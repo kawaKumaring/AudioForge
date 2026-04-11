@@ -1,10 +1,28 @@
+import { useState, useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
 import { useAppStore } from '@/stores/app.store'
 
 export default function ProgressBar() {
   const { status, progress, progressMessage } = useAppStore()
+  const [elapsed, setElapsed] = useState(0)
+  const startRef = useRef(0)
+
+  useEffect(() => {
+    if (status === 'processing') {
+      startRef.current = Date.now()
+      setElapsed(0)
+      const timer = setInterval(() => {
+        setElapsed(Math.floor((Date.now() - startRef.current) / 1000))
+      }, 1000)
+      return () => clearInterval(timer)
+    }
+    setElapsed(0)
+  }, [status])
 
   if (status !== 'processing') return null
+
+  const mm = Math.floor(elapsed / 60)
+  const ss = elapsed % 60
 
   return (
     <motion.div
@@ -21,9 +39,14 @@ export default function ProgressBar() {
           </motion.div>
           <span style={{ fontSize: 13, fontWeight: 500, color: 'var(--text-secondary)' }}>{progressMessage}</span>
         </div>
-        <span style={{ fontSize: 13, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: 'var(--accent-light)' }}>
-          {Math.round(progress)}%
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
+          <span style={{ fontSize: 11, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>
+            {mm}:{String(ss).padStart(2, '0')}
+          </span>
+          <span style={{ fontSize: 13, fontWeight: 700, fontVariantNumeric: 'tabular-nums', color: 'var(--accent-light)' }}>
+            {Math.round(progress)}%
+          </span>
+        </div>
       </div>
       <div style={{ height: 8, borderRadius: 999, overflow: 'hidden', background: 'rgba(139,92,246,0.08)' }}>
         <motion.div
