@@ -62,10 +62,13 @@ def main():
         # ── Separation modes (music / conversation) ──
         tracks = []
         if args.mode == "music":
+            emit("progress", percent=1, message="Demucs 엔진 로딩 중... (torch + demucs)")
             from music_worker import run_music_separation
             tracks = run_music_separation(args.input, args.output, args.model) or []
         elif args.mode == "conversation":
+            emit("progress", percent=1, message="화자 분리 엔진 로딩 중... (torch + speechbrain)")
             from conversation_worker import run_conversation_separation
+            emit("progress", percent=2, message="엔진 로딩 완료, 분리 시작")
             tracks = run_conversation_separation(args.input, args.output, args.n_speakers) or []
 
         if not tracks:
@@ -84,7 +87,6 @@ def _post_process(args, tracks):
     """Trim silence, transcribe, translate, convert format."""
     # Trim silence
     if args.trim_silence:
-        import torch
         emit("progress", percent=91, message="무음 구간 제거 중...")
         for t in tracks:
             wav, sr = load_audio(t["path"])
