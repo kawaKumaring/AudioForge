@@ -77,7 +77,7 @@ export const useAppStore = create<AppState>((set) => ({
   setWhisperModel: (v) => set({ whisperModel: v }),
   setDemucsModel: (v) => set({ demucsModel: v }),
   setNSpeakers: (v) => set({ nSpeakers: v }),
-  setProcessing: () => set({ status: 'processing', progress: 0, progressMessage: '준비 중...', error: null, tracks: [] }),
+  setProcessing: () => set({ status: 'processing', progress: 0, progressMessage: '파일 준비 중...', error: null, tracks: [] }),
   setProgress: (percent, message) => set({ progress: percent, progressMessage: message }),
   setResult: (tracks, outputDir) => set({ status: 'done', progress: 100, progressMessage: '완료', tracks, outputDir }),
   setError: (error) => set({ status: 'error', error, progressMessage: '' }),

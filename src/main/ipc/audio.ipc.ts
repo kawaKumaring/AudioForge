@@ -213,7 +213,21 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       }
     }
 
+    // Send preparation messages before Python starts
+    const modeNames: Record<string, string> = {
+      music: '음악 분리', conversation: '대화 분리', transcribe: '텍스트 추출', split: '트랙 분할'
+    }
+    mainWindow.webContents.send('audio:progress', { percent: 0, message: `${modeNames[mode] || mode} 엔진 시작 중...` })
+
     runner.run(scriptPath, args)
+
+    // Notify that Python process has been spawned
+    setTimeout(() => {
+      if (runner?.isRunning) {
+        mainWindow.webContents.send('audio:progress', { percent: 1, message: 'Python 프로세스 실행 중... (AI 모델 로딩에 시간이 걸릴 수 있습니다)' })
+      }
+    }, 2000)
+
     return { outputDir }
   })
 
