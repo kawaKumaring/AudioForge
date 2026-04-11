@@ -55,8 +55,8 @@ def convert_to_wav(input_path: str) -> str:
 
     tmp_dir = tempfile.mkdtemp(prefix="audioforge_")
     ext = os.path.splitext(input_path)[1]
-    tmp_input = os.path.join(tmp_dir, f"input{ext}")
-    wav_path = os.path.join(tmp_dir, "input.wav")
+    tmp_input = os.path.join(tmp_dir, f"source{ext}")
+    wav_path = os.path.join(tmp_dir, "converted.wav")
 
     shutil.copy2(input_path, tmp_input)
 
