@@ -322,9 +322,10 @@ def _run_split(args):
                 if mp and os.path.exists(mp):
                     with open(mp, "r", encoding="utf-8") as mf:
                         m = json.load(mf)
+                    track_num = m.get("track_number", idx + 1)
                     start_sec = m.get("start_time", 0)
                     title = m.get("title", t["name"])
-                    f.write(f"{fmt_time(start_sec)}\t{title}\n")
+                    f.write(f"{track_num:02d}\t{fmt_time(start_sec)}\t{title}\n")
 
         # Embed audio tags
         emit("progress", percent=88, message="오디오 태그 삽입 중...")
