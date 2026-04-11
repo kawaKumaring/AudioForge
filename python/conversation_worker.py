@@ -16,14 +16,6 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
       5. Soft crossfade reconstruction
     """
     emit("status", message="AI 화자 분리 준비 중...", percent=0)
-
-    try:
-        import torch
-        import numpy as np
-    except ImportError as e:
-        emit("error", message=f"필요한 패키지가 설치되지 않았습니다: {e}")
-        return
-
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     # ── Convert to WAV ──

@@ -4,7 +4,7 @@ const api = {
   audio: {
     selectFile: () => ipcRenderer.invoke('audio:select-file'),
     getFileInfo: (filePath: string) => ipcRenderer.invoke('audio:get-file-info', filePath),
-    process: (filePath: string, mode: string, options?: { trimSilence?: boolean; silenceGap?: number; transcribe?: boolean; translate?: boolean; exportSrt?: boolean; outputFormat?: string; splitMarkers?: number[]; splitLabels?: string[] }) =>
+    process: (filePath: string, mode: string, options?: Record<string, unknown>) =>
       ipcRenderer.invoke('audio:process', filePath, mode, options),
     cancel: () => ipcRenderer.invoke('audio:cancel'),
     getFileUrl: (filePath: string) => ipcRenderer.invoke('audio:get-file-url', filePath),

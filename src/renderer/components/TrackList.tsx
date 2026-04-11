@@ -64,10 +64,13 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
 
     const off = window.api.audio.onTrackResult((data: any) => {
       const t = data?.tracks?.[0]
-      if (t) {
-        if (t.text) setTranscript(t.text)
-        if (t.translated_text) setTranslation(t.translated_text)
-      }
+      if (!t) return
+      // Match by track name to avoid cross-track confusion
+      const resultName = t.name || ''
+      const myName = track.path.replace(/\\/g, '/').split('/').pop()?.replace(/\.\w+$/, '') || ''
+      if (resultName !== myName && !resultName.includes(myName)) return
+      if (t.text) setTranscript(t.text)
+      if (t.translated_text) setTranslation(t.translated_text)
       setProcessing(false)
       off()
     })

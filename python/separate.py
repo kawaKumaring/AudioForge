@@ -93,46 +93,8 @@ def _post_process(args, tracks):
 
     # Whisper transcription
     if args.transcribe:
-        emit("progress", percent=94, message="Whisper 모델 로딩 중...")
-        import whisper
-        import torch
-        device = "cuda" if torch.cuda.is_available() else "cpu"
-        model = whisper.load_model(args.whisper_model, device=device)
-        emit("progress", percent=95, message="텍스트 변환 중...")
-
-        from transcribe_worker import translate_to_korean
-
-        for i, t in enumerate(tracks):
-            pct = 95 + int((i / max(len(tracks), 1)) * 4)
-            emit("progress", percent=pct, message=f"텍스트 변환: {t['label']}")
-
-            result = model.transcribe(t["path"], language=None, task="transcribe", verbose=False)
-            text = result["text"].strip()
-            language = result.get("language", "unknown")
-
-            base = os.path.splitext(os.path.basename(t["path"]))[0]
-            txt_path = os.path.join(args.output, f"{base}.txt")
-            with open(txt_path, "w", encoding="utf-8") as f:
-                f.write(text)
-
-            if args.srt:
-                srt_path = os.path.join(args.output, f"{base}.srt")
-                with open(srt_path, "w", encoding="utf-8") as f:
-                    for si, seg in enumerate(result["segments"], 1):
-                        f.write(f"{si}\n{fmt_srt_time(seg['start'])} --> {fmt_srt_time(seg['end'])}\n{seg['text'].strip()}\n\n")
-
-            if args.translate and language != "ko":
-                emit("progress", percent=pct + 1, message=f"{t['label']}: {language}→한국어 번역 중...")
-                kr = translate_to_korean(text, language)
-                if kr:
-                    kr_path = os.path.join(args.output, f"{base}_korean.txt")
-                    with open(kr_path, "w", encoding="utf-8") as f:
-                        f.write(kr)
-                    t["translated_text"] = kr
-
-            t["text"] = text
-            t["language"] = language
-            t["txt_path"] = txt_path
+        from transcribe_worker import transcribe_tracks
+        transcribe_tracks(tracks, args.output, args.whisper_model, args.translate, args.srt)
 
     # Convert output format
     if args.output_format != "wav":
@@ -351,6 +313,18 @@ def _run_split(args):
                 json.dump(meta, f, ensure_ascii=False, indent=2)
 
             tracks.append({"name": name, "label": f"{label} ({fmt_time(dur)})", "path": out_path, "meta_path": meta_path})
+
+        # Save timestamp list as txt
+        ts_txt_path = os.path.join(args.output, "_tracklist.txt")
+        with open(ts_txt_path, "w", encoding="utf-8") as f:
+            for t in tracks:
+                mp = t.get("meta_path")
+                if mp and os.path.exists(mp):
+                    with open(mp, "r", encoding="utf-8") as mf:
+                        m = json.load(mf)
+                    start_sec = m.get("start_time", 0)
+                    title = m.get("title", t["name"])
+                    f.write(f"{fmt_time(start_sec)}\t{title}\n")
 
         # Embed audio tags
         emit("progress", percent=88, message="오디오 태그 삽입 중...")

@@ -72,7 +72,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     return `local-file://${encodeURIComponent(filePath)}`
   })
 
-  ipcMain.handle('audio:process', async (_event, filePath: string, mode: string, options?: { trimSilence?: boolean; silenceGap?: number; transcribe?: boolean; translate?: boolean; exportSrt?: boolean; outputFormat?: string; whisperModel?: string; demucsModel?: string; splitMarkers?: number[]; splitLabels?: string[] }) => {
+  ipcMain.handle('audio:process', async (_event, filePath: string, mode: string, options?: Record<string, unknown>) => {
     if (runner?.isRunning) {
       throw new Error('이미 처리 중인 작업이 있습니다')
     }

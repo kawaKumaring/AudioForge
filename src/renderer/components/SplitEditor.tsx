@@ -86,15 +86,20 @@ export default function SplitEditor() {
       })
     })
 
-    // Listen for drag updates
+    // Listen for drag updates — use a single persistent handler
     const handleUpdate = (region: any) => {
       setMarkers(prev => prev.map(m =>
         m.id === region.id ? { ...m, time: region.start } : m
       ).sort((a, b) => a.time - b.time))
     }
 
+    // Remove all previous listeners before adding new one
+    try { regions.un('region-updated') } catch {}
     regions.on('region-updated', handleUpdate)
-    return () => { regions.un('region-updated', handleUpdate) }
+
+    return () => {
+      try { regions.un('region-updated') } catch {}
+    }
   }, [markers])
 
   const addMarker = useCallback((time: number, label?: string) => {

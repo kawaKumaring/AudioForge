@@ -16,6 +16,20 @@ export interface ProcessingResult {
   outputDir: string
 }
 
+export interface ProcessOptions {
+  trimSilence?: boolean
+  silenceGap?: number
+  transcribe?: boolean
+  translate?: boolean
+  exportSrt?: boolean
+  outputFormat?: string
+  whisperModel?: string
+  demucsModel?: string
+  nSpeakers?: number
+  splitMarkers?: number[]
+  splitLabels?: string[]
+}
+
 export interface FileInfo {
   path: string
   name: string
