@@ -1,8 +1,22 @@
 import { motion } from 'framer-motion'
 import { useAppStore } from '@/stores/app.store'
 
+function _estimateTime(mode: string, duration: number, transcribe: boolean, translate: boolean): string {
+  let secs = 0
+  if (mode === 'music') secs = duration * 0.3 + 15       // Demucs: ~0.3x realtime + model load
+  else if (mode === 'conversation') secs = duration * 0.5 + 20  // VAD + embedding + clustering
+  else if (mode === 'transcribe') secs = duration * 0.2 + 10   // Whisper
+  else if (mode === 'split') secs = 5                           // Very fast
+
+  if (transcribe && mode !== 'transcribe') secs += duration * 0.2 + 10
+  if (translate) secs += 10
+
+  if (secs < 60) return `약 ${Math.ceil(secs)}초`
+  return `약 ${Math.ceil(secs / 60)}분`
+}
+
 export default function ProcessButton() {
-  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, splitMarkers, splitLabels, status, setProcessing, setProgress, setResult, setError } = useAppStore()
+  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, demucsModel, nSpeakers, splitMarkers, splitLabels, status, setProcessing, setProgress, setResult, setError } = useAppStore()
 
   const handleProcess = async () => {
     if (!fileInfo) return
@@ -23,7 +37,7 @@ export default function ProcessButton() {
     function cleanup() { offProgress(); offResult(); offError() }
 
     try {
-      await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, splitMarkers, splitLabels })
+      await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, demucsModel, nSpeakers, splitMarkers, splitLabels })
     } catch (err: any) {
       setError(err.message || 'Process failed')
       cleanup()
@@ -67,6 +81,11 @@ export default function ProcessButton() {
         <circle cx="12" cy="12" r="10" /><polygon points="10,8 16,12 10,16" fill="currentColor" stroke="none" />
       </svg>
       {mode === 'music' ? '음악 분리 시작' : mode === 'conversation' ? '대화 분리 시작' : mode === 'split' ? '트랙 분할 시작' : '텍스트 추출 시작'}
+      {fileInfo.duration > 0 && (
+        <span style={{ opacity: 0.6, fontSize: 11, fontWeight: 400 }}>
+          ({_estimateTime(mode, fileInfo.duration, transcribe, translate)})
+        </span>
+      )}
     </motion.button>
   )
 }

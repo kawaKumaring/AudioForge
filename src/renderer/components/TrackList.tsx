@@ -192,7 +192,7 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
 }
 
 function KaraokeButton({ tracks }: { tracks: { name: string; path: string }[] }) {
-  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const audiosRef = useRef<HTMLAudioElement[]>([])
   const [playing, setPlaying] = useState(false)
 
   const hasVocals = tracks.some(t => t.name === 'vocals')
@@ -200,14 +200,25 @@ function KaraokeButton({ tracks }: { tracks: { name: string; path: string }[] })
   if (!hasVocals || instrumentals.length === 0) return null
 
   const handleKaraoke = async () => {
-    if (playing) { audioRef.current?.pause(); setPlaying(false); return }
-    const otherTrack = tracks.find(t => t.name === 'other') || instrumentals[0]
-    if (!audioRef.current) {
-      const url = await window.api.audio.getFileUrl(otherTrack.path)
-      audioRef.current = new Audio(url)
-      audioRef.current.onended = () => setPlaying(false)
+    if (playing) {
+      audiosRef.current.forEach(a => a.pause())
+      setPlaying(false)
+      return
     }
-    audioRef.current.play()
+    // Load all instrumental tracks for simultaneous playback
+    if (audiosRef.current.length === 0) {
+      for (const t of instrumentals) {
+        const url = await window.api.audio.getFileUrl(t.path)
+        const audio = new Audio(url)
+        audiosRef.current.push(audio)
+      }
+      audiosRef.current[0].onended = () => {
+        audiosRef.current.forEach(a => a.pause())
+        setPlaying(false)
+      }
+    }
+    // Sync play all tracks
+    audiosRef.current.forEach(a => { a.currentTime = 0; a.play() })
     setPlaying(true)
   }
 

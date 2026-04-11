@@ -2,8 +2,8 @@ import { useState } from 'react'
 import { useAppStore } from '@/stores/app.store'
 
 export default function Options() {
-  const { mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat,
-    setTrimSilence, setSilenceGap, setTranscribe, setTranslate, setExportSrt, setOutputFormat, status } = useAppStore()
+  const { mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, demucsModel, nSpeakers,
+    setTrimSilence, setSilenceGap, setTranscribe, setTranslate, setExportSrt, setOutputFormat, setWhisperModel, setDemucsModel, setNSpeakers, status } = useAppStore()
   const disabled = status === 'processing'
   const [open, setOpen] = useState(false)
 
@@ -85,6 +85,52 @@ export default function Options() {
                     background: outputFormat === fmt ? 'var(--accent)' : 'transparent',
                     color: outputFormat === fmt ? '#fff' : 'var(--text-muted)'
                   }}>{fmt}</button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Model selection row */}
+          <div style={{ display: 'flex', gap: 10 }}>
+            {/* Whisper model */}
+            {(transcribe || isTranscribeMode || isSplitMode) && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Whisper</span>
+                {(['small', 'medium', 'large-v3'] as const).map((m) => (
+                  <button key={m} onClick={() => !disabled && setWhisperModel(m)} disabled={disabled} style={{
+                    padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                    fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
+                    background: whisperModel === m ? 'var(--cyan)' : 'transparent',
+                    color: whisperModel === m ? '#fff' : 'var(--text-muted)'
+                  }}>{m === 'large-v3' ? 'Large' : m.charAt(0).toUpperCase() + m.slice(1)}</button>
+                ))}
+              </div>
+            )}
+            {/* Speaker count (conversation mode) */}
+            {mode === 'conversation' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>화자 수</span>
+                {[2, 3, 4, 5].map((n) => (
+                  <button key={n} onClick={() => !disabled && setNSpeakers(n)} disabled={disabled} style={{
+                    padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                    fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
+                    background: nSpeakers === n ? 'var(--cyan)' : 'transparent',
+                    color: nSpeakers === n ? '#fff' : 'var(--text-muted)'
+                  }}>{n}명</button>
+                ))}
+              </div>
+            )}
+            {/* Demucs model */}
+            {mode === 'music' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Demucs</span>
+                {(['htdemucs', 'htdemucs_ft'] as const).map((m) => (
+                  <button key={m} onClick={() => !disabled && setDemucsModel(m)} disabled={disabled} style={{
+                    padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                    fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
+                    background: demucsModel === m ? 'var(--accent)' : 'transparent',
+                    color: demucsModel === m ? '#fff' : 'var(--text-muted)'
+                  }}>{m === 'htdemucs' ? '기본' : '고품질'}</button>
                 ))}
               </div>
             )}

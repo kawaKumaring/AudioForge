@@ -72,7 +72,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     return `local-file://${encodeURIComponent(filePath)}`
   })
 
-  ipcMain.handle('audio:process', async (_event, filePath: string, mode: string, options?: { trimSilence?: boolean; silenceGap?: number; transcribe?: boolean; translate?: boolean; exportSrt?: boolean; outputFormat?: string; splitMarkers?: number[]; splitLabels?: string[] }) => {
+  ipcMain.handle('audio:process', async (_event, filePath: string, mode: string, options?: { trimSilence?: boolean; silenceGap?: number; transcribe?: boolean; translate?: boolean; exportSrt?: boolean; outputFormat?: string; whisperModel?: string; demucsModel?: string; splitMarkers?: number[]; splitLabels?: string[] }) => {
     if (runner?.isRunning) {
       throw new Error('이미 처리 중인 작업이 있습니다')
     }
@@ -131,7 +131,10 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       clearTimeout(timeout)
     })
 
-    const args = ['--mode', mode, '--input', filePath, '--output', outputDir]
+    const args = ['--mode', mode, '--input', filePath, '--output', outputDir,
+      '--whisper-model', options?.whisperModel || 'large-v3',
+      '--model', options?.demucsModel || 'htdemucs',
+      '--n-speakers', String(options?.nSpeakers || 2)]
     if (options?.trimSilence) {
       args.push('--trim-silence')
       args.push('--silence-gap', String(options.silenceGap ?? 0.5))
