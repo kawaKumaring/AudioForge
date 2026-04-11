@@ -326,7 +326,7 @@ def _run_split(args):
     import tempfile, shutil, re
     tmp_dir = tempfile.mkdtemp(prefix="audioforge_")
     ext = os.path.splitext(args.input)[1]
-    tmp_input = os.path.join(tmp_dir, f"input{ext}")
+    tmp_input = os.path.join(tmp_dir, f"source{ext}")
     shutil.copy2(args.input, tmp_input)
 
     try:

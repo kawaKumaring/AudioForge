@@ -2,7 +2,7 @@ import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import { join, basename, dirname, extname } from 'path'
-import { existsSync, mkdirSync, copyFileSync, readdirSync, renameSync } from 'fs'
+import { existsSync, mkdirSync, copyFileSync, readdirSync, renameSync, unlinkSync } from 'fs'
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
 
@@ -42,7 +42,13 @@ function createSafePaths(filePath: string): { safePath: string; safeOutputDir: s
           for (const f of readdirSync(safeOutputDir)) {
             const src = join(safeOutputDir, f)
             const dst = join(realOutputDir, f)
-            renameSync(src, dst)
+            try {
+              renameSync(src, dst)
+            } catch {
+              // Cross-drive rename fails on Windows — fallback to copy+delete
+              copyFileSync(src, dst)
+              unlinkSync(src)
+            }
           }
         }
         // Clean temp
@@ -137,8 +143,12 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     }
 
     // Create ASCII-safe paths (Korean chars break spawn args on Windows)
+    console.log(`[AudioForge] Input path: ${filePath}`)
     const { safePath, safeOutputDir, realOutputDir, cleanup: pathCleanup } = createSafePaths(filePath)
     const outputDir = realOutputDir
+    console.log(`[AudioForge] Safe path: ${safePath}`)
+    console.log(`[AudioForge] Safe output: ${safeOutputDir}`)
+    console.log(`[AudioForge] Real output: ${realOutputDir}`)
 
     runner = new PythonRunner(pythonPath)
 
