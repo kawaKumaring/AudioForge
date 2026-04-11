@@ -796,7 +796,9 @@ def main():
                         label = split_labels_list[idx].strip()
                     else:
                         label = f"Track {idx + 1:02d}"
-                    name = f"track_{idx + 1:02d}"
+                    # Sanitize label for filename
+                    safe_label = "".join(c for c in label if c not in r'\/:*?"<>|').strip()
+                    name = f"{idx + 1:02d}_{safe_label}" if safe_label else f"track_{idx + 1:02d}"
                     emit("progress", percent=pct, message=f"{label} 저장 중...")
 
                     end = min(end, wav_full.shape[1])
