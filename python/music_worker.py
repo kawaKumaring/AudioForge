@@ -1,7 +1,7 @@
 """Demucs music source separation."""
 
 import os
-from audio_utils import emit, load_audio, save_audio, convert_to_wav
+from audio_utils import emit, load_audio, save_audio, convert_to_wav, get_device
 
 
 def run_music_separation(input_path: str, output_dir: str, model: str = "htdemucs"):
@@ -16,8 +16,9 @@ def run_music_separation(input_path: str, output_dir: str, model: str = "htdemuc
         emit("error", message=f"필요한 패키지가 설치되지 않았습니다: {e}")
         return []
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-    emit("status", message=f"디바이스: {device}, 모델: {model}", percent=5)
+    emit("progress", percent=3, message="GPU 확인 중...")
+    device = get_device(timeout_sec=10)
+    emit("status", message=f"디바이스: {device.upper()}, 모델: {model}", percent=5)
 
     separator = get_model(model)
     separator.to(device)

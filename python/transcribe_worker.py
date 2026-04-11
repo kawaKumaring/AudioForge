@@ -1,7 +1,7 @@
 """Whisper transcription + NLLB-200 translation."""
 
 import os
-from audio_utils import emit, fmt_time, fmt_srt_time
+from audio_utils import emit, fmt_time, fmt_srt_time, get_device
 
 # Whisper language code → NLLB-200 language code
 LANG_TO_NLLB = {
@@ -26,7 +26,7 @@ def _get_whisper_model(model_name="large-v3"):
     import whisper
     import torch
     if _whisper_cache["model"] is None or _whisper_cache["name"] != model_name:
-        device = "cuda" if torch.cuda.is_available() else "cpu"
+        device = get_device(timeout_sec=10)
         _whisper_cache["model"] = whisper.load_model(model_name, device=device)
         _whisper_cache["name"] = model_name
     return _whisper_cache["model"]
@@ -41,10 +41,9 @@ def translate_to_korean(text: str, src_lang: str):
     if not nllb_src:
         return None
 
-    import torch
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = get_device(timeout_sec=10)
     model_name = "facebook/nllb-200-distilled-600M"
 
     if _nllb_cache["model"] is None or _nllb_cache["src_lang"] != nllb_src:

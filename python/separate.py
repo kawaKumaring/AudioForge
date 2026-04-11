@@ -15,7 +15,7 @@ import subprocess
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from audio_utils import (emit, load_audio, save_audio, find_ffmpeg,
-                         convert_to_wav, trim_silence, fmt_time, fmt_srt_time)
+                         convert_to_wav, trim_silence, fmt_time, fmt_srt_time, get_device)
 
 
 def main():
@@ -187,9 +187,8 @@ def _run_track_process(args):
     """Process individual track (transcribe/translate)."""
     emit("status", message="트랙 개별 처리", percent=0)
     import whisper
-    import torch
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = get_device(timeout_sec=10)
     base = os.path.splitext(os.path.basename(args.input))[0]
     text = None
     language = None

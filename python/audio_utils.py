@@ -143,6 +143,28 @@ def trim_silence(wav_tensor, sr, silence_gap_sec=0.0, threshold_db=-40):
     return torch.cat(pieces, dim=1)
 
 
+def get_device(timeout_sec=10):
+    """Get best available device. Falls back to CPU if CUDA is busy/unavailable."""
+    import torch
+    if not torch.cuda.is_available():
+        return "cpu"
+    try:
+        import threading
+        ok = [False]
+        def _probe():
+            try:
+                torch.zeros(1, device="cuda")
+                ok[0] = True
+            except Exception:
+                pass
+        t = threading.Thread(target=_probe)
+        t.start()
+        t.join(timeout=timeout_sec)
+        return "cuda" if ok[0] else "cpu"
+    except Exception:
+        return "cpu"
+
+
 def fmt_time(seconds):
     m = int(seconds // 60)
     s = int(seconds % 60)
