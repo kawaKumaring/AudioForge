@@ -13,7 +13,7 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
       4. Temporal smoothing (min 500ms per speaker turn)
       5. Soft crossfade reconstruction
     """
-    emit("status", message="AI 화자 분리 준비 중...", percent=0)
+    emit("progress", percent=1, message="torch 엔진 로딩 중... (10~30초 소요)")
 
     try:
         import torch
@@ -22,7 +22,9 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
         emit("error", message=f"필요한 패키지가 설치되지 않았습니다: {e}")
         return []
 
+    emit("progress", percent=3, message="torch 로딩 완료, CUDA 초기화 중...")
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    emit("progress", percent=4, message=f"디바이스: {device}")
 
     # ── Convert to WAV ──
     emit("progress", percent=2, message="오디오 변환 중...")
