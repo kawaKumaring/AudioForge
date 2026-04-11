@@ -43,7 +43,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile'],
       filters: [
-        { name: 'Audio', extensions: ['m4a', 'mp3', 'wav', 'flac', 'ogg', 'aac', 'wma'] }
+        { name: 'Audio/Video', extensions: ['m4a', 'mp3', 'wav', 'flac', 'ogg', 'aac', 'wma', 'mp4', 'mkv', 'avi', 'mov', 'webm'] }
       ]
     })
     if (result.canceled || result.filePaths.length === 0) return null

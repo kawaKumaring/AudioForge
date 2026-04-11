@@ -51,7 +51,7 @@ export default function DropZone() {
       const file = e.dataTransfer?.files?.[0]
       if (file) {
         const ext = file.name.split('.').pop()?.toLowerCase()
-        if (['m4a', 'mp3', 'wav', 'flac', 'ogg', 'aac', 'wma'].includes(ext || '')) {
+        if (['m4a', 'mp3', 'wav', 'flac', 'ogg', 'aac', 'wma', 'mp4', 'mkv', 'avi', 'mov', 'webm'].includes(ext || '')) {
           const filePath = window.api.utils.getPathForFile(file)
           if (filePath) loadFile(filePath)
         }
@@ -205,12 +205,12 @@ export default function DropZone() {
               오디오 파일을 드래그하거나 클릭
             </div>
             <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-muted)' }}>
-              M4A, MP3, WAV, FLAC, OGG 지원
+              M4A, MP3, WAV, FLAC, OGG, MP4, MKV 지원
             </div>
 
             {/* Format badges */}
             <div style={{ marginTop: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
-              {['M4A', 'MP3', 'WAV', 'FLAC'].map((fmt) => (
+              {['M4A', 'MP3', 'WAV', 'FLAC', 'MP4'].map((fmt) => (
                 <span key={fmt} style={{
                   borderRadius: '6px', padding: '4px 10px',
                   fontSize: '10px', fontWeight: 600, letterSpacing: '0.05em',
