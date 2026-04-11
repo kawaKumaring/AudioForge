@@ -12,6 +12,20 @@ export default function App() {
   const { fileInfo, mode, status, reset } = useAppStore()
   const setIdle = () => useAppStore.setState({ status: 'idle', tracks: [], error: null, progress: 0 })
 
+  const handleRestore = async () => {
+    const result = await window.api.audio.restoreFromFolder()
+    if (result && result.tracks.length > 0) {
+      useAppStore.setState({
+        fileInfo: { path: '', name: '이전 결과 복원', duration: 0, channels: 0, sampleRate: 0, format: '' },
+        fileUrl: null,
+        status: 'done',
+        tracks: result.tracks,
+        outputDir: result.outputDir,
+        mode: 'split'
+      })
+    }
+  }
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg-base)', color: 'var(--text-primary)', fontFamily: "'Inter', -apple-system, sans-serif" }}>
       {/* Title bar */}
@@ -48,6 +62,18 @@ export default function App() {
               <p style={{ marginTop: 8, fontSize: 13, color: 'var(--text-muted)' }}>AI 기반 오디오 분리 · 텍스트 변환 · 번역</p>
             </div>
             <DropZone />
+            <button onClick={handleRestore} style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+              width: '100%', marginTop: 16, padding: '10px 0', borderRadius: 10,
+              border: '1px solid var(--border-subtle)', background: 'transparent',
+              cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500,
+              color: 'var(--text-muted)'
+            }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+              </svg>
+              이전 결과 폴더 열기
+            </button>
           </div>
         </div>
       ) : (

@@ -191,6 +191,52 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     return true
   })
 
+  ipcMain.handle('audio:restore-from-folder', async () => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory'],
+      title: '이전 결과 폴더 선택'
+    })
+    if (result.canceled || result.filePaths.length === 0) return null
+
+    const dir = result.filePaths[0]
+    const { readdirSync, readFileSync } = await import('fs')
+    const files = readdirSync(dir)
+    const jsonFiles = files.filter((f: string) => f.endsWith('.json')).sort()
+
+    if (jsonFiles.length === 0) return null
+
+    const tracks: { name: string; label: string; path: string }[] = []
+
+    for (const jf of jsonFiles) {
+      try {
+        const meta = JSON.parse(readFileSync(join(dir, jf), 'utf-8'))
+        const audioFile = meta.output_file || ''
+        const audioPath = join(dir, audioFile)
+        if (existsSync(audioPath)) {
+          tracks.push({
+            name: audioFile.replace(/\.\w+$/, ''),
+            label: `${meta.title || audioFile} (${Math.floor((meta.duration || 0) / 60)}:${String(Math.floor((meta.duration || 0) % 60)).padStart(2, '0')})`,
+            path: audioPath
+          })
+        }
+      } catch { /* skip invalid json */ }
+    }
+
+    // Also include audio files without JSON (e.g., speaker_a.wav, vocals.wav)
+    const audioExts = ['.wav', '.mp3', '.flac']
+    for (const f of files) {
+      const ext = f.substring(f.lastIndexOf('.')).toLowerCase()
+      if (audioExts.includes(ext)) {
+        const name = f.replace(/\.\w+$/, '')
+        if (!tracks.some(t => t.name === name)) {
+          tracks.push({ name, label: name, path: join(dir, f) })
+        }
+      }
+    }
+
+    return { tracks, outputDir: dir }
+  })
+
   ipcMain.handle('audio:export-tracks', async (_event, trackPaths: string[]) => {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory', 'createDirectory'],
