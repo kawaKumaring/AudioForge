@@ -18,6 +18,8 @@ interface AppState {
   tracks: Track[]
   outputDir: string | null
   playingTrack: string | null
+  splitMarkers: number[]
+  splitLabels: string[]
 
   setFile: (info: FileInfo, url: string) => void
   setMode: (mode: SeparationMode) => void
@@ -52,6 +54,8 @@ export const useAppStore = create<AppState>((set) => ({
   tracks: [],
   outputDir: null,
   playingTrack: null,
+  splitMarkers: [],
+  splitLabels: [],
 
   setFile: (info, url) => set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, progress: 0, outputDir: null }),
   setMode: (mode) => set({ mode }),
@@ -66,5 +70,5 @@ export const useAppStore = create<AppState>((set) => ({
   setResult: (tracks, outputDir) => set({ status: 'done', progress: 100, progressMessage: '완료', tracks, outputDir }),
   setError: (error) => set({ status: 'error', error, progressMessage: '' }),
   setPlayingTrack: (name) => set({ playingTrack: name }),
-  reset: () => set({ fileInfo: null, fileUrl: null, status: 'idle', progress: 0, progressMessage: '', error: null, tracks: [], outputDir: null, playingTrack: null })
+  reset: () => set({ fileInfo: null, fileUrl: null, status: 'idle', progress: 0, progressMessage: '', error: null, tracks: [], outputDir: null, playingTrack: null, splitMarkers: [], splitLabels: [] })
 }))

@@ -705,6 +705,8 @@ def main():
     parser.add_argument("--whisper-model", default="large-v3", help="Whisper model name")
     parser.add_argument("--translate", action="store_true", help="Translate to Korean using NLLB-200")
     parser.add_argument("--srt", action="store_true", help="Export SRT subtitle file")
+    parser.add_argument("--split-points", default="", help="Comma-separated split points in seconds")
+    parser.add_argument("--split-labels", default="", help="Pipe-separated track labels")
     args = parser.parse_args()
 
     os.makedirs(args.output, exist_ok=True)
@@ -724,70 +726,76 @@ def main():
                 audio_np = wav_full.squeeze().numpy()
 
                 import numpy as np
+                total_samples = wav_full.shape[1]
 
-                # Detect silence regions to find track boundaries
-                frame_len = int(0.05 * sr_full)  # 50ms frames
-                hop = frame_len
-                n_frames = len(audio_np) // hop
+                # Determine split points
+                split_seconds = []
+                split_labels_list = []
 
-                emit("progress", percent=10, message="무음 구간 탐색 중...")
-                rms = np.array([
-                    np.sqrt(np.mean(audio_np[i * hop:i * hop + frame_len] ** 2))
-                    for i in range(n_frames)
-                ])
-
-                # Adaptive threshold
-                if rms.max() > 0:
-                    sorted_rms = np.sort(rms)
-                    noise_floor = sorted_rms[int(len(sorted_rms) * 0.1)]
-                    threshold = max(noise_floor * 5, 0.005)
+                if args.split_points:
+                    # User-provided timestamps
+                    split_seconds = [float(x) for x in args.split_points.split(',') if x.strip()]
+                    if args.split_labels:
+                        split_labels_list = args.split_labels.split('|')
+                    emit("progress", percent=15, message=f"타임스탬프 {len(split_seconds)}개 지점으로 분할")
                 else:
-                    threshold = 0.005
+                    # Auto-detect silence
+                    frame_len = int(0.05 * sr_full)
+                    hop = frame_len
+                    n_frames = len(audio_np) // hop
 
-                is_sound = rms > threshold
+                    emit("progress", percent=10, message="무음 구간 탐색 중...")
+                    rms = np.array([
+                        np.sqrt(np.mean(audio_np[i * hop:i * hop + frame_len] ** 2))
+                        for i in range(n_frames)
+                    ])
 
-                # Find silence gaps longer than 1.5 seconds (track boundaries)
-                min_silence_frames = int(1.5 * sr_full / hop)
-                min_track_frames = int(10.0 * sr_full / hop)  # minimum 10s per track
-
-                # Detect silence segments
-                silence_segments = []
-                i = 0
-                while i < len(is_sound):
-                    if not is_sound[i]:
-                        j = i
-                        while j < len(is_sound) and not is_sound[j]:
-                            j += 1
-                        if (j - i) >= min_silence_frames:
-                            center = ((i + j) // 2) * hop
-                            silence_segments.append(center)
-                        i = j
+                    if rms.max() > 0:
+                        sorted_rms = np.sort(rms)
+                        noise_floor = sorted_rms[int(len(sorted_rms) * 0.1)]
+                        threshold = max(noise_floor * 5, 0.005)
                     else:
-                        i += 1
+                        threshold = 0.005
 
-                emit("progress", percent=20, message=f"{len(silence_segments)}개 분할 지점 감지")
+                    is_sound = rms > threshold
+                    min_silence_frames = int(1.5 * sr_full / hop)
 
-                # Build track boundaries
-                boundaries = [0] + silence_segments + [len(audio_np)]
+                    i = 0
+                    while i < len(is_sound):
+                        if not is_sound[i]:
+                            j = i
+                            while j < len(is_sound) and not is_sound[j]:
+                                j += 1
+                            if (j - i) >= min_silence_frames:
+                                center = ((i + j) / 2) * hop / sr_full
+                                split_seconds.append(center)
+                            i = j
+                        else:
+                            i += 1
+
+                    emit("progress", percent=20, message=f"{len(split_seconds)}개 분할 지점 자동 감지")
+
+                # Build track ranges from split points
+                split_samples = [int(s * sr_full) for s in split_seconds]
+                boundaries = [0] + split_samples + [total_samples]
                 track_ranges = []
                 for k in range(len(boundaries) - 1):
-                    start = boundaries[k]
-                    end = boundaries[k + 1]
-                    # Skip very short segments
-                    dur_frames = (end - start) // hop
-                    if dur_frames >= min_track_frames:
+                    start = max(0, boundaries[k])
+                    end = min(boundaries[k + 1], total_samples)
+                    if end > start:
                         track_ranges.append((start, end))
-
-                if not track_ranges:
-                    track_ranges = [(0, len(audio_np))]
 
                 emit("progress", percent=25, message=f"{len(track_ranges)}개 트랙 분할")
 
                 # Save each track
                 tracks = []
                 for idx, (start, end) in enumerate(track_ranges):
-                    pct = 25 + int((idx / max(len(track_ranges), 1)) * 30)
-                    label = f"Track {idx + 1:02d}"
+                    pct = 25 + int((idx / max(len(track_ranges), 1)) * 60)
+                    # Use user-provided labels or default
+                    if idx < len(split_labels_list) and split_labels_list[idx].strip():
+                        label = split_labels_list[idx].strip()
+                    else:
+                        label = f"Track {idx + 1:02d}"
                     name = f"track_{idx + 1:02d}"
                     emit("progress", percent=pct, message=f"{label} 저장 중...")
 

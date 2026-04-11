@@ -6,9 +6,10 @@ import ProcessButton from '@/components/ProcessButton'
 import ProgressBar from '@/components/ProgressBar'
 import TrackList from '@/components/TrackList'
 import Options from '@/components/Options'
+import SplitEditor from '@/components/SplitEditor'
 
 export default function App() {
-  const { fileInfo, status, reset } = useAppStore()
+  const { fileInfo, mode, status, reset } = useAppStore()
   const setIdle = () => useAppStore.setState({ status: 'idle', tracks: [], error: null, progress: 0 })
 
   return (
@@ -95,13 +96,13 @@ export default function App() {
                   </svg>
                 </button>
               </div>
-              <Waveform />
+              {mode !== 'split' && <Waveform />}
             </div>
 
             {/* 모드 + 옵션 + 버튼 + 결과 */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               <ModeSelector />
-              <Options />
+              {mode === 'split' ? <SplitEditor /> : <Options />}
               <ProcessButton />
               <ProgressBar />
               <TrackList />

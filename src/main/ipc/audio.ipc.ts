@@ -72,7 +72,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     return `local-file://${encodeURIComponent(filePath)}`
   })
 
-  ipcMain.handle('audio:process', async (_event, filePath: string, mode: string, options?: { trimSilence?: boolean; silenceGap?: number; transcribe?: boolean; translate?: boolean; exportSrt?: boolean; outputFormat?: string }) => {
+  ipcMain.handle('audio:process', async (_event, filePath: string, mode: string, options?: { trimSilence?: boolean; silenceGap?: number; transcribe?: boolean; translate?: boolean; exportSrt?: boolean; outputFormat?: string; splitMarkers?: number[]; splitLabels?: string[] }) => {
     if (runner?.isRunning) {
       throw new Error('이미 처리 중인 작업이 있습니다')
     }
@@ -141,6 +141,12 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     if (options?.exportSrt) args.push('--srt')
     if (options?.outputFormat && options.outputFormat !== 'wav') {
       args.push('--output-format', options.outputFormat)
+    }
+    if (mode === 'split' && options?.splitMarkers && options.splitMarkers.length > 0) {
+      args.push('--split-points', options.splitMarkers.join(','))
+      if (options.splitLabels && options.splitLabels.length > 0) {
+        args.push('--split-labels', options.splitLabels.join('|'))
+      }
     }
 
     runner.run(scriptPath, args)

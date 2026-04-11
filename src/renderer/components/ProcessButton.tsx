@@ -2,7 +2,7 @@ import { motion } from 'framer-motion'
 import { useAppStore } from '@/stores/app.store'
 
 export default function ProcessButton() {
-  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, status, setProcessing, setProgress, setResult, setError } = useAppStore()
+  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, splitMarkers, splitLabels, status, setProcessing, setProgress, setResult, setError } = useAppStore()
 
   const handleProcess = async () => {
     if (!fileInfo) return
@@ -23,7 +23,7 @@ export default function ProcessButton() {
     function cleanup() { offProgress(); offResult(); offError() }
 
     try {
-      await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat })
+      await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, splitMarkers, splitLabels })
     } catch (err: any) {
       setError(err.message || 'Process failed')
       cleanup()
