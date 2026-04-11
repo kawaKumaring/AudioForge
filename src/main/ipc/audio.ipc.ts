@@ -2,62 +2,9 @@ import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import { join, basename, dirname, extname } from 'path'
-import { existsSync, mkdirSync, copyFileSync, readdirSync, renameSync, unlinkSync } from 'fs'
+import { existsSync, mkdirSync, unlinkSync } from 'fs'
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
-
-// Create ASCII-safe temp paths for Python (avoids spawn encoding issues with Korean paths)
-function createSafePaths(filePath: string): { safePath: string; safeOutputDir: string; realOutputDir: string; cleanup: () => void } {
-  const ext = extname(filePath)
-  const nameWithoutExt = basename(filePath, ext)
-  const now = new Date()
-  const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}-${String(now.getSeconds()).padStart(2, '0')}`
-
-  // Real output dir (may have Korean chars)
-  const realOutputDir = join(dirname(filePath), 'AudioForge_output', `${timestamp}_${nameWithoutExt}`)
-  if (!existsSync(realOutputDir)) mkdirSync(realOutputDir, { recursive: true })
-
-  // Check if path is ASCII-safe
-  const isAscii = /^[\x00-\x7F]*$/.test(filePath)
-  if (isAscii) {
-    return { safePath: filePath, safeOutputDir: realOutputDir, realOutputDir, cleanup: () => {} }
-  }
-
-  // Copy to temp ASCII dir
-  const tempBase = join(tmpdir(), `audioforge_${Date.now()}`)
-  mkdirSync(tempBase, { recursive: true })
-  const safePath = join(tempBase, `source${ext}`)
-  const safeOutputDir = join(tempBase, 'output')
-  mkdirSync(safeOutputDir, { recursive: true })
-  copyFileSync(filePath, safePath)
-
-  return {
-    safePath,
-    safeOutputDir,
-    realOutputDir,
-    cleanup: () => {
-      // Move results from safe output to real output
-      try {
-        if (existsSync(safeOutputDir)) {
-          for (const f of readdirSync(safeOutputDir)) {
-            const src = join(safeOutputDir, f)
-            const dst = join(realOutputDir, f)
-            try {
-              renameSync(src, dst)
-            } catch {
-              // Cross-drive rename fails on Windows — fallback to copy+delete
-              copyFileSync(src, dst)
-              unlinkSync(src)
-            }
-          }
-        }
-        // Clean temp
-        const { rmSync } = require('fs')
-        rmSync(tempBase, { recursive: true, force: true })
-      } catch { /* ignore cleanup errors */ }
-    }
-  }
-}
 
 const execAsync = promisify(exec)
 
@@ -142,13 +89,35 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       throw new Error(`Python 스크립트를 찾을 수 없습니다: ${scriptPath}`)
     }
 
-    // Create ASCII-safe paths (Korean chars break spawn args on Windows)
-    console.log(`[AudioForge] Input path: ${filePath}`)
-    const { safePath, safeOutputDir, realOutputDir, cleanup: pathCleanup } = createSafePaths(filePath)
-    const outputDir = realOutputDir
-    console.log(`[AudioForge] Safe path: ${safePath}`)
-    console.log(`[AudioForge] Safe output: ${safeOutputDir}`)
-    console.log(`[AudioForge] Real output: ${realOutputDir}`)
+    // Build output directory
+    const ext = extname(filePath)
+    const nameWithoutExt = basename(filePath, ext)
+    const now = new Date()
+    const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}-${String(now.getSeconds()).padStart(2, '0')}`
+    const outputDir = join(dirname(filePath), 'AudioForge_output', `${timestamp}_${nameWithoutExt}`)
+    if (!existsSync(outputDir)) mkdirSync(outputDir, { recursive: true })
+
+    // Write all options to JSON config file (avoids spawn encoding issues with Korean paths)
+    const configPath = join(tmpdir(), `audioforge_config_${Date.now()}.json`)
+    const config = {
+      mode,
+      input: filePath,
+      output: outputDir,
+      model: options?.demucsModel || 'htdemucs',
+      trimSilence: !!options?.trimSilence,
+      silenceGap: options?.silenceGap ?? 0.5,
+      transcribe: !!(options?.transcribe || mode === 'transcribe'),
+      outputFormat: options?.outputFormat || 'wav',
+      whisperModel: options?.whisperModel || 'large-v3',
+      translate: !!options?.translate,
+      srt: !!options?.exportSrt,
+      splitPoints: mode === 'split' && options?.splitMarkers ? (options.splitMarkers as number[]).join(',') : '',
+      splitLabels: mode === 'split' && options?.splitLabels ? (options.splitLabels as string[]).join('|') : '',
+      nSpeakers: options?.nSpeakers || 2
+    }
+    const { writeFileSync } = require('fs')
+    writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+    console.log(`[AudioForge] Config written to: ${configPath}`)
 
     runner = new PythonRunner(pythonPath)
 
@@ -157,18 +126,6 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     })
 
     runner.on('result', (data) => {
-      // Replace safe paths with real paths in result
-      if (data && data.tracks) {
-        for (const t of data.tracks) {
-          if (t.path && t.path.includes(safeOutputDir.replace(/\\/g, '/'))) {
-            t.path = t.path.replace(safeOutputDir.replace(/\\/g, '/'), realOutputDir.replace(/\\/g, '/'))
-          }
-          if (t.path && t.path.includes(safeOutputDir)) {
-            t.path = t.path.replace(safeOutputDir, realOutputDir)
-          }
-        }
-        data.outputDir = realOutputDir
-      }
       mainWindow.webContents.send('audio:result', data)
     })
 
@@ -190,53 +147,26 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       }, WATCHDOG_MS)
     }
 
-    resetWatchdog()  // Start initial watchdog
+    resetWatchdog()
 
     runner.on('done', () => {
       if (watchdog) clearTimeout(watchdog)
-      pathCleanup()  // Move results from temp to real output dir
+      // Clean up config file
+      try { unlinkSync(configPath) } catch {}
       runner = null
     })
 
     runner.on('progress', () => {
-      resetWatchdog()  // Reset on every progress — keeps alive
+      resetWatchdog()
     })
 
-    const args = ['--mode', mode, '--input', safePath, '--output', safeOutputDir,
-      '--whisper-model', options?.whisperModel || 'large-v3',
-      '--model', options?.demucsModel || 'htdemucs',
-      '--n-speakers', String(options?.nSpeakers || 2)]
-    if (options?.trimSilence) {
-      args.push('--trim-silence')
-      args.push('--silence-gap', String(options.silenceGap ?? 0.5))
-    }
-    if (options?.transcribe || mode === 'transcribe') args.push('--transcribe')
-    if (options?.translate) args.push('--translate')
-    if (options?.exportSrt) args.push('--srt')
-    if (options?.outputFormat && options.outputFormat !== 'wav') {
-      args.push('--output-format', options.outputFormat)
-    }
-    if (mode === 'split' && options?.splitMarkers && options.splitMarkers.length > 0) {
-      args.push('--split-points', options.splitMarkers.join(','))
-      if (options.splitLabels && options.splitLabels.length > 0) {
-        args.push('--split-labels', options.splitLabels.join('|'))
-      }
-    }
-
-    // Send preparation messages before Python starts
+    // Only pass ASCII config path to Python — no Korean chars in spawn args
     const modeNames: Record<string, string> = {
       music: '음악 분리', conversation: '대화 분리', transcribe: '텍스트 추출', split: '트랙 분할'
     }
-    mainWindow.webContents.send('audio:progress', { percent: 0, message: `${modeNames[mode] || mode} 엔진 시작 중...` })
+    mainWindow.webContents.send('audio:progress', { percent: 0, message: `${modeNames[mode] || mode} 시작 중...` })
 
-    runner.run(scriptPath, args)
-
-    // Notify that Python process has been spawned
-    setTimeout(() => {
-      if (runner?.isRunning) {
-        mainWindow.webContents.send('audio:progress', { percent: 1, message: 'Python 프로세스 실행 중... (AI 모델 로딩에 시간이 걸릴 수 있습니다)' })
-      }
-    }, 2000)
+    runner.run(scriptPath, ['--config', configPath])
 
     return { outputDir }
   })

@@ -20,21 +20,45 @@ from audio_utils import (emit, load_audio, save_audio, find_ffmpeg,
 
 def main():
     parser = argparse.ArgumentParser(description="AudioForge separator")
-    parser.add_argument("--mode", choices=["music", "conversation", "transcribe", "split", "track-process", "meta-fix"], required=True)
-    parser.add_argument("--input", required=True, help="Input audio file path")
-    parser.add_argument("--output", required=True, help="Output directory")
-    parser.add_argument("--model", default="htdemucs", help="Demucs model name")
+    parser.add_argument("--config", default="", help="JSON config file (overrides all other args)")
+    parser.add_argument("--mode", default="music")
+    parser.add_argument("--input", default="")
+    parser.add_argument("--output", default="")
+    parser.add_argument("--model", default="htdemucs")
     parser.add_argument("--trim-silence", action="store_true")
     parser.add_argument("--silence-gap", type=float, default=0.0)
     parser.add_argument("--transcribe", action="store_true")
-    parser.add_argument("--output-format", default="wav", choices=["wav", "mp3", "flac"])
+    parser.add_argument("--output-format", default="wav")
     parser.add_argument("--whisper-model", default="large-v3")
     parser.add_argument("--translate", action="store_true")
     parser.add_argument("--srt", action="store_true")
     parser.add_argument("--split-points", default="")
     parser.add_argument("--split-labels", default="")
-    parser.add_argument("--n-speakers", type=int, default=2, help="Number of speakers (conversation mode)")
+    parser.add_argument("--n-speakers", type=int, default=2)
     args = parser.parse_args()
+
+    # Load config from JSON file if provided (avoids spawn encoding issues)
+    if args.config and os.path.exists(args.config):
+        with open(args.config, "r", encoding="utf-8") as f:
+            config = json.load(f)
+        args.mode = config.get("mode", args.mode)
+        args.input = config.get("input", args.input)
+        args.output = config.get("output", args.output)
+        args.model = config.get("model", args.model)
+        args.trim_silence = config.get("trimSilence", args.trim_silence)
+        args.silence_gap = config.get("silenceGap", args.silence_gap)
+        args.transcribe = config.get("transcribe", args.transcribe)
+        args.output_format = config.get("outputFormat", args.output_format)
+        args.whisper_model = config.get("whisperModel", args.whisper_model)
+        args.translate = config.get("translate", args.translate)
+        args.srt = config.get("srt", args.srt)
+        args.split_points = config.get("splitPoints", args.split_points)
+        args.split_labels = config.get("splitLabels", args.split_labels)
+        args.n_speakers = config.get("nSpeakers", args.n_speakers)
+
+    if not args.input or not args.output:
+        emit("error", message="입력 파일과 출력 경로가 필요합니다.")
+        sys.exit(1)
 
     os.makedirs(args.output, exist_ok=True)
 
