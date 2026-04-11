@@ -21,6 +21,7 @@ export default function SplitEditor() {
   const [inputMode, setInputMode] = useState<'auto' | 'manual'>('manual')
   const [timestampText, setTimestampText] = useState('')
   const [autoDetecting, setAutoDetecting] = useState(false)
+  const [firstTrackLabel, setFirstTrackLabel] = useState('Track 01')
   const markersRef = useRef<Marker[]>([])
 
   // Keep ref in sync
@@ -146,7 +147,9 @@ export default function SplitEditor() {
 
     if (parsed.length === 0) return
 
-    // First entry at 0:00 is the start of Track 1, not a split point
+    // First entry is the start of Track 1 — save its label
+    setFirstTrackLabel(parsed[0].label || 'Track 01')
+
     // Split points are everything after the first
     const newMarkers: Marker[] = []
     for (let i = 1; i < parsed.length; i++) {
@@ -233,7 +236,7 @@ export default function SplitEditor() {
   useEffect(() => {
     // Store markers in global state for ProcessButton to access
     const points = markers.map(m => m.time)
-    const labels = ['Track 01', ...markers.map(m => m.label)]
+    const labels = [firstTrackLabel, ...markers.map(m => m.label)]
     useAppStore.setState({ splitMarkers: points, splitLabels: labels })
   }, [markers])
 
@@ -335,7 +338,7 @@ export default function SplitEditor() {
           <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)' }}>
               분할 지점 ({markers.length}개 → {markers.length + 1}트랙)
-              <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 400, color: 'var(--text-muted)' }}>Track 01 = 0:00~</span>
+              <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 400, color: 'var(--text-muted)' }}>01 = 0:00~ {firstTrackLabel}</span>
             </span>
             <button onClick={() => setMarkers([])} style={{
               padding: '2px 8px', borderRadius: 4, border: 'none', cursor: 'pointer',
