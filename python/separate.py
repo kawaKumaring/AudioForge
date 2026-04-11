@@ -694,7 +694,7 @@ def translate_to_korean(text: str, src_lang: str):
 
 def main():
     parser = argparse.ArgumentParser(description="AudioForge separator")
-    parser.add_argument("--mode", choices=["music", "conversation", "transcribe", "split", "track-process"], required=True)
+    parser.add_argument("--mode", choices=["music", "conversation", "transcribe", "split", "track-process", "meta-fix"], required=True)
     parser.add_argument("--input", required=True, help="Input audio file path")
     parser.add_argument("--output", required=True, help="Output directory")
     parser.add_argument("--model", default="htdemucs", help="Demucs model name")
@@ -712,6 +712,83 @@ def main():
     os.makedirs(args.output, exist_ok=True)
 
     try:
+        # ── Meta fix mode: re-apply metadata from edited JSON files ──
+        if args.mode == "meta-fix":
+            emit("status", message="메타데이터 재적용", percent=0)
+            ffmpeg = find_ffmpeg()
+
+            # args.output is the directory containing JSON + audio files
+            target_dir = args.output
+            json_files = sorted([f for f in os.listdir(target_dir) if f.endswith('.json')])
+            if not json_files:
+                emit("error", message="JSON 메타 파일이 없습니다.")
+                sys.exit(1)
+
+            total = len(json_files)
+            tracks = []
+            source_name = ""
+
+            for i, jf in enumerate(json_files):
+                pct = int((i / total) * 90)
+                meta_path = os.path.join(target_dir, jf)
+                with open(meta_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+
+                old_file = meta.get("output_file", "")
+                old_path = os.path.join(target_dir, old_file)
+                title = meta.get("title", f"Track {i+1}")
+                source_name = meta.get("source_file", "")
+
+                # Build new filename from (possibly edited) title
+                safe_label = "".join(c for c in title if c not in r'\/:*?"<>|').strip()
+                new_file = f"{meta.get('track_number', i+1):02d}_{safe_label}.wav" if safe_label else old_file
+
+                # Rename file if title changed
+                new_path = os.path.join(target_dir, new_file)
+                if old_path != new_path and os.path.exists(old_path):
+                    os.rename(old_path, new_path)
+                    meta["output_file"] = new_file
+                    emit("progress", percent=pct, message=f"이름 변경: {old_file} → {new_file}")
+                elif os.path.exists(new_path):
+                    pass
+                else:
+                    emit("progress", percent=pct, message=f"파일 없음: {old_file}")
+                    continue
+
+                # Re-embed tags
+                if ffmpeg and os.path.exists(new_path):
+                    tmp = new_path + ".tmp.wav"
+                    cmd = [
+                        ffmpeg, "-y", "-i", new_path,
+                        "-metadata", f"title={title}",
+                        "-metadata", f"track={meta.get('track_number', i+1)}/{total}",
+                        "-metadata", f"album={os.path.splitext(source_name)[0]}",
+                        "-codec", "copy", tmp
+                    ]
+                    subprocess.run(cmd, capture_output=True)
+                    if os.path.exists(tmp):
+                        os.replace(tmp, new_path)
+
+                # Update JSON
+                with open(meta_path, "w", encoding="utf-8") as f:
+                    json.dump(meta, f, ensure_ascii=False, indent=2)
+
+                # Also rename JSON if filename changed
+                new_json = os.path.splitext(new_file)[0] + ".json"
+                new_json_path = os.path.join(target_dir, new_json)
+                if meta_path != new_json_path:
+                    os.rename(meta_path, new_json_path)
+
+                tracks.append({
+                    "name": os.path.splitext(new_file)[0],
+                    "label": title,
+                    "path": new_path
+                })
+
+            emit("progress", percent=99, message="메타데이터 재적용 완료!")
+            emit("result", tracks=tracks, outputDir=target_dir)
+            sys.exit(0)
+
         # ── Track split mode ──
         if args.mode == "split":
             emit("status", message="트랙 분할 모드", percent=0)
@@ -807,13 +884,62 @@ def main():
                     save_audio(out_path, chunk, sr_full)
 
                     dur = (end - start) / sr_full
+                    start_sec = start / sr_full
+                    end_sec = end / sr_full
+
+                    # Save metadata JSON
+                    from datetime import datetime
+                    meta = {
+                        "track_number": idx + 1,
+                        "title": label,
+                        "start_time": round(start_sec, 3),
+                        "end_time": round(end_sec, 3),
+                        "duration": round(dur, 3),
+                        "source_file": os.path.basename(args.input),
+                        "source_path": args.input,
+                        "sample_rate": sr_full,
+                        "split_date": datetime.now().isoformat(),
+                        "output_file": f"{name}.wav"
+                    }
+                    meta_path = os.path.join(args.output, f"{name}.json")
+                    with open(meta_path, "w", encoding="utf-8") as f:
+                        json.dump(meta, f, ensure_ascii=False, indent=2)
+
                     tracks.append({
                         "name": name,
                         "label": f"{label} ({_fmt_time(dur)})",
-                        "path": out_path
+                        "path": out_path,
+                        "meta_path": meta_path
                     })
 
-                emit("progress", percent=90, message="분할 완료!")
+                emit("progress", percent=88, message="분할 완료!")
+
+                # Embed audio tags if output format supports it
+                ffmpeg = find_ffmpeg()
+                if ffmpeg:
+                    emit("progress", percent=89, message="오디오 태그 삽입 중...")
+                    source_name = os.path.splitext(os.path.basename(args.input))[0]
+                    for t in tracks:
+                        meta_file = t.get("meta_path")
+                        if meta_file and os.path.exists(meta_file):
+                            with open(meta_file, "r", encoding="utf-8") as f:
+                                meta = json.load(f)
+                            # Use ffmpeg to embed metadata into wav (RIFF INFO tags)
+                            src = t["path"]
+                            tmp = src + ".tmp.wav"
+                            cmd = [
+                                ffmpeg, "-y", "-i", src,
+                                "-metadata", f"title={meta['title']}",
+                                "-metadata", f"track={meta['track_number']}/{len(tracks)}",
+                                "-metadata", f"album={source_name}",
+                                "-metadata", f"date={meta['split_date'][:10]}",
+                                "-codec", "copy", tmp
+                            ]
+                            subprocess.run(cmd, capture_output=True)
+                            if os.path.exists(tmp):
+                                os.replace(tmp, src)
+
+                emit("progress", percent=90, message="메타데이터 저장 완료!")
                 emit("result", tracks=tracks, outputDir=args.output)
                 sys.exit(0)
 
