@@ -11,6 +11,9 @@ import os
 import sys
 import subprocess
 
+# Ensure sibling modules are importable regardless of cwd
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
 from audio_utils import (emit, load_audio, save_audio, find_ffmpeg,
                          convert_to_wav, trim_silence, fmt_time, fmt_srt_time)
 
