@@ -694,7 +694,7 @@ def translate_to_korean(text: str, src_lang: str):
 
 def main():
     parser = argparse.ArgumentParser(description="AudioForge separator")
-    parser.add_argument("--mode", choices=["music", "conversation", "transcribe", "split"], required=True)
+    parser.add_argument("--mode", choices=["music", "conversation", "transcribe", "split", "track-process"], required=True)
     parser.add_argument("--input", required=True, help="Input audio file path")
     parser.add_argument("--output", required=True, help="Output directory")
     parser.add_argument("--model", default="htdemucs", help="Demucs model name")
@@ -803,54 +803,7 @@ def main():
                         "path": out_path
                     })
 
-                # Transcribe + translate each track if requested
-                if args.transcribe or args.translate:
-                    emit("progress", percent=55, message="Whisper 모델 로딩 중...")
-                    import whisper
-                    import torch
-                    device = "cuda" if torch.cuda.is_available() else "cpu"
-                    w_model = whisper.load_model(args.whisper_model, device=device)
-
-                    nllb_model = None
-                    nllb_tokenizer = None
-
-                    for idx, t in enumerate(tracks):
-                        pct = 60 + int((idx / max(len(tracks), 1)) * 35)
-                        emit("progress", percent=pct, message=f"{t['label']}: 텍스트 추출 중...")
-
-                        result = w_model.transcribe(t["path"], language=None, task="transcribe", verbose=False)
-                        text = result["text"].strip()
-                        language = result.get("language", "unknown")
-
-                        base = os.path.splitext(os.path.basename(t["path"]))[0]
-                        txt_path = os.path.join(args.output, f"{base}.txt")
-                        with open(txt_path, "w", encoding="utf-8") as f:
-                            f.write(text)
-
-                        t["text"] = text
-                        t["language"] = language
-                        t["txt_path"] = txt_path
-
-                        # SRT
-                        if args.srt:
-                            srt_path = os.path.join(args.output, f"{base}.srt")
-                            with open(srt_path, "w", encoding="utf-8") as f:
-                                for si, seg in enumerate(result["segments"], 1):
-                                    f.write(f"{si}\n{_fmt_srt_time(seg['start'])} --> {_fmt_srt_time(seg['end'])}\n{seg['text'].strip()}\n\n")
-
-                        # Translate
-                        if args.translate and language != "ko":
-                            emit("progress", percent=pct + 1, message=f"{t['label']}: {language}→한국어 번역 중...")
-                            kr = translate_to_korean(text, language)
-                            if kr:
-                                kr_path = os.path.join(args.output, f"{base}_korean.txt")
-                                with open(kr_path, "w", encoding="utf-8") as f:
-                                    f.write(kr)
-                                t["translated_text"] = kr
-
-                        emit("progress", percent=pct + 1, message=f"{t['label']}: {language} 감지")
-
-                emit("progress", percent=99, message="완료!")
+                emit("progress", percent=90, message="분할 완료!")
                 emit("result", tracks=tracks, outputDir=args.output)
                 sys.exit(0)
 
@@ -860,6 +813,79 @@ def main():
                     os.rmdir(os.path.dirname(wav_path))
                 except OSError:
                     pass
+
+        # ── Individual track processing (transcribe/translate a single file) ──
+        if args.mode == "track-process":
+            emit("status", message="트랙 개별 처리", percent=0)
+            import whisper
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+
+            base = os.path.splitext(os.path.basename(args.input))[0]
+            text = None
+            language = None
+
+            if args.transcribe:
+                emit("progress", percent=10, message="Whisper 모델 로딩 중...")
+                w_model = whisper.load_model(args.whisper_model, device=device)
+                emit("progress", percent=30, message="텍스트 추출 중...")
+
+                result = w_model.transcribe(args.input, language=None, task="transcribe", verbose=False)
+                text = result["text"].strip()
+                language = result.get("language", "unknown")
+
+                txt_path = os.path.join(args.output, f"{base}.txt")
+                with open(txt_path, "w", encoding="utf-8") as f:
+                    f.write(text)
+
+                if args.srt:
+                    srt_path = os.path.join(args.output, f"{base}.srt")
+                    with open(srt_path, "w", encoding="utf-8") as f:
+                        for si, seg in enumerate(result["segments"], 1):
+                            f.write(f"{si}\n{_fmt_srt_time(seg['start'])} --> {_fmt_srt_time(seg['end'])}\n{seg['text'].strip()}\n\n")
+
+                emit("progress", percent=60, message=f"언어 감지: {language}")
+            else:
+                # If translate only, try to read existing txt
+                txt_path = os.path.join(args.output, f"{base}.txt")
+                if os.path.exists(txt_path):
+                    with open(txt_path, "r", encoding="utf-8") as f:
+                        text = f.read().strip()
+
+            translated = None
+            if args.translate and text:
+                if not language:
+                    # Detect language with whisper
+                    emit("progress", percent=65, message="언어 감지 중...")
+                    w_model = whisper.load_model("base", device=device)
+                    audio = whisper.load_audio(args.input)
+                    audio = whisper.pad_or_trim(audio)
+                    mel = whisper.log_mel_spectrogram(audio).to(device)
+                    _, probs = w_model.detect_language(mel)
+                    language = max(probs, key=probs.get)
+
+                if language != "ko":
+                    emit("progress", percent=70, message=f"{language}→한국어 번역 중...")
+                    translated = translate_to_korean(text, language)
+                    if translated:
+                        kr_path = os.path.join(args.output, f"{base}_korean.txt")
+                        with open(kr_path, "w", encoding="utf-8") as f:
+                            f.write(translated)
+                        emit("progress", percent=90, message="번역 완료")
+
+            track = {
+                "name": base,
+                "label": base,
+                "path": args.input,
+                "text": text or "",
+                "language": language or "unknown",
+            }
+            if translated:
+                track["translated_text"] = translated
+
+            emit("progress", percent=99, message="완료!")
+            emit("result", tracks=[track], outputDir=args.output)
+            sys.exit(0)
 
         # ── Transcribe-only mode ──
         if args.mode == "transcribe":

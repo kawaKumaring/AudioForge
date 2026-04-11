@@ -147,6 +147,38 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     return { outputDir }
   })
 
+  // Process individual track (transcribe/translate)
+  ipcMain.handle('audio:process-track', async (_event, trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean }) => {
+    if (!existsSync(pythonPath)) {
+      sendError(`Python을 찾을 수 없습니다: ${pythonPath}`)
+      return null
+    }
+    const scriptPath = PythonRunner.getScriptPath('separate.py')
+    if (!existsSync(scriptPath)) {
+      sendError(`스크립트를 찾을 수 없습니다`)
+      return null
+    }
+
+    const trackRunner = new PythonRunner(pythonPath)
+    const args = ['--mode', 'track-process', '--input', trackPath, '--output', outputDir]
+    if (options.transcribe) args.push('--transcribe')
+    if (options.translate) args.push('--translate')
+    if (options.srt) args.push('--srt')
+
+    trackRunner.on('progress', (data) => {
+      mainWindow.webContents.send('audio:progress', data)
+    })
+    trackRunner.on('result', (data) => {
+      mainWindow.webContents.send('audio:track-result', data)
+    })
+    trackRunner.on('error', (message) => {
+      sendError(typeof message === 'string' ? message : String(message))
+    })
+
+    trackRunner.run(scriptPath, args)
+    return { outputDir }
+  })
+
   ipcMain.handle('audio:cancel', () => {
     runner?.cancel()
     runner = null

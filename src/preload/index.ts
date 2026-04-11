@@ -9,6 +9,13 @@ const api = {
     cancel: () => ipcRenderer.invoke('audio:cancel'),
     getFileUrl: (filePath: string) => ipcRenderer.invoke('audio:get-file-url', filePath),
     exportTracks: (trackPaths: string[]) => ipcRenderer.invoke('audio:export-tracks', trackPaths),
+    processTrack: (trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean }) =>
+      ipcRenderer.invoke('audio:process-track', trackPath, outputDir, options),
+    onTrackResult: (callback: (data: unknown) => void) => {
+      const handler = (_event: unknown, data: unknown) => callback(data)
+      ipcRenderer.on('audio:track-result', handler)
+      return () => ipcRenderer.removeListener('audio:track-result', handler)
+    },
     onProgress: (callback: (data: unknown) => void) => {
       const handler = (_event: unknown, data: unknown) => callback(data)
       ipcRenderer.on('audio:progress', handler)
