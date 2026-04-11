@@ -318,78 +318,84 @@ def _run_split(args):
                 pass
         return
 
-    # Auto-detect mode: need full WAV load for silence analysis
-    emit("progress", percent=3, message="자동 감지: 오디오 변환 중...")
-    wav_path = convert_to_wav(args.input)
+    # Auto-detect mode: use ffmpeg silencedetect (no WAV conversion needed)
+    emit("progress", percent=5, message="ffmpeg 무음 구간 자동 감지 중...")
+
+    import tempfile, shutil, re
+    tmp_dir = tempfile.mkdtemp(prefix="audioforge_")
+    ext = os.path.splitext(args.input)[1]
+    tmp_input = os.path.join(tmp_dir, f"input{ext}")
+    shutil.copy2(args.input, tmp_input)
 
     try:
-        import numpy as np
-        import torch
+        # Get total duration
+        ffprobe = ffmpeg.replace("ffmpeg", "ffprobe")
+        probe_cmd = [ffprobe, "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", tmp_input]
+        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
+        total_dur = float(probe_result.stdout.strip()) if probe_result.returncode == 0 else 0
 
-        emit("progress", percent=8, message="오디오 분석 중...")
-        wav_full, sr_full = load_audio(wav_path)
-        if wav_full.shape[0] > 1:
-            wav_full = wav_full.mean(dim=0, keepdim=True)
-        audio_np = wav_full.squeeze().numpy()
-        total_samples = wav_full.shape[1]
+        # Run silencedetect filter
+        cmd = [ffmpeg, "-i", tmp_input, "-af", "silencedetect=noise=-35dB:d=1.5", "-f", "null", "-"]
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        stderr = result.stderr
 
-        frame_len = int(0.05 * sr_full)
-        hop = frame_len
-        n_frames = len(audio_np) // hop
+        # Parse silence_end timestamps
+        # Format: [silencedetect @ ...] silence_end: 184.523 | silence_duration: 2.145
+        silence_ends = []
+        for match in re.finditer(r'silence_end:\s*([\d.]+)\s*\|\s*silence_duration:\s*([\d.]+)', stderr):
+            end_time = float(match.group(1))
+            dur = float(match.group(2))
+            # Split point = middle of silence
+            mid = end_time - dur / 2
+            if mid > 1.0:  # Skip if too close to start
+                silence_ends.append(mid)
 
-        emit("progress", percent=12, message="무음 구간 탐색 중...")
-        rms = np.array([np.sqrt(np.mean(audio_np[i * hop:i * hop + frame_len] ** 2)) for i in range(n_frames)])
+        emit("progress", percent=20, message=f"{len(silence_ends)}개 무음 구간 감지")
 
-        if rms.max() > 0:
-            sorted_rms = np.sort(rms)
-            noise_floor = sorted_rms[int(len(sorted_rms) * 0.1)]
-            threshold = max(noise_floor * 5, 0.005)
-        else:
-            threshold = 0.005
+        # Filter: minimum 10 seconds between splits
+        filtered = []
+        for t in silence_ends:
+            if not filtered or (t - filtered[-1]) > 10:
+                filtered.append(t)
 
-        is_sound = rms > threshold
-        min_silence_frames = int(1.5 * sr_full / hop)
+        split_seconds = filtered
+        emit("progress", percent=25, message=f"{len(split_seconds)}개 분할 지점 확정")
 
-        i = 0
-        while i < len(is_sound):
-            if not is_sound[i]:
-                j = i
-                while j < len(is_sound) and not is_sound[j]:
-                    j += 1
-                if (j - i) >= min_silence_frames:
-                    split_seconds.append(((i + j) / 2) * hop / sr_full)
-                i = j
-            else:
-                i += 1
-
-        emit("progress", percent=20, message=f"{len(split_seconds)}개 분할 지점 자동 감지")
-
-        split_samples = [int(s * sr_full) for s in split_seconds]
-        boundaries = [0] + split_samples + [total_samples]
-        track_ranges = [(max(0, boundaries[k]), min(boundaries[k + 1], total_samples))
-                        for k in range(len(boundaries) - 1) if boundaries[k + 1] > boundaries[k]]
-
-        emit("progress", percent=25, message=f"{len(track_ranges)}개 트랙 분할")
-
+        # Use same fast ffmpeg extraction as timestamp mode
+        boundaries = [0.0] + split_seconds + ([total_dur] if total_dur > 0 else [])
         tracks = []
+        total_tracks = len(boundaries) - 1
         source_name = os.path.splitext(os.path.basename(args.input))[0]
-        for idx, (start, end) in enumerate(track_ranges):
-            pct = 25 + int((idx / max(len(track_ranges), 1)) * 60)
+
+        for idx in range(total_tracks):
+            pct = 25 + int((idx / max(total_tracks, 1)) * 60)
+            start_sec = boundaries[idx]
+            end_sec = boundaries[idx + 1] if idx + 1 < len(boundaries) else None
+
             label = f"Track {idx + 1:02d}"
             name = f"track_{idx + 1:02d}"
 
-            emit("progress", percent=pct, message=f"{label} 저장 중...")
-            chunk = wav_full[:, start:end]
-            out_path = os.path.join(args.output, f"{name}.wav")
-            save_audio(out_path, chunk, sr_full)
+            emit("progress", percent=pct, message=f"{label} 추출 중...")
 
-            dur = (end - start) / sr_full
+            out_path = os.path.join(args.output, f"{name}.wav")
+            cmd = [ffmpeg, "-y", "-i", tmp_input, "-ss", str(start_sec)]
+            if end_sec is not None:
+                cmd.extend(["-to", str(end_sec)])
+            cmd.extend(["-acodec", "pcm_s16le", "-metadata", f"title={label}",
+                        "-metadata", f"track={idx+1}/{total_tracks}",
+                        "-metadata", f"album={source_name}", out_path])
+            subprocess.run(cmd, capture_output=True)
+
+            dur = (end_sec - start_sec) if end_sec else 0
             meta = {
                 "track_number": idx + 1, "title": label,
-                "start_time": round(start / sr_full, 3), "end_time": round(end / sr_full, 3),
-                "duration": round(dur, 3), "source_file": os.path.basename(args.input),
-                "source_path": args.input, "sample_rate": sr_full,
-                "split_date": datetime.now().isoformat(), "output_file": f"{name}.wav"
+                "start_time": round(start_sec, 3),
+                "end_time": round(end_sec, 3) if end_sec else 0,
+                "duration": round(dur, 3),
+                "source_file": os.path.basename(args.input),
+                "source_path": args.input,
+                "split_date": datetime.now().isoformat(),
+                "output_file": f"{name}.wav"
             }
             meta_path = os.path.join(args.output, f"{name}.json")
             with open(meta_path, "w", encoding="utf-8") as f:
@@ -404,8 +410,8 @@ def _run_split(args):
 
     finally:
         try:
-            os.remove(wav_path)
-            os.rmdir(os.path.dirname(wav_path))
+            os.remove(tmp_input)
+            os.rmdir(tmp_dir)
         except OSError:
             pass
 
