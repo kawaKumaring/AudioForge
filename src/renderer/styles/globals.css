@@ -1,0 +1,185 @@
+@import 'tailwindcss';
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/500.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/inter/700.css';
+
+:root {
+  --bg-base: #08080c;
+  --bg-primary: #0c0c14;
+  --bg-card: #111119;
+  --bg-elevated: #16161f;
+  --bg-hover: #1c1c2a;
+  --bg-input: #0e0e16;
+  --border-subtle: rgba(255, 255, 255, 0.06);
+  --border-default: rgba(255, 255, 255, 0.08);
+  --border-accent: rgba(139, 92, 246, 0.3);
+  --text-primary: #f0f0f8;
+  --text-secondary: #9898b0;
+  --text-muted: #555568;
+  --accent: #8b5cf6;
+  --accent-light: #a78bfa;
+  --accent-glow: rgba(139, 92, 246, 0.2);
+  --accent-glow-strong: rgba(139, 92, 246, 0.35);
+  --cyan: #22d3ee;
+  --cyan-glow: rgba(34, 211, 238, 0.15);
+  --emerald: #34d399;
+  --emerald-glow: rgba(52, 211, 153, 0.15);
+  --amber: #fbbf24;
+  --rose: #fb7185;
+  --rose-glow: rgba(251, 113, 133, 0.12);
+  --success: #34d399;
+  --error: #fb7185;
+}
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  overflow: hidden;
+  -webkit-app-region: no-drag;
+}
+
+/* Titlebar */
+.titlebar-drag {
+  -webkit-app-region: drag;
+}
+.titlebar-drag button, .titlebar-drag input, .titlebar-drag select, .titlebar-drag a {
+  -webkit-app-region: no-drag;
+}
+
+/* Glass card */
+.glass-card {
+  background: linear-gradient(135deg, rgba(17, 17, 25, 0.95), rgba(12, 12, 20, 0.98));
+  border: 1px solid var(--border-subtle);
+  backdrop-filter: blur(20px);
+}
+
+.glass-card-elevated {
+  background: linear-gradient(135deg, rgba(22, 22, 31, 0.95), rgba(16, 16, 25, 0.98));
+  border: 1px solid var(--border-default);
+  backdrop-filter: blur(20px);
+}
+
+/* Glow effects */
+.glow-accent {
+  box-shadow: 0 0 20px var(--accent-glow), 0 0 60px rgba(139, 92, 246, 0.06);
+}
+
+.glow-accent-strong {
+  box-shadow: 0 0 30px var(--accent-glow-strong), 0 0 80px rgba(139, 92, 246, 0.1);
+}
+
+/* Hover glow border */
+.hover-glow {
+  border: 1px solid var(--border-subtle);
+  transition: border-color 0.3s ease, box-shadow 0.3s ease;
+}
+
+.hover-glow:hover {
+  border-color: var(--border-accent);
+  box-shadow: 0 0 30px var(--accent-glow), 0 0 60px rgba(139, 92, 246, 0.06);
+}
+
+/* Shimmer animation for loading */
+@keyframes shimmer {
+  0% { background-position: -200% center; }
+  100% { background-position: 200% center; }
+}
+
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--accent) 0%,
+    var(--accent-light) 50%,
+    var(--accent) 100%
+  );
+  background-size: 200% auto;
+  animation: shimmer 2s linear infinite;
+}
+
+/* Pulse glow for processing */
+@keyframes pulse-glow {
+  0%, 100% { box-shadow: 0 0 15px var(--accent-glow); }
+  50% { box-shadow: 0 0 35px var(--accent-glow-strong); }
+}
+
+.pulse-glow {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* Scrollbar */
+::-webkit-scrollbar {
+  width: 5px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 10px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(255, 255, 255, 0.15);
+}
+
+/* Noise texture overlay */
+.noise-bg::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  opacity: 0.015;
+  background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='noise'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23noise)'/%3E%3C/svg%3E");
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* Button base */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  font-weight: 500;
+  font-size: 13px;
+  border-radius: 10px;
+  padding: 8px 16px;
+  transition: all 0.2s ease;
+  cursor: pointer;
+  border: none;
+  outline: none;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, var(--accent), #7c3aed);
+  color: #fff;
+  box-shadow: 0 2px 12px var(--accent-glow);
+}
+.btn-primary:hover {
+  box-shadow: 0 4px 20px var(--accent-glow-strong);
+  transform: translateY(-1px);
+}
+
+.btn-ghost {
+  background: var(--bg-elevated);
+  color: var(--text-secondary);
+  border: 1px solid var(--border-subtle);
+}
+.btn-ghost:hover {
+  background: var(--bg-hover);
+  color: var(--text-primary);
+  border-color: var(--border-default);
+}
+
+.btn-danger {
+  background: linear-gradient(135deg, #e11d48, #be123c);
+  color: #fff;
+  box-shadow: 0 2px 12px var(--rose-glow);
+}
