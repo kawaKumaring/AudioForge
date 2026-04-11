@@ -79,8 +79,13 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
 
     // Verify python exists
     if (!existsSync(pythonPath)) {
-      sendError(`Python을 찾을 수 없습니다: ${pythonPath}`)
-      return null
+      throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
+    }
+
+    // Resolve script path
+    const scriptPath = PythonRunner.getScriptPath('separate.py')
+    if (!existsSync(scriptPath)) {
+      throw new Error(`Python 스크립트를 찾을 수 없습니다: ${scriptPath}`)
     }
 
     // Build output directory: timestamp + filename
@@ -90,13 +95,6 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}-${String(now.getSeconds()).padStart(2, '0')}`
     const outputDir = join(dirname(filePath), 'AudioForge_output', `${timestamp}_${nameWithoutExt}`)
     if (!existsSync(outputDir)) mkdirSync(outputDir, { recursive: true })
-
-    // Resolve script path
-    const scriptPath = PythonRunner.getScriptPath('separate.py')
-    if (!existsSync(scriptPath)) {
-      sendError(`Python 스크립트를 찾을 수 없습니다: ${scriptPath}`)
-      return null
-    }
 
     runner = new PythonRunner(pythonPath)
 
@@ -112,23 +110,29 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       sendError(typeof message === 'string' ? message : String(message))
     })
 
-    // Timeout: if no progress within 5 min (Whisper model loading can be slow)
-    const timeoutMs = options?.transcribe ? 300000 : 120000
-    const timeout = setTimeout(() => {
-      if (runner?.isRunning) {
-        runner.cancel()
-        sendError(`처리 시간이 초과되었습니다. Python 환경을 확인해주세요.`)
-      }
-    }, timeoutMs)
+    // Watchdog: kill if no progress for 5 minutes
+    const WATCHDOG_MS = 300000
+    let watchdog: ReturnType<typeof setTimeout> | null = null
+
+    const resetWatchdog = () => {
+      if (watchdog) clearTimeout(watchdog)
+      watchdog = setTimeout(() => {
+        if (runner?.isRunning) {
+          runner.cancel()
+          sendError('처리 시간이 초과되었습니다 (5분간 응답 없음). Python 환경을 확인해주세요.')
+        }
+      }, WATCHDOG_MS)
+    }
+
+    resetWatchdog()  // Start initial watchdog
 
     runner.on('done', () => {
-      clearTimeout(timeout)
+      if (watchdog) clearTimeout(watchdog)
       runner = null
     })
 
     runner.on('progress', () => {
-      // Reset timeout on any progress
-      clearTimeout(timeout)
+      resetWatchdog()  // Reset on every progress — keeps alive
     })
 
     const args = ['--mode', mode, '--input', filePath, '--output', outputDir,

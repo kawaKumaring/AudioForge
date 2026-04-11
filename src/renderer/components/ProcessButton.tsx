@@ -1,3 +1,4 @@
+import React from 'react'
 import { motion } from 'framer-motion'
 import { useAppStore } from '@/stores/app.store'
 
@@ -17,6 +18,7 @@ function _estimateTime(mode: string, duration: number, transcribe: boolean, tran
 
 export default function ProcessButton() {
   const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, demucsModel, nSpeakers, splitMarkers, splitLabels, status, setProcessing, setProgress, setResult, setError } = useAppStore()
+  const cleanupRef = React.useRef<(() => void) | null>(null)
 
   const handleProcess = async () => {
     if (!fileInfo) return
@@ -34,7 +36,11 @@ export default function ProcessButton() {
       cleanup()
     })
 
-    function cleanup() { offProgress(); offResult(); offError() }
+    function cleanup() {
+      offProgress(); offResult(); offError()
+      cleanupRef.current = null
+    }
+    cleanupRef.current = cleanup
 
     try {
       await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, demucsModel, nSpeakers, splitMarkers, splitLabels })
@@ -42,6 +48,12 @@ export default function ProcessButton() {
       setError(err.message || 'Process failed')
       cleanup()
     }
+  }
+
+  const handleCancel = () => {
+    window.api.audio.cancel()
+    if (cleanupRef.current) cleanupRef.current()
+    useAppStore.setState({ status: 'idle', progress: 0, progressMessage: '' })
   }
 
   if (!fileInfo) return null
@@ -59,7 +71,7 @@ export default function ProcessButton() {
       <motion.button
         initial={{ opacity: 0 }} animate={{ opacity: 1 }}
         whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.99 }}
-        onClick={() => window.api.audio.cancel()}
+        onClick={handleCancel}
         style={{ ...btnBase, background: 'linear-gradient(135deg, #e11d48, #be123c)', color: '#fff', boxShadow: '0 2px 12px var(--rose-glow)' }}
       >
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">

@@ -256,7 +256,7 @@ def _run_split(args):
         try:
             # Get total duration via ffprobe
             from audio_utils import find_ffmpeg as _ff
-            ffprobe = os.path.join(os.path.dirname(ffmpeg), "ffprobe.exe")
+            ffprobe = os.path.join(os.path.dirname(ffmpeg), "ffprobe" + os.path.splitext(ffmpeg)[1])
             probe_cmd = [ffprobe, "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", tmp_input]
             probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
             total_dur = float(probe_result.stdout.strip()) if probe_result.returncode == 0 else 0
@@ -329,7 +329,7 @@ def _run_split(args):
 
     try:
         # Get total duration
-        ffprobe = os.path.join(os.path.dirname(ffmpeg), "ffprobe.exe")
+        ffprobe = os.path.join(os.path.dirname(ffmpeg), "ffprobe" + os.path.splitext(ffmpeg)[1])
         probe_cmd = [ffprobe, "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", tmp_input]
         probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
         total_dur = float(probe_result.stdout.strip()) if probe_result.returncode == 0 else 0

@@ -48,7 +48,9 @@ def find_ffmpeg():
 
 
 def convert_to_wav(input_path: str) -> str:
-    """Convert any audio file to WAV PCM using ffmpeg."""
+    """Convert any audio file to WAV PCM using ffmpeg.
+    Caller must clean up: os.remove(wav_path) + os.rmdir(os.path.dirname(wav_path))
+    """
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
         raise RuntimeError("ffmpeg을 찾을 수 없습니다.")

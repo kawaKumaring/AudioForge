@@ -36,11 +36,12 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
         total_dur = len(wav_16k_np) / SR
 
         # ── Step 1: Silero VAD ──
-        emit("progress", percent=6, message="Silero VAD 음성 검출 중...")
+        emit("progress", percent=6, message="Silero VAD 모델 로딩 중... (첫 실행 시 다운로드)")
         vad_model, vad_utils = torch.hub.load(
             repo_or_dir='snakers4/silero-vad', model='silero_vad',
             trust_repo=True, onnx=False
         )
+        emit("progress", percent=8, message="Silero VAD 음성 검출 중...")
         get_speech_ts = vad_utils[0]  # get_speech_timestamps
 
         speech_timestamps = get_speech_ts(
@@ -53,8 +54,8 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
         )
 
         if len(speech_timestamps) < 2:
-            emit("error", message="발화 구간이 너무 적습니다.")
-            return
+            emit("error", message="발화 구간이 너무 적습니다. 오디오를 확인해주세요.")
+            return []
 
         # Build speech mask at 16kHz sample level
         n_16k = len(wav_16k_np)
@@ -65,7 +66,7 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
         emit("progress", percent=12, message=f"Silero VAD: {len(speech_timestamps)}개 발화 구간")
 
         # ── Step 2: Load ECAPA-TDNN ──
-        emit("progress", percent=14, message="ECAPA-TDNN 모델 로딩 중...")
+        emit("progress", percent=14, message="ECAPA-TDNN 모델 로딩 중... (첫 실행 시 다운로드)")
 
         _orig_symlink = getattr(os, "symlink", None)
         def _copy_instead(src, dst, *a, **kw):
@@ -77,11 +78,13 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
 
         try:
             from speechbrain.inference.speaker import EncoderClassifier
+            emit("progress", percent=15, message="SpeechBrain 모델 다운로드/로딩 중...")
             encoder = EncoderClassifier.from_hparams(
                 source="speechbrain/spkrec-ecapa-voxceleb",
                 savedir=os.path.join(os.path.expanduser("~"), ".cache", "speechbrain", "ecapa"),
                 run_opts={"device": device}
             )
+            emit("progress", percent=17, message="ECAPA-TDNN 로딩 완료")
         finally:
             if _orig_symlink:
                 os.symlink = _orig_symlink
@@ -128,7 +131,7 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
         valid_windows = [(t, e) for t, e in window_embeddings if e is not None]
         if len(valid_windows) < 2:
             emit("error", message="유효한 음성 윈도우가 부족합니다.")
-            return
+            return []
 
         # ── Step 4: Spectral clustering ──
         emit("progress", percent=55, message="스펙트럴 클러스터링 중...")
@@ -336,7 +339,7 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
             save_audio(out_path, speaker_wavs[spk_idx], sr_full)
             tracks.append({"name": name, "label": label, "path": out_path})
 
-        emit("progress", percent=90, message="분리 완료")
+        emit("progress", percent=95, message="분리 완료")
         return tracks
 
     finally:
@@ -345,7 +348,6 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
             os.rmdir(os.path.dirname(wav_path))
         except OSError:
             pass
-    return []
 
 
 def _kmeans(data, k, max_iter=100):

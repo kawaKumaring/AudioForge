@@ -67,4 +67,3 @@ def run_music_separation(input_path: str, output_dir: str, model: str = "htdemuc
             os.rmdir(os.path.dirname(wav_path))
         except OSError:
             pass
-    return []

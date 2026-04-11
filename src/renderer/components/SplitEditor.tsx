@@ -27,12 +27,11 @@ export default function SplitEditor() {
   // Keep ref in sync
   useEffect(() => { markersRef.current = markers }, [markers])
 
-  if (mode !== 'split') return null
-  if (!fileUrl) return null
+  const isActive = mode === 'split' && !!fileUrl
 
   // Initialize wavesurfer
   useEffect(() => {
-    if (!containerRef.current || !fileUrl) return
+    if (!isActive || !containerRef.current || !fileUrl) return
 
     wsRef.current?.destroy()
 
@@ -238,7 +237,9 @@ export default function SplitEditor() {
     const points = markers.map(m => m.time)
     const labels = [firstTrackLabel, ...markers.map(m => m.label)]
     useAppStore.setState({ splitMarkers: points, splitLabels: labels })
-  }, [markers])
+  }, [markers, firstTrackLabel])
+
+  if (!isActive) return null
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
