@@ -335,6 +335,7 @@ export default function SplitEditor() {
           <div style={{ padding: '8px 14px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
             <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)' }}>
               분할 지점 ({markers.length}개 → {markers.length + 1}트랙)
+              <span style={{ marginLeft: 8, fontSize: 10, fontWeight: 400, color: 'var(--text-muted)' }}>Track 01 = 0:00~</span>
             </span>
             <button onClick={() => setMarkers([])} style={{
               padding: '2px 8px', borderRadius: 4, border: 'none', cursor: 'pointer',
@@ -342,11 +343,14 @@ export default function SplitEditor() {
             }}>전체 삭제</button>
           </div>
           <div style={{ maxHeight: 200, overflowY: 'auto' }}>
-            {markers.map((m) => (
+            {markers.map((m, idx) => (
               <div key={m.id} style={{
                 display: 'flex', alignItems: 'center', gap: 8, padding: '6px 14px',
                 borderBottom: '1px solid var(--border-subtle)'
               }}>
+                <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', minWidth: 20, textAlign: 'center' }}>
+                  {String(idx + 2).padStart(2, '0')}
+                </span>
                 <span style={{ fontSize: 11, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: 'var(--amber)', minWidth: 40 }}>
                   {fmtTime(m.time)}
                 </span>
