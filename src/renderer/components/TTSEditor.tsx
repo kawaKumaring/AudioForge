@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useAppStore } from '@/stores/app.store'
 
 export default function TTSEditor() {
@@ -8,10 +8,12 @@ export default function TTSEditor() {
   const [ttsSilenceGap, setTtsSilenceGap] = useState(0.5)
   const disabled = status === 'processing'
 
-  if (mode !== 'tts') return null
+  // Sync to store (useEffect prevents render loop)
+  useEffect(() => {
+    useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap })
+  }, [ttsText, ttsSpeed, ttsSilenceGap])
 
-  // Store TTS params for ProcessButton to access
-  useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap })
+  if (mode !== 'tts') return null
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
