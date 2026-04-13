@@ -99,6 +99,7 @@ def main():
         args.tts_speed = config.get("ttsSpeed", 1.0)
         args.tts_silence_gap = config.get("ttsSilenceGap", 0.5)
         args.tts_emotion_refs = config.get("ttsEmotionRefs", {})
+        args.tts_engine = config.get("ttsEngine", "auto")
 
     if not args.input or not args.output:
         emit("error", message="입력 파일과 출력 경로가 필요합니다.")
@@ -113,9 +114,10 @@ def main():
             emotion_refs = {}
             if hasattr(args, 'tts_emotion_refs') and args.tts_emotion_refs:
                 emotion_refs = args.tts_emotion_refs if isinstance(args.tts_emotion_refs, dict) else {}
+            preferred_engine = args.tts_engine if hasattr(args, 'tts_engine') and args.tts_engine != 'auto' else None
             synthesize(args.input, args.tts_text, args.output,
                        speed=args.tts_speed, silence_gap=args.tts_silence_gap,
-                       emotion_refs=emotion_refs)
+                       emotion_refs=emotion_refs, preferred_engine=preferred_engine)
             return
 
         # ── Meta fix mode ──

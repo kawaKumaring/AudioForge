@@ -94,12 +94,13 @@ export default function TTSEditor() {
   const [ttsSilenceGap, setTtsSilenceGap] = useState(0.5)
   const [emotionRefs, setEmotionRefs] = useState<Record<string, string>>({})
   const [showEmotionSetup, setShowEmotionSetup] = useState(false)
+  const [ttsEngine, setTtsEngine] = useState('auto')
   const disabled = status === 'processing'
 
   // Sync to store
   useEffect(() => {
-    useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefs: emotionRefs })
-  }, [ttsText, ttsSpeed, ttsSilenceGap, emotionRefs])
+    useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefs: emotionRefs, ttsEngine })
+  }, [ttsText, ttsSpeed, ttsSilenceGap, emotionRefs, ttsEngine])
 
   if (mode !== 'tts') return null
 
@@ -225,7 +226,29 @@ export default function TTSEditor() {
         </div>
       </div>
 
-      {/* Controls */}
+      {/* Engine + Controls */}
+      <div style={{ display: 'flex', gap: 10 }}>
+        <div style={{
+          display: 'flex', alignItems: 'center', gap: 6,
+          borderRadius: 10, padding: '8px 14px',
+          background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', flexShrink: 0
+        }}>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>엔진</span>
+          {[
+            { id: 'auto', label: '자동' },
+            { id: 'gptsovits', label: 'GPT-SoVITS' },
+            { id: 'f5tts', label: 'F5' },
+            { id: 'kokoro', label: 'Kokoro' },
+          ].map(e => (
+            <button key={e.id} onClick={() => !disabled && setTtsEngine(e.id)} disabled={disabled} style={{
+              padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
+              fontSize: 9, fontWeight: 600, fontFamily: 'inherit',
+              background: ttsEngine === e.id ? 'var(--rose)' : 'transparent',
+              color: ttsEngine === e.id ? '#fff' : 'var(--text-muted)'
+            }}>{e.label}</button>
+          ))}
+        </div>
+      </div>
       <div style={{ display: 'flex', gap: 10 }}>
         <div style={{
           flex: 1, display: 'flex', alignItems: 'center', gap: 8,

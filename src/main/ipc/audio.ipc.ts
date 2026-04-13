@@ -116,7 +116,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       nSpeakers: options?.nSpeakers || 2,
       ttsText: options?.ttsText || '',
       ttsSpeed: options?.ttsSpeed || 1.0,
-      ttsSilenceGap: options?.ttsSilenceGap || 0.5
+      ttsSilenceGap: options?.ttsSilenceGap || 0.5,
+      ttsEngine: options?.ttsEngine || 'auto'
     }
     const { writeFileSync } = require('fs')
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')

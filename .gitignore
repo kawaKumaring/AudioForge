@@ -13,6 +13,10 @@ __pycache__/
 # Work files and outputs
 작업파일/
 
+# External dependencies (large, installed separately)
+externals/GPT-SoVITS/
+externals/gptsovits_venv/
+
 # Environment
 .env
 .env.local

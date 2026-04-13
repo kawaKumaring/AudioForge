@@ -174,12 +174,68 @@ class KokoroEngine(TTSEngine):
             sf.write(output_path, combined, 24000)
 
 
+# ── GPT-SoVITS Engine (Korean, Japanese, Chinese, English — via isolated venv) ──
+
+class GPTSoVITSEngine(TTSEngine):
+    name = "gptsovits"
+    supported_languages = ["ko", "ja", "zh", "en"]
+
+    def __init__(self):
+        self._venv_python = None
+        self._bridge_script = None
+
+    def load(self):
+        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        self._venv_python = os.path.join(base_dir, "externals", "gptsovits_venv", "Scripts", "python.exe")
+        self._bridge_script = os.path.join(base_dir, "python", "gptsovits_bridge.py")
+
+        if not os.path.exists(self._venv_python):
+            raise RuntimeError("GPT-SoVITS venv가 설치되지 않았습니다. externals/gptsovits_venv를 확인하세요.")
+
+    def synthesize_segment(self, text, ref_audio, emotion_id, speed, output_path):
+        self.load()
+        import subprocess, json, tempfile
+
+        config = {
+            "ref_audio": ref_audio,
+            "text": text,
+            "output_path": output_path,
+            "language": _detect_language(text),
+            "speed": speed,
+        }
+
+        result = subprocess.run(
+            [self._venv_python, "-X", "utf8", "-u", self._bridge_script],
+            input=json.dumps(config, ensure_ascii=False),
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=120
+        )
+
+        if result.returncode != 0:
+            stderr = result.stderr[-500:] if result.stderr else ""
+            raise RuntimeError(f"GPT-SoVITS 실패: {stderr}")
+
+        # Parse output for errors
+        for line in result.stdout.split("\n"):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = json.loads(line)
+                if msg.get("type") == "error":
+                    raise RuntimeError(msg.get("message", "Unknown error"))
+                if msg.get("type") == "progress":
+                    emit("progress", percent=msg.get("percent", 0), message=msg.get("message", ""))
+            except json.JSONDecodeError:
+                pass
+
+
 # ── Engine registry ──
 
 ENGINES = {
     "f5tts": F5TTSEngine,
     "kokoro": KokoroEngine,
-    # future: "gptsovits": GPTSoVITSEngine,
+    "gptsovits": GPTSoVITSEngine,
 }
 
 
@@ -201,14 +257,37 @@ def _detect_language(text):
 
 
 def _select_engine(text, preferred_engine=None):
-    """Select best engine for the given text."""
+    """Select best engine for the given text.
+    Priority: user preference > GPT-SoVITS (ko/ja) > Kokoro (ja/zh) > F5-TTS (en)
+    """
     if preferred_engine and preferred_engine in ENGINES:
         return ENGINES[preferred_engine]()
 
     lang = _detect_language(text)
-    # Korean/Japanese/Chinese → Kokoro, English → F5-TTS
-    if lang in ("ko", "ja", "zh"):
+
+    # Korean → GPT-SoVITS (best quality), fallback to Kokoro
+    if lang == "ko":
+        try:
+            engine = GPTSoVITSEngine()
+            engine.load()  # Check if venv exists
+            return engine
+        except Exception:
+            return KokoroEngine()  # Kokoro doesn't support Korean well, but as fallback
+
+    # Japanese → GPT-SoVITS first, then Kokoro
+    if lang == "ja":
+        try:
+            engine = GPTSoVITSEngine()
+            engine.load()
+            return engine
+        except Exception:
+            return KokoroEngine()
+
+    # Chinese → Kokoro
+    if lang == "zh":
         return KokoroEngine()
+
+    # English → F5-TTS (voice cloning)
     return F5TTSEngine()
 
 
