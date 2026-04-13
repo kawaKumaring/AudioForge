@@ -123,7 +123,7 @@ export default function App() {
                   </svg>
                 </button>
               </div>
-              {mode !== 'split' && <Waveform />}
+              <Waveform />
             </div>
 
             {/* 모드 + 옵션 + 버튼 + 결과 */}

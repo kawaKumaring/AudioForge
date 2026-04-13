@@ -243,35 +243,6 @@ export default function SplitEditor() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {/* Waveform with markers */}
-      <div style={{
-        borderRadius: 14, overflow: 'hidden', padding: '16px 16px 12px',
-        background: 'var(--bg-card)', border: '1px solid var(--border-subtle)'
-      }}>
-        <div ref={containerRef} style={{ marginBottom: 8 }} />
-        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <span style={{ fontSize: 10, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>{fmtTime(currentTime)}</span>
-          <div style={{ display: 'flex', gap: 6 }}>
-            <button onClick={() => wsRef.current?.playPause()} style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              width: 30, height: 30, borderRadius: '50%', border: 'none', cursor: 'pointer',
-              background: isPlaying ? 'rgba(251,191,36,0.15)' : 'linear-gradient(135deg, #f59e0b, #d97706)',
-              boxShadow: isPlaying ? 'none' : '0 2px 10px rgba(251,191,36,0.2)'
-            }}>
-              {isPlaying ? (
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="#fbbf24"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
-              ) : (
-                <svg width="12" height="12" viewBox="0 0 24 24" fill="#fff"><polygon points="6,3 20,12 6,21" /></svg>
-              )}
-            </button>
-          </div>
-          <span style={{ fontSize: 10, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>{fmtTime(duration)}</span>
-        </div>
-        <div style={{ marginTop: 6, fontSize: 10, color: 'var(--text-muted)', textAlign: 'center' }}>
-          더블클릭: 마커 추가 · 마커 드래그: 위치 조정
-        </div>
-      </div>
-
       {/* Input mode toggle */}
       <div style={{
         display: 'flex', borderRadius: 10, overflow: 'hidden',
