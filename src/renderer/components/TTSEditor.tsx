@@ -1,58 +1,91 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useAppStore } from '@/stores/app.store'
 
-const EMOTIONS = [
-  { id: 'default', label: '기본', color: 'var(--text-secondary)' },
-  { id: 'happy', label: '기쁨', color: '#4ade80' },
-  { id: 'sad', label: '슬픔', color: '#60a5fa' },
-  { id: 'angry', label: '화남', color: '#f87171' },
-  { id: 'surprise', label: '놀람', color: '#fbbf24' },
-  { id: 'whisper', label: '속삭임', color: '#c084fc' },
-  { id: 'serious', label: '진지', color: '#94a3b8' },
-  { id: 'cheerful', label: '명랑', color: '#fb923c' },
-  { id: 'worried', label: '걱정', color: '#f59e0b' },
-  { id: 'tired', label: '피곤', color: '#78716c' },
-  { id: 'polite', label: '공손', color: '#2dd4bf' },
-  { id: 'sarcastic', label: '냉소', color: '#e879f9' },
-  { id: 'nervous', label: '긴장', color: '#fda4af' },
-  { id: 'shy', label: '부끄러움', color: '#f9a8d4' },
-  { id: 'confident', label: '자신감', color: '#38bdf8' },
-  { id: 'comforting', label: '위로', color: '#86efac' },
-  { id: 'excited', label: '흥분', color: '#ff6b6b' },
-  { id: 'scared', label: '공포', color: '#a78bfa' },
-  { id: 'annoyed', label: '짜증', color: '#fdba74' },
-  { id: 'narration', label: '나레이션', color: '#cbd5e1' },
-  { id: 'longing', label: '그리움', color: '#93c5fd' },
-  { id: 'jealous', label: '질투', color: '#d946ef' },
-  { id: 'touched', label: '감동', color: '#f472b6' },
-  { id: 'empty', label: '허탈', color: '#6b7280' },
-  { id: 'mocking', label: '비꼼', color: '#a855f7' },
-  { id: 'cute', label: '애교', color: '#fb7185' },
-  { id: 'cold', label: '냉정', color: '#64748b' },
-  { id: 'tender', label: '다정', color: '#f9a8d4' },
-  { id: 'tearful', label: '울먹', color: '#7dd3fc' },
-  { id: 'sighing', label: '한숨', color: '#a1a1aa' },
-  { id: 'solemn', label: '비장', color: '#475569' },
-  { id: 'playful', label: '장난', color: '#facc15' },
-  { id: 'contempt', label: '경멸', color: '#9f1239' },
-  { id: 'admiring', label: '동경', color: '#c4b5fd' },
-  { id: 'restless', label: '초조', color: '#ef4444' },
-  { id: 'resigned', label: '체념', color: '#9ca3af' },
-  { id: 'curious', label: '호기심', color: '#34d399' },
-  { id: 'bored', label: '지루함', color: '#d4d4d8' },
-  { id: 'flustered', label: '당황', color: '#fca5a5' },
-  { id: 'proud', label: '득의', color: '#fde047' },
-  { id: 'flutter', label: '설렘', color: '#ff6b9d' },
-  { id: 'seductive', label: '유혹', color: '#be185d' },
-  { id: 'sweet', label: '달콤', color: '#f9a8d4' },
-  { id: 'intimate', label: '은밀', color: '#831843' },
-  { id: 'bittersweet', label: '애틋', color: '#db2777' },
-  { id: 'charming', label: '매력', color: '#ec4899' },
-  { id: 'aroused', label: '흥분(성적)', color: '#9f1239' },
-  { id: 'climax', label: '절정', color: '#881337' },
-  { id: 'moaning', label: '신음', color: '#701a75' },
-  { id: 'ecstasy', label: '황홀', color: '#a21caf' },
+const EMOTION_GROUPS = [
+  {
+    name: '기본',
+    emotions: [
+      { id: 'default', label: '기본', color: 'var(--text-secondary)' },
+      { id: 'narration', label: '나레이션', color: '#cbd5e1' },
+      { id: 'polite', label: '공손', color: '#2dd4bf' },
+      { id: 'serious', label: '진지', color: '#94a3b8' },
+      { id: 'confident', label: '자신감', color: '#38bdf8' },
+    ]
+  },
+  {
+    name: '긍정',
+    emotions: [
+      { id: 'happy', label: '기쁨', color: '#4ade80' },
+      { id: 'cheerful', label: '명랑', color: '#fb923c' },
+      { id: 'excited', label: '흥분', color: '#ff6b6b' },
+      { id: 'proud', label: '득의', color: '#fde047' },
+      { id: 'touched', label: '감동', color: '#f472b6' },
+      { id: 'curious', label: '호기심', color: '#34d399' },
+      { id: 'playful', label: '장난', color: '#facc15' },
+      { id: 'admiring', label: '동경', color: '#c4b5fd' },
+    ]
+  },
+  {
+    name: '부정',
+    emotions: [
+      { id: 'sad', label: '슬픔', color: '#60a5fa' },
+      { id: 'angry', label: '화남', color: '#f87171' },
+      { id: 'annoyed', label: '짜증', color: '#fdba74' },
+      { id: 'scared', label: '공포', color: '#a78bfa' },
+      { id: 'jealous', label: '질투', color: '#d946ef' },
+      { id: 'contempt', label: '경멸', color: '#9f1239' },
+      { id: 'sarcastic', label: '냉소', color: '#e879f9' },
+      { id: 'mocking', label: '비꼼', color: '#a855f7' },
+      { id: 'cold', label: '냉정', color: '#64748b' },
+    ]
+  },
+  {
+    name: '불안/피로',
+    emotions: [
+      { id: 'worried', label: '걱정', color: '#f59e0b' },
+      { id: 'nervous', label: '긴장', color: '#fda4af' },
+      { id: 'restless', label: '초조', color: '#ef4444' },
+      { id: 'flustered', label: '당황', color: '#fca5a5' },
+      { id: 'tired', label: '피곤', color: '#78716c' },
+      { id: 'bored', label: '지루함', color: '#d4d4d8' },
+      { id: 'sighing', label: '한숨', color: '#a1a1aa' },
+      { id: 'empty', label: '허탈', color: '#6b7280' },
+      { id: 'resigned', label: '체념', color: '#9ca3af' },
+    ]
+  },
+  {
+    name: '부드러움',
+    emotions: [
+      { id: 'whisper', label: '속삭임', color: '#c084fc' },
+      { id: 'comforting', label: '위로', color: '#86efac' },
+      { id: 'tender', label: '다정', color: '#f9a8d4' },
+      { id: 'shy', label: '부끄러움', color: '#f9a8d4' },
+      { id: 'cute', label: '애교', color: '#fb7185' },
+      { id: 'tearful', label: '울먹', color: '#7dd3fc' },
+      { id: 'solemn', label: '비장', color: '#475569' },
+      { id: 'surprise', label: '놀람', color: '#fbbf24' },
+      { id: 'longing', label: '그리움', color: '#93c5fd' },
+      { id: 'bittersweet', label: '애틋', color: '#db2777' },
+    ]
+  },
+  {
+    name: '로맨스',
+    emotions: [
+      { id: 'flutter', label: '설렘', color: '#ff6b9d' },
+      { id: 'sweet', label: '달콤', color: '#f9a8d4' },
+      { id: 'charming', label: '매력', color: '#ec4899' },
+      { id: 'seductive', label: '유혹', color: '#be185d' },
+      { id: 'intimate', label: '은밀', color: '#831843' },
+      { id: 'aroused', label: '흥분(성적)', color: '#9f1239' },
+      { id: 'moaning', label: '신음', color: '#701a75' },
+      { id: 'climax', label: '절정', color: '#881337' },
+      { id: 'ecstasy', label: '황홀', color: '#a21caf' },
+    ]
+  },
 ]
+
+// Flat list for reference registration
+const ALL_EMOTIONS = EMOTION_GROUPS.flatMap(g => g.emotions)
 
 export default function TTSEditor() {
   const { mode, status } = useAppStore()
@@ -114,9 +147,12 @@ export default function TTSEditor() {
             <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>
               각 감정의 참조 음성을 등록하세요. 미등록 감정은 기본(드롭한 파일)을 사용합니다.
             </div>
-            {EMOTIONS.filter(e => e.id !== 'default').map((e) => (
-              <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ fontSize: 11, fontWeight: 600, color: e.color, minWidth: 45 }}>{e.label}</span>
+            {EMOTION_GROUPS.filter(g => g.name !== '기본').map((group) => (
+              <div key={group.name} style={{ marginBottom: 6 }}>
+                <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 4 }}>{group.name}</div>
+                {group.emotions.filter(e => e.id !== 'default').map((e) => (
+              <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: e.color, minWidth: 55 }}>{e.label}</span>
                 <div style={{
                   flex: 1, fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden',
                   textOverflow: 'ellipsis', whiteSpace: 'nowrap'
@@ -137,6 +173,8 @@ export default function TTSEditor() {
                     X
                   </button>
                 )}
+              </div>
+            ))}
               </div>
             ))}
           </div>
@@ -165,19 +203,24 @@ export default function TTSEditor() {
           }}
         />
         {/* Emotion tag buttons for quick insert */}
-        <div style={{ padding: '8px 16px', borderTop: '1px solid var(--border-subtle)', display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-          <span style={{ fontSize: 10, color: 'var(--text-muted)', marginRight: 4, lineHeight: '22px' }}>태그 삽입:</span>
-          {EMOTIONS.filter(e => e.id !== 'default').map((e) => (
-            <button key={e.id} onClick={() => {
-              const tag = `[${e.label}] `
-              setTtsText(prev => prev + (prev.endsWith('\n') || prev === '' ? '' : '\n') + tag)
-            }} disabled={disabled} style={{
-              padding: '2px 8px', borderRadius: 4, border: 'none', cursor: 'pointer',
-              fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
-              background: `${e.color}15`, color: e.color
-            }}>
-              {e.label}
-            </button>
+        <div style={{ padding: '8px 16px', borderTop: '1px solid var(--border-subtle)' }}>
+          <span style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4, display: 'block' }}>태그 삽입:</span>
+          {EMOTION_GROUPS.filter(g => g.name !== '기본').map((group) => (
+            <div key={group.name} style={{ display: 'flex', gap: 3, flexWrap: 'wrap', marginBottom: 4, alignItems: 'center' }}>
+              <span style={{ fontSize: 9, color: 'var(--text-muted)', minWidth: 40 }}>{group.name}</span>
+              {group.emotions.filter(e => e.id !== 'default').map((e) => (
+                <button key={e.id} onClick={() => {
+                  const tag = `[${e.label}] `
+                  setTtsText(prev => prev + (prev.endsWith('\n') || prev === '' ? '' : '\n') + tag)
+                }} disabled={disabled} style={{
+                  padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                  fontSize: 9, fontWeight: 600, fontFamily: 'inherit',
+                  background: `${e.color}15`, color: e.color
+                }}>
+                  {e.label}
+                </button>
+              ))}
+            </div>
           ))}
         </div>
       </div>
