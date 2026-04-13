@@ -6,12 +6,20 @@ from audio_utils import emit, get_device, find_ffmpeg
 
 _tts_cache = {"model": None}
 
-# Emotion tag → ID + prompt hint for F5-TTS ref_text
+# Emotion tag (Korean/English) → internal ID
 EMOTION_TAGS = {
+    # Korean
     "기본": "default", "기쁨": "happy", "슬픔": "sad", "화남": "angry",
     "놀람": "surprise", "속삭임": "whisper", "진지": "serious", "명랑": "cheerful",
+    "걱정": "worried", "피곤": "tired", "공손": "polite", "냉소": "sarcastic",
+    "긴장": "nervous", "부끄러움": "shy", "자신감": "confident", "위로": "comforting",
+    "흥분": "excited", "공포": "scared", "짜증": "annoyed", "나레이션": "narration",
+    # English aliases
     "happy": "happy", "sad": "sad", "angry": "angry", "surprise": "surprise",
     "whisper": "whisper", "serious": "serious", "cheerful": "cheerful",
+    "worried": "worried", "tired": "tired", "polite": "polite", "sarcastic": "sarcastic",
+    "nervous": "nervous", "shy": "shy", "confident": "confident", "comforting": "comforting",
+    "excited": "excited", "scared": "scared", "annoyed": "annoyed", "narration": "narration",
 }
 
 # Emotion prompt hints — guides F5-TTS tone without separate reference audio
@@ -19,11 +27,23 @@ EMOTION_PROMPTS = {
     "default": "",
     "happy": "(happily, with joy and excitement) ",
     "sad": "(sadly, with a sorrowful and melancholic tone) ",
-    "angry": "(angrily, with frustration and intensity) ",
-    "surprise": "(with surprise and astonishment) ",
-    "whisper": "(whispering softly and quietly) ",
-    "serious": "(in a serious, formal and composed tone) ",
-    "cheerful": "(cheerfully, with a bright and upbeat tone) ",
+    "angry": "(angrily, with frustration and strong intensity) ",
+    "surprise": "(with genuine surprise and wide-eyed astonishment) ",
+    "whisper": "(whispering very softly and quietly, barely audible) ",
+    "serious": "(in a serious, formal and composed authoritative tone) ",
+    "cheerful": "(cheerfully, with a bright, upbeat and light-hearted tone) ",
+    "worried": "(with worry and anxiety, voice slightly trembling) ",
+    "tired": "(tiredly, with a weary, slow and exhausted tone) ",
+    "polite": "(politely and respectfully, with a warm courteous tone) ",
+    "sarcastic": "(sarcastically, with a dry and ironic undertone) ",
+    "nervous": "(nervously, with a shaky and hesitant voice) ",
+    "shy": "(shyly, with a soft, bashful and timid tone) ",
+    "confident": "(confidently, with a strong, bold and assured voice) ",
+    "comforting": "(gently and warmly, with a soothing comforting tone) ",
+    "excited": "(excitedly, with high energy and enthusiastic tone) ",
+    "scared": "(fearfully, with a trembling and frightened voice) ",
+    "annoyed": "(with annoyance and slight irritation in voice) ",
+    "narration": "(in a calm, clear narrator voice with even pacing) ",
 }
 
 

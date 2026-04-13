@@ -10,6 +10,18 @@ const EMOTIONS = [
   { id: 'whisper', label: '속삭임', color: '#c084fc' },
   { id: 'serious', label: '진지', color: '#94a3b8' },
   { id: 'cheerful', label: '명랑', color: '#fb923c' },
+  { id: 'worried', label: '걱정', color: '#f59e0b' },
+  { id: 'tired', label: '피곤', color: '#78716c' },
+  { id: 'polite', label: '공손', color: '#2dd4bf' },
+  { id: 'sarcastic', label: '냉소', color: '#e879f9' },
+  { id: 'nervous', label: '긴장', color: '#fda4af' },
+  { id: 'shy', label: '부끄러움', color: '#f9a8d4' },
+  { id: 'confident', label: '자신감', color: '#38bdf8' },
+  { id: 'comforting', label: '위로', color: '#86efac' },
+  { id: 'excited', label: '흥분', color: '#ff6b6b' },
+  { id: 'scared', label: '공포', color: '#a78bfa' },
+  { id: 'annoyed', label: '짜증', color: '#fdba74' },
+  { id: 'narration', label: '나레이션', color: '#cbd5e1' },
 ]
 
 export default function TTSEditor() {
