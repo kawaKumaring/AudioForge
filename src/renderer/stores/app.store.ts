@@ -26,6 +26,7 @@ interface AppState {
   ttsText: string
   ttsSpeed: number
   ttsSilenceGap: number
+  ttsEmotionRefs: Record<string, string>
 
   setFile: (info: FileInfo, url: string) => void
   setMode: (mode: SeparationMode) => void
@@ -71,6 +72,7 @@ export const useAppStore = create<AppState>((set) => ({
   ttsText: '',
   ttsSpeed: 1.0,
   ttsSilenceGap: 0.5,
+  ttsEmotionRefs: {} as Record<string, string>,
 
   setFile: (info, url) => set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, progress: 0, outputDir: null }),
   setMode: (mode) => set({ mode }),

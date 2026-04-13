@@ -1,54 +1,108 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import { useAppStore } from '@/stores/app.store'
+
+const EMOTIONS = [
+  { id: 'default', label: '기본', color: 'var(--text-secondary)' },
+  { id: 'happy', label: '기쁨', color: '#4ade80' },
+  { id: 'sad', label: '슬픔', color: '#60a5fa' },
+  { id: 'angry', label: '화남', color: '#f87171' },
+  { id: 'surprise', label: '놀람', color: '#fbbf24' },
+  { id: 'whisper', label: '속삭임', color: '#c084fc' },
+  { id: 'serious', label: '진지', color: '#94a3b8' },
+  { id: 'cheerful', label: '명랑', color: '#fb923c' },
+]
 
 export default function TTSEditor() {
   const { mode, status } = useAppStore()
   const [ttsText, setTtsText] = useState('')
   const [ttsSpeed, setTtsSpeed] = useState(1.0)
   const [ttsSilenceGap, setTtsSilenceGap] = useState(0.5)
+  const [emotionRefs, setEmotionRefs] = useState<Record<string, string>>({})
+  const [showEmotionSetup, setShowEmotionSetup] = useState(false)
   const disabled = status === 'processing'
 
   // Sync to store
   useEffect(() => {
-    useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap })
-  }, [ttsText, ttsSpeed, ttsSilenceGap])
+    useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefs: emotionRefs })
+  }, [ttsText, ttsSpeed, ttsSilenceGap, emotionRefs])
 
   if (mode !== 'tts') return null
+
+  const handleEmotionFile = async (emotionId: string) => {
+    const filePath = await window.api.audio.selectFile()
+    if (filePath) {
+      setEmotionRefs(prev => ({ ...prev, [emotionId]: filePath }))
+    }
+  }
+
+  const registeredCount = Object.keys(emotionRefs).filter(k => emotionRefs[k]).length
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {/* Guide */}
       <div style={{
-        borderRadius: 12, overflow: 'hidden',
-        background: 'var(--bg-card)', border: '1px solid var(--border-subtle)'
+        borderRadius: 12, padding: '12px 16px',
+        background: 'rgba(251,113,133,0.05)', border: '1px solid rgba(251,113,133,0.12)',
+        fontSize: 11, lineHeight: 1.7, color: 'var(--text-secondary)'
       }}>
-        <div style={{ padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
-          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--rose)' }}>음성 합성 가이드</span>
-        </div>
-        <div style={{ padding: '12px 16px', fontSize: 11, lineHeight: 1.8, color: 'var(--text-secondary)' }}>
-          <div style={{ marginBottom: 8 }}>
-            <strong style={{ color: 'var(--text-primary)' }}>참조 음성</strong> = 위에 드롭한 파일 (5~30초 권장)
-          </div>
-          <div style={{ display: 'flex', flexDirection: 'column', gap: 4, paddingLeft: 8, borderLeft: '2px solid var(--border-subtle)' }}>
-            <div><span style={{ color: 'var(--rose)' }}>감정 톤</span> — 참조 음성의 감정이 그대로 반영됩니다</div>
-            <div style={{ paddingLeft: 12, color: 'var(--text-muted)', fontSize: 10 }}>
-              웃는 톤 샘플 → 밝은 음성 / 화난 톤 샘플 → 강한 음성 / 속삭임 샘플 → 속삭이는 음성
+        <strong style={{ color: 'var(--rose)' }}>참조 음성</strong> = 위에 드롭한 파일 (기본 감정).
+        감정별 음성을 추가 등록하면 대사마다 <code style={{ background: 'var(--bg-elevated)', padding: '1px 4px', borderRadius: 3 }}>[기쁨]</code> 태그로 감정을 지정할 수 있습니다.
+        <br />한국어 · 영어 · 일본어 · 중국어 지원. 영어 목소리로 한국어 대사도 가능합니다.
+      </div>
+
+      {/* Emotion references (collapsible) */}
+      <div style={{ borderRadius: 12, overflow: 'hidden', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)' }}>
+        <button onClick={() => setShowEmotionSetup(!showEmotionSetup)} style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          width: '100%', padding: '10px 16px', border: 'none', cursor: 'pointer',
+          background: 'transparent', fontFamily: 'inherit', outline: 'none'
+        }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>
+            감정별 음성 등록
+            {registeredCount > 0 && <span style={{ marginLeft: 8, fontSize: 10, color: 'var(--rose)' }}>{registeredCount}개 등록됨</span>}
+          </span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2"
+            style={{ transform: showEmotionSetup ? 'rotate(180deg)' : 'rotate(0)', transition: 'transform 0.2s' }}>
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </button>
+
+        {showEmotionSetup && (
+          <div style={{ padding: '0 16px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>
+              각 감정의 참조 음성을 등록하세요. 미등록 감정은 기본(드롭한 파일)을 사용합니다.
             </div>
-            <div><span style={{ color: 'var(--cyan)' }}>다국어</span> — 한국어, 영어, 일본어, 중국어 지원</div>
-            <div><span style={{ color: 'var(--emerald)' }}>긴 대사</span> — 줄바꿈으로 문장 구분, 각각 합성 후 이어붙임</div>
+            {EMOTIONS.filter(e => e.id !== 'default').map((e) => (
+              <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontSize: 11, fontWeight: 600, color: e.color, minWidth: 45 }}>{e.label}</span>
+                <div style={{
+                  flex: 1, fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden',
+                  textOverflow: 'ellipsis', whiteSpace: 'nowrap'
+                }}>
+                  {emotionRefs[e.id] ? emotionRefs[e.id].split(/[/\\]/).pop() : '미등록 (기본 사용)'}
+                </div>
+                <button onClick={() => handleEmotionFile(e.id)} disabled={disabled} style={{
+                  padding: '3px 10px', borderRadius: 5, border: 'none', cursor: 'pointer',
+                  fontSize: 10, fontWeight: 500, fontFamily: 'inherit',
+                  background: emotionRefs[e.id] ? `${e.color}20` : 'var(--bg-elevated)',
+                  color: emotionRefs[e.id] ? e.color : 'var(--text-muted)'
+                }}>
+                  {emotionRefs[e.id] ? '변경' : '등록'}
+                </button>
+                {emotionRefs[e.id] && (
+                  <button onClick={() => setEmotionRefs(prev => { const n = { ...prev }; delete n[e.id]; return n })}
+                    style={{ padding: '3px 6px', borderRadius: 5, border: 'none', cursor: 'pointer', fontSize: 10, background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}>
+                    X
+                  </button>
+                )}
+              </div>
+            ))}
           </div>
-          <div style={{ marginTop: 8, padding: '6px 10px', borderRadius: 6, background: 'rgba(251,191,36,0.06)', border: '1px solid rgba(251,191,36,0.1)', fontSize: 10, color: 'var(--amber)' }}>
-            💡 <strong>팁:</strong> 같은 사람의 기쁜/슬픈/화난 음성을 각각 저장해두면 감정별 합성이 가능합니다.
-            AudioForge 대화 분리로 특정 화자 목소리를 추출하면 참조 음성으로 바로 사용할 수 있습니다.
-          </div>
-        </div>
+        )}
       </div>
 
       {/* Text input */}
-      <div style={{
-        borderRadius: 12, overflow: 'hidden',
-        background: 'var(--bg-card)', border: '1px solid var(--border-subtle)'
-      }}>
+      <div style={{ borderRadius: 12, overflow: 'hidden', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)' }}>
         <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>대사 입력</span>
           <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
@@ -59,7 +113,7 @@ export default function TTSEditor() {
           value={ttsText}
           onChange={(e) => !disabled && setTtsText(e.target.value)}
           disabled={disabled}
-          placeholder={"안녕하세요. 오늘 회의를 시작하겠습니다.\n첫 번째 안건은 프로젝트 진행 상황입니다.\n각 팀별로 발표해주세요.\n\n↑ 줄바꿈으로 문장을 구분합니다"}
+          placeholder={"안녕하세요. 오늘 좋은 소식이 있어요.\n[기쁨] 드디어 프로젝트가 완성됐습니다!\n[슬픔] 하지만 아쉽게도 일정이 늦어졌어요.\n[속삭임] 비밀인데... 사실 보너스가 있대요.\n\n감정 태그 없으면 기본 톤으로 합성됩니다."}
           style={{
             width: '100%', height: 140, resize: 'vertical',
             padding: '12px 16px', border: 'none',
@@ -68,11 +122,26 @@ export default function TTSEditor() {
             outline: 'none', opacity: disabled ? 0.5 : 1
           }}
         />
+        {/* Emotion tag buttons for quick insert */}
+        <div style={{ padding: '8px 16px', borderTop: '1px solid var(--border-subtle)', display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+          <span style={{ fontSize: 10, color: 'var(--text-muted)', marginRight: 4, lineHeight: '22px' }}>태그 삽입:</span>
+          {EMOTIONS.filter(e => e.id !== 'default').map((e) => (
+            <button key={e.id} onClick={() => {
+              const tag = `[${e.label}] `
+              setTtsText(prev => prev + (prev.endsWith('\n') || prev === '' ? '' : '\n') + tag)
+            }} disabled={disabled} style={{
+              padding: '2px 8px', borderRadius: 4, border: 'none', cursor: 'pointer',
+              fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
+              background: `${e.color}15`, color: e.color
+            }}>
+              {e.label}
+            </button>
+          ))}
+        </div>
       </div>
 
       {/* Controls */}
       <div style={{ display: 'flex', gap: 10 }}>
-        {/* Speed */}
         <div style={{
           flex: 1, display: 'flex', alignItems: 'center', gap: 8,
           borderRadius: 10, padding: '8px 14px',
@@ -86,8 +155,6 @@ export default function TTSEditor() {
             {ttsSpeed.toFixed(1)}x
           </span>
         </div>
-
-        {/* Silence gap */}
         <div style={{
           flex: 1, display: 'flex', alignItems: 'center', gap: 8,
           borderRadius: 10, padding: '8px 14px',

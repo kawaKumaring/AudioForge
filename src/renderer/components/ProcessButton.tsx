@@ -18,7 +18,7 @@ function _estimateTime(mode: string, duration: number, transcribe: boolean, tran
 }
 
 export default function ProcessButton() {
-  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, status, setProcessing, setProgress, setResult, setError } = useAppStore()
+  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefs, status, setProcessing, setProgress, setResult, setError } = useAppStore()
   const cleanupRef = React.useRef<(() => void) | null>(null)
 
   const handleProcess = async () => {
@@ -44,7 +44,7 @@ export default function ProcessButton() {
     cleanupRef.current = cleanup
 
     try {
-      await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap })
+      await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefs })
     } catch (err: any) {
       setError(err.message || 'Process failed')
       cleanup()
