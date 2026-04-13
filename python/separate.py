@@ -14,6 +14,9 @@ import subprocess
 # Ensure sibling modules are importable regardless of cwd
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# transformers 5.x requires higher recursion limit on import
+sys.setrecursionlimit(10000)
+
 from audio_utils import (emit, load_audio, save_audio, find_ffmpeg,
                          convert_to_wav, trim_silence, fmt_time, fmt_srt_time, get_device)
 
