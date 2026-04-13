@@ -42,6 +42,16 @@ const EMOTIONS = [
   { id: 'bored', label: '지루함', color: '#d4d4d8' },
   { id: 'flustered', label: '당황', color: '#fca5a5' },
   { id: 'proud', label: '득의', color: '#fde047' },
+  { id: 'flutter', label: '설렘', color: '#ff6b9d' },
+  { id: 'seductive', label: '유혹', color: '#be185d' },
+  { id: 'sweet', label: '달콤', color: '#f9a8d4' },
+  { id: 'intimate', label: '은밀', color: '#831843' },
+  { id: 'bittersweet', label: '애틋', color: '#db2777' },
+  { id: 'charming', label: '매력', color: '#ec4899' },
+  { id: 'aroused', label: '흥분(성적)', color: '#9f1239' },
+  { id: 'climax', label: '절정', color: '#881337' },
+  { id: 'moaning', label: '신음', color: '#701a75' },
+  { id: 'ecstasy', label: '황홀', color: '#a21caf' },
 ]
 
 export default function TTSEditor() {

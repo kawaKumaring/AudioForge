@@ -31,6 +31,13 @@ EMOTION_TAGS = {
     "tearful": "tearful", "sighing": "sighing", "solemn": "solemn", "playful": "playful",
     "contempt": "contempt", "admiring": "admiring", "restless": "restless", "resigned": "resigned",
     "curious": "curious", "bored": "bored", "flustered": "flustered", "proud": "proud",
+    # 로맨스/성적
+    "설렘": "flutter", "유혹": "seductive", "달콤": "sweet", "은밀": "intimate",
+    "애틋": "bittersweet", "매력": "charming", "흥분(성적)": "aroused",
+    "절정": "climax", "신음": "moaning", "황홀": "ecstasy",
+    "flutter": "flutter", "seductive": "seductive", "sweet": "sweet", "intimate": "intimate",
+    "bittersweet": "bittersweet", "charming": "charming", "aroused": "aroused",
+    "climax": "climax", "moaning": "moaning", "ecstasy": "ecstasy",
 }
 
 # Emotion prompt hints — guides F5-TTS tone without separate reference audio
@@ -75,6 +82,16 @@ EMOTION_PROMPTS = {
     "bored": "(boredly, with a flat and uninterested monotone) ",
     "flustered": "(flustered, confused and embarrassed) ",
     "proud": "(proudly, with triumphant satisfaction) ",
+    "flutter": "(with heart fluttering, nervous romantic excitement and anticipation) ",
+    "seductive": "(in a low, seductive and alluring tone, slow and breathy) ",
+    "sweet": "(sweetly, with a honey-like warm and loving tone) ",
+    "intimate": "(intimately, in a close, quiet and private whisper) ",
+    "bittersweet": "(with bittersweet longing, tender yet painful) ",
+    "charming": "(charmingly, with confident and magnetic allure) ",
+    "aroused": "(with heavy breathing, heated and passionate intensity) ",
+    "climax": "(with intense, overwhelming emotional peak, gasping) ",
+    "moaning": "(with a low, breathy moan-like quality) ",
+    "ecstasy": "(in a dreamy, euphoric and blissful daze) ",
 }
 
 
