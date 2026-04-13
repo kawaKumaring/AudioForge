@@ -17,6 +17,42 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # transformers 5.x requires higher recursion limit on import
 sys.setrecursionlimit(10000)
 
+# torchaudio 2.11 removed soundfile backend and requires torchcodec DLLs
+# which are not available on this system. Monkey-patch torchaudio.load/save
+# to use soundfile directly, bypassing torchcodec entirely.
+def _patch_torchaudio():
+    try:
+        import torchaudio
+        import soundfile as sf
+        import torch
+        import numpy as np
+
+        _original_load = torchaudio.load
+
+        def _soundfile_load(uri, frame_offset=0, num_frames=-1, normalize=True,
+                           channels_first=True, format=None, buffer_size=4096, backend=None):
+            try:
+                return _original_load(uri, frame_offset=frame_offset, num_frames=num_frames,
+                                     normalize=normalize, channels_first=channels_first,
+                                     format=format, buffer_size=buffer_size, backend=backend)
+            except Exception:
+                # Fallback to soundfile
+                data, sr = sf.read(str(uri), dtype='float32',
+                                   start=frame_offset,
+                                   stop=frame_offset + num_frames if num_frames > 0 else None)
+                tensor = torch.from_numpy(data)
+                if tensor.dim() == 1:
+                    tensor = tensor.unsqueeze(0 if channels_first else 1)
+                elif channels_first and tensor.dim() == 2:
+                    tensor = tensor.T
+                return tensor, sr
+
+        torchaudio.load = _soundfile_load
+    except ImportError:
+        pass
+
+_patch_torchaudio()
+
 from audio_utils import (emit, load_audio, save_audio, find_ffmpeg,
                          convert_to_wav, trim_silence, fmt_time, fmt_srt_time, get_device)
 
