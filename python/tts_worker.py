@@ -6,13 +6,24 @@ from audio_utils import emit, get_device, find_ffmpeg
 
 _tts_cache = {"model": None}
 
-# Emotion tag → reference audio mapping
+# Emotion tag → ID + prompt hint for F5-TTS ref_text
 EMOTION_TAGS = {
     "기본": "default", "기쁨": "happy", "슬픔": "sad", "화남": "angry",
     "놀람": "surprise", "속삭임": "whisper", "진지": "serious", "명랑": "cheerful",
-    # English aliases
     "happy": "happy", "sad": "sad", "angry": "angry", "surprise": "surprise",
     "whisper": "whisper", "serious": "serious", "cheerful": "cheerful",
+}
+
+# Emotion prompt hints — guides F5-TTS tone without separate reference audio
+EMOTION_PROMPTS = {
+    "default": "",
+    "happy": "(happily, with joy and excitement) ",
+    "sad": "(sadly, with a sorrowful and melancholic tone) ",
+    "angry": "(angrily, with frustration and intensity) ",
+    "surprise": "(with surprise and astonishment) ",
+    "whisper": "(whispering softly and quietly) ",
+    "serious": "(in a serious, formal and composed tone) ",
+    "cheerful": "(cheerfully, with a bright and upbeat tone) ",
 }
 
 
@@ -109,16 +120,22 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5, em
         for i, (emotion_id, line_text) in enumerate(parsed):
             pct = 30 + int((i / len(parsed)) * 55)
 
-            # Select reference audio for this emotion
+            # Select reference audio + prompt hint for this emotion
             ref = ref_cache.get(emotion_id, ref_cache["default"])
             emotion_label = next((k for k, v in EMOTION_TAGS.items() if v == emotion_id), emotion_id)
+
+            # If no dedicated reference for this emotion, use prompt hint
+            if emotion_id not in ref_cache or emotion_id == "default":
+                ref_text = EMOTION_PROMPTS.get(emotion_id, "")
+            else:
+                ref_text = ""  # Dedicated reference already carries the emotion
 
             emit("progress", percent=pct, message=f"[{emotion_label}] {line_text[:30]}...")
 
             seg_path = os.path.join(output_dir, f"segment_{i+1:03d}.wav")
             tts.infer(
                 ref_file=ref,
-                ref_text="",
+                ref_text=ref_text,
                 gen_text=line_text,
                 file_wave=seg_path,
                 speed=speed
