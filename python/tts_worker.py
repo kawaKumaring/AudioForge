@@ -95,6 +95,30 @@ EMOTION_PROMPTS = {
 }
 
 
+_ref_text_cache = {}  # ref_audio_path → transcribed text
+
+
+def _transcribe_reference(ref_path):
+    """Transcribe reference audio with Whisper for accurate ref_text."""
+    if ref_path in _ref_text_cache:
+        return _ref_text_cache[ref_path]
+
+    emit("progress", percent=26, message="참조 음성 텍스트 추출 중 (Whisper)...")
+    try:
+        import whisper
+        device = get_device(timeout_sec=10)
+        model = whisper.load_model("base", device=device)  # base model for speed
+        result = model.transcribe(ref_path, language=None, task="transcribe", verbose=False)
+        text = result["text"].strip()
+        lang = result.get("language", "unknown")
+        emit("progress", percent=29, message=f"참조 음성 인식: [{lang}] {text[:40]}...")
+        _ref_text_cache[ref_path] = text
+        return text
+    except Exception as e:
+        emit("progress", percent=29, message=f"참조 음성 인식 실패: {e}")
+        return ""
+
+
 def _get_tts_model():
     if _tts_cache["model"] is None:
         emit("progress", percent=10, message="F5-TTS 모델 로딩 중... (첫 실행 시 ~1.2GB 다운로드)")
@@ -182,21 +206,25 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5, em
                 tmp_dirs.append(tmp)
             ref_cache[emo_id] = wav
 
+    # Transcribe all reference audios for accurate ref_text
+    ref_text_cache = {}
+    for key, ref_path in ref_cache.items():
+        ref_text_cache[key] = _transcribe_reference(ref_path)
+
     try:
         segment_paths = []
 
         for i, (emotion_id, line_text) in enumerate(parsed):
             pct = 30 + int((i / len(parsed)) * 55)
 
-            # Select reference audio + prompt hint for this emotion
+            # Select reference audio for this emotion
             ref = ref_cache.get(emotion_id, ref_cache["default"])
             emotion_label = next((k for k, v in EMOTION_TAGS.items() if v == emotion_id), emotion_id)
 
-            # If no dedicated reference for this emotion, use prompt hint
-            if emotion_id not in ref_cache or emotion_id == "default":
-                ref_text = EMOTION_PROMPTS.get(emotion_id, "")
-            else:
-                ref_text = ""  # Dedicated reference already carries the emotion
+            # Build ref_text: transcribed text + optional emotion hint
+            base_ref_text = ref_text_cache.get(emotion_id, ref_text_cache.get("default", ""))
+            emotion_hint = EMOTION_PROMPTS.get(emotion_id, "")
+            ref_text = base_ref_text if base_ref_text else emotion_hint
 
             emit("progress", percent=pct, message=f"[{emotion_label}] {line_text[:30]}...")
 
