@@ -20,6 +20,17 @@ EMOTION_TAGS = {
     "worried": "worried", "tired": "tired", "polite": "polite", "sarcastic": "sarcastic",
     "nervous": "nervous", "shy": "shy", "confident": "confident", "comforting": "comforting",
     "excited": "excited", "scared": "scared", "annoyed": "annoyed", "narration": "narration",
+    # 추가
+    "그리움": "longing", "질투": "jealous", "감동": "touched", "허탈": "empty",
+    "비꼼": "mocking", "애교": "cute", "냉정": "cold", "다정": "tender",
+    "울먹": "tearful", "한숨": "sighing", "비장": "solemn", "장난": "playful",
+    "경멸": "contempt", "동경": "admiring", "초조": "restless", "체념": "resigned",
+    "호기심": "curious", "지루함": "bored", "당황": "flustered", "득의": "proud",
+    "longing": "longing", "jealous": "jealous", "touched": "touched", "empty": "empty",
+    "mocking": "mocking", "cute": "cute", "cold": "cold", "tender": "tender",
+    "tearful": "tearful", "sighing": "sighing", "solemn": "solemn", "playful": "playful",
+    "contempt": "contempt", "admiring": "admiring", "restless": "restless", "resigned": "resigned",
+    "curious": "curious", "bored": "bored", "flustered": "flustered", "proud": "proud",
 }
 
 # Emotion prompt hints — guides F5-TTS tone without separate reference audio
@@ -44,6 +55,26 @@ EMOTION_PROMPTS = {
     "scared": "(fearfully, with a trembling and frightened voice) ",
     "annoyed": "(with annoyance and slight irritation in voice) ",
     "narration": "(in a calm, clear narrator voice with even pacing) ",
+    "longing": "(with deep longing and nostalgic yearning) ",
+    "jealous": "(with jealousy and envious undertone) ",
+    "touched": "(deeply moved and emotionally touched, voice quivering) ",
+    "empty": "(with an empty, hollow and defeated tone) ",
+    "mocking": "(mockingly, with a taunting and derisive tone) ",
+    "cute": "(cutely, with an adorable and sweet aegyo tone) ",
+    "cold": "(coldly, with an icy and emotionless flat tone) ",
+    "tender": "(tenderly, with warmth and gentle affection) ",
+    "tearful": "(on the verge of tears, voice cracking with emotion) ",
+    "sighing": "(with a heavy sigh, weary and resigned) ",
+    "solemn": "(solemnly, with gravity and dignified seriousness) ",
+    "playful": "(playfully, with a teasing and fun-loving tone) ",
+    "contempt": "(with contempt and disdain, looking down) ",
+    "admiring": "(with admiration and awe, deeply impressed) ",
+    "restless": "(restlessly, with urgent and fidgety energy) ",
+    "resigned": "(with resigned acceptance, giving up hope) ",
+    "curious": "(curiously, with inquisitive wonder) ",
+    "bored": "(boredly, with a flat and uninterested monotone) ",
+    "flustered": "(flustered, confused and embarrassed) ",
+    "proud": "(proudly, with triumphant satisfaction) ",
 }
 
 
