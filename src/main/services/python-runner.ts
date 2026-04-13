@@ -27,8 +27,7 @@ export class PythonRunner extends EventEmitter {
           PYTHONIOENCODING: 'utf-8',
           PYTHONUNBUFFERED: '1',
           PYTHONUTF8: '1',
-          // Add ffmpeg bin to PATH for torchcodec DLL loading
-          PATH: `${process.env.LOCALAPPDATA}\\Microsoft\\WinGet\\Packages\\Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe\\ffmpeg-8.1-full_build\\bin;${process.env.PATH || ''}`
+          TORCHAUDIO_BACKEND: 'soundfile'
         },
         windowsHide: true
       })
