@@ -1,4 +1,4 @@
-export type SeparationMode = 'music' | 'conversation' | 'transcribe' | 'split'
+export type SeparationMode = 'music' | 'conversation' | 'transcribe' | 'split' | 'tts'
 
 export interface Track {
   name: string

@@ -55,6 +55,10 @@ def main():
         args.split_points = config.get("splitPoints", args.split_points)
         args.split_labels = config.get("splitLabels", args.split_labels)
         args.n_speakers = config.get("nSpeakers", args.n_speakers)
+        # TTS fields
+        args.tts_text = config.get("ttsText", "")
+        args.tts_speed = config.get("ttsSpeed", 1.0)
+        args.tts_silence_gap = config.get("ttsSilenceGap", 0.5)
 
     if not args.input or not args.output:
         emit("error", message="입력 파일과 출력 경로가 필요합니다.")
@@ -63,6 +67,13 @@ def main():
     os.makedirs(args.output, exist_ok=True)
 
     try:
+        # ── TTS mode ──
+        if args.mode == "tts":
+            from tts_worker import synthesize
+            synthesize(args.input, args.tts_text, args.output,
+                       speed=args.tts_speed, silence_gap=args.tts_silence_gap)
+            return
+
         # ── Meta fix mode ──
         if args.mode == "meta-fix":
             _run_meta_fix(args)

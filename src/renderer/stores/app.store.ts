@@ -23,6 +23,9 @@ interface AppState {
   playingTrack: string | null
   splitMarkers: number[]
   splitLabels: string[]
+  ttsText: string
+  ttsSpeed: number
+  ttsSilenceGap: number
 
   setFile: (info: FileInfo, url: string) => void
   setMode: (mode: SeparationMode) => void
@@ -65,6 +68,9 @@ export const useAppStore = create<AppState>((set) => ({
   playingTrack: null,
   splitMarkers: [],
   splitLabels: [],
+  ttsText: '',
+  ttsSpeed: 1.0,
+  ttsSilenceGap: 0.5,
 
   setFile: (info, url) => set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, progress: 0, outputDir: null }),
   setMode: (mode) => set({ mode }),

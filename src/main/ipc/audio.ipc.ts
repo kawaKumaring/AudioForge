@@ -113,7 +113,10 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       srt: !!options?.exportSrt,
       splitPoints: mode === 'split' && options?.splitMarkers ? (options.splitMarkers as number[]).join(',') : '',
       splitLabels: mode === 'split' && options?.splitLabels ? (options.splitLabels as string[]).join('|') : '',
-      nSpeakers: options?.nSpeakers || 2
+      nSpeakers: options?.nSpeakers || 2,
+      ttsText: options?.ttsText || '',
+      ttsSpeed: options?.ttsSpeed || 1.0,
+      ttsSilenceGap: options?.ttsSilenceGap || 0.5
     }
     const { writeFileSync } = require('fs')
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
@@ -162,7 +165,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
 
     // Only pass ASCII config path to Python — no Korean chars in spawn args
     const modeNames: Record<string, string> = {
-      music: '음악 분리', conversation: '대화 분리', transcribe: '텍스트 추출', split: '트랙 분할'
+      music: '음악 분리', conversation: '대화 분리', transcribe: '텍스트 추출', split: '트랙 분할', tts: '음성 합성'
     }
     mainWindow.webContents.send('audio:progress', { percent: 0, message: `${modeNames[mode] || mode} 시작 중...` })
 

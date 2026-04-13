@@ -7,7 +7,8 @@ function _estimateTime(mode: string, duration: number, transcribe: boolean, tran
   if (mode === 'music') secs = duration * 0.3 + 15
   else if (mode === 'conversation') secs = duration * 0.5 + 20
   else if (mode === 'transcribe') secs = duration * 0.2 + 10
-  else if (mode === 'split') secs = 10 + duration * 0.02  // ffmpeg direct: ~2% of duration
+  else if (mode === 'split') secs = 10 + duration * 0.02
+  else if (mode === 'tts') secs = 15 + 5  // model load + ~5s per sentence
 
   if (transcribe && mode !== 'transcribe') secs += duration * 0.2 + 10
   if (translate) secs += 10
@@ -17,7 +18,7 @@ function _estimateTime(mode: string, duration: number, transcribe: boolean, tran
 }
 
 export default function ProcessButton() {
-  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, demucsModel, nSpeakers, splitMarkers, splitLabels, status, setProcessing, setProgress, setResult, setError } = useAppStore()
+  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, status, setProcessing, setProgress, setResult, setError } = useAppStore()
   const cleanupRef = React.useRef<(() => void) | null>(null)
 
   const handleProcess = async () => {
@@ -43,7 +44,7 @@ export default function ProcessButton() {
     cleanupRef.current = cleanup
 
     try {
-      await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, demucsModel, nSpeakers, splitMarkers, splitLabels })
+      await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap })
     } catch (err: any) {
       setError(err.message || 'Process failed')
       cleanup()
@@ -92,7 +93,7 @@ export default function ProcessButton() {
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
         <circle cx="12" cy="12" r="10" /><polygon points="10,8 16,12 10,16" fill="currentColor" stroke="none" />
       </svg>
-      {mode === 'music' ? '음악 분리 시작' : mode === 'conversation' ? '대화 분리 시작' : mode === 'split' ? '트랙 분할 시작' : '텍스트 추출 시작'}
+      {mode === 'music' ? '음악 분리 시작' : mode === 'conversation' ? '대화 분리 시작' : mode === 'split' ? '트랙 분할 시작' : mode === 'tts' ? '음성 합성 시작' : '텍스트 추출 시작'}
       {fileInfo.duration > 0 && (
         <span style={{ opacity: 0.6, fontSize: 11, fontWeight: 400 }}>
           ({_estimateTime(mode, fileInfo.duration, transcribe, translate)})

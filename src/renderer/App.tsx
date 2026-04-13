@@ -7,6 +7,7 @@ import ProgressBar from '@/components/ProgressBar'
 import TrackList from '@/components/TrackList'
 import Options from '@/components/Options'
 import SplitEditor from '@/components/SplitEditor'
+import TTSEditor from '@/components/TTSEditor'
 
 export default function App() {
   const { fileInfo, mode, status, reset } = useAppStore()
@@ -128,7 +129,7 @@ export default function App() {
             {/* 모드 + 옵션 + 버튼 + 결과 */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               <ModeSelector />
-              {mode === 'split' ? <SplitEditor /> : <Options />}
+              {mode === 'split' ? <SplitEditor /> : mode === 'tts' ? <TTSEditor /> : <Options />}
               <ProcessButton />
               <ProgressBar />
               <TrackList />
