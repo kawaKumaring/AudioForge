@@ -151,16 +151,22 @@ class KokoroEngine(TTSEngine):
 
     def load(self, lang_code="ko"):
         lang_map = {"ko": "k", "ja": "j", "zh": "z", "en": "a"}
-        self._lang = lang_map.get(lang_code, "k")
+        new_lang = lang_map.get(lang_code, "k")
 
-        if self._pipeline is None or True:  # reload on language change
-            emit("progress", percent=10, message=f"Kokoro TTS 로딩 중... (언어: {lang_code})")
-            from kokoro import KPipeline
-            self._pipeline = KPipeline(lang_code=self._lang)
-            emit("progress", percent=20, message="Kokoro 로딩 완료")
+        # Reload only when the language actually changes
+        if self._pipeline is not None and self._lang == new_lang:
+            return
+
+        emit("progress", percent=10, message=f"Kokoro TTS 로딩 중... (언어: {lang_code})")
+        from kokoro import KPipeline
+        self._pipeline = KPipeline(lang_code=new_lang)
+        self._lang = new_lang
+        emit("progress", percent=20, message="Kokoro 로딩 완료")
 
     def synthesize_segment(self, text, ref_audio, emotion_id, speed, output_path):
-        self.load()
+        # Do not force-reload here — the caller sets the language via load(lang)
+        if self._pipeline is None:
+            self.load()
         import soundfile as sf
 
         generator = self._pipeline(text, speed=speed)
@@ -238,6 +244,16 @@ ENGINES = {
     "gptsovits": GPTSoVITSEngine,
 }
 
+# Engine instances are cached so loaded models survive across segments —
+# creating a new instance per sentence reloads the model every time.
+_engine_cache = {}
+
+
+def _get_engine(name):
+    if name not in _engine_cache:
+        _engine_cache[name] = ENGINES[name]()
+    return _engine_cache[name]
+
 
 def _detect_language(text):
     """Simple language detection from text."""
@@ -261,34 +277,25 @@ def _select_engine(text, preferred_engine=None):
     Priority: user preference > GPT-SoVITS (ko/ja) > Kokoro (ja/zh) > F5-TTS (en)
     """
     if preferred_engine and preferred_engine in ENGINES:
-        return ENGINES[preferred_engine]()
+        return _get_engine(preferred_engine)
 
     lang = _detect_language(text)
 
-    # Korean → GPT-SoVITS (best quality), fallback to Kokoro
-    if lang == "ko":
+    # Korean/Japanese → GPT-SoVITS (best quality), fallback to Kokoro
+    if lang in ("ko", "ja"):
         try:
-            engine = GPTSoVITSEngine()
+            engine = _get_engine("gptsovits")
             engine.load()  # Check if venv exists
             return engine
         except Exception:
-            return KokoroEngine()  # Kokoro doesn't support Korean well, but as fallback
-
-    # Japanese → GPT-SoVITS first, then Kokoro
-    if lang == "ja":
-        try:
-            engine = GPTSoVITSEngine()
-            engine.load()
-            return engine
-        except Exception:
-            return KokoroEngine()
+            return _get_engine("kokoro")
 
     # Chinese → Kokoro
     if lang == "zh":
-        return KokoroEngine()
+        return _get_engine("kokoro")
 
     # English → F5-TTS (voice cloning)
-    return F5TTSEngine()
+    return _get_engine("f5tts")
 
 
 # ── Helpers ──
