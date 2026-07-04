@@ -32,6 +32,32 @@ def _get_whisper_model(model_name="large-v3"):
     return _whisper_cache["model"]
 
 
+# NLLB max_length=512 대비: 한 문장이 이보다 길면 잘린 만큼 조용히 유실되므로
+# CJK 문장부호로도 분리하고, 그래도 긴 문장은 하드 청크로 나눈다 (CJK ≈ 1char/token)
+_MAX_SENT_CHARS = 400
+
+
+def _split_sentences(text: str):
+    """Split text into translation units. Handles CJK punctuation (。！？)
+    that '. '-splitting misses; hard-chunks oversized sentences."""
+    import re
+    raw = re.split(r'(?<=[。．！？])\s*|(?<=[.!?])\s+|\n+', text)
+    sentences = []
+    for sent in raw:
+        sent = sent.strip() if sent else ''
+        if not sent:
+            continue
+        while len(sent) > _MAX_SENT_CHARS:
+            cut = sent.rfind(' ', _MAX_SENT_CHARS // 2, _MAX_SENT_CHARS)
+            if cut == -1:
+                cut = _MAX_SENT_CHARS  # no space (CJK) — hard cut
+            sentences.append(sent[:cut].strip())
+            sent = sent[cut:].strip()
+        if sent:
+            sentences.append(sent)
+    return sentences
+
+
 def translate_to_korean(text: str, src_lang: str):
     """Translate text to Korean using NLLB-200 with GPU acceleration."""
     if src_lang == "ko":
@@ -57,7 +83,7 @@ def translate_to_korean(text: str, src_lang: str):
     model = _nllb_cache["model"]
     kor_id = tokenizer.convert_tokens_to_ids("kor_Hang")
 
-    sentences = [s.strip() for s in text.replace('\n', '. ').split('. ') if s.strip()]
+    sentences = _split_sentences(text)
     translated_parts = []
 
     for sent in sentences:
