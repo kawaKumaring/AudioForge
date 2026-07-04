@@ -35,10 +35,18 @@ python setup_gptsovits.py --no-models # shim/패키지만
    - gsv-v2final-pretrained/s1bert25hz-...ckpt (149MB) — GPT(t2s)
    - gsv-v2final-pretrained/s2G2333k.pth (102MB) — SoVITS(vits)
 
-### VS Build Tools 불필요 (기존 가이드에서 바뀐 점)
-과거 가이드는 Visual Studio Build Tools로 jieba_fast/pyopenjtalk/eunjeon을 빌드하라
-했으나, **shim + 프리빌트 휠 방식으로 빌드 없이 해결**했다. pyopenjtalk(일본어)는
-GPT-SoVITS 한국어 경로에서 불필요.
+### 언어별 지원 현황 (VS Build Tools 없이)
+| 출력 언어 | 동작 | 필요 모델/패키지 |
+|-----------|------|-----------------|
+| 한국어 | ✅ | g2pk2 + eunjeon shim(python-mecab-ko) |
+| 영어 | ✅ | 기본 |
+| 중국어 | ✅ | jieba shim + fast_langdetect(lid.176.bin) |
+| **일본어** | ❌ | **pyopenjtalk 필요** (프리빌트 휠 없음 → VS Build Tools 빌드) |
+
+- **일본어 출력** 또는 **일본어 참조 음성의 전사(prompt_text)** 는 pyopenjtalk가 필요.
+  미설치 시 브리지가 처리: 일본어 출력 → 명확한 에러, 일본어 참조 → ref-free 자동 강등.
+- fast_langdetect(lid.176.bin, ~131MB): 일본어/중국어 언어 구분용. 한국어/영어는 불필요.
+- 과거 가이드의 jieba_fast/eunjeon 빌드 요구는 **shim + 프리빌트 휠로 회피**했다.
 
 ## 핵심 기술 이슈와 해결
 

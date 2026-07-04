@@ -73,6 +73,22 @@ def main():
         text_lang = _LANG_MAP.get(language, "all_ko")
         p_lang = _LANG_MAP.get(prompt_lang, text_lang)
 
+        # pyopenjtalk(일본어 음소화)는 C++ 빌드가 필요해 미설치일 수 있음.
+        # 일본어 텍스트 처리 경로에서만 필요하므로 상황별로 처리:
+        #  - 합성 텍스트가 일본어인데 미설치 → 명확한 에러
+        #  - 참조 전사(prompt_text)만 일본어인데 미설치 → ref-free로 자동 강등
+        import importlib.util
+        has_pyopenjtalk = importlib.util.find_spec("pyopenjtalk") is not None
+        if not has_pyopenjtalk:
+            if text_lang == "all_ja":
+                emit("error", message="일본어 합성은 pyopenjtalk가 필요합니다 (VS Build Tools 빌드). "
+                                      "한국어/영어/중국어 출력은 가능합니다.")
+                sys.exit(1)
+            if p_lang == "all_ja" and prompt_text.strip():
+                emit("progress", percent=56,
+                     message="pyopenjtalk 미설치 → 참조 전사 없이(ref-free) 합성")
+                prompt_text = ""
+
         inputs = {
             "text": text,
             "text_lang": text_lang,

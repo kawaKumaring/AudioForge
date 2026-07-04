@@ -122,7 +122,29 @@ def main():
         print("[오류] 모델 다운로드 실패")
         return 1
 
+    print("5. fast_langdetect 모델 다운로드 (일본어/중국어 언어 구분용, ~131MB)...")
+    # 일본어/중국어 텍스트는 GPT-SoVITS의 LangSegmenter가 fast_langdetect로
+    # ja/zh를 구분한다. lid.176.bin이 없으면 일본어/중국어 합성이 크래시.
+    # (한국어/영어는 이 모델 불필요)
+    cache = os.path.join(SOVITS, "GPT_SoVITS", "pretrained_models", "fast_langdetect")
+    os.makedirs(cache, exist_ok=True)
+    dst = os.path.join(cache, "lid.176.bin")
+    if os.path.exists(dst) and os.path.getsize(dst) > 1e8:
+        print("  이미 존재.")
+    else:
+        dl2 = (
+            "import urllib.request;"
+            "urllib.request.urlretrieve("
+            "'https://dl.fbaipublicfiles.com/fasttext/supervised-models/lid.176.bin',"
+            f"r'{dst}')"
+        )
+        r = subprocess.run([VENV_PY, "-X", "utf8", "-c", dl2])
+        if r.returncode != 0:
+            print("  [경고] fast_langdetect 다운로드 실패 — 한국어/영어는 정상, 일본어/중국어만 영향")
+
     print("\n완료. python smoke_test.py --tts <참조음성.wav> 로 검증하세요.")
+    print("참고: 일본어 출력/참조는 pyopenjtalk 필요 (프리빌트 휠 없음 → VS Build Tools 빌드).")
+    print("      한국어/영어/중국어 출력은 빌드 없이 동작.")
     return 0
 
 
