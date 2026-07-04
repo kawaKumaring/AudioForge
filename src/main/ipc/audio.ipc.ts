@@ -1,12 +1,14 @@
 import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
-import { exec } from 'child_process'
+import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { join, basename, dirname, extname } from 'path'
 import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
 
-const execAsync = promisify(exec)
+// execFile(배열 인자)은 cmd.exe를 거치지 않아 시스템 코드페이지(CP949)의
+// 한글 경로 손상 문제에 면역. exec(문자열)은 한글 파일명에서 깨짐 → 금지.
+const execFileAsync = promisify(execFile)
 
 // ffprobe path (winget install location)
 const FFPROBE_PATHS = [
@@ -27,7 +29,7 @@ async function findFfprobe(): Promise<string> {
   if (cachedFfprobe) return cachedFfprobe
   for (const p of FFPROBE_PATHS) {
     try {
-      await execAsync(`"${p}" -version`)
+      await execFileAsync(p, ['-version'])
       cachedFfprobe = p
       return p
     } catch { /* try next */ }
@@ -53,9 +55,17 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
   })
 
   ipcMain.handle('audio:get-file-info', async (_event, filePath: string) => {
+    if (!existsSync(filePath)) {
+      throw new Error(`파일을 찾을 수 없습니다: ${basename(filePath)}`)
+    }
     const ffprobe = await findFfprobe()
-    const cmd = `"${ffprobe}" -hide_banner -show_entries stream=codec_name,channels,channel_layout,sample_rate,duration -of json "${filePath}"`
-    const { stdout } = await execAsync(cmd)
+    // 한글 경로 손상 방지: execFile 배열 인자 (cmd.exe 미경유)
+    const { stdout } = await execFileAsync(ffprobe, [
+      '-hide_banner',
+      '-show_entries', 'stream=codec_name,channels,channel_layout,sample_rate,duration',
+      '-of', 'json',
+      filePath
+    ])
     const data = JSON.parse(stdout)
     const stream = data.streams?.[0]
     if (!stream) throw new Error('오디오 스트림을 찾을 수 없습니다')
