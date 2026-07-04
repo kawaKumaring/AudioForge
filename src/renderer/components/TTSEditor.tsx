@@ -89,12 +89,14 @@ const ALL_EMOTIONS = EMOTION_GROUPS.flatMap(g => g.emotions)
 
 export default function TTSEditor() {
   const { mode, status } = useAppStore()
-  const [ttsText, setTtsText] = useState('')
-  const [ttsSpeed, setTtsSpeed] = useState(1.0)
-  const [ttsSilenceGap, setTtsSilenceGap] = useState(0.5)
-  const [emotionRefs, setEmotionRefs] = useState<Record<string, string>>({})
+  // 로컬 상태는 store 값으로 초기화 — 빈 값으로 시작하면 아래 동기화
+  // useEffect가 다른 모드에 다녀온 뒤 store의 대사/등록을 덮어써 유실시킴
+  const [ttsText, setTtsText] = useState(() => useAppStore.getState().ttsText)
+  const [ttsSpeed, setTtsSpeed] = useState(() => useAppStore.getState().ttsSpeed)
+  const [ttsSilenceGap, setTtsSilenceGap] = useState(() => useAppStore.getState().ttsSilenceGap)
+  const [emotionRefs, setEmotionRefs] = useState<Record<string, string>>(() => useAppStore.getState().ttsEmotionRefs)
   const [showEmotionSetup, setShowEmotionSetup] = useState(false)
-  const [ttsEngine, setTtsEngine] = useState('auto')
+  const [ttsEngine, setTtsEngine] = useState(() => useAppStore.getState().ttsEngine)
   const disabled = status === 'processing'
 
   // Sync to store
