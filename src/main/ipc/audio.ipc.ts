@@ -2,7 +2,7 @@ import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
 import { exec } from 'child_process'
 import { promisify } from 'util'
 import { join, basename, dirname, extname } from 'path'
-import { existsSync, mkdirSync, unlinkSync } from 'fs'
+import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
 
@@ -119,7 +119,6 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       ttsSilenceGap: options?.ttsSilenceGap || 0.5,
       ttsEngine: options?.ttsEngine || 'auto'
     }
-    const { writeFileSync } = require('fs')
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
     console.log(`[AudioForge] Config written to: ${configPath}`)
 
@@ -188,10 +187,23 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     }
 
     const trackRunner = new PythonRunner(pythonPath)
-    const args = ['--mode', 'track-process', '--input', trackPath, '--output', outputDir]
-    if (options.transcribe) args.push('--transcribe')
-    if (options.translate) args.push('--translate')
-    if (options.srt) args.push('--srt')
+
+    // Korean paths must never be passed as spawn args (CP949 corruption) —
+    // same JSON config approach as 'audio:process'
+    const configPath = join(tmpdir(), `audioforge_track_${Date.now()}.json`)
+    const config = {
+      mode: 'track-process',
+      input: trackPath,
+      output: outputDir,
+      transcribe: !!options.transcribe,
+      translate: !!options.translate,
+      srt: !!options.srt
+    }
+    writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+
+    trackRunner.on('done', () => {
+      try { unlinkSync(configPath) } catch {}
+    })
 
     trackRunner.on('progress', (data) => {
       mainWindow.webContents.send('audio:progress', data)
@@ -203,7 +215,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       sendError(typeof message === 'string' ? message : String(message))
     })
 
-    trackRunner.run(scriptPath, args)
+    trackRunner.run(scriptPath, ['--config', configPath])
     return { outputDir }
   })
 
