@@ -18,6 +18,7 @@ const FFPROBE_PATHS = [
 const DEFAULT_PYTHON = 'E:/AI/ComfyUI_windows_portable_python3.12/python_embeded/python.exe'
 
 let runner: PythonRunner | null = null
+let trackRunner: PythonRunner | null = null
 let pythonPath = existsSync(DEFAULT_PYTHON) ? DEFAULT_PYTHON : 'python'
 
 let cachedFfprobe: string | null = null
@@ -176,17 +177,18 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
 
   // Process individual track (transcribe/translate)
   ipcMain.handle('audio:process-track', async (_event, trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean }) => {
+    if (trackRunner?.isRunning) {
+      throw new Error('이미 처리 중인 트랙 작업이 있습니다')
+    }
     if (!existsSync(pythonPath)) {
-      sendError(`Python을 찾을 수 없습니다: ${pythonPath}`)
-      return null
+      throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     }
     const scriptPath = PythonRunner.getScriptPath('separate.py')
     if (!existsSync(scriptPath)) {
-      sendError(`스크립트를 찾을 수 없습니다`)
-      return null
+      throw new Error(`Python 스크립트를 찾을 수 없습니다: ${scriptPath}`)
     }
 
-    const trackRunner = new PythonRunner(pythonPath)
+    trackRunner = new PythonRunner(pythonPath)
 
     // Korean paths must never be passed as spawn args (CP949 corruption) —
     // same JSON config approach as 'audio:process'
@@ -201,18 +203,38 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     }
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
 
+    // Watchdog: kill if no progress for 5 minutes (same policy as main runner)
+    const WATCHDOG_MS = 300000
+    let watchdog: ReturnType<typeof setTimeout> | null = null
+    const sendTrackError = (message: string) => {
+      mainWindow.webContents.send('audio:track-error', { message, trackPath })
+    }
+    const resetWatchdog = () => {
+      if (watchdog) clearTimeout(watchdog)
+      watchdog = setTimeout(() => {
+        if (trackRunner?.isRunning) {
+          trackRunner.cancel()
+          sendTrackError('트랙 처리 시간이 초과되었습니다 (5분간 응답 없음).')
+        }
+      }, WATCHDOG_MS)
+    }
+    resetWatchdog()
+
     trackRunner.on('done', () => {
+      if (watchdog) clearTimeout(watchdog)
       try { unlinkSync(configPath) } catch {}
+      trackRunner = null
     })
 
     trackRunner.on('progress', (data) => {
+      resetWatchdog()
       mainWindow.webContents.send('audio:progress', data)
     })
     trackRunner.on('result', (data) => {
       mainWindow.webContents.send('audio:track-result', data)
     })
     trackRunner.on('error', (message) => {
-      sendError(typeof message === 'string' ? message : String(message))
+      sendTrackError(typeof message === 'string' ? message : String(message))
     })
 
     trackRunner.run(scriptPath, ['--config', configPath])
@@ -222,6 +244,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
   ipcMain.handle('audio:cancel', () => {
     runner?.cancel()
     runner = null
+    trackRunner?.cancel()
+    trackRunner = null
     return true
   })
 

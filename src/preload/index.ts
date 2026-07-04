@@ -17,6 +17,11 @@ const api = {
       ipcRenderer.on('audio:track-result', handler)
       return () => ipcRenderer.removeListener('audio:track-result', handler)
     },
+    onTrackError: (callback: (data: unknown) => void) => {
+      const handler = (_event: unknown, data: unknown) => callback(data)
+      ipcRenderer.on('audio:track-error', handler)
+      return () => ipcRenderer.removeListener('audio:track-error', handler)
+    },
     onProgress: (callback: (data: unknown) => void) => {
       const handler = (_event: unknown, data: unknown) => callback(data)
       ipcRenderer.on('audio:progress', handler)

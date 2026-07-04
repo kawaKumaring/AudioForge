@@ -62,7 +62,9 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
     if (!outputDir || !isAudioTrack || processing) return
     setProcessing(true)
 
-    const off = window.api.audio.onTrackResult((data: any) => {
+    const cleanup = () => { offResult(); offError() }
+
+    const offResult = window.api.audio.onTrackResult((data: any) => {
       const t = data?.tracks?.[0]
       if (!t) return
       // Match by track name to avoid cross-track confusion
@@ -72,14 +74,21 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
       if (t.text) setTranscript(t.text)
       if (t.translated_text) setTranslation(t.translated_text)
       setProcessing(false)
-      off()
+      cleanup()
+    })
+
+    // Python 에러 시 "처리 중..." 고착 방지 — 실패해도 버튼 복구
+    const offError = window.api.audio.onTrackError((data: any) => {
+      if (data?.trackPath && data.trackPath !== track.path) return
+      setProcessing(false)
+      cleanup()
     })
 
     try {
       await window.api.audio.processTrack(track.path, outputDir, { transcribe, translate, srt: false })
     } catch {
       setProcessing(false)
-      off()
+      cleanup()
     }
   }
 
