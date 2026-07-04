@@ -2,6 +2,7 @@ import { spawn, ChildProcess } from 'child_process'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { EventEmitter } from 'events'
+import { StringDecoder } from 'string_decoder'
 
 export class PythonRunner extends EventEmitter {
   private process: ChildProcess | null = null
@@ -37,25 +38,35 @@ export class PythonRunner extends EventEmitter {
     }
 
     let stderrBuffer = ''
+    // Line buffer: a JSON line can be split across pipe chunks (~64KB).
+    // Keep the trailing incomplete line and prepend it to the next chunk.
+    // StringDecoder handles multi-byte UTF-8 chars split across chunk boundaries.
+    let stdoutBuffer = ''
+    const stdoutDecoder = new StringDecoder('utf-8')
+
+    const handleLine = (line: string): void => {
+      const trimmed = line.trim()
+      if (!trimmed) return
+      try {
+        const msg = JSON.parse(trimmed)
+        if (msg.type === 'progress' || msg.type === 'status') {
+          this.emit('progress', { percent: msg.percent ?? 0, message: msg.message ?? '' })
+        } else if (msg.type === 'result') {
+          this.emit('result', msg)
+        } else if (msg.type === 'error') {
+          this.emit('error', msg.message)
+        }
+      } catch {
+        // Non-JSON output (e.g., tqdm progress bars), ignore
+        console.log(`[PythonRunner stdout] ${trimmed}`)
+      }
+    }
 
     this.process.stdout?.on('data', (data: Buffer) => {
-      const text = data.toString('utf-8')
-      const lines = text.split('\n').filter(Boolean)
-      for (const line of lines) {
-        try {
-          const msg = JSON.parse(line.trim())
-          if (msg.type === 'progress' || msg.type === 'status') {
-            this.emit('progress', { percent: msg.percent ?? 0, message: msg.message ?? '' })
-          } else if (msg.type === 'result') {
-            this.emit('result', msg)
-          } else if (msg.type === 'error') {
-            this.emit('error', msg.message)
-          }
-        } catch {
-          // Non-JSON output (e.g., tqdm progress bars), ignore
-          console.log(`[PythonRunner stdout] ${line}`)
-        }
-      }
+      stdoutBuffer += stdoutDecoder.write(data)
+      const lines = stdoutBuffer.split('\n')
+      stdoutBuffer = lines.pop() ?? ''
+      for (const line of lines) handleLine(line)
     })
 
     this.process.stderr?.on('data', (data: Buffer) => {
@@ -66,6 +77,12 @@ export class PythonRunner extends EventEmitter {
 
     this.process.on('close', (code) => {
       console.log(`[PythonRunner] Process exited with code ${code}`)
+      // Flush a final line that had no trailing newline
+      stdoutBuffer += stdoutDecoder.end()
+      if (stdoutBuffer) {
+        handleLine(stdoutBuffer)
+        stdoutBuffer = ''
+      }
       this.process = null
       if (code !== 0 && code !== null) {
         // Extract meaningful error from stderr
