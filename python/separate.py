@@ -17,44 +17,12 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # transformers 5.x requires higher recursion limit on import
 sys.setrecursionlimit(10000)
 
-# torchaudio 2.11 removed soundfile backend and requires torchcodec DLLs
-# which are not available on this system. Monkey-patch torchaudio.load/save
-# to use soundfile directly, bypassing torchcodec entirely.
-def _patch_torchaudio():
-    try:
-        import torchaudio
-        import soundfile as sf
-        import torch
-        import numpy as np
-
-        _original_load = torchaudio.load
-
-        def _soundfile_load(uri, frame_offset=0, num_frames=-1, normalize=True,
-                           channels_first=True, format=None, buffer_size=4096, backend=None):
-            try:
-                return _original_load(uri, frame_offset=frame_offset, num_frames=num_frames,
-                                     normalize=normalize, channels_first=channels_first,
-                                     format=format, buffer_size=buffer_size, backend=backend)
-            except Exception:
-                # Fallback to soundfile
-                data, sr = sf.read(str(uri), dtype='float32',
-                                   start=frame_offset,
-                                   stop=frame_offset + num_frames if num_frames > 0 else None)
-                tensor = torch.from_numpy(data)
-                if tensor.dim() == 1:
-                    tensor = tensor.unsqueeze(0 if channels_first else 1)
-                elif channels_first and tensor.dim() == 2:
-                    tensor = tensor.T
-                return tensor, sr
-
-        torchaudio.load = _soundfile_load
-    except ImportError:
-        pass
-
-_patch_torchaudio()
-
+# NOTE: torchaudio patching moved to audio_utils.patch_torchaudio() —
+# it imports torch (10-30s) so it must NOT run at module import time.
+# split/meta-fix/gptsovits paths never need torch.
 from audio_utils import (emit, load_audio, save_audio, find_ffmpeg,
-                         convert_to_wav, trim_silence, fmt_time, fmt_srt_time, get_device)
+                         convert_to_wav, trim_silence, fmt_time, fmt_srt_time,
+                         get_device, patch_torchaudio)
 
 
 def main():
@@ -144,10 +112,12 @@ def main():
         tracks = []
         if args.mode == "music":
             emit("progress", percent=1, message="Demucs 엔진 로딩 중... (torch + demucs)")
+            patch_torchaudio()
             from music_worker import run_music_separation
             tracks = run_music_separation(args.input, args.output, args.model) or []
         elif args.mode == "conversation":
             emit("progress", percent=1, message="화자 분리 엔진 로딩 중... (torch + speechbrain)")
+            patch_torchaudio()
             from conversation_worker import run_conversation_separation
             emit("progress", percent=2, message="엔진 로딩 완료, 분리 시작")
             tracks = run_conversation_separation(args.input, args.output, args.n_speakers) or []

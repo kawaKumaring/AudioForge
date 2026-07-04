@@ -12,6 +12,49 @@ def emit(msg_type: str, **kwargs):
     print(json.dumps({"type": msg_type, **kwargs}, ensure_ascii=False), flush=True)
 
 
+_torchaudio_patched = False
+
+
+def patch_torchaudio():
+    """torchaudio 2.11 removed the soundfile backend and requires torchcodec DLLs
+    which are not available on this system. Patch torchaudio.load to fall back to
+    soundfile. Heavy (imports torch, 10-30s) — call only from torch-using code
+    paths, after a progress emit. Idempotent."""
+    global _torchaudio_patched
+    if _torchaudio_patched:
+        return
+    _torchaudio_patched = True
+
+    try:
+        import torchaudio
+        import soundfile as sf
+        import torch
+
+        _original_load = torchaudio.load
+
+        def _soundfile_load(uri, frame_offset=0, num_frames=-1, normalize=True,
+                            channels_first=True, format=None, buffer_size=4096, backend=None):
+            try:
+                return _original_load(uri, frame_offset=frame_offset, num_frames=num_frames,
+                                      normalize=normalize, channels_first=channels_first,
+                                      format=format, buffer_size=buffer_size, backend=backend)
+            except Exception:
+                # Fallback to soundfile
+                data, sr = sf.read(str(uri), dtype='float32',
+                                   start=frame_offset,
+                                   stop=frame_offset + num_frames if num_frames > 0 else None)
+                tensor = torch.from_numpy(data)
+                if tensor.dim() == 1:
+                    tensor = tensor.unsqueeze(0 if channels_first else 1)
+                elif channels_first and tensor.dim() == 2:
+                    tensor = tensor.T
+                return tensor, sr
+
+        torchaudio.load = _soundfile_load
+    except ImportError:
+        pass
+
+
 def load_audio(path):
     """Load audio with soundfile backend."""
     import soundfile as sf

@@ -12,7 +12,7 @@ Engine selection:
 
 import os
 import re
-from audio_utils import emit, get_device, find_ffmpeg
+from audio_utils import emit, get_device, find_ffmpeg, patch_torchaudio
 
 # ── Emotion definitions ──
 
@@ -125,6 +125,7 @@ class F5TTSEngine(TTSEngine):
     def load(self):
         if self._model is None:
             emit("progress", percent=10, message="F5-TTS 모델 로딩 중...")
+            patch_torchaudio()  # F5-TTS loads ref audio via torchaudio.load
             from f5_tts.api import F5TTS
             device = get_device(timeout_sec=10)
             self._model = F5TTS(device=device)
