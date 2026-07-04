@@ -148,17 +148,17 @@ export default function Options() {
                 ))}
               </div>
             )}
-            {/* Demucs model */}
+            {/* Music separation model */}
             {mode === 'music' && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
-                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Demucs</span>
-                {(['htdemucs', 'htdemucs_ft'] as const).map((m) => (
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>분리</span>
+                {([['htdemucs', '기본 4트랙'], ['htdemucs_ft', '고품질 4트랙'], ['roformer', '보컬 2트랙']] as const).map(([m, label]) => (
                   <button key={m} onClick={() => !disabled && setDemucsModel(m)} disabled={disabled} style={{
                     padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
                     fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
                     background: demucsModel === m ? 'var(--accent)' : 'transparent',
                     color: demucsModel === m ? '#fff' : 'var(--text-muted)'
-                  }}>{m === 'htdemucs' ? '기본' : '고품질'}</button>
+                  }}>{label}</button>
                 ))}
               </div>
             )}

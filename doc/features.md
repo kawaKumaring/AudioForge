@@ -3,10 +3,11 @@
 ## 모드 (5가지 사용자 모드 + 2 내부 모드)
 
 ### 1. 음악 분리 (`music`) — 보라색
-- **엔진**: Demucs htdemucs / htdemucs_ft (CUDA GPU 가속, CPU 폴백)
-- **출력**: 보컬, 드럼, 베이스, 기타 악기 4트랙
-- **옵션**: 무음 제거, 텍스트 변환, 한국어 번역, SRT 자막, 출력 포맷, Demucs 모델 선택
-- **부가**: 노래방 모드 (drums+bass+other 동시 재생)
+- **엔진**:
+  - Demucs htdemucs / htdemucs_ft → 보컬/드럼/베이스/기타 4트랙
+  - **BS-RoFormer (보컬 2트랙)**: SDR 12.97, Demucs보다 보컬 품질 우수 → 보컬/반주
+- **옵션**: 무음 제거, 텍스트 변환, 한국어 번역, SRT 자막, 출력 포맷, 분리 모델 선택
+- **부가**: 노래방 모드 (반주 트랙 재생)
 
 ### 2. 대화 분리 (`conversation`) — 시안색
 - **엔진**: Silero VAD + ECAPA-TDNN + 스펙트럴 클러스터링

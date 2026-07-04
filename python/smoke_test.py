@@ -172,6 +172,13 @@ def main():
             "mode": "music", "input": synth, "output": music_out, "model": "htdemucs"
         }, work_dir)
         record("music", "PASS" if ok else "FAIL", d)
+
+        rf_out = os.path.join(work_dir, "roformer_out")
+        os.makedirs(rf_out, exist_ok=True)
+        ok, d = _run_mode("music-roformer", {
+            "mode": "music", "input": synth, "output": rf_out, "model": "roformer"
+        }, work_dir)
+        record("music(RoFormer)", "PASS" if ok else "FAIL", d)
     else:
         record("music", "SKIP", "ffmpeg 없음")
 

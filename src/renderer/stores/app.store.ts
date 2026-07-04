@@ -14,7 +14,7 @@ interface AppState {
   whisperModel: 'small' | 'medium' | 'large-v3'
   whisperLang: string
   translateModel: '600m' | '1.3b'
-  demucsModel: 'htdemucs' | 'htdemucs_ft'
+  demucsModel: 'htdemucs' | 'htdemucs_ft' | 'roformer'
   nSpeakers: number
   status: 'idle' | 'loading' | 'processing' | 'done' | 'error'
   progress: number
@@ -42,7 +42,7 @@ interface AppState {
   setWhisperModel: (v: 'small' | 'medium' | 'large-v3') => void
   setWhisperLang: (v: string) => void
   setTranslateModel: (v: '600m' | '1.3b') => void
-  setDemucsModel: (v: 'htdemucs' | 'htdemucs_ft') => void
+  setDemucsModel: (v: 'htdemucs' | 'htdemucs_ft' | 'roformer') => void
   setNSpeakers: (v: number) => void
   setProcessing: () => void
   setProgress: (percent: number, message: string) => void

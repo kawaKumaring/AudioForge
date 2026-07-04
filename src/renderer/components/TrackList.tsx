@@ -3,7 +3,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { useAppStore } from '@/stores/app.store'
 
 const TRACK_STYLES: Record<string, { color: string; glow: string }> = {
-  vocals:    { color: '#a78bfa', glow: 'rgba(167,139,250,0.15)' },
+  vocals:      { color: '#a78bfa', glow: 'rgba(167,139,250,0.15)' },
+  instrumental:{ color: '#60a5fa', glow: 'rgba(96,165,250,0.12)' },
   drums:     { color: '#fbbf24', glow: 'rgba(251,191,36,0.12)' },
   bass:      { color: '#34d399', glow: 'rgba(52,211,153,0.12)' },
   other:     { color: '#60a5fa', glow: 'rgba(96,165,250,0.12)' },

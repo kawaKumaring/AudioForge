@@ -115,10 +115,15 @@ def main():
         # ── Separation modes (music / conversation) ──
         tracks = []
         if args.mode == "music":
-            emit("progress", percent=1, message="Demucs 엔진 로딩 중... (torch + demucs)")
-            patch_torchaudio()
-            from music_worker import run_music_separation
-            tracks = run_music_separation(args.input, args.output, args.model) or []
+            if args.model == "roformer":
+                emit("progress", percent=1, message="RoFormer 보컬 분리 엔진 로딩 중...")
+                from music_worker import run_roformer_separation
+                tracks = run_roformer_separation(args.input, args.output) or []
+            else:
+                emit("progress", percent=1, message="Demucs 엔진 로딩 중... (torch + demucs)")
+                patch_torchaudio()
+                from music_worker import run_music_separation
+                tracks = run_music_separation(args.input, args.output, args.model) or []
         elif args.mode == "conversation":
             emit("progress", percent=1, message="화자 분리 엔진 로딩 중... (torch + speechbrain)")
             patch_torchaudio()

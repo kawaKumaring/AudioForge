@@ -1,5 +1,15 @@
 # AudioForge Changelog
 
+## 2026-07-05 — 품질 로드맵 §9-4 (RoFormer 보컬 분리)
+
+- 음악 분리에 BS-RoFormer(SDR 12.97) 보컬/반주 2트랙 옵션 추가
+- audio-separator+onnxruntime이 ComfyUI 환경에 이미 설치돼 있어 **환경 리스크 없음**
+  (§9-7 격리 우려 해소) — 새 venv/설치 불필요
+- music 모드 선택: 기본4트랙 / 고품질4트랙 / 보컬2트랙(RoFormer)
+- 모델 610MB는 externals/separator_models 캐싱(gitignore). 15초 ~5초(GPU)
+- 스모크 테스트에 music(RoFormer) 추가 → 7 PASS
+- TrackList에 instrumental(반주) 색상 추가
+
 ## 2026-07-05 — 품질 로드맵 §9-2 (번역 모델 선택)
 
 - NLLB 모델 선택 옵션 추가 (600M 기본 / 1.3B) — config/store/UI 배선, 캐시 무효화 처리
