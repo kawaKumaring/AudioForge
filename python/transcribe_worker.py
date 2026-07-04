@@ -42,6 +42,7 @@ def translate_to_korean(text: str, src_lang: str):
         return None
 
     from transformers import AutoModelForSeq2SeqLM, AutoTokenizer
+    import torch
 
     device = get_device(timeout_sec=10)
     model_name = "facebook/nllb-200-distilled-600M"
