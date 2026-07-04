@@ -200,7 +200,8 @@ def get_device(timeout_sec=10):
                 ok[0] = True
             except Exception:
                 pass
-        t = threading.Thread(target=_probe)
+        # daemon: CUDA가 응답 없이 멈춘 경우 프로브 스레드가 프로세스 종료를 막지 않도록
+        t = threading.Thread(target=_probe, daemon=True)
         t.start()
         t.join(timeout=timeout_sec)
         return "cuda" if ok[0] else "cpu"

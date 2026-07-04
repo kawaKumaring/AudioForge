@@ -93,12 +93,11 @@ export default function SplitEditor() {
       ).sort((a, b) => a.time - b.time))
     }
 
-    // Remove all previous listeners before adding new one
-    try { regions.un('region-updated') } catch {}
     regions.on('region-updated', handleUpdate)
 
     return () => {
-      try { regions.un('region-updated') } catch {}
+      // un(event)만 부르면 아무것도 해제되지 않음 — 핸들러를 명시해야 함
+      regions.un('region-updated', handleUpdate)
     }
   }, [markers])
 
