@@ -32,6 +32,30 @@ def _get_whisper_model(model_name="large-v3"):
     return _whisper_cache["model"]
 
 
+def _norm_lang(lang):
+    """Normalize a UI language value to a Whisper code or None (auto-detect)."""
+    if not lang or lang in ("auto", "none", ""):
+        return None
+    return lang
+
+
+def run_transcribe(model, audio_path, language=None):
+    """Whisper 전사 — 분리/무음이 많은 트랙의 환각을 억제한 공통 호출부.
+
+    condition_on_previous_text=False: 이전 문장을 조건으로 쓰지 않아 무음/연주
+    구간에서 같은 문장이 반복되는 대표적 환각을 억제한다.
+    language: None이면 자동 감지, 코드(예: 'ja')를 주면 강제 — 짧은 클립의
+    언어 오판(일본어 노래를 영어로 감지 등) 방지.
+    """
+    return model.transcribe(
+        audio_path,
+        language=_norm_lang(language),
+        task="transcribe",
+        verbose=False,
+        condition_on_previous_text=False,
+    )
+
+
 # NLLB max_length=512 대비: 한 문장이 이보다 길면 잘린 만큼 조용히 유실되므로
 # CJK 문장부호로도 분리하고, 그래도 긴 문장은 하드 청크로 나눈다 (CJK ≈ 1char/token)
 _MAX_SENT_CHARS = 400
@@ -128,13 +152,13 @@ def _save_transcription(result, audio_path, output_dir, do_srt=False, do_transla
 
 
 def transcribe_file(audio_path, output_dir, whisper_model_name="large-v3",
-                    do_translate=False, do_srt=False):
+                    do_translate=False, do_srt=False, whisper_lang=None):
     """Transcribe a single file (standalone mode)."""
     emit("progress", percent=10, message="Whisper 모델 로딩 중...")
     model = _get_whisper_model(whisper_model_name)
 
     emit("progress", percent=30, message="텍스트 변환 중...")
-    result = model.transcribe(audio_path, language=None, task="transcribe", verbose=False)
+    result = run_transcribe(model, audio_path, whisper_lang)
 
     emit("progress", percent=70, message="저장 중...")
     info = _save_transcription(result, audio_path, output_dir, do_srt, do_translate)
@@ -142,7 +166,7 @@ def transcribe_file(audio_path, output_dir, whisper_model_name="large-v3",
 
 
 def transcribe_tracks(tracks, output_dir, whisper_model_name="large-v3",
-                      do_translate=False, do_srt=False):
+                      do_translate=False, do_srt=False, whisper_lang=None):
     """Transcribe multiple tracks (post-processing). Model loaded once."""
     emit("progress", percent=94, message="Whisper 모델 로딩 중...")
     model = _get_whisper_model(whisper_model_name)
@@ -151,7 +175,7 @@ def transcribe_tracks(tracks, output_dir, whisper_model_name="large-v3",
         pct = 95 + int((i / max(len(tracks), 1)) * 4)
         emit("progress", percent=pct, message=f"텍스트 변환: {t['label']}")
 
-        result = model.transcribe(t["path"], language=None, task="transcribe", verbose=False)
+        result = run_transcribe(model, t["path"], whisper_lang)
 
         if do_translate:
             lang = result.get("language", "unknown")

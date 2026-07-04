@@ -37,6 +37,7 @@ def main():
     parser.add_argument("--transcribe", action="store_true")
     parser.add_argument("--output-format", default="wav")
     parser.add_argument("--whisper-model", default="large-v3")
+    parser.add_argument("--whisper-lang", default="")
     parser.add_argument("--translate", action="store_true")
     parser.add_argument("--srt", action="store_true")
     parser.add_argument("--split-points", default="")
@@ -57,6 +58,7 @@ def main():
         args.transcribe = config.get("transcribe", args.transcribe)
         args.output_format = config.get("outputFormat", args.output_format)
         args.whisper_model = config.get("whisperModel", args.whisper_model)
+        args.whisper_lang = config.get("whisperLang", args.whisper_lang)
         args.translate = config.get("translate", args.translate)
         args.srt = config.get("srt", args.srt)
         args.split_points = config.get("splitPoints", args.split_points)
@@ -150,7 +152,8 @@ def _post_process(args, tracks):
     # Whisper transcription
     if args.transcribe:
         from transcribe_worker import transcribe_tracks
-        transcribe_tracks(tracks, args.output, args.whisper_model, args.translate, args.srt)
+        transcribe_tracks(tracks, args.output, args.whisper_model, args.translate, args.srt,
+                          whisper_lang=getattr(args, "whisper_lang", ""))
 
     # Convert output format
     if args.output_format != "wav":
@@ -183,7 +186,8 @@ def _run_transcribe_only(args):
     emit("progress", percent=5, message="오디오 변환 중...")
     wav_path = convert_to_wav(args.input)
     try:
-        info = transcribe_file(wav_path, args.output, args.whisper_model, args.translate, args.srt)
+        info = transcribe_file(wav_path, args.output, args.whisper_model, args.translate, args.srt,
+                               whisper_lang=getattr(args, "whisper_lang", ""))
     finally:
         try:
             os.remove(wav_path)
@@ -228,7 +232,8 @@ def _run_track_process(args):
         w_model = whisper.load_model(args.whisper_model, device=device)
         emit("progress", percent=30, message="텍스트 추출 중...")
 
-        result = w_model.transcribe(args.input, language=None, task="transcribe", verbose=False)
+        from transcribe_worker import run_transcribe
+        result = run_transcribe(w_model, args.input, getattr(args, "whisper_lang", ""))
         text = result["text"].strip()
         language = result.get("language", "unknown")
 
