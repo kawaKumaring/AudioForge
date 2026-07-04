@@ -224,7 +224,7 @@ worker 간 상호 의존 없음, watchdog, GPU 타임아웃 폴백(`get_device`)
 | L-2 | 무음 감지 구현이 3벌 (클라이언트 RMS / ffmpeg silencedetect / trim_silence) — SplitEditor의 클라이언트 감지를 Python silencedetect 호출로 통일 검토 | SplitEditor.tsx:167 |
 | L-3 | 감정 정의가 TS/Python 두 곳에 중복 (라벨 오타 = 조용한 기본값 폴백) — Python이 단일 소스, config에 id만 전달하는 방향 | TTSEditor.tsx / tts_worker.py |
 | L-4 | requirements.txt 낡음: pyannote.audio(미사용) 기재, whisper/speechbrain/transformers/silero-vad/f5-tts/kokoro 누락 | python/requirements.txt |
-| L-5 | `audio:get-file-info`가 exec + 문자열 조립 — execFile 배열 인자로 교체 (따옴표 포함 파일명 방어) | audio.ipc.ts:56 |
+| ~~L-5~~ ✅ | `audio:get-file-info` exec→execFile 전환 완료 (833fff6) — 한글 경로 CP949 손상 실제 발생 확인 후 수정 | audio.ipc.ts |
 | L-6 | pythonPath 설정이 메모리에만 존재 — 재시작 시 초기화. userData JSON 1개로 영속화 | audio.ipc.ts:21 |
 | L-7 | `_kmeans` 난수 시드 없음 — 같은 파일도 실행마다 화자 분리 결과 변동. `np.random.default_rng(0)` 고정 검토 | conversation_worker.py:366 |
 | L-8 | HOP_SEC 주석 불일치 (docstring 0.75s, 코드 0.5s) | conversation_worker.py:11,102 |
