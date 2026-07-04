@@ -335,9 +335,11 @@ def _run_split(args):
                 emit("progress", percent=pct, message=f"{label} 추출 중...")
 
                 out_path = os.path.join(args.output, f"{name}.wav")
-                cmd = [ffmpeg, "-y", "-i", tmp_input, "-ss", str(start_sec)]
+                # 입력 시킹(-ss가 -i 앞): 매 트랙 처음부터 디코딩하지 않고 즉시 점프.
+                # 디코딩+재인코딩이므로 샘플 정확도 유지 (-to 대신 -t 구간길이 사용)
+                cmd = [ffmpeg, "-y", "-ss", str(start_sec), "-i", tmp_input]
                 if end_sec is not None:
-                    cmd.extend(["-to", str(end_sec)])
+                    cmd.extend(["-t", str(end_sec - start_sec)])
                 cmd.extend(["-acodec", "pcm_s16le", "-metadata", f"title={label}",
                             "-metadata", f"track={idx+1}/{total_tracks}",
                             "-metadata", f"album={source_name}", out_path])
@@ -437,9 +439,10 @@ def _run_split(args):
             emit("progress", percent=pct, message=f"{label} 추출 중...")
 
             out_path = os.path.join(args.output, f"{name}.wav")
-            cmd = [ffmpeg, "-y", "-i", tmp_input, "-ss", str(start_sec)]
+            # 입력 시킹(-ss가 -i 앞): 타임스탬프 모드와 동일한 최적화
+            cmd = [ffmpeg, "-y", "-ss", str(start_sec), "-i", tmp_input]
             if end_sec is not None:
-                cmd.extend(["-to", str(end_sec)])
+                cmd.extend(["-t", str(end_sec - start_sec)])
             cmd.extend(["-acodec", "pcm_s16le", "-metadata", f"title={label}",
                         "-metadata", f"track={idx+1}/{total_tracks}",
                         "-metadata", f"album={source_name}", out_path])
