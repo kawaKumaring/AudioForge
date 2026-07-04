@@ -1,62 +1,80 @@
-# TTS 음성 합성 설치/개발 가이드 (미완료)
+# TTS 음성 합성 설치/개발 가이드
 
-## 현재 상태: 개발 중
+## 현재 상태: GPT-SoVITS 한국어 합성 작동 (2026-07-05)
 
 ### 작동하는 것
+- **GPT-SoVITS**: 한국어/일본어/중국어/영어 + 음성 클로닝 (참조 음성 필요) — **주력 엔진**
+  - 격리 venv(`externals/gptsovits_venv`)에서 실행, v2 모델
+  - 참조 음성을 Whisper로 자동 전사(prompt_text)해 클로닝 품질 향상
+  - 참조 전사 실패 시 ref-free 모드로 자동 폴백
 - **F5-TTS**: 영어 음성 합성 + 음성 클로닝 (참조 음성 필요)
-- **Kokoro**: 일본어, 중국어, 영어 (한국어 미지원)
-- **엔진 추상화 구조**: TTSEngine 베이스 클래스, 엔진별 자동 선택
+- **Kokoro**: 일본어, 중국어, 영어 (보이스팩)
+- **엔진 추상화**: 언어별 자동 선택 (ko/ja → GPT-SoVITS, zh → Kokoro, en → F5)
 
-### 미완료
-- **GPT-SoVITS**: 한국어 음성 합성 — 의존성 빌드 문제로 보류
-- **한국어 TTS**: 현재 한국어를 제대로 합성할 수 있는 엔진 없음
+## GPT-SoVITS 셋업 (신규 환경 재현)
 
-## GPT-SoVITS 설치 방법 (이후 진행)
+**venv와 pretrained_models는 gitignore 대상(수 GB)** 이라 버전 관리에서 빠진다.
+새 환경에서는 `python/setup_gptsovits.py`로 재현한다:
 
-### 전제 조건
-1. **Visual Studio Build Tools** 설치 필수
-   - https://visualstudio.microsoft.com/ko/visual-cpp-build-tools/
-   - "C++ 빌드 도구" 워크로드 선택
-   - cmake, MSVC 컴파일러 포함
-
-### 설치 순서
-1. Visual Studio Build Tools 설치
-2. GPT-SoVITS venv 의존성 재설치:
-   ```bash
-   cd E:/AI_Project/claudeCodeVsCode/AudioForge
-   externals/gptsovits_venv/Scripts/python.exe -m pip install -r externals/GPT-SoVITS/requirements.txt
-   ```
-3. 빌드 실패했던 패키지:
-   - `jieba_fast`: C 확장 필요 (또는 소스 코드에서 jieba로 전부 교체)
-   - `pyopenjtalk`: cmake + C++ 컴파일러 필요 (일본어 TTS용, 한국어에는 불필요할 수 있음)
-4. GPT-SoVITS 사전학습 모델 다운로드 (추론에 필요)
-
-### 현재 파일 구조
-```
-externals/
-├── GPT-SoVITS/          ← git clone 완료 (repo)
-│   └── GPT_SoVITS/      ← 핵심 코드
-├── gptsovits_venv/       ← Python 3.12 venv (torch 2.11+cu130 설치됨)
-│   └── Lib/site-packages/ ← transformers 4.50, 기타 의존성 설치됨
+```bash
+# 전제: externals/gptsovits_venv (torch/transformers/g2pk2 설치됨),
+#       externals/GPT-SoVITS (repo clone)
+python setup_gptsovits.py             # 패키지 + shim + 모델 다운로드 전체
+python setup_gptsovits.py --no-models # shim/패키지만
 ```
 
-### 의존성 충돌 정보
-| 패키지 | 메인 환경 (ComfyUI) | GPT-SoVITS venv |
-|--------|---------------------|-----------------|
-| transformers | 5.3.0 | 4.50.0 |
-| numpy | 1.26.4 (공유 가능) | 1.26.4 |
-| torch | 2.11.0+cu130 (공유) | 2.11.0+cu130 |
+셋업 스크립트가 하는 일:
+1. **python-mecab-ko 설치** (프리빌트 cp312 휠 — MSVC 빌드 불필요)
+2. **jieba_fast → jieba shim** 생성 (중국어 프론트엔드가 jieba_fast를 import하나
+   C 확장 빌드 필요 → 순수 파이썬 jieba로 리다이렉트)
+3. **eunjeon → python-mecab-ko shim** 생성 (한국어 g2p(g2pk2)가 Windows에서
+   eunjeon.Mecab을 요구하나 MSVC 빌드 필요 → python-mecab-ko로 리다이렉트)
+4. **v2 사전학습 모델 다운로드** (~1GB, HuggingFace `lj1995/GPT-SoVITS`):
+   - chinese-roberta-wwm-ext-large (622MB) — BERT
+   - chinese-hubert-base (181MB) — CNHuBERT
+   - gsv-v2final-pretrained/s1bert25hz-...ckpt (149MB) — GPT(t2s)
+   - gsv-v2final-pretrained/s2G2333k.pth (102MB) — SoVITS(vits)
 
-**반드시 별도 venv로 격리.** 메인 환경에 GPT-SoVITS 의존성 설치 금지.
+### VS Build Tools 불필요 (기존 가이드에서 바뀐 점)
+과거 가이드는 Visual Studio Build Tools로 jieba_fast/pyopenjtalk/eunjeon을 빌드하라
+했으나, **shim + 프리빌트 휠 방식으로 빌드 없이 해결**했다. pyopenjtalk(일본어)는
+GPT-SoVITS 한국어 경로에서 불필요.
 
-### 코드 구조 (이미 구현됨)
-- `python/tts_worker.py`: GPTSoVITSEngine 클래스 정의됨
-- `python/gptsovits_bridge.py`: venv에서 실행되는 브릿지 스크립트
+## 핵심 기술 이슈와 해결
+
+### 1. torchcodec (AudioForge 공통 이슈)
+GPT-SoVITS가 `torchaudio.load`를 쓰는데 torchaudio 2.11은 torchcodec DLL을 요구.
+→ 브리지가 `audio_utils.patch_torchaudio()`(soundfile 폴백)를 TTS import 전에 적용.
+
+### 2. sys.path
+GPT-SoVITS 내부 모듈(AR, feature_extractor 등)은 `GPT_SoVITS/` 하위를 path에
+넣어야 잡힘. 브리지가 repo 루트 + `GPT_SoVITS` 둘 다 insert하고 repo 루트로 chdir
+(tts_infer.yaml/모델 경로가 cwd 기준 상대경로).
+
+### 3. run() 반환 형식
+`TTS.run()`은 `(sr, ndarray)` 튜플을 yield. (과거 브리지가 dict로 파싱하던 버그 수정)
+
+### 4. 언어 코드
+GPT-SoVITS는 `all_ko/all_ja/all_zh/en`(텍스트 전체를 한 언어로). 브리지가 매핑.
+`prompt_text`가 비면 자동 ref-free 모드.
+
+## 코드 구조
+- `python/tts_worker.py`: GPTSoVITSEngine (참조 전사 캐싱 + 브리지 subprocess 호출)
+- `python/gptsovits_bridge.py`: venv에서 실행되는 브리지 (JSON stdin/stdout)
+- `python/setup_gptsovits.py`: 재현용 셋업 (shim 생성 + 모델 다운로드)
 - UI: 엔진 선택 버튼 (자동/GPT-SoVITS/F5/Kokoro)
 
-### 이후 작업
-1. Visual Studio Build Tools 설치
-2. jieba_fast + pyopenjtalk 빌드
-3. GPT-SoVITS 사전학습 모델 다운로드
-4. gptsovits_bridge.py 추론 테스트
-5. 앱 통합 테스트
+## 의존성 격리 (필수)
+| 패키지 | 메인(ComfyUI) | GPT-SoVITS venv |
+|--------|---------------|-----------------|
+| transformers | 5.3.0 | 4.50.0 |
+| torch | 2.11.0+cu130 | 2.11.0+cu130 |
+| python-mecab-ko | (없음) | 1.3.7 (shim으로 eunjeon 대체) |
+
+**메인 환경에 GPT-SoVITS 의존성 설치 금지.** 반드시 별도 venv.
+
+## 남은 개선 (선택)
+- **세션형 브리지**: 현재 문장마다 브리지 subprocess를 새로 띄워 모델을 재로딩.
+  여러 문장 대본에서 느림. stdin으로 여러 요청을 받는 상주 프로세스로 개선 가능
+  (code-review §8에서 베타 확정 전 보류했으나, 이제 작동 확정됨 → 후보).
+- **청취 품질 검증**: 파이프라인은 검증됐으나 주관적 합성 품질은 사용자 청취 필요.

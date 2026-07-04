@@ -23,7 +23,8 @@
 | M-2 Gaussian 루프 벡터화 | ⏸ 보류 | 부동소수 합산 순서 변화 — 동일성 검증 체계 마련 후 |
 | L-1~L-11 | ⏸ 대기 | 기능 작업 없는 날 한 개씩 (L-4 requirements는 ✅) |
 | 9-1 Whisper 환각 대책 | ✅ 4b2f4b1 + 3b81f33 | condition_on_previous_text=False + 언어 강제 UI. VAD 사전필터는 보류(조용한 발화 손실 위험) |
-| 9-3 스모크 테스트 | ✅ (이번 커밋) | 6 PASS/1 SKIP, C-1 회귀 감지 확인 |
+| 9-3 스모크 테스트 | ✅ 7155178 | C-1 회귀 감지 확인. TTS 포함 시 7 PASS |
+| 9-5 GPT-SoVITS 완성 | ✅ (이번 커밋) | 한국어 합성 작동. shim(jieba_fast/eunjeon)+프리빌트 휠로 VS Build Tools 없이 해결, v2 모델 다운로드, 참조 전사(prompt_text). 스모크 tts PASS. **청취 품질은 사용자 검증 필요** |
 
 ---
 

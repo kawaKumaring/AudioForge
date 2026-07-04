@@ -190,6 +190,7 @@ class GPTSoVITSEngine(TTSEngine):
     def __init__(self):
         self._venv_python = None
         self._bridge_script = None
+        self._ref_text_cache = {}  # ref_audio 경로 → 전사 텍스트 (1회만)
 
     def load(self):
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -199,23 +200,43 @@ class GPTSoVITSEngine(TTSEngine):
         if not os.path.exists(self._venv_python):
             raise RuntimeError("GPT-SoVITS venv가 설치되지 않았습니다. externals/gptsovits_venv를 확인하세요.")
 
+    def _get_ref_text(self, ref_audio):
+        """참조 음성을 Whisper로 전사 → prompt_text (클로닝 품질↑).
+        실패하면 빈 문자열 반환 → 브리지가 ref-free 모드로 폴백."""
+        if ref_audio in self._ref_text_cache:
+            return self._ref_text_cache[ref_audio]
+        ref_text = ""
+        try:
+            from transcribe_worker import _get_whisper_model, run_transcribe
+            emit("progress", percent=8, message="참조 음성 전사 중... (클로닝 품질 향상)")
+            model = _get_whisper_model("small")
+            result = run_transcribe(model, ref_audio, None)
+            ref_text = (result.get("text") or "").strip()
+        except Exception:
+            ref_text = ""  # ref-free 폴백
+        self._ref_text_cache[ref_audio] = ref_text
+        return ref_text
+
     def synthesize_segment(self, text, ref_audio, emotion_id, speed, output_path):
         self.load()
         import subprocess, json, tempfile
 
+        ref_text = self._get_ref_text(ref_audio)
         config = {
             "ref_audio": ref_audio,
             "text": text,
             "output_path": output_path,
             "language": _detect_language(text),
             "speed": speed,
+            "prompt_text": ref_text,
+            "prompt_lang": _detect_language(ref_text) if ref_text else _detect_language(text),
         }
 
         result = subprocess.run(
             [self._venv_python, "-X", "utf8", "-u", self._bridge_script],
             input=json.dumps(config, ensure_ascii=False),
             capture_output=True, text=True, encoding="utf-8", errors="replace",
-            timeout=120
+            timeout=300  # 첫 모델 로딩 + CPU 폴백 대비
         )
 
         if result.returncode != 0:

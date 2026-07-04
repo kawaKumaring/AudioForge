@@ -1,5 +1,24 @@
 # AudioForge Changelog
 
+## 2026-07-05 — 품질 로드맵 §9-1/§9-3/§9-5
+
+### 9-1 Whisper 환각 대책
+- condition_on_previous_text=False로 분리/무음 트랙의 반복 환각 억제
+- 언어 강제 옵션(자동/한국어/영어/일본어/중국어) UI + config 배선
+
+### 9-3 스모크 테스트 (python/smoke_test.py)
+- 6개 모드 + 번역 경로를 result까지 검증, C-1 회귀 감지 설계
+
+### 9-5 GPT-SoVITS 한국어 TTS 완성
+- **VS Build Tools 없이 해결**: jieba_fast→jieba shim, eunjeon→python-mecab-ko shim
+  (프리빌트 cp312 휠), 둘 다 격리 venv에 생성
+- v2 사전학습 모델 다운로드(~1GB), 재현용 python/setup_gptsovits.py 작성
+- 브리지 재작성: torchaudio soundfile 패치, sys.path/chdir 정리,
+  run() (sr,ndarray) 튜플 파싱 버그 수정, all_ko 언어 매핑
+- 참조 음성 Whisper 자동 전사(prompt_text)로 클로닝 품질 향상 + ref-free 폴백
+- 검증: 스모크 tts PASS (7/7). 청취 품질은 사용자 검증 필요
+- tts-setup-guide.md 전면 갱신
+
 ## 2026-07-05 — 리뷰 후속 수정 12건 (커밋별 1건 + 테스트)
 
 ### Critical
