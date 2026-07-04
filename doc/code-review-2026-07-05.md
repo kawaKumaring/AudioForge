@@ -24,7 +24,7 @@
 | L-1~L-11 | ⏸ 대기 | 기능 작업 없는 날 한 개씩 (L-4 requirements는 ✅) |
 | 9-1 Whisper 환각 대책 | ✅ 4b2f4b1 + 3b81f33 | condition_on_previous_text=False + 언어 강제 UI. VAD 사전필터는 보류(조용한 발화 손실 위험) |
 | 9-3 스모크 테스트 | ✅ 7155178 | C-1 회귀 감지 확인. TTS 포함 시 7 PASS |
-| 9-5 GPT-SoVITS 완성 | ✅ (이번 커밋) | 한국어 합성 작동. shim(jieba_fast/eunjeon)+프리빌트 휠로 VS Build Tools 없이 해결, v2 모델 다운로드, 참조 전사(prompt_text). 스모크 tts PASS. **청취 품질은 사용자 검증 필요** |
+| 9-5 GPT-SoVITS 완성 | ✅ 파이프라인 / ⚠️ 품질 한계 | **한/영/중 출력 동작**(VS Build Tools 없이 — shim+프리빌트 휠). 일본어 출력/참조는 pyopenjtalk 필요(빌드 부재로 보류, graceful fallback 구현). 청취 결과 speaker_b(분리 조각) 클로닝 품질 낮음 = 참조 음원 한계. **파인튜닝은 컴파일러 부재+데이터 부족(~20초 조각)으로 보류** — 상세 tts-setup-guide.md. 사용자 결정으로 TTS 여기서 정리 |
 
 ---
 
