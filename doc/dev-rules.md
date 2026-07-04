@@ -14,11 +14,24 @@
 3. 설치 후: 전체 기능 동작 확인 스크립트 실행
 ```
 
-### 1.3 기능 동작 확인 스크립트
-새 기능 추가/수정 후 반드시 실행:
+### 1.3 기능 동작 확인 스크립트 (스모크 테스트)
+새 기능 추가/수정 후 반드시 실행 — `python/smoke_test.py`:
 ```bash
-python separate.py --config test_config.json  # 각 모드별 테스트
+# 즉시 모드만 (split, meta-fix — torch 불필요, 수초)
+python smoke_test.py --quick
+
+# 전체 (split/meta-fix/번역/music/transcribe/conversation — 실제 샘플 자동 탐색)
+python smoke_test.py
+
+# TTS 포함 (참조 음성 지정, 느림)
+python smoke_test.py --tts path/to/reference.wav
 ```
+- Electron과 동일하게 JSON config → separate.py → stdout JSON으로 호출
+- 각 모드가 크래시 없이 `result`까지 도달하는지 확인 (결과 품질이 아니라 파이프라인 구동)
+- **번역(en→ko) 체크는 C-1(번역 torch NameError) 회귀 감지 전용** — 한국어 샘플은
+  조기 반환으로 이 경로를 안 타므로 비한국어 입력으로 torch 경로를 강제 통과시킴
+- 실제 음성 샘플은 `작업파일/` 폴더에서 자동 탐색 (없으면 해당 모드 SKIP)
+- 종료 코드 0=통과/스킵, 1=실패 → CI/커밋 훅에 연결 가능
 
 ## 2. 코드 수정 규칙
 

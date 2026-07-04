@@ -22,6 +22,8 @@
 | M-1 F5 ref_text | ⏸ 보류 | **청취 검증 필요** — 코드만으로 품질 판단 불가, 사용자 확인 후 진행 |
 | M-2 Gaussian 루프 벡터화 | ⏸ 보류 | 부동소수 합산 순서 변화 — 동일성 검증 체계 마련 후 |
 | L-1~L-11 | ⏸ 대기 | 기능 작업 없는 날 한 개씩 (L-4 requirements는 ✅) |
+| 9-1 Whisper 환각 대책 | ✅ 4b2f4b1 + 3b81f33 | condition_on_previous_text=False + 언어 강제 UI. VAD 사전필터는 보류(조용한 발화 손실 위험) |
+| 9-3 스모크 테스트 | ✅ (이번 커밋) | 6 PASS/1 SKIP, C-1 회귀 감지 확인 |
 
 ---
 
@@ -281,10 +283,13 @@ NLLB-600M distilled는 일→한 구어체·가사에서 품질 낮음. C-1/M-3 
 - 크게: LLM 번역 옵션 (로컬 또는 API). 가사·통화처럼 문맥 의존 큰 텍스트에서 격차 매우 큼.
   "NLLB(오프라인) / LLM(고품질)" 2택까지만 — 옵션 폭주 금지.
 
-### 9-3. 스모크 테스트 스크립트 — 도구 품질 최고 레버
-10초 고정 샘플로 6개 모드를 돌려 result JSON까지 확인하는 스크립트 (1-2시간).
-C-1(번역 전체 크래시)은 이런 스크립트가 있었다면 커밋 당일 잡혔다. dev-rules §1.3에
-명시만 되어 있고 실물이 없는 상태.
+### 9-3. 스모크 테스트 스크립트 — ✅ 완료 (python/smoke_test.py)
+합성/실제 샘플로 6개 모드 + 번역 경로를 돌려 result JSON까지 확인.
+Electron과 동일한 config→separate.py→stdout 방식으로 호출해 충실도 높음.
+- **번역(en→ko) 체크가 C-1 회귀를 실제로 감지**하도록 설계 (한국어 샘플은
+  조기 반환으로 torch 경로를 안 타므로 비한국어 입력 강제 — 시뮬레이션으로
+  C-1 재현 시 FAIL 확인 완료)
+- 사용법 dev-rules.md §1.3. 현재 6 PASS / 1 SKIP(tts, 참조음성 필요)
 
 ### 9-4. 보컬 분리 — Demucs보다 명확히 좋은 세대 존재
 BS-RoFormer / Mel-Band RoFormer 계열(`audio-separator` pip 패키지)이 보컬 SDR에서
