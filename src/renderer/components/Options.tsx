@@ -2,8 +2,8 @@ import { useState } from 'react'
 import { useAppStore } from '@/stores/app.store'
 
 export default function Options() {
-  const { mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, demucsModel, nSpeakers,
-    setTrimSilence, setSilenceGap, setTranscribe, setTranslate, setExportSrt, setOutputFormat, setWhisperModel, setWhisperLang, setDemucsModel, setNSpeakers, status } = useAppStore()
+  const { mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers,
+    setTrimSilence, setSilenceGap, setTranscribe, setTranslate, setExportSrt, setOutputFormat, setWhisperModel, setWhisperLang, setTranslateModel, setDemucsModel, setNSpeakers, status } = useAppStore()
   const disabled = status === 'processing'
   const [open, setOpen] = useState(false)
 
@@ -116,6 +116,20 @@ export default function Options() {
                     fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
                     background: whisperLang === code ? 'var(--cyan)' : 'transparent',
                     color: whisperLang === code ? '#fff' : 'var(--text-muted)'
+                  }}>{label}</button>
+                ))}
+              </div>
+            )}
+            {/* Translation model (shown when translate on) */}
+            {translate && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>번역</span>
+                {([['600m', '600M'], ['1.3b', '1.3B']] as const).map(([v, label]) => (
+                  <button key={v} onClick={() => !disabled && setTranslateModel(v)} disabled={disabled} style={{
+                    padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                    fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
+                    background: translateModel === v ? 'var(--emerald)' : 'transparent',
+                    color: translateModel === v ? '#fff' : 'var(--text-muted)'
                   }}>{label}</button>
                 ))}
               </div>

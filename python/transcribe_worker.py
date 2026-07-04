@@ -14,8 +14,22 @@ LANG_TO_NLLB = {
     "hi": "hin_Deva", "bn": "ben_Beng", "ta": "tam_Taml", "uk": "ukr_Cyrl",
 }
 
-# NLLB model cache
-_nllb_cache = {"model": None, "tokenizer": None, "src_lang": None}
+# NLLB 모델 선택: 600M(기본, 가벼움) / 1.3B(고품질, ~5GB·VRAM↑)
+_NLLB_MODELS = {
+    "600m": "facebook/nllb-200-distilled-600M",
+    "1.3b": "facebook/nllb-200-distilled-1.3B",
+}
+_DEFAULT_NLLB = _NLLB_MODELS["600m"]
+
+# NLLB model cache (name = 현재 로드된 모델 이름)
+_nllb_cache = {"model": None, "tokenizer": None, "src_lang": None, "name": _DEFAULT_NLLB}
+
+
+def set_nllb_model(size):
+    """번역 모델 크기 지정 ('600m'/'1.3b'). 바뀌면 캐시 무효화."""
+    name = _NLLB_MODELS.get((size or "600m").lower(), _DEFAULT_NLLB)
+    if _nllb_cache.get("name") != name:
+        _nllb_cache.update({"model": None, "tokenizer": None, "src_lang": None, "name": name})
 
 # Whisper model cache
 _whisper_cache = {"model": None, "name": None}
@@ -95,9 +109,10 @@ def translate_to_korean(text: str, src_lang: str):
     import torch
 
     device = get_device(timeout_sec=10)
-    model_name = "facebook/nllb-200-distilled-600M"
+    model_name = _nllb_cache.get("name") or _DEFAULT_NLLB
 
     if _nllb_cache["model"] is None or _nllb_cache["src_lang"] != nllb_src:
+        emit("progress", percent=72, message=f"번역 모델 로딩 중... ({model_name.split('-')[-1]})")
         _nllb_cache["tokenizer"] = AutoTokenizer.from_pretrained(model_name, src_lang=nllb_src)
         if _nllb_cache["model"] is None:
             _nllb_cache["model"] = AutoModelForSeq2SeqLM.from_pretrained(model_name).to(device)

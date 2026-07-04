@@ -112,6 +112,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       whisperModel: options?.whisperModel || 'large-v3',
       whisperLang: options?.whisperLang || 'auto',
       translate: !!options?.translate,
+      translateModel: options?.translateModel || '600m',
       srt: !!options?.exportSrt,
       splitPoints: mode === 'split' && options?.splitMarkers ? (options.splitMarkers as number[]).join(',') : '',
       splitLabels: mode === 'split' && options?.splitLabels ? (options.splitLabels as string[]).join('|') : '',
@@ -177,7 +178,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
   })
 
   // Process individual track (transcribe/translate)
-  ipcMain.handle('audio:process-track', async (_event, trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean }) => {
+  ipcMain.handle('audio:process-track', async (_event, trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string }) => {
     if (trackRunner?.isRunning) {
       throw new Error('이미 처리 중인 트랙 작업이 있습니다')
     }
@@ -200,7 +201,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       output: outputDir,
       transcribe: !!options.transcribe,
       translate: !!options.translate,
-      srt: !!options.srt
+      srt: !!options.srt,
+      translateModel: options.translateModel || '600m'
     }
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
 
