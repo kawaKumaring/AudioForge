@@ -1,6 +1,26 @@
-torch>=2.6.0
-torchaudio>=2.6.0
+# 기준 환경: ComfyUI Python 3.12 (E:/AI/ComfyUI_windows_portable_python3.12/python_embeded)
+# 이 파일은 재설치용 참고 목록 — 실제 설치 버전은 doc/dev-rules.md §7 기준
+torch>=2.11.0
+torchaudio>=2.11.0
+# torchaudio는 Resample만 사용 (load/save는 soundfile — dev-rules §3.4)
 demucs>=4.0.0
-pyannote.audio>=3.3.0
-soundfile>=0.12.0
+# demucs: 음악 분리 (htdemucs / htdemucs_ft)
+speechbrain>=1.1.0
+# speechbrain: 화자 분리 (ECAPA-TDNN)
+openai-whisper
+# whisper: 텍스트 추출 (small/medium/large-v3)
+transformers>=5.0.0
+# transformers: NLLB-200 번역 + F5-TTS 의존
+soundfile>=0.13.0
+# soundfile: 모든 오디오 I/O의 기본
 numpy>=1.24.0
+f5-tts>=1.1.0
+# f5-tts: TTS 영어/보이스 클로닝
+kokoro
+# kokoro: TTS ko/ja/zh/en 폴백 엔진
+
+# 설치 불필요/금지 항목:
+# - silero-vad: torch.hub로 로딩 (pip 패키지 불필요)
+# - GPT-SoVITS: externals/gptsovits_venv 전용 격리 venv (이 환경에 설치 금지)
+# - torchcodec: 설치 금지 (ffmpeg shared DLL 필요 — dev-rules §3.4)
+# - pyannote.audio: 미사용 (화자 분리 품질 개선 후보 — code-review §9-6)

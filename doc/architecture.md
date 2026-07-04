@@ -3,43 +3,53 @@
 ## 전체 구조
 
 ```
-AudioForge/
+AudioForge/                      # (줄 수는 2026-07-05 기준)
 ├── python/                    # AI 백엔드 (Python 3.12 + CUDA)
-│   ├── separate.py  (486줄)   # CLI 엔트리포인트 + 라우팅 + 후처리
-│   ├── audio_utils.py (155줄) # I/O, ffmpeg, 무음제거, 포맷 유틸
+│   ├── separate.py  (~580줄)  # CLI 엔트리포인트 + 라우팅 + split/meta-fix
+│   ├── audio_utils.py (~230줄)# I/O, ffmpeg, 무음제거, torchaudio 패치, 유틸
 │   ├── music_worker.py (70줄) # Demucs 음악 분리
-│   ├── conversation_worker.py (377줄) # 화자 분리 (VAD+ECAPA+클러스터링)
-│   └── transcribe_worker.py (139줄)   # Whisper 텍스트 + NLLB 번역
+│   ├── conversation_worker.py (~385줄) # 화자 분리 (VAD+ECAPA+클러스터링)
+│   ├── transcribe_worker.py (~165줄)   # Whisper 텍스트 + NLLB 번역
+│   ├── tts_worker.py (~420줄) # TTS 엔진 추상화 (F5/Kokoro/GPT-SoVITS) + 감정 50개
+│   └── gptsovits_bridge.py (87줄) # GPT-SoVITS 격리 venv 브리지 (stdin JSON)
+├── externals/
+│   ├── GPT-SoVITS/            # GPT-SoVITS 소스 (베타)
+│   └── gptsovits_venv/        # 전용 격리 venv (ComfyUI 환경 오염 방지)
 ├── src/
 │   ├── main/
 │   │   ├── index.ts           # Electron 메인 프로세스
 │   │   ├── ipc/
-│   │   │   └── audio.ipc.ts (297줄) # 모든 IPC 핸들러
+│   │   │   └── audio.ipc.ts (~370줄) # 모든 IPC 핸들러 (runner + trackRunner)
 │   │   └── services/
-│   │       └── python-runner.ts (122줄) # Python 프로세스 관리
+│   │       └── python-runner.ts (~145줄) # Python 프로세스 관리 (라인 버퍼링)
 │   ├── preload/
-│   │   └── index.ts (53줄)    # contextBridge API
+│   │   └── index.ts (~60줄)   # contextBridge API
 │   ├── renderer/
-│   │   ├── App.tsx (156줄)    # 메인 레이아웃 (초기/작업 화면 분기)
+│   │   ├── App.tsx (157줄)    # 메인 레이아웃 (초기/작업 화면 분기)
 │   │   ├── components/
 │   │   │   ├── DropZone.tsx (229줄)     # 파일 드래그앤드롭
-│   │   │   ├── ModeSelector.tsx (65줄)  # 4개 모드 탭 선택
+│   │   │   ├── ModeSelector.tsx (70줄)  # 5개 모드 탭 선택
 │   │   │   ├── Options.tsx (142줄)      # 접이식 옵션 패널
-│   │   │   ├── SplitEditor.tsx (392줄)  # 트랙 분할 에디터 (파형+마커)
-│   │   │   ├── ProcessButton.tsx (91줄) # 시작/취소 + 시간 예측
-│   │   │   ├── ProgressBar.tsx (38줄)   # 진행률
-│   │   │   ├── Waveform.tsx (69줄)      # wavesurfer.js 파형
-│   │   │   └── TrackList.tsx (289줄)    # 결과 트랙 + 재생/가사/번역
+│   │   │   ├── SplitEditor.tsx (364줄)  # 트랙 분할 에디터 (파형+마커)
+│   │   │   ├── TTSEditor.tsx (~285줄)   # TTS 대사/감정/엔진 편집기
+│   │   │   ├── ProcessButton.tsx (104줄)# 시작/취소 + 시간 예측
+│   │   │   ├── ProgressBar.tsx (61줄)   # 진행률
+│   │   │   ├── Waveform.tsx (82줄)      # wavesurfer.js 파형 (모드별 색상)
+│   │   │   └── TrackList.tsx (~300줄)   # 결과 트랙 + 재생/가사/번역
 │   │   ├── stores/
-│   │   │   └── app.store.ts (86줄)      # Zustand 전역 상태
+│   │   │   └── app.store.ts (96줄)      # Zustand 전역 상태
 │   │   └── styles/
 │   │       └── globals.css              # CSS 변수 + 장식 클래스
 │   └── shared/
 │       └── types.ts (40줄)              # 공유 타입 정의
 └── doc/                        # 문서
-    ├── architecture.md          # 이 파일
-    ├── features.md              # 기능 현황
-    ├── changelog.md             # 변경 이력
+    ├── architecture.md           # 이 파일
+    ├── features.md               # 기능 현황
+    ├── changelog.md              # 변경 이력
+    ├── dev-rules.md              # 필수 개발 규칙
+    ├── dev-guide.md              # 회고 + 교훈 (버그 목록은 종결됨)
+    ├── code-review-2026-07-05.md # 전수 리뷰 + 수정/품질 로드맵 (버그 단일 소스)
+    ├── tts-setup-guide.md        # GPT-SoVITS 셋업 (베타)
     └── tailwind-v4-layout-bug.md # Tailwind v4 레이아웃 버그 기록
 ```
 
@@ -91,26 +101,22 @@ separate.py (라우팅 + 후처리)
 
 **규칙**: worker 간 상호 의존 없음. audio_utils만 공유.
 
-## 알려진 구조 문제 (향후 개선 대상)
+## 알려진 구조 문제 (2026-07-05 리뷰 반영)
 
-### 1. separate.py에 split/meta-fix/track-process 로직이 남아있음 (486줄)
-- `_run_split`: 170줄 — 타임스탬프 분할 + 자동감지 + ffmpeg 추출
-- `_run_track_process`: 60줄 — 개별 트랙 Whisper/번역
-- `_run_meta_fix`: 40줄 — 메타데이터 재적용
-- **계획**: split_worker.py로 분리 예정이나, 한 파일씩 테스트 후 진행 필요
+### 1. separate.py에 split/meta-fix 로직이 남아있음
+- `_run_split` 타임스탬프/자동감지 경로에 추출 루프 ~70줄 중복 (code-review L-1)
+- **판단**: 파일 분리는 현 규모에서 실익보다 회귀 위험이 큼 — 중복 함수 추출만 대기,
+  파일 분리는 실제 고통이 생길 때까지 보류 (code-review §8 '하지 말 것')
 
-### 2. audio.ipc.ts가 7개 핸들러를 모두 포함 (297줄)
-- process, process-track, cancel, restore-from-folder, export-tracks, select-file, get-file-info 등
-- **계획**: track.ipc.ts로 분리 예정
+### 2. audio.ipc.ts / SplitEditor.tsx 분리 계획 — 보류로 확정
+- 과거 "분리 예정"이었으나 2026-07-05 리뷰에서 보류 결정 (같은 근거)
 
-### 3. SplitEditor.tsx가 과도하게 큼 (392줄)
-- 파형 관리 + 마커 관리 + 타임스탬프 파서 + 자동감지 + UI가 한 컴포넌트
-- **계획**: 타임스탬프 파서를 utils로 분리, 클라이언트 자동감지는 이미 ffmpeg으로 대체되어 제거 가능
+### 3. 무음 감지 구현 3벌 중복 (code-review L-2)
+- SplitEditor 클라이언트 RMS / Python ffmpeg silencedetect / audio_utils.trim_silence
+- **계획**: 클라이언트 감지를 Python silencedetect 호출로 통일 검토
 
-### 4. conversation_worker.py에서 try/except ImportError 보호가 제거됨
-- 6416d19 커밋에서 "이중 import 정리" 시 실수로 제거
-- 함수 상단의 import 실패 시 적절한 에러 메시지 없이 크래시
-- **수정 필요**: 에러 처리 복구
+### 4. ~~conversation_worker ImportError 보호 제거~~ — 해결됨
+- torch/numpy는 try/except 복구, 나머지는 separate.py 최상위 except가 emit("error") 처리
 
 ## 개발 규칙
 

@@ -1,5 +1,31 @@
 # AudioForge Changelog
 
+## 2026-07-05 — 리뷰 후속 수정 12건 (커밋별 1건 + 테스트)
+
+### Critical
+- **번역 torch import 누락 복구** (C-1): 번역 옵션 100% 크래시 해소
+- **stdout JSON 라인 버퍼링** (C-3): 64KB 청크 분할로 result 유실 → 99% 멈춤 증상 방지. StringDecoder로 한글 분할도 방어. 1MB JSON 통합 테스트
+- **TTS 엔진 캐싱** (C-2): 문장마다 모델 재로딩(10문장=10회) → 1회. Kokoro `or True` 제거
+
+### High
+- **track-process config화** (H-1): 한글 경로 spawn 인자 마지막 잔존 경로 제거
+- **torchaudio 패치 지연 로딩** (H-2): 전 모드 시작 시 torch 10-30초 로딩 제거 (split 모드 e2e 0.78초)
+- **trackRunner 수명 관리 + audio:track-error 채널** (H-3): 가사/번역 버튼 '처리 중' 고착/연타 누적/취소 불가 해소 (구 BUG-5/6 종결)
+
+### Medium
+- **NLLB CJK 문장 분리 + 400자 하드 청크** (M-3): 일본어 번역 조용한 유실 차단
+- **TTSEditor 상태 store 초기화** (M-6): 모드 전환 시 대사 유실 방지
+- **ffmpeg 실패 감지** (M-5): 손상 파일/디스크 부족 시 '완료!' 대신 명확한 에러
+- **SplitEditor 리스너 정확 해제** (M-7) + **get_device daemon 스레드** (M-8)
+- **트랙 분할 입력 시킹** (M-4): 곡마다 처음부터 디코딩 제거 (10.000s/42.459s 정확 검증)
+- **화자 분리 루프 불변 최적화** (M-2 안전 부분): 중심 재계산 제거 + O(1) 인덱스 (통화 52초 e2e 검증)
+
+### 문서/환경
+- requirements.txt 실사용 기준 재작성 (pyannote 제거, whisper/speechbrain/f5-tts/kokoro 추가)
+- architecture.md 현행화 (TTS 계층 반영, 구조 문제 목록 갱신)
+- dev-guide.md 구버그 6건 종결 표기 — 버그 단일 소스는 code-review-2026-07-05.md
+- 보류 항목: M-1(F5 ref_text — 청취 검증 필요), M-2 벡터화(동일성 검증 체계 필요), L-1~11
+
 ## 2026-07-05 — 전체 코드 리뷰 (4,330줄 전수)
 
 - **doc/code-review-2026-07-05.md 작성**: Critical 3건(번역 torch NameError, TTS 문장별 모델 재로딩, stdout JSON 라인 버퍼링 부재) + High 3건 + Medium 8건 + Low 11건, 수정 우선순위 로드맵 포함

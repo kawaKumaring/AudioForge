@@ -57,7 +57,12 @@
 - split_worker.py 분리 시도 → 테스트 없이 진행하여 기능 고장 → 롤백
 - **규칙**: 한 파일씩 분리 → 테스트 → 커밋. 한번에 여러 파일 금지
 
-## 3. 현재 잔존 버그 (6건)
+## 3. 현재 잔존 버그 (6건) — ⚠️ 2026-07-05 기준 전부 종결
+
+> **이 목록은 역사 기록으로만 유지.** 2026-07-05 전수 리뷰에서 재검증한 결과:
+> BUG-1/3 이미 수정됨, BUG-2 사실상 해결(최상위 except가 처리), BUG-4 무효
+> (createSafePaths가 config 방식으로 대체되며 소멸), BUG-5/6 당일 수정 완료.
+> **현재 유효한 버그/개선 목록은 `code-review-2026-07-05.md`가 단일 소스.**
 
 ### BUG-1 [Critical] auto-detect split에서 datetime import 누락
 - **위치**: `separate.py` 라인 326-399
@@ -150,7 +155,10 @@ ProcessButton.handleProcess()
 | 5 | BUG-5: trackRunner 정리 | 10분 | 취소 불가 + 누수 |
 | 6 | BUG-6: listener leak | 5분 | 마이너 |
 
-## 7. 코드 현황 (3296줄)
+## 7. 코드 현황 (3296줄) — ⚠️ TTS 추가 이전 시점
+
+> 2026-07-05 기준 실제 4,330줄 (tts_worker.py 411, TTSEditor.tsx 282,
+> gptsovits_bridge.py 87 등 TTS 계층 추가). 최신 구조는 architecture.md 참조.
 
 ### Python (1227줄)
 ```

@@ -3,6 +3,26 @@
 전수 리뷰 범위: `python/` 7파일 + `src/` 전체(main/preload/renderer) + `doc/` 8파일 = 소스 4,330줄.
 리뷰 방식: 전 파일 완독 + dev-guide.md 잔존 버그 6건 현재 코드 대조 검증.
 
+## 수정 현황 (리뷰 당일 처리 — 커밋별 1건, 각각 테스트 후 push)
+
+| 항목 | 상태 | 검증 |
+|------|:---:|------|
+| C-1 번역 torch import | ✅ 74978b1 | py_compile + AST 정적 검증 |
+| C-3 stdout 라인 버퍼링 | ✅ ad00b6c | 1MB 한글 JSON 통합 테스트 통과 |
+| H-1 track-process config화 | ✅ 9d8c9b5 | 빌드 + separate.py --config 경로 검증 |
+| C-2 TTS 엔진 캐싱 | ✅ 8370f52 | 캐싱/재사용/폴백 유닛 테스트 |
+| H-2 torchaudio 지연 로딩 | ✅ 8703ecc | import 0.01초·torch 미로딩 + split e2e 0.78초 |
+| H-3 trackRunner 수명 관리 | ✅ a1063a0 | 빌드 (BUG-5/6 해소) |
+| M-3 CJK 문장 분리 | ✅ 5d94eb8 | 유닛 테스트 6케이스 |
+| M-6 TTSEditor 상태 초기화 | ✅ abafc98 | 빌드 |
+| M-5 subprocess 실패 감지 | ✅ 1792635 | 손상 파일 → 에러 emit 확인 |
+| M-7 SplitEditor 리스너 / M-8 daemon | ✅ 738ef72 | 빌드 + py_compile |
+| M-4 ffmpeg 입력 시킹 | ✅ df8f68e | 분할 결과 10.000s/42.459s 정확 |
+| M-2 화자 분리 루프 불변 (안전 부분) | ✅ 745b25b | 실제 통화 52초 e2e — 2화자 분리 정상 |
+| M-1 F5 ref_text | ⏸ 보류 | **청취 검증 필요** — 코드만으로 품질 판단 불가, 사용자 확인 후 진행 |
+| M-2 Gaussian 루프 벡터화 | ⏸ 보류 | 부동소수 합산 순서 변화 — 동일성 검증 체계 마련 후 |
+| L-1~L-11 | ⏸ 대기 | 기능 작업 없는 날 한 개씩 (L-4 requirements는 ✅) |
+
 ---
 
 ## 1. 총평
