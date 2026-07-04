@@ -164,9 +164,12 @@ def _post_process(args, tracks):
                     continue
                 dst = src.replace(".wav", f".{args.output_format}")
                 cmd = [ffmpeg, "-y", "-i", src, *codec.get(args.output_format, []), dst]
-                subprocess.run(cmd, capture_output=True)
-                if os.path.exists(dst):
-                    t["path"] = dst
+                proc = subprocess.run(cmd, capture_output=True)
+                if proc.returncode != 0 or not os.path.exists(dst):
+                    # 변환 실패해도 결과는 살아있으므로 중단하지 않고 WAV 유지
+                    emit("progress", percent=98, message=f"{t['label']} {args.output_format.upper()} 변환 실패 — WAV 유지")
+                    continue
+                t["path"] = dst
 
     emit("progress", percent=99, message="완료!")
     emit("result", tracks=tracks, outputDir=args.output)
@@ -338,7 +341,11 @@ def _run_split(args):
                 cmd.extend(["-acodec", "pcm_s16le", "-metadata", f"title={label}",
                             "-metadata", f"track={idx+1}/{total_tracks}",
                             "-metadata", f"album={source_name}", out_path])
-                subprocess.run(cmd, capture_output=True)
+                proc = subprocess.run(cmd, capture_output=True)
+                if proc.returncode != 0 or not os.path.exists(out_path):
+                    stderr_tail = proc.stderr.decode("utf-8", errors="replace")[-300:]
+                    emit("error", message=f"'{label}' 추출 실패: {stderr_tail}")
+                    return
 
                 dur = (end_sec - start_sec) if end_sec else 0
                 meta = {
@@ -436,7 +443,11 @@ def _run_split(args):
             cmd.extend(["-acodec", "pcm_s16le", "-metadata", f"title={label}",
                         "-metadata", f"track={idx+1}/{total_tracks}",
                         "-metadata", f"album={source_name}", out_path])
-            subprocess.run(cmd, capture_output=True)
+            proc = subprocess.run(cmd, capture_output=True)
+            if proc.returncode != 0 or not os.path.exists(out_path):
+                stderr_tail = proc.stderr.decode("utf-8", errors="replace")[-300:]
+                emit("error", message=f"'{label}' 추출 실패: {stderr_tail}")
+                return
 
             dur = (end_sec - start_sec) if end_sec else 0
             meta = {
@@ -516,9 +527,11 @@ def _run_meta_fix(args):
         if ffmpeg and os.path.exists(new_path):
             tmp = new_path + ".tmp.wav"
             cmd = [ffmpeg, "-y", "-i", new_path, "-metadata", f"title={title}", "-metadata", f"track={meta.get('track_number', i+1)}/{total}", "-codec", "copy", tmp]
-            subprocess.run(cmd, capture_output=True)
-            if os.path.exists(tmp):
+            proc = subprocess.run(cmd, capture_output=True)
+            if proc.returncode == 0 and os.path.exists(tmp):
                 os.replace(tmp, new_path)
+            else:
+                emit("progress", percent=pct, message=f"태그 적용 실패 (파일은 유지): {new_file}")
 
         with open(meta_path, "w", encoding="utf-8") as f:
             json.dump(meta, f, ensure_ascii=False, indent=2)
