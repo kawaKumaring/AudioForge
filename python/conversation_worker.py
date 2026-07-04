@@ -136,7 +136,12 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
                 emb = encoder.encode_batch(chunk_tensor)
             window_embeddings.append((center_time, emb.squeeze().cpu().numpy()))
 
-        valid_windows = [(t, e) for t, e in window_embeddings if e is not None]
+        valid_windows = []
+        window_to_valid = {}  # window_embeddings 인덱스 → valid_windows 인덱스 (O(1) 매칭)
+        for wi, (t, e) in enumerate(window_embeddings):
+            if e is not None:
+                window_to_valid[wi] = len(valid_windows)
+                valid_windows.append((t, e))
         if len(valid_windows) < 2:
             emit("error", message="유효한 음성 윈도우가 부족합니다.")
             return []
@@ -187,28 +192,21 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
         speaker_scores = np.zeros((n_prob_frames, n_speakers), dtype=np.float64)
         speaker_weights = np.zeros(n_prob_frames, dtype=np.float64)
 
+        # 클러스터 중심은 루프 불변 — 윈도우마다 재계산하지 않고 1회만 계산
+        centroids = []
+        for c in range(n_speakers):
+            c_mask = best_labels == c
+            if c_mask.sum() > 0:
+                centroids.append(valid_embs_normed[c_mask].mean(axis=0))
+            else:
+                centroids.append(np.zeros(valid_embs_normed.shape[1]))
+
         for idx, (center_time, emb) in enumerate(window_embeddings):
             if emb is None:
                 continue
-            # Find this window's label
-            vi = None
-            for j, (vt, _) in enumerate(valid_windows):
-                if abs(vt - center_time) < 0.01:
-                    vi = j
-                    break
+            vi = window_to_valid.get(idx)
             if vi is None:
                 continue
-
-            spk = best_labels[vi]
-
-            # Compute confidence: cosine similarity to each cluster centroid
-            centroids = []
-            for c in range(n_speakers):
-                mask = best_labels == c
-                if mask.sum() > 0:
-                    centroids.append(valid_embs_normed[mask].mean(axis=0))
-                else:
-                    centroids.append(np.zeros(valid_embs_normed.shape[1]))
 
             emb_n = emb / max(np.linalg.norm(emb), 1e-8)
             confs = np.array([max(0, np.dot(emb_n, ctr)) for ctr in centroids])
