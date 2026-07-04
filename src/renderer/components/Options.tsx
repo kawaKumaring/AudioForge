@@ -2,8 +2,8 @@ import { useState } from 'react'
 import { useAppStore } from '@/stores/app.store'
 
 export default function Options() {
-  const { mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, demucsModel, nSpeakers,
-    setTrimSilence, setSilenceGap, setTranscribe, setTranslate, setExportSrt, setOutputFormat, setWhisperModel, setDemucsModel, setNSpeakers, status } = useAppStore()
+  const { mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, demucsModel, nSpeakers,
+    setTrimSilence, setSilenceGap, setTranscribe, setTranslate, setExportSrt, setOutputFormat, setWhisperModel, setWhisperLang, setDemucsModel, setNSpeakers, status } = useAppStore()
   const disabled = status === 'processing'
   const [open, setOpen] = useState(false)
 
@@ -103,6 +103,20 @@ export default function Options() {
                     background: whisperModel === m ? 'var(--cyan)' : 'transparent',
                     color: whisperModel === m ? '#fff' : 'var(--text-muted)'
                   }}>{m === 'large-v3' ? 'Large' : m.charAt(0).toUpperCase() + m.slice(1)}</button>
+                ))}
+              </div>
+            )}
+            {/* Whisper language (auto-detect vs forced) */}
+            {(transcribe || isTranscribeMode || isSplitMode) && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>언어</span>
+                {([['auto', '자동'], ['ko', '한국어'], ['en', '영어'], ['ja', '일본어'], ['zh', '중국어']] as const).map(([code, label]) => (
+                  <button key={code} onClick={() => !disabled && setWhisperLang(code)} disabled={disabled} style={{
+                    padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                    fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
+                    background: whisperLang === code ? 'var(--cyan)' : 'transparent',
+                    color: whisperLang === code ? '#fff' : 'var(--text-muted)'
+                  }}>{label}</button>
                 ))}
               </div>
             )}

@@ -110,6 +110,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       transcribe: !!(options?.transcribe || mode === 'transcribe'),
       outputFormat: options?.outputFormat || 'wav',
       whisperModel: options?.whisperModel || 'large-v3',
+      whisperLang: options?.whisperLang || 'auto',
       translate: !!options?.translate,
       srt: !!options?.exportSrt,
       splitPoints: mode === 'split' && options?.splitMarkers ? (options.splitMarkers as number[]).join(',') : '',

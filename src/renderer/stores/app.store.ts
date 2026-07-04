@@ -12,6 +12,7 @@ interface AppState {
   exportSrt: boolean
   outputFormat: 'wav' | 'mp3' | 'flac'
   whisperModel: 'small' | 'medium' | 'large-v3'
+  whisperLang: string
   demucsModel: 'htdemucs' | 'htdemucs_ft'
   nSpeakers: number
   status: 'idle' | 'loading' | 'processing' | 'done' | 'error'
@@ -38,6 +39,7 @@ interface AppState {
   setExportSrt: (v: boolean) => void
   setOutputFormat: (v: 'wav' | 'mp3' | 'flac') => void
   setWhisperModel: (v: 'small' | 'medium' | 'large-v3') => void
+  setWhisperLang: (v: string) => void
   setDemucsModel: (v: 'htdemucs' | 'htdemucs_ft') => void
   setNSpeakers: (v: number) => void
   setProcessing: () => void
@@ -59,6 +61,7 @@ export const useAppStore = create<AppState>((set) => ({
   exportSrt: false,
   outputFormat: 'wav' as const,
   whisperModel: 'large-v3' as const,
+  whisperLang: 'auto',
   demucsModel: 'htdemucs' as const,
   nSpeakers: 2,
   status: 'idle',
@@ -85,6 +88,7 @@ export const useAppStore = create<AppState>((set) => ({
   setExportSrt: (v) => set({ exportSrt: v }),
   setOutputFormat: (v) => set({ outputFormat: v }),
   setWhisperModel: (v) => set({ whisperModel: v }),
+  setWhisperLang: (v) => set({ whisperLang: v }),
   setDemucsModel: (v) => set({ demucsModel: v }),
   setNSpeakers: (v) => set({ nSpeakers: v }),
   setProcessing: () => set({ status: 'processing', progress: 0, progressMessage: '파일 준비 중...', error: null, tracks: [] }),
