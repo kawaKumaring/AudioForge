@@ -119,11 +119,14 @@ def translate_to_korean(text: str, src_lang: str):
     return " ".join(translated_parts)
 
 
-def _save_transcription(result, audio_path, output_dir, do_srt=False, do_translate=False):
-    """Save transcription results (txt, timestamps, srt, translation)."""
+def _save_transcription(result, audio_path, output_dir, do_srt=False, do_translate=False,
+                        base_name=None):
+    """Save transcription results (txt, timestamps, srt, translation).
+    base_name: 출력 파일 접두어. None이면 audio_path에서 유도 —
+    임시 변환 파일(converted.wav)을 넘길 때는 원본명을 명시해야 함."""
     text = result["text"].strip()
     language = result.get("language", "unknown")
-    base = os.path.splitext(os.path.basename(audio_path))[0]
+    base = base_name or os.path.splitext(os.path.basename(audio_path))[0]
 
     txt_path = os.path.join(output_dir, f"{base}.txt")
     with open(txt_path, "w", encoding="utf-8") as f:
@@ -152,8 +155,9 @@ def _save_transcription(result, audio_path, output_dir, do_srt=False, do_transla
 
 
 def transcribe_file(audio_path, output_dir, whisper_model_name="large-v3",
-                    do_translate=False, do_srt=False, whisper_lang=None):
-    """Transcribe a single file (standalone mode)."""
+                    do_translate=False, do_srt=False, whisper_lang=None, base_name=None):
+    """Transcribe a single file (standalone mode).
+    base_name: 출력 파일명 접두어 (임시 wav를 넘길 때 원본명 지정용)."""
     emit("progress", percent=10, message="Whisper 모델 로딩 중...")
     model = _get_whisper_model(whisper_model_name)
 
@@ -161,7 +165,7 @@ def transcribe_file(audio_path, output_dir, whisper_model_name="large-v3",
     result = run_transcribe(model, audio_path, whisper_lang)
 
     emit("progress", percent=70, message="저장 중...")
-    info = _save_transcription(result, audio_path, output_dir, do_srt, do_translate)
+    info = _save_transcription(result, audio_path, output_dir, do_srt, do_translate, base_name)
     return info
 
 

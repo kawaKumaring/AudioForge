@@ -185,9 +185,11 @@ def _run_transcribe_only(args):
 
     emit("progress", percent=5, message="오디오 변환 중...")
     wav_path = convert_to_wav(args.input)
+    # 출력 파일은 임시 wav(converted.wav)가 아니라 원본 이름으로 저장
+    orig_base = os.path.splitext(os.path.basename(args.input))[0]
     try:
         info = transcribe_file(wav_path, args.output, args.whisper_model, args.translate, args.srt,
-                               whisper_lang=getattr(args, "whisper_lang", ""))
+                               whisper_lang=getattr(args, "whisper_lang", ""), base_name=orig_base)
     finally:
         try:
             os.remove(wav_path)
