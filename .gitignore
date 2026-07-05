@@ -13,9 +13,9 @@ __pycache__/
 # Work files and outputs
 작업파일/
 
-# External dependencies (large, installed separately)
-externals/GPT-SoVITS/
-externals/gptsovits_venv/
+# External dependencies (large/generated, installed separately)
+# 클론·venv·모델·env.json 등 전부 setup 스크립트로 재현 (버전관리 제외)
+externals/
 
 # Environment
 .env

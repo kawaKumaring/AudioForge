@@ -2,7 +2,7 @@ import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { join, basename, dirname, extname } from 'path'
-import { existsSync, mkdirSync, unlinkSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync } from 'fs'
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
 
@@ -16,12 +16,28 @@ const FFPROBE_PATHS = [
   join(process.env.LOCALAPPDATA || '', 'Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.1-full_build/bin/ffprobe.exe')
 ]
 
-// Python path: use ComfyUI's Python 3.12 with CUDA + torch + demucs
+// AI 패키지가 설치된 Python을 참조 (의존 대상은 ComfyUI 앱이 아니라 그 패키지들).
+// 우선순위: externals/env.json(setup_env.py가 기록) → 하드코딩 기본값 → 시스템 python.
 const DEFAULT_PYTHON = 'E:/AI/ComfyUI_windows_portable_python3.12/python_embeded/python.exe'
+
+function resolvePythonPath(): string {
+  // 1. setup_env.py가 해석해 기록한 경로
+  try {
+    const cfg = join(__dirname, '..', '..', 'externals', 'env.json')
+    if (existsSync(cfg)) {
+      const p = JSON.parse(readFileSync(cfg, 'utf-8')).python
+      if (p && existsSync(p)) return p
+    }
+  } catch { /* fall through */ }
+  // 2. 하드코딩 기본값(ComfyUI 임베디드) — 있으면
+  if (existsSync(DEFAULT_PYTHON)) return DEFAULT_PYTHON
+  // 3. 시스템 python
+  return 'python'
+}
 
 let runner: PythonRunner | null = null
 let trackRunner: PythonRunner | null = null
-let pythonPath = existsSync(DEFAULT_PYTHON) ? DEFAULT_PYTHON : 'python'
+let pythonPath = resolvePythonPath()
 
 let cachedFfprobe: string | null = null
 
