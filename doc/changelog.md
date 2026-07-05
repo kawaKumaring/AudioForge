@@ -1,5 +1,17 @@
 # AudioForge Changelog
 
+## 2026-07-05 — 환경 탐지/설치 구조 + 의존성 프레이밍 정정
+
+- **프레이밍 정정**: 의존 대상은 ComfyUI 앱이 아니라 그 안에 설치된 AI 패키지들
+  (코드 전수 확인 — 쓰는 건 python.exe 경로뿐, API/노드/모델 미사용)
+- python/env_check.py: 환경 doctor (필수 패키지/ffmpeg/CUDA 점검, 단일 목록 소스)
+- python/setup_env.py: 파이썬 해석/설치 (attach 우선 → 없으면 전용 venv,
+  빌린 환경엔 자동설치 금지, env.json 기록)
+- audio.ipc.ts: 하드코딩 경로 → resolvePythonPath (env.json → 기본값 → 시스템)
+- .gitignore: externals/ 전체 무시 (venv·모델·env.json 머신별 자산)
+- doc/environment.md 신규: 의존성·해석 구조·이식성 체크리스트·한계
+- architecture/features/code-review 문서의 "ComfyUI 종속" 표현 정정
+
 ## 2026-07-05 — 품질 로드맵 §9-4 (RoFormer 보컬 분리)
 
 - 음악 분리에 BS-RoFormer(SDR 12.97) 보컬/반주 2트랙 옵션 추가

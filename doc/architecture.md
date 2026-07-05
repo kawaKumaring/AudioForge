@@ -5,7 +5,11 @@
 ```
 AudioForge/                      # (줄 수는 2026-07-05 기준)
 ├── python/                    # AI 백엔드 (Python 3.12 + CUDA)
-│   ├── separate.py  (~580줄)  # CLI 엔트리포인트 + 라우팅 + split/meta-fix
+│   ├── separate.py  (~590줄)  # CLI 엔트리포인트 + 라우팅 + split/meta-fix
+│   ├── env_check.py           # 환경 doctor (필수 패키지/ffmpeg/CUDA 점검)
+│   ├── setup_env.py           # 파이썬 해석/설치 (attach 우선, 없으면 전용 venv)
+│   ├── setup_gptsovits.py     # GPT-SoVITS 전용 venv 재현 (shim+모델)
+│   ├── smoke_test.py          # 모드별 스모크 테스트
 │   ├── audio_utils.py (~230줄)# I/O, ffmpeg, 무음제거, torchaudio 패치, 유틸
 │   ├── music_worker.py (70줄) # Demucs 음악 분리
 │   ├── conversation_worker.py (~385줄) # 화자 분리 (VAD+ECAPA+클러스터링)
@@ -49,6 +53,7 @@ AudioForge/                      # (줄 수는 2026-07-05 기준)
     ├── dev-rules.md              # 필수 개발 규칙
     ├── dev-guide.md              # 회고 + 교훈 (버그 목록은 종결됨)
     ├── code-review-2026-07-05.md # 전수 리뷰 + 수정/품질 로드맵 (버그 단일 소스)
+    ├── environment.md            # 실행 환경/의존성/이식성 (ComfyUI 아닌 패키지 의존)
     ├── tts-setup-guide.md        # GPT-SoVITS 셋업 (베타)
     └── tailwind-v4-layout-bug.md # Tailwind v4 레이아웃 버그 기록
 ```

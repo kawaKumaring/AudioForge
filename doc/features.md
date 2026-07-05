@@ -95,7 +95,7 @@
 | 스타일 | Tailwind CSS v4 (장식만) + inline style (레이아웃) |
 | 오디오 시각화 | wavesurfer.js 7.x |
 | 빌드 | electron-vite 3.0 |
-| Python | ComfyUI Python 3.12 (torch 2.11 + CUDA 13.0) |
+| Python | CUDA Python 3.12 (torch 2.11 + CUDA) — 현재 ComfyUI 임베디드 파이썬 참조 (앱 아닌 패키지 의존, doc/environment.md) |
 | 음악 분리 | Demucs 4.0 (htdemucs / htdemucs_ft) |
 | 화자 분리 | speechbrain 1.1 (ECAPA-TDNN) + Silero VAD 6.2 |
 | 텍스트 | Whisper 20250625 (small/medium/large-v3) |
