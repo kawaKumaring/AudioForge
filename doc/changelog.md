@@ -1,5 +1,20 @@
 # AudioForge Changelog
 
+## 2026-07-24 — 품질 로드맵 §9-2 후속: 로컬 LLM 번역 백엔드 (Qwen2.5-3B)
+
+- 번역 백엔드에 로컬 LLM(Qwen2.5-3B-Instruct) 추가 — JA→KO 구어체·문맥 번역이 NLLB보다 나음
+- **환경 리스크 없음**: 이미 설치된 transformers(4.57.3, qwen2 지원)+torch를 그대로 재사용.
+  새 venv·빌드·설치 없음. 모델(~6GB)은 HF 캐시에 최초 1회 다운로드(NLLB와 동일 방식)
+- 백엔드만 교체하는 최소 변경: `translate_to_korean`을 디스패처로,
+  `_translate_nllb`(기존)/`_translate_llm`(신규)로 분리. `set_translate_model`이
+  config `translateModel` 값으로 라우팅('llm'/'qwen3b'→LLM, 그 외→NLLB 600m/1.3b)
+- LLM은 문장을 ~1200자 청크로 묶어 한 번에 번역(문맥 유지 + generate 호출 감소),
+  그리디 디코딩(결정적) + "번역문만 출력" 시스템 프롬프트
+- UI: 번역 셀렉터에 'LLM' 버튼 추가(600M/1.3B/LLM), hover 힌트로 특성·다운로드 용량 안내
+- **VRAM**: Qwen 3B(bf16 ~6GB) + Whisper(~3GB) 공존, 16GB 내 여유
+- 검증: py_compile + TS 빌드 + 디스패치 라우팅 6종(모델 로드 없음) + transformers 호환 확인.
+  **번역 품질은 실제 GPU 추론+청취로 사용자 검증 필요**(NLLB 1.3B 사례와 동일 원칙)
+
 ## 2026-07-05 — 환경 탐지/설치 구조 + 의존성 프레이밍 정정
 
 - **프레이밍 정정**: 의존 대상은 ComfyUI 앱이 아니라 그 안에 설치된 AI 패키지들

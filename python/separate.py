@@ -158,8 +158,8 @@ def _post_process(args, tracks):
 
     # Whisper transcription
     if args.transcribe:
-        from transcribe_worker import transcribe_tracks, set_nllb_model
-        set_nllb_model(getattr(args, "translate_model", "600m"))
+        from transcribe_worker import transcribe_tracks, set_translate_model
+        set_translate_model(getattr(args, "translate_model", "600m"))
         transcribe_tracks(tracks, args.output, args.whisper_model, args.translate, args.srt,
                           whisper_lang=getattr(args, "whisper_lang", ""))
 
@@ -189,8 +189,8 @@ def _post_process(args, tracks):
 def _run_transcribe_only(args):
     """Transcribe-only mode."""
     emit("status", message="텍스트 추출 모드", percent=0)
-    from transcribe_worker import transcribe_file, translate_to_korean, set_nllb_model
-    set_nllb_model(getattr(args, "translate_model", "600m"))
+    from transcribe_worker import transcribe_file, translate_to_korean, set_translate_model
+    set_translate_model(getattr(args, "translate_model", "600m"))
 
     emit("progress", percent=5, message="오디오 변환 중...")
     wav_path = convert_to_wav(args.input)
@@ -277,8 +277,8 @@ def _run_track_process(args):
             language = max(probs, key=probs.get)
 
         if language != "ko":
-            from transcribe_worker import translate_to_korean, set_nllb_model
-            set_nllb_model(getattr(args, "translate_model", "600m"))
+            from transcribe_worker import translate_to_korean, set_translate_model
+            set_translate_model(getattr(args, "translate_model", "600m"))
             emit("progress", percent=70, message=f"{language}→한국어 번역 중...")
             translated = translate_to_korean(text, language)
             if translated:

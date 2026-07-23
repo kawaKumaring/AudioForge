@@ -31,6 +31,31 @@ def set_nllb_model(size):
     if _nllb_cache.get("name") != name:
         _nllb_cache.update({"model": None, "tokenizer": None, "src_lang": None, "name": name})
 
+
+# ── 번역 백엔드 선택 (NLLB / 로컬 LLM) ──────────────────────────────────────
+# LLM 백엔드: 이미 설치된 transformers+torch를 그대로 재사용 (새 venv/빌드/설치 없음).
+# NLLB-600M보다 구어체·문맥 번역이 낫지만 느리고 VRAM을 더 쓴다. 기본은 NLLB 유지.
+_QWEN_MODEL = "Qwen/Qwen2.5-3B-Instruct"
+_LLM_BACKEND_VALUES = {"llm", "qwen", "qwen3b", "qwen2.5-3b"}
+_translate_backend = {"mode": "nllb"}
+
+# LLM 프롬프트용 소스 언어 한국어 이름 (없으면 코드 그대로)
+_LANG_KO_NAME = {
+    "ja": "일본어", "en": "영어", "zh": "중국어", "fr": "프랑스어", "de": "독일어",
+    "es": "스페인어", "it": "이탈리아어", "pt": "포르투갈어", "ru": "러시아어",
+    "th": "태국어", "vi": "베트남어", "id": "인도네시아어", "tr": "터키어",
+}
+
+
+def set_translate_model(value):
+    """번역 백엔드/모델 선택. 'llm'/'qwen3b' → 로컬 LLM, 그 외 → NLLB(600m/1.3b)."""
+    v = (value or "600m").lower()
+    if v in _LLM_BACKEND_VALUES:
+        _translate_backend["mode"] = "llm"
+    else:
+        _translate_backend["mode"] = "nllb"
+        set_nllb_model(v)
+
 # Whisper model cache
 _whisper_cache = {"model": None, "name": None}
 
@@ -97,10 +122,82 @@ def _split_sentences(text: str):
 
 
 def translate_to_korean(text: str, src_lang: str):
-    """Translate text to Korean using NLLB-200 with GPU acceleration."""
+    """소스 언어 텍스트를 한국어로 번역. 백엔드(NLLB/LLM)는 set_translate_model로 선택."""
     if src_lang == "ko":
         return text
+    if _translate_backend["mode"] == "llm":
+        return _translate_llm(text, src_lang)
+    return _translate_nllb(text, src_lang)
 
+
+# ── LLM 번역 백엔드 (Qwen2.5-3B-Instruct) ───────────────────────────────────
+_llm_cache = {"model": None, "tokenizer": None, "name": None}
+# 여러 문장을 한 번에 넘겨 문맥을 살리고 generate 호출 수를 줄인다 (CJK ≈ 1char/token)
+_LLM_CHUNK_CHARS = 1200
+
+
+def _get_llm(model_name):
+    """로컬 LLM 로드/재사용. transformers+torch(설치됨)만 사용 — 새 의존성 없음."""
+    import torch
+    from transformers import AutoModelForCausalLM, AutoTokenizer
+    if _llm_cache["model"] is None or _llm_cache["name"] != model_name:
+        device = get_device(timeout_sec=10)
+        emit("progress", percent=72,
+             message="LLM 번역 모델 로딩 중... (Qwen2.5-3B, 최초 1회 ~6GB 다운로드)")
+        tok = AutoTokenizer.from_pretrained(model_name)
+        model = AutoModelForCausalLM.from_pretrained(
+            model_name, torch_dtype=torch.bfloat16).to(device)
+        model.eval()
+        _llm_cache.update({"model": model, "tokenizer": tok, "name": model_name})
+    return _llm_cache["model"], _llm_cache["tokenizer"]
+
+
+def _llm_chunks(sentences):
+    """문장 리스트를 _LLM_CHUNK_CHARS 이하 블록으로 묶는다."""
+    chunks, cur, cur_len = [], [], 0
+    for s in sentences:
+        if cur and cur_len + len(s) > _LLM_CHUNK_CHARS:
+            chunks.append("\n".join(cur))
+            cur, cur_len = [], 0
+        cur.append(s)
+        cur_len += len(s) + 1
+    if cur:
+        chunks.append("\n".join(cur))
+    return chunks
+
+
+def _translate_llm(text: str, src_lang: str):
+    """로컬 LLM으로 한국어 번역. 그리디 디코딩(결정적) + 번역문만 추출."""
+    import torch
+    model, tok = _get_llm(_QWEN_MODEL)
+    device = next(model.parameters()).device
+    src_name = _LANG_KO_NAME.get(src_lang, src_lang)
+    system = ("당신은 전문 번역가입니다. 주어진 텍스트를 자연스러운 한국어 구어체로 "
+              "번역하세요. 줄바꿈 구조는 유지하고, 번역 결과만 출력하세요. "
+              "설명·주석·원문·따옴표를 덧붙이지 마세요.")
+
+    out_parts = []
+    for chunk in _llm_chunks(_split_sentences(text)):
+        messages = [
+            {"role": "system", "content": system},
+            {"role": "user", "content": f"다음 {src_name} 텍스트를 한국어로 번역:\n\n{chunk}"},
+        ]
+        prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = tok(prompt, return_tensors="pt").to(device)
+        with torch.no_grad():
+            gen = model.generate(**inputs, max_new_tokens=1024, do_sample=False,
+                                 repetition_penalty=1.05,
+                                 pad_token_id=tok.eos_token_id)
+        new_tokens = gen[0][inputs["input_ids"].shape[1]:]
+        out = tok.decode(new_tokens, skip_special_tokens=True).strip()
+        if out:
+            out_parts.append(out)
+
+    return "\n".join(out_parts) if out_parts else None
+
+
+def _translate_nllb(text: str, src_lang: str):
+    """Translate text to Korean using NLLB-200 with GPU acceleration."""
     nllb_src = LANG_TO_NLLB.get(src_lang)
     if not nllb_src:
         return None

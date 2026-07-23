@@ -13,7 +13,7 @@ interface AppState {
   outputFormat: 'wav' | 'mp3' | 'flac'
   whisperModel: 'small' | 'medium' | 'large-v3'
   whisperLang: string
-  translateModel: '600m' | '1.3b'
+  translateModel: '600m' | '1.3b' | 'llm'
   demucsModel: 'htdemucs' | 'htdemucs_ft' | 'roformer'
   nSpeakers: number
   status: 'idle' | 'loading' | 'processing' | 'done' | 'error'
@@ -41,7 +41,7 @@ interface AppState {
   setOutputFormat: (v: 'wav' | 'mp3' | 'flac') => void
   setWhisperModel: (v: 'small' | 'medium' | 'large-v3') => void
   setWhisperLang: (v: string) => void
-  setTranslateModel: (v: '600m' | '1.3b') => void
+  setTranslateModel: (v: '600m' | '1.3b' | 'llm') => void
   setDemucsModel: (v: 'htdemucs' | 'htdemucs_ft' | 'roformer') => void
   setNSpeakers: (v: number) => void
   setProcessing: () => void

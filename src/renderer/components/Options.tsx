@@ -124,8 +124,12 @@ export default function Options() {
             {translate && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>번역</span>
-                {([['600m', '600M'], ['1.3b', '1.3B']] as const).map(([v, label]) => (
-                  <button key={v} onClick={() => !disabled && setTranslateModel(v)} disabled={disabled} style={{
+                {([
+                  ['600m', '600M', 'NLLB-600M — 가볍고 빠름 (기본)'],
+                  ['1.3b', '1.3B', 'NLLB-1.3B — 더 큼 (효과 제한적)'],
+                  ['llm', 'LLM', 'Qwen2.5-3B 로컬 LLM — 구어체·문맥 번역, 느림·VRAM↑ (최초 1회 ~6GB 다운로드)'],
+                ] as const).map(([v, label, hint]) => (
+                  <button key={v} onClick={() => !disabled && setTranslateModel(v)} disabled={disabled} title={hint} style={{
                     padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
                     fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
                     background: translateModel === v ? 'var(--emerald)' : 'transparent',

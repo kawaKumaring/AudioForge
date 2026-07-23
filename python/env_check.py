@@ -30,7 +30,7 @@ REQUIRED = [
     ("audio-separator",  "audio_separator", "RoFormer 보컬 분리",    "core"),
     ("onnxruntime-gpu",  "onnxruntime",     "audio-separator 백엔드","core"),
     ("speechbrain",      "speechbrain",     "화자 분리(ECAPA)",      "core"),
-    ("transformers",     "transformers",    "NLLB 번역",             "core"),
+    ("transformers",     "transformers",    "NLLB/LLM 번역",         "core"),
     ("f5-tts",           "f5_tts",          "TTS(영어/클로닝)",      "tts"),
     ("kokoro",           "kokoro",          "TTS(다국어 폴백)",      "tts"),
     ("silero-vad",       "silero_vad",      "음성 검출(torch.hub도 가능)", "hub"),
