@@ -108,13 +108,10 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
         n_windows = max(1, (n_16k - win_samples) // hop_samples + 1)
         emit("progress", percent=18, message=f"슬라이딩 윈도우 분석: {n_windows}개 윈도우")
 
-        window_embeddings = []  # list of (center_time, embedding_or_None)
-
+        # Pass 1: 윈도우별 발화 청크 준비 (GPU 호출 없음)
+        EMB_BATCH = 32
+        window_meta = []  # (center_time, chunk_np or None)
         for w in range(n_windows):
-            if w % 20 == 0:
-                pct = 18 + int((w / n_windows) * 35)
-                emit("progress", percent=pct, message=f"임베딩 추출 중... ({w+1}/{n_windows})")
-
             start = w * hop_samples
             end = min(start + win_samples, n_16k)
             center_time = (start + end) / 2 / SR
@@ -122,19 +119,40 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
             # Check speech ratio in this window
             speech_ratio = speech_mask[start:end].mean()
             if speech_ratio < MIN_SPEECH_RATIO:
-                window_embeddings.append((center_time, None))
+                window_meta.append((center_time, None))
                 continue
 
             # Extract only the speech parts for cleaner embedding
             chunk = wav_16k_np[start:end].copy()
-            # Zero out non-speech parts
-            chunk_mask = speech_mask[start:end]
-            chunk[~chunk_mask] = 0.0
+            chunk[~speech_mask[start:end]] = 0.0  # zero out non-speech
+            window_meta.append((center_time, chunk))
 
-            chunk_tensor = torch.from_numpy(chunk).unsqueeze(0).float().to(device)
-            with torch.no_grad():
-                emb = encoder.encode_batch(chunk_tensor)
-            window_embeddings.append((center_time, emb.squeeze().cpu().numpy()))
+        # Pass 2: 같은 길이 청크끼리 묶어 배치 추론.
+        # 동일 길이만 한 배치로 → 패딩이 없어 개별 추론과 결과가 동일하다.
+        from collections import defaultdict
+        length_groups = defaultdict(list)
+        for i, (_, chunk) in enumerate(window_meta):
+            if chunk is not None:
+                length_groups[len(chunk)].append(i)
+
+        embeddings_by_idx = {}
+        n_valid_total = sum(len(v) for v in length_groups.values())
+        done = 0
+        for _length, idxs in length_groups.items():
+            for b in range(0, len(idxs), EMB_BATCH):
+                batch_idxs = idxs[b:b + EMB_BATCH]
+                batch_np = np.stack([window_meta[i][1] for i in batch_idxs])
+                batch_tensor = torch.from_numpy(batch_np).float().to(device)
+                with torch.no_grad():
+                    embs = encoder.encode_batch(batch_tensor)  # (B, 1, D)
+                embs = embs.squeeze(1).cpu().numpy()
+                for k, i in enumerate(batch_idxs):
+                    embeddings_by_idx[i] = embs[k]
+                done += len(batch_idxs)
+                pct = 18 + int((done / max(n_valid_total, 1)) * 35)
+                emit("progress", percent=pct, message=f"임베딩 추출 중... ({done}/{n_valid_total})")
+
+        window_embeddings = [(t, embeddings_by_idx.get(i)) for i, (t, _) in enumerate(window_meta)]
 
         valid_windows = []
         window_to_valid = {}  # window_embeddings 인덱스 → valid_windows 인덱스 (O(1) 매칭)
@@ -219,13 +237,13 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
             win_start_f = max(0, win_start_f)
             win_end_f = min(n_prob_frames, win_end_f)
 
-            for f in range(win_start_f, win_end_f):
-                t = f / PROB_SR
-                # Gaussian weight centered at window center
-                w = np.exp(-((t - center_time) ** 2) / (2 * (WIN_SEC / 4) ** 2))
-                for sp in range(n_speakers):
-                    speaker_scores[f, sp] += probs[sp] * w
-                speaker_weights[f] += w
+            # 프레임×화자 이중 루프를 벡터화 (윈도우별 누적 순서·곱 동일 → 수치 동등)
+            if win_end_f > win_start_f:
+                frames = np.arange(win_start_f, win_end_f)
+                ts = frames / PROB_SR
+                gw = np.exp(-((ts - center_time) ** 2) / (2 * (WIN_SEC / 4) ** 2))
+                speaker_scores[win_start_f:win_end_f] += gw[:, None] * probs[None, :]
+                speaker_weights[win_start_f:win_end_f] += gw
 
         # Normalize scores
         mask = speaker_weights > 0
