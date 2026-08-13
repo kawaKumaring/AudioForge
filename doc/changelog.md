@@ -1,5 +1,25 @@
 # AudioForge Changelog
 
+## 2026-08-14 — Whisper Turbo 옵션 추가 + 모델 업그레이드 검증
+
+- **Whisper large-v3-turbo 옵션 추가** (기본 large-v3 유지, 비파괴적):
+  - 디코더 4층(large-v3는 32층) → 약 8배 빠름, 정확도 ≈ large-v2
+  - UI Whisper 셀렉터에 "Turbo" 버튼 + 툴팁(한/일 CJK는 Large가 근소 우위 안내)
+  - `whisperModel` 유니온에 'large-v3-turbo' 추가, config→args.whisper_model→
+    whisper.load_model 전체 배선 확인, 화이트리스트 없음. whisper 20250625가
+    available_models()에 'large-v3-turbo' 보유(검증). 최초 선택 시 ~1.6GB 다운로드
+- **검증으로 반려된 후보(중요 — 무턱대고 교체 금지 근거)**:
+  - **Mel-Band RoFormer 교체 반려**: 이 환경 audio-separator 0.44.2 번들 목록 기준,
+    일반 보컬 분리는 현행 BS-RoFormer `ep_317`=**SDR 12.98**이 최고. 번들 Mel-Band
+    일반 보컬 `ep_3005`=**11.44로 오히려 낮음**. SDR 27.99/19.17짜리 Mel-Band는
+    디노이즈·디리버브 **전용**(보컬 분리 아님). 최신 커뮤니티 체크포인트
+    (kim_ft2_bleedless_unwa, vocals_revive_v3e_unwa 등)는 파일명 SDR 부재로 수치
+    우위 증명 불가 → 실측 A/B 없이는 교체하면 품질 저하 위험. **보류.**
+  - **Qwen3 번역 백엔드 교체 보류**: 8B bf16≈16GB인데 번역 시 Whisper(~3GB)가
+    캐시 잔존해 공존 OOM → 4B(bf16≈8GB)라야 공존 가능. 게다가 Qwen2.5-3B 품질이
+    아직 사용자 청취 검증 전 → 미검증 모델을 미검증 모델로 바꾸는 churn. **2.5-3B
+    청취 후 판단.** (교체 시엔 thinking 태그 회피 위해 Instruct-2507 변형 사용)
+
 ## 2026-08-14 — 화자 분리 재현성 (L-7 kmeans 시드 고정)
 
 - **문제**: `_kmeans` k-means++ 초기화가 `np.random`(전역·비시드)을 써서 같은 입력도

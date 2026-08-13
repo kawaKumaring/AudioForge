@@ -96,13 +96,15 @@ export default function Options() {
             {(transcribe || isTranscribeMode || isSplitMode) && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Whisper</span>
-                {(['small', 'medium', 'large-v3'] as const).map((m) => (
-                  <button key={m} onClick={() => !disabled && setWhisperModel(m)} disabled={disabled} style={{
+                {(['small', 'medium', 'large-v3', 'large-v3-turbo'] as const).map((m) => (
+                  <button key={m} onClick={() => !disabled && setWhisperModel(m)} disabled={disabled}
+                    title={m === 'large-v3-turbo' ? 'large-v3 대비 약 8배 빠름, 정확도는 v2급(한/일 CJK는 Large가 근소 우위)' : ''}
+                    style={{
                     padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
                     fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
                     background: whisperModel === m ? 'var(--cyan)' : 'transparent',
                     color: whisperModel === m ? '#fff' : 'var(--text-muted)'
-                  }}>{m === 'large-v3' ? 'Large' : m.charAt(0).toUpperCase() + m.slice(1)}</button>
+                  }}>{m === 'large-v3' ? 'Large' : m === 'large-v3-turbo' ? 'Turbo' : m.charAt(0).toUpperCase() + m.slice(1)}</button>
                 ))}
               </div>
             )}

@@ -11,7 +11,7 @@ interface AppState {
   translate: boolean
   exportSrt: boolean
   outputFormat: 'wav' | 'mp3' | 'flac'
-  whisperModel: 'small' | 'medium' | 'large-v3'
+  whisperModel: 'small' | 'medium' | 'large-v3' | 'large-v3-turbo'
   whisperLang: string
   translateModel: '600m' | '1.3b' | 'llm'
   demucsModel: 'htdemucs' | 'htdemucs_ft' | 'roformer'
@@ -39,7 +39,7 @@ interface AppState {
   setTranslate: (v: boolean) => void
   setExportSrt: (v: boolean) => void
   setOutputFormat: (v: 'wav' | 'mp3' | 'flac') => void
-  setWhisperModel: (v: 'small' | 'medium' | 'large-v3') => void
+  setWhisperModel: (v: 'small' | 'medium' | 'large-v3' | 'large-v3-turbo') => void
   setWhisperLang: (v: string) => void
   setTranslateModel: (v: '600m' | '1.3b' | 'llm') => void
   setDemucsModel: (v: 'htdemucs' | 'htdemucs_ft' | 'roformer') => void
