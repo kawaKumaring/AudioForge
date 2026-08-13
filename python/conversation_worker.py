@@ -193,10 +193,13 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
         features = features / np.maximum(row_norms, 1e-8)
 
         # K-means with multiple restarts for stability
+        # 재현성: 시드된 생성기를 재시작 전체에서 공유 → 재시작 간 다양성 유지,
+        # 실행 간 동일 입력이면 동일 결과 (L-7)
+        km_rng = np.random.default_rng(0)
         best_labels = None
         best_inertia = float('inf')
         for _ in range(10):
-            labels, inertia = _kmeans(features, n_speakers)
+            labels, inertia = _kmeans(features, n_speakers, rng=km_rng)
             if inertia < best_inertia:
                 best_inertia = inertia
                 best_labels = labels.copy()
@@ -374,16 +377,22 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
             pass
 
 
-def _kmeans(data, k, max_iter=100):
-    """K-means with inertia tracking. Returns (labels, inertia)."""
+def _kmeans(data, k, max_iter=100, rng=None):
+    """K-means with inertia tracking. Returns (labels, inertia).
+
+    rng: np.random.Generator — 재현성을 위해 호출부에서 시드된 생성기를 넘긴다.
+    None이면 비시드 생성기(기존 동작에 준함).
+    """
     import numpy as np
+    if rng is None:
+        rng = np.random.default_rng()
     n = data.shape[0]
     # k-means++ init
-    centers = [data[np.random.randint(n)]]
+    centers = [data[rng.integers(n)]]
     for _ in range(1, k):
         dists = np.min([np.sum((data - c) ** 2, axis=1) for c in centers], axis=0)
         probs = dists / max(dists.sum(), 1e-12)
-        centers.append(data[np.random.choice(n, p=probs)])
+        centers.append(data[rng.choice(n, p=probs)])
     centers = np.array(centers)
 
     labels = np.zeros(n, dtype=int)
