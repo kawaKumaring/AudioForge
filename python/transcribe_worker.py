@@ -81,8 +81,15 @@ def _norm_lang(lang):
 def run_transcribe(model, audio_path, language=None):
     """Whisper 전사 — 분리/무음이 많은 트랙의 환각을 억제한 공통 호출부.
 
-    condition_on_previous_text=False: 이전 문장을 조건으로 쓰지 않아 무음/연주
-    구간에서 같은 문장이 반복되는 대표적 환각을 억제한다.
+    환각(hallucination) 억제 3중 장치:
+    - condition_on_previous_text=False: 이전 문장을 조건으로 쓰지 않아 무음/연주
+      구간에서 같은 문장이 반복되는 대표적 환각을 억제.
+    - word_timestamps=True + hallucination_silence_threshold: 단어 단위 타임스탬프로
+      무음 구간을 식별해, 무음(>2초) 위에 지어낸 상투 자막('작사·작곡…', '시청 감사합니다'
+      류)을 폐기한다. 음악 모드는 보컬 스템만 전사하므로 인트로/아웃로가 실제로
+      거의 무음 → 이 장치가 특히 잘 듣는다.
+    - no_speech/logprob 임계는 whisper 기본값(0.6 / -1.0)을 그대로 쓴다.
+
     language: None이면 자동 감지, 코드(예: 'ja')를 주면 강제 — 짧은 클립의
     언어 오판(일본어 노래를 영어로 감지 등) 방지.
     """
@@ -92,6 +99,8 @@ def run_transcribe(model, audio_path, language=None):
         task="transcribe",
         verbose=False,
         condition_on_previous_text=False,
+        word_timestamps=True,
+        hallucination_silence_threshold=2.0,
     )
 
 
@@ -196,6 +205,83 @@ def _translate_llm(text: str, src_lang: str):
     return "\n".join(out_parts) if out_parts else None
 
 
+# ── 세그먼트(타임라인) 번역 — 1:1 정합 유지 ──────────────────────────────────
+# 타임라인은 각 세그먼트가 정확히 한 줄로 대응돼야 한다. 예전엔 줄마다 따로 번역해
+# 조각(예: "異郷の月")마다 문맥이 없어 소형 LLM이 중국어·영어를 섞는 문제가 있었다.
+# 이제 전 세그먼트를 '한 번에' 번역(문맥 확보)하고 번호로 되돌린다.
+_LLM_SEG_SYSTEM = (
+    "당신은 전문 자막 번역가입니다. 입력은 '번호. 원문' 형식의 여러 줄입니다. "
+    "각 줄을 자연스러운 한국어 구어체로 번역하되, 반드시 '번호. 번역' 형식으로 "
+    "입력과 같은 번호·같은 줄 수로만 출력하세요. 반드시 한국어(한글)로만 쓰고, "
+    "한자·일본어 가나·영어 원문을 남기지 마세요. 설명·따옴표·원문을 덧붙이지 마세요."
+)
+
+
+def _seg_chunks(segments):
+    """세그먼트 인덱스를 _LLM_CHUNK_CHARS 문자 예산 이하 청크로 묶는다."""
+    chunks, cur, cur_len = [], [], 0
+    for idx, s in enumerate(segments):
+        if cur and cur_len + len(s) > _LLM_CHUNK_CHARS:
+            chunks.append(cur)
+            cur, cur_len = [], 0
+        cur.append(idx)
+        cur_len += len(s) + 8  # "NN. " 번호 오버헤드 여유
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
+def _translate_segments_llm(segments, src_lang):
+    """세그먼트 리스트를 LLM으로 '한 번에'(청크 단위) 번역. 번호로 1:1 되돌림.
+    줄 수/번호가 어긋나면 그 청크만 세그먼트별 NLLB 폴백(언어 혼입·유실 방지)."""
+    import torch
+    import re
+    model, tok = _get_llm(_QWEN_MODEL)
+    device = next(model.parameters()).device
+    src_name = _LANG_KO_NAME.get(src_lang, src_lang)
+    out = [""] * len(segments)
+
+    for chunk in _seg_chunks(segments):
+        numbered = "\n".join(f"{n + 1}. {segments[gi]}" for n, gi in enumerate(chunk))
+        messages = [
+            {"role": "system", "content": _LLM_SEG_SYSTEM},
+            {"role": "user", "content": f"다음 {src_name} 자막을 한국어로 번역:\n\n{numbered}"},
+        ]
+        prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        inputs = tok(prompt, return_tensors="pt").to(device)
+        with torch.no_grad():
+            gen = model.generate(**inputs, max_new_tokens=2048, do_sample=False,
+                                 repetition_penalty=1.05, pad_token_id=tok.eos_token_id)
+        text = tok.decode(gen[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True).strip()
+
+        parsed = {}
+        for line in text.splitlines():
+            m = re.match(r'^\s*(\d+)\s*[.)]\s*(.*)$', line)
+            if m:
+                parsed[int(m.group(1))] = m.group(2).strip()
+
+        if len(parsed) == len(chunk) and all((n + 1) in parsed for n in range(len(chunk))):
+            for n, gi in enumerate(chunk):
+                out[gi] = parsed[n + 1]
+        else:
+            # 정합 실패 → 안전하게 세그먼트별 NLLB로 폴백 (코드 스위칭 없는 결과 보장)
+            for gi in chunk:
+                seg = segments[gi]
+                out[gi] = (_translate_nllb(seg, src_lang) or seg) if seg.strip() else ""
+    return out
+
+
+def translate_segments_to_korean(segments, src_lang):
+    """세그먼트 리스트를 1:1 매핑 유지하며 한국어로 번역(타임라인용).
+    - ko: 그대로. - NLLB: 세그먼트별(짧은 조각에도 안정적, 코드 스위칭 없음).
+    - LLM: 번호 매겨 한 번에 번역 후 번호로 되돌림(문맥 확보), 실패 시 청크 폴백."""
+    if src_lang == "ko":
+        return list(segments)
+    if _translate_backend["mode"] == "llm":
+        return _translate_segments_llm(segments, src_lang)
+    return [((_translate_nllb(s, src_lang) or "") if s.strip() else "") for s in segments]
+
+
 def _translate_nllb(text: str, src_lang: str):
     """Translate text to Korean using NLLB-200 with GPU acceleration."""
     nllb_src = LANG_TO_NLLB.get(src_lang)
@@ -233,30 +319,48 @@ def _translate_nllb(text: str, src_lang: str):
 
 def write_translation_timeline(output_dir, base, src_lang):
     """세그먼트별 타임라인 번역 파일 생성: {base}_korean_timeline.txt.
-    {base}_timestamps.txt(전사 타임라인)를 읽어 각 세그먼트를 개별 번역한다.
-    타임라인 정렬이 목적이라 세그먼트별 번역 — 전체 번역(_korean.txt)보다 문맥은 약할 수 있으나
-    시간축 대조에 유용. 현재 백엔드(set_translate_model)를 그대로 사용. timestamps 없으면 None."""
+    {base}_timestamps.txt(전사 타임라인)를 읽어, 전 세그먼트를 '한 번에' 번역한 뒤
+    타임스탬프에 되돌려 붙인다. (예전엔 줄마다 따로 번역 → 문맥이 없어 소형 LLM이
+    조각마다 중국어·영어를 섞는 문제가 있었다.) 현재 백엔드(set_translate_model)를
+    그대로 사용. timestamps 없으면 None."""
     import re
     ts_path = os.path.join(output_dir, f"{base}_timestamps.txt")
     if not os.path.exists(ts_path):
         return None
     with open(ts_path, "r", encoding="utf-8") as f:
         lines = [ln.rstrip("\n") for ln in f if ln.strip()]
-    total = len(lines)
-    out_lines = []
-    for i, line in enumerate(lines):
+
+    # 각 줄을 (스탬프, 원문) 또는 비정형(passthrough)으로 분해
+    stamps, texts, passthrough = [], [], []
+    for line in lines:
         m = re.match(r'^(\[[^\]]*\])\s*(.*)$', line)
-        if not m:
-            out_lines.append(line)
-            continue
-        stamp, seg_text = m.group(1), m.group(2).strip()
-        if i % 5 == 0:
-            emit("progress", percent=97, message=f"타임라인 번역 {i + 1}/{total}")
-        if not seg_text:
-            out_lines.append(stamp)
-            continue
-        tr = seg_text if src_lang == "ko" else (translate_to_korean(seg_text, src_lang) or "")
-        out_lines.append(f"{stamp} {tr}".rstrip())
+        if m:
+            stamps.append(m.group(1))
+            texts.append(m.group(2).strip())
+            passthrough.append(None)
+        else:
+            stamps.append(None)
+            texts.append(None)
+            passthrough.append(line)
+
+    # 실제 텍스트가 있는 세그먼트만 모아 한 번에 번역 (1:1 정합 유지)
+    idxs = [i for i, t in enumerate(texts) if t]
+    emit("progress", percent=97, message=f"타임라인 번역 {len(idxs)}개 세그먼트")
+    if src_lang == "ko":
+        translated = {i: texts[i] for i in idxs}
+    else:
+        tr_list = translate_segments_to_korean([texts[i] for i in idxs], src_lang)
+        translated = {i: (tr_list[k] or "") for k, i in enumerate(idxs)}
+
+    out_lines = []
+    for i in range(len(stamps)):
+        if passthrough[i] is not None:
+            out_lines.append(passthrough[i])
+        elif texts[i]:
+            out_lines.append(f"{stamps[i]} {translated.get(i, '')}".rstrip())
+        else:
+            out_lines.append(stamps[i])
+
     tl_path = os.path.join(output_dir, f"{base}_korean_timeline.txt")
     with open(tl_path, "w", encoding="utf-8") as f:
         f.write("\n".join(out_lines) + "\n")
