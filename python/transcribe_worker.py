@@ -231,6 +231,38 @@ def _translate_nllb(text: str, src_lang: str):
     return " ".join(translated_parts)
 
 
+def write_translation_timeline(output_dir, base, src_lang):
+    """세그먼트별 타임라인 번역 파일 생성: {base}_korean_timeline.txt.
+    {base}_timestamps.txt(전사 타임라인)를 읽어 각 세그먼트를 개별 번역한다.
+    타임라인 정렬이 목적이라 세그먼트별 번역 — 전체 번역(_korean.txt)보다 문맥은 약할 수 있으나
+    시간축 대조에 유용. 현재 백엔드(set_translate_model)를 그대로 사용. timestamps 없으면 None."""
+    import re
+    ts_path = os.path.join(output_dir, f"{base}_timestamps.txt")
+    if not os.path.exists(ts_path):
+        return None
+    with open(ts_path, "r", encoding="utf-8") as f:
+        lines = [ln.rstrip("\n") for ln in f if ln.strip()]
+    total = len(lines)
+    out_lines = []
+    for i, line in enumerate(lines):
+        m = re.match(r'^(\[[^\]]*\])\s*(.*)$', line)
+        if not m:
+            out_lines.append(line)
+            continue
+        stamp, seg_text = m.group(1), m.group(2).strip()
+        if i % 5 == 0:
+            emit("progress", percent=97, message=f"타임라인 번역 {i + 1}/{total}")
+        if not seg_text:
+            out_lines.append(stamp)
+            continue
+        tr = seg_text if src_lang == "ko" else (translate_to_korean(seg_text, src_lang) or "")
+        out_lines.append(f"{stamp} {tr}".rstrip())
+    tl_path = os.path.join(output_dir, f"{base}_korean_timeline.txt")
+    with open(tl_path, "w", encoding="utf-8") as f:
+        f.write("\n".join(out_lines) + "\n")
+    return tl_path
+
+
 def _save_transcription(result, audio_path, output_dir, do_srt=False, do_translate=False,
                         base_name=None):
     """Save transcription results (txt, timestamps, srt, translation).
@@ -262,6 +294,8 @@ def _save_transcription(result, audio_path, output_dir, do_srt=False, do_transla
             kr_path = os.path.join(output_dir, f"{base}_korean.txt")
             with open(kr_path, "w", encoding="utf-8") as f:
                 f.write(translated)
+        # 세그먼트별 타임라인 번역 파일도 생성 ([시작 → 끝] 번역)
+        write_translation_timeline(output_dir, base, language)
 
     return {"text": text, "language": language, "txt_path": txt_path, "translated_text": translated}
 

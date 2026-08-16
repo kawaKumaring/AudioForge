@@ -256,6 +256,12 @@ def _run_track_process(args):
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write(text)
 
+        # 타임라인 원문 저장 (재번역·타임라인 번역용)
+        ts_path = os.path.join(args.output, f"{base}_timestamps.txt")
+        with open(ts_path, "w", encoding="utf-8") as f:
+            for seg in result["segments"]:
+                f.write(f"[{fmt_time(seg['start'])} → {fmt_time(seg['end'])}] {seg['text'].strip()}\n")
+
         if args.srt:
             srt_path = os.path.join(args.output, f"{base}.srt")
             with open(srt_path, "w", encoding="utf-8") as f:
@@ -289,6 +295,9 @@ def _run_track_process(args):
                 kr_path = os.path.join(args.output, f"{base}_korean.txt")
                 with open(kr_path, "w", encoding="utf-8") as f:
                     f.write(translated)
+            # 세그먼트별 타임라인 번역 파일 생성 (timestamps.txt 있으면)
+            from transcribe_worker import write_translation_timeline
+            write_translation_timeline(args.output, base, language)
 
     track = {"name": base, "label": base, "path": args.input, "text": text or "", "language": language or "unknown"}
     if translated:

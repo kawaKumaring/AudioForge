@@ -1,5 +1,18 @@
 # AudioForge Changelog
 
+## 2026-08-16 — 타임라인 번역 파일 생성 (_korean_timeline.txt)
+
+- **번역 시 세그먼트별 타임라인 번역 파일 추가**: `{base}_korean_timeline.txt`
+  (`[0:01 → 0:03] 번역문` 형식). 전사 타임라인(`_timestamps.txt`)을 세그먼트별로 번역.
+- 재사용 헬퍼 `write_translation_timeline(output_dir, base, src_lang)` 신설
+  (`transcribe_worker.py`). `_save_transcription`(텍스트 추출·음악/대화 전사+번역)과
+  `_run_track_process`(트랙별 번역·재번역)에서 호출. 루프 중 진행률 emit(워치독 방지).
+- `_run_track_process` 전사 시 `_timestamps.txt`도 저장하도록 보강(트랙별 전사에도 타임라인 근거 확보).
+- **설계 선택**: 전체 번역 `_korean.txt`(문맥·자연스러움)는 그대로 유지하고 타임라인은 별도 파일.
+  타임라인은 세그먼트별 번역이라 문맥이 약할 수 있으나 시간축 대조에 유용. 현재 번역 백엔드
+  (600M/1.3B/LLM)를 그대로 사용. **주의: LLM은 세그먼트 수만큼 호출이 늘어 느려짐**(전체+세그먼트 2회).
+- 검증: 헬퍼 로직 테스트(스탬프 보존·빈 세그먼트·timestamps 부재 시 None), 구문 OK
+
 ## 2026-08-16 — 음악 전사는 보컬만 + 재번역 경로 + 트랙 번역 백엔드 반영
 
 - **음악 모드 텍스트/SRT는 보컬 트랙만** (사용자 관찰): 켜면 드럼·베이스·기타까지 전부
