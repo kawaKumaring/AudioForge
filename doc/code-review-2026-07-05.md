@@ -224,12 +224,12 @@ worker 간 상호 의존 없음, watchdog, GPU 타임아웃 폴백(`get_device`)
 | # | 항목 | 위치 |
 |---|------|------|
 | ~~L-1~~ ✅ (2026-08-16) | `_run_split` 두 모드 추출 루프 중복 → `_extract_tracks_ffmpeg()` 통합. 실행 검증 완료 | separate.py |
-| ~~L-2~~ ✅ 평가완료(통일 안 함) | 무음 감지 3벌은 목적이 다름: 클라이언트 RMS(편집기 즉시·인터랙티브) / ffmpeg silencedetect(배치 분할 정확도) / trim_silence(트리밍). 통일하면 편집기가 서브프로세스 왕복으로 즉답성 상실 → UX 후퇴. **의도적 분리 유지**, 오해 소지 주석만 정정(2026-08-16) | SplitEditor.tsx:166 |
+| ~~L-2~~ ✅ 평가완료(통일 안 함) | 무음 감지 3벌은 목적이 다름: 클라이언트 RMS(편집기 즉시·인터랙티브) / ffmpeg silencedetect(배치 분할 정확도) / trim_silence(트리밍). 통일하면 편집기가 서브프로세스 왕복으로 즉답성 상실 → UX 후퇴. **의도적 분리 유지**, 오해 소지 주석만 정정(2026-08-16) | SplitEditor.tsx |
 | ~~L-3~~ ✅ (2026-08-16) | 감정 정의 중복 → smoke_test `_check_emotions()` 드리프트 가드로 해결(분리 유지). 공유 JSON은 패키징 리스크 검증 불가로 미채택 | TTSEditor.tsx / tts_worker.py |
 | ~~L-4~~ ✅ (2026-08-16) | 대부분 07-05 이후 이미 반영돼 있었음. 실제 누락 audio-separator 추가 + transformers 주석/버전 정정 | python/requirements.txt |
 | ~~L-5~~ ✅ | `audio:get-file-info` exec→execFile 전환 완료 (833fff6) — 한글 경로 CP949 손상 실제 발생 확인 후 수정 | audio.ipc.ts |
 | ~~L-6~~ ✅ (2026-08-16) | pythonPath를 userData/settings.json에 영속화, 시작 시 우선 적용 | audio.ipc.ts |
-| L-7 | `_kmeans` 난수 시드 없음 — 같은 파일도 실행마다 화자 분리 결과 변동. `np.random.default_rng(0)` 고정 검토 | conversation_worker.py:366 |
+| ~~L-7~~ ✅ (2026-08-14, `0e28f5e`) | `_kmeans` 난수 시드 없어 실행마다 화자 분리 결과 변동 → 호출부에서 `default_rng(0)`를 10회 재시작에 공유(재시작 다양성 유지 + 실행 간 동일). 격리 검증 완료 | conversation_worker.py |
 | ~~L-8~~ ✅ (2026-08-16) | docstring hop 0.75s→0.5s 정정 (코드 HOP_SEC=0.5 기준) | conversation_worker.py |
 | ~~L-9~~ ✅ (2026-08-16) | Windows `taskkill /T /F`로 자식 프로세스 트리 종료, kill() 폴백 | python-runner.ts |
 | ~~L-10~~ ✅ obsolete (2026-08-16) | `models_dir` 죽은 변수는 이미 제거됨. 현재 bridge는 `TTS_Config(yaml)`로 모델 경로 로드 — 코드 변경 불필요 | gptsovits_bridge.py |
