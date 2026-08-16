@@ -13,7 +13,7 @@ function fmtTime(sec: number): string {
 }
 
 // 결과 트랙용 파형 플레이어 (파형 + 시간 + 볼륨 + 드래그 이동). 재생 시에만 지연 생성.
-function TrackPlayer({ path, color, onEnded }: { path: string; color: string; onEnded: () => void }) {
+function TrackPlayer({ path, color, onClose }: { path: string; color: string; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WaveSurfer | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
@@ -37,7 +37,7 @@ function TrackPlayer({ path, color, onEnded }: { path: string; color: string; on
       ws.on('timeupdate', (t) => setCur(fmtTime(t)))
       ws.on('decode', (d) => setDur(fmtTime(d)))
       ws.on('ready', () => { ws && ws.play() })   // 펼쳐지면 자동 재생
-      ws.on('finish', () => onEnded())
+      ws.on('finish', () => onClose())
       ws.load(url)
       wsRef.current = ws
     })()
@@ -72,6 +72,15 @@ function TrackPlayer({ path, color, onEnded }: { path: string; color: string; on
             onChange={(e) => setVolume(parseFloat(e.target.value))}
             style={{ width: 56, accentColor: color, cursor: 'pointer', height: 4 }} />
         </div>
+        <button onClick={onClose} title="재생 닫기" style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          width: 22, height: 22, borderRadius: 6, border: 'none', cursor: 'pointer',
+          background: 'var(--bg-elevated)', color: 'var(--text-muted)', flexShrink: 0
+        }}>
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
+          </svg>
+        </button>
       </div>
     </div>
   )
@@ -220,27 +229,21 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
           </button>
         )}
 
-        {/* Play button */}
-        {isAudioTrack && (
+        {/* 재생 시작 버튼 — 재생 중엔 숨기고, 제어는 아래 플레이어가 담당(재생 버튼 중복 방지) */}
+        {isAudioTrack && !isPlaying && (
           <button onClick={handlePlay} style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             width: 28, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', flexShrink: 0,
-            background: isPlaying ? st.color : 'var(--bg-elevated)',
-            color: isPlaying ? '#fff' : 'var(--text-muted)',
-            boxShadow: isPlaying ? `0 2px 10px ${st.glow}` : 'none'
+            background: 'var(--bg-elevated)', color: 'var(--text-muted)'
           }}>
-            {isPlaying ? (
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
-            ) : (
-              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="7,3 21,12 7,21" /></svg>
-            )}
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="7,3 21,12 7,21" /></svg>
           </button>
         )}
       </div>
 
-      {/* 재생 시 펼쳐지는 파형 플레이어 (파형 + 시간 + 볼륨 + 드래그 이동) */}
+      {/* 재생 시 펼쳐지는 파형 플레이어 (파형 + 시간 + 볼륨 + 드래그 이동). 재생 제어는 이 안에서만. */}
       {isPlaying && isAudioTrack && (
-        <TrackPlayer path={track.path} color={st.color} onEnded={() => setPlayingTrack(null)} />
+        <TrackPlayer path={track.path} color={st.color} onClose={() => setPlayingTrack(null)} />
       )}
 
       {/* Expandable text area */}
