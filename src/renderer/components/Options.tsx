@@ -1,6 +1,14 @@
 import { useState } from 'react'
 import { useAppStore } from '@/stores/app.store'
 
+// Whisper 모델 크기별 의미 (툴팁) — 클수록 정확하지만 느리고 무겁다
+const WHISPER_HINTS: Record<string, string> = {
+  'small': '가장 빠르고 가벼움. 정확도는 낮아 짧고 또렷한 음성에 적합',
+  'medium': '속도와 정확도의 중간 균형 — 무난한 선택',
+  'large-v3': '가장 정확하지만 느리고 무거움. 잡음·다국어에 강함 (기본)',
+  'large-v3-turbo': 'Large 대비 약 8배 빠름. 정확도는 조금 낮음 (한/일은 Large가 근소 우위)',
+}
+
 export default function Options() {
   const { mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers,
     setTrimSilence, setSilenceGap, setTranscribe, setTranslate, setExportSrt, setOutputFormat, setWhisperModel, setWhisperLang, setTranslateModel, setDemucsModel, setNSpeakers, status } = useAppStore()
@@ -64,17 +72,11 @@ export default function Options() {
             {chip(exportSrt, 'var(--amber)', 'SRT 자막', setExportSrt)}
           </div>
 
-          {/* Sub-options row */}
-          <div style={{ display: 'flex', gap: 10 }}>
-            {trimSilence && !isTranscribeMode && !isSplitMode && (
-              <div style={{ flex: 1, display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
-                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>무음 간격</span>
-                <input type="range" min="0" max="2" step="0.1" value={silenceGap}
-                  onChange={(e) => setSilenceGap(parseFloat(e.target.value))} disabled={disabled}
-                  style={{ flex: 1, accentColor: 'var(--accent)', cursor: 'pointer', height: 4 }} />
-                <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent-light)', fontVariantNumeric: 'tabular-nums', minWidth: 32 }}>{silenceGap.toFixed(1)}초</span>
-              </div>
-            )}
+          {/* Sub-options: 한 줄에 몰아넣지 않고 wrap.
+              출력/화자수/분리(항상 표시되는 앵커)를 앞에 두어 위치를 고정하고,
+              토글로 켜지는 컨트롤(무음간격/Whisper/언어/번역)은 아래로 줄바꿈된다. */}
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+            {/* 출력 (앵커) */}
             {!isTranscribeMode && !isSplitMode && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>출력</span>
@@ -88,20 +90,54 @@ export default function Options() {
                 ))}
               </div>
             )}
-          </div>
-
-          {/* Model selection row */}
-          <div style={{ display: 'flex', gap: 10 }}>
+            {/* 화자 수 (앵커, conversation mode) */}
+            {mode === 'conversation' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>화자 수</span>
+                {[2, 3, 4, 5].map((n) => (
+                  <button key={n} onClick={() => !disabled && setNSpeakers(n)} disabled={disabled} style={{
+                    padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                    fontSize: 10, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',
+                    background: nSpeakers === n ? 'var(--cyan)' : 'transparent',
+                    color: nSpeakers === n ? '#fff' : 'var(--text-muted)'
+                  }}>{n}명</button>
+                ))}
+              </div>
+            )}
+            {/* 분리 (앵커, music mode) */}
+            {mode === 'music' && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>분리</span>
+                {([['htdemucs', '기본 4트랙'], ['htdemucs_ft', '고품질 4트랙'], ['roformer', '보컬 2트랙']] as const).map(([m, label]) => (
+                  <button key={m} onClick={() => !disabled && setDemucsModel(m)} disabled={disabled} style={{
+                    padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                    fontSize: 10, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',
+                    background: demucsModel === m ? 'var(--accent)' : 'transparent',
+                    color: demucsModel === m ? '#fff' : 'var(--text-muted)'
+                  }}>{label}</button>
+                ))}
+              </div>
+            )}
+            {/* 무음 간격 (trimSilence on) — wrap에서 한 줄 독차지하지 않게 고정 폭 */}
+            {trimSilence && !isTranscribeMode && !isSplitMode && (
+              <div style={{ width: 240, display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>무음 간격</span>
+                <input type="range" min="0" max="2" step="0.1" value={silenceGap}
+                  onChange={(e) => setSilenceGap(parseFloat(e.target.value))} disabled={disabled}
+                  style={{ flex: 1, accentColor: 'var(--accent)', cursor: 'pointer', height: 4 }} />
+                <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--accent-light)', fontVariantNumeric: 'tabular-nums', minWidth: 32 }}>{silenceGap.toFixed(1)}초</span>
+              </div>
+            )}
             {/* Whisper model */}
             {(transcribe || isTranscribeMode || isSplitMode) && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Whisper</span>
                 {(['small', 'medium', 'large-v3', 'large-v3-turbo'] as const).map((m) => (
                   <button key={m} onClick={() => !disabled && setWhisperModel(m)} disabled={disabled}
-                    title={m === 'large-v3-turbo' ? 'large-v3 대비 약 8배 빠름, 정확도는 v2급(한/일 CJK는 Large가 근소 우위)' : ''}
+                    title={WHISPER_HINTS[m] || ''}
                     style={{
                     padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
-                    fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
+                    fontSize: 10, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',
                     background: whisperModel === m ? 'var(--cyan)' : 'transparent',
                     color: whisperModel === m ? '#fff' : 'var(--text-muted)'
                   }}>{m === 'large-v3' ? 'Large' : m === 'large-v3-turbo' ? 'Turbo' : m.charAt(0).toUpperCase() + m.slice(1)}</button>
@@ -115,7 +151,7 @@ export default function Options() {
                 {([['auto', '자동'], ['ko', '한국어'], ['en', '영어'], ['ja', '일본어'], ['zh', '중국어']] as const).map(([code, label]) => (
                   <button key={code} onClick={() => !disabled && setWhisperLang(code)} disabled={disabled} style={{
                     padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
-                    fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
+                    fontSize: 10, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',
                     background: whisperLang === code ? 'var(--cyan)' : 'transparent',
                     color: whisperLang === code ? '#fff' : 'var(--text-muted)'
                   }}>{label}</button>
@@ -133,37 +169,9 @@ export default function Options() {
                 ] as const).map(([v, label, hint]) => (
                   <button key={v} onClick={() => !disabled && setTranslateModel(v)} disabled={disabled} title={hint} style={{
                     padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
-                    fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
+                    fontSize: 10, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',
                     background: translateModel === v ? 'var(--emerald)' : 'transparent',
                     color: translateModel === v ? '#fff' : 'var(--text-muted)'
-                  }}>{label}</button>
-                ))}
-              </div>
-            )}
-            {/* Speaker count (conversation mode) */}
-            {mode === 'conversation' && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
-                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>화자 수</span>
-                {[2, 3, 4, 5].map((n) => (
-                  <button key={n} onClick={() => !disabled && setNSpeakers(n)} disabled={disabled} style={{
-                    padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
-                    fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
-                    background: nSpeakers === n ? 'var(--cyan)' : 'transparent',
-                    color: nSpeakers === n ? '#fff' : 'var(--text-muted)'
-                  }}>{n}명</button>
-                ))}
-              </div>
-            )}
-            {/* Music separation model */}
-            {mode === 'music' && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
-                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>분리</span>
-                {([['htdemucs', '기본 4트랙'], ['htdemucs_ft', '고품질 4트랙'], ['roformer', '보컬 2트랙']] as const).map(([m, label]) => (
-                  <button key={m} onClick={() => !disabled && setDemucsModel(m)} disabled={disabled} style={{
-                    padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
-                    fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
-                    background: demucsModel === m ? 'var(--accent)' : 'transparent',
-                    color: demucsModel === m ? '#fff' : 'var(--text-muted)'
                   }}>{label}</button>
                 ))}
               </div>
