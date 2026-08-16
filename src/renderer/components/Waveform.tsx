@@ -120,10 +120,12 @@ export default function Waveform() {
     const ws = wsRef.current
     if (!ws || !analysis || !analysis.regions[selIdx]) return
     const r = analysis.regions[selIdx]
-    const dur = ws.getDuration()
+    // 무음 구간 '내부'만 재생 — 인접 말소리를 섞지 않아야 "정말 조용한지"를 확인할 수 있다.
+    // 시작 버튼=무음 앞부분, 끝 버튼=무음 뒷부분 (둘 다 [start,end] 안에서만).
+    const span = Math.min(0.8, r.end - r.start)
     const [s, e] = which === 'start'
-      ? [Math.max(0, r.start - 0.3), Math.min(dur, r.start + 0.5)]
-      : [Math.max(0, r.end - 0.5), Math.min(dur, r.end + 0.3)]
+      ? [r.start, r.start + span]
+      : [r.end - span, r.end]
     ws.play(s, e)
   }
 
@@ -132,7 +134,7 @@ export default function Waveform() {
     const next = (selIdx + delta + regionCount) % regionCount
     setSelIdx(next)
     const r = analysis!.regions[next]
-    wsRef.current?.setTime(Math.max(0, r.start - 0.3))
+    wsRef.current?.setTime(Math.max(0, r.start))
   }
 
   const btnMini = (accent: boolean): CSSProperties => ({
@@ -210,8 +212,8 @@ export default function Waveform() {
                 <button onClick={() => step(-1)} title="이전 무음" style={btnMini(false)}>◀</button>
                 <span style={{ color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums', minWidth: 34, textAlign: 'center' }}>{selIdx + 1}/{regionCount}</span>
                 <button onClick={() => step(1)} title="다음 무음" style={btnMini(false)}>▶</button>
-                <button onClick={() => playBoundary('start')} title="무음 시작 경계 듣기(말→무음)" style={btnMini(true)}>▶ 시작</button>
-                <button onClick={() => playBoundary('end')} title="무음 끝 경계 듣기(무음→말)" style={btnMini(true)}>▶ 끝</button>
+                <button onClick={() => playBoundary('start')} title="무음 앞부분 듣기 (이 구간이 정말 조용한지 확인 — 말소리 안 섞음)" style={btnMini(true)}>▶ 앞</button>
+                <button onClick={() => playBoundary('end')} title="무음 뒷부분 듣기 (이 구간이 정말 조용한지 확인 — 말소리 안 섞음)" style={btnMini(true)}>▶ 뒤</button>
               </div>
             </>
           )}
