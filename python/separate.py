@@ -298,8 +298,7 @@ def _run_split(args):
     """Track split mode. Uses ffmpeg direct extraction when timestamps provided."""
     emit("status", message="트랙 분할 모드", percent=0)
 
-    from datetime import datetime
-    import shutil
+    import shutil  # datetime은 _extract_tracks_ffmpeg 내부에서 사용
 
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
@@ -336,56 +335,19 @@ def _run_split(args):
             # Build time boundaries
             boundaries = [0.0] + split_seconds + ([total_dur] if total_dur > 0 else [])
 
-            tracks = []
-            total_tracks = len(boundaries) - 1
-            source_name = os.path.splitext(os.path.basename(args.input))[0]
+            # 트랙 이름/라벨: 커스텀 라벨 있으면 사용 + 파일명 안전화, 없으면 Track NN
+            track_specs = []
+            for idx in range(len(boundaries) - 1):
+                lbl = split_labels_list[idx].strip() if idx < len(split_labels_list) and split_labels_list[idx].strip() else f"Track {idx + 1:02d}"
+                safe_label = "".join(c for c in lbl if c not in r'\/:*?"<>|').strip()
+                nm = f"{idx + 1:02d}_{safe_label}" if safe_label else f"track_{idx + 1:02d}"
+                track_specs.append((nm, lbl))
 
-            for idx in range(total_tracks):
-                pct = 10 + int((idx / max(total_tracks, 1)) * 75)
-                start_sec = boundaries[idx]
-                end_sec = boundaries[idx + 1] if idx + 1 < len(boundaries) else None
+            tracks = _extract_tracks_ffmpeg(ffmpeg, tmp_input, boundaries, track_specs, args, 10, 75)
+            if tracks is None:
+                return
 
-                label = split_labels_list[idx].strip() if idx < len(split_labels_list) and split_labels_list[idx].strip() else f"Track {idx + 1:02d}"
-                safe_label = "".join(c for c in label if c not in r'\/:*?"<>|').strip()
-                name = f"{idx + 1:02d}_{safe_label}" if safe_label else f"track_{idx + 1:02d}"
-
-                emit("progress", percent=pct, message=f"{label} 추출 중...")
-
-                out_path = os.path.join(args.output, f"{name}.wav")
-                # 입력 시킹(-ss가 -i 앞): 매 트랙 처음부터 디코딩하지 않고 즉시 점프.
-                # 디코딩+재인코딩이므로 샘플 정확도 유지 (-to 대신 -t 구간길이 사용)
-                cmd = [ffmpeg, "-y", "-ss", str(start_sec), "-i", tmp_input]
-                if end_sec is not None:
-                    cmd.extend(["-t", str(end_sec - start_sec)])
-                cmd.extend(["-acodec", "pcm_s16le", "-metadata", f"title={label}",
-                            "-metadata", f"track={idx+1}/{total_tracks}",
-                            "-metadata", f"album={source_name}", out_path])
-                proc = subprocess.run(cmd, capture_output=True)
-                if proc.returncode != 0 or not os.path.exists(out_path):
-                    stderr_tail = proc.stderr.decode("utf-8", errors="replace")[-300:]
-                    emit("error", message=f"'{label}' 추출 실패: {stderr_tail}")
-                    return
-
-                dur = (end_sec - start_sec) if end_sec else 0
-                meta = {
-                    "track_number": idx + 1, "title": label,
-                    "start_time": round(start_sec, 3),
-                    "end_time": round(end_sec, 3) if end_sec else 0,
-                    "duration": round(dur, 3),
-                    "source_file": os.path.basename(args.input),
-                    "source_path": args.input,
-                    "split_date": datetime.now().isoformat(),
-                    "output_file": f"{name}.wav"
-                }
-                meta_path = os.path.join(args.output, f"{name}.json")
-                with open(meta_path, "w", encoding="utf-8") as f:
-                    json.dump(meta, f, ensure_ascii=False, indent=2)
-
-                tracks.append({"name": name, "label": f"{label} ({fmt_time(dur)})", "path": out_path, "meta_path": meta_path})
-
-            # Save tracklist
             _save_tracklist(tracks, args.output)
-
             emit("progress", percent=90, message="분할 완료!")
             emit("result", tracks=tracks, outputDir=args.output)
         finally:
@@ -441,53 +403,13 @@ def _run_split(args):
 
         # Use same fast ffmpeg extraction as timestamp mode
         boundaries = [0.0] + split_seconds + ([total_dur] if total_dur > 0 else [])
-        tracks = []
-        total_tracks = len(boundaries) - 1
-        source_name = os.path.splitext(os.path.basename(args.input))[0]
+        track_specs = [(f"track_{i + 1:02d}", f"Track {i + 1:02d}") for i in range(len(boundaries) - 1)]
 
-        for idx in range(total_tracks):
-            pct = 25 + int((idx / max(total_tracks, 1)) * 60)
-            start_sec = boundaries[idx]
-            end_sec = boundaries[idx + 1] if idx + 1 < len(boundaries) else None
-
-            label = f"Track {idx + 1:02d}"
-            name = f"track_{idx + 1:02d}"
-
-            emit("progress", percent=pct, message=f"{label} 추출 중...")
-
-            out_path = os.path.join(args.output, f"{name}.wav")
-            # 입력 시킹(-ss가 -i 앞): 타임스탬프 모드와 동일한 최적화
-            cmd = [ffmpeg, "-y", "-ss", str(start_sec), "-i", tmp_input]
-            if end_sec is not None:
-                cmd.extend(["-t", str(end_sec - start_sec)])
-            cmd.extend(["-acodec", "pcm_s16le", "-metadata", f"title={label}",
-                        "-metadata", f"track={idx+1}/{total_tracks}",
-                        "-metadata", f"album={source_name}", out_path])
-            proc = subprocess.run(cmd, capture_output=True)
-            if proc.returncode != 0 or not os.path.exists(out_path):
-                stderr_tail = proc.stderr.decode("utf-8", errors="replace")[-300:]
-                emit("error", message=f"'{label}' 추출 실패: {stderr_tail}")
-                return
-
-            dur = (end_sec - start_sec) if end_sec else 0
-            meta = {
-                "track_number": idx + 1, "title": label,
-                "start_time": round(start_sec, 3),
-                "end_time": round(end_sec, 3) if end_sec else 0,
-                "duration": round(dur, 3),
-                "source_file": os.path.basename(args.input),
-                "source_path": args.input,
-                "split_date": datetime.now().isoformat(),
-                "output_file": f"{name}.wav"
-            }
-            meta_path = os.path.join(args.output, f"{name}.json")
-            with open(meta_path, "w", encoding="utf-8") as f:
-                json.dump(meta, f, ensure_ascii=False, indent=2)
-
-            tracks.append({"name": name, "label": f"{label} ({fmt_time(dur)})", "path": out_path, "meta_path": meta_path})
+        tracks = _extract_tracks_ffmpeg(ffmpeg, tmp_input, boundaries, track_specs, args, 25, 60)
+        if tracks is None:
+            return
 
         _save_tracklist(tracks, args.output)
-
         emit("progress", percent=90, message="분할 완료!")
         emit("result", tracks=tracks, outputDir=args.output)
 
@@ -497,6 +419,58 @@ def _run_split(args):
             os.rmdir(tmp_dir)
         except OSError:
             pass
+
+
+def _extract_tracks_ffmpeg(ffmpeg, tmp_input, boundaries, track_specs, args, pct_start, pct_span):
+    """boundaries 인접 구간을 ffmpeg 입력 시킹으로 추출 (타임스탬프/자동감지 공통 — L-1).
+    track_specs[idx] = (name, label). 성공 시 tracks 리스트, 실패 시 emit('error') 후 None 반환.
+    진행률은 pct_start ~ pct_start+pct_span 범위로 표시."""
+    from datetime import datetime
+    tracks = []
+    total_tracks = len(boundaries) - 1
+    source_name = os.path.splitext(os.path.basename(args.input))[0]
+
+    for idx in range(total_tracks):
+        pct = pct_start + int((idx / max(total_tracks, 1)) * pct_span)
+        start_sec = boundaries[idx]
+        end_sec = boundaries[idx + 1] if idx + 1 < len(boundaries) else None
+        name, label = track_specs[idx]
+
+        emit("progress", percent=pct, message=f"{label} 추출 중...")
+
+        out_path = os.path.join(args.output, f"{name}.wav")
+        # 입력 시킹(-ss가 -i 앞): 매 트랙 처음부터 디코딩하지 않고 즉시 점프.
+        # 디코딩+재인코딩이므로 샘플 정확도 유지 (-to 대신 -t 구간길이 사용)
+        cmd = [ffmpeg, "-y", "-ss", str(start_sec), "-i", tmp_input]
+        if end_sec is not None:
+            cmd.extend(["-t", str(end_sec - start_sec)])
+        cmd.extend(["-acodec", "pcm_s16le", "-metadata", f"title={label}",
+                    "-metadata", f"track={idx+1}/{total_tracks}",
+                    "-metadata", f"album={source_name}", out_path])
+        proc = subprocess.run(cmd, capture_output=True)
+        if proc.returncode != 0 or not os.path.exists(out_path):
+            stderr_tail = proc.stderr.decode("utf-8", errors="replace")[-300:]
+            emit("error", message=f"'{label}' 추출 실패: {stderr_tail}")
+            return None
+
+        dur = (end_sec - start_sec) if end_sec else 0
+        meta = {
+            "track_number": idx + 1, "title": label,
+            "start_time": round(start_sec, 3),
+            "end_time": round(end_sec, 3) if end_sec else 0,
+            "duration": round(dur, 3),
+            "source_file": os.path.basename(args.input),
+            "source_path": args.input,
+            "split_date": datetime.now().isoformat(),
+            "output_file": f"{name}.wav"
+        }
+        meta_path = os.path.join(args.output, f"{name}.json")
+        with open(meta_path, "w", encoding="utf-8") as f:
+            json.dump(meta, f, ensure_ascii=False, indent=2)
+
+        tracks.append({"name": name, "label": f"{label} ({fmt_time(dur)})", "path": out_path, "meta_path": meta_path})
+
+    return tracks
 
 
 def _save_tracklist(tracks, output_dir):
