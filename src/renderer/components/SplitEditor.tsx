@@ -162,9 +162,10 @@ export default function SplitEditor() {
     setMarkers(newMarkers.sort((a, b) => a.time - b.time))
   }, [timestampText])
 
-  // Auto detect (calls existing Python split logic for silence detection)
+  // 무음 자동 감지 = 클라이언트 RMS 에너지 분석(즉시·인터랙티브). Python silencedetect
+  // (separate.py 배치 분할)와 의도적으로 분리 — 편집기에선 서브프로세스 왕복 없이 이미
+  // 디코드된 WaveSurfer 버퍼로 즉답한다. (무음 감지 3벌은 목적이 달라 통일하지 않음 — L-2)
   const handleAutoDetect = async () => {
-    // Use simple client-side energy analysis for speed
     setAutoDetecting(true)
     const ws = wsRef.current
     if (!ws) { setAutoDetecting(false); return }

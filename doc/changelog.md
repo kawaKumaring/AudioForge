@@ -44,6 +44,17 @@
   공유 JSON(단일 소스) 방식은 Vite의 src 밖 import + 패키징 포함이 필요하고 이 환경에서
   프로덕션 빌드 검증이 불가('dev OK, 배포 깨짐' 리스크)해 **의도적으로 채택 안 함**.
   검증: `smoke_test --quick`에서 TS 50종 ⊆ Python 일치 PASS(가드가 스코핑 오탐도 잡아냄)
+- L-2: 무음 감지 3벌(클라이언트 RMS / ffmpeg silencedetect / trim_silence) → **평가 후 통일 안 함**.
+  SplitEditor의 자동 감지를 Python silencedetect로 통일하면 클릭마다 서브프로세스 왕복으로
+  즉답성 상실 = UX 후퇴. 3벌은 목적(즉시 인터랙티브/배치 정확도/트리밍)이 달라 정당한 분리.
+  실제 결함이던 오해 소지 주석("calls Python"인데 실제 클라이언트)만 정정 (`SplitEditor.tsx`)
+
+**그룹 F — L-10**
+- L-10: `gptsovits_bridge`의 죽은 `models_dir` 변수는 이미 제거된 상태(obsolete). 현재 bridge는
+  `TTS_Config(yaml)`로 모델 경로를 로드 — 코드 변경 불필요, 문서만 정리
+
+**요약**: code-review L-1~L-11 전부 소진(L-5·L-7 기존 완료 + 이번 A~F). 신규 결함 0,
+기능 회귀 0. 검증: TSC 무에러, python 구문 OK, split 실행 검증, smoke_test --quick 3/3 PASS.
 
 ## 2026-08-14 — 입력 포맷 전면 개방 (ffmpeg 디코딩 가능 전부, mo3 등 포함)
 
