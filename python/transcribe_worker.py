@@ -78,6 +78,45 @@ def _norm_lang(lang):
     return lang
 
 
+def _filter_silent_segments(result, audio_path, rms_threshold=0.005):
+    """무음 구간에 지어낸 환각 세그먼트 제거(에너지 게이트).
+    각 세그먼트 구간의 실제 오디오 RMS가 임계 미만(=사실상 무음)이면 버린다.
+    분리된 보컬 스템은 노래 없는 구간이 실제로 무음이라, 거기 전사된 텍스트('시청 감사'
+    류 아웃로 등)는 환각으로 간주. 측정: 진짜 무음 RMS≈0.0002 ≪ 실제 가사 RMS≈0.11 →
+    임계 0.005는 양쪽에서 20배 이상 여유. 진짜 말/노래는 임계를 훨씬 넘어 안전.
+    과삭제 방지 가드: 세그먼트의 60% 초과를 지우게 되면(레벨 이상 의심) 필터를 건너뛴다."""
+    segs = result.get("segments") or []
+    if not segs:
+        return result
+    try:
+        import soundfile as sf
+        import numpy as np
+        data, sr = sf.read(audio_path, dtype="float32")
+    except Exception:
+        return result  # 측정 불가 시 원본 유지(안전)
+    if getattr(data, "ndim", 1) > 1:
+        data = data.mean(axis=1)
+    total = len(data)
+    kept = []
+    for s in segs:
+        a = int(max(0.0, s.get("start", 0.0)) * sr)
+        b = int(min(total / sr, s.get("end", 0.0)) * sr)
+        if b <= a:
+            kept.append(s)
+            continue
+        seg = data[a:b]
+        rms = float(np.sqrt(np.mean(seg ** 2)))
+        if rms >= rms_threshold:
+            kept.append(s)
+    # 과삭제 가드: 너무 많이 지우면(레벨 스케일 이상) 원본 유지
+    if len(kept) < len(segs) * 0.4:
+        return result
+    if len(kept) != len(segs):
+        result["segments"] = kept
+        result["text"] = "".join(s.get("text", "") for s in kept).strip()
+    return result
+
+
 def run_transcribe(model, audio_path, language=None):
     """Whisper 전사 — 분리/무음이 많은 트랙의 환각을 억제한 공통 호출부.
 
@@ -93,7 +132,7 @@ def run_transcribe(model, audio_path, language=None):
     language: None이면 자동 감지, 코드(예: 'ja')를 주면 강제 — 짧은 클립의
     언어 오판(일본어 노래를 영어로 감지 등) 방지.
     """
-    return model.transcribe(
+    result = model.transcribe(
         audio_path,
         language=_norm_lang(language),
         task="transcribe",
@@ -102,6 +141,9 @@ def run_transcribe(model, audio_path, language=None):
         word_timestamps=True,
         hallucination_silence_threshold=2.0,
     )
+    # 에너지 게이트: 무음 구간의 잔존 환각(아웃로 '시청 감사' 등) 제거.
+    # hallucination_silence_threshold가 못 잡는, 옅게 깔린 무음 위 환각까지 걸러낸다.
+    return _filter_silent_segments(result, audio_path)
 
 
 # NLLB max_length=512 대비: 한 문장이 이보다 길면 잘린 만큼 조용히 유실되므로

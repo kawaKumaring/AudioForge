@@ -101,9 +101,11 @@ def run_roformer_ensemble(input_path: str, output_dir: str):
     return tracks
 
 
-def run_roformer_separation(input_path: str, output_dir: str):
-    """BS-RoFormer로 보컬/반주 2트랙 분리 (Demucs보다 보컬 SDR 우수).
-    audio-separator(onnxruntime+torch)는 ComfyUI 환경에 이미 존재 — 별도 설치 불필요."""
+def run_roformer_separation(input_path: str, output_dir: str, model_name: str = _ROFORMER_MODEL):
+    """RoFormer로 보컬/반주 2트랙 분리 (Demucs보다 보컬 SDR 우수).
+    model_name으로 BS(기본)/Mel-Band 등 선택. audio-separator(onnxruntime+torch)는
+    ComfyUI 환경에 이미 존재 — 별도 설치 불필요."""
+    import re
     emit("status", message="RoFormer 보컬 분리", percent=0)
 
     try:
@@ -119,7 +121,7 @@ def run_roformer_separation(input_path: str, output_dir: str):
 
     emit("progress", percent=10, message="RoFormer 모델 로딩 중... (첫 실행 시 다운로드)")
     sep = Separator(model_file_dir=model_dir, output_dir=output_dir, output_format="WAV")
-    sep.load_model(_ROFORMER_MODEL)
+    sep.load_model(model_name)
 
     # 입력을 ffmpeg로 wav 정규화 — audio-separator 자체 로더(soundfile/librosa)가 못 읽는
     # 포맷(mo3 등 트래커 모듈 포함)도 ffmpeg가 지원하면 처리되도록. Demucs 경로와 동일 전처리.
@@ -136,13 +138,16 @@ def run_roformer_separation(input_path: str, output_dir: str):
         except OSError:
             pass
 
+    # 스템 명명이 모델마다 다르다(BS '(Vocals)/(Instrumental)', Mel-Band '(vocals)/(other)').
+    # 대소문자 무시 + 반주 명칭 변형(other/no vocals/accompan) 인식.
     tracks = []
     for fn in outputs:
+        low = fn.lower()
         full = os.path.join(output_dir, fn)
-        if "Vocals" in fn:
-            name, label = "vocals", "보컬"
-        elif "Instrumental" in fn:
+        if re.search(r'instrumental|other|no[_ ]?vocal|accompan', low):
             name, label = "instrumental", "반주"
+        elif "vocal" in low:
+            name, label = "vocals", "보컬"
         else:
             name, label = os.path.splitext(fn)[0], fn
         clean = os.path.join(output_dir, f"{name}.wav")
