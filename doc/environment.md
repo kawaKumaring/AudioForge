@@ -24,7 +24,7 @@ ComfyUI를 켜지 않아도, 심지어 없어도, 아래 패키지를 갖춘 파
 | core | audio-separator | audio_separator | RoFormer 보컬 분리 |
 | core | onnxruntime-gpu | onnxruntime | audio-separator 백엔드 |
 | core | speechbrain | speechbrain | 화자 분리(ECAPA) |
-| core | transformers | transformers | NLLB 번역 |
+| core | transformers | transformers | NLLB/LLM(Qwen) 번역 |
 | tts | f5-tts | f5_tts | 합성(영어/클로닝) |
 | tts | kokoro | kokoro | 합성(다국어 폴백) |
 | hub | silero-vad | silero_vad | 음성 검출(torch.hub로도 로드) |

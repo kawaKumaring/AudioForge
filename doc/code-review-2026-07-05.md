@@ -35,7 +35,7 @@
 | M-2 화자 분리 루프 불변 (안전 부분) | ✅ 745b25b | 실제 통화 52초 e2e — 2화자 분리 정상 |
 | M-1 F5 ref_text | ⏸ 보류 | **청취 검증 필요** — 코드만으로 품질 판단 불가, 사용자 확인 후 진행 |
 | M-2 Gaussian 루프 벡터화 | ✅ (2026-07-24) | 격리 테스트로 기존 루프와 scores/weights 완전 동일 확인 + 배치 임베딩 추론 추가 |
-| L-1~L-11 | ✅ **전부 완료** (2026-08-14) | 완성도 개선 패스 그룹 A~F로 소진. L-2는 평가 후 의도적 분리 유지, L-10은 obsolete. 상세는 changelog |
+| L-1~L-11 | ✅ **전부 완료** (2026-08-16) | 완성도 개선 패스 그룹 A~F로 소진. L-2는 평가 후 의도적 분리 유지, L-10은 obsolete. 상세는 changelog |
 | 9-1 Whisper 환각 대책 | ✅ 4b2f4b1 + 3b81f33 | condition_on_previous_text=False + 언어 강제 UI. VAD 사전필터는 보류(조용한 발화 손실 위험) |
 | 9-3 스모크 테스트 | ✅ 7155178 | C-1 회귀 감지 확인. TTS 포함 시 7 PASS |
 | 9-5 GPT-SoVITS 완성 | ✅ 파이프라인 / ⚠️ 품질 한계 | **한/영/중 출력 동작**(VS Build Tools 없이 — shim+프리빌트 휠). 일본어 출력/참조는 pyopenjtalk 필요(빌드 부재로 보류, graceful fallback 구현). 청취 결과 speaker_b(분리 조각) 클로닝 품질 낮음 = 참조 음원 한계. **파인튜닝은 컴파일러 부재+데이터 부족(~20초 조각)으로 보류** — 상세 tts-setup-guide.md. 사용자 결정으로 TTS 여기서 정리 |
@@ -223,17 +223,17 @@ worker 간 상호 의존 없음, watchdog, GPU 타임아웃 폴백(`get_device`)
 
 | # | 항목 | 위치 |
 |---|------|------|
-| ~~L-1~~ ✅ (2026-08-14) | `_run_split` 두 모드 추출 루프 중복 → `_extract_tracks_ffmpeg()` 통합. 실행 검증 완료 | separate.py |
-| ~~L-2~~ ✅ 평가완료(통일 안 함) | 무음 감지 3벌은 목적이 다름: 클라이언트 RMS(편집기 즉시·인터랙티브) / ffmpeg silencedetect(배치 분할 정확도) / trim_silence(트리밍). 통일하면 편집기가 서브프로세스 왕복으로 즉답성 상실 → UX 후퇴. **의도적 분리 유지**, 오해 소지 주석만 정정(2026-08-14) | SplitEditor.tsx:166 |
-| ~~L-3~~ ✅ (2026-08-14) | 감정 정의 중복 → smoke_test `_check_emotions()` 드리프트 가드로 해결(분리 유지). 공유 JSON은 패키징 리스크 검증 불가로 미채택 | TTSEditor.tsx / tts_worker.py |
-| ~~L-4~~ ✅ (2026-08-14) | 대부분 07-05 이후 이미 반영돼 있었음. 실제 누락 audio-separator 추가 + transformers 주석/버전 정정 | python/requirements.txt |
+| ~~L-1~~ ✅ (2026-08-16) | `_run_split` 두 모드 추출 루프 중복 → `_extract_tracks_ffmpeg()` 통합. 실행 검증 완료 | separate.py |
+| ~~L-2~~ ✅ 평가완료(통일 안 함) | 무음 감지 3벌은 목적이 다름: 클라이언트 RMS(편집기 즉시·인터랙티브) / ffmpeg silencedetect(배치 분할 정확도) / trim_silence(트리밍). 통일하면 편집기가 서브프로세스 왕복으로 즉답성 상실 → UX 후퇴. **의도적 분리 유지**, 오해 소지 주석만 정정(2026-08-16) | SplitEditor.tsx:166 |
+| ~~L-3~~ ✅ (2026-08-16) | 감정 정의 중복 → smoke_test `_check_emotions()` 드리프트 가드로 해결(분리 유지). 공유 JSON은 패키징 리스크 검증 불가로 미채택 | TTSEditor.tsx / tts_worker.py |
+| ~~L-4~~ ✅ (2026-08-16) | 대부분 07-05 이후 이미 반영돼 있었음. 실제 누락 audio-separator 추가 + transformers 주석/버전 정정 | python/requirements.txt |
 | ~~L-5~~ ✅ | `audio:get-file-info` exec→execFile 전환 완료 (833fff6) — 한글 경로 CP949 손상 실제 발생 확인 후 수정 | audio.ipc.ts |
-| ~~L-6~~ ✅ (2026-08-14) | pythonPath를 userData/settings.json에 영속화, 시작 시 우선 적용 | audio.ipc.ts |
+| ~~L-6~~ ✅ (2026-08-16) | pythonPath를 userData/settings.json에 영속화, 시작 시 우선 적용 | audio.ipc.ts |
 | L-7 | `_kmeans` 난수 시드 없음 — 같은 파일도 실행마다 화자 분리 결과 변동. `np.random.default_rng(0)` 고정 검토 | conversation_worker.py:366 |
-| ~~L-8~~ ✅ (2026-08-14) | docstring hop 0.75s→0.5s 정정 (코드 HOP_SEC=0.5 기준) | conversation_worker.py |
-| ~~L-9~~ ✅ (2026-08-14) | Windows `taskkill /T /F`로 자식 프로세스 트리 종료, kill() 폴백 | python-runner.ts |
-| ~~L-10~~ ✅ obsolete (2026-08-14) | `models_dir` 죽은 변수는 이미 제거됨. 현재 bridge는 `TTS_Config(yaml)`로 모델 경로 로드 — 코드 변경 불필요 | gptsovits_bridge.py |
-| ~~L-11~~ ✅ (2026-08-14) | TrackItem/KaraokeButton 언마운트 시 HTMLAudioElement pause+정리 useEffect 추가 | TrackList.tsx |
+| ~~L-8~~ ✅ (2026-08-16) | docstring hop 0.75s→0.5s 정정 (코드 HOP_SEC=0.5 기준) | conversation_worker.py |
+| ~~L-9~~ ✅ (2026-08-16) | Windows `taskkill /T /F`로 자식 프로세스 트리 종료, kill() 폴백 | python-runner.ts |
+| ~~L-10~~ ✅ obsolete (2026-08-16) | `models_dir` 죽은 변수는 이미 제거됨. 현재 bridge는 `TTS_Config(yaml)`로 모델 경로 로드 — 코드 변경 불필요 | gptsovits_bridge.py |
+| ~~L-11~~ ✅ (2026-08-16) | TrackItem/KaraokeButton 언마운트 시 HTMLAudioElement pause+정리 useEffect 추가 | TrackList.tsx |
 
 ---
 

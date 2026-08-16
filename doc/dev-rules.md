@@ -137,6 +137,6 @@ def run_something():
 | speechbrain | 1.1.0 | 화자 분리 |
 | whisper | 20250625 | 텍스트 추출 |
 | f5-tts | 1.1.18 | 음성 합성 |
-| transformers | 5.3.0 | NLLB 번역 + F5-TTS |
+| transformers | 4.57.3 | NLLB/LLM(Qwen) 번역 + F5-TTS |
 | silero-vad | 6.2.1 | 음성 검출 |
 | ffmpeg | 8.1 (WinGet, static) | 오디오 변환 |

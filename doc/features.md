@@ -15,9 +15,9 @@
 - **옵션**: 화자 수, 무음 제거 (간격 조절 0~2초), 텍스트 변환, 한국어 번역, SRT, 출력 포맷
 
 ### 3. 텍스트 추출 (`transcribe`) — 초록색
-- **엔진**: Whisper small/medium/large-v3 (CUDA, CPU 폴백)
+- **엔진**: Whisper small/medium/large-v3/large-v3-turbo(빠름) (CUDA, CPU 폴백)
 - **출력**: 텍스트 파일 (.txt + _timestamps.txt)
-- **옵션**: 한국어 번역 (NLLB-200), SRT 자막
+- **옵션**: 한국어 번역 (NLLB-200 또는 로컬 LLM Qwen 선택), SRT 자막
 
 ### 4. 트랙 분할 (`split`) — 주황색
 - **방식 1**: 타임스탬프 붙여넣기 → ffmpeg 직접 추출
@@ -64,15 +64,17 @@
 ## 공통 기능
 
 ### 텍스트
-- Whisper: small/medium/large-v3, 99개 언어 자동 감지, GPU 가속, 모델 캐싱
-- NLLB-200 (600M): 28개 언어 → 한국어, GPU 가속, 모델 캐싱
+- Whisper: small/medium/large-v3/large-v3-turbo, 99개 언어 자동 감지(또는 강제), GPU 가속, 모델 캐싱
+  - large-v3-turbo: large-v3 대비 약 8배 빠름, 정확도 v2급 (한/일 CJK는 large-v3가 근소 우위)
+- NLLB-200 (600M/1.3B): 28개 언어 → 한국어, GPU 가속, 모델 캐싱
+- 로컬 LLM 번역 백엔드(Qwen2.5-3B) 선택 가능 — 구어체·문맥 번역, API 미사용 (config `translateModel='llm'`)
 - SRT 자막 내보내기, 클립보드 복사
 
 ### 오디오
 - 무음 구간 제거 + 간격 조절 (0~2초)
 - 출력 포맷: WAV / MP3 / FLAC
 - 원본 샘플레이트 보존
-- MP4/MKV/AVI/MOV/WebM 영상 파일 지원
+- 입력: **ffmpeg이 디코딩 가능한 모든 오디오/영상 포맷** (mp3/wav/flac/m4a/ogg/aac/wma/mp4/mkv/avi/mov/webm + mo3 등 트래커 모듈). UI 표시는 대표 포맷만 유지하되 실제 허용은 전체
 
 ### GPU 폴백
 - CUDA 사용 가능 → GPU 가속
