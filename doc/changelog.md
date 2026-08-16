@@ -24,6 +24,14 @@
   사용자 명시 선택이 자동 해석(env.json/기본값)보다 우선. app.getPath는 ready 이후에만 접근
   (`registerAudioIpc` 내부에서 로드) (`src/main/ipc/audio.ipc.ts`)
 
+**그룹 D — 렌더러 정리**
+- L-11: `TrackItem`/`KaraokeButton`의 `HTMLAudioElement`가 언마운트 시 미정리 → 재생 중
+  트랙 목록 교체/언마운트 시 소리 잔존. 각 컴포넌트에 unmount cleanup useEffect 추가
+  (pause + src 해제). KaraokeButton은 조기 `return null`보다 위에 배치해 훅 규칙 준수
+  (`src/renderer/components/TrackList.tsx`)
+- F1: 입력 포맷 개방 이후 디코딩 불가/손상 파일 드롭 시 `loadFile`이 `console.error`만 하고
+  **사용자에겐 무반응**이던 문제 → `setError`로 안내 메시지 표시 (`src/renderer/components/DropZone.tsx`)
+
 ## 2026-08-14 — 입력 포맷 전면 개방 (ffmpeg 디코딩 가능 전부, mo3 등 포함)
 
 - **동기**: 개발자 실사용으로 트래커 모듈(mo3 등) 등 비주류 포맷 입력 필요. UI에는

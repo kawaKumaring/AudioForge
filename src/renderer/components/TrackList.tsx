@@ -47,6 +47,17 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
     if (!isPlaying && audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0 }
   }, [isPlaying])
 
+  // 언마운트 시 오디오 정리 — 재생 중 트랙 목록 교체/언마운트돼도 소리 잔존 방지 (L-11)
+  useEffect(() => {
+    return () => {
+      if (audioRef.current) {
+        audioRef.current.pause()
+        audioRef.current.src = ''
+        audioRef.current = null
+      }
+    }
+  }, [])
+
   const handlePlay = async () => {
     if (!isAudioTrack) return
     if (isPlaying) { setPlayingTrack(null); return }
@@ -207,6 +218,14 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
 function KaraokeButton({ tracks }: { tracks: { name: string; path: string }[] }) {
   const audiosRef = useRef<HTMLAudioElement[]>([])
   const [playing, setPlaying] = useState(false)
+
+  // 언마운트 시 모든 오디오 정리 (L-11). 조기 return보다 위에 둬 훅 규칙 준수.
+  useEffect(() => {
+    return () => {
+      audiosRef.current.forEach(a => { a.pause(); a.src = '' })
+      audiosRef.current = []
+    }
+  }, [])
 
   const hasVocals = tracks.some(t => t.name === 'vocals')
   const instrumentals = tracks.filter(t => t.name !== 'vocals')
