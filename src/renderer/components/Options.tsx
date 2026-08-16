@@ -179,9 +179,10 @@ export default function Options() {
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>번역</span>
                 {([
-                  ['600m', '600M', 'NLLB-600M — 가볍고 빠름 (기본)'],
-                  ['1.3b', '1.3B', 'NLLB-1.3B — 더 큼 (효과 제한적)'],
+                  ['600m', '600M', 'NLLB-600M — 가볍고 빠름 (기본, 로컬)'],
+                  ['1.3b', '1.3B', 'NLLB-1.3B — 더 큼 (효과 제한적, 로컬)'],
                   ['llm', 'LLM', 'Qwen2.5-3B 로컬 LLM — 구어체·문맥 번역, 느림·VRAM↑ (최초 1회 ~6GB 다운로드)'],
+                  ['google', '구글', '구글 번역 — 품질 좋음. 단 네트워크 필요·텍스트가 구글로 전송됨(비공식 엔드포인트, 막힐 수 있음)'],
                 ] as const).map(([v, label, hint]) => (
                   <button key={v} onClick={() => !disabled && setTranslateModel(v)} disabled={disabled} title={hint} style={{
                     padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',

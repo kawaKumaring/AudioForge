@@ -1,5 +1,20 @@
 # AudioForge Changelog
 
+## 2026-08-16 — LLM 잔재 글자 NLLB 수리 + 구글 번역 백엔드
+
+실제 앙상블+LLM 실행 산출물 확인 결과: 최악(중국어 문장·영어 통째)은 사라졌으나 36줄 중 9줄에
+원문 한 글자(`風`, `致`, `스スキ`)가 잔존 → Qwen2.5-3B가 문장은 옮기되 가끔 한 글자를 베낌.
+
+- **LLM 잔재 글자 수리**(`_translate_segments_llm` 후단): LLM 출력에 한자/가나가 남은 줄만
+  NLLB로 재번역(NLLB는 JA→KO 혼입 없음). 깨끗한 줄은 LLM 그대로. 검증: 한자 줄만 교체·나머지 유지.
+- **구글 번역 백엔드 추가**(`translateModel: 'google'`): 비공식 무료 엔드포인트(`translate_a/single`)
+  를 `requests`로 호출 — **새 패키지 0**. 세그먼트별 1:1, 실패 시 NLLB 폴백. `set_translate_model`
+  ·`translate_to_korean`·`translate_segments_to_korean` 분기 추가. UI '구글' 버튼(툴팁에 네트워크·
+  프라이버시·비공식 고지). **검증(네트워크)**: 일본어 5세그 모두 깨끗한 한국어, CJK 잔재 0.
+- **정직한 고지**: 구글은 (1)네트워크 필수(오프라인 원칙 이탈) (2)전사 텍스트가 구글로 전송(프라이버시)
+  (3)비공식이라 막힘/레이트리밋 가능 → 그때 NLLB 폴백. 로컬 원칙 유지가 필요하면 NLLB/LLM 사용.
+- py_compile·TSC OK.
+
 ## 2026-08-16 — 유틸 검증 후속: 에너지 게이트(아웃로 환각) + Mel-Band 단일 모드
 
 유틸로 before/after를 수치 측정한 뒤(아래) 드러난 한계를 보완.

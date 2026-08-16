@@ -14,7 +14,7 @@ export interface RestorableSession {
     outputFormat: 'wav' | 'mp3' | 'flac'
     whisperModel: 'small' | 'medium' | 'large-v3' | 'large-v3-turbo'
     whisperLang: string
-    translateModel: '600m' | '1.3b' | 'llm'
+    translateModel: '600m' | '1.3b' | 'llm' | 'google'
     nSpeakers: number
   }>
   tracks?: Track[]
@@ -33,7 +33,7 @@ interface AppState {
   outputFormat: 'wav' | 'mp3' | 'flac'
   whisperModel: 'small' | 'medium' | 'large-v3' | 'large-v3-turbo'
   whisperLang: string
-  translateModel: '600m' | '1.3b' | 'llm'
+  translateModel: '600m' | '1.3b' | 'llm' | 'google'
   demucsModel: 'htdemucs' | 'htdemucs_ft' | 'roformer' | 'roformer_melband' | 'roformer_ensemble'
   nSpeakers: number
   status: 'idle' | 'loading' | 'processing' | 'done' | 'error'
@@ -63,7 +63,7 @@ interface AppState {
   setOutputFormat: (v: 'wav' | 'mp3' | 'flac') => void
   setWhisperModel: (v: 'small' | 'medium' | 'large-v3' | 'large-v3-turbo') => void
   setWhisperLang: (v: string) => void
-  setTranslateModel: (v: '600m' | '1.3b' | 'llm') => void
+  setTranslateModel: (v: '600m' | '1.3b' | 'llm' | 'google') => void
   setDemucsModel: (v: 'htdemucs' | 'htdemucs_ft' | 'roformer' | 'roformer_melband' | 'roformer_ensemble') => void
   setNSpeakers: (v: number) => void
   setProcessing: () => void
