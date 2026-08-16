@@ -19,6 +19,7 @@
 
 | 날짜 | 핵심 (한 일) | 커밋 | 상세 위치 |
 |------|-------------|------|-----------|
+| 08-16 | 무음 감지 미리보기 + 경계 청취 (Phase A) | `7c293bc` | changelog §"무음 감지 미리보기 + 청취 (Phase A)" / silence-preview-design.md |
 | 08-16 | 파일 열기 시 마지막 폴더 기억(defaultPath) | `3efb45e` | changelog §"파일 열기 시 마지막 폴더 기억" |
 | 08-16 | 툴팁 확충 — 출력/분리/언어/칩/TTS엔진 의미 설명 | `3ab5770` | changelog §"옵션 패널 레이아웃 wrap + Whisper 툴팁" |
 | 08-16 | 옵션 패널 wrap 레이아웃(앵커 고정 + 아래로 줄바꿈) | `43407de` | changelog §"옵션 패널 레이아웃 wrap + Whisper 툴팁" |
