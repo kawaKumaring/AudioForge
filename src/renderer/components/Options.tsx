@@ -128,12 +128,12 @@ export default function Options() {
                 ))}
               </div>
             )}
-            {/* 문장 간격 (trimSilence on) — wrap에서 한 줄 독차지하지 않게 고정 폭.
-                주의: 감지가 아니라 '제거 후 남길 간격'. 이름을 무음간격→문장간격으로 명확화. */}
+            {/* 무음 간격 (trimSilence on) — 고정 폭. 라벨은 부모 '무음 구간 제거'와 어휘 일관.
+                의미(감지가 아니라 '제거 후 남길 간격')는 라벨이 아니라 툴팁으로 설명. */}
             {trimSilence && !isTranscribeMode && !isSplitMode && (
-              <div title="무음을 제거한 뒤 문장(말소리) 사이에 남겨둘 무음 길이입니다. 감지 자체는 바꾸지 않음 (0초=딱 붙임, 클수록 쉼이 김)"
+              <div title="무음을 제거한 뒤 말과 말 사이에 남겨둘 무음 길이입니다. 어디를 무음으로 감지할지는 바꾸지 않습니다 (0초=딱 붙임, 클수록 쉼이 김)"
                 style={{ width: 240, display: 'flex', alignItems: 'center', gap: 8, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
-                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>문장 간격</span>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>무음 간격</span>
                 <input type="range" min="0" max="2" step="0.1" value={silenceGap}
                   onChange={(e) => setSilenceGap(parseFloat(e.target.value))} disabled={disabled}
                   style={{ flex: 1, accentColor: 'var(--accent)', cursor: 'pointer', height: 4 }} />
