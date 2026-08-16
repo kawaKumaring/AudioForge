@@ -10,7 +10,7 @@ import SplitEditor from '@/components/SplitEditor'
 import TTSEditor from '@/components/TTSEditor'
 
 export default function App() {
-  const { fileInfo, mode, status, reset } = useAppStore()
+  const { fileInfo, mode, status, reset, restorable, restoreSession, setRestorable } = useAppStore()
   const setIdle = () => useAppStore.setState({ status: 'idle', tracks: [], error: null, progress: 0 })
 
   const handleRestore = async () => {
@@ -125,6 +125,29 @@ export default function App() {
               </div>
               <Waveform />
             </div>
+
+            {/* 이전 결과 있음 — 재분리 없이 복원 (안내 후 선택) */}
+            {restorable && status === 'idle' && (
+              <div style={{
+                display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 10,
+                background: 'var(--cyan-glow, rgba(34,211,238,0.08))', border: '1px solid rgba(34,211,238,0.35)'
+              }}>
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--cyan)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
+                  <path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.36 2.64L3 8" /><path d="M3 3v5h5" />
+                </svg>
+                <span style={{ flex: 1, fontSize: 12, color: 'var(--text-secondary)' }}>
+                  이전 분리 결과가 있습니다. 다시 분리하지 않고 불러올까요?
+                </span>
+                <button onClick={() => restorable && restoreSession(restorable.dir, restorable.session)} style={{
+                  padding: '6px 12px', borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'inherit',
+                  fontSize: 12, fontWeight: 600, background: 'var(--cyan)', color: '#00181c'
+                }}>불러오기</button>
+                <button onClick={() => setRestorable(null)} style={{
+                  padding: '6px 12px', borderRadius: 8, border: '1px solid var(--border-subtle)', cursor: 'pointer',
+                  fontFamily: 'inherit', fontSize: 12, fontWeight: 500, background: 'transparent', color: 'var(--text-muted)'
+                }}>새로 분리</button>
+              </div>
+            )}
 
             {/* 모드 + 옵션 + 버튼 + 결과 */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>

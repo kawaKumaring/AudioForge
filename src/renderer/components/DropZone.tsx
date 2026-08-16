@@ -3,7 +3,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import { useAppStore } from '@/stores/app.store'
 
 export default function DropZone() {
-  const { fileInfo, status, setFile, setError } = useAppStore()
+  const { fileInfo, status, setFile, setError, setRestorable } = useAppStore()
   const [isDragging, setIsDragging] = useState(false)
   const dragCounter = useRef(0)
 
@@ -12,13 +12,18 @@ export default function DropZone() {
       const info = await window.api.audio.getFileInfo(filePath)
       const url = await window.api.audio.getFileUrl(filePath)
       setFile(info, url)
+      // 이전 결과(session.json)가 있으면 복원 배너용으로 저장 — 자동 복원은 안 함(안내 후 선택)
+      try {
+        const s = await window.api.audio.findSession(filePath)
+        if (s && s.dir && s.session) setRestorable({ dir: s.dir, session: s.session })
+      } catch { /* 탐색 실패는 무시 */ }
     } catch (err) {
       // 입력 포맷을 넓게 허용하므로, 디코딩 불가/손상 파일은 여기서 조용히 실패할 수 있음.
       // 무반응 대신 사용자에게 안내 (F1)
       console.error('Failed to load file:', err)
       setError('이 파일을 열 수 없습니다. 지원되지 않는 형식이거나 손상된 파일일 수 있습니다.')
     }
-  }, [setFile, setError])
+  }, [setFile, setError, setRestorable])
 
   useEffect(() => {
     const handleDragEnter = (e: DragEvent) => {

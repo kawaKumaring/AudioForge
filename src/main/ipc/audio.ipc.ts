@@ -2,7 +2,7 @@ import { ipcMain, dialog, BrowserWindow, shell, app } from 'electron'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { join, basename, dirname, extname } from 'path'
-import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync } from 'fs'
+import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
 
@@ -197,6 +197,24 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     })
 
     runner.on('result', (data) => {
+      // 세션 매니페스트 저장 — 나중에 재분리 없이 설정+트랙 복원용 (source of truth)
+      try {
+        const tracks = Array.isArray((data as { tracks?: unknown[] })?.tracks)
+          ? (data as { tracks: { name?: string; label?: string; path?: string }[] }).tracks.map(t => ({ name: t.name, label: t.label, path: t.path }))
+          : []
+        const session = {
+          version: 1,
+          source: filePath,
+          sourceName: basename(filePath),
+          mode,
+          options: config,
+          tracks,
+          createdAt: new Date().toISOString()
+        }
+        writeFileSync(join(outputDir, 'session.json'), JSON.stringify(session, null, 2), 'utf-8')
+      } catch (err) {
+        console.log(`[AudioForge] session.json 저장 실패: ${(err as Error).message}`)
+      }
       mainWindow.webContents.send('audio:result', data)
     })
 
@@ -315,6 +333,39 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     trackRunner?.cancel()
     trackRunner = null
     return true
+  })
+
+  // 불러온 원본에 대응하는 이전 결과(session.json) 탐색 — <원본폴더>/AudioForge_output/*/session.json
+  ipcMain.handle('audio:find-session', (_event, sourcePath: string) => {
+    try {
+      const root = join(dirname(sourcePath), 'AudioForge_output')
+      if (!existsSync(root)) return null
+      const srcName = basename(sourcePath)
+      const matches: { dir: string; session: Record<string, unknown>; createdAt: string }[] = []
+      for (const entry of readdirSync(root)) {
+        const dir = join(root, entry)
+        let isDir = false
+        try { isDir = statSync(dir).isDirectory() } catch { continue }
+        if (!isDir) continue
+        const sp = join(dir, 'session.json')
+        if (!existsSync(sp)) continue
+        try {
+          const s = JSON.parse(readFileSync(sp, 'utf-8'))
+          if (s.source !== sourcePath && s.sourceName !== srcName) continue
+          // 트랙 파일이 실제로 남아 있는 것만 유지 (지워졌으면 복원 대상 아님)
+          const tracks = Array.isArray(s.tracks)
+            ? s.tracks.filter((t: { path?: string }) => t.path && existsSync(t.path))
+            : []
+          if (tracks.length === 0) continue
+          matches.push({ dir, session: { ...s, tracks }, createdAt: String(s.createdAt || entry) })
+        } catch { /* skip invalid */ }
+      }
+      if (matches.length === 0) return null
+      matches.sort((a, b) => b.createdAt.localeCompare(a.createdAt))  // 최신 우선
+      return { dir: matches[0].dir, session: matches[0].session }
+    } catch {
+      return null
+    }
   })
 
   ipcMain.handle('audio:restore-from-folder', async () => {

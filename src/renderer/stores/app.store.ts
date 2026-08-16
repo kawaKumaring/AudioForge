@@ -1,6 +1,25 @@
 import { create } from 'zustand'
 import type { SeparationMode, Track, FileInfo } from '../../shared/types'
 
+// 이전 결과(session.json) 복원용 — 재분리 없이 설정+트랙 되살리기
+export interface RestorableSession {
+  mode?: SeparationMode
+  options?: Partial<{
+    model: 'htdemucs' | 'htdemucs_ft' | 'roformer'
+    trimSilence: boolean
+    silenceGap: number
+    transcribe: boolean
+    translate: boolean
+    srt: boolean
+    outputFormat: 'wav' | 'mp3' | 'flac'
+    whisperModel: 'small' | 'medium' | 'large-v3' | 'large-v3-turbo'
+    whisperLang: string
+    translateModel: '600m' | '1.3b' | 'llm'
+    nSpeakers: number
+  }>
+  tracks?: Track[]
+}
+
 interface AppState {
   fileInfo: FileInfo | null
   fileUrl: string | null
@@ -24,6 +43,7 @@ interface AppState {
   tracks: Track[]
   outputDir: string | null
   playingTrack: string | null
+  restorable: { dir: string; session: RestorableSession } | null
   splitMarkers: number[]
   splitLabels: string[]
   ttsText: string
@@ -51,6 +71,8 @@ interface AppState {
   setResult: (tracks: Track[], outputDir: string) => void
   setError: (error: string) => void
   setPlayingTrack: (name: string | null) => void
+  setRestorable: (v: { dir: string; session: RestorableSession } | null) => void
+  restoreSession: (dir: string, session: RestorableSession) => void
   reset: () => void
 }
 
@@ -77,6 +99,7 @@ export const useAppStore = create<AppState>((set) => ({
   tracks: [],
   outputDir: null,
   playingTrack: null,
+  restorable: null,
   splitMarkers: [],
   splitLabels: [],
   ttsText: '',
@@ -85,7 +108,7 @@ export const useAppStore = create<AppState>((set) => ({
   ttsEmotionRefs: {} as Record<string, string>,
   ttsEngine: 'auto',
 
-  setFile: (info, url) => set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, progress: 0, outputDir: null }),
+  setFile: (info, url) => set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, progress: 0, outputDir: null, restorable: null, playingTrack: null }),
   setMode: (mode) => set({ mode }),
   setTrimSilence: (v) => set({ trimSilence: v }),
   setSilenceGap: (v) => set({ silenceGap: v }),
@@ -104,5 +127,27 @@ export const useAppStore = create<AppState>((set) => ({
   setResult: (tracks, outputDir) => set({ status: 'done', progress: 100, progressMessage: '완료', tracks, outputDir }),
   setError: (error) => set({ status: 'error', error, progressMessage: '' }),
   setPlayingTrack: (name) => set({ playingTrack: name }),
-  reset: () => set({ fileInfo: null, fileUrl: null, status: 'idle', progress: 0, progressMessage: '', error: null, tracks: [], outputDir: null, playingTrack: null, splitMarkers: [], splitLabels: [] })
+  setRestorable: (v) => set({ restorable: v }),
+  restoreSession: (dir, session) => set(() => {
+    const o = session.options || {}
+    return {
+      mode: session.mode || 'music',
+      demucsModel: o.model || 'htdemucs',
+      trimSilence: !!o.trimSilence,
+      silenceGap: o.silenceGap ?? 0.5,
+      transcribe: o.transcribe ?? true,
+      translate: !!o.translate,
+      exportSrt: !!o.srt,
+      outputFormat: o.outputFormat || 'wav',
+      whisperModel: o.whisperModel || 'large-v3',
+      whisperLang: o.whisperLang || 'auto',
+      translateModel: o.translateModel || '600m',
+      nSpeakers: o.nSpeakers ?? 2,
+      tracks: session.tracks || [],
+      outputDir: dir,
+      status: 'done' as const, progress: 100, progressMessage: '이전 결과 불러옴',
+      restorable: null, playingTrack: null, error: null
+    }
+  }),
+  reset: () => set({ fileInfo: null, fileUrl: null, status: 'idle', progress: 0, progressMessage: '', error: null, tracks: [], outputDir: null, playingTrack: null, restorable: null, splitMarkers: [], splitLabels: [] })
 }))
