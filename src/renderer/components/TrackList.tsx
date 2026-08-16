@@ -13,10 +13,12 @@ function fmtTime(sec: number): string {
 }
 
 // 결과 트랙용 파형 플레이어 (파형 + 시간 + 볼륨 + 드래그 이동). 재생 시에만 지연 생성.
-function TrackPlayer({ path, color, onClose }: { path: string; color: string; onClose: () => void }) {
+function TrackPlayer({ path, color, paused, onClose }: { path: string; color: string; paused: boolean; onClose: () => void }) {
   const ref = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WaveSurfer | null>(null)
-  const [isPlaying, setIsPlaying] = useState(false)
+  const readyRef = useRef(false)
+  const pausedRef = useRef(paused)
+  pausedRef.current = paused
   const [cur, setCur] = useState('0:00')
   const [dur, setDur] = useState('0:00')
   const [volume, setVolume] = useState(1)
@@ -32,34 +34,36 @@ function TrackPlayer({ path, color, onClose }: { path: string; color: string; on
         cursorColor: color, cursorWidth: 2, barWidth: 2, barGap: 2, barRadius: 4,
         height: 40, normalize: true, backend: 'WebAudio', dragToSeek: true
       })
-      ws.on('play', () => setIsPlaying(true))
-      ws.on('pause', () => setIsPlaying(false))
       ws.on('timeupdate', (t) => setCur(fmtTime(t)))
       ws.on('decode', (d) => setDur(fmtTime(d)))
-      ws.on('ready', () => { ws && ws.play() })   // 펼쳐지면 자동 재생
+      ws.on('ready', () => { readyRef.current = true; if (ws && !pausedRef.current) ws.play() })
       ws.on('finish', () => onClose())
       ws.load(url)
       wsRef.current = ws
     })()
-    return () => { cancelled = true; ws?.destroy(); wsRef.current = null }
+    return () => {
+      cancelled = true
+      const w = ws || wsRef.current
+      if (w) { try { w.pause() } catch { /* noop */ } try { w.destroy() } catch { /* noop */ } }
+      wsRef.current = null
+      readyRef.current = false
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path])
 
   useEffect(() => { wsRef.current?.setVolume(volume) }, [volume])
 
+  // 재생/일시정지 제어는 트랙 행의 버튼(원래 위치)이 담당 — paused prop을 준비된 뒤에만 반영
+  useEffect(() => {
+    const ws = wsRef.current
+    if (!ws || !readyRef.current) return
+    if (paused) ws.pause(); else ws.play()
+  }, [paused])
+
   return (
     <div style={{ padding: '8px 14px', borderTop: '1px solid var(--border-subtle)' }}>
       <div ref={ref} style={{ marginBottom: 6 }} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <button onClick={() => wsRef.current?.playPause()} style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          width: 26, height: 26, borderRadius: '50%', border: 'none', cursor: 'pointer',
-          background: isPlaying ? `${color}20` : color, color: isPlaying ? color : '#fff', flexShrink: 0
-        }}>
-          {isPlaying
-            ? <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
-            : <svg width="11" height="11" viewBox="0 0 24 24" fill="#fff"><polygon points="7,3 21,12 7,21" /></svg>}
-        </button>
         <span style={{ fontSize: 10, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>{cur} / {dur}</span>
         <div title="재생 볼륨 (듣기 전용 · 원본 파일에는 영향 없음)" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5 }}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -115,6 +119,7 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
   const [translation, setTranslation] = useState<string | null>(null)
   const [showText, setShowText] = useState(false)
   const [processing, setProcessing] = useState(false)
+  const [paused, setPaused] = useState(false)  // 재생 중 일시정지 여부(행 버튼이 제어)
 
   const isAudioTrack = track.path.endsWith('.wav') || track.path.endsWith('.mp3') || track.path.endsWith('.flac')
 
@@ -126,10 +131,11 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
     window.api.app.readTextFile(base + '_korean.txt').then((t: string | null) => { if (t) setTranslation(t) })
   }, [track.path, outputDir])
 
-  // 재생 토글 — 실제 재생/파형/볼륨은 아래 TrackPlayer(wavesurfer)가 담당. 한 번에 한 트랙만.
+  // 재생 버튼(행 오른쪽, 원래 위치): 접힘→시작, 재생 중→일시정지/재개(아이콘만 바뀜). 한 번에 한 트랙만.
   const handlePlay = () => {
     if (!isAudioTrack) return
-    setPlayingTrack(isPlaying ? null : track.name)
+    if (!isPlaying) { setPaused(false); setPlayingTrack(track.name) }
+    else setPaused((p) => !p)
   }
 
   const handleTrackProcess = async (transcribe: boolean, translate: boolean) => {
@@ -229,21 +235,25 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
           </button>
         )}
 
-        {/* 재생 시작 버튼 — 재생 중엔 숨기고, 제어는 아래 플레이어가 담당(재생 버튼 중복 방지) */}
-        {isAudioTrack && !isPlaying && (
+        {/* 재생 버튼 — 항상 이 자리(원래 위치). 아이콘만 ▶↔❚❚로 바뀜. 정지/닫기는 플레이어의 ✕. */}
+        {isAudioTrack && (
           <button onClick={handlePlay} style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center',
             width: 28, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', flexShrink: 0,
-            background: 'var(--bg-elevated)', color: 'var(--text-muted)'
+            background: isPlaying ? st.color : 'var(--bg-elevated)',
+            color: isPlaying ? '#fff' : 'var(--text-muted)',
+            boxShadow: isPlaying ? `0 2px 10px ${st.glow}` : 'none'
           }}>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="7,3 21,12 7,21" /></svg>
+            {(isPlaying && !paused)
+              ? <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
+              : <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="7,3 21,12 7,21" /></svg>}
           </button>
         )}
       </div>
 
-      {/* 재생 시 펼쳐지는 파형 플레이어 (파형 + 시간 + 볼륨 + 드래그 이동). 재생 제어는 이 안에서만. */}
+      {/* 재생 시 펼쳐지는 파형 플레이어 (파형 + 시간 + 볼륨 + 드래그 이동). 재생/일시정지는 행 버튼이 제어. */}
       {isPlaying && isAudioTrack && (
-        <TrackPlayer path={track.path} color={st.color} onClose={() => setPlayingTrack(null)} />
+        <TrackPlayer path={track.path} color={st.color} paused={paused} onClose={() => setPlayingTrack(null)} />
       )}
 
       {/* Expandable text area */}
