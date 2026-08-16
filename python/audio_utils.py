@@ -73,8 +73,14 @@ def save_audio(path, tensor, sr):
     sf.write(path, data, sr)
 
 
+_ffmpeg_cache = None
+
+
 def find_ffmpeg():
-    """Find ffmpeg executable."""
+    """Find ffmpeg executable. 결과를 캐시해 반복 호출 시 winget 폴더 재탐색을 피한다."""
+    global _ffmpeg_cache
+    if _ffmpeg_cache is not None:
+        return _ffmpeg_cache
     local = os.environ.get("LOCALAPPDATA", "")
     if local:
         winget_base = os.path.join(local, "Microsoft", "WinGet", "Packages")
@@ -83,10 +89,12 @@ def find_ffmpeg():
                 if "FFmpeg" in entry:
                     for root, dirs, files in os.walk(os.path.join(winget_base, entry)):
                         if "ffmpeg.exe" in files:
-                            return os.path.join(root, "ffmpeg.exe")
+                            _ffmpeg_cache = os.path.join(root, "ffmpeg.exe")
+                            return _ffmpeg_cache
     path_ffmpeg = shutil.which("ffmpeg")
     if path_ffmpeg:
-        return path_ffmpeg
+        _ffmpeg_cache = path_ffmpeg
+        return _ffmpeg_cache
     return None
 
 

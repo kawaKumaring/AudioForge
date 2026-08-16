@@ -1,5 +1,18 @@
 # AudioForge Changelog
 
+## 2026-08-14 — 완성도 개선 패스 (L-items + 잔여 정리)
+
+기능 결함이 아닌 유지보수성·정확성·견고성 정리. 그룹 단위 진행.
+
+**그룹 A — 자잘한 안전 수정**
+- L-8: `conversation_worker` docstring hop 표기 수정(0.75s→0.5s, 코드가 권위 HOP_SEC=0.5)
+- F2: `_get_llm` 진행 메시지가 "Qwen2.5-3B" 하드코딩 → `model_name` 변수 기반으로(모델 바꿔도 정확)
+- F3: `find_ffmpeg` 결과 모듈 캐시 — 반복 호출 시 winget 폴더 `os.walk` 재탐색 제거
+- L-4: requirements.txt 정정 — **audio-separator 누락 추가**(RoFormer 9-4 기능 의존, 실제 구멍),
+  transformers 주석에 로컬 LLM(Qwen) 추가 + 버전을 검증 환경(4.57.3)에 맞게 `>=4.57.0`으로,
+  whisper 주석에 large-v3-turbo 추가. (07-05 이후 speechbrain/whisper/f5-tts/kokoro는 이미 반영돼 있어
+  L-4 원문의 "누락" 지적 대부분은 이미 해결된 상태였음 — 실제 남은 건 audio-separator였음)
+
 ## 2026-08-14 — 입력 포맷 전면 개방 (ffmpeg 디코딩 가능 전부, mo3 등 포함)
 
 - **동기**: 개발자 실사용으로 트래커 모듈(mo3 등) 등 비주류 포맷 입력 필요. UI에는

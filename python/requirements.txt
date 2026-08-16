@@ -5,12 +5,14 @@ torchaudio>=2.11.0
 # torchaudio는 Resample만 사용 (load/save는 soundfile — dev-rules §3.4)
 demucs>=4.0.0
 # demucs: 음악 분리 (htdemucs / htdemucs_ft)
+audio-separator
+# audio-separator: RoFormer 보컬 2트랙 분리 (BS-RoFormer). onnxruntime(-gpu)을 함께 끌어옴
 speechbrain>=1.1.0
 # speechbrain: 화자 분리 (ECAPA-TDNN)
 openai-whisper
-# whisper: 텍스트 추출 (small/medium/large-v3)
-transformers>=5.0.0
-# transformers: NLLB-200 번역 + F5-TTS 의존
+# whisper: 텍스트 추출 (small/medium/large-v3/large-v3-turbo)
+transformers>=4.57.0
+# transformers: NLLB-200 번역 + 로컬 LLM 번역(Qwen) + F5-TTS 의존 (검증 환경=4.57.3)
 soundfile>=0.13.0
 # soundfile: 모든 오디오 I/O의 기본
 numpy>=1.24.0

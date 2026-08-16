@@ -8,7 +8,7 @@ from audio_utils import emit, load_audio, save_audio, convert_to_wav, get_device
 def run_conversation_separation(input_path: str, output_dir: str, n_speakers: int = 2):
     """High-quality speaker separation using:
       1. Silero VAD (neural network) for precise speech detection
-      2. Sliding window (1.5s, 0.75s hop) with ECAPA-TDNN embeddings
+      2. Sliding window (1.5s, 0.5s hop) with ECAPA-TDNN embeddings
       3. Per-frame speaker probability map from overlapping windows
       4. Temporal smoothing (min 500ms per speaker turn)
       5. Soft crossfade reconstruction

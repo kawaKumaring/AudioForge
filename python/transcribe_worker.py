@@ -143,7 +143,7 @@ def _get_llm(model_name):
     if _llm_cache["model"] is None or _llm_cache["name"] != model_name:
         device = get_device(timeout_sec=10)
         emit("progress", percent=72,
-             message="LLM 번역 모델 로딩 중... (Qwen2.5-3B, 최초 1회 ~6GB 다운로드)")
+             message=f"LLM 번역 모델 로딩 중... ({model_name.split('/')[-1]}, 최초 1회 대용량 다운로드)")
         tok = AutoTokenizer.from_pretrained(model_name)
         model = AutoModelForCausalLM.from_pretrained(
             model_name, torch_dtype=torch.bfloat16).to(device)
