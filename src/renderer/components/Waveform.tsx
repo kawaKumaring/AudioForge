@@ -31,6 +31,7 @@ export default function Waveform() {
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState('0:00')
   const [duration, setDuration] = useState('0:00')
+  const [volume, setVolume] = useState(1) // 재생 볼륨(듣기 전용) — 파일에 영향 없음
   const [decoded, setDecoded] = useState(false)
   const [analysis, setAnalysis] = useState<SilenceAnalysis | null>(null)
   const [computing, setComputing] = useState(false)
@@ -63,6 +64,7 @@ export default function Waveform() {
       cursorColor: c.cursor,
       cursorWidth: 2, barWidth: 2, barGap: 2, barRadius: 4,
       height: 56, normalize: true, backend: 'WebAudio',
+      dragToSeek: true, // 드래그로 스크럽/이동 (왼쪽으로 넘겨 끌면 처음으로)
       plugins: [regions]
     })
 
@@ -75,6 +77,9 @@ export default function Waveform() {
 
     return () => { ws.destroy(); wsRef.current = null; regionsRef.current = null; setIsPlaying(false) }
   }, [fileUrl, mode])
+
+  // 재생 볼륨 적용(듣기 전용 — Web Audio 게인, 파일 미변경). 파일/모드 재초기화 후에도 재적용.
+  useEffect(() => { wsRef.current?.setVolume(volume) }, [volume, fileUrl, mode])
 
   // 미리보기 켜지고 디코드 완료 시 감지 계산(1회, 지연 실행으로 클릭 블로킹 방지 — 설계 §5 R5)
   useEffect(() => {
@@ -185,7 +190,21 @@ export default function Waveform() {
             </svg>
           )}
         </button>
-        <span style={{ fontSize: 10, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>{duration}</span>
+        {/* 오른쪽: 볼륨(듣기 전용) + 길이 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <div title="재생 볼륨 (듣기 전용 · 원본 파일에는 영향 없음)" style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+              {volume < 0.01
+                ? <><line x1="23" y1="9" x2="17" y2="15" /><line x1="17" y1="9" x2="23" y2="15" /></>
+                : <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />}
+            </svg>
+            <input type="range" min="0" max="1" step="0.05" value={volume}
+              onChange={(e) => setVolume(parseFloat(e.target.value))}
+              style={{ width: 60, accentColor: colors.cursor, cursor: 'pointer', height: 4 }} />
+          </div>
+          <span style={{ fontSize: 10, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>{duration}</span>
+        </div>
       </div>
 
       {/* Layer 2: 미리보기 켤 때만 펼쳐지는 얇은 스트립 */}
