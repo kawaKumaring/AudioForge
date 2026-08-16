@@ -1,6 +1,81 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
+import WaveSurfer from 'wavesurfer.js'
 import { useAppStore } from '@/stores/app.store'
+
+function hexToRgba(hex: string, alpha: number): string {
+  const h = hex.replace('#', '')
+  return `rgba(${parseInt(h.slice(0, 2), 16)},${parseInt(h.slice(2, 4), 16)},${parseInt(h.slice(4, 6), 16)},${alpha})`
+}
+function fmtTime(sec: number): string {
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60)
+  return `${m}:${s.toString().padStart(2, '0')}`
+}
+
+// 결과 트랙용 파형 플레이어 (파형 + 시간 + 볼륨 + 드래그 이동). 재생 시에만 지연 생성.
+function TrackPlayer({ path, color, onEnded }: { path: string; color: string; onEnded: () => void }) {
+  const ref = useRef<HTMLDivElement>(null)
+  const wsRef = useRef<WaveSurfer | null>(null)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [cur, setCur] = useState('0:00')
+  const [dur, setDur] = useState('0:00')
+  const [volume, setVolume] = useState(1)
+
+  useEffect(() => {
+    let cancelled = false
+    let ws: WaveSurfer | null = null
+    ;(async () => {
+      const url = await window.api.audio.getFileUrl(path)
+      if (cancelled || !ref.current) return
+      ws = WaveSurfer.create({
+        container: ref.current, waveColor: hexToRgba(color, 0.3), progressColor: color,
+        cursorColor: color, cursorWidth: 2, barWidth: 2, barGap: 2, barRadius: 4,
+        height: 40, normalize: true, backend: 'WebAudio', dragToSeek: true
+      })
+      ws.on('play', () => setIsPlaying(true))
+      ws.on('pause', () => setIsPlaying(false))
+      ws.on('timeupdate', (t) => setCur(fmtTime(t)))
+      ws.on('decode', (d) => setDur(fmtTime(d)))
+      ws.on('ready', () => { ws && ws.play() })   // 펼쳐지면 자동 재생
+      ws.on('finish', () => onEnded())
+      ws.load(url)
+      wsRef.current = ws
+    })()
+    return () => { cancelled = true; ws?.destroy(); wsRef.current = null }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [path])
+
+  useEffect(() => { wsRef.current?.setVolume(volume) }, [volume])
+
+  return (
+    <div style={{ padding: '8px 14px', borderTop: '1px solid var(--border-subtle)' }}>
+      <div ref={ref} style={{ marginBottom: 6 }} />
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <button onClick={() => wsRef.current?.playPause()} style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'center',
+          width: 26, height: 26, borderRadius: '50%', border: 'none', cursor: 'pointer',
+          background: isPlaying ? `${color}20` : color, color: isPlaying ? color : '#fff', flexShrink: 0
+        }}>
+          {isPlaying
+            ? <svg width="11" height="11" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
+            : <svg width="11" height="11" viewBox="0 0 24 24" fill="#fff"><polygon points="7,3 21,12 7,21" /></svg>}
+        </button>
+        <span style={{ fontSize: 10, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>{cur} / {dur}</span>
+        <div title="재생 볼륨 (듣기 전용 · 원본 파일에는 영향 없음)" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5 }}>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
+            {volume < 0.01
+              ? <><line x1="23" y1="9" x2="17" y2="15" /><line x1="17" y1="9" x2="23" y2="15" /></>
+              : <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />}
+          </svg>
+          <input type="range" min="0" max="1" step="0.05" value={volume}
+            onChange={(e) => setVolume(parseFloat(e.target.value))}
+            style={{ width: 56, accentColor: color, cursor: 'pointer', height: 4 }} />
+        </div>
+      </div>
+    </div>
+  )
+}
 
 const TRACK_STYLES: Record<string, { color: string; glow: string }> = {
   vocals:      { color: '#a78bfa', glow: 'rgba(167,139,250,0.15)' },
@@ -24,7 +99,6 @@ const actionBtnStyle = (active: boolean, color: string): React.CSSProperties => 
 })
 
 function TrackItem({ track, index }: { track: { name: string; label: string; path: string }; index: number }) {
-  const audioRef = useRef<HTMLAudioElement | null>(null)
   const { playingTrack, setPlayingTrack, outputDir, mode, translateModel } = useAppStore()
   const isPlaying = playingTrack === track.name
   const st = TRACK_STYLES[track.name] || DEFAULT_STYLE
@@ -43,31 +117,10 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
     window.api.app.readTextFile(base + '_korean.txt').then((t: string | null) => { if (t) setTranslation(t) })
   }, [track.path, outputDir])
 
-  useEffect(() => {
-    if (!isPlaying && audioRef.current) { audioRef.current.pause(); audioRef.current.currentTime = 0 }
-  }, [isPlaying])
-
-  // 언마운트 시 오디오 정리 — 재생 중 트랙 목록 교체/언마운트돼도 소리 잔존 방지 (L-11)
-  useEffect(() => {
-    return () => {
-      if (audioRef.current) {
-        audioRef.current.pause()
-        audioRef.current.src = ''
-        audioRef.current = null
-      }
-    }
-  }, [])
-
-  const handlePlay = async () => {
+  // 재생 토글 — 실제 재생/파형/볼륨은 아래 TrackPlayer(wavesurfer)가 담당. 한 번에 한 트랙만.
+  const handlePlay = () => {
     if (!isAudioTrack) return
-    if (isPlaying) { setPlayingTrack(null); return }
-    if (!audioRef.current) {
-      const url = await window.api.audio.getFileUrl(track.path)
-      audioRef.current = new Audio(url)
-      audioRef.current.onended = () => setPlayingTrack(null)
-    }
-    setPlayingTrack(track.name)
-    audioRef.current.play()
+    setPlayingTrack(isPlaying ? null : track.name)
   }
 
   const handleTrackProcess = async (transcribe: boolean, translate: boolean) => {
@@ -184,6 +237,11 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
           </button>
         )}
       </div>
+
+      {/* 재생 시 펼쳐지는 파형 플레이어 (파형 + 시간 + 볼륨 + 드래그 이동) */}
+      {isPlaying && isAudioTrack && (
+        <TrackPlayer path={track.path} color={st.color} onEnded={() => setPlayingTrack(null)} />
+      )}
 
       {/* Expandable text area */}
       {showText && (transcript || translation) && (

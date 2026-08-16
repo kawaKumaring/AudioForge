@@ -1,5 +1,15 @@
 # AudioForge Changelog
 
+## 2026-08-16 — 결과 트랙 재생기: 파형 + 시간 + 볼륨 + 드래그 이동
+
+- **결과 트랙 재생을 밋밋한 `new Audio` → wavesurfer 파형 플레이어로 교체**. 재생 버튼을 누르면
+  트랙 아래로 **파형 + `현재/전체 시간` + 재생/일시정지 + 볼륨(듣기 전용) + 드래그 이동**이
+  펼쳐짐(상단 파일 카드와 동일한 결). 트랙 색을 파형/컨트롤에 반영.
+- 새 `TrackPlayer` 컴포넌트(`TrackList.tsx`). **재생 시에만 지연 생성** — 트랙 4개를 동시에
+  디코드하지 않음. 접히면 wavesurfer destroy(누수 방지). 한 번에 한 트랙만 재생(기존 semantics 유지).
+- 볼륨은 `setVolume`(Web Audio 게인) — 원본 파일 미변경. 드래그 이동은 `dragToSeek`.
+- 기존 `new Audio`/audioRef 경로 및 L-11 언마운트 정리 제거(플레이어가 자체 정리). 검증: TSC 무에러.
+
 ## 2026-08-16 — 타임라인 번역 파일 생성 (_korean_timeline.txt)
 
 - **번역 시 세그먼트별 타임라인 번역 파일 추가**: `{base}_korean_timeline.txt`
