@@ -160,8 +160,12 @@ def _post_process(args, tracks):
     if args.transcribe:
         from transcribe_worker import transcribe_tracks, set_translate_model
         set_translate_model(getattr(args, "translate_model", "600m"))
-        transcribe_tracks(tracks, args.output, args.whisper_model, args.translate, args.srt,
-                          whisper_lang=getattr(args, "whisper_lang", ""))
+        # 음악 모드는 보컬 트랙만 전사(드럼/베이스 등은 무의미 — 환각·시간낭비 방지).
+        # 대화 모드 등은 모든 트랙(화자)을 전사. 개별 트랙 전사는 TrackList의 '가사' 버튼으로도 가능.
+        targets = [t for t in tracks if t.get("name") == "vocals"] if args.mode == "music" else tracks
+        if targets:
+            transcribe_tracks(targets, args.output, args.whisper_model, args.translate, args.srt,
+                              whisper_lang=getattr(args, "whisper_lang", ""))
 
     # Convert output format
     if args.output_format != "wav":

@@ -25,7 +25,7 @@ const actionBtnStyle = (active: boolean, color: string): React.CSSProperties => 
 
 function TrackItem({ track, index }: { track: { name: string; label: string; path: string }; index: number }) {
   const audioRef = useRef<HTMLAudioElement | null>(null)
-  const { playingTrack, setPlayingTrack, outputDir, mode } = useAppStore()
+  const { playingTrack, setPlayingTrack, outputDir, mode, translateModel } = useAppStore()
   const isPlaying = playingTrack === track.name
   const st = TRACK_STYLES[track.name] || DEFAULT_STYLE
   const [transcript, setTranscript] = useState<string | null>(null)
@@ -97,7 +97,7 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
     })
 
     try {
-      await window.api.audio.processTrack(track.path, outputDir, { transcribe, translate, srt: false })
+      await window.api.audio.processTrack(track.path, outputDir, { transcribe, translate, srt: false, translateModel })
     } catch {
       setProcessing(false)
       cleanup()
@@ -142,6 +142,13 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
               <button onClick={() => handleTrackProcess(false, true)} style={actionBtnStyle(false, 'var(--emerald)')}>
                 <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 8l6 6M4 14l6-6 2 3" /><path d="M2 5h12M7 2v6" /><path d="M12 22l5-10 5 10M14.5 19h5" /></svg>
                 번역
+              </button>
+            )}
+            {translation && !processing && (
+              <button onClick={() => handleTrackProcess(false, true)} style={actionBtnStyle(false, 'var(--text-muted)')}
+                title="현재 번역 설정(600M/1.3B/LLM)으로 다시 번역합니다">
+                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M23 4v6h-6" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" /></svg>
+                다시 번역
               </button>
             )}
             {processing && (
