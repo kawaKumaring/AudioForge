@@ -7,6 +7,7 @@ interface AppState {
   mode: SeparationMode
   trimSilence: boolean
   silenceGap: number
+  silencePreview: boolean
   transcribe: boolean
   translate: boolean
   exportSrt: boolean
@@ -35,6 +36,7 @@ interface AppState {
   setMode: (mode: SeparationMode) => void
   setTrimSilence: (v: boolean) => void
   setSilenceGap: (v: number) => void
+  setSilencePreview: (v: boolean) => void
   setTranscribe: (v: boolean) => void
   setTranslate: (v: boolean) => void
   setExportSrt: (v: boolean) => void
@@ -58,6 +60,7 @@ export const useAppStore = create<AppState>((set) => ({
   mode: 'music',
   trimSilence: false,
   silenceGap: 0.5,
+  silencePreview: false,
   transcribe: true,
   translate: false,
   exportSrt: false,
@@ -86,6 +89,7 @@ export const useAppStore = create<AppState>((set) => ({
   setMode: (mode) => set({ mode }),
   setTrimSilence: (v) => set({ trimSilence: v }),
   setSilenceGap: (v) => set({ silenceGap: v }),
+  setSilencePreview: (v) => set({ silencePreview: v }),
   setTranscribe: (v) => set({ transcribe: v }),
   setTranslate: (v) => set({ translate: v }),
   setExportSrt: (v) => set({ exportSrt: v }),
