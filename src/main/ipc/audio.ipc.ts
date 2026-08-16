@@ -47,15 +47,16 @@ function loadSettings(): Record<string, unknown> {
   } catch { /* ignore */ }
   return {}
 }
-function savePythonPath(p: string): void {
+function saveSetting(key: string, value: unknown): void {
   try {
     const s = loadSettings()
-    s.pythonPath = p
+    s[key] = value
     writeFileSync(settingsFilePath(), JSON.stringify(s, null, 2), 'utf-8')
   } catch (err) {
     console.log(`[AudioForge] 설정 저장 실패: ${(err as Error).message}`)
   }
 }
+function savePythonPath(p: string): void { saveSetting('pythonPath', p) }
 
 let runner: PythonRunner | null = null
 let trackRunner: PythonRunner | null = null
@@ -91,8 +92,11 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
   }
 
   ipcMain.handle('audio:select-file', async () => {
+    // 마지막으로 불러온 폴더에서 열기 — settings.json에 기억(다른 앱 영향 없음)
+    const lastDir = loadSettings().lastDir
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile'],
+      defaultPath: (typeof lastDir === 'string' && existsSync(lastDir)) ? lastDir : undefined,
       filters: [
         // 대표 포맷은 편의를 위해 앞에 두고, 실제 허용은 전체(ffmpeg 디코딩 가능 포맷 전부: mo3 등 포함)
         { name: 'Audio/Video', extensions: ['m4a', 'mp3', 'wav', 'flac', 'ogg', 'aac', 'wma', 'mp4', 'mkv', 'avi', 'mov', 'webm'] },
@@ -107,6 +111,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     if (!existsSync(filePath)) {
       throw new Error(`파일을 찾을 수 없습니다: ${basename(filePath)}`)
     }
+    // 마지막 폴더 기억 — 다이얼로그·드래그앤드롭 공통 경로라 여기서 저장
+    saveSetting('lastDir', dirname(filePath))
     const ffprobe = await findFfprobe()
     // 한글 경로 손상 방지: execFile 배열 인자 (cmd.exe 미경유)
     const { stdout } = await execFileAsync(ffprobe, [

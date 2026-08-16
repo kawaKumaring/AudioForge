@@ -1,5 +1,14 @@
 # AudioForge Changelog
 
+## 2026-08-16 — 파일 열기 시 마지막 폴더 기억
+
+- **문제**: 파일 열기 다이얼로그에 `defaultPath`가 없어 OS 공용 "마지막 다이얼로그 경로"에
+  의존 → 다른 Electron 앱이 그 값을 바꾸면 AudioForge도 엉뚱한 폴더로 열림(사용자 관찰 정확)
+- **수정**: `userData/settings.json`에 마지막 폴더(`lastDir`) 기억. `audio:get-file-info`가
+  다이얼로그·드래그앤드롭 공통 경로이므로 거기서 `dirname` 저장, `audio:select-file`은
+  `defaultPath`로 사용. 저장 유틸을 `saveSetting(key,value)`로 일반화(L-6 pythonPath와 공유)
+  (`src/main/ipc/audio.ipc.ts`). 결정적 — 다른 앱 영향 없음
+
 ## 2026-08-16 — 옵션 패널 레이아웃 wrap + Whisper 툴팁
 
 - **레이아웃 깨짐 수정**: 옵션 서브컨트롤이 `flexWrap` 없는 단일 행이라, 옵션을 켤수록
