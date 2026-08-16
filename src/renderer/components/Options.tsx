@@ -79,10 +79,9 @@ export default function Options() {
             {chip(exportSrt, 'var(--amber)', 'SRT 자막', setExportSrt, '영상 편집기에서 쓰는 시간 동기화 자막 파일(.srt)을 함께 생성합니다')}
           </div>
 
-          {/* Sub-options: 한 줄에 몰아넣지 않고 wrap.
-              출력/화자수/분리(항상 표시되는 앵커)를 앞에 두어 위치를 고정하고,
-              토글로 켜지는 컨트롤(무음간격/Whisper/언어/번역)은 아래로 줄바꿈된다. */}
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 10, alignItems: 'center' }}>
+          {/* Sub-options: 각 컨트롤을 한 줄씩 세로로 쌓아 서로 간섭·밀림 없게(사용자 요청).
+              컨트롤은 자기 너비만 차지하도록 왼쪽 정렬(pill 리스트 느낌). */}
+          <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
             {/* 출력 (앵커) */}
             {!isTranscribeMode && !isSplitMode && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
