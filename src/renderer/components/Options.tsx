@@ -118,6 +118,7 @@ export default function Options() {
                   ['htdemucs', '기본 4트랙', '보컬·드럼·베이스·기타 4개로 분리 (표준·빠름)'],
                   ['htdemucs_ft', '고품질 4트랙', '4개로 분리, 더 정밀하지만 느림'],
                   ['roformer', '보컬 2트랙', '보컬 / 반주 2개로만 분리 (노래 커버·MR용, 보컬 품질 우수)'],
+                  ['roformer_ensemble', '보컬 앙상블', 'BS + Mel-Band 2모델 앙상블 — 잔음·bleed 최소, 가장 느림(2배). 최고 품질 보컬'],
                 ] as const).map(([m, label, hint]) => (
                   <button key={m} onClick={() => !disabled && setDemucsModel(m)} disabled={disabled} title={hint} style={{
                     padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',

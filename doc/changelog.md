@@ -1,5 +1,24 @@
 # AudioForge Changelog
 
+## 2026-08-16 — 보컬 앙상블 (BS-RoFormer + Mel-Band 2모델, 잔음 최소)
+
+목적: "보컬 추출 한계 돌파". 조사 결과 SOTA는 RoFormer 계열이고, 단일 모델 교체보다
+**아키텍처가 다른 두 모델의 앙상블이 잔음·bleed 감소에 지각적으로 크다**는 결론.
+
+- **새 분리 모드 `roformer_ensemble`** — `music_worker.run_roformer_ensemble`.
+  BS-RoFormer(`ep_317`, SDR 12.98) + Mel-Band(`kim_ft2_bleedless_unwa`, bleed 억제 특화)를
+  각각 돌려 **보컬/반주를 파형 평균(avg_wave)** 한다. 두 모델을 임시 폴더에 따로 분리 후 섞음.
+- 스템 명명이 모델마다 달라(BS=`(Vocals)/(Instrumental)`, Mel-Band=`(vocals)/(other)`)
+  대소문자 무시 + 반주 명칭 변형(other/no vocals/accompan) 인식으로 매칭.
+- UI: 분리 앵커에 '보컬 앙상블' 버튼 추가(툴팁: 잔음 최소, 2배 느림). 타입 유니온 확장.
+- audio-separator 0.44.2가 두 모델 모두 네이티브 지원 — **새 의존성 0**, Kim FT2 ckpt만 첫 실행 시
+  `externals/separator_models`에 다운로드(gitignore).
+- 검증: 실곡(250초)으로 실행 → 보컬/반주 스템 생성(각 44MB), 스테레오 44.1k·250.4초·
+  피크<1.0(클리핑 없음)·NaN 없음 확인. py_compile·TSC OK.
+- **한계(정직)**: SDR 이득은 reference 스템이 없어 수치 검증 불가 — 앙상블은 SDR이 아니라
+  아티팩트 감소가 목적이라 최종 품질 판단은 귀로 해야 한다. 커뮤니티 ckpt(Kim FT2)는 상업
+  라이선스 불명확(개인 사용 무방).
+
 ## 2026-08-16 — Whisper 환각 억제 + 타임라인 번역 한 번에(언어 혼입 제거)
 
 실사용 산출물(`F:/Download/AudioForge_output`)에서 두 결함을 근거로 확인해 수정.

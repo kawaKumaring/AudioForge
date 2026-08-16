@@ -5,7 +5,7 @@ import type { SeparationMode, Track, FileInfo } from '../../shared/types'
 export interface RestorableSession {
   mode?: SeparationMode
   options?: Partial<{
-    model: 'htdemucs' | 'htdemucs_ft' | 'roformer'
+    model: 'htdemucs' | 'htdemucs_ft' | 'roformer' | 'roformer_ensemble'
     trimSilence: boolean
     silenceGap: number
     transcribe: boolean
@@ -34,7 +34,7 @@ interface AppState {
   whisperModel: 'small' | 'medium' | 'large-v3' | 'large-v3-turbo'
   whisperLang: string
   translateModel: '600m' | '1.3b' | 'llm'
-  demucsModel: 'htdemucs' | 'htdemucs_ft' | 'roformer'
+  demucsModel: 'htdemucs' | 'htdemucs_ft' | 'roformer' | 'roformer_ensemble'
   nSpeakers: number
   status: 'idle' | 'loading' | 'processing' | 'done' | 'error'
   progress: number
@@ -64,7 +64,7 @@ interface AppState {
   setWhisperModel: (v: 'small' | 'medium' | 'large-v3' | 'large-v3-turbo') => void
   setWhisperLang: (v: string) => void
   setTranslateModel: (v: '600m' | '1.3b' | 'llm') => void
-  setDemucsModel: (v: 'htdemucs' | 'htdemucs_ft' | 'roformer') => void
+  setDemucsModel: (v: 'htdemucs' | 'htdemucs_ft' | 'roformer' | 'roformer_ensemble') => void
   setNSpeakers: (v: number) => void
   setProcessing: () => void
   setProgress: (percent: number, message: string) => void

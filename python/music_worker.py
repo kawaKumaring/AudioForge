@@ -5,6 +5,100 @@ from audio_utils import emit, load_audio, save_audio, convert_to_wav, get_device
 
 # audio-separator RoFormer 보컬 모델 (SDR 12.97, ComfyUI 환경에 이미 설치됨)
 _ROFORMER_MODEL = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
+# 앙상블 2번째 모델: Mel-Band(Kim FT2 bleedless, unwa) — 잔음/bleed 억제 특화.
+# BS(full 계열)와 아키텍처·오차 특성이 달라 평균 시 아티팩트가 줄어든다.
+_MELBAND_ENSEMBLE_MODEL = "mel_band_roformer_kim_ft2_bleedless_unwa.ckpt"
+
+
+def _run_one_roformer(model_name, wav_input, model_dir, work_dir, pct_lo, pct_hi):
+    """단일 RoFormer 모델로 분리 → {'vocals': path, 'instrumental': path} 반환.
+    출력은 work_dir(전용 임시 폴더)에 남긴다(앙상블에서 두 모델 결과를 섞기 위함)."""
+    from audio_separator.separator import Separator
+    os.makedirs(work_dir, exist_ok=True)
+    short = model_name.split(".")[0][:28]
+    emit("progress", percent=pct_lo, message=f"모델 로딩: {short}… (첫 실행 시 다운로드)")
+    sep = Separator(model_file_dir=model_dir, output_dir=work_dir, output_format="WAV")
+    sep.load_model(model_name)
+    emit("progress", percent=(pct_lo + pct_hi) // 2, message="보컬/반주 분리 중... (GPU)")
+    outputs = sep.separate(wav_input)
+    # 스템 명명이 모델마다 다르다: BS는 '(Vocals)'/'(Instrumental)', Mel-Band는
+    # '(vocals)'/'(other)'. 대소문자 무시 + 반주 명칭 변형(other/no vocals 등) 인식.
+    import re
+    res = {}
+    for fn in outputs:
+        low = fn.lower()
+        full = os.path.join(work_dir, fn)
+        if re.search(r'instrumental|other|no[_ ]?vocal|accompan', low):
+            res["instrumental"] = full
+        elif "vocal" in low:
+            res["vocals"] = full
+    emit("progress", percent=pct_hi, message="분리 완료")
+    return res
+
+
+def run_roformer_ensemble(input_path: str, output_dir: str):
+    """BS-RoFormer + Mel-Band(Kim FT2 bleedless) 2모델 앙상블.
+    두 모델의 보컬/반주를 파형 평균(avg_wave)해 잔음·bleed를 줄인다.
+    SDR을 크게 올리는 게 아니라 아티팩트를 줄이는 게 목적 — 단일 모델보다 2배 느림."""
+    emit("status", message="보컬 앙상블 (BS + Mel-Band)", percent=0)
+    try:
+        import audio_separator  # noqa: F401
+    except ImportError as e:
+        emit("error", message=f"audio-separator가 설치되지 않았습니다: {e}")
+        return []
+
+    import tempfile
+    import shutil as _sh
+
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    model_dir = os.path.join(base_dir, "externals", "separator_models")
+    os.makedirs(model_dir, exist_ok=True)
+
+    emit("progress", percent=8, message="입력 오디오 변환 중...")
+    wav_input = convert_to_wav(input_path)
+
+    tmp_root = tempfile.mkdtemp(prefix="af_ens_")
+    try:
+        a = _run_one_roformer(_ROFORMER_MODEL, wav_input, model_dir,
+                              os.path.join(tmp_root, "a"), 12, 48)
+        b = _run_one_roformer(_MELBAND_ENSEMBLE_MODEL, wav_input, model_dir,
+                              os.path.join(tmp_root, "b"), 50, 86)
+    finally:
+        try:
+            os.remove(wav_input)
+            os.rmdir(os.path.dirname(wav_input))
+        except OSError:
+            pass
+
+    if "vocals" not in a or "vocals" not in b:
+        _sh.rmtree(tmp_root, ignore_errors=True)
+        emit("error", message="앙상블 분리 결과가 불완전합니다.")
+        return []
+
+    emit("progress", percent=90, message="두 모델 결과 앙상블(파형 평균) 중...")
+    tracks = []
+    for name, label in (("vocals", "보컬"), ("instrumental", "반주")):
+        pa, pb = a.get(name), b.get(name)
+        out_path = os.path.join(output_dir, f"{name}.wav")
+        if pa and pb and os.path.exists(pa) and os.path.exists(pb):
+            wa, sr = load_audio(pa)
+            wb, _ = load_audio(pb)
+            n = min(wa.shape[-1], wb.shape[-1])
+            ch = min(wa.shape[0], wb.shape[0])
+            mixed = (wa[:ch, :n] + wb[:ch, :n]) / 2.0
+            save_audio(out_path, mixed, sr)
+        elif pa and os.path.exists(pa):
+            os.replace(pa, out_path)
+        else:
+            continue
+        tracks.append({"name": name, "label": label, "path": out_path})
+
+    _sh.rmtree(tmp_root, ignore_errors=True)
+    if not tracks:
+        emit("error", message="앙상블 결과가 없습니다.")
+        return []
+    emit("progress", percent=95, message="앙상블 완료")
+    return tracks
 
 
 def run_roformer_separation(input_path: str, output_dir: str):

@@ -119,6 +119,10 @@ def main():
                 emit("progress", percent=1, message="RoFormer 보컬 분리 엔진 로딩 중...")
                 from music_worker import run_roformer_separation
                 tracks = run_roformer_separation(args.input, args.output) or []
+            elif args.model == "roformer_ensemble":
+                emit("progress", percent=1, message="보컬 앙상블 엔진 로딩 중... (BS + Mel-Band)")
+                from music_worker import run_roformer_ensemble
+                tracks = run_roformer_ensemble(args.input, args.output) or []
             else:
                 emit("progress", percent=1, message="Demucs 엔진 로딩 중... (torch + demucs)")
                 patch_torchaudio()
