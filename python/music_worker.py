@@ -27,8 +27,20 @@ def run_roformer_separation(input_path: str, output_dir: str):
     sep = Separator(model_file_dir=model_dir, output_dir=output_dir, output_format="WAV")
     sep.load_model(_ROFORMER_MODEL)
 
+    # 입력을 ffmpeg로 wav 정규화 — audio-separator 자체 로더(soundfile/librosa)가 못 읽는
+    # 포맷(mo3 등 트래커 모듈 포함)도 ffmpeg가 지원하면 처리되도록. Demucs 경로와 동일 전처리.
+    emit("progress", percent=30, message="입력 오디오 변환 중...")
+    wav_input = convert_to_wav(input_path)
+
     emit("progress", percent=40, message="보컬/반주 분리 중... (GPU)")
-    outputs = sep.separate(input_path)  # output_dir에 파일 저장, 파일명 리스트 반환
+    try:
+        outputs = sep.separate(wav_input)  # output_dir에 파일 저장, 파일명 리스트 반환
+    finally:
+        try:
+            os.remove(wav_input)
+            os.rmdir(os.path.dirname(wav_input))
+        except OSError:
+            pass
 
     tracks = []
     for fn in outputs:

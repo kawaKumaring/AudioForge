@@ -1,5 +1,27 @@
 # AudioForge Changelog
 
+## 2026-08-14 — 입력 포맷 전면 개방 (ffmpeg 디코딩 가능 전부, mo3 등 포함)
+
+- **동기**: 개발자 실사용으로 트래커 모듈(mo3 등) 등 비주류 포맷 입력 필요. UI에는
+  대표 포맷만 유지(긴 나열 회피), 실제 허용은 ffmpeg가 디코딩 가능한 전 포맷으로 확장
+- **입력 필터 개방(2곳)**:
+  - 드래그앤드롭 확장자 화이트리스트 제거 — 모든 파일 허용, 디코딩 불가 시 파이프라인이 에러 처리
+    (`src/renderer/components/DropZone.tsx`)
+  - 파일 다이얼로그에 'All Files'(`*`) 필터 추가, 대표 Audio/Video 필터는 편의용으로 유지
+    (`src/main/ipc/audio.ipc.ts`)
+  - UI 표시 텍스트/배지는 **의도적으로 그대로**(짧게 유지) — 요구사항
+- **RoFormer 경로 ffmpeg 정규화**: 유일하게 원시 입력을 audio-separator 자체 로더로
+  직행하던 `run_roformer_separation`에 `convert_to_wav` 전처리 + 임시파일 정리 추가
+  (`python/music_worker.py`). 나머지 모드는 이미 ffmpeg 경유(Demucs·대화=convert_to_wav,
+  Whisper=내부 ffmpeg, split=ffmpeg 직접)라 무변경
+- **검증**:
+  - 앱이 실제로 고르는 ffmpeg(winget Gyan 8.1)에 `libopenmpt`/`libmodplug` 존재 확인,
+    데뮤서 `libopenmpt — Tracker formats` 등록 확인 → mo3 디코딩 능력 실측
+  - soundfile 불가·ffmpeg 가능 부류(m4a 프록시)로 메커니즘 증명: soundfile 직접 read는
+    LibsndfileError, `convert_to_wav` 경유 시 44100Hz wav 정상 + cleanup 정상
+  - TSC 무에러, music_worker 구문 OK
+  - ⚠️ 실제 `.mo3` 샘플 파일 e2e는 미실행(샘플 부재) — 능력·메커니즘은 검증됨
+
 ## 2026-08-14 — Whisper Turbo 옵션 추가 + 모델 업그레이드 검증
 
 - **Whisper large-v3-turbo 옵션 추가** (기본 large-v3 유지, 비파괴적):

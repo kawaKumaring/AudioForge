@@ -50,11 +50,10 @@ export default function DropZone() {
 
       const file = e.dataTransfer?.files?.[0]
       if (file) {
-        const ext = file.name.split('.').pop()?.toLowerCase()
-        if (['m4a', 'mp3', 'wav', 'flac', 'ogg', 'aac', 'wma', 'mp4', 'mkv', 'avi', 'mov', 'webm'].includes(ext || '')) {
-          const filePath = window.api.utils.getPathForFile(file)
-          if (filePath) loadFile(filePath)
-        }
+        // 확장자 화이트리스트 제거 — ffmpeg가 디코딩 가능한 포맷이면 모두 허용(mo3 등 포함).
+        // UI에는 대표 포맷만 표기하고 실제 허용 범위는 넓게 둔다. 디코딩 불가 파일은 파이프라인이 에러로 처리.
+        const filePath = window.api.utils.getPathForFile(file)
+        if (filePath) loadFile(filePath)
       }
     }
 
