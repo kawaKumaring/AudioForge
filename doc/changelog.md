@@ -10,6 +10,11 @@
   라벨 세로 깨짐 방지 (`src/renderer/components/Options.tsx`)
 - **Whisper 모델 툴팁**: Small/Medium/Large/Turbo 의미를 알기 어렵던 문제 → 크기별 설명
   툴팁 추가(WHISPER_HINTS, 아티스트 친화 평이한 용어: 속도·정확도·용량 트레이드오프)
+- **툴팁 확충(의미 불분명 컨트롤 전반)**: 힌트맵 패턴을 다른 컨트롤에도 적용 —
+  Options: 출력 포맷(WAV/MP3/FLAC=OUTPUT_HINTS), 음악 분리 모델(4트랙/2트랙 설명),
+  언어(자동 vs 강제 이유), 칩 전체(무음제거/텍스트변환/번역/SRT=전문용어 풀이).
+  TTSEditor: 엔진(auto/GPT-SoVITS/F5/Kokoro), 속도·간격 슬라이더. 모두 아티스트 친화 용어
+  (`Options.tsx`, `TTSEditor.tsx`). 모드 탭은 라벨이 이미 명확해 제외
 
 ## 2026-08-14 — 완성도 개선 패스 (L-items + 잔여 정리)
 

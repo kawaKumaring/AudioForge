@@ -238,14 +238,14 @@ export default function TTSEditor() {
           borderRadius: 10, padding: '8px 14px',
           background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', flexShrink: 0
         }}>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>엔진</span>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }} title="목소리를 합성하는 AI 엔진 선택">엔진</span>
           {[
-            { id: 'auto', label: '자동' },
-            { id: 'gptsovits', label: 'GPT-SoVITS' },
-            { id: 'f5tts', label: 'F5' },
-            { id: 'kokoro', label: 'Kokoro' },
+            { id: 'auto', label: '자동', hint: '언어에 맞춰 최적 엔진을 자동 선택 (권장)' },
+            { id: 'gptsovits', label: 'GPT-SoVITS', hint: '한/영/중 지원, 참조 음성으로 목소리 클로닝 (베타)' },
+            { id: 'f5tts', label: 'F5', hint: '영어 중심의 고품질 보이스 클로닝' },
+            { id: 'kokoro', label: 'Kokoro', hint: '한/일/중/영 다국어 폴백 엔진, 가벼움' },
           ].map(e => (
-            <button key={e.id} onClick={() => !disabled && setTtsEngine(e.id)} disabled={disabled} style={{
+            <button key={e.id} onClick={() => !disabled && setTtsEngine(e.id)} disabled={disabled} title={e.hint} style={{
               padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
               fontSize: 9, fontWeight: 600, fontFamily: 'inherit',
               background: ttsEngine === e.id ? 'var(--rose)' : 'transparent',
@@ -260,7 +260,7 @@ export default function TTSEditor() {
           borderRadius: 10, padding: '8px 14px',
           background: 'var(--bg-card)', border: '1px solid var(--border-subtle)'
         }}>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>속도</span>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title="말하기 속도 (1.0 = 기본, 낮을수록 느리게)">속도</span>
           <input type="range" min="0.5" max="2.0" step="0.1" value={ttsSpeed}
             onChange={(e) => setTtsSpeed(parseFloat(e.target.value))} disabled={disabled}
             style={{ flex: 1, accentColor: 'var(--rose)', cursor: 'pointer' }} />
@@ -273,7 +273,7 @@ export default function TTSEditor() {
           borderRadius: 10, padding: '8px 14px',
           background: 'var(--bg-card)', border: '1px solid var(--border-subtle)'
         }}>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>간격</span>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title="문장과 문장 사이에 넣을 무음 길이(초)">간격</span>
           <input type="range" min="0" max="2.0" step="0.1" value={ttsSilenceGap}
             onChange={(e) => setTtsSilenceGap(parseFloat(e.target.value))} disabled={disabled}
             style={{ flex: 1, accentColor: 'var(--rose)', cursor: 'pointer' }} />

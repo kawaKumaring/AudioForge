@@ -9,6 +9,13 @@ const WHISPER_HINTS: Record<string, string> = {
   'large-v3-turbo': 'Large 대비 약 8배 빠름. 정확도는 조금 낮음 (한/일은 Large가 근소 우위)',
 }
 
+// 출력 파일 형식 (툴팁) — 품질/용량 트레이드오프
+const OUTPUT_HINTS: Record<string, string> = {
+  'wav': '무손실 원본 품질. 용량이 큼 (기본)',
+  'mp3': '손실 압축. 용량이 작아 공유·재생에 편리',
+  'flac': '무손실 압축. WAV 품질을 유지하며 용량 절감',
+}
+
 export default function Options() {
   const { mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers,
     setTrimSilence, setSilenceGap, setTranscribe, setTranslate, setExportSrt, setOutputFormat, setWhisperModel, setWhisperLang, setTranslateModel, setDemucsModel, setNSpeakers, status } = useAppStore()
@@ -18,8 +25,8 @@ export default function Options() {
   const isTranscribeMode = mode === 'transcribe'
   const isSplitMode = mode === 'split'
 
-  const chip = (checked: boolean, color: string, label: string, onChange: (v: boolean) => void) => (
-    <label style={{
+  const chip = (checked: boolean, color: string, label: string, onChange: (v: boolean) => void, tooltip?: string) => (
+    <label title={tooltip || ''} style={{
       display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px',
       borderRadius: 8, cursor: disabled ? 'not-allowed' : 'pointer',
       background: checked ? `${color}18` : 'var(--bg-elevated)',
@@ -65,11 +72,11 @@ export default function Options() {
         <div style={{ padding: '0 16px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
           {/* Chips row */}
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {!isTranscribeMode && !isSplitMode && chip(trimSilence, 'var(--accent)', '무음 구간 제거', setTrimSilence)}
-            {!isTranscribeMode && !isSplitMode && chip(transcribe, 'var(--cyan)', '텍스트 변환', setTranscribe)}
-            {isSplitMode && chip(transcribe, 'var(--cyan)', '트랙별 가사 추출', setTranscribe)}
-            {chip(translate, 'var(--emerald)', '한국어 번역', setTranslate)}
-            {chip(exportSrt, 'var(--amber)', 'SRT 자막', setExportSrt)}
+            {!isTranscribeMode && !isSplitMode && chip(trimSilence, 'var(--accent)', '무음 구간 제거', setTrimSilence, '중간의 긴 무음 구간을 잘라내 전체 길이를 줄입니다')}
+            {!isTranscribeMode && !isSplitMode && chip(transcribe, 'var(--cyan)', '텍스트 변환', setTranscribe, '음성을 글자(대본/자막)로 받아쓰기합니다')}
+            {isSplitMode && chip(transcribe, 'var(--cyan)', '트랙별 가사 추출', setTranscribe, '분할된 각 트랙의 음성을 글자로 받아쓰기합니다')}
+            {chip(translate, 'var(--emerald)', '한국어 번역', setTranslate, '받아쓴 텍스트를 한국어로 번역합니다')}
+            {chip(exportSrt, 'var(--amber)', 'SRT 자막', setExportSrt, '영상 편집기에서 쓰는 시간 동기화 자막 파일(.srt)을 함께 생성합니다')}
           </div>
 
           {/* Sub-options: 한 줄에 몰아넣지 않고 wrap.
@@ -81,7 +88,7 @@ export default function Options() {
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>출력</span>
                 {(['wav', 'mp3', 'flac'] as const).map((fmt) => (
-                  <button key={fmt} onClick={() => !disabled && setOutputFormat(fmt)} disabled={disabled} style={{
+                  <button key={fmt} onClick={() => !disabled && setOutputFormat(fmt)} disabled={disabled} title={OUTPUT_HINTS[fmt] || ''} style={{
                     padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
                     fontSize: 10, fontWeight: 600, textTransform: 'uppercase', fontFamily: 'inherit',
                     background: outputFormat === fmt ? 'var(--accent)' : 'transparent',
@@ -108,8 +115,12 @@ export default function Options() {
             {mode === 'music' && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>분리</span>
-                {([['htdemucs', '기본 4트랙'], ['htdemucs_ft', '고품질 4트랙'], ['roformer', '보컬 2트랙']] as const).map(([m, label]) => (
-                  <button key={m} onClick={() => !disabled && setDemucsModel(m)} disabled={disabled} style={{
+                {([
+                  ['htdemucs', '기본 4트랙', '보컬·드럼·베이스·기타 4개로 분리 (표준·빠름)'],
+                  ['htdemucs_ft', '고품질 4트랙', '4개로 분리, 더 정밀하지만 느림'],
+                  ['roformer', '보컬 2트랙', '보컬 / 반주 2개로만 분리 (노래 커버·MR용, 보컬 품질 우수)'],
+                ] as const).map(([m, label, hint]) => (
+                  <button key={m} onClick={() => !disabled && setDemucsModel(m)} disabled={disabled} title={hint} style={{
                     padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
                     fontSize: 10, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',
                     background: demucsModel === m ? 'var(--accent)' : 'transparent',
@@ -149,7 +160,9 @@ export default function Options() {
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>언어</span>
                 {([['auto', '자동'], ['ko', '한국어'], ['en', '영어'], ['ja', '일본어'], ['zh', '중국어']] as const).map(([code, label]) => (
-                  <button key={code} onClick={() => !disabled && setWhisperLang(code)} disabled={disabled} style={{
+                  <button key={code} onClick={() => !disabled && setWhisperLang(code)} disabled={disabled}
+                    title={code === 'auto' ? '언어를 자동 감지 (기본). 언어를 잘못 잡거나 엉뚱한 자막이 나오면 특정 언어로 강제하세요' : `${label}로 강제 인식 — 자동 감지 오류 방지`}
+                    style={{
                     padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
                     fontSize: 10, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',
                     background: whisperLang === code ? 'var(--cyan)' : 'transparent',
