@@ -15,6 +15,9 @@ import re
 from audio_utils import emit, get_device, find_ffmpeg, patch_torchaudio
 
 # ── Emotion definitions ──
+# ⚠️ 감정 id는 UI(src/renderer/components/TTSEditor.tsx의 EMOTION_GROUPS)와 공유된다.
+# 여기 값(id)/키(한글 태그)를 바꾸면 TS도 함께 갱신할 것. 불일치는 smoke_test의
+# _check_emotions()가 잡는다(TS id ⊆ EMOTION_PROMPTS 키 ∩ EMOTION_TAGS 값). — L-3
 
 EMOTION_TAGS = {
     "기본": "default", "기쁨": "happy", "슬픔": "sad", "화남": "angry",

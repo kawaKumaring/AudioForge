@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useAppStore } from '@/stores/app.store'
 
+// ⚠️ 각 emotion의 id는 Python(python/tts_worker.py의 EMOTION_TAGS 값 / EMOTION_PROMPTS 키)과
+// 공유된다. id를 추가/변경하면 Python도 함께 갱신할 것. 불일치는 smoke_test._check_emotions()가
+// FAIL로 잡는다(색상/그룹/한글 label은 UI 전용이라 Python과 무관). — L-3
 const EMOTION_GROUPS = [
   {
     name: '기본',

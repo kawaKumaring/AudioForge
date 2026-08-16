@@ -37,6 +37,13 @@
   공통 함수 `_extract_tracks_ffmpeg(...)`로 통합(차이는 진행률 범위·라벨 규칙뿐 → 파라미터화).
   실행 검증: 6초 입력 2,4초 분할 → 3트랙(0-2/2-4/4-6), 라벨/파일명/메타데이터/진행률 정확
   (`python/separate.py`)
+- L-3: 감정 정의 TS(TTSEditor.tsx)/Python(tts_worker.py) 중복 → **드리프트 가드로 해결**.
+  두 정의는 관심사가 달라(TS=색상/그룹, Python=한/영 태그·프롬프트) 분리 유지하되,
+  smoke_test에 `_check_emotions()` 추가: TS의 emotion id를 파싱해 `id ⊆ EMOTION_PROMPTS 키
+  ∩ EMOTION_TAGS 값` 불변식 대조, 어긋나면 조용한 기본값 폴백 대신 FAIL. 양쪽에 교차참조 주석.
+  공유 JSON(단일 소스) 방식은 Vite의 src 밖 import + 패키징 포함이 필요하고 이 환경에서
+  프로덕션 빌드 검증이 불가('dev OK, 배포 깨짐' 리스크)해 **의도적으로 채택 안 함**.
+  검증: `smoke_test --quick`에서 TS 50종 ⊆ Python 일치 PASS(가드가 스코핑 오탐도 잡아냄)
 
 ## 2026-08-14 — 입력 포맷 전면 개방 (ffmpeg 디코딩 가능 전부, mo3 등 포함)
 

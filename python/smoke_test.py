@@ -102,6 +102,43 @@ def _check_translate():
         return False, f"{type(e).__name__}: {str(e)[:100]}"
 
 
+def _check_emotions():
+    """감정 정의 드리프트 감지 (L-3). TS(TTSEditor.tsx)와 Python(tts_worker)은 관심사가
+    달라 분리 유지하되(TS=색상/그룹, Python=한/영 태그·영어 프롬프트), 공유 불변식
+    'TS의 emotion id ⊆ EMOTION_PROMPTS 키 ∩ EMOTION_TAGS 값'이 어긋나면 런타임에
+    조용히 기본값으로 폴백한다. 그 드리프트를 여기서 시끄럽게 실패시킨다.
+    런타임/패키징 결합 없이 테스트 시점에만 대조 → 배포 리스크 0."""
+    import re
+    try:
+        from tts_worker import EMOTION_TAGS, EMOTION_PROMPTS
+    except Exception as e:  # noqa: BLE001
+        return False, f"tts_worker import 실패: {type(e).__name__}: {e}"
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    tsx = os.path.join(base, "src", "renderer", "components", "TTSEditor.tsx")
+    if not os.path.exists(tsx):
+        return False, "TTSEditor.tsx 없음"
+    src = open(tsx, encoding="utf-8").read()
+    # EMOTION_GROUPS 블록으로 한정 — 엔진 셀렉터 등 다른 id:'...' 오탐 방지
+    start = src.find("const EMOTION_GROUPS")
+    end = src.find("const ALL_EMOTIONS", start)
+    block = src[start:end] if start != -1 and end != -1 else ""
+    ts_ids = set(re.findall(r"id:\s*'([A-Za-z_]+)'", block))
+    if not ts_ids:
+        return False, "TS emotion id 추출 실패 (구조/정규식 변경?)"
+    prompt_keys = set(EMOTION_PROMPTS)
+    tag_ids = set(EMOTION_TAGS.values())
+    problems = []
+    if ts_ids - prompt_keys:
+        problems.append(f"TS에 있으나 프롬프트 없음: {sorted(ts_ids - prompt_keys)}")
+    if ts_ids - tag_ids:
+        problems.append(f"TS에 있으나 태그 매핑 없음: {sorted(ts_ids - tag_ids)}")
+    if tag_ids - prompt_keys:  # Python 내부 일관성
+        problems.append(f"태그 값인데 프롬프트 없음: {sorted(tag_ids - prompt_keys)}")
+    if problems:
+        return False, " / ".join(problems)
+    return True, f"TS {len(ts_ids)}종 ⊆ Python 정의 일치"
+
+
 def _find_sample():
     """작업파일/ 폴더에서 첫 오디오 샘플 탐색."""
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -156,6 +193,10 @@ def main():
     else:
         record("split", "SKIP", "ffmpeg 없음")
         record("meta-fix", "SKIP", "ffmpeg 없음")
+
+    # ── 감정 정의 TS↔Python 드리프트 감지 (L-3, torch 불필요) ──
+    ok, d = _check_emotions()
+    record("감정정의(L-3)", "PASS" if ok else "FAIL", d)
 
     if args.quick:
         return _summary(results)
