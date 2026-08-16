@@ -1,4 +1,4 @@
-import { ipcMain, dialog, BrowserWindow, shell } from 'electron'
+import { ipcMain, dialog, BrowserWindow, shell, app } from 'electron'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { join, basename, dirname, extname } from 'path'
@@ -35,6 +35,28 @@ function resolvePythonPath(): string {
   return 'python'
 }
 
+// L-6: 사용자가 고른 python 경로를 userData/settings.json에 영속화 → 재시작 후에도 유지.
+// (app.getPath는 ready 이후에만 안전하므로 여기서 함수로만 정의하고 호출은 registerAudioIpc 내부에서)
+function settingsFilePath(): string {
+  return join(app.getPath('userData'), 'settings.json')
+}
+function loadSettings(): Record<string, unknown> {
+  try {
+    const f = settingsFilePath()
+    if (existsSync(f)) return JSON.parse(readFileSync(f, 'utf-8'))
+  } catch { /* ignore */ }
+  return {}
+}
+function savePythonPath(p: string): void {
+  try {
+    const s = loadSettings()
+    s.pythonPath = p
+    writeFileSync(settingsFilePath(), JSON.stringify(s, null, 2), 'utf-8')
+  } catch (err) {
+    console.log(`[AudioForge] 설정 저장 실패: ${(err as Error).message}`)
+  }
+}
+
 let runner: PythonRunner | null = null
 let trackRunner: PythonRunner | null = null
 let pythonPath = resolvePythonPath()
@@ -54,6 +76,15 @@ async function findFfprobe(): Promise<string> {
 }
 
 export function registerAudioIpc(mainWindow: BrowserWindow): void {
+  // 영속화된 사용자 지정 python 경로가 있으면 우선 적용(재시작 후에도 유지) — L-6.
+  // 사용자의 명시적 선택이 자동 해석(env.json/기본값)보다 우선한다.
+  try {
+    const persisted = loadSettings().pythonPath
+    if (typeof persisted === 'string' && existsSync(persisted)) {
+      pythonPath = persisted
+    }
+  } catch { /* ignore */ }
+
   // Helper to send error to renderer
   const sendError = (message: string) => {
     mainWindow.webContents.send('audio:error', { message })
@@ -349,6 +380,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
   ipcMain.handle('settings:set', (_event, key: string, value: unknown) => {
     if (key === 'pythonPath' && typeof value === 'string') {
       pythonPath = value
+      savePythonPath(value)  // L-6: 영속화
     }
   })
 
@@ -359,6 +391,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     })
     if (result.canceled) return null
     pythonPath = result.filePaths[0]
+    savePythonPath(pythonPath)  // L-6: 영속화
     return pythonPath
   })
 

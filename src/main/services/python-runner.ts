@@ -120,7 +120,18 @@ export class PythonRunner extends EventEmitter {
 
   cancel(): void {
     if (this.process) {
-      this.process.kill()
+      const pid = this.process.pid
+      // Windows: kill()은 부모 python만 종료 → 자식(ffmpeg, 격리 venv 등)이 잔존할 수 있어
+      // taskkill /T로 프로세스 트리 전체를 종료. 실패 시 기본 kill()로 폴백.
+      if (process.platform === 'win32' && pid) {
+        try {
+          spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true })
+        } catch {
+          this.process.kill()
+        }
+      } else {
+        this.process.kill()
+      }
       this.process = null
     }
   }

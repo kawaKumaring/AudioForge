@@ -13,6 +13,17 @@
   whisper 주석에 large-v3-turbo 추가. (07-05 이후 speechbrain/whisper/f5-tts/kokoro는 이미 반영돼 있어
   L-4 원문의 "누락" 지적 대부분은 이미 해결된 상태였음 — 실제 남은 건 audio-separator였음)
 
+**그룹 B — 취소 견고성**
+- L-9: `PythonRunner.cancel()`이 `kill()`로 부모 python만 종료 → 자식(ffmpeg/격리 venv) 잔존 가능.
+  Windows에서 `taskkill /pid <pid> /T /F`로 프로세스 트리 전체 종료, 실패 시 `kill()` 폴백.
+  비 Windows는 기존 `kill()` 유지 (`src/main/services/python-runner.ts`)
+
+**그룹 C — 설정 영속화**
+- L-6: 사용자가 고른 python 경로가 메모리에만 있어 재시작 시 초기화되던 문제.
+  `userData/settings.json`에 저장(`settings:set`/`settings:select-python-path`), 시작 시 우선 적용.
+  사용자 명시 선택이 자동 해석(env.json/기본값)보다 우선. app.getPath는 ready 이후에만 접근
+  (`registerAudioIpc` 내부에서 로드) (`src/main/ipc/audio.ipc.ts`)
+
 ## 2026-08-14 — 입력 포맷 전면 개방 (ffmpeg 디코딩 가능 전부, mo3 등 포함)
 
 - **동기**: 개발자 실사용으로 트래커 모듈(mo3 등) 등 비주류 포맷 입력 필요. UI에는
