@@ -2,10 +2,12 @@
 
 import os
 import shutil
-from audio_utils import emit, load_audio, save_audio, convert_to_wav, get_device
+from audio_utils import emit, load_audio, save_audio, convert_to_wav
+from gpu_policy import select_device, run_with_oom_retry
 
 
-def run_conversation_separation(input_path: str, output_dir: str, n_speakers: int = 2):
+def run_conversation_separation(input_path: str, output_dir: str, n_speakers: int = 2,
+                                gpu_policy: str = "auto"):
     """High-quality speaker separation using:
       1. Silero VAD (neural network) for precise speech detection
       2. Sliding window (1.5s, 0.5s hop) with ECAPA-TDNN embeddings
@@ -22,9 +24,14 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
         emit("error", message=f"필요한 패키지가 설치되지 않았습니다: {e}")
         return []
 
-    emit("progress", percent=2, message="GPU 확인 중... (점유 시 CPU로 자동 전환)")
-    device = get_device(timeout_sec=10)
-    emit("progress", percent=3, message=f"디바이스: {device.upper()}")
+    emit("progress", percent=2, message="GPU 확인 중... (실제 여유 VRAM 기준, 점유 시 CPU 전환)")
+    try:
+        device, reason = select_device(gpu_policy, timeout_sec=10)
+    except RuntimeError as e:
+        # 강제 GPU인데 CUDA 미가용 등 — 조용히 CPU로 낮추지 않고 명확히 실패
+        emit("error", message=str(e))
+        return []
+    emit("progress", percent=3, message=f"디바이스: {device.upper()} ({reason})")
 
     # ── Convert to WAV ──
     emit("progress", percent=2, message="오디오 변환 중...")
@@ -73,31 +80,7 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
 
         emit("progress", percent=12, message=f"Silero VAD: {len(speech_timestamps)}개 발화 구간")
 
-        # ── Step 2: Load ECAPA-TDNN ──
-        emit("progress", percent=14, message="ECAPA-TDNN 모델 로딩 중... (첫 실행 시 다운로드)")
-
-        _orig_symlink = getattr(os, "symlink", None)
-        def _copy_instead(src, dst, *a, **kw):
-            if os.path.isdir(src):
-                shutil.copytree(src, dst, dirs_exist_ok=True)
-            else:
-                shutil.copy2(src, dst)
-        os.symlink = _copy_instead
-
-        try:
-            from speechbrain.inference.speaker import EncoderClassifier
-            emit("progress", percent=15, message="SpeechBrain 모델 다운로드/로딩 중...")
-            encoder = EncoderClassifier.from_hparams(
-                source="speechbrain/spkrec-ecapa-voxceleb",
-                savedir=os.path.join(os.path.expanduser("~"), ".cache", "speechbrain", "ecapa"),
-                run_opts={"device": device}
-            )
-            emit("progress", percent=17, message="ECAPA-TDNN 로딩 완료")
-        finally:
-            if _orig_symlink:
-                os.symlink = _orig_symlink
-
-        # ── Step 3: Sliding window embedding extraction ──
+        # ── Step 2/3: 윈도우 준비(CPU) → ECAPA 임베딩 추출(GPU, OOM 시 CPU 1회 재시도) ──
         WIN_SEC = 1.5    # window size in seconds
         HOP_SEC = 0.5    # hop size (overlap = WIN - HOP = 1.0s)
         MIN_SPEECH_RATIO = 0.3  # minimum speech ratio in window to extract embedding
@@ -106,9 +89,9 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
         hop_samples = int(HOP_SEC * SR)
 
         n_windows = max(1, (n_16k - win_samples) // hop_samples + 1)
-        emit("progress", percent=18, message=f"슬라이딩 윈도우 분석: {n_windows}개 윈도우")
+        emit("progress", percent=13, message=f"슬라이딩 윈도우 분석: {n_windows}개 윈도우")
 
-        # Pass 1: 윈도우별 발화 청크 준비 (GPU 호출 없음)
+        # Pass 1: 윈도우별 발화 청크 준비 (GPU 호출 없음 — 재시도해도 재계산 불필요)
         EMB_BATCH = 32
         window_meta = []  # (center_time, chunk_np or None)
         for w in range(n_windows):
@@ -127,30 +110,72 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
             chunk[~speech_mask[start:end]] = 0.0  # zero out non-speech
             window_meta.append((center_time, chunk))
 
-        # Pass 2: 같은 길이 청크끼리 묶어 배치 추론.
-        # 동일 길이만 한 배치로 → 패딩이 없어 개별 추론과 결과가 동일하다.
+        # Pass 2 준비: 같은 길이 청크끼리 묶어 배치 추론(패딩 없어 개별 추론과 동일).
         from collections import defaultdict
         length_groups = defaultdict(list)
         for i, (_, chunk) in enumerate(window_meta):
             if chunk is not None:
                 length_groups[len(chunk)].append(i)
-
-        embeddings_by_idx = {}
         n_valid_total = sum(len(v) for v in length_groups.values())
-        done = 0
-        for _length, idxs in length_groups.items():
-            for b in range(0, len(idxs), EMB_BATCH):
-                batch_idxs = idxs[b:b + EMB_BATCH]
-                batch_np = np.stack([window_meta[i][1] for i in batch_idxs])
-                batch_tensor = torch.from_numpy(batch_np).float().to(device)
-                with torch.no_grad():
-                    embs = encoder.encode_batch(batch_tensor)  # (B, 1, D)
-                embs = embs.squeeze(1).cpu().numpy()
-                for k, i in enumerate(batch_idxs):
-                    embeddings_by_idx[i] = embs[k]
-                done += len(batch_idxs)
-                pct = 18 + int((done / max(n_valid_total, 1)) * 35)
-                emit("progress", percent=pct, message=f"임베딩 추출 중... ({done}/{n_valid_total})")
+
+        # ECAPA 로딩 + 배치 추론을 하나의 재시도 단위로 — CUDA OOM 시 정리 후 CPU로 1회 재시도.
+        def _extract_embeddings(dev):
+            emit("progress", percent=14,
+                 message=f"ECAPA-TDNN 모델 로딩 중... ({dev.upper()}, 첫 실행 시 다운로드)")
+            _orig_symlink = getattr(os, "symlink", None)
+
+            def _copy_instead(src, dst, *a, **kw):
+                if os.path.isdir(src):
+                    shutil.copytree(src, dst, dirs_exist_ok=True)
+                else:
+                    shutil.copy2(src, dst)
+            os.symlink = _copy_instead
+            try:
+                from speechbrain.inference.speaker import EncoderClassifier
+                emit("progress", percent=15, message="SpeechBrain 모델 다운로드/로딩 중...")
+                enc = EncoderClassifier.from_hparams(
+                    source="speechbrain/spkrec-ecapa-voxceleb",
+                    savedir=os.path.join(os.path.expanduser("~"), ".cache", "speechbrain", "ecapa"),
+                    run_opts={"device": dev}
+                )
+                emit("progress", percent=17, message=f"ECAPA-TDNN 로딩 완료 ({dev.upper()})")
+            finally:
+                if _orig_symlink:
+                    os.symlink = _orig_symlink
+
+            emb_by_idx = {}
+            done = 0
+            for _length, idxs in length_groups.items():
+                for b in range(0, len(idxs), EMB_BATCH):
+                    batch_idxs = idxs[b:b + EMB_BATCH]
+                    batch_np = np.stack([window_meta[i][1] for i in batch_idxs])
+                    batch_tensor = torch.from_numpy(batch_np).float().to(dev)
+                    with torch.no_grad():
+                        embs = enc.encode_batch(batch_tensor)  # (B, 1, D)
+                    embs = embs.squeeze(1).cpu().numpy()
+                    for k, i in enumerate(batch_idxs):
+                        emb_by_idx[i] = embs[k]
+                    done += len(batch_idxs)
+                    pct = 18 + int((done / max(n_valid_total, 1)) * 35)
+                    emit("progress", percent=pct,
+                         message=f"임베딩 추출 중... ({done}/{n_valid_total}, {dev.upper()})")
+            return emb_by_idx
+
+        def _cleanup_cuda():
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+        def _on_oom(e):
+            emit("progress", percent=14,
+                 message=f"CUDA 메모리 부족 → CPU로 1회 재시도 ({str(e)[:60]})")
+
+        embeddings_by_idx, used_device = run_with_oom_retry(
+            _extract_embeddings, device, cleanup=_cleanup_cuda, on_fallback=_on_oom)
+        if used_device != device:
+            emit("progress", percent=53,
+                 message=f"임베딩 추출: {used_device.upper()}로 완료 (GPU→CPU 전환됨)")
 
         window_embeddings = [(t, embeddings_by_idx.get(i)) for i, (t, _) in enumerate(window_meta)]
 

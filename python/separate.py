@@ -66,6 +66,7 @@ def main():
         args.split_points = config.get("splitPoints", args.split_points)
         args.split_labels = config.get("splitLabels", args.split_labels)
         args.n_speakers = config.get("nSpeakers", args.n_speakers)
+        args.gpu_policy = config.get("gpuPolicy", "auto")  # 대화 분리 GPU 정책(auto/gpu/cpu)
         # TTS fields
         args.tts_text = config.get("ttsText", "")
         args.tts_speed = config.get("ttsSpeed", 1.0)
@@ -137,7 +138,9 @@ def main():
             patch_torchaudio()
             from conversation_worker import run_conversation_separation
             emit("progress", percent=2, message="엔진 로딩 완료, 분리 시작")
-            tracks = run_conversation_separation(args.input, args.output, args.n_speakers) or []
+            tracks = run_conversation_separation(
+                args.input, args.output, args.n_speakers,
+                gpu_policy=getattr(args, "gpu_policy", "auto")) or []
 
         if not tracks:
             emit("error", message="분리 결과가 없습니다.")

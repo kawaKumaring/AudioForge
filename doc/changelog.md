@@ -1,5 +1,41 @@
 # AudioForge Changelog
 
+## 2026-08-21 — 대화 분리 GPU 정책 분리(Auto/GPU/CPU) + OOM 재시도 + 종료 상태 보장
+
+증상: ComfyUI 실행 중 대화 분리가 장시간 준비 상태에 머묾(종료 후 정상). 원인: `get_device()`가
+`torch.zeros(1)` 성공만 검사 → ComfyUI가 VRAM을 잡고 있어도 GPU로 판정해 경합. TTS 코드는 불변.
+
+- **신규 `python/gpu_policy.py`** — GPU 선택 정책 분리(다른 엔진 재사용 가능):
+  - `select_device(policy, min_free_mb=1500, timeout_sec)` → `(device, reason)`. **스칼라 할당이 아니라
+    `torch.cuda.mem_get_info`의 실제 여유 VRAM**으로 판단(free는 ComfyUI 등 타 프로세스 점유를 반영).
+    Auto: 여유 VRAM ≥ 임계면 GPU, 아니면 CPU(사유 포함). GPU 강제: CUDA 미가용이면 **조용히 CPU로
+    낮추지 않고 RuntimeError**. CPU 강제: 항상 CPU. CUDA 조회는 데몬 스레드+타임아웃(busy hang 방어).
+  - `run_with_oom_retry(fn, device, cleanup, on_fallback)` → `(result, used_device)`: cuda에서 **CUDA OOM만**
+    정리 후 CPU로 1회 재시도. OOM 아닌 예외는 전파(원인 불명을 CPU 성공으로 숨기지 않음). `is_cuda_oom` 판별.
+    **OOM 정리 시점 교정**: except 안에서 정리하면 traceback이 fn 프레임(GPU 모델·배치 텐서)을 붙들어
+    empty_cache로도 VRAM이 안 풀린다 → OOM 메시지만 문자열로 보관하고 `del e`로 참조를 끊은 뒤,
+    **except 범위를 벗어나 `gc.collect()` → cleanup(empty_cache) → CPU 재시도** 순으로 실행.
+  - `get_device()`(transcribe/music/tts 공용)는 **건드리지 않음** — 이번 변경은 대화 경로로 한정.
+- **`conversation_worker.py`**: `select_device(gpu_policy)`로 장치+사유 선택, progress에 표시.
+  ECAPA 로딩+배치 추론을 하나의 재시도 단위(`_extract_embeddings(dev)`)로 묶어 `run_with_oom_retry`로
+  감쌈 → CUDA OOM 시 `empty_cache` 후 CPU 1회 재시도(전환 사유 표시). CPU-only 준비(window_meta)는
+  재시도 밖. `run_conversation_separation(..., gpu_policy="auto")`.
+- **`separate.py`**: config `gpuPolicy`(기본 auto)를 대화 분리에 전달(다른 모드 불변).
+- **신규 `src/main/services/run-settlement.ts`** + `audio.ipc.ts` 연결: 프로세스가 result/error/watchdog 중
+  하나로 반드시 '정착'하도록 `createSettlementGuard` 추출. 외부 kill·코드0 무결과 등 어떤 종료에도 `done`에서
+  오류로 마감 → **UI가 processing에 남지 않음**. 중복 오류 전송 방지. (테스트 가능하도록 순수 모듈로 분리.)
+- **신규 `python/test_gpu_policy.py`**(16케이스): Auto→GPU(여유충분)/Auto→CPU(ComfyUI 점유 mock=free 300MB)/
+  강제 GPU/강제 GPU 미가용 예외/강제 CPU/미가용/조회실패/타임아웃/스칼라할당 근거배제, OOM→CPU 재시도/
+  **cleanup이 CPU 재시도보다 먼저·순서 검증**/비-OOM 전파(cleanup 미실행)/cpu 미재시도, is_cuda_oom.
+  실제 CUDA 없이 torch.cuda mock. 모델 로딩 0회.
+- **신규 `src/main/services/run-settlement.test.ts`**(6케이스, node:test): result→done 무오류/error→done 중복없음/
+  watchdog→done 중복없음/무정착 done→완료신호없음 오류/done 중복호출 1회/settled 플래그. `npm test` 글롭을
+  `src/**/*.test.ts`로 확장.
+- **범위 준수**: TTS 코드 불변. get_device 공용 로직 불변(대화 경로만 신규 정책 사용). 새 패키지 0.
+- 검증: gpu_policy 16 · discovery 68 · smoke --quick 3/3(SKIP 0) · npm test 12(ttsConfig 6+settlement 6) · tsc · build 통과.
+- **미검증(사용자 확인 필요)**: 실제 ComfyUI 점유 상황에서 1.5GB 임계로 Auto가 CPU를 고르는지는 미입증
+  (현재 여유 VRAM ~15GB라 Auto=GPU 확인됨). push 전 ComfyUI 실행 상태에서 여유 VRAM·Auto 선택 1회 확인 권장.
+
 ## 2026-08-21 — TTS 2C-1: 참조 전사 구조화 + 조용한 ref-free 강등 관측화
 
 목표: GPT-SoVITS 참조 음성의 Whisper 전사 결과를 구조화하고, 전사 실패·빈 결과·미지원 언어가

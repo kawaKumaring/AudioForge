@@ -5,6 +5,7 @@ import { join, basename, dirname, extname } from 'path'
 import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
+import { createSettlementGuard } from '../services/run-settlement'
 import { buildTtsConfig, type TtsInputOptions } from '../../shared/ttsConfig'
 
 // execFile(배열 인자)은 cmd.exe를 거치지 않아 시스템 코드페이지(CP949)의
@@ -193,6 +194,10 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
 
     runner = new PythonRunner(pythonPath)
 
+    // 종료 시 UI가 'processing'에 남지 않도록: result/error/watchdog 중 하나로 반드시 '정착'.
+    // 어느 것도 없이 프로세스가 끝나면(예: 외부 kill, 코드 0인데 result 미도달) done에서 오류로 마감.
+    const settle = createSettlementGuard(sendError)
+
     runner.on('progress', (data) => {
       mainWindow.webContents.send('audio:progress', data)
     })
@@ -216,10 +221,12 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       } catch (err) {
         console.log(`[AudioForge] session.json 저장 실패: ${(err as Error).message}`)
       }
+      settle.markSettled()
       mainWindow.webContents.send('audio:result', data)
     })
 
     runner.on('error', (message) => {
+      settle.markSettled()
       sendError(typeof message === 'string' ? message : String(message))
     })
 
@@ -231,6 +238,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       if (watchdog) clearTimeout(watchdog)
       watchdog = setTimeout(() => {
         if (runner?.isRunning) {
+          settle.markSettled()
           runner.cancel()
           sendError('처리 시간이 초과되었습니다 (5분간 응답 없음). Python 환경을 확인해주세요.')
         }
@@ -239,8 +247,10 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
 
     resetWatchdog()
 
-    runner.on('done', () => {
+    runner.on('done', (code) => {
       if (watchdog) clearTimeout(watchdog)
+      // 정착 신호(result/error/watchdog)가 없었으면 여기서 오류로 마감 → UI가 processing에 안 남음.
+      settle.finish(code)
       // Clean up config file
       try { unlinkSync(configPath) } catch {}
       runner = null
