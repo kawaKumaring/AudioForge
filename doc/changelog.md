@@ -1,5 +1,20 @@
 # AudioForge Changelog
 
+## 2026-08-20 — TTS 2A: 감정 참조 라우팅 회귀 테스트 (모델 없이 검증)
+
+1단계(전달 경로)에 이어, 등록한 감정별 참조 음성이 **실제 파일 그대로** 올바른 문장에
+전달되는지 확정. **품질/길이 검증은 2B로 분리**(이번은 라우팅 정확성만).
+
+- 신규 `python/test_tts_routing.py`(stdlib `unittest`, **새 의존성 0**). 실제 `tts_worker.synthesize()`를
+  호출해 파싱→참조 선택→엔진 호출 전 흐름을 통합 검증(헬퍼만 따로 테스트하지 않음).
+- 모델 차단: `_select_engine`을 가짜 엔진 반환으로 monkeypatch → GPT-SoVITS/F5/Kokoro 로딩·추론
+  0회. `_engine_cache` 빈 상태 + 실행 0.24초로 확인.
+- 검증 케이스: 기쁨→happy.wav(happy) · 슬픔→sad.wav(sad) · 화남→미등록이라 default.wav(angry) ·
+  본문만 전달(태그 제거) · synthesized.wav 생성 · 알수없는태그/없는경로/무태그→default 폴백 ·
+  교차 등록 시 참조 뒤바뀜 없음. 6/6 PASS.
+- **production 코드 변경 없음** — 현재 구현이 그대로 통과(요구사항: 통과 시 테스트만 추가).
+  IPC 경계 `as TtsInputOptions`는 런타임 검증 아님(2A 차단 사유 아님, 유지). npm test·build·tsc OK.
+
 ## 2026-08-20 — TTS 1단계 전달 결함 수정 (ttsEmotionRefs 누락 + 0초 변질)
 
 TTS 옵션 전달 경로만 수정(다른 모드 코드 불변). 확인된 결함 3건:
