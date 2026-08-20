@@ -1,5 +1,75 @@
 # AudioForge Changelog
 
+## 2026-08-21 — Qwen3-TTS 엔진 연동 (한국어 Auto 우선순위, job bridge 모델 1회 로딩)
+
+배경: 블라인드 청취에서 GPT-SoVITS v2 한국어 제로샷이 4조건 모두 "외국인식 억양"(v2 한계). 로컬
+Qwen3-TTS-12Hz-0.6B-Base(공식 Base) 최소 비교에서 4개 중 3개 억양 제거. → production 연동(GPT-SoVITS 병존).
+
+- **신규 엔진 `qwen3`(`QwenTTSEngine`)** — 격리 `externals/qwen3_tts_venv`에서 **job bridge(`qwen_bridge.py`)로
+  모델 1회 로딩 후 전 문장 배치 처리**(문장별 프로세스 금지). GPT-SoVITS 엔진은 **제거하지 않고 병존**.
+- **폴백 범위(정확히)**: 두 종류를 구분한다.
+  - **프리플라이트 불가 → GPT-SoVITS 폴백**: `available()`이 False(venv/bridge/스냅샷 필수 파일 부재)이거나
+    `_select_job_engine`이 한국어 Auto에서 Qwen을 못 고를 때만, **모델 로딩 전에** 조용히가 아니라 warning 후
+    기존 문장별 GPT-SoVITS 경로로 폴백. `preferred`가 다른 엔진/비한국어면 애초에 문장별 경로.
+  - **합성 도중 오류 → 명확한 오류(폴백 아님)**: Qwen이 로딩/합성 중 실패하면 **GPT-SoVITS로 조용히 재합성하지
+    않는다**. 오류를 그대로 표면화한다(부분 산출물은 정리). 단 하나의 예외는 CUDA OOM(아래) — 이것도 조용한
+    GPT 재합성이 아니라 **가시적** CPU 1회 재시도.
+- **완전 오프라인**: 브리지는 repo id가 아니라 **로컬 스냅샷 '경로'** 로 `from_pretrained(local_files_only=True)`.
+  (repo id + `HF_HUB_OFFLINE=1`은 qwen-tts가 HF API를 때려 `OfflineModeIsEnabled`로 실패함을 실측 → 경로 로드로 회피.)
+  `available()`은 venv만으로 True 금지 — **qwen_tts 패키지 설치 흔적**(venv `Lib/site-packages/qwen_tts`)과
+  pinned revision(`5d839924…`) 스냅샷의 필수 파일(config/model.safetensors/vocab/merges/tokenizer_config/speech_tokenizer)을
+  함께 preflight. venv만 남고 패키지가 제거된 상태를 available로 오판하지 않음. 런타임 자동 다운로드 없음(오프라인 로드 2.3s 실측).
+- **참조 전사 → (ref_text, x_vector_only)**: `_resolve_qwen_ref_text`가 튜플 반환. 수동/자동 전사가 비어있지 않으면
+  **ICL(x_vector_only=False)**; 명시적 ref-free·전사 실패·빈 전사는 **x-vector-only(True, ref_text 무시)로 강등**(warning에
+  "x-vector-only 강등" 명시). Qwen 공식 구현이 `ref_text=""`+`x_vector_only=False`를 거부하므로 필수. **세그먼트별** 적용.
+- **세그먼트별 언어**: `_detect_language`로 문장마다 `Korean/English/Chinese/Japanese`를 골라 전달(단일 Korean 고정 아님).
+  미지원 감지 시 명확한 오류.
+- **장치(작업별 VRAM 임계)**: `gpu_policy.select_device(min_free_mb=…)`를 작업별로 분리 — 대화 분리는 기존 1500,
+  **Qwen은 실측 peak ~2569MiB + 안전 여유 → 4000**. `_QWEN_MIN_FREE_MB` 상수·gpu_policy 주석에 근거 기록,
+  경계 테스트 추가. flash-attn 미설치, **sdpa 우선(실패 시 부분참조 해제+gc+`empty_cache` 후 eager)**. CPU면 float32,
+  CUDA면 bfloat16(고정 dtype 아님).
+- **CUDA OOM**: 브리지 오류가 OOM이면(자식 종료로 GPU는 이미 해제) **가시적 progress + CPU 1회 재시도**(조용한 재시도
+  아님). CPU 실사용 가능성 실측(1문장 gen≈29.7s, 짧은 스크립트엔 사용 가능)에 근거. CPU도 실패면 오류 표면화.
+- **실시간 진행률·타임아웃**: `subprocess.run(capture_output)` 대신 **`Popen`으로 stdout JSON 라인을 스레드+큐로 실시간**
+  읽어 세그먼트마다 즉시 progress emit. **무응답 280s**(`_QWEN_INACTIVITY_SEC`) 초과 시 프로세스 트리 kill+정리 후 명확한
+  오류. stderr는 tail(40)만 보존. Electron watchdog 300s(진행마다 리셋)와 조율: **Python 280s < Electron 300s** →
+  Python이 먼저 자식을 정리(총시간 타임아웃 없이 무응답 기준 일원화).
+- **속도·간격**: speed=1.0은 raw. 1.0 외는 **최종 결합본이 아니라 각 raw 세그먼트에 ffmpeg atempo** 적용 후, 사용자
+  `silence_gap`으로 결합(간격 보존). atempo 실패(ffmpeg 없음/타임아웃/`OSError`/`SubprocessError`/returncode/0바이트)는 조용히
+  raw로 넘기지 않고 **명확한 오류** — 이때 ffmpeg가 만든 **부분 출력을 직접 삭제**(뒤에 남지 않게).
+- **최종 출력 원자적 교체**: `synthesized.wav`에 직접 결합하지 않는다. output_dir 내부 **고유 임시 WAV**(`.synthesized.pending.<pid>.wav`)
+  에 결합→존재/non-empty/sr/finite **전량 검증 성공 시에만 `os.replace(temp, synthesized.wav)`**. 실패/검증실패면 임시만 삭제하고
+  **기존 synthesized.wav는 그대로 보존**(부분 결과로 덮어쓰지 않음). 단일 세그먼트도 동일 경로.
+- **출력 검증·정리**: 브리지가 세그먼트마다 sr>0·non-empty·finite 검증. 부모는 결과 수·index 중복/누락·요청 out_path 일치·
+  존재·0바이트 검증. **finally로 `segment_qwen_*`·atempo·임시 결합본을 실패해도 정리**.
+- **UI**: TTSEditor 엔진에 `Qwen3` 추가(미설치 시 GPT-SoVITS 폴백 고지). production 연동은 이 커밋에 포함.
+- **전사 캐시 상한**: `_qwen_ref_text_cache`에 GPT 전사 캐시(`_TRANSCRIPT_CACHE_MAX`)와 동일한 방어적 상한(128,
+  cap 미만일 때만 추가)을 둔다. 키는 `(path,size,mtime)`로 파일 변경 시 자동 무효화 유지.
+- **테스트(모델 미로딩 단위)**: `python/test_qwen_engine.py`(26) — 라우팅 6 / (ref_text,x_vector_only) 4조건(수동 ICL·
+  ref-free 강등·자동 ICL 캐시·빈 전사 강등) / run_job **Popen 실시간**(result 전 progress emit)·오류·returncode·예외 /
+  batch-only 가드 / `_validate_seg_out` 3종 / **배치 경로 run_job 1회+세그먼트별 언어+임시정리** / **속도 후 silence_gap 보존** /
+  부적합 참조 차단 / **available은 qwen_tts 패키지 요구**(제거 시 False) / **atempo 실패 시 부분출력 정리** /
+  **최종 원자 교체**(concat 실패·검증 실패에 기존 synthesized.wav 불변, 성공 시 교체·pending 없음) 3종.
+  **`mock.patch.stopall` 제거** — 패처별 `addCleanup(stop)` + 전역 Qwen 캐시 스냅샷/복원.
+  `test_gpu_policy.py`에 작업별 임계 경계 3종 추가. `test_tts_routing`(2A) Qwen 라우팅 비활성 패치 유지.
+- **실제 모델 스모크(단위 아님, 산출물 git 비추적·미커밋)**:
+  - 오프라인 경로 로드 성공(2.3s, `HF_HUB_OFFLINE=1`) — repo id 로드가 실패하던 것을 경로 로드로 해결.
+  - **CUDA 배치(2문장)**: gpu_policy=cuda:0(여유 14483/16302MB ≥ 4000), sdpa+bfloat16, 세그먼트별 실시간 progress
+    (result 전 9회), 임시파일 정리됨(leftover=[]). **출력 WAV 길이 6.26초**(2문장 결합)·무NaN. **해당 실행 elapsed
+    223.8초**(torch/whisper import + 오프라인 모델 로딩 + 2문장 생성 포함)로 문장 생성 자체 대비 느림. 실행 중 큰
+    Python 프로세스(≈31GB)가 있었으나 이는 **시스템 메모리 정황일 뿐 GPU 점유 원인 확정이 아니다** — 정확한 원인은
+    ComfyUI 실모델 병행 검증에서 `nvidia-smi`의 PID/used_memory로 확인.
+  - **CPU 1문장**: float32, gen≈29.7s(3.60s 출력) — 짧은 스크립트엔 사용 가능.
+  - **ref-free x-vector(CPU)**: `x_vector_only=True`(ref_text="") 실경로 정상, 2.48s 출력, "x-vector-only 강등" warning 확인.
+  - **무응답 타임아웃**: `_QWEN_INACTIVITY_SEC=3`로 유도 → 3.2s에 프로세스 트리 kill + 명확한 오류.
+  - **실패 시 정리**: 합성 중 실패(무응답)에도 finally가 부분 세그먼트 제거(leftover=[]), 기존 synthesized.wav 미훼손(미작성).
+- 검증: python discovery **102** · gpu_policy 19 · qwen_engine 21 · routing 6 · smoke --quick 3/3 · npm test 29 ·
+  tsc node 통과 · **tsc web는 기존 오류 1건(`ModeSelector.tsx`, 커밋 `1a59c22` 유래, 본 변경과 무관)만 — 신규 오류 0** · build 통과.
+- **제한사항**: Qwen 생성 결과에 **확률적 편차** 확인됨(seed 미고정, 반복마다 톤/자연스러움 변동). 운영 기본 참조로 C가
+  비교적 안정적이나 이는 사용자 청취 정성 판단이며 **production 코드에 참조 선택을 하드코딩하지 않음**(엔진 라우팅만).
+  음색 유사도 A/C 우열은 수치 결론 없음. CPU 합성은 문장당 ~30초로 긴 스크립트엔 느림(장치 사유는 progress로 가시화).
+- **범위**: GPT-SoVITS/F5/Kokoro 엔진·정책 불변. venv·모델 가중치·resources/·작업파일/ 미스테이지. 새 project 의존성 파일 미수정.
+
 ## 2026-08-21 — TTS 2C-2: 수동 참조 전사 UI + 전달 경로(명시적 ref-free > 수동 > 자동)
 
 목표: 사용자가 GPT-SoVITS 참조 음성의 전사문·언어를 확인/수정/직접입력. 대화 분리 코드 불변.

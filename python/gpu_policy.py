@@ -18,7 +18,10 @@ POLICY_AUTO = "auto"
 POLICY_GPU = "gpu"
 POLICY_CPU = "cpu"
 
-# ECAPA-TDNN + speechbrain + 입력 배치 텐서의 대략적 여유. 휴리스틱(환경/모델에 따라 조정 가능).
+# 작업별 required_free_vram: select_device(min_free_mb=...)로 호출자가 작업에 맞는 임계를 준다.
+# 하나의 고정값을 공유하지 않는다(작업마다 실측 VRAM이 다르므로).
+#   - 대화 분리(ECAPA-TDNN+speechbrain): DEFAULT_MIN_FREE_MB=1500 (기존 근거값 유지).
+#   - Qwen3-TTS: tts_worker._QWEN_MIN_FREE_MB=4000 (실측 peak ~2569MiB + 안전 여유).
 # 스칼라 할당이 아니라 이 임계값과 실제 free VRAM 비교로 GPU 안전성을 판단한다.
 DEFAULT_MIN_FREE_MB = 1500
 

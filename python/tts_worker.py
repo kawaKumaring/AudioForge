@@ -364,6 +364,188 @@ class GPTSoVITSEngine(TTSEngine):
                 pass
 
 
+# ── Qwen3-TTS engine (로컬 Base, 격리 venv, job bridge — 모델 1회 로딩, 완전 오프라인) ──
+# GPT-SoVITS 엔진은 제거하지 않고 병존. 한국어 Auto 우선순위: Qwen3 → GPT-SoVITS → 폴백.
+_QWEN_REPO = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
+_QWEN_REVISION = "5d83992436eae1d760afd27aff78a71d676296fc"  # 공식 pinned Base
+_QWEN_LANG_NAME = {"ko": "Korean", "en": "English", "zh": "Chinese", "ja": "Japanese"}
+# 로컬 스냅샷(오프라인 preflight/추론 고정 위치). 런타임 자동 다운로드 금지.
+_QWEN_HF_HOME = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             "externals", "qwen3_tts_hf")
+_QWEN_SNAPSHOT = os.path.join(_QWEN_HF_HOME, "hub",
+                              "models--Qwen--Qwen3-TTS-12Hz-0.6B-Base", "snapshots", _QWEN_REVISION)
+_QWEN_REQUIRED = ["config.json", "model.safetensors", "vocab.json", "merges.txt",
+                  "tokenizer_config.json", os.path.join("speech_tokenizer", "model.safetensors")]
+# 무응답(진행 없음) 인용 timeout. Electron watchdog(무진행 5분)보다 짧게 잡아 Python이 먼저 정리·오류.
+_QWEN_INACTIVITY_SEC = 280
+
+
+def _kill_proc_tree(proc):
+    import subprocess
+    try:
+        if os.name == "nt" and proc.pid:
+            subprocess.run(["taskkill", "/pid", str(proc.pid), "/T", "/F"], capture_output=True)
+        else:
+            proc.kill()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+class QwenTTSEngine(TTSEngine):
+    """Qwen3-TTS 로컬 Base — 격리 qwen3_tts_venv에서 job bridge로 실행(모델 1회 로딩, 전 문장 배치).
+    per-segment가 아니라 run_job 배치. 완전 오프라인(local_files_only)."""
+    name = "qwen3"
+    supported_languages = ["ko", "ja", "zh", "en"]
+    is_batch = True
+
+    def __init__(self):
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        venv = os.path.join(base, "externals", "qwen3_tts_venv")
+        self._venv_python = os.path.join(venv, "Scripts", "python.exe")
+        self._bridge = os.path.join(base, "python", "qwen_bridge.py")
+        # qwen_tts 패키지 설치 흔적(venv만 남고 패키지가 제거된 상태를 available로 오판하지 않게)
+        self._qwen_pkg_dir = os.path.join(venv, "Lib", "site-packages", "qwen_tts")
+
+    def available(self):
+        """venv 존재만으로 True 금지 — qwen_tts 패키지 설치 흔적 + pinned revision 로컬 스냅샷의
+        필수 모델 파일까지 preflight."""
+        if not (os.path.exists(self._venv_python) and os.path.exists(self._bridge)):
+            return False
+        if not os.path.isdir(self._qwen_pkg_dir):  # venv만 남고 패키지 제거된 상태 배제
+            return False
+        if not os.path.isdir(_QWEN_SNAPSHOT):
+            return False
+        for f in _QWEN_REQUIRED:
+            p = os.path.join(_QWEN_SNAPSHOT, f)
+            try:
+                if not (os.path.exists(p) and os.path.getsize(p) > 0):
+                    return False
+            except OSError:
+                return False
+        return True
+
+    def synthesize_segment(self, text, ref_audio, emotion_id, speed, output_path):
+        raise RuntimeError("QwenTTSEngine은 배치(run_job) 전용입니다. synthesize() 배치 경로를 사용하세요.")
+
+    def run_job(self, segments, device):
+        """모델 1회 로딩 후 전 세그먼트 합성. Popen으로 stdout JSON을 실시간 읽어 즉시 progress emit.
+        무응답 시 프로세스 종료·정리 후 명확한 오류. 오프라인(HF_HOME 고정 + bridge local_files_only)."""
+        import subprocess
+        import threading
+        import queue
+        import json as _json
+        # 로컬 스냅샷 '경로'로 로드(repo id 아님) → 오프라인에서 HF API 호출 회피. 자동 다운로드 금지.
+        cfg = {"model_path": _QWEN_SNAPSHOT, "device": device, "segments": segments}
+        env = {**os.environ, "HF_HOME": _QWEN_HF_HOME, "HF_HUB_OFFLINE": "1",
+               "TRANSFORMERS_OFFLINE": "1", "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
+        try:
+            proc = subprocess.Popen(
+                [self._venv_python, "-X", "utf8", "-u", self._bridge],
+                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                text=True, encoding="utf-8", errors="replace", env=env)
+        except (OSError, subprocess.SubprocessError) as e:
+            raise RuntimeError(f"Qwen 브리지 실행 오류: {e}")
+
+        stderr_tail = []
+
+        def _read_err():
+            try:
+                for ln in proc.stderr:
+                    stderr_tail.append(ln)
+                    if len(stderr_tail) > 40:
+                        stderr_tail.pop(0)
+            except Exception:
+                pass
+        threading.Thread(target=_read_err, daemon=True).start()
+
+        q = queue.Queue()
+
+        def _read_out():
+            try:
+                for ln in proc.stdout:
+                    q.put(ln)
+            except Exception:
+                pass
+            q.put(None)
+        threading.Thread(target=_read_out, daemon=True).start()
+
+        try:
+            proc.stdin.write(_json.dumps(cfg, ensure_ascii=False))
+            proc.stdin.close()
+        except Exception as e:
+            _kill_proc_tree(proc)
+            raise RuntimeError(f"Qwen 브리지 입력 전달 오류: {e}")
+
+        seg_out = None
+        err_msg = None
+        while True:
+            try:
+                line = q.get(timeout=_QWEN_INACTIVITY_SEC)
+            except queue.Empty:
+                _kill_proc_tree(proc)
+                raise RuntimeError(f"Qwen 무응답 {_QWEN_INACTIVITY_SEC}s 초과 — 프로세스 종료")
+            if line is None:
+                break
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                msg = _json.loads(line)
+            except _json.JSONDecodeError:
+                continue
+            t = msg.get("type")
+            if t == "progress":
+                emit("progress", percent=msg.get("percent", 0), message=msg.get("message", ""))  # 실시간
+            elif t == "error":
+                err_msg = msg.get("message", "Qwen 오류")
+            elif t == "result":
+                seg_out = msg.get("segments")
+        try:
+            proc.wait(timeout=10)
+        except Exception:
+            _kill_proc_tree(proc)
+        if err_msg:
+            raise RuntimeError(f"Qwen 합성 오류: {err_msg}")
+        if proc.returncode not in (0, None) and seg_out is None:
+            raise RuntimeError(f"Qwen 실패(코드 {proc.returncode}): {''.join(stderr_tail)[-400:]}")
+        if not seg_out:
+            raise RuntimeError(f"Qwen 합성 결과 없음: {''.join(stderr_tail)[-300:]}")
+        return self._validate_seg_out(seg_out, segments)
+
+    @staticmethod
+    def _validate_seg_out(seg_out, segments):
+        """결과 수·index 중복/누락·요청 out_path 일치·파일 존재/0바이트 검증."""
+        want = {s["index"]: s["out_path"] for s in segments}
+        got = {}
+        for r in seg_out:
+            idx = r.get("index")
+            if idx in got:
+                raise RuntimeError(f"중복 세그먼트 index: {idx}")
+            got[idx] = r.get("out_path")
+        if set(got.keys()) != set(want.keys()):
+            raise RuntimeError(f"세그먼트 index 불일치 — 요청 {sorted(want)} vs 결과 {sorted(got)}")
+        for idx, wp in want.items():
+            gp = got[idx]
+            if os.path.abspath(gp) != os.path.abspath(wp):
+                raise RuntimeError(f"세그먼트 {idx} out_path 불일치")
+            if not (os.path.exists(gp) and os.path.getsize(gp) > 0):
+                raise RuntimeError(f"세그먼트 {idx} 출력 없음/0바이트: {gp}")
+        return seg_out
+
+
+_qwen_engine = None
+
+
+def _get_qwen_engine():
+    global _qwen_engine
+    if _qwen_engine is None:
+        _qwen_engine = QwenTTSEngine()
+    return _qwen_engine
+
+
 # ── Engine registry ──
 
 ENGINES = {
@@ -424,6 +606,196 @@ def _select_engine(text, preferred_engine=None):
 
     # English → F5-TTS (voice cloning)
     return _get_engine("f5tts")
+
+
+def _select_job_engine(text, preferred_engine=None):
+    """작업 전체를 배치형 Qwen으로 라우팅할지 결정. 반환 'qwen3'(배치) 또는 None(문장별 기존 경로).
+    한국어 Auto 우선순위: Qwen3 → (미설치 시) 기존 GPT-SoVITS→폴백 경로."""
+    qwen = _get_qwen_engine()
+    if preferred_engine == "qwen3":
+        if qwen.available():
+            return "qwen3"
+        emit("progress", percent=4, message="Qwen 미설치 → GPT-SoVITS/폴백으로 전환")
+        return None
+    if preferred_engine:  # 다른 엔진 명시 → 문장별 기존 경로
+        return None
+    if _detect_language(text) == "ko" and qwen.available():
+        return "qwen3"
+    return None
+
+
+_qwen_ref_text_cache = {}
+# 방어적 상한 — GPT 전사 캐시(_TRANSCRIPT_CACHE_MAX)와 동일 방식. 키는 (path,size,mtime)로
+# 파일 변경 시 자동 무효화되지만, 서로 다른 파일이 누적되며 무한히 커지지 않도록 상한을 둔다.
+_QWEN_REF_TEXT_CACHE_MAX = 128
+
+# Qwen 전용 여유 VRAM 임계(MiB). 근거: 실측 peak(프로세스) ~2569MiB(CUDA 1문장 배치, torch.cuda
+# max_memory_allocated) + 안전 여유(allocator 단편화·로딩 스파이크·다문장) → 4000MiB.
+# conversation(gpu_policy DEFAULT 1500)과 분리해 작업별로 다르게 적용.
+_QWEN_MIN_FREE_MB = 4000
+
+
+def _resolve_qwen_ref_text(ref_audio, overrides_by_path, warned):
+    """Qwen용 (ref_text, x_vector_only) 결정 — 수동/자동/ref-free 정책 재사용.
+    수동·자동 전사가 비어있지 않으면 ICL(x_vector_only=False). 명시적 ref-free / 전사 실패 / 빈 전사는
+    x-vector-only(True, ref_text 무시). Qwen 공식 구현은 ref_text=""+x_vector_only=False를 거부하므로 필수."""
+    from reference_transcript import transcribe_reference, MODE_REF_FREE, STATUS_OK
+    ap = os.path.abspath(ref_audio)
+    ov = (overrides_by_path or {}).get(ap)
+    if ov:
+        if ov.get("mode") == MODE_REF_FREE:
+            if ("reffree", ap) not in warned:
+                warned.add(("reffree", ap))
+                emit("progress", percent=7,
+                     message="ref-free → Qwen x-vector-only로 강등(ICL 아님, 참조 전사 미사용)")
+            return "", True
+        manual = (ov.get("manual_text") or "").strip()
+        if manual:
+            if ("manual", ap) not in warned:
+                warned.add(("manual", ap))
+                emit("progress", percent=7, message=f"참조 전사(수동, ICL): {len(manual)}자")
+            return manual, False
+    try:
+        st = os.stat(ref_audio)
+        key = (ap, st.st_size, st.st_mtime_ns)
+    except OSError:
+        key = (ap, None, None)
+    if key in _qwen_ref_text_cache:
+        return _qwen_ref_text_cache[key]
+    t = transcribe_reference(ref_audio, "small")
+    if t.status == STATUS_OK and (t.text or "").strip():
+        res = (t.text, False)
+        if ("auto", ap) not in warned:
+            warned.add(("auto", ap))
+            emit("progress", percent=9, message=f"참조 전사(자동, ICL): {t.language}, {len(t.text)}자")
+    else:
+        res = ("", True)
+        if ("autofail", ap) not in warned:
+            warned.add(("autofail", ap))
+            emit("progress", percent=9,
+                 message=f"참조 전사 실패/빈 결과({t.status}) → Qwen x-vector-only로 강등(ICL 아님)")
+    if len(_qwen_ref_text_cache) < _QWEN_REF_TEXT_CACHE_MAX:  # 방어적 상한
+        _qwen_ref_text_cache[key] = res
+    return res
+
+
+def _atempo_segment(inp, speed):
+    """세그먼트 raw wav에 ffmpeg atempo 적용(후처리). 실패를 조용히 raw로 넘기지 않고 명확한 예외.
+    out 경로를 미리 계산하고, timeout/OSError/returncode 실패/0바이트에서는 ffmpeg가 만든 부분 출력을
+    직접 삭제한 뒤 예외를 던진다(성공했을 때만 경로 반환). 부분 파일이 뒤에 남지 않게."""
+    from audio_utils import find_ffmpeg
+    import subprocess
+    ff = find_ffmpeg()
+    if not ff:
+        raise RuntimeError("속도 적용 실패 — ffmpeg 없음")
+    out = inp.replace(".wav", f"_x{speed:.2f}.wav")  # 미리 계산
+
+    def _rm_partial():
+        try:
+            if os.path.exists(out):
+                os.remove(out)
+        except OSError:
+            pass
+
+    try:
+        proc = subprocess.run([ff, "-y", "-i", inp, "-filter:a", f"atempo={speed:.4f}", out],
+                              capture_output=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as e:  # TimeoutExpired 포함
+        _rm_partial()
+        raise RuntimeError(f"속도 적용 중 오류: {e}")
+    if proc.returncode != 0 or not os.path.exists(out) or os.path.getsize(out) == 0:
+        _rm_partial()  # ffmpeg가 부분 파일을 만들고 실패했을 수 있음
+        raise RuntimeError(f"속도 적용 실패: {(proc.stderr or b'')[-200:]}")
+    return out
+
+
+def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed, silence_gap):
+    """Qwen 배치 합성 — 2B 품질 게이트 재사용, Qwen 전용 VRAM 임계로 장치 선택(ComfyUI 병행 안전),
+    모델 1회 로딩. speed: 세그먼트별 atempo 후 사용자 silence_gap으로 결합(1.0은 raw). 임시파일 finally 정리."""
+    from reference_audio import assess_reference_file, GPTSOVITS_POLICY
+    from gpu_policy import select_device, is_cuda_oom
+    qwen = _get_qwen_engine()
+
+    dev, reason = select_device("auto", min_free_mb=_QWEN_MIN_FREE_MB)
+    device = "cuda:0" if dev == "cuda" else "cpu"
+    if device == "cpu":
+        emit("progress", percent=6, message=f"Qwen 장치: CPU ({reason}) — 문장당 ~30초로 느릴 수 있음")
+    else:
+        emit("progress", percent=6, message=f"Qwen 장치: {device} ({reason})")
+
+    # 참조 품질 게이트 재사용 — 고유 참조별 1회, invalid면 모델 로딩 전 실패
+    for ref in set(ref_cache.values()):
+        a = assess_reference_file(ref, GPTSOVITS_POLICY)
+        if not a.valid:
+            codes = "; ".join(f"[{e.code}] {e.message}" for e in a.errors)
+            raise RuntimeError(f"참조 음성 부적합(Qwen): {os.path.basename(ref)} — {codes}")
+
+    warned = set()
+    segments = []
+    raw_paths = []
+    for i, (emotion_id, line_text) in enumerate(parsed):
+        ref = ref_cache.get(emotion_id, ref_cache["default"])
+        ref_text, xvo = _resolve_qwen_ref_text(ref, overrides_by_path, warned)
+        lang_code = _detect_language(line_text)  # 세그먼트별 언어
+        lang_name = _QWEN_LANG_NAME.get(lang_code)
+        if not lang_name:
+            raise RuntimeError(f"Qwen 미지원 언어(감지 {lang_code}) — 문장: {line_text[:20]}")
+        out_path = os.path.join(output_dir, f"segment_qwen_{i + 1:03d}.wav")
+        raw_paths.append(out_path)
+        segments.append({"index": i, "text": line_text, "ref_audio": ref, "ref_text": ref_text,
+                         "x_vector_only": xvo, "language_name": lang_name, "out_path": out_path})
+
+    final_path = os.path.join(output_dir, "synthesized.wav")
+    # 원자적 교체: 최종 파일에 직접 결합하지 않는다. 고유 임시 WAV에 결합→전량 검증 성공 시에만
+    # os.replace(temp, final). 실패하면 임시만 삭제하고 기존 synthesized.wav는 그대로 보존한다.
+    pending_path = os.path.join(output_dir, f".synthesized.pending.{os.getpid()}.wav")
+    atempo_paths = []
+    try:
+        try:
+            seg_out = qwen.run_job(segments, device)
+        except RuntimeError as e:
+            # CUDA OOM만 CPU로 1회 가시적 재시도(조용한 재시도 아님). 그 외 예외는 전파.
+            if device == "cuda:0" and is_cuda_oom(e):
+                emit("progress", percent=30, message="GPU 메모리 부족(OOM) → CPU로 1회 재시도(느림)")
+                seg_out = qwen.run_job(segments, "cpu")
+            else:
+                raise
+        ordered = [s["out_path"] for s in sorted(seg_out, key=lambda x: x["index"])]
+
+        # speed: 1.0=raw, 그 외 세그먼트별 atempo(최종 결합본 아님) 후 결합. 간격은 사용자 silence_gap 유지.
+        use = ordered
+        if abs(float(speed) - 1.0) > 1e-6:
+            use = []
+            for p in ordered:
+                ap2 = _atempo_segment(p, float(speed))
+                atempo_paths.append(ap2)
+                use.append(ap2)
+
+        emit("progress", percent=90, message="문장 이어붙이기 중...")
+        _concat_with_silence(use, pending_path, silence_gap)  # 최종 아님 — 임시로 결합(단일 세그먼트도 동일 경로)
+
+        # 임시 출력 전량 검증(존재/non-empty/sr/finite) — 이 검사를 모두 통과해야 교체
+        import soundfile as _sf
+        import numpy as _np
+        if not (os.path.exists(pending_path) and os.path.getsize(pending_path) > 0):
+            raise RuntimeError("최종 합성 임시 출력 없음/0바이트")
+        d, sr = _sf.read(pending_path)
+        mono = d if d.ndim == 1 else d.mean(axis=1)
+        if mono.size == 0 or sr <= 0 or not bool(_np.all(_np.isfinite(mono))):
+            raise RuntimeError("최종 합성 출력 검증 실패(빈/비유한/sr)")
+
+        # 전량 성공 → 원자적 교체(기존 synthesized.wav는 이 시점에만 대체됨)
+        os.replace(pending_path, final_path)
+        return final_path
+    finally:
+        # 이 작업이 만든 세그먼트·atempo·임시 결합본 정리(실패해도). 성공 시 pending은 이미 replace로 사라짐.
+        # 기존 synthesized.wav는 정리 대상이 아니다(실패 시 그대로 보존).
+        for p in raw_paths + atempo_paths + [pending_path]:
+            try:
+                if os.path.exists(p):
+                    os.remove(p)
+            except OSError:
+                pass
 
 
 # ── Helpers ──
@@ -542,6 +914,16 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         # 이미 존재하면 빈 dict로 덮어써 이전 작업의 override 잔재를 해제.
         if overrides_by_path or "gptsovits" in _engine_cache:
             _get_engine("gptsovits").set_prompt_overrides(overrides_by_path)
+
+        # 배치형 엔진(Qwen3) 라우팅: 한국어 Auto 우선순위 Qwen3 → GPT-SoVITS → 폴백.
+        # 모델 1회 로딩으로 전 문장 처리(문장별 프로세스 금지).
+        if _select_job_engine(text, preferred_engine) == "qwen3":
+            final_path = _synthesize_qwen_job(parsed, ref_cache, overrides_by_path,
+                                              output_dir, speed, silence_gap)
+            tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
+            emit("progress", percent=99, message="완료!")
+            emit("result", tracks=tracks, outputDir=output_dir)
+            return
 
         segment_paths = []
 

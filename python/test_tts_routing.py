@@ -73,9 +73,13 @@ class TtsRoutingTest(unittest.TestCase):
         # 가짜 엔진 주입 + emit 기록(실제 모델 로딩 완전 차단)
         self.fake = FakeEngine()
         self._orig_select = tts_worker._select_engine
+        self._orig_job = tts_worker._select_job_engine
         self._orig_emit = tts_worker.emit
         self.emitted = []
         tts_worker._select_engine = lambda text, preferred=None: self.fake
+        # 이 테스트는 '문장별 감정 매핑'을 검증한다. Qwen venv가 설치돼 있으면 한국어 auto가
+        # Qwen 배치로 라우팅되므로, 배치 라우팅을 끄고 per-segment 경로를 결정적으로 탄다.
+        tts_worker._select_job_engine = lambda text, preferred=None: None
         tts_worker.emit = lambda mtype, **kw: self.emitted.append((mtype, kw))
         # 라우팅에 영향받지 않도록 엔진 캐시는 비운 상태에서 시작하되,
         # 기존 캐시를 보존했다가 tearDown에서 복원한다(같은 프로세스의 다른 TTS 테스트 격리).
@@ -84,6 +88,7 @@ class TtsRoutingTest(unittest.TestCase):
 
     def tearDown(self):
         tts_worker._select_engine = self._orig_select
+        tts_worker._select_job_engine = self._orig_job
         tts_worker.emit = self._orig_emit
         # 이 테스트가 만든 캐시를 제거하고 기존 캐시를 복원
         tts_worker._engine_cache.clear()

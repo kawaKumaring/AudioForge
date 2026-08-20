@@ -85,6 +85,29 @@ class SelectDeviceTest(unittest.TestCase):
         self.assertEqual(dev, "cpu")
 
 
+class PerJobThresholdBoundaryTest(unittest.TestCase):
+    """작업별 required_free_vram 경계 — 같은 free VRAM이라도 임계값에 따라 장치가 갈린다.
+    Qwen(4000)과 대화 분리(1500)가 분리돼 있음을 free≈3000MiB 상황으로 대비."""
+    def _dev(self, free_mb, min_free_mb):
+        with mock.patch.object(torch.cuda, "is_available", return_value=True), \
+             mock.patch.object(torch.cuda, "mem_get_info",
+                               return_value=(int(free_mb * MB), 16000 * MB)):
+            return gp.select_device("auto", min_free_mb=min_free_mb)[0]
+
+    def test_qwen_boundary_exact(self):
+        # 정확히 임계값이면 GPU(>=), 1MiB 부족이면 CPU
+        self.assertEqual(self._dev(4000, 4000), "cuda")
+        self.assertEqual(self._dev(3999, 4000), "cpu")
+
+    def test_same_free_different_job_thresholds(self):
+        # free≈3000MiB: 대화(1500)는 GPU, Qwen(4000)은 CPU로 갈린다
+        self.assertEqual(self._dev(3000, gp.DEFAULT_MIN_FREE_MB), "cuda")
+        self.assertEqual(self._dev(3000, 4000), "cpu")
+
+    def test_qwen_ample_free_gpu(self):
+        self.assertEqual(self._dev(8000, 4000), "cuda")
+
+
 class OomRetryTest(unittest.TestCase):
     def test_success_no_fallback(self):
         calls = []
