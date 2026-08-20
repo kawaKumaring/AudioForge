@@ -1,5 +1,41 @@
 # AudioForge Changelog
 
+## 2026-08-21 — TTS 2B: 참조 음성 분석·판정 구조화 + GPT 로딩 전 게이트
+
+목표: 참조 음성의 객관적 상태 분석과 엔진별 적합성 판정을 분리·구조화하고, GPT-SoVITS
+공식 조건(3~10초)·무음·심한 클리핑·디코딩 불가를 **모델 로딩 전에** 차단.
+
+- **신규 `python/reference_audio.py`** — "사실 분석"과 "정책 판정" 분리(다른 엔진 재사용 가능):
+  - `analyze_reference()`: soundfile 블록 스캔(전체를 메모리에 안 올림)으로 길이·sr·채널·frames·
+    peak·rms_dbfs·silence_ratio·clipping_ratio 측정. 무음은 개별 샘플이 아니라 **25ms 창 RMS<-45dBFS**로
+    판정(제로크로싱 오인 방지). 클리핑은 abs≥0.99. dBFS는 -120 하한(JSON 안전). 계측 상수는 엔진 무관.
+  - `ReferencePolicy`(엔진별 기준)·`assess_reference()`(정책 적용). GPT 규칙을 분석 함수에 하드코딩 안 함.
+  - dataclass 전부 `to_dict()`로 **json.dumps 가능**, 안정적 issue code 제공(FILE_NOT_FOUND/DECODE_FAILED/
+    EMPTY_AUDIO/TOO_SHORT/TOO_LONG/NEAR_SILENT/HIGH_SILENCE_RATIO/CLIPPING_DETECTED/SEVERE_CLIPPING/MULTI_CHANNEL).
+  - 분석 캐시는 (경로+size+mtime)로 키 → 파일 변경 시 자동 무효화. `assess_reference_file()`은 메타데이터
+    먼저 읽어 **이미 TOO_LONG이면 품질 전체 스캔 생략**(quality_scanned=false).
+  - GPT 정책(휴리스틱, 코드/문서 명시): 3.0~10.0초 경계 포함 / silence_ratio≥0.95 또는 RMS≤-55dBFS→NEAR_SILENT
+    error / ≥0.40→HIGH_SILENCE warning / clip≥0.05→SEVERE error / ≥0.001→CLIPPING warning / 다채널→warning.
+- **`tts_worker._prepare_ref` 보강**: 입력 존재 확인, 비 WAV+ffmpeg 부재 시 명확한 오류, returncode·결과
+  파일 존재·0바이트 검사, stderr 끝부분 포함, 출력 mono/24kHz/pcm_s16le 명시. **실패를 조용히 원본
+  반환하지 않음**. 정상 WAV 흐름은 유지.
+- **`GPTSoVITSEngine`**: `synthesize_segment` 최상단에서 `_assess_ref()` → invalid면 load/Whisper/브리지
+  전에 즉시 실패. 참조별(size/mtime) 판정 캐시로 문장마다 재분석 안 함. 경고는 참조당 1회 progress로 알림.
+  → **2초·20초·무음·손상 파일은 모델을 전혀 로딩하지 않음.**
+- **오류 경로 보완(리뷰 반영)**:
+  - `analyze_reference`의 블록 스캔 예외를 **readable=False로 강등 → DECODE_FAILED**(정상 valid 통과 차단).
+  - `synthesize`의 참조 준비(기본+감정)를 **try/finally 정리 범위에 포함** — 기본 준비로 임시폴더가 생긴 뒤
+    감정 준비가 실패해도 임시폴더가 새지 않게 한다.
+  - `_prepare_ref`가 `subprocess.run`의 **OSError/SubprocessError를 처리**(임시폴더 정리 후 명확한 RuntimeError).
+    `timeout=120s` 설정(근거: PCM WAV 트랜스코딩은 실시간보다 훨씬 빨라 수분짜리도 수초 → 정상 파일 과도
+    차단 없이 멈춘 ffmpeg의 무한 대기만 차단).
+- **신규 `python/test_reference_audio.py`**(25케이스, stdlib unittest+mock, 새 의존성 0): 모델·ffmpeg 없이
+  통과(ffmpeg는 mock). 없는파일/손상/빈/8s정상/2.99·3.0·10.0·10.01/전무음/반무음/소량·심한클리핑/스테레오/
+  JSON/캐시재사용·무효화/**스캔예외→DECODE_FAILED**/invalid→모델0회/ffmpeg 부재·실패·**예외정리**·성공/
+  **synthesize 감정준비 실패 시 기본 임시폴더 정리**. 전역 monkeypatch·분석캐시는 addCleanup/스냅샷 복원.
+- **범위 준수**: UI/IPC/separate.py/브리지 추론 파라미터/F5·Kokoro 정책/음악·대화·전사·분할 불변. 새 패키지 0.
+- 검증: reference 25 · routing 6 · discovery 31 · smoke --quick 3/3(SKIP 0) · npm test 6 · tsc · build 모두 통과.
+
 ## 2026-08-20 — TTS 2A: 감정 참조 라우팅 회귀 테스트 (모델 없이 검증)
 
 1단계(전달 경로)에 이어, 등록한 감정별 참조 음성이 **실제 파일 그대로** 올바른 문장에

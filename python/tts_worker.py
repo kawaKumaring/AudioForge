@@ -194,6 +194,8 @@ class GPTSoVITSEngine(TTSEngine):
         self._venv_python = None
         self._bridge_script = None
         self._ref_text_cache = {}  # ref_audio 경로 → 전사 텍스트 (1회만)
+        self._ref_assess_cache = {}  # (path,size,mtime) → ReferenceAssessment (재판정 방지)
+        self._warned_refs = set()    # 참조당 경고 1회만 알림
 
     def load(self):
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -220,7 +222,35 @@ class GPTSoVITSEngine(TTSEngine):
         self._ref_text_cache[ref_audio] = ref_text
         return ref_text
 
+    def _assess_ref(self, ref_audio):
+        """모델/Whisper/브리지 로딩 전에 참조 음성을 판정한다.
+        invalid면 구조화된 오류로 즉시 실패 → 2초·20초·무음·손상 파일은 모델을 전혀 로딩하지 않는다.
+        같은 참조(size/mtime 동일)는 재판정하지 않고, 경고는 참조당 한 번만 알린다."""
+        from reference_audio import assess_reference_file, GPTSOVITS_POLICY
+        try:
+            st = os.stat(ref_audio)
+            key = (os.path.abspath(ref_audio), st.st_size, st.st_mtime_ns)
+        except OSError:
+            key = (os.path.abspath(ref_audio), None, None)
+
+        if key in self._ref_assess_cache:
+            assessment = self._ref_assess_cache[key]
+        else:
+            assessment = assess_reference_file(ref_audio, GPTSOVITS_POLICY)
+            self._ref_assess_cache[key] = assessment
+
+        if not assessment.valid:
+            codes = "; ".join(f"[{e.code}] {e.message}" for e in assessment.errors)
+            raise RuntimeError(f"참조 음성 부적합(GPT-SoVITS): {codes}")
+
+        if assessment.warnings and key not in self._warned_refs:
+            self._warned_refs.add(key)
+            for w in assessment.warnings:
+                emit("progress", percent=7, message=f"참조 경고 [{w.code}] {w.message}")
+
     def synthesize_segment(self, text, ref_audio, emotion_id, speed, output_path):
+        # 실제 모델/Whisper/브리지 로딩 전에 참조 판정(부적합이면 로딩 없이 실패)
+        self._assess_ref(ref_audio)
         self.load()
         import subprocess, json, tempfile
 
@@ -335,15 +365,43 @@ def _parse_line(line):
 
 
 def _prepare_ref(ref_path):
+    """참조 음성을 mono PCM WAV로 준비. 실패를 조용히 원본 반환으로 넘기지 않고 명확히 실패한다.
+    정상 WAV는 그대로 사용(기존 흐름 유지)."""
+    # 입력 존재 확인
+    if not os.path.exists(ref_path):
+        raise RuntimeError(f"참조 음성 파일을 찾을 수 없습니다: {ref_path}")
+    # 정상 WAV는 변환 없이 사용
     if ref_path.lower().endswith('.wav'):
         return ref_path, None
+    # 비 WAV → ffmpeg 필요
     ffmpeg = find_ffmpeg()
     if not ffmpeg:
-        return ref_path, None
-    import tempfile, subprocess
+        raise RuntimeError(f"WAV가 아닌 참조 음성 변환에는 ffmpeg가 필요합니다(미설치): {ref_path}")
+    import tempfile, subprocess, shutil
     tmp_dir = tempfile.mkdtemp(prefix="audioforge_tts_")
     tmp_wav = os.path.join(tmp_dir, "ref.wav")
-    subprocess.run([ffmpeg, "-y", "-i", ref_path, "-ar", "24000", "-ac", "1", tmp_wav], capture_output=True)
+    # 출력은 명시적으로 mono / 24kHz / PCM s16le
+    # timeout=120s 근거: PCM WAV 트랜스코딩은 I/O 위주로 실시간보다 훨씬 빠르다(수분짜리도
+    # 수초). 참조 음성은 원래 수 초짜리라 정상 파일을 과도 차단하지 않으면서, 멈춘 ffmpeg의
+    # 무한 대기만 끊는다.
+    try:
+        proc = subprocess.run(
+            [ffmpeg, "-y", "-i", ref_path, "-ar", "24000", "-ac", "1",
+             "-acodec", "pcm_s16le", tmp_wav],
+            capture_output=True, timeout=120)
+    except (OSError, subprocess.SubprocessError) as e:
+        # ffmpeg 실행 자체 실패(경로/권한) 또는 timeout 등 → 임시 폴더 정리 후 명확히 실패
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise RuntimeError(f"참조 음성 변환 중 오류({ref_path}): {e}")
+    ok = proc.returncode == 0 and os.path.exists(tmp_wav) and os.path.getsize(tmp_wav) > 0
+    if not ok:
+        stderr_tail = ""
+        try:
+            stderr_tail = proc.stderr.decode("utf-8", errors="replace")[-300:]
+        except Exception:
+            pass
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise RuntimeError(f"참조 음성 변환 실패({ref_path}): {stderr_tail}")
     return tmp_wav, tmp_dir
 
 
@@ -383,19 +441,22 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
     parsed = [_parse_line(l) for l in lines]
     emit("progress", percent=5, message=f"{len(parsed)}개 문장 합성 준비")
 
-    # Prepare reference audio
-    ref_wav, tmp_ref_dir = _prepare_ref(reference_audio)
-    ref_cache = {"default": ref_wav}
-    tmp_dirs = [tmp_ref_dir] if tmp_ref_dir else []
-
-    for emo_id, emo_path in emotion_refs.items():
-        if emo_path and os.path.exists(emo_path):
-            wav, tmp = _prepare_ref(emo_path)
-            if tmp:
-                tmp_dirs.append(tmp)
-            ref_cache[emo_id] = wav
-
+    # 참조 준비부터 finally 정리 범위에 포함 — 기본 참조 준비로 임시 폴더가 생긴 뒤
+    # 감정 참조 준비가 실패해도, 이미 만든 임시 폴더가 새지 않게 한다.
+    tmp_dirs = []
     try:
+        ref_wav, tmp_ref_dir = _prepare_ref(reference_audio)
+        if tmp_ref_dir:
+            tmp_dirs.append(tmp_ref_dir)
+        ref_cache = {"default": ref_wav}
+
+        for emo_id, emo_path in emotion_refs.items():
+            if emo_path and os.path.exists(emo_path):
+                wav, tmp = _prepare_ref(emo_path)
+                if tmp:
+                    tmp_dirs.append(tmp)
+                ref_cache[emo_id] = wav
+
         segment_paths = []
 
         for i, (emotion_id, line_text) in enumerate(parsed):
