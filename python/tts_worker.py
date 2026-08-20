@@ -190,12 +190,18 @@ class GPTSoVITSEngine(TTSEngine):
     name = "gptsovits"
     supported_languages = ["ko", "ja", "zh", "en"]
 
+    # 전사 캐시 상한(엔진 인스턴스 범위) — 정상 작업은 참조가 소수라 도달하지 않지만,
+    # 비정상적으로 많은 참조에서도 무한히 쌓이지 않게 하는 방어적 상한.
+    _TRANSCRIPT_CACHE_MAX = 128
+
     def __init__(self):
         self._venv_python = None
         self._bridge_script = None
-        self._ref_text_cache = {}  # ref_audio 경로 → 전사 텍스트 (1회만)
         self._ref_assess_cache = {}  # (path,size,mtime) → ReferenceAssessment (재판정 방지)
-        self._warned_refs = set()    # 참조당 경고 1회만 알림
+        self._warned_refs = set()    # 참조당 판정 경고 1회만 알림
+        self._ref_transcript_cache = {}  # (path,size,mtime,model) → ReferenceTranscript (전사 1회)
+        self._warned_transcripts = set()  # (transcript_key, code) → 전사 강등 경고 1회만
+        self._announced_transcripts = set()  # transcript_key → 전사 완료 메시지 1회만(로그 오염 방지)
 
     def load(self):
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -205,22 +211,46 @@ class GPTSoVITSEngine(TTSEngine):
         if not os.path.exists(self._venv_python):
             raise RuntimeError("GPT-SoVITS venv가 설치되지 않았습니다. externals/gptsovits_venv를 확인하세요.")
 
-    def _get_ref_text(self, ref_audio):
-        """참조 음성을 Whisper로 전사 → prompt_text (클로닝 품질↑).
-        실패하면 빈 문자열 반환 → 브리지가 ref-free 모드로 폴백."""
-        if ref_audio in self._ref_text_cache:
-            return self._ref_text_cache[ref_audio]
-        ref_text = ""
+    def _transcript_key(self, ref_audio, model_name):
+        """전사 캐시 키: 절대경로 + size + mtime_ns + Whisper 모델명.
+        경로가 같아도 파일이 교체(size/mtime 변경)되면 키가 달라져 재전사된다."""
         try:
-            from transcribe_worker import _get_whisper_model, run_transcribe
+            st = os.stat(ref_audio)
+            return (os.path.abspath(ref_audio), st.st_size, st.st_mtime_ns, model_name)
+        except OSError:
+            return (os.path.abspath(ref_audio), None, None, model_name)
+
+    def _get_ref_prompt(self, ref_audio, target_language, model_name="small"):
+        """참조 음성을 전사하고 GPT-SoVITS용 ReferencePrompt를 만든다(구조화).
+        - 전사는 (경로+size+mtime+모델) 캐시로 참조당 1회.
+        - 성공: 언어+글자 수만 progress로 표시(전문은 로그에 출력하지 않음).
+        - 실패/빈 결과/미지원 언어: ref-free로 강등하되, 같은 참조·같은 원인당 1회만 경고 emit."""
+        from reference_transcript import (transcribe_reference, build_gpt_prompt,
+                                          MODE_TRANSCRIBED)
+        key = self._transcript_key(ref_audio, model_name)
+        if key in self._ref_transcript_cache:
+            transcript = self._ref_transcript_cache[key]
+        else:
             emit("progress", percent=8, message="참조 음성 전사 중... (클로닝 품질 향상)")
-            model = _get_whisper_model("small")
-            result = run_transcribe(model, ref_audio, None)
-            ref_text = (result.get("text") or "").strip()
-        except Exception:
-            ref_text = ""  # ref-free 폴백
-        self._ref_text_cache[ref_audio] = ref_text
-        return ref_text
+            transcript = transcribe_reference(ref_audio, model_name)
+            # 실패/빈 결과도 캐시해 같은 작업에서 반복 모델 호출을 막는다.
+            if len(self._ref_transcript_cache) < self._TRANSCRIPT_CACHE_MAX:
+                self._ref_transcript_cache[key] = transcript
+
+        prompt = build_gpt_prompt(transcript, target_language)
+
+        if prompt.mode == MODE_TRANSCRIBED:
+            if key not in self._announced_transcripts:
+                self._announced_transcripts.add(key)
+                emit("progress", percent=9,
+                     message=f"참조 전사 완료: {prompt.prompt_language}, {len(prompt.prompt_text)}자")
+        else:
+            for w in prompt.warnings:
+                wkey = (key, w.code)
+                if wkey not in self._warned_transcripts:
+                    self._warned_transcripts.add(wkey)
+                    emit("progress", percent=8, message=f"참조 전사 경고 [{w.code}] {w.message}")
+        return prompt
 
     def _assess_ref(self, ref_audio):
         """모델/Whisper/브리지 로딩 전에 참조 음성을 판정한다.
@@ -254,15 +284,20 @@ class GPTSoVITSEngine(TTSEngine):
         self.load()
         import subprocess, json, tempfile
 
-        ref_text = self._get_ref_text(ref_audio)
+        # 목표 텍스트 언어는 기존 방식(_detect_language)으로 판별.
+        target_language = _detect_language(text)
+        # 참조 프롬프트는 구조화된 전사 정책으로 결정.
+        # 전사 성공 시 Whisper 언어를 그대로 쓰고 _detect_language(ref_text)로 재추정하지 않는다.
+        # ref-free일 때만 프롬프트 언어 기본값으로 목표 텍스트 언어를 쓴다.
+        prompt = self._get_ref_prompt(ref_audio, target_language)
         config = {
             "ref_audio": ref_audio,
             "text": text,
             "output_path": output_path,
-            "language": _detect_language(text),
+            "language": target_language,
             "speed": speed,
-            "prompt_text": ref_text,
-            "prompt_lang": _detect_language(ref_text) if ref_text else _detect_language(text),
+            "prompt_text": prompt.prompt_text,
+            "prompt_lang": prompt.prompt_language,
         }
 
         result = subprocess.run(

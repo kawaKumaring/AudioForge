@@ -266,7 +266,8 @@ class ReferenceAnalysisTest(unittest.TestCase):
 
         load_calls, text_calls = [], []
         eng.load = lambda *a, **k: load_calls.append(1)
-        eng._get_ref_text = lambda r: (text_calls.append(1) or "")
+        # 전사 진입도 없어야 함(assessment가 먼저 차단) — 새 구조화 메서드로 확인
+        eng._get_ref_prompt = lambda *a, **k: text_calls.append(1)
 
         # subprocess.run이 호출되면 즉시 드러나게(assessment가 먼저 막아야 함)
         with mock.patch.object(subprocess, "run",

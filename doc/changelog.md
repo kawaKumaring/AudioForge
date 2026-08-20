@@ -1,5 +1,48 @@
 # AudioForge Changelog
 
+## 2026-08-21 — TTS 2C-1: 참조 전사 구조화 + 조용한 ref-free 강등 관측화
+
+목표: GPT-SoVITS 참조 음성의 Whisper 전사 결과를 구조화하고, 전사 실패·빈 결과·미지원 언어가
+**조용히 빈 문자열로 바뀌던 동작을 제거**. (수동 전사 입력 UI·강제 확인은 2C-2로 분리.)
+
+- **신규 `python/reference_transcript.py`** — 전사(사실) ↔ 프롬프트 정책 분리(reference_audio 패턴):
+  - `transcribe_reference(path, model_name)`: `_get_whisper_model`+`run_transcribe` 사용. text=strip,
+    **language는 Whisper 결과를 정규화해 그대로 사용(문자 비율 재추정 없음 → 일본어 한자↔중국어 오판 방지)**.
+    예외→`status=failed`+`TRANSCRIPTION_FAILED`, 빈 텍스트→`status=empty`+`EMPTY_TRANSCRIPT`.
+    dataclass `ReferenceTranscript`(source_path/status/text/language/model_name/source/error_code/
+    error_message/file_size/file_mtime_ns) + to_dict().
+  - `build_gpt_prompt(transcript, target_language)`: 정책 판정. status=ok & language∈{ko,ja,zh,en}이면
+    `mode=transcribed`(prompt_text=전사, prompt_language=Whisper 언어). 그 외는 `mode=ref_free`
+    (prompt_text="", prompt_language=목표 텍스트 언어) + 구조화된 warning(원인 코드 + `REF_FREE_FALLBACK`).
+    `ReferencePrompt`(mode/prompt_text/prompt_language/transcript/warnings) + to_dict(). 전부 json 직렬화.
+  - 언어 정규화: 소문자화 + 최소 alias만(zh-cn/zh-tw/cmn/yue→zh, jp→ja, kr→ko). unknown/빈 값→None.
+    추측으로 다른 언어를 지정하지 않음.
+- **`GPTSoVITSEngine`**: `_get_ref_text`(예외 삼키고 ""반환) 제거 → **`_get_ref_prompt`**로 교체.
+  - `config["prompt_text"]=prompt.prompt_text`, `config["prompt_lang"]=prompt.prompt_language`.
+    전사 성공 시 `_detect_language(ref_text)` 재추정 호출 제거. 목표 텍스트 언어는 기존 `_detect_language(text)`.
+    ref-free일 때만 목표 텍스트 언어를 프롬프트 언어 기본값으로.
+  - 관측: 성공 시 **언어+글자 수만** progress로(전문 미출력). 강등 시 **같은 참조·같은 원인당 1회** warning emit.
+  - 전사 캐시 키 = **절대경로 + size + mtime_ns + Whisper 모델명** → 파일 교체/모델 변경 시 재전사,
+    같은 파일 반복 문장은 전사 1회. 실패/빈 결과도 캐시(같은 작업 반복 모델 호출 방지). 엔진 인스턴스
+    범위 + 방어적 상한(128).
+- **ref-free가 발생하는 조건(이번 단계에선 금지 아님, 경고만)**: 전사 예외(TRANSCRIPTION_FAILED) /
+  빈 전사(EMPTY_TRANSCRIPT) / 언어 없음·unknown(LANGUAGE_MISSING) / 지원 밖 언어(UNSUPPORTED_PROMPT_LANGUAGE).
+- **명시적 제한(숨기지 않음)**: GPT-SoVITS venv에 pyopenjtalk가 없으면 브리지에서 일본어 프롬프트가
+  ref-free로 강등되는 별도 문제는 남아 있다. pyopenjtalk 설치/브리지 정책 변경은 이번 범위 아님.
+- **비정상 반환값 방어(리뷰 반영)**: `run_transcribe`가 예외 없이 `None`/비-Mapping을 반환하거나
+  text/language 타입이 이상해도 `.get` AttributeError로 터지지 않게 **결과 파싱을 예외 경계 안으로** 이동 +
+  타입 검증 → 모두 `status=failed`+`TRANSCRIPTION_FAILED` → `build_gpt_prompt`에서 기존대로 ref_free 강등.
+- **성공 메시지도 전사 키당 1회**(리뷰 권장): 캐시 적중 문장마다 반복되던 "참조 전사 완료"를 키당 1회로
+  제한(긴 대본 로그 오염 방지). 강등 경고는 이미 원인당 1회.
+- **신규 `python/test_reference_transcript.py`**(21케이스, 실제 Whisper/GPT 없이 mock): 한/일(zh 오판 금지)/영/
+  중(zh-CN 정규화)/빈→ref_free/예외→ref_free/**None·비-Mapping·text타입이상→failed**/언어없음→ref_free/미지원→
+  ref_free/성공 payload prompt_text·lang/ref-free payload text=""·목표언어/캐시 1회/**성공메시지 1회**/mtime·모델
+  변경 재전사/경고 1회/JSON/invalid 차단(전사 0회). 통합 테스트는 load+subprocess mock 후 전달 JSON payload
+  캡처로 검증. **각 patch는 patcher별 addCleanup(stop)으로 개별 복원(전역 stopall 미사용)**. 전역 분석캐시 스냅샷 복원.
+- **범위 준수**: UI/IPC/separate.py/브리지 추론 정책/pyopenjtalk/F5 ref_text/Kokoro/엔진 자동선택/
+  음악·대화·전사·분할 불변. 새 패키지 0.
+- 검증: transcript 21 · audio 25 · routing 6 · discovery 52 · smoke --quick 3/3(SKIP 0) · npm 6 · tsc · build 통과.
+
 ## 2026-08-21 — TTS 2B: 참조 음성 분석·판정 구조화 + GPT 로딩 전 게이트
 
 목표: 참조 음성의 객관적 상태 분석과 엔진별 적합성 판정을 분리·구조화하고, GPT-SoVITS
