@@ -1,5 +1,19 @@
 # AudioForge Changelog
 
+## 2026-08-20 — TTS 1단계 전달 결함 수정 (ttsEmotionRefs 누락 + 0초 변질)
+
+TTS 옵션 전달 경로만 수정(다른 모드 코드 불변). 확인된 결함 3건:
+
+- **ttsEmotionRefs 전달 경로 끊김**: ProcessButton은 보내고 separate.py는 읽을 준비가 됐는데,
+  `audio.ipc.ts`의 JSON config에 `ttsEmotionRefs`가 빠져 중간에서 유실됐다.
+- **0초 변질**: `ttsSilenceGap`/`ttsSpeed`가 `|| 기본값`이라 사용자가 지정한 0이 기본값으로 바뀜.
+- 수정: TTS 필드 직렬화를 `src/shared/ttsConfig.ts`의 **`buildTtsConfig`(타입 있는 단일 소스)**로
+  일원화 — `ttsEmotionRefs` 포함, 숫자 기본값은 **`??`**(0 보존). 반환 타입 `TtsConfig`라
+  **이후 필드 누락은 컴파일 단계에서 잡힘**. `audio.ipc.ts`는 `...buildTtsConfig(options)` 스프레드.
+- 회귀 테스트: `src/shared/ttsConfig.test.ts`(Node 내장 `node:test`, **새 의존성 0**). `npm test`.
+  6케이스(refs 전달·0초 보존·기본값·통과·키 5개 존재) 전부 PASS. `npm run build`·tsc(node) OK.
+- 범위: 음악/대화/전사/분할 코드 불변. `nSpeakers`(대화)의 `|| 2`는 TTS 아님 → 그대로 둠.
+
 ## 2026-08-16 — LLM 잔재 글자 NLLB 수리 + 구글 번역 백엔드
 
 실제 앙상블+LLM 실행 산출물 확인 결과: 최악(중국어 문장·영어 통째)은 사라졌으나 36줄 중 9줄에

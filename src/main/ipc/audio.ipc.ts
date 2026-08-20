@@ -5,6 +5,7 @@ import { join, basename, dirname, extname } from 'path'
 import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
+import { buildTtsConfig, type TtsInputOptions } from '../../shared/ttsConfig'
 
 // execFile(배열 인자)은 cmd.exe를 거치지 않아 시스템 코드페이지(CP949)의
 // 한글 경로 손상 문제에 면역. exec(문자열)은 한글 파일명에서 깨짐 → 금지.
@@ -182,10 +183,10 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       splitPoints: mode === 'split' && options?.splitMarkers ? (options.splitMarkers as number[]).join(',') : '',
       splitLabels: mode === 'split' && options?.splitLabels ? (options.splitLabels as string[]).join('|') : '',
       nSpeakers: options?.nSpeakers || 2,
-      ttsText: options?.ttsText || '',
-      ttsSpeed: options?.ttsSpeed || 1.0,
-      ttsSilenceGap: options?.ttsSilenceGap || 0.5,
-      ttsEngine: options?.ttsEngine || 'auto'
+      // TTS 필드는 단일 소스(buildTtsConfig)로 직렬화 — ttsEmotionRefs 포함,
+      // 숫자 기본값은 ??(0 보존). 필드 추가 시 컴파일 단계에서 누락 검출.
+      // IPC로 온 untyped 옵션을 TtsInputOptions로 명시 변환해 전달.
+      ...buildTtsConfig(options as TtsInputOptions | undefined)
     }
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
     console.log(`[AudioForge] Config written to: ${configPath}`)

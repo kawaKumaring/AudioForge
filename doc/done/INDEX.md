@@ -19,6 +19,7 @@
 
 | 날짜 | 핵심 (한 일) | 커밋 | 상세 위치 |
 |------|-------------|------|-----------|
+| 08-20 | TTS 1단계 전달 결함 수정(ttsEmotionRefs 누락+0초 변질) | 동일 커밋 | changelog §"TTS 1단계 전달 결함 수정 (ttsEmotionRefs 누락 + 0초 변질)" |
 | 08-16 | LLM 잔재 글자 NLLB 수리 + 구글 번역 백엔드 | `c169e71` | changelog §"LLM 잔재 글자 NLLB 수리 + 구글 번역 백엔드" |
 | 08-16 | 에너지 게이트(아웃로 환각 제거) + Mel-Band 단일 모드 | `c015263` | changelog §"유틸 검증 후속: 에너지 게이트(아웃로 환각) + Mel-Band 단일 모드" |
 | 08-16 | 보컬 앙상블(BS-RoFormer + Mel-Band, 잔음 최소) | `eed68a1` | changelog §"보컬 앙상블 (BS-RoFormer + Mel-Band 2모델, 잔음 최소)" |
