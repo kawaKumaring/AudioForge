@@ -73,6 +73,7 @@ def main():
         args.tts_silence_gap = config.get("ttsSilenceGap", 0.5)
         args.tts_emotion_refs = config.get("ttsEmotionRefs", {})
         args.tts_engine = config.get("ttsEngine", "auto")
+        args.tts_reference_prompts = config.get("ttsReferencePrompts", {})  # 식별자→수동 override
 
     if not args.input or not args.output:
         emit("error", message="입력 파일과 출력 경로가 필요합니다.")
@@ -88,9 +89,17 @@ def main():
             if hasattr(args, 'tts_emotion_refs') and args.tts_emotion_refs:
                 emotion_refs = args.tts_emotion_refs if isinstance(args.tts_emotion_refs, dict) else {}
             preferred_engine = args.tts_engine if hasattr(args, 'tts_engine') and args.tts_engine != 'auto' else None
+            ref_prompts = getattr(args, "tts_reference_prompts", {})
+            ref_prompts = ref_prompts if isinstance(ref_prompts, dict) else {}
             synthesize(args.input, args.tts_text, args.output,
                        speed=args.tts_speed, silence_gap=args.tts_silence_gap,
-                       emotion_refs=emotion_refs, preferred_engine=preferred_engine)
+                       emotion_refs=emotion_refs, preferred_engine=preferred_engine,
+                       reference_prompts=ref_prompts)
+            return
+
+        # ── Reference transcribe (preview for 수동 전사 UI) ──
+        if args.mode == "ref-transcribe":
+            _run_ref_transcribe(args)
             return
 
         # ── Meta fix mode ──
@@ -199,6 +208,16 @@ def _post_process(args, tracks):
 
     emit("progress", percent=99, message="완료!")
     emit("result", tracks=tracks, outputDir=args.output)
+
+
+def _run_ref_transcribe(args):
+    """참조 음성 1개 자동 전사(수동 전사 UI 미리보기용). Whisper 로딩 포함 — 사용자 클릭 시에만.
+    GPT 합성 경로와 동일하게 'small' 모델을 써서 결과가 일치하도록 한다. 구조화 결과를 emit."""
+    from reference_transcript import transcribe_reference
+    emit("status", message="참조 전사 미리보기", percent=0)
+    emit("progress", percent=10, message="참조 음성 전사 중... (Whisper)")
+    t = transcribe_reference(args.input, "small")
+    emit("result", transcript=t.to_dict())
 
 
 def _run_transcribe_only(args):

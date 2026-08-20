@@ -202,6 +202,19 @@ class GPTSoVITSEngine(TTSEngine):
         self._ref_transcript_cache = {}  # (path,size,mtime,model) → ReferenceTranscript (전사 1회)
         self._warned_transcripts = set()  # (transcript_key, code) → 전사 강등 경고 1회만
         self._announced_transcripts = set()  # transcript_key → 전사 완료 메시지 1회만(로그 오염 방지)
+        self._prompt_overrides = {}  # abspath → {manual_text, prompt_lang, mode} (사용자 수동 override)
+
+    def set_prompt_overrides(self, overrides_by_path):
+        """경로별 사용자 프롬프트 override 설정. 매 작업 시작 시 호출(빈 dict면 이전 override 해제)."""
+        self._prompt_overrides = overrides_by_path or {}
+
+    def _emit_prompt_warnings(self, key, prompt):
+        """ref-free 등 강등 경고를 참조·원인당 1회만 emit."""
+        for w in prompt.warnings:
+            wkey = (key, w.code)
+            if wkey not in self._warned_transcripts:
+                self._warned_transcripts.add(wkey)
+                emit("progress", percent=8, message=f"참조 전사 경고 [{w.code}] {w.message}")
 
     def load(self):
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -226,8 +239,32 @@ class GPTSoVITSEngine(TTSEngine):
         - 성공: 언어+글자 수만 progress로 표시(전문은 로그에 출력하지 않음).
         - 실패/빈 결과/미지원 언어: ref-free로 강등하되, 같은 참조·같은 원인당 1회만 경고 emit."""
         from reference_transcript import (transcribe_reference, build_gpt_prompt,
-                                          MODE_TRANSCRIBED)
+                                          build_manual_prompt, build_user_ref_free_prompt,
+                                          normalize_language, MODE_TRANSCRIBED, MODE_REF_FREE)
         key = self._transcript_key(ref_audio, model_name)
+
+        # ── 사용자 override(수동 전사/프롬프트 언어/모드) — 자동 전사보다 우선 ──
+        ov = self._prompt_overrides.get(os.path.abspath(ref_audio)) if self._prompt_overrides else None
+        user_lang = (ov or {}).get("prompt_lang")
+        if ov:
+            # 우선순위 고정: 명시적 ref_free > 명시적 manual(비어있지 않음) > auto.
+            if ov.get("mode") == MODE_REF_FREE:
+                # ref-free에서는 manual_text가 남아 있어도 무시하고 참조 없이 합성.
+                prompt = build_user_ref_free_prompt(target_language, user_lang)
+                self._emit_prompt_warnings(key, prompt)
+                return prompt
+            manual_text = (ov.get("manual_text") or "").strip()
+            if manual_text:
+                # 비어있지 않은 수동 전사문 → Whisper 미호출
+                prompt = build_manual_prompt(manual_text, user_lang, target_language)
+                if key not in self._announced_transcripts:
+                    self._announced_transcripts.add(key)
+                    emit("progress", percent=9,
+                         message=f"참조 전사(수동): {prompt.prompt_language}, {len(manual_text)}자")
+                return prompt
+            # 빈 수동 입력 + auto → 아래 자동 경로로(빈 수동을 자동 성공으로 오인하지 않음)
+
+        # ── 자동 전사 경로 ──
         if key in self._ref_transcript_cache:
             transcript = self._ref_transcript_cache[key]
         else:
@@ -238,6 +275,11 @@ class GPTSoVITSEngine(TTSEngine):
                 self._ref_transcript_cache[key] = transcript
 
         prompt = build_gpt_prompt(transcript, target_language)
+        # 사용자가 프롬프트 언어를 지정했으면 자동 감지 언어를 덮어씀(전사문은 자동 유지)
+        if user_lang and prompt.mode == MODE_TRANSCRIBED:
+            nl = normalize_language(user_lang)
+            if nl:
+                prompt.prompt_language = nl
 
         if prompt.mode == MODE_TRANSCRIBED:
             if key not in self._announced_transcripts:
@@ -245,11 +287,7 @@ class GPTSoVITSEngine(TTSEngine):
                 emit("progress", percent=9,
                      message=f"참조 전사 완료: {prompt.prompt_language}, {len(prompt.prompt_text)}자")
         else:
-            for w in prompt.warnings:
-                wkey = (key, w.code)
-                if wkey not in self._warned_transcripts:
-                    self._warned_transcripts.add(wkey)
-                    emit("progress", percent=8, message=f"참조 전사 경고 [{w.code}] {w.message}")
+            self._emit_prompt_warnings(key, prompt)
         return prompt
 
     def _assess_ref(self, ref_audio):
@@ -461,8 +499,9 @@ def _concat_with_silence(segment_paths, output_path, silence_sec=0.5):
 # ── Main synthesize function ──
 
 def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
-               emotion_refs=None, preferred_engine=None):
-    """Synthesize speech. Auto-selects engine by language."""
+               emotion_refs=None, preferred_engine=None, reference_prompts=None):
+    """Synthesize speech. Auto-selects engine by language.
+    reference_prompts: 식별자(default/emotionId) → {manual_text, prompt_lang, mode} 사용자 override."""
     emit("status", message="음성 합성 시작", percent=0)
 
     if not emotion_refs:
@@ -491,6 +530,18 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                 if tmp:
                     tmp_dirs.append(tmp)
                 ref_cache[emo_id] = wav
+
+        # 사용자 프롬프트 override(식별자 기준)를 준비된 참조 '경로' 기준으로 매핑해 GPT 엔진에 전달.
+        # 항상 설정(빈 dict 포함)해 이전 작업의 override가 남지 않게 한다.
+        overrides_by_path = {}
+        for ident, ov in (reference_prompts or {}).items():
+            p = ref_cache.get(ident)
+            if p and isinstance(ov, dict):
+                overrides_by_path[os.path.abspath(p)] = ov
+        # override가 있거나 GPT 엔진이 이미 존재할 때만 설정(없으면 굳이 인스턴스화하지 않음).
+        # 이미 존재하면 빈 dict로 덮어써 이전 작업의 override 잔재를 해제.
+        if overrides_by_path or "gptsovits" in _engine_cache:
+            _get_engine("gptsovits").set_prompt_overrides(overrides_by_path)
 
         segment_paths = []
 

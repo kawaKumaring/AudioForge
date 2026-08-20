@@ -19,7 +19,8 @@
 
 | 날짜 | 핵심 (한 일) | 커밋 | 상세 위치 |
 |------|-------------|------|-----------|
-| 08-21 | 대화 분리 GPU 정책(Auto/GPU/CPU)+OOM 재시도+종료 상태 보장 | 동일 커밋 | changelog §"대화 분리 GPU 정책 분리(Auto/GPU/CPU) + OOM 재시도 + 종료 상태 보장" |
+| 08-21 | TTS 2C-2: 수동 참조 전사 UI + 전달 경로(ref-free>수동>자동) | 동일 커밋 | changelog §"TTS 2C-2: 수동 참조 전사 UI + 전달 경로(명시적 ref-free > 수동 > 자동)" |
+| 08-21 | 대화 분리 GPU 정책(Auto/GPU/CPU)+OOM 재시도+종료 상태 보장 | `ccebd10` | changelog §"대화 분리 GPU 정책 분리(Auto/GPU/CPU) + OOM 재시도 + 종료 상태 보장" |
 | 08-21 | TTS 2C-1: 참조 전사 구조화 + ref-free 강등 관측화 | `b9859eb` | changelog §"TTS 2C-1: 참조 전사 구조화 + 조용한 ref-free 강등 관측화" |
 | 08-21 | TTS 2B: 참조 음성 분석·판정 구조화 + GPT 로딩 전 게이트 | `1c0b9ab` | changelog §"TTS 2B: 참조 음성 분석·판정 구조화 + GPT 로딩 전 게이트" |
 | 08-20 | TTS 2A: 감정 참조 라우팅 회귀 테스트(모델 없이) | `8d3975e` | changelog §"TTS 2A: 감정 참조 라우팅 회귀 테스트 (모델 없이 검증)" |

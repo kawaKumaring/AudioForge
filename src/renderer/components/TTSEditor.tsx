@@ -1,5 +1,11 @@
 import { useState, useEffect, useCallback } from 'react'
 import { useAppStore } from '@/stores/app.store'
+import type { TtsReferenceEntry } from '../../shared/ttsConfig'
+import { deriveRefMode } from '../../shared/ttsConfig'
+
+const PROMPT_LANGS: [string, string][] = [
+  ['', '자동'], ['ko', '한국어'], ['ja', '일본어'], ['zh', '중국어'], ['en', '영어'],
+]
 
 // ⚠️ 각 emotion의 id는 Python(python/tts_worker.py의 EMOTION_TAGS 값 / EMOTION_PROMPTS 키)과
 // 공유된다. id를 추가/변경하면 Python도 함께 갱신할 것. 불일치는 smoke_test._check_emotions()가
@@ -91,7 +97,7 @@ const EMOTION_GROUPS = [
 const ALL_EMOTIONS = EMOTION_GROUPS.flatMap(g => g.emotions)
 
 export default function TTSEditor() {
-  const { mode, status } = useAppStore()
+  const { mode, status, fileInfo } = useAppStore()
   // 로컬 상태는 store 값으로 초기화 — 빈 값으로 시작하면 아래 동기화
   // useEffect가 다른 모드에 다녀온 뒤 store의 대사/등록을 덮어써 유실시킴
   const [ttsText, setTtsText] = useState(() => useAppStore.getState().ttsText)
@@ -100,12 +106,54 @@ export default function TTSEditor() {
   const [emotionRefs, setEmotionRefs] = useState<Record<string, string>>(() => useAppStore.getState().ttsEmotionRefs)
   const [showEmotionSetup, setShowEmotionSetup] = useState(false)
   const [ttsEngine, setTtsEngine] = useState(() => useAppStore.getState().ttsEngine)
+  const [refPrompts, setRefPrompts] = useState<Record<string, TtsReferenceEntry>>(() => useAppStore.getState().ttsReferencePrompts)
+  const [showRefPrompts, setShowRefPrompts] = useState(false)
+  const [txLoading, setTxLoading] = useState<string | null>(null)
   const disabled = status === 'processing'
 
   // Sync to store
   useEffect(() => {
-    useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefs: emotionRefs, ttsEngine })
-  }, [ttsText, ttsSpeed, ttsSilenceGap, emotionRefs, ttsEngine])
+    useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefs: emotionRefs, ttsReferencePrompts: refPrompts, ttsEngine })
+  }, [ttsText, ttsSpeed, ttsSilenceGap, emotionRefs, refPrompts, ttsEngine])
+
+  const updateRef = (id: string, patch: Partial<TtsReferenceEntry>) =>
+    setRefPrompts(prev => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }))
+
+  const autoTranscribe = async (id: string, path: string) => {
+    if (!path || txLoading) return
+    setTxLoading(id)
+    try {
+      const t = await window.api.audio.transcribeReference(path) as {
+        status?: string; text?: string; language?: string; error_message?: string
+      }
+      const ok = t?.status === 'ok'
+      // 자동 결과는 autoText에만 저장한다. manualText에 자동 복사하지 않는다 —
+      // 사용자가 '수정하여 사용'을 눌러 명시적으로 전환해야만 수동(manual)이 된다.
+      updateRef(id, {
+        autoStatus: t?.status || 'failed',
+        autoText: ok ? (t?.text ?? '') : '',
+        autoLang: ok ? (t?.language ?? '') : '',
+        autoError: ok ? undefined : (t?.error_message || t?.status || '전사 실패')
+      })
+    } catch (e) {
+      // 실패를 조용히 무시하지 않고 UI에 표시
+      updateRef(id, { autoStatus: 'failed', autoError: (e as Error)?.message || '전사 실패' })
+    } finally {
+      setTxLoading(null)
+    }
+  }
+
+  // '수정하여 사용': 자동 결과를 수동 칸으로 옮기고 store mode도 manual로 전환(UI=직렬화 일치).
+  const useAutoAsManual = (id: string) =>
+    updateRef(id, { manualText: (refPrompts[id]?.autoText || ''), mode: 'manual' })
+
+  // 수동문 편집: 내용이 있으면 manual, 완전히 비우면 auto로 복귀(ref-free일 때는 이 경로가 비활성).
+  const onManualEdit = (id: string, text: string) =>
+    updateRef(id, { manualText: text, mode: text.trim() ? 'manual' : 'auto' })
+
+  // ref-free 토글: 켜면 ref_free, 끄면 남은 수동문 유무로 mode 복원.
+  const onRefFreeToggle = (id: string, checked: boolean) =>
+    updateRef(id, { mode: checked ? 'ref_free' : ((refPrompts[id]?.manualText || '').trim() ? 'manual' : 'auto') })
 
   if (mode !== 'tts') return null
 
@@ -183,6 +231,97 @@ export default function TTSEditor() {
             ))}
               </div>
             ))}
+          </div>
+        )}
+      </div>
+
+      {/* 참조 전사 (선택 — 수동 입력·언어). GPT-SoVITS 클로닝 품질용. */}
+      <div style={{ borderRadius: 12, overflow: 'hidden', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)' }}>
+        <button onClick={() => setShowRefPrompts(!showRefPrompts)} style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          width: '100%', padding: '10px 16px', border: 'none', cursor: 'pointer',
+          background: 'transparent', fontFamily: 'inherit', outline: 'none'
+        }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>
+            참조 전사 <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>(선택 — 수동 입력·언어)</span>
+          </span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2"
+            style={{ transform: showRefPrompts ? 'rotate(180deg)' : 'rotate(0)', transition: 'transform 0.2s' }}>
+            <polyline points="6 9 12 15 18 9" />
+          </svg>
+        </button>
+        {showRefPrompts && (
+          <div style={{ padding: '0 16px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+              자동 전사가 틀리면 직접 고치거나 입력하세요. 비워두면 자동 전사를 사용합니다. (GPT-SoVITS 전용)
+            </div>
+            {[
+              { id: 'default', label: '기본 참조', path: fileInfo?.path || '' },
+              ...ALL_EMOTIONS.filter(e => e.id !== 'default' && emotionRefs[e.id]).map(e => ({ id: e.id, label: e.label, path: emotionRefs[e.id] }))
+            ].map(ref => {
+              const entry = refPrompts[ref.id] || {}
+              const effMode = deriveRefMode(entry)  // 우선순위: ref_free > manual > auto
+              const refFree = effMode === 'ref_free'
+              const eff = refFree ? 'ref-free' : (effMode === 'manual' ? '수동' : '자동')
+              const effColor = refFree ? 'var(--text-muted)' : (effMode === 'manual' ? 'var(--rose)' : 'var(--cyan)')
+              return (
+                <div key={ref.id} style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 5 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', minWidth: 62 }}>{ref.label}</span>
+                    <span style={{ fontSize: 9, fontWeight: 600, color: effColor, padding: '1px 6px', borderRadius: 4, background: 'var(--bg-elevated)' }}>{eff}</span>
+                    <span style={{ flex: 1, fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {ref.path ? ref.path.split(/[/\\]/).pop() : '파일 없음'}
+                    </span>
+                    <button onClick={() => autoTranscribe(ref.id, ref.path)} disabled={disabled || !ref.path || !!txLoading} style={{
+                      padding: '3px 10px', borderRadius: 5, border: 'none', cursor: 'pointer',
+                      fontSize: 10, fontWeight: 500, fontFamily: 'inherit',
+                      background: 'var(--bg-elevated)', color: 'var(--text-secondary)', opacity: (disabled || !ref.path || !!txLoading) ? 0.5 : 1
+                    }}>
+                      {txLoading === ref.id ? '전사 중...' : '자동 전사'}
+                    </button>
+                  </div>
+                  {entry.autoStatus === 'ok' && (
+                    <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 9, color: 'var(--text-muted)' }}>
+                      <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                        자동 전사: {entry.autoLang || '?'} · {(entry.autoText || '').length}자 · "{(entry.autoText || '').slice(0, 30)}"
+                      </span>
+                      <button onClick={() => useAutoAsManual(ref.id)} disabled={disabled || refFree || !entry.autoText} style={{
+                        padding: '2px 8px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                        fontSize: 9, fontWeight: 600, fontFamily: 'inherit',
+                        background: 'var(--accent-glow, rgba(56,189,248,0.15))', color: 'var(--cyan)',
+                        opacity: (disabled || refFree || !entry.autoText) ? 0.5 : 1
+                      }}>수정하여 사용</button>
+                    </div>
+                  )}
+                  {entry.autoStatus && entry.autoStatus !== 'ok' && (
+                    <div style={{ fontSize: 9, color: 'var(--rose)' }}>
+                      자동 전사 실패({entry.autoStatus}): {entry.autoError || '알 수 없는 오류'}
+                    </div>
+                  )}
+                  <textarea value={entry.manualText || ''} onChange={(e) => onManualEdit(ref.id, e.target.value)}
+                    disabled={disabled || refFree}
+                    placeholder="수동 전사문 (비우면 자동 전사 사용). '자동 전사' 후 '수정하여 사용'으로 불러올 수 있습니다."
+                    style={{
+                      width: '100%', height: 42, resize: 'vertical', padding: '6px 8px',
+                      borderRadius: 6, border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
+                      color: 'var(--text-primary)', fontFamily: "'Inter', sans-serif", fontSize: 11, outline: 'none',
+                      opacity: (disabled || refFree) ? 0.5 : 1
+                    }} />
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                    <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>언어</span>
+                    <select value={entry.promptLang || ''} onChange={(e) => updateRef(ref.id, { promptLang: e.target.value })} disabled={disabled}
+                      style={{ fontSize: 10, padding: '2px 6px', borderRadius: 5, border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-secondary)', fontFamily: 'inherit' }}>
+                      {PROMPT_LANGS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                    </select>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--text-muted)', cursor: 'pointer' }}>
+                      <input type="checkbox" checked={refFree} disabled={disabled}
+                        onChange={(e) => onRefFreeToggle(ref.id, e.target.checked)} />
+                      참조 없이(ref-free)
+                    </label>
+                  </div>
+                </div>
+              )
+            })}
           </div>
         )}
       </div>

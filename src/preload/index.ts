@@ -11,6 +11,7 @@ const api = {
     exportTracks: (trackPaths: string[]) => ipcRenderer.invoke('audio:export-tracks', trackPaths),
     restoreFromFolder: () => ipcRenderer.invoke('audio:restore-from-folder'),
     findSession: (sourcePath: string) => ipcRenderer.invoke('audio:find-session', sourcePath),
+    transcribeReference: (filePath: string) => ipcRenderer.invoke('audio:transcribe-reference', filePath),
     processTrack: (trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string }) =>
       ipcRenderer.invoke('audio:process-track', trackPath, outputDir, options),
     onTrackResult: (callback: (data: unknown) => void) => {

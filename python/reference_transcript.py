@@ -23,8 +23,9 @@ STATUS_EMPTY = "empty"
 STATUS_FAILED = "failed"
 
 # prompt mode
-MODE_TRANSCRIBED = "transcribed"
-MODE_REF_FREE = "ref_free"
+MODE_TRANSCRIBED = "transcribed"   # 자동 Whisper 전사 사용
+MODE_MANUAL = "manual"             # 사용자가 직접 입력/수정한 전사 사용(자동보다 우선)
+MODE_REF_FREE = "ref_free"         # 전사 없이 합성
 
 # 안정적 issue code (문자열 메시지 대신 IPC/UI 분기용)
 TRANSCRIPTION_FAILED = "TRANSCRIPTION_FAILED"
@@ -32,6 +33,7 @@ EMPTY_TRANSCRIPT = "EMPTY_TRANSCRIPT"
 LANGUAGE_MISSING = "LANGUAGE_MISSING"
 UNSUPPORTED_PROMPT_LANGUAGE = "UNSUPPORTED_PROMPT_LANGUAGE"
 REF_FREE_FALLBACK = "REF_FREE_FALLBACK"
+REF_FREE_USER = "REF_FREE_USER"    # 사용자가 명시적으로 ref-free 선택
 
 # GPT-SoVITS 프롬프트가 지원하는 언어
 GPT_PROMPT_LANGUAGES = ("ko", "ja", "zh", "en")
@@ -89,10 +91,10 @@ class TranscriptIssue:
 
 @dataclass
 class ReferencePrompt:
-    mode: str                        # transcribed | ref_free
+    mode: str                        # transcribed | manual | ref_free
     prompt_text: str
     prompt_language: Optional[str]
-    transcript: ReferenceTranscript
+    transcript: Optional[ReferenceTranscript] = None
     warnings: List[TranscriptIssue] = field(default_factory=list)
 
     def to_dict(self) -> dict:
@@ -171,3 +173,23 @@ def build_gpt_prompt(transcript: ReferenceTranscript, target_language: Optional[
                         {"prompt_language": target_language}),
     ]
     return ReferencePrompt(MODE_REF_FREE, "", target_language, t, warnings)
+
+
+def build_manual_prompt(manual_text, prompt_language, target_language) -> ReferencePrompt:
+    """사용자가 직접 입력/수정한 전사문으로 프롬프트를 만든다(자동 전사보다 우선).
+    manual_text는 비어있지 않아야 한다(호출부에서 strip 후 보장). 언어는 사용자 선택 언어 우선,
+    없으면 목표 텍스트 언어. Whisper를 호출하지 않는다."""
+    lang = normalize_language(prompt_language) or target_language
+    t = ReferenceTranscript(source_path="", status=STATUS_OK, text=manual_text,
+                            language=lang, model_name="", source="manual")
+    return ReferencePrompt(MODE_MANUAL, manual_text, lang, t, [])
+
+
+def build_user_ref_free_prompt(target_language, prompt_language=None) -> ReferencePrompt:
+    """사용자가 명시적으로 ref-free를 선택한 경우. 구조화된 warning 유지(REF_FREE_USER + REF_FREE_FALLBACK)."""
+    lang = normalize_language(prompt_language) or target_language
+    warnings = [
+        TranscriptIssue(REF_FREE_USER, "사용자가 ref-free를 선택했습니다.", {"prompt_language": lang}),
+        TranscriptIssue(REF_FREE_FALLBACK, "참조 전사 없이(ref-free) 합성합니다.", {"prompt_language": lang}),
+    ]
+    return ReferencePrompt(MODE_REF_FREE, "", lang, None, warnings)

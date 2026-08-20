@@ -1,5 +1,6 @@
 import { create } from 'zustand'
 import type { SeparationMode, Track, FileInfo } from '../../shared/types'
+import type { TtsReferenceEntry } from '../../shared/ttsConfig'
 
 // 이전 결과(session.json) 복원용 — 재분리 없이 설정+트랙 되살리기
 export interface RestorableSession {
@@ -50,6 +51,7 @@ interface AppState {
   ttsSpeed: number
   ttsSilenceGap: number
   ttsEmotionRefs: Record<string, string>
+  ttsReferencePrompts: Record<string, TtsReferenceEntry>
   ttsEngine: string
 
   setFile: (info: FileInfo, url: string) => void
@@ -66,6 +68,7 @@ interface AppState {
   setTranslateModel: (v: '600m' | '1.3b' | 'llm' | 'google') => void
   setDemucsModel: (v: 'htdemucs' | 'htdemucs_ft' | 'roformer' | 'roformer_melband' | 'roformer_ensemble') => void
   setNSpeakers: (v: number) => void
+  setTtsReferencePrompts: (v: Record<string, TtsReferenceEntry>) => void
   setProcessing: () => void
   setProgress: (percent: number, message: string) => void
   setResult: (tracks: Track[], outputDir: string) => void
@@ -106,6 +109,7 @@ export const useAppStore = create<AppState>((set) => ({
   ttsSpeed: 1.0,
   ttsSilenceGap: 0.5,
   ttsEmotionRefs: {} as Record<string, string>,
+  ttsReferencePrompts: {} as Record<string, TtsReferenceEntry>,
   ttsEngine: 'auto',
 
   setFile: (info, url) => set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, progress: 0, outputDir: null, restorable: null, playingTrack: null }),
@@ -122,6 +126,7 @@ export const useAppStore = create<AppState>((set) => ({
   setTranslateModel: (v) => set({ translateModel: v }),
   setDemucsModel: (v) => set({ demucsModel: v }),
   setNSpeakers: (v) => set({ nSpeakers: v }),
+  setTtsReferencePrompts: (v) => set({ ttsReferencePrompts: v }),
   setProcessing: () => set({ status: 'processing', progress: 0, progressMessage: '파일 준비 중...', error: null, tracks: [] }),
   setProgress: (percent, message) => set({ progress: percent, progressMessage: message }),
   setResult: (tracks, outputDir) => set({ status: 'done', progress: 100, progressMessage: '완료', tracks, outputDir }),

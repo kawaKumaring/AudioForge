@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdir
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
 import { createSettlementGuard } from '../services/run-settlement'
+import { createPreviewGuard, runPreview } from '../services/preview-transcribe'
 import { buildTtsConfig, type TtsInputOptions } from '../../shared/ttsConfig'
 
 // execFile(배열 인자)은 cmd.exe를 거치지 않아 시스템 코드페이지(CP949)의
@@ -93,6 +94,9 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     mainWindow.webContents.send('audio:error', { message })
   }
 
+  // 참조 전사 미리보기 동시 실행/중복 방지 가드(핸들러 간 공유)
+  const previewGuard = createPreviewGuard()
+
   ipcMain.handle('audio:select-file', async () => {
     // 마지막으로 불러온 폴더에서 열기 — settings.json에 기억(다른 앱 영향 없음)
     const lastDir = loadSettings().lastDir
@@ -141,9 +145,37 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     return `local-file://${encodeURIComponent(filePath)}`
   })
 
+  // 참조 음성 자동 전사 미리보기(수동 전사 UI용). 사용자 클릭 시에만 Whisper 로딩.
+  // 메인 처리용 runner와 별개의 단기 프로세스로 실행. 동시 실행 방지 + timeout + 정리.
+  ipcMain.handle('audio:transcribe-reference', async (_event, filePath: string) => {
+    if (runner?.isRunning) throw new Error('처리 중에는 참조 전사를 실행할 수 없습니다.')
+    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
+    if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
+    previewGuard.begin()  // 미리보기 중복 실행 방지(진행 중이면 throw)
+    // config 생성·writeFileSync·실행 전체를 try/finally 안에 둔다 — 설정 단계 예외에서도
+    // guard가 running에 영구히 남지 않고, 생성된 config도 정리된다.
+    const cfgPath = join(tmpdir(), `audioforge_reftx_${Date.now()}.json`)
+    try {
+      const scriptPath = PythonRunner.getScriptPath('separate.py')
+      writeFileSync(cfgPath, JSON.stringify({ mode: 'ref-transcribe', input: filePath, output: dirname(filePath) }), 'utf-8')
+      return await runPreview({
+        runner: new PythonRunner(pythonPath),
+        scriptPath, args: ['--config', cfgPath],
+        timeoutMs: 120000,  // Whisper small 로딩+전사 여유. 멈춘 프로세스만 끊음.
+        cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
+      })
+    } finally {
+      try { unlinkSync(cfgPath) } catch {}  // 설정 예외/누락 대비(정상 시 runPreview cleanup과 중복이나 무해)
+      previewGuard.end()
+    }
+  })
+
   ipcMain.handle('audio:process', async (_event, filePath: string, mode: string, options?: Record<string, unknown>) => {
     if (runner?.isRunning) {
       throw new Error('이미 처리 중인 작업이 있습니다')
+    }
+    if (previewGuard.running) {
+      throw new Error('참조 전사 미리보기 중에는 합성을 시작할 수 없습니다.')
     }
 
     // Verify python exists

@@ -1,5 +1,48 @@
 # AudioForge Changelog
 
+## 2026-08-21 — TTS 2C-2: 수동 참조 전사 UI + 전달 경로(명시적 ref-free > 수동 > 자동)
+
+목표: 사용자가 GPT-SoVITS 참조 음성의 전사문·언어를 확인/수정/직접입력. 대화 분리 코드 불변.
+
+- **데이터 모델(참조별 독립)**: `TtsReferenceEntry`(shared) — manualText/promptLang/mode + 자동 미리보기
+  캐시(autoStatus/autoText/autoLang). 식별자 `'default'`(기본 참조)·emotionId(감정별)로 **독립 관리**.
+  store `ttsReferencePrompts` + setter.
+- **전달 경로**: UI(TTSEditor) → store → ProcessButton → IPC config(`buildTtsConfig`) → separate.py →
+  `tts_worker.synthesize(reference_prompts)` → GPT 브리지 payload. `buildReferencePrompts`가 camelCase
+  UI → snake_case(`manual_text/prompt_lang/mode`) 변환, **순수 auto(수동 없음·언어 미지정)는 전달 제외**.
+- **우선순위**(`GPTSoVITSEngine._get_ref_prompt` + override): **명시적 ref-free > 수동 전사문(비어있지 않음) > 자동**.
+  - 비어있지 않은 수동 → mode=manual, Whisper 미호출.
+  - 사용자 프롬프트 언어 지정 시 자동 감지 언어를 override(전사문은 자동 유지).
+  - **빈 수동 입력은 자동 성공으로 오인하지 않음** — auto로 폴백(공백 trim). 명시적 ref-free만 ref-free.
+  - `reference_transcript`: MODE_MANUAL·REF_FREE_USER 추가, `build_manual_prompt`/`build_user_ref_free_prompt`,
+    ReferencePrompt.transcript Optional. ref-free 강등은 기존 구조화 warning 유지.
+  - override는 경로 기준(abspath)으로 GPT 엔진에 주입, **매 작업 set(빈 dict면 이전 잔재 해제)**. 기존 전사
+    캐시(경로+size+mtime+모델)·품질 게이트 불변. override 없고 엔진 미생성이면 인스턴스화도 안 함.
+- **자동 전사 미리보기**: IPC `audio:transcribe-reference`(preload `transcribeReference`) — 사용자 클릭 시에만
+  단기 프로세스로 `separate.py ref-transcribe`(Whisper small, GPT 경로와 동일 모델) 실행 → 구조화 결과 표시.
+  메인 처리 runner와 분리. 전문은 일반 progress 로그에 출력하지 않음(전사 성공은 언어+글자수만).
+- **테스트**(모델 미로딩 우선):
+  - `python/test_reference_prompt_override.py`(10): ref-free>수동>자동 우선순위/수동 전사(Whisper 0회)/언어 기본값/
+    빈수동 ref_free/빈수동 auto 폴백/언어 override/override 없음/JSON 직렬화 + 전달경로 payload(식별자→경로)/잔재 해제.
+    subprocess·Whisper mock.
+  - `ttsConfig.test.ts`: buildReferencePrompts(trim/순수auto 제외/ref_free strips manual/언어만/UI캐시 제외) +
+    deriveRefMode(우선순위·수동비우면 auto 복귀) + 미리보기만→미전달/수정하여사용→manual.
+- **리뷰 보완 4건**:
+  1. 자동 전사 결과를 `manualText`에 자동 복사하지 않음 — autoText에만 저장하고, **'수정하여 사용'** 명시
+     클릭 시에만 manual로 전환(자동 미리보기만으론 manual override가 전달되지 않음). UI에 실효 모드
+     배지(자동/수동/ref-free) 표시.
+  2. 우선순위를 **명시적 ref_free > manual(비어있지 않음) > auto**로 고정 — `_get_ref_prompt`가 ref_free를
+     manual보다 먼저 판정, `buildReferencePrompts`는 ref_free 시 manual_text를 비워 전달. 회귀 테스트 추가.
+  3. 미리보기 runner에 **동시 실행 방지 + 120s timeout + 정리** — `preview-transcribe.ts`(`createPreviewGuard`/
+     `runPreview`)로 추출. 미리보기 중 두 번째 미리보기·메인 합성 차단, timeout/오류/비정상 done에서도
+     config·runner 정리하고 단일 resolve(UI가 '전사 중...'에 안 남음).
+  4. `autoTranscribe()`의 빈 catch 제거 — 실패 시 `autoStatus=failed`+오류 메시지를 UI에 표시.
+- **범위 준수**: 대화 분리 코드 불변. F5/Kokoro/자동선택/음악·전사·분할 불변. 새 패키지 0. `resources/`·파생
+  테스트 음성·합성 출력 미커밋. tsconfig.web에 테스트 제외 추가(기존 ModeSelector 오류는 무관·선재).
+- 검증: python discovery 78 · override 10 · smoke --quick 3/3(SKIP 0) · npm test 29(ttsConfig 17+settlement 6+
+  preview 6) · tsc(node)·tsc(web) 신규오류 없음 · build 통과. preview-transcribe 6케이스(result/error/무결과 done/
+  timeout+cancel/단일 resolve/guard 중복).
+
 ## 2026-08-21 — 대화 분리 GPU 정책 분리(Auto/GPU/CPU) + OOM 재시도 + 종료 상태 보장
 
 증상: ComfyUI 실행 중 대화 분리가 장시간 준비 상태에 머묾(종료 후 정상). 원인: `get_device()`가
