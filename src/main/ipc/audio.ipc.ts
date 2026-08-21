@@ -1,7 +1,8 @@
 import { ipcMain, dialog, BrowserWindow, shell, app } from 'electron'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { join, basename, dirname, extname } from 'path'
+import { join, basename, dirname, extname, resolve } from 'path'
+import { randomUUID } from 'crypto'
 import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
@@ -10,6 +11,7 @@ import { createPreviewGuard, runPreview } from '../services/preview-transcribe'
 import { buildTtsConfig, type TtsInputOptions } from '../../shared/ttsConfig'
 import { sweepQwenJobDirs } from '../services/qwen-cleanup'
 import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
+import { createSingleFlight, createKeyedSingleFlight } from '../services/single-flight'
 
 // execFile(배열 인자)은 cmd.exe를 거치지 않아 시스템 코드페이지(CP949)의
 // 한글 경로 손상 문제에 면역. exec(문자열)은 한글 파일명에서 깨짐 → 금지.
@@ -107,8 +109,16 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     mainWindow.webContents.send('audio:error', { message })
   }
 
-  // 참조 전사 미리보기 동시 실행/중복 방지 가드(핸들러 간 공유)
-  const previewGuard = createPreviewGuard()
+  // 배타 가드는 '중복 실행을 막아야 하는' 쓰기성 작업에만. 읽기 전용 analyze/preflight는 쓰지 않는다.
+  //  - transcriptPreviewGuard: 참조 전사 미리보기(Whisper)
+  //  - referenceTrimGuard: 참조 구간 트림(파생 클립 생성)
+  // 둘은 서로 다른 가드라 서로를 차단하지 않고, analyze/preflight도 차단하지 않는다.
+  const transcriptPreviewGuard = createPreviewGuard()
+  const referenceTrimGuard = createPreviewGuard()
+
+  // 읽기 전용 작업 single-flight — StrictMode 중복 effect/동시 요청에도 subprocess는 1회.
+  const qwenPreflightSF = createSingleFlight<unknown>()
+  const analyzeSF = createKeyedSingleFlight<unknown>()  // 절대경로 key
 
   ipcMain.handle('audio:select-file', async () => {
     // 마지막으로 불러온 폴더에서 열기 — settings.json에 기억(다른 앱 영향 없음)
@@ -164,10 +174,10 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 전사를 실행할 수 없습니다.')
     if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
-    previewGuard.begin()  // 미리보기 중복 실행 방지(진행 중이면 throw)
+    transcriptPreviewGuard.begin()  // 참조 전사 중복 실행 방지(진행 중이면 throw)
     // config 생성·writeFileSync·실행 전체를 try/finally 안에 둔다 — 설정 단계 예외에서도
     // guard가 running에 영구히 남지 않고, 생성된 config도 정리된다.
-    const cfgPath = join(tmpdir(), `audioforge_reftx_${Date.now()}.json`)
+    const cfgPath = join(tmpdir(), `audioforge_reftx_${randomUUID()}.json`)
     try {
       const scriptPath = PythonRunner.getScriptPath('separate.py')
       writeFileSync(cfgPath, JSON.stringify({ mode: 'ref-transcribe', input: filePath, output: dirname(filePath) }), 'utf-8')
@@ -179,31 +189,33 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       })
     } finally {
       try { unlinkSync(cfgPath) } catch {}  // 설정 예외/누락 대비(정상 시 runPreview cleanup과 중복이나 무해)
-      previewGuard.end()
+      transcriptPreviewGuard.end()
     }
   })
 
-  // 참조 구간 분석(길이/추천/파형 peak) — 10초 초과 원본에서 3~10초 구간 선택 UI용. 짧은 미리보기.
+  // 참조 구간 분석(길이/추천/파형 peak) — 읽기 전용. 배타 가드 미사용(analyze/preflight를 서로 차단하지
+  // 않음). 같은 절대 filePath의 동시 요청은 single-flight로 합쳐 subprocess 1회, 모두 같은 결과.
   ipcMain.handle('audio:analyze-reference', async (_event, filePath: string) => {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 분석을 실행할 수 없습니다.')
     if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
-    releaseRefClip()  // 새 파일 분석 시작 → 이전 파생 클립 폐기(합성 중이 아니므로 안전)
-    previewGuard.begin()
-    const cfgPath = join(tmpdir(), `audioforge_refanalyze_${Date.now()}.json`)
-    try {
-      const scriptPath = PythonRunner.getScriptPath('separate.py')
-      writeFileSync(cfgPath, JSON.stringify({ mode: 'ref-analyze', input: filePath, output: dirname(filePath) }), 'utf-8')
-      return await runPreview({
-        runner: new PythonRunner(pythonPath),
-        scriptPath, args: ['--config', cfgPath],
-        timeoutMs: 60000,  // 파형 peak 스캔 여유. 멈춘 프로세스만 끊음.
-        cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
-      })
-    } finally {
-      try { unlinkSync(cfgPath) } catch {}
-      previewGuard.end()
-    }
+    const key = resolve(filePath)
+    if (!analyzeSF.has(key)) releaseRefClip()  // 새 분석 시작일 때만 이전 파생 클립 폐기(중복 요청엔 안 함)
+    return analyzeSF.run(key, async () => {  // 동시/StrictMode 중복은 진행 중 Promise 공유(subprocess 1회)
+      const cfgPath = join(tmpdir(), `audioforge_refanalyze_${randomUUID()}.json`)
+      try {
+        const scriptPath = PythonRunner.getScriptPath('separate.py')
+        writeFileSync(cfgPath, JSON.stringify({ mode: 'ref-analyze', input: filePath, output: dirname(filePath) }), 'utf-8')
+        return await runPreview({
+          runner: new PythonRunner(pythonPath),
+          scriptPath, args: ['--config', cfgPath],
+          timeoutMs: 60000,  // 파형 peak 스캔 여유. 멈춘 프로세스만 끊음.
+          cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
+        })
+      } finally {
+        try { unlinkSync(cfgPath) } catch {}
+      }
+    })
   })
 
   // 선택 구간 → mono/24k 파생 참조 WAV(작업 임시폴더). 원본 불변. 반환 clip_path를 합성에 전달한다.
@@ -212,9 +224,10 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
     releaseRefClip()  // 재확정 → 이전 파생 클립 폐기(합성 중 아님: 위에서 차단)
-    previewGuard.begin()
-    const cfgPath = join(tmpdir(), `audioforge_reftrim_${Date.now()}.json`)
-    const outDir = join(tmpdir(), `audioforge_refclip_${Date.now()}`)  // 작업 임시폴더(프로젝트 밖)
+    referenceTrimGuard.begin()  // 트림 중복 실행 방지(전사 가드와 분리 — 서로 차단하지 않음)
+    const uid = randomUUID()
+    const cfgPath = join(tmpdir(), `audioforge_reftrim_${uid}.json`)
+    const outDir = join(tmpdir(), `audioforge_refclip_${uid}`)  // 작업 임시폴더(프로젝트 밖), 충돌 불가 UID
     currentRefClipDir = outDir  // 새 파생 클립 폴더 추적(합성 종료/새 파일/재확정 시 정리)
     try {
       mkdirSync(outDir, { recursive: true })
@@ -231,37 +244,44 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       })
     } finally {
       try { unlinkSync(cfgPath) } catch {}
-      previewGuard.end()
+      referenceTrimGuard.end()
     }
   })
 
-  // Qwen 실행 전 상태(preflight) — 설치/스냅샷/예상 장치. 예상값이며 실행 결과는 metadata가 최종.
+  // Qwen 실행 전 상태(preflight) — 읽기 전용. 배타 가드 미사용. 동시(또는 StrictMode 중복) 호출은
+  // 하나의 in-flight Promise를 공유해 subprocess 1회. 예상값이며 실행 결과는 metadata가 최종.
   ipcMain.handle('audio:qwen-preflight', async () => {
     if (runner?.isRunning) return { available: false, reason: '처리 중' }
     if (!existsSync(pythonPath)) return { available: false, reason: 'Python 없음' }
-    const cfgPath = join(tmpdir(), `audioforge_qwenpre_${Date.now()}.json`)
-    try {
-      const scriptPath = PythonRunner.getScriptPath('separate.py')
-      writeFileSync(cfgPath, JSON.stringify({ mode: 'qwen-preflight' }), 'utf-8')
-      return await runPreview({
-        runner: new PythonRunner(pythonPath),
-        scriptPath, args: ['--config', cfgPath],
-        timeoutMs: 30000,
-        cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
-      })
-    } catch (e) {
-      return { available: false, reason: (e as Error)?.message || 'preflight 실패' }
-    } finally {
-      try { unlinkSync(cfgPath) } catch {}
-    }
+    return qwenPreflightSF.run(async () => {  // 동시/StrictMode 중복은 진행 중 Promise 공유(subprocess 1회)
+      const cfgPath = join(tmpdir(), `audioforge_qwenpre_${randomUUID()}.json`)
+      try {
+        const scriptPath = PythonRunner.getScriptPath('separate.py')
+        writeFileSync(cfgPath, JSON.stringify({ mode: 'qwen-preflight' }), 'utf-8')
+        return await runPreview({
+          runner: new PythonRunner(pythonPath),
+          scriptPath, args: ['--config', cfgPath],
+          timeoutMs: 30000,
+          cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
+        })
+      } catch (e) {
+        return { available: false, reason: (e as Error)?.message || 'preflight 실패' }
+      } finally {
+        try { unlinkSync(cfgPath) } catch {}
+      }
+    })
   })
 
   ipcMain.handle('audio:process', async (_event, filePath: string, mode: string, options?: Record<string, unknown>) => {
     if (runner?.isRunning) {
       throw new Error('이미 처리 중인 작업이 있습니다')
     }
-    if (previewGuard.running) {
+    // 읽기 전용 preflight/analyze는 합성을 막지 않는다. 실제 참조 전사·트림 중일 때만 차단(작업명 표시).
+    if (transcriptPreviewGuard.running) {
       throw new Error('참조 전사 미리보기 중에는 합성을 시작할 수 없습니다.')
+    }
+    if (referenceTrimGuard.running) {
+      throw new Error('참조 구간 트림 중에는 합성을 시작할 수 없습니다.')
     }
 
     // Verify python exists

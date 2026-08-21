@@ -49,42 +49,46 @@ export default function ReferenceRegionPanel() {
   const stopTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const path = fileInfo?.path || ''
 
-  // 파일이 바뀌면 분석. 결과에 따라 준비 상태를 store에 반영.
-  useEffect(() => {
+  // 분석 실행(재사용 — 파일 변경 시 + '다시 분석' 재시도). single-flight는 main IPC에서 보장.
+  const runAnalyze = useCallback(async (signal?: { cancelled: boolean }) => {
     if (!path) return
-    let cancelled = false
     setAnalysis(null); setMetrics(null); setConfirmedClip(''); setAnalyzeError(null)
     setLoading(true)
     setTtsRefState({ ready: false, clip: '', message: '참조 음성을 분석 중입니다...' })
-    ;(async () => {
-      try {
-        const a = await window.api.audio.analyzeReference(path) as Analysis
-        if (cancelled) return
-        setAnalysis(a)
-        if (a.too_short) {
-          setTtsRefState({ ready: false, clip: '', message: `참조가 ${fmt(a.duration_sec)}로 3초 미만입니다 — 3~10초 음성을 올려주세요` })
-        } else if (a.needs_region) {
-          const r = a.recommend
-          if (r && r.ok) { setStart(r.start_sec); setDur(Math.min(MAX_SEC, Math.max(MIN_SEC, r.dur_sec))) }
-          setTtsRefState({ ready: false, clip: '', message: '참조 구간(3~10초)을 확정하세요' })
-        } else if (a.valid_whole) {
-          // 3~10초 + 품질 통과 → 원본을 그대로 참조로 사용(파생 클립 불필요)
-          setTtsRefState({ ready: true, clip: '', message: '' })
-        } else {
-          const why = (a.errors || []).map(e => e.message).join(' / ') || '참조 음성 품질 오류'
-          setTtsRefState({ ready: false, clip: '', message: why })
-        }
-      } catch (e) {
-        if (cancelled) return
-        const msg = (e as Error)?.message || '참조 분석 실패'
-        setAnalyzeError(msg)
-        setTtsRefState({ ready: false, clip: '', message: `참조 분석 실패: ${msg}` })
-      } finally {
-        if (!cancelled) setLoading(false)
+    try {
+      const a = await window.api.audio.analyzeReference(path) as Analysis
+      if (signal?.cancelled) return
+      setAnalysis(a)
+      if (a.too_short) {
+        setTtsRefState({ ready: false, clip: '', message: `참조가 ${fmt(a.duration_sec)}로 3초 미만입니다 — 3~10초 음성을 올려주세요` })
+      } else if (a.needs_region) {
+        const r = a.recommend
+        if (r && r.ok) { setStart(r.start_sec); setDur(Math.min(MAX_SEC, Math.max(MIN_SEC, r.dur_sec))) }
+        setTtsRefState({ ready: false, clip: '', message: '참조 구간(3~10초)을 확정하세요' })
+      } else if (a.valid_whole) {
+        // 3~10초 + 품질 통과 → 원본을 그대로 참조로 사용(파생 클립 불필요)
+        setTtsRefState({ ready: true, clip: '', message: '' })
+      } else {
+        const why = (a.errors || []).map(e => e.message).join(' / ') || '참조 음성 품질 오류'
+        setTtsRefState({ ready: false, clip: '', message: why })
       }
-    })()
-    return () => { cancelled = true }
+    } catch (e) {
+      if (signal?.cancelled) return
+      const msg = (e as Error)?.message || '참조 분석 실패'
+      setAnalyzeError(msg)
+      setTtsRefState({ ready: false, clip: '', message: `참조 분석 실패: ${msg}` })
+    } finally {
+      if (!signal?.cancelled) setLoading(false)
+    }
   }, [path, setTtsRefState])
+
+  // 파일이 바뀌면 분석(StrictMode 중복 setup에도 main single-flight로 subprocess 1회).
+  useEffect(() => {
+    if (!path) return
+    const signal = { cancelled: false }
+    runAnalyze(signal)
+    return () => { signal.cancelled = true }
+  }, [path, runAnalyze])
 
   // 구간(start/dur)이 바뀌면 이전 확정은 무효 → 재확정 필요
   useEffect(() => {
@@ -145,7 +149,19 @@ export default function ReferenceRegionPanel() {
     return <div style={card}><span style={sub}>참조 음성 분석 중...</span></div>
   }
   if (analyzeError) {
-    return <div style={card}><span style={{ ...sub, color: 'var(--rose)' }}>참조 분석 실패: {analyzeError}</span></div>
+    return (
+      <div style={card}>
+        <span style={{ ...sub, color: 'var(--rose)' }}>참조 분석 실패: {analyzeError}</span>
+        <div>
+          <button onClick={() => runAnalyze()} disabled={disabled || loading} style={{
+            padding: '5px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
+            fontSize: 11, fontWeight: 600, fontFamily: 'inherit',
+            background: 'var(--rose)', color: '#fff', opacity: (disabled || loading) ? 0.5 : 1,
+          }}>다시 분석</button>
+          <span style={{ ...sub, marginLeft: 8 }}>일시적 오류일 수 있습니다 — 파일을 다시 올릴 필요 없이 재시도하세요.</span>
+        </div>
+      </div>
+    )
   }
   if (!analysis) return null
 

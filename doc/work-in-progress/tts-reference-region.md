@@ -14,7 +14,11 @@
   - `a17020f` — **P1-1** 결과 재현 메타데이터(session/result, 전사 전문 미기록).
   - `e441fa6` — **P1-2** 결과 GUI(실제 엔진·장치·참조 방식·구간·폴백·소요 시간). ⚠커밋 제목에 `@` 오타(본문 정상, 정책상 amend 안 함).
   - `0f72671` — **P1-3** Qwen preflight 상태 표시(예상값, 실행 결과 metadata가 최종).
-  - (새 커밋) **P1-4** 고급 설정 정리(엔진·속도·간격 → 고급 접이식) + 감정 태그 자주쓰는것+더보기.
+  - `fe1f17b` **P1-4** 고급 설정 정리(엔진·속도·간격 → 고급 접이식) + 감정 태그 자주쓰는것+더보기.
+  - (새 커밋) **초기화 race 수정**: analyze-reference/qwen-preflight를 previewGuard에서 분리(읽기 전용),
+    single-flight(preflight 공유 / analyze 파일별) — StrictMode 중복·동시 요청에도 subprocess 1회.
+    previewGuard를 transcriptPreviewGuard·referenceTrimGuard로 분리, process 차단은 실제 전사/트림만.
+    cfgPath randomUUID. analyze 실패 UI에 "다시 분석" 재시도 버튼.
 - **남은 문제(다음 슬라이스)**
   - P1-4 잔여: "감정별 음성 등록" 전체 섹션·"언어 강제/전사문 없이"를 단일 고급 패널로 완전 통합
     (현재 각각 자체 접이식으로 기본 접힘 — 클러터는 해소, 위치 통합은 미완). 기존 감정ID/직렬화/라우팅 불변.
