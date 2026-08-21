@@ -10,8 +10,8 @@
 
 로컬 모델은 `Qwen3-TTS-12Hz-0.6B-Base`(`tts_model_type: "base"`). **텍스트 지시로 감정을 바꾸는 기능이 없다**(`generate_voice_clone`에 instruction 인자 부재, 공식 토론 확인). 따라서 제어는 두 축뿐이다.
 
-- **생성 축(generation)** — 모델 입력/조건을 바꾼다 → **재합성 필요**. 감정별 참조 음성, ref_text/x_vector 모드, 언어, 샘플링(현재 bridge 미개방). **B(emotion reference)가 이 축**.
-- **후처리 축(post-process)** — 생성된 WAV에 신호 처리 → **재합성 불필요(실시간)**. pitch, speed(기존 atempo), pause(기존 silence_gap), energy(미구현). **A(pitch)가 이 축**.
+- **생성 축(generation)** — 모델 입력/조건을 바꾼다 → **모델 재합성 필요**. 감정별 참조 음성, ref_text/x_vector 모드, 언어, 샘플링(현재 bridge 미개방). **B(emotion reference)가 이 축**.
+- **후처리 축(post-process)** — 생성된 WAV에 신호 처리 → **모델 재합성 없이 빠른 재처리 가능**(모델을 다시 돌리지 않으므로 재합성보다 빠르다. 단 "즉시/실시간"이 아니라 **실제 처리 시간은 WAV 길이와 CPU에 따라 달라진다**). pitch, speed(기존 atempo), pause(기존 silence_gap), energy(미구현). **A(pitch)가 이 축**.
 
 두 축은 서로 독립 파이프라인이며 같은 결과에 함께 적용될 수 있다(감정 참조로 생성 → pitch로 미세 보정).
 
@@ -21,21 +21,31 @@
 
 기존 필드는 전부 불변. 추가/재정의만 아래로 확정한다.
 
-### 1.1 신규 필드 (통합 브랜치가 추가)
+### 1.1 pitch 신규 필드 (통합 브랜치가 추가)
 - `ttsPitch` — `TtsInputOptions.ttsPitch?: number`, `TtsConfig.ttsPitch: number`. 기본값 **0.0**.
   `buildTtsConfig`에서 `ttsPitch: o?.ttsPitch ?? 0.0` (**반드시 `??`** — 사용자 지정 0이 `||`로 변질 방지, speed 규칙과 동일).
   의미: 결과 WAV에 적용할 음높이 보정(반음). 범위 **-2.0 ~ +2.0, 0.5 단위**. TS는 UI 입력 제한만 하고,
   **정규화 권위는 Python `pitch_shift.clamp_quantize`**(비수치/범위초과/비스텝을 유효 스텝으로 강제, None→0.0).
-- `ttsEmotionRefRegions` — `TtsInputOptions.ttsEmotionRefRegions?: Record<string, {start: number; duration: number}>`,
-  `TtsConfig.ttsEmotionRefRegions: Record<string, {start:number; duration:number}>` 기본 `{}`.
-  **재현 메타데이터 전용** — 각 감정 effective 클립이 원본의 어느 구간(초)인지 기록. **합성 입력에는 영향 없음**
-  (Python은 이를 읽어 합성에 쓰지 않는다). start/duration 단위는 초(second), duration은 3.0~10.0 범위.
 
-### 1.2 의미 재정의 (타입 불변)
-- `ttsEmotionRefs: Record<string, string>` — **타입 그대로**, 값 의미를 "**effective 참조 경로**"로 확정한다:
-  파생 3~10초 클립이 있으면 그 경로, 없고 원본이 유효(≤10초)면 원본 경로. **B가 렌더러에서 이 불변식을 보장**하며,
-  만료/미확정/10초 초과 원본 경로는 **절대 넣지 않는다**. → Python 계약(`Record<string,string>`)·`tts_worker`·`separate.py` 불변.
-- `ttsReferenceOverride: string` — 기존 그대로(기본 참조의 effective 3~10초 클립). 감정 참조와 동일 원칙의 기본(default) 버전.
+### 1.2 감정 참조 3필드 — 역할이 다르며 서로 대체하지 않는다 (정정 1)
+
+세 필드는 **각각 다른 역할**을 하며 하나가 다른 하나를 대신하지 못한다. 셋 다 `Record<emotionId, …>`, 기본 `{}`.
+
+- `ttsEmotionRefSources: Record<emotionId, string>` (신규, 통합 브랜치 추가) —
+  **사용자가 등록한 원본 감정 파일 경로.** 임시 클립 경로가 아니다. 분석·재생·재트림·**세션 재현**의 기준.
+  앱 재시작 후에도 유효한 영속 경로여야 한다.
+- `ttsEmotionRefs: Record<emotionId, string>` (기존, 타입 불변) —
+  **현재 합성에 실제 사용할 effective 경로.** source에서 만든 확정 파생 3~10초 클립, 또는 유효한 ≤10초 원본.
+  임시(refclip) 경로일 수 있어 **앱 종료 후 유효를 가정하지 않는다**. 만료/미확정/10초 초과 원본은 넣지 않는다.
+- `ttsEmotionRefRegions: Record<emotionId, {start:number; duration:number}>` (신규, 통합 브랜치 추가) —
+  **source에서 effective를 만든 구간**(초). start≥0, duration 3.0~10.0. 재현·기록용이며 **합성 입력에 영향 없음**.
+
+세션 재현 규칙:
+- **완전 재현은 `ttsEmotionRefSources`(원본 경로) + `ttsEmotionRefRegions`(구간)** 조합이 담당 — 앱 재시작 후 이 둘로 다시 분석·트림해 effective를 복원한다.
+- `ttsEmotionRefs`(effective 임시 경로)는 **앱 종료 후 유효하다고 가정하지 않는다.**
+- 결과 GUI에는 전체 경로가 아니라 **basename만** 표시. 전사 전문은 기존 정책대로 저장하지 않는다(언어/글자수/sha8만).
+
+- `ttsReferenceOverride: string` (기본 참조) — 기존 그대로, 기본 참조의 effective 3~10초 클립. 기본 참조도 위 감정 3필드와 같은 원칙: 원본(원본 fileInfo.path)+region으로 재현, override는 effective 임시 경로.
 
 ---
 
@@ -45,7 +55,7 @@ metadata는 두 경로로 채워진다: (a) Python `_build_tts_metadata`의 고�
 
 ### 2.1 Python `_METADATA_KEYS`에 추가 (**A 소유**)
 - `pitch_semitones` — float. 실제 적용된 양자화 값. 무변경이면 **0.0**.
-- `pitch_method` — str | null. `"rubberband"` | `"asetrate+atempo(fallback)"` | **null**(무변경/미적용).
+- `pitch_method` — str | null. **production 허용값은 `"rubberband"` | `null`(무변경/미적용) 둘뿐**(정정 3). `asetrate+atempo` 계열은 production 값에서 제외.
 - `pitch_postprocessed` — bool. 후처리 수행 여부(`speed_postprocessed`와 동형).
 
 ### 2.2 main이 `md`에 주입 (**통합 브랜치 소유**, `_METADATA_KEYS` 밖)
@@ -54,13 +64,20 @@ metadata는 두 경로로 채워진다: (a) Python `_build_tts_metadata`의 고�
 
 기존 26개 키는 전부 불변. A는 (2.1) 3키만 `_METADATA_KEYS`에 append하고, 통합 브랜치는 (2.2)만 main에서 주입한다.
 
+### 2.3 metadata의 재현 한계 (추가 정합)
+- **`emotion_reference_regions`(및 `reference_region`)만으로 완전 재현이 가능하다고 표현하지 않는다.** metadata는 **비민감 요약 + 실제 사용 사실**(어떤 구간이 쓰였는지의 기록)을 담당할 뿐이다.
+- **완전 재현(앱 재시작 후 복원)의 책임은 session의 `source path + region` 조합**(§1.2)에 있다. metadata의 effective 경로는 임시일 수 있어 재현의 단일 근거가 될 수 없다.
+
 ---
 
 ## 3. original / effective reference 의미 (기존 확정 + 감정 확장)
 
-- `original_reference_path` — 사용자가 **고른 원본 파일**. 분석·재생·전사·구간 선택의 대상. **절대 합성 참조로 직접 전달 금지**(10초 초과 원본 통째 사용 금지).
+- `original_reference_path` — 사용자가 **고른 원본 파일**. 분석·재생·전사·구간 선택·세션 재현의 대상.
 - `effective_reference_path` — **실제 합성에 쓰인 경로**. 기본 참조는 `ttsReferenceOverride`(파생 클립) 우선, 없으면 원본(단 ≤10초일 때만). 감정 참조는 `ttsEmotionRefs[emotionId]`의 effective 경로.
-- 감정별로도 동일 원칙: 원본은 기록/분석용, **effective(3~10초)만 합성 입력**. B가 이를 렌더러에서 강제.
+- **원본↔effective 규칙(정정 4)**:
+  - **유효한 3~10초 원본은 그 자체가 effective가 될 수 있다**(파생 클립을 강제로 만들 필요 없음). 이때 effective_path == original_path.
+  - **10초 초과 원본은 합성에 직접 전달 금지** — 반드시 사용자가 확정한 3~10초 **파생 클립만** effective로 사용.
+  - 즉 금지되는 것은 "원본 전달" 일반이 아니라 "**10초 초과 원본의 직접 전달**"이다. B가 이 경계를 렌더러에서 강제.
 
 ---
 
@@ -74,15 +91,23 @@ metadata는 두 경로로 채워진다: (a) Python `_build_tts_metadata`의 고�
 
 ## 5. 만료 참조 오류 정책 (backend 방어 — 필수 불변식)
 
-감정 참조가 등록됐으나 파일이 만료된 경우 **Python이 기본 참조로 조용히 폴백하면 안 된다**(현재 `tts_worker`가 `if emo_path and os.path.exists(emo_path)`로 silent-skip → 기본 참조 대체하는 버그가 v1.0.0에 잔존). 3단계 불변식으로 확정:
+감정 참조가 등록됐으나 파일이 만료된 경우 **Python이 기본 참조로 조용히 폴백하면 안 된다**(현재 `tts_worker`가 `if emo_path and os.path.exists(emo_path)`로 silent-skip → 기본 참조 대체하는 버그가 v1.0.0에 잔존). **등록 여부의 기준은 `ttsEmotionRefSources`(원본 등록)**이며, 4개 불변식으로 확정:
 
-1. **감정 ID 미등록** → 기본 참조 폴백 **허용**(정상).
-2. **감정 ID 등록 + effective 경로 존재** → 해당 참조 **사용**.
-3. **감정 ID 등록 + 경로 만료/부적합** → **명확한 오류**(silent fallback 금지). 오류 메시지에 감정 ID 지목.
+1. **emotionId가 `ttsEmotionRefSources`에 없음** → 미등록. 기본 참조 폴백 **허용**(정상).
+2. **source 등록 + effective 경로 존재·유효** → 감정 참조 **사용**.
+3. **source 등록 + effective 없음/만료/부적합** → **명확한 오류**(silent fallback 금지). 오류 메시지에 감정 ID 지목.
+4. **미사용 감정**(대사에 태그가 등장하지 않음)은 **등록 상태와 무관하게 현재 합성을 차단하지 않는다**.
 
 집행 위치(2단계 방어):
-- **B(1차)**: 렌더러/IPC에서 차단 — 만료/미확정 경로를 `ttsEmotionRefs`에 애초에 넣지 않고, 대사에 쓰인 감정이 미준비면 합성 차단(감정 지목 안내). Python silent-skip 경로에 도달하지 않게.
-- **최종 통합(2차)**: `tts_worker.py`에 위 불변식을 코드로 추가한다. **UI 검사만으로 완료 판정하지 않는다.** 이 `tts_worker` 수정은 A의 pitch 병합 이후 최종 통합 단계에서 A와 협의해 진행(감정 라우팅 인접 코드).
+- **B(1차, UI/IPC)**: 렌더러/IPC에서 차단 — 만료/미확정 경로를 `ttsEmotionRefs`(effective)에 넣지 않고, 대사에 쓰인 감정이 미준비면 합성 차단(감정 지목 안내). 미사용 감정은 비차단·미전송.
+- **최종 통합(2차, Python)**: 위 불변식을 `tts_worker.py`에 **코드로 완성**한다. **UI 검사만으로 완료 판정하지 않는다.** 이를 위해 integration 단계에서 다음을 Python까지 전달·집행한다(아래 §5.1). 이 `tts_worker`/`separate.py` 수정은 A의 pitch 병합 이후 통합 단계에서 A와 협의해 진행.
+
+### 5.1 Python 전달 계약 (정정 2 — "tts_worker/separate.py 불변" 표현 철회)
+§1.2에서 "Python·tts_worker·separate.py 불변"이라 했던 것을 **정정한다**. 만료 backend 방어를 위해 integration 단계에서 Python까지 정보가 전달돼야 하므로 완전 불변이 아니다. 단, **이는 integration 단계 작업**이며 **A/B의 병렬 구현 단계에서는 여전히 A=Python(pitch만)·B=renderer/IPC만**이다.
+- integration 단계에서 `emotion_ref_sources`(또는 등록된 emotionId 목록)를 Python config로 전달한다.
+- `tts_worker`는 **실제 대사에서 사용된 emotionId만 검증**한다(미사용 ID는 검증 대상 아님 — 불변식 4).
+- 사용된 ID가 (source에) 등록됐는데 effective가 없으면 → **기본 폴백 금지, 명확한 오류**(불변식 3).
+- **사용되지 않은 감정 참조는 Qwen bridge segment에 전달·검증하지 않는다**(불필요한 로딩/검증 방지, 불변식 4).
 
 ---
 
@@ -97,10 +122,10 @@ metadata는 두 경로로 채워진다: (a) Python `_build_tts_metadata`의 고�
 ## 7. rubberband / ffmpeg 정책 (A 실측 기반)
 
 - 실측(2026-08-22): 프로젝트 ffmpeg = WinGet Gyan.FFmpeg 8.1-full, `--enable-librubberband` 포함 → **rubberband 필터 사용 가능**. 길이·SR 유지 + `formant=preserved` 정상 + F0 반음 상승 확인.
-- **기본 경로**: `rubberband=pitch=<ratio>:formant=preserved`, `ratio = 2**(semitones/12)`.
-- **rubberband 미지원 환경**: **조용한 저품질 폴백 금지.** `pitch_available()`이 rubberband 부재를 감지하면 두 정책 중 하나로 명시 동작:
-  (a) pitch 기능 **비활성**(UI에서 pitch 슬라이더 비활성 + 사유 표시), 또는 (b) 합성 시 **명확한 오류**.
-  `asetrate+atempo+aresample` 폴백은 길이 근사·**formant 미보존**이라 화자 유사도를 해치므로, 쓰더라도 `pitch_method`에 `"asetrate+atempo(fallback)"`로 반드시 표기해 품질 한계를 숨기지 않는다. 단순 asetrate 단독은 길이·formant 위반이라 **금지**.
+- **기본 경로**: `rubberband=pitch=<ratio>:formant=preserved`, `ratio = 2**(semitones/12)`. production pitch 경로는 **rubberband 단일**이다.
+- **rubberband 미지원 환경(정정 3 — 모순 제거)**: **어떤 저품질 폴백도 production에 넣지 않는다.** `asetrate+atempo` 계열은 production 경로·`pitch_method` 값에서 **완전히 제거**한다. `pitch_available()`이 rubberband 부재를 감지하면:
+  - `ttsPitch == 0`(양자화 후) → pitch 무관, **기존 합성 정상 동작**.
+  - `ttsPitch != 0` → **UI에서 pitch 비활성**(슬라이더 비활성 + 사유 표시), 또는 합성 시 **명확한 `PITCH_UNAVAILABLE` 오류**. **조용한 음질 저하 fallback 금지.**
 - **배포 의무(라이선스)**: librubberband는 **GPL**. rubberband를 활성화한 ffmpeg는 GPL 빌드다. AudioForge가 이 ffmpeg를 번들/배포하면 GPL 의무(소스 제공·라이선스 고지)가 발생한다. 배포 형태(시스템 ffmpeg 사용 vs 번들)에 따라 의무가 갈리므로 **배포 단계에서 라이선스 검토 필수** — 이 계약에 기록해 둔다.
 
 ---
@@ -110,7 +135,7 @@ metadata는 두 경로로 채워진다: (a) Python `_build_tts_metadata`의 고�
 - pitch: **"음높이 보정(반음)"**. 후처리 축이라 **재합성 없이 결과에 적용**됨을 표시.
 - speed: "속도", pause: "문장 간 간격".
 - 감정 참조: **"감정별 참조 음성"** + "참조 구간(3~10초)".
-- 결과 카드(TtsResultInfo): "음높이 <±n반음>", "감정 참조 구간 <감정: start~end초>".
+- 결과 카드(TtsResultInfo): "음높이 <±n반음>", "감정 참조 구간 <감정: start~end초>". **경로는 전체 경로가 아니라 basename만** 표시(§1.2).
 - **금지 표현**: "AI가 문맥 읽고 감정 연기", "텍스트로 감정 지시" 등 Base가 못 하는 것을 암시하는 문구. 감정은 **"참조 음성 + 후처리로 근사"**한다고 아티스트가 이해할 평이한 말로.
 - formant 보존은 사용자 언어로 "자연스러움 우선"으로 노출(내부 옵션명 노출 금지).
 
@@ -133,8 +158,8 @@ metadata는 두 경로로 채워진다: (a) Python `_build_tts_metadata`의 고�
 
 ### 공용 파일 — 후속 통합 브랜치 (`feature/tts-prosody-integration`)
 A/B 구현·검토 후 **갱신된 develop에서 생성**, **한 명(통합 담당)만** 수정:
-- `src/shared/ttsConfig.ts`(§1 신규 필드), metadata 공용 연결(§2.2 main 주입), `src/renderer/components/TtsResultInfo.tsx`(pitch·감정 표시), **pitch UI**(ProcessButton/TTSEditor의 pitch 슬라이더 배선), session 재현 정보.
-- 이 브랜치가 A의 `ttsPitch`(Python)와 renderer를 연결하고, §5 2차 방어(`tts_worker` 불변식)를 A와 협의해 마감한다.
+- `src/shared/ttsConfig.ts`(§1 신규 필드: `ttsPitch`·`ttsEmotionRefSources`·`ttsEmotionRefRegions`), metadata 공용 연결(§2.2 main 주입), `src/renderer/components/TtsResultInfo.tsx`(pitch·감정 표시), **pitch UI**(ProcessButton/TTSEditor의 pitch 슬라이더 배선), session 재현 정보(source+region 저장/복원).
+- 이 브랜치가 A의 `ttsPitch`(Python)와 renderer를 연결하고, **§5.1 emotion_ref_sources/등록 ID의 Python 전달 + `tts_worker`의 사용-감정 검증(§5 2차 방어)**을 A와 협의해 마감한다(`separate.py`의 감정 source 수신 포함).
 
 ---
 
@@ -157,7 +182,8 @@ A/B 구현·검토 후 **갱신된 develop에서 생성**, **한 명(통합 담�
 - `clamp_quantize`(2.4→2.0, -3→-2.0, 0.3→0.5, 0.24→0.0, None→0.0), `semitones_to_ratio`(0→1.0, +12→2.0, -12→0.5).
 - ffmpeg 왕복(rubberband): 길이 유지(±1프레임)·SR 유지·finite·peak<1.0(클리핑 없음)·F0 목표 반음 상승.
 - pitch=0 → 무호출·바이트 불변. 실패 입력 → RuntimeError·부분출력 미잔류·기존 wav 보존.
-- rubberband 미탐지 시: 비활성 또는 명확한 오류(조용한 저품질 폴백 아님).
+- `pitch_method`는 `"rubberband"` | `null`만 관측(asetrate 폴백 값이 production에 절대 등장 안 함).
+- rubberband 미탐지 시: `ttsPitch=0` 정상 합성 / `ttsPitch!=0` → UI 비활성 또는 `PITCH_UNAVAILABLE` 명확 오류(조용한 저품질 폴백 없음).
 
 **감정 만료 불변식(§5, B+통합)**:
 - 미등록→기본 폴백 / 등록+존재→사용 / 등록+만료→명확한 오류. **tts_worker 코드 레벨로도 검증**(UI 검사만으로 완료 판정 금지).
@@ -166,7 +192,8 @@ A/B 구현·검토 후 **갱신된 develop에서 생성**, **한 명(통합 담�
 - 기본 합성 회귀(검은화면/crash 0).
 - pitch 0(무후처리) / pitch +1(F0 상승, 길이·SR 유지) 결과 검증 + metadata pitch 3필드 표시.
 - 감정 기본+기쁨+슬픔 **3클립 동시 유지**, 한 감정 재확정 시 타 감정 클립 불변(경로/해시), 대사 태그별 **올바른 감정 클립 전달**(config JSON 검사), `emotion_reference_regions` metadata 표시.
-- 감정 만료 → 명확한 오류(silent fallback 없음). 미사용 감정 **비차단·미전송**.
+- 감정 만료 → 명확한 오류(silent fallback 없음, **`tts_worker` 코드 레벨로도 검증**). 미사용 감정 **비차단·미전송**(대사에 없는 등록 감정이 합성을 막지 않음, bridge segment 미전달).
+- **앱 재시작 후 세션 재현 1건(추가 정합)**: 감정 참조 등록·구간 확정 후 앱 종료 → 재시작 → `ttsEmotionRefSources`+`ttsEmotionRefRegions`(및 기본 참조 source+region)로 effective를 **다시 분석·트림해 복원**하고 재합성 가능함을 단언(effective 임시 경로에 의존하지 않음을 확인).
 - 연속 합성(pitch+감정 병용) 2회, "이미 처리 중"/TOO_LONG/만료 0.
 - reset·앱 종료 정리(venv 자식 0·`.qwen-job-*` 0·refclip 0), **resources/ 원본 불변**(스냅샷).
 - GPU 여유/경합 각각 device 선택(cuda/cpu, source=nvidia-smi) 완료.
