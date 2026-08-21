@@ -53,6 +53,10 @@ interface AppState {
   ttsEmotionRefs: Record<string, string>
   ttsReferencePrompts: Record<string, TtsReferenceEntry>
   ttsEngine: string
+  // 참조 준비 상태(합성 버튼 게이팅 + 사유 표시). ttsReferenceClip이 있으면 그 파생 클립을 참조로 전달.
+  ttsReferenceClip: string
+  ttsRefReady: boolean
+  ttsRefMessage: string
 
   setFile: (info: FileInfo, url: string) => void
   setMode: (mode: SeparationMode) => void
@@ -69,6 +73,7 @@ interface AppState {
   setDemucsModel: (v: 'htdemucs' | 'htdemucs_ft' | 'roformer' | 'roformer_melband' | 'roformer_ensemble') => void
   setNSpeakers: (v: number) => void
   setTtsReferencePrompts: (v: Record<string, TtsReferenceEntry>) => void
+  setTtsRefState: (v: { clip?: string; ready?: boolean; message?: string }) => void
   setProcessing: () => void
   setProgress: (percent: number, message: string) => void
   setResult: (tracks: Track[], outputDir: string) => void
@@ -111,8 +116,12 @@ export const useAppStore = create<AppState>((set) => ({
   ttsEmotionRefs: {} as Record<string, string>,
   ttsReferencePrompts: {} as Record<string, TtsReferenceEntry>,
   ttsEngine: 'auto',
+  ttsReferenceClip: '',
+  ttsRefReady: false,
+  ttsRefMessage: '',
 
-  setFile: (info, url) => set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, progress: 0, outputDir: null, restorable: null, playingTrack: null }),
+  // 새 파일 → 이전 파생 참조/준비 상태 무효화(다른 원본의 클립을 재사용하지 않도록)
+  setFile: (info, url) => set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '' }),
   setMode: (mode) => set({ mode }),
   setTrimSilence: (v) => set({ trimSilence: v }),
   setSilenceGap: (v) => set({ silenceGap: v }),
@@ -127,6 +136,11 @@ export const useAppStore = create<AppState>((set) => ({
   setDemucsModel: (v) => set({ demucsModel: v }),
   setNSpeakers: (v) => set({ nSpeakers: v }),
   setTtsReferencePrompts: (v) => set({ ttsReferencePrompts: v }),
+  setTtsRefState: (v) => set((s) => ({
+    ttsReferenceClip: v.clip !== undefined ? v.clip : s.ttsReferenceClip,
+    ttsRefReady: v.ready !== undefined ? v.ready : s.ttsRefReady,
+    ttsRefMessage: v.message !== undefined ? v.message : s.ttsRefMessage,
+  })),
   setProcessing: () => set({ status: 'processing', progress: 0, progressMessage: '파일 준비 중...', error: null, tracks: [] }),
   setProgress: (percent, message) => set({ progress: percent, progressMessage: message }),
   setResult: (tracks, outputDir) => set({ status: 'done', progress: 100, progressMessage: '완료', tracks, outputDir }),

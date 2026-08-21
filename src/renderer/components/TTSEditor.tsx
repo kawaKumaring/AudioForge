@@ -1,7 +1,10 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { useAppStore } from '@/stores/app.store'
 import type { TtsReferenceEntry } from '../../shared/ttsConfig'
 import { deriveRefMode } from '../../shared/ttsConfig'
+import ReferenceRegionPanel from './ReferenceRegionPanel'
+
+const EXAMPLE_TEXT = "안녕하세요. 오늘 좋은 소식이 있어요.\n[기쁨] 드디어 프로젝트가 완성됐습니다!\n[슬픔] 하지만 아쉽게도 일정이 늦어졌어요."
 
 const PROMPT_LANGS: [string, string][] = [
   ['', '자동'], ['ko', '한국어'], ['ja', '일본어'], ['zh', '중국어'], ['en', '영어'],
@@ -168,13 +171,16 @@ export default function TTSEditor() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* 참조 음성: 분석·구간 선택(3~10초)·파생 클립 준비 */}
+      <ReferenceRegionPanel />
+
       {/* Guide */}
       <div style={{
         borderRadius: 12, padding: '12px 16px',
         background: 'rgba(251,113,133,0.05)', border: '1px solid rgba(251,113,133,0.12)',
-        fontSize: 11, lineHeight: 1.7, color: 'var(--text-secondary)'
+        fontSize: 12, lineHeight: 1.7, color: 'var(--text-secondary)'
       }}>
-        <strong style={{ color: 'var(--rose)' }}>참조 음성</strong> = 위에 드롭한 파일 (기본 감정).
+        <strong style={{ color: 'var(--rose)' }}>참조 음성</strong> = 위에 올린 파일의 목소리를 흉내 냅니다.
         감정별 음성을 추가 등록하면 대사마다 <code style={{ background: 'var(--bg-elevated)', padding: '1px 4px', borderRadius: 3 }}>[기쁨]</code> 태그로 감정을 지정할 수 있습니다.
         <br />한국어 · 영어 · 일본어 · 중국어 지원. 영어 목소리로 한국어 대사도 가능합니다.
       </div>
@@ -252,8 +258,9 @@ export default function TTSEditor() {
         </button>
         {showRefPrompts && (
           <div style={{ padding: '0 16px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-              자동 전사가 틀리면 직접 고치거나 입력하세요. 비워두면 자동 전사를 사용합니다. (GPT-SoVITS 전용)
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              참조 음성이 무슨 말을 하는지 적어두면 목소리를 더 정확히 흉내 냅니다. 자동 전사가 틀리면 직접 고치거나 입력하세요.
+              비워두면 자동 전사를 사용합니다. (10초 초과 파일은 확정한 구간만 전사합니다.)
             </div>
             {[
               { id: 'default', label: '기본 참조', path: fileInfo?.path || '' },
@@ -262,7 +269,7 @@ export default function TTSEditor() {
               const entry = refPrompts[ref.id] || {}
               const effMode = deriveRefMode(entry)  // 우선순위: ref_free > manual > auto
               const refFree = effMode === 'ref_free'
-              const eff = refFree ? 'ref-free' : (effMode === 'manual' ? '수동' : '자동')
+              const eff = refFree ? '전사문 없이' : (effMode === 'manual' ? '직접 입력' : '자동 인식')
               const effColor = refFree ? 'var(--text-muted)' : (effMode === 'manual' ? 'var(--rose)' : 'var(--cyan)')
               return (
                 <div key={ref.id} style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 5 }}>
@@ -316,7 +323,7 @@ export default function TTSEditor() {
                     <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--text-muted)', cursor: 'pointer' }}>
                       <input type="checkbox" checked={refFree} disabled={disabled}
                         onChange={(e) => onRefFreeToggle(ref.id, e.target.checked)} />
-                      참조 없이(ref-free)
+                      전사문 없이 사용(화자 특성만 · 유사도 저하 가능)
                     </label>
                   </div>
                 </div>
@@ -328,11 +335,20 @@ export default function TTSEditor() {
 
       {/* Text input */}
       <div style={{ borderRadius: 12, overflow: 'hidden', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)' }}>
-        <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>대사 입력</span>
-          <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-            {ttsText.split('\n').filter(l => l.trim()).length}개 문장
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {!ttsText.trim() && (
+              <button onClick={() => !disabled && setTtsText(EXAMPLE_TEXT)} disabled={disabled} style={{
+                padding: '3px 10px', borderRadius: 5, border: 'none', cursor: 'pointer',
+                fontSize: 11, fontWeight: 600, fontFamily: 'inherit',
+                background: 'var(--bg-elevated)', color: 'var(--cyan)'
+              }}>예문 불러오기</button>
+            )}
+            <span style={{ fontSize: 11, color: ttsText.trim() ? 'var(--text-muted)' : 'var(--rose)' }}>
+              {ttsText.trim() ? `${ttsText.split('\n').filter(l => l.trim()).length}개 문장` : '합성할 대사를 입력하세요'}
+            </span>
+          </div>
         </div>
         <textarea
           value={ttsText}

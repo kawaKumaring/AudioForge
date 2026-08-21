@@ -27,6 +27,7 @@ test('미지정(undefined) 필드에는 기본값이 적용된다', () => {
   assert.equal(c.ttsSilenceGap, 0.5)
   assert.deepEqual(c.ttsEmotionRefs, {})
   assert.equal(c.ttsEngine, 'auto')
+  assert.equal(c.ttsReferenceOverride, '')  // 파생 참조 미확정 → 빈 값(원본 참조 경로)
 })
 
 test('지정한 값은 그대로 통과한다', () => {
@@ -41,11 +42,11 @@ test('지정한 값은 그대로 통과한다', () => {
   assert.equal(c.ttsEngine, 'gptsovits')
 })
 
-test('직렬화 형태에 6개 TTS 키가 모두 존재한다 (필드 누락 방지)', () => {
+test('직렬화 형태에 7개 TTS 키가 모두 존재한다 (필드 누락 방지)', () => {
   const c = buildTtsConfig({})
   assert.deepEqual(
     Object.keys(c).sort(),
-    ['ttsEmotionRefs', 'ttsEngine', 'ttsReferencePrompts', 'ttsSilenceGap', 'ttsSpeed', 'ttsText']
+    ['ttsEmotionRefs', 'ttsEngine', 'ttsReferenceOverride', 'ttsReferencePrompts', 'ttsSilenceGap', 'ttsSpeed', 'ttsText']
   )
 })
 

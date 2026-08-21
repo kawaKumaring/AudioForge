@@ -1,7 +1,8 @@
+import type { ReactNode } from 'react'
 import { useAppStore } from '@/stores/app.store'
-import type { SeparationMode } from '../../../shared/types'
+import type { SeparationMode } from '../../shared/types'
 
-const modes: { id: SeparationMode; label: string; short: string; icon: JSX.Element }[] = [
+const modes: { id: SeparationMode; label: string; short: string; icon: ReactNode }[] = [
   {
     id: 'music', label: '음악 분리', short: '음악',
     icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>
@@ -19,7 +20,7 @@ const modes: { id: SeparationMode; label: string; short: string; icon: JSX.Eleme
     icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /><line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" /></svg>
   },
   {
-    id: 'tts', label: '음성 합성 (개발중)', short: '합성(β)',
+    id: 'tts', label: '음성 합성', short: '합성',
     icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="23" /></svg>
   }
 ]

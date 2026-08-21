@@ -74,6 +74,10 @@ def main():
         args.tts_emotion_refs = config.get("ttsEmotionRefs", {})
         args.tts_engine = config.get("ttsEngine", "auto")
         args.tts_reference_prompts = config.get("ttsReferencePrompts", {})  # 식별자→수동 override
+        args.tts_reference_override = config.get("ttsReferenceOverride", "")  # 파생 참조 클립(있으면 기본 참조로 사용)
+        # ref-analyze / ref-trim 파라미터(참조 구간 선택 UI용)
+        args.region_start = config.get("regionStart", 0.0)
+        args.region_dur = config.get("regionDur", 0.0)
 
     if not args.input or not args.output:
         emit("error", message="입력 파일과 출력 경로가 필요합니다.")
@@ -91,10 +95,44 @@ def main():
             preferred_engine = args.tts_engine if hasattr(args, 'tts_engine') and args.tts_engine != 'auto' else None
             ref_prompts = getattr(args, "tts_reference_prompts", {})
             ref_prompts = ref_prompts if isinstance(ref_prompts, dict) else {}
-            synthesize(args.input, args.tts_text, args.output,
+            # 기본 참조: 파생 클립(ttsReferenceOverride)이 있으면 그것을, 없으면 입력 파일.
+            # 전체 원본 파일을 모델 참조로 직접 전달하지 않는다(10초 초과는 UI가 파생 클립을 만든다).
+            override = getattr(args, "tts_reference_override", "") or ""
+            ref_input = override if (override and os.path.exists(override)) else args.input
+            synthesize(ref_input, args.tts_text, args.output,
                        speed=args.tts_speed, silence_gap=args.tts_silence_gap,
                        emotion_refs=emotion_refs, preferred_engine=preferred_engine,
                        reference_prompts=ref_prompts)
+            return
+
+        # ── Reference region: 분석(추천/파형) · 트림(파생 클립) (참조 구간 선택 UI용) ──
+        if args.mode == "ref-analyze":
+            import reference_region as rr
+            from reference_audio import assess_reference_file, GPTSOVITS_POLICY
+            assessed = assess_reference_file(args.input, GPTSOVITS_POLICY)
+            dur = assessed.analysis.duration_sec
+            payload = {
+                "duration_sec": dur, "sample_rate": assessed.analysis.sample_rate,
+                "channels": assessed.analysis.channels,
+                "needs_region": bool(dur > GPTSOVITS_POLICY.max_duration_sec),
+                "too_short": bool(assessed.analysis.readable and 0 < dur < GPTSOVITS_POLICY.min_duration_sec),
+                "valid_whole": bool(assessed.valid),
+                "errors": [e.to_dict() for e in assessed.errors],
+                "warnings": [w.to_dict() for w in assessed.warnings],
+            }
+            if payload["needs_region"]:
+                payload["recommend"] = rr.recommend_region(args.input)
+                payload["peaks"] = rr.coarse_peaks(args.input, buckets=500)
+            emit("result", **payload)
+            return
+
+        if args.mode == "ref-trim":
+            import reference_region as rr
+            os.makedirs(args.output, exist_ok=True)
+            out_path = os.path.join(args.output, "reference_clip_24k.wav")
+            rr.trim_region(args.input, float(args.region_start), float(args.region_dur), out_path)
+            metrics = rr.analyze_region(out_path, 0.0, float(args.region_dur))
+            emit("result", clip_path=out_path, metrics=metrics)
             return
 
         # ── Reference transcribe (preview for 수동 전사 UI) ──

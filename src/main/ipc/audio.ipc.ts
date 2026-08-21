@@ -171,6 +171,55 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     }
   })
 
+  // 참조 구간 분석(길이/추천/파형 peak) — 10초 초과 원본에서 3~10초 구간 선택 UI용. 짧은 미리보기.
+  ipcMain.handle('audio:analyze-reference', async (_event, filePath: string) => {
+    if (runner?.isRunning) throw new Error('처리 중에는 참조 분석을 실행할 수 없습니다.')
+    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
+    if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
+    previewGuard.begin()
+    const cfgPath = join(tmpdir(), `audioforge_refanalyze_${Date.now()}.json`)
+    try {
+      const scriptPath = PythonRunner.getScriptPath('separate.py')
+      writeFileSync(cfgPath, JSON.stringify({ mode: 'ref-analyze', input: filePath, output: dirname(filePath) }), 'utf-8')
+      return await runPreview({
+        runner: new PythonRunner(pythonPath),
+        scriptPath, args: ['--config', cfgPath],
+        timeoutMs: 60000,  // 파형 peak 스캔 여유. 멈춘 프로세스만 끊음.
+        cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
+      })
+    } finally {
+      try { unlinkSync(cfgPath) } catch {}
+      previewGuard.end()
+    }
+  })
+
+  // 선택 구간 → mono/24k 파생 참조 WAV(작업 임시폴더). 원본 불변. 반환 clip_path를 합성에 전달한다.
+  ipcMain.handle('audio:trim-reference', async (_event, filePath: string, startSec: number, durSec: number) => {
+    if (runner?.isRunning) throw new Error('처리 중에는 참조 트림을 실행할 수 없습니다.')
+    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
+    if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
+    previewGuard.begin()
+    const cfgPath = join(tmpdir(), `audioforge_reftrim_${Date.now()}.json`)
+    const outDir = join(tmpdir(), `audioforge_refclip_${Date.now()}`)  // 작업 임시폴더(프로젝트 밖)
+    try {
+      mkdirSync(outDir, { recursive: true })
+      const scriptPath = PythonRunner.getScriptPath('separate.py')
+      writeFileSync(cfgPath, JSON.stringify({
+        mode: 'ref-trim', input: filePath, output: outDir,
+        regionStart: startSec, regionDur: durSec
+      }), 'utf-8')
+      return await runPreview({
+        runner: new PythonRunner(pythonPath),
+        scriptPath, args: ['--config', cfgPath],
+        timeoutMs: 60000,
+        cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
+      })
+    } finally {
+      try { unlinkSync(cfgPath) } catch {}
+      previewGuard.end()
+    }
+  })
+
   ipcMain.handle('audio:process', async (_event, filePath: string, mode: string, options?: Record<string, unknown>) => {
     if (runner?.isRunning) {
       throw new Error('이미 처리 중인 작업이 있습니다')
