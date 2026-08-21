@@ -326,6 +326,21 @@ class QwenBatchPathTest(_QwenGlobalIsolation, unittest.TestCase):
         self.assertEqual(gap_seen, [0.75], "결합 시 사용자 silence_gap 유지")
         self.assertTrue(os.path.exists(os.path.join(self.out, "synthesized.wav")))
 
+    def test_long_emotion_ref_blocks_with_emotion_id(self):
+        # 감정 참조가 10초 초과 → 감정 ID·파일 포함 오류, run_job(모델 로딩) 미도달
+        long_ref = os.path.join(self.tmp, "happy_long.wav")
+        _write(long_ref, 12.0)
+        called = []
+        self._patch(tts_worker.QwenTTSEngine, "run_job",
+                    new=(lambda self, *a, **k: called.append(1) or []))
+        with self.assertRaises(RuntimeError) as cm:
+            tts_worker.synthesize(self.ref, "[기쁨] 문장입니다.", self.out, emotion_refs={"happy": long_ref},
+                                  preferred_engine="qwen3", reference_prompts={})
+        msg = str(cm.exception)
+        self.assertIn("happy", msg)   # 감정 ID 명시
+        self.assertIn("10초", msg)    # 구간 선택 안내
+        self.assertEqual(called, [], "긴 감정 참조는 run_job(모델) 도달 전 차단")
+
     def test_invalid_ref_blocks_before_run_job(self):
         short = os.path.join(self.tmp, "short2s.wav")
         _write(short, 2.0)  # TOO_SHORT
@@ -477,6 +492,134 @@ class AtomicFinalReplaceTest(_QwenGlobalIsolation, unittest.TestCase):
         with open(self.final, "rb") as f:
             self.assertEqual(f.read(), marker, "atempo 실패 시 기존 synthesized.wav 불변")
         self.assertEqual(self._job_dirs_left(), [], "atempo 실패에도 실행별 임시폴더 정리")
+
+
+class ResolveReferenceInputTest(unittest.TestCase):
+    """override(확정 파생 클립) 수명 — 만료 시 원본으로 조용히 폴백하지 않고 명확히 실패."""
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="af_refin_")
+        self.clip = os.path.join(self.tmp, "reference_clip_24k.wav")
+        with open(self.clip, "wb") as f:
+            f.write(b"x")
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+
+    def test_empty_override_uses_input(self):
+        self.assertEqual(tts_worker.resolve_reference_input("", "orig.wav"), "orig.wav")
+        self.assertEqual(tts_worker.resolve_reference_input(None, "orig.wav"), "orig.wav")
+
+    def test_existing_override_used(self):
+        self.assertEqual(tts_worker.resolve_reference_input(self.clip, "orig.wav"), self.clip)
+
+    def test_missing_override_raises_no_fallback(self):
+        missing = os.path.join(self.tmp, "gone.wav")
+        with self.assertRaises(RuntimeError) as cm:
+            tts_worker.resolve_reference_input(missing, "orig.wav")
+        self.assertIn("만료", str(cm.exception))  # 원본으로 폴백하지 않음
+
+
+class MetadataHelperTest(unittest.TestCase):
+    """P1-1 재현 메타데이터 헬퍼 — 고정 형태·source 파싱·prompt_source·전사 요약(비민감)."""
+    def test_build_metadata_full_shape(self):
+        m = tts_worker._build_tts_metadata(actual_engine="qwen3")
+        for k in tts_worker._METADATA_KEYS:
+            self.assertIn(k, m)
+        self.assertEqual(m["actual_engine"], "qwen3")
+        # 전사 '전문' 키는 존재하지 않는다(언어/길이/해시만)
+        self.assertNotIn("reference_transcript", m)
+
+    def test_parse_device_source(self):
+        self.assertEqual(tts_worker._parse_device_source("여유 VRAM 5000/16000MB ≥ 4000MB → GPU (source=nvidia-smi)"), "nvidia-smi")
+        self.assertEqual(tts_worker._parse_device_source("... (source=torch.mem_get_info)"), "torch.mem_get_info")
+        self.assertIn("측정실패", tts_worker._parse_device_source("nvidia-smi 측정 실패(부재/timeout/파싱) → 보수적 CPU"))
+
+    def test_prompt_source_for(self):
+        ref = os.path.abspath("r.wav")
+        self.assertEqual(tts_worker._prompt_source_for(ref, {}, True), "x-vector-only")
+        self.assertEqual(tts_worker._prompt_source_for(ref, {ref: {"manual_text": "수동"}}, False), "manual")
+        self.assertEqual(tts_worker._prompt_source_for(ref, {}, False), "auto")
+
+    def test_transcript_meta_no_fulltext(self):
+        lang, n, sha = tts_worker._transcript_meta("안녕하세요 테스트입니다")
+        self.assertEqual(lang, "ko")
+        self.assertEqual(n, len("안녕하세요 테스트입니다"))
+        self.assertEqual(len(sha), 8)
+        self.assertNotIn("안녕", sha)  # 해시는 전문을 노출하지 않음
+        self.assertEqual(tts_worker._transcript_meta(""), (None, 0, None))
+
+
+class MetadataEmitQwenTest(_QwenGlobalIsolation, unittest.TestCase):
+    """Qwen 배치 경로가 result에 재현 메타데이터를 emit하고, 전사 전문은 담기지 않음을 검증."""
+    def setUp(self):
+        self._isolate_globals()
+        self.events = []
+        self._patch(tts_worker, "emit", new=(lambda mt, **k: self.events.append((mt, k))))
+        self.tmp = tempfile.mkdtemp(prefix="af_meta_")
+        self.ref = os.path.join(self.tmp, "ref5.wav"); _write(self.ref, 5.0)
+        self.out = os.path.join(self.tmp, "out"); os.makedirs(self.out)
+        self._orig_ra = dict(ra._analysis_cache); ra._analysis_cache.clear()
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+        self.addCleanup(lambda: (ra._analysis_cache.clear(), ra._analysis_cache.update(self._orig_ra)))
+        self._patch("gpu_policy.select_device",
+                    new=(lambda *a, **k: ("cuda", "여유 VRAM 5000/16000MB ≥ 4000MB → GPU (source=nvidia-smi)")))
+        self._patch(transcribe_worker, "_get_whisper_model", new=(lambda n: ("m", n)))
+        self._patch(transcribe_worker, "run_transcribe",
+                    side_effect=(lambda m, p, l: {"text": "자동전사문장", "language": "ko"}))
+        self._patch(tts_worker.QwenTTSEngine, "available", new=(lambda self: True))
+
+        def fake_run_job(inner_self, segments, device):
+            for s in segments:
+                _write(s["out_path"], 0.3)
+            return [{"index": s["index"], "out_path": s["out_path"], "sr": 24000,
+                     "x_vector_only": s["x_vector_only"]} for s in segments]
+        self._patch(tts_worker.QwenTTSEngine, "run_job", new=fake_run_job)
+
+        # speed!=1.0 경로의 ffmpeg 의존 제거 — atempo를 복사로 대체(메타데이터만 검증)
+        def fake_atempo(inp, speed):
+            out = inp.replace(".wav", f"_x{speed:.2f}.wav"); shutil.copyfile(inp, out); return out
+        self._patch(tts_worker, "_atempo_segment", new=fake_atempo)
+
+    def _result_meta(self):
+        for mt, k in self.events:
+            if mt == "result":
+                return k.get("metadata")
+        return None
+
+    def test_qwen_result_metadata(self):
+        tts_worker.synthesize(self.ref, "안녕하세요 첫 문장입니다.", self.out, speed=1.0, silence_gap=0.5,
+                              emotion_refs={}, preferred_engine="qwen3", reference_prompts={})
+        meta = self._result_meta()
+        self.assertIsNotNone(meta, "result에 metadata가 있어야 함")
+        self.assertEqual(meta["actual_engine"], "qwen3")
+        self.assertEqual(meta["requested_engine"], "qwen3")
+        self.assertEqual(meta["device"], "cuda:0")
+        self.assertEqual(meta["device_selection_source"], "nvidia-smi")
+        self.assertEqual(meta["prompt_source"], "auto")  # 자동 전사 → ICL
+        self.assertEqual(meta["x_vector_only_mode"], False)
+        self.assertEqual(meta["reference_transcript_language"], "ko")
+        self.assertEqual(meta["reference_transcript_len"], len("자동전사문장"))
+        self.assertEqual(len(meta["reference_transcript_sha8"]), 8)
+        self.assertEqual(meta["output_sample_rate"], 24000)
+        self.assertFalse(meta["speed_postprocessed"])
+        self.assertFalse(meta["seed_supported"])
+        self.assertIsInstance(meta["elapsed_seconds"], (int, float))
+        # 보안: 어떤 메타 값에도 전사 '전문'이 들어가지 않는다
+        blob = _json_dumps(meta)
+        self.assertNotIn("자동전사문장", blob)
+
+    def test_ref_free_prompt_source_metadata(self):
+        ap = os.path.abspath(self.ref)
+        tts_worker.synthesize(self.ref, "안녕하세요 문장.", self.out, speed=1.5, silence_gap=0.5,
+                              emotion_refs={}, preferred_engine="qwen3",
+                              reference_prompts={"default": {"mode": "ref_free"}})
+        meta = self._result_meta()
+        self.assertEqual(meta["prompt_source"], "x-vector-only")
+        self.assertTrue(meta["x_vector_only_mode"])
+        self.assertTrue(meta["speed_postprocessed"])  # speed 1.5
+
+
+def _json_dumps(o):
+    import json
+    return json.dumps(o, ensure_ascii=False)
 
 
 if __name__ == "__main__":

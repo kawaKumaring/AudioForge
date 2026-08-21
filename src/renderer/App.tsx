@@ -8,6 +8,7 @@ import TrackList from '@/components/TrackList'
 import Options from '@/components/Options'
 import SplitEditor from '@/components/SplitEditor'
 import TTSEditor from '@/components/TTSEditor'
+import TtsResultInfo from '@/components/TtsResultInfo'
 
 export default function App() {
   const { fileInfo, mode, status, reset, restorable, restoreSession, setRestorable } = useAppStore()
@@ -155,6 +156,7 @@ export default function App() {
               {mode === 'split' ? <SplitEditor /> : mode === 'tts' ? <TTSEditor /> : <Options />}
               <ProcessButton />
               <ProgressBar />
+              <TtsResultInfo />
               <TrackList />
               {/* 재처리 버튼 (결과 나온 후) */}
               {status === 'done' && (

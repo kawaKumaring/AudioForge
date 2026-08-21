@@ -12,6 +12,11 @@ const api = {
     restoreFromFolder: () => ipcRenderer.invoke('audio:restore-from-folder'),
     findSession: (sourcePath: string) => ipcRenderer.invoke('audio:find-session', sourcePath),
     transcribeReference: (filePath: string) => ipcRenderer.invoke('audio:transcribe-reference', filePath),
+    analyzeReference: (filePath: string) => ipcRenderer.invoke('audio:analyze-reference', filePath),
+    trimReference: (filePath: string, startSec: number, durSec: number) =>
+      ipcRenderer.invoke('audio:trim-reference', filePath, startSec, durSec),
+    releaseReferenceClip: () => ipcRenderer.invoke('audio:release-reference-clip'),
+    qwenPreflight: () => ipcRenderer.invoke('audio:qwen-preflight'),
     processTrack: (trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string }) =>
       ipcRenderer.invoke('audio:process-track', trackPath, outputDir, options),
     onTrackResult: (callback: (data: unknown) => void) => {
@@ -52,7 +57,9 @@ const api = {
   utils: {
     getPathForFile: (file: File) => webUtils.getPathForFile(file),
     copyToClipboard: (text: string) => ipcRenderer.invoke('app:copy-to-clipboard', text)
-  }
+  },
+  // E2E 전용 게이트 — AF_E2E=1 로 실행할 때만 true. 이 값으로만 renderer가 테스트 훅을 노출한다.
+  _e2e: process.env.AF_E2E === '1'
 }
 
 contextBridge.exposeInMainWorld('api', api)

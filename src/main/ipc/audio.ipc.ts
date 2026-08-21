@@ -1,7 +1,8 @@
 import { ipcMain, dialog, BrowserWindow, shell, app } from 'electron'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { join, basename, dirname, extname } from 'path'
+import { join, basename, dirname, extname, resolve } from 'path'
+import { randomUUID } from 'crypto'
 import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
@@ -9,6 +10,8 @@ import { createSettlementGuard } from '../services/run-settlement'
 import { createPreviewGuard, runPreview } from '../services/preview-transcribe'
 import { buildTtsConfig, type TtsInputOptions } from '../../shared/ttsConfig'
 import { sweepQwenJobDirs } from '../services/qwen-cleanup'
+import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
+import { createSingleFlight, createKeyedSingleFlight } from '../services/single-flight'
 
 // execFile(배열 인자)은 cmd.exe를 거치지 않아 시스템 코드페이지(CP949)의
 // 한글 경로 손상 문제에 면역. exec(문자열)은 한글 파일명에서 깨짐 → 금지.
@@ -65,6 +68,8 @@ function savePythonPath(p: string): void { saveSetting('pythonPath', p) }
 let runner: PythonRunner | null = null
 let trackRunner: PythonRunner | null = null
 let pythonPath = resolvePythonPath()
+// 현재 유효한 파생 참조 클립 폴더(tmpdir/audioforge_refclip_*). 새 클립/새 파일/합성 종료 시 정리.
+let currentRefClipDir: string | null = null
 
 let cachedFfprobe: string | null = null
 
@@ -90,13 +95,30 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     }
   } catch { /* ignore */ }
 
+  // 앱 시작: 이전 세션이 남긴 stale 파생 참조 폴더 방어 정리(정확한 prefix + tmpdir 직속 폴더만).
+  try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ }
+  // 앱 종료: 남은 파생 참조 폴더 정리.
+  app.on('will-quit', () => { try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ } })
+
+  const releaseRefClip = () => {
+    if (currentRefClipDir) { removeRefClipDir(tmpdir(), currentRefClipDir); currentRefClipDir = null }
+  }
+
   // Helper to send error to renderer
   const sendError = (message: string) => {
     mainWindow.webContents.send('audio:error', { message })
   }
 
-  // 참조 전사 미리보기 동시 실행/중복 방지 가드(핸들러 간 공유)
-  const previewGuard = createPreviewGuard()
+  // 배타 가드는 '중복 실행을 막아야 하는' 쓰기성 작업에만. 읽기 전용 analyze/preflight는 쓰지 않는다.
+  //  - transcriptPreviewGuard: 참조 전사 미리보기(Whisper)
+  //  - referenceTrimGuard: 참조 구간 트림(파생 클립 생성)
+  // 둘은 서로 다른 가드라 서로를 차단하지 않고, analyze/preflight도 차단하지 않는다.
+  const transcriptPreviewGuard = createPreviewGuard()
+  const referenceTrimGuard = createPreviewGuard()
+
+  // 읽기 전용 작업 single-flight — StrictMode 중복 effect/동시 요청에도 subprocess는 1회.
+  const qwenPreflightSF = createSingleFlight<unknown>()
+  const analyzeSF = createKeyedSingleFlight<unknown>()  // 절대경로 key
 
   ipcMain.handle('audio:select-file', async () => {
     // 마지막으로 불러온 폴더에서 열기 — settings.json에 기억(다른 앱 영향 없음)
@@ -152,10 +174,10 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 전사를 실행할 수 없습니다.')
     if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
-    previewGuard.begin()  // 미리보기 중복 실행 방지(진행 중이면 throw)
+    transcriptPreviewGuard.begin()  // 참조 전사 중복 실행 방지(진행 중이면 throw)
     // config 생성·writeFileSync·실행 전체를 try/finally 안에 둔다 — 설정 단계 예외에서도
     // guard가 running에 영구히 남지 않고, 생성된 config도 정리된다.
-    const cfgPath = join(tmpdir(), `audioforge_reftx_${Date.now()}.json`)
+    const cfgPath = join(tmpdir(), `audioforge_reftx_${randomUUID()}.json`)
     try {
       const scriptPath = PythonRunner.getScriptPath('separate.py')
       writeFileSync(cfgPath, JSON.stringify({ mode: 'ref-transcribe', input: filePath, output: dirname(filePath) }), 'utf-8')
@@ -167,16 +189,99 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       })
     } finally {
       try { unlinkSync(cfgPath) } catch {}  // 설정 예외/누락 대비(정상 시 runPreview cleanup과 중복이나 무해)
-      previewGuard.end()
+      transcriptPreviewGuard.end()
     }
+  })
+
+  // 참조 구간 분석(길이/추천/파형 peak) — 읽기 전용. 배타 가드 미사용(analyze/preflight를 서로 차단하지
+  // 않음). 같은 절대 filePath의 동시 요청은 single-flight로 합쳐 subprocess 1회, 모두 같은 결과.
+  ipcMain.handle('audio:analyze-reference', async (_event, filePath: string) => {
+    if (runner?.isRunning) throw new Error('처리 중에는 참조 분석을 실행할 수 없습니다.')
+    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
+    if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
+    const key = resolve(filePath)
+    if (!analyzeSF.has(key)) releaseRefClip()  // 새 분석 시작일 때만 이전 파생 클립 폐기(중복 요청엔 안 함)
+    return analyzeSF.run(key, async () => {  // 동시/StrictMode 중복은 진행 중 Promise 공유(subprocess 1회)
+      const cfgPath = join(tmpdir(), `audioforge_refanalyze_${randomUUID()}.json`)
+      try {
+        const scriptPath = PythonRunner.getScriptPath('separate.py')
+        writeFileSync(cfgPath, JSON.stringify({ mode: 'ref-analyze', input: filePath, output: dirname(filePath) }), 'utf-8')
+        return await runPreview({
+          runner: new PythonRunner(pythonPath),
+          scriptPath, args: ['--config', cfgPath],
+          timeoutMs: 60000,  // 파형 peak 스캔 여유. 멈춘 프로세스만 끊음.
+          cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
+        })
+      } finally {
+        try { unlinkSync(cfgPath) } catch {}
+      }
+    })
+  })
+
+  // 선택 구간 → mono/24k 파생 참조 WAV(작업 임시폴더). 원본 불변. 반환 clip_path를 합성에 전달한다.
+  ipcMain.handle('audio:trim-reference', async (_event, filePath: string, startSec: number, durSec: number) => {
+    if (runner?.isRunning) throw new Error('처리 중에는 참조 트림을 실행할 수 없습니다.')
+    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
+    if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
+    releaseRefClip()  // 재확정 → 이전 파생 클립 폐기(합성 중 아님: 위에서 차단)
+    referenceTrimGuard.begin()  // 트림 중복 실행 방지(전사 가드와 분리 — 서로 차단하지 않음)
+    const uid = randomUUID()
+    const cfgPath = join(tmpdir(), `audioforge_reftrim_${uid}.json`)
+    const outDir = join(tmpdir(), `audioforge_refclip_${uid}`)  // 작업 임시폴더(프로젝트 밖), 충돌 불가 UID
+    currentRefClipDir = outDir  // 새 파생 클립 폴더 추적(합성 종료/새 파일/재확정 시 정리)
+    try {
+      mkdirSync(outDir, { recursive: true })
+      const scriptPath = PythonRunner.getScriptPath('separate.py')
+      writeFileSync(cfgPath, JSON.stringify({
+        mode: 'ref-trim', input: filePath, output: outDir,
+        regionStart: startSec, regionDur: durSec
+      }), 'utf-8')
+      return await runPreview({
+        runner: new PythonRunner(pythonPath),
+        scriptPath, args: ['--config', cfgPath],
+        timeoutMs: 60000,
+        cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
+      })
+    } finally {
+      try { unlinkSync(cfgPath) } catch {}
+      referenceTrimGuard.end()
+    }
+  })
+
+  // Qwen 실행 전 상태(preflight) — 읽기 전용. 배타 가드 미사용. 동시(또는 StrictMode 중복) 호출은
+  // 하나의 in-flight Promise를 공유해 subprocess 1회. 예상값이며 실행 결과는 metadata가 최종.
+  ipcMain.handle('audio:qwen-preflight', async () => {
+    if (runner?.isRunning) return { available: false, reason: '처리 중' }
+    if (!existsSync(pythonPath)) return { available: false, reason: 'Python 없음' }
+    return qwenPreflightSF.run(async () => {  // 동시/StrictMode 중복은 진행 중 Promise 공유(subprocess 1회)
+      const cfgPath = join(tmpdir(), `audioforge_qwenpre_${randomUUID()}.json`)
+      try {
+        const scriptPath = PythonRunner.getScriptPath('separate.py')
+        writeFileSync(cfgPath, JSON.stringify({ mode: 'qwen-preflight' }), 'utf-8')
+        return await runPreview({
+          runner: new PythonRunner(pythonPath),
+          scriptPath, args: ['--config', cfgPath],
+          timeoutMs: 30000,
+          cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
+        })
+      } catch (e) {
+        return { available: false, reason: (e as Error)?.message || 'preflight 실패' }
+      } finally {
+        try { unlinkSync(cfgPath) } catch {}
+      }
+    })
   })
 
   ipcMain.handle('audio:process', async (_event, filePath: string, mode: string, options?: Record<string, unknown>) => {
     if (runner?.isRunning) {
       throw new Error('이미 처리 중인 작업이 있습니다')
     }
-    if (previewGuard.running) {
+    // 읽기 전용 preflight/analyze는 합성을 막지 않는다. 실제 참조 전사·트림 중일 때만 차단(작업명 표시).
+    if (transcriptPreviewGuard.running) {
       throw new Error('참조 전사 미리보기 중에는 합성을 시작할 수 없습니다.')
+    }
+    if (referenceTrimGuard.running) {
+      throw new Error('참조 구간 트림 중에는 합성을 시작할 수 없습니다.')
     }
 
     // Verify python exists
@@ -234,11 +339,28 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     // 어느 것도 없이 프로세스가 끝나면(예: 외부 kill, 코드 0인데 result 미도달) done에서 오류로 마감.
     const settle = createSettlementGuard(sendError)
 
+    // production race 방지: 터미널 신호(result/error)를 즉시 보내지 않고 버퍼링했다가 runner 'done'
+    // (자식 프로세스 실제 종료 = backend free) 이후에 전달한다. 이러면 renderer가 완료(done)와
+    // '다른 모드로 재처리'를 보는 시점엔 이미 runner=null이라, 결과 직후 재합성해도 "이미 처리 중"이 없다.
+    let pendingResult: unknown = null
+    let pendingError: string | null = null
+
     runner.on('progress', (data) => {
       mainWindow.webContents.send('audio:progress', data)
     })
 
     runner.on('result', (data) => {
+      // TTS 결과 재현 메타데이터: Python이 아는 런타임 사실 + main이 아는 config 필드 병합.
+      // 보안: 참조 전사 '전문'은 기록하지 않는다(Python이 언어/글자수/해시만 넣음).
+      if (mode === 'tts' && data && typeof data === 'object') {
+        const md = ((data as { metadata?: Record<string, unknown> }).metadata) || {}
+        if (md.requested_engine == null) md.requested_engine = options?.ttsEngine ?? 'auto'
+        md.original_reference_path = filePath  // 사용자 원본
+        md.effective_reference_path = (options?.ttsReferenceOverride as string) || filePath  // 파생 클립 우선
+        const region = options?.ttsReferenceRegion as { start: number; duration: number } | null | undefined
+        if (region && typeof region.start === 'number') md.reference_region = region
+        ;(data as { metadata?: unknown }).metadata = md
+      }
       // 세션 매니페스트 저장 — 나중에 재분리 없이 설정+트랙 복원용 (source of truth)
       try {
         const tracks = Array.isArray((data as { tracks?: unknown[] })?.tracks)
@@ -251,6 +373,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
           mode,
           options: config,
           tracks,
+          metadata: (data as { metadata?: unknown }).metadata ?? null,
           createdAt: new Date().toISOString()
         }
         writeFileSync(join(outputDir, 'session.json'), JSON.stringify(session, null, 2), 'utf-8')
@@ -258,12 +381,12 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
         console.log(`[AudioForge] session.json 저장 실패: ${(err as Error).message}`)
       }
       settle.markSettled()
-      mainWindow.webContents.send('audio:result', data)
+      pendingResult = data  // 'done'에서 backend free 확인 후 전달
     })
 
     runner.on('error', (message) => {
       settle.markSettled()
-      sendError(typeof message === 'string' ? message : String(message))
+      pendingError = typeof message === 'string' ? message : String(message)  // 'done'에서 전달
     })
 
     // Watchdog: kill if no progress for 5 minutes
@@ -285,14 +408,25 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
 
     runner.on('done', (code) => {
       if (watchdog) clearTimeout(watchdog)
-      // 정착 신호(result/error/watchdog)가 없었으면 여기서 오류로 마감 → UI가 processing에 안 남음.
-      settle.finish(code)
-      // Clean up config file
+      // 자식 프로세스 실제 종료 후 발생(취소 taskkill 포함). 여기서 backend를 먼저 free로 만들고
+      // (runner=null) '그 다음' 버퍼링한 터미널 신호를 renderer에 전달 → 완료 표시 시점엔 이미 재합성 가능.
       try { unlinkSync(configPath) } catch {}
-      // 'done'은 자식 프로세스 실제 종료 후 발생(취소 taskkill 포함). 정상 성공 시 Python finally가
-      // 이미 .qwen-job-*를 지웠으므로 no-op이고, 취소로 finally가 안 돈 경우 남은 실행별 폴더를 제거.
-      if (mode === 'tts') { try { sweepQwenJobDirs(outputDir) } catch { /* noop */ } }
-      runner = null
+      if (mode === 'tts') {
+        // 합성 '중간 산출물'(.qwen-job-*)만 정리. 취소(taskkill)로 죽은 worker가 파일 핸들을 잠깐 물어
+        // 즉시 삭제가 실패할 수 있어(Windows 락) 즉시 + 지연 재스윕.
+        try { sweepQwenJobDirs(outputDir) } catch { /* noop */ }
+        setTimeout(() => { try { sweepQwenJobDirs(outputDir) } catch { /* noop */ } }, 2500)
+        // 파생 '참조 클립'(reference_clip_24k.wav)은 여기서 삭제하지 않는다 — 성공/오류/취소 후에도 유지해
+        // 같은 클립으로 재합성이 가능하게. 삭제는 새 파일/reset/구간 재확정/앱 종료에서만.
+      }
+      runner = null  // backend free — 아래 터미널 신호 전달 전에 반드시 먼저.
+      // 버퍼링한 터미널 신호 전달(정착됨). 없으면 abnormal exit → settle.finish가 오류로 마감(UI 안 멈춤).
+      if (pendingResult !== null) {
+        mainWindow.webContents.send('audio:result', pendingResult)
+      } else if (pendingError !== null) {
+        sendError(pendingError)
+      }
+      settle.finish(code)
     })
 
     runner.on('progress', () => {
@@ -382,6 +516,13 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     runner = null
     trackRunner?.cancel()
     trackRunner = null
+    return true
+  })
+
+  // 파일 reset/변경 시 렌더러가 호출 — 유효 파생 참조 클립 폴더 정리(합성 중이면 건드리지 않음).
+  ipcMain.handle('audio:release-reference-clip', () => {
+    if (runner?.isRunning) return false  // 합성 worker가 참조 사용 중 → 삭제 금지
+    releaseRefClip()
     return true
   })
 

@@ -20,3 +20,4 @@ externals/
 # Environment
 .env
 .env.local
+scratch_e2e/

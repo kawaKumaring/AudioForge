@@ -9,6 +9,8 @@ export interface PreviewResult {
   text?: string
   language?: string
   error_message?: string
+  // analyze/trim/preflight 등은 결과 필드를 최상위로 실어 보낸다(transcript 래핑 없음).
+  [key: string]: unknown
 }
 
 // EventEmitter 기반 러너의 최소 인터페이스(PythonRunner 호환) — 테스트에서 fake 주입.
@@ -66,8 +68,17 @@ export function runPreview(opts: RunPreviewOpts): Promise<PreviewResult> {
     }
 
     opts.runner.on('result', (data) => {
-      const t = (data as { transcript?: PreviewResult })?.transcript
-      if (t) payload = t
+      // ref-transcribe는 { transcript:{...} }로 감싸 보내고(back-compat), analyze/trim/preflight는
+      // 결과 필드를 최상위로 보낸다. 전자는 transcript를 풀고, 후자는 type만 뺀 전체 payload를 넘긴다.
+      const d = (data ?? {}) as Record<string, unknown>
+      const t = d.transcript as PreviewResult | undefined
+      if (t) {
+        payload = t
+      } else {
+        const { type: _type, ...rest } = d  // 'type' 필드만 제외하고 전체 전달
+        void _type
+        payload = rest as PreviewResult
+      }
     })
     opts.runner.on('error', (msg) => {
       if (!errMsg) errMsg = typeof msg === 'string' ? msg : String(msg)

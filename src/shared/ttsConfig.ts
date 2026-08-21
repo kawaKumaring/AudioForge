@@ -24,6 +24,9 @@ export interface TtsInputOptions {
   ttsEmotionRefs?: Record<string, string>
   ttsEngine?: string
   ttsReferencePrompts?: Record<string, TtsReferenceEntry>
+  // 10초 초과 원본에서 사용자가 확정한 3~10초 파생 참조 클립(mono/24k). 설정 시 기본 참조로 이것을 쓴다.
+  // 원본은 절대 참조로 직접 전달하지 않는다(전체 파일 참조 금지).
+  ttsReferenceOverride?: string
 }
 
 // Python(separate.py/tts_worker)이 읽는 참조 override의 직렬화 형태(snake_case).
@@ -42,6 +45,7 @@ export interface TtsConfig {
   ttsEmotionRefs: Record<string, string>
   ttsEngine: string
   ttsReferencePrompts: Record<string, TtsReferencePromptConfig>
+  ttsReferenceOverride: string
 }
 
 // 참조 항목의 실효 모드 파생(UI 배지 + store mode 전환에 공용). 우선순위: ref_free > manual > auto.
@@ -84,6 +88,7 @@ export function buildTtsConfig(o?: TtsInputOptions): TtsConfig {
     ttsSilenceGap: o?.ttsSilenceGap ?? 0.5,
     ttsEmotionRefs: o?.ttsEmotionRefs ?? {},
     ttsEngine: o?.ttsEngine ?? 'auto',
-    ttsReferencePrompts: buildReferencePrompts(o?.ttsReferencePrompts)
+    ttsReferencePrompts: buildReferencePrompts(o?.ttsReferencePrompts),
+    ttsReferenceOverride: o?.ttsReferenceOverride ?? ''
   }
 }
