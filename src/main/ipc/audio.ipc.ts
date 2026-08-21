@@ -68,8 +68,10 @@ function savePythonPath(p: string): void { saveSetting('pythonPath', p) }
 let runner: PythonRunner | null = null
 let trackRunner: PythonRunner | null = null
 let pythonPath = resolvePythonPath()
-// 현재 유효한 파생 참조 클립 폴더(tmpdir/audioforge_refclip_*). 새 클립/새 파일/합성 종료 시 정리.
-let currentRefClipDir: string | null = null
+// 유효한 파생 참조 클립 폴더(tmpdir/audioforge_refclip_*)를 clipKey별로 추적.
+// clipKey = 'default'(기본 참조) | emotionId(감정 참조). 단일 슬롯을 감정별 식별 구조로 확장.
+// 새 클립/새 파일/재확정/합성 종료(합성 중 제외) 시 해당 key(또는 전체)만 정리.
+const refClipDirs = new Map<string, string>()
 
 let cachedFfprobe: string | null = null
 
@@ -100,8 +102,15 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
   // 앱 종료: 남은 파생 참조 폴더 정리.
   app.on('will-quit', () => { try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ } })
 
-  const releaseRefClip = () => {
-    if (currentRefClipDir) { removeRefClipDir(tmpdir(), currentRefClipDir); currentRefClipDir = null }
+  // clipKey 지정 시 그 하나만, 생략 시 전체 정리(새 파일/reset용). 반환: 실제 삭제된 개수.
+  const releaseRefClip = (clipKey?: string): number => {
+    const keys = clipKey !== undefined ? [clipKey] : Array.from(refClipDirs.keys())
+    let removed = 0
+    for (const k of keys) {
+      const dir = refClipDirs.get(k)
+      if (dir) { removeRefClipDir(tmpdir(), dir); refClipDirs.delete(k); removed++ }
+    }
+    return removed
   }
 
   // Helper to send error to renderer
@@ -195,12 +204,13 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
 
   // 참조 구간 분석(길이/추천/파형 peak) — 읽기 전용. 배타 가드 미사용(analyze/preflight를 서로 차단하지
   // 않음). 같은 절대 filePath의 동시 요청은 single-flight로 합쳐 subprocess 1회, 모두 같은 결과.
-  ipcMain.handle('audio:analyze-reference', async (_event, filePath: string) => {
+  ipcMain.handle('audio:analyze-reference', async (_event, filePath: string, clipKey: string = 'default') => {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 분석을 실행할 수 없습니다.')
     if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
-    const key = resolve(filePath)
-    if (!analyzeSF.has(key)) releaseRefClip()  // 새 분석 시작일 때만 이전 파생 클립 폐기(중복 요청엔 안 함)
+    // single-flight key는 clipKey+절대경로 — 감정별로 분리하되 같은 (key,파일)의 동시 요청만 합침.
+    const key = clipKey + ' ' + resolve(filePath)
+    if (!analyzeSF.has(key)) releaseRefClip(clipKey)  // 새 분석 시작일 때만 그 key의 이전 파생 클립 폐기(중복 요청엔 안 함)
     return analyzeSF.run(key, async () => {  // 동시/StrictMode 중복은 진행 중 Promise 공유(subprocess 1회)
       const cfgPath = join(tmpdir(), `audioforge_refanalyze_${randomUUID()}.json`)
       try {
@@ -219,16 +229,16 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
   })
 
   // 선택 구간 → mono/24k 파생 참조 WAV(작업 임시폴더). 원본 불변. 반환 clip_path를 합성에 전달한다.
-  ipcMain.handle('audio:trim-reference', async (_event, filePath: string, startSec: number, durSec: number) => {
+  ipcMain.handle('audio:trim-reference', async (_event, filePath: string, startSec: number, durSec: number, clipKey: string = 'default') => {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 트림을 실행할 수 없습니다.')
     if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
-    releaseRefClip()  // 재확정 → 이전 파생 클립 폐기(합성 중 아님: 위에서 차단)
+    releaseRefClip(clipKey)  // 재확정 → 그 key의 이전 파생 클립만 폐기(타 감정 클립 불변; 합성 중 아님: 위에서 차단)
     referenceTrimGuard.begin()  // 트림 중복 실행 방지(전사 가드와 분리 — 서로 차단하지 않음)
     const uid = randomUUID()
     const cfgPath = join(tmpdir(), `audioforge_reftrim_${uid}.json`)
     const outDir = join(tmpdir(), `audioforge_refclip_${uid}`)  // 작업 임시폴더(프로젝트 밖), 충돌 불가 UID
-    currentRefClipDir = outDir  // 새 파생 클립 폴더 추적(합성 종료/새 파일/재확정 시 정리)
+    refClipDirs.set(clipKey, outDir)  // 새 파생 클립 폴더를 그 key로 추적(합성 종료/새 파일/재확정 시 정리)
     try {
       mkdirSync(outDir, { recursive: true })
       const scriptPath = PythonRunner.getScriptPath('separate.py')
@@ -519,10 +529,11 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     return true
   })
 
-  // 파일 reset/변경 시 렌더러가 호출 — 유효 파생 참조 클립 폴더 정리(합성 중이면 건드리지 않음).
-  ipcMain.handle('audio:release-reference-clip', () => {
+  // 파일 reset/변경·감정 삭제/재등록 시 렌더러가 호출 — 파생 참조 클립 폴더 정리(합성 중이면 건드리지 않음).
+  // clipKey 지정 시 그 하나만(감정 삭제/재등록), 생략 시 전체(새 파일/reset).
+  ipcMain.handle('audio:release-reference-clip', (_event, clipKey?: string) => {
     if (runner?.isRunning) return false  // 합성 worker가 참조 사용 중 → 삭제 금지
-    releaseRefClip()
+    releaseRefClip(clipKey)
     return true
   })
 
