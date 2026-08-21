@@ -774,12 +774,23 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
     else:
         emit("progress", percent=6, message=f"Qwen 장치: {device} ({reason})")
 
-    # 참조 품질 게이트 재사용 — 고유 참조별 1회, invalid면 모델 로딩 전 실패
-    for ref in set(ref_cache.values()):
+    # 참조 품질 게이트(기본 + 감정별) — 모델 로딩 전 실패. 고유 경로 1회 검사하되 어떤 참조인지 명시.
+    # 10초 초과(TOO_LONG)는 감정 ID·파일명과 함께 '구간 선택 필요'를 안내. 원본을 모델 참조로 직접
+    # 넘기지 않으므로(override가 정석) 긴 원본/긴 감정참조는 여기서 차단되고 run_job(모델 로딩)에 도달하지 않는다.
+    seen_refs = set()
+    for emo_id, ref in ref_cache.items():
+        if ref in seen_refs:
+            continue
+        seen_refs.add(ref)
         a = assess_reference_file(ref, GPTSOVITS_POLICY)
-        if not a.valid:
-            codes = "; ".join(f"[{e.code}] {e.message}" for e in a.errors)
-            raise RuntimeError(f"참조 음성 부적합(Qwen): {os.path.basename(ref)} — {codes}")
+        if a.valid:
+            continue
+        base = os.path.basename(ref)
+        who = "기본 참조" if emo_id == "default" else f"감정 '{emo_id}' 참조"
+        if any(e.code == "TOO_LONG" for e in a.errors):
+            raise RuntimeError(f"{who}({base})가 10초를 초과합니다 — 3~10초 구간을 선택·확정한 뒤 합성하세요.")
+        codes = "; ".join(f"[{e.code}] {e.message}" for e in a.errors)
+        raise RuntimeError(f"참조 음성 부적합(Qwen): {who} {base} — {codes}")
 
     import tempfile
     import shutil
@@ -943,6 +954,17 @@ def _concat_with_silence(segment_paths, output_path, silence_sec=0.5):
 
 
 # ── Main synthesize function ──
+
+def resolve_reference_input(override, input_path):
+    """기본 참조 경로 결정. override(확정 파생 클립)가 지정됐는데 파일이 없으면 원본으로 조용히
+    폴백하지 않고 명확한 오류(만료). override 없으면 원본 사용."""
+    ov = (override or "").strip()
+    if ov:
+        if not os.path.exists(ov):
+            raise RuntimeError("확정한 참조 클립이 만료되었습니다 — 참조 구간을 다시 확정하세요.")
+        return ov
+    return input_path
+
 
 def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                emotion_refs=None, preferred_engine=None, reference_prompts=None):

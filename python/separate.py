@@ -121,9 +121,14 @@ def main():
             ref_prompts = getattr(args, "tts_reference_prompts", {})
             ref_prompts = ref_prompts if isinstance(ref_prompts, dict) else {}
             # 기본 참조: 파생 클립(ttsReferenceOverride)이 있으면 그것을, 없으면 입력 파일.
-            # 전체 원본 파일을 모델 참조로 직접 전달하지 않는다(10초 초과는 UI가 파생 클립을 만든다).
+            # override가 지정됐는데 파일이 없으면(만료) 원본으로 조용히 폴백하지 않고 명확히 실패한다.
+            from tts_worker import resolve_reference_input
             override = getattr(args, "tts_reference_override", "") or ""
-            ref_input = override if (override and os.path.exists(override)) else args.input
+            try:
+                ref_input = resolve_reference_input(override, args.input)
+            except RuntimeError as e:
+                emit("error", message=str(e))
+                return
             synthesize(ref_input, args.tts_text, args.output,
                        speed=args.tts_speed, silence_gap=args.tts_silence_gap,
                        emotion_refs=emotion_refs, preferred_engine=preferred_engine,

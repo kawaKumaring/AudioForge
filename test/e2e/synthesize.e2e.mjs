@@ -78,7 +78,7 @@ try {
     const url = await window.api.audio.getFileUrl(p)
     s.getState().setFile(info, url); s.getState().setMode('tts')
   }, REF)
-  await win.waitForFunction(() => /111\.08/.test(document.getElementById('root')?.innerText || ''), { timeout: 30000 })
+  await win.waitForFunction(() => /111\.08/.test(document.getElementById('root')?.innerText || ''), undefined, { timeout: 30000 })
   const tts = await measure()
   await win.screenshot({ path: path.join(SHOT, 'e2e_02_tts.png') })
   ok(/111\.08/.test(tts.txt), '111.08초 분석 결과 표시')
@@ -89,7 +89,7 @@ try {
 
   // 3) 구간 확정 → 파생 클립 ready
   await win.getByText('이 구간으로 확정').click({ timeout: 20000 })
-  await win.waitForFunction(() => window.__afStore?.getState().ttsRefReady === true, { timeout: 40000 })
+  await win.waitForFunction(() => window.__afStore?.getState().ttsRefReady === true, undefined, { timeout: 40000 })
   ok(true, '구간 확정 → ttsRefReady=true')
   await win.evaluate(() => window.__afStore.setState({ ttsText: '안녕하세요. 테스트 문장입니다.' }))
 
@@ -98,7 +98,7 @@ try {
   const beforeCfg = mainOut.join('').split('Config written').length - 1
   await win.getByText('음성 합성 시작', { exact: false }).click({ timeout: 8000 })
   // processing 상태를 느슨한 정규식이 아니라 store.status로 단언
-  await win.waitForFunction(() => window.__afStore?.getState().status === 'processing', { timeout: 8000 })
+  await win.waitForFunction(() => window.__afStore?.getState().status === 'processing', undefined, { timeout: 8000 })
   ok(await win.evaluate(() => window.__afStore.getState().status === 'processing'), 'store.status === processing')
   // 처리 취소 버튼이 실제로 표시됨(느슨한 텍스트 매칭 아님)
   const cancelBtn = win.getByText('처리 취소', { exact: false })
@@ -113,7 +113,7 @@ try {
   // 5) 취소 필수 클릭(부재를 catch로 넘기지 않음) → processing=false + worker 종료 + 임시폴더 0
   userCancelled = true  // 이후 발생하는 worker 조기 종료(code≠0/kill)는 '사용자 취소로 인한 예상 종료'
   await cancelBtn.click({ timeout: 8000 })  // 실패 시 예외 → E2E 실패
-  await win.waitForFunction(() => window.__afStore?.getState().status !== 'processing', { timeout: 15000 })
+  await win.waitForFunction(() => window.__afStore?.getState().status !== 'processing', undefined, { timeout: 15000 })
   ok(await win.evaluate(() => window.__afStore.getState().status !== 'processing'), '취소 후 store.status !== processing')
   // 취소된 synth worker(자식 프로세스)가 종료됐는지 — 'done'('Process exited') 1회 이상 추가 발생
   const t0 = Date.now()

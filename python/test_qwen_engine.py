@@ -326,6 +326,21 @@ class QwenBatchPathTest(_QwenGlobalIsolation, unittest.TestCase):
         self.assertEqual(gap_seen, [0.75], "결합 시 사용자 silence_gap 유지")
         self.assertTrue(os.path.exists(os.path.join(self.out, "synthesized.wav")))
 
+    def test_long_emotion_ref_blocks_with_emotion_id(self):
+        # 감정 참조가 10초 초과 → 감정 ID·파일 포함 오류, run_job(모델 로딩) 미도달
+        long_ref = os.path.join(self.tmp, "happy_long.wav")
+        _write(long_ref, 12.0)
+        called = []
+        self._patch(tts_worker.QwenTTSEngine, "run_job",
+                    new=(lambda self, *a, **k: called.append(1) or []))
+        with self.assertRaises(RuntimeError) as cm:
+            tts_worker.synthesize(self.ref, "[기쁨] 문장입니다.", self.out, emotion_refs={"happy": long_ref},
+                                  preferred_engine="qwen3", reference_prompts={})
+        msg = str(cm.exception)
+        self.assertIn("happy", msg)   # 감정 ID 명시
+        self.assertIn("10초", msg)    # 구간 선택 안내
+        self.assertEqual(called, [], "긴 감정 참조는 run_job(모델) 도달 전 차단")
+
     def test_invalid_ref_blocks_before_run_job(self):
         short = os.path.join(self.tmp, "short2s.wav")
         _write(short, 2.0)  # TOO_SHORT
@@ -477,6 +492,29 @@ class AtomicFinalReplaceTest(_QwenGlobalIsolation, unittest.TestCase):
         with open(self.final, "rb") as f:
             self.assertEqual(f.read(), marker, "atempo 실패 시 기존 synthesized.wav 불변")
         self.assertEqual(self._job_dirs_left(), [], "atempo 실패에도 실행별 임시폴더 정리")
+
+
+class ResolveReferenceInputTest(unittest.TestCase):
+    """override(확정 파생 클립) 수명 — 만료 시 원본으로 조용히 폴백하지 않고 명확히 실패."""
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="af_refin_")
+        self.clip = os.path.join(self.tmp, "reference_clip_24k.wav")
+        with open(self.clip, "wb") as f:
+            f.write(b"x")
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+
+    def test_empty_override_uses_input(self):
+        self.assertEqual(tts_worker.resolve_reference_input("", "orig.wav"), "orig.wav")
+        self.assertEqual(tts_worker.resolve_reference_input(None, "orig.wav"), "orig.wav")
+
+    def test_existing_override_used(self):
+        self.assertEqual(tts_worker.resolve_reference_input(self.clip, "orig.wav"), self.clip)
+
+    def test_missing_override_raises_no_fallback(self):
+        missing = os.path.join(self.tmp, "gone.wav")
+        with self.assertRaises(RuntimeError) as cm:
+            tts_worker.resolve_reference_input(missing, "orig.wav")
+        self.assertIn("만료", str(cm.exception))  # 원본으로 폴백하지 않음
 
 
 class MetadataHelperTest(unittest.TestCase):

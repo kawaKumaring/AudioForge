@@ -31,16 +31,16 @@ try {
     const url = await window.api.audio.getFileUrl(p)
     s.getState().setFile(info, url); s.getState().setMode('tts')
   }, REF)
-  await win.waitForFunction(() => /111\.08/.test(document.getElementById('root')?.innerText || ''), { timeout: 30000 })
+  await win.waitForFunction(() => /111\.08/.test(document.getElementById('root')?.innerText || ''), undefined, { timeout: 30000 })
   await win.getByText('이 구간으로 확정').click({ timeout: 20000 })
-  await win.waitForFunction(() => window.__afStore?.getState().ttsRefReady === true, { timeout: 40000 })
+  await win.waitForFunction(() => window.__afStore?.getState().ttsRefReady === true, undefined, { timeout: 40000 })
   await win.evaluate(() => window.__afStore.setState({ ttsText: '안녕하세요.' }))
   await win.getByText('음성 합성 시작', { exact: false }).click({ timeout: 8000 })
-  await win.waitForFunction(() => window.__afStore?.getState().status === 'processing', { timeout: 8000 })
+  await win.waitForFunction(() => window.__afStore?.getState().status === 'processing', undefined, { timeout: 8000 })
   ok(true, '합성 시작(processing)')
 
   // 실제 합성 완료까지 대기(최대 240s). 오류로 마감되면 즉시 실패.
-  await win.waitForFunction(() => ['done', 'error'].includes(window.__afStore?.getState().status), { timeout: 240000 })
+  await win.waitForFunction(() => ['done', 'error'].includes(window.__afStore?.getState().status), undefined, { timeout: 240000 })
   const st = await win.evaluate(() => ({
     status: window.__afStore.getState().status,
     outputDir: window.__afStore.getState().outputDir,
