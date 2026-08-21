@@ -709,26 +709,88 @@ def _atempo_segment(inp, speed):
     return out
 
 
+_METADATA_KEYS = [
+    "requested_engine", "actual_engine", "model_name", "model_revision", "device",
+    "device_selection_source", "prompt_source", "x_vector_only_mode",
+    "original_reference_path", "effective_reference_path", "reference_region",
+    "reference_transcript_language", "reference_transcript_len", "reference_transcript_sha8",
+    "target_language", "seed", "seed_supported", "speed", "speed_postprocessed", "silence_gap",
+    "fallback", "fallback_reason", "elapsed_seconds", "output_sample_rate",
+]
+
+
+def _build_tts_metadata(**kw):
+    """결과 재현 메타데이터의 고정 형태(모든 키 존재, JSON 직렬화 가능).
+    보안: 참조 전사 '전문'은 절대 포함하지 않는다 — 언어/글자수/짧은 해시(source)만."""
+    return {k: kw.get(k) for k in _METADATA_KEYS}
+
+
+def _parse_device_source(reason):
+    """select_device 사유 문자열에서 측정 출처(source=...)를 추출. 없으면 사유 자체를 요약."""
+    if not reason:
+        return None
+    m = re.search(r"source=([\w.\-]+)", reason)
+    if m:
+        return m.group(1)
+    if "측정 실패" in reason:
+        return "nvidia-smi(측정실패→CPU)"
+    return None
+
+
+def _prompt_source_for(ref, overrides_by_path, xvo):
+    """참조의 프롬프트 출처 라벨: x-vector-only / manual / auto."""
+    if xvo:
+        return "x-vector-only"
+    ov = (overrides_by_path or {}).get(os.path.abspath(ref)) or {}
+    if (ov.get("manual_text") or "").strip():
+        return "manual"
+    return "auto"
+
+
+def _transcript_meta(ref_text):
+    """전사문에서 GUI/세션용 비민감 요약만: (언어, 글자수, sha8). 전문은 반환하지 않는다."""
+    t = (ref_text or "").strip()
+    if not t:
+        return None, 0, None
+    import hashlib
+    return _detect_language(t), len(t), hashlib.sha256(t.encode("utf-8")).hexdigest()[:8]
+
+
 def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed, silence_gap):
     """Qwen 배치 합성 — 2B 품질 게이트 재사용, Qwen 전용 VRAM 임계로 장치 선택(ComfyUI 병행 안전),
-    모델 1회 로딩. speed: 세그먼트별 atempo 후 사용자 silence_gap으로 결합(1.0은 raw). 임시파일 finally 정리."""
+    모델 1회 로딩. speed: 세그먼트별 atempo 후 사용자 silence_gap으로 결합(1.0은 raw). 임시파일 finally 정리.
+    반환: (final_path, info) — info는 재현 메타데이터의 런타임 사실(device/source/prompt_source/전사요약 등)."""
+    import time
     from reference_audio import assess_reference_file, GPTSOVITS_POLICY
     from gpu_policy import select_device, is_cuda_oom
     qwen = _get_qwen_engine()
+    t_start = time.monotonic()
 
     dev, reason = select_device("auto", min_free_mb=_QWEN_MIN_FREE_MB)
     device = "cuda:0" if dev == "cuda" else "cpu"
+    device_source = _parse_device_source(reason)
     if device == "cpu":
         emit("progress", percent=6, message=f"Qwen 장치: CPU ({reason}) — 문장당 ~30초로 느릴 수 있음")
     else:
         emit("progress", percent=6, message=f"Qwen 장치: {device} ({reason})")
 
-    # 참조 품질 게이트 재사용 — 고유 참조별 1회, invalid면 모델 로딩 전 실패
-    for ref in set(ref_cache.values()):
+    # 참조 품질 게이트(기본 + 감정별) — 모델 로딩 전 실패. 고유 경로 1회 검사하되 어떤 참조인지 명시.
+    # 10초 초과(TOO_LONG)는 감정 ID·파일명과 함께 '구간 선택 필요'를 안내. 원본을 모델 참조로 직접
+    # 넘기지 않으므로(override가 정석) 긴 원본/긴 감정참조는 여기서 차단되고 run_job(모델 로딩)에 도달하지 않는다.
+    seen_refs = set()
+    for emo_id, ref in ref_cache.items():
+        if ref in seen_refs:
+            continue
+        seen_refs.add(ref)
         a = assess_reference_file(ref, GPTSOVITS_POLICY)
-        if not a.valid:
-            codes = "; ".join(f"[{e.code}] {e.message}" for e in a.errors)
-            raise RuntimeError(f"참조 음성 부적합(Qwen): {os.path.basename(ref)} — {codes}")
+        if a.valid:
+            continue
+        base = os.path.basename(ref)
+        who = "기본 참조" if emo_id == "default" else f"감정 '{emo_id}' 참조"
+        if any(e.code == "TOO_LONG" for e in a.errors):
+            raise RuntimeError(f"{who}({base})가 10초를 초과합니다 — 3~10초 구간을 선택·확정한 뒤 합성하세요.")
+        codes = "; ".join(f"[{e.code}] {e.message}" for e in a.errors)
+        raise RuntimeError(f"참조 음성 부적합(Qwen): {who} {base} — {codes}")
 
     import tempfile
     import shutil
@@ -739,6 +801,14 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
     job_dir = tempfile.mkdtemp(prefix=".qwen-job-", dir=output_dir)
     final_path = os.path.join(output_dir, "synthesized.wav")
     pending_path = os.path.join(job_dir, "pending.wav")
+    default_ref = ref_cache["default"]
+    def_source = None
+    def_xvo = None
+    def_tr_lang = def_tr_len = def_tr_sha = None
+    lang_codes = []
+    fallback = False
+    fallback_reason = None
+    actual_device = device
     try:
         warned = set()
         segments = []
@@ -746,9 +816,14 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             ref = ref_cache.get(emotion_id, ref_cache["default"])
             ref_text, xvo = _resolve_qwen_ref_text(ref, overrides_by_path, warned)
             lang_code = _detect_language(line_text)  # 세그먼트별 언어
+            lang_codes.append(lang_code)
             lang_name = _QWEN_LANG_NAME.get(lang_code)
             if not lang_name:
                 raise RuntimeError(f"Qwen 미지원 언어(감지 {lang_code}) — 문장: {line_text[:20]}")
+            if ref == default_ref and def_source is None:  # 기본 참조의 메타(전문 아닌 요약)
+                def_xvo = bool(xvo)
+                def_source = _prompt_source_for(ref, overrides_by_path, xvo)
+                def_tr_lang, def_tr_len, def_tr_sha = _transcript_meta(ref_text)
             out_path = os.path.join(job_dir, f"segment_qwen_{i + 1:03d}.wav")
             segments.append({"index": i, "text": line_text, "ref_audio": ref, "ref_text": ref_text,
                              "x_vector_only": xvo, "language_name": lang_name, "out_path": out_path})
@@ -759,6 +834,9 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             # CUDA OOM만 CPU로 1회 가시적 재시도(조용한 재시도 아님). 그 외 예외는 전파.
             if device == "cuda:0" and is_cuda_oom(e):
                 emit("progress", percent=30, message="GPU 메모리 부족(OOM) → CPU로 1회 재시도(느림)")
+                fallback = True
+                fallback_reason = "CUDA OOM → CPU 재시도"
+                actual_device = "cpu"
                 seg_out = qwen.run_job(segments, "cpu")
             else:
                 raise
@@ -784,7 +862,21 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
 
         # 전량 성공 → 원자적 교체(기존 synthesized.wav는 이 시점에만 대체됨). job_dir는 finally에서 삭제.
         os.replace(pending_path, final_path)
-        return final_path
+        import time as _time
+        # target_language: 세그먼트 언어 중 최빈값
+        tgt = max(set(lang_codes), key=lang_codes.count) if lang_codes else None
+        info = {
+            "actual_engine": "qwen3", "model_name": _QWEN_REPO, "model_revision": _QWEN_REVISION,
+            "device": actual_device, "device_selection_source": device_source,
+            "prompt_source": def_source, "x_vector_only_mode": def_xvo,
+            "reference_transcript_language": def_tr_lang, "reference_transcript_len": def_tr_len,
+            "reference_transcript_sha8": def_tr_sha, "target_language": tgt,
+            "seed": None, "seed_supported": False,
+            "speed_postprocessed": bool(abs(float(speed) - 1.0) > 1e-6),
+            "fallback": fallback, "fallback_reason": fallback_reason,
+            "elapsed_seconds": round(_time.monotonic() - t_start, 2), "output_sample_rate": int(sr),
+        }
+        return final_path, info
     finally:
         # 실행별 폴더 전체 삭제(정상/오류 공통). 성공 시 pending은 이미 replace로 빠져나갔고 나머지 중간물만 남음.
         # 기존 synthesized.wav·다른 작업 결과는 job_dir 밖이라 절대 건드리지 않는다.
@@ -863,6 +955,17 @@ def _concat_with_silence(segment_paths, output_path, silence_sec=0.5):
 
 # ── Main synthesize function ──
 
+def resolve_reference_input(override, input_path):
+    """기본 참조 경로 결정. override(확정 파생 클립)가 지정됐는데 파일이 없으면 원본으로 조용히
+    폴백하지 않고 명확한 오류(만료). override 없으면 원본 사용."""
+    ov = (override or "").strip()
+    if ov:
+        if not os.path.exists(ov):
+            raise RuntimeError("확정한 참조 클립이 만료되었습니다 — 참조 구간을 다시 확정하세요.")
+        return ov
+    return input_path
+
+
 def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                emotion_refs=None, preferred_engine=None, reference_prompts=None):
     """Synthesize speech. Auto-selects engine by language.
@@ -877,6 +980,9 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         emit("error", message="합성할 텍스트가 없습니다.")
         return
 
+    import time as _time
+    _t0 = _time.monotonic()
+    requested_engine = preferred_engine or "auto"
     parsed = [_parse_line(l) for l in lines]
     emit("progress", percent=5, message=f"{len(parsed)}개 문장 합성 준비")
 
@@ -911,14 +1017,19 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         # 배치형 엔진(Qwen3) 라우팅: 한국어 Auto 우선순위 Qwen3 → GPT-SoVITS → 폴백.
         # 모델 1회 로딩으로 전 문장 처리(문장별 프로세스 금지).
         if _select_job_engine(text, preferred_engine) == "qwen3":
-            final_path = _synthesize_qwen_job(parsed, ref_cache, overrides_by_path,
-                                              output_dir, speed, silence_gap)
+            final_path, info = _synthesize_qwen_job(parsed, ref_cache, overrides_by_path,
+                                                    output_dir, speed, silence_gap)
+            meta = _build_tts_metadata(
+                requested_engine=requested_engine,
+                original_reference_path=reference_audio, effective_reference_path=reference_audio,
+                reference_region=None, speed=float(speed), silence_gap=float(silence_gap), **info)
             tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
             emit("progress", percent=99, message="완료!")
-            emit("result", tracks=tracks, outputDir=output_dir)
+            emit("result", tracks=tracks, outputDir=output_dir, metadata=meta)
             return
 
         segment_paths = []
+        seg_engines = []
 
         for i, (emotion_id, line_text) in enumerate(parsed):
             pct = 25 + int((i / len(parsed)) * 60)
@@ -928,6 +1039,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             # Select engine based on text language
             engine = _select_engine(line_text, preferred_engine)
             engine_name = engine.name
+            seg_engines.append(engine_name)
 
             emit("progress", percent=pct, message=f"[{engine_name}] [{emotion_label}] {line_text[:25]}...")
 
@@ -952,9 +1064,37 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                 if os.path.exists(p):
                     os.remove(p)
 
+        # per-segment(GPT-SoVITS/F5/Kokoro) 메타데이터
+        import soundfile as _sf2
+        try:
+            out_sr = int(_sf2.info(final_path).samplerate)
+        except Exception:
+            out_sr = None
+        default_ref = ref_cache["default"]
+        ov_def = (overrides_by_path or {}).get(os.path.abspath(default_ref)) or {}
+        if ov_def.get("mode") == "ref_free":
+            p_src = "x-vector-only"
+        elif (ov_def.get("manual_text") or "").strip():
+            p_src = "manual"
+        else:
+            p_src = "auto"
+        lang_codes2 = [_detect_language(t) for _, t in parsed]
+        tgt2 = max(set(lang_codes2), key=lang_codes2.count) if lang_codes2 else None
+        engines_used = sorted(set(seg_engines))
+        # qwen3를 요청했는데 per-segment로 왔으면 폴백(미설치/미선택)
+        fb = (requested_engine == "qwen3")
+        meta = _build_tts_metadata(
+            requested_engine=requested_engine, actual_engine=",".join(engines_used),
+            device=None, device_selection_source=None, prompt_source=p_src,
+            x_vector_only_mode=None, original_reference_path=reference_audio,
+            effective_reference_path=reference_audio, reference_region=None,
+            target_language=tgt2, seed=None, seed_supported=False,
+            speed=float(speed), speed_postprocessed=False, silence_gap=float(silence_gap),
+            fallback=fb, fallback_reason=("Qwen3 사용 불가 → 기존 엔진 폴백" if fb else None),
+            elapsed_seconds=round(_time.monotonic() - _t0, 2), output_sample_rate=out_sr)
         tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
         emit("progress", percent=99, message="완료!")
-        emit("result", tracks=tracks, outputDir=output_dir)
+        emit("result", tracks=tracks, outputDir=output_dir, metadata=meta)
 
     finally:
         for d in tmp_dirs:

@@ -18,18 +18,21 @@ function _estimateTime(mode: string, duration: number, transcribe: boolean, tran
 }
 
 export default function ProcessButton() {
-  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefs, ttsReferencePrompts, ttsEngine, status, setProcessing, setProgress, setResult, setError } = useAppStore()
+  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefs, ttsReferencePrompts, ttsEngine, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, status, setProcessing, setProgress, setResult, setError } = useAppStore()
   const cleanupRef = React.useRef<(() => void) | null>(null)
 
   const handleProcess = async () => {
+    console.log('[renderer][synthesize] 클릭 핸들러 진입', { mode, hasFile: !!fileInfo })
     if (!fileInfo) return
+    console.log('[renderer][synthesize] setProcessing 직전')
     setProcessing()
+    console.log('[renderer][synthesize] setProcessing 직후')
 
     const offProgress = window.api.audio.onProgress((data: any) => {
       setProgress(data.percent ?? 0, data.message ?? '')
     })
     const offResult = window.api.audio.onResult((data: any) => {
-      setResult(data.tracks ?? [], data.outputDir ?? '')
+      setResult(data.tracks ?? [], data.outputDir ?? '', data.metadata ?? null)
       cleanup()
     })
     const offError = window.api.audio.onError((data: any) => {
@@ -44,8 +47,11 @@ export default function ProcessButton() {
     cleanupRef.current = cleanup
 
     try {
-      await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefs, ttsReferencePrompts, ttsEngine })
+      console.log('[renderer][synthesize] audio:process 호출 직전')
+      const r = await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefs, ttsReferencePrompts, ttsEngine, ttsReferenceOverride: ttsReferenceClip, ttsReferenceRegion })
+      console.log('[renderer][synthesize] audio:process 호출 직후', r)
     } catch (err: any) {
+      console.error('[renderer][synthesize] audio:process 오류', err?.stack || err)
       setError(err.message || 'Process failed')
       cleanup()
     }
@@ -83,6 +89,21 @@ export default function ProcessButton() {
     )
   }
 
+  // TTS 게이팅: 빈/공백 대사 또는 참조 미준비(구간 미확정·품질 오류·길이 밖)면 비활성화 + 사유.
+  const ttsBlockReason = mode === 'tts'
+    ? (!ttsText.trim() ? '합성할 대사를 입력하세요'
+        : (!ttsRefReady ? (ttsRefMessage || '참조 구간을 확정하세요') : ''))
+    : ''
+
+  if (ttsBlockReason) {
+    return (
+      <div style={{ ...btnBase, background: 'var(--bg-elevated)', color: 'var(--text-muted)', cursor: 'not-allowed', flexDirection: 'column', gap: 2, padding: '12px 0' }}>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>음성 합성 시작</span>
+        <span style={{ fontSize: 11, fontWeight: 400, opacity: 0.9 }}>{ttsBlockReason}</span>
+      </div>
+    )
+  }
+
   return (
     <motion.button
       initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
@@ -94,7 +115,8 @@ export default function ProcessButton() {
         <circle cx="12" cy="12" r="10" /><polygon points="10,8 16,12 10,16" fill="currentColor" stroke="none" />
       </svg>
       {mode === 'music' ? '음악 분리 시작' : mode === 'conversation' ? '대화 분리 시작' : mode === 'split' ? '트랙 분할 시작' : mode === 'tts' ? '음성 합성 시작' : '텍스트 추출 시작'}
-      {fileInfo.duration > 0 && (
+      {/* TTS는 문장수·장치·모델 준비 상태에 좌우돼 파일 길이 기반 예상이 부정확 → 표시하지 않음 */}
+      {fileInfo.duration > 0 && mode !== 'tts' && (
         <span style={{ opacity: 0.6, fontSize: 11, fontWeight: 400 }}>
           ({_estimateTime(mode, fileInfo.duration, transcribe, translate)})
         </span>

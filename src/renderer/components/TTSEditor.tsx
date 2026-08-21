@@ -1,7 +1,10 @@
-import { useState, useEffect, useCallback } from 'react'
+import { useState, useEffect } from 'react'
 import { useAppStore } from '@/stores/app.store'
 import type { TtsReferenceEntry } from '../../shared/ttsConfig'
 import { deriveRefMode } from '../../shared/ttsConfig'
+import ReferenceRegionPanel from './ReferenceRegionPanel'
+
+const EXAMPLE_TEXT = "안녕하세요. 오늘 좋은 소식이 있어요.\n[기쁨] 드디어 프로젝트가 완성됐습니다!\n[슬픔] 하지만 아쉽게도 일정이 늦어졌어요."
 
 const PROMPT_LANGS: [string, string][] = [
   ['', '자동'], ['ko', '한국어'], ['ja', '일본어'], ['zh', '중국어'], ['en', '영어'],
@@ -96,6 +99,10 @@ const EMOTION_GROUPS = [
 // Flat list for reference registration
 const ALL_EMOTIONS = EMOTION_GROUPS.flatMap(g => g.emotions)
 
+// 대사 입력의 태그 삽입에서 기본 노출할 '자주 쓰는' 감정(전체는 더보기). id는 Python과 공유되는 값 그대로.
+const FREQUENT_TAG_IDS = ['happy', 'sad', 'angry', 'surprise', 'whisper', 'cheerful', 'worried', 'shy']
+const FREQUENT_TAGS = ALL_EMOTIONS.filter(e => FREQUENT_TAG_IDS.includes(e.id))
+
 export default function TTSEditor() {
   const { mode, status, fileInfo } = useAppStore()
   // 로컬 상태는 store 값으로 초기화 — 빈 값으로 시작하면 아래 동기화
@@ -109,12 +116,25 @@ export default function TTSEditor() {
   const [refPrompts, setRefPrompts] = useState<Record<string, TtsReferenceEntry>>(() => useAppStore.getState().ttsReferencePrompts)
   const [showRefPrompts, setShowRefPrompts] = useState(false)
   const [txLoading, setTxLoading] = useState<string | null>(null)
+  const [preflight, setPreflight] = useState<{ available?: boolean; snapshot_ok?: boolean; device_expected?: string; reason?: string } | null>(null)
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const [showAllTags, setShowAllTags] = useState(false)
   const disabled = status === 'processing'
 
   // Sync to store
   useEffect(() => {
     useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefs: emotionRefs, ttsReferencePrompts: refPrompts, ttsEngine })
   }, [ttsText, ttsSpeed, ttsSilenceGap, emotionRefs, refPrompts, ttsEngine])
+
+  // Qwen 실행 전 상태(preflight) — 마운트 시 1회. 예상값이며 실행 결과는 결과 화면 metadata가 최종.
+  useEffect(() => {
+    if (mode !== 'tts') return
+    let cancelled = false
+    window.api.audio.qwenPreflight()
+      .then((p: unknown) => { if (!cancelled) setPreflight(p as typeof preflight) })
+      .catch(() => { if (!cancelled) setPreflight(null) })
+    return () => { cancelled = true }
+  }, [mode])
 
   const updateRef = (id: string, patch: Partial<TtsReferenceEntry>) =>
     setRefPrompts(prev => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }))
@@ -168,16 +188,40 @@ export default function TTSEditor() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+      {/* 참조 음성: 분석·구간 선택(3~10초)·파생 클립 준비 */}
+      <ReferenceRegionPanel />
+
       {/* Guide */}
       <div style={{
         borderRadius: 12, padding: '12px 16px',
         background: 'rgba(251,113,133,0.05)', border: '1px solid rgba(251,113,133,0.12)',
-        fontSize: 11, lineHeight: 1.7, color: 'var(--text-secondary)'
+        fontSize: 12, lineHeight: 1.7, color: 'var(--text-secondary)'
       }}>
-        <strong style={{ color: 'var(--rose)' }}>참조 음성</strong> = 위에 드롭한 파일 (기본 감정).
+        <strong style={{ color: 'var(--rose)' }}>참조 음성</strong> = 위에 올린 파일의 목소리를 흉내 냅니다.
         감정별 음성을 추가 등록하면 대사마다 <code style={{ background: 'var(--bg-elevated)', padding: '1px 4px', borderRadius: 3 }}>[기쁨]</code> 태그로 감정을 지정할 수 있습니다.
         <br />한국어 · 영어 · 일본어 · 중국어 지원. 영어 목소리로 한국어 대사도 가능합니다.
       </div>
+
+      {/* Qwen 실행 전 상태(preflight) — 예상값. 실제 엔진·장치는 합성 후 결과 화면에 표시 */}
+      {preflight && (() => {
+        const ok = preflight.available === true
+        const snapMissing = !ok && preflight.snapshot_ok === false
+        const dev = preflight.device_expected
+        const msg = ok
+          ? (dev === 'gpu' ? 'Qwen3 준비됨 · 완전 로컬 · GPU 예상'
+            : dev === 'cpu' ? 'Qwen3 준비됨 · 완전 로컬 · VRAM 부족으로 CPU 예상'
+            : 'Qwen3 준비됨 · 완전 로컬')
+          : (snapMissing ? 'Qwen3 모델 스냅샷 누락 · 자동 선택 시 GPT-SoVITS 사용 예정'
+            : 'Qwen3 미설치 · 자동 선택 시 GPT-SoVITS 사용 예정')
+        const color = ok ? 'var(--cyan)' : 'var(--text-muted)'
+        return (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color, padding: '2px 2px' }}>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: ok ? 'var(--cyan)' : 'var(--text-muted)', flexShrink: 0 }} />
+            <span>{msg}</span>
+            <span style={{ color: 'var(--text-muted)' }}>· 예상값(실제 결과는 합성 후 표시)</span>
+          </div>
+        )
+      })()}
 
       {/* Emotion references (collapsible) */}
       <div style={{ borderRadius: 12, overflow: 'hidden', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)' }}>
@@ -252,8 +296,9 @@ export default function TTSEditor() {
         </button>
         {showRefPrompts && (
           <div style={{ padding: '0 16px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-              자동 전사가 틀리면 직접 고치거나 입력하세요. 비워두면 자동 전사를 사용합니다. (GPT-SoVITS 전용)
+            <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              참조 음성이 무슨 말을 하는지 적어두면 목소리를 더 정확히 흉내 냅니다. 자동 전사가 틀리면 직접 고치거나 입력하세요.
+              비워두면 자동 전사를 사용합니다. (10초 초과 파일은 확정한 구간만 전사합니다.)
             </div>
             {[
               { id: 'default', label: '기본 참조', path: fileInfo?.path || '' },
@@ -262,7 +307,7 @@ export default function TTSEditor() {
               const entry = refPrompts[ref.id] || {}
               const effMode = deriveRefMode(entry)  // 우선순위: ref_free > manual > auto
               const refFree = effMode === 'ref_free'
-              const eff = refFree ? 'ref-free' : (effMode === 'manual' ? '수동' : '자동')
+              const eff = refFree ? '전사문 없이' : (effMode === 'manual' ? '직접 입력' : '자동 인식')
               const effColor = refFree ? 'var(--text-muted)' : (effMode === 'manual' ? 'var(--rose)' : 'var(--cyan)')
               return (
                 <div key={ref.id} style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 5 }}>
@@ -316,7 +361,7 @@ export default function TTSEditor() {
                     <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--text-muted)', cursor: 'pointer' }}>
                       <input type="checkbox" checked={refFree} disabled={disabled}
                         onChange={(e) => onRefFreeToggle(ref.id, e.target.checked)} />
-                      참조 없이(ref-free)
+                      전사문 없이 사용(화자 특성만 · 유사도 저하 가능)
                     </label>
                   </div>
                 </div>
@@ -328,11 +373,20 @@ export default function TTSEditor() {
 
       {/* Text input */}
       <div style={{ borderRadius: 12, overflow: 'hidden', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)' }}>
-        <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <div style={{ padding: '10px 16px', borderBottom: '1px solid var(--border-subtle)', display: 'flex', justifyContent: 'space-between', alignItems: 'center', gap: 8 }}>
           <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>대사 입력</span>
-          <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-            {ttsText.split('\n').filter(l => l.trim()).length}개 문장
-          </span>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            {!ttsText.trim() && (
+              <button onClick={() => !disabled && setTtsText(EXAMPLE_TEXT)} disabled={disabled} style={{
+                padding: '3px 10px', borderRadius: 5, border: 'none', cursor: 'pointer',
+                fontSize: 11, fontWeight: 600, fontFamily: 'inherit',
+                background: 'var(--bg-elevated)', color: 'var(--cyan)'
+              }}>예문 불러오기</button>
+            )}
+            <span style={{ fontSize: 11, color: ttsText.trim() ? 'var(--text-muted)' : 'var(--rose)' }}>
+              {ttsText.trim() ? `${ttsText.split('\n').filter(l => l.trim()).length}개 문장` : '합성할 대사를 입력하세요'}
+            </span>
+          </div>
         </div>
         <textarea
           value={ttsText}
@@ -347,35 +401,62 @@ export default function TTSEditor() {
             outline: 'none', opacity: disabled ? 0.5 : 1
           }}
         />
-        {/* Emotion tag buttons for quick insert */}
+        {/* 태그 삽입 — 자주 쓰는 것만 기본, 전체는 더보기 */}
         <div style={{ padding: '8px 16px', borderTop: '1px solid var(--border-subtle)' }}>
-          <span style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4, display: 'block' }}>태그 삽입:</span>
-          {EMOTION_GROUPS.filter(g => g.name !== '기본').map((group) => (
-            <div key={group.name} style={{ display: 'flex', gap: 3, flexWrap: 'wrap', marginBottom: 4, alignItems: 'center' }}>
-              <span style={{ fontSize: 9, color: 'var(--text-muted)', minWidth: 40 }}>{group.name}</span>
-              {group.emotions.filter(e => e.id !== 'default').map((e) => (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>감정 태그 삽입:</span>
+            <button onClick={() => setShowAllTags(v => !v)} style={{
+              padding: '1px 8px', borderRadius: 4, border: 'none', cursor: 'pointer',
+              fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
+              background: 'var(--bg-elevated)', color: 'var(--text-secondary)'
+            }}>{showAllTags ? '접기' : '더보기(전체)'}</button>
+          </div>
+          {!showAllTags ? (
+            <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+              {FREQUENT_TAGS.map((e) => (
                 <button key={e.id} onClick={() => {
                   const tag = `[${e.label}] `
                   setTtsText(prev => prev + (prev.endsWith('\n') || prev === '' ? '' : '\n') + tag)
                 }} disabled={disabled} style={{
-                  padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
-                  fontSize: 9, fontWeight: 600, fontFamily: 'inherit',
+                  padding: '3px 9px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                  fontSize: 11, fontWeight: 600, fontFamily: 'inherit',
                   background: `${e.color}15`, color: e.color
-                }}>
-                  {e.label}
-                </button>
+                }}>{e.label}</button>
               ))}
             </div>
-          ))}
+          ) : (
+            EMOTION_GROUPS.filter(g => g.name !== '기본').map((group) => (
+              <div key={group.name} style={{ display: 'flex', gap: 3, flexWrap: 'wrap', marginBottom: 4, alignItems: 'center' }}>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', minWidth: 44 }}>{group.name}</span>
+                {group.emotions.filter(e => e.id !== 'default').map((e) => (
+                  <button key={e.id} onClick={() => {
+                    const tag = `[${e.label}] `
+                    setTtsText(prev => prev + (prev.endsWith('\n') || prev === '' ? '' : '\n') + tag)
+                  }} disabled={disabled} style={{
+                    padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                    fontSize: 10, fontWeight: 600, fontFamily: 'inherit',
+                    background: `${e.color}15`, color: e.color
+                  }}>{e.label}</button>
+                ))}
+              </div>
+            ))
+          )}
         </div>
       </div>
 
+      {/* 고급 설정 — 엔진 직접 선택 · 속도 · 간격 (기본 화면 단순화). 기본 접힘. */}
+      <div style={{ borderRadius: 12, overflow: 'hidden', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)' }}>
+        <button onClick={() => setShowAdvanced(v => !v)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', padding: '10px 16px', border: 'none', cursor: 'pointer', background: 'transparent', fontFamily: 'inherit', outline: 'none' }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>고급 설정 <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>(엔진 직접 선택 · 속도 · 간격)</span></span>
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" style={{ transform: showAdvanced ? 'rotate(180deg)' : 'rotate(0)', transition: 'transform 0.2s' }}><polyline points="6 9 12 15 18 9" /></svg>
+        </button>
+        {showAdvanced && (<div style={{ padding: '0 16px 12px', display: 'flex', flexDirection: 'column', gap: 10 }}>
       {/* Engine + Controls */}
       <div style={{ display: 'flex', gap: 10 }}>
         <div style={{
           display: 'flex', alignItems: 'center', gap: 6,
           borderRadius: 10, padding: '8px 14px',
-          background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', flexShrink: 0
+          background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', flexShrink: 0
         }}>
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }} title="목소리를 합성하는 AI 엔진 선택">엔진</span>
           {[
@@ -421,6 +502,8 @@ export default function TTSEditor() {
             {ttsSilenceGap.toFixed(1)}초
           </span>
         </div>
+      </div>
+        </div>)}
       </div>
     </div>
   )
