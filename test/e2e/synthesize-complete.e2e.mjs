@@ -4,18 +4,21 @@ import { _electron as electron } from 'playwright'
 import { execFileSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
+import { isolatedInput, cleanupIsolated, snapshotTree } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
-const REF = path.join(APP, 'resources', 'speaker_b.wav')
+const SRC = path.join(APP, 'resources', 'speaker_b.wav')
+const RES_DIR = path.join(APP, 'resources')
 const SHOT = path.join(APP, '작업파일', 'e2e_shots')
 const PY = 'E:/AI/ComfyUI_windows_portable_python3.12/python_embeded/python.exe'
 fs.mkdirSync(SHOT, { recursive: true })
 let failed = 0
 const ok = (c, m) => { console.log(c ? '[e2e] PASS' : '[e2e] FAIL', m); if (!c) failed++ }
-if (!fs.existsSync(REF)) { console.error('필수 파일 없음:', REF); process.exit(2) }
+if (!fs.existsSync(SRC)) { console.error('필수 파일 없음:', SRC); process.exit(2) }
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
-const OUT_BASE = path.join(path.dirname(REF), 'AudioForge_output')
-try { fs.rmSync(OUT_BASE, { recursive: true, force: true }) } catch { /* ignore */ }
+// resources/ 삭제 금지 — 입력을 격리 tmp로 복사, 출력도 그 안에 생성.
+const resBefore = snapshotTree(RES_DIR)
+const { dir: ISO, input: REF } = isolatedInput(SRC)
 
 const pageErrors = [], crashes = []
 const app = await electron.launch({ args: ['out/main/index.js'], cwd: APP, env: { ...process.env, AF_E2E: '1' } })
@@ -76,5 +79,7 @@ try {
 }
 
 await app.close()
+ok(snapshotTree(RES_DIR) === resBefore, 'resources/ 원본·기존 출력 불변(size/hash/목록)')
+cleanupIsolated(ISO)
 console.log('[e2e] SUMMARY', JSON.stringify({ failed, pageErrors: pageErrors.length, crashes: crashes.length }))
 process.exit(failed === 0 ? 0 : 1)

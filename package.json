@@ -8,7 +8,7 @@
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "test": "node --test \"src/**/*.test.ts\"",
-    "test:e2e": "node test/e2e/synthesize.e2e.mjs && node test/e2e/single-instance.e2e.mjs",
+    "test:e2e": "node test/e2e/synthesize.e2e.mjs && node test/e2e/single-instance.e2e.mjs && node test/e2e/reset-cleanup.e2e.mjs",
     "test:e2e:complete": "node test/e2e/synthesize-complete.e2e.mjs && node test/e2e/resynthesize.e2e.mjs",
     "postinstall": "electron-builder install-app-deps"
   },

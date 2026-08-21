@@ -5,9 +5,11 @@
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
+import { isolatedInput, cleanupIsolated, snapshotTree } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
-const REF = path.join(APP, 'resources', 'speaker_b.wav')
+const SRC = path.join(APP, 'resources', 'speaker_b.wav')
+const RES_DIR = path.join(APP, 'resources')
 const SHOT = path.join(APP, '작업파일', 'e2e_shots')
 fs.mkdirSync(SHOT, { recursive: true })
 const logLines = []
@@ -30,13 +32,13 @@ function collectDirs(base) {
   return out
 }
 
-if (!fs.existsSync(REF)) { console.error('필수 검증 파일 없음:', REF); process.exit(2) }
+if (!fs.existsSync(SRC)) { console.error('필수 검증 파일 없음:', SRC); process.exit(2) }
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요: npm run build'); process.exit(2) }
 
-// 결정적 검증을 위해 이전 실행이 남긴 테스트 출력만 초기화(입력 resources/speaker_b.wav는 보존).
-// AudioForge_output은 전부 생성물이라 안전하게 삭제.
+// resources/를 삭제하지 않는다 — 입력을 격리 tmp로 복사해 주입, 출력도 그 안(dirname(input)/AudioForge_output).
+const resBefore = snapshotTree(RES_DIR)
+const { dir: ISO, input: REF } = isolatedInput(SRC)
 const OUT_BASE = path.join(path.dirname(REF), 'AudioForge_output')
-try { fs.rmSync(OUT_BASE, { recursive: true, force: true }) } catch { /* ignore */ }
 
 const pageErrors = [], consoleErrors = [], crashes = []
 const mainOut = []
@@ -157,6 +159,9 @@ if (userCancelled) log('참고: 취소로 인한 worker 조기 종료는 예상 
 const os = await import('os')
 const leftover = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('audioforge_refclip_'))
 ok(leftover.length === 0, `종료 후 파생 참조 임시폴더 정리(leftover=${leftover.length})`)
+// 원본 resources/ 불변 단언 후 격리 폴더만 삭제
+ok(snapshotTree(RES_DIR) === resBefore, 'resources/ 원본·기존 출력 불변(size/hash/목록)')
+cleanupIsolated(ISO)
 
 fs.writeFileSync(path.join(SHOT, 'e2e_log.txt'), logLines.join('\n') + '\n\n--- main ---\n' + mainOut.join(''), 'utf-8')
 if (pageErrors.length) log('PAGEERRORS', pageErrors.join(' | '))

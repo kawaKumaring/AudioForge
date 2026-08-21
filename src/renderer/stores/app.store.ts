@@ -176,5 +176,14 @@ export const useAppStore = create<AppState>((set) => ({
       restorable: null, playingTrack: null, error: null
     }
   }),
-  reset: () => set({ fileInfo: null, fileUrl: null, status: 'idle', progress: 0, progressMessage: '', error: null, tracks: [], outputDir: null, playingTrack: null, restorable: null, splitMarkers: [], splitLabels: [] })
+  reset: () => {
+    // 세션 리셋 → 파생 참조 클립 폴더 삭제 + 참조/전사/결과 상태 초기화(다른 원본의 상태 잔존 방지).
+    try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }
+    set({
+      fileInfo: null, fileUrl: null, status: 'idle', progress: 0, progressMessage: '', error: null,
+      tracks: [], outputDir: null, playingTrack: null, restorable: null, splitMarkers: [], splitLabels: [],
+      ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null,
+      ttsReferencePrompts: {}, resultMetadata: null,
+    })
+  }
 }))

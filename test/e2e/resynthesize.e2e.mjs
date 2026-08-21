@@ -2,11 +2,15 @@
 // 실행: node test/e2e/resynthesize.e2e.mjs  (사전 npm run build). 실제 합성 2회 → 수 분.
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
+import { isolatedInput, cleanupIsolated, snapshotTree } from './_e2e-helper.mjs'
 const APP = process.cwd()
-const REF = path.join(APP, 'resources', 'speaker_b.wav')  // 111s(>10s) → 구간 선택 경로. 72.58s와 동일 경로.
+const SRC = path.join(APP, 'resources', 'speaker_b.wav')  // 111s(>10s) → 구간 선택 경로. 원본은 읽기만.
+const RES_DIR = path.join(APP, 'resources')
 const SHOT = path.join(APP, '작업파일', 'e2e_shots'); fs.mkdirSync(SHOT, { recursive: true })
 let failed = 0; const ok = (c, m) => { console.log(c ? '[e2e] PASS' : '[e2e] FAIL', m); if (!c) failed++ }
-try { fs.rmSync(path.join(path.dirname(REF), 'AudioForge_output'), { recursive: true, force: true }) } catch {}
+// resources/를 삭제하지 않는다 — 입력을 격리 tmp 폴더로 복사해 주입하고 출력도 그 안에 생성.
+const resBefore = snapshotTree(RES_DIR)
+const { dir: ISO, input: REF } = isolatedInput(SRC)
 const pageErrors = []
 const mainOut = []
 const step = (m) => console.log('[e2e][step]', m)
@@ -16,12 +20,34 @@ app.process().stdout.on('data', d => { mainOut.push(String(d)); process.stdout.w
 app.process().stderr.on('data', d => { mainOut.push(String(d)); process.stdout.write('[main:err] ' + d) })
 const win = await app.firstWindow(); win.on('pageerror', e => { pageErrors.push(e.message); console.log('[e2e] PAGEERROR', e.message) })
 
+async function clickSynthUntilProcessing(label) {
+  // result(done)와 worker 프로세스 exit(runner=null) 사이 간극에서 재클릭 시 "이미 처리 중"이 날 수 있다.
+  // 앱은 프로세스 종료 후 재합성을 허용하므로, processing 진입까지 최대 몇 회 재시도(사용자 재클릭 모델).
+  for (let i = 0; i < 8; i++) {
+    await win.getByText('음성 합성 시작', { exact: false }).click({ timeout: 8000 })
+    try {
+      await win.waitForFunction(() => window.__afStore?.getState().status === 'processing', undefined, { timeout: 4000 })
+      return
+    } catch {
+      const s = await win.evaluate(() => ({ status: window.__afStore.getState().status, err: window.__afStore.getState().error }))
+      if (s.status === 'error' && /이미 처리 중/.test(s.err || '')) {
+        step(`${label}: 이전 worker 종료 대기 후 재클릭(${i + 1})`)
+        await win.evaluate(() => window.__afStore.setState({ status: 'idle', error: null }))
+        await win.waitForTimeout(1500)
+        continue
+      }
+      throw new Error(`${label}: processing 진입 실패(status=${s.status}, err=${s.err})`)
+    }
+  }
+  throw new Error(`${label}: processing 진입 재시도 소진`)
+}
+
 async function synthOnce(label) {
   const err0 = pageErrors.length
   const exit0 = exits()
   step(`${label}: 합성 버튼 클릭 시도`)
-  await win.getByText('음성 합성 시작', { exact: false }).click({ timeout: 8000 })
-  step(`${label}: 클릭 완료 — 완료 대기(최대 240s)`)
+  await clickSynthUntilProcessing(label)
+  step(`${label}: processing 진입 — 완료 대기(최대 240s)`)
   await win.waitForFunction(() => ['done', 'error'].includes(window.__afStore?.getState().status), undefined, { timeout: 240000 })
   const st = await win.evaluate(() => ({ status: window.__afStore.getState().status, err: window.__afStore.getState().error, dir: window.__afStore.getState().outputDir }))
   ok(st.status === 'done', `${label}: 합성 완료(status=done, error=${st.err || '없음'})`)
@@ -69,5 +95,8 @@ try {
   try { await win.screenshot({ path: path.join(SHOT, 'e2e_resynth_FAIL.png') }) } catch {}
 }
 await app.close()
+// 원본 resources/ 불변 단언 후 격리 폴더만 삭제
+ok(snapshotTree(RES_DIR) === resBefore, 'resources/ 원본·기존 출력 불변(size/hash/목록)')
+cleanupIsolated(ISO)
 console.log('[e2e] SUMMARY', JSON.stringify({ failed, pageErrors: pageErrors.length }))
 process.exit(failed === 0 ? 0 : 1)
