@@ -29,7 +29,7 @@ export default function ProcessButton() {
       setProgress(data.percent ?? 0, data.message ?? '')
     })
     const offResult = window.api.audio.onResult((data: any) => {
-      setResult(data.tracks ?? [], data.outputDir ?? '')
+      setResult(data.tracks ?? [], data.outputDir ?? '', data.metadata ?? null)
       cleanup()
     })
     const offError = window.api.audio.onError((data: any) => {

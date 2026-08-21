@@ -58,6 +58,7 @@ interface AppState {
   ttsRefReady: boolean
   ttsRefMessage: string
   ttsReferenceRegion: { start: number; duration: number } | null
+  resultMetadata: Record<string, unknown> | null
 
   setFile: (info: FileInfo, url: string) => void
   setMode: (mode: SeparationMode) => void
@@ -77,7 +78,7 @@ interface AppState {
   setTtsRefState: (v: { clip?: string; ready?: boolean; message?: string; region?: { start: number; duration: number } | null }) => void
   setProcessing: () => void
   setProgress: (percent: number, message: string) => void
-  setResult: (tracks: Track[], outputDir: string) => void
+  setResult: (tracks: Track[], outputDir: string, metadata?: Record<string, unknown> | null) => void
   setError: (error: string) => void
   setPlayingTrack: (name: string | null) => void
   setRestorable: (v: { dir: string; session: RestorableSession } | null) => void
@@ -121,6 +122,7 @@ export const useAppStore = create<AppState>((set) => ({
   ttsRefReady: false,
   ttsRefMessage: '',
   ttsReferenceRegion: null,
+  resultMetadata: null,
 
   // 새 파일 → 이전 파생 참조/준비 상태 무효화(다른 원본의 클립을 재사용하지 않도록) + 임시 클립 폴더 정리
   setFile: (info, url) => {
@@ -147,9 +149,9 @@ export const useAppStore = create<AppState>((set) => ({
     ttsRefMessage: v.message !== undefined ? v.message : s.ttsRefMessage,
     ttsReferenceRegion: v.region !== undefined ? v.region : s.ttsReferenceRegion,
   })),
-  setProcessing: () => set({ status: 'processing', progress: 0, progressMessage: '파일 준비 중...', error: null, tracks: [] }),
+  setProcessing: () => set({ status: 'processing', progress: 0, progressMessage: '파일 준비 중...', error: null, tracks: [], resultMetadata: null }),
   setProgress: (percent, message) => set({ progress: percent, progressMessage: message }),
-  setResult: (tracks, outputDir) => set({ status: 'done', progress: 100, progressMessage: '완료', tracks, outputDir }),
+  setResult: (tracks, outputDir, metadata) => set({ status: 'done', progress: 100, progressMessage: '완료', tracks, outputDir, resultMetadata: metadata ?? null }),
   setError: (error) => set({ status: 'error', error, progressMessage: '' }),
   setPlayingTrack: (name) => set({ playingTrack: name }),
   setRestorable: (v) => set({ restorable: v }),
