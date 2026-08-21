@@ -15,10 +15,24 @@
   - `e441fa6` — **P1-2** 결과 GUI(실제 엔진·장치·참조 방식·구간·폴백·소요 시간). ⚠커밋 제목에 `@` 오타(본문 정상, 정책상 amend 안 함).
   - `0f72671` — **P1-3** Qwen preflight 상태 표시(예상값, 실행 결과 metadata가 최종).
   - `fe1f17b` **P1-4** 고급 설정 정리(엔진·속도·간격 → 고급 접이식) + 감정 태그 자주쓰는것+더보기.
-  - (새 커밋) **초기화 race 수정**: analyze-reference/qwen-preflight를 previewGuard에서 분리(읽기 전용),
-    single-flight(preflight 공유 / analyze 파일별) — StrictMode 중복·동시 요청에도 subprocess 1회.
-    previewGuard를 transcriptPreviewGuard·referenceTrimGuard로 분리, process 차단은 실제 전사/트림만.
-    cfgPath randomUUID. analyze 실패 UI에 "다시 분석" 재시도 버튼.
+  - `da9325b` **초기화 race 수정**: analyze-reference/qwen-preflight를 previewGuard에서 분리(읽기 전용),
+    single-flight(preflight 공유 / analyze 파일별). transcriptPreviewGuard·referenceTrimGuard 분리. randomUUID.
+  - (새 커밋) **P0 검은 화면 수정 + Electron E2E**: 근본 원인 = `runPreview`가 result에서 `data.transcript`만
+    꺼내 analyze/trim/preflight의 최상위 payload를 유실 → `analysis.duration_sec` undefined → `fmt()` 크래시 →
+    React 언마운트 → 검은 화면(#0a0a0f). 수정: runPreview가 transcript 래핑 있으면 그것, 없으면 type 제외 전체
+    payload를 반환. 방어: fmt null-safe + analyze payload 검증(실패 시 "다시 분석"). renderer ErrorBoundary(검은
+    화면 대신 오류 표시, 원인 미은폐). main 진단 로그(did-fail-load/preload-error/render-process-gone/unresponsive/
+    console-message). 단일 인스턴스 락(requestSingleInstanceLock + second-instance focus, 방어적). Playwright
+    Electron E2E(synthesize 16 assert + single-instance 3 assert) — 프로덕션 빌드 실제 구동으로 검은 화면 회귀 차단.
+
+## 실제 재현/수정 (P0 검은 화면)
+- **재현**: Playwright로 프로덕션 앱 구동 → 111초 파일 TTS 진입 → `ReferenceRegionPanel` render 중
+  `TypeError: Cannot read properties of undefined (reading 'toFixed')`(fmt) → ErrorBoundary가 없었다면 검은 화면.
+- **원인**: runPreview payload 유실(위). analyze/trim/preflight IPC를 transcribe 전용 runPreview에 재사용한 사각지대.
+- **검증(수정 후, 프로덕션 빌드)**: E2E 16/16 PASS — 초기 non-empty · analyze+preflight 동시 · 111.08 표시 ·
+  구간 확정 · 합성 클릭 audio:process 1회·검은 overlay 0·pageerror/crash 0·processing UI 유지 · 취소 복귀 ·
+  모드 전환 후 재진입 · 종료 후 임시폴더 0. single-instance 3/3. dev startup: preload 경로 동일·클린.
+  스크린샷: `작업파일/e2e_shots/`(git 비추적).
 - **남은 문제(다음 슬라이스)**
   - P1-4 잔여: "감정별 음성 등록" 전체 섹션·"언어 강제/전사문 없이"를 단일 고급 패널로 완전 통합
     (현재 각각 자체 접이식으로 기본 접힘 — 클러터는 해소, 위치 통합은 미완). 기존 감정ID/직렬화/라우팅 불변.

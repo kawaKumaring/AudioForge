@@ -57,7 +57,9 @@ const api = {
   utils: {
     getPathForFile: (file: File) => webUtils.getPathForFile(file),
     copyToClipboard: (text: string) => ipcRenderer.invoke('app:copy-to-clipboard', text)
-  }
+  },
+  // E2E 전용 게이트 — AF_E2E=1 로 실행할 때만 true. 이 값으로만 renderer가 테스트 훅을 노출한다.
+  _e2e: process.env.AF_E2E === '1'
 }
 
 contextBridge.exposeInMainWorld('api', api)

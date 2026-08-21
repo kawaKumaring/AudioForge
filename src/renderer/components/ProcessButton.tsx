@@ -22,8 +22,11 @@ export default function ProcessButton() {
   const cleanupRef = React.useRef<(() => void) | null>(null)
 
   const handleProcess = async () => {
+    console.log('[renderer][synthesize] 클릭 핸들러 진입', { mode, hasFile: !!fileInfo })
     if (!fileInfo) return
+    console.log('[renderer][synthesize] setProcessing 직전')
     setProcessing()
+    console.log('[renderer][synthesize] setProcessing 직후')
 
     const offProgress = window.api.audio.onProgress((data: any) => {
       setProgress(data.percent ?? 0, data.message ?? '')
@@ -44,8 +47,11 @@ export default function ProcessButton() {
     cleanupRef.current = cleanup
 
     try {
-      await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefs, ttsReferencePrompts, ttsEngine, ttsReferenceOverride: ttsReferenceClip, ttsReferenceRegion })
+      console.log('[renderer][synthesize] audio:process 호출 직전')
+      const r = await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefs, ttsReferencePrompts, ttsEngine, ttsReferenceOverride: ttsReferenceClip, ttsReferenceRegion })
+      console.log('[renderer][synthesize] audio:process 호출 직후', r)
     } catch (err: any) {
+      console.error('[renderer][synthesize] audio:process 오류', err?.stack || err)
       setError(err.message || 'Process failed')
       cleanup()
     }

@@ -30,8 +30,8 @@ interface RegionMetrics {
   warnings: string[]
 }
 
-function fmt(s: number) {
-  return `${s.toFixed(2)}초`
+function fmt(s: number | undefined | null) {
+  return typeof s === 'number' && Number.isFinite(s) ? `${s.toFixed(2)}초` : '-초'
 }
 
 export default function ReferenceRegionPanel() {
@@ -56,8 +56,12 @@ export default function ReferenceRegionPanel() {
     setLoading(true)
     setTtsRefState({ ready: false, clip: '', message: '참조 음성을 분석 중입니다...' })
     try {
-      const a = await window.api.audio.analyzeReference(path) as Analysis
+      const a = await window.api.audio.analyzeReference(path) as Analysis & { error_message?: string; reason?: string }
       if (signal?.cancelled) return
+      // 방어: 분석 payload가 올바르지 않으면(예: IPC 유실/실패) 검은 화면 대신 오류 처리 → "다시 분석"
+      if (!a || typeof a.duration_sec !== 'number') {
+        throw new Error(a?.error_message || a?.reason || '참조 분석 결과가 올바르지 않습니다')
+      }
       setAnalysis(a)
       if (a.too_short) {
         setTtsRefState({ ready: false, clip: '', message: `참조가 ${fmt(a.duration_sec)}로 3초 미만입니다 — 3~10초 음성을 올려주세요` })
