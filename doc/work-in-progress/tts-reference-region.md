@@ -9,14 +9,16 @@
 
 ## 상태
 - **완료(커밋됨)**
-  - `7e5ba82` — P0 참조 구간 선택 + 게이팅 + 문구 정정 (reference_region.py, ref-analyze/ref-trim,
-    IPC, ttsReferenceOverride, ReferenceRegionPanel, 빈 대사 차단, 예상시간 제거, 문구/타입 정정).
-  - (새 커밋) 파생 참조 임시폴더 수명 관리(refclip-cleanup) + 111초 실파일 재검증.
+  - `7e5ba82` — P0 참조 구간 선택 + 게이팅 + 문구 정정.
+  - `90a476a` — 파생 참조 임시폴더 수명 관리(refclip-cleanup) + 111초 실파일 재검증.
+  - `a17020f` — **P1-1** 결과 재현 메타데이터(session/result, 전사 전문 미기록).
+  - `e441fa6` — **P1-2** 결과 GUI(실제 엔진·장치·참조 방식·구간·폴백·소요 시간). ⚠커밋 제목에 `@` 오타(본문 정상, 정책상 amend 안 함).
+  - `0f72671` — **P1-3** Qwen preflight 상태 표시(예상값, 실행 결과 metadata가 최종).
+  - (새 커밋) **P1-4** 고급 설정 정리(엔진·속도·간격 → 고급 접이식) + 감정 태그 자주쓰는것+더보기.
 - **남은 문제(다음 슬라이스)**
-  - 결과 metadata/session 기록: requested_engine, actual_engine, model/revision, device,
-    prompt_source, x_vector_only_mode, reference path/region, language, seed, speed_postprocessed,
-    fallback_reason. GUI 결과 화면에 최소 actual_engine·device·prompt mode·fallback 표시.
-  - Qwen preflight 상태 배지, 엔진/감정참조/언어의 고급설정 재편(P1 #11/#12).
+  - P1-4 잔여: "감정별 음성 등록" 전체 섹션·"언어 강제/전사문 없이"를 단일 고급 패널로 완전 통합
+    (현재 각각 자체 접이식으로 기본 접힘 — 클러터는 해소, 위치 통합은 미완). 기존 감정ID/직렬화/라우팅 불변.
+  - GUI 결과 화면에 seed·model revision 등 상세 표시 확장(현재 핵심 필드만).
   - Electron 창 상호작용 UI(업로드·파형 드래그·재생) 실제 클릭 검증 — 자동화 도구로는 미실시.
 
 ## 파생 참조 임시폴더 수명 관리 (audioforge_refclip_*)
