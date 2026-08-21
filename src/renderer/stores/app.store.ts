@@ -120,8 +120,11 @@ export const useAppStore = create<AppState>((set) => ({
   ttsRefReady: false,
   ttsRefMessage: '',
 
-  // 새 파일 → 이전 파생 참조/준비 상태 무효화(다른 원본의 클립을 재사용하지 않도록)
-  setFile: (info, url) => set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '' }),
+  // 새 파일 → 이전 파생 참조/준비 상태 무효화(다른 원본의 클립을 재사용하지 않도록) + 임시 클립 폴더 정리
+  setFile: (info, url) => {
+    try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }
+    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '' })
+  },
   setMode: (mode) => set({ mode }),
   setTrimSilence: (v) => set({ trimSilence: v }),
   setSilenceGap: (v) => set({ silenceGap: v }),

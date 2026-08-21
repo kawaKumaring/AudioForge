@@ -15,6 +15,7 @@ const api = {
     analyzeReference: (filePath: string) => ipcRenderer.invoke('audio:analyze-reference', filePath),
     trimReference: (filePath: string, startSec: number, durSec: number) =>
       ipcRenderer.invoke('audio:trim-reference', filePath, startSec, durSec),
+    releaseReferenceClip: () => ipcRenderer.invoke('audio:release-reference-clip'),
     processTrack: (trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string }) =>
       ipcRenderer.invoke('audio:process-track', trackPath, outputDir, options),
     onTrackResult: (callback: (data: unknown) => void) => {

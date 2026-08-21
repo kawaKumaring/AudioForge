@@ -1,0 +1,47 @@
+# WIP — TTS 참조 구간 선택(긴 참조 3~10초) + GUI/UX
+
+브랜치: `feature/tts-reference-region-ux` (base: 안정 `19f777c`, master는 병합 금지 — 별도 승인)
+
+## 목적
+합성 백엔드는 완료. GUI/UX를 보완한다. 특히 10초 초과 참조를 오류로 거부하지 않고 "참조 원본"으로
+수용해, 파형에서 3~10초 구간을 골라 그 구간만 mono/24kHz 파생 WAV로 만들어 전사·합성에 쓴다.
+원본은 절대 변경하지 않는다.
+
+## 상태
+- **완료(커밋됨)**
+  - `7e5ba82` — P0 참조 구간 선택 + 게이팅 + 문구 정정 (reference_region.py, ref-analyze/ref-trim,
+    IPC, ttsReferenceOverride, ReferenceRegionPanel, 빈 대사 차단, 예상시간 제거, 문구/타입 정정).
+  - (새 커밋) 파생 참조 임시폴더 수명 관리(refclip-cleanup) + 111초 실파일 재검증.
+- **남은 문제(다음 슬라이스)**
+  - 결과 metadata/session 기록: requested_engine, actual_engine, model/revision, device,
+    prompt_source, x_vector_only_mode, reference path/region, language, seed, speed_postprocessed,
+    fallback_reason. GUI 결과 화면에 최소 actual_engine·device·prompt mode·fallback 표시.
+  - Qwen preflight 상태 배지, 엔진/감정참조/언어의 고급설정 재편(P1 #11/#12).
+  - Electron 창 상호작용 UI(업로드·파형 드래그·재생) 실제 클릭 검증 — 자동화 도구로는 미실시.
+
+## 파생 참조 임시폴더 수명 관리 (audioforge_refclip_*)
+- 위치: `tmpdir/audioforge_refclip_<ts>/reference_clip_24k.wav`.
+- 정리 시점: 재확정(이전 클립) / 새 파일 분석·reset / 합성 성공·오류·취소(runner 'done') /
+  앱 시작·종료 방어 스윕.
+- 안전 규칙: 합성 worker 사용 중(runner.isRunning)엔 삭제 안 함 / 원본·synthesized.wav·다른 prefix·
+  상위 경로 불변 / tmpdir 직속 정확한 prefix 폴더만.
+- 코드: `src/main/services/refclip-cleanup.ts`(isRefClipDir/removeRefClipDir/sweepRefClipDirs),
+  `audio.ipc.ts`(currentRefClipDir 추적 + analyze/trim/done/release IPC + app start/will-quit).
+
+## 테스트
+- python discovery 126 (reference_region 7 포함).
+- npm test 35 (refclip-cleanup 3, qwen-cleanup 3 포함).
+- tsc node/web 통과(신규 오류 0), build 통과.
+
+## 실측 (실제 파일, git 비추적)
+- 파일: `resources/speaker_b.wav` — 48kHz mono PCM16, **111.083초**, ~10.66MB.
+  - (이전 보고서의 72.6초 파일은 `작업파일/AudioForge_output/2026-04-12_04-43-15_…권하영…/speaker_b.wav`였음 — 지정 파일 오인, 정정됨.)
+- 백엔드 e2e: analyze duration **111.083** → 추천 6.6s/**7.0s**(speech 0.97) → 구간 무음 0.08·클리핑 0·
+  in_range → 파생 **24kHz mono PCM16/7.0s** → **원본 sha256 불변**(a876e390…) → 자동전사 파생 클립만
+  (ko 35자) → Qwen 파생 클립만 합성 성공(cuda, source=nvidia-smi, 2.48s).
+
+## master 병합 조건 (별도 승인 필요)
+1. 위 "남은 문제"의 결과 metadata/session 기록 반영.
+2. 실제 Electron 앱에서 사용자 클릭 검증(업로드→추천 재생→범위 변경→확정→파생→합성, 취소 정리) 통과.
+3. 전체 회귀(python/npm/tsc/build) 유지.
+4. develop 통합 검증 후.

@@ -9,6 +9,7 @@ import { createSettlementGuard } from '../services/run-settlement'
 import { createPreviewGuard, runPreview } from '../services/preview-transcribe'
 import { buildTtsConfig, type TtsInputOptions } from '../../shared/ttsConfig'
 import { sweepQwenJobDirs } from '../services/qwen-cleanup'
+import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
 
 // execFile(배열 인자)은 cmd.exe를 거치지 않아 시스템 코드페이지(CP949)의
 // 한글 경로 손상 문제에 면역. exec(문자열)은 한글 파일명에서 깨짐 → 금지.
@@ -65,6 +66,8 @@ function savePythonPath(p: string): void { saveSetting('pythonPath', p) }
 let runner: PythonRunner | null = null
 let trackRunner: PythonRunner | null = null
 let pythonPath = resolvePythonPath()
+// 현재 유효한 파생 참조 클립 폴더(tmpdir/audioforge_refclip_*). 새 클립/새 파일/합성 종료 시 정리.
+let currentRefClipDir: string | null = null
 
 let cachedFfprobe: string | null = null
 
@@ -89,6 +92,15 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       pythonPath = persisted
     }
   } catch { /* ignore */ }
+
+  // 앱 시작: 이전 세션이 남긴 stale 파생 참조 폴더 방어 정리(정확한 prefix + tmpdir 직속 폴더만).
+  try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ }
+  // 앱 종료: 남은 파생 참조 폴더 정리.
+  app.on('will-quit', () => { try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ } })
+
+  const releaseRefClip = () => {
+    if (currentRefClipDir) { removeRefClipDir(tmpdir(), currentRefClipDir); currentRefClipDir = null }
+  }
 
   // Helper to send error to renderer
   const sendError = (message: string) => {
@@ -176,6 +188,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 분석을 실행할 수 없습니다.')
     if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
+    releaseRefClip()  // 새 파일 분석 시작 → 이전 파생 클립 폐기(합성 중이 아니므로 안전)
     previewGuard.begin()
     const cfgPath = join(tmpdir(), `audioforge_refanalyze_${Date.now()}.json`)
     try {
@@ -198,9 +211,11 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 트림을 실행할 수 없습니다.')
     if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
+    releaseRefClip()  // 재확정 → 이전 파생 클립 폐기(합성 중 아님: 위에서 차단)
     previewGuard.begin()
     const cfgPath = join(tmpdir(), `audioforge_reftrim_${Date.now()}.json`)
     const outDir = join(tmpdir(), `audioforge_refclip_${Date.now()}`)  // 작업 임시폴더(프로젝트 밖)
+    currentRefClipDir = outDir  // 새 파생 클립 폴더 추적(합성 종료/새 파일/재확정 시 정리)
     try {
       mkdirSync(outDir, { recursive: true })
       const scriptPath = PythonRunner.getScriptPath('separate.py')
@@ -340,7 +355,11 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       try { unlinkSync(configPath) } catch {}
       // 'done'은 자식 프로세스 실제 종료 후 발생(취소 taskkill 포함). 정상 성공 시 Python finally가
       // 이미 .qwen-job-*를 지웠으므로 no-op이고, 취소로 finally가 안 돈 경우 남은 실행별 폴더를 제거.
-      if (mode === 'tts') { try { sweepQwenJobDirs(outputDir) } catch { /* noop */ } }
+      if (mode === 'tts') {
+        try { sweepQwenJobDirs(outputDir) } catch { /* noop */ }
+        // 합성 종료(성공/오류/취소) → worker가 참조 사용을 끝냈으므로 파생 참조 클립 폴더 정리.
+        releaseRefClip()
+      }
       runner = null
     })
 
@@ -431,6 +450,13 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     runner = null
     trackRunner?.cancel()
     trackRunner = null
+    return true
+  })
+
+  // 파일 reset/변경 시 렌더러가 호출 — 유효 파생 참조 클립 폴더 정리(합성 중이면 건드리지 않음).
+  ipcMain.handle('audio:release-reference-clip', () => {
+    if (runner?.isRunning) return false  // 합성 worker가 참조 사용 중 → 삭제 금지
+    releaseRefClip()
     return true
   })
 
