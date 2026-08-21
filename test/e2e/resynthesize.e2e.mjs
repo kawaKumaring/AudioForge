@@ -2,9 +2,12 @@
 // result 표시 시점엔 backend가 이미 free(main이 done 이후에만 result 전달)이므로, 결과 직후
 // '다른 모드로 재처리' → 합성 시작을 '정상 UI 조작 1회'로 재합성한다(강제 status 변경/재클릭 없음).
 // 실행: node test/e2e/resynthesize.e2e.mjs  (사전 npm run build). 실제 합성 2회 → 수 분.
+// 완료 대기 = 350초. 근거: E2E 350 > Electron watchdog 300 > Qwen 무응답 280(synthesize-complete 주석 참조).
+//   production 내부 안전장치가 발동하기 전에 E2E가 먼저 포기하지 않도록. production timeout은 불변.
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
-import { isolatedInput, cleanupIsolated, snapshotTree } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenJobDirs, qwenVenvPids } from './_e2e-helper.mjs'
+const WAIT_MS = 350000
 const APP = process.cwd()
 const SRC = path.join(APP, 'resources', 'speaker_b.wav')
 const RES_DIR = path.join(APP, 'resources')
@@ -24,8 +27,8 @@ async function synthOnce(label) {
   // 강제 status 변경/재클릭 없이 1회 클릭으로 processing 진입해야 한다.
   await win.waitForFunction(() => window.__afStore?.getState().status === 'processing', undefined, { timeout: 8000 })
   ok(true, `${label}: 1회 클릭으로 processing 진입`)
-  step(`${label}: 완료 대기(최대 240s)`)
-  await win.waitForFunction(() => ['done', 'error'].includes(window.__afStore?.getState().status), undefined, { timeout: 240000 })
+  step(`${label}: 완료 대기(최대 ${WAIT_MS / 1000}s)`)
+  await win.waitForFunction(() => ['done', 'error'].includes(window.__afStore?.getState().status), undefined, { timeout: WAIT_MS })
   const st = await win.evaluate(() => ({ status: window.__afStore.getState().status, err: window.__afStore.getState().error }))
   ok(st.status === 'done', `${label}: 합성 완료(status=done, error=${st.err || '없음'})`)
   ok(!(st.err && /이미 처리 중/.test(st.err)), `${label}: "이미 처리 중" 오류 없음`)
@@ -70,6 +73,11 @@ try {
   try { await win.screenshot({ path: path.join(SHOT, 'e2e_resynth_FAIL.png') }) } catch { /* ignore */ }
 } finally {
   try { await app.close() } catch { /* ignore */ }
+  const OUT_BASE = path.join(path.dirname(REF), 'AudioForge_output')
+  const pids = qwenVenvPids()
+  ok(pids.length === 0, `종료 후 Qwen venv 자식 프로세스 0(잔존=${pids.join(',') || '없음'})`)
+  ok(qwenJobDirs(OUT_BASE).length === 0, `종료 후 .qwen-job-* 정리(leftover=${qwenJobDirs(OUT_BASE).length})`)
+  ok(refClipDirs().length === 0, `종료 후 파생 참조 임시폴더 정리(leftover=${refClipDirs().length})`)
   ok(snapshotTree(RES_DIR) === resBefore, 'resources/ 원본·기존 출력 불변(size/hash/목록)')
   cleanupIsolated(ISO)  // 예외에도 반드시 정리
 }

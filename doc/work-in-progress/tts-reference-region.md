@@ -76,3 +76,29 @@
   develop 통합 검증 → master 승인의 동일 흐름. 공용 변경(metadata 스키마 등)은 먼저 develop에 반영 후 rebase.
 - 공유 지점 주의: 둘 다 `TtsResultInfo`(결과 GUI)·metadata 스키마·`_synthesize_qwen_job`을 건드릴 수 있어,
   스키마/결과 GUI 확장은 한쪽에서 먼저 develop에 넣고 다른 쪽이 받아가는 순서로.
+
+## 실제 합성 E2E 타임아웃 감사 (2026-08-22, develop) — 결론: 테스트 계층 결함, production 결함 아님
+develop 병합 검증 중 `synthesize-complete` E2E가 1회 240초 타임아웃(EXCEPTION)했다. 원인 감사:
+
+- **타임아웃 계층 대조**: E2E 완료 대기 240초 < Qwen 무응답 280초(`tts_worker.py:_QWEN_INACTIVITY_SEC`,
+  bridge stdout 한 줄 무응답 기준) < Electron watchdog 300초(`audio.ipc.ts:WATCHDOG_MS`, progress마다 리셋되는
+  무진행 기준). 즉 **E2E가 production 내부 안전장치보다 먼저 포기**해, 완료도 명확한 오류(280초 무응답/300초
+  watchdog)도 관측하지 못하고 Playwright Timeout만 났다. 코드 결함이 아니라 테스트 대기창이 너무 짧았던 것.
+- **첫 실패 로그 소실**: 당시 `synthesize-complete`가 main stdout/마지막 progress를 파일로 남기지 않아 device·
+  source·마지막 단계를 사후 확인 불가였다. → E2E 보강으로 재발 방지.
+- **조치(테스트 보완만, production timeout 불변)**:
+  - 완료 대기 240→**350초**(watchdog 300 + 여유). 근거를 두 E2E 주석에 명시.
+  - `synthesize-complete`를 완료-폴링 루프로 바꿔 매 초 store(status/progress/progressMessage) 스냅샷 →
+    타임아웃 시 device/source/최종 단계와 nvidia-smi(used/free)를 로그로 남긴다(`작업파일/e2e_shots/e2e_complete_log.txt`).
+  - 타임아웃/완료 무관하게 종료 후 **Qwen venv 자식 0 · `.qwen-job-*` 0 · refclip 0** 단언
+    (`_e2e-helper.mjs`: `qwenVenvPids`/`qwenJobDirs`/`refClipDirs`/`nvidiaSmiGpu0`). resynthesize도 동일 적용.
+- **GPU 여유/경합 실측(짧은 합성 각 1회, source=nvidia-smi로 WDDM 측정 출처 분리 수정 동작 확인)**:
+  - 경합(nvidia-smi free 1230 < 임계 4000): `device=cpu, source=nvidia-smi` → 완료, 잔존 0.
+  - 여유(free 8795 > 4000): `device=cuda:0, source=nvidia-smi` → 완료, 잔존 0.
+  - 취소는 device-독립 경로(runner.cancel→taskkill)라 `synthesize` E2E가 이미 단언(양 상태 공통).
+  - 정황: 첫 240초 실패는 경합 상황에서 cpu 경로가 240초를 넘겼으나 350초 내 완료되는 케이스로 유력하다
+    (첫 실패 로그가 소실돼 device는 정황 추정 — 이후 350초·로그 캡처로 재현 시 확정 가능).
+- **무진행 상태 표시(요구 6 점검)**: model load는 진입 시 10% "모델 로딩 중..." emit 후 완료(25%)까지 중간
+  progress가 없다(HF `from_pretrained`가 원자적). 로딩이 길면 진행률이 10%에 정체하나 **메시지는 표시되고**,
+  정말 멈추면 280초에 "Qwen 무응답 280s 초과" 명확한 오류로 마감된다 → 상태 미표시 방치/데이터 결함 아님.
+  다만 로딩 단계 경과 표시(스피너/경과 초)는 사용감 개선 후보로 이관.
