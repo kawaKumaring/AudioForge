@@ -117,6 +117,25 @@ metadata는 두 경로로 채워진다: (a) Python `_build_tts_metadata`의 고�
 - **실패 시 보존**: `pitch_shift.apply_pitch_shift`는 실패를 조용히 삼키지 않고 **RuntimeError**를 던지고 부분 출력을 삭제한다. 상위 `_synthesize_qwen_job`의 흐름 = job_dir 임시본 생성 → pitch 임시본 → 검증 → `os.replace(final)`. 실패는 `os.replace` **직전** 예외 → `finally: rmtree(job_dir)` → `os.replace` 미도달 → **기존 synthesized.wav 무손상**.
 - 원자성 책임 분리: `pitch_shift` 모듈은 "input wav → output wav(임시)"만 만든다. final 교체 원자성은 호출부(`tts_worker`)가 책임(모듈은 final을 직접 건드리지 않음).
 
+### 6.1 pitch 적용 범위 — 전 엔진 공통 최종 후처리 (엔진 무관)
+
+pitch는 **모델 입력 제어가 아니라 최종 WAV 신호 후처리**다. 따라서 특정 엔진에 묶이지 않고, **모든 엔진(Qwen3 / GPT-SoVITS / F5 / Kokoro)이 생성한 최종 `synthesized.wav`에 동일 정책으로 적용**되는 공통 단계여야 한다.
+
+- **적용 시점**: speed(atempo) 세그먼트 처리와 문장 결합(`_concat_with_silence`)이 **모두 끝나 최종 WAV가 완성된 뒤 마지막 단계**로 pitch를 적용한다. pitch가 speed·결합보다 앞서면 안 된다.
+- **공통 지점 권장 형태**: 두 경로가 각기 다르게 pitch를 끼워 넣지 말고, "최종 WAV 경로 + pitch"를 받아 **in-place 원자 교체**(job 임시 → pitch → 검증 → `os.replace(final)`)하는 **단일 공통 함수** 하나를 두고, 각 엔진 경로는 최종 WAV 완성 직후 그 함수를 **한 번** 호출한다.
+  - Qwen 배치 경로(`_synthesize_qwen_job`): 기존 pending→`os.replace(final)` 흐름의 그 지점.
+  - per-segment 경로(`synthesize()`의 F5/GPT-SoVITS/Kokoro 분기): 현재 `final_path`에 직접 쓰므로(단일=rename, 복수=concat), 최종 WAV 완성 직후 같은 공통 함수로 in-place 후처리. per-segment 경로에 무손상 원자 교체 계약을 세운다.
+- **0 무호출(전 엔진)**: `clamp_quantize(pitch)==0`이면 어떤 엔진에서도 pitch 함수를 호출하지 않는다 → 기존 바이트 그대로.
+- **엔진별 미지원 처리**: 구조상 특정 엔진에서 최종 WAV 후처리가 불가능하거나(예: 스트리밍 산출 등) rubberband가 없으면 **조용히 무시 금지**. §7대로 UI 비활성 또는 명확한 오류로 알리고, 적용이 안 된 경우 `pitch_postprocessed=false` + `pitch_method=null`로 metadata에 **미적용 사실**을 남긴다(사유 식별 가능하게).
+- **단위 테스트(모델 로딩 없이)**: 실제 엔진을 돌리지 않고 **각 엔진의 "가짜 최종 WAV"**(lavfi sine 등으로 만든 mono/24k wav)를 공통 후처리 함수에 통과시켜 길이·SR·finite·peak·클리핑·F0·0-무호출·실패-원본보존을 검증한다. 엔진 종류와 무관하게 동일 경로임을 이 테스트가 보장.
+
+### 6.2 A의 범위 경계 (공통화가 소유 범위를 넘을 때)
+
+A는 pitch **backend helper(`pitch_shift.py`)와 공통 적용 함수의 호출 계약**을 소유한다. 단 per-segment 경로의 원자 교체 도입이 `tts_worker.py`/엔진 분기 구조를 **크게 변경**해야 한다면, A는 **임의로 확장하지 말고**:
+- `pitch_shift.py`(helper) + Qwen 경로 적용(자신의 확실한 범위) + **"각 엔진 최종 WAV 지점에서 이 함수를 이렇게 호출하라"는 호출 계약(시그니처·인자·반환·실패 규약)**을 제출하고,
+- per-segment 경로들의 **최종 연결은 integration 브랜치로 넘긴다**(integration이 계약대로 각 분기에 한 줄 배선 + 무손상 원자 교체 마감).
+- 즉 1차 구현의 확실한 산출은 "helper + Qwen 경로 + 공통 함수 계약"이고, 전 엔진 배선은 범위가 크면 integration이 수령한다. 어느 쪽이든 **0=무호출·실패=원본보존·미적용=metadata 표시**는 불변.
+
 ---
 
 ## 7. rubberband / ffmpeg 정책 (A 실측 기반)
@@ -184,6 +203,7 @@ A/B 구현·검토 후 **갱신된 develop에서 생성**, **한 명(통합 담�
 - pitch=0 → 무호출·바이트 불변. 실패 입력 → RuntimeError·부분출력 미잔류·기존 wav 보존.
 - `pitch_method`는 `"rubberband"` | `null`만 관측(asetrate 폴백 값이 production에 절대 등장 안 함).
 - rubberband 미탐지 시: `ttsPitch=0` 정상 합성 / `ttsPitch!=0` → UI 비활성 또는 `PITCH_UNAVAILABLE` 명확 오류(조용한 저품질 폴백 없음).
+- **전 엔진 공통 후처리(§6.1, 모델 로딩 없이)**: 각 엔진의 가짜 최종 WAV(Qwen/GPT-SoVITS/F5/Kokoro 각 1개, lavfi sine mono/24k)를 공통 pitch 함수에 통과 → 길이·SR·finite·peak·클리핑·F0 목표 상승. pitch=0은 전부 바이트 불변. 미적용 시 `pitch_postprocessed=false`·`pitch_method=null` 기록 확인.
 
 **감정 만료 불변식(§5, B+통합)**:
 - 미등록→기본 폴백 / 등록+존재→사용 / 등록+만료→명확한 오류. **tts_worker 코드 레벨로도 검증**(UI 검사만으로 완료 판정 금지).
