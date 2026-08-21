@@ -57,6 +57,7 @@ interface AppState {
   ttsReferenceClip: string
   ttsRefReady: boolean
   ttsRefMessage: string
+  ttsReferenceRegion: { start: number; duration: number } | null
 
   setFile: (info: FileInfo, url: string) => void
   setMode: (mode: SeparationMode) => void
@@ -73,7 +74,7 @@ interface AppState {
   setDemucsModel: (v: 'htdemucs' | 'htdemucs_ft' | 'roformer' | 'roformer_melband' | 'roformer_ensemble') => void
   setNSpeakers: (v: number) => void
   setTtsReferencePrompts: (v: Record<string, TtsReferenceEntry>) => void
-  setTtsRefState: (v: { clip?: string; ready?: boolean; message?: string }) => void
+  setTtsRefState: (v: { clip?: string; ready?: boolean; message?: string; region?: { start: number; duration: number } | null }) => void
   setProcessing: () => void
   setProgress: (percent: number, message: string) => void
   setResult: (tracks: Track[], outputDir: string) => void
@@ -119,11 +120,12 @@ export const useAppStore = create<AppState>((set) => ({
   ttsReferenceClip: '',
   ttsRefReady: false,
   ttsRefMessage: '',
+  ttsReferenceRegion: null,
 
   // 새 파일 → 이전 파생 참조/준비 상태 무효화(다른 원본의 클립을 재사용하지 않도록) + 임시 클립 폴더 정리
   setFile: (info, url) => {
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }
-    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '' })
+    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null })
   },
   setMode: (mode) => set({ mode }),
   setTrimSilence: (v) => set({ trimSilence: v }),
@@ -143,6 +145,7 @@ export const useAppStore = create<AppState>((set) => ({
     ttsReferenceClip: v.clip !== undefined ? v.clip : s.ttsReferenceClip,
     ttsRefReady: v.ready !== undefined ? v.ready : s.ttsRefReady,
     ttsRefMessage: v.message !== undefined ? v.message : s.ttsRefMessage,
+    ttsReferenceRegion: v.region !== undefined ? v.region : s.ttsReferenceRegion,
   })),
   setProcessing: () => set({ status: 'processing', progress: 0, progressMessage: '파일 준비 중...', error: null, tracks: [] }),
   setProgress: (percent, message) => set({ progress: percent, progressMessage: message }),

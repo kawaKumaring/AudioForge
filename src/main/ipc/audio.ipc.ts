@@ -303,6 +303,17 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     })
 
     runner.on('result', (data) => {
+      // TTS 결과 재현 메타데이터: Python이 아는 런타임 사실 + main이 아는 config 필드 병합.
+      // 보안: 참조 전사 '전문'은 기록하지 않는다(Python이 언어/글자수/해시만 넣음).
+      if (mode === 'tts' && data && typeof data === 'object') {
+        const md = ((data as { metadata?: Record<string, unknown> }).metadata) || {}
+        if (md.requested_engine == null) md.requested_engine = options?.ttsEngine ?? 'auto'
+        md.original_reference_path = filePath  // 사용자 원본
+        md.effective_reference_path = (options?.ttsReferenceOverride as string) || filePath  // 파생 클립 우선
+        const region = options?.ttsReferenceRegion as { start: number; duration: number } | null | undefined
+        if (region && typeof region.start === 'number') md.reference_region = region
+        ;(data as { metadata?: unknown }).metadata = md
+      }
       // 세션 매니페스트 저장 — 나중에 재분리 없이 설정+트랙 복원용 (source of truth)
       try {
         const tracks = Array.isArray((data as { tracks?: unknown[] })?.tracks)
@@ -315,6 +326,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
           mode,
           options: config,
           tracks,
+          metadata: (data as { metadata?: unknown }).metadata ?? null,
           createdAt: new Date().toISOString()
         }
         writeFileSync(join(outputDir, 'session.json'), JSON.stringify(session, null, 2), 'utf-8')

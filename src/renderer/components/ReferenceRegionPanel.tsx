@@ -90,7 +90,7 @@ export default function ReferenceRegionPanel() {
   useEffect(() => {
     if (analysis?.needs_region) {
       setConfirmedClip(''); setMetrics(null)
-      setTtsRefState({ ready: false, clip: '', message: '구간을 변경했습니다 — 다시 확정하세요' })
+      setTtsRefState({ ready: false, clip: '', message: '구간을 변경했습니다 — 다시 확정하세요', region: null })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [start, dur])
@@ -120,10 +120,10 @@ export default function ReferenceRegionPanel() {
       const ok = res.metrics.in_range && !res.metrics.warnings.some(w => w.includes('심각') || w.includes('거의 무음') || w.includes('부족') || w.includes('초과'))
       if (ok) {
         setConfirmedClip(res.clip_path)
-        setTtsRefState({ ready: true, clip: res.clip_path, message: '' })
+        setTtsRefState({ ready: true, clip: res.clip_path, message: '', region: { start, duration: dur } })
       } else {
         setConfirmedClip('')
-        setTtsRefState({ ready: false, clip: '', message: res.metrics.warnings[0] || '구간 품질이 부적합합니다' })
+        setTtsRefState({ ready: false, clip: '', message: res.metrics.warnings[0] || '구간 품질이 부적합합니다', region: null })
       }
     } catch (e) {
       setTtsRefState({ ready: false, clip: '', message: `파생 참조 생성 실패: ${(e as Error)?.message || ''}` })
