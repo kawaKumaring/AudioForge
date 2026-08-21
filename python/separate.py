@@ -79,6 +79,31 @@ def main():
         args.region_start = config.get("regionStart", 0.0)
         args.region_dur = config.get("regionDur", 0.0)
 
+    # Qwen preflight — 입력/출력 불필요(실행 전 상태 표시용). 예상값이며 실행 결과는 metadata가 최종.
+    if args.mode == "qwen-preflight":
+        try:
+            from tts_worker import _get_qwen_engine, _QWEN_MIN_FREE_MB, _QWEN_SNAPSHOT, _parse_device_source
+            eng = _get_qwen_engine()
+            avail = bool(eng.available())
+            snapshot_ok = os.path.isdir(_QWEN_SNAPSHOT)
+            device_expected = None
+            device_source = None
+            reason = None
+            if avail:
+                try:
+                    from gpu_policy import select_device
+                    dev, reason = select_device("auto", min_free_mb=_QWEN_MIN_FREE_MB)
+                    device_expected = "gpu" if dev == "cuda" else "cpu"
+                    device_source = _parse_device_source(reason)
+                except Exception as e:
+                    reason = f"장치 예상 실패: {e}"
+            emit("result", available=avail, snapshot_ok=snapshot_ok,
+                 device_expected=device_expected, device_source=device_source, reason=reason)
+        except Exception as e:
+            emit("result", available=False, snapshot_ok=False, device_expected=None,
+                 device_source=None, reason=f"preflight 오류: {e}")
+        return
+
     if not args.input or not args.output:
         emit("error", message="입력 파일과 출력 경로가 필요합니다.")
         sys.exit(1)

@@ -235,6 +235,27 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     }
   })
 
+  // Qwen 실행 전 상태(preflight) — 설치/스냅샷/예상 장치. 예상값이며 실행 결과는 metadata가 최종.
+  ipcMain.handle('audio:qwen-preflight', async () => {
+    if (runner?.isRunning) return { available: false, reason: '처리 중' }
+    if (!existsSync(pythonPath)) return { available: false, reason: 'Python 없음' }
+    const cfgPath = join(tmpdir(), `audioforge_qwenpre_${Date.now()}.json`)
+    try {
+      const scriptPath = PythonRunner.getScriptPath('separate.py')
+      writeFileSync(cfgPath, JSON.stringify({ mode: 'qwen-preflight' }), 'utf-8')
+      return await runPreview({
+        runner: new PythonRunner(pythonPath),
+        scriptPath, args: ['--config', cfgPath],
+        timeoutMs: 30000,
+        cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
+      })
+    } catch (e) {
+      return { available: false, reason: (e as Error)?.message || 'preflight 실패' }
+    } finally {
+      try { unlinkSync(cfgPath) } catch {}
+    }
+  })
+
   ipcMain.handle('audio:process', async (_event, filePath: string, mode: string, options?: Record<string, unknown>) => {
     if (runner?.isRunning) {
       throw new Error('이미 처리 중인 작업이 있습니다')

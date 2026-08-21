@@ -112,12 +112,23 @@ export default function TTSEditor() {
   const [refPrompts, setRefPrompts] = useState<Record<string, TtsReferenceEntry>>(() => useAppStore.getState().ttsReferencePrompts)
   const [showRefPrompts, setShowRefPrompts] = useState(false)
   const [txLoading, setTxLoading] = useState<string | null>(null)
+  const [preflight, setPreflight] = useState<{ available?: boolean; snapshot_ok?: boolean; device_expected?: string; reason?: string } | null>(null)
   const disabled = status === 'processing'
 
   // Sync to store
   useEffect(() => {
     useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefs: emotionRefs, ttsReferencePrompts: refPrompts, ttsEngine })
   }, [ttsText, ttsSpeed, ttsSilenceGap, emotionRefs, refPrompts, ttsEngine])
+
+  // Qwen 실행 전 상태(preflight) — 마운트 시 1회. 예상값이며 실행 결과는 결과 화면 metadata가 최종.
+  useEffect(() => {
+    if (mode !== 'tts') return
+    let cancelled = false
+    window.api.audio.qwenPreflight()
+      .then((p: unknown) => { if (!cancelled) setPreflight(p as typeof preflight) })
+      .catch(() => { if (!cancelled) setPreflight(null) })
+    return () => { cancelled = true }
+  }, [mode])
 
   const updateRef = (id: string, patch: Partial<TtsReferenceEntry>) =>
     setRefPrompts(prev => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }))
@@ -184,6 +195,27 @@ export default function TTSEditor() {
         감정별 음성을 추가 등록하면 대사마다 <code style={{ background: 'var(--bg-elevated)', padding: '1px 4px', borderRadius: 3 }}>[기쁨]</code> 태그로 감정을 지정할 수 있습니다.
         <br />한국어 · 영어 · 일본어 · 중국어 지원. 영어 목소리로 한국어 대사도 가능합니다.
       </div>
+
+      {/* Qwen 실행 전 상태(preflight) — 예상값. 실제 엔진·장치는 합성 후 결과 화면에 표시 */}
+      {preflight && (() => {
+        const ok = preflight.available === true
+        const snapMissing = !ok && preflight.snapshot_ok === false
+        const dev = preflight.device_expected
+        const msg = ok
+          ? (dev === 'gpu' ? 'Qwen3 준비됨 · 완전 로컬 · GPU 예상'
+            : dev === 'cpu' ? 'Qwen3 준비됨 · 완전 로컬 · VRAM 부족으로 CPU 예상'
+            : 'Qwen3 준비됨 · 완전 로컬')
+          : (snapMissing ? 'Qwen3 모델 스냅샷 누락 · 자동 선택 시 GPT-SoVITS 사용 예정'
+            : 'Qwen3 미설치 · 자동 선택 시 GPT-SoVITS 사용 예정')
+        const color = ok ? 'var(--cyan)' : 'var(--text-muted)'
+        return (
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color, padding: '2px 2px' }}>
+            <span style={{ width: 7, height: 7, borderRadius: '50%', background: ok ? 'var(--cyan)' : 'var(--text-muted)', flexShrink: 0 }} />
+            <span>{msg}</span>
+            <span style={{ color: 'var(--text-muted)' }}>· 예상값(실제 결과는 합성 후 표시)</span>
+          </div>
+        )
+      })()}
 
       {/* Emotion references (collapsible) */}
       <div style={{ borderRadius: 12, overflow: 'hidden', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)' }}>
