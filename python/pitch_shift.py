@@ -139,3 +139,62 @@ def apply_pitch_shift(input_path, semitones, output_path, *, ffmpeg=None):
         tail = (proc.stderr or b"")[-200:].decode("utf-8", errors="replace")
         raise PitchError(f"음높이 보정 실패: {tail}")
     return output_path
+
+
+def place_final_with_pitch(src_candidate, final_path, semitones, work_dir, *, ffmpeg=None):
+    """엔진 무관 공통 최종 단계(계약 §6.1). speed·문장 결합이 모두 끝난 최종 후보 WAV
+    (src_candidate)를 검증한 뒤 final_path에 **원자적으로** 배치한다. semitones!=0이면 배치
+    '직전'에 rubberband 음높이 보정을 적용한다. 모든 엔진(Qwen3/GPT-SoVITS/F5/Kokoro)의 최종
+    synthesized.wav가 이 단일 함수를 최종 WAV 완성 직후 한 번 호출한다.
+
+    호출 계약
+    - src_candidate: 완성된 최종 후보 WAV 경로. **호출부 소유** — 실패 시 이 파일 정리는 호출부 책임.
+    - final_path: 최종 산출(synthesized.wav) 경로. 이 함수만 os.replace로 대체한다.
+    - semitones: 사용자 pitch(반음). 내부에서 clamp_quantize로 재정규화. 0이면 pitch 미적용(무호출 게이트는
+      호출부가 우선 적용하되, 0이 들어와도 안전하게 후보를 그대로 배치한다 — 재인코딩 없음).
+    - work_dir: pitch 임시본을 둘 디렉토리. **final_path와 동일 파일시스템이어야** os.replace가 원자적
+      (Qwen=job_dir(output_dir 하위), per-segment=output_dir). src_candidate도 동일 파일시스템 권장.
+    - 반환: {pitch_semitones, pitch_method("rubberband"|None), pitch_postprocessed(bool), output_sample_rate(int)}.
+
+    실패 규약(무손상 계약)
+    - rubberband 부재 + pitch!=0 → PitchError(PITCH_UNAVAILABLE). pitch/검증 실패는 os.replace(final)
+      '이전'에 예외로 빠져나가 기존 final_path(이전 합성 결과)를 무손상 보존한다(조용한 무보정 폴백 없음).
+    - 이 함수가 만든 pitch 임시본은 실패 시 스스로 삭제한다. src_candidate는 호출부가 정리한다.
+    """
+    import soundfile as sf
+    import numpy as np
+
+    st = clamp_quantize(semitones)
+    candidate = src_candidate
+    method = None
+    pitched = None
+    if st != 0.0:
+        pitched = os.path.join(work_dir, ".pitch-tmp.wav")
+        apply_pitch_shift(src_candidate, st, pitched, ffmpeg=ffmpeg)  # 실패→예외(부분삭제), final 미접촉
+        candidate = pitched
+        method = "rubberband"
+
+    try:
+        # 배치 직전 검증(존재/non-empty/sr/finite) — 통과해야 final 교체
+        if not (os.path.exists(candidate) and os.path.getsize(candidate) > 0):
+            raise PitchError("최종 후보 출력 없음/0바이트")
+        data, sr = sf.read(candidate)
+        mono = data if data.ndim == 1 else data.mean(axis=1)
+        if mono.size == 0 or sr <= 0 or not bool(np.all(np.isfinite(mono))):
+            raise PitchError("최종 후보 출력 검증 실패(빈/비유한/sr)")
+    except Exception:
+        # 이 함수가 만든 pitch 임시본만 정리(src_candidate는 호출부 소유)
+        if pitched is not None and os.path.exists(pitched):
+            try:
+                os.remove(pitched)
+            except OSError:
+                pass
+        raise
+
+    os.replace(candidate, final_path)  # 이 시점에만 기존 final 대체(원자적)
+    return {
+        "pitch_semitones": st,
+        "pitch_method": method,
+        "pitch_postprocessed": bool(st != 0.0),
+        "output_sample_rate": int(sr),
+    }

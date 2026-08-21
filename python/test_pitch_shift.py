@@ -158,5 +158,80 @@ class RubberbandRoundTripTest(unittest.TestCase):
         self.assertLess(f0_dst, f0_src - 5.0)  # 확실히 내려감
 
 
+class PlaceFinalWithPitchTest(unittest.TestCase):
+    """공통 최종 단계(계약 §6.1) — 실제 모델 없이 '가짜 최종 WAV'(sine)로 엔진 무관 경로 검증."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="af_place_")
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+        self.cand = os.path.join(self.tmp, "candidate.wav")
+        self.final = os.path.join(self.tmp, "synthesized.wav")
+        self._make_tone(self.cand, freq=220.0, dur=1.5, sr=24000)
+
+    def _make_tone(self, path, freq, dur, sr):
+        import numpy as np
+        import soundfile as sf
+        t = np.arange(int(dur * sr)) / sr
+        sig = (0.3 * np.sin(2 * np.pi * freq * t)).astype("float32")
+        sf.write(path, sig, sr)
+
+    def _read(self, path):
+        import soundfile as sf
+        data, sr = sf.read(path, dtype="float32")
+        if data.ndim > 1:
+            data = data.mean(axis=1)
+        return data, sr
+
+    def test_zero_is_noop_but_places_final(self):
+        import numpy as np
+        # 기존 final(다른 내용) 존재 → 0이면 candidate가 그대로 final로 배치(무보정, 재인코딩 없음)
+        self._make_tone(self.final, freq=440.0, dur=0.5, sr=24000)
+        cand_data, cand_sr = self._read(self.cand)
+        r = ps.place_final_with_pitch(self.cand, self.final, 0.0, self.tmp)
+        self.assertEqual(r["pitch_semitones"], 0.0)
+        self.assertIsNone(r["pitch_method"])
+        self.assertFalse(r["pitch_postprocessed"])
+        self.assertEqual(r["output_sample_rate"], 24000)
+        # final 내용이 candidate와 동일(무보정 배치)
+        fin_data, fin_sr = self._read(self.final)
+        self.assertEqual(fin_sr, cand_sr)
+        self.assertEqual(len(fin_data), len(cand_data))
+        self.assertTrue(bool(np.allclose(fin_data, cand_data)))
+        # candidate는 os.replace로 소비됨
+        self.assertFalse(os.path.exists(self.cand))
+
+    def test_pitch_applied_replaces_and_shifts(self):
+        import numpy as np
+        ff = find_ffmpeg()
+        if not ff or not ps.pitch_available(ff)[0]:
+            self.skipTest("rubberband 미지원")
+        r = ps.place_final_with_pitch(self.cand, self.final, 2.0, self.tmp)
+        self.assertEqual(r["pitch_semitones"], 2.0)
+        self.assertEqual(r["pitch_method"], "rubberband")
+        self.assertTrue(r["pitch_postprocessed"])
+        cand_before = 220.0
+        fin, sr = self._read(self.final)
+        self.assertEqual(sr, 24000)
+        # 길이 유지(±0.02s)
+        self.assertAlmostEqual(len(fin) / sr, 1.5, delta=0.02)
+        self.assertLess(float(np.max(np.abs(fin))), 1.0)  # 클리핑 없음
+        f0 = _estimate_f0(fin, sr)
+        self.assertGreater(f0, cand_before + 10.0)  # +2반음 → 확실히 상승
+        self.assertFalse(os.path.exists(os.path.join(self.tmp, ".pitch-tmp.wav")))  # 임시본 정리됨
+
+    def test_failure_preserves_existing_final(self):
+        import numpy as np
+        # 기존 final(마커) 존재. candidate가 없으면(검증 실패) final은 os.replace 미도달로 무손상.
+        self._make_tone(self.final, freq=330.0, dur=0.7, sr=24000)
+        before, before_sr = self._read(self.final)
+        missing = os.path.join(self.tmp, "nope.wav")
+        with self.assertRaises(Exception):
+            ps.place_final_with_pitch(missing, self.final, 0.0, self.tmp)
+        after, after_sr = self._read(self.final)
+        self.assertEqual(before_sr, after_sr)
+        self.assertEqual(len(before), len(after))
+        self.assertTrue(bool(np.allclose(before, after)))  # 기존 final 무손상
+
+
 if __name__ == "__main__":
     unittest.main()

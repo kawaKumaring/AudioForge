@@ -1,7 +1,12 @@
 # TTS 음역(pitch) 보정 backend 설계 계획
 
 브랜치: `feature/tts-pitch-backend` (origin/develop `0788885`에서 분기)
-작성 단계: **설계 + 실측만**. production 소스 코드 미수정. 새 의존성 미설치.
+
+> **갱신(구현 착수 후)**: 이 문서는 초기 설계다. 확정 계약은
+> `origin/design/tts-prosody-integration-contract:doc/work-in-progress/tts-prosody-integration-contract.md`가
+> 단일 권위이며 아래 §1.2의 `asetrate+atempo` 폴백은 계약 §7 정정으로 **production에서 완전 제거**됐다.
+> production pitch 경로는 **rubberband 단일**, 미지원 시 `PITCH_UNAVAILABLE` 오류(조용한 저품질 폴백 금지).
+> 실제 구현은 `python/pitch_shift.py`(helper + 엔진 무관 공통 함수 `place_final_with_pitch`)를 참조.
 
 ## 0. 문제 정의
 
