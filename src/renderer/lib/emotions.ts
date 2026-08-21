@@ -132,3 +132,34 @@ export function parseUsedEmotionIds(text: string): Set<string> {
   }
   return used
 }
+
+// 감정 참조 slot의 구조적 최소 형태(store EmotionRefState와 호환; store 의존 없이 재사용).
+export interface EmotionRefSlotLike {
+  source: string
+  clip: string
+  ready: boolean
+  message?: string
+}
+
+export interface EmotionSendPlan {
+  toSend: Record<string, string>  // 대사에 쓰인 ∩ 등록 ∩ 준비된 감정 → effective 경로(clip||source)
+  blockedId: string | null        // 쓰인 ∩ 등록 ∩ 미준비 첫 감정(합성 차단 사유 생성용)
+}
+
+// 게이팅/전송 계획(계약 §5 불변식) — ProcessButton과 E2E가 공유하는 단일 판정 로직.
+//  1) 미등록(slot 없음) 사용 감정 → 기본 참조 폴백(전송·차단 안 함).
+//  2) 등록 + 준비 → effective(clip||source) 전송.
+//  3) 등록 + 미준비 → blockedId(합성 차단, 전송 안 함).
+//  4) 미사용 감정 → 등록 여부와 무관하게 전송·차단 대상 아님(used에 없으므로 자연 제외).
+export function planEmotionRefs(text: string, refState: Record<string, EmotionRefSlotLike>): EmotionSendPlan {
+  const used = parseUsedEmotionIds(text)
+  const toSend: Record<string, string> = {}
+  let blockedId: string | null = null
+  for (const id of used) {
+    const slot = refState[id]
+    if (!slot) continue                                   // (1) 미등록 → 기본 폴백
+    if (!slot.ready) { if (!blockedId) blockedId = id; continue }  // (3) 미준비 → 차단
+    toSend[id] = slot.clip || slot.source                 // (2) 준비 → effective 전송
+  }
+  return { toSend, blockedId }
+}

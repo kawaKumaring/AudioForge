@@ -1,7 +1,7 @@
 import React from 'react'
 import { motion } from 'framer-motion'
-import { useAppStore, emotionEffectivePath } from '@/stores/app.store'
-import { ALL_EMOTIONS, parseUsedEmotionIds } from '@/lib/emotions'
+import { useAppStore } from '@/stores/app.store'
+import { ALL_EMOTIONS, planEmotionRefs } from '@/lib/emotions'
 
 function _estimateTime(mode: string, duration: number, transcribe: boolean, translate: boolean): string {
   let secs = 0
@@ -22,30 +22,12 @@ export default function ProcessButton() {
   const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefState, ttsReferencePrompts, ttsEngine, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, status, setProcessing, setProgress, setResult, setError } = useAppStore()
   const cleanupRef = React.useRef<(() => void) | null>(null)
 
-  // 감정 참조 게이팅/전송(계약 §5 불변식):
-  //  - 대사에 실제 쓰인 감정만 대상. 미사용 감정은 등록 여부와 무관하게 비차단·미전송.
-  //  - 사용된 감정이 등록됐는데(source 있음) 준비 안 됐으면(구간 미확정/품질/만료) → 차단 + 감정 지목 사유.
-  //  - 미등록(source 없음) 사용 감정은 기본 참조로 폴백(허용) — 차단하지 않음.
-  const usedEmotionIds = React.useMemo(() => parseUsedEmotionIds(ttsText), [ttsText])
-  // 전송용 effective 맵(ttsEmotionRefs): 사용 ∩ 등록 ∩ 준비된 감정만, effective 경로로.
-  const emotionRefsToSend = React.useMemo(() => {
-    const out: Record<string, string> = {}
-    for (const id of usedEmotionIds) {
-      const slot = ttsEmotionRefState[id]
-      if (!slot) continue                 // 미등록 → 기본 폴백(전송 안 함)
-      const eff = emotionEffectivePath(slot)
-      if (eff) out[id] = eff              // 준비된 것만. 미준비는 아래 blockedEmotion이 차단.
-    }
-    return out
-  }, [usedEmotionIds, ttsEmotionRefState])
-  // 사용됐지만 등록+미준비인 첫 감정(차단 사유 생성용).
-  const blockedEmotionId = React.useMemo(() => {
-    for (const id of usedEmotionIds) {
-      const slot = ttsEmotionRefState[id]
-      if (slot && !slot.ready) return id
-    }
-    return null
-  }, [usedEmotionIds, ttsEmotionRefState])
+  // 감정 참조 게이팅/전송(계약 §5 불변식) — 순수 판정은 planEmotionRefs 단일 로직.
+  //  대사에 실제 쓰인 감정만 대상. 미사용은 비차단·미전송. 등록+미준비 사용 감정은 blockedId로 차단.
+  const { toSend: emotionRefsToSend, blockedId: blockedEmotionId } = React.useMemo(
+    () => planEmotionRefs(ttsText, ttsEmotionRefState),
+    [ttsText, ttsEmotionRefState]
+  )
 
   const handleProcess = async () => {
     console.log('[renderer][synthesize] 클릭 핸들러 진입', { mode, hasFile: !!fileInfo })
