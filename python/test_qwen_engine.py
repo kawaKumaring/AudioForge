@@ -293,9 +293,10 @@ class QwenBatchPathTest(_QwenGlobalIsolation, unittest.TestCase):
         self.assertEqual(calls[0]["device"], "cpu")
         self.assertEqual(calls[0]["langs"], ["Korean", "English"], "세그먼트별 언어 감지 전달")
         self.assertTrue(os.path.exists(os.path.join(self.out, "synthesized.wav")))
-        # 세그먼트 임시파일 정리
-        leftovers = [f for f in os.listdir(self.out) if f.startswith("segment_qwen_")]
-        self.assertEqual(leftovers, [], "세그먼트 임시파일은 정리돼야 함")
+        # 실행별 임시폴더·세그먼트 정리 확인
+        self.assertEqual([f for f in os.listdir(self.out) if f.startswith("segment_qwen_")], [])
+        self.assertEqual([f for f in os.listdir(self.out) if f.startswith(".qwen-job-")], [],
+                         "실행별 임시폴더(.qwen-job-*)가 정리돼야 함")
 
     def test_speed_preserves_user_silence_gap(self):
         calls = []
@@ -422,8 +423,9 @@ class AtomicFinalReplaceTest(_QwenGlobalIsolation, unittest.TestCase):
             f.write(marker)
         return marker
 
-    def _no_pending_left(self):
-        return [f for f in os.listdir(self.out) if f.startswith(".synthesized.pending")]
+    def _job_dirs_left(self):
+        # 실행별 임시폴더(.qwen-job-*) 잔존 여부 — Python finally가 지워야 함
+        return [f for f in os.listdir(self.out) if f.startswith(".qwen-job-")]
 
     def test_existing_final_preserved_on_concat_failure(self):
         marker = self._preexisting_final()
@@ -438,7 +440,7 @@ class AtomicFinalReplaceTest(_QwenGlobalIsolation, unittest.TestCase):
                                   emotion_refs={}, preferred_engine="qwen3", reference_prompts={})
         with open(self.final, "rb") as f:
             self.assertEqual(f.read(), marker, "concat 실패 시 기존 synthesized.wav 불변")
-        self.assertEqual(self._no_pending_left(), [], "임시 pending 정리")
+        self.assertEqual(self._job_dirs_left(), [], "실행별 임시폴더 정리")
 
     def test_existing_final_preserved_on_validation_failure(self):
         marker = self._preexisting_final()
@@ -452,7 +454,7 @@ class AtomicFinalReplaceTest(_QwenGlobalIsolation, unittest.TestCase):
                                   emotion_refs={}, preferred_engine="qwen3", reference_prompts={})
         with open(self.final, "rb") as f:
             self.assertEqual(f.read(), marker, "검증 실패 시 기존 synthesized.wav 불변")
-        self.assertEqual(self._no_pending_left(), [], "임시 pending 정리")
+        self.assertEqual(self._job_dirs_left(), [], "실행별 임시폴더 정리")
 
     def test_success_replaces_final_atomically(self):
         self._preexisting_final()
@@ -462,8 +464,19 @@ class AtomicFinalReplaceTest(_QwenGlobalIsolation, unittest.TestCase):
         d, sr = sf.read(self.final)
         self.assertGreater(len(d), 0)
         self.assertEqual(int(sr), 24000)
-        self.assertEqual(self._no_pending_left(), [], "성공 후 pending 없음")
+        self.assertEqual(self._job_dirs_left(), [], "성공 후 실행별 임시폴더 없음")
         self.assertEqual([f for f in os.listdir(self.out) if f.startswith("segment_qwen_")], [])
+
+    def test_atempo_failure_cleans_job_dir_and_preserves_final(self):
+        marker = self._preexisting_final()
+        self._patch(tts_worker, "_atempo_segment",
+                    new=(lambda inp, speed: (_ for _ in ()).throw(RuntimeError("속도 적용 실패"))))
+        with self.assertRaises(RuntimeError):
+            tts_worker.synthesize(self.ref, "한 문장입니다.", self.out, speed=1.5, silence_gap=0.5,
+                                  emotion_refs={}, preferred_engine="qwen3", reference_prompts={})
+        with open(self.final, "rb") as f:
+            self.assertEqual(f.read(), marker, "atempo 실패 시 기존 synthesized.wav 불변")
+        self.assertEqual(self._job_dirs_left(), [], "atempo 실패에도 실행별 임시폴더 정리")
 
 
 if __name__ == "__main__":

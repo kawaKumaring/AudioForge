@@ -730,27 +730,29 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             codes = "; ".join(f"[{e.code}] {e.message}" for e in a.errors)
             raise RuntimeError(f"참조 음성 부적합(Qwen): {os.path.basename(ref)} — {codes}")
 
-    warned = set()
-    segments = []
-    raw_paths = []
-    for i, (emotion_id, line_text) in enumerate(parsed):
-        ref = ref_cache.get(emotion_id, ref_cache["default"])
-        ref_text, xvo = _resolve_qwen_ref_text(ref, overrides_by_path, warned)
-        lang_code = _detect_language(line_text)  # 세그먼트별 언어
-        lang_name = _QWEN_LANG_NAME.get(lang_code)
-        if not lang_name:
-            raise RuntimeError(f"Qwen 미지원 언어(감지 {lang_code}) — 문장: {line_text[:20]}")
-        out_path = os.path.join(output_dir, f"segment_qwen_{i + 1:03d}.wav")
-        raw_paths.append(out_path)
-        segments.append({"index": i, "text": line_text, "ref_audio": ref, "ref_text": ref_text,
-                         "x_vector_only": xvo, "language_name": lang_name, "out_path": out_path})
-
+    import tempfile
+    import shutil
+    # 실행별 전용 임시 폴더 — 모든 중간 산출물(segment/atempo/pending)을 이 안에만 둔다.
+    # output_dir 내부에 두어 최종 os.replace가 동일 파일시스템 이동(원자적)이 되게 한다.
+    # 정상/오류 경로는 finally가 폴더 전체를 삭제하고, 취소(taskkill /T /F로 finally 미실행) 경로는
+    # Electron 부모가 자식 종료 확인 후 output_dir의 .qwen-job-* 를 삭제한다.
+    job_dir = tempfile.mkdtemp(prefix=".qwen-job-", dir=output_dir)
     final_path = os.path.join(output_dir, "synthesized.wav")
-    # 원자적 교체: 최종 파일에 직접 결합하지 않는다. 고유 임시 WAV에 결합→전량 검증 성공 시에만
-    # os.replace(temp, final). 실패하면 임시만 삭제하고 기존 synthesized.wav는 그대로 보존한다.
-    pending_path = os.path.join(output_dir, f".synthesized.pending.{os.getpid()}.wav")
-    atempo_paths = []
+    pending_path = os.path.join(job_dir, "pending.wav")
     try:
+        warned = set()
+        segments = []
+        for i, (emotion_id, line_text) in enumerate(parsed):
+            ref = ref_cache.get(emotion_id, ref_cache["default"])
+            ref_text, xvo = _resolve_qwen_ref_text(ref, overrides_by_path, warned)
+            lang_code = _detect_language(line_text)  # 세그먼트별 언어
+            lang_name = _QWEN_LANG_NAME.get(lang_code)
+            if not lang_name:
+                raise RuntimeError(f"Qwen 미지원 언어(감지 {lang_code}) — 문장: {line_text[:20]}")
+            out_path = os.path.join(job_dir, f"segment_qwen_{i + 1:03d}.wav")
+            segments.append({"index": i, "text": line_text, "ref_audio": ref, "ref_text": ref_text,
+                             "x_vector_only": xvo, "language_name": lang_name, "out_path": out_path})
+
         try:
             seg_out = qwen.run_job(segments, device)
         except RuntimeError as e:
@@ -765,14 +767,10 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         # speed: 1.0=raw, 그 외 세그먼트별 atempo(최종 결합본 아님) 후 결합. 간격은 사용자 silence_gap 유지.
         use = ordered
         if abs(float(speed) - 1.0) > 1e-6:
-            use = []
-            for p in ordered:
-                ap2 = _atempo_segment(p, float(speed))
-                atempo_paths.append(ap2)
-                use.append(ap2)
+            use = [_atempo_segment(p, float(speed)) for p in ordered]  # 실패는 명확한 예외
 
         emit("progress", percent=90, message="문장 이어붙이기 중...")
-        _concat_with_silence(use, pending_path, silence_gap)  # 최종 아님 — 임시로 결합(단일 세그먼트도 동일 경로)
+        _concat_with_silence(use, pending_path, silence_gap)  # 최종 아님 — job_dir 임시로 결합(단일도 동일 경로)
 
         # 임시 출력 전량 검증(존재/non-empty/sr/finite) — 이 검사를 모두 통과해야 교체
         import soundfile as _sf
@@ -784,18 +782,13 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         if mono.size == 0 or sr <= 0 or not bool(_np.all(_np.isfinite(mono))):
             raise RuntimeError("최종 합성 출력 검증 실패(빈/비유한/sr)")
 
-        # 전량 성공 → 원자적 교체(기존 synthesized.wav는 이 시점에만 대체됨)
+        # 전량 성공 → 원자적 교체(기존 synthesized.wav는 이 시점에만 대체됨). job_dir는 finally에서 삭제.
         os.replace(pending_path, final_path)
         return final_path
     finally:
-        # 이 작업이 만든 세그먼트·atempo·임시 결합본 정리(실패해도). 성공 시 pending은 이미 replace로 사라짐.
-        # 기존 synthesized.wav는 정리 대상이 아니다(실패 시 그대로 보존).
-        for p in raw_paths + atempo_paths + [pending_path]:
-            try:
-                if os.path.exists(p):
-                    os.remove(p)
-            except OSError:
-                pass
+        # 실행별 폴더 전체 삭제(정상/오류 공통). 성공 시 pending은 이미 replace로 빠져나갔고 나머지 중간물만 남음.
+        # 기존 synthesized.wav·다른 작업 결과는 job_dir 밖이라 절대 건드리지 않는다.
+        shutil.rmtree(job_dir, ignore_errors=True)
 
 
 # ── Helpers ──

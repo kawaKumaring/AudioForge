@@ -8,6 +8,7 @@ import { PythonRunner } from '../services/python-runner'
 import { createSettlementGuard } from '../services/run-settlement'
 import { createPreviewGuard, runPreview } from '../services/preview-transcribe'
 import { buildTtsConfig, type TtsInputOptions } from '../../shared/ttsConfig'
+import { sweepQwenJobDirs } from '../services/qwen-cleanup'
 
 // execFile(배열 인자)은 cmd.exe를 거치지 않아 시스템 코드페이지(CP949)의
 // 한글 경로 손상 문제에 면역. exec(문자열)은 한글 파일명에서 깨짐 → 금지.
@@ -196,6 +197,9 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}-${String(now.getSeconds()).padStart(2, '0')}`
     const outputDir = join(dirname(filePath), 'AudioForge_output', `${timestamp}_${nameWithoutExt}`)
     if (!existsSync(outputDir)) mkdirSync(outputDir, { recursive: true })
+    // 방어적: 이 output_dir에 이전 실행이 남긴 Qwen 실행별 임시폴더가 있으면 시작 전에 정리
+    // (신규 dir이라 보통 없음). 안전 범위 = 이 output_dir 바로 아래 .qwen-job-* 폴더만.
+    if (mode === 'tts') { try { sweepQwenJobDirs(outputDir) } catch { /* noop */ } }
 
     // Write all options to JSON config file (avoids spawn encoding issues with Korean paths)
     const configPath = join(tmpdir(), `audioforge_config_${Date.now()}.json`)
@@ -285,6 +289,9 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       settle.finish(code)
       // Clean up config file
       try { unlinkSync(configPath) } catch {}
+      // 'done'은 자식 프로세스 실제 종료 후 발생(취소 taskkill 포함). 정상 성공 시 Python finally가
+      // 이미 .qwen-job-*를 지웠으므로 no-op이고, 취소로 finally가 안 돈 경우 남은 실행별 폴더를 제거.
+      if (mode === 'tts') { try { sweepQwenJobDirs(outputDir) } catch { /* noop */ } }
       runner = null
     })
 

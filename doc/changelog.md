@@ -1,5 +1,43 @@
 # AudioForge Changelog
 
+## 2026-08-21 — 실측 안정화: WDDM Auto VRAM 측정 출처 분리 + Qwen 취소 잔존물 정리
+
+배경: ComfyUI 실모델 병행 실측에서 두 production 결함 확인. (1) Windows WDDM에서 nvidia-smi free
+2121MiB인데 `torch.cuda.mem_get_info` free는 14148MiB로 보고 → Qwen 임계 4000인데 GPU 오선택.
+(2) Qwen 취소(taskkill /T /F) 후 `segment_qwen_001.wav`가 output_dir에 잔존.
+
+**결함 1 — 장치 정책 측정 출처 분리(`gpu_policy.py`)**
+- Auto의 측정 출처를 플랫폼별로 분리. **Windows: nvidia-smi `--query-gpu=index,memory.total,memory.used,
+  memory.free`의 GPU 전체 free를 1차 근거**로 사용(대상 GPU index 행만). subprocess timeout·비정상 종료·
+  명령 부재·파싱 실패를 처리하고, **측정 실패 시 Auto는 보수적으로 CPU**(torch 값으로 폴백하지 않음 —
+  WDDM에서 타 프로세스 점유 미반영이 실측 확인됨). 비-Windows는 기존 `mem_get_info` 경로 유지.
+- 선택 사유(reason)에 **free·threshold·source**(nvidia-smi / torch.mem_get_info)를 포함.
+- GPU/CPU 강제 정책 불변. OOM→CPU 1회 재시도는 최종 안전망으로 유지.
+- 문서에서 "mem_get_info가 타 프로세스 점유를 반영한다"는 단정 제거.
+
+**결함 2 — Qwen 취소 잔존물 정리(`tts_worker.py` + `qwen-cleanup.ts` + `audio.ipc.ts`)**
+- Qwen 실행마다 output_dir 안에 **실행별 전용 임시폴더 `.qwen-job-*`**(tempfile.mkdtemp)를 만들고,
+  segment·atempo·pending 등 모든 중간 산출물을 그 안에만 둔다(동일 파일시스템 → 최종 os.replace 원자적).
+- 성공 시 검증된 최종만 `os.replace(job_dir/pending, output_dir/synthesized.wav)`. Python 정상/오류 경로는
+  **finally로 job_dir 전체 삭제**.
+- 취소(taskkill /T /F로 finally 미실행)는 **Electron 부모가 자식 종료 확인(runner 'done') 후** output_dir의
+  `.qwen-job-*` 폴더만 삭제(`sweepQwenJobDirs`). 작업 시작 시에도 방어적으로 동일 스윕(안전 범위 = 해당
+  output_dir 바로 아래 `.qwen-job-*` '폴더'만; synthesized.wav·session.json·타 작업 결과·동명 파일은 불변).
+
+**테스트**
+- `test_gpu_policy.py`(30): nvidia-smi 파싱(대상 index·garbage·returncode·부재·timeout) / Windows Auto(9508→GPU@1500,
+  2121→CPU@4000, torch와 충돌 시 nvidia-smi 우선, 측정 실패→보수적 CPU) / 비-Windows source 태그 / 기존 torch 경로·
+  OOM 재시도·강제 정책 불변.
+- `test_qwen_engine.py`(27): 성공/실패/atempo 실패에 `.qwen-job-*` 정리·기존 synthesized.wav 불변 추가.
+- `qwen-cleanup.test.ts`(node): `.qwen-job-*` 폴더만 제거, 최종/세션/타 폴더/동명 파일 보존, 부재 output_dir 무해.
+
+**실측 재검증(실제 ComfyUI 병행, 산출물 git 비추적)**: A 대화 — nvidia-smi free 2420 ≥ 1500 → GPU(source=nvidia-smi).
+B Qwen — nvidia-smi free 2424(torch는 14306) < 4000 → **CPU**(구 코드는 GPU 오선택), 출력 정상·`.qwen-job` 0.
+C 취소 — seg_001 기록 후 취소 → worker/venv 자식 0, 중간물은 `.qwen-job-*`에 격리(output_dir 느슨한 잔존 0),
+Electron 스윕 후 temp 0, 기존 synthesized.wav 불변.
+- 검증: python discovery 119 · npm test 32 · tsc node 통과 · build 통과. (tsc web 기존 오류 `ModeSelector` 1건 무관·불변)
+- **범위**: 기존 3커밋 불변(squash 안 함). UX 개선은 이 안정화 커밋 승인 후 별도 커밋. resources/·작업파일/ 미스테이지. push 안 함.
+
 ## 2026-08-21 — Qwen3-TTS 엔진 연동 (한국어 Auto 우선순위, job bridge 모델 1회 로딩)
 
 배경: 블라인드 청취에서 GPT-SoVITS v2 한국어 제로샷이 4조건 모두 "외국인식 억양"(v2 한계). 로컬
