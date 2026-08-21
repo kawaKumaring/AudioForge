@@ -339,6 +339,12 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     // 어느 것도 없이 프로세스가 끝나면(예: 외부 kill, 코드 0인데 result 미도달) done에서 오류로 마감.
     const settle = createSettlementGuard(sendError)
 
+    // production race 방지: 터미널 신호(result/error)를 즉시 보내지 않고 버퍼링했다가 runner 'done'
+    // (자식 프로세스 실제 종료 = backend free) 이후에 전달한다. 이러면 renderer가 완료(done)와
+    // '다른 모드로 재처리'를 보는 시점엔 이미 runner=null이라, 결과 직후 재합성해도 "이미 처리 중"이 없다.
+    let pendingResult: unknown = null
+    let pendingError: string | null = null
+
     runner.on('progress', (data) => {
       mainWindow.webContents.send('audio:progress', data)
     })
@@ -375,12 +381,12 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
         console.log(`[AudioForge] session.json 저장 실패: ${(err as Error).message}`)
       }
       settle.markSettled()
-      mainWindow.webContents.send('audio:result', data)
+      pendingResult = data  // 'done'에서 backend free 확인 후 전달
     })
 
     runner.on('error', (message) => {
       settle.markSettled()
-      sendError(typeof message === 'string' ? message : String(message))
+      pendingError = typeof message === 'string' ? message : String(message)  // 'done'에서 전달
     })
 
     // Watchdog: kill if no progress for 5 minutes
@@ -402,12 +408,9 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
 
     runner.on('done', (code) => {
       if (watchdog) clearTimeout(watchdog)
-      // 정착 신호(result/error/watchdog)가 없었으면 여기서 오류로 마감 → UI가 processing에 안 남음.
-      settle.finish(code)
-      // Clean up config file
+      // 자식 프로세스 실제 종료 후 발생(취소 taskkill 포함). 여기서 backend를 먼저 free로 만들고
+      // (runner=null) '그 다음' 버퍼링한 터미널 신호를 renderer에 전달 → 완료 표시 시점엔 이미 재합성 가능.
       try { unlinkSync(configPath) } catch {}
-      // 'done'은 자식 프로세스 실제 종료 후 발생(취소 taskkill 포함). 정상 성공 시 Python finally가
-      // 이미 .qwen-job-*를 지웠으므로 no-op이고, 취소로 finally가 안 돈 경우 남은 실행별 폴더를 제거.
       if (mode === 'tts') {
         // 합성 '중간 산출물'(.qwen-job-*)만 정리. 취소(taskkill)로 죽은 worker가 파일 핸들을 잠깐 물어
         // 즉시 삭제가 실패할 수 있어(Windows 락) 즉시 + 지연 재스윕.
@@ -416,7 +419,14 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
         // 파생 '참조 클립'(reference_clip_24k.wav)은 여기서 삭제하지 않는다 — 성공/오류/취소 후에도 유지해
         // 같은 클립으로 재합성이 가능하게. 삭제는 새 파일/reset/구간 재확정/앱 종료에서만.
       }
-      runner = null
+      runner = null  // backend free — 아래 터미널 신호 전달 전에 반드시 먼저.
+      // 버퍼링한 터미널 신호 전달(정착됨). 없으면 abnormal exit → settle.finish가 오류로 마감(UI 안 멈춤).
+      if (pendingResult !== null) {
+        mainWindow.webContents.send('audio:result', pendingResult)
+      } else if (pendingError !== null) {
+        sendError(pendingError)
+      }
+      settle.finish(code)
     })
 
     runner.on('progress', () => {

@@ -76,10 +76,10 @@ try {
 } catch (e) {
   failed++; console.log('[e2e] EXCEPTION', e?.message || String(e))
   try { await win.screenshot({ path: path.join(SHOT, 'e2e_complete_FAIL.png') }) } catch { /* ignore */ }
+} finally {
+  try { await app.close() } catch { /* ignore */ }
+  ok(snapshotTree(RES_DIR) === resBefore, 'resources/ 원본·기존 출력 불변(size/hash/목록)')
+  cleanupIsolated(ISO)  // 예외에도 반드시 정리
 }
-
-await app.close()
-ok(snapshotTree(RES_DIR) === resBefore, 'resources/ 원본·기존 출력 불변(size/hash/목록)')
-cleanupIsolated(ISO)
 console.log('[e2e] SUMMARY', JSON.stringify({ failed, pageErrors: pageErrors.length, crashes: crashes.length }))
 process.exit(failed === 0 ? 0 : 1)

@@ -145,25 +145,25 @@ try {
 } catch (e) {
   failed++; log('EXCEPTION', e?.message || String(e))
   try { await win.screenshot({ path: path.join(SHOT, 'e2e_FAIL.png') }) } catch { /* ignore */ }
+} finally {
+  try { await app.close() } catch { /* ignore */ }
+
+  // 6) code 구분 — 취소로 인한 worker 조기 종료(code≠0/kill)는 예상. 취소 아닌 error는 실패 처리.
+  const mainText = mainOut.join('')
+  const unexpectedErr = /\[main\]\[render-process-gone\]|\[main\]\[preload-error\]|\[main\]\[did-fail-load\]/.test(mainText)
+  ok(!unexpectedErr, '예상치 못한 renderer/preload/load 오류 없음')
+  if (userCancelled) log('참고: 취소로 인한 worker 조기 종료는 예상 종료로 간주(사용자 취소)')
+
+  // 7) 종료 후 임시 파생/작업 폴더 정리 확인
+  const os = await import('os')
+  const leftover = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('audioforge_refclip_'))
+  ok(leftover.length === 0, `종료 후 파생 참조 임시폴더 정리(leftover=${leftover.length})`)
+  // 원본 resources/ 불변 단언 후 격리 폴더만 삭제(예외에도 반드시)
+  ok(snapshotTree(RES_DIR) === resBefore, 'resources/ 원본·기존 출력 불변(size/hash/목록)')
+  cleanupIsolated(ISO)
+
+  fs.writeFileSync(path.join(SHOT, 'e2e_log.txt'), logLines.join('\n') + '\n\n--- main ---\n' + mainOut.join(''), 'utf-8')
 }
-
-await app.close()
-
-// 6) code 구분 — 취소로 인한 worker 조기 종료(code≠0/kill)는 예상. 취소 아닌 error는 실패 처리.
-const mainText = mainOut.join('')
-const unexpectedErr = /\[main\]\[render-process-gone\]|\[main\]\[preload-error\]|\[main\]\[did-fail-load\]/.test(mainText)
-ok(!unexpectedErr, '예상치 못한 renderer/preload/load 오류 없음')
-if (userCancelled) log('참고: 취소로 인한 worker 조기 종료는 예상 종료로 간주(사용자 취소)')
-
-// 7) 종료 후 임시 파생/작업 폴더 정리 확인
-const os = await import('os')
-const leftover = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('audioforge_refclip_'))
-ok(leftover.length === 0, `종료 후 파생 참조 임시폴더 정리(leftover=${leftover.length})`)
-// 원본 resources/ 불변 단언 후 격리 폴더만 삭제
-ok(snapshotTree(RES_DIR) === resBefore, 'resources/ 원본·기존 출력 불변(size/hash/목록)')
-cleanupIsolated(ISO)
-
-fs.writeFileSync(path.join(SHOT, 'e2e_log.txt'), logLines.join('\n') + '\n\n--- main ---\n' + mainOut.join(''), 'utf-8')
 if (pageErrors.length) log('PAGEERRORS', pageErrors.join(' | '))
 log('SUMMARY', { failed, pageErrors: pageErrors.length, consoleErrors: consoleErrors.length, crashes: crashes.length, shots: SHOT })
 process.exit(failed === 0 ? 0 : 1)
