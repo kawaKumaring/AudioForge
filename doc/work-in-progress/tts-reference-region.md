@@ -1,67 +1,78 @@
-# WIP — TTS 참조 구간 선택(긴 참조 3~10초) + GUI/UX
+# WIP 인수인계 — TTS 참조 구간 선택(긴 참조 3~10초) + GUI/UX
 
-브랜치: `feature/tts-reference-region-ux` (base: 안정 `19f777c`, master는 병합 금지 — 별도 승인)
+브랜치: `feature/tts-reference-region-ux` — master/develop 병합 금지(별도 승인).
+
+## 브랜치 상태 (compact 시점)
+- **master 안정선**: `19f777c` (로컬=원격, 불변)
+- **feature HEAD**: `aa0a113` (로컬 == origin/feature/tts-reference-region-ux)
+- 작업트리: clean (untracked `resources/`만 — 사용자 자산, 커밋/스테이지 안 함)
+- 안정선(19f777c) 이후 feature 12커밋(아래).
 
 ## 목적
-합성 백엔드는 완료. GUI/UX를 보완한다. 특히 10초 초과 참조를 오류로 거부하지 않고 "참조 원본"으로
-수용해, 파형에서 3~10초 구간을 골라 그 구간만 mono/24kHz 파생 WAV로 만들어 전사·합성에 쓴다.
-원본은 절대 변경하지 않는다.
+합성 백엔드는 완료. GUI/UX 보완. 특히 10초 초과 참조를 오류 거부하지 않고 "참조 원본"으로 수용해,
+파형에서 3~10초 구간을 골라 그 구간만 mono/24kHz 파생 WAV로 만들어 전사·합성에 쓴다. 원본 불변.
 
-## 상태
-- **완료(커밋됨)**
-  - `7e5ba82` — P0 참조 구간 선택 + 게이팅 + 문구 정정.
-  - `90a476a` — 파생 참조 임시폴더 수명 관리(refclip-cleanup) + 111초 실파일 재검증.
-  - `a17020f` — **P1-1** 결과 재현 메타데이터(session/result, 전사 전문 미기록).
-  - `e441fa6` — **P1-2** 결과 GUI(실제 엔진·장치·참조 방식·구간·폴백·소요 시간). ⚠커밋 제목에 `@` 오타(본문 정상, 정책상 amend 안 함).
-  - `0f72671` — **P1-3** Qwen preflight 상태 표시(예상값, 실행 결과 metadata가 최종).
-  - `fe1f17b` **P1-4** 고급 설정 정리(엔진·속도·간격 → 고급 접이식) + 감정 태그 자주쓰는것+더보기.
-  - `da9325b` **초기화 race 수정**: analyze-reference/qwen-preflight를 previewGuard에서 분리(읽기 전용),
-    single-flight(preflight 공유 / analyze 파일별). transcriptPreviewGuard·referenceTrimGuard 분리. randomUUID.
-  - (새 커밋) **P0 검은 화면 수정 + Electron E2E**: 근본 원인 = `runPreview`가 result에서 `data.transcript`만
-    꺼내 analyze/trim/preflight의 최상위 payload를 유실 → `analysis.duration_sec` undefined → `fmt()` 크래시 →
-    React 언마운트 → 검은 화면(#0a0a0f). 수정: runPreview가 transcript 래핑 있으면 그것, 없으면 type 제외 전체
-    payload를 반환. 방어: fmt null-safe + analyze payload 검증(실패 시 "다시 분석"). renderer ErrorBoundary(검은
-    화면 대신 오류 표시, 원인 미은폐). main 진단 로그(did-fail-load/preload-error/render-process-gone/unresponsive/
-    console-message). 단일 인스턴스 락(requestSingleInstanceLock + second-instance focus, 방어적). Playwright
-    Electron E2E(synthesize 16 assert + single-instance 3 assert) — 프로덕션 빌드 실제 구동으로 검은 화면 회귀 차단.
+## 완료 기능 + 커밋 해시 (7e5ba82 → aa0a113)
+- `7e5ba82` — 긴 참조 3~10초 구간 선택(파형·추천·재생·확정→파생 클립) + 합성 게이팅 + 문구 정정.
+- `90a476a` — 파생 참조 임시폴더 수명 관리(refclip-cleanup) + 111초 실파일 재검증.
+- `a17020f` — P1-1 결과 재현 메타데이터(session/result, 전사 전문 미기록: 언어/글자수/sha8만).
+- `e441fa6` — P1-2 결과 GUI(실제 엔진·장치·참조 방식·구간·폴백·소요 시간). ⚠커밋 '제목'에 `@` 오타(본문 정상, 이미 push라 정책상 미수정 — 병합 방식으로 정리 가능).
+- `0f72671` — P1-3 Qwen preflight 상태 표시(예상값; 실행 결과 metadata가 최종 권위).
+- `fe1f17b` — P1-4 고급 설정 정리(엔진·속도·간격 → 고급 접이식) + 감정 태그 자주쓰는것+더보기.
+- `da9325b` — 초기화 race: analyze-reference/qwen-preflight를 previewGuard에서 분리(읽기 전용) +
+  single-flight(preflight 공유 / analyze 파일별). transcriptPreviewGuard·referenceTrimGuard 분리. cfg randomUUID.
+- `24c0338` — **P0 검은 화면 근본 수정** + Electron E2E. 원인: `runPreview`가 result에서 `data.transcript`만
+  꺼내 analyze/trim/preflight의 최상위 payload 유실 → `analysis.duration_sec` undefined → `fmt()` 크래시 →
+  React 언마운트 → 검은 화면. 수정: transcript 래핑 없으면 type 제외 전체 payload 반환. + fmt null-safe,
+  analyze payload 검증("다시 분석"), renderer ErrorBoundary, main 진단 로그, 단일 인스턴스 락(방어적).
+- `f1bf069` — P0 검증 강화(runPreview payload 회귀, 완료 E2E, 엄격 취소 검증, 증거 정정).
+- `d3791cc` — **파생 참조 클립 수명**: 합성 성공/오류/취소 후에도 클립 유지(재합성 가능), 삭제는 새 파일/
+  reset/재확정/앱 종료에서만. override 만료 시 원본 폴백 금지(resolve_reference_input). 긴 원본/긴 감정참조는
+  모델 로딩 전 차단(감정 ID·파일명·구간 안내).
+- `59ee4bd` — reset()에서 파생 참조 실제 정리 구현 + E2E를 resources 격리(tmp UUID 복사)로 안전화.
+- `aa0a113` — **결과 직후 재합성 race 제거**(아래 "최근 해결").
 
-## 실제 재현/수정 (P0 검은 화면)
-- **재현**: Playwright로 프로덕션 앱 구동 → 111초 파일 TTS 진입 → `ReferenceRegionPanel` render 중
-  `TypeError: Cannot read properties of undefined (reading 'toFixed')`(fmt) → ErrorBoundary가 없었다면 검은 화면.
-- **원인**: runPreview payload 유실(위). analyze/trim/preflight IPC를 transcribe 전용 runPreview에 재사용한 사각지대.
-- **검증(수정 후, 프로덕션 빌드)**: E2E 16/16 PASS — 초기 non-empty · analyze+preflight 동시 · 111.08 표시 ·
-  구간 확정 · 합성 클릭 audio:process 1회·검은 overlay 0·pageerror/crash 0·processing UI 유지 · 취소 복귀 ·
-  모드 전환 후 재진입 · 종료 후 임시폴더 0. single-instance 3/3. dev startup: preload 경로 동일·클린.
-  스크린샷: `작업파일/e2e_shots/`(git 비추적).
-- **남은 문제(다음 슬라이스)**
-  - P1-4 잔여: "감정별 음성 등록" 전체 섹션·"언어 강제/전사문 없이"를 단일 고급 패널로 완전 통합
-    (현재 각각 자체 접이식으로 기본 접힘 — 클러터는 해소, 위치 통합은 미완). 기존 감정ID/직렬화/라우팅 불변.
-  - GUI 결과 화면에 seed·model revision 등 상세 표시 확장(현재 핵심 필드만).
-  - Electron 창 상호작용 UI(업로드·파형 드래그·재생) 실제 클릭 검증 — 자동화 도구로는 미실시.
+## 최근 해결 (aa0a113) — result/runner-done 재합성 backend-ready race
+- 증상(이전 미해결): 첫 result가 UI 표시된 뒤 Python runner의 done/exit 전 재합성/재처리 클릭 시
+  "이미 처리 중" 발생(result 표시와 backend ready 미분리). 사용자가 결과 직후 재처리 누르면 재현되는 real race.
+- 수정: main이 `result`/`error`를 즉시 보내지 않고 버퍼링 → runner `'done'`(자식 종료 = backend free)에서
+  `runner=null` 이후에 전달. → renderer가 완료/재처리를 보는 시점엔 이미 backend free → 정상 1회 클릭 재합성,
+  "이미 처리 중" 미노출. abnormal exit는 settle.finish가 오류로 마감(UI 안 멈춤).
+- 검증: resynthesize E2E 15/15(강제 status 변경·재클릭 없이 1회 클릭 2회차 진입, "이미 처리 중" 0).
+- 상태: **수정·검증 완료**. 잔여 모니터링 포인트: 실제 사용자 클릭 감으로 최종 확인(사용감).
 
-## 파생 참조 임시폴더 수명 관리 (audioforge_refclip_*)
-- 위치: `tmpdir/audioforge_refclip_<ts>/reference_clip_24k.wav`.
-- 정리 시점: 재확정(이전 클립) / 새 파일 분석·reset / 합성 성공·오류·취소(runner 'done') /
-  앱 시작·종료 방어 스윕.
-- 안전 규칙: 합성 worker 사용 중(runner.isRunning)엔 삭제 안 함 / 원본·synthesized.wav·다른 prefix·
-  상위 경로 불변 / tmpdir 직속 정확한 prefix 폴더만.
-- 코드: `src/main/services/refclip-cleanup.ts`(isRefClipDir/removeRefClipDir/sweepRefClipDirs),
-  `audio.ipc.ts`(currentRefClipDir 추적 + analyze/trim/done/release IPC + app start/will-quit).
+## 통과한 테스트 (aa0a113 기준)
+- 단위: python discovery **136** · npm test **41** · tsc node/web 통과(신규 오류 0) · build 통과.
+- Electron E2E(실 앱 구동, `npm run test:e2e` / `test:e2e:complete`):
+  - synthesize **20/20**(검은화면/크래시/overlay 0, audio:process 1회, 취소 후 worker·임시폴더 정리)
+  - single-instance **3/3** · reset-cleanup **6/6**(reset→파생 폴더 실제 삭제)
+  - complete **10/10**(실제 Qwen 완료 → wav 디코딩·NaN 없음·peak>0 → resultMetadata·결과 GUI)
+  - resynthesize **15/15**(같은 클립 2회 합성, 1회 클릭 재합성, race 0)
+  - 모든 E2E: 입력을 `tmpdir/audioforge_e2e_<UUID>/`로 격리, finally 정리, resources/ 스냅샷 불변 단언.
+- 실측 파일: `resources/speaker_b.wav`(48kHz mono PCM16, **111.083초**). 백엔드 e2e: 추천 6.6/7.0s → 파생
+  24kHz mono PCM16/7.0s → 원본 sha256 불변 → 파생 클립만 전사·합성.
 
-## 테스트
-- python discovery 126 (reference_region 7 포함).
-- npm test 35 (refclip-cleanup 3, qwen-cleanup 3 포함).
-- tsc node/web 통과(신규 오류 0), build 통과.
+## 현재 미해결 / 다음 슬라이스 (P1 잔여)
+- P1-4 잔여: "감정별 음성 등록" 전체·"언어 강제/전사문 없이"를 단일 고급 패널로 완전 통합(현재 각각 자체
+  접이식으로 기본 접힘 — 클러터는 해소, 위치 통합 미완). 기존 감정 ID/직렬화/라우팅 불변 유지.
+- 감정별 참조도 10초 초과 시 UI에서 구간 선택 지원(현재는 백엔드가 감정 ID·파일명으로 차단만, 전용 UI 없음).
+- 결과 GUI 상세 확장: seed·model revision 등(현재 핵심 필드만 표시).
+- (해결됨) result/runner-done 재합성 race → aa0a113. 실사용 사용감 최종 확인만 남음.
 
-## 실측 (실제 파일, git 비추적)
-- 파일: `resources/speaker_b.wav` — 48kHz mono PCM16, **111.083초**, ~10.66MB.
-  - (이전 보고서의 72.6초 파일은 `작업파일/AudioForge_output/2026-04-12_04-43-15_…권하영…/speaker_b.wav`였음 — 지정 파일 오인, 정정됨.)
-- 백엔드 e2e: analyze duration **111.083** → 추천 6.6s/**7.0s**(speech 0.97) → 구간 무음 0.08·클리핑 0·
-  in_range → 파생 **24kHz mono PCM16/7.0s** → **원본 sha256 불변**(a876e390…) → 자동전사 파생 클립만
-  (ko 35자) → Qwen 파생 클립만 합성 성공(cuda, source=nvidia-smi, 2.48s).
+## master 병합 조건
+1. 전체 회귀 유지: python discovery · npm test · tsc(node/web) · build.
+2. Electron E2E 전부 PASS: synthesize / single-instance / reset-cleanup / complete / resynthesize.
+3. 병합 대상 diff에 금지 경로(resources/·작업파일/·venv·모델·*.wav) 0 (현재 clean).
+4. develop 통합 검증 후 master 승인(정책: master 직접 push 금지, 병합 별도 승인).
+5. (선택) `e441fa6` 제목 `@` 오타 정리 방식 결정(squash merge 시 자연 해소).
 
-## master 병합 조건 (별도 승인 필요)
-1. 위 "남은 문제"의 결과 metadata/session 기록 반영.
-2. 실제 Electron 앱에서 사용자 클릭 검증(업로드→추천 재생→범위 변경→확정→파생→합성, 취소 정리) 통과.
-3. 전체 회귀(python/npm/tsc/build) 유지.
-4. develop 통합 검증 후.
+## 병합 후 병렬 작업 계획 (pitch / emotion)
+- 병합 후 안정선에서 각각 독립 feature 브랜치를 분기(서로 격리, 상호 의존 없음):
+  - `feature/tts-pitch` — 합성 결과 pitch 조정(후처리 또는 엔진 파라미터). speed(atempo)와 유사하게 결과에만
+    적용하고 참조/라우팅/직렬화 불변. metadata에 pitch·pitch_postprocessed 필드 추가(P1-1 스키마 확장).
+  - `feature/tts-emotion` — 감정별 참조 구간 선택 UI(위 "감정별 참조 10초 초과" 항목 흡수) + 감정 라우팅 강화.
+    기존 감정 ID/직렬화 불변 필수. P1-4 고급 패널 통합과 함께 진행 가능.
+- 두 브랜치는 이 feature가 develop/master에 병합된 뒤 그 안정선에서 분기해 충돌 최소화. 각자 feature/* →
+  develop 통합 검증 → master 승인의 동일 흐름. 공용 변경(metadata 스키마 등)은 먼저 develop에 반영 후 rebase.
+- 공유 지점 주의: 둘 다 `TtsResultInfo`(결과 GUI)·metadata 스키마·`_synthesize_qwen_job`을 건드릴 수 있어,
+  스키마/결과 GUI 확장은 한쪽에서 먼저 develop에 넣고 다른 쪽이 받아가는 순서로.
