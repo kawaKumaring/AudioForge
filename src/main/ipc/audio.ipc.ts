@@ -410,6 +410,9 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       // 이미 .qwen-job-*를 지웠으므로 no-op이고, 취소로 finally가 안 돈 경우 남은 실행별 폴더를 제거.
       if (mode === 'tts') {
         try { sweepQwenJobDirs(outputDir) } catch { /* noop */ }
+        // 취소(taskkill /T /F)로 죽은 worker가 세그먼트/pending 파일 핸들을 잠깐 물고 있어 즉시 삭제가
+        // 실패할 수 있다(Windows 파일 락). OS가 핸들을 놓은 뒤 한 번 더 스윕(지연 재시도).
+        setTimeout(() => { try { sweepQwenJobDirs(outputDir) } catch { /* noop */ } }, 2500)
         // 합성 종료(성공/오류/취소) → worker가 참조 사용을 끝냈으므로 파생 참조 클립 폴더 정리.
         releaseRefClip()
       }

@@ -14,10 +14,29 @@ const logLines = []
 const log = (...a) => { const s = a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '); logLines.push(s); console.log('[e2e]', s) }
 
 let failed = 0
+let userCancelled = false
 function ok(cond, msg) { if (cond) { log('PASS', msg) } else { failed++; log('FAIL', msg) } }
+// base 아래(1단계) 폴더의 하위 항목 경로들 수집(.qwen-job-* 잔존 확인용)
+function collectDirs(base) {
+  const out = []
+  let top = []
+  try { top = fs.readdirSync(base, { withFileTypes: true }) } catch { return out }
+  for (const d of top) {
+    if (!d.isDirectory()) continue
+    const sub = path.join(base, d.name)
+    out.push(sub)
+    try { for (const c of fs.readdirSync(sub, { withFileTypes: true })) if (c.isDirectory()) out.push(path.join(sub, c.name)) } catch { /* ignore */ }
+  }
+  return out
+}
 
 if (!fs.existsSync(REF)) { console.error('필수 검증 파일 없음:', REF); process.exit(2) }
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요: npm run build'); process.exit(2) }
+
+// 결정적 검증을 위해 이전 실행이 남긴 테스트 출력만 초기화(입력 resources/speaker_b.wav는 보존).
+// AudioForge_output은 전부 생성물이라 안전하게 삭제.
+const OUT_BASE = path.join(path.dirname(REF), 'AudioForge_output')
+try { fs.rmSync(OUT_BASE, { recursive: true, force: true }) } catch { /* ignore */ }
 
 const pageErrors = [], consoleErrors = [], crashes = []
 const mainOut = []
@@ -75,22 +94,40 @@ try {
   await win.evaluate(() => window.__afStore.setState({ ttsText: '안녕하세요. 테스트 문장입니다.' }))
 
   // 4) 합성 클릭 → audio:process 1회 + processing UI + 검은 화면/크래시 없음
+  const exitedBefore = (mainOut.join('').match(/Process exited/g) || []).length
   const beforeCfg = mainOut.join('').split('Config written').length - 1
   await win.getByText('음성 합성 시작', { exact: false }).click({ timeout: 8000 })
-  await win.waitForTimeout(3000)
+  // processing 상태를 느슨한 정규식이 아니라 store.status로 단언
+  await win.waitForFunction(() => window.__afStore?.getState().status === 'processing', { timeout: 8000 })
+  ok(await win.evaluate(() => window.__afStore.getState().status === 'processing'), 'store.status === processing')
+  // 처리 취소 버튼이 실제로 표시됨(느슨한 텍스트 매칭 아님)
+  const cancelBtn = win.getByText('처리 취소', { exact: false })
+  ok(await cancelBtn.isVisible(), '처리 취소 버튼 표시')
   const afterClick = await measure()
   await win.screenshot({ path: path.join(SHOT, 'e2e_03_after_synth_click.png') })
   const cfgCount = mainOut.join('').split('Config written').length - 1 - beforeCfg
   ok(cfgCount === 1, `audio:process 정확히 1회(config written=${cfgCount})`)
-  ok(afterClick.len > 20, `합성 클릭 후 화면 non-empty(len=${afterClick.len})`)
   ok(afterClick.overlays === 0, '합성 클릭 후 검은 전체 overlay 없음')
   ok(pageErrors.length === 0 && crashes.length === 0, '합성 클릭: pageerror/crash 0')
-  const processingUI = await win.evaluate(() => /처리 취소|중\.\.\.|Qwen|합성/.test(document.getElementById('root')?.innerText || ''))
-  ok(processingUI, 'processing UI 표시 유지')
 
-  // 5) 취소 → 정상 화면 복귀
-  await win.getByText('처리 취소').click({ timeout: 8000 }).catch(() => log('취소 버튼 없음(이미 완료?)'))
-  await win.waitForTimeout(1500)
+  // 5) 취소 필수 클릭(부재를 catch로 넘기지 않음) → processing=false + worker 종료 + 임시폴더 0
+  userCancelled = true  // 이후 발생하는 worker 조기 종료(code≠0/kill)는 '사용자 취소로 인한 예상 종료'
+  await cancelBtn.click({ timeout: 8000 })  // 실패 시 예외 → E2E 실패
+  await win.waitForFunction(() => window.__afStore?.getState().status !== 'processing', { timeout: 15000 })
+  ok(await win.evaluate(() => window.__afStore.getState().status !== 'processing'), '취소 후 store.status !== processing')
+  // 취소된 synth worker(자식 프로세스)가 종료됐는지 — 'done'('Process exited') 1회 이상 추가 발생
+  const t0 = Date.now()
+  while (((mainOut.join('').match(/Process exited/g) || []).length) <= exitedBefore && Date.now() - t0 < 15000) {
+    await win.waitForTimeout(300)
+  }
+  const exitedAfter = (mainOut.join('').match(/Process exited/g) || []).length
+  ok(exitedAfter > exitedBefore, `취소 후 worker 자식 프로세스 종료('Process exited' ${exitedBefore}→${exitedAfter})`)
+  // 임시 파생/작업 폴더 정리(합성 output_dir의 .qwen-job-* 0) — 지연 재스윕(락 해제 대기)까지 폴링.
+  // OUT_BASE는 시작 시 초기화했으므로 이 카운트는 오직 이번 실행의 결과다(과거 stale 오탐 없음).
+  const jobCount = () => collectDirs(OUT_BASE).filter(n => path.basename(n).startsWith('.qwen-job-')).length
+  const tc = Date.now()
+  while (jobCount() > 0 && Date.now() - tc < 12000) await win.waitForTimeout(500)
+  ok(jobCount() === 0, `취소 후 .qwen-job-* 정리(leftover=${jobCount()})`)
   const afterCancel = await measure()
   ok(afterCancel.len > 20 && afterCancel.overlays === 0, '취소 후 정상 화면')
 
@@ -110,10 +147,15 @@ try {
 
 await app.close()
 
-// 7) 종료 후 임시 파생/작업 폴더 정리 확인(best-effort)
+// 6) code 구분 — 취소로 인한 worker 조기 종료(code≠0/kill)는 예상. 취소 아닌 error는 실패 처리.
+const mainText = mainOut.join('')
+const unexpectedErr = /\[main\]\[render-process-gone\]|\[main\]\[preload-error\]|\[main\]\[did-fail-load\]/.test(mainText)
+ok(!unexpectedErr, '예상치 못한 renderer/preload/load 오류 없음')
+if (userCancelled) log('참고: 취소로 인한 worker 조기 종료는 예상 종료로 간주(사용자 취소)')
+
+// 7) 종료 후 임시 파생/작업 폴더 정리 확인
 const os = await import('os')
-const tmp = os.tmpdir()
-const leftover = fs.readdirSync(tmp).filter(n => n.startsWith('audioforge_refclip_'))
+const leftover = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('audioforge_refclip_'))
 ok(leftover.length === 0, `종료 후 파생 참조 임시폴더 정리(leftover=${leftover.length})`)
 
 fs.writeFileSync(path.join(SHOT, 'e2e_log.txt'), logLines.join('\n') + '\n\n--- main ---\n' + mainOut.join(''), 'utf-8')

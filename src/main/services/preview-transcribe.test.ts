@@ -55,6 +55,44 @@ test('result → done: transcript payload로 resolve, cleanup 1회', async () =>
   assert.equal(t.cleared, true)  // 타임아웃 타이머 해제됨
 })
 
+test('result → done: 최상위 payload(analyze/trim/preflight)는 type만 제거하고 전체 반환', async () => {
+  // P0 회귀: runPreview가 transcript 래핑이 없는 result의 최상위 필드를 유실하면 안 된다.
+  // (검은 화면 근본 원인: analyze의 duration_sec 등이 유실돼 renderer가 undefined.toFixed() 크래시.)
+  const r = new FakeRunner()
+  const t = manualTimers()
+  const p = runPreview({
+    runner: r, scriptPath: 's', args: [], timeoutMs: 1000,
+    cleanup: () => {}, setTimeoutFn: t.setT, clearTimeoutFn: t.clrT
+  })
+  r.emit('result', {
+    type: 'result', duration_sec: 111.08, sample_rate: 48000, channels: 1,
+    needs_region: true, recommend: { ok: true, start_sec: 6.6, dur_sec: 7.0 }, peaks: { peaks: [0.1, 0.2] }
+  })
+  r.emit('done', 0)
+  const res = await p as Record<string, unknown>
+  assert.equal(res.type, undefined, 'type 필드는 제거')
+  assert.equal(res.duration_sec, 111.08, 'duration_sec 보존')
+  assert.equal(res.sample_rate, 48000)
+  assert.equal(res.channels, 1)
+  assert.equal(res.needs_region, true)
+  assert.deepEqual(res.recommend, { ok: true, start_sec: 6.6, dur_sec: 7.0 }, 'recommend 보존')
+  assert.deepEqual(res.peaks, { peaks: [0.1, 0.2] }, 'peaks 보존')
+})
+
+test('result → done: trim 최상위 payload(clip_path·metrics) 보존', async () => {
+  const r = new FakeRunner()
+  const t = manualTimers()
+  const p = runPreview({
+    runner: r, scriptPath: 's', args: [], timeoutMs: 1000,
+    cleanup: () => {}, setTimeoutFn: t.setT, clearTimeoutFn: t.clrT
+  })
+  r.emit('result', { type: 'result', clip_path: 'C:/tmp/ref.wav', metrics: { dur_sec: 7.0, in_range: true } })
+  r.emit('done', 0)
+  const res = await p as Record<string, unknown>
+  assert.equal(res.clip_path, 'C:/tmp/ref.wav')
+  assert.deepEqual(res.metrics, { dur_sec: 7.0, in_range: true })
+})
+
 test('error → done: failed로 resolve(오류 메시지 포함)', async () => {
   const r = new FakeRunner()
   const t = manualTimers()
