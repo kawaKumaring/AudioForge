@@ -47,6 +47,8 @@ try {
   await win.getByText('고급 설정', { exact: false }).click({ timeout: 8000 })
   const pitch = win.locator('input[list="tts-pitch-ticks"]')
   await pitch.waitFor({ timeout: 8000 })
+  // 새 정책(계약 G): probe 전 unknown은 slider 비활성 → 실제 probe(supported)가 store에 반영될 때까지 대기.
+  await win.waitForFunction(() => window.__afStore.getState().ttsPitchCapability?.supported === true, undefined, { timeout: 15000 })
   const disabledNow = await pitch.isDisabled()
   ok(!disabledNow, `capability 지원 → pitch slider 활성(disabled=${disabledNow})`)
   await win.evaluate(() => window.__afStore.setState({ ttsPitch: 0 }))

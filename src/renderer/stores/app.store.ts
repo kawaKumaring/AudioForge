@@ -1,6 +1,6 @@
 import { create } from 'zustand'
 import type { SeparationMode, Track, FileInfo } from '../../shared/types'
-import type { TtsReferenceEntry } from '../../shared/ttsConfig'
+import type { TtsReferenceEntry, PitchCapability } from '../../shared/ttsConfig'
 
 // 감정별 참조 상태 — 하나의 slot이 통합 브랜치의 config 3필드(§1.2 계약)로 직렬화된다:
 //   source  → ttsEmotionRefSources[id] (사용자 등록 원본 경로, 영속·세션 재현 기준)
@@ -137,6 +137,8 @@ interface AppState {
   ttsSilenceGap: number
   // 음높이 보정(반음, -2.0~+2.0). 후처리 축(최종 WAV) — 0이면 무후처리. 정규화 권위는 Python.
   ttsPitch: number
+  // pitch 후처리 capability(rubberband) — TTSEditor가 probe해 기록하고 ProcessButton이 합성 gate에 소비(단일 소스).
+  ttsPitchCapability: PitchCapability | null
   // 감정별 참조 상태(source/clip/region/ready). 통합 브랜치가 config 3필드로 직렬화.
   ttsEmotionRefState: Record<string, EmotionRefState>
   ttsReferencePrompts: Record<string, TtsReferenceEntry>
@@ -175,6 +177,7 @@ interface AppState {
   setPlayingTrack: (name: string | null) => void
   setRestorable: (v: { dir: string; session: RestorableSession } | null) => void
   restoreSession: (dir: string, session: RestorableSession) => void
+  setTtsPitchCapability: (c: PitchCapability | null) => void
   reset: () => void
 }
 
@@ -208,6 +211,7 @@ export const useAppStore = create<AppState>((set) => ({
   ttsSpeed: 1.0,
   ttsSilenceGap: 0.5,
   ttsPitch: 0.0,
+  ttsPitchCapability: null,
   ttsEmotionRefState: {} as Record<string, EmotionRefState>,
   ttsReferencePrompts: {} as Record<string, TtsReferenceEntry>,
   ttsEngine: 'auto',
@@ -238,6 +242,7 @@ export const useAppStore = create<AppState>((set) => ({
   setDemucsModel: (v) => set({ demucsModel: v }),
   setNSpeakers: (v) => set({ nSpeakers: v }),
   setTtsReferencePrompts: (v) => set({ ttsReferencePrompts: v }),
+  setTtsPitchCapability: (c) => set({ ttsPitchCapability: c }),
   setTtsRefState: (v) => set((s) => ({
     ttsReferenceClip: v.clip !== undefined ? v.clip : s.ttsReferenceClip,
     ttsRefReady: v.ready !== undefined ? v.ready : s.ttsRefReady,
@@ -350,7 +355,7 @@ export const useAppStore = create<AppState>((set) => ({
       fileInfo: null, fileUrl: null, status: 'idle', progress: 0, progressMessage: '', error: null,
       tracks: [], outputDir: null, playingTrack: null, restorable: null, splitMarkers: [], splitLabels: [],
       ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null,
-      ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsPitch: 0.0, resultMetadata: null,
+      ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsPitch: 0.0, ttsPitchCapability: null, resultMetadata: null,
     })
   }
 }))

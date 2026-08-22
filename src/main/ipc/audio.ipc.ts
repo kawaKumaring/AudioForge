@@ -167,6 +167,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
 
   // 읽기 전용 작업 single-flight — StrictMode 중복 effect/동시 요청에도 subprocess는 1회.
   const qwenPreflightSF = createSingleFlight<unknown>()
+  const pitchPreflightSF = createSingleFlight<unknown>()  // pitch capability probe(qwen/analyze/trim guard와 무관)
   const analyzeSF = createKeyedSingleFlight<unknown>()  // 절대경로 key
 
   ipcMain.handle('audio:select-file', async () => {
@@ -322,14 +323,40 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     })
   })
 
-  // pitch capability preflight(§6) — UI(음높이 슬라이더)가 rubberband 지원 여부를 미리 소비.
-  // ⚠️ 계약/타입/mock 단계: 여기서는 ffmpeg를 실행하지 않고 '미probe' 기본 계약을 반환한다.
-  // 실제 probe 연결(separate.py의 pitch_shift.pitch_available 결과를 normalizePitchCapability에 주입)은
-  // 통합 담당이 확인·배선한다. 배선 시 이 핸들러가 raw {available, reason}를 받아 normalize만 하면 된다.
+  // pitch capability preflight(§6·계약 G) — UI(음높이 슬라이더)와 합성 gate가 rubberband 지원 여부를 소비.
+  // separate.py 'pitch-preflight' 모드가 pitch_shift.pitch_available()의 (available, reason)만 반환(미디어·
+  // GPU·모델 없음). 읽기 전용 single-flight로 StrictMode/동시 호출에도 subprocess 1회. Python 없음·runner
+  // 오류·timeout은 supported=false·probed=true(미지원 확정)로 명확히 반환한다(조용한 unknown 방치 금지).
   ipcMain.handle('audio:pitch-preflight', async () => {
-    // TODO(통합): separate.py에 'pitch-preflight' 모드를 추가해 pitch_available(ffmpeg)의
-    // (available, reason)을 반환받고 normalizePitchCapability(raw)로 정규화. 지금은 미probe 기본값.
-    return normalizePitchCapability(null)
+    // E2E 결정성(계약 G-C): AF_E2E=1 일 때만 환경변수로 capability를 강제한다(production 무영향·monkeypatch 없음).
+    if (process.env.AF_E2E === '1') {
+      const forced = process.env.AF_E2E_PITCH_CAPABILITY
+      if (forced === 'supported') return normalizePitchCapability({ available: true, reason: 'e2e-forced-supported' })
+      if (forced === 'unsupported') return normalizePitchCapability({ available: false, reason: 'e2e-forced-unsupported' })
+      if (forced === 'probe-failed') return normalizePitchCapability({ available: false, reason: 'pitch-probe-failed: e2e-forced' })
+      // 그 외/미설정이면 실제 probe로 진행
+    }
+    if (runner?.isRunning) return normalizePitchCapability(null)  // 처리 중엔 probe 안 함(unknown 유지)
+    if (!existsSync(pythonPath)) return normalizePitchCapability({ available: false, reason: 'pitch-probe-failed: python-not-found' })
+    return pitchPreflightSF.run(async () => {  // 동시/StrictMode 중복은 진행 중 Promise 공유(subprocess 1회)
+      const cfgPath = join(tmpdir(), `audioforge_pitchpre_${randomUUID()}.json`)
+      try {
+        const scriptPath = PythonRunner.getScriptPath('separate.py')
+        writeFileSync(cfgPath, JSON.stringify({ mode: 'pitch-preflight' }), 'utf-8')
+        const raw = await runPreview({
+          runner: new PythonRunner(pythonPath),
+          scriptPath, args: ['--config', cfgPath],
+          timeoutMs: 35000,
+          cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
+        }) as { available?: boolean | null; reason?: string } | null
+        return normalizePitchCapability(raw)
+      } catch (e) {
+        // Python/runner 오류·timeout → 미지원 확정(probed=true, supported=false). 사유에 경로/민감정보 미포함.
+        return normalizePitchCapability({ available: false, reason: `pitch-probe-failed: ${(e as Error)?.name || 'error'}` })
+      } finally {
+        try { unlinkSync(cfgPath) } catch {}
+      }
+    })
   })
 
   ipcMain.handle('audio:process', async (_event, filePath: string, mode: string, options?: Record<string, unknown>) => {

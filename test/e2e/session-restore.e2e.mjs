@@ -1,6 +1,6 @@
 // 세션 복원 + capability + 지문 IPC 비합성 E2E — 실제 앱을 띄우되 Qwen/ffmpeg를 전혀 실행하지 않는다.
 // 검증: (1) store.restoreSession이 TTS mode·pitch·source+region·전사·metadata를 복원하고 source 소실
-//        감정만 재지정 필요로 표시, (2) audio:pitch-preflight가 PitchCapability 계약을 반환(mock),
+//        감정만 재지정 필요로 표시, (2) audio:pitch-preflight가 PitchCapability 계약을 반환(계약 G: 실제 probe, probed:true),
 //        (3) audio:fingerprint-reference가 statSync 기반 지문(path|size|mtime)을 반환.
 // 실행: node test/e2e/session-restore.e2e.mjs   (사전: npm run build)
 import { _electron as electron } from 'playwright'
@@ -76,7 +76,7 @@ try {
   // (2) pitch capability 계약(mock — 미probe 기본값)
   ok(r.pitchCap && typeof r.pitchCap.supported === 'boolean', 'PitchCapability.supported boolean')
   ok(['rubberband', 'none', 'unknown'].includes(r.pitchCap.method), `PitchCapability.method 유효 → ${r.pitchCap.method}`)
-  ok(r.pitchCap.probed === false, 'mock 단계 → probed:false')
+  ok(r.pitchCap.probed === true, '실제 pitch-preflight 배선(계약 G) → probed:true')
 
   // (3) fingerprint(statSync)
   ok(typeof r.fp === 'string' && r.fp.split('|').length === 3, `지문 형식 path|size|mtime → ${r.fp.split('|').length}필드`)

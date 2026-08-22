@@ -19,7 +19,7 @@ function _estimateTime(mode: string, duration: number, transcribe: boolean, tran
 }
 
 export default function ProcessButton() {
-  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsEmotionRefState, ttsReferencePrompts, ttsEngine, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, status, setProcessing, setProgress, setResult, setError } = useAppStore()
+  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsPitchCapability, ttsEmotionRefState, ttsReferencePrompts, ttsEngine, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, status, setProcessing, setProgress, setResult, setError } = useAppStore()
   const cleanupRef = React.useRef<(() => void) | null>(null)
 
   // 감정 참조 게이팅/전송(계약 §5 불변식) — 순수 판정은 planEmotionRefs 단일 로직.
@@ -123,10 +123,17 @@ export default function ProcessButton() {
         return `[${blockedEmotion.label}] 참조 ${msg ? `— ${msg}` : '구간을 확정하세요'}`
       })()
     : ''
+  // pitch 합성 gate(계약 G-D): ttsPitch==0이면 capability와 무관하게 합성 가능. ttsPitch!=0인데 capability가
+  // supported로 확정되지 않았으면(미확인/미지원) 차단 — 저장된 nonzero pitch를 조용히 0으로 무시하지 않는다.
+  // 사용자가 '원본(0)'으로 되돌리면 ttsPitch=0이 되어 차단이 풀린다.
+  const pitchSupported = !!ttsPitchCapability && ttsPitchCapability.supported
+  const pitchBlockReason = (mode === 'tts' && ttsPitch !== 0 && !pitchSupported)
+    ? `음높이 보정 지원을 확인할 수 없어 ${ttsPitch > 0 ? '+' : ''}${ttsPitch.toFixed(1)}반음 설정으로 합성할 수 없습니다. 원본(0)으로 되돌리세요.`
+    : ''
   const ttsBlockReason = mode === 'tts'
     ? (!ttsText.trim() ? '합성할 대사를 입력하세요'
         : (!ttsRefReady ? (ttsRefMessage || '참조 구간을 확정하세요')
-        : (emotionBlockReason || '')))
+        : (emotionBlockReason || pitchBlockReason || '')))
     : ''
 
   if (ttsBlockReason) {

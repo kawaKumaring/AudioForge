@@ -106,6 +106,18 @@ def main():
                  device_source=None, reason=f"preflight 오류: {e}")
         return
 
+    if args.mode == "pitch-preflight":
+        # pitch 후처리(rubberband) 지원 여부만 조회 — 미디어 입력·오디오 디코딩·Qwen/GPU/모델 로딩 없음.
+        # pitch_available()은 ffmpeg -filters 조회만 수행하고 경로/민감정보 없는 사유 코드를 준다.
+        try:
+            from pitch_shift import pitch_available
+            available, reason = pitch_available()
+            emit("result", available=bool(available), reason=str(reason))
+        except Exception as e:
+            # 전체 경로/민감정보 미포함 — 예외 종류만.
+            emit("result", available=False, reason=f"pitch-probe-failed: {type(e).__name__}")
+        return
+
     if not args.input or not args.output:
         emit("error", message="입력 파일과 출력 경로가 필요합니다.")
         sys.exit(1)

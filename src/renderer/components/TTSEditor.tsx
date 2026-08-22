@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import { useAppStore } from '@/stores/app.store'
 import type { TtsReferenceEntry, PitchCapability } from '../../shared/ttsConfig'
-import { deriveRefMode, normalizePitchCapability } from '../../shared/ttsConfig'
+import { deriveRefMode } from '../../shared/ttsConfig'
 import ReferenceRegionPanel from './ReferenceRegionPanel'
 import { EMOTION_GROUPS, ALL_EMOTIONS, FREQUENT_TAGS, parseUsedEmotionIds } from '@/lib/emotions'
 
@@ -12,7 +12,7 @@ const PROMPT_LANGS: [string, string][] = [
 ]
 
 export default function TTSEditor() {
-  const { mode, status, fileInfo, ttsEmotionRefState, registerEmotionRef, removeEmotionRef, setEmotionRefState, setTtsRefState } = useAppStore()
+  const { mode, status, fileInfo, ttsEmotionRefState, registerEmotionRef, removeEmotionRef, setEmotionRefState, setTtsRefState, ttsPitchCapability, setTtsPitchCapability } = useAppStore()
   // 로컬 상태는 store 값으로 초기화 — 빈 값으로 시작하면 아래 동기화
   // useEffect가 다른 모드에 다녀온 뒤 store의 대사/등록을 덮어써 유실시킴
   const [ttsText, setTtsText] = useState(() => useAppStore.getState().ttsText)
@@ -25,7 +25,8 @@ export default function TTSEditor() {
   const [showRefPrompts, setShowRefPrompts] = useState(false)
   const [txLoading, setTxLoading] = useState<string | null>(null)
   const [preflight, setPreflight] = useState<{ available?: boolean; snapshot_ok?: boolean; device_expected?: string; reason?: string } | null>(null)
-  const [pitchCap, setPitchCap] = useState<PitchCapability | null>(null)
+  // pitch capability는 store 단일 소스(ProcessButton도 같은 상태를 gate에 소비). 여기선 probe해 기록만.
+  const pitchCap = ttsPitchCapability
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [showAllTags, setShowAllTags] = useState(false)
   const [showUnregistered, setShowUnregistered] = useState(false)
@@ -54,9 +55,15 @@ export default function TTSEditor() {
   useEffect(() => {
     if (mode !== 'tts') return
     let cancelled = false
+    // 핸들러(audio:pitch-preflight)가 이미 normalizePitchCapability로 최종 계약(PitchCapability)을 반환한다.
+    // 여기서 다시 normalize하면 이중 정규화로 뭉개지므로(PitchCapability엔 available 필드가 없음) 직접 소비한다.
     window.api.audio.pitchPreflight()
-      .then((raw: unknown) => { if (!cancelled) setPitchCap(normalizePitchCapability(raw as { available?: boolean | null; reason?: string } | null)) })
-      .catch(() => { if (!cancelled) setPitchCap(null) })
+      .then((cap: unknown) => {
+        if (cancelled) return
+        const c = cap as PitchCapability | null
+        setTtsPitchCapability(c && typeof c.probed === 'boolean' ? c : { supported: false, method: 'none', probed: true, reason: 'pitch-probe-failed' })
+      })
+      .catch(() => { if (!cancelled) setTtsPitchCapability({ supported: false, method: 'none', probed: true, reason: 'pitch-probe-failed' }) })
     return () => { cancelled = true }
   }, [mode])
 
@@ -159,10 +166,12 @@ export default function TTSEditor() {
 
   const toggleCollapse = (id: string) => setCollapsedRefs(prev => ({ ...prev, [id]: !prev[id] }))
 
-  // pitch capability(§6): probe가 실제로 수행됐고(supported=false·probed=true) 미지원이면 슬라이더를 잠근다.
-  // probe 미수행(probed=false, unknown)은 잠그지 않는다 — 통합 담당이 실제 probe를 배선하기 전 기본값.
+  // pitch capability(§6·계약 G): supported로 확정된 경우에만 슬라이더 활성. 미확인(unknown/probe 전)과
+  // 미지원(probed·unsupported)은 모두 잠근다(미probe인데 활성화되던 회귀 수정). reset은 capability와 무관.
+  const pitchSupported = !!pitchCap && pitchCap.supported
   const pitchProbedUnsupported = !!pitchCap && pitchCap.probed && !pitchCap.supported
-  const pitchDisabled = disabled || pitchProbedUnsupported
+  const pitchUnknown = !pitchSupported && !pitchProbedUnsupported   // null 또는 probed=false
+  const pitchDisabled = disabled || !pitchSupported
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
@@ -577,7 +586,7 @@ export default function TTSEditor() {
           flex: '1 1 240px', minWidth: 0, display: 'flex', flexDirection: 'column', gap: 5,
           borderRadius: 10, padding: '8px 14px',
           background: 'var(--bg-card)', border: '1px solid var(--border-subtle)',
-          opacity: pitchProbedUnsupported ? 0.6 : 1
+          opacity: pitchSupported ? 1 : 0.6
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
             <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title="음높이 보정(반음). 0=원본, +는 높게 / −는 낮게.">음높이</span>
@@ -588,12 +597,14 @@ export default function TTSEditor() {
             <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--rose)', fontVariantNumeric: 'tabular-nums', minWidth: 46, textAlign: 'right' }}>
               {ttsPitch > 0 ? '+' : ''}{ttsPitch.toFixed(1)}반음
             </span>
-            <button onClick={() => !pitchDisabled && setTtsPitch(0)} disabled={pitchDisabled || ttsPitch === 0}
+            {/* reset은 capability와 무관: 미지원/미확인이라도 저장된 nonzero를 0으로 되돌려 합성 차단을 풀 수 있어야 함.
+                처리 중이거나 이미 0일 때만 비활성. */}
+            <button onClick={() => !disabled && ttsPitch !== 0 && setTtsPitch(0)} disabled={disabled || ttsPitch === 0}
               title="음높이를 원본(0)으로 되돌립니다" style={{
-                padding: '2px 7px', borderRadius: 4, border: 'none', cursor: (pitchDisabled || ttsPitch === 0) ? 'default' : 'pointer',
+                padding: '2px 7px', borderRadius: 4, border: 'none', cursor: (disabled || ttsPitch === 0) ? 'default' : 'pointer',
                 fontSize: 9, fontWeight: 600, fontFamily: 'inherit',
                 background: 'var(--bg-elevated)', color: 'var(--text-secondary)',
-                opacity: (pitchDisabled || ttsPitch === 0) ? 0.4 : 1
+                opacity: (disabled || ttsPitch === 0) ? 0.4 : 1
               }}>원본(0)</button>
           </div>
           {/* 중앙 눈금 — 0(원본)을 가운데에 표시 */}
@@ -602,7 +613,11 @@ export default function TTSEditor() {
           </div>
           {pitchProbedUnsupported ? (
             <div style={{ fontSize: 9, lineHeight: 1.5, color: 'var(--rose)' }}>
-              이 ffmpeg는 음높이 보정(rubberband)을 지원하지 않아 사용할 수 없습니다{pitchCap?.reason ? ` — ${pitchCap.reason}` : ''}. 음높이는 원본(0)으로 합성됩니다.
+              이 환경에서는 음높이 보정을 사용할 수 없습니다{pitchCap?.reason ? ` — ${pitchCap.reason}` : ''}. 저장된 음높이 값이 있으면 원본(0)으로 되돌린 뒤 합성하세요.
+            </div>
+          ) : pitchUnknown ? (
+            <div style={{ fontSize: 9, lineHeight: 1.5, color: 'var(--text-muted)' }}>
+              음높이 보정 지원 여부를 확인하는 중입니다. 확인 전에는 음높이를 조절할 수 없습니다(원본 0으로 합성됩니다).
             </div>
           ) : (
             <div style={{ fontSize: 9, lineHeight: 1.5, color: 'var(--text-muted)' }}>
