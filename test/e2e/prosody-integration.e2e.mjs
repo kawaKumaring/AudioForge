@@ -84,11 +84,16 @@ try {
 
   const deadline = Date.now() + WAIT_MS
   let settled = false, snap = null
+  const msgs = []
   while (Date.now() < deadline) {
     snap = await win.evaluate(() => { const s = window.__afStore.getState(); return { status: s.status, progress: s.progress, msg: s.progressMessage, err: s.error } })
+    if (snap.msg && msgs[msgs.length - 1] !== snap.msg) msgs.push(snap.msg)
     if (['done', 'error'].includes(snap.status)) { settled = true; break }
-    await win.waitForTimeout(1000)
+    await win.waitForTimeout(500)
   }
+  log('progress 이력:', msgs)
+  const deviceMsg = msgs.find(m => /장치/.test(m)) || '(장치 메시지 미포착)'
+  log('device 메시지:', deviceMsg)
   log('최종 store 스냅샷:', snap)
   if (!settled) log('미정착 — nvidia-smi:', nvidiaSmiGpu0() || '측정실패', '| 마지막 progress:', snap?.msg)
   ok(snap?.status === 'done', `합성 완료(status=done, error=${snap?.err || '없음'})`)
