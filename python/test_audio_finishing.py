@@ -412,16 +412,61 @@ class FinishAndPlaceIntegration(unittest.TestCase):
         import soundfile as sf
         s = _sine(dur=0.05)
         s[-1] = 0.8
-        cand = self._write("cand.wav", s)
+        cand = self._write("cand.wav", s)  # PCM_16 candidate (engine emulation)
         final = os.path.join(self.dir, "synthesized.wav")
         self.tw._finish_and_place(cand, final, 0.0, self.dir, self._AUTO)
         data, sr = sf.read(final, dtype="float32")
         info = sf.info(final)
         self.assertEqual(len(data), int(0.05 * SR) + 2880, "tail padding 반영")
         self.assertEqual(int(info.samplerate), SR, "메타 sr 유지")
+        self.assertEqual(info.subtype, "PCM_16", "auto pitch0 subtype == staged(PCM_16) 패리티")
         self.assertEqual(float(data[-1]), 0.0, "마지막 padding 샘플 정확히 0")
         self.assertTrue(np.all(np.isfinite(data)))
         self._leftovers_zero()
+
+    # ── 서브타입 패리티(auto == legacy off, per pitch) ──
+    def _final_subtype(self, tail_cfg, pitch):
+        import soundfile as sf
+        d = tempfile.mkdtemp(prefix="af_st_", dir=self.dir)
+        cand = os.path.join(d, "cand.wav")
+        sf.write(cand, _sine(dur=0.05), SR)  # engine emulation: default PCM_16
+        final = os.path.join(d, "synthesized.wav")
+        self.tw._finish_and_place(cand, final, pitch, d, tail_cfg)
+        return sf.info(final).subtype
+
+    def _rubberband(self):
+        import pitch_shift
+        return bool(pitch_shift.pitch_available()[0])
+
+    def test_legacy_off_subtype_recorded(self):
+        """레거시 off: pitch0 → PCM_16, pitch+1 → FLOAT(rubberband 출력, 기존값)."""
+        self.assertEqual(self._final_subtype(None, 0.0), "PCM_16")
+        if not self._rubberband():
+            self.skipTest("rubberband 미지원 — pitch+1 subtype 측정 불가")
+        self.assertEqual(self._final_subtype(None, 1.0), "FLOAT")
+
+    def test_auto_subtype_matches_legacy_pitch0(self):
+        self.assertEqual(self._final_subtype(None, 0.0), "PCM_16", "legacy off pitch0")
+        self.assertEqual(self._final_subtype(self._AUTO, 0.0), "PCM_16", "auto pitch0 == legacy")
+
+    def test_auto_subtype_matches_legacy_pitch1(self):
+        if not self._rubberband():
+            self.skipTest("rubberband 미지원 — pitch+1 subtype 측정 불가")
+        self.assertEqual(self._final_subtype(None, 1.0), "FLOAT", "legacy off pitch+1")
+        self.assertEqual(self._final_subtype(self._AUTO, 1.0), "FLOAT", "auto pitch+1 == legacy")
+
+    def test_subtype_mismatch_rejected(self):
+        """pending을 staged와 다른 subtype으로 쓰면(주입) 재오픈 검증이 잡아 거부 + final 무손상."""
+        import soundfile as sf
+        cand = self._write("cand.wav", _sine(dur=0.05))  # pitch0 → staged PCM_16
+        real_write = sf.write
+
+        def wrong_write(path, data, samplerate, *a, **k):
+            if str(path).endswith(".af-finished.wav"):
+                return real_write(path, data, samplerate, subtype="FLOAT")  # staged=PCM_16과 불일치
+            return real_write(path, data, samplerate, *a, **k)
+        self._run_fail_and_assert_preserved(
+            cand, patches=[self.mock.patch("soundfile.write", side_effect=wrong_write)])
 
     # ── 비유한(FLOAT) 차단: write 이전에 source에서 거부 ──
     def test_float_nan_candidate_rejected_preserves_final(self):
@@ -495,12 +540,16 @@ class FinishAndPlaceIntegration(unittest.TestCase):
         real_info = sf.info
 
         class _FakeInfo:
-            def __init__(self, real):
-                self.samplerate = real.samplerate + 1  # 메타 sr 오염
+            def __init__(self, real, bump):
+                self.samplerate = real.samplerate + bump  # 재오픈 시 메타 sr 오염
                 self.frames = real.frames
+                self.subtype = real.subtype
 
         def fake_info(path, *a, **k):
-            return _FakeInfo(real_info(path, *a, **k))
+            real = real_info(path, *a, **k)
+            # staged info는 그대로(패리티 subtype 확보), pending 재오픈 info만 sr 오염.
+            bump = 1 if str(path).endswith(".af-finished.wav") else 0
+            return _FakeInfo(real, bump)
         self._run_fail_and_assert_preserved(
             cand, patches=[self.mock.patch("soundfile.info", side_effect=fake_info)])
 
