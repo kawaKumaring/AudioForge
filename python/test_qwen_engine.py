@@ -231,8 +231,11 @@ class ValidateSegOutTest(_QwenGlobalIsolation, unittest.TestCase):
         return [{"index": i, "out_path": os.path.join(self.tmp, f"segment_qwen_{i + 1:03d}.wav")}
                 for i in range(n)]
 
+    def _expected(self, osi, ci):
+        return os.path.join(self.tmp, f"segment_qwen_{osi + 1:03d}_c{ci:03d}.wav")
+
     def _chunk(self, osi, ci, cc, write=True, path=None, status="ok"):
-        p = path or os.path.join(self.tmp, f"segment_qwen_{osi + 1:03d}_c{ci:03d}.wav")
+        p = path or self._expected(osi, ci)
         if write:
             _write(p, 0.2)
         return {"original_segment_index": osi, "chunk_index": ci, "chunk_count": cc, "out_path": p,
@@ -279,6 +282,61 @@ class ValidateSegOutTest(_QwenGlobalIsolation, unittest.TestCase):
         p = os.path.join(self.tmp, "segment_qwen_001_c000.wav")
         with open(p, "wb"):  # 0바이트
             pass
+        with self.assertRaises(RuntimeError):
+            self._val([self._chunk(0, 0, 1, write=False, path=p)], 1)
+
+    # ── P0-2 경로 정확 일치 ──
+    def test_wrong_basename_raises(self):
+        bad = os.path.join(self.tmp, "wrong_name.wav")   # job_dir 내부지만 결정적 규칙 위반
+        _write(bad, 0.2)
+        with self.assertRaises(RuntimeError):
+            self._val([self._chunk(0, 0, 1, write=False, path=bad)], 1)
+
+    def test_cross_segment_path_raises(self):
+        # seg0의 chunk인데 out_path가 seg1의 chunk 경로 → 기대 경로 불일치
+        cross = os.path.join(self.tmp, "segment_qwen_002_c000.wav")
+        _write(cross, 0.2)
+        with self.assertRaises(RuntimeError):
+            self._val([self._chunk(0, 0, 1, write=False, path=cross)], 2)
+
+    def test_realpath_escape_raises(self):
+        # .. 로 job_dir 밖을 가리키면 realpath 기준 기대 경로와 불일치
+        escaped = os.path.join(self.tmp, "..", os.path.basename(self.other), "segment_qwen_001_c000.wav")
+        _write(escaped, 0.2)
+        with self.assertRaises(RuntimeError):
+            self._val([self._chunk(0, 0, 1, write=False, path=escaped)], 1)
+
+    # ── P0-3 sr/채널 일관성 ──
+    def _write_sr(self, path, sr, stereo=False):
+        import numpy as np
+        import soundfile as sf
+        n = int(0.2 * sr)
+        t = np.arange(n) / sr
+        mono = (0.3 * np.sin(2 * np.pi * 220 * t)).astype("float32")
+        data = np.stack([mono, mono], axis=1) if stereo else mono
+        sf.write(path, data, sr)
+
+    def test_metadata_sr_mismatch_raises(self):
+        p = self._expected(0, 0)
+        self._write_sr(p, 24000)
+        e = self._chunk(0, 0, 1, write=False, path=p)
+        e["sr"] = 48000            # 위조된 metadata sr
+        with self.assertRaises(RuntimeError):
+            self._val([e], 1)
+
+    def test_chunk_sr_mismatch_raises(self):
+        p0 = self._expected(0, 0)
+        p1 = self._expected(0, 1)
+        self._write_sr(p0, 24000)
+        self._write_sr(p1, 48000)
+        e0 = self._chunk(0, 0, 2, write=False, path=p0); e0["sr"] = 24000
+        e1 = self._chunk(0, 1, 2, write=False, path=p1); e1["sr"] = 48000
+        with self.assertRaises(RuntimeError):
+            self._val([e0, e1], 1)
+
+    def test_stereo_chunk_raises(self):
+        p = self._expected(0, 0)
+        self._write_sr(p, 24000, stereo=True)
         with self.assertRaises(RuntimeError):
             self._val([self._chunk(0, 0, 1, write=False, path=p)], 1)
 

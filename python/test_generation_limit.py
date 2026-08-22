@@ -508,6 +508,36 @@ class SynthJobSafetyTest(unittest.TestCase):
             self.assertEqual(f.read(), sentinel)   # 원자 보존
         self.assertEqual(self._job_dirs(), [])
 
+    def test_concat_sr_mismatch_preserves(self):
+        # 결합 직전 chunk 간 sr 불일치(P0-3) → _assert_concat_ready 중단 → 기존 synthesized.wav 보존.
+        final = os.path.join(self.out, "synthesized.wav")
+        sentinel = b"KEEP-SR-" + b"z" * 8
+        with open(final, "wb") as f:
+            f.write(sentinel)
+
+        def fake(inner_self, segments, device):
+            import soundfile as sf
+            import numpy as np
+            jobdir = os.path.dirname(segments[0]["out_path"])
+            outs = []
+            for ci, sr in enumerate((24000, 48000)):   # 서로 다른 sr 2 chunk
+                p = os.path.join(jobdir, f"segment_qwen_001_c{ci:03d}.wav")
+                n = int(0.2 * sr)
+                sf.write(p, (0.3 * np.sin(2 * np.pi * 220 * np.arange(n) / sr)).astype("float32"), sr)
+                outs.append({"original_segment_index": 0, "chunk_index": ci, "chunk_count": 2,
+                             "out_path": p, "sr": sr, "x_vector_only": True, "emotion_id": "default",
+                             "production_tokens": 20, "generation_limit": 256, "generated_iterations": 90,
+                             "termination_reason": "completed_before_limit", "status": "ok"})
+            return outs
+
+        with mock.patch.object(tts_worker.QwenTTSEngine, "run_job", new=fake):
+            with self.assertRaises(RuntimeError):
+                tts_worker._synthesize_qwen_job(
+                    [("default", "문장")], {"default": self.ref}, {}, self.out, 1.0, 0.5, 0.0)
+        with open(final, "rb") as f:
+            self.assertEqual(f.read(), sentinel)
+        self.assertEqual(self._job_dirs(), [])
+
     def test_text_segment_too_long_surface_and_preserve(self):
         final = os.path.join(self.out, "synthesized.wav")
         sentinel = b"KEEP-ME-" + b"y" * 8

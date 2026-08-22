@@ -27,6 +27,7 @@ import json
 
 import generation_limit  # 순수 계산(math만). 스크립트 디렉터리(python/)가 sys.path에 있어 import 가능.
 import text_segmenter    # 다국어 token-aware 자동 분할(계약 B). 순수 로직.
+import chunk_paths       # chunk 경로 규칙(bridge·worker 공용 순수 헬퍼).
 
 
 def emit(msg_type, **kwargs):
@@ -124,14 +125,95 @@ def _generate_segment(model, seg, builder, proc):
             "termination_reason": reason}
 
 
-def _chunk_out_path(seg_out_path, chunk_index):
-    """chunk WAV의 결정적 경로 — 원본 out_path와 같은 디렉터리(job_dir) 안, 파일명에 chunk index 포함.
-    예: .../segment_qwen_001.wav → .../segment_qwen_001_c000.wav. 임의/외부 경로 생성 금지."""
-    import os
-    d = os.path.dirname(seg_out_path)
-    base = os.path.basename(seg_out_path)
-    stem = base[:-4] if base.lower().endswith(".wav") else base
-    return os.path.join(d, f"{stem}_c{chunk_index:03d}.wav")
+class BridgeSegmentTooLong(Exception):
+    """자동 분할로도 상한 이내 못 만든 원본 줄(계약 B). 생성 시작 전에 발생 → generate 호출 0."""
+
+    def __init__(self, segment_index, emotion_id, production_tokens, allowed):
+        self.segment_index = segment_index
+        self.emotion_id = emotion_id
+        self.production_tokens = production_tokens
+        self.allowed = allowed
+        super().__init__(f"TEXT_SEGMENT_TOO_LONG(seg={segment_index})")
+
+
+class BridgeGenerationLimit(Exception):
+    """chunk가 동적 상한 도달(계약 A). 잘린 WAV 미채택."""
+
+    def __init__(self, segment_index, chunk_index, emotion_id, generated_iterations, generation_limit):
+        self.segment_index = segment_index
+        self.chunk_index = chunk_index
+        self.emotion_id = emotion_id
+        self.generated_iterations = generated_iterations
+        self.generation_limit = generation_limit
+        super().__init__(f"GENERATION_LIMIT_EXCEEDED(seg={segment_index}, chunk={chunk_index})")
+
+
+def _build_chunk_plan(segments, builder, proc, max_seg_tok):
+    """전 원본 segment를 먼저 분할(생성 없음). 하나라도 분할 실패면 BridgeSegmentTooLong →
+    생성 루프에 진입하지 않아 generate 호출 0. 반환: [{seg, chunk_index, chunk_count, text}]."""
+    plan = []
+    for seg in segments:
+        try:
+            chunks = text_segmenter.split_for_generation(
+                seg["text"], lambda t: _prod_tokens(builder, proc, t), max_seg_tok)
+        except text_segmenter.SegmentTooLong as e:
+            raise BridgeSegmentTooLong(int(seg["index"]), seg.get("emotion_id"),
+                                       int(e.prod_tokens), int(e.max_tokens))
+        cc = len(chunks)
+        for ci, ctext in enumerate(chunks):
+            plan.append({"seg": seg, "chunk_index": ci, "chunk_count": cc, "text": ctext})
+    return plan
+
+
+def _finalize_wav(wavs, sr, seg_index, chunk_index):
+    """생성 결과 → 검증된 mono float32 1-D 배열. sr>0·non-empty·finite·mono 보장."""
+    import numpy as np
+    d = wavs[0] if isinstance(wavs, list) else wavs
+    d = np.asarray(d, dtype=np.float32)
+    if d.ndim > 1:
+        d = d.mean(axis=1)   # 모델이 다채널을 주면 mono로 다운믹스(저장은 항상 mono 1-D)
+    if not (isinstance(sr, (int, float)) and sr > 0):
+        raise RuntimeError(f"세그먼트 {seg_index} 조각 {chunk_index} sr 이상: {sr}")
+    if d.size == 0:
+        raise RuntimeError(f"세그먼트 {seg_index} 조각 {chunk_index} 빈 오디오")
+    if not np.all(np.isfinite(d)):
+        raise RuntimeError(f"세그먼트 {seg_index} 조각 {chunk_index} 비유한(NaN/Inf) 샘플")
+    return d
+
+
+def _generate_plan(model, plan, builder, proc, n_segments, progress=None):
+    """chunk plan을 순서대로 생성. total_chunks 기준 진행률(시작/완료). chunk 상한 도달 → BridgeGenerationLimit.
+    progress(percent, seg_index, n_segments, chunk_index, chunk_count, phase) 콜백(수치만)."""
+    import soundfile as sf
+    total = len(plan)
+    completed = 0
+    done = []
+    for item in plan:
+        seg = item["seg"]
+        ci = item["chunk_index"]
+        cc = item["chunk_count"]
+        if progress:
+            progress(30 + (completed * 60) // total, int(seg["index"]), n_segments, ci, cc, "start")
+        cseg = dict(seg)         # 원본 속성 상속 — text만 chunk로 교체
+        cseg["text"] = item["text"]
+        g = _generate_segment(model, cseg, builder, proc)
+        if g["termination_reason"] == "generation_limit":
+            raise BridgeGenerationLimit(int(seg["index"]), int(ci), seg.get("emotion_id"),
+                                        int(g["generated_iterations"]), int(g["generation_limit"]))
+        d = _finalize_wav(g["wavs"], g["sr"], seg["index"], ci)
+        cpath = chunk_paths.chunk_out_path(seg["out_path"], ci)  # 결정적·job_dir 내부
+        sf.write(cpath, d, int(g["sr"]))
+        completed += 1
+        done.append({"original_segment_index": int(seg["index"]), "chunk_index": int(ci),
+                     "chunk_count": int(cc), "out_path": cpath, "sr": int(g["sr"]),
+                     "x_vector_only": bool(seg.get("x_vector_only", False)),
+                     "emotion_id": seg.get("emotion_id"), "production_tokens": int(g["prod_tokens"]),
+                     "generation_limit": int(g["generation_limit"]),
+                     "generated_iterations": int(g["generated_iterations"]),
+                     "termination_reason": g["termination_reason"], "status": "ok"})
+        if progress:
+            progress(30 + (completed * 60) // total, int(seg["index"]), n_segments, ci, cc, "done")
+    return done
 
 
 def _load_model(model_path, device):
@@ -177,73 +259,35 @@ def main():
         sys.exit(1)
 
     try:
-        import numpy as np
-        import soundfile as sf
-
         emit("progress", percent=10, message=f"Qwen3-TTS 모델 로딩 중... ({device}, offline)")
         model = _load_model(model_path, device)
         builder, proc = _preflight_tokenizer(model)  # 안전장치 전제 — 부재 시 여기서 명확히 실패
         _install_talker_counter(model)
-
-        max_seg_tok = generation_limit.max_segment_tokens()
-        done = []
         n = len(segments)
-        for i, seg in enumerate(segments):
-            emo = seg.get("emotion_id")  # 태그(비민감). 결과·오류에 그대로 반환.
 
-            # 계약 B: 원본 segment를 동적 상한 이내 chunk로 자동 분할(실제 tokenizer 기준).
-            try:
-                chunks = text_segmenter.split_for_generation(
-                    seg["text"], lambda t: _prod_tokens(builder, proc, t), max_seg_tok)
-            except text_segmenter.SegmentTooLong as e:
-                # 더는 못 나눔 → 명확히 실패(내용 미포함). 부분 결과도 채택되지 않는다.
-                emit("error", code="TEXT_SEGMENT_TOO_LONG", segment_index=int(seg["index"]),
-                     emotion_id=emo, production_tokens=int(e.prod_tokens), allowed=int(e.max_tokens))
-                sys.exit(1)
+        # 1단계: 전 segment 선분할(생성 없음). 실패 시 여기서 종료 → generate 호출 0(뒤 실패로 앞 낭비 방지).
+        max_seg_tok = generation_limit.max_segment_tokens()
+        try:
+            plan = _build_chunk_plan(segments, builder, proc, max_seg_tok)
+        except BridgeSegmentTooLong as e:
+            emit("error", code="TEXT_SEGMENT_TOO_LONG", segment_index=e.segment_index,
+                 emotion_id=e.emotion_id, production_tokens=e.production_tokens, allowed=e.allowed)
+            sys.exit(1)
 
-            cc = len(chunks)
-            for ci, chunk_text in enumerate(chunks):
-                pct = 30 + int(((i + (ci + 1) / cc) / max(n, 1)) * 60)
-                # 진행률: 원본 문장 n / 생성 조각 m — 수치만(텍스트 전문 없음). chunk마다 watchdog 정상 갱신.
-                emit("progress", percent=pct,
-                     message=f"합성 중... (문장 {i + 1}/{n}, 조각 {ci + 1}/{cc})")
+        # 2단계: 생성. total_chunks 기준 진행률(시작 30% → 완료 90%). 시작·완료 모두 수치만(텍스트 없음).
+        def _progress(percent, seg_index, n_seg, ci, cc, phase):
+            tag = "시작" if phase == "start" else "완료"
+            emit("progress", percent=percent,
+                 message=f"합성 중... (문장 {seg_index + 1}/{n_seg}, 조각 {ci + 1}/{cc} {tag})")
 
-                # 원본 속성 상속(재감정/재언어감지·기본참조 폴백 없음): text만 chunk로 교체.
-                cseg = dict(seg)
-                cseg["text"] = chunk_text
-                g = _generate_segment(model, cseg, builder, proc)
-
-                if g["termination_reason"] == "generation_limit":
-                    # 상한 도달 → 잘린 WAV 미저장 + offending 구조화 오류(정수·감정 ID만).
-                    emit("error", code="GENERATION_LIMIT_EXCEEDED", segment_index=int(seg["index"]),
-                         chunk_index=int(ci), emotion_id=emo,
-                         generated_iterations=int(g["generated_iterations"]),
-                         generation_limit=int(g["generation_limit"]),
-                         termination_reason="generation_limit", status="generation_limit")
-                    sys.exit(1)
-
-                wavs, sr = g["wavs"], g["sr"]
-                d = wavs[0] if isinstance(wavs, list) else wavs
-                d = np.asarray(d, dtype=np.float32)
-                if d.ndim > 1:
-                    d = d.mean(axis=1)
-                if not (isinstance(sr, (int, float)) and sr > 0):
-                    raise RuntimeError(f"세그먼트 {seg['index']} 조각 {ci} sr 이상: {sr}")
-                if d.size == 0:
-                    raise RuntimeError(f"세그먼트 {seg['index']} 조각 {ci} 빈 오디오")
-                if not np.all(np.isfinite(d)):
-                    raise RuntimeError(f"세그먼트 {seg['index']} 조각 {ci} 비유한(NaN/Inf) 샘플")
-
-                # chunk out_path: job_dir 내부 결정적 파일명(원본 out_path 기반). job_dir 밖 경로 금지.
-                cpath = _chunk_out_path(seg["out_path"], ci)
-                sf.write(cpath, d, int(sr))
-                done.append({"original_segment_index": int(seg["index"]), "chunk_index": int(ci),
-                             "chunk_count": int(cc), "out_path": cpath, "sr": int(sr),
-                             "x_vector_only": bool(seg.get("x_vector_only", False)), "emotion_id": emo,
-                             "production_tokens": int(g["prod_tokens"]),
-                             "generation_limit": int(g["generation_limit"]),
-                             "generated_iterations": int(g["generated_iterations"]),
-                             "termination_reason": g["termination_reason"], "status": "ok"})
+        try:
+            done = _generate_plan(model, plan, builder, proc, n, progress=_progress)
+        except BridgeGenerationLimit as e:
+            emit("error", code="GENERATION_LIMIT_EXCEEDED", segment_index=e.segment_index,
+                 chunk_index=e.chunk_index, emotion_id=e.emotion_id,
+                 generated_iterations=e.generated_iterations, generation_limit=e.generation_limit,
+                 termination_reason="generation_limit", status="generation_limit")
+            sys.exit(1)
 
         emit("result", segments=done, success=True)
 

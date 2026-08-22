@@ -12,6 +12,7 @@ Engine selection:
 
 import os
 import re
+import chunk_paths   # chunk 경로 규칙(bridge와 공용) — 결정적 경로 정확 일치 검증
 from audio_utils import emit, get_device, find_ffmpeg, patch_torchaudio
 
 # ── Emotion definitions ──
@@ -564,15 +565,19 @@ class QwenTTSEngine(TTSEngine):
 
     @staticmethod
     def _validate_seg_out(seg_out, segments):
-        """chunk 결과 검증(계약 B §2): 경로 job_dir 내부·original_segment_index 연속성·chunk_index 0..cc-1
-        중복/누락 없음·같은 segment의 chunk_count 일치·status=ok·파일 존재/0바이트 아님·sr>0·finite."""
+        """chunk 결과 검증(계약 B §2 + P0 보완):
+        - status=ok·메타 필드 정합·original_segment_index 연속·chunk_index 0..cc-1 완전·chunk_count 일치.
+        - 경로: 각 결과가 정확히 chunk_paths.chunk_out_path(원본 out_path, ci)와 realpath+normcase 동일
+          (같은 디렉터리만으로 통과 금지; junction/symlink·상위경로 이탈·잘못된 basename·segment 교차 차단).
+        - sr: 결과 metadata sr == 실제 WAV sr, 전 chunk 공통 sr, mono(1-D), non-empty, finite."""
         import soundfile as sf
         import numpy as np
         n = len(segments)
         if not segments:
             raise RuntimeError("검증할 세그먼트 없음")
-        job_dir = os.path.abspath(os.path.dirname(segments[0]["out_path"]))
-        by_seg = {}   # osi -> {"cc":int, "chunks":{ci:entry}}
+        want_path = {s["index"]: s["out_path"] for s in segments}
+        by_seg = {}    # osi -> {"cc":int, "chunks":{ci:entry}}
+        common_sr = None
         for r in seg_out:
             if r.get("status") != "ok":
                 raise RuntimeError(f"비정상 chunk status={r.get('status')} (seg {r.get('original_segment_index')})")
@@ -582,15 +587,29 @@ class QwenTTSEngine(TTSEngine):
             if not (isinstance(osi, int) and isinstance(ci, int) and isinstance(cc, int) and cc >= 1
                     and 0 <= ci < cc):
                 raise RuntimeError(f"chunk 메타 필드 이상: seg={osi} chunk={ci} count={cc}")
+            if osi not in want_path:
+                raise RuntimeError(f"알 수 없는 original_segment_index: {osi}")
             gp = r.get("out_path")
-            if not gp or os.path.abspath(os.path.dirname(gp)) != job_dir:
-                raise RuntimeError(f"chunk 경로 job_dir 이탈: seg {osi} chunk {ci}")
-            if not (os.path.exists(gp) and os.path.getsize(gp) > 0):
-                raise RuntimeError(f"chunk 출력 없음/0바이트: seg {osi} chunk {ci}")
+            expected = chunk_paths.chunk_out_path(want_path[osi], ci)
+            if not gp or not os.path.exists(gp):
+                raise RuntimeError(f"chunk 출력 없음: seg {osi} chunk {ci}")
+            if not chunk_paths.same_real_path(gp, expected):
+                raise RuntimeError(f"chunk 경로 불일치(결정적 규칙 위반/이탈): seg {osi} chunk {ci}")
+            if os.path.getsize(gp) <= 0:
+                raise RuntimeError(f"chunk 0바이트: seg {osi} chunk {ci}")
+            meta_sr = r.get("sr")
+            if not (isinstance(meta_sr, int) and meta_sr > 0):
+                raise RuntimeError(f"chunk metadata sr 이상: seg {osi} chunk {ci}")
             d, sr = sf.read(gp, dtype="float32")
-            if not (isinstance(sr, (int, float)) and sr > 0):
-                raise RuntimeError(f"chunk sr 이상: seg {osi} chunk {ci}")
+            if int(sr) != meta_sr:
+                raise RuntimeError(f"chunk metadata sr({meta_sr}) != 실제 sr({sr}): seg {osi} chunk {ci}")
+            if common_sr is None:
+                common_sr = int(sr)
+            elif int(sr) != common_sr:
+                raise RuntimeError(f"chunk 간 sr 불일치: {common_sr} vs {sr} (seg {osi} chunk {ci})")
             d = np.asarray(d)
+            if d.ndim != 1:
+                raise RuntimeError(f"chunk가 mono(1-D)가 아님: seg {osi} chunk {ci} ndim={d.ndim}")
             if d.size == 0 or not np.all(np.isfinite(d)):
                 raise RuntimeError(f"chunk 비유한/빈 오디오: seg {osi} chunk {ci}")
             grp = by_seg.setdefault(osi, {"cc": cc, "chunks": {}})
@@ -976,6 +995,10 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         if abs(float(speed) - 1.0) > 1e-6:
             use = [_atempo_segment(p, float(speed)) for p in ordered]  # 실패는 명확한 예외
 
+        # 결합 직전 재검증(P0-3): speed 후처리 포함 모든 chunk가 동일 sr·mono·finite·non-empty.
+        # (첫 파일 sr로 저장하므로 sr 혼입 시 뒤 chunk 속도/길이 변질 → 명확히 중단, 기존 wav 보존.)
+        _assert_concat_ready(use)
+
         # gap: 자동분할 내부 chunk 사이 0초, 원래 segment(사용자 줄바꿈) 경계에만 사용자 silence_gap.
         gaps = []
         prev_osi = None
@@ -1089,6 +1112,26 @@ def _concat_with_silence(segment_paths, output_path, silence_sec=0.5):
         all_audio.pop()
     combined = np.concatenate(all_audio)
     sf.write(output_path, combined, target_sr)
+
+
+def _assert_concat_ready(paths):
+    """결합 직전 일관성 단언(P0-3): 전 파일 동일 sr·mono(1-D)·non-empty·finite. 위반 시 명확한 예외."""
+    import soundfile as sf
+    import numpy as np
+    common_sr = None
+    for p in paths:
+        d, sr = sf.read(p, dtype="float32")
+        if not (isinstance(sr, (int, float)) and sr > 0):
+            raise RuntimeError(f"결합 전 sr 이상: {os.path.basename(p)}")
+        if common_sr is None:
+            common_sr = int(sr)
+        elif int(sr) != common_sr:
+            raise RuntimeError(f"결합 전 sr 불일치: {common_sr} vs {sr}")
+        d = np.asarray(d)
+        if d.ndim != 1:
+            raise RuntimeError(f"결합 전 mono 아님(ndim={d.ndim}): {os.path.basename(p)}")
+        if d.size == 0 or not np.all(np.isfinite(d)):
+            raise RuntimeError(f"결합 전 빈/비유한 오디오: {os.path.basename(p)}")
 
 
 def _concat_with_boundaries(paths, gaps_before, output_path):
