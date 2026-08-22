@@ -70,6 +70,8 @@ interface AppState {
   ttsText: string
   ttsSpeed: number
   ttsSilenceGap: number
+  // 음높이 보정(반음, -2.0~+2.0). 후처리 축(최종 WAV) — 0이면 무후처리. 정규화 권위는 Python.
+  ttsPitch: number
   // 감정별 참조 상태(source/clip/region/ready). 통합 브랜치가 config 3필드로 직렬화.
   ttsEmotionRefState: Record<string, EmotionRefState>
   ttsReferencePrompts: Record<string, TtsReferenceEntry>
@@ -140,6 +142,7 @@ export const useAppStore = create<AppState>((set) => ({
   ttsText: '',
   ttsSpeed: 1.0,
   ttsSilenceGap: 0.5,
+  ttsPitch: 0.0,
   ttsEmotionRefState: {} as Record<string, EmotionRefState>,
   ttsReferencePrompts: {} as Record<string, TtsReferenceEntry>,
   ttsEngine: 'auto',
@@ -244,7 +247,7 @@ export const useAppStore = create<AppState>((set) => ({
       fileInfo: null, fileUrl: null, status: 'idle', progress: 0, progressMessage: '', error: null,
       tracks: [], outputDir: null, playingTrack: null, restorable: null, splitMarkers: [], splitLabels: [],
       ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null,
-      ttsReferencePrompts: {}, ttsEmotionRefState: {}, resultMetadata: null,
+      ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsPitch: 0.0, resultMetadata: null,
     })
   }
 }))

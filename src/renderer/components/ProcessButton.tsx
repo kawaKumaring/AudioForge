@@ -19,7 +19,7 @@ function _estimateTime(mode: string, duration: number, transcribe: boolean, tran
 }
 
 export default function ProcessButton() {
-  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefState, ttsReferencePrompts, ttsEngine, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, status, setProcessing, setProgress, setResult, setError } = useAppStore()
+  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsEmotionRefState, ttsReferencePrompts, ttsEngine, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, status, setProcessing, setProgress, setResult, setError } = useAppStore()
   const cleanupRef = React.useRef<(() => void) | null>(null)
 
   // 감정 참조 게이팅/전송(계약 §5 불변식) — 순수 판정은 planEmotionRefs 단일 로직.
@@ -28,6 +28,18 @@ export default function ProcessButton() {
     () => planEmotionRefs(ttsText, ttsEmotionRefState),
     [ttsText, ttsEmotionRefState]
   )
+
+  // 재현/Python 등록판정용 — 등록된 감정 전부의 source(원본 경로)와 region(구간). effective(위 toSend)와
+  // 역할이 다르다(계약 §1.2). Python은 이 sources로 "사용된 감정이 등록됐는지"를 판정(§5.1). 미사용도 등록이면 포함.
+  const { emotionSources, emotionRegions } = React.useMemo(() => {
+    const emotionSources: Record<string, string> = {}
+    const emotionRegions: Record<string, { start: number; duration: number }> = {}
+    for (const [id, slot] of Object.entries(ttsEmotionRefState)) {
+      if (slot?.source) emotionSources[id] = slot.source
+      if (slot?.region) emotionRegions[id] = slot.region
+    }
+    return { emotionSources, emotionRegions }
+  }, [ttsEmotionRefState])
 
   const handleProcess = async () => {
     console.log('[renderer][synthesize] 클릭 핸들러 진입', { mode, hasFile: !!fileInfo })
@@ -56,9 +68,10 @@ export default function ProcessButton() {
 
     try {
       console.log('[renderer][synthesize] audio:process 호출 직전')
-      // ttsEmotionRefs = 사용∩등록∩준비된 감정의 effective 경로만(계약 §5 전송 필터). 통합 브랜치가
-      // 여기에 ttsEmotionRefSources/ttsEmotionRefRegions(재현용)를 추가한다 — 편집을 게이팅/전송에 국소화.
-      const r = await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefs: emotionRefsToSend, ttsReferencePrompts, ttsEngine, ttsReferenceOverride: ttsReferenceClip, ttsReferenceRegion })
+      // ttsEmotionRefs = 사용∩등록∩준비된 감정의 effective 경로만(계약 §5 전송 필터).
+      // ttsEmotionRefSources/Regions = 등록 전부의 원본/구간(재현·Python 등록판정용, §1.2/§5.1).
+      // ttsPitch = 최종 WAV 음높이 후처리(0=무후처리, §6).
+      const r = await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsEmotionRefs: emotionRefsToSend, ttsEmotionRefSources: emotionSources, ttsEmotionRefRegions: emotionRegions, ttsReferencePrompts, ttsEngine, ttsReferenceOverride: ttsReferenceClip, ttsReferenceRegion })
       console.log('[renderer][synthesize] audio:process 호출 직후', r)
     } catch (err: any) {
       console.error('[renderer][synthesize] audio:process 오류', err?.stack || err)

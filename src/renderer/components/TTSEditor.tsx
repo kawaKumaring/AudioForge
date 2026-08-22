@@ -18,6 +18,7 @@ export default function TTSEditor() {
   const [ttsText, setTtsText] = useState(() => useAppStore.getState().ttsText)
   const [ttsSpeed, setTtsSpeed] = useState(() => useAppStore.getState().ttsSpeed)
   const [ttsSilenceGap, setTtsSilenceGap] = useState(() => useAppStore.getState().ttsSilenceGap)
+  const [ttsPitch, setTtsPitch] = useState(() => useAppStore.getState().ttsPitch)
   const [showEmotionSetup, setShowEmotionSetup] = useState(false)
   const [ttsEngine, setTtsEngine] = useState(() => useAppStore.getState().ttsEngine)
   const [refPrompts, setRefPrompts] = useState<Record<string, TtsReferenceEntry>>(() => useAppStore.getState().ttsReferencePrompts)
@@ -30,8 +31,8 @@ export default function TTSEditor() {
 
   // Sync to store (감정 참조 상태는 store가 단일 소스라 여기서 동기화하지 않는다)
   useEffect(() => {
-    useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap, ttsReferencePrompts: refPrompts, ttsEngine })
-  }, [ttsText, ttsSpeed, ttsSilenceGap, refPrompts, ttsEngine])
+    useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsReferencePrompts: refPrompts, ttsEngine })
+  }, [ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, refPrompts, ttsEngine])
 
   // Qwen 실행 전 상태(preflight) — 마운트 시 1회. 예상값이며 실행 결과는 결과 화면 metadata가 최종.
   useEffect(() => {
@@ -437,6 +438,19 @@ export default function TTSEditor() {
             style={{ flex: 1, accentColor: 'var(--rose)', cursor: 'pointer' }} />
           <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--rose)', fontVariantNumeric: 'tabular-nums', minWidth: 32, textAlign: 'right' }}>
             {ttsSilenceGap.toFixed(1)}초
+          </span>
+        </div>
+        <div style={{
+          flex: 1, display: 'flex', alignItems: 'center', gap: 8,
+          borderRadius: 10, padding: '8px 14px',
+          background: 'var(--bg-card)', border: '1px solid var(--border-subtle)'
+        }}>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }} title="음높이 보정(반음). 0=원본, +는 높게 / −는 낮게. 모델 재합성 없이 결과 음성에 후처리로 적용됩니다.">음높이</span>
+          <input type="range" min="-2" max="2" step="0.5" value={ttsPitch}
+            onChange={(e) => setTtsPitch(parseFloat(e.target.value))} disabled={disabled}
+            style={{ flex: 1, accentColor: 'var(--rose)', cursor: 'pointer' }} />
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--rose)', fontVariantNumeric: 'tabular-nums', minWidth: 40, textAlign: 'right' }}>
+            {ttsPitch > 0 ? '+' : ''}{ttsPitch.toFixed(1)}반음
           </span>
         </div>
       </div>
