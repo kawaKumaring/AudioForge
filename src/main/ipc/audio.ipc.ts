@@ -99,6 +99,20 @@ function buildReferenceFingerprints(filePath: string, options?: Record<string, u
   return map
 }
 
+// 세션 복원 시 참조 source 존재 여부 맵('default' + 감정 id). 렌더러는 fs 접근이 없으므로 여기서 판정.
+// source가 사라진 감정만 재지정 필요로 표시하기 위한 근거.
+function computeRefLiveness(session: Record<string, unknown>): Record<string, boolean> {
+  const liveness: Record<string, boolean> = {}
+  const source = typeof session.source === 'string' ? session.source : ''
+  liveness.default = !!source && existsSync(source)
+  const options = (session.options as Record<string, unknown> | undefined) || {}
+  const sources = (options.ttsEmotionRefSources as Record<string, string> | undefined) || {}
+  for (const [id, src] of Object.entries(sources)) {
+    liveness[id] = !!src && existsSync(src)
+  }
+  return liveness
+}
+
 let cachedFfprobe: string | null = null
 
 async function findFfprobe(): Promise<string> {
@@ -618,7 +632,9 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       }
       if (matches.length === 0) return null
       matches.sort((a, b) => b.createdAt.localeCompare(a.createdAt))  // 최신 우선
-      return { dir: matches[0].dir, session: matches[0].session }
+      const top = matches[0]
+      // refLiveness 주입 — 자동 복원 경로도 source 소실 감정을 재지정 필요로 표시할 수 있게.
+      return { dir: top.dir, session: { ...top.session, refLiveness: computeRefLiveness(top.session) } }
     } catch {
       return null
     }
@@ -634,6 +650,31 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     const dir = result.filePaths[0]
     const { readdirSync, readFileSync } = await import('fs')
     const files = readdirSync(dir)
+
+    // 우선 session.json이 있으면 그것으로 전체 설정(TTS mode·pitch·source+region·전사·metadata)을 복원.
+    // 트랙은 session.tracks 중 실제 남아 있는 파일만. refLiveness로 source 소실 감정을 렌더러가 표시.
+    if (files.includes('session.json')) {
+      try {
+        const s = JSON.parse(readFileSync(join(dir, 'session.json'), 'utf-8')) as Record<string, unknown>
+        const rawTracks = Array.isArray(s.tracks) ? s.tracks as { name?: string; label?: string; path?: string }[] : []
+        const sessionTracks = rawTracks
+          .filter(t => t.path && existsSync(t.path as string))
+          .map(t => ({ name: t.name || '', label: t.label || t.name || '', path: t.path as string }))
+        return {
+          tracks: sessionTracks,
+          outputDir: dir,
+          session: {
+            mode: s.mode,
+            source: s.source,
+            metadata: s.metadata ?? null,
+            options: s.options ?? {},
+            refLiveness: computeRefLiveness(s),
+            tracks: sessionTracks
+          }
+        }
+      } catch { /* session.json 손상 → 아래 레거시 스캔으로 폴백 */ }
+    }
+
     const jsonFiles = files.filter((f: string) => f.endsWith('.json')).sort()
 
     if (jsonFiles.length === 0) return null
@@ -667,7 +708,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       }
     }
 
-    return { tracks, outputDir: dir }
+    return { tracks, outputDir: dir, session: null }
   })
 
   ipcMain.handle('audio:export-tracks', async (_event, trackPaths: string[]) => {

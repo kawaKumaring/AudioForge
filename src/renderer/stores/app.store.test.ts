@@ -9,7 +9,7 @@ const released: (string | undefined)[] = []
   api: { audio: { releaseReferenceClip: (clipKey?: string) => { released.push(clipKey) } } },
 }
 
-const { useAppStore, emotionEffectivePath } = await import('./app.store.ts')
+const { useAppStore, emotionEffectivePath, reconstructEmotionRefState, reconstructReferencePrompts } = await import('./app.store.ts')
 
 beforeEach(() => {
   released.length = 0
@@ -148,4 +148,91 @@ test('reset 시 전사 상태 전량 초기화', () => {
   useAppStore.setState({ ttsReferencePrompts: { default: { manualText: 'x', mode: 'manual' } } })
   s.reset()
   assert.deepEqual(useAppStore.getState().ttsReferencePrompts, {})
+})
+
+// ── 세션 복원 재구성(지시 5) — source 소실 감정만 재지정 필요, 나머지 보존 ──
+test('reconstructEmotionRefState: source 존재+원본 직접 사용 → 준비됨', () => {
+  const out = reconstructEmotionRefState(
+    { happy: 'C:/ref/happy.wav' },
+    { happy: { start: 1, duration: 5 } },
+    { happy: 'C:/ref/happy.wav' },  // effective===source (≤10초 유효 원본 직접 사용)
+    { happy: true }
+  )
+  assert.deepEqual(out.happy, { source: 'C:/ref/happy.wav', clip: '', region: { start: 1, duration: 5 }, ready: true, message: '' })
+})
+
+test('reconstructEmotionRefState: source 존재+파생 클립 사용했었음 → 구간 재확정 필요', () => {
+  const out = reconstructEmotionRefState(
+    { happy: 'C:/ref/long.wav' },
+    { happy: { start: 2, duration: 6 } },
+    { happy: 'C:/tmp/derived.wav' },  // effective≠source (파생 클립, 현재 소실)
+    { happy: true }
+  )
+  assert.equal(out.happy.ready, false)
+  assert.equal(out.happy.message, '구간 재확정 필요')
+  assert.equal(out.happy.source, 'C:/ref/long.wav')
+  assert.deepEqual(out.happy.region, { start: 2, duration: 6 })
+})
+
+test('reconstructEmotionRefState: source 소실 → 원본 다시 지정 필요(나머지 보존)', () => {
+  const out = reconstructEmotionRefState(
+    { happy: 'C:/gone/happy.wav', sad: 'C:/ref/sad.wav' },
+    {},
+    { happy: 'C:/gone/happy.wav', sad: 'C:/ref/sad.wav' },
+    { happy: false, sad: true }
+  )
+  assert.equal(out.happy.ready, false)
+  assert.equal(out.happy.message, '원본 다시 지정 필요')
+  assert.equal(out.sad.ready, true)   // 살아있는 감정은 보존
+})
+
+test('reconstructReferencePrompts: 살아있는 source의 전사만 복원(snake→camel)', () => {
+  const out = reconstructReferencePrompts(
+    {
+      default: { manual_text: '기본 문장', prompt_lang: 'ko', mode: 'manual' },
+      happy: { manual_text: '소실될 문장', mode: 'manual' },
+      sad: { mode: 'ref_free', prompt_lang: 'ja' },
+    },
+    { default: true, happy: false, sad: true }
+  )
+  assert.deepEqual(out.default, { manualText: '기본 문장', promptLang: 'ko', mode: 'manual' })
+  assert.equal(out.happy, undefined)  // source 소실 → 전사 폐기(stale 방지)
+  assert.deepEqual(out.sad, { promptLang: 'ja', mode: 'ref_free' })
+})
+
+test('restoreSession: TTS 스냅샷을 mode·pitch·source+region·전사·metadata로 복원', () => {
+  useAppStore.setState({ ttsEmotionRefState: {}, ttsReferencePrompts: {} })
+  const session = {
+    mode: 'tts' as const,
+    source: 'C:/in/voice.wav',
+    metadata: { reference_region: { start: 0, duration: 4 }, requested_engine: 'qwen3' },
+    refLiveness: { default: true, happy: true, sad: false },
+    options: {
+      ttsText: '안녕하세요',
+      ttsPitch: 1.5,
+      ttsSpeed: 1.2,
+      ttsEngine: 'qwen3',
+      ttsReferenceOverride: '',  // 기본은 원본 직접 사용 → 준비됨
+      ttsEmotionRefSources: { happy: 'C:/ref/happy.wav', sad: 'C:/gone/sad.wav' },
+      ttsEmotionRefRegions: { happy: { start: 1, duration: 5 } },
+      ttsEmotionRefs: { happy: 'C:/ref/happy.wav' },
+      ttsReferencePrompts: { default: { manual_text: '기본', mode: 'manual' }, happy: { manual_text: 'h', mode: 'manual' } },
+    },
+    tracks: [{ name: 'tts', label: 'tts', path: 'C:/out/tts.wav' }],
+  }
+  useAppStore.getState().restoreSession('C:/out', session)
+  const st = useAppStore.getState()
+  assert.equal(st.mode, 'tts')
+  assert.equal(st.ttsText, '안녕하세요')
+  assert.equal(st.ttsPitch, 1.5)
+  assert.equal(st.ttsEngine, 'qwen3')
+  assert.equal(st.ttsReferenceClip, '')                 // 파생 override는 항상 비움
+  assert.equal(st.ttsRefReady, true)                    // 기본 원본 직접 사용 + 살아있음
+  assert.deepEqual(st.ttsReferenceRegion, { start: 0, duration: 4 })
+  assert.equal(st.ttsEmotionRefState.happy.ready, true)
+  assert.equal(st.ttsEmotionRefState.sad.message, '원본 다시 지정 필요')
+  assert.deepEqual(st.ttsReferencePrompts.default, { manualText: '기본', mode: 'manual' })
+  assert.equal(st.ttsReferencePrompts.sad, undefined)   // sad source 소실 → 전사 없음
+  assert.equal(st.resultMetadata?.requested_engine, 'qwen3')
+  assert.equal(st.status, 'done')
 })
