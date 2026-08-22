@@ -49,6 +49,21 @@ fix(최소, auto 경로만; off 경로·pitch_shift.py·K2 무변경):
 4. write/재오픈/0바이트/디코드 실패는 AudioFinishingError로 승격 → pending 삭제 + 기존 final 무손상.
    테스트 fixture도 비유한 케이스는 subtype='FLOAT'로 기록(교훈: PCM은 NaN을 write 순간 소실).
 
+## 후속 fix 2 — subtype 패리티(통합 merge 게이트)
+
+지적: auto pitch0가 FLOAT(하드코딩)라 legacy off pitch0의 PCM_16과 불일치 → subtype-parity 게이트 차단.
+측정(SYNTHETIC, 공유 venv에서 내 코드):
+- legacy off pitch0 → PCM_16, pitch+1 → FLOAT(rubberband 기존 출력, pitch_shift.py 무변경)
+- (수정 전) auto → 양쪽 FLOAT ← pitch0 불일치
+
+fix(auto 경로만): pending write subtype을 하드코딩하지 않고 **staged(post-pitch) 파일의 subtype을 그대로
+따른다**. `soundfile.info(staged).subtype`을 읽어 `sf.write(..., subtype=that)`. 결과:
+- auto pitch0 → PCM_16(== legacy), auto pitch+1 → FLOAT(== legacy). **per-pitch 정확 패리티.**
+재오픈 검증(C)에 `subtype == staged subtype`까지 추가. 비유한 안전(A: source array, B: in-memory finished)은
+그대로라 PCM_16으로 써도 비유한을 숨길 수 없다(write 전 이미 finite 확정). pitch_shift.py·K2 무변경.
+
+측정(수정 후): pitch0 legacy=PCM_16 auto=PCM_16 (EQUAL), pitch1 legacy=FLOAT auto=FLOAT (EQUAL).
+
 ## 검증 상태
 - `python/test_audio_finishing.py`: numpy 순수 스위트(tail plan/apply·config 검증·array 검증·경계 우선순위)
   = 이 환경(ambient numpy 2.3.5)에서 **실행·통과**. numpy 부재 환경에선 자동 skip.
