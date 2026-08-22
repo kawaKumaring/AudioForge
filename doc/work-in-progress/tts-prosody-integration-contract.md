@@ -224,3 +224,34 @@ A/B 구현·검토 후 **갱신된 develop에서 생성**, **한 명(통합 담�
 ## 12. 요약 — 충돌이 사라지는 이유
 
 A는 Python만(스키마·renderer 무접촉), B는 renderer/IPC 클립 수명만(Python·result metadata 무접촉), 공용 스키마(`ttsConfig`·main metadata 주입·`TtsResultInfo`·pitch UI)는 통합 브랜치 **한 곳**에서만 작성한다. A/B가 서로의 소유 파일을 건드리지 않으므로 develop 병합은 깔끔하고, 남는 결합은 통합 브랜치가 계약(§1·§2·§9)대로 배선한다.
+
+---
+
+## 13. 취소 순서 계약 + 조사 (ux-state 에이전트 — read-only 코드 조사, 결함 미판정)
+
+> ⚠️ **범위 한정**: 아래는 코드 read-only 조사와 기대 순서(계약) 초안일 뿐이다. `runner.cancel()`이
+> 실제로 자식 종료를 기다리는지의 **최종 판정과 수정은 하지 않았다**. child 실제 종료 시각 vs UI idle
+> 시각의 real Electron 재현(합성 필요)은 **통합 담당**이 수행한다. 여기 "창(window)"은 *가설*이다.
+
+### 13.1 기대 순서 (계약)
+정상적인 취소는 다음 순서를 만족해야 한다:
+1. 취소 요청(사용자)
+2. **자식 프로세스 트리(python + ffmpeg + 격리 venv)의 실제 종료 확인** — backend free(GPU/VRAM 반환, 파일 핸들 해제)
+3. UI idle 전이 + 재합성 허용(`audio:process` 가드 통과 가능)
+
+즉 3(재합성 허용)은 2(자식 실제 종료) **이후**여야 한다. 정상 완료 경로는 이미 이 순서를 지킨다 —
+`runner.on('done')`(=자식 실제 종료)에서야 `runner=null`로 backend를 free하고 그 뒤 터미널 신호를 전달한다
+(`src/main/ipc/audio.ipc.ts` 완료 경로). 취소 경로가 이 순서를 지키는지가 조사 대상.
+
+### 13.2 조사 결과 (코드 근거, `git` HEAD 기준)
+- `PythonRunner.cancel()` (`src/main/services/python-runner.ts`): win32에서 `spawn('taskkill', ['/pid', pid, '/T', '/F'])`를 **발사하고 완료를 await 하지 않는다**. 직후 `this.process = null` → `isRunning`이 **즉시 false**. 즉 `cancel()`은 **내부적으로 자식 종료를 기다리지 않는다**(코드상).
+- `audio:cancel` 핸들러 (`audio.ipc.ts`): `runner?.cancel(); runner = null` — 모듈 참조를 **동기 즉시** null. 따라서 `audio:process`의 `if (runner?.isRunning) throw '이미 처리 중'` 가드는 취소 직후 곧바로 통과한다.
+- `ProcessButton.handleCancel()` (`ProcessButton.tsx`, 조사 대상·미수정): `window.api.audio.cancel()` 호출 후 IPC 응답을 기다리지 않고 `setState({ status:'idle' })`로 **UI를 동기 즉시 idle**.
+- 실제 자식 종료: taskkill이 OS에서 완료되면 원래 `ChildProcess`의 `'close'`가 여전히 발화(리스너 클로저가 인스턴스를 보유) → `'done'` emit → `sweepQwenJobDirs` 즉시 + 2.5초 지연 재스윕(Windows 파일 락 대비). 이 시점은 UI idle **이후**.
+
+### 13.3 가설(통합 담당이 재현·판정)
+UI idle/재합성 허용(13.2의 즉시 경로)과 backend 실제 free(자식 트리 종료) 사이에 **시간 창**이 존재할 수 있다.
+이 창에서 재합성을 시작하면 죽어가는 이전 worker와 자원(GPU/VRAM/파일 핸들)이 겹칠 수 있다 — 이번 CUDA
+진단의 오디오-전사 불일치와 인접한 통합 리스크 후보. **판정에 필요한 측정**: 취소 클릭 → `'done'`(자식 실제
+종료) 실경과시간 vs UI idle 시각. 필요 시 대책 후보(통합 담당 결정): `audio:cancel`을 `'done'` 대기 후
+resolve하도록 async화, 또는 재합성 가드를 `isRunning` 대신 "자식 종료 확인" 신호로 강화. (여기서는 **미수정**.)

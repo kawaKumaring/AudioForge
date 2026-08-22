@@ -8,7 +8,7 @@ import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
 import { createSettlementGuard } from '../services/run-settlement'
 import { createPreviewGuard, runPreview } from '../services/preview-transcribe'
-import { buildTtsConfig, type TtsInputOptions } from '../../shared/ttsConfig'
+import { buildTtsConfig, normalizePitchCapability, type TtsInputOptions } from '../../shared/ttsConfig'
 import { sweepQwenJobDirs } from '../services/qwen-cleanup'
 import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
 import { createSingleFlight, createKeyedSingleFlight } from '../services/single-flight'
@@ -72,6 +72,46 @@ let pythonPath = resolvePythonPath()
 // clipKey = 'default'(기본 참조) | emotionId(감정 참조). 단일 슬롯을 감정별 식별 구조로 확장.
 // 새 클립/새 파일/재확정/합성 종료(합성 중 제외) 시 해당 key(또는 전체)만 정리.
 const refClipDirs = new Map<string, string>()
+
+// 참조 source 지문 — 경로+크기+수정시각. 파일이 바뀌면(경로 교체/내용 덮어쓰기) 값이 달라져
+// 전사 캐시를 무효화할 수 있다(불변식 3·4). stat 실패 시 ''(비교에서 '살아있는 source 없음'과 동치).
+function computeFingerprint(filePath: string): string {
+  try {
+    if (!filePath) return ''
+    const st = statSync(filePath)
+    return `${resolve(filePath)}|${st.size}|${Math.round(st.mtimeMs)}`
+  } catch {
+    return ''
+  }
+}
+
+// 합성 경계에서 쓸 현재 참조 source 지문 맵 — 'default'=원본 파일, 감정 id=ttsEmotionRefSources.
+// 지문이 잡히는(파일 존재) source만 포함한다. 여기 없는 id의 전사는 orphan으로 폐기된다(§4 규칙 2).
+function buildReferenceFingerprints(filePath: string, options?: Record<string, unknown>): Record<string, string> {
+  const map: Record<string, string> = {}
+  const dfp = computeFingerprint(filePath)
+  if (dfp) map.default = dfp
+  const sources = (options?.ttsEmotionRefSources as Record<string, string> | undefined) || {}
+  for (const [id, src] of Object.entries(sources)) {
+    const fp = computeFingerprint(src)
+    if (fp) map[id] = fp
+  }
+  return map
+}
+
+// 세션 복원 시 참조 source 존재 여부 맵('default' + 감정 id). 렌더러는 fs 접근이 없으므로 여기서 판정.
+// source가 사라진 감정만 재지정 필요로 표시하기 위한 근거.
+function computeRefLiveness(session: Record<string, unknown>): Record<string, boolean> {
+  const liveness: Record<string, boolean> = {}
+  const source = typeof session.source === 'string' ? session.source : ''
+  liveness.default = !!source && existsSync(source)
+  const options = (session.options as Record<string, unknown> | undefined) || {}
+  const sources = (options.ttsEmotionRefSources as Record<string, string> | undefined) || {}
+  for (const [id, src] of Object.entries(sources)) {
+    liveness[id] = !!src && existsSync(src)
+  }
+  return liveness
+}
 
 let cachedFfprobe: string | null = null
 
@@ -282,6 +322,16 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     })
   })
 
+  // pitch capability preflight(§6) — UI(음높이 슬라이더)가 rubberband 지원 여부를 미리 소비.
+  // ⚠️ 계약/타입/mock 단계: 여기서는 ffmpeg를 실행하지 않고 '미probe' 기본 계약을 반환한다.
+  // 실제 probe 연결(separate.py의 pitch_shift.pitch_available 결과를 normalizePitchCapability에 주입)은
+  // 통합 담당이 확인·배선한다. 배선 시 이 핸들러가 raw {available, reason}를 받아 normalize만 하면 된다.
+  ipcMain.handle('audio:pitch-preflight', async () => {
+    // TODO(통합): separate.py에 'pitch-preflight' 모드를 추가해 pitch_available(ffmpeg)의
+    // (available, reason)을 반환받고 normalizePitchCapability(raw)로 정규화. 지금은 미probe 기본값.
+    return normalizePitchCapability(null)
+  })
+
   ipcMain.handle('audio:process', async (_event, filePath: string, mode: string, options?: Record<string, unknown>) => {
     if (runner?.isRunning) {
       throw new Error('이미 처리 중인 작업이 있습니다')
@@ -338,7 +388,10 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       // TTS 필드는 단일 소스(buildTtsConfig)로 직렬화 — ttsEmotionRefs 포함,
       // 숫자 기본값은 ??(0 보존). 필드 추가 시 컴파일 단계에서 누락 검출.
       // IPC로 온 untyped 옵션을 TtsInputOptions로 명시 변환해 전달.
-      ...buildTtsConfig(options as TtsInputOptions | undefined)
+      // 합성 경계 불변식(§4): 현재 참조 source 지문 맵을 함께 넘겨 stale 전사를 폐기한 뒤 직렬화.
+      // 'default'=원본 파일, 감정=ttsEmotionRefSources. 렌더러가 stale 전사를 되살려 보내도
+      // 여기서 정합 전사만 Python에 전달된다.
+      ...buildTtsConfig(options as TtsInputOptions | undefined, buildReferenceFingerprints(filePath, options))
     }
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
     console.log(`[AudioForge] Config written to: ${configPath}`)
@@ -555,6 +608,13 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     return true
   })
 
+  // 참조 source 지문(path|size|mtimeMs) — 렌더러가 전사 확정 시 그 전사가 어느 source에서 왔는지
+  // 기록(TtsReferenceEntry.sourceFingerprint)해 두면, 합성 경계에서 현재 지문과 비교해 stale을 폐기(§4).
+  // 파일 없음/접근 실패는 '' 반환(비교 시 '살아있는 source 없음'과 동치).
+  ipcMain.handle('audio:fingerprint-reference', (_event, filePath: string) => {
+    return computeFingerprint(filePath)
+  })
+
   // 불러온 원본에 대응하는 이전 결과(session.json) 탐색 — <원본폴더>/AudioForge_output/*/session.json
   ipcMain.handle('audio:find-session', (_event, sourcePath: string) => {
     try {
@@ -582,7 +642,9 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       }
       if (matches.length === 0) return null
       matches.sort((a, b) => b.createdAt.localeCompare(a.createdAt))  // 최신 우선
-      return { dir: matches[0].dir, session: matches[0].session }
+      const top = matches[0]
+      // refLiveness 주입 — 자동 복원 경로도 source 소실 감정을 재지정 필요로 표시할 수 있게.
+      return { dir: top.dir, session: { ...top.session, refLiveness: computeRefLiveness(top.session) } }
     } catch {
       return null
     }
@@ -598,6 +660,31 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     const dir = result.filePaths[0]
     const { readdirSync, readFileSync } = await import('fs')
     const files = readdirSync(dir)
+
+    // 우선 session.json이 있으면 그것으로 전체 설정(TTS mode·pitch·source+region·전사·metadata)을 복원.
+    // 트랙은 session.tracks 중 실제 남아 있는 파일만. refLiveness로 source 소실 감정을 렌더러가 표시.
+    if (files.includes('session.json')) {
+      try {
+        const s = JSON.parse(readFileSync(join(dir, 'session.json'), 'utf-8')) as Record<string, unknown>
+        const rawTracks = Array.isArray(s.tracks) ? s.tracks as { name?: string; label?: string; path?: string }[] : []
+        const sessionTracks = rawTracks
+          .filter(t => t.path && existsSync(t.path as string))
+          .map(t => ({ name: t.name || '', label: t.label || t.name || '', path: t.path as string }))
+        return {
+          tracks: sessionTracks,
+          outputDir: dir,
+          session: {
+            mode: s.mode,
+            source: s.source,
+            metadata: s.metadata ?? null,
+            options: s.options ?? {},
+            refLiveness: computeRefLiveness(s),
+            tracks: sessionTracks
+          }
+        }
+      } catch { /* session.json 손상 → 아래 레거시 스캔으로 폴백 */ }
+    }
+
     const jsonFiles = files.filter((f: string) => f.endsWith('.json')).sort()
 
     if (jsonFiles.length === 0) return null
@@ -631,7 +718,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       }
     }
 
-    return { tracks, outputDir: dir }
+    return { tracks, outputDir: dir, session: null }
   })
 
   ipcMain.handle('audio:export-tracks', async (_event, trackPaths: string[]) => {
