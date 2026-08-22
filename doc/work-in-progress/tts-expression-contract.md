@@ -38,7 +38,7 @@
 
 "emotions.ts 단일 권위 + Python 동형"은 성립하지 않음(Python은 TS 파일을 소비하지 않음). 계약:
 - **언어 중립 문법 명세가 권위**(이 문서 §문법 명세).
-- `parser_version` 명시(예: `1`).
+- `parser_version` 명시. **확정 = `2`**(legacy 단일 선두 태그 문법 = 암묵적 v1, 신규 인라인 다중감정·명시적 쉼·escape·dual offset·plan hash = v2). v1 유지 금지.
 - **공용 JSON conformance fixture가 권위 있는 테스트 벡터**(초안: `doc/work-in-progress/contract/tts-grammar-conformance.draft.json`).
 - TS parser와 Python parser는 **각각 구현**하고, **둘 다 동일 fixture를 통과**해야 함.
 - 두 구현의 출력이 정확히 일치: **raw offset · spoken text · emotion id · pause(sec) · original line index**.
@@ -145,7 +145,7 @@ textarea+overlay가 한글 IME를 "100% 보장"한다고 표현하지 않는다.
 
 ---
 
-## 문법 명세 (언어 중립, parser_version=1)
+## 문법 명세 (언어 중립, parser_version=2)
 
 - 입력 = 단일 `ttsText`(여러 줄, `\n` 구분). 각 줄은 0개 이상의 control token + spoken text.
 - control token 형식: `\[\s*<name>(\s+<arg>)?\s*\]`.
