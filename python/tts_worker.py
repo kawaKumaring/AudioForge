@@ -853,7 +853,91 @@ def _transcript_meta(ref_text):
     return _detect_language(t), len(t), hashlib.sha256(t.encode("utf-8")).hexdigest()[:8]
 
 
-def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed, silence_gap, pitch=0.0):
+def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
+    """엔진 무관 공통 최종 단계 + 말끝 finishing(계약 §2 순서: … → 전체 pitch → 최종 조건부 fade →
+    최종 0 padding → 검증 → 원자 교체).
+
+    - tail off/부재(기본) → 기존 경로 그대로: pitch_shift.place_final_with_pitch가 pitch·검증·원자
+      교체를 담당한다(**동작 변화 0 — 레거시 회귀 보존**).
+    - tail 'auto'(명시 설정 시) → pitch를 work_dir 내부 staged로 배치(final 미접촉) → array로 읽어
+      audio_finishing으로 조건부 fade + 0 padding → 검증(mono·finite·non-empty·sr) → work_dir 내부
+      finished temp에 write → os.replace로 **이 함수만** 최종 final_path를 원자 교체한다.
+
+    무손상 계약: auto 경로도 final_path는 모든 검증 통과 후 마지막 os.replace 한 번에만 바뀐다. 그 이전
+    어떤 예외(pitch/검증/finishing)도 final_path(이전 합성 결과)를 건드리지 않는다. staged/finished temp는
+    work_dir 안이라 정상/오류/취소(부모 정리) 모두에서 청소된다. pitch_shift.py·K2 취소 권위는 무변경.
+    반환: place_final_with_pitch와 동형 dict(pitch_* + output_sample_rate)."""
+    import pitch_shift as _ps
+    import audio_finishing as _af  # numpy 지연 로드(모듈 최상단 import 회피 — import tts_worker는 numpy 불요)
+
+    tail = _af.parse_tail_config(tail_cfg)  # 범위 밖이면 INVALID_TTS_CONFIG(조용한 clamp 없음)
+    if tail.mode == "off":
+        # 레거시 경로와 바이트 단위 동일 — place_final_with_pitch가 final을 원자 교체.
+        return _ps.place_final_with_pitch(candidate, final_path, pitch, work_dir)
+
+    # auto: 원자 교체 전 모든 불변식(A/B/C)을 강제한다. 비유한은 **write 이전에** 차단하고, pending은
+    # **write 후 재오픈**해 다시 검증한다. 어느 단계든 실패면 AudioFinishingError로 pending 삭제 + 기존
+    # synthesized.wav 무손상(os.replace 미도달). 오류엔 경로/대사/전사를 담지 않는다.
+    import os as _os
+    import soundfile as _sf
+    staged = _os.path.join(work_dir, ".af-staged.wav")
+    finished_tmp = _os.path.join(work_dir, ".af-finished.wav")
+
+    # 불변식 A(source) — pitch/write 이전에 **원본 후보 array**를 직접 검증한다. PCM 저장이 NaN/inf를
+    # 유한값으로 바꾸기 전 단계는 없지만(파일에서 읽는 순간 이미 변환됨), FLOAT 후보의 비유한은 여기서
+    # AudioFinishingError로 차단된다(pitch_shift의 PitchError보다 앞서 올바른 오류 타입·순서로).
+    try:
+        _src, _src_sr = _sf.read(candidate, dtype="float32")
+    except _af.AudioFinishingError:
+        raise
+    except Exception as e:
+        raise _af.AudioFinishingError("최종 후보 디코드 실패", code="AUDIO_INVALID") from e
+    _af.require_valid_mono(_af.validate_audio_array(_src, _src_sr))
+
+    pinfo = _ps.place_final_with_pitch(candidate, staged, pitch, work_dir)  # 실패→예외, final 무접촉
+    try:
+        # 불변식 A(staged) — pitch 후 staged를 다시 검증(pitch가 비유한을 만들지 않았는지).
+        data, sr = _sf.read(staged, dtype="float32")
+        _af.require_valid_mono(_af.validate_audio_array(data, sr))
+        # 서브타입 패리티: pending은 staged(=레거시가 이 pitch로 이미 만든 결과)와 같은 subtype으로 쓴다.
+        #   pitch 0 → staged=PCM_16 → pending PCM_16(== 레거시 off pitch0). pitch!=0 → staged=FLOAT →
+        #   pending FLOAT(== 레거시 off pitch+1). FLOAT 하드코딩(비패리티) 금지. pitch_shift.py 무변경.
+        staged_subtype = _sf.info(staged).subtype
+        plan = _af.compute_tail_plan(data, sr, tail)
+        finished = _af.apply_final_tail(data, sr, plan)
+        # 불변식 B — in-memory: mono·non-empty·finite + 예상 프레임 수 + padding 정확히 0.
+        # (여기서 finite가 이미 보장되므로 PCM_16으로 써도 비유한을 숨길 수 없다 — write 전 in-memory 검증.)
+        _af.require_valid_finished(finished, sr, plan, len(data))
+        try:
+            _sf.write(finished_tmp, finished, sr, subtype=staged_subtype)
+        except Exception as e:
+            raise _af.AudioFinishingError("pending write 실패", code="AUDIO_INVALID") from e
+        if not (_os.path.exists(finished_tmp) and _os.path.getsize(finished_tmp) > 0):
+            raise _af.AudioFinishingError("pending 0바이트/미생성", code="AUDIO_INVALID")
+        # 불변식 C — 파일 재오픈 검증: 디코드·메타 sr==실제 sr·mono·non-empty·finite·프레임 수·peak
+        #   + subtype == staged subtype(패리티 보증).
+        try:
+            _rd, _rd_sr = _sf.read(finished_tmp, dtype="float32")
+            _meta = _sf.info(finished_tmp)
+        except Exception as e:
+            raise _af.AudioFinishingError("pending 재오픈 실패", code="AUDIO_INVALID") from e
+        _af.require_valid_reopened(_rd, _rd_sr, _meta.samplerate, _meta.frames, len(finished),
+                                   actual_subtype=_meta.subtype, expected_subtype=staged_subtype)
+        _os.replace(finished_tmp, final_path)  # 이 시점에만 final 교체(원자적)
+    finally:
+        for p in (staged, finished_tmp):
+            if _os.path.exists(p):
+                try:
+                    _os.remove(p)
+                except OSError:
+                    pass
+    out = dict(pinfo)
+    out["output_sample_rate"] = int(sr)
+    return out
+
+
+def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed, silence_gap, pitch=0.0,
+                         tail_cfg=None):
     """Qwen 배치 합성 — 2B 품질 게이트 재사용, Qwen 전용 VRAM 임계로 장치 선택(ComfyUI 병행 안전),
     모델 1회 로딩. speed: 세그먼트별 atempo 후 사용자 silence_gap으로 결합(1.0은 raw). 임시파일 finally 정리.
     pitch: 결합본(pending)에 rubberband 음높이 후처리(0=무후처리, 계약 §6·§7). 실패는 os.replace 직전
@@ -1036,7 +1120,8 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         if _ps.clamp_quantize(pitch) != 0.0:
             emit("progress", percent=93, message=f"음높이 보정 중 ({_ps.clamp_quantize(pitch):+.1f}반음)...")
         # pending은 job_dir 내부(output_dir 하위) → os.replace가 동일 파일시스템 원자 이동.
-        pinfo = _ps.place_final_with_pitch(pending_path, final_path, pitch, job_dir)
+        # tail off(기본)면 place_final_with_pitch와 동일. auto면 pitch 뒤 조건부 fade+0 padding까지(계약 §2).
+        pinfo = _finish_and_place(pending_path, final_path, pitch, job_dir, tail_cfg)
         sr = pinfo["output_sample_rate"]
         import time as _time
         # target_language: 세그먼트 언어 중 최빈값
@@ -1189,12 +1274,15 @@ def resolve_reference_input(override, input_path):
 
 
 def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
-               emotion_refs=None, emotion_ref_sources=None, preferred_engine=None, reference_prompts=None, pitch=0.0):
+               emotion_refs=None, emotion_ref_sources=None, preferred_engine=None, reference_prompts=None, pitch=0.0,
+               tail_cfg=None):
     """Synthesize speech. Auto-selects engine by language.
     reference_prompts: 식별자(default/emotionId) → {manual_text, prompt_lang, mode} 사용자 override.
     emotion_refs: emotionId → 합성에 쓸 effective 참조 경로(3~10초 클립/유효 원본).
     emotion_ref_sources: emotionId → 사용자 등록 원본 경로(등록 사실). 만료 판정 기준(계약 §5).
-    pitch: 결과 WAV 음높이 보정(반음, 후처리 축). 0=무후처리. 정규화 권위는 pitch_shift.clamp_quantize."""
+    pitch: 결과 WAV 음높이 보정(반음, 후처리 축). 0=무후처리. 정규화 권위는 pitch_shift.clamp_quantize.
+    tail_cfg: 말끝 finishing 설정({'mode':'off'|'auto','pad_ms','fade_ms'}) 또는 None. **None/off(기본)면
+      동작 변화 0(레거시 회귀 보존)**. 'auto'는 통합 담당이 config에서 배선할 때만 전달된다(계약 §3)."""
     emit("status", message="음성 합성 시작", percent=0)
 
     if not emotion_refs:
@@ -1260,7 +1348,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         # 모델 1회 로딩으로 전 문장 처리(문장별 프로세스 금지).
         if _select_job_engine(text, preferred_engine) == "qwen3":
             final_path, info = _synthesize_qwen_job(parsed, ref_cache, overrides_by_path,
-                                                    output_dir, speed, silence_gap, pitch)
+                                                    output_dir, speed, silence_gap, pitch, tail_cfg)
             meta = _build_tts_metadata(
                 requested_engine=requested_engine,
                 original_reference_path=reference_audio, effective_reference_path=reference_audio,
@@ -1311,7 +1399,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         try:
             if _ps.clamp_quantize(pitch) != 0.0:
                 emit("progress", percent=93, message=f"음높이 보정 중 ({_ps.clamp_quantize(pitch):+.1f}반음)...")
-            pinfo2 = _ps.place_final_with_pitch(candidate, final_path, pitch, output_dir)
+            pinfo2 = _finish_and_place(candidate, final_path, pitch, output_dir, tail_cfg)
         finally:
             # 후보/세그먼트 정리(성공 시 candidate는 os.replace로 소비됐을 수 있음). 실패 시 final_path는
             # os.replace 미도달로 기존 파일 보존. 공통 함수의 pitch 임시본은 함수가 자체 정리.
