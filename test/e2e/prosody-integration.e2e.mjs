@@ -1,10 +1,10 @@
 // 통합 E2E — pitch + 감정 참조 공용 배선을 실제 앱으로 검증.
-//  Part A(실 Qwen 합성): 기본 참조 구간 확정 + 감정(기쁨) 구간 확정 + pitch +1 → [기쁨] 대사 합성.
-//    결과 WAV 디코딩·F0·길이·SR·finite·peak / metadata pitch 3필드·emotion_reference_* / session.json
-//    에 source+region+pitch 저장(재현 근거) 확인.
-//  Part B(합성 없음): 재구성 시 source 파일이 사라지면 그 감정만 오류·미준비가 되고 다른 정상 감정은
-//    보존됨(silent 기본 폴백 없음) — 계약 §5/추가정합3.
-// 실행: node test/e2e/prosody-integration.e2e.mjs  (사전 npm run build). Part A는 실제 합성이라 수 분.
+//  Session 1(실 Qwen 합성): 기본 참조 구간 확정 + 감정(기쁨) 구간 확정 + pitch +1 → [기쁨] 대사 합성.
+//    결과 WAV 디코딩·F0·길이·SR·finite·peak / metadata pitch 3필드·emotion_reference_* / session.json에
+//    source+region+pitch 저장. 이어서 Part B: 재구성 시 source 부재면 그 감정만 오류·미준비, 다른 감정 보존.
+//  Session 2(앱 재시작, 합성 없음): Session 1의 session.json을 **파일에서 읽어** source+region으로 effective를
+//    재구성(이전 세션의 임시 경로에 의존하지 않음) — 계약 §1.2/추가정합3(재시작 복원).
+// 실행: node test/e2e/prosody-integration.e2e.mjs  (사전 npm run build). Session 1은 실제 합성이라 수 분.
 import { _electron as electron } from 'playwright'
 import { execFileSync } from 'child_process'
 import fs from 'fs'; import path from 'path'
@@ -27,7 +27,6 @@ const resBefore = snapshotTree(RES_DIR)
 const { dir: ISO, input: REF } = isolatedInput(SRC)
 const OUT_BASE = path.join(path.dirname(REF), 'AudioForge_output')
 
-// F0(medianF0) 자기상관 측정 — 유성 프레임만.
 function medianF0(wav) {
   const out = execFileSync(PY, ['-X', 'utf8', '-c',
     `import soundfile as sf,numpy as np,sys
@@ -47,15 +46,25 @@ print('OK', len(m), sr, bool(np.all(np.isfinite(m))), float(np.max(np.abs(m))) i
 }
 
 const pageErrors = [], crashes = [], mainOut = []
+function launchApp() {
+  const a = electron.launch({ args: ['out/main/index.js'], cwd: APP, env: { ...process.env, AF_E2E: '1' } })
+  return a
+}
+function attach(a, w) {
+  a.process().stdout.on('data', d => mainOut.push(String(d)))
+  a.process().stderr.on('data', d => mainOut.push(String(d)))
+  w.on('pageerror', e => pageErrors.push(e.message))
+  w.on('crash', () => crashes.push('crash'))
+}
+
 log('시작 nvidia-smi GPU0(used/free MiB):', nvidiaSmiGpu0() || '측정 실패')
-const app = await electron.launch({ args: ['out/main/index.js'], cwd: APP, env: { ...process.env, AF_E2E: '1' } })
-app.process().stdout.on('data', d => mainOut.push(String(d)))
-app.process().stderr.on('data', d => mainOut.push(String(d)))
-const win = await app.firstWindow()
-win.on('pageerror', e => pageErrors.push(e.message))
-win.on('crash', () => crashes.push('crash'))
+let app = await launchApp()
+let win = await app.firstWindow()
+attach(app, win)
+let sess1OutputDir = null
 
 try {
+  // ── Session 1: 실 Qwen 합성(pitch +1 + [기쁨] 감정) + Part B ──
   await win.waitForLoadState('domcontentloaded')
   await win.evaluate(async (p) => {
     const s = window.__afStore
@@ -64,7 +73,6 @@ try {
   }, REF)
   await win.waitForFunction(() => /111\.08/.test(document.getElementById('root')?.innerText || ''), undefined, { timeout: 30000 })
 
-  // 기본 참조 구간 확정(6.0~13.0s) + 감정 기쁨 구간 확정(20.0~27.0s) — store/IPC 직접(결정적)
   const setup = await win.evaluate(async (p) => {
     const s = window.__afStore
     const base = await window.api.audio.trimReference(p, 6.0, 7.0, 'default')
@@ -92,13 +100,13 @@ try {
     await win.waitForTimeout(500)
   }
   log('progress 이력:', msgs)
-  const deviceMsg = msgs.find(m => /장치/.test(m)) || '(장치 메시지 미포착)'
-  log('device 메시지:', deviceMsg)
+  log('device 메시지:', msgs.find(m => /장치/.test(m)) || '(미포착)')
   log('최종 store 스냅샷:', snap)
   if (!settled) log('미정착 — nvidia-smi:', nvidiaSmiGpu0() || '측정실패', '| 마지막 progress:', snap?.msg)
   ok(snap?.status === 'done', `합성 완료(status=done, error=${snap?.err || '없음'})`)
 
   const st = await win.evaluate(() => ({ outputDir: window.__afStore.getState().outputDir, tracks: window.__afStore.getState().tracks, meta: window.__afStore.getState().resultMetadata }))
+  sess1OutputDir = st.outputDir
   const wav = (st.tracks && st.tracks[0] && st.tracks[0].path) || (st.outputDir && path.join(st.outputDir, 'synthesized.wav'))
   ok(!!wav && fs.existsSync(wav), `synthesized.wav 존재(${wav})`)
   if (wav && fs.existsSync(wav)) {
@@ -107,17 +115,14 @@ try {
     ok(m.finite, `finite=${m.finite}`)
     ok(m.peak > 0 && m.peak <= 1.0, `무음 아님·클리핑 없음(peak=${m.peak.toFixed(4)})`)
     log(`결과 medianF0=${m.f0.toFixed(1)}Hz (pitch +1 반영)`)
-    // 청취용 사본(작업파일/에만, 커밋 금지)
     try { fs.copyFileSync(wav, path.join(SHOT, 'prosody_pitch+1_emotion.wav')) } catch { /* ignore */ }
   }
-  // metadata: pitch 3필드 + 감정 요약
   ok(st.meta?.pitch_postprocessed === true && Math.abs((st.meta?.pitch_semitones ?? 0) - 1.0) < 1e-6 && st.meta?.pitch_method === 'rubberband',
     `metadata pitch(semitones=${st.meta?.pitch_semitones}, method=${st.meta?.pitch_method}, post=${st.meta?.pitch_postprocessed})`)
   const names = st.meta?.emotion_reference_source_names || {}
   const regions = st.meta?.emotion_reference_regions || {}
   ok(names.happy === 'speaker_b.wav', `metadata emotion source basename(happy=${names.happy})`)
   ok(regions.happy && Math.abs(regions.happy.start - 20.0) < 1e-6, `metadata emotion region(happy start=${regions.happy?.start})`)
-  // session.json: source+region+pitch 저장(완전 재현 근거)
   const sess = st.outputDir && path.join(st.outputDir, 'session.json')
   if (sess && fs.existsSync(sess)) {
     const j = JSON.parse(fs.readFileSync(sess, 'utf-8'))
@@ -129,28 +134,59 @@ try {
   await win.screenshot({ path: path.join(SHOT, 'prosody_result.png') })
   ok(pageErrors.length === 0 && crashes.length === 0, '완료까지 pageerror/crash 0')
 
-  // ── Part B: 재구성 source 부재 → 그 감정만 오류·미준비, 다른 감정 보존(silent 폴백 없음) ──
+  // Part B: 재구성 source 부재 → 그 감정만 오류·미준비, 다른 감정 보존
   const partB = await win.evaluate(async (p) => {
     const s = window.__afStore
-    // happy는 정상(위에서 ready). sad는 존재하지 않는 source로 등록 → 재트림 실패해야 함.
     const missing = p + '.NOEXIST_.wav'
     s.getState().registerEmotionRef('sad', missing)
     let trimErr = null
-    try { await window.api.audio.trimReference(missing, 3.0, 5.0, 'sad') }
-    catch (e) { trimErr = String(e?.message || e) }
-    // 실패 시 그 감정만 미준비로(effective 없음). happy는 그대로.
+    try { await window.api.audio.trimReference(missing, 3.0, 5.0, 'sad') } catch (e) { trimErr = String(e?.message || e) }
     if (trimErr) s.getState().setEmotionRefState('sad', { ready: false, message: '원본 파일을 다시 지정하세요' })
     const st2 = s.getState()
-    return {
-      trimErr,
-      sadReady: st2.ttsEmotionRefState.sad?.ready,
-      happyReady: st2.ttsEmotionRefState.happy?.ready,
-      happyClipExists: st2.ttsEmotionRefState.happy?.clip,
-    }
+    return { trimErr, sadReady: st2.ttsEmotionRefState.sad?.ready, happyReady: st2.ttsEmotionRefState.happy?.ready, happyClip: st2.ttsEmotionRefState.happy?.clip }
   }, REF)
-  ok(!!partB.trimErr, `없는 source 재트림은 오류(silent 성공 아님) — ${partB.trimErr ? 'error' : 'NONE'}`)
+  ok(!!partB.trimErr, `없는 source 재트림은 오류(silent 성공 아님)`)
   ok(partB.sadReady === false, '실패한 감정(sad)만 미준비 처리')
-  ok(partB.happyReady === true && !!partB.happyClipExists, '다른 정상 감정(happy) 상태 보존(silent 폴백 없음)')
+  ok(partB.happyReady === true && !!partB.happyClip, '다른 정상 감정(happy) 상태 보존(silent 폴백 없음)')
+
+  await app.close()
+
+  // ── Session 2: 앱 재시작 → session.json을 '파일에서 읽어' source+region으로 effective 재구성 ──
+  // Session 1이 실패해 session.json이 없으면(sess1OutputDir null) 재구성 검증 불가 → 명시적 실패로 남기고 스킵.
+  if (!sess1OutputDir || !fs.existsSync(path.join(sess1OutputDir, 'session.json'))) {
+    ok(false, 'Session 2 스킵 — Session 1 합성 실패로 session.json 없음(재구성 검증 불가)')
+    throw new Error('Session 1 실패로 Session 2 진행 불가')
+  }
+  ok(refClipDirs().length === 0, '앱 종료 후 파생 클립 폴더 0(effective 임시 경로는 재시작 후 무효)')
+  app = await launchApp()
+  win = await app.firstWindow()
+  attach(app, win)
+  await win.waitForLoadState('domcontentloaded')
+  await win.evaluate(async (p) => {
+    const s = window.__afStore
+    s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
+    s.getState().setMode('tts')
+  }, REF)
+  await win.waitForFunction(() => /111\.08/.test(document.getElementById('root')?.innerText || ''), undefined, { timeout: 30000 })
+
+  // 완전 재현 근거는 session.json의 source+region(effective 임시 경로 아님)
+  const sjPath = path.join(sess1OutputDir, 'session.json')
+  ok(fs.existsSync(sjPath), `재시작 후 이전 session.json 발견(${path.basename(path.dirname(sjPath))})`)
+  const sj = JSON.parse(fs.readFileSync(sjPath, 'utf-8'))
+  const src = sj.options?.ttsEmotionRefSources?.happy
+  const reg = sj.options?.ttsEmotionRefRegions?.happy
+  ok(!!src && fs.existsSync(src), `session의 source 파일 존재(재현 가능): ${src ? path.basename(src) : 'none'}`)
+
+  const rebuilt = await win.evaluate(async ({ source, region }) => {
+    const s = window.__afStore
+    s.getState().registerEmotionRef('happy', source)
+    const res = await window.api.audio.trimReference(source, region.start, region.duration, 'happy')
+    s.getState().setEmotionRefState('happy', { clip: res.clip_path, region, ready: true })
+    const plan = window.__afPlanEmotionRefs('[기쁨] 다시 안녕하세요.')
+    return { clip: res.clip_path, planHappy: plan.toSend.happy, blockedId: plan.blockedId }
+  }, { source: src, region: reg })
+  ok(!!rebuilt.clip && fs.existsSync(rebuilt.clip), '재시작 후 session.json의 source+region으로 effective 재구성')
+  ok(rebuilt.planHappy === rebuilt.clip && rebuilt.blockedId === null, '재구성된 effective가 전송 대상으로 올바름')
 } catch (e) {
   failed++; log('EXCEPTION', e?.message || String(e))
   try { await win.screenshot({ path: path.join(SHOT, 'prosody_FAIL.png') }) } catch { /* ignore */ }
