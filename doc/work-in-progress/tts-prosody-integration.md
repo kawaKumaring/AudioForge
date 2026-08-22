@@ -94,10 +94,12 @@ compact 전 체크포인트. 재개 시 이 문서 + `git log`로 상태 복원 
 - 마지막 통과: **python discovery 221 / npm test 90 / tsc node·web 0 / build OK**. E2E: state·tts-editor-ux·tts-pitch-capability·tts-accessibility·tts-result-metadata 전부 failed 0.
 
 ### C. 아직 남은 공용 마감 (I·J·K 완료, L 남음)
-> 진행: **J 완료 `8d1e668`**(GENERATION_LIMIT 구조화 재시도), **K 완료 `c499c27`** — 취소 lifecycle 상태 머신
-> (processing→cancelling→child close 확인(bounded)→done→cancelled→idle). child 생존 중 idle 금지·race 최초 정착 승자·
-> kill 실패 cancel-failed(재취소)·runner clobber 방지·will-quit tree kill. synthetic 트리 fixture + tts-cancel-lifecycle.e2e.mjs 33.
-> 검증: cancel E2E 33 / npm test 90 / python 221 / tsc 0 / build OK / 기존 E2E 6종 회귀 통과. 다음 = L(GPU 없는 전체 회귀 → 중간 보고 → 승인 후 최소 실 Qwen 1회).
+> 진행: **J 완료 `8d1e668`**(GENERATION_LIMIT 구조화 재시도), **K 완료 `c499c27`** + **K2 완료 `2b893c8`** — 취소 lifecycle.
+> K2에서 terminal 권위를 audio:cancel로 이전: cancelling→kill→**tree 종료 확인(taskkill exit 0)**→runner done 합류(deferred)→
+> **bounded cleanup(.qwen-job-* 0 확인)**→cancelled→idle. done은 취소 중 신호 억제. cleanupPending·inflight 중 새 실행 거부.
+> before-quit 1회 preventDefault→bounded tree kill 확인 후 quit. E2E는 인과 DAG 상대순서 + tree-dead-before-idle + 지연 cleanup 회귀.
+> ★열린 항목: **trackRunner(대화 분할 후처리) 취소는 여전히 fire-and-forget** — synthesis runner만 완결. 별도 보완 대상.
+> 검증: cancel E2E(phase 포함) 통과 / npm test 90 / python 221 / tsc 0 / build OK / 기존 E2E 회귀 통과. 다음 = L(GPU 없는 전체 회귀 → 중간 보고 → 승인 후 최소 실 Qwen 1회).
 
 - **I (완료 `d45cdd8`)**: generation metadata shared/main/store/session/TtsResultInfo(기본 요약 + details, generation_limit/generated_iterations/termination_reason/generation_chunks). 데이터 경로는 이미 verbatim 관통했었고 GUI만 연결.
 - **J (미완, 재개 지점)**: GENERATION_LIMIT_EXCEEDED 사용자 명시 재시도.
