@@ -77,6 +77,8 @@ def main():
         args.tts_reference_prompts = config.get("ttsReferencePrompts", {})  # 식별자→수동 override
         args.tts_reference_override = config.get("ttsReferenceOverride", "")  # 파생 참조 클립(있으면 기본 참조로 사용)
         args.tts_pitch = config.get("ttsPitch", 0.0)  # 음높이 보정(반음, 후처리). 부재 시 0.0(하위호환·무후처리)
+        args.tts_parsed_plan_sha256 = config.get("ttsParsedPlanSha256", "")  # 공용 마감 I1: renderer 파싱 full sha256(parity 대조)
+        args.tts_parser_version = config.get("ttsParserVersion", None)
         # ref-analyze / ref-trim 파라미터(참조 구간 선택 UI용)
         args.region_start = config.get("regionStart", 0.0)
         args.region_dur = config.get("regionDur", 0.0)
@@ -127,6 +129,18 @@ def main():
     try:
         # ── TTS mode ──
         if args.mode == "tts":
+            # 공용 마감 I1: 모델 로딩 전에 renderer 파싱 결과와 parity 대조(합성 권위=Python).
+            # 파싱 실패(UNKNOWN_TTS_TAG/INVALID_PAUSE_TAG/EMPTY_EMOTION_SEGMENT) 또는 hash 불일치
+            # (PARSER_PARITY_MISMATCH)면 여기서 구조화 오류로 차단한다(모델 미로딩·대사 전문 미출력).
+            try:
+                import tts_parity as _tp
+                _perr = _tp.verify_parity(args.tts_text, getattr(args, "tts_parsed_plan_sha256", "") or "")
+            except Exception as e:  # parser 자체 오류도 조용히 통과시키지 않는다
+                _perr = [{"code": "PARSER_PARITY_MISMATCH", "reason": "verify_failed:" + type(e).__name__}]
+            if _perr:
+                _e0 = _perr[0] if isinstance(_perr[0], dict) else {"code": "PARSER_PARITY_MISMATCH"}
+                emit("error", message="대사 태그를 처리할 수 없습니다.", **{k: v for k, v in _e0.items()})
+                return
             from tts_worker import synthesize
             emotion_refs = {}
             if hasattr(args, 'tts_emotion_refs') and args.tts_emotion_refs:

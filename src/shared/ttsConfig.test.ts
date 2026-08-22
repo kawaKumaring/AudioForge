@@ -49,6 +49,15 @@ test('ttsEmotionRefs가 config에 전달된다 (전달 경로 끊김 회귀)', (
   assert.deepEqual(c.ttsEmotionRefs, refs)
 })
 
+test('I1: ttsParsedPlanSha256/ttsParserVersion 전달(parity 배선) + 기본값', () => {
+  const c = buildTtsConfig({ ttsParsedPlanSha256: 'a'.repeat(64), ttsParserVersion: 2 })
+  assert.equal(c.ttsParsedPlanSha256, 'a'.repeat(64))
+  assert.equal(c.ttsParserVersion, 2)
+  const d = buildTtsConfig({})  // 미제공 → sha ''(parity 미강제), version 기본 2
+  assert.equal(d.ttsParsedPlanSha256, '')
+  assert.equal(d.ttsParserVersion, 2)
+})
+
 test('ttsSilenceGap=0 이 0.5로 변질되지 않는다 (|| → ?? 회귀)', () => {
   const c = buildTtsConfig({ ttsSilenceGap: 0 })
   assert.equal(c.ttsSilenceGap, 0)
@@ -81,11 +90,12 @@ test('지정한 값은 그대로 통과한다', () => {
   assert.equal(c.ttsEngine, 'gptsovits')
 })
 
-test('직렬화 형태에 10개 TTS 키가 모두 존재한다 (필드 누락 방지)', () => {
+test('직렬화 형태에 12개 TTS 키가 모두 존재한다 (필드 누락 방지; I1 parity 2필드 추가)', () => {
   const c = buildTtsConfig({})
   assert.deepEqual(
     Object.keys(c).sort(),
-    ['ttsEmotionRefRegions', 'ttsEmotionRefSources', 'ttsEmotionRefs', 'ttsEngine', 'ttsPitch',
+    ['ttsEmotionRefRegions', 'ttsEmotionRefSources', 'ttsEmotionRefs', 'ttsEngine',
+      'ttsParsedPlanSha256', 'ttsParserVersion', 'ttsPitch',
       'ttsReferenceOverride', 'ttsReferencePrompts', 'ttsSilenceGap', 'ttsSpeed', 'ttsText']
   )
 })

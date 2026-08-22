@@ -162,6 +162,10 @@ export interface TtsConfig {
   ttsEngine: string
   ttsReferencePrompts: Record<string, TtsReferencePromptConfig>
   ttsReferenceOverride: string
+  // 공용 마감 I1: renderer 파싱(parser_version=2) full sha256 — Python이 재파싱해 parity 대조(불일치→PARSER_PARITY_MISMATCH).
+  // metadata엔 sha8만; 여기(config)엔 full. 미제공('')이면 Python은 파싱 유효성만 검사하고 parity는 강제하지 않는다.
+  ttsParsedPlanSha256: string
+  ttsParserVersion: number
 }
 
 // ── stale 전사 방지 불변식(§4) — 합성 경계에서 전사↔음성 결합의 정합을 강제한다. ──
@@ -234,6 +238,10 @@ export function buildTtsConfig(o?: TtsInputOptions, sourceFingerprints?: Record<
     ttsEmotionRefRegions: o?.ttsEmotionRefRegions ?? {},
     ttsEngine: o?.ttsEngine ?? 'auto',
     ttsReferencePrompts: buildReferencePrompts(prompts),
-    ttsReferenceOverride: o?.ttsReferenceOverride ?? ''
+    ttsReferenceOverride: o?.ttsReferenceOverride ?? '',
+    ttsParsedPlanSha256: o?.ttsParsedPlanSha256 ?? '',
+    // 기본값 2 = ttsGrammar.TTS_PARSER_VERSION(권위). 여기선 런타임 cross-module import를 피하려 상수 미러(=2).
+    // 드리프트 방지는 ttsGrammar/tts_grammar parity fixture + parser_version 계약이 담당.
+    ttsParserVersion: o?.ttsParserVersion ?? 2
   }
 }

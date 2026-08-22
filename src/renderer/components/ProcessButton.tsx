@@ -2,6 +2,7 @@ import React from 'react'
 import { motion } from 'framer-motion'
 import { useAppStore } from '@/stores/app.store'
 import { ALL_EMOTIONS, planEmotionRefs } from '@/lib/emotions'
+import { parseTtsScript, TTS_PARSER_VERSION } from '../../shared/ttsGrammar'
 
 function _estimateTime(mode: string, duration: number, transcribe: boolean, translate: boolean): string {
   let secs = 0
@@ -44,6 +45,19 @@ export default function ProcessButton() {
   const handleProcess = async () => {
     console.log('[renderer][synthesize] 클릭 핸들러 진입', { mode, hasFile: !!fileInfo })
     if (!fileInfo) return
+    // 공용 마감 I1: tts는 합성 시작 전에 대사 문법을 파싱(parser_version=2). 오류(unknown/invalid/empty)면
+    // 합성을 시작하지 않고 차단(모델 미로딩). 성공이면 full sha256를 Python parity 대조용으로 전달한다.
+    // 대사 전문은 로그/오류에 넣지 않는다(오류엔 code만).
+    let ttsParsedPlanSha256: string | undefined
+    if (mode === 'tts') {
+      const parsed = parseTtsScript(ttsText)
+      if (!parsed.ok) {
+        setError('대사 태그를 처리할 수 없습니다.', { code: parsed.errors[0]?.code })
+        return
+      }
+      ttsParsedPlanSha256 = parsed.plan.fullSha256
+    }
+
     console.log('[renderer][synthesize] setProcessing 직전')
     setProcessing()
     console.log('[renderer][synthesize] setProcessing 직후')
@@ -79,7 +93,7 @@ export default function ProcessButton() {
       // ttsEmotionRefs = 사용∩등록∩준비된 감정의 effective 경로만(계약 §5 전송 필터).
       // ttsEmotionRefSources/Regions = 등록 전부의 원본/구간(재현·Python 등록판정용, §1.2/§5.1).
       // ttsPitch = 최종 WAV 음높이 후처리(0=무후처리, §6).
-      const r = await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsEmotionRefs: emotionRefsToSend, ttsEmotionRefSources: emotionSources, ttsEmotionRefRegions: emotionRegions, ttsReferencePrompts, ttsEngine, ttsReferenceOverride: ttsReferenceClip, ttsReferenceRegion })
+      const r = await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsEmotionRefs: emotionRefsToSend, ttsEmotionRefSources: emotionSources, ttsEmotionRefRegions: emotionRegions, ttsReferencePrompts, ttsEngine, ttsReferenceOverride: ttsReferenceClip, ttsReferenceRegion, ttsParsedPlanSha256, ttsParserVersion: TTS_PARSER_VERSION })
       console.log('[renderer][synthesize] audio:process 호출 직후', r)
     } catch (err: any) {
       console.error('[renderer][synthesize] audio:process 오류', err?.stack || err)
