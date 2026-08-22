@@ -875,19 +875,48 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
         # 레거시 경로와 바이트 단위 동일 — place_final_with_pitch가 final을 원자 교체.
         return _ps.place_final_with_pitch(candidate, final_path, pitch, work_dir)
 
-    # auto: pitch를 final이 아닌 staged로 배치 → final 미접촉 유지.
+    # auto: 원자 교체 전 모든 불변식(A/B/C)을 강제한다. 비유한은 **write 이전에** 차단하고, pending은
+    # **write 후 재오픈**해 다시 검증한다. 어느 단계든 실패면 AudioFinishingError로 pending 삭제 + 기존
+    # synthesized.wav 무손상(os.replace 미도달). 오류엔 경로/대사/전사를 담지 않는다.
     import os as _os
     import soundfile as _sf
     staged = _os.path.join(work_dir, ".af-staged.wav")
     finished_tmp = _os.path.join(work_dir, ".af-finished.wav")
+
+    # 불변식 A(source) — pitch/write 이전에 **원본 후보 array**를 직접 검증한다. PCM 저장이 NaN/inf를
+    # 유한값으로 바꾸기 전 단계는 없지만(파일에서 읽는 순간 이미 변환됨), FLOAT 후보의 비유한은 여기서
+    # AudioFinishingError로 차단된다(pitch_shift의 PitchError보다 앞서 올바른 오류 타입·순서로).
+    try:
+        _src, _src_sr = _sf.read(candidate, dtype="float32")
+    except _af.AudioFinishingError:
+        raise
+    except Exception as e:
+        raise _af.AudioFinishingError("최종 후보 디코드 실패", code="AUDIO_INVALID") from e
+    _af.require_valid_mono(_af.validate_audio_array(_src, _src_sr))
+
     pinfo = _ps.place_final_with_pitch(candidate, staged, pitch, work_dir)  # 실패→예외, final 무접촉
     try:
+        # 불변식 A(staged) — pitch 후 staged를 다시 검증(pitch가 비유한을 만들지 않았는지).
         data, sr = _sf.read(staged, dtype="float32")
-        _af.require_valid_mono(_af.validate_audio_array(data, sr))       # before
+        _af.require_valid_mono(_af.validate_audio_array(data, sr))
         plan = _af.compute_tail_plan(data, sr, tail)
         finished = _af.apply_final_tail(data, sr, plan)
-        _af.require_valid_mono(_af.validate_audio_array(finished, sr))   # after
-        _sf.write(finished_tmp, finished, sr)
+        # 불변식 B — in-memory: mono·non-empty·finite + 예상 프레임 수 + padding 정확히 0.
+        _af.require_valid_finished(finished, sr, plan, len(data))
+        # write는 FLOAT로(비유한을 PCM처럼 조용히 삼키지 않게 + fade 정밀도 보존). 이후 재오픈해 C 검증.
+        try:
+            _sf.write(finished_tmp, finished, sr, subtype="FLOAT")
+        except Exception as e:
+            raise _af.AudioFinishingError("pending write 실패", code="AUDIO_INVALID") from e
+        if not (_os.path.exists(finished_tmp) and _os.path.getsize(finished_tmp) > 0):
+            raise _af.AudioFinishingError("pending 0바이트/미생성", code="AUDIO_INVALID")
+        # 불변식 C — 파일 재오픈 검증: 디코드 가능·메타 sr==실제 sr·mono·non-empty·finite·프레임 수·peak.
+        try:
+            _rd, _rd_sr = _sf.read(finished_tmp, dtype="float32")
+            _meta = _sf.info(finished_tmp)
+        except Exception as e:
+            raise _af.AudioFinishingError("pending 재오픈 실패", code="AUDIO_INVALID") from e
+        _af.require_valid_reopened(_rd, _rd_sr, _meta.samplerate, _meta.frames, len(finished))
         _os.replace(finished_tmp, final_path)  # 이 시점에만 final 교체(원자적)
     finally:
         for p in (staged, finished_tmp):

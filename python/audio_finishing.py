@@ -269,6 +269,46 @@ def require_valid_mono(stats: dict):
     return stats
 
 
+def expected_tail_frames(input_len, plan: TailPlan) -> int:
+    """apply_final_tail 결과의 예상 프레임 수 = 입력 길이 + padding(off면 0). fade는 길이 불변."""
+    if plan.mode != "auto":
+        return int(input_len)
+    pad = int(round(plan.pad_ms * plan.sr / 1000.0))
+    return int(input_len) + max(0, pad)
+
+
+def require_valid_finished(samples, sr, plan: TailPlan, input_len) -> dict:
+    """불변식 B(원자 교체 전, in-memory): mono·non-empty·finite + 예상 프레임 수 + padding 구간 정확히 0.
+    위반 시 AUDIO_INVALID. (apply_final_tail이 구조적으로 보장하지만 write 전 방어적 재확인.)"""
+    stats = require_valid_mono(validate_audio_array(samples, sr))
+    exp = expected_tail_frames(input_len, plan)
+    if stats["frames"] != exp:
+        raise AudioFinishingError(f"finished 프레임 수 불일치: {stats['frames']} != {exp}",
+                                  code="AUDIO_INVALID")
+    pad = exp - int(input_len)
+    if pad > 0:
+        arr = np.asarray(samples)
+        if not bool(np.all(arr[-pad:] == 0.0)):
+            raise AudioFinishingError("padding 구간이 정확히 0이 아님", code="AUDIO_INVALID")
+    return stats
+
+
+def require_valid_reopened(samples, sr, meta_samplerate, meta_frames, expected_frames) -> dict:
+    """불변식 C(원자 교체 전, 파일 재오픈 후): 디코드된 array가 mono·non-empty·finite,
+    메타 sr == 실제 sr, 프레임 수 == 예상, peak 유한. 위반 시 AUDIO_INVALID.
+    호출부는 파일을 실제로 재오픈(sf.read/sf.info)해 이 함수에 넘긴다 — 여기 자체는 파일 I/O 없음."""
+    stats = require_valid_mono(validate_audio_array(samples, sr))
+    if meta_samplerate is None or int(meta_samplerate) != int(sr):
+        raise AudioFinishingError(f"메타 sr != 실제 sr: {meta_samplerate} != {sr}", code="AUDIO_INVALID")
+    if int(meta_frames) != int(expected_frames) or stats["frames"] != int(expected_frames):
+        raise AudioFinishingError(
+            f"재오픈 프레임 수 불일치: meta={meta_frames} read={stats['frames']} exp={expected_frames}",
+            code="AUDIO_INVALID")
+    if not np.isfinite(stats["peak"]):
+        raise AudioFinishingError("재오픈 peak 비유한", code="AUDIO_INVALID")
+    return stats
+
+
 # ────────────────────────── 경계(boundary) 간격 해석 ──────────────────────────
 
 @dataclass(frozen=True)
