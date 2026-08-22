@@ -72,6 +72,7 @@ def main():
         args.tts_speed = config.get("ttsSpeed", 1.0)
         args.tts_silence_gap = config.get("ttsSilenceGap", 0.5)
         args.tts_emotion_refs = config.get("ttsEmotionRefs", {})
+        args.tts_emotion_ref_sources = config.get("ttsEmotionRefSources", {})  # 등록 원본(만료 판정 기준, §5)
         args.tts_engine = config.get("ttsEngine", "auto")
         args.tts_reference_prompts = config.get("ttsReferencePrompts", {})  # 식별자→수동 override
         args.tts_reference_override = config.get("ttsReferenceOverride", "")  # 파생 참조 클립(있으면 기본 참조로 사용)
@@ -118,6 +119,8 @@ def main():
             emotion_refs = {}
             if hasattr(args, 'tts_emotion_refs') and args.tts_emotion_refs:
                 emotion_refs = args.tts_emotion_refs if isinstance(args.tts_emotion_refs, dict) else {}
+            emotion_ref_sources = getattr(args, 'tts_emotion_ref_sources', {})
+            emotion_ref_sources = emotion_ref_sources if isinstance(emotion_ref_sources, dict) else {}
             preferred_engine = args.tts_engine if hasattr(args, 'tts_engine') and args.tts_engine != 'auto' else None
             ref_prompts = getattr(args, "tts_reference_prompts", {})
             ref_prompts = ref_prompts if isinstance(ref_prompts, dict) else {}
@@ -130,11 +133,17 @@ def main():
             except RuntimeError as e:
                 emit("error", message=str(e))
                 return
-            synthesize(ref_input, args.tts_text, args.output,
-                       speed=args.tts_speed, silence_gap=args.tts_silence_gap,
-                       emotion_refs=emotion_refs, preferred_engine=preferred_engine,
-                       reference_prompts=ref_prompts,
-                       pitch=getattr(args, "tts_pitch", 0.0))
+            # 감정 참조 만료(§5 불변식 3) 등 synthesize가 던지는 RuntimeError를 명확한 오류로 표면화
+            # (silent fallback 금지 — resolve_reference_input과 동일 패턴).
+            try:
+                synthesize(ref_input, args.tts_text, args.output,
+                           speed=args.tts_speed, silence_gap=args.tts_silence_gap,
+                           emotion_refs=emotion_refs, emotion_ref_sources=emotion_ref_sources,
+                           preferred_engine=preferred_engine,
+                           reference_prompts=ref_prompts,
+                           pitch=getattr(args, "tts_pitch", 0.0))
+            except RuntimeError as e:
+                emit("error", message=str(e))
             return
 
         # ── Reference region: 분석(추천/파형) · 트림(파생 클립) (참조 구간 선택 UI용) ──

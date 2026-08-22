@@ -970,14 +970,18 @@ def resolve_reference_input(override, input_path):
 
 
 def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
-               emotion_refs=None, preferred_engine=None, reference_prompts=None, pitch=0.0):
+               emotion_refs=None, emotion_ref_sources=None, preferred_engine=None, reference_prompts=None, pitch=0.0):
     """Synthesize speech. Auto-selects engine by language.
     reference_prompts: 식별자(default/emotionId) → {manual_text, prompt_lang, mode} 사용자 override.
+    emotion_refs: emotionId → 합성에 쓸 effective 참조 경로(3~10초 클립/유효 원본).
+    emotion_ref_sources: emotionId → 사용자 등록 원본 경로(등록 사실). 만료 판정 기준(계약 §5).
     pitch: 결과 WAV 음높이 보정(반음, 후처리 축). 0=무후처리. 정규화 권위는 pitch_shift.clamp_quantize."""
     emit("status", message="음성 합성 시작", percent=0)
 
     if not emotion_refs:
         emotion_refs = {}
+    if not emotion_ref_sources:
+        emotion_ref_sources = {}
 
     lines = [l.strip() for l in text.strip().split('\n') if l.strip()]
     if not lines:
@@ -999,12 +1003,27 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             tmp_dirs.append(tmp_ref_dir)
         ref_cache = {"default": ref_wav}
 
-        for emo_id, emo_path in emotion_refs.items():
-            if emo_path and os.path.exists(emo_path):
-                wav, tmp = _prepare_ref(emo_path)
-                if tmp:
-                    tmp_dirs.append(tmp)
-                ref_cache[emo_id] = wav
+        # 감정 참조(계약 §5 4불변식) — 실제 대사에서 '사용된' 감정만 검증한다(미사용은 무시·bridge 미전달).
+        #  등록 기준 = emotion_ref_sources(원본 등록 사실). 등록됐는데 effective가 없거나 만료면 명확한 오류를
+        #  던진다(silent fallback 금지 — 예전엔 파일 없으면 조용히 건너뛰어 기본 참조로 대체됐다).
+        #  미등록 사용 감정은 ref_cache에 넣지 않아 아래 라우팅에서 기본 참조로 폴백된다.
+        used_emotion_ids = {eid for eid, _ in parsed if eid != "default"}
+        for eid in used_emotion_ids:
+            # 등록 판정: sources(원본 등록, 계약상 진실) 또는 effective(refs)에 존재. production은 sources가
+            # 준비된 것(refs)을 포함하므로 sources 기준과 동치이고, sources 없이 refs만 주어지는 호출(구 경로/
+            # 테스트)도 등록으로 보아 effective 유효성을 검증한다 — 어느 경우든 "등록됐는데 effective 없음"은 오류.
+            if eid not in emotion_ref_sources and eid not in emotion_refs:
+                continue  # (1) 미등록 → 기본 참조 폴백(정상)
+            eff = emotion_refs.get(eid)
+            if not (eff and os.path.exists(eff)):  # (3) 등록됐는데 effective 없음/만료 → 명확한 오류
+                label = next((k for k, v in EMOTION_TAGS.items() if v == eid), eid)
+                raise RuntimeError(
+                    f"감정 참조가 만료되었거나 유효하지 않습니다 — [{label}] 참조 구간을 다시 확정하세요.")
+            wav, tmp = _prepare_ref(eff)  # (2) 등록 + effective 유효 → 사용
+            if tmp:
+                tmp_dirs.append(tmp)
+            ref_cache[eid] = wav
+        # (4) 미사용 감정은 위 루프(used_emotion_ids)에 없으므로 준비·검증·전달되지 않는다.
 
         # 사용자 프롬프트 override(식별자 기준)를 준비된 참조 '경로' 기준으로 매핑해 GPT 엔진에 전달.
         # 항상 설정(빈 dict 포함)해 이전 작업의 override가 남지 않게 한다.
