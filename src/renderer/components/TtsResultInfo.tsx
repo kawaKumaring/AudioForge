@@ -85,7 +85,7 @@ export default function TtsResultInfo() {
         {tgt && <span style={chip()}>언어: {tgt}</span>}
         <span style={chip()}>속도 후처리: {speedPost ? '적용됨' : '없음'}</span>
         <span style={chip(pitchPost ? 'var(--accent)' : undefined)}>
-          음높이: {pitchPost ? `${pitchSt > 0 ? '+' : ''}${pitchSt.toFixed(1)}반음${pitchMethod ? ` (${pitchMethod})` : ''}` : '원본'}
+          음높이: {pitchPost ? `${pitchSt > 0 ? '+' : ''}${pitchSt.toFixed(1)}반음` : '원본'}
         </span>
         {sr && <span style={chip()}>{(sr / 1000).toFixed(0)}kHz</span>}
         {elapsed != null && <span style={chip()}>소요: {elapsed < 60 ? `${elapsed.toFixed(1)}초` : `${(elapsed / 60).toFixed(1)}분`}</span>}
@@ -106,6 +106,15 @@ export default function TtsResultInfo() {
       )}
       {fallback && Boolean(m.fallback_reason) && (
         <div style={{ fontSize: 11, color: 'var(--rose)' }}>⚠ 폴백 사유: {String(m.fallback_reason)}</div>
+      )}
+      {/* 구현 상세(접기) — 기술 구현명은 기본 노출에서 숨기고 원하는 사용자만 펼쳐 보게 한다. */}
+      {(pitchPost && pitchMethod) && (
+        <details style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          <summary style={{ cursor: 'pointer', color: 'var(--text-secondary)', width: 'fit-content' }}>상세 정보</summary>
+          <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+            <span style={chip()}>음높이 구현: {pitchMethod}</span>
+          </div>
+        </details>
       )}
     </div>
   )

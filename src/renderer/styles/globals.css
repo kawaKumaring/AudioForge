@@ -16,7 +16,8 @@
   --border-accent: rgba(139, 92, 246, 0.3);
   --text-primary: #f0f0f8;
   --text-secondary: #9898b0;
-  --text-muted: #555568;
+  /* 대비 개선: 기존 #555568은 어두운 배경에서 본문 대비가 낮아 상향 (WCAG 가독성) */
+  --text-muted: #8a8aa4;
   --accent: #8b5cf6;
   --accent-light: #a78bfa;
   --accent-glow: rgba(139, 92, 246, 0.2);
@@ -154,7 +155,6 @@ html, body, #root {
   transition: all 0.2s ease;
   cursor: pointer;
   border: none;
-  outline: none;
 }
 
 .btn-primary {
@@ -182,4 +182,64 @@ html, body, #root {
   background: linear-gradient(135deg, #e11d48, #be123c);
   color: #fff;
   box-shadow: 0 2px 12px var(--rose-glow);
+}
+
+/* ── 접근성: 키보드 포커스 링 ────────────────────────────────
+   마우스 클릭에는 링을 띄우지 않고(:focus-visible), 키보드 이동 시에만
+   또렷한 링을 준다. 인라인 outline:none을 쓰던 버튼도 여기서 되살린다. */
+:focus {
+  outline: none;
+}
+a:focus-visible,
+button:focus-visible,
+[role="button"]:focus-visible,
+[tabindex]:focus-visible,
+summary:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid var(--accent-light);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+input[type="range"]:focus-visible {
+  outline: 2px solid var(--accent-light);
+  outline-offset: 3px;
+}
+
+/* ── 진행 취소 중(cancelling) 상태 스타일 ─────────────────────
+   실제 취소 재현/트리거 배선은 통합 담당이 결정. 여기서는 UI만 준비.
+   진행 메시지에 '취소' 신호가 오면 앰버 펄스로 전환된다. */
+@keyframes cancelling-pulse {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+.cancelling-indicator {
+  animation: cancelling-pulse 1.2s ease-in-out infinite;
+}
+
+/* ── 모션 민감 사용자 배려 ───────────────────────────────────
+   시스템 설정이 모션 감소면 무한 애니메이션/전환을 죽인다. */
+@media (prefers-reduced-motion: reduce) {
+  .pulse-glow,
+  .shimmer,
+  .cancelling-indicator {
+    animation: none !important;
+  }
+  * {
+    transition-duration: 0.01ms !important;
+  }
+}
+
+/* 스크린리더 전용(시각적으로 숨김) */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
 }
