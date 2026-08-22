@@ -243,3 +243,28 @@ input[type="range"]:focus-visible {
   white-space: nowrap;
   border: 0;
 }
+
+/* ── 표현 사이클 전용(APPEND ONLY) ─────────────────────────────────────────
+   TTS 표현 흐름 컴포넌트(TtsVoiceSection / EmotionReferenceManager / ExpressionControls)
+   전용 클래스. 기존 공유 토큰·레이아웃을 변경하지 않는다(추가만). 대부분의 스타일은
+   컴포넌트 인라인이며, 여기는 좁은 창(800×600)·125/150% 배율에서 안전한 줄바꿈만 보강한다. */
+
+/* 흐름 카드 헤더/행: 좁아지면 세로로 접히도록(가로 스크롤 유발 금지). */
+.tts-flow-head,
+.tts-expr-row {
+  min-width: 0;
+}
+.tts-expr-row > * {
+  min-width: 0;
+}
+
+/* 800px 미만(작은 창) 또는 고배율로 좁아지면 흐름 헤더의 요약을 전체폭으로 내려 겹침을 막는다. */
+@media (max-width: 560px) {
+  .tts-flow-head {
+    row-gap: 6px;
+  }
+  .tts-flow-head > span[role="status"],
+  .tts-flow-head > span:nth-child(4) {
+    flex-basis: 100%;
+  }
+}
