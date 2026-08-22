@@ -1,7 +1,7 @@
 {
   "_meta": {
     "purpose": "TTS 감정/쉼 문법 언어중립 conformance 벡터(초안). TS parser와 Python parser가 둘 다 통과해야 한다. 통합 담당이 scaffold 단계에서 실제 테스트 경로로 이동·배선한다. 대사 전문은 테스트 입력에만 존재하고 metadata/로그로 나가지 않는다.",
-    "parser_version": 1,
+    "parser_version": 2,
     "status": "draft — 2차 확정 반영(D-2 방식A+full sha256 parity, D-4 인접쉼=오류, D-7 spoken_text 포함+offset 이원화, escape, empty segment, boundary priority). offset 숫자는 예시이며 로더가 재계산.",
     "emotion_ok_note": "emotion_id는 emotions.ts ALL_EMOTIONS(한글 label + 영문 id)에서 주입. 아래 happy/cheerful 등은 예시.",
     "pause_range_seconds": [0.05, 5.0],
