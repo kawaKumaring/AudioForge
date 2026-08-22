@@ -76,3 +76,37 @@ compact 전 체크포인트. 재개 시 이 문서 + `git log`로 상태 복원 
 - 최소 holdout 완료(승인된 중단·판정 절차 경유). GPU H1/H2_EN/H2_ZH·H3(matched-ICL)·H4(감정+pitch+1) completed. CPU C1 최대 무진행 42.3s(≪280). E1/tts-autosplit 실앱 통과.
 - H2_JA 정상 입력에서 generation_limit 중단 조건 1회 관측 → 승인된 동일 조건 2회 재측정 completed → 같은 입력이 완료/상한으로 갈리는 **비결정 tail 확인**(공식·상한 불변). refgen도 generation_limit 1회 후 승인된 재실행 1회 completed. 안전장치·미채택·원자 보존·정리 모두 정상.
 - 확정 특성: `GENERATION_LIMIT_EXCEEDED`는 유효 입력에서도 비결정적으로 발생 가능 → 후속 UX(§공용배선 B)에 안전중단 안내 + **사용자 클릭 재시도**(자동 재시도·x-vector 강등·기본참조 폴백 금지).
+
+## Compact 인수인계 2 (2026-08-23) — 공용 마감 진행 중
+
+### A. 현재 통합 사슬 (feature/tts-prosody-integration)
+- A `1401d38` 생성 상한 256 / B `3910eee` 다국어 자동분할·gap / C `3001113` 진행률·경로·sr/mono 보완 /
+  D `ffa46ed` autosplit 실 Electron E2E / UX-1 `bea909c` 상태·session·fingerprint / UX-2 `7f37274` TTSEditor /
+  E `bb8265a` editor UX E2E / F `d8a228f` literal NUL 제거 / G `5269f64` 실제 pitch capability·gate /
+  UX-3 `db0e23f` 접근성 병합 / H `b536683` accessibility E2E / **I `d45cdd8` generation metadata 결과 GUI(공용 마감 1 완료)**.
+- 이 compact 인수인계 docs-only 커밋 해시: (아래 보고에 기재)
+
+### B. 완료 검증 (수치·상태만)
+- generation 안전장치/자동분할 holdout: 정상 입력에서도 mode 무관 **비결정 장시간 tail** 존재. JA 동일조건 재측정에서 완료/상한 분기 → 비결정 확정(공식·상한 불변). `GENERATION_LIMIT_EXCEEDED`는 상한에서 유한 차단·잘린 WAV 미채택·원자 보존.
+- CPU C1(강제 CPU, KO xvec 긴줄 자동분할): 최대 무진행 **42.3s**, 전체 **142.8s**(≪280/300).
+- Electron autosplit(E1/tts-autosplit): 진행률 30% 시작→45→60→75→90 단조(점프 없음), 4조각 표면화, crash 0.
+- UX-1 state/session·UX-2 editor·UX-3 accessibility E2E 통과. 실제 pitch capability preflight: available=rubberband, elapsed 0.19s, single-flight 1회.
+- 마지막 통과: **python discovery 221 / npm test 90 / tsc node·web 0 / build OK**. E2E: state·tts-editor-ux·tts-pitch-capability·tts-accessibility·tts-result-metadata 전부 failed 0.
+
+### C. 아직 남은 공용 마감 (I 완료, J·K·L 남음)
+- **I (완료 `d45cdd8`)**: generation metadata shared/main/store/session/TtsResultInfo(기본 요약 + details, generation_limit/generated_iterations/termination_reason/generation_chunks). 데이터 경로는 이미 verbatim 관통했었고 GUI만 연결.
+- **J (미완, 재개 지점)**: GENERATION_LIMIT_EXCEEDED 사용자 명시 재시도.
+  - 설계(합의): 구조화 오류 code+필드를 Python→renderer까지 관통(문자열 prefix 추론 금지).
+    경로 손실 3지점 = `python-runner.ts:57`(msg.message만 forward), `separate.py`(message만 emit), `tts_worker`(RuntimeError 문자열 변환).
+  - **J-WIP는 compact 위해 revert함**(tts_worker error_payload + separate.py 구조화 emit 편집을 되돌려 트리를 I 상태로 정리). 재개 시 다시:
+    tts_worker `_synthesize_qwen_job`가 raise하는 RuntimeError에 `.error_payload`(code/segment_index/chunk_index/emotion_id/generated_iterations/generation_limit; TEXT_SEGMENT는 production_tokens/allowed) 부착 → separate.py except가 payload 있으면 `emit("error", message, **payload)` → python-runner가 `emit('error', msg)` 전체 객체 forward → audio.ipc가 audio:error로 전체 전달 → store `errorInfo`(구조화)+`setError(msg, info)` → TrackList 오류 카드가 code로 분기.
+  - UI: 제목 "생성이 비정상적으로 길어 안전하게 중단됐습니다." / 설명 "참조 음성과 전사문이 일치하는지 확인하거나 다시 시도하세요." / 버튼 [다시 시도][참조 전사 확인][닫기].
+  - 재시도 계약: 1클릭=1 audio:process, 자동/타이머 재시도 0, x-vector 자동 강등 0, 기본참조 폴백 0, 현재 store 설정으로 재구성, stale fingerprint면 차단·참조 확인 유도, backend 미종료면 버튼 비활성, 기존 synthesized.wav 유지, 성공 시 오류 제거·새 metadata, 실패 시 새 오류 1회, 중복 클릭/Enter에도 1회. mock Electron E2E + 커밋 J.
+  - 배선안: store `retryNonce`+`bumpRetry()`(=clearError+nonce++). ProcessButton useEffect([retryNonce])에서 status!=='processing' && fileInfo && !ttsBlockReason일 때만 handleProcess() 1회(ref로 dedup). 카드 "다시 시도"는 processing 중 비활성.
+- **K (미완)**: cancel lifecycle. synthetic child runner로 timestamp 측정(click→cancelling→child exit→runner done→settlement→idle). 불변식: child 생존 중 idle 금지, cancelling 중 새 합성 금지, kill 실패 시 "취소하지 못했습니다" 오류(조용한 idle 금지). Electron E2E(정상/중복/직후/result 직전 race/kill 실패 mock/앱 종료 중/취소 후 새 합성). Agent 3 cancelling 스타일·ARIA를 이 실측 상태머신에만 연결. 커밋 K.
+- **L (미완)**: GPU 없는 전체 회귀(python discovery·npm·tsc·build·state·editor-ux·pitch-capability·accessibility·result-metadata·generation-retry·cancel-lifecycle·single-instance·reset-cleanup·반응형·Tab) → 중간 보고(I/J/K 해시·diff·cancel timestamp·retry 호출수·metadata/GUI·남은 결함·Git) → **최소 실제 Qwen E2E 1회 승인 대기**(긴줄 자동분할+matched-ICL 감정+pitch+1, WAV 구조·finite·sr·peak; 자연스러움/발음/감정/pitch 체감은 청취 전 미확인; WDDM 사용량 집계만·PID 귀속 단정 금지). develop 병합은 그 뒤 별도 승인.
+
+### D. 불변 정책 (전 단계)
+- 공통 generation ABS=256. CPU worst spi 0.763 유지. timeout 증가·자동 재시도·자동 x-vector 강등·기본 참조 silent fallback 금지.
+- 사용자 미디어·전사 전문·오디오 바이트·ComfyUI prompt 내용 출력 금지. resources/·작업파일/·externals·WAV·모델·로그 커밋 금지.
+- 기존 공유 커밋(A~I·UX 병합) amend/rebase/squash/force-push 금지. develop/master/v1.0.0(tag object 810e448·peeled ca42b0e) 불변.
