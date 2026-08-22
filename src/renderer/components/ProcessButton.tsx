@@ -19,7 +19,7 @@ function _estimateTime(mode: string, duration: number, transcribe: boolean, tran
 }
 
 export default function ProcessButton() {
-  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsPitchCapability, ttsEmotionRefState, ttsReferencePrompts, ttsEngine, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, status, setProcessing, setProgress, setResult, setError } = useAppStore()
+  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsPitchCapability, ttsEmotionRefState, ttsReferencePrompts, ttsEngine, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, status, retryNonce, setProcessing, setProgress, setResult, setError } = useAppStore()
   const cleanupRef = React.useRef<(() => void) | null>(null)
   // 취소 중 표시용 로컬 상태(UI 준비/스타일링). 실제 취소 완료 전환은 통합/메인이 결정.
   const [cancelling, setCancelling] = React.useState(false)
@@ -59,7 +59,9 @@ export default function ProcessButton() {
       cleanup()
     })
     const offError = window.api.audio.onError((data: any) => {
-      setError(data.message ?? 'Unknown error')
+      // 구조화 code(GENERATION_LIMIT_EXCEEDED 등)를 store에 함께 저장 → 오류 카드가 분기.
+      const code = typeof data?.code === 'string' ? data.code : undefined
+      setError(data.message ?? 'Unknown error', code ? { code } : null)
       cleanup()
     })
 
@@ -82,6 +84,19 @@ export default function ProcessButton() {
       cleanup()
     }
   }
+
+  // ── 사용자 명시 재시도 배선 ──
+  // 오류 카드의 '다시 시도' → store.bumpRetry()가 retryNonce를 올린다. 이 effect는 그 증가에만 반응해
+  // 재합성을 정확히 1회 실행한다. 자동 재시도·타이머·x-vector 강등·기본참조 폴백 없음(현재 store 설정 그대로 재구성).
+  // 최신 참조 패턴: 렌더마다 최신 handleProcess와 재시도 가능 여부(차단/파일/상태)를 refs에 담아 stale closure 방지.
+  const handleProcessRef = React.useRef(handleProcess)
+  const canRetryRef = React.useRef(false)
+  const lastHandledNonce = React.useRef(retryNonce)
+  React.useEffect(() => {
+    if (retryNonce === lastHandledNonce.current) return  // 마운트/무변화 → 발화 안 함
+    lastHandledNonce.current = retryNonce
+    if (canRetryRef.current) handleProcessRef.current()   // 차단·파일없음·processing이면 실행 안 함
+  }, [retryNonce])
 
   const handleCancel = () => {
     // 취소 중 UI를 먼저 켠다(스타일링 준비). 현재 배선은 즉시 idle로 되돌리므로 실질적으로는
@@ -158,6 +173,11 @@ export default function ProcessButton() {
         : (!ttsRefReady ? (ttsRefMessage || '참조 구간을 확정하세요')
         : (emotionBlockReason || pitchBlockReason || '')))
     : ''
+
+  // 재시도 effect가 읽을 최신 참조 갱신. 이 지점은 processing/done early-return을 이미 지나 status가 idle|loading|error뿐 —
+  // 즉 '진행 중 아님'이 타입상 보장되므로 여기선 차단 사유 없음 + 파일 있음만 확인한다. ttsBlockReason은 pitch·감정·참조 게이팅 포함.
+  handleProcessRef.current = handleProcess
+  canRetryRef.current = !ttsBlockReason && !!fileInfo
 
   if (ttsBlockReason) {
     return (

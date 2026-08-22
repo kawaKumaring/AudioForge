@@ -126,6 +126,11 @@ interface AppState {
   progress: number
   progressMessage: string
   error: string | null
+  // 구조화 오류 정보(오류 UX 분기용). 현재는 code만 — GENERATION_LIMIT_EXCEEDED면 전용 카드.
+  // 전사·문장·전체경로·스택은 담지 않는다(§미디어 정책).
+  errorInfo: { code?: string } | null
+  // 사용자 명시 재시도 트리거(단조 증가). ProcessButton이 이 값 변화에서만 재합성 1회 실행.
+  retryNonce: number
   tracks: Track[]
   outputDir: string | null
   playingTrack: string | null
@@ -173,7 +178,11 @@ interface AppState {
   setProcessing: () => void
   setProgress: (percent: number, message: string) => void
   setResult: (tracks: Track[], outputDir: string, metadata?: Record<string, unknown> | null) => void
-  setError: (error: string) => void
+  setError: (error: string, info?: { code?: string } | null) => void
+  // 오류 카드 '닫기' — 오류만 해제하고 idle로. 디스크의 synthesized.wav·재시도 nonce는 건드리지 않는다.
+  clearError: () => void
+  // 오류 카드 '다시 시도' — 오류 해제 + retryNonce 증가(= 재합성 1회 트리거). 자동/타이머 재시도 아님.
+  bumpRetry: () => void
   setPlayingTrack: (name: string | null) => void
   setRestorable: (v: { dir: string; session: RestorableSession } | null) => void
   restoreSession: (dir: string, session: RestorableSession) => void
@@ -201,6 +210,8 @@ export const useAppStore = create<AppState>((set) => ({
   progress: 0,
   progressMessage: '',
   error: null,
+  errorInfo: null,
+  retryNonce: 0,
   tracks: [],
   outputDir: null,
   playingTrack: null,
@@ -226,7 +237,7 @@ export const useAppStore = create<AppState>((set) => ({
   // ttsReferencePrompts 전량 비움(불변식 3·4: stale 전사 ↔ 새 음성 결합 방지).
   setFile: (info, url) => {
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 전체 파생 클립(기본+감정) 정리
-    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsReferencePrompts: {} })
+    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsReferencePrompts: {} })
   },
   setMode: (mode) => set({ mode }),
   setTrimSilence: (v) => set({ trimSilence: v }),
@@ -294,10 +305,16 @@ export const useAppStore = create<AppState>((set) => ({
       },
     }
   }),
-  setProcessing: () => set({ status: 'processing', progress: 0, progressMessage: '파일 준비 중...', error: null, tracks: [], resultMetadata: null }),
+  setProcessing: () => set({ status: 'processing', progress: 0, progressMessage: '파일 준비 중...', error: null, errorInfo: null, tracks: [], resultMetadata: null }),
   setProgress: (percent, message) => set({ progress: percent, progressMessage: message }),
   setResult: (tracks, outputDir, metadata) => set({ status: 'done', progress: 100, progressMessage: '완료', tracks, outputDir, resultMetadata: metadata ?? null }),
-  setError: (error) => set({ status: 'error', error, progressMessage: '' }),
+  setError: (error, info) => set({ status: 'error', error, errorInfo: info ?? null, progressMessage: '' }),
+  clearError: () => set({ status: 'idle', error: null, errorInfo: null, progressMessage: '' }),
+  // 오류 해제 + 재시도 트리거. idle로 되돌려 ProcessButton effect가 재합성 1회 실행하도록.
+  // 이미 processing이면 무시(재진입 방지 — 중복 클릭에도 1회만, 진행 중 상태를 뒤엎지 않음).
+  bumpRetry: () => set((s) => s.status === 'processing'
+    ? {}
+    : { retryNonce: s.retryNonce + 1, status: 'idle', error: null, errorInfo: null, progressMessage: '' }),
   setPlayingTrack: (name) => set({ playingTrack: name }),
   setRestorable: (v) => set({ restorable: v }),
   restoreSession: (dir, session) => set(() => {
@@ -345,14 +362,14 @@ export const useAppStore = create<AppState>((set) => ({
       tracks: session.tracks || [],
       outputDir: dir,
       status: 'done' as const, progress: 100, progressMessage: '이전 결과 불러옴',
-      restorable: null, playingTrack: null, error: null
+      restorable: null, playingTrack: null, error: null, errorInfo: null
     }
   }),
   reset: () => {
     // 세션 리셋 → 파생 참조 클립 폴더 삭제 + 참조/전사/결과 상태 초기화(다른 원본의 상태 잔존 방지).
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }
     set({
-      fileInfo: null, fileUrl: null, status: 'idle', progress: 0, progressMessage: '', error: null,
+      fileInfo: null, fileUrl: null, status: 'idle', progress: 0, progressMessage: '', error: null, errorInfo: null,
       tracks: [], outputDir: null, playingTrack: null, restorable: null, splitMarkers: [], splitLabels: [],
       ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null,
       ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsPitch: 0.0, ttsPitchCapability: null, resultMetadata: null,

@@ -951,21 +951,40 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             if emo is None:  # bridge가 못 준 경우만 parsed로 보강(offending segment 기준)
                 emo = (parsed[si][0] if isinstance(si, int) and 0 <= si < len(parsed) else "?")
             ck = f", 조각 {gle.chunk_index}" if gle.chunk_index is not None else ""
-            raise RuntimeError(
+            _e = RuntimeError(
                 f"GENERATION_LIMIT_EXCEEDED — 감정 '{emo}' 문장{ck}이 동적 생성 상한"
                 f"(max_new_tokens={gle.generation_limit})에 도달했습니다(생성 반복 {gle.generated_iterations}). "
                 f"참조 오디오와 전사 내용이 맞지 않을 때 나타날 수 있습니다 — 참조 구간/전사를 확인한 뒤 다시 시도하세요."
-            ) from None
+            )
+            # 구조화 payload(renderer까지 정식 code 전달 — 문자열 prefix 추론 금지).
+            # 감정 ID·index·수치만 담는다: 전사·문장·전체경로 없음(§미디어 정책).
+            _e.error_payload = {
+                "code": "GENERATION_LIMIT_EXCEEDED",
+                "segment_index": si if isinstance(si, int) else None,
+                "chunk_index": gle.chunk_index,
+                "emotion_id": emo,
+                "generated_iterations": gle.generated_iterations,
+                "generation_limit": gle.generation_limit,
+            }
+            raise _e from None
         except QwenTextSegmentTooLongError as tle:
             # 자동 분할로도 상한 이내로 못 만든 줄 → 명확히 실패(내용 미포함). 기존 synthesized.wav 보존.
             si = tle.segment_index
             emo = tle.emotion_id
             if emo is None:
                 emo = (parsed[si][0] if isinstance(si, int) and 0 <= si < len(parsed) else "?")
-            raise RuntimeError(
+            _e = RuntimeError(
                 f"TEXT_SEGMENT_TOO_LONG — 감정 '{emo}' 줄이 안전한 단일 합성 길이를 초과합니다. "
                 f"문장별로 나누거나 줄바꿈을 추가하세요. (production 토큰 {tle.production_tokens}, 허용 {tle.allowed})"
-            ) from None
+            )
+            _e.error_payload = {
+                "code": "TEXT_SEGMENT_TOO_LONG",
+                "segment_index": si if isinstance(si, int) else None,
+                "emotion_id": emo,
+                "production_tokens": tle.production_tokens,
+                "allowed": tle.allowed,
+            }
+            raise _e from None
 
         # chunk 정렬: (original_segment_index, chunk_index). 순서 보존 = 원문 순서.
         ordered_entries = sorted(seg_out, key=lambda x: (x["original_segment_index"], x["chunk_index"]))

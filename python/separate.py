@@ -155,7 +155,13 @@ def main():
                            reference_prompts=ref_prompts,
                            pitch=getattr(args, "tts_pitch", 0.0))
             except RuntimeError as e:
-                emit("error", message=str(e))
+                # 구조화 payload(code+필드)가 있으면 renderer까지 전달(문자열 prefix 추론 대신 정식 code).
+                # payload에는 문장·전사·전체경로가 없다(tts_worker가 index/토큰/감정 ID만 담음).
+                payload = getattr(e, "error_payload", None)
+                if isinstance(payload, dict):
+                    emit("error", message=str(e), **payload)
+                else:
+                    emit("error", message=str(e))
             return
 
         # ── Reference region: 분석(추천/파형) · 트림(파생 클립) (참조 구간 선택 UI용) ──

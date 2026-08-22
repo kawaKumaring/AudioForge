@@ -153,9 +153,14 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     return removed
   }
 
-  // Helper to send error to renderer
-  const sendError = (message: string) => {
-    mainWindow.webContents.send('audio:error', { message })
+  // Helper to send error to renderer.
+  // 문자열 또는 구조화 오류({message, code?})를 받아 renderer용으로 정제 — message + (있으면) code만 전달.
+  // code는 GENERATION_LIMIT_EXCEEDED 등 오류 UX 분기 열쇠. 전사·문장·전체경로·수치 상세는 전달하지 않는다.
+  const sendError = (err: string | { message?: unknown; code?: unknown }) => {
+    const o = typeof err === 'string' ? { message: err } : (err || {})
+    const message = typeof o.message === 'string' ? o.message : String((o.message ?? '알 수 없는 오류'))
+    const code = typeof o.code === 'string' ? o.code : undefined
+    mainWindow.webContents.send('audio:error', code ? { message, code } : { message })
   }
 
   // 배타 가드는 '중복 실행을 막아야 하는' 쓰기성 작업에만. 읽기 전용 analyze/preflight는 쓰지 않는다.
@@ -433,7 +438,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     // (자식 프로세스 실제 종료 = backend free) 이후에 전달한다. 이러면 renderer가 완료(done)와
     // '다른 모드로 재처리'를 보는 시점엔 이미 runner=null이라, 결과 직후 재합성해도 "이미 처리 중"이 없다.
     let pendingResult: unknown = null
-    let pendingError: string | null = null
+    let pendingError: string | { message?: unknown; code?: unknown } | null = null
 
     runner.on('progress', (data) => {
       mainWindow.webContents.send('audio:progress', data)
@@ -494,7 +499,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
 
     runner.on('error', (message) => {
       settle.markSettled()
-      pendingError = typeof message === 'string' ? message : String(message)  // 'done'에서 전달
+      // 문자열(spawn/close 오류) 또는 구조화 객체(파싱된 error 라인, code 포함) 그대로 보관 → 'done'에서 정제 전달.
+      pendingError = (message && typeof message === 'object') ? message : String(message)
     })
 
     // Watchdog: kill if no progress for 5 minutes
@@ -612,7 +618,11 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       mainWindow.webContents.send('audio:track-result', data)
     })
     trackRunner.on('error', (message) => {
-      sendTrackError(typeof message === 'string' ? message : String(message))
+      // message가 구조화 객체({message,...})일 수 있으므로 .message 추출(그냥 String()이면 [object Object]).
+      const text = typeof message === 'string'
+        ? message
+        : String((message as { message?: unknown })?.message ?? message)
+      sendTrackError(text)
     })
 
     trackRunner.run(scriptPath, ['--config', configPath])

@@ -356,8 +356,9 @@ export default function TTSEditor() {
         )}
       </div>
 
-      {/* 참조 전사 (선택 — 수동 입력·언어). GPT-SoVITS 클로닝 품질용. */}
-      <div style={{ borderRadius: 12, overflow: 'hidden', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)' }}>
+      {/* 참조 전사 (선택 — 수동 입력·언어). GPT-SoVITS 클로닝 품질용.
+          id: 생성상한 오류 카드의 '참조 전사 확인'이 이 섹션으로 스크롤한다(전사-오디오 불일치 점검 유도). */}
+      <div id="tts-reference-transcript" style={{ borderRadius: 12, overflow: 'hidden', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)' }}>
         <button onClick={() => setShowRefPrompts(!showRefPrompts)} style={{
           display: 'flex', alignItems: 'center', justifyContent: 'space-between',
           width: '100%', padding: '10px 16px', border: 'none', cursor: 'pointer',

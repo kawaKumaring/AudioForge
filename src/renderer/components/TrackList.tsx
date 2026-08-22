@@ -355,9 +355,19 @@ function KaraokeButton({ tracks }: { tracks: { name: string; path: string }[] })
 }
 
 export default function TrackList() {
-  const { tracks, status, outputDir, error, mode } = useAppStore()
+  const { tracks, status, outputDir, error, errorInfo, mode, bumpRetry, clearError } = useAppStore()
 
   if (error) {
+    // 생성 상한 도달(GENERATION_LIMIT_EXCEEDED)은 유효 입력에서도 비결정적으로 발생 가능 → 전용 안내 + 명시 재시도.
+    // 그 외 오류는 기존 일반 카드(메시지 + '다시 시도'=닫기). code는 main이 정제해 넘긴 구조화 값(전사·경로 없음).
+    const isGenLimit = errorInfo?.code === 'GENERATION_LIMIT_EXCEEDED'
+    const scrollToTranscript = () => {
+      clearError()
+      // 오류 해제 후 참조 전사 섹션으로 스크롤(전사-오디오 불일치 점검 유도). 다음 프레임에 실행(레이아웃 안정 후).
+      requestAnimationFrame(() => {
+        document.getElementById('tts-reference-transcript')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      })
+    }
     return (
       <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
         role="alert"
@@ -366,11 +376,28 @@ export default function TrackList() {
           <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
         </svg>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--rose)' }}>{error}</span>
-          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-            <button onClick={() => useAppStore.setState({ status: 'idle', error: null })}
-              className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 12px' }}>다시 시도</button>
-          </div>
+          {isGenLimit ? (
+            <>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--rose)' }}>생성이 비정상적으로 길어 안전하게 중단됐습니다.</span>
+              <span style={{ fontSize: 12, fontWeight: 400, color: 'var(--text-secondary)' }}>참조 음성과 전사문이 일치하는지 확인하거나 다시 시도하세요.</span>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button onClick={() => bumpRetry()}
+                  className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 12px' }}>다시 시도</button>
+                <button onClick={scrollToTranscript}
+                  className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 12px' }}>참조 전사 확인</button>
+                <button onClick={() => clearError()}
+                  className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 12px' }}>닫기</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--rose)' }}>{error}</span>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button onClick={() => clearError()}
+                  className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 12px' }}>다시 시도</button>
+              </div>
+            </>
+          )}
         </div>
       </motion.div>
     )

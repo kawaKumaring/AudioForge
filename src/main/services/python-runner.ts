@@ -54,7 +54,9 @@ export class PythonRunner extends EventEmitter {
         } else if (msg.type === 'result') {
           this.emit('result', msg)
         } else if (msg.type === 'error') {
-          this.emit('error', msg.message)
+          // 구조화 오류 전체 전달(message + 선택적 code·필드). renderer용 정제는 audio.ipc가 담당.
+          // Python이 담는 필드는 이미 비민감(전사·문장·전체경로 없음)이지만, 소비 측이 최종 정제.
+          this.emit('error', msg)
         }
       } catch {
         // Non-JSON output (e.g., tqdm progress bars), ignore

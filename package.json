@@ -16,6 +16,7 @@
     "test:e2e:tts-pitch-capability": "node test/e2e/tts-pitch-capability.e2e.mjs",
     "test:e2e:tts-accessibility": "node test/e2e/tts-accessibility.e2e.mjs",
     "test:e2e:tts-result-metadata": "node test/e2e/tts-result-metadata.e2e.mjs",
+    "test:e2e:tts-generation-retry": "node test/e2e/tts-generation-retry.e2e.mjs",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
