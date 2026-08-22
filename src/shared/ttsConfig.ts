@@ -5,6 +5,12 @@
 // 식별자('default' 또는 emotionId) → 이 항목.
 export type TtsReferenceMode = 'auto' | 'manual' | 'ref_free'
 
+// 감정별 참조 구간(초). source에서 effective를 만든 구간 — 재현/기록용(계약 §1.2/§4).
+export interface TtsEmotionRegion {
+  start: number
+  duration: number
+}
+
 export interface TtsReferenceEntry {
   manualText?: string        // 사용자가 직접 입력/수정한 전사문
   promptLang?: string        // 사용자가 선택한 프롬프트 언어
@@ -21,7 +27,15 @@ export interface TtsInputOptions {
   ttsText?: string
   ttsSpeed?: number
   ttsSilenceGap?: number
+  // 결과 WAV 음높이 보정(반음). 범위 -2.0~+2.0, 0.5 단위(정규화 권위는 Python pitch_shift.clamp_quantize).
+  // 후처리 축: 모델 재합성 없이 최종 WAV에 적용. 0이면 무후처리(계약 §1.1/§6).
+  ttsPitch?: number
+  // 합성에 실제 사용할 감정별 effective 경로(파생 3~10초 클립, 또는 유효 ≤10초 원본). 사용∩등록∩준비만.
   ttsEmotionRefs?: Record<string, string>
+  // 사용자가 등록한 감정별 원본 경로(영속). 재현·Python 등록판정 기준. effective와 역할이 다름(계약 §1.2).
+  ttsEmotionRefSources?: Record<string, string>
+  // source에서 effective를 만든 구간(초). 재현/기록용(합성 입력 무영향).
+  ttsEmotionRefRegions?: Record<string, TtsEmotionRegion>
   ttsEngine?: string
   ttsReferencePrompts?: Record<string, TtsReferenceEntry>
   // 10초 초과 원본에서 사용자가 확정한 3~10초 파생 참조 클립(mono/24k). 설정 시 기본 참조로 이것을 쓴다.
@@ -42,7 +56,10 @@ export interface TtsConfig {
   ttsText: string
   ttsSpeed: number
   ttsSilenceGap: number
+  ttsPitch: number
   ttsEmotionRefs: Record<string, string>
+  ttsEmotionRefSources: Record<string, string>
+  ttsEmotionRefRegions: Record<string, TtsEmotionRegion>
   ttsEngine: string
   ttsReferencePrompts: Record<string, TtsReferencePromptConfig>
   ttsReferenceOverride: string
@@ -86,7 +103,10 @@ export function buildTtsConfig(o?: TtsInputOptions): TtsConfig {
     ttsText: o?.ttsText ?? '',
     ttsSpeed: o?.ttsSpeed ?? 1.0,
     ttsSilenceGap: o?.ttsSilenceGap ?? 0.5,
+    ttsPitch: o?.ttsPitch ?? 0.0,
     ttsEmotionRefs: o?.ttsEmotionRefs ?? {},
+    ttsEmotionRefSources: o?.ttsEmotionRefSources ?? {},
+    ttsEmotionRefRegions: o?.ttsEmotionRefRegions ?? {},
     ttsEngine: o?.ttsEngine ?? 'auto',
     ttsReferencePrompts: buildReferencePrompts(o?.ttsReferencePrompts),
     ttsReferenceOverride: o?.ttsReferenceOverride ?? ''

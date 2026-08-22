@@ -42,12 +42,25 @@ test('지정한 값은 그대로 통과한다', () => {
   assert.equal(c.ttsEngine, 'gptsovits')
 })
 
-test('직렬화 형태에 7개 TTS 키가 모두 존재한다 (필드 누락 방지)', () => {
+test('직렬화 형태에 10개 TTS 키가 모두 존재한다 (필드 누락 방지)', () => {
   const c = buildTtsConfig({})
   assert.deepEqual(
     Object.keys(c).sort(),
-    ['ttsEmotionRefs', 'ttsEngine', 'ttsReferenceOverride', 'ttsReferencePrompts', 'ttsSilenceGap', 'ttsSpeed', 'ttsText']
+    ['ttsEmotionRefRegions', 'ttsEmotionRefSources', 'ttsEmotionRefs', 'ttsEngine', 'ttsPitch',
+      'ttsReferenceOverride', 'ttsReferencePrompts', 'ttsSilenceGap', 'ttsSpeed', 'ttsText']
   )
+})
+
+test('pitch/emotion source·region 기본값 — ttsPitch=0.0, 나머지 {} (계약 §1)', () => {
+  const c = buildTtsConfig({})
+  assert.equal(c.ttsPitch, 0.0)
+  assert.deepEqual(c.ttsEmotionRefSources, {})
+  assert.deepEqual(c.ttsEmotionRefRegions, {})
+})
+
+test('ttsPitch=0 이 ??로 보존된다 (|| 변질 방지)', () => {
+  assert.equal(buildTtsConfig({ ttsPitch: 0 }).ttsPitch, 0)
+  assert.equal(buildTtsConfig({ ttsPitch: -1.5 }).ttsPitch, -1.5)
 })
 
 test('buildReferencePrompts: 수동 전사문은 snake_case로 전달(trim)', () => {
