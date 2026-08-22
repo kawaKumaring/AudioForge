@@ -28,8 +28,33 @@
 - metadata 요약(`summarize_finishing`: tail_mode/padding/fade/fade_applied, emotion_boundary_mode,
   explicit_pause_count/total_ms)은 **내부 계산만** — 공유 metadata/schema/renderer 미배선(통합 담당 몫).
 
+## 후속 fix — auto 경로 비유한 검증 갭(통합 리뷰 지적)
+
+증상: 통합 리뷰(soundfile 있는 full venv)에서 `test_finishing_fail_preserves_existing_final`가
+"AudioFinishingError not raised"로 실패 — auto 경로가 비유한 후보를 원자 교체 전에 거부하지 못했다.
+
+root-cause(각 단계 finite 계측, SYNTHETIC float):
+- **PCM_16 후보**(원래 테스트 fixture가 이렇게 씀): in-memory finite=False →
+  **후보 파일 read 직후 finite=True**. libsndfile이 PCM write에서 NaN→유한으로 바꿔, 비유한이
+  코드에 도달하기 전에 소실. 이후 전 단계 finite=True → 어떤 검증도 안 걸림 → os.replace 진행 = CI 실패.
+- **FLOAT 후보**: read 후에도 finite=False(NaN 생존) → `place_final_with_pitch`가 잡지만 **PitchError**
+  (AudioFinishingError 아님)로, finishing 헬퍼가 거부를 소유하지 못함.
+
+fix(최소, auto 경로만; off 경로·pitch_shift.py·K2 무변경):
+1. **A(source)**: pitch/write 이전에 원본 후보 array를 직접 검증 → FLOAT 비유한/스테레오/빈/sr을
+   올바른 타입(AudioFinishingError)·순서로 write 전에 차단.
+2. **B(in-memory)**: apply_final_tail 출력 재검증 — mono·finite + 예상 프레임 수 + padding 정확히 0.
+3. **C(재오픈)**: pending을 **FLOAT로 write**(비유한을 PCM처럼 삼키지 않게) 후 재오픈해 디코드·메타
+   sr==실제 sr·mono·finite·프레임 수·peak 검증. 통과해야만 os.replace(final) 1회.
+4. write/재오픈/0바이트/디코드 실패는 AudioFinishingError로 승격 → pending 삭제 + 기존 final 무손상.
+   테스트 fixture도 비유한 케이스는 subtype='FLOAT'로 기록(교훈: PCM은 NaN을 write 순간 소실).
+
 ## 검증 상태
 - `python/test_audio_finishing.py`: numpy 순수 스위트(tail plan/apply·config 검증·array 검증·경계 우선순위)
   = 이 환경(ambient numpy 2.3.5)에서 **실행·통과**. numpy 부재 환경에선 자동 skip.
-- `_finish_and_place` 통합(staging→tail 순서 / finishing-fail·config-거부 시 기존 final 보존 / temp 정리)
-  = **soundfile 필요 → 이 환경 미실행(skip)**, 공유 qwen venv에서 통합 담당이 검증.
+- `_finish_and_place` 통합(off byte-identity / auto staging→원자교체 / FLOAT NaN·+inf·-inf·stereo 거부 /
+  apply 출력 비유한·프레임 불일치 / sf.write 실패 / 0바이트 pending / 재오픈 메타 sr 오염 / config 거부 /
+  pitch 실패 — 각각 final 무손상 + os.replace(final) 미호출 + pending 잔여 0)
+  = **공유 qwen venv(soundfile 0.14.0, numpy 2.5.2)에서 실행·통과**. 후속 fix 사이클에서 47/47 OK,
+  full discovery 285/285 OK(K2 cancel·pitch 회귀 포함). PYTHONPATH를 boundary-pause worktree로 고정,
+  import된 tts_worker/audio_finishing __file__이 worktree 안임을 preflight로 단언.
