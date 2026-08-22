@@ -1,6 +1,7 @@
 import type { CSSProperties } from 'react'
 import { useAppStore } from '@/stores/app.store'
 import { ALL_EMOTIONS } from '@/lib/emotions'
+import { parseGenerationSummary } from '../../shared/ttsConfig'
 
 const EMO_LABEL: Record<string, string> = Object.fromEntries(ALL_EMOTIONS.map(e => [e.id, e.label]))
 
@@ -25,6 +26,7 @@ export default function TtsResultInfo() {
   const { mode, status, resultMetadata: m } = useAppStore()
   if (mode !== 'tts' || status !== 'done' || !m) return null
 
+  const gen = parseGenerationSummary(m)   // 생성 안전장치 요약(계약 A/B) — 안전 파싱, 구 session이면 null
   const requested = String(m.requested_engine ?? 'auto')
   const actual = String(m.actual_engine ?? '')
   const device = m.device ? String(m.device).toUpperCase().replace('CUDA:0', 'GPU (CUDA)') : null
@@ -89,6 +91,13 @@ export default function TtsResultInfo() {
         </span>
         {sr && <span style={chip()}>{(sr / 1000).toFixed(0)}kHz</span>}
         {elapsed != null && <span style={chip()}>소요: {elapsed < 60 ? `${elapsed.toFixed(1)}초` : `${(elapsed / 60).toFixed(1)}분`}</span>}
+        {gen && gen.termination === 'completed_before_limit' && (
+          <span style={chip('var(--cyan)')} title="생성 안전장치: 동적 상한 전에 자연히 끝났습니다(계약 A/B).">
+            생성: 안전 범위 내 완료
+            {gen.iters != null && gen.limit != null && ` (반복 ${gen.iters}/${gen.limit})`}
+            {gen.chunks.length > 0 && ` · 조각 ${gen.chunks.length}`}
+          </span>
+        )}
       </div>
       {emoNames && Object.keys(emoNames).length > 0 && (
         <div style={rowWrap}>
@@ -107,13 +116,34 @@ export default function TtsResultInfo() {
       {fallback && Boolean(m.fallback_reason) && (
         <div style={{ fontSize: 11, color: 'var(--rose)' }}>⚠ 폴백 사유: {String(m.fallback_reason)}</div>
       )}
-      {/* 구현 상세(접기) — 기술 구현명은 기본 노출에서 숨기고 원하는 사용자만 펼쳐 보게 한다. */}
-      {(pitchPost && pitchMethod) && (
+      {/* 구현 상세(접기) — 기술 구현명·자동분할 조각별 수치는 기본 노출에서 숨기고 원하는 사용자만 펼쳐 본다.
+          문장·전사·전체 경로는 담지 않는다(스키마상 없음). 구 session(기술 필드 없음)은 이 영역 자체를 숨김. */}
+      {((pitchPost && pitchMethod) || (gen && gen.chunks.length > 0)) && (
         <details style={{ fontSize: 11, color: 'var(--text-muted)' }}>
           <summary style={{ cursor: 'pointer', color: 'var(--text-secondary)', width: 'fit-content' }}>상세 정보</summary>
           <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
-            <span style={chip()}>음높이 구현: {pitchMethod}</span>
+            {pitchPost && pitchMethod && <span style={chip()}>음높이 구현: {pitchMethod}</span>}
           </div>
+          {gen && gen.chunks.length > 0 && (
+            <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4, overflowX: 'auto' }}>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>자동 분할 조각 ({gen.chunks.length})</span>
+              {gen.chunks.map((c, i) => (
+                <div key={`${c.original_segment_index}-${c.chunk_index}-${i}`} style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                  <span style={chip()}>문장 {c.original_segment_index + 1} · 조각 {c.chunk_index + 1}/{c.chunk_count}</span>
+                  {c.production_tokens != null && <span style={chip()}>토큰 {c.production_tokens}</span>}
+                  {c.generated_iterations != null && c.generation_limit != null && (
+                    <span style={chip()}>반복 {c.generated_iterations}/{c.generation_limit}</span>
+                  )}
+                  <span style={chip(c.termination_reason === 'generation_limit' ? 'var(--rose)' : undefined)}>
+                    {c.termination_reason === 'generation_limit' ? '상한 도달' : '상한 전 완료'}
+                  </span>
+                  {c.emotion_id && c.emotion_id !== 'default' && (
+                    <span style={chip('var(--accent)')}>감정 {EMO_LABEL[c.emotion_id] || c.emotion_id}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
         </details>
       )}
     </div>

@@ -25,6 +25,64 @@ export function normalizePitchCapability(raw?: { available?: boolean | null; rea
   return { supported: false, method: 'none', probed: true, reason: raw.reason || 'rubberband-unsupported' }
 }
 
+// ── 생성 안전장치 metadata(계약 A/B) — Python 필드명 그대로. result GUI가 소비. ──
+export type TerminationReason = 'completed_before_limit' | 'generation_limit'
+export interface GenerationChunk {
+  original_segment_index: number
+  chunk_index: number
+  chunk_count: number
+  production_tokens: number | null
+  generation_limit: number | null
+  generated_iterations: number | null
+  termination_reason: TerminationReason
+  emotion_id?: string | null
+}
+export interface GenerationSummary {
+  limit: number | null
+  iters: number | null
+  termination: TerminationReason | null
+  chunks: GenerationChunk[]
+}
+
+function _finiteNum(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+// result metadata에서 생성 안전장치 요약을 안전 추출. 비정상 배열 항목은 crash 없이 무시/정규화하고,
+// 문장·전사·전체경로는 애초에 담기지 않는다(스키마상 없음). 기술 필드가 전혀 없으면(구 session) null.
+export function parseGenerationSummary(metadata: Record<string, unknown> | null | undefined): GenerationSummary | null {
+  if (!metadata || typeof metadata !== 'object') return null
+  const limit = _finiteNum(metadata.generation_limit)
+  const iters = _finiteNum(metadata.generated_iterations)
+  const tr = metadata.termination_reason
+  const termination: TerminationReason | null =
+    (tr === 'completed_before_limit' || tr === 'generation_limit') ? tr : null
+  const chunks: GenerationChunk[] = []
+  const raw = metadata.generation_chunks
+  if (Array.isArray(raw)) {
+    for (const c of raw) {
+      if (!c || typeof c !== 'object') continue
+      const o = c as Record<string, unknown>
+      const osi = _finiteNum(o.original_segment_index)
+      const ci = _finiteNum(o.chunk_index)
+      const cc = _finiteNum(o.chunk_count)
+      const t = o.termination_reason
+      if (osi == null || ci == null || cc == null) continue                 // 필수 index/count 없으면 무시
+      if (t !== 'completed_before_limit' && t !== 'generation_limit') continue
+      chunks.push({
+        original_segment_index: osi, chunk_index: ci, chunk_count: cc,
+        production_tokens: _finiteNum(o.production_tokens),
+        generation_limit: _finiteNum(o.generation_limit),
+        generated_iterations: _finiteNum(o.generated_iterations),
+        termination_reason: t,
+        emotion_id: typeof o.emotion_id === 'string' ? o.emotion_id : null,
+      })
+    }
+  }
+  if (limit == null && iters == null && termination == null && chunks.length === 0) return null
+  return { limit, iters, termination, chunks }
+}
+
 // 참조별 사용자 프롬프트 항목(UI/스토어에서 camelCase로 관리).
 // 식별자('default' 또는 emotionId) → 이 항목.
 export type TtsReferenceMode = 'auto' | 'manual' | 'ref_free'

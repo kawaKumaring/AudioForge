@@ -2,7 +2,46 @@
 // 실행: npm test  (또는 node --test src/shared/ttsConfig.test.ts)
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildTtsConfig, buildReferencePrompts, deriveRefMode, pruneStaleReferencePrompts, normalizePitchCapability } from './ttsConfig.ts'
+import { buildTtsConfig, buildReferencePrompts, deriveRefMode, pruneStaleReferencePrompts, normalizePitchCapability, parseGenerationSummary } from './ttsConfig.ts'
+
+test('parseGenerationSummary: 정상 다중 chunk', () => {
+  const g = parseGenerationSummary({
+    generation_limit: 256, generated_iterations: 180, termination_reason: 'completed_before_limit',
+    generation_chunks: [
+      { original_segment_index: 0, chunk_index: 0, chunk_count: 2, production_tokens: 30, generation_limit: 247, generated_iterations: 90, termination_reason: 'completed_before_limit', emotion_id: 'happy' },
+      { original_segment_index: 0, chunk_index: 1, chunk_count: 2, production_tokens: 20, generation_limit: 218, generated_iterations: 60, termination_reason: 'completed_before_limit' },
+    ],
+  })
+  assert.equal(g.limit, 256); assert.equal(g.iters, 180); assert.equal(g.termination, 'completed_before_limit')
+  assert.equal(g.chunks.length, 2)
+  assert.equal(g.chunks[0].emotion_id, 'happy'); assert.equal(g.chunks[1].emotion_id, null)
+})
+
+test('parseGenerationSummary: null/누락 → null(구 session)', () => {
+  assert.equal(parseGenerationSummary(null), null)
+  assert.equal(parseGenerationSummary({}), null)
+  assert.equal(parseGenerationSummary({ actual_engine: 'qwen3' }), null)
+})
+
+test('parseGenerationSummary: 잘못된 타입/비정상 chunk는 무시(crash 없음)', () => {
+  const g = parseGenerationSummary({
+    generation_limit: 'x', generated_iterations: NaN, termination_reason: 'weird',
+    generation_chunks: [
+      null, 42, 'nope',
+      { chunk_index: 0 },                                            // 필수 index 누락 → 무시
+      { original_segment_index: 0, chunk_index: 0, chunk_count: 1, termination_reason: 'bad' }, // 사유 불량 → 무시
+      { original_segment_index: 1, chunk_index: 0, chunk_count: 1, production_tokens: 'x', generation_limit: null, generated_iterations: 5, termination_reason: 'completed_before_limit' }, // 정상(1개)
+    ],
+  })
+  assert.equal(g.limit, null); assert.equal(g.iters, null); assert.equal(g.termination, null)
+  assert.equal(g.chunks.length, 1)
+  assert.equal(g.chunks[0].production_tokens, null); assert.equal(g.chunks[0].generated_iterations, 5)
+})
+
+test('parseGenerationSummary: generation_chunks 비배열 → chunks 빈 배열', () => {
+  const g = parseGenerationSummary({ generation_limit: 256, generation_chunks: { not: 'array' } })
+  assert.ok(g); assert.equal(g.chunks.length, 0); assert.equal(g.limit, 256)
+})
 
 test('ttsEmotionRefs가 config에 전달된다 (전달 경로 끊김 회귀)', () => {
   const refs = { happy: 'C:/ref/happy.wav', sad: 'C:/ref/sad.wav' }
