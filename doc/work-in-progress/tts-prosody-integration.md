@@ -93,7 +93,9 @@ compact 전 체크포인트. 재개 시 이 문서 + `git log`로 상태 복원 
 - UX-1 state/session·UX-2 editor·UX-3 accessibility E2E 통과. 실제 pitch capability preflight: available=rubberband, elapsed 0.19s, single-flight 1회.
 - 마지막 통과: **python discovery 221 / npm test 90 / tsc node·web 0 / build OK**. E2E: state·tts-editor-ux·tts-pitch-capability·tts-accessibility·tts-result-metadata 전부 failed 0.
 
-### C. 아직 남은 공용 마감 (I 완료, J·K·L 남음)
+### C. 아직 남은 공용 마감 (I·J 완료, K·L 남음)
+> 진행: **J 완료 `8d1e668`** — GENERATION_LIMIT_EXCEEDED 구조화 code Python→renderer 관통 + 사용자 명시 재시도(자동 재시도·x-vector 강등·기본참조 폴백 없음). tts-generation-retry.e2e.mjs 24/24, npm test 90, tsc 0. 다음 = K(cancel lifecycle).
+
 - **I (완료 `d45cdd8`)**: generation metadata shared/main/store/session/TtsResultInfo(기본 요약 + details, generation_limit/generated_iterations/termination_reason/generation_chunks). 데이터 경로는 이미 verbatim 관통했었고 GUI만 연결.
 - **J (미완, 재개 지점)**: GENERATION_LIMIT_EXCEEDED 사용자 명시 재시도.
   - 설계(합의): 구조화 오류 code+필드를 Python→renderer까지 관통(문자열 prefix 추론 금지).
