@@ -333,11 +333,18 @@ class BoundaryResolution(unittest.TestCase):
 
 @unittest.skipUnless(HAS_NUMPY and HAS_SOUNDFILE, _DEFER)
 class FinishAndPlaceIntegration(unittest.TestCase):
-    """pitch=0(ffmpeg 불요) + tail로 staging→finishing→원자 교체 경로를 실제 검증."""
+    """pitch=0(ffmpeg 불요) + tail로 staging→finishing→원자 교체 경로 실검증 + 실패 시 무손상 보존.
+    핵심(root-cause 대응): FLOAT WAV로 써야 비유한이 살아남는다(PCM_16은 write 순간 NaN→유한으로 소실).
+    그래서 비유한 검증 테스트는 반드시 subtype='FLOAT' 후보를 쓴다."""
+
+    _AUTO = {"mode": "auto", "pad_ms": 120, "fade_ms": 8}
 
     def setUp(self):
+        from unittest import mock  # stdlib
         import audio_finishing  # noqa: F401
         import tts_worker
+        self.mock = mock
+        self.af = audio_finishing
         self.tw = tts_worker
         self.dir = tempfile.mkdtemp(prefix="af_finish_")
         self.addCleanup(self._cleanup)
@@ -346,12 +353,50 @@ class FinishAndPlaceIntegration(unittest.TestCase):
         import shutil
         shutil.rmtree(self.dir, ignore_errors=True)
 
-    def _write(self, name, samples):
+    def _write(self, name, samples, subtype=None):
         import soundfile as sf
         p = os.path.join(self.dir, name)
-        sf.write(p, samples, SR)
+        sf.write(p, samples, SR, subtype=subtype) if subtype else sf.write(p, samples, SR)
         return p
 
+    def _write_float(self, name, samples):
+        """subtype='FLOAT' — NaN/inf가 파일을 왕복해도 보존된다(PCM은 소실)."""
+        return self._write(name, samples, subtype="FLOAT")
+
+    def _marker_final(self):
+        """기존 synthesized.wav를 심어 두고 바이트 스냅샷 반환(실패 후 무손상 확인용)."""
+        p = self._write("synthesized.wav", _sine(dur=0.02, freq=440))
+        with open(p, "rb") as f:
+            return p, f.read()
+
+    def _leftovers_zero(self):
+        self.assertFalse(os.path.exists(os.path.join(self.dir, ".af-staged.wav")), "staged 잔여 0")
+        self.assertFalse(os.path.exists(os.path.join(self.dir, ".af-finished.wav")), "finished 잔여 0")
+
+    def _run_fail_and_assert_preserved(self, cand, cfg=None, patches=(), pitch=0.0):
+        """_finish_and_place가 AudioFinishingError로 실패하면서 (1) os.replace가 final을 대상으로
+        호출되지 않음 (2) 기존 final 바이트 무손상 (3) pending 잔여 0 을 모두 단언."""
+        cfg = cfg or self._AUTO
+        final, prev = self._marker_final()
+        real_replace = os.replace
+        calls = []
+
+        def spy(src, dst):
+            calls.append((os.path.abspath(src), os.path.abspath(dst)))
+            return real_replace(src, dst)
+
+        stack = [self.mock.patch("os.replace", side_effect=spy)]
+        stack.extend(patches)
+        with _nested(stack):
+            with self.assertRaises(self.af.AudioFinishingError):
+                self.tw._finish_and_place(cand, final, pitch, self.dir, cfg)
+        # final이 os.replace의 대상이 된 적 없어야(원자 교체 미도달)
+        self.assertNotIn(os.path.abspath(final), [d for _, d in calls], "final은 교체되면 안 됨")
+        with open(final, "rb") as f:
+            self.assertEqual(f.read(), prev, "실패 시 기존 final 바이트 무손상")
+        self._leftovers_zero()
+
+    # ── 정상 경로 ──
     def test_off_path_bytes_identical_to_place_final(self):
         """tail off → place_final_with_pitch와 동일 결과(레거시 회귀 보존)."""
         import soundfile as sf
@@ -369,41 +414,137 @@ class FinishAndPlaceIntegration(unittest.TestCase):
         s[-1] = 0.8
         cand = self._write("cand.wav", s)
         final = os.path.join(self.dir, "synthesized.wav")
-        self.tw._finish_and_place(cand, final, 0.0, self.dir,
-                                  {"mode": "auto", "pad_ms": 120, "fade_ms": 8})
+        self.tw._finish_and_place(cand, final, 0.0, self.dir, self._AUTO)
         data, sr = sf.read(final, dtype="float32")
+        info = sf.info(final)
         self.assertEqual(len(data), int(0.05 * SR) + 2880, "tail padding 반영")
-        self.assertEqual(float(data[-1]), 0.0)
-        # staging/finished temp 청소됨
-        self.assertFalse(os.path.exists(os.path.join(self.dir, ".af-staged.wav")))
-        self.assertFalse(os.path.exists(os.path.join(self.dir, ".af-finished.wav")))
+        self.assertEqual(int(info.samplerate), SR, "메타 sr 유지")
+        self.assertEqual(float(data[-1]), 0.0, "마지막 padding 샘플 정확히 0")
+        self.assertTrue(np.all(np.isfinite(data)))
+        self._leftovers_zero()
 
-    def test_finishing_fail_preserves_existing_final(self):
-        """검증 실패(비유한 후보) → 기존 synthesized.wav 무손상 + temp 정리."""
+    # ── 비유한(FLOAT) 차단: write 이전에 source에서 거부 ──
+    def test_float_nan_candidate_rejected_preserves_final(self):
+        bad = _sine(dur=0.05); bad[5] = np.nan
+        cand = self._write_float("cand.wav", bad)
+        self._run_fail_and_assert_preserved(cand)
+
+    def test_float_posinf_candidate_rejected_preserves_final(self):
+        bad = _sine(dur=0.05); bad[7] = np.inf
+        cand = self._write_float("cand.wav", bad)
+        self._run_fail_and_assert_preserved(cand)
+
+    def test_float_neginf_candidate_rejected_preserves_final(self):
+        bad = _sine(dur=0.05); bad[9] = -np.inf
+        cand = self._write_float("cand.wav", bad)
+        self._run_fail_and_assert_preserved(cand)
+
+    def test_stereo_candidate_rejected_preserves_final(self):
+        st = np.stack([_sine(dur=0.03), _sine(dur=0.03)], axis=1)
+        cand = self._write_float("cand.wav", st)
+        self._run_fail_and_assert_preserved(cand)
+
+    # ── in-memory finished 검증(B) 실패: apply_final_tail 출력이 비유한/프레임불일치 ──
+    def test_apply_output_nonfinite_rejected(self):
+        cand = self._write("cand.wav", _sine(dur=0.05))
+
+        def bad_apply(samples, sr, plan):
+            out = np.asarray(samples, dtype=np.float32).copy()
+            out[0] = np.nan
+            return out
+        self._run_fail_and_assert_preserved(
+            cand, patches=[self.mock.patch.object(self.af, "apply_final_tail", side_effect=bad_apply)])
+
+    def test_expected_frame_mismatch_rejected(self):
+        cand = self._write("cand.wav", _sine(dur=0.05))
+
+        def short_apply(samples, sr, plan):
+            return np.asarray(samples, dtype=np.float32)[:10].copy()  # 잘못된 길이
+        self._run_fail_and_assert_preserved(
+            cand, patches=[self.mock.patch.object(self.af, "apply_final_tail", side_effect=short_apply)])
+
+    # ── write/재오픈(C) 실패 ──
+    def test_sf_write_failure_rejected(self):
         import soundfile as sf
-        prev = self._write("synthesized.wav", _sine(dur=0.02, freq=440))
-        prev_bytes = open(prev, "rb").read()
-        bad = _sine(dur=0.05)
-        bad[5] = np.nan
-        cand = self._write("cand.wav", bad)
-        final = os.path.join(self.dir, "synthesized.wav")
-        with self.assertRaises(self.tw_af_error()):
-            self.tw._finish_and_place(cand, final, 0.0, self.dir,
-                                      {"mode": "auto", "pad_ms": 120, "fade_ms": 8})
-        self.assertEqual(open(final, "rb").read(), prev_bytes, "실패 시 기존 final 보존")
-        self.assertFalse(os.path.exists(os.path.join(self.dir, ".af-finished.wav")))
+        cand = self._write("cand.wav", _sine(dur=0.05))
+        real_write = sf.write
 
+        def boom_write(path, data, samplerate, *a, **k):
+            if str(path).endswith(".af-finished.wav"):
+                raise OSError("disk full (synthetic)")
+            return real_write(path, data, samplerate, *a, **k)
+        self._run_fail_and_assert_preserved(
+            cand, patches=[self.mock.patch("soundfile.write", side_effect=boom_write)])
+
+    def test_zero_byte_pending_rejected(self):
+        import soundfile as sf
+        cand = self._write("cand.wav", _sine(dur=0.05))
+        real_write = sf.write
+
+        def empty_write(path, data, samplerate, *a, **k):
+            if str(path).endswith(".af-finished.wav"):
+                open(path, "wb").close()  # 0바이트 생성
+                return
+            return real_write(path, data, samplerate, *a, **k)
+        self._run_fail_and_assert_preserved(
+            cand, patches=[self.mock.patch("soundfile.write", side_effect=empty_write)])
+
+    def test_pending_reopen_meta_sr_mismatch_rejected(self):
+        import soundfile as sf
+        cand = self._write("cand.wav", _sine(dur=0.05))
+        real_info = sf.info
+
+        class _FakeInfo:
+            def __init__(self, real):
+                self.samplerate = real.samplerate + 1  # 메타 sr 오염
+                self.frames = real.frames
+
+        def fake_info(path, *a, **k):
+            return _FakeInfo(real_info(path, *a, **k))
+        self._run_fail_and_assert_preserved(
+            cand, patches=[self.mock.patch("soundfile.info", side_effect=fake_info)])
+
+    # ── config / pitch 실패 ──
     def test_invalid_config_rejected_before_touch(self):
         cand = self._write("cand.wav", _sine(dur=0.02))
-        final = os.path.join(self.dir, "synthesized.wav")
-        with self.assertRaises(self.tw_af_error()):
-            self.tw._finish_and_place(cand, final, 0.0, self.dir,
-                                      {"mode": "auto", "pad_ms": 999, "fade_ms": 8})
-        self.assertFalse(os.path.exists(final), "config 거부 시 final 미생성")
+        final, prev = self._marker_final()
+        with self.assertRaises(self.af.AudioFinishingError):
+            self.tw._finish_and_place(cand, final, 0.0, self.dir, {"mode": "auto", "pad_ms": 999, "fade_ms": 8})
+        with open(final, "rb") as f:
+            self.assertEqual(f.read(), prev, "config 거부 시 기존 final 무손상")
+        self._leftovers_zero()
 
-    def tw_af_error(self):
-        import audio_finishing
-        return audio_finishing.AudioFinishingError
+    def test_pitch_failure_preserves_final(self):
+        """pitch 후처리 실패(place_final_with_pitch가 PitchError) → final 무손상, os.replace(final) 미호출."""
+        import pitch_shift
+        cand = self._write("cand.wav", _sine(dur=0.05))
+        final, prev = self._marker_final()
+        real_replace = os.replace
+        calls = []
+
+        def spy(src, dst):
+            calls.append(os.path.abspath(dst))
+            return real_replace(src, dst)
+
+        def boom(src, dst_final, semitones, work_dir, **k):
+            raise pitch_shift.PitchError("rubberband 없음(synthetic)", code=pitch_shift.PITCH_UNAVAILABLE)
+        with self.mock.patch("os.replace", side_effect=spy), \
+                self.mock.patch.object(pitch_shift, "place_final_with_pitch", side_effect=boom):
+            with self.assertRaises(pitch_shift.PitchError):
+                self.tw._finish_and_place(cand, final, 1.0, self.dir, self._AUTO)
+        self.assertNotIn(os.path.abspath(final), calls, "pitch 실패 시 final 미교체")
+        with open(final, "rb") as f:
+            self.assertEqual(f.read(), prev)
+        self._leftovers_zero()
+
+
+def _nested(cms):
+    """여러 context manager를 한 with로 — 파이썬 버전 무관 단순 헬퍼(ExitStack)."""
+    import contextlib
+    stack = contextlib.ExitStack()
+    for cm in cms:
+        stack.enter_context(cm)
+    return stack
 
 
 if __name__ == "__main__":
