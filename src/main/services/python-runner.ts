@@ -120,22 +120,42 @@ export class PythonRunner extends EventEmitter {
     return lines.slice(-3).join('\n')
   }
 
-  cancel(): void {
-    if (this.process) {
-      const pid = this.process.pid
-      // Windows: kill()은 부모 python만 종료 → 자식(ffmpeg, 격리 venv 등)이 잔존할 수 있어
-      // taskkill /T로 프로세스 트리 전체를 종료. 실패 시 기본 kill()로 폴백.
+  // 취소: 프로세스 트리를 kill하고 '자식 종료(close)'를 bounded timeout 내에서 확인한다.
+  //  - resolve(true): timeout 내 child close 관측(트리 종료 확인). run()의 close 핸들러가 done을 발생시킨다.
+  //  - resolve(false): timeout 초과 → 종료 미확인(취소 실패). this.process를 null로 만들지 않는다
+  //    (isRunning=true로 '자식 생존'을 표면화). child 종료를 가정하지 않는다.
+  //  this.process는 여기서 null로 만들지 않는다 — run()의 'close' 핸들러가 관리(그래야 done 경로가 그대로 동작).
+  cancel(timeoutMs: number = 8000): Promise<boolean> {
+    const proc = this.process
+    if (!proc) return Promise.resolve(true)
+    const pid = proc.pid
+    // E2E 시임(AF_E2E=1에서만): kill 실패를 재현하려면 실제 kill을 건너뛴다(트리는 fixture가 자진 종료).
+    const g = globalThis as unknown as { __afSimulateKillFail?: boolean }
+    const simulateKillFail = process.env.AF_E2E === '1' && g.__afSimulateKillFail === true
+    return new Promise<boolean>((resolve) => {
+      let done = false
+      const finish = (ok: boolean) => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        proc.removeListener('close', onClose)
+        resolve(ok)
+      }
+      const onClose = () => finish(true)
+      const timer = setTimeout(() => finish(false), timeoutMs)
+      proc.once('close', onClose)
+      if (simulateKillFail) return  // kill 요청 자체를 생략 → close 없음 → timeout(false)
+      // Windows: kill()은 부모 python만 종료 → 자식(ffmpeg, 격리 venv 등) 잔존 → taskkill /T로 트리 전체 종료.
       if (process.platform === 'win32' && pid) {
         try {
           spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true })
         } catch {
-          this.process.kill()
+          try { proc.kill() } catch { /* noop */ }
         }
       } else {
-        this.process.kill()
+        try { proc.kill() } catch { /* noop */ }
       }
-      this.process = null
-    }
+    })
   }
 
   get isRunning(): boolean {

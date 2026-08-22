@@ -122,13 +122,13 @@ interface AppState {
   translateModel: '600m' | '1.3b' | 'llm' | 'google'
   demucsModel: 'htdemucs' | 'htdemucs_ft' | 'roformer' | 'roformer_melband' | 'roformer_ensemble'
   nSpeakers: number
-  status: 'idle' | 'loading' | 'processing' | 'done' | 'error'
+  status: 'idle' | 'loading' | 'processing' | 'cancelling' | 'done' | 'error'
   progress: number
   progressMessage: string
   error: string | null
-  // 구조화 오류 정보(오류 UX 분기용). 현재는 code만 — GENERATION_LIMIT_EXCEEDED면 전용 카드.
+  // 구조화 오류 정보(오류 UX 분기용). code + (취소 실패 시) childAlive만 — GENERATION_LIMIT_EXCEEDED/CANCEL_FAILED 분기.
   // 전사·문장·전체경로·스택은 담지 않는다(§미디어 정책).
-  errorInfo: { code?: string } | null
+  errorInfo: { code?: string; childAlive?: boolean } | null
   // 사용자 명시 재시도 트리거(단조 증가). ProcessButton이 이 값 변화에서만 재합성 1회 실행.
   retryNonce: number
   tracks: Track[]
@@ -178,11 +178,15 @@ interface AppState {
   setProcessing: () => void
   setProgress: (percent: number, message: string) => void
   setResult: (tracks: Track[], outputDir: string, metadata?: Record<string, unknown> | null) => void
-  setError: (error: string, info?: { code?: string } | null) => void
+  setError: (error: string, info?: { code?: string; childAlive?: boolean } | null) => void
   // 오류 카드 '닫기' — 오류만 해제하고 idle로. 디스크의 synthesized.wav·재시도 nonce는 건드리지 않는다.
   clearError: () => void
   // 오류 카드 '다시 시도' — 오류 해제 + retryNonce 증가(= 재합성 1회 트리거). 자동/타이머 재시도 아님.
   bumpRetry: () => void
+  // 취소 lifecycle(공용 마감 K): 취소 요청 표시 / 취소 완료(idle) / 취소 실패(error+childAlive).
+  beginCancelling: () => void
+  finishCancelled: () => void
+  setCancelFailed: (childAlive: boolean) => void
   setPlayingTrack: (name: string | null) => void
   setRestorable: (v: { dir: string; session: RestorableSession } | null) => void
   restoreSession: (dir: string, session: RestorableSession) => void
@@ -190,7 +194,7 @@ interface AppState {
   reset: () => void
 }
 
-export const useAppStore = create<AppState>((set) => ({
+export const useAppStore = create<AppState>((set, get) => ({
   fileInfo: null,
   fileUrl: null,
   mode: 'music',
@@ -236,6 +240,7 @@ export const useAppStore = create<AppState>((set) => ({
   // 새 기본 참조 = 새 파일이므로 이전 전사(default + 감정 전부)는 새 음성에 결합되면 안 된다 →
   // ttsReferencePrompts 전량 비움(불변식 3·4: stale 전사 ↔ 새 음성 결합 방지).
   setFile: (info, url) => {
+    if (get().status === 'cancelling') return  // 취소 정리 중 새 파일 처리 차단(worker 종료 확인 전 상태 교체 방지)
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 전체 파생 클립(기본+감정) 정리
     set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsReferencePrompts: {} })
   },
@@ -311,10 +316,24 @@ export const useAppStore = create<AppState>((set) => ({
   setError: (error, info) => set({ status: 'error', error, errorInfo: info ?? null, progressMessage: '' }),
   clearError: () => set({ status: 'idle', error: null, errorInfo: null, progressMessage: '' }),
   // 오류 해제 + 재시도 트리거. idle로 되돌려 ProcessButton effect가 재합성 1회 실행하도록.
-  // 이미 processing이면 무시(재진입 방지 — 중복 클릭에도 1회만, 진행 중 상태를 뒤엎지 않음).
-  bumpRetry: () => set((s) => s.status === 'processing'
+  // processing/cancelling 중이면 무시(재진입 방지 — 중복 클릭에도 1회만, 진행/취소 중 상태를 뒤엎지 않음).
+  bumpRetry: () => set((s) => (s.status === 'processing' || s.status === 'cancelling')
     ? {}
     : { retryNonce: s.retryNonce + 1, status: 'idle', error: null, errorInfo: null, progressMessage: '' }),
+  // 취소 요청 표시(사용자 클릭 또는 main의 audio:cancelling). processing에서, 또는 취소 실패(CANCEL_FAILED) 상태에서
+  // '다시 취소'로 재진입할 때만 cancelling으로. 그 외 상태는 무시(child 생존 중 idle 금지·엉뚱한 전환 방지).
+  beginCancelling: () => set((s) => (s.status === 'processing' || (s.status === 'error' && s.errorInfo?.code === 'CANCEL_FAILED'))
+    ? { status: 'cancelling', progressMessage: '작업을 취소하고 정리하는 중…', error: null, errorInfo: null }
+    : {}),
+  // 취소 완료(main audio:cancelled) → idle. 부분 결과 미채택.
+  finishCancelled: () => set({ status: 'idle', progress: 0, progressMessage: '', error: null, errorInfo: null, tracks: [], resultMetadata: null }),
+  // 취소 실패(main audio:cancel-failed) → 조용한 idle 금지. error + childAlive(재취소 게이팅용).
+  setCancelFailed: (childAlive) => set({
+    status: 'error',
+    error: '작업을 취소하지 못했습니다. 프로세스 상태를 확인하거나 앱을 종료하세요.',
+    errorInfo: { code: 'CANCEL_FAILED', childAlive: !!childAlive },
+    progressMessage: ''
+  }),
   setPlayingTrack: (name) => set({ playingTrack: name }),
   setRestorable: (v) => set({ restorable: v }),
   restoreSession: (dir, session) => set(() => {
@@ -366,6 +385,7 @@ export const useAppStore = create<AppState>((set) => ({
     }
   }),
   reset: () => {
+    if (get().status === 'cancelling') return  // 취소 정리 중 reset 차단(worker 종료 확인 전 상태 초기화 방지)
     // 세션 리셋 → 파생 참조 클립 폴더 삭제 + 참조/전사/결과 상태 초기화(다른 원본의 상태 잔존 방지).
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }
     set({

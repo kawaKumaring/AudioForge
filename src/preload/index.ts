@@ -49,6 +49,23 @@ const api = {
       const handler = (_event: unknown, data: unknown) => callback(data)
       ipcRenderer.on('audio:error', handler)
       return () => ipcRenderer.removeListener('audio:error', handler)
+    },
+    // 취소 lifecycle(공용 마감 K): cancelling→(cancelled|cancel-failed). result/error와 별개 채널로,
+    // 취소 승자 정착 후 main이 명시적으로 보낸다(늦은 result/error는 main에서 이미 억제).
+    onCancelling: (callback: () => void) => {
+      const handler = () => callback()
+      ipcRenderer.on('audio:cancelling', handler)
+      return () => ipcRenderer.removeListener('audio:cancelling', handler)
+    },
+    onCancelled: (callback: () => void) => {
+      const handler = () => callback()
+      ipcRenderer.on('audio:cancelled', handler)
+      return () => ipcRenderer.removeListener('audio:cancelled', handler)
+    },
+    onCancelFailed: (callback: (data: unknown) => void) => {
+      const handler = (_event: unknown, data: unknown) => callback(data)
+      ipcRenderer.on('audio:cancel-failed', handler)
+      return () => ipcRenderer.removeListener('audio:cancel-failed', handler)
     }
   },
   settings: {

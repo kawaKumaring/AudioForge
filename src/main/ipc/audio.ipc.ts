@@ -68,6 +68,20 @@ function savePythonPath(p: string): void { saveSetting('pythonPath', p) }
 let runner: PythonRunner | null = null
 let trackRunner: PythonRunner | null = null
 let pythonPath = resolvePythonPath()
+// 취소 lifecycle(공용 마감 K) 조정 상태 — audio:process가 세팅하고 audio:cancel/done이 소비.
+let currentSettle: import('../services/run-settlement').SettlementGuard | null = null
+// 취소 진행 상태: none=취소 안 함 / inflight=취소 요청 후 child 종료 대기 / failed=kill 확인 실패(재취소 허용).
+let cancelState: 'none' | 'inflight' | 'failed' = 'none'
+let currentWatchdogClear: (() => void) | null = null          // 취소가 watchdog을 즉시 해제할 수 있게
+const CANCEL_EXIT_MS_DEFAULT = 8000                           // taskkill 후 child close 대기(bounded). worker timeout과 별개.
+// 취소-종료 대기 timeout(ms). production 값 불변; AF_E2E=1에서만 globalThis 주입값으로 대체(테스트 결정성).
+function cancelExitMs(): number {
+  if (process.env.AF_E2E === '1') {
+    const g = globalThis as unknown as { __afCancelExitMs?: number }
+    if (typeof g.__afCancelExitMs === 'number' && g.__afCancelExitMs > 0) return g.__afCancelExitMs
+  }
+  return CANCEL_EXIT_MS_DEFAULT
+}
 // 유효한 파생 참조 클립 폴더(tmpdir/audioforge_refclip_*)를 clipKey별로 추적.
 // clipKey = 'default'(기본 참조) | emotionId(감정 참조). 단일 슬롯을 감정별 식별 구조로 확장.
 // 새 클립/새 파일/재확정/합성 종료(합성 중 제외) 시 해당 key(또는 전체)만 정리.
@@ -139,8 +153,12 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
 
   // 앱 시작: 이전 세션이 남긴 stale 파생 참조 폴더 방어 정리(정확한 prefix + tmpdir 직속 폴더만).
   try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ }
-  // 앱 종료: 남은 파생 참조 폴더 정리.
-  app.on('will-quit', () => { try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ } })
+  // 앱 종료: 실행 중인 작업의 프로세스 트리를 kill(고아 자식 방지) + 남은 파생 참조 폴더 정리(공용 마감 K).
+  app.on('will-quit', () => {
+    try { runner?.cancel() } catch { /* noop */ }        // 트리(taskkill /T) 종료 — await 없이 요청(종료 경로)
+    try { trackRunner?.cancel() } catch { /* noop */ }
+    try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ }
+  })
 
   // clipKey 지정 시 그 하나만, 생략 시 전체 정리(새 파일/reset용). 반환: 실제 삭제된 개수.
   const releaseRefClip = (clipKey?: string): number => {
@@ -381,8 +399,12 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     }
 
-    // Resolve script path
-    const scriptPath = PythonRunner.getScriptPath('separate.py')
+    // Resolve script path. AF_E2E=1에서만: 취소 lifecycle E2E가 실제 Qwen/미디어 대신 synthetic
+    // 프로세스 트리를 띄우도록 스크립트 경로를 대체(취소·정착·정리·watchdog 로직은 production 그대로 실행).
+    let scriptPath = PythonRunner.getScriptPath('separate.py')
+    if (process.env.AF_E2E === '1' && process.env.AF_E2E_TTS_SCRIPT && existsSync(process.env.AF_E2E_TTS_SCRIPT)) {
+      scriptPath = process.env.AF_E2E_TTS_SCRIPT
+    }
     if (!existsSync(scriptPath)) {
       throw new Error(`Python 스크립트를 찾을 수 없습니다: ${scriptPath}`)
     }
@@ -429,10 +451,13 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     console.log(`[AudioForge] Config written to: ${configPath}`)
 
     runner = new PythonRunner(pythonPath)
+    const thisRunner = runner  // 이 실행 인스턴스 고정 — done에서 새 실행의 runner를 null로 덮어쓰지 않도록(clobber 방지).
 
-    // 종료 시 UI가 'processing'에 남지 않도록: result/error/watchdog 중 하나로 반드시 '정착'.
+    // 종료 시 UI가 'processing'에 남지 않도록: result/error/watchdog/취소 중 하나로 반드시 '정착'.
     // 어느 것도 없이 프로세스가 끝나면(예: 외부 kill, 코드 0인데 result 미도달) done에서 오류로 마감.
     const settle = createSettlementGuard(sendError)
+    cancelState = 'none'          // 새 실행 시작 → 취소 상태 초기화
+    currentSettle = settle        // audio:cancel이 '최초 정착 승자' 판정에 사용
 
     // production race 방지: 터미널 신호(result/error)를 즉시 보내지 않고 버퍼링했다가 runner 'done'
     // (자식 프로세스 실제 종료 = backend free) 이후에 전달한다. 이러면 renderer가 완료(done)와
@@ -512,29 +537,41 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       watchdog = setTimeout(() => {
         if (runner?.isRunning) {
           settle.markSettled()
-          runner.cancel()
+          runner.cancel()  // async(무시) — 트리 kill 시도
           sendError('처리 시간이 초과되었습니다 (5분간 응답 없음). Python 환경을 확인해주세요.')
         }
       }, WATCHDOG_MS)
     }
+    // 취소가 watchdog을 즉시 해제할 수 있게 노출(취소는 watchdog 무의미). done에서 정리.
+    currentWatchdogClear = () => { if (watchdog) { clearTimeout(watchdog); watchdog = null } }
 
     resetWatchdog()
 
     runner.on('done', (code) => {
-      if (watchdog) clearTimeout(watchdog)
+      if (watchdog) { clearTimeout(watchdog); watchdog = null }
       // 자식 프로세스 실제 종료 후 발생(취소 taskkill 포함). 여기서 backend를 먼저 free로 만들고
       // (runner=null) '그 다음' 버퍼링한 터미널 신호를 renderer에 전달 → 완료 표시 시점엔 이미 재합성 가능.
       try { unlinkSync(configPath) } catch {}
       if (mode === 'tts') {
         // 합성 '중간 산출물'(.qwen-job-*)만 정리. 취소(taskkill)로 죽은 worker가 파일 핸들을 잠깐 물어
-        // 즉시 삭제가 실패할 수 있어(Windows 락) 즉시 + 지연 재스윕.
+        // 즉시 삭제가 실패할 수 있어(Windows 락) 즉시 + 지연 재스윕. 취소여도 '부분 chunk'만 지운다.
         try { sweepQwenJobDirs(outputDir) } catch { /* noop */ }
         setTimeout(() => { try { sweepQwenJobDirs(outputDir) } catch { /* noop */ } }, 2500)
         // 파생 '참조 클립'(reference_clip_24k.wav)은 여기서 삭제하지 않는다 — 성공/오류/취소 후에도 유지해
-        // 같은 클립으로 재합성이 가능하게. 삭제는 새 파일/reset/구간 재확정/앱 종료에서만.
+        // 같은 클립으로 재합성이 가능하게(유효 수명 계약). 삭제는 새 파일/reset/구간 재확정/앱 종료에서만.
       }
-      runner = null  // backend free — 아래 터미널 신호 전달 전에 반드시 먼저.
-      // 버퍼링한 터미널 신호 전달(정착됨). 없으면 abnormal exit → settle.finish가 오류로 마감(UI 안 멈춤).
+      const wasCancelled = cancelState === 'inflight'  // 취소 요청 후 child 종료 확인 = 정상 취소 완료
+      // clobber 방지: 이 done이 '현재' 실행의 것일 때만 backend를 free로. 새 실행이 이미 시작됐다면 건드리지 않는다.
+      if (runner === thisRunner) { runner = null; currentSettle = null; currentWatchdogClear = null }
+      // 취소로 인한 종료: result/error 미채택 → 명시적 '취소 완료' 신호만(renderer가 idle로). 부분 결과·kill 오류 억제.
+      if (wasCancelled) {
+        cancelState = 'none'
+        mainWindow.webContents.send('audio:cancelled')
+        return  // settle는 취소 핸들러에서 이미 markSettled — finish 불필요(중복 신호 0).
+      }
+      // 취소 실패 후 child가 뒤늦게 스스로 종료한 경우: 이미 cancel-failed를 보냈으므로 추가 신호 없이 상태만 정리.
+      if (cancelState === 'failed') { cancelState = 'none' }
+      // 정상 종료: 버퍼링한 터미널 신호 전달(정착됨). 없으면 abnormal exit → settle.finish가 오류로 마감(UI 안 멈춤).
       if (pendingResult !== null) {
         mainWindow.webContents.send('audio:result', pendingResult)
       } else if (pendingError !== null) {
@@ -629,12 +666,34 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     return { outputDir }
   })
 
-  ipcMain.handle('audio:cancel', () => {
-    runner?.cancel()
-    runner = null
-    trackRunner?.cancel()
-    trackRunner = null
-    return true
+  // 취소 lifecycle(공용 마감 K): cancelling→kill 요청→child exit 확인(bounded)→done이 'cancelled' 전송→idle.
+  //  - 최초 정착 승자: 이미 result/error로 정착(currentSettle.settled)했으면 취소는 no-op(늦은 취소).
+  //  - kill 확인 실패/timeout: 조용한 idle 금지 → 'cancel-failed'(child 생존 boolean만).
+  //  - kill 요청 1회: 핸들러 재진입은 cancelRequested/settled로 차단.
+  ipcMain.handle('audio:cancel', async () => {
+    // track-process(대화 분할 후처리)는 기존 단순 취소 유지 — synthesis lifecycle과 분리.
+    if (trackRunner) { trackRunner.cancel(); trackRunner = null }
+
+    const r = runner
+    if (!r || !r.isRunning) return { ok: true, noop: true }               // 실행 중 아님 → no-op
+    // result/error가 먼저 정착(취소 아님)했으면 늦은 취소는 no-op(계약 4-B/4-C).
+    if (currentSettle?.settled && cancelState === 'none') return { ok: true, noop: true }
+    if (cancelState === 'inflight') return { ok: true, noop: true }        // 이미 취소 진행 중 → 중복 클릭 무시(kill 요청 1회)
+    // 첫 취소면 최초 정착 승자로 마킹(재취소는 이미 settled이므로 재마킹하지 않는다).
+    if (cancelState === 'none') currentSettle?.markSettled()
+    cancelState = 'inflight'
+    if (currentWatchdogClear) currentWatchdogClear()   // watchdog 무의미 → 즉시 해제
+    mainWindow.webContents.send('audio:cancelling')     // renderer → 'cancelling' 표시
+    const exited = await r.cancel(cancelExitMs())        // 트리 kill + child close bounded 대기
+    if (!exited) {
+      // kill 확인 실패/timeout — child 종료를 가정하지 않는다. 조용한 idle 금지 → cancel-failed(재취소 허용).
+      cancelState = 'failed'
+      const childAlive = r.isRunning
+      mainWindow.webContents.send('audio:cancel-failed', { childAlive })
+      return { ok: false, childAlive }
+    }
+    // exited=true → run()의 'close'→'done'가 'audio:cancelled'를 이미 전송(그쪽이 renderer를 idle로).
+    return { ok: true }
   })
 
   // 파일 reset/변경·감정 삭제/재등록 시 렌더러가 호출 — 파생 참조 클립 폴더 정리(합성 중이면 건드리지 않음).

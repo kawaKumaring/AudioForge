@@ -19,11 +19,8 @@ function _estimateTime(mode: string, duration: number, transcribe: boolean, tran
 }
 
 export default function ProcessButton() {
-  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsPitchCapability, ttsEmotionRefState, ttsReferencePrompts, ttsEngine, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, status, retryNonce, setProcessing, setProgress, setResult, setError } = useAppStore()
+  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsPitchCapability, ttsEmotionRefState, ttsReferencePrompts, ttsEngine, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, status, retryNonce, errorInfo, setProcessing, setProgress, setResult, setError, beginCancelling } = useAppStore()
   const cleanupRef = React.useRef<(() => void) | null>(null)
-  // 취소 중 표시용 로컬 상태(UI 준비/스타일링). 실제 취소 완료 전환은 통합/메인이 결정.
-  const [cancelling, setCancelling] = React.useState(false)
-  React.useEffect(() => { if (status !== 'processing') setCancelling(false) }, [status])
 
   // 감정 참조 게이팅/전송(계약 §5 불변식) — 순수 판정은 planEmotionRefs 단일 로직.
   //  대사에 실제 쓰인 감정만 대상. 미사용은 비차단·미전송. 등록+미준비 사용 감정은 blockedId로 차단.
@@ -52,19 +49,25 @@ export default function ProcessButton() {
     console.log('[renderer][synthesize] setProcessing 직후')
 
     const offProgress = window.api.audio.onProgress((data: any) => {
+      // 취소 정리 중이면 진행률 갱신 무시(cancelling 메시지를 덮지 않도록).
+      if (useAppStore.getState().status === 'cancelling') return
       setProgress(data.percent ?? 0, data.message ?? '')
     })
     const offResult = window.api.audio.onResult((data: any) => {
+      // 취소가 먼저 정착했으면 늦게 도착한 결과는 채택 안 함(계약 4-A). main도 억제하지만 방어적 이중 가드.
+      if (useAppStore.getState().status === 'cancelling') return
       setResult(data.tracks ?? [], data.outputDir ?? '', data.metadata ?? null)
       cleanup()
     })
     const offError = window.api.audio.onError((data: any) => {
+      if (useAppStore.getState().status === 'cancelling') return  // 취소 승리 시 늦은 오류 무시(계약 4-A)
       // 구조화 code(GENERATION_LIMIT_EXCEEDED 등)를 store에 함께 저장 → 오류 카드가 분기.
       const code = typeof data?.code === 'string' ? data.code : undefined
       setError(data.message ?? 'Unknown error', code ? { code } : null)
       cleanup()
     })
 
+    // 진행/결과/오류(실행별) 구독만 여기서 관리. 취소 lifecycle 구독은 아래 상시 effect(재취소도 받도록).
     function cleanup() {
       offProgress(); offResult(); offError()
       cleanupRef.current = null
@@ -98,13 +101,22 @@ export default function ProcessButton() {
     if (canRetryRef.current) handleProcessRef.current()   // 차단·파일없음·processing이면 실행 안 함
   }, [retryNonce])
 
+  // 취소 lifecycle 상시 구독(공용 마감 K). 실행별 구독과 분리 — cancel-failed 후 '다시 취소'도 받아야 하므로
+  // 여기서 유지하고, 터미널(cancelled/cancel-failed)에서만 실행별 구독(cleanupRef)을 해제한다.
+  React.useEffect(() => {
+    const s = () => useAppStore.getState()
+    const offCancelling = window.api.audio.onCancelling(() => s().beginCancelling())
+    const offCancelled = window.api.audio.onCancelled(() => { s().finishCancelled(); cleanupRef.current?.() })
+    const offFailed = window.api.audio.onCancelFailed((d: any) => { s().setCancelFailed(!!d?.childAlive); cleanupRef.current?.() })
+    return () => { offCancelling(); offCancelled(); offFailed() }
+  }, [])
+
   const handleCancel = () => {
-    // 취소 중 UI를 먼저 켠다(스타일링 준비). 현재 배선은 즉시 idle로 되돌리므로 실질적으로는
-    // 짧게만 보이며, 통합이 취소를 비동기로 배선하면 이 상태가 유지된다(트리거 조건부).
-    setCancelling(true)
+    if (status !== 'processing') return  // cancelling/그 외에서는 무시(중복 클릭 방지)
+    // 즉시 'cancelling' 표시(child 생존 중 idle 금지). idle/error 전환은 main의 audio:cancelled / cancel-failed가 결정.
+    // 구독(onResult/onCancelled/…)은 여기서 해제하지 않는다 — 터미널 이벤트가 도착해 cleanup해야 하므로.
+    beginCancelling()
     window.api.audio.cancel()
-    if (cleanupRef.current) cleanupRef.current()
-    useAppStore.setState({ status: 'idle', progress: 0, progressMessage: '' })
   }
 
   if (!fileInfo) return null
@@ -117,23 +129,26 @@ export default function ProcessButton() {
     border: 'none', cursor: 'pointer'
   }
 
+  // 취소 정리 중: 실제 상태 머신(status==='cancelling')에 연결된 비활성 표시. child 종료 확인 전까지 유지.
+  // aria-busy=true, 취소·합성 버튼 비활성. Agent 3의 cancelling 스타일(.cancelling-indicator)에 연결.
+  if (status === 'cancelling') {
+    return (
+      <div
+        className="cancelling-indicator"
+        role="status"
+        aria-live="polite"
+        aria-busy="true"
+        style={{ ...btnBase, background: 'var(--bg-elevated)', color: 'var(--amber)', cursor: 'progress' }}
+      >
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
+        </svg>
+        작업을 취소하고 정리하는 중…
+      </div>
+    )
+  }
+
   if (status === 'processing') {
-    // 취소 중 상태(준비/스타일링): 앰버 펄스, 비활성. 트리거는 handleCancel에서 조건부.
-    if (cancelling) {
-      return (
-        <div
-          className="cancelling-indicator"
-          role="status"
-          aria-live="polite"
-          style={{ ...btnBase, background: 'var(--bg-elevated)', color: 'var(--amber)', cursor: 'progress' }}
-        >
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
-          </svg>
-          취소 중…
-        </div>
-      )
-    }
     return (
       <motion.button
         initial={{ opacity: 0 }} animate={{ opacity: 1 }}
@@ -174,10 +189,25 @@ export default function ProcessButton() {
         : (emotionBlockReason || pitchBlockReason || '')))
     : ''
 
-  // 재시도 effect가 읽을 최신 참조 갱신. 이 지점은 processing/done early-return을 이미 지나 status가 idle|loading|error뿐 —
-  // 즉 '진행 중 아님'이 타입상 보장되므로 여기선 차단 사유 없음 + 파일 있음만 확인한다. ttsBlockReason은 pitch·감정·참조 게이팅 포함.
+  // 취소 실패로 이전 작업의 child가 아직 살아 있으면(CANCEL_FAILED·childAlive) 새 합성·재시도를 차단한다.
+  // (main도 runner.isRunning으로 새 process를 거부하지만, UI에서 먼저 명확히 막는다.)
+  const cancelFailedActive = errorInfo?.code === 'CANCEL_FAILED' && !!errorInfo?.childAlive
+
+  // 재시도 effect가 읽을 최신 참조 갱신. 이 지점은 processing/cancelling/done early-return을 이미 지나 status가 idle|loading|error뿐 —
+  // 즉 '진행 중 아님'이 타입상 보장되므로 여기선 차단 사유 없음 + 파일 있음 + 취소실패-생존 아님만 확인한다.
   handleProcessRef.current = handleProcess
-  canRetryRef.current = !ttsBlockReason && !!fileInfo
+  canRetryRef.current = !ttsBlockReason && !!fileInfo && !cancelFailedActive
+
+  if (cancelFailedActive) {
+    // 이전 작업 종료 대기 — 새 합성 불가(오류 카드의 '다시 취소'로 트리 종료를 재시도). aria-disabled.
+    return (
+      <div role="status" aria-live="polite" aria-disabled="true"
+        style={{ ...btnBase, background: 'var(--bg-elevated)', color: 'var(--text-secondary)', cursor: 'not-allowed', flexDirection: 'column', gap: 2, padding: '12px 0' }}>
+        <span style={{ fontSize: 13, fontWeight: 600 }}>이전 작업 종료 대기</span>
+        <span style={{ fontSize: 11, fontWeight: 400, opacity: 0.95 }}>취소되지 않은 작업이 남아 있어 새 합성을 시작할 수 없습니다.</span>
+      </div>
+    )
+  }
 
   if (ttsBlockReason) {
     return (
