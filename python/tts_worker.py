@@ -716,6 +716,8 @@ _METADATA_KEYS = [
     "reference_transcript_language", "reference_transcript_len", "reference_transcript_sha8",
     "target_language", "seed", "seed_supported", "speed", "speed_postprocessed", "silence_gap",
     "fallback", "fallback_reason", "elapsed_seconds", "output_sample_rate",
+    # pitch 후처리(계약 §2.1) — pitch_method는 production에서 "rubberband" | None 둘뿐.
+    "pitch_semitones", "pitch_method", "pitch_postprocessed",
 ]
 
 
@@ -756,9 +758,11 @@ def _transcript_meta(ref_text):
     return _detect_language(t), len(t), hashlib.sha256(t.encode("utf-8")).hexdigest()[:8]
 
 
-def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed, silence_gap):
+def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed, silence_gap, pitch=0.0):
     """Qwen 배치 합성 — 2B 품질 게이트 재사용, Qwen 전용 VRAM 임계로 장치 선택(ComfyUI 병행 안전),
     모델 1회 로딩. speed: 세그먼트별 atempo 후 사용자 silence_gap으로 결합(1.0은 raw). 임시파일 finally 정리.
+    pitch: 결합본(pending)에 rubberband 음높이 후처리(0=무후처리, 계약 §6·§7). 실패는 os.replace 직전
+    예외 → finally가 job_dir 정리 → 기존 synthesized.wav 무손상.
     반환: (final_path, info) — info는 재현 메타데이터의 런타임 사실(device/source/prompt_source/전사요약 등)."""
     import time
     from reference_audio import assess_reference_file, GPTSOVITS_POLICY
@@ -850,18 +854,15 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         emit("progress", percent=90, message="문장 이어붙이기 중...")
         _concat_with_silence(use, pending_path, silence_gap)  # 최종 아님 — job_dir 임시로 결합(단일도 동일 경로)
 
-        # 임시 출력 전량 검증(존재/non-empty/sr/finite) — 이 검사를 모두 통과해야 교체
-        import soundfile as _sf
-        import numpy as _np
-        if not (os.path.exists(pending_path) and os.path.getsize(pending_path) > 0):
-            raise RuntimeError("최종 합성 임시 출력 없음/0바이트")
-        d, sr = _sf.read(pending_path)
-        mono = d if d.ndim == 1 else d.mean(axis=1)
-        if mono.size == 0 or sr <= 0 or not bool(_np.all(_np.isfinite(mono))):
-            raise RuntimeError("최종 합성 출력 검증 실패(빈/비유한/sr)")
-
-        # 전량 성공 → 원자적 교체(기존 synthesized.wav는 이 시점에만 대체됨). job_dir는 finally에서 삭제.
-        os.replace(pending_path, final_path)
+        # 공통 최종 단계(계약 §6.1): pitch(후처리 축)를 speed·결합이 끝난 최종 후보에 적용하고
+        # 원자적으로 synthesized.wav에 배치. 검증·os.replace·실패격리(기존 wav 무손상)는 공통 함수가 책임.
+        # 0=무호출(바이트 불변). rubberband 부재+pitch!=0 → PITCH_UNAVAILABLE 예외(조용한 폴백 없음).
+        import pitch_shift as _ps
+        if _ps.clamp_quantize(pitch) != 0.0:
+            emit("progress", percent=93, message=f"음높이 보정 중 ({_ps.clamp_quantize(pitch):+.1f}반음)...")
+        # pending은 job_dir 내부(output_dir 하위) → os.replace가 동일 파일시스템 원자 이동.
+        pinfo = _ps.place_final_with_pitch(pending_path, final_path, pitch, job_dir)
+        sr = pinfo["output_sample_rate"]
         import time as _time
         # target_language: 세그먼트 언어 중 최빈값
         tgt = max(set(lang_codes), key=lang_codes.count) if lang_codes else None
@@ -875,6 +876,8 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             "speed_postprocessed": bool(abs(float(speed) - 1.0) > 1e-6),
             "fallback": fallback, "fallback_reason": fallback_reason,
             "elapsed_seconds": round(_time.monotonic() - t_start, 2), "output_sample_rate": int(sr),
+            "pitch_semitones": pinfo["pitch_semitones"], "pitch_method": pinfo["pitch_method"],
+            "pitch_postprocessed": pinfo["pitch_postprocessed"],
         }
         return final_path, info
     finally:
@@ -967,9 +970,10 @@ def resolve_reference_input(override, input_path):
 
 
 def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
-               emotion_refs=None, preferred_engine=None, reference_prompts=None):
+               emotion_refs=None, preferred_engine=None, reference_prompts=None, pitch=0.0):
     """Synthesize speech. Auto-selects engine by language.
-    reference_prompts: 식별자(default/emotionId) → {manual_text, prompt_lang, mode} 사용자 override."""
+    reference_prompts: 식별자(default/emotionId) → {manual_text, prompt_lang, mode} 사용자 override.
+    pitch: 결과 WAV 음높이 보정(반음, 후처리 축). 0=무후처리. 정규화 권위는 pitch_shift.clamp_quantize."""
     emit("status", message="음성 합성 시작", percent=0)
 
     if not emotion_refs:
@@ -1018,7 +1022,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         # 모델 1회 로딩으로 전 문장 처리(문장별 프로세스 금지).
         if _select_job_engine(text, preferred_engine) == "qwen3":
             final_path, info = _synthesize_qwen_job(parsed, ref_cache, overrides_by_path,
-                                                    output_dir, speed, silence_gap)
+                                                    output_dir, speed, silence_gap, pitch)
             meta = _build_tts_metadata(
                 requested_engine=requested_engine,
                 original_reference_path=reference_audio, effective_reference_path=reference_audio,
@@ -1056,13 +1060,34 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         emit("progress", percent=88, message="문장 이어붙이기 중...")
         final_path = os.path.join(output_dir, "synthesized.wav")
 
+        # 최종 후보 WAV 완성(단일=세그먼트 그대로, 복수=결합 임시본). speed는 세그먼트 합성 시 이미 반영.
+        # 그 뒤 Qwen과 '동일한' 공통 최종 단계(place_final_with_pitch)로 pitch 후처리 + 원자적 배치(계약 §6.1).
+        import pitch_shift as _ps
         if len(segment_paths) == 1:
-            os.rename(segment_paths[0], final_path)
+            candidate = segment_paths[0]           # output_dir 내부 → os.replace 원자적
+            concat_tmp = None
         else:
-            _concat_with_silence(segment_paths, final_path, silence_gap)
-            for p in segment_paths:
+            concat_tmp = os.path.join(output_dir, ".synth-concat.wav")
+            _concat_with_silence(segment_paths, concat_tmp, silence_gap)
+            candidate = concat_tmp
+        try:
+            if _ps.clamp_quantize(pitch) != 0.0:
+                emit("progress", percent=93, message=f"음높이 보정 중 ({_ps.clamp_quantize(pitch):+.1f}반음)...")
+            pinfo2 = _ps.place_final_with_pitch(candidate, final_path, pitch, output_dir)
+        finally:
+            # 후보/세그먼트 정리(성공 시 candidate는 os.replace로 소비됐을 수 있음). 실패 시 final_path는
+            # os.replace 미도달로 기존 파일 보존. 공통 함수의 pitch 임시본은 함수가 자체 정리.
+            leftovers = list(segment_paths)
+            if concat_tmp:
+                leftovers.append(concat_tmp)
+            for p in leftovers:
                 if os.path.exists(p):
-                    os.remove(p)
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+        pitch_st2 = pinfo2["pitch_semitones"]
+        pitch_method2 = pinfo2["pitch_method"]
 
         # per-segment(GPT-SoVITS/F5/Kokoro) 메타데이터
         import soundfile as _sf2
@@ -1091,7 +1116,9 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             target_language=tgt2, seed=None, seed_supported=False,
             speed=float(speed), speed_postprocessed=False, silence_gap=float(silence_gap),
             fallback=fb, fallback_reason=("Qwen3 사용 불가 → 기존 엔진 폴백" if fb else None),
-            elapsed_seconds=round(_time.monotonic() - _t0, 2), output_sample_rate=out_sr)
+            elapsed_seconds=round(_time.monotonic() - _t0, 2), output_sample_rate=out_sr,
+            pitch_semitones=pitch_st2, pitch_method=pitch_method2,
+            pitch_postprocessed=bool(pitch_st2 != 0.0))
         tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
         emit("progress", percent=99, message="완료!")
         emit("result", tracks=tracks, outputDir=output_dir, metadata=meta)
