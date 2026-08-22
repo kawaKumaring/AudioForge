@@ -29,3 +29,16 @@ export function sweepQwenJobDirs(outputDir: string): string[] {
   }
   return removed
 }
+
+// 남아 있는 `.qwen-job-*` 폴더 이름 목록(삭제하지 않음). 취소 정리(bounded cleanup)의 완료 판정에 사용 —
+// 실제로 0개임을 확인한 뒤에만 '취소 완료'를 확정하기 위한 관측 함수. 안전 범위는 sweepQwenJobDirs와 동일.
+export function listQwenJobDirs(outputDir: string): string[] {
+  const found: string[] = []
+  let entries: string[]
+  try { entries = readdirSync(outputDir) } catch { return found }
+  for (const name of entries) {
+    if (!name.startsWith('.qwen-job-')) continue
+    try { if (statSync(join(outputDir, name)).isDirectory()) found.push(name) } catch { /* noop */ }
+  }
+  return found
+}

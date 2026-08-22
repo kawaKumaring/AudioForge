@@ -64,6 +64,17 @@ const setSeam = (s) => app.evaluate((_e, ss) => {
 const injectResult = () => app.evaluate(({ BrowserWindow }) => {
   BrowserWindow.getAllWindows()[0].webContents.send('audio:result', { tracks: [{ name: 'stray', label: '늦은 결과', path: 'X/o.wav' }], outputDir: 'X', metadata: {} })
 })
+// 취소 phase telemetry(AF_E2E 전용, main 프로세스 globalThis에 최초 관측 ms 기록).
+const resetPhases = () => app.evaluate(() => { globalThis.__afCancelPhases = {} })
+const getPhases = () => app.evaluate(() => globalThis.__afCancelPhases || {})
+const setCleanupFail = (n) => app.evaluate((_e, nn) => { globalThis.__afCleanupFailCount = nn }, n)
+// 상대 순서 단언: 배열 [ [name, t], ... ]에서 인접쌍이 a<=b (역전 금지, 동일 ms 허용).
+const assertOrder = (pairs) => {
+  for (let i = 1; i < pairs.length; i++) {
+    const [pa, ta] = pairs[i - 1], [pb, tb] = pairs[i]
+    ok(typeof ta === 'number' && typeof tb === 'number' && ta <= tb, `순서 ${pa}(${ta}) ≤ ${pb}(${tb})`)
+  }
+}
 
 // ── 렌더러/store 헬퍼 ──
 const armStore = async () => {
@@ -100,23 +111,38 @@ try {
   await installSendCounter()
   await armStore()
 
-  // ── 시나리오 1: 정상 취소 + 상대 순서 + grandchild tree 종료 ──
-  await setFixtureMode('hang'); await setSeam({}); await resetSent()
+  // ── 시나리오 1: 정상 취소 — phase 상대 순서 + tree-dead-before-idle + 중복 0 ──
+  await setFixtureMode('hang'); await setSeam({}); await setCleanupFail(0); await resetSent(); await resetPhases()
   let pids = await startSynth()
   ok(pids && pids.parent, 'synthetic 트리 spawn(pidfile 기록)')
   ok(isAlive(pids.parent) && isAlive(pids.child), '취소 전 parent+grandchild 생존')
   const t_click = Date.now()
   await win.getByRole('button', { name: '처리 취소' }).first().click({ timeout: 8000 })
-  await waitStatus('cancelling', 8000)
-  const t_cancelling = Date.now()
-  ok(isAlive(pids.parent), 'cancelling 표시 시점에 child 아직 생존(=child 생존 중 idle 금지)')
-  await waitStatus('idle', 12000)
-  const t_idle = Date.now()
-  // child exit 확인(트리 전체)
-  let deadAt = 0
-  for (let i = 0; i < 60; i++) { if (!isAlive(pids.parent) && !isAlive(pids.child)) { deadAt = Date.now(); break } await win.waitForTimeout(50) }
-  ok(deadAt > 0, '취소 후 parent+grandchild 모두 종료(tree kill)')
-  ok(t_click <= t_cancelling && t_cancelling <= t_idle, `상대 순서 click(${t_click})≤cancelling(${t_cancelling})≤idle(${t_idle})`)
+  // 단일 poll 루프로 cancelling·tree-dead·idle 시점을 각각 최초 관측 시각으로 수집(고정 sleep 추정 아님).
+  let t_cancelling = 0, t_treeDead = 0, t_idle = 0
+  for (let i = 0; i < 500 && !t_idle; i++) {
+    const s = await status()
+    if (!t_cancelling && s === 'cancelling') t_cancelling = Date.now()
+    if (!t_treeDead && !isAlive(pids.parent) && !isAlive(pids.child)) t_treeDead = Date.now()
+    if (s === 'idle') { t_idle = Date.now(); break }
+    await win.waitForTimeout(20)
+  }
+  ok(t_cancelling > 0, 'cancelling 표시 관측')
+  ok(t_treeDead > 0, '취소 후 parent+grandchild 모두 종료(tree kill 관측)')
+  ok(t_idle > 0, 'idle 전환 관측')
+  ok(t_treeDead <= t_idle, `tree 종료(${t_treeDead}) ≤ idle(${t_idle}) — child 생존 중 idle 금지`)
+  // phase telemetry로 인과 순서 단언(동일 ms 허용, 역전 금지). parent close·taskkill close·done은 사실상 동시
+  // 사건이라 그들끼리의 선형 순서 대신 '인과적으로 보장되는 간선'만 단언한다(정직한 DAG).
+  const ph = await getPhases()
+  // (1) 메인 인과 사슬: 클릭 → cancelling 전송 → kill 요청 → runner done → cleanup → cancelled → idle
+  assertOrder([
+    ['cancel_clicked', t_click], ['cancelling_sent', ph.cancelling_sent], ['kill_requested', ph.kill_requested],
+    ['runner_done', ph.runner_done], ['cleanup_done', ph.cleanup_done], ['cancelled_sent', ph.cancelled_sent], ['idle_rendered', t_idle]
+  ])
+  // (2) tree kill 확인은 kill 이후·cleanup 이전(트리 종료를 확인한 뒤에만 정리·완료)
+  assertOrder([['kill_requested', ph.kill_requested], ['tree_kill_confirmed', ph.tree_kill_confirmed], ['cleanup_done', ph.cleanup_done]])
+  // (3) 렌더러 표시 사슬: 클릭 → cancelling 렌더 → idle 렌더(취소 정리 표시가 idle 이전)
+  assertOrder([['cancel_clicked', t_click], ['cancelling_rendered', t_cancelling], ['idle_rendered', t_idle]])
   const sent1 = await getSent()
   ok((sent1['audio:cancelled'] || 0) === 1, `audio:cancelled 정확히 1회(=${sent1['audio:cancelled'] || 0})`)
   ok((sent1['audio:error'] || 0) === 0 && (sent1['audio:result'] || 0) === 0, '취소 시 error/result 전송 0(중복·spurious 없음)')
@@ -200,7 +226,6 @@ try {
   pids = await startSynth()
   await win.getByRole('button', { name: '처리 취소' }).first().click({ timeout: 8000 })
   await waitStatus('cancelling', 8000)
-  const spawnsBefore = (await getSent())['audio:progress'] || 0
   await win.evaluate(() => window.__afStore.getState().bumpRetry())  // 취소 중 재시도 시도
   await win.waitForTimeout(200)
   ok((await status()) === 'cancelling', '취소 중 bumpRetry는 상태를 뒤엎지 않음(cancelling 유지)')
@@ -214,6 +239,29 @@ try {
   ok((await status()) === 'done', '취소 완료 후 새 합성 1회 정상(done)')
   const sent10 = await getSent()
   ok((sent10['audio:result'] || 0) === 1, '새 합성 결과 1회(중복 0)')
+
+  // ── 시나리오 11: 지연 cleanup — 첫 sweep 실패·재시도 성공 → 정상 idle ──
+  await win.evaluate(() => window.__afStore.getState().reset()); await armStore()
+  await setFixtureMode('hang'); await setSeam({}); await setCleanupFail(1); await resetSent()
+  pids = await startSynth()
+  await win.getByRole('button', { name: '처리 취소' }).first().click({ timeout: 8000 })
+  await waitStatus('idle', 12000)
+  ok(!isAlive(pids.parent), '지연 cleanup(1회 실패): 트리 종료')
+  const s11 = await getSent()
+  ok((s11['audio:cancelled'] || 0) === 1, '지연 cleanup 성공 후 cancelled 1회 → idle')
+  await setCleanupFail(0)
+
+  // ── 시나리오 12: cleanup 전부 실패 → cancel-failed(cleanupPending)·새 합성 차단 ──
+  await win.evaluate(() => window.__afStore.getState().reset()); await armStore()
+  await setFixtureMode('hang'); await setSeam({}); await setCleanupFail(50); await resetSent()
+  pids = await startSynth()
+  await win.getByRole('button', { name: '처리 취소' }).first().click({ timeout: 8000 })
+  await win.waitForFunction(() => window.__afStore.getState().errorInfo?.code === 'CANCEL_FAILED', undefined, { timeout: 10000 })
+  ok(!isAlive(pids.parent), 'cleanup 실패라도 트리는 종료(tree kill 확인됨)')
+  ok((await status()) === 'error', 'cleanup 전부 실패 → cancel-failed(조용한 idle 아님)')
+  const blocked = await win.evaluate(async () => { try { await window.api.audio.process('X:/in.wav', 'tts', { ttsText: 'x' }); return 'ok' } catch { return 'blocked' } })
+  ok(blocked === 'blocked', 'cleanupPending 중 새 합성 차단(main 거부)')
+  await setCleanupFail(0)
 
   ok(pageErrors.length === 0 && crashes.length === 0, `pageerror/crash 0(pe=${pageErrors.length},cr=${crashes.length})`)
 } catch (e) {

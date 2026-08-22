@@ -9,7 +9,7 @@ import { PythonRunner } from '../services/python-runner'
 import { createSettlementGuard } from '../services/run-settlement'
 import { createPreviewGuard, runPreview } from '../services/preview-transcribe'
 import { buildTtsConfig, normalizePitchCapability, type TtsInputOptions } from '../../shared/ttsConfig'
-import { sweepQwenJobDirs } from '../services/qwen-cleanup'
+import { sweepQwenJobDirs, listQwenJobDirs } from '../services/qwen-cleanup'
 import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
 import { createSingleFlight, createKeyedSingleFlight } from '../services/single-flight'
 
@@ -68,12 +68,18 @@ function savePythonPath(p: string): void { saveSetting('pythonPath', p) }
 let runner: PythonRunner | null = null
 let trackRunner: PythonRunner | null = null
 let pythonPath = resolvePythonPath()
-// 취소 lifecycle(공용 마감 K) 조정 상태 — audio:process가 세팅하고 audio:cancel/done이 소비.
+// 취소 lifecycle(공용 마감 K/K2) 조정 상태 — audio:process가 세팅하고 audio:cancel/done이 소비.
 let currentSettle: import('../services/run-settlement').SettlementGuard | null = null
-// 취소 진행 상태: none=취소 안 함 / inflight=취소 요청 후 child 종료 대기 / failed=kill 확인 실패(재취소 허용).
+// 취소 진행 상태: none=취소 안 함 / inflight=취소 요청 후 종료·정리 대기 / failed=kill 확인 실패(재취소 허용).
 let cancelState: 'none' | 'inflight' | 'failed' = 'none'
 let currentWatchdogClear: (() => void) | null = null          // 취소가 watchdog을 즉시 해제할 수 있게
-const CANCEL_EXIT_MS_DEFAULT = 8000                           // taskkill 후 child close 대기(bounded). worker timeout과 별개.
+let currentOutputDir: string | null = null                    // 취소 정리(bounded cleanup)가 쓸 output_dir
+let currentIsTts = false                                      // tts 실행만 job-dir 정리 대상
+let cleanupPending = false                                    // 취소 성공했으나 job-dir 정리 미완 → 새 실행 차단
+// runner 'done' 합류용 deferred — cancel 핸들러가 '실제로 runner가 free 됐는지'를 sleep 없이 기다린다.
+let runnerDoneDeferred: { promise: Promise<void>; resolve: () => void } | null = null
+const CANCEL_EXIT_MS_DEFAULT = 8000                           // taskkill 후 tree 종료 확인 대기(bounded). worker timeout과 별개.
+const CLEANUP_DEADLINE_MS = 2500                              // 취소 후 .qwen-job-* 정리 마감(bounded retry).
 // 취소-종료 대기 timeout(ms). production 값 불변; AF_E2E=1에서만 globalThis 주입값으로 대체(테스트 결정성).
 function cancelExitMs(): number {
   if (process.env.AF_E2E === '1') {
@@ -81,6 +87,34 @@ function cancelExitMs(): number {
     if (typeof g.__afCancelExitMs === 'number' && g.__afCancelExitMs > 0) return g.__afCancelExitMs
   }
   return CANCEL_EXIT_MS_DEFAULT
+}
+function makeDeferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void
+  const promise = new Promise<void>((r) => { resolve = r })
+  return { promise, resolve }
+}
+const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+// 취소 phase telemetry — AF_E2E=1에서만 globalThis에 최초 관측 시각(ms) 기록. production 로그/UI 미노출.
+function afPhase(name: string): void {
+  if (process.env.AF_E2E !== '1') return
+  const g = globalThis as unknown as { __afCancelPhases?: Record<string, number> }
+  g.__afCancelPhases = g.__afCancelPhases || {}
+  if (g.__afCancelPhases[name] == null) g.__afCancelPhases[name] = Date.now()
+}
+// 취소 후 .qwen-job-* bounded 정리 — 실제로 0개임을 확인(listQwenJobDirs)한 뒤에만 true.
+// AF_E2E=1에서 __afCleanupFailCount로 초기 실패 횟수를 주입해 지연 정리 회귀를 결정적으로 재현.
+async function boundedJobCleanup(outputDir: string, deadlineMs: number): Promise<boolean> {
+  const start = Date.now()
+  const g = globalThis as unknown as { __afCleanupFailCount?: number }
+  let forceFail = process.env.AF_E2E === '1' && typeof g.__afCleanupFailCount === 'number' ? g.__afCleanupFailCount : 0
+  for (;;) {
+    try { sweepQwenJobDirs(outputDir) } catch { /* noop */ }
+    let remaining = listQwenJobDirs(outputDir).length
+    if (forceFail > 0) { forceFail--; if (process.env.AF_E2E === '1') g.__afCleanupFailCount = forceFail; remaining = Math.max(remaining, 1) }
+    if (remaining === 0) return true
+    if (Date.now() - start >= deadlineMs) return false
+    await delay(120)
+  }
 }
 // 유효한 파생 참조 클립 폴더(tmpdir/audioforge_refclip_*)를 clipKey별로 추적.
 // clipKey = 'default'(기본 참조) | emotionId(감정 참조). 단일 슬롯을 감정별 식별 구조로 확장.
@@ -154,10 +188,20 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
   // 앱 시작: 이전 세션이 남긴 stale 파생 참조 폴더 방어 정리(정확한 prefix + tmpdir 직속 폴더만).
   try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ }
   // 앱 종료: 실행 중인 작업의 프로세스 트리를 kill(고아 자식 방지) + 남은 파생 참조 폴더 정리(공용 마감 K).
-  app.on('will-quit', () => {
-    try { runner?.cancel() } catch { /* noop */ }        // 트리(taskkill /T) 종료 — await 없이 요청(종료 경로)
-    try { trackRunner?.cancel() } catch { /* noop */ }
-    try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ }
+  // 앱 종료(공용 마감 K2-I): 실행 트리를 kill하고 '종료 확인'까지 기다린 뒤 실제 quit(고아 자식 방지).
+  // before-quit을 1회 preventDefault → bounded tree kill → 재진입 guard 후 quit. 무한 대기 방지(delay backstop).
+  let quitCleanupDone = false
+  app.on('before-quit', (e) => {
+    if (quitCleanupDone) return  // 재진입 → 실제 종료 진행
+    const busy = runner?.isRunning || trackRunner?.isRunning
+    if (!busy) { try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ } ; quitCleanupDone = true; return }
+    e.preventDefault()  // 실행 트리 종료 확인 전까지 종료 보류
+    const kills: Promise<unknown>[] = []
+    if (runner) kills.push(runner.cancel(3000))
+    if (trackRunner) kills.push(trackRunner.cancel(3000))
+    Promise.race([Promise.all(kills), delay(3500)])
+      .then(() => { try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ } })
+      .finally(() => { quitCleanupDone = true; app.quit() })
   })
 
   // clipKey 지정 시 그 하나만, 생략 시 전체 정리(새 파일/reset용). 반환: 실제 삭제된 개수.
@@ -386,6 +430,17 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     if (runner?.isRunning) {
       throw new Error('이미 처리 중인 작업이 있습니다')
     }
+    // 취소 진행 중(inflight)엔 새 실행 거부 — renderer 버튼 차단에만 의존하지 않는다(공용 마감 K2-D).
+    if (cancelState === 'inflight') {
+      throw new Error('작업을 취소하고 정리하는 중입니다. 잠시 후 다시 시도하세요.')
+    }
+    // 취소 후 job-dir 정리 미완(cleanupPending): 여기서 한 번 더 bounded 정리 시도 → 성공해야 진행.
+    if (cleanupPending) {
+      const dir = currentOutputDir
+      const done = dir ? await boundedJobCleanup(dir, CLEANUP_DEADLINE_MS) : true
+      if (!done) throw new Error('이전 취소 작업의 임시 파일 정리가 끝나지 않았습니다. 잠시 후 다시 시도하세요.')
+      cleanupPending = false; currentOutputDir = null
+    }
     // 읽기 전용 preflight/analyze는 합성을 막지 않는다. 실제 참조 전사·트림 중일 때만 차단(작업명 표시).
     if (transcriptPreviewGuard.running) {
       throw new Error('참조 전사 미리보기 중에는 합성을 시작할 수 없습니다.')
@@ -458,6 +513,10 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     const settle = createSettlementGuard(sendError)
     cancelState = 'none'          // 새 실행 시작 → 취소 상태 초기화
     currentSettle = settle        // audio:cancel이 '최초 정착 승자' 판정에 사용
+    currentOutputDir = outputDir  // 취소 정리(bounded cleanup)가 쓸 경로
+    currentIsTts = mode === 'tts'
+    const runnerDone = makeDeferred()  // done 핸들러가 resolve → cancel 핸들러가 sleep 없이 합류
+    runnerDoneDeferred = runnerDone
 
     // production race 방지: 터미널 신호(result/error)를 즉시 보내지 않고 버퍼링했다가 runner 'done'
     // (자식 프로세스 실제 종료 = backend free) 이후에 전달한다. 이러면 renderer가 완료(done)와
@@ -549,29 +608,30 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
 
     runner.on('done', (code) => {
       if (watchdog) { clearTimeout(watchdog); watchdog = null }
-      // 자식 프로세스 실제 종료 후 발생(취소 taskkill 포함). 여기서 backend를 먼저 free로 만들고
-      // (runner=null) '그 다음' 버퍼링한 터미널 신호를 renderer에 전달 → 완료 표시 시점엔 이미 재합성 가능.
       try { unlinkSync(configPath) } catch {}
+
+      // ── 취소 경로(inflight): done은 '권위'가 아니다. runner를 free로 만들고 관측만 기록·합류시킨다.
+      // 부분 결과/오류/스윕/터미널 신호(cancelled)는 모두 audio:cancel 핸들러가 tree 종료·정리 확인 후 보낸다.
+      if (cancelState === 'inflight') {
+        afPhase('runner_done')
+        if (runner === thisRunner) { runner = null }  // clobber 방지. currentSettle/OutputDir는 cancel 핸들러가 정리.
+        runnerDone.resolve()  // cancel 핸들러의 await 합류(sleep 없이)
+        return
+      }
+
+      // ── 정상 종료 경로 ──
+      // 자식 프로세스 실제 종료 후 발생. 여기서 backend를 먼저 free로 만들고 '그 다음' 버퍼링한 터미널 신호 전달.
       if (mode === 'tts') {
-        // 합성 '중간 산출물'(.qwen-job-*)만 정리. 취소(taskkill)로 죽은 worker가 파일 핸들을 잠깐 물어
-        // 즉시 삭제가 실패할 수 있어(Windows 락) 즉시 + 지연 재스윕. 취소여도 '부분 chunk'만 지운다.
+        // 합성 '중간 산출물'(.qwen-job-*)만 정리(즉시 + 지연 재스윕). synthesized.wav·session.json은 보존.
         try { sweepQwenJobDirs(outputDir) } catch { /* noop */ }
         setTimeout(() => { try { sweepQwenJobDirs(outputDir) } catch { /* noop */ } }, 2500)
-        // 파생 '참조 클립'(reference_clip_24k.wav)은 여기서 삭제하지 않는다 — 성공/오류/취소 후에도 유지해
-        // 같은 클립으로 재합성이 가능하게(유효 수명 계약). 삭제는 새 파일/reset/구간 재확정/앱 종료에서만.
+        // 파생 '참조 클립'은 여기서 삭제하지 않는다(유효 수명 계약).
       }
-      const wasCancelled = cancelState === 'inflight'  // 취소 요청 후 child 종료 확인 = 정상 취소 완료
-      // clobber 방지: 이 done이 '현재' 실행의 것일 때만 backend를 free로. 새 실행이 이미 시작됐다면 건드리지 않는다.
-      if (runner === thisRunner) { runner = null; currentSettle = null; currentWatchdogClear = null }
-      // 취소로 인한 종료: result/error 미채택 → 명시적 '취소 완료' 신호만(renderer가 idle로). 부분 결과·kill 오류 억제.
-      if (wasCancelled) {
-        cancelState = 'none'
-        mainWindow.webContents.send('audio:cancelled')
-        return  // settle는 취소 핸들러에서 이미 markSettled — finish 불필요(중복 신호 0).
-      }
-      // 취소 실패 후 child가 뒤늦게 스스로 종료한 경우: 이미 cancel-failed를 보냈으므로 추가 신호 없이 상태만 정리.
+      // clobber 방지: 이 done이 '현재' 실행의 것일 때만 backend를 free로.
+      if (runner === thisRunner) { runner = null; currentSettle = null; currentWatchdogClear = null; currentOutputDir = null }
+      // 취소 실패 후 child가 뒤늦게 스스로 종료: 이미 cancel-failed를 보냈으므로 추가 신호 없이 상태만 정리.
       if (cancelState === 'failed') { cancelState = 'none' }
-      // 정상 종료: 버퍼링한 터미널 신호 전달(정착됨). 없으면 abnormal exit → settle.finish가 오류로 마감(UI 안 멈춤).
+      // 버퍼링한 터미널 신호 전달(정착됨). 없으면 abnormal exit → settle.finish가 오류로 마감(UI 안 멈춤).
       if (pendingResult !== null) {
         mainWindow.webContents.send('audio:result', pendingResult)
       } else if (pendingError !== null) {
@@ -670,8 +730,11 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
   //  - 최초 정착 승자: 이미 result/error로 정착(currentSettle.settled)했으면 취소는 no-op(늦은 취소).
   //  - kill 확인 실패/timeout: 조용한 idle 금지 → 'cancel-failed'(child 생존 boolean만).
   //  - kill 요청 1회: 핸들러 재진입은 cancelRequested/settled로 차단.
+  // 정상 취소의 terminal 신호(audio:cancelled)는 '이 핸들러'가 권위다(공용 마감 K2-B).
+  // 순서: cancelling → kill 요청 → tree 종료 확인 → runner done 합류 → bounded cleanup 확인 → cancelled → idle.
+  // done 핸들러는 취소 중이면 runner만 free로 만들고 아무 신호도 보내지 않는다.
   ipcMain.handle('audio:cancel', async () => {
-    // track-process(대화 분할 후처리)는 기존 단순 취소 유지 — synthesis lifecycle과 분리.
+    // track-process(대화 분할 후처리)는 이번 K/K2 범위 밖 — 단순 취소 유지(별도 열린 결함으로 문서화).
     if (trackRunner) { trackRunner.cancel(); trackRunner = null }
 
     const r = runner
@@ -682,17 +745,40 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     // 첫 취소면 최초 정착 승자로 마킹(재취소는 이미 settled이므로 재마킹하지 않는다).
     if (cancelState === 'none') currentSettle?.markSettled()
     cancelState = 'inflight'
+    const doneP = runnerDoneDeferred?.promise ?? Promise.resolve()
+    const outDir = currentOutputDir
+    const isTts = currentIsTts
     if (currentWatchdogClear) currentWatchdogClear()   // watchdog 무의미 → 즉시 해제
+    afPhase('cancelling_sent')
     mainWindow.webContents.send('audio:cancelling')     // renderer → 'cancelling' 표시
-    const exited = await r.cancel(cancelExitMs())        // 트리 kill + child close bounded 대기
-    if (!exited) {
-      // kill 확인 실패/timeout — child 종료를 가정하지 않는다. 조용한 idle 금지 → cancel-failed(재취소 허용).
+    afPhase('kill_requested')
+    const res = await r.cancel(cancelExitMs())          // 트리 kill + tree 종료 확인(parent close + taskkill exit 0)
+    if (res.treeKillConfirmed) afPhase('tree_kill_confirmed')
+    if (!res.treeKillConfirmed) {
+      // 트리 종료 미확인(spawn 실패/nonzero/parent close timeout/taskkill timeout) — 조용한 idle 금지.
       cancelState = 'failed'
       const childAlive = r.isRunning
       mainWindow.webContents.send('audio:cancel-failed', { childAlive })
-      return { ok: false, childAlive }
+      return { ok: false, childAlive, reason: res.reason }
     }
-    // exited=true → run()의 'close'→'done'가 'audio:cancelled'를 이미 전송(그쪽이 renderer를 idle로).
+    // runner done 합류(bounded) — done 핸들러가 runner를 free로 만들었는지 sleep 없이 확인.
+    await Promise.race([doneP, delay(3000)])
+    afPhase('runner_done_joined')
+    // bounded cleanup — 실제로 .qwen-job-* 0개임을 확인한 뒤에만 취소 완료.
+    const cleanupOk = isTts && outDir ? await boundedJobCleanup(outDir, CLEANUP_DEADLINE_MS) : true
+    afPhase('cleanup_done')
+    if (!cleanupOk) {
+      // 트리는 죽었으나 임시파일 정리 미완 — 조용한 idle 금지. 새 합성 차단(cleanupPending). synthesized.wav 보존.
+      cleanupPending = true
+      cancelState = 'none'
+      currentSettle = null; currentWatchdogClear = null  // currentOutputDir는 재시도 정리용으로 남긴다
+      mainWindow.webContents.send('audio:cancel-failed', { childAlive: false, cleanupPending: true })
+      return { ok: false, cleanupPending: true }
+    }
+    cancelState = 'none'
+    currentSettle = null; currentWatchdogClear = null; currentOutputDir = null
+    afPhase('cancelled_sent')
+    mainWindow.webContents.send('audio:cancelled')       // ← terminal 신호(권위). renderer가 idle로.
     return { ok: true }
   })
 
