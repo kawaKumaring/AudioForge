@@ -408,15 +408,16 @@ class SynthJobSafetyTest(unittest.TestCase):
         self.assertEqual(self._job_dirs(), [], "job_dir 이 정리돼야 함")
 
     def _run_with_segmeta(self, per_seg):
-        """per_seg: {index: (iters, limit)}. fake run_job으로 그 값을 실은 seg_out 반환 → info 산출."""
+        """per_seg: {index: (iters, limit)}. fake run_job으로 chunk 형식 seg_out(1 chunk/seg) 반환 → info 산출."""
         def fake_run_job(inner_self, segments, device):
             outs = []
             for s in segments:
                 _write_wav(s["out_path"], 0.3)
                 it, lim = per_seg[s["index"]]
-                outs.append({"index": s["index"], "out_path": s["out_path"], "sr": 24000,
+                outs.append({"original_segment_index": s["index"], "chunk_index": 0, "chunk_count": 1,
+                             "out_path": s["out_path"], "sr": 24000,
                              "x_vector_only": s["x_vector_only"], "emotion_id": s.get("emotion_id"),
-                             "prod_tokens": 60, "generation_limit": lim, "generated_iterations": it,
+                             "production_tokens": 20, "generation_limit": lim, "generated_iterations": it,
                              "termination_reason": "completed_before_limit", "status": "ok"})
             return outs
         parsed = [("default", f"문장 {i} 입니다") for i in range(len(per_seg))]
@@ -442,6 +443,95 @@ class SynthJobSafetyTest(unittest.TestCase):
         _fp, info = self._run_with_segmeta({0: (100, 200), 1: (200, 400)})
         self.assertEqual(info["generation_limit"], 200)
         self.assertEqual(info["generated_iterations"], 100)
+
+    # ── 계약 B: 다중 chunk 통합 ──
+    def _fake_multichunk(self, plan):
+        """plan: {original_segment_index: chunk_count}. job_dir 내부에 chunk WAV 쓰고 chunk 형식 반환."""
+        def fake_run_job(inner_self, segments, device):
+            outs = []
+            jobdir = os.path.dirname(segments[0]["out_path"])
+            for s in segments:
+                osi = s["index"]
+                cc = plan[osi]
+                for ci in range(cc):
+                    p = os.path.join(jobdir, f"segment_qwen_{osi + 1:03d}_c{ci:03d}.wav")
+                    _write_wav(p, 0.2)
+                    outs.append({"original_segment_index": osi, "chunk_index": ci, "chunk_count": cc,
+                                 "out_path": p, "sr": 24000, "x_vector_only": s["x_vector_only"],
+                                 "emotion_id": s.get("emotion_id"), "production_tokens": 20 + ci,
+                                 "generation_limit": 256, "generated_iterations": 90 + ci,
+                                 "termination_reason": "completed_before_limit", "status": "ok"})
+            return outs
+        return fake_run_job
+
+    def test_multichunk_internal_gap_zero_external_silence(self):
+        # 원본 seg0 → 3 chunk, seg1 → 1 chunk. 내부 gap 0, seg0→seg1 경계만 silence_gap(0.5).
+        gaps_seen = []
+        real = tts_worker._concat_with_boundaries
+
+        def spy(paths, gaps_before, out_path):
+            gaps_seen.append(list(gaps_before))
+            return real(paths, gaps_before, out_path)
+        with mock.patch.object(tts_worker.QwenTTSEngine, "run_job", new=self._fake_multichunk({0: 3, 1: 1})), \
+                mock.patch.object(tts_worker, "_concat_with_boundaries", new=spy):
+            parsed = [("default", "첫째 줄입니다"), ("default", "둘째 줄입니다")]
+            final_path, info = tts_worker._synthesize_qwen_job(
+                parsed, {"default": self.ref}, {}, self.out, 1.0, 0.5, 0.0)
+        self.assertEqual(gaps_seen, [[0.0, 0.0, 0.0, 0.5]])   # 내부 0×3, 경계 0.5
+        self.assertTrue(os.path.exists(final_path))
+        gc = info["generation_chunks"]
+        self.assertEqual(len(gc), 4)
+        self.assertEqual([c["chunk_count"] for c in gc], [3, 3, 3, 1])
+        self.assertEqual([(c["original_segment_index"], c["chunk_index"]) for c in gc],
+                         [(0, 0), (0, 1), (0, 2), (1, 0)])
+        self.assertEqual(self._job_dirs(), [])
+
+    def test_generation_limit_chunk_preserves_and_reports_chunk(self):
+        final = os.path.join(self.out, "synthesized.wav")
+        sentinel = b"OLD-GOOD-" + b"x" * 8
+        with open(final, "wb") as f:
+            f.write(sentinel)
+
+        def boom(inner_self, segments, device):
+            raise tts_worker.QwenGenerationLimitError(0, 256, 256, "default", 1)  # chunk_index=1
+
+        with mock.patch.object(tts_worker.QwenTTSEngine, "run_job", new=boom):
+            with self.assertRaises(RuntimeError) as cm:
+                tts_worker._synthesize_qwen_job(
+                    [("default", "비밀 문장입니다")], {"default": self.ref}, {}, self.out, 1.0, 0.5, 0.0)
+        msg = str(cm.exception)
+        self.assertIn("GENERATION_LIMIT_EXCEEDED", msg)
+        self.assertIn("조각 1", msg)         # chunk index 노출
+        self.assertIn("default", msg)
+        self.assertNotIn("비밀", msg)         # 문장 본문 미포함
+        with open(final, "rb") as f:
+            self.assertEqual(f.read(), sentinel)   # 원자 보존
+        self.assertEqual(self._job_dirs(), [])
+
+    def test_text_segment_too_long_surface_and_preserve(self):
+        final = os.path.join(self.out, "synthesized.wav")
+        sentinel = b"KEEP-ME-" + b"y" * 8
+        with open(final, "wb") as f:
+            f.write(sentinel)
+
+        def toolong(inner_self, segments, device):
+            raise tts_worker.QwenTextSegmentTooLongError(0, 500, 33, "happy")
+
+        with mock.patch.object(tts_worker.QwenTTSEngine, "run_job", new=toolong):
+            with self.assertRaises(RuntimeError) as cm:
+                tts_worker._synthesize_qwen_job(
+                    [("happy", "아주 긴 비밀 문장 원문")], {"default": self.ref, "happy": self.ref},
+                    {}, self.out, 1.0, 0.5, 0.0)
+        msg = str(cm.exception)
+        self.assertIn("TEXT_SEGMENT_TOO_LONG", msg)
+        self.assertIn("안전한 단일 합성 길이", msg)   # 정확 문구
+        self.assertIn("happy", msg)
+        self.assertIn("500", msg)
+        self.assertIn("33", msg)
+        self.assertNotIn("비밀", msg)                 # 대사 본문 미포함
+        with open(final, "rb") as f:
+            self.assertEqual(f.read(), sentinel)
+        self.assertEqual(self._job_dirs(), [])
 
 
 if __name__ == "__main__":

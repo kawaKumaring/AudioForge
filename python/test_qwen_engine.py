@@ -217,35 +217,70 @@ class RunJobRealtimeTest(_QwenGlobalIsolation, unittest.TestCase):
 
 
 class ValidateSegOutTest(_QwenGlobalIsolation, unittest.TestCase):
+    """chunk 계약(§2) 검증: 경로 job_dir 내부·original_segment_index 연속·chunk_index 완전·chunk_count 일치·
+    status=ok·존재/0바이트/sr/finite. 단일/다중 chunk 정상 + 각 위반 차단."""
     def setUp(self):
         self._isolate_globals()
         self._silence_emit()
-        self.tmp = tempfile.mkdtemp(prefix="af_qwenval_")
+        self.tmp = tempfile.mkdtemp(prefix="af_qwenval_")   # = job_dir
+        self.other = tempfile.mkdtemp(prefix="af_qwenval_out_")
         self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+        self.addCleanup(lambda: shutil.rmtree(self.other, ignore_errors=True))
 
-    def _seg(self, i):
-        p = os.path.join(self.tmp, f"s{i}.wav")
-        return {"index": i, "out_path": p}, p
+    def _segs(self, n):
+        return [{"index": i, "out_path": os.path.join(self.tmp, f"segment_qwen_{i + 1:03d}.wav")}
+                for i in range(n)]
 
-    def test_ok(self):
-        (s0, p0) = self._seg(0)
-        _write(p0, 0.2)
-        out = tts_worker.QwenTTSEngine._validate_seg_out(
-            [{"index": 0, "out_path": p0}], [s0])
-        self.assertEqual(out[0]["index"], 0)
+    def _chunk(self, osi, ci, cc, write=True, path=None, status="ok"):
+        p = path or os.path.join(self.tmp, f"segment_qwen_{osi + 1:03d}_c{ci:03d}.wav")
+        if write:
+            _write(p, 0.2)
+        return {"original_segment_index": osi, "chunk_index": ci, "chunk_count": cc, "out_path": p,
+                "sr": 24000, "x_vector_only": False, "emotion_id": "default", "production_tokens": 20,
+                "generation_limit": 256, "generated_iterations": 100,
+                "termination_reason": "completed_before_limit", "status": status}
 
-    def test_missing_index_raises(self):
-        (s0, p0), (s1, p1) = self._seg(0), self._seg(1)
-        _write(p0, 0.2)
+    def _val(self, seg_out, n):
+        return tts_worker.QwenTTSEngine._validate_seg_out(seg_out, self._segs(n))
+
+    def test_ok_single_chunk(self):
+        out = self._val([self._chunk(0, 0, 1)], 1)
+        self.assertEqual(out[0]["original_segment_index"], 0)
+
+    def test_ok_multi_chunk(self):
+        self._val([self._chunk(0, 0, 3), self._chunk(0, 1, 3), self._chunk(0, 2, 3)], 1)
+
+    def test_missing_chunk_raises(self):
+        with self.assertRaises(RuntimeError):   # cc=2 인데 ci=1 없음
+            self._val([self._chunk(0, 0, 2)], 1)
+
+    def test_dup_chunk_raises(self):
         with self.assertRaises(RuntimeError):
-            tts_worker.QwenTTSEngine._validate_seg_out([{"index": 0, "out_path": p0}], [s0, s1])
+            self._val([self._chunk(0, 0, 2), self._chunk(0, 0, 2)], 1)
+
+    def test_chunk_count_mismatch_raises(self):
+        with self.assertRaises(RuntimeError):   # 같은 seg 인데 cc 다름
+            self._val([self._chunk(0, 0, 2), self._chunk(0, 1, 3)], 1)
+
+    def test_missing_original_segment_raises(self):
+        with self.assertRaises(RuntimeError):   # segment 2개인데 osi=0만
+            self._val([self._chunk(0, 0, 1)], 2)
+
+    def test_path_escape_raises(self):
+        bad = os.path.join(self.other, "x_c000.wav")   # job_dir 밖
+        with self.assertRaises(RuntimeError):
+            self._val([self._chunk(0, 0, 1, path=bad)], 1)
+
+    def test_bad_status_raises(self):
+        with self.assertRaises(RuntimeError):
+            self._val([self._chunk(0, 0, 1, status="generation_limit")], 1)
 
     def test_zero_byte_raises(self):
-        (s0, p0) = self._seg(0)
-        with open(p0, "wb"):  # 0바이트
+        p = os.path.join(self.tmp, "segment_qwen_001_c000.wav")
+        with open(p, "wb"):  # 0바이트
             pass
         with self.assertRaises(RuntimeError):
-            tts_worker.QwenTTSEngine._validate_seg_out([{"index": 0, "out_path": p0}], [s0])
+            self._val([self._chunk(0, 0, 1, write=False, path=p)], 1)
 
 
 class QwenBatchPathTest(_QwenGlobalIsolation, unittest.TestCase):
@@ -278,8 +313,11 @@ class QwenBatchPathTest(_QwenGlobalIsolation, unittest.TestCase):
                          "ref_texts": [s["ref_text"] for s in segments]})
             for s in segments:
                 _write(s["out_path"], 0.3)
-            return [{"index": s["index"], "out_path": s["out_path"], "sr": 24000,
-                     "x_vector_only": s["x_vector_only"]} for s in segments]
+            return [{"original_segment_index": s["index"], "chunk_index": 0, "chunk_count": 1,
+                     "out_path": s["out_path"], "sr": 24000, "x_vector_only": s["x_vector_only"],
+                     "emotion_id": s.get("emotion_id"), "production_tokens": 20,
+                     "generation_limit": 256, "generated_iterations": 100,
+                     "termination_reason": "completed_before_limit", "status": "ok"} for s in segments]
         return fake_run_job
 
     def test_routes_to_qwen_batch_once_and_per_segment_language(self):
@@ -310,20 +348,21 @@ class QwenBatchPathTest(_QwenGlobalIsolation, unittest.TestCase):
             shutil.copyfile(inp, out)
             return out
         self._patch(tts_worker, "_atempo_segment", new=fake_atempo)
-        gap_seen = []
-        real_concat = tts_worker._concat_with_silence
+        gaps_seen = []
+        real_concat = tts_worker._concat_with_boundaries
 
-        def spy_concat(paths, out_path, gap):
-            gap_seen.append(gap)
-            return real_concat(paths, out_path, gap)
-        self._patch(tts_worker, "_concat_with_silence", new=spy_concat)
+        def spy_concat(paths, gaps_before, out_path):
+            gaps_seen.append(list(gaps_before))
+            return real_concat(paths, gaps_before, out_path)
+        self._patch(tts_worker, "_concat_with_boundaries", new=spy_concat)
 
-        text = "첫 문장입니다.\n둘째 문장입니다."
+        text = "첫 문장입니다.\n둘째 문장입니다."   # 2개 원본 segment(각 1 chunk)
         tts_worker.synthesize(self.ref, text, self.out, speed=1.5, silence_gap=0.75,
                               emotion_refs={}, preferred_engine="qwen3", reference_prompts={})
         self.assertEqual(len(atempo_hits), 2, "속도는 최종 결합본이 아니라 세그먼트별로 적용")
         self.assertTrue(all(abs(s - 1.5) < 1e-9 for _, s in atempo_hits))
-        self.assertEqual(gap_seen, [0.75], "결합 시 사용자 silence_gap 유지")
+        # 첫 항목 gap 0, 원 segment 경계(0→1)에 사용자 silence_gap 0.75
+        self.assertEqual(gaps_seen, [[0.0, 0.75]], "원 segment 경계에 사용자 silence_gap 유지")
         self.assertTrue(os.path.exists(os.path.join(self.out, "synthesized.wav")))
 
     def test_long_emotion_ref_blocks_with_emotion_id(self):
@@ -428,8 +467,11 @@ class AtomicFinalReplaceTest(_QwenGlobalIsolation, unittest.TestCase):
         def fake_run_job(inner_self, segments, device):
             for s in segments:
                 _write(s["out_path"], 0.3)
-            return [{"index": s["index"], "out_path": s["out_path"], "sr": 24000,
-                     "x_vector_only": s["x_vector_only"]} for s in segments]
+            return [{"original_segment_index": s["index"], "chunk_index": 0, "chunk_count": 1,
+                     "out_path": s["out_path"], "sr": 24000, "x_vector_only": s["x_vector_only"],
+                     "emotion_id": s.get("emotion_id"), "production_tokens": 20,
+                     "generation_limit": 256, "generated_iterations": 100,
+                     "termination_reason": "completed_before_limit", "status": "ok"} for s in segments]
         self._patch(tts_worker.QwenTTSEngine, "run_job", new=fake_run_job)
 
     def _preexisting_final(self):
@@ -445,11 +487,11 @@ class AtomicFinalReplaceTest(_QwenGlobalIsolation, unittest.TestCase):
     def test_existing_final_preserved_on_concat_failure(self):
         marker = self._preexisting_final()
 
-        def raise_concat(paths, out_path, gap):
+        def raise_concat(paths, gaps_before, out_path):
             with open(out_path, "wb") as f:  # 부분 pending 생성 후 예외
                 f.write(b"partial")
             raise RuntimeError("concat boom")
-        self._patch(tts_worker, "_concat_with_silence", new=raise_concat)
+        self._patch(tts_worker, "_concat_with_boundaries", new=raise_concat)
         with self.assertRaises(RuntimeError):
             tts_worker.synthesize(self.ref, "한 문장입니다.", self.out, speed=1.0, silence_gap=0.5,
                                   emotion_refs={}, preferred_engine="qwen3", reference_prompts={})
@@ -460,10 +502,10 @@ class AtomicFinalReplaceTest(_QwenGlobalIsolation, unittest.TestCase):
     def test_existing_final_preserved_on_validation_failure(self):
         marker = self._preexisting_final()
 
-        def zero_byte_concat(paths, out_path, gap):
+        def zero_byte_concat(paths, gaps_before, out_path):
             with open(out_path, "wb"):  # 0바이트 pending → 검증 실패
                 pass
-        self._patch(tts_worker, "_concat_with_silence", new=zero_byte_concat)
+        self._patch(tts_worker, "_concat_with_boundaries", new=zero_byte_concat)
         with self.assertRaises(RuntimeError):
             tts_worker.synthesize(self.ref, "한 문장입니다.", self.out, speed=1.0, silence_gap=0.5,
                                   emotion_refs={}, preferred_engine="qwen3", reference_prompts={})
@@ -569,8 +611,11 @@ class MetadataEmitQwenTest(_QwenGlobalIsolation, unittest.TestCase):
         def fake_run_job(inner_self, segments, device):
             for s in segments:
                 _write(s["out_path"], 0.3)
-            return [{"index": s["index"], "out_path": s["out_path"], "sr": 24000,
-                     "x_vector_only": s["x_vector_only"]} for s in segments]
+            return [{"original_segment_index": s["index"], "chunk_index": 0, "chunk_count": 1,
+                     "out_path": s["out_path"], "sr": 24000, "x_vector_only": s["x_vector_only"],
+                     "emotion_id": s.get("emotion_id"), "production_tokens": 20,
+                     "generation_limit": 256, "generated_iterations": 100,
+                     "termination_reason": "completed_before_limit", "status": "ok"} for s in segments]
         self._patch(tts_worker.QwenTTSEngine, "run_job", new=fake_run_job)
 
         # speed!=1.0 경로의 ffmpeg 의존 제거 — atempo를 복사로 대체(메타데이터만 검증)
