@@ -20,6 +20,9 @@ export interface TtsReferenceEntry {
   autoText?: string
   autoLang?: string
   autoError?: string
+  // 이 전사가 만들어진 참조 source의 지문(path|size|mtimeMs). 합성 경계에서 현재 source 지문과
+  // 비교해 불일치면 stale로 판정·폐기(불변식 4). 미기록이면 지문 비교는 건너뛴다(source 존재만 검사).
+  sourceFingerprint?: string
 }
 
 // 렌더러(ProcessButton)가 IPC로 넘기는 TTS 입력 옵션(모두 선택적).
@@ -65,6 +68,29 @@ export interface TtsConfig {
   ttsReferenceOverride: string
 }
 
+// ── stale 전사 방지 불변식(§4) — 합성 경계에서 전사↔음성 결합의 정합을 강제한다. ──
+// sourceFingerprints = 현재 실제 참조 source의 지문 맵(id → 'path|size|mtimeMs'). 'default' 포함.
+// 규칙(과도 폐기 방지):
+//   1) 지문 맵이 없으면(undefined) 검사 생략 — 전부 보존(순수 렌더러 단위테스트 호환).
+//   2) id가 지문 맵에 없다(=현재 살아있는 source 없음) → orphan 전사 → 폐기.
+//   3) entry.sourceFingerprint가 기록됐고 현재 지문과 다르다 → stale(원본 교체/내용 변경) → 폐기.
+//   4) 그 외(살아있는 source + 지문 미기록/일치) → 보존.
+export function pruneStaleReferencePrompts(
+  prompts?: Record<string, TtsReferenceEntry>,
+  sourceFingerprints?: Record<string, string>
+): Record<string, TtsReferenceEntry> {
+  const out: Record<string, TtsReferenceEntry> = {}
+  if (!prompts) return out
+  if (!sourceFingerprints) return { ...prompts }  // (1) 검사 생략
+  for (const [id, e] of Object.entries(prompts)) {
+    const current = sourceFingerprints[id]
+    if (current === undefined) continue                       // (2) orphan → 폐기
+    if (e?.sourceFingerprint && e.sourceFingerprint !== current) continue  // (3) stale → 폐기
+    out[id] = e                                               // (4) 보존
+  }
+  return out
+}
+
 // 참조 항목의 실효 모드 파생(UI 배지 + store mode 전환에 공용). 우선순위: ref_free > manual > auto.
 // 수동문을 완전히 비우면 auto로 복귀(ref_free가 아닐 때).
 export function deriveRefMode(e?: TtsReferenceEntry): TtsReferenceMode {
@@ -98,7 +124,10 @@ export function buildReferencePrompts(
 // 입력은 타입 있는 TtsInputOptions로 받는다(IPC 경계에서 명시적으로 변환해 전달).
 // 숫자 기본값은 반드시 ?? 로 — 사용자가 지정한 0(예: ttsSilenceGap=0)이
 // || 때문에 기본값으로 변질되는 것을 막는다. (문자열/객체 기본값도 동일 규칙)
-export function buildTtsConfig(o?: TtsInputOptions): TtsConfig {
+// sourceFingerprints(선택) = 현재 실제 참조 source 지문 맵. 지정 시 합성 경계에서 stale 전사를
+// 먼저 폐기(§4)한 뒤 직렬화 — 렌더러가 stale 전사를 되살려 보내도 Python엔 정합 전사만 전달된다.
+export function buildTtsConfig(o?: TtsInputOptions, sourceFingerprints?: Record<string, string>): TtsConfig {
+  const prompts = pruneStaleReferencePrompts(o?.ttsReferencePrompts, sourceFingerprints)
   return {
     ttsText: o?.ttsText ?? '',
     ttsSpeed: o?.ttsSpeed ?? 1.0,
@@ -108,7 +137,7 @@ export function buildTtsConfig(o?: TtsInputOptions): TtsConfig {
     ttsEmotionRefSources: o?.ttsEmotionRefSources ?? {},
     ttsEmotionRefRegions: o?.ttsEmotionRefRegions ?? {},
     ttsEngine: o?.ttsEngine ?? 'auto',
-    ttsReferencePrompts: buildReferencePrompts(o?.ttsReferencePrompts),
+    ttsReferencePrompts: buildReferencePrompts(prompts),
     ttsReferenceOverride: o?.ttsReferenceOverride ?? ''
   }
 }

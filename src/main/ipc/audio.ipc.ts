@@ -73,6 +73,32 @@ let pythonPath = resolvePythonPath()
 // 새 클립/새 파일/재확정/합성 종료(합성 중 제외) 시 해당 key(또는 전체)만 정리.
 const refClipDirs = new Map<string, string>()
 
+// 참조 source 지문 — 경로+크기+수정시각. 파일이 바뀌면(경로 교체/내용 덮어쓰기) 값이 달라져
+// 전사 캐시를 무효화할 수 있다(불변식 3·4). stat 실패 시 ''(비교에서 '살아있는 source 없음'과 동치).
+function computeFingerprint(filePath: string): string {
+  try {
+    if (!filePath) return ''
+    const st = statSync(filePath)
+    return `${resolve(filePath)}|${st.size}|${Math.round(st.mtimeMs)}`
+  } catch {
+    return ''
+  }
+}
+
+// 합성 경계에서 쓸 현재 참조 source 지문 맵 — 'default'=원본 파일, 감정 id=ttsEmotionRefSources.
+// 지문이 잡히는(파일 존재) source만 포함한다. 여기 없는 id의 전사는 orphan으로 폐기된다(§4 규칙 2).
+function buildReferenceFingerprints(filePath: string, options?: Record<string, unknown>): Record<string, string> {
+  const map: Record<string, string> = {}
+  const dfp = computeFingerprint(filePath)
+  if (dfp) map.default = dfp
+  const sources = (options?.ttsEmotionRefSources as Record<string, string> | undefined) || {}
+  for (const [id, src] of Object.entries(sources)) {
+    const fp = computeFingerprint(src)
+    if (fp) map[id] = fp
+  }
+  return map
+}
+
 let cachedFfprobe: string | null = null
 
 async function findFfprobe(): Promise<string> {
@@ -338,7 +364,10 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       // TTS 필드는 단일 소스(buildTtsConfig)로 직렬화 — ttsEmotionRefs 포함,
       // 숫자 기본값은 ??(0 보존). 필드 추가 시 컴파일 단계에서 누락 검출.
       // IPC로 온 untyped 옵션을 TtsInputOptions로 명시 변환해 전달.
-      ...buildTtsConfig(options as TtsInputOptions | undefined)
+      // 합성 경계 불변식(§4): 현재 참조 source 지문 맵을 함께 넘겨 stale 전사를 폐기한 뒤 직렬화.
+      // 'default'=원본 파일, 감정=ttsEmotionRefSources. 렌더러가 stale 전사를 되살려 보내도
+      // 여기서 정합 전사만 Python에 전달된다.
+      ...buildTtsConfig(options as TtsInputOptions | undefined, buildReferenceFingerprints(filePath, options))
     }
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
     console.log(`[AudioForge] Config written to: ${configPath}`)
@@ -553,6 +582,13 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     if (runner?.isRunning) return false  // 합성 worker가 참조 사용 중 → 삭제 금지
     releaseRefClip(clipKey)
     return true
+  })
+
+  // 참조 source 지문(path|size|mtimeMs) — 렌더러가 전사 확정 시 그 전사가 어느 source에서 왔는지
+  // 기록(TtsReferenceEntry.sourceFingerprint)해 두면, 합성 경계에서 현재 지문과 비교해 stale을 폐기(§4).
+  // 파일 없음/접근 실패는 '' 반환(비교 시 '살아있는 source 없음'과 동치).
+  ipcMain.handle('audio:fingerprint-reference', (_event, filePath: string) => {
+    return computeFingerprint(filePath)
   })
 
   // 불러온 원본에 대응하는 이전 결과(session.json) 탐색 — <원본폴더>/AudioForge_output/*/session.json
