@@ -65,3 +65,14 @@ compact 전 체크포인트. 재개 시 이 문서 + `git log`로 상태 복원 
 
 ## integration → develop 병합 게이트
 1. A 구현 + 단위 + holdout(정상 completed·불일치 generation_limit) 통과. 2. UX 1·2·3 병합 + 공용 TS 연결. 3. 전체 회귀(python discovery·npm·tsc·build) + Electron E2E(GUI mock + 실제 Qwen 종단) + 창크기·배율·Tab/slider. 4. 금지 경로 diff 0. 5. 별도 승인 후 develop `--no-ff`. master는 그 다음 별도 승인.
+
+## optional slow E2E — tts-autosplit (커밋 D)
+- `test/e2e/tts-autosplit-complete.e2e.mjs` + `npm run test:e2e:tts-autosplit`. **실제 Qwen·GPU·참조 자산 필요**하므로 기본 `npm test`·빠른 `test:e2e`에 **미포함**(수 분·GPU).
+- 검증: 긴 한 줄 자동분할(계약 B)·진행률 시작 즉시 90% 점프 없음·chunk 시작/완료 표면화·결과 카드('합성 정보')·엔진(Qwen3)·검은화면/ErrorBoundary/pageerror/crash 0·종료 후 프로세스/job/refclip/pending 0·resources 불변.
+- 참조 자산: `AF_E2E_REFERENCE` 경로 우선, 없으면 `resources/speaker_b.wav` fallback, 둘 다 없으면 prerequisite 오류. 사용자 경로 하드코딩 금지. 출력/스크린샷/로그는 gitignore된 `작업파일/e2e_shots/`만.
+- chunk 시작/완료 진행의 완전 단조·경계 단언은 `python/test_autosplit_bridge.py`(단위)에서 고정; E2E는 UI 표면화만 확인.
+
+## holdout 실측 요약 (커밋 없음 — 결함 미발견)
+- 최소 holdout 완료(승인된 중단·판정 절차 경유). GPU H1/H2_EN/H2_ZH·H3(matched-ICL)·H4(감정+pitch+1) completed. CPU C1 최대 무진행 42.3s(≪280). E1/tts-autosplit 실앱 통과.
+- H2_JA 정상 입력에서 generation_limit 중단 조건 1회 관측 → 승인된 동일 조건 2회 재측정 completed → 같은 입력이 완료/상한으로 갈리는 **비결정 tail 확인**(공식·상한 불변). refgen도 generation_limit 1회 후 승인된 재실행 1회 completed. 안전장치·미채택·원자 보존·정리 모두 정상.
+- 확정 특성: `GENERATION_LIMIT_EXCEEDED`는 유효 입력에서도 비결정적으로 발생 가능 → 후속 UX(§공용배선 B)에 안전중단 안내 + **사용자 클릭 재시도**(자동 재시도·x-vector 강등·기본참조 폴백 금지).
