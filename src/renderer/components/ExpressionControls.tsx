@@ -12,57 +12,16 @@
 import { useState } from 'react'
 import type { CSSProperties } from 'react'
 import type { ExpressionControlsProps, ExpressionCapabilities } from '../types/ttsExpression'
-
-// ── 순수 로직(테스트 대상, React 비의존 계산) ────────────────────────────────
-export interface PresetValues { pitchSemitones: number; speed: number; sentenceGapMs: number }
-export interface ExpressionPreset { id: string; label: string; values: PresetValues }
-
-// 프리셋 값은 보수적(연구 tts-prosody-control §4: pitch ±1 이내로 유사도 보호). 전부 후처리 축.
-export const EXPRESSION_PRESETS: readonly ExpressionPreset[] = Object.freeze([
-  { id: 'original', label: '원본', values: { pitchSemitones: 0, speed: 1.0, sentenceGapMs: 500 } },
-  { id: 'calm_low', label: '낮고 차분', values: { pitchSemitones: -1, speed: 0.95, sentenceGapMs: 650 } },
-  { id: 'neutral', label: '중성적', values: { pitchSemitones: 0, speed: 1.0, sentenceGapMs: 500 } },
-  { id: 'bright_light', label: '밝고 가볍게', values: { pitchSemitones: 1, speed: 1.05, sentenceGapMs: 400 } },
-])
-export const EXPRESSION_PRESET_IDS: readonly string[] = EXPRESSION_PRESETS.map(p => p.id)
-
-export function getPresetValues(presetId: string): PresetValues | null {
-  const p = EXPRESSION_PRESETS.find(x => x.id === presetId)
-  return p ? { ...p.values } : null
-}
-export function presetLabel(presetId: string): string {
-  return EXPRESSION_PRESETS.find(x => x.id === presetId)?.label ?? '사용자 지정'
-}
-
-// 활성 컨트롤 판정(가짜 슬라이더 방지) — capability=true인 축만.
-export function activeControlKeys(cap: ExpressionCapabilities): string[] {
-  const out: string[] = []
-  if (cap.pitch) out.push('pitch')
-  if (cap.speed) out.push('speed')
-  if (cap.sentenceGap) out.push('sentenceGap')
-  if (cap.emotionTransitionGap) out.push('emotionTransitionGap')
-  if (cap.tailTrim) out.push('tailTrim')
-  if (cap.tailPadding) out.push('tailPadding')
-  return out
-}
-
-function fmtPitch(v: number): string { return `${v > 0 ? '+' : ''}${v.toFixed(1)}반음` }
-function fmtSpeed(v: number): string { return `${v.toFixed(2)}x` }
-function fmtSec(ms: number): string { const s = ms / 1000; return `${Number.isInteger(s) ? s.toFixed(1) : String(s)}초` }
-
-// 접힘 상태에서도 보이는 적용값 요약. 기본값(pitch 0/speed 1.0/gap 500)은 노이즈 방지로 생략.
-export function summarizeExpression(
-  presetId: string,
-  values: { pitchSemitones: number; speed: number; sentenceGapMs: number },
-  cap: ExpressionCapabilities,
-): string {
-  const parts: string[] = [presetLabel(presetId)]
-  if (cap.pitch && values.pitchSemitones !== 0) parts.push(`음높이 ${fmtPitch(values.pitchSemitones)}`)
-  if (cap.speed && values.speed !== 1.0) parts.push(`속도 ${fmtSpeed(values.speed)}`)
-  if (cap.sentenceGap && values.sentenceGapMs !== 500) parts.push(`문장 간격 ${fmtSec(values.sentenceGapMs)}`)
-  if (parts.length === 1) parts.push('기본값')
-  return parts.join(' · ')
-}
+// 순수 로직은 별도 모듈(React/JSX 비의존)에서 가져온다 — node --test가 로더 없이 실행할 수 있도록.
+import {
+  EXPRESSION_PRESETS,
+  summarizeExpression,
+  fmtPitch,
+  fmtSpeed,
+  fmtSec,
+} from './ExpressionControls.logic'
+// 기존 공개 표면 보존: 순수 export를 이 모듈에서도 계속 재노출(shell 등 './ExpressionControls' import 호환).
+export * from './ExpressionControls.logic'
 
 // ── 컨트롤 메타(한 문장 도움말 + 자세히) ──────────────────────────────────────
 interface CtrlMeta { key: keyof ExpressionCapabilities; label: string; help: string; detail: string }

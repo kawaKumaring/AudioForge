@@ -1,7 +1,6 @@
 // ExpressionControls 순수 로직 테스트 (C 소유). node:test + assert.
-// ⚠️ 실행 환경: 이 파일은 ExpressionControls.tsx(React import 포함)를 import하므로 공유 env의
-//    TS/JSX 로더가 필요하다. 이 fresh worktree에는 node_modules가 없어 여기서는 실행할 수 없다 —
-//    통합 리뷰(공유 env) / PHASE 4 E2E에서 실행. (dependency-free 아님 → DEFERRED)
+// 순수 로직 모듈(.logic.ts, React/JSX 비의존)에서 EXPLICIT '.ts' 확장자로 import한다(레포 규약).
+// → node --test가 로더 없이 type-strip해 바로 실행 가능(node_modules 불필요).
 // 검증 대상: 프리셋 값 표, 프리셋 라벨, 활성 컨트롤 판정(capability 게이팅), 접힘 요약 문자열.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -12,8 +11,8 @@ import {
   presetLabel,
   activeControlKeys,
   summarizeExpression,
-} from './ExpressionControls'
-import type { ExpressionCapabilities } from '../types/ttsExpression'
+} from './ExpressionControls.logic.ts'
+import type { ExpressionCapabilities } from '../types/ttsExpression.ts'
 
 const CAP_SUPPORTED_ONLY: ExpressionCapabilities = {
   pitch: true, speed: true, sentenceGap: true,
