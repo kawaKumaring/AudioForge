@@ -126,6 +126,20 @@ export interface TtsInputOptions {
   // 10초 초과 원본에서 사용자가 확정한 3~10초 파생 참조 클립(mono/24k). 설정 시 기본 참조로 이것을 쓴다.
   // 원본은 절대 참조로 직접 전달하지 않는다(전체 파일 참조 금지).
   ttsReferenceOverride?: string
+
+  // ── 표현 사이클 S1 scaffold(타입 계약만) ──
+  // ⚠️ 아래 필드는 '타입 선언'일 뿐이며 이번 S1에서 buildTtsConfig 반환값에 자동 추가되지 않는다.
+  //    Python 전달·session 직렬화·metadata·기본값 적용 없음 → runtime 동작 변화 0. 실제 배선은 후속 승인 단계.
+  ttsParserVersion?: 2                                        // 신규 문법 버전(legacy=암묵적 v1)
+  ttsParsedPlanSha256?: string                               // renderer 파싱 결과 full sha256(Python parity 비교용; metadata엔 sha8만)
+  ttsTailMode?: 'off' | 'auto'                               // 말끝 다듬기(legacy=off, new=auto). 미배선
+  ttsTailPaddingMs?: number                                  // 끝 여백(new 기본 120, 허용 0~300). 미배선
+  ttsTailFadeMs?: number                                     // 말끝 fade(new 기본 8, 허용 0~20). 미배선
+  ttsEmotionBoundaryMode?: 'immediate' | 'pause'             // 감정 전환 경계(기본 pause). 미배선
+  ttsEmotionBoundaryPauseMs?: number                         // 감정 전환 간격(기본 200, 허용 0~1000). 미배선
+  ttsExpressionFineTuneEnabled?: boolean                     // 세부 조절 사용 스위치(펼치기/접기와 별개). 미배선
+  ttsExpressionPresetId?: string                             // 프리셋 id(원본/낮고차분/중성/밝고가벼움). 미배선
+  ttsShowSettingHelp?: boolean                               // 전역 설정 설명 표시. 미배선
 }
 
 // Python(separate.py/tts_worker)이 읽는 참조 override의 직렬화 형태(snake_case).
