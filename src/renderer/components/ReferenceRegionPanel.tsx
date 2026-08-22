@@ -181,15 +181,15 @@ export default function ReferenceRegionPanel({ path, clipKey, disabled, onState,
   const sub: CSSProperties = { fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }
 
   if (loading) {
-    return <div style={card}><span style={sub}>참조 음성 분석 중...</span></div>
+    return <div style={card}><span role="status" aria-live="polite" aria-busy="true" style={sub}>참조 음성 분석 중...</span></div>
   }
   if (analyzeError) {
     return (
-      <div style={card}>
+      <div style={card} role="alert">
         <span style={{ ...sub, color: 'var(--rose)' }}>참조 분석 실패: {analyzeError}</span>
         <div>
-          <button onClick={() => runAnalyze()} disabled={disabled || loading} style={{
-            padding: '5px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
+          <button onClick={() => runAnalyze()} disabled={disabled || loading} aria-label="참조 음성 다시 분석" style={{
+            padding: '6px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
             fontSize: 11, fontWeight: 600, fontFamily: 'inherit',
             background: 'var(--rose)', color: '#fff', opacity: (disabled || loading) ? 0.5 : 1,
           }}>다시 분석</button>
@@ -251,14 +251,18 @@ export default function ReferenceRegionPanel({ path, clipKey, disabled, onState,
           {/* 시작/길이 컨트롤 */}
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 180 }}>
-              <span style={sub}>시작</span>
+              <span style={sub} aria-hidden="true">시작</span>
               <input type="range" min={0} max={Math.max(0, durTotal - dur)} step={0.1} value={start} disabled={disabled}
+                aria-label="참조 구간 시작 위치(초)"
+                aria-valuetext={`${start.toFixed(1)}초`}
                 onChange={(e) => setStart(parseFloat(e.target.value))} style={{ flex: 1, accentColor: 'var(--rose)' }} />
               <span style={{ ...sub, minWidth: 48, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{start.toFixed(1)}s</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 180 }}>
-              <span style={sub}>길이</span>
+              <span style={sub} aria-hidden="true">길이</span>
               <input type="range" min={MIN_SEC} max={MAX_SEC} step={0.1} value={dur} disabled={disabled}
+                aria-label="참조 구간 길이(초)"
+                aria-valuetext={`${dur.toFixed(1)}초`}
                 onChange={(e) => { const d = parseFloat(e.target.value); setDur(d); setStart(s => Math.min(s, Math.max(0, durTotal - d))) }}
                 style={{ flex: 1, accentColor: 'var(--rose)' }} />
               <span style={{ ...sub, minWidth: 48, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{dur.toFixed(1)}s</span>
@@ -278,7 +282,7 @@ export default function ReferenceRegionPanel({ path, clipKey, disabled, onState,
 
           {/* 확정 후 구간 품질 지표 */}
           {metrics && (
-            <div style={{ ...sub, borderTop: '1px solid var(--border-subtle)', paddingTop: 6 }}>
+            <div role="status" aria-live="polite" style={{ ...sub, borderTop: '1px solid var(--border-subtle)', paddingTop: 6 }}>
               구간 품질 — 길이 {fmt(metrics.dur_sec)} · 무음 {(metrics.silence_ratio * 100).toFixed(0)}% ·
               클리핑 {(metrics.clipping_ratio * 100).toFixed(2)}% · RMS {metrics.rms_dbfs.toFixed(1)}dBFS
               {metrics.warnings.length > 0 && (
@@ -321,6 +325,8 @@ function Waveform({ peaks, durTotal, start, dur, disabled, onSeek }: {
   }
   return (
     <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" onClick={handleClick}
+      role="img"
+      aria-label={`참조 파형 미리보기 — 전체 ${durTotal.toFixed(1)}초 중 ${start.toFixed(1)}~${(start + dur).toFixed(1)}초 선택됨. 아래 슬라이더로 조정하세요.`}
       style={{ width: '100%', height: 72, background: 'var(--bg-elevated)', borderRadius: 8, cursor: disabled ? 'default' : 'pointer', display: 'block' }}>
       {/* 선택 구간 하이라이트 */}
       <rect x={regA} y={0} width={Math.max(0, regB - regA)} height={H} fill="rgba(251,113,133,0.18)" />
