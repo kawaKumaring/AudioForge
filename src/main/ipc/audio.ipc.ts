@@ -369,6 +369,24 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
         md.effective_reference_path = (options?.ttsReferenceOverride as string) || filePath  // 파생 클립 우선
         const region = options?.ttsReferenceRegion as { start: number; duration: number } | null | undefined
         if (region && typeof region.start === 'number') md.reference_region = region
+        // 감정별 참조(추가정합1): metadata에는 실제 사용된 감정(effective=ttsEmotionRefs 키)의 구간 +
+        // source basename만 기록(비민감 요약·실제 사용 사실). 전체 원본 경로는 session config에만 보존.
+        // 완전 재현은 session의 source+region이 담당한다(§1.2/§2.3).
+        const usedEmo = options?.ttsEmotionRefs as Record<string, string> | undefined
+        if (usedEmo && Object.keys(usedEmo).length) {
+          const emoRegions = (options?.ttsEmotionRefRegions as Record<string, { start: number; duration: number }> | undefined) || {}
+          const emoSources = (options?.ttsEmotionRefSources as Record<string, string> | undefined) || {}
+          const regionsOut: Record<string, { start: number; duration: number }> = {}
+          const namesOut: Record<string, string> = {}
+          for (const id of Object.keys(usedEmo)) {
+            const r = emoRegions[id]
+            if (r && typeof r.start === 'number') regionsOut[id] = r
+            const s = emoSources[id]
+            if (s) namesOut[id] = basename(s)
+          }
+          if (Object.keys(regionsOut).length) md.emotion_reference_regions = regionsOut
+          if (Object.keys(namesOut).length) md.emotion_reference_source_names = namesOut
+        }
         ;(data as { metadata?: unknown }).metadata = md
       }
       // 세션 매니페스트 저장 — 나중에 재분리 없이 설정+트랙 복원용 (source of truth)

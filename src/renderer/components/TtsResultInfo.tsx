@@ -1,5 +1,8 @@
 import type { CSSProperties } from 'react'
 import { useAppStore } from '@/stores/app.store'
+import { ALL_EMOTIONS } from '@/lib/emotions'
+
+const EMO_LABEL: Record<string, string> = Object.fromEntries(ALL_EMOTIONS.map(e => [e.id, e.label]))
 
 // 합성 완료 화면의 재현 정보 — 실제 엔진/장치/참조 방식/구간/속도 후처리/폴백/소요 시간.
 // 값의 최종 권위는 metadata(actual_engine/device) — preflight 예상이 아니라 실행 결과.
@@ -28,6 +31,12 @@ export default function TtsResultInfo() {
   const promptMode = PROMPT_LABEL[String(m.prompt_source ?? '')] || (m.prompt_source ? String(m.prompt_source) : null)
   const region = m.reference_region as { start?: number; duration?: number } | null
   const speedPost = m.speed_postprocessed === true
+  const pitchPost = m.pitch_postprocessed === true
+  const pitchSt = typeof m.pitch_semitones === 'number' ? m.pitch_semitones : 0
+  const pitchMethod = m.pitch_method ? String(m.pitch_method) : null
+  // 감정별 참조: basename + 구간(전체 경로 아님, 추가정합1). source_names 키가 이번 합성에 실제 쓰인 감정.
+  const emoNames = (m.emotion_reference_source_names as Record<string, string> | null) || null
+  const emoRegions = (m.emotion_reference_regions as Record<string, { start?: number; duration?: number }> | null) || null
   const fallback = m.fallback === true
   const elapsed = typeof m.elapsed_seconds === 'number' ? m.elapsed_seconds : null
   const sr = typeof m.output_sample_rate === 'number' ? m.output_sample_rate : null
@@ -75,9 +84,26 @@ export default function TtsResultInfo() {
         )}
         {tgt && <span style={chip()}>언어: {tgt}</span>}
         <span style={chip()}>속도 후처리: {speedPost ? '적용됨' : '없음'}</span>
+        <span style={chip(pitchPost ? 'var(--accent)' : undefined)}>
+          음높이: {pitchPost ? `${pitchSt > 0 ? '+' : ''}${pitchSt.toFixed(1)}반음${pitchMethod ? ` (${pitchMethod})` : ''}` : '원본'}
+        </span>
         {sr && <span style={chip()}>{(sr / 1000).toFixed(0)}kHz</span>}
         {elapsed != null && <span style={chip()}>소요: {elapsed < 60 ? `${elapsed.toFixed(1)}초` : `${(elapsed / 60).toFixed(1)}분`}</span>}
       </div>
+      {emoNames && Object.keys(emoNames).length > 0 && (
+        <div style={rowWrap}>
+          {Object.entries(emoNames).map(([id, name]) => {
+            const r = emoRegions?.[id]
+            const hasR = r && typeof r.start === 'number' && typeof r.duration === 'number'
+            return (
+              <span key={id} style={chip('var(--accent)')}>
+                감정 참조 [{EMO_LABEL[id] || id}]: {name}
+                {hasR && ` (${r!.start!.toFixed(1)}~${(r!.start! + r!.duration!).toFixed(1)}초)`}
+              </span>
+            )
+          })}
+        </div>
+      )}
       {fallback && Boolean(m.fallback_reason) && (
         <div style={{ fontSize: 11, color: 'var(--rose)' }}>⚠ 폴백 사유: {String(m.fallback_reason)}</div>
       )}
