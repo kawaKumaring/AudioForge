@@ -10,6 +10,14 @@
     "test": "node --test \"src/**/*.test.ts\"",
     "test:e2e": "node test/e2e/synthesize.e2e.mjs && node test/e2e/single-instance.e2e.mjs && node test/e2e/reset-cleanup.e2e.mjs",
     "test:e2e:complete": "node test/e2e/synthesize-complete.e2e.mjs && node test/e2e/resynthesize.e2e.mjs",
+    "test:e2e:state": "node test/e2e/single-instance.e2e.mjs && node test/e2e/session-restore.e2e.mjs",
+    "test:e2e:tts-autosplit": "node test/e2e/tts-autosplit-complete.e2e.mjs",
+    "test:e2e:tts-editor-ux": "node test/e2e/tts-editor-ux.e2e.mjs",
+    "test:e2e:tts-pitch-capability": "node test/e2e/tts-pitch-capability.e2e.mjs",
+    "test:e2e:tts-accessibility": "node test/e2e/tts-accessibility.e2e.mjs",
+    "test:e2e:tts-result-metadata": "node test/e2e/tts-result-metadata.e2e.mjs",
+    "test:e2e:tts-generation-retry": "node test/e2e/tts-generation-retry.e2e.mjs",
+    "test:e2e:tts-cancel-lifecycle": "node test/e2e/tts-cancel-lifecycle.e2e.mjs",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {

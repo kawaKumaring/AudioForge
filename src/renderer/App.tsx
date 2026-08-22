@@ -1,4 +1,4 @@
-import { useAppStore } from '@/stores/app.store'
+import { useAppStore, type RestorableSession } from '@/stores/app.store'
 import DropZone from '@/components/DropZone'
 import ModeSelector from '@/components/ModeSelector'
 import Waveform from '@/components/Waveform'
@@ -16,16 +16,30 @@ export default function App() {
 
   const handleRestore = async () => {
     const result = await window.api.audio.restoreFromFolder()
-    if (result && result.tracks.length > 0) {
+    if (!result || result.tracks.length === 0) return
+    // session.json이 있으면 TTS mode·pitch·source+region·전사·metadata까지 복원(단일 재구성 경로).
+    if (result.session) {
+      const s = result.session as RestorableSession
       useAppStore.setState({
-        fileInfo: { path: '', name: '이전 결과 복원', duration: 0, channels: 0, sampleRate: 0, format: '' },
-        fileUrl: null,
-        status: 'done',
-        tracks: result.tracks,
-        outputDir: result.outputDir,
-        mode: 'split'
+        fileInfo: {
+          path: s.source || '',
+          name: s.source ? (s.source.split(/[/\\]/).pop() || '이전 결과 복원') : '이전 결과 복원',
+          duration: 0, channels: 0, sampleRate: 0, format: ''
+        },
+        fileUrl: null
       })
+      restoreSession(result.outputDir, s)
+      return
     }
+    // 레거시(session.json 없음) — 트랙만 복원
+    useAppStore.setState({
+      fileInfo: { path: '', name: '이전 결과 복원', duration: 0, channels: 0, sampleRate: 0, format: '' },
+      fileUrl: null,
+      status: 'done',
+      tracks: result.tracks,
+      outputDir: result.outputDir,
+      mode: 'split'
+    })
   }
 
   return (

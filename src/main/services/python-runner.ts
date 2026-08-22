@@ -4,6 +4,14 @@ import { existsSync } from 'fs'
 import { EventEmitter } from 'events'
 import { StringDecoder } from 'string_decoder'
 
+// 취소 결과(공용 마감 K2): 부모 종료 관측 + (Windows) taskkill 완료·성공까지 확인해야 tree 종료로 판정.
+export interface CancelResult {
+  parentExited: boolean        // 대상 Python 프로세스 'close' 관측
+  treeKillConfirmed: boolean   // Windows: parentExited && taskkill 'close' && exit 0. 비-Windows: parentExited(best-effort)
+  timedOut: boolean            // bounded 대기 초과
+  reason?: string              // 비민감 사유(코드/이벤트만 — 경로·명령줄 없음)
+}
+
 export class PythonRunner extends EventEmitter {
   private process: ChildProcess | null = null
   private pythonPath: string
@@ -54,7 +62,9 @@ export class PythonRunner extends EventEmitter {
         } else if (msg.type === 'result') {
           this.emit('result', msg)
         } else if (msg.type === 'error') {
-          this.emit('error', msg.message)
+          // 구조화 오류 전체 전달(message + 선택적 code·필드). renderer용 정제는 audio.ipc가 담당.
+          // Python이 담는 필드는 이미 비민감(전사·문장·전체경로 없음)이지만, 소비 측이 최종 정제.
+          this.emit('error', msg)
         }
       } catch {
         // Non-JSON output (e.g., tqdm progress bars), ignore
@@ -118,22 +128,68 @@ export class PythonRunner extends EventEmitter {
     return lines.slice(-3).join('\n')
   }
 
-  cancel(): void {
-    if (this.process) {
-      const pid = this.process.pid
-      // Windows: kill()은 부모 python만 종료 → 자식(ffmpeg, 격리 venv 등)이 잔존할 수 있어
-      // taskkill /T로 프로세스 트리 전체를 종료. 실패 시 기본 kill()로 폴백.
-      if (process.platform === 'win32' && pid) {
-        try {
-          spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true })
-        } catch {
-          this.process.kill()
-        }
-      } else {
-        this.process.kill()
+  // 취소: 프로세스 트리를 kill하고 종료를 bounded timeout 내에서 '확인'한다(공용 마감 K2).
+  //  Windows 성공(treeKillConfirmed) = 대상 Python 'close' 관측 AND taskkill 프로세스 'close' AND exit 0.
+  //  taskkill을 fire-and-forget으로 두지 않는다 — parent만 닫히고 트리가 아직 종료 중이면 성공으로 오판하지 않도록.
+  //  실패 구분: taskkill spawn error / nonzero exit / parent close timeout / taskkill 완료 timeout → treeKillConfirmed=false.
+  //  this.process는 여기서 null로 만들지 않는다 — run()의 'close' 핸들러가 관리(그래야 done 경로가 그대로 동작).
+  cancel(timeoutMs: number = 8000): Promise<CancelResult> {
+    const proc = this.process
+    if (!proc) return Promise.resolve({ parentExited: true, treeKillConfirmed: true, timedOut: false, reason: 'no-process' })
+    const pid = proc.pid
+    const isWin = process.platform === 'win32'
+    // E2E 시임(AF_E2E=1에서만): kill 실패를 재현하려면 실제 kill을 건너뛴다(트리는 fixture가 자진 종료).
+    const g = globalThis as unknown as { __afSimulateKillFail?: boolean }
+    const simulateKillFail = process.env.AF_E2E === '1' && g.__afSimulateKillFail === true
+    return new Promise<CancelResult>((resolve) => {
+      let settled = false
+      let parentExited = false
+      let taskkillDone = !isWin           // 비-Windows는 taskkill 개념 없음 → 완료로 간주
+      let taskkillOk = !isWin
+      let reason: string | undefined
+      const finalize = (timedOut: boolean) => {
+        if (settled) return
+        settled = true
+        clearTimeout(timer)
+        proc.removeListener('close', onParentClose)
+        const treeKillConfirmed = isWin
+          ? (parentExited && taskkillDone && taskkillOk)   // 트리 종료 명령 성공 + 부모 종료 확인
+          : parentExited                                    // 비-Windows: best-effort
+        resolve({ parentExited, treeKillConfirmed, timedOut, reason })
       }
-      this.process = null
-    }
+      const maybeDone = () => { if (parentExited && taskkillDone) finalize(false) }
+      const onParentClose = () => { parentExited = true; maybeDone() }
+      proc.once('close', onParentClose)
+      const timer = setTimeout(() => finalize(true), timeoutMs)
+      if (simulateKillFail) return  // kill 생략 → parent close 없음 → timeout(treeKillConfirmed=false)
+      if (isWin && pid) {
+        let tk
+        try {
+          tk = spawn('taskkill', ['/pid', String(pid), '/T', '/F'], { windowsHide: true })
+        } catch (e) {
+          // taskkill 자체를 못 띄움 → fallback kill(부모만). 트리 확인 불가 → taskkillOk=false 유지.
+          reason = `taskkill-spawn-failed:${(e as Error)?.name || 'error'}`
+          taskkillDone = true; taskkillOk = false
+          try { proc.kill() } catch { /* noop */ }
+          maybeDone()
+          return
+        }
+        tk.on('close', (code) => {
+          taskkillDone = true
+          taskkillOk = code === 0
+          if (code !== 0) reason = `taskkill-exit-${code}`
+          maybeDone()
+        })
+        tk.on('error', (e) => {
+          taskkillDone = true; taskkillOk = false
+          reason = `taskkill-error:${(e as Error)?.name || 'error'}`
+          try { proc.kill() } catch { /* noop */ }
+          maybeDone()
+        })
+      } else {
+        try { proc.kill() } catch { /* noop */ }
+      }
+    })
   }
 
   get isRunning(): boolean {

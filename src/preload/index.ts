@@ -12,11 +12,17 @@ const api = {
     restoreFromFolder: () => ipcRenderer.invoke('audio:restore-from-folder'),
     findSession: (sourcePath: string) => ipcRenderer.invoke('audio:find-session', sourcePath),
     transcribeReference: (filePath: string) => ipcRenderer.invoke('audio:transcribe-reference', filePath),
-    analyzeReference: (filePath: string) => ipcRenderer.invoke('audio:analyze-reference', filePath),
-    trimReference: (filePath: string, startSec: number, durSec: number) =>
-      ipcRenderer.invoke('audio:trim-reference', filePath, startSec, durSec),
-    releaseReferenceClip: () => ipcRenderer.invoke('audio:release-reference-clip'),
+    // clipKey('default'|emotionId): 감정별 파생 클립을 식별해 분석/트림/정리(생략 시 'default').
+    analyzeReference: (filePath: string, clipKey?: string) => ipcRenderer.invoke('audio:analyze-reference', filePath, clipKey),
+    trimReference: (filePath: string, startSec: number, durSec: number, clipKey?: string) =>
+      ipcRenderer.invoke('audio:trim-reference', filePath, startSec, durSec, clipKey),
+    // clipKey 지정 시 그 하나만, 생략 시 전체 파생 클립 정리.
+    releaseReferenceClip: (clipKey?: string) => ipcRenderer.invoke('audio:release-reference-clip', clipKey),
+    // 참조 source 지문(path|size|mtimeMs). 전사 확정 시 stamp해 두면 합성 경계에서 stale 폐기(§4).
+    fingerprintReference: (filePath: string): Promise<string> => ipcRenderer.invoke('audio:fingerprint-reference', filePath),
     qwenPreflight: () => ipcRenderer.invoke('audio:qwen-preflight'),
+    // pitch 후처리 capability(rubberband 지원 여부) — PitchCapability 계약. UI가 슬라이더 가용성에 소비.
+    pitchPreflight: () => ipcRenderer.invoke('audio:pitch-preflight'),
     processTrack: (trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string }) =>
       ipcRenderer.invoke('audio:process-track', trackPath, outputDir, options),
     onTrackResult: (callback: (data: unknown) => void) => {
@@ -43,6 +49,23 @@ const api = {
       const handler = (_event: unknown, data: unknown) => callback(data)
       ipcRenderer.on('audio:error', handler)
       return () => ipcRenderer.removeListener('audio:error', handler)
+    },
+    // 취소 lifecycle(공용 마감 K): cancelling→(cancelled|cancel-failed). result/error와 별개 채널로,
+    // 취소 승자 정착 후 main이 명시적으로 보낸다(늦은 result/error는 main에서 이미 억제).
+    onCancelling: (callback: () => void) => {
+      const handler = () => callback()
+      ipcRenderer.on('audio:cancelling', handler)
+      return () => ipcRenderer.removeListener('audio:cancelling', handler)
+    },
+    onCancelled: (callback: () => void) => {
+      const handler = () => callback()
+      ipcRenderer.on('audio:cancelled', handler)
+      return () => ipcRenderer.removeListener('audio:cancelled', handler)
+    },
+    onCancelFailed: (callback: (data: unknown) => void) => {
+      const handler = (_event: unknown, data: unknown) => callback(data)
+      ipcRenderer.on('audio:cancel-failed', handler)
+      return () => ipcRenderer.removeListener('audio:cancel-failed', handler)
     }
   },
   settings: {

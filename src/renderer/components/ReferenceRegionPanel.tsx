@@ -1,12 +1,30 @@
 import { useState, useEffect, useRef, useCallback, type CSSProperties, type MouseEvent } from 'react'
-import { useAppStore } from '@/stores/app.store'
 
 // 참조 음성 준비 패널 — 10초 초과 원본을 거부하지 않고 "참조 원본"으로 수용하고,
 // 파형에서 3~10초 구간을 골라 mono/24k 파생 클립을 만든 뒤 그것만 합성/전사에 전달한다.
-// 원본은 변경하지 않는다. 준비 상태(store.ttsRefReady/ttsReferenceClip/ttsRefMessage)로 합성 버튼을 게이팅.
+// 원본은 변경하지 않는다. 준비 상태는 onState 콜백으로 상위(store slot)에 반영해 합성 버튼을 게이팅.
+//
+// clipKey('default'|emotionId)로 기본 참조와 감정별 참조에 공용 재사용된다. 여러 인스턴스가 서로 다른
+// clipKey/path를 쓰면 파생 클립 폴더가 key별로 분리돼 상호 간섭하지 않는다.
 
 const MIN_SEC = 3.0
 const MAX_SEC = 10.0
+
+// 상위(store)로 준비 상태를 올리는 패치 형태 — default(setTtsRefState)/emotion(setEmotionRefState) 공용.
+export interface RefStatePatch {
+  clip?: string
+  ready?: boolean
+  message?: string
+  region?: { start: number; duration: number } | null
+}
+
+interface ReferenceRegionPanelProps {
+  path: string                          // 분석/트림 대상 원본 경로
+  clipKey: string                       // 'default' | emotionId (파생 클립 식별)
+  disabled: boolean                     // 합성 중 등 조작 불가
+  onState: (s: RefStatePatch) => void   // 준비 상태 변경을 store slot에 반영
+  label?: string                        // 헤더 표시명(감정 label). 기본 참조는 '참조 음성'
+}
 
 interface Analysis {
   duration_sec: number
@@ -34,9 +52,8 @@ function fmt(s: number | undefined | null) {
   return typeof s === 'number' && Number.isFinite(s) ? `${s.toFixed(2)}초` : '-초'
 }
 
-export default function ReferenceRegionPanel() {
-  const { fileInfo, fileUrl, status, setTtsRefState } = useAppStore()
-  const disabled = status === 'processing'
+export default function ReferenceRegionPanel({ path, clipKey, disabled, onState, label = '참조 음성' }: ReferenceRegionPanelProps) {
+  const [fileUrl, setFileUrl] = useState<string | null>(null)
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
   const [loading, setLoading] = useState(false)
   const [analyzeError, setAnalyzeError] = useState<string | null>(null)
@@ -47,16 +64,30 @@ export default function ReferenceRegionPanel() {
   const [confirmedClip, setConfirmedClip] = useState<string>('')
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const stopTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const path = fileInfo?.path || ''
+
+  // onState는 상위에서 인라인 화살표로 올 수 있어 매 렌더 새 참조 → runAnalyze useCallback/effect가
+  // 매 렌더 재실행되면 무한 재분석이 된다. ref로 최신 함수만 참조해 identity 의존을 끊는다.
+  const onStateRef = useRef(onState)
+  useEffect(() => { onStateRef.current = onState })
+
+  // 원본 재생용 URL — path에서 자체 취득(기본/감정 공용, 상위가 넘겨줄 필요 없음).
+  useEffect(() => {
+    let cancelled = false
+    if (!path) { setFileUrl(null); return }
+    Promise.resolve(window.api.audio.getFileUrl(path))
+      .then((u) => { if (!cancelled) setFileUrl(u as string) })
+      .catch(() => { if (!cancelled) setFileUrl(null) })
+    return () => { cancelled = true }
+  }, [path])
 
   // 분석 실행(재사용 — 파일 변경 시 + '다시 분석' 재시도). single-flight는 main IPC에서 보장.
   const runAnalyze = useCallback(async (signal?: { cancelled: boolean }) => {
     if (!path) return
     setAnalysis(null); setMetrics(null); setConfirmedClip(''); setAnalyzeError(null)
     setLoading(true)
-    setTtsRefState({ ready: false, clip: '', message: '참조 음성을 분석 중입니다...' })
+    onStateRef.current({ ready: false, clip: '', message: '참조 음성을 분석 중입니다...', region: null })
     try {
-      const a = await window.api.audio.analyzeReference(path) as Analysis & { error_message?: string; reason?: string }
+      const a = await window.api.audio.analyzeReference(path, clipKey) as Analysis & { error_message?: string; reason?: string }
       if (signal?.cancelled) return
       // 방어: 분석 payload가 올바르지 않으면(예: IPC 유실/실패) 검은 화면 대신 오류 처리 → "다시 분석"
       if (!a || typeof a.duration_sec !== 'number') {
@@ -64,27 +95,27 @@ export default function ReferenceRegionPanel() {
       }
       setAnalysis(a)
       if (a.too_short) {
-        setTtsRefState({ ready: false, clip: '', message: `참조가 ${fmt(a.duration_sec)}로 3초 미만입니다 — 3~10초 음성을 올려주세요` })
+        onStateRef.current({ ready: false, clip: '', message: `참조가 ${fmt(a.duration_sec)}로 3초 미만입니다 — 3~10초 음성을 올려주세요`, region: null })
       } else if (a.needs_region) {
         const r = a.recommend
         if (r && r.ok) { setStart(r.start_sec); setDur(Math.min(MAX_SEC, Math.max(MIN_SEC, r.dur_sec))) }
-        setTtsRefState({ ready: false, clip: '', message: '참조 구간(3~10초)을 확정하세요' })
+        onStateRef.current({ ready: false, clip: '', message: '참조 구간(3~10초)을 확정하세요', region: null })
       } else if (a.valid_whole) {
-        // 3~10초 + 품질 통과 → 원본을 그대로 참조로 사용(파생 클립 불필요)
-        setTtsRefState({ ready: true, clip: '', message: '' })
+        // 3~10초 + 품질 통과 → 원본을 그대로 참조로 사용(파생 클립 불필요, effective==원본)
+        onStateRef.current({ ready: true, clip: '', message: '', region: null })
       } else {
         const why = (a.errors || []).map(e => e.message).join(' / ') || '참조 음성 품질 오류'
-        setTtsRefState({ ready: false, clip: '', message: why })
+        onStateRef.current({ ready: false, clip: '', message: why, region: null })
       }
     } catch (e) {
       if (signal?.cancelled) return
       const msg = (e as Error)?.message || '참조 분석 실패'
       setAnalyzeError(msg)
-      setTtsRefState({ ready: false, clip: '', message: `참조 분석 실패: ${msg}` })
+      onStateRef.current({ ready: false, clip: '', message: `참조 분석 실패: ${msg}`, region: null })
     } finally {
       if (!signal?.cancelled) setLoading(false)
     }
-  }, [path, setTtsRefState])
+  }, [path, clipKey])
 
   // 파일이 바뀌면 분석(StrictMode 중복 setup에도 main single-flight로 subprocess 1회).
   useEffect(() => {
@@ -98,7 +129,7 @@ export default function ReferenceRegionPanel() {
   useEffect(() => {
     if (analysis?.needs_region) {
       setConfirmedClip(''); setMetrics(null)
-      setTtsRefState({ ready: false, clip: '', message: '구간을 변경했습니다 — 다시 확정하세요', region: null })
+      onStateRef.current({ ready: false, clip: '', message: '구간을 변경했습니다 — 다시 확정하세요', region: null })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [start, dur])
@@ -123,18 +154,18 @@ export default function ReferenceRegionPanel() {
     if (!path || confirming) return
     setConfirming(true)
     try {
-      const res = await window.api.audio.trimReference(path, start, dur) as { clip_path: string; metrics: RegionMetrics }
+      const res = await window.api.audio.trimReference(path, start, dur, clipKey) as { clip_path: string; metrics: RegionMetrics }
       setMetrics(res.metrics)
       const ok = res.metrics.in_range && !res.metrics.warnings.some(w => w.includes('심각') || w.includes('거의 무음') || w.includes('부족') || w.includes('초과'))
       if (ok) {
         setConfirmedClip(res.clip_path)
-        setTtsRefState({ ready: true, clip: res.clip_path, message: '', region: { start, duration: dur } })
+        onStateRef.current({ ready: true, clip: res.clip_path, message: '', region: { start, duration: dur } })
       } else {
         setConfirmedClip('')
-        setTtsRefState({ ready: false, clip: '', message: res.metrics.warnings[0] || '구간 품질이 부적합합니다', region: null })
+        onStateRef.current({ ready: false, clip: '', message: res.metrics.warnings[0] || '구간 품질이 부적합합니다', region: null })
       }
     } catch (e) {
-      setTtsRefState({ ready: false, clip: '', message: `파생 참조 생성 실패: ${(e as Error)?.message || ''}` })
+      onStateRef.current({ ready: false, clip: '', message: `파생 참조 생성 실패: ${(e as Error)?.message || ''}`, region: null })
     } finally {
       setConfirming(false)
     }
@@ -146,19 +177,19 @@ export default function ReferenceRegionPanel() {
     borderRadius: 12, background: 'var(--bg-card)', border: '1px solid var(--border-subtle)',
     padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8
   }
-  const label: CSSProperties = { fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }
+  const labelStyle: CSSProperties = { fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }
   const sub: CSSProperties = { fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }
 
   if (loading) {
-    return <div style={card}><span style={sub}>참조 음성 분석 중...</span></div>
+    return <div style={card}><span role="status" aria-live="polite" aria-busy="true" style={sub}>참조 음성 분석 중...</span></div>
   }
   if (analyzeError) {
     return (
-      <div style={card}>
+      <div style={card} role="alert">
         <span style={{ ...sub, color: 'var(--rose)' }}>참조 분석 실패: {analyzeError}</span>
         <div>
-          <button onClick={() => runAnalyze()} disabled={disabled || loading} style={{
-            padding: '5px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
+          <button onClick={() => runAnalyze()} disabled={disabled || loading} aria-label="참조 음성 다시 분석" style={{
+            padding: '6px 12px', borderRadius: 6, border: 'none', cursor: 'pointer',
             fontSize: 11, fontWeight: 600, fontFamily: 'inherit',
             background: 'var(--rose)', color: '#fff', opacity: (disabled || loading) ? 0.5 : 1,
           }}>다시 분석</button>
@@ -174,7 +205,7 @@ export default function ReferenceRegionPanel() {
   return (
     <div style={card}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <span style={label}>참조 음성</span>
+        <span style={labelStyle}>{label}</span>
         <span style={sub}>
           길이 {fmt(durTotal)} · {analysis.sample_rate.toLocaleString()}Hz · {analysis.channels === 1 ? '모노' : `${analysis.channels}채널`} · 허용 3~10초
         </span>
@@ -220,14 +251,18 @@ export default function ReferenceRegionPanel() {
           {/* 시작/길이 컨트롤 */}
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 180 }}>
-              <span style={sub}>시작</span>
+              <span style={sub} aria-hidden="true">시작</span>
               <input type="range" min={0} max={Math.max(0, durTotal - dur)} step={0.1} value={start} disabled={disabled}
+                aria-label="참조 구간 시작 위치(초)"
+                aria-valuetext={`${start.toFixed(1)}초`}
                 onChange={(e) => setStart(parseFloat(e.target.value))} style={{ flex: 1, accentColor: 'var(--rose)' }} />
               <span style={{ ...sub, minWidth: 48, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{start.toFixed(1)}s</span>
             </div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 180 }}>
-              <span style={sub}>길이</span>
+              <span style={sub} aria-hidden="true">길이</span>
               <input type="range" min={MIN_SEC} max={MAX_SEC} step={0.1} value={dur} disabled={disabled}
+                aria-label="참조 구간 길이(초)"
+                aria-valuetext={`${dur.toFixed(1)}초`}
                 onChange={(e) => { const d = parseFloat(e.target.value); setDur(d); setStart(s => Math.min(s, Math.max(0, durTotal - d))) }}
                 style={{ flex: 1, accentColor: 'var(--rose)' }} />
               <span style={{ ...sub, minWidth: 48, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{dur.toFixed(1)}s</span>
@@ -247,7 +282,7 @@ export default function ReferenceRegionPanel() {
 
           {/* 확정 후 구간 품질 지표 */}
           {metrics && (
-            <div style={{ ...sub, borderTop: '1px solid var(--border-subtle)', paddingTop: 6 }}>
+            <div role="status" aria-live="polite" style={{ ...sub, borderTop: '1px solid var(--border-subtle)', paddingTop: 6 }}>
               구간 품질 — 길이 {fmt(metrics.dur_sec)} · 무음 {(metrics.silence_ratio * 100).toFixed(0)}% ·
               클리핑 {(metrics.clipping_ratio * 100).toFixed(2)}% · RMS {metrics.rms_dbfs.toFixed(1)}dBFS
               {metrics.warnings.length > 0 && (
@@ -290,6 +325,8 @@ function Waveform({ peaks, durTotal, start, dur, disabled, onSeek }: {
   }
   return (
     <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" onClick={handleClick}
+      role="img"
+      aria-label={`참조 파형 미리보기 — 전체 ${durTotal.toFixed(1)}초 중 ${start.toFixed(1)}~${(start + dur).toFixed(1)}초 선택됨. 아래 슬라이더로 조정하세요.`}
       style={{ width: '100%', height: 72, background: 'var(--bg-elevated)', borderRadius: 8, cursor: disabled ? 'default' : 'pointer', display: 'block' }}>
       {/* 선택 구간 하이라이트 */}
       <rect x={regA} y={0} width={Math.max(0, regB - regA)} height={H} fill="rgba(251,113,133,0.18)" />

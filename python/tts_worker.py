@@ -12,6 +12,7 @@ Engine selection:
 
 import os
 import re
+import chunk_paths   # chunk 경로 규칙(bridge와 공용) — 결정적 경로 정확 일치 검증
 from audio_utils import emit, get_device, find_ffmpeg, patch_torchaudio
 
 # ── Emotion definitions ──
@@ -394,6 +395,37 @@ def _kill_proc_tree(proc):
             pass
 
 
+class QwenGenerationLimitError(RuntimeError):
+    """talker 생성이 동적 max_new_tokens 상한에 도달(계약 A). 잘린 결과는 정상으로 채택하지 않는다.
+    보안: segment_index/generated_iterations/generation_limit(정수)만 담는다 — 전사·문장·경로 금지.
+    감정 ID 매핑은 parsed를 아는 상위(_synthesize_qwen_job)에서 부여한다."""
+
+    def __init__(self, segment_index, generated_iterations, generation_limit, emotion_id=None,
+                 chunk_index=None):
+        self.segment_index = segment_index
+        self.generated_iterations = generated_iterations
+        self.generation_limit = generation_limit
+        self.emotion_id = emotion_id
+        self.chunk_index = chunk_index
+        super().__init__(
+            f"GENERATION_LIMIT_EXCEEDED(seg={segment_index}, chunk={chunk_index}, "
+            f"emotion={emotion_id}, iters={generated_iterations}, limit={generation_limit})")
+
+
+class QwenTextSegmentTooLongError(RuntimeError):
+    """자동 분할로도 동적 상한 이내로 못 만든 줄(계약 B). 보안: segment_index/emotion_id/토큰 수만.
+    감정 ID 매핑은 상위에서. 대사·전사·경로 미포함."""
+
+    def __init__(self, segment_index, production_tokens, allowed, emotion_id=None):
+        self.segment_index = segment_index
+        self.production_tokens = production_tokens
+        self.allowed = allowed
+        self.emotion_id = emotion_id
+        super().__init__(
+            f"TEXT_SEGMENT_TOO_LONG(seg={segment_index}, emotion={emotion_id}, "
+            f"tokens={production_tokens}, allowed={allowed})")
+
+
 class QwenTTSEngine(TTSEngine):
     """Qwen3-TTS 로컬 Base — 격리 qwen3_tts_venv에서 job bridge로 실행(모델 1회 로딩, 전 문장 배치).
     per-segment가 아니라 run_job 배치. 완전 오프라인(local_files_only)."""
@@ -481,6 +513,8 @@ class QwenTTSEngine(TTSEngine):
 
         seg_out = None
         err_msg = None
+        gl_err = None   # GENERATION_LIMIT_EXCEEDED(구조화) — 감정 ID 매핑은 상위에서
+        tsl_err = None  # TEXT_SEGMENT_TOO_LONG(구조화)
         while True:
             try:
                 line = q.get(timeout=_QWEN_INACTIVITY_SEC)
@@ -500,13 +534,27 @@ class QwenTTSEngine(TTSEngine):
             if t == "progress":
                 emit("progress", percent=msg.get("percent", 0), message=msg.get("message", ""))  # 실시간
             elif t == "error":
-                err_msg = msg.get("message", "Qwen 오류")
+                code = msg.get("code")
+                if code == "GENERATION_LIMIT_EXCEEDED":
+                    gl_err = QwenGenerationLimitError(
+                        msg.get("segment_index"), msg.get("generated_iterations"),
+                        msg.get("generation_limit"), msg.get("emotion_id"), msg.get("chunk_index"))
+                elif code == "TEXT_SEGMENT_TOO_LONG":
+                    tsl_err = QwenTextSegmentTooLongError(
+                        msg.get("segment_index"), msg.get("production_tokens"),
+                        msg.get("allowed"), msg.get("emotion_id"))
+                else:
+                    err_msg = msg.get("message", "Qwen 오류")
             elif t == "result":
                 seg_out = msg.get("segments")
         try:
             proc.wait(timeout=10)
         except Exception:
             _kill_proc_tree(proc)
+        if tsl_err is not None:
+            raise tsl_err  # 분할 불가 — 상위가 감정 ID로 재해석.
+        if gl_err is not None:
+            raise gl_err  # 상한 도달 — CPU 재시도(OOM 전용) 대상 아님. 상위가 감정 ID로 재해석.
         if err_msg:
             raise RuntimeError(f"Qwen 합성 오류: {err_msg}")
         if proc.returncode not in (0, None) and seg_out is None:
@@ -517,22 +565,64 @@ class QwenTTSEngine(TTSEngine):
 
     @staticmethod
     def _validate_seg_out(seg_out, segments):
-        """결과 수·index 중복/누락·요청 out_path 일치·파일 존재/0바이트 검증."""
-        want = {s["index"]: s["out_path"] for s in segments}
-        got = {}
+        """chunk 결과 검증(계약 B §2 + P0 보완):
+        - status=ok·메타 필드 정합·original_segment_index 연속·chunk_index 0..cc-1 완전·chunk_count 일치.
+        - 경로: 각 결과가 정확히 chunk_paths.chunk_out_path(원본 out_path, ci)와 realpath+normcase 동일
+          (같은 디렉터리만으로 통과 금지; junction/symlink·상위경로 이탈·잘못된 basename·segment 교차 차단).
+        - sr: 결과 metadata sr == 실제 WAV sr, 전 chunk 공통 sr, mono(1-D), non-empty, finite."""
+        import soundfile as sf
+        import numpy as np
+        n = len(segments)
+        if not segments:
+            raise RuntimeError("검증할 세그먼트 없음")
+        want_path = {s["index"]: s["out_path"] for s in segments}
+        by_seg = {}    # osi -> {"cc":int, "chunks":{ci:entry}}
+        common_sr = None
         for r in seg_out:
-            idx = r.get("index")
-            if idx in got:
-                raise RuntimeError(f"중복 세그먼트 index: {idx}")
-            got[idx] = r.get("out_path")
-        if set(got.keys()) != set(want.keys()):
-            raise RuntimeError(f"세그먼트 index 불일치 — 요청 {sorted(want)} vs 결과 {sorted(got)}")
-        for idx, wp in want.items():
-            gp = got[idx]
-            if os.path.abspath(gp) != os.path.abspath(wp):
-                raise RuntimeError(f"세그먼트 {idx} out_path 불일치")
-            if not (os.path.exists(gp) and os.path.getsize(gp) > 0):
-                raise RuntimeError(f"세그먼트 {idx} 출력 없음/0바이트: {gp}")
+            if r.get("status") != "ok":
+                raise RuntimeError(f"비정상 chunk status={r.get('status')} (seg {r.get('original_segment_index')})")
+            osi = r.get("original_segment_index")
+            ci = r.get("chunk_index")
+            cc = r.get("chunk_count")
+            if not (isinstance(osi, int) and isinstance(ci, int) and isinstance(cc, int) and cc >= 1
+                    and 0 <= ci < cc):
+                raise RuntimeError(f"chunk 메타 필드 이상: seg={osi} chunk={ci} count={cc}")
+            if osi not in want_path:
+                raise RuntimeError(f"알 수 없는 original_segment_index: {osi}")
+            gp = r.get("out_path")
+            expected = chunk_paths.chunk_out_path(want_path[osi], ci)
+            if not gp or not os.path.exists(gp):
+                raise RuntimeError(f"chunk 출력 없음: seg {osi} chunk {ci}")
+            if not chunk_paths.same_real_path(gp, expected):
+                raise RuntimeError(f"chunk 경로 불일치(결정적 규칙 위반/이탈): seg {osi} chunk {ci}")
+            if os.path.getsize(gp) <= 0:
+                raise RuntimeError(f"chunk 0바이트: seg {osi} chunk {ci}")
+            meta_sr = r.get("sr")
+            if not (isinstance(meta_sr, int) and meta_sr > 0):
+                raise RuntimeError(f"chunk metadata sr 이상: seg {osi} chunk {ci}")
+            d, sr = sf.read(gp, dtype="float32")
+            if int(sr) != meta_sr:
+                raise RuntimeError(f"chunk metadata sr({meta_sr}) != 실제 sr({sr}): seg {osi} chunk {ci}")
+            if common_sr is None:
+                common_sr = int(sr)
+            elif int(sr) != common_sr:
+                raise RuntimeError(f"chunk 간 sr 불일치: {common_sr} vs {sr} (seg {osi} chunk {ci})")
+            d = np.asarray(d)
+            if d.ndim != 1:
+                raise RuntimeError(f"chunk가 mono(1-D)가 아님: seg {osi} chunk {ci} ndim={d.ndim}")
+            if d.size == 0 or not np.all(np.isfinite(d)):
+                raise RuntimeError(f"chunk 비유한/빈 오디오: seg {osi} chunk {ci}")
+            grp = by_seg.setdefault(osi, {"cc": cc, "chunks": {}})
+            if grp["cc"] != cc:
+                raise RuntimeError(f"seg {osi} chunk_count 불일치: {grp['cc']} vs {cc}")
+            if ci in grp["chunks"]:
+                raise RuntimeError(f"seg {osi} chunk_index 중복: {ci}")
+            grp["chunks"][ci] = r
+        if set(by_seg.keys()) != set(range(n)):
+            raise RuntimeError(f"원본 segment index 불연속: {sorted(by_seg)} vs 0..{n - 1}")
+        for osi, grp in by_seg.items():
+            if set(grp["chunks"].keys()) != set(range(grp["cc"])):
+                raise RuntimeError(f"seg {osi} chunk_index 누락/역전: {sorted(grp['chunks'])} vs 0..{grp['cc'] - 1}")
         return seg_out
 
 
@@ -716,6 +806,13 @@ _METADATA_KEYS = [
     "reference_transcript_language", "reference_transcript_len", "reference_transcript_sha8",
     "target_language", "seed", "seed_supported", "speed", "speed_postprocessed", "silence_gap",
     "fallback", "fallback_reason", "elapsed_seconds", "output_sample_rate",
+    # pitch 후처리(계약 §2.1) — pitch_method는 production에서 "rubberband" | None 둘뿐.
+    "pitch_semitones", "pitch_method", "pitch_postprocessed",
+    # 생성 안전장치(계약 A) — termination_reason 은 "completed_before_limit" | "generation_limit".
+    # completed_before_limit 은 EOS 직접 관측이 아니라 '동적 상한 전 자연 반환'이라는 운영 상태.
+    "generation_limit", "generated_iterations", "termination_reason",
+    # 자동 분할(계약 B) 재현 배열 — 내용/경로/전사 없이 index·count·token·iter·사유·emotion_id만.
+    "generation_chunks",
 ]
 
 
@@ -756,9 +853,11 @@ def _transcript_meta(ref_text):
     return _detect_language(t), len(t), hashlib.sha256(t.encode("utf-8")).hexdigest()[:8]
 
 
-def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed, silence_gap):
+def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed, silence_gap, pitch=0.0):
     """Qwen 배치 합성 — 2B 품질 게이트 재사용, Qwen 전용 VRAM 임계로 장치 선택(ComfyUI 병행 안전),
     모델 1회 로딩. speed: 세그먼트별 atempo 후 사용자 silence_gap으로 결합(1.0은 raw). 임시파일 finally 정리.
+    pitch: 결합본(pending)에 rubberband 음높이 후처리(0=무후처리, 계약 §6·§7). 실패는 os.replace 직전
+    예외 → finally가 job_dir 정리 → 기존 synthesized.wav 무손상.
     반환: (final_path, info) — info는 재현 메타데이터의 런타임 사실(device/source/prompt_source/전사요약 등)."""
     import time
     from reference_audio import assess_reference_file, GPTSOVITS_POLICY
@@ -826,42 +925,119 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                 def_tr_lang, def_tr_len, def_tr_sha = _transcript_meta(ref_text)
             out_path = os.path.join(job_dir, f"segment_qwen_{i + 1:03d}.wav")
             segments.append({"index": i, "text": line_text, "ref_audio": ref, "ref_text": ref_text,
-                             "x_vector_only": xvo, "language_name": lang_name, "out_path": out_path})
+                             "x_vector_only": xvo, "language_name": lang_name, "out_path": out_path,
+                             "emotion_id": emotion_id})  # 태그(비민감) — bridge가 결과·오류에 반환
 
         try:
-            seg_out = qwen.run_job(segments, device)
-        except RuntimeError as e:
-            # CUDA OOM만 CPU로 1회 가시적 재시도(조용한 재시도 아님). 그 외 예외는 전파.
-            if device == "cuda:0" and is_cuda_oom(e):
-                emit("progress", percent=30, message="GPU 메모리 부족(OOM) → CPU로 1회 재시도(느림)")
-                fallback = True
-                fallback_reason = "CUDA OOM → CPU 재시도"
-                actual_device = "cpu"
-                seg_out = qwen.run_job(segments, "cpu")
-            else:
-                raise
-        ordered = [s["out_path"] for s in sorted(seg_out, key=lambda x: x["index"])]
+            try:
+                seg_out = qwen.run_job(segments, device)
+            except RuntimeError as e:
+                # CUDA OOM만 CPU로 1회 가시적 재시도(조용한 재시도 아님). 상한 도달·그 외 예외는 전파.
+                if (device == "cuda:0" and is_cuda_oom(e)
+                        and not isinstance(e, QwenGenerationLimitError)):
+                    emit("progress", percent=30, message="GPU 메모리 부족(OOM) → CPU로 1회 재시도(느림)")
+                    fallback = True
+                    fallback_reason = "CUDA OOM → CPU 재시도"
+                    actual_device = "cpu"
+                    seg_out = qwen.run_job(segments, "cpu")
+                else:
+                    raise
+        except QwenGenerationLimitError as gle:
+            # 상한 도달 → 잘린 WAV 미채택. 감정 ID로만 재해석(전사·문장·경로 미포함).
+            # 이 예외로 place_final_with_pitch 이전에 빠져나가므로 finally가 job_dir을 지우고
+            # 기존 synthesized.wav는 output_dir(=job_dir 밖)에 그대로 보존된다(원자 보존).
+            si = gle.segment_index
+            emo = gle.emotion_id
+            if emo is None:  # bridge가 못 준 경우만 parsed로 보강(offending segment 기준)
+                emo = (parsed[si][0] if isinstance(si, int) and 0 <= si < len(parsed) else "?")
+            ck = f", 조각 {gle.chunk_index}" if gle.chunk_index is not None else ""
+            _e = RuntimeError(
+                f"GENERATION_LIMIT_EXCEEDED — 감정 '{emo}' 문장{ck}이 동적 생성 상한"
+                f"(max_new_tokens={gle.generation_limit})에 도달했습니다(생성 반복 {gle.generated_iterations}). "
+                f"참조 오디오와 전사 내용이 맞지 않을 때 나타날 수 있습니다 — 참조 구간/전사를 확인한 뒤 다시 시도하세요."
+            )
+            # 구조화 payload(renderer까지 정식 code 전달 — 문자열 prefix 추론 금지).
+            # 감정 ID·index·수치만 담는다: 전사·문장·전체경로 없음(§미디어 정책).
+            _e.error_payload = {
+                "code": "GENERATION_LIMIT_EXCEEDED",
+                "segment_index": si if isinstance(si, int) else None,
+                "chunk_index": gle.chunk_index,
+                "emotion_id": emo,
+                "generated_iterations": gle.generated_iterations,
+                "generation_limit": gle.generation_limit,
+            }
+            raise _e from None
+        except QwenTextSegmentTooLongError as tle:
+            # 자동 분할로도 상한 이내로 못 만든 줄 → 명확히 실패(내용 미포함). 기존 synthesized.wav 보존.
+            si = tle.segment_index
+            emo = tle.emotion_id
+            if emo is None:
+                emo = (parsed[si][0] if isinstance(si, int) and 0 <= si < len(parsed) else "?")
+            _e = RuntimeError(
+                f"TEXT_SEGMENT_TOO_LONG — 감정 '{emo}' 줄이 안전한 단일 합성 길이를 초과합니다. "
+                f"문장별로 나누거나 줄바꿈을 추가하세요. (production 토큰 {tle.production_tokens}, 허용 {tle.allowed})"
+            )
+            _e.error_payload = {
+                "code": "TEXT_SEGMENT_TOO_LONG",
+                "segment_index": si if isinstance(si, int) else None,
+                "emotion_id": emo,
+                "production_tokens": tle.production_tokens,
+                "allowed": tle.allowed,
+            }
+            raise _e from None
 
-        # speed: 1.0=raw, 그 외 세그먼트별 atempo(최종 결합본 아님) 후 결합. 간격은 사용자 silence_gap 유지.
+        # chunk 정렬: (original_segment_index, chunk_index). 순서 보존 = 원문 순서.
+        ordered_entries = sorted(seg_out, key=lambda x: (x["original_segment_index"], x["chunk_index"]))
+        ordered = [e["out_path"] for e in ordered_entries]
+
+        # 생성 안전장치 metadata(계약 A/B). 여기 도달 = 전 chunk가 completed_before_limit.
+        # scalar 3필드 대표 = generated_iterations/generation_limit 비율 최대 chunk(동률은 (osi,ci) 최소) 한 쌍.
+        _cand = [((e["original_segment_index"], e["chunk_index"]), e["generated_iterations"], e["generation_limit"])
+                 for e in ordered_entries if isinstance(e.get("generated_iterations"), int)
+                 and isinstance(e.get("generation_limit"), int) and e.get("generation_limit") > 0]
+        if _cand:
+            _rep = min(_cand, key=lambda c: (-(c[1] / c[2]), c[0]))
+            meta_gen_iters, meta_gen_limit = int(_rep[1]), int(_rep[2])
+            meta_term = "completed_before_limit"
+        else:
+            meta_gen_iters = meta_gen_limit = meta_term = None
+        # 분할 재현 배열(내용·경로·전사 없음)
+        gen_chunks = [{"original_segment_index": e["original_segment_index"], "chunk_index": e["chunk_index"],
+                       "chunk_count": e["chunk_count"], "production_tokens": e.get("production_tokens"),
+                       "generation_limit": e.get("generation_limit"),
+                       "generated_iterations": e.get("generated_iterations"),
+                       "termination_reason": e.get("termination_reason"), "emotion_id": e.get("emotion_id")}
+                      for e in ordered_entries]
+
+        # speed: 1.0=raw, 그 외 chunk별 atempo 후 결합.
         use = ordered
         if abs(float(speed) - 1.0) > 1e-6:
             use = [_atempo_segment(p, float(speed)) for p in ordered]  # 실패는 명확한 예외
 
+        # 결합 직전 재검증(P0-3): speed 후처리 포함 모든 chunk가 동일 sr·mono·finite·non-empty.
+        # (첫 파일 sr로 저장하므로 sr 혼입 시 뒤 chunk 속도/길이 변질 → 명확히 중단, 기존 wav 보존.)
+        _assert_concat_ready(use)
+
+        # gap: 자동분할 내부 chunk 사이 0초, 원래 segment(사용자 줄바꿈) 경계에만 사용자 silence_gap.
+        gaps = []
+        prev_osi = None
+        for e in ordered_entries:
+            osi = e["original_segment_index"]
+            gaps.append(0.0 if (prev_osi is None or osi == prev_osi) else float(silence_gap))
+            prev_osi = osi
+
         emit("progress", percent=90, message="문장 이어붙이기 중...")
-        _concat_with_silence(use, pending_path, silence_gap)  # 최종 아님 — job_dir 임시로 결합(단일도 동일 경로)
+        _concat_with_boundaries(use, gaps, pending_path)  # 내부 0 / 원 segment 경계 silence_gap
 
-        # 임시 출력 전량 검증(존재/non-empty/sr/finite) — 이 검사를 모두 통과해야 교체
-        import soundfile as _sf
-        import numpy as _np
-        if not (os.path.exists(pending_path) and os.path.getsize(pending_path) > 0):
-            raise RuntimeError("최종 합성 임시 출력 없음/0바이트")
-        d, sr = _sf.read(pending_path)
-        mono = d if d.ndim == 1 else d.mean(axis=1)
-        if mono.size == 0 or sr <= 0 or not bool(_np.all(_np.isfinite(mono))):
-            raise RuntimeError("최종 합성 출력 검증 실패(빈/비유한/sr)")
-
-        # 전량 성공 → 원자적 교체(기존 synthesized.wav는 이 시점에만 대체됨). job_dir는 finally에서 삭제.
-        os.replace(pending_path, final_path)
+        # 공통 최종 단계(계약 §6.1): pitch(후처리 축)를 speed·결합이 끝난 최종 후보에 적용하고
+        # 원자적으로 synthesized.wav에 배치. 검증·os.replace·실패격리(기존 wav 무손상)는 공통 함수가 책임.
+        # 0=무호출(바이트 불변). rubberband 부재+pitch!=0 → PITCH_UNAVAILABLE 예외(조용한 폴백 없음).
+        import pitch_shift as _ps
+        if _ps.clamp_quantize(pitch) != 0.0:
+            emit("progress", percent=93, message=f"음높이 보정 중 ({_ps.clamp_quantize(pitch):+.1f}반음)...")
+        # pending은 job_dir 내부(output_dir 하위) → os.replace가 동일 파일시스템 원자 이동.
+        pinfo = _ps.place_final_with_pitch(pending_path, final_path, pitch, job_dir)
+        sr = pinfo["output_sample_rate"]
         import time as _time
         # target_language: 세그먼트 언어 중 최빈값
         tgt = max(set(lang_codes), key=lang_codes.count) if lang_codes else None
@@ -875,6 +1051,10 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             "speed_postprocessed": bool(abs(float(speed) - 1.0) > 1e-6),
             "fallback": fallback, "fallback_reason": fallback_reason,
             "elapsed_seconds": round(_time.monotonic() - t_start, 2), "output_sample_rate": int(sr),
+            "pitch_semitones": pinfo["pitch_semitones"], "pitch_method": pinfo["pitch_method"],
+            "pitch_postprocessed": pinfo["pitch_postprocessed"],
+            "generation_limit": meta_gen_limit, "generated_iterations": meta_gen_iters,
+            "termination_reason": meta_term, "generation_chunks": gen_chunks,
         }
         return final_path, info
     finally:
@@ -953,6 +1133,48 @@ def _concat_with_silence(segment_paths, output_path, silence_sec=0.5):
     sf.write(output_path, combined, target_sr)
 
 
+def _assert_concat_ready(paths):
+    """결합 직전 일관성 단언(P0-3): 전 파일 동일 sr·mono(1-D)·non-empty·finite. 위반 시 명확한 예외."""
+    import soundfile as sf
+    import numpy as np
+    common_sr = None
+    for p in paths:
+        d, sr = sf.read(p, dtype="float32")
+        if not (isinstance(sr, (int, float)) and sr > 0):
+            raise RuntimeError(f"결합 전 sr 이상: {os.path.basename(p)}")
+        if common_sr is None:
+            common_sr = int(sr)
+        elif int(sr) != common_sr:
+            raise RuntimeError(f"결합 전 sr 불일치: {common_sr} vs {sr}")
+        d = np.asarray(d)
+        if d.ndim != 1:
+            raise RuntimeError(f"결합 전 mono 아님(ndim={d.ndim}): {os.path.basename(p)}")
+        if d.size == 0 or not np.all(np.isfinite(d)):
+            raise RuntimeError(f"결합 전 빈/비유한 오디오: {os.path.basename(p)}")
+
+
+def _concat_with_boundaries(paths, gaps_before, output_path):
+    """paths를 순서대로 이어붙이되 각 항목 '앞'에 gaps_before[i]초 무음 삽입(계약 B).
+    자동분할 내부 chunk 사이 gap=0(연속), 원래 segment 경계에만 사용자 silence_gap. gaps_before[0]은 0.
+    무음은 각 파일 sr 기준(첫 파일 sr을 target으로 사용). 무작위 무음 삽입 아님 — 호출부가 경계에서만 지정."""
+    import soundfile as sf
+    import numpy as np
+    if len(paths) != len(gaps_before):
+        raise RuntimeError("concat: paths와 gaps 길이 불일치")
+    out = []
+    target_sr = None
+    for i, path in enumerate(paths):
+        data, sr = sf.read(path, dtype="float32")
+        if target_sr is None:
+            target_sr = sr
+        g = float(gaps_before[i])
+        if i > 0 and g > 0:
+            out.append(np.zeros(int(g * target_sr), dtype=np.float32))
+        out.append(data)
+    combined = np.concatenate(out) if out else np.zeros(0, dtype=np.float32)
+    sf.write(output_path, combined, target_sr)
+
+
 # ── Main synthesize function ──
 
 def resolve_reference_input(override, input_path):
@@ -967,13 +1189,18 @@ def resolve_reference_input(override, input_path):
 
 
 def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
-               emotion_refs=None, preferred_engine=None, reference_prompts=None):
+               emotion_refs=None, emotion_ref_sources=None, preferred_engine=None, reference_prompts=None, pitch=0.0):
     """Synthesize speech. Auto-selects engine by language.
-    reference_prompts: 식별자(default/emotionId) → {manual_text, prompt_lang, mode} 사용자 override."""
+    reference_prompts: 식별자(default/emotionId) → {manual_text, prompt_lang, mode} 사용자 override.
+    emotion_refs: emotionId → 합성에 쓸 effective 참조 경로(3~10초 클립/유효 원본).
+    emotion_ref_sources: emotionId → 사용자 등록 원본 경로(등록 사실). 만료 판정 기준(계약 §5).
+    pitch: 결과 WAV 음높이 보정(반음, 후처리 축). 0=무후처리. 정규화 권위는 pitch_shift.clamp_quantize."""
     emit("status", message="음성 합성 시작", percent=0)
 
     if not emotion_refs:
         emotion_refs = {}
+    if not emotion_ref_sources:
+        emotion_ref_sources = {}
 
     lines = [l.strip() for l in text.strip().split('\n') if l.strip()]
     if not lines:
@@ -995,12 +1222,27 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             tmp_dirs.append(tmp_ref_dir)
         ref_cache = {"default": ref_wav}
 
-        for emo_id, emo_path in emotion_refs.items():
-            if emo_path and os.path.exists(emo_path):
-                wav, tmp = _prepare_ref(emo_path)
-                if tmp:
-                    tmp_dirs.append(tmp)
-                ref_cache[emo_id] = wav
+        # 감정 참조(계약 §5 4불변식) — 실제 대사에서 '사용된' 감정만 검증한다(미사용은 무시·bridge 미전달).
+        #  등록 기준 = emotion_ref_sources(원본 등록 사실). 등록됐는데 effective가 없거나 만료면 명확한 오류를
+        #  던진다(silent fallback 금지 — 예전엔 파일 없으면 조용히 건너뛰어 기본 참조로 대체됐다).
+        #  미등록 사용 감정은 ref_cache에 넣지 않아 아래 라우팅에서 기본 참조로 폴백된다.
+        used_emotion_ids = {eid for eid, _ in parsed if eid != "default"}
+        for eid in used_emotion_ids:
+            # 등록 판정: sources(원본 등록, 계약상 진실) 또는 effective(refs)에 존재. production은 sources가
+            # 준비된 것(refs)을 포함하므로 sources 기준과 동치이고, sources 없이 refs만 주어지는 호출(구 경로/
+            # 테스트)도 등록으로 보아 effective 유효성을 검증한다 — 어느 경우든 "등록됐는데 effective 없음"은 오류.
+            if eid not in emotion_ref_sources and eid not in emotion_refs:
+                continue  # (1) 미등록 → 기본 참조 폴백(정상)
+            eff = emotion_refs.get(eid)
+            if not (eff and os.path.exists(eff)):  # (3) 등록됐는데 effective 없음/만료 → 명확한 오류
+                label = next((k for k, v in EMOTION_TAGS.items() if v == eid), eid)
+                raise RuntimeError(
+                    f"감정 참조가 만료되었거나 유효하지 않습니다 — [{label}] 참조 구간을 다시 확정하세요.")
+            wav, tmp = _prepare_ref(eff)  # (2) 등록 + effective 유효 → 사용
+            if tmp:
+                tmp_dirs.append(tmp)
+            ref_cache[eid] = wav
+        # (4) 미사용 감정은 위 루프(used_emotion_ids)에 없으므로 준비·검증·전달되지 않는다.
 
         # 사용자 프롬프트 override(식별자 기준)를 준비된 참조 '경로' 기준으로 매핑해 GPT 엔진에 전달.
         # 항상 설정(빈 dict 포함)해 이전 작업의 override가 남지 않게 한다.
@@ -1018,7 +1260,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         # 모델 1회 로딩으로 전 문장 처리(문장별 프로세스 금지).
         if _select_job_engine(text, preferred_engine) == "qwen3":
             final_path, info = _synthesize_qwen_job(parsed, ref_cache, overrides_by_path,
-                                                    output_dir, speed, silence_gap)
+                                                    output_dir, speed, silence_gap, pitch)
             meta = _build_tts_metadata(
                 requested_engine=requested_engine,
                 original_reference_path=reference_audio, effective_reference_path=reference_audio,
@@ -1056,13 +1298,34 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         emit("progress", percent=88, message="문장 이어붙이기 중...")
         final_path = os.path.join(output_dir, "synthesized.wav")
 
+        # 최종 후보 WAV 완성(단일=세그먼트 그대로, 복수=결합 임시본). speed는 세그먼트 합성 시 이미 반영.
+        # 그 뒤 Qwen과 '동일한' 공통 최종 단계(place_final_with_pitch)로 pitch 후처리 + 원자적 배치(계약 §6.1).
+        import pitch_shift as _ps
         if len(segment_paths) == 1:
-            os.rename(segment_paths[0], final_path)
+            candidate = segment_paths[0]           # output_dir 내부 → os.replace 원자적
+            concat_tmp = None
         else:
-            _concat_with_silence(segment_paths, final_path, silence_gap)
-            for p in segment_paths:
+            concat_tmp = os.path.join(output_dir, ".synth-concat.wav")
+            _concat_with_silence(segment_paths, concat_tmp, silence_gap)
+            candidate = concat_tmp
+        try:
+            if _ps.clamp_quantize(pitch) != 0.0:
+                emit("progress", percent=93, message=f"음높이 보정 중 ({_ps.clamp_quantize(pitch):+.1f}반음)...")
+            pinfo2 = _ps.place_final_with_pitch(candidate, final_path, pitch, output_dir)
+        finally:
+            # 후보/세그먼트 정리(성공 시 candidate는 os.replace로 소비됐을 수 있음). 실패 시 final_path는
+            # os.replace 미도달로 기존 파일 보존. 공통 함수의 pitch 임시본은 함수가 자체 정리.
+            leftovers = list(segment_paths)
+            if concat_tmp:
+                leftovers.append(concat_tmp)
+            for p in leftovers:
                 if os.path.exists(p):
-                    os.remove(p)
+                    try:
+                        os.remove(p)
+                    except OSError:
+                        pass
+        pitch_st2 = pinfo2["pitch_semitones"]
+        pitch_method2 = pinfo2["pitch_method"]
 
         # per-segment(GPT-SoVITS/F5/Kokoro) 메타데이터
         import soundfile as _sf2
@@ -1091,7 +1354,9 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             target_language=tgt2, seed=None, seed_supported=False,
             speed=float(speed), speed_postprocessed=False, silence_gap=float(silence_gap),
             fallback=fb, fallback_reason=("Qwen3 사용 불가 → 기존 엔진 폴백" if fb else None),
-            elapsed_seconds=round(_time.monotonic() - _t0, 2), output_sample_rate=out_sr)
+            elapsed_seconds=round(_time.monotonic() - _t0, 2), output_sample_rate=out_sr,
+            pitch_semitones=pitch_st2, pitch_method=pitch_method2,
+            pitch_postprocessed=bool(pitch_st2 != 0.0))
         tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
         emit("progress", percent=99, message="완료!")
         emit("result", tracks=tracks, outputDir=output_dir, metadata=meta)

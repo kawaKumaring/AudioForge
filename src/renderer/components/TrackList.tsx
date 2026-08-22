@@ -64,24 +64,25 @@ function TrackPlayer({ path, color, paused, onClose }: { path: string; color: st
     <div style={{ padding: '8px 14px', borderTop: '1px solid var(--border-subtle)' }}>
       <div ref={ref} style={{ marginBottom: 6 }} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontSize: 10, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>{cur} / {dur}</span>
+        <span style={{ fontSize: 11, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>{cur} / {dur}</span>
         <div title="재생 볼륨 (듣기 전용 · 원본 파일에는 영향 없음)" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5 }}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
             {volume < 0.01
               ? <><line x1="23" y1="9" x2="17" y2="15" /><line x1="17" y1="9" x2="23" y2="15" /></>
               : <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />}
           </svg>
           <input type="range" min="0" max="1" step="0.05" value={volume}
+            aria-label="재생 볼륨 (듣기 전용, 원본에 영향 없음)"
             onChange={(e) => setVolume(parseFloat(e.target.value))}
             style={{ width: 56, accentColor: color, cursor: 'pointer', height: 4 }} />
         </div>
-        <button onClick={onClose} title="재생 닫기" style={{
+        <button onClick={onClose} title="재생 닫기" aria-label="재생 닫기" style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          width: 22, height: 22, borderRadius: 6, border: 'none', cursor: 'pointer',
-          background: 'var(--bg-elevated)', color: 'var(--text-muted)', flexShrink: 0
+          width: 28, height: 28, borderRadius: 6, border: 'none', cursor: 'pointer',
+          background: 'var(--bg-elevated)', color: 'var(--text-secondary)', flexShrink: 0
         }}>
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
+          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
             <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
           </svg>
         </button>
@@ -104,11 +105,11 @@ const TRACK_STYLES: Record<string, { color: string; glow: string }> = {
 const DEFAULT_STYLE = { color: '#a78bfa', glow: 'rgba(167,139,250,0.15)' }
 
 const actionBtnStyle = (active: boolean, color: string): React.CSSProperties => ({
-  display: 'flex', alignItems: 'center', gap: 4, padding: '4px 10px',
-  borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 600,
+  display: 'flex', alignItems: 'center', gap: 4, padding: '6px 10px',
+  borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600,
   fontFamily: 'inherit', transition: 'all 0.15s',
   background: active ? `${color}20` : 'var(--bg-elevated)',
-  color: active ? color : 'var(--text-muted)'
+  color: active ? color : 'var(--text-secondary)'
 })
 
 function TrackItem({ track, index }: { track: { name: string; label: string; path: string }; index: number }) {
@@ -220,15 +221,17 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
               </button>
             )}
             {processing && (
-              <span style={{ fontSize: 10, color: 'var(--accent)', fontWeight: 500, padding: '4px 8px' }}>처리 중...</span>
+              <span role="status" aria-live="polite" style={{ fontSize: 11, color: 'var(--accent-light)', fontWeight: 500, padding: '4px 8px' }}>처리 중...</span>
             )}
           </div>
         )}
 
         {/* Text toggle */}
         {(transcript || translation) && (
-          <button onClick={() => setShowText(!showText)} style={actionBtnStyle(showText, 'var(--cyan)')}>
-            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
+          <button onClick={() => setShowText(!showText)} style={actionBtnStyle(showText, 'var(--cyan)')}
+            aria-expanded={showText} aria-controls={`track-text-${track.name}`}
+            aria-label={showText ? `${track.label} 텍스트 접기` : `${track.label} 텍스트 펼치기`}>
+            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" aria-hidden="true">
               <line x1="17" y1="10" x2="3" y2="10" /><line x1="21" y1="6" x2="3" y2="6" /><line x1="21" y1="14" x2="3" y2="14" /><line x1="17" y1="18" x2="3" y2="18" />
             </svg>
             텍스트
@@ -237,16 +240,18 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
 
         {/* 재생 버튼 — 항상 이 자리(원래 위치). 아이콘만 ▶↔❚❚로 바뀜. 정지/닫기는 플레이어의 ✕. */}
         {isAudioTrack && (
-          <button onClick={handlePlay} style={{
+          <button onClick={handlePlay}
+            aria-label={!isPlaying ? `${track.label} 재생` : paused ? `${track.label} 재생 재개` : `${track.label} 일시정지`}
+            style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            width: 28, height: 28, borderRadius: 7, border: 'none', cursor: 'pointer', flexShrink: 0,
+            width: 32, height: 32, borderRadius: 7, border: 'none', cursor: 'pointer', flexShrink: 0,
             background: isPlaying ? st.color : 'var(--bg-elevated)',
-            color: isPlaying ? '#fff' : 'var(--text-muted)',
+            color: isPlaying ? '#fff' : 'var(--text-secondary)',
             boxShadow: isPlaying ? `0 2px 10px ${st.glow}` : 'none'
           }}>
             {(isPlaying && !paused)
-              ? <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
-              : <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><polygon points="7,3 21,12 7,21" /></svg>}
+              ? <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><rect x="6" y="4" width="4" height="16" rx="1" /><rect x="14" y="4" width="4" height="16" rx="1" /></svg>
+              : <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><polygon points="7,3 21,12 7,21" /></svg>}
           </button>
         )}
       </div>
@@ -258,10 +263,10 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
 
       {/* Expandable text area */}
       {showText && (transcript || translation) && (
-        <div style={{ borderTop: '1px solid var(--border-subtle)' }}>
+        <div id={`track-text-${track.name}`} style={{ borderTop: '1px solid var(--border-subtle)' }}>
           {transcript && (
             <div style={{ padding: '10px 14px' }}>
-              <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 4 }}>원문</div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', marginBottom: 4 }}>원문</div>
               <div style={{ fontSize: 11, lineHeight: 1.7, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', maxHeight: 150, overflowY: 'auto' }}>
                 {transcript}
               </div>
@@ -269,7 +274,7 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
           )}
           {translation && (
             <div style={{ padding: '10px 14px', borderTop: '1px solid var(--border-subtle)', background: 'rgba(34,211,238,0.03)' }}>
-              <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--cyan)', marginBottom: 4 }}>한국어 번역</div>
+              <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--cyan)', marginBottom: 4 }}>한국어 번역</div>
               <div style={{ fontSize: 11, lineHeight: 1.7, color: 'var(--text-secondary)', whiteSpace: 'pre-wrap', maxHeight: 150, overflowY: 'auto' }}>
                 {translation}
               </div>
@@ -350,16 +355,64 @@ function KaraokeButton({ tracks }: { tracks: { name: string; path: string }[] })
 }
 
 export default function TrackList() {
-  const { tracks, status, outputDir, error, mode } = useAppStore()
+  const { tracks, status, outputDir, error, errorInfo, mode, bumpRetry, clearError } = useAppStore()
 
   if (error) {
+    // 생성 상한 도달(GENERATION_LIMIT_EXCEEDED)은 유효 입력에서도 비결정적으로 발생 가능 → 전용 안내 + 명시 재시도.
+    // 그 외 오류는 기존 일반 카드(메시지 + '다시 시도'=닫기). code는 main이 정제해 넘긴 구조화 값(전사·경로 없음).
+    const isGenLimit = errorInfo?.code === 'GENERATION_LIMIT_EXCEEDED'
+    const isCancelFailed = errorInfo?.code === 'CANCEL_FAILED'
+    const scrollToTranscript = () => {
+      clearError()
+      // 오류 해제 후 참조 전사 섹션으로 스크롤(전사-오디오 불일치 점검 유도). 다음 프레임에 실행(레이아웃 안정 후).
+      requestAnimationFrame(() => {
+        document.getElementById('tts-reference-transcript')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+      })
+    }
     return (
       <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}
+        role="alert"
         style={{ display: 'flex', alignItems: 'flex-start', gap: 12, borderRadius: 14, padding: 14, background: 'var(--rose-glow)', border: '1px solid rgba(251,113,133,0.25)' }}>
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--rose)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}>
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--rose)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }} aria-hidden="true">
           <circle cx="12" cy="12" r="10" /><line x1="15" y1="9" x2="9" y2="15" /><line x1="9" y1="9" x2="15" y2="15" />
         </svg>
-        <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--rose)' }}>{error}</span>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {isGenLimit ? (
+            <>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--rose)' }}>생성이 비정상적으로 길어 안전하게 중단됐습니다.</span>
+              <span style={{ fontSize: 12, fontWeight: 400, color: 'var(--text-secondary)' }}>참조 음성과 전사문이 일치하는지 확인하거나 다시 시도하세요.</span>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button onClick={() => bumpRetry()}
+                  className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 12px' }}>다시 시도</button>
+                <button onClick={scrollToTranscript}
+                  className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 12px' }}>참조 전사 확인</button>
+                <button onClick={() => clearError()}
+                  className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 12px' }}>닫기</button>
+              </div>
+            </>
+          ) : isCancelFailed ? (
+            <>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--rose)' }}>{error}</span>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {/* '다시 취소'는 실제 child가 살아 있을 때만(계약 5). 없으면 닫기만. */}
+                {errorInfo?.childAlive && (
+                  <button onClick={() => window.api.audio.cancel()}
+                    className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 12px' }}>다시 취소</button>
+                )}
+                <button onClick={() => clearError()}
+                  className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 12px' }}>닫기</button>
+              </div>
+            </>
+          ) : (
+            <>
+              <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--rose)' }}>{error}</span>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button onClick={() => clearError()}
+                  className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 12px' }}>다시 시도</button>
+              </div>
+            </>
+          )}
+        </div>
       </motion.div>
     )
   }

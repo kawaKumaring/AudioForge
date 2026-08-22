@@ -8,8 +8,8 @@ import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
 import { createSettlementGuard } from '../services/run-settlement'
 import { createPreviewGuard, runPreview } from '../services/preview-transcribe'
-import { buildTtsConfig, type TtsInputOptions } from '../../shared/ttsConfig'
-import { sweepQwenJobDirs } from '../services/qwen-cleanup'
+import { buildTtsConfig, normalizePitchCapability, type TtsInputOptions } from '../../shared/ttsConfig'
+import { sweepQwenJobDirs, listQwenJobDirs } from '../services/qwen-cleanup'
 import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
 import { createSingleFlight, createKeyedSingleFlight } from '../services/single-flight'
 
@@ -68,8 +68,98 @@ function savePythonPath(p: string): void { saveSetting('pythonPath', p) }
 let runner: PythonRunner | null = null
 let trackRunner: PythonRunner | null = null
 let pythonPath = resolvePythonPath()
-// 현재 유효한 파생 참조 클립 폴더(tmpdir/audioforge_refclip_*). 새 클립/새 파일/합성 종료 시 정리.
-let currentRefClipDir: string | null = null
+// 취소 lifecycle(공용 마감 K/K2) 조정 상태 — audio:process가 세팅하고 audio:cancel/done이 소비.
+let currentSettle: import('../services/run-settlement').SettlementGuard | null = null
+// 취소 진행 상태: none=취소 안 함 / inflight=취소 요청 후 종료·정리 대기 / failed=kill 확인 실패(재취소 허용).
+let cancelState: 'none' | 'inflight' | 'failed' = 'none'
+let currentWatchdogClear: (() => void) | null = null          // 취소가 watchdog을 즉시 해제할 수 있게
+let currentOutputDir: string | null = null                    // 취소 정리(bounded cleanup)가 쓸 output_dir
+let currentIsTts = false                                      // tts 실행만 job-dir 정리 대상
+let cleanupPending = false                                    // 취소 성공했으나 job-dir 정리 미완 → 새 실행 차단
+// runner 'done' 합류용 deferred — cancel 핸들러가 '실제로 runner가 free 됐는지'를 sleep 없이 기다린다.
+let runnerDoneDeferred: { promise: Promise<void>; resolve: () => void } | null = null
+const CANCEL_EXIT_MS_DEFAULT = 8000                           // taskkill 후 tree 종료 확인 대기(bounded). worker timeout과 별개.
+const CLEANUP_DEADLINE_MS = 2500                              // 취소 후 .qwen-job-* 정리 마감(bounded retry).
+// 취소-종료 대기 timeout(ms). production 값 불변; AF_E2E=1에서만 globalThis 주입값으로 대체(테스트 결정성).
+function cancelExitMs(): number {
+  if (process.env.AF_E2E === '1') {
+    const g = globalThis as unknown as { __afCancelExitMs?: number }
+    if (typeof g.__afCancelExitMs === 'number' && g.__afCancelExitMs > 0) return g.__afCancelExitMs
+  }
+  return CANCEL_EXIT_MS_DEFAULT
+}
+function makeDeferred(): { promise: Promise<void>; resolve: () => void } {
+  let resolve!: () => void
+  const promise = new Promise<void>((r) => { resolve = r })
+  return { promise, resolve }
+}
+const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms))
+// 취소 phase telemetry — AF_E2E=1에서만 globalThis에 최초 관측 시각(ms) 기록. production 로그/UI 미노출.
+function afPhase(name: string): void {
+  if (process.env.AF_E2E !== '1') return
+  const g = globalThis as unknown as { __afCancelPhases?: Record<string, number> }
+  g.__afCancelPhases = g.__afCancelPhases || {}
+  if (g.__afCancelPhases[name] == null) g.__afCancelPhases[name] = Date.now()
+}
+// 취소 후 .qwen-job-* bounded 정리 — 실제로 0개임을 확인(listQwenJobDirs)한 뒤에만 true.
+// AF_E2E=1에서 __afCleanupFailCount로 초기 실패 횟수를 주입해 지연 정리 회귀를 결정적으로 재현.
+async function boundedJobCleanup(outputDir: string, deadlineMs: number): Promise<boolean> {
+  const start = Date.now()
+  const g = globalThis as unknown as { __afCleanupFailCount?: number }
+  let forceFail = process.env.AF_E2E === '1' && typeof g.__afCleanupFailCount === 'number' ? g.__afCleanupFailCount : 0
+  for (;;) {
+    try { sweepQwenJobDirs(outputDir) } catch { /* noop */ }
+    let remaining = listQwenJobDirs(outputDir).length
+    if (forceFail > 0) { forceFail--; if (process.env.AF_E2E === '1') g.__afCleanupFailCount = forceFail; remaining = Math.max(remaining, 1) }
+    if (remaining === 0) return true
+    if (Date.now() - start >= deadlineMs) return false
+    await delay(120)
+  }
+}
+// 유효한 파생 참조 클립 폴더(tmpdir/audioforge_refclip_*)를 clipKey별로 추적.
+// clipKey = 'default'(기본 참조) | emotionId(감정 참조). 단일 슬롯을 감정별 식별 구조로 확장.
+// 새 클립/새 파일/재확정/합성 종료(합성 중 제외) 시 해당 key(또는 전체)만 정리.
+const refClipDirs = new Map<string, string>()
+
+// 참조 source 지문 — 경로+크기+수정시각. 파일이 바뀌면(경로 교체/내용 덮어쓰기) 값이 달라져
+// 전사 캐시를 무효화할 수 있다(불변식 3·4). stat 실패 시 ''(비교에서 '살아있는 source 없음'과 동치).
+function computeFingerprint(filePath: string): string {
+  try {
+    if (!filePath) return ''
+    const st = statSync(filePath)
+    return `${resolve(filePath)}|${st.size}|${Math.round(st.mtimeMs)}`
+  } catch {
+    return ''
+  }
+}
+
+// 합성 경계에서 쓸 현재 참조 source 지문 맵 — 'default'=원본 파일, 감정 id=ttsEmotionRefSources.
+// 지문이 잡히는(파일 존재) source만 포함한다. 여기 없는 id의 전사는 orphan으로 폐기된다(§4 규칙 2).
+function buildReferenceFingerprints(filePath: string, options?: Record<string, unknown>): Record<string, string> {
+  const map: Record<string, string> = {}
+  const dfp = computeFingerprint(filePath)
+  if (dfp) map.default = dfp
+  const sources = (options?.ttsEmotionRefSources as Record<string, string> | undefined) || {}
+  for (const [id, src] of Object.entries(sources)) {
+    const fp = computeFingerprint(src)
+    if (fp) map[id] = fp
+  }
+  return map
+}
+
+// 세션 복원 시 참조 source 존재 여부 맵('default' + 감정 id). 렌더러는 fs 접근이 없으므로 여기서 판정.
+// source가 사라진 감정만 재지정 필요로 표시하기 위한 근거.
+function computeRefLiveness(session: Record<string, unknown>): Record<string, boolean> {
+  const liveness: Record<string, boolean> = {}
+  const source = typeof session.source === 'string' ? session.source : ''
+  liveness.default = !!source && existsSync(source)
+  const options = (session.options as Record<string, unknown> | undefined) || {}
+  const sources = (options.ttsEmotionRefSources as Record<string, string> | undefined) || {}
+  for (const [id, src] of Object.entries(sources)) {
+    liveness[id] = !!src && existsSync(src)
+  }
+  return liveness
+}
 
 let cachedFfprobe: string | null = null
 
@@ -97,16 +187,42 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
 
   // 앱 시작: 이전 세션이 남긴 stale 파생 참조 폴더 방어 정리(정확한 prefix + tmpdir 직속 폴더만).
   try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ }
-  // 앱 종료: 남은 파생 참조 폴더 정리.
-  app.on('will-quit', () => { try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ } })
+  // 앱 종료: 실행 중인 작업의 프로세스 트리를 kill(고아 자식 방지) + 남은 파생 참조 폴더 정리(공용 마감 K).
+  // 앱 종료(공용 마감 K2-I): 실행 트리를 kill하고 '종료 확인'까지 기다린 뒤 실제 quit(고아 자식 방지).
+  // before-quit을 1회 preventDefault → bounded tree kill → 재진입 guard 후 quit. 무한 대기 방지(delay backstop).
+  let quitCleanupDone = false
+  app.on('before-quit', (e) => {
+    if (quitCleanupDone) return  // 재진입 → 실제 종료 진행
+    const busy = runner?.isRunning || trackRunner?.isRunning
+    if (!busy) { try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ } ; quitCleanupDone = true; return }
+    e.preventDefault()  // 실행 트리 종료 확인 전까지 종료 보류
+    const kills: Promise<unknown>[] = []
+    if (runner) kills.push(runner.cancel(3000))
+    if (trackRunner) kills.push(trackRunner.cancel(3000))
+    Promise.race([Promise.all(kills), delay(3500)])
+      .then(() => { try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ } })
+      .finally(() => { quitCleanupDone = true; app.quit() })
+  })
 
-  const releaseRefClip = () => {
-    if (currentRefClipDir) { removeRefClipDir(tmpdir(), currentRefClipDir); currentRefClipDir = null }
+  // clipKey 지정 시 그 하나만, 생략 시 전체 정리(새 파일/reset용). 반환: 실제 삭제된 개수.
+  const releaseRefClip = (clipKey?: string): number => {
+    const keys = clipKey !== undefined ? [clipKey] : Array.from(refClipDirs.keys())
+    let removed = 0
+    for (const k of keys) {
+      const dir = refClipDirs.get(k)
+      if (dir) { removeRefClipDir(tmpdir(), dir); refClipDirs.delete(k); removed++ }
+    }
+    return removed
   }
 
-  // Helper to send error to renderer
-  const sendError = (message: string) => {
-    mainWindow.webContents.send('audio:error', { message })
+  // Helper to send error to renderer.
+  // 문자열 또는 구조화 오류({message, code?})를 받아 renderer용으로 정제 — message + (있으면) code만 전달.
+  // code는 GENERATION_LIMIT_EXCEEDED 등 오류 UX 분기 열쇠. 전사·문장·전체경로·수치 상세는 전달하지 않는다.
+  const sendError = (err: string | { message?: unknown; code?: unknown }) => {
+    const o = typeof err === 'string' ? { message: err } : (err || {})
+    const message = typeof o.message === 'string' ? o.message : String((o.message ?? '알 수 없는 오류'))
+    const code = typeof o.code === 'string' ? o.code : undefined
+    mainWindow.webContents.send('audio:error', code ? { message, code } : { message })
   }
 
   // 배타 가드는 '중복 실행을 막아야 하는' 쓰기성 작업에만. 읽기 전용 analyze/preflight는 쓰지 않는다.
@@ -118,6 +234,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
 
   // 읽기 전용 작업 single-flight — StrictMode 중복 effect/동시 요청에도 subprocess는 1회.
   const qwenPreflightSF = createSingleFlight<unknown>()
+  const pitchPreflightSF = createSingleFlight<unknown>()  // pitch capability probe(qwen/analyze/trim guard와 무관)
   const analyzeSF = createKeyedSingleFlight<unknown>()  // 절대경로 key
 
   ipcMain.handle('audio:select-file', async () => {
@@ -195,12 +312,13 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
 
   // 참조 구간 분석(길이/추천/파형 peak) — 읽기 전용. 배타 가드 미사용(analyze/preflight를 서로 차단하지
   // 않음). 같은 절대 filePath의 동시 요청은 single-flight로 합쳐 subprocess 1회, 모두 같은 결과.
-  ipcMain.handle('audio:analyze-reference', async (_event, filePath: string) => {
+  ipcMain.handle('audio:analyze-reference', async (_event, filePath: string, clipKey: string = 'default') => {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 분석을 실행할 수 없습니다.')
     if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
-    const key = resolve(filePath)
-    if (!analyzeSF.has(key)) releaseRefClip()  // 새 분석 시작일 때만 이전 파생 클립 폐기(중복 요청엔 안 함)
+    // single-flight key는 clipKey+절대경로 — 감정별로 분리하되 같은 (key,파일)의 동시 요청만 합침.
+    const key = clipKey + '\u0000' + resolve(filePath)
+    if (!analyzeSF.has(key)) releaseRefClip(clipKey)  // 새 분석 시작일 때만 그 key의 이전 파생 클립 폐기(중복 요청엔 안 함)
     return analyzeSF.run(key, async () => {  // 동시/StrictMode 중복은 진행 중 Promise 공유(subprocess 1회)
       const cfgPath = join(tmpdir(), `audioforge_refanalyze_${randomUUID()}.json`)
       try {
@@ -219,16 +337,16 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
   })
 
   // 선택 구간 → mono/24k 파생 참조 WAV(작업 임시폴더). 원본 불변. 반환 clip_path를 합성에 전달한다.
-  ipcMain.handle('audio:trim-reference', async (_event, filePath: string, startSec: number, durSec: number) => {
+  ipcMain.handle('audio:trim-reference', async (_event, filePath: string, startSec: number, durSec: number, clipKey: string = 'default') => {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 트림을 실행할 수 없습니다.')
     if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
-    releaseRefClip()  // 재확정 → 이전 파생 클립 폐기(합성 중 아님: 위에서 차단)
+    releaseRefClip(clipKey)  // 재확정 → 그 key의 이전 파생 클립만 폐기(타 감정 클립 불변; 합성 중 아님: 위에서 차단)
     referenceTrimGuard.begin()  // 트림 중복 실행 방지(전사 가드와 분리 — 서로 차단하지 않음)
     const uid = randomUUID()
     const cfgPath = join(tmpdir(), `audioforge_reftrim_${uid}.json`)
     const outDir = join(tmpdir(), `audioforge_refclip_${uid}`)  // 작업 임시폴더(프로젝트 밖), 충돌 불가 UID
-    currentRefClipDir = outDir  // 새 파생 클립 폴더 추적(합성 종료/새 파일/재확정 시 정리)
+    refClipDirs.set(clipKey, outDir)  // 새 파생 클립 폴더를 그 key로 추적(합성 종료/새 파일/재확정 시 정리)
     try {
       mkdirSync(outDir, { recursive: true })
       const scriptPath = PythonRunner.getScriptPath('separate.py')
@@ -272,9 +390,56 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     })
   })
 
+  // pitch capability preflight(§6·계약 G) — UI(음높이 슬라이더)와 합성 gate가 rubberband 지원 여부를 소비.
+  // separate.py 'pitch-preflight' 모드가 pitch_shift.pitch_available()의 (available, reason)만 반환(미디어·
+  // GPU·모델 없음). 읽기 전용 single-flight로 StrictMode/동시 호출에도 subprocess 1회. Python 없음·runner
+  // 오류·timeout은 supported=false·probed=true(미지원 확정)로 명확히 반환한다(조용한 unknown 방치 금지).
+  ipcMain.handle('audio:pitch-preflight', async () => {
+    // E2E 결정성(계약 G-C): AF_E2E=1 일 때만 환경변수로 capability를 강제한다(production 무영향·monkeypatch 없음).
+    if (process.env.AF_E2E === '1') {
+      const forced = process.env.AF_E2E_PITCH_CAPABILITY
+      if (forced === 'supported') return normalizePitchCapability({ available: true, reason: 'e2e-forced-supported' })
+      if (forced === 'unsupported') return normalizePitchCapability({ available: false, reason: 'e2e-forced-unsupported' })
+      if (forced === 'probe-failed') return normalizePitchCapability({ available: false, reason: 'pitch-probe-failed: e2e-forced' })
+      // 그 외/미설정이면 실제 probe로 진행
+    }
+    if (runner?.isRunning) return normalizePitchCapability(null)  // 처리 중엔 probe 안 함(unknown 유지)
+    if (!existsSync(pythonPath)) return normalizePitchCapability({ available: false, reason: 'pitch-probe-failed: python-not-found' })
+    return pitchPreflightSF.run(async () => {  // 동시/StrictMode 중복은 진행 중 Promise 공유(subprocess 1회)
+      const cfgPath = join(tmpdir(), `audioforge_pitchpre_${randomUUID()}.json`)
+      try {
+        const scriptPath = PythonRunner.getScriptPath('separate.py')
+        writeFileSync(cfgPath, JSON.stringify({ mode: 'pitch-preflight' }), 'utf-8')
+        const raw = await runPreview({
+          runner: new PythonRunner(pythonPath),
+          scriptPath, args: ['--config', cfgPath],
+          timeoutMs: 35000,
+          cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
+        }) as { available?: boolean | null; reason?: string } | null
+        return normalizePitchCapability(raw)
+      } catch (e) {
+        // Python/runner 오류·timeout → 미지원 확정(probed=true, supported=false). 사유에 경로/민감정보 미포함.
+        return normalizePitchCapability({ available: false, reason: `pitch-probe-failed: ${(e as Error)?.name || 'error'}` })
+      } finally {
+        try { unlinkSync(cfgPath) } catch {}
+      }
+    })
+  })
+
   ipcMain.handle('audio:process', async (_event, filePath: string, mode: string, options?: Record<string, unknown>) => {
     if (runner?.isRunning) {
       throw new Error('이미 처리 중인 작업이 있습니다')
+    }
+    // 취소 진행 중(inflight)엔 새 실행 거부 — renderer 버튼 차단에만 의존하지 않는다(공용 마감 K2-D).
+    if (cancelState === 'inflight') {
+      throw new Error('작업을 취소하고 정리하는 중입니다. 잠시 후 다시 시도하세요.')
+    }
+    // 취소 후 job-dir 정리 미완(cleanupPending): 여기서 한 번 더 bounded 정리 시도 → 성공해야 진행.
+    if (cleanupPending) {
+      const dir = currentOutputDir
+      const done = dir ? await boundedJobCleanup(dir, CLEANUP_DEADLINE_MS) : true
+      if (!done) throw new Error('이전 취소 작업의 임시 파일 정리가 끝나지 않았습니다. 잠시 후 다시 시도하세요.')
+      cleanupPending = false; currentOutputDir = null
     }
     // 읽기 전용 preflight/analyze는 합성을 막지 않는다. 실제 참조 전사·트림 중일 때만 차단(작업명 표시).
     if (transcriptPreviewGuard.running) {
@@ -289,8 +454,12 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     }
 
-    // Resolve script path
-    const scriptPath = PythonRunner.getScriptPath('separate.py')
+    // Resolve script path. AF_E2E=1에서만: 취소 lifecycle E2E가 실제 Qwen/미디어 대신 synthetic
+    // 프로세스 트리를 띄우도록 스크립트 경로를 대체(취소·정착·정리·watchdog 로직은 production 그대로 실행).
+    let scriptPath = PythonRunner.getScriptPath('separate.py')
+    if (process.env.AF_E2E === '1' && process.env.AF_E2E_TTS_SCRIPT && existsSync(process.env.AF_E2E_TTS_SCRIPT)) {
+      scriptPath = process.env.AF_E2E_TTS_SCRIPT
+    }
     if (!existsSync(scriptPath)) {
       throw new Error(`Python 스크립트를 찾을 수 없습니다: ${scriptPath}`)
     }
@@ -328,22 +497,32 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       // TTS 필드는 단일 소스(buildTtsConfig)로 직렬화 — ttsEmotionRefs 포함,
       // 숫자 기본값은 ??(0 보존). 필드 추가 시 컴파일 단계에서 누락 검출.
       // IPC로 온 untyped 옵션을 TtsInputOptions로 명시 변환해 전달.
-      ...buildTtsConfig(options as TtsInputOptions | undefined)
+      // 합성 경계 불변식(§4): 현재 참조 source 지문 맵을 함께 넘겨 stale 전사를 폐기한 뒤 직렬화.
+      // 'default'=원본 파일, 감정=ttsEmotionRefSources. 렌더러가 stale 전사를 되살려 보내도
+      // 여기서 정합 전사만 Python에 전달된다.
+      ...buildTtsConfig(options as TtsInputOptions | undefined, buildReferenceFingerprints(filePath, options))
     }
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
     console.log(`[AudioForge] Config written to: ${configPath}`)
 
     runner = new PythonRunner(pythonPath)
+    const thisRunner = runner  // 이 실행 인스턴스 고정 — done에서 새 실행의 runner를 null로 덮어쓰지 않도록(clobber 방지).
 
-    // 종료 시 UI가 'processing'에 남지 않도록: result/error/watchdog 중 하나로 반드시 '정착'.
+    // 종료 시 UI가 'processing'에 남지 않도록: result/error/watchdog/취소 중 하나로 반드시 '정착'.
     // 어느 것도 없이 프로세스가 끝나면(예: 외부 kill, 코드 0인데 result 미도달) done에서 오류로 마감.
     const settle = createSettlementGuard(sendError)
+    cancelState = 'none'          // 새 실행 시작 → 취소 상태 초기화
+    currentSettle = settle        // audio:cancel이 '최초 정착 승자' 판정에 사용
+    currentOutputDir = outputDir  // 취소 정리(bounded cleanup)가 쓸 경로
+    currentIsTts = mode === 'tts'
+    const runnerDone = makeDeferred()  // done 핸들러가 resolve → cancel 핸들러가 sleep 없이 합류
+    runnerDoneDeferred = runnerDone
 
     // production race 방지: 터미널 신호(result/error)를 즉시 보내지 않고 버퍼링했다가 runner 'done'
     // (자식 프로세스 실제 종료 = backend free) 이후에 전달한다. 이러면 renderer가 완료(done)와
     // '다른 모드로 재처리'를 보는 시점엔 이미 runner=null이라, 결과 직후 재합성해도 "이미 처리 중"이 없다.
     let pendingResult: unknown = null
-    let pendingError: string | null = null
+    let pendingError: string | { message?: unknown; code?: unknown } | null = null
 
     runner.on('progress', (data) => {
       mainWindow.webContents.send('audio:progress', data)
@@ -359,6 +538,24 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
         md.effective_reference_path = (options?.ttsReferenceOverride as string) || filePath  // 파생 클립 우선
         const region = options?.ttsReferenceRegion as { start: number; duration: number } | null | undefined
         if (region && typeof region.start === 'number') md.reference_region = region
+        // 감정별 참조(추가정합1): metadata에는 실제 사용된 감정(effective=ttsEmotionRefs 키)의 구간 +
+        // source basename만 기록(비민감 요약·실제 사용 사실). 전체 원본 경로는 session config에만 보존.
+        // 완전 재현은 session의 source+region이 담당한다(§1.2/§2.3).
+        const usedEmo = options?.ttsEmotionRefs as Record<string, string> | undefined
+        if (usedEmo && Object.keys(usedEmo).length) {
+          const emoRegions = (options?.ttsEmotionRefRegions as Record<string, { start: number; duration: number }> | undefined) || {}
+          const emoSources = (options?.ttsEmotionRefSources as Record<string, string> | undefined) || {}
+          const regionsOut: Record<string, { start: number; duration: number }> = {}
+          const namesOut: Record<string, string> = {}
+          for (const id of Object.keys(usedEmo)) {
+            const r = emoRegions[id]
+            if (r && typeof r.start === 'number') regionsOut[id] = r
+            const s = emoSources[id]
+            if (s) namesOut[id] = basename(s)
+          }
+          if (Object.keys(regionsOut).length) md.emotion_reference_regions = regionsOut
+          if (Object.keys(namesOut).length) md.emotion_reference_source_names = namesOut
+        }
         ;(data as { metadata?: unknown }).metadata = md
       }
       // 세션 매니페스트 저장 — 나중에 재분리 없이 설정+트랙 복원용 (source of truth)
@@ -386,7 +583,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
 
     runner.on('error', (message) => {
       settle.markSettled()
-      pendingError = typeof message === 'string' ? message : String(message)  // 'done'에서 전달
+      // 문자열(spawn/close 오류) 또는 구조화 객체(파싱된 error 라인, code 포함) 그대로 보관 → 'done'에서 정제 전달.
+      pendingError = (message && typeof message === 'object') ? message : String(message)
     })
 
     // Watchdog: kill if no progress for 5 minutes
@@ -398,28 +596,41 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       watchdog = setTimeout(() => {
         if (runner?.isRunning) {
           settle.markSettled()
-          runner.cancel()
+          runner.cancel()  // async(무시) — 트리 kill 시도
           sendError('처리 시간이 초과되었습니다 (5분간 응답 없음). Python 환경을 확인해주세요.')
         }
       }, WATCHDOG_MS)
     }
+    // 취소가 watchdog을 즉시 해제할 수 있게 노출(취소는 watchdog 무의미). done에서 정리.
+    currentWatchdogClear = () => { if (watchdog) { clearTimeout(watchdog); watchdog = null } }
 
     resetWatchdog()
 
     runner.on('done', (code) => {
-      if (watchdog) clearTimeout(watchdog)
-      // 자식 프로세스 실제 종료 후 발생(취소 taskkill 포함). 여기서 backend를 먼저 free로 만들고
-      // (runner=null) '그 다음' 버퍼링한 터미널 신호를 renderer에 전달 → 완료 표시 시점엔 이미 재합성 가능.
+      if (watchdog) { clearTimeout(watchdog); watchdog = null }
       try { unlinkSync(configPath) } catch {}
+
+      // ── 취소 경로(inflight): done은 '권위'가 아니다. runner를 free로 만들고 관측만 기록·합류시킨다.
+      // 부분 결과/오류/스윕/터미널 신호(cancelled)는 모두 audio:cancel 핸들러가 tree 종료·정리 확인 후 보낸다.
+      if (cancelState === 'inflight') {
+        afPhase('runner_done')
+        if (runner === thisRunner) { runner = null }  // clobber 방지. currentSettle/OutputDir는 cancel 핸들러가 정리.
+        runnerDone.resolve()  // cancel 핸들러의 await 합류(sleep 없이)
+        return
+      }
+
+      // ── 정상 종료 경로 ──
+      // 자식 프로세스 실제 종료 후 발생. 여기서 backend를 먼저 free로 만들고 '그 다음' 버퍼링한 터미널 신호 전달.
       if (mode === 'tts') {
-        // 합성 '중간 산출물'(.qwen-job-*)만 정리. 취소(taskkill)로 죽은 worker가 파일 핸들을 잠깐 물어
-        // 즉시 삭제가 실패할 수 있어(Windows 락) 즉시 + 지연 재스윕.
+        // 합성 '중간 산출물'(.qwen-job-*)만 정리(즉시 + 지연 재스윕). synthesized.wav·session.json은 보존.
         try { sweepQwenJobDirs(outputDir) } catch { /* noop */ }
         setTimeout(() => { try { sweepQwenJobDirs(outputDir) } catch { /* noop */ } }, 2500)
-        // 파생 '참조 클립'(reference_clip_24k.wav)은 여기서 삭제하지 않는다 — 성공/오류/취소 후에도 유지해
-        // 같은 클립으로 재합성이 가능하게. 삭제는 새 파일/reset/구간 재확정/앱 종료에서만.
+        // 파생 '참조 클립'은 여기서 삭제하지 않는다(유효 수명 계약).
       }
-      runner = null  // backend free — 아래 터미널 신호 전달 전에 반드시 먼저.
+      // clobber 방지: 이 done이 '현재' 실행의 것일 때만 backend를 free로.
+      if (runner === thisRunner) { runner = null; currentSettle = null; currentWatchdogClear = null; currentOutputDir = null }
+      // 취소 실패 후 child가 뒤늦게 스스로 종료: 이미 cancel-failed를 보냈으므로 추가 신호 없이 상태만 정리.
+      if (cancelState === 'failed') { cancelState = 'none' }
       // 버퍼링한 터미널 신호 전달(정착됨). 없으면 abnormal exit → settle.finish가 오류로 마감(UI 안 멈춤).
       if (pendingResult !== null) {
         mainWindow.webContents.send('audio:result', pendingResult)
@@ -504,26 +715,86 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       mainWindow.webContents.send('audio:track-result', data)
     })
     trackRunner.on('error', (message) => {
-      sendTrackError(typeof message === 'string' ? message : String(message))
+      // message가 구조화 객체({message,...})일 수 있으므로 .message 추출(그냥 String()이면 [object Object]).
+      const text = typeof message === 'string'
+        ? message
+        : String((message as { message?: unknown })?.message ?? message)
+      sendTrackError(text)
     })
 
     trackRunner.run(scriptPath, ['--config', configPath])
     return { outputDir }
   })
 
-  ipcMain.handle('audio:cancel', () => {
-    runner?.cancel()
-    runner = null
-    trackRunner?.cancel()
-    trackRunner = null
+  // 취소 lifecycle(공용 마감 K): cancelling→kill 요청→child exit 확인(bounded)→done이 'cancelled' 전송→idle.
+  //  - 최초 정착 승자: 이미 result/error로 정착(currentSettle.settled)했으면 취소는 no-op(늦은 취소).
+  //  - kill 확인 실패/timeout: 조용한 idle 금지 → 'cancel-failed'(child 생존 boolean만).
+  //  - kill 요청 1회: 핸들러 재진입은 cancelRequested/settled로 차단.
+  // 정상 취소의 terminal 신호(audio:cancelled)는 '이 핸들러'가 권위다(공용 마감 K2-B).
+  // 순서: cancelling → kill 요청 → tree 종료 확인 → runner done 합류 → bounded cleanup 확인 → cancelled → idle.
+  // done 핸들러는 취소 중이면 runner만 free로 만들고 아무 신호도 보내지 않는다.
+  ipcMain.handle('audio:cancel', async () => {
+    // track-process(대화 분할 후처리)는 이번 K/K2 범위 밖 — 단순 취소 유지(별도 열린 결함으로 문서화).
+    if (trackRunner) { trackRunner.cancel(); trackRunner = null }
+
+    const r = runner
+    if (!r || !r.isRunning) return { ok: true, noop: true }               // 실행 중 아님 → no-op
+    // result/error가 먼저 정착(취소 아님)했으면 늦은 취소는 no-op(계약 4-B/4-C).
+    if (currentSettle?.settled && cancelState === 'none') return { ok: true, noop: true }
+    if (cancelState === 'inflight') return { ok: true, noop: true }        // 이미 취소 진행 중 → 중복 클릭 무시(kill 요청 1회)
+    // 첫 취소면 최초 정착 승자로 마킹(재취소는 이미 settled이므로 재마킹하지 않는다).
+    if (cancelState === 'none') currentSettle?.markSettled()
+    cancelState = 'inflight'
+    const doneP = runnerDoneDeferred?.promise ?? Promise.resolve()
+    const outDir = currentOutputDir
+    const isTts = currentIsTts
+    if (currentWatchdogClear) currentWatchdogClear()   // watchdog 무의미 → 즉시 해제
+    afPhase('cancelling_sent')
+    mainWindow.webContents.send('audio:cancelling')     // renderer → 'cancelling' 표시
+    afPhase('kill_requested')
+    const res = await r.cancel(cancelExitMs())          // 트리 kill + tree 종료 확인(parent close + taskkill exit 0)
+    if (res.treeKillConfirmed) afPhase('tree_kill_confirmed')
+    if (!res.treeKillConfirmed) {
+      // 트리 종료 미확인(spawn 실패/nonzero/parent close timeout/taskkill timeout) — 조용한 idle 금지.
+      cancelState = 'failed'
+      const childAlive = r.isRunning
+      mainWindow.webContents.send('audio:cancel-failed', { childAlive })
+      return { ok: false, childAlive, reason: res.reason }
+    }
+    // runner done 합류(bounded) — done 핸들러가 runner를 free로 만들었는지 sleep 없이 확인.
+    await Promise.race([doneP, delay(3000)])
+    afPhase('runner_done_joined')
+    // bounded cleanup — 실제로 .qwen-job-* 0개임을 확인한 뒤에만 취소 완료.
+    const cleanupOk = isTts && outDir ? await boundedJobCleanup(outDir, CLEANUP_DEADLINE_MS) : true
+    afPhase('cleanup_done')
+    if (!cleanupOk) {
+      // 트리는 죽었으나 임시파일 정리 미완 — 조용한 idle 금지. 새 합성 차단(cleanupPending). synthesized.wav 보존.
+      cleanupPending = true
+      cancelState = 'none'
+      currentSettle = null; currentWatchdogClear = null  // currentOutputDir는 재시도 정리용으로 남긴다
+      mainWindow.webContents.send('audio:cancel-failed', { childAlive: false, cleanupPending: true })
+      return { ok: false, cleanupPending: true }
+    }
+    cancelState = 'none'
+    currentSettle = null; currentWatchdogClear = null; currentOutputDir = null
+    afPhase('cancelled_sent')
+    mainWindow.webContents.send('audio:cancelled')       // ← terminal 신호(권위). renderer가 idle로.
+    return { ok: true }
+  })
+
+  // 파일 reset/변경·감정 삭제/재등록 시 렌더러가 호출 — 파생 참조 클립 폴더 정리(합성 중이면 건드리지 않음).
+  // clipKey 지정 시 그 하나만(감정 삭제/재등록), 생략 시 전체(새 파일/reset).
+  ipcMain.handle('audio:release-reference-clip', (_event, clipKey?: string) => {
+    if (runner?.isRunning) return false  // 합성 worker가 참조 사용 중 → 삭제 금지
+    releaseRefClip(clipKey)
     return true
   })
 
-  // 파일 reset/변경 시 렌더러가 호출 — 유효 파생 참조 클립 폴더 정리(합성 중이면 건드리지 않음).
-  ipcMain.handle('audio:release-reference-clip', () => {
-    if (runner?.isRunning) return false  // 합성 worker가 참조 사용 중 → 삭제 금지
-    releaseRefClip()
-    return true
+  // 참조 source 지문(path|size|mtimeMs) — 렌더러가 전사 확정 시 그 전사가 어느 source에서 왔는지
+  // 기록(TtsReferenceEntry.sourceFingerprint)해 두면, 합성 경계에서 현재 지문과 비교해 stale을 폐기(§4).
+  // 파일 없음/접근 실패는 '' 반환(비교 시 '살아있는 source 없음'과 동치).
+  ipcMain.handle('audio:fingerprint-reference', (_event, filePath: string) => {
+    return computeFingerprint(filePath)
   })
 
   // 불러온 원본에 대응하는 이전 결과(session.json) 탐색 — <원본폴더>/AudioForge_output/*/session.json
@@ -553,7 +824,9 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       }
       if (matches.length === 0) return null
       matches.sort((a, b) => b.createdAt.localeCompare(a.createdAt))  // 최신 우선
-      return { dir: matches[0].dir, session: matches[0].session }
+      const top = matches[0]
+      // refLiveness 주입 — 자동 복원 경로도 source 소실 감정을 재지정 필요로 표시할 수 있게.
+      return { dir: top.dir, session: { ...top.session, refLiveness: computeRefLiveness(top.session) } }
     } catch {
       return null
     }
@@ -569,6 +842,31 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     const dir = result.filePaths[0]
     const { readdirSync, readFileSync } = await import('fs')
     const files = readdirSync(dir)
+
+    // 우선 session.json이 있으면 그것으로 전체 설정(TTS mode·pitch·source+region·전사·metadata)을 복원.
+    // 트랙은 session.tracks 중 실제 남아 있는 파일만. refLiveness로 source 소실 감정을 렌더러가 표시.
+    if (files.includes('session.json')) {
+      try {
+        const s = JSON.parse(readFileSync(join(dir, 'session.json'), 'utf-8')) as Record<string, unknown>
+        const rawTracks = Array.isArray(s.tracks) ? s.tracks as { name?: string; label?: string; path?: string }[] : []
+        const sessionTracks = rawTracks
+          .filter(t => t.path && existsSync(t.path as string))
+          .map(t => ({ name: t.name || '', label: t.label || t.name || '', path: t.path as string }))
+        return {
+          tracks: sessionTracks,
+          outputDir: dir,
+          session: {
+            mode: s.mode,
+            source: s.source,
+            metadata: s.metadata ?? null,
+            options: s.options ?? {},
+            refLiveness: computeRefLiveness(s),
+            tracks: sessionTracks
+          }
+        }
+      } catch { /* session.json 손상 → 아래 레거시 스캔으로 폴백 */ }
+    }
+
     const jsonFiles = files.filter((f: string) => f.endsWith('.json')).sort()
 
     if (jsonFiles.length === 0) return null
@@ -602,7 +900,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       }
     }
 
-    return { tracks, outputDir: dir }
+    return { tracks, outputDir: dir, session: null }
   })
 
   ipcMain.handle('audio:export-tracks', async (_event, trackPaths: string[]) => {

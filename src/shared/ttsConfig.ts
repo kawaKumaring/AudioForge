@@ -1,9 +1,97 @@
 // TTS 1단계 전달용 설정 — separate.py로 넘길 TTS 필드의 단일 소스.
 // 목적: 필드 누락(예: ttsEmotionRefs 미전달)을 컴파일 단계에서 잡는다.
 
+// ── pitch 후처리 capability 계약(§6) — UI(음높이 슬라이더)가 소비. ──
+// pitch 경로는 ffmpeg rubberband 단일(pitch_shift.py). rubberband 미지원 ffmpeg에서 pitch!=0을
+// 요청하면 PITCH_UNAVAILABLE로 실패하므로, 지원 여부를 미리 UI에 알려 예방한다.
+//   supported : pitch 후처리 사용 가능(rubberband 존재)
+//   method    : 'rubberband' | 'none' | 'unknown'
+//   probed    : 실제 ffmpeg probe가 수행됐는지(false=미배선 기본값 — 통합 담당이 실제 probe 연결)
+//   reason    : 미지원/불명 사유(진단 표시용)
+export interface PitchCapability {
+  supported: boolean
+  method: 'rubberband' | 'none' | 'unknown'
+  probed: boolean
+  reason?: string
+}
+
+// Python pitch_shift.pitch_available()의 (available, reason) → UI 계약으로 정규화(순수·mock 가능).
+// raw 미지정/available null → 미probe(unknown). 실제 probe 결과 주입은 통합 담당이 배선한다.
+export function normalizePitchCapability(raw?: { available?: boolean | null; reason?: string } | null): PitchCapability {
+  if (!raw || raw.available == null) {
+    return { supported: false, method: 'unknown', probed: false, reason: raw?.reason || 'probe 미수행' }
+  }
+  if (raw.available) return { supported: true, method: 'rubberband', probed: true, reason: raw.reason }
+  return { supported: false, method: 'none', probed: true, reason: raw.reason || 'rubberband-unsupported' }
+}
+
+// ── 생성 안전장치 metadata(계약 A/B) — Python 필드명 그대로. result GUI가 소비. ──
+export type TerminationReason = 'completed_before_limit' | 'generation_limit'
+export interface GenerationChunk {
+  original_segment_index: number
+  chunk_index: number
+  chunk_count: number
+  production_tokens: number | null
+  generation_limit: number | null
+  generated_iterations: number | null
+  termination_reason: TerminationReason
+  emotion_id?: string | null
+}
+export interface GenerationSummary {
+  limit: number | null
+  iters: number | null
+  termination: TerminationReason | null
+  chunks: GenerationChunk[]
+}
+
+function _finiteNum(v: unknown): number | null {
+  return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+
+// result metadata에서 생성 안전장치 요약을 안전 추출. 비정상 배열 항목은 crash 없이 무시/정규화하고,
+// 문장·전사·전체경로는 애초에 담기지 않는다(스키마상 없음). 기술 필드가 전혀 없으면(구 session) null.
+export function parseGenerationSummary(metadata: Record<string, unknown> | null | undefined): GenerationSummary | null {
+  if (!metadata || typeof metadata !== 'object') return null
+  const limit = _finiteNum(metadata.generation_limit)
+  const iters = _finiteNum(metadata.generated_iterations)
+  const tr = metadata.termination_reason
+  const termination: TerminationReason | null =
+    (tr === 'completed_before_limit' || tr === 'generation_limit') ? tr : null
+  const chunks: GenerationChunk[] = []
+  const raw = metadata.generation_chunks
+  if (Array.isArray(raw)) {
+    for (const c of raw) {
+      if (!c || typeof c !== 'object') continue
+      const o = c as Record<string, unknown>
+      const osi = _finiteNum(o.original_segment_index)
+      const ci = _finiteNum(o.chunk_index)
+      const cc = _finiteNum(o.chunk_count)
+      const t = o.termination_reason
+      if (osi == null || ci == null || cc == null) continue                 // 필수 index/count 없으면 무시
+      if (t !== 'completed_before_limit' && t !== 'generation_limit') continue
+      chunks.push({
+        original_segment_index: osi, chunk_index: ci, chunk_count: cc,
+        production_tokens: _finiteNum(o.production_tokens),
+        generation_limit: _finiteNum(o.generation_limit),
+        generated_iterations: _finiteNum(o.generated_iterations),
+        termination_reason: t,
+        emotion_id: typeof o.emotion_id === 'string' ? o.emotion_id : null,
+      })
+    }
+  }
+  if (limit == null && iters == null && termination == null && chunks.length === 0) return null
+  return { limit, iters, termination, chunks }
+}
+
 // 참조별 사용자 프롬프트 항목(UI/스토어에서 camelCase로 관리).
 // 식별자('default' 또는 emotionId) → 이 항목.
 export type TtsReferenceMode = 'auto' | 'manual' | 'ref_free'
+
+// 감정별 참조 구간(초). source에서 effective를 만든 구간 — 재현/기록용(계약 §1.2/§4).
+export interface TtsEmotionRegion {
+  start: number
+  duration: number
+}
 
 export interface TtsReferenceEntry {
   manualText?: string        // 사용자가 직접 입력/수정한 전사문
@@ -14,6 +102,9 @@ export interface TtsReferenceEntry {
   autoText?: string
   autoLang?: string
   autoError?: string
+  // 이 전사가 만들어진 참조 source의 지문(path|size|mtimeMs). 합성 경계에서 현재 source 지문과
+  // 비교해 불일치면 stale로 판정·폐기(불변식 4). 미기록이면 지문 비교는 건너뛴다(source 존재만 검사).
+  sourceFingerprint?: string
 }
 
 // 렌더러(ProcessButton)가 IPC로 넘기는 TTS 입력 옵션(모두 선택적).
@@ -21,7 +112,15 @@ export interface TtsInputOptions {
   ttsText?: string
   ttsSpeed?: number
   ttsSilenceGap?: number
+  // 결과 WAV 음높이 보정(반음). 범위 -2.0~+2.0, 0.5 단위(정규화 권위는 Python pitch_shift.clamp_quantize).
+  // 후처리 축: 모델 재합성 없이 최종 WAV에 적용. 0이면 무후처리(계약 §1.1/§6).
+  ttsPitch?: number
+  // 합성에 실제 사용할 감정별 effective 경로(파생 3~10초 클립, 또는 유효 ≤10초 원본). 사용∩등록∩준비만.
   ttsEmotionRefs?: Record<string, string>
+  // 사용자가 등록한 감정별 원본 경로(영속). 재현·Python 등록판정 기준. effective와 역할이 다름(계약 §1.2).
+  ttsEmotionRefSources?: Record<string, string>
+  // source에서 effective를 만든 구간(초). 재현/기록용(합성 입력 무영향).
+  ttsEmotionRefRegions?: Record<string, TtsEmotionRegion>
   ttsEngine?: string
   ttsReferencePrompts?: Record<string, TtsReferenceEntry>
   // 10초 초과 원본에서 사용자가 확정한 3~10초 파생 참조 클립(mono/24k). 설정 시 기본 참조로 이것을 쓴다.
@@ -42,10 +141,36 @@ export interface TtsConfig {
   ttsText: string
   ttsSpeed: number
   ttsSilenceGap: number
+  ttsPitch: number
   ttsEmotionRefs: Record<string, string>
+  ttsEmotionRefSources: Record<string, string>
+  ttsEmotionRefRegions: Record<string, TtsEmotionRegion>
   ttsEngine: string
   ttsReferencePrompts: Record<string, TtsReferencePromptConfig>
   ttsReferenceOverride: string
+}
+
+// ── stale 전사 방지 불변식(§4) — 합성 경계에서 전사↔음성 결합의 정합을 강제한다. ──
+// sourceFingerprints = 현재 실제 참조 source의 지문 맵(id → 'path|size|mtimeMs'). 'default' 포함.
+// 규칙(과도 폐기 방지):
+//   1) 지문 맵이 없으면(undefined) 검사 생략 — 전부 보존(순수 렌더러 단위테스트 호환).
+//   2) id가 지문 맵에 없다(=현재 살아있는 source 없음) → orphan 전사 → 폐기.
+//   3) entry.sourceFingerprint가 기록됐고 현재 지문과 다르다 → stale(원본 교체/내용 변경) → 폐기.
+//   4) 그 외(살아있는 source + 지문 미기록/일치) → 보존.
+export function pruneStaleReferencePrompts(
+  prompts?: Record<string, TtsReferenceEntry>,
+  sourceFingerprints?: Record<string, string>
+): Record<string, TtsReferenceEntry> {
+  const out: Record<string, TtsReferenceEntry> = {}
+  if (!prompts) return out
+  if (!sourceFingerprints) return { ...prompts }  // (1) 검사 생략
+  for (const [id, e] of Object.entries(prompts)) {
+    const current = sourceFingerprints[id]
+    if (current === undefined) continue                       // (2) orphan → 폐기
+    if (e?.sourceFingerprint && e.sourceFingerprint !== current) continue  // (3) stale → 폐기
+    out[id] = e                                               // (4) 보존
+  }
+  return out
 }
 
 // 참조 항목의 실효 모드 파생(UI 배지 + store mode 전환에 공용). 우선순위: ref_free > manual > auto.
@@ -81,14 +206,20 @@ export function buildReferencePrompts(
 // 입력은 타입 있는 TtsInputOptions로 받는다(IPC 경계에서 명시적으로 변환해 전달).
 // 숫자 기본값은 반드시 ?? 로 — 사용자가 지정한 0(예: ttsSilenceGap=0)이
 // || 때문에 기본값으로 변질되는 것을 막는다. (문자열/객체 기본값도 동일 규칙)
-export function buildTtsConfig(o?: TtsInputOptions): TtsConfig {
+// sourceFingerprints(선택) = 현재 실제 참조 source 지문 맵. 지정 시 합성 경계에서 stale 전사를
+// 먼저 폐기(§4)한 뒤 직렬화 — 렌더러가 stale 전사를 되살려 보내도 Python엔 정합 전사만 전달된다.
+export function buildTtsConfig(o?: TtsInputOptions, sourceFingerprints?: Record<string, string>): TtsConfig {
+  const prompts = pruneStaleReferencePrompts(o?.ttsReferencePrompts, sourceFingerprints)
   return {
     ttsText: o?.ttsText ?? '',
     ttsSpeed: o?.ttsSpeed ?? 1.0,
     ttsSilenceGap: o?.ttsSilenceGap ?? 0.5,
+    ttsPitch: o?.ttsPitch ?? 0.0,
     ttsEmotionRefs: o?.ttsEmotionRefs ?? {},
+    ttsEmotionRefSources: o?.ttsEmotionRefSources ?? {},
+    ttsEmotionRefRegions: o?.ttsEmotionRefRegions ?? {},
     ttsEngine: o?.ttsEngine ?? 'auto',
-    ttsReferencePrompts: buildReferencePrompts(o?.ttsReferencePrompts),
+    ttsReferencePrompts: buildReferencePrompts(prompts),
     ttsReferenceOverride: o?.ttsReferenceOverride ?? ''
   }
 }
