@@ -152,10 +152,12 @@ export const useAppStore = create<AppState>((set) => ({
   ttsReferenceRegion: null,
   resultMetadata: null,
 
-  // 새 파일 → 이전 파생 참조/준비 상태 무효화(다른 원본의 클립을 재사용하지 않도록) + 임시 클립 폴더 정리
+  // 새 파일 → 이전 파생 참조/준비 상태 무효화(다른 원본의 클립을 재사용하지 않도록) + 임시 클립 폴더 정리.
+  // 새 기본 참조 = 새 파일이므로 이전 전사(default + 감정 전부)는 새 음성에 결합되면 안 된다 →
+  // ttsReferencePrompts 전량 비움(불변식 3·4: stale 전사 ↔ 새 음성 결합 방지).
   setFile: (info, url) => {
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 전체 파생 클립(기본+감정) 정리
-    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {} })
+    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsReferencePrompts: {} })
   },
   setMode: (mode) => set({ mode }),
   setTrimSilence: (v) => set({ trimSilence: v }),
@@ -178,22 +180,31 @@ export const useAppStore = create<AppState>((set) => ({
     ttsReferenceRegion: v.region !== undefined ? v.region : s.ttsReferenceRegion,
   })),
   // 감정 원본 등록/변경: source만 설정하고 파생 상태 초기화(재분석 필요) + 그 clipKey의 이전 파생 클립 정리.
+  // source가 바뀌면 그 감정의 이전 전사(ttsReferencePrompts[id])는 옛 음성 것이므로 함께 제거 —
+  // 새 source에 stale 전사가 결합되는 것을 막는다(불변식 3·4). 타 감정 전사는 불변.
   registerEmotionRef: (emotionId, source) => {
     try { window.api?.audio?.releaseReferenceClip?.(emotionId) } catch { /* noop */ }
-    set((s) => ({
-      ttsEmotionRefState: {
-        ...s.ttsEmotionRefState,
-        [emotionId]: { source, clip: '', region: null, ready: false, message: '' },
-      },
-    }))
+    set((s) => {
+      const nextPrompts = { ...s.ttsReferencePrompts }
+      delete nextPrompts[emotionId]
+      return {
+        ttsEmotionRefState: {
+          ...s.ttsEmotionRefState,
+          [emotionId]: { source, clip: '', region: null, ready: false, message: '' },
+        },
+        ttsReferencePrompts: nextPrompts,
+      }
+    })
   },
-  // 감정 삭제: slot 제거 + 그 clipKey 파생 클립만 정리(타 감정 불변).
+  // 감정 삭제: slot 제거 + 그 감정의 전사 제거 + 그 clipKey 파생 클립만 정리(타 감정 불변).
   removeEmotionRef: (emotionId) => {
     try { window.api?.audio?.releaseReferenceClip?.(emotionId) } catch { /* noop */ }
     set((s) => {
       const next = { ...s.ttsEmotionRefState }
       delete next[emotionId]
-      return { ttsEmotionRefState: next }
+      const nextPrompts = { ...s.ttsReferencePrompts }
+      delete nextPrompts[emotionId]
+      return { ttsEmotionRefState: next, ttsReferencePrompts: nextPrompts }
     })
   },
   // 감정 참조 구간 패널 onChange — clip/region/ready/message만 패치(source 불변).
