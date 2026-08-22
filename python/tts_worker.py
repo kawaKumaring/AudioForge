@@ -394,6 +394,21 @@ def _kill_proc_tree(proc):
             pass
 
 
+class QwenGenerationLimitError(RuntimeError):
+    """talker 생성이 동적 max_new_tokens 상한에 도달(계약 A). 잘린 결과는 정상으로 채택하지 않는다.
+    보안: segment_index/generated_iterations/generation_limit(정수)만 담는다 — 전사·문장·경로 금지.
+    감정 ID 매핑은 parsed를 아는 상위(_synthesize_qwen_job)에서 부여한다."""
+
+    def __init__(self, segment_index, generated_iterations, generation_limit, emotion_id=None):
+        self.segment_index = segment_index
+        self.generated_iterations = generated_iterations
+        self.generation_limit = generation_limit
+        self.emotion_id = emotion_id
+        super().__init__(
+            f"GENERATION_LIMIT_EXCEEDED(seg={segment_index}, emotion={emotion_id}, "
+            f"iters={generated_iterations}, limit={generation_limit})")
+
+
 class QwenTTSEngine(TTSEngine):
     """Qwen3-TTS 로컬 Base — 격리 qwen3_tts_venv에서 job bridge로 실행(모델 1회 로딩, 전 문장 배치).
     per-segment가 아니라 run_job 배치. 완전 오프라인(local_files_only)."""
@@ -481,6 +496,7 @@ class QwenTTSEngine(TTSEngine):
 
         seg_out = None
         err_msg = None
+        gl_err = None  # GENERATION_LIMIT_EXCEEDED(구조화) — 감정 ID 매핑은 상위에서
         while True:
             try:
                 line = q.get(timeout=_QWEN_INACTIVITY_SEC)
@@ -500,13 +516,20 @@ class QwenTTSEngine(TTSEngine):
             if t == "progress":
                 emit("progress", percent=msg.get("percent", 0), message=msg.get("message", ""))  # 실시간
             elif t == "error":
-                err_msg = msg.get("message", "Qwen 오류")
+                if msg.get("code") == "GENERATION_LIMIT_EXCEEDED":
+                    gl_err = QwenGenerationLimitError(
+                        msg.get("segment_index"), msg.get("generated_iterations"),
+                        msg.get("generation_limit"), msg.get("emotion_id"))
+                else:
+                    err_msg = msg.get("message", "Qwen 오류")
             elif t == "result":
                 seg_out = msg.get("segments")
         try:
             proc.wait(timeout=10)
         except Exception:
             _kill_proc_tree(proc)
+        if gl_err is not None:
+            raise gl_err  # 상한 도달 — CPU 재시도(OOM 전용) 대상 아님. 상위가 감정 ID로 재해석.
         if err_msg:
             raise RuntimeError(f"Qwen 합성 오류: {err_msg}")
         if proc.returncode not in (0, None) and seg_out is None:
@@ -718,6 +741,9 @@ _METADATA_KEYS = [
     "fallback", "fallback_reason", "elapsed_seconds", "output_sample_rate",
     # pitch 후처리(계약 §2.1) — pitch_method는 production에서 "rubberband" | None 둘뿐.
     "pitch_semitones", "pitch_method", "pitch_postprocessed",
+    # 생성 안전장치(계약 A) — termination_reason 은 "completed_before_limit" | "generation_limit".
+    # completed_before_limit 은 EOS 직접 관측이 아니라 '동적 상한 전 자연 반환'이라는 운영 상태.
+    "generation_limit", "generated_iterations", "termination_reason",
 ]
 
 
@@ -830,21 +856,52 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                 def_tr_lang, def_tr_len, def_tr_sha = _transcript_meta(ref_text)
             out_path = os.path.join(job_dir, f"segment_qwen_{i + 1:03d}.wav")
             segments.append({"index": i, "text": line_text, "ref_audio": ref, "ref_text": ref_text,
-                             "x_vector_only": xvo, "language_name": lang_name, "out_path": out_path})
+                             "x_vector_only": xvo, "language_name": lang_name, "out_path": out_path,
+                             "emotion_id": emotion_id})  # 태그(비민감) — bridge가 결과·오류에 반환
 
         try:
-            seg_out = qwen.run_job(segments, device)
-        except RuntimeError as e:
-            # CUDA OOM만 CPU로 1회 가시적 재시도(조용한 재시도 아님). 그 외 예외는 전파.
-            if device == "cuda:0" and is_cuda_oom(e):
-                emit("progress", percent=30, message="GPU 메모리 부족(OOM) → CPU로 1회 재시도(느림)")
-                fallback = True
-                fallback_reason = "CUDA OOM → CPU 재시도"
-                actual_device = "cpu"
-                seg_out = qwen.run_job(segments, "cpu")
-            else:
-                raise
+            try:
+                seg_out = qwen.run_job(segments, device)
+            except RuntimeError as e:
+                # CUDA OOM만 CPU로 1회 가시적 재시도(조용한 재시도 아님). 상한 도달·그 외 예외는 전파.
+                if (device == "cuda:0" and is_cuda_oom(e)
+                        and not isinstance(e, QwenGenerationLimitError)):
+                    emit("progress", percent=30, message="GPU 메모리 부족(OOM) → CPU로 1회 재시도(느림)")
+                    fallback = True
+                    fallback_reason = "CUDA OOM → CPU 재시도"
+                    actual_device = "cpu"
+                    seg_out = qwen.run_job(segments, "cpu")
+                else:
+                    raise
+        except QwenGenerationLimitError as gle:
+            # 상한 도달 → 잘린 WAV 미채택. 감정 ID로만 재해석(전사·문장·경로 미포함).
+            # 이 예외로 place_final_with_pitch 이전에 빠져나가므로 finally가 job_dir을 지우고
+            # 기존 synthesized.wav는 output_dir(=job_dir 밖)에 그대로 보존된다(원자 보존).
+            si = gle.segment_index
+            emo = gle.emotion_id
+            if emo is None:  # bridge가 못 준 경우만 parsed로 보강(offending segment 기준)
+                emo = (parsed[si][0] if isinstance(si, int) and 0 <= si < len(parsed) else "?")
+            raise RuntimeError(
+                f"GENERATION_LIMIT_EXCEEDED — 감정 '{emo}' 문장이 동적 생성 상한"
+                f"(max_new_tokens={gle.generation_limit})에 도달했습니다(생성 반복 {gle.generated_iterations}). "
+                f"참조 오디오와 전사 내용이 맞지 않을 때 나타날 수 있습니다 — 참조 구간/전사를 확인한 뒤 다시 시도하세요."
+            ) from None
         ordered = [s["out_path"] for s in sorted(seg_out, key=lambda x: x["index"])]
+
+        # 생성 안전장치 metadata(계약 A). 여기 도달했다는 것은 전 세그먼트가 상한 전 자연 반환
+        # (completed_before_limit)임을 뜻한다(상한 도달은 위에서 예외로 빠져나감).
+        # 대표 세그먼트 = generated_iterations/generation_limit 비율이 가장 큰 것(상한에 가장 근접).
+        # 그 세그먼트의 limit·iterations를 '한 쌍'으로 기록(서로 다른 세그먼트의 max를 섞지 않음).
+        # 동률이면 가장 앞 세그먼트(index 최소). 이 규칙은 test_metadata_representative_by_ratio 로 고정.
+        _cand = [(s.get("index"), s.get("generated_iterations"), s.get("generation_limit"))
+                 for s in seg_out if isinstance(s.get("generated_iterations"), int)
+                 and isinstance(s.get("generation_limit"), int) and s.get("generation_limit") > 0]
+        if _cand:
+            _rep = min(_cand, key=lambda c: (-(c[1] / c[2]), c[0]))  # 비율 내림차순, 동률은 index 오름차순
+            meta_gen_iters, meta_gen_limit = int(_rep[1]), int(_rep[2])
+            meta_term = "completed_before_limit"
+        else:
+            meta_gen_iters = meta_gen_limit = meta_term = None
 
         # speed: 1.0=raw, 그 외 세그먼트별 atempo(최종 결합본 아님) 후 결합. 간격은 사용자 silence_gap 유지.
         use = ordered
@@ -878,6 +935,8 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             "elapsed_seconds": round(_time.monotonic() - t_start, 2), "output_sample_rate": int(sr),
             "pitch_semitones": pinfo["pitch_semitones"], "pitch_method": pinfo["pitch_method"],
             "pitch_postprocessed": pinfo["pitch_postprocessed"],
+            "generation_limit": meta_gen_limit, "generated_iterations": meta_gen_iters,
+            "termination_reason": meta_term,
         }
         return final_path, info
     finally:

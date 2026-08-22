@@ -3,6 +3,14 @@
 성능: 모델 1회 로딩 후 한 작업의 모든 문장(감정별 참조 포함)을 처리(문장별 프로세스 금지).
 완전 오프라인: local_files_only=True(런타임 자동 다운로드 금지). HF_HOME은 부모가 env로 지정.
 
+생성 안전장치(계약 A):
+  segment마다 production token 수(`_build_assistant_text` 적용 후 tokenize, production과 동일 경로)로
+  동적 max_new_tokens 상한을 산정(generation_limit.compute_max_new_tokens)해 talker 생성 상한을 건다.
+  talker 자기회귀 반복(iteration)을 RNG/logits 불변 StoppingCriteria로 계측하고, 상한 대비로 종료 상태를 판정한다.
+  상한 도달(generation_limit)이면 잘린 WAV를 쓰지 않고 GENERATION_LIMIT_EXCEEDED 구조화 오류를 낸다.
+  ※ 이 안전장치는 vendor(qwen_tts) 수정 없이 이 브리지에서만 구현한다. eos_pos/has_stop_token/effective_lengths
+    기반 EOS 판정은 이 pinned 버전에서 유효하지 않아 사용하지 않는다(talker_iters vs 동적 상한만 사용).
+
 stdin config(JSON):
   model_path             로컬 스냅샷 디렉터리(오프라인). repo id가 아니라 경로 → HF API 호출 회피.
   device                 "cuda:0" | "cpu"
@@ -10,13 +18,109 @@ stdin config(JSON):
                          x_vector_only=True면 x-vector-only(ref_text 무시), False면 ICL(ref_text 필요)
                          language_name은 세그먼트별(Korean/English/Chinese/Japanese)
 stdout: progress/result/error JSON 라인(부모가 실시간 읽음). 각 세그먼트 wav는 raw 저장(후처리 없음).
+  result.segments[*]에 prod_tokens/generation_limit/generated_iterations/termination_reason 포함.
+  error.code == GENERATION_LIMIT_EXCEEDED 는 상한 도달 — segment_index/generated_iterations/generation_limit(정수)만,
+  전사·문장·경로는 절대 포함하지 않는다.
 """
 import sys
 import json
 
+import generation_limit  # 순수 계산(math만). 스크립트 디렉터리(python/)가 sys.path에 있어 import 가능.
+
 
 def emit(msg_type, **kwargs):
     print(json.dumps({"type": msg_type, **kwargs}, ensure_ascii=False), flush=True)
+
+
+# talker 자기회귀 스텝 카운터 — 세그먼트마다 리셋. RNG/logits 불변(scores 미사용·torch/random 무호출).
+_COUNTER = {"n": 0}
+
+
+def _install_talker_counter(model):
+    """model.model.talker.generate 에 counting StoppingCriteria를 주입(멱등).
+
+    criteria는 _COUNTER['n'] += 1; return False 뿐이라:
+      - 항상 False → 기존 종료조건(eos_token_id=2150 / max_new_tokens) OR 에 영향 없음(동작 불변).
+      - scores 미사용·난수 미사용 → 생성 분포/RNG 불변(계측 전용).
+    talker step 1회 = codec 토큰 1개 생성. 상한 도달 시 step 수 == max_new_tokens.
+    """
+    from transformers import StoppingCriteria, StoppingCriteriaList
+
+    talker = model.model.talker
+    if getattr(talker, "_af_counter_installed", False):
+        return
+
+    class _StepCounter(StoppingCriteria):
+        def __call__(self, input_ids, scores, **kw):
+            _COUNTER["n"] += 1
+            return False
+
+    orig = talker.generate
+
+    def wrapped(*a, **k):
+        sc = k.get("stopping_criteria")
+        if sc is None:
+            sc = StoppingCriteriaList()
+        elif not isinstance(sc, StoppingCriteriaList):
+            sc = StoppingCriteriaList(sc)
+        sc.append(_StepCounter())
+        k["stopping_criteria"] = sc
+        return orig(*a, **k)
+
+    talker.generate = wrapped
+    talker._af_counter_installed = True
+
+
+def _preflight_tokenizer(model):
+    """production token 계산에 필요한 도구 존재 확인. 부재/비호출 → 조용한 8192 폴백 금지, 명확한 호환성 오류."""
+    builder = getattr(model, "_build_assistant_text", None)
+    if not callable(builder):
+        raise RuntimeError(
+            "TTS_COMPAT: model._build_assistant_text 부재 — 이 pinned qwen_tts에서 production 토큰 계산 불가. "
+            "안전장치 없이 생성하지 않는다.")
+    proc = getattr(model, "processor", None)
+    if proc is None or not callable(proc):
+        raise RuntimeError("TTS_COMPAT: model.processor 부재/비호출 — production 토큰 계산 불가.")
+    return builder, proc
+
+
+def _prod_tokens(builder, proc, text):
+    """production과 동일 경로의 입력 토큰 수: processor(_build_assistant_text(text)).input_ids 길이.
+    실패 시 조용한 폴백 없이 호환성 오류(안전장치가 임의 상한으로 열리는 것을 막는다)."""
+    try:
+        at = builder(text)
+        enc = proc(text=at, return_tensors="pt")
+        ids = enc["input_ids"]
+        n = int(ids.shape[-1])
+    except Exception as e:
+        raise RuntimeError(f"TTS_COMPAT: production 토큰 계산 실패 — {type(e).__name__}")
+    if n <= 0:
+        raise RuntimeError("TTS_COMPAT: production 토큰 수가 0 이하 — 계산 경로 이상.")
+    return n
+
+
+def _generate_segment(model, seg, builder, proc):
+    """세그먼트 1개 합성 + 안전장치. production token → 동적 상한 → 상한 건 생성 → 반복 계측 → 종료 판정.
+    반환: dict(wavs, sr, prod_tokens, generation_limit, generated_iterations, termination_reason).
+    counter 미측정(0)·상한 산정 실패는 조용히 통과하지 않고 예외(안전장치 없는 성공 금지)."""
+    xvo = bool(seg.get("x_vector_only", False))
+    ref_text = "" if xvo else (seg.get("ref_text") or "")
+    prod_tokens = _prod_tokens(builder, proc, seg["text"])
+    seg_limit = generation_limit.compute_max_new_tokens(prod_tokens)
+    _COUNTER["n"] = 0
+    wavs, sr = model.generate_voice_clone(
+        text=seg["text"], language=seg.get("language_name", "Korean"),
+        ref_audio=seg["ref_audio"], ref_text=ref_text,
+        x_vector_only_mode=xvo, max_new_tokens=seg_limit)
+    iters = _COUNTER["n"]
+    if iters <= 0:
+        # 계측 래퍼가 동작하지 않은 것 — 상한이 실제로 걸렸는지 확인 불가. 성공 처리 금지.
+        raise RuntimeError(
+            "TTS_COMPAT: talker 반복 계측값이 0 — StoppingCriteria 계측 경로 미동작. 안전장치 없이 통과 금지.")
+    reason = generation_limit.classify_termination(iters, seg_limit)
+    return {"wavs": wavs, "sr": sr, "prod_tokens": prod_tokens,
+            "generation_limit": seg_limit, "generated_iterations": iters,
+            "termination_reason": reason}
 
 
 def _load_model(model_path, device):
@@ -67,18 +171,30 @@ def main():
 
         emit("progress", percent=10, message=f"Qwen3-TTS 모델 로딩 중... ({device}, offline)")
         model = _load_model(model_path, device)
+        builder, proc = _preflight_tokenizer(model)  # 안전장치 전제 — 부재 시 여기서 명확히 실패
+        _install_talker_counter(model)
 
         done = []
         n = len(segments)
         for i, seg in enumerate(segments):
             pct = 30 + int((i / max(n, 1)) * 60)
             emit("progress", percent=pct, message=f"합성 중... ({i + 1}/{n})")
-            xvo = bool(seg.get("x_vector_only", False))
-            ref_text = "" if xvo else (seg.get("ref_text") or "")
-            wavs, sr = model.generate_voice_clone(
-                text=seg["text"], language=seg.get("language_name", "Korean"),
-                ref_audio=seg["ref_audio"], ref_text=ref_text,
-                x_vector_only_mode=xvo)
+            emo = seg.get("emotion_id")  # 태그(비민감). 결과·오류에 그대로 반환.
+
+            g = _generate_segment(model, seg, builder, proc)
+
+            # 상한 도달 → 잘린 WAV 미저장 + offending segment 구조화 오류.
+            # (부분 완료된 앞 세그먼트 결과도 result로 내보내지 않으므로 부모가 최종 WAV로 채택하지 않는다.)
+            # 반환 필드: segment_index/emotion_id/generation_limit/generated_iterations/termination_reason.
+            # 금지: 목표 문장 전문·전사 전문·전체 참조 경로·오디오 내용.
+            if g["termination_reason"] == "generation_limit":
+                emit("error", code="GENERATION_LIMIT_EXCEEDED", segment_index=int(seg["index"]),
+                     emotion_id=emo, generated_iterations=int(g["generated_iterations"]),
+                     generation_limit=int(g["generation_limit"]),
+                     termination_reason="generation_limit", status="generation_limit")
+                sys.exit(1)
+
+            wavs, sr = g["wavs"], g["sr"]
             d = wavs[0] if isinstance(wavs, list) else wavs
             d = np.asarray(d, dtype=np.float32)
             if d.ndim > 1:
@@ -92,7 +208,11 @@ def main():
                 raise RuntimeError(f"세그먼트 {seg['index']} 비유한(NaN/Inf) 샘플")
             sf.write(seg["out_path"], d, int(sr))
             done.append({"index": seg["index"], "out_path": seg["out_path"], "sr": int(sr),
-                         "x_vector_only": xvo})
+                         "x_vector_only": bool(seg.get("x_vector_only", False)), "emotion_id": emo,
+                         "prod_tokens": int(g["prod_tokens"]),
+                         "generation_limit": int(g["generation_limit"]),
+                         "generated_iterations": int(g["generated_iterations"]),
+                         "termination_reason": g["termination_reason"], "status": "ok"})
 
         emit("result", segments=done, success=True)
 
