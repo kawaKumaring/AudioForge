@@ -12,10 +12,12 @@ const api = {
     restoreFromFolder: () => ipcRenderer.invoke('audio:restore-from-folder'),
     findSession: (sourcePath: string) => ipcRenderer.invoke('audio:find-session', sourcePath),
     transcribeReference: (filePath: string) => ipcRenderer.invoke('audio:transcribe-reference', filePath),
-    analyzeReference: (filePath: string) => ipcRenderer.invoke('audio:analyze-reference', filePath),
-    trimReference: (filePath: string, startSec: number, durSec: number) =>
-      ipcRenderer.invoke('audio:trim-reference', filePath, startSec, durSec),
-    releaseReferenceClip: () => ipcRenderer.invoke('audio:release-reference-clip'),
+    // clipKey('default'|emotionId): 감정별 파생 클립을 식별해 분석/트림/정리(생략 시 'default').
+    analyzeReference: (filePath: string, clipKey?: string) => ipcRenderer.invoke('audio:analyze-reference', filePath, clipKey),
+    trimReference: (filePath: string, startSec: number, durSec: number, clipKey?: string) =>
+      ipcRenderer.invoke('audio:trim-reference', filePath, startSec, durSec, clipKey),
+    // clipKey 지정 시 그 하나만, 생략 시 전체 파생 클립 정리.
+    releaseReferenceClip: (clipKey?: string) => ipcRenderer.invoke('audio:release-reference-clip', clipKey),
     qwenPreflight: () => ipcRenderer.invoke('audio:qwen-preflight'),
     processTrack: (trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string }) =>
       ipcRenderer.invoke('audio:process-track', trackPath, outputDir, options),

@@ -3,6 +3,7 @@ import { useAppStore } from '@/stores/app.store'
 import type { TtsReferenceEntry } from '../../shared/ttsConfig'
 import { deriveRefMode } from '../../shared/ttsConfig'
 import ReferenceRegionPanel from './ReferenceRegionPanel'
+import { EMOTION_GROUPS, ALL_EMOTIONS, FREQUENT_TAGS } from '@/lib/emotions'
 
 const EXAMPLE_TEXT = "안녕하세요. 오늘 좋은 소식이 있어요.\n[기쁨] 드디어 프로젝트가 완성됐습니다!\n[슬픔] 하지만 아쉽게도 일정이 늦어졌어요."
 
@@ -10,107 +11,13 @@ const PROMPT_LANGS: [string, string][] = [
   ['', '자동'], ['ko', '한국어'], ['ja', '일본어'], ['zh', '중국어'], ['en', '영어'],
 ]
 
-// ⚠️ 각 emotion의 id는 Python(python/tts_worker.py의 EMOTION_TAGS 값 / EMOTION_PROMPTS 키)과
-// 공유된다. id를 추가/변경하면 Python도 함께 갱신할 것. 불일치는 smoke_test._check_emotions()가
-// FAIL로 잡는다(색상/그룹/한글 label은 UI 전용이라 Python과 무관). — L-3
-const EMOTION_GROUPS = [
-  {
-    name: '기본',
-    emotions: [
-      { id: 'default', label: '기본', color: 'var(--text-secondary)' },
-      { id: 'narration', label: '나레이션', color: '#cbd5e1' },
-      { id: 'polite', label: '공손', color: '#2dd4bf' },
-      { id: 'serious', label: '진지', color: '#94a3b8' },
-      { id: 'confident', label: '자신감', color: '#38bdf8' },
-    ]
-  },
-  {
-    name: '긍정',
-    emotions: [
-      { id: 'happy', label: '기쁨', color: '#4ade80' },
-      { id: 'cheerful', label: '명랑', color: '#fb923c' },
-      { id: 'excited', label: '흥분', color: '#ff6b6b' },
-      { id: 'proud', label: '득의', color: '#fde047' },
-      { id: 'touched', label: '감동', color: '#f472b6' },
-      { id: 'curious', label: '호기심', color: '#34d399' },
-      { id: 'playful', label: '장난', color: '#facc15' },
-      { id: 'admiring', label: '동경', color: '#c4b5fd' },
-    ]
-  },
-  {
-    name: '부정',
-    emotions: [
-      { id: 'sad', label: '슬픔', color: '#60a5fa' },
-      { id: 'angry', label: '화남', color: '#f87171' },
-      { id: 'annoyed', label: '짜증', color: '#fdba74' },
-      { id: 'scared', label: '공포', color: '#a78bfa' },
-      { id: 'jealous', label: '질투', color: '#d946ef' },
-      { id: 'contempt', label: '경멸', color: '#9f1239' },
-      { id: 'sarcastic', label: '냉소', color: '#e879f9' },
-      { id: 'mocking', label: '비꼼', color: '#a855f7' },
-      { id: 'cold', label: '냉정', color: '#64748b' },
-    ]
-  },
-  {
-    name: '불안/피로',
-    emotions: [
-      { id: 'worried', label: '걱정', color: '#f59e0b' },
-      { id: 'nervous', label: '긴장', color: '#fda4af' },
-      { id: 'restless', label: '초조', color: '#ef4444' },
-      { id: 'flustered', label: '당황', color: '#fca5a5' },
-      { id: 'tired', label: '피곤', color: '#78716c' },
-      { id: 'bored', label: '지루함', color: '#d4d4d8' },
-      { id: 'sighing', label: '한숨', color: '#a1a1aa' },
-      { id: 'empty', label: '허탈', color: '#6b7280' },
-      { id: 'resigned', label: '체념', color: '#9ca3af' },
-    ]
-  },
-  {
-    name: '부드러움',
-    emotions: [
-      { id: 'whisper', label: '속삭임', color: '#c084fc' },
-      { id: 'comforting', label: '위로', color: '#86efac' },
-      { id: 'tender', label: '다정', color: '#f9a8d4' },
-      { id: 'shy', label: '부끄러움', color: '#f9a8d4' },
-      { id: 'cute', label: '애교', color: '#fb7185' },
-      { id: 'tearful', label: '울먹', color: '#7dd3fc' },
-      { id: 'solemn', label: '비장', color: '#475569' },
-      { id: 'surprise', label: '놀람', color: '#fbbf24' },
-      { id: 'longing', label: '그리움', color: '#93c5fd' },
-      { id: 'bittersweet', label: '애틋', color: '#db2777' },
-    ]
-  },
-  {
-    name: '로맨스',
-    emotions: [
-      { id: 'flutter', label: '설렘', color: '#ff6b9d' },
-      { id: 'sweet', label: '달콤', color: '#f9a8d4' },
-      { id: 'charming', label: '매력', color: '#ec4899' },
-      { id: 'seductive', label: '유혹', color: '#be185d' },
-      { id: 'intimate', label: '은밀', color: '#831843' },
-      { id: 'aroused', label: '흥분(성적)', color: '#9f1239' },
-      { id: 'moaning', label: '신음', color: '#701a75' },
-      { id: 'climax', label: '절정', color: '#881337' },
-      { id: 'ecstasy', label: '황홀', color: '#a21caf' },
-    ]
-  },
-]
-
-// Flat list for reference registration
-const ALL_EMOTIONS = EMOTION_GROUPS.flatMap(g => g.emotions)
-
-// 대사 입력의 태그 삽입에서 기본 노출할 '자주 쓰는' 감정(전체는 더보기). id는 Python과 공유되는 값 그대로.
-const FREQUENT_TAG_IDS = ['happy', 'sad', 'angry', 'surprise', 'whisper', 'cheerful', 'worried', 'shy']
-const FREQUENT_TAGS = ALL_EMOTIONS.filter(e => FREQUENT_TAG_IDS.includes(e.id))
-
 export default function TTSEditor() {
-  const { mode, status, fileInfo } = useAppStore()
+  const { mode, status, fileInfo, ttsEmotionRefState, registerEmotionRef, removeEmotionRef, setEmotionRefState, setTtsRefState } = useAppStore()
   // 로컬 상태는 store 값으로 초기화 — 빈 값으로 시작하면 아래 동기화
   // useEffect가 다른 모드에 다녀온 뒤 store의 대사/등록을 덮어써 유실시킴
   const [ttsText, setTtsText] = useState(() => useAppStore.getState().ttsText)
   const [ttsSpeed, setTtsSpeed] = useState(() => useAppStore.getState().ttsSpeed)
   const [ttsSilenceGap, setTtsSilenceGap] = useState(() => useAppStore.getState().ttsSilenceGap)
-  const [emotionRefs, setEmotionRefs] = useState<Record<string, string>>(() => useAppStore.getState().ttsEmotionRefs)
   const [showEmotionSetup, setShowEmotionSetup] = useState(false)
   const [ttsEngine, setTtsEngine] = useState(() => useAppStore.getState().ttsEngine)
   const [refPrompts, setRefPrompts] = useState<Record<string, TtsReferenceEntry>>(() => useAppStore.getState().ttsReferencePrompts)
@@ -121,10 +28,10 @@ export default function TTSEditor() {
   const [showAllTags, setShowAllTags] = useState(false)
   const disabled = status === 'processing'
 
-  // Sync to store
+  // Sync to store (감정 참조 상태는 store가 단일 소스라 여기서 동기화하지 않는다)
   useEffect(() => {
-    useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefs: emotionRefs, ttsReferencePrompts: refPrompts, ttsEngine })
-  }, [ttsText, ttsSpeed, ttsSilenceGap, emotionRefs, refPrompts, ttsEngine])
+    useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap, ttsReferencePrompts: refPrompts, ttsEngine })
+  }, [ttsText, ttsSpeed, ttsSilenceGap, refPrompts, ttsEngine])
 
   // Qwen 실행 전 상태(preflight) — 마운트 시 1회. 예상값이며 실행 결과는 결과 화면 metadata가 최종.
   useEffect(() => {
@@ -177,19 +84,26 @@ export default function TTSEditor() {
 
   if (mode !== 'tts') return null
 
+  // 감정 원본 등록/변경 → store에 source 기록(파생 상태 초기화·그 clipKey 정리). 아래 구간 패널이 재분석.
   const handleEmotionFile = async (emotionId: string) => {
     const filePath = await window.api.audio.selectFile()
-    if (filePath) {
-      setEmotionRefs(prev => ({ ...prev, [emotionId]: filePath }))
-    }
+    if (filePath) registerEmotionRef(emotionId, filePath)
   }
 
-  const registeredCount = Object.keys(emotionRefs).filter(k => emotionRefs[k]).length
+  const registeredCount = Object.keys(ttsEmotionRefState).filter(k => ttsEmotionRefState[k]?.source).length
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {/* 참조 음성: 분석·구간 선택(3~10초)·파생 클립 준비 */}
-      <ReferenceRegionPanel />
+      {/* 기본 참조 음성: 분석·구간 선택(3~10초)·파생 클립 준비 */}
+      {fileInfo?.path && (
+        <ReferenceRegionPanel
+          clipKey="default"
+          path={fileInfo.path}
+          disabled={disabled}
+          onState={setTtsRefState}
+          label="참조 음성"
+        />
+      )}
 
       {/* Guide */}
       <div style={{
@@ -242,37 +156,58 @@ export default function TTSEditor() {
 
         {showEmotionSetup && (
           <div style={{ padding: '0 16px 12px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4 }}>
-              각 감정의 참조 음성을 등록하세요. 미등록 감정은 기본(드롭한 파일)을 사용합니다.
+            <div style={{ fontSize: 10, color: 'var(--text-muted)', marginBottom: 4, lineHeight: 1.6 }}>
+              각 감정의 참조 음성을 등록하세요. 미등록 감정은 기본 참조(위에 올린 파일)를 사용합니다.
+              10초를 넘는 파일은 등록 후 아래에서 <strong style={{ color: 'var(--rose)' }}>3~10초 구간</strong>을 골라 확정하세요.
+              감정은 그 참조 음성으로 근사합니다(대사에 실제로 쓴 감정만 준비되면 됩니다).
             </div>
             {EMOTION_GROUPS.filter(g => g.name !== '기본').map((group) => (
               <div key={group.name} style={{ marginBottom: 6 }}>
                 <div style={{ fontSize: 10, fontWeight: 600, color: 'var(--text-muted)', marginBottom: 4 }}>{group.name}</div>
-                {group.emotions.filter(e => e.id !== 'default').map((e) => (
-              <div key={e.id} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
-                <span style={{ fontSize: 11, fontWeight: 600, color: e.color, minWidth: 55 }}>{e.label}</span>
-                <div style={{
-                  flex: 1, fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden',
-                  textOverflow: 'ellipsis', whiteSpace: 'nowrap'
-                }}>
-                  {emotionRefs[e.id] ? emotionRefs[e.id].split(/[/\\]/).pop() : '미등록 (기본 사용)'}
-                </div>
-                <button onClick={() => handleEmotionFile(e.id)} disabled={disabled} style={{
-                  padding: '3px 10px', borderRadius: 5, border: 'none', cursor: 'pointer',
-                  fontSize: 10, fontWeight: 500, fontFamily: 'inherit',
-                  background: emotionRefs[e.id] ? `${e.color}20` : 'var(--bg-elevated)',
-                  color: emotionRefs[e.id] ? e.color : 'var(--text-muted)'
-                }}>
-                  {emotionRefs[e.id] ? '변경' : '등록'}
-                </button>
-                {emotionRefs[e.id] && (
-                  <button onClick={() => setEmotionRefs(prev => { const n = { ...prev }; delete n[e.id]; return n })}
-                    style={{ padding: '3px 6px', borderRadius: 5, border: 'none', cursor: 'pointer', fontSize: 10, background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}>
-                    X
-                  </button>
-                )}
-              </div>
-            ))}
+                {group.emotions.filter(e => e.id !== 'default').map((e) => {
+                  const slot = ttsEmotionRefState[e.id]
+                  const src = slot?.source || ''
+                  const base = src ? (src.split(/[/\\]/).pop() || src) : ''
+                  return (
+                    <div key={e.id} style={{ marginBottom: src ? 8 : 3 }}>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 3 }}>
+                        <span style={{ fontSize: 11, fontWeight: 600, color: e.color, minWidth: 55 }}>{e.label}</span>
+                        <div style={{ flex: 1, fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {src ? base : '미등록 (기본 사용)'}
+                        </div>
+                        {slot && (slot.ready
+                          ? <span style={{ fontSize: 9, fontWeight: 600, color: 'var(--cyan)' }}>준비됨</span>
+                          : <span style={{ fontSize: 9, fontWeight: 600, color: 'var(--rose)' }} title={slot.message || ''}>확정 필요</span>
+                        )}
+                        <button onClick={() => handleEmotionFile(e.id)} disabled={disabled} style={{
+                          padding: '3px 10px', borderRadius: 5, border: 'none', cursor: 'pointer',
+                          fontSize: 10, fontWeight: 500, fontFamily: 'inherit',
+                          background: src ? `${e.color}20` : 'var(--bg-elevated)',
+                          color: src ? e.color : 'var(--text-muted)', opacity: disabled ? 0.5 : 1
+                        }}>
+                          {src ? '변경' : '등록'}
+                        </button>
+                        {src && (
+                          <button onClick={() => removeEmotionRef(e.id)} disabled={disabled}
+                            style={{ padding: '3px 6px', borderRadius: 5, border: 'none', cursor: 'pointer', fontSize: 10, background: 'var(--bg-elevated)', color: 'var(--text-muted)', opacity: disabled ? 0.5 : 1 }}>
+                            X
+                          </button>
+                        )}
+                      </div>
+                      {/* 등록된 감정: 3~10초 구간 선택 패널(긴 파일 대응). key에 source 포함 → 파일 변경 시 재마운트. */}
+                      {src && (
+                        <ReferenceRegionPanel
+                          key={src}
+                          clipKey={e.id}
+                          path={src}
+                          disabled={disabled}
+                          onState={(s) => setEmotionRefState(e.id, s)}
+                          label={`${e.label} 참조`}
+                        />
+                      )}
+                    </div>
+                  )
+                })}
               </div>
             ))}
           </div>
@@ -302,7 +237,9 @@ export default function TTSEditor() {
             </div>
             {[
               { id: 'default', label: '기본 참조', path: fileInfo?.path || '' },
-              ...ALL_EMOTIONS.filter(e => e.id !== 'default' && emotionRefs[e.id]).map(e => ({ id: e.id, label: e.label, path: emotionRefs[e.id] }))
+              // 감정 참조 전사 대상은 effective(확정 파생 클립) 우선, 없으면 원본 — 10초 초과는 확정 구간만 전사.
+              ...ALL_EMOTIONS.filter(e => e.id !== 'default' && ttsEmotionRefState[e.id]?.source)
+                .map(e => ({ id: e.id, label: e.label, path: ttsEmotionRefState[e.id].clip || ttsEmotionRefState[e.id].source }))
             ].map(ref => {
               const entry = refPrompts[ref.id] || {}
               const effMode = deriveRefMode(entry)  // 우선순위: ref_free > manual > auto

@@ -1,6 +1,7 @@
 import React from 'react'
 import { motion } from 'framer-motion'
 import { useAppStore } from '@/stores/app.store'
+import { ALL_EMOTIONS, planEmotionRefs } from '@/lib/emotions'
 
 function _estimateTime(mode: string, duration: number, transcribe: boolean, translate: boolean): string {
   let secs = 0
@@ -18,8 +19,15 @@ function _estimateTime(mode: string, duration: number, transcribe: boolean, tran
 }
 
 export default function ProcessButton() {
-  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefs, ttsReferencePrompts, ttsEngine, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, status, setProcessing, setProgress, setResult, setError } = useAppStore()
+  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefState, ttsReferencePrompts, ttsEngine, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, status, setProcessing, setProgress, setResult, setError } = useAppStore()
   const cleanupRef = React.useRef<(() => void) | null>(null)
+
+  // 감정 참조 게이팅/전송(계약 §5 불변식) — 순수 판정은 planEmotionRefs 단일 로직.
+  //  대사에 실제 쓰인 감정만 대상. 미사용은 비차단·미전송. 등록+미준비 사용 감정은 blockedId로 차단.
+  const { toSend: emotionRefsToSend, blockedId: blockedEmotionId } = React.useMemo(
+    () => planEmotionRefs(ttsText, ttsEmotionRefState),
+    [ttsText, ttsEmotionRefState]
+  )
 
   const handleProcess = async () => {
     console.log('[renderer][synthesize] 클릭 핸들러 진입', { mode, hasFile: !!fileInfo })
@@ -48,7 +56,9 @@ export default function ProcessButton() {
 
     try {
       console.log('[renderer][synthesize] audio:process 호출 직전')
-      const r = await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefs, ttsReferencePrompts, ttsEngine, ttsReferenceOverride: ttsReferenceClip, ttsReferenceRegion })
+      // ttsEmotionRefs = 사용∩등록∩준비된 감정의 effective 경로만(계약 §5 전송 필터). 통합 브랜치가
+      // 여기에 ttsEmotionRefSources/ttsEmotionRefRegions(재현용)를 추가한다 — 편집을 게이팅/전송에 국소화.
+      const r = await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsEmotionRefs: emotionRefsToSend, ttsReferencePrompts, ttsEngine, ttsReferenceOverride: ttsReferenceClip, ttsReferenceRegion })
       console.log('[renderer][synthesize] audio:process 호출 직후', r)
     } catch (err: any) {
       console.error('[renderer][synthesize] audio:process 오류', err?.stack || err)
@@ -89,10 +99,21 @@ export default function ProcessButton() {
     )
   }
 
-  // TTS 게이팅: 빈/공백 대사 또는 참조 미준비(구간 미확정·품질 오류·길이 밖)면 비활성화 + 사유.
+  // TTS 게이팅: 빈/공백 대사 → 차단. 기본 참조 미준비 → 차단. 사용된 감정이 등록+미준비 → 감정 지목 차단.
+  // (미사용 감정은 등록 여부와 무관하게 비차단 — 계약 §5 불변식 4.)
+  const blockedEmotion = blockedEmotionId
+    ? ALL_EMOTIONS.find(e => e.id === blockedEmotionId)
+    : null
+  const emotionBlockReason = blockedEmotion
+    ? (() => {
+        const msg = ttsEmotionRefState[blockedEmotion.id]?.message
+        return `[${blockedEmotion.label}] 참조 ${msg ? `— ${msg}` : '구간을 확정하세요'}`
+      })()
+    : ''
   const ttsBlockReason = mode === 'tts'
     ? (!ttsText.trim() ? '합성할 대사를 입력하세요'
-        : (!ttsRefReady ? (ttsRefMessage || '참조 구간을 확정하세요') : ''))
+        : (!ttsRefReady ? (ttsRefMessage || '참조 구간을 확정하세요')
+        : (emotionBlockReason || '')))
     : ''
 
   if (ttsBlockReason) {
