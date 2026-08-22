@@ -899,24 +899,30 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
         # 불변식 A(staged) — pitch 후 staged를 다시 검증(pitch가 비유한을 만들지 않았는지).
         data, sr = _sf.read(staged, dtype="float32")
         _af.require_valid_mono(_af.validate_audio_array(data, sr))
+        # 서브타입 패리티: pending은 staged(=레거시가 이 pitch로 이미 만든 결과)와 같은 subtype으로 쓴다.
+        #   pitch 0 → staged=PCM_16 → pending PCM_16(== 레거시 off pitch0). pitch!=0 → staged=FLOAT →
+        #   pending FLOAT(== 레거시 off pitch+1). FLOAT 하드코딩(비패리티) 금지. pitch_shift.py 무변경.
+        staged_subtype = _sf.info(staged).subtype
         plan = _af.compute_tail_plan(data, sr, tail)
         finished = _af.apply_final_tail(data, sr, plan)
         # 불변식 B — in-memory: mono·non-empty·finite + 예상 프레임 수 + padding 정확히 0.
+        # (여기서 finite가 이미 보장되므로 PCM_16으로 써도 비유한을 숨길 수 없다 — write 전 in-memory 검증.)
         _af.require_valid_finished(finished, sr, plan, len(data))
-        # write는 FLOAT로(비유한을 PCM처럼 조용히 삼키지 않게 + fade 정밀도 보존). 이후 재오픈해 C 검증.
         try:
-            _sf.write(finished_tmp, finished, sr, subtype="FLOAT")
+            _sf.write(finished_tmp, finished, sr, subtype=staged_subtype)
         except Exception as e:
             raise _af.AudioFinishingError("pending write 실패", code="AUDIO_INVALID") from e
         if not (_os.path.exists(finished_tmp) and _os.path.getsize(finished_tmp) > 0):
             raise _af.AudioFinishingError("pending 0바이트/미생성", code="AUDIO_INVALID")
-        # 불변식 C — 파일 재오픈 검증: 디코드 가능·메타 sr==실제 sr·mono·non-empty·finite·프레임 수·peak.
+        # 불변식 C — 파일 재오픈 검증: 디코드·메타 sr==실제 sr·mono·non-empty·finite·프레임 수·peak
+        #   + subtype == staged subtype(패리티 보증).
         try:
             _rd, _rd_sr = _sf.read(finished_tmp, dtype="float32")
             _meta = _sf.info(finished_tmp)
         except Exception as e:
             raise _af.AudioFinishingError("pending 재오픈 실패", code="AUDIO_INVALID") from e
-        _af.require_valid_reopened(_rd, _rd_sr, _meta.samplerate, _meta.frames, len(finished))
+        _af.require_valid_reopened(_rd, _rd_sr, _meta.samplerate, _meta.frames, len(finished),
+                                   actual_subtype=_meta.subtype, expected_subtype=staged_subtype)
         _os.replace(finished_tmp, final_path)  # 이 시점에만 final 교체(원자적)
     finally:
         for p in (staged, finished_tmp):

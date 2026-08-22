@@ -293,10 +293,12 @@ def require_valid_finished(samples, sr, plan: TailPlan, input_len) -> dict:
     return stats
 
 
-def require_valid_reopened(samples, sr, meta_samplerate, meta_frames, expected_frames) -> dict:
+def require_valid_reopened(samples, sr, meta_samplerate, meta_frames, expected_frames,
+                           actual_subtype=None, expected_subtype=None) -> dict:
     """불변식 C(원자 교체 전, 파일 재오픈 후): 디코드된 array가 mono·non-empty·finite,
-    메타 sr == 실제 sr, 프레임 수 == 예상, peak 유한. 위반 시 AUDIO_INVALID.
-    호출부는 파일을 실제로 재오픈(sf.read/sf.info)해 이 함수에 넘긴다 — 여기 자체는 파일 I/O 없음."""
+    메타 sr == 실제 sr, 프레임 수 == 예상, peak 유한. expected_subtype가 주어지면 subtype 패리티
+    (actual == expected)까지 강제한다 — pending은 staged(레거시가 이 pitch로 만든 결과)와 같은 subtype이어야
+    함. 위반 시 AUDIO_INVALID. 호출부가 파일을 재오픈(sf.read/sf.info)해 넘긴다 — 여기 자체는 파일 I/O 없음."""
     stats = require_valid_mono(validate_audio_array(samples, sr))
     if meta_samplerate is None or int(meta_samplerate) != int(sr):
         raise AudioFinishingError(f"메타 sr != 실제 sr: {meta_samplerate} != {sr}", code="AUDIO_INVALID")
@@ -306,6 +308,10 @@ def require_valid_reopened(samples, sr, meta_samplerate, meta_frames, expected_f
             code="AUDIO_INVALID")
     if not np.isfinite(stats["peak"]):
         raise AudioFinishingError("재오픈 peak 비유한", code="AUDIO_INVALID")
+    if expected_subtype is not None and actual_subtype != expected_subtype:
+        raise AudioFinishingError(
+            f"subtype 패리티 위반: actual={actual_subtype} != staged={expected_subtype}",
+            code="AUDIO_INVALID")
     return stats
 
 
