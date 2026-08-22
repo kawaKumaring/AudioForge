@@ -249,7 +249,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
     // single-flight key는 clipKey+절대경로 — 감정별로 분리하되 같은 (key,파일)의 동시 요청만 합침.
-    const key = clipKey + ' ' + resolve(filePath)
+    const key = clipKey + '\u0000' + resolve(filePath)
     if (!analyzeSF.has(key)) releaseRefClip(clipKey)  // 새 분석 시작일 때만 그 key의 이전 파생 클립 폐기(중복 요청엔 안 함)
     return analyzeSF.run(key, async () => {  // 동시/StrictMode 중복은 진행 중 Promise 공유(subprocess 1회)
       const cfgPath = join(tmpdir(), `audioforge_refanalyze_${randomUUID()}.json`)
