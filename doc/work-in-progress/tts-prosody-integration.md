@@ -99,6 +99,7 @@ compact 전 체크포인트. 재개 시 이 문서 + `git log`로 상태 복원 
 > **G2** — 취소 phase DAG·taskkill exit0·cleanup 후 idle·잔존 0 PASS. (재실행으로 고친 qwenVenvPids 실측 포함.)
 >
 > ★**test-infra 정정(공용 마감 K2-보완, test-only)**: 과거 `qwenVenvPids()`는 `wmic` 의존이었으나 이 Windows 11(26200)엔 wmic가 없어 **항상 [] 반환 = 실제 관측 아님**. 따라서 그간 E2E의 "종료 후 Qwen venv 0" 단언은 이 OS에서 자명통과였다(실검증 아님). **단, 이번 G1/G2 종료 후 '현재 worktree 관련 프로세스 0'과 'taskkill exit 0'은 PowerShell CIM으로 독립 확인한 유효 결과**다. 수정: `wmic`→`powershell -NoProfile -NonInteractive` + `Get-CimInstance Win32_Process`(execFile·구조화 JSON·실패 시 throw), 매칭을 **현재 worktree의 python/qwen_bridge.py 절대경로로 스코프**(다른 AudioForge checkout·ComfyUI 제외). 순수 함수(parseCimProcJson/filterWorktreeQwenPids/normPathForMatch) 단위테스트 11건.
+> ★flaky 정정(test-only): tts-cancel-lifecycle 시나리오 9가 "bumpRetry 후 200ms 동안 status=cancelling 유지"를 단언해 flaky했다(synthetic child는 ~40ms에 죽어 취소가 그 창 안에 정상 완료되면 idle이 옳은 동작). transient 상태 지속은 제품 계약이 아니므로 재시도 차단의 **결정적 불변식**으로 교체: cancelling 창을 cleanup 재시도 시임으로 확보한 뒤 **원자적 관측**으로 (retryNonce 불변=store 가드 no-op)·(취소 대상 PID 교체 없음=재합성 spawn 0)·(status processing 미복귀)를 권위로 단언. 연속 5회 PASS.
 > ★열린 항목: **trackRunner(대화 분할 후처리) 취소는 여전히 fire-and-forget** — synthesis runner만 완결. 별도 보완 대상.
 >
 > 이력: **J `8d1e668`**(GENERATION_LIMIT 구조화 재시도), **K `c499c27`** + **K2 `2b893c8`** — 취소 lifecycle.
