@@ -2,9 +2,13 @@
   "_meta": {
     "purpose": "TTS 감정/쉼 문법 언어중립 conformance 벡터(초안). TS parser와 Python parser가 둘 다 통과해야 한다. 통합 담당이 scaffold 단계에서 실제 테스트 경로로 이동·배선한다. 대사 전문은 테스트 입력에만 존재하고 metadata/로그로 나가지 않는다.",
     "parser_version": 1,
-    "status": "draft — D 계약 미결정(D-2/D-4/D-7) 확정 후 고정",
+    "status": "draft — 2차 확정 반영(D-2 방식A+full sha256 parity, D-4 인접쉼=오류, D-7 spoken_text 포함+offset 이원화, escape, empty segment, boundary priority). offset 숫자는 예시이며 로더가 재계산.",
     "emotion_ok_note": "emotion_id는 emotions.ts ALL_EMOTIONS(한글 label + 영문 id)에서 주입. 아래 happy/cheerful 등은 예시.",
-    "pause_range_seconds": [0.05, 5.0]
+    "pause_range_seconds": [0.05, 5.0],
+    "pause_ms_integer": true,
+    "offset_fields": ["ui_start_utf16", "ui_end_utf16", "text_start_codepoint", "text_end_codepoint"],
+    "hash_inputs": ["parser_version", "segment_order", "line_index", "emotion_id", "pause_ms(int)", "transition_boundary_type", "spoken_text_full_sha256", "spoken_text_utf8_byte_length", "segment_count"],
+    "error_codes": ["UNKNOWN_TTS_TAG", "INVALID_PAUSE_TAG", "EMPTY_EMOTION_SEGMENT", "PARSER_PARITY_MISMATCH", "INVALID_TTS_CONFIG"]
   },
   "valid": [
     {
@@ -74,6 +78,44 @@
         { "original_line_index": 1, "emotion_id": "sad", "spoken_text": "둘째 줄.", "pauses": [] }
       ],
       "used_emotion_ids": ["happy", "sad"]
+    },
+    {
+      "name": "escape: literal bracket 발음(한국어)",
+      "input": "\\[기쁨\\] 은 감정 태그입니다.",
+      "segments": [
+        { "original_line_index": 0, "emotion_id": null, "spoken_text": "[기쁨] 은 감정 태그입니다.", "pauses": [] }
+      ],
+      "used_emotion_ids": [],
+      "note": "\\[ 는 리터럴 [ 시작 → control tag 아님. 합성 spoken_text에서 escape backslash 제거."
+    },
+    {
+      "name": "escape: literal bracket (english)",
+      "input": "use \\[happy\\] to tag",
+      "segments": [
+        { "original_line_index": 0, "emotion_id": null, "spoken_text": "use [happy] to tag", "pauses": [] }
+      ],
+      "used_emotion_ids": []
+    },
+    {
+      "name": "escape: double backslash then tag (\\\\[기쁨] = literal backslash + real tag)",
+      "input": "\\\\[기쁨] 안녕",
+      "segments": [
+        { "original_line_index": 0, "emotion_id": "happy", "spoken_text": "\\안녕", "pauses": [] }
+      ],
+      "used_emotion_ids": ["happy"],
+      "note": "\\\\ = literal backslash 하나, 그 뒤 [기쁨]은 정상 태그."
+    },
+    {
+      "name": "boundary priority: 줄바꿈 + 감정변경 → line silence_gap만(emotion gap 추가 안 함)",
+      "input": "[기쁨] 첫째 줄.\n[슬픔] 둘째 줄.",
+      "boundary_between_line0_line1": "line_silence_gap_only",
+      "note": "추가계약3: line boundary(2) > emotion boundary pause(3). 합산 금지."
+    },
+    {
+      "name": "boundary priority: explicit pause가 line silence_gap을 대체",
+      "input": "첫 줄.[쉼 0.8]\n둘째 줄.",
+      "boundary_applied": "explicit_pause_0.8s",
+      "note": "추가계약3: explicit pause(1) > line silence_gap(2)."
     }
   ],
   "errors": [
@@ -106,10 +148,22 @@
       "error": { "code": "INVALID_PAUSE_TAG", "arg": "잠깐", "offset": 2 }
     },
     {
-      "name": "adjacent duplicate pause (D-4 초안: 같은 경계 2개↑ → 오류)",
+      "name": "adjacent duplicate pause → 오류 (D-4 확정=오류)",
       "input": "A [쉼 0.2][쉼 0.3] B",
       "error": { "code": "INVALID_PAUSE_TAG", "reason": "adjacent_duplicate", "offset": 2 },
-      "note": "D-4 확정 전 잠정. '정규화' 채택 시 이 케이스는 valid로 이동."
+      "note": "D-4 확정: 같은 경계 2개↑ = 오류. 합산/마지막값/조용한 정규화 금지."
+    },
+    {
+      "name": "empty emotion segment (연속 감정 태그, spoken text 없음)",
+      "input": "[기쁨][명랑] 안녕하세요.",
+      "error": { "code": "EMPTY_EMOTION_SEGMENT", "tag": "기쁨", "offset": 0 },
+      "note": "추가계약2: spoken text 없는 감정 구간 = 오류. 조용히 마지막 태그만 선택 금지."
+    },
+    {
+      "name": "parser parity mismatch (renderer sha256 != python)",
+      "input": "(런타임 케이스: renderer가 보낸 ttsParsedPlanSha256과 Python 재파싱 결과 불일치)",
+      "error": { "code": "PARSER_PARITY_MISMATCH" },
+      "note": "D-2: 모델 로딩 전에 차단. 조용한 합성 진행 금지. 단위 fixture가 아니라 통합 계약 케이스로 기록."
     }
   ]
 }

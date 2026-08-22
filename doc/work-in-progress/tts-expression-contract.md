@@ -185,3 +185,105 @@ session: 단일 ttsText(인라인 태그) 유지 + 위 UI 설정 스냅샷 + `se
 - 본 계약 문서 1개 + JSON conformance fixture 초안 1개.
 - production 변경 0 · A/B/C 브랜치 변경·병합 0 · 신규 dependency 0.
 - master `ca42b0e`·v1.0.0 불변 · develop `b933ab5` 불변.
+
+---
+
+# 확정 결정 (2차) — 위 §미결정 D-1~D-9를 supersede
+
+아래 결정이 위 초안·미결정을 대체(supersede)한다. 이전 초안 표현과 충돌하면 본 절이 권위.
+
+## D-1 다중 줄 선택 (확정)
+- 선택 영역이 닿는 **비어 있지 않은 각 줄**에 감정 적용.
+- 각 줄 **선두**의 기존 감정 태그는 교체.
+- 기존 대사·인라인 후속 감정 태그는 삭제하지 않음. 빈 줄은 변경하지 않음.
+- 부분 선택된 첫·마지막 줄도 선택이 **실제 문자에 닿으면** 적용.
+- **사용자 선택 텍스트를 태그로 대체하지 않음.**
+- 작업 후 수정된 전체 범위를 다시 selection으로 유지.
+- 단일 undo를 목표로 하되 **실제 textarea/React E2E 검증 전 보장 표현 금지**.
+- selection 없음: caret 위치 삽입, caret 인접 감정 태그만 교체, **무조건 줄 시작 삽입 금지**.
+
+## D-2 전달 방식 (확정 = A + parity 안전장치)
+- raw ttsText 전달 · TS/Python dual parser · 공용 JSON fixture parity · **Python parser가 합성 권위**.
+- renderer가 `ttsParserVersion` + **full `ttsParsedPlanSha256`**를 config로 전달.
+- Python이 같은 raw text를 파싱해 **full SHA256 비교** → 불일치 시 **모델 로딩 전에 `PARSER_PARITY_MISMATCH`**(조용한 합성 진행 금지).
+- metadata에는 full hash가 아니라 **sha8만** 기록.
+
+## D-3 renderer live preview (확정 = 1차 포함)
+- 포함: 감정 색상 범위 · unknown/malformed 경고 · 등록/미등록/미준비 상태 · 감정 전환 경계 표시.
+- 단: renderer는 preview, 합성 권위는 Python, parity mismatch 시 합성 차단.
+- overlay는 `aria-hidden="true"`; **접근성 텍스트 권위는 textarea**.
+
+## D-4 인접 쉼 (확정 = 오류)
+- 동일 경계 쉼 2개↑ → `INVALID_PAUSE_TAG`. 합산·마지막값·조용한 정규화 금지.
+- UI 생성 canonical 쉼 태그는 항상 하나. 명시적 쉼은 자동 gap 대체(합산 아님).
+
+## D-5 audio finishing 위치 (확정 = 신설 모듈)
+- 신규 순수 모듈 `python/audio_finishing.py`(통합 담당 소유). 역할: final conditional fade · final tail padding · 최종 WAV 검증용 순수 계산.
+- 금지: `pitch_shift.py` 직접 확장 · pitch/tail 로직 혼합 · 내부 crossfade 1차 포함.
+- 순서: 1 생성 → 2 chunk speed → 3 내부 chunk 결합 → 4 line/emotion/explicit pause → 5 전체 pitch → 6 final conditional fade → 7 final tail padding → 8 최종 검증 → 9 원자 교체.
+
+## D-6 legacy session (확정)
+- legacy(신규 tail 필드 없음) → `tail_mode=off`로 기존 동작 복원. 조용한 auto 변경 금지.
+- UI 안내: `기존 세션 설정 유지 · 말끝 다듬기 꺼짐`. 사용자가 `자동 사용`을 직접 선택하면 migration.
+- new session `tail_mode=auto`. migration 선택은 session에 저장. `session_schema_version` 명시.
+
+## D-7 parsed_plan 해시 (확정 = spoken text 포함 + offset 이원화)
+canonical hash 입력: `parser_version` · segment 순서 · line_index · emotion_id · **pause_ms(정수)** · transition boundary type · **spoken_text의 전체 SHA256** · spoken_text **UTF-8 byte length** · segment count.
+- canonical JSON key 순서 고정 · **float 금지(pause는 integer ms)** · 내부 비교는 full SHA256 · metadata/GUI엔 sha8만 · 대사 전문 metadata 금지.
+- **offset 이원화(혼용 금지)**: UI용 `ui_start_utf16`/`ui_end_utf16`(renderer selection 정합, UTF-16 code-unit), 텍스트용 `text_start_codepoint`/`text_end_codepoint`(Python Unicode code-point). raw UTF-8 byte offset은 hash의 byte length 산출에만.
+- TS/Python fixture에 Unicode·offset 규칙 케이스 포함.
+
+## D-8 편집기 (확정 = textarea+overlay, E2E gate 조건부)
+- 1차 후보 textarea+overlay. 채택은 다음 gate 통과 조건부: 한국어 IME · caret 삽입 · 다중 줄 선택 · undo · paste · scroll sync · font wrapping · 800×600 · 125/150% · 긴 대사 성능 · 키보드·스크린리더.
+- 실패 시 workaround 누적 금지 → CodeMirror 6 도입안 **별도 승인 요청**(dependency 설치 아직 금지).
+- **"IME 100% 보장" 표현 금지.**
+
+## D-9 빠른 재처리 (확정 = 후속 분리)
+- 1차 UI 버튼 미노출. raw/base WAV 수명·원자 저장·session 연결 계약 전 지원 표현 금지. pitch/speed/tail 이론적 후처리 가능성만 연구 기록.
+
+## 추가 계약 1 — tag escape
+- `\[` = literal `[` 시작. escaped bracket는 control tag로 파싱하지 않음.
+- 합성 spoken text에서 escape backslash 제거. `\\` = literal backslash 하나(그 뒤 `[`는 escape 아님).
+- TS/Python fixture에 한국어·영어 literal bracket 케이스 추가.
+- control-tag 형태의 unknown tag는 `UNKNOWN_TTS_TAG` 합성 차단 유지.
+
+## 추가 계약 2 — 빈 감정 구간
+- spoken text가 없는 감정 구간(연속 감정 태그 등) → `EMPTY_EMOTION_SEGMENT`(offset·tag id, 대사 전문 없음).
+- UI 버튼 삽입은 인접 태그 교체로 이 상태를 만들지 않음. 붙여넣기로 생기면 inline warning + 합성 차단.
+- 조용히 마지막 태그만 선택하지 않음.
+
+## 추가 계약 3 — 경계 우선순위 (겹칠 때 하나만)
+같은 위치 경계 우선순위: 1) explicit pause 2) original line boundary silence_gap 3) emotion boundary pause 4) internal autosplit boundary(0).
+- 합산하지 않고 **가장 높은 우선순위 하나만** 적용.
+- 감정이 줄바꿈에서 바뀌면 **line silence_gap만** 적용(emotion gap 추가 안 함).
+
+## 추가 계약 4 — 1차 config 필드 (이름·타입·범위 고정)
+- `ttsParserVersion`(int)
+- `ttsParsedPlanSha256`(string, full; parity 검증용, metadata엔 sha8만)
+- `ttsTailMode`: `"off" | "auto"`
+- `ttsTailPaddingMs`: int, new 기본 120, 허용 0~300
+- `ttsTailFadeMs`: int, new 기본 8, 허용 0~20
+- `ttsEmotionBoundaryMode`: `"immediate" | "pause"`
+- `ttsEmotionBoundaryPauseMs`: int, 기본 200, 허용 0~1000
+- `ttsExpressionFineTuneEnabled`(bool)
+- `ttsExpressionPresetId`(string)
+- `ttsShowSettingHelp`(bool)
+- Python 권위 검증: 범위 밖 값 조용한 clamp 금지 → 구조화 오류 반환(`INVALID_TTS_CONFIG` 또는 필드별 code, 값·필드명만).
+- smooth/crossfade/formant/brightness/breathiness/falsetto 필드는 이번 스키마에 **넣지 않음**.
+
+## 추가 계약 5 — tail 알고리즘 초안 (synthetic gate용 초기값)
+- 마지막 최대 5ms 구간 peak ≤ 1e-4 → 이미 무음으로 판단.
+- 이미 무음이면 fade 없이 padding만.
+- 아니면 `min(설정 fade ms, 파일 길이)` cosine fade-to-zero → 이후 정확한 0 샘플 padding.
+- 0ms 설정 허용. mono·finite·sr 검증 전후 수행. 같은 pending에 두 번 적용 금지(pipeline 단계 권위 고정).
+- **이 수치는 synthetic gate용 초기값이며 사용자 실제 청취 전 최적값으로 표현하지 않음.**
+
+## 추가 계약 6 — 통합 브랜치 (확정)
+- D 확정 후 `feature/tts-expression-integration`을 origin/develop `b933ab5`에서 생성.
+- 통합 담당이 **shared grammar fixture / types / config / component shell scaffold를 먼저 구현**.
+- A/B/C는 scaffold 계약을 받은 뒤 production 구현. 부분 기능 develop 직접 병합 금지.
+- A→B→C를 expression integration에만 `--no-ff`. 전체 검증·사용자 확인 후 별도 승인으로 develop 병합. master/v1.0.0 불변.
+- B root-cause supersede 문구(재확인): **"최종 tail 처리 부재는 코드상 유력한 발생 경로이며 synthetic WAV에서 재현됐다. 실제 사용자 출력과의 동일성은 청취 또는 승인된 진단 전 미확인이다."**
+
+## 여전히 남은 미결정(2차 이후)
+- 없음(주요 결정 D-1~D-9 + 추가 1~6 확정). 구현 세부의 실측 의존 항목: D-8 편집기 채택은 E2E gate 결과에, tail 수치는 청취 검증에, 빠른 재처리는 후속 사이클에 종속(모두 "미확정/후속"으로 명시됨).
