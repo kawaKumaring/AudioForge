@@ -1,6 +1,30 @@
 // TTS 1단계 전달용 설정 — separate.py로 넘길 TTS 필드의 단일 소스.
 // 목적: 필드 누락(예: ttsEmotionRefs 미전달)을 컴파일 단계에서 잡는다.
 
+// ── pitch 후처리 capability 계약(§6) — UI(음높이 슬라이더)가 소비. ──
+// pitch 경로는 ffmpeg rubberband 단일(pitch_shift.py). rubberband 미지원 ffmpeg에서 pitch!=0을
+// 요청하면 PITCH_UNAVAILABLE로 실패하므로, 지원 여부를 미리 UI에 알려 예방한다.
+//   supported : pitch 후처리 사용 가능(rubberband 존재)
+//   method    : 'rubberband' | 'none' | 'unknown'
+//   probed    : 실제 ffmpeg probe가 수행됐는지(false=미배선 기본값 — 통합 담당이 실제 probe 연결)
+//   reason    : 미지원/불명 사유(진단 표시용)
+export interface PitchCapability {
+  supported: boolean
+  method: 'rubberband' | 'none' | 'unknown'
+  probed: boolean
+  reason?: string
+}
+
+// Python pitch_shift.pitch_available()의 (available, reason) → UI 계약으로 정규화(순수·mock 가능).
+// raw 미지정/available null → 미probe(unknown). 실제 probe 결과 주입은 통합 담당이 배선한다.
+export function normalizePitchCapability(raw?: { available?: boolean | null; reason?: string } | null): PitchCapability {
+  if (!raw || raw.available == null) {
+    return { supported: false, method: 'unknown', probed: false, reason: raw?.reason || 'probe 미수행' }
+  }
+  if (raw.available) return { supported: true, method: 'rubberband', probed: true, reason: raw.reason }
+  return { supported: false, method: 'none', probed: true, reason: raw.reason || 'rubberband-unsupported' }
+}
+
 // 참조별 사용자 프롬프트 항목(UI/스토어에서 camelCase로 관리).
 // 식별자('default' 또는 emotionId) → 이 항목.
 export type TtsReferenceMode = 'auto' | 'manual' | 'ref_free'

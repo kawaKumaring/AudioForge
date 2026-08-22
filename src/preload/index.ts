@@ -21,6 +21,8 @@ const api = {
     // 참조 source 지문(path|size|mtimeMs). 전사 확정 시 stamp해 두면 합성 경계에서 stale 폐기(§4).
     fingerprintReference: (filePath: string): Promise<string> => ipcRenderer.invoke('audio:fingerprint-reference', filePath),
     qwenPreflight: () => ipcRenderer.invoke('audio:qwen-preflight'),
+    // pitch 후처리 capability(rubberband 지원 여부) — PitchCapability 계약. UI가 슬라이더 가용성에 소비.
+    pitchPreflight: () => ipcRenderer.invoke('audio:pitch-preflight'),
     processTrack: (trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string }) =>
       ipcRenderer.invoke('audio:process-track', trackPath, outputDir, options),
     onTrackResult: (callback: (data: unknown) => void) => {

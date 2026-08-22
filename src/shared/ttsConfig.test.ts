@@ -2,7 +2,7 @@
 // 실행: npm test  (또는 node --test src/shared/ttsConfig.test.ts)
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildTtsConfig, buildReferencePrompts, deriveRefMode, pruneStaleReferencePrompts } from './ttsConfig.ts'
+import { buildTtsConfig, buildReferencePrompts, deriveRefMode, pruneStaleReferencePrompts, normalizePitchCapability } from './ttsConfig.ts'
 
 test('ttsEmotionRefs가 config에 전달된다 (전달 경로 끊김 회귀)', () => {
   const refs = { happy: 'C:/ref/happy.wav', sad: 'C:/ref/sad.wav' }
@@ -154,6 +154,26 @@ test('prune: 지문 미기록 + 살아있는 source는 보존(과도 폐기 방�
   const p = { happy: { manualText: 'h' } }  // sourceFingerprint 없음
   const out = pruneStaleReferencePrompts(p, { happy: 'X|1|2' })
   assert.deepEqual(out.happy, p.happy)
+})
+
+// ── normalizePitchCapability (§6 pitch capability 계약) ──
+test('pitch capability: probe 미수행(null) → unknown·probed:false', () => {
+  const c = normalizePitchCapability(null)
+  assert.deepEqual(c, { supported: false, method: 'unknown', probed: false, reason: 'probe 미수행' })
+  assert.equal(normalizePitchCapability(undefined).probed, false)
+  assert.equal(normalizePitchCapability({}).method, 'unknown')  // available 미지정도 unknown
+})
+
+test('pitch capability: rubberband 지원 → supported·probed:true', () => {
+  const c = normalizePitchCapability({ available: true, reason: 'rubberband' })
+  assert.deepEqual(c, { supported: true, method: 'rubberband', probed: true, reason: 'rubberband' })
+})
+
+test('pitch capability: rubberband 미지원 → none·probed:true', () => {
+  const c = normalizePitchCapability({ available: false, reason: 'rubberband-unsupported' })
+  assert.equal(c.supported, false)
+  assert.equal(c.method, 'none')
+  assert.equal(c.probed, true)
 })
 
 test('buildTtsConfig: 지문 맵 지정 시 stale/ orphan 전사는 Python 전달에서 제외', () => {

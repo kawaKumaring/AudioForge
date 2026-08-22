@@ -8,7 +8,7 @@ import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
 import { createSettlementGuard } from '../services/run-settlement'
 import { createPreviewGuard, runPreview } from '../services/preview-transcribe'
-import { buildTtsConfig, type TtsInputOptions } from '../../shared/ttsConfig'
+import { buildTtsConfig, normalizePitchCapability, type TtsInputOptions } from '../../shared/ttsConfig'
 import { sweepQwenJobDirs } from '../services/qwen-cleanup'
 import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
 import { createSingleFlight, createKeyedSingleFlight } from '../services/single-flight'
@@ -320,6 +320,16 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
         try { unlinkSync(cfgPath) } catch {}
       }
     })
+  })
+
+  // pitch capability preflight(§6) — UI(음높이 슬라이더)가 rubberband 지원 여부를 미리 소비.
+  // ⚠️ 계약/타입/mock 단계: 여기서는 ffmpeg를 실행하지 않고 '미probe' 기본 계약을 반환한다.
+  // 실제 probe 연결(separate.py의 pitch_shift.pitch_available 결과를 normalizePitchCapability에 주입)은
+  // 통합 담당이 확인·배선한다. 배선 시 이 핸들러가 raw {available, reason}를 받아 normalize만 하면 된다.
+  ipcMain.handle('audio:pitch-preflight', async () => {
+    // TODO(통합): separate.py에 'pitch-preflight' 모드를 추가해 pitch_available(ffmpeg)의
+    // (available, reason)을 반환받고 normalizePitchCapability(raw)로 정규화. 지금은 미probe 기본값.
+    return normalizePitchCapability(null)
   })
 
   ipcMain.handle('audio:process', async (_event, filePath: string, mode: string, options?: Record<string, unknown>) => {
