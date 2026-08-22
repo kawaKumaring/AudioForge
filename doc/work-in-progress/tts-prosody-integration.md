@@ -93,8 +93,15 @@ compact 전 체크포인트. 재개 시 이 문서 + `git log`로 상태 복원 
 - UX-1 state/session·UX-2 editor·UX-3 accessibility E2E 통과. 실제 pitch capability preflight: available=rubberband, elapsed 0.19s, single-flight 1회.
 - 마지막 통과: **python discovery 221 / npm test 90 / tsc node·web 0 / build OK**. E2E: state·tts-editor-ux·tts-pitch-capability·tts-accessibility·tts-result-metadata 전부 failed 0.
 
-### C. 아직 남은 공용 마감 (I·J·K 완료, L 남음)
-> 진행: **J 완료 `8d1e668`**(GENERATION_LIMIT 구조화 재시도), **K 완료 `c499c27`** + **K2 완료 `2b893c8`** — 취소 lifecycle.
+### C. 아직 남은 공용 마감 (I·J·K·K2 + L·GPU 게이트 완료, develop 병합 승인 대기)
+> **L 완료**: GPU 없는 전체 회귀(python 221 / npm 90 / tsc node·web 0 / build / Electron E2E 209 PASS·pageerror·crash·console 0 / resources 불변).
+> **실 Qwen GPU 게이트**: **G1 PASS(36/36)** — cuda:0(nvidia-smi)·감정 happy 라우팅·pitch+1 rubberband postprocessed·4 chunk completed·renderer==session metadata·WAV mono/24000/finite/peak0.49 no-clip.
+> **G2** — 취소 phase DAG·taskkill exit0·cleanup 후 idle·잔존 0 PASS. (재실행으로 고친 qwenVenvPids 실측 포함.)
+>
+> ★**test-infra 정정(공용 마감 K2-보완, test-only)**: 과거 `qwenVenvPids()`는 `wmic` 의존이었으나 이 Windows 11(26200)엔 wmic가 없어 **항상 [] 반환 = 실제 관측 아님**. 따라서 그간 E2E의 "종료 후 Qwen venv 0" 단언은 이 OS에서 자명통과였다(실검증 아님). **단, 이번 G1/G2 종료 후 '현재 worktree 관련 프로세스 0'과 'taskkill exit 0'은 PowerShell CIM으로 독립 확인한 유효 결과**다. 수정: `wmic`→`powershell -NoProfile -NonInteractive` + `Get-CimInstance Win32_Process`(execFile·구조화 JSON·실패 시 throw), 매칭을 **현재 worktree의 python/qwen_bridge.py 절대경로로 스코프**(다른 AudioForge checkout·ComfyUI 제외). 순수 함수(parseCimProcJson/filterWorktreeQwenPids/normPathForMatch) 단위테스트 11건.
+> ★열린 항목: **trackRunner(대화 분할 후처리) 취소는 여전히 fire-and-forget** — synthesis runner만 완결. 별도 보완 대상.
+>
+> 이력: **J `8d1e668`**(GENERATION_LIMIT 구조화 재시도), **K `c499c27`** + **K2 `2b893c8`** — 취소 lifecycle.
 > K2에서 terminal 권위를 audio:cancel로 이전: cancelling→kill→**tree 종료 확인(taskkill exit 0)**→runner done 합류(deferred)→
 > **bounded cleanup(.qwen-job-* 0 확인)**→cancelled→idle. done은 취소 중 신호 억제. cleanupPending·inflight 중 새 실행 거부.
 > before-quit 1회 preventDefault→bounded tree kill 확인 후 quit. E2E는 인과 DAG 상대순서 + tree-dead-before-idle + 지연 cleanup 회귀.
