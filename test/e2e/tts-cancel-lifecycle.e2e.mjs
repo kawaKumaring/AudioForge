@@ -5,7 +5,7 @@
 import { _electron as electron } from 'playwright'
 import { execSync } from 'child_process'
 import fs from 'fs'; import path from 'path'; import os from 'os'
-import { snapshotTree, refClipDirs, qwenVenvPids } from './_e2e-helper.mjs'
+import { snapshotTree, refClipDirs, qwenVenvPids, qwenJobDirs } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const FIXTURE = path.join(APP, 'test', 'e2e', 'fixtures', 'synthetic_tree.py')
@@ -30,6 +30,7 @@ const resBefore = snapshotTree(RES_DIR)
 const isoDir = fs.mkdtempSync(path.join(os.tmpdir(), 'af_cancel_'))
 const inputPath = path.join(isoDir, 'in.wav')  // 존재하지 않아도 됨(합성은 fixture로 대체)
 const pidFile = path.join(isoDir, 'pids.json')
+const OUT_BASE = path.join(isoDir, 'AudioForge_output')  // main이 dirname(input)/AudioForge_output에 output 생성
 
 const launchEnv = {
   ...process.env, AF_E2E: '1',
@@ -221,16 +222,42 @@ try {
   await waitStatus('idle', 12000)
   ok(!isAlive(pids.parent) && !isAlive(pids.child), '다시 취소 → 트리 종료·idle')
 
-  // ── 시나리오 9: 취소 중 generation retry 차단 ──
-  await setFixtureMode('hang'); await setSeam({}); await resetSent()
+  // ── 시나리오 9: 취소 중 generation retry 차단 (결정적 불변식) ──
+  // transient 'cancelling'이 특정 시간 유지되는지가 아니라, 재시도가 '실제로 차단됐는지'를 권위로 단언한다:
+  //  retryNonce 불변(store 가드 no-op) · 재합성 spawn 0(취소 대상 PID 교체 없음) · status가 processing으로 복귀 없음.
+  // cancelling 창은 cleanup 재시도 시임으로 결정적 확보(6회≈720ms<deadline → 이후 정상 완료). timeout 늘리기 아님.
+  await setFixtureMode('hang'); await setSeam({}); await setCleanupFail(6); await resetSent()
   pids = await startSynth()
+  const pidBefore9 = readPids()
   await win.getByRole('button', { name: '처리 취소' }).first().click({ timeout: 8000 })
   await waitStatus('cancelling', 8000)
-  await win.evaluate(() => window.__afStore.getState().bumpRetry())  // 취소 중 재시도 시도
-  await win.waitForTimeout(200)
-  ok((await status()) === 'cancelling', '취소 중 bumpRetry는 상태를 뒤엎지 않음(cancelling 유지)')
+  // A. 취소가 실제 시작됨
+  const ph9 = await getPhases()
+  ok(!!ph9.cancelling_sent || !!ph9.kill_requested, 'A: 취소 실제 시작(cancelling_sent/kill_requested 관측)')
+  // B. cancelling 상태에서 bumpRetry를 원자적으로 호출하고 before/after를 같은 tick에 관측(가드 no-op 증명)
+  const g9 = await win.evaluate(() => {
+    const s = window.__afStore
+    const before = { status: s.getState().status, nonce: s.getState().retryNonce }
+    s.getState().bumpRetry()  // 취소 중 재시도 시도 — 가드로 no-op이어야 함
+    return { before, after: { status: s.getState().status, nonce: s.getState().retryNonce } }
+  })
+  ok(g9.before.status === 'cancelling', `B(전제): bumpRetry 시점 status=cancelling(${g9.before.status})`)
+  ok(g9.after.nonce === g9.before.nonce, `B: bumpRetry가 retryNonce 증가 안 함(가드 no-op, ${g9.before.nonce}→${g9.after.nonce})`)
+  ok(g9.after.status !== 'processing', `B: status가 processing으로 복귀 안 함(${g9.after.status})`)
+  const pidAfter9 = readPids()
+  ok(!!pidBefore9 && !!pidAfter9 && pidAfter9.parent === pidBefore9.parent,
+    `B: 취소 대상 PID 교체 없음(재합성 spawn 0, ${pidBefore9 && pidBefore9.parent}→${pidAfter9 && pidAfter9.parent})`)
+  ok((await getSent())['audio:cancelling'] === 1, 'B: cancelling 신호 1회(재시도로 새 취소/합성 사이클 없음)')
+  // C. 정상 완료
+  await setCleanupFail(0)
   await waitStatus('idle', 12000)
-  ok(!isAlive(pids.parent), '취소 중 retry 차단 후 정상 종료')
+  ok((await status()) === 'idle', 'C: 최종 idle')
+  let dead9 = false
+  for (let i = 0; i < 60; i++) { if (!isAlive(pids.parent) && !isAlive(pids.child)) { dead9 = true; break } await win.waitForTimeout(50) }
+  ok(dead9, 'C: 원래 child tree dead')
+  ok(qwenJobDirs(OUT_BASE).length === 0, 'C: .qwen-job-* 0')
+  ok((await win.evaluate(() => window.__afStore.getState().tracks.length)) === 0, 'C: 결과 track 생성 없음')
+  ok(((await getSent())['audio:cancel-failed'] || 0) === 0, 'C: CANCEL_FAILED 없음')
 
   // ── 시나리오 10: 취소 완료 후 새 합성 1회 정상 ──
   await setFixtureMode('result'); await setSeam({}); await resetSent()
