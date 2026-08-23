@@ -6,7 +6,10 @@ import type {
   InterpreterProbe,
   PackageProbe,
 } from './capabilityEvaluator.ts'
-import { makeRuntimeFingerprint, type RuntimeFingerprint } from '../../shared/runtimeContract.ts'
+// TYPE만 import(확장자 없이) — 순수 type import는 런타임에 제거돼 node --test가 확장자 없는
+// 지정자를 해석하려 하지 않는다. RuntimeFingerprint 리터럴은 아래 fp()에서 직접 만든다
+// (계약 makeRuntimeFingerprint를 값으로 import하면 node 런타임 해석이 깨지므로).
+import type { RuntimeFingerprint } from '../../shared/runtimeContract'
 
 const PROBE_VERSION = 'probe-v1'
 const OBSERVED_AT = '2026-08-24T00:00:00.000Z'
@@ -17,7 +20,7 @@ function pkg(imp: string, pip: string, installed = true, extra: Partial<PackageP
 
 // 지문(RuntimeFingerprint) — 문자열 단독 지문 폐기, digest 필드로 이관(계약 §3).
 function fp(digest: string, pythonVersion: string, architecture: string, packageCount: number): RuntimeFingerprint {
-  return makeRuntimeFingerprint({ digest, pythonVersion, architecture, lockHash: null, probeVersion: PROBE_VERSION, packageCount })
+  return { algorithm: 'sha256', digest, pythonVersion, architecture, lockHash: null, probeVersion: PROBE_VERSION, packageCount }
 }
 
 // 정상 parent 인터프리터(core/music/dialogue/asr/pitch 전부 충족).

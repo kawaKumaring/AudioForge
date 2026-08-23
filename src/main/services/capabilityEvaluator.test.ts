@@ -241,7 +241,7 @@ test('계약 정합: emit되는 status/reasonCode 전부 canonical + 로컬 Capa
   assert.ok(!/\b(export\s+)?type\s+CapabilityState\s*=/.test(src), '로컬 CapabilityState 선언 0')
   assert.ok(!/\b(export\s+)?(type|interface)\s+ValidationEvidence(Item)?\s*[={]/.test(src), '로컬 ValidationEvidence 선언 0')
   assert.ok(!/\b(export\s+)?(type|interface)\s+RuntimeFingerprint\s*[={]/.test(src), '로컬 RuntimeFingerprint 선언 0')
-  assert.ok(/from '\.\.\/\.\.\/shared\/runtimeContract\.ts'/.test(src), '계약에서 import')
+  assert.ok(/from '\.\.\/\.\.\/shared\/runtimeContract'/.test(src), '계약에서 import')
 })
 
 test('env_check --json 어댑터: parent probe + system probe 매핑(canonical, 미제공 축 없음)', () => {

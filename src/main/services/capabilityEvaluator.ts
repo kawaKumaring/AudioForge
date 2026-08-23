@@ -20,19 +20,24 @@
 //   ※ 판정 로직 자체(9 독립 capability·killswitch 부재·증거 분리·GPU/CPU·모델/checksum/venv
 //     구분·stale/drift·env_check adapter)는 v1과 동일 — 타입·표현만 계약으로 이관했다.
 
-import {
-  type CapabilityStatus,
-  type CapabilityState,
-  type ReasonCode,
-  type RuntimeFingerprint,
-  type ValidationEvidence,
-  type ValidationEvidenceItem,
-  type EvidenceKind,
-  makeRuntimeFingerprint,
-  makeSupportedCapabilityState,
-  makeStaleCapabilityState,
-  makeCpuFallbackCapabilityState,
-} from '../../shared/runtimeContract.ts'
+// 계약에서 TYPE만 import한다(값 헬퍼는 아래에서 인라인). 이유(빌드/런타임 정합):
+//   - tsconfig.node(moduleResolution: bundler, allowImportingTsExtensions 미설정)는 import에
+//     `.ts` 확장자를 금지(TS5097) → 확장자 없이 써야 한다.
+//   - 그런데 native `node --test`(로더 없음)는 런타임에 확장자 없는 sibling 지정자를 해석하지 못한다.
+//   - 순수 `import type`은 타입 스트리핑 시 완전히 제거돼 런타임 해석이 아예 일어나지 않으므로,
+//     계약 "타입"은 확장자 없이 안전하게 import된다(단일 소스 유지). 반면 계약의 값 헬퍼
+//     (makeRuntimeFingerprint/makeSupportedCapabilityState/…)를 값으로 import하면 런타임 해석이
+//     발생해 node가 깨진다 → 그 헬퍼가 만드는 작은 리터럴만 이 파일에서 인라인 생성한다.
+//     (타입은 계약 단일 소스 그대로. 값 리터럴만 로컬 — 타입 중복 선언 아님.)
+import type {
+  CapabilityStatus,
+  CapabilityState,
+  ReasonCode,
+  RuntimeFingerprint,
+  ValidationEvidence,
+  ValidationEvidenceItem,
+  EvidenceKind,
+} from '../../shared/runtimeContract'
 
 // ── capability 목록 (각각 독립 판정) ──────────────────────────────────────────
 export type CapabilityId =
@@ -167,9 +172,23 @@ function versionGte(a: string, b: string): boolean {
   return true
 }
 
+// RuntimeFingerprint 리터럴 빌더 — 계약 makeRuntimeFingerprint와 동형(값 헬퍼를 값으로 import하면
+// node --test가 깨지므로 로컬에서 리터럴을 만든다). 반환 타입은 계약 RuntimeFingerprint로 고정 →
+// 필드가 계약과 어긋나면 tsc가 잡는다(형태 단일 소스는 계약이 유지).
+function makeFingerprint(params: {
+  digest: string
+  pythonVersion: string
+  architecture: string
+  lockHash: string | null
+  probeVersion: string
+  packageCount: number
+}): RuntimeFingerprint {
+  return { algorithm: 'sha256', ...params }
+}
+
 // 시스템(인터프리터 없음) capability용 최소 지문. 경로·사용자명 없음(계약 §3·§5).
 function systemFingerprint(probe: CapabilityProbe, digest: string): RuntimeFingerprint {
-  return makeRuntimeFingerprint({
+  return makeFingerprint({
     digest,
     pythonVersion: '',
     architecture: '',
@@ -246,10 +265,11 @@ function deriveState(built: BuiltItem[]): CapabilityState {
   }
   const warn = built.find((b) => b.severity === 'warning')
   if (warn) {
-    if (warn.ev.reasonCode === 'CPU_FALLBACK_AVAILABLE') return makeCpuFallbackCapabilityState()
+    // GPU 없음+CPU 가능 및 그 외 비치명 경고 → supported·degraded·current(계약 makeCpuFallback…와 동형 리터럴).
     return { status: 'supported', freshness: 'current', supportLevel: 'degraded', reasonCode: warn.ev.reasonCode }
   }
-  return makeSupportedCapabilityState()
+  // 정상 → supported·full·current(계약 makeSupportedCapabilityState와 동형 리터럴).
+  return { status: 'supported', freshness: 'current', supportLevel: 'full', reasonCode: null }
 }
 
 // stale 판정 — probeVersion 불일치 또는 maxAge 초과.
@@ -273,7 +293,8 @@ export function evaluateCapability(
   if (isStale(probe, opts)) {
     return {
       capability: req.capability,
-      state: makeStaleCapabilityState('EVIDENCE_STALE'),
+      // stale → 반드시 unverified(과거 supported 재사용 금지). 계약 makeStaleCapabilityState와 동형 리터럴.
+      state: { status: 'unverified', freshness: 'stale', supportLevel: 'full', reasonCode: 'EVIDENCE_STALE' },
       evidence: buildEvidence(probe, systemFingerprint(probe, 'stale'), []),
       acceleration: { gpuAvailable: false, cpuFallback: false },
     }
@@ -487,8 +508,8 @@ export function interpreterProbeFromEnvCheck(
     packages,
   }
   if (meta.minPythonVersion !== undefined) probe.minPythonVersion = meta.minPythonVersion
-  if (meta.digest !== undefined) probe.fingerprint = makeRuntimeFingerprint({ digest: meta.digest, ...fpFields })
-  if (meta.expectedDigest !== undefined) probe.expectedFingerprint = makeRuntimeFingerprint({ digest: meta.expectedDigest, ...fpFields })
+  if (meta.digest !== undefined) probe.fingerprint = makeFingerprint({ digest: meta.digest, ...fpFields })
+  if (meta.expectedDigest !== undefined) probe.expectedFingerprint = makeFingerprint({ digest: meta.expectedDigest, ...fpFields })
   return probe
 }
 
