@@ -10,5 +10,9 @@
   "\\[기쁨] 안녕": "a3ce742777862dcb1e5a60965de89aa4a3f0973a9a6ba4319668a2cd1a959389",
   "🎉[기쁨] 안녕": "dc453b15d11265c54ba59004ba72342c1eff1f3fd4b2da36c7f48a1bd05d6d60",
   "첫 줄.[쉼 0.8]\n둘째 줄.": "be124e05e0d897bfe6aced00c2bcf3f5b0b3bf8979b5457bafc15999c366abfd",
-  "[whisper] one [happy] two [쉼 1.0] three": "aa749b344bfe973db46854a3aaac971d7d656badde3e1559d5b52d623e8b631a"
+  "[whisper] one [happy] two [쉼 1.0] three": "aa749b344bfe973db46854a3aaac971d7d656badde3e1559d5b52d623e8b631a",
+  "[기쁨] 첫째 줄.\r\n[슬픔] 둘째 줄.": "dee7ad1ddad94297eb11d8fa7134aab96e27bb04864d69e4fbbfa9a27f129896",
+  "[기쁨] 첫째.\n\n[슬픔] 둘째.": "dc23fed4a93ff26fa3ea5b7487a92c56e6af0f0bc75f2b2f06d4f3a9b064e836",
+  "  [기쁨] 안녕하세요.  ": "2e7a5f83ef79fa2728c921e140b1c4b95ce2cca27a8a93749d5f1dd3e005b00d",
+  "[happy] Hello 안녕 こんにちは": "487fb28cef9bf8ef2c756312f0e1432ca0fadc3f6052c0a9336f4c5edaec2f34"
 }

@@ -3,6 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { buildTtsConfig, buildReferencePrompts, deriveRefMode, pruneStaleReferencePrompts, normalizePitchCapability, parseGenerationSummary } from './ttsConfig.ts'
+import { TTS_PARSER_VERSION } from './ttsGrammar.ts'
 
 test('parseGenerationSummary: 정상 다중 chunk', () => {
   const g = parseGenerationSummary({
@@ -237,4 +238,40 @@ test('buildTtsConfig: 지문 맵 지정 시 stale/ orphan 전사는 Python 전�
   assert.ok(c.ttsReferencePrompts.default)          // 기본은 살아있음 → 보존
   assert.equal(c.ttsReferencePrompts.happy, undefined)  // stale 폐기
   assert.equal(c.ttsReferencePrompts.sad, undefined)    // orphan 폐기
+})
+
+// ── 공용 마감 I1 보강: parser_version 드리프트 가드(주석 아닌 실제 단언) ──
+// buildTtsConfig의 하드코딩 폴백(?? 2)이 ttsGrammar의 권위 상수와 어긋나면 실패한다.
+// 옵션에 ttsParserVersion을 주지 않아 폴백 경로를 강제로 탄다(드리프트 지점).
+test('drift guard: buildTtsConfig 폴백 ttsParserVersion === TTS_PARSER_VERSION(단일 권위)', () => {
+  assert.equal(buildTtsConfig().ttsParserVersion, TTS_PARSER_VERSION)
+  assert.equal(buildTtsConfig({}).ttsParserVersion, TTS_PARSER_VERSION)
+})
+
+// ── 공용 마감 I1 보강: parity 입력 바이트 동일성(config가 원문·sha를 조용히 정규화하지 않음) ──
+// renderer가 hash한 원문과 Python이 parse하는 원문이 정확히 같은 문자열이어야 한다.
+// trim/CRLF→LF/앞뒤 공백 제거/Unicode 정규화가 config 계층에서 끼어들면 안 된다.
+// 대사 전문은 단언에 쓰되 로그로 출력하지 않는다(assert 실패 메시지에 라벨만).
+const BYTE_IDENTITY_INPUTS: Array<[string, string]> = [
+  ['crlf', '[기쁨] 첫째 줄.\r\n[슬픔] 둘째 줄.'],
+  ['blank-line', '[기쁨] 첫째.\n\n[슬픔] 둘째.'],
+  ['leading-trailing-ws', '  [기쁨] 안녕하세요.  '],
+  ['escape-tag', '\[기쁨] 안녕'],
+  ['multilingual', '[happy] Hello 안녕 こんにちは'],
+]
+test('parity 바이트 동일성: buildTtsConfig가 ttsText를 무변형 통과(CRLF/빈줄/공백/escape/다국어)', () => {
+  for (const [label, raw] of BYTE_IDENTITY_INPUTS) {
+    const c = buildTtsConfig({ ttsText: raw })
+    assert.equal(c.ttsText, raw, `label=${label} ttsText 변형됨`)
+    assert.equal(c.ttsText.length, raw.length, `label=${label} 길이 변형됨`)
+    // config 파일 직렬화(IPC 경로 모델) 왕복도 바이트 동일
+    const round = JSON.parse(JSON.stringify(c)).ttsText
+    assert.equal(round, raw, `label=${label} JSON 왕복 변형됨`)
+  }
+})
+test('parity 바이트 동일성: buildTtsConfig가 ttsParsedPlanSha256을 무변형 통과', () => {
+  const sha = 'dee7ad1ddad94297eb11d8fa7134aab96e27bb04864d69e4fbbfa9a27f129896'
+  const c = buildTtsConfig({ ttsText: '[기쁨] 첫째 줄.\r\n[슬픔] 둘째 줄.', ttsParsedPlanSha256: sha })
+  assert.equal(c.ttsParsedPlanSha256, sha)
+  assert.equal(JSON.parse(JSON.stringify(c)).ttsParsedPlanSha256, sha)
 })
