@@ -29,7 +29,7 @@ import music_worker  # noqa: E402
 
 
 ALLOWED_ERROR_KEYS = {
-    "type", "code", "reason",
+    "type", "code", "message", "reason",
     "sampleRateA", "sampleRateB", "channelsA", "channelsB",
     "framesA", "framesB", "finiteA", "finiteB",
 }
@@ -199,6 +199,9 @@ class NonFiniteTest(_Base):
         self.assertEqual(len(errs), 1)
         self.assertEqual(errs[0]["code"], "MUSIC_ENSEMBLE_NON_FINITE")
         self.assertLessEqual(set(errs[0].keys()), ALLOWED_ERROR_KEYS)
+        # non-finite 경로도 사용자 표시 message + code 둘 다 존재
+        self.assertIsInstance(errs[0].get("message"), str)
+        self.assertTrue(errs[0]["message"].strip(), "message는 비어있지 않은 문자열")
         self.assertFalse(errs[0]["finiteA"])
         self.assertTrue(errs[0]["finiteB"])
         self.assertEqual(self._h.saves, [])
@@ -247,8 +250,12 @@ class PayloadWhitelistTest(_Base):
         err = self._h.error_emits()[0]
         # 화이트리스트 밖 키 없음
         self.assertLessEqual(set(err.keys()), ALLOWED_ERROR_KEYS)
-        # 자유형 'message' 미사용 (구조화 code 만)
-        self.assertNotIn("message", err)
+        # 사용자 표시용 message + 구조화 code 둘 다 존재(renderer message+code 계약)
+        self.assertIn("message", err)
+        self.assertIsInstance(err["message"], str)
+        self.assertTrue(err["message"].strip(), "message는 비어있지 않은 문자열")
+        self.assertIn("code", err)
+        self.assertTrue(str(err["code"]).startswith("MUSIC_ENSEMBLE_"))
         # 값에 경로·파일명·파형/샘플 배열 없음
         for k, v in err.items():
             self.assertNotIsInstance(v, (list, tuple, dict, np.ndarray))
