@@ -6,6 +6,97 @@ from audio_utils import emit, load_audio, save_audio, convert_to_wav
 from gpu_policy import select_device, run_with_oom_retry
 
 
+def _canonical_labels(order, n_speakers):
+    """cluster index → 'order 첫 등장 순' canonical 라벨 (트랙 라벨 규칙과 동일:
+    enumerate(order)). 반환 (label_of, speaker_names[0..n_speakers-1]).
+
+    hard-label sidecar 와 posterior 해석이 같은 라벨 규약을 쓰도록 단일 소스로 둔다.
+    """
+    label_of = {}
+    for idx, c in enumerate(order):
+        label_of[c] = f"화자 {chr(65 + idx)}"
+    speaker_names = [label_of.get(c, f"화자 {chr(65 + c)}") for c in range(n_speakers)]
+    return label_of, speaker_names
+
+
+# posterior 해석 임계 메타(직렬화용). synthetic 검증값이며 실제 정확도 확정값이 아니다.
+def _interpretation_thresholds():
+    import dialogue_canonical as dc
+    import dialogue_quality_p1 as q1
+    return {
+        "reviewBelow": q1.DEFAULT_POLICY.review_below,
+        "unknownBelow": q1.DEFAULT_POLICY.unknown_below,
+        "overlapMinPosterior": dc.DEFAULT_OVERLAP_MIN_POSTERIOR,
+        "note": "synthetic 검증값 — 실제 정확도 확정값 아님",
+    }
+
+
+def _build_dialogue_interpretation(frame_posteriors, prob_speech_mask, speaker_names, frame_rate):
+    """experimental posterior 해석 블록(순수). 프레임 posterior 를 overlap 다중 라벨 +
+    UNKNOWN/REVIEW 상태 세그먼트로 해석해 additive namespace 로 반환한다.
+
+    ★ 이것은 "source separation" 이 아니다 — production argmax WAV/track 은 이 함수와
+      무관하게 이미 확정·저장됐다. 여기서는 posterior 를 *해석* 만 한다(오디오 불변).
+    ★ frame_confidence 는 넘기지 않는다(=None). worker 의 speaker_weights 는 [0,1] 이
+      아니라 Gaussian 근거량 합이라, 근거 없는 변환 대신 posterior margin(top1-top2)을
+      confidence 대용으로 쓴다. status 는 synthetic 검증 임계 기준이다.
+    실패 격리는 호출부(_attach_interpretation)의 책임. 파일을 절대 쓰지 않는다.
+    """
+    import dialogue_canonical as dc
+    import dialogue_quality_p1 as q1
+
+    segs = q1.interpret_posteriors(
+        frame_posteriors, frame_rate, speaker_names,
+        frame_confidence=None,               # 결정 7: 근거 없는 speaker_weights 변환 금지.
+        speech_mask=prob_speech_mask,
+        policy=q1.DEFAULT_POLICY,
+    )
+    return {
+        "schemaVersion": dc.SCHEMA_VERSION,
+        "status": "available",
+        "experimental": True,
+        "segments": [s.to_dict() for s in segs],
+        "summary": {
+            "overlapCount": sum(1 for s in segs if s.is_overlap),
+            "unknownCount": sum(1 for s in segs if s.status == dc.SegmentStatus.UNKNOWN),
+            "reviewCount": sum(1 for s in segs if s.status == dc.SegmentStatus.REVIEW),
+        },
+        "thresholds": _interpretation_thresholds(),
+        "source": {"pipeline": "posterior-interpret", "frameRate": str(int(frame_rate))},
+    }
+
+
+def _unavailable_interpretation(error_code):
+    """해석 실패 시의 additive 블록. safe error code 만 포함(traceback·경로·score 배열 금지)."""
+    import dialogue_canonical as dc
+    return {
+        "schemaVersion": dc.SCHEMA_VERSION,
+        "status": "unavailable",
+        "experimental": True,
+        "segments": [],
+        "summary": {"overlapCount": 0, "unknownCount": 0, "reviewCount": 0},
+        "thresholds": _interpretation_thresholds(),
+        "source": {"pipeline": "posterior-interpret"},
+        "errorCode": str(error_code),
+    }
+
+
+def _attach_interpretation(payload, frame_posteriors, prob_speech_mask, speaker_names, frame_rate):
+    """payload 에 experimental posterior 해석을 additive namespace('interpretation')로
+    붙인다. **내부 try 로 격리** — 해석이 실패해도 hard-label payload(sidecar/speakerMeta)
+    는 절대 건드리지 않고, interpretation.status='unavailable' + safe error code 만 담는다.
+
+    반환은 (mutated) payload. frame_confidence 는 넘기지 않는다(결정 7).
+    """
+    try:
+        payload["interpretation"] = _build_dialogue_interpretation(
+            frame_posteriors, prob_speech_mask, speaker_names, frame_rate)
+    except Exception as ie:
+        # safe error code = 예외 클래스명만(메시지·traceback·경로·score 미포함).
+        payload["interpretation"] = _unavailable_interpretation(type(ie).__name__)
+    return payload
+
+
 def _build_dialogue_sidecar_payload(frame_labels, smoothed, order, n_speakers, frame_rate):
     """canonical dialogue sidecar 를 in-memory versioned payload 로 만든다 (순수 함수).
 
@@ -26,10 +117,7 @@ def _build_dialogue_sidecar_payload(frame_labels, smoothed, order, n_speakers, f
     import dialogue_canonical as dc
 
     # cluster index → order 기반 canonical 라벨 (track 라벨 규칙과 동일: enumerate(order)).
-    label_of = {}
-    for idx, c in enumerate(order):
-        label_of[c] = f"화자 {chr(65 + idx)}"
-    speaker_names = [label_of.get(c, f"화자 {chr(65 + c)}") for c in range(n_speakers)]
+    label_of, speaker_names = _canonical_labels(order, n_speakers)
 
     # 병합 전 hard label → 세그먼트(posterior={label:1.0}). 현재 파이프라인은 argmax 마스킹이라
     # overlap 개념이 없으므로 frame_posteriors 를 넘기지 않는다(트랙 배정과 동일한 hard label 유지).
@@ -461,6 +549,18 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
                 frame_labels.copy().tolist(),   # speech-mask 후·병합 전
                 smoothed.tolist(),              # 트랙 존재 판정용(읽기 전용)
                 order, n_speakers, PROB_SR,
+            )
+            # ── experimental posterior 해석 (additive namespace) ──
+            # 병합 전 speaker_scores(:296 정규화 :336)와 prob_speech_mask(:345-350)를
+            # plain list 로 넘겨 overlap/UNKNOWN/REVIEW 를 해석한다. **내부 try 로 격리**되어
+            # 해석이 실패해도 위 hard-label payload·아래 WAV/track 은 불변으로 나간다.
+            # frame_confidence 는 넘기지 않는다(결정 7). 파일 저장·UI 노출 없음.
+            _, interp_names = _canonical_labels(order, n_speakers)
+            _attach_interpretation(
+                payload,
+                speaker_scores.tolist(),        # 병합 전 프레임 posterior
+                prob_speech_mask.tolist(),      # 무음 경계(읽기 전용)
+                interp_names, PROB_SR,
             )
             emit("dialogueSidecar", **payload)
         except Exception as e:
