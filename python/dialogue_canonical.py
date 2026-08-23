@@ -378,9 +378,17 @@ class CanonicalSidecar:
 # 합성/실측 프레임 타임라인 → 세그먼트 빌더 (순수)
 #
 # 이것이 conversation_worker.py 의 후속 배선 지점이다. worker 는 100Hz
-# `smoothed` 프레임 라벨과 `speaker_scores` posterior 를 갖고 있으므로,
-# 그것을 plain list 로 변환해 build_segments_from_frames 에 넘기면 된다.
+# 프레임 라벨과 `speaker_scores` posterior 를 갖고 있으므로, 그것을 plain list
+# 로 변환해 build_segments_from_frames 에 넘기면 된다.
 # (이 모듈은 numpy 에 의존하지 않기 위해 plain list 만 받는다.)
+#
+# ★ 반드시 병합 전 `frame_labels`(conversation_worker.py:284, np.argmax 직후)를
+#   넘긴다 — 병합 후 `smoothed`(:296) 가 아니다. `smoothed` 는
+#   MIN_TURN_FRAMES=int(0.5*PROB_SR)=50프레임=500ms 병합(:309-324)을 거쳐 이미
+#   <500ms backchannel 이 소실된 배열이므로, 그대로 넘기면 이 모듈의 backchannel
+#   보존 목적(is_backchannel)이 무력화된다. canonical sidecar 는 병합 전 라벨을
+#   써야 짧은 맞장구가 세그먼트로 보존된다. (500ms 병합은 이 모듈이 아닌 상류
+#   단계라는 build_segments_from_frames docstring 의 설명과도 정합.)
 # ─────────────────────────────────────────────────────────────────────────
 
 def build_segments_from_frames(
