@@ -414,7 +414,13 @@ def format_srt_timestamp(seconds: float) -> str:
     프로덕션 audio_utils.fmt_srt_time 은 `int((seconds%1)*1000)` 로 ms 를 절삭하는데,
     float 비표현(예: 2.3 == 2.2999…)에서 1ms 어긋나는 잠재 버그가 있다. 이 함수는
     round(seconds*1000) 로 정수화해 그 결함을 피하며, 두 결과는 항상 ≤1ms 이내로
-    일치한다(형식 호환). 음수는 0 으로 클램프."""
+    일치한다(형식 호환). 음수는 0 으로 클램프.
+
+    ⚠ SNAPSHOT MIGRATION: canonical(반올림) 과 프로덕션(절삭)은 경계 ms 에서 최대
+    1ms 다르다. 이 차이는 이번 P0 에서 임의로 통일하지 않는다 — production 배선
+    시점에 어느 규약을 쓸지 최종 선택한다. canonical 반올림으로 전환하면 기존
+    절삭 기준으로 만들어진 SRT 스냅샷/골든 파일은 경계 ms 가 어긋날 수 있으므로
+    snapshot migration(재생성 또는 ≤1ms 허용 비교)이 필요하다."""
     if seconds < 0:
         seconds = 0.0
     total_ms = int(round(seconds * 1000))
@@ -563,19 +569,45 @@ class SilenceDecision:
 
 def apply_silence_policy(rms_values: Sequence[float],
                          threshold: float = DEFAULT_RMS_THRESHOLD,
-                         min_keep_ratio: float = MIN_KEEP_RATIO) -> SilenceDecision:
+                         min_keep_ratio: float = MIN_KEEP_RATIO,
+                         durations: Optional[Sequence[float]] = None) -> SilenceDecision:
     """세그먼트별 RMS 로 유지/삭제 결정 (순수 — 오디오 안 읽음).
 
-    transcribe_worker._filter_silent_segments 의 숫자 정책 재현:
-      - rms >= threshold 인 세그먼트만 유지.
-      - 단, 유지 개수가 total × min_keep_ratio 미만이면(레벨 이상 의심) 전부 유지
-        (over-delete 가드) — guard_tripped=True.
+    transcribe_worker._filter_silent_segments 의 숫자 정책을 그대로 재현:
+      - **0길이(측정 불가) 세그먼트는 RMS 를 재지 않고 무조건 유지.** 프로덕션
+        transcribe_worker.py:107-109 의 `if b <= a: kept.append(s); continue`
+        분기와 동일 — 샘플 범위가 비면(0길이) 임계 판정 없이 보존한다.
+        canonical 계약이 0길이(end==start)를 유효 입력으로 허용하므로
+        (TranscriptSegment.__post_init__ 는 end<start 만 거부),
+        이 정책에 도달할 수 있고, 도달 시 동작이 프로덕션과 일치해야 한다.
+      - 그 외에는 rms >= threshold 인 세그먼트만 유지.
+      - 유지 개수가 total × min_keep_ratio 미만이면(레벨 이상 의심) 전부 유지
+        (over-delete 가드) — guard_tripped=True. 0길이 유지분도 프로덕션과 같이
+        kept 카운트에 포함된다.
+
+    durations : 선택 — 세그먼트별 길이(초). 주어지면 duration<=0 인 항목을 위
+                0길이 규칙으로 무조건 유지하고 rms_values 의 해당 값은 무시한다
+                (None 이어도 됨). 미지정이면 모든 항목을 측정 대상으로 본다
+                (기존 호출부 호환).
+                주: 프로덕션의 b<=a 는 sample-rate 양자화로 sub-sample(0<dur<1/sr)
+                까지 포함하나, 그 sr 의존 경계는 오디오 없는 순수 정책의 범위 밖이다
+                — 여기서는 명시적 0길이(duration<=0)만 무조건 유지로 다룬다.
     """
     n = len(rms_values)
+    if durations is not None and len(durations) != n:
+        raise ValueError(
+            f"durations length {len(durations)} != rms_values length {n}")
     if n == 0:
         return SilenceDecision(keep=(), guard_tripped=False, threshold=threshold,
                                kept_count=0, total_count=0)
-    raw_keep = [float(r) >= threshold for r in rms_values]
+
+    def _measurable(i: int) -> bool:
+        return durations is None or float(durations[i]) > 0.0
+
+    raw_keep = [
+        (float(rms_values[i]) >= threshold) if _measurable(i) else True
+        for i in range(n)
+    ]
     kept = sum(raw_keep)
     if kept < n * min_keep_ratio:
         # 가드 발동: 과삭제로 판단 → 전부 유지(원본 보존).

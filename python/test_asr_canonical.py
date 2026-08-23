@@ -256,6 +256,69 @@ class SilencePolicyTest(unittest.TestCase):
         dec = ac.apply_silence_policy(rms)
         self.assertTrue(all(dec.keep))
 
+    def test_threshold_boundary_kept(self):
+        # rms == threshold 는 유지(>= 규약). 바로 아래는 삭제.
+        thr = ac.DEFAULT_RMS_THRESHOLD
+        # 하나만 임계 미만이면 40% 가드 아래로 안 떨어지도록 다수를 명확 발화로.
+        dec = ac.apply_silence_policy([thr, thr - 1e-9, 0.11, 0.11], threshold=thr)
+        self.assertEqual(dec.keep, (True, False, True, True))
+
+
+class ZeroLengthPolicyTest(unittest.TestCase):
+    """0길이(end==start) 세그먼트 처리 — 프로덕션 b<=a '무조건 유지' 정합."""
+
+    def test_zero_length_segment_is_valid_input(self):
+        # canonical 계약: end==start 는 거부하지 않는다(end<start 만 거부).
+        seg = ac.TranscriptSegment(start=1.0, end=1.0)   # 예외 없음
+        self.assertEqual(seg.duration, 0.0)
+        w = ac.WordTiming("x", 2.0, 2.0)                 # 예외 없음
+        self.assertEqual(w.duration, 0.0)
+        # end<start 는 여전히 거부.
+        with self.assertRaises(ValueError):
+            ac.TranscriptSegment(start=1.0, end=0.9)
+
+    def test_zero_length_kept_unconditionally_even_if_silent(self):
+        # duration<=0 항목은 RMS 가 임계 미만이어도(심지어 None 이어도) 무조건 유지.
+        rms = [None, 0.11, 0.11]
+        durs = [0.0, 1.0, 1.0]
+        dec = ac.apply_silence_policy(rms, durations=durs)
+        self.assertFalse(dec.guard_tripped)
+        self.assertEqual(dec.keep, (True, True, True))
+
+    def test_minimal_positive_duration_measured_normally(self):
+        # 최소 양수 길이(측정 대상)는 임계로 정상 판정된다.
+        rms = [0.0001, 0.11, 0.11]
+        durs = [0.02, 1.0, 1.0]   # 전부 양수 → 전부 측정
+        dec = ac.apply_silence_policy(rms, durations=durs)
+        self.assertEqual(dec.keep, (False, True, True))  # 무음만 삭제
+
+    def test_zero_length_counts_toward_guard(self):
+        # 0길이 유지분도 kept 카운트에 포함(프로덕션과 동일).
+        rms = [None, 0.0001, 0.0001]
+        durs = [0.0, 1.0, 1.0]    # 1개 무조건 유지 + 2개 무음 삭제 → kept=1 < 3*0.4=1.2 → 가드
+        dec = ac.apply_silence_policy(rms, durations=durs)
+        self.assertTrue(dec.guard_tripped)
+        self.assertTrue(all(dec.keep))
+
+    def test_durations_length_mismatch_rejected(self):
+        with self.assertRaises(ValueError):
+            ac.apply_silence_policy([0.1, 0.1], durations=[0.0])
+
+    def test_validation_precedes_silence_policy_call_order(self):
+        # 호출 순서: 세그먼트 생성(검증) → 그 뒤 순수 정책에 duration 전달.
+        # 0길이 세그먼트가 정책에 '도달'하며, 도달 시 무조건 유지됨을 고정.
+        segs = [
+            ac.make_segment(0.0, 0.0, text="네"),          # 0길이(유효) — 검증 통과
+            ac.make_segment(0.0, 2.0, text=CJK_KO,
+                            avg_logprob=-0.1, no_speech_prob=0.0),
+        ]
+        # 세그먼트에서 정책 입력을 파생(오디오 없이 duration 만).
+        durs = [s.duration for s in segs]
+        rms = [None, 0.11]   # 0길이엔 RMS 없음(프로덕션도 측정 안 함)
+        dec = ac.apply_silence_policy(rms, durations=durs)
+        self.assertTrue(dec.keep[0])   # 0길이 세그먼트 보존
+        self.assertTrue(dec.keep[1])
+
 
 class DeterministicSerializationTest(unittest.TestCase):
     def _transcript(self):
