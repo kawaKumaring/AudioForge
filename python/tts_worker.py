@@ -936,8 +936,8 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
     return out
 
 
-def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed, silence_gap, pitch=0.0,
-                         tail_cfg=None):
+def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed, silence_gap,
+                         pitch=0.0, tail_cfg=None, boundary_gaps=None):
     """Qwen 배치 합성 — 2B 품질 게이트 재사용, Qwen 전용 VRAM 임계로 장치 선택(ComfyUI 병행 안전),
     모델 1회 로딩. speed: 세그먼트별 atempo 후 사용자 silence_gap으로 결합(1.0은 raw). 임시파일 finally 정리.
     pitch: 결합본(pending)에 rubberband 음높이 후처리(0=무후처리, 계약 §6·§7). 실패는 os.replace 직전
@@ -1102,12 +1102,19 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         # (첫 파일 sr로 저장하므로 sr 혼입 시 뒤 chunk 속도/길이 변질 → 명확히 중단, 기존 wav 보존.)
         _assert_concat_ready(use)
 
-        # gap: 자동분할 내부 chunk 사이 0초, 원래 segment(사용자 줄바꿈) 경계에만 사용자 silence_gap.
+        # gap(계약 I2·추가3): 자동분할 내부 chunk 경계는 항상 0(연속, §5 불변). 원 segment 경계에는
+        # 파서가 결정한 boundary별 gap(explicit pause / line silence / emotion transition)을 쓴다 —
+        # boundary_gaps[osi] = segment osi '앞' 무음 초. 미전달(구 경로/테스트)이면 레거시 silence_gap로 폴백.
         gaps = []
         prev_osi = None
         for e in ordered_entries:
             osi = e["original_segment_index"]
-            gaps.append(0.0 if (prev_osi is None or osi == prev_osi) else float(silence_gap))
+            if prev_osi is None or osi == prev_osi:
+                gaps.append(0.0)
+            elif boundary_gaps is not None and 0 <= osi < len(boundary_gaps):
+                gaps.append(float(boundary_gaps[osi]))
+            else:
+                gaps.append(float(silence_gap))
             prev_osi = osi
 
         emit("progress", percent=90, message="문장 이어붙이기 중...")
@@ -1150,14 +1157,8 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
 
 # ── Helpers ──
 
-def _parse_line(line):
-    match = re.match(r'^\[([^\]]+)\]\s*(.+)', line.strip())
-    if match:
-        tag = match.group(1).strip()
-        text = match.group(2).strip()
-        return EMOTION_TAGS.get(tag, "default"), text
-    return "default", line.strip()
-
+# (레거시 _parse_line 제거 — 공용 마감 I2에서 합성 파싱 권위를 A 소유 tts_grammar.parse_tts_script 단일 소스로
+#  일원화했다. 줄단위 감정 태그만 알던 옛 파서는 인라인 감정·명시적 쉼·경계 우선순위를 몰라 이중 소스 위험이었다.)
 
 def _prepare_ref(ref_path):
     """참조 음성을 mono PCM WAV로 준비. 실패를 조용히 원본 반환으로 넘기지 않고 명확히 실패한다.
@@ -1260,6 +1261,46 @@ def _concat_with_boundaries(paths, gaps_before, output_path):
     sf.write(output_path, combined, target_sr)
 
 
+def _boundary_gaps_from_plan(plan, silence_gap, emotion_boundary_mode="pause",
+                             emotion_boundary_pause_ms=200):
+    """공용 마감 I2 — A 소유 파서(tts_grammar) plan → (parsed, gaps_before). 순수(numpy/soundfile 불요).
+
+    합성 권위는 Python 파서다. renderer가 보낸 것과 동일 raw를 파서가 이미 (separate.py I1 parity로) 검증했고,
+    여기선 그 plan을 합성 입력으로 환산만 한다(재-strip·재해석·조용한 default 강등 금지).
+
+    - parsed: [(emotion_id, spoken_text), ...] — 레거시 shape 유지. emotion 없으면 'default'(기존 라우팅 그대로).
+      spoken_text는 **파서 산출 그대로**(정규화 단일 소스=A 파서; parity 해시도 이 값 기준).
+    - gaps_before[i]: segment i '앞' 무음 초. [0]=0.0. 경계 우선순위(계약 추가3)는 파서가 boundary_type로
+      **단일 결정**(explicitPause > lineSilenceGap > emotionBoundaryPause > internal) → 여기선 gap 초로 환산만(합산 없음):
+        explicitPause        → 그 segment의 explicitPause pause_ms/1000 (명시값이 자동 gap을 대체, override)
+        lineSilenceGap       → silence_gap (전역 기본)
+        emotionBoundaryPause → immediate: 0.0 / pause: emotion_boundary_pause_ms/1000
+        internal(및 idx 0)   → 0.0
+    감정 전환은 immediate|pause만(계약 정정6·정정7). smooth/crossfade는 환산하지 않는다(미지원).
+    """
+    segs = plan.get("segments", [])
+    parsed = []
+    gaps_before = []
+    for idx, s in enumerate(segs):
+        eid = s.get("emotion_id") or "default"
+        parsed.append((eid, s.get("spoken_text", "")))
+        bt = s.get("boundary_type", "internal")
+        if idx == 0 or bt == "internal":
+            g = 0.0
+        elif bt == "explicitPause":
+            pm = next((p.get("pause_ms") for p in s.get("pauses", [])
+                       if p.get("boundary_type") == "explicitPause"), None)
+            g = (pm / 1000.0) if isinstance(pm, (int, float)) else 0.0
+        elif bt == "lineSilenceGap":
+            g = float(silence_gap)
+        elif bt == "emotionBoundaryPause":
+            g = 0.0 if emotion_boundary_mode == "immediate" else (float(emotion_boundary_pause_ms) / 1000.0)
+        else:
+            g = 0.0
+        gaps_before.append(g)
+    return parsed, gaps_before
+
+
 # ── Main synthesize function ──
 
 def resolve_reference_input(override, input_path):
@@ -1275,14 +1316,17 @@ def resolve_reference_input(override, input_path):
 
 def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                emotion_refs=None, emotion_ref_sources=None, preferred_engine=None, reference_prompts=None, pitch=0.0,
-               tail_cfg=None):
+               tail_cfg=None, emotion_boundary_mode="pause", emotion_boundary_pause_ms=200):
     """Synthesize speech. Auto-selects engine by language.
     reference_prompts: 식별자(default/emotionId) → {manual_text, prompt_lang, mode} 사용자 override.
     emotion_refs: emotionId → 합성에 쓸 effective 참조 경로(3~10초 클립/유효 원본).
     emotion_ref_sources: emotionId → 사용자 등록 원본 경로(등록 사실). 만료 판정 기준(계약 §5).
     pitch: 결과 WAV 음높이 보정(반음, 후처리 축). 0=무후처리. 정규화 권위는 pitch_shift.clamp_quantize.
     tail_cfg: 말끝 finishing 설정({'mode':'off'|'auto','pad_ms','fade_ms'}) 또는 None. **None/off(기본)면
-      동작 변화 0(레거시 회귀 보존)**. 'auto'는 통합 담당이 config에서 배선할 때만 전달된다(계약 §3)."""
+      동작 변화 0(레거시 회귀 보존)**. 'auto'는 통합 담당이 config에서 배선할 때만 전달된다(계약 §3).
+    emotion_boundary_mode: 감정 전환 경계 정책 immediate|pause(계약 정정6·추가3). 기본 pause(현행 동치, smooth 미지원).
+    emotion_boundary_pause_ms: pause 모드의 감정전환 경계 무음 ms. 기본 200(계약 추가4). 두 값은 I3에서 config로
+      배선되며 그 전까지 인라인 감정전환 경계에만 영향(레거시 줄단위 입력은 lineSilenceGap이라 무영향=회귀 보존)."""
     emit("status", message="음성 합성 시작", percent=0)
 
     if not emotion_refs:
@@ -1290,15 +1334,26 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
     if not emotion_ref_sources:
         emotion_ref_sources = {}
 
-    lines = [l.strip() for l in text.strip().split('\n') if l.strip()]
-    if not lines:
-        emit("error", message="합성할 텍스트가 없습니다.")
-        return
-
     import time as _time
     _t0 = _time.monotonic()
     requested_engine = preferred_engine or "auto"
-    parsed = [_parse_line(l) for l in lines]
+
+    # 공용 마감 I2 — A 소유 파서(tts_grammar) 단일 소스로 파싱(합성 권위=Python). 인라인 감정·명시적 쉼·경계
+    # 우선순위를 파서가 결정하고, 여기선 그 plan을 (parsed, boundary_gaps)로 환산만 한다(재-strip·재해석 금지).
+    # 파싱 오류는 정상 흐름상 separate.py의 I1 parity 게이트가 모델 로딩 전에 이미 차단하지만(대사 전문 미출력),
+    # 방어적으로 여기서도 구조화 code로 명확히 실패한다(조용한 default 강등·발음 금지 — 계약 정정2).
+    import tts_grammar as _tg
+    _pres = _tg.parse_tts_script(text)
+    if not _pres.get("ok"):
+        _err = (_pres.get("errors") or [{}])[0]
+        _e = RuntimeError("대사 태그를 처리할 수 없습니다.")
+        _e.error_payload = {"code": _err.get("code", "TTS_PARSE_ERROR")}
+        raise _e
+    parsed, boundary_gaps = _boundary_gaps_from_plan(
+        _pres["plan"], silence_gap, emotion_boundary_mode, emotion_boundary_pause_ms)
+    if not parsed:
+        emit("error", message="합성할 텍스트가 없습니다.")
+        return
     emit("progress", percent=5, message=f"{len(parsed)}개 문장 합성 준비")
 
     # 참조 준비부터 finally 정리 범위에 포함 — 기본 참조 준비로 임시 폴더가 생긴 뒤
@@ -1348,7 +1403,8 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         # 모델 1회 로딩으로 전 문장 처리(문장별 프로세스 금지).
         if _select_job_engine(text, preferred_engine) == "qwen3":
             final_path, info = _synthesize_qwen_job(parsed, ref_cache, overrides_by_path,
-                                                    output_dir, speed, silence_gap, pitch, tail_cfg)
+                                                    output_dir, speed, silence_gap, pitch, tail_cfg,
+                                                    boundary_gaps=boundary_gaps)
             meta = _build_tts_metadata(
                 requested_engine=requested_engine,
                 original_reference_path=reference_audio, effective_reference_path=reference_audio,
@@ -1394,7 +1450,12 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             concat_tmp = None
         else:
             concat_tmp = os.path.join(output_dir, ".synth-concat.wav")
-            _concat_with_silence(segment_paths, concat_tmp, silence_gap)
+            # I2: 경계별 gap(explicit/line/emotion). segment_paths와 boundary_gaps는 parsed 기준 1:1 정렬
+            # (gaps_before[0]은 무시). 미전달 시 전 경계 silence_gap로 폴백(레거시 동치).
+            if boundary_gaps is not None and len(boundary_gaps) == len(segment_paths):
+                _concat_with_boundaries(segment_paths, boundary_gaps, concat_tmp)
+            else:
+                _concat_with_silence(segment_paths, concat_tmp, silence_gap)
             candidate = concat_tmp
         try:
             if _ps.clamp_quantize(pitch) != 0.0:
