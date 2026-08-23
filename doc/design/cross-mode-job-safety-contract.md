@@ -19,11 +19,13 @@
 | # | 모드 | separate.py `--mode` [F] | 엔진/자원 [F/I] | 산출물 [F] |
 |---|---|---|---|---|
 | 1 | 음악 분리 | `music` | Demucs/RoFormer · GPU 선택 | 다중 스템 WAV(트랙 N개) |
-| 2 | 대화 처리 | `conversation` | 분리+화자(diarization) · GPU/CPU | 화자별/구간 트랙 |
-| 3 | 텍스트 추출 | `transcribe` | Whisper · GPU/CPU | 전사 텍스트/SRT |
-| 4 | 영상 분할 | `split` + `track-process` | ffmpeg 중심 · CPU | 분할 구간 산출물 |
+| 2 | 대화 화자 분석 | `conversation` | Silero VAD + ECAPA-TDNN + spectral clustering · GPU/CPU | 화자 활동 추정과 단일 화자 마스킹 트랙(실제 source separation 아님) |
+| 3 | 오디오 텍스트 추출(ASR) | `transcribe` | Whisper · GPU/CPU | 전사 텍스트·타임라인·선택 SRT/번역 |
+| 4 | 오디오 트랙 분할·후처리 | `split` + `track-process` | RMS/FFmpeg silencedetect + 후속 ASR/번역 · CPU/GPU 선택 | 분할 WAV·JSON·tracklist·선택 TXT/SRT/번역 |
 | 5 | 음성 합성·표현 | `tts` | Qwen3/GPT-SoVITS 등 · GPU 선택 | synthesized.wav(단일) |
 | 6 | 향후 가창(singing) | (미구현) | [R] | [R] |
+
+[F] 현행 `split`은 영상 frame 기반 shot/scene 분할이 아니다. 향후 영상 shot/scene/event 분석은 별도 analysis job/stage이며 §29에서 구분한다.
 
 보조 모드[F]: `qwen-preflight`·`pitch-preflight`(single-flight read-only), `ref-analyze`·`ref-trim`·`ref-transcribe`(참조 준비), `meta-fix`. 이들은 job이 아니라 **prepare/probe** 성격 — §11에서 구분.
 
@@ -58,13 +60,13 @@
 - **불변식 K1**: 취소의 terminal 신호 권위는 `audio:cancel`. 순서(K2)[F]: `cancelling` → tree kill 확인(taskkill 완료 exit 0 + parent 'close') → runner 'done' 합류 → bounded cleanup(§7) → `audio:cancelled`.
 - **불변식 K2**: `PythonRunner.cancel(timeoutMs)`는 `{parentExited, treeKillConfirmed, timedOut, reason}`를 반환하고, 부모 'close' AND taskkill 프로세스 'close' exit 0을 **둘 다** 기다린다. [F]
 - **불변식 K3**: 앱 종료(before-quit) 시 bounded tree kill. [F]
-- 모드 차이[F]: `audio:cancel`은 `runner`+`trackRunner` 둘 다 `cancel(3000)` 호출. 그러나 **cleanup 스코프는 TTS(`.qwen-job-*`)만 형식화**됨(§7). 비-TTS 자식(demucs/whisper/ffmpeg)의 잔존·부분 산출물 정리는 미형식화 → **P0/P1**.
-- **trackRunner 잔존[F/I]**: `trackRunner.on('done', ()=>trackRunner=null)` + 조건부 `trackRunner.cancel()`는 runner의 K2 settlement/bounded-cleanup 합류만큼 엄격하지 않다(fire-and-forget 성격). → **P0**(§17): track-process 취소 시 자식·임시물 잔존 가능성.
+- 모드 차이[F]: 앱 종료 경로는 실행 중인 `runner`와 `trackRunner`의 `cancel(3000)` Promise를 모아 bounded 종료를 기다린다. 반면 사용자 `audio:cancel` 경로는 `trackRunner.cancel()`을 await하지 않고 즉시 `trackRunner=null`로 만든 뒤, 주 `runner`에만 K2 settlement·tree kill 확인·done 합류·bounded cleanup을 적용한다. 따라서 trackRunner의 기존 tree-cancel 기능과 별개로 terminal 정착·종료 확인·부분 산출물 cleanup 계약이 부족하다.
+- **trackRunner 완료 계약 격차[F/I]**: 실행 가드·5분 inactivity watchdog·`done` config cleanup·PythonRunner tree cancel은 존재한다. 그러나 사용자 취소에서 cancel 결과를 await하지 않고 terminal event를 TrackList 행에 정착시키지 않으며, 부분 산출물 bounded cleanup도 없다. 위험은 lifecycle 전무가 아니라 **accepted와 terminal의 분리 부재 및 종료/정리 미합류**다. → **P0**(§17·§29).
 
 ## 6. Timeout 구분 (공통)
 
-- **T1 하드 deadline**: preflight/prepare에만 존재[F] — `runPreview(timeoutMs)` preflight 30000ms, ffmpeg trim 120000ms. 주 job(합성/분리/전사)은 **하드 deadline 없음**(완료 또는 취소까지 실행).
-- **T2 inactivity timeout**: **현재 없음**[F] — 자식이 진행 없이 멈춰도 자동 종료 없음 → **P1**(모드별 무진행 감지).
+- **T1 hard deadline**: preflight/prepare 일부에만 존재[F] — `runPreview(timeoutMs)` 30000ms, ffmpeg trim 120000ms. 일반 주 job 전체에 공통 hard deadline은 없다.
+- **T2 inactivity timeout**: 모드별로 불균일[F]. `trackRunner`에는 300000ms watchdog이 있고, Qwen 합성 경로에는 Python 측 280초 inactivity 방어가 있다. 그 외 주 runner 모드에는 공통 main-process inactivity 계약이 없다. 따라서 `현재 없음`이 아니라 **일부 모드에만 존재하며 공통 권위·단계 정의가 없음**이 정확하다.
 - **T3 취소 대기 bounded**: `CLEANUP_DEADLINE_MS=2500`, `cancel(3000)`[F].
 - 계약[I]: 모드별로 (a) 하드 deadline(예: 전사 파일 길이×배수), (b) inactivity(진행 이벤트 없는 최대 시간)를 **분리 정의**하고, 초과 시 T3 취소 경로를 재사용.
 
@@ -130,7 +132,7 @@
 
 | 항목 | TTS[F] | 음악/대화[I] | split/track-process[F/I] | 전사[I] |
 |---|---|---|---|---|
-| 취소 tree kill | K2 완전(settlement·합류) | runner.cancel 공통, cleanup 미형식화 | trackRunner fire-and-forget(P0) | runner.cancel 공통 |
+| 취소 tree kill | K2 완전(settlement·합류) | runner.cancel 공통, cleanup 미형식화 | tree cancel 기능은 있으나 사용자 취소에서 await·terminal 정착·bounded cleanup 미합류(P0) | runner.cancel 공통 |
 | cleanup 스코프 | `.qwen-job-*` bounded 확인 | 부분 스템·임시물 미형식화(P1) | 분할 임시물 미형식화(P1) | 부분 전사 임시물(P1) |
 | 산출 원자성 | 단일 os.replace(완전) | 다중 트랙 일괄 publish 미형식화(P1) | 다중 파일(P1) | 텍스트/SRT 원자성(I) |
 | 비민감 metadata | I1–I4 형식화 | 미형식화(P1) | 미형식화(P1) | 본문 위험 큼(P0 검토) |
@@ -169,10 +171,10 @@ J1 job 식별 · J2 parent 권위 · S1 단일 정착 · S2 취소 중 신규 �
 
 # 후속 보강 (research intake 1차 — 음악·대화·텍스트, DOC ONLY)
 
-조사 문서 3종(§28 reference)을 read-only로 코드 대조 후 반영. 사실 감사[O]: 세 문서의 현행 판독은 develop `b933ab5`와 일치 —
+조사 문서 3종(§28 reference)을 read-only로 코드 대조 후 반영. 코드 사실 감사[F]: 세 문서의 현행 판독은 develop `b933ab5`와 일치 —
 `separate.py` 음악 5 preset + `music_worker.run_roformer_ensemble`, `conversation_worker.py`(Silero VAD+ECAPA+spectral
 clustering=argmax 마스킹), `transcribe_worker.py`(Whisper ASR, RMS 0.005, condition_on_previous_text=False,
-hallucination_silence_threshold=2.0). 미구현 기능을 구현된 듯 표현한 부분 없음. 영상 분할은 조사 진행 중 → §28 placeholder.
+hallucination_silence_threshold=2.0). 미구현 기능을 구현된 듯 표현한 부분 없음. 영상/트랙 분할은 §28·§29·§30에 별도 반영됨.
 
 ## 20. Job 종류 구분 (kind)
 
@@ -269,17 +271,16 @@ TTS 단일 os.replace(§7 A1)를 다중 산출(stem/track/subtitle/chunk)로 일
 | CF14 | multi-output 한 개 누락 | 전체 publish 실패(부분 노출 금지) |
 | CF15 | progress 역행 | 단조 위반 거부(P2) |
 
-## 28. 영상 분할 — placeholder / reference slot [R]
+## 28. 영상/트랙 분할 reference 반영 상태 [F]
 
-영상 분할 조사는 **진행 중**. 문서 도착 시 별도 후속 DOC ONLY 커밋으로 반영:
-- trackRunner fire-and-forget(§17 P0-1) 해소 · shot/scene/event 경계 · 부분 산출물 two-phase publish(§22) · resume/checkpoint(§9) · cleanup(§7).
-- burned-in subtitle는 §26 TXT4(video OCR analysis stage)와 연결.
+영상 분할 조사는 완료됐으며 `doc/references/video-segmentation-techniques.md`를 반영했다. 현행 오디오 트랙 분할 계약은 §29, synthetic/mock fixture는 §30이 권위다. 향후 영상 shot/scene/event 분석은 §29의 별도 job/stage와 reference 문서 P1/P2를 따른다.
 
-### Reference 문서 (research intake 소스)
-- 음악 분리: `apps/development/AudioForge/doc/references/music-separation-techniques.md`
-- 대화 처리: `apps/development/AudioForge/doc/references/dialogue-processing-techniques.md`
-- 텍스트 추출: `_af_worktrees/integration/doc/references/text-extraction-techniques.md`
-- 영상 분할: `doc/references/video-segmentation-techniques.md`(통합 완료 — §29·§30 반영)
+### Reference 문서 (research intake 소스 — 이 브랜치 `doc/references/`에 통합)
+- 음악 분리: `doc/references/music-separation-techniques.md`
+- 대화 화자 분석: `doc/references/dialogue-processing-techniques.md`
+- 오디오 텍스트 추출(ASR): `doc/references/text-extraction-techniques.md`
+- 영상/트랙 분할: `doc/references/video-segmentation-techniques.md`
+- 색인: `doc/references/README.md`
 - 기존 audit: `research/cross-mode-reliability-audit.md`(별도 브랜치)
 - intake 요약표: `doc/design/cross-mode-research-intake.md`(동반 문서)
 

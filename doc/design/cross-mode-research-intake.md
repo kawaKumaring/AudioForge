@@ -1,7 +1,7 @@
 # Cross-Mode Research Intake (요약표 · DOC ONLY)
 
 브랜치: `design/cross-mode-job-safety-contract`(origin/develop `b933ab5` 기준). 동반 계약: `cross-mode-job-safety-contract.md`.
-목적: 완료된 기술 조사(음악·대화·텍스트)를 job-safety 계약 절과 fixture로 연결하는 intake 표. 영상 분할은 조사 진행 중.
+목적: 완료된 네 분야 기술 조사(음악·대화·텍스트/ASR·영상/트랙 분할)를 job-safety 계약 절과 fixture로 연결한다. 네 reference 문서는 모두 `doc/references/`에 통합됐다.
 
 사실 등급: [F] 코드/문서 확인 · [I] 적용 추론 · [R] 후속 슬롯. 원문·전사·prompt 본문은 이 문서에 넣지 않는다.
 "현재 실제 동작"은 develop `b933ab5` 코드 대조로 확인한 사실이다.

@@ -4,12 +4,12 @@
 원본은 각 소유 worktree에 그대로 두고, 이 브랜치는 계약(`../design/cross-mode-job-safety-contract.md`)·intake
 (`../design/cross-mode-research-intake.md`) 근거로만 참조한다. 축약·재해석하지 않은 전문 사본이다.
 
-| 분야 | 파일 | 원본 위치 | 줄 수 | 핵심 사실 정정([F]) |
+| 분야 | 파일 | 핵심 적용 계약 | 줄 수 | 핵심 사실 정정([F]) |
 |---|---|---|---|---|
-| 음악 분리 | [music-separation-techniques.md](music-separation-techniques.md) | apps/development/AudioForge/doc/references/ | 220 | 5 preset + 파형 앙상블(정합 검증·mixture consistency·manifest 부재) |
-| 대화 처리 | [dialogue-processing-techniques.md](dialogue-processing-techniques.md) | apps/development/AudioForge/doc/references/ | 207 | conversation = argmax 단일화자 마스킹(실제 source separation 아님) |
-| 텍스트 추출 | [text-extraction-techniques.md](text-extraction-techniques.md) | _af_worktrees/integration/doc/references/ | 235 | 이미지 OCR 아니라 Whisper 오디오 ASR |
-| 영상 분할 | [video-segmentation-techniques.md](video-segmentation-techniques.md) | apps/development/AudioForge/doc/references/ | 220 | split = 오디오 무음/수동 marker 트랙 분할(시각 shot/scene 아님) |
+| 음악 분리 | [music-separation-techniques.md](music-separation-techniques.md) | §21·§22·§24 | 220 | 5 preset + 파형 앙상블(정합 검증·mixture consistency·manifest 부재) |
+| 대화 화자 분석 | [dialogue-processing-techniques.md](dialogue-processing-techniques.md) | §20·§23·§25 | 207 | conversation = argmax 단일화자 마스킹(실제 source separation 아님) |
+| 오디오 텍스트 추출(ASR) | [text-extraction-techniques.md](text-extraction-techniques.md) | §20·§23·§26 | 235 | 이미지 OCR 아니라 Whisper 오디오 ASR |
+| 영상/트랙 분할 | [video-segmentation-techniques.md](video-segmentation-techniques.md) | §22·§29·§30 | 220 | split = 오디오 무음/수동 marker 트랙 분할(시각 shot/scene 아님) |
 
 ## 사실 등급 표기(각 문서 공통)
 - **[사실]/[코드 사실]/[공식 사실]** — 원 논문·공식 저장소/문서 또는 현재 AudioForge 코드로 확인.
