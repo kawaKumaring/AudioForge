@@ -279,6 +279,51 @@ TTS 단일 os.replace(§7 A1)를 다중 산출(stem/track/subtitle/chunk)로 일
 - 음악 분리: `apps/development/AudioForge/doc/references/music-separation-techniques.md`
 - 대화 처리: `apps/development/AudioForge/doc/references/dialogue-processing-techniques.md`
 - 텍스트 추출: `_af_worktrees/integration/doc/references/text-extraction-techniques.md`
-- 영상 분할: (조사 진행 중 — 도착 시 추가)
+- 영상 분할: `doc/references/video-segmentation-techniques.md`(통합 완료 — §29·§30 반영)
 - 기존 audit: `research/cross-mode-reliability-audit.md`(별도 브랜치)
 - intake 요약표: `doc/design/cross-mode-research-intake.md`(동반 문서)
+
+> §28은 영상 분할 조사 완료로 §29(계약)·§30(fixture)에서 확정됨. 이하는 그 반영분.
+
+## 29. 영상 분할 계약 (오디오 트랙 분할 = 현행; 영상 shot/scene = 미래 별도 job)
+
+[F 근거: video-segmentation-techniques.md §2 + `separate.py::_run_split`·`silencedetect=noise=-35dB:d=1.5`·`_save_tracklist`,
+`audio.ipc.ts::audio:process-track`(fire-and-forget)·`trackRunner`(WATCHDOG_MS=300000)·`SplitEditor.tsx` 코드 대조]
+
+- **VID1 명칭 정정 [F]**: 현행 `split`은 영상 frame 기반 shot/scene 분할이 아니라 **오디오 기반 트랙 분할**(수동 timestamp `splitMarkers` 또는 무음 감지)이다. UI/문서에서 `오디오 트랙 분할`로 표기하고, 미래 **영상 shot/scene/event 분할은 별도 job/stage**로 구분한다(같은 이름으로 뭉치지 않음).
+- **VID2 무음 규칙 provenance [F]**: UI(adaptive RMS·1초·첫 채널)와 Python(고정 `-35dB`·1.5초·FFmpeg mix)의 무음 판정이 **서로 다르다**. detector/version/config를 manifest에 기록하고 `interactive-preview`/`batch`로 구분(조용한 결과 차이 금지).
+- **VID3 marker 검증**: 경계 생성 전 main·worker 양쪽에서 finite · `0 < t < duration` · strictly increasing · epsilon 중복 병합 · min-gap · label cardinality 검증(현행 없음 → P0). 빈/0-duration probe는 명시적 실패로 정착.
+- **VID4 detector ≠ export 경계**: detector 경계(`requestedPts`)와 실제 export 경계(`exportedStartPts/EndPts`)를 분리 기록. keyframe snap/encoder rounding을 숨기지 않고, 초 metadata가 아니라 실제 첫/마지막 sample·PTS·duration으로 검증.
+- **VID5 시간축 권위**: 원본 time base의 integer PTS를 권위로(UI만 초 변환). PTS·timebase·keyframe·source fingerprint를 산출 metadata에 기록.
+- **VID6 staging + two-phase publish**: 복수 WAV/JSON/`_tracklist`를 실행 전용 staging에 전량 생성·검증 후 **manifest 단위 전체 세대 원자 publish**(§22). 개별 파일 순차 publish·이전 세대 혼입 금지(현행은 output에 즉시 순차 write → P0). track-process의 `.txt/_timestamps.txt/.srt/_korean.txt`도 동일 publish 계약.
+- **VID7 terminal event 분리 [F]**: `trackRunner`는 **실행 가드·5분 inactivity watchdog·PythonRunner tree cancel을 이미 갖는다**(전무 아님). 그러나 `audio:process-track` IPC는 spawn 직후 성공 반환(fire-and-forget)이라 clean-no-result·전역 cancel 시 TrackList 행에 terminal event가 없어 `processing` 고착 가능. → `accepted(jobId)`(spawn 확인)와 `completed|failed|cancelled(jobId)`(terminal)를 **분리**하고, renderer는 terminal event로만 행 상태를 끝낸다. **IPC return은 completion 신호가 아니다.**
+- **VID8 timeout 구분**: inactivity timeout(현행 5분 watchdog) · per-stage timeout · 전체 hard deadline을 분리. 긴 무음·긴 scene 자체는 inactivity가 아니며 worker heartbeat/progress 권위(§4)를 정의.
+- **VID9 cancel 정리**: cancel 시 worker/FFmpeg tree 종료 **확인 후**, job manifest가 소유한 정확한 staging만 정리(다른 세대·기존 결과 무접촉).
+- **VID10 crash orphan**: 앱 재시작 시 running manifest는 orphan으로 판정하되 source/result를 삭제하지 않고 staging 검증 후 resume 가능/폐기 가능 상태로 노출. config는 현행 done에서만 삭제 → crash 후 orphan 규칙 필요(P0).
+- **VID11 partial ≠ final**: 부분 결과는 final과 다른 namespace/state(§22). resume은 `source fingerprint · detector config · boundary plan`이 **모두 같을 때만** 허용(feature/index·미publish 결과까지만 재사용).
+- **VID12 민감정보**: 원본 절대 경로·자막/전사 본문은 progress/log/telemetry/metadata에서 제외. source ID/fingerprint와 allowlisted metadata만(§4 SEC1·§23).
+- **VID13 parent/child 구조**: `split` parent 아래 detector/index/extract/publish child. parent cancel은 모든 child를 terminal 상태로 만든 뒤에만 완료(§2 J2).
+
+## 30. 영상 분할 conformance fixture (synthetic/mock, GPU·사용자 미디어 없음)
+
+FFmpeg test source/color/sine/noise로 생성, 실행 전용 임시 경로·finally 정리·resources 무접촉. boundary JSON뿐 아니라
+각 segment 첫/마지막 sample·PTS, 합계 duration, gap/overlap, A/V sync, decode 가능성, manifest hash를 검사.
+
+| ID | 시나리오 | 핵심 단언 |
+|---|---|---|
+| VF01 | marker NaN/inf | 경계 생성 전 거부(VID3) |
+| VF02 | 음수·duration 초과 marker | 범위 밖 거부 |
+| VF03 | 정렬 역전·중복 marker | strictly increasing·중복 병합, 조용한 통과 금지 |
+| VF04 | segment N개 중 N−1 생성 후 실패 | final 미노출, 기존 세대 보존, staging만 정리(VID6/VID9) |
+| VF05 | publish 직전 cancel | 부분물 final 승격 금지, cancelled terminal event(VID7) |
+| VF06 | clean-no-result | 행이 `processing` 고착 없이 terminal(완료 계약, VID7) |
+| VF07 | 전역 cancel | 모든 TrackList 행 terminal event, 잔존 0 |
+| VF08 | child exit 후 terminal event 누락 | accepted↔completed 분리로 행 정착(VID7) |
+| VF09 | 앱 crash 후 orphan staging | 재시작 시 orphan 판정·source 무삭제(VID10) |
+| VF10 | VFR·non-zero PTS·long GOP | requested/exported PTS 분리 검증(VID4/VID5) |
+| VF11 | exported boundary 오차 | detector 오차와 exporter 오차 분리 측정 |
+| VF12 | 고정 chunk N±1 overlap transition | 중복·누락 없이 valid region만 정착 |
+| VF13 | A/V offset·drift | 보정/경고, 불명확 시 fusion off(§3.5 근거) |
+| VF14 | flash·camera motion·fade/dissolve | flash 과검출 억제·fade는 interval로(향후 visual detector) |
+| VF15 | 동일 source/config resume | fingerprint 일치 시에만 재개, 중복 연산 최소 |
+| VF16 | source fingerprint 변경 후 resume | resume 거부(VID11) |
