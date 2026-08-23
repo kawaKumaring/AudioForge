@@ -8,6 +8,34 @@ import path from 'path'
 import os from 'os'
 import { fileURLToPath } from 'url'
 
+// 실 Qwen 게이트 공용 fixture 계약(test-only) — 명시적 AF_E2E_REFERENCE만 사용한다.
+// speaker_b.wav 하드코딩·자동 검색·복사·fallback 없음. 오디오 decode·전사는 하지 않는다(실 Qwen 실행 전 금지).
+// 검사: 미설정 / 파일 없음 / .wav 아님 / 최소 바이트 미만(빈·손상 방어; 지속시간은 decode 없이 검사 불가라
+// 호출자가 요구하는 실제 길이는 사용자가 승인 자산으로 보장). 순수 함수(process.exit·decode 없음)라 단위테스트 가능.
+export function validateE2EReferencePath(raw, { minBytes = 64 * 1024 } = {}) {
+  const p = (raw || '').trim()
+  if (!p) return { ok: false, kind: 'unset', reason: 'AF_E2E_REFERENCE 미설정' }
+  if (!fs.existsSync(p)) return { ok: false, kind: 'missing', reason: '경로에 파일 없음' }
+  if (path.extname(p).toLowerCase() !== '.wav') return { ok: false, kind: 'ext', reason: '.wav 확장자 아님' }
+  const bytes = fs.statSync(p).size
+  if (bytes < minBytes) return { ok: false, kind: 'small', reason: `파일 크기 ${bytes}B < 최소 ${minBytes}B` }
+  return { ok: true, path: p, bytes }
+}
+
+// exit 래퍼 — 미설정은 SKIP(prerequisite), 잘못된 값은 명시 오류. 어느 경우든 경로·내용을 로그로 출력하지 않는다.
+export function requireE2EReference(opts = {}) {
+  const r = validateE2EReferencePath(process.env.AF_E2E_REFERENCE, opts)
+  if (!r.ok) {
+    if (r.kind === 'unset') {
+      console.error('SKIP(prerequisite): AF_E2E_REFERENCE 미설정 — 실 Qwen 게이트는 명시 참조 자산이 필요합니다. speaker_b.wav 자동 fallback·검색 없음.')
+    } else {
+      console.error(`prerequisite 오류: AF_E2E_REFERENCE ${r.reason} (경로·내용 미출력).`)
+    }
+    process.exit(2)
+  }
+  return r.path   // 유효 경로 반환(로그로 출력하지 않는다)
+}
+
 // test-only synthetic WAV 생성(사용자 미디어 미사용). 순수 Node Buffer로 PCM16 mono sine WAV를 쓴다.
 // 이번 실행 전용 임시 경로에 만들고, 호출부가 finally에서 정확히 그 경로만 정리한다(resources/외부 파일 무접촉).
 export function makeSyntheticWav(destPath, seconds = 30, sampleRate = 24000, freq = 180) {

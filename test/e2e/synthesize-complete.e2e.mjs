@@ -11,11 +11,11 @@ import { _electron as electron } from 'playwright'
 import { execFileSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
-import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenJobDirs, qwenVenvPids, nvidiaSmiGpu0 } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenJobDirs, qwenVenvPids, nvidiaSmiGpu0, requireE2EReference } from './_e2e-helper.mjs'
 
 const WAIT_MS = 350000  // > watchdog 300 > 무응답 280 (위 근거 참조)
 const APP = process.cwd()
-const SRC = path.join(APP, 'resources', 'speaker_b.wav')
+const SRC = requireE2EReference()   // 명시 AF_E2E_REFERENCE 단일 권위(speaker_b.wav 하드코딩·fallback 없음)
 const RES_DIR = path.join(APP, 'resources')
 const SHOT = path.join(APP, '작업파일', 'e2e_shots')
 const PY = 'E:/AI/ComfyUI_windows_portable_python3.12/python_embeded/python.exe'
@@ -24,7 +24,7 @@ let failed = 0
 const logLines = []
 const log = (...a) => { const s = a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '); logLines.push(s); console.log('[e2e]', s) }
 const ok = (c, m) => { log(c ? 'PASS' : 'FAIL', m); if (!c) failed++ }
-if (!fs.existsSync(SRC)) { console.error('필수 파일 없음:', SRC); process.exit(2) }
+// (참조 자산 검증은 requireE2EReference가 처리 — 경로·내용 미출력)
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
 // resources/ 삭제 금지 — 입력을 격리 tmp로 복사, 출력도 그 안에 생성.
 const resBefore = snapshotTree(RES_DIR)
@@ -49,7 +49,7 @@ try {
     const url = await window.api.audio.getFileUrl(p)
     s.getState().setFile(info, url); s.getState().setMode('tts')
   }, REF)
-  await win.waitForFunction(() => /111\.08/.test(document.getElementById('root')?.innerText || ''), undefined, { timeout: 30000 })
+  await win.getByText('이 구간으로 확정').waitFor({ timeout: 30000 })   // 참조 패널 분석 완료 대기(파일별 duration 하드코딩 없음)
   await win.getByText('이 구간으로 확정').click({ timeout: 20000 })
   await win.waitForFunction(() => window.__afStore?.getState().ttsRefReady === true, undefined, { timeout: 40000 })
   await win.evaluate(() => window.__afStore.setState({ ttsText: '안녕하세요.' }))
