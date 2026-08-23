@@ -23,6 +23,20 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import generation_limit as gl
 import qwen_bridge
 import tts_worker
+import runtime_paths
+
+
+def _configure_synth_roots(base):
+    """run_job의 venv/모델 경로가 주입된 root 밑에서 해석되도록 synthetic managed root를 심는다
+    (Popen은 별도 mock — 해석된 경로는 argv로만 쓰이고 실행되지 않는다)."""
+    runtime_paths.reset()
+    runtime_paths.set_path_resolver(None)
+    runtime_paths.configure({
+        "schemaVersion": 2,
+        "runtimeRoot": {"path": os.path.join(base, "rt"), "ownership": "audioforge-managed"},
+        "modelRoot": {"path": os.path.join(base, "md"), "ownership": "audioforge-managed"},
+        "cacheRoot": {"path": os.path.join(base, "ch"), "ownership": "audioforge-managed"},
+    })
 
 
 def _write_wav(path, seconds=0.3, sr=24000, amp=0.3):
@@ -332,6 +346,10 @@ class RunJobLimitErrorTest(unittest.TestCase):
         self._p.start(); self.addCleanup(self._p.stop)
         self.tmp = tempfile.mkdtemp(prefix="af_gl_")
         self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+        self._root_dir = tempfile.mkdtemp(prefix="af_root_")
+        _configure_synth_roots(self._root_dir)
+        self.addCleanup(runtime_paths.reset)
+        self.addCleanup(lambda: shutil.rmtree(self._root_dir, ignore_errors=True))
         self.eng = tts_worker.QwenTTSEngine()
         self.seg = [{"index": 0, "text": "x", "ref_audio": "r", "ref_text": "",
                      "x_vector_only": True, "language_name": "Korean",

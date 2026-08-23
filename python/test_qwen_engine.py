@@ -187,6 +187,9 @@ class RunJobRealtimeTest(_QwenGlobalIsolation, unittest.TestCase):
         self._isolate_globals()
         self.log = []
         self._silence_emit(self.log)
+        # run_job이 venv/모델 경로를 주입된 root에서 해석하므로 synthetic root 구성(Popen은 mock).
+        _configure_test_roots()
+        self.addCleanup(runtime_paths.reset)
         self.eng = tts_worker.QwenTTSEngine()
         self.seg = [{"index": 0, "text": "t", "ref_audio": "r", "ref_text": "x",
                      "x_vector_only": False, "language_name": "Korean", "out_path": "a.wav"}]
