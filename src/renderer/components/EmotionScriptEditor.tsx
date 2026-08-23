@@ -7,7 +7,7 @@
 //  - parsedPreview는 renderer preview(합성 권위는 Python; parity mismatch 시 상위에서 합성 차단).
 //  - ⚠️ TTSEditor 배선은 통합 담당 단계. 이 파일은 TTSEditor에 연결하지 않는다.
 //  - ⚠️ 실제 Electron 800×600·125/150%·IME·스크롤 동기화 E2E는 shared env에서 검증(D-8 gate). 여기선 미검증.
-import { useRef, useMemo, useCallback, useImperativeHandle, forwardRef } from 'react'
+import { useRef, useMemo, useCallback, useEffect, useImperativeHandle, forwardRef } from 'react'
 import type { CSSProperties, ClipboardEvent, Ref, ReactElement, ReactNode } from 'react'
 import { ALL_EMOTIONS, EMOTION_ID_TO_LABEL, insertEmotionTag, insertPauseTag } from '@/lib/emotions'
 import { parseTtsScript, type ParsedPlan, type TtsGrammarError } from '../../shared/ttsGrammar'
@@ -81,8 +81,11 @@ function EmotionScriptEditorImpl(
   const plan = localPreview.plan
   const errors = localPreview.errors
 
-  // textarea selection/scroll 복원 유틸.
-  const restore = useCallback((selStart: number, selEnd: number) => {
+  // textarea selection/scroll 복원 유틸. scrollTop을 함께 복원한다 — controlled value 교체 시 브라우저가
+  // textarea.scrollTop을 0으로 리셋하므로, 삽입/교체 전 scrollTop을 넘겨받아 rAF에서 되돌린다(긴 대사에서
+  // 태그 삽입 시 뷰가 맨 위로 튀는 것 방지). setSelectionRange의 caret-into-view 스크롤을 마지막 scrollTop
+  // 대입이 덮어써 '기존 scroll 유지' 계약을 만족시킨다.
+  const restore = useCallback((selStart: number, selEnd: number, scrollTop: number, scrollLeft: number) => {
     const ta = taRef.current
     if (!ta) return
     // React onChange 반영 후 selection 지정(다음 프레임).
@@ -91,6 +94,8 @@ function EmotionScriptEditorImpl(
       if (!el) return
       el.focus()
       try { el.setSelectionRange(selStart, selEnd) } catch { /* noop */ }
+      el.scrollTop = scrollTop        // setSelectionRange의 caret-scroll을 덮어써 기존 scroll 유지
+      el.scrollLeft = scrollLeft
       if (overlayRef.current) {
         overlayRef.current.scrollTop = el.scrollTop
         overlayRef.current.scrollLeft = el.scrollLeft
@@ -103,10 +108,11 @@ function EmotionScriptEditorImpl(
     if (!ta || disabled) return
     const s = ta.selectionStart ?? value.length
     const e = ta.selectionEnd ?? s
+    const scrollTop = ta.scrollTop, scrollLeft = ta.scrollLeft  // value 교체 전 캡처(교체 후 0으로 리셋됨)
     const res = insertEmotionTag(value, s, e, emotionId)
     onChange(res.text)
     onInsertEmotion(emotionId) // 상위 알림(감정 참조 게이팅 등)
-    restore(res.selStart, res.selEnd)
+    restore(res.selStart, res.selEnd, scrollTop, scrollLeft)
   }, [value, disabled, onChange, onInsertEmotion, restore])
 
   const applyPause = useCallback((pauseMs: number) => {
@@ -114,6 +120,7 @@ function EmotionScriptEditorImpl(
     if (!ta || disabled) return
     const s = ta.selectionStart ?? value.length
     const e = ta.selectionEnd ?? s
+    const scrollTop = ta.scrollTop, scrollLeft = ta.scrollLeft
     const res = insertPauseTag(value, s, e, pauseMs)
     if (!res.ok) {
       // 조용한 clamp/합산 금지 — 삽입하지 않고 상위 알림만(구조화 오류는 preview/parse에서 표면화).
@@ -122,7 +129,7 @@ function EmotionScriptEditorImpl(
     }
     onChange(res.text)
     onInsertPause(pauseMs)
-    restore(res.selStart, res.selEnd)
+    restore(res.selStart, res.selEnd, scrollTop, scrollLeft)
   }, [value, disabled, onChange, onInsertPause, restore])
 
   const flushQueue = useCallback(() => {
@@ -145,6 +152,19 @@ function EmotionScriptEditorImpl(
     },
     focus: () => { taRef.current?.focus() },
   }), [applyEmotion, applyPause])
+
+  // E2E 전용(window.api._e2e=AF_E2E): 셸에 쉼 삽입 UI 버튼이 아직 없어도 편집 계약(특히 scrollTop 복원)을
+  // 감정/쉼 삽입 양쪽에서 실제 Electron으로 검증할 수 있도록 삽입 트리거만 노출한다(production은 노출 안 함).
+  // A 편집 로직 변경이 아니라 imperative handle 재노출이다.
+  useEffect(() => {
+    const w = window as unknown as { api?: { _e2e?: boolean }; __afEditor?: unknown }
+    if (!w.api?._e2e) return
+    w.__afEditor = {
+      insertEmotion: (id: string) => { if (composingRef.current) { queueRef.current.push({ kind: 'emotion', id }); return } applyEmotion(id) },
+      insertPause: (ms: number) => { if (composingRef.current) { queueRef.current.push({ kind: 'pause', ms }); return } applyPause(ms) },
+    }
+    return () => { try { delete w.__afEditor } catch { /* noop */ } }
+  }, [applyEmotion, applyPause])
 
   // ── overlay 색상 세그먼트 빌드(감정 구간 표시. 혼합 아님). ──
   // 원문 value를 세그먼트 offset(ui UTF-16)으로 잘라 배경색을 입힌 span 조각으로 재구성.
