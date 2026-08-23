@@ -813,6 +813,11 @@ _METADATA_KEYS = [
     "generation_limit", "generated_iterations", "termination_reason",
     # 자동 분할(계약 B) 재현 배열 — 내용/경로/전사 없이 index·count·token·iter·사유·emotion_id만.
     "generation_chunks",
+    # 공용 마감 I4 — 파서 plan 재현(비민감: 수치/해시8만, 대사 전문·전사·경로 없음). parsed_plan_sha8은 full sha256의 앞 8자.
+    "parser_version", "parsed_plan_sha8", "segment_count", "chunk_count",
+    "explicit_pause_count", "total_pause_ms",
+    # 말끝 finishing 재현(계약 §2·추가4) + 감정 전환 경계 모드.
+    "tail_mode", "tail_pad_ms", "tail_fade_ms", "tail_fade_applied", "emotion_boundary_mode",
 ]
 
 
@@ -873,7 +878,10 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
     tail = _af.parse_tail_config(tail_cfg)  # 범위 밖이면 INVALID_TTS_CONFIG(조용한 clamp 없음)
     if tail.mode == "off":
         # 레거시 경로와 바이트 단위 동일 — place_final_with_pitch가 final을 원자 교체.
-        return _ps.place_final_with_pitch(candidate, final_path, pitch, work_dir)
+        _off = dict(_ps.place_final_with_pitch(candidate, final_path, pitch, work_dir))
+        # I4 재현 메타: off는 tail 미적용(패딩/페이드 0).
+        _off.update(tail_mode="off", tail_pad_ms=0, tail_fade_ms=0, tail_fade_applied=False)
+        return _off
 
     # auto: 원자 교체 전 모든 불변식(A/B/C)을 강제한다. 비유한은 **write 이전에** 차단하고, pending은
     # **write 후 재오픈**해 다시 검증한다. 어느 단계든 실패면 AudioFinishingError로 pending 삭제 + 기존
@@ -933,6 +941,9 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
                     pass
     out = dict(pinfo)
     out["output_sample_rate"] = int(sr)
+    # I4 재현 메타: auto tail 적용값(계약 §2). fade_applied는 실제 fade 수행 여부(무음 tail이면 pad만).
+    out.update(tail_mode="auto", tail_pad_ms=int(round(plan.pad_ms)),
+               tail_fade_ms=int(round(plan.fade_ms)), tail_fade_applied=bool(plan.fade_applied))
     return out
 
 
@@ -1147,6 +1158,9 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             "pitch_postprocessed": pinfo["pitch_postprocessed"],
             "generation_limit": meta_gen_limit, "generated_iterations": meta_gen_iters,
             "termination_reason": meta_term, "generation_chunks": gen_chunks,
+            # I4: 말끝 finishing 재현(off/auto·pad·fade·적용여부). _finish_and_place가 반환.
+            "tail_mode": pinfo.get("tail_mode"), "tail_pad_ms": pinfo.get("tail_pad_ms"),
+            "tail_fade_ms": pinfo.get("tail_fade_ms"), "tail_fade_applied": pinfo.get("tail_fade_applied"),
         }
         return final_path, info
     finally:
@@ -1349,11 +1363,23 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         _e = RuntimeError("대사 태그를 처리할 수 없습니다.")
         _e.error_payload = {"code": _err.get("code", "TTS_PARSE_ERROR")}
         raise _e
+    _plan = _pres["plan"]
     parsed, boundary_gaps = _boundary_gaps_from_plan(
-        _pres["plan"], silence_gap, emotion_boundary_mode, emotion_boundary_pause_ms)
+        _plan, silence_gap, emotion_boundary_mode, emotion_boundary_pause_ms)
     if not parsed:
         emit("error", message="합성할 텍스트가 없습니다.")
         return
+    # I4 파서 plan 재현 메타(비민감: 수치·해시8만, 대사 전문/전사/경로 없음). 두 합성 경로 메타에 공통 병합.
+    _sm = _plan.get("summary", {})
+    _plan_meta = {
+        "parser_version": _sm.get("parser_version"),
+        "parsed_plan_sha8": _sm.get("plan_sha8"),
+        "segment_count": _sm.get("segment_count"),
+        "chunk_count": _sm.get("chunk_count"),
+        "explicit_pause_count": _sm.get("explicit_pause_count"),
+        "total_pause_ms": _sm.get("total_pause_ms"),
+        "emotion_boundary_mode": emotion_boundary_mode,
+    }
     emit("progress", percent=5, message=f"{len(parsed)}개 문장 합성 준비")
 
     # 참조 준비부터 finally 정리 범위에 포함 — 기본 참조 준비로 임시 폴더가 생긴 뒤
@@ -1408,7 +1434,8 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             meta = _build_tts_metadata(
                 requested_engine=requested_engine,
                 original_reference_path=reference_audio, effective_reference_path=reference_audio,
-                reference_region=None, speed=float(speed), silence_gap=float(silence_gap), **info)
+                reference_region=None, speed=float(speed), silence_gap=float(silence_gap),
+                **_plan_meta, **info)
             tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
             emit("progress", percent=99, message="완료!")
             emit("result", tracks=tracks, outputDir=output_dir, metadata=meta)
@@ -1505,7 +1532,11 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             fallback=fb, fallback_reason=("Qwen3 사용 불가 → 기존 엔진 폴백" if fb else None),
             elapsed_seconds=round(_time.monotonic() - _t0, 2), output_sample_rate=out_sr,
             pitch_semitones=pitch_st2, pitch_method=pitch_method2,
-            pitch_postprocessed=bool(pitch_st2 != 0.0))
+            pitch_postprocessed=bool(pitch_st2 != 0.0),
+            # I4: 파서 plan 재현 + 말끝 finishing(pinfo2가 반환).
+            tail_mode=pinfo2.get("tail_mode"), tail_pad_ms=pinfo2.get("tail_pad_ms"),
+            tail_fade_ms=pinfo2.get("tail_fade_ms"), tail_fade_applied=pinfo2.get("tail_fade_applied"),
+            **_plan_meta)
         tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
         emit("progress", percent=99, message="완료!")
         emit("result", tracks=tracks, outputDir=output_dir, metadata=meta)
