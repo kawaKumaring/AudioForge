@@ -164,3 +164,121 @@
 J1 job 식별 · J2 parent 권위 · S1 단일 정착 · S2 취소 중 신규 차단 · P1 진행 권위=main · P2 단조 · K1 audio:cancel terminal 권위 · K2 tree kill 확인 · K3 종료 시 kill · A1 원자 1회 교체 · A2 실행 전용 임시폴더 · RT1 자동 재시도 금지 · RT2 명시 1클릭=1회 · RS1 가시적 자원 폴백 · CC1 동일자원 직렬화 · SEC1 민감정보 비노출 · M1/M2 공통 metadata envelope+버전.
 
 (현행 완전 충족=TTS. 타 모드는 [I]/[R] — production 계약화는 §17 P0/P1 순서로.)
+
+---
+
+# 후속 보강 (research intake 1차 — 음악·대화·텍스트, DOC ONLY)
+
+조사 문서 3종(§28 reference)을 read-only로 코드 대조 후 반영. 사실 감사[O]: 세 문서의 현행 판독은 develop `b933ab5`와 일치 —
+`separate.py` 음악 5 preset + `music_worker.run_roformer_ensemble`, `conversation_worker.py`(Silero VAD+ECAPA+spectral
+clustering=argmax 마스킹), `transcribe_worker.py`(Whisper ASR, RMS 0.005, condition_on_previous_text=False,
+hallucination_silence_threshold=2.0). 미구현 기능을 구현된 듯 표현한 부분 없음. 영상 분할은 조사 진행 중 → §28 placeholder.
+
+## 20. Job 종류 구분 (kind)
+
+작업을 4종으로 분류하고, kind는 §3 상태 DAG와 **직교**(같은 DAG, 다른 품질 계약)한다.
+
+- **analysis**: 입력에서 구조/라벨 추출 — ASR(텍스트 추출), diarization(대화), (향후) OCR·scene detection. 산출=구조화 artifact + confidence + provenance. **원본을 변형하지 않음.**
+- **transformation**: 신호 변형 — 음악 분리, trimming, pitch, audio finishing. 산출=변형된 오디오(길이/sr/채널 보존 계약).
+- **generation**: 무→유 생성 — TTS, 향후 singing. 비결정성 가능(생성 tail).
+- **composite**: analysis→transformation→generation 파이프라인(예: 대화 분석→화자 분리→다화자 TTS). 각 stage가 자기 kind 계약을 따르고 parent job이 stage DAG를 소유(§2 J2).
+
+[F] 현행 매핑: music/conversation=transformation+analysis 혼재(분리 마스킹+diarization), transcribe=analysis, tts=generation. **불변식 KIND1**: 한 job은 primary kind를 선언하고, composite는 stage별 kind를 명시(analysis 산출을 transformation/generation 산출과 같은 artifact kind로 뭉개지 않음 — §25 대화, §26 텍스트).
+
+## 21. Artifact manifest (공통 산출물 계약)
+
+모든 산출물(임시/부분/최종)은 아래 manifest 항목으로 기술한다. 원문·전사·prompt 본문은 **넣지 않는다**(§4 SEC1, `sensitive_content=true`면 본문은 보호 artifact에만).
+
+```
+artifact_id · job_id · parent_job_id · stage · mode · kind(analysis|transformation|generation|composite)
+· publish_state(temporary|partial|final) · source_fingerprint · model_config_fingerprint(name·url·sha256·license)
+· size · checksum(sha256) · created_at · sensitive_content(bool) · cleanup_owner(job|session|app-quit)
+```
+
+- **불변식 ART1**: `final`은 §22 two-phase publish 통과 후에만 부여. `temporary`/`partial`은 final과 **다른 namespace/state**.
+- **불변식 ART2**: `cleanup_owner`가 정리 주체·시점을 명시(§7 P1-2 해소 축). manifest 없는 산출물은 orphan(§12).
+
+## 22. 다중 산출물 two-phase publish
+
+TTS 단일 os.replace(§7 A1)를 다중 산출(stem/track/subtitle/chunk)로 일반화.
+
+1. **prepare**: 모든 산출을 job 임시 namespace에 쓰고 manifest(§21) 작성.
+2. **validate all**: 전 산출 검증(모드별 §24–§26) — 하나라도 실패면 **final 미노출**, 기존 final 보존, job=failed, 임시물 정리.
+3. **atomic manifest publish**: 전부 통과 시 manifest 단위로 원자 노출(개별 파일 부분 노출 금지).
+4. **partial**: 부분 성공물은 `partial` state로 별도 namespace 유지(final로 오인 금지). 앱 재시작 시 orphan partial 탐지(§12).
+
+- **불변식 PUB1**: 검증 전 어떤 stem/track/subtitle/chunk도 final로 노출하지 않는다.
+- **불변식 PUB2**: 실패 시 기존 final 무손상(A1 계승). cancel(§5)은 publish 직전에도 부분물을 final로 승격하지 않는다.
+
+## 23. Provenance·confidence (analysis 산출)
+
+- **불변식 PROV1**: 전사·화자·OCR·scene boundary 등 analysis 결과값은 **confidence·provenance와 분리 저장하지 않는다**(한 레코드에 값+점수+출처 동반).
+- **불변식 PROV2**: metadata envelope(§14)에는 count·hash·version·status만. 원문·전사 본문은 **보호된 결과 artifact** 안에만(§4 SEC1).
+- 공통 필드[I]: `{ value, raw_scores, calibrated_score?, provenance{source_kind, source_interval, engine, model_config_fingerprint, timing_source}, decision(accept|review|suppress)+reasons }`.
+
+## 24. 음악 분리 계약 (transformation)
+
+[F 근거: music-separation-techniques.md §2.2 위험 + 코드 대조]
+
+- **MUS1 앙상블 입력 정합**: 앙상블/합성 전 sample rate·channel·length·offset·polarity·gain 일치 검증. 불일치 시 **조용한 truncate/평균 금지** — 단일 모델 fallback 또는 명시 실패(현행은 최소 길이·채널로 잘라 평균 → P0).
+- **MUS2 stem 검증**: stem별 finite·peak·length 보존. mixture consistency(`‖mixture − Σstems‖`) 측정.
+- **MUS3 품질 metric ≠ 상태 DAG**: leakage·phase·transient·chunk seam은 **품질 metric**이며 §3 상태 DAG와 분리(promotion gate용, job 성공/실패 판정과 별개).
+- **MUS4 provenance**: model URL·SHA-256·config·license manifest(§21). 자동 다운로드를 production 기본으로 두지 않음.
+- 다중 stem 산출은 §22 two-phase publish 대상(부분 stem 노출 금지).
+
+## 25. 대화 처리 계약 (analysis; 분리 아님)
+
+[F 근거: dialogue-processing-techniques.md §1·§2.1 + `conversation_worker.py` 코드 대조]
+
+- **DLG1 [F]**: 현행 conversation은 **실제 source separation이 아니라 frame당 단일 화자 argmax 마스킹**이다. 산출을 "분리"로 표현하지 않는다.
+- **DLG2 overlap 다중 라벨**: `speaker_label: scalar` → `active_speakers[] + posteriors`. 겹침 프레임을 손실 없이 다중 라벨로 표기(argmax 전 posterior 보존).
+- **DLG3 UNKNOWN/REVIEW**: 낮은 posterior margin·부족한 순수 발화는 억지 귀속 대신 `UNKNOWN`/`REVIEW` 상태.
+- **DLG4 word-level attribution**: 원본 1회 전사+정렬 후 diarization posterior와 단어 구간 결합(§23 PROV).
+- **DLG5 구조화 artifact**: RTTM·CTM·canonical JSON(session/turn/word/source interval/version/confidence). TXT/SRT는 파생.
+- **DLG6 kind 분리**: diarization 분석과 다화자 TTS 생성은 **별도 job kind**(analysis vs generation). 분석 speaker_id를 자동으로 TTS 참조로 넘기지 않음(동의 경계).
+
+## 26. 텍스트 추출 계약 (analysis)
+
+[F 근거: text-extraction-techniques.md §1·§2 + `transcribe_worker.py` 코드 대조]
+
+- **TXT1 [F]**: 현행 "텍스트 추출"은 **이미지 OCR이 아니라 Whisper 기반 오디오 ASR**이다. artifact kind를 OCR과 뭉개지 않는다.
+- **TXT2 canonical segment**: Whisper raw 세그먼트·단어 시간·점수(avg_logprob·no_speech_prob·compression_ratio·word prob)·filter 사유를 **하나의 canonical segment list + provenance sidecar**에 보존. TXT/timeline/SRT/translation/UI는 이 단일 소스에서 파생.
+- **TXT3 SRT publish sanitizer**: 겹침·역전·0길이 cue 금지, 문장부호·침묵·CPS·CJK grapheme·최대 2줄로 재분할. 번역은 원문 cue ID/time 유지(모델이 cue 수 변경 금지).
+- **TXT4 향후 video OCR = 별도 analysis stage**: ASR transcript와 OCR text를 같은 artifact kind로 뭉개지 않음. video OCR은 temporal dedupe·reading order·subtitle timing(§28 영상 계약)을 자기 계약에 포함.
+- **TXT5 민감**: transcript 본문은 metadata가 아니라 보호 artifact로만(§23 PROV2). RMS 저음량 오삭제는 품질 metric(§8 fixture)으로 별도 측정.
+
+## 27. 공통 conformance fixture 초안 (synthetic/mock, GPU·사용자 미디어 없음)
+
+모드 무관 공통 시나리오(각 모드가 자기 검증을 추가). 실행 전용 임시 경로, finally 정리, resources/외부 무접촉.
+
+| ID | 시나리오 | 핵심 단언 |
+|---|---|---|
+| CF01 | 성공 | 전 산출 final publish + manifest 정합 |
+| CF02 | prepare 실패 | job=failed, final 무변경, 임시물 0 |
+| CF03 | 일부 artifact 생성 후 실패 | partial state 유지, final 미노출, 기존 final 보존 |
+| CF04 | validation 실패 | two-phase publish 중단, final 미노출 |
+| CF05 | publish 직전 cancel | 부분물 final 승격 안 함, cancelled 상태, tree kill+cleanup |
+| CF06 | publish 후 cleanup | 임시물 0, final·manifest 잔존 |
+| CF07 | 앱 crash 후 orphan | 부팅 시 orphan partial/프로세스 탐지·표시 |
+| CF08 | 동일 job retry | 사용자 명시 1클릭=1회, 자동 재시도 0 |
+| CF09 | parent cancel | 모든 child stage 종료, 잔존 0 |
+| CF10 | GPU unavailable | 가시적 CPU 폴백 또는 대기(조용한 저하 금지) |
+| CF11 | disk full | 실행 전/중 감지, 명시 실패, 임시물 정리 |
+| CF12 | metadata 민감정보 거부 | 원문·전사·prompt가 envelope에 없음(있으면 실패) |
+| CF13 | checksum mismatch | 산출 검증 실패 → publish 중단 |
+| CF14 | multi-output 한 개 누락 | 전체 publish 실패(부분 노출 금지) |
+| CF15 | progress 역행 | 단조 위반 거부(P2) |
+
+## 28. 영상 분할 — placeholder / reference slot [R]
+
+영상 분할 조사는 **진행 중**. 문서 도착 시 별도 후속 DOC ONLY 커밋으로 반영:
+- trackRunner fire-and-forget(§17 P0-1) 해소 · shot/scene/event 경계 · 부분 산출물 two-phase publish(§22) · resume/checkpoint(§9) · cleanup(§7).
+- burned-in subtitle는 §26 TXT4(video OCR analysis stage)와 연결.
+
+### Reference 문서 (research intake 소스)
+- 음악 분리: `apps/development/AudioForge/doc/references/music-separation-techniques.md`
+- 대화 처리: `apps/development/AudioForge/doc/references/dialogue-processing-techniques.md`
+- 텍스트 추출: `_af_worktrees/integration/doc/references/text-extraction-techniques.md`
+- 영상 분할: (조사 진행 중 — 도착 시 추가)
+- 기존 audit: `research/cross-mode-reliability-audit.md`(별도 브랜치)
+- intake 요약표: `doc/design/cross-mode-research-intake.md`(동반 문서)
