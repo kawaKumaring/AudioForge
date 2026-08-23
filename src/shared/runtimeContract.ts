@@ -42,6 +42,13 @@ export const REASON_CODES = [
   'CPU_FALLBACK_AVAILABLE',
   'EVIDENCE_STALE',
   'BORROWED_RUNTIME_READ_ONLY',
+  // v2.1(통합 확장): 경로 규칙 위반 + Python 프로세스/입력 진단 코드.
+  // B(python injection)·C(runner diagnostics)가 동일 값을 참조한다(자유 문자열 금지).
+  'PATH_OUTSIDE_ROOT',
+  'PYTHON_PROCESS_ABNORMAL_EXIT',
+  'PYTHON_PROCESS_SIGNAL',
+  'PYTHON_RUNTIME_ERROR',
+  'INPUT_FILE_MISSING',
 ] as const
 export type ReasonCode = (typeof REASON_CODES)[number]
 

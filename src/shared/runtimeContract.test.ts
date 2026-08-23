@@ -105,15 +105,28 @@ test('schema version은 v2로 올랐다', () => {
 })
 
 // ── ReasonCode canonical union 고정(§5) ─────────────────────────────────────
-test('ReasonCode union이 계약대로 20개 고정', () => {
+test('ReasonCode union이 계약대로 25개 고정(기존 20 + 통합 확장 5)', () => {
   assert.deepEqual([...REASON_CODES], [
     'NO_RUNTIME_ROOT', 'USER_SELECTION_FAILED', 'INTERPRETER_NOT_FOUND', 'DANGLING_JUNCTION',
     'DUPLICATE_CANDIDATE', 'PREFLIGHT_FAILED', 'PYTHON_VERSION_INCOMPATIBLE', 'ARCHITECTURE_INCOMPATIBLE',
     'PACKAGE_MISSING', 'PACKAGE_VERSION_INCOMPATIBLE', 'PACKAGE_DRIFT', 'PIP_CHECK_FAILED', 'VENV_MISSING',
     'MODEL_MISSING', 'MODEL_CHECKSUM_MISMATCH', 'TOOL_MISSING', 'GPU_UNAVAILABLE', 'CPU_FALLBACK_AVAILABLE',
     'EVIDENCE_STALE', 'BORROWED_RUNTIME_READ_ONLY',
+    // v2.1 통합 확장(B·C 공유)
+    'PATH_OUTSIDE_ROOT', 'PYTHON_PROCESS_ABNORMAL_EXIT', 'PYTHON_PROCESS_SIGNAL',
+    'PYTHON_RUNTIME_ERROR', 'INPUT_FILE_MISSING',
   ])
-  assert.equal(REASON_CODES.length, 20)
+  assert.equal(REASON_CODES.length, 25)
+})
+
+test('통합 확장 5종은 canonical ReasonCode로 인식되고 자유 문자열은 여전히 거부', () => {
+  for (const c of ['PATH_OUTSIDE_ROOT', 'PYTHON_PROCESS_ABNORMAL_EXIT', 'PYTHON_PROCESS_SIGNAL', 'PYTHON_RUNTIME_ERROR', 'INPUT_FILE_MISSING']) {
+    assert.ok(isReasonCode(c), `${c}는 canonical ReasonCode여야 한다`)
+    assert.ok(isReasonCodeOrNull(c))
+  }
+  // 확장 후에도 자유 문자열/앱 레벨 에러코드(RUNTIME_NOT_CONFIGURED)는 ReasonCode가 아니다.
+  assert.ok(!isReasonCode('RUNTIME_NOT_CONFIGURED'))
+  assert.ok(!isReasonCode('python-process-abnormal-exit'))
 })
 
 test('reasonCode 가드: 자유 문자열 거부, null 허용', () => {
