@@ -23,6 +23,17 @@ sys.setrecursionlimit(10000)
 from audio_utils import (emit, load_audio, save_audio, find_ffmpeg,
                          convert_to_wav, trim_silence, fmt_time, fmt_srt_time,
                          get_device, patch_torchaudio)
+import runtime_paths   # 주입된 root(runtimeRoot/modelRoot/cacheRoot) 초기화·경로 해석(순수)
+import model_manifest  # 모델 존재/checksum evidence 생산(C가 해석) — 순수
+
+
+def _require_roots_or_emit():
+    """externals(venv/모델)를 쓰는 모드 진입 게이트. roots 미주입/무효면 구조화 NO_RUNTIME_ROOT
+    오류를 emit하고 False 반환(워크트리 폴백 금지). 정상이면 True."""
+    if not runtime_paths.is_configured():
+        emit("error", message="런타임 root가 주입되지 않았습니다.", code=runtime_paths.NO_RUNTIME_ROOT)
+        return False
+    return True
 
 
 def main():
@@ -80,14 +91,28 @@ def main():
         # ref-analyze / ref-trim 파라미터(참조 구간 선택 UI용)
         args.region_start = config.get("regionStart", 0.0)
         args.region_dur = config.get("regionDur", 0.0)
+        # 런타임 root 주입(공유 계약 RuntimeRootConfig 1:1). Electron(A)이 기록. 없거나 무효면
+        # externals-필요 모드는 NO_RUNTIME_ROOT로 실패하고 preflight 모드는 degrade한다.
+        roots = config.get("roots")
+        if roots:
+            try:
+                runtime_paths.configure(roots)
+            except runtime_paths.RuntimeRootError:
+                # 무효 roots는 미주입과 동일 취급(워크트리 폴백 금지). 게이트에서 명시 오류로 표면화.
+                pass
 
     # Qwen preflight — 입력/출력 불필요(실행 전 상태 표시용). 예상값이며 실행 결과는 metadata가 최종.
     if args.mode == "qwen-preflight":
+        # roots 미주입이면 크래시 대신 degrade(available=false, reason=NO_RUNTIME_ROOT).
+        if not runtime_paths.is_configured():
+            emit("result", available=False, snapshot_ok=False, device_expected=None,
+                 device_source=None, reason=runtime_paths.NO_RUNTIME_ROOT)
+            return
         try:
-            from tts_worker import _get_qwen_engine, _QWEN_MIN_FREE_MB, _QWEN_SNAPSHOT, _parse_device_source
+            from tts_worker import _get_qwen_engine, _QWEN_MIN_FREE_MB, _qwen_snapshot, _parse_device_source
             eng = _get_qwen_engine()
             avail = bool(eng.available())
-            snapshot_ok = os.path.isdir(_QWEN_SNAPSHOT)
+            snapshot_ok = os.path.isdir(_qwen_snapshot())
             device_expected = None
             device_source = None
             reason = None
@@ -118,6 +143,36 @@ def main():
             emit("result", available=False, reason=f"pitch-probe-failed: {type(e).__name__}")
         return
 
+    # ── Model evidence(C의 capabilityEvaluator 소비) — 입력/출력·GPU·합성 없음(읽기 전용) ──
+    # 모델 존재/checksum evidence를 계약 키(qwen3/separator_bs/separator_melband/gptsovits)로 생산.
+    # checksum '계산'은 Python(model_manifest), '해석'은 C. manifest(expected) 부재 시 present-only.
+    if args.mode == "model-evidence":
+        if not runtime_paths.is_configured():
+            emit("result", available=False, reason=runtime_paths.NO_RUNTIME_ROOT, models={})
+            return
+        try:
+            from tts_worker import _qwen_snapshot, _QWEN_REQUIRED
+            from music_worker import _ROFORMER_MODEL, _MELBAND_ENSEMBLE_MODEL
+            qwen_snap = _qwen_snapshot()
+            spec = {
+                "qwen3": {"files": [os.path.join(qwen_snap, f) for f in _QWEN_REQUIRED], "expected": None},
+                "separator_bs": {
+                    "files": [runtime_paths.model_subdir("separator_models", _ROFORMER_MODEL)],
+                    "expected": None},
+                "separator_melband": {
+                    "files": [runtime_paths.model_subdir("separator_models", _MELBAND_ENSEMBLE_MODEL)],
+                    "expected": None},
+                "gptsovits": {
+                    "files": [runtime_paths.runtime_subdir("gptsovits_venv", "Scripts", "python.exe")],
+                    "expected": None},
+            }
+            emit("result", available=True, reason=None, models=model_manifest.build_evidence(spec))
+        except runtime_paths.RuntimeRootError as e:
+            emit("result", available=False, reason=e.code, models={})
+        except Exception as e:
+            emit("result", available=False, reason=f"model-evidence-failed: {type(e).__name__}", models={})
+        return
+
     if not args.input or not args.output:
         emit("error", message="입력 파일과 출력 경로가 필요합니다.")
         sys.exit(1)
@@ -127,6 +182,9 @@ def main():
     try:
         # ── TTS mode ──
         if args.mode == "tts":
+            # 격리 venv(gptsovits/qwen)와 모델을 쓰므로 roots 필수 — 미주입이면 명시 오류(폴백 금지).
+            if not _require_roots_or_emit():
+                return
             from tts_worker import synthesize
             emotion_refs = {}
             if hasattr(args, 'tts_emotion_refs') and args.tts_emotion_refs:
@@ -222,6 +280,11 @@ def main():
         # ── Separation modes (music / conversation) ──
         tracks = []
         if args.mode == "music":
+            # RoFormer 계열은 separator_models(modelRoot) 필요 — roots 미주입이면 명시 오류.
+            # Demucs(else)는 메인 인터프리터 torch hub 캐시라 roots 불필요.
+            if args.model in ("roformer", "roformer_melband", "roformer_ensemble"):
+                if not _require_roots_or_emit():
+                    return
             if args.model == "roformer":
                 emit("progress", percent=1, message="RoFormer 보컬 분리 엔진 로딩 중...")
                 from music_worker import run_roformer_separation
