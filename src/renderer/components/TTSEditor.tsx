@@ -19,16 +19,21 @@ const PROMPT_LANGS: [string, string][] = [
   ['', '자동'], ['ko', '한국어'], ['ja', '일본어'], ['zh', '중국어'], ['en', '영어'],
 ]
 
-// I5-a: 감정 참조 미리듣기(신규 어포던스 — 기존 TTSEditor엔 없던 기능). 셸이 최선 배선.
-// 실제 재생 가능 여부는 Electron 파일 접근 정책에 달림 → PHASE 4 E2E에서 확인(미확인 사용감).
+// I5-a: 감정 참조 미리듣기(신규 어포던스). PHASE 4에서 raw file:// 재생이 webSecurity에 막히는 것을 확인 →
+// 앱이 결과 트랙 재생에 쓰는 '기존 안전 경로'(getFileUrl → local-file:// 권한 프로토콜)를 재사용한다.
+// webSecurity 완화·임의 경로·외부 전송 없음. 재생 대상은 등록된 감정 참조의 effective(파생 클립/원본) 경로뿐.
 let _previewAudio: HTMLAudioElement | null = null
-function previewLocalFile(path: string) {
+export function stopReferencePreview() {
+  if (_previewAudio) { try { _previewAudio.pause() } catch { /* noop */ } _previewAudio = null }
+}
+async function previewLocalFile(path: string) {
   if (!path) return
   try {
-    if (_previewAudio) { _previewAudio.pause(); _previewAudio = null }
-    const url = 'file:///' + encodeURI(path.replace(/\\/g, '/'))
+    stopReferencePreview()                             // 다른 clip 미리듣기 시작 전 이전 것 정지(전환)
+    const url = await window.api.audio.getFileUrl(path)  // local-file:// (결과 트랙과 동일 안전 경로)
+    if (!url) return
     _previewAudio = new Audio(url)
-    void _previewAudio.play().catch(() => { /* 파일 접근 불가 시 조용히 무시(크래시 없음) */ })
+    void _previewAudio.play().catch(() => { /* 재생 불가 시 조용히 무시(크래시 없음) */ })
   } catch { /* noop */ }
 }
 
@@ -87,6 +92,9 @@ export default function TTSEditor() {
       .catch(() => { if (!cancelled) setTtsPitchCapability({ supported: false, method: 'none', probed: true, reason: 'pitch-probe-failed' }) })
     return () => { cancelled = true }
   }, [mode])
+
+  // 컴포넌트 해제(모드 전환 등) 시 재생 중인 참조 미리듣기 정지 — 잔여 재생 방지.
+  useEffect(() => () => { stopReferencePreview() }, [])
 
   const updateRef = (id: string, patch: Partial<TtsReferenceEntry>) =>
     setRefPrompts(prev => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }))

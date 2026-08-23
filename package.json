@@ -19,6 +19,7 @@
     "test:e2e:tts-i5b-editor": "node test/e2e/tts-i5b-editor.e2e.mjs",
     "test:e2e:tts-i5b-restore": "node test/e2e/tts-i5b-restore.e2e.mjs",
     "test:e2e:tts-i5c-detail": "node test/e2e/tts-i5c-detail.e2e.mjs",
+    "test:e2e:tts-i5-preview": "node test/e2e/tts-i5-preview.e2e.mjs",
     "test:e2e:tts-result-metadata": "node test/e2e/tts-result-metadata.e2e.mjs",
     "test:e2e:tts-generation-retry": "node test/e2e/tts-generation-retry.e2e.mjs",
     "test:e2e:tts-cancel-lifecycle": "node test/e2e/tts-cancel-lifecycle.e2e.mjs",
