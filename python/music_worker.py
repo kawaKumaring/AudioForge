@@ -49,6 +49,7 @@ def run_roformer_ensemble(input_path: str, output_dir: str):
 
     import tempfile
     import shutil as _sh
+    import music_separation_integrity as msi
 
     base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     model_dir = os.path.join(base_dir, "externals", "separator_models")
@@ -76,21 +77,56 @@ def run_roformer_ensemble(input_path: str, output_dir: str):
         return []
 
     emit("progress", percent=90, message="두 모델 결과 앙상블(파형 평균) 중...")
-    tracks = []
+    # 1단계: 모든 스템을 무결성 검증·결합해 메모리에 '기록 계획'만 만든다. 아직 디스크에
+    # 쓰지 않는다 — 어느 한 스템이라도 무결성에 실패하면 부분 출력 없이 원자적으로 중단하고
+    # 기존 산출물을 보존하기 위함. 조용한 min-length/min-channel 절단은 하지 않는다:
+    # 스펙 불일치·비유한값은 구조화 오류로 승격 후 return [] (single-model fallback·재시도 없음).
+    plan = []  # (out_path, kind, payload)  kind: "write" -> (mixed, sr) | "move" -> src
     for name, label in (("vocals", "보컬"), ("instrumental", "반주")):
         pa, pb = a.get(name), b.get(name)
         out_path = os.path.join(output_dir, f"{name}.wav")
         if pa and pb and os.path.exists(pa) and os.path.exists(pb):
             wa, sr = load_audio(pa)
-            wb, _ = load_audio(pb)
+            wb, sr_b = load_audio(pb)
+            spec_a = msi.describe_audio(wa, sr)
+            spec_b = msi.describe_audio(wb, sr_b)
+            match = msi.check_spec_match(
+                [spec_a, spec_b], labels=[f"{name}:BS", f"{name}:MelBand"])
+            if match.failed:
+                _sh.rmtree(tmp_root, ignore_errors=True)
+                emit("error", code="MUSIC_ENSEMBLE_SHAPE_MISMATCH",
+                     reason=f"{label} 앙상블 출력 스펙 불일치 — 조용한 절단 금지",
+                     sampleRateA=spec_a.sample_rate, sampleRateB=spec_b.sample_rate,
+                     channelsA=spec_a.channels, channelsB=spec_b.channels,
+                     framesA=spec_a.length, framesB=spec_b.length)
+                return []
+            fa = msi.check_finite(wa, name=f"{name}:BS")
+            fb = msi.check_finite(wb, name=f"{name}:MelBand")
+            if fa.failed or fb.failed:
+                _sh.rmtree(tmp_root, ignore_errors=True)
+                emit("error", code="MUSIC_ENSEMBLE_NON_FINITE",
+                     reason=f"{label} 앙상블 입력에 NaN/Inf 감지 — 저장 금지",
+                     finiteA=fa.ok, finiteB=fb.ok)
+                return []
+            # 스펙 정합 확인됨 → min slice 는 실질 no-op. 기존 0.5/0.5 평균과 동일.
             n = min(wa.shape[-1], wb.shape[-1])
             ch = min(wa.shape[0], wb.shape[0])
             mixed = (wa[:ch, :n] + wb[:ch, :n]) / 2.0
-            save_audio(out_path, mixed, sr)
+            plan.append((out_path, "write", (mixed, sr, name, label)))
         elif pa and os.path.exists(pa):
-            os.replace(pa, out_path)
+            plan.append((out_path, "move", (pa, name, label)))
         else:
             continue
+
+    # 2단계: 전 스템이 검증을 통과한 뒤에만 디스크에 기록한다 (부분 출력 방지).
+    tracks = []
+    for out_path, kind, payload in plan:
+        if kind == "write":
+            mixed, sr, name, label = payload
+            save_audio(out_path, mixed, sr)
+        else:
+            src, name, label = payload
+            os.replace(src, out_path)
         tracks.append({"name": name, "label": label, "path": out_path})
 
     _sh.rmtree(tmp_root, ignore_errors=True)
