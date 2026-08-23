@@ -26,6 +26,19 @@ import reference_transcript as rt   # noqa: E402
 import reference_audio as ra        # noqa: E402
 import transcribe_worker            # noqa: E402
 import tts_worker                   # noqa: E402
+import runtime_paths                # noqa: E402
+
+
+def _configure_test_roots():
+    """GPT-SoVITS 합성 payload(venv/GPT-SoVITS dir 주입)가 root를 요구 — 테스트 root를 심는다."""
+    runtime_paths.reset()
+    runtime_paths.set_path_resolver(None)
+    runtime_paths.configure({
+        "schemaVersion": 2,
+        "runtimeRoot": {"path": "C:/af_test/rt", "ownership": "audioforge-managed"},
+        "modelRoot": {"path": "C:/af_test/md", "ownership": "audioforge-managed"},
+        "cacheRoot": {"path": "C:/af_test/ch", "ownership": "audioforge-managed"},
+    })
 
 
 def _write(path, seconds, sr=24000, amp=0.3):
@@ -190,6 +203,8 @@ class GptPromptIntegrationTest(_PatchMixin, unittest.TestCase):
         _write(self.ref5, 5.0)   # 유효(3~10s)
         _write(self.ref2, 2.0)   # TOO_SHORT
         self.out = os.path.join(self.tmp, "out.wav")
+        _configure_test_roots()
+        self.addCleanup(runtime_paths.reset)
         # 전역 분석 캐시 스냅샷 후 복원(전역 stopall 사용 안 함)
         self._orig_cache = dict(ra._analysis_cache)
         ra._analysis_cache.clear()

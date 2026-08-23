@@ -11,6 +11,7 @@ config 키:
   speed        속도 배수 (기본 1.0)
   prompt_text  참조 음성의 전사 (있으면 품질↑, 없으면 ref-free)
   prompt_lang  prompt_text 언어 (기본 language와 동일)
+  sovits_dir   GPT-SoVITS 소스 repo 절대경로 (부모 tts_worker가 주입; 필수)
 """
 
 import sys
@@ -36,6 +37,9 @@ def main():
     speed = config.get("speed", 1.0)
     prompt_text = config.get("prompt_text", "") or ""
     prompt_lang = config.get("prompt_lang", language)
+    # GPT-SoVITS 소스 dir은 부모(tts_worker)가 주입된 root에서 해석해 절대경로로 넘긴다.
+    # 이 bridge는 별도 venv라 runtime_paths를 import하지 않고 부모가 준 경로를 신뢰(+존재 확인)한다.
+    sovits_dir = config.get("sovits_dir")
 
     # torchaudio 2.11 torchcodec 문제: GPT-SoVITS가 torchaudio.load를 쓰므로
     # AudioForge와 동일한 soundfile 폴백 패치를 먼저 적용 (audio_utils 재사용)
@@ -48,7 +52,11 @@ def main():
         pass
 
     # GPT-SoVITS를 path에 추가 (repo 루트 + GPT_SoVITS 하위: AR 등 내부 모듈용)
-    sovits_dir = os.path.abspath(os.path.join(py_dir, "..", "externals", "GPT-SoVITS"))
+    # 부모가 주입한 절대경로 사용(worktree-relative 추측 제거). 누락/미존재면 명확히 실패.
+    if not sovits_dir or not os.path.isdir(sovits_dir):
+        emit("error", message="GPT-SoVITS 소스 경로가 유효하지 않습니다(sovits_dir 주입 확인).")
+        sys.exit(1)
+    sovits_dir = os.path.abspath(sovits_dir)
     sys.path.insert(0, sovits_dir)
     sys.path.insert(0, os.path.join(sovits_dir, "GPT_SoVITS"))
     # tts_infer.yaml과 모델 경로가 cwd 기준 상대경로이므로 repo 루트로 이동
