@@ -1,9 +1,20 @@
 """Demucs music source separation + RoFormer 고품질 보컬 분리."""
 
 import os
+import runtime_paths  # 주입된 modelRoot 기반 separator_models 경로 해석(worktree-relative 추측 대체)
 from audio_utils import emit, load_audio, save_audio, convert_to_wav, get_device
 
-# audio-separator RoFormer 보컬 모델 (SDR 12.97, ComfyUI 환경에 이미 설치됨)
+
+def _separator_model_dir():
+    """separator_models 디렉터리를 주입된 modelRoot 밑으로 해석.
+    managed root만 없으면 생성(borrowed는 읽기 전용 — 자동 다운로드가 빌린 트리에 쓰는 것 차단).
+    roots 미주입이면 RuntimeRootError(NO_RUNTIME_ROOT) — 워크트리 폴백 금지."""
+    model_dir = runtime_paths.model_subdir("separator_models")
+    if runtime_paths.can_write("modelRoot"):
+        os.makedirs(model_dir, exist_ok=True)
+    return model_dir
+
+# audio-separator RoFormer 보컬 모델 (SDR 12.97). 파일은 주입된 modelRoot/separator_models 에 위치.
 _ROFORMER_MODEL = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
 # 앙상블 2번째 모델: Mel-Band(Kim FT2 bleedless, unwa) — 잔음/bleed 억제 특화.
 # BS(full 계열)와 아키텍처·오차 특성이 달라 평균 시 아티팩트가 줄어든다.
@@ -131,6 +142,8 @@ def run_roformer_ensemble(input_path: str, output_dir: str):
     두 모델의 보컬/반주를 파형 평균(avg_wave)해 잔음·bleed를 줄인다.
     SDR을 크게 올리는 게 아니라 아티팩트를 줄이는 게 목적 — 단일 모델보다 2배 느림."""
     emit("status", message="보컬 앙상블 (BS + Mel-Band)", percent=0)
+    # 모델 경로를 먼저 해석(roots 미주입이면 audio-separator import 전에 명시 오류).
+    model_dir = _separator_model_dir()
     try:
         import audio_separator  # noqa: F401
     except ImportError as e:
@@ -140,10 +153,6 @@ def run_roformer_ensemble(input_path: str, output_dir: str):
     import tempfile
     import shutil as _sh
     import music_separation_integrity as msi
-
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    model_dir = os.path.join(base_dir, "externals", "separator_models")
-    os.makedirs(model_dir, exist_ok=True)
 
     emit("progress", percent=8, message="입력 오디오 변환 중...")
     wav_input = convert_to_wav(input_path)
@@ -241,20 +250,18 @@ def run_roformer_ensemble(input_path: str, output_dir: str):
 def run_roformer_separation(input_path: str, output_dir: str, model_name: str = _ROFORMER_MODEL):
     """RoFormer로 보컬/반주 2트랙 분리 (Demucs보다 보컬 SDR 우수).
     model_name으로 BS(기본)/Mel-Band 등 선택. audio-separator(onnxruntime+torch)는
-    ComfyUI 환경에 이미 존재 — 별도 설치 불필요."""
+    해석된 인터프리터 환경에 존재해야 한다(별도 설치는 관리형 setup 소관)."""
     import re
     emit("status", message="RoFormer 보컬 분리", percent=0)
 
+    # 모델 경로를 먼저 해석(roots 미주입이면 audio-separator import 전에 명시 오류).
+    # 모델은 주입된 modelRoot/separator_models 에 캐싱(managed면 생성, borrowed면 읽기 전용).
+    model_dir = _separator_model_dir()
     try:
         from audio_separator.separator import Separator
     except ImportError as e:
         emit("error", message=f"audio-separator가 설치되지 않았습니다: {e}")
         return []
-
-    # 모델은 프로젝트 externals에 캐싱 (gitignore, 재다운로드 방지)
-    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    model_dir = os.path.join(base_dir, "externals", "separator_models")
-    os.makedirs(model_dir, exist_ok=True)
 
     emit("progress", percent=10, message="RoFormer 모델 로딩 중... (첫 실행 시 다운로드)")
     sep = Separator(model_file_dir=model_dir, output_dir=output_dir, output_format="WAV")
