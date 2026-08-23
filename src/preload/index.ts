@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import type { RuntimeStatusReport } from '../shared/runtimeStatus.ts'
 
 const api = {
   audio: {
@@ -69,9 +70,9 @@ const api = {
     }
   },
   settings: {
-    get: () => ipcRenderer.invoke('settings:get'),
+    get: (): Promise<RuntimeStatusReport> => ipcRenderer.invoke('settings:get'),
     set: (key: string, value: unknown) => ipcRenderer.invoke('settings:set', key, value),
-    selectPythonPath: () => ipcRenderer.invoke('settings:select-python-path')
+    selectPythonPath: (): Promise<{ basename: string } | null> => ipcRenderer.invoke('settings:select-python-path')
   },
   app: {
     openFolder: (path: string) => ipcRenderer.invoke('app:open-folder', path),
