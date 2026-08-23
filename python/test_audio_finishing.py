@@ -172,6 +172,11 @@ class TailConfigValidation(unittest.TestCase):
             self.af.parse_tail_config({"mode": "auto", "pad_ms": 120, "fade_ms": 21})
         self.assertEqual(cm.exception.code, "INVALID_TTS_CONFIG")
 
+    def test_fade_negative_rejected(self):  # I5-c 경계 매트릭스 완성(fade min-1)
+        with self.assertRaises(self.af.AudioFinishingError) as cm:
+            self.af.parse_tail_config({"mode": "auto", "pad_ms": 120, "fade_ms": -1})
+        self.assertEqual(cm.exception.code, "INVALID_TTS_CONFIG")
+
     def test_bad_mode_rejected(self):
         with self.assertRaises(self.af.AudioFinishingError):
             self.af.parse_tail_config({"mode": "crossfade"})
