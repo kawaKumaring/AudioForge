@@ -172,6 +172,50 @@ class FixtureInterpretTest(unittest.TestCase):
                              f"policy u={policy.unknown_below} r={policy.review_below}")
 
 
+# ─────────────────────────── 경계 판정(frozenset + 상태 종류) ───────────────────────────
+class BoundaryGroupingTest(unittest.TestCase):
+    def test_rank_crossing_same_set_single_segment(self):
+        # 집합 {A,B} 불변, posterior 순위만 교차 → 한 segment 유지.
+        f = fx.overlap_rank_crossing()
+        segs = _interpret(f)
+        self.assertEqual(len(segs), 1)
+        self.assertTrue(segs[0].is_overlap)
+        self.assertEqual(segs[0].speakers, ("A", "B"))   # 평균 동률→라벨순 결정적
+        self.assertAlmostEqual(segs[0].start, 0.0, places=6)
+        self.assertAlmostEqual(segs[0].end, 1.0, places=6)
+
+    def test_actual_set_change_splits(self):
+        # 화자 집합 실제 변경({A}→{A,B}→{B}) → 분할 유지.
+        post = ([[0.9, 0.1]] * 40 + [[0.55, 0.45]] * 40 + [[0.1, 0.9]] * 40)
+        conf = [0.9] * 120
+        segs = q1.interpret_posteriors(post, 100.0, ["A", "B"], frame_confidence=conf)
+        self.assertEqual(len(segs), 3)
+        self.assertEqual(segs[0].speakers, ("A",))
+        self.assertEqual(frozenset(segs[1].speakers), frozenset({"A", "B"}))
+        self.assertEqual(segs[2].speakers, ("B",))
+
+    def test_status_change_splits(self):
+        # 집합 {A,B} 불변이나 상태가 OK→UNKNOWN 으로 변화 → 분할 유지.
+        post = [[0.55, 0.45]] * 100
+        # 앞 절반 근거 충분(OK), 뒤 절반 근거 희박(UNKNOWN) — 집합은 동일.
+        conf = [0.9] * 50 + [0.05] * 50
+        segs = q1.interpret_posteriors(post, 100.0, ["A", "B"], frame_confidence=conf)
+        self.assertEqual(len(segs), 2)
+        self.assertEqual(segs[0].status, dc.SegmentStatus.OK)
+        self.assertEqual(segs[1].status, dc.SegmentStatus.UNKNOWN)
+        # 두 세그먼트 모두 화자 집합은 {A,B} 로 동일.
+        self.assertEqual(frozenset(segs[0].speakers), frozenset({"A", "B"}))
+        self.assertEqual(frozenset(segs[1].speakers), frozenset({"A", "B"}))
+
+    def test_rank_crossing_deterministic_serialization(self):
+        f = fx.overlap_rank_crossing()
+        segs = _interpret(f)
+        sc = q1.to_sidecar(segs, source={"fixture": f.name})
+        self.assertEqual(sc.to_json(), sc.to_json())
+        again = dc.CanonicalSidecar.from_json(sc.to_json())
+        self.assertEqual(sc.to_json(), again.to_json())
+
+
 # ─────────────────────────── 평가 지표 ───────────────────────────
 class MetricsTest(unittest.TestCase):
     def test_overlap_recall_precision_perfect(self):

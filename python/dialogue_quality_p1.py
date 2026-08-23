@@ -238,7 +238,15 @@ def interpret_posteriors(
     overlap_min_posterior : 2순위 화자 동시 발화 판정 임계.
 
     ★ <500ms turn 도 병합·삭제 없이 그대로 세그먼트로 보존(backchannel 손실 방지).
-      활성 화자 *집합* 이 바뀌는 지점에서만 경계를 만든다 → overlap 진입/이탈도 경계.
+
+    ★ 경계 판정(연속성) 규칙 — 순위 튜플이 아니라 (frozenset(활성 화자), 상태 종류)로
+      비교한다. 같은 화자 *집합* 안에서 posterior 순위만 교차(A>B → B>A, 둘 다 여전히
+      활성)하는 것은 새 경계가 아니다(불필요한 분할 방지). 반면 실제 화자 집합 변화와
+      프레임 상태(UNKNOWN/REVIEW/OK) 종류 변화는 정상 경계로 유지한다.
+      출력 세그먼트의 speakers 순서는 경계 판정과 분리해, 구간 평균 posterior 기준
+      결정적 규칙(내림차순, 동률은 라벨 오름차순)으로 별도 정렬한다.
+      임계(threshold) 의미·schema·직렬화 계약은 바뀌지 않는다(최종 상태는 종전대로
+      구간 평균 confidence 를 policy 로 판정).
     """
     cal = calibrator or IdentityCalibrator()
     n = len(frame_posteriors)
@@ -252,24 +260,39 @@ def interpret_posteriors(
             return False
         return sum(max(0.0, float(v)) for v in frame_posteriors[f]) > 0.0
 
-    # 프레임별 활성 집합(무음이면 None).
-    frame_active: List[Optional[Tuple[str, ...]]] = []
+    def frame_raw_conf(f: int, norm: Sequence[float]) -> float:
+        if frame_confidence is not None:
+            return _clamp01(float(frame_confidence[f]))
+        return margin_confidence(norm)
+
+    # 프레임별 경계 키 = (frozenset(활성 화자), 프레임 상태 종류). 무음이면 None.
+    # 상태 종류는 프레임별 (calibrated) confidence + posterior 를 policy 로 판정한
+    # 것으로, 경계 검출 전용이다(세그먼트 최종 상태는 아래에서 구간 평균으로 재판정).
+    Key = Tuple[frozenset, dc.SegmentStatus]
+    frame_key: List[Optional[Key]] = []
     for f in range(n):
         if not is_speech(f):
-            frame_active.append(None)
-        else:
-            frame_active.append(active_speakers(frame_posteriors[f], speaker_names,
-                                                overlap_min_posterior))
+            frame_key.append(None)
+            continue
+        act = active_speakers(frame_posteriors[f], speaker_names, overlap_min_posterior)
+        if not act:
+            frame_key.append(None)
+            continue
+        norm = normalize_row(frame_posteriors[f])
+        fpost = {speaker_names[c]: norm[c] for c in range(min(len(speaker_names), len(norm)))}
+        fconf = cal.calibrate(frame_raw_conf(f, norm))
+        fkind = policy.classify(fconf, fpost)
+        frame_key.append((frozenset(act), fkind))
 
     segments: List[dc.DialogueSegment] = []
     i = 0
     while i < n:
-        act = frame_active[i]
-        if act is None or len(act) == 0:
+        key = frame_key[i]
+        if key is None:
             i += 1
             continue
         j = i
-        while j < n and frame_active[j] == act:
+        while j < n and frame_key[j] == key:
             j += 1
         start = i / frame_rate
         end = j / frame_rate
@@ -280,24 +303,24 @@ def interpret_posteriors(
         conf_acc = 0.0
         cnt = 0
         for f in range(i, j):
-            row = normalize_row(frame_posteriors[f])
-            for c in range(min(ncols, len(row))):
-                acc[c] += row[c]
-            if frame_confidence is not None:
-                conf_acc += _clamp01(float(frame_confidence[f]))
-            else:
-                conf_acc += margin_confidence(frame_posteriors[f])
+            norm = normalize_row(frame_posteriors[f])
+            for c in range(min(ncols, len(norm))):
+                acc[c] += norm[c]
+            conf_acc += frame_raw_conf(f, norm)
             cnt += 1
         mean_post = {speaker_names[c]: (acc[c] / cnt) for c in range(ncols)} if cnt else {}
         raw_conf = (conf_acc / cnt) if cnt else 0.0
         conf = cal.calibrate(raw_conf)
 
-        # 활성 집합을 명시 speakers 로 강제(posterior 기반 overlap 라벨 보존).
+        # 활성 집합을 명시 speakers 로 강제(overlap 라벨 보존). 순서는 경계 판정과
+        # 분리해 구간 평균 posterior 로 결정적 정렬(내림차순, 동률 라벨 오름차순).
+        active_set = key[0]
+        ordered = sorted(active_set, key=lambda s: (-mean_post.get(s, 0.0), s))
         seg = dc.make_segment(
             start, end,
             posterior=mean_post,
             confidence=conf,
-            speakers=list(act),
+            speakers=ordered,
             review_below=policy.review_below,
             unknown_below=policy.unknown_below,
         )

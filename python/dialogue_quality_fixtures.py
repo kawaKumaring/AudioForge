@@ -161,6 +161,18 @@ def threshold_min_max() -> Fixture:
                    frame_confidence=conf, policy_checks=checks)
 
 
+# ── (보강) overlap 집합 유지 + 순위 교차 ──
+def overlap_rank_crossing() -> Fixture:
+    # 두 화자가 내내 동시 발화(집합 {A,B} 불변)하되 posterior 순위만 중간에 교차.
+    post = (_rows(50, [0.55, 0.45])          # A>B, 둘 다 활성
+            + _rows(50, [0.45, 0.55]))       # B>A, 둘 다 활성
+    conf = [0.9] * 100                         # 근거 충분 → OK 유지(상태 불변)
+    truth = [_truth_seg(0.0, 1.0, {"A": 0.5, "B": 0.5}, 0.9, ["A", "B"])]
+    return Fixture("overlap_rank_crossing", FRAME_RATE, ["A", "B"], post, truth,
+                   "집합 {A,B} 불변, 순위만 교차 → 한 segment 유지(분할 금지).",
+                   frame_confidence=conf)
+
+
 ALL_FIXTURES = [
     single_speaker,
     two_person_overlap,
@@ -171,6 +183,7 @@ ALL_FIXTURES = [
     all_backchannel_speaker,
     posterior_tie,
     threshold_min_max,
+    overlap_rank_crossing,
 ]
 
 
