@@ -95,6 +95,7 @@ def run_roformer_ensemble(input_path: str, output_dir: str):
             if match.failed:
                 _sh.rmtree(tmp_root, ignore_errors=True)
                 emit("error", code="MUSIC_ENSEMBLE_SHAPE_MISMATCH",
+                     message="음악 분리 모델의 출력 형식이 일치하지 않아 앙상블을 중단했습니다.",
                      reason=f"{label} 앙상블 출력 스펙 불일치 — 조용한 절단 금지",
                      sampleRateA=spec_a.sample_rate, sampleRateB=spec_b.sample_rate,
                      channelsA=spec_a.channels, channelsB=spec_b.channels,
@@ -105,6 +106,7 @@ def run_roformer_ensemble(input_path: str, output_dir: str):
             if fa.failed or fb.failed:
                 _sh.rmtree(tmp_root, ignore_errors=True)
                 emit("error", code="MUSIC_ENSEMBLE_NON_FINITE",
+                     message="음악 분리 모델 출력에 유효하지 않은 값이 있어 앙상블을 중단했습니다.",
                      reason=f"{label} 앙상블 입력에 NaN/Inf 감지 — 저장 금지",
                      finiteA=fa.ok, finiteB=fb.ok)
                 return []
