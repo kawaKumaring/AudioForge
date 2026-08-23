@@ -11,15 +11,16 @@
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'; import os from 'os'
 import { randomUUID } from 'crypto'
-import { cleanupIsolated, snapshotTree, refClipDirs } from './_e2e-helper.mjs'
+import { cleanupIsolated, snapshotTree, refClipDirs, makeSyntheticWav, cleanupSyntheticWav } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
-const SRC = path.join(APP, 'resources', 'speaker_b.wav')  // 48kHz mono, 111.083초
 const RES_DIR = path.join(APP, 'resources')
 let failed = 0
 const ok = (c, m) => { console.log(c ? '[e2e] PASS' : '[e2e] FAIL', m); if (!c) failed++ }
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요(npm run build)'); process.exit(2) }
-if (!fs.existsSync(SRC)) { console.error('resources/speaker_b.wav 필요'); process.exit(2) }
+// 사용자 미디어 미사용: 이번 실행 전용 synthetic WAV(30s)를 생성해 참조로 쓴다. region 테스트(20~26s)가 ≥26s를
+// 요구하므로 짧은 AF_E2E_REFERENCE로 대체하지 않고 항상 30s synthetic을 만든다. finally에서 이 경로만 정리.
+const SRC = makeSyntheticWav(path.join(os.tmpdir(), 'af_e2e_synth_' + randomUUID() + '.wav'), 30)
 
 const resBefore = snapshotTree(RES_DIR)
 // 격리 폴더에 원본을 default/happy/sad 세 이름으로 복사(경로·basename 구분).
@@ -55,8 +56,8 @@ try {
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
     s.getState().setMode('tts')
   }, DEF)
-  // 기본 참조: 패널 자동 분석(111.08) → 구간 확정 버튼(이 시점 감정 패널 미전개라 확정 버튼 1개)
-  await win.waitForFunction(() => /111\.08/.test(document.getElementById('root')?.innerText || ''), undefined, { timeout: 30000 })
+  // 기본 참조: 패널 자동 분석 완료 = '이 구간으로 확정' 버튼 등장(지속시간 하드코딩 대신 의미 기반 대기 — synthetic 길이 무관)
+  await win.getByText('이 구간으로 확정').waitFor({ timeout: 30000 })
   await win.getByText('이 구간으로 확정').click({ timeout: 20000 })
   await win.waitForFunction(() => window.__afStore?.getState().ttsRefReady === true, undefined, { timeout: 40000 })
   const defaultClip = await win.evaluate(() => window.__afStore.getState().ttsReferenceClip)
@@ -159,5 +160,6 @@ try {
 ok(refClipDirs().length === 0, '최종 종료 후 파생 클립 폴더 0')
 ok(snapshotTree(RES_DIR) === resBefore, 'resources/ 원본 불변')
 cleanupIsolated(ISO)
+cleanupSyntheticWav(SRC)  // 이번 실행이 만든 synthetic 소스만 정리(resources/외부 무접촉)
 console.log('[e2e] SUMMARY', JSON.stringify({ failed }))
 process.exit(failed === 0 ? 0 : 1)

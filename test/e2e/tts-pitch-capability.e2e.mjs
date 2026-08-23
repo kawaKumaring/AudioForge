@@ -46,12 +46,17 @@ async function setupReady(win, ref, presetPitch) {
     const base = await window.api.audio.trimReference(p, 6.0, 7.0, 'default')
     s.getState().setTtsRefState({ clip: base.clip_path, region: { start: 6.0, duration: 7.0 }, ready: true, message: '' })
   }, ref)
-  const ta = win.locator('textarea').last()
+  const ta = win.locator('section[aria-label="대사"] textarea').first()
   await ta.fill('안녕하세요. 합성 gate 확인용 문장입니다.')
-  await win.getByText('고급 설정', { exact: false }).click({ timeout: 8000 }).catch(() => {})
+  // 4-flow: pitch는 표현 카드('세부 조절') 안 SliderRow. supported면 펼치기+세부 조절로 노출. 미지원이면
+  // capability=false라 ExpressionControls가 슬라이더를 렌더하지 않고 셸 사유 노트만 표시(reset 포함).
+  const exprSec = win.locator('section[aria-label="표현"]')
+  await exprSec.getByRole('button', { name: '펼치기' }).click({ timeout: 8000 }).catch(() => {})
+  await exprSec.getByText('세부 조절 사용', { exact: false }).locator('input[type="checkbox"]').check().catch(() => {})
   // 비동기 pitch probe(IPC)가 store에 반영될 때까지 대기 — probed=true 확정 후에만 단언(unknown 오판 방지).
   await win.waitForFunction(() => window.__afStore.getState().ttsPitchCapability?.probed === true, undefined, { timeout: 15000 })
 }
+const pitchSlider = (win) => win.locator('section[aria-label="표현"]').getByRole('slider', { name: '음높이' })
 
 const pbState = (win) => win.evaluate(() => {
   const txt = document.getElementById('root')?.innerText || ''
@@ -67,9 +72,9 @@ try {
   {
     const { app, win } = await launch('supported')
     await setupReady(win, ISO.input, 0)
-    const slider = win.locator('input[list="tts-pitch-ticks"]')
+    const slider = pitchSlider(win)
     await slider.waitFor({ timeout: 8000 })
-    ok(!(await slider.isDisabled()), '[supported] slider 활성')
+    ok(!(await slider.isDisabled()), '[supported] slider 활성(표현 카드 세부 조절)')
     await win.evaluate(() => window.__afStore.setState({ ttsPitch: 0 }))
     await slider.focus(); await win.keyboard.press('ArrowRight'); await win.waitForTimeout(150)
     ok(Math.abs((await win.evaluate(() => window.__afStore.getState().ttsPitch)) - 0.5) < 1e-6, '[supported] 키보드 0.5 변경')
@@ -81,11 +86,11 @@ try {
   {
     const { app, win } = await launch('unsupported')
     await setupReady(win, ISO.input, 1.0)  // 마운트 전 ttsPitch=+1 주입(세션 복원 상황)
-    const slider = win.locator('input[list="tts-pitch-ticks"]')
-    await slider.waitFor({ timeout: 8000 })
-    ok(await slider.isDisabled(), '[unsupported] slider 비활성')
+    // 재설계: capability=false면 ExpressionControls가 pitch 슬라이더를 렌더하지 않는다(구 '비활성 슬라이더' 대체).
+    // 대신 셸의 pitch capability 노트가 사유 + reset을 표시한다(같은 기능: 사용 불가 안내 + 복구 경로).
+    ok((await pitchSlider(win).count()) === 0, '[unsupported] pitch 슬라이더 미렌더(capability=false)')
     const reason = await win.evaluate(() => /이 환경에서는 음높이 보정을 사용할 수 없|사용할 수 없습니다/.test(document.getElementById('root')?.innerText || ''))
-    ok(reason, '[unsupported] 미지원 사유 표시')
+    ok(reason, '[unsupported] 미지원 사유 표시(셸 노트)')
     let pb = await pbState(win)
     ok(pb.pitchVal === 1.0 && pb.pitchBlocked, `[unsupported] 저장된 +1에서 합성 버튼 차단 + 정확 사유(pitch=${pb.pitchVal})`)
     // reset 버튼 활성 → 클릭 → 0 → 차단 해제
@@ -101,9 +106,8 @@ try {
   {
     const { app, win } = await launch('probe-failed')
     await setupReady(win, ISO.input, 1.0)
-    const slider = win.locator('input[list="tts-pitch-ticks"]')
-    await slider.waitFor({ timeout: 8000 })
-    ok(await slider.isDisabled(), '[probe-failed] slider 비활성')
+    // probe 실패(unknown 성격)도 !supported → pitch 슬라이더 미렌더 + 셸 '확인하는 중/사용 불가' 노트.
+    ok((await pitchSlider(win).count()) === 0, '[probe-failed] pitch 슬라이더 미렌더(미확인)')
     const pb = await pbState(win)
     ok(pb.pitchVal === 1.0 && pb.pitchBlocked, '[probe-failed] nonzero pitch 합성 차단(조용한 무시 없음)')
     await app.close()

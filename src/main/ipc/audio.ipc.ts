@@ -650,6 +650,9 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
           : []
         const session = {
           version: 1,
+          // I3(계약 정정8): 세션 스키마 버전. 이 필드가 없는(legacy) 세션은 복원 시 tail off/현행으로 강등되어
+          // 구 세션을 여는 것만으로 재현이 조용히 바뀌지 않는다(자동 마이그레이션 없음). 2 = tail/감정경계 도입.
+          session_schema_version: 2,
           source: filePath,
           sourceName: basename(filePath),
           mode,

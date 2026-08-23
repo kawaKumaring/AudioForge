@@ -2,6 +2,8 @@ import React from 'react'
 import { motion } from 'framer-motion'
 import { useAppStore } from '@/stores/app.store'
 import { ALL_EMOTIONS, planEmotionRefs } from '@/lib/emotions'
+import { parseTtsScript, TTS_PARSER_VERSION } from '../../shared/ttsGrammar'
+import { inRange, TTS_TAIL_PADDING_MS, TTS_TAIL_FADE_MS, TTS_EMOTION_PAUSE_MS } from '../../shared/ttsExpressionCapabilities'
 
 function _estimateTime(mode: string, duration: number, transcribe: boolean, translate: boolean): string {
   let secs = 0
@@ -19,7 +21,7 @@ function _estimateTime(mode: string, duration: number, transcribe: boolean, tran
 }
 
 export default function ProcessButton() {
-  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsPitchCapability, ttsEmotionRefState, ttsReferencePrompts, ttsEngine, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, status, retryNonce, errorInfo, setProcessing, setProgress, setResult, setError, beginCancelling } = useAppStore()
+  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsPitchCapability, ttsEmotionRefState, ttsReferencePrompts, ttsEngine, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, status, retryNonce, errorInfo, setProcessing, setProgress, setResult, setError, beginCancelling } = useAppStore()
   const cleanupRef = React.useRef<(() => void) | null>(null)
 
   // 감정 참조 게이팅/전송(계약 §5 불변식) — 순수 판정은 planEmotionRefs 단일 로직.
@@ -44,6 +46,19 @@ export default function ProcessButton() {
   const handleProcess = async () => {
     console.log('[renderer][synthesize] 클릭 핸들러 진입', { mode, hasFile: !!fileInfo })
     if (!fileInfo) return
+    // 공용 마감 I1: tts는 합성 시작 전에 대사 문법을 파싱(parser_version=2). 오류(unknown/invalid/empty)면
+    // 합성을 시작하지 않고 차단(모델 미로딩). 성공이면 full sha256를 Python parity 대조용으로 전달한다.
+    // 대사 전문은 로그/오류에 넣지 않는다(오류엔 code만).
+    let ttsParsedPlanSha256: string | undefined
+    if (mode === 'tts') {
+      const parsed = parseTtsScript(ttsText)
+      if (!parsed.ok) {
+        setError('대사 태그를 처리할 수 없습니다.', { code: parsed.errors[0]?.code })
+        return
+      }
+      ttsParsedPlanSha256 = parsed.plan.fullSha256
+    }
+
     console.log('[renderer][synthesize] setProcessing 직전')
     setProcessing()
     console.log('[renderer][synthesize] setProcessing 직후')
@@ -79,7 +94,7 @@ export default function ProcessButton() {
       // ttsEmotionRefs = 사용∩등록∩준비된 감정의 effective 경로만(계약 §5 전송 필터).
       // ttsEmotionRefSources/Regions = 등록 전부의 원본/구간(재현·Python 등록판정용, §1.2/§5.1).
       // ttsPitch = 최종 WAV 음높이 후처리(0=무후처리, §6).
-      const r = await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsEmotionRefs: emotionRefsToSend, ttsEmotionRefSources: emotionSources, ttsEmotionRefRegions: emotionRegions, ttsReferencePrompts, ttsEngine, ttsReferenceOverride: ttsReferenceClip, ttsReferenceRegion })
+      const r = await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsEmotionRefs: emotionRefsToSend, ttsEmotionRefSources: emotionSources, ttsEmotionRefRegions: emotionRegions, ttsReferencePrompts, ttsEngine, ttsReferenceOverride: ttsReferenceClip, ttsReferenceRegion, ttsParsedPlanSha256, ttsParserVersion: TTS_PARSER_VERSION, ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs })
       console.log('[renderer][synthesize] audio:process 호출 직후', r)
     } catch (err: any) {
       console.error('[renderer][synthesize] audio:process 오류', err?.stack || err)
@@ -183,10 +198,16 @@ export default function ProcessButton() {
   const pitchBlockReason = (mode === 'tts' && ttsPitch !== 0 && !pitchSupported)
     ? `음높이 보정 지원을 확인할 수 없어 ${ttsPitch > 0 ? '+' : ''}${ttsPitch.toFixed(1)}반음 설정으로 합성할 수 없습니다. 원본(0)으로 되돌리세요.`
     : ''
+  // I5-c: 세부 표현 값 범위 gate(backend INVALID_TTS_CONFIG와 정합 — tail pad/fade는 auto일 때만, emotion pause는
+  // 무조건 범위 검사). 범위 밖(예: 손상/구 세션 복원값)이면 조용히 clamp하지 않고 합성을 차단한다.
+  const expressionBlockReason = (mode === 'tts' && (
+    (ttsTailMode === 'auto' && (!inRange(ttsTailPaddingMs, TTS_TAIL_PADDING_MS) || !inRange(ttsTailFadeMs, TTS_TAIL_FADE_MS)))
+    || !inRange(ttsEmotionBoundaryPauseMs, TTS_EMOTION_PAUSE_MS)
+  )) ? '세부 표현 값이 허용 범위를 벗어났습니다 — 기본값으로 되돌리세요.' : ''
   const ttsBlockReason = mode === 'tts'
     ? (!ttsText.trim() ? '합성할 대사를 입력하세요'
         : (!ttsRefReady ? (ttsRefMessage || '참조 구간을 확정하세요')
-        : (emotionBlockReason || pitchBlockReason || '')))
+        : (emotionBlockReason || pitchBlockReason || expressionBlockReason || '')))
     : ''
 
   // 취소 실패로 이전 작업의 child가 아직 살아 있으면(CANCEL_FAILED·childAlive) 새 합성·재시도를 차단한다.

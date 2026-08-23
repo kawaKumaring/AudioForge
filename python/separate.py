@@ -88,6 +88,16 @@ def main():
         args.tts_reference_prompts = config.get("ttsReferencePrompts", {})  # 식별자→수동 override
         args.tts_reference_override = config.get("ttsReferenceOverride", "")  # 파생 참조 클립(있으면 기본 참조로 사용)
         args.tts_pitch = config.get("ttsPitch", 0.0)  # 음높이 보정(반음, 후처리). 부재 시 0.0(하위호환·무후처리)
+        args.tts_parsed_plan_sha256 = config.get("ttsParsedPlanSha256", "")  # 공용 마감 I1: renderer 파싱 full sha256(parity 대조)
+        args.tts_parser_version = config.get("ttsParserVersion", None)
+        # 공용 마감 I3: 말끝 finishing + 감정 전환 경계 config. 부재(레거시 세션/구 config)=off/현행 → 회귀 보존,
+        # 자동 마이그레이션 없음(계약 정정8). new 세션은 렌더러가 auto를 명시 전달. 범위 밖은 조용한 clamp 없이
+        # INVALID_TTS_CONFIG(tail은 audio_finishing.parse_tail_config, emotion 경계는 아래에서 검증).
+        args.tts_tail_mode = config.get("ttsTailMode", "off")
+        args.tts_tail_padding_ms = config.get("ttsTailPaddingMs", 120)
+        args.tts_tail_fade_ms = config.get("ttsTailFadeMs", 8)
+        args.tts_emotion_boundary_mode = config.get("ttsEmotionBoundaryMode", "pause")
+        args.tts_emotion_boundary_pause_ms = config.get("ttsEmotionBoundaryPauseMs", 200)
         # ref-analyze / ref-trim 파라미터(참조 구간 선택 UI용)
         args.region_start = config.get("regionStart", 0.0)
         args.region_dur = config.get("regionDur", 0.0)
@@ -185,6 +195,18 @@ def main():
             # 격리 venv(gptsovits/qwen)와 모델을 쓰므로 roots 필수 — 미주입이면 명시 오류(폴백 금지).
             if not _require_roots_or_emit():
                 return
+            # 공용 마감 I1: 모델 로딩 전에 renderer 파싱 결과와 parity 대조(합성 권위=Python).
+            # 파싱 실패(UNKNOWN_TTS_TAG/INVALID_PAUSE_TAG/EMPTY_EMOTION_SEGMENT) 또는 hash 불일치
+            # (PARSER_PARITY_MISMATCH)면 여기서 구조화 오류로 차단한다(모델 미로딩·대사 전문 미출력).
+            try:
+                import tts_parity as _tp
+                _perr = _tp.verify_parity(args.tts_text, getattr(args, "tts_parsed_plan_sha256", "") or "")
+            except Exception as e:  # parser 자체 오류도 조용히 통과시키지 않는다
+                _perr = [{"code": "PARSER_PARITY_MISMATCH", "reason": "verify_failed:" + type(e).__name__}]
+            if _perr:
+                _e0 = _perr[0] if isinstance(_perr[0], dict) else {"code": "PARSER_PARITY_MISMATCH"}
+                emit("error", message="대사 태그를 처리할 수 없습니다.", **{k: v for k, v in _e0.items()})
+                return
             from tts_worker import synthesize
             emotion_refs = {}
             if hasattr(args, 'tts_emotion_refs') and args.tts_emotion_refs:
@@ -205,17 +227,47 @@ def main():
                 return
             # 감정 참조 만료(§5 불변식 3) 등 synthesize가 던지는 RuntimeError를 명확한 오류로 표면화
             # (silent fallback 금지 — resolve_reference_input과 동일 패턴).
+            # 공용 마감 I3 — 감정 전환 경계 config 검증(조용한 clamp 금지, Python 권위). immediate|pause만·0~1000ms.
+            _eb_mode = args.tts_emotion_boundary_mode
+            _eb_ms = args.tts_emotion_boundary_pause_ms
+            if _eb_mode not in ("immediate", "pause"):
+                emit("error", message="감정 전환 경계 설정이 올바르지 않습니다.",
+                     code="INVALID_TTS_CONFIG")
+                return
+            if not (isinstance(_eb_ms, (int, float)) and 0 <= _eb_ms <= 1000):
+                emit("error", message="감정 전환 간격 값이 허용 범위(0~1000ms)를 벗어났습니다.",
+                     code="INVALID_TTS_CONFIG")
+                return
+            # tail_cfg 검증을 모델 로딩 '전'으로 앞당긴다(emotion 경계와 대칭 fail-fast, 조용한 clamp 금지).
+            # _finish_and_place도 나중에 재검증하지만(방어), 범위 위반은 여기서 즉시 INVALID_TTS_CONFIG로 차단.
+            _tail_cfg = {"mode": args.tts_tail_mode,
+                         "pad_ms": args.tts_tail_padding_ms,
+                         "fade_ms": args.tts_tail_fade_ms}
+            try:
+                import audio_finishing as _af
+                _af.parse_tail_config(_tail_cfg)  # 범위 밖이면 AudioFinishingError(code=INVALID_TTS_CONFIG)
+            except Exception as _te:
+                _code = getattr(_te, "code", None) or "INVALID_TTS_CONFIG"
+                emit("error", message="말끝 다듬기 설정이 올바르지 않습니다.", code=_code)
+                return
             try:
                 synthesize(ref_input, args.tts_text, args.output,
                            speed=args.tts_speed, silence_gap=args.tts_silence_gap,
                            emotion_refs=emotion_refs, emotion_ref_sources=emotion_ref_sources,
                            preferred_engine=preferred_engine,
                            reference_prompts=ref_prompts,
-                           pitch=getattr(args, "tts_pitch", 0.0))
+                           pitch=getattr(args, "tts_pitch", 0.0),
+                           tail_cfg=_tail_cfg,
+                           emotion_boundary_mode=_eb_mode,
+                           emotion_boundary_pause_ms=_eb_ms)
             except RuntimeError as e:
                 # 구조화 payload(code+필드)가 있으면 renderer까지 전달(문자열 prefix 추론 대신 정식 code).
                 # payload에는 문장·전사·전체경로가 없다(tts_worker가 index/토큰/감정 ID만 담음).
+                # AudioFinishingError(예: tail 범위 위반 INVALID_TTS_CONFIG)는 .code를 payload로 승격.
                 payload = getattr(e, "error_payload", None)
+                if not isinstance(payload, dict):
+                    _code = getattr(e, "code", None)
+                    payload = {"code": _code} if _code else None
                 if isinstance(payload, dict):
                     emit("error", message=str(e), **payload)
                 else:
