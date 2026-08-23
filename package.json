@@ -15,6 +15,7 @@
     "test:e2e:tts-editor-ux": "node test/e2e/tts-editor-ux.e2e.mjs",
     "test:e2e:tts-pitch-capability": "node test/e2e/tts-pitch-capability.e2e.mjs",
     "test:e2e:tts-accessibility": "node test/e2e/tts-accessibility.e2e.mjs",
+    "test:e2e:tts-i5-smoke": "node test/e2e/tts-i5-shell-smoke.e2e.mjs",
     "test:e2e:tts-result-metadata": "node test/e2e/tts-result-metadata.e2e.mjs",
     "test:e2e:tts-generation-retry": "node test/e2e/tts-generation-retry.e2e.mjs",
     "test:e2e:tts-cancel-lifecycle": "node test/e2e/tts-cancel-lifecycle.e2e.mjs",
