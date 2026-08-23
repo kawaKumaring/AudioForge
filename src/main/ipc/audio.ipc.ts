@@ -3,7 +3,7 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { join, basename, dirname, extname, resolve } from 'path'
 import { randomUUID } from 'crypto'
-import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync } from 'fs'
+import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync, realpathSync } from 'fs'
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
 import { createSettlementGuard } from '../services/run-settlement'
@@ -12,34 +12,122 @@ import { buildTtsConfig, normalizePitchCapability, type TtsInputOptions } from '
 import { sweepQwenJobDirs, listQwenJobDirs } from '../services/qwen-cleanup'
 import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
 import { createSingleFlight, createKeyedSingleFlight } from '../services/single-flight'
+import {
+  resolveRuntimeWithDeps,
+  type RuntimeAdapterDeps,
+  type AdapterResolution,
+  type RuntimeSettings,
+} from '../services/runtimeResolverAdapter'
+import type { RuntimeRootConfig } from '../../shared/runtimeContract'
+import type { InterpreterProbeResult } from '../services/runtimeResolver'
 
 // execFile(배열 인자)은 cmd.exe를 거치지 않아 시스템 코드페이지(CP949)의
 // 한글 경로 손상 문제에 면역. exec(문자열)은 한글 파일명에서 깨짐 → 금지.
 const execFileAsync = promisify(execFile)
 
-// ffprobe path (winget install location)
-const FFPROBE_PATHS = [
-  'ffprobe',
-  join(process.env.LOCALAPPDATA || '', 'Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.1-full_build/bin/ffprobe.exe')
-]
+// ffprobe: PATH 우선. 버전 고정 절대경로(벤더 설치 위치)를 박지 않는다 —
+// 사용자 설정(ffprobePath)·환경변수(AUDIOFORGE_FFPROBE)로만 보강한다.
+function ffprobeCandidates(): string[] {
+  const out = ['ffprobe']
+  const fromSetting = loadSettings().ffprobePath
+  if (typeof fromSetting === 'string' && fromSetting) out.push(fromSetting)
+  const fromEnv = process.env.AUDIOFORGE_FFPROBE
+  if (fromEnv) out.push(fromEnv)
+  return out
+}
 
-// AI 패키지가 설치된 Python을 참조 (의존 대상은 ComfyUI 앱이 아니라 그 패키지들).
-// 우선순위: externals/env.json(setup_env.py가 기록) → 하드코딩 기본값 → 시스템 python.
-const DEFAULT_PYTHON = 'E:/AI/ComfyUI_windows_portable_python3.12/python_embeded/python.exe'
+// ── 런타임(파이썬) 해석 — 하드코딩·조용한 fallback 제거 ────────────────────────
+// 옛 해석기의 안티패턴(벤더 절대경로 상수 / exists만으로 채택 /
+// 마지막 시스템 python 조용한 fallback)을 순수 resolver + adapter로 대체한다.
+// 실제 fs/env/spawn/Electron은 여기서 deps로 주입하고, 결과는 1회 메모이즈한다.
+let resolved: AdapterResolution | null = null
 
-function resolvePythonPath(): string {
-  // 1. setup_env.py가 해석해 기록한 경로
+// 과거 externals/env.json(setup_env.py 기록)의 python 경로 — legacy-detected 후보(stale 가능).
+function legacyRecordPath(): string | undefined {
   try {
     const cfg = join(__dirname, '..', '..', 'externals', 'env.json')
     if (existsSync(cfg)) {
       const p = JSON.parse(readFileSync(cfg, 'utf-8')).python
-      if (p && existsSync(p)) return p
+      if (typeof p === 'string' && p) return p
     }
-  } catch { /* fall through */ }
-  // 2. 하드코딩 기본값(ComfyUI 임베디드) — 있으면
-  if (existsSync(DEFAULT_PYTHON)) return DEFAULT_PYTHON
-  // 3. 시스템 python
-  return 'python'
+  } catch { /* ignore */ }
+  return undefined
+}
+
+// env_check.py --json을 비동기 실행해 최소 probe 신호로 매핑. 증거 없거나 실행 불가면 null(→ 채택 불가).
+async function probeInterpreter(pythonPath: string): Promise<InterpreterProbeResult | null> {
+  try {
+    const script = PythonRunner.getScriptPath('env_check.py')
+    if (!existsSync(script)) return null
+    const { stdout } = await execFileAsync(pythonPath, ['-X', 'utf8', script, '--json'], { timeout: 30000 })
+    // 마지막 JSON 라인만 파싱(경고/tqdm 등 비-JSON 출력 방어).
+    let parsed: { core_ok?: boolean; core_missing?: string[]; tts_missing?: string[]; python_version?: string } | null = null
+    for (const line of stdout.split('\n').reverse()) {
+      const t = line.trim()
+      if (t.startsWith('{')) { try { parsed = JSON.parse(t) } catch { /* keep scanning */ } ; if (parsed) break }
+    }
+    if (!parsed) return null
+    return {
+      ok: parsed.core_ok === true,
+      coreMissing: parsed.core_missing ?? [],
+      ttsMissing: parsed.tts_missing ?? [],
+      pythonVersion: parsed.python_version,
+    }
+  } catch {
+    // 실행 자체 실패(미존재/권한/타임아웃) → 증거 없음.
+    return null
+  }
+}
+
+// 현재 설정에서 런타임 관련 값만 추린다(경로는 절대경로 기대).
+function runtimeSettings(): RuntimeSettings {
+  const s = loadSettings()
+  const pick = (k: string): string | undefined => (typeof s[k] === 'string' && s[k] ? (s[k] as string) : undefined)
+  return {
+    pythonPath: pick('pythonPath'),
+    externalPythonPath: pick('externalPythonPath'),
+    runtimeRoot: pick('runtimeRoot'),
+    modelRoot: pick('modelRoot'),
+    cacheRoot: pick('cacheRoot'),
+  }
+}
+
+function runtimeDeps(): RuntimeAdapterDeps {
+  return {
+    exists: (p) => existsSync(p),
+    realpath: (p) => { try { return realpathSync.native(p) } catch { return null } },
+    getEnv: (n) => process.env[n],
+    discoverPath: () => [],  // PATH 탐색은 이번 범위 밖(설치/발견 기능 미구현) — 빈 목록.
+    normalize: (p) => p.toLowerCase().replace(/\\/g, '/'),
+    probe: probeInterpreter,
+    settings: runtimeSettings,
+    legacyRecordPath,
+    userDataDir: () => app.getPath('userData'),
+    platform: process.platform === 'win32' ? 'win32' : 'posix',
+  }
+}
+
+// 런타임 해석(메모이즈). 성공 시 절대 interpreter 경로 반환, 실패 시 RUNTIME_NOT_CONFIGURED throw.
+// 조용한 fallback 없음 — 미해석은 명시 오류. code는 renderer UX 분기용(전체 경로 미포함).
+async function ensureRuntime(): Promise<string> {
+  if (!resolved || !resolved.resolved) {
+    resolved = await resolveRuntimeWithDeps(runtimeDeps())
+  }
+  if (resolved.resolved && resolved.interpreterPath) return resolved.interpreterPath
+  const e = new Error('실행 가능한 파이썬 런타임이 구성되지 않았습니다. 설정에서 인터프리터를 지정하거나 런타임을 설치하세요.') as Error & { code?: string }
+  e.code = 'RUNTIME_NOT_CONFIGURED'
+  throw e
+}
+
+// 현재 해석된 roots(계약 RuntimeRootConfig). ensureRuntime 성공 후에만 non-null. B(Python)가 config.roots로 소비.
+function getResolvedRuntime(): RuntimeRootConfig | null {
+  return resolved?.roots ?? null
+}
+
+// separate.py에 넘길 config에 최상위 roots를 주입(해석된 경우에만). 세션 저장본에는 넣지 않는다(stale 방지).
+function withRoots<T extends object>(cfg: T): T & { roots?: RuntimeRootConfig } {
+  const roots = getResolvedRuntime()
+  return roots ? { ...cfg, roots } : cfg
 }
 
 // L-6: 사용자가 고른 python 경로를 userData/settings.json에 영속화 → 재시작 후에도 유지.
@@ -67,7 +155,6 @@ function savePythonPath(p: string): void { saveSetting('pythonPath', p) }
 
 let runner: PythonRunner | null = null
 let trackRunner: PythonRunner | null = null
-let pythonPath = resolvePythonPath()
 // 취소 lifecycle(공용 마감 K/K2) 조정 상태 — audio:process가 세팅하고 audio:cancel/done이 소비.
 let currentSettle: import('../services/run-settlement').SettlementGuard | null = null
 // 취소 진행 상태: none=취소 안 함 / inflight=취소 요청 후 종료·정리 대기 / failed=kill 확인 실패(재취소 허용).
@@ -165,7 +252,7 @@ let cachedFfprobe: string | null = null
 
 async function findFfprobe(): Promise<string> {
   if (cachedFfprobe) return cachedFfprobe
-  for (const p of FFPROBE_PATHS) {
+  for (const p of ffprobeCandidates()) {
     try {
       await execFileAsync(p, ['-version'])
       cachedFfprobe = p
@@ -176,14 +263,10 @@ async function findFfprobe(): Promise<string> {
 }
 
 export function registerAudioIpc(mainWindow: BrowserWindow): void {
-  // 영속화된 사용자 지정 python 경로가 있으면 우선 적용(재시작 후에도 유지) — L-6.
-  // 사용자의 명시적 선택이 자동 해석(env.json/기본값)보다 우선한다.
-  try {
-    const persisted = loadSettings().pythonPath
-    if (typeof persisted === 'string' && existsSync(persisted)) {
-      pythonPath = persisted
-    }
-  } catch { /* ignore */ }
+  // 런타임 해석은 최초 사용 시 ensureRuntime()이 1회 수행하고 메모이즈한다(app.getPath 안전 시점 이후).
+  // 영속화된 사용자 지정 인터프리터(settings.pythonPath)는 resolver의 user-settings(1순위) 후보로 들어간다.
+  // 여기서 캐시를 비워 두면 첫 오디오 작업에서 최신 설정으로 해석된다.
+  resolved = null
 
   // 앱 시작: 이전 세션이 남긴 stale 파생 참조 폴더 방어 정리(정확한 prefix + tmpdir 직속 폴더만).
   try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ }
@@ -289,7 +372,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
   // 메인 처리용 runner와 별개의 단기 프로세스로 실행. 동시 실행 방지 + timeout + 정리.
   ipcMain.handle('audio:transcribe-reference', async (_event, filePath: string) => {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 전사를 실행할 수 없습니다.')
-    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
+    const py = await ensureRuntime()
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
     transcriptPreviewGuard.begin()  // 참조 전사 중복 실행 방지(진행 중이면 throw)
     // config 생성·writeFileSync·실행 전체를 try/finally 안에 둔다 — 설정 단계 예외에서도
@@ -297,9 +380,9 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     const cfgPath = join(tmpdir(), `audioforge_reftx_${randomUUID()}.json`)
     try {
       const scriptPath = PythonRunner.getScriptPath('separate.py')
-      writeFileSync(cfgPath, JSON.stringify({ mode: 'ref-transcribe', input: filePath, output: dirname(filePath) }), 'utf-8')
+      writeFileSync(cfgPath, JSON.stringify(withRoots({ mode: 'ref-transcribe', input: filePath, output: dirname(filePath) })), 'utf-8')
       return await runPreview({
-        runner: new PythonRunner(pythonPath),
+        runner: new PythonRunner(py),
         scriptPath, args: ['--config', cfgPath],
         timeoutMs: 120000,  // Whisper small 로딩+전사 여유. 멈춘 프로세스만 끊음.
         cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
@@ -314,7 +397,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
   // 않음). 같은 절대 filePath의 동시 요청은 single-flight로 합쳐 subprocess 1회, 모두 같은 결과.
   ipcMain.handle('audio:analyze-reference', async (_event, filePath: string, clipKey: string = 'default') => {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 분석을 실행할 수 없습니다.')
-    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
+    const py = await ensureRuntime()
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
     // single-flight key는 clipKey+절대경로 — 감정별로 분리하되 같은 (key,파일)의 동시 요청만 합침.
     const key = clipKey + '\u0000' + resolve(filePath)
@@ -323,9 +406,9 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       const cfgPath = join(tmpdir(), `audioforge_refanalyze_${randomUUID()}.json`)
       try {
         const scriptPath = PythonRunner.getScriptPath('separate.py')
-        writeFileSync(cfgPath, JSON.stringify({ mode: 'ref-analyze', input: filePath, output: dirname(filePath) }), 'utf-8')
+        writeFileSync(cfgPath, JSON.stringify(withRoots({ mode: 'ref-analyze', input: filePath, output: dirname(filePath) })), 'utf-8')
         return await runPreview({
-          runner: new PythonRunner(pythonPath),
+          runner: new PythonRunner(py),
           scriptPath, args: ['--config', cfgPath],
           timeoutMs: 60000,  // 파형 peak 스캔 여유. 멈춘 프로세스만 끊음.
           cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
@@ -339,7 +422,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
   // 선택 구간 → mono/24k 파생 참조 WAV(작업 임시폴더). 원본 불변. 반환 clip_path를 합성에 전달한다.
   ipcMain.handle('audio:trim-reference', async (_event, filePath: string, startSec: number, durSec: number, clipKey: string = 'default') => {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 트림을 실행할 수 없습니다.')
-    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
+    const py = await ensureRuntime()
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
     releaseRefClip(clipKey)  // 재확정 → 그 key의 이전 파생 클립만 폐기(타 감정 클립 불변; 합성 중 아님: 위에서 차단)
     referenceTrimGuard.begin()  // 트림 중복 실행 방지(전사 가드와 분리 — 서로 차단하지 않음)
@@ -350,12 +433,12 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     try {
       mkdirSync(outDir, { recursive: true })
       const scriptPath = PythonRunner.getScriptPath('separate.py')
-      writeFileSync(cfgPath, JSON.stringify({
+      writeFileSync(cfgPath, JSON.stringify(withRoots({
         mode: 'ref-trim', input: filePath, output: outDir,
         regionStart: startSec, regionDur: durSec
-      }), 'utf-8')
+      })), 'utf-8')
       return await runPreview({
-        runner: new PythonRunner(pythonPath),
+        runner: new PythonRunner(py),
         scriptPath, args: ['--config', cfgPath],
         timeoutMs: 60000,
         cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
@@ -370,14 +453,15 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
   // 하나의 in-flight Promise를 공유해 subprocess 1회. 예상값이며 실행 결과는 metadata가 최종.
   ipcMain.handle('audio:qwen-preflight', async () => {
     if (runner?.isRunning) return { available: false, reason: '처리 중' }
-    if (!existsSync(pythonPath)) return { available: false, reason: 'Python 없음' }
+    let py: string
+    try { py = await ensureRuntime() } catch { return { available: false, code: 'RUNTIME_NOT_CONFIGURED' } }
     return qwenPreflightSF.run(async () => {  // 동시/StrictMode 중복은 진행 중 Promise 공유(subprocess 1회)
       const cfgPath = join(tmpdir(), `audioforge_qwenpre_${randomUUID()}.json`)
       try {
         const scriptPath = PythonRunner.getScriptPath('separate.py')
-        writeFileSync(cfgPath, JSON.stringify({ mode: 'qwen-preflight' }), 'utf-8')
+        writeFileSync(cfgPath, JSON.stringify(withRoots({ mode: 'qwen-preflight' })), 'utf-8')
         return await runPreview({
-          runner: new PythonRunner(pythonPath),
+          runner: new PythonRunner(py),
           scriptPath, args: ['--config', cfgPath],
           timeoutMs: 30000,
           cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
@@ -404,14 +488,15 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       // 그 외/미설정이면 실제 probe로 진행
     }
     if (runner?.isRunning) return normalizePitchCapability(null)  // 처리 중엔 probe 안 함(unknown 유지)
-    if (!existsSync(pythonPath)) return normalizePitchCapability({ available: false, reason: 'pitch-probe-failed: python-not-found' })
+    let py: string
+    try { py = await ensureRuntime() } catch { return normalizePitchCapability({ available: false, reason: 'pitch-probe-failed: runtime-not-configured' }) }
     return pitchPreflightSF.run(async () => {  // 동시/StrictMode 중복은 진행 중 Promise 공유(subprocess 1회)
       const cfgPath = join(tmpdir(), `audioforge_pitchpre_${randomUUID()}.json`)
       try {
         const scriptPath = PythonRunner.getScriptPath('separate.py')
-        writeFileSync(cfgPath, JSON.stringify({ mode: 'pitch-preflight' }), 'utf-8')
+        writeFileSync(cfgPath, JSON.stringify(withRoots({ mode: 'pitch-preflight' })), 'utf-8')
         const raw = await runPreview({
-          runner: new PythonRunner(pythonPath),
+          runner: new PythonRunner(py),
           scriptPath, args: ['--config', cfgPath],
           timeoutMs: 35000,
           cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
@@ -449,10 +534,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       throw new Error('참조 구간 트림 중에는 합성을 시작할 수 없습니다.')
     }
 
-    // Verify python exists
-    if (!existsSync(pythonPath)) {
-      throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
-    }
+    // 런타임 해석(하드코딩/조용한 fallback 없음). 미해석 → RUNTIME_NOT_CONFIGURED(경로 미포함).
+    const py = await ensureRuntime()
 
     // Resolve script path. AF_E2E=1에서만: 취소 lifecycle E2E가 실제 Qwen/미디어 대신 synthetic
     // 프로세스 트리를 띄우도록 스크립트 경로를 대체(취소·정착·정리·watchdog 로직은 production 그대로 실행).
@@ -502,10 +585,12 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       // 여기서 정합 전사만 Python에 전달된다.
       ...buildTtsConfig(options as TtsInputOptions | undefined, buildReferenceFingerprints(filePath, options))
     }
-    writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+    // Python에 넘기는 config에만 최상위 roots(계약 RuntimeRootConfig)를 주입한다.
+    // session.json에는 config(roots 없음)를 그대로 저장 — 재현 시 런타임은 그 시점에 다시 해석(stale 방지).
+    writeFileSync(configPath, JSON.stringify(withRoots(config), null, 2), 'utf-8')
     console.log(`[AudioForge] Config written to: ${configPath}`)
 
-    runner = new PythonRunner(pythonPath)
+    runner = new PythonRunner(py)
     const thisRunner = runner  // 이 실행 인스턴스 고정 — done에서 새 실행의 runner를 null로 덮어쓰지 않도록(clobber 방지).
 
     // 종료 시 UI가 'processing'에 남지 않도록: result/error/watchdog/취소 중 하나로 반드시 '정착'.
@@ -660,15 +745,13 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     if (trackRunner?.isRunning) {
       throw new Error('이미 처리 중인 트랙 작업이 있습니다')
     }
-    if (!existsSync(pythonPath)) {
-      throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
-    }
+    const py = await ensureRuntime()
     const scriptPath = PythonRunner.getScriptPath('separate.py')
     if (!existsSync(scriptPath)) {
       throw new Error(`Python 스크립트를 찾을 수 없습니다: ${scriptPath}`)
     }
 
-    trackRunner = new PythonRunner(pythonPath)
+    trackRunner = new PythonRunner(py)
 
     // Korean paths must never be passed as spawn args (CP949 corruption) —
     // same JSON config approach as 'audio:process'
@@ -682,7 +765,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       srt: !!options.srt,
       translateModel: options.translateModel || '600m'
     }
-    writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
+    writeFileSync(configPath, JSON.stringify(withRoots(config), null, 2), 'utf-8')
 
     // Watchdog: kill if no progress for 5 minutes (same policy as main runner)
     const WATCHDOG_MS = 300000
@@ -919,14 +1002,25 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     return destDir
   })
 
-  ipcMain.handle('settings:get', () => {
-    return { pythonPath }
+  // renderer로 전체 경로를 내보내지 않는다(계약 §2) — 해석 상태 + basename/소유권/사유만.
+  ipcMain.handle('settings:get', async () => {
+    try { await ensureRuntime() } catch { /* 미해석도 유효한 보고 상태 */ }
+    const r = resolved
+    return {
+      resolved: !!r?.resolved,
+      interpreterBasename: r?.resolved && r.interpreterPath ? basename(r.interpreterPath) : null,
+      ownership: r?.ownership ?? null,
+      reasonCode: r?.reasonCode ?? null,
+    }
   })
 
+  // 런타임 관련 설정 변경 → 영속화 + 해석 캐시 무효화(다음 사용 시 새 설정으로 재해석).
   ipcMain.handle('settings:set', (_event, key: string, value: unknown) => {
-    if (key === 'pythonPath' && typeof value === 'string') {
-      pythonPath = value
-      savePythonPath(value)  // L-6: 영속화
+    const runtimeKeys = new Set(['pythonPath', 'externalPythonPath', 'runtimeRoot', 'modelRoot', 'cacheRoot', 'ffprobePath'])
+    if (runtimeKeys.has(key) && typeof value === 'string') {
+      saveSetting(key, value)  // L-6: 영속화
+      resolved = null
+      if (key === 'ffprobePath') cachedFfprobe = null
     }
   })
 
@@ -936,9 +1030,10 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       filters: [{ name: 'Python', extensions: ['exe'] }]
     })
     if (result.canceled) return null
-    pythonPath = result.filePaths[0]
-    savePythonPath(pythonPath)  // L-6: 영속화
-    return pythonPath
+    const chosen = result.filePaths[0]
+    savePythonPath(chosen)  // L-6: 영속화(user-settings 1순위 후보)
+    resolved = null         // 다음 사용 시 새 선택으로 재해석
+    return { basename: basename(chosen) }  // 전체 경로 미반환(§2)
   })
 
   ipcMain.handle('app:open-folder', (_event, path: string) => {
