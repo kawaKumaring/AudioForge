@@ -6,6 +6,64 @@ from audio_utils import emit, load_audio, save_audio, convert_to_wav
 from gpu_policy import select_device, run_with_oom_retry
 
 
+def _build_dialogue_sidecar_payload(frame_labels, smoothed, order, n_speakers, frame_rate):
+    """canonical dialogue sidecar 를 in-memory versioned payload 로 만든다 (순수 함수).
+
+    ★ frame_labels 는 **speech-mask 적용 후 · MIN_TURN_FRAMES 병합 전** 라벨(무음=-1)이어야
+      <500ms backchannel 이 세그먼트로 보존된다. smoothed 는 트랙 존재(오디오 출력) 판정용으로만
+      읽고, 오디오/트랙 결과에 손대지 않는다.
+
+    plain list 만 받으므로(numpy·torch·파일 I/O 없음) synthetic 테스트가 가능하다.
+    파일을 절대 쓰지 않는다. 실패 격리는 호출부(try/except)의 책임.
+
+    화자 라벨 규약(확정):
+      - order(첫 등장 순) 매핑으로 cluster index → "화자 A/B..." = 트랙 라벨과 동일.
+      - smoothed 에 남은(트랙 오디오가 있는) 화자: trackAvailable=True, trackIndex=order 위치.
+      - 병합으로 smoothed 에서 사라진 backchannel-only 화자: 삭제하지 않고 보존하되
+        trackAvailable=False, trackIndex=None, reviewRequired=True (없는 트랙 생성·타 화자
+        강제 귀속 금지 — deterministic canonical speaker ID 만 유지).
+    """
+    import dialogue_canonical as dc
+
+    # cluster index → order 기반 canonical 라벨 (track 라벨 규칙과 동일: enumerate(order)).
+    label_of = {}
+    for idx, c in enumerate(order):
+        label_of[c] = f"화자 {chr(65 + idx)}"
+    speaker_names = [label_of.get(c, f"화자 {chr(65 + c)}") for c in range(n_speakers)]
+
+    # 병합 전 hard label → 세그먼트(posterior={label:1.0}). 현재 파이프라인은 argmax 마스킹이라
+    # overlap 개념이 없으므로 frame_posteriors 를 넘기지 않는다(트랙 배정과 동일한 hard label 유지).
+    segments = dc.build_segments_from_frames(frame_labels, frame_rate, speaker_names)
+
+    sidecar = dc.CanonicalSidecar(
+        segments=segments,
+        speakers=[label_of[c] for c in order],   # deterministic 전 화자 목록
+        source={"pipeline": "argmax-mask", "frame_rate": str(int(frame_rate))},
+    )
+
+    premerge_present = {int(x) for x in frame_labels if x is not None and int(x) >= 0}
+    smoothed_present = {int(x) for x in smoothed if x is not None and int(x) >= 0}
+
+    speaker_meta = []
+    for idx, c in enumerate(order):
+        avail = c in smoothed_present
+        backchannel_only = (c in premerge_present) and not avail
+        speaker_meta.append({
+            "id": label_of[c],
+            "trackAvailable": avail,
+            "trackIndex": idx if avail else None,
+            "reviewRequired": backchannel_only,
+        })
+    speaker_meta.sort(key=lambda m: m["id"])   # deterministic
+
+    return {
+        "schema": dc.SCHEMA_ID,
+        "schemaVersion": dc.SCHEMA_VERSION,
+        "sidecar": sidecar.to_dict(),
+        "speakerMeta": speaker_meta,
+    }
+
+
 def run_conversation_separation(input_path: str, output_dir: str, n_speakers: int = 2,
                                 gpu_policy: str = "auto"):
     """High-quality speaker separation using:
@@ -392,6 +450,24 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
             tracks.append({"name": name, "label": label, "path": out_path})
 
         emit("progress", percent=95, message="분리 완료")
+
+        # ── canonical dialogue sidecar (in-memory, versioned payload) ──
+        # 병합 전 frame_labels(무음=-1)의 복사본으로 <500ms backchannel 을 보존한 sidecar 를
+        # 생성해 versioned payload 로 방출한다. 파일을 쓰지 않으며, smoothed 기반 오디오/트랙
+        # 출력에는 전혀 관여하지 않는다(위 tracks 는 이미 확정·저장됨). 실패해도 오디오/트랙은
+        # 정상이며, 부분 sidecar·파일 산출은 없다.
+        try:
+            payload = _build_dialogue_sidecar_payload(
+                frame_labels.copy().tolist(),   # speech-mask 후·병합 전
+                smoothed.tolist(),              # 트랙 존재 판정용(읽기 전용)
+                order, n_speakers, PROB_SR,
+            )
+            emit("dialogueSidecar", **payload)
+        except Exception as e:
+            # 구조화 오류 — 비치명적. 기존 WAV/track 결과 불변, 파일 산출 없음.
+            emit("dialogueSidecarError",
+                 message=f"canonical sidecar 생성 실패(오디오·트랙은 정상): {e}")
+
         return tracks
 
     finally:
