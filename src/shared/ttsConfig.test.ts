@@ -297,3 +297,17 @@ test('parity 바이트 동일성: buildTtsConfig가 ttsParsedPlanSha256을 무�
   assert.equal(c.ttsParsedPlanSha256, sha)
   assert.equal(JSON.parse(JSON.stringify(c)).ttsParsedPlanSha256, sha)
 })
+
+// ── I5-c: 끝 여백(padding)과 페이드(fade) 값이 서로 바뀌어 전송되지 않음(스왑 금지) ──
+test('buildTtsConfig: tailPadding/tailFade 값 스왑 없음(서로 다른 키로 정확 전송)', () => {
+  const c = buildTtsConfig({ ttsTailMode: 'auto', ttsTailPaddingMs: 90, ttsTailFadeMs: 15 })
+  assert.equal(c.ttsTailPaddingMs, 90, '끝 여백은 padding 키로')
+  assert.equal(c.ttsTailFadeMs, 15, '페이드는 fade 키로')
+  // 스왑됐다면 padding=15/fade=90이 됐을 것 — 명시적으로 부정.
+  assert.notEqual(c.ttsTailPaddingMs, 15)
+  assert.notEqual(c.ttsTailFadeMs, 90)
+  // 기본값도 스왑 없음: padding 120, fade 8.
+  const d = buildTtsConfig({ ttsTailMode: 'auto' })
+  assert.equal(d.ttsTailPaddingMs, 120)
+  assert.equal(d.ttsTailFadeMs, 8)
+})

@@ -3,6 +3,7 @@ import { motion } from 'framer-motion'
 import { useAppStore } from '@/stores/app.store'
 import { ALL_EMOTIONS, planEmotionRefs } from '@/lib/emotions'
 import { parseTtsScript, TTS_PARSER_VERSION } from '../../shared/ttsGrammar'
+import { inRange, TTS_TAIL_PADDING_MS, TTS_TAIL_FADE_MS, TTS_EMOTION_PAUSE_MS } from '../../shared/ttsExpressionCapabilities'
 
 function _estimateTime(mode: string, duration: number, transcribe: boolean, translate: boolean): string {
   let secs = 0
@@ -197,10 +198,16 @@ export default function ProcessButton() {
   const pitchBlockReason = (mode === 'tts' && ttsPitch !== 0 && !pitchSupported)
     ? `음높이 보정 지원을 확인할 수 없어 ${ttsPitch > 0 ? '+' : ''}${ttsPitch.toFixed(1)}반음 설정으로 합성할 수 없습니다. 원본(0)으로 되돌리세요.`
     : ''
+  // I5-c: 세부 표현 값 범위 gate(backend INVALID_TTS_CONFIG와 정합 — tail pad/fade는 auto일 때만, emotion pause는
+  // 무조건 범위 검사). 범위 밖(예: 손상/구 세션 복원값)이면 조용히 clamp하지 않고 합성을 차단한다.
+  const expressionBlockReason = (mode === 'tts' && (
+    (ttsTailMode === 'auto' && (!inRange(ttsTailPaddingMs, TTS_TAIL_PADDING_MS) || !inRange(ttsTailFadeMs, TTS_TAIL_FADE_MS)))
+    || !inRange(ttsEmotionBoundaryPauseMs, TTS_EMOTION_PAUSE_MS)
+  )) ? '세부 표현 값이 허용 범위를 벗어났습니다 — 기본값으로 되돌리세요.' : ''
   const ttsBlockReason = mode === 'tts'
     ? (!ttsText.trim() ? '합성할 대사를 입력하세요'
         : (!ttsRefReady ? (ttsRefMessage || '참조 구간을 확정하세요')
-        : (emotionBlockReason || pitchBlockReason || '')))
+        : (emotionBlockReason || pitchBlockReason || expressionBlockReason || '')))
     : ''
 
   // 취소 실패로 이전 작업의 child가 아직 살아 있으면(CANCEL_FAILED·childAlive) 새 합성·재시도를 차단한다.

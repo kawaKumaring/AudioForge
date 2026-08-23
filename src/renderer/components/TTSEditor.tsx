@@ -8,6 +8,8 @@ import TtsVoiceSection from './TtsVoiceSection'
 import EmotionReferenceManager from './EmotionReferenceManager'
 import ExpressionControls from './ExpressionControls'
 import { getPresetValues } from './ExpressionControls.logic'
+import TtsExpressionDetail from './TtsExpressionDetail'
+import { resolveExpressionCapability } from '../../shared/ttsExpressionCapabilities'
 import EmotionScriptEditor, { type EmotionScriptEditorHandle } from './EmotionScriptEditor'
 import { EMOTION_GROUPS, ALL_EMOTIONS, FREQUENT_TAGS, parseUsedEmotionIds } from '@/lib/emotions'
 
@@ -34,7 +36,8 @@ function previewLocalFile(path: string) {
 // ExpressionControls를 실제 props 계약으로 배선한다. 편집 알고리즘은 A 컴포넌트가 소유(I5-b는 그 동작 검증).
 // 모든 effect/analyze/preflight는 이 단일 컴포넌트에 유지 → 신규 하위 패널 재렌더로 중복 실행되지 않는다.
 export default function TTSEditor() {
-  const { mode, status, fileInfo, ttsEmotionRefState, registerEmotionRef, removeEmotionRef, setEmotionRefState, setTtsRefState, ttsRefReady, ttsRefMessage, ttsPitchCapability, setTtsPitchCapability } = useAppStore()
+  const { mode, status, fileInfo, ttsEmotionRefState, registerEmotionRef, removeEmotionRef, setEmotionRefState, setTtsRefState, ttsRefReady, ttsRefMessage, ttsPitchCapability, setTtsPitchCapability,
+    ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, setTtsExpression } = useAppStore()
   // 로컬 상태는 store 값으로 초기화 — 빈 값으로 시작하면 아래 동기화 useEffect가 다른 모드에 다녀온 뒤 store를 덮어써 유실시킴
   const [ttsText, setTtsText] = useState(() => useAppStore.getState().ttsText)
   const [ttsSpeed, setTtsSpeed] = useState(() => useAppStore.getState().ttsSpeed)
@@ -50,6 +53,7 @@ export default function TTSEditor() {
   // I5-a 표현 흐름 UI 상태(셸 로컬 — '고급 기능(세부 조절)'과 '패널 펼치기'는 컴포넌트가 각자 별도 관리, 정정 I5-c).
   const [presetId, setPresetId] = useState('original')
   const [fineTuneEnabled, setFineTuneEnabled] = useState(false)
+  const [detailFineTune, setDetailFineTune] = useState(false)   // 세부 표현 '직접 조절'(ExpressionControls fineTune과 별개)
   const [showSettingHelp, setShowSettingHelp] = useState(false)
   const editorRef = useRef<EmotionScriptEditorHandle>(null)
   const pitchCap = ttsPitchCapability
@@ -395,6 +399,21 @@ export default function TTSEditor() {
           )}
         </div>
       )}
+
+      {/* 세부 표현(통합 소유 블록) — 말끝 finishing + 감정 전환 경계. ExpressionControls(C) 아래 별도 배치. */}
+      <TtsExpressionDetail
+        capability={resolveExpressionCapability()}
+        tailMode={ttsTailMode}
+        tailPaddingMs={ttsTailPaddingMs}
+        tailFadeMs={ttsTailFadeMs}
+        emotionMode={ttsEmotionBoundaryMode}
+        emotionPauseMs={ttsEmotionBoundaryPauseMs}
+        fineTune={detailFineTune}
+        showSettingHelp={showSettingHelp}
+        disabled={disabled}
+        onChange={(patch) => setTtsExpression(patch)}
+        onToggleFineTune={setDetailFineTune}
+      />
 
       {/* 고급: 엔진 직접 선택(표현축 아님 → 셸이 별도 배치, 기본 접힘). */}
       <div style={flowCard}>
