@@ -236,3 +236,51 @@ test('restoreSession: TTS 스냅샷을 mode·pitch·source+region·전사·metad
   assert.equal(st.resultMetadata?.requested_engine, 'qwen3')
   assert.equal(st.status, 'done')
 })
+
+// ── I3: 세션 마이그레이션(legacy=off 보존 / new=저장값) ──
+test('restore: legacy 세션(tail 필드 없음) → tail off·현행으로 강등(자동 마이그레이션 없음)', () => {
+  // fresh 상태는 auto지만, 구 세션을 복원하면 off로 강등되어 재현이 조용히 바뀌지 않아야 한다.
+  useAppStore.setState({ ttsTailMode: 'auto', ttsEmotionBoundaryMode: 'immediate' })
+  const legacy = {
+    mode: 'tts' as const,
+    source: 'C:/in.wav',
+    options: { ttsText: '구 세션', ttsPitch: 0.0 },  // tail/emotion 필드 없음
+    tracks: [],
+  }
+  useAppStore.getState().restoreSession('C:/out', legacy)
+  const st = useAppStore.getState()
+  assert.equal(st.ttsTailMode, 'off')                 // legacy → off(현행 보존)
+  assert.equal(st.ttsTailPaddingMs, 120)
+  assert.equal(st.ttsTailFadeMs, 8)
+  assert.equal(st.ttsEmotionBoundaryMode, 'pause')    // legacy → 기본 pause
+  assert.equal(st.ttsEmotionBoundaryPauseMs, 200)
+})
+
+test('restore: new 세션(tail 필드 있음) → 저장값 그대로', () => {
+  const s = {
+    mode: 'tts' as const,
+    source: 'C:/in.wav',
+    options: {
+      ttsText: '새 세션', ttsPitch: 0.0,
+      ttsTailMode: 'auto' as const, ttsTailPaddingMs: 90, ttsTailFadeMs: 12,
+      ttsEmotionBoundaryMode: 'immediate' as const, ttsEmotionBoundaryPauseMs: 350,
+    },
+    tracks: [],
+  }
+  useAppStore.getState().restoreSession('C:/out', s)
+  const st = useAppStore.getState()
+  assert.equal(st.ttsTailMode, 'auto')
+  assert.equal(st.ttsTailPaddingMs, 90)
+  assert.equal(st.ttsTailFadeMs, 12)
+  assert.equal(st.ttsEmotionBoundaryMode, 'immediate')
+  assert.equal(st.ttsEmotionBoundaryPauseMs, 350)
+})
+
+test('setTtsExpression: 부분 갱신(다른 필드 불변)', () => {
+  useAppStore.setState({ ttsTailMode: 'auto', ttsTailPaddingMs: 120, ttsEmotionBoundaryMode: 'pause' })
+  useAppStore.getState().setTtsExpression({ ttsTailMode: 'off', ttsEmotionBoundaryMode: 'immediate' })
+  const st = useAppStore.getState()
+  assert.equal(st.ttsTailMode, 'off')
+  assert.equal(st.ttsEmotionBoundaryMode, 'immediate')
+  assert.equal(st.ttsTailPaddingMs, 120)  // 미지정 필드 불변
+})

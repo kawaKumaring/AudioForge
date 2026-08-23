@@ -53,6 +53,12 @@ export interface RestorableSession {
     ttsEmotionRefRegions: Record<string, { start: number; duration: number }>
     ttsReferenceOverride: string                    // 기본 참조 파생 클립(temp — 재시작 후 소실)
     ttsReferencePrompts: Record<string, { manual_text?: string; prompt_lang?: string; mode?: string }>
+    // I3: 말끝/감정경계 스냅샷. legacy 세션은 이 필드가 없어 복원 시 off/현행으로 강등(정정8, 자동 마이그레이션 없음).
+    ttsTailMode: 'off' | 'auto'
+    ttsTailPaddingMs: number
+    ttsTailFadeMs: number
+    ttsEmotionBoundaryMode: 'immediate' | 'pause'
+    ttsEmotionBoundaryPauseMs: number
   }>
   tracks?: Track[]
 }
@@ -153,6 +159,12 @@ interface AppState {
   ttsRefReady: boolean
   ttsRefMessage: string
   ttsReferenceRegion: { start: number; duration: number } | null
+  // I3: 말끝 finishing + 감정 전환 경계. fresh=auto(새 세션), 복원 시 필드 부재=off(legacy 보존, 자동 마이그레이션 없음).
+  ttsTailMode: 'off' | 'auto'
+  ttsTailPaddingMs: number
+  ttsTailFadeMs: number
+  ttsEmotionBoundaryMode: 'immediate' | 'pause'
+  ttsEmotionBoundaryPauseMs: number
   resultMetadata: Record<string, unknown> | null
 
   setFile: (info: FileInfo, url: string) => void
@@ -191,6 +203,14 @@ interface AppState {
   setRestorable: (v: { dir: string; session: RestorableSession } | null) => void
   restoreSession: (dir: string, session: RestorableSession) => void
   setTtsPitchCapability: (c: PitchCapability | null) => void
+  // I3: 표현(말끝/감정경계) 옵션 부분 갱신 — I5에서 ExpressionControls UI가 바인딩한다.
+  setTtsExpression: (patch: Partial<{
+    ttsTailMode: 'off' | 'auto'
+    ttsTailPaddingMs: number
+    ttsTailFadeMs: number
+    ttsEmotionBoundaryMode: 'immediate' | 'pause'
+    ttsEmotionBoundaryPauseMs: number
+  }>) => void
   reset: () => void
 }
 
@@ -230,6 +250,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   ttsEmotionRefState: {} as Record<string, EmotionRefState>,
   ttsReferencePrompts: {} as Record<string, TtsReferenceEntry>,
   ttsEngine: 'auto',
+  // I3: 새(fresh) 세션 기본 = auto(계약 정정8 "new session"). 복원 시 legacy(필드 부재)는 off로 강등.
+  ttsTailMode: 'auto' as 'off' | 'auto',
+  ttsTailPaddingMs: 120,
+  ttsTailFadeMs: 8,
+  ttsEmotionBoundaryMode: 'pause' as 'immediate' | 'pause',
+  ttsEmotionBoundaryPauseMs: 200,
   ttsReferenceClip: '',
   ttsRefReady: false,
   ttsRefMessage: '',
@@ -259,6 +285,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setNSpeakers: (v) => set({ nSpeakers: v }),
   setTtsReferencePrompts: (v) => set({ ttsReferencePrompts: v }),
   setTtsPitchCapability: (c) => set({ ttsPitchCapability: c }),
+  setTtsExpression: (patch) => set(patch),
   setTtsRefState: (v) => set((s) => ({
     ttsReferenceClip: v.clip !== undefined ? v.clip : s.ttsReferenceClip,
     ttsRefReady: v.ready !== undefined ? v.ready : s.ttsRefReady,
@@ -371,6 +398,14 @@ export const useAppStore = create<AppState>((set, get) => ({
       ttsSilenceGap: o.ttsSilenceGap ?? 0.5,
       ttsPitch: o.ttsPitch ?? 0.0,
       ttsEngine: o.ttsEngine ?? 'auto',
+      // I3: legacy 세션(필드 부재)은 off/현행으로 복원 — 구 세션을 여는 것만으로 재현이 조용히 바뀌지 않는다
+      // (정정8, 자동 마이그레이션 없음). new 세션은 저장된 값(off|auto) 그대로.
+      ttsTailMode: o.ttsTailMode === 'auto' || o.ttsTailMode === 'off' ? o.ttsTailMode : 'off',
+      ttsTailPaddingMs: o.ttsTailPaddingMs ?? 120,
+      ttsTailFadeMs: o.ttsTailFadeMs ?? 8,
+      ttsEmotionBoundaryMode: o.ttsEmotionBoundaryMode === 'immediate' || o.ttsEmotionBoundaryMode === 'pause'
+        ? o.ttsEmotionBoundaryMode : 'pause',
+      ttsEmotionBoundaryPauseMs: o.ttsEmotionBoundaryPauseMs ?? 200,
       ttsEmotionRefState: emotionState,
       ttsReferencePrompts: prompts,
       ttsReferenceClip: '',            // 파생 클립은 temp — 복원 시 항상 비움(§4: stale 클립 결합 금지)

@@ -91,14 +91,36 @@ test('지정한 값은 그대로 통과한다', () => {
   assert.equal(c.ttsEngine, 'gptsovits')
 })
 
-test('직렬화 형태에 12개 TTS 키가 모두 존재한다 (필드 누락 방지; I1 parity 2필드 추가)', () => {
+test('직렬화 형태에 17개 TTS 키가 모두 존재한다 (필드 누락 방지; I1 parity 2 + I3 tail/emotion 5 추가)', () => {
   const c = buildTtsConfig({})
   assert.deepEqual(
     Object.keys(c).sort(),
-    ['ttsEmotionRefRegions', 'ttsEmotionRefSources', 'ttsEmotionRefs', 'ttsEngine',
-      'ttsParsedPlanSha256', 'ttsParserVersion', 'ttsPitch',
-      'ttsReferenceOverride', 'ttsReferencePrompts', 'ttsSilenceGap', 'ttsSpeed', 'ttsText']
+    ['ttsEmotionBoundaryMode', 'ttsEmotionBoundaryPauseMs', 'ttsEmotionRefRegions', 'ttsEmotionRefSources',
+      'ttsEmotionRefs', 'ttsEngine', 'ttsParsedPlanSha256', 'ttsParserVersion', 'ttsPitch',
+      'ttsReferenceOverride', 'ttsReferencePrompts', 'ttsSilenceGap', 'ttsSpeed',
+      'ttsTailFadeMs', 'ttsTailMode', 'ttsTailPaddingMs', 'ttsText']
   )
+})
+
+test('I3: tail/emotion 경계 기본값 = backward-compat(off/현행) + 계약 추가4 수치', () => {
+  const c = buildTtsConfig({})
+  assert.equal(c.ttsTailMode, 'off')            // 부재 = 현행 동작 보존(정정8), new=auto는 스토어가 명시 전달
+  assert.equal(c.ttsTailPaddingMs, 120)
+  assert.equal(c.ttsTailFadeMs, 8)
+  assert.equal(c.ttsEmotionBoundaryMode, 'pause')
+  assert.equal(c.ttsEmotionBoundaryPauseMs, 200)
+})
+
+test('I3: 지정한 tail/emotion 경계 값은 그대로 통과(auto 포함)', () => {
+  const c = buildTtsConfig({
+    ttsTailMode: 'auto', ttsTailPaddingMs: 90, ttsTailFadeMs: 12,
+    ttsEmotionBoundaryMode: 'immediate', ttsEmotionBoundaryPauseMs: 350
+  })
+  assert.equal(c.ttsTailMode, 'auto')
+  assert.equal(c.ttsTailPaddingMs, 90)
+  assert.equal(c.ttsTailFadeMs, 12)
+  assert.equal(c.ttsEmotionBoundaryMode, 'immediate')
+  assert.equal(c.ttsEmotionBoundaryPauseMs, 350)
 })
 
 test('pitch/emotion source·region 기본값 — ttsPitch=0.0, 나머지 {} (계약 §1)', () => {

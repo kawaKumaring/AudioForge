@@ -166,6 +166,13 @@ export interface TtsConfig {
   // metadata엔 sha8만; 여기(config)엔 full. 미제공('')이면 Python은 파싱 유효성만 검사하고 parity는 강제하지 않는다.
   ttsParsedPlanSha256: string
   ttsParserVersion: number
+  // 공용 마감 I3: 말끝 finishing + 감정 전환 경계(계약 §2·추가3·추가4). 기본값은 backward-compat(off/현행).
+  // new 세션의 auto 기본은 렌더러 스토어가 정한다(정정8: 부재=현행 동작, 자동 마이그레이션 없음).
+  ttsTailMode: 'off' | 'auto'
+  ttsTailPaddingMs: number
+  ttsTailFadeMs: number
+  ttsEmotionBoundaryMode: 'immediate' | 'pause'
+  ttsEmotionBoundaryPauseMs: number
 }
 
 // ── stale 전사 방지 불변식(§4) — 합성 경계에서 전사↔음성 결합의 정합을 강제한다. ──
@@ -242,6 +249,13 @@ export function buildTtsConfig(o?: TtsInputOptions, sourceFingerprints?: Record<
     ttsParsedPlanSha256: o?.ttsParsedPlanSha256 ?? '',
     // 기본값 2 = ttsGrammar.TTS_PARSER_VERSION(권위). 여기선 런타임 cross-module import를 피하려 상수 미러(=2).
     // 드리프트 방지는 ttsGrammar/tts_grammar parity fixture + parser_version 계약이 담당.
-    ttsParserVersion: o?.ttsParserVersion ?? 2
+    ttsParserVersion: o?.ttsParserVersion ?? 2,
+    // I3: 옵션 부재 시 backward-compat(off/현행 동작 보존 — 정정8 "신규 설정 부재 = 현행 동작").
+    // new 세션의 auto는 렌더러 스토어 초기값이 명시 전달한다. 숫자 기본은 계약 추가4(120/8/200).
+    ttsTailMode: o?.ttsTailMode ?? 'off',
+    ttsTailPaddingMs: o?.ttsTailPaddingMs ?? 120,
+    ttsTailFadeMs: o?.ttsTailFadeMs ?? 8,
+    ttsEmotionBoundaryMode: o?.ttsEmotionBoundaryMode ?? 'pause',
+    ttsEmotionBoundaryPauseMs: o?.ttsEmotionBoundaryPauseMs ?? 200
   }
 }
