@@ -6,6 +6,7 @@ import type {
   InterpreterProbe,
   PackageProbe,
 } from './capabilityEvaluator.ts'
+import { makeRuntimeFingerprint, type RuntimeFingerprint } from '../../shared/runtimeContract.ts'
 
 const PROBE_VERSION = 'probe-v1'
 const OBSERVED_AT = '2026-08-24T00:00:00.000Z'
@@ -14,8 +15,23 @@ function pkg(imp: string, pip: string, installed = true, extra: Partial<PackageP
   return { import: imp, pip, installed, version: installed ? '1.0.0' : undefined, ...extra }
 }
 
+// 지문(RuntimeFingerprint) — 문자열 단독 지문 폐기, digest 필드로 이관(계약 §3).
+function fp(digest: string, pythonVersion: string, architecture: string, packageCount: number): RuntimeFingerprint {
+  return makeRuntimeFingerprint({ digest, pythonVersion, architecture, lockHash: null, probeVersion: PROBE_VERSION, packageCount })
+}
+
 // 정상 parent 인터프리터(core/music/dialogue/asr/pitch 전부 충족).
 function healthyParent(): InterpreterProbe {
+  const packages = [
+    pkg('torch', 'torch'),
+    pkg('numpy', 'numpy'),
+    pkg('soundfile', 'soundfile'),
+    pkg('demucs', 'demucs'),
+    pkg('audio_separator', 'audio-separator'),
+    pkg('onnxruntime', 'onnxruntime-gpu'),
+    pkg('speechbrain', 'speechbrain'),
+    pkg('whisper', 'openai-whisper'),
+  ]
   return {
     id: 'parent-py-3.12',
     present: true,
@@ -23,42 +39,35 @@ function healthyParent(): InterpreterProbe {
     pythonVersion: '3.12.4',
     minPythonVersion: '3.9.0',
     architecture: 'cuda-cu124',
-    packages: [
-      pkg('torch', 'torch'),
-      pkg('numpy', 'numpy'),
-      pkg('soundfile', 'soundfile'),
-      pkg('demucs', 'demucs'),
-      pkg('audio_separator', 'audio-separator'),
-      pkg('onnxruntime', 'onnxruntime-gpu'),
-      pkg('speechbrain', 'speechbrain'),
-      pkg('whisper', 'openai-whisper'),
-    ],
+    packages,
     pipCheck: { ran: true, fatalConflicts: 0, warningConflicts: 0 },
-    fingerprint: 'fp-parent-abc',
-    expectedFingerprint: 'fp-parent-abc', // borrowed baseline과 일치(정상)
+    fingerprint: fp('fp-parent-abc', '3.12.4', 'cuda-cu124', packages.length),
+    expectedFingerprint: fp('fp-parent-abc', '3.12.4', 'cuda-cu124', packages.length), // borrowed baseline과 일치
   }
 }
 
 function healthyQwen(): InterpreterProbe {
+  const packages = [pkg('qwen_tts', 'qwen-tts')]
   return {
     id: 'qwen-venv-py-3.10',
     present: true,
     isVenv: true,
     pythonVersion: '3.10.11',
-    packages: [pkg('qwen_tts', 'qwen-tts')],
+    packages,
     pipCheck: { ran: true, fatalConflicts: 0, warningConflicts: 0 },
-    fingerprint: 'fp-qwen-xyz',
+    fingerprint: fp('fp-qwen-xyz', '3.10.11', 'cuda-cu124', packages.length),
   }
 }
 
 function healthyGptSovits(): InterpreterProbe {
+  const packages = [pkg('GPT_SoVITS', 'gpt-sovits')]
   return {
     id: 'gptsovits-venv-py-3.10',
     present: true,
     isVenv: true,
     pythonVersion: '3.10.11',
-    packages: [pkg('GPT_SoVITS', 'gpt-sovits')],
-    fingerprint: 'fp-sovits-123',
+    packages,
+    fingerprint: fp('fp-sovits-123', '3.10.11', 'cuda-cu124', packages.length),
   }
 }
 
@@ -96,7 +105,6 @@ export const fixtures = {
       pkg('torch', 'torch'),
       pkg('numpy', 'numpy'),
       pkg('soundfile', 'soundfile'),
-      // music/dialogue/asr 패키지 미설치
       pkg('demucs', 'demucs', false),
       pkg('audio_separator', 'audio-separator', false),
       pkg('onnxruntime', 'onnxruntime-gpu', false),
@@ -114,8 +122,7 @@ export const fixtures = {
   // 2) ASR만 불가 — whisper 미설치, 나머지 정상.
   asrOnlyBroken(): CapabilityProbe {
     const p = clone(healthyProbe())
-    const pkgs = p.interpreters.parent.packages
-    const w = pkgs.find((x) => x.import === 'whisper')!
+    const w = p.interpreters.parent.packages.find((x) => x.import === 'whisper')!
     w.installed = false
     w.version = undefined
     return p
@@ -170,11 +177,11 @@ export const fixtures = {
     return p
   },
 
-  // 9) external borrowed drift — parent 지문이 baseline과 불일치.
+  // 9) external borrowed drift — parent 지문 digest가 baseline과 불일치.
   borrowedDrift(): CapabilityProbe {
     const p = clone(healthyProbe())
-    p.interpreters.parent.fingerprint = 'fp-parent-CHANGED'
-    p.interpreters.parent.expectedFingerprint = 'fp-parent-abc'
+    p.interpreters.parent.fingerprint!.digest = 'fp-parent-CHANGED'
+    // expectedFingerprint.digest는 'fp-parent-abc' 그대로 → 불일치
     return p
   },
 
