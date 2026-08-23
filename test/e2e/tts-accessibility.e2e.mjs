@@ -34,7 +34,8 @@ try {
     s.getState().setMode('tts')
   }, ISO.input)
   await win.waitForFunction(() => /\d/.test(document.getElementById('root')?.innerText || ''), undefined, { timeout: 30000 })
-  await win.getByText('고급 설정', { exact: false }).click({ timeout: 8000 }).catch(() => {})
+  // 4-flow: 구 '고급 설정' 아코디언 대신 표현/세부 표현 카드의 '펼치기'를 열어 더 많은 focusable(모드 토글·슬라이더) 노출.
+  await win.getByRole('button', { name: '펼치기' }).first().click({ timeout: 8000 }).catch(() => {})
 
   // ── §4A 키보드 도달 + accessible name 수집 (Playwright keyboard로 실제 Tab 순회) ──
   await win.evaluate(() => document.body.focus())
@@ -58,7 +59,8 @@ try {
   ok(backOk, 'Shift+Tab 역방향 focus 이동')
 
   // ── §4B focus-visible: 키보드 focus 시 outline ──
-  await win.getByText('고급 설정', { exact: false }).first().focus().catch(() => {})
+  // 4-flow: 구 '고급 설정' 버튼 대신 표현/세부 표현의 '펼치기' 버튼(항상 존재)에 focus.
+  await win.getByRole('button', { name: '펼치기' }).first().focus().catch(() => {})
   const fv = await win.evaluate(() => {
     const el = document.activeElement; if (!el) return null
     const cs = getComputedStyle(el)
