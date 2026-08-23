@@ -8,6 +8,28 @@ import path from 'path'
 import os from 'os'
 import { fileURLToPath } from 'url'
 
+// test-only synthetic WAV 생성(사용자 미디어 미사용). 순수 Node Buffer로 PCM16 mono sine WAV를 쓴다.
+// 이번 실행 전용 임시 경로에 만들고, 호출부가 finally에서 정확히 그 경로만 정리한다(resources/외부 파일 무접촉).
+export function makeSyntheticWav(destPath, seconds = 30, sampleRate = 24000, freq = 180) {
+  const n = Math.floor(seconds * sampleRate)
+  const dataSize = n * 2
+  const buf = Buffer.alloc(44 + dataSize)
+  buf.write('RIFF', 0); buf.writeUInt32LE(36 + dataSize, 4); buf.write('WAVE', 8)
+  buf.write('fmt ', 12); buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20); buf.writeUInt16LE(1, 22)
+  buf.writeUInt32LE(sampleRate, 24); buf.writeUInt32LE(sampleRate * 2, 28); buf.writeUInt16LE(2, 32); buf.writeUInt16LE(16, 34)
+  buf.write('data', 36); buf.writeUInt32LE(dataSize, 40)
+  const amp = Math.round(0.06 * 32767), w = (2 * Math.PI * freq) / sampleRate
+  for (let i = 0; i < n; i++) buf.writeInt16LE(Math.round(amp * Math.sin(w * i)), 44 + i * 2)
+  fs.mkdirSync(path.dirname(destPath), { recursive: true })
+  fs.writeFileSync(destPath, buf)
+  return destPath
+}
+
+// 이번 실행이 만든 synthetic 소스 파일만 안전 삭제(존재할 때만, 정확 경로).
+export function cleanupSyntheticWav(p) {
+  try { if (p && fs.existsSync(p)) fs.unlinkSync(p) } catch { /* noop */ }
+}
+
 // 입력을 격리 폴더로 복사. 반환 { dir, input }.
 export function isolatedInput(srcAbs) {
   const dir = path.join(os.tmpdir(), 'audioforge_e2e_' + randomUUID())
