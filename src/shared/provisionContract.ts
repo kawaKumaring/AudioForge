@@ -14,15 +14,23 @@
 
 import type { ReasonCode } from './runtimeContract'
 
-export const PROVISION_CONTRACT_SCHEMA_VERSION = 1 as const
+export const PROVISION_CONTRACT_SCHEMA_VERSION = 2 as const
 export type ProvisionContractSchemaVersion = typeof PROVISION_CONTRACT_SCHEMA_VERSION
 // Python provision.manifest schema (plan envelope schema와 별개).
 export const PROVISION_MANIFEST_SCHEMA_VERSION = 2 as const
 export const DEFAULT_PROVISION_PROFILE = 'minimal-qwen' as const
+export const MINIMAL_QWEN_COMPONENT_IDS = [
+  'bootstrap-python', 'parent-runtime', 'ffmpeg', 'cache-area', 'qwen-venv', 'models.qwen3',
+] as const
+export const MINIMAL_QWEN_EXCLUDED_IDS = [
+  'gptsovits-venv', 'models.gptsovits', 'models.separator',
+] as const
 
 // ── component 종류 ───────────────────────────────────────────────────────────
 export const COMPONENT_KINDS = ['bootstrap', 'venv', 'tool', 'model', 'cache'] as const
 export type ComponentKind = (typeof COMPONENT_KINDS)[number]
+export type TargetRoot = 'runtime' | 'model' | 'cache'
+export type ArtifactSourceKind = 'github-release' | 'huggingface-snapshot' | 'pypi-file' | 'direct-https'
 
 export function isComponentKind(v: unknown): v is ComponentKind {
   return typeof v === 'string' && (COMPONENT_KINDS as readonly string[]).includes(v)
@@ -34,30 +42,41 @@ export interface LicenseInfo {
   weights: string
   data: string
   output: string
+  notice: Evidence
+  sbom: Evidence
 }
 
+export interface Evidence { path: string; sha256: string }
+
 export interface ImmutableArtifact {
-  url: string | null
-  revision: string | null
-  filename: string | null
-  sha256: string | null
-  compressedBytes: number | null
-  installedBytes: number | null
-  license: LicenseInfo | null
-  noticeSha256: string | null
-  sbomSha256: string | null
+  sourceKind: ArtifactSourceKind
+  url: string
+  revision: string
+  filename: string
+  sha256: string
+  compressedBytes: number
+  installedBytes: number
+  license: LicenseInfo
 }
 
 export interface HashedLockEntry {
   name: string
+  normalizedName: string
   version: string
+  sourceKind: ArtifactSourceKind
+  url: string
+  revision: string
   filename: string
   sha256: string
+  license: LicenseInfo
 }
 
 export interface ExactHashedLock {
   format: 'pip-requirements-hashes'
-  sha256: string | null
+  locator: Evidence
+  target: { python: string; platform: string; abi: string }
+  resolver: { name: string; version: string }
+  closure: Evidence
   entries: HashedLockEntry[]
 }
 
@@ -77,6 +96,7 @@ export interface ComponentSizes {
 export interface ComponentView {
   id: string
   kind: ComponentKind
+  targetRoot: TargetRoot
   version: string | null
   required: boolean
   dependsOn: string[]
@@ -94,7 +114,7 @@ export interface ComponentView {
   lock?: ExactHashedLock | null
 }
 
-export interface ManifestComponent extends Omit<ComponentView, 'resolved' | 'reasonCode' | 'sizes'> {
+export interface ManifestComponent extends Omit<ComponentView, 'resolved' | 'reasonCode' | 'sizes' | 'license'> {
   artifact?: ImmutableArtifact | null
   lock?: ExactHashedLock | null
 }
@@ -111,20 +131,74 @@ export interface ProvisionManifestV2 {
   components: ManifestComponent[]
 }
 
+/** Shared profile selection authority used by main/root approval wiring. */
+export function selectProvisionProfile(manifest: ProvisionManifestV2, profile = DEFAULT_PROVISION_PROFILE): string[] {
+  if (manifest.schemaVersion !== 2 || manifest.profile !== DEFAULT_PROVISION_PROFILE
+      || profile !== DEFAULT_PROVISION_PROFILE || Object.keys(manifest.profiles).length !== 1) {
+    throw new Error('UNRESOLVED_COMPONENT: provision profile 불일치')
+  }
+  const spec = manifest.profiles[profile]
+  if (!spec || JSON.stringify(spec.componentIds) !== JSON.stringify(MINIMAL_QWEN_COMPONENT_IDS)
+      || JSON.stringify(spec.excludedComponentIds) !== JSON.stringify(MINIMAL_QWEN_EXCLUDED_IDS)) {
+    throw new Error('UNRESOLVED_COMPONENT: minimal-qwen exact 집합 불일치')
+  }
+  const byId = new Map(manifest.components.map((c) => [c.id, c]))
+  if (byId.size !== manifest.components.length) throw new Error('UNRESOLVED_COMPONENT: duplicate component id')
+  for (const id of MINIMAL_QWEN_COMPONENT_IDS) {
+    if (!byId.get(id)?.required) throw new Error(`UNRESOLVED_COMPONENT: required ${id}`)
+  }
+  for (const id of MINIMAL_QWEN_EXCLUDED_IDS) {
+    const component = byId.get(id)
+    if (!component || component.required) throw new Error(`UNRESOLVED_COMPONENT: excluded ${id}`)
+  }
+  const selected = new Set<string>()
+  const visit = (id: string): void => {
+    if (selected.has(id)) return
+    const component = byId.get(id)
+    if (!component) throw new Error(`DEPENDENCY_MISSING: ${id}`)
+    if ((MINIMAL_QWEN_EXCLUDED_IDS as readonly string[]).includes(id)) {
+      throw new Error(`UNRESOLVED_COMPONENT: excluded ${id}`)
+    }
+    selected.add(id)
+    component.dependsOn.forEach(visit)
+  }
+  spec.componentIds.forEach(visit)
+  return manifest.components.filter((c) => selected.has(c.id)).map((c) => c.id)
+}
+
 const SHA256_RE = /^[0-9a-f]{64}$/i
-const MUTABLE_REVISIONS = new Set(['latest', 'main', 'master', 'head', 'tip', 'stable'])
+const MUTABLE_REVISIONS = new Set(['latest', 'main', 'master', 'head', 'tip', 'stable', 'nightly'])
+const WINDOWS_RESERVED = new Set(['con', 'prn', 'aux', 'nul', 'clock$',
+  ...Array.from({ length: 9 }, (_, i) => `com${i + 1}`),
+  ...Array.from({ length: 9 }, (_, i) => `lpt${i + 1}`)])
+const KIND_ROOT: Record<ComponentKind, TargetRoot> = {
+  bootstrap: 'runtime', venv: 'runtime', tool: 'runtime', model: 'model', cache: 'cache',
+}
 
 export function isSafeProvisionRelativePath(value: unknown): value is string {
   if (typeof value !== 'string' || value.length === 0 || value.trim() !== value) return false
   if (value.includes('\\') || value.startsWith('/') || /^[A-Za-z]:/.test(value)) return false
   return value.split('/').every((part) => part !== '' && part !== '.' && part !== '..'
-    && !part.includes('\0') && !part.includes(':') && part.trim() === part && !part.endsWith('.'))
+    && !/[<>:"|?*\u0000-\u001f]/.test(part) && part.trim() === part
+    && !part.endsWith('.') && !WINDOWS_RESERVED.has(part.split('.')[0].toLowerCase()))
+}
+
+export function pep503Normalize(value: unknown): string | null {
+  if (typeof value !== 'string' || value.trim() !== value || !value) return null
+  const normalized = value.toLowerCase().replace(/[-_.]+/g, '-')
+  return /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(normalized) ? normalized : null
+}
+
+function evidenceValid(value: unknown): value is Evidence {
+  const e = value as Record<string, unknown> | null
+  return !!e && isSafeProvisionRelativePath(e.path) && typeof e.sha256 === 'string' && SHA256_RE.test(e.sha256)
 }
 
 function validLicense(value: unknown): value is LicenseInfo {
   if (!value || typeof value !== 'object') return false
   const lic = value as Record<string, unknown>
   return ['code', 'weights', 'data', 'output'].every((key) => typeof lic[key] === 'string' && (lic[key] as string).trim().length > 0)
+    && evidenceValid(lic.notice) && evidenceValid(lic.sbom)
 }
 
 export function isImmutableArtifact(value: unknown): value is ImmutableArtifact {
@@ -133,48 +207,65 @@ export function isImmutableArtifact(value: unknown): value is ImmutableArtifact 
   let parsed: URL
   try { parsed = new URL(String(a.url)) } catch { return false }
   const revision = typeof a.revision === 'string' ? a.revision.trim() : ''
-  return parsed.protocol === 'https:' && !parsed.username && !parsed.password
-    && revision.length > 0 && !MUTABLE_REVISIONS.has(revision.toLowerCase())
+  const sourceKind = a.sourceKind
+  const revisionOk = sourceKind === 'huggingface-snapshot' ? /^[0-9a-f]{40}$/i.test(revision)
+    : sourceKind === 'pypi-file' ? /^[0-9]+(?:[A-Za-z0-9._+-]*[A-Za-z0-9])?$/.test(revision)
+      : /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(revision)
+  return ['github-release', 'huggingface-snapshot', 'pypi-file', 'direct-https'].includes(String(sourceKind))
+    && parsed.protocol === 'https:' && !parsed.username && !parsed.password && !parsed.search && !parsed.hash
+    && revisionOk && !MUTABLE_REVISIONS.has(revision.toLowerCase())
     && isSafeProvisionRelativePath(a.filename) && !(a.filename as string).includes('/')
     && typeof a.sha256 === 'string' && SHA256_RE.test(a.sha256)
     && Number.isSafeInteger(a.compressedBytes) && (a.compressedBytes as number) > 0
     && Number.isSafeInteger(a.installedBytes) && (a.installedBytes as number) > 0
     && validLicense(a.license)
-    && typeof a.noticeSha256 === 'string' && SHA256_RE.test(a.noticeSha256)
-    && typeof a.sbomSha256 === 'string' && SHA256_RE.test(a.sbomSha256)
 }
 
 export function isExactHashedLock(value: unknown): value is ExactHashedLock {
   if (!value || typeof value !== 'object') return false
   const lock = value as Record<string, unknown>
-  if (lock.format !== 'pip-requirements-hashes' || typeof lock.sha256 !== 'string' || !SHA256_RE.test(lock.sha256)) return false
+  if (lock.format !== 'pip-requirements-hashes' || !evidenceValid(lock.locator) || !evidenceValid(lock.closure)) return false
+  const target = lock.target as Record<string, unknown> | null
+  const resolver = lock.resolver as Record<string, unknown> | null
+  if (!target || !['python', 'platform', 'abi'].every((k) => typeof target[k] === 'string' && (target[k] as string).length > 0)) return false
+  if (!resolver || !['name', 'version'].every((k) => typeof resolver[k] === 'string' && (resolver[k] as string).length > 0)) return false
   if (!Array.isArray(lock.entries) || lock.entries.length === 0) return false
   const names = new Set<string>()
   for (const raw of lock.entries) {
     if (!raw || typeof raw !== 'object') return false
     const e = raw as Record<string, unknown>
-    const name = typeof e.name === 'string' ? e.name : ''
+    const name = pep503Normalize(e.name)
     const version = typeof e.version === 'string' ? e.version : ''
-    if (!name || names.has(name.toLowerCase()) || !version || /[<>=!~* ,@]/.test(version)) return false
+    if (!name || e.normalizedName !== name || names.has(name) || !/^[0-9]+(?:[A-Za-z0-9._+-]*[A-Za-z0-9])?$/.test(version)) return false
+    if (e.sourceKind !== 'pypi-file' || e.revision !== version || !isImmutableArtifact({
+      sourceKind: e.sourceKind, url: e.url, revision: e.revision, filename: e.filename,
+      sha256: e.sha256, compressedBytes: 1, installedBytes: 1, license: e.license,
+    })) return false
+    if (!(e.filename as string).toLowerCase().replaceAll('_', '-').startsWith(`${name}-${version.toLowerCase().replaceAll('_', '-')}`)) return false
     if (!isSafeProvisionRelativePath(e.filename) || (e.filename as string).includes('/')) return false
     if (typeof e.sha256 !== 'string' || !SHA256_RE.test(e.sha256)) return false
-    names.add(name.toLowerCase())
+    if (!validLicense(e.license)) return false
+    names.add(name)
   }
   return true
 }
 
 export function manifestComponentIsResolved(component: ManifestComponent): boolean {
+  if (component.targetRoot !== KIND_ROOT[component.kind]) return false
   if (!isSafeProvisionRelativePath(component.installPath)) return false
-  if (component.kind === 'cache') return typeof component.version === 'string' && component.version.length > 0
+  if (component.kind === 'cache') return typeof component.version === 'string' && component.version.length > 0 && component.version !== 'unresolved'
   if (!isImmutableArtifact(component.artifact)) return false
+  if (component.artifact.revision !== component.version) return false
   if (component.kind === 'venv' && !isExactHashedLock(component.lock)) return false
   if (component.kind === 'model') {
+    if (!component.repoId || !component.pinnedRevision || component.pinnedRevision !== component.version) return false
     if (!Array.isArray(component.requiredFiles) || component.requiredFiles.length === 0) return false
     const paths = new Set<string>()
     for (const file of component.requiredFiles) {
       if (!isSafeProvisionRelativePath(file.path)) return false
       const pathKey = file.path.toLocaleLowerCase('en-US')
-      if (paths.has(pathKey) || typeof file.sha256 !== 'string' || !SHA256_RE.test(file.sha256)) return false
+      if ([...paths].some((prior) => prior === pathKey || prior.startsWith(pathKey + '/') || pathKey.startsWith(prior + '/'))
+          || typeof file.sha256 !== 'string' || !SHA256_RE.test(file.sha256)) return false
       paths.add(pathKey)
     }
   }
@@ -185,6 +276,7 @@ export function manifestComponentIsResolved(component: ManifestComponent): boole
 export interface PlanResult {
   schemaVersion: ProvisionContractSchemaVersion
   mode: 'plan' | 'dry-run'
+  profile: typeof DEFAULT_PROVISION_PROFILE
   components: ComponentView[]
   resolvedAll: boolean
   blockingReasons: ReasonCode[]
@@ -204,6 +296,7 @@ export interface VerifyItem {
 export interface VerifyResult {
   schemaVersion: ProvisionContractSchemaVersion
   mode: 'verify'
+  profile: typeof DEFAULT_PROVISION_PROFILE
   components: VerifyItem[]
 }
 

@@ -107,7 +107,23 @@ def profile_component_ids(manifest, profile_name=None):
 
 
 def select_profile(manifest, profile_name=None, extra_ids=()):
-    """Select required + profile components + explicitly requested extras."""
+    """Select the exact profile closure plus permitted extras, fail closed.
+
+    A dependency may never smuggle a profile-excluded component back into the
+    selection.  Explicit extras use the same rule.
+    """
     components = mf.validate_manifest(manifest)
-    profile_ids = profile_component_ids(manifest, profile_name)
-    return select_components(components, engine_ids=tuple(profile_ids) + tuple(extra_ids))
+    selected = profile_name or manifest["profile"]
+    profile_ids = profile_component_ids(manifest, selected)
+    excluded = set(manifest["profiles"][selected]["excludedComponentIds"])
+    extras = tuple(extra_ids)
+    blocked = excluded & (set(profile_ids) | set(extras))
+    if blocked:
+        raise rc.ProvisionError(rc.UNRESOLVED_COMPONENT,
+                                f"profile 제외 component 재포함: {sorted(blocked)[0]}")
+    ordered = select_components(components, engine_ids=tuple(profile_ids) + extras)
+    leaked = excluded & {component["id"] for component in ordered}
+    if leaked:
+        raise rc.ProvisionError(rc.UNRESOLVED_COMPONENT,
+                                f"dependency가 제외 component 재포함: {sorted(leaked)[0]}")
+    return ordered

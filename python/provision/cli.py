@@ -49,17 +49,16 @@ def _err(code, message=""):
 
 
 def _resolve_engine_ids(components, engine_ids):
-    """engineIds 정규화. "*" 또는 ["*"]는 '모든 선택(required=False) component'로 확장한다
-    (component id 지식을 Python 단일 소스에 둔다 — TS가 id를 하드코딩하지 않게). None → 필수만."""
+    """Explicit extras only. Wildcard/invalid values are fail-closed."""
     if engine_ids is None:
         return ()
     if isinstance(engine_ids, str):
         engine_ids = [engine_ids]
-    if not isinstance(engine_ids, (list, tuple)):
-        return ()
+    if not isinstance(engine_ids, (list, tuple)) or any(not isinstance(e, str) for e in engine_ids):
+        raise rc.ProvisionError(rc.UNRESOLVED_COMPONENT, "engineIds 형식 오류")
     if "*" in engine_ids:
-        return tuple(c["id"] for c in components if not c.get("required"))
-    return tuple(str(e) for e in engine_ids)
+        raise rc.ProvisionError(rc.UNRESOLVED_COMPONENT, "wildcard 선택 금지")
+    return tuple(engine_ids)
 
 
 def build_response(config):
@@ -67,7 +66,8 @@ def build_response(config):
 
     config 키:
       mode      : "provision-plan" | "provision-dry-run" | "provision-verify"
-      engineIds : [id, ...] | "*" | ["*"]  (선택; "*"=모든 선택 component)
+      profile   : profile id (기본 minimal-qwen)
+      engineIds : 명시 extra id 목록(선택; wildcard 금지)
       roots     : RuntimeRootConfig (선택; 있으면 configure로 검증만)
     """
     if not isinstance(config, dict):
@@ -88,13 +88,17 @@ def build_response(config):
         manifest = default_manifest.build()
         components = mf.validate_manifest(manifest)
         engine_ids = _resolve_engine_ids(components, config.get("engineIds"))
+        profile_name = config.get("profile", mf.DEFAULT_PROFILE)
+        if not isinstance(profile_name, str):
+            raise rc.ProvisionError(rc.UNRESOLVED_COMPONENT, "profile 형식 오류")
         if mode == "provision-verify":
             # 이번 단계 apply 비활성 + 설치 이력 0 → evidence 미주입(synthetic). present=False로 정직하게.
-            result = state.verify(manifest, engine_ids=engine_ids, evidence_by_id=None)
+            result = state.verify(manifest, engine_ids=engine_ids, evidence_by_id=None,
+                                  profile_name=profile_name)
         elif mode == "provision-dry-run":
-            result = state.dry_run(manifest, engine_ids=engine_ids)
+            result = state.dry_run(manifest, engine_ids=engine_ids, profile_name=profile_name)
         else:
-            result = state.plan(manifest, engine_ids=engine_ids)
+            result = state.plan(manifest, engine_ids=engine_ids, profile_name=profile_name)
         return _ok(result)
     except rc.ProvisionError as e:
         return _err(e.code, "provision 계획 실패")

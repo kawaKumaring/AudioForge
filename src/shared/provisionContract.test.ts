@@ -20,6 +20,9 @@ import {
   isImmutableArtifact,
   isExactHashedLock,
   manifestComponentIsResolved,
+  selectProvisionProfile,
+  MINIMAL_QWEN_COMPONENT_IDS,
+  pep503Normalize,
   type PlanResult,
   type ComponentView,
   type ImmutableArtifact,
@@ -28,7 +31,7 @@ import {
 
 function comp(over: Partial<ComponentView>): ComponentView {
   return {
-    id: 'c', kind: 'model', version: '1', required: false, dependsOn: [],
+    id: 'c', kind: 'model', targetRoot: 'model', version: '1', required: false, dependsOn: [],
     installPath: 'qwen3', displayLabel: 'Qwen3-TTS 모델', license: null,
     resolved: false, reasonCode: 'UNRESOLVED_COMPONENT',
     sizes: { compressed: null, installed: null, total: null },
@@ -40,6 +43,7 @@ function plan(over: Partial<PlanResult> = {}): PlanResult {
   return {
     schemaVersion: PROVISION_CONTRACT_SCHEMA_VERSION,
     mode: 'plan',
+    profile: DEFAULT_PROVISION_PROFILE,
     components: [comp({})],
     resolvedAll: false,
     blockingReasons: ['UNRESOLVED_COMPONENT'],
@@ -147,16 +151,18 @@ test('COMPONENT_KINDS 고정 + reasonCode 슬롯은 계약 ReasonCode', () => {
 })
 
 const H = 'a'.repeat(64)
+const evidence = (path: string, char: string) => ({ path, sha256: char.repeat(64) })
+const license = { code: 'MIT', weights: 'n/a', data: 'n/a', output: 'n/a',
+  notice: evidence('evidence/NOTICE.txt', 'b'), sbom: evidence('evidence/sbom.json', 'c') }
 const artifact = (over: Partial<ImmutableArtifact> = {}): ImmutableArtifact => ({
-  url: 'https://example.invalid/release/demo.zip', revision: 'v1.0.0', filename: 'demo.zip',
+  sourceKind: 'github-release', url: 'https://example.invalid/release/demo.zip', revision: 'v1.0.0', filename: 'demo.zip',
   sha256: H, compressedBytes: 10, installedBytes: 20,
-  license: { code: 'MIT', weights: 'n/a', data: 'n/a', output: 'n/a' },
-  noticeSha256: 'b'.repeat(64), sbomSha256: 'c'.repeat(64), ...over,
+  license, ...over,
 })
 
 const manifestComp = (over: Partial<ManifestComponent> = {}): ManifestComponent => ({
-  id: 'tool', kind: 'tool', version: '1', required: true, dependsOn: [],
-  installPath: 'tools/demo', displayLabel: 'demo', license: null, artifact: artifact(), ...over,
+  id: 'tool', kind: 'tool', targetRoot: 'runtime', version: 'v1.0.0', required: true, dependsOn: [],
+  installPath: 'tools/demo', displayLabel: 'demo', artifact: artifact(), ...over,
 })
 
 test('manifest schema v2와 minimal-qwen 기본 profile을 고정한다', () => {
@@ -169,6 +175,7 @@ test('portable install path는 절대경로·역슬래시·dot segment를 거부
   for (const bad of ['../x', 'a/../x', 'C:/x', '/x', '\\\\host\\x', 'a\\b', 'a//b', 'a/stream:name', 'a/trailing.']) {
     assert.equal(isSafeProvisionRelativePath(bad), false, bad)
   }
+  for (const bad of ['CON/file', 'aux.txt', 'dir?/x', 'trail /x']) assert.equal(isSafeProvisionRelativePath(bad), false, bad)
 })
 
 test('immutable artifact는 완전한 SHA/크기/license/notice/SBOM만 허용한다', () => {
@@ -176,13 +183,19 @@ test('immutable artifact는 완전한 SHA/크기/license/notice/SBOM만 허용�
   assert.equal(isImmutableArtifact(artifact({ sha256: 'd0' })), false)
   assert.equal(isImmutableArtifact(artifact({ revision: 'latest' })), false)
   assert.equal(isImmutableArtifact(artifact({ compressedBytes: 0 })), false)
-  assert.equal(isImmutableArtifact(artifact({ noticeSha256: null })), false)
+  assert.equal(isImmutableArtifact(artifact({ license: { ...license, notice: { path: '../NOTICE', sha256: H } } })), false)
+  assert.equal(isImmutableArtifact(artifact({ url: 'https://x.invalid/a?latest=1' })), false)
 })
 
 test('venv는 exact hashed lock 없이는 false-resolved 되지 않는다', () => {
   const exact = {
-    format: 'pip-requirements-hashes' as const, sha256: 'd'.repeat(64),
-    entries: [{ name: 'numpy', version: '2.2.0', filename: 'numpy.whl', sha256: 'e'.repeat(64) }],
+    format: 'pip-requirements-hashes' as const,
+    locator: evidence('locks/runtime.lock', 'd'),
+    target: { python: '3.12.10', platform: 'win_amd64', abi: 'cp312' },
+    resolver: { name: 'pip', version: '25.1' }, closure: evidence('locks/closure.json', 'e'),
+    entries: [{ name: 'NumPy', normalizedName: 'numpy', version: '2.2.0', sourceKind: 'pypi-file' as const,
+      url: 'https://example.invalid/numpy-2.2.0.whl', revision: '2.2.0',
+      filename: 'numpy-2.2.0-cp312.whl', sha256: 'e'.repeat(64), license }],
   }
   assert.equal(isExactHashedLock(exact), true)
   assert.equal(manifestComponentIsResolved(manifestComp({ kind: 'venv', lock: exact })), true)
@@ -191,10 +204,32 @@ test('venv는 exact hashed lock 없이는 false-resolved 되지 않는다', () =
 })
 
 test('model required file SHA와 path 중복도 resolved를 차단한다', () => {
-  const base = manifestComp({ kind: 'model', requiredFiles: [{ path: 'a.bin', sha256: H }] })
+  const rev = 'a'.repeat(40)
+  const base = manifestComp({ kind: 'model', targetRoot: 'model', version: rev,
+    repoId: 'org/demo', pinnedRevision: rev,
+    artifact: artifact({ sourceKind: 'huggingface-snapshot', revision: rev }),
+    requiredFiles: [{ path: 'a.bin', sha256: H }] })
   assert.equal(manifestComponentIsResolved(base), true)
   assert.equal(manifestComponentIsResolved({ ...base, requiredFiles: [{ path: '../a', sha256: H }] }), false)
   assert.equal(manifestComponentIsResolved({ ...base, requiredFiles: [
     { path: 'a.bin', sha256: H }, { path: 'a.bin', sha256: H },
   ] }), false)
+  assert.equal(manifestComponentIsResolved({ ...base, requiredFiles: [
+    { path: 'dir', sha256: H }, { path: 'dir/a.bin', sha256: H },
+  ] }), false)
+})
+
+test('PEP503 정규화와 exact minimal-qwen profile 선택을 고정한다', () => {
+  assert.equal(pep503Normalize('Foo_Bar.BAZ'), 'foo-bar-baz')
+  const ids = [...MINIMAL_QWEN_COMPONENT_IDS]
+  const components = ids.map((id) => manifestComp({ id, required: true,
+    kind: id === 'cache-area' ? 'cache' : 'tool', targetRoot: id === 'cache-area' ? 'cache' : 'runtime',
+    dependsOn: [] }))
+  const excluded = ['gptsovits-venv', 'models.gptsovits', 'models.separator']
+  components.push(...excluded.map((id) => manifestComp({ id, required: false, dependsOn: [] })))
+  const manifest = { schemaVersion: 2 as const, profile: DEFAULT_PROVISION_PROFILE,
+    profiles: { [DEFAULT_PROVISION_PROFILE]: { componentIds: ids, excludedComponentIds: excluded } }, components }
+  assert.deepEqual(selectProvisionProfile(manifest), ids)
+  manifest.components.find((c) => c.id === 'models.qwen3')!.dependsOn = ['models.separator']
+  assert.throws(() => selectProvisionProfile(manifest), /excluded/)
 })
