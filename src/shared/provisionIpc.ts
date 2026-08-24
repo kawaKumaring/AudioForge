@@ -11,17 +11,16 @@ import type { ReasonCode } from './runtimeContract'
 export interface ManagedRootSelectionStatus {
   configured: boolean
   displayLabel: string
-  token: string | null
-  rootFingerprint: string | null
-  volumeIdentity: string | null
+  /** 선택 nonce/root/volume identity를 결합한 renderer-safe opaque 값. */
+  approvalContext: string | null
 }
 
 export interface ProvisionApprovalContext {
   ready: boolean
   profile: string
   root: ManagedRootSelectionStatus
-  /** profile + planFingerprint + opaque root/volume identity. 실제 승인 토큰은 아님. */
-  approvalFingerprint: string | null
+  /** profile + planFingerprint + root approvalContext. 실제 승인 토큰은 아님. */
+  approvalContext: string | null
 }
 
 // plan/verify가 실행되지 못한 경우(예: provisioner를 돌릴 Python이 주입되지 않음)의 사유.

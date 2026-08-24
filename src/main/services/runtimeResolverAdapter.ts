@@ -10,7 +10,8 @@
 //  - preflight는 비동기 subprocess(env_check.py --json)라 resolver의 sync preflight 포트와 맞지 않는다.
 //    → discovery 후 후보를 async로 미리 probe해 캐시에 채우고, resolver에는 캐시를 읽는 sync 포트를 넘긴다.
 //  - resolver는 절대 쓰기를 하지 않는다(borrowed 읽기 전용). onWrite가 불리면 즉시 throw로 계약을 런타임 보증.
-//  - 관리형 저장 위치는 1) main folder picker가 기록한 managedBaseRoot 또는 2) 명시 ops env만 인정한다.
+//  - 관리형 저장 위치는 1) main이 marker/HMAC/volume을 재검증한 verifiedManagedRoots 또는
+//    2) 명시 ops env만 인정한다. settings 원문 경로를 이 경계가 직접 신뢰하지 않는다.
 //    Electron userData/Roaming은 설정·manifest 저장소일 뿐 대용량 runtime/model/cache 자동 대상이 아니다.
 
 import { win32 as pathWin32, posix as pathPosix } from 'path'
@@ -43,8 +44,8 @@ export interface RuntimeSettings {
   runtimeRoot?: string
   modelRoot?: string
   cacheRoot?: string
-  /** main folder picker가 기록한 사용자 선택 managed base root. */
-  managedBaseRoot?: string
+  /** main-only 검증 API가 발급한 현재 접근용 roots. settings 원문으로 만들면 안 된다. */
+  verifiedManagedRoots?: { runtimeRoot: string; modelRoot: string; cacheRoot: string }
   /** 옛 개별 root/legacy env.json 후보를 명시적으로 채택한 경우에만 true. */
   legacyRuntimeConsent?: boolean
 }
@@ -106,12 +107,11 @@ export function resolveStorageRoots(deps: RuntimeAdapterDeps): {
 } | null {
   const P = picker(deps)
   const s = deps.settings()
-  if (s.managedBaseRoot) {
-    const base = canon(P, s.managedBaseRoot)
+  if (s.verifiedManagedRoots) {
     return {
-      runtimeRoot: canon(P, P.join(base, 'runtime')),
-      modelRoot: canon(P, P.join(base, 'models')),
-      cacheRoot: canon(P, P.join(base, 'cache')),
+      runtimeRoot: canon(P, s.verifiedManagedRoots.runtimeRoot),
+      modelRoot: canon(P, s.verifiedManagedRoots.modelRoot),
+      cacheRoot: canon(P, s.verifiedManagedRoots.cacheRoot),
     }
   }
   // ops/E2E의 명시 환경 주입은 folder picker와 동급의 의도된 입력이다.

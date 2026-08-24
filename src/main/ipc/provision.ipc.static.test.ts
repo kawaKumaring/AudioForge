@@ -56,12 +56,12 @@ test('managed root folder picker는 main 권위이며 renderer가 전체 경로�
   assert.ok(/dialog\.showOpenDialog\(mainWindow/.test(SRC), 'main folder picker 배선 없음')
   assert.ok(/provision:select-managed-root/.test(SRC), 'managed root 선택 IPC 없음')
   assert.ok(/selectManagedRoot:\s*\(\)/.test(PRELOAD), 'preload root 선택은 무인자여야 한다')
-  assert.ok(/publicRootStatus\(record\)/.test(SRC), 'renderer-safe root status 반환 없음')
+  assert.ok(/rootStatus\(\)/.test(SRC), 'renderer-safe root status 반환 없음')
   assert.ok(!/return\s*\{[^}]*baseRoot/s.test(SRC), 'renderer 응답에 baseRoot 원문 노출')
 })
 
-test('approval fingerprint는 profile+plan+opaque root+volume identity를 모두 결합', () => {
-  for (const key of ['profile', 'planFingerprint', 'rootFingerprint', 'volumeIdentity']) {
+test('approval context는 profile+plan+opaque selection context를 결합', () => {
+  for (const key of ['profile', 'planFingerprint', 'approvalContext']) {
     assert.ok(ROOT_HELPERS.includes(key), `${key} 결합 누락`)
   }
   assert.ok(/approvalFingerprint\(/.test(SRC), 'plan 응답에 approval fingerprint 미배선')
@@ -70,4 +70,8 @@ test('approval fingerprint는 profile+plan+opaque root+volume identity를 모두
 test('apply는 root 선택과 무관하게 계속 비활성이고 설치·다운로드는 없다', () => {
   assert.ok(/reasonCode: 'APPLY_DISABLED'/.test(SRC))
   assert.ok(!/mkdirSync|pip\s+install|https?:\/\//i.test(SRC + ROOT_HELPERS))
+})
+
+test('root 재선택 성공은 runtime resolver cache를 무효화한다', () => {
+  assert.ok(/onManagedRootChanged\?\.\(\)/.test(SRC))
 })

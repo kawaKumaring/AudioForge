@@ -62,7 +62,7 @@ const MANAGED_PY = 'D:\\AudioForgeData\\runtime\\audioforge_venv\\Scripts\\pytho
 // ── managed 정상 ─────────────────────────────────────────────────────────────
 test('managed 정상: runtimeRoot 내 인터프리터 존재+probe ok → 채택(audioforge-managed) + roots 생성', async () => {
   const deps = makeDeps({
-    settings: { managedBaseRoot: MANAGED_BASE },
+    settings: { verifiedManagedRoots: { runtimeRoot: MANAGED_ROOT, modelRoot: `${MANAGED_BASE}\\models`, cacheRoot: `${MANAGED_BASE}\\cache` } },
     existing: [MANAGED_PY],
     probe: { [MANAGED_PY]: okProbe() },
   })
@@ -115,7 +115,7 @@ test('borrowed: 사용자 지정 외부 인터프리터 probe ok → 채택(exte
 // ── exists만으로 채택 금지 ───────────────────────────────────────────────────
 test('exists하지만 probe 증거 없음(null) → discovered 유지, 채택 안 함(unresolved)', async () => {
   const deps = makeDeps({
-    settings: { managedBaseRoot: MANAGED_BASE },
+    settings: { verifiedManagedRoots: { runtimeRoot: MANAGED_ROOT, modelRoot: `${MANAGED_BASE}\\models`, cacheRoot: `${MANAGED_BASE}\\cache` } },
     existing: [MANAGED_PY],
     // probe 없음 → null 반환 → 증거 없음
   })
@@ -142,7 +142,7 @@ test('사용자 선택 실패: probe 실패면 다른 외부로 조용히 전환
 
 // ── 순수 헬퍼 ────────────────────────────────────────────────────────────────
 test('resolveStorageRoots: 사용자 선택 base > 명시 env, userData 자동 fallback 없음', () => {
-  const bySettings = resolveStorageRoots(makeDeps({ settings: { managedBaseRoot: 'D:\\S' } }))
+  const bySettings = resolveStorageRoots(makeDeps({ settings: { verifiedManagedRoots: { runtimeRoot: 'D:\\S\\runtime', modelRoot: 'D:\\S\\models', cacheRoot: 'D:\\S\\cache' } } }))
   assert.equal(bySettings?.runtimeRoot, 'D:\\S\\runtime')
   assert.equal(bySettings?.modelRoot, 'D:\\S\\models')
   assert.equal(bySettings?.cacheRoot, 'D:\\S\\cache')
@@ -176,7 +176,7 @@ test('legacy root/인터프리터는 명시 동의가 있을 때만 후보에 �
 })
 
 test('buildRootConfig: 세 루트 모두 audioforge-managed + canonical absolute', () => {
-  const cfg = buildRootConfig(makeDeps({ settings: { managedBaseRoot: 'C:\\a\\..\\b' } }))
+  const cfg = buildRootConfig(makeDeps({ settings: { verifiedManagedRoots: { runtimeRoot: 'C:\\a\\..\\b\\runtime', modelRoot: 'C:\\a\\..\\b\\models', cacheRoot: 'C:\\a\\..\\b\\cache' } } }))
   assert.ok(cfg)
   // '..' 정규화 확인
   assert.equal(cfg!.runtimeRoot.path, 'C:\\b\\runtime')
