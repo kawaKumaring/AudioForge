@@ -1,8 +1,8 @@
-import { ipcMain, app, type BrowserWindow } from 'electron'
+import { ipcMain, app, dialog, type BrowserWindow } from 'electron'
 import { spawn, type ChildProcess } from 'child_process'
 import { join, dirname } from 'path'
 import { randomUUID } from 'crypto'
-import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'fs'
+import { writeFileSync, unlinkSync } from 'fs'
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
 import { assertNoAbsolutePaths, type PlanResult, type VerifyResult } from '../../shared/provisionContract'
@@ -11,8 +11,16 @@ import type {
   ProvisionPlanResponse,
   ProvisionVerifyResponse,
   ProvisionApplyResponse,
+  ProvisionSelectManagedRootResponse,
+  ManagedRootSelectionStatus,
 } from '../../shared/provisionIpc'
 import { ALL_OPTIONAL, pickProvisionPython, parseProvisionEnvelope, envelopeReasonCode } from './provision-helpers'
+import {
+  MANAGED_ROOT_PROFILE,
+  approvalFingerprint,
+} from './provision-root-helpers'
+import { managedRootStatus, selectManagedRoot, verifyManagedRoot, type ManagedRootDeps } from '../services/managed-root-store'
+import { readSettingsFile } from '../services/settings-store'
 
 // managed provisioner의 Electron 표면(Agent Q). P의 pure core가 산출한 canonical JSON을 subprocess로
 // 받아 renderer로 실어 나른다 — plan/verify state machine·DAG·manifest·fingerprint·staging은 재구현 0.
@@ -93,15 +101,38 @@ function runProvisionCli(pyPath: string, mode: string, engineIds: readonly strin
   })
 }
 
-export function registerProvisionIpc(_mainWindow: BrowserWindow): void {
+export function registerProvisionIpc(mainWindow: BrowserWindow, options: { onManagedRootChanged?: () => void } = {}): void {
   const settingsFile = (): string => join(app.getPath('userData'), 'settings.json')
-  const loadSettings = (): Record<string, unknown> => {
+  const loadSettings = (): Record<string, unknown> => readSettingsFile(settingsFile())
+  const rootDeps = (): ManagedRootDeps => ({
+    settingsFile: settingsFile(),
+    forbiddenRoots: [
+      app.getPath('home'), app.getPath('userData'), app.getPath('temp'), app.getAppPath(), process.cwd(),
+      process.env.WINDIR ?? '', process.env.ProgramFiles ?? '', process.env['ProgramFiles(x86)'] ?? '',
+    ],
+    platform: process.platform,
+  })
+  const rootStatus = (): ManagedRootSelectionStatus => managedRootStatus(rootDeps())
+
+  // folder picker는 main 권위다. renderer는 선택 경로를 보내지도, 받지도 않는다.
+  ipcMain.handle('provision:get-managed-root', async (): Promise<ManagedRootSelectionStatus> => rootStatus())
+  ipcMain.handle('provision:select-managed-root', async (): Promise<ProvisionSelectManagedRootResponse> => {
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openDirectory', 'createDirectory'],
+      title: 'AudioForge 관리형 런타임 저장 위치 선택',
+    })
+    if (result.canceled || result.filePaths.length === 0) {
+      return { ok: false, cancelled: true, root: rootStatus() }
+    }
     try {
-      const f = settingsFile()
-      if (existsSync(f)) return JSON.parse(readFileSync(f, 'utf-8'))
-    } catch { /* ignore */ }
-    return {}
-  }
+      selectManagedRoot(result.filePaths[0], rootDeps())
+      options.onManagedRootChanged?.()
+      return { ok: true, root: rootStatus() }
+    } catch {
+      // fs 오류 원문에는 절대경로가 들어갈 수 있으므로 renderer에는 canonical 사유만 보낸다.
+      return { ok: false, cancelled: false, reasonCode: 'PREFLIGHT_FAILED', root: rootStatus() }
+    }
+  })
 
   // plan/verify 공통 실행 — 성공 시 renderer-safe envelope, 실패 시 사유 코드. 절대경로 가드는 여기서.
   async function planOrVerify(mode: 'provision-plan' | 'provision-verify'):
@@ -134,7 +165,26 @@ export function registerProvisionIpc(_mainWindow: BrowserWindow): void {
   ipcMain.handle('provision:plan', async (): Promise<ProvisionPlanResponse> => {
     const r = await planOrVerify('provision-plan')
     if (!r.ok) return { ok: false, reasonCode: r.reasonCode, message: r.message }
-    return { ok: true, plan: r.result as PlanResult }
+    const plan = r.result as PlanResult
+    const verified = verifyManagedRoot(rootDeps())
+    const root = rootStatus()
+    const ready = root.configured && !!root.approvalContext && !!verified
+    return {
+      ok: true,
+      plan,
+      approval: {
+        ready,
+        profile: MANAGED_ROOT_PROFILE,
+        root,
+        approvalContext: ready
+          ? approvalFingerprint({
+              profile: MANAGED_ROOT_PROFILE,
+              planFingerprint: plan.planFingerprint,
+              approvalContext: root.approvalContext!,
+            })
+          : null,
+      },
+    }
   })
 
   ipcMain.handle('provision:verify', async (): Promise<ProvisionVerifyResponse> => {

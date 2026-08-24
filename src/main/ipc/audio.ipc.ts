@@ -20,6 +20,8 @@ import {
 } from '../services/runtimeResolverAdapter'
 import type { RuntimeRootConfig } from '../../shared/runtimeContract'
 import type { InterpreterProbeResult } from '../services/runtimeResolver'
+import { verifyManagedRoot, type ManagedRootDeps } from '../services/managed-root-store'
+import { readSettingsFile, updateSettingsFile } from '../services/settings-store'
 
 // execFile(배열 인자)은 cmd.exe를 거치지 않아 시스템 코드페이지(CP949)의
 // 한글 경로 손상 문제에 면역. exec(문자열)은 한글 파일명에서 깨짐 → 금지.
@@ -41,6 +43,7 @@ function ffprobeCandidates(): string[] {
 // 마지막 시스템 python 조용한 fallback)을 순수 resolver + adapter로 대체한다.
 // 실제 fs/env/spawn/Electron은 여기서 deps로 주입하고, 결과는 1회 메모이즈한다.
 let resolved: AdapterResolution | null = null
+export function invalidateRuntimeResolution(): void { resolved = null }
 
 // 과거 externals/env.json(setup_env.py 기록)의 python 경로 — legacy-detected 후보(stale 가능).
 function legacyRecordPath(): string | undefined {
@@ -83,12 +86,15 @@ async function probeInterpreter(pythonPath: string): Promise<InterpreterProbeRes
 function runtimeSettings(): RuntimeSettings {
   const s = loadSettings()
   const pick = (k: string): string | undefined => (typeof s[k] === 'string' && s[k] ? (s[k] as string) : undefined)
+  const managed = verifyManagedRoot(managedRootDeps())
   return {
     pythonPath: pick('pythonPath'),
     externalPythonPath: pick('externalPythonPath'),
     runtimeRoot: pick('runtimeRoot'),
     modelRoot: pick('modelRoot'),
     cacheRoot: pick('cacheRoot'),
+    verifiedManagedRoots: managed?.roots,
+    legacyRuntimeConsent: s.legacyRuntimeConsent === true,
   }
 }
 
@@ -110,6 +116,12 @@ function runtimeDeps(): RuntimeAdapterDeps {
 // 런타임 해석(메모이즈). 성공 시 절대 interpreter 경로 반환, 실패 시 RUNTIME_NOT_CONFIGURED throw.
 // 조용한 fallback 없음 — 미해석은 명시 오류. code는 renderer UX 분기용(전체 경로 미포함).
 async function ensureRuntime(): Promise<string> {
+  // managed 후보는 캐시가 있어도 marker/HMAC/volume을 매 접근 재검증한다.
+  // ops가 명시 주입한 AUDIOFORGE_RUNTIME_ROOT는 별도 신뢰 경계이므로 marker를 요구하지 않는다.
+  if (resolved?.result.selected?.source === 'managed-runtime' && !process.env.AUDIOFORGE_RUNTIME_ROOT) {
+    const current = verifyManagedRoot(managedRootDeps())
+    if (!current || current.roots.runtimeRoot !== resolved.roots?.runtimeRoot.path) resolved = null
+  }
   if (!resolved || !resolved.resolved) {
     resolved = await resolveRuntimeWithDeps(runtimeDeps())
   }
@@ -135,18 +147,19 @@ function withRoots<T extends object>(cfg: T): T & { roots?: RuntimeRootConfig } 
 function settingsFilePath(): string {
   return join(app.getPath('userData'), 'settings.json')
 }
+function managedRootDeps(): ManagedRootDeps {
+  return {
+    settingsFile: settingsFilePath(),
+    forbiddenRoots: [app.getPath('home'), app.getPath('userData'), app.getPath('temp'), app.getAppPath(), process.cwd(), process.env.WINDIR ?? '', process.env.ProgramFiles ?? '', process.env['ProgramFiles(x86)'] ?? ''],
+    platform: process.platform,
+  }
+}
 function loadSettings(): Record<string, unknown> {
-  try {
-    const f = settingsFilePath()
-    if (existsSync(f)) return JSON.parse(readFileSync(f, 'utf-8'))
-  } catch { /* ignore */ }
-  return {}
+  return readSettingsFile(settingsFilePath())
 }
 function saveSetting(key: string, value: unknown): void {
   try {
-    const s = loadSettings()
-    s[key] = value
-    writeFileSync(settingsFilePath(), JSON.stringify(s, null, 2), 'utf-8')
+    updateSettingsFile(settingsFilePath(), (s) => { s[key] = value })
   } catch (err) {
     console.log(`[AudioForge] 설정 저장 실패: ${(err as Error).message}`)
   }

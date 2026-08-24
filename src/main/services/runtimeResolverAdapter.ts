@@ -10,8 +10,9 @@
 //  - preflight는 비동기 subprocess(env_check.py --json)라 resolver의 sync preflight 포트와 맞지 않는다.
 //    → discovery 후 후보를 async로 미리 probe해 캐시에 채우고, resolver에는 캐시를 읽는 sync 포트를 넘긴다.
 //  - resolver는 절대 쓰기를 하지 않는다(borrowed 읽기 전용). onWrite가 불리면 즉시 throw로 계약을 런타임 보증.
-//  - runtimeRoot 우선순위: 1) 사용자 설정 2) AUDIOFORGE_RUNTIME_ROOT 3) userData/runtime.
-//    항상 관리형 저장 위치를 하나 확보한다(설치 대상). 실제 채택은 그 안이 검증돼야만 일어난다.
+//  - 관리형 저장 위치는 1) main이 marker/HMAC/volume을 재검증한 verifiedManagedRoots 또는
+//    2) 명시 ops env만 인정한다. settings 원문 경로를 이 경계가 직접 신뢰하지 않는다.
+//    Electron userData/Roaming은 설정·manifest 저장소일 뿐 대용량 runtime/model/cache 자동 대상이 아니다.
 
 import { win32 as pathWin32, posix as pathPosix } from 'path'
 import {
@@ -43,6 +44,10 @@ export interface RuntimeSettings {
   runtimeRoot?: string
   modelRoot?: string
   cacheRoot?: string
+  /** main-only 검증 API가 발급한 현재 접근용 roots. settings 원문으로 만들면 안 된다. */
+  verifiedManagedRoots?: { runtimeRoot: string; modelRoot: string; cacheRoot: string }
+  /** 옛 개별 root/legacy env.json 후보를 명시적으로 채택한 경우에만 true. */
+  legacyRuntimeConsent?: boolean
 }
 
 /** 어댑터 주입 의존성 — 모든 I/O·환경·플랫폼은 여기로만(Electron/전역 접근 0). */
@@ -99,19 +104,40 @@ export function resolveStorageRoots(deps: RuntimeAdapterDeps): {
   runtimeRoot: string
   modelRoot: string
   cacheRoot: string
-} {
+} | null {
   const P = picker(deps)
   const s = deps.settings()
-  const rt = s.runtimeRoot ?? deps.getEnv('AUDIOFORGE_RUNTIME_ROOT') ?? P.join(deps.userDataDir(), 'runtime')
+  if (s.verifiedManagedRoots) {
+    return {
+      runtimeRoot: canon(P, s.verifiedManagedRoots.runtimeRoot),
+      modelRoot: canon(P, s.verifiedManagedRoots.modelRoot),
+      cacheRoot: canon(P, s.verifiedManagedRoots.cacheRoot),
+    }
+  }
+  // ops/E2E의 명시 환경 주입은 folder picker와 동급의 의도된 입력이다.
+  const envRuntime = deps.getEnv('AUDIOFORGE_RUNTIME_ROOT')
+  if (envRuntime) {
+    const rt = canon(P, envRuntime)
+    const base = P.dirname(rt)
+    return {
+      runtimeRoot: rt,
+      modelRoot: canon(P, deps.getEnv('AUDIOFORGE_MODEL_ROOT') ?? P.join(base, 'models')),
+      cacheRoot: canon(P, deps.getEnv('AUDIOFORGE_CACHE_ROOT') ?? P.join(base, 'cache')),
+    }
+  }
+  // 기존 개별 root 설정은 사용자 동의가 저장된 경우에만 채택한다.
+  if (!s.legacyRuntimeConsent || !s.runtimeRoot) return null
+  const rt = s.runtimeRoot
   const base = P.dirname(rt)
-  const mr = s.modelRoot ?? deps.getEnv('AUDIOFORGE_MODEL_ROOT') ?? P.join(base, 'models')
-  const cr = s.cacheRoot ?? deps.getEnv('AUDIOFORGE_CACHE_ROOT') ?? P.join(base, 'cache')
+  const mr = s.modelRoot ?? P.join(base, 'models')
+  const cr = s.cacheRoot ?? P.join(base, 'cache')
   return { runtimeRoot: canon(P, rt), modelRoot: canon(P, mr), cacheRoot: canon(P, cr) }
 }
 
 /** 계약 RuntimeRootConfig 생성. 세 루트 모두 audioforge-managed(우리 소유 저장 위치). */
-export function buildRootConfig(deps: RuntimeAdapterDeps): RuntimeRootConfig {
+export function buildRootConfig(deps: RuntimeAdapterDeps): RuntimeRootConfig | null {
   const r = resolveStorageRoots(deps)
+  if (!r) return null
   const ownership: RuntimeOwnership = 'audioforge-managed'
   return {
     schemaVersion: RUNTIME_CONTRACT_SCHEMA_VERSION,
@@ -126,16 +152,16 @@ export function buildRootConfig(deps: RuntimeAdapterDeps): RuntimeRootConfig {
 /** deps → resolver spec(경로 문자열만; I/O 아님). */
 export function buildResolveSpec(deps: RuntimeAdapterDeps): RuntimeResolveSpec {
   const s = deps.settings()
-  const { runtimeRoot } = resolveStorageRoots(deps)
   const spec: RuntimeResolveSpec = {
     platform: deps.platform ?? 'win32',
     envVarName: 'AUDIOFORGE_PYTHON',
-    runtimeRoot,
   }
+  const roots = resolveStorageRoots(deps)
+  if (roots) spec.runtimeRoot = roots.runtimeRoot
   if (s.pythonPath) spec.userSelectedPath = s.pythonPath
   if (s.externalPythonPath) spec.userSelectedExternalPath = s.externalPythonPath
   const legacy = deps.legacyRecordPath()
-  if (legacy) spec.legacyRecordPath = legacy
+  if (s.legacyRuntimeConsent && legacy) spec.legacyRecordPath = legacy
   return spec
 }
 

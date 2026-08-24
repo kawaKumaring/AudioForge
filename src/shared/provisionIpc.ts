@@ -8,6 +8,21 @@
 import type { PlanResult, VerifyResult } from './provisionContract'
 import type { ReasonCode } from './runtimeContract'
 
+export interface ManagedRootSelectionStatus {
+  configured: boolean
+  displayLabel: string
+  /** 선택 nonce/root/volume identity를 결합한 renderer-safe opaque 값. */
+  approvalContext: string | null
+}
+
+export interface ProvisionApprovalContext {
+  ready: boolean
+  profile: string
+  root: ManagedRootSelectionStatus
+  /** profile + planFingerprint + root approvalContext. 실제 승인 토큰은 아님. */
+  approvalContext: string | null
+}
+
 // plan/verify가 실행되지 못한 경우(예: provisioner를 돌릴 Python이 주입되지 않음)의 사유.
 // - BOOTSTRAP_PYTHON_UNRESOLVED: provisioner 실행용 Python이 명시 주입되지 않음(자동 채택 금지 —
 //   env AUDIOFORGE_PROVISION_PYTHON / 사용자가 고른 인터프리터만 인정). production 해석은 STOP 표 항목.
@@ -21,6 +36,7 @@ export interface ProvisionUnavailable {
 export interface ProvisionPlanOk {
   ok: true
   plan: PlanResult
+  approval: ProvisionApprovalContext
 }
 
 export interface ProvisionVerifyOk {
@@ -37,3 +53,8 @@ export interface ProvisionApplyResponse {
   reasonCode: ReasonCode
   message?: string
 }
+
+export type ProvisionSelectManagedRootResponse =
+  | { ok: true; root: ManagedRootSelectionStatus }
+  | { ok: false; cancelled: true; root: ManagedRootSelectionStatus }
+  | { ok: false; cancelled: false; reasonCode: ReasonCode; root: ManagedRootSelectionStatus }

@@ -1,4 +1,4 @@
-import { useCallback, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import {
   estimateInstallBytes,
   displayComponentLabel,
@@ -7,6 +7,7 @@ import {
   type VerifyResult,
 } from '../../shared/provisionContract'
 import type { ReasonCode } from '../../shared/runtimeContract'
+import type { ManagedRootSelectionStatus, ProvisionApprovalContext } from '../../shared/provisionIpc'
 
 // managed provisioner 패널(R-provision) — 설치 계획 보기 / 외부 런타임 선택 / 다시 검사.
 // 실제 설치 버튼은 항상 비활성(승인 전, apply 차단). 자동 다운로드·자동 복구 0.
@@ -49,13 +50,19 @@ export default function RuntimeProvisionPanel() {
   const [verify, setVerify] = useState<VerifyResult | null>(null)
   const [status, setStatus] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
+  const [root, setRoot] = useState<ManagedRootSelectionStatus | null>(null)
+  const [approval, setApproval] = useState<ProvisionApprovalContext | null>(null)
+
+  useEffect(() => {
+    void window.api.provision.getManagedRoot().then(setRoot).catch(() => setRoot(null))
+  }, [])
 
   const runPlan = useCallback(async () => {
     setBusy(true); setStatus(null)
     try {
       const r = await window.api.provision.plan()
-      if (r.ok) { setPlan(r.plan); setVerify(null); setStatus(null) }
-      else { setPlan(null); setStatus(reasonText(r.reasonCode)) }
+      if (r.ok) { setPlan(r.plan); setApproval(r.approval); setRoot(r.approval.root); setVerify(null); setStatus(null) }
+      else { setPlan(null); setApproval(null); setStatus(reasonText(r.reasonCode)) }
     } catch {
       setStatus('설치 계획을 불러오지 못했습니다.')
     } finally { setBusy(false) }
@@ -79,6 +86,20 @@ export default function RuntimeProvisionPanel() {
     } finally { setBusy(false) }
   }, [])
 
+  const selectManagedRoot = useCallback(async () => {
+    setBusy(true); setStatus(null)
+    try {
+      const r = await window.api.provision.selectManagedRoot()
+      setRoot(r.root)
+      setPlan(null)
+      setApproval(null) // 설치 대상이 바뀌면 이전 계획 기반 승인은 즉시 무효.
+      if (r.ok) setStatus('관리형 설치 위치를 선택했습니다. 설치 계획을 다시 확인하세요.')
+      else if (!r.cancelled) setStatus(reasonText(r.reasonCode))
+    } catch {
+      setStatus('관리형 설치 위치를 선택하지 못했습니다.')
+    } finally { setBusy(false) }
+  }, [])
+
   const applicable = plan ? planIsApplicable(plan) : { ok: false, reasonCode: null as ReasonCode | null }
   const applyDisabled = true  // 이번 단계 apply 항상 차단(승인 전)
 
@@ -93,8 +114,11 @@ export default function RuntimeProvisionPanel() {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
         <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>런타임 설치 관리</div>
         <div style={{ display: 'flex', gap: 6 }}>
+          <button data-testid="provision-select-managed-root" onClick={selectManagedRoot} disabled={busy} style={btnStyle(busy)}>
+            설치 위치 선택
+          </button>
           <button data-testid="provision-select-runtime" onClick={selectRuntime} disabled={busy} style={btnStyle(busy)}>
-            외부 런타임 선택
+            외부 Python 선택(읽기 전용)
           </button>
           <button data-testid="provision-plan-btn" onClick={runPlan} disabled={busy} style={btnStyle(busy)}>
             {busy ? '확인 중…' : '설치 계획 보기'}
@@ -103,6 +127,11 @@ export default function RuntimeProvisionPanel() {
             다시 검사
           </button>
         </div>
+      </div>
+
+      <div data-testid="provision-managed-root-status" style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+        설치 위치: {root?.displayLabel ?? '확인 중…'}
+        {root?.configured ? ' · 선택됨' : ' · 설치 승인 준비 불가'}
       </div>
 
       {status && (
@@ -162,7 +191,9 @@ export default function RuntimeProvisionPanel() {
               설치 시작
             </button>
             <span data-testid="provision-apply-reason" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-              {applicable.ok
+              {!approval?.ready
+                ? '관리형 설치 위치를 먼저 선택해야 합니다.'
+                : applicable.ok
                 ? '실제 설치는 아직 비활성입니다(승인 전).'
                 : reasonText(applicable.reasonCode)}
             </span>
