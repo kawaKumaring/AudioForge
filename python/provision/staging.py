@@ -16,14 +16,22 @@ checksum '계산'은 model_manifest(Python) 재사용. '해석'은 상위(state)
 
 import json
 import os
+import secrets
 import shutil
 import stat
+import unicodedata
 
 import model_manifest
 from . import reason_codes as rc
 
 JOB_MARKER_FILE = ".audioforge-provision-job.json"
 TARGET_STAGING_DIR = ".audioforge-staging"
+_WINDOWS_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+_WINDOWS_FORBIDDEN = set('<>"|?*')
 
 
 def validate_path_segment(value, field="path segment"):
@@ -31,9 +39,77 @@ def validate_path_segment(value, field="path segment"):
     if (not isinstance(value, str) or not value or value in (".", "..")
             or len(value) > 255 or "\x00" in value
             or "/" in value or "\\" in value or ":" in value
-            or any(ord(ch) < 0x20 for ch in value)):
+            or value != value.strip() or value.endswith(".")
+            or value.split(".", 1)[0].upper() in _WINDOWS_RESERVED
+            or any(ch in _WINDOWS_FORBIDDEN or ord(ch) < 0x20
+                   for ch in value)):
         raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT, field)
     return value
+
+
+def _identity_from_stat(info, kind=None):
+    attrs = getattr(info, "st_file_attributes", 0)
+    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0x400)
+    if stat.S_ISLNK(info.st_mode) or bool(attrs & reparse):
+        return None
+    if kind == "file" and (
+            not stat.S_ISREG(info.st_mode) or getattr(info, "st_nlink", 1) != 1):
+        return None
+    if kind == "dir" and not stat.S_ISDIR(info.st_mode):
+        return None
+    return (info.st_dev, info.st_ino)
+
+
+def _path_identity(path, kind=None):
+    try:
+        return _identity_from_stat(os.lstat(path), kind)
+    except OSError:
+        return None
+
+
+def _fd_identity(fd, kind="file"):
+    try:
+        return _identity_from_stat(os.fstat(fd), kind)
+    except OSError:
+        return None
+
+
+def _same_identity(path, identity, kind=None):
+    return identity is not None and _path_identity(path, kind) == identity
+
+
+def _sync_directory(path):
+    """Durably sync directory metadata or fail closed where unsupported."""
+    if os.name == "nt":
+        # CPython cannot open a Windows directory for fsync without a native
+        # handle adapter. Apply remains disabled until that adapter is supplied.
+        raise rc.ProvisionError(rc.APPLY_DISABLED,
+                                "Windows directory fsync adapter required")
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _write_all(fd, data):
+    view = memoryview(data)
+    while view:
+        written = os.write(fd, view)
+        if written <= 0:
+            raise OSError("short write")
+        view = view[written:]
+
+
+def _guard_namespace_mutation(path, adapter=None):
+    """Require a reviewed handle-relative adapter for Windows tree mutation."""
+    if adapter is not None:
+        adapter(path)
+        return
+    if os.name == "nt":
+        raise rc.ProvisionError(
+            rc.APPLY_DISABLED,
+            "Windows handle-relative mutation adapter required")
 
 
 def _within(path, root):
@@ -119,16 +195,27 @@ def create_job_marker(staging_dir, managed_root, job_id, plan_fingerprint, nonce
         "nonce": nonce,
     }, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
     fd = os.open(marker, flags, 0o600)
+    identity = _fd_identity(fd)
     try:
-        os.write(fd, payload.encode("utf-8"))
+        if identity is None:
+            raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT,
+                                    "unsafe marker identity")
+        _write_all(fd, payload.encode("utf-8"))
         os.fsync(fd)
-    finally:
+    except BaseException:
+        os.close(fd)
+        if _same_identity(marker, identity, "file"):
+            os.remove(marker)
+        raise
+    else:
         os.close(fd)
     return marker
 
 
-def _owned_job(staging_dir, job_id, nonce):
+def _owned_job(staging_dir, job_id, plan_fingerprint, nonce):
     marker = os.path.join(staging_dir, JOB_MARKER_FILE)
     try:
         with open(marker, "r", encoding="utf-8") as handle:
@@ -139,9 +226,8 @@ def _owned_job(staging_dir, job_id, nonce):
         isinstance(info, dict)
         and info.get("schemaVersion") == 1
         and info.get("jobId") == job_id
+        and info.get("planFingerprint") == plan_fingerprint
         and info.get("nonce") == nonce
-        and isinstance(info.get("planFingerprint"), str)
-        and info.get("planFingerprint")
     )
 
 
@@ -153,8 +239,18 @@ def safe_archive_member_path(destination, member_name):
     drive, _ = os.path.splitdrive(normalized)
     trimmed = normalized[:-1] if normalized.endswith("/") else normalized
     parts = trimmed.split("/")
+    def _unsafe_windows_part(part):
+        base = part.split(".", 1)[0].upper()
+        return (
+            part != part.strip()
+            or part.endswith(".")
+            or base in _WINDOWS_RESERVED
+            or any(ch in _WINDOWS_FORBIDDEN or ord(ch) < 0x20 for ch in part)
+        )
+
     if (drive or normalized.startswith("/") or normalized.startswith("//")
-            or any(part in ("", ".", "..") or ":" in part for part in parts)):
+            or any(part in ("", ".", "..") or ":" in part
+                   or _unsafe_windows_part(part) for part in parts)):
         raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT, "archive traversal")
     if not parts:
         raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT, "archive member")
@@ -169,10 +265,12 @@ def validate_zip_infos(destination, infos):
     for info in infos:
         name = getattr(info, "filename", None)
         mode = (int(getattr(info, "external_attr", 0)) >> 16) & 0o170000
-        if mode == stat.S_IFLNK:
-            raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT, "archive symlink")
+        if mode not in (0, stat.S_IFREG, stat.S_IFDIR):
+            raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT,
+                                    "archive special file")
         target = safe_archive_member_path(destination, name)
-        key = os.path.normcase(os.path.normpath(target))
+        key = unicodedata.normalize(
+            "NFC", os.path.normpath(target)).casefold()
         if key in seen:
             raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT, "archive collision")
         seen.add(key)
@@ -181,21 +279,37 @@ def validate_zip_infos(destination, infos):
 
 
 def required_free_by_volume(entries, reserve_bytes=0):
-    """Pure per-volume capacity calculation. Unknown or invalid sizes STOP."""
+    """Pure capacity plan with cache/download and target bytes attributed separately.
+
+    Each entry must provide downloadVolumeId, cacheVolumeId, targetVolumeId and
+    download/cache/staging/install/rollback byte counts. Unknown values STOP;
+    no component size is silently omitted.
+    """
     if not isinstance(reserve_bytes, int) or reserve_bytes < 0:
         raise ValueError("invalid reserve_bytes")
     totals = {}
     for entry in entries:
-        volume = entry.get("volumeId") if isinstance(entry, dict) else None
-        if not isinstance(volume, str) or not volume:
-            raise rc.ProvisionError(rc.UNRESOLVED_COMPONENT, "volumeId")
-        subtotal = 0
-        for field in ("downloadBytes", "stagingBytes", "installBytes", "rollbackBytes"):
+        if not isinstance(entry, dict):
+            raise rc.ProvisionError(rc.UNRESOLVED_COMPONENT, "disk entry")
+        for field in (
+                "downloadVolumeId", "cacheVolumeId", "targetVolumeId"):
+            value = entry.get(field)
+            if not isinstance(value, str) or not value:
+                raise rc.ProvisionError(rc.UNRESOLVED_COMPONENT, field)
+        for field in (
+                "downloadBytes", "cacheBytes", "stagingBytes",
+                "installBytes", "rollbackBytes"):
             value = entry.get(field)
             if not isinstance(value, int) or isinstance(value, bool) or value < 0:
                 raise rc.ProvisionError(rc.UNRESOLVED_COMPONENT, field)
-            subtotal += value
-        totals[volume] = totals.get(volume, 0) + subtotal
+        allocations = (
+            (entry["downloadVolumeId"], entry["downloadBytes"]),
+            (entry["cacheVolumeId"], entry["cacheBytes"]),
+            (entry["targetVolumeId"], entry["stagingBytes"]
+             + entry["installBytes"] + entry["rollbackBytes"]),
+        )
+        for volume, value in allocations:
+            totals[volume] = totals.get(volume, 0) + value
     return {volume: total + reserve_bytes for volume, total in totals.items()}
 
 
@@ -238,7 +352,9 @@ def verify_required_files(base_dir, required_files):
 # ── pointer(작은 active-manifest) atomic replace ────────────────────────────
 def read_pointer(pointer_path):
     """active pointer 읽기. 없으면 None(설치 이력 없음). 손상 시 None."""
-    if not os.path.exists(pointer_path):
+    if not os.path.lexists(pointer_path):
+        return None
+    if _path_identity(pointer_path, "file") is None:
         return None
     try:
         with open(pointer_path, "r", encoding="utf-8") as f:
@@ -248,30 +364,104 @@ def read_pointer(pointer_path):
     return obj if isinstance(obj, dict) else None
 
 
-def write_pointer_atomic(pointer_path, active, replace_fn=None):
-    """active(dict, 예: {componentId, version})를 pointer_path에 atomic하게 기록.
-    temp 파일에 쓰고 같은 디렉터리에서 os.replace(파일→파일; 원자적). replace_fn 주입 시 그것을 사용.
-    실패(예: disk full)면 temp만 남기지 않고 정리 후 예외 전파 — 기존 pointer는 불변."""
+def write_pointer_atomic(pointer_path, active, managed_root, replace_fn=None,
+                         dir_fsync_fn=None, nonce_fn=None):
+    """Durably replace a pointer using a random exclusive same-dir temp.
+
+    Existing pointer symlink/reparse/hardlinks and parent identity changes are
+    rejected. On platforms without directory-fsync support, the default adapter
+    fails before replace; a reviewed native adapter must be injected. A failure
+    in the post-replace directory sync is reported while the already-validated
+    pointer remains installed (never silently rolled back by path).
+    """
     _replace = replace_fn if replace_fn is not None else os.replace
-    d = os.path.dirname(pointer_path)
-    tmp = pointer_path + ".tmp"
+    _dir_sync = dir_fsync_fn if dir_fsync_fn is not None else _sync_directory
+    _nonce = nonce_fn if nonce_fn is not None else lambda: secrets.token_hex(16)
+    pointer_path = require_managed_containment(pointer_path, managed_root)
+    d = require_managed_containment(
+        os.path.dirname(pointer_path), managed_root, must_exist=True)
+    parent_identity = _path_identity(d, "dir")
+    if parent_identity is None:
+        raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT,
+                                "unsafe pointer parent")
+    original_exists = os.path.lexists(pointer_path)
+    original_identity = None
+    if original_exists:
+        original_identity = _path_identity(pointer_path, "file")
+        if original_identity is None:
+            raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT,
+                                    "unsafe existing pointer")
+    temp_nonce = validate_path_segment(_nonce(), "pointer temp nonce")
+    tmp = os.path.join(d, "." + os.path.basename(pointer_path)
+                       + ".tmp-" + temp_nonce)
     payload = json.dumps(active, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    fd = os.open(tmp, flags, 0o600)
+    temp_identity = _fd_identity(fd)
     try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(payload)
-        _replace(tmp, pointer_path)
-    except OSError:
-        try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        except OSError:
-            pass
+        if temp_identity is None:
+            raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT,
+                                    "unsafe pointer temp")
+        _write_all(fd, payload.encode("utf-8"))
+        os.fsync(fd)
+    except BaseException:
+        os.close(fd)
+        if _same_identity(tmp, temp_identity, "file"):
+            os.remove(tmp)
         raise
+    else:
+        os.close(fd)
+    try:
+        # Sync and revalidate before the irreversible namespace mutation.
+        _dir_sync(d)
+        require_managed_containment(d, managed_root, must_exist=True)
+        if not _same_identity(d, parent_identity, "dir"):
+            raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT,
+                                    "pointer parent identity changed")
+        current_exists = os.path.lexists(pointer_path)
+        current_identity = (
+            _path_identity(pointer_path, "file") if current_exists else None)
+        if (current_exists != original_exists
+                or (current_exists and current_identity is None)
+                or current_identity != original_identity):
+            raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT,
+                                    "pointer identity changed")
+        if not _same_identity(tmp, temp_identity, "file"):
+            raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT,
+                                    "pointer temp identity changed")
+        _replace(tmp, pointer_path)
+        tmp = None
+        if not _same_identity(pointer_path, temp_identity, "file"):
+            raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT,
+                                    "pointer post-replace identity mismatch")
+        _dir_sync(d)
+    finally:
+        if tmp and _same_identity(tmp, temp_identity, "file"):
+            os.remove(tmp)
     return active
 
 
 # ── immutable 설치 + promote ─────────────────────────────────────────────────
-def cleanup_staging(staging_dir, managed_root, job_id, nonce):
+def _revalidate_owned_tree(path, managed_root, directory_identity,
+                           job_id, plan_fingerprint, nonce):
+    """Revalidate containment, directory identity, and full marker ownership."""
+    base = require_managed_containment(path, managed_root, must_exist=True)
+    if not _same_identity(base, directory_identity, "dir"):
+        raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT,
+                                "owned directory identity changed")
+    marker = os.path.join(base, JOB_MARKER_FILE)
+    marker_identity = _path_identity(marker, "file")
+    if marker_identity is None or not _owned_job(
+            base, job_id, plan_fingerprint, nonce):
+        raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT,
+                                "staging ownership marker mismatch")
+    return base, marker_identity
+
+
+def cleanup_staging(staging_dir, managed_root, job_id,
+                    plan_fingerprint, nonce, mutation_guard_fn=None):
     """Remove only a contained staging tree bearing this job's marker.
 
     Missing directories are a no-op. Marker mismatch, traversal and reparse
@@ -281,10 +471,22 @@ def cleanup_staging(staging_dir, managed_root, job_id, nonce):
         return False
     base = require_managed_containment(
         staging_dir, managed_root, must_exist=True)
-    if not os.path.isdir(base) or not _owned_job(base, job_id, nonce):
+    directory_identity = _path_identity(base, "dir")
+    if directory_identity is None:
         raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT,
-                                "staging ownership marker mismatch")
+                                "unsafe staging directory")
+    _revalidate_owned_tree(base, managed_root, directory_identity,
+                           job_id, plan_fingerprint, nonce)
+    # Last fail-closed validation immediately before recursive mutation. A
+    # reviewed native handle-relative deleter is required to close the final
+    # Windows namespace race; until then any detected identity drift aborts.
+    _revalidate_owned_tree(base, managed_root, directory_identity,
+                           job_id, plan_fingerprint, nonce)
+    _guard_namespace_mutation(base, mutation_guard_fn)
     shutil.rmtree(base)
+    if os.path.lexists(base):
+        raise rc.ProvisionError(rc.APPLY_DISABLED,
+                                "staging cleanup left residual data")
     return True
 
 
@@ -304,8 +506,9 @@ def _volume_identity(path):
 
 
 def promote(staging_dir, versioned_component_dir, pointer_path, active,
-            managed_root, job_id, nonce, replace_dir_fn=None,
-            replace_pointer_fn=None, volume_fn=None):
+            managed_root, job_id, plan_fingerprint, nonce,
+            replace_dir_fn=None, replace_pointer_fn=None, volume_fn=None,
+            dir_fsync_fn=None, mutation_guard_fn=None):
     """검증된 staging_dir을 immutable versioned_component_dir로 이동한 뒤, 작은 pointer만 atomic 교체.
     - versioned_component_dir가 이미 존재하면 덮어쓰지 않는다(immutable) → 그대로 예외.
     - 디렉터리 이동 실패(disk full 등) → staging 제거, 기존 active/버전 불변 후 예외.
@@ -321,25 +524,83 @@ def promote(staging_dir, versioned_component_dir, pointer_path, active,
     versioned_component_dir = require_managed_containment(
         versioned_component_dir, managed_root)
     pointer_path = require_managed_containment(pointer_path, managed_root)
-    if not _owned_job(staging_dir, job_id, nonce):
+    staging_identity = _path_identity(staging_dir, "dir")
+    if staging_identity is None:
         raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT,
-                                "staging ownership marker mismatch")
-    if _volume(staging_dir) != _volume(os.path.dirname(versioned_component_dir)):
-        raise rc.ProvisionError(rc.APPLY_DISABLED,
-                                "cross-volume promotion forbidden")
-    if os.path.exists(versioned_component_dir):
-        raise rc.ProvisionError(rc.APPLY_DISABLED, "immutable 버전 이미 존재(덮어쓰기 금지)")
+                                "unsafe staging directory")
+    _revalidate_owned_tree(staging_dir, managed_root, staging_identity,
+                           job_id, plan_fingerprint, nonce)
     # 대상 부모(버전 저장소)만 준비 — 기존 버전은 건드리지 않는다. os.replace(dir)는 부모가 있어야 함.
     parent = os.path.dirname(versioned_component_dir)
     if parent:
+        require_managed_containment(parent, managed_root)
+        if not os.path.lexists(parent):
+            # Parent creation is also a namespace mutation. Windows must use a
+            # reviewed handle-relative adapter instead of path-only mkdir.
+            _guard_namespace_mutation(parent, mutation_guard_fn)
         os.makedirs(parent, exist_ok=True)
+    parent = require_managed_containment(parent, managed_root, must_exist=True)
+    parent_identity = _path_identity(parent, "dir")
+    if parent_identity is None:
+        raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT,
+                                "unsafe version parent")
+    # Revalidate every namespace authority immediately before promotion.
+    _revalidate_owned_tree(staging_dir, managed_root, staging_identity,
+                           job_id, plan_fingerprint, nonce)
+    require_managed_containment(parent, managed_root, must_exist=True)
+    if not _same_identity(parent, parent_identity, "dir"):
+        raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT,
+                                "version parent identity changed")
+    if os.path.lexists(versioned_component_dir):
+        raise rc.ProvisionError(rc.APPLY_DISABLED,
+                                "immutable 버전 이미 존재(덮어쓰기 금지)")
+    if _volume(staging_dir) != _volume(parent):
+        raise rc.ProvisionError(rc.APPLY_DISABLED,
+                                "cross-volume promotion forbidden")
+    _guard_namespace_mutation(staging_dir, mutation_guard_fn)
     try:
         _rep_dir(staging_dir, versioned_component_dir)
     except OSError:
         # 이동 실패 → 검증된 소유 staging만 정리, 기존 active/버전 불변.
-        cleanup_staging(staging_dir, managed_root, job_id, nonce)
+        cleanup_staging(staging_dir, managed_root, job_id,
+                        plan_fingerprint, nonce,
+                        mutation_guard_fn=mutation_guard_fn)
         raise rc.ProvisionError(rc.APPLY_DISABLED, "staging 이동 실패 — 기존 active 보존")
-    # Ownership metadata belongs to staging, not the immutable component.
-    os.remove(os.path.join(versioned_component_dir, JOB_MARKER_FILE))
-    write_pointer_atomic(pointer_path, active, replace_fn=replace_pointer_fn)
+    # The final keeps its full owner marker. If pointer publication fails it is
+    # an explicit rollback-capable orphan, never an anonymous partial install.
+    if (not _same_identity(versioned_component_dir, staging_identity, "dir")
+            or not _owned_job(versioned_component_dir, job_id,
+                              plan_fingerprint, nonce)):
+        raise rc.ProvisionError(rc.APPLY_DISABLED,
+                                "promotion post-validation failed; owned orphan retained")
+    write_pointer_atomic(pointer_path, active, managed_root,
+                         replace_fn=replace_pointer_fn,
+                         dir_fsync_fn=dir_fsync_fn)
     return active
+
+
+def rollback_orphan_final(versioned_component_dir, pointer_path, active,
+                          managed_root, job_id, plan_fingerprint, nonce,
+                          mutation_guard_fn=None):
+    """Remove only an inactive final still bearing this full owner tuple."""
+    if read_pointer(pointer_path) == active:
+        raise rc.ProvisionError(rc.APPLY_DISABLED,
+                                "active version cannot be rolled back")
+    if not os.path.lexists(versioned_component_dir):
+        return False
+    base = require_managed_containment(
+        versioned_component_dir, managed_root, must_exist=True)
+    identity = _path_identity(base, "dir")
+    if identity is None:
+        raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT,
+                                "unsafe orphan directory")
+    _revalidate_owned_tree(base, managed_root, identity,
+                           job_id, plan_fingerprint, nonce)
+    _revalidate_owned_tree(base, managed_root, identity,
+                           job_id, plan_fingerprint, nonce)
+    _guard_namespace_mutation(base, mutation_guard_fn)
+    shutil.rmtree(base)
+    if os.path.lexists(base):
+        raise rc.ProvisionError(rc.APPLY_DISABLED,
+                                "orphan rollback left residual data")
+    return True

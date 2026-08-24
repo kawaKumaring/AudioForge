@@ -254,7 +254,9 @@ class Staging(unittest.TestCase):
             f.write(json.dumps({"componentId": "models.demo", "version": "0"}))
         active = {"componentId": "models.demo", "version": "1"}
         staging.promote(staged, versioned, pointer, active,
-                        self.d, "job1", "nonce-job1")
+                        self.d, "job1", "plan-fingerprint", "nonce-job1",
+                        dir_fsync_fn=lambda _path: None,
+                        mutation_guard_fn=lambda _path: None)
         self.assertTrue(os.path.isfile(os.path.join(versioned, "a.bin")))
         self.assertFalse(os.path.isdir(staged), "staging이 immutable 위치로 이동돼야 함")
         self.assertEqual(staging.read_pointer(pointer), active)
@@ -272,8 +274,10 @@ class Staging(unittest.TestCase):
         # dir 이동은 성공, pointer 교체만 실패 → 기존 active pointer 불변.
         with self.assertRaises(OSError):
             staging.promote(staged, versioned, pointer, {"componentId": "models.demo", "version": "1"},
-                            self.d, "job2", "nonce-job2",
-                            replace_pointer_fn=_boom)
+                            self.d, "job2", "plan-fingerprint", "nonce-job2",
+                            replace_pointer_fn=_boom,
+                            dir_fsync_fn=lambda _path: None,
+                            mutation_guard_fn=lambda _path: None)
         self.assertEqual(staging.read_pointer(pointer), prev, "기존 active pointer가 보존돼야 함")
 
     def test_dir_move_diskfull_cleans_staging_keeps_active(self):
@@ -288,8 +292,9 @@ class Staging(unittest.TestCase):
             raise OSError(28, "No space left on device")
         with self.assertRaises(rc.ProvisionError) as cm:
             staging.promote(staged, versioned, pointer, {"componentId": "models.demo", "version": "1"},
-                            self.d, "job3", "nonce-job3",
-                            replace_dir_fn=_boom)
+                            self.d, "job3", "plan-fingerprint", "nonce-job3",
+                            replace_dir_fn=_boom,
+                            mutation_guard_fn=lambda _path: None)
         self.assertEqual(cm.exception.code, rc.APPLY_DISABLED)
         self.assertFalse(os.path.isdir(staged), "이동 실패 시 staging은 제거돼야 함")
         self.assertFalse(os.path.isdir(versioned), "이동 실패 시 versioned 미생성")
@@ -302,7 +307,7 @@ class Staging(unittest.TestCase):
         pointer = os.path.join(self.d, "active4.json")
         with self.assertRaises(rc.ProvisionError) as cm:
             staging.promote(staged, versioned, pointer, {"componentId": "c", "version": "1"},
-                            self.d, "job4", "nonce-job4")
+                            self.d, "job4", "plan-fingerprint", "nonce-job4")
         self.assertEqual(cm.exception.code, rc.APPLY_DISABLED)  # 덮어쓰기 금지
 
 
