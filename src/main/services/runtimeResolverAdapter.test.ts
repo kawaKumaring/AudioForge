@@ -55,7 +55,8 @@ function makeDeps(cfg: MockCfg): RuntimeAdapterDeps {
 }
 
 const MANAGED_ROOT = 'C:\\Users\\x\\AppData\\Roaming\\AudioForge\\runtime'
-const MANAGED_PY = 'C:\\Users\\x\\AppData\\Roaming\\AudioForge\\runtime\\Scripts\\python.exe'
+// 부모 워커 venv는 runtimeRoot/audioforge_venv 아래(provisioner 고정 레이아웃과 일치).
+const MANAGED_PY = 'C:\\Users\\x\\AppData\\Roaming\\AudioForge\\runtime\\audioforge_venv\\Scripts\\python.exe'
 
 // ── managed 정상 ─────────────────────────────────────────────────────────────
 test('managed 정상: runtimeRoot 내 인터프리터 존재+probe ok → 채택(audioforge-managed) + roots 생성', async () => {

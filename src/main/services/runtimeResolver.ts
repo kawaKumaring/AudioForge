@@ -122,10 +122,18 @@ const RANK: Record<CandidateSource, number> = {
   'legacy-detected': 7,
 }
 
-/** runtimeRoot에서 managed 인터프리터 경로 도출(순수). 절대경로 상수 없음. */
+// managed 부모 워커 venv 디렉터리명 — provisioner 고정 레이아웃(python/provision/layout.py
+// RUNTIME_PARENT_VENV)과 반드시 동일해야 install 위치 == resolve 위치가 보장된다(단일 소스는 layout.py,
+// 여기 리터럴은 그 미러; provision-layout-parity 테스트가 일치를 고정).
+export const RUNTIME_PARENT_VENV = 'audioforge_venv'
+
+/** runtimeRoot에서 managed 인터프리터 경로 도출(순수). 절대경로 상수 없음.
+ * 부모 워커 venv는 runtimeRoot/audioforge_venv 아래에 있다(runtimeRoot 자체가 venv가 아님). */
 export function managedInterpreterPath(runtimeRoot: string, platform: 'win32' | 'posix' = 'win32'): string {
   const sep = platform === 'win32' ? '\\' : '/'
-  const parts = platform === 'win32' ? ['Scripts', 'python.exe'] : ['bin', 'python']
+  const parts = platform === 'win32'
+    ? [RUNTIME_PARENT_VENV, 'Scripts', 'python.exe']
+    : [RUNTIME_PARENT_VENV, 'bin', 'python']
   const root = runtimeRoot.replace(/[\\/]+$/, '')
   return [root, ...parts].join(sep)
 }

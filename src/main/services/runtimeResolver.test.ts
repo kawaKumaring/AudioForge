@@ -102,9 +102,9 @@ test('reconcile: 산출 후보/결과 값이 계약 3축·ReasonCode·PolicyOutc
 
 // ── managedInterpreterPath: 절대경로 상수 없이 root에서 도출 ────────────────
 test('managedInterpreterPath: win32/posix 형태 도출 (하드코딩 상수 아님)', () => {
-  assert.equal(managedInterpreterPath('C:/af/externals/audioforge_venv', 'win32'), 'C:/af/externals/audioforge_venv\\Scripts\\python.exe')
-  assert.equal(managedInterpreterPath('/opt/af/venv', 'posix'), '/opt/af/venv/bin/python')
-  assert.equal(managedInterpreterPath('/opt/af/venv/', 'posix'), '/opt/af/venv/bin/python')
+  assert.equal(managedInterpreterPath('C:/af/runtime', 'win32'), 'C:/af/runtime\\audioforge_venv\\Scripts\\python.exe')
+  assert.equal(managedInterpreterPath('/opt/af/runtime', 'posix'), '/opt/af/runtime/audioforge_venv/bin/python')
+  assert.equal(managedInterpreterPath('/opt/af/runtime/', 'posix'), '/opt/af/runtime/audioforge_venv/bin/python')
 })
 
 // ── managed 정상 ────────────────────────────────────────────────────────────
