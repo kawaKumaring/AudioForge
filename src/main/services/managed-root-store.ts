@@ -86,9 +86,10 @@ export function managedRootStatus(deps: ManagedRootDeps): ManagedRootPublicStatu
 export function selectManagedRoot(selected: string, deps: ManagedRootDeps): VerifiedManagedRoot {
   const prior = verifyManagedRoot(deps), platform = deps.platform ?? process.platform
   const { root, volume } = canonicalAndSafe(selected, deps), entries = readdirSync(root), marker = readMarker(root)
-  if (entries.length && !(marker && prior && eqPath(prior.record.baseRoot, root, platform) && markerMatches(marker, prior.record))) throw new Error('ROOT_NOT_EMPTY_OR_OWNED')
   const s = readSettingsFile(deps.settingsFile), secret = typeof s.managedRootSecret === 'string' && s.managedRootSecret ? s.managedRootSecret : randomUUID()
-  const instanceId = prior && eqPath(prior.record.baseRoot, root, platform) ? prior.record.instanceId : randomUUID()
+  const ownedMarker = !!marker && marker.rootFingerprint === opaqueFingerprint(secret, 'managed-root', root)
+  if (entries.length && !ownedMarker) throw new Error('ROOT_NOT_EMPTY_OR_OWNED')
+  const instanceId = ownedMarker ? marker!.instanceId : (prior && eqPath(prior.record.baseRoot, root, platform) ? prior.record.instanceId : randomUUID())
   const record: ManagedRootRecord = { schemaVersion: MANAGED_ROOT_SCHEMA_VERSION, baseRoot: root, selectionNonce: randomUUID(), instanceId, rootFingerprint: opaqueFingerprint(secret, 'managed-root', root), volumeIdentity: opaqueFingerprint(secret, 'managed-volume', `${volume.identity}\0${instanceId}`), selectedAt: new Date().toISOString() }
   writeMarkerAtomic(root, markerFor(record))
   try {

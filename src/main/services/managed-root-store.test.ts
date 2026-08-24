@@ -42,6 +42,18 @@ test('marker/volume tamper invalidates status and reselection invalidates approv
   } finally { rmSync(f.top, { recursive: true, force: true }) }
 })
 
+test('previously-owned marker remains selectable after another root was selected', () => {
+  const f = fixture()
+  try {
+    const other = join(f.top, 'other'); mkdirSync(other)
+    const first = selectManagedRoot(f.root, f.deps)
+    selectManagedRoot(other, f.deps)
+    const again = selectManagedRoot(f.root, f.deps)
+    assert.equal(again.record.instanceId, first.record.instanceId)
+    assert.notEqual(again.record.selectionNonce, first.record.selectionNonce)
+  } finally { rmSync(f.top, { recursive: true, force: true }) }
+})
+
 test('forbidden, ComfyUI, non-empty and removable roots fail closed', () => {
   const f = fixture()
   try {
