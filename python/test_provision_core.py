@@ -42,20 +42,63 @@ def _managed_roots(base):
     }
 
 
-def _resolved_manifest():
-    """전 component가 resolved인 소형 합성 manifest(fingerprint/apply 게이트 검증용)."""
-    lic = {"code": "MIT", "weights": "OpenRAIL", "data": "n/a", "output": "n/a"}
+_H = "a" * 64
+def _evidence(path, char):
+    return {"path": path, "sha256": char * 64}
+
+
+_LIC = {"code": "MIT", "weights": "OpenRAIL", "data": "n/a", "output": "n/a",
+        "notice": _evidence("evidence/NOTICE.txt", "b"),
+        "sbom": _evidence("evidence/sbom.json", "c")}
+
+
+def _artifact(filename="demo.tar.zst", revision="v1.0.0", source_kind="github-release"):
+    return {
+        "sourceKind": source_kind, "url": "https://example.invalid/releases/demo.tar.zst",
+        "revision": revision,
+        "filename": filename, "sha256": _H, "compressedBytes": 512,
+        "installedBytes": 1024, "license": _LIC,
+    }
+
+
+def _lock():
+    return {"format": "pip-requirements-hashes",
+            "locator": _evidence("locks/runtime.lock", "d"),
+            "target": {"python": "3.12.10", "platform": "win_amd64", "abi": "cp312"},
+            "resolver": {"name": "pip", "version": "25.1"},
+            "closure": _evidence("locks/runtime.closure.json", "e"),
+            "entries": [{"name": "NumPy", "normalizedName": "numpy", "version": "2.2.0",
+                         "sourceKind": "pypi-file", "url": "https://example.invalid/numpy-2.2.0.whl",
+                         "revision": "2.2.0", "filename": "numpy-2.2.0-cp312.whl",
+                         "sha256": "f" * 64, "license": _LIC}]}
+
+
+def _manifest(components):
     return {
         "schemaVersion": mf.MANIFEST_SCHEMA_VERSION,
-        "components": [
-            {"id": "cache-area", "kind": "cache", "version": "1", "required": True,
-             "dependsOn": [], "installPath": "staging", "displayLabel": "캐시", "license": lic},
-            {"id": "models.demo", "kind": "model", "version": "1", "required": True,
-             "dependsOn": [], "installPath": "demo", "displayLabel": "데모 모델",
-             "repoId": "org/demo", "pinnedRevision": "abc123", "totalSize": 1024,
-             "requiredFiles": [{"path": "a.bin", "sha256": "d0"}], "license": lic},
-        ],
+        "profile": mf.DEFAULT_PROFILE,
+        "profiles": {mf.DEFAULT_PROFILE: {"componentIds": [], "excludedComponentIds": []}},
+        "components": components,
     }
+
+
+def _resolved_manifest():
+    """Exact minimal-qwen profile whose selected components are resolved."""
+    manifest = default_manifest.build()
+    index = mf.component_index(manifest["components"])
+    for cid in ("bootstrap-python", "ffmpeg"):
+        index[cid]["version"] = "v1.0.0"
+        index[cid]["artifact"] = _artifact(index[cid]["artifact"]["filename"])
+    for cid in ("parent-runtime", "qwen-venv"):
+        index[cid]["version"] = "v1.0.0"
+        index[cid]["artifact"] = _artifact(index[cid]["artifact"]["filename"])
+        index[cid]["lock"] = _lock()
+    qwen = index["models.qwen3"]
+    revision = qwen["version"]
+    qwen["artifact"] = _artifact("qwen3.snapshot", revision, "huggingface-snapshot")
+    qwen["requiredFiles"] = [{"path": item["path"], "sha256": _H}
+                             for item in qwen["requiredFiles"]]
+    return manifest
 
 
 # ── plan / dry-run: 부작용 0 ──────────────────────────────────────────────────
@@ -98,11 +141,102 @@ class ManifestAndDag(unittest.TestCase):
         comps = mf.validate_manifest(default_manifest.build())
         self.assertTrue(any(c["id"] == "bootstrap-python" for c in comps))
 
-    def test_bootstrap_always_unresolved(self):
+    def test_schema_v1_is_rejected_not_silently_migrated(self):
+        manifest = default_manifest.build()
+        manifest["schemaVersion"] = 1
+        with self.assertRaises(rc.ProvisionError):
+            mf.validate_manifest(manifest)
+
+    def test_profile_unknown_or_include_exclude_overlap_is_rejected(self):
+        manifest = default_manifest.build()
+        manifest["profiles"][mf.DEFAULT_PROFILE]["componentIds"].append("ghost")
+        with self.assertRaises(rc.ProvisionError) as cm:
+            mf.validate_manifest(manifest)
+        self.assertEqual(cm.exception.code, rc.UNRESOLVED_COMPONENT)
+        manifest = default_manifest.build()
+        manifest["profiles"][mf.DEFAULT_PROFILE]["excludedComponentIds"].append("models.qwen3")
+        with self.assertRaises(rc.ProvisionError):
+            mf.validate_manifest(manifest)
+
+    def test_default_bootstrap_unresolved_without_complete_artifact(self):
         comps = mf.component_index(mf.validate_manifest(default_manifest.build()))
         self.assertFalse(mf.is_resolved(comps["bootstrap-python"]))
         self.assertEqual(mf.unresolved_reason(comps["bootstrap-python"]),
                          rc.BOOTSTRAP_PYTHON_UNRESOLVED)
+
+    def test_bootstrap_can_resolve_only_with_complete_immutable_artifact(self):
+        component = {
+            "id": "bootstrap", "kind": "bootstrap", "version": "3.12.14",
+            "targetRoot": "runtime", "required": True, "dependsOn": [], "installPath": "bootstrap-python",
+            "artifact": _artifact("python.zip", "3.12.14"),
+        }
+        self.assertTrue(mf.is_resolved(component))
+        for missing in ("sha256", "compressedBytes", "installedBytes", "license"):
+            broken = dict(component)
+            broken["artifact"] = dict(component["artifact"])
+            broken["artifact"][missing] = None
+            self.assertFalse(mf.is_resolved(broken), missing)
+
+    def test_venv_requires_exact_hashed_lock(self):
+        component = {
+            "id": "venv", "kind": "venv", "version": "1", "required": True,
+            "targetRoot": "runtime", "dependsOn": [], "installPath": "venv",
+            "artifact": _artifact("venv.lock", "1"), "lock": _lock(),
+        }
+        self.assertTrue(mf.is_resolved(component))
+        bad_lock = _lock(); bad_lock["entries"][0]["version"] = ">=2"
+        for lock in (None, bad_lock):
+            broken = dict(component)
+            broken["lock"] = lock
+            self.assertFalse(mf.is_resolved(broken))
+
+    def test_sha256_is_exactly_64_hex(self):
+        component = {"id": "tool", "kind": "tool", "version": "1", "required": True,
+                     "targetRoot": "runtime", "dependsOn": [], "installPath": "tools/x",
+                     "artifact": _artifact(revision="1")}
+        self.assertTrue(mf.is_resolved(component))
+        for digest in ("d0", "g" * 64, "a" * 63, "a" * 65):
+            broken = dict(component)
+            broken["artifact"] = dict(component["artifact"], sha256=digest)
+            self.assertFalse(mf.is_resolved(broken), digest)
+
+    def test_install_and_required_paths_reject_escape_absolute_and_duplicates(self):
+        for path in ("../x", "a/../x", "C:/x", "/x", "\\\\host\\share", "a\\b",
+                     "a//b", "a/stream:name", "a/trailing."):
+            manifest = default_manifest.build()
+            manifest["components"][0]["installPath"] = path
+            with self.assertRaises(rc.ProvisionError, msg=path):
+                mf.validate_manifest(manifest)
+
+        manifest = default_manifest.build()
+        manifest["components"][1]["installPath"] = manifest["components"][0]["installPath"]
+        with self.assertRaises(rc.ProvisionError):
+            mf.validate_manifest(manifest)
+
+        manifest = default_manifest.build()
+        manifest["components"][1]["installPath"] = (
+            manifest["components"][0]["installPath"] + "/nested"
+        )
+        with self.assertRaises(rc.ProvisionError):
+            mf.validate_manifest(manifest)
+
+        manifest = default_manifest.build()
+        qwen = mf.component_index(manifest["components"])["models.qwen3"]
+        qwen["requiredFiles"] = [{"path": "../escape", "sha256": _H}]
+        with self.assertRaises(rc.ProvisionError):
+            mf.validate_manifest(manifest)
+
+    def test_default_profile_is_minimal_qwen_and_excludes_gpt_separator(self):
+        manifest = default_manifest.build()
+        spec = manifest["profiles"][mf.DEFAULT_PROFILE]
+        self.assertEqual(manifest["profile"], "minimal-qwen")
+        self.assertEqual(tuple(spec["componentIds"]), mf.MINIMAL_QWEN_COMPONENT_IDS)
+        self.assertEqual(set(spec["excludedComponentIds"]),
+                         {"gptsovits-venv", "models.gptsovits", "models.separator"})
+        ids = {c["id"] for c in dag.select_profile(manifest)}
+        self.assertIn("models.qwen3", ids)
+        self.assertNotIn("models.gptsovits", ids)
+        self.assertNotIn("models.separator", ids)
 
     def test_models_unresolved_when_sha_or_license_missing(self):
         comps = mf.component_index(mf.validate_manifest(default_manifest.build()))
@@ -110,8 +244,50 @@ class ManifestAndDag(unittest.TestCase):
         self.assertEqual(mf.unresolved_reason(comps["models.qwen3"]), rc.UNRESOLVED_COMPONENT)
 
     def test_resolved_manifest_all_resolved(self):
-        comps = mf.validate_manifest(_resolved_manifest())
-        self.assertTrue(all(mf.is_resolved(c) for c in comps))
+        manifest = _resolved_manifest()
+        self.assertTrue(all(mf.is_resolved(c) for c in dag.select_profile(manifest)))
+
+    def test_windows_paths_target_roots_and_overlap_fail_closed(self):
+        for path in ("CON/file", "aux.txt", "bad?/file", "trail /x", "dir./x"):
+            manifest = default_manifest.build()
+            manifest["components"][0]["installPath"] = path
+            with self.assertRaises(rc.ProvisionError, msg=path):
+                mf.validate_manifest(manifest)
+        manifest = default_manifest.build()
+        manifest["components"][0]["targetRoot"] = "model"
+        with self.assertRaises(rc.ProvisionError):
+            mf.validate_manifest(manifest)
+
+    def test_artifact_url_revision_and_model_binding(self):
+        component = {"id": "m", "kind": "model", "targetRoot": "model",
+                     "version": "a" * 40, "required": True, "dependsOn": [],
+                     "installPath": "m", "repoId": "org/m", "pinnedRevision": "a" * 40,
+                     "requiredFiles": [{"path": "m.bin", "sha256": _H}],
+                     "artifact": _artifact("m.snapshot", "a" * 40, "huggingface-snapshot")}
+        self.assertTrue(mf.is_resolved(component))
+        for artifact_change in ({"url": "https://x.invalid/a?latest=1"},
+                                {"url": "https://x.invalid/a#frag"},
+                                {"revision": "main"}):
+            broken = json.loads(json.dumps(component))
+            broken["artifact"].update(artifact_change)
+            self.assertFalse(mf.is_resolved(broken))
+        broken = json.loads(json.dumps(component)); broken["pinnedRevision"] = "b" * 40
+        self.assertFalse(mf.is_resolved(broken))
+
+    def test_profile_excluded_dependency_cannot_reenter(self):
+        manifest = default_manifest.build()
+        mf.component_index(manifest["components"])["models.qwen3"]["dependsOn"].append("models.separator")
+        with self.assertRaises(rc.ProvisionError) as cm:
+            dag.select_profile(manifest)
+        self.assertEqual(cm.exception.code, rc.UNRESOLVED_COMPONENT)
+
+    def test_schema_type_errors_are_provision_error(self):
+        for mutation in (lambda m: m.update({"components": "bad"}),
+                         lambda m: m["components"].append(None),
+                         lambda m: m["components"][0].update({"dependsOn": 3})):
+            manifest = default_manifest.build(); mutation(manifest)
+            with self.assertRaises(rc.ProvisionError):
+                mf.validate_manifest(manifest)
 
     def test_topo_sort_orders_deps_first(self):
         comps = mf.validate_manifest(default_manifest.build())
@@ -121,23 +297,23 @@ class ManifestAndDag(unittest.TestCase):
         self.assertLess(ids.index("qwen-venv"), ids.index("models.qwen3"))
 
     def test_cycle_detected(self):
-        m = {"schemaVersion": 1, "components": [
+        m = _manifest([
             {"id": "a", "kind": "tool", "version": "1", "required": True, "dependsOn": ["b"],
-             "installPath": "a", "displayLabel": "a", "license": None},
+             "installPath": "a", "displayLabel": "a", "license": None, "artifact": None},
             {"id": "b", "kind": "tool", "version": "1", "required": True, "dependsOn": ["a"],
-             "installPath": "b", "displayLabel": "b", "license": None},
-        ]}
-        comps = mf.validate_manifest(m)
+             "installPath": "b", "displayLabel": "b", "license": None, "artifact": None},
+        ])
+        comps = m["components"]
         with self.assertRaises(rc.ProvisionError) as cm:
             dag.topo_sort(comps)
         self.assertEqual(cm.exception.code, rc.DAG_CYCLE)
 
     def test_missing_dependency(self):
-        m = {"schemaVersion": 1, "components": [
+        m = _manifest([
             {"id": "a", "kind": "tool", "version": "1", "required": True, "dependsOn": ["ghost"],
-             "installPath": "a", "displayLabel": "a", "license": None},
-        ]}
-        comps = mf.validate_manifest(m)
+             "installPath": "a", "displayLabel": "a", "license": None, "artifact": None},
+        ])
+        comps = m["components"]
         with self.assertRaises(rc.ProvisionError) as cm:
             dag.topo_sort(comps)
         self.assertEqual(cm.exception.code, rc.DEPENDENCY_MISSING)
@@ -186,6 +362,25 @@ class ApplyGate(unittest.TestCase):
         with self.assertRaises(rc.ProvisionError) as cm:
             state.apply(p, p["planFingerprint"])
         self.assertEqual(cm.exception.code, rc.APPLY_DISABLED)
+
+    def test_fingerprint_binds_every_artifact_and_lock_axis(self):
+        base = _resolved_manifest()
+        original = state.plan(base)["planFingerprint"]
+        mutations = [
+            lambda c: c["artifact"].update(url="https://mirror.invalid/demo.tar.zst"),
+            lambda c: c["artifact"].update(sha256="1" * 64),
+            lambda c: c["artifact"].update(compressedBytes=513),
+            lambda c: c["artifact"]["license"]["notice"].update(sha256="2" * 64),
+            lambda c: c["lock"]["locator"].update(sha256="3" * 64),
+            lambda c: c["lock"]["target"].update(python="3.12.11"),
+            lambda c: c["lock"]["resolver"].update(version="25.2"),
+            lambda c: c["lock"]["entries"][0].update(sha256="4" * 64),
+        ]
+        for mutate in mutations:
+            manifest = json.loads(json.dumps(base))
+            component = mf.component_index(manifest["components"])["qwen-venv"]
+            mutate(component)
+            self.assertNotEqual(original, state.plan(manifest)["planFingerprint"])
 
 
 # ── fingerprint 순수 규칙 ────────────────────────────────────────────────────

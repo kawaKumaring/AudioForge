@@ -3,7 +3,7 @@
 
 검증:
   - plan/dry-run/verify가 P core를 소비해 renderer-safe 봉투를 emit(전체 절대경로 0, canonical 키).
-  - "*" engineIds가 모든 선택 component로 확장.
+  - minimal-qwen profile이 exact selection이고 wildcard는 fail-closed.
   - 알 수 없는 mode / config 아님 → APPLY_DISABLED 오류 봉투.
   - roots 무효(있는데 깨짐) → NO_RUNTIME_ROOT / roots 정상 managed → plan 정상(roots 없이도 정상).
   - dry-run fingerprint == plan fingerprint(같은 engineIds).
@@ -54,11 +54,12 @@ def _managed_roots(base):
 
 class TestProvisionCli(unittest.TestCase):
     def test_plan_is_renderer_safe(self):
-        resp = cli.build_response({"mode": "provision-plan", "engineIds": ["*"]})
+        resp = cli.build_response({"mode": "provision-plan", "profile": "minimal-qwen"})
         self.assertTrue(resp["ok"], resp)
         self.assertEqual(resp["type"], "provision-result")
         result = resp["result"]
-        self.assertEqual(result["schemaVersion"], 1)
+        self.assertEqual(result["schemaVersion"], 2)
+        self.assertEqual(result["profile"], "minimal-qwen")
         self.assertEqual(result["mode"], "plan")
         self.assertGreater(len(result["components"]), 0)
         self.assertIsInstance(result["planFingerprint"], str)
@@ -67,17 +68,18 @@ class TestProvisionCli(unittest.TestCase):
         hit = _find_absolute(result)
         self.assertIsNone(hit, f"절대경로 노출: {hit}")
 
-    def test_star_expands_optional(self):
-        req_only = cli.build_response({"mode": "provision-plan"})["result"]
-        full = cli.build_response({"mode": "provision-plan", "engineIds": ["*"]})["result"]
-        self.assertGreater(len(full["components"]), len(req_only["components"]))
+    def test_profile_exact_and_star_blocked(self):
+        full = cli.build_response({"mode": "provision-plan"})["result"]
         ids = {c["id"] for c in full["components"]}
-        # 선택 component가 포함됐는지(예: qwen-venv, models.qwen3).
         self.assertIn("qwen-venv", ids)
         self.assertIn("models.qwen3", ids)
+        self.assertNotIn("models.separator", ids)
+        blocked = cli.build_response({"mode": "provision-plan", "engineIds": ["*"]})
+        self.assertFalse(blocked["ok"])
+        self.assertEqual(blocked["error"]["code"], rc.UNRESOLVED_COMPONENT)
 
     def test_verify_synthetic_not_present(self):
-        resp = cli.build_response({"mode": "provision-verify", "engineIds": ["*"]})
+        resp = cli.build_response({"mode": "provision-verify"})
         self.assertTrue(resp["ok"], resp)
         result = resp["result"]
         self.assertEqual(result["mode"], "verify")
@@ -87,8 +89,8 @@ class TestProvisionCli(unittest.TestCase):
         self.assertIsNone(_find_absolute(result))
 
     def test_dry_run_matches_plan_fingerprint(self):
-        p = cli.build_response({"mode": "provision-plan", "engineIds": ["*"]})["result"]
-        d = cli.build_response({"mode": "provision-dry-run", "engineIds": ["*"]})["result"]
+        p = cli.build_response({"mode": "provision-plan"})["result"]
+        d = cli.build_response({"mode": "provision-dry-run"})["result"]
         self.assertEqual(p["planFingerprint"], d["planFingerprint"])
         self.assertEqual(d["mode"], "dry-run")
 

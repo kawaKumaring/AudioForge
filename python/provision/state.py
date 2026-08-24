@@ -14,13 +14,14 @@ from . import fingerprint as fp
 from . import manifest as mf
 from . import reason_codes as rc
 
-PLAN_SCHEMA_VERSION = 1
+PLAN_SCHEMA_VERSION = 2
 
 
 def _sizes(component):
+    artifact = component.get("artifact") if isinstance(component.get("artifact"), dict) else {}
     return {
-        "compressed": component.get("compressedSize"),
-        "installed": component.get("installedSize"),
+        "compressed": artifact.get("compressedBytes"),
+        "installed": artifact.get("installedBytes"),
         "total": component.get("totalSize"),
     }
 
@@ -31,12 +32,16 @@ def _component_view(component):
     view = {
         "id": component["id"],
         "kind": component["kind"],
+        "targetRoot": component.get("targetRoot"),
         "version": component.get("version"),
         "required": bool(component.get("required")),
         "dependsOn": list(component.get("dependsOn", [])),
         "installPath": component.get("installPath"),  # 레이아웃 상대경로(절대경로 아님)
         "displayLabel": component.get("displayLabel"),
-        "license": component.get("license"),
+        "artifact": component.get("artifact"),
+        "lock": component.get("lock"),
+        "license": ((component.get("artifact") or {}).get("license")
+                    if isinstance(component.get("artifact"), dict) else None),
         "resolved": resolved,
         "reasonCode": mf.unresolved_reason(component),
         "sizes": _sizes(component),
@@ -52,15 +57,17 @@ def _component_view(component):
     return view
 
 
-def _fingerprint_payload(views):
+def _fingerprint_payload(profile_name, views):
     """apply 승인 대상이 되는 canonical 입력. mode·displayLabel 등 표시 전용/휘발 필드는 제외하고
     '무엇을 설치하는가'만 담는다 → manifest/경로/버전/checksum 변경 시 fingerprint가 바뀐다."""
     payload = []
     for v in views:
         item = {
-            "id": v["id"], "kind": v["kind"], "version": v["version"],
+            "id": v["id"], "kind": v["kind"], "targetRoot": v["targetRoot"],
+            "version": v["version"],
             "required": v["required"], "dependsOn": v["dependsOn"],
-            "installPath": v["installPath"], "license": v["license"],
+            "installPath": v["installPath"], "artifact": v["artifact"],
+            "lock": v["lock"],
             "resolved": v["resolved"],
         }
         if v["kind"] == "model":
@@ -69,21 +76,23 @@ def _fingerprint_payload(views):
             item["requiredFiles"] = v.get("requiredFiles", [])
             item["totalSize"] = v["sizes"]["total"]
         payload.append(item)
-    return payload
+    return {"profile": profile_name, "components": payload}
 
 
-def _make(manifest, engine_ids, mode):
-    components = mf.validate_manifest(manifest)
-    ordered = dag.select_components(components, engine_ids=tuple(engine_ids))
+def _make(manifest, profile_name, engine_ids, mode):
+    mf.validate_manifest(manifest)
+    selected_profile = profile_name or manifest["profile"]
+    ordered = dag.select_profile(manifest, selected_profile, tuple(engine_ids))
     views = [_component_view(c) for c in ordered]
     blocking = []
     for v in views:
         if not v["resolved"] and v["reasonCode"] not in blocking:
             blocking.append(v["reasonCode"])
-    payload = _fingerprint_payload(views)
+    payload = _fingerprint_payload(selected_profile, views)
     return {
         "schemaVersion": PLAN_SCHEMA_VERSION,
         "mode": mode,
+        "profile": selected_profile,
         "components": views,
         "resolvedAll": all(v["resolved"] for v in views),
         "blockingReasons": blocking,
@@ -91,23 +100,24 @@ def _make(manifest, engine_ids, mode):
     }
 
 
-def plan(manifest, engine_ids=()):
+def plan(manifest, engine_ids=(), profile_name=None):
     """설치 계획 산출 — 파일/네트워크 변경 0. 항상 실행 가능."""
-    return _make(manifest, engine_ids, "plan")
+    return _make(manifest, profile_name, engine_ids, "plan")
 
 
-def dry_run(manifest, engine_ids=()):
+def dry_run(manifest, engine_ids=(), profile_name=None):
     """dry-run — plan과 동일 내용(같은 fingerprint), mode만 다름. 파일/네트워크 변경 0."""
-    return _make(manifest, engine_ids, "dry-run")
+    return _make(manifest, profile_name, engine_ids, "dry-run")
 
 
-def verify(manifest, engine_ids=(), evidence_by_id=None):
+def verify(manifest, engine_ids=(), evidence_by_id=None, profile_name=None):
     """설치 없이 상태 검사. evidence_by_id: {component_id: {present, reasonCode, ...}} 주입.
     (checksum '계산'은 상위가 model_manifest/staging으로 수행해 주입 — 이 함수는 순수 해석.)
     반환: 각 component의 resolved/present/reasonCode 요약(renderer-safe)."""
     evidence_by_id = evidence_by_id or {}
-    components = mf.validate_manifest(manifest)
-    ordered = dag.select_components(components, engine_ids=tuple(engine_ids))
+    mf.validate_manifest(manifest)
+    selected_profile = profile_name or manifest["profile"]
+    ordered = dag.select_profile(manifest, selected_profile, tuple(engine_ids))
     out = []
     for c in ordered:
         v = _component_view(c)
@@ -120,7 +130,8 @@ def verify(manifest, engine_ids=(), evidence_by_id=None):
             "id": v["id"], "kind": v["kind"], "displayLabel": v["displayLabel"],
             "resolved": v["resolved"], "present": present, "reasonCode": reason,
         })
-    return {"schemaVersion": PLAN_SCHEMA_VERSION, "mode": "verify", "components": out}
+    return {"schemaVersion": PLAN_SCHEMA_VERSION, "mode": "verify",
+            "profile": selected_profile, "components": out}
 
 
 def apply(plan_result, approval_token):

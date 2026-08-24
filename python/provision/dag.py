@@ -83,3 +83,47 @@ def select_components(components, engine_ids=()):
     wanted = _closure(index, roots)
     subset = [c for c in components if c["id"] in wanted]
     return topo_sort(subset)
+
+
+def profile_component_ids(manifest, profile_name=None):
+    """Return the explicit optional ids for a schema-v2 profile.
+
+    ``validate_manifest`` is the authority for profile shape and id existence.
+    Keeping the profile choice separate from ``select_components`` preserves the
+    old explicit-engine API while preventing callers from silently inventing a
+    profile or including components listed as excluded.
+    """
+    mf.validate_manifest(manifest)
+    selected = profile_name or manifest["profile"]
+    profiles = manifest["profiles"]
+    if selected not in profiles:
+        raise rc.ProvisionError(rc.DEPENDENCY_MISSING, f"profile 없음: {selected}")
+    spec = profiles[selected]
+    included = list(spec["componentIds"])
+    excluded = set(spec["excludedComponentIds"])
+    if set(included) & excluded:
+        raise rc.ProvisionError(rc.UNRESOLVED_COMPONENT, "profile include/exclude 충돌")
+    return included
+
+
+def select_profile(manifest, profile_name=None, extra_ids=()):
+    """Select the exact profile closure plus permitted extras, fail closed.
+
+    A dependency may never smuggle a profile-excluded component back into the
+    selection.  Explicit extras use the same rule.
+    """
+    components = mf.validate_manifest(manifest)
+    selected = profile_name or manifest["profile"]
+    profile_ids = profile_component_ids(manifest, selected)
+    excluded = set(manifest["profiles"][selected]["excludedComponentIds"])
+    extras = tuple(extra_ids)
+    blocked = excluded & (set(profile_ids) | set(extras))
+    if blocked:
+        raise rc.ProvisionError(rc.UNRESOLVED_COMPONENT,
+                                f"profile 제외 component 재포함: {sorted(blocked)[0]}")
+    ordered = select_components(components, engine_ids=tuple(profile_ids) + extras)
+    leaked = excluded & {component["id"] for component in ordered}
+    if leaked:
+        raise rc.ProvisionError(rc.UNRESOLVED_COMPONENT,
+                                f"dependency가 제외 component 재포함: {sorted(leaked)[0]}")
+    return ordered
