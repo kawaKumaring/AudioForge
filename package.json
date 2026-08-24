@@ -19,6 +19,7 @@
     "test:e2e:tts-generation-retry": "node test/e2e/tts-generation-retry.e2e.mjs",
     "test:e2e:tts-cancel-lifecycle": "node test/e2e/tts-cancel-lifecycle.e2e.mjs",
     "test:e2e:standalone": "node test/e2e/standalone-runtime.e2e.mjs",
+    "test:e2e:provision": "node test/e2e/provision-panel.e2e.mjs",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {

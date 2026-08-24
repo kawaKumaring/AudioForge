@@ -1,5 +1,10 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { RuntimeStatusReport } from '../shared/runtimeStatus.ts'
+import type {
+  ProvisionPlanResponse,
+  ProvisionVerifyResponse,
+  ProvisionApplyResponse,
+} from '../shared/provisionIpc.ts'
 
 const api = {
   audio: {
@@ -73,6 +78,14 @@ const api = {
     get: (): Promise<RuntimeStatusReport> => ipcRenderer.invoke('settings:get'),
     set: (key: string, value: unknown) => ipcRenderer.invoke('settings:set', key, value),
     selectPythonPath: (): Promise<{ basename: string } | null> => ipcRenderer.invoke('settings:select-python-path')
+  },
+  // managed provisioner(R-provision) — plan/verify는 읽기 전용, apply는 항상 차단(APPLY_DISABLED).
+  // 반환에는 전체 절대경로가 없다(main이 assertNoAbsolutePaths로 가드한 뒤 전달).
+  provision: {
+    plan: (): Promise<ProvisionPlanResponse> => ipcRenderer.invoke('provision:plan'),
+    verify: (): Promise<ProvisionVerifyResponse> => ipcRenderer.invoke('provision:verify'),
+    apply: (): Promise<ProvisionApplyResponse> => ipcRenderer.invoke('provision:apply'),
+    cancel: (): Promise<{ ok: true; cancelled: number }> => ipcRenderer.invoke('provision:cancel')
   },
   app: {
     openFolder: (path: string) => ipcRenderer.invoke('app:open-folder', path),
