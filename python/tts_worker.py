@@ -14,6 +14,7 @@ import os
 import re
 import chunk_paths   # chunk 경로 규칙(bridge와 공용) — 결정적 경로 정확 일치 검증
 import runtime_paths  # 주입된 root 기반 venv/모델 경로 해석(worktree-relative 추측 대체)
+from provision import layout as _layout  # 고정 managed 레이아웃 단일 소스(qwen3 모델 base)
 from audio_utils import emit, get_device, find_ffmpeg, patch_torchaudio
 
 # ── Emotion definitions ──
@@ -378,7 +379,8 @@ _QWEN_LANG_NAME = {"ko": "Korean", "en": "English", "zh": "Chinese", "ja": "Japa
 # 로컬 스냅샷(오프라인 preflight/추론 고정 위치). 런타임 자동 다운로드 금지.
 # 주입된 modelRoot 밑으로 해석(worktree-relative 추측 제거). 모듈 로드 시점이 아니라 호출 시점에
 # 해석하므로 configure(roots)가 먼저 실행되어야 한다(separate.py가 config 파싱 직후 보장).
-_QWEN_HF_SUBDIR = "qwen3_tts_hf"
+# 고정 레이아웃 §1: Qwen HF 캐시는 modelRoot/qwen3 밑(단일 소스 provision.layout.QWEN_MODELS).
+_QWEN_HF_SUBDIR = _layout.QWEN_MODELS
 
 
 def _qwen_hf_home():

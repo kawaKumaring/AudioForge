@@ -25,6 +25,7 @@ from audio_utils import (emit, load_audio, save_audio, find_ffmpeg,
                          get_device, patch_torchaudio)
 import runtime_paths   # 주입된 root(runtimeRoot/modelRoot/cacheRoot) 초기화·경로 해석(순수)
 import model_manifest  # 모델 존재/checksum evidence 생산(C가 해석) — 순수
+from provision import layout as _layout  # 고정 managed 레이아웃 단일 소스(separator engine 서브디렉터리)
 
 
 def _require_roots_or_emit():
@@ -157,10 +158,12 @@ def main():
             spec = {
                 "qwen3": {"files": [os.path.join(qwen_snap, f) for f in _QWEN_REQUIRED], "expected": None},
                 "separator_bs": {
-                    "files": [runtime_paths.model_subdir("separator_models", _ROFORMER_MODEL)],
+                    "files": [_layout.separator_engine_dir(
+                        _layout.SEPARATOR_ENGINE_ROFORMER, _ROFORMER_MODEL)],
                     "expected": None},
                 "separator_melband": {
-                    "files": [runtime_paths.model_subdir("separator_models", _MELBAND_ENSEMBLE_MODEL)],
+                    "files": [_layout.separator_engine_dir(
+                        _layout.SEPARATOR_ENGINE_MELBAND, _MELBAND_ENSEMBLE_MODEL)],
                     "expected": None},
                 "gptsovits": {
                     "files": [runtime_paths.runtime_subdir("gptsovits_venv", "Scripts", "python.exe")],

@@ -2,23 +2,32 @@
 
 import os
 import runtime_paths  # 주입된 modelRoot 기반 separator_models 경로 해석(worktree-relative 추측 대체)
+from provision import layout as _layout  # 고정 managed 레이아웃 단일 소스(separator_models/<engine>)
 from audio_utils import emit, load_audio, save_audio, convert_to_wav, get_device
 
-
-def _separator_model_dir():
-    """separator_models 디렉터리를 주입된 modelRoot 밑으로 해석.
-    managed root만 없으면 생성(borrowed는 읽기 전용 — 자동 다운로드가 빌린 트리에 쓰는 것 차단).
-    roots 미주입이면 RuntimeRootError(NO_RUNTIME_ROOT) — 워크트리 폴백 금지."""
-    model_dir = runtime_paths.model_subdir("separator_models")
-    if runtime_paths.can_write("modelRoot"):
-        os.makedirs(model_dir, exist_ok=True)
-    return model_dir
-
-# audio-separator RoFormer 보컬 모델 (SDR 12.97). 파일은 주입된 modelRoot/separator_models 에 위치.
+# audio-separator RoFormer 보컬 모델 (SDR 12.97). 파일은 modelRoot/separator_models/roformer 에 위치.
 _ROFORMER_MODEL = "model_bs_roformer_ep_317_sdr_12.9755.ckpt"
 # 앙상블 2번째 모델: Mel-Band(Kim FT2 bleedless, unwa) — 잔음/bleed 억제 특화.
 # BS(full 계열)와 아키텍처·오차 특성이 달라 평균 시 아티팩트가 줄어든다.
+# 파일은 modelRoot/separator_models/melband 에 위치.
 _MELBAND_ENSEMBLE_MODEL = "mel_band_roformer_kim_ft2_bleedless_unwa.ckpt"
+
+# 모델 파일명 → 고정 레이아웃 engine 서브디렉터리(단일 소스 provision.layout).
+_ENGINE_SUBDIR = {
+    _ROFORMER_MODEL: _layout.SEPARATOR_ENGINE_ROFORMER,
+    _MELBAND_ENSEMBLE_MODEL: _layout.SEPARATOR_ENGINE_MELBAND,
+}
+
+
+def _separator_model_dir(engine):
+    """separator_models/<engine> 디렉터리를 주입된 modelRoot 밑으로 해석(고정 레이아웃 §1).
+    engine은 provision.layout.SEPARATOR_ENGINES 중 하나(roformer/melband).
+    managed root만 없으면 생성(borrowed는 읽기 전용 — 자동 다운로드가 빌린 트리에 쓰는 것 차단).
+    roots 미주입이면 RuntimeRootError(NO_RUNTIME_ROOT) — 워크트리 폴백 금지."""
+    model_dir = _layout.separator_engine_dir(engine)
+    if runtime_paths.can_write("modelRoot"):
+        os.makedirs(model_dir, exist_ok=True)
+    return model_dir
 
 # ---------------------------------------------------------------------------
 # music_quality_p1 shadow 진단 게이트 (개발용)
@@ -143,7 +152,9 @@ def run_roformer_ensemble(input_path: str, output_dir: str):
     SDR을 크게 올리는 게 아니라 아티팩트를 줄이는 게 목적 — 단일 모델보다 2배 느림."""
     emit("status", message="보컬 앙상블 (BS + Mel-Band)", percent=0)
     # 모델 경로를 먼저 해석(roots 미주입이면 audio-separator import 전에 명시 오류).
-    model_dir = _separator_model_dir()
+    # 고정 레이아웃 §1: 두 모델은 각자 separator_models/<engine> 서브디렉터리에 위치한다.
+    roformer_dir = _separator_model_dir(_layout.SEPARATOR_ENGINE_ROFORMER)
+    melband_dir = _separator_model_dir(_layout.SEPARATOR_ENGINE_MELBAND)
     try:
         import audio_separator  # noqa: F401
     except ImportError as e:
@@ -159,9 +170,9 @@ def run_roformer_ensemble(input_path: str, output_dir: str):
 
     tmp_root = tempfile.mkdtemp(prefix="af_ens_")
     try:
-        a = _run_one_roformer(_ROFORMER_MODEL, wav_input, model_dir,
+        a = _run_one_roformer(_ROFORMER_MODEL, wav_input, roformer_dir,
                               os.path.join(tmp_root, "a"), 12, 48)
-        b = _run_one_roformer(_MELBAND_ENSEMBLE_MODEL, wav_input, model_dir,
+        b = _run_one_roformer(_MELBAND_ENSEMBLE_MODEL, wav_input, melband_dir,
                               os.path.join(tmp_root, "b"), 50, 86)
     finally:
         try:
@@ -255,8 +266,9 @@ def run_roformer_separation(input_path: str, output_dir: str, model_name: str = 
     emit("status", message="RoFormer 보컬 분리", percent=0)
 
     # 모델 경로를 먼저 해석(roots 미주입이면 audio-separator import 전에 명시 오류).
-    # 모델은 주입된 modelRoot/separator_models 에 캐싱(managed면 생성, borrowed면 읽기 전용).
-    model_dir = _separator_model_dir()
+    # 모델은 modelRoot/separator_models/<engine> 에 캐싱(managed면 생성, borrowed면 읽기 전용).
+    engine = _ENGINE_SUBDIR.get(model_name, _layout.SEPARATOR_ENGINE_ROFORMER)
+    model_dir = _separator_model_dir(engine)
     try:
         from audio_separator.separator import Separator
     except ImportError as e:

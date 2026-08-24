@@ -9,7 +9,7 @@
   - roots 미주입 + qwen-preflight → degrade(available=false, reason=NO_RUNTIME_ROOT, 크래시 없음)
   - roots 미주입 + model-evidence → degrade
   - roots 주입 + model-evidence → 계약 키(qwen3/separator_bs/separator_melband/gptsovits) evidence
-  - borrowed modelRoot: _separator_model_dir()가 makedirs 안 함(읽기 전용)
+  - borrowed modelRoot: _separator_model_dir(engine)가 makedirs 안 함(읽기 전용)
   - managed modelRoot: makedirs 함
   - 3워커+bridge 소스에 ComfyUI 리터럴 0, 워크트리 externals 추측(dirname(dirname(__file__))+externals) 0
 
@@ -154,15 +154,16 @@ class SeparatorOwnership(unittest.TestCase):
         roots = _managed_roots(base)
         roots["modelRoot"]["ownership"] = "external-borrowed"
         self.rp.configure(roots)
-        model_dir = music_worker._separator_model_dir()
+        # 고정 레이아웃 정렬: engine 인자 필요(separator_models/<engine>). assertion은 보존.
+        model_dir = music_worker._separator_model_dir("roformer")
         self.assertFalse(os.path.exists(model_dir), "borrowed root에 makedirs 발생(금지)")
 
     def test_managed_makedirs(self):
         import music_worker
         base = self._base()
         self.rp.configure(_managed_roots(base))
-        model_dir = music_worker._separator_model_dir()
-        self.assertTrue(os.path.isdir(model_dir), "managed root에 separator_models 미생성")
+        model_dir = music_worker._separator_model_dir("roformer")
+        self.assertTrue(os.path.isdir(model_dir), "managed root에 separator_models/<engine> 미생성")
 
 
 class SourceHygiene(unittest.TestCase):
