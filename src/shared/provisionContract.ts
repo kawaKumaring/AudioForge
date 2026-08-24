@@ -16,6 +16,9 @@ import type { ReasonCode } from './runtimeContract'
 
 export const PROVISION_CONTRACT_SCHEMA_VERSION = 1 as const
 export type ProvisionContractSchemaVersion = typeof PROVISION_CONTRACT_SCHEMA_VERSION
+// Python provision.manifest schema (plan envelope schema와 별개).
+export const PROVISION_MANIFEST_SCHEMA_VERSION = 2 as const
+export const DEFAULT_PROVISION_PROFILE = 'minimal-qwen' as const
 
 // ── component 종류 ───────────────────────────────────────────────────────────
 export const COMPONENT_KINDS = ['bootstrap', 'venv', 'tool', 'model', 'cache'] as const
@@ -31,6 +34,31 @@ export interface LicenseInfo {
   weights: string
   data: string
   output: string
+}
+
+export interface ImmutableArtifact {
+  url: string | null
+  revision: string | null
+  filename: string | null
+  sha256: string | null
+  compressedBytes: number | null
+  installedBytes: number | null
+  license: LicenseInfo | null
+  noticeSha256: string | null
+  sbomSha256: string | null
+}
+
+export interface HashedLockEntry {
+  name: string
+  version: string
+  filename: string
+  sha256: string
+}
+
+export interface ExactHashedLock {
+  format: 'pip-requirements-hashes'
+  sha256: string | null
+  entries: HashedLockEntry[]
 }
 
 // model kind 필수 파일 1건 — 상대 path + 파일별 sha256(미상이면 null → unresolved).
@@ -62,6 +90,95 @@ export interface ComponentView {
   repoId?: string | null
   pinnedRevision?: string | null
   requiredFiles?: RequiredFile[]
+  artifact?: ImmutableArtifact | null
+  lock?: ExactHashedLock | null
+}
+
+export interface ManifestComponent extends Omit<ComponentView, 'resolved' | 'reasonCode' | 'sizes'> {
+  artifact?: ImmutableArtifact | null
+  lock?: ExactHashedLock | null
+}
+
+export interface ProvisionProfile {
+  componentIds: string[]
+  excludedComponentIds: string[]
+}
+
+export interface ProvisionManifestV2 {
+  schemaVersion: typeof PROVISION_MANIFEST_SCHEMA_VERSION
+  profile: typeof DEFAULT_PROVISION_PROFILE
+  profiles: Record<string, ProvisionProfile>
+  components: ManifestComponent[]
+}
+
+const SHA256_RE = /^[0-9a-f]{64}$/i
+const MUTABLE_REVISIONS = new Set(['latest', 'main', 'master', 'head', 'tip', 'stable'])
+
+export function isSafeProvisionRelativePath(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.trim() !== value) return false
+  if (value.includes('\\') || value.startsWith('/') || /^[A-Za-z]:/.test(value)) return false
+  return value.split('/').every((part) => part !== '' && part !== '.' && part !== '..'
+    && !part.includes('\0') && !part.includes(':') && part.trim() === part && !part.endsWith('.'))
+}
+
+function validLicense(value: unknown): value is LicenseInfo {
+  if (!value || typeof value !== 'object') return false
+  const lic = value as Record<string, unknown>
+  return ['code', 'weights', 'data', 'output'].every((key) => typeof lic[key] === 'string' && (lic[key] as string).trim().length > 0)
+}
+
+export function isImmutableArtifact(value: unknown): value is ImmutableArtifact {
+  if (!value || typeof value !== 'object') return false
+  const a = value as Record<string, unknown>
+  let parsed: URL
+  try { parsed = new URL(String(a.url)) } catch { return false }
+  const revision = typeof a.revision === 'string' ? a.revision.trim() : ''
+  return parsed.protocol === 'https:' && !parsed.username && !parsed.password
+    && revision.length > 0 && !MUTABLE_REVISIONS.has(revision.toLowerCase())
+    && isSafeProvisionRelativePath(a.filename) && !(a.filename as string).includes('/')
+    && typeof a.sha256 === 'string' && SHA256_RE.test(a.sha256)
+    && Number.isSafeInteger(a.compressedBytes) && (a.compressedBytes as number) > 0
+    && Number.isSafeInteger(a.installedBytes) && (a.installedBytes as number) > 0
+    && validLicense(a.license)
+    && typeof a.noticeSha256 === 'string' && SHA256_RE.test(a.noticeSha256)
+    && typeof a.sbomSha256 === 'string' && SHA256_RE.test(a.sbomSha256)
+}
+
+export function isExactHashedLock(value: unknown): value is ExactHashedLock {
+  if (!value || typeof value !== 'object') return false
+  const lock = value as Record<string, unknown>
+  if (lock.format !== 'pip-requirements-hashes' || typeof lock.sha256 !== 'string' || !SHA256_RE.test(lock.sha256)) return false
+  if (!Array.isArray(lock.entries) || lock.entries.length === 0) return false
+  const names = new Set<string>()
+  for (const raw of lock.entries) {
+    if (!raw || typeof raw !== 'object') return false
+    const e = raw as Record<string, unknown>
+    const name = typeof e.name === 'string' ? e.name : ''
+    const version = typeof e.version === 'string' ? e.version : ''
+    if (!name || names.has(name.toLowerCase()) || !version || /[<>=!~* ,@]/.test(version)) return false
+    if (!isSafeProvisionRelativePath(e.filename) || (e.filename as string).includes('/')) return false
+    if (typeof e.sha256 !== 'string' || !SHA256_RE.test(e.sha256)) return false
+    names.add(name.toLowerCase())
+  }
+  return true
+}
+
+export function manifestComponentIsResolved(component: ManifestComponent): boolean {
+  if (!isSafeProvisionRelativePath(component.installPath)) return false
+  if (component.kind === 'cache') return typeof component.version === 'string' && component.version.length > 0
+  if (!isImmutableArtifact(component.artifact)) return false
+  if (component.kind === 'venv' && !isExactHashedLock(component.lock)) return false
+  if (component.kind === 'model') {
+    if (!Array.isArray(component.requiredFiles) || component.requiredFiles.length === 0) return false
+    const paths = new Set<string>()
+    for (const file of component.requiredFiles) {
+      if (!isSafeProvisionRelativePath(file.path)) return false
+      const pathKey = file.path.toLocaleLowerCase('en-US')
+      if (paths.has(pathKey) || typeof file.sha256 !== 'string' || !SHA256_RE.test(file.sha256)) return false
+      paths.add(pathKey)
+    }
+  }
+  return true
 }
 
 // provision:plan / provision:dry-run 반환 형태(Python state.plan/dry_run과 1:1).

@@ -42,20 +42,39 @@ def _managed_roots(base):
     }
 
 
-def _resolved_manifest():
-    """전 component가 resolved인 소형 합성 manifest(fingerprint/apply 게이트 검증용)."""
-    lic = {"code": "MIT", "weights": "OpenRAIL", "data": "n/a", "output": "n/a"}
+_H = "a" * 64
+_LIC = {"code": "MIT", "weights": "OpenRAIL", "data": "n/a", "output": "n/a"}
+
+
+def _artifact(filename="demo.tar.zst"):
+    return {
+        "url": "https://example.invalid/releases/demo.tar.zst", "revision": "v1.0.0",
+        "filename": filename, "sha256": _H, "compressedBytes": 512,
+        "installedBytes": 1024, "license": _LIC,
+        "noticeSha256": "b" * 64, "sbomSha256": "c" * 64,
+    }
+
+
+def _manifest(components):
     return {
         "schemaVersion": mf.MANIFEST_SCHEMA_VERSION,
-        "components": [
+        "profile": mf.DEFAULT_PROFILE,
+        "profiles": {mf.DEFAULT_PROFILE: {"componentIds": [], "excludedComponentIds": []}},
+        "components": components,
+    }
+
+
+def _resolved_manifest():
+    """전 component가 resolved인 소형 합성 manifest(fingerprint/apply 게이트 검증용)."""
+    return _manifest([
             {"id": "cache-area", "kind": "cache", "version": "1", "required": True,
-             "dependsOn": [], "installPath": "staging", "displayLabel": "캐시", "license": lic},
+             "dependsOn": [], "installPath": "staging", "displayLabel": "캐시", "license": _LIC},
             {"id": "models.demo", "kind": "model", "version": "1", "required": True,
              "dependsOn": [], "installPath": "demo", "displayLabel": "데모 모델",
-             "repoId": "org/demo", "pinnedRevision": "abc123", "totalSize": 1024,
-             "requiredFiles": [{"path": "a.bin", "sha256": "d0"}], "license": lic},
-        ],
-    }
+             "repoId": "org/demo", "pinnedRevision": "abc123",
+             "requiredFiles": [{"path": "a.bin", "sha256": _H}], "license": _LIC,
+             "artifact": _artifact()},
+        ])
 
 
 # ── plan / dry-run: 부작용 0 ──────────────────────────────────────────────────
@@ -98,11 +117,104 @@ class ManifestAndDag(unittest.TestCase):
         comps = mf.validate_manifest(default_manifest.build())
         self.assertTrue(any(c["id"] == "bootstrap-python" for c in comps))
 
-    def test_bootstrap_always_unresolved(self):
+    def test_schema_v1_is_rejected_not_silently_migrated(self):
+        manifest = default_manifest.build()
+        manifest["schemaVersion"] = 1
+        with self.assertRaises(rc.ProvisionError):
+            mf.validate_manifest(manifest)
+
+    def test_profile_unknown_or_include_exclude_overlap_is_rejected(self):
+        manifest = default_manifest.build()
+        manifest["profiles"][mf.DEFAULT_PROFILE]["componentIds"].append("ghost")
+        with self.assertRaises(rc.ProvisionError) as cm:
+            mf.validate_manifest(manifest)
+        self.assertEqual(cm.exception.code, rc.DEPENDENCY_MISSING)
+        manifest = default_manifest.build()
+        manifest["profiles"][mf.DEFAULT_PROFILE]["excludedComponentIds"].append("models.qwen3")
+        with self.assertRaises(rc.ProvisionError):
+            mf.validate_manifest(manifest)
+
+    def test_default_bootstrap_unresolved_without_complete_artifact(self):
         comps = mf.component_index(mf.validate_manifest(default_manifest.build()))
         self.assertFalse(mf.is_resolved(comps["bootstrap-python"]))
         self.assertEqual(mf.unresolved_reason(comps["bootstrap-python"]),
                          rc.BOOTSTRAP_PYTHON_UNRESOLVED)
+
+    def test_bootstrap_can_resolve_only_with_complete_immutable_artifact(self):
+        component = {
+            "id": "bootstrap", "kind": "bootstrap", "version": "3.12.14",
+            "required": True, "dependsOn": [], "installPath": "bootstrap-python",
+            "artifact": _artifact("python.zip"),
+        }
+        self.assertTrue(mf.is_resolved(component))
+        for missing in ("sha256", "compressedBytes", "installedBytes", "noticeSha256", "sbomSha256"):
+            broken = dict(component)
+            broken["artifact"] = dict(component["artifact"])
+            broken["artifact"][missing] = None
+            self.assertFalse(mf.is_resolved(broken), missing)
+
+    def test_venv_requires_exact_hashed_lock(self):
+        component = {
+            "id": "venv", "kind": "venv", "version": "1", "required": True,
+            "dependsOn": [], "installPath": "venv", "artifact": _artifact("venv.lock"),
+            "lock": {"format": "pip-requirements-hashes", "sha256": "d" * 64,
+                     "entries": [{"name": "numpy", "version": "2.2.0",
+                                  "filename": "numpy.whl", "sha256": "e" * 64}]},
+        }
+        self.assertTrue(mf.is_resolved(component))
+        for lock in (None, {"format": "pip-requirements-hashes", "sha256": "d" * 64,
+                            "entries": [{"name": "numpy", "version": ">=2",
+                                         "filename": "numpy.whl", "sha256": "e" * 64}]}):
+            broken = dict(component)
+            broken["lock"] = lock
+            self.assertFalse(mf.is_resolved(broken))
+
+    def test_sha256_is_exactly_64_hex(self):
+        component = {"id": "tool", "kind": "tool", "version": "1", "required": True,
+                     "dependsOn": [], "installPath": "tools/x", "artifact": _artifact()}
+        self.assertTrue(mf.is_resolved(component))
+        for digest in ("d0", "g" * 64, "a" * 63, "a" * 65):
+            broken = dict(component)
+            broken["artifact"] = dict(component["artifact"], sha256=digest)
+            self.assertFalse(mf.is_resolved(broken), digest)
+
+    def test_install_and_required_paths_reject_escape_absolute_and_duplicates(self):
+        for path in ("../x", "a/../x", "C:/x", "/x", "\\\\host\\share", "a\\b",
+                     "a//b", "a/stream:name", "a/trailing."):
+            manifest = default_manifest.build()
+            manifest["components"][0]["installPath"] = path
+            with self.assertRaises(rc.ProvisionError, msg=path):
+                mf.validate_manifest(manifest)
+
+        manifest = default_manifest.build()
+        manifest["components"][1]["installPath"] = manifest["components"][0]["installPath"]
+        with self.assertRaises(rc.ProvisionError):
+            mf.validate_manifest(manifest)
+
+        manifest = default_manifest.build()
+        manifest["components"][1]["installPath"] = (
+            manifest["components"][0]["installPath"] + "/nested"
+        )
+        with self.assertRaises(rc.ProvisionError):
+            mf.validate_manifest(manifest)
+
+        manifest = default_manifest.build()
+        qwen = mf.component_index(manifest["components"])["models.qwen3"]
+        qwen["requiredFiles"] = [{"path": "../escape", "sha256": _H}]
+        with self.assertRaises(rc.ProvisionError):
+            mf.validate_manifest(manifest)
+
+    def test_default_profile_is_minimal_qwen_and_excludes_gpt_separator(self):
+        manifest = default_manifest.build()
+        spec = manifest["profiles"][mf.DEFAULT_PROFILE]
+        self.assertEqual(manifest["profile"], "minimal-qwen")
+        self.assertEqual(spec["componentIds"], ["qwen-venv", "models.qwen3"])
+        self.assertEqual(set(spec["excludedComponentIds"]),
+                         {"gptsovits-venv", "models.gptsovits", "models.separator"})
+        ids = {c["id"] for c in dag.select_profile(manifest)}
+        self.assertIn("models.qwen3", ids)
+        self.assertNotIn("models.gptsovits", ids)
+        self.assertNotIn("models.separator", ids)
 
     def test_models_unresolved_when_sha_or_license_missing(self):
         comps = mf.component_index(mf.validate_manifest(default_manifest.build()))
@@ -121,22 +233,22 @@ class ManifestAndDag(unittest.TestCase):
         self.assertLess(ids.index("qwen-venv"), ids.index("models.qwen3"))
 
     def test_cycle_detected(self):
-        m = {"schemaVersion": 1, "components": [
+        m = _manifest([
             {"id": "a", "kind": "tool", "version": "1", "required": True, "dependsOn": ["b"],
-             "installPath": "a", "displayLabel": "a", "license": None},
+             "installPath": "a", "displayLabel": "a", "license": None, "artifact": None},
             {"id": "b", "kind": "tool", "version": "1", "required": True, "dependsOn": ["a"],
-             "installPath": "b", "displayLabel": "b", "license": None},
-        ]}
+             "installPath": "b", "displayLabel": "b", "license": None, "artifact": None},
+        ])
         comps = mf.validate_manifest(m)
         with self.assertRaises(rc.ProvisionError) as cm:
             dag.topo_sort(comps)
         self.assertEqual(cm.exception.code, rc.DAG_CYCLE)
 
     def test_missing_dependency(self):
-        m = {"schemaVersion": 1, "components": [
+        m = _manifest([
             {"id": "a", "kind": "tool", "version": "1", "required": True, "dependsOn": ["ghost"],
-             "installPath": "a", "displayLabel": "a", "license": None},
-        ]}
+             "installPath": "a", "displayLabel": "a", "license": None, "artifact": None},
+        ])
         comps = mf.validate_manifest(m)
         with self.assertRaises(rc.ProvisionError) as cm:
             dag.topo_sort(comps)

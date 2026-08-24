@@ -83,3 +83,31 @@ def select_components(components, engine_ids=()):
     wanted = _closure(index, roots)
     subset = [c for c in components if c["id"] in wanted]
     return topo_sort(subset)
+
+
+def profile_component_ids(manifest, profile_name=None):
+    """Return the explicit optional ids for a schema-v2 profile.
+
+    ``validate_manifest`` is the authority for profile shape and id existence.
+    Keeping the profile choice separate from ``select_components`` preserves the
+    old explicit-engine API while preventing callers from silently inventing a
+    profile or including components listed as excluded.
+    """
+    mf.validate_manifest(manifest)
+    selected = profile_name or manifest["profile"]
+    profiles = manifest["profiles"]
+    if selected not in profiles:
+        raise rc.ProvisionError(rc.DEPENDENCY_MISSING, f"profile 없음: {selected}")
+    spec = profiles[selected]
+    included = list(spec["componentIds"])
+    excluded = set(spec["excludedComponentIds"])
+    if set(included) & excluded:
+        raise rc.ProvisionError(rc.UNRESOLVED_COMPONENT, "profile include/exclude 충돌")
+    return included
+
+
+def select_profile(manifest, profile_name=None, extra_ids=()):
+    """Select required + profile components + explicitly requested extras."""
+    components = mf.validate_manifest(manifest)
+    profile_ids = profile_component_ids(manifest, profile_name)
+    return select_components(components, engine_ids=tuple(profile_ids) + tuple(extra_ids))

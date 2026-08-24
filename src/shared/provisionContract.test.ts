@@ -5,6 +5,8 @@ import assert from 'node:assert/strict'
 import { isReasonCode } from './runtimeContract.ts'
 import {
   PROVISION_CONTRACT_SCHEMA_VERSION,
+  PROVISION_MANIFEST_SCHEMA_VERSION,
+  DEFAULT_PROVISION_PROFILE,
   COMPONENT_KINDS,
   canonicalize,
   planIsApplicable,
@@ -14,8 +16,14 @@ import {
   displayComponentLabel,
   findAbsolutePath,
   assertNoAbsolutePaths,
+  isSafeProvisionRelativePath,
+  isImmutableArtifact,
+  isExactHashedLock,
+  manifestComponentIsResolved,
   type PlanResult,
   type ComponentView,
+  type ImmutableArtifact,
+  type ManifestComponent,
 } from './provisionContract.ts'
 
 function comp(over: Partial<ComponentView>): ComponentView {
@@ -136,4 +144,57 @@ test('COMPONENT_KINDS 고정 + reasonCode 슬롯은 계약 ReasonCode', () => {
     if (c.reasonCode !== null) assert.ok(isReasonCode(c.reasonCode), `${c.reasonCode}는 계약 ReasonCode여야 함`)
   }
   for (const rcode of p.blockingReasons) assert.ok(isReasonCode(rcode))
+})
+
+const H = 'a'.repeat(64)
+const artifact = (over: Partial<ImmutableArtifact> = {}): ImmutableArtifact => ({
+  url: 'https://example.invalid/release/demo.zip', revision: 'v1.0.0', filename: 'demo.zip',
+  sha256: H, compressedBytes: 10, installedBytes: 20,
+  license: { code: 'MIT', weights: 'n/a', data: 'n/a', output: 'n/a' },
+  noticeSha256: 'b'.repeat(64), sbomSha256: 'c'.repeat(64), ...over,
+})
+
+const manifestComp = (over: Partial<ManifestComponent> = {}): ManifestComponent => ({
+  id: 'tool', kind: 'tool', version: '1', required: true, dependsOn: [],
+  installPath: 'tools/demo', displayLabel: 'demo', license: null, artifact: artifact(), ...over,
+})
+
+test('manifest schema v2와 minimal-qwen 기본 profile을 고정한다', () => {
+  assert.equal(PROVISION_MANIFEST_SCHEMA_VERSION, 2)
+  assert.equal(DEFAULT_PROVISION_PROFILE, 'minimal-qwen')
+})
+
+test('portable install path는 절대경로·역슬래시·dot segment를 거부한다', () => {
+  assert.equal(isSafeProvisionRelativePath('tools/ffmpeg'), true)
+  for (const bad of ['../x', 'a/../x', 'C:/x', '/x', '\\\\host\\x', 'a\\b', 'a//b', 'a/stream:name', 'a/trailing.']) {
+    assert.equal(isSafeProvisionRelativePath(bad), false, bad)
+  }
+})
+
+test('immutable artifact는 완전한 SHA/크기/license/notice/SBOM만 허용한다', () => {
+  assert.equal(isImmutableArtifact(artifact()), true)
+  assert.equal(isImmutableArtifact(artifact({ sha256: 'd0' })), false)
+  assert.equal(isImmutableArtifact(artifact({ revision: 'latest' })), false)
+  assert.equal(isImmutableArtifact(artifact({ compressedBytes: 0 })), false)
+  assert.equal(isImmutableArtifact(artifact({ noticeSha256: null })), false)
+})
+
+test('venv는 exact hashed lock 없이는 false-resolved 되지 않는다', () => {
+  const exact = {
+    format: 'pip-requirements-hashes' as const, sha256: 'd'.repeat(64),
+    entries: [{ name: 'numpy', version: '2.2.0', filename: 'numpy.whl', sha256: 'e'.repeat(64) }],
+  }
+  assert.equal(isExactHashedLock(exact), true)
+  assert.equal(manifestComponentIsResolved(manifestComp({ kind: 'venv', lock: exact })), true)
+  assert.equal(manifestComponentIsResolved(manifestComp({ kind: 'venv', lock: null })), false)
+  assert.equal(isExactHashedLock({ ...exact, entries: [{ ...exact.entries[0], version: '>=2' }] }), false)
+})
+
+test('model required file SHA와 path 중복도 resolved를 차단한다', () => {
+  const base = manifestComp({ kind: 'model', requiredFiles: [{ path: 'a.bin', sha256: H }] })
+  assert.equal(manifestComponentIsResolved(base), true)
+  assert.equal(manifestComponentIsResolved({ ...base, requiredFiles: [{ path: '../a', sha256: H }] }), false)
+  assert.equal(manifestComponentIsResolved({ ...base, requiredFiles: [
+    { path: 'a.bin', sha256: H }, { path: 'a.bin', sha256: H },
+  ] }), false)
 })
