@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
-"""AudioForge 메인 AI 환경 해석/설치 오케스트레이터.
+"""[DEPRECATED — legacy 진입점] AudioForge 메인 AI 환경 해석/설치 오케스트레이터.
+
+⚠️ 이 스크립트는 managed provisioner(python/provision/ + Electron 경로 권위)로 대체되는 중이다.
+   ComfyUI 자동탐지(_comfyui_candidates)·worktree externals(BASE/externals) 스캔·자동 attach는
+   **새 흐름에서 권위가 없다**(PROVISIONER-PLAN §13). 실수로 새 계약을 우회하지 않도록 main()은
+   기본적으로 실행을 거부하며, 재현/참고 목적일 때만 명시적 `--legacy-force`로 구동한다.
+   삭제하지 않는 이유: 과거 셋업 재현·비교의 단일 기록으로 보존(자동 migration/junction 금지).
 
 의존 대상은 'ComfyUI 앱'이 아니라 AI 패키지들(env_check.REQUIRED)이다.
 이 스크립트는 다른 환경에서도 동작하도록:
@@ -136,6 +142,12 @@ def _apply_shims():
 
 
 def main():
+    # legacy 권위 제거: 새 provisioner 흐름을 우회하는 자동 스캔/attach/설치를 기본 차단.
+    if "--legacy-force" not in sys.argv:
+        print("[DEPRECATED] setup_env.py는 managed provisioner로 대체되었습니다.")
+        print("  ComfyUI 자동탐지·worktree externals 스캔·자동 attach는 더 이상 권위가 없습니다.")
+        print("  재현/참고용으로 굳이 구동하려면 --legacy-force 를 명시하세요(권장하지 않음).")
+        return 2
     check_only = "--check" in sys.argv
     force_venv = "--force-venv" in sys.argv
     torch_index = "cu124"
