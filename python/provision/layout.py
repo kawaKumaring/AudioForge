@@ -45,6 +45,16 @@ CACHE_STAGING = "staging"
 CACHE_JOBS = "jobs"
 
 
+def _path_id(value, label):
+    """Identifiers used as directory names must remain exactly one segment."""
+    if (not isinstance(value, str) or not value or value in (".", "..")
+            or len(value) > 255 or "\x00" in value
+            or "/" in value or "\\" in value or ":" in value
+            or any(ord(ch) < 0x20 for ch in value)):
+        raise ValueError(f"invalid {label}")
+    return value
+
+
 # ── modelRoot helper(runtime_paths 경유 — containment 검증) ──────────────────
 def separator_engine_dir(engine, *parts):
     """separator_models/<engine>[/parts]. engine은 SEPARATOR_ENGINES 중 하나."""
@@ -95,12 +105,15 @@ def provision_lock_path():
 
 # ── cacheRoot helper(staging은 managed cacheRoot에서만) ──────────────────────
 def downloads_dir(job_id, *parts):
-    return runtime_paths.cache_subdir(CACHE_DOWNLOADS, job_id, *parts)
+    return runtime_paths.cache_subdir(
+        CACHE_DOWNLOADS, _path_id(job_id, "jobId"), *parts)
 
 
 def staging_dir(job_id, *parts):
-    return runtime_paths.cache_subdir(CACHE_STAGING, job_id, *parts)
+    return runtime_paths.cache_subdir(
+        CACHE_STAGING, _path_id(job_id, "jobId"), *parts)
 
 
 def jobs_dir(job_id, *parts):
-    return runtime_paths.cache_subdir(CACHE_JOBS, job_id, *parts)
+    return runtime_paths.cache_subdir(
+        CACHE_JOBS, _path_id(job_id, "jobId"), *parts)

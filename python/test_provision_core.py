@@ -217,6 +217,14 @@ class Staging(unittest.TestCase):
             f.write(data)
         return path
 
+    def _stage(self, versioned, job_id, component_id, data=b"DATA"):
+        staged = staging.target_local_staging_dir(
+            versioned, job_id, component_id)
+        self._write(os.path.join(staged, "a.bin"), data)
+        staging.create_job_marker(
+            staged, self.d, job_id, "plan-fingerprint", "nonce-" + job_id)
+        return staged
+
     def test_multi_file_checksum_partial_failure(self):
         base = os.path.join(self.d, "staged")
         self._write(os.path.join(base, "a.bin"), b"AAA")
@@ -238,23 +246,22 @@ class Staging(unittest.TestCase):
         self.assertEqual(results[0]["reasonCode"], rc.MODEL_MISSING)
 
     def test_immutable_install_then_pointer_swap(self):
-        staged = os.path.join(self.d, "staging", "job1", "models.demo")
-        self._write(os.path.join(staged, "a.bin"), b"DATA")
         versioned = os.path.join(self.d, "versions", "models.demo@1")
+        staged = self._stage(versioned, "job1", "models.demo")
         pointer = os.path.join(self.d, "active.json")
         # 기존 active(이전 버전)를 심어 보존 검증
         with open(pointer, "w", encoding="utf-8") as f:
             f.write(json.dumps({"componentId": "models.demo", "version": "0"}))
         active = {"componentId": "models.demo", "version": "1"}
-        staging.promote(staged, versioned, pointer, active)
+        staging.promote(staged, versioned, pointer, active,
+                        self.d, "job1", "nonce-job1")
         self.assertTrue(os.path.isfile(os.path.join(versioned, "a.bin")))
         self.assertFalse(os.path.isdir(staged), "staging이 immutable 위치로 이동돼야 함")
         self.assertEqual(staging.read_pointer(pointer), active)
 
     def test_pointer_swap_diskfull_preserves_active(self):
-        staged = os.path.join(self.d, "staging", "job2", "models.demo")
-        self._write(os.path.join(staged, "a.bin"), b"DATA")
         versioned = os.path.join(self.d, "versions2", "models.demo@1")
+        staged = self._stage(versioned, "job2", "models.demo")
         pointer = os.path.join(self.d, "active2.json")
         prev = {"componentId": "models.demo", "version": "0"}
         with open(pointer, "w", encoding="utf-8") as f:
@@ -265,13 +272,13 @@ class Staging(unittest.TestCase):
         # dir 이동은 성공, pointer 교체만 실패 → 기존 active pointer 불변.
         with self.assertRaises(OSError):
             staging.promote(staged, versioned, pointer, {"componentId": "models.demo", "version": "1"},
+                            self.d, "job2", "nonce-job2",
                             replace_pointer_fn=_boom)
         self.assertEqual(staging.read_pointer(pointer), prev, "기존 active pointer가 보존돼야 함")
 
     def test_dir_move_diskfull_cleans_staging_keeps_active(self):
-        staged = os.path.join(self.d, "staging", "job3", "models.demo")
-        self._write(os.path.join(staged, "a.bin"), b"DATA")
         versioned = os.path.join(self.d, "versions3", "models.demo@1")
+        staged = self._stage(versioned, "job3", "models.demo")
         pointer = os.path.join(self.d, "active3.json")
         prev = {"componentId": "models.demo", "version": "0"}
         with open(pointer, "w", encoding="utf-8") as f:
@@ -281,6 +288,7 @@ class Staging(unittest.TestCase):
             raise OSError(28, "No space left on device")
         with self.assertRaises(rc.ProvisionError) as cm:
             staging.promote(staged, versioned, pointer, {"componentId": "models.demo", "version": "1"},
+                            self.d, "job3", "nonce-job3",
                             replace_dir_fn=_boom)
         self.assertEqual(cm.exception.code, rc.APPLY_DISABLED)
         self.assertFalse(os.path.isdir(staged), "이동 실패 시 staging은 제거돼야 함")
@@ -288,13 +296,13 @@ class Staging(unittest.TestCase):
         self.assertEqual(staging.read_pointer(pointer), prev, "기존 active 보존")
 
     def test_immutable_no_overwrite_existing_version(self):
-        staged = os.path.join(self.d, "staging", "job4", "c")
-        self._write(os.path.join(staged, "a.bin"), b"X")
         versioned = os.path.join(self.d, "versions4", "c@1")
+        staged = self._stage(versioned, "job4", "c", b"X")
         os.makedirs(versioned, exist_ok=True)  # 이미 존재하는 버전
         pointer = os.path.join(self.d, "active4.json")
         with self.assertRaises(rc.ProvisionError) as cm:
-            staging.promote(staged, versioned, pointer, {"componentId": "c", "version": "1"})
+            staging.promote(staged, versioned, pointer, {"componentId": "c", "version": "1"},
+                            self.d, "job4", "nonce-job4")
         self.assertEqual(cm.exception.code, rc.APPLY_DISABLED)  # 덮어쓰기 금지
 
 
@@ -308,22 +316,26 @@ class Lock(unittest.TestCase):
         shutil.rmtree(self.d, ignore_errors=True)
 
     def test_duplicate_lock_held(self):
-        lock.acquire(self.path, pid=111, now=1000.0, pid_alive=lambda p: True)
+        lock.acquire(self.path, pid=111, now=1000.0, pid_alive=lambda p: True,
+                     job_id="job1", plan_fingerprint="fp1", nonce="nonce1")
         with self.assertRaises(rc.ProvisionError) as cm:
-            lock.acquire(self.path, pid=222, now=1001.0, pid_alive=lambda p: True)
+            lock.acquire(self.path, pid=222, now=1001.0, pid_alive=lambda p: True,
+                         job_id="job2", plan_fingerprint="fp2", nonce="nonce2")
         self.assertEqual(cm.exception.code, rc.PROVISION_LOCK_HELD)
 
     def test_orphan_dead_pid_stale_not_stolen(self):
-        lock.acquire(self.path, pid=111, now=1000.0, pid_alive=lambda p: True)
+        lock.acquire(self.path, pid=111, now=1000.0, pid_alive=lambda p: True,
+                     job_id="job1", plan_fingerprint="fp1", nonce="nonce1")
         # 보유 pid가 죽음 → stale 판정. 하지만 자동 탈취 금지 → STALE 예외(안내), 파일 유지.
         with self.assertRaises(rc.ProvisionError) as cm:
             lock.acquire(self.path, pid=333, now=1050.0, pid_alive=lambda p: False,
+                         job_id="job3", plan_fingerprint="fp3", nonce="nonce3",
                          stat_fn=lambda _p: 1000.0)
         self.assertEqual(cm.exception.code, rc.PROVISION_LOCK_STALE)
         self.assertTrue(os.path.exists(self.path), "STALE여도 자동 삭제/탈취 금지")
 
     def test_stale_by_mtime(self):
-        info = {"pid": 111}
+        info = {"pid": 111, "heartbeatAt": 0.0}
         self.assertTrue(lock.is_stale(info, mtime=0.0, now=99999.0, pid_alive=lambda p: True))
         self.assertFalse(lock.is_stale(info, mtime=99990.0, now=99999.0, pid_alive=lambda p: True))
 
@@ -334,9 +346,14 @@ class Lock(unittest.TestCase):
                                       pid_alive=lambda p: True))
 
     def test_release_only_own_pid(self):
-        lock.acquire(self.path, pid=111, now=1000.0, pid_alive=lambda p: True)
-        self.assertFalse(lock.release(self.path, pid=999), "타 pid lock 해제 금지")
-        self.assertTrue(lock.release(self.path, pid=111))
+        lock.acquire(self.path, pid=111, now=1000.0, pid_alive=lambda p: True,
+                     job_id="job1", plan_fingerprint="fp1", nonce="nonce1")
+        self.assertFalse(lock.release(
+            self.path, pid=111, job_id="job1", plan_fingerprint="fp1",
+            nonce="wrong"), "nonce 불일치 lock 해제 금지")
+        self.assertTrue(lock.release(
+            self.path, pid=111, job_id="job1", plan_fingerprint="fp1",
+            nonce="nonce1"))
         self.assertFalse(os.path.exists(self.path))
 
 
