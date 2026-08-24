@@ -54,14 +54,15 @@ function makeDeps(cfg: MockCfg): RuntimeAdapterDeps {
   }
 }
 
-const MANAGED_ROOT = 'C:\\Users\\x\\AppData\\Roaming\\AudioForge\\runtime'
+const MANAGED_BASE = 'D:\\AudioForgeData'
+const MANAGED_ROOT = 'D:\\AudioForgeData\\runtime'
 // 부모 워커 venv는 runtimeRoot/audioforge_venv 아래(provisioner 고정 레이아웃과 일치).
-const MANAGED_PY = 'C:\\Users\\x\\AppData\\Roaming\\AudioForge\\runtime\\audioforge_venv\\Scripts\\python.exe'
+const MANAGED_PY = 'D:\\AudioForgeData\\runtime\\audioforge_venv\\Scripts\\python.exe'
 
 // ── managed 정상 ─────────────────────────────────────────────────────────────
 test('managed 정상: runtimeRoot 내 인터프리터 존재+probe ok → 채택(audioforge-managed) + roots 생성', async () => {
   const deps = makeDeps({
-    settings: { runtimeRoot: MANAGED_ROOT },
+    settings: { managedBaseRoot: MANAGED_BASE },
     existing: [MANAGED_PY],
     probe: { [MANAGED_PY]: okProbe() },
   })
@@ -78,8 +79,8 @@ test('managed 정상: runtimeRoot 내 인터프리터 존재+probe ok → 채택
   }
   // model/cache는 runtime의 형제 위치.
   assert.equal(r.roots!.runtimeRoot.path, MANAGED_ROOT)
-  assert.equal(r.roots!.modelRoot.path, 'C:\\Users\\x\\AppData\\Roaming\\AudioForge\\models')
-  assert.equal(r.roots!.cacheRoot.path, 'C:\\Users\\x\\AppData\\Roaming\\AudioForge\\cache')
+  assert.equal(r.roots!.modelRoot.path, 'D:\\AudioForgeData\\models')
+  assert.equal(r.roots!.cacheRoot.path, 'D:\\AudioForgeData\\cache')
 })
 
 // ── 미해석(runtime 없음) → 앱 레벨 RUNTIME_NOT_CONFIGURED ────────────────────
@@ -90,8 +91,7 @@ test('runtime 없음: 아무 후보도 validated 아님 → unresolved + roots �
   assert.equal(r.interpreterPath, null)
   assert.equal(r.roots, null, '미해석 시 roots 생략')
   assert.ok(r.reasonCode && isReasonCode(r.reasonCode), 'canonical reasonCode여야 한다')
-  // 관리형 루트는 항상 확보되므로(userData/runtime) NO_RUNTIME_ROOT가 아니라 미발견으로 귀결.
-  assert.equal(r.reasonCode, 'INTERPRETER_NOT_FOUND')
+  assert.equal(r.reasonCode, 'NO_RUNTIME_ROOT')
 })
 
 // ── borrowed read-only ───────────────────────────────────────────────────────
@@ -115,7 +115,7 @@ test('borrowed: 사용자 지정 외부 인터프리터 probe ok → 채택(exte
 // ── exists만으로 채택 금지 ───────────────────────────────────────────────────
 test('exists하지만 probe 증거 없음(null) → discovered 유지, 채택 안 함(unresolved)', async () => {
   const deps = makeDeps({
-    settings: { runtimeRoot: MANAGED_ROOT },
+    settings: { managedBaseRoot: MANAGED_BASE },
     existing: [MANAGED_PY],
     // probe 없음 → null 반환 → 증거 없음
   })
@@ -141,35 +141,47 @@ test('사용자 선택 실패: probe 실패면 다른 외부로 조용히 전환
 })
 
 // ── 순수 헬퍼 ────────────────────────────────────────────────────────────────
-test('resolveStorageRoots 우선순위: settings > env > userData', () => {
-  const bySettings = resolveStorageRoots(makeDeps({ settings: { runtimeRoot: 'C:\\S\\rt' } }))
-  assert.equal(bySettings.runtimeRoot, 'C:\\S\\rt')
+test('resolveStorageRoots: 사용자 선택 base > 명시 env, userData 자동 fallback 없음', () => {
+  const bySettings = resolveStorageRoots(makeDeps({ settings: { managedBaseRoot: 'D:\\S' } }))
+  assert.equal(bySettings?.runtimeRoot, 'D:\\S\\runtime')
+  assert.equal(bySettings?.modelRoot, 'D:\\S\\models')
+  assert.equal(bySettings?.cacheRoot, 'D:\\S\\cache')
 
   const byEnv = resolveStorageRoots(makeDeps({ env: { AUDIOFORGE_RUNTIME_ROOT: 'C:\\E\\rt' } }))
-  assert.equal(byEnv.runtimeRoot, 'C:\\E\\rt')
+  assert.equal(byEnv?.runtimeRoot, 'C:\\E\\rt')
 
   const byUserData = resolveStorageRoots(makeDeps({ userData: 'C:\\U\\data' }))
-  assert.equal(byUserData.runtimeRoot, 'C:\\U\\data\\runtime')
+  assert.equal(byUserData, null, 'Roaming userData를 대용량 managed root로 자동 채택하면 안 된다')
 })
 
-test('buildResolveSpec: 항상 runtimeRoot 확보 + envVarName 고정 + 사용자/legacy 반영', () => {
+test('buildResolveSpec: root 미선택 + legacy 미동의면 둘 다 후보에 넣지 않음', () => {
   const spec = buildResolveSpec(makeDeps({
     settings: { pythonPath: 'C:\\u\\py.exe' },
     legacy: 'C:\\legacy\\py.exe',
     userData: 'C:\\U\\data',
   }))
   assert.equal(spec.envVarName, 'AUDIOFORGE_PYTHON')
-  assert.equal(spec.runtimeRoot, 'C:\\U\\data\\runtime')
+  assert.equal(spec.runtimeRoot, undefined)
   assert.equal(spec.userSelectedPath, 'C:\\u\\py.exe')
+  assert.equal(spec.legacyRecordPath, undefined)
+})
+
+test('legacy root/인터프리터는 명시 동의가 있을 때만 후보에 반영', () => {
+  const spec = buildResolveSpec(makeDeps({
+    settings: { runtimeRoot: 'C:\\legacy-root\\runtime', legacyRuntimeConsent: true },
+    legacy: 'C:\\legacy\\py.exe',
+  }))
+  assert.equal(spec.runtimeRoot, 'C:\\legacy-root\\runtime')
   assert.equal(spec.legacyRecordPath, 'C:\\legacy\\py.exe')
 })
 
 test('buildRootConfig: 세 루트 모두 audioforge-managed + canonical absolute', () => {
-  const cfg = buildRootConfig(makeDeps({ settings: { runtimeRoot: 'C:\\a\\..\\b\\rt' } }))
+  const cfg = buildRootConfig(makeDeps({ settings: { managedBaseRoot: 'C:\\a\\..\\b' } }))
+  assert.ok(cfg)
   // '..' 정규화 확인
-  assert.equal(cfg.runtimeRoot.path, 'C:\\b\\rt')
+  assert.equal(cfg!.runtimeRoot.path, 'C:\\b\\runtime')
   for (const key of ['runtimeRoot', 'modelRoot', 'cacheRoot'] as const) {
-    assert.equal(cfg[key].ownership, 'audioforge-managed')
-    assert.ok(isCanonicalAbsolutePath(cfg[key].path))
+    assert.equal(cfg![key].ownership, 'audioforge-managed')
+    assert.ok(isCanonicalAbsolutePath(cfg![key].path))
   }
 })

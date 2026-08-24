@@ -89,6 +89,8 @@ function runtimeSettings(): RuntimeSettings {
     runtimeRoot: pick('runtimeRoot'),
     modelRoot: pick('modelRoot'),
     cacheRoot: pick('cacheRoot'),
+    managedBaseRoot: pick('managedBaseRoot'),
+    legacyRuntimeConsent: s.legacyRuntimeConsent === true,
   }
 }
 
