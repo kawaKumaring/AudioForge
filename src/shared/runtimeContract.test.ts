@@ -105,7 +105,7 @@ test('schema version은 v2로 올랐다', () => {
 })
 
 // ── ReasonCode canonical union 고정(§5) ─────────────────────────────────────
-test('ReasonCode union이 계약대로 25개 고정(기존 20 + 통합 확장 5)', () => {
+test('ReasonCode union이 계약대로 33개 고정(기존 20 + 통합 확장 5 + provisioner 8)', () => {
   assert.deepEqual([...REASON_CODES], [
     'NO_RUNTIME_ROOT', 'USER_SELECTION_FAILED', 'INTERPRETER_NOT_FOUND', 'DANGLING_JUNCTION',
     'DUPLICATE_CANDIDATE', 'PREFLIGHT_FAILED', 'PYTHON_VERSION_INCOMPATIBLE', 'ARCHITECTURE_INCOMPATIBLE',
@@ -115,8 +115,11 @@ test('ReasonCode union이 계약대로 25개 고정(기존 20 + 통합 확장 5)
     // v2.1 통합 확장(B·C 공유)
     'PATH_OUTSIDE_ROOT', 'PYTHON_PROCESS_ABNORMAL_EXIT', 'PYTHON_PROCESS_SIGNAL',
     'PYTHON_RUNTIME_ERROR', 'INPUT_FILE_MISSING',
+    // v2.2 provisioner(Python provision.reason_codes와 parity)
+    'PLAN_FINGERPRINT_MISMATCH', 'UNRESOLVED_COMPONENT', 'BOOTSTRAP_PYTHON_UNRESOLVED', 'APPLY_DISABLED',
+    'PROVISION_LOCK_HELD', 'PROVISION_LOCK_STALE', 'DEPENDENCY_MISSING', 'DAG_CYCLE',
   ])
-  assert.equal(REASON_CODES.length, 25)
+  assert.equal(REASON_CODES.length, 33)
 })
 
 test('통합 확장 5종은 canonical ReasonCode로 인식되고 자유 문자열은 여전히 거부', () => {

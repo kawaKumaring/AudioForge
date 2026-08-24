@@ -49,6 +49,16 @@ export const REASON_CODES = [
   'PYTHON_PROCESS_SIGNAL',
   'PYTHON_RUNTIME_ERROR',
   'INPUT_FILE_MISSING',
+  // v2.2(provisioner): managed runtime provisioner 사유. Python provision.reason_codes와 정합
+  // (parity 테스트로 고정). apply는 이번 단계 비활성이지만 사유 코드는 계약에 미리 고정한다.
+  'PLAN_FINGERPRINT_MISMATCH',
+  'UNRESOLVED_COMPONENT',
+  'BOOTSTRAP_PYTHON_UNRESOLVED',
+  'APPLY_DISABLED',
+  'PROVISION_LOCK_HELD',
+  'PROVISION_LOCK_STALE',
+  'DEPENDENCY_MISSING',
+  'DAG_CYCLE',
 ] as const
 export type ReasonCode = (typeof REASON_CODES)[number]
 
