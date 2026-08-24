@@ -19,6 +19,14 @@ containment 검증만 수행하고 디렉터리를 만들지 않는다).
 """
 
 import runtime_paths
+from provision import reason_codes as rc
+
+_WINDOWS_RESERVED = {
+    "CON", "PRN", "AUX", "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
+_WINDOWS_FORBIDDEN = set('<>"|?*')
 
 # ── runtimeRoot 하위 ──────────────────────────────────────────────────────────
 RUNTIME_PARENT_VENV = "audioforge_venv"
@@ -43,6 +51,19 @@ GPTSOVITS_MODELS = "gptsovits"
 CACHE_DOWNLOADS = "downloads"
 CACHE_STAGING = "staging"
 CACHE_JOBS = "jobs"
+
+
+def _path_id(value, label):
+    """Identifiers used as directory names must remain exactly one segment."""
+    if (not isinstance(value, str) or not value or value in (".", "..")
+            or len(value) > 255 or "\x00" in value
+            or "/" in value or "\\" in value or ":" in value
+            or value != value.strip() or value.endswith(".")
+            or value.split(".", 1)[0].upper() in _WINDOWS_RESERVED
+            or any(ch in _WINDOWS_FORBIDDEN or ord(ch) < 0x20
+                   for ch in value)):
+        raise rc.ProvisionError(rc.PATH_OUTSIDE_ROOT, f"invalid {label}")
+    return value
 
 
 # ── modelRoot helper(runtime_paths 경유 — containment 검증) ──────────────────
@@ -95,12 +116,15 @@ def provision_lock_path():
 
 # ── cacheRoot helper(staging은 managed cacheRoot에서만) ──────────────────────
 def downloads_dir(job_id, *parts):
-    return runtime_paths.cache_subdir(CACHE_DOWNLOADS, job_id, *parts)
+    return runtime_paths.cache_subdir(
+        CACHE_DOWNLOADS, _path_id(job_id, "jobId"), *parts)
 
 
 def staging_dir(job_id, *parts):
-    return runtime_paths.cache_subdir(CACHE_STAGING, job_id, *parts)
+    return runtime_paths.cache_subdir(
+        CACHE_STAGING, _path_id(job_id, "jobId"), *parts)
 
 
 def jobs_dir(job_id, *parts):
-    return runtime_paths.cache_subdir(CACHE_JOBS, job_id, *parts)
+    return runtime_paths.cache_subdir(
+        CACHE_JOBS, _path_id(job_id, "jobId"), *parts)
