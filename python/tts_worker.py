@@ -813,6 +813,11 @@ _METADATA_KEYS = [
     "generation_limit", "generated_iterations", "termination_reason",
     # 자동 분할(계약 B) 재현 배열 — 내용/경로/전사 없이 index·count·token·iter·사유·emotion_id만.
     "generation_chunks",
+    # 공용 마감 I4 — 파서 plan 재현(비민감: 수치/해시8만, 대사 전문·전사·경로 없음). parsed_plan_sha8은 full sha256의 앞 8자.
+    "parser_version", "parsed_plan_sha8", "segment_count", "chunk_count",
+    "explicit_pause_count", "total_pause_ms",
+    # 말끝 finishing 재현(계약 §2·추가4) + 감정 전환 경계 모드.
+    "tail_mode", "tail_pad_ms", "tail_fade_ms", "tail_fade_applied", "emotion_boundary_mode",
 ]
 
 
@@ -853,7 +858,97 @@ def _transcript_meta(ref_text):
     return _detect_language(t), len(t), hashlib.sha256(t.encode("utf-8")).hexdigest()[:8]
 
 
-def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed, silence_gap, pitch=0.0):
+def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
+    """엔진 무관 공통 최종 단계 + 말끝 finishing(계약 §2 순서: … → 전체 pitch → 최종 조건부 fade →
+    최종 0 padding → 검증 → 원자 교체).
+
+    - tail off/부재(기본) → 기존 경로 그대로: pitch_shift.place_final_with_pitch가 pitch·검증·원자
+      교체를 담당한다(**동작 변화 0 — 레거시 회귀 보존**).
+    - tail 'auto'(명시 설정 시) → pitch를 work_dir 내부 staged로 배치(final 미접촉) → array로 읽어
+      audio_finishing으로 조건부 fade + 0 padding → 검증(mono·finite·non-empty·sr) → work_dir 내부
+      finished temp에 write → os.replace로 **이 함수만** 최종 final_path를 원자 교체한다.
+
+    무손상 계약: auto 경로도 final_path는 모든 검증 통과 후 마지막 os.replace 한 번에만 바뀐다. 그 이전
+    어떤 예외(pitch/검증/finishing)도 final_path(이전 합성 결과)를 건드리지 않는다. staged/finished temp는
+    work_dir 안이라 정상/오류/취소(부모 정리) 모두에서 청소된다. pitch_shift.py·K2 취소 권위는 무변경.
+    반환: place_final_with_pitch와 동형 dict(pitch_* + output_sample_rate)."""
+    import pitch_shift as _ps
+    import audio_finishing as _af  # numpy 지연 로드(모듈 최상단 import 회피 — import tts_worker는 numpy 불요)
+
+    tail = _af.parse_tail_config(tail_cfg)  # 범위 밖이면 INVALID_TTS_CONFIG(조용한 clamp 없음)
+    if tail.mode == "off":
+        # 레거시 경로와 바이트 단위 동일 — place_final_with_pitch가 final을 원자 교체.
+        _off = dict(_ps.place_final_with_pitch(candidate, final_path, pitch, work_dir))
+        # I4 재현 메타: off는 tail 미적용(패딩/페이드 0).
+        _off.update(tail_mode="off", tail_pad_ms=0, tail_fade_ms=0, tail_fade_applied=False)
+        return _off
+
+    # auto: 원자 교체 전 모든 불변식(A/B/C)을 강제한다. 비유한은 **write 이전에** 차단하고, pending은
+    # **write 후 재오픈**해 다시 검증한다. 어느 단계든 실패면 AudioFinishingError로 pending 삭제 + 기존
+    # synthesized.wav 무손상(os.replace 미도달). 오류엔 경로/대사/전사를 담지 않는다.
+    import os as _os
+    import soundfile as _sf
+    staged = _os.path.join(work_dir, ".af-staged.wav")
+    finished_tmp = _os.path.join(work_dir, ".af-finished.wav")
+
+    # 불변식 A(source) — pitch/write 이전에 **원본 후보 array**를 직접 검증한다. PCM 저장이 NaN/inf를
+    # 유한값으로 바꾸기 전 단계는 없지만(파일에서 읽는 순간 이미 변환됨), FLOAT 후보의 비유한은 여기서
+    # AudioFinishingError로 차단된다(pitch_shift의 PitchError보다 앞서 올바른 오류 타입·순서로).
+    try:
+        _src, _src_sr = _sf.read(candidate, dtype="float32")
+    except _af.AudioFinishingError:
+        raise
+    except Exception as e:
+        raise _af.AudioFinishingError("최종 후보 디코드 실패", code="AUDIO_INVALID") from e
+    _af.require_valid_mono(_af.validate_audio_array(_src, _src_sr))
+
+    pinfo = _ps.place_final_with_pitch(candidate, staged, pitch, work_dir)  # 실패→예외, final 무접촉
+    try:
+        # 불변식 A(staged) — pitch 후 staged를 다시 검증(pitch가 비유한을 만들지 않았는지).
+        data, sr = _sf.read(staged, dtype="float32")
+        _af.require_valid_mono(_af.validate_audio_array(data, sr))
+        # 서브타입 패리티: pending은 staged(=레거시가 이 pitch로 이미 만든 결과)와 같은 subtype으로 쓴다.
+        #   pitch 0 → staged=PCM_16 → pending PCM_16(== 레거시 off pitch0). pitch!=0 → staged=FLOAT →
+        #   pending FLOAT(== 레거시 off pitch+1). FLOAT 하드코딩(비패리티) 금지. pitch_shift.py 무변경.
+        staged_subtype = _sf.info(staged).subtype
+        plan = _af.compute_tail_plan(data, sr, tail)
+        finished = _af.apply_final_tail(data, sr, plan)
+        # 불변식 B — in-memory: mono·non-empty·finite + 예상 프레임 수 + padding 정확히 0.
+        # (여기서 finite가 이미 보장되므로 PCM_16으로 써도 비유한을 숨길 수 없다 — write 전 in-memory 검증.)
+        _af.require_valid_finished(finished, sr, plan, len(data))
+        try:
+            _sf.write(finished_tmp, finished, sr, subtype=staged_subtype)
+        except Exception as e:
+            raise _af.AudioFinishingError("pending write 실패", code="AUDIO_INVALID") from e
+        if not (_os.path.exists(finished_tmp) and _os.path.getsize(finished_tmp) > 0):
+            raise _af.AudioFinishingError("pending 0바이트/미생성", code="AUDIO_INVALID")
+        # 불변식 C — 파일 재오픈 검증: 디코드·메타 sr==실제 sr·mono·non-empty·finite·프레임 수·peak
+        #   + subtype == staged subtype(패리티 보증).
+        try:
+            _rd, _rd_sr = _sf.read(finished_tmp, dtype="float32")
+            _meta = _sf.info(finished_tmp)
+        except Exception as e:
+            raise _af.AudioFinishingError("pending 재오픈 실패", code="AUDIO_INVALID") from e
+        _af.require_valid_reopened(_rd, _rd_sr, _meta.samplerate, _meta.frames, len(finished),
+                                   actual_subtype=_meta.subtype, expected_subtype=staged_subtype)
+        _os.replace(finished_tmp, final_path)  # 이 시점에만 final 교체(원자적)
+    finally:
+        for p in (staged, finished_tmp):
+            if _os.path.exists(p):
+                try:
+                    _os.remove(p)
+                except OSError:
+                    pass
+    out = dict(pinfo)
+    out["output_sample_rate"] = int(sr)
+    # I4 재현 메타: auto tail 적용값(계약 §2). fade_applied는 실제 fade 수행 여부(무음 tail이면 pad만).
+    out.update(tail_mode="auto", tail_pad_ms=int(round(plan.pad_ms)),
+               tail_fade_ms=int(round(plan.fade_ms)), tail_fade_applied=bool(plan.fade_applied))
+    return out
+
+
+def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed, silence_gap,
+                         pitch=0.0, tail_cfg=None, boundary_gaps=None):
     """Qwen 배치 합성 — 2B 품질 게이트 재사용, Qwen 전용 VRAM 임계로 장치 선택(ComfyUI 병행 안전),
     모델 1회 로딩. speed: 세그먼트별 atempo 후 사용자 silence_gap으로 결합(1.0은 raw). 임시파일 finally 정리.
     pitch: 결합본(pending)에 rubberband 음높이 후처리(0=무후처리, 계약 §6·§7). 실패는 os.replace 직전
@@ -1018,12 +1113,19 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         # (첫 파일 sr로 저장하므로 sr 혼입 시 뒤 chunk 속도/길이 변질 → 명확히 중단, 기존 wav 보존.)
         _assert_concat_ready(use)
 
-        # gap: 자동분할 내부 chunk 사이 0초, 원래 segment(사용자 줄바꿈) 경계에만 사용자 silence_gap.
+        # gap(계약 I2·추가3): 자동분할 내부 chunk 경계는 항상 0(연속, §5 불변). 원 segment 경계에는
+        # 파서가 결정한 boundary별 gap(explicit pause / line silence / emotion transition)을 쓴다 —
+        # boundary_gaps[osi] = segment osi '앞' 무음 초. 미전달(구 경로/테스트)이면 레거시 silence_gap로 폴백.
         gaps = []
         prev_osi = None
         for e in ordered_entries:
             osi = e["original_segment_index"]
-            gaps.append(0.0 if (prev_osi is None or osi == prev_osi) else float(silence_gap))
+            if prev_osi is None or osi == prev_osi:
+                gaps.append(0.0)
+            elif boundary_gaps is not None and 0 <= osi < len(boundary_gaps):
+                gaps.append(float(boundary_gaps[osi]))
+            else:
+                gaps.append(float(silence_gap))
             prev_osi = osi
 
         emit("progress", percent=90, message="문장 이어붙이기 중...")
@@ -1036,7 +1138,8 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         if _ps.clamp_quantize(pitch) != 0.0:
             emit("progress", percent=93, message=f"음높이 보정 중 ({_ps.clamp_quantize(pitch):+.1f}반음)...")
         # pending은 job_dir 내부(output_dir 하위) → os.replace가 동일 파일시스템 원자 이동.
-        pinfo = _ps.place_final_with_pitch(pending_path, final_path, pitch, job_dir)
+        # tail off(기본)면 place_final_with_pitch와 동일. auto면 pitch 뒤 조건부 fade+0 padding까지(계약 §2).
+        pinfo = _finish_and_place(pending_path, final_path, pitch, job_dir, tail_cfg)
         sr = pinfo["output_sample_rate"]
         import time as _time
         # target_language: 세그먼트 언어 중 최빈값
@@ -1055,6 +1158,9 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             "pitch_postprocessed": pinfo["pitch_postprocessed"],
             "generation_limit": meta_gen_limit, "generated_iterations": meta_gen_iters,
             "termination_reason": meta_term, "generation_chunks": gen_chunks,
+            # I4: 말끝 finishing 재현(off/auto·pad·fade·적용여부). _finish_and_place가 반환.
+            "tail_mode": pinfo.get("tail_mode"), "tail_pad_ms": pinfo.get("tail_pad_ms"),
+            "tail_fade_ms": pinfo.get("tail_fade_ms"), "tail_fade_applied": pinfo.get("tail_fade_applied"),
         }
         return final_path, info
     finally:
@@ -1065,14 +1171,8 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
 
 # ── Helpers ──
 
-def _parse_line(line):
-    match = re.match(r'^\[([^\]]+)\]\s*(.+)', line.strip())
-    if match:
-        tag = match.group(1).strip()
-        text = match.group(2).strip()
-        return EMOTION_TAGS.get(tag, "default"), text
-    return "default", line.strip()
-
+# (레거시 _parse_line 제거 — 공용 마감 I2에서 합성 파싱 권위를 A 소유 tts_grammar.parse_tts_script 단일 소스로
+#  일원화했다. 줄단위 감정 태그만 알던 옛 파서는 인라인 감정·명시적 쉼·경계 우선순위를 몰라 이중 소스 위험이었다.)
 
 def _prepare_ref(ref_path):
     """참조 음성을 mono PCM WAV로 준비. 실패를 조용히 원본 반환으로 넘기지 않고 명확히 실패한다.
@@ -1175,6 +1275,46 @@ def _concat_with_boundaries(paths, gaps_before, output_path):
     sf.write(output_path, combined, target_sr)
 
 
+def _boundary_gaps_from_plan(plan, silence_gap, emotion_boundary_mode="pause",
+                             emotion_boundary_pause_ms=200):
+    """공용 마감 I2 — A 소유 파서(tts_grammar) plan → (parsed, gaps_before). 순수(numpy/soundfile 불요).
+
+    합성 권위는 Python 파서다. renderer가 보낸 것과 동일 raw를 파서가 이미 (separate.py I1 parity로) 검증했고,
+    여기선 그 plan을 합성 입력으로 환산만 한다(재-strip·재해석·조용한 default 강등 금지).
+
+    - parsed: [(emotion_id, spoken_text), ...] — 레거시 shape 유지. emotion 없으면 'default'(기존 라우팅 그대로).
+      spoken_text는 **파서 산출 그대로**(정규화 단일 소스=A 파서; parity 해시도 이 값 기준).
+    - gaps_before[i]: segment i '앞' 무음 초. [0]=0.0. 경계 우선순위(계약 추가3)는 파서가 boundary_type로
+      **단일 결정**(explicitPause > lineSilenceGap > emotionBoundaryPause > internal) → 여기선 gap 초로 환산만(합산 없음):
+        explicitPause        → 그 segment의 explicitPause pause_ms/1000 (명시값이 자동 gap을 대체, override)
+        lineSilenceGap       → silence_gap (전역 기본)
+        emotionBoundaryPause → immediate: 0.0 / pause: emotion_boundary_pause_ms/1000
+        internal(및 idx 0)   → 0.0
+    감정 전환은 immediate|pause만(계약 정정6·정정7). smooth/crossfade는 환산하지 않는다(미지원).
+    """
+    segs = plan.get("segments", [])
+    parsed = []
+    gaps_before = []
+    for idx, s in enumerate(segs):
+        eid = s.get("emotion_id") or "default"
+        parsed.append((eid, s.get("spoken_text", "")))
+        bt = s.get("boundary_type", "internal")
+        if idx == 0 or bt == "internal":
+            g = 0.0
+        elif bt == "explicitPause":
+            pm = next((p.get("pause_ms") for p in s.get("pauses", [])
+                       if p.get("boundary_type") == "explicitPause"), None)
+            g = (pm / 1000.0) if isinstance(pm, (int, float)) else 0.0
+        elif bt == "lineSilenceGap":
+            g = float(silence_gap)
+        elif bt == "emotionBoundaryPause":
+            g = 0.0 if emotion_boundary_mode == "immediate" else (float(emotion_boundary_pause_ms) / 1000.0)
+        else:
+            g = 0.0
+        gaps_before.append(g)
+    return parsed, gaps_before
+
+
 # ── Main synthesize function ──
 
 def resolve_reference_input(override, input_path):
@@ -1189,12 +1329,18 @@ def resolve_reference_input(override, input_path):
 
 
 def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
-               emotion_refs=None, emotion_ref_sources=None, preferred_engine=None, reference_prompts=None, pitch=0.0):
+               emotion_refs=None, emotion_ref_sources=None, preferred_engine=None, reference_prompts=None, pitch=0.0,
+               tail_cfg=None, emotion_boundary_mode="pause", emotion_boundary_pause_ms=200):
     """Synthesize speech. Auto-selects engine by language.
     reference_prompts: 식별자(default/emotionId) → {manual_text, prompt_lang, mode} 사용자 override.
     emotion_refs: emotionId → 합성에 쓸 effective 참조 경로(3~10초 클립/유효 원본).
     emotion_ref_sources: emotionId → 사용자 등록 원본 경로(등록 사실). 만료 판정 기준(계약 §5).
-    pitch: 결과 WAV 음높이 보정(반음, 후처리 축). 0=무후처리. 정규화 권위는 pitch_shift.clamp_quantize."""
+    pitch: 결과 WAV 음높이 보정(반음, 후처리 축). 0=무후처리. 정규화 권위는 pitch_shift.clamp_quantize.
+    tail_cfg: 말끝 finishing 설정({'mode':'off'|'auto','pad_ms','fade_ms'}) 또는 None. **None/off(기본)면
+      동작 변화 0(레거시 회귀 보존)**. 'auto'는 통합 담당이 config에서 배선할 때만 전달된다(계약 §3).
+    emotion_boundary_mode: 감정 전환 경계 정책 immediate|pause(계약 정정6·추가3). 기본 pause(현행 동치, smooth 미지원).
+    emotion_boundary_pause_ms: pause 모드의 감정전환 경계 무음 ms. 기본 200(계약 추가4). 두 값은 I3에서 config로
+      배선되며 그 전까지 인라인 감정전환 경계에만 영향(레거시 줄단위 입력은 lineSilenceGap이라 무영향=회귀 보존)."""
     emit("status", message="음성 합성 시작", percent=0)
 
     if not emotion_refs:
@@ -1202,15 +1348,38 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
     if not emotion_ref_sources:
         emotion_ref_sources = {}
 
-    lines = [l.strip() for l in text.strip().split('\n') if l.strip()]
-    if not lines:
-        emit("error", message="합성할 텍스트가 없습니다.")
-        return
-
     import time as _time
     _t0 = _time.monotonic()
     requested_engine = preferred_engine or "auto"
-    parsed = [_parse_line(l) for l in lines]
+
+    # 공용 마감 I2 — A 소유 파서(tts_grammar) 단일 소스로 파싱(합성 권위=Python). 인라인 감정·명시적 쉼·경계
+    # 우선순위를 파서가 결정하고, 여기선 그 plan을 (parsed, boundary_gaps)로 환산만 한다(재-strip·재해석 금지).
+    # 파싱 오류는 정상 흐름상 separate.py의 I1 parity 게이트가 모델 로딩 전에 이미 차단하지만(대사 전문 미출력),
+    # 방어적으로 여기서도 구조화 code로 명확히 실패한다(조용한 default 강등·발음 금지 — 계약 정정2).
+    import tts_grammar as _tg
+    _pres = _tg.parse_tts_script(text)
+    if not _pres.get("ok"):
+        _err = (_pres.get("errors") or [{}])[0]
+        _e = RuntimeError("대사 태그를 처리할 수 없습니다.")
+        _e.error_payload = {"code": _err.get("code", "TTS_PARSE_ERROR")}
+        raise _e
+    _plan = _pres["plan"]
+    parsed, boundary_gaps = _boundary_gaps_from_plan(
+        _plan, silence_gap, emotion_boundary_mode, emotion_boundary_pause_ms)
+    if not parsed:
+        emit("error", message="합성할 텍스트가 없습니다.")
+        return
+    # I4 파서 plan 재현 메타(비민감: 수치·해시8만, 대사 전문/전사/경로 없음). 두 합성 경로 메타에 공통 병합.
+    _sm = _plan.get("summary", {})
+    _plan_meta = {
+        "parser_version": _sm.get("parser_version"),
+        "parsed_plan_sha8": _sm.get("plan_sha8"),
+        "segment_count": _sm.get("segment_count"),
+        "chunk_count": _sm.get("chunk_count"),
+        "explicit_pause_count": _sm.get("explicit_pause_count"),
+        "total_pause_ms": _sm.get("total_pause_ms"),
+        "emotion_boundary_mode": emotion_boundary_mode,
+    }
     emit("progress", percent=5, message=f"{len(parsed)}개 문장 합성 준비")
 
     # 참조 준비부터 finally 정리 범위에 포함 — 기본 참조 준비로 임시 폴더가 생긴 뒤
@@ -1260,11 +1429,13 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         # 모델 1회 로딩으로 전 문장 처리(문장별 프로세스 금지).
         if _select_job_engine(text, preferred_engine) == "qwen3":
             final_path, info = _synthesize_qwen_job(parsed, ref_cache, overrides_by_path,
-                                                    output_dir, speed, silence_gap, pitch)
+                                                    output_dir, speed, silence_gap, pitch, tail_cfg,
+                                                    boundary_gaps=boundary_gaps)
             meta = _build_tts_metadata(
                 requested_engine=requested_engine,
                 original_reference_path=reference_audio, effective_reference_path=reference_audio,
-                reference_region=None, speed=float(speed), silence_gap=float(silence_gap), **info)
+                reference_region=None, speed=float(speed), silence_gap=float(silence_gap),
+                **_plan_meta, **info)
             tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
             emit("progress", percent=99, message="완료!")
             emit("result", tracks=tracks, outputDir=output_dir, metadata=meta)
@@ -1306,12 +1477,17 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             concat_tmp = None
         else:
             concat_tmp = os.path.join(output_dir, ".synth-concat.wav")
-            _concat_with_silence(segment_paths, concat_tmp, silence_gap)
+            # I2: 경계별 gap(explicit/line/emotion). segment_paths와 boundary_gaps는 parsed 기준 1:1 정렬
+            # (gaps_before[0]은 무시). 미전달 시 전 경계 silence_gap로 폴백(레거시 동치).
+            if boundary_gaps is not None and len(boundary_gaps) == len(segment_paths):
+                _concat_with_boundaries(segment_paths, boundary_gaps, concat_tmp)
+            else:
+                _concat_with_silence(segment_paths, concat_tmp, silence_gap)
             candidate = concat_tmp
         try:
             if _ps.clamp_quantize(pitch) != 0.0:
                 emit("progress", percent=93, message=f"음높이 보정 중 ({_ps.clamp_quantize(pitch):+.1f}반음)...")
-            pinfo2 = _ps.place_final_with_pitch(candidate, final_path, pitch, output_dir)
+            pinfo2 = _finish_and_place(candidate, final_path, pitch, output_dir, tail_cfg)
         finally:
             # 후보/세그먼트 정리(성공 시 candidate는 os.replace로 소비됐을 수 있음). 실패 시 final_path는
             # os.replace 미도달로 기존 파일 보존. 공통 함수의 pitch 임시본은 함수가 자체 정리.
@@ -1356,7 +1532,11 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             fallback=fb, fallback_reason=("Qwen3 사용 불가 → 기존 엔진 폴백" if fb else None),
             elapsed_seconds=round(_time.monotonic() - _t0, 2), output_sample_rate=out_sr,
             pitch_semitones=pitch_st2, pitch_method=pitch_method2,
-            pitch_postprocessed=bool(pitch_st2 != 0.0))
+            pitch_postprocessed=bool(pitch_st2 != 0.0),
+            # I4: 파서 plan 재현 + 말끝 finishing(pinfo2가 반환).
+            tail_mode=pinfo2.get("tail_mode"), tail_pad_ms=pinfo2.get("tail_pad_ms"),
+            tail_fade_ms=pinfo2.get("tail_fade_ms"), tail_fade_applied=pinfo2.get("tail_fade_applied"),
+            **_plan_meta)
         tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
         emit("progress", percent=99, message="완료!")
         emit("result", tracks=tracks, outputDir=output_dir, metadata=meta)

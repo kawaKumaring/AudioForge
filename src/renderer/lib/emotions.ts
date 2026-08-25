@@ -106,12 +106,21 @@ export const FREQUENT_TAGS: Emotion[] = ALL_EMOTIONS.filter(e => FREQUENT_TAG_ID
 
 // 태그 문자열(한글 label 또는 영어 id) → emotionId. Python EMOTION_TAGS와 동형(한글 label + 영어 alias).
 // 알 수 없는 태그는 Python `_parse_line`처럼 'default'로 귀결.
-const LABEL_TO_ID: Record<string, string> = (() => {
+export const EMOTION_LABEL_TO_ID: Record<string, string> = (() => {
   const m: Record<string, string> = {}
   for (const e of ALL_EMOTIONS) {
     m[e.label] = e.id  // 한글 label
     m[e.id] = e.id     // 영어 id alias
   }
+  return m
+})()
+// 하위호환 별칭(기존 내부 사용).
+const LABEL_TO_ID = EMOTION_LABEL_TO_ID
+
+// emotionId → 한글 label(태그 삽입 canonical 표기용). 없으면 id 그대로.
+export const EMOTION_ID_TO_LABEL: Record<string, string> = (() => {
+  const m: Record<string, string> = {}
+  for (const e of ALL_EMOTIONS) if (!(e.id in m)) m[e.id] = e.label
   return m
 })()
 
@@ -163,3 +172,166 @@ export function planEmotionRefs(text: string, refState: Record<string, EmotionRe
   }
   return { toSend, blockedId }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// v2 문법 연동: preview 파싱 브리지 + 감정/쉼 태그 삽입(순수·무손실). EmotionScriptEditor가 소비.
+// 모든 offset은 textarea 네이티브 UTF-16 code unit(selectionStart/End)과 같은 좌표계. parser dual-offset과 별개.
+// ⚠️ 대사 전문을 로그로 내보내지 않는다.
+// ─────────────────────────────────────────────────────────────────────────────
+// 값(parseTtsScript)이 아니라 '타입만' import한다 — 런타임 모듈 해석을 유발하지 않아(erased)
+// 이 파일을 node --test에서 leaf로 로드 가능(shared env tsc는 bundler resolution으로 extensionless).
+import type { TtsGrammarError } from '../../shared/ttsGrammar'
+
+// 렌더러 감정 vocab(emotions.ts 단일 소스) 기반 resolver. parser 기본표는 이것의 거울(smoke/parity가 가드).
+// EmotionScriptEditor는 parseTtsScript(shared)에 이 resolver를 주입해 preview를 만든다.
+export function resolveEmotionId(name: string): string | null {
+  return Object.prototype.hasOwnProperty.call(EMOTION_LABEL_TO_ID, name) ? EMOTION_LABEL_TO_ID[name] : null
+}
+
+// emotionId → canonical 삽입 태그 문자열 `[label]`.
+export function emotionTagText(emotionId: string): string {
+  return '[' + (EMOTION_ID_TO_LABEL[emotionId] ?? emotionId) + ']'
+}
+
+export interface EditResult { ok: true; text: string; selStart: number; selEnd: number }
+export interface EditError { ok: false; error: TtsGrammarError }
+export type EditOutcome = EditResult | EditError
+
+// 줄 경계(시작 index 포함, 끝 index=개행 전) 계산.
+interface LineSpan { start: number; end: number; text: string }
+function lineSpans(text: string): LineSpan[] {
+  const spans: LineSpan[] = []
+  let start = 0
+  for (let i = 0; i <= text.length; i++) {
+    if (i === text.length || text[i] === '\n') {
+      spans.push({ start, end: i, text: text.slice(start, i) })
+      start = i + 1
+    }
+  }
+  return spans
+}
+
+// 줄 선두의 감정 태그(선행 공백 허용)를 찾는다. 감정으로 resolve되는 단일 토큰만 인정.
+// 반환: { tagStart, tagEnd }(줄 절대 index) 또는 null.
+function leadingEmotionTag(text: string, line: LineSpan): { tagStart: number; tagEnd: number } | null {
+  const m = /^(\s*)\[([^\]\n]*)\]/.exec(line.text)
+  if (!m) return null
+  const inner = m[2].trim()
+  if (/\s/.test(inner)) return null            // 내부 공백 → 감정 태그 아님(리터럴)
+  if (resolveEmotionId(inner) == null) return null
+  const lead = m[1].length
+  return { tagStart: line.start + lead, tagEnd: line.start + m[0].length }
+}
+
+// caret 바로 인접(앞/뒤)한 감정 태그를 찾는다(중복 방지 교체용). 반환 태그 절대 범위 또는 null.
+function adjacentEmotionTag(text: string, caret: number): { tagStart: number; tagEnd: number } | null {
+  // 태그 정규식으로 전 구간 스캔 후 caret이 [start,end] 경계에 걸치거나 내부면 채택.
+  const re = /\[([^\]\n]*)\]/g
+  let mm: RegExpExecArray | null
+  while ((mm = re.exec(text)) != null) {
+    const s = mm.index
+    const e = mm.index + mm[0].length
+    const inner = mm[1].trim()
+    if (/\s/.test(inner) || resolveEmotionId(inner) == null) continue // 감정 태그만
+    // caret이 태그 내부거나, 바로 앞(공백 없이) 또는 바로 뒤(공백 허용)면 인접으로 간주
+    if (caret >= s && caret <= e) return { tagStart: s, tagEnd: e }
+  }
+  return null
+}
+
+/**
+ * 감정 태그 삽입(대사 무손실). 계약 §3 + D-1.
+ * - 선택 없음: caret 삽입, caret 인접 감정 태그는 교체(중복 방지), 무조건 줄 선두 삽입 금지.
+ * - 선택 있음: 선택이 닿는 '비어 있지 않은 각 줄'의 선두 감정 태그 삽입/교체. 대사·인라인 후속 태그 보존.
+ *   선택 텍스트를 태그로 대체하지 않음. 수정된 전체 범위를 다시 selection으로.
+ */
+export function insertEmotionTag(text: string, selStart: number, selEnd: number, emotionId: string): EditResult {
+  const tag = emotionTagText(emotionId)
+  const a = Math.max(0, Math.min(selStart, selEnd))
+  const b = Math.max(0, Math.max(selStart, selEnd))
+
+  if (a === b) {
+    // ── 선택 없음: caret 삽입 / 인접 교체 ──
+    const adj = adjacentEmotionTag(text, a)
+    if (adj) {
+      const next = text.slice(0, adj.tagStart) + tag + text.slice(adj.tagEnd)
+      const caret = adj.tagStart + tag.length
+      return { ok: true, text: next, selStart: caret, selEnd: caret }
+    }
+    const insert = tag + ' '
+    const next = text.slice(0, a) + insert + text.slice(a)
+    const caret = a + insert.length
+    return { ok: true, text: next, selStart: caret, selEnd: caret }
+  }
+
+  // ── 선택 있음: 닿는 비어있지 않은 각 줄의 선두 태그 삽입/교체(뒤에서 앞으로 처리해 index 안정화) ──
+  const spans = lineSpans(text)
+  const touched = spans.filter((ln) => a <= ln.end && b >= ln.start && ln.text.trim() !== '')
+  let out = text
+  let firstStart = a
+  let lastEnd = b
+  const targets = touched.slice().reverse()
+  for (const ln of targets) {
+    const lead = leadingEmotionTag(out, ln)
+    if (lead) {
+      out = out.slice(0, lead.tagStart) + tag + out.slice(lead.tagEnd)
+    } else {
+      const wsMatch = /^\s*/.exec(ln.text)
+      const insAt = ln.start + (wsMatch ? wsMatch[0].length : 0)
+      out = out.slice(0, insAt) + tag + ' ' + out.slice(insAt)
+    }
+  }
+  // 재선택: 첫 touched 줄 시작 ~ 마지막 touched 줄 끝(수정 반영). 간단히 전체 touched 범위로.
+  if (touched.length > 0) {
+    firstStart = touched[0].start
+    // 마지막 줄 끝은 길이 변동분 반영이 복잡하므로 out에서 재계산.
+    const newSpans = lineSpans(out)
+    // touched 첫 줄 인덱스 기준으로 같은 줄 수만큼 끝을 잡는다.
+    const startLineIdx = spans.indexOf(touched[0])
+    const endLineIdx = spans.indexOf(touched[touched.length - 1])
+    lastEnd = newSpans[Math.min(endLineIdx, newSpans.length - 1)].end
+    firstStart = newSpans[Math.min(startLineIdx, newSpans.length - 1)].start
+  }
+  return { ok: true, text: out, selStart: firstStart, selEnd: lastEnd }
+}
+
+// 초 표기(canonical): 정수초는 N.0, 그 외는 최소 표기. 0.05→"0.05", 0.5→"0.5", 1.0→"1.0".
+function formatPauseSeconds(ms: number): string {
+  const s = ms / 1000
+  return Number.isInteger(s) ? s.toFixed(1) : String(s)
+}
+
+const PAUSE_TAG_RE = /\[\s*(쉼|pause)\s+[^\]\n]*\]/g
+
+// 삽입 지점 인접(공백 무시)에 기존 쉼 태그가 있는지.
+function pauseAdjacent(text: string, pos: number): boolean {
+  const before = text.slice(0, pos)
+  if (/\[\s*(?:쉼|pause)\s+[^\]\n]*\]\s*$/.test(before)) return true
+  const after = text.slice(pos)
+  if (/^\s*\[\s*(?:쉼|pause)\s+[^\]\n]*\]/.test(after)) return true
+  return false
+}
+
+/**
+ * 쉼 태그 삽입(선택 텍스트 무손실). 계약 §4 + D-4.
+ * - caret(또는 contracted selection end)에 canonical `[쉼 N]` 삽입.
+ * - 0.05~5.0s 밖 → INVALID_PAUSE_TAG(조용한 clamp 금지). 인접 중복 → INVALID_PAUSE_TAG(합산·정규화 금지).
+ * - 선택 텍스트를 삭제하지 않는다.
+ */
+export function insertPauseTag(text: string, selStart: number, selEnd: number, pauseMs: number): EditOutcome {
+  const seconds = pauseMs / 1000
+  if (!Number.isFinite(seconds) || seconds < 0.05 || seconds > 5.0) {
+    return { ok: false, error: { code: 'INVALID_PAUSE_TAG', arg: String(seconds), reason: 'range' } }
+  }
+  const pos = Math.max(selStart, selEnd) // 선택 있으면 끝(contracted end), 없으면 caret
+  if (pauseAdjacent(text, pos)) {
+    return { ok: false, error: { code: 'INVALID_PAUSE_TAG', reason: 'adjacent_duplicate', uiOffsetUtf16: pos } }
+  }
+  const tag = '[쉼 ' + formatPauseSeconds(pauseMs) + ']'
+  const next = text.slice(0, pos) + tag + text.slice(pos)
+  const caret = pos + tag.length
+  return { ok: true, text: next, selStart: caret, selEnd: caret }
+}
+
+// 미사용 경고 억제(정규식 상수 export 안 함 — 내부 전용). PAUSE_TAG_RE는 향후 하이라이트용.
+void PAUSE_TAG_RE

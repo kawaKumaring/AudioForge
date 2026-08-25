@@ -3,6 +3,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { buildTtsConfig, buildReferencePrompts, deriveRefMode, pruneStaleReferencePrompts, normalizePitchCapability, parseGenerationSummary } from './ttsConfig.ts'
+import { TTS_PARSER_VERSION } from './ttsGrammar.ts'
 
 test('parseGenerationSummary: 정상 다중 chunk', () => {
   const g = parseGenerationSummary({
@@ -49,6 +50,15 @@ test('ttsEmotionRefs가 config에 전달된다 (전달 경로 끊김 회귀)', (
   assert.deepEqual(c.ttsEmotionRefs, refs)
 })
 
+test('I1: ttsParsedPlanSha256/ttsParserVersion 전달(parity 배선) + 기본값', () => {
+  const c = buildTtsConfig({ ttsParsedPlanSha256: 'a'.repeat(64), ttsParserVersion: 2 })
+  assert.equal(c.ttsParsedPlanSha256, 'a'.repeat(64))
+  assert.equal(c.ttsParserVersion, 2)
+  const d = buildTtsConfig({})  // 미제공 → sha ''(parity 미강제), version 기본 2
+  assert.equal(d.ttsParsedPlanSha256, '')
+  assert.equal(d.ttsParserVersion, 2)
+})
+
 test('ttsSilenceGap=0 이 0.5로 변질되지 않는다 (|| → ?? 회귀)', () => {
   const c = buildTtsConfig({ ttsSilenceGap: 0 })
   assert.equal(c.ttsSilenceGap, 0)
@@ -81,13 +91,36 @@ test('지정한 값은 그대로 통과한다', () => {
   assert.equal(c.ttsEngine, 'gptsovits')
 })
 
-test('직렬화 형태에 10개 TTS 키가 모두 존재한다 (필드 누락 방지)', () => {
+test('직렬화 형태에 17개 TTS 키가 모두 존재한다 (필드 누락 방지; I1 parity 2 + I3 tail/emotion 5 추가)', () => {
   const c = buildTtsConfig({})
   assert.deepEqual(
     Object.keys(c).sort(),
-    ['ttsEmotionRefRegions', 'ttsEmotionRefSources', 'ttsEmotionRefs', 'ttsEngine', 'ttsPitch',
-      'ttsReferenceOverride', 'ttsReferencePrompts', 'ttsSilenceGap', 'ttsSpeed', 'ttsText']
+    ['ttsEmotionBoundaryMode', 'ttsEmotionBoundaryPauseMs', 'ttsEmotionRefRegions', 'ttsEmotionRefSources',
+      'ttsEmotionRefs', 'ttsEngine', 'ttsParsedPlanSha256', 'ttsParserVersion', 'ttsPitch',
+      'ttsReferenceOverride', 'ttsReferencePrompts', 'ttsSilenceGap', 'ttsSpeed',
+      'ttsTailFadeMs', 'ttsTailMode', 'ttsTailPaddingMs', 'ttsText']
   )
+})
+
+test('I3: tail/emotion 경계 기본값 = backward-compat(off/현행) + 계약 추가4 수치', () => {
+  const c = buildTtsConfig({})
+  assert.equal(c.ttsTailMode, 'off')            // 부재 = 현행 동작 보존(정정8), new=auto는 스토어가 명시 전달
+  assert.equal(c.ttsTailPaddingMs, 120)
+  assert.equal(c.ttsTailFadeMs, 8)
+  assert.equal(c.ttsEmotionBoundaryMode, 'pause')
+  assert.equal(c.ttsEmotionBoundaryPauseMs, 200)
+})
+
+test('I3: 지정한 tail/emotion 경계 값은 그대로 통과(auto 포함)', () => {
+  const c = buildTtsConfig({
+    ttsTailMode: 'auto', ttsTailPaddingMs: 90, ttsTailFadeMs: 12,
+    ttsEmotionBoundaryMode: 'immediate', ttsEmotionBoundaryPauseMs: 350
+  })
+  assert.equal(c.ttsTailMode, 'auto')
+  assert.equal(c.ttsTailPaddingMs, 90)
+  assert.equal(c.ttsTailFadeMs, 12)
+  assert.equal(c.ttsEmotionBoundaryMode, 'immediate')
+  assert.equal(c.ttsEmotionBoundaryPauseMs, 350)
 })
 
 test('pitch/emotion source·region 기본값 — ttsPitch=0.0, 나머지 {} (계약 §1)', () => {
@@ -227,4 +260,54 @@ test('buildTtsConfig: 지문 맵 지정 시 stale/ orphan 전사는 Python 전�
   assert.ok(c.ttsReferencePrompts.default)          // 기본은 살아있음 → 보존
   assert.equal(c.ttsReferencePrompts.happy, undefined)  // stale 폐기
   assert.equal(c.ttsReferencePrompts.sad, undefined)    // orphan 폐기
+})
+
+// ── 공용 마감 I1 보강: parser_version 드리프트 가드(주석 아닌 실제 단언) ──
+// buildTtsConfig의 하드코딩 폴백(?? 2)이 ttsGrammar의 권위 상수와 어긋나면 실패한다.
+// 옵션에 ttsParserVersion을 주지 않아 폴백 경로를 강제로 탄다(드리프트 지점).
+test('drift guard: buildTtsConfig 폴백 ttsParserVersion === TTS_PARSER_VERSION(단일 권위)', () => {
+  assert.equal(buildTtsConfig().ttsParserVersion, TTS_PARSER_VERSION)
+  assert.equal(buildTtsConfig({}).ttsParserVersion, TTS_PARSER_VERSION)
+})
+
+// ── 공용 마감 I1 보강: parity 입력 바이트 동일성(config가 원문·sha를 조용히 정규화하지 않음) ──
+// renderer가 hash한 원문과 Python이 parse하는 원문이 정확히 같은 문자열이어야 한다.
+// trim/CRLF→LF/앞뒤 공백 제거/Unicode 정규화가 config 계층에서 끼어들면 안 된다.
+// 대사 전문은 단언에 쓰되 로그로 출력하지 않는다(assert 실패 메시지에 라벨만).
+const BYTE_IDENTITY_INPUTS: Array<[string, string]> = [
+  ['crlf', '[기쁨] 첫째 줄.\r\n[슬픔] 둘째 줄.'],
+  ['blank-line', '[기쁨] 첫째.\n\n[슬픔] 둘째.'],
+  ['leading-trailing-ws', '  [기쁨] 안녕하세요.  '],
+  ['escape-tag', '\[기쁨] 안녕'],
+  ['multilingual', '[happy] Hello 안녕 こんにちは'],
+]
+test('parity 바이트 동일성: buildTtsConfig가 ttsText를 무변형 통과(CRLF/빈줄/공백/escape/다국어)', () => {
+  for (const [label, raw] of BYTE_IDENTITY_INPUTS) {
+    const c = buildTtsConfig({ ttsText: raw })
+    assert.equal(c.ttsText, raw, `label=${label} ttsText 변형됨`)
+    assert.equal(c.ttsText.length, raw.length, `label=${label} 길이 변형됨`)
+    // config 파일 직렬화(IPC 경로 모델) 왕복도 바이트 동일
+    const round = JSON.parse(JSON.stringify(c)).ttsText
+    assert.equal(round, raw, `label=${label} JSON 왕복 변형됨`)
+  }
+})
+test('parity 바이트 동일성: buildTtsConfig가 ttsParsedPlanSha256을 무변형 통과', () => {
+  const sha = 'dee7ad1ddad94297eb11d8fa7134aab96e27bb04864d69e4fbbfa9a27f129896'
+  const c = buildTtsConfig({ ttsText: '[기쁨] 첫째 줄.\r\n[슬픔] 둘째 줄.', ttsParsedPlanSha256: sha })
+  assert.equal(c.ttsParsedPlanSha256, sha)
+  assert.equal(JSON.parse(JSON.stringify(c)).ttsParsedPlanSha256, sha)
+})
+
+// ── I5-c: 끝 여백(padding)과 페이드(fade) 값이 서로 바뀌어 전송되지 않음(스왑 금지) ──
+test('buildTtsConfig: tailPadding/tailFade 값 스왑 없음(서로 다른 키로 정확 전송)', () => {
+  const c = buildTtsConfig({ ttsTailMode: 'auto', ttsTailPaddingMs: 90, ttsTailFadeMs: 15 })
+  assert.equal(c.ttsTailPaddingMs, 90, '끝 여백은 padding 키로')
+  assert.equal(c.ttsTailFadeMs, 15, '페이드는 fade 키로')
+  // 스왑됐다면 padding=15/fade=90이 됐을 것 — 명시적으로 부정.
+  assert.notEqual(c.ttsTailPaddingMs, 15)
+  assert.notEqual(c.ttsTailFadeMs, 90)
+  // 기본값도 스왑 없음: padding 120, fade 8.
+  const d = buildTtsConfig({ ttsTailMode: 'auto' })
+  assert.equal(d.ttsTailPaddingMs, 120)
+  assert.equal(d.ttsTailFadeMs, 8)
 })
