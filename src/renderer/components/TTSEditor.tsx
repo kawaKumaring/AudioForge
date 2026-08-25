@@ -12,8 +12,13 @@ import TtsExpressionDetail from './TtsExpressionDetail'
 import { resolveExpressionCapability } from '../../shared/ttsExpressionCapabilities'
 import EmotionScriptEditor, { type EmotionScriptEditorHandle } from './EmotionScriptEditor'
 import { EMOTION_GROUPS, ALL_EMOTIONS, FREQUENT_TAGS, parseUsedEmotionIds } from '@/lib/emotions'
+import type { Emotion } from '@/lib/emotions'
 
 const EXAMPLE_TEXT = "안녕하세요. 오늘 좋은 소식이 있어요.\n[기쁨] 드디어 프로젝트가 완성됐습니다!\n[슬픔] 하지만 아쉽게도 일정이 늦어졌어요."
+
+// 팔레트 '쉼' 버튼이 삽입하는 기본 길이(ms). 허용 범위 0.05~5.0s 안의 흔한 값이며,
+// 범위·인접 중복 판정은 순수 helper(insertPauseTag)가 하고 여기서 clamp하지 않는다.
+const PALETTE_PAUSE_MS = 300
 
 const PROMPT_LANGS: [string, string][] = [
   ['', '자동'], ['ko', '한국어'], ['ja', '일본어'], ['zh', '중국어'], ['en', '영어'],
@@ -141,6 +146,15 @@ export default function TTSEditor() {
   // 감정 요약(§1) — 대사에 실제 쓰인 감정 + 미등록 안내(§3).
   const usedIds = useMemo(() => parseUsedEmotionIds(ttsText), [ttsText])
   const nonDefaultEmotions = useMemo(() => ALL_EMOTIONS.filter(e => e.id !== 'default'), [])
+
+  // 팔레트 정렬: 대사에 이미 쓰인 감정을 앞으로(첫 등장 순 = parseUsedEmotionIds 순서), 그 뒤 자주 쓰는 감정.
+  // 사용 중인 감정이 자주 쓰는 목록 밖이어도 팔레트에서 바로 다시 삽입할 수 있어야 한다.
+  // (parseUsedEmotionIds가 Set을 첫 등장 순으로 채우므로 Set 순회가 곧 첫 등장 순이다.)
+  const paletteTags = useMemo(() => {
+    const byId = new Map(nonDefaultEmotions.map(e => [e.id, e]))
+    const used = [...usedIds].map(id => byId.get(id)).filter((e): e is Emotion => !!e)
+    return [...used, ...FREQUENT_TAGS.filter(e => !usedIds.has(e.id))]
+  }, [usedIds, nonDefaultEmotions])
 
   if (mode !== 'tts') return null
 
@@ -339,29 +353,34 @@ export default function TTSEditor() {
           )}
         </header>
         <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {/* A 소유 편집기(caret/IME/overlay/오류 = A). 셸은 value/onChange + 삽입 handle만 배선. */}
-          <EmotionScriptEditor
-            ref={editorRef}
-            value={ttsText}
-            parsedPreview={null}
-            parseErrors={[]}
-            onChange={(next) => { if (!disabled) setTtsText(next) }}
-            onInsertEmotion={() => { /* A가 caret 삽입까지 수행 — 셸은 추가 배선 불필요(게이팅은 store가 담당) */ }}
-            onInsertPause={() => { /* 동일 */ }}
-            disabled={disabled}
-            refStates={Object.fromEntries(nonDefaultEmotions.map(e => [e.id, { registered: !!ttsEmotionRefState[e.id]?.source, ready: !!ttsEmotionRefState[e.id]?.ready }]))}
-          />
-          {/* 감정 태그 삽입 팔레트(셸) — A의 imperative handle 호출(실제 caret/선택 삽입은 A). 색은 감정 '전환' 표시. */}
-          <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 8 }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5 }}>
+          {/* 감정 태그 삽입 팔레트(셸) — **편집기 바로 위**. A의 imperative handle 호출(실제 caret/선택
+              삽입·IME·selection/scroll 복원은 전부 A의 기존 구현). 여기서 삽입 알고리즘을 다시 만들지 않는다.
+              순서: 대사에 이미 쓰인 감정 우선(첫 등장 순) → 나머지 자주 쓰는 감정.
+              색은 감정 '전환' 구간 표시이며 감정 혼합이 아니다. 접근성 권위는 편집기 textarea가 갖는다. */}
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>감정 태그 삽입 <span style={{ fontSize: 9 }}>(색은 감정 전환 구간 표시 · 혼합 아님)</span>:</span>
               <button onClick={() => setShowAllTags(v => !v)} style={{ padding: '1px 8px', borderRadius: 4, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 600, fontFamily: 'inherit', background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }} aria-expanded={showAllTags}>{showAllTags ? '접기' : '더보기(전체)'}</button>
             </div>
             {!showAllTags ? (
-              <div style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                {FREQUENT_TAGS.map((e) => (
-                  <button key={e.id} onClick={() => editorRef.current?.insertEmotion(e.id)} disabled={disabled} style={{ padding: '3px 9px', borderRadius: 4, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600, fontFamily: 'inherit', background: `${e.color}15`, color: e.color }}>{e.label}</button>
-                ))}
+              <div role="group" aria-label="감정 태그 팔레트" style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                {paletteTags.map((e) => {
+                  const used = usedIds.has(e.id)
+                  return (
+                    <button key={e.id} onClick={() => editorRef.current?.insertEmotion(e.id)} disabled={disabled}
+                      aria-label={used ? `${e.label} 태그 삽입 (대사에 사용 중)` : `${e.label} 태그 삽입`}
+                      title={used ? '대사에 사용 중' : undefined}
+                      style={{ padding: '3px 9px', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600, fontFamily: 'inherit', background: `${e.color}15`, color: e.color, border: used ? `1px solid ${e.color}` : '1px solid transparent' }}>
+                      {e.label}
+                    </button>
+                  )
+                })}
+                {/* 쉼 삽입 — 편집기의 기존 insertPause handle을 그대로 호출한다(범위·인접중복 판정은 순수 helper). */}
+                <button onClick={() => editorRef.current?.insertPause(PALETTE_PAUSE_MS)} disabled={disabled}
+                  aria-label={`쉼 ${PALETTE_PAUSE_MS / 1000}초 삽입`}
+                  style={{ padding: '3px 9px', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600, fontFamily: 'inherit', background: 'var(--bg-elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}>
+                  쉼 {PALETTE_PAUSE_MS / 1000}초
+                </button>
               </div>
             ) : (
               EMOTION_GROUPS.filter(g => g.name !== '기본').map((group) => (
@@ -374,6 +393,19 @@ export default function TTSEditor() {
               ))
             )}
           </div>
+          {/* A 소유 편집기(caret/IME/overlay/오류 = A). 셸은 value/onChange + 삽입 handle만 배선.
+              팔레트가 위로 올라가도 이 편집기가 [2] 대사 섹션의 첫 textarea라는 계약은 유지된다. */}
+          <EmotionScriptEditor
+            ref={editorRef}
+            value={ttsText}
+            parsedPreview={null}
+            parseErrors={[]}
+            onChange={(next) => { if (!disabled) setTtsText(next) }}
+            onInsertEmotion={() => { /* A가 caret 삽입까지 수행 — 셸은 추가 배선 불필요(게이팅은 store가 담당) */ }}
+            onInsertPause={() => { /* 동일 */ }}
+            disabled={disabled}
+            refStates={Object.fromEntries(nonDefaultEmotions.map(e => [e.id, { registered: !!ttsEmotionRefState[e.id]?.source, ready: !!ttsEmotionRefState[e.id]?.ready }]))}
+          />
         </div>
       </section>
 
