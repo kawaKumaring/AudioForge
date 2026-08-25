@@ -57,7 +57,6 @@ export default function TtsExpressionDetail(props: TtsExpressionDetailProps) {
     <section className="tts-flow-card" aria-label="세부 표현" style={card}>
       <header className="tts-flow-head" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
         <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>세부 표현</span>
-        <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--cyan)', background: 'var(--cyan-glow, rgba(56,189,248,0.15))', padding: '2px 7px', borderRadius: 5 }}>재합성 없이 적용</span>
         <span style={{ fontSize: 11, color: capOn ? 'var(--text-muted)' : 'var(--rose)', flex: 1, minWidth: 160 }}>{summary}</span>
         <button type="button" onClick={() => setExpanded(e => !e)} aria-expanded={expanded} aria-controls="tts-expr-detail-body" disabled={!capOn}
           style={btn('var(--bg-elevated)', 'var(--text-secondary)', !capOn)}>{expanded ? '접기' : '펼치기'}</button>
