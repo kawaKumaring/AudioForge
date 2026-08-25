@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""GPT-SoVITS(한국어 TTS) 셋업 스크립트 — 재현용.
+"""[DEPRECATED — legacy 진입점] GPT-SoVITS(한국어 TTS) 셋업 스크립트 — 재현용.
+
+⚠️ managed provisioner(python/provision/)로 대체되는 중이다. 이 스크립트의 BASE/externals 경로
+   가정(worktree-relative)은 **새 흐름에서 권위가 없다**(PROVISIONER-PLAN §13). 실수로 새 계약을
+   우회하지 않도록 main()은 기본 실행을 거부하며, 재현/참고 목적일 때만 `--legacy-force`로 구동한다.
+   삭제하지 않는 이유: 과거 셋업(shim 생성·모델 다운로드) 재현의 단일 기록으로 보존.
 
 externals/gptsovits_venv와 pretrained_models는 gitignore 대상(수 GB)이라
 버전 관리에서 빠진다. 이 스크립트가 새 환경에서 셋업을 재현한다:
@@ -80,7 +85,16 @@ def _write(path, content):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--no-models", action="store_true", help="모델 다운로드 생략")
+    ap.add_argument("--legacy-force", action="store_true",
+                    help="deprecated 스크립트를 재현/참고용으로 강제 구동(권장하지 않음)")
     args = ap.parse_args()
+
+    # legacy 권위 제거: worktree-externals 가정으로 설치/다운로드하는 흐름을 기본 차단.
+    if not args.legacy_force:
+        print("[DEPRECATED] setup_gptsovits.py는 managed provisioner로 대체되었습니다.")
+        print("  externals(worktree-relative) 경로 가정은 더 이상 권위가 없습니다.")
+        print("  재현/참고용으로 굳이 구동하려면 --legacy-force 를 명시하세요(권장하지 않음).")
+        return 2
 
     if not os.path.exists(VENV_PY):
         print(f"[오류] venv Python 없음: {VENV_PY}")

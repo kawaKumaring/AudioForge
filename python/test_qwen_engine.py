@@ -15,7 +15,20 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tts_worker
+import runtime_paths
 import reference_audio as ra
+
+
+def _configure_test_roots():
+    """available()/경로 해석이 주입된 root를 요구하므로 테스트용 managed root를 심는다."""
+    runtime_paths.reset()
+    runtime_paths.set_path_resolver(None)
+    runtime_paths.configure({
+        "schemaVersion": 2,
+        "runtimeRoot": {"path": "C:/af_test/rt", "ownership": "audioforge-managed"},
+        "modelRoot": {"path": "C:/af_test/md", "ownership": "audioforge-managed"},
+        "cacheRoot": {"path": "C:/af_test/ch", "ownership": "audioforge-managed"},
+    })
 import reference_transcript as rt  # noqa: F401 (STATUS_OK 등 상수 사용 경로 확인용)
 import transcribe_worker
 
@@ -174,6 +187,9 @@ class RunJobRealtimeTest(_QwenGlobalIsolation, unittest.TestCase):
         self._isolate_globals()
         self.log = []
         self._silence_emit(self.log)
+        # run_job이 venv/모델 경로를 주입된 root에서 해석하므로 synthetic root 구성(Popen은 mock).
+        _configure_test_roots()
+        self.addCleanup(runtime_paths.reset)
         self.eng = tts_worker.QwenTTSEngine()
         self.seg = [{"index": 0, "text": "t", "ref_audio": "r", "ref_text": "x",
                      "x_vector_only": False, "language_name": "Korean", "out_path": "a.wav"}]
@@ -455,10 +471,12 @@ class AvailablePreflightTest(_QwenGlobalIsolation, unittest.TestCase):
     def setUp(self):
         self._isolate_globals()
         self._silence_emit()
+        _configure_test_roots()
+        self.addCleanup(runtime_paths.reset)
 
     def test_available_requires_qwen_pkg(self):
         eng = tts_worker.QwenTTSEngine()
-        pkg = eng._qwen_pkg_dir
+        pkg = eng._qwen_pkg_dir_path()
         with mock.patch.object(os.path, "exists", lambda p: True), \
              mock.patch.object(os.path, "getsize", lambda p: 100):
             # 패키지 dir 없음(venv만 남음) → False

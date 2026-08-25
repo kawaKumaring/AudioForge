@@ -13,6 +13,8 @@ Engine selection:
 import os
 import re
 import chunk_paths   # chunk 경로 규칙(bridge와 공용) — 결정적 경로 정확 일치 검증
+import runtime_paths  # 주입된 root 기반 venv/모델 경로 해석(worktree-relative 추측 대체)
+from provision import layout as _layout  # 고정 managed 레이아웃 단일 소스(qwen3 모델 base)
 from audio_utils import emit, get_device, find_ffmpeg, patch_torchaudio
 
 # ── Emotion definitions ──
@@ -218,12 +220,14 @@ class GPTSoVITSEngine(TTSEngine):
                 emit("progress", percent=8, message=f"참조 전사 경고 [{w.code}] {w.message}")
 
     def load(self):
-        base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self._venv_python = os.path.join(base_dir, "externals", "gptsovits_venv", "Scripts", "python.exe")
-        self._bridge_script = os.path.join(base_dir, "python", "gptsovits_bridge.py")
+        # venv는 주입된 runtimeRoot 밑(worktree-relative 추측 제거). bridge 스크립트는 우리 소스라
+        # __file__ 기준 유지(externals 아님 — 코드와 함께 이동).
+        self._venv_python = runtime_paths.runtime_subdir("gptsovits_venv", "Scripts", "python.exe")
+        self._bridge_script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "gptsovits_bridge.py")
 
         if not os.path.exists(self._venv_python):
-            raise RuntimeError("GPT-SoVITS venv가 설치되지 않았습니다. externals/gptsovits_venv를 확인하세요.")
+            raise runtime_paths.RuntimeRootError(
+                runtime_paths.VENV_MISSING, "gptsovits_venv")
 
     def _transcript_key(self, ref_audio, model_name):
         """전사 캐시 키: 절대경로 + size + mtime_ns + Whisper 모델명.
@@ -337,6 +341,8 @@ class GPTSoVITSEngine(TTSEngine):
             "speed": speed,
             "prompt_text": prompt.prompt_text,
             "prompt_lang": prompt.prompt_language,
+            # GPT-SoVITS 소스 dir을 주입(bridge가 __file__로 추측하지 않게). 부모가 containment 확인 후 전달.
+            "sovits_dir": runtime_paths.runtime_subdir("GPT-SoVITS"),
         }
 
         result = subprocess.run(
@@ -371,10 +377,22 @@ _QWEN_REPO = "Qwen/Qwen3-TTS-12Hz-0.6B-Base"
 _QWEN_REVISION = "5d83992436eae1d760afd27aff78a71d676296fc"  # 공식 pinned Base
 _QWEN_LANG_NAME = {"ko": "Korean", "en": "English", "zh": "Chinese", "ja": "Japanese"}
 # 로컬 스냅샷(오프라인 preflight/추론 고정 위치). 런타임 자동 다운로드 금지.
-_QWEN_HF_HOME = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                             "externals", "qwen3_tts_hf")
-_QWEN_SNAPSHOT = os.path.join(_QWEN_HF_HOME, "hub",
-                              "models--Qwen--Qwen3-TTS-12Hz-0.6B-Base", "snapshots", _QWEN_REVISION)
+# 주입된 modelRoot 밑으로 해석(worktree-relative 추측 제거). 모듈 로드 시점이 아니라 호출 시점에
+# 해석하므로 configure(roots)가 먼저 실행되어야 한다(separate.py가 config 파싱 직후 보장).
+# 고정 레이아웃 §1: Qwen HF 캐시는 modelRoot/qwen3 밑(단일 소스 provision.layout.QWEN_MODELS).
+_QWEN_HF_SUBDIR = _layout.QWEN_MODELS
+
+
+def _qwen_hf_home():
+    return runtime_paths.model_subdir(_QWEN_HF_SUBDIR)
+
+
+def _qwen_snapshot():
+    return runtime_paths.model_subdir(
+        _QWEN_HF_SUBDIR, "hub",
+        "models--Qwen--Qwen3-TTS-12Hz-0.6B-Base", "snapshots", _QWEN_REVISION)
+
+
 _QWEN_REQUIRED = ["config.json", "model.safetensors", "vocab.json", "merges.txt",
                   "tokenizer_config.json", os.path.join("speech_tokenizer", "model.safetensors")]
 # 무응답(진행 없음) 인용 timeout. Electron watchdog(무진행 5분)보다 짧게 잡아 Python이 먼저 정리·오류.
@@ -434,24 +452,37 @@ class QwenTTSEngine(TTSEngine):
     is_batch = True
 
     def __init__(self):
-        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        venv = os.path.join(base, "externals", "qwen3_tts_venv")
-        self._venv_python = os.path.join(venv, "Scripts", "python.exe")
-        self._bridge = os.path.join(base, "python", "qwen_bridge.py")
+        # 경로는 지연 해석(configure(roots) 이후 available()/run_job에서). __init__ 시점에
+        # roots가 아직 없어도 엔진 인스턴스는 만들 수 있어야 하므로 여기서 externals 경로를 잡지 않는다.
+        # bridge는 우리 소스라 __file__ 기준(externals 아님).
+        self._bridge = os.path.join(os.path.dirname(os.path.abspath(__file__)), "qwen_bridge.py")
+
+    def _venv_python_path(self):
+        return runtime_paths.runtime_subdir("qwen3_tts_venv", "Scripts", "python.exe")
+
+    def _qwen_pkg_dir_path(self):
         # qwen_tts 패키지 설치 흔적(venv만 남고 패키지가 제거된 상태를 available로 오판하지 않게)
-        self._qwen_pkg_dir = os.path.join(venv, "Lib", "site-packages", "qwen_tts")
+        return runtime_paths.runtime_subdir("qwen3_tts_venv", "Lib", "site-packages", "qwen_tts")
 
     def available(self):
         """venv 존재만으로 True 금지 — qwen_tts 패키지 설치 흔적 + pinned revision 로컬 스냅샷의
-        필수 모델 파일까지 preflight."""
-        if not (os.path.exists(self._venv_python) and os.path.exists(self._bridge)):
+        필수 모델 파일까지 preflight. roots 미주입이면 (워크트리 폴백 대신) False."""
+        if not runtime_paths.is_configured():
             return False
-        if not os.path.isdir(self._qwen_pkg_dir):  # venv만 남고 패키지 제거된 상태 배제
+        try:
+            venv_python = self._venv_python_path()
+            pkg_dir = self._qwen_pkg_dir_path()
+            snapshot = _qwen_snapshot()
+        except runtime_paths.RuntimeRootError:
             return False
-        if not os.path.isdir(_QWEN_SNAPSHOT):
+        if not (os.path.exists(venv_python) and os.path.exists(self._bridge)):
+            return False
+        if not os.path.isdir(pkg_dir):  # venv만 남고 패키지 제거된 상태 배제
+            return False
+        if not os.path.isdir(snapshot):
             return False
         for f in _QWEN_REQUIRED:
-            p = os.path.join(_QWEN_SNAPSHOT, f)
+            p = os.path.join(snapshot, f)
             try:
                 if not (os.path.exists(p) and os.path.getsize(p) > 0):
                     return False
@@ -470,12 +501,14 @@ class QwenTTSEngine(TTSEngine):
         import queue
         import json as _json
         # 로컬 스냅샷 '경로'로 로드(repo id 아님) → 오프라인에서 HF API 호출 회피. 자동 다운로드 금지.
-        cfg = {"model_path": _QWEN_SNAPSHOT, "device": device, "segments": segments}
-        env = {**os.environ, "HF_HOME": _QWEN_HF_HOME, "HF_HUB_OFFLINE": "1",
+        # 경로는 주입된 root 기반 지연 해석(configure(roots) 선행 필수).
+        venv_python = self._venv_python_path()
+        cfg = {"model_path": _qwen_snapshot(), "device": device, "segments": segments}
+        env = {**os.environ, "HF_HOME": _qwen_hf_home(), "HF_HUB_OFFLINE": "1",
                "TRANSFORMERS_OFFLINE": "1", "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
         try:
             proc = subprocess.Popen(
-                [self._venv_python, "-X", "utf8", "-u", self._bridge],
+                [venv_python, "-X", "utf8", "-u", self._bridge],
                 stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 text=True, encoding="utf-8", errors="replace", env=env)
         except (OSError, subprocess.SubprocessError) as e:
@@ -949,7 +982,7 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
 
 def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed, silence_gap,
                          pitch=0.0, tail_cfg=None, boundary_gaps=None):
-    """Qwen 배치 합성 — 2B 품질 게이트 재사용, Qwen 전용 VRAM 임계로 장치 선택(ComfyUI 병행 안전),
+    """Qwen 배치 합성 — 2B 품질 게이트 재사용, Qwen 전용 VRAM 임계로 장치 선택(타 GPU 프로세스 병행 안전),
     모델 1회 로딩. speed: 세그먼트별 atempo 후 사용자 silence_gap으로 결합(1.0은 raw). 임시파일 finally 정리.
     pitch: 결합본(pending)에 rubberband 음높이 후처리(0=무후처리, 계약 §6·§7). 실패는 os.replace 직전
     예외 → finally가 job_dir 정리 → 기존 synthesized.wav 무손상.

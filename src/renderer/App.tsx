@@ -9,6 +9,8 @@ import Options from '@/components/Options'
 import SplitEditor from '@/components/SplitEditor'
 import TTSEditor from '@/components/TTSEditor'
 import TtsResultInfo from '@/components/TtsResultInfo'
+import RuntimeStatus from '@/components/RuntimeStatus'
+import RuntimeProvisionPanel from '@/components/RuntimeProvisionPanel'
 
 export default function App() {
   const { fileInfo, mode, status, reset, restorable, restoreSession, setRestorable } = useAppStore()
@@ -90,6 +92,10 @@ export default function App() {
               </svg>
               이전 결과 폴더 열기
             </button>
+            {/* 독립 실행 런타임 상태(R4) — ComfyUI 전제 없이 파이썬 런타임 구성 여부를 표면화 */}
+            <RuntimeStatus />
+            {/* managed provisioner(R-provision) — 설치 계획 보기/외부 런타임 선택/다시 검사(설치는 비활성) */}
+            <RuntimeProvisionPanel />
           </div>
         </div>
       ) : (

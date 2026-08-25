@@ -26,6 +26,20 @@ import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import music_worker  # noqa: E402
+import runtime_paths  # noqa: E402
+
+
+def _configure_synth_roots(base):
+    """separator_models 경로가 주입된 modelRoot 밑에서 해석되도록 synthetic managed root를 심는다.
+    (roots 주입 계약: separate.py가 실행 시 하는 일을 테스트에서 재현.)"""
+    runtime_paths.reset()
+    runtime_paths.set_path_resolver(None)
+    runtime_paths.configure({
+        "schemaVersion": 2,
+        "runtimeRoot": {"path": os.path.join(base, "rt"), "ownership": "audioforge-managed"},
+        "modelRoot": {"path": os.path.join(base, "md"), "ownership": "audioforge-managed"},
+        "cacheRoot": {"path": os.path.join(base, "ch"), "ownership": "audioforge-managed"},
+    })
 
 
 SHADOW_KEYS = {
@@ -105,6 +119,8 @@ class _Harness:
 class _Base(unittest.TestCase):
     def setUp(self):
         self.out_dir = tempfile.mkdtemp(prefix="af_out_")
+        self._root_dir = tempfile.mkdtemp(prefix="af_root_")
+        _configure_synth_roots(self._root_dir)
         self._h = None
         self._prev_env = os.environ.get(music_worker._P1_ENV)
         os.environ.pop(music_worker._P1_ENV, None)
@@ -113,6 +129,8 @@ class _Base(unittest.TestCase):
         if self._h is not None:
             self._h.cleanup()
         shutil.rmtree(self.out_dir, ignore_errors=True)
+        runtime_paths.reset()
+        shutil.rmtree(self._root_dir, ignore_errors=True)
         if self._prev_env is None:
             os.environ.pop(music_worker._P1_ENV, None)
         else:

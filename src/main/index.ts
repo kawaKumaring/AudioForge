@@ -2,7 +2,8 @@ import { app, BrowserWindow, protocol, net } from 'electron'
 import { join } from 'path'
 import { existsSync } from 'fs'
 import { pathToFileURL } from 'url'
-import { registerAudioIpc } from './ipc/audio.ipc'
+import { invalidateRuntimeResolution, registerAudioIpc } from './ipc/audio.ipc'
+import { registerProvisionIpc } from './ipc/provision.ipc'
 
 let mainWindow: BrowserWindow | null = null
 
@@ -49,6 +50,8 @@ function createWindow(): void {
   wc.on('will-navigate', (e) => e.preventDefault())
 
   registerAudioIpc(mainWindow)
+  // managed provisioner 표면(R-provision) — plan/verify(읽기 전용) + apply 차단. 설치/다운로드 0.
+  registerProvisionIpc(mainWindow, { onManagedRootChanged: invalidateRuntimeResolution })
 
   if (process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)

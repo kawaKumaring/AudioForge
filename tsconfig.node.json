@@ -3,6 +3,8 @@
     "composite": true,
     "module": "ESNext",
     "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "rewriteRelativeImportExtensions": true,
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "target": "ESNext",

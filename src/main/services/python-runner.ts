@@ -3,6 +3,7 @@ import { join } from 'path'
 import { existsSync } from 'fs'
 import { EventEmitter } from 'events'
 import { StringDecoder } from 'string_decoder'
+import { diagnoseExit } from './runner-diagnostics'
 
 // 취소 결과(공용 마감 K2): 부모 종료 관측 + (Windows) taskkill 완료·성공까지 확인해야 tree 종료로 판정.
 export interface CancelResult {
@@ -46,6 +47,10 @@ export class PythonRunner extends EventEmitter {
     }
 
     let stderrBuffer = ''
+    // 진단 수집(공용 마감 R3-C): close 시점에 '구조화 stdout 신호가 왔는지'를 알아야
+    // 무해 경고를 실패 원인으로 표면화하지 않고 이중 emit도 피한다. 구조화 신호가 권위.
+    let hadStructuredResult = false
+    let hadStructuredError = false
     // Line buffer: a JSON line can be split across pipe chunks (~64KB).
     // Keep the trailing incomplete line and prepend it to the next chunk.
     // StringDecoder handles multi-byte UTF-8 chars split across chunk boundaries.
@@ -60,10 +65,12 @@ export class PythonRunner extends EventEmitter {
         if (msg.type === 'progress' || msg.type === 'status') {
           this.emit('progress', { percent: msg.percent ?? 0, message: msg.message ?? '' })
         } else if (msg.type === 'result') {
+          hadStructuredResult = true
           this.emit('result', msg)
         } else if (msg.type === 'error') {
           // 구조화 오류 전체 전달(message + 선택적 code·필드). renderer용 정제는 audio.ipc가 담당.
           // Python이 담는 필드는 이미 비민감(전사·문장·전체경로 없음)이지만, 소비 측이 최종 정제.
+          hadStructuredError = true
           this.emit('error', msg)
         }
       } catch {
@@ -85,8 +92,8 @@ export class PythonRunner extends EventEmitter {
       console.log(`[PythonRunner stderr] ${text.trim()}`)
     })
 
-    this.process.on('close', (code) => {
-      console.log(`[PythonRunner] Process exited with code ${code}`)
+    this.process.on('close', (code, signal) => {
+      console.log(`[PythonRunner] Process exited with code ${code} signal ${signal}`)
       // Flush a final line that had no trailing newline
       stdoutBuffer += stdoutDecoder.end()
       if (stdoutBuffer) {
@@ -94,10 +101,19 @@ export class PythonRunner extends EventEmitter {
         stdoutBuffer = ''
       }
       this.process = null
-      if (code !== 0 && code !== null) {
-        // Extract meaningful error from stderr
-        const errorMsg = this.extractError(stderrBuffer) || `프로세스가 코드 ${code}로 종료되었습니다`
-        this.emit('error', errorMsg)
+      // 종료 진단(R3-C): 구조화 stdout 신호가 권위이므로 그게 왔으면 여기서 재표면화하지 않는다.
+      // 무해 경고(*Warning:)만으로 fatal 금지, signal→PYTHON_PROCESS_SIGNAL, nonzero+fatal없음→ABNORMAL_EXIT.
+      // renderer로는 { message: 안전 안내, code: reasonCode }만. traceback·절대경로·sha8/length는 devLog(로컬 console)만.
+      const diag = diagnoseExit({
+        code,
+        signal,
+        stderr: stderrBuffer,
+        hadStructuredError,
+        hadStructuredResult
+      })
+      if (diag) {
+        console.log(`[PythonRunner][diag] ${diag.devLog}`)
+        this.emit('error', { message: diag.userMessage, code: diag.reasonCode })
       }
       this.emit('done', code)
     })
@@ -108,24 +124,6 @@ export class PythonRunner extends EventEmitter {
       this.emit('error', `Python 실행 실패: ${err.message}`)
       this.emit('done', -1)
     })
-  }
-
-  private extractError(stderr: string): string {
-    // Try to find the last meaningful error line
-    const lines = stderr.trim().split('\n').filter(Boolean)
-
-    // Look for common Python errors
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].trim()
-      if (line.startsWith('ModuleNotFoundError:')) return `패키지 미설치: ${line}`
-      if (line.startsWith('ImportError:')) return `Import 오류: ${line}`
-      if (line.startsWith('FileNotFoundError:')) return `파일 없음: ${line}`
-      if (line.startsWith('RuntimeError:')) return line
-      if (line.startsWith('Error:') || line.startsWith('error:')) return line
-    }
-
-    // Return last 3 lines if nothing specific found
-    return lines.slice(-3).join('\n')
   }
 
   // 취소: 프로세스 트리를 kill하고 종료를 bounded timeout 내에서 '확인'한다(공용 마감 K2).

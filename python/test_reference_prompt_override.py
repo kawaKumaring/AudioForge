@@ -23,6 +23,19 @@ import reference_transcript as rt   # noqa: E402
 import reference_audio as ra        # noqa: E402
 import transcribe_worker            # noqa: E402
 import tts_worker                   # noqa: E402
+import runtime_paths                # noqa: E402
+
+
+def _configure_test_roots():
+    """GPT-SoVITS 합성 경로(venv/GPT-SoVITS dir)가 주입된 root를 요구하므로 테스트 root를 심는다."""
+    runtime_paths.reset()
+    runtime_paths.set_path_resolver(None)
+    runtime_paths.configure({
+        "schemaVersion": 2,
+        "runtimeRoot": {"path": "C:/af_test/rt", "ownership": "audioforge-managed"},
+        "modelRoot": {"path": "C:/af_test/md", "ownership": "audioforge-managed"},
+        "cacheRoot": {"path": "C:/af_test/ch", "ownership": "audioforge-managed"},
+    })
 
 
 def _write(path, seconds, sr=24000, amp=0.3):
@@ -152,6 +165,8 @@ class DeliveryPathTest(_Mixin, unittest.TestCase):
         self.ref5 = os.path.join(self.tmp, "ref5.wav")
         _write(self.ref5, 5.0)  # 유효(3~10s, 품질 게이트 통과)
         self.out = os.path.join(self.tmp, "out.wav")
+        _configure_test_roots()
+        self.addCleanup(runtime_paths.reset)
         self._orig_cache = dict(ra._analysis_cache)
         ra._analysis_cache.clear()
         self.addCleanup(self._restore_cache)
