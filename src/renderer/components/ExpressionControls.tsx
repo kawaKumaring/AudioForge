@@ -1,8 +1,11 @@
-// 표현 컨트롤 (C 소유). 4-flow의 [3] 표현 흐름 — 후처리 축(pitch/speed/문장 간격)만 조작한다(생성축과 분리).
+// 표현 컨트롤. 4-flow의 [3] 표현 흐름 — 후처리 축(pitch/speed/문장 간격)만 조작한다(생성축과 분리).
+// (원래 'C 소유'로 병렬 작업 중 동시 수정을 막던 파일이다. 해당 분업 브랜치가 모두 develop에
+//  병합돼 지금은 단일 담당이 관리한다 — 아래 규칙 자체는 계속 유효하다.)
 // 규칙:
 //  - 프리셋(원본/낮고 차분/중성적/밝고 가볍게)은 후처리 값 묶음. 실제 값 적용(store)은 셸의 onPreset 핸들러가 한다.
 //  - '세부 조절 사용'(enable)과 펼치기/접기(expand)는 별개 컨트롤이다.
 //  - 접혀 있어도 적용값 요약을 항상 보인다.
+//  - 음높이·속도는 기본 노출(프리셋과 같은 층). 문장 간격은 펼침 영역, 말끝·감정 전환은 '세부 표현'.
 //  - 지원 축(capabilities=true)만 활성. emotionTransitionGap/tailTrim/tailPadding은 capability=false면 비활성(미노출/준비 중).
 //  - smooth/formant/brightness/breathiness/가성 슬라이더는 존재하지 않는다(가짜 슬라이더 금지).
 //  - '다시 합성 없이 적용'(빠른 재처리) 버튼은 노출하지 않는다. 축 성격은 정보 배지로만 표시한다.
@@ -110,34 +113,39 @@ export default function ExpressionControls({
           </span>
         </div>
 
+        {/* 기본 노출 축 — 음높이·속도는 사용 빈도가 높아 접지 않는다(프리셋과 같은 층).
+            문장 간격/말끝/감정 전환 같은 나머지는 아래 펼침 영역과 '세부 표현'에 둔다. */}
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {/* pitch */}
+          {capabilities.pitch && (
+            <SliderRow
+              metaKey="pitch" label="음높이" valueText={fmtPitch(values.pitchSemitones)}
+              min={-2} max={2} step={0.5} value={values.pitchSemitones} disabled={fineDisabled}
+              ariaValueText={fmtPitch(values.pitchSemitones)}
+              endLabels={['낮고 묵직함', '높고 가볍게']}
+              help={SUPPORTED_META[0].help} detail={SUPPORTED_META[0].detail}
+              helpVisible={helpVisible('pitch')} onToggleHelp={() => toggleHelp('pitch')}
+              detailVisible={!!openDetail['pitch']} onToggleDetail={() => toggleDetail('pitch')}
+              onChange={(v) => onChange({ pitchSemitones: v })}
+            />
+          )}
+          {/* speed */}
+          {capabilities.speed && (
+            <SliderRow
+              metaKey="speed" label="속도" valueText={fmtSpeed(values.speed)}
+              min={0.5} max={2.0} step={0.05} value={values.speed} disabled={fineDisabled}
+              ariaValueText={fmtSpeed(values.speed)}
+              help={SUPPORTED_META[1].help} detail={SUPPORTED_META[1].detail}
+              helpVisible={helpVisible('speed')} onToggleHelp={() => toggleHelp('speed')}
+              detailVisible={!!openDetail['speed']} onToggleDetail={() => toggleDetail('speed')}
+              onChange={(v) => onChange({ speed: v })}
+            />
+          )}
+        </div>
+
         {/* 세부 컨트롤(펼침) */}
         {expanded && (
           <div id="tts-expr-fine" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {/* pitch */}
-            {capabilities.pitch && (
-              <SliderRow
-                metaKey="pitch" label="음높이" valueText={fmtPitch(values.pitchSemitones)}
-                min={-2} max={2} step={0.5} value={values.pitchSemitones} disabled={fineDisabled}
-                ariaValueText={fmtPitch(values.pitchSemitones)}
-                endLabels={['낮고 묵직함', '높고 가볍게']}
-                help={SUPPORTED_META[0].help} detail={SUPPORTED_META[0].detail}
-                helpVisible={helpVisible('pitch')} onToggleHelp={() => toggleHelp('pitch')}
-                detailVisible={!!openDetail['pitch']} onToggleDetail={() => toggleDetail('pitch')}
-                onChange={(v) => onChange({ pitchSemitones: v })}
-              />
-            )}
-            {/* speed */}
-            {capabilities.speed && (
-              <SliderRow
-                metaKey="speed" label="속도" valueText={fmtSpeed(values.speed)}
-                min={0.5} max={2.0} step={0.05} value={values.speed} disabled={fineDisabled}
-                ariaValueText={fmtSpeed(values.speed)}
-                help={SUPPORTED_META[1].help} detail={SUPPORTED_META[1].detail}
-                helpVisible={helpVisible('speed')} onToggleHelp={() => toggleHelp('speed')}
-                detailVisible={!!openDetail['speed']} onToggleDetail={() => toggleDetail('speed')}
-                onChange={(v) => onChange({ speed: v })}
-              />
-            )}
             {/* sentenceGap */}
             {capabilities.sentenceGap && (
               <SliderRow
