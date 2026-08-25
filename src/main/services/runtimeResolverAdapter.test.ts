@@ -28,6 +28,8 @@ interface MockCfg {
   probe?: Record<string, InterpreterProbeResult | null>
   settings?: RuntimeSettings
   legacy?: string
+  /** 기존 사용자 환경 디렉터리(앱 옆 externals) — borrowed root 도출 입력. */
+  borrowedRoot?: string
   userData?: string
   writeSpy?: string[]
 }
@@ -49,6 +51,7 @@ function makeDeps(cfg: MockCfg): RuntimeAdapterDeps {
     probe: (p) => Promise.resolve(Object.prototype.hasOwnProperty.call(probe, p) ? probe[p] : null),
     settings: () => cfg.settings ?? {},
     legacyRecordPath: () => cfg.legacy,
+    borrowedRootDir: () => cfg.borrowedRoot,
     userDataDir: () => cfg.userData ?? 'C:\\Users\\x\\AppData\\Roaming\\AudioForge',
     platform: 'win32',
   }
@@ -154,16 +157,56 @@ test('resolveStorageRoots: 사용자 선택 base > 명시 env, userData 자동 f
   assert.equal(byUserData, null, 'Roaming userData를 대용량 managed root로 자동 채택하면 안 된다')
 })
 
-test('buildResolveSpec: root 미선택 + legacy 미동의면 둘 다 후보에 넣지 않음', () => {
+test('buildResolveSpec: managed root 없으면 runtimeRoot 미주입, 기존 환경 기록은 최하위 후보로 제시', () => {
   const spec = buildResolveSpec(makeDeps({
     settings: { pythonPath: 'C:\\u\\py.exe' },
     legacy: 'C:\\legacy\\py.exe',
     userData: 'C:\\U\\data',
   }))
   assert.equal(spec.envVarName, 'AUDIOFORGE_PYTHON')
+  // managed 후보는 managed root에서만(userData 자동 파생 없음).
   assert.equal(spec.runtimeRoot, undefined)
   assert.equal(spec.userSelectedPath, 'C:\\u\\py.exe')
-  assert.equal(spec.legacyRecordPath, undefined)
+  // 기존 환경 기록은 동의 없이도 후보가 된다 — rank 최하위 + probe 증거 필수라 조용한 폴백이 아니다.
+  assert.equal(spec.legacyRecordPath, 'C:\\legacy\\py.exe')
+})
+
+test('buildResolveSpec: borrowed root는 managed 후보를 만들지 않는다', () => {
+  // borrowed root로 managed 인터프리터 후보를 만들면 빌린 트리를 canWrite=true로 오표기한다.
+  const spec = buildResolveSpec(makeDeps({ borrowedRoot: 'C:\\app\\externals' }))
+  assert.equal(spec.runtimeRoot, undefined)
+})
+
+test('resolveStorageRoots: managed 부재 시 기존 환경(externals)을 borrowed root로 도출', () => {
+  const r = resolveStorageRoots(makeDeps({ borrowedRoot: 'C:\\app\\externals\\' }))
+  assert.ok(r)
+  assert.equal(r!.ownership, 'external-borrowed')
+  // venv·모델이 모두 그 트리 안에 있으므로 세 root가 같은 경로 + 후행 구분자 정규화.
+  assert.equal(r!.runtimeRoot, 'C:\\app\\externals')
+  assert.equal(r!.modelRoot, 'C:\\app\\externals')
+  assert.equal(r!.cacheRoot, 'C:\\app\\externals')
+})
+
+test('resolveStorageRoots: managed/ops 경로가 borrowed보다 우선', () => {
+  const byManaged = resolveStorageRoots(makeDeps({
+    settings: { verifiedManagedRoots: { runtimeRoot: 'D:\\S\\runtime', modelRoot: 'D:\\S\\models', cacheRoot: 'D:\\S\\cache' } },
+    borrowedRoot: 'C:\\app\\externals',
+  }))
+  assert.equal(byManaged!.runtimeRoot, 'D:\\S\\runtime')
+  assert.equal(byManaged!.ownership, 'audioforge-managed')
+
+  const byEnv = resolveStorageRoots(makeDeps({ env: { AUDIOFORGE_RUNTIME_ROOT: 'C:\\E\\rt' }, borrowedRoot: 'C:\\app\\externals' }))
+  assert.equal(byEnv!.runtimeRoot, 'C:\\E\\rt')
+  assert.equal(byEnv!.ownership, 'audioforge-managed')
+})
+
+test('buildRootConfig: borrowed root는 세 root 모두 external-borrowed(읽기 전용 계약)', () => {
+  const cfg = buildRootConfig(makeDeps({ borrowedRoot: 'C:\\app\\externals' }))
+  assert.ok(cfg)
+  for (const key of ['runtimeRoot', 'modelRoot', 'cacheRoot'] as const) {
+    assert.equal(cfg![key].ownership, 'external-borrowed')
+    assert.ok(isCanonicalAbsolutePath(cfg![key].path))
+  }
 })
 
 test('legacy root/인터프리터는 명시 동의가 있을 때만 후보에 반영', () => {

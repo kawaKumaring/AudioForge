@@ -16,10 +16,29 @@ test('resolved → ready, 버튼 없음, basename·소유권 표기', () => {
   assert.match(v.detail, /전용 런타임/)
 })
 
-test('borrowed 소유권 라벨', () => {
+test('borrowed 소유권 라벨 — 기존 환경을 읽기 전용으로 쓰는 중임을 명시', () => {
   const v = runtimeStatusView(report({ resolved: true, interpreterBasename: 'python', ownership: 'external-borrowed' }))
   assert.equal(v.tone, 'ready')
-  assert.match(v.detail, /빌려온 런타임/)
+  assert.match(v.detail, /기존 환경 사용 중/)
+  assert.match(v.detail, /읽기 전용/)
+  // 빌린 런타임은 다른 실행기로 바꿀 길을 열어둔다(managed는 우리가 설치한 것이므로 불필요).
+  assert.equal(v.canSelectInterpreter, true)
+})
+
+test('출처 표기 — 자동 감지된 기존 환경 기록', () => {
+  const v = runtimeStatusView(report({
+    resolved: true,
+    interpreterBasename: 'python.exe',
+    ownership: 'external-borrowed',
+    source: 'legacy-detected',
+  }))
+  assert.match(v.detail, /기존 환경 기록\(자동 감지\)/)
+  assert.match(v.detail, /python\.exe/)
+})
+
+test('출처 미지(구버전 보고) → 출처 없이도 표현이 깨지지 않음', () => {
+  const v = runtimeStatusView(report({ resolved: true, interpreterBasename: 'python.exe', ownership: 'audioforge-managed' }))
+  assert.equal(v.detail, 'AudioForge 전용 런타임 · python.exe')
 })
 
 test('미해석 + reasonCode null → action, 인터프리터 선택 유도', () => {

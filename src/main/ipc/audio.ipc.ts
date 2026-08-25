@@ -46,6 +46,15 @@ let resolved: AdapterResolution | null = null
 export function invalidateRuntimeResolution(): void { resolved = null }
 
 // 과거 externals/env.json(setup_env.py 기록)의 python 경로 — legacy-detected 후보(stale 가능).
+// 기존 사용자 환경 디렉터리(앱 옆 externals). borrowed root 도출 전용 — 존재할 때만 반환한다.
+// legacyRecordPath와 같은 트리를 가리키며, 이 안의 venv·모델을 읽기 전용으로 빌려 쓴다.
+function borrowedRootDir(): string | undefined {
+  try {
+    const dir = join(__dirname, '..', '..', 'externals')
+    return existsSync(dir) ? dir : undefined
+  } catch { return undefined }
+}
+
 function legacyRecordPath(): string | undefined {
   try {
     const cfg = join(__dirname, '..', '..', 'externals', 'env.json')
@@ -108,6 +117,7 @@ function runtimeDeps(): RuntimeAdapterDeps {
     probe: probeInterpreter,
     settings: runtimeSettings,
     legacyRecordPath,
+    borrowedRootDir,
     userDataDir: () => app.getPath('userData'),
     platform: process.platform === 'win32' ? 'win32' : 'posix',
   }
@@ -1027,6 +1037,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       interpreterBasename: r?.resolved && r.interpreterPath ? basename(r.interpreterPath) : null,
       ownership: r?.ownership ?? null,
       reasonCode: r?.reasonCode ?? null,
+      source: r?.source ?? null,
     }
   })
 

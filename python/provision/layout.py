@@ -47,6 +47,21 @@ SEPARATOR_ENGINES = (SEPARATOR_ENGINE_ROFORMER, SEPARATOR_ENGINE_MELBAND)
 QWEN_MODELS = "qwen3"                     # HF 캐시 루트(HF_HOME)를 여기 둔다
 GPTSOVITS_MODELS = "gptsovits"
 
+# ── borrowed(외부에서 빌려온) modelRoot의 레거시 레이아웃 별칭 ────────────────
+# managed 설치는 위 고정 레이아웃을 쓴다. 그러나 기존 사용자 환경(externals)은 provisioner 이전에
+# 만들어진 다른 배치를 갖는다: Qwen HF 캐시는 `qwen3_tts_hf`, separator 모델은 engine 서브디렉터리
+# 없이 `separator_models` 평면에 놓여 있다. borrowed root를 managed 레이아웃으로 읽으면 기존 환경의
+# 모델을 못 찾는다(설치 위치 == 읽기 위치 보장이 managed에만 성립).
+# → ownership('modelRoot')로 **명시 분기**한다. fs 존재 탐색으로 추측하지 않는다(조용한 폴백 금지).
+#   borrowed는 읽기 전용이므로 이 별칭이 빌린 트리에 무엇도 쓰지 않는다.
+QWEN_MODELS_BORROWED = "qwen3_tts_hf"     # 레거시 externals/qwen3_tts_hf
+#   separator: 레거시는 engine 서브디렉터리 없이 separator_models 평면 배치(별도 상수 불필요).
+
+
+def _model_borrowed():
+    """modelRoot가 external-borrowed면 True(레거시 레이아웃). roots 미주입이면 RuntimeRootError."""
+    return runtime_paths.ownership("modelRoot") == "external-borrowed"
+
 # ── cacheRoot 하위 ────────────────────────────────────────────────────────────
 CACHE_DOWNLOADS = "downloads"
 CACHE_STAGING = "staging"
@@ -68,15 +83,20 @@ def _path_id(value, label):
 
 # ── modelRoot helper(runtime_paths 경유 — containment 검증) ──────────────────
 def separator_engine_dir(engine, *parts):
-    """separator_models/<engine>[/parts]. engine은 SEPARATOR_ENGINES 중 하나."""
+    """separator_models/<engine>[/parts]. engine은 SEPARATOR_ENGINES 중 하나.
+    borrowed modelRoot는 레거시 평면 배치라 engine 세그먼트를 넣지 않는다(engine 값은 여전히 검증)."""
     if engine not in SEPARATOR_ENGINES:
         raise ValueError(f"unknown separator engine: {engine!r}")
+    if _model_borrowed():
+        return runtime_paths.model_subdir(SEPARATOR_MODELS, *parts)
     return runtime_paths.model_subdir(SEPARATOR_MODELS, engine, *parts)
 
 
 def qwen_model_home(*parts):
-    """modelRoot/qwen3[/parts] — Qwen HF_HOME 및 스냅샷 경로의 베이스."""
-    return runtime_paths.model_subdir(QWEN_MODELS, *parts)
+    """modelRoot/qwen3[/parts] — Qwen HF_HOME 및 스냅샷 경로의 베이스.
+    borrowed modelRoot는 레거시 `qwen3_tts_hf`를 쓴다(기존 환경 스냅샷 위치 보존)."""
+    base = QWEN_MODELS_BORROWED if _model_borrowed() else QWEN_MODELS
+    return runtime_paths.model_subdir(base, *parts)
 
 
 def gptsovits_model_dir(*parts):

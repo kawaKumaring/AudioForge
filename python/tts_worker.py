@@ -379,18 +379,18 @@ _QWEN_LANG_NAME = {"ko": "Korean", "en": "English", "zh": "Chinese", "ja": "Japa
 # 로컬 스냅샷(오프라인 preflight/추론 고정 위치). 런타임 자동 다운로드 금지.
 # 주입된 modelRoot 밑으로 해석(worktree-relative 추측 제거). 모듈 로드 시점이 아니라 호출 시점에
 # 해석하므로 configure(roots)가 먼저 실행되어야 한다(separate.py가 config 파싱 직후 보장).
-# 고정 레이아웃 §1: Qwen HF 캐시는 modelRoot/qwen3 밑(단일 소스 provision.layout.QWEN_MODELS).
-_QWEN_HF_SUBDIR = _layout.QWEN_MODELS
+# HF 캐시 베이스 디렉터리명은 provision.layout이 modelRoot ownership으로 결정한다
+# (managed = 고정 레이아웃 §1 `qwen3` / borrowed = 레거시 `qwen3_tts_hf`). 여기서 직접
+# model_subdir을 부르지 않는 이유: 레이아웃 분기의 단일 소스를 layout 하나로 유지한다.
 
 
 def _qwen_hf_home():
-    return runtime_paths.model_subdir(_QWEN_HF_SUBDIR)
+    return _layout.qwen_model_home()
 
 
 def _qwen_snapshot():
-    return runtime_paths.model_subdir(
-        _QWEN_HF_SUBDIR, "hub",
-        "models--Qwen--Qwen3-TTS-12Hz-0.6B-Base", "snapshots", _QWEN_REVISION)
+    return _layout.qwen_model_home(
+        "hub", "models--Qwen--Qwen3-TTS-12Hz-0.6B-Base", "snapshots", _QWEN_REVISION)
 
 
 _QWEN_REQUIRED = ["config.json", "model.safetensors", "vocab.json", "merges.txt",

@@ -1,8 +1,11 @@
 // 독립 실행(standalone) 런타임 launch smoke — ComfyUI·GPU 없이 부팅하고,
 // 런타임 미구성 상태를 "검은 화면/크래시 없이" 사용자에게 표면화하는지 검증한다(R4).
 //
-// 결정성: 격리된 빈 userData(--user-data-dir)로 실행하고 AUDIOFORGE_RUNTIME_ROOT를 제거한다.
-// R3 계약상 조용한 'python' fallback이 없으므로, 이 조건에서 런타임은 반드시 미해석(resolved=0)이어야 한다.
+// 결정성: (a) 격리된 빈 userData(--user-data-dir) (b) AUDIOFORGE_RUNTIME_ROOT 제거
+//   (c) **런타임 없는 PC를 실제로 재현** — 빌드 산출물만 임시 디렉터리로 복사해 실행한다.
+//   앱은 자기 옆 `externals`(기존 사용자 환경)를 borrowed 후보로 자동 감지하므로, 개발 트리에서
+//   그대로 실행하면 그 환경이 잡혀 "미구성" 상태를 재현할 수 없다. 임시 사본에는 externals가 없다.
+// 이 조건에서 조용한 'python' fallback·worktree-relative 추측이 없으므로 반드시 미해석(resolved=0).
 // 즉 이 스모크는 (a) 독립 부팅 (b) 미구성의 우아한 표면화 (c) 무-fallback 계약을 동시에 확인한다.
 // 실행: node test/e2e/standalone-runtime.e2e.mjs  (사전: npm run build)
 import { _electron as electron } from 'playwright'
@@ -21,6 +24,12 @@ const ok = (c, m) => { console.log(c ? '[e2e] PASS' : '[e2e] FAIL', m); if (!c) 
 const USERDATA = path.join(os.tmpdir(), 'audioforge_e2e_userdata_' + randomUUID())
 fs.mkdirSync(USERDATA, { recursive: true })
 
+// 런타임 없는 PC 재현: out/ + package.json만 임시 앱 디렉터리로 복사(externals·python 없음).
+const STAGE = path.join(os.tmpdir(), 'audioforge_e2e_app_' + randomUUID())
+fs.mkdirSync(STAGE, { recursive: true })
+fs.cpSync(path.join(APP, 'out'), path.join(STAGE, 'out'), { recursive: true })
+fs.copyFileSync(path.join(APP, 'package.json'), path.join(STAGE, 'package.json'))
+
 // AUDIOFORGE_RUNTIME_ROOT 제거 + AF_E2E 게이트.
 const env = { ...process.env, AF_E2E: '1' }
 delete env.AUDIOFORGE_RUNTIME_ROOT
@@ -28,8 +37,8 @@ delete env.AUDIOFORGE_RUNTIME_ROOT
 const pageErrors = [], crashes = []
 
 const app = await electron.launch({
-  args: ['out/main/index.js', '--user-data-dir=' + USERDATA],
-  cwd: APP,
+  args: [path.join(STAGE, 'out/main/index.js'), '--user-data-dir=' + USERDATA],
+  cwd: STAGE,
   env,
 })
 const win = await app.firstWindow()
@@ -73,7 +82,7 @@ try {
   ok(status !== null, '런타임 상태 속성 판독 가능')
   if (status) {
     ok(['ready', 'action', 'incomplete'].includes(status.tone), `유효한 tone(${status.tone})`)
-    // 무-fallback 계약: 격리 userData + AUDIOFORGE_RUNTIME_ROOT 제거 → 미해석이어야 한다.
+    // 무-fallback 계약: 격리 userData + AUDIOFORGE_RUNTIME_ROOT 제거 + externals 없는 사본 → 미해석.
     ok(status.resolved === '0', `격리 환경에서 런타임 미해석(resolved=${status.resolved}) — 조용한 fallback 없음`)
     ok(status.hasSelectButton === true, '미구성 시 "파이썬 실행기 선택" 버튼 노출')
     ok(status.tone === 'action' || status.tone === 'incomplete', `미구성 tone은 action/incomplete(${status.tone})`)
@@ -83,9 +92,12 @@ try {
   ok(crashes.length === 0, `crash 0(${crashes.length})`)
 } finally {
   try { await app.close() } catch { /* 이미 종료 */ }
-  // 자신이 만든 격리 userData만 삭제(prefix 가드).
+  // 자신이 만든 격리 userData/앱 사본만 삭제(prefix 가드).
   if (path.basename(USERDATA).startsWith('audioforge_e2e_userdata_') && path.dirname(USERDATA) === os.tmpdir()) {
     try { fs.rmSync(USERDATA, { recursive: true, force: true }) } catch { /* ignore */ }
+  }
+  if (path.basename(STAGE).startsWith('audioforge_e2e_app_') && path.dirname(STAGE) === os.tmpdir()) {
+    try { fs.rmSync(STAGE, { recursive: true, force: true }) } catch { /* ignore */ }
   }
 }
 

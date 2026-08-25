@@ -4,7 +4,7 @@
 // (자유 문자열 금지 — 코드→문구 매핑의 단일 소스. 설치/다운로드는 여기서 하지 않는다: PROVISION 단계 소관.)
 // 순수 type-only import — node의 타입 제거가 런타임에 이 줄을 지우므로 확장자가 필요없고,
 // tsc(web/node) 양쪽 bundler 해석으로 충분하다(비-test shared 파일의 확장자 무표기 관례 준수).
-import type { ReasonCode, RuntimeOwnership } from './runtimeContract'
+import type { CandidateSource, ReasonCode, RuntimeOwnership } from './runtimeContract'
 
 // main(settings:get)이 renderer로 넘기는 상태 보고. 전체 경로는 절대 포함하지 않는다(basename만).
 export interface RuntimeStatusReport {
@@ -12,6 +12,8 @@ export interface RuntimeStatusReport {
   interpreterBasename: string | null
   ownership: RuntimeOwnership | null
   reasonCode: ReasonCode | null
+  /** 채택된 후보의 출처. 어떤 런타임을 쓰는 중인지 사용자에게 명시하는 데 쓴다(구버전 보고=undefined). */
+  source?: CandidateSource | null
 }
 
 // UI가 그릴 표현. tone으로 색을, canSelectInterpreter로 "인터프리터 선택" 버튼 노출을 결정한다.
@@ -25,8 +27,23 @@ export interface RuntimeStatusView {
 
 function ownershipLabel(o: RuntimeOwnership | null): string {
   if (o === 'audioforge-managed') return 'AudioForge 전용 런타임'
-  if (o === 'external-borrowed') return '외부에서 빌려온 런타임(읽기 전용)'
+  if (o === 'external-borrowed') return '기존 환경 사용 중(읽기 전용)'
   return '런타임'
+}
+
+// 출처 라벨 — "왜 이 런타임이 쓰이는지"를 사용자 말로 표시한다(코드 노출·전체 경로 금지).
+const SOURCE_LABEL: Record<CandidateSource, string> = {
+  'user-settings': '설정에서 지정한 실행기',
+  'managed-runtime': 'AudioForge가 설치한 런타임',
+  'environment-variable': '환경변수 지정',
+  'user-selected-external': '직접 고른 외부 실행기',
+  'path-discovery': 'PATH에서 발견',
+  'py-launcher-discovery': 'py 런처에서 발견',
+  'legacy-detected': '기존 환경 기록(자동 감지)',
+}
+
+function sourceLabel(src: CandidateSource | null | undefined): string | null {
+  return src ? (SOURCE_LABEL[src] ?? null) : null
 }
 
 // 인터프리터 지정으로 해결되는 사유(구성 이전 단계) — "인터프리터 선택" 버튼을 띄운다.
@@ -60,11 +77,15 @@ const INCOMPLETE_MESSAGE: Partial<Record<ReasonCode, string>> = {
 export function runtimeStatusView(report: RuntimeStatusReport): RuntimeStatusView {
   if (report.resolved) {
     const name = report.interpreterBasename ?? '파이썬'
+    const src = sourceLabel(report.source)
+    // 빌려온 런타임은 "무엇을 쓰는지"가 사용자에게 중요하다(우리가 설치·수정한 것이 아님).
+    // → 소유권 + 출처 + 실행기 이름을 함께 표시하고, 다른 실행기로 바꿀 길도 열어둔다.
+    const borrowed = report.ownership === 'external-borrowed'
     return {
       tone: 'ready',
       title: '런타임 준비됨',
-      detail: `${ownershipLabel(report.ownership)} · ${name}`,
-      canSelectInterpreter: false,
+      detail: [ownershipLabel(report.ownership), src, name].filter(Boolean).join(' · '),
+      canSelectInterpreter: borrowed,
     }
   }
   const code = report.reasonCode

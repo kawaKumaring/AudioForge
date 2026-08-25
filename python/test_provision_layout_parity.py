@@ -78,12 +78,51 @@ class QwenLayoutParity(unittest.TestCase):
 
     def test_qwen_home_under_qwen3(self):
         import tts_worker
-        self.assertEqual(tts_worker._QWEN_HF_SUBDIR, layout.QWEN_MODELS)
-        self.assertEqual(tts_worker._QWEN_HF_SUBDIR, "qwen3")
+        self.assertEqual(layout.QWEN_MODELS, "qwen3")
         self.assertEqual(tts_worker._qwen_hf_home(), layout.qwen_model_home())
         self.assertEqual(tts_worker._qwen_hf_home(), os.path.normpath("C:/af/md/qwen3"))
         # 스냅샷도 qwen3 밑.
         self.assertTrue(tts_worker._qwen_snapshot().startswith(os.path.normpath("C:/af/md/qwen3")))
+
+
+class BorrowedLegacyLayoutParity(unittest.TestCase):
+    """borrowed modelRoot(기존 사용자 externals)는 provisioner 이전 레거시 배치를 읽는다.
+    managed 레이아웃과 다른 유일한 지점이며, 분기는 ownership으로만 결정한다(fs 탐색 추측 없음)."""
+
+    def setUp(self):
+        rp.reset()
+        rp.set_path_resolver(None)
+        roots = _managed_roots()
+        roots["modelRoot"]["ownership"] = "external-borrowed"
+        rp.configure(roots)
+
+    def tearDown(self):
+        rp.reset()
+        rp.set_path_resolver(None)
+
+    def test_qwen_home_uses_legacy_dir_name(self):
+        import tts_worker
+        self.assertEqual(layout.QWEN_MODELS_BORROWED, "qwen3_tts_hf")
+        self.assertEqual(layout.qwen_model_home(), os.path.normpath("C:/af/md/qwen3_tts_hf"))
+        self.assertEqual(tts_worker._qwen_hf_home(), layout.qwen_model_home())
+        # 스냅샷 경로 = 레거시 externals/qwen3_tts_hf/hub/models--… 와 동형.
+        self.assertEqual(
+            tts_worker._qwen_snapshot(),
+            os.path.normpath("C:/af/md/qwen3_tts_hf/hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-Base"
+                             "/snapshots/" + tts_worker._QWEN_REVISION))
+
+    def test_separator_dirs_are_flat_legacy(self):
+        # 레거시는 engine 서브디렉터리가 없다 — 두 엔진 모두 separator_models 평면.
+        flat = os.path.normpath("C:/af/md/separator_models")
+        self.assertEqual(layout.separator_engine_dir("roformer"), flat)
+        self.assertEqual(layout.separator_engine_dir("melband"), flat)
+        # engine 검증은 borrowed에서도 유지(알 수 없는 엔진은 거부).
+        with self.assertRaises(ValueError):
+            layout.separator_engine_dir("nope")
+
+    def test_borrowed_model_root_is_read_only(self):
+        # 별칭이 빌린 트리에 쓰기를 허용하지 않는다(makedirs 게이트의 근거).
+        self.assertFalse(rp.can_write("modelRoot"))
 
 
 class ManifestLayoutParity(unittest.TestCase):

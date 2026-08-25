@@ -30,6 +30,7 @@ import {
   type RuntimeRootConfig,
   type RuntimeOwnership,
   type ReasonCode,
+  type CandidateSource,
 } from '../../shared/runtimeContract.ts'
 
 // ── 주입 타입 ────────────────────────────────────────────────────────────────
@@ -66,6 +67,9 @@ export interface RuntimeAdapterDeps {
   settings(): RuntimeSettings
   /** 과거 externals/env.json 기록 경로(legacy-detected 후보). 없으면 undefined. */
   legacyRecordPath(): string | undefined
+  /** 기존 사용자 환경 디렉터리(앱 옆 externals). borrowed root 도출에만 쓴다. 없으면 undefined.
+   *  managed/ops 경로가 하나라도 잡히면 이 값은 무시된다(우선순위 최하위). */
+  borrowedRootDir?(): string | undefined
   /** managed 저장 루트 기본값의 부모(Electron app.getPath('userData')). */
   userDataDir(): string
   /** 경로 형태 결정. 기본 'win32'. */
@@ -75,6 +79,8 @@ export interface RuntimeAdapterDeps {
 /** 어댑터 해석 결과 — audio.ipc가 소비한다. interpreterPath는 spawn에 쓰는 절대 working path다. */
 export interface AdapterResolution {
   resolved: boolean
+  /** 선택된 후보의 출처(미해석 시 null). renderer가 "무엇을 쓰는 중인지" 표시하는 데 쓴다. */
+  source: CandidateSource | null
   /** 선택된 인터프리터의 절대 working path(borrowed=canonical abs, managed=realpath abs). 미해석 시 null. */
   interpreterPath: string | null
   ownership: RuntimeOwnership | null
@@ -99,12 +105,18 @@ function canon(P: typeof pathWin32, p: string): string {
   return trimmed.length ? trimmed : norm
 }
 
-/** runtimeRoot/modelRoot/cacheRoot 해석. 값은 canonical absolute. */
-export function resolveStorageRoots(deps: RuntimeAdapterDeps): {
+/** 해석된 저장 루트 + 그 소유권. borrowed는 읽기 전용(Python can_write가 이 값으로 판정). */
+export interface StorageRoots {
   runtimeRoot: string
   modelRoot: string
   cacheRoot: string
-} | null {
+  ownership: RuntimeOwnership
+}
+
+/** runtimeRoot/modelRoot/cacheRoot 해석. 값은 canonical absolute.
+ *  우선순위: 검증된 managed > 명시 ops env > 동의된 개별 설정 > 기존 사용자 환경(borrowed).
+ *  마지막 분기만 external-borrowed이며, 앞의 어느 하나라도 잡히면 도달하지 않는다. */
+export function resolveStorageRoots(deps: RuntimeAdapterDeps): StorageRoots | null {
   const P = picker(deps)
   const s = deps.settings()
   if (s.verifiedManagedRoots) {
@@ -112,6 +124,7 @@ export function resolveStorageRoots(deps: RuntimeAdapterDeps): {
       runtimeRoot: canon(P, s.verifiedManagedRoots.runtimeRoot),
       modelRoot: canon(P, s.verifiedManagedRoots.modelRoot),
       cacheRoot: canon(P, s.verifiedManagedRoots.cacheRoot),
+      ownership: 'audioforge-managed',
     }
   }
   // ops/E2E의 명시 환경 주입은 folder picker와 동급의 의도된 입력이다.
@@ -123,22 +136,34 @@ export function resolveStorageRoots(deps: RuntimeAdapterDeps): {
       runtimeRoot: rt,
       modelRoot: canon(P, deps.getEnv('AUDIOFORGE_MODEL_ROOT') ?? P.join(base, 'models')),
       cacheRoot: canon(P, deps.getEnv('AUDIOFORGE_CACHE_ROOT') ?? P.join(base, 'cache')),
+      ownership: 'audioforge-managed',
     }
   }
   // 기존 개별 root 설정은 사용자 동의가 저장된 경우에만 채택한다.
-  if (!s.legacyRuntimeConsent || !s.runtimeRoot) return null
-  const rt = s.runtimeRoot
-  const base = P.dirname(rt)
-  const mr = s.modelRoot ?? P.join(base, 'models')
-  const cr = s.cacheRoot ?? P.join(base, 'cache')
-  return { runtimeRoot: canon(P, rt), modelRoot: canon(P, mr), cacheRoot: canon(P, cr) }
+  if (s.legacyRuntimeConsent && s.runtimeRoot) {
+    const rt = s.runtimeRoot
+    const base = P.dirname(rt)
+    const mr = s.modelRoot ?? P.join(base, 'models')
+    const cr = s.cacheRoot ?? P.join(base, 'cache')
+    return { runtimeRoot: canon(P, rt), modelRoot: canon(P, mr), cacheRoot: canon(P, cr), ownership: 'audioforge-managed' }
+  }
+  // 기존 사용자 환경(앱 옆 externals): venv·모델이 이미 그 트리 안에 있으므로 세 root 모두 그 경로로
+  // 두고 external-borrowed로 표기한다. borrowed 표기가 곧 읽기 전용 계약이므로(can_write=false)
+  // 워커가 빌린 트리에 makedirs·다운로드를 하지 않는다. 레거시 배치와의 정합은 provision.layout이
+  // ownership으로 분기해 처리한다(managed 레이아웃 무변경).
+  const borrowed = deps.borrowedRootDir?.()
+  if (borrowed) {
+    const b = canon(P, borrowed)
+    return { runtimeRoot: b, modelRoot: b, cacheRoot: b, ownership: 'external-borrowed' }
+  }
+  return null
 }
 
-/** 계약 RuntimeRootConfig 생성. 세 루트 모두 audioforge-managed(우리 소유 저장 위치). */
+/** 계약 RuntimeRootConfig 생성. ownership은 해석 분기가 정한다(managed 저장 위치 / 빌린 기존 환경). */
 export function buildRootConfig(deps: RuntimeAdapterDeps): RuntimeRootConfig | null {
   const r = resolveStorageRoots(deps)
   if (!r) return null
-  const ownership: RuntimeOwnership = 'audioforge-managed'
+  const ownership: RuntimeOwnership = r.ownership
   return {
     schemaVersion: RUNTIME_CONTRACT_SCHEMA_VERSION,
     runtimeRoot: { path: r.runtimeRoot, ownership },
@@ -157,11 +182,18 @@ export function buildResolveSpec(deps: RuntimeAdapterDeps): RuntimeResolveSpec {
     envVarName: 'AUDIOFORGE_PYTHON',
   }
   const roots = resolveStorageRoots(deps)
-  if (roots) spec.runtimeRoot = roots.runtimeRoot
+  // managed 후보(runtimeRoot/audioforge_venv)는 managed root에서만 만든다. borrowed root로
+  // managed 후보를 만들면 빌린 트리를 우리 소유로 오표기(canWrite=true)하게 된다.
+  if (roots && roots.ownership === 'audioforge-managed') spec.runtimeRoot = roots.runtimeRoot
   if (s.pythonPath) spec.userSelectedPath = s.pythonPath
   if (s.externalPythonPath) spec.userSelectedExternalPath = s.externalPythonPath
+  // 기존 환경 기록(externals/env.json)은 최하위 후보로 항상 제시한다. 조용한 폴백이 아니다:
+  //   ① 후보는 probe(env_check --json) 증거를 통과해야 validated가 되고
+  //   ② ownership은 external-borrowed(읽기 전용)로 남고
+  //   ③ 사용자 선택(user-settings)·managed가 있으면 rank가 밀린다.
+  // 제거된 것은 bare `python` PATH 폴백과 worktree-relative 추측이며, 그 둘은 여기서 부활하지 않는다.
   const legacy = deps.legacyRecordPath()
-  if (s.legacyRuntimeConsent && legacy) spec.legacyRecordPath = legacy
+  if (legacy) spec.legacyRecordPath = legacy
   return spec
 }
 
@@ -203,6 +235,7 @@ export async function resolveRuntimeWithDeps(deps: RuntimeAdapterDeps): Promise<
   const resolved = result.status === 'resolved' && sel != null
   return {
     resolved,
+    source: sel ? sel.source : null,
     interpreterPath: resolved && sel ? sel.resolvedPath : null,
     ownership: sel ? sel.ownership : null,
     reasonCode: result.reasonCode,
