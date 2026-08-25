@@ -43,6 +43,17 @@ export default function TtsResultInfo() {
   const elapsed = typeof m.elapsed_seconds === 'number' ? m.elapsed_seconds : null
   const sr = typeof m.output_sample_rate === 'number' ? m.output_sample_rate : null
   const tgt = LANG_LABEL[String(m.target_language ?? '')] || null
+  // I4 재현 필드(비민감: 수치·모드·해시8만). 구 session은 이 값들이 없어 표시하지 않는다.
+  const tailMode = m.tail_mode === 'auto' || m.tail_mode === 'off' ? m.tail_mode : null
+  const tailPad = typeof m.tail_pad_ms === 'number' ? m.tail_pad_ms : null
+  const tailFadeApplied = m.tail_fade_applied === true
+  const parserVer = typeof m.parser_version === 'number' ? m.parser_version : null
+  const planSha8 = typeof m.parsed_plan_sha8 === 'string' ? m.parsed_plan_sha8 : null
+  const segCount = typeof m.segment_count === 'number' ? m.segment_count : null
+  const explicitPauses = typeof m.explicit_pause_count === 'number' ? m.explicit_pause_count : 0
+  const emoBoundary = m.emotion_boundary_mode === 'immediate' || m.emotion_boundary_mode === 'pause'
+    ? m.emotion_boundary_mode : null
+  const hasExprMeta = tailMode != null || parserVer != null
 
   // requested 'auto'가 아니고 requested≠actual이면 명확한 폴백/전환 표시
   const requestedIsAuto = requested === 'auto'
@@ -118,11 +129,16 @@ export default function TtsResultInfo() {
       )}
       {/* 구현 상세(접기) — 기술 구현명·자동분할 조각별 수치는 기본 노출에서 숨기고 원하는 사용자만 펼쳐 본다.
           문장·전사·전체 경로는 담지 않는다(스키마상 없음). 구 session(기술 필드 없음)은 이 영역 자체를 숨김. */}
-      {((pitchPost && pitchMethod) || (gen && gen.chunks.length > 0)) && (
+      {((pitchPost && pitchMethod) || hasExprMeta || (gen && gen.chunks.length > 0)) && (
         <details style={{ fontSize: 11, color: 'var(--text-muted)' }}>
           <summary style={{ cursor: 'pointer', color: 'var(--text-secondary)', width: 'fit-content' }}>상세 정보</summary>
           <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
             {pitchPost && pitchMethod && <span style={chip()}>음높이 구현: {pitchMethod}</span>}
+            {tailMode && <span style={chip()}>말끝 다듬기: {tailMode === 'auto' ? `자동${tailPad != null ? ` (여백 ${tailPad}ms${tailFadeApplied ? ', 페이드' : ''})` : ''}` : '끔'}</span>}
+            {emoBoundary && <span style={chip()}>감정 전환: {emoBoundary === 'pause' ? '쉼 후' : '즉시'}</span>}
+            {explicitPauses > 0 && <span style={chip()}>명시적 쉼 {explicitPauses}회</span>}
+            {segCount != null && <span style={chip()}>문장 {segCount}개</span>}
+            {parserVer != null && planSha8 && <span style={chip()}>파서 v{parserVer} · {planSha8}</span>}
           </div>
           {gen && gen.chunks.length > 0 && (
             <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4, overflowX: 'auto' }}>
