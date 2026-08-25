@@ -1135,12 +1135,13 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         # 기준 파일은 **pitch 적용 전 pending**이다. pitch=0이면 최종 synthesized.wav와 동일 좌표지만,
         # pitch!=0이면 rubberband가 전체 길이를 바꾸므로 이 위치는 최종 파일에 선형 대응하지 않는다.
         # gen_chunks/ordered_entries/use/gaps는 모두 같은 순서·같은 길이(위 루프들이 ordered_entries 기준).
-        if len(_layout) != len(gen_chunks):
-            raise RuntimeError("concat layout과 chunk 메타 길이 불일치")
-        for _e, _lay in zip(gen_chunks, _layout):
-            _e["frames"] = _lay["frames"]
-            _e["gap_before_samples"] = _lay["gap_before_samples"]
-            _e["start_sample"] = _lay["start_sample"]
+        # 진단 정보는 합성을 절대 깨뜨리지 않는다: layout이 없거나(테스트 스텁 등) 길이가 어긋나면
+        # 부분 기록으로 잘못된 join 위치를 남기는 대신 그냥 붙이지 않는다(오디오 출력에는 무관).
+        if isinstance(_layout, list) and len(_layout) == len(gen_chunks):
+            for _e, _lay in zip(gen_chunks, _layout):
+                _e["frames"] = _lay["frames"]
+                _e["gap_before_samples"] = _lay["gap_before_samples"]
+                _e["start_sample"] = _lay["start_sample"]
 
         # 공통 최종 단계(계약 §6.1): pitch(후처리 축)를 speed·결합이 끝난 최종 후보에 적용하고
         # 원자적으로 synthesized.wav에 배치. 검증·os.replace·실패격리(기존 wav 무손상)는 공통 함수가 책임.
