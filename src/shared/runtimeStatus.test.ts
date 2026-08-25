@@ -1,7 +1,14 @@
 // runtimeStatusView 순수 매핑 회귀 — Node 내장 러너(node --test).
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { runtimeStatusView, type RuntimeStatusReport } from './runtimeStatus.ts'
+import {
+  runtimeStatusView,
+  runtimeScreenState,
+  runtimeScreenView,
+  runtimeProblemSummary,
+  RUNTIME_SCREEN_STATES,
+  type RuntimeStatusReport,
+} from './runtimeStatus.ts'
 import { REASON_CODES } from './runtimeContract.ts'
 
 function report(p: Partial<RuntimeStatusReport>): RuntimeStatusReport {
@@ -74,4 +81,68 @@ test('전체 25개 ReasonCode에 대해 안전한 View 반환(throw 없음, 유�
     assert.equal(typeof v.detail, 'string')
     assert.ok(v.detail.length > 0)
   }
+})
+
+// ── 메인 화면 상태 권위(5개) ─────────────────────────────────────────────────
+test('runtimeScreenState: 보고 없음=checking, resolved=ready', () => {
+  assert.equal(runtimeScreenState(null), 'checking')
+  assert.equal(runtimeScreenState(report({ resolved: true, ownership: 'external-borrowed' })), 'ready')
+})
+
+test('runtimeScreenState: 구성 불완전=invalid, 그 외 미해석=setup-required', () => {
+  assert.equal(runtimeScreenState(report({ resolved: false, reasonCode: 'VENV_MISSING' })), 'invalid')
+  assert.equal(runtimeScreenState(report({ resolved: false, reasonCode: 'PACKAGE_MISSING' })), 'invalid')
+  assert.equal(runtimeScreenState(report({ resolved: false, reasonCode: 'NO_RUNTIME_ROOT' })), 'setup-required')
+  assert.equal(runtimeScreenState(report({ resolved: false, reasonCode: null })), 'setup-required')
+})
+
+test('runtimeScreenState: installing이 다른 모든 상태를 덮는다', () => {
+  assert.equal(runtimeScreenState(report({ resolved: true }), { installing: true }), 'installing')
+  assert.equal(runtimeScreenState(null, { installing: true }), 'installing')
+})
+
+test('ready 화면은 한 줄 + 관리 버튼 하나 — 설치 불가 경고를 섞지 않는다', () => {
+  const v = runtimeScreenView(report({ resolved: true, ownership: 'external-borrowed', source: 'legacy-detected' }))
+  assert.equal(v.state, 'ready')
+  assert.equal(v.headline, '음성 엔진 준비됨')
+  assert.equal(v.suffix, '기존 환경 사용 중')
+  assert.equal(v.actionLabel, '관리')
+  assert.equal(v.action, 'manage')
+  // 모순 방지: ready 문구에 설치·미선택·불가 같은 말이 들어가면 안 된다.
+  const line = `${v.headline} ${v.suffix ?? ''}`
+  for (const bad of ['설치', '미선택', '불가', '준비 불가']) assert.ok(!line.includes(bad), bad)
+})
+
+test('managed로 준비되면 독립 환경 사용 중으로 표기', () => {
+  const v = runtimeScreenView(report({ resolved: true, ownership: 'audioforge-managed' }))
+  assert.equal(v.suffix, '독립 환경 사용 중')
+})
+
+test('setup-required 화면의 기본 CTA는 설정 시작 하나', () => {
+  const v = runtimeScreenView(report({ resolved: false, reasonCode: 'NO_RUNTIME_ROOT' }))
+  assert.equal(v.state, 'setup-required')
+  assert.equal(v.headline, '음성 엔진 설정이 필요합니다')
+  assert.equal(v.actionLabel, '설정 시작')
+  assert.equal(v.suffix, null)
+})
+
+test('invalid 화면은 원인 요약 + 문제 해결 버튼, 기술 상세는 문구에 없음', () => {
+  const r = report({ resolved: false, reasonCode: 'PYTHON_VERSION_INCOMPATIBLE' })
+  const v = runtimeScreenView(r)
+  assert.equal(v.state, 'invalid')
+  assert.equal(v.headline, '음성 엔진을 사용할 수 없습니다')
+  assert.equal(v.actionLabel, '문제 해결')
+  // reasonCode 문자열이 메인 화면 문구로 새지 않는다.
+  assert.ok(!v.headline.includes('PYTHON_VERSION_INCOMPATIBLE'))
+  assert.match(runtimeProblemSummary(r), /파이썬 버전/)
+})
+
+test('checking/installing에는 기본 버튼이 없다', () => {
+  assert.equal(runtimeScreenView(null).action, null)
+  assert.equal(runtimeScreenView(null).actionLabel, null)
+  assert.equal(runtimeScreenView(report({ resolved: true }), { installing: true }).action, null)
+})
+
+test('모든 상태가 정확히 하나의 표현을 갖는다(상태 권위 5개)', () => {
+  assert.deepEqual([...RUNTIME_SCREEN_STATES], ['checking', 'ready', 'setup-required', 'invalid', 'installing'])
 })

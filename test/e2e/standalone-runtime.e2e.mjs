@@ -73,19 +73,58 @@ try {
   const status = await win.evaluate(() => {
     const el = document.querySelector('[data-testid="runtime-status"]')
     if (!el) return null
+    const actions = [...el.querySelectorAll('button')]
+    const primary = el.querySelector('[data-testid="runtime-primary-action"]')
     return {
-      tone: el.getAttribute('data-tone'),
+      state: el.getAttribute('data-state'),
       resolved: el.getAttribute('data-resolved'),
-      hasSelectButton: !!el.querySelector('[data-testid="runtime-select-interpreter"]'),
+      buttonCount: actions.length,
+      primaryAction: primary ? primary.getAttribute('data-action') : null,
+      primaryLabel: primary ? primary.textContent.trim() : null,
+      text: el.innerText,
     }
   })
   ok(status !== null, '런타임 상태 속성 판독 가능')
   if (status) {
-    ok(['ready', 'action', 'incomplete'].includes(status.tone), `유효한 tone(${status.tone})`)
+    ok(['checking', 'ready', 'setup-required', 'invalid', 'installing'].includes(status.state),
+      `상태 권위 5개 중 하나(${status.state})`)
     // 무-fallback 계약: 격리 userData + AUDIOFORGE_RUNTIME_ROOT 제거 + externals 없는 사본 → 미해석.
     ok(status.resolved === '0', `격리 환경에서 런타임 미해석(resolved=${status.resolved}) — 조용한 fallback 없음`)
-    ok(status.hasSelectButton === true, '미구성 시 "파이썬 실행기 선택" 버튼 노출')
-    ok(status.tone === 'action' || status.tone === 'incomplete', `미구성 tone은 action/incomplete(${status.tone})`)
+    ok(status.state === 'setup-required' || status.state === 'invalid', `미구성 상태(${status.state})`)
+    // 메인 화면 계약: 기본 버튼은 정확히 하나.
+    ok(status.buttonCount === 1, `메인 화면 버튼 1개(${status.buttonCount})`)
+    ok(status.primaryAction === 'setup' || status.primaryAction === 'troubleshoot',
+      `단일 CTA(${status.primaryAction} · ${status.primaryLabel})`)
+    // 설치 위치·설치 계획·Python 같은 개발자용 기능은 메인 화면에 노출되지 않는다.
+    for (const banned of ['설치 위치', '설치 계획', '다시 검사', 'Python', '파이썬 실행기']) {
+      ok(!status.text.includes(banned), `메인 화면에 "${banned}" 미노출`)
+    }
+  }
+
+  // 관리/설정 모달 — 기본 CTA로 열리고 Escape로 닫힌다(키보드 접근).
+  await win.click('[data-testid="runtime-primary-action"]')
+  let modalOpen = true
+  try { await win.waitForSelector('[data-testid="runtime-manager-modal"]', { timeout: 10000 }) } catch { modalOpen = false }
+  ok(modalOpen, '기본 CTA가 관리 모달을 연다')
+  if (modalOpen) {
+    const modal = await win.evaluate(() => {
+      const el = document.querySelector('[data-testid="runtime-manager-modal"]')
+      return {
+        role: el.getAttribute('role'),
+        modal: el.getAttribute('aria-modal'),
+        labelled: !!document.getElementById(el.getAttribute('aria-labelledby') || ''),
+        hasExisting: !!el.querySelector('[data-testid="runtime-use-existing"]'),
+        hasInstall: !!el.querySelector('[data-testid="runtime-toggle-install"]'),
+        hasDiagnostics: !!el.querySelector('[data-testid="runtime-diagnostics"]'),
+        focusInside: el.contains(document.activeElement),
+      }
+    })
+    ok(modal.role === 'dialog' && modal.modal === 'true' && modal.labelled, 'dialog/aria-modal/aria-labelledby')
+    ok(modal.focusInside, '열릴 때 포커스가 모달 안으로 이동')
+    ok(modal.hasExisting && modal.hasInstall && modal.hasDiagnostics, '기존 환경 사용·독립 설치·진단 상세가 모달 안에 있음')
+    await win.keyboard.press('Escape')
+    const closed = await win.evaluate(() => !document.querySelector('[data-testid="runtime-manager-modal"]'))
+    ok(closed, 'Escape로 모달이 닫힘')
   }
 
   ok(pageErrors.length === 0, `pageerror 0(${pageErrors.length})`)

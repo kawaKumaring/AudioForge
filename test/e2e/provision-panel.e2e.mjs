@@ -38,10 +38,21 @@ try {
   await win.waitForLoadState('domcontentloaded')
   ok((await app.windows()).length === 1, '단일 윈도우로 부팅')
 
-  // provision 패널이 렌더될 때까지 대기.
+  // provisioner는 메인 화면이 아니라 **관리 모달 안**에 있다 — 기본 CTA로 열고 설치 섹션을 펼친다.
+  await win.waitForSelector('[data-testid="runtime-primary-action"]', { timeout: 15000 })
+  await win.click('[data-testid="runtime-primary-action"]')
+  await win.waitForSelector('[data-testid="runtime-manager-modal"]', { timeout: 15000 })
   let panelVisible = true
   try { await win.waitForSelector('[data-testid="runtime-provision-panel"]', { timeout: 15000 }) } catch { panelVisible = false }
-  ok(panelVisible, 'provision 패널이 렌더됨')
+  if (!panelVisible) {
+    // manage intent로 열리면 설치 섹션이 접혀 있다 — 명시적으로 펼친다.
+    try {
+      await win.click('[data-testid="runtime-toggle-install"]')
+      await win.waitForSelector('[data-testid="runtime-provision-panel"]', { timeout: 15000 })
+      panelVisible = true
+    } catch { panelVisible = false }
+  }
+  ok(panelVisible, 'provision 패널이 관리 모달 안에서 렌더됨')
 
   // "설치 계획 보기" 클릭 → provision_cli.py subprocess(pure) → 구성요소 렌더.
   await win.click('[data-testid="provision-plan-btn"]')

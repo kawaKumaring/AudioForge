@@ -2,9 +2,12 @@
 // provision.ipc.ts가 이 함수들을 소비한다(electron 의존은 그쪽에만 둔다).
 import { isReasonCode, type ReasonCode } from '../../shared/runtimeContract.ts'
 
-// plan에서 보여줄 선택(optional) component 집합. "*"는 Python cli가 manifest의 required=False 전부로 확장한다
-// (component id 지식을 Python 단일 소스에 두기 위함 — TS에서 개별 id를 하드코딩하지 않는다).
-export const ALL_OPTIONAL = ['*'] as const
+// plan에서 보여줄 선택(optional) extra component 집합.
+// Python cli(_resolve_engine_ids)는 "Explicit extras only" — wildcard를 fail-closed로 거부한다
+// (UNRESOLVED_COMPONENT). 따라서 여기서 "*"를 보내면 plan/verify가 통째로 실패한다.
+// 기본 미리보기는 profile(minimal-qwen)이 정의한 구성요소만 보여주면 되므로 extras는 비운다.
+// 개별 extra는 사용자가 선택할 때 명시 id로 전달한다(TS가 id를 하드코딩하지 않는 원칙 유지).
+export const ALL_OPTIONAL: readonly string[] = []
 
 // provisioner 실행용 Python 경로를 **명시 주입원**에서만 고른다. 자동 스캔·벤더(외부 배포판/system) 하드코딩 0.
 //   1) env AUDIOFORGE_PROVISION_PYTHON (ops/E2E 주입)

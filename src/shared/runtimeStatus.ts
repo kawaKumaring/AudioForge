@@ -113,3 +113,90 @@ export function runtimeStatusView(report: RuntimeStatusReport): RuntimeStatusVie
     canSelectInterpreter: true,
   }
 }
+
+// ── 메인 화면 상태 권위 ──────────────────────────────────────────────────────
+// 화면은 아래 5개 중 **하나**만 그린다. 현재 실행 가능 상태(ready)와 향후 독립 설치 준비 상태
+// (설치 위치 미선택 등)를 같은 카드에서 섞지 않는다 — ready에 설치 불가 경고를 붙이면 모순이다.
+// 설치 준비 정보는 전부 관리 모달 안에서만 다룬다.
+export const RUNTIME_SCREEN_STATES = ['checking', 'ready', 'setup-required', 'invalid', 'installing'] as const
+export type RuntimeScreenState = (typeof RUNTIME_SCREEN_STATES)[number]
+
+/** 메인 화면 한 줄의 표현. action은 항상 0개 또는 1개(기본 버튼 하나). */
+export interface RuntimeScreenView {
+  state: RuntimeScreenState
+  /** 한 줄 문구. 기술 용어·경로·reasonCode 없음(그건 진단 상세 소관). */
+  headline: string
+  /** ready에서만 쓰는 보조 어절(예: 기존 환경 사용 중). 그 외 null. */
+  suffix: string | null
+  /** 기본 버튼 라벨. null이면 버튼 없음(checking/installing). */
+  actionLabel: string | null
+  /** 버튼이 여는 대상. manage=관리 모달, setup=설정 시작, troubleshoot=문제 해결(진단 열림). */
+  action: 'manage' | 'setup' | 'troubleshoot' | null
+}
+
+/** 보고 → 화면 상태(순수). report null = 아직 조회 중, installing은 호출부가 명시한다. */
+export function runtimeScreenState(
+  report: RuntimeStatusReport | null,
+  opts?: { installing?: boolean },
+): RuntimeScreenState {
+  if (opts?.installing) return 'installing'
+  if (!report) return 'checking'
+  if (report.resolved) return 'ready'
+  // 런타임은 있으나 구성이 불완전 → invalid(원인 요약 + 문제 해결). 그 외 미해석 → setup-required.
+  const code = report.reasonCode
+  if (code && INCOMPLETE_MESSAGE[code]) return 'invalid'
+  return 'setup-required'
+}
+
+/** 소유권 → 사용자 언어의 짧은 어절. 경로·fingerprint·ownership 코드는 노출하지 않는다. */
+function ownershipSuffix(o: RuntimeOwnership | null): string {
+  if (o === 'audioforge-managed') return '독립 환경 사용 중'
+  if (o === 'external-borrowed') return '기존 환경 사용 중'
+  return '사용 준비됨'
+}
+
+/** 상태 → 메인 화면 표현(순수). renderer는 이 결과만 그린다. */
+export function runtimeScreenView(
+  report: RuntimeStatusReport | null,
+  opts?: { installing?: boolean },
+): RuntimeScreenView {
+  const state = runtimeScreenState(report, opts)
+  switch (state) {
+    case 'checking':
+      return { state, headline: '음성 엔진을 확인하는 중입니다', suffix: null, actionLabel: null, action: null }
+    case 'installing':
+      return { state, headline: '음성 엔진을 설치하는 중입니다', suffix: null, actionLabel: null, action: null }
+    case 'ready':
+      return {
+        state,
+        headline: '음성 엔진 준비됨',
+        suffix: ownershipSuffix(report?.ownership ?? null),
+        actionLabel: '관리',
+        action: 'manage',
+      }
+    case 'invalid':
+      return {
+        state,
+        headline: '음성 엔진을 사용할 수 없습니다',
+        suffix: null,
+        actionLabel: '문제 해결',
+        action: 'troubleshoot',
+      }
+    case 'setup-required':
+    default:
+      return {
+        state,
+        headline: '음성 엔진 설정이 필요합니다',
+        suffix: null,
+        actionLabel: '설정 시작',
+        action: 'setup',
+      }
+  }
+}
+
+/** invalid 상태의 원인 요약 한 줄(진단 상세 밖에서 보여줄 수 있는 유일한 원인 문구). */
+export function runtimeProblemSummary(report: RuntimeStatusReport | null): string {
+  const code = report?.reasonCode
+  if (code && INCOMPLETE_MESSAGE[code]) return INCOMPLETE_MESSAGE[code] as string
+  return '음성 엔진 구성을 확인해야 합니다.'
+}

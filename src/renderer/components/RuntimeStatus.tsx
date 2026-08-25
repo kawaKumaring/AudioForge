@@ -1,86 +1,97 @@
-import { useEffect, useState, useCallback } from 'react'
-import { runtimeStatusView, type RuntimeStatusReport, type RuntimeStatusView } from '../../shared/runtimeStatus'
+import { useCallback, useEffect, useState } from 'react'
+import {
+  runtimeScreenView,
+  runtimeProblemSummary,
+  type RuntimeStatusReport,
+  type RuntimeScreenView,
+} from '../../shared/runtimeStatus'
+import RuntimeManagerModal from './RuntimeManagerModal'
 
-// 독립 실행(standalone) 런타임 상태 패널(R4).
-// 앱은 ComfyUI를 전제하지 않는다 — 시작 화면에서 "런타임이 구성됐는지"를 사용자에게 보여주고,
-// 미구성이면 파이썬 실행기를 직접 지정하도록 안내한다. 설치/다운로드는 하지 않는다(PROVISION 단계 소관).
-// main의 settings:get은 전체 경로를 주지 않으므로(basename·소유권·reasonCode만) 여기서도 경로를 다루지 않는다.
+// 메인 화면의 음성 엔진 상태 — **한 줄 + 기본 버튼 하나**만 그린다.
+// 상태 권위는 shared/runtimeStatus의 5개 상태(checking/ready/setup-required/invalid/installing)뿐이며,
+// ready에 설치 불가 경고를 함께 표시하지 않는다(모순 금지). 설치 위치·Python·설치 계획·다시 검사·
+// 진단 상세는 전부 관리 모달 안으로 이동했다. 여기서는 경로·ownership·fingerprint를 다루지 않는다.
 
-const TONE: Record<RuntimeStatusView['tone'], { fg: string; bg: string; border: string; dot: string }> = {
-  ready:      { fg: 'var(--text-primary)', bg: 'rgba(52, 211, 153, 0.08)',  border: 'rgba(52, 211, 153, 0.35)',  dot: '#34d399' },
-  action:     { fg: 'var(--text-primary)', bg: 'var(--accent-glow)',        border: 'var(--border-accent)',      dot: 'var(--accent-light)' },
-  incomplete: { fg: 'var(--text-primary)', bg: 'rgba(251, 191, 36, 0.08)',  border: 'rgba(251, 191, 36, 0.35)',  dot: '#fbbf24' },
+const DOT: Record<RuntimeScreenView['state'], string> = {
+  checking: 'var(--text-muted)',
+  ready: '#34d399',
+  'setup-required': 'var(--accent-light)',
+  invalid: '#fbbf24',
+  installing: 'var(--accent-light)',
 }
 
 export default function RuntimeStatus() {
   const [report, setReport] = useState<RuntimeStatusReport | null>(null)
-  const [busy, setBusy] = useState(false)
+  const [loaded, setLoaded] = useState(false)
+  const [manager, setManager] = useState<null | 'manage' | 'setup' | 'troubleshoot'>(null)
 
   const refresh = useCallback(async () => {
     try {
-      const r = await window.api.settings.get()
-      setReport(r)
+      setReport(await window.api.settings.get())
     } catch {
-      // settings:get 자체 실패도 "미구성"으로 안전하게 표시(앱은 계속 살아있어야 함).
+      // settings:get 자체 실패도 "설정 필요"로 안전하게 표시(앱은 계속 살아있어야 함).
       setReport({ resolved: false, interpreterBasename: null, ownership: null, reasonCode: null })
+    } finally {
+      setLoaded(true)
     }
   }, [])
 
   useEffect(() => { void refresh() }, [refresh])
 
-  const selectInterpreter = useCallback(async () => {
-    setBusy(true)
-    try {
-      await window.api.settings.selectPythonPath()
-    } finally {
-      setBusy(false)
-      void refresh()
-    }
-  }, [refresh])
-
-  // 아직 상태를 못 받았으면 아무것도 그리지 않는다(초기 화면 깜빡임 방지).
-  if (!report) return null
-
-  const view = runtimeStatusView(report)
-  const tone = TONE[view.tone]
+  // 첫 조회 전에는 아무것도 그리지 않는다(초기 화면 깜빡임 방지). 조회 후에는 항상 한 줄이 있다.
+  const view = runtimeScreenView(loaded ? report : null)
+  if (!loaded) return null
 
   return (
-    <div
-      data-testid="runtime-status"
-      data-tone={view.tone}
-      data-resolved={report.resolved ? '1' : '0'}
-      style={{
-        display: 'flex', alignItems: 'center', gap: 12,
-        marginTop: 16, padding: '12px 14px', borderRadius: 12,
-        background: tone.bg, border: `1px solid ${tone.border}`, color: tone.fg,
-      }}
-    >
-      <span style={{
-        width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
-        background: tone.dot, boxShadow: `0 0 8px ${tone.dot}`,
-      }} />
-      <div style={{ minWidth: 0, flex: 1 }}>
-        <div style={{ fontSize: 12, fontWeight: 600 }}>{view.title}</div>
-        <div style={{ marginTop: 2, fontSize: 11, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {view.detail}
-        </div>
-      </div>
-      {view.canSelectInterpreter && (
-        <button
-          data-testid="runtime-select-interpreter"
-          onClick={selectInterpreter}
-          disabled={busy}
+    <>
+      <div
+        data-testid="runtime-status"
+        data-state={view.state}
+        data-resolved={report?.resolved ? '1' : '0'}
+        style={{
+          display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
+          marginTop: 16, padding: '10px 14px', borderRadius: 12,
+          background: 'var(--bg-card)', border: '1px solid var(--border-subtle)',
+          color: 'var(--text-primary)',
+        }}
+      >
+        <span
+          aria-hidden="true"
           style={{
-            flexShrink: 0, padding: '7px 12px', borderRadius: 8,
-            border: '1px solid var(--border-subtle)', cursor: busy ? 'default' : 'pointer',
-            fontFamily: 'inherit', fontSize: 11, fontWeight: 500,
-            background: 'var(--bg-elevated)', color: 'var(--text-primary)',
-            opacity: busy ? 0.6 : 1,
+            width: 8, height: 8, borderRadius: '50%', flexShrink: 0,
+            background: DOT[view.state], boxShadow: `0 0 8px ${DOT[view.state]}`,
           }}
+        />
+        <span
+          data-testid="runtime-status-line"
+          style={{ minWidth: 0, flex: '1 1 200px', fontSize: 12, fontWeight: 500, overflowWrap: 'anywhere' }}
         >
-          {busy ? '선택 중…' : '파이썬 실행기 선택'}
-        </button>
+          {view.headline}
+          {view.suffix && (
+            <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> · {view.suffix}</span>
+          )}
+        </span>
+        {view.action && (
+          <button
+            data-testid="runtime-primary-action"
+            data-action={view.action}
+            className="btn btn-primary"
+            style={{ flexShrink: 0, fontSize: 12, padding: '6px 14px' }}
+            onClick={() => setManager(view.action)}
+          >
+            {view.actionLabel}
+          </button>
+        )}
+      </div>
+
+      {manager && (
+        <RuntimeManagerModal
+          intent={manager}
+          report={report}
+          problemSummary={runtimeProblemSummary(report)}
+          onClose={() => { setManager(null); void refresh() }}
+        />
       )}
-    </div>
+    </>
   )
 }

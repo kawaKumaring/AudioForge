@@ -63,6 +63,8 @@ test('계약 ReasonCode는 그대로, 비계약/미상은 APPLY_DISABLED', () =>
   assert.equal(envelopeReasonCode({}), 'APPLY_DISABLED')
 })
 
-test('ALL_OPTIONAL은 "*" 확장 신호', () => {
-  assert.deepEqual([...ALL_OPTIONAL], ['*'])
+test('ALL_OPTIONAL은 비어 있다 — Python cli가 wildcard를 fail-closed로 거부하므로', () => {
+  assert.deepEqual([...ALL_OPTIONAL], [])
+  // '*'를 보내면 provision_cli가 UNRESOLVED_COMPONENT로 계획 전체를 거부한다(회귀 가드).
+  assert.ok(!(ALL_OPTIONAL as readonly string[]).includes('*'))
 })

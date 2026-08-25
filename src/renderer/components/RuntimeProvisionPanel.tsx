@@ -9,14 +9,16 @@ import {
 import type { ReasonCode } from '../../shared/runtimeContract'
 import type { ManagedRootSelectionStatus, ProvisionApprovalContext } from '../../shared/provisionIpc'
 
-// managed provisioner 패널(R-provision) — 설치 계획 보기 / 외부 런타임 선택 / 다시 검사.
+// managed provisioner 패널(R-provision) — 설치 위치 변경 / 설치 계획 보기 / 다시 검사.
+// **관리 모달 안에서만** 렌더된다(메인 화면에는 상태 한 줄 + 기본 버튼 하나만 남는다).
+// "기존 환경 사용"(외부 인터프리터 선택)은 모달 상위 섹션으로 이동했다 — 여기는 독립 설치 전용.
 // 실제 설치 버튼은 항상 비활성(승인 전, apply 차단). 자동 다운로드·자동 복구 0.
 // 표시는 displayLabel·레이아웃 상대경로·용량 요약만 — 전체 절대경로는 main이 애초에 주지 않는다(§11).
 // inline style(Electron에서 Tailwind 레이아웃 유틸 미동작) + CSS 변수. E2E용 data-testid 부여.
 
 // reasonCode → 사용자용 안내(자유 문자열 금지 — 코드 매핑 단일 소스). 미매핑 코드는 기본 문구.
 const REASON_MESSAGE: Partial<Record<ReasonCode, string>> = {
-  BOOTSTRAP_PYTHON_UNRESOLVED: 'provisioner를 실행할 파이썬이 지정되지 않았습니다. 외부 런타임을 선택하세요.',
+  BOOTSTRAP_PYTHON_UNRESOLVED: '설치를 진행할 파이썬이 지정되지 않았습니다. 먼저 기존 환경을 선택하세요.',
   UNRESOLVED_COMPONENT: '일부 구성요소의 출처·체크섬·라이선스가 아직 확정되지 않아 설치할 수 없습니다.',
   APPLY_DISABLED: '실제 설치는 아직 비활성입니다(승인 전).',
   PLAN_FINGERPRINT_MISMATCH: '설치 계획이 변경되어 이전 승인이 무효화되었습니다. 계획을 다시 확인하세요.',
@@ -79,13 +81,6 @@ export default function RuntimeProvisionPanel() {
     } finally { setBusy(false) }
   }, [])
 
-  const selectRuntime = useCallback(async () => {
-    setBusy(true)
-    try {
-      await window.api.settings.selectPythonPath()  // 외부 런타임(borrowed) 지정 — 기존 선택 흐름 재사용
-    } finally { setBusy(false) }
-  }, [])
-
   const selectManagedRoot = useCallback(async () => {
     setBusy(true); setStatus(null)
     try {
@@ -106,32 +101,24 @@ export default function RuntimeProvisionPanel() {
   return (
     <div
       data-testid="runtime-provision-panel"
-      style={{
-        marginTop: 12, padding: '12px 14px', borderRadius: 12,
-        background: 'var(--bg-card)', border: '1px solid var(--border-subtle)',
-      }}
+      style={{ marginTop: 12, paddingTop: 12, borderTop: '1px solid var(--border-subtle)' }}
     >
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
-        <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>런타임 설치 관리</div>
-        <div style={{ display: 'flex', gap: 6 }}>
-          <button data-testid="provision-select-managed-root" onClick={selectManagedRoot} disabled={busy} style={btnStyle(busy)}>
-            설치 위치 선택
-          </button>
-          <button data-testid="provision-select-runtime" onClick={selectRuntime} disabled={busy} style={btnStyle(busy)}>
-            외부 Python 선택(읽기 전용)
-          </button>
-          <button data-testid="provision-plan-btn" onClick={runPlan} disabled={busy} style={btnStyle(busy)}>
-            {busy ? '확인 중…' : '설치 계획 보기'}
-          </button>
-          <button data-testid="provision-verify-btn" onClick={runVerify} disabled={busy} style={btnStyle(busy)}>
-            다시 검사
-          </button>
-        </div>
+      {/* 버튼은 줄바꿈으로 흐른다 — 좁은 창(800×600·125%/150%)에서도 카드 밖으로 넘치지 않게. */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+        <button data-testid="provision-select-managed-root" onClick={selectManagedRoot} disabled={busy} style={btnStyle(busy)}>
+          설치 위치 변경
+        </button>
+        <button data-testid="provision-plan-btn" onClick={runPlan} disabled={busy} style={btnStyle(busy)}>
+          {busy ? '확인 중…' : '설치 계획 보기'}
+        </button>
+        <button data-testid="provision-verify-btn" onClick={runVerify} disabled={busy} style={btnStyle(busy)}>
+          다시 검사
+        </button>
       </div>
 
-      <div data-testid="provision-managed-root-status" style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)' }}>
+      <div data-testid="provision-managed-root-status" style={{ marginTop: 8, fontSize: 11, color: 'var(--text-muted)', overflowWrap: 'anywhere' }}>
         설치 위치: {root?.displayLabel ?? '확인 중…'}
-        {root?.configured ? ' · 선택됨' : ' · 설치 승인 준비 불가'}
+        {root?.configured ? ' · 선택됨' : ' · 아직 선택하지 않음'}
       </div>
 
       {status && (
@@ -142,7 +129,7 @@ export default function RuntimeProvisionPanel() {
 
       {plan && (
         <div style={{ marginTop: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 6, marginBottom: 8 }}>
             <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
               구성요소 {plan.components.length}개 · 예상 용량 {formatSize(plan)}
             </span>
@@ -157,11 +144,11 @@ export default function RuntimeProvisionPanel() {
                 data-testid="provision-component"
                 data-resolved={c.resolved ? '1' : '0'}
                 style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+                  display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8,
                   padding: '6px 8px', borderRadius: 8, background: 'var(--bg-elevated)',
                 }}
               >
-                <span style={{ fontSize: 11, color: 'var(--text-primary)', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                <span style={{ fontSize: 11, color: 'var(--text-primary)', minWidth: 0, overflowWrap: 'anywhere' }}>
                   {displayComponentLabel(c)}
                   {c.installPath && (
                     <span style={{ marginLeft: 6, fontSize: 10, color: 'var(--text-muted)' }}>· {c.installPath}</span>
@@ -177,7 +164,7 @@ export default function RuntimeProvisionPanel() {
             ))}
           </div>
 
-          <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
+          <div style={{ marginTop: 10, display: 'flex', flexWrap: 'wrap', alignItems: 'center', gap: 10 }}>
             <button
               data-testid="provision-apply-btn"
               disabled={applyDisabled}
@@ -190,7 +177,7 @@ export default function RuntimeProvisionPanel() {
             >
               설치 시작
             </button>
-            <span data-testid="provision-apply-reason" style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            <span data-testid="provision-apply-reason" style={{ fontSize: 11, color: 'var(--text-muted)', minWidth: 0, flex: '1 1 180px', overflowWrap: 'anywhere' }}>
               {!approval?.ready
                 ? '관리형 설치 위치를 먼저 선택해야 합니다.'
                 : applicable.ok
@@ -209,7 +196,7 @@ export default function RuntimeProvisionPanel() {
               data-testid="provision-verify-item"
               data-present={v.present ? '1' : '0'}
               style={{
-                display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8,
+                display: 'flex', flexWrap: 'wrap', alignItems: 'center', justifyContent: 'space-between', gap: 8,
                 padding: '6px 8px', borderRadius: 8, background: 'var(--bg-elevated)',
               }}
             >
