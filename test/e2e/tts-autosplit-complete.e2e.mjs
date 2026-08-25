@@ -11,13 +11,11 @@
 // 여기서는 그 시작/완료 진행이 실제 앱 UI에 표면화되는지를 확인한다.
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
-import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenJobDirs, qwenVenvPids, nvidiaSmiGpu0 } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenJobDirs, qwenVenvPids, nvidiaSmiGpu0, requireE2EReference } from './_e2e-helper.mjs'
 
 const WAIT_MS = 350000
 const APP = process.cwd()
-const REF_ENV = process.env.AF_E2E_REFERENCE
-const FALLBACK = path.join(APP, 'resources', 'speaker_b.wav')
-const SRC = REF_ENV && REF_ENV.trim() ? REF_ENV.trim() : FALLBACK
+const SRC = requireE2EReference()   // 명시 AF_E2E_REFERENCE 단일 권위(speaker_b.wav 하드코딩·fallback 없음)
 const RES_DIR = path.join(APP, 'resources')
 const SHOT = path.join(APP, '작업파일', 'e2e_shots'); fs.mkdirSync(SHOT, { recursive: true })
 let failed = 0
@@ -25,12 +23,9 @@ const logLines = []
 const log = (...a) => { const s = a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '); logLines.push(s); console.log('[autosplit]', s) }
 const ok = (c, m) => { log(c ? 'PASS' : 'FAIL', m); if (!c) failed++ }
 
-if (!fs.existsSync(SRC)) {
-  console.error(`prerequisite 오류: 참조 자산 없음. AF_E2E_REFERENCE 설정 또는 ${FALLBACK} 준비 필요.`)
-  process.exit(2)
-}
+// (참조 자산 검증은 requireE2EReference가 처리 — 경로·내용 미출력)
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요: npm run build'); process.exit(2) }
-log(`참조 자산: ${REF_ENV ? 'AF_E2E_REFERENCE' : 'fallback resources/speaker_b.wav'}`)
+log('참조 자산: AF_E2E_REFERENCE(명시)')
 
 // 긴 한 줄(자동분할 ≥2). 비민감 진단문.
 const LONG_KO = '오늘은 여러 절을 이어 붙여 아주 길게 만든 한국어 문장으로 자동 분할이 실제로 일어나는지 그리고 각 조각이 안전한 생성 상한 안에서 자연스럽게 끝나는지 확인하기 위한 예문이며 문장 부호와 쉼표 그리고 충분한 길이를 갖도록 구성했습니다.'

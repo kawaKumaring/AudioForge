@@ -8,11 +8,11 @@
 import { _electron as electron } from 'playwright'
 import { execFileSync } from 'child_process'
 import fs from 'fs'; import path from 'path'
-import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenJobDirs, qwenVenvPids, nvidiaSmiGpu0 } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenJobDirs, qwenVenvPids, nvidiaSmiGpu0, requireE2EReference } from './_e2e-helper.mjs'
 
 const WAIT_MS = 350000
 const APP = process.cwd()
-const SRC = path.join(APP, 'resources', 'speaker_b.wav')
+const SRC = requireE2EReference()   // 명시 AF_E2E_REFERENCE 단일 권위(speaker_b.wav 하드코딩·fallback 없음)
 const RES_DIR = path.join(APP, 'resources')
 const SHOT = path.join(APP, '작업파일', 'e2e_shots'); fs.mkdirSync(SHOT, { recursive: true })
 const PY = 'E:/AI/ComfyUI_windows_portable_python3.12/python_embeded/python.exe'
@@ -20,7 +20,7 @@ let failed = 0
 const logLines = []
 const log = (...a) => { const s = a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '); logLines.push(s); console.log('[e2e]', s) }
 const ok = (c, m) => { log(c ? 'PASS' : 'FAIL', m); if (!c) failed++ }
-if (!fs.existsSync(SRC)) { console.error('resources/speaker_b.wav 필요'); process.exit(2) }
+// (참조 자산 검증은 requireE2EReference가 처리 — 경로·내용 미출력)
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
 
 const resBefore = snapshotTree(RES_DIR)
@@ -71,7 +71,7 @@ try {
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
     s.getState().setMode('tts')
   }, REF)
-  await win.waitForFunction(() => /111\.08/.test(document.getElementById('root')?.innerText || ''), undefined, { timeout: 30000 })
+  await win.getByText('이 구간으로 확정').waitFor({ timeout: 30000 })  // 참조 분석 완료(지속시간 하드코딩 대신 의미 기반 — AF_E2E_REFERENCE 길이 무관)
 
   const setup = await win.evaluate(async (p) => {
     const s = window.__afStore
@@ -121,7 +121,7 @@ try {
     `metadata pitch(semitones=${st.meta?.pitch_semitones}, method=${st.meta?.pitch_method}, post=${st.meta?.pitch_postprocessed})`)
   const names = st.meta?.emotion_reference_source_names || {}
   const regions = st.meta?.emotion_reference_regions || {}
-  ok(names.happy === 'speaker_b.wav', `metadata emotion source basename(happy=${names.happy})`)
+  ok(names.happy === path.basename(REF), `metadata emotion source basename(happy=${names.happy})`)
   ok(regions.happy && Math.abs(regions.happy.start - 20.0) < 1e-6, `metadata emotion region(happy start=${regions.happy?.start})`)
   const sess = st.outputDir && path.join(st.outputDir, 'session.json')
   if (sess && fs.existsSync(sess)) {
@@ -167,7 +167,7 @@ try {
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
     s.getState().setMode('tts')
   }, REF)
-  await win.waitForFunction(() => /111\.08/.test(document.getElementById('root')?.innerText || ''), undefined, { timeout: 30000 })
+  await win.getByText('이 구간으로 확정').waitFor({ timeout: 30000 })  // 참조 분석 완료(지속시간 하드코딩 대신 의미 기반 — AF_E2E_REFERENCE 길이 무관)
 
   // 완전 재현 근거는 session.json의 source+region(effective 임시 경로 아님)
   const sjPath = path.join(sess1OutputDir, 'session.json')
