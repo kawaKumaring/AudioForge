@@ -22,11 +22,32 @@ export interface EmotionReferenceManagerLocalProps extends EmotionReferenceManag
   requestSource?: (emotionId: string) => Promise<string | null> | string | null
   /** 셸이 감정별 구간 편집기(ReferenceRegionPanel)를 주입. onChangeRegion을 내부에서 호출한다. */
   renderRegionEditor?: (emotionId: string, onChangeRegion: (r: TtsEmotionRegion) => void) => ReactNode
+  /** 대사에 실제 쓰인 감정 id(첫 등장 순). 목록 상단 우선 표시에만 쓴다. */
+  usedEmotionIds?: string[]
   disabled?: boolean
 }
 
+// 한 감정이 가질 수 있는 상태는 셋뿐이다(토글 아님 — 등록 여부와 구간 확정 여부에서 파생).
+type RefStatus = 'registered' | 'needs-setup' | 'default-voice'
+const STATUS_LABEL: Record<RefStatus, string> = {
+  registered: '전용 목소리 등록됨',
+  'needs-setup': '등록 필요',
+  'default-voice': '기본 목소리 사용',
+}
+const STATUS_COLOR: Record<RefStatus, string> = {
+  registered: 'var(--cyan)',
+  'needs-setup': 'var(--rose)',
+  'default-voice': 'var(--text-muted)',
+}
+function statusOf(r: { registered: boolean; ready: boolean }): RefStatus {
+  if (!r.registered) return 'default-voice'
+  return r.ready ? 'registered' : 'needs-setup'
+}
+
+// 길이는 값이 있을 때만 문자열을 만든다(없으면 ''). 셸이 실제 길이를 아직 공급하지 않는 경우
+// "길이 -"를 상시 노출하는 대신 그 자리를 비운다(빈 값 표시 금지).
 function fmtDur(sec?: number): string {
-  return typeof sec === 'number' && Number.isFinite(sec) ? `${sec.toFixed(1)}초` : '-'
+  return typeof sec === 'number' && Number.isFinite(sec) ? `${sec.toFixed(1)}초` : ''
 }
 function fmtRegion(r?: TtsEmotionRegion): string | null {
   if (!r || typeof r.start !== 'number' || typeof r.duration !== 'number') return null
@@ -41,6 +62,7 @@ export default function EmotionReferenceManager({
   onChangeRegion,
   requestSource,
   renderRegionEditor,
+  usedEmotionIds,
   disabled = false,
 }: EmotionReferenceManagerLocalProps) {
   const [open, setOpen] = useState(false)
@@ -50,6 +72,17 @@ export default function EmotionReferenceManager({
   const registered = useMemo(() => refs.filter(r => r.registered), [refs])
   const readyCount = registered.filter(r => r.ready).length
   const needsConfirm = registered.length - readyCount
+
+  // 한 목록으로 보여줄 행: 대사에 쓰인 감정(첫 등장 순) 먼저, 그 뒤 쓰이지 않았지만 등록된 감정.
+  // 쓰인 감정이 미등록이면 '기본 목소리 사용' 행으로 같은 목록에 남는다(별도 안내 문단 대신).
+  const rows = useMemo(() => {
+    const byId = new Map(refs.map(r => [r.emotionId, r]))
+    const used = (usedEmotionIds ?? []).filter(id => id !== 'default')
+    const usedSet = new Set(used)
+    const usedRows = used.map(id => byId.get(id) ?? { emotionId: id, registered: false, ready: false })
+    const otherRegistered = registered.filter(r => !usedSet.has(r.emotionId))
+    return [...usedRows, ...otherRegistered]
+  }, [refs, registered, usedEmotionIds])
 
   // 추가 가능한 감정 = 아직 등록되지 않은 것(default 제외).
   const addable = useMemo(() => {
@@ -99,15 +132,17 @@ export default function EmotionReferenceManager({
           aria-label="감정 참조 관리"
           style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 4px' }}
         >
-          {registered.length === 0 && (
+          {rows.length === 0 && (
             <p style={{ fontSize: 11, color: 'var(--text-muted)' }}>아직 등록된 감정 음성이 없습니다. 아래에서 감정을 추가하세요.</p>
           )}
 
-          {registered.map((r) => {
+          {rows.map((r) => {
             const label = EMOTION_ID_TO_LABEL[r.emotionId] ?? r.emotionId
             const color = ID_TO_COLOR[r.emotionId] ?? 'var(--text-secondary)'
             const rowOpen = expandedRow === r.emotionId
             const regionText = fmtRegion(r.region)
+            const status = statusOf(r)
+            const durText = fmtDur(r.durationSec)
             return (
               <div key={r.emotionId} style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 6 }}>
                 <div className="tts-expr-row" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -116,16 +151,23 @@ export default function EmotionReferenceManager({
                     <span aria-hidden="true" style={{ width: 8, height: 8, borderRadius: '50%', background: color, flexShrink: 0 }} />
                     <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-primary)' }}>{label}</span>
                   </span>
-                  {/* 등록 상태 (색 + 텍스트 병기) */}
-                  {r.ready
-                    ? <span style={badge('var(--cyan)')}>준비됨</span>
-                    : <span style={badge('var(--rose)')}>확정 필요</span>}
-                  {/* 참조 길이 */}
-                  <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                    길이 {fmtDur(r.durationSec)}{regionText ? ` · 구간 ${regionText}` : ''}
-                  </span>
-                  {/* 미리듣기 / 변경 / 삭제 */}
-                  <span style={{ display: 'inline-flex', gap: 6, marginLeft: 'auto' }}>
+                  {/* 상태 — 셋 중 하나만(색 + 텍스트 병기). 토글이 아니라 파생 상태다. */}
+                  <span style={badge(STATUS_COLOR[status])}>{STATUS_LABEL[status]}</span>
+                  {/* 보조 정보 — 값이 있을 때만(빈 "길이 -"를 상시 노출하지 않는다) */}
+                  {(durText || regionText) && (
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                      {[durText ? `길이 ${durText}` : null, regionText ? `구간 ${regionText}` : null].filter(Boolean).join(' · ')}
+                    </span>
+                  )}
+                  {/* 미등록(기본 목소리 사용) → 등록 하나만. 등록됨 → 미리듣기/구간/변경/삭제 보존. */}
+                  {!r.registered ? (
+                    <span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', marginLeft: 'auto' }}>
+                      <button type="button" onClick={() => pickAndRegister(r.emotionId)} disabled={!canPick}
+                        title={canPick ? '' : '파일 선택은 셸 배선(I5) 후 동작합니다'}
+                        aria-label={`${label} 전용 목소리 등록`} style={btn(`${color}22`, color, !canPick)}>전용 목소리 등록</button>
+                    </span>
+                  ) : (
+                  <span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', marginLeft: 'auto' }}>
                     <button type="button" onClick={() => onPreview(r.emotionId)} disabled={disabled}
                       aria-label={`${label} 참조 미리듣기`} style={btn('var(--bg-elevated)', 'var(--text-secondary)')}>▶ 미리듣기</button>
                     {renderRegionEditor && (
@@ -138,6 +180,7 @@ export default function EmotionReferenceManager({
                     <button type="button" onClick={() => onRemove(r.emotionId)} disabled={disabled}
                       aria-label={`${label} 참조 삭제`} style={btn('var(--bg-elevated)', 'var(--text-muted)')}>삭제</button>
                   </span>
+                  )}
                 </div>
                 {/* 셸 주입 구간 편집기(onChangeRegion 소비). */}
                 {rowOpen && renderRegionEditor && (

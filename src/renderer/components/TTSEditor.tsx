@@ -160,12 +160,17 @@ export default function TTSEditor() {
 
   // ── EmotionReferenceManager 입력 배선 ──
   const registeredEmotions = nonDefaultEmotions.filter(e => ttsEmotionRefState[e.id]?.source)
-  const managerRefs = registeredEmotions.map(e => {
-    const slot = ttsEmotionRefState[e.id]
-    return { emotionId: e.id, registered: true, ready: !!slot?.ready, region: slot?.region ?? undefined }
-  })
-  // 대사에 쓰였지만 미등록 → 기본 참조 사용(§3 안내 보존).
+  // 대사에 쓰였지만 미등록 → '기본 목소리 사용' 행으로 같은 목록에 실어 보낸다(별도 안내 문단 대체).
   const usedUnregistered = nonDefaultEmotions.filter(e => usedIds.has(e.id) && !ttsEmotionRefState[e.id]?.source)
+  const managerRefs = [
+    ...registeredEmotions.map(e => {
+      const slot = ttsEmotionRefState[e.id]
+      return { emotionId: e.id, registered: true, ready: !!slot?.ready, region: slot?.region ?? undefined }
+    }),
+    ...usedUnregistered.map(e => ({ emotionId: e.id, registered: false, ready: false })),
+  ]
+  // 목록 상단 우선순위(첫 등장 순). Set 순회 = 첫 등장 순.
+  const usedEmotionIdList = [...usedIds]
 
   // 셸이 파일 선택 다이얼로그를 주입(EmotionReferenceManager는 파일 I/O를 하지 않음).
   const requestEmotionSource = async (): Promise<string | null> => {
@@ -239,11 +244,14 @@ export default function TTSEditor() {
               onChangeRegion={(id, region) => setEmotionRefState(id, { region })}
               requestSource={requestEmotionSource}
               renderRegionEditor={renderEmotionRegion}
+              usedEmotionIds={usedEmotionIdList}
               disabled={disabled}
             />
+            {/* 미등록 안내는 관리 목록의 '기본 목소리 사용' 행이 대신한다(같은 사실을 두 곳에 쓰지 않음).
+                목록을 열지 않아도 보이도록 요약 한 줄만 남긴다. */}
             {usedUnregistered.length > 0 && (
               <div style={{ fontSize: 10, lineHeight: 1.6, color: 'var(--text-secondary)', padding: '6px 10px', borderRadius: 6, background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
-                대사에 쓰인 <span style={{ color: 'var(--text-muted)' }}>{usedUnregistered.map(e => e.label).join(', ')}</span> 은(는) 아직 미등록입니다 → <strong style={{ color: 'var(--rose)' }}>기본 참조</strong>로 합성됩니다.
+                대사에 쓰인 <span style={{ color: 'var(--text-muted)' }}>{usedUnregistered.map(e => e.label).join(', ')}</span> 은(는) <strong style={{ color: 'var(--text-primary)' }}>기본 목소리</strong>로 합성됩니다.
               </div>
             )}
           </>
