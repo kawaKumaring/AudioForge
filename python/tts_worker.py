@@ -1129,7 +1129,18 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             prev_osi = osi
 
         emit("progress", percent=90, message="문장 이어붙이기 중...")
-        _concat_with_boundaries(use, gaps, pending_path)  # 내부 0 / 원 segment 경계 silence_gap
+        _layout = _concat_with_boundaries(use, gaps, pending_path)  # 내부 0 / 원 segment 경계 silence_gap
+        # 진단 전용: 각 chunk의 결합본 내 위치를 metadata에 남긴다(오디오 출력 불변, 수치만).
+        # 이 값이 없으면 join 지점을 사후에 찾을 수 없어 경계 품질을 실측할 수 없다.
+        # 기준 파일은 **pitch 적용 전 pending**이다. pitch=0이면 최종 synthesized.wav와 동일 좌표지만,
+        # pitch!=0이면 rubberband가 전체 길이를 바꾸므로 이 위치는 최종 파일에 선형 대응하지 않는다.
+        # gen_chunks/ordered_entries/use/gaps는 모두 같은 순서·같은 길이(위 루프들이 ordered_entries 기준).
+        if len(_layout) != len(gen_chunks):
+            raise RuntimeError("concat layout과 chunk 메타 길이 불일치")
+        for _e, _lay in zip(gen_chunks, _layout):
+            _e["frames"] = _lay["frames"]
+            _e["gap_before_samples"] = _lay["gap_before_samples"]
+            _e["start_sample"] = _lay["start_sample"]
 
         # 공통 최종 단계(계약 §6.1): pitch(후처리 축)를 speed·결합이 끝난 최종 후보에 적용하고
         # 원자적으로 synthesized.wav에 배치. 검증·os.replace·실패격리(기존 wav 무손상)는 공통 함수가 책임.
@@ -1256,23 +1267,41 @@ def _assert_concat_ready(paths):
 def _concat_with_boundaries(paths, gaps_before, output_path):
     """paths를 순서대로 이어붙이되 각 항목 '앞'에 gaps_before[i]초 무음 삽입(계약 B).
     자동분할 내부 chunk 사이 gap=0(연속), 원래 segment 경계에만 사용자 silence_gap. gaps_before[0]은 0.
-    무음은 각 파일 sr 기준(첫 파일 sr을 target으로 사용). 무작위 무음 삽입 아님 — 호출부가 경계에서만 지정."""
+    무음은 각 파일 sr 기준(첫 파일 sr을 target으로 사용). 무작위 무음 삽입 아님 — 호출부가 경계에서만 지정.
+
+    반환(진단 전용, 오디오 출력에는 영향 없음): [{frames, gap_before_samples, start_sample}, ...]
+      - frames             : 이 chunk가 결합본에 기여한 샘플 수(speed 후처리까지 끝난 실제 길이)
+      - gap_before_samples : 이 chunk '앞'에 실제로 삽입된 무음 샘플 수(초→샘플 절단 규칙 그대로)
+      - start_sample       : 결합본에서 이 chunk의 첫 샘플 위치(= 직전 chunk와의 join 지점)
+    join 지점을 나중에 되찾을 방법이 없어(작업 디렉터리는 정리되고 metadata에 길이가 없다) 경계 품질을
+    실측할 수 없었다. 여기서 실제 삽입값을 그대로 돌려주고 호출부가 metadata에 싣는다.
+    """
     import soundfile as sf
     import numpy as np
     if len(paths) != len(gaps_before):
         raise RuntimeError("concat: paths와 gaps 길이 불일치")
     out = []
+    layout = []
     target_sr = None
+    cursor = 0
     for i, path in enumerate(paths):
         data, sr = sf.read(path, dtype="float32")
         if target_sr is None:
             target_sr = sr
         g = float(gaps_before[i])
+        gap_samples = 0
         if i > 0 and g > 0:
-            out.append(np.zeros(int(g * target_sr), dtype=np.float32))
+            # 절단(int) — 아래 layout에 기록하는 값도 반드시 '실제 삽입한' 이 값이어야 한다.
+            gap_samples = int(g * target_sr)
+            out.append(np.zeros(gap_samples, dtype=np.float32))
+            cursor += gap_samples
+        frames = int(data.shape[0])
+        layout.append({"frames": frames, "gap_before_samples": gap_samples, "start_sample": cursor})
         out.append(data)
+        cursor += frames
     combined = np.concatenate(out) if out else np.zeros(0, dtype=np.float32)
     sf.write(output_path, combined, target_sr)
+    return layout
 
 
 def _boundary_gaps_from_plan(plan, silence_gap, emotion_boundary_mode="pause",
