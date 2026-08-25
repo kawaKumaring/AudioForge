@@ -135,13 +135,37 @@ export default function ProcessButton() {
   }
 
   if (!fileInfo) return null
-  if (status === 'done') return null
 
   const btnBase: React.CSSProperties = {
     display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 8,
     width: '100%', borderRadius: 12, padding: '14px 0',
     fontSize: 13, fontWeight: 600, fontFamily: 'inherit',
     border: 'none', cursor: 'pointer'
+  }
+
+  // 결과가 나온 뒤(done): 지금까지는 아무것도 그리지 않아서, 같은 설정으로 한 번 더 만들려면
+  // '다른 모드로 재처리'로 초기 상태를 거쳐야만 했다. TTS에서는 결과 화면의 기본 동작이므로
+  // 여기서 바로 제공한다. 새 IPC 경로를 만들지 않고 기존 handleProcess를 그대로 호출한다
+  // (설정은 store에 그대로 남아 있어 '같은 설정'이 성립한다).
+  if (status === 'done') {
+    if (mode !== 'tts') return null
+    return (
+      <button
+        type="button"
+        onClick={() => {
+          // 이전 결과 표시를 먼저 비우고(진행 표시와 섞이지 않게) 곧바로 같은 설정으로 재합성.
+          useAppStore.setState({ status: 'idle', tracks: [], error: null, progress: 0 })
+          void handleProcess()
+        }}
+        aria-label="같은 설정으로 다시 만들기"
+        style={{ ...btnBase, background: 'var(--bg-card)', color: 'var(--text-primary)', border: '1px solid var(--border-subtle)', fontSize: 12 }}
+      >
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+          <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" />
+        </svg>
+        같은 설정으로 다시 만들기
+      </button>
+    )
   }
 
   // 취소 정리 중: 실제 상태 머신(status==='cancelling')에 연결된 비활성 표시. child 종료 확인 전까지 유지.
