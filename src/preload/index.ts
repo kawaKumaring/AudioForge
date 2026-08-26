@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import type { CancelResponseLike } from '../shared/cancelContract'
 
 const api = {
   audio: {
@@ -6,7 +7,10 @@ const api = {
     getFileInfo: (filePath: string) => ipcRenderer.invoke('audio:get-file-info', filePath),
     process: (filePath: string, mode: string, options?: Record<string, unknown>) =>
       ipcRenderer.invoke('audio:process', filePath, mode, options),
-    cancel: () => ipcRenderer.invoke('audio:cancel'),
+    // 취소 '요청'(계약 C2-P0.1). 수락 여부의 권위는 main이고, 반환값은 신 계약 CancelResponse이거나
+    // 구 shape({ok,noop} 등)일 수 있다 → 소비자는 반드시 interpretCancelResponse()로 해석한다.
+    // 'cancelling' 전환은 이 반환값이 아니라 audio:cancelling 이벤트가 결정한다(낙관적 전환 금지).
+    cancel: (): Promise<CancelResponseLike> => ipcRenderer.invoke('audio:cancel'),
     getFileUrl: (filePath: string) => ipcRenderer.invoke('audio:get-file-url', filePath),
     exportTracks: (trackPaths: string[]) => ipcRenderer.invoke('audio:export-tracks', trackPaths),
     restoreFromFolder: () => ipcRenderer.invoke('audio:restore-from-folder'),
