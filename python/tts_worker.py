@@ -825,22 +825,80 @@ _QWEN_REF_TEXT_CACHE_MAX = 128
 _QWEN_MIN_FREE_MB = 4000
 
 
-def _resolve_qwen_ref_text(ref_audio, overrides_by_path, warned):
+# Qwen 참조 자동 전사에 쓰는 Whisper 모델 이름. GPT 경로와 같은 'small'을 써서 결과가 일치한다.
+_QWEN_REF_TRANSCRIBE_MODEL = "small"
+
+# 강등 사유 코드(C2). 앞 두 개는 reference_transcript의 issue code를 그대로 재사용한다.
+#   TRANSCRIPTION_FAILED    전사 호출/파싱 자체가 실패
+#   EMPTY_TRANSCRIPT        전사가 비었음
+#   REF_FREE_USER           사용자가 명시적으로 ref-free 선택(실패 아님 — 의도된 강등)
+#   TRANSCRIPT_UNAVAILABLE  status는 비-ok인데 error_code가 없는 경우의 보수적 기본값
+REF_DEGRADE_TRANSCRIPT_UNAVAILABLE = "TRANSCRIPT_UNAVAILABLE"
+
+# transcript_status 값: ok | empty | failed | manual | user_ref_free
+_REF_STATUS_MANUAL = "manual"
+_REF_STATUS_USER_REF_FREE = "user_ref_free"
+
+
+def _ref_record(emotion_id, prompt_source, degraded, reason_code, transcript_status, model):
+    """참조 프롬프트 결정의 '비민감 요약' 1건.
+
+    보안 불변식: 경로·전사 전문·예외 메시지는 절대 담지 않는다.
+    특히 reference_transcript.transcribe_reference 는 error_message 에 str(e)[:300] 을 담는데,
+    FileNotFoundError 등은 거기에 전체 경로가 들어간다 — 그래서 error_code 만 옮기고
+    error_message 는 의도적으로 버린다."""
+    return {"emotion_id": emotion_id, "prompt_source": prompt_source,
+            "degraded": bool(degraded), "reason_code": reason_code,
+            "transcript_status": transcript_status, "model": model}
+
+
+def _resolve_qwen_ref_text(ref_audio, overrides_by_path, warned, degrade_sink=None,
+                           emotion_id=None):
     """Qwen용 (ref_text, x_vector_only) 결정 — 수동/자동/ref-free 정책 재사용.
     수동·자동 전사가 비어있지 않으면 ICL(x_vector_only=False). 명시적 ref-free / 전사 실패 / 빈 전사는
-    x-vector-only(True, ref_text 무시). Qwen 공식 구현은 ref_text=""+x_vector_only=False를 거부하므로 필수."""
+    x-vector-only(True, ref_text 무시). Qwen 공식 구현은 ref_text=""+x_vector_only=False를 거부하므로 필수.
+
+    C2: 예전에는 t.status 만 읽고 t.error_code 를 버려서, 전사가 실패해도 사용자에게는 스쳐 지나가는
+    progress 한 줄뿐이었고 실행은 조용히 낮은 품질(x-vector-only)로 계속됐다. 이제 호출마다
+    비민감 요약 1건을 degrade_sink 에 남기고, 강등일 때만 tts_reference_degraded 이벤트를 낸다.
+    x-vector-only 자체는 그대로 유지된다 — 없애는 게 아니라 '보이게' 만드는 변경이다.
+
+    반환 arity는 (ref_text, x_vector_only) 2-tuple 그대로다(기존 호출부·회귀 테스트 보존).
+    degrade_sink/emotion_id 는 keyword 선택 인자다."""
     from reference_transcript import transcribe_reference, MODE_REF_FREE, STATUS_OK
+
+    def _record(rec):
+        if degrade_sink is not None:
+            degrade_sink.append(rec)
+        return rec
+
+    def _announce(rec, ap):
+        """강등일 때만, 참조 1개당 1회 구조화 이벤트. 경로·전사 없음."""
+        if not rec["degraded"]:
+            return
+        if ("degraded", ap, rec["reason_code"]) in warned:
+            return
+        warned.add(("degraded", ap, rec["reason_code"]))
+        emit("tts_reference_degraded", emotion_id=rec["emotion_id"],
+             prompt_source=rec["prompt_source"], degraded_to="x_vector_only",
+             reason_code=rec["reason_code"], transcript_status=rec["transcript_status"],
+             model=rec["model"])
+
     ap = os.path.abspath(ref_audio)
     ov = (overrides_by_path or {}).get(ap)
     if ov:
         if ov.get("mode") == MODE_REF_FREE:
+            rec = _record(_ref_record(emotion_id, "x-vector-only", True, "REF_FREE_USER",
+                                      _REF_STATUS_USER_REF_FREE, ""))
             if ("reffree", ap) not in warned:
                 warned.add(("reffree", ap))
                 emit("progress", percent=7,
                      message="ref-free → Qwen x-vector-only로 강등(ICL 아님, 참조 전사 미사용)")
+            _announce(rec, ap)
             return "", True
         manual = (ov.get("manual_text") or "").strip()
         if manual:
+            _record(_ref_record(emotion_id, "manual", False, None, _REF_STATUS_MANUAL, ""))
             if ("manual", ap) not in warned:
                 warned.add(("manual", ap))
                 emit("progress", percent=7, message=f"참조 전사(수동, ICL): {len(manual)}자")
@@ -851,22 +909,58 @@ def _resolve_qwen_ref_text(ref_audio, overrides_by_path, warned):
     except OSError:
         key = (ap, None, None)
     if key in _qwen_ref_text_cache:
-        return _qwen_ref_text_cache[key]
-    t = transcribe_reference(ref_audio, "small")
+        # 캐시 적중이어도 요약은 남긴다 — 같은 참조를 쓰는 다른 감정도 메타데이터에 집계돼야 한다.
+        res, crec = _qwen_ref_text_cache[key]
+        _record(dict(crec, emotion_id=emotion_id))
+        return res
+    t = transcribe_reference(ref_audio, _QWEN_REF_TRANSCRIBE_MODEL)
     if t.status == STATUS_OK and (t.text or "").strip():
         res = (t.text, False)
+        rec = _ref_record(emotion_id, "auto", False, None, t.status, _QWEN_REF_TRANSCRIBE_MODEL)
         if ("auto", ap) not in warned:
             warned.add(("auto", ap))
             emit("progress", percent=9, message=f"참조 전사(자동, ICL): {t.language}, {len(t.text)}자")
     else:
         res = ("", True)
+        # error_code 만 옮긴다(error_message 는 경로를 담을 수 있어 절대 옮기지 않는다).
+        rec = _ref_record(emotion_id, "x-vector-only", True,
+                          t.error_code or REF_DEGRADE_TRANSCRIPT_UNAVAILABLE,
+                          t.status, _QWEN_REF_TRANSCRIBE_MODEL)
         if ("autofail", ap) not in warned:
             warned.add(("autofail", ap))
             emit("progress", percent=9,
                  message=f"참조 전사 실패/빈 결과({t.status}) → Qwen x-vector-only로 강등(ICL 아님)")
+    _record(rec)
+    _announce(rec, ap)
     if len(_qwen_ref_text_cache) < _QWEN_REF_TEXT_CACHE_MAX:  # 방어적 상한
-        _qwen_ref_text_cache[key] = res
+        _qwen_ref_text_cache[key] = (res, rec)
     return res
+
+
+def _summarize_ref_degradation(records, default_emotion_id):
+    """참조 결정 요약 리스트 → 재현 메타데이터 5필드(비민감).
+    default 참조의 상태를 대표값으로 쓰고, 강등된 감정 ID 목록을 따로 남긴다."""
+    if not records:
+        return {"reference_prompt_degraded": None, "reference_degrade_reason": None,
+                "reference_transcript_status": None, "reference_transcript_model": None,
+                "reference_degraded_emotions": None}
+    degraded = [r for r in records if r["degraded"]]
+    rep = None
+    for r in records:
+        if r["emotion_id"] == default_emotion_id:
+            rep = r
+            break
+    if rep is None:
+        rep = degraded[0] if degraded else records[0]
+    emos = sorted({str(r["emotion_id"]) for r in degraded if r["emotion_id"] is not None})
+    return {
+        "reference_prompt_degraded": bool(degraded),
+        "reference_degrade_reason": (rep["reason_code"] if rep["degraded"]
+                                     else (degraded[0]["reason_code"] if degraded else None)),
+        "reference_transcript_status": rep["transcript_status"],
+        "reference_transcript_model": rep["model"],
+        "reference_degraded_emotions": emos or None,
+    }
 
 
 def _atempo_segment(inp, speed):
@@ -904,6 +998,10 @@ _METADATA_KEYS = [
     "device_selection_source", "prompt_source", "x_vector_only_mode",
     "original_reference_path", "effective_reference_path", "reference_region",
     "reference_transcript_language", "reference_transcript_len", "reference_transcript_sha8",
+    # C2 — 참조 프롬프트 강등 가시화. 사유 코드/상태/모델명만(경로·전사 전문·예외 메시지 없음).
+    # x-vector-only 능력은 그대로 유지되고, '왜 그렇게 됐는지'만 기록에 남는다.
+    "reference_prompt_degraded", "reference_degrade_reason", "reference_transcript_status",
+    "reference_transcript_model", "reference_degraded_emotions",
     "target_language", "seed", "seed_supported", "speed", "speed_postprocessed", "silence_gap",
     "fallback", "fallback_reason", "elapsed_seconds", "output_sample_rate",
     # pitch 후처리(계약 §2.1) — pitch_method는 production에서 "rubberband" | None 둘뿐.
@@ -1106,15 +1204,20 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
     try:
         warned = set()
         segments = []
+        degrade_records = []     # 참조 프롬프트 결정 요약(C2) — 비민감, 세그먼트 수만큼 유계
+        def_emotion_id = None    # 기본 참조를 쓰는 첫 감정 ID(요약의 대표값 선택용)
         for i, (emotion_id, line_text) in enumerate(parsed):
             ref = ref_cache.get(emotion_id, ref_cache["default"])
-            ref_text, xvo = _resolve_qwen_ref_text(ref, overrides_by_path, warned)
+            ref_text, xvo = _resolve_qwen_ref_text(ref, overrides_by_path, warned,
+                                                   degrade_sink=degrade_records,
+                                                   emotion_id=emotion_id)
             lang_code = _detect_language(line_text)  # 세그먼트별 언어
             lang_codes.append(lang_code)
             lang_name = _QWEN_LANG_NAME.get(lang_code)
             if not lang_name:
                 raise RuntimeError(f"Qwen 미지원 언어(감지 {lang_code}) — 문장: {line_text[:20]}")
             if ref == default_ref and def_source is None:  # 기본 참조의 메타(전문 아닌 요약)
+                def_emotion_id = emotion_id
                 def_xvo = bool(xvo)
                 def_source = _prompt_source_for(ref, overrides_by_path, xvo)
                 def_tr_lang, def_tr_len, def_tr_sha = _transcript_meta(ref_text)
@@ -1262,6 +1365,7 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             "prompt_source": def_source, "x_vector_only_mode": def_xvo,
             "reference_transcript_language": def_tr_lang, "reference_transcript_len": def_tr_len,
             "reference_transcript_sha8": def_tr_sha, "target_language": tgt,
+            **_summarize_ref_degradation(degrade_records, def_emotion_id),
             "seed": None, "seed_supported": False,
             "speed_postprocessed": bool(abs(float(speed) - 1.0) > 1e-6),
             "fallback": fallback, "fallback_reason": fallback_reason,
