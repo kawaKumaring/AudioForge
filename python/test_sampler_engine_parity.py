@@ -311,6 +311,7 @@ class Item2And3SharedReasonCodesTest(unittest.TestCase):
         symbols = [row["symbol"] for row in FX["engine_only_vocabulary"]]
         self.assertEqual(symbols, EXPECT_ENGINE_ONLY_SYMBOLS)
         self.assertIn("CAPABILITY_UNVERIFIED_FALLBACK", pl.STRATEGY_REASON_CODES)
+        scanned = 0
         for root, _dirs, files in os.walk(SRC_DIR):
             if "node_modules" in root:
                 continue
@@ -318,10 +319,13 @@ class Item2And3SharedReasonCodesTest(unittest.TestCase):
                 # 테스트 파일은 제외한다 — parity 테스트 자신이 이 이름들을 문자열로 들고 있다.
                 if not fn.endswith((".ts", ".tsx")) or ".test." in fn:
                     continue
+                scanned += 1
                 body = _read(os.path.join(root, fn))
                 for sym in EXPECT_ENGINE_ONLY_SYMBOLS:
                     self.assertNotIn(sym, body,
                                      "엔진 전용 %s 가 %s 에 나타났다 — 병렬 어휘 금지" % (sym, fn))
+        # 스캔이 조용히 0개가 되어 통과하는 일이 없게(경로가 틀리면 여기서 깨진다).
+        self.assertGreater(scanned, 5, "src 트리를 실제로 훑지 못했다 — 경로 확인")
         # 픽스처가 '왜 대응물이 없는지' 를 비워 두지 않았는지.
         for row in FX["engine_only_vocabulary"]:
             self.assertIsNone(row["sampler_counterpart"])
