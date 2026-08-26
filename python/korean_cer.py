@@ -27,9 +27,11 @@
      규칙이 바뀌면 NORMALIZATION_VERSION 을 반드시 올린다(지표 드리프트 방지).
   3. **provenance 필수.** ASR 모델명·버전·지문·정규화 버전이 없으면 결과 레코드를
      만들 수 없다(기본값 없음 → 생략 시 TypeError, 빈 값 → ProvenanceError).
-  4. **표현 이벤트는 별도 지표.** 감정 태그·운율 문장부호·웃음은 문자 CER 에서
-     제거하고, 발생/누락/유령 발생 여부를 자기 자신의 지표로 따로 보고한다.
-     웃음을 단어 오류로 세면 표현 기능을 잘못 평가한다.
+  4. **표현 이벤트는 별도 지표이며, 토큰 정체는 계약에서 온다.** 감정 태그·운율
+     문장부호·웃음은 문자 CER 에서 제거하고 발생/위치/개수를 자기 지표로 보고한다.
+     웃음을 단어 오류로 세면 표현 기능을 잘못 평가한다. 토큰을 무엇으로 볼지는 이
+     모듈이 정하지 않는다 — expressive_timeline(표현 언어 계약 v3)의 파서·enum·
+     상한을 그대로 소비하고, 계약 지문을 결과에 각인해 드리프트를 감지한다.
   5. **결과 레코드는 본문·경로 없음(body-free).** 결과 dict 에는 전사 본문도,
      파일 경로도, 오디오도 담기지 않는다(코드베이스 asr_canonical 사이드카 규약과 동일).
      본문을 보려면 NormalizationResult(검사용 아티팩트)를 쓴다.
@@ -39,11 +41,17 @@ granularity 선택은 SYLLABLE_PRIMARY_RATIONALE 를 참고한다(음절 단위�
 
 from __future__ import annotations
 
+import os
 import re
+import sys
 import unicodedata
 from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+# ★ 표현 언어 계약 원본. enum·상한·해시를 여기서 *import* 한다(복사 금지).
+import expressive_timeline as et
 
 
 # ── 스키마/버전 (asr_canonical 규약과 동일한 형태) ──
@@ -52,7 +60,13 @@ SCHEMA_VERSION = "1.0.0"
 
 # ★ 정규화 규칙이 한 글자라도 바뀌면 반드시 올린다. 이 값이 결과 레코드에 박혀
 #   저장되므로, 과거 수치와 현재 수치가 같은 규칙에서 나왔는지 판별할 수 있다.
-NORMALIZATION_VERSION = "audioforge/ko-cer-normalization 1.0.0"
+# 2.0.0 인 이유: strip_expression_events 단계가 자체 정규식에서 실제 표현 언어 계약
+# (expressive_timeline v3) 소비로 바뀌면서 *정규화 결과 문자열 자체가* 달라졌다.
+#   - '~'(vowel_extend)는 이전에 기호로 남았으나 이제 토큰으로 제거된다.
+#   - 본문에 그냥 쓴 'ㅋㅋ' 는 이전에 제거됐으나 계약상 텍스트이므로 이제 남는다.
+#   - '[기쁨]' 같은 감정 태그는 이전에 대괄호만 벗겨져 내용으로 남았으나 이제 제거된다.
+# 규칙이 바뀌면 버전을 올린다 — 1.0.0 으로 두면 두 규칙의 수치를 구분할 수 없다.
+NORMALIZATION_VERSION = "audioforge/ko-cer-normalization 2.0.0"
 
 # 비율 직렬화 고정 소수 자리 (결정적 출력).
 RATE_DECIMALS = 6
@@ -210,130 +224,346 @@ def _require_provenance(provenance: Optional[AsrProvenance]) -> AsrProvenance:
 
 
 # ─────────────────────────────────────────────────────────────────────────
-# 표현 이벤트 (감정 태그 · 운율 문장부호 · 웃음)
+# 표현 이벤트 — **실제 표현 언어 계약(expressive_timeline)을 소비한다**
 #
-# ★ 계약 경계 주의 ★
-#   AudioForge 의 실제 "표현 언어(expressive language) 계약" 은 다른 브랜치
-#   (design/tts-expression-contract, feature/expressive-prosody-language)에 있고
-#   이 브랜치에서는 볼 수 없다. 따라서 아래 토큰 서술은 **이 모듈이 스스로 소유한
-#   최소한의 임시(provisional) 서술** 이다. 평가 도구가 표현 이벤트를 문자 오류로
-#   세지 않게 만드는 것이 목적이지, 표현 문법을 정의하는 것이 목적이 아니다.
-#   실제 계약과의 정합(reconcile)은 후속 작업이다 — EXPRESSION_TOKEN_SPEC_VERSION
-#   의 `-provisional` 접미사가 그 미완결 상태를 표시한다.
+# ★ 이 절에는 자체 토크나이저가 없다 ★
+#   토큰의 정체(identity)는 전부 expressive_timeline 계약에서 온다. 이 모듈은
+#   계약의 enum·상한·해시를 *import* 할 뿐 복사하지 않는다. 계약이 바뀌면
+#   expressive_contract_fingerprint() 가 움직여 저장된 수치와 새 수치가 구분된다.
+#
+#   계약이 이미 확정한 것들(이 모듈이 다시 정하지 않는다):
+#     - '?!' 는 '!?' 의 별칭이며 shock_rise **이벤트 1개** 다(2개가 아니다).
+#     - dot-run 은 토큰 1개이고 개수에 상한이 있다(… 는 가중치 3, 상한 6).
+#       마침표 1개는 firm_end, 2개 이상은 fade_end — 둘은 서로 다른 종류다.
+#     - 웃음은 **대괄호 안**에서만 이벤트다([ㅋㅋ]). 본문에 그냥 쓴 ㅋㅋ 는 텍스트다.
+#     - '~' 는 vowel_extend 토큰이다(내용 문자가 아니다).
+#
+# ★ identity 결정 (매칭에 참여하는 것 / 참여하지 않는 것) ★
+#   참여함  : 노드 종류(계약 EXPRESSIVE_NODE_KINDS) + 감정 id + 감정 전이 모드
+#             (blend/immediate) + 운율 kind + 웃음 style.
+#   참여 안 함: 세기(strength/intensity/brightness), transition_strength,
+#             effective_count/repeat, duration_hint, scope_kind, laugh position,
+#             pause_ms, vowel_extend 분류.
+#   이유는 EVENT_IDENTITY_RATIONALE 에 적어 두었다. 조용히 무시하는 것이 아니라
+#   **일치한 이벤트의 크기 차이는 magnitude_mismatch 로 따로 보고한다.**
 # ─────────────────────────────────────────────────────────────────────────
 
-EXPRESSION_TOKEN_SPEC_VERSION = "audioforge/ko-eval-expression-tokens 0.1.0-provisional"
+# 이 평가 도구는 표현형 모드를 **명시적으로** 고정한다. 계약의 기본 모드는
+# legacy_v2 이고 그 모드에서는 운율/웃음 토큰이 아예 생기지 않는다.
+EXPRESSIVE_EVAL_MODE = "expressive_v3"
+
+if EXPRESSIVE_EVAL_MODE not in et.EXPRESSIVE_MODES:
+    raise RuntimeError(
+        "계약이 모드 이름을 바꿨다: {0} 없음 (있는 것: {1})".format(
+            EXPRESSIVE_EVAL_MODE, ", ".join(et.EXPRESSIVE_MODES)))
+
+
+class ExpressiveContractError(KoreanCerError):
+    """표현 언어 계약과의 전제가 깨졌을 때(모드/enum 불일치 등)."""
 
 
 class EventKind(str, Enum):
-    """표현 이벤트 종류. 문자 CER 에서 제거되고 자기 지표로 따로 보고된다."""
-    EMOTION = "emotion"              # 감정 태그
-    LAUGH = "laugh"                  # 웃음 (태그 또는 한글 표기)
-    PROSODY_PUNCT = "prosody_punct"  # 운율 문장부호(!, ?, !?, dot-run)
+    """표현 이벤트 종류 — **값은 계약의 EXPRESSIVE_NODE_KINDS 와 같아야 한다.**
+
+    값을 새로 정의하지 않는다. 아래 import-time 가드가 계약 원본과 대조하며,
+    계약이 노드 종류를 바꾸면 이 모듈은 import 단계에서 즉시 실패한다.
+    """
+    EMOTION_TRANSITION = "emotionTransition"
+    LOCAL_PROSODY = "localProsody"
+    NONVERBAL_LAUGH = "nonverbalLaugh"
+    EXPLICIT_PAUSE = "explicitPause"
 
 
-# (kind, 원문 패턴 설명, 정규 토큰, 비고) — 사람이 읽고 검사할 수 있는 선언표.
-EXPRESSION_TOKEN_SPEC: Tuple[Tuple[str, str, str, str], ...] = (
-    (EventKind.EMOTION.value, "[emotion:<이름>]", "emotion:<이름 소문자>",
-     "대괄호 감정 태그. 이름은 ASCII 영문/숫자/밑줄/하이픈."),
-    (EventKind.LAUGH.value, "[laugh]", "laugh",
-     "명시적 웃음 태그."),
-    (EventKind.LAUGH.value, "ㅋ 또는 ㅎ 가 2자 이상 연속", "laugh",
-     "한글 표기 웃음(ㅋㅋ, ㅎㅎ, ㅋㅎ…). 1자 단독은 이벤트가 아니다."),
-    (EventKind.PROSODY_PUNCT.value, "! 와 ? 의 연속 런", "excl | ques | excl_ques",
-     "런 전체가 이벤트 1개. !! 와 ! 는 같은 토큰(excl), !? 와 ?! 는 excl_ques."),
-    (EventKind.PROSODY_PUNCT.value, ".. 이상 또는 … 연속", "dots",
-     "dot-run(말줄임) 운율 토큰. 마침표 1개는 이벤트가 아니라 일반 문장부호."),
+_UNKNOWN_KINDS = tuple(k.value for k in EventKind
+                       if k.value not in et.EXPRESSIVE_NODE_KINDS)
+if _UNKNOWN_KINDS:
+    raise ExpressiveContractError(
+        "계약에 없는 노드 종류를 참조한다: {0}".format(", ".join(_UNKNOWN_KINDS)))
+
+# 같은 위치에 여러 이벤트가 겹칠 때의 정렬 순서도 계약에서 가져온다.
+_KIND_PRIORITY = {name: i for i, name in enumerate(et.EXPRESSIVE_EVENT_PRIORITY)}
+
+
+EVENT_IDENTITY_RATIONALE = (
+    "이벤트 identity 는 '무엇이 일어났는가' 이지 '얼마나 세게 일어났는가' 가 아니다. "
+    "(1) transition_strength 는 계약에서 상수(EMOTION_TRANSITION_DEFAULT_STRENGTH)라 "
+    "정보가 0 이다. (2) strength/intensity/brightness/duration_hint 는 effective_count "
+    "에서 결정적으로 파생되는 표 조회값이므로 identity 에 넣으면 개수를 두 번 세는 것이다. "
+    "(3) 개수를 identity 에 넣으면 '!!' 가 '!' 로 약해진 경우가 '누락 1 + 유령 1' 이 되어, "
+    "표현이 **사라진 것**과 **살아남았지만 약해진 것**을 구분할 수 없게 된다. 이 지표의 "
+    "일은 발생·위치·개수이므로 그 구분이 핵심이다. (4) scope_kind 는 kind 의 함수라 "
+    "중복이다(테스트가 그 함수 관계를 감시한다). (5) laugh position 은 주변 텍스트에서 "
+    "파생되므로 넣으면 문자 오류를 이벤트 오류로 이중 계상한다. "
+    "반면 transition_mode(blend/immediate)는 크기가 아니라 범주적 선택이므로 identity 에 "
+    "넣는다 — [기쁨] 과 [기쁨|즉시] 는 다른 지시다. "
+    "크기 차이는 버리지 않고 일치한 이벤트의 magnitude_mismatch 로 따로 보고한다."
 )
 
-# 매칭 순서 = 아래 alternation 순서. 앞선 그룹이 우선한다.
-_EVENT_PATTERN = re.compile(
-    r"\[emotion:(?P<emotion>[A-Za-z_][A-Za-z0-9_\-]*)\]"
-    r"|\[laugh\](?P<laughtag>)"
-    r"|(?P<laughrun>[ㅋㅎ]{2,})"
-    r"|(?P<dots>\.{2,}|\u2026+)"
-    r"|(?P<bang>[!?]+)"
+
+def expressive_contract_fingerprint() -> str:
+    """의존하는 계약 표면의 지문. 계약이 바뀌면 이 값이 움직인다.
+
+    계약 자신의 해시 함수(sha256_hex_of_string)로 계산하므로, 지문 산출 방식조차
+    계약과 같은 알고리즘이다. enum 집합과 개수 상한을 모두 넣는다 — 운율 종류가
+    하나 늘거나 dot-run 상한이 바뀌면 저장된 수치와 새 수치를 구분할 수 있어야 한다.
+    """
+    parts = [
+        "contract_version=" + str(et.EXPRESSIVE_CONTRACT_VERSION),
+        "mode=" + EXPRESSIVE_EVAL_MODE,
+        "node_kinds=" + ",".join(et.EXPRESSIVE_NODE_KINDS),
+        "event_priority=" + ",".join(et.EXPRESSIVE_EVENT_PRIORITY),
+        "transition_modes=" + ",".join(et.EMOTION_TRANSITION_MODES),
+        "prosody_kinds=" + ",".join(et.LOCAL_PROSODY_KINDS),
+        "prosody_scopes=" + ",".join(et.PROSODY_SCOPE_KINDS),
+        "laugh_styles=" + ",".join(et.LAUGH_STYLES),
+        "laugh_positions=" + ",".join(et.LAUGH_POSITIONS),
+        "dot_run={0}..{1}".format(et.DOT_RUN_MIN_COUNT, et.DOT_RUN_MAX_COUNT),
+        "bang_run={0}..{1}".format(et.BANG_RUN_MIN_COUNT, et.BANG_RUN_MAX_COUNT),
+        "question_run={0}..{1}".format(et.QUESTION_RUN_MIN_COUNT, et.QUESTION_RUN_MAX_COUNT),
+        "shock_run={0}..{1}".format(et.SHOCK_RUN_MIN_COUNT, et.SHOCK_RUN_MAX_COUNT),
+        "tilde_run={0}..{1}".format(et.TILDE_RUN_MIN_COUNT, et.TILDE_RUN_MAX_COUNT),
+        "laugh_repeat={0}..{1}".format(et.LAUGH_REPEAT_MIN_COUNT, et.LAUGH_REPEAT_MAX_COUNT),
+    ]
+    return et.sha256_hex_of_string("\n".join(parts))
+
+
+EXPRESSIVE_CONTRACT_VERSION = et.EXPRESSIVE_CONTRACT_VERSION
+EXPRESSIVE_CONTRACT_FINGERPRINT = expressive_contract_fingerprint()
+
+# ★ -provisional 제거 ★ 토큰 서술은 더 이상 이 모듈의 임시 발명품이 아니라
+#   계약 v3 의 소비다. 계약 버전을 이름에 박아 두어 눈으로도 드리프트가 보이게 한다.
+EXPRESSION_TOKEN_SPEC_VERSION = (
+    "audioforge/ko-eval-expression-tokens 1.0.0"
+    "+expressive-contract-v{0}".format(et.EXPRESSIVE_CONTRACT_VERSION)
 )
 
-# 이벤트 위치를 ref/hyp 사이에서 비교할 때 허용하는 문자 오프셋 오차.
-# 이벤트 주변에서 한두 음절이 어긋났다고 "누락 + 유령발생" 으로 뒤집히면
-# 이벤트 지표가 문자 오류를 그대로 되받아 세는 꼴이 된다. 그래서 2음절 여유를 둔다.
+
+def _spec_rows() -> Tuple[Tuple[str, str, str], ...]:
+    """(노드 종류, identity 형태, 계약 원본 enum) — 계약에서 파생, 손으로 적지 않는다."""
+    return (
+        (EventKind.EMOTION_TRANSITION.value,
+         "emotion:<target_emotion>:<transition_mode>",
+         "EMOTION_TRANSITION_MODES = " + ",".join(et.EMOTION_TRANSITION_MODES)),
+        (EventKind.LOCAL_PROSODY.value,
+         "prosody:<kind>",
+         "LOCAL_PROSODY_KINDS = " + ",".join(et.LOCAL_PROSODY_KINDS)),
+        (EventKind.NONVERBAL_LAUGH.value,
+         "laugh:<style>",
+         "LAUGH_STYLES = " + ",".join(et.LAUGH_STYLES)),
+        (EventKind.EXPLICIT_PAUSE.value,
+         "pause",
+         "EXPRESSIVE_PAUSE_MIN_SEC..MAX_SEC = {0}..{1}".format(
+             et.EXPRESSIVE_PAUSE_MIN_SEC, et.EXPRESSIVE_PAUSE_MAX_SEC)),
+    )
+
+
+EXPRESSION_TOKEN_SPEC: Tuple[Tuple[str, str, str], ...] = _spec_rows()
+
+
+# 이벤트 위치를 ref/hyp 사이에서 비교할 때 허용하는 오차.
+# 단위는 **정규화 완료 음절**(CER 의 분모와 같은 단위)이다 — 계약의 원시 소스
+# 오프셋(utf16/codepoint)은 ref 와 hyp 의 띄어쓰기·길이가 달라 그대로는 비교 불가라,
+# AST 노드 순서를 권위로 삼아 정규화 좌표로 환산한다(_plain_prefix_lengths).
 DEFAULT_EVENT_POSITION_TOLERANCE = 2
+EVENT_POSITION_UNIT = "normalized_syllable"
 
 
 @dataclass(frozen=True)
 class ExpressionEvent:
-    """추출된 표현 이벤트 1개.
+    """계약 타임라인에서 추출한 표현 이벤트 1개.
 
-    kind     : EventKind
-    token    : 정규 토큰(비교 단위). 예 "emotion:joy", "laugh", "excl_ques", "dots"
-    position : **정규화 완료 텍스트 기준** 문자 오프셋(이 이벤트 앞에 남은 문자 수).
-    raw      : 원문에서 실제로 매치된 리터럴(감사용).
+    kind      : EventKind (= 계약 노드 종류)
+    token     : identity. 크기·범위는 들어가지 않는다(EVENT_IDENTITY_RATIONALE).
+    position  : **정규화 완료 음절 좌표**. AST 노드 순서로 산출한다(비교 권위).
+    raw       : 계약이 준 raw_token (감사용).
+    magnitude : 크기 서술(identity 아님) — 일치한 이벤트의 차이 보고에만 쓴다.
+    source_start_utf16 / source_end_utf16 / source_start_codepoint /
+    source_end_codepoint : 계약 source_range 의 이중 오프셋 원본(추적용).
     """
     kind: EventKind
     token: str
     position: int
     raw: str
+    magnitude: int
+    source_start_utf16: int
+    source_end_utf16: int
+    source_start_codepoint: int
+    source_end_codepoint: int
+    capped: bool = False
+    detail: str = ""
 
     def to_dict(self) -> dict:
-        return {"kind": self.kind.value, "token": self.token,
-                "position": self.position, "raw": self.raw}
+        return {
+            "kind": self.kind.value,
+            "token": self.token,
+            "position": self.position,
+            "position_unit": EVENT_POSITION_UNIT,
+            "raw": self.raw,
+            "magnitude": self.magnitude,
+            "capped": self.capped,
+            "detail": self.detail,
+            "source_start_utf16": self.source_start_utf16,
+            "source_end_utf16": self.source_end_utf16,
+            "source_start_codepoint": self.source_start_codepoint,
+            "source_end_codepoint": self.source_end_codepoint,
+        }
 
     @property
     def key(self) -> Tuple[str, str]:
-        """비교 그룹 키 — 같은 종류·같은 토큰끼리만 대응시킨다."""
+        """비교 그룹 키 — 같은 노드 종류·같은 identity 끼리만 대응시킨다."""
         return (self.kind.value, self.token)
 
-
-def _classify_event_match(m: "re.Match") -> Tuple[EventKind, str]:
-    if m.group("emotion") is not None:
-        return EventKind.EMOTION, "emotion:" + m.group("emotion").lower()
-    if m.group("laughtag") is not None or m.group("laughrun") is not None:
-        return EventKind.LAUGH, "laugh"
-    if m.group("dots") is not None:
-        return EventKind.PROSODY_PUNCT, "dots"
-    run = m.group("bang")
-    has_bang = "!" in run
-    has_q = "?" in run
-    if has_bang and has_q:
-        return EventKind.PROSODY_PUNCT, "excl_ques"
-    return EventKind.PROSODY_PUNCT, ("excl" if has_bang else "ques")
+    @property
+    def sort_key(self) -> Tuple[int, int, str, int]:
+        return (self.position, _KIND_PRIORITY.get(self.kind.value, 99),
+                self.token, self.source_start_codepoint)
 
 
-def extract_expression_events(text: str) -> Tuple[str, Tuple[ExpressionEvent, ...]]:
-    """텍스트에서 표현 이벤트를 **제거하고** 이벤트 목록을 함께 돌려준다.
+@dataclass(frozen=True)
+class ExpressiveParse:
+    """한 문자열에 대한 계약 파싱 결과 (검사용 — 본문 텍스트를 담는다).
 
-    반환 (stripped_text, events).
-      - stripped_text : 이벤트 리터럴이 빠진 텍스트 (이후 정규화 단계가 계속 적용됨).
-      - events        : position 은 *정규화 완료* 텍스트 기준 오프셋.
+    text            : plain_text (이벤트 토큰이 제거된 본문). 이후 정규화 단계가 이어진다.
+    events          : 추출된 표현 이벤트.
+    contract_ok     : 계약 파서가 성공했는지. 실패하면 events 는 비고 text 는 원문 그대로다.
+    diagnostic_codes: 계약 진단 코드(본문 없음). 실패 사유를 조용히 감추지 않는다.
+    timeline_sha256 : 계약이 계산한 이 파싱의 full_sha256(실패 시 "").
+    """
+    text: str
+    events: Tuple[ExpressionEvent, ...]
+    contract_ok: bool
+    diagnostic_codes: Tuple[str, ...]
+    timeline_sha256: str
 
-    position 이 정규화 완료 기준일 수 있는 이유: 이 단계 뒤의 정규화 단계는 모두
-    **문자 국소(character-local)** 연산(문자 제거/치환)이라 접두사에 적용한 결과가
-    전체에 적용한 결과의 접두사와 같다. 이 불변식은 테스트로 강제한다.
+
+def _plain_prefix_lengths(nodes: Sequence[dict]) -> List[int]:
+    """node_index → 그 노드 **앞까지**의 plain_text 정규화 완료 길이.
+
+    계약 plain_text 규칙: text 노드는 text 를, lineBreak 는 "\\n" 를 기여하고,
+    emotionTransition/localProsody/nonverbalLaugh/explicitPause 는 기여하지 않는다.
+    이벤트 이후 정규화 단계가 문자 국소 연산이므로 조각별 길이를 더해도 전체와 같다.
+    """
+    lengths = [0] * (len(nodes) + 1)
+    running = 0
+    for i, nd in enumerate(nodes):
+        lengths[i] = running
+        kind = nd.get("kind")
+        if kind == "text":
+            running += len(_finalize_after_events(nd.get("text", "")))
+        elif kind == "lineBreak":
+            running += len(_finalize_after_events("\n"))
+    lengths[len(nodes)] = running
+    return lengths
+
+
+def _events_from_timeline(timeline: dict) -> Tuple[ExpressionEvent, ...]:
+    """계약 타임라인 → 이 모듈의 이벤트 목록. 토큰 정체는 전부 계약에서 온다."""
+    nodes = timeline.get("nodes") or []
+    prefix = _plain_prefix_lengths(nodes)
+
+    def _pos(node_index: int) -> int:
+        if 0 <= node_index < len(prefix):
+            return prefix[node_index]
+        return prefix[-1] if prefix else 0
+
+    def _rng(record: dict) -> Tuple[int, int, int, int]:
+        r = record.get("source_range") or {}
+        return (int(r.get("start_utf16", 0)), int(r.get("end_utf16", 0)),
+                int(r.get("start_codepoint", 0)), int(r.get("end_codepoint", 0)))
+
+    out: List[ExpressionEvent] = []
+
+    for e in timeline.get("emotion_transitions") or ():
+        su, eu, sc, ec = _rng(e)
+        out.append(ExpressionEvent(
+            kind=EventKind.EMOTION_TRANSITION,
+            token="emotion:{0}:{1}".format(e["target_emotion"], e["transition_mode"]),
+            position=_pos(e["node_index"]), raw=e["raw_token"],
+            magnitude=int(e["transition_strength"]),
+            source_start_utf16=su, source_end_utf16=eu,
+            source_start_codepoint=sc, source_end_codepoint=ec,
+            capped=False,
+            detail="explicit_mode" if e.get("explicit_mode") else "default_mode",
+        ))
+
+    for lp in timeline.get("local_prosody") or ():
+        su, eu, sc, ec = _rng(lp)
+        ve = lp.get("vowel_extend")
+        out.append(ExpressionEvent(
+            kind=EventKind.LOCAL_PROSODY,
+            token="prosody:{0}".format(lp["kind"]),
+            position=_pos(lp["node_index"]), raw=lp["raw_token"],
+            magnitude=int(lp["effective_count"]),
+            source_start_utf16=su, source_end_utf16=eu,
+            source_start_codepoint=sc, source_end_codepoint=ec,
+            capped=bool(lp.get("capped")),
+            detail=(ve or {}).get("classification", "") if ve else "",
+        ))
+
+    for lg in timeline.get("laughs") or ():
+        su, eu, sc, ec = _rng(lg)
+        out.append(ExpressionEvent(
+            kind=EventKind.NONVERBAL_LAUGH,
+            token="laugh:{0}".format(lg["style"]),
+            position=_pos(lg["node_index"]), raw=lg["raw_token"],
+            magnitude=int(lg["effective_repeat_count"]),
+            source_start_utf16=su, source_end_utf16=eu,
+            source_start_codepoint=sc, source_end_codepoint=ec,
+            capped=bool(lg.get("capped")),
+            detail=str(lg.get("position", "")),
+        ))
+
+    for pz in timeline.get("explicit_pauses") or ():
+        su, eu, sc, ec = _rng(pz)
+        out.append(ExpressionEvent(
+            kind=EventKind.EXPLICIT_PAUSE,
+            token="pause",
+            position=_pos(pz["node_index"]), raw=pz["raw_token"],
+            magnitude=int(pz["pause_ms"]),
+            source_start_utf16=su, source_end_utf16=eu,
+            source_start_codepoint=sc, source_end_codepoint=ec,
+            capped=False, detail="",
+        ))
+
+    out.sort(key=lambda e: e.sort_key)
+    return tuple(out)
+
+
+def extract_expression_events(text: str) -> ExpressiveParse:
+    """계약 파서로 표현 이벤트를 분리한다. 자체 정규식은 쓰지 않는다.
+
+    성공하면 계약의 plain_text 를 본문으로, 계약 이벤트를 목록으로 돌려준다.
+    실패하면(계약이 모르는 대괄호 태그 등) 조용히 넘어가지 않고 contract_ok=False 와
+    진단 코드를 남기며, 본문은 원문 그대로 둔다 — 문자 CER 은 계속 계산되지만
+    그 항목의 이벤트 지표는 신뢰할 수 없다는 사실이 레코드에 남는다.
     """
     if text is None:
         text = ""
     if not isinstance(text, str):
-        raise KoreanCerError(f"텍스트는 str 이어야 한다 — 받은 타입: {type(text).__name__}")
-    events: List[ExpressionEvent] = []
-    kept = ""
-    cursor = 0
-    for m in _EVENT_PATTERN.finditer(text):
-        kept += text[cursor:m.start()]
-        kind, token = _classify_event_match(m)
-        events.append(ExpressionEvent(
-            kind=kind, token=token,
-            position=len(_finalize_after_events(kept)),
-            raw=m.group(0),
-        ))
-        cursor = m.end()
-    kept += text[cursor:]
-    return kept, tuple(events)
+        raise KoreanCerError("텍스트는 str 이어야 한다 — 받은 타입: {0}".format(
+            type(text).__name__))
+
+    parsed = et.parse_expressive_timeline(text, mode=EXPRESSIVE_EVAL_MODE)
+    if not parsed.get("ok"):
+        codes = tuple(sorted({str(d.get("code")) for d in (parsed.get("errors") or ())}))
+        return ExpressiveParse(text=text, events=(), contract_ok=False,
+                               diagnostic_codes=codes, timeline_sha256="")
+
+    timeline = parsed["timeline"]
+    codes = tuple(sorted({str(d.get("code"))
+                          for d in (timeline.get("diagnostics") or ())}))
+    return ExpressiveParse(
+        text=timeline["plain_text"],
+        events=_events_from_timeline(timeline),
+        contract_ok=True,
+        diagnostic_codes=codes,
+        timeline_sha256=str(timeline.get("full_sha256", "")),
+    )
 
 
 def _strip_expression_events(text: str) -> str:
     """정규화 파이프라인 단계용 얇은 래퍼 (이벤트는 normalize() 가 따로 수집)."""
-    return extract_expression_events(text)[0]
+    return extract_expression_events(text).text
 
 
 # ─────────────────────────────────────────────────────────────────────────
@@ -414,7 +644,8 @@ NORMALIZATION_PIPELINE: Tuple[NormalizationStep, ...] = (
         _step_unicode_nfc),
     NormalizationStep(
         "strip_expression_events",
-        "감정 태그·웃음·운율 문장부호를 제거하고 별도 이벤트로 수집",
+        "표현 언어 계약(expressive_timeline v3) 파서로 감정 태그·웃음·운율 토큰을"
+        " 제거하고 별도 이벤트로 수집 — 토큰 정체는 계약 소유",
         _strip_expression_events),
     NormalizationStep(
         "strip_punctuation",
@@ -481,6 +712,9 @@ class NormalizationResult:
     text: str
     traces: Tuple[NormalizationTrace, ...]
     events: Tuple[ExpressionEvent, ...]
+    contract_ok: bool = True
+    contract_diagnostic_codes: Tuple[str, ...] = ()
+    timeline_sha256: str = ""
 
     def step_names(self) -> Tuple[str, ...]:
         return tuple(t.step_name for t in self.traces)
@@ -495,6 +729,9 @@ class NormalizationResult:
             "text": self.text,
             "traces": [t.to_dict() for t in self.traces],
             "events": [e.to_dict() for e in self.events],
+            "contract_ok": self.contract_ok,
+            "contract_diagnostic_codes": list(self.contract_diagnostic_codes),
+            "timeline_sha256": self.timeline_sha256,
         }
 
 
@@ -507,15 +744,24 @@ def normalize(text: str) -> NormalizationResult:
     current = text
     traces: List[NormalizationTrace] = []
     events: Tuple[ExpressionEvent, ...] = ()
+    contract_ok = True
+    codes: Tuple[str, ...] = ()
+    sha = ""
     for step in NORMALIZATION_PIPELINE:
         before = current
         if step.name == _EVENT_STEP_NAME:
-            current, events = extract_expression_events(before)
+            parse = extract_expression_events(before)
+            current, events = parse.text, parse.events
+            contract_ok, codes, sha = (parse.contract_ok, parse.diagnostic_codes,
+                                       parse.timeline_sha256)
         else:
             current = step.fn(before)
         traces.append(NormalizationTrace(step.name, before, current))
     return NormalizationResult(NORMALIZATION_VERSION, text, current,
-                               tuple(traces), events)
+                               tuple(traces), events,
+                               contract_ok=contract_ok,
+                               contract_diagnostic_codes=codes,
+                               timeline_sha256=sha)
 
 
 def normalize_text(text: str) -> str:
@@ -646,6 +892,16 @@ class ExpressionEventReport:
     provenance: AsrProvenance
     token_spec_version: str
     position_tolerance: int
+    expressive_contract_version: int
+    expressive_contract_fingerprint: str
+    expressive_mode: str
+    reference_timeline_sha256: str
+    hypothesis_timeline_sha256: str
+    reference_contract_ok: bool
+    hypothesis_contract_ok: bool
+    contract_diagnostic_codes: Tuple[str, ...]
+    magnitude_mismatch_count: int
+    max_magnitude_delta: Optional[int]
     expected_count: int
     observed_count: int
     matched_count: int
@@ -657,6 +913,11 @@ class ExpressionEventReport:
 
     def __post_init__(self):
         _require_provenance(self.provenance)
+
+    @property
+    def contract_ok(self) -> bool:
+        """양쪽 모두 계약 파서를 통과했는가. 거짓이면 이벤트 지표는 신뢰할 수 없다."""
+        return self.reference_contract_ok and self.hypothesis_contract_ok
 
     @property
     def missing_count(self) -> int:
@@ -679,6 +940,18 @@ class ExpressionEventReport:
             "provenance": self.provenance.to_dict(),
             "token_spec_version": self.token_spec_version,
             "position_tolerance": self.position_tolerance,
+            "position_unit": EVENT_POSITION_UNIT,
+            "expressive_contract_version": self.expressive_contract_version,
+            "expressive_contract_fingerprint": self.expressive_contract_fingerprint,
+            "expressive_mode": self.expressive_mode,
+            "reference_timeline_sha256": self.reference_timeline_sha256,
+            "hypothesis_timeline_sha256": self.hypothesis_timeline_sha256,
+            "reference_contract_ok": self.reference_contract_ok,
+            "hypothesis_contract_ok": self.hypothesis_contract_ok,
+            "contract_ok": self.contract_ok,
+            "contract_diagnostic_codes": list(self.contract_diagnostic_codes),
+            "magnitude_mismatch_count": self.magnitude_mismatch_count,
+            "max_magnitude_delta": self.max_magnitude_delta,
             "expected_count": self.expected_count,
             "observed_count": self.observed_count,
             "matched_count": self.matched_count,
@@ -694,6 +967,16 @@ class ExpressionEventReport:
         }
 
 
+@dataclass(frozen=True)
+class ContractStamp:
+    """계약 파싱의 신원 도장. 나중에 드리프트를 감지할 수 있을 만큼만 담는다(본문 없음)."""
+    reference_timeline_sha256: str = ""
+    hypothesis_timeline_sha256: str = ""
+    reference_contract_ok: bool = True
+    hypothesis_contract_ok: bool = True
+    diagnostic_codes: Tuple[str, ...] = ()
+
+
 def _count_by_kind(events: Sequence[ExpressionEvent]) -> Dict[str, int]:
     out: Dict[str, int] = {}
     for e in events:
@@ -707,6 +990,7 @@ def compare_expression_events(
         observed: Sequence[ExpressionEvent],
         provenance: AsrProvenance,
         position_tolerance: int = DEFAULT_EVENT_POSITION_TOLERANCE,
+        contract: Optional["ContractStamp"] = None,
 ) -> ExpressionEventReport:
     """기대 이벤트 vs 관측 이벤트를 (kind, token) 그룹별 위치 순 그리디로 대응시킨다.
 
@@ -728,6 +1012,7 @@ def compare_expression_events(
     missing: List[ExpressionEvent] = []
     spurious: List[ExpressionEvent] = []
     deltas: List[int] = []
+    magnitude_deltas: List[int] = []
 
     for key in sorted(groups):
         exp_list = sorted(groups[key][0], key=lambda e: e.position)
@@ -738,6 +1023,9 @@ def compare_expression_events(
             if abs(delta) <= position_tolerance:
                 matched += 1
                 deltas.append(abs(delta))
+                # 크기(세기·개수)는 identity 가 아니지만 버리지도 않는다 — 따로 보고.
+                magnitude_deltas.append(
+                    abs(obs_list[j].magnitude - exp_list[i].magnitude))
                 i += 1
                 j += 1
             elif delta < 0:
@@ -749,14 +1037,26 @@ def compare_expression_events(
         missing.extend(exp_list[i:])
         spurious.extend(obs_list[j:])
 
-    missing.sort(key=lambda e: (e.position, e.kind.value, e.token))
-    spurious.sort(key=lambda e: (e.position, e.kind.value, e.token))
+    missing.sort(key=lambda e: e.sort_key)
+    spurious.sort(key=lambda e: e.sort_key)
+    stamp = contract or ContractStamp()
+    nonzero_magnitude = [d for d in magnitude_deltas if d != 0]
 
     return ExpressionEventReport(
         item_id=item_id,
         provenance=provenance,
         token_spec_version=EXPRESSION_TOKEN_SPEC_VERSION,
         position_tolerance=position_tolerance,
+        expressive_contract_version=EXPRESSIVE_CONTRACT_VERSION,
+        expressive_contract_fingerprint=EXPRESSIVE_CONTRACT_FINGERPRINT,
+        expressive_mode=EXPRESSIVE_EVAL_MODE,
+        reference_timeline_sha256=stamp.reference_timeline_sha256,
+        hypothesis_timeline_sha256=stamp.hypothesis_timeline_sha256,
+        reference_contract_ok=stamp.reference_contract_ok,
+        hypothesis_contract_ok=stamp.hypothesis_contract_ok,
+        contract_diagnostic_codes=tuple(stamp.diagnostic_codes),
+        magnitude_mismatch_count=len(nonzero_magnitude),
+        max_magnitude_delta=(max(nonzero_magnitude) if nonzero_magnitude else None),
         expected_count=len(expected),
         observed_count=len(observed),
         matched_count=matched,
@@ -863,6 +1163,14 @@ def score_item(item_id: str,
         observed=hyp_norm.events,
         provenance=provenance,
         position_tolerance=event_position_tolerance,
+        contract=ContractStamp(
+            reference_timeline_sha256=ref_norm.timeline_sha256,
+            hypothesis_timeline_sha256=hyp_norm.timeline_sha256,
+            reference_contract_ok=ref_norm.contract_ok,
+            hypothesis_contract_ok=hyp_norm.contract_ok,
+            diagnostic_codes=tuple(sorted(set(ref_norm.contract_diagnostic_codes)
+                                          | set(hyp_norm.contract_diagnostic_codes))),
+        ),
     )
     return CerResult(item_id=item_id, category=category, provenance=provenance,
                      syllable=syllable, jamo=jamo, events=events)
@@ -1053,7 +1361,7 @@ def sample_result_records(provenance: Optional[AsrProvenance] = None) -> Tuple[d
     """
     prov = provenance or _INTROSPECTION_PROVENANCE
     result = score_item("sample-1", "sample_category",
-                        "안녕하세요! 김하늘 씨 ㅋㅋ", "안녕하세요 김하늘 씨",
+                        "안녕하세요! 김하늘 씨 [ㅋㅋ]", "안녕하세요 김하늘 씨",
                         prov)
     empty_events = compare_expression_events("sample-2", (), (), prov)
     agg = aggregate_results("sample_category", (result,))
@@ -1082,7 +1390,7 @@ def public_result_keys() -> Tuple[str, ...]:
 _PUBLIC_TYPES = (
     "AsrProvenance", "EditCounts", "ExpressionEvent", "ExpressionEventReport",
     "NormalizationStep", "NormalizationTrace", "NormalizationResult",
-    "CerResult", "CerAggregate", "EventKind",
+    "CerResult", "CerAggregate", "EventKind", "ExpressiveParse", "ContractStamp",
 )
 
 
