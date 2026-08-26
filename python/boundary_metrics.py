@@ -28,6 +28,10 @@ join_index 규약(중요):
 
 프라이버시(하드 요건): 이 모듈은 오디오 샘플·대사·참조 전사·파일 경로를 **어떤 형태로도** 내보내지
 않는다. 레코드는 숫자/인덱스와 emotion_id(짧은 안전 토큰) 뿐이며, 직렬화 helper 가 이를 강제한다.
+
+계측 1차 함수의 단일 권위: 창 통계(RMS/peak/DC/HF)·이음매 단차·zero-cross 거리·저에너지 꼬리 길이는
+**onset_continuity_metrics** 에 한 벌만 존재하며 여기서는 import 해 쓴다(중복 구현 금지). 이 모듈이
+계속 소유하는 것은 'join 서술자' 라는 관점 하나뿐이다 — 결합 규칙 거울, BoundaryPoint, join 레코드 스키마.
 """
 
 import math
@@ -37,13 +41,16 @@ from typing import List, Optional, Sequence
 
 import numpy as np
 
+import onset_continuity_metrics as ocm
+
 # ────────────────────────── 분석 상수(문서화된 기본값) ──────────────────────────
 
-WINDOW_MS = 50.0                 # prev/next 창 길이(계약 고정: 50 ms)
-ZERO_CROSS_SEARCH_MS = 50.0      # zero crossing 탐색 한계(초과 시 한계값으로 saturate)
-TRAILING_FRAME_MS = 5.0          # trailing 저에너지 판정 프레임(비중첩)
-TRAILING_LOOKBACK_MS = 1000.0    # trailing 판정 시 되돌아보는 최대 길이
-TRAILING_REL_THRESHOLD = 0.10    # 기준(lookback 내 최대 프레임 RMS) 대비 -20 dB 이하 = 저에너지 후보
+# 값의 권위는 onset_continuity_metrics 다(여기서 재정의하지 않는다 — 드리프트 방지).
+WINDOW_MS = ocm.WINDOW_MS                          # prev/next 창 길이(계약 고정: 50 ms)
+ZERO_CROSS_SEARCH_MS = ocm.ZERO_CROSS_SEARCH_MS    # zero crossing 탐색 한계
+TRAILING_FRAME_MS = ocm.TRAILING_FRAME_MS          # trailing 저에너지 판정 프레임(비중첩)
+TRAILING_LOOKBACK_MS = ocm.TRAILING_LOOKBACK_MS    # trailing 판정 되돌아보기 최대 길이
+TRAILING_REL_THRESHOLD = ocm.TRAILING_REL_THRESHOLD  # 구간 최대 프레임 RMS 대비 상대 임계
 
 # emotion_id 안전 토큰: 짧은 식별자만 허용. 경로·문장·전사는 이 패턴을 통과할 수 없다.
 SAFE_EMOTION_ID = re.compile(r"^[A-Za-z0-9_.\-]{1,32}$")
@@ -68,12 +75,9 @@ INT_FIELDS = (
 )
 
 
-class BoundaryMetricsError(ValueError):
-    """입력 계약 위반(신호/서술자). 메시지엔 숫자·인덱스만 담는다."""
-
-
-class PrivacyViolation(ValueError):
-    """직렬화 단계에서 숫자/인덱스/안전 emotion_id 이외의 값이 감지됨."""
+# 예외도 한 벌만 존재한다(onset_continuity_metrics 소유). 이름만 여기서 재노출한다.
+BoundaryMetricsError = ocm.MetricsError
+PrivacyViolation = ocm.PrivacyViolation
 
 
 @dataclass(frozen=True)
@@ -154,103 +158,22 @@ def build_concat_case(chunks: Sequence[dict]):
 
 # ────────────────────────── 내부 계산(순수) ──────────────────────────
 
-def _ms_to_samples(ms: float, sr: int) -> int:
-    return int(round(float(ms) * int(sr) / 1000.0))
-
-
-def _window_stats(win: np.ndarray):
-    """(rms, peak, dc, hf_energy). 빈 창이면 전부 0.0.
-    hf_energy = 1차 차분 제곱 평균(단순 고역통과 에너지 — scipy/FFT 없음)."""
-    if win.size == 0:
-        return 0.0, 0.0, 0.0, 0.0
-    w = win.astype(np.float64, copy=False)
-    rms = float(math.sqrt(float(np.mean(w * w))))
-    peak = float(np.max(np.abs(w)))
-    dc = float(np.mean(w))
-    if w.size < 2:
-        hf = 0.0
-    else:
-        d = np.diff(w)
-        hf = float(np.mean(d * d))
-    return rms, peak, dc, hf
-
-
-def _zero_cross_distance_back(sig: np.ndarray, j: int, lo: int, limit: int) -> int:
-    """join 직전 마지막 실제 샘플 x[j-1] 에서 가장 가까운 zero crossing 까지의 샘플 거리.
-
-    0 = x[j-1] 자체가 crossing(값이 0 이거나 x[j-2]와 부호가 반대). 탐색은 max(lo, j-1-limit)
-    까지만 하고, 못 찾으면 limit 으로 saturate 한다(양수 정수만 반환 — 판정 아님, 서술)."""
-    start = max(int(lo), j - 1 - int(limit))
-    seg = sig[start:j]
-    if seg.size < 1:
-        return int(limit)
-    s = np.sign(seg.astype(np.float64, copy=False))
-    best: Optional[int] = None
-    zeros = np.nonzero(s == 0.0)[0]
-    if zeros.size:
-        best = int(zeros[-1])
-    if s.size >= 2:
-        ch = np.nonzero(s[:-1] * s[1:] < 0.0)[0]
-        if ch.size:
-            cand = int(ch[-1]) + 1          # crossing 직후 샘플 위치
-            best = cand if best is None else max(best, cand)
-    if best is None:
-        return int(limit)
-    return int(min(limit, (seg.size - 1) - best))
-
-
-def _zero_cross_distance_fwd(sig: np.ndarray, h: int, hi: int, limit: int) -> int:
-    """join 이후 첫 실제 샘플 x[h] 에서 가장 가까운 zero crossing 까지의 샘플 거리.
-    0 = x[h] 자체가 crossing. 못 찾으면 limit 으로 saturate."""
-    stop = min(int(hi), h + int(limit) + 1)
-    seg = sig[h:stop]
-    if seg.size < 1:
-        return int(limit)
-    s = np.sign(seg.astype(np.float64, copy=False))
-    best: Optional[int] = None
-    zeros = np.nonzero(s == 0.0)[0]
-    if zeros.size:
-        best = int(zeros[0])
-    if s.size >= 2:
-        ch = np.nonzero(s[:-1] * s[1:] < 0.0)[0]
-        if ch.size:
-            cand = int(ch[0])               # crossing 직전 샘플 위치
-            best = cand if best is None else min(best, cand)
-    if best is None:
-        return int(limit)
-    return int(min(limit, best))
+# 아래 1차 함수들은 onset_continuity_metrics 가 단일 권위다. 여기서는 이름만 붙여 쓴다.
+_ms_to_samples = ocm.ms_to_samples
+_window_stats = ocm.window_stats
+_zero_cross_distance_back = ocm.zero_cross_distance_back
+_zero_cross_distance_fwd = ocm.zero_cross_distance_fwd
 
 
 def _trailing_low_energy_len(sig: np.ndarray, j: int, lo: int, sr: int,
                              frame_ms: float, lookback_ms: float, rel_threshold: float) -> int:
     """join 직전의 '저에너지/비음성 후보' 꼬리 길이(샘플).
 
-    문서화된 상대 임계: lookback(최대 lookback_ms, 단 이전 join 이후로 제한) 구간을 frame_ms 비중첩
-    프레임으로 나눠 프레임 RMS 를 구하고, **그 구간 최대 프레임 RMS × rel_threshold** 를 임계로 삼는다.
-    마지막 프레임부터 임계 이하인 프레임이 연속으로 몇 개인지 세어 샘플 길이로 환산한다.
+    구현 권위는 onset_continuity_metrics.trailing_low_energy_len 하나뿐이다(여기서 재구현하지 않는다).
+    문서화된 상대 임계: lookback 구간의 최대 프레임 RMS × rel_threshold 이하인 마지막 프레임들의 길이.
     절대 dBFS 를 쓰지 않는 이유: 화자/참조 음량에 독립적이어야 하기 때문(상대 판정).
-    구간 전체가 완전 무음(최대 RMS==0)이면 분석 구간 전체 길이를 반환한다."""
-    frame = max(1, _ms_to_samples(frame_ms, sr))
-    lookback = max(frame, _ms_to_samples(lookback_ms, sr))
-    start = max(int(lo), j - lookback)
-    region = sig[start:j]
-    n_frames = region.size // frame
-    if n_frames < 1:
-        return 0
-    usable = region[region.size - n_frames * frame:]
-    frames = usable.reshape(n_frames, frame).astype(np.float64, copy=False)
-    frame_rms = np.sqrt(np.mean(frames * frames, axis=1))
-    ref = float(np.max(frame_rms))
-    if ref <= 0.0:
-        return int(usable.size)
-    thr = ref * float(rel_threshold)
-    count = 0
-    for k in range(n_frames - 1, -1, -1):
-        if frame_rms[k] <= thr:
-            count += 1
-        else:
-            break
-    return int(count * frame)
+    """
+    return ocm.trailing_low_energy_len(sig, j, lo, sr, frame_ms, lookback_ms, rel_threshold)
 
 
 # ────────────────────────── 공개 API ──────────────────────────
@@ -318,7 +241,7 @@ def compute_boundary_metrics(signal, sr, boundaries: Sequence[BoundaryPoint],
         p_rms, p_peak, p_dc, p_hf = _window_stats(prev_win)
         n_rms, n_peak, n_dc, n_hf = _window_stats(next_win)
 
-        jump = float(abs(float(sig[j]) - float(sig[j - 1])))
+        jump = ocm.sample_jump(sig, j)
 
         rec = {
             "prev_tail_rms": p_rms,
