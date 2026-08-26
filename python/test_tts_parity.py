@@ -81,5 +81,47 @@ class VerifyParityTest(unittest.TestCase):
                     self.assertNotIn(k, e, "비민감 payload(전사/경로/전문 금지)")
 
 
+class ExpressiveModeArgTest(unittest.TestCase):
+    """v3 배선 — verify_parity 3번째 인자의 API 계약.
+
+    (모드 선택·경계·payload 의 전체 계약 스윕은 test_expressive_v3_wiring 에 있다.
+     여기서는 '이 모듈의 함수 시그니처와 분기'만 고정한다.)
+    """
+
+    def test_third_arg_is_optional_and_defaults_to_legacy(self):
+        raw = "[기쁨] 안녕하세요."
+        h = tts_grammar.parse_tts_script(raw)["plan"]["full_sha256"]
+        self.assertEqual(tts_parity.verify_parity(raw, h), [])
+        self.assertEqual(tts_parity.verify_parity(raw, h, None), [])
+        self.assertEqual(tts_parity.verify_parity(raw, h, "legacy_v2"), [])
+
+    def test_v3_flag_switches_hash_authority(self):
+        import expressive_timeline
+        raw = "[기쁨] 안녕하세요."
+        v2h = tts_grammar.parse_tts_script(raw)["plan"]["full_sha256"]
+        v3h = expressive_timeline.parse_expressive_timeline(
+            raw, "expressive_v3")["timeline"]["full_sha256"]
+        self.assertNotEqual(v2h, v3h)
+        # v3 플래그면 v3 해시만 통과하고, v2 해시는 v3 전용 코드로 막힌다.
+        self.assertEqual(tts_parity.verify_parity(raw, v3h, "expressive_v3"), [])
+        errs = tts_parity.verify_parity(raw, v2h, "expressive_v3")
+        self.assertEqual([e["code"] for e in errs], ["EXPRESSIVE_PARITY_MISMATCH"])
+
+    def test_invalid_flag_is_loud_not_silent_v2(self):
+        raw = "[기쁨] 안녕하세요."
+        h = tts_grammar.parse_tts_script(raw)["plan"]["full_sha256"]
+        # 오타난 플래그는 v2로 조용히 강등되지 않는다(그랬다면 [] 가 나왔을 것).
+        errs = tts_parity.verify_parity(raw, h, "expressive_V3")
+        self.assertEqual([e["code"] for e in errs], ["EXPRESSIVE_MODE_INVALID"])
+        self.assertEqual(errs[0]["raw_type"], "string")
+
+    def test_mode_helpers_agree(self):
+        self.assertEqual(tts_parity.parity_mode(None), "legacy_v2")
+        self.assertEqual(tts_parity.parity_mode("expressive_v3"), "expressive_v3")
+        self.assertTrue(tts_parity.uses_expressive_v3("expressive_v3"))
+        for bad in (None, "", "v3", 3, True, {}):
+            self.assertFalse(tts_parity.uses_expressive_v3(bad))
+
+
 if __name__ == "__main__":
     unittest.main()
