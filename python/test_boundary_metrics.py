@@ -304,7 +304,9 @@ class TestWindowingAndConcatMirror(unittest.TestCase):
 
 # ────────────────────────── 5) 프라이버시(하드 요건) ──────────────────────────
 
-_ALLOWED_IMPORTS = {"math", "re", "dataclasses", "typing", "numpy"}
+# onset_continuity_metrics 는 계측 1차 함수의 단일 권위이며 동일한 순수성 보증을 받는다
+# (test_onset_continuity_metrics.py 가 같은 AST 검사를 그 모듈에 적용한다).
+_ALLOWED_IMPORTS = {"math", "re", "dataclasses", "typing", "numpy", "onset_continuity_metrics"}
 _FORBIDDEN_CALLS = {"open", "print", "exec", "eval", "input", "compile", "__import__"}
 
 
