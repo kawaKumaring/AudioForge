@@ -121,10 +121,45 @@ export type LaughStyle = typeof LAUGH_STYLES[number]
 export const LAUGH_POSITIONS = ['leading', 'inline', 'trailing', 'standalone'] as const
 export type LaughPosition = typeof LAUGH_POSITIONS[number]
 
-export const VOWEL_EXTEND_DEGRADE_REASONS = [
-  'final_consonant', 'unsupported_script', 'no_preceding_text', 'no_preceding_vowel',
+/**
+ * '~' 의 최종음 분류 — 문법 층의 '관찰'이지 음향 품질 판정이 아니다.
+ *  - open_vowel            : 종성 없음(최종음이 모음)
+ *  - sustainable_final     : 종성이 ㅇ/ㄴ/ㅁ/ㄹ (사용 허용 대상)
+ *  - non_sustainable_final : 그 밖의 종성
+ *  - undeterminable        : 최종 모음/종성을 확정할 수 없음(스크립트 한계·선행 텍스트 없음 등)
+ *
+ * ⚠️ 계약 경고 (엔진 구현자에게):
+ *   1) ㅇ/ㄴ/ㅁ/ㄹ 를 "자연스럽게 늘어난다" 고 서술하지 말 것 —
+ *      실청 테스트 전까지 미검증이며 이 계약은 그것을 보증하지 않는다(분류일 뿐이다).
+ *   2) 종성 자음을 복제·반복해 길이를 만드는 방식은 금지(VOWEL_EXTEND_FORBIDDEN_TECHNIQUES).
+ *   supported/degraded 같은 최종 판정은 엔진 capability 모듈의 몫이다(이 모듈은 내리지 않는다).
+ */
+export const VOWEL_EXTEND_CLASSES = [
+  'open_vowel', 'sustainable_final', 'non_sustainable_final', 'undeterminable',
 ] as const
-export type VowelExtendDegradeReason = typeof VOWEL_EXTEND_DEGRADE_REASONS[number]
+export type VowelExtendClass = typeof VOWEL_EXTEND_CLASSES[number]
+
+/** classification === 'undeterminable' 일 때의 사유(확정 가능성의 한계이지 음향 판정이 아니다). */
+export const VOWEL_EXTEND_UNDETERMINABLE_REASONS = [
+  'unsupported_script', 'no_preceding_text', 'no_preceding_vowel',
+] as const
+export type VowelExtendUndeterminableReason = typeof VOWEL_EXTEND_UNDETERMINABLE_REASONS[number]
+
+/** sustainable_final 판정용 한글 종성 집합. '자연스럽다'는 주장이 아니라 분류 기준일 뿐이다. */
+export const SUSTAINABLE_FINAL_JAMO = 'ㅇㄴㅁㄹ'
+/** 위 집합의 라틴 대응(같은 공명음 부류). 한글 기준의 거울이며 역시 음향 보증이 아니다. */
+export const SUSTAINABLE_FINAL_LATIN = 'nmlr'
+
+/** 엔진이 절대 써서는 안 되는 길이 확보 기법(계약으로 못 박는다). */
+export const VOWEL_EXTEND_FORBIDDEN_TECHNIQUES = [
+  'duplicate_final_consonant', 'repeat_final_consonant',
+] as const
+export type VowelExtendForbiddenTechnique = typeof VOWEL_EXTEND_FORBIDDEN_TECHNIQUES[number]
+
+/** ㅇ/ㄴ/ㅁ/ㄹ 가 실제로 잘 늘어나는지는 실청 테스트 전까지 미검증 — 계약이 보증하지 않는다. */
+export const SUSTAINABLE_FINAL_IS_ACOUSTICALLY_VERIFIED = false
+/** 문법 층은 음향 품질(supported/degraded)을 판정하지 않는다. 엔진 capability 모듈의 몫. */
+export const LANGUAGE_LAYER_ASSERTS_ACOUSTIC_QUALITY = false
 
 export const EXPRESSIVE_BOUNDARY_KINDS = ['explicitPause', 'sentenceGap', 'finalTail'] as const
 export type ExpressiveBoundaryKind = typeof EXPRESSIVE_BOUNDARY_KINDS[number]
@@ -144,7 +179,8 @@ export const EXPRESSIVE_ERROR_CODES = [
   'INVALID_EXPRESSIVE_PAUSE',    // error   — [쉼 N] 형식/범위 위반
   'INVALID_EMOTION_MODIFIER',    // error   — [감정|???] 미지원 수식어(v3 전용 구문)
   'AMBIGUOUS_LAUGH_TOKEN',       // error   — 웃음 문자만으로 이뤄졌으나 어떤 style 에도 일치하지 않음
-  'UNSUPPORTED_VOWEL_EXTEND',    // warning — '~' 의 최종 모음 위치를 확정할 수 없음(자음/전체 늘이기 금지)
+  'VOWEL_EXTEND_NON_SUSTAINABLE_FINAL', // warning — '~' 앞 최종음이 ㅇ/ㄴ/ㅁ/ㄹ 밖의 종성(사실 기술, 품질 판정 아님)
+  'VOWEL_EXTEND_UNDETERMINABLE', // warning — '~' 앞 최종 모음/종성을 확정할 수 없음(스크립트 한계 등)
   'PROSODY_WITHOUT_HOST',        // warning — 앞선 발화 텍스트 없이 놓인 운율 토큰
   'EXPRESSIVE_PARITY_MISMATCH',  // error   — TS/Python 표현형 해시 불일치(런타임 게이트용 예약)
   'EXPRESSIVE_MODE_INVALID',     // error   — 모드 플래그 값이 계약 밖(조용한 기본값 승격 금지)
@@ -270,6 +306,18 @@ export const HANGUL_JUNGSEONG: readonly string[] = Object.freeze([
   'ㅙ', 'ㅚ', 'ㅛ', 'ㅜ', 'ㅝ', 'ㅞ', 'ㅟ', 'ㅠ', 'ㅡ', 'ㅢ',
   'ㅣ',
 ])
+/**
+ * 한글 종성(받침) 표 — index 0 = 종성 없음. '~' 분류에만 쓴다.
+ * ⚠️ 겹받침(ㄳ/ㄵ/ㄻ/ㄺ ...)은 자모 표기 그대로 분류한다. 실제 발음상의 대표음 축약
+ *    (예: 삶 → [삼])은 음운 규칙 모듈이 없어 적용하지 않으며, 따라서 겹받침은
+ *    ㅇ/ㄴ/ㅁ/ㄹ 집합에 들지 않아 non_sustainable_final 로 분류된다(알려진 한계).
+ */
+export const HANGUL_JONGSEONG: readonly string[] = Object.freeze([
+  '', 'ㄱ', 'ㄲ', 'ㄳ', 'ㄴ', 'ㄵ', 'ㄶ', 'ㄷ', 'ㄹ', 'ㄺ',
+  'ㄻ', 'ㄼ', 'ㄽ', 'ㄾ', 'ㄿ', 'ㅀ', 'ㅁ', 'ㅂ', 'ㅄ', 'ㅅ',
+  'ㅆ', 'ㅇ', 'ㅈ', 'ㅊ', 'ㅋ', 'ㅌ', 'ㅍ', 'ㅎ',
+])
+
 /** 모음이 자명한 가나만 지원. 나머지 가나/한자는 unsupported_script(정직한 한계). */
 export const KANA_VOWEL_MAP: Readonly<Record<string, string>> = Object.freeze({
   'あ': 'a', 'い': 'i', 'う': 'u', 'え': 'e', 'お': 'o',
@@ -324,12 +372,18 @@ export interface EmotionTransitionEvent {
   lineIndex: number
 }
 
-/** '~' 의 최종 모음 판정 결과. supported=false 면 절대 자음/전체 발화를 늘이지 말 것. */
-export interface VowelExtendInfo {
-  supported: boolean
-  /** 확정된 모음 문자(한글 중성 또는 라틴/가나 모음). 미확정이면 null. */
+/**
+ * '~' 앞 최종음의 '분류'. 문법 층은 여기까지만 말한다.
+ * supported/degraded 같은 음향 품질 판정은 담지 않는다 — 엔진 capability 모듈이 이 분류를 받아 결정한다.
+ */
+export interface VowelExtendClassification {
+  classification: VowelExtendClass
+  /** 확정된 최종 모음(한글 중성 또는 라틴/가나 모음). 확정 불가면 null. */
   targetVowel: string | null
-  degradedReason: VowelExtendDegradeReason | null
+  /** 한글 종성 자모(있을 때만). 그 외에는 null. */
+  finalConsonant: string | null
+  /** classification === 'undeterminable' 일 때만 non-null. */
+  undeterminableReason: VowelExtendUndeterminableReason | null
 }
 
 /**
@@ -360,8 +414,8 @@ export interface LocalProsodyEvent {
   isChunkBoundary: typeof LOCAL_PROSODY_IS_CHUNK_BOUNDARY
   /** 항상 0 — 문장부호는 스스로 무음을 만들지 않는다. */
   extraPauseMs: 0
-  /** kind==='vowel_extend' 일 때만 non-null. */
-  vowelExtend: VowelExtendInfo | null
+  /** kind==='vowel_extend' 일 때만 non-null. 분류만 담는다(품질 판정 아님). */
+  vowelExtend: VowelExtendClassification | null
   nodeIndex: number
   lineIndex: number
 }
@@ -449,7 +503,7 @@ export interface ExpressiveSummary {
   explicitPauseCount: number
   totalExplicitPauseMs: number
   usedEmotionIds: string[]
-  degradedVowelExtendCount: number
+  nonOpenVowelExtendCount: number
   cappedTokenCount: number
   /** 표시용 8 hex(표현형 해시 앞 8자리). v2 planSha8 와 혼용 금지. */
   sha8: string
@@ -912,14 +966,17 @@ export function parseExpressiveTimeline(raw: string, opts?: ExpressiveParseOptio
     while (hostEnd > 0 && isWhitespace(host[hostEnd - 1].ch)) hostEnd -= 1
 
     let scopeRange: ExprRange
-    let vowelExtend: VowelExtendInfo | null = null
+    let vowelExtend: VowelExtendClassification | null = null
     if (hostEnd === 0) {
       scopeRange = rangeOf(p.startIdx, p.startIdx)
       pushDiag({ code: 'PROSODY_WITHOUT_HOST', severity: 'warning', reason: kind, uiOffsetUtf16: range.startUtf16 })
       if (kind === 'vowel_extend') {
-        vowelExtend = { supported: false, targetVowel: null, degradedReason: 'no_preceding_text' }
+        vowelExtend = {
+          classification: 'undeterminable', targetVowel: null, finalConsonant: null,
+          undeterminableReason: 'no_preceding_text',
+        }
         pushDiag({
-          code: 'UNSUPPORTED_VOWEL_EXTEND', severity: 'warning',
+          code: 'VOWEL_EXTEND_UNDETERMINABLE', severity: 'warning',
           reason: 'no_preceding_text', uiOffsetUtf16: range.startUtf16,
         })
       }
@@ -937,11 +994,17 @@ export function parseExpressiveTimeline(raw: string, opts?: ExpressiveParseOptio
       }
       scopeRange = rangeOf(host[from].src, host[hostEnd - 1].src + 1)
       if (kind === 'vowel_extend') {
-        vowelExtend = resolveVowelExtend(host[hostEnd - 1].ch)
-        if (!vowelExtend.supported) {
+        vowelExtend = classifyVowelExtend(host[hostEnd - 1].ch)
+        // open_vowel / sustainable_final 은 경고하지 않는다(사용 허용 대상).
+        if (vowelExtend.classification === 'non_sustainable_final') {
           pushDiag({
-            code: 'UNSUPPORTED_VOWEL_EXTEND', severity: 'warning',
-            reason: vowelExtend.degradedReason ?? 'no_preceding_vowel', uiOffsetUtf16: range.startUtf16,
+            code: 'VOWEL_EXTEND_NON_SUSTAINABLE_FINAL', severity: 'warning',
+            reason: vowelExtend.finalConsonant ?? 'non_sustainable_final', uiOffsetUtf16: range.startUtf16,
+          })
+        } else if (vowelExtend.classification === 'undeterminable') {
+          pushDiag({
+            code: 'VOWEL_EXTEND_UNDETERMINABLE', severity: 'warning',
+            reason: vowelExtend.undeterminableReason ?? 'no_preceding_vowel', uiOffsetUtf16: range.startUtf16,
           })
         }
       }
@@ -1113,10 +1176,10 @@ export function parseExpressiveTimeline(raw: string, opts?: ExpressiveParseOptio
 
   let totalExplicitPauseMs = 0
   for (const pz of explicitPauses) totalExplicitPauseMs += pz.pauseMs
-  let degradedVowelExtendCount = 0
+  let nonOpenVowelExtendCount = 0
   let cappedTokenCount = 0
   for (const lp of localProsody) {
-    if (lp.vowelExtend != null && !lp.vowelExtend.supported) degradedVowelExtendCount += 1
+    if (lp.vowelExtend != null && lp.vowelExtend.classification !== 'open_vowel') nonOpenVowelExtendCount += 1
     if (lp.capped) cappedTokenCount += 1
   }
   for (const lg of laughs) if (lg.capped) cappedTokenCount += 1
@@ -1140,7 +1203,7 @@ export function parseExpressiveTimeline(raw: string, opts?: ExpressiveParseOptio
     explicitPauseCount: explicitPauses.length,
     totalExplicitPauseMs,
     usedEmotionIds,
-    degradedVowelExtendCount,
+    nonOpenVowelExtendCount,
     cappedTokenCount,
     sha8: fullSha256.slice(0, 8),
   }
@@ -1180,32 +1243,62 @@ function findAdjacentLineBreak(nodes: ExpressiveNode[], pauseNodeIndex: number):
   return -1
 }
 
-/** '~' 의 최종 모음 판정. 확정 불가면 degraded — 자음/전체 발화를 늘이는 폴백은 금지. */
-export function resolveVowelExtend(lastChar: string): VowelExtendInfo {
+/**
+ * '~' 앞 최종음을 '분류'한다(품질 판정 아님 — supported/degraded 는 엔진 capability 의 몫).
+ * 세 갈래: open_vowel / sustainable_final(ㅇㄴㅁㄹ) / non_sustainable_final,
+ * 그리고 확정 불가일 때 undeterminable.
+ *
+ * ⚠️ sustainable_final 은 "자연스럽게 늘어난다"는 뜻이 아니다(SUSTAINABLE_FINAL_IS_ACOUSTICALLY_VERIFIED=false).
+ * ⚠️ 어떤 분류에서도 종성 자음을 복제·반복해 길이를 만드는 것은 금지(VOWEL_EXTEND_FORBIDDEN_TECHNIQUES).
+ */
+export function classifyVowelExtend(lastChar: string): VowelExtendClassification {
+  const undeterminable = (reason: VowelExtendUndeterminableReason): VowelExtendClassification => ({
+    classification: 'undeterminable', targetVowel: null, finalConsonant: null, undeterminableReason: reason,
+  })
   const cp = lastChar.codePointAt(0)
-  if (cp == null) return { supported: false, targetVowel: null, degradedReason: 'no_preceding_text' }
+  if (cp == null) return undeterminable('no_preceding_text')
+
+  // 한글 음절 — 종성 유무/종류로 분류. 중성(모음)은 확정 가능하므로 targetVowel 로 실어 준다.
   if (cp >= 0xac00 && cp <= 0xd7a3) {
     const idx = cp - 0xac00
     const jong = idx % 28
-    if (jong !== 0) return { supported: false, targetVowel: null, degradedReason: 'final_consonant' }
     const jung = Math.floor(idx / 28) % 21
-    return { supported: true, targetVowel: HANGUL_JUNGSEONG[jung], degradedReason: null }
+    const vowel = HANGUL_JUNGSEONG[jung]
+    if (jong === 0) {
+      return { classification: 'open_vowel', targetVowel: vowel, finalConsonant: null, undeterminableReason: null }
+    }
+    const finalJamo = HANGUL_JONGSEONG[jong]
+    const cls: VowelExtendClass = SUSTAINABLE_FINAL_JAMO.indexOf(finalJamo) >= 0
+      ? 'sustainable_final'
+      : 'non_sustainable_final'
+    return { classification: cls, targetVowel: vowel, finalConsonant: finalJamo, undeterminableReason: null }
   }
+
+  // 모음이 자명한 가나만 open_vowel. 그 밖의 가나/한자는 '확정 불가'(스크립트 한계).
   if (Object.prototype.hasOwnProperty.call(KANA_VOWEL_MAP, lastChar)) {
-    return { supported: true, targetVowel: KANA_VOWEL_MAP[lastChar], degradedReason: null }
+    return {
+      classification: 'open_vowel', targetVowel: KANA_VOWEL_MAP[lastChar],
+      finalConsonant: null, undeterminableReason: null,
+    }
   }
+
   const isLatin = (cp >= 0x41 && cp <= 0x5a) || (cp >= 0x61 && cp <= 0x7a)
   if (isLatin) {
     const lower = lastChar.toLowerCase()
-    if ('aeiou'.indexOf(lower) >= 0) return { supported: true, targetVowel: lower, degradedReason: null }
-    return { supported: false, targetVowel: null, degradedReason: 'final_consonant' }
+    if ('aeiou'.indexOf(lower) >= 0) {
+      return { classification: 'open_vowel', targetVowel: lower, finalConsonant: null, undeterminableReason: null }
+    }
+    const cls: VowelExtendClass = SUSTAINABLE_FINAL_LATIN.indexOf(lower) >= 0
+      ? 'sustainable_final'
+      : 'non_sustainable_final'
+    return { classification: cls, targetVowel: null, finalConsonant: lower, undeterminableReason: null }
   }
-  // 그 밖의 CJK/자모/가나 등 — 발음 사전 없이는 모음 위치를 확정할 수 없다.
+
   const isKana = cp >= 0x3040 && cp <= 0x30ff
   const isHan = (cp >= 0x3400 && cp <= 0x4dbf) || (cp >= 0x4e00 && cp <= 0x9fff) || (cp >= 0xf900 && cp <= 0xfaff)
   const isJamo = (cp >= 0x1100 && cp <= 0x11ff) || (cp >= 0x3130 && cp <= 0x318f)
-  if (isKana || isHan || isJamo) return { supported: false, targetVowel: null, degradedReason: 'unsupported_script' }
-  return { supported: false, targetVowel: null, degradedReason: 'no_preceding_vowel' }
+  if (isKana || isHan || isJamo) return undeterminable('unsupported_script')
+  return undeterminable('no_preceding_vowel')
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1320,9 +1413,10 @@ function computeExpressiveSha256(
     host_start_cp: e.hostRange.startCodepoint, host_end_cp: e.hostRange.endCodepoint,
     start_cp: e.sourceRange.startCodepoint, end_cp: e.sourceRange.endCodepoint,
     extra_pause_ms: e.extraPauseMs, is_chunk_boundary: e.isChunkBoundary,
-    vowel_supported: e.vowelExtend == null ? null : e.vowelExtend.supported,
+    vowel_class: e.vowelExtend == null ? null : e.vowelExtend.classification,
     vowel_target: e.vowelExtend == null ? null : e.vowelExtend.targetVowel,
-    vowel_reason: e.vowelExtend == null ? null : e.vowelExtend.degradedReason,
+    vowel_final_consonant: e.vowelExtend == null ? null : e.vowelExtend.finalConsonant,
+    vowel_undeterminable_reason: e.vowelExtend == null ? null : e.vowelExtend.undeterminableReason,
   }))
   const canonLaughs: CanonValue[] = laughs.map((e, i) => ({
     i, node_index: e.nodeIndex, style: e.style, intensity: e.intensity, brightness: e.brightness,
@@ -1373,7 +1467,16 @@ function computeExpressiveSha256(
 //     (resolve 결과의 mode 는 안전한 legacy_v2 로 채워지지만 valid=false 이다).
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** store/session.json · TtsConfig payload · result metadata 가 공통으로 쓰는 유일한 필드 이름. */
+/**
+ * store/session.json · TtsConfig payload · result metadata 가 공통으로 쓰는 '유일한' 필드 이름.
+ *
+ * ⚠️ 소유자 결정(확정, 되돌리지 말 것):
+ *   camelCase 'ttsExpressiveMode' 가 세 캐리어 전부의 단일 정본 키다.
+ *   result metadata 가 관례상 snake_case 라는 이유로 별칭(tts_expressive_mode)을 추가하지 않는다 —
+ *   권위가 둘이 되는 편이 관례 불일치보다 나쁘다.
+ *   외부 export 스키마가 snake_case 를 요구하면 '경계 직렬화기'에서만 변환하고,
+ *   저장되는 키 자체는 절대 바꾸지 않는다.
+ */
 export const EXPRESSIVE_MODE_FIELD = 'ttsExpressiveMode' as const
 export type ExpressiveModeField = typeof EXPRESSIVE_MODE_FIELD
 

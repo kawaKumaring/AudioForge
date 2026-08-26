@@ -47,9 +47,18 @@ LOCAL_PROSODY_KINDS = (
 PROSODY_SCOPE_KINDS = ("final_syllables", "final_word", "latter_half", "final_vowel")
 LAUGH_STYLES = ("chuckle", "breathy", "bashful", "open", "high_giggle")
 LAUGH_POSITIONS = ("leading", "inline", "trailing", "standalone")
-VOWEL_EXTEND_DEGRADE_REASONS = (
-    "final_consonant", "unsupported_script", "no_preceding_text", "no_preceding_vowel",
+# '~' 의 최종음 분류 — 문법 층의 '관찰'이지 음향 품질 판정이 아니다.
+#   open_vowel / sustainable_final(ㅇㄴㅁㄹ) / non_sustainable_final / undeterminable
+# 계약 경고(엔진 구현자에게):
+#   1) ㅇ/ㄴ/ㅁ/ㄹ 를 "자연스럽게 늘어난다" 고 서술하지 말 것 — 실청 테스트 전까지 미검증.
+#   2) 종성 자음을 복제·반복해 길이를 만드는 방식은 금지.
+VOWEL_EXTEND_CLASSES = (
+    "open_vowel", "sustainable_final", "non_sustainable_final", "undeterminable",
 )
+VOWEL_EXTEND_UNDETERMINABLE_REASONS = (
+    "unsupported_script", "no_preceding_text", "no_preceding_vowel",
+)
+VOWEL_EXTEND_FORBIDDEN_TECHNIQUES = ("duplicate_final_consonant", "repeat_final_consonant")
 EXPRESSIVE_BOUNDARY_KINDS = ("explicitPause", "sentenceGap", "finalTail")
 EXPRESSIVE_EVENT_PRIORITY = (
     "emotionTransition", "localProsody", "nonverbalLaugh", "explicitPause", "sentenceGap", "finalTail",
@@ -59,7 +68,8 @@ EXPRESSIVE_ERROR_CODES = (
     "INVALID_EXPRESSIVE_PAUSE",
     "INVALID_EMOTION_MODIFIER",
     "AMBIGUOUS_LAUGH_TOKEN",
-    "UNSUPPORTED_VOWEL_EXTEND",
+    "VOWEL_EXTEND_NON_SUSTAINABLE_FINAL",
+    "VOWEL_EXTEND_UNDETERMINABLE",
     "PROSODY_WITHOUT_HOST",
     "EXPRESSIVE_PARITY_MISMATCH",
     "EXPRESSIVE_MODE_INVALID",
@@ -135,6 +145,14 @@ LAUGH_INTENSITY_BY_REPEAT = (0, 30, 45, 55, 65, 75, 85, 92, 100)
 LAUGH_BRIGHTNESS_BY_REPEAT = (0, 40, 52, 62, 70, 78, 86, 93, 100)
 LAUGH_DURATION_MS_BY_REPEAT = (0, 180, 300, 420, 540, 660, 780, 900, 1020)
 
+# sustainable_final 판정용 집합. '자연스럽다'는 주장이 아니라 분류 기준일 뿐이다.
+SUSTAINABLE_FINAL_JAMO = "ㅇㄴㅁㄹ"
+SUSTAINABLE_FINAL_LATIN = "nmlr"
+# ㅇ/ㄴ/ㅁ/ㄹ 가 실제로 잘 늘어나는지는 실청 테스트 전까지 미검증 — 계약이 보증하지 않는다.
+SUSTAINABLE_FINAL_IS_ACOUSTICALLY_VERIFIED = False
+# 문법 층은 음향 품질(supported/degraded)을 판정하지 않는다. 엔진 capability 모듈의 몫.
+LANGUAGE_LAYER_ASSERTS_ACOUSTIC_QUALITY = False
+
 LOCAL_PROSODY_TAIL_SYLLABLES = 3
 LOCAL_PROSODY_IS_CHUNK_BOUNDARY = False
 SENTENCE_GAP_SOURCE = "lineBreak"
@@ -149,6 +167,14 @@ HANGUL_JUNGSEONG = (
     "ㅏ", "ㅐ", "ㅑ", "ㅒ", "ㅓ", "ㅔ", "ㅕ", "ㅖ", "ㅗ", "ㅘ",
     "ㅙ", "ㅚ", "ㅛ", "ㅜ", "ㅝ", "ㅞ", "ㅟ", "ㅠ", "ㅡ", "ㅢ",
     "ㅣ",
+)
+# 한글 종성(받침) 표 — index 0 = 종성 없음.
+# 겹받침(ㄳ/ㄵ/ㄻ/ㄺ ...)은 자모 표기 그대로 분류한다. 실제 발음상의 대표음 축약(삶 → [삼])은
+# 음운 규칙 모듈이 없어 적용하지 않으며, 따라서 겹받침은 non_sustainable_final 로 분류된다(알려진 한계).
+HANGUL_JONGSEONG = (
+    "", "ㄱ", "ㄲ", "ㄳ", "ㄴ", "ㄵ", "ㄶ", "ㄷ", "ㄹ", "ㄺ",
+    "ㄻ", "ㄼ", "ㄽ", "ㄾ", "ㄿ", "ㅀ", "ㅁ", "ㅂ", "ㅄ", "ㅅ",
+    "ㅆ", "ㅇ", "ㅈ", "ㅊ", "ㅋ", "ㅌ", "ㅍ", "ㅎ",
 )
 KANA_VOWEL_MAP = {
     "あ": "a", "い": "i", "う": "u", "え": "e", "お": "o",
@@ -318,32 +344,55 @@ def _classify_expressive_bracket(inner, resolve_emotion, mode):
 # 6. '~' 최종 모음 판정
 # ─────────────────────────────────────────────────────────────────────────────
 
-def resolve_vowel_extend(last_char):
-    """'~' 의 최종 모음 판정. 확정 불가면 degraded — 자음/전체 발화를 늘이는 폴백은 금지."""
+def classify_vowel_extend(last_char):
+    """'~' 앞 최종음을 '분류'한다(품질 판정 아님 — supported/degraded 는 엔진 capability 의 몫).
+
+    세 갈래: open_vowel / sustainable_final(ㅇㄴㅁㄹ) / non_sustainable_final,
+    그리고 확정 불가일 때 undeterminable.
+    sustainable_final 은 "자연스럽게 늘어난다"는 뜻이 아니다. 어떤 분류에서도 종성 자음을
+    복제·반복해 길이를 만드는 것은 금지(VOWEL_EXTEND_FORBIDDEN_TECHNIQUES).
+    """
+    def undeterminable(reason):
+        return {"classification": "undeterminable", "target_vowel": None,
+                "final_consonant": None, "undeterminable_reason": reason}
+
     if last_char is None or last_char == "":
-        return {"supported": False, "target_vowel": None, "degraded_reason": "no_preceding_text"}
+        return undeterminable("no_preceding_text")
     cp = ord(last_char)
+
     if 0xAC00 <= cp <= 0xD7A3:
         idx = cp - 0xAC00
         jong = idx % 28
-        if jong != 0:
-            return {"supported": False, "target_vowel": None, "degraded_reason": "final_consonant"}
         jung = (idx // 28) % 21
-        return {"supported": True, "target_vowel": HANGUL_JUNGSEONG[jung], "degraded_reason": None}
+        vowel = HANGUL_JUNGSEONG[jung]
+        if jong == 0:
+            return {"classification": "open_vowel", "target_vowel": vowel,
+                    "final_consonant": None, "undeterminable_reason": None}
+        final_jamo = HANGUL_JONGSEONG[jong]
+        cls = "sustainable_final" if final_jamo in SUSTAINABLE_FINAL_JAMO else "non_sustainable_final"
+        return {"classification": cls, "target_vowel": vowel,
+                "final_consonant": final_jamo, "undeterminable_reason": None}
+
     if last_char in KANA_VOWEL_MAP:
-        return {"supported": True, "target_vowel": KANA_VOWEL_MAP[last_char], "degraded_reason": None}
+        return {"classification": "open_vowel", "target_vowel": KANA_VOWEL_MAP[last_char],
+                "final_consonant": None, "undeterminable_reason": None}
+
     is_latin = (0x41 <= cp <= 0x5A) or (0x61 <= cp <= 0x7A)
     if is_latin:
         lower = last_char.lower()
         if lower in "aeiou":
-            return {"supported": True, "target_vowel": lower, "degraded_reason": None}
-        return {"supported": False, "target_vowel": None, "degraded_reason": "final_consonant"}
+            return {"classification": "open_vowel", "target_vowel": lower,
+                    "final_consonant": None, "undeterminable_reason": None}
+        cls = "sustainable_final" if lower in SUSTAINABLE_FINAL_LATIN else "non_sustainable_final"
+        return {"classification": cls, "target_vowel": None,
+                "final_consonant": lower, "undeterminable_reason": None}
+
     is_kana = 0x3040 <= cp <= 0x30FF
     is_han = (0x3400 <= cp <= 0x4DBF) or (0x4E00 <= cp <= 0x9FFF) or (0xF900 <= cp <= 0xFAFF)
     is_jamo = (0x1100 <= cp <= 0x11FF) or (0x3130 <= cp <= 0x318F)
     if is_kana or is_han or is_jamo:
-        return {"supported": False, "target_vowel": None, "degraded_reason": "unsupported_script"}
-    return {"supported": False, "target_vowel": None, "degraded_reason": "no_preceding_vowel"}
+        return undeterminable("unsupported_script")
+    return undeterminable("no_preceding_vowel")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -620,9 +669,10 @@ def parse_expressive_timeline(raw, mode=None, resolve_emotion=None):
                 "reason": kind, "ui_offset_utf16": rng["start_utf16"],
             })
             if kind == "vowel_extend":
-                vowel_extend = {"supported": False, "target_vowel": None, "degraded_reason": "no_preceding_text"}
+                vowel_extend = {"classification": "undeterminable", "target_vowel": None,
+                                "final_consonant": None, "undeterminable_reason": "no_preceding_text"}
                 push_diag({
-                    "code": "UNSUPPORTED_VOWEL_EXTEND", "severity": "warning",
+                    "code": "VOWEL_EXTEND_UNDETERMINABLE", "severity": "warning",
                     "reason": "no_preceding_text", "ui_offset_utf16": rng["start_utf16"],
                 })
         else:
@@ -638,11 +688,18 @@ def parse_expressive_timeline(raw, mode=None, resolve_emotion=None):
                     frm -= 1
             scope_range = range_of(host[frm][1], host[host_end - 1][1] + 1)
             if kind == "vowel_extend":
-                vowel_extend = resolve_vowel_extend(host[host_end - 1][0])
-                if not vowel_extend["supported"]:
+                vowel_extend = classify_vowel_extend(host[host_end - 1][0])
+                # open_vowel / sustainable_final 은 경고하지 않는다(사용 허용 대상).
+                if vowel_extend["classification"] == "non_sustainable_final":
                     push_diag({
-                        "code": "UNSUPPORTED_VOWEL_EXTEND", "severity": "warning",
-                        "reason": vowel_extend["degraded_reason"] or "no_preceding_vowel",
+                        "code": "VOWEL_EXTEND_NON_SUSTAINABLE_FINAL", "severity": "warning",
+                        "reason": vowel_extend["final_consonant"] or "non_sustainable_final",
+                        "ui_offset_utf16": rng["start_utf16"],
+                    })
+                elif vowel_extend["classification"] == "undeterminable":
+                    push_diag({
+                        "code": "VOWEL_EXTEND_UNDETERMINABLE", "severity": "warning",
+                        "reason": vowel_extend["undeterminable_reason"] or "no_preceding_vowel",
                         "ui_offset_utf16": rng["start_utf16"],
                     })
 
@@ -835,11 +892,11 @@ def parse_expressive_timeline(raw, mode=None, resolve_emotion=None):
     total_explicit_pause_ms = 0
     for pz in explicit_pauses:
         total_explicit_pause_ms += pz["pause_ms"]
-    degraded_vowel_extend_count = 0
+    non_open_vowel_extend_count = 0
     capped_token_count = 0
     for lp in local_prosody:
-        if lp["vowel_extend"] is not None and not lp["vowel_extend"]["supported"]:
-            degraded_vowel_extend_count += 1
+        if lp["vowel_extend"] is not None and lp["vowel_extend"]["classification"] != "open_vowel":
+            non_open_vowel_extend_count += 1
         if lp["capped"]:
             capped_token_count += 1
     for lg in laughs:
@@ -865,7 +922,7 @@ def parse_expressive_timeline(raw, mode=None, resolve_emotion=None):
         "explicit_pause_count": len(explicit_pauses),
         "total_explicit_pause_ms": total_explicit_pause_ms,
         "used_emotion_ids": used_emotion_ids,
-        "degraded_vowel_extend_count": degraded_vowel_extend_count,
+        "non_open_vowel_extend_count": non_open_vowel_extend_count,
         "capped_token_count": capped_token_count,
         "sha8": full_sha256[:8],
     }
@@ -1050,9 +1107,10 @@ def _compute_expressive_sha256(mode, effective_version, nodes, emotion_transitio
             "host_end_cp": hr["end_codepoint"], "start_cp": r["start_codepoint"],
             "end_cp": r["end_codepoint"], "extra_pause_ms": e["extra_pause_ms"],
             "is_chunk_boundary": e["is_chunk_boundary"],
-            "vowel_supported": None if ve is None else ve["supported"],
+            "vowel_class": None if ve is None else ve["classification"],
             "vowel_target": None if ve is None else ve["target_vowel"],
-            "vowel_reason": None if ve is None else ve["degraded_reason"],
+            "vowel_final_consonant": None if ve is None else ve["final_consonant"],
+            "vowel_undeterminable_reason": None if ve is None else ve["undeterminable_reason"],
         })
     canon_laughs = []
     for i, e in enumerate(laughs):
@@ -1112,6 +1170,11 @@ def _compute_expressive_sha256(mode, effective_version, nodes, emotion_transitio
 #  ⚠️ 값이 있는데 계약 밖이면 조용히 기본값으로 넘어가지 말고 EXPRESSIVE_MODE_INVALID 로 실패시킨다.
 # ─────────────────────────────────────────────────────────────────────────────
 
+# 소유자 결정(확정, 되돌리지 말 것):
+#   camelCase 'ttsExpressiveMode' 가 세 캐리어(session/config/metadata) 전부의 단일 정본 키다.
+#   result metadata 가 관례상 snake_case 라는 이유로 별칭(tts_expressive_mode)을 추가하지 않는다 —
+#   권위가 둘이 되는 편이 관례 불일치보다 나쁘다. 외부 export 스키마가 snake_case 를 요구하면
+#   '경계 직렬화기'에서만 변환하고, 저장되는 키 자체는 절대 바꾸지 않는다.
 EXPRESSIVE_MODE_FIELD = "ttsExpressiveMode"
 EXPRESSIVE_MODE_CARRIERS = ("session", "config", "metadata")
 EXPRESSIVE_MODE_CARRIER_PAIRS = ("session_vs_config", "session_vs_metadata", "config_vs_metadata")
