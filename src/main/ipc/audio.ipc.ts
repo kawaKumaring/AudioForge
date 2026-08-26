@@ -11,6 +11,7 @@ import { createPreviewGuard, runPreview } from '../services/preview-transcribe'
 import { buildTtsConfig, normalizePitchCapability, type TtsInputOptions } from '../../shared/ttsConfig'
 import { sweepQwenJobDirs, listQwenJobDirs } from '../services/qwen-cleanup'
 import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
+import { removeSplitTempDirs, listSplitTempDirs } from '../services/split-temp-cleanup'
 import { createSingleFlight, createKeyedSingleFlight } from '../services/single-flight'
 
 // execFile(배열 인자)은 cmd.exe를 거치지 않아 시스템 코드페이지(CP949)의
@@ -187,6 +188,15 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
 
   // 앱 시작: 이전 세션이 남긴 stale 파생 참조 폴더 방어 정리(정확한 prefix + tmpdir 직속 폴더만).
   try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ }
+  // 과거 실행이 남긴 split 원본 사본은 **자동 삭제하지 않는다**(사용자 디스크의 큰 파일을 임의로
+  // 지우지 않는다). 개수와 가장 오래된 항목의 시각만 로그로 남겨 상황을 알 수 있게 한다.
+  try {
+    const orphans = listSplitTempDirs(tmpdir())
+    if (orphans.length > 0) {
+      const oldest = orphans.reduce((a, b) => (a.mtimeMs <= b.mtimeMs ? a : b))
+      console.log(`[AudioForge] split 임시 폴더 ${orphans.length}개 잔류(가장 오래된 것: ${new Date(oldest.mtimeMs).toISOString()}). 자동 삭제하지 않습니다.`)
+    }
+  } catch { /* noop */ }
   // 앱 종료: 실행 중인 작업의 프로세스 트리를 kill(고아 자식 방지) + 남은 파생 참조 폴더 정리(공용 마감 K).
   // 앱 종료(공용 마감 K2-I): 실행 트리를 kill하고 '종료 확인'까지 기다린 뒤 실제 quit(고아 자식 방지).
   // before-quit을 1회 preventDefault → bounded tree kill → 재진입 guard 후 quit. 무한 대기 방지(delay backstop).
@@ -484,10 +494,15 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     // (신규 dir이라 보통 없음). 안전 범위 = 이 output_dir 바로 아래 .qwen-job-* 폴더만.
     if (mode === 'tts') { try { sweepQwenJobDirs(outputDir) } catch { /* noop */ } }
 
+    // 이번 실행 식별자. ① config 파일 이름 충돌 방지(Date.now()는 같은 ms에 겹칠 수 있다)
+    // ② split 워커가 만드는 '원본 전체 사본' 임시폴더 이름에 실려, 취소·강제종료 뒤에도 main이
+    //    이 실행의 폴더만 정확히 지울 수 있게 한다(파이썬 finally는 taskkill에서 실행되지 않는다).
+    const runToken = randomUUID().slice(0, 8)
     // Write all options to JSON config file (avoids spawn encoding issues with Korean paths)
-    const configPath = join(tmpdir(), `audioforge_config_${Date.now()}.json`)
+    const configPath = join(tmpdir(), `audioforge_config_${runToken}.json`)
     const config = {
       mode,
+      runToken,
       input: filePath,
       output: outputDir,
       model: options?.demucsModel || 'htdemucs',
@@ -621,6 +636,9 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     runner.on('done', (code) => {
       if (watchdog) { clearTimeout(watchdog); watchdog = null }
       try { unlinkSync(configPath) } catch {}
+      // 성공·오류·취소 어느 경로로 끝나든 이 실행이 만든 split 원본 사본을 지운다. 취소 분기보다
+      // 위에 두어 early return에 걸리지 않게 한다. 다른 실행/과거 orphan은 건드리지 않는다.
+      if (mode === 'split') { try { removeSplitTempDirs(tmpdir(), runToken) } catch { /* noop */ } }
 
       // ── 취소 경로(inflight): done은 '권위'가 아니다. runner를 free로 만들고 관측만 기록·합류시킨다.
       // 부분 결과/오류/스윕/터미널 신호(cancelled)는 모두 audio:cancel 핸들러가 tree 종료·정리 확인 후 보낸다.

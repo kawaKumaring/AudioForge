@@ -9,6 +9,7 @@ import argparse
 import json
 import math
 import os
+import re
 import sys
 import subprocess
 
@@ -68,6 +69,9 @@ def main():
         args.split_labels = config.get("splitLabels", args.split_labels)
         args.n_speakers = config.get("nSpeakers", args.n_speakers)
         args.gpu_policy = config.get("gpuPolicy", "auto")  # 대화 분리 GPU 정책(auto/gpu/cpu)
+        # 이번 실행 식별자(main 생성). split 임시폴더 이름에 넣어 취소/강제종료 후에도 main이
+        # **이 실행이 만든 폴더만** 정확히 지울 수 있게 한다(파이썬 finally는 taskkill에서 안 돈다).
+        args.run_token = config.get("runToken", "")
         # TTS fields
         args.tts_text = config.get("ttsText", "")
         args.tts_speed = config.get("ttsSpeed", 1.0)
@@ -512,7 +516,7 @@ def _run_split(args):
 
         # Copy input to temp ASCII path for ffmpeg compatibility
         import tempfile
-        tmp_dir = tempfile.mkdtemp(prefix="audioforge_")
+        tmp_dir = tempfile.mkdtemp(prefix=_split_tmp_prefix(args))
         ext = os.path.splitext(args.input)[1]
         tmp_input = os.path.join(tmp_dir, f"source{ext}")
         shutil.copy2(args.input, tmp_input)
@@ -556,7 +560,7 @@ def _run_split(args):
     emit("progress", percent=5, message="ffmpeg 무음 구간 자동 감지 중...")
 
     import tempfile, shutil, re
-    tmp_dir = tempfile.mkdtemp(prefix="audioforge_")
+    tmp_dir = tempfile.mkdtemp(prefix=_split_tmp_prefix(args))
     ext = os.path.splitext(args.input)[1]
     tmp_input = os.path.join(tmp_dir, f"source{ext}")
     shutil.copy2(args.input, tmp_input)
@@ -614,6 +618,15 @@ def _run_split(args):
             os.rmdir(tmp_dir)
         except OSError:
             pass
+
+
+def _split_tmp_prefix(args):
+    """split 임시폴더 접두사. runToken이 있으면 audioforge_split_<token>_ 형태.
+    main의 split-temp-cleanup이 같은 규칙으로 이 실행 폴더만 골라 지운다."""
+    token = getattr(args, "run_token", "") or ""
+    if token and re.fullmatch(r"[A-Za-z0-9-]{4,64}", token):
+        return f"audioforge_split_{token}_"
+    return "audioforge_"
 
 
 def _probe_total_duration(ffmpeg, media_path):
