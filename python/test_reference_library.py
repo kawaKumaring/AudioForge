@@ -318,6 +318,380 @@ class HygieneTest(unittest.TestCase):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# 9) 내용 기반 지문이 단일 권위 — 경로/크기/mtime은 캐시 권위가 아니다
+# ─────────────────────────────────────────────────────────────────────────────
+class ContentAuthorityTest(unittest.TestCase):
+    def test_same_file_moved_to_different_path_is_still_reusable(self):
+        # 같은 바이트를 서로 다른 '경로'에서 읽어도 내용 해시가 같으므로 재사용된다.
+        content = b"the same audio bytes"
+        old = rl.sha256_hex_of_source("C:/old/place/voice.wav", reader=lambda p: [content])
+        new = rl.sha256_hex_of_source("E:/totally/other/renamed.wav", reader=lambda p: [content])
+        self.assertEqual(old, new)
+        stored = {"source_sha256": old, "region": {"start": 1.25, "duration": 7.0}, "transcript": TRANSCRIPT}
+        moved = {"source_sha256": new, "region": {"start": 1.25, "duration": 7.0}, "transcript": TRANSCRIPT}
+        v = rl.evaluate_reuse(stored, moved)
+        self.assertTrue(v["reusable"])
+        self.assertEqual(v["reasons"], [])
+
+    def test_changed_content_same_name_and_size_invalidates(self):
+        # 이름·크기가 같아도 내용이 다르면 무효화된다(경로|크기|mtime 캐시가 놓치는 바로 그 경우).
+        a = b"AAAAAAAAAAAAAAAA"
+        b = b"BBBBBBBBBBBBBBBB"
+        self.assertEqual(len(a), len(b))
+        path = "C:/same/name.wav"
+        sha_a = rl.sha256_hex_of_source(path, reader=lambda p: [a])
+        sha_b = rl.sha256_hex_of_source(path, reader=lambda p: [b])
+        self.assertNotEqual(sha_a, sha_b)
+        v = rl.evaluate_reuse(
+            {"source_sha256": sha_a, "region": {"start": 0, "duration": 5}, "transcript": ""},
+            {"source_sha256": sha_b, "region": {"start": 0, "duration": 5}, "transcript": ""})
+        self.assertEqual(v["reasons"], [rl.REF_SOURCE_CHANGED])
+        self.assertFalse(v["reusable"])
+
+    def test_cache_key_rejects_path_size_mtime_tuple(self):
+        # 구형 fingerprintReference(path|size|mtimeMs)는 캐시 권위로 받아들이지 않는다.
+        for bad in ("C:/ref/a.wav|1234|1699999999999", "a.wav|10|20", "", "not-a-hash", SRC_A[:63]):
+            with self.assertRaises(rl.ReferenceLibraryError) as cm:
+                rl.reference_cache_key(bad)
+            self.assertEqual(cm.exception.code, rl.INVALID_FINGERPRINT_INPUT)
+        self.assertEqual(rl.reference_cache_key(PINNED_FINGERPRINT), PINNED_FINGERPRINT)
+
+    def test_sampler_consumes_exported_identity(self):
+        # 샘플러가 스스로 지문을 만들지 않도록, 소비할 값을 그대로 내보낸다.
+        e = entry_with_3()
+        ref = rl.build_synthesis_reference(e, [e["default_candidate_id"]])
+        self.assertEqual(ref["cache_key"], e["fingerprint"])
+        self.assertEqual(ref["source_sha256"], SRC_A)
+        ident = rl.reference_identity(e)
+        self.assertEqual(ident, {"fingerprint": e["fingerprint"], "cache_key": e["fingerprint"],
+                                 "source_sha256": SRC_A, "analysis_version": rl.REFERENCE_ANALYSIS_VERSION})
+        # 경로/크기/mtime 흔적 없음
+        self.assertEqual(rl.find_sensitive_strings(ref), [])
+        self.assertEqual(rl.find_sensitive_strings(ident), [])
+
+    def test_module_never_uses_stat_based_fingerprint(self):
+        """실행 코드에 stat 기반 지문(경로/크기/mtime)의 흔적이 없어야 한다.
+
+        주석·docstring은 '그것을 쓰지 않는다'고 설명하므로 문자열 검색이 아니라 ast로 식별자만 본다."""
+        import ast
+        with open(rl.__file__, encoding="utf-8") as f:
+            tree = ast.parse(f.read(), filename=rl.__file__)
+        names = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Name):
+                names.add(node.id)
+            elif isinstance(node, ast.Attribute):
+                names.add(node.attr)
+            elif isinstance(node, ast.arg):
+                names.add(node.arg)
+            elif isinstance(node, (ast.FunctionDef, ast.ClassDef)):
+                names.add(node.name)
+            elif isinstance(node, ast.Constant) and isinstance(node.value, str):
+                # dict 키/필드명 같은 '식별자형' 리터럴만 본다(공백 있는 진단 메시지는 산문이므로 제외).
+                if node.value and not any(ch.isspace() for ch in node.value):
+                    names.add(node.value)
+        for banned in ("mtime", "st_size", "getsize", "getmtime", "sourcefingerprint", "fingerprintreference"):
+            for n in names:
+                self.assertNotIn(banned, str(n).lower(), "stat 기반 지문 흔적: %s in %r" % (banned, n))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 10) 재탐색(rescan) — 기존 후보를 명시적으로 제외
+# ─────────────────────────────────────────────────────────────────────────────
+class RescanTest(unittest.TestCase):
+    def _scored(self):
+        return [iv(0, 5000, 0.9, "a"), iv(3000, 5000, 0.85, "b"), iv(5000, 5000, 0.7, "c"),
+                iv(10000, 5000, 0.6, "d"), iv(16000, 5000, 0.5, "e")]
+
+    def test_rescan_excludes_existing_intervals(self):
+        first = rl.rescan_candidates(self._scored(), [], max_count=1)
+        self.assertEqual(first["status"], rl.REFERENCE_CANDIDATES_FOUND)
+        self.assertEqual([c["id"] for c in first["added"]], ["a"])
+        # a를 가진 채 재탐색 → a와 겹치는 b는 제외되고 끝점이 맞닿는 c가 나온다
+        second = rl.rescan_candidates(self._scored(), first["candidates"], max_count=2)
+        self.assertEqual([c["id"] for c in second["added"]], ["c"])
+        self.assertEqual([c["id"] for c in second["candidates"]], ["a", "c"])
+
+    def test_rescan_never_replaces_reorders_or_deletes_existing(self):
+        existing = [iv(16000, 5000, 0.5, "e"), iv(10000, 5000, 0.6, "d")]   # 일부러 점수 역순
+        r = rl.rescan_candidates(self._scored(), existing, max_count=3)
+        self.assertEqual([c["id"] for c in r["candidates"][:2]], ["e", "d"], "기존 순서 그대로 보존")
+        self.assertEqual(r["candidates"][0], existing[0])
+        self.assertEqual(r["candidates"][1], existing[1])
+        self.assertEqual(len(r["candidates"]), 3)
+        self.assertEqual(r["excluded_count"], 2)
+
+    def test_rescan_exhaustion_returns_structured_state(self):
+        # 후보 전 구간(0~21000ms)을 덮는 구간을 이미 가지고 있으면 남는 게 없다 → 빈 배열을 조용히 주지 않는다
+        r = rl.rescan_candidates(self._scored(), [iv(0, 21000)], max_count=3)
+        self.assertEqual(r["status"], rl.NO_MORE_REFERENCE_CANDIDATES)
+        self.assertEqual(r["added"], [])
+        self.assertIn(r["status"], rl.REFERENCE_SCAN_STATUSES)
+        # 자리가 이미 다 찼을 때도 같은 상태
+        full = rl.rescan_candidates(self._scored(), [iv(0, 5000), iv(5000, 5000), iv(10000, 5000)], max_count=3)
+        self.assertEqual(full["status"], rl.NO_MORE_REFERENCE_CANDIDATES)
+        self.assertEqual(full["room"], 0)
+
+    def test_rescan_never_fabricates_overlapping_candidate(self):
+        r = rl.rescan_candidates(self._scored(), [iv(0, 5000, 0.9, "a")], max_count=3)
+        for added in r["added"]:
+            self.assertFalse(rl.intervals_overlap(added, iv(0, 5000)))
+
+    def test_rescan_is_deterministic_for_fixed_exclusion_set(self):
+        excl = [iv(0, 5000, 0.9, "a")]
+        runs = [tuple(c["id"] for c in rl.rescan_candidates(self._scored(), excl, max_count=3)["added"])
+                for _ in range(5)]
+        self.assertEqual(len(set(runs)), 1, "같은 입력+같은 제외 집합 → 항상 같은 결과")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 11) 영속 저장소 — manifest / 재시작 / 삭제 / 승격 순서·실패 불변식
+# ─────────────────────────────────────────────────────────────────────────────
+CLIP_SHA = "c" * 64
+RUN_ID = "deadbeef"
+
+
+def durable_entry():
+    return rl.build_library_entry(SRC_A, {"start": 1.25, "duration": 7.0}, TRANSCRIPT)
+
+
+class DurableManifestTest(unittest.TestCase):
+    def test_record_holds_only_the_allowed_fields(self):
+        rec = rl.build_manifest_record(durable_entry(), CLIP_SHA)
+        self.assertEqual(sorted(rec.keys()), sorted(rl.MANIFEST_RECORD_FIELDS))
+        self.assertEqual(rec["clip_id"], PINNED_CLIP_ID)
+        self.assertEqual(rec["fingerprint"], PINNED_FINGERPRINT)
+        self.assertEqual(rec["clip_sha256"], CLIP_SHA)
+        self.assertEqual(rl.find_sensitive_strings(rec, (TRANSCRIPT.strip(), "안녕하세요")), [])
+
+    def test_manifest_rejects_any_path_field(self):
+        rec = rl.build_manifest_record(durable_entry(), CLIP_SHA)
+        leaky = dict(rec, clip_path="C:/userData/reference-library/x.wav")
+        with self.assertRaises(rl.ReferenceLibraryError) as cm:
+            rl.assert_manifest_record_valid(leaky)
+        self.assertEqual(cm.exception.code, rl.MANIFEST_CONTAINS_PATH)
+
+    def test_file_name_is_clip_id_only(self):
+        self.assertEqual(rl.clip_file_name(PINNED_CLIP_ID), PINNED_CLIP_ID + rl.CLIP_FILE_EXTENSION)
+        self.assertFalse(rl.is_path_like(rl.clip_file_name(PINNED_CLIP_ID)))
+        with self.assertRaises(rl.ReferenceLibraryError):
+            rl.clip_file_name("../escape")
+
+    def test_same_volume_requirement_for_atomic_promote(self):
+        rl.assert_promotion_same_volume(r"E:\ud\reference-library\staging\run-deadbeef", r"E:\ud\reference-library")
+        rl.assert_promotion_same_volume("E:/ud/x", r"e:\ud\y")           # 대소문자/구분자 무관
+        with self.assertRaises(rl.ReferenceLibraryError) as cm:
+            rl.assert_promotion_same_volume(r"C:\Temp\run-deadbeef", r"E:\ud\reference-library")
+        self.assertEqual(cm.exception.code, rl.CROSS_DEVICE_PROMOTION)
+        self.assertEqual(rl.path_volume(r"\\server\share\ud"), r"\\server\share")
+
+    def test_deletion_removes_only_recorded_assets(self):
+        m = rl.upsert_manifest_record(rl.empty_manifest(), rl.build_manifest_record(durable_entry(), CLIP_SHA))
+        plan = rl.plan_asset_deletion(m, PINNED_CLIP_ID)
+        self.assertEqual(plan["file_names"], [PINNED_CLIP_ID + ".wav"])
+        m2, plan2 = rl.remove_manifest_record(m, PINNED_CLIP_ID)
+        self.assertEqual(m2["records"], [])
+        self.assertEqual(plan2["clip_id"], PINNED_CLIP_ID)
+        # 기록에 없는 것은 계획조차 만들지 않는다(광역/접두사 청소 금지)
+        with self.assertRaises(rl.ReferenceLibraryError) as cm:
+            rl.plan_asset_deletion(m2, "0123456789abcdef")
+        self.assertEqual(cm.exception.code, rl.UNKNOWN_REFERENCE_ASSET)
+
+    def test_checksum_mismatch_is_detected(self):
+        rec = rl.build_manifest_record(durable_entry(), CLIP_SHA)
+        self.assertEqual(rl.verify_stored_clip(rec, CLIP_SHA)["clip_id"], PINNED_CLIP_ID)
+        with self.assertRaises(rl.ReferenceLibraryError) as cm:
+            rl.verify_stored_clip(rec, "d" * 64)
+        self.assertEqual(cm.exception.code, rl.CLIP_CHECKSUM_MISMATCH)
+
+    def test_restart_equivalent_manifest_reread_resolves_same_fingerprint(self):
+        """재시작 등가: manifest를 디스크에 쓰고, 새 상태로 다시 읽어 같은 지문이 클립을 찾는지."""
+        import json
+        import tempfile
+        m = rl.upsert_manifest_record(rl.empty_manifest(), rl.build_manifest_record(durable_entry(), CLIP_SHA))
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, rl.MANIFEST_FILE_NAME)
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(m, f)
+            del m                                    # 프로세스 내 상태를 버린다(재시작 등가)
+            with open(path, encoding="utf-8") as f:
+                reloaded = rl.assert_manifest_valid(json.load(f))
+        # 대본/속도/감정이 전부 달라진 새 세션의 요청
+        req = base(script="완전히 다른 대본", speed=1.9, emotion_id="angry")
+        got = rl.resolve_reusable_clip(reloaded, req)
+        self.assertTrue(got["reusable"])
+        self.assertEqual(got["clip_id"], PINNED_CLIP_ID)
+        self.assertEqual(got["file_name"], PINNED_CLIP_ID + ".wav")
+        self.assertEqual(got["fingerprint"], PINNED_FINGERPRINT)
+        # 그 클립이 실제로 쓸 수 있는(체크섬 일치) 자산인지까지 확인
+        self.assertEqual(rl.verify_stored_clip(got["record"], CLIP_SHA)["clip_sha256"], CLIP_SHA)
+
+    def test_restart_reread_reports_invalidation_when_source_changed(self):
+        m = rl.upsert_manifest_record(rl.empty_manifest(), rl.build_manifest_record(durable_entry(), CLIP_SHA))
+        got = rl.resolve_reusable_clip(m, base(source_sha256=SRC_B))
+        self.assertFalse(got["reusable"])
+        self.assertIsNone(got["clip_id"])
+        self.assertEqual(got["reasons"], [])           # 지문 자체가 달라 라이브러리에 없음(무효화가 아니라 부재)
+        # 레코드를 직접 대조하면 사유가 나온다
+        rec = rl.find_manifest_record(m, PINNED_FINGERPRINT)
+        self.assertEqual(rl.evaluate_reuse_against_record(rec, base(source_sha256=SRC_B))["reasons"],
+                         [rl.REF_SOURCE_CHANGED])
+
+
+class PromotionTest(unittest.TestCase):
+    """가짜 fs로 승격 순서·실패 불변식을 검증한다(실제 오디오/파일 없음)."""
+
+    def _effects(self, calls, fail_at=None, staging="E:/ud/reference-library/staging/run-deadbeef"):
+        measured = {"decodable": True, "all_samples_finite": True, "sample_rate": 24000,
+                    "channel_count": 1, "duration_ms": 7000, "clip_sha256": CLIP_SHA}
+
+        def step(name, ret):
+            def f(*args):
+                if name == fail_at:
+                    raise RuntimeError("injected failure at %s" % name)
+                calls.append(name)
+                return ret
+            return f
+
+        return {
+            "create_staging_dir": step("CREATE_STAGING_DIR", staging),
+            "write_staging_clip": step("WRITE_STAGING_CLIP", staging + "/" + PINNED_CLIP_ID + ".wav"),
+            "verify_staging_clip": step("VERIFY_STAGING_CLIP", measured),
+            "promote_clip": step("PROMOTE_CLIP", "E:/ud/reference-library/" + PINNED_CLIP_ID + ".wav"),
+            "write_manifest_temp": step("WRITE_MANIFEST_TEMP", "E:/ud/reference-library/manifest.json.deadbeef.tmp"),
+            "replace_manifest": step("REPLACE_MANIFEST", None),
+        }
+
+    def _request(self, manifest=None):
+        return {"run_id": RUN_ID, "entry": durable_entry(), "durable_dir": "E:/ud/reference-library",
+                "manifest": manifest if manifest is not None else rl.empty_manifest(),
+                "expected": {"sample_rate": 24000, "channel_count": 1, "duration_ms": 7000}}
+
+    def test_promote_order_is_observed(self):
+        calls = []
+        r = rl.promote_reference_clip(self._effects(calls), self._request())
+        self.assertEqual(r["status"], rl.REFERENCE_PROMOTED)
+        self.assertEqual(calls, list(rl.PROMOTE_STEPS))
+        self.assertEqual(r["steps"], list(rl.PROMOTE_STEPS))
+        rl.assert_promote_order(calls)
+        self.assertEqual(len(r["manifest"]["records"]), 1)
+        self.assertEqual(r["record"]["clip_sha256"], CLIP_SHA)
+        self.assertEqual(r["orphan_clip_ids"], [])
+
+    def test_out_of_order_sequence_is_rejected(self):
+        for bad in (["WRITE_STAGING_CLIP"], ["CREATE_STAGING_DIR", "PROMOTE_CLIP"],
+                    list(reversed(rl.PROMOTE_STEPS))):
+            with self.assertRaises(rl.ReferenceLibraryError) as cm:
+                rl.assert_promote_order(bad)
+            self.assertEqual(cm.exception.code, rl.PROMOTE_ORDER_VIOLATION)
+
+    def test_failure_at_each_step_leaves_previous_manifest_and_clips_intact(self):
+        # 이전 상태: 다른 참조 하나가 이미 등재돼 있다
+        prev_entry = rl.build_library_entry(SRC_B, {"start": 0.0, "duration": 4.0}, "이전 참조")
+        prev = rl.upsert_manifest_record(rl.empty_manifest(), rl.build_manifest_record(prev_entry, "e" * 64))
+        prev_snapshot = json_copy(prev)
+
+        for idx, step in enumerate(rl.PROMOTE_STEPS[1:], start=1):   # 2~6단계에 각각 실패 주입
+            calls = []
+            r = rl.promote_reference_clip(self._effects(calls, fail_at=step), self._request(prev))
+            self.assertEqual(r["status"], rl.REFERENCE_PROMOTE_FAILED, step)
+            self.assertEqual(r["failed_step"], step)
+            self.assertEqual(calls, list(rl.PROMOTE_STEPS[:idx]), "실패 지점까지만 실행 %s" % step)
+            self.assertNotIn("REPLACE_MANIFEST", calls, "manifest 교체는 마지막 단계에서만 %s" % step)
+            # 반환된 manifest는 이전 그대로 — 부분 manifest가 노출되지 않는다
+            self.assertEqual(json_copy(r["manifest"]), prev_snapshot, step)
+            self.assertEqual(json_copy(prev), prev_snapshot, "입력 manifest 원본 불변 %s" % step)
+            # 기존 참조는 계속 쓸 수 있다
+            still = rl.resolve_reusable_clip(r["manifest"],
+                                             {"source_sha256": SRC_B, "region": {"start": 0.0, "duration": 4.0},
+                                              "transcript": "이전 참조"})
+            self.assertTrue(still["reusable"], "기존 참조 계속 사용 가능 %s" % step)
+
+    def test_replace_manifest_reached_only_after_all_previous_steps(self):
+        calls = []
+        rl.promote_reference_clip(self._effects(calls), self._request())
+        self.assertEqual(calls.index("REPLACE_MANIFEST"), len(rl.PROMOTE_STEPS) - 1)
+        self.assertLess(calls.index("PROMOTE_CLIP"), calls.index("WRITE_MANIFEST_TEMP"))
+        self.assertLess(calls.index("VERIFY_STAGING_CLIP"), calls.index("PROMOTE_CLIP"))
+
+    def test_clip_promoted_but_manifest_failed_leaves_orphan_and_keeps_existing_usable(self):
+        prev_entry = rl.build_library_entry(SRC_B, {"start": 0.0, "duration": 4.0}, "이전 참조")
+        prev = rl.upsert_manifest_record(rl.empty_manifest(), rl.build_manifest_record(prev_entry, "e" * 64))
+        calls = []
+        r = rl.promote_reference_clip(self._effects(calls, fail_at="REPLACE_MANIFEST"), self._request(prev))
+        self.assertEqual(r["status"], rl.REFERENCE_PROMOTE_FAILED)
+        self.assertEqual(r["orphan_clip_ids"], [PINNED_CLIP_ID])       # 고아 허용 — 단, 기존은 멀쩡
+        self.assertEqual(len(r["manifest"]["records"]), 1)
+        still = rl.resolve_reusable_clip(r["manifest"],
+                                         {"source_sha256": SRC_B, "region": {"start": 0.0, "duration": 4.0},
+                                          "transcript": "이전 참조"})
+        self.assertTrue(still["reusable"], "고아가 생겨도 기존 참조는 깨지지 않는다")
+        # 고아는 이 run 저널로만 정리 가능
+        self.assertTrue(rl.is_orphan_owned_by_run(PINNED_CLIP_ID + ".wav", r["journal"], r["manifest"]))
+
+    def test_cross_volume_staging_blocked_before_any_write(self):
+        calls = []
+        r = rl.promote_reference_clip(self._effects(calls, staging="C:/Temp/run-deadbeef"), self._request())
+        self.assertEqual(r["status"], rl.REFERENCE_PROMOTE_FAILED)
+        self.assertEqual(r["error_code"], rl.CROSS_DEVICE_PROMOTION)
+        self.assertEqual(r["steps"], [], "볼륨이 다르면 아무것도 쓰지 않는다")
+        self.assertEqual(r["orphan_clip_ids"], [])
+
+    def test_verification_failure_blocks_promotion(self):
+        for broken in ({"decodable": False}, {"all_samples_finite": False}, {"sample_rate": 16000},
+                       {"channel_count": 2}, {"duration_ms": 9000}, {"clip_sha256": "nope"}):
+            calls = []
+            fx = self._effects(calls)
+            base_measured = {"decodable": True, "all_samples_finite": True, "sample_rate": 24000,
+                             "channel_count": 1, "duration_ms": 7000, "clip_sha256": CLIP_SHA}
+            fx["verify_staging_clip"] = (lambda m: (lambda *a: (calls.append("VERIFY_STAGING_CLIP"), m)[1]))(
+                dict(base_measured, **broken))
+            r = rl.promote_reference_clip(fx, self._request())
+            self.assertEqual(r["status"], rl.REFERENCE_PROMOTE_FAILED, broken)
+            self.assertEqual(r["error_code"], rl.CLIP_VERIFICATION_FAILED, broken)
+            self.assertNotIn("PROMOTE_CLIP", calls, "검증 실패면 승격하지 않는다 %s" % broken)
+            self.assertEqual(r["orphan_clip_ids"], [])
+
+    def test_verification_check_list_is_the_contract(self):
+        failed = rl.evaluate_clip_verification(
+            {"decodable": False, "all_samples_finite": False, "sample_rate": 1, "channel_count": 2,
+             "duration_ms": 3, "clip_sha256": "x"},
+            {"sample_rate": 24000, "channel_count": 1, "duration_ms": 7000})
+        self.assertEqual(sorted(failed), sorted(rl.CLIP_VERIFICATION_CHECKS))
+        self.assertEqual(rl.evaluate_clip_verification(
+            {"decodable": True, "all_samples_finite": True, "sample_rate": 24000, "channel_count": 1,
+             "duration_ms": 7000, "clip_sha256": CLIP_SHA},
+            {"sample_rate": 24000, "channel_count": 1, "duration_ms": 7000}), [])
+
+    def test_run_scoped_naming_and_orphan_ownership(self):
+        self.assertEqual(rl.run_scoped_staging_dir_name(RUN_ID), "run-deadbeef")
+        self.assertEqual(rl.run_journal_file_name(RUN_ID), "run-deadbeef.journal.json")
+        self.assertEqual(rl.manifest_temp_file_name(RUN_ID), "manifest.json.deadbeef.tmp")
+        self.assertTrue(rl.is_run_scoped_name("run-deadbeef", RUN_ID))
+        self.assertFalse(rl.is_run_scoped_name("run-deadbeefX", RUN_ID), "접두사 일치만으로는 소유가 아니다")
+        self.assertFalse(rl.is_run_scoped_name("run-cafebabe", RUN_ID))
+        with self.assertRaises(rl.ReferenceLibraryError):
+            rl.run_scoped_staging_dir_name("nope")
+
+        journal = rl.build_run_journal(RUN_ID, [PINNED_CLIP_ID])
+        empty = rl.empty_manifest()
+        self.assertTrue(rl.is_orphan_owned_by_run(PINNED_CLIP_ID + ".wav", journal, empty))
+        # 남의 파일 / 접두사만 같은 파일 / 저널에 없는 파일은 전부 거부(광역 삭제 금지)
+        for foreign in ("somebody-else.wav", PINNED_CLIP_ID + "_old.wav", PINNED_CLIP_ID[:8] + ".wav",
+                        "0123456789abcdef.wav", "manifest.json", ""):
+            self.assertFalse(rl.is_orphan_owned_by_run(foreign, journal, empty), foreign)
+        # manifest에 등재된 것은 고아가 아니다 → 절대 삭제 대상이 아니다
+        listed = rl.upsert_manifest_record(empty, rl.build_manifest_record(durable_entry(), CLIP_SHA))
+        self.assertFalse(rl.is_orphan_owned_by_run(PINNED_CLIP_ID + ".wav", journal, listed))
+        self.assertFalse(rl.is_orphan_owned_by_run(PINNED_CLIP_ID + ".wav", {"clip_ids": []}, empty))
+
+
+def json_copy(v):
+    import json
+    return json.loads(json.dumps(v, sort_keys=True))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # 8) PARITY — src/shared/referenceLibrary.ts 소스를 파싱해 코드 집합·버전 대조
 # ─────────────────────────────────────────────────────────────────────────────
 class ParityTest(unittest.TestCase):
@@ -351,6 +725,37 @@ class ParityTest(unittest.TestCase):
     def test_guard_code_set_parity(self):
         self.assertEqual(sorted(self._ts_string_array("REFERENCE_GUARD_CODES")),
                          sorted(rl.REFERENCE_GUARD_CODES))
+
+    def test_scan_and_promote_status_set_parity(self):
+        self.assertEqual(sorted(self._ts_string_array("REFERENCE_SCAN_STATUSES")),
+                         sorted(rl.REFERENCE_SCAN_STATUSES))
+        self.assertEqual(sorted(self._ts_string_array("REFERENCE_PROMOTE_STATUSES")),
+                         sorted(rl.REFERENCE_PROMOTE_STATUSES))
+
+    def test_promote_step_order_parity(self):
+        # 순서 자체가 계약이므로 정렬하지 않고 순서까지 대조한다.
+        self.assertEqual(self._ts_string_array("PROMOTE_STEPS"), list(rl.PROMOTE_STEPS))
+
+    def test_verification_check_list_parity(self):
+        m = re.search(r"^export const CLIP_VERIFICATION_CHECKS\s*=\s*\[(.*?)\]\s*as const",
+                      self.ts, re.M | re.S)
+        self.assertIsNotNone(m)
+        self.assertEqual(re.findall(r"'([a-z0-9_]+)'", m.group(1)), list(rl.CLIP_VERIFICATION_CHECKS))
+
+    def test_manifest_record_fields_parity(self):
+        m = re.search(r"^export const MANIFEST_RECORD_FIELDS\s*=\s*\[(.*?)\]\s*as const", self.ts, re.M | re.S)
+        self.assertIsNotNone(m)
+        self.assertEqual(re.findall(r"'([a-z0-9_]+)'", m.group(1)), list(rl.MANIFEST_RECORD_FIELDS))
+
+    def test_durable_storage_constants_parity(self):
+        self.assertEqual(self._ts_int("MANIFEST_VERSION"), rl.MANIFEST_VERSION)
+        self.assertEqual(self._ts_string("REFERENCE_LIBRARY_DIR_NAME"), rl.REFERENCE_LIBRARY_DIR_NAME)
+        self.assertEqual(self._ts_string("REFERENCE_STAGING_DIR_NAME"), rl.REFERENCE_STAGING_DIR_NAME)
+        self.assertEqual(self._ts_string("MANIFEST_FILE_NAME"), rl.MANIFEST_FILE_NAME)
+        self.assertEqual(self._ts_string("CLIP_FILE_EXTENSION"), rl.CLIP_FILE_EXTENSION)
+        self.assertEqual(self._ts_string("RUN_SCOPE_PREFIX"), rl.RUN_SCOPE_PREFIX)
+        self.assertEqual(self._ts_string("RUN_JOURNAL_SUFFIX"), rl.RUN_JOURNAL_SUFFIX)
+        self.assertEqual(self._ts_string("MANIFEST_TEMP_SUFFIX"), rl.MANIFEST_TEMP_SUFFIX)
 
     def test_policy_and_serialization_constants_parity(self):
         self.assertEqual(self._ts_int("MAX_AUTO_CANDIDATES"), rl.MAX_AUTO_CANDIDATES)
