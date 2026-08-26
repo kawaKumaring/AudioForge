@@ -1,0 +1,5089 @@
+{
+  "_meta": {
+    "purpose": "표현형 운율(expressive prosody) v3 계약 conformance/parity 벡터. TS(src/shared/expressiveTimeline.ts)와 Python(python/expressive_timeline.py)이 둘 다 통과해야 한다. v2 픽스처(tts-grammar-conformance-v2.json)는 건드리지 않는다.",
+    "contract_version": 3,
+    "legacy_plan_version": 2,
+    "modes": [
+      "legacy_v2",
+      "expressive_v3"
+    ],
+    "default_mode": "legacy_v2",
+    "mode_to_version": {
+      "legacy_v2": 2,
+      "expressive_v3": 3
+    },
+    "mode_field": "ttsExpressiveMode",
+    "mode_carriers": [
+      "session",
+      "config",
+      "metadata"
+    ],
+    "mode_carrier_pairs": [
+      "session_vs_config",
+      "session_vs_metadata",
+      "config_vs_metadata"
+    ],
+    "version_selection_rule": "모드는 호출자가 명시적으로 고른다. 본문 내용은 절대 버전을 고르지 않는다. 플래그 부재 = legacy_v2.",
+    "event_priority": [
+      "emotionTransition",
+      "localProsody",
+      "nonverbalLaugh",
+      "explicitPause",
+      "sentenceGap",
+      "finalTail"
+    ],
+    "node_kinds": [
+      "text",
+      "lineBreak",
+      "emotionTransition",
+      "localProsody",
+      "nonverbalLaugh",
+      "explicitPause"
+    ],
+    "local_prosody_kinds": [
+      "firm_end",
+      "fade_end",
+      "emphasis",
+      "question_rise",
+      "shock_rise",
+      "vowel_extend"
+    ],
+    "prosody_scope_kinds": [
+      "final_syllables",
+      "final_word",
+      "latter_half",
+      "final_vowel"
+    ],
+    "laugh_styles": [
+      "chuckle",
+      "breathy",
+      "bashful",
+      "open",
+      "high_giggle"
+    ],
+    "laugh_positions": [
+      "leading",
+      "inline",
+      "trailing",
+      "standalone"
+    ],
+    "emotion_transition_modes": [
+      "blend",
+      "immediate"
+    ],
+    "boundary_kinds": [
+      "explicitPause",
+      "sentenceGap",
+      "finalTail"
+    ],
+    "vowel_extend_degrade_reasons": [
+      "final_consonant",
+      "unsupported_script",
+      "no_preceding_text",
+      "no_preceding_vowel"
+    ],
+    "error_codes": [
+      "UNKNOWN_EXPRESSIVE_TAG",
+      "INVALID_EXPRESSIVE_PAUSE",
+      "INVALID_EMOTION_MODIFIER",
+      "AMBIGUOUS_LAUGH_TOKEN",
+      "UNSUPPORTED_VOWEL_EXTEND",
+      "PROSODY_WITHOUT_HOST",
+      "EXPRESSIVE_PARITY_MISMATCH",
+      "EXPRESSIVE_MODE_INVALID",
+      "EXPRESSIVE_MODE_CARRIER_MISMATCH"
+    ],
+    "counts": {
+      "dot_run": [
+        1,
+        6
+      ],
+      "bang_run": [
+        1,
+        3
+      ],
+      "question_run": [
+        1,
+        3
+      ],
+      "shock_run": [
+        2,
+        4
+      ],
+      "tilde_run": [
+        1,
+        4
+      ],
+      "laugh_repeat": [
+        1,
+        8
+      ],
+      "local_prosody_tail_syllables": 3
+    },
+    "invariants": {
+      "emotion_transition_is_chunk_boundary": false,
+      "emotion_transition_extra_pause_ms": 0,
+      "local_prosody_is_chunk_boundary": false,
+      "sentence_gap_source": "lineBreak",
+      "sentence_gap_suppressed_by_explicit_pause": true,
+      "sentence_gap_and_emotion_pause_may_sum": false,
+      "final_tail_applies_once_at_file_end": true,
+      "expressive_mode_preset_may_change": false
+    },
+    "note_logging": "테스트는 case id·필드명만 보고한다. 대사 전문을 로그로 출력하지 않는다.",
+    "hash_authority": "full_sha256 은 python/expressive_timeline.py 로 산출·고정. TS 가 같은 값을 재현해야 한다."
+  },
+  "vectors": [
+    {
+      "id": "emotion-single-blend",
+      "input": "[기쁨] 안녕하세요",
+      "mode": "expressive_v3",
+      "full_sha256": "dd0884cb45e46e2ba89b17bfb0a93dbe639e1993f70bd45ffddb5ab362f88365",
+      "sha8": "dd0884cb",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 1,
+          "local_prosody_count": 0,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [
+            "happy"
+          ],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": false,
+        "emotion_transitions": [
+          {
+            "target_emotion": "happy",
+            "transition_mode": "blend",
+            "transition_strength": 100,
+            "transition_duration_hint": 300,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": false,
+            "source_offset": {
+              "utf16": 0,
+              "codepoint": 0
+            }
+          }
+        ],
+        "local_prosody": [],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": " 안녕하세요",
+        "verbatim_text": " 안녕하세요"
+      }
+    },
+    {
+      "id": "emotion-inline-two",
+      "input": "[기쁨] 안녕하세요 [명랑] 오늘 날씨 좋아요",
+      "mode": "expressive_v3",
+      "full_sha256": "cbc1c0342be255dc14db39f8b6e6f0e213e242e22969537630a54f709f9198c1",
+      "sha8": "cbc1c034",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 4,
+          "line_count": 1,
+          "emotion_transition_count": 2,
+          "local_prosody_count": 0,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [
+            "happy",
+            "cheerful"
+          ],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": false,
+        "emotion_transitions": [
+          {
+            "target_emotion": "happy",
+            "transition_mode": "blend",
+            "transition_strength": 100,
+            "transition_duration_hint": 300,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": false,
+            "source_offset": {
+              "utf16": 0,
+              "codepoint": 0
+            }
+          },
+          {
+            "target_emotion": "cheerful",
+            "transition_mode": "blend",
+            "transition_strength": 100,
+            "transition_duration_hint": 300,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": false,
+            "source_offset": {
+              "utf16": 11,
+              "codepoint": 11
+            }
+          }
+        ],
+        "local_prosody": [],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": " 안녕하세요  오늘 날씨 좋아요",
+        "verbatim_text": " 안녕하세요  오늘 날씨 좋아요"
+      }
+    },
+    {
+      "id": "emotion-explicit-immediate",
+      "input": "[기쁨|즉시] 갑자기 바뀐다",
+      "mode": "expressive_v3",
+      "full_sha256": "8a2e9220dc3f30ce6949597cf345fff72d1c4156f25f372aeeb3b72738f1babf",
+      "sha8": "8a2e9220",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 1,
+          "local_prosody_count": 0,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [
+            "happy"
+          ],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": false,
+        "emotion_transitions": [
+          {
+            "target_emotion": "happy",
+            "transition_mode": "immediate",
+            "transition_strength": 100,
+            "transition_duration_hint": 0,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": true,
+            "source_offset": {
+              "utf16": 0,
+              "codepoint": 0
+            }
+          }
+        ],
+        "local_prosody": [],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": " 갑자기 바뀐다",
+        "verbatim_text": " 갑자기 바뀐다"
+      }
+    },
+    {
+      "id": "emotion-explicit-immediate-en",
+      "input": "[happy|immediate] sudden change",
+      "mode": "expressive_v3",
+      "full_sha256": "bae88323f4430c029d7d2ce63c6d9c7dd0bc8a08094fbe22820cab8438f11af9",
+      "sha8": "bae88323",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 1,
+          "local_prosody_count": 0,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [
+            "happy"
+          ],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": false,
+        "emotion_transitions": [
+          {
+            "target_emotion": "happy",
+            "transition_mode": "immediate",
+            "transition_strength": 100,
+            "transition_duration_hint": 0,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": true,
+            "source_offset": {
+              "utf16": 0,
+              "codepoint": 0
+            }
+          }
+        ],
+        "local_prosody": [],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": " sudden change",
+        "verbatim_text": " sudden change"
+      }
+    },
+    {
+      "id": "emotion-explicit-blend",
+      "input": "[기쁨|블렌드] 천천히 바뀐다",
+      "mode": "expressive_v3",
+      "full_sha256": "5e93f49377a174873c1110de98f88d83ab7480916754114f01234031c2d982ee",
+      "sha8": "5e93f493",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 1,
+          "local_prosody_count": 0,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [
+            "happy"
+          ],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": false,
+        "emotion_transitions": [
+          {
+            "target_emotion": "happy",
+            "transition_mode": "blend",
+            "transition_strength": 100,
+            "transition_duration_hint": 300,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": true,
+            "source_offset": {
+              "utf16": 0,
+              "codepoint": 0
+            }
+          }
+        ],
+        "local_prosody": [],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": " 천천히 바뀐다",
+        "verbatim_text": " 천천히 바뀐다"
+      }
+    },
+    {
+      "id": "emotion-offset-emoji-dual",
+      "input": "🎉[기쁨] 안녕",
+      "mode": "expressive_v3",
+      "full_sha256": "b01b3f855de6a791fcbf66a3c2121e0438f42aea4b83460e88e46d7d16f6030b",
+      "sha8": "b01b3f85",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 3,
+          "line_count": 1,
+          "emotion_transition_count": 1,
+          "local_prosody_count": 0,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [
+            "happy"
+          ],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": false,
+        "emotion_transitions": [
+          {
+            "target_emotion": "happy",
+            "transition_mode": "blend",
+            "transition_strength": 100,
+            "transition_duration_hint": 300,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": false,
+            "source_offset": {
+              "utf16": 2,
+              "codepoint": 1
+            }
+          }
+        ],
+        "local_prosody": [],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "🎉 안녕",
+        "verbatim_text": "🎉 안녕"
+      }
+    },
+    {
+      "id": "dot-one-firm-end",
+      "input": "안녕하세요.",
+      "mode": "expressive_v3",
+      "full_sha256": "9927399c130ecfba3970f3fbe66fadf9832d2e73a3b6c112881fed2696ee1c79",
+      "sha8": "9927399c",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "firm_end",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 25,
+            "duration_hint": 120,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 2,
+              "end_utf16": 5,
+              "start_codepoint": 2,
+              "end_codepoint": 5
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 5,
+              "start_codepoint": 0,
+              "end_codepoint": 5
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": ".",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "안녕하세요",
+        "verbatim_text": "안녕하세요."
+      }
+    },
+    {
+      "id": "dot-two-fade-short",
+      "input": "글쎄..",
+      "mode": "expressive_v3",
+      "full_sha256": "e572ebd7df460da45d5e05379978d3e920ee540941886cc88757d13856e3c01b",
+      "sha8": "e572ebd7",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "fade_end",
+            "raw_count": 2,
+            "effective_count": 2,
+            "capped": false,
+            "strength": 40,
+            "duration_hint": 240,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 0,
+              "end_utf16": 2,
+              "start_codepoint": 0,
+              "end_codepoint": 2
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 2,
+              "start_codepoint": 0,
+              "end_codepoint": 2
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "..",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "글쎄",
+        "verbatim_text": "글쎄.."
+      }
+    },
+    {
+      "id": "dot-three-fade",
+      "input": "글쎄...",
+      "mode": "expressive_v3",
+      "full_sha256": "5d7b1aacec89f93f9bf4df66a6311c641791778919635bc7e296945099938f5e",
+      "sha8": "5d7b1aac",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "fade_end",
+            "raw_count": 3,
+            "effective_count": 3,
+            "capped": false,
+            "strength": 55,
+            "duration_hint": 360,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 0,
+              "end_utf16": 2,
+              "start_codepoint": 0,
+              "end_codepoint": 2
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 2,
+              "start_codepoint": 0,
+              "end_codepoint": 2
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "...",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "글쎄",
+        "verbatim_text": "글쎄..."
+      }
+    },
+    {
+      "id": "dot-six-max",
+      "input": "글쎄......",
+      "mode": "expressive_v3",
+      "full_sha256": "dea7ce30d68a8deeebd9c6b75bb33495fe7134926f1db33e4a41d2cdb078deca",
+      "sha8": "dea7ce30",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "fade_end",
+            "raw_count": 6,
+            "effective_count": 6,
+            "capped": false,
+            "strength": 100,
+            "duration_hint": 720,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 0,
+              "end_utf16": 2,
+              "start_codepoint": 0,
+              "end_codepoint": 2
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 2,
+              "start_codepoint": 0,
+              "end_codepoint": 2
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "......",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "글쎄",
+        "verbatim_text": "글쎄......"
+      }
+    },
+    {
+      "id": "dot-ten-capped",
+      "input": "글쎄..........",
+      "mode": "expressive_v3",
+      "full_sha256": "84ba8f4bf3130f6ab19f632a7a01bcadb24163db67897ec3b04d2568a1317479",
+      "sha8": "84ba8f4b",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 1
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "fade_end",
+            "raw_count": 10,
+            "effective_count": 6,
+            "capped": true,
+            "strength": 100,
+            "duration_hint": 720,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 0,
+              "end_utf16": 2,
+              "start_codepoint": 0,
+              "end_codepoint": 2
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 2,
+              "start_codepoint": 0,
+              "end_codepoint": 2
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "..........",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "글쎄",
+        "verbatim_text": "글쎄.........."
+      }
+    },
+    {
+      "id": "dot-ellipsis-char",
+      "input": "정말…",
+      "mode": "expressive_v3",
+      "full_sha256": "e1e2356437a60dc2f982c1a8679f914e5c7fe84ed99e327324c003c17ca4eb98",
+      "sha8": "e1e23564",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "fade_end",
+            "raw_count": 3,
+            "effective_count": 3,
+            "capped": false,
+            "strength": 55,
+            "duration_hint": 360,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 0,
+              "end_utf16": 2,
+              "start_codepoint": 0,
+              "end_codepoint": 2
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 2,
+              "start_codepoint": 0,
+              "end_codepoint": 2
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "…",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "정말",
+        "verbatim_text": "정말…"
+      }
+    },
+    {
+      "id": "dot-ideographic-stop",
+      "input": "そうです。",
+      "mode": "expressive_v3",
+      "full_sha256": "e943a1313f95442edf007664166ff25c6d550906b8c3d60e97ed17afafe87e64",
+      "sha8": "e943a131",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "firm_end",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 25,
+            "duration_hint": 120,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 1,
+              "end_utf16": 4,
+              "start_codepoint": 1,
+              "end_codepoint": 4
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 4,
+              "start_codepoint": 0,
+              "end_codepoint": 4
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "。",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "そうです",
+        "verbatim_text": "そうです。"
+      }
+    },
+    {
+      "id": "bang-one",
+      "input": "정말 대단해!",
+      "mode": "expressive_v3",
+      "full_sha256": "1d7995b50bcb7eed6e395c1ac911c07d9e2d0aa073c9cf4e09d6b64398222926",
+      "sha8": "1d7995b5",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "emphasis",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 60,
+            "duration_hint": 300,
+            "scope_kind": "latter_half",
+            "scope_range": {
+              "start_utf16": 3,
+              "end_utf16": 6,
+              "start_codepoint": 3,
+              "end_codepoint": 6
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 6,
+              "start_codepoint": 0,
+              "end_codepoint": 6
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "!",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "정말 대단해",
+        "verbatim_text": "정말 대단해!"
+      }
+    },
+    {
+      "id": "bang-two",
+      "input": "정말 대단해!!",
+      "mode": "expressive_v3",
+      "full_sha256": "6a7fe0a4ed00805f32cbc297cc2498ee1c5b0dbeea51dc9bd33fb823b29657d7",
+      "sha8": "6a7fe0a4",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "emphasis",
+            "raw_count": 2,
+            "effective_count": 2,
+            "capped": false,
+            "strength": 80,
+            "duration_hint": 400,
+            "scope_kind": "latter_half",
+            "scope_range": {
+              "start_utf16": 3,
+              "end_utf16": 6,
+              "start_codepoint": 3,
+              "end_codepoint": 6
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 6,
+              "start_codepoint": 0,
+              "end_codepoint": 6
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "!!",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "정말 대단해",
+        "verbatim_text": "정말 대단해!!"
+      }
+    },
+    {
+      "id": "bang-four-capped",
+      "input": "정말 대단해!!!!",
+      "mode": "expressive_v3",
+      "full_sha256": "49ee5f36120d746cf07e655ce9f380ac6a34b25210c7497352945a563e1aeb1d",
+      "sha8": "49ee5f36",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 1
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "emphasis",
+            "raw_count": 4,
+            "effective_count": 3,
+            "capped": true,
+            "strength": 100,
+            "duration_hint": 500,
+            "scope_kind": "latter_half",
+            "scope_range": {
+              "start_utf16": 3,
+              "end_utf16": 6,
+              "start_codepoint": 3,
+              "end_codepoint": 6
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 6,
+              "start_codepoint": 0,
+              "end_codepoint": 6
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "!!!!",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "정말 대단해",
+        "verbatim_text": "정말 대단해!!!!"
+      }
+    },
+    {
+      "id": "question-one",
+      "input": "정말요?",
+      "mode": "expressive_v3",
+      "full_sha256": "890aaf9129748f997e0c6a4e011dce17bd6e0cb0a372a6b9361d9d40fffe727a",
+      "sha8": "890aaf91",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "question_rise",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 70,
+            "duration_hint": 250,
+            "scope_kind": "final_word",
+            "scope_range": {
+              "start_utf16": 0,
+              "end_utf16": 3,
+              "start_codepoint": 0,
+              "end_codepoint": 3
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 3,
+              "start_codepoint": 0,
+              "end_codepoint": 3
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "?",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "정말요",
+        "verbatim_text": "정말요?"
+      }
+    },
+    {
+      "id": "question-three",
+      "input": "정말요???",
+      "mode": "expressive_v3",
+      "full_sha256": "edabff3d4deaa5f4dccd42fcaf07e63a1d31e5401c6a435522126b3b27ee4ce0",
+      "sha8": "edabff3d",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "question_rise",
+            "raw_count": 3,
+            "effective_count": 3,
+            "capped": false,
+            "strength": 100,
+            "duration_hint": 350,
+            "scope_kind": "final_word",
+            "scope_range": {
+              "start_utf16": 0,
+              "end_utf16": 3,
+              "start_codepoint": 0,
+              "end_codepoint": 3
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 3,
+              "start_codepoint": 0,
+              "end_codepoint": 3
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "???",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "정말요",
+        "verbatim_text": "정말요???"
+      }
+    },
+    {
+      "id": "shock-bang-question",
+      "input": "뭐라고!?",
+      "mode": "expressive_v3",
+      "full_sha256": "fee1141c96aa930ec307c28bf3643e71d8e0c65b9ca475ef9a1a067f909780cf",
+      "sha8": "fee1141c",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "shock_rise",
+            "raw_count": 2,
+            "effective_count": 2,
+            "capped": false,
+            "strength": 80,
+            "duration_hint": 350,
+            "scope_kind": "final_word",
+            "scope_range": {
+              "start_utf16": 0,
+              "end_utf16": 3,
+              "start_codepoint": 0,
+              "end_codepoint": 3
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 3,
+              "start_codepoint": 0,
+              "end_codepoint": 3
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "!?",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "뭐라고",
+        "verbatim_text": "뭐라고!?"
+      }
+    },
+    {
+      "id": "shock-question-bang",
+      "input": "뭐라고?!",
+      "mode": "expressive_v3",
+      "full_sha256": "5b304a40b1991cd05cb08b2a8528265a863ad23b7781744d6d8f8086ae0fcec8",
+      "sha8": "5b304a40",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "shock_rise",
+            "raw_count": 2,
+            "effective_count": 2,
+            "capped": false,
+            "strength": 80,
+            "duration_hint": 350,
+            "scope_kind": "final_word",
+            "scope_range": {
+              "start_utf16": 0,
+              "end_utf16": 3,
+              "start_codepoint": 0,
+              "end_codepoint": 3
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 3,
+              "start_codepoint": 0,
+              "end_codepoint": 3
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "?!",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "뭐라고",
+        "verbatim_text": "뭐라고?!"
+      }
+    },
+    {
+      "id": "shock-five-capped",
+      "input": "뭐라고!?!?!",
+      "mode": "expressive_v3",
+      "full_sha256": "1db989c3b9abb60e4406a24f9ccd5fc14583b9f95bd2c1d7eee24a01bfbd91f2",
+      "sha8": "1db989c3",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 1
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "shock_rise",
+            "raw_count": 5,
+            "effective_count": 4,
+            "capped": true,
+            "strength": 100,
+            "duration_hint": 450,
+            "scope_kind": "final_word",
+            "scope_range": {
+              "start_utf16": 0,
+              "end_utf16": 3,
+              "start_codepoint": 0,
+              "end_codepoint": 3
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 3,
+              "start_codepoint": 0,
+              "end_codepoint": 3
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "!?!?!",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "뭐라고",
+        "verbatim_text": "뭐라고!?!?!"
+      }
+    },
+    {
+      "id": "shock-fullwidth",
+      "input": "그래！？",
+      "mode": "expressive_v3",
+      "full_sha256": "22c6af76b21154e2608372d100cb54e7acb4bcb08925f12dc774f5c3ecc796f6",
+      "sha8": "22c6af76",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "shock_rise",
+            "raw_count": 2,
+            "effective_count": 2,
+            "capped": false,
+            "strength": 80,
+            "duration_hint": 350,
+            "scope_kind": "final_word",
+            "scope_range": {
+              "start_utf16": 0,
+              "end_utf16": 2,
+              "start_codepoint": 0,
+              "end_codepoint": 2
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 2,
+              "start_codepoint": 0,
+              "end_codepoint": 2
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "！？",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "그래",
+        "verbatim_text": "그래！？"
+      }
+    },
+    {
+      "id": "tilde-korean-open-syllable",
+      "input": "그래도~",
+      "mode": "expressive_v3",
+      "full_sha256": "3440e2470d9049bf523ca210a9f26c3ccfcebdeb4b09b95df359ca9a61cf8038",
+      "sha8": "3440e247",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "vowel_extend",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 40,
+            "duration_hint": 150,
+            "scope_kind": "final_vowel",
+            "scope_range": {
+              "start_utf16": 2,
+              "end_utf16": 3,
+              "start_codepoint": 2,
+              "end_codepoint": 3
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 3,
+              "start_codepoint": 0,
+              "end_codepoint": 3
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "~",
+            "vowel_extend": {
+              "supported": true,
+              "target_vowel": "ㅗ",
+              "degraded_reason": null
+            }
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "그래도",
+        "verbatim_text": "그래도~"
+      }
+    },
+    {
+      "id": "tilde-korean-final-consonant",
+      "input": "안녕~",
+      "mode": "expressive_v3",
+      "full_sha256": "e613c6af5c7a0e39887639fa407d87963a359504813b5d2a3cfa99f8ed370c80",
+      "sha8": "e613c6af",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 1,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "vowel_extend",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 40,
+            "duration_hint": 150,
+            "scope_kind": "final_vowel",
+            "scope_range": {
+              "start_utf16": 1,
+              "end_utf16": 2,
+              "start_codepoint": 1,
+              "end_codepoint": 2
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 2,
+              "start_codepoint": 0,
+              "end_codepoint": 2
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "~",
+            "vowel_extend": {
+              "supported": false,
+              "target_vowel": null,
+              "degraded_reason": "final_consonant"
+            }
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": "UNSUPPORTED_VOWEL_EXTEND",
+            "severity": "warning",
+            "reason": "final_consonant"
+          }
+        ],
+        "plain_text": "안녕",
+        "verbatim_text": "안녕~"
+      }
+    },
+    {
+      "id": "tilde-latin-vowel",
+      "input": "hello~",
+      "mode": "expressive_v3",
+      "full_sha256": "6731c923421b86732ef76c6515bf3121a4d9e1ded9ed1bb0c7dbf68f35d32e98",
+      "sha8": "6731c923",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "vowel_extend",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 40,
+            "duration_hint": 150,
+            "scope_kind": "final_vowel",
+            "scope_range": {
+              "start_utf16": 4,
+              "end_utf16": 5,
+              "start_codepoint": 4,
+              "end_codepoint": 5
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 5,
+              "start_codepoint": 0,
+              "end_codepoint": 5
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "~",
+            "vowel_extend": {
+              "supported": true,
+              "target_vowel": "o",
+              "degraded_reason": null
+            }
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "hello",
+        "verbatim_text": "hello~"
+      }
+    },
+    {
+      "id": "tilde-latin-consonant",
+      "input": "world~",
+      "mode": "expressive_v3",
+      "full_sha256": "a970e9b7e5d9a247f2d423271d630024ddbb3016a878df90b893512d85cd35bc",
+      "sha8": "a970e9b7",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 1,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "vowel_extend",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 40,
+            "duration_hint": 150,
+            "scope_kind": "final_vowel",
+            "scope_range": {
+              "start_utf16": 4,
+              "end_utf16": 5,
+              "start_codepoint": 4,
+              "end_codepoint": 5
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 5,
+              "start_codepoint": 0,
+              "end_codepoint": 5
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "~",
+            "vowel_extend": {
+              "supported": false,
+              "target_vowel": null,
+              "degraded_reason": "final_consonant"
+            }
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": "UNSUPPORTED_VOWEL_EXTEND",
+            "severity": "warning",
+            "reason": "final_consonant"
+          }
+        ],
+        "plain_text": "world",
+        "verbatim_text": "world~"
+      }
+    },
+    {
+      "id": "tilde-kana-vowel",
+      "input": "あ~",
+      "mode": "expressive_v3",
+      "full_sha256": "6258cd1795c7b91fb31f071be089deb040106b26018507dc86b81e77a7cafd7a",
+      "sha8": "6258cd17",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "vowel_extend",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 40,
+            "duration_hint": 150,
+            "scope_kind": "final_vowel",
+            "scope_range": {
+              "start_utf16": 0,
+              "end_utf16": 1,
+              "start_codepoint": 0,
+              "end_codepoint": 1
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 1,
+              "start_codepoint": 0,
+              "end_codepoint": 1
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "~",
+            "vowel_extend": {
+              "supported": true,
+              "target_vowel": "a",
+              "degraded_reason": null
+            }
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "あ",
+        "verbatim_text": "あ~"
+      }
+    },
+    {
+      "id": "tilde-kana-other",
+      "input": "こんにちは~",
+      "mode": "expressive_v3",
+      "full_sha256": "906c407116fb32a976c501368cb250c994a6238830f9a033fda5c0d1c9d9d785",
+      "sha8": "906c4071",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 1,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "vowel_extend",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 40,
+            "duration_hint": 150,
+            "scope_kind": "final_vowel",
+            "scope_range": {
+              "start_utf16": 4,
+              "end_utf16": 5,
+              "start_codepoint": 4,
+              "end_codepoint": 5
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 5,
+              "start_codepoint": 0,
+              "end_codepoint": 5
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "~",
+            "vowel_extend": {
+              "supported": false,
+              "target_vowel": null,
+              "degraded_reason": "unsupported_script"
+            }
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": "UNSUPPORTED_VOWEL_EXTEND",
+            "severity": "warning",
+            "reason": "unsupported_script"
+          }
+        ],
+        "plain_text": "こんにちは",
+        "verbatim_text": "こんにちは~"
+      }
+    },
+    {
+      "id": "tilde-han",
+      "input": "你好~",
+      "mode": "expressive_v3",
+      "full_sha256": "591d5437a91414f57ddd78024c1c077c673de1105328144d787bcf45de6bfcbf",
+      "sha8": "591d5437",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 1,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "vowel_extend",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 40,
+            "duration_hint": 150,
+            "scope_kind": "final_vowel",
+            "scope_range": {
+              "start_utf16": 1,
+              "end_utf16": 2,
+              "start_codepoint": 1,
+              "end_codepoint": 2
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 2,
+              "start_codepoint": 0,
+              "end_codepoint": 2
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "~",
+            "vowel_extend": {
+              "supported": false,
+              "target_vowel": null,
+              "degraded_reason": "unsupported_script"
+            }
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": "UNSUPPORTED_VOWEL_EXTEND",
+            "severity": "warning",
+            "reason": "unsupported_script"
+          }
+        ],
+        "plain_text": "你好",
+        "verbatim_text": "你好~"
+      }
+    },
+    {
+      "id": "tilde-five-capped",
+      "input": "그래도~~~~~",
+      "mode": "expressive_v3",
+      "full_sha256": "edef946e3c3c00abde8452a06d4eb084e4c9c8a698ef05fb9d2f3ca271c6ba98",
+      "sha8": "edef946e",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 1
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "vowel_extend",
+            "raw_count": 5,
+            "effective_count": 4,
+            "capped": true,
+            "strength": 100,
+            "duration_hint": 450,
+            "scope_kind": "final_vowel",
+            "scope_range": {
+              "start_utf16": 2,
+              "end_utf16": 3,
+              "start_codepoint": 2,
+              "end_codepoint": 3
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 3,
+              "start_codepoint": 0,
+              "end_codepoint": 3
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "~~~~~",
+            "vowel_extend": {
+              "supported": true,
+              "target_vowel": "ㅗ",
+              "degraded_reason": null
+            }
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "그래도",
+        "verbatim_text": "그래도~~~~~"
+      }
+    },
+    {
+      "id": "tilde-no-host",
+      "input": "~시작",
+      "mode": "expressive_v3",
+      "full_sha256": "287b1711f4a30ed097ea991b8a9b5e1f713a133a8a01f1a859bea839706214f3",
+      "sha8": "287b1711",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 1,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "vowel_extend",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 40,
+            "duration_hint": 150,
+            "scope_kind": "final_vowel",
+            "scope_range": {
+              "start_utf16": 0,
+              "end_utf16": 0,
+              "start_codepoint": 0,
+              "end_codepoint": 0
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 0,
+              "start_codepoint": 0,
+              "end_codepoint": 0
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "~",
+            "vowel_extend": {
+              "supported": false,
+              "target_vowel": null,
+              "degraded_reason": "no_preceding_text"
+            }
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [
+          {
+            "code": "PROSODY_WITHOUT_HOST",
+            "severity": "warning",
+            "reason": "vowel_extend"
+          },
+          {
+            "code": "UNSUPPORTED_VOWEL_EXTEND",
+            "severity": "warning",
+            "reason": "no_preceding_text"
+          }
+        ],
+        "plain_text": "시작",
+        "verbatim_text": "~시작"
+      }
+    },
+    {
+      "id": "laugh-chuckle-1",
+      "input": "[ㅋ]",
+      "mode": "expressive_v3",
+      "full_sha256": "cfb8f06e1d109d43cabaec23ad61eb07dc85fbca7c61c07bcd507f89c29441dc",
+      "sha8": "cfb8f06e",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 1,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 1,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [
+          {
+            "style": "chuckle",
+            "intensity": 30,
+            "brightness": 40,
+            "duration_hint": 180,
+            "position": "standalone",
+            "raw_repeat_count": 1,
+            "effective_repeat_count": 1,
+            "capped": false,
+            "is_chunk_boundary": false,
+            "raw_token": "[ㅋ]"
+          }
+        ],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "",
+        "verbatim_text": ""
+      }
+    },
+    {
+      "id": "laugh-chuckle-2",
+      "input": "[ㅋㅋ]",
+      "mode": "expressive_v3",
+      "full_sha256": "5fbc7a42dfa5eb92a8ee07bf0801330bd8b8cf8fe8bcefad3b90ff66f2dfeb96",
+      "sha8": "5fbc7a42",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 1,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 1,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [
+          {
+            "style": "chuckle",
+            "intensity": 45,
+            "brightness": 52,
+            "duration_hint": 300,
+            "position": "standalone",
+            "raw_repeat_count": 2,
+            "effective_repeat_count": 2,
+            "capped": false,
+            "is_chunk_boundary": false,
+            "raw_token": "[ㅋㅋ]"
+          }
+        ],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "",
+        "verbatim_text": ""
+      }
+    },
+    {
+      "id": "laugh-chuckle-4",
+      "input": "[ㅋㅋㅋㅋ]",
+      "mode": "expressive_v3",
+      "full_sha256": "5bec0132bfe5f9067171f15477f219bab7d9c3d2487b4915a1663e1e8a7ad5fe",
+      "sha8": "5bec0132",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 1,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 1,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [
+          {
+            "style": "chuckle",
+            "intensity": 65,
+            "brightness": 70,
+            "duration_hint": 540,
+            "position": "standalone",
+            "raw_repeat_count": 4,
+            "effective_repeat_count": 4,
+            "capped": false,
+            "is_chunk_boundary": false,
+            "raw_token": "[ㅋㅋㅋㅋ]"
+          }
+        ],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "",
+        "verbatim_text": ""
+      }
+    },
+    {
+      "id": "laugh-chuckle-12-capped",
+      "input": "[ㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋ]",
+      "mode": "expressive_v3",
+      "full_sha256": "8c09871de911114761cd6e85b736809fd66bf4754f3d30b8c0afc312ead71293",
+      "sha8": "8c09871d",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 1,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 1,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 1
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [
+          {
+            "style": "chuckle",
+            "intensity": 100,
+            "brightness": 100,
+            "duration_hint": 1020,
+            "position": "standalone",
+            "raw_repeat_count": 12,
+            "effective_repeat_count": 8,
+            "capped": true,
+            "is_chunk_boundary": false,
+            "raw_token": "[ㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋㅋ]"
+          }
+        ],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "",
+        "verbatim_text": ""
+      }
+    },
+    {
+      "id": "laugh-breathy-1",
+      "input": "[ㅎ] 그렇구나",
+      "mode": "expressive_v3",
+      "full_sha256": "6b2cce16e1522698280dcfe190a16784b7de8eb6ebf4156aa02bc482628fe296",
+      "sha8": "6b2cce16",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 1,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [
+          {
+            "style": "breathy",
+            "intensity": 30,
+            "brightness": 40,
+            "duration_hint": 180,
+            "position": "leading",
+            "raw_repeat_count": 1,
+            "effective_repeat_count": 1,
+            "capped": false,
+            "is_chunk_boundary": false,
+            "raw_token": "[ㅎ]"
+          }
+        ],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": " 그렇구나",
+        "verbatim_text": " 그렇구나"
+      }
+    },
+    {
+      "id": "laugh-breathy-4",
+      "input": "[ㅎㅎㅎㅎ]",
+      "mode": "expressive_v3",
+      "full_sha256": "fd1ef99fedabc2ff93450ae134ce818c035271e1102d7eee982919a33f90a620",
+      "sha8": "fd1ef99f",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 1,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 1,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [
+          {
+            "style": "breathy",
+            "intensity": 65,
+            "brightness": 70,
+            "duration_hint": 540,
+            "position": "standalone",
+            "raw_repeat_count": 4,
+            "effective_repeat_count": 4,
+            "capped": false,
+            "is_chunk_boundary": false,
+            "raw_token": "[ㅎㅎㅎㅎ]"
+          }
+        ],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "",
+        "verbatim_text": ""
+      }
+    },
+    {
+      "id": "laugh-bashful-hehe",
+      "input": "[헤헤]",
+      "mode": "expressive_v3",
+      "full_sha256": "4452585ad649fbd65d6e36d56f3aad94a0c9540cec43e60effcf2f76ccff8072",
+      "sha8": "4452585a",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 1,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 1,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [
+          {
+            "style": "bashful",
+            "intensity": 45,
+            "brightness": 52,
+            "duration_hint": 300,
+            "position": "standalone",
+            "raw_repeat_count": 2,
+            "effective_repeat_count": 2,
+            "capped": false,
+            "is_chunk_boundary": false,
+            "raw_token": "[헤헤]"
+          }
+        ],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "",
+        "verbatim_text": ""
+      }
+    },
+    {
+      "id": "laugh-bashful-hehet",
+      "input": "[헤헷]",
+      "mode": "expressive_v3",
+      "full_sha256": "0fa5bf7c6adcbb25993166be1b1e9d8f752a5ced4b010c226335cbad0fd8c22d",
+      "sha8": "0fa5bf7c",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 1,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 1,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [
+          {
+            "style": "bashful",
+            "intensity": 45,
+            "brightness": 52,
+            "duration_hint": 300,
+            "position": "standalone",
+            "raw_repeat_count": 2,
+            "effective_repeat_count": 2,
+            "capped": false,
+            "is_chunk_boundary": false,
+            "raw_token": "[헤헷]"
+          }
+        ],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "",
+        "verbatim_text": ""
+      }
+    },
+    {
+      "id": "laugh-open-hoho",
+      "input": "[호호]",
+      "mode": "expressive_v3",
+      "full_sha256": "5cd42c9836160b692924438e42033ac05c458e9658dfcfcd85e827243f71679d",
+      "sha8": "5cd42c98",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 1,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 1,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [
+          {
+            "style": "open",
+            "intensity": 45,
+            "brightness": 52,
+            "duration_hint": 300,
+            "position": "standalone",
+            "raw_repeat_count": 2,
+            "effective_repeat_count": 2,
+            "capped": false,
+            "is_chunk_boundary": false,
+            "raw_token": "[호호]"
+          }
+        ],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "",
+        "verbatim_text": ""
+      }
+    },
+    {
+      "id": "laugh-open-hohot",
+      "input": "[호홋]",
+      "mode": "expressive_v3",
+      "full_sha256": "8ce7e84ba638053b1fd74c5925259ef2b0cfb5418e2ef3f81e212a94f1ac3a38",
+      "sha8": "8ce7e84b",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 1,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 1,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [
+          {
+            "style": "open",
+            "intensity": 45,
+            "brightness": 52,
+            "duration_hint": 300,
+            "position": "standalone",
+            "raw_repeat_count": 2,
+            "effective_repeat_count": 2,
+            "capped": false,
+            "is_chunk_boundary": false,
+            "raw_token": "[호홋]"
+          }
+        ],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "",
+        "verbatim_text": ""
+      }
+    },
+    {
+      "id": "laugh-giggle-2",
+      "input": "[히히]",
+      "mode": "expressive_v3",
+      "full_sha256": "6c01d4ffb833cfe5192dd829084ae2ddadb710375075ecd1a3ce6e6f72813a4e",
+      "sha8": "6c01d4ff",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 1,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 1,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [
+          {
+            "style": "high_giggle",
+            "intensity": 45,
+            "brightness": 52,
+            "duration_hint": 300,
+            "position": "standalone",
+            "raw_repeat_count": 2,
+            "effective_repeat_count": 2,
+            "capped": false,
+            "is_chunk_boundary": false,
+            "raw_token": "[히히]"
+          }
+        ],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "",
+        "verbatim_text": ""
+      }
+    },
+    {
+      "id": "laugh-giggle-3",
+      "input": "[히히히]",
+      "mode": "expressive_v3",
+      "full_sha256": "9be5c43685850b8b71d8c88141eea0c15fc7f3984f45a84070f48fcb4a1853d5",
+      "sha8": "9be5c436",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 1,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 1,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [
+          {
+            "style": "high_giggle",
+            "intensity": 55,
+            "brightness": 62,
+            "duration_hint": 420,
+            "position": "standalone",
+            "raw_repeat_count": 3,
+            "effective_repeat_count": 3,
+            "capped": false,
+            "is_chunk_boundary": false,
+            "raw_token": "[히히히]"
+          }
+        ],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "",
+        "verbatim_text": ""
+      }
+    },
+    {
+      "id": "laugh-position-inline",
+      "input": "안녕 [ㅋㅋ] 반가워",
+      "mode": "expressive_v3",
+      "full_sha256": "814de856cae7993de3fb89f4494d08c747202e999c55013ccdd9644f7726fee1",
+      "sha8": "814de856",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 3,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 1,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [
+          {
+            "style": "chuckle",
+            "intensity": 45,
+            "brightness": 52,
+            "duration_hint": 300,
+            "position": "inline",
+            "raw_repeat_count": 2,
+            "effective_repeat_count": 2,
+            "capped": false,
+            "is_chunk_boundary": false,
+            "raw_token": "[ㅋㅋ]"
+          }
+        ],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "안녕  반가워",
+        "verbatim_text": "안녕  반가워"
+      }
+    },
+    {
+      "id": "laugh-position-trailing",
+      "input": "그래 [ㅋㅋ]",
+      "mode": "expressive_v3",
+      "full_sha256": "974beff354a9e26245216664aa27fb33bb8b6687f47d7d4e94e7d4c771596492",
+      "sha8": "974beff3",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 1,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [
+          {
+            "style": "chuckle",
+            "intensity": 45,
+            "brightness": 52,
+            "duration_hint": 300,
+            "position": "trailing",
+            "raw_repeat_count": 2,
+            "effective_repeat_count": 2,
+            "capped": false,
+            "is_chunk_boundary": false,
+            "raw_token": "[ㅋㅋ]"
+          }
+        ],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "그래 ",
+        "verbatim_text": "그래 "
+      }
+    },
+    {
+      "id": "laugh-more-specific-than-emotion",
+      "input": "[기쁨] 웃겨 [ㅋㅋ] 진짜.",
+      "mode": "expressive_v3",
+      "full_sha256": "b5851f2a95750ad1a206236eca71188311fd48658aaa44d2e48efb5d703829f2",
+      "sha8": "b5851f2a",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 5,
+          "line_count": 1,
+          "emotion_transition_count": 1,
+          "local_prosody_count": 1,
+          "laugh_count": 1,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [
+            "happy"
+          ],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [
+          {
+            "target_emotion": "happy",
+            "transition_mode": "blend",
+            "transition_strength": 100,
+            "transition_duration_hint": 300,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": false,
+            "source_offset": {
+              "utf16": 0,
+              "codepoint": 0
+            }
+          }
+        ],
+        "local_prosody": [
+          {
+            "kind": "firm_end",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 25,
+            "duration_hint": 120,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 12,
+              "end_utf16": 15,
+              "start_codepoint": 12,
+              "end_codepoint": 15
+            },
+            "host_range": {
+              "start_utf16": 12,
+              "end_utf16": 15,
+              "start_codepoint": 12,
+              "end_codepoint": 15
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": ".",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [
+          {
+            "style": "chuckle",
+            "intensity": 45,
+            "brightness": 52,
+            "duration_hint": 300,
+            "position": "inline",
+            "raw_repeat_count": 2,
+            "effective_repeat_count": 2,
+            "capped": false,
+            "is_chunk_boundary": false,
+            "raw_token": "[ㅋㅋ]"
+          }
+        ],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": " 웃겨  진짜",
+        "verbatim_text": " 웃겨  진짜."
+      }
+    },
+    {
+      "id": "laugh-outside-bracket-stays-literal",
+      "input": "웃겨 ㅋㅋㅋㅋ 진짜",
+      "mode": "expressive_v3",
+      "full_sha256": "c4c5028923e5248508b744539140e4b1c0cb31bf4026c9b5d8f6802062ab4fe8",
+      "sha8": "c4c50289",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 1,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": false,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "웃겨 ㅋㅋㅋㅋ 진짜",
+        "verbatim_text": "웃겨 ㅋㅋㅋㅋ 진짜"
+      }
+    },
+    {
+      "id": "pause-explicit",
+      "input": "[기쁨] 첫 문장. [쉼 0.5] 둘째 문장.",
+      "mode": "expressive_v3",
+      "full_sha256": "05f932c9e9c102cfbccbe58a785ba0d4441af7fed1d61f05b088ac6a8fb10a59",
+      "sha8": "05f932c9",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 7,
+          "line_count": 1,
+          "emotion_transition_count": 1,
+          "local_prosody_count": 2,
+          "laugh_count": 0,
+          "explicit_pause_count": 1,
+          "total_explicit_pause_ms": 500,
+          "used_emotion_ids": [
+            "happy"
+          ],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [
+          {
+            "target_emotion": "happy",
+            "transition_mode": "blend",
+            "transition_strength": 100,
+            "transition_duration_hint": 300,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": false,
+            "source_offset": {
+              "utf16": 0,
+              "codepoint": 0
+            }
+          }
+        ],
+        "local_prosody": [
+          {
+            "kind": "firm_end",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 25,
+            "duration_hint": 120,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 6,
+              "end_utf16": 9,
+              "start_codepoint": 6,
+              "end_codepoint": 9
+            },
+            "host_range": {
+              "start_utf16": 4,
+              "end_utf16": 9,
+              "start_codepoint": 4,
+              "end_codepoint": 9
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": ".",
+            "vowel_extend": null
+          },
+          {
+            "kind": "firm_end",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 25,
+            "duration_hint": 120,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 21,
+              "end_utf16": 24,
+              "start_codepoint": 21,
+              "end_codepoint": 24
+            },
+            "host_range": {
+              "start_utf16": 18,
+              "end_utf16": 24,
+              "start_codepoint": 18,
+              "end_codepoint": 24
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": ".",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [
+          {
+            "pause_ms": 500
+          }
+        ],
+        "boundaries": [
+          {
+            "kind": "explicitPause",
+            "candidates": [
+              "explicitPause"
+            ],
+            "suppressed": [],
+            "pause_ms": 500
+          },
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": " 첫 문장  둘째 문장",
+        "verbatim_text": " 첫 문장.  둘째 문장."
+      }
+    },
+    {
+      "id": "pause-alias-english-min",
+      "input": "A [pause 0.05] B",
+      "mode": "expressive_v3",
+      "full_sha256": "47185000567698a9387f039506a521278f748809779228895534565b4716a1ab",
+      "sha8": "47185000",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 3,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 0,
+          "explicit_pause_count": 1,
+          "total_explicit_pause_ms": 50,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": false,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [],
+        "explicit_pauses": [
+          {
+            "pause_ms": 50
+          }
+        ],
+        "boundaries": [
+          {
+            "kind": "explicitPause",
+            "candidates": [
+              "explicitPause"
+            ],
+            "suppressed": [],
+            "pause_ms": 50
+          },
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "A  B",
+        "verbatim_text": "A  B"
+      }
+    },
+    {
+      "id": "pause-replaces-sentence-gap",
+      "input": "첫 줄.[쉼 0.8]\n둘째 줄.",
+      "mode": "expressive_v3",
+      "full_sha256": "bb7e9fce8bc1e8426fafc9987043a843bcfa81faf801aa856078008bf5be12cb",
+      "sha8": "bb7e9fce",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 6,
+          "line_count": 2,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 2,
+          "laugh_count": 0,
+          "explicit_pause_count": 1,
+          "total_explicit_pause_ms": 800,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [],
+        "local_prosody": [
+          {
+            "kind": "firm_end",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 25,
+            "duration_hint": 120,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 0,
+              "end_utf16": 3,
+              "start_codepoint": 0,
+              "end_codepoint": 3
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 3,
+              "start_codepoint": 0,
+              "end_codepoint": 3
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": ".",
+            "vowel_extend": null
+          },
+          {
+            "kind": "firm_end",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 25,
+            "duration_hint": 120,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 13,
+              "end_utf16": 16,
+              "start_codepoint": 13,
+              "end_codepoint": 16
+            },
+            "host_range": {
+              "start_utf16": 12,
+              "end_utf16": 16,
+              "start_codepoint": 12,
+              "end_codepoint": 16
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": ".",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [
+          {
+            "pause_ms": 800
+          }
+        ],
+        "boundaries": [
+          {
+            "kind": "explicitPause",
+            "candidates": [
+              "explicitPause",
+              "sentenceGap"
+            ],
+            "suppressed": [
+              "sentenceGap"
+            ],
+            "pause_ms": 800
+          },
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "첫 줄\n둘째 줄",
+        "verbatim_text": "첫 줄.\n둘째 줄."
+      }
+    },
+    {
+      "id": "multiline-two-lines",
+      "input": "[기쁨] 첫째 줄.\n[슬픔] 둘째 줄.",
+      "mode": "expressive_v3",
+      "full_sha256": "08de99b3f8c557141547377b4effa4fc4d60303021eac02c6bd9f11288b2fd06",
+      "sha8": "08de99b3",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 7,
+          "line_count": 2,
+          "emotion_transition_count": 2,
+          "local_prosody_count": 2,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [
+            "happy",
+            "sad"
+          ],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [
+          {
+            "target_emotion": "happy",
+            "transition_mode": "blend",
+            "transition_strength": 100,
+            "transition_duration_hint": 300,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": false,
+            "source_offset": {
+              "utf16": 0,
+              "codepoint": 0
+            }
+          },
+          {
+            "target_emotion": "sad",
+            "transition_mode": "blend",
+            "transition_strength": 100,
+            "transition_duration_hint": 300,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": false,
+            "source_offset": {
+              "utf16": 11,
+              "codepoint": 11
+            }
+          }
+        ],
+        "local_prosody": [
+          {
+            "kind": "firm_end",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 25,
+            "duration_hint": 120,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 6,
+              "end_utf16": 9,
+              "start_codepoint": 6,
+              "end_codepoint": 9
+            },
+            "host_range": {
+              "start_utf16": 4,
+              "end_utf16": 9,
+              "start_codepoint": 4,
+              "end_codepoint": 9
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": ".",
+            "vowel_extend": null
+          },
+          {
+            "kind": "firm_end",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 25,
+            "duration_hint": 120,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 17,
+              "end_utf16": 20,
+              "start_codepoint": 17,
+              "end_codepoint": 20
+            },
+            "host_range": {
+              "start_utf16": 15,
+              "end_utf16": 20,
+              "start_codepoint": 15,
+              "end_codepoint": 20
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": ".",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "sentenceGap",
+            "candidates": [
+              "sentenceGap"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          },
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": " 첫째 줄\n 둘째 줄",
+        "verbatim_text": " 첫째 줄.\n 둘째 줄."
+      }
+    },
+    {
+      "id": "multiline-blank-line",
+      "input": "[기쁨] 첫째.\n\n[슬픔] 둘째.",
+      "mode": "expressive_v3",
+      "full_sha256": "f9bbb7e336b74f9318923a5fdd0068abeb8fac7eec210aedc65bf9506485c13f",
+      "sha8": "f9bbb7e3",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 8,
+          "line_count": 3,
+          "emotion_transition_count": 2,
+          "local_prosody_count": 2,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [
+            "happy",
+            "sad"
+          ],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [
+          {
+            "target_emotion": "happy",
+            "transition_mode": "blend",
+            "transition_strength": 100,
+            "transition_duration_hint": 300,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": false,
+            "source_offset": {
+              "utf16": 0,
+              "codepoint": 0
+            }
+          },
+          {
+            "target_emotion": "sad",
+            "transition_mode": "blend",
+            "transition_strength": 100,
+            "transition_duration_hint": 300,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": false,
+            "source_offset": {
+              "utf16": 10,
+              "codepoint": 10
+            }
+          }
+        ],
+        "local_prosody": [
+          {
+            "kind": "firm_end",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 25,
+            "duration_hint": 120,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 4,
+              "end_utf16": 7,
+              "start_codepoint": 4,
+              "end_codepoint": 7
+            },
+            "host_range": {
+              "start_utf16": 4,
+              "end_utf16": 7,
+              "start_codepoint": 4,
+              "end_codepoint": 7
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": ".",
+            "vowel_extend": null
+          },
+          {
+            "kind": "firm_end",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 25,
+            "duration_hint": 120,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 14,
+              "end_utf16": 17,
+              "start_codepoint": 14,
+              "end_codepoint": 17
+            },
+            "host_range": {
+              "start_utf16": 14,
+              "end_utf16": 17,
+              "start_codepoint": 14,
+              "end_codepoint": 17
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": ".",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "sentenceGap",
+            "candidates": [
+              "sentenceGap"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          },
+          {
+            "kind": "sentenceGap",
+            "candidates": [
+              "sentenceGap"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          },
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": " 첫째\n\n 둘째",
+        "verbatim_text": " 첫째.\n\n 둘째."
+      }
+    },
+    {
+      "id": "multiline-crlf",
+      "input": "[기쁨] 첫째 줄.\r\n[슬픔] 둘째 줄.",
+      "mode": "expressive_v3",
+      "full_sha256": "d904e168b350ad8148056c3c5213ec03220d9d31e7016f8646c8735bd96cae33",
+      "sha8": "d904e168",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 8,
+          "line_count": 2,
+          "emotion_transition_count": 2,
+          "local_prosody_count": 2,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [
+            "happy",
+            "sad"
+          ],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [
+          {
+            "target_emotion": "happy",
+            "transition_mode": "blend",
+            "transition_strength": 100,
+            "transition_duration_hint": 300,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": false,
+            "source_offset": {
+              "utf16": 0,
+              "codepoint": 0
+            }
+          },
+          {
+            "target_emotion": "sad",
+            "transition_mode": "blend",
+            "transition_strength": 100,
+            "transition_duration_hint": 300,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": false,
+            "source_offset": {
+              "utf16": 12,
+              "codepoint": 12
+            }
+          }
+        ],
+        "local_prosody": [
+          {
+            "kind": "firm_end",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 25,
+            "duration_hint": 120,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 6,
+              "end_utf16": 9,
+              "start_codepoint": 6,
+              "end_codepoint": 9
+            },
+            "host_range": {
+              "start_utf16": 4,
+              "end_utf16": 9,
+              "start_codepoint": 4,
+              "end_codepoint": 9
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": ".",
+            "vowel_extend": null
+          },
+          {
+            "kind": "firm_end",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 25,
+            "duration_hint": 120,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 18,
+              "end_utf16": 21,
+              "start_codepoint": 18,
+              "end_codepoint": 21
+            },
+            "host_range": {
+              "start_utf16": 16,
+              "end_utf16": 21,
+              "start_codepoint": 16,
+              "end_codepoint": 21
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": ".",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "sentenceGap",
+            "candidates": [
+              "sentenceGap"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          },
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": " 첫째 줄\r\n 둘째 줄",
+        "verbatim_text": " 첫째 줄.\r\n 둘째 줄."
+      }
+    },
+    {
+      "id": "multilang-mixed",
+      "input": "[happy] Hello 안녕 こんにちは 你好",
+      "mode": "expressive_v3",
+      "full_sha256": "44c2b2b022429194f93bd4a36dac246671af678495bb88a53f9675ea5e1bad5f",
+      "sha8": "44c2b2b0",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 1,
+          "local_prosody_count": 0,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [
+            "happy"
+          ],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": false,
+        "emotion_transitions": [
+          {
+            "target_emotion": "happy",
+            "transition_mode": "blend",
+            "transition_strength": 100,
+            "transition_duration_hint": 300,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": false,
+            "source_offset": {
+              "utf16": 0,
+              "codepoint": 0
+            }
+          }
+        ],
+        "local_prosody": [],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": " Hello 안녕 こんにちは 你好",
+        "verbatim_text": " Hello 안녕 こんにちは 你好"
+      }
+    },
+    {
+      "id": "multilang-japanese-sentence",
+      "input": "[기쁨] これは テストです。",
+      "mode": "expressive_v3",
+      "full_sha256": "5764e6c3f16b5c0a61f4ec657d98e095d1c8269f13d834f4cc07b72951581fbc",
+      "sha8": "5764e6c3",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 3,
+          "line_count": 1,
+          "emotion_transition_count": 1,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [
+            "happy"
+          ],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [
+          {
+            "target_emotion": "happy",
+            "transition_mode": "blend",
+            "transition_strength": 100,
+            "transition_duration_hint": 300,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": false,
+            "source_offset": {
+              "utf16": 0,
+              "codepoint": 0
+            }
+          }
+        ],
+        "local_prosody": [
+          {
+            "kind": "firm_end",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 25,
+            "duration_hint": 120,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 11,
+              "end_utf16": 14,
+              "start_codepoint": 11,
+              "end_codepoint": 14
+            },
+            "host_range": {
+              "start_utf16": 4,
+              "end_utf16": 14,
+              "start_codepoint": 4,
+              "end_codepoint": 14
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "。",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": " これは テストです",
+        "verbatim_text": " これは テストです。"
+      }
+    },
+    {
+      "id": "multilang-chinese-sentence",
+      "input": "[기쁨] 这是一个测试。",
+      "mode": "expressive_v3",
+      "full_sha256": "16ce96bac1e5ff2aaac907e4196fa8ba659bb3aca59f139e51cc813ae059094e",
+      "sha8": "16ce96ba",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 3,
+          "line_count": 1,
+          "emotion_transition_count": 1,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [
+            "happy"
+          ],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [
+          {
+            "target_emotion": "happy",
+            "transition_mode": "blend",
+            "transition_strength": 100,
+            "transition_duration_hint": 300,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": false,
+            "source_offset": {
+              "utf16": 0,
+              "codepoint": 0
+            }
+          }
+        ],
+        "local_prosody": [
+          {
+            "kind": "firm_end",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 25,
+            "duration_hint": 120,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 8,
+              "end_utf16": 11,
+              "start_codepoint": 8,
+              "end_codepoint": 11
+            },
+            "host_range": {
+              "start_utf16": 4,
+              "end_utf16": 11,
+              "start_codepoint": 4,
+              "end_codepoint": 11
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "。",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": " 这是一个测试",
+        "verbatim_text": " 这是一个测试。"
+      }
+    },
+    {
+      "id": "multilang-english-sentence",
+      "input": "[happy] This is a test!",
+      "mode": "expressive_v3",
+      "full_sha256": "895b15d32e6ea5057743fbc3de0133db1b4d32d7f12f08580346c43f3cb800fa",
+      "sha8": "895b15d3",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 3,
+          "line_count": 1,
+          "emotion_transition_count": 1,
+          "local_prosody_count": 1,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [
+            "happy"
+          ],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [
+          {
+            "target_emotion": "happy",
+            "transition_mode": "blend",
+            "transition_strength": 100,
+            "transition_duration_hint": 300,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": false,
+            "source_offset": {
+              "utf16": 0,
+              "codepoint": 0
+            }
+          }
+        ],
+        "local_prosody": [
+          {
+            "kind": "emphasis",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 60,
+            "duration_hint": 300,
+            "scope_kind": "latter_half",
+            "scope_range": {
+              "start_utf16": 14,
+              "end_utf16": 22,
+              "start_codepoint": 14,
+              "end_codepoint": 22
+            },
+            "host_range": {
+              "start_utf16": 7,
+              "end_utf16": 22,
+              "start_codepoint": 7,
+              "end_codepoint": 22
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "!",
+            "vowel_extend": null
+          }
+        ],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": " This is a test",
+        "verbatim_text": " This is a test!"
+      }
+    },
+    {
+      "id": "escape-bracket-literal",
+      "input": "\\[기쁨] 안녕",
+      "mode": "expressive_v3",
+      "full_sha256": "5903ada9d2d8b2a8fd6024d65e22f55987eb4b2abd08e38738043c6e7ae3bcd3",
+      "sha8": "5903ada9",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 1,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": false,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "[기쁨] 안녕",
+        "verbatim_text": "[기쁨] 안녕"
+      }
+    },
+    {
+      "id": "bracket-with-space-literalized",
+      "input": "[기쁨 안녕하세요]",
+      "mode": "expressive_v3",
+      "full_sha256": "9db2d655047e13747e333e69d5e7f025d78c75a8c15cd4fd7d5fde93be5d6e2b",
+      "sha8": "9db2d655",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 1,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": false,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "[기쁨 안녕하세요]",
+        "verbatim_text": "[기쁨 안녕하세요]"
+      }
+    },
+    {
+      "id": "bracket-empty-literalized",
+      "input": "[]",
+      "mode": "expressive_v3",
+      "full_sha256": "38614909969d8148d21941a2eff2117da148c19729b921c85685f5cf62f0f816",
+      "sha8": "38614909",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 1,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": false,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "[]",
+        "verbatim_text": "[]"
+      }
+    },
+    {
+      "id": "bracket-unclosed-literal",
+      "input": "[미종료 태그",
+      "mode": "expressive_v3",
+      "full_sha256": "35b806166e9cb0d266f7225b2916ffd897e2b6f43d5d3e1250b1753861fbe01c",
+      "sha8": "35b80616",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 1,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": false,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "[미종료 태그",
+        "verbatim_text": "[미종료 태그"
+      }
+    },
+    {
+      "id": "combined-all-tokens",
+      "input": "다 끝났다!? 정말...\n[슬픔|즉시] 그렇구나~ [ㅋㅋ]",
+      "mode": "expressive_v3",
+      "full_sha256": "6011b43094d67d840600a7e2cde7b8ea58c5fd321b3585810cd45a017ab644f8",
+      "sha8": "6011b430",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 10,
+          "line_count": 2,
+          "emotion_transition_count": 1,
+          "local_prosody_count": 3,
+          "laugh_count": 1,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [
+            "sad"
+          ],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": true,
+        "emotion_transitions": [
+          {
+            "target_emotion": "sad",
+            "transition_mode": "immediate",
+            "transition_strength": 100,
+            "transition_duration_hint": 0,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": true,
+            "source_offset": {
+              "utf16": 14,
+              "codepoint": 14
+            }
+          }
+        ],
+        "local_prosody": [
+          {
+            "kind": "shock_rise",
+            "raw_count": 2,
+            "effective_count": 2,
+            "capped": false,
+            "strength": 80,
+            "duration_hint": 350,
+            "scope_kind": "final_word",
+            "scope_range": {
+              "start_utf16": 2,
+              "end_utf16": 5,
+              "start_codepoint": 2,
+              "end_codepoint": 5
+            },
+            "host_range": {
+              "start_utf16": 0,
+              "end_utf16": 5,
+              "start_codepoint": 0,
+              "end_codepoint": 5
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "!?",
+            "vowel_extend": null
+          },
+          {
+            "kind": "fade_end",
+            "raw_count": 3,
+            "effective_count": 3,
+            "capped": false,
+            "strength": 55,
+            "duration_hint": 360,
+            "scope_kind": "final_syllables",
+            "scope_range": {
+              "start_utf16": 7,
+              "end_utf16": 10,
+              "start_codepoint": 7,
+              "end_codepoint": 10
+            },
+            "host_range": {
+              "start_utf16": 7,
+              "end_utf16": 10,
+              "start_codepoint": 7,
+              "end_codepoint": 10
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "...",
+            "vowel_extend": null
+          },
+          {
+            "kind": "vowel_extend",
+            "raw_count": 1,
+            "effective_count": 1,
+            "capped": false,
+            "strength": 40,
+            "duration_hint": 150,
+            "scope_kind": "final_vowel",
+            "scope_range": {
+              "start_utf16": 25,
+              "end_utf16": 26,
+              "start_codepoint": 25,
+              "end_codepoint": 26
+            },
+            "host_range": {
+              "start_utf16": 21,
+              "end_utf16": 26,
+              "start_codepoint": 21,
+              "end_codepoint": 26
+            },
+            "is_chunk_boundary": false,
+            "extra_pause_ms": 0,
+            "raw_token": "~",
+            "vowel_extend": {
+              "supported": true,
+              "target_vowel": "ㅏ",
+              "degraded_reason": null
+            }
+          }
+        ],
+        "laughs": [
+          {
+            "style": "chuckle",
+            "intensity": 45,
+            "brightness": 52,
+            "duration_hint": 300,
+            "position": "trailing",
+            "raw_repeat_count": 2,
+            "effective_repeat_count": 2,
+            "capped": false,
+            "is_chunk_boundary": false,
+            "raw_token": "[ㅋㅋ]"
+          }
+        ],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "sentenceGap",
+            "candidates": [
+              "sentenceGap"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          },
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "다 끝났다 정말\n 그렇구나 ",
+        "verbatim_text": "다 끝났다!? 정말...\n 그렇구나~ "
+      }
+    },
+    {
+      "id": "empty-input",
+      "input": "",
+      "mode": "expressive_v3",
+      "full_sha256": "470f1d791d8a219c958fcfdaf2f4e3538587569651f616e8e8f63a4b501e5a48",
+      "sha8": "470f1d79",
+      "expect": {
+        "summary": {
+          "mode": "expressive_v3",
+          "effective_version": 3,
+          "node_count": 0,
+          "line_count": 0,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": true,
+        "has_expressive_events": false,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "",
+        "verbatim_text": ""
+      }
+    },
+    {
+      "id": "legacy-all-tokens-stays-v2",
+      "input": "다 끝났다!? 정말...\n[슬픔] 그렇구나~",
+      "mode": "legacy_v2",
+      "full_sha256": "222652768b00cadd5c363bf8f7d21d0f17311b4d9c80a1d2cacdd01af2b176a7",
+      "sha8": "22265276",
+      "expect": {
+        "summary": {
+          "mode": "legacy_v2",
+          "effective_version": 2,
+          "node_count": 4,
+          "line_count": 2,
+          "emotion_transition_count": 1,
+          "local_prosody_count": 0,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [
+            "sad"
+          ],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": false,
+        "has_expressive_events": false,
+        "emotion_transitions": [
+          {
+            "target_emotion": "sad",
+            "transition_mode": "blend",
+            "transition_strength": 100,
+            "transition_duration_hint": 300,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": false,
+            "source_offset": {
+              "utf16": 14,
+              "codepoint": 14
+            }
+          }
+        ],
+        "local_prosody": [],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "sentenceGap",
+            "candidates": [
+              "sentenceGap"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          },
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "다 끝났다!? 정말...\n 그렇구나~",
+        "verbatim_text": "다 끝났다!? 정말...\n 그렇구나~"
+      }
+    },
+    {
+      "id": "legacy-dot-run-is-literal",
+      "input": "글쎄..........",
+      "mode": "legacy_v2",
+      "full_sha256": "cd15f3774327b1888652ca27adbcc0b0c15ee80a4ad8c776c1993b21f9a5a825",
+      "sha8": "cd15f377",
+      "expect": {
+        "summary": {
+          "mode": "legacy_v2",
+          "effective_version": 2,
+          "node_count": 1,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": false,
+        "has_expressive_events": false,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "글쎄..........",
+        "verbatim_text": "글쎄.........."
+      }
+    },
+    {
+      "id": "legacy-shock-is-literal",
+      "input": "뭐라고!?",
+      "mode": "legacy_v2",
+      "full_sha256": "cd2d2699f2db9bb79549da05ca790b6f16b5f3112967c61dfc4540606227cda1",
+      "sha8": "cd2d2699",
+      "expect": {
+        "summary": {
+          "mode": "legacy_v2",
+          "effective_version": 2,
+          "node_count": 1,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": false,
+        "has_expressive_events": false,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "뭐라고!?",
+        "verbatim_text": "뭐라고!?"
+      }
+    },
+    {
+      "id": "legacy-tilde-is-literal",
+      "input": "안녕~",
+      "mode": "legacy_v2",
+      "full_sha256": "c14fef983e4317d605782fb310283ce97de1de375e253d9b5fdd331a6677a525",
+      "sha8": "c14fef98",
+      "expect": {
+        "summary": {
+          "mode": "legacy_v2",
+          "effective_version": 2,
+          "node_count": 1,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": false,
+        "has_expressive_events": false,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "안녕~",
+        "verbatim_text": "안녕~"
+      }
+    },
+    {
+      "id": "legacy-plain-script",
+      "input": "[기쁨] 안녕하세요.",
+      "mode": "legacy_v2",
+      "full_sha256": "d12e6c633c3ffd8125faaf8e25b80c331d3b49065fe9cc0d982ee73f380d2e39",
+      "sha8": "d12e6c63",
+      "expect": {
+        "summary": {
+          "mode": "legacy_v2",
+          "effective_version": 2,
+          "node_count": 2,
+          "line_count": 1,
+          "emotion_transition_count": 1,
+          "local_prosody_count": 0,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [
+            "happy"
+          ],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": false,
+        "has_expressive_events": false,
+        "emotion_transitions": [
+          {
+            "target_emotion": "happy",
+            "transition_mode": "blend",
+            "transition_strength": 100,
+            "transition_duration_hint": 300,
+            "extra_pause_ms": 0,
+            "is_chunk_boundary": false,
+            "explicit_mode": false,
+            "source_offset": {
+              "utf16": 0,
+              "codepoint": 0
+            }
+          }
+        ],
+        "local_prosody": [],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": " 안녕하세요.",
+        "verbatim_text": " 안녕하세요."
+      }
+    },
+    {
+      "id": "legacy-outside-bracket-laugh",
+      "input": "웃겨 ㅋㅋㅋㅋ 진짜",
+      "mode": "legacy_v2",
+      "full_sha256": "aecac44c00adcf6b1acc965d3d397f6916c9c8b63fea6e42f74534371b2df8c1",
+      "sha8": "aecac44c",
+      "expect": {
+        "summary": {
+          "mode": "legacy_v2",
+          "effective_version": 2,
+          "node_count": 1,
+          "line_count": 1,
+          "emotion_transition_count": 0,
+          "local_prosody_count": 0,
+          "laugh_count": 0,
+          "explicit_pause_count": 0,
+          "total_explicit_pause_ms": 0,
+          "used_emotion_ids": [],
+          "degraded_vowel_extend_count": 0,
+          "capped_token_count": 0
+        },
+        "expressive_enabled": false,
+        "has_expressive_events": false,
+        "emotion_transitions": [],
+        "local_prosody": [],
+        "laughs": [],
+        "explicit_pauses": [],
+        "boundaries": [
+          {
+            "kind": "finalTail",
+            "candidates": [
+              "finalTail"
+            ],
+            "suppressed": [],
+            "pause_ms": null
+          }
+        ],
+        "diagnostics": [],
+        "plain_text": "웃겨 ㅋㅋㅋㅋ 진짜",
+        "verbatim_text": "웃겨 ㅋㅋㅋㅋ 진짜"
+      }
+    }
+  ],
+  "errors": [
+    {
+      "id": "err-unknown-tag",
+      "input": "[명란] 오타",
+      "mode": "expressive_v3",
+      "code": "UNKNOWN_EXPRESSIVE_TAG",
+      "codes": [
+        "UNKNOWN_EXPRESSIVE_TAG"
+      ],
+      "effective_version": 3
+    },
+    {
+      "id": "err-unknown-tag-legacy",
+      "input": "[명란] 오타",
+      "mode": "legacy_v2",
+      "code": "UNKNOWN_EXPRESSIVE_TAG",
+      "codes": [
+        "UNKNOWN_EXPRESSIVE_TAG"
+      ],
+      "effective_version": 2
+    },
+    {
+      "id": "err-laugh-bracket-in-legacy",
+      "input": "[ㅋㅋ]",
+      "mode": "legacy_v2",
+      "code": "UNKNOWN_EXPRESSIVE_TAG",
+      "codes": [
+        "UNKNOWN_EXPRESSIVE_TAG"
+      ],
+      "effective_version": 2
+    },
+    {
+      "id": "err-emotion-modifier-in-legacy",
+      "input": "[기쁨|즉시] 안녕",
+      "mode": "legacy_v2",
+      "code": "UNKNOWN_EXPRESSIVE_TAG",
+      "codes": [
+        "UNKNOWN_EXPRESSIVE_TAG"
+      ],
+      "effective_version": 2
+    },
+    {
+      "id": "err-ambiguous-laugh-mixed",
+      "input": "[ㅋㅎ]",
+      "mode": "expressive_v3",
+      "code": "AMBIGUOUS_LAUGH_TOKEN",
+      "codes": [
+        "AMBIGUOUS_LAUGH_TOKEN"
+      ],
+      "effective_version": 3
+    },
+    {
+      "id": "err-ambiguous-laugh-mixed2",
+      "input": "[헤히]",
+      "mode": "expressive_v3",
+      "code": "AMBIGUOUS_LAUGH_TOKEN",
+      "codes": [
+        "AMBIGUOUS_LAUGH_TOKEN"
+      ],
+      "effective_version": 3
+    },
+    {
+      "id": "err-modifier-unknown",
+      "input": "[기쁨|살짝] 안녕",
+      "mode": "expressive_v3",
+      "code": "INVALID_EMOTION_MODIFIER",
+      "codes": [
+        "INVALID_EMOTION_MODIFIER"
+      ],
+      "effective_version": 3
+    },
+    {
+      "id": "err-modifier-arity",
+      "input": "[기쁨|즉시|더] 안녕",
+      "mode": "expressive_v3",
+      "code": "INVALID_EMOTION_MODIFIER",
+      "codes": [
+        "INVALID_EMOTION_MODIFIER"
+      ],
+      "effective_version": 3
+    },
+    {
+      "id": "err-modifier-unknown-head",
+      "input": "[명란|즉시] 안녕",
+      "mode": "expressive_v3",
+      "code": "UNKNOWN_EXPRESSIVE_TAG",
+      "codes": [
+        "UNKNOWN_EXPRESSIVE_TAG"
+      ],
+      "effective_version": 3
+    },
+    {
+      "id": "err-pause-missing-arg",
+      "input": "[쉼] 안녕",
+      "mode": "expressive_v3",
+      "code": "INVALID_EXPRESSIVE_PAUSE",
+      "codes": [
+        "INVALID_EXPRESSIVE_PAUSE"
+      ],
+      "effective_version": 3
+    },
+    {
+      "id": "err-pause-format",
+      "input": "[쉼 abc] 안녕",
+      "mode": "expressive_v3",
+      "code": "INVALID_EXPRESSIVE_PAUSE",
+      "codes": [
+        "INVALID_EXPRESSIVE_PAUSE"
+      ],
+      "effective_version": 3
+    },
+    {
+      "id": "err-pause-range-low",
+      "input": "[쉼 0.01] 안녕",
+      "mode": "expressive_v3",
+      "code": "INVALID_EXPRESSIVE_PAUSE",
+      "codes": [
+        "INVALID_EXPRESSIVE_PAUSE"
+      ],
+      "effective_version": 3
+    },
+    {
+      "id": "err-pause-range-high",
+      "input": "[쉼 9.9] 안녕",
+      "mode": "expressive_v3",
+      "code": "INVALID_EXPRESSIVE_PAUSE",
+      "codes": [
+        "INVALID_EXPRESSIVE_PAUSE"
+      ],
+      "effective_version": 3
+    },
+    {
+      "id": "err-pause-extra-args",
+      "input": "[쉼 0.5 0.5] 안녕",
+      "mode": "expressive_v3",
+      "code": "INVALID_EXPRESSIVE_PAUSE",
+      "codes": [
+        "INVALID_EXPRESSIVE_PAUSE"
+      ],
+      "effective_version": 3
+    }
+  ],
+  "legacy_no_migration": [
+    {
+      "input": "[기쁨] 안녕하세요.",
+      "v2_full_sha256": "6ecc66d87a865c91d4f3fe7245b55aec61b437bb202f4189d6cd8024ab680c2a",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "[기쁨] 안녕하세요. [명랑] 오늘 날씨가 좋아요.",
+      "v2_full_sha256": "a90e713ace5fc2bc5b0c70de5bf2e0f795afc391eca65589569b0b89ad91d93e",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "[happy] hello world",
+      "v2_full_sha256": "9a36d3c4300c0c3053c5a316a4508d8735302503fd8d74a0e068aaed95a9621d",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "[기쁨] 첫 문장. [쉼 0.5] 둘째 문장.",
+      "v2_full_sha256": "cf73c30ba90ea77d2704aca60439ce520c5ab25fdf9a6b5f96ec039514134552",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "A [pause 0.05] B",
+      "v2_full_sha256": "c8e355ff5df4f269603948957e53ea4579e4c0d86e7bb5db850d86ad61f1df60",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "그냥 대사입니다.",
+      "v2_full_sha256": "7276e61c585742679856d4b6892d48f2875aed2525f65fcba08c374539698445",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "[기쁨] 첫째 줄.\n[슬픔] 둘째 줄.",
+      "v2_full_sha256": "57040d49c66d44b97c78374aa3582314f419953aa7fc722d5ae9c8f2002093f8",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "[기쁨] 은 감정 태그입니다.",
+      "v2_full_sha256": "d5d8526fef253458ab6fd787be46ce765ccc5c0cb539ce095dbf13cae900e4a1",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "\\[기쁨] 안녕",
+      "v2_full_sha256": "a3ce742777862dcb1e5a60965de89aa4a3f0973a9a6ba4319668a2cd1a959389",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "🎉[기쁨] 안녕",
+      "v2_full_sha256": "dc453b15d11265c54ba59004ba72342c1eff1f3fd4b2da36c7f48a1bd05d6d60",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "첫 줄.[쉼 0.8]\n둘째 줄.",
+      "v2_full_sha256": "be124e05e0d897bfe6aced00c2bcf3f5b0b3bf8979b5457bafc15999c366abfd",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "[whisper] one [happy] two [쉼 1.0] three",
+      "v2_full_sha256": "aa749b344bfe973db46854a3aaac971d7d656badde3e1559d5b52d623e8b631a",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "[기쁨] 첫째 줄.\r\n[슬픔] 둘째 줄.",
+      "v2_full_sha256": "dee7ad1ddad94297eb11d8fa7134aab96e27bb04864d69e4fbbfa9a27f129896",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "[기쁨] 첫째.\n\n[슬픔] 둘째.",
+      "v2_full_sha256": "dc23fed4a93ff26fa3ea5b7487a92c56e6af0f0bc75f2b2f06d4f3a9b064e836",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "  [기쁨] 안녕하세요.  ",
+      "v2_full_sha256": "2e7a5f83ef79fa2728c921e140b1c4b95ce2cca27a8a93749d5f1dd3e005b00d",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "[happy] Hello 안녕 こんにちは",
+      "v2_full_sha256": "487fb28cef9bf8ef2c756312f0e1432ca0fadc3f6052c0a9336f4c5edaec2f34",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "[기쁨 안녕하세요]다음",
+      "v2_full_sha256": "a364f34ee9df60836cb0c4a01401ddeabb136121052c12645d098fae72d5eaf4",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "\\[기쁨\\] 은 감정 태그입니다.",
+      "v2_full_sha256": "64c647746dbbbaf7b01b4f972d366c39425d016efa995b861cdf7a15d0c9f5a3",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "use \\[happy\\] to tag",
+      "v2_full_sha256": "fa938aef26ede6b732e7aa355adbd0013b776a32eef0666a1c76e3d35c3543cc",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "\\\\[기쁨] 안녕",
+      "v2_full_sha256": "66eefa22aa048e1b777dc176bd2d12e13978bc4da746169b26b5fcee9473a914",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "다 끝났다!? 정말...... 그렇구나~",
+      "v2_full_sha256": "e50f54f36d0bfc8583df8d1128eba2d5ad49f16641cf988274835d8ff02b8186",
+      "v2_parser_version": 2
+    },
+    {
+      "input": "hello world!? ...... ~",
+      "v2_full_sha256": "a1b25a08a84bd331c44d6d3979be7b9c23edffdd7dfe3d988f81ebe0c88ff38f",
+      "v2_parser_version": 2
+    }
+  ]
+}
