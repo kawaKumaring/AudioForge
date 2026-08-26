@@ -17,8 +17,9 @@
   **절대 합치지 않는 것**이다. evaluate_all() 은 카테고리별 집계 dict 를 돌려주고,
   합치려면 korean_cer.pool_aggregates(..., acknowledge_pooling=True) 를 명시해야 한다.
 
-표현 이벤트(감정 태그·웃음·운율 문장부호) probe 는 EXPRESSION_EVENT_PROBES 에 따로 둔다.
-그것은 CER 카테고리가 아니며 CATEGORIES 에 포함되지 않는다.
+표현 이벤트(감정 태그·웃음·운율 토큰·쉼) probe 는 EXPRESSION_EVENT_PROBES 에 따로 둔다.
+그것은 CER 카테고리가 아니며 CATEGORIES 에 포함되지 않는다. probe 의 표기는 전부 실제
+표현 언어 계약(expressive_timeline v3) 문법이다 — 이 파일이 토큰을 발명하지 않는다.
 """
 
 from __future__ import annotations
@@ -32,7 +33,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import korean_cer as kc
 
 
-FIXTURE_SET_VERSION = "audioforge/ko-asr-eval-fixtures 1.0.0"
+FIXTURE_SET_VERSION = "audioforge/ko-asr-eval-fixtures 2.0.0"
 
 # ── 카테고리 (CER 로 보고되는 세 층) ──
 CATEGORY_NUMBERS = "numbers"
@@ -250,38 +251,46 @@ FIXTURE_SETS: Dict[str, Tuple[EvalItem, ...]] = {
 # ─────────────────────────────────────────────────────────────────────────
 # 표현 이벤트 probe — CER 카테고리가 아니다
 #
-# 목적: 감정 태그·웃음·운율 문장부호가 문자 CER 에 **전혀 기여하지 않으면서**
-#       이벤트 지표로는 누락/유령이 잡히는지 확인한다.
+# 목적: 표현 언어 계약(expressive_timeline v3)의 토큰이 문자 CER 에 **전혀**
+#       기여하지 않으면서 이벤트 지표로는 누락/유령/크기 차이가 잡히는지 확인한다.
 #       (웃음을 단어 오류로 세면 표현 기능을 잘못 평가한다.)
+#
+# ★ 표기는 전부 계약 문법이다 ★ 감정 태그는 [기쁨]·[기쁨|즉시], 웃음은 [ㅋㅋ],
+#   쉼은 [쉼 0.5], 운율은 !·?·!?·dot-run·~. 본문에 그냥 쓴 ㅋㅋ 는 계약상 텍스트이므로
+#   여기서는 이벤트 표기로 쓰지 않는다.
 # ─────────────────────────────────────────────────────────────────────────
 
 EXPRESSION_EVENT_PROBES: Tuple[EvalItem, ...] = (
     _item("probe_laugh_missing", PROBE_GROUP_EXPRESSION_EVENTS,
-          "정말 웃겼어요 ㅋㅋ",
+          "정말 웃겼어요 [ㅋㅋ]",
           "웃음이 사라져도 문자 CER 은 0 이어야 하고, 이벤트 누락 1 이 잡혀야 한다.",
           [
-              (PERFECT_LABEL, "정말 웃겼어요 ㅋㅋ", "완전 일치 — 이벤트도 일치."),
+              (PERFECT_LABEL, "정말 웃겼어요 [ㅋㅋ]", "완전 일치 — 이벤트도 일치."),
               (DEGRADED_LABEL, "정말 웃겼어요", "웃음만 사라짐 — CER 0, 이벤트 누락 1."),
-              ("spurious_laugh", "정말 웃겼어요 ㅋㅋ 그리고 ㅎㅎ",
-               "없던 웃음이 하나 더 생김 — 이벤트 유령 1(문자 오류도 함께 발생)."),
+              ("spurious_laugh", "정말 웃겼어요 [ㅋㅋ] [ㅋㅋ]",
+               "없던 웃음이 하나 더 생김 — 일치 1 + 유령 1, 문자 CER 은 0."),
           ]),
     _item("probe_emotion_tag", PROBE_GROUP_EXPRESSION_EVENTS,
-          "[emotion:joy] 오늘 기분이 좋아요",
+          "[기쁨] 오늘 기분이 좋아요",
           "감정 태그는 문자 CER 에서 제거되고 이벤트로만 평가된다.",
           [
-              (PERFECT_LABEL, "[emotion:joy] 오늘 기분이 좋아요", "완전 일치."),
+              (PERFECT_LABEL, "[기쁨] 오늘 기분이 좋아요", "완전 일치."),
               (DEGRADED_LABEL, "오늘 기분이 좋아요", "감정 태그 소실 — CER 0, 이벤트 누락 1."),
-              ("wrong_emotion", "[emotion:sad] 오늘 기분이 좋아요",
-               "다른 감정 토큰 — 누락 1 + 유령 1, 문자 CER 은 0."),
+              ("wrong_emotion", "[슬픔] 오늘 기분이 좋아요",
+               "다른 감정 id — 누락 1 + 유령 1, 문자 CER 은 0."),
+              ("immediate_mode", "[기쁨|즉시] 오늘 기분이 좋아요",
+               "전이 모드는 크기가 아니라 범주적 선택이라 identity 에 포함 — 누락 1 + 유령 1."),
           ]),
     _item("probe_prosody_punct", PROBE_GROUP_EXPRESSION_EVENTS,
           "정말요?! 믿을 수 없어요...",
-          "운율 문장부호(!?, dot-run)도 문자 CER 에서 빠지고 이벤트로만 평가된다.",
+          "운율 토큰(shock_rise, fade_end)도 문자 CER 에서 빠지고 이벤트로만 평가된다.",
           [
               (PERFECT_LABEL, "정말요?! 믿을 수 없어요...", "완전 일치."),
               (DEGRADED_LABEL, "정말요 믿을 수 없어요", "운율 토큰 2개 소실 — CER 0, 누락 2."),
               ("flattened_punct", "정말요. 믿을 수 없어요.",
-               "마침표는 이벤트가 아니라 일반 문장부호 — CER 0, 누락 2."),
+               "마침표 1개는 계약상 firm_end — 다른 운율이 생긴 것이라 누락 2 + 유령 2."),
+              ("alias_form", "정말요!? 믿을 수 없어요…",
+               "'?!' 는 '!?' 의 별칭이고 '…' 는 '...' 과 같은 개수 — 전부 일치해야 한다."),
           ]),
     _item("probe_content_error_with_event", PROBE_GROUP_EXPRESSION_EVENTS,
           "안녕하세요! 반갑습니다",
@@ -289,6 +298,40 @@ EXPRESSION_EVENT_PROBES: Tuple[EvalItem, ...] = (
           [
               (PERFECT_LABEL, "안녕하세요! 반갑습니다", "완전 일치."),
               (DEGRADED_LABEL, "안녕하세요! 반값습니다", "1음절 치환 — 이벤트는 정상 대응."),
+          ]),
+    _item("probe_magnitude_attenuated", PROBE_GROUP_EXPRESSION_EVENTS,
+          "정말 대단해요!!!",
+          "표현이 '사라진 것'과 '살아남았지만 약해진 것'을 구분한다 — identity 결정의 핵심.",
+          [
+              (PERFECT_LABEL, "정말 대단해요!!!", "완전 일치."),
+              (DEGRADED_LABEL, "정말 대단해요!",
+               "같은 emphasis 가 약해짐 — 일치 1, 누락/유령 0, magnitude_mismatch 1."),
+              ("capped_run", "정말 대단해요!!!!!!",
+               "계약 상한(BANG_RUN_MAX_COUNT)이 이미 지운 차이 — mismatch 0."),
+          ]),
+    _item("probe_vowel_extend", PROBE_GROUP_EXPRESSION_EVENTS,
+          "안녕하세요~~",
+          "'~' 는 계약상 vowel_extend 토큰이지 내용 문자가 아니다.",
+          [
+              (PERFECT_LABEL, "안녕하세요~~", "완전 일치."),
+              (DEGRADED_LABEL, "안녕하세요", "늘임 토큰 소실 — CER 0, 누락 1."),
+          ]),
+    _item("probe_explicit_pause", PROBE_GROUP_EXPRESSION_EVENTS,
+          "잠깐 [쉼 0.5] 생각해 볼게요",
+          "명시적 쉼도 본문에서 빠지는 토큰이라 이벤트로 추적한다(길이는 identity 아님).",
+          [
+              (PERFECT_LABEL, "잠깐 [쉼 0.5] 생각해 볼게요", "완전 일치."),
+              (DEGRADED_LABEL, "잠깐 생각해 볼게요", "쉼 소실 — CER 0, 누락 1."),
+              ("longer_pause", "잠깐 [쉼 2.0] 생각해 볼게요",
+               "길이만 다름 — 일치 1, magnitude_mismatch 1."),
+          ]),
+    _item("probe_contract_parse_failure", PROBE_GROUP_EXPRESSION_EVENTS,
+          "안녕하세요 반갑습니다",
+          "계약이 모르는 대괄호 태그 — 이벤트 지표는 신뢰 불가로 표시되고 CER 은 계속 계산된다.",
+          [
+              (PERFECT_LABEL, "안녕하세요 반갑습니다", "완전 일치, 이벤트 0."),
+              (DEGRADED_LABEL, "[웃음] 안녕하세요 반갑습니다",
+               "UNKNOWN_EXPRESSIVE_TAG — contract_ok=False 가 레코드에 남는다."),
           ]),
 )
 
