@@ -45,7 +45,7 @@ FP_B = "b" * 64
 
 def make_input(**over):
     inp = {
-        "voice_fingerprint": FP_A,
+        "voice_content_sha256": FP_A,
         "engine_id": "qwen",
         "model_id": "qwen3-omni-flash",
         "emotion_id": "happy",
@@ -66,6 +66,18 @@ def _strip_comments(src):
 
 
 TS_CODE = _strip_comments(TS_SRC)
+
+
+def _strip_py_comments(src):
+    # 독스트링과 # 주석을 걷어낸 '실제 코드'만 남긴다.
+    # 설명 주석에 적힌 단어(예: mtimeMs)가 금지 패턴 검사에 걸려 거짓 실패하는 것을 막는다.
+    src = re.sub(r'"""[\s\S]*?"""', "", src)
+    src = re.sub(r"'''[\s\S]*?'''", "", src)
+    src = re.sub(r"#.*$", "", src, flags=re.MULTILINE)
+    return src
+
+
+PY_CODE = _strip_py_comments(PY_SRC)
 
 
 # ── TS 소스 파서(parity-by-parsing) ────────────────────────────────────────
@@ -108,7 +120,7 @@ class CacheKeyTest(unittest.TestCase):
         self.assertNotRegex(payload, r"\d\.\d", "canonical payload 에 float 없음")
         parsed = json.loads(payload)
         self.assertEqual(list(parsed.keys()), [
-            "config", "emotion_id", "engine_id", "key_version", "model_id", "phrase_version", "voice_fingerprint",
+            "config", "emotion_id", "engine_id", "key_version", "model_id", "phrase_version", "voice_content_sha256",
         ])
         self.assertEqual(list(parsed["config"].keys()), [
             "pitch_centi", "speed_milli", "tail_fade_ms", "tail_mode", "tail_padding_ms",
@@ -121,8 +133,8 @@ class CacheKeyTest(unittest.TestCase):
         self.assertEqual(es.build_cache_key(es.EMOTION_SAMPLER_PARITY_INPUT), es.EMOTION_SAMPLER_PARITY_KEY)
 
     # ── 계약 3: 각 차원이 '독립적으로' 키를 바꾼다 ──
-    def test_voice_fingerprint_changes_key(self):
-        self.assertNotEqual(es.build_cache_key(make_input(voice_fingerprint=FP_B)), KEY_A)
+    def test_voice_content_sha256_changes_key(self):
+        self.assertNotEqual(es.build_cache_key(make_input(voice_content_sha256=FP_B)), KEY_A)
 
     def test_engine_changes_key(self):
         self.assertNotEqual(es.build_cache_key(make_input(engine_id="gptsovits")), KEY_A)
@@ -326,7 +338,7 @@ class StateMachineTest(unittest.TestCase):
         self.assertEqual(es.apply_event(failed, {"type": "GENERATE_REQUESTED"})["entry"]["state"], "generating")
         # 모듈에 타이머/스레드(자동 재시도 통로)가 없다
         for banned in ("import time", "threading", "sleep(", "retry"):
-            self.assertNotIn(banned, PY_SRC, "자동 재시도 통로 없음: %s" % banned)
+            self.assertNotIn(banned, PY_CODE, "자동 재시도 통로 없음: %s" % banned)
 
     def test_rejections_are_visible(self):
         idle = es.initial_entry("happy", KEY_A)
@@ -348,7 +360,7 @@ class StateMachineTest(unittest.TestCase):
             self.assertIn(code, es.EMOTION_SAMPLER_REJECTION_CODES)
 
     def test_invariant_applied_iff_not_rejected(self):
-        other_key = es.build_cache_key(make_input(voice_fingerprint=FP_B))
+        other_key = es.build_cache_key(make_input(voice_content_sha256=FP_B))
         events = [
             {"type": "GENERATE_REQUESTED"},
             {"type": "GENERATE_SUCCEEDED"},
@@ -375,7 +387,7 @@ class StateMachineTest(unittest.TestCase):
 
     def test_key_changed_resets_to_idle(self):
         ready = es.apply_event(self._generating(), {"type": "GENERATE_SUCCEEDED"})["entry"]
-        new_key = es.build_cache_key(make_input(voice_fingerprint=FP_B))
+        new_key = es.build_cache_key(make_input(voice_content_sha256=FP_B))
         t = es.apply_event(ready, {"type": "KEY_CHANGED", "cache_key": new_key})
         self.assertTrue(t["applied"])
         self.assertEqual(t["entry"]["state"], "idle")
@@ -489,7 +501,7 @@ class HygieneTest(unittest.TestCase):
             with self.assertRaises(es.EmotionSamplerInputError) as cm:
                 es.assert_sampler_safe_value("x", p)
             self.assertEqual(cm.exception.code, "SAMPLER_PATH_LIKE_VALUE")
-            for field in ("engine_id", "model_id", "voice_fingerprint"):
+            for field in ("engine_id", "model_id", "voice_content_sha256"):
                 with self.assertRaises(es.EmotionSamplerInputError, msg="%s 에 경로 금지: %s" % (field, p)) as cm2:
                     es.build_cache_key(make_input(**{field: p}))
                 self.assertEqual(cm2.exception.code, "SAMPLER_PATH_LIKE_VALUE")
@@ -548,18 +560,6 @@ class HygieneTest(unittest.TestCase):
         self.assertIn("model_id", msg)
         self.assertIn(cm.exception.code, es.EMOTION_SAMPLER_INPUT_ERROR_CODES)
 
-    def test_voice_fingerprint_from_raw(self):
-        raw = "E:/AI/voice.wav|123456|1700000000000"
-        fp = es.voice_fingerprint_from_raw(raw)
-        self.assertRegex(fp, r"^[0-9a-f]{64}$")
-        self.assertNotIn("E:", fp)
-        self.assertEqual(es.voice_fingerprint_from_raw(raw), fp)
-        self.assertNotEqual(es.voice_fingerprint_from_raw(raw + "x"), fp)
-        with self.assertRaises(es.EmotionSamplerInputError):
-            es.build_cache_key(make_input(voice_fingerprint=raw))
-        self.assertRegex(es.build_cache_key(make_input(voice_fingerprint=fp)), r"^[0-9a-f]{64}$")
-        with self.assertRaises(es.EmotionSamplerInputError):
-            es.voice_fingerprint_from_raw("")
 
     def test_cache_key_format_validation(self):
         self.assertEqual(es.assert_cache_key(KEY_A), KEY_A)
@@ -573,6 +573,103 @@ class HygieneTest(unittest.TestCase):
                          "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
         self.assertEqual(es.sampler_sha256_hex(""),
                          "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+
+
+class VoiceAuthorityTest(unittest.TestCase):
+    """목소리 입력 권위 = 참조 라이브러리의 콘텐츠 SHA-256(주입). 경로/크기/mtime 은 입력이 아니다."""
+
+    SHA_ONE = "1" * 64
+    SHA_TWO = "2" * 64
+
+    def test_moved_file_same_content_reuses_cache(self):
+        # 같은 내용, 다른 경로 — 참조 라이브러리는 같은 content sha 를 내준다.
+        k1 = es.build_cache_key(make_input(voice_content_sha256=self.SHA_ONE))
+        k2 = es.build_cache_key(make_input(voice_content_sha256=self.SHA_ONE))
+        self.assertEqual(k1, k2, "경로 이동은 키를 바꾸지 않는다")
+        self.assertEqual(es.resolve_request("happy", k2, {k1: {"degraded": False}})["action"], "reuse")
+
+    def test_content_change_invalidates_even_with_same_name_and_size(self):
+        k1 = es.build_cache_key(make_input(voice_content_sha256=self.SHA_ONE))
+        k2 = es.build_cache_key(make_input(voice_content_sha256=self.SHA_TWO))
+        self.assertNotEqual(k1, k2, "내용 변경은 이름/크기가 같아도 키를 바꾼다")
+        self.assertEqual(es.resolve_request("happy", k2, {k1: {"degraded": False}})["action"], "generate")
+
+    def test_path_based_fingerprint_cannot_be_key_input(self):
+        raw = "E:/AI/voice.wav|480000|1700000000000"
+        with self.assertRaises(es.EmotionSamplerInputError) as cm:
+            es.build_cache_key(make_input(voice_content_sha256=raw))
+        self.assertEqual(cm.exception.code, "SAMPLER_PATH_LIKE_VALUE")
+        # 대문자 hex 는 무효(소문자 강제). SHA_ONE 은 숫자뿐이라 upper() 가 무의미하므로 별도 값을 쓴다.
+        for bad in ("abc123", ("ab" * 32).upper(), self.SHA_ONE + "a", ""):
+            with self.assertRaises(es.EmotionSamplerInputError):
+                es.build_cache_key(make_input(voice_content_sha256=bad))
+
+    def test_module_does_not_mint_its_own_fingerprint(self):
+        self.assertFalse(hasattr(es, "voice_content_sha256_from_raw"), "자체 지문 생성 헬퍼 없음")
+        self.assertFalse(hasattr(es, "voice_fingerprint_from_raw"))
+        for banned in ("mtimeMs", "size_bytes", "fingerprint_reference"):
+            self.assertNotIn(banned, PY_CODE, "경로/크기/mtime 기반 입력 없음: %s" % banned)
+        payload = json.loads(es.canonical_cache_key_payload(make_input()))
+        self.assertIn("voice_content_sha256", payload)
+        self.assertNotIn("voice_fingerprint", payload)
+
+
+class SummaryTest(unittest.TestCase):
+    """접힘 상태 요약(progressive disclosure)."""
+
+    def _mk(self, state):
+        reasons = es.EMOTION_SAMPLE_STATE_REASONS[state]
+        return {"emotion_id": "happy", "state": state,
+                "reason": reasons[0] if reasons else None, "cache_key": KEY_A}
+
+    def test_each_state_in_exactly_one_bucket(self):
+        all_states = [self._mk(s) for s in es.EMOTION_SAMPLE_STATES]
+        s = es.summarize_samples(all_states)
+        self.assertEqual(s["generated"], 1)
+        self.assertEqual(s["generating"], 1)
+        self.assertEqual(s["attention"], 3)
+        self.assertEqual(s["generated"] + s["generating"] + s["attention"],
+                         len(es.EMOTION_SAMPLE_STATES) - 1, "idle 만 미집계")
+        self.assertEqual(s["text"], "만들어짐 1 · 만드는 중 1 · 확인 필요 3")
+
+    def test_zero_buckets_omitted_and_empty_message(self):
+        self.assertEqual(es.summarize_samples([])["text"], es.EMOTION_SAMPLE_SUMMARY_EMPTY)
+        self.assertEqual(es.summarize_samples([self._mk("idle")])["text"], es.EMOTION_SAMPLE_SUMMARY_EMPTY)
+        self.assertEqual(es.summarize_samples([self._mk("ready")])["text"], "만들어짐 1")
+        self.assertEqual(es.summarize_samples([self._mk("failed")])["text"], "확인 필요 1")
+        many = [self._mk("ready") for _ in range(50)]
+        self.assertLessEqual(len(es.summarize_samples(many)["text"]), 40, "요약 한 줄 길이 상한")
+
+    def test_summary_exposes_no_reason_text_or_phrase(self):
+        text = es.summarize_samples([self._mk(s) for s in es.EMOTION_SAMPLE_STATES])["text"]
+        for r in es.EMOTION_SAMPLE_REASON_CODES:
+            self.assertNotIn(es.EMOTION_SAMPLE_REASON_LABEL[r], text)
+        for p in es.EMOTION_SAMPLER_PHRASES:
+            self.assertNotIn(p, text)
+
+
+class SampleScriptTest(unittest.TestCase):
+    """표현 언어 교체 지점 — 지금은 태그 문자열 결합."""
+
+    def test_script_is_tag_plus_phrase(self):
+        self.assertEqual(es.build_sample_script("[기쁨]"), "[기쁨] " + es.phrase_script())
+        self.assertEqual(es.build_sample_script(""), es.phrase_script())
+        self.assertEqual(es.build_sample_script("  [슬픔]  "), "[슬픔] " + es.phrase_script())
+        self.assertIn("EXPRESSION LANGUAGE SWAP POINT", PY_SRC, "교체 지점 표시")
+
+    def test_phrase_set_and_version_unchanged_by_this_correction(self):
+        self.assertEqual(es.EMOTION_SAMPLER_PHRASE_VERSION, 1)
+        self.assertEqual(list(es.EMOTION_SAMPLER_PHRASES), ["안녕하세요.", "잠시 후에 다시 말씀드리겠습니다."])
+        # 표현 이벤트(구두점/웃음)는 아직 없다 — 별도 문구/이벤트 버전으로 나중에 온다.
+        for banned in ("!?", "ㅅㅅ", "laugh", "웃음"):
+            self.assertNotIn(banned, es.phrase_script())
+
+    def test_script_never_enters_state_or_key(self):
+        script = es.build_sample_script("[기쁨]")
+        self.assertNotIn(script, es.canonical_cache_key_payload(make_input()))
+        entry = es.initial_entry("happy", KEY_A)
+        self.assertNotIn(script, json.dumps(entry, ensure_ascii=False))
+        self.assertNotIn(script, json.dumps(es.describe_sample(entry), ensure_ascii=False))
 
 
 class ParityWithTsTest(unittest.TestCase):
@@ -614,18 +711,25 @@ class ParityWithTsTest(unittest.TestCase):
 
     def test_disclaimer_and_title(self):
         self.assertEqual(ts_str("EMOTION_SAMPLER_DISCLAIMER"), es.EMOTION_SAMPLER_DISCLAIMER)
-        self.assertEqual(ts_str("EMOTION_SAMPLER_TITLE"), es.EMOTION_SAMPLER_TITLE)
+        self.assertEqual(ts_str("EMOTION_SAMPLER_SECTION_TITLE"), es.EMOTION_SAMPLER_SECTION_TITLE)
+        self.assertEqual(ts_str("EMOTION_SAMPLE_SUMMARY_EMPTY"), es.EMOTION_SAMPLE_SUMMARY_EMPTY)
+        self.assertEqual(ts_array("EMOTION_SAMPLE_SUMMARY_BUCKETS"), list(es.EMOTION_SAMPLE_SUMMARY_BUCKETS))
+        sm = ts_record("EMOTION_SAMPLE_SUMMARY_LABEL")
+        for b in es.EMOTION_SAMPLE_SUMMARY_BUCKETS:
+            self.assertEqual(sm[b], es.EMOTION_SAMPLE_SUMMARY_LABEL[b], "요약 라벨 %s" % b)
         # 샘플러가 '감정 참조 등록'이 아님을 문구가 못 박는다.
         self.assertIn("미리듣기", es.EMOTION_SAMPLER_DISCLAIMER)
         self.assertIn("등록되지 않", es.EMOTION_SAMPLER_DISCLAIMER)
-        self.assertEqual(es.EMOTION_SAMPLER_TITLE, "감정 샘플러")
+        self.assertEqual(es.EMOTION_SAMPLER_SECTION_TITLE, "감정·표현 미리듣기")
+        self.assertNotIn("참조", es.EMOTION_SAMPLER_SECTION_TITLE)
+        self.assertNotIn("등록", es.EMOTION_SAMPLER_SECTION_TITLE)
 
     def test_config_field_names_match(self):
         """canonical config 필드명이 양쪽 소스에 동일하게 등장한다(직렬화 드리프트 방지)."""
         for field in ("pitch_centi", "speed_milli", "tail_fade_ms", "tail_mode", "tail_padding_ms"):
             self.assertIn(field, TS_CODE, "TS 에 %s 없음" % field)
             self.assertIn(field, PY_SRC, "Python 에 %s 없음" % field)
-        for field in ("emotion_id", "engine_id", "key_version", "model_id", "phrase_version", "voice_fingerprint"):
+        for field in ("emotion_id", "engine_id", "key_version", "model_id", "phrase_version", "voice_content_sha256"):
             self.assertIn('"%s"' % field, TS_CODE + PY_SRC)
 
 

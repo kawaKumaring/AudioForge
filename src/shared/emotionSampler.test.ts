@@ -20,7 +20,12 @@ import {
   EMOTION_SAMPLER_PHRASE_SET_SHA256,
   EMOTION_SAMPLER_DEFAULT_CONFIG,
   EMOTION_SAMPLER_DISCLAIMER,
-  EMOTION_SAMPLER_TITLE,
+  EMOTION_SAMPLER_SECTION_TITLE,
+  EMOTION_SAMPLE_SUMMARY_BUCKETS,
+  EMOTION_SAMPLE_SUMMARY_LABEL,
+  EMOTION_SAMPLE_SUMMARY_EMPTY,
+  summarizeEmotionSamples,
+  buildEmotionSampleScript,
   EMOTION_SAMPLER_PARITY_INPUT,
   EMOTION_SAMPLER_PARITY_PAYLOAD,
   EMOTION_SAMPLER_PARITY_KEY,
@@ -35,7 +40,6 @@ import {
   emotionSamplerPhraseScript,
   emotionSamplerPhraseSetDigest,
   samplerSha256Hex,
-  voiceFingerprintFromRaw,
   looksPathLike,
   looksTextLike,
   assertSamplerSafeValue,
@@ -66,7 +70,7 @@ const FP_B = 'b'.repeat(64)
 
 function input(over: Partial<EmotionSampleKeyInput> = {}): EmotionSampleKeyInput {
   return {
-    voiceFingerprint: FP_A,
+    voiceContentSha256: FP_A,
     engineId: 'qwen',
     modelId: 'qwen3-omni-flash',
     emotionId: 'happy',
@@ -116,7 +120,7 @@ test('캐시 키: canonical payload 는 key 정렬·공백 없음·정수만', (
   assert.ok(!/\d\.\d/.test(payload), 'canonical payload 에 float 없음(정수 양자화)')
   const parsed = JSON.parse(payload)
   assert.deepEqual(Object.keys(parsed), [
-    'config', 'emotion_id', 'engine_id', 'key_version', 'model_id', 'phrase_version', 'voice_fingerprint',
+    'config', 'emotion_id', 'engine_id', 'key_version', 'model_id', 'phrase_version', 'voice_content_sha256',
   ])
   assert.deepEqual(Object.keys(parsed.config), [
     'pitch_centi', 'speed_milli', 'tail_fade_ms', 'tail_mode', 'tail_padding_ms',
@@ -131,7 +135,7 @@ test('캐시 키: 고정 parity 벡터(payload/key) 재현', () => {
 
 // ── 계약 3: 각 입력 차원이 '독립적으로' 키를 바꾼다 ──
 test('캐시 키: 목소리 지문만 바뀌어도 키가 달라진다', () => {
-  assert.notEqual(buildEmotionSampleCacheKey(input({ voiceFingerprint: FP_B })), KEY_A)
+  assert.notEqual(buildEmotionSampleCacheKey(input({ voiceContentSha256: FP_B })), KEY_A)
 })
 
 test('캐시 키: 엔진 식별자만 바뀌어도 키가 달라진다', () => {
@@ -396,7 +400,7 @@ test('상태 기계: 불변식 applied === (rejected === null) 이 모든 상태
     { type: 'CACHE_HIT' as const },
     { type: 'CACHE_HIT' as const, degraded: true },
     { type: 'DELETED' as const },
-    { type: 'KEY_CHANGED' as const, cacheKey: buildEmotionSampleCacheKey(input({ voiceFingerprint: FP_B })) },
+    { type: 'KEY_CHANGED' as const, cacheKey: buildEmotionSampleCacheKey(input({ voiceContentSha256: FP_B })) },
   ]
   for (const state of EMOTION_SAMPLE_STATES) {
     const reason = EMOTION_SAMPLE_STATE_REASONS[state][0] ?? null
@@ -415,7 +419,7 @@ test('상태 기계: 불변식 applied === (rejected === null) 이 모든 상태
 test('상태 기계: 목소리/설정 변경(KEY_CHANGED) → 새 키 + 미생성 복귀', () => {
   const gen = applyEmotionSamplerEvent(initialEmotionSampleEntry('happy', KEY_A), { type: 'GENERATE_REQUESTED' }).entry
   const ready = applyEmotionSamplerEvent(gen, { type: 'GENERATE_SUCCEEDED' }).entry
-  const newKey = buildEmotionSampleCacheKey(input({ voiceFingerprint: FP_B }))
+  const newKey = buildEmotionSampleCacheKey(input({ voiceContentSha256: FP_B }))
   const t = applyEmotionSamplerEvent(ready, { type: 'KEY_CHANGED', cacheKey: newKey })
   assert.ok(t.applied)
   assert.equal(t.entry.state, 'idle')
@@ -565,17 +569,13 @@ test('위생: 경로처럼 보이는 값은 캐시 키 입력에서 거부된다
       () => assertSamplerSafeValue('x', p),
       (e: unknown) => e instanceof EmotionSamplerInputError && e.code === 'SAMPLER_PATH_LIKE_VALUE'
     )
-    for (const field of ['engineId', 'modelId'] as const) {
+    for (const field of ['engineId', 'modelId', 'voiceContentSha256'] as const) {
       assert.throws(
         () => buildEmotionSampleCacheKey(input({ [field]: p } as Partial<EmotionSampleKeyInput>)),
         (e: unknown) => e instanceof EmotionSamplerInputError && e.code === 'SAMPLER_PATH_LIKE_VALUE',
         `${field} 에 경로 금지: ${p}`
       )
     }
-    assert.throws(
-      () => buildEmotionSampleCacheKey(input({ voiceFingerprint: p })),
-      (e: unknown) => e instanceof EmotionSamplerInputError && e.code === 'SAMPLER_PATH_LIKE_VALUE'
-    )
   }
 })
 
@@ -648,18 +648,58 @@ test('위생: 오류 메시지는 코드+필드명만 담고 위반 값을 노�
   }
 })
 
-test('위생: voiceFingerprintFromRaw 가 경로 포함 원시 지문을 불투명 hex 로 바꾼다', () => {
-  const raw = 'E:/AI/voice.wav|123456|1700000000000'
-  const fp = voiceFingerprintFromRaw(raw)
-  assert.match(fp, /^[0-9a-f]{64}$/)
-  assert.ok(!fp.includes('E:'))
-  assert.equal(voiceFingerprintFromRaw(raw), fp, '결정적')
-  assert.notEqual(voiceFingerprintFromRaw(raw + 'x'), fp)
-  // 원시 지문을 그대로 넣으면 거부된다(통합 담당 실수 방지).
-  assert.throws(() => buildEmotionSampleCacheKey(input({ voiceFingerprint: raw })))
-  // 변환한 값은 정상 동작
-  assert.match(buildEmotionSampleCacheKey(input({ voiceFingerprint: fp })), /^[0-9a-f]{64}$/)
-  assert.throws(() => voiceFingerprintFromRaw(''))
+// ── 목소리 입력 권위 = 참조 라이브러리의 콘텐츠 SHA-256 ──
+// 합성 픽스처: 참조 라이브러리가 내주는 레코드. 경로/크기는 '있지만 키 입력이 아니다'를 보이기 위해 둔다.
+interface RefRecord { sourcePath: string; sizeBytes: number; contentSha256: string }
+const SHA_ONE = '1'.repeat(64)
+const SHA_TWO = '2'.repeat(64)
+
+test('목소리 권위: 같은 파일이 다른 경로로 옮겨져도 같은 키(캐시 재사용)', () => {
+  const before: RefRecord = { sourcePath: 'E:/voices/my.wav', sizeBytes: 480000, contentSha256: SHA_ONE }
+  const after: RefRecord = { sourcePath: 'D:/backup/2026/renamed.wav', sizeBytes: 480000, contentSha256: SHA_ONE }
+  const k1 = buildEmotionSampleCacheKey(input({ voiceContentSha256: before.contentSha256 }))
+  const k2 = buildEmotionSampleCacheKey(input({ voiceContentSha256: after.contentSha256 }))
+  assert.equal(k1, k2, '경로 이동은 키를 바꾸지 않는다')
+  // 그래서 이동 후에도 기존 캐시가 그대로 hit 된다(재합성 없음).
+  const cache: EmotionSamplerCacheIndex = { [k1]: { degraded: false } }
+  assert.equal(resolveEmotionSampleRequest('happy', k2, cache).action, 'reuse')
+})
+
+test('목소리 권위: 이름·크기가 같아도 내용이 바뀌면 키가 달라진다(캐시 무효화)', () => {
+  const edited: RefRecord = { sourcePath: 'E:/voices/my.wav', sizeBytes: 480000, contentSha256: SHA_TWO }
+  const k1 = buildEmotionSampleCacheKey(input({ voiceContentSha256: SHA_ONE }))
+  const k2 = buildEmotionSampleCacheKey(input({ voiceContentSha256: edited.contentSha256 }))
+  assert.notEqual(k1, k2, '내용 변경은 이름/크기가 같아도 키를 바꾼다')
+  const cache: EmotionSamplerCacheIndex = { [k1]: { degraded: false } }
+  assert.equal(resolveEmotionSampleRequest('happy', k2, cache).action, 'generate')
+})
+
+test('목소리 권위: 경로 기반 지문(path|size|mtimeMs)은 키 입력이 될 수 없다', () => {
+  // main 의 audio:fingerprint-reference 반환 형태. 그대로 넣으면 경로 위생 가드가 막는다.
+  const raw = 'E:/AI/voice.wav|480000|1700000000000'
+  assert.throws(
+    () => buildEmotionSampleCacheKey(input({ voiceContentSha256: raw })),
+    (e: unknown) => e instanceof EmotionSamplerInputError && e.code === 'SAMPLER_PATH_LIKE_VALUE'
+  )
+  // 64 hex 가 아닌 불투명 문자열도 거부(임의 지문 형식이 슬쩍 들어오는 것 방지).
+  // 대문자 hex 는 무효(정규화 없이 그대로 비교하므로 소문자 강제). SHA_ONE 은 숫자뿐이라 별도 값을 쓴다.
+  for (const bad of ['abc123', 'ab'.repeat(32).toUpperCase(), SHA_ONE + 'a', '']) {
+    assert.throws(
+      () => buildEmotionSampleCacheKey(input({ voiceContentSha256: bad })),
+      (e: unknown) => e instanceof EmotionSamplerInputError,
+      `콘텐츠 sha256 형식 강제: ${bad.slice(0, 12)}`
+    )
+  }
+})
+
+test('목소리 권위: 모듈이 스스로 목소리 지문을 만들지 않는다(주입 전용)', () => {
+  // 자체 해싱 헬퍼가 export 되어 있으면 '두 번째 권위'가 생긴다 — 존재 자체를 금지한다.
+  assert.ok(!/voiceContentSha256FromRaw|voiceFingerprintFromRaw/.test(moduleCode), '자체 지문 생성 헬퍼 없음')
+  assert.ok(!/mtimeMs|sizeBytes|fingerprintReference/.test(moduleCode), '경로/크기/mtime 기반 입력 없음')
+  // 캐시 키 입력 필드는 정확히 이 다섯 개뿐이다.
+  const payload = JSON.parse(canonicalEmotionSampleKeyPayload(input()))
+  assert.ok('voice_content_sha256' in payload)
+  assert.ok(!('voice_fingerprint' in payload), '경로 기반 지문 필드가 남아 있지 않음')
 })
 
 test('위생: 캐시 키 형식 검증(64 hex 만)', () => {
@@ -760,7 +800,11 @@ test('parity: 상태/사유 라벨 문자열이 TS==Python', () => {
 
 test('parity: 안내 문구/제목이 TS==Python', () => {
   assert.equal(pyStr('EMOTION_SAMPLER_DISCLAIMER'), EMOTION_SAMPLER_DISCLAIMER)
-  assert.equal(pyStr('EMOTION_SAMPLER_TITLE'), EMOTION_SAMPLER_TITLE)
+  assert.equal(pyStr('EMOTION_SAMPLER_SECTION_TITLE'), EMOTION_SAMPLER_SECTION_TITLE)
+  assert.equal(pyStr('EMOTION_SAMPLE_SUMMARY_EMPTY'), EMOTION_SAMPLE_SUMMARY_EMPTY)
+  const sm = pyDict('EMOTION_SAMPLE_SUMMARY_LABEL')
+  for (const b of EMOTION_SAMPLE_SUMMARY_BUCKETS) assert.equal(sm[b], EMOTION_SAMPLE_SUMMARY_LABEL[b], `요약 라벨 ${b}`)
+  assert.deepEqual(pyTuple('EMOTION_SAMPLE_SUMMARY_BUCKETS'), [...EMOTION_SAMPLE_SUMMARY_BUCKETS])
 })
 
 test('parity: Python 쪽에도 일괄 생성 진입점이 없다', () => {
@@ -786,7 +830,7 @@ test('패널: props-only(스토어/IPC import 없음)', () => {
 test('패널: 상태 표시를 shared 파생(describeEmotionSample)에 위임', () => {
   assert.ok(panelCode.includes('describeEmotionSample'), '표시 로직 단일 소스 사용')
   assert.ok(panelCode.includes('EMOTION_SAMPLER_DISCLAIMER'), '샘플러 안내 문구 렌더')
-  assert.ok(panelCode.includes('EMOTION_SAMPLER_TITLE'), '패널 제목은 감정 샘플러')
+  assert.ok(panelCode.includes('EMOTION_SAMPLER_SECTION_TITLE'), '패널 제목은 섹션 제목 상수')
   // 상태 라벨/사유 라벨을 패널이 다시 하드코딩하지 않는다.
   for (const s of EMOTION_SAMPLE_STATES) {
     assert.ok(!panelCode.includes(`'${EMOTION_SAMPLE_STATE_LABEL[s]}'`), `상태 라벨 하드코딩 금지: ${s}`)
@@ -801,7 +845,10 @@ test('패널: 감정 참조 등록과 혼동되는 문구/경로가 없다', () 
   assert.ok(!/onRegister|registerEmotionRef/.test(panelCode), '참조 등록 콜백/경로 없음')
   assert.match(EMOTION_SAMPLER_DISCLAIMER, /미리듣기/, '미리듣기 전용임을 명시')
   assert.match(EMOTION_SAMPLER_DISCLAIMER, /등록되지 않/, '참조로 등록되지 않음을 명시')
-  assert.equal(EMOTION_SAMPLER_TITLE, '감정 샘플러')
+  assert.equal(EMOTION_SAMPLER_SECTION_TITLE, '감정·표현 미리듣기')
+  // 감정 참조 등록과 어휘가 겹치지 않는다.
+  assert.ok(!EMOTION_SAMPLER_SECTION_TITLE.includes('참조'))
+  assert.ok(!EMOTION_SAMPLER_SECTION_TITLE.includes('등록'))
 })
 
 test('패널: 표준 문구 원문을 렌더하지 않는다(버전만 표시)', () => {
@@ -825,4 +872,91 @@ test('패널: 접근성 — 실제 button + aria-label, 고정 폭 없음(800x60
   assert.ok(panelCode.includes('aria-live'), '상태 변화 낭독용 live region')
   // label 요소는 htmlFor 로 연결(키보드/낭독기 도달).
   assert.ok(!/<label(?![^>]*htmlFor)/.test(panelCode), 'label 은 htmlFor 로 연결')
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 11) 점진적 공개 — 접힘 기본 + 접힘 요약
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('접힘 요약: 상태 6개가 정확히 한 버킷에만 집계된다(중복 없음)', () => {
+  const mk = (state: EmotionSampleState): EmotionSampleEntry => ({
+    emotionId: 'happy', state, reason: EMOTION_SAMPLE_STATE_REASONS[state][0] ?? null, cacheKey: KEY_A,
+  })
+  // 상태별로 하나씩 → generated 1(ready) / generating 1 / attention 3(degraded+limitExceeded+failed), idle 미집계
+  const all = EMOTION_SAMPLE_STATES.map(mk)
+  const s = summarizeEmotionSamples(all)
+  assert.equal(s.generated, 1)
+  assert.equal(s.generating, 1)
+  assert.equal(s.attention, 3)
+  assert.equal(s.generated + s.generating + s.attention, EMOTION_SAMPLE_STATES.length - 1, 'idle 만 미집계')
+  assert.equal(s.text, '만들어짐 1 · 만드는 중 1 · 확인 필요 3')
+})
+
+test('접힘 요약: 0인 버킷은 문구에서 빠지고, 전부 0이면 빈 안내', () => {
+  const mk = (state: EmotionSampleState): EmotionSampleEntry =>
+    ({ emotionId: 'happy', state, reason: EMOTION_SAMPLE_STATE_REASONS[state][0] ?? null, cacheKey: KEY_A })
+  assert.equal(summarizeEmotionSamples([]).text, EMOTION_SAMPLE_SUMMARY_EMPTY)
+  assert.equal(summarizeEmotionSamples([mk('idle'), mk('idle')]).text, EMOTION_SAMPLE_SUMMARY_EMPTY)
+  assert.equal(summarizeEmotionSamples([mk('ready')]).text, '만들어짐 1')
+  assert.equal(summarizeEmotionSamples([mk('failed')]).text, '확인 필요 1')
+  assert.equal(summarizeEmotionSamples([mk('ready'), mk('generating')]).text, '만들어짐 1 · 만드는 중 1')
+  // 요약은 항목 수와 무관하게 짧게 유지된다(접힘 상태가 길어지지 않는다).
+  const many = Array.from({ length: 50 }, () => mk('ready'))
+  assert.ok(summarizeEmotionSamples(many).text.length <= 40, '요약 한 줄 길이 상한')
+})
+
+test('접힘 요약: 문구가 상태 라벨/사유 문장을 그대로 노출하지 않는다(요약만)', () => {
+  const mk = (state: EmotionSampleState): EmotionSampleEntry =>
+    ({ emotionId: 'happy', state, reason: EMOTION_SAMPLE_STATE_REASONS[state][0] ?? null, cacheKey: KEY_A })
+  const text = summarizeEmotionSamples(EMOTION_SAMPLE_STATES.map(mk)).text
+  for (const r of EMOTION_SAMPLE_REASON_CODES) {
+    assert.ok(!text.includes(EMOTION_SAMPLE_REASON_LABEL[r]), `접힘 요약에 사유 문장 없음: ${r}`)
+  }
+  for (const p of EMOTION_SAMPLER_PHRASES) assert.ok(!text.includes(p))
+})
+
+test('패널: 기본 접힘 + 펼쳐야 목록/안내가 렌더된다', () => {
+  // useState 기본값이 false 여야 한다(열린 채로 시작 금지).
+  assert.match(panelCode, /useState\(false\)/, '접힘 기본')
+  assert.ok(!/useState\(true\)/.test(panelCode), '열림 기본 금지')
+  // 토글 버튼이 aria-expanded / aria-controls 로 본문과 연결된다.
+  assert.ok(panelCode.includes('aria-expanded={open}'), 'aria-expanded 연결')
+  assert.ok(panelCode.includes('aria-controls={BODY_ID}'), 'aria-controls 연결')
+  // 본문(안내 문장 + 목록)은 open 가드 안에 있다.
+  // import 블록에도 상수 이름이 나오므로 JSX(return 이후)만 잘라서 본다.
+  const jsx = panelCode.slice(panelCode.indexOf('return ('))
+  const bodyStart = jsx.indexOf('{open && (')
+  assert.ok(bodyStart > 0, 'open 가드 존재')
+  const beforeBody = jsx.slice(0, bodyStart)
+  assert.ok(!beforeBody.includes('EMOTION_SAMPLER_DISCLAIMER'), '접힘 상태에 안내 문장 없음')
+  assert.ok(!beforeBody.includes('views.map'), '접힘 상태에 목록 없음')
+  assert.ok(!beforeBody.includes('onGenerate('), '접힘 상태에 생성 버튼 없음')
+  // 접힘 헤더에는 요약만 있다.
+  assert.ok(beforeBody.includes('summary.text'), '접힘 헤더에 요약 렌더')
+  assert.ok(panelCode.includes('summarizeEmotionSamples'), 'shared 요약 파생 사용')
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 12) 표현 언어 교체 지점 — 지금은 태그 문자열 결합, 나중에 AST/event builder
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('대본 조립: 태그 + 표준 문구. 교체 지점이 한 함수로 격리돼 있다', () => {
+  assert.equal(buildEmotionSampleScript('[기쁨]'), `[기쁨] ${emotionSamplerPhraseScript()}`)
+  assert.equal(buildEmotionSampleScript(''), emotionSamplerPhraseScript(), '태그 없으면 문구만')
+  assert.equal(buildEmotionSampleScript('  [슬픔]  '), `[슬픔] ${emotionSamplerPhraseScript()}`)
+  // 모듈이 감정 label 표를 알지 않는다 — 태그 문자열은 호출부가 주입한다(교체 시 여기만 바뀐다).
+  assert.ok(moduleSrc.includes('EXPRESSION LANGUAGE SWAP POINT'), '교체 지점 표시(주석)')
+  // 아직 표현 이벤트(구두점/웃음)를 넣지 않았다 — 별도 문구/이벤트 버전으로 나중에 온다.
+  assert.equal(EMOTION_SAMPLER_PHRASE_VERSION, 1, '이번 정정에서 문구 버전 불변')
+  assert.deepEqual([...EMOTION_SAMPLER_PHRASES], ['안녕하세요.', '잠시 후에 다시 말씀드리겠습니다.'])
+})
+
+test('대본 조립: 결과 프롬프트는 상태/키/화면 어디에도 쓰이지 않는다', () => {
+  const script = buildEmotionSampleScript('[기쁨]')
+  const payload = canonicalEmotionSampleKeyPayload(input())
+  assert.ok(!payload.includes(script))
+  const entry = initialEmotionSampleEntry('happy', KEY_A)
+  assert.ok(!JSON.stringify(entry).includes(script))
+  assert.ok(!JSON.stringify(describeEmotionSample(entry)).includes(script))
+  assert.ok(!panelCode.includes('buildEmotionSampleScript'), '패널은 대본을 만들지도 렌더하지도 않는다')
 })
