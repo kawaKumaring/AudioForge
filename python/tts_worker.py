@@ -1005,6 +1005,20 @@ def _positive_int_or_none(v):
     return n if n > 0 else None
 
 
+def _positive_float_or_none(v):
+    """양의 실수만 통과, 그 외는 None(= 'unavailable'). _positive_int_or_none 의 실수판.
+
+    0 을 거르는 이유: 생성 구간은 monotonic 차이라 0.0 이 나오려면 시계 분해능 아래여야 하는데,
+    그건 '측정 안 됨' 과 구분할 수 없다. 나눗셈에서 0 은 조용한 division-by-zero 원인이 되므로
+    통과시키지 않는다. bool 은 int 의 서브클래스라 명시적으로 먼저 거른다."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    if v != v or v in (float("inf"), float("-inf")):   # NaN / ±Inf
+        return None
+    f = float(v)
+    return f if f > 0.0 else None
+
+
 _METADATA_KEYS = [
     "requested_engine", "actual_engine", "model_name", "model_revision", "device",
     "device_selection_source", "prompt_source", "x_vector_only_mode",
@@ -1320,7 +1334,12 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                        # 진단 추가(가산): chunk 행을 자가 완결로 만든다. 이 값이 없으면 소비자가 frames를
                        # 초로 바꾸려고 상위 dict와 join해야 했다. 출처는 그 chunk를 실제로 기록한 값과
                        # 동일한 bridge의 int(g["sr"]) (= entry["sr"]) — 두 번째 진실 소스를 만들지 않는다.
-                       "output_sample_rate": _positive_int_or_none(e.get("sr"))}
+                       "output_sample_rate": _positive_int_or_none(e.get("sr")),
+                       # blocking 생성 구간만 잰 값(가산). qwen_bridge 가 model.generate_voice_clone
+                       # 호출 하나만 감싸 측정한다 — 작업 전체 시간인 elapsed_seconds 와 다른 값이다.
+                       # 없거나 비정상이면 None(= unavailable). 0 으로 위조하지 않는다.
+                       "generation_elapsed_sec": _positive_float_or_none(
+                           e.get("generation_elapsed_sec"))}
                       for e in ordered_entries]
 
         # speed: 1.0=raw, 그 외 chunk별 atempo 후 결합.
