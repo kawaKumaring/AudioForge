@@ -76,9 +76,33 @@ if (!gotLock) {
   })
 
   app.whenReady().then(() => {
-    protocol.handle('local-file', (request) => {
+    protocol.handle('local-file', async (request) => {
       const filePath = decodeURIComponent(request.url.replace('local-file://', ''))
-      return net.fetch(pathToFileURL(filePath).href)
+      // 소비자(렌더러 미디어/fetch)가 로드를 포기하면 Electron 34.2.0이 알려주는 경로는
+      // '우리가 돌려준 body의 cancel()' 하나뿐이다. request.signal은 존재하지만 어떤 취소
+      // 시나리오에서도 발화하지 않고, net.fetch 응답 body를 cancel해도 상류 로더는 살아남아
+      // 파일 핸들과 전송 버퍼가 세션 내내 남는다. 그래서 자체 AbortController를 net.fetch에
+      // 넘기고, 반환한 body가 cancel될 때 정확히 그 요청만 abort한다.
+      // 주의: 여기서는 어떤 로그도 남기지 않는다(경로·미디어 바이트가 로그에 닿을 수 없게).
+      const upstream = new AbortController()
+      const res = await net.fetch(pathToFileURL(filePath).href, { signal: upstream.signal })
+      if (!res.body) return res
+      const reader = res.body.getReader()
+      return new Response(
+        new ReadableStream({
+          async pull(controller) {
+            try {
+              const { done, value } = await reader.read()
+              if (done) controller.close()
+              else controller.enqueue(value)
+            } catch (err) {
+              try { controller.error(err) } catch { /* 이미 닫힘 */ }
+            }
+          },
+          cancel() { upstream.abort() }
+        }),
+        { status: res.status, statusText: res.statusText, headers: res.headers }
+      )
     })
 
     createWindow()
