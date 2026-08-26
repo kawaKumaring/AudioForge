@@ -58,6 +58,91 @@ interface RunScope {
   cleanups: Array<() => void>   // run-scoped 정리(config 파일 등) — 모든 종료 경로에서 finally처럼 1회 실행
 }
 
+// ── 실패 '문구' 선택 — 실패 '판정'은 하지 않는다 ────────────────────────────
+//
+// 실패 권위는 여기 없다: nonzero exit / structured error·final / no-result settlement 가 정한다.
+// 이 함수는 이미 실패로 판정된 실행에 대해 사용자에게 보여줄 한 줄을 고를 뿐이다.
+//
+// 왜 바꿨나: 예전에는 알려진 패턴을 못 찾으면 stderr 마지막 3줄을 그대로 썼다. 그런데 외부
+// 패키지가 import 단계에서 뿜는 경고(RequestsDependencyWarning 등)가 stderr 끝에 남으면
+// 진짜 원인 대신 그 경고문이 사용자 오류 카드에 올라온다. 경고는 실패의 원인이 아닌데도
+// 원인처럼 보이는 것이다.
+//
+// 그래서 '문구 후보'에서만 소음을 걸러낸다. stderr 자체는 그대로 보존되고(콘솔 로그·진단),
+// 실제 ModuleNotFoundError·ImportError·traceback 은 숨기지 않는다.
+// 안전하게 고를 것이 없으면 빈 문자열을 돌려주고 호출부가 exit code 문구를 쓴다.
+
+/** 사용자에게 보여줄 '원인 후보'가 될 수 없는 줄인가. */
+function isDiagnosticNoise(line: string): boolean {
+  if (!line) return true
+  const hasError = /(Error|Exception)\s*:/.test(line)
+  if (/\w*Warning\s*:/.test(line)) return true          // 경고류는 실패 원인이 아니다
+  if (/#\s*type:\s*ignore/.test(line)) return true      // 외부 패키지 소스 인용 줄
+  if (/site-packages/.test(line) && !hasError) return true
+  if (/^\s*File\s+"/.test(line)) return true            // traceback 위치 표시
+  if (/^\s{2,}\S/.test(line) && !hasError) return true  // 들여쓰기된 소스 인용
+  return false
+}
+
+/** 사용자 문구에서 절대 경로를 파일명만 남기고 지운다(경로 노출 금지). */
+function stripPaths(text: string): string {
+  return text
+    .replace(/[A-Za-z]:[\\/][^\s'"]*[\\/]([^\s'"\\/]+)/g, '$1')
+    .replace(/\/(?:[^\s'"/]+\/)+([^\s'"/]+)/g, '$1')
+    .trim()
+}
+
+const EXCEPTION_LINE = /^[A-Za-z_][\w.]*(Error|Exception)\s*:/
+/** 줄 앞에 파일 위치가 붙어 있어도 예외 부분만 떼어낸다. */
+const EXCEPTION_ANYWHERE = /([A-Za-z_][\w.]*(?:Error|Exception)\s*:.*)$/
+
+/** 이 줄에서 사용자에게 보여줄 예외 문구를 뽑는다. 없으면 null. */
+function exceptionFrom(line: string): string | null {
+  if (EXCEPTION_LINE.test(line)) return line
+  const m = EXCEPTION_ANYWHERE.exec(line)
+  return m ? m[1] : null
+}
+
+/**
+ * 이미 실패로 판정된 실행의 stderr 에서 사용자에게 보여줄 한 줄을 고른다.
+ * 고를 것이 없으면 빈 문자열 — 호출부가 exit code 기반 문구를 쓴다.
+ */
+export function selectPythonErrorMessage(stderr: string): string {
+  const raw = (stderr || '').trim()
+  if (!raw) return ''
+  const lines = raw.split('\n').map((l) => l.replace(/\r$/, '')).filter((l) => l.trim().length > 0)
+
+  // 1) traceback 이 있으면 그 블록의 마지막 예외 줄이 가장 정확한 원인이다.
+  let lastTraceback = -1
+  for (let i = lines.length - 1; i >= 0; i--) {
+    if (/^Traceback \(most recent call last\)/.test(lines[i].trim())) { lastTraceback = i; break }
+  }
+  if (lastTraceback >= 0) {
+    for (let i = lines.length - 1; i > lastTraceback; i--) {
+      const line = lines[i].trim()
+      if (isDiagnosticNoise(line)) continue
+      const exc = exceptionFrom(line)
+      if (exc) return stripPaths(exc)
+    }
+  }
+
+  // 2) 알려진 원인 패턴 — 소음 줄은 후보에서 뺀다.
+  for (let i = lines.length - 1; i >= 0; i--) {
+    const line = lines[i].trim()
+    if (isDiagnosticNoise(line)) continue
+    if (line.startsWith('ModuleNotFoundError:')) return stripPaths(`패키지 미설치: ${line}`)
+    if (line.startsWith('ImportError:')) return stripPaths(`Import 오류: ${line}`)
+    if (line.startsWith('FileNotFoundError:')) return stripPaths(`파일 없음: ${line}`)
+    if (line.startsWith('RuntimeError:')) return stripPaths(line)
+    const exc = exceptionFrom(line)
+    if (exc) return stripPaths(exc)
+    if (line.startsWith('Error:') || line.startsWith('error:')) return stripPaths(line)
+  }
+
+  // 3) 안전하게 고를 것이 없다 — 지어내지 않고 호출부에 넘긴다.
+  return ''
+}
+
 export class PythonRunner extends EventEmitter {
   private process: ChildProcess | null = null
   private pythonPath: string
@@ -284,21 +369,7 @@ export class PythonRunner extends EventEmitter {
   }
 
   private extractError(stderr: string): string {
-    // Try to find the last meaningful error line
-    const lines = stderr.trim().split('\n').filter(Boolean)
-
-    // Look for common Python errors
-    for (let i = lines.length - 1; i >= 0; i--) {
-      const line = lines[i].trim()
-      if (line.startsWith('ModuleNotFoundError:')) return `패키지 미설치: ${line}`
-      if (line.startsWith('ImportError:')) return `Import 오류: ${line}`
-      if (line.startsWith('FileNotFoundError:')) return `파일 없음: ${line}`
-      if (line.startsWith('RuntimeError:')) return line
-      if (line.startsWith('Error:') || line.startsWith('error:')) return line
-    }
-
-    // Return last 3 lines if nothing specific found
-    return lines.slice(-3).join('\n')
+    return selectPythonErrorMessage(stderr)
   }
 
   // 취소: 프로세스 트리를 kill하고 종료를 bounded timeout 내에서 '확인'한다(공용 마감 K2).
