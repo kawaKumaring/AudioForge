@@ -4,6 +4,7 @@ import {
   type ReferenceCandidate,
   type ReferenceInvalidationReason,
   type ReferenceReuseVerdict,
+  type ReferenceScanStatus,
 } from '../../shared/referenceLibrary'
 
 // 참조 클립 라이브러리 패널 — 확정된 3~10초 참조를 "재사용 가능한 자산"으로 보여준다.
@@ -27,6 +28,8 @@ export interface ReferenceLibraryPanelProps {
   disabled?: boolean
   /** 후보 재탐색 진행 중. */
   scanning?: boolean
+  /** 마지막 재탐색 결과 상태. 남은 구간이 없었다는 사실을 조용히 넘기지 않고 알린다. */
+  scanStatus?: ReferenceScanStatus | null
   /** 지금 미리듣기 중인 후보 id. */
   auditioningId?: string | null
   /** 헤더 표시명(기본 참조 / 감정 label). */
@@ -94,6 +97,7 @@ export default function ReferenceLibraryPanel({
   reuse = null,
   disabled = false,
   scanning = false,
+  scanStatus = null,
   auditioningId = null,
   label = '참조 클립 라이브러리',
   onAudition,
@@ -130,6 +134,13 @@ export default function ReferenceLibraryPanel({
           {reusable
             ? '저장된 참조를 그대로 재사용합니다(재분석 없음).'
             : `다시 확정이 필요합니다 — ${reasons.map((r) => REASON_LABEL[r] ?? r).join(' · ')}`}
+        </div>
+      )}
+
+      {/* 재탐색 결과 — 남은 구간이 없었다는 사실을 조용히 넘기지 않는다 */}
+      {!scanning && scanStatus === 'NO_MORE_REFERENCE_CANDIDATES' && (
+        <div role="status" aria-live="polite" style={sub}>
+          기존 후보와 겹치지 않는 새 구간이 더 없습니다. 기존 후보는 그대로 유지됩니다.
         </div>
       )}
 
