@@ -12,6 +12,7 @@ Engine selection:
 
 import os
 import re
+import time
 import chunk_paths   # chunk 경로 규칙(bridge와 공용) — 결정적 경로 정확 일치 검증
 from audio_utils import emit, get_device, find_ffmpeg, patch_torchaudio
 
@@ -378,7 +379,23 @@ _QWEN_SNAPSHOT = os.path.join(_QWEN_HF_HOME, "hub",
 _QWEN_REQUIRED = ["config.json", "model.safetensors", "vocab.json", "merges.txt",
                   "tokenizer_config.json", os.path.join("speech_tokenizer", "model.safetensors")]
 # 무응답(진행 없음) 인용 timeout. Electron watchdog(무진행 5분)보다 짧게 잡아 Python이 먼저 정리·오류.
+# ※ 이 값은 '생성 구간' 계약이다(계약 A 산정 근거가 이 280에 묶여 있다) — 절대 키우지 않는다.
 _QWEN_INACTIVITY_SEC = 280
+
+# 기동(모델 로딩) 전용 hard deadline. 무응답 timeout과 '다른 축'이다:
+#   - 무응답 timeout: 마지막 stdout 이후 경과. heartbeat가 갱신한다.
+#   - 기동 deadline : run_job 진입 이후 총 경과. heartbeat가 절대 연장하지 못한다.
+# 로딩은 blocking 단일 호출이라 예전에는 stdout이 전혀 없어, '정상이지만 느린 콜드 로딩'과
+# '멈춘 로딩'을 구분할 수 없었다. heartbeat가 생존을 증명하므로 무응답 timeout을 키우는 대신
+# 별도의 유한한 기동 예산을 둔다 — heartbeat가 계속 와도 이 예산을 넘기면 종료한다.
+_QWEN_STARTUP_DEADLINE_SEC = 600
+
+# 로딩 heartbeat → Electron progress 변환 구간(percent).
+# Electron watchdog(src/main/ipc/audio.ipc.ts WATCHDOG_MS=300000)은 'progress'에서만 리셋되므로,
+# heartbeat를 progress로 옮기지 않으면 기동 deadline을 아무리 늘려도 300s에 Electron이 먼저 죽인다.
+# 브리지가 로딩 완료 시 percent=25를 쓰므로 이 구간은 25 '미만'으로만 움직이고 되돌아가지 않는다.
+_QWEN_LOAD_PCT_MIN = 12
+_QWEN_LOAD_PCT_MAX = 24
 
 
 def _kill_proc_tree(proc):
@@ -393,6 +410,28 @@ def _kill_proc_tree(proc):
             proc.kill()
         except Exception:
             pass
+
+
+class QwenLoadTimeoutError(RuntimeError):
+    """모델 로딩이 기동 hard deadline을 초과(C1). heartbeat가 계속 도착해도 종료한다.
+
+    보안: 정수/enum만 담는다 — 경로·전사·문장 금지.
+    재시도 대상이 아니다: CUDA OOM이 아니므로 상위(_synthesize_qwen_job)의 CPU 1회 재시도
+    분기에 걸리지 않고 그대로 전파된다(자동 재시도·자동 CPU 강등·모델 재다운로드 없음)."""
+
+    def __init__(self, elapsed_sec, deadline_sec, heartbeats_seen, last_stage):
+        self.elapsed_sec = elapsed_sec
+        self.deadline_sec = deadline_sec
+        self.heartbeats_seen = heartbeats_seen
+        self.last_stage = last_stage
+        self.error_payload = {
+            "code": "QWEN_LOAD_TIMEOUT", "elapsed_sec": int(elapsed_sec),
+            "deadline_sec": int(deadline_sec), "heartbeats_seen": int(heartbeats_seen),
+            "last_stage": last_stage,
+        }
+        super().__init__(
+            f"Qwen 모델 로딩이 기동 제한 {int(deadline_sec)}s를 초과했습니다"
+            f"(경과 {int(elapsed_sec)}s, 생존 신호 {int(heartbeats_seen)}회) — 프로세스 종료")
 
 
 class QwenGenerationLimitError(RuntimeError):
@@ -462,13 +501,28 @@ class QwenTTSEngine(TTSEngine):
     def synthesize_segment(self, text, ref_audio, emotion_id, speed, output_path):
         raise RuntimeError("QwenTTSEngine은 배치(run_job) 전용입니다. synthesize() 배치 경로를 사용하세요.")
 
-    def run_job(self, segments, device):
+    def run_job(self, segments, device, *, inactivity_sec=None, startup_deadline_sec=None,
+                monotonic=None):
         """모델 1회 로딩 후 전 세그먼트 합성. Popen으로 stdout JSON을 실시간 읽어 즉시 progress emit.
-        무응답 시 프로세스 종료·정리 후 명확한 오류. 오프라인(HF_HOME 고정 + bridge local_files_only)."""
+        무응답 시 프로세스 종료·정리 후 명확한 오류. 오프라인(HF_HOME 고정 + bridge local_files_only).
+
+        두 개의 독립된 시계(C1):
+          - 비활성 timer(inactivity_sec, 기본 280): 마지막 stdout 라인 이후 경과. heartbeat가 갱신한다.
+          - 기동 deadline(startup_deadline_sec, 기본 600): run_job 진입 이후 총 경과.
+            stage=loaded 이전에만 적용되고 heartbeat로 절대 연장되지 않는다.
+        stage=loaded 이후에는 기존 무응답 계약(280s)이 '그대로' 적용된다 — 생성 구간은 변경 없음.
+
+        inactivity_sec/startup_deadline_sec/monotonic 은 keyword-only 테스트 주입점이다
+        (production 호출부는 위치 인자 2개 그대로 — 기존 run_job stub들이 계속 유효하다)."""
         import subprocess
         import threading
         import queue
         import json as _json
+        inactivity_sec = _QWEN_INACTIVITY_SEC if inactivity_sec is None else inactivity_sec
+        startup_deadline_sec = (_QWEN_STARTUP_DEADLINE_SEC if startup_deadline_sec is None
+                                else startup_deadline_sec)
+        _now = monotonic or time.monotonic
+        _t0 = _now()
         # 로컬 스냅샷 '경로'로 로드(repo id 아님) → 오프라인에서 HF API 호출 회피. 자동 다운로드 금지.
         cfg = {"model_path": _QWEN_SNAPSHOT, "device": device, "segments": segments}
         env = {**os.environ, "HF_HOME": _QWEN_HF_HOME, "HF_HUB_OFFLINE": "1",
@@ -515,12 +569,39 @@ class QwenTTSEngine(TTSEngine):
         err_msg = None
         gl_err = None   # GENERATION_LIMIT_EXCEEDED(구조화) — 감정 ID 매핑은 상위에서
         tsl_err = None  # TEXT_SEGMENT_TOO_LONG(구조화)
+        loaded = False          # stage=loaded 관측 여부. True면 기동 deadline은 더 이상 적용되지 않는다.
+        stage = "starting"      # 마지막 관측 stage(오류 payload용, 비민감 enum)
+        hb = {"seen": 0, "pct": _QWEN_LOAD_PCT_MIN}  # heartbeat 수신 수 / 마지막 로딩 percent(단조 비감소)
+
+        def _load_timeout():
+            """기동 deadline 초과 — 자식 트리 종료 후 구조화 오류."""
+            _kill_proc_tree(proc)
+            return QwenLoadTimeoutError(_now() - _t0, startup_deadline_sec, hb["seen"], stage)
+
+        def _no_response():
+            """무응답 초과 — 기존 계약 문구·동작 그대로. code만 구조화해 덧붙인다."""
+            _kill_proc_tree(proc)
+            e = RuntimeError(f"Qwen 무응답 {inactivity_sec}s 초과 — 프로세스 종료")
+            e.error_payload = {"code": "QWEN_NO_RESPONSE",
+                               "inactivity_sec": int(inactivity_sec), "last_stage": stage}
+            return e
+
         while True:
+            if loaded:
+                wait = inactivity_sec
+            else:
+                # heartbeat가 아무리 와도 이 남은 예산은 늘지 않는다(요구사항 7).
+                remain = startup_deadline_sec - (_now() - _t0)
+                if remain <= 0:
+                    raise _load_timeout()
+                wait = min(inactivity_sec, remain)
             try:
-                line = q.get(timeout=_QWEN_INACTIVITY_SEC)
+                line = q.get(timeout=wait)
             except queue.Empty:
-                _kill_proc_tree(proc)
-                raise RuntimeError(f"Qwen 무응답 {_QWEN_INACTIVITY_SEC}s 초과 — 프로세스 종료")
+                # wait가 기동 예산 잔량이라 짧았을 수 있다 — 어느 축이 터졌는지 명확히 구분한다.
+                if not loaded and (_now() - _t0) >= startup_deadline_sec:
+                    raise _load_timeout()
+                raise _no_response()
             if line is None:
                 break
             line = line.strip()
@@ -533,6 +614,25 @@ class QwenTTSEngine(TTSEngine):
             t = msg.get("type")
             if t == "progress":
                 emit("progress", percent=msg.get("percent", 0), message=msg.get("message", ""))  # 실시간
+            elif t == "stage":
+                st = msg.get("stage")
+                if st in ("loading", "loaded", "generating"):
+                    stage = st
+                if st == "loaded":
+                    loaded = True   # 이 시점부터 기동 deadline 해제, 무응답 280s 계약 그대로
+                elif st == "loading" and int(msg.get("attempt") or 1) > 1:
+                    # sdpa 실패 후 eager 재시도 = 두 번째 전체 로딩. 사용자에게 보이게 한다
+                    # (한 번 느린 로딩과 재시도를 사후에 구분할 수 있어야 한다).
+                    emit("progress", percent=hb["pct"],
+                         message="모델 로딩 재시도 중... (attn=%s)" % (msg.get("attn"),))
+            elif t == "heartbeat":
+                hb["seen"] += 1
+                # 비활성 timer만 갱신된다(q.get이 반환됐으므로 자동). 기동 deadline은 손대지 않는다.
+                # Electron watchdog(progress에서만 리셋)을 살리기 위해 progress로 옮긴다.
+                hb["pct"] = max(hb["pct"], min(_QWEN_LOAD_PCT_MAX, _QWEN_LOAD_PCT_MIN + hb["seen"]))
+                emit("progress", percent=hb["pct"],
+                     message="모델 로딩 중... (%d초 경과 — 첫 실행은 오래 걸릴 수 있습니다)"
+                             % (int(_now() - _t0),))
             elif t == "error":
                 code = msg.get("code")
                 if code == "GENERATION_LIMIT_EXCEEDED":
