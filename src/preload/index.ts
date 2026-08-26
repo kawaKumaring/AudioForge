@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { CancelResponseLike } from '../shared/cancelContract'
+import { SIDECAR_IPC_CHANNEL } from '../shared/sidecarEvents'
+import type { SidecarEnvelope } from '../shared/sidecarEvents'
 
 const api = {
   audio: {
@@ -53,6 +55,14 @@ const api = {
       const handler = (_event: unknown, data: unknown) => callback(data)
       ipcRenderer.on('audio:error', handler)
       return () => ipcRenderer.removeListener('audio:error', handler)
+    },
+    // 진단 사이드카(additive/shadow 관측). main 이 허용목록 + 스키마 검증을 통과시킨
+    // SidecarEnvelope 만 이 채널로 온다 — 경로·오디오 샘플·전사 본문은 main 에서 이미 제거됨.
+    // 기본 출력/품질 동작에는 어떤 영향도 없다(관측 전용). 반환값은 구독 해제 함수.
+    onSidecar: (callback: (data: SidecarEnvelope) => void) => {
+      const handler = (_event: unknown, data: SidecarEnvelope) => callback(data)
+      ipcRenderer.on(SIDECAR_IPC_CHANNEL, handler)
+      return () => ipcRenderer.removeListener(SIDECAR_IPC_CHANNEL, handler)
     },
     // 취소 lifecycle(공용 마감 K): cancelling→(cancelled|cancel-failed). result/error와 별개 채널로,
     // 취소 승자 정착 후 main이 명시적으로 보낸다(늦은 result/error는 main에서 이미 억제).

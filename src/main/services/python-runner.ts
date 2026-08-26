@@ -4,6 +4,27 @@ import { existsSync } from 'fs'
 import { EventEmitter } from 'events'
 import { StringDecoder } from 'string_decoder'
 import type { RunEnd, RunEndReasonCode } from './run-settlement'
+import type { SidecarValidation, SidecarValidator } from '../../shared/sidecarEvents'
+
+// 사이드카 카운터 키 위생: '타입 이름 + 개수'만 남긴다 — payload 는 절대 담지 않는다.
+// 짧은 안전 토큰이 아니면(경로·본문·긴 문자열 냄새) 버킷명으로 대체해 로그/메트릭 오염을 막는다.
+const SAFE_TYPE_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
+const TYPE_KEY_UNSAFE = '(unsafe-type)'
+const TYPE_KEY_MISSING = '(no-type)'
+const TYPE_KEY_OVERFLOW = '(overflow)'
+// 회귀한 Python 이 무한히 새로운 type 을 뿜어도 맵이 무한정 자라지 않게 한다.
+const MAX_TRACKED_TYPE_KEYS = 64
+
+function typeKeyOf(msg: unknown): string {
+  const t = (msg as { type?: unknown } | null)?.type
+  if (typeof t !== 'string' || t.length === 0) return TYPE_KEY_MISSING
+  return SAFE_TYPE_KEY_RE.test(t) ? t : TYPE_KEY_UNSAFE
+}
+
+function bumpCounter(map: Map<string, number>, key: string): void {
+  const k = map.has(key) || map.size < MAX_TRACKED_TYPE_KEYS ? key : TYPE_KEY_OVERFLOW
+  map.set(k, (map.get(k) ?? 0) + 1)
+}
 
 // 취소 결과(공용 마감 K2): 부모 종료 관측 + (Windows) taskkill 완료·성공까지 확인해야 tree 종료로 판정.
 export interface CancelResult {
@@ -16,6 +37,17 @@ export interface CancelResult {
 // 테스트 주입용(Electron·실제 프로세스 없이 종료 경로 전수 검증). 기본은 child_process.spawn.
 export interface PythonRunnerDeps {
   spawn?: typeof spawn
+  /**
+   * 진단 사이드카 이벤트 검증기(src/shared/sidecarEvents.validateSidecarEvent).
+   *
+   * 왜 '주입'인가: 이 파일은 Electron 없이 `node --test` 가 직접 로드한다. 프로젝트 모듈을
+   * 런타임 import 하면(확장자 없는 ESM specifier) 그 로드가 깨진다 — 그래서 run-settlement 도
+   * 여기서는 type-only 로만 가져온다. 실제 함수는 소유자(audio.ipc)가 넣는다.
+   *
+   * 미주입 시 동작은 **fail-closed**: 어떤 사이드카도 전달하지 않고, 네 핵심 type 밖의 모든
+   * 이벤트는 unknownEventStats 에 타입명으로 집계된다(손실이 조용하지 않게).
+   */
+  validateSidecar?: SidecarValidator
 }
 
 // 한 번의 run()에 묶인 상태. done은 정확히 1회 — 어떤 종료 경로에서도(정상/비정상/신호/spawn 실패).
@@ -30,6 +62,13 @@ export class PythonRunner extends EventEmitter {
   private process: ChildProcess | null = null
   private pythonPath: string
   private spawnFn: typeof spawn
+  private validateSidecar?: SidecarValidator
+  // 전달된 사이드카의 단조 순번(= 전달 성공 건수). Date.now()를 쓰지 않는다 — 테스트 결정성.
+  private sidecarSequence = 0
+  // 허용목록 밖 type 의 손실 관측용: 타입명 → 개수. payload 는 담지 않는다.
+  private readonly unknownEventCounts = new Map<string, number>()
+  // 허용목록 안이지만 검증에 실패한 건: reasonCode → 개수.
+  private readonly sidecarRejectCounts = new Map<string, number>()
   // run() 전에 등록된 cleanup을 첫 run이 이어받도록 초기 scope를 미리 둔다(started=false).
   private scope: RunScope = { started: false, ended: false, killRequested: false, cleanups: [] }
 
@@ -37,6 +76,60 @@ export class PythonRunner extends EventEmitter {
     super()
     this.pythonPath = pythonPath
     this.spawnFn = deps?.spawn ?? spawn
+    this.validateSidecar = deps?.validateSidecar
+  }
+
+  /** 허용목록 밖 type 의 누적 집계(타입명 → 개수). 러너 인스턴스 수명 동안 누적된다. */
+  get unknownEventStats(): Record<string, number> {
+    return Object.fromEntries(this.unknownEventCounts)
+  }
+
+  /** 허용목록 안이지만 검증에 실패한 건의 누적 집계(reasonCode → 개수). */
+  get sidecarRejectStats(): Record<string, number> {
+    return Object.fromEntries(this.sidecarRejectCounts)
+  }
+
+  /** 'sidecar' 로 실제 전달된 envelope 개수(= 마지막으로 부여한 sequence). */
+  get sidecarForwardedCount(): number {
+    return this.sidecarSequence
+  }
+
+  /**
+   * 네 핵심 type(progress|status|result|error) 밖의 JSON 한 줄을 처리한다.
+   *
+   * 예전에는 여기서 **완전한 침묵**으로 사라졌다: JSON 파싱은 성공하므로 catch(비-JSON 로그)
+   * 로도 가지 못했다. 이제 허용목록 검증을 통과한 것만 'sidecar' 로 재방출하고, 나머지는
+   * 카운터만 올린다(payload 는 어디에도 남기지 않는다). 어떤 경우에도 throw 하지 않는다.
+   */
+  private handleAuxMessage(msg: unknown): void {
+    const validate = this.validateSidecar
+    if (validate) {
+      const seq = this.sidecarSequence + 1
+      let verdict: SidecarValidation
+      try {
+        verdict = validate(msg, seq)
+      } catch {
+        // 검증기 자체가 터져도 실행은 계속된다 — 구조화 사유로 집계만 하고 아무것도 안 보낸다.
+        verdict = { ok: false, reasonCode: 'validator-threw' }
+      }
+      if (verdict.ok) {
+        this.sidecarSequence = seq
+        try {
+          this.emit('sidecar', verdict.envelope)
+        } catch (e) {
+          // 소비자가 터져도 여기서 막는다. 바깥 catch 로 넘기면 그쪽이 '비-JSON'으로 오해해
+          // 원본 줄(회귀 시 경로·본문이 들어있을 수 있는)을 통째로 로그에 찍는다.
+          console.log(`[PythonRunner] sidecar 소비자 실패: ${(e as Error)?.name || 'error'}`)
+        }
+        return
+      }
+      // 'unknown-kind' = 허용목록 밖 → 아래 타입명 카운터로 흘려보낸다(손실 관측).
+      if (verdict.reasonCode !== 'unknown-kind') {
+        bumpCounter(this.sidecarRejectCounts, verdict.reasonCode)
+        return
+      }
+    }
+    bumpCounter(this.unknownEventCounts, typeKeyOf(msg))
   }
 
   /**
@@ -127,6 +220,9 @@ export class PythonRunner extends EventEmitter {
           // 구조화 오류 전체 전달(message + 선택적 code·필드). renderer용 정제는 audio.ipc가 담당.
           // Python이 담는 필드는 이미 비민감(전사·문장·전체경로 없음)이지만, 소비 측이 최종 정제.
           this.emit('error', msg)
+        } else {
+          // 위 네 종류의 의미는 그대로 두고, 나머지만 여기서 처음으로 '보이게' 만든다.
+          this.handleAuxMessage(msg)
         }
       } catch {
         // Non-JSON output (e.g., tqdm progress bars), ignore
