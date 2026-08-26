@@ -351,6 +351,85 @@ export function createJobWatchdog(opts: JobWatchdogOptions): JobWatchdog {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 4-b) 감시 타이머 소유권 — 취소·종료 후 타이머가 남지 않는다는 것을 '검증 가능하게' 만든다
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// ②③ 축은 비활성 축과 달리 '신호가 오면 리셋' 이 아니라 주기 점검이어야 한다(아무 신호도 없이
+// 예산만 흘러가는 경우가 바로 그 축들이 잡아야 할 상황이다). 그 주기 타이머를 audio.ipc.ts 안에
+// 두면 **누수 여부를 유닛 테스트로 확인할 방법이 없다** — 그 파일은 electron 을 import 하므로
+// node --test 가 로드하지 못한다. 그래서 타이머 소유권만 여기로 옮기고 setInterval/clearInterval 을
+// 주입받는다. 이제 '취소·앱 종료 후 타이머가 남지 않는다' 가 단언 가능한 사실이 된다.
+
+export interface IntervalDeps {
+  setInterval: (fn: () => void, ms: number) => unknown
+  clearInterval: (handle: never) => void
+}
+
+export interface JobWatchHandle {
+  /** 타이머 해제. 멱등 — 실제로 이번 호출이 멈췄으면 true, 이미 멈춰 있었으면 false. */
+  stop(): boolean
+  readonly stopped: boolean
+  /** 실제로 실행된 점검 횟수(테스트·진단용). */
+  readonly tickCount: number
+  /** 어떤 축이 터져서 스스로 멈췄는가. 정상 종료로 멈췄으면 null. */
+  readonly breached: WatchVerdict | null
+}
+
+export interface StartJobWatchOptions {
+  watchdog: JobWatchdog
+  intervalMs: number
+  /** 자식 프로세스가 아직 살아있는가. false 면 이번 점검은 건너뛴다(종료 중 오판 금지). */
+  isRunning: () => boolean
+  /** ②③ 축이 터졌을 때 정확히 1회 호출. 호출 시점에 타이머는 이미 멈춰 있다. */
+  onBreach: (verdict: WatchVerdict, report: LongformProgressReport) => void
+  deps: IntervalDeps
+}
+
+export function startJobWatch(opts: StartJobWatchOptions): JobWatchHandle {
+  let handle: unknown = null
+  let stopped = false
+  let tickCount = 0
+  let breached: WatchVerdict | null = null
+
+  const stop = (): boolean => {
+    if (stopped) return false
+    stopped = true
+    if (handle !== null) {
+      try { opts.deps.clearInterval(handle as never) } catch { /* noop */ }
+      handle = null
+    }
+    return true
+  }
+
+  const tick = () => {
+    if (stopped) return
+    // 프로세스가 이미 끝났으면 판정하지 않는다 — done 핸들러가 곧 stop() 을 부른다.
+    if (!opts.isRunning()) return
+    tickCount++
+    const verdict = opts.watchdog.evaluate()
+    // ① 비활성 축은 자기 타이머(audio.ipc 의 resetWatchdog)가 담당한다 — 여기서 중복 판정하지 않는다.
+    if (verdict === 'ok' || verdict === 'inactivity-timeout') return
+    breached = verdict
+    stop()                       // onBreach 가 터져도 타이머는 이미 정리됐다
+    opts.onBreach(verdict, opts.watchdog.report())
+  }
+
+  handle = opts.deps.setInterval(tick, opts.intervalMs)
+  // 이 타이머가 앱 종료를 막지 않게(Node Timeout 에만 있는 기능 — 없으면 조용히 건너뛴다).
+  const maybeUnref = (handle as { unref?: unknown } | null)?.unref
+  if (typeof maybeUnref === 'function') {
+    try { maybeUnref.call(handle) } catch { /* noop */ }
+  }
+
+  return {
+    stop,
+    get stopped() { return stopped },
+    get tickCount() { return tickCount },
+    get breached() { return breached }
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 5) staging 게이트 — staging 이 끝나기 전에는 final 을 공개하지 않는다
 // ─────────────────────────────────────────────────────────────────────────────
 

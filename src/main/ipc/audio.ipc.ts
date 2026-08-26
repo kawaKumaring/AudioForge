@@ -15,7 +15,8 @@ import { sweepQwenJobDirs, listQwenJobDirs } from '../services/qwen-cleanup'
 import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
 import { removeSplitTempDirs, listSplitTempDirs } from '../services/split-temp-cleanup'
 import { createSingleFlight, createKeyedSingleFlight } from '../services/single-flight'
-import { createJobWatchdog } from '../services/longform-job'
+import { createJobWatchdog, startJobWatch, createStagingGate } from '../services/longform-job'
+import { createTerminalGate } from '../services/run-settlement'
 import type { CancelResponse } from '../../shared/cancelContract'
 import { validateSidecarEvent, SIDECAR_IPC_CHANNEL } from '../../shared/sidecarEvents'
 import type { SidecarEnvelope } from '../../shared/sidecarEvents'
@@ -566,7 +567,15 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     // production race 방지: 터미널 신호(result/error)를 즉시 보내지 않고 버퍼링했다가 runner 'done'
     // (자식 프로세스 실제 종료 = backend free) 이후에 전달한다. 이러면 renderer가 완료(done)와
     // '다른 모드로 재처리'를 보는 시점엔 이미 runner=null이라, 결과 직후 재합성해도 "이미 처리 중"이 없다.
-    let pendingResult: unknown = null
+    // 결과는 staging 게이트가 붙든다. 예전에는 pendingResult 변수 하나였고, 그 기준은 '자식
+    // 프로세스가 끝났는가'뿐이었다 — watchdog이 이미 시간 초과로 마감한 뒤에 result가 도착하면
+    // done 경로가 그 결과를 그대로 렌더러에 보냈다(터미널 확정 이후의 결과 공개). 게이트는
+    // '중간 산출물 정리(staging)까지 확인됐을 때만 공개'를 명시적 전제로 만들고, abandon된
+    // 실행에서는 어떤 결과도 나가지 못하게 한다.
+    const stagingGate = createStagingGate<unknown>(
+      (data) => { mainWindow.webContents.send('audio:result', data) },
+      createTerminalGate
+    )
     let pendingError: string | { message?: unknown; code?: unknown } | null = null
 
     forwardSidecar(runner, mainWindow)
@@ -628,7 +637,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
         console.log(`[AudioForge] session.json 저장 실패: ${(err as Error).message}`)
       }
       settle.markSettled()
-      pendingResult = data  // 'done'에서 backend free 확인 후 전달
+      stagingGate.offerFinal(data)  // 공개는 'done'에서 staging 확인 후(markStagingComplete)
     })
 
     runner.on('error', (message) => {
@@ -647,6 +656,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       watchdog = setTimeout(() => {
         if (runner?.isRunning) {
           settle.markSettled()
+          stagingGate.abandon()   // 시간 초과로 마감된 실행의 늦은 결과는 공개하지 않는다
           runner.cancel()  // async(무시) — 트리 kill 시도
           sendError('처리 시간이 초과되었습니다 (5분간 응답 없음). Python 환경을 확인해주세요.')
         }
@@ -659,37 +669,40 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     // 로딩을 죽이면 안 된다), 그것 **하나뿐**이면 살아있으나 아무것도 생산하지 않는 job과
     // 총 길이가 폭주하는 job에 대한 천장이 어디에도 없다. 판정 로직·상수 근거는 longform-job.ts.
     const jobWatch = createJobWatchdog({ now: () => Date.now() })
-    let jobTick: ReturnType<typeof setInterval> | null = null
-    const clearJobTick = () => { if (jobTick) { clearInterval(jobTick); jobTick = null } }
-    jobTick = setInterval(() => {
-      if (!runner?.isRunning) return
-      const verdict = jobWatch.evaluate()
-      // ①은 자기 타이머가 담당한다 — 여기서 중복 판정하지 않는다.
-      if (verdict === 'ok' || verdict === 'inactivity-timeout') return
-      clearJobTick()
-      settle.markSettled()
-      runner.cancel()  // async(무시) — 트리 kill 시도
-      const r = jobWatch.report()
-      sendError(verdict === 'no-forward-progress'
-        ? `합성이 ${Math.round(r.sinceForwardMs / 1000)}초 동안 한 조각도 진행하지 못했습니다 `
-          + `(완료 ${r.completedChunks}조각). 프로세스는 살아 있었지만 결과를 만들지 못했습니다.`
-        : `합성이 이 작업에 허용된 총 시간을 초과했습니다 `
-          + `(경과 ${Math.round(r.elapsedMs / 1000)}초, 완료 ${r.completedChunks}`
-          + `/${r.estimatedTotalChunks ?? '?'}조각).`)
-    }, JOB_TICK_MS)
-    if (typeof jobTick.unref === 'function') jobTick.unref()  // 이 타이머가 앱 종료를 막지 않게
+    // 타이머 소유권은 longform-job.startJobWatch 가 갖는다 — 이 파일은 electron 을 import 하므로
+    // node --test 로 로드할 수 없고, 여기에 타이머를 두면 '취소·종료 후 남지 않는다'를 유닛
+    // 테스트로 확인할 방법이 없다. setInterval/clearInterval 을 주입하는 형태라 그쪽에서 검증된다.
+    const jobTick = startJobWatch({
+      watchdog: jobWatch,
+      intervalMs: JOB_TICK_MS,
+      isRunning: () => runner?.isRunning === true,
+      deps: { setInterval, clearInterval },
+      onBreach: (verdict, r) => {
+        settle.markSettled()
+        // staging 이 끝나기 전에 터미널이 확정됐다 → 뒤늦게 도착하는 결과는 절대 공개하지 않는다.
+        stagingGate.abandon()
+        runner?.cancel()  // async(무시) — 트리 kill 시도
+        sendError(verdict === 'no-forward-progress'
+          ? `합성이 ${Math.round(r.sinceForwardMs / 1000)}초 동안 한 조각도 진행하지 못했습니다 `
+            + `(완료 ${r.completedChunks}조각). 프로세스는 살아 있었지만 결과를 만들지 못했습니다.`
+          : `합성이 이 작업에 허용된 총 시간을 초과했습니다 `
+            + `(경과 ${Math.round(r.elapsedMs / 1000)}초, 완료 ${r.completedChunks}`
+            + `/${r.estimatedTotalChunks ?? '?'}조각).`)
+      }
+    })
 
     // 취소가 watchdog을 즉시 해제할 수 있게 노출(취소는 watchdog 무의미). done에서 정리.
     currentWatchdogClear = () => {
       if (watchdog) { clearTimeout(watchdog); watchdog = null }
-      clearJobTick()
+      jobTick.stop()
+      stagingGate.abandon()   // 취소된 실행의 결과는 공개하지 않는다
     }
 
     resetWatchdog()
 
     runner.on('done', (code) => {
       if (watchdog) { clearTimeout(watchdog); watchdog = null }
-      clearJobTick()
+      jobTick.stop()
       try { unlinkSync(configPath) } catch {}
       // 성공·오류·취소 어느 경로로 끝나든 이 실행이 만든 split 원본 사본을 지운다. 취소 분기보다
       // 위에 두어 early return에 걸리지 않게 한다. 다른 실행/과거 orphan은 건드리지 않는다.
@@ -717,9 +730,9 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       // 취소 실패 후 child가 뒤늦게 스스로 종료: 이미 cancel-failed를 보냈으므로 추가 신호 없이 상태만 정리.
       if (cancelState === 'failed') { cancelState = 'none' }
       // 버퍼링한 터미널 신호 전달(정착됨). 없으면 abnormal exit → settle.finish가 오류로 마감(UI 안 멈춤).
-      if (pendingResult !== null) {
-        mainWindow.webContents.send('audio:result', pendingResult)
-      } else if (pendingError !== null) {
+      // tts는 위에서 .qwen-job-* 스윕이 이미 돌았다 — 그 '다음'에만 결과가 공개된다(순서가 계약).
+      // 게이트가 공개하지 못한 경우(결과 없음 / watchdog·취소로 abandon)에만 오류 경로로 내려간다.
+      if (!stagingGate.markStagingComplete() && pendingError !== null) {
         sendError(pendingError)
       }
       settle.finish(code)
