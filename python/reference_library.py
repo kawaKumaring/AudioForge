@@ -15,9 +15,16 @@
   - 단일 참조 보증: 후보는 여러 개 저장·미리듣기 가능하지만 합성에 넘기는 참조는 정확히 1개다
     (assert_single_reference / build_synthesis_reference).
 
+  - 영속 저장(durable library): 확정 클립은 앱 소유 영속 디렉터리에 남아 재시작 후에도 재사용된다.
+    manifest는 해시와 clipId만 담고 경로는 영원히 담지 않는다(build_manifest_record / resolve_reusable_clip).
+  - 재탐색(rescan): 기존 후보 구간을 명시적 제외 입력으로 받아 겹치지 않는 새 후보만 더한다
+    (rescan_candidates). 남은 구간이 없으면 NO_MORE_REFERENCE_CANDIDATES 상태를 돌려준다.
+
 정책:
   - 원본 미디어는 절대 변경하지 않는다. 이 모듈은 어떤 파일도 쓰지 않는다.
   - 외부 전송 없음. 저장 구조에는 경로·전사 원문이 담기지 않는다(불투명 id + 숫자 지표만).
+  - 참조 동일성의 단일 권위는 '내용 해시'다. path|size|mtime 조합은 캐시 권위로 쓰지 않는다
+    (파일을 옮기면 틀리고, 이름·크기가 같은 채 내용만 바뀌어도 틀린다). reference_cache_key가 강제한다.
 """
 import hashlib
 import math
@@ -46,6 +53,12 @@ UNKNOWN_REFERENCE_SELECTED = "UNKNOWN_REFERENCE_SELECTED"      # 저장된 후�
 OVERLAPPING_CANDIDATES = "OVERLAPPING_CANDIDATES"              # 저장 후보끼리 구간이 겹침
 TOO_MANY_CANDIDATES = "TOO_MANY_CANDIDATES"                    # 후보 3개 초과
 INVALID_FINGERPRINT_INPUT = "INVALID_FINGERPRINT_INPUT"        # 지문 입력이 규격 위반
+UNKNOWN_REFERENCE_ASSET = "UNKNOWN_REFERENCE_ASSET"            # manifest에 기록되지 않은 자산 조회/삭제
+CROSS_DEVICE_PROMOTION = "CROSS_DEVICE_PROMOTION"              # staging↔durable 볼륨이 달라 원자적 승격 불가
+CLIP_CHECKSUM_MISMATCH = "CLIP_CHECKSUM_MISMATCH"              # 저장된 클립 체크섬이 manifest와 불일치
+MANIFEST_CONTAINS_PATH = "MANIFEST_CONTAINS_PATH"              # manifest에 경로 문자열이 섞임(절대 금지)
+PROMOTE_ORDER_VIOLATION = "PROMOTE_ORDER_VIOLATION"            # 승격 단계 순서 위반(건너뜀/재배열)
+CLIP_VERIFICATION_FAILED = "CLIP_VERIFICATION_FAILED"          # staging 클립 검증 실패(디코드/샘플/규격)
 
 REFERENCE_GUARD_CODES = (
     NO_REFERENCE_SELECTED,
@@ -54,12 +67,93 @@ REFERENCE_GUARD_CODES = (
     OVERLAPPING_CANDIDATES,
     TOO_MANY_CANDIDATES,
     INVALID_FINGERPRINT_INPUT,
+    UNKNOWN_REFERENCE_ASSET,
+    CROSS_DEVICE_PROMOTION,
+    CLIP_CHECKSUM_MISMATCH,
+    MANIFEST_CONTAINS_PATH,
+    PROMOTE_ORDER_VIOLATION,
+    CLIP_VERIFICATION_FAILED,
+)
+
+# ── 승격(promote) 결과 상태 — 예외가 아니라 구조화 상태. TS와 집합이 동일해야 한다. ──
+REFERENCE_PROMOTED = "REFERENCE_PROMOTED"                      # 6단계 전부 성공(manifest 교체까지)
+REFERENCE_PROMOTE_FAILED = "REFERENCE_PROMOTE_FAILED"          # 중간 실패 — 기존 manifest/클립 불변
+
+REFERENCE_PROMOTE_STATUSES = (
+    REFERENCE_PROMOTED,
+    REFERENCE_PROMOTE_FAILED,
+)
+
+# ── 재탐색(rescan) 결과 상태 — 예외가 아니라 구조화 상태로 돌려준다. TS와 집합이 동일해야 한다. ──
+REFERENCE_CANDIDATES_FOUND = "REFERENCE_CANDIDATES_FOUND"          # 새 후보를 1개 이상 찾음
+NO_MORE_REFERENCE_CANDIDATES = "NO_MORE_REFERENCE_CANDIDATES"      # 남은 유효 구간 없음(빈 배열을 조용히 주지 않는다)
+
+REFERENCE_SCAN_STATUSES = (
+    REFERENCE_CANDIDATES_FOUND,
+    NO_MORE_REFERENCE_CANDIDATES,
 )
 
 # ── 정책 상수 ──
 MAX_AUTO_CANDIDATES = 3        # 자동 추천 후보 최대 개수
 MIN_REGION_MS = 3000           # 참조 하한(3.0초) — reference_region 정책과 동일
 MAX_REGION_MS = 10000          # 참조 상한(10.0초)
+
+# ── 영속(durable) 저장소 계약 — 실제 디렉터리 해석/파일 이동은 main(통합 담당) 소유. ──
+# 레이아웃:  <app userData>/reference-library/manifest.json          ← manifest(원자적 교체 대상)
+#            <app userData>/reference-library/<clipId>.wav          ← 영속 자산
+#            <app userData>/reference-library/staging/run-<runId>/  ← 이 실행(run) 전용 staging
+#            <app userData>/reference-library/staging/run-<runId>.journal.json ← 이 run이 만든 clipId 목록
+#
+# OS temp은 영속 위치가 아니다(재시작/청소로 사라진다).
+# staging은 "캐시 어딘가"가 아니라 **durable 대상의 부모와 같은 볼륨/파일시스템 아래**에 만든
+# run 스코프 디렉터리여야 한다. C:\ staging + E:\ durable 조합은 승격 시점에 정확히 터진다
+# (교차 볼륨 os.replace는 Windows에서 예외). assert_promotion_same_volume가 사전 차단한다.
+MANIFEST_VERSION = 1
+REFERENCE_LIBRARY_DIR_NAME = "reference-library"   # userData 하위 영속 디렉터리명
+REFERENCE_STAGING_DIR_NAME = "staging"             # 위 디렉터리 하위 staging(같은 볼륨 보장)
+MANIFEST_FILE_NAME = "manifest.json"
+CLIP_FILE_EXTENSION = ".wav"
+# manifest 레코드에 허용되는 필드 — 이 목록이 전부다(경로 필드는 영원히 없다).
+MANIFEST_RECORD_FIELDS = (
+    "clip_id",
+    "fingerprint",
+    "source_sha256",
+    "region_start_ms",
+    "region_duration_ms",
+    "transcript_sha256",
+    "analysis_version",
+    "clip_sha256",
+)
+
+# ── 승격 순서 — 이 순서가 계약이다. 건너뛰거나 재배열하면 PROMOTE_ORDER_VIOLATION. ──
+#   1 staging 디렉터리 생성(durable 부모와 같은 볼륨, run 스코프)
+#   2 staging에 WAV 기록
+#   3 검증: 디코드 / 전 샘플 유한 / 샘플레이트 / 채널 수 / 길이 / 체크섬
+#   4 클립을 durable로 원자적 승격
+#   5 manifest를 임시 파일에 기록하고 플랫폼이 허용하는 만큼 flush
+#   6 manifest를 마지막에 원자적으로 교체
+PROMOTE_STEPS = (
+    "CREATE_STAGING_DIR",
+    "WRITE_STAGING_CLIP",
+    "VERIFY_STAGING_CLIP",
+    "PROMOTE_CLIP",
+    "WRITE_MANIFEST_TEMP",
+    "REPLACE_MANIFEST",
+)
+# 3단계에서 반드시 확인해야 하는 항목(하나라도 실패하면 승격하지 않는다).
+CLIP_VERIFICATION_CHECKS = (
+    "decodable",
+    "all_samples_finite",
+    "sample_rate",
+    "channel_count",
+    "duration_ms",
+    "clip_sha256",
+)
+RUN_SCOPE_PREFIX = "run-"                       # run 스코프 이름 접두사(고아 소유 판정의 유일한 근거)
+RUN_JOURNAL_SUFFIX = ".journal.json"            # run이 만든 clipId 목록 파일
+MANIFEST_TEMP_SUFFIX = ".tmp"                   # manifest 임시 파일 접미사(5단계)
+
+_RUN_ID_RE = re.compile(r"^[0-9a-f]{8,32}$")
 
 # ── 정규 직렬화 상수 — 여기 한 곳이 권위. TS가 바이트 단위로 미러링한다. ──
 FINGERPRINT_PAYLOAD_HEADER = "reflib-fp/1"   # 직렬화 포맷 자체의 버전(분석 버전과 별개)
@@ -411,15 +505,47 @@ def assert_single_reference(entry, selected_ids):
 
 
 def build_synthesis_reference(entry, selected_ids):
-    """합성 경로에 넘기는 payload — 정확히 하나의 클립. 경로/전사 원문 없음."""
+    """합성/샘플러 경로에 넘기는 payload — 정확히 하나의 클립. 경로/전사 원문 없음.
+
+    샘플러는 여기 담긴 fingerprint/cache_key를 그대로 쓰고 자기 나름의 지문을 만들지 않는다
+    (내용 기반 지문이 참조 동일성의 단일 권위 — 요구 2)."""
     c = assert_single_reference(entry, selected_ids)
+    entry = entry or {}
+    fp = entry.get("fingerprint", "")
     return {
         "clip_id": c["id"],
         "start_ms": c["start_ms"],
         "duration_ms": c["duration_ms"],
-        "fingerprint": (entry or {}).get("fingerprint", ""),
-        "analysis_version": (entry or {}).get("analysis_version", REFERENCE_ANALYSIS_VERSION),
+        "fingerprint": fp,
+        "source_sha256": entry.get("source_sha256", ""),
+        "cache_key": reference_cache_key(fp) if fp else "",
+        "analysis_version": entry.get("analysis_version", REFERENCE_ANALYSIS_VERSION),
     }
+
+
+def reference_identity(entry_or_record):
+    """샘플러/캐시가 소비하는 참조 동일성 묶음. 경로·크기·mtime은 포함되지 않는다."""
+    e = entry_or_record or {}
+    fp = e.get("fingerprint", "")
+    return {
+        "fingerprint": reference_cache_key(fp),
+        "cache_key": reference_cache_key(fp),
+        "source_sha256": _require_sha256(e.get("source_sha256"), "source_sha256"),
+        "analysis_version": e.get("analysis_version", REFERENCE_ANALYSIS_VERSION),
+    }
+
+
+def reference_cache_key(fingerprint):
+    """재사용 캐시 키 = 내용 기반 지문 그 자체(소문자 hex 64).
+
+    `path|size|mtimeMs` 같은 경로/스탯 조합은 캐시 권위가 아니다 — 파일을 옮기기만 해도 달라지고,
+    이름·크기가 같은 채로 내용만 바뀌면 그대로여서 둘 다 틀린다. 규격 위반은 즉시 거부한다."""
+    v = str(fingerprint or "").strip().lower()
+    if not _SHA256_RE.match(v):
+        raise ReferenceLibraryError(
+            INVALID_FINGERPRINT_INPUT,
+            "cache key must be a content fingerprint (64 hex), not a path/size/mtime tuple")
+    return v
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -451,3 +577,418 @@ def find_sensitive_strings(value, forbidden=(), _at="$"):
                 hits.append({"at": _at, "kind": "forbidden_text"})
                 break
     return hits
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 재탐색(rescan) — 기존 후보 구간을 명시적 제외 입력으로 받는다(요구 3)
+# ─────────────────────────────────────────────────────────────────────────────
+def rescan_candidates(scored, existing=(), max_count=MAX_AUTO_CANDIDATES,
+                      min_duration_ms=MIN_REGION_MS, max_duration_ms=MAX_REGION_MS):
+    """이미 가진 후보(existing)의 반열린 구간과 겹치는 것을 전부 제외하고 새 후보를 찾는다.
+
+    - existing은 명시적 입력이다(한 번의 스캔이 3개를 고르는 것으로 끝내지 않는다).
+      끝점이 맞닿는 구간은 여전히 허용한다(반열린 [start, start+duration) 규칙 유지).
+    - 기존 후보를 교체·재정렬·삭제하지 않는다. 결과 candidates는 existing을 원래 순서 그대로
+      앞에 두고 새로 찾은 것만 뒤에 붙인다.
+    - 남은 유효 구간이 없으면 빈 배열을 조용히 주지 않고 NO_MORE_REFERENCE_CANDIDATES 상태를 준다.
+      겹치는 구간을 억지로 만들어내지도 않는다.
+    - 같은 입력 + 같은 제외 집합이면 항상 같은 결과(pick_auto_candidates가 결정적).
+
+    반환: {"status", "added", "candidates", "excluded_count", "room"}
+    """
+    existing = list(existing or [])
+    room = max(0, int(max_count) - len(existing))
+    added = []
+    if room > 0:
+        added = pick_auto_candidates(scored, room, existing, min_duration_ms, max_duration_ms)
+    status = REFERENCE_CANDIDATES_FOUND if added else NO_MORE_REFERENCE_CANDIDATES
+    return {
+        "status": status,
+        "added": added,
+        "candidates": existing + added,   # 기존은 순서 그대로 보존
+        "excluded_count": len(existing),
+        "room": room,
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 영속 저장소(durable library) — manifest는 순수 데이터, 파일 이동은 main 소유
+# ─────────────────────────────────────────────────────────────────────────────
+# Windows 볼륨 토큰(드라이브 문자 또는 UNC \\server\share). 파일시스템을 건드리지 않는 문자열 판정.
+_VOLUME_RE = re.compile(r"^(?:([A-Za-z]:)|(\\\\[^\\]+\\[^\\]+))")
+
+
+def path_volume(path):
+    """경로의 볼륨 토큰(소문자). 판정 불가면 빈 문자열. fs 접근 없음 — 문자열만 본다."""
+    s = str(path or "").replace("/", "\\")
+    m = _VOLUME_RE.match(s)
+    if not m:
+        return ""
+    return (m.group(1) or m.group(2)).lower()
+
+
+def assert_promotion_same_volume(staging_path, durable_path):
+    """원자적 승격 전제: staging과 durable이 같은 볼륨이어야 한다.
+
+    교차 볼륨 os.replace는 Windows에서 실패한다(그리고 복사+삭제는 원자적이지 않다).
+    staging을 cache/temp에 두더라도 durable과 같은 드라이브여야 하며, 아니면 승격을 시도조차 하지 않는다."""
+    a, b = path_volume(staging_path), path_volume(durable_path)
+    if a != b:
+        raise ReferenceLibraryError(CROSS_DEVICE_PROMOTION, "staging and durable volumes differ")
+    return True
+
+
+def clip_file_name(clip_id):
+    """영속 자산 파일명 — clipId + 확장자. 디렉터리는 붙이지 않는다(경로 해석은 main 소유)."""
+    cid = str(clip_id or "").strip().lower()
+    if not re.match(r"^[0-9a-f]{%d}$" % CLIP_ID_LENGTH, cid):
+        raise ReferenceLibraryError(INVALID_FINGERPRINT_INPUT, "clip_id must be %d hex chars" % CLIP_ID_LENGTH)
+    return cid + CLIP_FILE_EXTENSION
+
+
+def empty_manifest():
+    """빈 manifest(신규 설치/최초 실행)."""
+    return {"manifest_version": MANIFEST_VERSION, "records": []}
+
+
+def build_manifest_record(entry, clip_sha256, clip_id=None):
+    """영속 항목 1건. MANIFEST_RECORD_FIELDS 외의 필드는 만들지 않는다(경로 필드는 영원히 없다).
+
+    clip_sha256은 '실제로 durable에 저장된 클립 파일'의 sha256이다 — 재시작 후 무결성 검증에 쓴다.
+    clip_id 미지정이면 entry의 기본 후보를 쓴다."""
+    e = entry or {}
+    cid = clip_id or e.get("default_candidate_id")
+    record = {
+        "clip_id": str(cid or "").strip().lower(),
+        "fingerprint": reference_cache_key(e.get("fingerprint")),
+        "source_sha256": _require_sha256(e.get("source_sha256"), "source_sha256"),
+        "region_start_ms": int(e.get("region_start_ms", 0)),
+        "region_duration_ms": int(e.get("region_duration_ms", 0)),
+        "transcript_sha256": _require_sha256(e.get("transcript_sha256"), "transcript_sha256"),
+        "analysis_version": int(e.get("analysis_version", REFERENCE_ANALYSIS_VERSION)),
+        "clip_sha256": _require_sha256(clip_sha256, "clip_sha256"),
+    }
+    return assert_manifest_record_valid(record)
+
+
+def assert_manifest_record_valid(record):
+    """레코드 불변식: 허용 필드만, 해시 형식 정상, 경로 문자열 0."""
+    r = dict(record or {})
+    extra = sorted(set(r.keys()) - set(MANIFEST_RECORD_FIELDS))
+    if extra:
+        raise ReferenceLibraryError(MANIFEST_CONTAINS_PATH, "unexpected fields: %s" % ",".join(extra))
+    missing = [f for f in MANIFEST_RECORD_FIELDS if f not in r]
+    if missing:
+        raise ReferenceLibraryError(INVALID_FINGERPRINT_INPUT, "missing fields: %s" % ",".join(missing))
+    clip_file_name(r["clip_id"])                       # clip_id 형식 검증(부수효과 없음)
+    reference_cache_key(r["fingerprint"])
+    _require_sha256(r["source_sha256"], "source_sha256")
+    _require_sha256(r["transcript_sha256"], "transcript_sha256")
+    _require_sha256(r["clip_sha256"], "clip_sha256")
+    hits = find_sensitive_strings(r)
+    if hits:
+        raise ReferenceLibraryError(MANIFEST_CONTAINS_PATH, "at %s" % hits[0]["at"])
+    return r
+
+
+def assert_manifest_valid(manifest):
+    """manifest 전체 불변식. 경로가 한 글자라도 섞이면 즉시 거부한다."""
+    m = manifest or {}
+    if int(m.get("manifest_version", 0)) != MANIFEST_VERSION:
+        raise ReferenceLibraryError(INVALID_FINGERPRINT_INPUT, "unsupported manifest_version")
+    records = list(m.get("records") or [])
+    for r in records:
+        assert_manifest_record_valid(r)
+    ids = [r["clip_id"] for r in records]
+    if len(ids) != len(set(ids)):
+        raise ReferenceLibraryError(INVALID_FINGERPRINT_INPUT, "duplicate clip_id in manifest")
+    return {"manifest_version": MANIFEST_VERSION, "records": records}
+
+
+def upsert_manifest_record(manifest, record):
+    """레코드 추가/갱신(clip_id 기준). 원본 manifest를 변형하지 않고 새 dict를 돌려준다."""
+    m = assert_manifest_valid(manifest or empty_manifest())
+    rec = assert_manifest_record_valid(record)
+    records = [r for r in m["records"] if r["clip_id"] != rec["clip_id"]]
+    records.append(rec)
+    return {"manifest_version": MANIFEST_VERSION, "records": records}
+
+
+def find_manifest_record(manifest, fingerprint):
+    """지문으로 영속 레코드를 찾는다. 없으면 None. (재시작 후 재사용 조회 경로)"""
+    fp = reference_cache_key(fingerprint)
+    for r in (manifest or {}).get("records") or []:
+        if r.get("fingerprint") == fp:
+            return r
+    return None
+
+
+def find_manifest_record_by_clip_id(manifest, clip_id):
+    cid = str(clip_id or "").strip().lower()
+    for r in (manifest or {}).get("records") or []:
+        if r.get("clip_id") == cid:
+            return r
+    return None
+
+
+def plan_asset_deletion(manifest, clip_id):
+    """삭제 계획 — 그 manifest 레코드가 소유한 자산만. prefix 청소를 하지 않는다.
+
+    반환: {"clip_id", "file_names": [...]}. 기록에 없는 id는 UNKNOWN_REFERENCE_ASSET로 거부한다
+    (기록하지 않은 것은 절대 지우지 않는다)."""
+    rec = find_manifest_record_by_clip_id(manifest, clip_id)
+    if rec is None:
+        raise ReferenceLibraryError(UNKNOWN_REFERENCE_ASSET, "clip_id not in manifest")
+    return {"clip_id": rec["clip_id"], "file_names": [clip_file_name(rec["clip_id"])]}
+
+
+def remove_manifest_record(manifest, clip_id):
+    """사용자가 그 참조를 제거할 때만 호출. (새 manifest, 삭제 계획) 반환."""
+    plan = plan_asset_deletion(manifest, clip_id)
+    m = assert_manifest_valid(manifest)
+    records = [r for r in m["records"] if r["clip_id"] != plan["clip_id"]]
+    return {"manifest_version": MANIFEST_VERSION, "records": records}, plan
+
+
+def verify_stored_clip(record, actual_clip_sha256):
+    """재시작 후 무결성 검증 — 저장된 클립의 실제 sha256이 레코드와 같아야 한다."""
+    rec = assert_manifest_record_valid(record)
+    if rec["clip_sha256"] != _require_sha256(actual_clip_sha256, "clip_sha256"):
+        raise ReferenceLibraryError(CLIP_CHECKSUM_MISMATCH, "stored clip checksum differs")
+    return rec
+
+
+def evaluate_reuse_against_record(record, requested):
+    """영속 레코드(전사 원문 없음, 해시만)와 요청을 비교한다 — 재시작 직후 경로.
+
+    evaluate_reuse와 같은 반환 모양/같은 사유 코드를 쓴다. 레코드에는 전사 원문이 없으므로
+    전사는 해시로만 비교한다(그래서 manifest에 원문을 담을 필요가 없다)."""
+    rec = assert_manifest_record_valid(record)
+    requested = requested or {}
+    r_region = requested.get("region") or {}
+    r_version = requested.get("analysis_version", REFERENCE_ANALYSIS_VERSION)
+    requested_fp = compute_fingerprint_from_request(requested)
+
+    reasons = []
+    if rec["source_sha256"] != _require_sha256(requested.get("source_sha256"), "source_sha256"):
+        reasons.append(REF_SOURCE_CHANGED)
+    if (rec["region_start_ms"] != seconds_to_ms(r_region.get("start", 0.0))
+            or rec["region_duration_ms"] != seconds_to_ms(r_region.get("duration", 0.0))):
+        reasons.append(REF_REGION_CHANGED)
+    if rec["transcript_sha256"] != sha256_hex_of_string(normalize_transcript(requested.get("transcript", ""))):
+        reasons.append(REF_TRANSCRIPT_CHANGED)
+    if rec["analysis_version"] != r_version:
+        reasons.append(REF_ANALYSIS_VERSION_CHANGED)
+
+    order = {code: i for i, code in enumerate(REFERENCE_INVALIDATION_REASONS)}
+    reasons.sort(key=lambda c: order[c])
+    return {
+        "reusable": (not reasons) and rec["fingerprint"] == requested_fp,
+        "reasons": reasons,
+        "fingerprint": requested_fp,
+        "stored_fingerprint": rec["fingerprint"],
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 승격(promote) — 순서·검증·실패 불변식. 실제 fs 호출은 effects로 주입받는다(여긴 순수).
+# ─────────────────────────────────────────────────────────────────────────────
+def _require_run_id(run_id):
+    v = str(run_id or "").strip().lower()
+    if not _RUN_ID_RE.match(v):
+        raise ReferenceLibraryError(INVALID_FINGERPRINT_INPUT, "run_id must be 8~32 hex chars")
+    return v
+
+
+def run_scoped_staging_dir_name(run_id):
+    """이 실행 전용 staging 디렉터리명. durable 부모와 같은 볼륨 아래에 만들어야 한다."""
+    return RUN_SCOPE_PREFIX + _require_run_id(run_id)
+
+
+def run_journal_file_name(run_id):
+    """이 run이 만든 clipId 목록 파일명. 고아 정리의 유일한 근거."""
+    return RUN_SCOPE_PREFIX + _require_run_id(run_id) + RUN_JOURNAL_SUFFIX
+
+
+def manifest_temp_file_name(run_id):
+    """5단계 manifest 임시 파일명(같은 디렉터리에서 원자적 교체 가능해야 한다)."""
+    return MANIFEST_FILE_NAME + "." + _require_run_id(run_id) + MANIFEST_TEMP_SUFFIX
+
+
+def is_run_scoped_name(name, run_id):
+    """이름이 그 run 소유의 staging 산출물인가(디렉터리/저널/manifest 임시본). 접두사 일치만으로는 안 된다."""
+    n = str(name or "").strip().lower()
+    return n in (run_scoped_staging_dir_name(run_id),
+                 run_journal_file_name(run_id),
+                 manifest_temp_file_name(run_id))
+
+
+def build_run_journal(run_id, clip_ids):
+    """run 저널 — 이 실행이 durable에 새로 넣으려 한 clipId 목록. 경로는 담지 않는다."""
+    ids = []
+    for cid in (clip_ids or []):
+        c = str(cid or "").strip().lower()
+        clip_file_name(c)                 # 형식 검증
+        if c not in ids:
+            ids.append(c)
+    return {"run_id": _require_run_id(run_id), "clip_ids": ids}
+
+
+def is_orphan_owned_by_run(file_name, journal, manifest):
+    """durable 디렉터리의 파일 하나가 '이 run이 남긴 고아'인가.
+
+    True 조건(전부 만족해야 한다):
+      - 파일명이 저널에 적힌 clipId의 정식 파일명과 '완전히' 같다(접두사 일치는 인정하지 않는다).
+      - 그 clipId가 현재 manifest에 없다(등재된 것은 고아가 아니며 절대 지우지 않는다).
+    저널에 없는 파일, 남의 파일, prefix만 같은 파일은 전부 False — 광역 스캔 삭제를 막는다."""
+    ids = list((journal or {}).get("clip_ids") or [])
+    if not ids:
+        return False
+    name = str(file_name or "").strip().lower()
+    for cid in ids:
+        c = str(cid or "").strip().lower()
+        try:
+            owned = clip_file_name(c)
+        except ReferenceLibraryError:
+            continue
+        if name == owned:
+            return find_manifest_record_by_clip_id(manifest, c) is None
+    return False
+
+
+def evaluate_clip_verification(measured, expected):
+    """3단계 검증 — 실패한 항목 이름 목록을 돌려준다(빈 목록이면 통과)."""
+    m = measured or {}
+    e = expected or {}
+    failed = []
+    if not m.get("decodable"):
+        failed.append("decodable")
+    if not m.get("all_samples_finite"):
+        failed.append("all_samples_finite")
+    for key in ("sample_rate", "channel_count", "duration_ms"):
+        if key in e and int(m.get(key, -1)) != int(e[key]):
+            failed.append(key)
+    try:
+        _require_sha256(m.get("clip_sha256"), "clip_sha256")
+    except ReferenceLibraryError:
+        failed.append("clip_sha256")
+    return failed
+
+
+def assert_clip_verified(measured, expected):
+    """검증 실패면 승격하지 않는다(4단계로 넘어가지 않음)."""
+    failed = evaluate_clip_verification(measured, expected)
+    if failed:
+        raise ReferenceLibraryError(CLIP_VERIFICATION_FAILED, ",".join(failed))
+    return measured
+
+
+def assert_promote_order(observed):
+    """관찰된 단계 열이 PROMOTE_STEPS의 접두사인지(건너뜀/재배열 없음) 확인한다."""
+    obs = list(observed or [])
+    if len(obs) > len(PROMOTE_STEPS) or obs != list(PROMOTE_STEPS[:len(obs)]):
+        raise ReferenceLibraryError(PROMOTE_ORDER_VIOLATION, "->".join(obs))
+    return obs
+
+
+def promote_reference_clip(effects, request):
+    """확정 클립을 영속 저장소로 승격한다 — 순서를 호출부가 틀릴 수 없게 여기서 고정한다.
+
+    effects: PROMOTE_STEPS와 1:1인 콜러블 6개(실제 fs 작업은 main 소유).
+      create_staging_dir(run_id)                     -> staging_dir 경로
+      write_staging_clip(staging_dir, file_name)     -> staged 경로
+      verify_staging_clip(staged_path)               -> {decodable, all_samples_finite,
+                                                          sample_rate, channel_count, duration_ms, clip_sha256}
+      promote_clip(staged_path, durable_file_name)   -> durable 경로 (원자적 rename/replace)
+      write_manifest_temp(manifest_dict, temp_name)  -> temp 경로 (기록 + flush)
+      replace_manifest(temp_path)                    -> None      (원자적 교체, 마지막)
+
+    request: {run_id, entry, durable_dir, manifest, expected{sample_rate,channel_count,duration_ms}, clip_id?}
+
+    반환(성공): {"status": REFERENCE_PROMOTED, "manifest", "record", "steps", "orphan_clip_ids": []}
+    반환(실패): {"status": REFERENCE_PROMOTE_FAILED, "failed_step", "error_code", "steps",
+                "orphan_clip_ids", "manifest"(원본 그대로), "journal"}
+    실패 시 이 함수는 manifest를 변형하지 않는다 — 원본 객체를 그대로 돌려준다.
+    5·6단계 전에 실패하면 replace_manifest는 호출조차 되지 않으므로 기존 manifest는 불변이다."""
+    req = request or {}
+    run_id = _require_run_id(req.get("run_id"))
+    entry = req.get("entry") or {}
+    manifest = req.get("manifest") or empty_manifest()
+    durable_dir = req.get("durable_dir") or ""
+    clip_id = str(req.get("clip_id") or entry.get("default_candidate_id") or "").strip().lower()
+    file_name = clip_file_name(clip_id)
+    journal = build_run_journal(run_id, [clip_id])
+
+    steps = []
+    failed_step = None
+    error_code = None
+    new_manifest = None
+    record = None
+    try:
+        staging_dir = effects["create_staging_dir"](run_id)
+        # staging은 durable 부모와 같은 볼륨이어야 한다 — 아니면 4단계에서 터진다. 여기서 미리 막는다.
+        assert_promotion_same_volume(staging_dir, durable_dir)
+        steps.append("CREATE_STAGING_DIR")
+
+        failed_step = "WRITE_STAGING_CLIP"
+        staged = effects["write_staging_clip"](staging_dir, file_name)
+        steps.append("WRITE_STAGING_CLIP")
+
+        failed_step = "VERIFY_STAGING_CLIP"
+        measured = effects["verify_staging_clip"](staged)
+        assert_clip_verified(measured, req.get("expected"))
+        steps.append("VERIFY_STAGING_CLIP")
+
+        failed_step = "PROMOTE_CLIP"
+        effects["promote_clip"](staged, file_name)
+        steps.append("PROMOTE_CLIP")
+
+        failed_step = "WRITE_MANIFEST_TEMP"
+        record = build_manifest_record(entry, measured["clip_sha256"], clip_id)
+        new_manifest = upsert_manifest_record(manifest, record)
+        temp_path = effects["write_manifest_temp"](new_manifest, manifest_temp_file_name(run_id))
+        steps.append("WRITE_MANIFEST_TEMP")
+
+        failed_step = "REPLACE_MANIFEST"
+        effects["replace_manifest"](temp_path)
+        steps.append("REPLACE_MANIFEST")
+    except ReferenceLibraryError as e:
+        if failed_step is None:
+            failed_step = "CREATE_STAGING_DIR"
+        error_code = e.code
+    except Exception:
+        if failed_step is None:
+            failed_step = "CREATE_STAGING_DIR"
+        error_code = None
+
+    assert_promote_order(steps)
+    if len(steps) == len(PROMOTE_STEPS):
+        return {"status": REFERENCE_PROMOTED, "manifest": new_manifest, "record": record,
+                "steps": steps, "orphan_clip_ids": [], "journal": journal}
+    # 4단계를 넘겼다면 클립은 durable에 있는데 manifest에는 없다 → 이 run 소유의 고아.
+    orphans = [clip_id] if "PROMOTE_CLIP" in steps else []
+    return {"status": REFERENCE_PROMOTE_FAILED, "failed_step": failed_step, "error_code": error_code,
+            "steps": steps, "orphan_clip_ids": orphans,
+            "manifest": manifest, "journal": journal}
+
+
+def resolve_reusable_clip(manifest, requested):
+    """재시작 후 재사용 조회: 요청 → 지문 → 영속 레코드 → clip_id.
+
+    반환: {"reusable", "clip_id", "file_name", "record", "fingerprint", "reasons"}
+    라이브러리에 없으면 reusable False + clip_id None(사유 없음 — 무효화가 아니라 부재).
+    clip_id를 실제 파일 경로로 바꾸는 일은 main 소유다(여기서는 파일명까지만)."""
+    fp = compute_fingerprint_from_request(requested)
+    rec = find_manifest_record(manifest, fp)
+    if rec is None:
+        return {"reusable": False, "clip_id": None, "file_name": None, "record": None,
+                "fingerprint": fp, "reasons": []}
+    verdict = evaluate_reuse_against_record(rec, requested)
+    return {
+        "reusable": verdict["reusable"],
+        "clip_id": rec["clip_id"] if verdict["reusable"] else None,
+        "file_name": clip_file_name(rec["clip_id"]) if verdict["reusable"] else None,
+        "record": rec,
+        "fingerprint": fp,
+        "reasons": verdict["reasons"],
+    }
