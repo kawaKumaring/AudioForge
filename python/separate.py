@@ -7,6 +7,7 @@ Communication via JSON lines on stdout.
 
 import argparse
 import json
+import math
 import os
 import sys
 import subprocess
@@ -517,15 +518,16 @@ def _run_split(args):
         shutil.copy2(args.input, tmp_input)
 
         try:
-            # Get total duration via ffprobe
-            from audio_utils import find_ffmpeg as _ff
-            ffprobe = os.path.join(os.path.dirname(ffmpeg), "ffprobe" + os.path.splitext(ffmpeg)[1])
-            probe_cmd = [ffprobe, "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", tmp_input]
-            probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
-            total_dur = float(probe_result.stdout.strip()) if probe_result.returncode == 0 else 0
+            # 총 길이(초). 실패하면 None → 마지막 트랙을 조용히 빠뜨리는 대신 구조화 오류로 중단.
+            total_dur = _probe_total_duration(ffmpeg, tmp_input)
+            if total_dur is None:
+                # 길이를 모르면 마지막 트랙 경계를 만들 수 없다 → 조용히 빠뜨리지 말고 중단.
+                emit("error", code="SPLIT_DURATION_UNKNOWN",
+                     message="오디오 길이를 확인할 수 없어 분할을 중단했습니다.")
+                return None
 
             # Build time boundaries
-            boundaries = [0.0] + split_seconds + ([total_dur] if total_dur > 0 else [])
+            boundaries = [0.0] + split_seconds + [total_dur]
 
             # 트랙 이름/라벨: 커스텀 라벨 있으면 사용 + 파일명 안전화, 없으면 Track NN
             track_specs = []
@@ -560,11 +562,12 @@ def _run_split(args):
     shutil.copy2(args.input, tmp_input)
 
     try:
-        # Get total duration
-        ffprobe = os.path.join(os.path.dirname(ffmpeg), "ffprobe" + os.path.splitext(ffmpeg)[1])
-        probe_cmd = [ffprobe, "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", tmp_input]
-        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
-        total_dur = float(probe_result.stdout.strip()) if probe_result.returncode == 0 else 0
+        # 총 길이(초). 위와 같은 규칙 — 실패는 조용한 누락이 아니라 명시 오류.
+        total_dur = _probe_total_duration(ffmpeg, tmp_input)
+        if total_dur is None:
+            emit("error", code="SPLIT_DURATION_UNKNOWN",
+                 message="오디오 길이를 확인할 수 없어 분할을 중단했습니다.")
+            return None
 
         # Run silencedetect filter
         cmd = [ffmpeg, "-i", tmp_input, "-af", "silencedetect=noise=-35dB:d=1.5", "-f", "null", "-"]
@@ -594,7 +597,7 @@ def _run_split(args):
         emit("progress", percent=25, message=f"{len(split_seconds)}개 분할 지점 확정")
 
         # Use same fast ffmpeg extraction as timestamp mode
-        boundaries = [0.0] + split_seconds + ([total_dur] if total_dur > 0 else [])
+        boundaries = [0.0] + split_seconds + [total_dur]
         track_specs = [(f"track_{i + 1:02d}", f"Track {i + 1:02d}") for i in range(len(boundaries) - 1)]
 
         tracks = _extract_tracks_ffmpeg(ffmpeg, tmp_input, boundaries, track_specs, args, 25, 60)
@@ -611,6 +614,29 @@ def _run_split(args):
             os.rmdir(tmp_dir)
         except OSError:
             pass
+
+
+def _probe_total_duration(ffmpeg, media_path):
+    """ffprobe로 총 길이(초)를 구한다. 실패/비정상값이면 None.
+
+    None을 0으로 뭉개면 boundaries에서 마지막 끝점이 빠져 **마지막 트랙이 조용히 사라지는데도
+    성공으로 보고**된다(감사 R5). 호출부는 None을 구조화 오류로 처리해야 한다.
+    """
+    try:
+        ffprobe = os.path.join(os.path.dirname(ffmpeg), "ffprobe" + os.path.splitext(ffmpeg)[1])
+        probe = subprocess.run([ffprobe, "-v", "quiet", "-show_entries", "format=duration",
+                                "-of", "csv=p=0", media_path], capture_output=True, text=True)
+        if probe.returncode != 0:
+            return None
+        raw = (probe.stdout or "").strip()
+        if not raw:
+            return None
+        dur = float(raw)
+    except (OSError, ValueError):
+        return None
+    if not math.isfinite(dur) or dur <= 0:
+        return None
+    return dur
 
 
 def _extract_tracks_ffmpeg(ffmpeg, tmp_input, boundaries, track_specs, args, pct_start, pct_span):

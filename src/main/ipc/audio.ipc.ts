@@ -469,8 +469,17 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     const nameWithoutExt = basename(filePath, ext)
     const now = new Date()
     const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}-${String(now.getSeconds()).padStart(2, '0')}`
-    const outputDir = join(dirname(filePath), 'AudioForge_output', `${timestamp}_${nameWithoutExt}`)
-    if (!existsSync(outputDir)) mkdirSync(outputDir, { recursive: true })
+    // 폴더명은 초 단위라 같은 초에 두 번 시작하면 같은 폴더를 재사용하게 되고, 워커가 ffmpeg -y로
+    // 덮어써 **이전 결과가 소리 없이 사라진다**(감사 R9). 이미 존재하면 짧은 접미사를 붙여 새 폴더를
+    // 확보한다. 접미사는 첫 충돌부터만 붙으므로 기존 폴더 이름 규칙은 그대로다.
+    const baseOutputDir = join(dirname(filePath), 'AudioForge_output', `${timestamp}_${nameWithoutExt}`)
+    let outputDir = baseOutputDir
+    for (let n = 2; existsSync(outputDir) && n <= 100; n++) outputDir = `${baseOutputDir}_${n}`
+    if (existsSync(outputDir)) {
+      // 100개까지 전부 존재 = 비정상. 덮어쓰지 않고 명시 실패한다.
+      throw Object.assign(new Error('출력 폴더를 만들 수 없습니다. 같은 이름의 폴더가 너무 많습니다.'), { code: 'OUTPUT_DIR_UNAVAILABLE' })
+    }
+    mkdirSync(outputDir, { recursive: true })
     // 방어적: 이 output_dir에 이전 실행이 남긴 Qwen 실행별 임시폴더가 있으면 시작 전에 정리
     // (신규 dir이라 보통 없음). 안전 범위 = 이 output_dir 바로 아래 .qwen-job-* 폴더만.
     if (mode === 'tts') { try { sweepQwenJobDirs(outputDir) } catch { /* noop */ } }
