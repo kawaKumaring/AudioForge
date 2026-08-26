@@ -5,6 +5,12 @@ import type { TtsReferenceEntry, PitchCapability, TtsEmotionRegion } from '../..
 import { deriveRefMode } from '../../shared/ttsConfig'
 import ReferenceRegionPanel from './ReferenceRegionPanel'
 import ReferenceAssetLibraryPanel from './ReferenceAssetLibraryPanel'
+import EmotionSamplerPanel from './EmotionSamplerPanel'
+import { SAMPLER_FAILURE_TEXT } from '../../shared/samplerApi'
+import { EMOTION_SAMPLE_ROWS, capabilityForRow, stateForCapability } from '../../shared/emotionSampler'
+import type { EmotionSampleEntry } from '../../shared/emotionSampler'
+import { EMOTION_PREVIEW_SILENCE_MS } from '../../shared/emotionSamplePreview'
+import { createEmotionSamplePreviewPlayer, browserPreviewDeps } from '@/lib/emotionSamplePreviewPlayer'
 import { REF_ASSET_FAILURE_TEXT } from './ReferenceAssetLibraryPanel.logic'
 import type { ReferenceLibraryItem, ReferenceLibraryStatus } from '../../shared/referenceLibraryApi'
 import TtsVoiceSection from './TtsVoiceSection'
@@ -202,6 +208,89 @@ export default function TTSEditor() {
   )
   const [refAssetBusy, setRefAssetBusy] = useState(false)
   const [refAssetNotice, setRefAssetNotice] = useState<string | null>(null)
+
+  // ── 감정·표현 미리듣기 배선 ──
+  // renderer 는 rowId 만 보낸다. cacheKey 는 main 이 계산해 응답으로 돌려준 값만 보관하고,
+  // 생성 요청에는 절대 실어 보내지 않는다(권위는 main 이다).
+  const [samplerRows, setSamplerRows] = useState<string[]>([])
+  const [samplerKeys, setSamplerKeys] = useState<Record<string, string>>({})
+  const [samplerBusyRow, setSamplerBusyRow] = useState<string | null>(null)
+  const [samplerNotice, setSamplerNotice] = useState<string | null>(null)
+  const samplerPlayer = useRef<ReturnType<typeof createEmotionSamplePreviewPlayer> | null>(null)
+
+  const selectedRefId = useMemo(
+    () => refAssets.items.find((i) => i.selected) ?? null,
+    [refAssets.items]
+  )
+  const samplerReferenceReady = !!selectedRefId && selectedRefId.ready && selectedRefId.transcript === 'present'
+
+  // 표시용 엔트리. cacheKey 자리는 main 이 돌려준 값이 있을 때만 실제 키이고,
+  // 없으면 자리표시자다(어떤 IPC 입력으로도 쓰이지 않는다).
+  const samplerEntries: EmotionSampleEntry[] = useMemo(() => samplerRows.map((rowId) => {
+    const cap = capabilityForRow(rowId)
+    const capState = stateForCapability(cap)
+    const key = samplerKeys[rowId]
+    const state = key ? 'ready' : capState
+    return {
+      rowId,
+      state: state as EmotionSampleEntry['state'],
+      reason: state === 'ready' ? null : cap.reason,
+      cacheKey: key ?? '0'.repeat(64),
+    }
+  }), [samplerRows, samplerKeys])
+
+  const refreshSamplerCache = async (): Promise<void> => {
+    const res = await window.api.sampler.inventory()
+    // 우리가 아는 행의 키만 남긴다 — 목록에 없는 키는 다른 설정으로 만든 것이다.
+    setSamplerKeys((prev) => {
+      const alive = new Set(res.keys)
+      const next: Record<string, string> = {}
+      for (const [rowId, key] of Object.entries(prev)) if (alive.has(key)) next[rowId] = key
+      return next
+    })
+  }
+
+  const stopSamplerPreview = (): void => { samplerPlayer.current?.stop() }
+
+  const generateSample = async (rowId: string): Promise<void> => {
+    if (!selectedRefId) { setSamplerNotice(SAMPLER_FAILURE_TEXT.NO_REFERENCE_SELECTED); return }
+    setSamplerBusyRow(rowId)
+    setSamplerNotice(null)
+    try {
+      const res = await window.api.sampler.generate({ referenceId: selectedRefId.referenceId, rowId })
+      if (res.ok) setSamplerKeys((p) => ({ ...p, [rowId]: res.cacheKey }))
+      else setSamplerNotice(SAMPLER_FAILURE_TEXT[res.reason] ?? '샘플을 만들지 못했습니다.')
+    } finally {
+      setSamplerBusyRow(null)
+    }
+  }
+
+  const auditionSample = async (rowId: string): Promise<void> => {
+    const key = samplerKeys[rowId]
+    if (!key) return
+    const res = await window.api.sampler.previewUrl({ cacheKey: key })
+    if (!res.ok) { setSamplerNotice('저장된 샘플을 찾을 수 없습니다.'); return }
+    if (!samplerPlayer.current) {
+      samplerPlayer.current = createEmotionSamplePreviewPlayer(
+        browserPreviewDeps(EMOTION_PREVIEW_SILENCE_MS, {
+          onError: () => setSamplerNotice('미리듣기를 재생하지 못했습니다.'),
+        })
+      )
+    }
+    samplerPlayer.current.play(rowId, res.url)
+  }
+
+  const deleteSample = async (rowId: string): Promise<void> => {
+    const key = samplerKeys[rowId]
+    if (!key) return
+    stopSamplerPreview()
+    const res = await window.api.sampler.remove({ cacheKey: key })
+    if (!res.ok) { setSamplerNotice('샘플을 삭제하지 못했습니다.'); return }
+    setSamplerKeys((p) => { const next = { ...p }; delete next[rowId]; return next })
+  }
+
+  // 언마운트·모드 전환에서 재생을 정리한다(요소·타이머가 남지 않게).
+  useEffect(() => () => { samplerPlayer.current?.dispose(); samplerPlayer.current = null }, [])
 
   const refreshRefAssets = async (): Promise<void> => {
     const res = await window.api.referenceLibrary.list()
@@ -469,6 +558,22 @@ export default function TTSEditor() {
           onSelect={selectRefAsset}
           onRemove={removeRefAsset}
         />
+
+        {/* 감정·표현 미리듣기 — 참조 보관함·감정 참조 등록과 별개 섹션. */}
+        <EmotionSamplerPanel
+          rows={samplerEntries}
+          cachedFileRowIds={Object.keys(samplerKeys)}
+          defaultVoiceReady={samplerReferenceReady}
+          disabled={disabled || samplerBusyRow !== null}
+          onGenerate={generateSample}
+          onAudition={auditionSample}
+          onDelete={deleteSample}
+          onAddRow={(rowId) => { setSamplerRows((r) => (r.includes(rowId) ? r : [...r, rowId])); void refreshSamplerCache() }}
+          onRemoveRow={(rowId) => { stopSamplerPreview(); setSamplerRows((r) => r.filter((x) => x !== rowId)) }}
+        />
+        {samplerNotice && (
+          <p style={{ fontSize: 11, color: 'var(--rose)', margin: 0, overflowWrap: 'anywhere' }}>{samplerNotice}</p>
+        )}
 
         {/* 기본 참조 음성 패널(셸 주입) — 단 1회 마운트. */}
         {fileInfo?.path && (
