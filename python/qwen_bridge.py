@@ -166,10 +166,19 @@ def _generate_segment(model, seg, builder, proc):
     prod_tokens = _prod_tokens(builder, proc, seg["text"])
     seg_limit = generation_limit.compute_max_new_tokens(prod_tokens)
     _COUNTER["n"] = 0
+    # 이 한 호출이 곧 'blocking 생성 구간'이다 — 그 사이 stdout 이 없으므로 production 비활성
+    # timeout 280s 가 재는 창과 정확히 같은 구간이다. 그래서 상한 정책 판단에 쓸 수 있는
+    # seconds_per_iteration 은 이 구간만 재야 한다.
+    #
+    # tts_worker 의 elapsed_seconds 로 대신할 수 없다: 그 타이머는 장치 선택·참조 평가·모델
+    # 로딩·결합·pitch·원자적 배치까지 포함한 '작업 전체' 시간이다. 또 generated_iterations 가
+    # chunk 단위이므로 elapsed 도 chunk 단위여야 나눗셈이 의미를 갖는다.
+    _t_gen = time.monotonic()
     wavs, sr = model.generate_voice_clone(
         text=seg["text"], language=seg.get("language_name", "Korean"),
         ref_audio=seg["ref_audio"], ref_text=ref_text,
         x_vector_only_mode=xvo, max_new_tokens=seg_limit)
+    gen_elapsed = round(time.monotonic() - _t_gen, 3)
     iters = _COUNTER["n"]
     if iters <= 0:
         # 계측 래퍼가 동작하지 않은 것 — 상한이 실제로 걸렸는지 확인 불가. 성공 처리 금지.
@@ -178,7 +187,7 @@ def _generate_segment(model, seg, builder, proc):
     reason = generation_limit.classify_termination(iters, seg_limit)
     return {"wavs": wavs, "sr": sr, "prod_tokens": prod_tokens,
             "generation_limit": seg_limit, "generated_iterations": iters,
-            "termination_reason": reason}
+            "termination_reason": reason, "generation_elapsed_sec": gen_elapsed}
 
 
 class BridgeSegmentTooLong(Exception):
@@ -266,6 +275,8 @@ def _generate_plan(model, plan, builder, proc, n_segments, progress=None):
                      "emotion_id": seg.get("emotion_id"), "production_tokens": int(g["prod_tokens"]),
                      "generation_limit": int(g["generation_limit"]),
                      "generated_iterations": int(g["generated_iterations"]),
+                     # blocking 생성 구간만 잰 값(가산). 없으면 None — 0 으로 위조하지 않는다.
+                     "generation_elapsed_sec": g.get("generation_elapsed_sec"),
                      "termination_reason": g["termination_reason"], "status": "ok"})
         if progress:
             progress(30 + (completed * 60) // total, int(seg["index"]), n_segments, ci, cc, "done")

@@ -29,6 +29,13 @@ export function framesOrNull(v: unknown): number | null {
   const n = finiteNumber(v)
   return n != null && n >= 0 ? n : null
 }
+// positiveSecondsOrNull: 0 과 음수도 거절. 생성 구간은 monotonic 차이라 0.0 이 나오려면 시계
+// 분해능 아래여야 하는데 그건 '측정 안 됨'과 구분되지 않는다. elapsed 는 분자이므로 0 이 통과하면
+// crash 없이 seconds_per_iteration = 0 이라는 거짓 수치가 나온다.
+export function positiveSecondsOrNull(v: unknown): number | null {
+  const n = finiteNumber(v)
+  return n != null && n > 0 ? n : null
+}
 
 // ── 'unavailable' 표현 ─────────────────────────────────────────────────────────
 // value 는 계산이 성립한 경우에만 number 이고, 그 외에는 **항상 null** 이다. 0 으로 위조하지
@@ -43,7 +50,8 @@ export type MetricUnavailableReason =
   | 'zero_iterations'                 // 0 으로 나눌 수 없음(복원/구 데이터에서 실제로 0 가능)
   | 'missing_applied_limit'           // 이 chunk 에 적용된 동적 상한 부재
   | 'zero_applied_limit'              // 0 으로 나눌 수 없음
-  | 'missing_generation_elapsed_sec'  // 아직 존재하지 않는 필드 — 추가되면 자동으로 available 이 된다
+  | 'missing_generation_elapsed_sec'  // 필드 부재 (구 session, 또는 bridge 가 값을 못 남긴 실행)
+  | 'invalid_generation_elapsed_sec'  // 0/음수/NaN/Infinity — 0 이면 '측정 안 됨'과 구분되지 않는다
   | 'speed_postprocessed'            // 속도 후처리가 frames 를 오염시켰다 → iteration 당 지표 무효
   | 'speed_unknown'                  // 오염 여부를 증명할 수 없다 → 보수적으로 무효 취급
   | 'no_valid_rows'                  // 집계에 넣을 유효 행이 하나도 없다
@@ -143,7 +151,13 @@ export function analyzeGenerationChunk(row: TelemetryChunkInput | null | undefin
 
   const iters = finiteNumber(r.generated_iterations)
   const limit = finiteNumber(r.generation_limit)   // 이 chunk 에 실제로 적용된 동적 상한
-  const elapsed = finiteNumber(r.generation_elapsed_sec) ?? finiteNumber(opts.jobGenerationElapsedSec)
+  // chunk 값이 우선, 없으면 job 값. 어느 쪽이든 '있지만 0/음수' 는 유효값이 아니다 — elapsed 는
+  // 분자라서 0 이 들어오면 crash 없이 seconds_per_iteration = 0 이라는 거짓 수치가 나온다.
+  const rawElapsed = r.generation_elapsed_sec ?? opts.jobGenerationElapsedSec
+  const elapsed = positiveSecondsOrNull(rawElapsed)
+  const elapsedReason: MetricUnavailableReason | null =
+    elapsed != null ? null : (rawElapsed == null ? 'missing_generation_elapsed_sec'
+      : 'invalid_generation_elapsed_sec')
 
   // output_duration_sec = frames / rate
   let outDur: Metric
@@ -160,9 +174,9 @@ export function analyzeGenerationChunk(row: TelemetryChunkInput | null | undefin
   // elapsed_seconds 로 대체하지 않는다: 그 값은 device 선택·참조 평가·모델 로딩·concat·pitch·원자적
   // 배치까지 포함한 작업 전체 시간이라 '생성 시간'이 아니다.
   let secPerIter: Metric
-  if (elapsed == null) secPerIter = na('missing_generation_elapsed_sec')
+  if (elapsedReason) secPerIter = na(elapsedReason)
   else if (iterDenom) secPerIter = na(iterDenom)
-  else secPerIter = ok(elapsed / iters!)
+  else secPerIter = ok(elapsed! / iters!)
 
   // output_seconds_per_iteration / samples_per_iteration — 오염 시 무효.
   let outSecPerIter: Metric

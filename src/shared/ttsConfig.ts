@@ -41,6 +41,9 @@ export interface GenerationChunk {
   // 아닌 현행 버전 실행에서도 부재할 수 있다 — 그래서 이 자리는 항상 null 가능이다.
   frames: number | null
   output_sample_rate: number | null
+  // blocking 생성 구간만 잰 값(초). 작업 전체 시간인 metadata.elapsed_seconds 와 다른 값이다 —
+  // qwen_bridge 가 model.generate_voice_clone 호출 하나만 감싸 측정한다.
+  generation_elapsed_sec: number | null
 }
 export interface GenerationSummary {
   limit: number | null
@@ -67,6 +70,12 @@ export function sampleRateOrNull(v: unknown): number | null {
 export function framesOrNull(v: unknown): number | null {
   const n = finiteNumber(v)
   return n != null && n >= 0 ? n : null
+}
+// positiveSecondsOrNull: 0과 음수도 거절. 생성 구간은 monotonic 차이라 0.0이 나오려면 시계
+// 분해능 아래여야 하는데 그건 '측정 안 됨'과 구분되지 않고, 나눗셈에서 조용한 0 나눔을 만든다.
+export function positiveSecondsOrNull(v: unknown): number | null {
+  const n = finiteNumber(v)
+  return n != null && n > 0 ? n : null
 }
 
 // result metadata에서 생성 안전장치 요약을 안전 추출. 비정상 배열 항목은 crash 없이 무시/정규화하고,
@@ -99,6 +108,7 @@ export function parseGenerationSummary(metadata: Record<string, unknown> | null 
         emotion_id: typeof o.emotion_id === 'string' ? o.emotion_id : null,
         frames: framesOrNull(o.frames),
         output_sample_rate: sampleRateOrNull(o.output_sample_rate),
+        generation_elapsed_sec: positiveSecondsOrNull(o.generation_elapsed_sec),
       })
     }
   }
