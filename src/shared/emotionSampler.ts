@@ -978,10 +978,11 @@ export interface ExpressiveTimelineLike {
 
 // ── 엔진 capability ──────────────────────────────────────────────────────────
 //
-// ⚠️ 권위는 엔진 capability 모듈(python/expressive_capability.py + expressive_planner.py)이고,
-//    그 모듈은 feature/expressive-prosody-engine 에 있으며 **이 브랜치에 병합되지 않았다**.
-//    그래서 아래 표는 그 계약의 '선언'을 이름 그대로 옮겨 둔 기본값일 뿐이고, 프로브로 확인된 값이 아니다.
-//    통합 담당은 엔진 capability 가 병합되면 그 판정을 override 로 주입해야 한다.
+// ⚠️ 권위는 엔진 capability 모듈(python/expressive_capability.py + expressive_planner.py)이다.
+//    그 모듈은 이제 이 트리에 병합되어 있고, 어휘 드리프트는 test/fixtures/sampler-engine-parity.json
+//    을 유일 권위로 삼는 양방향 parity 스위트(samplerEngineParity.test.ts / test_sampler_engine_parity.py)
+//    가 고정한다. 아래 표는 여전히 그 계약의 '선언'을 옮겨 둔 기본값이며 프로브로 확인된 값이 아니다 —
+//    실제 판정은 엔진 capability 를 override 로 주입해 얻어야 한다.
 // ⚠️ capability 규칙(그 모듈의 규칙 1): 선언만으로는 절대 supported 가 되지 않는다.
 //    프로브 증거가 없으면 'unknown' 이고, 'unknown' 은 성공이 아니다. usable 은 'supported' 뿐이다.
 

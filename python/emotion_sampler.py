@@ -749,9 +749,10 @@ def expression_from_timeline(row_id, timeline):
 
 # ── 엔진 capability ──────────────────────────────────────────────────────
 #
-# ⚠️ 권위는 엔진 capability 모듈(expressive_capability.py + expressive_planner.py)이고,
-#    그 모듈은 feature/expressive-prosody-engine 에 있으며 이 브랜치에 병합되지 않았다.
-#    아래 표는 그 계약의 '선언'을 이름 그대로 옮겨 둔 기본값일 뿐, 프로브로 확인된 값이 아니다.
+# ⚠️ 권위는 엔진 capability 모듈(expressive_capability.py + expressive_planner.py)이다.
+#    그 모듈은 이제 이 트리에 병합되어 있고, 어휘 드리프트는 test/fixtures/sampler-engine-parity.json
+#    을 유일 권위로 삼는 양방향 parity 스위트가 고정한다. 아래 표는 여전히 그 계약의 '선언'을 옮겨
+#    둔 기본값이며 프로브로 확인된 값이 아니다 — 실제 판정은 엔진 capability 주입으로 얻어야 한다.
 # ⚠️ capability 규칙: 선언만으로는 절대 supported 가 되지 않는다. 프로브 증거가 없으면
 #    'unknown' 이고, 'unknown' 은 성공이 아니다. usable 은 'supported' 뿐이다.
 
