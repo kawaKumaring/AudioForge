@@ -27,6 +27,19 @@ import {
   summarizeEmotionSamples,
   buildEmotionSampleScript,
   EMOTION_SAMPLER_PARITY_INPUT,
+  EMOTION_SAMPLER_EXPRESSION_HOST,
+  EMOTION_SAMPLE_ROWS,
+  EMOTION_SAMPLE_FAMILIES,
+  EMOTION_SAMPLE_DECLARED_CAPABILITY,
+  EMOTION_SAMPLER_CAPABILITY_STATES,
+  emotionSampleRow,
+  assertEmotionSampleRowId,
+  emotionSampleExpressionFromTimeline,
+  capabilityForRow,
+  capabilityForVowelExtend,
+  isCapabilityUsable,
+  stateForCapability,
+  type EmotionSampleExpression,
   EMOTION_SAMPLER_PARITY_PAYLOAD,
   EMOTION_SAMPLER_PARITY_KEY,
   EMOTION_SAMPLE_STATES,
@@ -63,20 +76,43 @@ import {
   type EmotionSamplerCacheIndex,
 } from './emotionSampler.ts'
 import { sha256HexOfString, TTS_EMOTION_LABEL_TO_ID } from './ttsGrammar.ts'
+// 표현 프로소디 언어 계약 — 이 테스트가 '실제 파서'를 돌려 카탈로그를 검증한다(계약이 권위).
+import {
+  parseExpressiveTimeline,
+  LOCAL_PROSODY_KINDS,
+  LAUGH_STYLES,
+  EXPRESSIVE_EMOTION_LABEL_TO_ID,
+  EXPRESSIVE_NODE_KINDS,
+  DOT_RUN_CHARS,
+  BANG_RUN_CHARS,
+  QUESTION_RUN_CHARS,
+  TILDE_RUN_CHARS,
+} from './expressiveTimeline.ts'
 
 // ── 공통 픽스처(전부 합성 값) ────────────────────────────────────────────────
 const FP_A = 'a'.repeat(64)
 const FP_B = 'b'.repeat(64)
+
+const EXPR_HAPPY: EmotionSampleExpression = {
+  family: 'emotion', rowId: 'emotion_happy', kind: 'emotionTransition', strength: 100,
+}
 
 function input(over: Partial<EmotionSampleKeyInput> = {}): EmotionSampleKeyInput {
   return {
     voiceContentSha256: FP_A,
     engineId: 'qwen',
     modelId: 'qwen3-omni-flash',
-    emotionId: 'happy',
+    expression: { ...EXPR_HAPPY },
     config: { ...EMOTION_SAMPLER_DEFAULT_CONFIG },
     ...over,
   }
+}
+
+/** 계약 파서로 한 행의 표현 축을 실제로 구해 온다(세기의 권위는 계약). */
+function exprOf(rowId: string): EmotionSampleExpression {
+  const r = parseExpressiveTimeline(buildEmotionSampleScript(rowId), { mode: 'expressive_v3' })
+  assert.ok(r.ok, `${rowId}: 계약 파싱 성공 기대`)
+  return emotionSampleExpressionFromTimeline(rowId, (r as { timeline: never }).timeline)
 }
 const KEY_A = buildEmotionSampleCacheKey(input())
 
@@ -120,8 +156,9 @@ test('캐시 키: canonical payload 는 key 정렬·공백 없음·정수만', (
   assert.ok(!/\d\.\d/.test(payload), 'canonical payload 에 float 없음(정수 양자화)')
   const parsed = JSON.parse(payload)
   assert.deepEqual(Object.keys(parsed), [
-    'config', 'emotion_id', 'engine_id', 'key_version', 'model_id', 'phrase_version', 'voice_content_sha256',
+    'config', 'engine_id', 'expression', 'key_version', 'model_id', 'phrase_version', 'voice_content_sha256',
   ])
+  assert.deepEqual(Object.keys(parsed.expression), ['family', 'kind', 'row_id', 'strength'])
   assert.deepEqual(Object.keys(parsed.config), [
     'pitch_centi', 'speed_milli', 'tail_fade_ms', 'tail_mode', 'tail_padding_ms',
   ])
@@ -146,12 +183,25 @@ test('캐시 키: 모델 식별자만 바뀌어도 키가 달라진다', () => {
   assert.notEqual(buildEmotionSampleCacheKey(input({ modelId: 'qwen3-omni-instruct' })), KEY_A)
 })
 
-test('캐시 키: 감정 태그만 바뀌어도 키가 달라진다', () => {
-  assert.notEqual(buildEmotionSampleCacheKey(input({ emotionId: 'sad' })), KEY_A)
-  // 모든 감정이 서로 다른 키를 갖는다(충돌 없음).
-  const ids = [...new Set(Object.values(TTS_EMOTION_LABEL_TO_ID))]
-  const keys = new Set(ids.map((id) => buildEmotionSampleCacheKey(input({ emotionId: id }))))
-  assert.equal(keys.size, ids.length, '감정별 키 충돌 없음')
+test('캐시 키: 표현 이벤트(kind)만 바뀌어도 키가 달라진다', () => {
+  const other = { ...EXPR_HAPPY, kind: 'emphasis' }
+  assert.notEqual(buildEmotionSampleCacheKey(input({ expression: other })), KEY_A)
+})
+
+test('캐시 키: 세기(strength)만 바뀌어도 키가 달라진다', () => {
+  const weaker = { ...EXPR_HAPPY, strength: 60 }
+  assert.notEqual(buildEmotionSampleCacheKey(input({ expression: weaker })), KEY_A)
+  // 같은 kind 라도 세기가 다르면 다른 샘플이다(웃음 피식/밝은 웃음이 그 예).
+  const a = buildEmotionSampleCacheKey(input({ expression: { ...EXPR_HAPPY, strength: 30 } }))
+  const b = buildEmotionSampleCacheKey(input({ expression: { ...EXPR_HAPPY, strength: 75 } }))
+  assert.notEqual(a, b)
+})
+
+test('캐시 키: 행(rowId)만 바뀌어도 키가 달라진다 — 카탈로그 전체가 서로 다른 키', () => {
+  const keys = new Set(EMOTION_SAMPLE_ROWS.map((r) => buildEmotionSampleCacheKey(input({
+    expression: exprOf(r.rowId),
+  }))))
+  assert.equal(keys.size, EMOTION_SAMPLE_ROWS.length, '행별 키 충돌 없음')
 })
 
 test('캐시 키: 합성 설정의 각 필드가 독립적으로 키를 바꾼다', () => {
@@ -282,7 +332,7 @@ test('모든 상태가 서로 다른 표시로 렌더 가능(조용한 무표시
     const reasons = EMOTION_SAMPLE_STATE_REASONS[state]
     const cases: (typeof reasons[number] | null)[] = reasons.length > 0 ? [...reasons] : [null]
     for (const reason of cases) {
-      const entry: EmotionSampleEntry = { emotionId: 'happy', state, reason, cacheKey: KEY_A }
+      const entry: EmotionSampleEntry = { rowId: 'emotion_happy', state, reason, cacheKey: KEY_A }
       const v = describeEmotionSample(entry)
       assert.ok(v.stateLabel.trim().length > 0, `${state}: 상태 문구 존재`)
       assert.equal(v.state, state)
@@ -301,7 +351,7 @@ test('모든 상태가 서로 다른 표시로 렌더 가능(조용한 무표시
 
 test('실패 3종(실패/한도초과/강등)은 서로 다른 상태·문구·톤을 갖는다', () => {
   const mk = (state: EmotionSampleState, reason: EmotionSampleEntry['reason']) =>
-    describeEmotionSample({ emotionId: 'happy', state, reason, cacheKey: KEY_A })
+    describeEmotionSample({ rowId: 'emotion_happy', state, reason, cacheKey: KEY_A })
   const failed = mk('failed', 'SAMPLER_ENGINE_ERROR')
   const limit = mk('limitExceeded', 'SAMPLER_GENERATION_LIMIT')
   const degraded = mk('degraded', 'SAMPLER_XVECTOR_ONLY')
@@ -321,7 +371,7 @@ test('실패 3종(실패/한도초과/강등)은 서로 다른 상태·문구·�
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('상태 기계: 정상 흐름 idle → generating → ready', () => {
-  const e0 = initialEmotionSampleEntry('happy', KEY_A)
+  const e0 = initialEmotionSampleEntry('emotion_happy', KEY_A)
   assert.equal(e0.state, 'idle')
   assert.equal(e0.reason, null)
   const t1 = applyEmotionSamplerEvent(e0, { type: 'GENERATE_REQUESTED' })
@@ -334,14 +384,14 @@ test('상태 기계: 정상 흐름 idle → generating → ready', () => {
 })
 
 test('상태 기계: x-vector-only 성공은 degraded + 전용 사유', () => {
-  const gen = applyEmotionSamplerEvent(initialEmotionSampleEntry('sad', KEY_A), { type: 'GENERATE_REQUESTED' }).entry
+  const gen = applyEmotionSamplerEvent(initialEmotionSampleEntry('emotion_sad', KEY_A), { type: 'GENERATE_REQUESTED' }).entry
   const t = applyEmotionSamplerEvent(gen, { type: 'GENERATE_SUCCEEDED', degraded: true })
   assert.equal(t.entry.state, 'degraded')
   assert.equal(t.entry.reason, 'SAMPLER_XVECTOR_ONLY')
 })
 
 test('상태 기계: 생성 한도 초과는 limitExceeded + 전용 사유(재생 불가)', () => {
-  const gen = applyEmotionSamplerEvent(initialEmotionSampleEntry('sad', KEY_A), { type: 'GENERATE_REQUESTED' }).entry
+  const gen = applyEmotionSamplerEvent(initialEmotionSampleEntry('emotion_sad', KEY_A), { type: 'GENERATE_REQUESTED' }).entry
   const t = applyEmotionSamplerEvent(gen, { type: 'GENERATE_LIMIT_EXCEEDED' })
   assert.equal(t.entry.state, 'limitExceeded')
   assert.equal(t.entry.reason, 'SAMPLER_GENERATION_LIMIT')
@@ -349,7 +399,7 @@ test('상태 기계: 생성 한도 초과는 limitExceeded + 전용 사유(재�
 })
 
 test('상태 기계: 실패 사유가 failed 집합 밖이면 UNKNOWN 으로 강제(조용한 무표시 금지)', () => {
-  const gen = applyEmotionSamplerEvent(initialEmotionSampleEntry('sad', KEY_A), { type: 'GENERATE_REQUESTED' }).entry
+  const gen = applyEmotionSamplerEvent(initialEmotionSampleEntry('emotion_sad', KEY_A), { type: 'GENERATE_REQUESTED' }).entry
   const t = applyEmotionSamplerEvent(gen, { type: 'GENERATE_FAILED', reason: 'SAMPLER_XVECTOR_ONLY' })
   assert.equal(t.entry.state, 'failed')
   assert.equal(t.entry.reason, 'SAMPLER_UNKNOWN')
@@ -357,7 +407,7 @@ test('상태 기계: 실패 사유가 failed 집합 밖이면 UNKNOWN 으로 강
 })
 
 test('상태 기계: 실패 후 자동 재시도 없음 — 사용자가 다시 눌러야 generating 이 된다', () => {
-  const gen = applyEmotionSamplerEvent(initialEmotionSampleEntry('sad', KEY_A), { type: 'GENERATE_REQUESTED' }).entry
+  const gen = applyEmotionSamplerEvent(initialEmotionSampleEntry('emotion_sad', KEY_A), { type: 'GENERATE_REQUESTED' }).entry
   const failed = applyEmotionSamplerEvent(gen, { type: 'GENERATE_FAILED', reason: 'SAMPLER_ENGINE_ERROR' }).entry
   assert.equal(failed.state, 'failed')
   // 아무 이벤트도 없으면 계속 failed
@@ -370,7 +420,7 @@ test('상태 기계: 실패 후 자동 재시도 없음 — 사용자가 다시 
 })
 
 test('상태 기계: 거부 전이는 조용히 삼키지 않고 rejected 코드로 드러난다', () => {
-  const idle = initialEmotionSampleEntry('happy', KEY_A)
+  const idle = initialEmotionSampleEntry('emotion_happy', KEY_A)
   const generating = applyEmotionSamplerEvent(idle, { type: 'GENERATE_REQUESTED' }).entry
   const ready = applyEmotionSamplerEvent(generating, { type: 'GENERATE_SUCCEEDED' }).entry
 
@@ -404,7 +454,7 @@ test('상태 기계: 불변식 applied === (rejected === null) 이 모든 상태
   ]
   for (const state of EMOTION_SAMPLE_STATES) {
     const reason = EMOTION_SAMPLE_STATE_REASONS[state][0] ?? null
-    const entry: EmotionSampleEntry = { emotionId: 'happy', state, reason, cacheKey: KEY_A }
+    const entry: EmotionSampleEntry = { rowId: 'emotion_happy', state, reason, cacheKey: KEY_A }
     for (const ev of events) {
       const t = applyEmotionSamplerEvent(entry, ev)
       assert.equal(t.applied, t.rejected === null, `${state} × ${ev.type}`)
@@ -417,7 +467,7 @@ test('상태 기계: 불변식 applied === (rejected === null) 이 모든 상태
 })
 
 test('상태 기계: 목소리/설정 변경(KEY_CHANGED) → 새 키 + 미생성 복귀', () => {
-  const gen = applyEmotionSamplerEvent(initialEmotionSampleEntry('happy', KEY_A), { type: 'GENERATE_REQUESTED' }).entry
+  const gen = applyEmotionSamplerEvent(initialEmotionSampleEntry('emotion_happy', KEY_A), { type: 'GENERATE_REQUESTED' }).entry
   const ready = applyEmotionSamplerEvent(gen, { type: 'GENERATE_SUCCEEDED' }).entry
   const newKey = buildEmotionSampleCacheKey(input({ voiceContentSha256: FP_B }))
   const t = applyEmotionSamplerEvent(ready, { type: 'KEY_CHANGED', cacheKey: newKey })
@@ -440,16 +490,16 @@ test('캐시 hit: 같은 키면 재사용하고 생성 호출이 0회', () => {
     if (plan.action === 'generate') generateCalls += 1
     return plan
   }
-  const p1 = run('happy', KEY_A)
+  const p1 = run('emotion_happy', KEY_A)
   assert.equal(p1.action, 'reuse')
   assert.equal(p1.entry.state, 'ready')
-  const p2 = run('happy', KEY_A)
+  const p2 = run('emotion_happy', KEY_A)
   assert.equal(p2.action, 'reuse')
   assert.equal(generateCalls, 0, 'hit 이면 합성을 호출하지 않는다')
 
   // miss 일 때만 생성
-  const otherKey = buildEmotionSampleCacheKey(input({ emotionId: 'sad' }))
-  const p3 = run('sad', otherKey)
+  const otherKey = buildEmotionSampleCacheKey(input({ expression: exprOf('emotion_sad') }))
+  const p3 = run('emotion_sad', otherKey)
   assert.equal(p3.action, 'generate')
   assert.equal(p3.entry.state, 'idle')
   assert.equal(generateCalls, 1)
@@ -457,7 +507,7 @@ test('캐시 hit: 같은 키면 재사용하고 생성 호출이 0회', () => {
 
 test('캐시 hit: 강등 샘플도 재사용되며 degraded 로 복원된다', () => {
   const cache: EmotionSamplerCacheIndex = { [KEY_A]: { degraded: true } }
-  const plan = resolveEmotionSampleRequest('happy', KEY_A, cache)
+  const plan = resolveEmotionSampleRequest('emotion_happy', KEY_A, cache)
   assert.equal(plan.action, 'reuse')
   assert.equal(plan.entry.state, 'degraded')
   assert.equal(plan.entry.reason, 'SAMPLER_XVECTOR_ONLY')
@@ -483,7 +533,7 @@ test('캐시 hit: 유효 캐시가 있으면 재생성 버튼이 비활성 + 이
 test('캐시: 문구 버전이 올라가면 기존 캐시가 hit 되지 않는다(무효화)', () => {
   const cache: EmotionSamplerCacheIndex = { [KEY_A]: { degraded: false } }
   const bumpedKey = buildEmotionSampleCacheKeyAt(input(), EMOTION_SAMPLER_PHRASE_VERSION + 1, EMOTION_SAMPLER_KEY_VERSION)
-  assert.equal(resolveEmotionSampleRequest('happy', bumpedKey, cache).action, 'generate')
+  assert.equal(resolveEmotionSampleRequest('emotion_happy', bumpedKey, cache).action, 'generate')
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -511,18 +561,20 @@ test('일괄 생성 금지: 모듈에 bulk/all 진입점이 없다(소스 파싱
 test('일괄 생성 금지: 생성 관련 함수는 감정 태그를 정확히 하나만 받는다(런타임)', () => {
   // 시그니처: 첫 인자 = 감정 하나. 배열/객체를 주면 즉시 실패한다.
   assert.equal(buildEmotionSampleCacheKey.length, 1)
-  assert.equal(resolveEmotionSampleRequest.length, 3)
-  assert.equal(initialEmotionSampleEntry.length, 2)
+  // resolve/initial 의 마지막 인자는 capability(선택) — 필수 인자는 여전히 '행 하나 + 키'다.
+  // (rowId, cacheKey, cacheIndex, capability?) — 4번째는 선택적 capability 주입 슬롯이다.
+  assert.equal(resolveEmotionSampleRequest.length, 4)
+  assert.equal(initialEmotionSampleEntry.length, 3)  // (rowId, cacheKey, capability?)
 
-  for (const bogus of [['happy', 'sad'], { 0: 'happy' }, 3, null, undefined, '']) {
+  for (const bogus of [['emotion_happy', 'emotion_sad'], { 0: 'x' }, 3, null, undefined, '']) {
     assert.throws(
-      () => assertEmotionSampleTag(bogus as never),
-      (e: unknown) => e instanceof EmotionSamplerInputError && e.code === 'SAMPLER_INVALID_EMOTION_ID',
-      `감정 태그가 아닌 입력 거부: ${JSON.stringify(bogus)}`
+      () => assertEmotionSampleRowId(bogus as never),
+      (e: unknown) => e instanceof EmotionSamplerInputError && e.code === 'SAMPLER_INVALID_ROW_ID',
+      `행 id 가 아닌 입력 거부: ${JSON.stringify(bogus)}`
     )
     assert.throws(() => initialEmotionSampleEntry(bogus as never, KEY_A))
     assert.throws(() => resolveEmotionSampleRequest(bogus as never, KEY_A, {}))
-    assert.throws(() => buildEmotionSampleCacheKey(input({ emotionId: bogus as never })))
+    assert.throws(() => buildEmotionSampleCacheKey(input({ expression: { ...EXPR_HAPPY, rowId: bogus as never } })))
   }
 })
 
@@ -538,7 +590,7 @@ test('일괄 생성 금지: 패널에도 전체 생성 버튼/팬아웃이 없�
     assert.match(c, /^[\w.]+$/, `onGenerate 인자는 단일 식별자: ${c}`)
   }
   // props 계약도 단일 태그
-  assert.match(panelCode, /onGenerate:\s*\(emotionId:\s*string\)\s*=>\s*void/)
+  assert.match(panelCode, /onGenerate:\s*\(rowId:\s*string\)\s*=>\s*void/)
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -599,14 +651,14 @@ test('위생: 문장/전사문처럼 보이는 값은 캐시 키 입력에서 �
 
 test('위생: 상태 객체는 문자열 필드 전부가 안전 값이며 경로/문장을 담지 않는다', () => {
   const cases: EmotionSampleEntry[] = EMOTION_SAMPLE_STATES.map((state) => ({
-    emotionId: 'happy',
+    rowId: 'emotion_happy',
     state,
     reason: EMOTION_SAMPLE_STATE_REASONS[state][0] ?? null,
     cacheKey: KEY_A,
   }))
   for (const entry of cases) {
-    assert.deepEqual(Object.keys(entry).sort(), ['cacheKey', 'emotionId', 'reason', 'state'])
-    assertSamplerSafeValue('emotionId', entry.emotionId)
+    assert.deepEqual(Object.keys(entry).sort(), ['cacheKey', 'reason', 'rowId', 'state'])
+    assertSamplerSafeValue('rowId', entry.rowId)
     assertSamplerSafeValue('state', entry.state)
     assertSamplerSafeValue('cacheKey', entry.cacheKey)
     if (entry.reason) assertSamplerSafeValue('reason', entry.reason)
@@ -619,7 +671,7 @@ test('위생: 상태 객체는 문자열 필드 전부가 안전 값이며 경�
 test('위생: 파생 표시 객체에도 경로·문구 원문이 없다', () => {
   for (const state of EMOTION_SAMPLE_STATES) {
     const v = describeEmotionSample({
-      emotionId: 'happy', state, reason: EMOTION_SAMPLE_STATE_REASONS[state][0] ?? null, cacheKey: KEY_A,
+      rowId: 'emotion_happy', state, reason: EMOTION_SAMPLE_STATE_REASONS[state][0] ?? null, cacheKey: KEY_A,
     })
     const json = JSON.stringify(v)
     assert.ok(!/[\\/]|\.wav|\.mp3|file:/.test(json), `표시 객체에 경로 없음: ${state}`)
@@ -662,7 +714,7 @@ test('목소리 권위: 같은 파일이 다른 경로로 옮겨져도 같은 �
   assert.equal(k1, k2, '경로 이동은 키를 바꾸지 않는다')
   // 그래서 이동 후에도 기존 캐시가 그대로 hit 된다(재합성 없음).
   const cache: EmotionSamplerCacheIndex = { [k1]: { degraded: false } }
-  assert.equal(resolveEmotionSampleRequest('happy', k2, cache).action, 'reuse')
+  assert.equal(resolveEmotionSampleRequest('emotion_happy', k2, cache).action, 'reuse')
 })
 
 test('목소리 권위: 이름·크기가 같아도 내용이 바뀌면 키가 달라진다(캐시 무효화)', () => {
@@ -671,7 +723,7 @@ test('목소리 권위: 이름·크기가 같아도 내용이 바뀌면 키가 �
   const k2 = buildEmotionSampleCacheKey(input({ voiceContentSha256: edited.contentSha256 }))
   assert.notEqual(k1, k2, '내용 변경은 이름/크기가 같아도 키를 바꾼다')
   const cache: EmotionSamplerCacheIndex = { [k1]: { degraded: false } }
-  assert.equal(resolveEmotionSampleRequest('happy', k2, cache).action, 'generate')
+  assert.equal(resolveEmotionSampleRequest('emotion_happy', k2, cache).action, 'generate')
 })
 
 test('목소리 권위: 경로 기반 지문(path|size|mtimeMs)은 키 입력이 될 수 없다', () => {
@@ -880,21 +932,22 @@ test('패널: 접근성 — 실제 button + aria-label, 고정 폭 없음(800x60
 
 test('접힘 요약: 상태 6개가 정확히 한 버킷에만 집계된다(중복 없음)', () => {
   const mk = (state: EmotionSampleState): EmotionSampleEntry => ({
-    emotionId: 'happy', state, reason: EMOTION_SAMPLE_STATE_REASONS[state][0] ?? null, cacheKey: KEY_A,
+    rowId: 'emotion_happy', state, reason: EMOTION_SAMPLE_STATE_REASONS[state][0] ?? null, cacheKey: KEY_A,
   })
-  // 상태별로 하나씩 → generated 1(ready) / generating 1 / attention 3(degraded+limitExceeded+failed), idle 미집계
+  // 상태별로 하나씩 → generated 1(ready) / generating 1 /
+  // attention 5(degraded+limitExceeded+failed+unsupported+unverified), idle 미집계
   const all = EMOTION_SAMPLE_STATES.map(mk)
   const s = summarizeEmotionSamples(all)
   assert.equal(s.generated, 1)
   assert.equal(s.generating, 1)
-  assert.equal(s.attention, 3)
+  assert.equal(s.attention, 5)
   assert.equal(s.generated + s.generating + s.attention, EMOTION_SAMPLE_STATES.length - 1, 'idle 만 미집계')
-  assert.equal(s.text, '만들어짐 1 · 만드는 중 1 · 확인 필요 3')
+  assert.equal(s.text, '만들어짐 1 · 만드는 중 1 · 확인 필요 5')
 })
 
 test('접힘 요약: 0인 버킷은 문구에서 빠지고, 전부 0이면 빈 안내', () => {
   const mk = (state: EmotionSampleState): EmotionSampleEntry =>
-    ({ emotionId: 'happy', state, reason: EMOTION_SAMPLE_STATE_REASONS[state][0] ?? null, cacheKey: KEY_A })
+    ({ rowId: 'emotion_happy', state, reason: EMOTION_SAMPLE_STATE_REASONS[state][0] ?? null, cacheKey: KEY_A })
   assert.equal(summarizeEmotionSamples([]).text, EMOTION_SAMPLE_SUMMARY_EMPTY)
   assert.equal(summarizeEmotionSamples([mk('idle'), mk('idle')]).text, EMOTION_SAMPLE_SUMMARY_EMPTY)
   assert.equal(summarizeEmotionSamples([mk('ready')]).text, '만들어짐 1')
@@ -907,7 +960,7 @@ test('접힘 요약: 0인 버킷은 문구에서 빠지고, 전부 0이면 빈 �
 
 test('접힘 요약: 문구가 상태 라벨/사유 문장을 그대로 노출하지 않는다(요약만)', () => {
   const mk = (state: EmotionSampleState): EmotionSampleEntry =>
-    ({ emotionId: 'happy', state, reason: EMOTION_SAMPLE_STATE_REASONS[state][0] ?? null, cacheKey: KEY_A })
+    ({ rowId: 'emotion_happy', state, reason: EMOTION_SAMPLE_STATE_REASONS[state][0] ?? null, cacheKey: KEY_A })
   const text = summarizeEmotionSamples(EMOTION_SAMPLE_STATES.map(mk)).text
   for (const r of EMOTION_SAMPLE_REASON_CODES) {
     assert.ok(!text.includes(EMOTION_SAMPLE_REASON_LABEL[r]), `접힘 요약에 사유 문장 없음: ${r}`)
@@ -940,23 +993,233 @@ test('패널: 기본 접힘 + 펼쳐야 목록/안내가 렌더된다', () => {
 // 12) 표현 언어 교체 지점 — 지금은 태그 문자열 결합, 나중에 AST/event builder
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('대본 조립: 태그 + 표준 문구. 교체 지점이 한 함수로 격리돼 있다', () => {
-  assert.equal(buildEmotionSampleScript('[기쁨]'), `[기쁨] ${emotionSamplerPhraseScript()}`)
-  assert.equal(buildEmotionSampleScript(''), emotionSamplerPhraseScript(), '태그 없으면 문구만')
-  assert.equal(buildEmotionSampleScript('  [슬픔]  '), `[슬픔] ${emotionSamplerPhraseScript()}`)
-  // 모듈이 감정 label 표를 알지 않는다 — 태그 문자열은 호출부가 주입한다(교체 시 여기만 바뀐다).
-  assert.ok(moduleSrc.includes('EXPRESSION LANGUAGE SWAP POINT'), '교체 지점 표시(주석)')
-  // 아직 표현 이벤트(구두점/웃음)를 넣지 않았다 — 별도 문구/이벤트 버전으로 나중에 온다.
-  assert.equal(EMOTION_SAMPLER_PHRASE_VERSION, 1, '이번 정정에서 문구 버전 불변')
-  assert.deepEqual([...EMOTION_SAMPLER_PHRASES], ['안녕하세요.', '잠시 후에 다시 말씀드리겠습니다.'])
+test('대본 조립: 행 id 하나로 계약 토큰을 조립한다(문자열 접합 아님)', () => {
+  // 감정 baseline 은 v1 과 바이트 동일해야 한다(비교 기준선 보존).
+  assert.equal(buildEmotionSampleScript('emotion_happy'), `[기쁨] ${emotionSamplerPhraseScript()}`)
+  assert.equal(buildEmotionSampleScript('emotion_transition_happy_sad'),
+    `[기쁨] ${EMOTION_SAMPLER_PHRASES[0]} [슬픔] ${EMOTION_SAMPLER_PHRASES[1]}`)
+  assert.equal(buildEmotionSampleScript('punct_emphasis'), `${EMOTION_SAMPLER_EXPRESSION_HOST}!`)
+  assert.equal(buildEmotionSampleScript('laugh_chuckle'), `${EMOTION_SAMPLER_EXPRESSION_HOST} [ㅋ]`)
+  // 카탈로그에 없는 행은 거부(임의 문자열을 대본으로 만들 수 없다).
+  for (const bogus of ['', 'nope', ['emotion_happy'], 3, null]) {
+    assert.throws(() => buildEmotionSampleScript(bogus as never))
+  }
+  assert.ok(moduleSrc.includes('EXPRESSION LANGUAGE SWAP POINT') === false,
+    '교체가 끝났으므로 예고 배너는 더 이상 없다')
 })
 
+
 test('대본 조립: 결과 프롬프트는 상태/키/화면 어디에도 쓰이지 않는다', () => {
-  const script = buildEmotionSampleScript('[기쁨]')
+  const script = buildEmotionSampleScript('emotion_happy')
   const payload = canonicalEmotionSampleKeyPayload(input())
   assert.ok(!payload.includes(script))
-  const entry = initialEmotionSampleEntry('happy', KEY_A)
+  const entry = initialEmotionSampleEntry('emotion_happy', KEY_A)
   assert.ok(!JSON.stringify(entry).includes(script))
   assert.ok(!JSON.stringify(describeEmotionSample(entry)).includes(script))
   assert.ok(!panelCode.includes('buildEmotionSampleScript'), '패널은 대본을 만들지도 렌더하지도 않는다')
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 13) 표현 언어 계약 소비 — 카탈로그가 계약과 어긋나지 않는가(실제 파서로 검증)
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('계약 소비: 모든 행의 대본이 계약 파서에서 오류 없이 파싱된다', () => {
+  for (const row of EMOTION_SAMPLE_ROWS) {
+    const r = parseExpressiveTimeline(buildEmotionSampleScript(row.rowId), { mode: 'expressive_v3' })
+    assert.ok(r.ok, `${row.rowId}: 파싱 성공`)
+    const errs = r.timeline.diagnostics.filter((d) => d.severity === 'error')
+    assert.equal(errs.length, 0, `${row.rowId}: error 진단 없음`)
+  }
+})
+
+test('계약 소비: 각 행의 expectKind 가 계약이 실제로 내는 이벤트 종류와 일치', () => {
+  for (const row of EMOTION_SAMPLE_ROWS) {
+    const ex = exprOf(row.rowId)
+    assert.equal(ex.kind, row.expectKind, `${row.rowId}: 계약 이벤트 종류`)
+    assert.equal(ex.rowId, row.rowId)
+    assert.equal(ex.family, row.family)
+    assert.ok(Number.isInteger(ex.strength) && ex.strength >= 0 && ex.strength <= 100,
+      `${row.rowId}: 세기는 0..100 정수`)
+  }
+})
+
+test('계약 소비: expectKind 는 계약 enum 집합 안에만 있다(병렬 어휘 금지)', () => {
+  const prosody = new Set<string>(LOCAL_PROSODY_KINDS as readonly string[])
+  const laughs = new Set<string>(LAUGH_STYLES as readonly string[])
+  const nodeKinds = new Set<string>(EXPRESSIVE_NODE_KINDS as readonly string[])
+  for (const row of EMOTION_SAMPLE_ROWS) {
+    if (row.family === 'punctuation') assert.ok(prosody.has(row.expectKind), `${row.rowId} in LOCAL_PROSODY_KINDS`)
+    else if (row.family === 'laugh') assert.ok(laughs.has(row.expectKind), `${row.rowId} in LAUGH_STYLES`)
+    else assert.ok(nodeKinds.has(row.expectKind), `${row.rowId} in EXPRESSIVE_NODE_KINDS`)
+  }
+  // 웃음 5 style 을 모두 덮는다(계약에 없는 style 을 만들지도 않았다).
+  const covered = new Set(EMOTION_SAMPLE_ROWS.filter((r) => r.family === 'laugh').map((r) => r.expectKind))
+  assert.deepEqual([...covered].sort(), [...LAUGH_STYLES].sort())
+  // 구두점 5종이 계약의 국소 운율 종류와 정확히 대응한다.
+  const punct = new Set(EMOTION_SAMPLE_ROWS.filter((r) => r.family === 'punctuation').map((r) => r.expectKind))
+  assert.deepEqual([...punct].sort(), [...LOCAL_PROSODY_KINDS].filter((k) => k !== 'firm_end').sort())
+})
+
+test('계약 소비: 감정 라벨은 계약 감정표에 있는 것만 쓴다', () => {
+  for (const row of EMOTION_SAMPLE_ROWS) {
+    for (const p of row.parts) {
+      if (p.part !== 'emotionTag') continue
+      assert.ok(Object.prototype.hasOwnProperty.call(EXPRESSIVE_EMOTION_LABEL_TO_ID, p.label),
+        `${row.rowId}: '${p.label}' 이 계약 감정표에 있어야 한다`)
+    }
+  }
+  // 요청받은 '분노'/'차분' 은 계약 감정표에 없어서 화남/진지로 잡았다 \u2014 표에 없는 이름을 만들지 않았다.
+  assert.ok(!('분노' in EXPRESSIVE_EMOTION_LABEL_TO_ID))
+  assert.ok(!('차분' in EXPRESSIVE_EMOTION_LABEL_TO_ID))
+})
+
+test('계약 소비: 운율 토큰 문자는 계약의 run 문자 집합에서 온다', () => {
+  const all = DOT_RUN_CHARS + BANG_RUN_CHARS + QUESTION_RUN_CHARS + TILDE_RUN_CHARS
+  for (const row of EMOTION_SAMPLE_ROWS) {
+    for (const p of row.parts) {
+      if (p.part !== 'prosodyToken') continue
+      for (const ch of p.token) assert.ok(all.includes(ch), `${row.rowId}: '${ch}' 는 계약 run 문자`)
+    }
+  }
+})
+
+test('계약 소비: 감정 baseline 행의 출력 문구가 v1 과 동일(비교 기준선 보존)', () => {
+  const baseline = '안녕하세요. 잠시 후에 다시 말씀드리겠습니다.'
+  assert.equal(emotionSamplerPhraseScript(), baseline)
+  for (const id of ['emotion_happy', 'emotion_sad', 'emotion_angry', 'emotion_serious']) {
+    assert.ok(buildEmotionSampleScript(id).endsWith(baseline), `${id}: baseline 문구 보존`)
+  }
+})
+
+test('행 카탈로그: 요청된 16행이 모두 있고 id 가 유일하며 안전 토큰이다', () => {
+  assert.equal(EMOTION_SAMPLE_ROWS.length, 16)
+  const ids = EMOTION_SAMPLE_ROWS.map((r) => r.rowId)
+  assert.equal(new Set(ids).size, ids.length, 'rowId 유일')
+  for (const id of ids) {
+    assert.equal(assertEmotionSampleRowId(id), id)
+    assertSamplerSafeValue('rowId', id)
+  }
+  const byFam = (f: string) => EMOTION_SAMPLE_ROWS.filter((r) => r.family === f).length
+  assert.equal(byFam('emotion'), 4)
+  assert.equal(byFam('emotionTransition'), 1)
+  assert.equal(byFam('punctuation'), 5)
+  assert.equal(byFam('laugh'), 6)
+  for (const r of EMOTION_SAMPLE_ROWS) {
+    assert.ok((EMOTION_SAMPLE_FAMILIES as readonly string[]).includes(r.family))
+    assert.ok(r.label.trim().length > 0)
+  }
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 14) 엔진 capability — 못 하는 것을 '됨'으로 그리지 않는다
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('capability: 웃음 6행은 전부 unsupported / LAUGH_NO_STRATEGY', () => {
+  for (const r of EMOTION_SAMPLE_ROWS.filter((x) => x.family === 'laugh')) {
+    const cap = capabilityForRow(r.rowId)
+    assert.equal(cap.state, 'unsupported', `${r.rowId}`)
+    assert.equal(cap.reason, 'LAUGH_NO_STRATEGY')
+    assert.equal(isCapabilityUsable(cap.state), false)
+    assert.equal(stateForCapability(cap), 'unsupported')
+  }
+})
+
+test("capability: '~' 늘임은 어떤 분류에서도 supported 가 되지 않는다", () => {
+  // 계약이 분류하고(open_vowel/sustainable_final/non_sustainable_final/undeterminable) 판정은 엔진 규칙.
+  assert.deepEqual(capabilityForVowelExtend('non_sustainable_final'),
+    { state: 'unsupported', reason: 'VOWEL_EXTEND_NOT_REALIZABLE' })
+  for (const c of ['open_vowel', 'sustainable_final', 'undeterminable']) {
+    const cap = capabilityForVowelExtend(c)
+    assert.equal(cap.state, 'unknown', `${c}: 프로브 없음 → unknown`)
+    assert.equal(cap.reason, 'CAPABILITY_UNVERIFIED')
+  }
+  for (const c of ['open_vowel', 'sustainable_final', 'non_sustainable_final', 'undeterminable']) {
+    assert.equal(isCapabilityUsable(capabilityForVowelExtend(c).state), false, `${c}: usable 아님`)
+  }
+  // 카탈로그의 '~' 행도 기본이 미검증이다.
+  assert.equal(capabilityForRow('punct_vowel_extend').state, 'unknown')
+})
+
+test('capability: supported 만 usable 이다(unknown 은 성공이 아니다)', () => {
+  for (const st of EMOTION_SAMPLER_CAPABILITY_STATES) {
+    assert.equal(isCapabilityUsable(st), st === 'supported', st)
+  }
+  assert.equal(stateForCapability({ state: 'unknown', reason: 'CAPABILITY_UNVERIFIED' }), 'unverified')
+  assert.equal(stateForCapability({ state: 'degraded', reason: null }), 'unverified')
+})
+
+test('capability: 못 하는 행은 미생성으로 시작하지 않고 이름 있는 상태로 시작한다', () => {
+  const laugh = initialEmotionSampleEntry('laugh_chuckle', KEY_A)
+  assert.equal(laugh.state, 'unsupported')
+  assert.equal(laugh.reason, 'LAUGH_NO_STRATEGY')
+  const tilde = initialEmotionSampleEntry('punct_vowel_extend', KEY_A)
+  assert.equal(tilde.state, 'unverified')
+  assert.equal(tilde.reason, 'CAPABILITY_UNVERIFIED')
+  const emo = initialEmotionSampleEntry('emotion_happy', KEY_A)
+  assert.equal(emo.state, 'idle')
+  assert.equal(emo.reason, null)
+})
+
+test('capability: 못 하는 행은 눌러도 생성이 시작되지 않는다(가짜 진행 금지)', () => {
+  for (const id of ['laugh_chuckle', 'punct_vowel_extend']) {
+    const e = initialEmotionSampleEntry(id, KEY_A)
+    const t = applyEmotionSamplerEvent(e, { type: 'GENERATE_REQUESTED' })
+    assert.equal(t.applied, false, `${id}: 시작 안 함`)
+    assert.equal(t.rejected, 'CAPABILITY_NOT_USABLE')
+    assert.deepEqual(t.entry, e, '상태 불변')
+    // 설정이 바뀌어도(=키 변경) 능력은 그대로다.
+    const k2 = buildEmotionSampleCacheKey(input({ voiceContentSha256: FP_B }))
+    const after = applyEmotionSamplerEvent(e, { type: 'KEY_CHANGED', cacheKey: k2 })
+    assert.equal(after.entry.state, e.state, `${id}: 키가 바뀌어도 못 하는 건 그대로`)
+    assert.equal(after.entry.cacheKey, k2)
+  }
+})
+
+test('capability: 못 하는 행은 캐시가 없어도 generate 계획이 나오지 않는다', () => {
+  const plan = resolveEmotionSampleRequest('laugh_chuckle', KEY_A, {})
+  assert.equal(plan.action, 'blocked')
+  assert.equal(plan.entry.state, 'unsupported')
+  const plan2 = resolveEmotionSampleRequest('punct_vowel_extend', KEY_A, {})
+  assert.equal(plan2.action, 'blocked')
+  // 지원되는 행은 그대로 generate
+  assert.equal(resolveEmotionSampleRequest('emotion_happy', KEY_A, {}).action, 'generate')
+})
+
+test('capability: override 주입이 선언 기본값을 이긴다(엔진 프로브 배선 지점)', () => {
+  const override = { laugh_chuckle: { state: 'supported' as const, reason: null } }
+  assert.equal(capabilityForRow('laugh_chuckle', override).state, 'supported')
+  const e = initialEmotionSampleEntry('laugh_chuckle', KEY_A, capabilityForRow('laugh_chuckle', override))
+  assert.equal(e.state, 'idle')
+  assert.equal(applyEmotionSamplerEvent(e, { type: 'GENERATE_REQUESTED' }).entry.state, 'generating')
+})
+
+test('capability: 두 새 상태가 화면에서 서로 다르게, 그리고 사유와 함께 보인다', () => {
+  const un = describeEmotionSample(initialEmotionSampleEntry('laugh_chuckle', KEY_A))
+  const uv = describeEmotionSample(initialEmotionSampleEntry('punct_vowel_extend', KEY_A))
+  assert.equal(un.stateLabel, '지원 안 됨')
+  assert.equal(uv.stateLabel, '미검증')
+  assert.notEqual(un.stateLabel, uv.stateLabel)
+  for (const v of [un, uv]) {
+    assert.equal(v.generateEnabled, false, '생성 불가')
+    assert.equal(v.auditionEnabled, false, '들을 것이 없다')
+    assert.equal(v.deleteEnabled, false)
+    assert.ok((v.reasonLabel ?? '').trim().length > 0, '사유 문장 존재')
+    assert.ok((v.generateNotice ?? '').trim().length > 0, '비활성 이유 문장 존재')
+  }
+  // '만들 수 있다'는 인상을 주는 라벨이 아니다.
+  assert.equal(un.generateLabel, '만들 수 없음')
+  assert.equal(uv.generateLabel, '확인 전')
+  assert.notEqual(un.generateLabel, '샘플 만들기')
+  assert.notEqual(uv.generateLabel, '샘플 만들기')
+})
+
+test('접힘 요약: 16행 전체를 담아도 한 줄 길이 상한을 지킨다', () => {
+  const all = EMOTION_SAMPLE_ROWS.map((r) => initialEmotionSampleEntry(r.rowId, KEY_A))
+  const sum = summarizeEmotionSamples(all)
+  // 16행 중 지원되는 9행은 idle(미집계), 웃음 6 + '~' 1 = 7 행이 '확인 필요'.
+  assert.equal(sum.generated, 0)
+  assert.equal(sum.generating, 0)
+  assert.equal(sum.attention, 7)
+  assert.equal(sum.text, '확인 필요 7')
+  assert.ok(sum.text.length <= 40, `접힘 한 줄 길이 상한: ${sum.text}`)
 })

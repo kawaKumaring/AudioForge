@@ -23,6 +23,8 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import emotion_sampler as es  # noqa: E402
+# 표현 프로소디 언어 계약 — 이 테스트가 '실제 파서'를 돌려 카탈로그를 검증한다(계약이 권위).
+import expressive_timeline as ex  # noqa: E402
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TS_PATH = os.path.join(REPO_ROOT, "src", "shared", "emotionSampler.ts")
@@ -43,12 +45,23 @@ FP_A = "a" * 64
 FP_B = "b" * 64
 
 
+EXPR_HAPPY = {"family": "emotion", "row_id": "emotion_happy",
+              "kind": "emotionTransition", "strength": 100}
+
+
+def expr_of(row_id):
+    """계약 파서로 한 행의 표현 축을 실제로 구해 온다(세기의 권위는 계약)."""
+    res = ex.parse_expressive_timeline(es.build_sample_script(row_id), mode="expressive_v3")
+    assert res["ok"], row_id
+    return es.expression_from_timeline(row_id, res["timeline"])
+
+
 def make_input(**over):
     inp = {
         "voice_content_sha256": FP_A,
         "engine_id": "qwen",
         "model_id": "qwen3-omni-flash",
-        "emotion_id": "happy",
+        "expression": dict(EXPR_HAPPY),
         "config": dict(es.EMOTION_SAMPLER_DEFAULT_CONFIG),
     }
     inp.update(over)
@@ -82,7 +95,7 @@ PY_CODE = _strip_py_comments(PY_SRC)
 
 # ── TS 소스 파서(parity-by-parsing) ────────────────────────────────────────
 def ts_int(name):
-    m = re.search(r"^export const %s = (-?\d+)$" % re.escape(name), TS_SRC, re.MULTILINE)
+    m = re.search(r"^export const %s = (-?\d+)$" % re.escape(name), TS_CODE, re.MULTILINE)
     assert m, "TS 상수 %s 를 찾지 못함" % name
     return int(m.group(1))
 
@@ -96,13 +109,16 @@ def ts_str(name):
 def ts_array(name):
     m = re.search(r"export const %s\b[^=]*=\s*(?:Object\.freeze\()?\[([\s\S]*?)\]" % re.escape(name), TS_SRC)
     assert m, "TS 배열 %s 를 찾지 못함" % name
-    return re.findall(r"'([^']*)'", m.group(1))
+    # 원소 뒤 꼬리 주석(// ...)에 든 따옴표가 원소로 오인되지 않게 블록 안에서만 걷어낸다.
+    body = re.sub(r"//.*$", "", m.group(1), flags=re.MULTILINE)
+    return re.findall(r"'([^']*)'", body)
 
 
 def ts_record(name):
     m = re.search(r"export const %s\b[^=]*=\s*Object\.freeze\(\{([\s\S]*?)\n\}\)" % re.escape(name), TS_SRC)
     assert m, "TS 레코드 %s 를 찾지 못함" % name
-    return dict(re.findall(r"(\w+):\s*'([^']*)'", m.group(1)))
+    body = re.sub(r"//.*$", "", m.group(1), flags=re.MULTILINE)
+    return dict(re.findall(r"(\w+):\s*'([^']*)'", body))
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -120,8 +136,10 @@ class CacheKeyTest(unittest.TestCase):
         self.assertNotRegex(payload, r"\d\.\d", "canonical payload 에 float 없음")
         parsed = json.loads(payload)
         self.assertEqual(list(parsed.keys()), [
-            "config", "emotion_id", "engine_id", "key_version", "model_id", "phrase_version", "voice_content_sha256",
+            "config", "engine_id", "expression", "key_version", "model_id",
+            "phrase_version", "voice_content_sha256",
         ])
+        self.assertEqual(list(parsed["expression"].keys()), ["family", "kind", "row_id", "strength"])
         self.assertEqual(list(parsed["config"].keys()), [
             "pitch_centi", "speed_milli", "tail_fade_ms", "tail_mode", "tail_padding_ms",
         ])
@@ -142,11 +160,20 @@ class CacheKeyTest(unittest.TestCase):
     def test_model_changes_key(self):
         self.assertNotEqual(es.build_cache_key(make_input(model_id="qwen3-omni-instruct")), KEY_A)
 
-    def test_emotion_changes_key_and_no_collision(self):
-        self.assertNotEqual(es.build_cache_key(make_input(emotion_id="sad")), KEY_A)
-        ids = ["happy", "sad", "angry", "surprise", "whisper", "serious", "cheerful", "narration", "default"]
-        keys = {es.build_cache_key(make_input(emotion_id=i)) for i in ids}
-        self.assertEqual(len(keys), len(ids), "감정별 키 충돌 없음")
+    def test_expression_kind_changes_key(self):
+        other = dict(EXPR_HAPPY, kind="emphasis")
+        self.assertNotEqual(es.build_cache_key(make_input(expression=other)), KEY_A)
+
+    def test_expression_strength_changes_key(self):
+        self.assertNotEqual(es.build_cache_key(make_input(expression=dict(EXPR_HAPPY, strength=60))), KEY_A)
+        a = es.build_cache_key(make_input(expression=dict(EXPR_HAPPY, strength=30)))
+        b = es.build_cache_key(make_input(expression=dict(EXPR_HAPPY, strength=75)))
+        self.assertNotEqual(a, b, "같은 kind 라도 세기가 다르면 다른 샘플")
+
+    def test_every_row_has_distinct_key(self):
+        keys = {es.build_cache_key(make_input(expression=expr_of(r["row_id"])))
+                for r in es.EMOTION_SAMPLE_ROWS}
+        self.assertEqual(len(keys), len(es.EMOTION_SAMPLE_ROWS), "행별 키 충돌 없음")
 
     def test_each_config_field_changes_key(self):
         base = dict(es.EMOTION_SAMPLER_DEFAULT_CONFIG)
@@ -260,7 +287,7 @@ class StatesAndReasonsTest(unittest.TestCase):
         for state in es.EMOTION_SAMPLE_STATES:
             reasons = es.EMOTION_SAMPLE_STATE_REASONS[state] or (None,)
             for reason in reasons:
-                v = es.describe_sample({"emotion_id": "happy", "state": state,
+                v = es.describe_sample({"row_id": "emotion_happy", "state": state,
                                         "reason": reason, "cache_key": KEY_A})
                 self.assertTrue(v["state_label"].strip(), "%s: 상태 문구 존재" % state)
                 self.assertEqual(v["state"], state)
@@ -281,7 +308,7 @@ class StatesAndReasonsTest(unittest.TestCase):
 
     def test_three_failure_kinds_distinct(self):
         def mk(state, reason):
-            return es.describe_sample({"emotion_id": "happy", "state": state,
+            return es.describe_sample({"row_id": "emotion_happy", "state": state,
                                        "reason": reason, "cache_key": KEY_A})
         failed = mk("failed", "SAMPLER_ENGINE_ERROR")
         limit = mk("limitExceeded", "SAMPLER_GENERATION_LIMIT")
@@ -296,11 +323,11 @@ class StatesAndReasonsTest(unittest.TestCase):
 
 
 class StateMachineTest(unittest.TestCase):
-    def _generating(self, emotion="happy"):
-        return es.apply_event(es.initial_entry(emotion, KEY_A), {"type": "GENERATE_REQUESTED"})["entry"]
+    def _generating(self, row_id="emotion_happy"):
+        return es.apply_event(es.initial_entry(row_id, KEY_A), {"type": "GENERATE_REQUESTED"})["entry"]
 
     def test_happy_path(self):
-        e0 = es.initial_entry("happy", KEY_A)
+        e0 = es.initial_entry("emotion_happy", KEY_A)
         self.assertEqual(e0["state"], "idle")
         self.assertIsNone(e0["reason"])
         t1 = es.apply_event(e0, {"type": "GENERATE_REQUESTED"})
@@ -341,7 +368,7 @@ class StateMachineTest(unittest.TestCase):
             self.assertNotIn(banned, PY_CODE, "자동 재시도 통로 없음: %s" % banned)
 
     def test_rejections_are_visible(self):
-        idle = es.initial_entry("happy", KEY_A)
+        idle = es.initial_entry("emotion_happy", KEY_A)
         generating = self._generating()
         ready = es.apply_event(generating, {"type": "GENERATE_SUCCEEDED"})["entry"]
 
@@ -375,7 +402,7 @@ class StateMachineTest(unittest.TestCase):
         ]
         for state in es.EMOTION_SAMPLE_STATES:
             reasons = es.EMOTION_SAMPLE_STATE_REASONS[state]
-            entry = {"emotion_id": "happy", "state": state,
+            entry = {"row_id": "emotion_happy", "state": state,
                      "reason": reasons[0] if reasons else None, "cache_key": KEY_A}
             for ev in events:
                 t = es.apply_event(entry, ev)
@@ -407,20 +434,20 @@ class CacheReuseTest(unittest.TestCase):
                 calls.append(emotion_id)
             return plan
 
-        p1 = run("happy", KEY_A)
+        p1 = run("emotion_happy", KEY_A)
         self.assertEqual(p1["action"], "reuse")
         self.assertEqual(p1["entry"]["state"], "ready")
-        run("happy", KEY_A)
+        run("emotion_happy", KEY_A)
         self.assertEqual(calls, [], "hit 이면 합성을 호출하지 않는다")
 
-        other = es.build_cache_key(make_input(emotion_id="sad"))
-        p3 = run("sad", other)
+        other = es.build_cache_key(make_input(expression=expr_of("emotion_sad")))
+        p3 = run("emotion_sad", other)
         self.assertEqual(p3["action"], "generate")
         self.assertEqual(p3["entry"]["state"], "idle")
-        self.assertEqual(calls, ["sad"])
+        self.assertEqual(calls, ["emotion_sad"])
 
     def test_degraded_hit_restores_degraded(self):
-        plan = es.resolve_request("happy", KEY_A, {KEY_A: {"degraded": True}})
+        plan = es.resolve_request("emotion_happy", KEY_A, {KEY_A: {"degraded": True}})
         self.assertEqual(plan["action"], "reuse")
         self.assertEqual(plan["entry"]["state"], "degraded")
         self.assertEqual(plan["entry"]["reason"], "SAMPLER_XVECTOR_ONLY")
@@ -442,7 +469,7 @@ class CacheReuseTest(unittest.TestCase):
         cache = {KEY_A: {"degraded": False}}
         bumped = es.build_cache_key_at(make_input(), es.EMOTION_SAMPLER_PHRASE_VERSION + 1,
                                        es.EMOTION_SAMPLER_KEY_VERSION)
-        self.assertEqual(es.resolve_request("happy", bumped, cache)["action"], "generate")
+        self.assertEqual(es.resolve_request("emotion_happy", bumped, cache)["action"], "generate")
 
 
 class NoFanOutTest(unittest.TestCase):
@@ -458,19 +485,21 @@ class NoFanOutTest(unittest.TestCase):
 
     def test_generate_takes_exactly_one_tag(self):
         self.assertEqual(len(inspect.signature(es.build_cache_key).parameters), 1)
+        # 마지막 인자는 선택적 capability 주입 슬롯 — 필수는 여전히 '행 하나 + 키'다.
         self.assertEqual(list(inspect.signature(es.resolve_request).parameters),
-                         ["emotion_id", "cache_key", "cache_index"])
-        self.assertEqual(list(inspect.signature(es.initial_entry).parameters), ["emotion_id", "cache_key"])
-        for bogus in (["happy", "sad"], ("happy",), {"0": "happy"}, 3, None, ""):
+                         ["row_id", "cache_key", "cache_index", "capability"])
+        self.assertEqual(list(inspect.signature(es.initial_entry).parameters),
+                         ["row_id", "cache_key", "capability"])
+        for bogus in (["emotion_happy", "emotion_sad"], ("x",), {"0": "x"}, 3, None, ""):
             with self.assertRaises(es.EmotionSamplerInputError, msg="거부: %r" % (bogus,)) as cm:
-                es.assert_emotion_sample_tag(bogus)
-            self.assertEqual(cm.exception.code, "SAMPLER_INVALID_EMOTION_ID")
+                es.assert_row_id(bogus)
+            self.assertEqual(cm.exception.code, "SAMPLER_INVALID_ROW_ID")
             with self.assertRaises(es.EmotionSamplerInputError):
                 es.initial_entry(bogus, KEY_A)
             with self.assertRaises(es.EmotionSamplerInputError):
                 es.resolve_request(bogus, KEY_A, {})
             with self.assertRaises(es.EmotionSamplerInputError):
-                es.build_cache_key(make_input(emotion_id=bogus))
+                es.build_cache_key(make_input(expression=dict(EXPR_HAPPY, row_id=bogus)))
 
     def test_ts_module_has_no_bulk_entry_point(self):
         exports = re.findall(r"^export\s+(?:const|function|class|type|interface)\s+(\w+)", TS_CODE, re.MULTILINE)
@@ -521,10 +550,10 @@ class HygieneTest(unittest.TestCase):
     def test_state_dict_has_no_path_or_transcript(self):
         for state in es.EMOTION_SAMPLE_STATES:
             reasons = es.EMOTION_SAMPLE_STATE_REASONS[state]
-            entry = {"emotion_id": "happy", "state": state,
+            entry = {"row_id": "emotion_happy", "state": state,
                      "reason": reasons[0] if reasons else None, "cache_key": KEY_A}
-            self.assertEqual(sorted(entry), ["cache_key", "emotion_id", "reason", "state"])
-            es.assert_sampler_safe_value("emotion_id", entry["emotion_id"])
+            self.assertEqual(sorted(entry), ["cache_key", "reason", "row_id", "state"])
+            es.assert_sampler_safe_value("row_id", entry["row_id"])
             es.assert_sampler_safe_value("state", entry["state"])
             es.assert_sampler_safe_value("cache_key", entry["cache_key"])
             if entry["reason"]:
@@ -537,7 +566,7 @@ class HygieneTest(unittest.TestCase):
     def test_view_dict_has_no_path_or_phrase(self):
         for state in es.EMOTION_SAMPLE_STATES:
             reasons = es.EMOTION_SAMPLE_STATE_REASONS[state]
-            v = es.describe_sample({"emotion_id": "happy", "state": state,
+            v = es.describe_sample({"row_id": "emotion_happy", "state": state,
                                     "reason": reasons[0] if reasons else None, "cache_key": KEY_A})
             blob = json.dumps(v, ensure_ascii=False)
             self.assertNotRegex(blob, r"[\\/]|\.wav|\.mp3|file:")
@@ -586,13 +615,13 @@ class VoiceAuthorityTest(unittest.TestCase):
         k1 = es.build_cache_key(make_input(voice_content_sha256=self.SHA_ONE))
         k2 = es.build_cache_key(make_input(voice_content_sha256=self.SHA_ONE))
         self.assertEqual(k1, k2, "경로 이동은 키를 바꾸지 않는다")
-        self.assertEqual(es.resolve_request("happy", k2, {k1: {"degraded": False}})["action"], "reuse")
+        self.assertEqual(es.resolve_request("emotion_happy", k2, {k1: {"degraded": False}})["action"], "reuse")
 
     def test_content_change_invalidates_even_with_same_name_and_size(self):
         k1 = es.build_cache_key(make_input(voice_content_sha256=self.SHA_ONE))
         k2 = es.build_cache_key(make_input(voice_content_sha256=self.SHA_TWO))
         self.assertNotEqual(k1, k2, "내용 변경은 이름/크기가 같아도 키를 바꾼다")
-        self.assertEqual(es.resolve_request("happy", k2, {k1: {"degraded": False}})["action"], "generate")
+        self.assertEqual(es.resolve_request("emotion_happy", k2, {k1: {"degraded": False}})["action"], "generate")
 
     def test_path_based_fingerprint_cannot_be_key_input(self):
         raw = "E:/AI/voice.wav|480000|1700000000000"
@@ -619,7 +648,7 @@ class SummaryTest(unittest.TestCase):
 
     def _mk(self, state):
         reasons = es.EMOTION_SAMPLE_STATE_REASONS[state]
-        return {"emotion_id": "happy", "state": state,
+        return {"row_id": "emotion_happy", "state": state,
                 "reason": reasons[0] if reasons else None, "cache_key": KEY_A}
 
     def test_each_state_in_exactly_one_bucket(self):
@@ -627,10 +656,10 @@ class SummaryTest(unittest.TestCase):
         s = es.summarize_samples(all_states)
         self.assertEqual(s["generated"], 1)
         self.assertEqual(s["generating"], 1)
-        self.assertEqual(s["attention"], 3)
+        self.assertEqual(s["attention"], 5)
         self.assertEqual(s["generated"] + s["generating"] + s["attention"],
                          len(es.EMOTION_SAMPLE_STATES) - 1, "idle 만 미집계")
-        self.assertEqual(s["text"], "만들어짐 1 · 만드는 중 1 · 확인 필요 3")
+        self.assertEqual(s["text"], "만들어짐 1 · 만드는 중 1 · 확인 필요 5")
 
     def test_zero_buckets_omitted_and_empty_message(self):
         self.assertEqual(es.summarize_samples([])["text"], es.EMOTION_SAMPLE_SUMMARY_EMPTY)
@@ -651,23 +680,28 @@ class SummaryTest(unittest.TestCase):
 class SampleScriptTest(unittest.TestCase):
     """표현 언어 교체 지점 — 지금은 태그 문자열 결합."""
 
-    def test_script_is_tag_plus_phrase(self):
-        self.assertEqual(es.build_sample_script("[기쁨]"), "[기쁨] " + es.phrase_script())
-        self.assertEqual(es.build_sample_script(""), es.phrase_script())
-        self.assertEqual(es.build_sample_script("  [슬픔]  "), "[슬픔] " + es.phrase_script())
-        self.assertIn("EXPRESSION LANGUAGE SWAP POINT", PY_SRC, "교체 지점 표시")
+    def test_script_built_from_catalog(self):
+        self.assertEqual(es.build_sample_script("emotion_happy"), "[기쁨] " + es.phrase_script())
+        self.assertEqual(es.build_sample_script("punct_emphasis"),
+                         es.EMOTION_SAMPLER_EXPRESSION_HOST + "!")
+        self.assertEqual(es.build_sample_script("laugh_chuckle"),
+                         es.EMOTION_SAMPLER_EXPRESSION_HOST + " [ㅋ]")
+        for bogus in ("", "nope", ["emotion_happy"], 3, None):
+            with self.assertRaises(es.EmotionSamplerInputError):
+                es.build_sample_script(bogus)
+        self.assertNotIn("EXPRESSION LANGUAGE SWAP POINT", PY_SRC, "교체가 끝나 예고 배너는 없다")
 
-    def test_phrase_set_and_version_unchanged_by_this_correction(self):
-        self.assertEqual(es.EMOTION_SAMPLER_PHRASE_VERSION, 1)
+    def test_baseline_phrases_preserved(self):
+        self.assertEqual(es.EMOTION_SAMPLER_PHRASE_VERSION, 2)
         self.assertEqual(list(es.EMOTION_SAMPLER_PHRASES), ["안녕하세요.", "잠시 후에 다시 말씀드리겠습니다."])
-        # 표현 이벤트(구두점/웃음)는 아직 없다 — 별도 문구/이벤트 버전으로 나중에 온다.
-        for banned in ("!?", "ㅅㅅ", "laugh", "웃음"):
+        # baseline 문구 자체에는 여전히 표현 토큰이 없다(감정 행의 비교 기준선).
+        for banned in ("!?", "~", "[", "]"):
             self.assertNotIn(banned, es.phrase_script())
 
     def test_script_never_enters_state_or_key(self):
-        script = es.build_sample_script("[기쁨]")
+        script = es.build_sample_script("emotion_happy")
         self.assertNotIn(script, es.canonical_cache_key_payload(make_input()))
-        entry = es.initial_entry("happy", KEY_A)
+        entry = es.initial_entry("emotion_happy", KEY_A)
         self.assertNotIn(script, json.dumps(entry, ensure_ascii=False))
         self.assertNotIn(script, json.dumps(es.describe_sample(entry), ensure_ascii=False))
 
@@ -682,6 +716,7 @@ class ParityWithTsTest(unittest.TestCase):
     def test_phrase_set(self):
         self.assertEqual(ts_array("EMOTION_SAMPLER_PHRASES"), list(es.EMOTION_SAMPLER_PHRASES))
         self.assertEqual(ts_str("EMOTION_SAMPLER_PHRASE_SET_SHA256"), es.EMOTION_SAMPLER_PHRASE_SET_SHA256)
+        self.assertEqual(ts_str("EMOTION_SAMPLER_EXPRESSION_HOST"), es.EMOTION_SAMPLER_EXPRESSION_HOST)
 
     def test_canonical_serialization_is_byte_identical(self):
         ts_payload = ts_str("EMOTION_SAMPLER_PARITY_PAYLOAD")
@@ -729,9 +764,163 @@ class ParityWithTsTest(unittest.TestCase):
         for field in ("pitch_centi", "speed_milli", "tail_fade_ms", "tail_mode", "tail_padding_ms"):
             self.assertIn(field, TS_CODE, "TS 에 %s 없음" % field)
             self.assertIn(field, PY_SRC, "Python 에 %s 없음" % field)
-        for field in ("emotion_id", "engine_id", "key_version", "model_id", "phrase_version", "voice_content_sha256"):
+        for field in ("engine_id", "expression", "key_version", "model_id",
+                      "phrase_version", "voice_content_sha256", "row_id", "strength"):
             self.assertIn('"%s"' % field, TS_CODE + PY_SRC)
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ContractConsumptionTest(unittest.TestCase):
+    """카탈로그가 표현 언어 계약과 어긋나지 않는가 — 실제 계약 파서로 검증."""
+
+    def test_all_rows_parse_without_error(self):
+        for r in es.EMOTION_SAMPLE_ROWS:
+            res = ex.parse_expressive_timeline(es.build_sample_script(r["row_id"]), mode="expressive_v3")
+            self.assertTrue(res["ok"], r["row_id"])
+            errs = [d for d in res["timeline"]["diagnostics"] if d["severity"] == "error"]
+            self.assertEqual(errs, [], "%s: error 진단 없음" % r["row_id"])
+
+    def test_expect_kind_matches_contract(self):
+        for r in es.EMOTION_SAMPLE_ROWS:
+            e = expr_of(r["row_id"])
+            self.assertEqual(e["kind"], r["expect_kind"], r["row_id"])
+            self.assertEqual(e["row_id"], r["row_id"])
+            self.assertEqual(e["family"], r["family"])
+            self.assertIsInstance(e["strength"], int)
+            self.assertTrue(0 <= e["strength"] <= 100)
+
+    def test_expect_kind_is_in_contract_enums(self):
+        prosody = set(ex.LOCAL_PROSODY_KINDS)
+        laughs = set(ex.LAUGH_STYLES)
+        for r in es.EMOTION_SAMPLE_ROWS:
+            if r["family"] == "punctuation":
+                self.assertIn(r["expect_kind"], prosody, r["row_id"])
+            elif r["family"] == "laugh":
+                self.assertIn(r["expect_kind"], laughs, r["row_id"])
+            else:
+                self.assertIn(r["expect_kind"], ex.EXPRESSIVE_NODE_KINDS, r["row_id"])
+        covered = {r["expect_kind"] for r in es.EMOTION_SAMPLE_ROWS if r["family"] == "laugh"}
+        self.assertEqual(sorted(covered), sorted(ex.LAUGH_STYLES), "웃음 5 style 전부 덮음")
+
+    def test_emotion_labels_exist_in_contract_table(self):
+        for r in es.EMOTION_SAMPLE_ROWS:
+            for p in r["parts"]:
+                if p["part"] != "emotion_tag":
+                    continue
+                self.assertIn(p["label"], ex.EXPRESSIVE_EMOTION_LABEL_TO_ID, r["row_id"])
+        # 요청받은 '분노'/'차분'은 계약 감정표에 없어 화남/진지로 잡았다.
+        self.assertNotIn("분노", ex.EXPRESSIVE_EMOTION_LABEL_TO_ID)
+        self.assertNotIn("차분", ex.EXPRESSIVE_EMOTION_LABEL_TO_ID)
+
+    def test_prosody_tokens_come_from_contract_run_chars(self):
+        allowed = ex.DOT_RUN_CHARS + ex.BANG_RUN_CHARS + ex.QUESTION_RUN_CHARS + ex.TILDE_RUN_CHARS
+        for r in es.EMOTION_SAMPLE_ROWS:
+            for p in r["parts"]:
+                if p["part"] != "prosody_token":
+                    continue
+                for ch in p["token"]:
+                    self.assertIn(ch, allowed, r["row_id"])
+
+    def test_catalog_shape(self):
+        self.assertEqual(len(es.EMOTION_SAMPLE_ROWS), 16)
+        ids = [r["row_id"] for r in es.EMOTION_SAMPLE_ROWS]
+        self.assertEqual(len(set(ids)), len(ids))
+        for i in ids:
+            self.assertEqual(es.assert_row_id(i), i)
+            es.assert_sampler_safe_value("row_id", i)
+        counts = {}
+        for r in es.EMOTION_SAMPLE_ROWS:
+            counts[r["family"]] = counts.get(r["family"], 0) + 1
+        self.assertEqual(counts, {"emotion": 4, "emotionTransition": 1, "punctuation": 5, "laugh": 6})
+
+    def test_baseline_rows_unchanged(self):
+        baseline = "안녕하세요. 잠시 후에 다시 말씀드리겠습니다."
+        self.assertEqual(es.phrase_script(), baseline)
+        for i in ("emotion_happy", "emotion_sad", "emotion_angry", "emotion_serious"):
+            self.assertTrue(es.build_sample_script(i).endswith(baseline), i)
+
+
+class CapabilityTest(unittest.TestCase):
+    """엔진이 못 하는 것을 '됨'으로 그리지 않는다."""
+
+    def test_laughs_are_unsupported(self):
+        for r in [x for x in es.EMOTION_SAMPLE_ROWS if x["family"] == "laugh"]:
+            cap = es.capability_for_row(r["row_id"])
+            self.assertEqual(cap["state"], "unsupported", r["row_id"])
+            self.assertEqual(cap["reason"], "LAUGH_NO_STRATEGY")
+            self.assertFalse(es.is_capability_usable(cap["state"]))
+            self.assertEqual(es.state_for_capability(cap), "unsupported")
+
+    def test_vowel_extend_never_supported(self):
+        self.assertEqual(es.capability_for_vowel_extend("non_sustainable_final"),
+                         {"state": "unsupported", "reason": "VOWEL_EXTEND_NOT_REALIZABLE"})
+        for c in ("open_vowel", "sustainable_final", "undeterminable"):
+            cap = es.capability_for_vowel_extend(c)
+            self.assertEqual(cap["state"], "unknown", c)
+            self.assertEqual(cap["reason"], "CAPABILITY_UNVERIFIED")
+        for c in ("open_vowel", "sustainable_final", "non_sustainable_final", "undeterminable"):
+            self.assertFalse(es.is_capability_usable(es.capability_for_vowel_extend(c)["state"]), c)
+        self.assertEqual(es.capability_for_row("punct_vowel_extend")["state"], "unknown")
+
+    def test_only_supported_is_usable(self):
+        for st in es.EMOTION_SAMPLER_CAPABILITY_STATES:
+            self.assertEqual(es.is_capability_usable(st), st == "supported", st)
+        self.assertEqual(es.state_for_capability({"state": "unknown", "reason": "CAPABILITY_UNVERIFIED"}),
+                         "unverified")
+
+    def test_blocked_rows_start_in_named_state(self):
+        laugh = es.initial_entry("laugh_chuckle", KEY_A)
+        self.assertEqual(laugh["state"], "unsupported")
+        self.assertEqual(laugh["reason"], "LAUGH_NO_STRATEGY")
+        tilde = es.initial_entry("punct_vowel_extend", KEY_A)
+        self.assertEqual(tilde["state"], "unverified")
+        self.assertEqual(es.initial_entry("emotion_happy", KEY_A)["state"], "idle")
+
+    def test_blocked_rows_reject_generate(self):
+        other = es.build_cache_key(make_input(voice_content_sha256=FP_B))
+        for i in ("laugh_chuckle", "punct_vowel_extend"):
+            e = es.initial_entry(i, KEY_A)
+            t = es.apply_event(e, {"type": "GENERATE_REQUESTED"})
+            self.assertFalse(t["applied"], i)
+            self.assertEqual(t["rejected"], "CAPABILITY_NOT_USABLE")
+            self.assertEqual(t["entry"], e)
+            after = es.apply_event(e, {"type": "KEY_CHANGED", "cache_key": other})
+            self.assertEqual(after["entry"]["state"], e["state"], "%s: 키가 바뀌어도 능력은 그대로" % i)
+
+    def test_blocked_rows_never_planned_for_generate(self):
+        self.assertEqual(es.resolve_request("laugh_chuckle", KEY_A, {})["action"], "blocked")
+        self.assertEqual(es.resolve_request("punct_vowel_extend", KEY_A, {})["action"], "blocked")
+        self.assertEqual(es.resolve_request("emotion_happy", KEY_A, {})["action"], "generate")
+
+    def test_override_wins(self):
+        override = {"laugh_chuckle": {"state": "supported", "reason": None}}
+        self.assertEqual(es.capability_for_row("laugh_chuckle", override)["state"], "supported")
+        e = es.initial_entry("laugh_chuckle", KEY_A, es.capability_for_row("laugh_chuckle", override))
+        self.assertEqual(e["state"], "idle")
+
+    def test_blocked_states_render_distinctly(self):
+        un = es.describe_sample(es.initial_entry("laugh_chuckle", KEY_A))
+        uv = es.describe_sample(es.initial_entry("punct_vowel_extend", KEY_A))
+        self.assertEqual(un["state_label"], "지원 안 됨")
+        self.assertEqual(uv["state_label"], "미검증")
+        for v in (un, uv):
+            self.assertFalse(v["generate_enabled"])
+            self.assertFalse(v["audition_enabled"])
+            self.assertFalse(v["delete_enabled"])
+            self.assertTrue((v["reason_label"] or "").strip())
+            self.assertTrue((v["generate_notice"] or "").strip())
+            self.assertNotEqual(v["generate_label"], "샘플 만들기")
+        self.assertEqual(un["generate_label"], "만들 수 없음")
+        self.assertEqual(uv["generate_label"], "확인 전")
+
+    def test_summary_bounded_with_full_catalog(self):
+        entries = [es.initial_entry(r["row_id"], KEY_A) for r in es.EMOTION_SAMPLE_ROWS]
+        sum_ = es.summarize_samples(entries)
+        self.assertEqual(sum_["generated"], 0)
+        self.assertEqual(sum_["generating"], 0)
+        self.assertEqual(sum_["attention"], 7)   # 웃음 6 + '~' 1
+        self.assertEqual(sum_["text"], "확인 필요 7")
+        self.assertLessEqual(len(sum_["text"]), 40)
