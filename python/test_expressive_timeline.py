@@ -227,6 +227,24 @@ class ExpressiveLexingTest(unittest.TestCase):
             self.assertEqual(tl["local_prosody"][0]["kind"], "shock_rise")
             self.assertEqual(tl["local_prosody"][0]["raw_count"], 2)
 
+    def test_c1b_qbang_is_alias_of_bangq(self):
+        """'?!' 는 '!?' 의 별칭 — 같은 kind, rawToken 은 원문 그대로 구분."""
+        a = self._tl("정말 몰랐어!?")
+        b = self._tl("정말 몰랐어?!")
+        self.assertEqual(len(a["local_prosody"]), 1)
+        self.assertEqual(len(b["local_prosody"]), 1)
+        ea, eb = a["local_prosody"][0], b["local_prosody"][0]
+        self.assertEqual(ea["kind"], "shock_rise")
+        self.assertEqual(eb["kind"], "shock_rise")
+        self.assertEqual(ea["kind"], eb["kind"])
+        for k in ("strength", "duration_hint", "scope_kind", "raw_count"):
+            self.assertEqual(ea[k], eb[k], k)
+        self.assertEqual(ea["raw_token"], "!?")
+        self.assertEqual(eb["raw_token"], "?!")
+        self.assertNotEqual(ea["raw_token"], eb["raw_token"])
+        self.assertEqual(ex.reconstruct_source(a), "정말 몰랐어!?")
+        self.assertEqual(ex.reconstruct_source(b), "정말 몰랐어?!")
+
     def test_c2_dot_run_is_one_token(self):
         tl = self._tl("글쎄......")
         self.assertEqual(len(tl["local_prosody"]), 1)
@@ -364,30 +382,77 @@ class ExpressiveEventContractTest(unittest.TestCase):
         e = self._tl("안녕[기쁨]하세요.")["local_prosody"][0]
         self.assertEqual(e["host_range"]["start_codepoint"], 0)
 
-    def test_d9_vowel_extend_and_degradation(self):
-        ok1 = self._tl("그래도~")["local_prosody"][0]
-        self.assertEqual(ok1["kind"], "vowel_extend")
-        self.assertEqual(ok1["scope_kind"], "final_vowel")
-        self.assertTrue(ok1["vowel_extend"]["supported"])
-        self.assertEqual(ok1["vowel_extend"]["target_vowel"], "ㅗ")
+    def test_d9_vowel_extend_three_way_classification(self):
+        # 1) 종성 없음 → open_vowel
+        e = self._tl("그래도~")["local_prosody"][0]
+        self.assertEqual(e["kind"], "vowel_extend")
+        self.assertEqual(e["scope_kind"], "final_vowel")
+        self.assertEqual(e["vowel_extend"]["classification"], "open_vowel")
+        self.assertEqual(e["vowel_extend"]["target_vowel"], "ㅗ")
+        self.assertIsNone(e["vowel_extend"]["final_consonant"])
+        self.assertIsNone(e["vowel_extend"]["undeterminable_reason"])
 
-        cons = self._tl("안녕~")["local_prosody"][0]
-        self.assertFalse(cons["vowel_extend"]["supported"])
-        self.assertEqual(cons["vowel_extend"]["degraded_reason"], "final_consonant")
-        self.assertIsNone(cons["vowel_extend"]["target_vowel"])
+        # 2) 종성 ㅇ/ㄴ/ㅁ/ㄹ → sustainable_final (경고 없음)
+        for src, jamo in (("안녕~", "ㅇ"), ("그런~", "ㄴ"), ("사랑함~", "ㅁ"), ("그럴~", "ㄹ")):
+            tl = self._tl(src)
+            ve = tl["local_prosody"][0]["vowel_extend"]
+            self.assertEqual(ve["classification"], "sustainable_final", src)
+            self.assertEqual(ve["final_consonant"], jamo, src)
+            self.assertIn(jamo, ex.SUSTAINABLE_FINAL_JAMO)
+            self.assertEqual(len(tl["diagnostics"]), 0, "%s: sustainable_final 은 경고하지 않는다" % src)
 
-        self.assertEqual(self._tl("你好~")["local_prosody"][0]["vowel_extend"]["degraded_reason"],
-                         "unsupported_script")
-        self.assertEqual(self._tl("~시작")["local_prosody"][0]["vowel_extend"]["degraded_reason"],
-                         "no_preceding_text")
-        en = self._tl("hello~")["local_prosody"][0]
-        self.assertTrue(en["vowel_extend"]["supported"])
-        self.assertEqual(en["vowel_extend"]["target_vowel"], "o")
-
-        tl = self._tl("안녕~")
-        self.assertTrue(any(d["code"] == "UNSUPPORTED_VOWEL_EXTEND" and d["severity"] == "warning"
+        # 3) 그 밖의 종성 → non_sustainable_final + 경고
+        tl = self._tl("밥~")
+        ve = tl["local_prosody"][0]["vowel_extend"]
+        self.assertEqual(ve["classification"], "non_sustainable_final")
+        self.assertEqual(ve["final_consonant"], "ㅂ")
+        self.assertTrue(any(d["code"] == "VOWEL_EXTEND_NON_SUSTAINABLE_FINAL" and d["severity"] == "warning"
                             for d in tl["diagnostics"]))
-        self.assertEqual(tl["summary"]["degraded_vowel_extend_count"], 1)
+
+        # 겹받침은 자모 표기 그대로 분류(음운 규칙 미적용 — 알려진 한계)
+        ve = self._tl("삶~")["local_prosody"][0]["vowel_extend"]
+        self.assertEqual(ve["classification"], "non_sustainable_final")
+        self.assertEqual(ve["final_consonant"], "ㄻ")
+
+        # 4) 확정 불가
+        ve = self._tl("你好~")["local_prosody"][0]["vowel_extend"]
+        self.assertEqual(ve["classification"], "undeterminable")
+        self.assertEqual(ve["undeterminable_reason"], "unsupported_script")
+        ve = self._tl("~시작")["local_prosody"][0]["vowel_extend"]
+        self.assertEqual(ve["classification"], "undeterminable")
+        self.assertEqual(ve["undeterminable_reason"], "no_preceding_text")
+
+        # 라틴
+        self.assertEqual(self._tl("hello~")["local_prosody"][0]["vowel_extend"]["classification"], "open_vowel")
+        self.assertEqual(self._tl("listen~")["local_prosody"][0]["vowel_extend"]["classification"], "sustainable_final")
+        self.assertEqual(self._tl("cat~")["local_prosody"][0]["vowel_extend"]["classification"], "non_sustainable_final")
+
+        # 문법적으로는 모두 수용된다
+        for src in ("그래도~", "안녕~", "밥~", "你好~", "~시작", "cat~"):
+            r = ex.parse_expressive_timeline(src, mode=V3)
+            self.assertTrue(r["ok"], "%s: 문법적으로 수용" % src)
+            self.assertEqual(len(r["timeline"]["local_prosody"]), 1, src)
+
+    def test_d9b_language_layer_does_not_assert_acoustic_quality(self):
+        self.assertFalse(ex.LANGUAGE_LAYER_ASSERTS_ACOUSTIC_QUALITY)
+        self.assertFalse(ex.SUSTAINABLE_FINAL_IS_ACOUSTICALLY_VERIFIED)
+        for src in ("그래도~", "안녕~", "밥~", "你好~", "~시작"):
+            ve = self._tl(src)["local_prosody"][0]["vowel_extend"]
+            self.assertIsNotNone(ve)
+            self.assertNotIn("supported", ve, src)
+            self.assertNotIn("degraded", ve, src)
+            self.assertNotIn("degraded_reason", ve, src)
+            self.assertEqual(sorted(ve.keys()),
+                             ["classification", "final_consonant", "target_vowel", "undeterminable_reason"])
+            self.assertIn(ve["classification"], ex.VOWEL_EXTEND_CLASSES)
+        self.assertEqual(list(ex.VOWEL_EXTEND_FORBIDDEN_TECHNIQUES),
+                         ["duplicate_final_consonant", "repeat_final_consonant"])
+        self.assertEqual(list(ex.VOWEL_EXTEND_CLASSES),
+                         ["open_vowel", "sustainable_final", "non_sustainable_final", "undeterminable"])
+        self.assertEqual(list(ex.VOWEL_EXTEND_UNDETERMINABLE_REASONS),
+                         ["unsupported_script", "no_preceding_text", "no_preceding_vowel"])
+        self.assertEqual(ex.SUSTAINABLE_FINAL_JAMO, "ㅇㄴㅁㄹ")
+        self.assertEqual(ex.SUSTAINABLE_FINAL_LATIN, "nmlr")
 
     def test_d10_laugh_styles_repeat_cap_position(self):
         styles = [("[ㅋ]", "chuckle", 1), ("[ㅋㅋ]", "chuckle", 2), ("[ㅋㅋㅋㅋ]", "chuckle", 4),
@@ -595,7 +660,9 @@ class ExpressiveTsSourceDriftTest(unittest.TestCase):
             ("PROSODY_SCOPE_KINDS", ex.PROSODY_SCOPE_KINDS),
             ("LAUGH_STYLES", ex.LAUGH_STYLES),
             ("LAUGH_POSITIONS", ex.LAUGH_POSITIONS),
-            ("VOWEL_EXTEND_DEGRADE_REASONS", ex.VOWEL_EXTEND_DEGRADE_REASONS),
+            ("VOWEL_EXTEND_CLASSES", ex.VOWEL_EXTEND_CLASSES),
+            ("VOWEL_EXTEND_UNDETERMINABLE_REASONS", ex.VOWEL_EXTEND_UNDETERMINABLE_REASONS),
+            ("VOWEL_EXTEND_FORBIDDEN_TECHNIQUES", ex.VOWEL_EXTEND_FORBIDDEN_TECHNIQUES),
             ("EXPRESSIVE_BOUNDARY_KINDS", ex.EXPRESSIVE_BOUNDARY_KINDS),
             ("EXPRESSIVE_EVENT_PRIORITY", ex.EXPRESSIVE_EVENT_PRIORITY),
             ("EXPRESSIVE_ERROR_CODES", ex.EXPRESSIVE_ERROR_CODES),
@@ -639,7 +706,8 @@ class ExpressiveTsSourceDriftTest(unittest.TestCase):
 
     def test_g4_token_char_sets_match(self):
         for name in ("DOT_RUN_CHARS", "BANG_RUN_CHARS", "QUESTION_RUN_CHARS",
-                     "TILDE_RUN_CHARS", "LAUGH_TOKEN_CHARS", "EMOTION_MODIFIER_SEPARATOR"):
+                     "TILDE_RUN_CHARS", "LAUGH_TOKEN_CHARS", "EMOTION_MODIFIER_SEPARATOR",
+                     "SUSTAINABLE_FINAL_JAMO", "SUSTAINABLE_FINAL_LATIN"):
             self.assertEqual(_ts_single_quoted(self.src, name), getattr(ex, name),
                              "char set drift: %s" % name)
 
@@ -682,21 +750,33 @@ class ExpressiveTsSourceDriftTest(unittest.TestCase):
         """자립 모듈 불변식 — 런타임 import 가 들어오면 node --test 가 해석하지 못한다."""
         self.assertNotRegex(self.src, r"(?m)^import\s+\{[^}]*\}\s+from")
 
-    def test_g11_resolve_vowel_extend_units(self):
-        self.assertEqual(ex.resolve_vowel_extend("가"),
-                         {"supported": True, "target_vowel": "ㅏ", "degraded_reason": None})
-        self.assertEqual(ex.resolve_vowel_extend("강"),
-                         {"supported": False, "target_vowel": None, "degraded_reason": "final_consonant"})
-        self.assertEqual(ex.resolve_vowel_extend("a"),
-                         {"supported": True, "target_vowel": "a", "degraded_reason": None})
-        self.assertEqual(ex.resolve_vowel_extend("b"),
-                         {"supported": False, "target_vowel": None, "degraded_reason": "final_consonant"})
-        self.assertEqual(ex.resolve_vowel_extend("い"),
-                         {"supported": True, "target_vowel": "i", "degraded_reason": None})
-        self.assertEqual(ex.resolve_vowel_extend("好"),
-                         {"supported": False, "target_vowel": None, "degraded_reason": "unsupported_script"})
-        self.assertEqual(ex.resolve_vowel_extend("1"),
-                         {"supported": False, "target_vowel": None, "degraded_reason": "no_preceding_vowel"})
+    def test_g11_classify_vowel_extend_units(self):
+        def c(ch):
+            return ex.classify_vowel_extend(ch)
+        self.assertEqual(c("가"), {"classification": "open_vowel", "target_vowel": "ㅏ",
+                                  "final_consonant": None, "undeterminable_reason": None})
+        self.assertEqual(c("강"), {"classification": "sustainable_final", "target_vowel": "ㅏ",
+                                  "final_consonant": "ㅇ", "undeterminable_reason": None})
+        self.assertEqual(c("간"), {"classification": "sustainable_final", "target_vowel": "ㅏ",
+                                  "final_consonant": "ㄴ", "undeterminable_reason": None})
+        self.assertEqual(c("감"), {"classification": "sustainable_final", "target_vowel": "ㅏ",
+                                  "final_consonant": "ㅁ", "undeterminable_reason": None})
+        self.assertEqual(c("갈"), {"classification": "sustainable_final", "target_vowel": "ㅏ",
+                                  "final_consonant": "ㄹ", "undeterminable_reason": None})
+        self.assertEqual(c("갑"), {"classification": "non_sustainable_final", "target_vowel": "ㅏ",
+                                  "final_consonant": "ㅂ", "undeterminable_reason": None})
+        self.assertEqual(c("a"), {"classification": "open_vowel", "target_vowel": "a",
+                                  "final_consonant": None, "undeterminable_reason": None})
+        self.assertEqual(c("n"), {"classification": "sustainable_final", "target_vowel": None,
+                                  "final_consonant": "n", "undeterminable_reason": None})
+        self.assertEqual(c("b"), {"classification": "non_sustainable_final", "target_vowel": None,
+                                  "final_consonant": "b", "undeterminable_reason": None})
+        self.assertEqual(c("い"), {"classification": "open_vowel", "target_vowel": "i",
+                                  "final_consonant": None, "undeterminable_reason": None})
+        self.assertEqual(c("好"), {"classification": "undeterminable", "target_vowel": None,
+                                  "final_consonant": None, "undeterminable_reason": "unsupported_script"})
+        self.assertEqual(c("1"), {"classification": "undeterminable", "target_vowel": None,
+                                  "final_consonant": None, "undeterminable_reason": "no_preceding_vowel"})
 
     def test_g12_sha256_known_vectors(self):
         self.assertEqual(ex.sha256_hex_of_string("abc"),

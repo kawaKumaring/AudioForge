@@ -17,13 +17,15 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import {
-  parseExpressiveTimeline, verifyRoundTrip, reconstructSource, resolveVowelExtend,
+  parseExpressiveTimeline, verifyRoundTrip, reconstructSource, classifyVowelExtend,
   expressiveSha256Hex,
   EXPRESSIVE_CONTRACT_VERSION, EXPRESSIVE_LEGACY_PLAN_VERSION, EXPRESSIVE_MODES,
   EXPRESSIVE_DEFAULT_MODE, EXPRESSIVE_MODE_TO_VERSION, EXPRESSIVE_EVENT_PRIORITY,
   EXPRESSIVE_ERROR_CODES, LOCAL_PROSODY_KINDS, LAUGH_STYLES, LAUGH_POSITIONS,
   EXPRESSIVE_NODE_KINDS, EXPRESSIVE_BOUNDARY_KINDS, PROSODY_SCOPE_KINDS,
-  EMOTION_TRANSITION_MODES, VOWEL_EXTEND_DEGRADE_REASONS,
+  EMOTION_TRANSITION_MODES, VOWEL_EXTEND_CLASSES, VOWEL_EXTEND_UNDETERMINABLE_REASONS,
+  VOWEL_EXTEND_FORBIDDEN_TECHNIQUES, SUSTAINABLE_FINAL_JAMO, SUSTAINABLE_FINAL_LATIN,
+  SUSTAINABLE_FINAL_IS_ACOUSTICALLY_VERIFIED, LANGUAGE_LAYER_ASSERTS_ACOUSTIC_QUALITY,
   EXPRESSIVE_EMOTION_LABEL_TO_ID, EXPRESSIVE_PAUSE_NAMES, EXPRESSIVE_WHITESPACE_CHARS,
   DOT_RUN_MAX_COUNT, BANG_RUN_MAX_COUNT, QUESTION_RUN_MAX_COUNT, SHOCK_RUN_MAX_COUNT,
   TILDE_RUN_MAX_COUNT, LAUGH_REPEAT_MAX_COUNT, LOCAL_PROSODY_TAIL_SYLLABLES,
@@ -183,6 +185,29 @@ test('C1: "!?" 는 하나의 shock_rise 토큰(절대 !+? 로 쪼개지지 않�
     assert.equal(t.localProsody[0].rawCount, 2)
     assert.equal(t.localProsody[0].rawToken.length, 2)
   }
+})
+
+test('C1b: "?!" 는 "!?" 의 별칭 — 같은 이벤트 kind, rawToken 은 원문 그대로 구분된다', () => {
+  const a = okTimeline(parseExpressiveTimeline('정말 몰랐어!?', { mode: 'expressive_v3' }), 'C1b')
+  const b = okTimeline(parseExpressiveTimeline('정말 몰랐어?!', { mode: 'expressive_v3' }), 'C1b')
+  // 각각 정확히 하나의 이벤트 — 절대 두 개(!, ?)로 갈라지지 않는다
+  assert.equal(a.localProsody.length, 1)
+  assert.equal(b.localProsody.length, 1)
+  // 같은 kind / 같은 파라미터
+  assert.equal(a.localProsody[0].kind, 'shock_rise')
+  assert.equal(b.localProsody[0].kind, 'shock_rise')
+  assert.equal(a.localProsody[0].kind, b.localProsody[0].kind)
+  assert.equal(a.localProsody[0].strength, b.localProsody[0].strength)
+  assert.equal(a.localProsody[0].durationHint, b.localProsody[0].durationHint)
+  assert.equal(a.localProsody[0].scopeKind, b.localProsody[0].scopeKind)
+  assert.equal(a.localProsody[0].rawCount, b.localProsody[0].rawCount)
+  // provenance: 원문 문장부호는 rawToken 에 그대로 남아 서로 구분된다
+  assert.equal(a.localProsody[0].rawToken, '!?')
+  assert.equal(b.localProsody[0].rawToken, '?!')
+  assert.notEqual(a.localProsody[0].rawToken, b.localProsody[0].rawToken)
+  // 원문 복원도 각각 정확
+  assert.equal(reconstructSource(a), '정말 몰랐어!?')
+  assert.equal(reconstructSource(b), '정말 몰랐어?!')
 })
 
 test('C2: "......" 는 하나의 dot-run 토큰(...+... 아님)', () => {
@@ -350,34 +375,84 @@ test('D8: 감정 태그는 국소 운율의 host 를 끊지 않는다', () => {
   assert.equal(e.hostRange.startCodepoint, 0, '감정 태그 이전 텍스트까지 host 에 포함')
 })
 
-test('D9: ~ 는 최종 모음을 늘이고, 확정 불가면 degraded (자음/전체 늘이기 금지)', () => {
-  const ok1 = okTimeline(parseExpressiveTimeline('그래도~', { mode: 'expressive_v3' }), 'D9').localProsody[0]
-  assert.equal(ok1.kind, 'vowel_extend')
-  assert.equal(ok1.scopeKind, 'final_vowel')
-  assert.equal(ok1.vowelExtend?.supported, true)
-  assert.equal(ok1.vowelExtend?.targetVowel, 'ㅗ')
+test('D9: ~ 는 문법적으로 모두 수용되고, 최종음은 3분류로만 관찰된다', () => {
+  // 1) 종성 없음 → open_vowel
+  const open = okTimeline(parseExpressiveTimeline('그래도~', { mode: 'expressive_v3' }), 'D9').localProsody[0]
+  assert.equal(open.kind, 'vowel_extend')
+  assert.equal(open.scopeKind, 'final_vowel')
+  assert.equal(open.vowelExtend?.classification, 'open_vowel')
+  assert.equal(open.vowelExtend?.targetVowel, 'ㅗ')
+  assert.equal(open.vowelExtend?.finalConsonant, null)
+  assert.equal(open.vowelExtend?.undeterminableReason, null)
 
-  const cons = okTimeline(parseExpressiveTimeline('안녕~', { mode: 'expressive_v3' }), 'D9').localProsody[0]
-  assert.equal(cons.vowelExtend?.supported, false)
-  assert.equal(cons.vowelExtend?.degradedReason, 'final_consonant')
-  assert.equal(cons.vowelExtend?.targetVowel, null)
+  // 2) 종성 ㅇ/ㄴ/ㅁ/ㄹ → sustainable_final (네 자모 모두)
+  const sustainable: Array<[string, string]> = [['안녕~', 'ㅇ'], ['그런~', 'ㄴ'], ['사랑함~', 'ㅁ'], ['그럴~', 'ㄹ']]
+  for (const [src, jamo] of sustainable) {
+    const t = okTimeline(parseExpressiveTimeline(src, { mode: 'expressive_v3' }), 'D9')
+    const e = t.localProsody[0]
+    assert.equal(e.vowelExtend?.classification, 'sustainable_final', src)
+    assert.equal(e.vowelExtend?.finalConsonant, jamo, src)
+    assert.ok(SUSTAINABLE_FINAL_JAMO.includes(jamo))
+    // 사용 허용 대상이므로 경고를 만들지 않는다
+    assert.equal(t.diagnostics.length, 0, `${src}: sustainable_final 은 경고하지 않는다`)
+  }
 
+  // 3) 그 밖의 종성 → non_sustainable_final + 경고
+  const nonSus = okTimeline(parseExpressiveTimeline('밥~', { mode: 'expressive_v3' }), 'D9')
+  assert.equal(nonSus.localProsody[0].vowelExtend?.classification, 'non_sustainable_final')
+  assert.equal(nonSus.localProsody[0].vowelExtend?.finalConsonant, 'ㅂ')
+  assert.ok(nonSus.diagnostics.some((d) => d.code === 'VOWEL_EXTEND_NON_SUSTAINABLE_FINAL' && d.severity === 'warning'))
+
+  // 겹받침은 자모 표기 그대로 분류(음운 규칙 미적용 — 알려진 한계)
+  const compound = okTimeline(parseExpressiveTimeline('삶~', { mode: 'expressive_v3' }), 'D9').localProsody[0]
+  assert.equal(compound.vowelExtend?.classification, 'non_sustainable_final')
+  assert.equal(compound.vowelExtend?.finalConsonant, 'ㄻ')
+
+  // 4) 확정 불가(스크립트 한계·선행 텍스트 없음)
   const han = okTimeline(parseExpressiveTimeline('你好~', { mode: 'expressive_v3' }), 'D9').localProsody[0]
-  assert.equal(han.vowelExtend?.degradedReason, 'unsupported_script')
-
+  assert.equal(han.vowelExtend?.classification, 'undeterminable')
+  assert.equal(han.vowelExtend?.undeterminableReason, 'unsupported_script')
   const none = okTimeline(parseExpressiveTimeline('~시작', { mode: 'expressive_v3' }), 'D9').localProsody[0]
-  assert.equal(none.vowelExtend?.degradedReason, 'no_preceding_text')
+  assert.equal(none.vowelExtend?.classification, 'undeterminable')
+  assert.equal(none.vowelExtend?.undeterminableReason, 'no_preceding_text')
 
-  const en = okTimeline(parseExpressiveTimeline('hello~', { mode: 'expressive_v3' }), 'D9').localProsody[0]
-  assert.equal(en.vowelExtend?.supported, true)
-  assert.equal(en.vowelExtend?.targetVowel, 'o')
+  // 라틴: 모음 → open_vowel, 공명음 → sustainable_final, 그 외 → non_sustainable_final
+  assert.equal(okTimeline(parseExpressiveTimeline('hello~', { mode: 'expressive_v3' }), 'D9').localProsody[0].vowelExtend?.classification, 'open_vowel')
+  assert.equal(okTimeline(parseExpressiveTimeline('listen~', { mode: 'expressive_v3' }), 'D9').localProsody[0].vowelExtend?.classification, 'sustainable_final')
+  assert.equal(okTimeline(parseExpressiveTimeline('cat~', { mode: 'expressive_v3' }), 'D9').localProsody[0].vowelExtend?.classification, 'non_sustainable_final')
 
-  // degraded 는 경고 진단으로도 표면화된다(조용한 폴백 금지)
-  const t = okTimeline(parseExpressiveTimeline('안녕~', { mode: 'expressive_v3' }), 'D9')
-  assert.ok(t.diagnostics.some((d) => d.code === 'UNSUPPORTED_VOWEL_EXTEND' && d.severity === 'warning'))
-  assert.equal(t.summary.degradedVowelExtendCount, 1)
+  // 어떤 경우에도 '~' 자체는 문법적으로 거부되지 않는다(전부 파싱 성공 + 이벤트 1개)
+  for (const src of ['그래도~', '안녕~', '밥~', '你好~', '~시작', 'cat~']) {
+    const r = parseExpressiveTimeline(src, { mode: 'expressive_v3' })
+    assert.equal(r.ok, true, `${src}: 문법적으로 수용`)
+    if (r.ok) assert.equal(r.timeline.localProsody.length, 1, src)
+  }
 })
 
+test('D9b: 문법 층은 음향 품질(supported/degraded) 판정을 내보내지 않는다', () => {
+  assert.equal(LANGUAGE_LAYER_ASSERTS_ACOUSTIC_QUALITY, false)
+  assert.equal(SUSTAINABLE_FINAL_IS_ACOUSTICALLY_VERIFIED, false, 'ㅇㄴㅁㄹ 는 실청 검증 전까지 미보증')
+  for (const src of ['그래도~', '안녕~', '밥~', '你好~', '~시작']) {
+    const t = okTimeline(parseExpressiveTimeline(src, { mode: 'expressive_v3' }), 'D9b')
+    const ve = t.localProsody[0].vowelExtend as unknown as Record<string, unknown>
+    assert.ok(ve != null)
+    assert.equal('supported' in ve, false, `${src}: supported 판정 없음`)
+    assert.equal('degraded' in ve, false, `${src}: degraded 판정 없음`)
+    assert.equal('degradedReason' in ve, false, `${src}: degradedReason 없음`)
+    assert.deepEqual(Object.keys(ve).sort(),
+      ['classification', 'finalConsonant', 'targetVowel', 'undeterminableReason'])
+    assert.ok((VOWEL_EXTEND_CLASSES as readonly string[]).includes(String(ve.classification)))
+  }
+  // 금지 기법이 계약에 명시돼 있다(엔진 구현자용)
+  assert.deepEqual([...VOWEL_EXTEND_FORBIDDEN_TECHNIQUES],
+    ['duplicate_final_consonant', 'repeat_final_consonant'])
+  assert.deepEqual([...VOWEL_EXTEND_CLASSES],
+    ['open_vowel', 'sustainable_final', 'non_sustainable_final', 'undeterminable'])
+  assert.deepEqual([...VOWEL_EXTEND_UNDETERMINABLE_REASONS],
+    ['unsupported_script', 'no_preceding_text', 'no_preceding_vowel'])
+  assert.equal(SUSTAINABLE_FINAL_JAMO, 'ㅇㄴㅁㄹ')
+  assert.equal(SUSTAINABLE_FINAL_LATIN, 'nmlr')
+})
 test('D10: 웃음 style/반복/상한/위치', () => {
   const styles: Array<[string, string, number]> = [
     ['[ㅋ]', 'chuckle', 1], ['[ㅋㅋ]', 'chuckle', 2], ['[ㅋㅋㅋㅋ]', 'chuckle', 4],
@@ -513,7 +588,7 @@ for (const v of vectors) {
     assert.equal(t.summary.explicitPauseCount, exp.summary.explicit_pause_count)
     assert.equal(t.summary.totalExplicitPauseMs, exp.summary.total_explicit_pause_ms)
     assert.deepEqual(t.summary.usedEmotionIds, exp.summary.used_emotion_ids)
-    assert.equal(t.summary.degradedVowelExtendCount, exp.summary.degraded_vowel_extend_count)
+    assert.equal(t.summary.nonOpenVowelExtendCount, exp.summary.non_open_vowel_extend_count)
     assert.equal(t.summary.cappedTokenCount, exp.summary.capped_token_count)
     assert.equal(t.expressiveEnabled, exp.expressive_enabled)
     assert.equal(t.hasExpressiveEvents, exp.has_expressive_events)
@@ -557,9 +632,10 @@ for (const v of vectors) {
       assert.equal(g.rawToken, e.raw_token)
       if (e.vowel_extend == null) assert.equal(g.vowelExtend, null)
       else {
-        assert.equal(g.vowelExtend?.supported, e.vowel_extend.supported)
+        assert.equal(g.vowelExtend?.classification, e.vowel_extend.classification)
         assert.equal(g.vowelExtend?.targetVowel, e.vowel_extend.target_vowel)
-        assert.equal(g.vowelExtend?.degradedReason, e.vowel_extend.degraded_reason)
+        assert.equal(g.vowelExtend?.finalConsonant, e.vowel_extend.final_consonant)
+        assert.equal(g.vowelExtend?.undeterminableReason, e.vowel_extend.undeterminable_reason)
       }
     }
 
@@ -623,7 +699,13 @@ test('F-meta: 픽스처 _meta 의 enum/상수 집합이 TS 계약과 일치', ()
   assert.deepEqual(meta.laugh_positions, [...LAUGH_POSITIONS])
   assert.deepEqual(meta.emotion_transition_modes, [...EMOTION_TRANSITION_MODES])
   assert.deepEqual(meta.boundary_kinds, [...EXPRESSIVE_BOUNDARY_KINDS])
-  assert.deepEqual(meta.vowel_extend_degrade_reasons, [...VOWEL_EXTEND_DEGRADE_REASONS])
+  assert.deepEqual(meta.vowel_extend_classes, [...VOWEL_EXTEND_CLASSES])
+  assert.deepEqual(meta.vowel_extend_undeterminable_reasons, [...VOWEL_EXTEND_UNDETERMINABLE_REASONS])
+  assert.deepEqual(meta.vowel_extend_forbidden_techniques, [...VOWEL_EXTEND_FORBIDDEN_TECHNIQUES])
+  assert.equal(meta.sustainable_final_jamo, SUSTAINABLE_FINAL_JAMO)
+  assert.equal(meta.sustainable_final_latin, SUSTAINABLE_FINAL_LATIN)
+  assert.equal(meta.invariants.sustainable_final_is_acoustically_verified, SUSTAINABLE_FINAL_IS_ACOUSTICALLY_VERIFIED)
+  assert.equal(meta.invariants.language_layer_asserts_acoustic_quality, LANGUAGE_LAYER_ASSERTS_ACOUSTIC_QUALITY)
   assert.deepEqual(meta.error_codes, [...EXPRESSIVE_ERROR_CODES])
   assert.deepEqual(meta.counts.dot_run, [1, DOT_RUN_MAX_COUNT])
   assert.deepEqual(meta.counts.bang_run, [1, BANG_RUN_MAX_COUNT])
@@ -663,14 +745,20 @@ test('G4: sha256 거울이 ttsGrammar / node crypto 와 동일', () => {
   }
 })
 
-test('G5: resolveVowelExtend 단위 동작', () => {
-  assert.deepEqual(resolveVowelExtend('가'), { supported: true, targetVowel: 'ㅏ', degradedReason: null })
-  assert.deepEqual(resolveVowelExtend('강'), { supported: false, targetVowel: null, degradedReason: 'final_consonant' })
-  assert.deepEqual(resolveVowelExtend('a'), { supported: true, targetVowel: 'a', degradedReason: null })
-  assert.deepEqual(resolveVowelExtend('b'), { supported: false, targetVowel: null, degradedReason: 'final_consonant' })
-  assert.deepEqual(resolveVowelExtend('い'), { supported: true, targetVowel: 'i', degradedReason: null })
-  assert.deepEqual(resolveVowelExtend('好'), { supported: false, targetVowel: null, degradedReason: 'unsupported_script' })
-  assert.deepEqual(resolveVowelExtend('1'), { supported: false, targetVowel: null, degradedReason: 'no_preceding_vowel' })
+test('G5: classifyVowelExtend 단위 동작(3분류 + 확정 불가)', () => {
+  const c = (ch: string): Record<string, unknown> => classifyVowelExtend(ch) as unknown as Record<string, unknown>
+  assert.deepEqual(c('가'), { classification: 'open_vowel', targetVowel: 'ㅏ', finalConsonant: null, undeterminableReason: null })
+  assert.deepEqual(c('강'), { classification: 'sustainable_final', targetVowel: 'ㅏ', finalConsonant: 'ㅇ', undeterminableReason: null })
+  assert.deepEqual(c('간'), { classification: 'sustainable_final', targetVowel: 'ㅏ', finalConsonant: 'ㄴ', undeterminableReason: null })
+  assert.deepEqual(c('감'), { classification: 'sustainable_final', targetVowel: 'ㅏ', finalConsonant: 'ㅁ', undeterminableReason: null })
+  assert.deepEqual(c('갈'), { classification: 'sustainable_final', targetVowel: 'ㅏ', finalConsonant: 'ㄹ', undeterminableReason: null })
+  assert.deepEqual(c('갑'), { classification: 'non_sustainable_final', targetVowel: 'ㅏ', finalConsonant: 'ㅂ', undeterminableReason: null })
+  assert.deepEqual(c('a'), { classification: 'open_vowel', targetVowel: 'a', finalConsonant: null, undeterminableReason: null })
+  assert.deepEqual(c('n'), { classification: 'sustainable_final', targetVowel: null, finalConsonant: 'n', undeterminableReason: null })
+  assert.deepEqual(c('b'), { classification: 'non_sustainable_final', targetVowel: null, finalConsonant: 'b', undeterminableReason: null })
+  assert.deepEqual(c('い'), { classification: 'open_vowel', targetVowel: 'i', finalConsonant: null, undeterminableReason: null })
+  assert.deepEqual(c('好'), { classification: 'undeterminable', targetVowel: null, finalConsonant: null, undeterminableReason: 'unsupported_script' })
+  assert.deepEqual(c('1'), { classification: 'undeterminable', targetVowel: null, finalConsonant: null, undeterminableReason: 'no_preceding_vowel' })
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
