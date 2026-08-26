@@ -2,8 +2,9 @@
 """asr_eval_fixtures 단위 테스트 — 실제 ASR·음성·GPU 없음(합성 mock 문자열만).
 
 검증: fixture 구조 불변식 / 세 카테고리를 **각각 독립적으로** 평가하고 기본값으로는
-절대 합치지 않는다는 것 / 선언된 정규화 규칙의 결과(띄어쓰기·대소문자) / 표현 이벤트
-probe / provenance 각인 / 금지 이름 스캔 / 결과 레코드 위생.
+절대 합치지 않는다는 것 / 선언된 정규화 규칙의 결과(띄어쓰기·대소문자) / 표현 언어
+계약(expressive_timeline v3) 문법으로 쓴 이벤트 probe / 계약 버전·지문·타임라인 해시
+각인 / provenance 각인 / 금지 이름 스캔 / 결과 레코드 위생.
 """
 
 import json
@@ -14,6 +15,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import korean_cer as kc
+import expressive_timeline as et
 import asr_eval_fixtures as fx
 
 
@@ -245,6 +247,7 @@ class ExpressionEventProbeTest(unittest.TestCase):
             self.assertEqual(r.events.spurious_count, 0, msg=r.item_id)
             self.assertEqual(r.events.matched_count, r.events.expected_count,
                              msg=r.item_id)
+            self.assertEqual(r.events.magnitude_mismatch_count, 0, msg=r.item_id)
 
     def test_missing_laugh_does_not_move_character_cer(self):
         r = _score(_probe("probe_laugh_missing"), fx.DEGRADED_LABEL)
@@ -253,8 +256,10 @@ class ExpressionEventProbeTest(unittest.TestCase):
         self.assertEqual(r.events.missing_count, 1)
         self.assertEqual(r.events.spurious_count, 0)
 
-    def test_spurious_laugh_is_reported_as_spurious(self):
+    def test_extra_laugh_is_reported_as_spurious(self):
         r = _score(_probe("probe_laugh_missing"), "spurious_laugh")
+        self.assertEqual(r.syllable_cer, 0.0)
+        self.assertEqual(r.events.matched_count, 1)
         self.assertEqual(r.events.spurious_count, 1)
         self.assertEqual(r.events.missing_count, 0)
 
@@ -270,17 +275,36 @@ class ExpressionEventProbeTest(unittest.TestCase):
         self.assertEqual(r.events.spurious_count, 1)
         self.assertEqual(r.events.matched_count, 0)
 
+    def test_transition_mode_change_is_not_a_magnitude_change(self):
+        """[기쁨] → [기쁨|즉시] 는 범주적 차이라 identity 가 달라진다."""
+        r = _score(_probe("probe_emotion_tag"), "immediate_mode")
+        self.assertEqual(r.syllable_cer, 0.0)
+        self.assertEqual(r.events.matched_count, 0)
+        self.assertEqual(r.events.missing_count, 1)
+        self.assertEqual(r.events.spurious_count, 1)
+
     def test_missing_prosody_tokens(self):
         r = _score(_probe("probe_prosody_punct"), fx.DEGRADED_LABEL)
         self.assertEqual(r.syllable_cer, 0.0)
         self.assertEqual(r.events.expected_count, 2)
         self.assertEqual(r.events.missing_count, 2)
 
-    def test_flattened_punctuation_still_counts_as_missing_events(self):
-        """마침표는 이벤트가 아니다 — 문자 CER 은 0 이지만 운율 이벤트는 사라졌다."""
+    def test_flattened_punctuation_substitutes_a_different_prosody(self):
+        """마침표 1개는 계약상 firm_end — '사라짐'이 아니라 '다른 운율로 바뀜'이다."""
         r = _score(_probe("probe_prosody_punct"), "flattened_punct")
         self.assertEqual(r.syllable_cer, 0.0)
         self.assertEqual(r.events.missing_count, 2)
+        self.assertEqual(r.events.spurious_count, 2)
+        self.assertEqual(r.events.matched_count, 0)
+
+    def test_alias_form_matches_completely(self):
+        """'?!'↔'!?' 별칭과 '...'↔'…' 개수 동치는 계약이 확정한 것이다."""
+        r = _score(_probe("probe_prosody_punct"), "alias_form")
+        self.assertEqual(r.syllable_cer, 0.0)
+        self.assertEqual(r.events.matched_count, 2)
+        self.assertEqual(r.events.missing_count, 0)
+        self.assertEqual(r.events.spurious_count, 0)
+        self.assertEqual(r.events.magnitude_mismatch_count, 0)
 
     def test_content_error_with_intact_events(self):
         r = _score(_probe("probe_content_error_with_event"), fx.DEGRADED_LABEL)
@@ -288,11 +312,97 @@ class ExpressionEventProbeTest(unittest.TestCase):
         self.assertEqual(r.events.missing_count, 0)
         self.assertEqual(r.events.spurious_count, 0)
 
-    def test_token_spec_version_is_stamped_on_every_report(self):
-        for r in fx.evaluate_expression_probes(fx.mock_asr(fx.DEGRADED_LABEL), PROV):
-            self.assertEqual(r.events.token_spec_version,
-                             kc.EXPRESSION_TOKEN_SPEC_VERSION)
+    def test_attenuated_event_is_matched_with_magnitude_mismatch(self):
+        r = _score(_probe("probe_magnitude_attenuated"), fx.DEGRADED_LABEL)
+        self.assertEqual(r.syllable_cer, 0.0)
+        self.assertEqual(r.events.matched_count, 1)
+        self.assertEqual(r.events.missing_count, 0)
+        self.assertEqual(r.events.spurious_count, 0)
+        self.assertEqual(r.events.magnitude_mismatch_count, 1)
 
+    def test_difference_beyond_the_contract_cap_is_already_gone(self):
+        r = _score(_probe("probe_magnitude_attenuated"), "capped_run")
+        self.assertEqual(r.events.matched_count, 1)
+        self.assertEqual(r.events.magnitude_mismatch_count, 0)
+
+    def test_vowel_extend_token_is_not_content(self):
+        item = _probe("probe_vowel_extend")
+        self.assertEqual(kc.normalize_text(item.reference_text),
+                         kc.normalize_text(item.hypothesis(fx.DEGRADED_LABEL).text))
+        r = _score(item, fx.DEGRADED_LABEL)
+        self.assertEqual(r.syllable_cer, 0.0)
+        self.assertEqual(r.events.missing_count, 1)
+
+    def test_explicit_pause_missing_and_length_only(self):
+        missing = _score(_probe("probe_explicit_pause"), fx.DEGRADED_LABEL)
+        self.assertEqual(missing.syllable_cer, 0.0)
+        self.assertEqual(missing.events.missing_count, 1)
+        longer = _score(_probe("probe_explicit_pause"), "longer_pause")
+        self.assertEqual(longer.events.matched_count, 1)   # 길이는 identity 가 아니다
+        self.assertEqual(longer.events.magnitude_mismatch_count, 1)
+
+    def test_contract_parse_failure_is_visible_and_cer_survives(self):
+        r = _score(_probe("probe_contract_parse_failure"), fx.DEGRADED_LABEL)
+        self.assertFalse(r.events.contract_ok)
+        self.assertFalse(r.events.hypothesis_contract_ok)
+        self.assertTrue(r.events.reference_contract_ok)
+        self.assertIn("UNKNOWN_EXPRESSIVE_TAG", r.events.contract_diagnostic_codes)
+        self.assertGreater(r.syllable_cer, 0.0)
+
+    def test_probes_use_contract_syntax_only(self):
+        """probe 표기는 계약 문법이어야 한다 — 본문의 맨 ㅋㅋ 는 이벤트가 아니다."""
+        for it in fx.EXPRESSION_EVENT_PROBES:
+            if it.item_id == "probe_contract_parse_failure":
+                continue
+            parse = kc.extract_expression_events(it.reference_text)
+            self.assertTrue(parse.contract_ok, msg=it.item_id)
+            self.assertGreaterEqual(len(parse.events), 1, msg=it.item_id)
+
+
+# ────────────────────────── 계약 각인 ──────────────────────────
+class ContractStampTest(unittest.TestCase):
+
+    def _all_reports(self):
+        out = []
+        for label in (fx.PERFECT_LABEL, fx.DEGRADED_LABEL):
+            for agg in fx.evaluate_all(fx.mock_asr(label), PROV).values():
+                out.extend(r.events for r in agg.items)
+            out.extend(r.events for r
+                       in fx.evaluate_expression_probes(fx.mock_asr(label), PROV))
+        return out
+
+    def test_token_spec_version_is_stamped_and_not_provisional(self):
+        for rep in self._all_reports():
+            self.assertEqual(rep.token_spec_version, kc.EXPRESSION_TOKEN_SPEC_VERSION)
+            self.assertNotIn("provisional", rep.token_spec_version)
+
+    def test_contract_version_and_fingerprint_are_stamped(self):
+        for rep in self._all_reports():
+            self.assertEqual(rep.expressive_contract_version,
+                             et.EXPRESSIVE_CONTRACT_VERSION)
+            self.assertEqual(rep.expressive_contract_fingerprint,
+                             kc.EXPRESSIVE_CONTRACT_FINGERPRINT)
+            self.assertEqual(rep.expressive_mode, kc.EXPRESSIVE_EVAL_MODE)
+
+    def test_timeline_sha256_is_recorded_when_the_contract_parses(self):
+        for rep in self._all_reports():
+            if not rep.contract_ok:
+                continue
+            self.assertEqual(len(rep.reference_timeline_sha256), 64, msg=rep.item_id)
+            self.assertEqual(len(rep.hypothesis_timeline_sha256), 64, msg=rep.item_id)
+
+    def test_timeline_sha256_differs_when_the_text_differs(self):
+        rep = _score(_probe("probe_prosody_punct"), fx.DEGRADED_LABEL).events
+        self.assertNotEqual(rep.reference_timeline_sha256,
+                            rep.hypothesis_timeline_sha256)
+
+    def test_timeline_sha256_matches_for_the_perfect_mock(self):
+        rep = _score(_probe("probe_prosody_punct"), fx.PERFECT_LABEL).events
+        self.assertEqual(rep.reference_timeline_sha256,
+                         rep.hypothesis_timeline_sha256)
+
+    def test_fixture_set_version_tracks_the_token_rewrite(self):
+        self.assertIn("2.0.0", fx.FIXTURE_SET_VERSION)
 
 # ────────────────────────── mock ASR · provenance ──────────────────────────
 class MockAsrAndProvenanceTest(unittest.TestCase):
