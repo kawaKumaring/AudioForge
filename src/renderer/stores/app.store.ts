@@ -1,6 +1,12 @@
 import { create } from 'zustand'
 import type { SeparationMode, Track, FileInfo } from '../../shared/types'
 import type { TtsReferenceEntry, PitchCapability } from '../../shared/ttsConfig'
+// 취소 계약(C2-P0.1)의 순수 술어 — store/UI/테스트가 같은 판정을 공유해 갈라지지 않게 한다.
+// 확장자(.ts)를 명시하는 이유: app.store.ts는 node --test(ESM, 확장자 필수)가 직접 로드하는 유일한 store 파일이라
+// 확장자 없는 상대 경로는 런타임에 ERR_MODULE_NOT_FOUND가 된다. tsconfig의 allowImportingTsExtensions는
+// 이 작업 범위 밖(공유 설정)이므로 TS5097만 국소 억제한다 — 모듈 해석·타입 검사는 그대로 살아 있다.
+// @ts-ignore TS5097: node --test가 요구하는 명시적 .ts 확장자(위 주석 참고).
+import { CANCEL_FAILED_CODE, canBeginCancelling, isCancelCleanupBusy } from '../../shared/cancelContract.ts'
 
 // 감정별 참조 상태 — 하나의 slot이 통합 브랜치의 config 3필드(§1.2 계약)로 직렬화된다:
 //   source  → ttsEmotionRefSources[id] (사용자 등록 원본 경로, 영속·세션 재현 기준)
@@ -266,7 +272,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   // 새 기본 참조 = 새 파일이므로 이전 전사(default + 감정 전부)는 새 음성에 결합되면 안 된다 →
   // ttsReferencePrompts 전량 비움(불변식 3·4: stale 전사 ↔ 새 음성 결합 방지).
   setFile: (info, url) => {
-    if (get().status === 'cancelling') return  // 취소 정리 중 새 파일 처리 차단(worker 종료 확인 전 상태 교체 방지)
+    if (isCancelCleanupBusy(get().status)) return  // 취소 정리 중 새 파일 처리 차단(worker 종료 확인 전 상태 교체 방지)
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 전체 파생 클립(기본+감정) 정리
     set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsReferencePrompts: {} })
   },
@@ -344,12 +350,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearError: () => set({ status: 'idle', error: null, errorInfo: null, progressMessage: '' }),
   // 오류 해제 + 재시도 트리거. idle로 되돌려 ProcessButton effect가 재합성 1회 실행하도록.
   // processing/cancelling 중이면 무시(재진입 방지 — 중복 클릭에도 1회만, 진행/취소 중 상태를 뒤엎지 않음).
-  bumpRetry: () => set((s) => (s.status === 'processing' || s.status === 'cancelling')
+  bumpRetry: () => set((s) => (s.status === 'processing' || isCancelCleanupBusy(s.status))
     ? {}
     : { retryNonce: s.retryNonce + 1, status: 'idle', error: null, errorInfo: null, progressMessage: '' }),
-  // 취소 요청 표시(사용자 클릭 또는 main의 audio:cancelling). processing에서, 또는 취소 실패(CANCEL_FAILED) 상태에서
-  // '다시 취소'로 재진입할 때만 cancelling으로. 그 외 상태는 무시(child 생존 중 idle 금지·엉뚱한 전환 방지).
-  beginCancelling: () => set((s) => (s.status === 'processing' || (s.status === 'error' && s.errorInfo?.code === 'CANCEL_FAILED'))
+  // 취소 정리 표시 — 오직 main의 audio:cancelling 이벤트를 받았을 때만 호출한다(계약 C2-P0.1 §4).
+  // 클릭 시점의 낙관적 전환은 금지: main이 no-op으로 끝내면 어떤 터미널 이벤트도 오지 않아 UI가 영구
+  // 'cancelling'에 갇히고, 그 사이 도착한 result/error까지 폐기됐다(이 결함의 원인).
+  // processing에서, 또는 취소 실패(CANCEL_FAILED)에서 '다시 취소'로 재진입할 때만 전환(canBeginCancelling).
+  beginCancelling: () => set((s) => canBeginCancelling(s.status, s.errorInfo?.code)
     ? { status: 'cancelling', progressMessage: '작업을 취소하고 정리하는 중…', error: null, errorInfo: null }
     : {}),
   // 취소 완료(main audio:cancelled) → idle. 부분 결과 미채택.
@@ -358,7 +366,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setCancelFailed: (childAlive) => set({
     status: 'error',
     error: '작업을 취소하지 못했습니다. 프로세스 상태를 확인하거나 앱을 종료하세요.',
-    errorInfo: { code: 'CANCEL_FAILED', childAlive: !!childAlive },
+    errorInfo: { code: CANCEL_FAILED_CODE, childAlive: !!childAlive },
     progressMessage: ''
   }),
   setPlayingTrack: (name) => set({ playingTrack: name }),
@@ -420,7 +428,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   }),
   reset: () => {
-    if (get().status === 'cancelling') return  // 취소 정리 중 reset 차단(worker 종료 확인 전 상태 초기화 방지)
+    if (isCancelCleanupBusy(get().status)) return  // 취소 정리 중 reset 차단(worker 종료 확인 전 상태 초기화 방지)
     // 세션 리셋 → 파생 참조 클립 폴더 삭제 + 참조/전사/결과 상태 초기화(다른 원본의 상태 잔존 방지).
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }
     set({
