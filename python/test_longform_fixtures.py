@@ -213,12 +213,30 @@ class TestLongformShape(LongformFixtureBase):
         counts = set(len(paragraphs_of(self.raw[name])) for name in TEXT_FILES)
         self.assertEqual(len(counts), 1, "문단 1:1 대응이 깨졌다")
 
-    def test_no_crlf_and_single_trailing_newline(self):
+    def test_single_trailing_newline(self):
+        """정규화된 텍스트에 후행 개행이 정확히 하나.
+
+        raw 는 text 모드로 읽어 universal-newline 변환을 거친 것이므로, 디스크 상의
+        줄끝 모양은 이 단언에 드러나지 않는다 — 그 사실은 아래 테스트가 따로 다룬다."""
         for name in TEXT_FILES:
             raw = self.raw[name]
-            self.assertNotIn("\r", raw, name)
             self.assertTrue(raw.endswith("\n"), name)
             self.assertFalse(raw.endswith("\n\n"), name)
+            self.assertNotIn("\r", raw, name)   # 줄 중간의 단독 CR
+
+    def test_on_disk_line_endings_do_not_affect_manifest(self):
+        """리포지토리는 core.autocrlf=true 로 돌아가므로 새 상황에서 이 fixture 들은
+        디스크에 CRLF 로 내려간다(실측: 7617바이트 LF → 7652바이트 CRLF). 그것은 정상이며
+        manifest 값을 깨뜨리지 않는다 — sha256·char_count·byte_length_utf8 이 전부 LF
+        정규화된 텍스트 기준이기 때문이다. 이 테스트는 그 불변을 직접 증명한다.
+
+        왜 필요한가: `sha256sum <파일>` 로 직접 해싱하면 manifest 와 다른 값이 나온다.
+        그것은 fixture 오염이 아니라 해싱 기준이 다른 것이라는 사실을 여기에 박아 둔다."""
+        for name in TEXT_FILES:
+            with io.open(os.path.join(FIXTURE_DIR, name), "rb") as f:
+                data = f.read()
+            normalized = data.replace(b"\r\n", b"\n").decode("utf-8")
+            self.assertEqual(normalized, self.raw[name], name)
 
     def test_latin_ratio_under_bound(self):
         for name in TEXT_FILES:
