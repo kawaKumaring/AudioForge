@@ -28,10 +28,16 @@ REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TS_PATH = os.path.join(REPO_ROOT, "src", "shared", "emotionSampler.ts")
 PY_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "emotion_sampler.py")
 
-with open(TS_PATH, encoding="utf-8") as _f:
-    TS_SRC = _f.read()
-with open(PY_PATH, encoding="utf-8") as _f:
-    PY_SRC = _f.read()
+
+def _read_source(path):
+    """⚠️ core.autocrlf=true 인 레포다 — 새 체크아웃에서는 CRLF 로 내려온다.
+    소스를 '파싱'하는 테스트라 개행을 먼저 LF 로 정규화해야 정규식이 체크아웃 방식에 흔들리지 않는다."""
+    with open(path, encoding="utf-8") as f:
+        return f.read().replace("\r\n", "\n")
+
+
+TS_SRC = _read_source(TS_PATH)
+PY_SRC = _read_source(PY_PATH)
 
 FP_A = "a" * 64
 FP_B = "b" * 64

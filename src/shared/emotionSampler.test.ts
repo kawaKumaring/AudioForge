@@ -79,9 +79,14 @@ const KEY_A = buildEmotionSampleCacheKey(input())
 const MODULE_PATH = fileURLToPath(new URL('./emotionSampler.ts', import.meta.url))
 const PY_PATH = fileURLToPath(new URL('../../python/emotion_sampler.py', import.meta.url))
 const PANEL_PATH = fileURLToPath(new URL('../renderer/components/EmotionSamplerPanel.tsx', import.meta.url))
-const moduleSrc = readFileSync(MODULE_PATH, 'utf-8')
-const pySrc = readFileSync(PY_PATH, 'utf-8')
-const panelSrc = readFileSync(PANEL_PATH, 'utf-8')
+// ⚠️ core.autocrlf=true 인 레포다 — 새 체크아웃에서는 CRLF 로 내려온다.
+// 소스를 '파싱'하는 테스트라 개행을 먼저 LF 로 정규화해야 정규식이 체크아웃 방식에 흔들리지 않는다.
+function readSource(path: string): string {
+  return readFileSync(path, 'utf-8').replace(/\r\n/g, '\n')
+}
+const moduleSrc = readSource(MODULE_PATH)
+const pySrc = readSource(PY_PATH)
+const panelSrc = readSource(PANEL_PATH)
 
 // 주석을 제거한 '실제 코드'만 검사한다 — 설명 주석("'전체 생성'은 두지 않는다" 등)이
 // 금지 패턴에 걸려 거짓 실패하는 것을 막는다.
