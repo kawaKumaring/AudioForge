@@ -4,6 +4,9 @@ import { useAppStore, emotionEffectivePath } from '@/stores/app.store'
 import type { TtsReferenceEntry, PitchCapability, TtsEmotionRegion } from '../../shared/ttsConfig'
 import { deriveRefMode } from '../../shared/ttsConfig'
 import ReferenceRegionPanel from './ReferenceRegionPanel'
+import ReferenceAssetLibraryPanel from './ReferenceAssetLibraryPanel'
+import { REF_ASSET_FAILURE_TEXT } from './ReferenceAssetLibraryPanel.logic'
+import type { ReferenceLibraryItem, ReferenceLibraryStatus } from '../../shared/referenceLibraryApi'
 import TtsVoiceSection from './TtsVoiceSection'
 import EmotionReferenceManager from './EmotionReferenceManager'
 import ExpressionControls from './ExpressionControls'
@@ -191,6 +194,52 @@ export default function TTSEditor() {
   const [ttsEngine, setTtsEngine] = useState(() => useAppStore.getState().ttsEngine)
   const [refPrompts, setRefPrompts] = useState<Record<string, TtsReferenceEntry>>(() => useAppStore.getState().ttsReferencePrompts)
   const [showRefPrompts, setShowRefPrompts] = useState(false)
+
+  // ── 참조 목소리 보관함 배선 — renderer 는 논리 ID 만 다룬다(경로는 import 요청에만 실린다). ──
+  const ttsReferenceRegion = useAppStore((s) => s.ttsReferenceRegion)
+  const [refAssets, setRefAssets] = useState<{ status: ReferenceLibraryStatus; items: ReferenceLibraryItem[] }>(
+    { status: 'ok', items: [] }
+  )
+  const [refAssetBusy, setRefAssetBusy] = useState(false)
+  const [refAssetNotice, setRefAssetNotice] = useState<string | null>(null)
+
+  const refreshRefAssets = async (): Promise<void> => {
+    const res = await window.api.referenceLibrary.list()
+    setRefAssets({ status: res.status, items: res.items })
+  }
+
+  const importCurrentReference = async (): Promise<void> => {
+    if (!fileInfo?.path || !ttsReferenceRegion) return
+    setRefAssetBusy(true)
+    setRefAssetNotice(null)
+    try {
+      // 경로가 renderer 를 떠나는 유일한 지점. 응답에는 논리 ID 만 돌아온다.
+      const res = await window.api.referenceLibrary.import({
+        filePath: fileInfo.path,
+        regionStartMs: Math.round(ttsReferenceRegion.start * 1000),
+        regionDurationMs: Math.round(ttsReferenceRegion.duration * 1000),
+      })
+      if (!res.ok) setRefAssetNotice(REF_ASSET_FAILURE_TEXT[res.reason] ?? '참조를 저장하지 못했습니다.')
+      await refreshRefAssets()
+    } finally {
+      setRefAssetBusy(false)
+    }
+  }
+
+  const selectRefAsset = async (referenceId: string): Promise<void> => {
+    const res = await window.api.referenceLibrary.select(referenceId)
+    // 실패해도 다른 참조로 대신 고르지 않는다 — 사유만 알리고 선택은 그대로 둔다.
+    if (!res.ok) setRefAssetNotice(REF_ASSET_FAILURE_TEXT[res.reason] ?? '참조를 사용할 수 없습니다.')
+    else setRefAssetNotice(null)
+    await refreshRefAssets()
+  }
+
+  const removeRefAsset = async (referenceId: string): Promise<void> => {
+    const res = await window.api.referenceLibrary.remove(referenceId)
+    if (!res.ok) setRefAssetNotice(REF_ASSET_FAILURE_TEXT[res.reason] ?? '참조를 삭제하지 못했습니다.')
+    else setRefAssetNotice(null)
+    await refreshRefAssets()
+  }
   const [txLoading, setTxLoading] = useState<string | null>(null)
   const [preflight, setPreflight] = useState<{ available?: boolean; snapshot_ok?: boolean; device_expected?: string; reason?: string } | null>(null)
   const [showAdvanced, setShowAdvanced] = useState(false)
@@ -402,6 +451,21 @@ export default function TTSEditor() {
           </>
         }
       >
+        {/* 참조 목소리 보관함 — 저장해 둔 참조 자산 관리. 감정 참조 등록·구간 편집과 별개 섹션이다. */}
+        <ReferenceAssetLibraryPanel
+          status={refAssets.status}
+          items={refAssets.items}
+          hasConfirmedRegion={!!fileInfo?.path && !!ttsReferenceRegion}
+          busy={disabled}
+          importing={refAssetBusy}
+          disabled={disabled}
+          notice={refAssetNotice}
+          onRefresh={refreshRefAssets}
+          onImport={importCurrentReference}
+          onSelect={selectRefAsset}
+          onRemove={removeRefAsset}
+        />
+
         {/* 기본 참조 음성 패널(셸 주입) — 단 1회 마운트. */}
         {fileInfo?.path && (
           <ReferenceRegionPanel clipKey="default" path={fileInfo.path} disabled={disabled} onState={setTtsRefState} label="참조 음성" />
