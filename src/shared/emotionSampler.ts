@@ -22,11 +22,15 @@
 /**
  * 캐시 키 '형식' 버전. 직렬화 구조를 바꾸면 올린다(기존 키 전부 무효화).
  * v2: 목소리 입력을 경로 기반 지문(path|size|mtimeMs)에서 **참조 라이브러리의 콘텐츠 SHA-256**으로 교체.
+ * v3: 표현 이벤트(expression.kind)와 세기(expression.strength)를 키에 추가.
  */
-export const EMOTION_SAMPLER_KEY_VERSION = 2
+export const EMOTION_SAMPLER_KEY_VERSION = 3
 
-/** 표준 문구 세트 버전. 문구를 하나라도 바꾸면 반드시 올린다 → 캐시 샘플 전부 무효화. */
-export const EMOTION_SAMPLER_PHRASE_VERSION = 1
+/**
+ * 표준 문구/이벤트 세트 버전. 문구나 행 카탈로그가 바뀌면 반드시 올린다 → 캐시 샘플 전부 무효화.
+ * v2: 표현 프로소디 언어 계약 소비로 전환(스크립트가 계약 토큰으로 조립됨) + 구두점/웃음 행 추가.
+ */
+export const EMOTION_SAMPLER_PHRASE_VERSION = 2
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 2) 표준 문구 세트(버전 있는 상수)
@@ -39,7 +43,13 @@ export const EMOTION_SAMPLER_PHRASES: readonly string[] = Object.freeze([
   '잠시 후에 다시 말씀드리겠습니다.',
 ])
 
-/** 표준 문구 세트를 합성 대본 한 줄로 결합(공백 하나). Python `emotion_sampler.phrase_script()`와 동일. */
+/**
+ * 구두점·웃음 행이 얹히는 호스트 문구(v2 추가). 최종 음절 '요'는 종성이 없어
+ * '~'(vowel_extend)가 계약상 open_vowel 로 분류된다 — 분류 판정은 계약 파서가 한다.
+ */
+export const EMOTION_SAMPLER_EXPRESSION_HOST = '그럼 이제 시작할게요'
+
+/** 감정 baseline 문구 세트를 대본 한 줄로 결합(공백 하나). Python `phrase_script()`와 동일. */
 export function emotionSamplerPhraseScript(): string {
   return EMOTION_SAMPLER_PHRASES.join(' ')
 }
@@ -51,14 +61,16 @@ export function emotionSamplerPhraseScript(): string {
  */
 export function emotionSamplerPhraseSetDigest(): string {
   return samplerSha256Hex(canonicalize({
+    host: EMOTION_SAMPLER_EXPRESSION_HOST,
     phrase_version: EMOTION_SAMPLER_PHRASE_VERSION,
     phrases: EMOTION_SAMPLER_PHRASES.slice(),
+    rows: EMOTION_SAMPLE_ROWS.map((r) => `${r.rowId}:${r.family}:${r.expectKind}`),
   }))
 }
 
 /** 현재 문구 세트(버전 포함)의 고정 지문. 문구 변경 시 PHRASE_VERSION 을 올리고 함께 갱신할 것. */
 export const EMOTION_SAMPLER_PHRASE_SET_SHA256 =
-  'eba75d825d52e7cb6da9a1ae25811545b4d119e4a3fca934b942fb20ecaae9e6'
+  '54b752e341268b6d5446378197ad127f9655ddf8a203dab9ee4eb0d2557c468a'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 3) 상태 / 사유 코드 — 조용한 무표시 금지. 실패·강등은 각각 '이름 있는' 상태다.
@@ -71,6 +83,8 @@ export const EMOTION_SAMPLE_STATES = [
   'degraded',      // 재생 가능하지만 x-vector-only 로 강등되어 만들어짐
   'limitExceeded', // 생성 한도 초과 → 결과 폐기(재생 불가)
   'failed',        // 생성 실패 + 사유
+  'unsupported',   // 엔진 capability 가 '못 한다'고 판정 — 생성 시도 자체를 막는다
+  'unverified',    // capability 가 프로브로 확인되지 않음(unknown) — '됨'으로 표시하지 않는다
 ] as const
 export type EmotionSampleState = typeof EMOTION_SAMPLE_STATES[number]
 
@@ -81,6 +95,8 @@ export const EMOTION_SAMPLE_STATE_LABEL: Readonly<Record<EmotionSampleState, str
   degraded: '재생 가능(음색만 반영)',
   limitExceeded: '생성 한도 초과',
   failed: '실패',
+  unsupported: '지원 안 됨',
+  unverified: '미검증',
 })
 
 export const EMOTION_SAMPLE_REASON_CODES = [
@@ -90,6 +106,12 @@ export const EMOTION_SAMPLE_REASON_CODES = [
   'SAMPLER_REFERENCE_MISSING', // failed — 기본 참조 목소리 없음/사라짐
   'SAMPLER_CANCELLED',         // failed — 사용자가 중단
   'SAMPLER_UNKNOWN',           // failed — 분류되지 않은 오류(조용한 무표시 대신 이 코드를 쓴다)
+  // ↓ 엔진 capability 계약(python/expressive_capability.py · expressive_planner.py)의 코드를
+  //   **그대로** 쓴다. 병렬 어휘를 만들지 않기 위해서다. 그 모듈은 아직 이 브랜치에 병합되지 않았으므로
+  //   parity 테스트로 대조할 수 없다 — 병합되면 드리프트 가드를 추가할 것.
+  'LAUGH_NO_STRATEGY',           // unsupported — 웃음 전략 A~D 전부 불가
+  'VOWEL_EXTEND_NOT_REALIZABLE', // unsupported — 받침 계열: 자음 늘이기/반복 금지라 실현 경로 없음
+  'CAPABILITY_UNVERIFIED',       // unverified — 실제 엔진 프로브 없이는 판정 불가(성공 아님)
 ] as const
 export type EmotionSampleReasonCode = typeof EMOTION_SAMPLE_REASON_CODES[number]
 
@@ -100,6 +122,9 @@ export const EMOTION_SAMPLE_REASON_LABEL: Readonly<Record<EmotionSampleReasonCod
   SAMPLER_REFERENCE_MISSING: '기본 목소리를 찾을 수 없습니다',
   SAMPLER_CANCELLED: '사용자가 중단했습니다',
   SAMPLER_UNKNOWN: '알 수 없는 오류',
+  LAUGH_NO_STRATEGY: '이 엔진에는 웃음을 만드는 방법이 아직 없습니다',
+  VOWEL_EXTEND_NOT_REALIZABLE: '받침이 있어 늘일 수 없습니다(자음을 반복하는 방식은 금지)',
+  CAPABILITY_UNVERIFIED: '엔진이 실제로 해낼 수 있는지 아직 확인되지 않았습니다',
 })
 
 /** 상태별로 허용되는 사유 코드(교차 오염 방지 — 상태와 사유는 1:N 고정). */
@@ -113,6 +138,10 @@ export const EMOTION_SAMPLE_STATE_REASONS: Readonly<Record<EmotionSampleState, r
     failed: Object.freeze([
       'SAMPLER_ENGINE_ERROR', 'SAMPLER_REFERENCE_MISSING', 'SAMPLER_CANCELLED', 'SAMPLER_UNKNOWN',
     ]) as readonly EmotionSampleReasonCode[],
+    unsupported: Object.freeze([
+      'LAUGH_NO_STRATEGY', 'VOWEL_EXTEND_NOT_REALIZABLE',
+    ]) as readonly EmotionSampleReasonCode[],
+    unverified: Object.freeze(['CAPABILITY_UNVERIFIED']) as readonly EmotionSampleReasonCode[],
   })
 
 /** 입력 검증 실패 코드(문자열 prefix 추론 금지 — Python 과 공유). */
@@ -125,6 +154,9 @@ export const EMOTION_SAMPLER_INPUT_ERROR_CODES = [
   'SAMPLER_INVALID_EMOTION_ID',
   'SAMPLER_INVALID_CONFIG',
   'SAMPLER_INVALID_CACHE_KEY',
+  'SAMPLER_INVALID_ROW_ID',      // 카탈로그에 없는 샘플 행 id
+  'SAMPLER_INVALID_EXPRESSION',  // expression 축(kind/strength) 형식 위반
+  'SAMPLER_EXPRESSION_MISSING',  // 계약 타임라인에 이 행이 기대한 이벤트가 없음
 ] as const
 export type EmotionSamplerInputErrorCode = typeof EMOTION_SAMPLER_INPUT_ERROR_CODES[number]
 
@@ -221,8 +253,10 @@ const EMOTION_ID_RE = /^[a-z]{2,32}$/
 //    직렬화 형태(줄바꿈/공백은 실제로는 없음. 아래는 가독성용):
 //      {"config":{"pitch_centi":<int>,"speed_milli":<int>,"tail_fade_ms":<int>,
 //                 "tail_mode":"<off|auto>","tail_padding_ms":<int>},
-//       "emotion_id":"<id>","engine_id":"<token>","key_version":<int>,
-//       "model_id":"<token>","phrase_version":<int>,"voice_content_sha256":"<64hex>"}
+//       "engine_id":"<token>",
+//       "expression":{"family":"<family>","kind":"<contract kind>","row_id":"<row>","strength":<0..100>},
+//       "key_version":<int>,"model_id":"<token>","phrase_version":<int>,
+//       "voice_content_sha256":"<64hex>"}
 //    cache_key = sha256_hex(utf8(위 문자열))
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -236,8 +270,11 @@ export interface EmotionSampleKeyInput {
   engineId: string
   /** 모델 식별자(예: 'qwen3-omni-flash'). 슬래시·콜론·공백 불가 → 필요하면 통합 담당이 slug 화. */
   modelId: string
-  /** 감정 태그 id(영문 소문자). 한글 label 이 아니다. */
-  emotionId: string
+  /**
+   * 표현 이벤트 축 — 계약 타임라인에서 뽑은 값(emotionSampleExpressionFromTimeline).
+   * 감정·구두점·웃음이 모두 여기로 들어온다. 세기는 계약이 정한 0..100 정수다.
+   */
+  expression: EmotionSampleExpression
   config: EmotionSamplerSynthConfig
 }
 
@@ -305,7 +342,24 @@ export function canonicalEmotionSampleKeyPayloadAt(
   if (!ID_TOKEN_RE.test(modelId) || modelId.length > 128) {
     throw new EmotionSamplerInputError('SAMPLER_INVALID_MODEL_ID', 'modelId')
   }
-  const emotionId = assertEmotionSampleTag(input.emotionId)
+  const expr = input.expression
+  if (!expr || typeof expr !== 'object') {
+    throw new EmotionSamplerInputError('SAMPLER_INVALID_EXPRESSION', 'expression')
+  }
+  const exprRowId = assertEmotionSampleRowId(expr.rowId)
+  const exprFamily = validatedString(expr.family, 'expression.family', 'SAMPLER_INVALID_EXPRESSION')
+  if (!(EMOTION_SAMPLE_FAMILIES as readonly string[]).includes(exprFamily)) {
+    throw new EmotionSamplerInputError('SAMPLER_INVALID_EXPRESSION', 'expression.family')
+  }
+  const exprKind = validatedString(expr.kind, 'expression.kind', 'SAMPLER_INVALID_EXPRESSION')
+  if (!/^[a-zA-Z][a-zA-Z_]{1,31}$/.test(exprKind)) {
+    throw new EmotionSamplerInputError('SAMPLER_INVALID_EXPRESSION', 'expression.kind')
+  }
+  const exprStrength = expr.strength
+  if (typeof exprStrength !== 'number' || !Number.isInteger(exprStrength)
+      || exprStrength < 0 || exprStrength > 100) {
+    throw new EmotionSamplerInputError('SAMPLER_INVALID_EXPRESSION', 'expression.strength')
+  }
 
   const cfg = input.config
   if (!cfg || typeof cfg !== 'object') throw new EmotionSamplerInputError('SAMPLER_INVALID_CONFIG', 'config')
@@ -328,8 +382,13 @@ export function canonicalEmotionSampleKeyPayloadAt(
       tail_mode: cfg.tailMode,
       tail_padding_ms: requireInt(cfg.tailPaddingMs, 'config.tailPaddingMs', TAIL_PADDING_MIN, TAIL_PADDING_MAX),
     },
-    emotion_id: emotionId,
     engine_id: engineId,
+    expression: {
+      family: exprFamily,
+      kind: exprKind,
+      row_id: exprRowId,
+      strength: exprStrength,
+    },
     key_version: keyVersion,
     model_id: modelId,
     phrase_version: phraseVersion,
@@ -364,7 +423,12 @@ export const EMOTION_SAMPLER_PARITY_INPUT: Readonly<EmotionSampleKeyInput> = Obj
   voiceContentSha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
   engineId: 'qwen',
   modelId: 'qwen3-omni-flash',
-  emotionId: 'happy',
+  expression: Object.freeze({
+    family: 'emotion' as EmotionSampleFamily,
+    rowId: 'emotion_happy',
+    kind: 'emotionTransition',
+    strength: 100,
+  }),
   config: Object.freeze({
     speed: 1.05,
     pitch: -0.5,
@@ -373,15 +437,16 @@ export const EMOTION_SAMPLER_PARITY_INPUT: Readonly<EmotionSampleKeyInput> = Obj
     tailFadeMs: 8,
   }),
 })
-export const EMOTION_SAMPLER_PARITY_PAYLOAD = '{"config":{"pitch_centi":-50,"speed_milli":1050,"tail_fade_ms":8,"tail_mode":"auto","tail_padding_ms":120},"emotion_id":"happy","engine_id":"qwen","key_version":2,"model_id":"qwen3-omni-flash","phrase_version":1,"voice_content_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}'
-export const EMOTION_SAMPLER_PARITY_KEY = '92e7c2a7cc4ef23a7bfab6e791655e498025c82631aa6897c6a2566f7cf5c3d1'
+export const EMOTION_SAMPLER_PARITY_PAYLOAD = '{"config":{"pitch_centi":-50,"speed_milli":1050,"tail_fade_ms":8,"tail_mode":"auto","tail_padding_ms":120},"engine_id":"qwen","expression":{"family":"emotion","kind":"emotionTransition","row_id":"emotion_happy","strength":100},"key_version":3,"model_id":"qwen3-omni-flash","phrase_version":2,"voice_content_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}'
+export const EMOTION_SAMPLER_PARITY_KEY = 'd99546c21090dfde7f47416c60b87a51ec1beb4400c02814be7b809b1826d087'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 7) 상태 기계 — 자동 재시도 없음. 거부는 '이유 코드'로 드러난다(조용한 무시 금지).
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface EmotionSampleEntry {
-  emotionId: string
+  /** 샘플 행 id(감정·구두점·웃음 공통). 카탈로그 EMOTION_SAMPLE_ROWS 의 rowId. */
+  rowId: string
   state: EmotionSampleState
   /** 실패/강등 사유. idle/generating/ready 는 항상 null. */
   reason: EmotionSampleReasonCode | null
@@ -403,6 +468,7 @@ export const EMOTION_SAMPLER_REJECTION_CODES = [
   'ALREADY_GENERATING',    // 생성 중 재요청
   'CACHED_SAMPLE_EXISTS',  // 유효 캐시가 있어 재생성 불가(계약 2: 같은 키 → 재사용)
   'NO_SAMPLE_TO_DELETE',   // 지울 샘플이 없음
+  'CAPABILITY_NOT_USABLE', // 엔진이 못 하거나(unsupported) 확인되지 않아(unverified) 생성 불가
   'INVALID_EVENT',         // 이 상태에서 정의되지 않은 이벤트
 ] as const
 export type EmotionSamplerRejectionCode = typeof EMOTION_SAMPLER_REJECTION_CODES[number]
@@ -414,11 +480,19 @@ export interface EmotionSamplerTransition {
   rejected: EmotionSamplerRejectionCode | null
 }
 
-export function initialEmotionSampleEntry(emotionId: string, cacheKey: string): EmotionSampleEntry {
+export function initialEmotionSampleEntry(
+  rowId: string,
+  cacheKey: string,
+  capability?: EmotionSampleCapability
+): EmotionSampleEntry {
+  const id = assertEmotionSampleRowId(rowId)
+  const cap = capability ?? capabilityForRow(id)
+  // 엔진이 못 하거나 확인되지 않은 행은 '미생성'으로 시작하지 않는다 — 그러면 '만들면 된다'는 거짓말이 된다.
+  const state = stateForCapability(cap)
   return {
-    emotionId: assertEmotionSampleTag(emotionId),
-    state: 'idle',
-    reason: null,
+    rowId: id,
+    state,
+    reason: state === 'idle' ? null : cap.reason,
     cacheKey: assertEmotionSampleCacheKey(cacheKey),
   }
 }
@@ -450,6 +524,12 @@ export function regenerateBlockedNotice(state: EmotionSampleState): string | nul
   if (state === 'degraded') {
     return '이미 만들어진 샘플이 있어 다시 만들 수 없습니다(결과가 같습니다). 참조 전사를 채우거나 설정을 바꾸면 새로 만들 수 있습니다.'
   }
+  if (state === 'unsupported') {
+    return '지금 엔진이 이 표현을 만들지 못합니다. 설정을 바꿔도 만들어지지 않습니다.'
+  }
+  if (state === 'unverified') {
+    return '엔진이 이 표현을 해낼 수 있는지 아직 확인되지 않아 만들지 않습니다.'
+  }
   return null
 }
 
@@ -460,7 +540,7 @@ function entryWith(
   cacheKey?: string
 ): EmotionSampleEntry {
   return {
-    emotionId: entry.emotionId,
+    rowId: entry.rowId,
     state,
     reason,
     cacheKey: cacheKey === undefined ? entry.cacheKey : assertEmotionSampleCacheKey(cacheKey),
@@ -486,6 +566,10 @@ export function applyEmotionSamplerEvent(
     case 'GENERATE_REQUESTED': {
       if (entry.state === 'generating') return reject(entry, 'ALREADY_GENERATING')
       if (hasCachedSample(entry.state)) return reject(entry, 'CACHED_SAMPLE_EXISTS')
+      // 엔진이 못 하는/확인 안 된 행은 눌러도 시작하지 않는다(가짜 진행 금지).
+      if (entry.state === 'unsupported' || entry.state === 'unverified') {
+        return reject(entry, 'CAPABILITY_NOT_USABLE')
+      }
       return ok(entryWith(entry, 'generating', null))
     }
     case 'GENERATE_SUCCEEDED': {
@@ -515,6 +599,10 @@ export function applyEmotionSamplerEvent(
       return ok(entryWith(entry, 'idle', null))
     }
     case 'KEY_CHANGED': {
+      // 설정이 바뀌어도 엔진 능력은 그대로다 — 못 하던 행을 '미생성'으로 되돌리지 않는다.
+      if (entry.state === 'unsupported' || entry.state === 'unverified') {
+        return ok(entryWith(entry, entry.state, entry.reason, event.cacheKey))
+      }
       return ok(entryWith(entry, 'idle', null, event.cacheKey))
     }
     default:
@@ -531,8 +619,12 @@ export interface EmotionSampleCacheMeta { degraded: boolean }
 export type EmotionSamplerCacheIndex = Readonly<Record<string, EmotionSampleCacheMeta>>
 
 export interface EmotionSampleRequestPlan {
-  /** 'reuse' = 캐시 재사용(합성 호출 금지). 'generate' = 이 감정 하나만 새로 합성. */
-  action: 'reuse' | 'generate'
+  /**
+   * 'reuse'    = 캐시 재사용(합성 호출 금지)
+   * 'generate' = 이 행 하나만 새로 합성
+   * 'blocked'  = 엔진 capability 가 못 한다/확인 안 됐다 — 합성 호출 금지, 상태로 드러난다
+   */
+  action: 'reuse' | 'generate' | 'blocked'
   entry: EmotionSampleEntry
 }
 
@@ -541,15 +633,20 @@ export interface EmotionSampleRequestPlan {
  * 감정 배열을 받지 않는다 — 시그니처 자체가 대량 생성을 불가능하게 한다(계약 1).
  */
 export function resolveEmotionSampleRequest(
-  emotionId: string,
+  rowId: string,
   cacheKey: string,
-  cacheIndex: EmotionSamplerCacheIndex
+  cacheIndex: EmotionSamplerCacheIndex,
+  capability?: EmotionSampleCapability
 ): EmotionSampleRequestPlan {
-  const base = initialEmotionSampleEntry(emotionId, cacheKey)
+  const base = initialEmotionSampleEntry(rowId, cacheKey, capability)
   const hit = cacheIndex ? cacheIndex[cacheKey] : undefined
   if (hit) {
     const t = applyEmotionSamplerEvent(base, { type: 'CACHE_HIT', degraded: hit.degraded === true })
     return { action: 'reuse', entry: t.entry }
+  }
+  // 엔진이 못 하는/확인 안 된 행은 캐시가 없어도 '생성'을 계획하지 않는다.
+  if (base.state === 'unsupported' || base.state === 'unverified') {
+    return { action: 'blocked', entry: base }
   }
   return { action: 'generate', entry: base }
 }
@@ -561,7 +658,7 @@ export function resolveEmotionSampleRequest(
 export type EmotionSampleTone = 'neutral' | 'busy' | 'ok' | 'warn' | 'error'
 
 export interface EmotionSampleView {
-  emotionId: string
+  rowId: string
   state: EmotionSampleState
   stateLabel: string
   reason: EmotionSampleReasonCode | null
@@ -582,6 +679,8 @@ const TONE_BY_STATE: Readonly<Record<EmotionSampleState, EmotionSampleTone>> = O
   degraded: 'warn',
   limitExceeded: 'error',
   failed: 'error',
+  unsupported: 'error',
+  unverified: 'warn',
 })
 
 /** 패널이 소비하는 단일 파생 함수(표시 로직 분산 금지). 순수 — DOM/React 비의존. */
@@ -590,7 +689,7 @@ export function describeEmotionSample(entry: EmotionSampleEntry): EmotionSampleV
   const reason = entry.reason
   const canGen = canRegenerateEmotionSample(state)
   return {
-    emotionId: entry.emotionId,
+    rowId: entry.rowId,
     state,
     stateLabel: EMOTION_SAMPLE_STATE_LABEL[state],
     reason,
@@ -601,7 +700,9 @@ export function describeEmotionSample(entry: EmotionSampleEntry): EmotionSampleV
     generateLabel:
       state === 'generating' ? '만드는 중…'
         : state === 'idle' ? '샘플 만들기'
-          : '다시 만들기',
+          : state === 'unsupported' ? '만들 수 없음'
+            : state === 'unverified' ? '확인 전'
+              : '다시 만들기',
     generateNotice: regenerateBlockedNotice(state),
     deleteEnabled: hasCachedSample(state),
   }
@@ -643,6 +744,9 @@ const SUMMARY_BUCKET_BY_STATE: Readonly<Record<EmotionSampleState, EmotionSample
     degraded: 'attention' as EmotionSampleSummaryBucket,
     limitExceeded: 'attention' as EmotionSampleSummaryBucket,
     failed: 'attention' as EmotionSampleSummaryBucket,
+    // 못 하는/확인 안 된 행도 '확인 필요' 로 묶는다 — 버킷을 늘리면 접힘 한 줄이 길어진다.
+    unsupported: 'attention' as EmotionSampleSummaryBucket,
+    unverified: 'attention' as EmotionSampleSummaryBucket,
   })
 
 export interface EmotionSampleSummary {
@@ -668,21 +772,285 @@ export function summarizeEmotionSamples(entries: readonly EmotionSampleEntry[]):
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// EXPRESSION LANGUAGE SWAP POINT (미래 교체 지점)
-//   지금은 '[감정] 태그 문자열 + 표준 문구'를 단순 결합한다. 표현 프로소디 언어 계약(구두점 !/?/!?/.../~,
-//   웃음 등 이벤트)이 완성되면 **아래 buildEmotionSampleScript 하나만** AST/event builder 호출로 갈아끼운다.
-//   그때 함께 올릴 것: EMOTION_SAMPLER_PHRASE_VERSION(문구/이벤트 세트가 바뀌므로).
-//   이번 정정에서는 문구도 PHRASE_VERSION 도 건드리지 않는다 — 지금 세트가 비교 기준선이다.
-//   시그니처가 string -> string 이라 교체해도 호출부(통합 담당의 합성 호출)는 그대로다.
+// 11) 표현 언어 계약 소비 — 행 카탈로그 · 대본 조립 · 표현 이벤트 키 축
+//
+// 권위는 src/shared/expressiveTimeline.ts(= python/expressive_timeline.py) 하나다.
+// 이 모듈은 그 계약을 **소비**한다: 이벤트 종류/웃음 스타일/세기/분류를 재구현하지 않는다.
+//   · 아래 카탈로그는 "어떤 토큰을 어떤 순서로 놓을지"만 선언한다(= 대본 조립 지시).
+//   · 그 토큰이 실제로 어떤 이벤트/세기가 되는지는 **계약 파서가** 정한다.
+//     단위테스트가 실제 parseExpressiveTimeline 을 돌려 expectKind/세기를 대조하므로,
+//     계약이 바뀌면 여기가 조용히 어긋나지 않고 테스트가 먼저 깨진다.
+//   · 값 import 를 하지 않는 이유는 레포 규약(node --test 가 로더 없이 type-strip) 때문이다.
+//     타입은 import type 으로 가져오므로(런타임에 지워짐) 계약 타입은 그대로 쓴다.
 // ─────────────────────────────────────────────────────────────────────────────
+
+/** 샘플 행 갈래. 계약의 node/event 축과 1:1로 대응한다. */
+export const EMOTION_SAMPLE_FAMILIES = ['emotion', 'emotionTransition', 'punctuation', 'laugh'] as const
+export type EmotionSampleFamily = typeof EMOTION_SAMPLE_FAMILIES[number]
+
+/** 대본 조립 지시 한 조각. 계약 토큰을 '어디에 놓을지'만 말한다. */
+export type EmotionSampleScriptPart =
+  /** 감정 태그 `[label]`. label 은 계약의 감정표에 있어야 한다(테스트가 대조). */
+  | { part: 'emotionTag'; label: string }
+  /** baseline 문구(EMOTION_SAMPLER_PHRASES) 전체를 한 줄로. */
+  | { part: 'baselinePhrase' }
+  /** baseline 문구 중 index 하나만. */
+  | { part: 'baselinePhraseAt'; index: number }
+  /** 구두점/웃음 행의 호스트 문구. */
+  | { part: 'host' }
+  /** 운율 토큰(계약이 분류한다). token 은 계약의 run 문자 집합에 속해야 한다(테스트가 대조). */
+  | { part: 'prosodyToken'; token: string }
+  /** 웃음 태그 `[ㅋㅋ]`. inner 는 계약의 웃음 style 패턴에 맞아야 한다(테스트가 대조). */
+  | { part: 'laughTag'; inner: string }
+  /** 공백 하나. */
+  | { part: 'space' }
+
+export interface EmotionSampleRowSpec {
+  /** 행 식별자(안전 토큰). 캐시 키 · 상태 객체 · 콜백 인자로 흐르는 유일한 id. */
+  rowId: string
+  family: EmotionSampleFamily
+  /** 화면 표시용 한글 이름. */
+  label: string
+  /** 대본 조립 지시. */
+  parts: readonly EmotionSampleScriptPart[]
+  /**
+   * 계약 파서가 내야 하는 이벤트 종류.
+   *   emotion/emotionTransition → 'emotionTransition'
+   *   punctuation              → LocalProsodyKind ('emphasis'|'question_rise'|'shock_rise'|'fade_end'|'vowel_extend')
+   *   laugh                    → LaughStyle ('chuckle'|'breathy'|'bashful'|'open'|'high_giggle')
+   * ⚠️ 여기 적힌 문자열은 계약의 enum 값이다. 테스트가 계약 소스의 enum 집합과 대조해 드리프트를 막는다.
+   */
+  expectKind: string
+}
+
 /**
- * 감정 하나짜리 샘플 합성 대본. emotionTagText 는 호출부가 주입한다(예: emotions.ts 의 emotionTagText()).
- * ⚠️ 반환값은 '프롬프트'다 — 상태 객체·캐시 키·화면·로그 어디에도 넣지 않는다(계약 6). 합성 호출 인자로만 쓴다.
+ * 샘플 행 카탈로그(v2). 사용자가 이 중에서 **하나씩** 골라 생성한다 — 일괄 생성 경로는 없다.
+ *
+ * 감정 4행 + 감정 전환 예시 1행은 **기존 baseline 그대로**를 만든다(비교 기준선 보존).
+ * 구두점 5행 · 웃음 6행이 v2 에서 새로 붙는다.
+ *
+ * ⚠️ 감정 이름은 계약 감정표(EXPRESSIVE_EMOTION_LABEL_TO_ID)에 있는 것만 쓸 수 있다.
+ *    요청받은 '분노'/'차분'은 그 표에 없어 각각 '화남'(angry)/'진지'(serious)로 잡았다.
+ *    표에 없는 이름을 새로 만들면 감정 어휘가 tts_worker 와 어긋난다.
  */
-export function buildEmotionSampleScript(emotionTagText: string): string {
-  const tag = (emotionTagText ?? '').trim()
-  const phrase = emotionSamplerPhraseScript()
-  return tag ? `${tag} ${phrase}` : phrase
+export const EMOTION_SAMPLE_ROWS: readonly EmotionSampleRowSpec[] = Object.freeze<readonly EmotionSampleRowSpec[]>([
+  // ── 감정 baseline(출력 문구 불변) ──
+  { rowId: 'emotion_happy', family: 'emotion', label: '기쁨', expectKind: 'emotionTransition',
+    parts: [{ part: 'emotionTag', label: '기쁨' }, { part: 'space' }, { part: 'baselinePhrase' }] },
+  { rowId: 'emotion_sad', family: 'emotion', label: '슬픔', expectKind: 'emotionTransition',
+    parts: [{ part: 'emotionTag', label: '슬픔' }, { part: 'space' }, { part: 'baselinePhrase' }] },
+  { rowId: 'emotion_angry', family: 'emotion', label: '화남', expectKind: 'emotionTransition',
+    parts: [{ part: 'emotionTag', label: '화남' }, { part: 'space' }, { part: 'baselinePhrase' }] },
+  { rowId: 'emotion_serious', family: 'emotion', label: '진지', expectKind: 'emotionTransition',
+    parts: [{ part: 'emotionTag', label: '진지' }, { part: 'space' }, { part: 'baselinePhrase' }] },
+
+  // ── 감정 전환 예시: 한 사람이 말하는 도중 감정이 바뀐다(새 WAV 가 아니다) ──
+  { rowId: 'emotion_transition_happy_sad', family: 'emotionTransition', label: '기쁨→슬픔 전환',
+    expectKind: 'emotionTransition',
+    parts: [
+      { part: 'emotionTag', label: '기쁨' }, { part: 'space' }, { part: 'baselinePhraseAt', index: 0 },
+      { part: 'space' }, { part: 'emotionTag', label: '슬픔' }, { part: 'space' },
+      { part: 'baselinePhraseAt', index: 1 },
+    ] },
+
+  // ── 구두점(국소 운율) ──
+  { rowId: 'punct_emphasis', family: 'punctuation', label: '! 강조', expectKind: 'emphasis',
+    parts: [{ part: 'host' }, { part: 'prosodyToken', token: '!' }] },
+  { rowId: 'punct_question_rise', family: 'punctuation', label: '? 올림', expectKind: 'question_rise',
+    parts: [{ part: 'host' }, { part: 'prosodyToken', token: '?' }] },
+  { rowId: 'punct_shock_rise', family: 'punctuation', label: '!? 놀람', expectKind: 'shock_rise',
+    parts: [{ part: 'host' }, { part: 'prosodyToken', token: '!?' }] },
+  { rowId: 'punct_fade_end', family: 'punctuation', label: '... 흐림', expectKind: 'fade_end',
+    parts: [{ part: 'host' }, { part: 'prosodyToken', token: '...' }] },
+  { rowId: 'punct_vowel_extend', family: 'punctuation', label: '~ 늘임', expectKind: 'vowel_extend',
+    parts: [{ part: 'host' }, { part: 'prosodyToken', token: '~' }] },
+
+  // ── 비언어 웃음 ──
+  // 요청받은 이름은 6개인데 계약의 style 은 5개다. '밝은 웃음'은 새 style 이 아니라
+  // **같은 chuckle 의 반복 수(밝기) 변형**으로 잡는다 — 계약에 없는 style 을 만들지 않기 위해서다.
+  { rowId: 'laugh_chuckle', family: 'laugh', label: '피식 웃음', expectKind: 'chuckle',
+    parts: [{ part: 'host' }, { part: 'space' }, { part: 'laughTag', inner: 'ㅋ' }] },
+  { rowId: 'laugh_bright', family: 'laugh', label: '밝은 웃음', expectKind: 'chuckle',
+    parts: [{ part: 'host' }, { part: 'space' }, { part: 'laughTag', inner: 'ㅋㅋㅋㅋㅋ' }] },
+  { rowId: 'laugh_breathy', family: 'laugh', label: '숨 섞인 웃음', expectKind: 'breathy',
+    parts: [{ part: 'host' }, { part: 'space' }, { part: 'laughTag', inner: 'ㅎㅎ' }] },
+  { rowId: 'laugh_bashful', family: 'laugh', label: '수줍은 웃음', expectKind: 'bashful',
+    parts: [{ part: 'host' }, { part: 'space' }, { part: 'laughTag', inner: '헤헤' }] },
+  { rowId: 'laugh_open', family: 'laugh', label: '열린 웃음', expectKind: 'open',
+    parts: [{ part: 'host' }, { part: 'space' }, { part: 'laughTag', inner: '호호' }] },
+  { rowId: 'laugh_high_giggle', family: 'laugh', label: '장난스러운 웃음', expectKind: 'high_giggle',
+    parts: [{ part: 'host' }, { part: 'space' }, { part: 'laughTag', inner: '히히' }] },
+])
+
+const ROW_BY_ID: ReadonlyMap<string, EmotionSampleRowSpec> =
+  new Map(EMOTION_SAMPLE_ROWS.map((r) => [r.rowId, r]))
+
+const ROW_ID_RE = /^[a-z][a-z0-9_]{1,47}$/
+
+/** 행 id 검증. 배열/객체를 넘기면 즉시 실패한다(일괄 생성 진입점이 생길 수 없다). */
+export function assertEmotionSampleRowId(rowId: unknown): string {
+  const v = validatedString(rowId, 'rowId', 'SAMPLER_INVALID_ROW_ID')
+  if (!ROW_ID_RE.test(v) || !ROW_BY_ID.has(v)) {
+    throw new EmotionSamplerInputError('SAMPLER_INVALID_ROW_ID', 'rowId')
+  }
+  return v
+}
+
+export function emotionSampleRow(rowId: string): EmotionSampleRowSpec {
+  return ROW_BY_ID.get(assertEmotionSampleRowId(rowId)) as EmotionSampleRowSpec
+}
+
+/**
+ * 행 하나의 합성 대본을 **계약 토큰으로 조립**해서 돌려준다.
+ *
+ * ⚠️ 시그니처 변경: 이전 v1 은 buildEmotionSampleScript(emotionTagText: string) 로 '[감정]' 문자열을
+ *    호출부에서 받아 단순 결합했다. 이제는 행 id 만 받고, 무엇을 어떻게 놓을지는 카탈로그가 정한다.
+ *    (호출부가 태그 문자열을 만들 필요가 없어졌다.)
+ * ⚠️ 반환값은 '프롬프트'다 — 상태 객체·캐시 키·화면·로그 어디에도 넣지 않는다(계약 6). 합성 인자 전용.
+ * ⚠️ 이 문자열의 '의미'는 계약 파서가 정한다. 호출부는 parseExpressiveTimeline(script, {mode:'expressive_v3'})
+ *    로 파싱해 타임라인을 얻고, 그 타임라인에서 캐시 키의 expression 축을 뽑는다.
+ */
+export function buildEmotionSampleScript(rowId: string): string {
+  const row = emotionSampleRow(rowId)
+  let out = ''
+  for (const p of row.parts) {
+    switch (p.part) {
+      case 'emotionTag': out += `[${p.label}]`; break
+      case 'baselinePhrase': out += emotionSamplerPhraseScript(); break
+      case 'baselinePhraseAt': out += EMOTION_SAMPLER_PHRASES[p.index] ?? ''; break
+      case 'host': out += EMOTION_SAMPLER_EXPRESSION_HOST; break
+      case 'prosodyToken': out += p.token; break
+      case 'laughTag': out += `[${p.inner}]`; break
+      case 'space': out += ' '; break
+      default: break
+    }
+  }
+  return out
+}
+
+// ── 캐시 키의 표현 축 ────────────────────────────────────────────────────────
+
+/** 캐시 키에 들어가는 표현 이벤트 축. 계약 타임라인에서 뽑아낸다(직접 분류하지 않는다). */
+export interface EmotionSampleExpression {
+  family: EmotionSampleFamily
+  /** 행 id. 같은 kind/strength 를 쓰는 행들을 구분한다(예: emotion_happy vs emotion_sad). */
+  rowId: string
+  /** 계약이 낸 이벤트 종류(LocalProsodyKind | LaughStyle | 'emotionTransition'). */
+  kind: string
+  /** 계약이 낸 세기 0..100 정수(운율 strength / 웃음 intensity / 감정 transitionStrength). */
+  strength: number
+}
+
+/**
+ * 계약 타임라인에서 이 행의 표현 축을 뽑는다(순수, 타입만 의존).
+ * 세기의 권위는 전적으로 계약이다 — 여기서 계산하지 않는다.
+ * 이벤트가 여러 개면 **마지막 것**을 쓴다(감정 전환 행처럼 2개인 경우 결정적으로 하나만 고르기 위해).
+ */
+export function emotionSampleExpressionFromTimeline(
+  rowId: string,
+  timeline: ExpressiveTimelineLike
+): EmotionSampleExpression {
+  const row = emotionSampleRow(rowId)
+  if (row.family === 'emotion' || row.family === 'emotionTransition') {
+    const evs = timeline.emotionTransitions ?? []
+    const last = evs[evs.length - 1]
+    if (!last) throw new EmotionSamplerInputError('SAMPLER_EXPRESSION_MISSING', 'timeline')
+    return { family: row.family, rowId: row.rowId, kind: 'emotionTransition', strength: last.transitionStrength }
+  }
+  if (row.family === 'punctuation') {
+    const evs = timeline.localProsody ?? []
+    const last = evs[evs.length - 1]
+    if (!last) throw new EmotionSamplerInputError('SAMPLER_EXPRESSION_MISSING', 'timeline')
+    return { family: row.family, rowId: row.rowId, kind: last.kind, strength: last.strength }
+  }
+  const evs = timeline.laughs ?? []
+  const last = evs[evs.length - 1]
+  if (!last) throw new EmotionSamplerInputError('SAMPLER_EXPRESSION_MISSING', 'timeline')
+  return { family: row.family, rowId: row.rowId, kind: last.style, strength: last.intensity }
+}
+
+/** 계약 타임라인 중 이 모듈이 실제로 읽는 부분만(구조적 타이핑 — 계약 값 import 없이 소비). */
+export interface ExpressiveTimelineLike {
+  emotionTransitions?: readonly { transitionStrength: number }[]
+  localProsody?: readonly { kind: string; strength: number }[]
+  laughs?: readonly { style: string; intensity: number }[]
+}
+
+// ── 엔진 capability ──────────────────────────────────────────────────────────
+//
+// ⚠️ 권위는 엔진 capability 모듈(python/expressive_capability.py + expressive_planner.py)이고,
+//    그 모듈은 feature/expressive-prosody-engine 에 있으며 **이 브랜치에 병합되지 않았다**.
+//    그래서 아래 표는 그 계약의 '선언'을 이름 그대로 옮겨 둔 기본값일 뿐이고, 프로브로 확인된 값이 아니다.
+//    통합 담당은 엔진 capability 가 병합되면 그 판정을 override 로 주입해야 한다.
+// ⚠️ capability 규칙(그 모듈의 규칙 1): 선언만으로는 절대 supported 가 되지 않는다.
+//    프로브 증거가 없으면 'unknown' 이고, 'unknown' 은 성공이 아니다. usable 은 'supported' 뿐이다.
+
+export const EMOTION_SAMPLER_CAPABILITY_STATES = ['supported', 'degraded', 'unsupported', 'unknown'] as const
+export type EmotionSamplerCapabilityState = typeof EMOTION_SAMPLER_CAPABILITY_STATES[number]
+
+export interface EmotionSampleCapability {
+  state: EmotionSamplerCapabilityState
+  /** unsupported/unknown 일 때의 엔진 코드. supported 면 null. */
+  reason: EmotionSampleReasonCode | null
+}
+
+const CAP_OK: EmotionSampleCapability = Object.freeze({ state: 'supported' as const, reason: null })
+const CAP_LAUGH: EmotionSampleCapability =
+  Object.freeze({ state: 'unsupported' as const, reason: 'LAUGH_NO_STRATEGY' as const })
+const CAP_UNVERIFIED: EmotionSampleCapability =
+  Object.freeze({ state: 'unknown' as const, reason: 'CAPABILITY_UNVERIFIED' as const })
+
+/**
+ * 행별 기본 capability(엔진 선언 기준, 프로브 아님).
+ *   · 웃음 6행 → unsupported / LAUGH_NO_STRATEGY (전략 A~D 전부 불가)
+ *   · '~' 늘임 → 호스트 최종음이 open_vowel 이면 supported 후보지만, 엔진의
+ *     vowel_extend_sustainable_final 기능은 프로브가 없어 unknown 이다. 받침이 붙는 순간
+ *     VOWEL_EXTEND_NOT_REALIZABLE(unsupported)이 된다 — capabilityForVowelExtend() 참고.
+ *   · 그 밖(감정/전환/구두점) → supported(기존 동작 보존)
+ */
+export const EMOTION_SAMPLE_DECLARED_CAPABILITY: Readonly<Record<string, EmotionSampleCapability>> =
+  Object.freeze(Object.fromEntries(EMOTION_SAMPLE_ROWS.map((r) => {
+    if (r.family === 'laugh') return [r.rowId, CAP_LAUGH]
+    if (r.expectKind === 'vowel_extend') return [r.rowId, CAP_UNVERIFIED]
+    return [r.rowId, CAP_OK]
+  })))
+
+/**
+ * 계약의 '~' 최종음 분류 → capability 판정. 분류는 계약이, 판정은 엔진 규칙이 한다.
+ *   open_vowel            → unknown(프로브 없음). 늘일 대상은 있으나 엔진이 해낸다는 증거가 없다.
+ *   sustainable_final     → unknown(vowel_extend_sustainable_final 프로브 없음)
+ *   non_sustainable_final → unsupported / VOWEL_EXTEND_NOT_REALIZABLE (자음 반복 금지 → 실현 경로 없음)
+ *   undeterminable        → unknown
+ * ⚠️ 어느 경우에도 'supported' 가 나오지 않는다 — 프로브 전까지 '됨'이라고 말하지 않는다.
+ */
+export function capabilityForVowelExtend(classification: string): EmotionSampleCapability {
+  if (classification === 'non_sustainable_final') {
+    return { state: 'unsupported', reason: 'VOWEL_EXTEND_NOT_REALIZABLE' }
+  }
+  return { state: 'unknown', reason: 'CAPABILITY_UNVERIFIED' }
+}
+
+/** 이 capability 로 실제 생성을 시도해도 되는가. 'supported' 만 true(unknown 은 성공이 아니다). */
+export function isCapabilityUsable(state: EmotionSamplerCapabilityState): boolean {
+  return state === 'supported'
+}
+
+/** capability → 초기 상태. 못 하거나 확인 안 된 것은 '미생성'이 아니라 각자의 이름 있는 상태로 시작한다. */
+export function stateForCapability(cap: EmotionSampleCapability): EmotionSampleState {
+  if (cap.state === 'supported') return 'idle'
+  if (cap.state === 'unsupported') return 'unsupported'
+  return 'unverified'
+}
+
+/** 행의 capability(주입 override 우선). override 는 엔진 capability 모듈이 병합되면 통합 담당이 넣는다. */
+export function capabilityForRow(
+  rowId: string,
+  override?: Readonly<Record<string, EmotionSampleCapability>>
+): EmotionSampleCapability {
+  const id = assertEmotionSampleRowId(rowId)
+  const o = override ? override[id] : undefined
+  if (o) return o
+  return EMOTION_SAMPLE_DECLARED_CAPABILITY[id]
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
