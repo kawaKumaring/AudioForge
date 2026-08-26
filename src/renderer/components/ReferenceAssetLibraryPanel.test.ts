@@ -22,6 +22,7 @@ function item(over: Partial<ReferenceLibraryItem> = {}): ReferenceLibraryItem {
     ready: true,
     missing: false,
     selected: false,
+    transcript: 'present',
     displayName: '참조 1',
     ...over,
   }
@@ -212,4 +213,41 @@ test('경계: 감정 참조 등록·미리듣기와 어휘가 겹치지 않는�
   }
   // 기존 후보 선택 패널을 끌어다 쓰지 않는다(역할이 다르다).
   assert.ok(!panelCode.includes('ReferenceLibraryPanel'), '후보 선택 패널과 분리되어 있다')
+})
+
+// ── 전사 상태 ───────────────────────────────────────────────────────────────
+
+test('전사: 없음·손상은 배지로 드러나고 샘플 생성이 막힌다', () => {
+  const view = buildReferenceAssetView('ok', [
+    item({ referenceId: 'a'.repeat(16), transcript: 'present' }),
+    item({ referenceId: 'b'.repeat(16), transcript: 'TRANSCRIPT_MISSING' }),
+    item({ referenceId: 'c'.repeat(16), transcript: 'TRANSCRIPT_HASH_MISMATCH' }),
+    item({ referenceId: 'd'.repeat(16), transcript: 'TRANSCRIPT_CORRUPT' }),
+  ])
+  const [ok, missing, mismatch, corrupt] = view.rows
+  assert.equal(ok.transcriptLabel, null)
+  assert.equal(ok.samplerReady, true)
+  assert.equal(missing.transcriptLabel, REFERENCE_ASSET_TEXT.transcriptMissing)
+  assert.equal(missing.samplerReady, false)
+  assert.equal(mismatch.transcriptLabel, REFERENCE_ASSET_TEXT.transcriptBroken)
+  assert.equal(mismatch.samplerReady, false)
+  assert.equal(corrupt.samplerReady, false)
+  // 전사가 없어도 보관·선택·삭제는 가능하다(등록 자체를 막지 않는다).
+  assert.equal(missing.selectable, true)
+  assert.equal(missing.removable, true)
+})
+
+test('전사: 안내 문구가 관리자 확정 문장과 같다', () => {
+  assert.equal(
+    REFERENCE_ASSET_TEXT.samplerBlocked,
+    '참조 전사가 없어 감정 샘플을 만들 수 없습니다. 참조 구간의 전사를 먼저 확정해 주세요.'
+  )
+})
+
+test('전사: 화면 값에 전사 원문이 실릴 자리가 없다', () => {
+  const view = buildReferenceAssetView('ok', [item({ transcript: 'present' })])
+  const keys = Object.keys(view.rows[0])
+  for (const banned of ['text', 'transcriptText', 'transcript']) {
+    assert.ok(!keys.includes(banned), `행에 ${banned} 필드가 없다`)
+  }
 })

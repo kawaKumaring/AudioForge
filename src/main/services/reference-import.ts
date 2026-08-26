@@ -53,6 +53,8 @@ export interface ReferenceImportRequest {
   regionDurationMs?: number
   /** 참조 전사문. 지문 입력이므로 비어 있어도 결정적으로 처리된다. */
   transcript?: string
+  /** 전사 언어(사용자가 고른 프롬프트 언어). 모르면 빈 문자열 — 임의 기본값으로 바꾸지 않는다. */
+  transcriptLanguage?: string
 }
 
 export type ReferenceImportFailure =
@@ -64,6 +66,7 @@ export type ReferenceImportFailure =
   | 'CLIP_INVALID'          // staged WAV 가 규격을 벗어남
   | 'MANIFEST_CORRUPT'      // manifest 가 손상돼 쓰기를 막았음
   | 'PROMOTE_FAILED'        // 승격 중 실패(파일·manifest 는 불변)
+  | 'TRANSCRIPT_REJECTED'   // 전사 sidecar 충돌·손상(기존 전사를 덮지 않았다)
 
 export type ReferenceImportOutcome =
   | {
@@ -81,6 +84,8 @@ export type ReferenceImportOutcome =
       wavCode?: WavValidationCode
       /** PROMOTE_FAILED 일 때만. 계약이 알려준 실패 단계. */
       failedStep?: ImportClipResult['failedStep']
+      /** TRANSCRIPT_REJECTED 일 때만. 전사 원문은 담지 않는다. */
+      transcriptCode?: ImportClipResult['transcriptCode']
     }
 
 const DEFAULT_EXTENSIONS = ['.wav', '.mp3', '.flac', '.ogg', '.m4a', '.aac', '.wma', '.opus'] as const
@@ -188,9 +193,16 @@ export async function importReference(
       // 규격 기대치는 ref-trim 계약이 보장하는 값(mono·24kHz)만 건다. 길이는 트리밍 반올림이
       // 있을 수 있어 걸지 않는다 — 대신 컨테이너 검증이 프레임 정합성을 본다.
       expected: { sample_rate: 24000, channel_count: 1 },
+      // 확정 전사가 있을 때만 sidecar 를 만든다. 빈 전사를 가짜로 저장하지 않는다.
+      transcript: String(request.transcript ?? '').trim() === ''
+        ? null
+        : { text: String(request.transcript), language: String(request.transcriptLanguage ?? '') },
     })
 
     if (promoted.status !== 'REFERENCE_PROMOTED' || !promoted.record) {
+      if (promoted.transcriptCode) {
+        return { ok: false, reason: 'TRANSCRIPT_REJECTED', transcriptCode: promoted.transcriptCode }
+      }
       if (promoted.wavCode) return { ok: false, reason: 'CLIP_INVALID', wavCode: promoted.wavCode }
       if (promoted.errorCode === 'INVALID_FINGERPRINT_INPUT' && promoted.steps.length === 0) {
         return { ok: false, reason: 'MANIFEST_CORRUPT' }

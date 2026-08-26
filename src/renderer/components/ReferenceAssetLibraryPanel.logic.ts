@@ -16,6 +16,9 @@ export const REFERENCE_ASSET_TEXT = {
   corrupt: '저장된 참조를 확인할 수 없습니다.',
   missing: '저장 파일이 없습니다.',
   removeBlocked: '현재 사용 중인 참조입니다. 다른 참조를 선택한 뒤 삭제할 수 있습니다.',
+  transcriptMissing: '전사 없음',
+  transcriptBroken: '전사 손상',
+  samplerBlocked: '참조 전사가 없어 감정 샘플을 만들 수 없습니다. 참조 구간의 전사를 먼저 확정해 주세요.',
   noConfirmedRegion: '먼저 참조 구간을 확정하면 저장할 수 있습니다.',
   busy: '다른 작업이 진행 중이라 지금은 저장할 수 없습니다.',
 } as const
@@ -61,6 +64,10 @@ export interface ReferenceAssetRow {
   tone: ReferenceAssetTone
   /** 진단용 짧은 해시(앞 8자리). 기본 화면에서는 숨긴다. */
   shortHash: string
+  /** 전사 상태 배지. 정상이면 null. 전사 '내용'은 절대 담지 않는다. */
+  transcriptLabel: string | null
+  /** 이 참조로 감정 샘플을 만들 수 있는가(ICL 은 ref_text 를 요구한다). */
+  samplerReady: boolean
 }
 
 /** manifest 손상 여부까지 포함한 화면 상태. */
@@ -110,6 +117,10 @@ export function buildReferenceAssetView(
       removeBlockedNotice: item.selected ? REFERENCE_ASSET_TEXT.removeBlocked : null,
       statusLabel: statusOf(item),
       tone: toneOf(item),
+      transcriptLabel: item.transcript === 'present' ? null
+        : item.transcript === 'TRANSCRIPT_MISSING' ? REFERENCE_ASSET_TEXT.transcriptMissing
+          : REFERENCE_ASSET_TEXT.transcriptBroken,
+      samplerReady: selectable && item.transcript === 'present',
       shortHash: (item.contentSha256 || '').slice(0, 8),
     }
   })

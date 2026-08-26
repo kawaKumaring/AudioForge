@@ -24,6 +24,7 @@ import type {
   PromotionResult, ReferenceLibraryEntry, ReferenceManifest, ReferenceManifestRecord,
 } from '../../shared/referenceLibrary'
 import type { WavFormatFacts, WavInspection, WavValidationCode } from '../../shared/wavContainer'
+import type { TranscriptFailure, TranscriptSidecar, TranscriptStatus, TranscriptStore } from './reference-transcript'
 
 /** 계약에서 주입받는 순수 함수들. 이 목록 밖의 규칙을 이 파일이 새로 만들지 않는다. */
 export interface ReferenceStoreContract {
@@ -62,6 +63,11 @@ export interface ImportClipRequest {
   clipBytes: Uint8Array
   expected?: ClipVerificationExpectation
   clipId?: string
+  /**
+   * 확정 전사. 있으면 clip 과 함께 sidecar 로 승격한다.
+   * 없으면 sidecar 를 만들지 않는다 — 빈 문자열을 가짜 전사로 저장하지 않는다.
+   */
+  transcript?: { text: string; language: string } | null
 }
 
 export interface ImportClipResult {
@@ -72,6 +78,8 @@ export interface ImportClipResult {
   errorCode?: PromotionResult['errorCode']
   /** 검증 단계에서 걸렸을 때의 사유. 경로·바이트를 담지 않는다. */
   wavCode?: WavValidationCode
+  /** 전사 sidecar 단계에서 걸렸을 때의 사유. 전사 원문은 담지 않는다. */
+  transcriptCode?: TranscriptFailure
 }
 
 export type RemoveReason =
@@ -93,6 +101,8 @@ export interface ReferenceRecordView {
   analysisVersion: number
   /** 파일이 실제로 남아 있는가(재시작 후 누락 감지). */
   present: boolean
+  /** 전사 sidecar 상태. 상태만 나가고 전사 원문은 나가지 않는다. */
+  transcript: TranscriptStatus
 }
 
 export interface ReferenceStore {
@@ -103,6 +113,11 @@ export interface ReferenceStore {
   removeClip(clipId: string): RemoveResult
   /** main 내부 전용 — 절대 경로를 돌려주므로 preload 로 내보내지 않는다. */
   resolveClipFile(clipId: string): ResolveResult
+  /**
+   * main 내부 전용 — 실제 ref_text 를 돌려준다. 생성 서비스만 부른다.
+   * manifest 의 transcript_sha256 과 대조해 통과한 것만 나온다(자동 대체·강등 없음).
+   */
+  resolveTranscript(clipId: string): { ok: true; sidecar: TranscriptSidecar } | { ok: false; reason: TranscriptFailure | 'NOT_FOUND' | 'MANIFEST_CORRUPT' }
   /** 이 run 이 남긴 staging·journal·manifest temp 를 정리한다. */
   sweepRunScoped(runId: string): number
 }
@@ -143,6 +158,7 @@ function isOwnedRegularFile(root: string, path: string): boolean {
 export function createReferenceStore(
   contract: ReferenceStoreContract,
   rootDir: string,
+  transcripts?: TranscriptStore,
 ): ReferenceStore {
   const root = resolve(rootDir)
   const manifestPath = (): string => join(root, contract.manifestFileName)
@@ -190,6 +206,8 @@ export function createReferenceStore(
         regionDurationMs: r.region_duration_ms,
         analysisVersion: r.analysis_version,
         present: isOwnedRegularFile(root, join(root, contract.clipFileName(r.clip_id))),
+        // 상태만 담는다 — 전사 원문은 목록에 절대 싣지 않는다.
+        transcript: transcripts ? transcripts.statusOf(r.clip_id, r.transcript_sha256) : 'TRANSCRIPT_MISSING',
       }))
     },
 
@@ -205,6 +223,20 @@ export function createReferenceStore(
         }
       }
       ensureRoot()
+
+      // 전사가 있을 때만 sidecar 를 만든다. 빈 문자열을 가짜 전사로 저장하지 않는다.
+      const clipIdForRun = request.clipId || request.entry.defaultCandidateId
+      let sidecar: TranscriptSidecar | null = null
+      if (transcripts && request.transcript && request.transcript.text.trim() !== '') {
+        sidecar = transcripts.build(clipIdForRun, request.transcript.text, request.transcript.language)
+        // 같은 clipId 에 다른 전사가 이미 있으면 조용히 덮지 않는다.
+        const conflict = transcripts.conflictWith(sidecar)
+        if (conflict) {
+          return {
+            status: 'REFERENCE_PROMOTE_FAILED', steps: [], record: null, transcriptCode: conflict,
+          }
+        }
+      }
 
       let wavCode: WavValidationCode | undefined
 
@@ -243,7 +275,16 @@ export function createReferenceStore(
         },
         promoteClip: (stagedPath, durableFileName) => {
           const durable = join(root, durableFileName)
-          renameSync(stagedPath, durable)   // 같은 볼륨 — 원자적
+          if (sidecar && transcripts) {
+            // 전사 temp 를 먼저 만들어 검증한다. 여기서 터지면 클립도 옮기지 않는다.
+            const temp = transcripts.writeStagingSidecar(
+              join(stagingRoot(), contract.runScopedStagingDirName(request.runId)), sidecar,
+            )
+            renameSync(stagedPath, durable)          // 같은 볼륨 — 원자적
+            transcripts.promote(temp, sidecar.clipId)
+            return durable
+          }
+          renameSync(stagedPath, durable)
           return durable
         },
         writeManifestTemp: (manifest, tempName) => {
@@ -272,6 +313,9 @@ export function createReferenceStore(
         failedStep: result.failedStep,
         errorCode: result.errorCode,
         wavCode,
+        // PROMOTE_CLIP 에서 터졌는데 wav 문제가 아니면 전사 승격이 원인이다.
+        transcriptCode: (!wavCode && result.failedStep === 'PROMOTE_CLIP' && sidecar)
+          ? 'TRANSCRIPT_CORRUPT' : undefined,
       }
     },
 
@@ -310,6 +354,8 @@ export function createReferenceStore(
           return { ok: false, reason: 'DELETE_FAILED' }
         }
       }
+      // 전사 sidecar 는 클립과 한 몸이다. manifest 에서 이미 빠졌으므로 남으면 고아가 된다.
+      if (transcripts && !transcripts.remove(id)) return { ok: false, reason: 'DELETE_FAILED' }
       return { ok: true }
     },
 
@@ -337,6 +383,21 @@ export function createReferenceStore(
         return { ok: false, reason: 'CHECKSUM_MISMATCH' }
       }
       return { ok: true, filePath, clipSha256: actual }
+    },
+
+    resolveTranscript(clipId: string) {
+      const id = String(clipId ?? '').trim().toLowerCase()
+      if (!CLIP_ID_RE.test(id)) return { ok: false as const, reason: 'NOT_FOUND' as const }
+      const loaded = load()
+      if (loaded.status === 'corrupt') return { ok: false as const, reason: 'MANIFEST_CORRUPT' as const }
+      const record = contract.findManifestRecordByClipId(loaded.manifest, id)
+      if (!record) return { ok: false as const, reason: 'NOT_FOUND' as const }
+      if (!transcripts) return { ok: false as const, reason: 'TRANSCRIPT_MISSING' as const }
+      // manifest 가 아는 해시와 대조한다. 통과하지 못하면 대체하지 않고 사유를 그대로 낸다.
+      const read = transcripts.read(id, record.transcript_sha256)
+      return read.ok
+        ? { ok: true as const, sidecar: read.sidecar }
+        : { ok: false as const, reason: read.reason }
     },
 
     sweepRunScoped(runId: string): number {

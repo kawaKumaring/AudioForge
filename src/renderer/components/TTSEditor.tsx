@@ -218,6 +218,10 @@ export default function TTSEditor() {
         filePath: fileInfo.path,
         regionStartMs: Math.round(ttsReferenceRegion.start * 1000),
         regionDurationMs: Math.round(ttsReferenceRegion.duration * 1000),
+        // 현재 원본·구간에 연결된 확정 전사만 넘긴다. store 는 원본이 바뀌면 prompts 를 비우므로
+        // 다른 원본의 전사가 섞이지 않는다. 확정 전사가 없으면 빈 값으로 두고 sidecar 를 만들지 않는다.
+        transcript: refPrompts['default']?.manualText ?? '',
+        transcriptLanguage: refPrompts['default']?.promptLang ?? '',
       })
       if (!res.ok) setRefAssetNotice(REF_ASSET_FAILURE_TEXT[res.reason] ?? '참조를 저장하지 못했습니다.')
       await refreshRefAssets()

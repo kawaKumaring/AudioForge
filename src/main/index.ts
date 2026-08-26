@@ -10,8 +10,10 @@ import { pathToFileURL } from 'url'
 import { registerAudioIpc } from './ipc/audio.ipc'
 import { registerReferenceLibraryIpc } from './ipc/reference-library.ipc'
 import { createReferenceStore } from './services/reference-store'
+import { createTranscriptStore } from './services/reference-transcript'
 import {
   buildLibraryEntry, emptyManifest, assertManifestValid, promoteReferenceClip,
+  normalizeTranscript, sha256HexOfString,
   removeManifestRecord, findManifestRecordByClipId, verifyStoredClip, clipFileName,
   runScopedStagingDirName, runJournalFileName, manifestTempFileName,
   MANIFEST_FILE_NAME, REFERENCE_LIBRARY_DIR_NAME, REFERENCE_STAGING_DIR_NAME,
@@ -106,6 +108,11 @@ function createWindow(): void {
         inspectWavContainer, wavSamplesAreFinite,
       },
       join(app.getPath('userData'), REFERENCE_LIBRARY_DIR_NAME),
+      // 실제 ref_text 는 sidecar 가 유일한 durable 권위다. 정규화·해시는 계약 함수를 그대로 쓴다.
+      createTranscriptStore(
+        { normalizeTranscript, sha256HexOfString },
+        join(app.getPath('userData'), REFERENCE_LIBRARY_DIR_NAME),
+      ),
     ),
     preview: previewAdapter,
     readSelectedId: () => readSelectedReferenceId(),

@@ -26,6 +26,8 @@ export interface ReferenceLibraryItem {
   /** 파일이 아예 없는 경우(무결성 실패와 구분해 사용자에게 다르게 안내한다). */
   missing: boolean
   selected: boolean
+  /** 전사 상태. 원문은 절대 오지 않는다 — 있음/없음/손상만 온다. */
+  transcript: 'present' | 'TRANSCRIPT_MISSING' | 'TRANSCRIPT_CORRUPT' | 'TRANSCRIPT_HASH_MISMATCH' | 'TRANSCRIPT_CONFLICT'
   /** 화면에 보여줄 안전한 이름. 원본 파일명이 아니라 앱이 붙인 번호다. */
   displayName: string
 }
@@ -40,12 +42,16 @@ export interface ReferenceLibraryImportRequest {
   filePath: string
   regionStartMs?: number
   regionDurationMs?: number
+  /** 확정 전사. 비어 있으면 sidecar 를 만들지 않는다(가짜 전사 저장 금지). */
   transcript?: string
+  /** 전사 언어. 모르면 비워 둔다 — 임의 기본값으로 바꾸지 않는다. */
+  transcriptLanguage?: string
 }
 
 export type ReferenceLibraryImportFailure =
   | 'INVALID_SOURCE' | 'SOURCE_UNREADABLE' | 'ANALYZE_FAILED' | 'SOURCE_NOT_SUITABLE'
   | 'TRIM_FAILED' | 'CLIP_INVALID' | 'MANIFEST_CORRUPT' | 'PROMOTE_FAILED' | 'BUSY'
+  | 'TRANSCRIPT_REJECTED'
 
 export type ReferenceLibraryImportResponse =
   | { ok: true; referenceId: string }

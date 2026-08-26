@@ -73,6 +73,7 @@ export function registerReferenceLibraryIpc(deps: ReferenceLibraryIpcDeps): void
         ready: resolved.ok,                       // 파일 존재 + 해시 일치까지 통과해야 ready
         missing: !r.present,
         selected: selected === r.referenceId,
+        transcript: r.transcript,
         displayName: referenceDisplayName(index),
       }
     })
@@ -106,6 +107,7 @@ export function registerReferenceLibraryIpc(deps: ReferenceLibraryIpcDeps): void
           regionStartMs: request?.regionStartMs,
           regionDurationMs: request?.regionDurationMs,
           transcript: request?.transcript,
+          transcriptLanguage: request?.transcriptLanguage,
         },
       )
 
