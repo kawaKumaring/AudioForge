@@ -5,11 +5,13 @@ import assert from 'node:assert/strict'
 import {
   analyzeGenerationChunk, buildGenerationTelemetryReport, isAvailable,
   finiteNumber as tFinite, sampleRateOrNull as tRate, framesOrNull as tFrames,
+  positiveSecondsOrNull as tSecs,
   type Metric, type MetricUnavailableReason,
 } from './generationTelemetry.ts'
 import {
   parseGenerationSummary,
   finiteNumber as cFinite, sampleRateOrNull as cRate, framesOrNull as cFrames,
+  positiveSecondsOrNull as cSecs,
 } from './ttsConfig.ts'
 
 // ── 공통 헬퍼 ──────────────────────────────────────────────────────────────────
@@ -51,6 +53,7 @@ test('검증기 parity: ttsConfig 와 generationTelemetry 구현이 모든 적�
     assert.equal(tFinite(v), cFinite(v), `finiteNumber(${String(v)})`)
     assert.equal(tRate(v), cRate(v), `sampleRateOrNull(${String(v)})`)
     assert.equal(tFrames(v), cFrames(v), `framesOrNull(${String(v)})`)
+    assert.equal(tSecs(v), cSecs(v), `positiveSecondsOrNull(${String(v)})`)
   }
 })
 
@@ -373,4 +376,86 @@ test('parseGenerationSummary 출력 행을 그대로 분석에 넣을 수 있다
   const a = analyzeGenerationChunk(g.chunks[0], CLEAN)
   assertValue(a.output_duration_sec, 2.0)
   assertValue(a.samples_per_iteration, 48000 / 90)
+})
+
+// ── 9. generation_elapsed_sec 가 실재하게 된 뒤의 계약 ─────────────────────────
+// 이 필드는 이제 production 에 존재한다(qwen_bridge 가 blocking 생성 호출 하나만 감싸 측정하고
+// tts_worker 가 chunk 행에 가산한다). 위 6절 테스트들이 '부재 → unavailable' 을 계속 고정하는
+// 이유는, 필드가 조건부로 빠질 수 있고(구 session, bridge 가 값을 못 남긴 실행) 그때 0 으로
+// 위조되면 안 되기 때문이다.
+
+test('검증기: 0/음수 generation_elapsed_sec 거절 → null(0 아님)', () => {
+  // elapsed 는 분자다. 0 이 통과하면 crash 없이 seconds_per_iteration = 0 이라는 거짓이 나온다.
+  for (const bad of [0, -0.0, -1, -35.2, NaN, Infinity, -Infinity, null, undefined, '35.2', true, {}]) {
+    assert.equal(tSecs(bad), null, `positiveSecondsOrNull(${String(bad)})`)
+    assert.notEqual(tSecs(bad), 0, '0 으로 위조 금지')
+  }
+  assert.equal(tSecs(35.271), 35.271)
+  assert.equal(tSecs(1e-6), 1e-6)
+})
+
+test('seconds_per_iteration: 0/이상값은 missing 이 아니라 invalid 로 구분된다', () => {
+  // 부재(구 session)와 '있지만 못 쓰는 값'을 섞으면 원인 추적이 불가능해진다.
+  assertUnavailable(
+    analyzeGenerationChunk({ ...ROW }, CLEAN).seconds_per_iteration,
+    'missing_generation_elapsed_sec')
+  for (const bad of [0, -1, NaN, Infinity]) {
+    assertUnavailable(
+      analyzeGenerationChunk({ ...ROW, generation_elapsed_sec: bad }, CLEAN).seconds_per_iteration,
+      'invalid_generation_elapsed_sec')
+  }
+})
+
+test('seconds_per_iteration: 실제 관측 형태로 계산된다', () => {
+  const a = analyzeGenerationChunk({ ...ROW, generation_elapsed_sec: 35.271 }, CLEAN)
+  assertValue(a.seconds_per_iteration, 35.271 / 90)
+  // 오염과 무관하다 — elapsed 는 speed 후처리의 영향을 받지 않는다(frames 만 오염된다).
+  const c = analyzeGenerationChunk({ ...ROW, generation_elapsed_sec: 35.271 },
+    { speedPostprocessed: true })
+  assertValue(c.seconds_per_iteration, 35.271 / 90)
+  assertUnavailable(c.samples_per_iteration, 'speed_postprocessed')
+})
+
+test('왕복: generation_elapsed_sec 가 python emit → parseGenerationSummary 를 통과한다', () => {
+  const metadata = JSON.parse(JSON.stringify({
+    output_sample_rate: 24000, elapsed_seconds: 120.5, device: 'cuda:0', speed_postprocessed: false,
+    generation_chunks: [
+      { ...ROW, generation_elapsed_sec: 35.271 },
+      { ...ROW, chunk_index: 1, generated_iterations: 45, generation_elapsed_sec: 17.8 },
+    ],
+  }))
+  const g = parseGenerationSummary(metadata)
+  assert.ok(g)
+  assert.equal(g.chunks[0].generation_elapsed_sec, 35.271)
+  assert.equal(g.chunks[1].generation_elapsed_sec, 17.8)
+  // 작업 전체 시간이 chunk 행으로 새어 들어오지 않는다.
+  assert.notEqual(g.chunks[0].generation_elapsed_sec, 120.5)
+  const rep = buildGenerationTelemetryReport(metadata)
+  assertValue(rep.chunks[0].seconds_per_iteration, 35.271 / 90)
+  assertValue(rep.chunks[1].seconds_per_iteration, 17.8 / 45)
+})
+
+test('구 session 복원: generation_elapsed_sec 부재 → null(0 아님), crash 없음', () => {
+  const g = parseGenerationSummary({
+    speed_postprocessed: false,
+    generation_chunks: [{
+      original_segment_index: 0, chunk_index: 0, chunk_count: 1,
+      generated_iterations: 90, generation_limit: 247,
+      termination_reason: 'completed_before_limit',
+    }],
+  })
+  assert.ok(g)
+  assert.equal(g.chunks[0].generation_elapsed_sec, null)
+  assert.notEqual(g.chunks[0].generation_elapsed_sec, 0)
+})
+
+test('구 session 복원: 이상 generation_elapsed_sec 도 throw 하지 않고 null 로 정규화', () => {
+  for (const bad of [0, -5, 'x', {}, [], true, NaN, Infinity]) {
+    const g = parseGenerationSummary({
+      speed_postprocessed: false,
+      generation_chunks: [{ ...ROW, generation_elapsed_sec: bad }],
+    })
+    assert.ok(g)
+    assert.equal(g.chunks[0].generation_elapsed_sec, null, `bad=${String(bad)}`)
+  }
 })

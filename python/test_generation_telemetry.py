@@ -66,7 +66,8 @@ def _chunk_row(entry, layout=None):
            "generation_limit": entry.get("generation_limit"),
            "generated_iterations": entry.get("generated_iterations"),
            "termination_reason": entry.get("termination_reason"), "emotion_id": entry.get("emotion_id"),
-           "output_sample_rate": w._positive_int_or_none(entry.get("sr"))}
+           "output_sample_rate": w._positive_int_or_none(entry.get("sr")),
+           "generation_elapsed_sec": w._positive_float_or_none(entry.get("generation_elapsed_sec"))}
     if layout is not None:
         row["frames"] = layout["frames"]
         row["gap_before_samples"] = layout["gap_before_samples"]
@@ -76,8 +77,38 @@ def _chunk_row(entry, layout=None):
 
 _ENTRY = {"original_segment_index": 0, "chunk_index": 0, "chunk_count": 1, "out_path": "C:/job/seg0_c0.wav",
           "sr": 24000, "x_vector_only": False, "emotion_id": "happy", "production_tokens": 30,
-          "generation_limit": 247, "generated_iterations": 90,
+          "generation_limit": 247, "generated_iterations": 90, "generation_elapsed_sec": 35.271,
           "termination_reason": "completed_before_limit", "status": "ok"}
+
+
+class PositiveFloatValidatorTest(unittest.TestCase):
+    """_positive_float_or_none — 0 을 거르는 것이 핵심이다(분자의 0 은 거짓 0 s/iter 를 만든다)."""
+
+    def test_accepts_positive_float_and_int(self):
+        self.assertEqual(w._positive_float_or_none(35.271), 35.271)
+        self.assertEqual(w._positive_float_or_none(1), 1.0)
+        self.assertEqual(w._positive_float_or_none(1e-6), 1e-6)
+
+    def test_rejects_zero_and_negative_as_none_not_zero(self):
+        for bad in (0, 0.0, -0.0, -1, -35.2):
+            got = w._positive_float_or_none(bad)
+            self.assertIsNone(got, repr(bad))
+            self.assertNotEqual(got, 0, "0 으로 위조하지 않는다: %r" % (bad,))
+
+    def test_rejects_nan_inf(self):
+        for bad in (float("nan"), float("inf"), float("-inf")):
+            self.assertIsNone(w._positive_float_or_none(bad), repr(bad))
+
+    def test_rejects_non_numeric_and_bool(self):
+        for bad in (None, "35.2", [], {}, True, False):
+            self.assertIsNone(w._positive_float_or_none(bad), repr(bad))
+
+    def test_never_raises(self):
+        class Weird:
+            def __float__(self):
+                raise RuntimeError("nope")
+        for bad in (Weird(), object(), b"1.0"):
+            self.assertIsNone(w._positive_float_or_none(bad))
 
 
 class ChunkRowShapeTest(unittest.TestCase):
@@ -148,9 +179,32 @@ class MetadataAllowlistTest(unittest.TestCase):
                   "generation_chunks", "speed_postprocessed", "x_vector_only_mode", "seed"):
             self.assertIn(k, w._METADATA_KEYS, k)
 
-    def test_generation_elapsed_sec_is_not_invented(self):
-        # 아직 존재하지 않는 필드를 몰래 만들지 않았고, elapsed_seconds 로 대체하지도 않았다.
+    def test_generation_elapsed_sec_is_per_chunk_not_top_level(self):
+        """generation_elapsed_sec 는 chunk 단위 값이며 top-level metadata 키가 아니다.
+
+        chunk 단위여야 하는 이유: generated_iterations 가 chunk 단위이므로 그것으로 나눈
+        seconds_per_iteration 이 의미를 가지려면 분자도 같은 chunk 의 값이어야 한다.
+        top-level 로 두면 실행당 표본이 1개뿐이라 device별 p95 를 계산할 수 없다."""
         self.assertNotIn("generation_elapsed_sec", w._METADATA_KEYS)
+        self.assertIn("generation_elapsed_sec", _chunk_row(_ENTRY))
+
+    def test_elapsed_seconds_is_not_substituted(self):
+        """작업 전체 시간(elapsed_seconds)을 생성 시간으로 재사용하지 않는다.
+
+        elapsed_seconds 의 타이머는 장치 선택·참조 평가·모델 로딩·결합·pitch·원자적 배치까지
+        포함한다. 두 값은 서로 다른 구간이며, chunk 행에는 전자가 실리지 않는다."""
+        self.assertNotIn("elapsed_seconds", _chunk_row(_ENTRY))
+        # bridge 가 재는 구간이 blocking 생성 호출 하나임을 소스로 고정한다.
+        src = _read(os.path.join(_HERE, "qwen_bridge.py"))
+        i_start = src.index("_t_gen = time.monotonic()")
+        i_call = src.index("model.generate_voice_clone(", i_start)
+        i_stop = src.index("time.monotonic() - _t_gen", i_call)
+        # 시작 → 호출 → 정지 순서이고, 그 사이에 다른 무거운 단계가 끼어 있지 않다.
+        between = src[i_start:i_stop]
+        for forbidden in ("_load_model", "assess_reference", "select_device", "_finish_and_place",
+                          "_concat_with_boundaries", "pitch_shift"):
+            self.assertNotIn(forbidden, between,
+                             "생성 구간 타이머가 %s 까지 감싸면 생성 시간이 아니다" % forbidden)
 
 
 # 4. metadata frames/sr 가 실제 출력 WAV 와 일치한다(mock — 진짜 합성 없음)
