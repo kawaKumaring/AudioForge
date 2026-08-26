@@ -3,6 +3,11 @@ import type { CancelResponseLike } from '../shared/cancelContract'
 import { SIDECAR_IPC_CHANNEL } from '../shared/sidecarEvents'
 import type { SidecarEnvelope } from '../shared/sidecarEvents'
 import { REFERENCE_LIBRARY_CHANNELS } from '../shared/referenceLibraryApi'
+import { SAMPLER_CHANNELS } from '../shared/samplerApi'
+import type {
+  SamplerCacheKeyRequest, SamplerGenerateRequest, SamplerGenerateResponse,
+  SamplerInventoryResponse, SamplerPreviewUrlResponse, SamplerRemoveResponse,
+} from '../shared/samplerApi'
 import type {
   ReferenceLibraryImportRequest, ReferenceLibraryImportResponse, ReferenceLibraryListResponse,
   ReferenceLibraryRemoveResponse, ReferenceLibrarySelectResponse,
@@ -107,6 +112,17 @@ const api = {
       ipcRenderer.invoke(REFERENCE_LIBRARY_CHANNELS.select, referenceId),
     remove: (referenceId: string): Promise<ReferenceLibraryRemoveResponse> =>
       ipcRenderer.invoke(REFERENCE_LIBRARY_CHANNELS.remove, referenceId)
+  },
+  // 감정 샘플러 — 논리 ID 만 오간다. 경로·전사·대본은 어떤 응답에도 없다.
+  sampler: {
+    generate: (request: SamplerGenerateRequest): Promise<SamplerGenerateResponse> =>
+      ipcRenderer.invoke(SAMPLER_CHANNELS.generate, request),
+    inventory: (): Promise<SamplerInventoryResponse> =>
+      ipcRenderer.invoke(SAMPLER_CHANNELS.inventory),
+    remove: (request: SamplerCacheKeyRequest): Promise<SamplerRemoveResponse> =>
+      ipcRenderer.invoke(SAMPLER_CHANNELS.remove, request),
+    previewUrl: (request: SamplerCacheKeyRequest): Promise<SamplerPreviewUrlResponse> =>
+      ipcRenderer.invoke(SAMPLER_CHANNELS.previewUrl, request)
   },
   utils: {
     getPathForFile: (file: File) => webUtils.getPathForFile(file),
