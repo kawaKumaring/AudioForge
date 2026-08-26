@@ -15,6 +15,7 @@ import { sweepQwenJobDirs, listQwenJobDirs } from '../services/qwen-cleanup'
 import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
 import { removeSplitTempDirs, listSplitTempDirs } from '../services/split-temp-cleanup'
 import { createSingleFlight, createKeyedSingleFlight } from '../services/single-flight'
+import { createJobWatchdog } from '../services/longform-job'
 import type { CancelResponse } from '../../shared/cancelContract'
 import { validateSidecarEvent, SIDECAR_IPC_CHANNEL } from '../../shared/sidecarEvents'
 import type { SidecarEnvelope } from '../../shared/sidecarEvents'
@@ -98,6 +99,9 @@ let cleanupPending = false                                    // 취소 성공�
 let runnerDoneDeferred: { promise: Promise<void>; resolve: () => void } | null = null
 const CANCEL_EXIT_MS_DEFAULT = 8000                           // taskkill 후 tree 종료 확인 대기(bounded). worker timeout과 별개.
 const CLEANUP_DEADLINE_MS = 2500                              // 취소 후 .qwen-job-* 정리 마감(bounded retry).
+// 장문 job 축(무진행/총예산) 점검 주기. 이 값은 '언제 판정하는지'일 뿐 '얼마나 기다리는지'가 아니다 —
+// 실제 상한은 longform-job.ts 의 STALL_MS/jobBudgetMs 가 정한다. 짧게 두면 판정 지연만 줄어든다.
+const JOB_TICK_MS = 15000
 // 취소-종료 대기 timeout(ms). production 값 불변; AF_E2E=1에서만 globalThis 주입값으로 대체(테스트 결정성).
 function cancelExitMs(): number {
   if (process.env.AF_E2E === '1') {
@@ -634,6 +638,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     })
 
     // Watchdog: kill if no progress for 5 minutes
+    // ① 비활성 축 — 값·문구·동작 모두 기존 그대로다(아래 두 축이 추가된 것뿐).
     const WATCHDOG_MS = 300000
     let watchdog: ReturnType<typeof setTimeout> | null = null
 
@@ -647,13 +652,44 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
         }
       }, WATCHDOG_MS)
     }
+
+    // ②③ 장문 job 축 — '살아있음'과 '실제로 조각을 만들어냈음'을 구분해 판정한다.
+    // 왜 별도 타이머인가: ①은 'progress 이벤트가 오면 리셋'이라 heartbeat(=Python이 로딩 생존
+    // 신호를 progress로 옮겨 보낸 것)만으로도 무한히 연장된다. 그건 의도된 보호지만(느린 콜드
+    // 로딩을 죽이면 안 된다), 그것 **하나뿐**이면 살아있으나 아무것도 생산하지 않는 job과
+    // 총 길이가 폭주하는 job에 대한 천장이 어디에도 없다. 판정 로직·상수 근거는 longform-job.ts.
+    const jobWatch = createJobWatchdog({ now: () => Date.now() })
+    let jobTick: ReturnType<typeof setInterval> | null = null
+    const clearJobTick = () => { if (jobTick) { clearInterval(jobTick); jobTick = null } }
+    jobTick = setInterval(() => {
+      if (!runner?.isRunning) return
+      const verdict = jobWatch.evaluate()
+      // ①은 자기 타이머가 담당한다 — 여기서 중복 판정하지 않는다.
+      if (verdict === 'ok' || verdict === 'inactivity-timeout') return
+      clearJobTick()
+      settle.markSettled()
+      runner.cancel()  // async(무시) — 트리 kill 시도
+      const r = jobWatch.report()
+      sendError(verdict === 'no-forward-progress'
+        ? `합성이 ${Math.round(r.sinceForwardMs / 1000)}초 동안 한 조각도 진행하지 못했습니다 `
+          + `(완료 ${r.completedChunks}조각). 프로세스는 살아 있었지만 결과를 만들지 못했습니다.`
+        : `합성이 이 작업에 허용된 총 시간을 초과했습니다 `
+          + `(경과 ${Math.round(r.elapsedMs / 1000)}초, 완료 ${r.completedChunks}`
+          + `/${r.estimatedTotalChunks ?? '?'}조각).`)
+    }, JOB_TICK_MS)
+    if (typeof jobTick.unref === 'function') jobTick.unref()  // 이 타이머가 앱 종료를 막지 않게
+
     // 취소가 watchdog을 즉시 해제할 수 있게 노출(취소는 watchdog 무의미). done에서 정리.
-    currentWatchdogClear = () => { if (watchdog) { clearTimeout(watchdog); watchdog = null } }
+    currentWatchdogClear = () => {
+      if (watchdog) { clearTimeout(watchdog); watchdog = null }
+      clearJobTick()
+    }
 
     resetWatchdog()
 
     runner.on('done', (code) => {
       if (watchdog) { clearTimeout(watchdog); watchdog = null }
+      clearJobTick()
       try { unlinkSync(configPath) } catch {}
       // 성공·오류·취소 어느 경로로 끝나든 이 실행이 만든 split 원본 사본을 지운다. 취소 분기보다
       // 위에 두어 early return에 걸리지 않게 한다. 다른 실행/과거 orphan은 건드리지 않는다.
@@ -689,8 +725,9 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       settle.finish(code)
     })
 
-    runner.on('progress', () => {
-      resetWatchdog()
+    runner.on('progress', (data) => {
+      resetWatchdog()          // ① 기존 그대로 — 어떤 progress 로도 리셋된다
+      jobWatch.observe(data)   // ②③ 은 여기서 liveness/forward 를 갈라 각자의 축만 갱신한다
     })
 
     // Only pass ASCII config path to Python — no Korean chars in spawn args
