@@ -190,7 +190,7 @@ export function createReferenceStore(
     }
   }
 
-  return {
+  const store: ReferenceStore = {
     rootDir: root,
 
     loadManifest: load,
@@ -297,14 +297,21 @@ export function createReferenceStore(
         },
       }
 
-      const result = contract.promoteReferenceClip(effects, {
-        runId: request.runId,
-        entry: request.entry,
-        durableDir: root,
-        manifest: loaded.manifest,
-        expected: request.expected,
-        clipId: request.clipId,
-      })
+      // 승격이 어떻게 끝나든 이번 run 의 staging 은 남기지 않는다.
+      // (고아 자산 sweep 과는 다른 일이다 — 여기서는 '내가 만든 것'만 지운다.)
+      let result: PromotionResult
+      try {
+        result = contract.promoteReferenceClip(effects, {
+          runId: request.runId,
+          entry: request.entry,
+          durableDir: root,
+          manifest: loaded.manifest,
+          expected: request.expected,
+          clipId: request.clipId,
+        })
+      } finally {
+        try { store.sweepRunScoped(request.runId) } catch { /* 정리 실패가 결과를 바꾸지 않는다 */ }
+      }
 
       return {
         status: result.status,
@@ -428,4 +435,5 @@ export function createReferenceStore(
       return removed
     },
   }
+  return store
 }

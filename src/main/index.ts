@@ -32,6 +32,13 @@ let mainWindow: BrowserWindow | null = null
 // 프로토콜 핸들러가 키를 경로로 바꿀 때 쓴다. 창 생성 시 채워진다.
 let samplerCache: SamplerCache | null = null
 
+// E2E 격리 — AF_E2E=1 에서만 userData 를 임시 폴더로 돌린다.
+// 사용자의 실제 참조 라이브러리·샘플 캐시를 테스트가 건드리지 않게 하기 위한 게이트이며,
+// production 실행에서는 이 분기가 동작하지 않는다.
+if (process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA) {
+  try { app.setPath('userData', process.env.AF_E2E_USER_DATA) } catch { /* noop */ }
+}
+
 // ── 선택된 참조 — 논리 ID 하나만 앱 소유 위치에 남긴다(절대 경로 저장 금지) ──
 // 앱의 다른 설정(settings.json)과 파일을 나누어 동시 쓰기 충돌을 피한다.
 function selectionFilePath(): string {
@@ -164,7 +171,37 @@ function createWindow(): void {
   )
   registerSamplerIpc({
     cache: samplerCache,
-    runner: { run: previewAdapter.runSamplerTts },
+    // AF_E2E=1 에서만 가짜 실행 결과를 주입할 수 있다(기존 __afCleanupFailCount 선례와 같은 게이트).
+    // production 경로는 언제나 기존 TTS 실행이며, 이 분기는 개발 빌드 밖에서 동작하지 않는다.
+    runner: {
+      run: async (job) => {
+        if (process.env.AF_E2E === '1') {
+          const g = globalThis as { __afSamplerFake?: string; __afSamplerRuns?: number }
+          g.__afSamplerRuns = (g.__afSamplerRuns ?? 0) + 1
+          const mode = g.__afSamplerFake
+          if (mode === 'error') return { kind: 'error' as const }
+          if (mode === 'cancelled') return { kind: 'cancelled' as const }
+          if (mode === 'limit') return { kind: 'limit' as const }
+          if (mode === 'no-result') return { kind: 'no-result' as const }
+          if (mode === 'silent' || mode === 'success') {
+            const frames = 24000
+            const data = frames * 2
+            const buf = Buffer.alloc(44 + data)
+            buf.write('RIFF', 0); buf.writeUInt32LE(36 + data, 4); buf.write('WAVE', 8)
+            buf.write('fmt ', 12); buf.writeUInt32LE(16, 16); buf.writeUInt16LE(1, 20); buf.writeUInt16LE(1, 22)
+            buf.writeUInt32LE(24000, 24); buf.writeUInt32LE(48000, 28); buf.writeUInt16LE(2, 32); buf.writeUInt16LE(16, 34)
+            buf.write('data', 36); buf.writeUInt32LE(data, 40)
+            if (mode === 'success') {
+              for (let i = 0; i < frames; i++) buf.writeInt16LE(i % 2 ? 9000 : -9000, 44 + i * 2)
+            }
+            const out = join(job.stagingDir, 'synthesized.wav')
+            writeFileSync(out, buf)
+            return { kind: 'success' as const, outputPath: out }
+          }
+        }
+        return previewAdapter.runSamplerTts(job)
+      },
+    },
     requestDeps: {
       referenceStore,
       buildEmotionSampleScript,
