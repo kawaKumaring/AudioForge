@@ -323,6 +323,19 @@ test('checkpoint 스냅샷 → 복원 → 남은 조각만 재개 계획에 남�
   assert.deepEqual(plan.remaining, [{ segIndex: 0, chunkIndex: 1 }], '가운데 하나만 다시 만들면 된다')
 })
 
+test('스냅샷 elapsedMs 는 시각이 아니라 기간이고, 재개 시 이전 실행분에 누적된다', () => {
+  const led = createChunkLedger()
+  assert.equal(led.snapshot(5_000_000).elapsedMs, 0, '조각이 하나도 없으면 기간은 0')
+  led.recordComplete({ segIndex: 0, segCount: 2, chunkIndex: 0, chunkCount: 1, phase: 'complete' }, 1_000_000)
+  led.recordComplete({ segIndex: 1, segCount: 2, chunkIndex: 0, chunkCount: 1, phase: 'complete' }, 1_030_000)
+  const snap = led.snapshot(1_030_000)
+  assert.equal(snap.elapsedMs, 30_000, '큰 타임스탬프가 그대로 기간으로 새면 안 된다')
+
+  const resumed = createChunkLedger(snap)
+  resumed.recordComplete({ segIndex: 0, segCount: 2, chunkIndex: 0, chunkCount: 1, phase: 'complete' }, 9_000_000)
+  assert.equal(resumed.snapshot(9_020_000).elapsedMs, 50_000, '이전 30초 + 이번 20초')
+})
+
 test('완료분이 없으면 재개 불가 — 처음부터 다시(부분 결과를 지어내지 않는다)', () => {
   const plan = createChunkLedger().resumePlan()
   assert.equal(plan.resumable, false)

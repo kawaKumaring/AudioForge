@@ -154,8 +154,9 @@ export interface ChunkLedger {
 export function createChunkLedger(restore?: CheckpointSnapshot | null): ChunkLedger {
   const seen = new Map<string, ChunkKey>()
   let chunkCount: number | null = null
-  let lastAtMs = 0
-  let baseElapsedMs = 0
+  let firstAtMs: number | null = null   // 이 원장이 처음 조각을 받은 시각(경과 계산 기준점)
+  let lastAtMs: number | null = null
+  let baseElapsedMs = 0                 // 복원된 이전 실행분의 누적 생성 시간
   // 복원: 형태가 어긋나면 조용히 '완료분 없음' 으로 떨어진다(복원 실패가 실행을 깨뜨리지 않는다).
   if (restore && restore.version === 1 && Array.isArray(restore.completed)) {
     for (const k of restore.completed) {
@@ -172,6 +173,7 @@ export function createChunkLedger(restore?: CheckpointSnapshot | null): ChunkLed
       // 총 조각 수는 bridge 가 세그먼트별 cc 를 보내므로 '누적 관측 최대' 가 아니라
       // 세그먼트 경계마다 달라진다. 여기서는 '이 세그먼트의 조각 수' 를 마지막 관측으로만 들고 간다.
       chunkCount = pos.chunkCount
+      if (firstAtMs === null) firstAtMs = atMs
       lastAtMs = atMs
       const k = keyOf(pos)
       if (seen.has(k)) return false
@@ -182,12 +184,11 @@ export function createChunkLedger(restore?: CheckpointSnapshot | null): ChunkLed
     get completed() { return [...seen.values()] },
     get chunkCount() { return chunkCount },
     snapshot(atMs) {
-      return {
-        version: 1,
-        completed: [...seen.values()],
-        chunkCount,
-        elapsedMs: baseElapsedMs + Math.max(0, (atMs || lastAtMs) - 0)
-      }
+      // atMs 는 '시각'이고 elapsedMs 는 '기간'이다 — 시각을 그대로 기간으로 쓰지 않는다.
+      // 이 원장이 조각을 받기 시작한 시점부터의 기간 + 복원된 이전 실행분.
+      const end = typeof atMs === 'number' && Number.isFinite(atMs) ? atMs : (lastAtMs ?? 0)
+      const span = firstAtMs === null ? 0 : Math.max(0, end - firstAtMs)
+      return { version: 1, completed: [...seen.values()], chunkCount, elapsedMs: baseElapsedMs + span }
     },
     resumePlan() {
       const completed = [...seen.values()]
