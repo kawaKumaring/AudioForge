@@ -993,6 +993,18 @@ def _atempo_segment(inp, speed):
     return out
 
 
+def _positive_int_or_none(v):
+    """양의 정수만 통과, 그 외는 None(= telemetry 규약상 'unavailable').
+    거르는 값: None / bool / 비수치 / NaN / ±Inf / 0 / 음수. 0 같은 위조값을 절대 남기지 않는다.
+    metadata는 합성을 깨뜨리지 않는다는 기존 원칙(frames 조건부 기록과 동일)에 따라 예외를 던지지 않는다."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    if v != v or v in (float("inf"), float("-inf")):   # NaN / ±Inf
+        return None
+    n = int(v)
+    return n if n > 0 else None
+
+
 _METADATA_KEYS = [
     "requested_engine", "actual_engine", "model_name", "model_revision", "device",
     "device_selection_source", "prompt_source", "x_vector_only_mode",
@@ -1304,7 +1316,11 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                        "chunk_count": e["chunk_count"], "production_tokens": e.get("production_tokens"),
                        "generation_limit": e.get("generation_limit"),
                        "generated_iterations": e.get("generated_iterations"),
-                       "termination_reason": e.get("termination_reason"), "emotion_id": e.get("emotion_id")}
+                       "termination_reason": e.get("termination_reason"), "emotion_id": e.get("emotion_id"),
+                       # 진단 추가(가산): chunk 행을 자가 완결로 만든다. 이 값이 없으면 소비자가 frames를
+                       # 초로 바꾸려고 상위 dict와 join해야 했다. 출처는 그 chunk를 실제로 기록한 값과
+                       # 동일한 bridge의 int(g["sr"]) (= entry["sr"]) — 두 번째 진실 소스를 만들지 않는다.
+                       "output_sample_rate": _positive_int_or_none(e.get("sr"))}
                       for e in ordered_entries]
 
         # speed: 1.0=raw, 그 외 chunk별 atempo 후 결합.
