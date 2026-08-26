@@ -2,7 +2,7 @@
 // 실행: npm test  (또는 node --test src/shared/ttsConfig.test.ts)
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildTtsConfig, buildReferencePrompts, deriveRefMode, pruneStaleReferencePrompts, normalizePitchCapability, parseGenerationSummary } from './ttsConfig.ts'
+import { buildTtsConfig, buildReferencePrompts, deriveRefMode, pruneStaleReferencePrompts, normalizePitchCapability, parseGenerationSummary, finiteNumber, sampleRateOrNull, framesOrNull } from './ttsConfig.ts'
 import { TTS_PARSER_VERSION } from './ttsGrammar.ts'
 
 test('parseGenerationSummary: 정상 다중 chunk', () => {
@@ -37,6 +37,60 @@ test('parseGenerationSummary: 잘못된 타입/비정상 chunk는 무시(crash �
   assert.equal(g.limit, null); assert.equal(g.iters, null); assert.equal(g.termination, null)
   assert.equal(g.chunks.length, 1)
   assert.equal(g.chunks[0].production_tokens, null); assert.equal(g.chunks[0].generated_iterations, 5)
+})
+
+test('parseGenerationSummary: frames/output_sample_rate 전달(가산)', () => {
+  const g = parseGenerationSummary({
+    generation_chunks: [
+      { original_segment_index: 0, chunk_index: 0, chunk_count: 1, generated_iterations: 90, generation_limit: 247, termination_reason: 'completed_before_limit', frames: 48000, output_sample_rate: 24000 },
+    ],
+  })
+  assert.ok(g)
+  assert.equal(g.chunks[0].frames, 48000)
+  assert.equal(g.chunks[0].output_sample_rate, 24000)
+  // 행 하나로 길이(초)가 계산된다 — 상위 dict 와 join 하지 않아도 된다.
+  assert.equal(g.chunks[0].frames! / g.chunks[0].output_sample_rate!, 2)
+})
+
+test('parseGenerationSummary: 구 session(새 필드 없음) → null, 절대 0 아님', () => {
+  const g = parseGenerationSummary({
+    generation_chunks: [
+      { original_segment_index: 0, chunk_index: 0, chunk_count: 1, generated_iterations: 90, generation_limit: 247, termination_reason: 'completed_before_limit' },
+    ],
+  })
+  assert.ok(g)
+  assert.equal(g.chunks[0].frames, null)
+  assert.equal(g.chunks[0].output_sample_rate, null)
+  assert.notEqual(g.chunks[0].frames, 0)
+  assert.notEqual(g.chunks[0].output_sample_rate, 0)
+})
+
+test('parseGenerationSummary: 이상 frames/sample rate 는 거절돼 null(crash 없음)', () => {
+  const base = { original_segment_index: 0, chunk_index: 0, chunk_count: 1, termination_reason: 'completed_before_limit' }
+  const g = parseGenerationSummary({
+    generation_chunks: [
+      { ...base, frames: -1, output_sample_rate: 0 },
+      { ...base, chunk_index: 1, frames: NaN, output_sample_rate: Infinity },
+      { ...base, chunk_index: 2, frames: '48000', output_sample_rate: -24000 },
+    ],
+  })
+  assert.ok(g)
+  assert.equal(g.chunks.length, 3)
+  for (const c of g.chunks) {
+    assert.equal(c.frames, null); assert.equal(c.output_sample_rate, null)
+  }
+})
+
+test('telemetry 검증기: NaN/Infinity/음수/0 rate 거절, 0 frames 는 유효', () => {
+  assert.equal(finiteNumber(NaN), null); assert.equal(finiteNumber(Infinity), null)
+  assert.equal(finiteNumber(-Infinity), null); assert.equal(finiteNumber('1'), null)
+  assert.equal(finiteNumber(0), 0)
+  for (const bad of [0, -1, NaN, Infinity, -Infinity, null, undefined, '24000']) {
+    assert.equal(sampleRateOrNull(bad), null)
+  }
+  assert.equal(sampleRateOrNull(24000), 24000)
+  for (const bad of [-1, NaN, Infinity, null, undefined, '0']) assert.equal(framesOrNull(bad), null)
+  assert.equal(framesOrNull(0), 0); assert.equal(framesOrNull(48000), 48000)
 })
 
 test('parseGenerationSummary: generation_chunks 비배열 → chunks 빈 배열', () => {

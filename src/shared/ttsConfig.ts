@@ -36,6 +36,11 @@ export interface GenerationChunk {
   generated_iterations: number | null
   termination_reason: TerminationReason
   emotion_id?: string | null
+  // 진단 추가(가산) — 값이 없거나 검증에서 거절되면 null(= 'unavailable'). 절대 0으로 위조하지 않는다.
+  // frames 는 Python 쪽에서 원래부터 조건부(concat layout 길이 일치 시에만 첨부)이므로 구 session이
+  // 아닌 현행 버전 실행에서도 부재할 수 있다 — 그래서 이 자리는 항상 null 가능이다.
+  frames: number | null
+  output_sample_rate: number | null
 }
 export interface GenerationSummary {
   limit: number | null
@@ -44,16 +49,32 @@ export interface GenerationSummary {
   chunks: GenerationChunk[]
 }
 
-function _finiteNum(v: unknown): number | null {
+// ── telemetry 값 검증기 — 'unavailable' = null 규약의 단일 소스. 분석 계층(generationTelemetry.ts)이
+//    같은 규칙을 재사용하므로 파싱과 분석이 절대 어긋나지 않는다. 어떤 입력에도 throw하지 않는다
+//    (세션 복원 중 나쁜 값 하나가 복원 전체를 깨뜨리면 안 된다).
+// finiteNumber: NaN/Infinity/-Infinity/비수치 → null
+export function finiteNumber(v: unknown): number | null {
   return typeof v === 'number' && Number.isFinite(v) ? v : null
+}
+// sampleRateOrNull: 0과 음수도 거절. 0을 통과시키면 duration이 Infinity가 되고, 결측을 0으로
+// 위조하면 duration이 0초로 보인다 — 둘 다 조용히 틀린 분석이 된다.
+export function sampleRateOrNull(v: unknown): number | null {
+  const n = finiteNumber(v)
+  return n != null && n > 0 ? n : null
+}
+// framesOrNull: 음수 거절. 0 프레임은 '빈 chunk'라는 실재 관측치이므로 유효값으로 통과시킨다
+// (길이 0의 chunk는 production에서 _finalize_wav가 막지만, 복원된 구 데이터에는 있을 수 있다).
+export function framesOrNull(v: unknown): number | null {
+  const n = finiteNumber(v)
+  return n != null && n >= 0 ? n : null
 }
 
 // result metadata에서 생성 안전장치 요약을 안전 추출. 비정상 배열 항목은 crash 없이 무시/정규화하고,
 // 문장·전사·전체경로는 애초에 담기지 않는다(스키마상 없음). 기술 필드가 전혀 없으면(구 session) null.
 export function parseGenerationSummary(metadata: Record<string, unknown> | null | undefined): GenerationSummary | null {
   if (!metadata || typeof metadata !== 'object') return null
-  const limit = _finiteNum(metadata.generation_limit)
-  const iters = _finiteNum(metadata.generated_iterations)
+  const limit = finiteNumber(metadata.generation_limit)
+  const iters = finiteNumber(metadata.generated_iterations)
   const tr = metadata.termination_reason
   const termination: TerminationReason | null =
     (tr === 'completed_before_limit' || tr === 'generation_limit') ? tr : null
@@ -63,19 +84,21 @@ export function parseGenerationSummary(metadata: Record<string, unknown> | null 
     for (const c of raw) {
       if (!c || typeof c !== 'object') continue
       const o = c as Record<string, unknown>
-      const osi = _finiteNum(o.original_segment_index)
-      const ci = _finiteNum(o.chunk_index)
-      const cc = _finiteNum(o.chunk_count)
+      const osi = finiteNumber(o.original_segment_index)
+      const ci = finiteNumber(o.chunk_index)
+      const cc = finiteNumber(o.chunk_count)
       const t = o.termination_reason
       if (osi == null || ci == null || cc == null) continue                 // 필수 index/count 없으면 무시
       if (t !== 'completed_before_limit' && t !== 'generation_limit') continue
       chunks.push({
         original_segment_index: osi, chunk_index: ci, chunk_count: cc,
-        production_tokens: _finiteNum(o.production_tokens),
-        generation_limit: _finiteNum(o.generation_limit),
-        generated_iterations: _finiteNum(o.generated_iterations),
+        production_tokens: finiteNumber(o.production_tokens),
+        generation_limit: finiteNumber(o.generation_limit),
+        generated_iterations: finiteNumber(o.generated_iterations),
         termination_reason: t,
         emotion_id: typeof o.emotion_id === 'string' ? o.emotion_id : null,
+        frames: framesOrNull(o.frames),
+        output_sample_rate: sampleRateOrNull(o.output_sample_rate),
       })
     }
   }
