@@ -6,13 +6,16 @@ import { randomUUID } from 'crypto'
 import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
-import { createSettlementGuard } from '../services/run-settlement'
+import { createSettlementGuard, createRunSettlement, createRunnerSlot } from '../services/run-settlement'
+import type { RunEnd, RunTerminal } from '../services/run-settlement'
+import { sendToWindow } from '../services/window-send'
 import { createPreviewGuard, runPreview } from '../services/preview-transcribe'
 import { buildTtsConfig, normalizePitchCapability, type TtsInputOptions } from '../../shared/ttsConfig'
 import { sweepQwenJobDirs, listQwenJobDirs } from '../services/qwen-cleanup'
 import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
 import { removeSplitTempDirs, listSplitTempDirs } from '../services/split-temp-cleanup'
 import { createSingleFlight, createKeyedSingleFlight } from '../services/single-flight'
+import type { CancelResponse } from '../../shared/cancelContract'
 
 // execFile(배열 인자)은 cmd.exe를 거치지 않아 시스템 코드페이지(CP949)의
 // 한글 경로 손상 문제에 면역. exec(문자열)은 한글 파일명에서 깨짐 → 금지.
@@ -67,7 +70,9 @@ function saveSetting(key: string, value: unknown): void {
 function savePythonPath(p: string): void { saveSetting('pythonPath', p) }
 
 let runner: PythonRunner | null = null
-let trackRunner: PythonRunner | null = null
+// 트랙 후처리 러너 슬롯. 늦게 도착한 옛 러너의 done이 새 러너를 지우지 못하도록 신원 가드를 쓴다
+// (메인 러너에는 원래 있던 보호가 여기엔 없어 고아 프로세스가 생길 수 있었다 — 감사 R3).
+const trackSlot = createRunnerSlot<PythonRunner>()
 let pythonPath = resolvePythonPath()
 // 취소 lifecycle(공용 마감 K/K2) 조정 상태 — audio:process가 세팅하고 audio:cancel/done이 소비.
 let currentSettle: import('../services/run-settlement').SettlementGuard | null = null
@@ -203,12 +208,12 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
   let quitCleanupDone = false
   app.on('before-quit', (e) => {
     if (quitCleanupDone) return  // 재진입 → 실제 종료 진행
-    const busy = runner?.isRunning || trackRunner?.isRunning
+    const busy = runner?.isRunning || trackSlot.current?.isRunning
     if (!busy) { try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ } ; quitCleanupDone = true; return }
     e.preventDefault()  // 실행 트리 종료 확인 전까지 종료 보류
     const kills: Promise<unknown>[] = []
     if (runner) kills.push(runner.cancel(3000))
-    if (trackRunner) kills.push(trackRunner.cancel(3000))
+    { const tr = trackSlot.current; if (tr) kills.push(tr.cancel(3000)) }
     Promise.race([Promise.all(kills), delay(3500)])
       .then(() => { try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ } })
       .finally(() => { quitCleanupDone = true; app.quit() })
@@ -687,7 +692,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
 
   // Process individual track (transcribe/translate)
   ipcMain.handle('audio:process-track', async (_event, trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string }) => {
-    if (trackRunner?.isRunning) {
+    if (trackSlot.current?.isRunning) {
       throw new Error('이미 처리 중인 트랙 작업이 있습니다')
     }
     if (!existsSync(pythonPath)) {
@@ -698,11 +703,11 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       throw new Error(`Python 스크립트를 찾을 수 없습니다: ${scriptPath}`)
     }
 
-    trackRunner = new PythonRunner(pythonPath)
+    const thisRunner = trackSlot.set(new PythonRunner(pythonPath))
 
     // Korean paths must never be passed as spawn args (CP949 corruption) —
     // same JSON config approach as 'audio:process'
-    const configPath = join(tmpdir(), `audioforge_track_${Date.now()}.json`)
+    const configPath = join(tmpdir(), `audioforge_track_${randomUUID().slice(0, 8)}.json`)  // 같은 ms 충돌 방지
     const config = {
       mode: 'track-process',
       input: trackPath,
@@ -714,45 +719,52 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     }
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
 
+    // 실행 범위 정리 — 성공·오류·취소·강제종료 어느 경로로 끝나도 done 직전에 1회 실행된다.
+    thisRunner.registerCleanup(() => { try { unlinkSync(configPath) } catch { /* noop */ } })
+
+    // 실행당 터미널 정확히 1개. 여기가 없어서 'exit 0인데 result 없음'이나 시그널 종료 때
+    // TrackList의 처리중 표시가 영구히 남았다(감사 R4) — 트랙 처리에는 취소 버튼도 없다.
+    const settle = createRunSettlement((t: RunTerminal) => {
+      if (t.kind === 'result') { sendToWindow(mainWindow, 'audio:track-result', t.data); return }
+      const message = t.kind === 'cancelled'
+        ? '트랙 처리가 취소되었습니다.'
+        : (t.message ?? '트랙 처리에 실패했습니다.')
+      // TrackList는 track-error로만 처리중 표시를 해제한다 → 취소도 같은 채널로 보낸다.
+      sendToWindow(mainWindow, 'audio:track-error', { message, trackPath, reasonCode: t.reasonCode })
+    })
+
     // Watchdog: kill if no progress for 5 minutes (same policy as main runner)
     const WATCHDOG_MS = 300000
     let watchdog: ReturnType<typeof setTimeout> | null = null
-    const sendTrackError = (message: string) => {
-      mainWindow.webContents.send('audio:track-error', { message, trackPath })
-    }
     const resetWatchdog = () => {
       if (watchdog) clearTimeout(watchdog)
       watchdog = setTimeout(() => {
-        if (trackRunner?.isRunning) {
-          trackRunner.cancel()
-          sendTrackError('트랙 처리 시간이 초과되었습니다 (5분간 응답 없음).')
-        }
+        if (!trackSlot.isCurrent(thisRunner)) return
+        // 먼저 정착시킨 뒤 kill — 뒤따르는 'killed' done이 timeout 사유를 덮지 않게.
+        if (settle.settleError('트랙 처리 시간이 초과되었습니다 (5분간 응답 없음).', 'timeout')) thisRunner.cancel()
       }, WATCHDOG_MS)
     }
     resetWatchdog()
 
-    trackRunner.on('done', () => {
-      if (watchdog) clearTimeout(watchdog)
-      try { unlinkSync(configPath) } catch {}
-      trackRunner = null
-    })
-
-    trackRunner.on('progress', (data) => {
+    thisRunner.on('progress', (data) => {
       resetWatchdog()
-      mainWindow.webContents.send('audio:progress', data)
+      sendToWindow(mainWindow, 'audio:progress', data)
     })
-    trackRunner.on('result', (data) => {
-      mainWindow.webContents.send('audio:track-result', data)
-    })
-    trackRunner.on('error', (message) => {
+    thisRunner.on('result', (data) => { settle.settleResult(data) })
+    thisRunner.on('error', (message) => {
       // message가 구조화 객체({message,...})일 수 있으므로 .message 추출(그냥 String()이면 [object Object]).
       const text = typeof message === 'string'
         ? message
         : String((message as { message?: unknown })?.message ?? message)
-      sendTrackError(text)
+      settle.settleError(text, 'error-reported')
+    })
+    thisRunner.on('done', (_code: number | null, end: RunEnd) => {
+      if (watchdog) { clearTimeout(watchdog); watchdog = null }
+      trackSlot.release(thisRunner)   // 신원 가드 — 내가 아직 현재 러너일 때만 비운다
+      settle.finishFromEnd(end)       // 미정착이면 여기서 반드시 터미널 1개(killed→cancelled, 그 외→error)
     })
 
-    trackRunner.run(scriptPath, ['--config', configPath])
+    thisRunner.run(scriptPath, ['--config', configPath])
     return { outputDir }
   })
 
@@ -763,15 +775,20 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
   // 정상 취소의 terminal 신호(audio:cancelled)는 '이 핸들러'가 권위다(공용 마감 K2-B).
   // 순서: cancelling → kill 요청 → tree 종료 확인 → runner done 합류 → bounded cleanup 확인 → cancelled → idle.
   // done 핸들러는 취소 중이면 runner만 free로 만들고 아무 신호도 보내지 않는다.
-  ipcMain.handle('audio:cancel', async () => {
+  // 반환값이 취소 수락의 **권위**다(계약 C2-P0.1). accepted:true = '취소를 접수했고 터미널 이벤트가
+  // 정확히 하나 뒤따른다'는 뜻이며 '취소가 성공했다'는 뜻이 아니다(실패 상세는 audio:cancel-failed가 나른다).
+  // accepted:true인 경우에만 audio:cancelling을 보낸다 — 렌더러는 그 이벤트로만 cancelling으로 전이한다.
+  ipcMain.handle('audio:cancel', async (): Promise<CancelResponse> => {
     // track-process(대화 분할 후처리)는 이번 K/K2 범위 밖 — 단순 취소 유지(별도 열린 결함으로 문서화).
-    if (trackRunner) { trackRunner.cancel(); trackRunner = null }
+    // 트랙 후처리도 전역 취소에 합류시킨다. 여기서 이벤트를 보내지 않는다 —
+    // 러너의 done이 reasonCode 'killed'로 도착해 그쪽 정착이 cancelled 터미널 1개를 보낸다.
+    { const tr = trackSlot.current; if (tr) { tr.cancel(); trackSlot.release(tr) } }
 
     const r = runner
-    if (!r || !r.isRunning) return { ok: true, noop: true }               // 실행 중 아님 → no-op
+    if (!r || !r.isRunning) return { accepted: false, reasonCode: 'NO_ACTIVE_JOB' }   // 실행 중 아님 → 렌더러 상태 불변
     // result/error가 먼저 정착(취소 아님)했으면 늦은 취소는 no-op(계약 4-B/4-C).
-    if (currentSettle?.settled && cancelState === 'none') return { ok: true, noop: true }
-    if (cancelState === 'inflight') return { ok: true, noop: true }        // 이미 취소 진행 중 → 중복 클릭 무시(kill 요청 1회)
+    if (currentSettle?.settled && cancelState === 'none') return { accepted: false, reasonCode: 'ALREADY_SETTLED' }
+    if (cancelState === 'inflight') return { accepted: false, reasonCode: 'ALREADY_CANCELLING' }  // 중복 클릭 → kill 요청 1회
     // 첫 취소면 최초 정착 승자로 마킹(재취소는 이미 settled이므로 재마킹하지 않는다).
     if (cancelState === 'none') currentSettle?.markSettled()
     cancelState = 'inflight'
@@ -789,7 +806,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       cancelState = 'failed'
       const childAlive = r.isRunning
       mainWindow.webContents.send('audio:cancel-failed', { childAlive })
-      return { ok: false, childAlive, reason: res.reason }
+      return { accepted: true }   // 취소는 접수됨(결과는 audio:cancel-failed로 이미 통지)
     }
     // runner done 합류(bounded) — done 핸들러가 runner를 free로 만들었는지 sleep 없이 확인.
     await Promise.race([doneP, delay(3000)])
@@ -803,13 +820,13 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       cancelState = 'none'
       currentSettle = null; currentWatchdogClear = null  // currentOutputDir는 재시도 정리용으로 남긴다
       mainWindow.webContents.send('audio:cancel-failed', { childAlive: false, cleanupPending: true })
-      return { ok: false, cleanupPending: true }
+      return { accepted: true }   // 접수됨(정리 미완은 audio:cancel-failed payload가 통지)
     }
     cancelState = 'none'
     currentSettle = null; currentWatchdogClear = null; currentOutputDir = null
     afPhase('cancelled_sent')
     mainWindow.webContents.send('audio:cancelled')       // ← terminal 신호(권위). renderer가 idle로.
-    return { ok: true }
+    return { accepted: true }
   })
 
   // 파일 reset/변경·감정 삭제/재등록 시 렌더러가 호출 — 파생 참조 클립 폴더 정리(합성 중이면 건드리지 않음).
