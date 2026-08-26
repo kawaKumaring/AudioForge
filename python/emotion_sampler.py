@@ -22,7 +22,8 @@ import re
 
 # ── 1) 버전 상수 ────────────────────────────────────────────────────────────
 # 캐시 키 '형식' 버전. 직렬화 구조를 바꾸면 올린다(기존 키 전부 무효화).
-EMOTION_SAMPLER_KEY_VERSION = 1
+# v2: 목소리 입력을 경로 기반 지문(path|size|mtimeMs)에서 참조 라이브러리의 콘텐츠 SHA-256 으로 교체.
+EMOTION_SAMPLER_KEY_VERSION = 2
 # 표준 문구 세트 버전. 문구를 하나라도 바꾸면 반드시 올린다 → 캐시 샘플 전부 무효화.
 EMOTION_SAMPLER_PHRASE_VERSION = 1
 
@@ -102,7 +103,7 @@ EMOTION_SAMPLE_STATE_REASONS = {
 EMOTION_SAMPLER_INPUT_ERROR_CODES = (
     "SAMPLER_PATH_LIKE_VALUE",
     "SAMPLER_TEXT_LIKE_VALUE",
-    "SAMPLER_INVALID_VOICE_FINGERPRINT",
+    "SAMPLER_INVALID_VOICE_CONTENT_SHA256",
     "SAMPLER_INVALID_ENGINE_ID",
     "SAMPLER_INVALID_MODEL_ID",
     "SAMPLER_INVALID_EMOTION_ID",
@@ -177,14 +178,10 @@ def assert_sampler_safe_value(field, v):
         raise EmotionSamplerInputError("SAMPLER_TEXT_LIKE_VALUE", field)
 
 
-def voice_fingerprint_from_raw(raw):
-    """원시 참조 지문(`path|size|mtimeMs` 등)을 **경로 없는 불투명 지문**으로 변환.
-
-    ⚠️ 통합 담당은 반드시 이 함수를 통과시킨 값만 캐시 키/상태에 넣는다(원시 문자열은 경로를 포함한다).
-    """
-    if not isinstance(raw, str) or not raw:
-        raise EmotionSamplerInputError("SAMPLER_INVALID_VOICE_FINGERPRINT", "voice_fingerprint")
-    return sampler_sha256_hex(raw)
+# ⚠️ 목소리 입력의 권위는 참조 라이브러리가 만든 콘텐츠 SHA-256 하나뿐이다.
+#    이 모듈은 그 값을 '주입받은 불투명 문자열'로만 소비한다 — 직접 해싱하지 않고, 대체 지문을 만들지 않는다.
+#    main 의 audio:fingerprint-reference(`path|size|mtimeMs`)는 경로 기반이라 캐시 권위가 될 수 없다.
+#    결과: 같은 내용의 파일은 경로가 달라져도 같은 키(캐시 재사용), 내용이 바뀌면 이름·크기가 같아도 다른 키.
 
 
 # ── 6) 캐시 키 ──────────────────────────────────────────────────────────────
@@ -195,7 +192,7 @@ def voice_fingerprint_from_raw(raw):
 #   {"config":{"pitch_centi":<int>,"speed_milli":<int>,"tail_fade_ms":<int>,
 #              "tail_mode":"<off|auto>","tail_padding_ms":<int>},
 #    "emotion_id":"<id>","engine_id":"<token>","key_version":<int>,
-#    "model_id":"<token>","phrase_version":<int>,"voice_fingerprint":"<64hex>"}
+#    "model_id":"<token>","phrase_version":<int>,"voice_content_sha256":"<64hex>"}
 # cache_key = sha256_hex(utf8(위 문자열))
 
 
@@ -247,10 +244,10 @@ def canonical_cache_key_payload_at(inp, phrase_version, key_version):
     if not isinstance(inp, dict):
         raise EmotionSamplerInputError("SAMPLER_INVALID_CONFIG", "input")
 
-    voice_fingerprint = _validated_string(
-        inp.get("voice_fingerprint"), "voice_fingerprint", "SAMPLER_INVALID_VOICE_FINGERPRINT")
-    if not _HEX64_RE.match(voice_fingerprint):
-        raise EmotionSamplerInputError("SAMPLER_INVALID_VOICE_FINGERPRINT", "voice_fingerprint")
+    voice_content_sha256 = _validated_string(
+        inp.get("voice_content_sha256"), "voice_content_sha256", "SAMPLER_INVALID_VOICE_CONTENT_SHA256")
+    if not _HEX64_RE.match(voice_content_sha256):
+        raise EmotionSamplerInputError("SAMPLER_INVALID_VOICE_CONTENT_SHA256", "voice_content_sha256")
 
     engine_id = _validated_string(inp.get("engine_id"), "engine_id", "SAMPLER_INVALID_ENGINE_ID")
     if not _ID_TOKEN_RE.match(engine_id) or len(engine_id) > 64:
@@ -289,7 +286,7 @@ def canonical_cache_key_payload_at(inp, phrase_version, key_version):
         "key_version": key_version,
         "model_id": model_id,
         "phrase_version": phrase_version,
-        "voice_fingerprint": voice_fingerprint,
+        "voice_content_sha256": voice_content_sha256,
     })
 
 
@@ -313,14 +310,14 @@ def build_cache_key(inp):
 
 # parity 고정 벡터: TS/Python 이 같은 입력에 바이트 동일한 payload · 동일 key 를 내는지 대조.
 EMOTION_SAMPLER_PARITY_INPUT = {
-    "voice_fingerprint": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "voice_content_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
     "engine_id": "qwen",
     "model_id": "qwen3-omni-flash",
     "emotion_id": "happy",
     "config": {"speed": 1.05, "pitch": -0.5, "tail_mode": "auto", "tail_padding_ms": 120, "tail_fade_ms": 8},
 }
-EMOTION_SAMPLER_PARITY_PAYLOAD = '{"config":{"pitch_centi":-50,"speed_milli":1050,"tail_fade_ms":8,"tail_mode":"auto","tail_padding_ms":120},"emotion_id":"happy","engine_id":"qwen","key_version":1,"model_id":"qwen3-omni-flash","phrase_version":1,"voice_fingerprint":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}'
-EMOTION_SAMPLER_PARITY_KEY = "823424616b25aef3f6a5174b599487c4e04991bbdbf414719b64e03484ab135e"
+EMOTION_SAMPLER_PARITY_PAYLOAD = '{"config":{"pitch_centi":-50,"speed_milli":1050,"tail_fade_ms":8,"tail_mode":"auto","tail_padding_ms":120},"emotion_id":"happy","engine_id":"qwen","key_version":2,"model_id":"qwen3-omni-flash","phrase_version":1,"voice_content_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}'
+EMOTION_SAMPLER_PARITY_KEY = "92e7c2a7cc4ef23a7bfab6e791655e498025c82631aa6897c6a2566f7cf5c3d1"
 
 
 # ── 7) 상태 기계 — 자동 재시도 없음. 거부는 '이유 코드'로 드러난다. ──────────
@@ -489,9 +486,70 @@ def describe_sample(entry):
     }
 
 
-# 패널 상단 고정 안내 — 샘플러가 감정 참조 등록이 아님을 화면에서 못 박는다.
+# 펼쳤을 때 상단에 고정으로 렌더 — 샘플러가 감정 참조 등록이 아님을 화면에서 못 박는다.
 EMOTION_SAMPLER_DISCLAIMER = "샘플은 기본 목소리로 만든 미리듣기 전용입니다. 감정 참조로 등록되지 않으며 합성 결과에 쓰이지 않습니다."
-EMOTION_SAMPLER_TITLE = "감정 샘플러"
+
+# 접이식 섹션 제목. '감정 참조 등록'과 어휘가 겹치지 않게 고른 이름이다.
+# (코드/모듈 이름은 emotion_sampler = 감정 샘플러 그대로 두고, 화면에 보이는 이름은 이것 하나로 통일한다.)
+EMOTION_SAMPLER_SECTION_TITLE = "감정·표현 미리듣기"
+
+# ── 접힘 상태 요약(progressive disclosure) — 접혀 있을 때는 아래 수치'만' 보여준다. ──
+# 상태 6개가 정확히 한 버킷에만 들어간다(중복 집계 없음). idle 은 어느 버킷에도 넣지 않는다.
+EMOTION_SAMPLE_SUMMARY_BUCKETS = (
+    "generated",
+    "generating",
+    "attention",
+)
+
+EMOTION_SAMPLE_SUMMARY_LABEL = {
+    "generated": "만들어짐",
+    "generating": "만드는 중",
+    "attention": "확인 필요",
+}
+
+# 모든 버킷이 0 일 때 대신 보여주는 문장(빈 수치 나열 금지).
+EMOTION_SAMPLE_SUMMARY_EMPTY = "아직 만든 미리듣기가 없습니다"
+
+_SUMMARY_BUCKET_BY_STATE = {
+    "idle": None,
+    "generating": "generating",
+    "ready": "generated",
+    "degraded": "attention",
+    "limitExceeded": "attention",
+    "failed": "attention",
+}
+
+
+def summarize_samples(entries):
+    """접힘 상태 요약(순수). 항목이 아무리 많아도 수치 3개 + 한 줄로 고정된다."""
+    counts = {"generated": 0, "generating": 0, "attention": 0}
+    for e in entries:
+        bucket = _SUMMARY_BUCKET_BY_STATE[e["state"]]
+        if bucket:
+            counts[bucket] += 1
+    parts = [
+        "%s %d" % (EMOTION_SAMPLE_SUMMARY_LABEL[b], counts[b])
+        for b in EMOTION_SAMPLE_SUMMARY_BUCKETS if counts[b] > 0
+    ]
+    out = dict(counts)
+    out["text"] = " · ".join(parts) if parts else EMOTION_SAMPLE_SUMMARY_EMPTY
+    return out
+
+
+# ────────────────────────────────────────────────────────────────────────
+# EXPRESSION LANGUAGE SWAP POINT (미래 교체 지점)
+#   지금은 '[감정] 태그 문자열 + 표준 문구'를 단순 결합한다. 표현 프로소디 언어 계약(구두점 !/?/!?/.../~,
+#   웃음 등 이벤트)이 완성되면 아래 build_sample_script 하나만 AST/event builder 호출로 갈아끼운다.
+#   그때 함께 올릴 것: EMOTION_SAMPLER_PHRASE_VERSION. 이번 정정에서는 문구도 버전도 건드리지 않는다.
+# ────────────────────────────────────────────────────────────────────────
+def build_sample_script(emotion_tag_text):
+    """감정 하나짜리 샘플 합성 대본. emotion_tag_text 는 호출부가 주입한다.
+
+    ⚠️ 반환값은 '프롬프트'다 — 상태 dict·캐시 키·화면·로그 어디에도 넣지 않는다. 합성 호출 인자로만 쓴다.
+    """
+    tag = (emotion_tag_text or "").strip()
+    phrase = phrase_script()
+    return ("%s %s" % (tag, phrase)) if tag else phrase
 
 
 # ── 10) canonical 직렬화 + sha256 (tts_grammar.py 와 동일 알고리즘). ────────

@@ -19,8 +19,11 @@
 // 1) 버전 상수
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** 캐시 키 '형식' 버전. 직렬화 구조를 바꾸면 올린다(기존 키 전부 무효화). */
-export const EMOTION_SAMPLER_KEY_VERSION = 1
+/**
+ * 캐시 키 '형식' 버전. 직렬화 구조를 바꾸면 올린다(기존 키 전부 무효화).
+ * v2: 목소리 입력을 경로 기반 지문(path|size|mtimeMs)에서 **참조 라이브러리의 콘텐츠 SHA-256**으로 교체.
+ */
+export const EMOTION_SAMPLER_KEY_VERSION = 2
 
 /** 표준 문구 세트 버전. 문구를 하나라도 바꾸면 반드시 올린다 → 캐시 샘플 전부 무효화. */
 export const EMOTION_SAMPLER_PHRASE_VERSION = 1
@@ -116,7 +119,7 @@ export const EMOTION_SAMPLE_STATE_REASONS: Readonly<Record<EmotionSampleState, r
 export const EMOTION_SAMPLER_INPUT_ERROR_CODES = [
   'SAMPLER_PATH_LIKE_VALUE',           // 경로처럼 보이는 값이 키/상태에 들어오려 함
   'SAMPLER_TEXT_LIKE_VALUE',           // 문장/전사문처럼 보이는 값(공백·비ASCII)이 들어오려 함
-  'SAMPLER_INVALID_VOICE_FINGERPRINT',
+  'SAMPLER_INVALID_VOICE_CONTENT_SHA256',
   'SAMPLER_INVALID_ENGINE_ID',
   'SAMPLER_INVALID_MODEL_ID',
   'SAMPLER_INVALID_EMOTION_ID',
@@ -204,16 +207,10 @@ const HEX64_RE = /^[0-9a-f]{64}$/
 const ID_TOKEN_RE = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 const EMOTION_ID_RE = /^[a-z]{2,32}$/
 
-/**
- * 원시 참조 지문(예: main 프로세스의 `path|size|mtimeMs`)을 **경로 없는 불투명 지문**으로 변환.
- * ⚠️ 통합 담당은 반드시 이 함수를 통과시킨 값만 캐시 키/상태에 넣는다. 원시 문자열은 경로를 포함한다.
- */
-export function voiceFingerprintFromRaw(raw: string): string {
-  if (typeof raw !== 'string' || raw.length === 0) {
-    throw new EmotionSamplerInputError('SAMPLER_INVALID_VOICE_FINGERPRINT', 'voiceFingerprint')
-  }
-  return samplerSha256Hex(raw)
-}
+// ⚠️ 목소리 입력의 권위는 **참조 라이브러리가 만든 콘텐츠 SHA-256** 하나뿐이다.
+//    이 모듈은 그 값을 '주입받은 불투명 문자열'로만 소비한다 — 직접 해싱하지 않고, 대체 지문을 만들지 않는다.
+//    main 의 audio:fingerprint-reference(`path|size|mtimeMs`)는 경로 기반이라 캐시 권위가 될 수 없다.
+//    결과: 같은 내용의 파일은 경로가 달라져도 같은 키(캐시 재사용), 내용이 바뀌면 이름·크기가 같아도 다른 키.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 6) 캐시 키 — canonical 직렬화(TS/Python 바이트 동일) → sha256 hex 64자.
@@ -225,13 +222,16 @@ export function voiceFingerprintFromRaw(raw: string): string {
 //      {"config":{"pitch_centi":<int>,"speed_milli":<int>,"tail_fade_ms":<int>,
 //                 "tail_mode":"<off|auto>","tail_padding_ms":<int>},
 //       "emotion_id":"<id>","engine_id":"<token>","key_version":<int>,
-//       "model_id":"<token>","phrase_version":<int>,"voice_fingerprint":"<64hex>"}
+//       "model_id":"<token>","phrase_version":<int>,"voice_content_sha256":"<64hex>"}
 //    cache_key = sha256_hex(utf8(위 문자열))
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface EmotionSampleKeyInput {
-  /** 기본 참조 목소리의 불투명 지문(64 hex). voiceFingerprintFromRaw 로 만든 값. */
-  voiceFingerprint: string
+  /**
+   * 기본 참조 목소리 **파일 내용**의 SHA-256(64 hex, 소문자). 참조 라이브러리가 산출해 주입한다.
+   * 경로·크기·mtime 은 입력이 아니다 — 파일을 옮겨도 키가 그대로여야 하고, 내용이 바뀌면 키가 달라져야 한다.
+   */
+  voiceContentSha256: string
   /** 엔진 식별자(예: 'qwen'). 슬래시·콜론·공백 불가. */
   engineId: string
   /** 모델 식별자(예: 'qwen3-omni-flash'). 슬래시·콜론·공백 불가 → 필요하면 통합 담당이 slug 화. */
@@ -293,9 +293,9 @@ export function canonicalEmotionSampleKeyPayloadAt(
 ): string {
   if (!input || typeof input !== 'object') throw new EmotionSamplerInputError('SAMPLER_INVALID_CONFIG', 'input')
 
-  const voiceFingerprint = validatedString(input.voiceFingerprint, 'voiceFingerprint', 'SAMPLER_INVALID_VOICE_FINGERPRINT')
-  if (!HEX64_RE.test(voiceFingerprint)) {
-    throw new EmotionSamplerInputError('SAMPLER_INVALID_VOICE_FINGERPRINT', 'voiceFingerprint')
+  const voiceContentSha256 = validatedString(input.voiceContentSha256, 'voiceContentSha256', 'SAMPLER_INVALID_VOICE_CONTENT_SHA256')
+  if (!HEX64_RE.test(voiceContentSha256)) {
+    throw new EmotionSamplerInputError('SAMPLER_INVALID_VOICE_CONTENT_SHA256', 'voiceContentSha256')
   }
   const engineId = validatedString(input.engineId, 'engineId', 'SAMPLER_INVALID_ENGINE_ID')
   if (!ID_TOKEN_RE.test(engineId) || engineId.length > 64) {
@@ -333,7 +333,7 @@ export function canonicalEmotionSampleKeyPayloadAt(
     key_version: keyVersion,
     model_id: modelId,
     phrase_version: phraseVersion,
-    voice_fingerprint: voiceFingerprint,
+    voice_content_sha256: voiceContentSha256,
   })
 }
 
@@ -361,7 +361,7 @@ export function buildEmotionSampleCacheKey(input: EmotionSampleKeyInput): string
 
 // ── parity 고정 벡터: TS/Python 이 같은 입력에 바이트 동일한 payload · 동일 key 를 내는지 대조. ──
 export const EMOTION_SAMPLER_PARITY_INPUT: Readonly<EmotionSampleKeyInput> = Object.freeze({
-  voiceFingerprint: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+  voiceContentSha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
   engineId: 'qwen',
   modelId: 'qwen3-omni-flash',
   emotionId: 'happy',
@@ -373,8 +373,8 @@ export const EMOTION_SAMPLER_PARITY_INPUT: Readonly<EmotionSampleKeyInput> = Obj
     tailFadeMs: 8,
   }),
 })
-export const EMOTION_SAMPLER_PARITY_PAYLOAD = '{"config":{"pitch_centi":-50,"speed_milli":1050,"tail_fade_ms":8,"tail_mode":"auto","tail_padding_ms":120},"emotion_id":"happy","engine_id":"qwen","key_version":1,"model_id":"qwen3-omni-flash","phrase_version":1,"voice_fingerprint":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}'
-export const EMOTION_SAMPLER_PARITY_KEY = '823424616b25aef3f6a5174b599487c4e04991bbdbf414719b64e03484ab135e'
+export const EMOTION_SAMPLER_PARITY_PAYLOAD = '{"config":{"pitch_centi":-50,"speed_milli":1050,"tail_fade_ms":8,"tail_mode":"auto","tail_padding_ms":120},"emotion_id":"happy","engine_id":"qwen","key_version":2,"model_id":"qwen3-omni-flash","phrase_version":1,"voice_content_sha256":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"}'
+export const EMOTION_SAMPLER_PARITY_KEY = '92e7c2a7cc4ef23a7bfab6e791655e498025c82631aa6897c6a2566f7cf5c3d1'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 7) 상태 기계 — 자동 재시도 없음. 거부는 '이유 코드'로 드러난다(조용한 무시 금지).
@@ -607,11 +607,83 @@ export function describeEmotionSample(entry: EmotionSampleEntry): EmotionSampleV
   }
 }
 
-/** 패널 상단 고정 안내 — 샘플러가 감정 참조 등록이 아님을 화면에서 못 박는다. */
+/** 펼쳤을 때 상단에 고정으로 렌더 — 샘플러가 감정 참조 등록이 아님을 화면에서 못 박는다. */
 export const EMOTION_SAMPLER_DISCLAIMER =
   '샘플은 기본 목소리로 만든 미리듣기 전용입니다. 감정 참조로 등록되지 않으며 합성 결과에 쓰이지 않습니다.'
 
-export const EMOTION_SAMPLER_TITLE = '감정 샘플러'
+/**
+ * 접이식 섹션 제목. '감정 참조 등록'과 어휘가 겹치지 않게 고른 이름이다.
+ * (코드/모듈 이름은 emotionSampler = 감정 샘플러 그대로 두고, 화면에 보이는 이름은 이것 하나로 통일한다.)
+ */
+export const EMOTION_SAMPLER_SECTION_TITLE = '감정·표현 미리듣기'
+
+// ── 접힘 상태 요약(progressive disclosure) — 접혀 있을 때는 아래 수치'만' 보여준다. ──
+// 상태 6개가 정확히 한 버킷에만 들어간다(중복 집계 없음):
+//   generated  <- ready
+//   generating <- generating
+//   attention  <- degraded(음색만 반영) · limitExceeded(폐기됨) · failed
+//   idle 은 어느 버킷에도 넣지 않는다 — '아직 아무것도 안 함'은 셀 거리가 아니다.
+export const EMOTION_SAMPLE_SUMMARY_BUCKETS = ['generated', 'generating', 'attention'] as const
+export type EmotionSampleSummaryBucket = typeof EMOTION_SAMPLE_SUMMARY_BUCKETS[number]
+
+export const EMOTION_SAMPLE_SUMMARY_LABEL: Readonly<Record<EmotionSampleSummaryBucket, string>> = Object.freeze({
+  generated: '만들어짐',
+  generating: '만드는 중',
+  attention: '확인 필요',
+})
+
+/** 모든 버킷이 0 일 때 대신 보여주는 문장(빈 수치 나열 금지). */
+export const EMOTION_SAMPLE_SUMMARY_EMPTY = '아직 만든 미리듣기가 없습니다'
+
+const SUMMARY_BUCKET_BY_STATE: Readonly<Record<EmotionSampleState, EmotionSampleSummaryBucket | null>> =
+  Object.freeze({
+    idle: null,
+    generating: 'generating' as EmotionSampleSummaryBucket,
+    ready: 'generated' as EmotionSampleSummaryBucket,
+    degraded: 'attention' as EmotionSampleSummaryBucket,
+    limitExceeded: 'attention' as EmotionSampleSummaryBucket,
+    failed: 'attention' as EmotionSampleSummaryBucket,
+  })
+
+export interface EmotionSampleSummary {
+  generated: number
+  generating: number
+  attention: number
+  /** 접힘 상태에 렌더할 한 줄. 0 인 버킷은 빼고, 전부 0 이면 EMOTION_SAMPLE_SUMMARY_EMPTY. */
+  text: string
+}
+
+/** 접힘 상태 요약(순수). 항목이 아무리 많아도 '수치 3개 + 한 줄'로 고정된다. */
+export function summarizeEmotionSamples(entries: readonly EmotionSampleEntry[]): EmotionSampleSummary {
+  const counts: Record<EmotionSampleSummaryBucket, number> = { generated: 0, generating: 0, attention: 0 }
+  for (const e of entries) {
+    const bucket = SUMMARY_BUCKET_BY_STATE[e.state]
+    if (bucket) counts[bucket] += 1
+  }
+  const parts: string[] = []
+  for (const b of EMOTION_SAMPLE_SUMMARY_BUCKETS) {
+    if (counts[b] > 0) parts.push(`${EMOTION_SAMPLE_SUMMARY_LABEL[b]} ${counts[b]}`)
+  }
+  return { ...counts, text: parts.length > 0 ? parts.join(' · ') : EMOTION_SAMPLE_SUMMARY_EMPTY }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// EXPRESSION LANGUAGE SWAP POINT (미래 교체 지점)
+//   지금은 '[감정] 태그 문자열 + 표준 문구'를 단순 결합한다. 표현 프로소디 언어 계약(구두점 !/?/!?/.../~,
+//   웃음 등 이벤트)이 완성되면 **아래 buildEmotionSampleScript 하나만** AST/event builder 호출로 갈아끼운다.
+//   그때 함께 올릴 것: EMOTION_SAMPLER_PHRASE_VERSION(문구/이벤트 세트가 바뀌므로).
+//   이번 정정에서는 문구도 PHRASE_VERSION 도 건드리지 않는다 — 지금 세트가 비교 기준선이다.
+//   시그니처가 string -> string 이라 교체해도 호출부(통합 담당의 합성 호출)는 그대로다.
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * 감정 하나짜리 샘플 합성 대본. emotionTagText 는 호출부가 주입한다(예: emotions.ts 의 emotionTagText()).
+ * ⚠️ 반환값은 '프롬프트'다 — 상태 객체·캐시 키·화면·로그 어디에도 넣지 않는다(계약 6). 합성 호출 인자로만 쓴다.
+ */
+export function buildEmotionSampleScript(emotionTagText: string): string {
+  const tag = (emotionTagText ?? '').trim()
+  const phrase = emotionSamplerPhraseScript()
+  return tag ? `${tag} ${phrase}` : phrase
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 10) canonical 직렬화 + sha256 (ttsGrammar.ts 와 동일 알고리즘의 자립 사본).
