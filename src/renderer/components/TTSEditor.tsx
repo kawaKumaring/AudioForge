@@ -10,6 +10,10 @@ import ExpressionControls from './ExpressionControls'
 import { getPresetValues } from './ExpressionControls.logic'
 import TtsExpressionDetail from './TtsExpressionDetail'
 import { resolveExpressionCapability } from '../../shared/ttsExpressionCapabilities'
+import {
+  IDLE_SESSION, beginRequest, invalidate, applyEvent, decideAsyncResult, previewErrorText,
+  type PreviewSession, type PreviewEvent,
+} from '../../shared/previewSession'
 import EmotionScriptEditor, { type EmotionScriptEditorHandle } from './EmotionScriptEditor'
 import { EMOTION_GROUPS, ALL_EMOTIONS, FREQUENT_TAGS, parseUsedEmotionIds } from '@/lib/emotions'
 import type { Emotion } from '@/lib/emotions'
@@ -27,19 +31,150 @@ const PROMPT_LANGS: [string, string][] = [
 // I5-a: 감정 참조 미리듣기(신규 어포던스). PHASE 4에서 raw file:// 재생이 webSecurity에 막히는 것을 확인 →
 // 앱이 결과 트랙 재생에 쓰는 '기존 안전 경로'(getFileUrl → local-file:// 권한 프로토콜)를 재사용한다.
 // webSecurity 완화·임의 경로·외부 전송 없음. 재생 대상은 등록된 감정 참조의 effective(파생 클립/원본) 경로뿐.
+//
+// 신뢰성(세대 기반): getFileUrl은 비동기라 감정 후보를 빠르게 옮겨 다니면 '이전 요청'의 URL이 뒤늦게
+// 도착해 새 Audio를 또 만들고, 이전 Audio는 아무도 참조하지 않은 채 계속 울리며 정지도 되지 않았다.
+// 이제 요청마다 세대를 올리고, 늦게 온 이전 세대의 결과는 Audio를 만들기 전에 폐기한다.
 let _previewAudio: HTMLAudioElement | null = null
-export function stopReferencePreview() {
-  if (_previewAudio) { try { _previewAudio.pause() } catch { /* noop */ } _previewAudio = null }
+let _previewSession: PreviewSession = IDLE_SESSION
+let _previewErrorSink: ((message: string | null) => void) | null = null
+// 요청 직렬화 — 동시에 진행 중인 local-file:// 로드를 항상 1개로 제한한다(아래 이유 참고).
+let _previewChain: Promise<void> = Promise.resolve()
+
+/** 셸(TTSEditor)이 미리듣기 오류를 화면에 띄우도록 등록한다. 해제는 null. */
+export function setReferencePreviewErrorSink(sink: ((message: string | null) => void) | null) {
+  _previewErrorSink = sink
 }
-async function previewLocalFile(path: string) {
-  if (!path) return
+function emitPreviewError(message: string | null) {
+  if (_previewErrorSink) _previewErrorSink(message)
+}
+
+// 미리듣기는 요소 하나를 재사용한다. 클릭마다 new Audio를 만들던 이전 구현은 아무도 참조하지 않는
+// 요소를 계속 쌓았고(정지 불가·중복 재생), 그 요소들의 로드가 동시에 몰리면 local-file:// 요청이
+// 고갈돼 그 뒤로는 어떤 미리듣기도 로드되지 않았다(= 사용자가 겪은 '무음').
+function previewElement(): HTMLAudioElement {
+  if (!_previewAudio) {
+    _previewAudio = new Audio()
+    _previewAudio.preload = 'auto'
+  }
+  return _previewAudio
+}
+function pausePreview() {
+  if (_previewAudio) { try { _previewAudio.pause() } catch { /* noop */ } }
+}
+// 요소가 로드 불능 상태로 굳으면 버린다 — 다음 '사용자 클릭'이 새 요소로 시작한다(자동 재시도는 하지 않는다).
+function discardPreviewElement() {
+  const el = _previewAudio
+  _previewAudio = null
+  if (!el) return
+  try { el.pause() } catch { /* noop */ }
+  el.removeAttribute('src')
+  try { el.load() } catch { /* noop */ }
+}
+
+export function stopReferencePreview() {
+  _previewSession = invalidate(_previewSession, 'stopped')   // 진행 중이던 요청의 결과를 전부 폐기
+  pausePreview()                                             // 로드는 끊지 않는다(끊긴 요청 누적이 무음의 원인)
+  emitPreviewError(null)
+}
+
+// loadedmetadata/canplay(또는 error/타임아웃)까지 기다린다. 로드가 끝나기 전에 재생을 시작하지 않는다.
+// 타임아웃이 반드시 있어야 한다 — 직렬화 큐가 정착하지 않는 로드에 걸려 영원히 막히면 그 뒤 모든 미리듣기가 무음이 된다.
+function waitUntilPreviewLoaded(el: HTMLAudioElement, timeoutMs = 4000): Promise<void> {
+  if (el.readyState >= 1 /* HAVE_METADATA */) return Promise.resolve()
+  return new Promise<void>((resolve) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const done = () => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      el.removeEventListener('loadedmetadata', done)
+      el.removeEventListener('canplay', done)
+      el.removeEventListener('error', done)
+      resolve()
+    }
+    timer = setTimeout(done, timeoutMs)
+    el.addEventListener('loadedmetadata', done)
+    el.addEventListener('canplay', done)
+    el.addEventListener('error', done)
+  })
+}
+
+function previewLocalFile(path: string) {
+  if (!path) { emitPreviewError(previewErrorText('source')); return }
+  // (1) 새 세대를 먼저 올린다 — 아직 URL/로드를 기다리는 이전 요청은 자기 차례에 stale임을 알고 물러난다.
+  _previewSession = beginRequest(_previewSession)
+  const gen = _previewSession.gen
+  pausePreview()                 // 들리던 소리는 즉시 멈춘다
+  emitPreviewError(null)
+  // (2) 앞선 요청의 로드가 끝난 뒤에만 다음 로드를 시작한다. 로드를 중간에 끊어 버리면 그 local-file://
+  //     요청이 남아 쌓이고, 수십 번 반복하면 이후 모든 미리듣기가 로드되지 않는다(영구 무음).
+  _previewChain = _previewChain.then(() => runPreview(gen, path)).catch(() => { /* 다음 요청을 막지 않는다 */ })
+}
+
+async function runPreview(gen: number, path: string) {
+  // 내 차례가 오기 전에 더 새로운 요청이 들어왔다면 아무 것도 하지 않는다(로드조차 시작하지 않음).
+  const stale = () => decideAsyncResult(_previewSession, gen) === 'discard'
+  if (stale()) return
+
+  const fail = (kind: 'source' | 'load' | 'play') => {
+    const v = applyEvent(_previewSession, gen, { kind: 'error', message: previewErrorText(kind) })
+    if (!v.apply) return                       // 옛 세대의 실패(새 요청이 끊은 것) → 조용히 폐기
+    _previewSession = v.next
+    emitPreviewError(v.next.errorMessage)
+  }
+  const advance = (event: PreviewEvent): boolean => {
+    const v = applyEvent(_previewSession, gen, event)
+    if (v.apply) _previewSession = v.next
+    return v.apply
+  }
+
   try {
-    stopReferencePreview()                             // 다른 clip 미리듣기 시작 전 이전 것 정지(전환)
-    const url = await window.api.audio.getFileUrl(path)  // local-file:// (결과 트랙과 동일 안전 경로)
-    if (!url) return
-    _previewAudio = new Audio(url)
-    void _previewAudio.play().catch(() => { /* 재생 불가 시 조용히 무시(크래시 없음) */ })
-  } catch { /* noop */ }
+    const url = await window.api.audio.getFileUrl(path)   // local-file:// (결과 트랙과 동일 안전 경로)
+    if (stale()) return                                   // 늦게 도착한 이전 요청 → 폐기(src를 덮어쓰지 않는다)
+    if (!url) { fail('source'); return }
+    if (!advance({ kind: 'url' })) return
+
+    const el = previewElement()
+    // (3) 소스 교체는 pause() → src 비우기 → 새 src 순서. 직렬화 덕분에 이 시점엔 진행 중인 로드가 없다.
+    try { el.pause() } catch { /* noop */ }
+    if (el.getAttribute('src') !== url) {
+      el.removeAttribute('src')
+      try { el.load() } catch { /* noop */ }
+      el.src = url
+      try { el.load() } catch { /* noop */ }
+    }
+
+    // (4) 로드가 끝난 뒤에 재생 위치를 정하고 재생한다.
+    await waitUntilPreviewLoaded(el)
+    // stale이면 그냥 물러난다 — 요소는 하나뿐이라 여기서 pause() 하면 새 세대의 재생을 죽인다.
+    // 정지 책임은 무효화한 쪽(stopReferencePreview·새 요청)이 이미 졌다.
+    if (stale()) return
+    // 로드가 실패했어도 play()는 반드시 시도한다 — 실패 신호를 한 곳(play 거부)에서 받아 오류로 노출하기 위해.
+    if (!advance({ kind: 'ready' })) return
+    try { el.currentTime = 0 } catch { /* noop */ }
+
+    // (5) play() 프로미스는 정착하지 않을 수도 있다(로드가 멈춘 요소). 반드시 타임아웃과 경주시켜
+    //     직렬화 큐를 풀어 준다 — 그러지 않으면 한 번의 실패가 이후 모든 미리듣기를 영구 무음으로 만든다.
+    const result = await Promise.race([
+      el.play().then(() => 'ok', (e: unknown) => 'rejected:' + ((e as Error)?.name || '')),
+      new Promise<string>((r) => setTimeout(() => r('timeout'), 4000)),
+    ])
+    if (stale()) return
+    if (result !== 'ok') {
+      // 거부를 삼키지 않는다. 새 요청이 끊어서 생긴 거부만 stale로 조용히 폐기되고, 나머지는 화면에 뜬다.
+      // NotSupportedError = 소스를 못 읽은 것(파일 이동·삭제), 그 밖은 재생 자체가 시작되지 못한 것.
+      discardPreviewElement()
+      fail(el.error || result.includes('NotSupportedError') ? 'load' : 'play')
+      return
+    }
+    advance({ kind: 'play' })
+  } catch {
+    if (stale()) return
+    discardPreviewElement()
+    fail('load')
+  }
 }
 
 // 4-flow 셸(통합 담당, 정정11). A의 EmotionScriptEditor + C의 TtsVoiceSection·EmotionReferenceManager·
@@ -65,6 +200,7 @@ export default function TTSEditor() {
   const [fineTuneEnabled, setFineTuneEnabled] = useState(false)
   const [detailFineTune, setDetailFineTune] = useState(false)   // 세부 표현 '직접 조절'(ExpressionControls fineTune과 별개)
   const [showSettingHelp, setShowSettingHelp] = useState(false)
+  const [previewError, setPreviewError] = useState<string | null>(null)   // 감정 참조 미리듣기 실패(사용자 언어)
   const editorRef = useRef<EmotionScriptEditorHandle>(null)
   const pitchCap = ttsPitchCapability
   const disabled = status === 'processing'
@@ -98,8 +234,11 @@ export default function TTSEditor() {
     return () => { cancelled = true }
   }, [mode])
 
-  // 컴포넌트 해제(모드 전환 등) 시 재생 중인 참조 미리듣기 정지 — 잔여 재생 방지.
-  useEffect(() => () => { stopReferencePreview() }, [])
+  // 미리듣기 오류를 화면에 띄우기 위한 sink 등록 + 컴포넌트 해제(모드 전환 등) 시 재생 정지(잔여 재생 방지).
+  useEffect(() => {
+    setReferencePreviewErrorSink(setPreviewError)
+    return () => { setReferencePreviewErrorSink(null); stopReferencePreview() }
+  }, [])
 
   const updateRef = (id: string, patch: Partial<TtsReferenceEntry>) =>
     setRefPrompts(prev => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }))
@@ -247,6 +386,12 @@ export default function TTSEditor() {
               usedEmotionIds={usedEmotionIdList}
               disabled={disabled}
             />
+            {/* 미리듣기 실패는 삼키지 않고 보여준다(사용자 언어·경로 미노출·자동 재시도 없음) */}
+            {previewError && (
+              <div role="alert" style={{ fontSize: 10, lineHeight: 1.6, color: 'var(--rose)', padding: '6px 10px', borderRadius: 6, background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
+                {previewError}
+              </div>
+            )}
             {/* 미등록 안내는 관리 목록의 '기본 목소리 사용' 행이 대신한다(같은 사실을 두 곳에 쓰지 않음).
                 목록을 열지 않아도 보이도록 요약 한 줄만 남긴다. */}
             {usedUnregistered.length > 0 && (
