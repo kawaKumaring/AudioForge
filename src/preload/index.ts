@@ -2,6 +2,11 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { CancelResponseLike } from '../shared/cancelContract'
 import { SIDECAR_IPC_CHANNEL } from '../shared/sidecarEvents'
 import type { SidecarEnvelope } from '../shared/sidecarEvents'
+import { REFERENCE_LIBRARY_CHANNELS } from '../shared/referenceLibraryApi'
+import type {
+  ReferenceLibraryImportRequest, ReferenceLibraryImportResponse, ReferenceLibraryListResponse,
+  ReferenceLibraryRemoveResponse, ReferenceLibrarySelectResponse,
+} from '../shared/referenceLibraryApi'
 
 const api = {
   audio: {
@@ -90,6 +95,18 @@ const api = {
   app: {
     openFolder: (path: string) => ipcRenderer.invoke('app:open-folder', path),
     readTextFile: (path: string) => ipcRenderer.invoke('app:read-text-file', path)
+  },
+  // 참조 라이브러리 — renderer 는 논리 ID 만 다룬다. import 요청의 filePath 하나만 경로이고,
+  // 어떤 응답에도 절대 경로가 들어오지 않는다(main 이 논리 메타데이터만 돌려준다).
+  referenceLibrary: {
+    list: (): Promise<ReferenceLibraryListResponse> =>
+      ipcRenderer.invoke(REFERENCE_LIBRARY_CHANNELS.list),
+    import: (request: ReferenceLibraryImportRequest): Promise<ReferenceLibraryImportResponse> =>
+      ipcRenderer.invoke(REFERENCE_LIBRARY_CHANNELS.import, request),
+    select: (referenceId: string | null): Promise<ReferenceLibrarySelectResponse> =>
+      ipcRenderer.invoke(REFERENCE_LIBRARY_CHANNELS.select, referenceId),
+    remove: (referenceId: string): Promise<ReferenceLibraryRemoveResponse> =>
+      ipcRenderer.invoke(REFERENCE_LIBRARY_CHANNELS.remove, referenceId)
   },
   utils: {
     getPathForFile: (file: File) => webUtils.getPathForFile(file),

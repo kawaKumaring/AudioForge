@@ -1,10 +1,53 @@
 import { app, BrowserWindow, protocol, net } from 'electron'
 import { join } from 'path'
-import { existsSync } from 'fs'
+import {
+  closeSync, existsSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, writeFileSync,
+} from 'fs'
+import { tmpdir } from 'os'
+import { createHash, randomUUID } from 'crypto'
+import { statSync } from 'fs'
 import { pathToFileURL } from 'url'
 import { registerAudioIpc } from './ipc/audio.ipc'
+import { registerReferenceLibraryIpc } from './ipc/reference-library.ipc'
+import { createReferenceStore } from './services/reference-store'
+import {
+  buildLibraryEntry, emptyManifest, assertManifestValid, promoteReferenceClip,
+  removeManifestRecord, findManifestRecordByClipId, verifyStoredClip, clipFileName,
+  runScopedStagingDirName, runJournalFileName, manifestTempFileName,
+  MANIFEST_FILE_NAME, REFERENCE_LIBRARY_DIR_NAME, REFERENCE_STAGING_DIR_NAME,
+} from '../shared/referenceLibrary'
+import { inspectWavContainer, wavSamplesAreFinite } from '../shared/wavContainer'
 
 let mainWindow: BrowserWindow | null = null
+
+// ── 선택된 참조 — 논리 ID 하나만 앱 소유 위치에 남긴다(절대 경로 저장 금지) ──
+// 앱의 다른 설정(settings.json)과 파일을 나누어 동시 쓰기 충돌을 피한다.
+function selectionFilePath(): string {
+  return join(app.getPath('userData'), REFERENCE_LIBRARY_DIR_NAME, 'selection.json')
+}
+
+function readSelectedReferenceId(): string | null {
+  try {
+    const raw = JSON.parse(readFileSync(selectionFilePath(), 'utf-8')) as { referenceId?: unknown }
+    const id = String(raw?.referenceId ?? '').trim().toLowerCase()
+    return /^[0-9a-f]{16}$/.test(id) ? id : null
+  } catch {
+    return null   // 없음·손상은 '선택 없음'이다. 다른 참조로 대신 고르지 않는다.
+  }
+}
+
+function writeSelectedReferenceId(referenceId: string | null): void {
+  const p = selectionFilePath()
+  try {
+    if (referenceId === null) {
+      if (existsSync(p)) rmSync(p, { force: true })
+      return
+    }
+    writeFileSync(p, JSON.stringify({ referenceId }), 'utf-8')
+  } catch {
+    // 저장 실패를 성공으로 보고하지 않는다 — 다음 조회에서 '선택 없음'으로 드러난다.
+  }
+}
 
 function createWindow(): void {
   const preloadPath = join(__dirname, '../preload/index.js')
@@ -48,7 +91,52 @@ function createWindow(): void {
   // Prevent Electron from navigating when files are dropped
   wc.on('will-navigate', (e) => e.preventDefault())
 
-  registerAudioIpc(mainWindow)
+  const previewAdapter = registerAudioIpc(mainWindow)
+
+  // 참조 라이브러리 — 저장 루트·선택 상태는 앱 소유 userData 안에만 둔다.
+  // 파이썬 실행은 audio.ipc 가 만든 adapter 를 그대로 쓴다(같은 pythonPath·타임아웃·정리).
+  registerReferenceLibraryIpc({
+    store: createReferenceStore(
+      {
+        emptyManifest, assertManifestValid, promoteReferenceClip, removeManifestRecord,
+        findManifestRecordByClipId, verifyStoredClip, clipFileName,
+        runScopedStagingDirName, runJournalFileName, manifestTempFileName,
+        manifestFileName: MANIFEST_FILE_NAME,
+        stagingDirName: REFERENCE_STAGING_DIR_NAME,
+        inspectWavContainer, wavSamplesAreFinite,
+      },
+      join(app.getPath('userData'), REFERENCE_LIBRARY_DIR_NAME),
+    ),
+    preview: previewAdapter,
+    readSelectedId: () => readSelectedReferenceId(),
+    writeSelectedId: (id) => writeSelectedReferenceId(id),
+    isReadableFile: (p) => { try { return statSync(p).isFile() } catch { return false } },
+    sha256OfFile: (p) => {
+      try {
+        const hash = createHash('sha256')
+        const fd = openSync(p, 'r')
+        try {
+          const buf = Buffer.alloc(1024 * 1024)
+          for (;;) {
+            const read = readSync(fd, buf, 0, buf.length, null)
+            if (read <= 0) break
+            hash.update(buf.subarray(0, read))
+          }
+        } finally {
+          closeSync(fd)
+        }
+        return hash.digest('hex')
+      } catch {
+        return null
+      }
+    },
+    readFileBytes: (p) => readFileSync(p),
+    makeTempDir: () => mkdtempSync(join(tmpdir(), 'audioforge_reflib_')),
+    removeTempDir: (d) => { try { rmSync(d, { recursive: true, force: true }) } catch { /* noop */ } },
+    joinPath: (...parts) => join(...parts),
+    buildLibraryEntry,
+    makeRunId: () => randomUUID().replace(/-/g, '').slice(0, 16),
+  })
 
   if (process.env.ELECTRON_RENDERER_URL) {
     mainWindow.loadURL(process.env.ELECTRON_RENDERER_URL)

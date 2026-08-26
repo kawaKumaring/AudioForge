@@ -18,6 +18,8 @@ import { createSingleFlight, createKeyedSingleFlight } from '../services/single-
 import type { CancelResponse } from '../../shared/cancelContract'
 import { validateSidecarEvent, SIDECAR_IPC_CHANNEL } from '../../shared/sidecarEvents'
 import type { SidecarEnvelope } from '../../shared/sidecarEvents'
+// 타입만 가져온다 — 참조 라이브러리 모듈을 런타임에 끌어오지 않으므로 순환 의존이 생기지 않는다.
+import type { ReferencePreviewAdapter } from './reference-library.ipc'
 
 // execFile(배열 인자)은 cmd.exe를 거치지 않아 시스템 코드페이지(CP949)의
 // 한글 경로 손상 문제에 면역. exec(문자열)은 한글 파일명에서 깨짐 → 금지.
@@ -193,7 +195,12 @@ async function findFfprobe(): Promise<string> {
   throw new Error('ffprobe를 찾을 수 없습니다. ffmpeg을 설치해주세요.')
 }
 
-export function registerAudioIpc(mainWindow: BrowserWindow): void {
+/**
+ * 오디오 IPC 등록. 반환값은 참조 라이브러리가 쓰는 파이썬 실행 adapter 하나뿐이다 —
+ * 기존 핸들러의 서명·타임아웃·정리·터미널 의미는 그대로다(추가만 했다).
+ * 기존 호출부는 반환값을 무시해도 동작이 같다.
+ */
+export function registerAudioIpc(mainWindow: BrowserWindow): ReferencePreviewAdapter {
   // 영속화된 사용자 지정 python 경로가 있으면 우선 적용(재시작 후에도 유지) — L-6.
   // 사용자의 명시적 선택이 자동 해석(env.json/기본값)보다 우선한다.
   try {
@@ -1022,4 +1029,51 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       return null
     }
   })
+
+  // 참조 라이브러리가 쓸 파이썬 실행 adapter. 기존 analyze/trim 핸들러와 **같은** 방식
+  // (같은 pythonPath·같은 separate.py·같은 runPreview 타임아웃/정리)으로 돌린다.
+  // 이 함수 밖으로 runner·pythonPath 를 내보내지 않기 위해 adapter 형태로만 넘긴다.
+  return {
+    busyReason: () => {
+      if (runner?.isRunning) return '처리 중에는 참조를 등록할 수 없습니다.'
+      if (!existsSync(pythonPath)) return 'Python 실행 파일을 찾을 수 없습니다.'
+      return null
+    },
+    runAnalyze: async (filePath: string) => {
+      const cfgPath = join(tmpdir(), `audioforge_reflib_analyze_${randomUUID()}.json`)
+      try {
+        const scriptPath = PythonRunner.getScriptPath('separate.py')
+        writeFileSync(cfgPath, JSON.stringify({
+          mode: 'ref-analyze', input: filePath, output: dirname(filePath)
+        }), 'utf-8')
+        return await runPreview({
+          runner: new PythonRunner(pythonPath, runnerDeps),
+          scriptPath, args: ['--config', cfgPath],
+          timeoutMs: 60000,
+          cleanup: () => { try { unlinkSync(cfgPath) } catch { /* noop */ } }
+        })
+      } finally {
+        try { unlinkSync(cfgPath) } catch { /* noop */ }
+      }
+    },
+    runTrim: async (filePath: string, startSec: number, durSec: number, outDir: string) => {
+      const cfgPath = join(tmpdir(), `audioforge_reflib_trim_${randomUUID()}.json`)
+      try {
+        mkdirSync(outDir, { recursive: true })
+        const scriptPath = PythonRunner.getScriptPath('separate.py')
+        writeFileSync(cfgPath, JSON.stringify({
+          mode: 'ref-trim', input: filePath, output: outDir,
+          regionStart: startSec, regionDur: durSec
+        }), 'utf-8')
+        return await runPreview({
+          runner: new PythonRunner(pythonPath, runnerDeps),
+          scriptPath, args: ['--config', cfgPath],
+          timeoutMs: 60000,
+          cleanup: () => { try { unlinkSync(cfgPath) } catch { /* noop */ } }
+        })
+      } finally {
+        try { unlinkSync(cfgPath) } catch { /* noop */ }
+      }
+    },
+  }
 }
