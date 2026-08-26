@@ -7,9 +7,31 @@ import subprocess
 import tempfile
 
 
+_error_emitted = False
+
+
 def emit(msg_type: str, **kwargs):
-    """Send a JSON message to Electron via stdout."""
+    """Send a JSON message to Electron via stdout.
+
+    'error' 를 한 번이라도 보냈는지 프로세스 단위로 기록한다. 메인 프로세스는 pending
+    error 를 나중 것으로 덮어쓰므로, 워커가 이미 구조화 오류(code 포함)를 낸 뒤 호출부가
+    일반 오류를 덧붙이면 근본 원인이 지워진다 — 호출부는 error_already_emitted() 로
+    확인하고 첫 오류를 그 실행의 종결 권위로 남겨야 한다."""
+    global _error_emitted
+    if msg_type == "error":
+        _error_emitted = True
     print(json.dumps({"type": msg_type, **kwargs}, ensure_ascii=False), flush=True)
+
+
+def error_already_emitted() -> bool:
+    """이번 실행(프로세스)에서 'error' 가 방출된 적이 있으면 True."""
+    return _error_emitted
+
+
+def reset_error_state() -> None:
+    """error 방출 플래그 초기화 — 한 프로세스에서 여러 실행을 도는 테스트 전용."""
+    global _error_emitted
+    _error_emitted = False
 
 
 _torchaudio_patched = False
