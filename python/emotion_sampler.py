@@ -407,6 +407,19 @@ def can_regenerate(state):
     return state in ("idle", "failed", "limitExceeded")
 
 
+def can_delete_cached_sample(state, cached_file_exists=False):
+    """지울 것이 있는가 — **생성 권한과 분리된 판정**.
+
+    엔진이 못 하는(unsupported)/확인 안 된(unverified) 행도 과거 판정이 달랐던 시절의
+    샘플 파일이 디스크에 남아 있을 수 있다. 그 파일을 화면에서 지울 길이 없으면 고아가 된다.
+    그래서 '만들 수 있다'와 '지울 수 있다'를 따로 판정한다.
+
+    cached_file_exists 는 셸이 **키로** 확인한 존재 여부(bool)만 받는다 — 경로·내용은 받지 않는다.
+    이 값이 True 라도 상태·사유·톤은 변하지 않는다(캐시가 있다는 사실이 '지원됨'으로 보이면 안 된다).
+    """
+    return has_cached_sample(state) or bool(cached_file_exists)
+
+
 def regenerate_blocked_notice(state):
     """생성 버튼이 비활성인 이유 문구. 회색으로만 죽이지 않고 반드시 함께 렌더한다. 활성이면 None."""
     if state == "generating":
@@ -481,6 +494,11 @@ def apply_event(entry, event):
     if etype == "CACHE_HIT":
         if state == "generating":
             return _reject(entry, "ALREADY_GENERATING")
+        # 엔진이 못 하는(unsupported)/확인 안 된(unverified) 행은 캐시가 있어도 '재생 가능'으로
+        # 올리지 않는다. 오래된 캐시 항목이 capability 판정을 덮어써 LAUGH_NO_STRATEGY 같은
+        # 사유 코드를 지우고 '됨'으로 보이게 하는 통로였다 — 가짜 지원 금지.
+        if state in ("unsupported", "unverified"):
+            return _reject(entry, "CAPABILITY_NOT_USABLE")
         if event.get("degraded") is True:
             return _ok(_entry_with(entry, "degraded", "SAMPLER_XVECTOR_ONLY"))
         return _ok(_entry_with(entry, "ready", None))
@@ -501,19 +519,26 @@ def apply_event(entry, event):
 
 # ── 8) 캐시 조회 — hit 이면 재사용(생성 호출 없음). ─────────────────────────
 def resolve_request(row_id, cache_key, cache_index, capability=None):
-    """감정 **하나**에 대한 요청 해석. 캐시에 키가 있으면 반드시 'reuse'(재생성 없음).
+    """감정 **하나**에 대한 요청 해석. capability 가 쓸 수 있는 행에 한해, 캐시에 키가 있으면
+    반드시 'reuse'(재생성 없음). unsupported/unverified 는 캐시가 있어도 'blocked' 이며
+    생성·재생 가능 상태로 승격되지 않는다.
 
     감정 배열을 받지 않는다 — 시그니처 자체가 대량 생성을 불가능하게 한다(계약 1).
     cache_index: {cache_key: {"degraded": bool}} — **경로를 담지 않는다**(셸이 키로 파일을 찾는다).
+
+    ⚠️ 엔진 capability 가 캐시보다 먼저다. 못 하는/확인 안 된 행은 캐시에 키가 남아 있어도
+       'blocked' 이며 사유 코드(LAUGH_NO_STRATEGY 등)를 그대로 들고 나간다. 어느 경로에서도
+       재생성은 일어나지 않으므로 계약 2(같은 키 → 재합성 금지)는 그대로 유지된다.
     """
     base = initial_entry(row_id, cache_key, capability)
+    # 엔진이 못 하는/확인 안 된 행은 캐시가 있어도 없어도 '생성'을 계획하지 않고,
+    # 캐시가 capability 판정을 덮어쓰지도 못한다(가짜 '재생 가능' 금지).
+    if base["state"] in ("unsupported", "unverified"):
+        return {"action": "blocked", "entry": base}
     hit = (cache_index or {}).get(cache_key)
     if hit:
         t = apply_event(base, {"type": "CACHE_HIT", "degraded": hit.get("degraded") is True})
         return {"action": "reuse", "entry": t["entry"]}
-    # 엔진이 못 하는/확인 안 된 행은 캐시가 없어도 '생성'을 계획하지 않는다.
-    if base["state"] in ("unsupported", "unverified"):
-        return {"action": "blocked", "entry": base}
     return {"action": "generate", "entry": base}
 
 
@@ -530,8 +555,14 @@ _TONE_BY_STATE = {
 }
 
 
-def describe_sample(entry):
-    """상태 dict → 표시용 파생(순수). TS describeEmotionSample() 과 같은 문자열을 낸다."""
+def describe_sample(entry, cached_file_exists=False):
+    """상태 dict → 표시용 파생(순수). TS describeEmotionSample() 과 같은 문자열을 낸다.
+
+    cached_file_exists: 셸이 캐시 키로 확인한 **샘플 파일 존재 여부**(bool). 기본 False.
+      True 여도 state/state_label/reason/tone/generate_enabled/audition_enabled 는 전혀 바뀌지
+      않고 delete_enabled 하나만 열린다 — 남은 파일을 지울 수 있게 하되, 파일이 있다는 사실이
+      '이 표현이 된다'로 오인되지 않게 하기 위해서다. 경로·내용은 받지도 내보내지도 않는다.
+    """
     state = entry["state"]
     reason = entry.get("reason")
     if state == "generating":
@@ -555,7 +586,7 @@ def describe_sample(entry):
         "generate_enabled": can_regenerate(state),
         "generate_label": generate_label,
         "generate_notice": regenerate_blocked_notice(state),
-        "delete_enabled": has_cached_sample(state),
+        "delete_enabled": can_delete_cached_sample(state, cached_file_exists),
     }
 
 

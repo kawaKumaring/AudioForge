@@ -66,6 +66,12 @@ export interface EmotionSamplerPanelProps {
   disabled?: boolean
   /** 표시용 표준 문구/이벤트 세트 버전. 기본은 shared 상수. */
   phraseVersion?: number
+  /**
+   * 샘플 파일이 디스크에 남아 있는 행 id 들(셸이 캐시 **키로** 확인한 결과). 경로는 받지 않는다.
+   * 지원 안 됨/미검증이라 만들 수도 들을 수도 없는 행이라도, 남은 파일은 지울 수 있어야 한다.
+   * 이 목록에 있어도 상태 배지·사유·톤은 그대로다 — 삭제 버튼만 열린다.
+   */
+  cachedFileRowIds?: readonly string[]
 }
 
 const NO_DEFAULT_VOICE_NOTICE = '기본 목소리를 먼저 등록하면 샘플을 만들 수 있습니다.'
@@ -82,11 +88,18 @@ export default function EmotionSamplerPanel({
   defaultVoiceReady = true,
   disabled = false,
   phraseVersion = EMOTION_SAMPLER_PHRASE_VERSION,
+  cachedFileRowIds,
 }: EmotionSamplerPanelProps) {
   // 점진적 공개: 기본 접힘. 사용자가 열기 전에는 목록도 안내 문장도 만들지 않는다.
   const [open, setOpen] = useState(false)
 
-  const views: EmotionSampleView[] = useMemo(() => rows.map(describeEmotionSample), [rows])
+  const cachedFiles = useMemo(() => new Set(cachedFileRowIds ?? []), [cachedFileRowIds])
+  // ⚠️ rows.map(describeEmotionSample) 로 넘기지 않는다 — map 이 두 번째 인자로 index 를 밀어넣어
+  //    cachedFileExists 자리를 오염시킨다. 항상 인자를 명시해서 부른다.
+  const views: EmotionSampleView[] = useMemo(
+    () => rows.map((r) => describeEmotionSample(r, cachedFiles.has(r.rowId))),
+    [rows, cachedFiles]
+  )
   const summary = useMemo(() => summarizeEmotionSamples(rows), [rows])
 
   // 갈래별로 묶어 보여준다(16행이 한 덩어리로 쏟아지지 않게).

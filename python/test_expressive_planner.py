@@ -792,5 +792,114 @@ class TestContractConsumption(unittest.TestCase):
         self.assertTrue(pl.validate_plan_continuity(plan)["ok"])
 
 
+# ------------- E-2. 웃음: '전략 없음' 은 절대 '지원됨' 이 되지 않는다 -------------
+
+LAUGH_FEATURES = ("nonverbal_laugh_instruction", "laugh_same_speaker_conditioning",
+                  "cached_laugh_sample", "voice_conditioned_laugh_transform")
+
+
+def profile_laugh_probe_not_honored():
+    """네 전략 전부 '입력은 받았지만 효과 없음'(accepted=True, honored=False) -> degraded."""
+    return cap.build_profile(
+        "laugh_ignored",
+        claims={f: "supported" for f in LAUGH_FEATURES},
+        evidence={f: cap.ProbeEvidence(f, True, True, False) for f in LAUGH_FEATURES})
+
+
+def profile_laugh_declared_unsupported():
+    """엔진이 네 전략 전부 못 한다고 스스로 선언."""
+    return cap.build_profile(
+        "laugh_declared_no",
+        claims={f: "unsupported" for f in LAUGH_FEATURES})
+
+
+class TestLaughNoStrategyIsNeverSupported(unittest.TestCase):
+    """LAUGH_NO_STRATEGY 가 '지원됨' 으로 새는 통로가 없음을 고정한다.
+
+    ⚠️ 현재 동작이 이미 정직하다 — 이 클래스는 고치는 것이 아니라 '고정' 한다.
+    """
+
+    def _profiles(self):
+        return (PROFILE_C_BLIND, profile_laugh_probe_not_honored(),
+                profile_laugh_declared_unsupported())
+
+    def test_probe_accepted_but_ignored_is_not_a_strategy(self):
+        """'입력을 받아줬다' 는 성공이 아니다 — degraded 는 전략으로 쓰이지 않는다."""
+        prof = profile_laugh_probe_not_honored()
+        for f in LAUGH_FEATURES:
+            self.assertEqual(prof.state_of(f), "degraded", f)
+            self.assertFalse(prof.is_supported(f), f)
+        sel = pl.select_laugh_strategy(prof)
+        self.assertIsNone(sel["strategy"])
+        self.assertEqual(sel["reason"], "NO_STRATEGY_AVAILABLE")
+        # 캐시 샘플이 '있다' 고 알려줘도 기능이 supported 가 아니면 전략이 되지 않는다.
+        self.assertIsNone(pl.select_laugh_strategy(prof, cached_sample_available=True)["strategy"])
+
+    def test_declared_unsupported_is_not_a_strategy(self):
+        prof = profile_laugh_declared_unsupported()
+        for f in LAUGH_FEATURES:
+            self.assertEqual(prof.state_of(f), "unsupported", f)
+        sel = pl.select_laugh_strategy(prof)
+        self.assertIsNone(sel["strategy"])
+        self.assertEqual(sel["reason"], "NO_STRATEGY_AVAILABLE")
+        self.assertIsNone(pl.select_laugh_strategy(prof, cached_sample_available=True)["strategy"])
+
+    def test_no_strategy_is_never_reportable_as_supported(self):
+        """전략이 없을 때 어떤 웃음 기능도 '지원됨' 으로 보고할 수 없다(정직성 검사가 막는다)."""
+        for prof in self._profiles():
+            self.assertIsNone(pl.select_laugh_strategy(prof)["strategy"], prof.engine_id)
+            for f in LAUGH_FEATURES:
+                self.assertFalse(cap.is_usable(prof.state_of(f)), "%s/%s" % (prof.engine_id, f))
+                with self.assertRaises(cap.CapabilityHonestyError):
+                    cap.assert_no_false_success(prof, [f])
+
+    def test_no_strategy_reaches_the_consumer_as_unsupported_code(self):
+        """사유 코드가 소비자에게 닿는다 — unsupported 목록 + 매니페스트 양쪽."""
+        for prof in self._profiles():
+            plan = plan_for("%s %s." % (LAUGH, S1), prof)
+            self.assertEqual(len(plan["laugh_manifest"]), 1, prof.engine_id)
+            m = plan["laugh_manifest"][0]
+            self.assertIsNone(m["strategy"], prof.engine_id)
+            self.assertEqual(m["strategy_reason"], "NO_STRATEGY_AVAILABLE")
+            self.assertFalse(m["experimental"])
+            codes = [u["code"] for u in plan["unsupported"]]
+            self.assertIn("LAUGH_NO_STRATEGY", codes, prof.engine_id)
+            self.assertIn("LAUGH_NO_STRATEGY", pl.UNSUPPORTED_CODES)
+            # '되긴 된다' 는 뜻의 강등 목록으로 새지 않는다.
+            deg = [d["code"] for d in plan["degradations"]]
+            self.assertNotIn("LAUGH_CACHED_SAMPLE", deg, prof.engine_id)
+            self.assertNotIn("LAUGH_VOICE_TRANSFORM_EXPERIMENTAL", deg, prof.engine_id)
+            # 차단 이슈는 아니므로 계획 자체는 만들어진다(조용히 사라지지 않는다).
+            self.assertNotIn("LAUGH_NO_STRATEGY", pl.BLOCKING_UNSUPPORTED_CODES)
+
+    def test_no_strategy_laughter_still_never_renders_as_letters(self):
+        """전략이 없어도 웃음이 글자로 새지 않는다 — 생성 텍스트에 음절이 들어가지 않는다."""
+        for prof in self._profiles():
+            for raw in ("%s %s." % (LAUGH, S1), "%s %s %s." % (S1, LAUGH, S2),
+                        "%s. %s" % (S1, LAUGH)):
+                plan = plan_for(raw, prof)
+                self.assertTrue(plan["laugh_manifest"], prof.engine_id)
+                for m in plan["laugh_manifest"]:
+                    self.assertTrue(m["never_literal_text"], prof.engine_id)
+                    self.assertFalse(m["asr_compare_as_words"])
+                    self.assertTrue(m["verify_presence"])
+                for c in plan["chunks"]:
+                    self.assertNotIn("ㅋ", c["generation_text"])
+                    self.assertNotIn(LAUGH, c["generation_text"])
+                self.assertFalse(plan["asr_parity"]["compare_laughter_as_words"])
+
+    def test_sampler_mirrors_the_engine_verdict_for_laughter(self):
+        """엔진이 '전략 없음' 인 동안 샘플러 웃음 행은 unsupported/LAUGH_NO_STRATEGY 다."""
+        import emotion_sampler as es
+        for prof in self._profiles():
+            self.assertIsNone(pl.select_laugh_strategy(prof)["strategy"])
+        for r in [x for x in es.EMOTION_SAMPLE_ROWS if x["family"] == "laugh"]:
+            c = es.capability_for_row(r["row_id"])
+            self.assertEqual(c["state"], "unsupported", r["row_id"])
+            self.assertEqual(c["reason"], "LAUGH_NO_STRATEGY", r["row_id"])
+            self.assertFalse(es.is_capability_usable(c["state"]), r["row_id"])
+        self.assertIn("LAUGH_NO_STRATEGY", es.EMOTION_SAMPLE_STATE_REASONS["unsupported"])
+
+
 if __name__ == "__main__":
     unittest.main()

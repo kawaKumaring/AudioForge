@@ -769,10 +769,6 @@ class ParityWithTsTest(unittest.TestCase):
             self.assertIn('"%s"' % field, TS_CODE + PY_SRC)
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class ContractConsumptionTest(unittest.TestCase):
     """카탈로그가 표현 언어 계약과 어긋나지 않는가 — 실제 계약 파서로 검증."""
 
@@ -924,3 +920,151 @@ class CapabilityTest(unittest.TestCase):
         self.assertEqual(sum_["attention"], 7)   # 웃음 6 + '~' 1
         self.assertEqual(sum_["text"], "확인 필요 7")
         self.assertLessEqual(len(sum_["text"]), 40)
+
+    # -- 웃음 capability 는 어떤 경로로도 '됨/재생 가능' 이 되지 않는다 -------------
+    #
+    # 배경: 캐시 조회가 capability 판정보다 먼저 돌던 통로가 있었다. 오래된 캐시 항목
+    # 하나가 웃음 행을 'ready'(사유 None, 재생 가능)로 승격시켜 LAUGH_NO_STRATEGY 를
+    # 지웠다. 아래 테스트가 그 통로를 고정으로 막는다.
+
+    LAUGH_ROW_IDS = ("laugh_chuckle", "laugh_bright", "laugh_breathy",
+                     "laugh_bashful", "laugh_open", "laugh_high_giggle")
+
+    def test_all_laugh_rows_are_unsupported_and_never_usable(self):
+        rows = [r["row_id"] for r in es.EMOTION_SAMPLE_ROWS if r["family"] == "laugh"]
+        self.assertEqual(tuple(rows), self.LAUGH_ROW_IDS, "웃음 행 카탈로그 고정")
+        for rid in rows:
+            c = es.capability_for_row(rid)
+            self.assertEqual(c["state"], "unsupported", rid)
+            self.assertEqual(c["reason"], "LAUGH_NO_STRATEGY", rid)
+            self.assertFalse(es.is_capability_usable(c["state"]), rid)
+            self.assertEqual(es.state_for_capability(c), "unsupported", rid)
+
+    def test_cache_hit_never_promotes_a_blocked_row(self):
+        """캐시가 capability 판정을 덮어쓰지 못한다 — 거부 코드로 드러난다(조용한 승격 금지)."""
+        for rid in ("laugh_chuckle", "punct_vowel_extend"):
+            e = es.initial_entry(rid, KEY_A)
+            for ev in ({"type": "CACHE_HIT"}, {"type": "CACHE_HIT", "degraded": True}):
+                t = es.apply_event(e, ev)
+                self.assertFalse(t["applied"], "%s x %s" % (rid, ev))
+                self.assertEqual(t["rejected"], "CAPABILITY_NOT_USABLE")
+                self.assertEqual(t["entry"], e, "거부 시 상태·사유 불변")
+                self.assertFalse(es.is_auditionable(t["entry"]["state"]))
+                self.assertFalse(es.has_cached_sample(t["entry"]["state"]))
+
+    def test_stale_cache_entry_never_advertises_laughter_as_playable(self):
+        """오래된 캐시에 웃음 키가 남아 있어도 'reuse/재생 가능' 이 되지 않는다."""
+        for rid in self.LAUGH_ROW_IDS:
+            key = es.build_cache_key(make_input(expression=expr_of(rid)))
+            plan = es.resolve_request(rid, key, {key: {"degraded": False}})
+            self.assertEqual(plan["action"], "blocked", rid)
+            self.assertEqual(plan["entry"]["state"], "unsupported", rid)
+            self.assertEqual(plan["entry"]["reason"], "LAUGH_NO_STRATEGY", rid)
+            v = es.describe_sample(plan["entry"])
+            self.assertFalse(v["audition_enabled"], rid)
+            self.assertFalse(v["generate_enabled"], rid)
+            self.assertFalse(v["delete_enabled"], rid)
+            self.assertEqual(v["reason"], "LAUGH_NO_STRATEGY", rid)
+            self.assertEqual(v["reason_label"],
+                             es.EMOTION_SAMPLE_REASON_LABEL["LAUGH_NO_STRATEGY"])
+            self.assertEqual(v["state_label"], "지원 안 됨")
+            # degraded 캐시 메타로도 승격되지 않는다.
+            d = es.resolve_request(rid, key, {key: {"degraded": True}})
+            self.assertEqual(d["action"], "blocked", rid)
+            self.assertEqual(d["entry"]["reason"], "LAUGH_NO_STRATEGY", rid)
+
+    def test_no_event_sequence_makes_a_laugh_row_auditionable(self):
+        """웃음 행에 어떤 이벤트를 어떤 순서로 먹여도 ready/degraded 에 도달하지 못한다."""
+        other = es.build_cache_key(make_input(voice_content_sha256=FP_B))
+        events = [
+            {"type": "GENERATE_REQUESTED"},
+            {"type": "GENERATE_SUCCEEDED"},
+            {"type": "GENERATE_SUCCEEDED", "degraded": True},
+            {"type": "GENERATE_FAILED", "reason": "SAMPLER_ENGINE_ERROR"},
+            {"type": "GENERATE_LIMIT_EXCEEDED"},
+            {"type": "CACHE_HIT"},
+            {"type": "CACHE_HIT", "degraded": True},
+            {"type": "DELETED"},
+            {"type": "KEY_CHANGED", "cache_key": other},
+        ]
+        for rid in self.LAUGH_ROW_IDS:
+            entry = es.initial_entry(rid, KEY_A)
+            for ev in events:                      # 단발
+                t = es.apply_event(entry, ev)
+                self.assertFalse(es.is_auditionable(t["entry"]["state"]),
+                                 "%s x %s" % (rid, ev["type"]))
+            cur = entry
+            for ev in events:                      # 누적(순서 의존 통로까지)
+                cur = es.apply_event(cur, ev)["entry"]
+                self.assertEqual(cur["state"], "unsupported", "%s: %s 이후" % (rid, ev["type"]))
+                self.assertEqual(cur["reason"], "LAUGH_NO_STRATEGY", rid)
+                self.assertFalse(es.is_auditionable(cur["state"]))
+
+
+# -- '만들 수 있다' 와 '지울 수 있다' 는 다른 권한이다 ---------------------------
+#
+# 배경: capability 판정이 바뀌기 전(또는 다른 엔진에서) 만들어진 샘플 파일이 디스크에 남을 수
+# 있다. 그 행이 지금 unsupported/unverified 면 만들 수도 들을 수도 없는데, 삭제까지 막히면
+# 파일을 회수할 길이 사라진다. 그래서 삭제 권한만 따로 연다 — 상태·사유는 건드리지 않는다.
+
+class DeletePermissionTest(unittest.TestCase):
+
+    BLOCKED_IDS = ("laugh_chuckle", "punct_vowel_extend")
+
+    def test_blocked_rows_can_still_delete_a_leftover_file(self):
+        for rid in self.BLOCKED_IDS:
+            v = es.describe_sample(es.initial_entry(rid, KEY_A), cached_file_exists=True)
+            self.assertTrue(v["delete_enabled"], rid)
+            # 지울 수 있다고 해서 '된다' 가 되지는 않는다.
+            self.assertFalse(v["generate_enabled"], rid)
+            self.assertFalse(v["audition_enabled"], rid)
+
+    def test_cached_file_flag_changes_nothing_but_delete(self):
+        """파일이 있다는 사실이 '지원됨' 으로 보이면 안 된다 — 삭제 외 모든 파생이 동일하다."""
+        for rid in self.BLOCKED_IDS:
+            e = es.initial_entry(rid, KEY_A)
+            off, on = es.describe_sample(e), es.describe_sample(e, cached_file_exists=True)
+            for k in ("row_id", "state", "state_label", "reason", "reason_label", "tone",
+                      "audition_enabled", "generate_enabled", "generate_label", "generate_notice"):
+                self.assertEqual(off[k], on[k], "%s/%s" % (rid, k))
+            self.assertFalse(off["delete_enabled"], rid)
+            self.assertTrue(on["delete_enabled"], rid)
+
+    def test_default_stays_exactly_as_before(self):
+        """기본값(파일 없음)은 예전 그대로 — 없는 파일을 지우라고 권하지 않는다."""
+        for rid in self.BLOCKED_IDS:
+            self.assertFalse(es.describe_sample(es.initial_entry(rid, KEY_A))["delete_enabled"], rid)
+        gen = es.apply_event(es.initial_entry("emotion_happy", KEY_A),
+                             {"type": "GENERATE_REQUESTED"})["entry"]
+        ready = es.apply_event(gen, {"type": "GENERATE_SUCCEEDED"})["entry"]
+        self.assertTrue(es.describe_sample(ready)["delete_enabled"])
+
+    def test_delete_permission_is_independent_of_regenerate(self):
+        self.assertFalse(es.can_regenerate("unsupported"))
+        self.assertFalse(es.can_regenerate("unverified"))
+        self.assertTrue(es.can_delete_cached_sample("unsupported", True))
+        self.assertTrue(es.can_delete_cached_sample("unverified", True))
+        self.assertFalse(es.can_delete_cached_sample("unsupported"))
+        self.assertFalse(es.can_delete_cached_sample("unverified"))
+        # 캐시가 있는 상태는 플래그와 무관하게 삭제 가능.
+        self.assertTrue(es.can_delete_cached_sample("ready"))
+        self.assertTrue(es.can_delete_cached_sample("degraded"))
+        # limitExceeded 는 결과를 버렸다 — 파일이 없으면 지울 것도 없다.
+        self.assertFalse(es.can_delete_cached_sample("limitExceeded"))
+
+    def test_deleting_a_blocked_row_does_not_promote_it(self):
+        """DELETED 이벤트는 ready/degraded 전용이다. 막힌 행의 파일 회수는 상태를 바꾸지 않는다.
+
+        셸은 파일을 지운 뒤 cached_file_exists 를 내릴 뿐이며, 상태는 capability 그대로 남는다.
+        """
+        for rid in self.BLOCKED_IDS:
+            e = es.initial_entry(rid, KEY_A)
+            t = es.apply_event(e, {"type": "DELETED"})
+            self.assertFalse(t["applied"], rid)
+            self.assertEqual(t["rejected"], "NO_SAMPLE_TO_DELETE", rid)
+            self.assertEqual(t["entry"], e, rid)
+            self.assertFalse(es.describe_sample(t["entry"])["delete_enabled"], rid)
+
+
+if __name__ == "__main__":
+    unittest.main()

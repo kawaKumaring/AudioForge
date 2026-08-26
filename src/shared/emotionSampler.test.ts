@@ -67,6 +67,7 @@ import {
   resolveEmotionSampleRequest,
   describeEmotionSample,
   canRegenerateEmotionSample,
+  canDeleteCachedSample,
   regenerateBlockedNotice,
   isAuditionable,
   hasCachedSample,
@@ -1222,4 +1223,142 @@ test('접힘 요약: 16행 전체를 담아도 한 줄 길이 상한을 지킨�
   assert.equal(sum.attention, 7)
   assert.equal(sum.text, '확인 필요 7')
   assert.ok(sum.text.length <= 40, `접힘 한 줄 길이 상한: ${sum.text}`)
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 10) capability honesty — 캐시가 판정을 덮어쓰지 못한다 (Python 과 같은 계약)
+//
+// 배경: 캐시 조회가 capability 판정보다 먼저 돌던 통로가 있었다. 오래된 캐시 항목 하나가
+// 웃음 행을 'ready'(사유 없음·재생 가능)로 올려 LAUGH_NO_STRATEGY 를 지웠다.
+// 아래는 python/test_emotion_sampler.py 의 같은 계약 테스트와 짝이다.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const LAUGH_ROW_IDS = EMOTION_SAMPLE_ROWS.filter((r) => r.family === 'laugh').map((r) => r.rowId)
+const BLOCKED_IDS = ['laugh_chuckle', 'punct_vowel_extend'] as const
+
+test('capability: unsupported 행은 CACHE_HIT 로 승격되지 않는다', () => {
+  const e = initialEmotionSampleEntry('laugh_chuckle', KEY_A)
+  assert.equal(e.state, 'unsupported')
+  for (const ev of [{ type: 'CACHE_HIT' as const }, { type: 'CACHE_HIT' as const, degraded: true }]) {
+    const t = applyEmotionSamplerEvent(e, ev)
+    assert.equal(t.applied, false, `${ev.type}/${ev.degraded}`)
+    assert.equal(t.rejected, 'CAPABILITY_NOT_USABLE')
+    assert.deepEqual(t.entry, e, '거부 시 상태·사유 불변')
+    assert.equal(isAuditionable(t.entry.state), false)
+    assert.equal(hasCachedSample(t.entry.state), false)
+  }
+})
+
+test('capability: unverified 행은 CACHE_HIT 로 승격되지 않는다', () => {
+  const e = initialEmotionSampleEntry('punct_vowel_extend', KEY_A)
+  assert.equal(e.state, 'unverified')
+  assert.equal(e.reason, 'CAPABILITY_UNVERIFIED')
+  for (const ev of [{ type: 'CACHE_HIT' as const }, { type: 'CACHE_HIT' as const, degraded: true }]) {
+    const t = applyEmotionSamplerEvent(e, ev)
+    assert.equal(t.applied, false)
+    assert.equal(t.rejected, 'CAPABILITY_NOT_USABLE')
+    assert.equal(t.entry.reason, 'CAPABILITY_UNVERIFIED', '사유가 지워지지 않는다')
+    assert.equal(isAuditionable(t.entry.state), false)
+  }
+})
+
+test('capability: 오래된 캐시가 있어도 웃음은 blocked 이고 사유가 남는다', () => {
+  assert.equal(LAUGH_ROW_IDS.length, 6)
+  for (const rid of LAUGH_ROW_IDS) {
+    for (const degraded of [false, true]) {
+      const cache: EmotionSamplerCacheIndex = { [KEY_A]: { degraded } }
+      const plan = resolveEmotionSampleRequest(rid, KEY_A, cache)
+      assert.equal(plan.action, 'blocked', `${rid}/degraded=${degraded}`)
+      assert.equal(plan.entry.state, 'unsupported', rid)
+      assert.equal(plan.entry.reason, 'LAUGH_NO_STRATEGY', rid)
+      const v = describeEmotionSample(plan.entry)
+      assert.equal(v.auditionEnabled, false, rid)
+      assert.equal(v.generateEnabled, false, rid)
+      assert.equal(v.deleteEnabled, false, rid)
+      assert.equal(v.stateLabel, '지원 안 됨', rid)
+      assert.equal(v.reasonLabel, EMOTION_SAMPLE_REASON_LABEL['LAUGH_NO_STRATEGY'], rid)
+    }
+  }
+})
+
+test('capability: 지원되는 행 + 정상 캐시 → reuse 는 그대로다(회귀 방지)', () => {
+  const plan = resolveEmotionSampleRequest('emotion_happy', KEY_A, { [KEY_A]: { degraded: false } })
+  assert.equal(plan.action, 'reuse')
+  assert.equal(plan.entry.state, 'ready')
+  assert.equal(plan.entry.reason, null)
+  assert.equal(isAuditionable(plan.entry.state), true)
+
+  const deg = resolveEmotionSampleRequest('emotion_happy', KEY_A, { [KEY_A]: { degraded: true } })
+  assert.equal(deg.action, 'reuse')
+  assert.equal(deg.entry.state, 'degraded')
+  assert.equal(deg.entry.reason, 'SAMPLER_XVECTOR_ONLY')
+
+  // 캐시가 없으면 여전히 generate.
+  assert.equal(resolveEmotionSampleRequest('emotion_happy', KEY_A, {}).action, 'generate')
+})
+
+test('parity: 캐시 우회 차단과 삭제 권한 분리가 Python 쪽에도 같은 어휘로 있다', () => {
+  // 상태·사유·거부 코드 어휘가 두 구현에 같은 문자열로 존재한다.
+  for (const s of EMOTION_SAMPLER_CAPABILITY_STATES) assert.ok(pySrc.includes(`"${s}"`), s)
+  for (const c of EMOTION_SAMPLER_REJECTION_CODES) assert.ok(pySrc.includes(`"${c}"`), c)
+
+  // CACHE_HIT 처리부가 양쪽 모두 CAPABILITY_NOT_USABLE 로 막는다.
+  const pyHit = pySrc.slice(pySrc.indexOf('if etype == "CACHE_HIT":'))
+  assert.ok(pyHit.slice(0, 900).includes('CAPABILITY_NOT_USABLE'), 'python CACHE_HIT 차단')
+  const tsHit = moduleSrc.slice(moduleSrc.indexOf("case 'CACHE_HIT': {"))
+  assert.ok(tsHit.slice(0, 900).includes('CAPABILITY_NOT_USABLE'), 'ts CACHE_HIT 차단')
+
+  // capability 검사가 캐시 조회보다 먼저 온다(순서가 계약이다).
+  const pyResolve = pySrc.slice(pySrc.indexOf('def resolve_request('))
+  assert.ok(
+    pyResolve.indexOf('"blocked"') < pyResolve.indexOf('cache_index or {}'),
+    'python: capability 검사가 캐시 조회보다 앞'
+  )
+  const tsResolve = moduleSrc.slice(moduleSrc.indexOf('export function resolveEmotionSampleRequest('))
+  assert.ok(
+    tsResolve.indexOf("action: 'blocked'") < tsResolve.indexOf('cacheIndex[cacheKey]'),
+    'ts: capability 검사가 캐시 조회보다 앞'
+  )
+
+  // 삭제 권한 분리가 양쪽에 같은 이름으로 있다.
+  assert.ok(pySrc.includes('def can_delete_cached_sample('), 'python 삭제 권한 함수')
+  assert.ok(moduleSrc.includes('export function canDeleteCachedSample('), 'ts 삭제 권한 함수')
+})
+
+// ── 삭제 권한 — '만들 수 있다' 와 '지울 수 있다' 는 다른 판정 ─────────────────
+
+test('삭제 권한: 막힌 행도 디스크에 남은 파일은 지울 수 있다', () => {
+  for (const rid of BLOCKED_IDS) {
+    const v = describeEmotionSample(initialEmotionSampleEntry(rid, KEY_A), true)
+    assert.equal(v.deleteEnabled, true, rid)
+    // 지울 수 있다고 해서 '된다' 가 되지는 않는다.
+    assert.equal(v.generateEnabled, false, rid)
+    assert.equal(v.auditionEnabled, false, rid)
+  }
+  assert.equal(canRegenerateEmotionSample('unsupported'), false)
+  assert.equal(canDeleteCachedSample('unsupported', true), true)
+  assert.equal(canDeleteCachedSample('unverified', true), true)
+  assert.equal(canDeleteCachedSample('unsupported'), false)
+  assert.equal(canDeleteCachedSample('ready'), true)
+  assert.equal(canDeleteCachedSample('degraded'), true)
+  // limitExceeded 는 결과를 버렸다 — 파일이 없으면 지울 것도 없다.
+  assert.equal(canDeleteCachedSample('limitExceeded'), false)
+})
+
+test('삭제 권한: 파일 존재 플래그는 삭제 외 어떤 파생도 바꾸지 않는다', () => {
+  for (const rid of BLOCKED_IDS) {
+    const e = initialEmotionSampleEntry(rid, KEY_A)
+    const off = describeEmotionSample(e)
+    const on = describeEmotionSample(e, true)
+    assert.deepEqual({ ...on, deleteEnabled: off.deleteEnabled }, off, `${rid}: 삭제 외 동일`)
+    assert.equal(off.deleteEnabled, false, rid)
+    assert.equal(on.deleteEnabled, true, rid)
+  }
+})
+
+test('패널: describeEmotionSample 을 map 에 그대로 넘기지 않는다(index 오염 방지)', () => {
+  // map 은 두 번째 인자로 index 를 밀어넣어 cachedFileExists 자리를 오염시킨다.
+  // 설명 주석에 같은 문구가 들어 있으므로 실제 코드만 본다(stripComments).
+  assert.ok(!/\.map\(\s*describeEmotionSample\s*\)/.test(panelCode), 'map 에 함수를 그대로 넘기면 안 된다')
+  assert.ok(/describeEmotionSample\(\s*r\s*,/.test(panelCode), '인자를 명시해 호출한다')
 })
