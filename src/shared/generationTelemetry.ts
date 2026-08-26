@@ -91,7 +91,12 @@ export interface ChunkAnalysis {
   chunk_index: number | null
   /** frames 가 속도 후처리로 오염됐는가(또는 오염 여부 불명인가). true 면 iteration 당 지표 무효. */
   speed_contaminated: boolean
-  /** frames / output_sample_rate — 이 chunk 의 pre-pitch 출력 길이(초). */
+  /**
+   * frames / output_sample_rate — 이 chunk 의 **pitch 적용 전 pending 파일** 길이(초).
+   * pitch != 0 이면 rubberband 가 전체 길이를 바꾸므로 이 값은 최종 synthesized.wav 의 길이와
+   * 선형 대응하지 않는다(frames 자체가 pre-pitch 좌표에서 측정된 값이다). pitch 는 iteration
+   * 당 지표를 오염시키지는 않는다 — 오염 축은 speed 뿐이다.
+   */
   output_duration_sec: Metric
   /** generation_elapsed_sec / generated_iterations — 필드가 생기기 전에는 항상 unavailable. */
   seconds_per_iteration: Metric
