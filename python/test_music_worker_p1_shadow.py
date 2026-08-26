@@ -78,7 +78,12 @@ class _Harness:
             self.emits.append({"type": t, **k})
 
         def _conv(_p):
-            return os.path.join(tempfile.mkdtemp(prefix="af_in_"), "in.wav")
+            # cleanup()은 self._tmpdirs 만 지우는데, 이 스텁은 거기에 등록하지 않아
+            # 호출될 때마다 복구 없는 번림이 났다(공폴더 수백 개 누적 사확).
+            # 경로만 필요하고 파일을 쓰지 않지만, 만들었으므로 기존 정리 경로에 연결한다.
+            d = tempfile.mkdtemp(prefix="af_in_")
+            self._tmpdirs.append(d)
+            return os.path.join(d, "in.wav")
 
         with mock.patch.object(music_worker, "emit", _emit), \
              mock.patch.object(music_worker, "convert_to_wav", _conv), \
