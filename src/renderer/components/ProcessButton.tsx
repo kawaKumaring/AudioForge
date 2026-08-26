@@ -1,6 +1,7 @@
 import React from 'react'
 import { motion } from 'framer-motion'
 import { useAppStore } from '@/stores/app.store'
+import { validateMarkers, formatSplitMarkerError } from '../../shared/splitMarkers'
 import { ALL_EMOTIONS, planEmotionRefs } from '@/lib/emotions'
 import { parseTtsScript, TTS_PARSER_VERSION } from '../../shared/ttsGrammar'
 import { inRange, TTS_TAIL_PADDING_MS, TTS_TAIL_FADE_MS, TTS_EMOTION_PAUSE_MS } from '../../shared/ttsExpressionCapabilities'
@@ -60,6 +61,15 @@ export default function ProcessButton() {
         return
       }
       ttsParsedPlanSha256 = parsed.plan.fullSha256
+    }
+    // split은 시작 전에 마커를 검증한다(Python이 최종 권위지만, 여기서 막으면 임시 복사·ffmpeg 실행 자체가
+    // 일어나지 않는다). 조용한 clamp·정렬·중복제거 없이 거부만 한다. 오류엔 순번·사유·수치만 담는다.
+    if (mode === 'split') {
+      const v = validateMarkers(splitMarkers, { durationSeconds: fileInfo.duration })
+      if (!v.ok) {
+        setError(formatSplitMarkerError(v.errors[0]), { code: v.errors[0].reasonCode })
+        return
+      }
     }
 
     console.log('[renderer][synthesize] setProcessing 직전')

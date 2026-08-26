@@ -22,6 +22,7 @@ sys.setrecursionlimit(10000)
 # NOTE: torchaudio patching moved to audio_utils.patch_torchaudio() —
 # it imports torch (10-30s) so it must NOT run at module import time.
 # split/meta-fix/gptsovits paths never need torch.
+import split_markers as _sm   # 분할 마커 검증 단일 권위(순수, stdlib만)
 from audio_utils import (emit, load_audio, save_audio, find_ffmpeg,
                          convert_to_wav, trim_silence, fmt_time, fmt_srt_time,
                          get_device, patch_torchaudio)
@@ -506,7 +507,8 @@ def _run_split(args):
     split_labels_list = []
 
     if args.split_points:
-        split_seconds = [float(x) for x in args.split_points.split(',') if x.strip()]
+        # 숫자로 못 읽는 토큰은 조용히 버리지 않고 그대로 남겨 검증에서 거부되게 한다.
+        split_seconds = _sm.parse_marker_csv(args.split_points)
         if args.split_labels:
             split_labels_list = args.split_labels.split('|')
 
@@ -528,6 +530,15 @@ def _run_split(args):
                 # 길이를 모르면 마지막 트랙 경계를 만들 수 없다 → 조용히 빠뜨리지 말고 중단.
                 emit("error", code="SPLIT_DURATION_UNKNOWN",
                      message="오디오 길이를 확인할 수 없어 분할을 중단했습니다.")
+                return None
+
+            # 마커 검증(단일 권위 split_markers). 조용한 clamp·정렬·중복제거를 하지 않고 거부한다 —
+            # 예전에는 범위 밖 마커가 그대로 통과해 ffmpeg가 음수 -t를 받고, 앞쪽 트랙만 남긴 채 죽었다.
+            _v = _sm.validate_markers(split_seconds, total_dur)
+            if not _v["ok"]:
+                emit("error", code="SPLIT_MARKERS_INVALID",
+                     message="분할 지점이 올바르지 않아 분할을 중단했습니다.",
+                     errors=_v["errors"])
                 return None
 
             # Build time boundaries
@@ -560,6 +571,8 @@ def _run_split(args):
     emit("progress", percent=5, message="ffmpeg 무음 구간 자동 감지 중...")
 
     import tempfile, shutil, re
+    # 마커가 없어 ffmpeg 무음 자동분할로 진입한다는 사실을 사용자에게 명시(예전엔 조용히 갈라졌다).
+    emit("progress", percent=3, message="마커가 없어 자동 무음 분할을 사용합니다.")
     tmp_dir = tempfile.mkdtemp(prefix=_split_tmp_prefix(args))
     ext = os.path.splitext(args.input)[1]
     tmp_input = os.path.join(tmp_dir, f"source{ext}")
