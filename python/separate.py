@@ -23,9 +23,9 @@ sys.setrecursionlimit(10000)
 # it imports torch (10-30s) so it must NOT run at module import time.
 # split/meta-fix/gptsovits paths never need torch.
 import split_markers as _sm   # 분할 마커 검증 단일 권위(순수, stdlib만)
-from audio_utils import (emit, load_audio, save_audio, find_ffmpeg,
-                         convert_to_wav, trim_silence, fmt_time, fmt_srt_time,
-                         get_device, patch_torchaudio)
+from audio_utils import (emit, error_already_emitted, load_audio, save_audio,
+                         find_ffmpeg, convert_to_wav, trim_silence, fmt_time,
+                         fmt_srt_time, get_device, patch_torchaudio)
 
 
 def main():
@@ -307,7 +307,14 @@ def main():
                 gpu_policy=getattr(args, "gpu_policy", "auto")) or []
 
         if not tracks:
-            emit("error", message="분리 결과가 없습니다.")
+            # 워커(music_worker/conversation_worker)가 이미 구조화 오류(code·샘플레이트·
+            # 채널 등)를 낸 뒤 return [] 한 경우가 있다. 메인 프로세스는 pending error 를
+            # 나중 것으로 덮어쓰므로 여기서 code 없는 일반 오류를 또 보내면 근본 원인이
+            # 지워지고 사용자는 가장 쓸모없는 마지막 메시지만 보게 된다.
+            # → 그 실행의 첫 구조화 오류를 종결 권위로 남기고, 아무 오류도 없었을 때만
+            #   일반 오류로 원인 없는 빈 결과를 보고한다.
+            if not error_already_emitted():
+                emit("error", message="분리 결과가 없습니다.")
             sys.exit(1)
 
         # Post-processing

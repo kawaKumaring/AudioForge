@@ -19,6 +19,49 @@ def _canonical_labels(order, n_speakers):
     return label_of, speaker_names
 
 
+def _speaker_track_plan(order, first_app, n_samples):
+    """저장할 화자 트랙 계획 — 출력 프레임이 하나도 없는 화자는 제외한다 (순수 함수).
+
+    MIN_TURN_FRAMES 병합이 어떤 화자의 구간을 전부 흡수하면 그 화자의
+    speaker_wavs 는 끝까지 all-zero 로 남는다. 예전에는 order 전체를 돌며 무조건
+    save_audio 를 불러서, 사용자 트랙 목록에 재생해도 아무 소리가 없는 무음 WAV 가
+    섞여 나왔다. 그런 화자는 파일을 쓰지도, tracks 에 넣지도 않는다.
+
+    판정 근거는 이미 계산된 first_app 뿐이다(재분석 없음). first_app[spk] 는
+    Step 8 에서 '그 화자가 처음 등장한 샘플 위치'로 채워지고, smoothed 에 한 프레임도
+    남지 않은 화자는 초기 sentinel(n_samples)에 그대로 머문다. 재구성 루프도
+    s >= n_samples 에서 멈추므로 first_app[spk] < n_samples 인 화자만 실제로
+    샘플을 배정받는다 — 즉 first_app 이 곧 '출력 프레임 유무'다.
+
+    살아남은 화자에게는 order(첫 등장 순)를 유지한 채 화자 A, B, … 를 빈틈없이
+    다시 매긴다(중간에 빠진 화자가 있어도 라벨에 구멍이 생기지 않는다).
+
+    반환: [(spk_idx, name, label), ...] — order 순. plain int 만 다루므로
+    torch/numpy 없이 합성 테스트가 가능하다.
+    """
+    plan = []
+    for spk_idx in order:
+        if first_app[spk_idx] >= n_samples:
+            continue   # 병합으로 전부 흡수됨 → 무음 WAV 만 나올 화자, 저장하지 않는다
+        letter = chr(65 + len(plan))
+        plan.append((spk_idx, f"speaker_{letter.lower()}", f"화자 {letter}"))
+    return plan
+
+
+def _save_speaker_tracks(order, first_app, n_samples, speaker_wavs, sr, output_dir):
+    """계획대로 화자 WAV 를 저장하고 tracks 목록을 돌려준다.
+
+    출력 프레임이 없는 화자는 파일을 만들지 않는다(_speaker_track_plan 참조).
+    save_audio 는 모듈 전역을 통해 부르므로, 테스트가 이를 가짜로 바꿔 끼우면
+    실제 오디오·파일 없이 저장 배선을 검증할 수 있다."""
+    tracks = []
+    for spk_idx, name, label in _speaker_track_plan(order, first_app, n_samples):
+        out_path = os.path.join(output_dir, f"{name}.wav")
+        save_audio(out_path, speaker_wavs[spk_idx], sr)
+        tracks.append({"name": name, "label": label, "path": out_path})
+    return tracks
+
+
 # posterior 해석 임계 메타(직렬화용). synthetic 검증값이며 실제 정확도 확정값이 아니다.
 def _interpretation_thresholds():
     import dialogue_canonical as dc
@@ -529,13 +572,11 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
 
         emit("progress", percent=92, message="파일 저장 중...")
 
-        tracks = []
-        for idx, spk_idx in enumerate(order):
-            label = f"화자 {chr(65 + idx)}"
-            name = f"speaker_{chr(65 + idx).lower()}"
-            out_path = os.path.join(output_dir, f"{name}.wav")
-            save_audio(out_path, speaker_wavs[spk_idx], sr_full)
-            tracks.append({"name": name, "label": label, "path": out_path})
+        # 출력 프레임이 없는 화자(MIN_TURN 병합에 전부 흡수됨)는 건너뛴다 — 예전에는
+        # 무음 WAV 가 저장돼 트랙 목록에 그대로 노출됐다. 남는 화자의 오디오 내용과
+        # 순서(order)는 그대로이고, 라벨만 빈틈없이 다시 매겨진다.
+        tracks = _save_speaker_tracks(order, first_app, n_samples,
+                                      speaker_wavs, sr_full, output_dir)
 
         emit("progress", percent=95, message="분리 완료")
 
