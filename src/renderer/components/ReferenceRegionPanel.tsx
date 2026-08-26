@@ -1,4 +1,8 @@
 import { useState, useEffect, useRef, useCallback, type CSSProperties, type MouseEvent } from 'react'
+import {
+  IDLE_SESSION, beginRequest, invalidate, applyEvent, decideAsyncResult, previewErrorText,
+  type PreviewSession, type PreviewPhase, type PreviewEvent,
+} from '../../shared/previewSession'
 
 // 참조 음성 준비 패널 — 10초 초과 원본을 거부하지 않고 "참조 원본"으로 수용하고,
 // 파형에서 3~10초 구간을 골라 mono/24k 파생 클립을 만든 뒤 그것만 합성/전사에 전달한다.
@@ -52,6 +56,49 @@ function fmt(s: number | undefined | null) {
   return typeof s === 'number' && Number.isFinite(s) ? `${s.toFixed(2)}초` : '-초'
 }
 
+// ── 미리듣기 DOM 조작(요소 수명은 컴포넌트가 소유, '적용/폐기' 판정은 shared/previewSession) ──
+
+// 소스 전환은 항상 pause() → src 비우기 → 새 src 순서로만 한다.
+// 재생 중인 요소의 src만 갈아끼우면 요소가 이상 상태로 남아(로드 미완·seek 무시) 이후 재생이 무음이 된다.
+//
+// 단, '진행 중인 로드'는 중간에 끊지 않는다. 끊긴 local-file:// 요청이 수십 개 쌓이면 그 뒤로는
+// 어떤 미리듣기도 로드되지 않는다(재현 확인). 로드가 끝났거나 애초에 소스가 없을 때만 src를 비운다.
+function detachSource(el: HTMLAudioElement) {
+  try { el.pause() } catch { /* noop */ }
+  if (el.readyState === 0 && el.networkState === 2 /* NETWORK_LOADING */) return
+  el.removeAttribute('src')
+  try { el.load() } catch { /* noop */ }
+}
+function attachSource(el: HTMLAudioElement, url: string) {
+  el.src = url
+  try { el.load() } catch { /* noop */ }
+}
+
+// loadedmetadata/canplay(또는 error/타임아웃)까지 기다린다. true면 재생 위치를 지정해도 안전하다.
+// 로드가 끝나기 전 currentTime을 지정하거나 play()를 부르면 위치가 반영되지 않거나 프로미스가 거부된다.
+function waitUntilLoaded(el: HTMLAudioElement, timeoutMs = 4000): Promise<boolean> {
+  if (el.readyState >= 1 /* HAVE_METADATA */) return Promise.resolve(true)
+  return new Promise<boolean>((resolve) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const onReady = () => finish(true)
+    const onFail = () => finish(false)
+    function finish(v: boolean) {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      el.removeEventListener('loadedmetadata', onReady)
+      el.removeEventListener('canplay', onReady)
+      el.removeEventListener('error', onFail)
+      resolve(v)
+    }
+    timer = setTimeout(() => finish(el.readyState >= 1), timeoutMs)
+    el.addEventListener('loadedmetadata', onReady)
+    el.addEventListener('canplay', onReady)
+    el.addEventListener('error', onFail)
+  })
+}
+
 export default function ReferenceRegionPanel({ path, clipKey, disabled, onState, label = '참조 음성' }: ReferenceRegionPanelProps) {
   const [fileUrl, setFileUrl] = useState<string | null>(null)
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
@@ -63,7 +110,14 @@ export default function ReferenceRegionPanel({ path, clipKey, disabled, onState,
   const [metrics, setMetrics] = useState<RegionMetrics | null>(null)
   const [confirmedClip, setConfirmedClip] = useState<string>('')
   const audioRef = useRef<HTMLAudioElement | null>(null)
-  const stopTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  // 구간 종료 타이머는 '어느 세대의 재생을 멈추려던 것인지'를 함께 들고 다닌다 — 옛 세대 타이머는 no-op.
+  const stopTimer = useRef<{ id: ReturnType<typeof setTimeout>; gen: number } | null>(null)
+  const sessionRef = useRef<PreviewSession>(IDLE_SESSION)
+  const [previewPhase, setPreviewPhase] = useState<PreviewPhase>('idle')
+  const [previewError, setPreviewError] = useState<string | null>(null)
+  // audio ref 콜백은 stable해야 매 렌더 detach/attach가 일어나지 않는다 → fileUrl은 ref로 읽는다.
+  const fileUrlRef = useRef<string | null>(fileUrl)
+  fileUrlRef.current = fileUrl
 
   // onState는 상위에서 인라인 화살표로 올 수 있어 매 렌더 새 참조 → runAnalyze useCallback/effect가
   // 매 렌더 재실행되면 무한 재분석이 된다. ref로 최신 함수만 참조해 identity 의존을 끊는다.
@@ -134,20 +188,109 @@ export default function ReferenceRegionPanel({ path, clipKey, disabled, onState,
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [start, dur])
 
-  const stopPlay = useCallback(() => {
-    if (stopTimer.current) { clearTimeout(stopTimer.current); stopTimer.current = null }
-    if (audioRef.current) { audioRef.current.pause() }
+  // ── 미리듣기(세대 기반) ────────────────────────────────────────────────────
+  const commitSession = (next: PreviewSession) => {
+    sessionRef.current = next
+    setPreviewPhase(next.phase)
+    setPreviewError(next.errorMessage)
+  }
+  // 비동기 결과를 세션에 반영한다. 옛 세대/불법 전이는 여기서 걸러져 아무 일도 하지 않는다.
+  const dispatchPreview = (gen: number, event: PreviewEvent): boolean => {
+    const v = applyEvent(sessionRef.current, gen, event)
+    if (v.apply) commitSession(v.next)
+    return v.apply
+  }
+  const clearRegionTimer = () => {
+    if (stopTimer.current) { clearTimeout(stopTimer.current.id); stopTimer.current = null }
+  }
+
+  // audio 요소의 src는 React가 아니라 이 콜백이 소유한다 — 교체/해제 시 pause + src 비우기를 보장하기 위해.
+  const setAudioEl = useCallback((el: HTMLAudioElement | null) => {
+    const prev = audioRef.current
+    if (prev === el) return
+    if (stopTimer.current) { clearTimeout(stopTimer.current.id); stopTimer.current = null }
+    if (prev) {
+      detachSource(prev)
+      // 요소가 교체/해제되면 진행 중이던 세대를 무효화 — 늦게 오는 로드/재생 결과가 새 요소를 건드리지 못하게.
+      sessionRef.current = invalidate(sessionRef.current)
+      setPreviewPhase('idle'); setPreviewError(null)
+    }
+    audioRef.current = el
+    const url = fileUrlRef.current
+    if (el && url) attachSource(el, url)
   }, [])
 
-  useEffect(() => () => stopPlay(), [stopPlay])
+  // 소스가 바뀌면(파일 교체) 이전 재생을 끝내고 src를 비운 뒤 새 소스를 건다 + 세대 무효화.
+  useEffect(() => {
+    const el = audioRef.current
+    if (!el) return
+    if (el.getAttribute('src') === (fileUrl || '')) return
+    clearRegionTimer()
+    detachSource(el)
+    commitSession(invalidate(sessionRef.current))
+    if (fileUrl) attachSource(el, fileUrl)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fileUrl])
+
+  const stopPlay = () => {
+    clearRegionTimer()
+    const el = audioRef.current
+    if (el) { try { el.pause() } catch { /* noop */ } }
+    // 정지도 세대를 올린다 — 아직 돌아오지 않은 로드/재생 결과가 다시 재생을 시작하지 못하게.
+    commitSession(invalidate(sessionRef.current, 'stopped'))
+  }
+
+  // 언마운트(모드 전환·행 접기) 시 재생 정지 + 타이머 해제 — 잔여 재생 방지.
+  useEffect(() => () => {
+    if (stopTimer.current) { clearTimeout(stopTimer.current.id); stopTimer.current = null }
+    const el = audioRef.current
+    if (el) { try { el.pause() } catch { /* noop */ } }
+  }, [])
 
   const playRegion = () => {
     const el = audioRef.current
     if (!el) return
-    stopPlay()
-    el.currentTime = start
-    el.play().catch(() => {})
-    stopTimer.current = setTimeout(() => { el.pause() }, Math.max(100, dur * 1000))
+    // (1) 이전 재생을 확실히 끝낸다 — 구간 종료 타이머 해제 + pause.
+    clearRegionTimer()
+    try { el.pause() } catch { /* noop */ }
+    // (2) 새 세대. 이후 도착하는 이전 세대의 로드 완료·play 결과·구간 종료 타이머는 전부 폐기된다.
+    const session = beginRequest(sessionRef.current)
+    commitSession(session)
+    const gen = session.gen
+    const startSec = start
+    const durSec = dur
+    void (async () => {
+      // (3) loadedmetadata/canplay 이전에는 seek·play 하지 않는다(위치 미반영·프로미스 거부의 원인).
+      const loaded = await waitUntilLoaded(el)
+      if (decideAsyncResult(sessionRef.current, gen) === 'discard') return
+      if (!loaded) { dispatchPreview(gen, { kind: 'error', message: previewErrorText('load') }); return }
+      if (!dispatchPreview(gen, { kind: 'ready' })) return
+      try { el.currentTime = startSec } catch { /* noop */ }
+      // play() 프로미스는 정착하지 않을 수도 있다(로드가 멈춘 요소) → 타임아웃과 경주시켜 '준비 중'에 갇히지 않게.
+      const result = await Promise.race([
+        el.play().then(() => 'ok', (e: unknown) => 'rejected:' + ((e as Error)?.name || '')),
+        new Promise<string>((r) => setTimeout(() => r('timeout'), 4000)),
+      ])
+      // stale이면 그냥 물러난다 — 요소는 하나뿐이라 여기서 pause() 하면 이미 시작된 '새' 재생을 죽인다.
+      // 정지 책임은 무효화한 쪽(stopPlay·소스 교체·언마운트·새 요청)이 이미 졌다.
+      if (decideAsyncResult(sessionRef.current, gen) === 'discard') return
+      if (result !== 'ok') {
+        // 새 요청이 이 재생을 끊어서 생긴 거부(AbortError)는 옛 세대 → 위 stale 검사에서 이미 폐기된다.
+        // 여기까지 온 실패는 삼키지 않고 사용자 언어 오류로 노출한다(자동 재시도 없음).
+        const kind = el.error || result.includes('NotSupportedError') ? 'load' : 'play'
+        dispatchPreview(gen, { kind: 'error', message: previewErrorText(kind) })
+        return
+      }
+      if (!dispatchPreview(gen, { kind: 'play' })) return
+      // (4) 구간 종료 타이머는 '실제 재생이 시작된 뒤'에 건다. 클릭 시각 기준이면 로드 시간만큼
+      //     들리는 구간이 잘려 무음처럼 느껴진다. 세대를 함께 들고 있어 옛 타이머는 새 재생을 멈추지 못한다.
+      const id = setTimeout(() => {
+        if (decideAsyncResult(sessionRef.current, gen) === 'discard') return
+        try { el.pause() } catch { /* noop */ }
+        dispatchPreview(gen, { kind: 'region-end' })
+      }, Math.max(100, durSec * 1000))
+      stopTimer.current = { id, gen }
+    })()
   }
 
   const confirmRegion = async () => {
@@ -271,14 +414,24 @@ export default function ReferenceRegionPanel({ path, clipKey, disabled, onState,
 
           {/* 재생 · 확정 */}
           <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
-            <button onClick={playRegion} disabled={disabled} style={btn('var(--bg-elevated)', 'var(--text-secondary)')}>▶ 구간 미리듣기</button>
+            <button onClick={playRegion} disabled={disabled} data-af-preview-phase={previewPhase}
+              style={btn('var(--bg-elevated)', 'var(--text-secondary)')}>▶ 구간 미리듣기</button>
             <button onClick={stopPlay} disabled={disabled} style={btn('var(--bg-elevated)', 'var(--text-muted)')}>■ 정지</button>
             <button onClick={confirmRegion} disabled={disabled || confirming}
               style={btn(confirmedClip ? 'var(--bg-elevated)' : 'var(--rose)', confirmedClip ? 'var(--cyan)' : '#fff')}>
               {confirming ? '생성 중...' : confirmedClip ? '✓ 확정됨 (다시 확정)' : '이 구간으로 확정'}
             </button>
+            {/* 재생 상태를 눈에 보이게 — '눌렀는데 아무 반응 없음'을 없앤다 */}
+            <span role="status" aria-live="polite" style={{ ...sub, minWidth: 44 }}>
+              {previewPhase === 'playing' ? '재생 중' : previewPhase === 'loading' ? '준비 중' : ''}
+            </span>
             <span style={{ ...sub, marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' }}>선택 {fmt(dur)}</span>
           </div>
+
+          {/* 미리듣기 실패는 삼키지 않고 보여준다(사용자 언어·경로 미노출·자동 재시도 없음) */}
+          {previewError && (
+            <div role="alert" style={{ ...sub, color: 'var(--rose)' }}>{previewError}</div>
+          )}
 
           {/* 확정 후 구간 품질 지표 */}
           {metrics && (
@@ -294,8 +447,8 @@ export default function ReferenceRegionPanel({ path, clipKey, disabled, onState,
             </div>
           )}
 
-          {/* 원본 재생용(숨김 오디오) */}
-          {fileUrl && <audio ref={audioRef} src={fileUrl} preload="auto" style={{ display: 'none' }} />}
+          {/* 원본 재생용(숨김 오디오). src는 setAudioEl/fileUrl effect가 소유한다 — 재생 중 src만 갈아끼우지 않기 위해. */}
+          {fileUrl && <audio ref={setAudioEl} preload="auto" style={{ display: 'none' }} />}
         </div>
       )}
     </div>
