@@ -20,9 +20,108 @@ sys.setrecursionlimit(10000)
 # NOTE: torchaudio patching moved to audio_utils.patch_torchaudio() —
 # it imports torch (10-30s) so it must NOT run at module import time.
 # split/meta-fix/gptsovits paths never need torch.
-from audio_utils import (emit, load_audio, save_audio, find_ffmpeg,
+import audio_utils as _audio_utils
+from audio_utils import (emit as _emit_upstream, load_audio, save_audio, find_ffmpeg,
                          convert_to_wav, trim_silence, fmt_time, fmt_srt_time,
                          get_device, patch_torchaudio)
+
+# ── C3: CLI 성공 판정 ──────────────────────────────────────────────────────────
+# 문제: TTS 모드는 error 이벤트를 낸 뒤 return 했다(모델 로딩 실패·상한 도달·config 위반 전부).
+# main()에서 return 하면 종료 코드는 0이므로, 종료 코드만 읽는 자동화 호출자는 실패를 성공으로 읽었다.
+#
+# 종료 코드는 '바꾸지 않는다'. Electron main은 성공을 종료 코드로 판정하지 않고 result 라인 도달로
+# 판정하는데(python-runner.ts는 result/error 라인을, audio.ipc.ts는 pendingResult를 본다),
+# 종료 코드를 0이 아니게 만들면 python-runner가 stderr 기반 '문자열' error를 한 번 더 emit 하고
+# 그것이 구조화 error({message, code})를 덮어써서 code가 사라진다(GENERATION_LIMIT_EXCEEDED /
+# INVALID_TTS_CONFIG 분기 UX가 조용히 깨진다). 그 보정은 src/ 소유이므로 여기서 건드리지 않는다.
+#
+# 대신 실행당 정확히 한 줄, 마지막에 구조화 종결 봉투를 낸다:
+#   {"type":"final","ok":bool,"terminal":"result"|"error"|"none","mode":...,"code":...,
+#    "output_verified":bool,"outputs":N,"exit_code":N}
+# 'final'은 새 type이라 python-runner의 분기(progress/status/result/error)에 걸리지 않는다
+# → Electron 영향 0. 자동화 호출자는 종료 코드 대신 이 봉투를 읽는다.
+#
+# 성공 조건은 단 하나: terminal=="result" 이면서 선언된 산출물이 실제로 존재하고 0바이트가 아닐 것.
+# result와 error가 한 실행에 함께 나오면 성공이 아니라 DOUBLE_TERMINAL 이다.
+_RUN = {
+    "mode": None,
+    "result": 0,          # result 터미널 수신 수
+    "error": 0,           # error 터미널 수신 수
+    "error_code": None,   # 첫 구조화 error code(있으면)
+    "outputs": [],        # result가 선언한 산출물 경로
+    "mismatch": False,    # 반환 경로가 선언 산출물에 없음(계약 위반)
+    "final_emitted": False,
+}
+
+
+def emit(msg_type, **kwargs):
+    """audio_utils.emit 패스스루 + 터미널 신호 기록.
+
+    모듈 import 시점에 audio_utils.emit 자체를 이 래퍼로 교체한다. music_worker /
+    conversation_worker / tts_worker 는 전부 main() 안에서 '지연 import' 되므로
+    (torch import 비용 때문) 그때 `from audio_utils import emit` 이 이 래퍼를 집는다.
+    → 한 실행의 모든 터미널 신호가 어느 모듈에서 나왔든 한 곳에 모인다."""
+    if msg_type == "result":
+        _RUN["result"] += 1
+        for t in (kwargs.get("tracks") or []):
+            p = t.get("path") if isinstance(t, dict) else None
+            if p:
+                _RUN["outputs"].append(p)
+    elif msg_type == "error":
+        _RUN["error"] += 1
+        if _RUN["error_code"] is None and kwargs.get("code"):
+            _RUN["error_code"] = kwargs["code"]
+    return _emit_upstream(msg_type, **kwargs)
+
+
+_audio_utils.emit = emit   # 이후 지연 import 되는 모듈들도 같은 래퍼를 본다
+
+
+def _same_path(a, b):
+    try:
+        return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+    except OSError:
+        return False
+
+
+def _outputs_verified():
+    """선언된 산출물이 전부 실제로 존재하고 0바이트가 아닌가.
+    선언이 0개인 조회성 모드(preflight/ref-analyze 등)는 공허참이다 — 검증할 산출물이 없다."""
+    for p in _RUN["outputs"]:
+        try:
+            if not (os.path.exists(p) and os.path.getsize(p) > 0):
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def _emit_final(exit_code=0):
+    """실행당 정확히 한 줄. 재진입/중복 방지."""
+    if _RUN["final_emitted"]:
+        return
+    _RUN["final_emitted"] = True
+    has_r, has_e = _RUN["result"] > 0, _RUN["error"] > 0
+    verified = _outputs_verified()
+    if has_r and has_e:
+        # 한 실행이 result와 error를 동시에 냈다 — 어느 쪽도 신뢰할 수 없다.
+        terminal, ok, code = "error", False, "DOUBLE_TERMINAL"
+    elif has_e:
+        terminal, ok, code = "error", False, _RUN["error_code"]
+    elif has_r:
+        terminal = "result"
+        if _RUN["mismatch"]:
+            ok, code = False, "OUTPUT_PATH_MISMATCH"
+        elif not verified:
+            ok, code = False, "OUTPUT_MISSING"
+        else:
+            ok, code = True, None
+    else:
+        # 외부 kill·조용한 return 등 — 종결 신호 없이 끝났다.
+        terminal, ok, code = "none", False, "NO_TERMINAL_SIGNAL"
+    _emit_upstream("final", ok=ok, terminal=terminal, mode=_RUN["mode"], code=code,
+                   output_verified=bool(ok and verified), outputs=len(_RUN["outputs"]),
+                   exit_code=exit_code)
 
 
 def main():
@@ -45,12 +144,14 @@ def main():
     parser.add_argument("--split-labels", default="")
     parser.add_argument("--n-speakers", type=int, default=2)
     args = parser.parse_args()
+    _RUN["mode"] = args.mode   # 종결 봉투에 실행 모드를 남긴다(파싱 직후 1회)
 
     # Load config from JSON file if provided (avoids spawn encoding issues)
     if args.config and os.path.exists(args.config):
         with open(args.config, "r", encoding="utf-8") as f:
             config = json.load(f)
         args.mode = config.get("mode", args.mode)
+        _RUN["mode"] = args.mode
         args.input = config.get("input", args.input)
         args.output = config.get("output", args.output)
         args.model = config.get("model", args.model)
@@ -193,15 +294,20 @@ def main():
                 emit("error", message="말끝 다듬기 설정이 올바르지 않습니다.", code=_code)
                 return
             try:
-                synthesize(ref_input, args.tts_text, args.output,
-                           speed=args.tts_speed, silence_gap=args.tts_silence_gap,
-                           emotion_refs=emotion_refs, emotion_ref_sources=emotion_ref_sources,
-                           preferred_engine=preferred_engine,
-                           reference_prompts=ref_prompts,
-                           pitch=getattr(args, "tts_pitch", 0.0),
-                           tail_cfg=_tail_cfg,
-                           emotion_boundary_mode=_eb_mode,
-                           emotion_boundary_pause_ms=_eb_ms)
+                _synth_out = synthesize(
+                    ref_input, args.tts_text, args.output,
+                    speed=args.tts_speed, silence_gap=args.tts_silence_gap,
+                    emotion_refs=emotion_refs, emotion_ref_sources=emotion_ref_sources,
+                    preferred_engine=preferred_engine,
+                    reference_prompts=ref_prompts,
+                    pitch=getattr(args, "tts_pitch", 0.0),
+                    tail_cfg=_tail_cfg,
+                    emotion_boundary_mode=_eb_mode,
+                    emotion_boundary_pause_ms=_eb_ms)
+                # 성공 조건은 'result 도달 + 실제 산출물'이다. synthesize가 돌려준 최종 경로가
+                # result가 선언한 tracks에 실제로 들어있는지까지 대조한다(선언과 산출의 드리프트 차단).
+                if _synth_out and not any(_same_path(_synth_out, p) for p in _RUN["outputs"]):
+                    _RUN["mismatch"] = True
             except RuntimeError as e:
                 # 구조화 payload(code+필드)가 있으면 renderer까지 전달(문자열 prefix 추론 대신 정식 code).
                 # payload에는 문장·전사·전체경로가 없다(tts_worker가 index/토큰/감정 ID만 담음).
@@ -734,4 +840,16 @@ def _run_meta_fix(args):
 
 
 if __name__ == "__main__":
-    main()
+    # 봉투는 main()의 try 블록이 아니라 여기서 감싼다 — qwen-preflight / pitch-preflight 는
+    # 그 try 이전에 return 하므로 안쪽 finally로는 덮이지 않는다.
+    try:
+        main()
+    except SystemExit as _se:
+        _code = _se.code
+        _emit_final(_code if isinstance(_code, int) else (0 if _code is None else 1))
+        raise
+    except BaseException:
+        _emit_final(1)
+        raise
+    else:
+        _emit_final(0)

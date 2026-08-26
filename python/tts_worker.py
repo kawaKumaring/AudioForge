@@ -1673,7 +1673,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
             emit("progress", percent=99, message="완료!")
             emit("result", tracks=tracks, outputDir=output_dir, metadata=meta)
-            return
+            return final_path   # C3: 호출부(separate.py)가 실제 산출물을 검증할 수 있게
 
         segment_paths = []
         seg_engines = []
@@ -1774,6 +1774,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
         emit("progress", percent=99, message="완료!")
         emit("result", tracks=tracks, outputDir=output_dir, metadata=meta)
+        return final_path   # C3: 호출부(separate.py)가 실제 산출물을 검증할 수 있게
 
     finally:
         for d in tmp_dirs:
