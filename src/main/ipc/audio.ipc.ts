@@ -16,6 +16,8 @@ import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
 import { removeSplitTempDirs, listSplitTempDirs } from '../services/split-temp-cleanup'
 import { createSingleFlight, createKeyedSingleFlight } from '../services/single-flight'
 import type { CancelResponse } from '../../shared/cancelContract'
+import { validateSidecarEvent, SIDECAR_IPC_CHANNEL } from '../../shared/sidecarEvents'
+import type { SidecarEnvelope } from '../../shared/sidecarEvents'
 
 // execFile(배열 인자)은 cmd.exe를 거치지 않아 시스템 코드페이지(CP949)의
 // 한글 경로 손상 문제에 면역. exec(문자열)은 한글 파일명에서 깨짐 → 금지.
@@ -68,6 +70,16 @@ function saveSetting(key: string, value: unknown): void {
   }
 }
 function savePythonPath(p: string): void { saveSetting('pythonPath', p) }
+
+// 진단 사이드카 검증기를 모든 러너에 주입한다. python-runner는 Electron 없이 node --test로도
+// 로드되므로 검증기를 직접 import하지 않고 주입받는다(주입을 빠뜨리면 fail-closed —
+// 아무것도 전달되지 않고 unknownEventStats에만 집계된다).
+const runnerDeps = { validateSidecar: validateSidecarEvent }
+
+// 검증을 통과한 봉투만 renderer로. main에서 이미 검증했으므로 여기서 추가 정제는 하지 않는다.
+function forwardSidecar(r: PythonRunner, win: BrowserWindow): void {
+  r.on('sidecar', (env: SidecarEnvelope) => { sendToWindow(win, SIDECAR_IPC_CHANNEL, env) })
+}
 
 let runner: PythonRunner | null = null
 // 트랙 후처리 러너 슬롯. 늦게 도착한 옛 러너의 done이 새 러너를 지우지 못하도록 신원 가드를 쓴다
@@ -314,7 +326,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       const scriptPath = PythonRunner.getScriptPath('separate.py')
       writeFileSync(cfgPath, JSON.stringify({ mode: 'ref-transcribe', input: filePath, output: dirname(filePath) }), 'utf-8')
       return await runPreview({
-        runner: new PythonRunner(pythonPath),
+        runner: new PythonRunner(pythonPath, runnerDeps),
         scriptPath, args: ['--config', cfgPath],
         timeoutMs: 120000,  // Whisper small 로딩+전사 여유. 멈춘 프로세스만 끊음.
         cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
@@ -340,7 +352,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
         const scriptPath = PythonRunner.getScriptPath('separate.py')
         writeFileSync(cfgPath, JSON.stringify({ mode: 'ref-analyze', input: filePath, output: dirname(filePath) }), 'utf-8')
         return await runPreview({
-          runner: new PythonRunner(pythonPath),
+          runner: new PythonRunner(pythonPath, runnerDeps),
           scriptPath, args: ['--config', cfgPath],
           timeoutMs: 60000,  // 파형 peak 스캔 여유. 멈춘 프로세스만 끊음.
           cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
@@ -370,7 +382,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
         regionStart: startSec, regionDur: durSec
       }), 'utf-8')
       return await runPreview({
-        runner: new PythonRunner(pythonPath),
+        runner: new PythonRunner(pythonPath, runnerDeps),
         scriptPath, args: ['--config', cfgPath],
         timeoutMs: 60000,
         cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
@@ -392,7 +404,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
         const scriptPath = PythonRunner.getScriptPath('separate.py')
         writeFileSync(cfgPath, JSON.stringify({ mode: 'qwen-preflight' }), 'utf-8')
         return await runPreview({
-          runner: new PythonRunner(pythonPath),
+          runner: new PythonRunner(pythonPath, runnerDeps),
           scriptPath, args: ['--config', cfgPath],
           timeoutMs: 30000,
           cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
@@ -426,7 +438,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
         const scriptPath = PythonRunner.getScriptPath('separate.py')
         writeFileSync(cfgPath, JSON.stringify({ mode: 'pitch-preflight' }), 'utf-8')
         const raw = await runPreview({
-          runner: new PythonRunner(pythonPath),
+          runner: new PythonRunner(pythonPath, runnerDeps),
           scriptPath, args: ['--config', cfgPath],
           timeoutMs: 35000,
           cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
@@ -534,7 +546,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
     console.log(`[AudioForge] Config written to: ${configPath}`)
 
-    runner = new PythonRunner(pythonPath)
+    runner = new PythonRunner(pythonPath, runnerDeps)
     const thisRunner = runner  // 이 실행 인스턴스 고정 — done에서 새 실행의 runner를 null로 덮어쓰지 않도록(clobber 방지).
 
     // 종료 시 UI가 'processing'에 남지 않도록: result/error/watchdog/취소 중 하나로 반드시 '정착'.
@@ -552,6 +564,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     // '다른 모드로 재처리'를 보는 시점엔 이미 runner=null이라, 결과 직후 재합성해도 "이미 처리 중"이 없다.
     let pendingResult: unknown = null
     let pendingError: string | { message?: unknown; code?: unknown } | null = null
+
+    forwardSidecar(runner, mainWindow)
 
     runner.on('progress', (data) => {
       mainWindow.webContents.send('audio:progress', data)
@@ -703,7 +717,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       throw new Error(`Python 스크립트를 찾을 수 없습니다: ${scriptPath}`)
     }
 
-    const thisRunner = trackSlot.set(new PythonRunner(pythonPath))
+    const thisRunner = trackSlot.set(new PythonRunner(pythonPath, runnerDeps))
 
     // Korean paths must never be passed as spawn args (CP949 corruption) —
     // same JSON config approach as 'audio:process'
@@ -745,6 +759,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       }, WATCHDOG_MS)
     }
     resetWatchdog()
+
+    forwardSidecar(thisRunner, mainWindow)
 
     thisRunner.on('progress', (data) => {
       resetWatchdog()
