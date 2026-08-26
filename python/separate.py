@@ -7,7 +7,9 @@ Communication via JSON lines on stdout.
 
 import argparse
 import json
+import math
 import os
+import re
 import sys
 import subprocess
 
@@ -20,9 +22,113 @@ sys.setrecursionlimit(10000)
 # NOTE: torchaudio patching moved to audio_utils.patch_torchaudio() —
 # it imports torch (10-30s) so it must NOT run at module import time.
 # split/meta-fix/gptsovits paths never need torch.
-from audio_utils import (emit, load_audio, save_audio, find_ffmpeg,
-                         convert_to_wav, trim_silence, fmt_time, fmt_srt_time,
-                         get_device, patch_torchaudio)
+import split_markers as _sm   # 분할 마커 검증 단일 권위(순수, stdlib만)
+import audio_utils as _audio_utils
+# 두 기능이 같은 emit 지점을 각자 필요로 한다 — 어느 쪽도 버리지 않고 함께 쓴다.
+#  - _emit_upstream : 아래에서 정의하는 터미널 기록 래퍼가 위임할 '원본' emit(C3 종결 봉투).
+#  - error_already_emitted : 이미 구조화 오류가 나갔는지 조회(음악 P0 근본 원인 보존).
+# 래퍼가 원본으로 패스스루하므로 원본이 세우는 _error_emitted 플래그는 그대로 유효하다.
+from audio_utils import (emit as _emit_upstream, error_already_emitted, load_audio, save_audio,
+                         find_ffmpeg, convert_to_wav, trim_silence, fmt_time,
+                         fmt_srt_time, get_device, patch_torchaudio)
+
+# ── C3: CLI 성공 판정 ──────────────────────────────────────────────────────────
+# 문제: TTS 모드는 error 이벤트를 낸 뒤 return 했다(모델 로딩 실패·상한 도달·config 위반 전부).
+# main()에서 return 하면 종료 코드는 0이므로, 종료 코드만 읽는 자동화 호출자는 실패를 성공으로 읽었다.
+#
+# 종료 코드는 '바꾸지 않는다'. Electron main은 성공을 종료 코드로 판정하지 않고 result 라인 도달로
+# 판정하는데(python-runner.ts는 result/error 라인을, audio.ipc.ts는 pendingResult를 본다),
+# 종료 코드를 0이 아니게 만들면 python-runner가 stderr 기반 '문자열' error를 한 번 더 emit 하고
+# 그것이 구조화 error({message, code})를 덮어써서 code가 사라진다(GENERATION_LIMIT_EXCEEDED /
+# INVALID_TTS_CONFIG 분기 UX가 조용히 깨진다). 그 보정은 src/ 소유이므로 여기서 건드리지 않는다.
+#
+# 대신 실행당 정확히 한 줄, 마지막에 구조화 종결 봉투를 낸다:
+#   {"type":"final","ok":bool,"terminal":"result"|"error"|"none","mode":...,"code":...,
+#    "output_verified":bool,"outputs":N,"exit_code":N}
+# 'final'은 새 type이라 python-runner의 분기(progress/status/result/error)에 걸리지 않는다
+# → Electron 영향 0. 자동화 호출자는 종료 코드 대신 이 봉투를 읽는다.
+#
+# 성공 조건은 단 하나: terminal=="result" 이면서 선언된 산출물이 실제로 존재하고 0바이트가 아닐 것.
+# result와 error가 한 실행에 함께 나오면 성공이 아니라 DOUBLE_TERMINAL 이다.
+_RUN = {
+    "mode": None,
+    "result": 0,          # result 터미널 수신 수
+    "error": 0,           # error 터미널 수신 수
+    "error_code": None,   # 첫 구조화 error code(있으면)
+    "outputs": [],        # result가 선언한 산출물 경로
+    "mismatch": False,    # 반환 경로가 선언 산출물에 없음(계약 위반)
+    "final_emitted": False,
+}
+
+
+def emit(msg_type, **kwargs):
+    """audio_utils.emit 패스스루 + 터미널 신호 기록.
+
+    모듈 import 시점에 audio_utils.emit 자체를 이 래퍼로 교체한다. music_worker /
+    conversation_worker / tts_worker 는 전부 main() 안에서 '지연 import' 되므로
+    (torch import 비용 때문) 그때 `from audio_utils import emit` 이 이 래퍼를 집는다.
+    → 한 실행의 모든 터미널 신호가 어느 모듈에서 나왔든 한 곳에 모인다."""
+    if msg_type == "result":
+        _RUN["result"] += 1
+        for t in (kwargs.get("tracks") or []):
+            p = t.get("path") if isinstance(t, dict) else None
+            if p:
+                _RUN["outputs"].append(p)
+    elif msg_type == "error":
+        _RUN["error"] += 1
+        if _RUN["error_code"] is None and kwargs.get("code"):
+            _RUN["error_code"] = kwargs["code"]
+    return _emit_upstream(msg_type, **kwargs)
+
+
+_audio_utils.emit = emit   # 이후 지연 import 되는 모듈들도 같은 래퍼를 본다
+
+
+def _same_path(a, b):
+    try:
+        return os.path.normcase(os.path.realpath(a)) == os.path.normcase(os.path.realpath(b))
+    except OSError:
+        return False
+
+
+def _outputs_verified():
+    """선언된 산출물이 전부 실제로 존재하고 0바이트가 아닌가.
+    선언이 0개인 조회성 모드(preflight/ref-analyze 등)는 공허참이다 — 검증할 산출물이 없다."""
+    for p in _RUN["outputs"]:
+        try:
+            if not (os.path.exists(p) and os.path.getsize(p) > 0):
+                return False
+        except OSError:
+            return False
+    return True
+
+
+def _emit_final(exit_code=0):
+    """실행당 정확히 한 줄. 재진입/중복 방지."""
+    if _RUN["final_emitted"]:
+        return
+    _RUN["final_emitted"] = True
+    has_r, has_e = _RUN["result"] > 0, _RUN["error"] > 0
+    verified = _outputs_verified()
+    if has_r and has_e:
+        # 한 실행이 result와 error를 동시에 냈다 — 어느 쪽도 신뢰할 수 없다.
+        terminal, ok, code = "error", False, "DOUBLE_TERMINAL"
+    elif has_e:
+        terminal, ok, code = "error", False, _RUN["error_code"]
+    elif has_r:
+        terminal = "result"
+        if _RUN["mismatch"]:
+            ok, code = False, "OUTPUT_PATH_MISMATCH"
+        elif not verified:
+            ok, code = False, "OUTPUT_MISSING"
+        else:
+            ok, code = True, None
+    else:
+        # 외부 kill·조용한 return 등 — 종결 신호 없이 끝났다.
+        terminal, ok, code = "none", False, "NO_TERMINAL_SIGNAL"
+    _emit_upstream("final", ok=ok, terminal=terminal, mode=_RUN["mode"], code=code,
+                   output_verified=bool(ok and verified), outputs=len(_RUN["outputs"]),
+                   exit_code=exit_code)
 
 
 def main():
@@ -45,12 +151,14 @@ def main():
     parser.add_argument("--split-labels", default="")
     parser.add_argument("--n-speakers", type=int, default=2)
     args = parser.parse_args()
+    _RUN["mode"] = args.mode   # 종결 봉투에 실행 모드를 남긴다(파싱 직후 1회)
 
     # Load config from JSON file if provided (avoids spawn encoding issues)
     if args.config and os.path.exists(args.config):
         with open(args.config, "r", encoding="utf-8") as f:
             config = json.load(f)
         args.mode = config.get("mode", args.mode)
+        _RUN["mode"] = args.mode
         args.input = config.get("input", args.input)
         args.output = config.get("output", args.output)
         args.model = config.get("model", args.model)
@@ -67,6 +175,9 @@ def main():
         args.split_labels = config.get("splitLabels", args.split_labels)
         args.n_speakers = config.get("nSpeakers", args.n_speakers)
         args.gpu_policy = config.get("gpuPolicy", "auto")  # 대화 분리 GPU 정책(auto/gpu/cpu)
+        # 이번 실행 식별자(main 생성). split 임시폴더 이름에 넣어 취소/강제종료 후에도 main이
+        # **이 실행이 만든 폴더만** 정확히 지울 수 있게 한다(파이썬 finally는 taskkill에서 안 돈다).
+        args.run_token = config.get("runToken", "")
         # TTS fields
         args.tts_text = config.get("ttsText", "")
         args.tts_speed = config.get("ttsSpeed", 1.0)
@@ -193,15 +304,20 @@ def main():
                 emit("error", message="말끝 다듬기 설정이 올바르지 않습니다.", code=_code)
                 return
             try:
-                synthesize(ref_input, args.tts_text, args.output,
-                           speed=args.tts_speed, silence_gap=args.tts_silence_gap,
-                           emotion_refs=emotion_refs, emotion_ref_sources=emotion_ref_sources,
-                           preferred_engine=preferred_engine,
-                           reference_prompts=ref_prompts,
-                           pitch=getattr(args, "tts_pitch", 0.0),
-                           tail_cfg=_tail_cfg,
-                           emotion_boundary_mode=_eb_mode,
-                           emotion_boundary_pause_ms=_eb_ms)
+                _synth_out = synthesize(
+                    ref_input, args.tts_text, args.output,
+                    speed=args.tts_speed, silence_gap=args.tts_silence_gap,
+                    emotion_refs=emotion_refs, emotion_ref_sources=emotion_ref_sources,
+                    preferred_engine=preferred_engine,
+                    reference_prompts=ref_prompts,
+                    pitch=getattr(args, "tts_pitch", 0.0),
+                    tail_cfg=_tail_cfg,
+                    emotion_boundary_mode=_eb_mode,
+                    emotion_boundary_pause_ms=_eb_ms)
+                # 성공 조건은 'result 도달 + 실제 산출물'이다. synthesize가 돌려준 최종 경로가
+                # result가 선언한 tracks에 실제로 들어있는지까지 대조한다(선언과 산출의 드리프트 차단).
+                if _synth_out and not any(_same_path(_synth_out, p) for p in _RUN["outputs"]):
+                    _RUN["mismatch"] = True
             except RuntimeError as e:
                 # 구조화 payload(code+필드)가 있으면 renderer까지 전달(문자열 prefix 추론 대신 정식 code).
                 # payload에는 문장·전사·전체경로가 없다(tts_worker가 index/토큰/감정 ID만 담음).
@@ -301,7 +417,14 @@ def main():
                 gpu_policy=getattr(args, "gpu_policy", "auto")) or []
 
         if not tracks:
-            emit("error", message="분리 결과가 없습니다.")
+            # 워커(music_worker/conversation_worker)가 이미 구조화 오류(code·샘플레이트·
+            # 채널 등)를 낸 뒤 return [] 한 경우가 있다. 메인 프로세스는 pending error 를
+            # 나중 것으로 덮어쓰므로 여기서 code 없는 일반 오류를 또 보내면 근본 원인이
+            # 지워지고 사용자는 가장 쓸모없는 마지막 메시지만 보게 된다.
+            # → 그 실행의 첫 구조화 오류를 종결 권위로 남기고, 아무 오류도 없었을 때만
+            #   일반 오류로 원인 없는 빈 결과를 보고한다.
+            if not error_already_emitted():
+                emit("error", message="분리 결과가 없습니다.")
             sys.exit(1)
 
         # Post-processing
@@ -501,7 +624,8 @@ def _run_split(args):
     split_labels_list = []
 
     if args.split_points:
-        split_seconds = [float(x) for x in args.split_points.split(',') if x.strip()]
+        # 숫자로 못 읽는 토큰은 조용히 버리지 않고 그대로 남겨 검증에서 거부되게 한다.
+        split_seconds = _sm.parse_marker_csv(args.split_points)
         if args.split_labels:
             split_labels_list = args.split_labels.split('|')
 
@@ -511,21 +635,31 @@ def _run_split(args):
 
         # Copy input to temp ASCII path for ffmpeg compatibility
         import tempfile
-        tmp_dir = tempfile.mkdtemp(prefix="audioforge_")
+        tmp_dir = tempfile.mkdtemp(prefix=_split_tmp_prefix(args))
         ext = os.path.splitext(args.input)[1]
         tmp_input = os.path.join(tmp_dir, f"source{ext}")
         shutil.copy2(args.input, tmp_input)
 
         try:
-            # Get total duration via ffprobe
-            from audio_utils import find_ffmpeg as _ff
-            ffprobe = os.path.join(os.path.dirname(ffmpeg), "ffprobe" + os.path.splitext(ffmpeg)[1])
-            probe_cmd = [ffprobe, "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", tmp_input]
-            probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
-            total_dur = float(probe_result.stdout.strip()) if probe_result.returncode == 0 else 0
+            # 총 길이(초). 실패하면 None → 마지막 트랙을 조용히 빠뜨리는 대신 구조화 오류로 중단.
+            total_dur = _probe_total_duration(ffmpeg, tmp_input)
+            if total_dur is None:
+                # 길이를 모르면 마지막 트랙 경계를 만들 수 없다 → 조용히 빠뜨리지 말고 중단.
+                emit("error", code="SPLIT_DURATION_UNKNOWN",
+                     message="오디오 길이를 확인할 수 없어 분할을 중단했습니다.")
+                return None
+
+            # 마커 검증(단일 권위 split_markers). 조용한 clamp·정렬·중복제거를 하지 않고 거부한다 —
+            # 예전에는 범위 밖 마커가 그대로 통과해 ffmpeg가 음수 -t를 받고, 앞쪽 트랙만 남긴 채 죽었다.
+            _v = _sm.validate_markers(split_seconds, total_dur)
+            if not _v["ok"]:
+                emit("error", code="SPLIT_MARKERS_INVALID",
+                     message="분할 지점이 올바르지 않아 분할을 중단했습니다.",
+                     errors=_v["errors"])
+                return None
 
             # Build time boundaries
-            boundaries = [0.0] + split_seconds + ([total_dur] if total_dur > 0 else [])
+            boundaries = [0.0] + split_seconds + [total_dur]
 
             # 트랙 이름/라벨: 커스텀 라벨 있으면 사용 + 파일명 안전화, 없으면 Track NN
             track_specs = []
@@ -554,17 +688,20 @@ def _run_split(args):
     emit("progress", percent=5, message="ffmpeg 무음 구간 자동 감지 중...")
 
     import tempfile, shutil, re
-    tmp_dir = tempfile.mkdtemp(prefix="audioforge_")
+    # 마커가 없어 ffmpeg 무음 자동분할로 진입한다는 사실을 사용자에게 명시(예전엔 조용히 갈라졌다).
+    emit("progress", percent=3, message="마커가 없어 자동 무음 분할을 사용합니다.")
+    tmp_dir = tempfile.mkdtemp(prefix=_split_tmp_prefix(args))
     ext = os.path.splitext(args.input)[1]
     tmp_input = os.path.join(tmp_dir, f"source{ext}")
     shutil.copy2(args.input, tmp_input)
 
     try:
-        # Get total duration
-        ffprobe = os.path.join(os.path.dirname(ffmpeg), "ffprobe" + os.path.splitext(ffmpeg)[1])
-        probe_cmd = [ffprobe, "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", tmp_input]
-        probe_result = subprocess.run(probe_cmd, capture_output=True, text=True)
-        total_dur = float(probe_result.stdout.strip()) if probe_result.returncode == 0 else 0
+        # 총 길이(초). 위와 같은 규칙 — 실패는 조용한 누락이 아니라 명시 오류.
+        total_dur = _probe_total_duration(ffmpeg, tmp_input)
+        if total_dur is None:
+            emit("error", code="SPLIT_DURATION_UNKNOWN",
+                 message="오디오 길이를 확인할 수 없어 분할을 중단했습니다.")
+            return None
 
         # Run silencedetect filter
         cmd = [ffmpeg, "-i", tmp_input, "-af", "silencedetect=noise=-35dB:d=1.5", "-f", "null", "-"]
@@ -594,7 +731,7 @@ def _run_split(args):
         emit("progress", percent=25, message=f"{len(split_seconds)}개 분할 지점 확정")
 
         # Use same fast ffmpeg extraction as timestamp mode
-        boundaries = [0.0] + split_seconds + ([total_dur] if total_dur > 0 else [])
+        boundaries = [0.0] + split_seconds + [total_dur]
         track_specs = [(f"track_{i + 1:02d}", f"Track {i + 1:02d}") for i in range(len(boundaries) - 1)]
 
         tracks = _extract_tracks_ffmpeg(ffmpeg, tmp_input, boundaries, track_specs, args, 25, 60)
@@ -611,6 +748,38 @@ def _run_split(args):
             os.rmdir(tmp_dir)
         except OSError:
             pass
+
+
+def _split_tmp_prefix(args):
+    """split 임시폴더 접두사. runToken이 있으면 audioforge_split_<token>_ 형태.
+    main의 split-temp-cleanup이 같은 규칙으로 이 실행 폴더만 골라 지운다."""
+    token = getattr(args, "run_token", "") or ""
+    if token and re.fullmatch(r"[A-Za-z0-9-]{4,64}", token):
+        return f"audioforge_split_{token}_"
+    return "audioforge_"
+
+
+def _probe_total_duration(ffmpeg, media_path):
+    """ffprobe로 총 길이(초)를 구한다. 실패/비정상값이면 None.
+
+    None을 0으로 뭉개면 boundaries에서 마지막 끝점이 빠져 **마지막 트랙이 조용히 사라지는데도
+    성공으로 보고**된다(감사 R5). 호출부는 None을 구조화 오류로 처리해야 한다.
+    """
+    try:
+        ffprobe = os.path.join(os.path.dirname(ffmpeg), "ffprobe" + os.path.splitext(ffmpeg)[1])
+        probe = subprocess.run([ffprobe, "-v", "quiet", "-show_entries", "format=duration",
+                                "-of", "csv=p=0", media_path], capture_output=True, text=True)
+        if probe.returncode != 0:
+            return None
+        raw = (probe.stdout or "").strip()
+        if not raw:
+            return None
+        dur = float(raw)
+    except (OSError, ValueError):
+        return None
+    if not math.isfinite(dur) or dur <= 0:
+        return None
+    return dur
 
 
 def _extract_tracks_ffmpeg(ffmpeg, tmp_input, boundaries, track_specs, args, pct_start, pct_span):
@@ -734,4 +903,16 @@ def _run_meta_fix(args):
 
 
 if __name__ == "__main__":
-    main()
+    # 봉투는 main()의 try 블록이 아니라 여기서 감싼다 — qwen-preflight / pitch-preflight 는
+    # 그 try 이전에 return 하므로 안쪽 finally로는 덮이지 않는다.
+    try:
+        main()
+    except SystemExit as _se:
+        _code = _se.code
+        _emit_final(_code if isinstance(_code, int) else (0 if _code is None else 1))
+        raise
+    except BaseException:
+        _emit_final(1)
+        raise
+    else:
+        _emit_final(0)

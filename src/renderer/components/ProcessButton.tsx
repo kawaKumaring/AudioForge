@@ -1,9 +1,11 @@
 import React from 'react'
 import { motion } from 'framer-motion'
 import { useAppStore } from '@/stores/app.store'
+import { validateMarkers, formatSplitMarkerError } from '../../shared/splitMarkers'
 import { ALL_EMOTIONS, planEmotionRefs } from '@/lib/emotions'
 import { parseTtsScript, TTS_PARSER_VERSION } from '../../shared/ttsGrammar'
 import { inRange, TTS_TAIL_PADDING_MS, TTS_TAIL_FADE_MS, TTS_EMOTION_PAUSE_MS } from '../../shared/ttsExpressionCapabilities'
+import { CANCEL_FAILED_CODE, acceptsSettlement, canRequestCancel, cancelJobId, cancelNoopReason, interpretCancelResponse, isCancelCleanupBusy } from '../../shared/cancelContract'
 
 function _estimateTime(mode: string, duration: number, transcribe: boolean, translate: boolean): string {
   let secs = 0
@@ -21,8 +23,10 @@ function _estimateTime(mode: string, duration: number, transcribe: boolean, tran
 }
 
 export default function ProcessButton() {
-  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsPitchCapability, ttsEmotionRefState, ttsReferencePrompts, ttsEngine, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, status, retryNonce, errorInfo, setProcessing, setProgress, setResult, setError, beginCancelling } = useAppStore()
+  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsPitchCapability, ttsEmotionRefState, ttsReferencePrompts, ttsEngine, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, status, retryNonce, errorInfo, setProcessing, setProgress, setResult, setError } = useAppStore()
   const cleanupRef = React.useRef<(() => void) | null>(null)
+  // 취소 요청 in-flight 가드(로컬). 새 상태 축이 아니라 '같은 요청 중복 전송'만 막는다 — finally에서 반드시 해제.
+  const cancelInFlightRef = React.useRef(false)
 
   // 감정 참조 게이팅/전송(계약 §5 불변식) — 순수 판정은 planEmotionRefs 단일 로직.
   //  대사에 실제 쓰인 감정만 대상. 미사용은 비차단·미전송. 등록+미준비 사용 감정은 blockedId로 차단.
@@ -58,6 +62,15 @@ export default function ProcessButton() {
       }
       ttsParsedPlanSha256 = parsed.plan.fullSha256
     }
+    // split은 시작 전에 마커를 검증한다(Python이 최종 권위지만, 여기서 막으면 임시 복사·ffmpeg 실행 자체가
+    // 일어나지 않는다). 조용한 clamp·정렬·중복제거 없이 거부만 한다. 오류엔 순번·사유·수치만 담는다.
+    if (mode === 'split') {
+      const v = validateMarkers(splitMarkers, { durationSeconds: fileInfo.duration })
+      if (!v.ok) {
+        setError(formatSplitMarkerError(v.errors[0]), { code: v.errors[0].reasonCode })
+        return
+      }
+    }
 
     console.log('[renderer][synthesize] setProcessing 직전')
     setProcessing()
@@ -65,17 +78,18 @@ export default function ProcessButton() {
 
     const offProgress = window.api.audio.onProgress((data: any) => {
       // 취소 정리 중이면 진행률 갱신 무시(cancelling 메시지를 덮지 않도록).
-      if (useAppStore.getState().status === 'cancelling') return
+      if (isCancelCleanupBusy(useAppStore.getState().status)) return
       setProgress(data.percent ?? 0, data.message ?? '')
     })
     const offResult = window.api.audio.onResult((data: any) => {
-      // 취소가 먼저 정착했으면 늦게 도착한 결과는 채택 안 함(계약 4-A). main도 억제하지만 방어적 이중 가드.
-      if (useAppStore.getState().status === 'cancelling') return
+      // 취소가 '실제로' 정착(main의 audio:cancelling 수신)했을 때만 늦은 결과를 버린다(계약 4-A). main도 억제하지만 방어적 이중 가드.
+      // 취소를 눌렀더라도 main이 no-op으로 끝냈으면 status는 여전히 processing이므로 이 결과는 정상 채택된다(계약 C2-P0.1 §5).
+      if (!acceptsSettlement(useAppStore.getState().status)) return
       setResult(data.tracks ?? [], data.outputDir ?? '', data.metadata ?? null)
       cleanup()
     })
     const offError = window.api.audio.onError((data: any) => {
-      if (useAppStore.getState().status === 'cancelling') return  // 취소 승리 시 늦은 오류 무시(계약 4-A)
+      if (!acceptsSettlement(useAppStore.getState().status)) return  // 취소가 정착했을 때만 늦은 오류 무시(계약 4-A)
       // 구조화 code(GENERATION_LIMIT_EXCEEDED 등)를 store에 함께 저장 → 오류 카드가 분기.
       const code = typeof data?.code === 'string' ? data.code : undefined
       setError(data.message ?? 'Unknown error', code ? { code } : null)
@@ -126,12 +140,32 @@ export default function ProcessButton() {
     return () => { offCancelling(); offCancelled(); offFailed() }
   }, [])
 
-  const handleCancel = () => {
-    if (status !== 'processing') return  // cancelling/그 외에서는 무시(중복 클릭 방지)
-    // 즉시 'cancelling' 표시(child 생존 중 idle 금지). idle/error 전환은 main의 audio:cancelled / cancel-failed가 결정.
-    // 구독(onResult/onCancelled/…)은 여기서 해제하지 않는다 — 터미널 이벤트가 도착해 cleanup해야 하므로.
-    beginCancelling()
-    window.api.audio.cancel()
+  // 취소 '요청'만 보낸다(계약 C2-P0.1 §1·§2·§4).
+  // 여기서 beginCancelling()으로 낙관적 전환을 하면 안 된다 — main의 audio:cancel은 실행 중 아님/이미 result·error로
+  // 정착함/이미 취소 진행 중이면 어떤 이벤트도 보내지 않고 no-op으로 끝난다. 낙관적 전환을 하면 그 no-op에서
+  // 터미널 이벤트가 영영 오지 않아 UI가 영구 'cancelling'에 갇히고(앱 재시작 외 탈출 불가), 그 찰나에 도착한
+  // result/error까지 'cancelling이라서' 폐기됐다. 'cancelling' 전환의 권위는 오직 main의 audio:cancelling 이벤트다
+  // (아래 상시 effect의 onCancelling). 구독은 여기서 해제하지 않는다 — 터미널 이벤트가 도착해 cleanup해야 하므로.
+  const handleCancel = async () => {
+    if (!canRequestCancel(status)) return   // processing에서만 요청(cancelling/그 외는 무시)
+    if (cancelInFlightRef.current) return   // 응답 대기 중 연타는 요청 1회로 접는다(멱등, 계약 §6)
+    cancelInFlightRef.current = true
+    try {
+      const resp = await window.api.audio.cancel()
+      if (interpretCancelResponse(resp) === 'accepted') {
+        // 수락 — main이 audio:cancelling을 보냈고 정확히 하나의 터미널(cancelled | cancel-failed)로 끝낸다(계약 §7).
+        console.log('[renderer][cancel] 취소 수락', { jobId: cancelJobId(resp) })
+      } else {
+        // 미수락(no-op) 또는 계약 밖/구 shape → 상태를 전혀 건드리지 않는다(계약 §5·§8).
+        // 진행 중 작업은 그대로 이어지고, 직후 도착하는 result/error가 정상 채택된다.
+        console.log('[renderer][cancel] 취소 미수락(no-op) — 상태 유지', { reason: cancelNoopReason(resp) })
+      }
+    } catch (err: any) {
+      // invoke 실패도 no-op과 동일 취급 — 상태를 바꾸지 않으므로 갇히지 않는다.
+      console.error('[renderer][cancel] audio:cancel 호출 실패', err?.stack || err)
+    } finally {
+      cancelInFlightRef.current = false   // 반드시 해제 — 취소 버튼이 영구 무반응이 되지 않도록.
+    }
   }
 
   if (!fileInfo) return null
@@ -192,7 +226,7 @@ export default function ProcessButton() {
       <motion.button
         initial={{ opacity: 0 }} animate={{ opacity: 1 }}
         whileHover={{ scale: 1.01 }} whileTap={{ scale: 0.99 }}
-        onClick={handleCancel}
+        onClick={() => { void handleCancel() }}
         aria-label="처리 취소"
         style={{ ...btnBase, background: 'linear-gradient(135deg, #e11d48, #be123c)', color: '#fff', boxShadow: '0 2px 12px var(--rose-glow)' }}
       >
@@ -236,7 +270,7 @@ export default function ProcessButton() {
 
   // 취소 실패로 이전 작업의 child가 아직 살아 있으면(CANCEL_FAILED·childAlive) 새 합성·재시도를 차단한다.
   // (main도 runner.isRunning으로 새 process를 거부하지만, UI에서 먼저 명확히 막는다.)
-  const cancelFailedActive = errorInfo?.code === 'CANCEL_FAILED' && !!errorInfo?.childAlive
+  const cancelFailedActive = errorInfo?.code === CANCEL_FAILED_CODE && !!errorInfo?.childAlive
 
   // 재시도 effect가 읽을 최신 참조 갱신. 이 지점은 processing/cancelling/done early-return을 이미 지나 status가 idle|loading|error뿐 —
   // 즉 '진행 중 아님'이 타입상 보장되므로 여기선 차단 사유 없음 + 파일 있음 + 취소실패-생존 아님만 확인한다.

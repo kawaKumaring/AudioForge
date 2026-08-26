@@ -1,4 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import type { CancelResponseLike } from '../shared/cancelContract'
+import { SIDECAR_IPC_CHANNEL } from '../shared/sidecarEvents'
+import type { SidecarEnvelope } from '../shared/sidecarEvents'
 
 const api = {
   audio: {
@@ -6,7 +9,10 @@ const api = {
     getFileInfo: (filePath: string) => ipcRenderer.invoke('audio:get-file-info', filePath),
     process: (filePath: string, mode: string, options?: Record<string, unknown>) =>
       ipcRenderer.invoke('audio:process', filePath, mode, options),
-    cancel: () => ipcRenderer.invoke('audio:cancel'),
+    // 취소 '요청'(계약 C2-P0.1). 수락 여부의 권위는 main이고, 반환값은 신 계약 CancelResponse이거나
+    // 구 shape({ok,noop} 등)일 수 있다 → 소비자는 반드시 interpretCancelResponse()로 해석한다.
+    // 'cancelling' 전환은 이 반환값이 아니라 audio:cancelling 이벤트가 결정한다(낙관적 전환 금지).
+    cancel: (): Promise<CancelResponseLike> => ipcRenderer.invoke('audio:cancel'),
     getFileUrl: (filePath: string) => ipcRenderer.invoke('audio:get-file-url', filePath),
     exportTracks: (trackPaths: string[]) => ipcRenderer.invoke('audio:export-tracks', trackPaths),
     restoreFromFolder: () => ipcRenderer.invoke('audio:restore-from-folder'),
@@ -49,6 +55,14 @@ const api = {
       const handler = (_event: unknown, data: unknown) => callback(data)
       ipcRenderer.on('audio:error', handler)
       return () => ipcRenderer.removeListener('audio:error', handler)
+    },
+    // 진단 사이드카(additive/shadow 관측). main 이 허용목록 + 스키마 검증을 통과시킨
+    // SidecarEnvelope 만 이 채널로 온다 — 경로·오디오 샘플·전사 본문은 main 에서 이미 제거됨.
+    // 기본 출력/품질 동작에는 어떤 영향도 없다(관측 전용). 반환값은 구독 해제 함수.
+    onSidecar: (callback: (data: SidecarEnvelope) => void) => {
+      const handler = (_event: unknown, data: SidecarEnvelope) => callback(data)
+      ipcRenderer.on(SIDECAR_IPC_CHANNEL, handler)
+      return () => ipcRenderer.removeListener(SIDECAR_IPC_CHANNEL, handler)
     },
     // 취소 lifecycle(공용 마감 K): cancelling→(cancelled|cancel-failed). result/error와 별개 채널로,
     // 취소 승자 정착 후 main이 명시적으로 보낸다(늦은 result/error는 main에서 이미 억제).
