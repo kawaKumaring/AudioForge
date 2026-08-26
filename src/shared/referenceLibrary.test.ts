@@ -10,15 +10,24 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import {
   REFERENCE_ANALYSIS_VERSION, REFERENCE_INVALIDATION_REASONS, REFERENCE_GUARD_CODES,
+  REFERENCE_SCAN_STATUSES, REFERENCE_PROMOTE_STATUSES, PROMOTE_STEPS, CLIP_VERIFICATION_CHECKS,
   MAX_AUTO_CANDIDATES, MIN_REGION_MS, MAX_REGION_MS, CLIP_ID_LENGTH,
   FINGERPRINT_PAYLOAD_HEADER, CLIP_ID_PAYLOAD_HEADER, VOLATILE_AXES,
+  MANIFEST_RECORD_FIELDS, CLIP_FILE_EXTENSION, MANIFEST_VERSION, REFERENCE_LIBRARY_DIR_NAME,
+  REFERENCE_STAGING_DIR_NAME, MANIFEST_FILE_NAME, RUN_SCOPE_PREFIX, RUN_JOURNAL_SUFFIX, MANIFEST_TEMP_SUFFIX,
   ReferenceLibraryError,
   buildFingerprintPayload, computeFingerprint, computeFingerprintFromRequest, deriveClipId,
   normalizeTranscript, secondsToMs, evaluateReuse,
-  intervalsOverlap, selectBestCandidate, pickAutoCandidates,
+  intervalsOverlap, selectBestCandidate, pickAutoCandidates, rescanCandidates,
   buildCandidate, buildLibraryEntry, assertCandidateSetValid, assertSingleReference,
-  buildSynthesisReference, candidateFromPython,
+  buildSynthesisReference, candidateFromPython, referenceCacheKey, referenceIdentity,
   findSensitiveStrings, isPathLike, sha256HexOfString,
+  clipFileName, emptyManifest, buildManifestRecord, assertManifestRecordValid, assertManifestValid,
+  upsertManifestRecord, findManifestRecord, planAssetDeletion, removeManifestRecord,
+  verifyStoredClip, evaluateReuseAgainstRecord, resolveReusableClip,
+  pathVolume, assertPromotionSameVolume, runScopedStagingDirName, runJournalFileName,
+  manifestTempFileName, isRunScopedName, buildRunJournal, isOrphanOwnedByRun,
+  evaluateClipVerification, assertPromoteOrder, promoteReferenceClip,
   type ScoredInterval, type ReferenceRequest, type StoredReferenceFingerprint,
 } from './referenceLibrary.ts'
 import { sha256HexOfString as grammarSha256 } from './ttsGrammar.ts'
@@ -351,6 +360,354 @@ test('위생: 탐지기가 실제 경로/전사 유출을 잡는다(음성 대�
 })
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 10) 내용 기반 지문이 단일 권위 — 경로/크기/mtime 은 캐시 권위가 아니다
+// ─────────────────────────────────────────────────────────────────────────────
+// 원본 SHA-256 은 TS 가 계산하지 않고 받는다. 아래는 main/Python 이 넘겨줄 값을 흉내낸 것.
+const SHA_CONTENT_1 = sha256HexOfString('the same audio bytes')
+const SHA_CONTENT_2 = sha256HexOfString('different audio bytes')
+
+test('내용 권위: 같은 파일이 다른 경로로 옮겨져도 재사용된다', () => {
+  // 경로는 애초에 입력이 아니다 — 같은 내용 해시면 같은 지문.
+  const stored: StoredReferenceFingerprint = {
+    sourceSha256: SHA_CONTENT_1, region: { start: 1.25, duration: 7 }, transcript: TRANSCRIPT,
+  }
+  const movedFile: ReferenceRequest = {
+    sourceSha256: SHA_CONTENT_1, region: { start: 1.25, duration: 7 }, transcript: TRANSCRIPT,
+  }
+  const v = evaluateReuse(stored, movedFile)
+  assert.equal(v.reusable, true)
+  assert.deepEqual(v.reasons, [])
+})
+
+test('내용 권위: 이름·크기가 같아도 내용이 바뀌면 무효화된다', () => {
+  assert.notEqual(SHA_CONTENT_1, SHA_CONTENT_2)
+  const v = evaluateReuse(
+    { sourceSha256: SHA_CONTENT_1, region: { start: 0, duration: 5 }, transcript: '' },
+    { sourceSha256: SHA_CONTENT_2, region: { start: 0, duration: 5 }, transcript: '' },
+  )
+  assert.deepEqual(v.reasons, ['REF_SOURCE_CHANGED'])
+  assert.equal(v.reusable, false)
+})
+
+test('캐시 키: path|size|mtime 조합은 캐시 권위로 받아들이지 않는다', () => {
+  for (const bad of ['C:/ref/a.wav|1234|1699999999999', 'a.wav|10|20', '', 'not-a-hash', SRC_A.slice(0, 63)]) {
+    assert.throws(() => referenceCacheKey(bad),
+      (e: unknown) => (e as ReferenceLibraryError).code === 'INVALID_FINGERPRINT_INPUT', bad)
+  }
+  assert.equal(referenceCacheKey(PINNED_FINGERPRINT), PINNED_FINGERPRINT)
+  assert.equal(referenceCacheKey(PINNED_FINGERPRINT.toUpperCase()), PINNED_FINGERPRINT)
+})
+
+test('샘플러 소비 계약: 지문/캐시키를 스스로 만들지 않도록 내보낸다', () => {
+  const entry = entryWith3()
+  const ref = buildSynthesisReference(entry, [entry.defaultCandidateId])
+  assert.equal(ref.cacheKey, entry.fingerprint)
+  assert.equal(ref.sourceSha256, SRC_A)
+  assert.deepEqual(referenceIdentity(entry), {
+    fingerprint: entry.fingerprint, cacheKey: entry.fingerprint,
+    sourceSha256: SRC_A, analysisVersion: REFERENCE_ANALYSIS_VERSION,
+  })
+  assert.deepEqual(findSensitiveStrings(ref), [])
+  assert.deepEqual(findSensitiveStrings(referenceIdentity(entry)), [])
+})
+
+test('모듈 소스에 stat 기반 지문(경로|크기|mtime) 사용 흔적이 없다', () => {
+  const tsSrc = readFileSync(fileURLToPath(new URL('./referenceLibrary.ts', import.meta.url)), 'utf-8')
+  // 주석과 진단 메시지는 "그것을 쓰지 않는다"는 설명(산문)이므로 제외하고 실행 코드 식별자만 본다.
+  const code = tsSrc
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')          // 블록 주석
+    .replace(/(^|[^:])\/\/.*$/gm, '$1')          // 줄 주석
+    // 공백을 포함한 문자열 리터럴(=산문 메시지)만 비운다. 리터럴 하나씩 정확히 매칭해야
+    // 인접한 두 리터럴을 통째로 삼켜 그 사이 산문을 노출시키는 일이 없다.
+    .replace(/'(?:[^'\\\n]|\\.)*'/g, (lit) => (/\s/.test(lit) ? "''" : lit))
+  for (const banned of ['mtime', 'statSync', 'sourceFingerprint', 'fingerprintReference', 'fileSize', 'st_size']) {
+    assert.equal(code.includes(banned), false, `stat 기반 지문 흔적: ${banned}`)
+  }
+  // 대조군: 위 필터가 실제 코드 사용은 여전히 잡는다
+  assert.equal("const x = stat.mtimeMs".replace(/\/\*[\s\S]*?\*\//g, ' ').includes('mtime'), true)
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 11) 재탐색(rescan) — 기존 후보를 명시적으로 제외
+// ─────────────────────────────────────────────────────────────────────────────
+function rescanScored(): ScoredInterval[] {
+  return [
+    { id: 'a', startMs: 0, durationMs: 5000, score: 0.9 },
+    { id: 'b', startMs: 3000, durationMs: 5000, score: 0.85 },
+    { id: 'c', startMs: 5000, durationMs: 5000, score: 0.7 },
+    { id: 'd', startMs: 10000, durationMs: 5000, score: 0.6 },
+    { id: 'e', startMs: 16000, durationMs: 5000, score: 0.5 },
+  ]
+}
+
+test('rescan: 기존 후보 구간을 명시적으로 제외한다(끝점 맞닿음은 허용)', () => {
+  const first = rescanCandidates(rescanScored(), [], 1)
+  assert.equal(first.status, 'REFERENCE_CANDIDATES_FOUND')
+  assert.deepEqual(first.added.map((c) => c.id), ['a'])
+  const second = rescanCandidates(rescanScored(), first.candidates, 2)
+  assert.deepEqual(second.added.map((c) => c.id), ['c'])          // b 는 a 와 겹쳐 제외, c 는 맞닿음이라 허용
+  assert.deepEqual(second.candidates.map((c) => c.id), ['a', 'c'])
+})
+
+test('rescan: 기존 후보를 교체·재정렬·삭제하지 않는다', () => {
+  const existing: ScoredInterval[] = [
+    { id: 'e', startMs: 16000, durationMs: 5000, score: 0.5 },
+    { id: 'd', startMs: 10000, durationMs: 5000, score: 0.6 },   // 일부러 점수 역순
+  ]
+  const r = rescanCandidates(rescanScored(), existing, 3)
+  assert.deepEqual(r.candidates.slice(0, 2).map((c) => c.id), ['e', 'd'])
+  assert.equal(r.candidates[0], existing[0])                      // 객체 신원까지 그대로
+  assert.equal(r.candidates[1], existing[1])
+  assert.equal(r.candidates.length, 3)
+  assert.equal(r.excludedCount, 2)
+  assert.deepEqual(existing.map((c) => c.id), ['e', 'd'], '입력 배열 불변')
+})
+
+test('rescan: 남은 구간이 없으면 NO_MORE_REFERENCE_CANDIDATES(빈 배열을 조용히 주지 않는다)', () => {
+  const r = rescanCandidates(rescanScored(), [{ id: 'all', startMs: 0, durationMs: 21000, score: 0 }], 3)
+  assert.equal(r.status, 'NO_MORE_REFERENCE_CANDIDATES')
+  assert.deepEqual(r.added, [])
+  assert.ok((REFERENCE_SCAN_STATUSES as readonly string[]).includes(r.status))
+  // 자리가 이미 다 찼을 때도 같은 상태
+  const full = rescanCandidates(rescanScored(), [
+    { id: 'a', startMs: 0, durationMs: 5000, score: 0.9 },
+    { id: 'c', startMs: 5000, durationMs: 5000, score: 0.7 },
+    { id: 'd', startMs: 10000, durationMs: 5000, score: 0.6 },
+  ], 3)
+  assert.equal(full.status, 'NO_MORE_REFERENCE_CANDIDATES')
+  assert.equal(full.room, 0)
+})
+
+test('rescan: 겹치는 후보를 만들어내지 않는다 + 고정 제외 집합에서 결정적', () => {
+  const excl: ScoredInterval[] = [{ id: 'a', startMs: 0, durationMs: 5000, score: 0.9 }]
+  const r = rescanCandidates(rescanScored(), excl, 3)
+  for (const added of r.added) assert.equal(intervalsOverlap(added, excl[0]), false)
+  const runs = new Set<string>()
+  for (let i = 0; i < 5; i++) runs.add(rescanCandidates(rescanScored(), excl, 3).added.map((c) => c.id).join(','))
+  assert.equal(runs.size, 1, '같은 입력 + 같은 제외 집합 → 항상 같은 결과')
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 12) 영속 저장소 — manifest / 재시작 / 삭제 / 승격 순서·실패 불변식
+// ─────────────────────────────────────────────────────────────────────────────
+const CLIP_SHA = 'c'.repeat(64)
+const RUN_ID = 'deadbeef'
+const durableEntry = () => buildLibraryEntry(baseInput())
+const jsonCopy = <T,>(v: T): T => JSON.parse(JSON.stringify(v))
+
+test('manifest: 허용된 필드만 담고 경로는 절대 담지 않는다', () => {
+  const rec = buildManifestRecord(durableEntry(), CLIP_SHA)
+  assert.deepEqual(Object.keys(rec).sort(), [...MANIFEST_RECORD_FIELDS].sort())
+  assert.equal(rec.clip_id, PINNED_CLIP_ID)
+  assert.equal(rec.fingerprint, PINNED_FINGERPRINT)
+  assert.equal(rec.clip_sha256, CLIP_SHA)
+  assert.deepEqual(findSensitiveStrings(rec, [TRANSCRIPT.trim(), '안녕하세요']), [])
+  const leaky = { ...rec, clip_path: 'C:/userData/reference-library/x.wav' } as unknown as typeof rec
+  assert.throws(() => assertManifestRecordValid(leaky),
+    (e: unknown) => (e as ReferenceLibraryError).code === 'MANIFEST_CONTAINS_PATH')
+})
+
+test('영속 자산 파일명은 clipId 뿐(경로 조각 불가)', () => {
+  assert.equal(clipFileName(PINNED_CLIP_ID), `${PINNED_CLIP_ID}${CLIP_FILE_EXTENSION}`)
+  assert.equal(isPathLike(clipFileName(PINNED_CLIP_ID)), false)
+  assert.throws(() => clipFileName('../escape'),
+    (e: unknown) => (e as ReferenceLibraryError).code === 'INVALID_FINGERPRINT_INPUT')
+})
+
+test('원자적 승격 전제: staging 과 durable 이 같은 볼륨이어야 한다', () => {
+  assertPromotionSameVolume('E:\\ud\\reference-library\\staging\\run-deadbeef', 'E:\\ud\\reference-library')
+  assertPromotionSameVolume('E:/ud/x', 'e:\\ud\\y')                 // 대소문자/구분자 무관
+  assert.throws(() => assertPromotionSameVolume('C:\\Temp\\run-deadbeef', 'E:\\ud\\reference-library'),
+    (e: unknown) => (e as ReferenceLibraryError).code === 'CROSS_DEVICE_PROMOTION')
+  assert.equal(pathVolume('\\\\server\\share\\ud'), '\\\\server\\share')
+})
+
+test('삭제는 그 레코드가 소유한 자산만(광역/접두사 청소 금지)', () => {
+  const m = upsertManifestRecord(emptyManifest(), buildManifestRecord(durableEntry(), CLIP_SHA))
+  assert.deepEqual(planAssetDeletion(m, PINNED_CLIP_ID).fileNames, [`${PINNED_CLIP_ID}.wav`])
+  const { manifest: after, plan } = removeManifestRecord(m, PINNED_CLIP_ID)
+  assert.deepEqual(after.records, [])
+  assert.equal(plan.clipId, PINNED_CLIP_ID)
+  assert.throws(() => planAssetDeletion(after, '0123456789abcdef'),
+    (e: unknown) => (e as ReferenceLibraryError).code === 'UNKNOWN_REFERENCE_ASSET')
+})
+
+test('저장된 클립 체크섬 불일치 감지', () => {
+  const rec = buildManifestRecord(durableEntry(), CLIP_SHA)
+  assert.equal(verifyStoredClip(rec, CLIP_SHA).clip_id, PINNED_CLIP_ID)
+  assert.throws(() => verifyStoredClip(rec, 'd'.repeat(64)),
+    (e: unknown) => (e as ReferenceLibraryError).code === 'CLIP_CHECKSUM_MISMATCH')
+})
+
+test('재시작 등가: manifest 를 직렬화→새 상태로 재파싱해도 같은 지문이 클립을 찾는다', () => {
+  const written = JSON.stringify(upsertManifestRecord(emptyManifest(), buildManifestRecord(durableEntry(), CLIP_SHA)))
+  // 프로세스 내 상태를 버리고 '디스크에서 다시 읽은' 것만 사용(재시작 등가)
+  const reloaded = assertManifestValid(JSON.parse(written))
+  const nextSession = baseInput({ script: '완전히 다른 대본', speed: 1.9, emotionId: 'angry' })
+  const got = resolveReusableClip(reloaded, nextSession)
+  assert.equal(got.reusable, true)
+  assert.equal(got.clipId, PINNED_CLIP_ID)
+  assert.equal(got.fileName, `${PINNED_CLIP_ID}.wav`)
+  assert.equal(got.fingerprint, PINNED_FINGERPRINT)
+  assert.equal(verifyStoredClip(got.record!, CLIP_SHA).clip_sha256, CLIP_SHA)
+})
+
+test('재시작 후: 원본 내용이 바뀌었으면 재사용되지 않는다', () => {
+  const m = upsertManifestRecord(emptyManifest(), buildManifestRecord(durableEntry(), CLIP_SHA))
+  const got = resolveReusableClip(m, baseInput({ sourceSha256: SRC_B }))
+  assert.equal(got.reusable, false)
+  assert.equal(got.clipId, null)
+  const rec = findManifestRecord(m, PINNED_FINGERPRINT)!
+  assert.deepEqual(evaluateReuseAgainstRecord(rec, baseInput({ sourceSha256: SRC_B })).reasons, ['REF_SOURCE_CHANGED'])
+})
+
+// ── 승격: 가짜 fs 로 순서·실패 불변식 검증(실제 오디오/파일 없음) ──
+const MEASURED = {
+  decodable: true, all_samples_finite: true, sample_rate: 24000,
+  channel_count: 1, duration_ms: 7000, clip_sha256: CLIP_SHA,
+}
+const EXPECTED = { sample_rate: 24000, channel_count: 1, duration_ms: 7000 }
+
+function fakeEffects(calls: string[], opts: { failAt?: string; staging?: string; measured?: typeof MEASURED } = {}) {
+  const staging = opts.staging ?? 'E:/ud/reference-library/staging/run-deadbeef'
+  const step = <T,>(name: string, ret: T) => (..._args: unknown[]): T => {
+    if (name === opts.failAt) throw new Error(`injected failure at ${name}`)
+    calls.push(name)
+    return ret
+  }
+  return {
+    createStagingDir: step('CREATE_STAGING_DIR', staging),
+    writeStagingClip: step('WRITE_STAGING_CLIP', `${staging}/${PINNED_CLIP_ID}.wav`),
+    verifyStagingClip: step('VERIFY_STAGING_CLIP', opts.measured ?? MEASURED),
+    promoteClip: step('PROMOTE_CLIP', `E:/ud/reference-library/${PINNED_CLIP_ID}.wav`),
+    writeManifestTemp: step('WRITE_MANIFEST_TEMP', 'E:/ud/reference-library/manifest.json.deadbeef.tmp'),
+    replaceManifest: step('REPLACE_MANIFEST', undefined as void),
+  }
+}
+const promoteRequest = (manifest = emptyManifest()) => ({
+  runId: RUN_ID, entry: durableEntry(), durableDir: 'E:/ud/reference-library', manifest, expected: EXPECTED,
+})
+
+test('승격: 6단계가 계약 순서 그대로 실행된다', () => {
+  const calls: string[] = []
+  const r = promoteReferenceClip(fakeEffects(calls), promoteRequest())
+  assert.equal(r.status, 'REFERENCE_PROMOTED')
+  assert.deepEqual(calls, [...PROMOTE_STEPS])
+  assert.deepEqual(r.steps, [...PROMOTE_STEPS])
+  assert.equal(r.manifest.records.length, 1)
+  assert.equal(r.record?.clip_sha256, CLIP_SHA)
+  assert.deepEqual(r.orphanClipIds, [])
+  // manifest 교체는 마지막, 승격은 검증 뒤
+  assert.equal(calls.indexOf('REPLACE_MANIFEST'), PROMOTE_STEPS.length - 1)
+  assert.ok(calls.indexOf('VERIFY_STAGING_CLIP') < calls.indexOf('PROMOTE_CLIP'))
+  assert.ok(calls.indexOf('PROMOTE_CLIP') < calls.indexOf('WRITE_MANIFEST_TEMP'))
+})
+
+test('승격: 순서를 건너뛰거나 재배열한 열은 거부된다', () => {
+  for (const bad of [['WRITE_STAGING_CLIP'], ['CREATE_STAGING_DIR', 'PROMOTE_CLIP'], [...PROMOTE_STEPS].reverse()]) {
+    assert.throws(() => assertPromoteOrder(bad),
+      (e: unknown) => (e as ReferenceLibraryError).code === 'PROMOTE_ORDER_VIOLATION')
+  }
+  assert.deepEqual(assertPromoteOrder([...PROMOTE_STEPS].slice(0, 3)), [...PROMOTE_STEPS].slice(0, 3))
+})
+
+test('승격: 2~6단계 어디서 실패해도 이전 manifest·클립이 그대로 남는다', () => {
+  const prevEntry = buildLibraryEntry({
+    sourceSha256: SRC_B, region: { start: 0, duration: 4 }, transcript: '이전 참조',
+  })
+  const prev = upsertManifestRecord(emptyManifest(), buildManifestRecord(prevEntry, 'e'.repeat(64)))
+  const snapshot = jsonCopy(prev)
+
+  PROMOTE_STEPS.slice(1).forEach((step, i) => {
+    const calls: string[] = []
+    const r = promoteReferenceClip(fakeEffects(calls, { failAt: step }), promoteRequest(prev))
+    assert.equal(r.status, 'REFERENCE_PROMOTE_FAILED', step)
+    assert.equal(r.failedStep, step)
+    assert.deepEqual(calls, [...PROMOTE_STEPS].slice(0, i + 1), `실패 지점까지만 실행: ${step}`)
+    assert.equal(calls.includes('REPLACE_MANIFEST'), false, `manifest 교체는 마지막에만: ${step}`)
+    assert.deepEqual(jsonCopy(r.manifest), snapshot, `부분 manifest 노출 없음: ${step}`)
+    assert.deepEqual(jsonCopy(prev), snapshot, `입력 manifest 원본 불변: ${step}`)
+    // 기존 참조는 계속 쓸 수 있다
+    const still = resolveReusableClip(r.manifest, {
+      sourceSha256: SRC_B, region: { start: 0, duration: 4 }, transcript: '이전 참조',
+    })
+    assert.equal(still.reusable, true, `기존 참조 계속 사용 가능: ${step}`)
+  })
+})
+
+test('승격: 클립은 승격됐는데 manifest 기록이 실패하면 고아가 되지만 기존 참조는 멀쩡하다', () => {
+  const prevEntry = buildLibraryEntry({
+    sourceSha256: SRC_B, region: { start: 0, duration: 4 }, transcript: '이전 참조',
+  })
+  const prev = upsertManifestRecord(emptyManifest(), buildManifestRecord(prevEntry, 'e'.repeat(64)))
+  const calls: string[] = []
+  const r = promoteReferenceClip(fakeEffects(calls, { failAt: 'REPLACE_MANIFEST' }), promoteRequest(prev))
+  assert.equal(r.status, 'REFERENCE_PROMOTE_FAILED')
+  assert.deepEqual(r.orphanClipIds, [PINNED_CLIP_ID])
+  assert.equal(r.manifest.records.length, 1)
+  const still = resolveReusableClip(r.manifest, {
+    sourceSha256: SRC_B, region: { start: 0, duration: 4 }, transcript: '이전 참조',
+  })
+  assert.equal(still.reusable, true, '고아가 생겨도 기존 참조는 깨지지 않는다')
+  assert.equal(isOrphanOwnedByRun(`${PINNED_CLIP_ID}.wav`, r.journal, r.manifest), true)
+})
+
+test('승격: 교차 볼륨 staging 은 아무것도 쓰기 전에 차단된다', () => {
+  const calls: string[] = []
+  const r = promoteReferenceClip(fakeEffects(calls, { staging: 'C:/Temp/run-deadbeef' }), promoteRequest())
+  assert.equal(r.status, 'REFERENCE_PROMOTE_FAILED')
+  assert.equal(r.errorCode, 'CROSS_DEVICE_PROMOTION')
+  assert.deepEqual(r.steps, [], '볼륨이 다르면 아무것도 쓰지 않는다')
+  assert.deepEqual(r.orphanClipIds, [])
+})
+
+test('승격: 검증 실패는 4단계(승격)로 넘어가지 않는다', () => {
+  const broken: Partial<typeof MEASURED>[] = [
+    { decodable: false }, { all_samples_finite: false }, { sample_rate: 16000 },
+    { channel_count: 2 }, { duration_ms: 9000 }, { clip_sha256: 'nope' },
+  ]
+  for (const patch of broken) {
+    const calls: string[] = []
+    const r = promoteReferenceClip(fakeEffects(calls, { measured: { ...MEASURED, ...patch } }), promoteRequest())
+    assert.equal(r.status, 'REFERENCE_PROMOTE_FAILED', JSON.stringify(patch))
+    assert.equal(r.errorCode, 'CLIP_VERIFICATION_FAILED', JSON.stringify(patch))
+    assert.equal(calls.includes('PROMOTE_CLIP'), false, `검증 실패면 승격하지 않는다: ${JSON.stringify(patch)}`)
+    assert.deepEqual(r.orphanClipIds, [])
+  }
+})
+
+test('승격 검증 항목 목록이 곧 계약', () => {
+  const allBad = evaluateClipVerification(
+    { decodable: false, all_samples_finite: false, sample_rate: 1, channel_count: 2, duration_ms: 3, clip_sha256: 'x' },
+    EXPECTED)
+  assert.deepEqual([...allBad].sort(), [...CLIP_VERIFICATION_CHECKS].sort())
+  assert.deepEqual(evaluateClipVerification(MEASURED, EXPECTED), [])
+})
+
+test('run 스코프 이름 + 고아 소유 판정(접두사 일치만으로는 소유가 아니다)', () => {
+  assert.equal(runScopedStagingDirName(RUN_ID), 'run-deadbeef')
+  assert.equal(runJournalFileName(RUN_ID), 'run-deadbeef.journal.json')
+  assert.equal(manifestTempFileName(RUN_ID), 'manifest.json.deadbeef.tmp')
+  assert.equal(isRunScopedName('run-deadbeef', RUN_ID), true)
+  assert.equal(isRunScopedName('run-deadbeefX', RUN_ID), false)
+  assert.equal(isRunScopedName('run-cafebabe', RUN_ID), false)
+  assert.throws(() => runScopedStagingDirName('nope'),
+    (e: unknown) => (e as ReferenceLibraryError).code === 'INVALID_FINGERPRINT_INPUT')
+
+  const journal = buildRunJournal(RUN_ID, [PINNED_CLIP_ID])
+  const empty = emptyManifest()
+  assert.equal(isOrphanOwnedByRun(`${PINNED_CLIP_ID}.wav`, journal, empty), true)
+  for (const foreign of ['somebody-else.wav', `${PINNED_CLIP_ID}_old.wav`, `${PINNED_CLIP_ID.slice(0, 8)}.wav`,
+    '0123456789abcdef.wav', 'manifest.json', '']) {
+    assert.equal(isOrphanOwnedByRun(foreign, journal, empty), false, foreign)
+  }
+  // manifest 에 등재된 것은 고아가 아니다 → 절대 삭제 대상이 아니다
+  const listed = upsertManifestRecord(empty, buildManifestRecord(durableEntry(), CLIP_SHA))
+  assert.equal(isOrphanOwnedByRun(`${PINNED_CLIP_ID}.wav`, journal, listed), false)
+  assert.equal(isOrphanOwnedByRun(`${PINNED_CLIP_ID}.wav`, { run_id: RUN_ID, clip_ids: [] }, empty), false)
+})
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 8) PARITY — python/reference_library.py 소스를 파싱해 코드 집합·버전 대조
 // ─────────────────────────────────────────────────────────────────────────────
 const PY_SRC = readFileSync(
@@ -372,6 +729,12 @@ function pyTupleIdents(src: string, name: string): string[] {
   const m = new RegExp(`^${name}\\s*=\\s*\\(([\\s\\S]*?)\\)`, 'm').exec(src)
   assert.ok(m, `python 에서 ${name} 튜플을 찾지 못함`)
   return m![1].split(',').map((s) => s.trim()).filter((s) => s.length > 0)
+}
+/** `NAME = ( "lit", "lit", ... )` 튜플의 문자열 리터럴 목록(선언 순서 그대로). */
+function pyQuotedList(src: string, name: string, item: RegExp): string[] {
+  const m = new RegExp(`^${name}\\s*=\\s*\\(([\\s\\S]*?)\\n\\)`, 'm').exec(src)
+  assert.ok(m, `python 에서 ${name} 튜플을 찾지 못함`)
+  return [...m![1].matchAll(item)].map((x) => x[1])
 }
 
 test('parity: 분석 버전 상수가 TS == Python', () => {
@@ -395,6 +758,39 @@ test('parity: 가드 코드 집합이 TS == Python', () => {
     return consts[ident]
   })
   assert.deepEqual([...pyCodes].sort(), [...REFERENCE_GUARD_CODES].sort())
+})
+
+test('parity: 재탐색/승격 상태 집합이 TS == Python', () => {
+  const consts = pyStringConsts(PY_SRC)
+  const resolve = (name: string) => pyTupleIdents(PY_SRC, name).map((ident) => {
+    assert.ok(ident in consts, `python 상수 ${ident} 의 리터럴을 찾지 못함`)
+    assert.equal(consts[ident], ident, `python ${ident} 값은 이름과 같아야 한다`)
+    return consts[ident]
+  })
+  assert.deepEqual(resolve('REFERENCE_SCAN_STATUSES').sort(), [...REFERENCE_SCAN_STATUSES].sort())
+  assert.deepEqual(resolve('REFERENCE_PROMOTE_STATUSES').sort(), [...REFERENCE_PROMOTE_STATUSES].sort())
+})
+
+test('parity: 승격 단계 순서와 검증 항목이 TS == Python(순서까지)', () => {
+  // 순서 자체가 계약이므로 정렬하지 않는다.
+  const pySteps = pyQuotedList(PY_SRC, 'PROMOTE_STEPS', /"([A-Z][A-Z0-9_]*)"/g)
+  assert.deepEqual(pySteps, [...PROMOTE_STEPS])
+  const pyChecks = pyQuotedList(PY_SRC, 'CLIP_VERIFICATION_CHECKS', /"([a-z0-9_]+)"/g)
+  assert.deepEqual(pyChecks, [...CLIP_VERIFICATION_CHECKS])
+  const pyFields = pyQuotedList(PY_SRC, 'MANIFEST_RECORD_FIELDS', /"([a-z0-9_]+)"/g)
+  assert.deepEqual(pyFields, [...MANIFEST_RECORD_FIELDS])
+})
+
+test('parity: 영속 저장소 상수가 TS == Python', () => {
+  const consts = pyStringConsts(PY_SRC)
+  assert.equal(pyIntConst(PY_SRC, 'MANIFEST_VERSION'), MANIFEST_VERSION)
+  assert.equal(consts.REFERENCE_LIBRARY_DIR_NAME, REFERENCE_LIBRARY_DIR_NAME)
+  assert.equal(consts.REFERENCE_STAGING_DIR_NAME, REFERENCE_STAGING_DIR_NAME)
+  assert.equal(consts.MANIFEST_FILE_NAME, MANIFEST_FILE_NAME)
+  assert.equal(consts.CLIP_FILE_EXTENSION, CLIP_FILE_EXTENSION)
+  assert.equal(consts.RUN_SCOPE_PREFIX, RUN_SCOPE_PREFIX)
+  assert.equal(consts.RUN_JOURNAL_SUFFIX, RUN_JOURNAL_SUFFIX)
+  assert.equal(consts.MANIFEST_TEMP_SUFFIX, MANIFEST_TEMP_SUFFIX)
 })
 
 test('parity: 정책/직렬화 상수가 TS == Python', () => {
