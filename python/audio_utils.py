@@ -2,6 +2,7 @@
 
 import os
 import json
+import math
 import shutil
 import subprocess
 import tempfile
@@ -246,8 +247,29 @@ def fmt_time(seconds):
 
 
 def fmt_srt_time(seconds):
-    h = int(seconds // 3600)
-    m = int((seconds % 3600) // 60)
-    s = int(seconds % 60)
-    ms = int((seconds % 1) * 1000)
+    """SRT 자막 타임코드 `HH:MM:SS,mmm`.
+
+    총 밀리초를 정수로 반올림한 뒤 시/분/초로 나눠 자리올림을 자연히 처리한다.
+
+    ⚠ 이전 구현은 `ms = int((seconds % 1) * 1000)` 로 ms 를 **절삭**했다. float
+    비표현(2.3 == 2.2999…) 때문에 2.3 이 ',299' 로 찍혔고, 분/초 자리를
+    각각 따로 계산해 자리올림이 없었기 때문에 경계값이 어긋났다:
+      2.9996    → 00:00:03,000 (이전: 00:00:02,999)
+      59.9996   → 00:01:00,000 (이전: 00:00:59,999)
+      3599.9996 → 01:00:00,000 (이전: 00:59:59,999)
+    asr_canonical.format_srt_timestamp 와 동일한 반올림 규약이다.
+
+    방어 규약: 음수·NaN·무한대·숫자가 아닌 값은 "00:00:00,000" 으로 클램프한다
+    (자막 타임코드에 쓸 수 없는 값 — 예외로 전사 저장 전체를 깨뜨리지 않는다).
+    fmt_time 은 이 변경과 무관하게 기존 출력을 그대로 유지한다."""
+    try:
+        value = float(seconds)
+    except (TypeError, ValueError):
+        return "00:00:00,000"
+    if not math.isfinite(value) or value <= 0:
+        return "00:00:00,000"
+    total_ms = int(round(value * 1000))
+    h, rem = divmod(total_ms, 3_600_000)
+    m, rem = divmod(rem, 60_000)
+    s, ms = divmod(rem, 1000)
     return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
