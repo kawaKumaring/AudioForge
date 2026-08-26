@@ -175,16 +175,22 @@ def _build_dialogue_sidecar_payload(frame_labels, smoothed, order, n_speakers, f
     premerge_present = {int(x) for x in frame_labels if x is not None and int(x) >= 0}
     smoothed_present = {int(x) for x in smoothed if x is not None and int(x) >= 0}
 
+    # trackIndex 는 실제 tracks 배열의 위치여야 한다. 출력 프레임이 없는 화자는 이제 트랙을
+    # 만들지 않으므로(_speaker_track_plan), order 위치를 그대로 쓰면 그 뒤 화자들의 인덱스가
+    # 한 칸씩 밀려 어긋난다. 저장 순서와 동일하게 '사용 가능한 화자만' 세어 매긴다.
     speaker_meta = []
-    for idx, c in enumerate(order):
+    track_pos = 0
+    for c in order:
         avail = c in smoothed_present
         backchannel_only = (c in premerge_present) and not avail
         speaker_meta.append({
             "id": label_of[c],
             "trackAvailable": avail,
-            "trackIndex": idx if avail else None,
+            "trackIndex": track_pos if avail else None,
             "reviewRequired": backchannel_only,
         })
+        if avail:
+            track_pos += 1
     speaker_meta.sort(key=lambda m: m["id"])   # deterministic
 
     return {

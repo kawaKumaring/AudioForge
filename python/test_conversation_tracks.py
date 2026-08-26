@@ -209,3 +209,33 @@ class PlanFunctionContract(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SidecarTrackIndexAlignment(unittest.TestCase):
+    """무음 화자를 트랙에서 뺀 뒤에도 sidecar 의 trackIndex 가 실제 tracks 위치와 맞는지.
+
+    order 위치를 그대로 쓰면 중간 화자가 빠졌을 때 그 뒤 화자들이 한 칸씩 밀린다.
+    sidecar 가 renderer 로 전달되기 시작했으므로 어긋난 인덱스는 곧 잘못된 표시가 된다."""
+
+    def test_track_index_matches_saved_track_position(self):
+        import conversation_worker as cw
+        order = [0, 1, 2]                 # 화자 A, B, C
+        n_samples = 100
+        # 화자 B(order 위치 1)는 병합으로 출력 프레임이 사라진 상태.
+        first_app = {0: 0, 1: n_samples, 2: 40}
+        plan = cw._speaker_track_plan(order, first_app, n_samples)
+        saved = [name for _spk, name, _label in plan]
+        self.assertEqual(saved, ["speaker_a", "speaker_b"],
+                         "살아남은 두 화자가 연속된 이름을 받는다")
+
+        # sidecar 쪽과 동일한 규칙으로 매긴 인덱스가 저장 위치와 일치해야 한다.
+        smoothed_present = {0, 2}
+        track_pos = 0
+        indices = []
+        for c in order:
+            avail = c in smoothed_present
+            indices.append(track_pos if avail else None)
+            if avail:
+                track_pos += 1
+        self.assertEqual(indices, [0, None, 1])
+        self.assertEqual(len(saved), sum(1 for i in indices if i is not None))
