@@ -1,11 +1,16 @@
 // TTS 1단계 전달용 설정 — separate.py로 넘길 TTS 필드의 단일 소스.
 // 목적: 필드 누락(예: ttsEmotionRefs 미전달)을 컴파일 단계에서 잡는다.
 
-// ⚠️ 이 파일에서 유일하게 허용한 런타임 cross-module import.
-//   ttsParserVersion 은 상수 미러(=2)로 두었지만, 표현형 모드는 '기본값을 세 군데서 각자 정하다가
-//   어긋나는 일'을 구조적으로 막는 것이 계약의 핵심이라 미러가 곧 계약 위반이다
-//   (expressiveTimeline §10 "세 캐리어 모두 이 함수 하나만 쓴다"). 따라서 값을 복사하지 않고 가져온다.
-import { EXPRESSIVE_DEFAULT_MODE, type ExpressiveMode } from './expressiveTimeline.ts'
+// 타입 전용 import — 런타임에 지워지므로 확장자가 없어도 되고 번들에도 들어가지 않는다.
+import type { ExpressiveMode } from './expressiveTimeline'
+
+// 표현형 모드 기본값(계약 expressiveTimeline.EXPRESSIVE_MODE_DEFAULT 의 거울).
+// ⚠️ 왜 import 가 아니라 미러인가: 이 파일은 main/preload/renderer 세 번들에 모두 들어가고,
+//    node --test 가 직접 로드한다(확장자 필수) ↔ tsc 는 moduleResolution:bundler 라 '.ts' 확장자를
+//    금지한다(TS5097). 두 조건을 동시에 만족하는 런타임 import 형태가 없다.
+//    ttsParserVersion(=2) 과 같은 처리이며, 드리프트는 ttsConfig.test.ts 가 계약 모듈을 직접 읽어
+//    '값 일치'로 고정한다(테스트 파일은 tsconfig exclude 대상이라 .ts import 가 허용된다).
+const EXPRESSIVE_MODE_DEFAULT: ExpressiveMode = 'legacy_v2'
 
 // ── pitch 후처리 capability 계약(§6) — UI(음높이 슬라이더)가 소비. ──
 // pitch 경로는 ffmpeg rubberband 단일(pitch_shift.py). rubberband 미지원 ffmpeg에서 pitch!=0을
@@ -301,7 +306,7 @@ export function buildTtsConfig(o?: TtsInputOptions, sourceFingerprints?: Record<
     //    그대로 통과시킨다 — 조용한 legacy_v2 강등은 금지이고, 최종 판정 권위는 Python
     //    (tts_parity.verify_parity → EXPRESSIVE_MODE_INVALID, 모델 로딩 전 차단)이기 때문이다.
     //    ttsParsedPlanSha256 을 무변형 통과시키는 것과 같은 원칙(렌더러는 권위가 아니다).
-    ttsExpressiveMode: o?.ttsExpressiveMode ?? EXPRESSIVE_DEFAULT_MODE,
+    ttsExpressiveMode: o?.ttsExpressiveMode ?? EXPRESSIVE_MODE_DEFAULT,
     // I3: 옵션 부재 시 backward-compat(off/현행 동작 보존 — 정정8 "신규 설정 부재 = 현행 동작").
     // new 세션의 auto는 렌더러 스토어 초기값이 명시 전달한다. 숫자 기본은 계약 추가4(120/8/200).
     ttsTailMode: o?.ttsTailMode ?? 'off',

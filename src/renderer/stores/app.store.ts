@@ -8,6 +8,7 @@ import type { TtsReferenceEntry, PitchCapability } from '../../shared/ttsConfig'
 // @ts-ignore TS5097: node --test가 요구하는 명시적 .ts 확장자(위 주석 참고).
 import { CANCEL_FAILED_CODE, canBeginCancelling, isCancelCleanupBusy } from '../../shared/cancelContract.ts'
 // 표현형 모드 해석 권위(계약 §10) — 기본값·유효성 규칙을 store 가 따로 쓰지 않는다.
+// @ts-ignore TS5097: node --test가 요구하는 명시적 .ts 확장자(위 cancelContract import 주석과 같은 이유).
 import { EXPRESSIVE_DEFAULT_MODE, resolveExpressiveMode, type ExpressiveMode } from '../../shared/expressiveTimeline.ts'
 
 // 감정별 참조 상태 — 하나의 slot이 통합 브랜치의 config 3필드(§1.2 계약)로 직렬화된다:
