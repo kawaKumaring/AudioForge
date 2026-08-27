@@ -15,6 +15,8 @@ import { sweepQwenJobDirs, listQwenJobDirs } from '../services/qwen-cleanup'
 import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
 import { removeSplitTempDirs, listSplitTempDirs } from '../services/split-temp-cleanup'
 import { createSingleFlight, createKeyedSingleFlight } from '../services/single-flight'
+import { createJobWatchdog, startJobWatch, createStagingGate } from '../services/longform-job'
+import { createTerminalGate } from '../services/run-settlement'
 import type { CancelResponse } from '../../shared/cancelContract'
 import { validateSidecarEvent, SIDECAR_IPC_CHANNEL } from '../../shared/sidecarEvents'
 import type { SidecarEnvelope } from '../../shared/sidecarEvents'
@@ -101,6 +103,21 @@ let cleanupPending = false                                    // 취소 성공�
 let runnerDoneDeferred: { promise: Promise<void>; resolve: () => void } | null = null
 const CANCEL_EXIT_MS_DEFAULT = 8000                           // taskkill 후 tree 종료 확인 대기(bounded). worker timeout과 별개.
 const CLEANUP_DEADLINE_MS = 2500                              // 취소 후 .qwen-job-* 정리 마감(bounded retry).
+// 장문 job 축(무진행/총예산) 점검 주기. 이 값은 '언제 판정하는지'일 뿐 '얼마나 기다리는지'가 아니다 —
+// 실제 상한은 longform-job.ts 의 STALL_MS/jobBudgetMs 가 정한다. 짧게 두면 판정 지연만 줄어든다.
+const JOB_TICK_MS = 15000
+// 장문 감시 축의 E2E 시임. production 값은 절대 바뀌지 않는다 — AF_E2E=1에서만 globalThis 주입값을
+// 읽는다(취소-종료 대기의 __afCancelExitMs, 정리 실패의 __afCleanupFailCount와 같은 선례).
+// 실제 stall/예산은 분 단위라 E2E가 그대로 기다릴 수 없으므로, '축이 존재하고 올바른 순서로
+// 작동하는가'를 초 단위로 재현하기 위한 것이다. 상한 값 자체의 근거는 longform-job.ts가 갖는다.
+function jobWatchSeam(): { inactivityMs?: number; stallMs?: number; tickMs?: number } {
+  if (process.env.AF_E2E !== '1') return {}
+  const g = globalThis as unknown as {
+    __afJobInactivityMs?: number; __afJobStallMs?: number; __afJobTickMs?: number
+  }
+  const pos = (v: unknown) => (typeof v === 'number' && v > 0 ? v : undefined)
+  return { inactivityMs: pos(g.__afJobInactivityMs), stallMs: pos(g.__afJobStallMs), tickMs: pos(g.__afJobTickMs) }
+}
 // 취소-종료 대기 timeout(ms). production 값 불변; AF_E2E=1에서만 globalThis 주입값으로 대체(테스트 결정성).
 function cancelExitMs(): number {
   if (process.env.AF_E2E === '1') {
@@ -577,7 +594,15 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     // production race 방지: 터미널 신호(result/error)를 즉시 보내지 않고 버퍼링했다가 runner 'done'
     // (자식 프로세스 실제 종료 = backend free) 이후에 전달한다. 이러면 renderer가 완료(done)와
     // '다른 모드로 재처리'를 보는 시점엔 이미 runner=null이라, 결과 직후 재합성해도 "이미 처리 중"이 없다.
-    let pendingResult: unknown = null
+    // 결과는 staging 게이트가 붙든다. 예전에는 pendingResult 변수 하나였고, 그 기준은 '자식
+    // 프로세스가 끝났는가'뿐이었다 — watchdog이 이미 시간 초과로 마감한 뒤에 result가 도착하면
+    // done 경로가 그 결과를 그대로 렌더러에 보냈다(터미널 확정 이후의 결과 공개). 게이트는
+    // '중간 산출물 정리(staging)까지 확인됐을 때만 공개'를 명시적 전제로 만들고, abandon된
+    // 실행에서는 어떤 결과도 나가지 못하게 한다.
+    const stagingGate = createStagingGate<unknown>(
+      (data) => { mainWindow.webContents.send('audio:result', data) },
+      createTerminalGate
+    )
     let pendingError: string | { message?: unknown; code?: unknown } | null = null
 
     forwardSidecar(runner, mainWindow)
@@ -639,16 +664,25 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
         console.log(`[AudioForge] session.json 저장 실패: ${(err as Error).message}`)
       }
       settle.markSettled()
-      pendingResult = data  // 'done'에서 backend free 확인 후 전달
+      stagingGate.offerFinal(data)  // 공개는 'done'에서 staging 확인 후(markStagingComplete)
     })
 
     runner.on('error', (message) => {
       settle.markSettled()
       // 문자열(spawn/close 오류) 또는 구조화 객체(파싱된 error 라인, code 포함) 그대로 보관 → 'done'에서 정제 전달.
-      pendingError = (message && typeof message === 'object') ? message : String(message)
+      const next = (message && typeof message === 'object') ? message : String(message)
+      // 구조화 오류가 먼저 도착했으면 뒤따르는 일반 문구가 그것을 덮지 않는다.
+      // Python이 error 라인(code 포함)을 내고 비정상 코드로 종료하면 러너가 close에서 '프로세스가
+      // 코드 N로 종료되었습니다'를 한 번 더 emit한다. 예전에는 그 두 번째가 code를 지워버려서
+      // QWEN_NO_RESPONSE·QWEN_LOAD_TIMEOUT 같은 진단이 일반 종료 문구로 뭉개졌다.
+      const hasCode = (v: unknown): boolean =>
+        !!v && typeof v === 'object' && typeof (v as { code?: unknown }).code === 'string'
+      if (pendingError !== null && hasCode(pendingError) && !hasCode(next)) return
+      pendingError = next
     })
 
     // Watchdog: kill if no progress for 5 minutes
+    // ① 비활성 축 — 값·문구·동작 모두 기존 그대로다(아래 두 축이 추가된 것뿐).
     const WATCHDOG_MS = 300000
     let watchdog: ReturnType<typeof setTimeout> | null = null
 
@@ -657,18 +691,56 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       watchdog = setTimeout(() => {
         if (runner?.isRunning) {
           settle.markSettled()
+          stagingGate.abandon()   // 시간 초과로 마감된 실행의 늦은 결과는 공개하지 않는다
           runner.cancel()  // async(무시) — 트리 kill 시도
           sendError('처리 시간이 초과되었습니다 (5분간 응답 없음). Python 환경을 확인해주세요.')
         }
       }, WATCHDOG_MS)
     }
+
+    // ②③ 장문 job 축 — '살아있음'과 '실제로 조각을 만들어냈음'을 구분해 판정한다.
+    // 왜 별도 타이머인가: ①은 'progress 이벤트가 오면 리셋'이라 heartbeat(=Python이 로딩 생존
+    // 신호를 progress로 옮겨 보낸 것)만으로도 무한히 연장된다. 그건 의도된 보호지만(느린 콜드
+    // 로딩을 죽이면 안 된다), 그것 **하나뿐**이면 살아있으나 아무것도 생산하지 않는 job과
+    // 총 길이가 폭주하는 job에 대한 천장이 어디에도 없다. 판정 로직·상수 근거는 longform-job.ts.
+    const seam = jobWatchSeam()
+    const jobWatch = createJobWatchdog({
+      now: () => Date.now(), inactivityMs: seam.inactivityMs, stallMs: seam.stallMs
+    })
+    // 타이머 소유권은 longform-job.startJobWatch 가 갖는다 — 이 파일은 electron 을 import 하므로
+    // node --test 로 로드할 수 없고, 여기에 타이머를 두면 '취소·종료 후 남지 않는다'를 유닛
+    // 테스트로 확인할 방법이 없다. setInterval/clearInterval 을 주입하는 형태라 그쪽에서 검증된다.
+    const jobTick = startJobWatch({
+      watchdog: jobWatch,
+      intervalMs: seam.tickMs ?? JOB_TICK_MS,
+      isRunning: () => runner?.isRunning === true,
+      deps: { setInterval, clearInterval },
+      onBreach: (verdict, r) => {
+        settle.markSettled()
+        // staging 이 끝나기 전에 터미널이 확정됐다 → 뒤늦게 도착하는 결과는 절대 공개하지 않는다.
+        stagingGate.abandon()
+        runner?.cancel()  // async(무시) — 트리 kill 시도
+        sendError(verdict === 'no-forward-progress'
+          ? `합성이 ${Math.round(r.sinceForwardMs / 1000)}초 동안 한 조각도 진행하지 못했습니다 `
+            + `(완료 ${r.completedChunks}조각). 프로세스는 살아 있었지만 결과를 만들지 못했습니다.`
+          : `합성이 이 작업에 허용된 총 시간을 초과했습니다 `
+            + `(경과 ${Math.round(r.elapsedMs / 1000)}초, 완료 ${r.completedChunks}`
+            + `/${r.estimatedTotalChunks ?? '?'}조각).`)
+      }
+    })
+
     // 취소가 watchdog을 즉시 해제할 수 있게 노출(취소는 watchdog 무의미). done에서 정리.
-    currentWatchdogClear = () => { if (watchdog) { clearTimeout(watchdog); watchdog = null } }
+    currentWatchdogClear = () => {
+      if (watchdog) { clearTimeout(watchdog); watchdog = null }
+      jobTick.stop()
+      stagingGate.abandon()   // 취소된 실행의 결과는 공개하지 않는다
+    }
 
     resetWatchdog()
 
     runner.on('done', (code) => {
       if (watchdog) { clearTimeout(watchdog); watchdog = null }
+      jobTick.stop()
       try { unlinkSync(configPath) } catch {}
       // 성공·오류·취소 어느 경로로 끝나든 이 실행이 만든 split 원본 사본을 지운다. 취소 분기보다
       // 위에 두어 early return에 걸리지 않게 한다. 다른 실행/과거 orphan은 건드리지 않는다.
@@ -696,16 +768,22 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       // 취소 실패 후 child가 뒤늦게 스스로 종료: 이미 cancel-failed를 보냈으므로 추가 신호 없이 상태만 정리.
       if (cancelState === 'failed') { cancelState = 'none' }
       // 버퍼링한 터미널 신호 전달(정착됨). 없으면 abnormal exit → settle.finish가 오류로 마감(UI 안 멈춤).
-      if (pendingResult !== null) {
-        mainWindow.webContents.send('audio:result', pendingResult)
-      } else if (pendingError !== null) {
+      // tts는 위에서 .qwen-job-* 스윕이 이미 돌았다 — 그 '다음'에만 결과가 공개된다(순서가 계약).
+      // 게이트가 공개하지 못한 경우(결과 없음 / watchdog·취소로 abandon)에만 오류 경로로 내려간다.
+      // watchdog(비활성/무진행/총예산)이 이미 terminal을 보냈으면 여기서 두 번째를 보내지 않는다.
+      // 그 경로들은 abandon()으로 게이트를 닫으므로 outcome이 그 사실의 단일 증거다. 이게 없으면
+      // watchdog이 kill한 자식의 종료 코드(taskkill /F → 1)에서 만들어진 '프로세스가 코드 1로
+      // 종료되었습니다'가 시간 초과 사유를 덮어쓰며 terminal을 2개로 만든다.
+      const terminalAlreadySent = stagingGate.outcome === 'abandoned'
+      if (!stagingGate.markStagingComplete() && pendingError !== null && !terminalAlreadySent) {
         sendError(pendingError)
       }
       settle.finish(code)
     })
 
-    runner.on('progress', () => {
-      resetWatchdog()
+    runner.on('progress', (data) => {
+      resetWatchdog()          // ① 기존 그대로 — 어떤 progress 로도 리셋된다
+      jobWatch.observe(data)   // ②③ 은 여기서 liveness/forward 를 갈라 각자의 축만 갱신한다
     })
 
     // Only pass ASCII config path to Python — no Korean chars in spawn args
