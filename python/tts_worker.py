@@ -1043,6 +1043,9 @@ _METADATA_KEYS = [
     "explicit_pause_count", "total_pause_ms",
     # 말끝 finishing 재현(계약 §2·추가4) + 감정 전환 경계 모드.
     "tail_mode", "tail_pad_ms", "tail_fade_ms", "tail_fade_applied", "emotion_boundary_mode",
+    # 경계 envelope 재현 — 최종 조립물 **바깥쪽** 시작·끝에 실제로 적용한 샘플 수(길이는 불변).
+    # offset 0 = tail auto 가 말끝 fade 를 가져갔거나 배열이 짧아 clamp 된 경우.
+    "boundary_onset_samples", "boundary_offset_samples",
     # 표현형 모드(계약 §10). ⚠️ 이웃이 snake_case 라도 이 키만은 camelCase 가 정본이다 —
     # session/config/metadata 세 캐리어가 '같은 필드 이름'이어야 하고, 계약이 별칭
     # (tts_expressive_mode)을 명시적으로 금지했다(권위가 둘이 되는 편이 더 나쁘다).
@@ -1088,31 +1091,35 @@ def _transcript_meta(ref_text):
 
 
 def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
-    """엔진 무관 공통 최종 단계 + 말끝 finishing(계약 §2 순서: … → 전체 pitch → 최종 조건부 fade →
-    최종 0 padding → 검증 → 원자 교체).
+    """엔진 무관 공통 최종 단계 + 경계 envelope + 말끝 finishing
+    (계약 §2 순서: … → 전체 pitch → 경계 envelope → 최종 조건부 fade → 최종 0 padding → 검증 → 원자 교체).
 
-    - tail off/부재(기본) → 기존 경로 그대로: pitch_shift.place_final_with_pitch가 pitch·검증·원자
-      교체를 담당한다(**동작 변화 0 — 레거시 회귀 보존**).
-    - tail 'auto'(명시 설정 시) → pitch를 work_dir 내부 staged로 배치(final 미접촉) → array로 읽어
-      audio_finishing으로 조건부 fade + 0 padding → 검증(mono·finite·non-empty·sr) → work_dir 내부
-      finished temp에 write → os.replace로 **이 함수만** 최종 final_path를 원자 교체한다.
+    여기가 **조립이 끝난 최종 배열을 보는 단 하나의 지점**이다. 단문이든 장문이든 이 함수는 결과물
+    하나만 보므로, 경계 envelope 을 여기에 걸면 자동으로 "바깥쪽 시작·끝에만 한 번" 이 된다.
+    내부 chunk 경계에는 걸리지 않는다(청크 결합은 _concat_with_boundaries 소관이고 거기는 무변경).
 
-    무손상 계약: auto 경로도 final_path는 모든 검증 통과 후 마지막 os.replace 한 번에만 바뀐다. 그 이전
+    - 경계 envelope: tail 설정과 **무관하게 항상** 적용된다. 사용자 청취로 확정된 결함(시작·끝이
+      S자 없이 딱 켜지고 꺼짐)의 수정이라 옵션이 아니다. 길이·sr·cache key 를 바꾸지 않는다
+      (gain 곱셈뿐, padding 없음). 적용 샘플 수는 반환 dict 에 담겨 metadata 로 나간다.
+    - tail off/부재(기본) → tail 은 아무것도 하지 않는다(padding·fade 0). 경계 envelope 만 적용.
+      길이·subtype·pitch 결과는 레거시와 같고, 달라지는 건 양 끝 gain 뿐이다.
+    - tail 'auto'(명시 설정 시) → 기존대로 조건부 cosine fade + 0 padding 까지. 이때 말끝의 권위는
+      tail 계약이 가지므로 경계 envelope 은 offset 을 0 으로 **양보**한다(이중 fade 금지).
+
+    처리는 pitch를 work_dir 내부 staged로 배치(final 미접촉) → array로 읽어 audio_finishing 적용 →
+    검증(mono·finite·non-empty·sr) → work_dir 내부 finished temp에 write → os.replace로 **이 함수만**
+    최종 final_path를 원자 교체하는 순서다.
+
+    무손상 계약: final_path는 모든 검증 통과 후 마지막 os.replace 한 번에만 바뀐다. 그 이전
     어떤 예외(pitch/검증/finishing)도 final_path(이전 합성 결과)를 건드리지 않는다. staged/finished temp는
     work_dir 안이라 정상/오류/취소(부모 정리) 모두에서 청소된다. pitch_shift.py·K2 취소 권위는 무변경.
-    반환: place_final_with_pitch와 동형 dict(pitch_* + output_sample_rate)."""
+    반환: place_final_with_pitch와 동형 dict(pitch_* + output_sample_rate + tail_* + boundary_*)."""
     import pitch_shift as _ps
     import audio_finishing as _af  # numpy 지연 로드(모듈 최상단 import 회피 — import tts_worker는 numpy 불요)
 
     tail = _af.parse_tail_config(tail_cfg)  # 범위 밖이면 INVALID_TTS_CONFIG(조용한 clamp 없음)
-    if tail.mode == "off":
-        # 레거시 경로와 바이트 단위 동일 — place_final_with_pitch가 final을 원자 교체.
-        _off = dict(_ps.place_final_with_pitch(candidate, final_path, pitch, work_dir))
-        # I4 재현 메타: off는 tail 미적용(패딩/페이드 0).
-        _off.update(tail_mode="off", tail_pad_ms=0, tail_fade_ms=0, tail_fade_applied=False)
-        return _off
 
-    # auto: 원자 교체 전 모든 불변식(A/B/C)을 강제한다. 비유한은 **write 이전에** 차단하고, pending은
+    # 원자 교체 전 모든 불변식(A/B/C)을 강제한다. 비유한은 **write 이전에** 차단하고, pending은
     # **write 후 재오픈**해 다시 검증한다. 어느 단계든 실패면 AudioFinishingError로 pending 삭제 + 기존
     # synthesized.wav 무손상(os.replace 미도달). 오류엔 경로/대사/전사를 담지 않는다.
     import os as _os
@@ -1140,10 +1147,16 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
         #   pitch 0 → staged=PCM_16 → pending PCM_16(== 레거시 off pitch0). pitch!=0 → staged=FLOAT →
         #   pending FLOAT(== 레거시 off pitch+1). FLOAT 하드코딩(비패리티) 금지. pitch_shift.py 무변경.
         staged_subtype = _sf.info(staged).subtype
+        # tail plan 은 **envelope 적용 전 원본**으로 산출한다 — already_silent 판정(마지막 5ms peak)이
+        # 우리 offset fade 때문에 뒤바뀌면 tail 계약의 의미가 달라진다. 순서: plan(원본) → envelope → tail.
         plan = _af.compute_tail_plan(data, sr, tail)
-        finished = _af.apply_final_tail(data, sr, plan)
+        # tail 이 실제로 cosine fade 를 걸 때만 말끝을 양보한다(이중 fade 방지). 시작 쪽은 겹칠 게 없다.
+        bplan = _af.compute_boundary_plan(len(data), sr, tail_owns_offset=bool(plan.fade_applied))
+        enveloped = _af.apply_boundary_envelope(data, sr, bplan)
+        finished = _af.apply_final_tail(enveloped, sr, plan)
         # 불변식 B — in-memory: mono·non-empty·finite + 예상 프레임 수 + padding 정확히 0.
         # (여기서 finite가 이미 보장되므로 PCM_16으로 써도 비유한을 숨길 수 없다 — write 전 in-memory 검증.)
+        # envelope 은 길이를 바꾸지 않으므로 기대 프레임 수의 기준은 여전히 len(data)다.
         _af.require_valid_finished(finished, sr, plan, len(data))
         try:
             _sf.write(finished_tmp, finished, sr, subtype=staged_subtype)
@@ -1170,9 +1183,16 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
                     pass
     out = dict(pinfo)
     out["output_sample_rate"] = int(sr)
-    # I4 재현 메타: auto tail 적용값(계약 §2). fade_applied는 실제 fade 수행 여부(무음 tail이면 pad만).
-    out.update(tail_mode="auto", tail_pad_ms=int(round(plan.pad_ms)),
-               tail_fade_ms=int(round(plan.fade_ms)), tail_fade_applied=bool(plan.fade_applied))
+    # I4 재현 메타: tail 적용값(계약 §2). off면 padding/fade 0. fade_applied는 실제 fade 수행 여부.
+    if plan.mode == "auto":
+        out.update(tail_mode="auto", tail_pad_ms=int(round(plan.pad_ms)),
+                   tail_fade_ms=int(round(plan.fade_ms)), tail_fade_applied=bool(plan.fade_applied))
+    else:
+        out.update(tail_mode="off", tail_pad_ms=0, tail_fade_ms=0, tail_fade_applied=False)
+    # 경계 envelope 재현 메타 — **실제로 적용한 샘플 수**(clamp 결과 포함). offset 0 은 tail 이 말끝을
+    # 가져갔거나(offset_yielded_to_tail) 배열이 너무 짧아 clamp 된 경우다.
+    out.update(boundary_onset_samples=int(bplan.onset_samples),
+               boundary_offset_samples=int(bplan.offset_samples))
     return out
 
 
@@ -1393,7 +1413,8 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         if _ps.clamp_quantize(pitch) != 0.0:
             emit("progress", percent=93, message=f"음높이 보정 중 ({_ps.clamp_quantize(pitch):+.1f}반음)...")
         # pending은 job_dir 내부(output_dir 하위) → os.replace가 동일 파일시스템 원자 이동.
-        # tail off(기본)면 place_final_with_pitch와 동일. auto면 pitch 뒤 조건부 fade+0 padding까지(계약 §2).
+        # pitch 뒤 경계 envelope(항상) + tail auto면 조건부 fade+0 padding까지(계약 §2).
+        # 경계 envelope 은 이 최종 조립물의 양 끝에만 걸린다 — 내부 문장 경계는 건드리지 않는다.
         pinfo = _finish_and_place(pending_path, final_path, pitch, job_dir, tail_cfg)
         sr = pinfo["output_sample_rate"]
         import time as _time
@@ -1417,6 +1438,9 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             # I4: 말끝 finishing 재현(off/auto·pad·fade·적용여부). _finish_and_place가 반환.
             "tail_mode": pinfo.get("tail_mode"), "tail_pad_ms": pinfo.get("tail_pad_ms"),
             "tail_fade_ms": pinfo.get("tail_fade_ms"), "tail_fade_applied": pinfo.get("tail_fade_applied"),
+            # 경계 envelope 재현 — 실제 적용 샘플 수.
+            "boundary_onset_samples": pinfo.get("boundary_onset_samples"),
+            "boundary_offset_samples": pinfo.get("boundary_offset_samples"),
         }
         return final_path, info
     finally:
@@ -1812,9 +1836,11 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             elapsed_seconds=round(_time.monotonic() - _t0, 2), output_sample_rate=out_sr,
             pitch_semitones=pitch_st2, pitch_method=pitch_method2,
             pitch_postprocessed=bool(pitch_st2 != 0.0),
-            # I4: 파서 plan 재현 + 말끝 finishing(pinfo2가 반환).
+            # I4: 파서 plan 재현 + 말끝 finishing(pinfo2가 반환) + 경계 envelope 적용 샘플 수.
             tail_mode=pinfo2.get("tail_mode"), tail_pad_ms=pinfo2.get("tail_pad_ms"),
             tail_fade_ms=pinfo2.get("tail_fade_ms"), tail_fade_applied=pinfo2.get("tail_fade_applied"),
+            boundary_onset_samples=pinfo2.get("boundary_onset_samples"),
+            boundary_offset_samples=pinfo2.get("boundary_offset_samples"),
             **_plan_meta)
         tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
         emit("progress", percent=99, message="완료!")
