@@ -282,3 +282,113 @@ class NonSensitivePayloadTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MetadataCarrierTest(unittest.TestCase):
+    """I. result metadata 캐리어 — 계약 §10 단일 정본 키.
+
+    tts_worker 는 무겁게 import 하지 않고 ast 로 읽는다(test_tts_grammar_parity 와 같은 관례).
+    """
+
+    @staticmethod
+    def _worker_assign(name):
+        import ast
+        tree = ast.parse(_read_source(os.path.join(HERE, "tts_worker.py")))
+        for node in tree.body:
+            if isinstance(node, ast.Assign):
+                for t in node.targets:
+                    if isinstance(t, ast.Name) and t.id == name:
+                        return ast.literal_eval(node.value)
+        return None
+
+    @staticmethod
+    def _synthesize_defaults():
+        import ast
+        tree = ast.parse(_read_source(os.path.join(HERE, "tts_worker.py")))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "synthesize":
+                args = node.args.args
+                defaults = node.args.defaults
+                paired = dict(zip([a.arg for a in args[len(args) - len(defaults):]],
+                                  [ast.literal_eval(d) for d in defaults]))
+                return paired
+        return None
+
+    def test_i1_metadata_key_is_the_contract_field(self):
+        keys = self._worker_assign("_METADATA_KEYS")
+        self.assertIsNotNone(keys, "tts_worker._METADATA_KEYS 를 찾지 못함")
+        self.assertIn(ex.EXPRESSIVE_MODE_FIELD, keys,
+                      "metadata 가 계약 필드를 실어야 3중 일치가 성립한다")
+
+    def test_i2_no_snake_case_alias_in_metadata(self):
+        # 계약 §10: 이웃이 snake_case 라는 이유로 별칭을 만들지 않는다(권위 이중화 금지).
+        keys = self._worker_assign("_METADATA_KEYS")
+        self.assertNotIn("tts_expressive_mode", keys)
+        self.assertEqual([k for k in keys if "xpressive" in k], [ex.EXPRESSIVE_MODE_FIELD],
+                         "표현형 모드 키는 정확히 하나여야 한다")
+
+    def test_i3_synthesize_default_is_legacy_v2(self):
+        # 인자를 주지 않는 호출자(기존 테스트/구 경로)는 오늘과 동일해야 한다.
+        d = self._synthesize_defaults()
+        self.assertIsNotNone(d, "synthesize 시그니처를 찾지 못함")
+        self.assertIn("expressive_mode", d, "metadata 캐리어용 인자가 있어야 한다")
+        self.assertEqual(d["expressive_mode"], tts_parity.EXPRESSIVE_MODE_LEGACY_V2)
+
+    def test_i4_separate_passes_resolved_mode_not_a_literal(self):
+        # 리터럴을 넘기면 3중 일치가 '사실'이 아니라 '기록'이 된다 — 실제 해석값을 넘기는지 고정.
+        src = _read_source(SEPARATE_SOURCE)
+        self.assertIn("expressive_mode=_emode", src)
+        self.assertNotIn('expressive_mode="legacy_v2"', src)
+        self.assertNotIn("expressive_mode='legacy_v2'", src)
+
+    def test_i5_synthesis_must_not_branch_on_the_mode(self):
+        # 이 인자는 '기록'이지 '분기'가 아니다. 분기하는 순간 조용한 v3 경로가 생긴다.
+        worker = _read_source(os.path.join(HERE, "tts_worker.py"))
+        for forbidden in ("if expressive_mode", "expressive_mode ==", "expressive_mode !="):
+            self.assertNotIn(forbidden, worker,
+                             "합성 경로가 표현형 모드로 분기하면 안 된다: %s" % forbidden)
+
+
+class ThreeCarrierAgreementTest(unittest.TestCase):
+    """J. session / config / metadata 3중 일치 — 어긋나면 loud."""
+
+    def _carriers(self, session_mode, config_mode, metadata_mode):
+        return (
+            {"ttsText": "x", ex.EXPRESSIVE_MODE_FIELD: session_mode},
+            {"ttsText": "x", ex.EXPRESSIVE_MODE_FIELD: config_mode},
+            {"parser_version": 2, ex.EXPRESSIVE_MODE_FIELD: metadata_mode},
+        )
+
+    def test_j1_all_legacy_agrees(self):
+        r = ex.assert_expressive_mode_carriers(*self._carriers(L2, L2, L2))
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["mode"], L2)
+        self.assertIsNone(r["error_code"])
+
+    def test_j2_all_v3_agrees(self):
+        r = ex.assert_expressive_mode_carriers(*self._carriers(V3, V3, V3))
+        self.assertTrue(r["ok"])
+        self.assertEqual(r["mode"], V3)
+
+    def test_j3_legacy_session_absent_field_still_agrees(self):
+        # 구 세션(session.options 에 필드 없음) + 새 config/metadata(명시 legacy_v2) → 일치.
+        # 이게 깨지면 구 세션을 여는 것만으로 오류가 나서 하위호환이 무너진다.
+        r = ex.assert_expressive_mode_carriers(
+            {"ttsText": "구 세션"},
+            {"ttsText": "구 세션", ex.EXPRESSIVE_MODE_FIELD: L2},
+            {"parser_version": 2, ex.EXPRESSIVE_MODE_FIELD: L2},
+        )
+        self.assertTrue(r["ok"], "부재=legacy_v2 이므로 명시 legacy_v2 와 일치해야 한다")
+        self.assertEqual(r["mode"], L2)
+
+    def test_j4_drift_between_carriers_is_loud(self):
+        r = ex.assert_expressive_mode_carriers(*self._carriers(V3, L2, L2))
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["error_code"], "EXPRESSIVE_MODE_CARRIER_MISMATCH")
+        self.assertIsNone(r["mode"], "어긋난 상태에서 '그럴듯한 답'을 만들어 주면 안 된다")
+
+    def test_j5_invalid_in_any_carrier_is_loud(self):
+        for carriers in (("expressive_V3", L2, L2), (L2, "v3", L2), (L2, L2, 3)):
+            r = ex.assert_expressive_mode_carriers(*self._carriers(*carriers))
+            self.assertFalse(r["ok"])
+            self.assertEqual(r["error_code"], "EXPRESSIVE_MODE_INVALID")

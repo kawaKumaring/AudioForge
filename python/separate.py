@@ -338,7 +338,10 @@ def main():
                     pitch=getattr(args, "tts_pitch", 0.0),
                     tail_cfg=_tail_cfg,
                     emotion_boundary_mode=_eb_mode,
-                    emotion_boundary_pause_ms=_eb_ms)
+                    emotion_boundary_pause_ms=_eb_ms,
+                    # metadata 캐리어(계약 §10). 위 게이트를 지났으므로 여기 값은 항상 legacy_v2 다.
+                    # 리터럴을 쓰지 않고 실제 해석값을 넘긴다 — 그래야 3중 일치가 '기록'이 아니라 '사실'이 된다.
+                    expressive_mode=_emode)
                 # 성공 조건은 'result 도달 + 실제 산출물'이다. synthesize가 돌려준 최종 경로가
                 # result가 선언한 tracks에 실제로 들어있는지까지 대조한다(선언과 산출의 드리프트 차단).
                 if _synth_out and not any(_same_path(_synth_out, p) for p in _RUN["outputs"]):

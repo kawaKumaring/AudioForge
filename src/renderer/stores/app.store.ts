@@ -7,6 +7,8 @@ import type { TtsReferenceEntry, PitchCapability } from '../../shared/ttsConfig'
 // 이 작업 범위 밖(공유 설정)이므로 TS5097만 국소 억제한다 — 모듈 해석·타입 검사는 그대로 살아 있다.
 // @ts-ignore TS5097: node --test가 요구하는 명시적 .ts 확장자(위 주석 참고).
 import { CANCEL_FAILED_CODE, canBeginCancelling, isCancelCleanupBusy } from '../../shared/cancelContract.ts'
+// 표현형 모드 해석 권위(계약 §10) — 기본값·유효성 규칙을 store 가 따로 쓰지 않는다.
+import { EXPRESSIVE_DEFAULT_MODE, resolveExpressiveMode, type ExpressiveMode } from '../../shared/expressiveTimeline.ts'
 
 // 감정별 참조 상태 — 하나의 slot이 통합 브랜치의 config 3필드(§1.2 계약)로 직렬화된다:
 //   source  → ttsEmotionRefSources[id] (사용자 등록 원본 경로, 영속·세션 재현 기준)
@@ -65,6 +67,8 @@ export interface RestorableSession {
     ttsTailFadeMs: number
     ttsEmotionBoundaryMode: 'immediate' | 'pause'
     ttsEmotionBoundaryPauseMs: number
+    // 표현형 모드 스냅샷. 필드 부재(legacy 세션)=legacy_v2 → 구 세션을 여는 것만으로 재현이 바뀌지 않는다.
+    ttsExpressiveMode: ExpressiveMode
   }>
   tracks?: Track[]
 }
@@ -140,7 +144,8 @@ interface AppState {
   error: string | null
   // 구조화 오류 정보(오류 UX 분기용). code + (취소 실패 시) childAlive만 — GENERATION_LIMIT_EXCEEDED/CANCEL_FAILED 분기.
   // 전사·문장·전체경로·스택은 담지 않는다(§미디어 정책).
-  errorInfo: { code?: string; childAlive?: boolean } | null
+  // rawType: 계약 밖 값의 '타입 이름'만(원시값·대사·경로는 절대 담지 않는다 — 비민감 payload 규칙).
+  errorInfo: { code?: string; childAlive?: boolean; rawType?: string | null } | null
   // 사용자 명시 재시도 트리거(단조 증가). ProcessButton이 이 값 변화에서만 재합성 1회 실행.
   retryNonce: number
   tracks: Track[]
@@ -171,6 +176,10 @@ interface AppState {
   ttsTailFadeMs: number
   ttsEmotionBoundaryMode: 'immediate' | 'pause'
   ttsEmotionBoundaryPauseMs: number
+  // 표현형 파서 모드. ⚠️ setter 를 의도적으로 두지 않는다 — v3 합성 경로가 없는 동안
+  // 사용자가 v3 를 고를 방법이 있으면 안 되기 때문이다(죽은 스위치 금지).
+  // 값이 바뀌는 경로는 '세션 복원' 하나뿐이며, 그때도 계약 밖 값은 조용히 고치지 않고 크게 실패시킨다.
+  ttsExpressiveMode: ExpressiveMode
   resultMetadata: Record<string, unknown> | null
 
   setFile: (info: FileInfo, url: string) => void
@@ -262,6 +271,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   ttsTailFadeMs: 8,
   ttsEmotionBoundaryMode: 'pause' as 'immediate' | 'pause',
   ttsEmotionBoundaryPauseMs: 200,
+  // fresh 세션도 legacy_v2 — v3 는 '명시적으로' 골라야 하고, 아직 고를 방법이 없다.
+  ttsExpressiveMode: EXPRESSIVE_DEFAULT_MODE,
   ttsReferenceClip: '',
   ttsRefReady: false,
   ttsRefMessage: '',
@@ -293,7 +304,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   setNSpeakers: (v) => set({ nSpeakers: v }),
   setTtsReferencePrompts: (v) => set({ ttsReferencePrompts: v }),
   setTtsPitchCapability: (c) => set({ ttsPitchCapability: c }),
-  setTtsExpression: (patch) => set(patch),
+  // ⚠️ patch 를 그대로 흘리지 않고 허용 키만 통과시킨다. 타입은 컴파일 때만 막아 주는데,
+  //    이 setter 로 ttsExpressiveMode 를 밀어 넣을 수 있으면 'UI 스위치 없음' 보장이 런타임에서 뚫린다
+  //    (v3 합성 경로가 없는 동안 v3 를 켜는 경로가 하나라도 있으면 죽은 스위치가 된다).
+  setTtsExpression: (patch) => set(() => {
+    const allowed = ['ttsTailMode', 'ttsTailPaddingMs', 'ttsTailFadeMs',
+      'ttsEmotionBoundaryMode', 'ttsEmotionBoundaryPauseMs'] as const
+    const out: Record<string, unknown> = {}
+    const src = (patch ?? {}) as Record<string, unknown>
+    for (const k of allowed) if (src[k] !== undefined) out[k] = src[k]
+    return out
+  }),
   setTtsRefState: (v) => set((s) => ({
     ttsReferenceClip: v.clip !== undefined ? v.clip : s.ttsReferenceClip,
     ttsRefReady: v.ready !== undefined ? v.ready : s.ttsRefReady,
@@ -380,6 +401,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     // TTS 스냅샷 복원 — source가 사라진 감정만 재지정 필요로 표시, 나머지는 source+region 보존.
     const emotionState = reconstructEmotionRefState(o.ttsEmotionRefSources, o.ttsEmotionRefRegions, o.ttsEmotionRefs, liveness)
     const prompts = reconstructReferencePrompts(o.ttsReferencePrompts, liveness)
+    // 표현형 모드 복원 — 해석 권위는 계약 함수 하나뿐(store 가 규칙을 다시 쓰지 않는다).
+    //   필드 부재(legacy 세션) → legacy_v2, 조용히 복원해도 무방하다(오늘과 같은 동작).
+    //   값이 있는데 계약 밖(손상·수기편집 session.json) → 조용한 강등 금지. mode 는 안전한 legacy_v2 로
+    //   두되 errorCode 를 그대로 드러내, 세션을 여는 것만으로 재현이 몰래 바뀌지 않게 한다.
+    const expressive = resolveExpressiveMode(o.ttsExpressiveMode)
     // 기본 참조: 파생 override는 temp라 재시작 후 소실 → 항상 clip='' 로 복원.
     //   default source 소실 → 재지정 필요. 원본 직접 사용(override 없음)이었고 살아있음 → 준비됨.
     const defaultAlive = liveness.default === true
@@ -416,6 +442,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       ttsEmotionBoundaryMode: o.ttsEmotionBoundaryMode === 'immediate' || o.ttsEmotionBoundaryMode === 'pause'
         ? o.ttsEmotionBoundaryMode : 'pause',
       ttsEmotionBoundaryPauseMs: o.ttsEmotionBoundaryPauseMs ?? 200,
+      ttsExpressiveMode: expressive.mode,
       ttsEmotionRefState: emotionState,
       ttsReferencePrompts: prompts,
       ttsReferenceClip: '',            // 파생 클립은 temp — 복원 시 항상 비움(§4: stale 클립 결합 금지)
@@ -426,7 +453,15 @@ export const useAppStore = create<AppState>((set, get) => ({
       tracks: session.tracks || [],
       outputDir: dir,
       status: 'done' as const, progress: 100, progressMessage: '이전 결과 불러옴',
-      restorable: null, playingTrack: null, error: null, errorInfo: null
+      restorable: null, playingTrack: null,
+      // 표현형 모드가 계약 밖이면 조용히 넘어가지 않는다. 트랙 복원 자체는 성공했으므로 status 는
+      // done 을 유지하고, 오류 카드로 사실을 드러낸다(닫으면 복원된 결과를 그대로 볼 수 있다).
+      ...(expressive.valid
+        ? { error: null, errorInfo: null }
+        : {
+          error: '세션에 저장된 표현형 모드 값이 올바르지 않습니다. 기본(legacy_v2)으로 복원했습니다.',
+          errorInfo: { code: expressive.errorCode ?? undefined, rawType: expressive.rawType }
+        })
     }
   }),
   reset: () => {
@@ -438,6 +473,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       tracks: [], outputDir: null, playingTrack: null, restorable: null, splitMarkers: [], splitLabels: [],
       ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null,
       ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsPitch: 0.0, ttsPitchCapability: null, resultMetadata: null,
+      // 세션 리셋은 표현형 모드도 기본으로 되돌린다(이전 세션의 모드가 새 작업에 눌러앉지 않게).
+      ttsExpressiveMode: EXPRESSIVE_DEFAULT_MODE,
     })
   }
 }))

@@ -1,6 +1,12 @@
 // TTS 1단계 전달용 설정 — separate.py로 넘길 TTS 필드의 단일 소스.
 // 목적: 필드 누락(예: ttsEmotionRefs 미전달)을 컴파일 단계에서 잡는다.
 
+// ⚠️ 이 파일에서 유일하게 허용한 런타임 cross-module import.
+//   ttsParserVersion 은 상수 미러(=2)로 두었지만, 표현형 모드는 '기본값을 세 군데서 각자 정하다가
+//   어긋나는 일'을 구조적으로 막는 것이 계약의 핵심이라 미러가 곧 계약 위반이다
+//   (expressiveTimeline §10 "세 캐리어 모두 이 함수 하나만 쓴다"). 따라서 값을 복사하지 않고 가져온다.
+import { EXPRESSIVE_DEFAULT_MODE, type ExpressiveMode } from './expressiveTimeline.ts'
+
 // ── pitch 후처리 capability 계약(§6) — UI(음높이 슬라이더)가 소비. ──
 // pitch 경로는 ffmpeg rubberband 단일(pitch_shift.py). rubberband 미지원 ffmpeg에서 pitch!=0을
 // 요청하면 PITCH_UNAVAILABLE로 실패하므로, 지원 여부를 미리 UI에 알려 예방한다.
@@ -160,6 +166,11 @@ export interface TtsInputOptions {
   // 원본은 절대 참조로 직접 전달하지 않는다(전체 파일 참조 금지).
   ttsReferenceOverride?: string
 
+  // 표현형 파서 모드(계약 단일 정본 키). 부재 = legacy_v2 = 오늘과 완전히 동일.
+  // ⚠️ UI 스위치는 아직 없다 — 사용자가 v3 를 고를 방법이 없어야 한다(합성 경로 미구현).
+  //    값이 계약 밖이어도 여기서 조용히 고치지 않는다(아래 buildTtsConfig 주석 참고).
+  ttsExpressiveMode?: ExpressiveMode
+
   // ── 표현 사이클 S1 scaffold(타입 계약만) ──
   // ⚠️ 아래 필드는 '타입 선언'일 뿐이며 이번 S1에서 buildTtsConfig 반환값에 자동 추가되지 않는다.
   //    Python 전달·session 직렬화·metadata·기본값 적용 없음 → runtime 동작 변화 0. 실제 배선은 후속 승인 단계.
@@ -199,6 +210,9 @@ export interface TtsConfig {
   // metadata엔 sha8만; 여기(config)엔 full. 미제공('')이면 Python은 파싱 유효성만 검사하고 parity는 강제하지 않는다.
   ttsParsedPlanSha256: string
   ttsParserVersion: number
+  // 표현형 모드 — session/config/metadata 세 캐리어가 같은 키·같은 값을 나른다(계약 §10).
+  // 기본 legacy_v2. Python(tts_parity)이 최종 권위이며 계약 밖 값은 EXPRESSIVE_MODE_INVALID.
+  ttsExpressiveMode: ExpressiveMode
   // 공용 마감 I3: 말끝 finishing + 감정 전환 경계(계약 §2·추가3·추가4). 기본값은 backward-compat(off/현행).
   // new 세션의 auto 기본은 렌더러 스토어가 정한다(정정8: 부재=현행 동작, 자동 마이그레이션 없음).
   ttsTailMode: 'off' | 'auto'
@@ -283,6 +297,11 @@ export function buildTtsConfig(o?: TtsInputOptions, sourceFingerprints?: Record<
     // 기본값 2 = ttsGrammar.TTS_PARSER_VERSION(권위). 여기선 런타임 cross-module import를 피하려 상수 미러(=2).
     // 드리프트 방지는 ttsGrammar/tts_grammar parity fixture + parser_version 계약이 담당.
     ttsParserVersion: o?.ttsParserVersion ?? 2,
+    // ⚠️ 부재(null/undefined)일 때만 기본값을 채운다. '값이 있는데 계약 밖'이면 여기서 고치지 않고
+    //    그대로 통과시킨다 — 조용한 legacy_v2 강등은 금지이고, 최종 판정 권위는 Python
+    //    (tts_parity.verify_parity → EXPRESSIVE_MODE_INVALID, 모델 로딩 전 차단)이기 때문이다.
+    //    ttsParsedPlanSha256 을 무변형 통과시키는 것과 같은 원칙(렌더러는 권위가 아니다).
+    ttsExpressiveMode: o?.ttsExpressiveMode ?? EXPRESSIVE_DEFAULT_MODE,
     // I3: 옵션 부재 시 backward-compat(off/현행 동작 보존 — 정정8 "신규 설정 부재 = 현행 동작").
     // new 세션의 auto는 렌더러 스토어 초기값이 명시 전달한다. 숫자 기본은 계약 추가4(120/8/200).
     ttsTailMode: o?.ttsTailMode ?? 'off',
