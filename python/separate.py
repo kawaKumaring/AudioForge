@@ -190,6 +190,13 @@ def main():
         args.tts_pitch = config.get("ttsPitch", 0.0)  # 음높이 보정(반음, 후처리). 부재 시 0.0(하위호환·무후처리)
         args.tts_parsed_plan_sha256 = config.get("ttsParsedPlanSha256", "")  # 공용 마감 I1: renderer 파싱 full sha256(parity 대조)
         args.tts_parser_version = config.get("ttsParserVersion", None)
+        # 표현형(v3) 파서 게이트 — 명시 플래그만이 파서를 고른다. 키 이름은 계약 단일 정본
+        # expressive_timeline.EXPRESSIVE_MODE_FIELD("ttsExpressiveMode")이며 드리프트는
+        # test_expressive_v3_wiring 이 이 파일 소스를 읽어 고정한다.
+        # 키 부재(None)만 조용한 legacy_v2(레거시 세션 보존). 값이 있는데 계약 밖이면
+        # EXPRESSIVE_MODE_INVALID로 크게 실패한다 — 해석은 tts_parity 단일 위임이며
+        # 여기서 기본값을 정하거나 값을 정규화하지 않는다(원시값 그대로 넘긴다).
+        args.tts_expressive_mode = config.get("ttsExpressiveMode", None)
         # 공용 마감 I3: 말끝 finishing + 감정 전환 경계 config. 부재(레거시 세션/구 config)=off/현행 → 회귀 보존,
         # 자동 마이그레이션 없음(계약 정정8). new 세션은 렌더러가 auto를 명시 전달. 범위 밖은 조용한 clamp 없이
         # INVALID_TTS_CONFIG(tail은 audio_finishing.parse_tail_config, emotion 경계는 아래에서 검증).
@@ -251,14 +258,32 @@ def main():
             # 공용 마감 I1: 모델 로딩 전에 renderer 파싱 결과와 parity 대조(합성 권위=Python).
             # 파싱 실패(UNKNOWN_TTS_TAG/INVALID_PAUSE_TAG/EMPTY_EMOTION_SEGMENT) 또는 hash 불일치
             # (PARSER_PARITY_MISMATCH)면 여기서 구조화 오류로 차단한다(모델 미로딩·대사 전문 미출력).
+            # 파서 선택은 config의 ttsExpressiveMode 명시 플래그만이 한다(키 부재 → legacy_v2 = 오늘과 동일).
+            # 값이 있는데 계약 밖이면 verify_parity가 EXPRESSIVE_MODE_INVALID를 돌려 아래 _perr 게이트에서
+            # 막힌다(조용한 v2 강등 금지 — 사용자가 v3를 요청했는데 v2 결과를 받는 무신호 상황 차단).
             try:
                 import tts_parity as _tp
-                _perr = _tp.verify_parity(args.tts_text, getattr(args, "tts_parsed_plan_sha256", "") or "")
+                _emode_raw = getattr(args, "tts_expressive_mode", None)
+                _emode = _tp.parity_mode(_emode_raw)
+                _perr = _tp.verify_parity(args.tts_text,
+                                          getattr(args, "tts_parsed_plan_sha256", "") or "",
+                                          _emode_raw)
             except Exception as e:  # parser 자체 오류도 조용히 통과시키지 않는다
                 _perr = [{"code": "PARSER_PARITY_MISMATCH", "reason": "verify_failed:" + type(e).__name__}]
             if _perr:
                 _e0 = _perr[0] if isinstance(_perr[0], dict) else {"code": "PARSER_PARITY_MISMATCH"}
                 emit("error", message="대사 태그를 처리할 수 없습니다.", **{k: v for k, v in _e0.items()})
+                return
+            # ── v3 표현형 모드의 '깨끗한 경계' ──
+            # 여기까지 왔다면 v3 문법 검증과 parity가 실제로 통과한 것이다(우회 아님). 그러나 합성 경로
+            # (tts_worker.synthesize → _boundary_gaps_from_plan)는 v2 plan의 segments/boundary_type만
+            # 소비하고 스스로 tts_grammar로 재파싱하므로, v3 타임라인은 번역 레이어 없이는 진입할 수 없다.
+            # 파서만 통과시켜 놓고 뒤에서 죽는 것보다 여기서 명확한 코드로 멈추는 편이 낫다(모델 미로딩).
+            # ⚠️ _tp/_emode 는 위 try가 성공했을 때만 이 지점에 도달한다(실패 시 _perr로 이미 return).
+            #    _perr 게이트를 지났으므로 _emode 는 계약상 유효한 두 값 중 하나임이 보장된다.
+            if _emode != _tp.EXPRESSIVE_MODE_LEGACY_V2:
+                emit("error", message="표현형(v3) 대사는 아직 합성할 수 없습니다(검증까지만 지원).",
+                     code=_tp.EXPRESSIVE_V3_SYNTHESIS_UNSUPPORTED, mode=_emode)
                 return
             from tts_worker import synthesize
             emotion_refs = {}
@@ -313,7 +338,10 @@ def main():
                     pitch=getattr(args, "tts_pitch", 0.0),
                     tail_cfg=_tail_cfg,
                     emotion_boundary_mode=_eb_mode,
-                    emotion_boundary_pause_ms=_eb_ms)
+                    emotion_boundary_pause_ms=_eb_ms,
+                    # metadata 캐리어(계약 §10). 위 게이트를 지났으므로 여기 값은 항상 legacy_v2 다.
+                    # 리터럴을 쓰지 않고 실제 해석값을 넘긴다 — 그래야 3중 일치가 '기록'이 아니라 '사실'이 된다.
+                    expressive_mode=_emode)
                 # 성공 조건은 'result 도달 + 실제 산출물'이다. synthesize가 돌려준 최종 경로가
                 # result가 선언한 tracks에 실제로 들어있는지까지 대조한다(선언과 산출의 드리프트 차단).
                 if _synth_out and not any(_same_path(_synth_out, p) for p in _RUN["outputs"]):

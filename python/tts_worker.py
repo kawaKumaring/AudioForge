@@ -1042,6 +1042,10 @@ _METADATA_KEYS = [
     "explicit_pause_count", "total_pause_ms",
     # 말끝 finishing 재현(계약 §2·추가4) + 감정 전환 경계 모드.
     "tail_mode", "tail_pad_ms", "tail_fade_ms", "tail_fade_applied", "emotion_boundary_mode",
+    # 표현형 모드(계약 §10). ⚠️ 이웃이 snake_case 라도 이 키만은 camelCase 가 정본이다 —
+    # session/config/metadata 세 캐리어가 '같은 필드 이름'이어야 하고, 계약이 별칭
+    # (tts_expressive_mode)을 명시적으로 금지했다(권위가 둘이 되는 편이 더 나쁘다).
+    "ttsExpressiveMode",
 ]
 
 
@@ -1599,7 +1603,8 @@ def resolve_reference_input(override, input_path):
 
 def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                emotion_refs=None, emotion_ref_sources=None, preferred_engine=None, reference_prompts=None, pitch=0.0,
-               tail_cfg=None, emotion_boundary_mode="pause", emotion_boundary_pause_ms=200):
+               tail_cfg=None, emotion_boundary_mode="pause", emotion_boundary_pause_ms=200,
+               expressive_mode="legacy_v2"):
     """Synthesize speech. Auto-selects engine by language.
     reference_prompts: 식별자(default/emotionId) → {manual_text, prompt_lang, mode} 사용자 override.
     emotion_refs: emotionId → 합성에 쓸 effective 참조 경로(3~10초 클립/유효 원본).
@@ -1609,7 +1614,11 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
       동작 변화 0(레거시 회귀 보존)**. 'auto'는 통합 담당이 config에서 배선할 때만 전달된다(계약 §3).
     emotion_boundary_mode: 감정 전환 경계 정책 immediate|pause(계약 정정6·추가3). 기본 pause(현행 동치, smooth 미지원).
     emotion_boundary_pause_ms: pause 모드의 감정전환 경계 무음 ms. 기본 200(계약 추가4). 두 값은 I3에서 config로
-      배선되며 그 전까지 인라인 감정전환 경계에만 영향(레거시 줄단위 입력은 lineSilenceGap이라 무영향=회귀 보존)."""
+      배선되며 그 전까지 인라인 감정전환 경계에만 영향(레거시 줄단위 입력은 lineSilenceGap이라 무영향=회귀 보존).
+    expressive_mode: 표현형 파서 모드(계약 §10) — result metadata 에 '어느 모드로 만든 결과인가'를 기록해
+      session/config/metadata 3중 일치를 성립시키기 위한 값이다. ⚠️ 합성 동작에는 쓰지 않는다.
+      오늘 이 함수에 도달하는 값은 항상 'legacy_v2' 다(separate.py 가 v3 를 모델 로딩 전에 차단한다).
+      v3 합성이 구현되기 전까지 이 인자로 분기하지 말 것 — 분기하면 그 순간 조용한 v3 경로가 생긴다."""
     emit("status", message="음성 합성 시작", percent=0)
 
     if not emotion_refs:
@@ -1648,6 +1657,8 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         "explicit_pause_count": _sm.get("explicit_pause_count"),
         "total_pause_ms": _sm.get("total_pause_ms"),
         "emotion_boundary_mode": emotion_boundary_mode,
+        # 표현형 모드 캐리어(계약 §10) — camelCase 가 세 캐리어 공통 정본 키.
+        "ttsExpressiveMode": expressive_mode,
     }
     emit("progress", percent=5, message=f"{len(parsed)}개 문장 합성 준비")
 

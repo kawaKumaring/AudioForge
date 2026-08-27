@@ -284,3 +284,72 @@ test('setTtsExpression: 부분 갱신(다른 필드 불변)', () => {
   assert.equal(st.ttsEmotionBoundaryMode, 'immediate')
   assert.equal(st.ttsTailPaddingMs, 120)  // 미지정 필드 불변
 })
+
+// ── B2a: 표현형 모드 carrier(store/session) ──
+// ⚠️ 이 기능에는 UI 스위치가 없다. 값이 바뀌는 경로는 '세션 복원' 하나뿐이다.
+
+test('B2a: fresh 세션 기본 = legacy_v2', () => {
+  useAppStore.getState().reset()
+  assert.equal(useAppStore.getState().ttsExpressiveMode, 'legacy_v2')
+})
+
+test('B2a: legacy 세션(필드 없음) → legacy_v2, 오류 없음', () => {
+  useAppStore.getState().restoreSession('C:/out', {
+    mode: 'tts' as const, source: 'C:/in.wav',
+    options: { ttsText: '구 세션' },   // ttsExpressiveMode 없음
+    tracks: [],
+  })
+  const st = useAppStore.getState()
+  assert.equal(st.ttsExpressiveMode, 'legacy_v2')
+  assert.equal(st.error, null)          // 부재는 정상이다 — 조용히 복원해도 된다
+  assert.equal(st.errorInfo, null)
+})
+
+test('B2a: 저장된 명시값은 그대로 복원된다', () => {
+  for (const mode of ['legacy_v2', 'expressive_v3'] as const) {
+    useAppStore.getState().restoreSession('C:/out', {
+      mode: 'tts' as const, source: 'C:/in.wav',
+      options: { ttsText: 'x', ttsExpressiveMode: mode },
+      tracks: [],
+    })
+    const st = useAppStore.getState()
+    assert.equal(st.ttsExpressiveMode, mode)
+    assert.equal(st.error, null)
+  }
+})
+
+test('B2a: 계약 밖 값 → 조용한 강등 금지, EXPRESSIVE_MODE_INVALID로 드러난다', () => {
+  for (const bad of ['expressive_V3', 'v3', '', 3, true, {}]) {
+    useAppStore.getState().restoreSession('C:/out', {
+      mode: 'tts' as const, source: 'C:/in.wav',
+      options: { ttsText: 'x', ttsExpressiveMode: bad as never },
+      tracks: [],
+    })
+    const st = useAppStore.getState()
+    // 안전한 폴백 값은 legacy_v2 — 절대 v3로 승격되지 않는다.
+    assert.equal(st.ttsExpressiveMode, 'legacy_v2')
+    // 그러나 조용하지 않다: 오류가 실제로 드러나야 한다.
+    assert.notEqual(st.error, null, `${typeof bad} 값이 조용히 통과했다`)
+    assert.equal(st.errorInfo?.code, 'EXPRESSIVE_MODE_INVALID')
+    // 원시값은 담지 않는다(타입 이름만).
+    assert.equal(JSON.stringify(st.errorInfo).includes('expressive_V3'), false)
+  }
+})
+
+test('B2a: 본문 내용이 모드를 바꾸지 않는다(복원 경로)', () => {
+  useAppStore.getState().restoreSession('C:/out', {
+    mode: 'tts' as const, source: 'C:/in.wav',
+    options: { ttsText: '다 끝났다!? 정말...... 그렇구나~ [ㅋㅋ] 마지막.' },  // v3 토큰 가득
+    tracks: [],
+  })
+  assert.equal(useAppStore.getState().ttsExpressiveMode, 'legacy_v2')
+})
+
+test('B2a: store에 v3를 켜는 setter가 없다(죽은 스위치 방지)', () => {
+  // setTtsExpression 은 tail/emotion 경계만 다룬다. 표현형 모드를 이 경로로 바꿀 수 없어야 한다.
+  useAppStore.setState({ ttsExpressiveMode: 'legacy_v2' })
+  useAppStore.getState().setTtsExpression({ ttsExpressiveMode: 'expressive_v3' } as never)
+  assert.equal(useAppStore.getState().ttsExpressiveMode, 'legacy_v2')
+  const api = useAppStore.getState() as unknown as Record<string, unknown>
+  assert.equal(typeof api.setTtsExpressiveMode, 'undefined')
+})
