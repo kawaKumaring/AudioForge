@@ -320,6 +320,36 @@ class TestMeasurement(unittest.TestCase):
         self.assertEqual(withc["speech_rate_available"], 1)
         self.assertGreater(withc["speech_rate_cps"], 0.0)
 
+    def test_prosody_adapter_reuses_existing_records(self):
+        # 이미 뽑아 둔 prosody_profile(analysis.json 의 f0 섹션과 같은 모양)을 재합성 없이 승격한다.
+        pro = {
+            "sample_rate": 24000, "analysis_samples": 216000, "frame_count": 896,
+            "voiced_frame_count": 775, "active_frame_count": 668, "voiced_ratio": 0.8649,
+            "f0_q10_hz": 198.3, "f0_q25_hz": 226.4, "f0_q50_hz": 266.67,
+            "f0_q75_hz": 324.3, "f0_q90_hz": 375.0,
+            "f0_range_semitones": 11.026, "f0_iqr_semitones": 6.22, "f0_std_semitones": 4.207,
+            "rms_q10": 0.048, "rms_q50": 0.162, "rms_q90": 0.25, "rms_range_db": 14.29,
+            "delta_pair_count": 744, "rising_ratio": 0.079, "falling_ratio": 0.112,
+            "flat_ratio": 0.809, "rising_falling_balance": -0.032,
+            "abs_delta_median_semitones": 0.189, "abs_delta_p90_semitones": 0.747,
+            "rise_run_count": 7, "fall_run_count": 15,
+        }
+        rec = ea.profile_from_prosody_profile(pro)
+        self.assertEqual(tuple(rec.keys()), ea.EMOTION_ACOUSTIC_PROFILE_FIELDS)
+        ea.serialize_emotion_profile(rec)
+        self.assertEqual(rec["f0_q50_hz"], 266.67)
+        # 쉼·전사 정보가 없으면 추정해 채우지 않는다 — 없음을 플래그로 표시한다.
+        self.assertEqual(rec["speech_rate_available"], 0)
+        self.assertEqual(rec["pause_count"], 0)
+
+    def test_prosody_adapter_computes_rate_only_with_char_count(self):
+        pro = ea.measure_emotion_acoustic_profile(self.tone(200.0), 24000)
+        prosody_like = dict(pro)
+        rec = ea.profile_from_prosody_profile(
+            prosody_like, pause={"speech_ms": 4000}, transcript_chars=20)
+        self.assertEqual(rec["speech_rate_available"], 1)
+        self.assertAlmostEqual(rec["speech_rate_cps"], 5.0)
+
     def test_brighter_signal_has_higher_tilt(self):
         import numpy as np
         dark = self.tone(200.0, 24000, 1.0)
