@@ -200,3 +200,85 @@ def trim_region(path, start_sec, dur_sec, out_path):
     if not (os.path.exists(out_path) and os.path.getsize(out_path) > 0):
         raise RuntimeError("파생 참조 WAV 생성 실패(빈/0바이트).")
     return out_path
+
+
+# ────────── 정렬 보장 구간 선택(참조 대사 혼입의 원인 수정, 2026-08-28) ──────────
+#
+# 기존 trim_region 은 "요청한 구간을 그대로 자른다". 그것이 사고의 경로였다 — 끝이 발화
+# 한가운데였는데도 잘렸고, ref_text 는 그 창에 걸친 전사 세그먼트를 통째로 이어 붙였다.
+# 아래 경로는 자르기 전에 reference_alignment 정책으로 경계를 보정하고, 보정이 불가능하면
+# **자르지 않고 실패시킨다**(경고만 내고 통과시키지 않는다).
+
+def detect_silences(path, min_len_sec=None, dbfs=SILENCE_DBFS,
+                    frame_ms=20.0, hop_ms=10.0, start_sec=0.0, dur_sec=None):
+    """파형에서 무음 구간 [(start,end), ...] 을 직접 잰다(초 단위, 홉 10ms).
+
+    전사 타임스탬프(표시용 1초 단위일 수 있다)가 아니라 **실제 파형**을 근거로 삼는 자리다.
+    이 구분이 무너지면 '일치'를 잘못 판정한다 — 이번 사고의 직접 원인이다."""
+    import numpy as np
+    import reference_alignment as ra
+    mono, sr = _load_mono(path)
+    if dur_sec is not None:
+        a = max(0, int(round(start_sec * sr)))
+        b = min(len(mono), a + int(round(dur_sec * sr)))
+        mono, off = mono[a:b], start_sec
+    else:
+        off = 0.0
+    if min_len_sec is None:
+        min_len_sec = ra.MIN_BOUNDARY_SILENCE_SEC
+    n, h = max(1, int(sr * frame_ms / 1000.0)), max(1, int(sr * hop_ms / 1000.0))
+    thr = 10.0 ** (dbfs / 20.0)
+    k = max(0, (len(mono) - n) // h + 1)
+    active = np.empty(k, dtype=bool)
+    for i in range(k):
+        w = mono[i * h:i * h + n]
+        active[i] = math.sqrt(float(np.square(w, dtype=np.float64).mean())) >= thr
+    out, s = [], None
+    for i in range(k):
+        if not active[i] and s is None:
+            s = i
+        elif active[i] and s is not None:
+            out.append((off + s * hop_ms / 1000.0, off + i * hop_ms / 1000.0))
+            s = None
+    if s is not None:
+        out.append((off + s * hop_ms / 1000.0, off + (k * hop_ms / 1000.0)))
+    return [(round(a, 4), round(b, 4)) for a, b in out if (b - a) >= min_len_sec]
+
+
+def plan_aligned_region(path, requested_start_sec, requested_dur_sec, segments,
+                        min_sec=None, max_sec=None):
+    """요청 구간 + 전사 세그먼트 → 정렬이 보장된 계획. 자르지는 않는다(계획만)."""
+    import reference_alignment as ra
+    import soundfile as sf
+    info = sf.info(path)
+    total_sec = float(info.frames) / float(info.samplerate)
+    sil = detect_silences(path)
+    return ra.plan_reference_region(
+        requested_start_sec, requested_start_sec + requested_dur_sec, segments, sil,
+        min_sec=ra.MIN_CLIP_SEC if min_sec is None else min_sec,
+        max_sec=ra.MAX_CLIP_SEC if max_sec is None else max_sec,
+        source_duration=total_sec)
+
+
+def build_aligned_reference(path, requested_start_sec, requested_dur_sec, segments, out_path,
+                            min_sec=None, max_sec=None):
+    """정렬 보장 참조 클립 + ref_text 를 만든다. **fail-closed** — 계획이 실패하면 예외.
+
+    반환 (out_path, plan). plan['ref_text'] 는 클립에 완전히 들어간 세그먼트만으로 만들어졌고,
+    plan 은 assert_alignment 를 통과한 것만 돌아온다. 예외가 나면 합성을 시작하면 안 된다."""
+    import numpy as np
+    import reference_alignment as ra
+    plan = plan_aligned_region(path, requested_start_sec, requested_dur_sec, segments,
+                              min_sec=min_sec, max_sec=max_sec)
+    ra.assert_alignment(plan)                      # 실패면 여기서 AlignmentError
+    trim_region(path, plan["clip_start"], plan["clip_end"] - plan["clip_start"], out_path)
+    # 만들어진 클립이 실제로 말 도중에 끊기지 않았는지 파형으로 다시 확인(계획과 산출물의 대조).
+    import reference_leakage as rl
+    mono, sr = _load_mono(out_path)
+    b = rl.boundary_truncation(np.asarray(mono, dtype=np.float64), sr)
+    plan["clip_boundary_check"] = b
+    if b["head_truncated"] or b["tail_truncated"]:
+        raise ra.AlignmentError(
+            "CLIP_BOUNDARY_STILL_TRUNCATED",
+            f"head={b['head_dbfs']}dBFS tail={b['tail_dbfs']}dBFS")
+    return out_path, plan
