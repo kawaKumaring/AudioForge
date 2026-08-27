@@ -421,6 +421,366 @@ class TestDeterminism(unittest.TestCase):
             ocm.compute_onset_continuity_metrics(sig, SR, spans, embed_fn=embed))
         self.assertEqual(first, second)
 
+# ────────────────────────── F. 마지막 구간(tail) 축 ──────────────────────────
+
+def decaying(n, f0, amp):
+    """진폭이 amp 에서 0 까지 선형 감쇠하는 톤(말끝이 여운으로 사라지는 케이스)."""
+    env = np.linspace(1.0, 0.0, n, dtype=np.float64)
+    return (tone(n, f0, amp).astype(np.float64) * env).astype(np.float32)
+
+
+def with_silence(body, lead_ms=0.0, trail_ms=0.0):
+    lead = np.zeros(int(lead_ms * SR / 1000.0), dtype=np.float32)
+    trail = np.zeros(int(trail_ms * SR / 1000.0), dtype=np.float32)
+    return np.concatenate([lead, body, trail])
+
+
+class TestTailAxis(unittest.TestCase):
+    """온셋(첫 300 ms)만 재던 계측에 대칭인 '마지막 구간' 축이 실제로 붙었는가."""
+
+    def test_tail_region_is_the_last_window_and_ends_at_the_chunk_end(self):
+        sp = span(0, 1000, 1000 + SR)
+        lo, hi = ocm.tail_region(sp, SR)
+        self.assertEqual(hi, sp.end_sample)
+        self.assertEqual(hi - lo, ocm.ms_to_samples(ocm.TAIL_WINDOW_MS, SR))
+
+    def test_tail_region_never_leaves_the_chunk_when_the_chunk_is_short(self):
+        sp = span(0, 0, int(0.1 * SR))
+        lo, hi = ocm.tail_region(sp, SR)
+        self.assertEqual((lo, hi), (sp.start_sample, sp.end_sample))
+
+    def test_tail_window_samples_is_reported_per_chunk(self):
+        sig, spans = two_chunk_case()
+        for rec in ocm.compute_onset_continuity_metrics(sig, SR, spans):
+            self.assertEqual(rec["tail_window_samples"],
+                             ocm.ms_to_samples(ocm.TAIL_WINDOW_MS, SR))
+
+    def test_a_chunk_that_fades_out_has_a_negative_tail_slope(self):
+        sig = np.concatenate([tone(SR, 150.0, 0.3), decaying(int(0.3 * SR), 150.0, 0.3)])
+        rec = ocm.compute_onset_continuity_metrics(sig, SR, [span(0, 0, sig.size)])[0]
+        self.assertLess(rec["tail_slope"], 0.0)
+        self.assertLess(rec["tail_rms_delta_db"], -3.0)
+
+    def test_a_chunk_cut_flat_has_a_near_zero_tail_slope(self):
+        """'칼로 자른 듯' 한 끝은 기울기가 0 에 가깝다 — 여운으로 사라지는 끝과 수치로 구분된다."""
+        sig = tone(2 * SR, 150.0, 0.3)
+        rec = ocm.compute_onset_continuity_metrics(sig, SR, [span(0, 0, sig.size)])[0]
+        self.assertLess(abs(rec["tail_slope"]), 1e-2)
+        self.assertLess(abs(rec["tail_rms_delta_db"]), 0.5)
+
+    def test_tail_pitch_is_reported_next_to_the_stable_pitch(self):
+        sig = np.concatenate([tone(SR, 120.0, 0.3), tone(int(0.3 * SR), 300.0, 0.3)])
+        rec = ocm.compute_onset_continuity_metrics(sig, SR, [span(0, 0, sig.size)])[0]
+        self.assertGreater(rec["tail_f0_delta_hz"], 100.0)
+        self.assertGreater(rec["tail_f0_ratio"], 1.5)
+
+
+# ────────────────────────── G. 유성 프레임 기준 F0(무음 오염 차단) ──────────────────────────
+
+class TestVoicedF0Primitives(unittest.TestCase):
+
+    def test_semitone_delta_is_twelve_log2_of_the_ratio(self):
+        self.assertAlmostEqual(ocm.semitone_delta(100.0, 200.0), 12.0, places=9)
+        self.assertAlmostEqual(ocm.semitone_delta(200.0, 100.0), -12.0, places=9)
+        self.assertAlmostEqual(ocm.semitone_delta(140.0, 140.0), 0.0, places=12)
+
+    def test_semitone_delta_reports_zero_when_it_cannot_measure(self):
+        self.assertEqual(ocm.semitone_delta(0.0, 200.0), 0.0)
+        self.assertEqual(ocm.semitone_delta(200.0, 0.0), 0.0)
+
+    def test_f0_track_and_rms_track_share_one_frame_grid(self):
+        sig = tone(SR, 150.0, 0.3)
+        f0 = ocm.f0_track(sig, SR, 0, sig.size)
+        rms = ocm.frame_rms_track(sig, SR, 0, sig.size)
+        self.assertEqual(f0.size, rms.size)
+        self.assertGreater(f0.size, 10)
+        self.assertTrue(bool(np.all(f0 > 0.0)))
+
+    def test_first_voiced_skips_leading_silence_instead_of_reporting_zero(self):
+        sig = with_silence(tone(SR, 150.0, 0.3), lead_ms=120.0)
+        hz, off, av = ocm.first_voiced_f0(sig, SR, 0, sig.size)
+        self.assertEqual(av, 1)
+        self.assertGreater(off, 0)
+        self.assertLess(abs(hz - 150.0) / 150.0, 0.03)
+
+    def test_last_voiced_reports_how_much_silence_follows_it(self):
+        sig = with_silence(tone(SR, 150.0, 0.3), trail_ms=200.0)
+        hz, rest, av = ocm.last_voiced_f0(sig, SR, 0, sig.size)
+        self.assertEqual(av, 1)
+        self.assertGreater(rest, 0)
+        self.assertLess(abs(hz - 150.0) / 150.0, 0.03)
+
+    def test_all_silence_is_unavailable_not_a_fake_zero_pitch(self):
+        sil = np.zeros(SR, dtype=np.float32)
+        self.assertEqual(ocm.first_voiced_f0(sil, SR, 0, sil.size), (0.0, -1, 0))
+        self.assertEqual(ocm.last_voiced_f0(sil, SR, 0, sil.size), (0.0, -1, 0))
+
+    def test_the_record_separates_unmeasurable_from_measured(self):
+        sig = with_silence(tone(SR, 150.0, 0.3), lead_ms=120.0, trail_ms=200.0)
+        rec = ocm.compute_onset_continuity_metrics(sig, SR, [span(0, 0, sig.size)])[0]
+        self.assertEqual(rec["onset_first_voiced_available"], 1)
+        self.assertEqual(rec["tail_last_voiced_available"], 1)
+        self.assertGreater(rec["onset_first_voiced_offset_samples"], 0)
+        self.assertGreater(rec["tail_last_voiced_trailing_samples"], 0)
+
+
+# ────────────────────────── H. 운율 프로필 ──────────────────────────
+
+def wobble(n, f0, amp, depth_st, rate_hz):
+    """F0 가 depth_st 반음 폭으로 rate_hz 로 흔들리는 톤(억양이 살아 있는 신호)."""
+    t = np.arange(n, dtype=np.float64) / float(SR)
+    inst = f0 * np.power(2.0, (depth_st / 12.0) * np.sin(2.0 * np.pi * rate_hz * t))
+    phase = 2.0 * np.pi * np.cumsum(inst) / float(SR)
+    return (amp * np.sin(phase)).astype(np.float32)
+
+
+class TestProsodyProfile(unittest.TestCase):
+
+    def test_profile_has_exactly_the_contract_fields(self):
+        rec = ocm.prosody_profile(tone(2 * SR, 150.0, 0.3), SR)
+        self.assertEqual(tuple(rec.keys()), ocm.PROSODY_PROFILE_FIELDS)
+
+    def test_a_steady_tone_is_described_as_flat(self):
+        rec = ocm.prosody_profile(tone(2 * SR, 150.0, 0.3), SR)
+        self.assertGreater(rec["voiced_ratio"], 0.9)
+        self.assertLess(rec["f0_std_semitones"], 0.2)
+        self.assertGreater(rec["flat_ratio"], 0.9)
+
+    def test_a_wobbling_tone_is_described_as_less_flat(self):
+        flat = ocm.prosody_profile(tone(2 * SR, 150.0, 0.3), SR)
+        live = ocm.prosody_profile(wobble(2 * SR, 150.0, 0.3, 5.0, 1.5), SR)
+        self.assertGreater(live["f0_std_semitones"], flat["f0_std_semitones"] + 0.5)
+        self.assertGreater(live["f0_range_semitones"], flat["f0_range_semitones"] + 1.0)
+        self.assertGreater(live["abs_delta_p90_semitones"], flat["abs_delta_p90_semitones"])
+
+    def test_comparison_says_the_generated_side_is_narrower_with_a_negative_percent(self):
+        ref = ocm.prosody_profile(wobble(2 * SR, 150.0, 0.3, 6.0, 2.0), SR)
+        gen = ocm.prosody_profile(wobble(2 * SR, 150.0, 0.3, 1.0, 2.0), SR)
+        cmp_rec = ocm.compare_prosody_profiles(ref, gen)
+        self.assertEqual(tuple(cmp_rec.keys()), ocm.PROSODY_COMPARISON_FIELDS)
+        self.assertLess(cmp_rec["f0_std_ratio"], 1.0)
+        self.assertLess(cmp_rec["f0_std_delta_pct"], 0.0)
+
+    def test_comparison_rejects_a_profile_that_is_missing_fields(self):
+        ref = ocm.prosody_profile(tone(2 * SR, 150.0, 0.3), SR)
+        broken = dict(ref)
+        broken.pop("f0_std_semitones")
+        with self.assertRaises(ocm.MetricsError):
+            ocm.compare_prosody_profiles(ref, broken)
+
+    def test_profile_and_comparison_serialize_to_numbers_only(self):
+        ref = ocm.prosody_profile(wobble(2 * SR, 150.0, 0.3, 6.0, 2.0), SR)
+        gen = ocm.prosody_profile(tone(2 * SR, 150.0, 0.3), SR)
+        for out in (ocm.serialize_prosody_profile(ref),
+                    ocm.serialize_prosody_comparison(ocm.compare_prosody_profiles(ref, gen))):
+            for key, value in out.items():
+                self.assertIsInstance(value, (int, float), key)
+                self.assertNotIsInstance(value, bool, key)
+                self.assertTrue(math.isfinite(float(value)), key)
+
+    def test_profile_serializer_rejects_poisoned_fields(self):
+        rec = dict(ocm.prosody_profile(tone(2 * SR, 150.0, 0.3), SR))
+        rec["source_path"] = "C:/tmp/ref.wav"
+        with self.assertRaises(ocm.PrivacyViolation):
+            ocm.serialize_prosody_profile(rec)
+        rec2 = dict(ocm.prosody_profile(tone(2 * SR, 150.0, 0.3), SR))
+        rec2["f0_q50_hz"] = float("nan")
+        with self.assertRaises(ocm.PrivacyViolation):
+            ocm.serialize_prosody_profile(rec2)
+
+
+# ────────────────────────── I. join 연속성(청크 '사이') ──────────────────────────
+
+def joined(chunks, gaps_samples):
+    """프로덕션 결합 규칙의 권위 미러로 신호 + span 을 만든다(계측 전용 두 번째 규칙 금지)."""
+    sig = bm.concat_with_boundaries_array(chunks, gaps_samples)
+    spans, cursor = [], 0
+    for i, c in enumerate(chunks):
+        g = gaps_samples[i] if i > 0 else 0
+        cursor += g
+        spans.append(span(i, cursor, cursor + c.size, g))
+        cursor += c.size
+    return sig, spans
+
+
+def one_join(chunks, gaps_samples, embed_fn=None):
+    sig, spans = joined(chunks, gaps_samples)
+    recs = ocm.compute_join_continuity_metrics(sig, SR, spans, embed_fn=embed_fn)
+    assert len(recs) == len(chunks) - 1
+    return recs[0]
+
+
+class TestJoinContinuity(unittest.TestCase):
+
+    def test_n_chunks_produce_n_minus_one_join_records(self):
+        c = tone(SR, 140.0, 0.25)
+        sig, spans = joined([c, c, c], [0, 0, 0])
+        self.assertEqual(len(ocm.compute_join_continuity_metrics(sig, SR, spans)), 2)
+
+    def test_a_single_chunk_has_no_join(self):
+        c = tone(SR, 140.0, 0.25)
+        self.assertEqual(ocm.compute_join_continuity_metrics(c, SR, [span(0, 0, c.size)]), [])
+        self.assertEqual(ocm.compute_join_continuity_metrics(c, SR, []), [])
+
+    def test_records_have_exactly_the_contract_fields(self):
+        c = tone(SR, 140.0, 0.25)
+        sig, spans = joined([c, c], [0, 0])
+        for rec in ocm.compute_join_continuity_metrics(sig, SR, spans):
+            self.assertEqual(tuple(rec.keys()), ocm.JOIN_RECORD_FIELDS)
+
+    def test_matched_chunks_show_no_step_on_any_axis(self):
+        c = tone(SR, 140.0, 0.25)
+        rec = one_join([c, c], [0, 0])
+        self.assertAlmostEqual(rec["rms_step_db"], 0.0, places=2)
+        self.assertAlmostEqual(rec["f0_step_semitones"], 0.0, places=3)
+        self.assertEqual(rec["f0_step_available"], 1)
+        self.assertLess(rec["mel_distance"], 1e-3)
+
+    def test_a_level_step_across_the_join_is_measured_in_db(self):
+        loud = tone(SR, 140.0, 0.25)
+        quiet = tone(SR, 140.0, 0.0625)          # -12.04 dB
+        rec = one_join([loud, quiet], [0, 0])
+        self.assertLess(rec["rms_step_db"], -11.5)
+        self.assertGreater(rec["rms_step_db"], -12.5)
+
+    def test_a_pitch_step_across_the_join_is_measured_in_semitones(self):
+        low = tone(SR, 140.0, 0.25)
+        high = tone(SR, 210.0, 0.25)             # +7.02 반음
+        rec = one_join([low, high], [0, 0])
+        self.assertEqual(rec["f0_step_available"], 1)
+        self.assertGreater(rec["f0_step_semitones"], 6.8)
+        self.assertLess(rec["f0_step_semitones"], 7.2)
+
+    def test_a_sample_rate_mix_shows_up_as_a_large_pitch_step(self):
+        """서로 다른 sr 로 만든 조각을 첫 파일 sr 로 기록하면 경계에서 피치가 통째로 어긋난다.
+
+        production 세그먼트 경로(_select_engine 이 세그먼트마다 엔진 선택)에서 실제로 가능한
+        조건이며, 이 수치가 tts_worker 의 _assert_concat_ready 배선 근거다.
+        """
+        at_24k = tone(SR, 140.0, 0.25)
+        # 32000 Hz 에서 만든 1.2 초 분량을 그대로 24000 Hz 로 재해석한 것과 동일한 샘플 열.
+        n32 = int(1.2 * 32000)
+        t32 = np.arange(n32, dtype=np.float64) / 32000.0
+        at_32k = (0.25 * np.sin(2.0 * np.pi * 140.0 * t32)).astype(np.float32)
+        rec = one_join([at_24k, at_32k], [0, 0])
+        self.assertEqual(rec["f0_step_available"], 1)
+        self.assertLess(rec["f0_step_semitones"], -4.5)      # 이론 -4.98, 측정 -4.90
+        self.assertGreater(rec["f0_step_semitones"], -5.3)
+        self.assertGreater(rec["mel_distance"], 1.0)
+
+    def test_generated_silence_is_counted_separately_from_the_declared_gap(self):
+        """gap=0 으로 '연속' 이라 선언해도 조각이 스스로 무음을 달고 있으면 실제 정적은 0 이 아니다."""
+        c = with_silence(tone(SR, 140.0, 0.25), lead_ms=80.0, trail_ms=150.0)
+        rec = one_join([c, c], [0, 0])
+        self.assertEqual(rec["gap_samples"], 0)
+        self.assertEqual(rec["declared_pause_ms"], 0.0)
+        self.assertAlmostEqual(rec["undeclared_pause_ms"], 230.0, places=3)
+        self.assertAlmostEqual(rec["effective_pause_ms"], 230.0, places=3)
+        self.assertEqual(rec["left_trailing_silence_samples"], int(0.150 * SR))
+        self.assertEqual(rec["right_leading_silence_samples"], int(0.080 * SR))
+
+    def test_declared_and_generated_silence_add_up(self):
+        c = with_silence(tone(SR, 140.0, 0.25), lead_ms=80.0, trail_ms=150.0)
+        gap = int(0.5 * SR)
+        rec = one_join([c, c], [0, gap])
+        self.assertEqual(rec["gap_samples"], gap)
+        self.assertAlmostEqual(rec["declared_pause_ms"], 500.0, places=6)
+        self.assertAlmostEqual(rec["effective_pause_ms"], 730.0, places=3)
+        self.assertEqual(rec["effective_pause_samples"],
+                         rec["left_trailing_silence_samples"] + gap
+                         + rec["right_leading_silence_samples"])
+
+    def test_the_level_step_is_not_faked_by_the_silence_around_the_join(self):
+        """무음을 걷어내지 않으면 여운 때문에 -40 dB 같은 가짜 계단이 나온다 — 그러면 안 된다."""
+        c = with_silence(tone(SR, 140.0, 0.25), lead_ms=80.0, trail_ms=150.0)
+        rec = one_join([c, c], [0, 0])
+        self.assertLess(abs(rec["rms_step_db"]), 0.5)
+
+    def test_an_out_of_phase_butt_join_shows_a_step_far_above_the_natural_one(self):
+        n = SR
+        k = np.arange(n)
+        pos = (0.25 * np.cos(2.0 * np.pi * 140.0 * k / SR)).astype(np.float32)   # +peak 에서 끝
+        neg = (-0.25 * np.cos(2.0 * np.pi * 140.0 * k / SR)).astype(np.float32)  # -peak 에서 시작
+        natural = 0.25 * 2.0 * math.pi * 140.0 / SR      # 이 톤의 인접 샘플 변화 상한
+        same = one_join([pos, pos], [0, 0])
+        opposite = one_join([pos, neg], [0, 0])
+        self.assertLess(same["sample_jump"], natural)
+        self.assertGreater(opposite["sample_jump"], 20.0 * natural)
+        self.assertEqual(opposite["sample_jump_available"], 1)
+
+    def test_speaker_distance_needs_an_injected_function(self):
+        c = tone(SR, 140.0, 0.25)
+        self.assertEqual(one_join([c, c], [0, 0])["speaker_distance_available"], 0)
+
+        def embed(x, rate):
+            return [float(np.mean(np.abs(x))), float(np.std(x)), 1.0]
+
+        loud = tone(SR, 140.0, 0.25)
+        quiet = tone(SR, 140.0, 0.05)
+        rec = one_join([loud, quiet], [0, 0], embed_fn=embed)
+        self.assertEqual(rec["speaker_distance_available"], 1)
+        self.assertGreater(rec["speaker_distance"], 0.0)
+
+    def test_overlapping_or_invalid_spans_are_rejected(self):
+        sig = tone(2 * SR, 140.0, 0.25)
+        with self.assertRaises(ocm.MetricsError):
+            ocm.compute_join_continuity_metrics(sig, SR, [span(0, 0, SR), span(1, SR // 2, 2 * SR)])
+        with self.assertRaises(ocm.MetricsError):
+            ocm.compute_join_continuity_metrics(sig, 0, [span(0, 0, SR), span(1, SR, 2 * SR)])
+        with self.assertRaises(ocm.MetricsError):
+            ocm.compute_join_continuity_metrics(sig, SR, [span(0, 0, SR), "not a span"])
+
+    def test_join_records_serialise_to_numbers_only(self):
+        c = with_silence(tone(SR, 140.0, 0.25), trail_ms=100.0)
+        sig, spans = joined([c, c, c], [0, 0, int(0.2 * SR)])
+        rows = ocm.serialize_join_records(ocm.compute_join_continuity_metrics(sig, SR, spans))
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertEqual(set(row.keys()), set(ocm.JOIN_RECORD_FIELDS))
+            for key, value in row.items():
+                self.assertIsInstance(value, (int, float), key)
+                self.assertNotIsInstance(value, bool, key)
+                self.assertTrue(math.isfinite(float(value)), key)
+
+    def test_join_serializer_rejects_extra_missing_and_poisoned_fields(self):
+        c = tone(SR, 140.0, 0.25)
+        base = one_join([c, c], [0, 0])
+        poisoned = dict(base)
+        poisoned["reference_path"] = "C:/Users/x/ref.wav"
+        with self.assertRaises(ocm.PrivacyViolation):
+            ocm.serialize_join_record(poisoned)
+        short = dict(base)
+        short.pop("rms_step_db")
+        with self.assertRaises(ocm.PrivacyViolation):
+            ocm.serialize_join_record(short)
+        for bad in ("C:/tmp/out.wav", "대사입니다", [0.1], True, float("inf")):
+            rec = dict(base)
+            rec["rms_step_db"] = bad
+            with self.assertRaises(ocm.PrivacyViolation):
+                ocm.serialize_join_record(rec)
+
+    def test_formatted_join_table_has_no_path_or_text_content(self):
+        c = tone(SR, 140.0, 0.25)
+        sig, spans = joined([c, c], [0, 0])
+        blob = ocm.format_join_records(ocm.compute_join_continuity_metrics(sig, SR, spans))
+        for line in blob.splitlines()[1:]:
+            for cell in line.split("\t"):
+                for bad in ("/", "\\", ":", " ", ".wav", ".txt", "Users", "python"):
+                    self.assertNotIn(bad, cell, cell)
+
+    def test_join_metrics_are_deterministic(self):
+        c = with_silence(tone(SR, 140.0, 0.25), lead_ms=40.0, trail_ms=90.0)
+        sig, spans = joined([c, c], [0, int(0.3 * SR)])
+
+        def embed(x, rate):
+            return [float(np.mean(np.abs(x))), float(np.std(x)), 1.0]
+
+        first = ocm.serialize_join_records(
+            ocm.compute_join_continuity_metrics(sig, SR, spans, embed_fn=embed))
+        second = ocm.serialize_join_records(
+            ocm.compute_join_continuity_metrics(sig, SR, spans, embed_fn=embed))
+        self.assertEqual(first, second)
+
 
 if __name__ == "__main__":
     unittest.main()

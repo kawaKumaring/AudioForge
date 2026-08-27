@@ -36,6 +36,7 @@ TRAILING_LOOKBACK_MS = 1000.0    # trailing 판정 시 되돌아보는 최대 �
 TRAILING_REL_THRESHOLD = 0.10    # 구간 최대 프레임 RMS 대비 -20 dB 이하 = 저에너지 후보
 
 ONSET_WINDOW_MS = 300.0          # '첫 300 ms' 온셋 창 — 안정 구간과 대조하는 기준 창
+TAIL_WINDOW_MS = 300.0           # '마지막 구간' 창 — 온셋과 대칭. 청크 끝이 안정 구간과 얼마나 다른가
 ONSET_SLOPE_FRAME_MS = 10.0      # 온셋 기울기 계산 프레임(비중첩)
 STABLE_MARGIN_MS = 200.0         # 안정 구간을 잡을 때 청크 앞/뒤에서 잘라내는 여유
 STABLE_MIN_MS = 300.0            # 안정 구간 최소 길이. 못 채우면 fallback 플래그를 세운다
@@ -46,6 +47,8 @@ F0_MIN_HZ = 60.0
 F0_MAX_HZ = 400.0
 F0_VOICED_MIN_CORR = 0.30        # 자기상관 정규화 피크가 이보다 낮으면 무성으로 보고 0.0
 F0_ANALYSIS_MS = 500.0           # F0 분석에 쓰는 최대 창 길이(더 길면 '가운데' 를 잘라 쓴다)
+
+JOIN_WINDOW_MS = 100.0           # join 양옆 비교 창(무음을 걷어낸 '실제 발화' 쪽에서 잡는다)
 
 MEL_N_FFT = 1024
 MEL_N_MELS = 40
@@ -360,10 +363,10 @@ def speaker_distance(signal: np.ndarray, span_a, span_b, sr: int,
 
 def onset_slope(sig: np.ndarray, start: int, stop: int, sr: int,
                 frame_ms: float = ONSET_SLOPE_FRAME_MS) -> float:
-    """온셋 구간의 프레임 RMS 증가 기울기(진폭/초). 프레임이 2개 미만이면 0.0.
+    """구간의 프레임 RMS 변화 기울기(진폭/초). 프레임이 2개 미만이면 0.0.
 
     최소제곱 1차 회귀 기울기를 쓴다 — 첫 프레임과 마지막 프레임만 보는 것보다 잡음에 강하다.
-    부호 그대로 서술한다(감소면 음수). 판정하지 않는다.
+    부호 그대로 서술한다(감소면 음수). 온셋 창에도 tail 창에도 같은 자로 쓰인다. 판정하지 않는다.
     """
     sig = np.asarray(sig)
     frame = max(1, ms_to_samples(frame_ms, sr))
@@ -417,6 +420,17 @@ def stable_region(span: ChunkSpan, sr: int,
     return int(span.start_sample), int(span.end_sample), 1
 
 
+def tail_region(span: ChunkSpan, sr: int, tail_window_ms: float = TAIL_WINDOW_MS):
+    """청크의 '마지막 구간' (start, end). 온셋 창(첫 300 ms)과 정확히 대칭인 끝 300 ms.
+
+    청크가 창보다 짧으면 청크 전체를 쓴다(잘라내지 않는다 — 서술 대상이 사라지면 안 되므로).
+    """
+    win = max(1, ms_to_samples(tail_window_ms, sr))
+    end = int(span.end_sample)
+    start = max(int(span.start_sample), end - win)
+    return start, end
+
+
 # ────────────────────────── 공개 API: 청크 온셋/연속성 레코드 ──────────────────────────
 
 ONSET_RECORD_FIELDS = (
@@ -435,6 +449,15 @@ ONSET_RECORD_FIELDS = (
     "onset_slope",
     "boundary_sample_jump", "boundary_sample_jump_available",
     "prev_zero_cross_distance", "next_zero_cross_distance",
+    # ── 마지막 구간(끝 300 ms) 축 — 온셋 축과 대칭. 청크의 '끝' 이 안정 구간과 얼마나 다른가.
+    "tail_window_samples",
+    "tail_rms", "tail_peak", "tail_hf_energy",
+    "tail_rms_delta_db",
+    "tail_f0_hz", "tail_f0_delta_hz", "tail_f0_ratio",
+    "tail_slope",
+    # ── 무음에 오염되지 않는 F0(유성 프레임 기준). 창 F0 가 0.0 인 경우와 구분하기 위함.
+    "onset_first_voiced_f0_hz", "onset_first_voiced_offset_samples", "onset_first_voiced_available",
+    "tail_last_voiced_f0_hz", "tail_last_voiced_trailing_samples", "tail_last_voiced_available",
     "sample_rate",
 )
 
@@ -448,6 +471,9 @@ ONSET_INT_FIELDS = (
     "leading_silence_samples", "trailing_silence_samples",
     "boundary_sample_jump_available",
     "prev_zero_cross_distance", "next_zero_cross_distance",
+    "tail_window_samples",
+    "onset_first_voiced_offset_samples", "onset_first_voiced_available",
+    "tail_last_voiced_trailing_samples", "tail_last_voiced_available",
     "sample_rate",
 )
 
@@ -464,10 +490,12 @@ def compute_onset_continuity_metrics(signal, sr, spans: Sequence[ChunkSpan],
                                      onset_window_ms: float = ONSET_WINDOW_MS,
                                      stable_margin_ms: float = STABLE_MARGIN_MS,
                                      stable_min_ms: float = STABLE_MIN_MS,
-                                     zero_cross_search_ms: float = ZERO_CROSS_SEARCH_MS) -> List[dict]:
+                                     zero_cross_search_ms: float = ZERO_CROSS_SEARCH_MS,
+                                     tail_window_ms: float = TAIL_WINDOW_MS) -> List[dict]:
     """산출 신호 + 청크 구간 → 청크당 레코드 1개(ONSET_RECORD_FIELDS 정확히 그대로).
 
-    각 청크의 **첫 onset_window_ms** 를 같은 청크의 **안정 구간**과 대조한다.
+    각 청크의 **첫 onset_window_ms** 와 **마지막 tail_window_ms** 를 같은 청크의 **안정 구간**과
+    각각 대조한다(두 끝은 대칭적으로 서술된다 — 시작만 보면 청크가 어떻게 끝나는지 알 수 없다).
     화자 임베딩 거리는 embed_fn 이 주어졌을 때만 계산되며, 없으면 available=0 이고
     speaker_distance 값은 의미가 없다(0.0). 임베딩 모델은 절대 여기서 로드하지 않는다.
     """
@@ -501,16 +529,26 @@ def compute_onset_continuity_metrics(signal, sr, spans: Sequence[ChunkSpan],
         start, end = int(sp.start_sample), int(sp.end_sample)
         st_lo, st_hi, st_fb = stable_region(sp, sr, stable_margin_ms, stable_min_ms)
         onset_hi = min(end, start + onset_win)
+        tail_lo, tail_hi = tail_region(sp, sr, tail_window_ms)
 
         onset = sig[start:onset_hi]
         stable = sig[st_lo:st_hi]
+        tail = sig[tail_lo:tail_hi]
 
         o_rms, o_peak, o_dc, o_hf = window_stats(onset)
         s_rms, s_peak, s_dc, s_hf = window_stats(stable)
+        t_rms, t_peak, _t_dc, t_hf = window_stats(tail)
 
         o_f0 = f0_hz(onset, sr)
         s_f0 = f0_hz(stable, sr)
+        t_f0 = f0_hz(tail, sr)
         f0_ratio = float(o_f0 / s_f0) if (o_f0 > 0.0 and s_f0 > 0.0) else 0.0
+        t_f0_ratio = float(t_f0 / s_f0) if (t_f0 > 0.0 and s_f0 > 0.0) else 0.0
+
+        # 창 F0 가 0.0 인 것은 '무성' 과 '앞/뒤가 무음이라 못 쟀음' 을 구분하지 못한다.
+        # 유성 프레임 기준 값을 따로 들고 가 그 구분을 레코드에 남긴다.
+        of_hz, of_off, of_av = first_voiced_f0(sig, sr, start, onset_hi)
+        tl_hz, tl_rest, tl_av = last_voiced_f0(sig, sr, tail_lo, tail_hi)
 
         if embed_fn is not None:
             dist = speaker_distance(sig, (start, onset_hi), (st_lo, st_hi), sr, embed_fn)
@@ -561,6 +599,21 @@ def compute_onset_continuity_metrics(signal, sr, spans: Sequence[ChunkSpan],
             "boundary_sample_jump_available": int(jump_avail),
             "prev_zero_cross_distance": int(prev_zc),
             "next_zero_cross_distance": zero_cross_distance_fwd(sig, start, end, zc_limit),
+            "tail_window_samples": int(tail_hi - tail_lo),
+            "tail_rms": float(t_rms),
+            "tail_peak": float(t_peak),
+            "tail_hf_energy": float(t_hf),
+            "tail_rms_delta_db": _rms_delta_db(t_rms, s_rms),
+            "tail_f0_hz": float(t_f0),
+            "tail_f0_delta_hz": float(t_f0 - s_f0),
+            "tail_f0_ratio": t_f0_ratio,
+            "tail_slope": onset_slope(sig, tail_lo, tail_hi, sr),
+            "onset_first_voiced_f0_hz": float(of_hz),
+            "onset_first_voiced_offset_samples": int(of_off),
+            "onset_first_voiced_available": int(of_av),
+            "tail_last_voiced_f0_hz": float(tl_hz),
+            "tail_last_voiced_trailing_samples": int(tl_rest),
+            "tail_last_voiced_available": int(tl_av),
             "sample_rate": sr,
         }
         assert tuple(rec.keys()) == ONSET_RECORD_FIELDS
@@ -610,6 +663,595 @@ def format_records(records: Sequence[dict]) -> str:
     for r in rows:
         cells = []
         for key in ONSET_RECORD_FIELDS:
+            v = r[key]
+            cells.append(str(v) if isinstance(v, int) else ("%.6g" % v))
+        lines.append("\t".join(cells))
+    return "\n".join(lines)
+
+
+# ══════════════════════════ 운율 프로필(F0 궤적 기반 서술) ══════════════════════════
+#
+# 왜 여기인가: F0 궤적·반음 변환·분위수·상승/하강 비율은 (a) 참조 클립 (b) 산출물 (c) 경계 보정
+# 후보의 전/후 비교가 **똑같이** 쓰는 범용 서술이다. 특정 엔진 전용이 아니므로 이 모듈(단일 권위)에
+# 둔다. boundary_metrics 는 여기서 import 해 'join 관점' 레코드만 조립한다(수식 중복 0).
+#
+# 이 절도 위 하드 요건을 그대로 따른다 — 판정하지 않고, 보정하지 않고, 숫자만 서술한다.
+# 임계값(PROSODY_FLAT_SEMITONES 등)은 '분석 파라미터' 이며 합격 기준이 아니다.
+
+F0_TRACK_FRAME_MS = 50.0         # F0 궤적 프레임 길이(60 Hz 에서도 최소 3 주기 확보)
+F0_TRACK_HOP_MS = 10.0           # F0 궤적 홉
+PROSODY_FLAT_SEMITONES = 0.5     # 인접 프레임 반음 변화가 이 미만이면 '평탄' 으로 센다
+PROSODY_RUN_MIN_FRAMES = 2       # 상승/하강 구간(run)으로 셀 최소 연속 프레임 수
+
+
+def semitone_delta(f_from: float, f_to: float) -> float:
+    """f_from → f_to 의 반음 차 12*log2(f_to/f_from). 어느 한쪽이 0 이하면 0.0(=측정 불가).
+
+    0.0 은 '변화 없음' 과 '측정 불가' 를 구분하지 않는다 — 호출부가 available 플래그를 따로 들고
+    가야 한다(f0_hz 가 0.0 으로 '추정하지 않음' 을 표현하는 기존 규약과 동일).
+    """
+    a, b = float(f_from), float(f_to)
+    if a <= 0.0 or b <= 0.0:
+        return 0.0
+    return float(12.0 * math.log2(b / a))
+
+
+def f0_track(sig: np.ndarray, sr: int, start: int = 0, stop: Optional[int] = None,
+             frame_ms: float = F0_TRACK_FRAME_MS, hop_ms: float = F0_TRACK_HOP_MS,
+             fmin: float = F0_MIN_HZ, fmax: float = F0_MAX_HZ,
+             voiced_min_corr: float = F0_VOICED_MIN_CORR) -> np.ndarray:
+    """[start, stop) 구간의 프레임별 F0 배열(Hz). 무성 프레임은 0.0.
+
+    프레임은 **완전히 구간 안에 들어가는 것만** 쓴다(경계를 넘어 다음 청크 오디오를 섞지 않는다).
+    각 프레임의 추정은 f0_hz 하나로만 한다 — 자기상관 구현이 두 곳에 존재하지 않는다.
+    """
+    s = np.asarray(sig, dtype=np.float64)
+    sr = int(sr)
+    if sr <= 0:
+        raise MetricsError("sr must be positive: %d" % sr)
+    lo = max(0, int(start))
+    hi = s.size if stop is None else min(s.size, int(stop))
+    frame = max(2, ms_to_samples(frame_ms, sr))
+    hop = max(1, ms_to_samples(hop_ms, sr))
+    if hi - lo < frame:
+        return np.zeros(0, dtype=np.float64)
+    n = 1 + (hi - lo - frame) // hop
+    out = np.zeros(n, dtype=np.float64)
+    for k in range(n):
+        a = lo + k * hop
+        out[k] = f0_hz(s[a:a + frame], sr, fmin=fmin, fmax=fmax,
+                       voiced_min_corr=voiced_min_corr, analysis_ms=frame_ms)
+    return out
+
+
+def frame_rms_track(sig: np.ndarray, sr: int, start: int = 0, stop: Optional[int] = None,
+                    frame_ms: float = F0_TRACK_FRAME_MS,
+                    hop_ms: float = F0_TRACK_HOP_MS) -> np.ndarray:
+    """f0_track 과 **같은 프레임 격자**의 프레임 RMS 배열. 인덱스가 1:1 대응한다."""
+    s = np.asarray(sig, dtype=np.float64)
+    sr = int(sr)
+    if sr <= 0:
+        raise MetricsError("sr must be positive: %d" % sr)
+    lo = max(0, int(start))
+    hi = s.size if stop is None else min(s.size, int(stop))
+    frame = max(2, ms_to_samples(frame_ms, sr))
+    hop = max(1, ms_to_samples(hop_ms, sr))
+    if hi - lo < frame:
+        return np.zeros(0, dtype=np.float64)
+    n = 1 + (hi - lo - frame) // hop
+    out = np.zeros(n, dtype=np.float64)
+    for k in range(n):
+        a = lo + k * hop
+        out[k] = rms_of(s[a:a + frame])
+    return out
+
+
+def first_voiced_f0(sig: np.ndarray, sr: int, start: int, stop: int,
+                    frame_ms: float = F0_TRACK_FRAME_MS, hop_ms: float = F0_TRACK_HOP_MS):
+    """[start, stop) 안에서 **처음** 유성으로 판정된 프레임의 (f0_hz, 프레임 시작 offset, available).
+
+    available=0 이면 (0.0, -1, 0). 앞 무음이 길어 첫 50 ms 가 무성인 실제 케이스를 0.0 으로
+    뭉개지 않기 위해 존재한다(경계 계측이 무음에 오염되지 않게 하는 핵심).
+    """
+    track = f0_track(sig, sr, start, stop, frame_ms, hop_ms)
+    hop = max(1, ms_to_samples(hop_ms, sr))
+    idx = np.nonzero(track > 0.0)[0]
+    if idx.size == 0:
+        return 0.0, -1, 0
+    k = int(idx[0])
+    return float(track[k]), int(k * hop), 1
+
+
+def last_voiced_f0(sig: np.ndarray, sr: int, start: int, stop: int,
+                   frame_ms: float = F0_TRACK_FRAME_MS, hop_ms: float = F0_TRACK_HOP_MS):
+    """[start, stop) 안에서 **마지막** 유성 프레임의 (f0_hz, stop 까지의 잔여 거리, available).
+
+    두 번째 값은 그 프레임의 끝에서 stop 까지 남은 샘플 수 — 이 청크가 유성으로 끝난 뒤 몇 샘플이
+    비음성인지 그대로 읽을 수 있다. available=0 이면 (0.0, -1, 0).
+    """
+    track = f0_track(sig, sr, start, stop, frame_ms, hop_ms)
+    hop = max(1, ms_to_samples(hop_ms, sr))
+    frame = max(2, ms_to_samples(frame_ms, sr))
+    idx = np.nonzero(track > 0.0)[0]
+    if idx.size == 0:
+        return 0.0, -1, 0
+    k = int(idx[-1])
+    frame_end = max(0, int(start)) + k * hop + frame
+    return float(track[k]), int(max(0, int(stop) - frame_end)), 1
+
+
+# ────────────────────────── 운율 프로필 레코드 ──────────────────────────
+
+PROSODY_PROFILE_FIELDS = (
+    "sample_rate",
+    "analysis_samples",
+    "frame_count", "voiced_frame_count", "active_frame_count",
+    "voiced_ratio",
+    "f0_q10_hz", "f0_q25_hz", "f0_q50_hz", "f0_q75_hz", "f0_q90_hz",
+    "f0_range_semitones", "f0_iqr_semitones", "f0_std_semitones",
+    "rms_q10", "rms_q50", "rms_q90", "rms_range_db",
+    "delta_pair_count",
+    "rising_ratio", "falling_ratio", "flat_ratio", "rising_falling_balance",
+    "abs_delta_median_semitones", "abs_delta_p90_semitones",
+    "rise_run_count", "fall_run_count",
+)
+
+PROSODY_PROFILE_INT_FIELDS = (
+    "sample_rate", "analysis_samples",
+    "frame_count", "voiced_frame_count", "active_frame_count",
+    "delta_pair_count", "rise_run_count", "fall_run_count",
+)
+
+
+def _quantile(values: np.ndarray, q: float) -> float:
+    if values.size == 0:
+        return 0.0
+    return float(np.quantile(values, q))
+
+
+def _count_runs(signs: np.ndarray, want: int, min_len: int) -> int:
+    """signs 안에서 값이 want 인 **연속 구간** 중 길이가 min_len 이상인 것의 개수."""
+    count, run = 0, 0
+    for v in signs:
+        if int(v) == want:
+            run += 1
+        else:
+            if run >= min_len:
+                count += 1
+            run = 0
+    if run >= min_len:
+        count += 1
+    return int(count)
+
+
+def prosody_profile(signal, sr, start: int = 0, stop: Optional[int] = None,
+                    frame_ms: float = F0_TRACK_FRAME_MS, hop_ms: float = F0_TRACK_HOP_MS,
+                    flat_semitones: float = PROSODY_FLAT_SEMITONES,
+                    active_rel_threshold: float = SILENCE_REL_THRESHOLD,
+                    run_min_frames: int = PROSODY_RUN_MIN_FRAMES) -> dict:
+    """구간 하나의 운율 프로필 — PROSODY_PROFILE_FIELDS 그대로인 숫자 dict.
+
+    정의(전부 문서화된 고정 규약):
+      - F0 분위수는 **유성 프레임만** 모아 계산한다(무성 0.0 이 분포를 끌어내리지 않게).
+      - f0_range_semitones = 12*log2(q90/q10), f0_iqr_semitones = 12*log2(q75/q25).
+      - f0_std_semitones = 유성 프레임을 q50 기준 반음으로 바꾼 값의 표준편차
+        → 피치 변화 폭의 단일 스칼라. 값이 작을수록 평탄하다.
+      - RMS 분위수는 **활성 프레임만** 쓴다(프레임 RMS 가 최대 프레임 RMS 의
+        active_rel_threshold 배 초과). 무음 비율이 다른 두 클립을 비교할 때 무음 바닥이
+        q10 을 지배하지 않게 하기 위함이다.
+      - 상승/하강은 **유성이 연속된 구간 안의 인접 프레임 쌍**만 본다(무성 건너뛰기 금지 —
+        무음을 가로지른 큰 점프를 억양으로 세지 않기 위함).
+        abs(delta) < flat_semitones 는 flat, delta 가 양수면 rising, 음수면 falling.
+      - rise_run_count / fall_run_count = 같은 부호가 run_min_frames 이상 이어진 구간 수.
+
+    판정하지 않는다. 특히 이 프로필은 목표치가 아니다 — 두 신호를 같은 자로 재기 위한 도구다.
+    """
+    sig = np.asarray(signal, dtype=np.float64)
+    if sig.ndim != 1:
+        raise MetricsError("mono(1-D) only: ndim=%d" % sig.ndim)
+    sr = int(sr)
+    if sr <= 0:
+        raise MetricsError("sr must be positive: %d" % sr)
+    lo = max(0, int(start))
+    hi = sig.size if stop is None else min(sig.size, int(stop))
+    if hi < lo:
+        raise MetricsError("stop before start: %d < %d" % (hi, lo))
+
+    f0 = f0_track(sig, sr, lo, hi, frame_ms, hop_ms)
+    rms = frame_rms_track(sig, sr, lo, hi, frame_ms, hop_ms)
+    n = int(min(f0.size, rms.size))
+    f0, rms = f0[:n], rms[:n]
+
+    voiced_mask = f0 > 0.0
+    voiced = f0[voiced_mask]
+    ref = float(np.max(rms)) if rms.size else 0.0
+    active_mask = rms > (ref * float(active_rel_threshold)) if ref > 0.0 else np.zeros(n, dtype=bool)
+    active = rms[active_mask]
+
+    q10 = _quantile(voiced, 0.10)
+    q25 = _quantile(voiced, 0.25)
+    q50 = _quantile(voiced, 0.50)
+    q75 = _quantile(voiced, 0.75)
+    q90 = _quantile(voiced, 0.90)
+
+    if voiced.size and q50 > 0.0:
+        f0_std_st = float(np.std(12.0 * np.log2(voiced / q50)))
+    else:
+        f0_std_st = 0.0
+
+    r10 = _quantile(active, 0.10)
+    r50 = _quantile(active, 0.50)
+    r90 = _quantile(active, 0.90)
+
+    # 유성이 연속된 구간 안의 인접 쌍만 모은다(무성이 끼면 run 을 끊는다).
+    deltas: List[float] = []
+    signs: List[int] = []
+    flat = float(flat_semitones)
+    for k in range(1, n):
+        if voiced_mask[k] and voiced_mask[k - 1]:
+            d = semitone_delta(float(f0[k - 1]), float(f0[k]))
+            deltas.append(d)
+            signs.append(0 if abs(d) < flat else (1 if d > 0.0 else -1))
+        else:
+            signs.append(0)
+    darr = np.asarray(deltas, dtype=np.float64)
+    sarr = np.asarray(signs, dtype=np.int64)
+    pair_count = int(darr.size)
+    if pair_count:
+        rising = float(np.count_nonzero(darr >= flat)) / pair_count
+        falling = float(np.count_nonzero(darr <= -flat)) / pair_count
+        flat_ratio = float(1.0 - rising - falling)
+        abs_med = float(np.median(np.abs(darr)))
+        abs_p90 = float(np.quantile(np.abs(darr), 0.90))
+    else:
+        rising = falling = 0.0
+        flat_ratio = 0.0
+        abs_med = abs_p90 = 0.0
+
+    rec = {
+        "sample_rate": int(sr),
+        "analysis_samples": int(hi - lo),
+        "frame_count": int(n),
+        "voiced_frame_count": int(voiced.size),
+        "active_frame_count": int(active.size),
+        "voiced_ratio": float(voiced.size / n) if n else 0.0,
+        "f0_q10_hz": q10, "f0_q25_hz": q25, "f0_q50_hz": q50,
+        "f0_q75_hz": q75, "f0_q90_hz": q90,
+        "f0_range_semitones": float(semitone_delta(q10, q90)),
+        "f0_iqr_semitones": float(semitone_delta(q25, q75)),
+        "f0_std_semitones": float(f0_std_st),
+        "rms_q10": r10, "rms_q50": r50, "rms_q90": r90,
+        "rms_range_db": float(_rms_delta_db(r90, r10)),
+        "delta_pair_count": pair_count,
+        "rising_ratio": rising, "falling_ratio": falling, "flat_ratio": flat_ratio,
+        "rising_falling_balance": float(rising - falling),
+        "abs_delta_median_semitones": abs_med,
+        "abs_delta_p90_semitones": abs_p90,
+        "rise_run_count": _count_runs(sarr, 1, int(run_min_frames)),
+        "fall_run_count": _count_runs(sarr, -1, int(run_min_frames)),
+    }
+    assert tuple(rec.keys()) == PROSODY_PROFILE_FIELDS
+    return rec
+
+
+def serialize_prosody_profile(record: dict) -> dict:
+    """운율 프로필 1개 → 숫자만. 스키마 밖 키·비유한·불리언을 전부 거부한다."""
+    if not isinstance(record, dict):
+        raise PrivacyViolation("profile must be a dict")
+    extra = set(record.keys()) - set(PROSODY_PROFILE_FIELDS)
+    if extra:
+        raise PrivacyViolation("disallowed fields: %d" % len(extra))
+    missing = set(PROSODY_PROFILE_FIELDS) - set(record.keys())
+    if missing:
+        raise PrivacyViolation("missing fields: %d" % len(missing))
+    out = {}
+    for key in PROSODY_PROFILE_FIELDS:
+        value = record[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float, np.integer, np.floating)):
+            raise PrivacyViolation("'%s' is not numeric" % key)
+        if key in PROSODY_PROFILE_INT_FIELDS:
+            out[key] = int(value)
+        else:
+            f = float(value)
+            if not math.isfinite(f):
+                raise PrivacyViolation("'%s' is not finite" % key)
+            out[key] = f
+    return out
+
+
+PROSODY_COMPARISON_FIELDS = (
+    "f0_std_ratio", "f0_std_delta_pct",
+    "f0_range_ratio", "f0_range_delta_pct",
+    "f0_iqr_ratio", "f0_iqr_delta_pct",
+    "rms_range_ratio",
+    "f0_median_semitone_offset",
+    "rising_ratio_delta", "falling_ratio_delta", "flat_ratio_delta",
+    "abs_delta_median_ratio",
+)
+
+
+def compare_prosody_profiles(reference: dict, generated: dict) -> dict:
+    """두 운율 프로필의 대조 — 얼마나 더 평탄한가를 비율/퍼센트로 서술한다.
+
+    *_delta_pct = (generated - reference) / reference * 100 → 음수면 생성물이 **더 좁다(평탄하다)**.
+    reference 쪽이 0 이면 해당 비율/퍼센트는 0.0 으로 둔다(무한대 금지).
+    f0_median_semitone_offset 은 중앙 F0 의 반음 차이(음역 차이)이며 평탄도와 다른 축이므로
+    별도 필드로 분리해 둔다. 어느 값도 좋다/나쁘다를 뜻하지 않는다.
+    """
+    for name, rec in (("reference", reference), ("generated", generated)):
+        missing = set(PROSODY_PROFILE_FIELDS) - set((rec or {}).keys())
+        if missing:
+            raise MetricsError("%s profile missing fields: %d" % (name, len(missing)))
+
+    def ratio(key):
+        a = float(reference[key])
+        return (float(generated[key]) / a) if a > 0.0 else 0.0
+
+    def pct(key):
+        a = float(reference[key])
+        return ((float(generated[key]) - a) / a * 100.0) if a > 0.0 else 0.0
+
+    rec = {
+        "f0_std_ratio": ratio("f0_std_semitones"),
+        "f0_std_delta_pct": pct("f0_std_semitones"),
+        "f0_range_ratio": ratio("f0_range_semitones"),
+        "f0_range_delta_pct": pct("f0_range_semitones"),
+        "f0_iqr_ratio": ratio("f0_iqr_semitones"),
+        "f0_iqr_delta_pct": pct("f0_iqr_semitones"),
+        "rms_range_ratio": ratio("rms_range_db"),
+        "f0_median_semitone_offset": semitone_delta(float(reference["f0_q50_hz"]),
+                                                    float(generated["f0_q50_hz"])),
+        "rising_ratio_delta": float(generated["rising_ratio"]) - float(reference["rising_ratio"]),
+        "falling_ratio_delta": float(generated["falling_ratio"]) - float(reference["falling_ratio"]),
+        "flat_ratio_delta": float(generated["flat_ratio"]) - float(reference["flat_ratio"]),
+        "abs_delta_median_ratio": ratio("abs_delta_median_semitones"),
+    }
+    assert tuple(rec.keys()) == PROSODY_COMPARISON_FIELDS
+    return rec
+
+
+def serialize_prosody_comparison(record: dict) -> dict:
+    """운율 대조 1개 → 숫자만. 프로필 직렬화와 동일한 하드 계약(스키마 밖·비유한·불리언 거부)."""
+    if not isinstance(record, dict):
+        raise PrivacyViolation("comparison must be a dict")
+    extra = set(record.keys()) - set(PROSODY_COMPARISON_FIELDS)
+    if extra:
+        raise PrivacyViolation("disallowed fields: %d" % len(extra))
+    missing = set(PROSODY_COMPARISON_FIELDS) - set(record.keys())
+    if missing:
+        raise PrivacyViolation("missing fields: %d" % len(missing))
+    out = {}
+    for key in PROSODY_COMPARISON_FIELDS:
+        value = record[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float, np.integer, np.floating)):
+            raise PrivacyViolation("'%s' is not numeric" % key)
+        f = float(value)
+        if not math.isfinite(f):
+            raise PrivacyViolation("'%s' is not finite" % key)
+        out[key] = f
+    return out
+
+
+# ══════════════════════════ join 연속성(청크 '사이' 서술) ══════════════════════════
+#
+# 왜 필요한가(빠져 있던 축):
+#   · compute_onset_continuity_metrics 는 청크 **안**만 본다(온셋 vs 안정 구간, tail vs 안정 구간).
+#   · boundary_metrics 는 이음매 **샘플 한 점**과 고정 50 ms 창만 본다(파형 단차 관점).
+#   두 계측 어디에도 "앞 청크의 말끝과 뒤 청크의 말머리가 서로 얼마나 다른가" 가 없다.
+#   경계에서 무엇이 튀는지는 바로 그 **건너편 대조**로만 분류된다 → 여기서 채운다.
+#
+# 무음 취급(핵심 설계):
+#   join 양옆 창은 **선언된 무음과 생성된 무음을 모두 걷어낸 '실제 발화' 쪽**에서 잡는다.
+#   그러지 않으면 앞 청크 끝의 자연스러운 여운(무음)이 rms_step_db 를 큰 음수로 만들어
+#   "경계에서 레벨이 튄다" 는 가짜 결론이 나온다. 무음 자체는 별도 필드로 따로 센다.
+#
+# 이 절도 위 하드 요건 그대로 — 판정하지 않고, 보정하지 않고, 숫자만 서술한다.
+
+JOIN_RECORD_FIELDS = (
+    "left_chunk_index", "right_chunk_index",
+    "join_index", "gap_samples",
+    "window_samples",
+    # 무음 축: 이 경계에서 청자가 실제로 듣는 정적의 총량 = 앞 여운 + 선언 무음 + 뒤 머뭇거림
+    "left_trailing_silence_samples", "right_leading_silence_samples",
+    "effective_pause_samples", "effective_pause_ms",
+    "declared_pause_ms", "undeclared_pause_ms",
+    # RMS 축(무음 제거 후 실제 발화끼리)
+    "left_tail_rms", "right_head_rms", "rms_step_db",
+    "left_tail_peak", "right_head_peak",
+    # F0 축(유성 프레임 기준 — 무음이 0.0 으로 오염시키지 않는다)
+    "left_tail_f0_hz", "right_head_f0_hz",
+    "f0_step_semitones", "f0_step_available",
+    # 음색/화자 축
+    "mel_distance",
+    "speaker_distance", "speaker_distance_available",
+    "hf_energy_step",
+    # 파형 축(이음매 한 점)
+    "sample_jump", "sample_jump_available",
+    "sample_rate",
+)
+
+JOIN_INT_FIELDS = (
+    "left_chunk_index", "right_chunk_index",
+    "join_index", "gap_samples",
+    "window_samples",
+    "left_trailing_silence_samples", "right_leading_silence_samples",
+    "effective_pause_samples",
+    "f0_step_available",
+    "speaker_distance_available",
+    "sample_jump_available",
+    "sample_rate",
+)
+
+
+def active_tail_window(span: ChunkSpan, win: int, silence: int):
+    """앞 청크에서 '무음을 걷어낸 마지막 win 샘플' 구간 (lo, hi). 전부 무음이면 빈 구간."""
+    lo0, hi0 = int(span.start_sample), int(span.end_sample)
+    hi = max(lo0, hi0 - int(silence))
+    lo = max(lo0, hi - int(win))
+    return lo, hi
+
+
+def active_head_window(span: ChunkSpan, win: int, silence: int):
+    """뒤 청크에서 '무음을 걷어낸 처음 win 샘플' 구간 (lo, hi). 전부 무음이면 빈 구간."""
+    lo0, hi0 = int(span.start_sample), int(span.end_sample)
+    lo = min(hi0, lo0 + int(silence))
+    hi = min(hi0, lo + int(win))
+    return lo, hi
+
+
+def compute_join_continuity_metrics(signal, sr, spans: Sequence[ChunkSpan],
+                                    embed_fn: Optional[Callable] = None,
+                                    window_ms: float = JOIN_WINDOW_MS,
+                                    onset_window_ms: float = ONSET_WINDOW_MS,
+                                    tail_window_ms: float = TAIL_WINDOW_MS) -> List[dict]:
+    """산출 신호 + 청크 구간 → **인접 청크 쌍마다** 레코드 1개(JOIN_RECORD_FIELDS 그대로).
+
+    청크가 n 개면 레코드는 n-1 개다(join 이 없는 단일 청크는 빈 리스트 — boundary_metrics 와 같은 계약).
+    spans 는 start_sample 오름차순으로 정렬해 쓴다. 겹치는 구간은 계약 위반으로 거부한다.
+
+    F0 계단(f0_step_semitones)은 앞 청크 tail 의 **마지막 유성 프레임** 과 뒤 청크 onset 의
+    **첫 유성 프레임** 을 비교한다. 둘 중 하나라도 유성이 없으면 available=0 이고 값은 0.0 이다
+    (0.0 을 '변화 없음' 으로 읽지 말 것 — available 이 권위다).
+    """
+    sig = np.asarray(signal, dtype=np.float32)
+    if sig.ndim != 1:
+        raise MetricsError("mono(1-D) only: ndim=%d" % sig.ndim)
+    sr = int(sr)
+    if sr <= 0:
+        raise MetricsError("sr must be positive: %d" % sr)
+    if sig.size and not bool(np.all(np.isfinite(sig))):
+        raise MetricsError("signal contains non-finite values")
+
+    items = list(spans or [])
+    for sp in items:
+        if not isinstance(sp, ChunkSpan):
+            raise MetricsError("ChunkSpan descriptor required")
+        if sp.start_sample < 0 or sp.end_sample > sig.size or sp.end_sample <= sp.start_sample:
+            raise MetricsError("span out of range: %d..%d / %d"
+                               % (sp.start_sample, sp.end_sample, sig.size))
+        if sp.gap_before_samples < 0:
+            raise MetricsError("gap_before_samples negative: %d" % sp.gap_before_samples)
+    if len(items) < 2:
+        return []
+
+    ordered = sorted(items, key=lambda s: int(s.start_sample))
+    for a, b in zip(ordered, ordered[1:]):
+        if int(b.start_sample) < int(a.end_sample):
+            raise MetricsError("spans overlap: %d < %d" % (b.start_sample, a.end_sample))
+
+    win = max(1, ms_to_samples(window_ms, sr))
+    fb = mel_filterbank(sr, MEL_N_FFT, MEL_N_MELS)
+
+    records: List[dict] = []
+    for left, right in zip(ordered, ordered[1:]):
+        gap = int(right.gap_before_samples)
+        join_index = int(right.start_sample) - gap
+
+        # 무음 축 — 선언 무음(gap)과 생성 무음(여운/머뭇거림)을 따로 센다.
+        left_sil = trailing_low_energy_len(sig, int(left.end_sample), int(left.start_sample), sr)
+        right_sil = leading_low_energy_len(sig, int(right.start_sample), int(right.end_sample), sr)
+        eff = int(left_sil) + gap + int(right_sil)
+
+        lt_lo, lt_hi = active_tail_window(left, win, left_sil)
+        rh_lo, rh_hi = active_head_window(right, win, right_sil)
+        left_win = sig[lt_lo:lt_hi]
+        right_win = sig[rh_lo:rh_hi]
+
+        l_rms, l_peak, _l_dc, l_hf = window_stats(left_win)
+        r_rms, r_peak, _r_dc, r_hf = window_stats(right_win)
+
+        # F0 계단 — 무음을 제외한 유성 프레임 기준(창 F0 의 0.0 오염을 피한다).
+        t_lo, t_hi = tail_region(left, sr, tail_window_ms)
+        o_hi = min(int(right.end_sample),
+                   int(right.start_sample) + ms_to_samples(onset_window_ms, sr))
+        l_f0, _l_rest, l_av = last_voiced_f0(sig, sr, t_lo, t_hi)
+        r_f0, _r_off, r_av = first_voiced_f0(sig, sr, int(right.start_sample), o_hi)
+        step_av = 1 if (l_av and r_av) else 0
+        f0_step = semitone_delta(l_f0, r_f0) if step_av else 0.0
+
+        if embed_fn is not None and left_win.size and right_win.size:
+            dist = speaker_distance(sig, (lt_lo, lt_hi), (rh_lo, rh_hi), sr, embed_fn)
+            dist_av = 1
+        else:
+            dist, dist_av = 0.0, 0
+
+        if 1 <= join_index < sig.size:
+            jump, jump_av = sample_jump(sig, join_index), 1
+        else:
+            jump, jump_av = 0.0, 0
+
+        rec = {
+            "left_chunk_index": int(left.chunk_index),
+            "right_chunk_index": int(right.chunk_index),
+            "join_index": int(join_index),
+            "gap_samples": gap,
+            "window_samples": int(win),
+            "left_trailing_silence_samples": int(left_sil),
+            "right_leading_silence_samples": int(right_sil),
+            "effective_pause_samples": int(eff),
+            "effective_pause_ms": float(eff * 1000.0 / sr),
+            "declared_pause_ms": float(gap * 1000.0 / sr),
+            "undeclared_pause_ms": float((int(left_sil) + int(right_sil)) * 1000.0 / sr),
+            "left_tail_rms": float(l_rms),
+            "right_head_rms": float(r_rms),
+            "rms_step_db": _rms_delta_db(r_rms, l_rms),
+            "left_tail_peak": float(l_peak),
+            "right_head_peak": float(r_peak),
+            "left_tail_f0_hz": float(l_f0),
+            "right_head_f0_hz": float(r_f0),
+            "f0_step_semitones": float(f0_step),
+            "f0_step_available": int(step_av),
+            "mel_distance": float(np.mean(np.abs(
+                mel_spectrum(left_win, sr, MEL_N_FFT, MEL_N_MELS, fb)
+                - mel_spectrum(right_win, sr, MEL_N_FFT, MEL_N_MELS, fb)))),
+            "speaker_distance": float(dist),
+            "speaker_distance_available": int(dist_av),
+            "hf_energy_step": float(r_hf - l_hf),
+            "sample_jump": float(jump),
+            "sample_jump_available": int(jump_av),
+            "sample_rate": sr,
+        }
+        assert tuple(rec.keys()) == JOIN_RECORD_FIELDS
+        records.append(rec)
+    return records
+
+
+def serialize_join_record(record: dict) -> dict:
+    """join 레코드 1개 → **숫자만**. 청크 레코드와 동일한 하드 계약."""
+    if not isinstance(record, dict):
+        raise PrivacyViolation("record must be a dict")
+    extra = set(record.keys()) - set(JOIN_RECORD_FIELDS)
+    if extra:
+        raise PrivacyViolation("disallowed fields: %d" % len(extra))
+    missing = set(JOIN_RECORD_FIELDS) - set(record.keys())
+    if missing:
+        raise PrivacyViolation("missing fields: %d" % len(missing))
+    out = {}
+    for key in JOIN_RECORD_FIELDS:
+        value = record[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float, np.integer, np.floating)):
+            raise PrivacyViolation("'%s' is not numeric" % key)
+        if key in JOIN_INT_FIELDS:
+            out[key] = int(value)
+        else:
+            f = float(value)
+            if not math.isfinite(f):
+                raise PrivacyViolation("'%s' is not finite" % key)
+            out[key] = f
+    return out
+
+
+def serialize_join_records(records: Sequence[dict]) -> List[dict]:
+    return [serialize_join_record(r) for r in (records or [])]
+
+
+def format_join_records(records: Sequence[dict]) -> str:
+    """진단용 텍스트 표(join). 숫자만 나온다(직렬화를 거치므로 동일 보증)."""
+    rows = serialize_join_records(records)
+    lines = ["\t".join(JOIN_RECORD_FIELDS)]
+    for r in rows:
+        cells = []
+        for key in JOIN_RECORD_FIELDS:
             v = r[key]
             cells.append(str(v) if isinstance(v, int) else ("%.6g" % v))
         lines.append("\t".join(cells))
