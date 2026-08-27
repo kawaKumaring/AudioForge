@@ -14,6 +14,8 @@
 
 실행:  python -m unittest python/test_boundary_pause_synth.py   (또는 이 파일 직접 실행)
 """
+import ast
+import io
 import math
 import os
 import struct
@@ -227,6 +229,85 @@ class TailSymptomRepro(unittest.TestCase):
         s = make_sine(envelope="flat")
         out, _ = apply_tail_policy(s)
         self.assertTrue(all(math.isfinite(x) for x in out))
+
+# ────────────────────────── production 결합 가드 배선(정적 확인) ──────────────────────────
+#
+# 이 파일은 stdlib 만 쓰므로 tts_worker 를 import 해 실행할 수 없다(soundfile/numpy 필요).
+# 대신 **소스 AST** 로 배선을 확인한다 — "가드가 그 경로에 실제로 걸려 있는가" 는 실행 없이도
+# 구조로 확정된다. 이 축이 없으면 세그먼트 경로의 sr 혼입이 조용히 통과한다.
+#
+# 왜 중요한가(계측 근거): 두 결합 함수는 모두 **첫 파일 sr** 로 전체를 기록한다. _select_engine 은
+# 세그먼트마다 엔진을 고르므로(ttsEngine 기본 'auto') 세그먼트 sr 이 섞일 수 있고, 섞이면 뒤
+# 세그먼트가 통째로 재해석된다. onset_continuity_metrics 의 join 계측으로 잰 값(SYNTHETIC):
+# 32000 생성분을 24000 으로 기록 → 경계 F0 계단 -4.904 반음, 길이 +33.3%, mel 거리 0→1.6723.
+
+TTS_WORKER_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tts_worker.py")
+
+
+def _called_names(node):
+    """node 안에서 호출된 이름 집합 {(이름, lineno)}."""
+    out = set()
+    for n in ast.walk(node):
+        if isinstance(n, ast.Call):
+            f = n.func
+            if isinstance(f, ast.Name):
+                out.add((f.id, n.lineno))
+            elif isinstance(f, ast.Attribute):
+                out.add((f.attr, n.lineno))
+    return out
+
+
+def _find_function(tree, name):
+    for n in ast.walk(tree):
+        if isinstance(n, ast.FunctionDef) and n.name == name:
+            return n
+    return None
+
+
+class ConcatGuardWiring(unittest.TestCase):
+    """결합 직전 sr/mono/finite 가드(P0-3)가 **두 결합 경로 모두**에 걸려 있는가."""
+
+    def setUp(self):
+        with io.open(TTS_WORKER_PATH, "r", encoding="utf-8") as fh:
+            self.tree = ast.parse(fh.read())
+
+    def test_qwen_chunk_path_guards_before_concat(self):
+        fn = _find_function(self.tree, "_synthesize_qwen_job")
+        self.assertIsNotNone(fn, "_synthesize_qwen_job 이 없다")
+        calls = _called_names(fn)
+        guard = [ln for nm, ln in calls if nm == "_assert_concat_ready"]
+        concat = [ln for nm, ln in calls if nm == "_concat_with_boundaries"]
+        self.assertTrue(guard, "chunk 결합 경로에 가드 없음")
+        self.assertTrue(concat, "chunk 결합 호출이 없음")
+        self.assertLess(min(guard), min(concat), "가드가 결합보다 뒤에 있다")
+
+    def test_segment_path_guards_before_concat(self):
+        """세그먼트(엔진 혼재) 경로 — 여기 가드가 빠져 있으면 sr 혼입이 조용히 통과한다."""
+        fn = _find_function(self.tree, "synthesize")
+        self.assertIsNotNone(fn, "synthesize 가 없다")
+        calls = _called_names(fn)
+        guard = [ln for nm, ln in calls if nm == "_assert_concat_ready"]
+        concat = [ln for nm, ln in calls
+                  if nm in ("_concat_with_boundaries", "_concat_with_silence")]
+        self.assertTrue(concat, "세그먼트 결합 호출이 없음")
+        self.assertTrue(guard, "세그먼트 결합 경로에 _assert_concat_ready 가 없다")
+        self.assertLess(min(guard), min(concat), "가드가 결합보다 뒤에 있다")
+
+    def test_segment_concat_failure_is_inside_the_cleanup_scope(self):
+        """가드/결합이 실패해도 세그먼트 임시파일이 남지 않아야 한다 —
+           결합 호출이 정리 finally 를 가진 try 안에 있는지 구조로 확인한다."""
+        fn = _find_function(self.tree, "synthesize")
+        concat_lines = {ln for nm, ln in _called_names(fn)
+                        if nm in ("_concat_with_boundaries", "_concat_with_silence")}
+        self.assertTrue(concat_lines)
+        covered = set()
+        for node in ast.walk(fn):
+            if isinstance(node, ast.Try) and node.finalbody:
+                body_lines = {n.lineno for b in node.body for n in ast.walk(b)
+                              if hasattr(n, "lineno")}
+                covered |= (concat_lines & body_lines)
+        self.assertEqual(covered, concat_lines,
+                         "결합 호출이 정리 finally 밖에 있다(실패 시 세그먼트 파일 누수)")
 
 
 if __name__ == "__main__":

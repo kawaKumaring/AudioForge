@@ -1741,19 +1741,29 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         # 최종 후보 WAV 완성(단일=세그먼트 그대로, 복수=결합 임시본). speed는 세그먼트 합성 시 이미 반영.
         # 그 뒤 Qwen과 '동일한' 공통 최종 단계(place_final_with_pitch)로 pitch 후처리 + 원자적 배치(계약 §6.1).
         import pitch_shift as _ps
-        if len(segment_paths) == 1:
-            candidate = segment_paths[0]           # output_dir 내부 → os.replace 원자적
-            concat_tmp = None
-        else:
-            concat_tmp = os.path.join(output_dir, ".synth-concat.wav")
-            # I2: 경계별 gap(explicit/line/emotion). segment_paths와 boundary_gaps는 parsed 기준 1:1 정렬
-            # (gaps_before[0]은 무시). 미전달 시 전 경계 silence_gap로 폴백(레거시 동치).
-            if boundary_gaps is not None and len(boundary_gaps) == len(segment_paths):
-                _concat_with_boundaries(segment_paths, boundary_gaps, concat_tmp)
-            else:
-                _concat_with_silence(segment_paths, concat_tmp, silence_gap)
-            candidate = concat_tmp
+        concat_tmp = None
         try:
+            if len(segment_paths) == 1:
+                candidate = segment_paths[0]       # output_dir 내부 → os.replace 원자적
+            else:
+                concat_tmp = os.path.join(output_dir, ".synth-concat.wav")
+                # 결합 직전 재검증(P0-3): 전 세그먼트가 동일 sr·mono·finite·non-empty.
+                # 이 경로는 _select_engine이 **세그먼트마다** 엔진을 고르므로(ttsEngine 기본 'auto'
+                # → preferred_engine None → 언어별 GPT-SoVITS/Kokoro/F5 혼재) 세그먼트 sr이 서로
+                # 다를 수 있다. 두 결합 함수는 모두 **첫 파일 sr**로 전체를 기록하므로, 섞이면 뒤
+                # 세그먼트가 그 sr로 재해석돼 피치·길이가 통째로 변질된다(경계에서 튄다).
+                # 계측 실측(SYNTHETIC): 32000 생성분을 24000으로 기록 시 경계 F0 계단 -4.904반음
+                # (이론 12*log2(24000/32000)=-4.980), 재생 길이 +33.3%, join mel 거리 0.0000→1.6723.
+                # Qwen 경로(_synthesize_qwen_job)는 같은 위험에 이미 이 가드를 쓴다 — 같은 가드를
+                # 이 경로에도 건다(조용한 변질 대신 명확한 중단 + 기존 synthesized.wav 보존).
+                _assert_concat_ready(segment_paths)
+                # I2: 경계별 gap(explicit/line/emotion). segment_paths와 boundary_gaps는 parsed 기준 1:1 정렬
+                # (gaps_before[0]은 무시). 미전달 시 전 경계 silence_gap로 폴백(레거시 동치).
+                if boundary_gaps is not None and len(boundary_gaps) == len(segment_paths):
+                    _concat_with_boundaries(segment_paths, boundary_gaps, concat_tmp)
+                else:
+                    _concat_with_silence(segment_paths, concat_tmp, silence_gap)
+                candidate = concat_tmp
             if _ps.clamp_quantize(pitch) != 0.0:
                 emit("progress", percent=93, message=f"음높이 보정 중 ({_ps.clamp_quantize(pitch):+.1f}반음)...")
             pinfo2 = _finish_and_place(candidate, final_path, pitch, output_dir, tail_cfg)
