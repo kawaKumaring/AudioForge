@@ -81,7 +81,10 @@ SEMANTIC_BOUNDARY_ORDER = (
 NON_SPLITTING_BOUNDARY_KINDS = ("internal", "emotion")
 
 # 규칙 2·5 — 한 덩어리가 상한을 넘을 때 잘라도 되는 경계(강한 것부터).
-SPLIT_ELIGIBLE_KINDS = ("explicitPause", "paragraph", "line", "sentence")
+# 위 두 튜플에서 '유도' 한다 — 손으로 적으면 종류가 늘어날 때 조용히 어긋난다.
+SPLIT_ELIGIBLE_KINDS = tuple(
+    k for k in reversed(SEMANTIC_BOUNDARY_ORDER) if k not in NON_SPLITTING_BOUNDARY_KINDS
+)
 
 # v2 boundary_type → 의미 경계. paragraph 승격만 별도 판정한다(빈 줄이 있을 때).
 V2_BOUNDARY_TYPE_TO_KIND = {

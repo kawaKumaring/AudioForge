@@ -176,6 +176,13 @@ class Rule4NoForcedSplitTest(unittest.TestCase):
         for k in scp.NON_SPLITTING_BOUNDARY_KINDS:
             self.assertNotIn(k, scp.SPLIT_ELIGIBLE_KINDS)
 
+    def test_split_eligible_set_covers_every_other_kind(self):
+        # 종류가 늘어나도 두 목록이 어긋나지 않는다(한쪽에서 유도되므로).
+        self.assertEqual(sorted(scp.SPLIT_ELIGIBLE_KINDS),
+                         sorted(k for k in scp.SEMANTIC_BOUNDARY_ORDER
+                                if k not in scp.NON_SPLITTING_BOUNDARY_KINDS))
+        self.assertEqual(scp.SPLIT_ELIGIBLE_KINDS[0], "explicitPause")   # 강한 것부터
+
     def test_inline_emotion_change_classified_as_emotion_not_line(self):
         es = scp.classify_plan_boundaries(plan_of("[기쁨] 안녕 [명랑] 반가워"))
         self.assertEqual([e["kind"] for e in es], ["internal", "emotion"])
