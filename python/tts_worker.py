@@ -14,6 +14,7 @@ import os
 import re
 import time
 import chunk_paths   # chunk 경로 규칙(bridge와 공용) — 결정적 경로 정확 일치 검증
+import semantic_chunk_planner   # 의미 경계 분류 + 무음 예산(C2). 순수 로직(stdlib only).
 from audio_utils import emit, get_device, find_ffmpeg, patch_torchaudio
 
 # ── Emotion definitions ──
@@ -1549,7 +1550,8 @@ def _concat_with_boundaries(paths, gaps_before, output_path):
 
 
 def _boundary_gaps_from_plan(plan, silence_gap, emotion_boundary_mode="pause",
-                             emotion_boundary_pause_ms=200):
+                             emotion_boundary_pause_ms=200, paragraph_gap=None,
+                             model_tail_ms=None, model_lead_ms=None):
     """공용 마감 I2 — A 소유 파서(tts_grammar) plan → (parsed, gaps_before). 순수(numpy/soundfile 불요).
 
     합성 권위는 Python 파서다. renderer가 보낸 것과 동일 raw를 파서가 이미 (separate.py I1 parity로) 검증했고,
@@ -1558,34 +1560,21 @@ def _boundary_gaps_from_plan(plan, silence_gap, emotion_boundary_mode="pause",
     - parsed: [(emotion_id, spoken_text), ...] — 레거시 shape 유지. emotion 없으면 'default'(기존 라우팅 그대로).
       spoken_text는 **파서 산출 그대로**(정규화 단일 소스=A 파서; parity 해시도 이 값 기준).
     - gaps_before[i]: segment i '앞' 무음 초. [0]=0.0. 경계 우선순위(계약 추가3)는 파서가 boundary_type로
-      **단일 결정**(explicitPause > lineSilenceGap > emotionBoundaryPause > internal) → 여기선 gap 초로 환산만(합산 없음):
-        explicitPause        → 그 segment의 explicitPause pause_ms/1000 (명시값이 자동 gap을 대체, override)
-        lineSilenceGap       → silence_gap (전역 기본)
-        emotionBoundaryPause → immediate: 0.0 / pause: emotion_boundary_pause_ms/1000
-        internal(및 idx 0)   → 0.0
+      **단일 결정**(explicitPause > lineSilenceGap > emotionBoundaryPause > internal) → 여기선 gap 초로 환산만(합산 없음).
+
+    환산은 semantic_chunk_planner 가 소유한다(C2). 이 함수는 그 결과를 받아 shape 만 맞춘다.
+    새 선택 인자는 전부 기본 None 이며, 주지 않으면 값이 이전과 완전히 동일하다:
+      paragraph_gap : 빈 줄(문단) 경계 전용 무음 초. None → 일반 줄바꿈과 같은 silence_gap.
+      model_tail_ms / model_lead_ms : 모델이 낸 말미/앞머리 무음 '측정값'(잰 주체는 이 모듈이 아니다).
+        주면 '말미 + 앱 gap + 앞머리 = 목표' 가 되도록 앱 gap 을 줄인다(합산 방지). 안 주면 보정 없음.
     감정 전환은 immediate|pause만(계약 정정6·정정7). smooth/crossfade는 환산하지 않는다(미지원).
     """
     segs = plan.get("segments", [])
-    parsed = []
-    gaps_before = []
-    for idx, s in enumerate(segs):
-        eid = s.get("emotion_id") or "default"
-        parsed.append((eid, s.get("spoken_text", "")))
-        bt = s.get("boundary_type", "internal")
-        if idx == 0 or bt == "internal":
-            g = 0.0
-        elif bt == "explicitPause":
-            pm = next((p.get("pause_ms") for p in s.get("pauses", [])
-                       if p.get("boundary_type") == "explicitPause"), None)
-            g = (pm / 1000.0) if isinstance(pm, (int, float)) else 0.0
-        elif bt == "lineSilenceGap":
-            g = float(silence_gap)
-        elif bt == "emotionBoundaryPause":
-            g = 0.0 if emotion_boundary_mode == "immediate" else (float(emotion_boundary_pause_ms) / 1000.0)
-        else:
-            g = 0.0
-        gaps_before.append(g)
-    return parsed, gaps_before
+    parsed = [(s.get("emotion_id") or "default", s.get("spoken_text", "")) for s in segs]
+    entries = semantic_chunk_planner.resolve_boundary_gaps(
+        plan, silence_gap, emotion_boundary_mode, emotion_boundary_pause_ms,
+        paragraph_gap, model_tail_ms, model_lead_ms)
+    return parsed, [e["gap_sec"] for e in entries]
 
 
 # ── Main synthesize function ──
