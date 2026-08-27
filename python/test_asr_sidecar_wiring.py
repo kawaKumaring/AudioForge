@@ -8,7 +8,9 @@
 ⚠ 이것은 오디오 ASR 후처리 배선 테스트다. 이미지 OCR 과 무관하다.
 
 검증(코디네이터 계약):
-  - 기존 TXT/timestamps/SRT 출력 **바이트 불변**(legacy fmt_srt_time 절삭 유지).
+  - 기존 TXT/timestamps/SRT 출력 형식 **불변**(_save_transcription 이 fmt_time/
+    fmt_srt_time 결과를 그대로 쓴다). ※ fmt_srt_time 의 ms 절삭 버그를 반올림으로
+    고친 뒤 경계 ms 타임코드는 1ms 달라진다 — 형식·블록 구조는 그대로.
   - canonical sidecar 이벤트: schemaVersion / segmentCount / timing·provenance·
     confidence·status 구조 / **결정적** 직렬화.
   - 전사 본문 0: 이벤트(sidecar/shadow/error)·summary 어디에도 segment/word text 없음.
@@ -56,7 +58,8 @@ def _capture_events(fn, *a, **kw):
 
 
 def _synthetic_result():
-    # 2.3 종료 세그먼트로 절삭(,299) 규약을 고정. 0길이·빈 세그먼트 포함.
+    # 2.3 종료 세그먼트로 ms 반올림(,300) 규약을 고정(예전 절삭 구현은 ,299).
+    # 0길이·빈 세그먼트 포함.
     return {
         "text": (CJK_KO + EN_NUM),
         "language": "ko",
@@ -101,9 +104,11 @@ class OutputByteInvarianceTest(unittest.TestCase):
             with open(os.path.join(d, "clip.srt"), encoding="utf-8") as f:
                 srt = f.read()
                 self.assertEqual(srt, exp_srt)
-        # legacy 절삭 유지 증거: 2.3 → ,299 (반올림 아님). 빈/0길이 cue 도 그대로.
-        self.assertIn("00:00:02,299", srt)
-        self.assertNotIn("00:00:02,300", srt)
+        # 타임코드 규약 증거: 2.3 → ,300 (반올림). 예전 절삭 구현은 ,299 를 냈고
+        # 그것이 버그였다(이전 기대값: assertIn ",299" / assertNotIn ",300").
+        # 빈/0길이 cue 는 여전히 그대로 유지된다(sanitizer 미적용).
+        self.assertIn("00:00:02,300", srt)
+        self.assertNotIn("00:00:02,299", srt)
         self.assertEqual(srt.count(" --> "), 3)   # sanitizer 미적용(cue 제거·재번호 없음)
 
     def test_no_sidecar_or_extra_file_created(self):

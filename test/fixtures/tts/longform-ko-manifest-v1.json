@@ -1,0 +1,718 @@
+{
+ "fixture_version": "longform-ko-v1",
+ "fixture_id": "longform-ko-manifest-v1",
+ "generated_for_contract": {
+  "expressive_contract_version": 3,
+  "mode": "expressive_v3",
+  "base_commit": "f08f48c"
+ },
+ "goal": "이 픽스처의 목적은 장문(3,000~5,000자) 한국어 TTS 의 '자연스러움', '연속성', '내용 보존'을 검증하는 것이다. 음향 품질 판정이나 감정 인식률 측정이 아니며, 동일한 사건을 (1) 평서 나레이션, (2) 태그 없는 연기 대본, (3) 계약 지원 태그를 얹은 같은 연기 대본 세 형태로 제시해, 태그가 붙어도 낭독 내용이 보존되는지와 장문에서 호흡·감정 전이가 끊기지 않는지를 비교 청취/비교 파싱으로 확인한다.",
+ "scenario": "성인 여성 배우 지망생(스물여섯)이 연극 연습으로 밤거리 가게 안주인 역의 말투를 흉내내지만, 본래의 밝은 말투와 부끄러운 웃음이 계속 새어 나온다. 성적으로 명시적인 묘사는 없고, 분위기·어조·호흡·말끝으로만 역할을 표현한다.",
+ "counting_rules": {
+  "paragraph": "빈 줄(정규식 \\n\\s*\\n)로 분리한 비어 있지 않은 블록의 개수.",
+  "sentence": "sentence_count = expressive_v3 파싱 결과의 verbatim_text 에서 문장 종결 부호 집합 '.!?。！？…' 의 극대 연속 구간(run) 개수. verbatim_text 를 쓰는 이유는 대괄호 태그 내부 문자(예: '[쉼 0.6]' 의 '.')를 세지 않기 위함이다. 종결 부호 없이 끝나는 의도적 미완결 구절(예: '하나, 둘, 셋')은 세지 않는다.",
+  "latin": "latin_letter_count = verbatim_text 안의 [A-Za-z] 개수. latin_ratio_pct = latin_letter_count / len(verbatim_text) * 100. 태그 이름(예: '[유혹|blend]' 의 'blend')은 발화되지 않으므로 verbatim_text 기준 집계에서 자연히 제외된다.",
+  "latin_ratio_bound_pct": 5.0,
+  "char_count": "원문(raw) 파일 내용의 코드포인트 개수. 후행 개행 1개를 포함한다.",
+  "sha256": "각 파일의 sha256 은 **LF 정교화된 텍스트**를 UTF-8 로 인코딩해 해싱한 값이다(text 모드로 읽은 내용). 리포지토리가 core.autocrlf=true 로 돌아가므로 새 상황에서는 이 fixture 들이 디스트에 CRLF 로 내려가며, 그럴 때 `sha256sum <파일>` 은 이 값과 달라진다. 바이트 무결성 실패가 아니라 해싱 기준이 다른 것이다. byte_length_utf8 와 char_count 도 동일한 LF 정교화 기준이다."
+ },
+ "meaning_equivalence": {
+  "claim": "performance 와 expressive 는 낭독 내용이 완전히 동일하다. expressive 는 performance 원문에 계약 태그만 삽입해 만들었고 본문 글자는 하나도 바꾸지 않았다.",
+  "check_a": "두 파일을 expressive_v3 로 파싱한 plain_text 를 whitespace_normalization 규칙으로 정규화하면 정확히 같은 문자열이 된다(잔차 없음).",
+  "check_b": "insertions 목록을 performance 원문에 순서대로 적용하면 expressive 원문과 바이트 단위로 동일해진다.",
+  "whitespace_normalization": "줄 단위로 (1) [ \\t]+ 를 공백 한 칸으로 축약하고 (2) 양끝 공백을 제거한 뒤 '\\n' 으로 다시 이어붙인다. 줄 개수와 빈 줄 위치는 보존한다.",
+  "residue": "없음. 정규화 후 두 plain_text 는 완전히 일치한다.",
+  "why_normalization_is_needed": "태그는 '[태그] 본문' 형태로 삽입되어 태그 뒤에 공백 한 칸이 추가된다. 태그 노드는 plain_text 에 아무 문자도 남기지 않으므로, 삽입 지점마다 공백이 한 칸 더 생기거나(문중) 줄 앞에 공백이 하나 생긴다(줄머리). 이 두 가지가 정규화가 흡수하는 차이의 전부다."
+ },
+ "insertions": [
+  {
+   "anchor": "안녕하세요, 저는 올해",
+   "insert": "[애교] "
+  },
+  {
+   "anchor": "너무 맑고,",
+   "insert": "[명랑] "
+  },
+  {
+   "anchor": "\"소리 씨, 목소리가",
+   "insert": "[진지] "
+  },
+  {
+   "anchor": "한 겹 접힌 목소리라는 게",
+   "insert": "[호기심] "
+  },
+  {
+   "anchor": "자, 이제 목소리를 반음쯤",
+   "insert": "[속삭임] "
+  },
+  {
+   "anchor": "준비됐어요?",
+   "insert": "[긴장] "
+  },
+  {
+   "anchor": "\"어서 오세요.",
+   "insert": "[유혹|즉시] "
+  },
+  {
+   "anchor": "오늘은 손님이 한 분뿐이라서,",
+   "insert": "[은밀] "
+  },
+  {
+   "anchor": "아, 방금 마지막 문장에서",
+   "insert": "[당황] "
+  },
+  {
+   "anchor": "대본에는 겨우 한 줄인데,",
+   "insert": "[ㅋㅋ] "
+  },
+  {
+   "anchor": "죄송해요, 지금 거울 속의",
+   "insert": "[부끄러움] "
+  },
+  {
+   "anchor": "진지한 얼굴을 만들려고",
+   "insert": "[ㅎㅎㅎㅎ] "
+  },
+  {
+   "anchor": "아, 맞다, 코트요.",
+   "insert": "[헤헷] "
+  },
+  {
+   "anchor": "숨 한 번 크게 쉬고,",
+   "insert": "[기본] "
+  },
+  {
+   "anchor": "시간은 오후 11시 30분,",
+   "insert": "[나레이션] "
+  },
+  {
+   "anchor": "문에 달린 종이 한 번 울리면,",
+   "insert": "[쉼 0.6] "
+  },
+  {
+   "anchor": "\"왜 그렇게 긴장하세요?",
+   "insert": "[유혹] "
+  },
+  {
+   "anchor": "저 자리는 밤이 깊어질수록",
+   "insert": "[매력] "
+  },
+  {
+   "anchor": "한 송이는 어제 오신 분,",
+   "insert": "[달콤] "
+  },
+  {
+   "anchor": "정말 저를 만나러 온 거예요?",
+   "insert": "[유혹|blend] "
+  },
+  {
+   "anchor": "저한테는 이 두 줄이 제일 무서워요.",
+   "insert": "[걱정] "
+  },
+  {
+   "anchor": "\"Bonsoir, monsieur.\"",
+   "insert": "[공손] "
+  },
+  {
+   "anchor": "\"Welcome. 오늘의 special guest는",
+   "insert": "[자신감] "
+  },
+  {
+   "anchor": "여기서는 '호호' 하고",
+   "insert": "[장난] "
+  },
+  {
+   "anchor": "그런데 조금만 방심하면",
+   "insert": "[당황] "
+  },
+  {
+   "anchor": "아, 또 나왔다.",
+   "insert": "[히히] "
+  },
+  {
+   "anchor": "이건 대본에 없는 웃음이에요.",
+   "insert": "[ㅎㅎ] "
+  },
+  {
+   "anchor": "그래도 어쩌겠어요,",
+   "insert": "[체념] "
+  },
+  {
+   "anchor": "좋아요, 다시.",
+   "insert": "[한숨] "
+  },
+  {
+   "anchor": "하나, 둘, 셋",
+   "insert": "[쉼 1.2] "
+  },
+  {
+   "anchor": "\"설마...... 지금 도망가려는",
+   "insert": "[속삭임] "
+  },
+  {
+   "anchor": "여기서는 아무 말도 하지 않으셔도",
+   "insert": "[다정] "
+  },
+  {
+   "anchor": "\"어머, 그렇게 놀랄 줄은",
+   "insert": "[놀람] "
+  },
+  {
+   "anchor": "아니, 잠깐만요!!",
+   "insert": "[당황] "
+  },
+  {
+   "anchor": "심장이 대사보다 훨씬 빨라요.",
+   "insert": "[헤헤헷] "
+  },
+  {
+   "anchor": "그래도 여기서 멈추면",
+   "insert": "[진지] "
+  },
+  {
+   "anchor": "어깨를 조금만 뒤로.",
+   "insert": "[쉼 0.4] "
+  },
+  {
+   "anchor": "\"오늘 밤은 여기까지만",
+   "insert": "[유혹] "
+  },
+  {
+   "anchor": "남은 이야기는, 다음에 오실 때.",
+   "insert": "[호호] "
+  },
+  {
+   "anchor": "후우.",
+   "insert": "[기본] "
+  },
+  {
+   "anchor": "다음 연습 때는 장미 이야기부터",
+   "insert": "[애교] "
+  }
+ ],
+ "contract_constructs_used": {
+  "emotion_transition_labels": [
+   "걱정",
+   "공손",
+   "기본",
+   "긴장",
+   "나레이션",
+   "놀람",
+   "다정",
+   "달콤",
+   "당황",
+   "매력",
+   "명랑",
+   "부끄러움",
+   "속삭임",
+   "애교",
+   "유혹",
+   "은밀",
+   "자신감",
+   "장난",
+   "진지",
+   "체념",
+   "한숨",
+   "호기심"
+  ],
+  "emotion_modifiers": [
+   "즉시 (immediate)",
+   "blend"
+  ],
+  "local_prosody_kinds": [
+   "firm_end",
+   "fade_end",
+   "emphasis",
+   "question_rise",
+   "shock_rise",
+   "vowel_extend"
+  ],
+  "laugh_styles": [
+   "chuckle",
+   "breathy",
+   "bashful",
+   "open",
+   "high_giggle"
+  ],
+  "explicit_pause_tokens": [
+   "[쉼 0.6]",
+   "[쉼 1.2]",
+   "[쉼 0.4]"
+  ],
+  "boundary_kinds": [
+   "explicitPause",
+   "sentenceGap",
+   "finalTail"
+  ],
+  "notes": [
+   "'.' 1개 = firm_end, 2개 이상 = fade_end (정도 차이가 아니라 다른 종류).",
+   "'?!' 는 '!?' 의 별칭 — shock_rise 한 개만 생성된다(두 개가 아니다).",
+   "'[ㅎㅎㅎㅎ]' 등 대괄호 웃음은 비언어 이벤트(글자로 읽지 않는다). 본문에 그냥 적힌 '헤헷', '호호호', '히히' 는 읽을 수 있는 의성어다."
+  ]
+ },
+ "laugh_kind_separation": {
+  "nonverbal_bracket_events_expressive_only": [
+   "[ㅋㅋ]",
+   "[ㅎㅎㅎㅎ]",
+   "[헤헷]",
+   "[히히]",
+   "[ㅎㅎ]",
+   "[헤헤헷]",
+   "[호호]"
+  ],
+  "pronounceable_onomatopoeia_in_all_three": [
+   "헤헷",
+   "호호호",
+   "히히"
+  ],
+  "rule": "대괄호 웃음은 세 파일 중 expressive 에만 존재하고, 읽을 수 있는 의성어는 performance/expressive 본문에 문자로 남아 있으며 neutral 에서도 '호호', '히히' 가 서술문 안에 그대로 등장한다. 두 종류가 같은 문단 안에서 나란히 나오는 지점(6번·11번·12번 문단)이 차이를 귀로 구분할 수 있는 자리다."
+ },
+ "lexical_inventory": {
+  "arabic_numerals": [
+   {
+    "text": "11",
+    "context": "오후 11시 30분"
+   },
+   {
+    "text": "30",
+    "context": "오후 11시 30분"
+   },
+   {
+    "text": "7",
+    "context": "테이블 7번"
+   }
+  ],
+  "korean_numerals": [
+   "스물여섯",
+   "반음",
+   "한 겹",
+   "세 가지",
+   "사흘째",
+   "두 줄",
+   "세 번쯤",
+   "세 송이",
+   "네 송이",
+   "하나",
+   "둘",
+   "셋",
+   "두 번째",
+   "다섯 번째"
+  ],
+  "latin_spans": [
+   "Bonsoir",
+   "monsieur",
+   "Welcome",
+   "special guest"
+  ],
+  "latin_span_note": "네 구간 모두 세 파일에 동일하게 등장한다. expressive 파일의 태그 이름 'blend' 는 발화 대상이 아니므로 latin 집계(verbatim_text 기준)에 들어가지 않는다.",
+  "proper_nouns": [
+   "한소리",
+   "소리"
+  ],
+  "proper_noun_note": "실재 인물·단체가 아닌 창작 인물명이다. '소리 씨' 는 연출가가 부르는 호칭이다. 'Bonsoir', 'monsieur', 'Welcome', 'special guest' 는 고유명사가 아니라 외국어 대사 어휘로 분류한다."
+ },
+ "paragraph_intent_labels": [
+  "baseline_cute",
+  "attempted_seductive",
+  "confident_seductive",
+  "embarrassed_break",
+  "nonverbal_laugh",
+  "recovery",
+  "multilingual_stress",
+  "calm_closure"
+ ],
+ "correspondence": {
+  "alignment": "세 파일은 문단 1:1 대응이다(각 18문단). 같은 index 의 문단은 같은 사건을 다룬다. neutral 은 3인칭 평서 나레이션, performance 는 같은 사건의 실제 연기 대본(태그 없음), expressive 는 performance 와 글자까지 같은 본문에 계약 태그만 얹은 것이다.",
+  "paragraphs": [
+   {
+    "index": 1,
+    "intent": "baseline_cute",
+    "beat": "평소 목소리로 하는 자기소개 — 이름, 나이(성인), 맡은 배역 설명"
+   },
+   {
+    "index": 2,
+    "intent": "baseline_cute",
+    "beat": "연출 지적('목소리가 너무 밝다')과 귀갓길의 되새김"
+   },
+   {
+    "index": 3,
+    "intent": "attempted_seductive",
+    "beat": "혼자 연습 준비 — 목소리를 반음 내리고 규칙 세 가지를 정한다"
+   },
+   {
+    "index": 4,
+    "intent": "attempted_seductive",
+    "beat": "첫 인물 대사 — 손님 맞이 인사('어서 오세요. 오늘 밤은 조금 특별하답니다.')"
+   },
+   {
+    "index": 5,
+    "intent": "embarrassed_break",
+    "beat": "말끝이 올라가 연기가 무너진다 — 첫 자책"
+   },
+   {
+    "index": 6,
+    "intent": "nonverbal_laugh",
+    "beat": "거울 속 표정에 웃음이 터진다 — 비언어 웃음 구간"
+   },
+   {
+    "index": 7,
+    "intent": "recovery",
+    "beat": "호흡을 고르고 무대 상황(오후 11시 30분)을 다시 세운다"
+   },
+   {
+    "index": 8,
+    "intent": "confident_seductive",
+    "beat": "두 번째 인물 대사 — '왜 그렇게 긴장하세요?', 테이블 7번 안내"
+   },
+   {
+    "index": 9,
+    "intent": "confident_seductive",
+    "beat": "세 번째 인물 대사 — 장미 세 송이, '정말 저를 만나러 온 거예요?'"
+   },
+   {
+    "index": 10,
+    "intent": "multilingual_stress",
+    "beat": "외국어 대사 두 줄 — 'Bonsoir, monsieur.' / 'Welcome. ... special guest ...'"
+   },
+   {
+    "index": 11,
+    "intent": "embarrassed_break",
+    "beat": "지문의 '호호' 웃음을 흉내내다 본래의 '히히'가 튀어나온다"
+   },
+   {
+    "index": 12,
+    "intent": "nonverbal_laugh",
+    "beat": "대본에 없는 웃음 — 비언어 웃음 구간"
+   },
+   {
+    "index": 13,
+    "intent": "recovery",
+    "beat": "다시 처음부터 — 자세와 시선을 바로잡고 숫자를 센다"
+   },
+   {
+    "index": 14,
+    "intent": "confident_seductive",
+    "beat": "네 번째 인물 대사 — '설마...... 지금 도망가려는 건 아니죠?', '이쪽으로 와 봐요~'"
+   },
+   {
+    "index": 15,
+    "intent": "embarrassed_break",
+    "beat": "다섯 번째 인물 대사에서 본인이 먼저 놀란다 — '어머, 그렇게 놀랄 줄은 몰랐는데!?'"
+   },
+   {
+    "index": 16,
+    "intent": "recovery",
+    "beat": "그래도 마지막 한 줄은 제대로 하겠다고 마음을 다잡는다"
+   },
+   {
+    "index": 17,
+    "intent": "confident_seductive",
+    "beat": "마지막 인물 대사 — 침착하게 연기를 마무리한다"
+   },
+   {
+    "index": 18,
+    "intent": "calm_closure",
+    "beat": "연습을 끝내고 평소 목소리로 소감을 말한다"
+   }
+  ]
+ },
+ "files": {
+  "neutral": {
+   "file": "longform-ko-neutral-v1.txt",
+   "role": "neutral",
+   "sha256": "dede35529137bd0a24aae654003a2a95b8f503d10db86504a1627fd53c82615c",
+   "byte_length_utf8": 7617,
+   "char_count": 3207,
+   "paragraph_count": 18,
+   "sentence_count": 79,
+   "verbatim_char_count": 3207,
+   "plain_char_count": 3128,
+   "latin_letter_count": 34,
+   "latin_ratio_pct": 1.0602,
+   "paragraph_char_counts": [
+    263,
+    228,
+    194,
+    200,
+    166,
+    149,
+    172,
+    168,
+    170,
+    281,
+    132,
+    140,
+    137,
+    159,
+    134,
+    141,
+    158,
+    180
+   ],
+   "expected_events": {
+    "mode": "expressive_v3",
+    "error_diagnostic_count": 0,
+    "warning_diagnostic_count": 0,
+    "node_count": 194,
+    "line_count": 36,
+    "emotion_transition_count": 0,
+    "emotion_transition_by_label": {},
+    "emotion_transition_by_mode": {},
+    "emotion_transition_explicit_mode_count": 0,
+    "used_emotion_ids": [],
+    "local_prosody_count": 79,
+    "local_prosody_by_kind": {
+     "firm_end": 79
+    },
+    "local_prosody_by_kind_and_effective_count": {
+     "firm_end:1": 79
+    },
+    "vowel_extend_classification": {},
+    "nonverbal_laugh_count": 0,
+    "nonverbal_laugh_by_style": {},
+    "nonverbal_laugh_by_position": {},
+    "nonverbal_laugh_raw_tokens": [],
+    "explicit_pause_count": 0,
+    "total_explicit_pause_ms": 0,
+    "boundary_by_kind": {
+     "finalTail": 1,
+     "sentenceGap": 35
+    },
+    "capped_token_count": 0,
+    "non_open_vowel_extend_count": 0
+   },
+   "observed_timeline_full_sha256": "71b81c393ae76437bffd332d86856929de9d22a9b4d66852f6ec9dec5a58d788"
+  },
+  "performance": {
+   "file": "longform-ko-seductive-performance-v1.txt",
+   "role": "performance",
+   "sha256": "e9765edaeedd59a3d091541c6ad044602846e7ee47fc867cbe942d495b3bd0c9",
+   "byte_length_utf8": 7581,
+   "char_count": 3253,
+   "paragraph_count": 18,
+   "sentence_count": 112,
+   "verbatim_char_count": 3253,
+   "plain_char_count": 3128,
+   "latin_letter_count": 34,
+   "latin_ratio_pct": 1.0452,
+   "paragraph_char_counts": [
+    303,
+    266,
+    213,
+    168,
+    156,
+    161,
+    170,
+    168,
+    167,
+    308,
+    181,
+    130,
+    122,
+    124,
+    137,
+    111,
+    122,
+    211
+   ],
+   "expected_events": {
+    "mode": "expressive_v3",
+    "error_diagnostic_count": 0,
+    "warning_diagnostic_count": 0,
+    "node_count": 270,
+    "line_count": 36,
+    "emotion_transition_count": 0,
+    "emotion_transition_by_label": {},
+    "emotion_transition_by_mode": {},
+    "emotion_transition_explicit_mode_count": 0,
+    "used_emotion_ids": [],
+    "local_prosody_count": 114,
+    "local_prosody_by_kind": {
+     "emphasis": 2,
+     "fade_end": 2,
+     "firm_end": 101,
+     "question_rise": 5,
+     "shock_rise": 2,
+     "vowel_extend": 2
+    },
+    "local_prosody_by_kind_and_effective_count": {
+     "emphasis:1": 1,
+     "emphasis:2": 1,
+     "fade_end:3": 1,
+     "fade_end:6": 1,
+     "firm_end:1": 101,
+     "question_rise:1": 4,
+     "question_rise:2": 1,
+     "shock_rise:2": 2,
+     "vowel_extend:1": 2
+    },
+    "vowel_extend_classification": {
+     "open_vowel": 2
+    },
+    "nonverbal_laugh_count": 0,
+    "nonverbal_laugh_by_style": {},
+    "nonverbal_laugh_by_position": {},
+    "nonverbal_laugh_raw_tokens": [],
+    "explicit_pause_count": 0,
+    "total_explicit_pause_ms": 0,
+    "boundary_by_kind": {
+     "finalTail": 1,
+     "sentenceGap": 35
+    },
+    "capped_token_count": 0,
+    "non_open_vowel_extend_count": 0
+   },
+   "observed_timeline_full_sha256": "bc7b817f24cbde6ed8df6e29d388ca68463a52d4bace604ed779028ee3b2a262"
+  },
+  "expressive": {
+   "file": "longform-ko-seductive-performance-expressive-v1.txt",
+   "role": "expressive",
+   "sha256": "662bbd9c04b3c0f64439a4e96b8786f29d55097187dadd851f726ac4835e9e6c",
+   "byte_length_utf8": 7999,
+   "char_count": 3487,
+   "paragraph_count": 18,
+   "sentence_count": 112,
+   "verbatim_char_count": 3294,
+   "plain_char_count": 3169,
+   "latin_letter_count": 34,
+   "latin_ratio_pct": 1.0322,
+   "paragraph_char_counts": [
+    313,
+    277,
+    224,
+    181,
+    166,
+    180,
+    190,
+    178,
+    183,
+    324,
+    196,
+    140,
+    135,
+    135,
+    153,
+    124,
+    132,
+    221
+   ],
+   "expected_events": {
+    "mode": "expressive_v3",
+    "error_diagnostic_count": 0,
+    "warning_diagnostic_count": 0,
+    "node_count": 339,
+    "line_count": 36,
+    "emotion_transition_count": 31,
+    "emotion_transition_by_label": {
+     "걱정": 1,
+     "공손": 1,
+     "기본": 2,
+     "긴장": 1,
+     "나레이션": 1,
+     "놀람": 1,
+     "다정": 1,
+     "달콤": 1,
+     "당황": 3,
+     "매력": 1,
+     "명랑": 1,
+     "부끄러움": 1,
+     "속삭임": 2,
+     "애교": 2,
+     "유혹": 4,
+     "은밀": 1,
+     "자신감": 1,
+     "장난": 1,
+     "진지": 2,
+     "체념": 1,
+     "한숨": 1,
+     "호기심": 1
+    },
+    "emotion_transition_by_mode": {
+     "blend": 30,
+     "immediate": 1
+    },
+    "emotion_transition_explicit_mode_count": 2,
+    "used_emotion_ids": [
+     "cute",
+     "cheerful",
+     "serious",
+     "curious",
+     "whisper",
+     "nervous",
+     "seductive",
+     "intimate",
+     "flustered",
+     "shy",
+     "narration",
+     "charming",
+     "sweet",
+     "worried",
+     "polite",
+     "confident",
+     "playful",
+     "resigned",
+     "sighing",
+     "tender",
+     "surprise"
+    ],
+    "local_prosody_count": 114,
+    "local_prosody_by_kind": {
+     "emphasis": 2,
+     "fade_end": 2,
+     "firm_end": 101,
+     "question_rise": 5,
+     "shock_rise": 2,
+     "vowel_extend": 2
+    },
+    "local_prosody_by_kind_and_effective_count": {
+     "emphasis:1": 1,
+     "emphasis:2": 1,
+     "fade_end:3": 1,
+     "fade_end:6": 1,
+     "firm_end:1": 101,
+     "question_rise:1": 4,
+     "question_rise:2": 1,
+     "shock_rise:2": 2,
+     "vowel_extend:1": 2
+    },
+    "vowel_extend_classification": {
+     "open_vowel": 2
+    },
+    "nonverbal_laugh_count": 7,
+    "nonverbal_laugh_by_style": {
+     "bashful": 2,
+     "breathy": 2,
+     "chuckle": 1,
+     "high_giggle": 1,
+     "open": 1
+    },
+    "nonverbal_laugh_by_position": {
+     "inline": 6,
+     "leading": 1
+    },
+    "nonverbal_laugh_raw_tokens": [
+     "[ㅋㅋ]",
+     "[ㅎㅎㅎㅎ]",
+     "[헤헷]",
+     "[히히]",
+     "[ㅎㅎ]",
+     "[헤헤헷]",
+     "[호호]"
+    ],
+    "explicit_pause_count": 3,
+    "total_explicit_pause_ms": 2200,
+    "boundary_by_kind": {
+     "explicitPause": 3,
+     "finalTail": 1,
+     "sentenceGap": 35
+    },
+    "capped_token_count": 0,
+    "non_open_vowel_extend_count": 0
+   },
+   "observed_timeline_full_sha256": "ec226a305eeb97d9b16ed7bc7981edc82bd7bf78fe6a38f6e7485a164a0f7de1"
+  }
+ },
+ "informational_only": {
+  "observed_timeline_full_sha256": "files[*].observed_timeline_full_sha256 은 작성 시점의 계약 해시를 기록해 둔 관찰값이다. 테스트는 이 값을 단정하지 않는다 — 이 픽스처의 목적은 해시 parity 고정이 아니라 장문 자연스러움 검증이며, parity 게이트는 test/fixtures/expressive-timeline-v3.json 이 담당한다."
+ }
+}

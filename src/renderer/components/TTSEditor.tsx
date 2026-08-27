@@ -4,12 +4,25 @@ import { useAppStore, emotionEffectivePath } from '@/stores/app.store'
 import type { TtsReferenceEntry, PitchCapability, TtsEmotionRegion } from '../../shared/ttsConfig'
 import { deriveRefMode } from '../../shared/ttsConfig'
 import ReferenceRegionPanel from './ReferenceRegionPanel'
+import ReferenceAssetLibraryPanel from './ReferenceAssetLibraryPanel'
+import EmotionSamplerPanel from './EmotionSamplerPanel'
+import { SAMPLER_FAILURE_TEXT } from '../../shared/samplerApi'
+import { EMOTION_SAMPLE_ROWS, capabilityForRow, stateForCapability } from '../../shared/emotionSampler'
+import type { EmotionSampleEntry } from '../../shared/emotionSampler'
+import { EMOTION_PREVIEW_SILENCE_MS } from '../../shared/emotionSamplePreview'
+import { createEmotionSamplePreviewPlayer, browserPreviewDeps } from '@/lib/emotionSamplePreviewPlayer'
+import { REF_ASSET_FAILURE_TEXT } from './ReferenceAssetLibraryPanel.logic'
+import type { ReferenceLibraryItem, ReferenceLibraryStatus } from '../../shared/referenceLibraryApi'
 import TtsVoiceSection from './TtsVoiceSection'
 import EmotionReferenceManager from './EmotionReferenceManager'
 import ExpressionControls from './ExpressionControls'
 import { getPresetValues } from './ExpressionControls.logic'
 import TtsExpressionDetail from './TtsExpressionDetail'
 import { resolveExpressionCapability } from '../../shared/ttsExpressionCapabilities'
+import {
+  IDLE_SESSION, beginRequest, invalidate, applyEvent, decideAsyncResult, previewErrorText,
+  type PreviewSession, type PreviewEvent,
+} from '../../shared/previewSession'
 import EmotionScriptEditor, { type EmotionScriptEditorHandle } from './EmotionScriptEditor'
 import { EMOTION_GROUPS, ALL_EMOTIONS, FREQUENT_TAGS, parseUsedEmotionIds } from '@/lib/emotions'
 import type { Emotion } from '@/lib/emotions'
@@ -27,19 +40,150 @@ const PROMPT_LANGS: [string, string][] = [
 // I5-a: 감정 참조 미리듣기(신규 어포던스). PHASE 4에서 raw file:// 재생이 webSecurity에 막히는 것을 확인 →
 // 앱이 결과 트랙 재생에 쓰는 '기존 안전 경로'(getFileUrl → local-file:// 권한 프로토콜)를 재사용한다.
 // webSecurity 완화·임의 경로·외부 전송 없음. 재생 대상은 등록된 감정 참조의 effective(파생 클립/원본) 경로뿐.
+//
+// 신뢰성(세대 기반): getFileUrl은 비동기라 감정 후보를 빠르게 옮겨 다니면 '이전 요청'의 URL이 뒤늦게
+// 도착해 새 Audio를 또 만들고, 이전 Audio는 아무도 참조하지 않은 채 계속 울리며 정지도 되지 않았다.
+// 이제 요청마다 세대를 올리고, 늦게 온 이전 세대의 결과는 Audio를 만들기 전에 폐기한다.
 let _previewAudio: HTMLAudioElement | null = null
-export function stopReferencePreview() {
-  if (_previewAudio) { try { _previewAudio.pause() } catch { /* noop */ } _previewAudio = null }
+let _previewSession: PreviewSession = IDLE_SESSION
+let _previewErrorSink: ((message: string | null) => void) | null = null
+// 요청 직렬화 — 동시에 진행 중인 local-file:// 로드를 항상 1개로 제한한다(아래 이유 참고).
+let _previewChain: Promise<void> = Promise.resolve()
+
+/** 셸(TTSEditor)이 미리듣기 오류를 화면에 띄우도록 등록한다. 해제는 null. */
+export function setReferencePreviewErrorSink(sink: ((message: string | null) => void) | null) {
+  _previewErrorSink = sink
 }
-async function previewLocalFile(path: string) {
-  if (!path) return
+function emitPreviewError(message: string | null) {
+  if (_previewErrorSink) _previewErrorSink(message)
+}
+
+// 미리듣기는 요소 하나를 재사용한다. 클릭마다 new Audio를 만들던 이전 구현은 아무도 참조하지 않는
+// 요소를 계속 쌓았고(정지 불가·중복 재생), 그 요소들의 로드가 동시에 몰리면 local-file:// 요청이
+// 고갈돼 그 뒤로는 어떤 미리듣기도 로드되지 않았다(= 사용자가 겪은 '무음').
+function previewElement(): HTMLAudioElement {
+  if (!_previewAudio) {
+    _previewAudio = new Audio()
+    _previewAudio.preload = 'auto'
+  }
+  return _previewAudio
+}
+function pausePreview() {
+  if (_previewAudio) { try { _previewAudio.pause() } catch { /* noop */ } }
+}
+// 요소가 로드 불능 상태로 굳으면 버린다 — 다음 '사용자 클릭'이 새 요소로 시작한다(자동 재시도는 하지 않는다).
+function discardPreviewElement() {
+  const el = _previewAudio
+  _previewAudio = null
+  if (!el) return
+  try { el.pause() } catch { /* noop */ }
+  el.removeAttribute('src')
+  try { el.load() } catch { /* noop */ }
+}
+
+export function stopReferencePreview() {
+  _previewSession = invalidate(_previewSession, 'stopped')   // 진행 중이던 요청의 결과를 전부 폐기
+  pausePreview()                                             // 로드는 끊지 않는다(끊긴 요청 누적이 무음의 원인)
+  emitPreviewError(null)
+}
+
+// loadedmetadata/canplay(또는 error/타임아웃)까지 기다린다. 로드가 끝나기 전에 재생을 시작하지 않는다.
+// 타임아웃이 반드시 있어야 한다 — 직렬화 큐가 정착하지 않는 로드에 걸려 영원히 막히면 그 뒤 모든 미리듣기가 무음이 된다.
+function waitUntilPreviewLoaded(el: HTMLAudioElement, timeoutMs = 4000): Promise<void> {
+  if (el.readyState >= 1 /* HAVE_METADATA */) return Promise.resolve()
+  return new Promise<void>((resolve) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const done = () => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      el.removeEventListener('loadedmetadata', done)
+      el.removeEventListener('canplay', done)
+      el.removeEventListener('error', done)
+      resolve()
+    }
+    timer = setTimeout(done, timeoutMs)
+    el.addEventListener('loadedmetadata', done)
+    el.addEventListener('canplay', done)
+    el.addEventListener('error', done)
+  })
+}
+
+function previewLocalFile(path: string) {
+  if (!path) { emitPreviewError(previewErrorText('source')); return }
+  // (1) 새 세대를 먼저 올린다 — 아직 URL/로드를 기다리는 이전 요청은 자기 차례에 stale임을 알고 물러난다.
+  _previewSession = beginRequest(_previewSession)
+  const gen = _previewSession.gen
+  pausePreview()                 // 들리던 소리는 즉시 멈춘다
+  emitPreviewError(null)
+  // (2) 앞선 요청의 로드가 끝난 뒤에만 다음 로드를 시작한다. 로드를 중간에 끊어 버리면 그 local-file://
+  //     요청이 남아 쌓이고, 수십 번 반복하면 이후 모든 미리듣기가 로드되지 않는다(영구 무음).
+  _previewChain = _previewChain.then(() => runPreview(gen, path)).catch(() => { /* 다음 요청을 막지 않는다 */ })
+}
+
+async function runPreview(gen: number, path: string) {
+  // 내 차례가 오기 전에 더 새로운 요청이 들어왔다면 아무 것도 하지 않는다(로드조차 시작하지 않음).
+  const stale = () => decideAsyncResult(_previewSession, gen) === 'discard'
+  if (stale()) return
+
+  const fail = (kind: 'source' | 'load' | 'play') => {
+    const v = applyEvent(_previewSession, gen, { kind: 'error', message: previewErrorText(kind) })
+    if (!v.apply) return                       // 옛 세대의 실패(새 요청이 끊은 것) → 조용히 폐기
+    _previewSession = v.next
+    emitPreviewError(v.next.errorMessage)
+  }
+  const advance = (event: PreviewEvent): boolean => {
+    const v = applyEvent(_previewSession, gen, event)
+    if (v.apply) _previewSession = v.next
+    return v.apply
+  }
+
   try {
-    stopReferencePreview()                             // 다른 clip 미리듣기 시작 전 이전 것 정지(전환)
-    const url = await window.api.audio.getFileUrl(path)  // local-file:// (결과 트랙과 동일 안전 경로)
-    if (!url) return
-    _previewAudio = new Audio(url)
-    void _previewAudio.play().catch(() => { /* 재생 불가 시 조용히 무시(크래시 없음) */ })
-  } catch { /* noop */ }
+    const url = await window.api.audio.getFileUrl(path)   // local-file:// (결과 트랙과 동일 안전 경로)
+    if (stale()) return                                   // 늦게 도착한 이전 요청 → 폐기(src를 덮어쓰지 않는다)
+    if (!url) { fail('source'); return }
+    if (!advance({ kind: 'url' })) return
+
+    const el = previewElement()
+    // (3) 소스 교체는 pause() → src 비우기 → 새 src 순서. 직렬화 덕분에 이 시점엔 진행 중인 로드가 없다.
+    try { el.pause() } catch { /* noop */ }
+    if (el.getAttribute('src') !== url) {
+      el.removeAttribute('src')
+      try { el.load() } catch { /* noop */ }
+      el.src = url
+      try { el.load() } catch { /* noop */ }
+    }
+
+    // (4) 로드가 끝난 뒤에 재생 위치를 정하고 재생한다.
+    await waitUntilPreviewLoaded(el)
+    // stale이면 그냥 물러난다 — 요소는 하나뿐이라 여기서 pause() 하면 새 세대의 재생을 죽인다.
+    // 정지 책임은 무효화한 쪽(stopReferencePreview·새 요청)이 이미 졌다.
+    if (stale()) return
+    // 로드가 실패했어도 play()는 반드시 시도한다 — 실패 신호를 한 곳(play 거부)에서 받아 오류로 노출하기 위해.
+    if (!advance({ kind: 'ready' })) return
+    try { el.currentTime = 0 } catch { /* noop */ }
+
+    // (5) play() 프로미스는 정착하지 않을 수도 있다(로드가 멈춘 요소). 반드시 타임아웃과 경주시켜
+    //     직렬화 큐를 풀어 준다 — 그러지 않으면 한 번의 실패가 이후 모든 미리듣기를 영구 무음으로 만든다.
+    const result = await Promise.race([
+      el.play().then(() => 'ok', (e: unknown) => 'rejected:' + ((e as Error)?.name || '')),
+      new Promise<string>((r) => setTimeout(() => r('timeout'), 4000)),
+    ])
+    if (stale()) return
+    if (result !== 'ok') {
+      // 거부를 삼키지 않는다. 새 요청이 끊어서 생긴 거부만 stale로 조용히 폐기되고, 나머지는 화면에 뜬다.
+      // NotSupportedError = 소스를 못 읽은 것(파일 이동·삭제), 그 밖은 재생 자체가 시작되지 못한 것.
+      discardPreviewElement()
+      fail(el.error || result.includes('NotSupportedError') ? 'load' : 'play')
+      return
+    }
+    advance({ kind: 'play' })
+  } catch {
+    if (stale()) return
+    discardPreviewElement()
+    fail('load')
+  }
 }
 
 // 4-flow 셸(통합 담당, 정정11). A의 EmotionScriptEditor + C의 TtsVoiceSection·EmotionReferenceManager·
@@ -56,6 +200,139 @@ export default function TTSEditor() {
   const [ttsEngine, setTtsEngine] = useState(() => useAppStore.getState().ttsEngine)
   const [refPrompts, setRefPrompts] = useState<Record<string, TtsReferenceEntry>>(() => useAppStore.getState().ttsReferencePrompts)
   const [showRefPrompts, setShowRefPrompts] = useState(false)
+
+  // ── 참조 목소리 보관함 배선 — renderer 는 논리 ID 만 다룬다(경로는 import 요청에만 실린다). ──
+  const ttsReferenceRegion = useAppStore((s) => s.ttsReferenceRegion)
+  const [refAssets, setRefAssets] = useState<{ status: ReferenceLibraryStatus; items: ReferenceLibraryItem[] }>(
+    { status: 'ok', items: [] }
+  )
+  const [refAssetBusy, setRefAssetBusy] = useState(false)
+  const [refAssetNotice, setRefAssetNotice] = useState<string | null>(null)
+
+  // ── 감정·표현 미리듣기 배선 ──
+  // renderer 는 rowId 만 보낸다. cacheKey 는 main 이 계산해 응답으로 돌려준 값만 보관하고,
+  // 생성 요청에는 절대 실어 보내지 않는다(권위는 main 이다).
+  const [samplerRows, setSamplerRows] = useState<string[]>([])
+  const [samplerKeys, setSamplerKeys] = useState<Record<string, string>>({})
+  const [samplerBusyRow, setSamplerBusyRow] = useState<string | null>(null)
+  const [samplerNotice, setSamplerNotice] = useState<string | null>(null)
+  const samplerPlayer = useRef<ReturnType<typeof createEmotionSamplePreviewPlayer> | null>(null)
+
+  const selectedRefId = useMemo(
+    () => refAssets.items.find((i) => i.selected) ?? null,
+    [refAssets.items]
+  )
+  const samplerReferenceReady = !!selectedRefId && selectedRefId.ready && selectedRefId.transcript === 'present'
+
+  // 표시용 엔트리. cacheKey 자리는 main 이 돌려준 값이 있을 때만 실제 키이고,
+  // 없으면 자리표시자다(어떤 IPC 입력으로도 쓰이지 않는다).
+  const samplerEntries: EmotionSampleEntry[] = useMemo(() => samplerRows.map((rowId) => {
+    const cap = capabilityForRow(rowId)
+    const capState = stateForCapability(cap)
+    const key = samplerKeys[rowId]
+    const state = key ? 'ready' : capState
+    return {
+      rowId,
+      state: state as EmotionSampleEntry['state'],
+      reason: state === 'ready' ? null : cap.reason,
+      cacheKey: key ?? '0'.repeat(64),
+    }
+  }), [samplerRows, samplerKeys])
+
+  const refreshSamplerCache = async (): Promise<void> => {
+    const res = await window.api.sampler.inventory()
+    // 우리가 아는 행의 키만 남긴다 — 목록에 없는 키는 다른 설정으로 만든 것이다.
+    setSamplerKeys((prev) => {
+      const alive = new Set(res.keys)
+      const next: Record<string, string> = {}
+      for (const [rowId, key] of Object.entries(prev)) if (alive.has(key)) next[rowId] = key
+      return next
+    })
+  }
+
+  const stopSamplerPreview = (): void => { samplerPlayer.current?.stop() }
+
+  const generateSample = async (rowId: string): Promise<void> => {
+    if (!selectedRefId) { setSamplerNotice(SAMPLER_FAILURE_TEXT.NO_REFERENCE_SELECTED); return }
+    setSamplerBusyRow(rowId)
+    setSamplerNotice(null)
+    try {
+      const res = await window.api.sampler.generate({ referenceId: selectedRefId.referenceId, rowId })
+      if (res.ok) setSamplerKeys((p) => ({ ...p, [rowId]: res.cacheKey }))
+      else setSamplerNotice(SAMPLER_FAILURE_TEXT[res.reason] ?? '샘플을 만들지 못했습니다.')
+    } finally {
+      setSamplerBusyRow(null)
+    }
+  }
+
+  const auditionSample = async (rowId: string): Promise<void> => {
+    const key = samplerKeys[rowId]
+    if (!key) return
+    const res = await window.api.sampler.previewUrl({ cacheKey: key })
+    if (!res.ok) { setSamplerNotice('저장된 샘플을 찾을 수 없습니다.'); return }
+    if (!samplerPlayer.current) {
+      samplerPlayer.current = createEmotionSamplePreviewPlayer(
+        browserPreviewDeps(EMOTION_PREVIEW_SILENCE_MS, {
+          onError: () => setSamplerNotice('미리듣기를 재생하지 못했습니다.'),
+        })
+      )
+    }
+    samplerPlayer.current.play(rowId, res.url)
+  }
+
+  const deleteSample = async (rowId: string): Promise<void> => {
+    const key = samplerKeys[rowId]
+    if (!key) return
+    stopSamplerPreview()
+    const res = await window.api.sampler.remove({ cacheKey: key })
+    if (!res.ok) { setSamplerNotice('샘플을 삭제하지 못했습니다.'); return }
+    setSamplerKeys((p) => { const next = { ...p }; delete next[rowId]; return next })
+  }
+
+  // 언마운트·모드 전환에서 재생을 정리한다(요소·타이머가 남지 않게).
+  useEffect(() => () => { samplerPlayer.current?.dispose(); samplerPlayer.current = null }, [])
+
+  const refreshRefAssets = async (): Promise<void> => {
+    const res = await window.api.referenceLibrary.list()
+    setRefAssets({ status: res.status, items: res.items })
+  }
+
+  const importCurrentReference = async (): Promise<void> => {
+    if (!fileInfo?.path || !ttsReferenceRegion) return
+    setRefAssetBusy(true)
+    setRefAssetNotice(null)
+    try {
+      // 경로가 renderer 를 떠나는 유일한 지점. 응답에는 논리 ID 만 돌아온다.
+      const res = await window.api.referenceLibrary.import({
+        filePath: fileInfo.path,
+        regionStartMs: Math.round(ttsReferenceRegion.start * 1000),
+        regionDurationMs: Math.round(ttsReferenceRegion.duration * 1000),
+        // 현재 원본·구간에 연결된 확정 전사만 넘긴다. store 는 원본이 바뀌면 prompts 를 비우므로
+        // 다른 원본의 전사가 섞이지 않는다. 확정 전사가 없으면 빈 값으로 두고 sidecar 를 만들지 않는다.
+        transcript: refPrompts['default']?.manualText ?? '',
+        transcriptLanguage: refPrompts['default']?.promptLang ?? '',
+      })
+      if (!res.ok) setRefAssetNotice(REF_ASSET_FAILURE_TEXT[res.reason] ?? '참조를 저장하지 못했습니다.')
+      await refreshRefAssets()
+    } finally {
+      setRefAssetBusy(false)
+    }
+  }
+
+  const selectRefAsset = async (referenceId: string): Promise<void> => {
+    const res = await window.api.referenceLibrary.select(referenceId)
+    // 실패해도 다른 참조로 대신 고르지 않는다 — 사유만 알리고 선택은 그대로 둔다.
+    if (!res.ok) setRefAssetNotice(REF_ASSET_FAILURE_TEXT[res.reason] ?? '참조를 사용할 수 없습니다.')
+    else setRefAssetNotice(null)
+    await refreshRefAssets()
+  }
+
+  const removeRefAsset = async (referenceId: string): Promise<void> => {
+    const res = await window.api.referenceLibrary.remove(referenceId)
+    if (!res.ok) setRefAssetNotice(REF_ASSET_FAILURE_TEXT[res.reason] ?? '참조를 삭제하지 못했습니다.')
+    else setRefAssetNotice(null)
+    await refreshRefAssets()
+  }
   const [txLoading, setTxLoading] = useState<string | null>(null)
   const [preflight, setPreflight] = useState<{ available?: boolean; snapshot_ok?: boolean; device_expected?: string; reason?: string } | null>(null)
   const [showAdvanced, setShowAdvanced] = useState(false)
@@ -65,6 +342,7 @@ export default function TTSEditor() {
   const [fineTuneEnabled, setFineTuneEnabled] = useState(false)
   const [detailFineTune, setDetailFineTune] = useState(false)   // 세부 표현 '직접 조절'(ExpressionControls fineTune과 별개)
   const [showSettingHelp, setShowSettingHelp] = useState(false)
+  const [previewError, setPreviewError] = useState<string | null>(null)   // 감정 참조 미리듣기 실패(사용자 언어)
   const editorRef = useRef<EmotionScriptEditorHandle>(null)
   const pitchCap = ttsPitchCapability
   const disabled = status === 'processing'
@@ -98,8 +376,11 @@ export default function TTSEditor() {
     return () => { cancelled = true }
   }, [mode])
 
-  // 컴포넌트 해제(모드 전환 등) 시 재생 중인 참조 미리듣기 정지 — 잔여 재생 방지.
-  useEffect(() => () => { stopReferencePreview() }, [])
+  // 미리듣기 오류를 화면에 띄우기 위한 sink 등록 + 컴포넌트 해제(모드 전환 등) 시 재생 정지(잔여 재생 방지).
+  useEffect(() => {
+    setReferencePreviewErrorSink(setPreviewError)
+    return () => { setReferencePreviewErrorSink(null); stopReferencePreview() }
+  }, [])
 
   const updateRef = (id: string, patch: Partial<TtsReferenceEntry>) =>
     setRefPrompts(prev => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }))
@@ -247,6 +528,12 @@ export default function TTSEditor() {
               usedEmotionIds={usedEmotionIdList}
               disabled={disabled}
             />
+            {/* 미리듣기 실패는 삼키지 않고 보여준다(사용자 언어·경로 미노출·자동 재시도 없음) */}
+            {previewError && (
+              <div role="alert" style={{ fontSize: 10, lineHeight: 1.6, color: 'var(--rose)', padding: '6px 10px', borderRadius: 6, background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
+                {previewError}
+              </div>
+            )}
             {/* 미등록 안내는 관리 목록의 '기본 목소리 사용' 행이 대신한다(같은 사실을 두 곳에 쓰지 않음).
                 목록을 열지 않아도 보이도록 요약 한 줄만 남긴다. */}
             {usedUnregistered.length > 0 && (
@@ -257,6 +544,37 @@ export default function TTSEditor() {
           </>
         }
       >
+        {/* 참조 목소리 보관함 — 저장해 둔 참조 자산 관리. 감정 참조 등록·구간 편집과 별개 섹션이다. */}
+        <ReferenceAssetLibraryPanel
+          status={refAssets.status}
+          items={refAssets.items}
+          hasConfirmedRegion={!!fileInfo?.path && !!ttsReferenceRegion}
+          busy={disabled}
+          importing={refAssetBusy}
+          disabled={disabled}
+          notice={refAssetNotice}
+          onRefresh={refreshRefAssets}
+          onImport={importCurrentReference}
+          onSelect={selectRefAsset}
+          onRemove={removeRefAsset}
+        />
+
+        {/* 감정·표현 미리듣기 — 참조 보관함·감정 참조 등록과 별개 섹션. */}
+        <EmotionSamplerPanel
+          rows={samplerEntries}
+          cachedFileRowIds={Object.keys(samplerKeys)}
+          defaultVoiceReady={samplerReferenceReady}
+          disabled={disabled || samplerBusyRow !== null}
+          onGenerate={generateSample}
+          onAudition={auditionSample}
+          onDelete={deleteSample}
+          onAddRow={(rowId) => { setSamplerRows((r) => (r.includes(rowId) ? r : [...r, rowId])); void refreshSamplerCache() }}
+          onRemoveRow={(rowId) => { stopSamplerPreview(); setSamplerRows((r) => r.filter((x) => x !== rowId)) }}
+        />
+        {samplerNotice && (
+          <p style={{ fontSize: 11, color: 'var(--rose)', margin: 0, overflowWrap: 'anywhere' }}>{samplerNotice}</p>
+        )}
+
         {/* 기본 참조 음성 패널(셸 주입) — 단 1회 마운트. */}
         {fileInfo?.path && (
           <ReferenceRegionPanel clipKey="default" path={fileInfo.path} disabled={disabled} onState={setTtsRefState} label="참조 음성" />

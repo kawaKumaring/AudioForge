@@ -8,9 +8,9 @@
        separate.py:392-396)와 canonical render_srt 의 블록 구분·본문 배치가
        바이트 동일한지(타임코드 규약을 제외한). 배선이 자막 구조를 바꾸지
        않음을 보장.
-  (W2) SRT 타임코드 규약 차이 — 프로덕션 fmt_srt_time(절삭) vs canonical
-       format_srt_timestamp(반올림)이 경계 ms 에서 최대 1ms 다름을 고정한다.
-       이것이 1ms snapshot migration 의 정확한 표면이다.
+  (W2) SRT 타임코드 규약 — 프로덕션 fmt_srt_time 의 ms 절삭 버그를 반올림으로
+       고친 뒤 canonical format_srt_timestamp 와 경계 ms 까지 일치함을 고정한다.
+       (수정 전에는 두 규약이 경계에서 최대 1ms 달랐다 — 그것이 migration 표면.)
   (W3) 무음 게이트 shadow 계약 — _filter_silent_segments(rms_threshold=0.005,
        0.4 keep-guard, b<=a 무조건 유지)의 keep 결정 수학을 순수 재현해
        apply_silence_policy 와 세그먼트별 keep 이 일치함을 고정(shadow 비교의
@@ -104,7 +104,9 @@ class SrtBlockStructureContract(unittest.TestCase):
 
 
 class SrtTimecodeMigrationContract(unittest.TestCase):
-    """(W2) 절삭 vs 반올림 — 1ms migration 표면을 정확히 고정."""
+    """(W2) 타임코드 규약 — 프로덕션 fmt_srt_time 의 ms 절삭 버그를 반올림으로
+    고친 뒤, canonical format_srt_timestamp 와 규약이 일치함을 고정한다.
+    (1ms migration 표면은 닫혔고, ≤1ms 계약은 그대로 유효하다.)"""
 
     def test_exact_ms_values_agree(self):
         # 정확한 ms 값에서는 두 포맷터가 동일(마이그레이션 무영향 구간).
@@ -112,8 +114,10 @@ class SrtTimecodeMigrationContract(unittest.TestCase):
             self.assertEqual(ac.format_srt_timestamp(t), fmt_srt_time(t), f"@{t}")
 
     def test_float_boundary_diverges_by_1ms(self):
-        # 2.3 == 2.2999… (float) → 절삭은 2299ms, 반올림은 2300ms. 정확히 1ms.
-        self.assertEqual(fmt_srt_time(2.3), "00:00:02,299")            # 프로덕션(절삭)
+        # 2.3 == 2.2999… (float). 예전 프로덕션은 ms 를 절삭해 2299ms 를 냈고 그것이
+        # 버그였다(이전 기대값: "00:00:02,299"). fmt_srt_time 이 반올림으로 수정되어
+        # 이제 canonical 과 같은 2300ms — 1ms migration 표면이 닫혔다.
+        self.assertEqual(fmt_srt_time(2.3), "00:00:02,300")            # 프로덕션(반올림, 수정 후)
         self.assertEqual(ac.format_srt_timestamp(2.3), "00:00:02,300")  # canonical(반올림)
 
     def test_divergence_never_exceeds_1ms(self):

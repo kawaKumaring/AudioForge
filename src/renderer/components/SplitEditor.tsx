@@ -1,7 +1,10 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import WaveSurfer from 'wavesurfer.js'
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js'
 import { useAppStore } from '@/stores/app.store'
+import {
+  validateMarkers, formatSplitMarkerError, AUTO_SILENCE_SPLIT_NOTICE,
+} from '../../shared/splitMarkers'
 
 interface Marker {
   id: string
@@ -10,7 +13,7 @@ interface Marker {
 }
 
 export default function SplitEditor() {
-  const { fileUrl, mode } = useAppStore()
+  const { fileUrl, fileInfo, mode } = useAppStore()
   const containerRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WaveSurfer | null>(null)
   const regionsRef = useRef<ReturnType<typeof RegionsPlugin.create> | null>(null)
@@ -23,11 +26,25 @@ export default function SplitEditor() {
   const [autoDetecting, setAutoDetecting] = useState(false)
   const [firstTrackLabel, setFirstTrackLabel] = useState('Track 01')
   const markersRef = useRef<Marker[]>([])
+  // 지금 화면의 마커가 '어느 파일 기준'인지. 파일이 바뀌면 마커와 함께 갱신된다.
+  const [markerFileKey, setMarkerFileKey] = useState('')
 
   // Keep ref in sync
   useEffect(() => { markersRef.current = markers }, [markers])
 
   const isActive = mode === 'split' && !!fileUrl
+
+  // 파일 식별 키(지문). 오류 payload에는 절대 싣지 않는다 — 비교 입력으로만 쓴다.
+  const fileKey = fileInfo?.path || fileUrl || ''
+
+  // 파일이 바뀌면 이전 파일 기준 마커를 버린다.
+  // 없으면 A의 분할 지점이 B에 그대로 적용된다(B가 더 길면 오류조차 없이 엉뚱하게 잘림).
+  // 아래 store 동기화 effect가 splitMarkers를 []로 덮어써 store의 스테일 값까지 정리한다.
+  useEffect(() => {
+    setMarkers([])
+    setFirstTrackLabel('Track 01')
+    setMarkerFileKey(fileKey)
+  }, [fileKey])
 
   // Initialize wavesurfer
   useEffect(() => {
@@ -231,6 +248,21 @@ export default function SplitEditor() {
     return `${m}:${sec.toString().padStart(2, '0')}`
   }
 
+  // 분할 지점 검증 — 규칙은 shared/splitMarkers 하나만 본다(renderer/main/Python 동일 권위).
+  // 파형 디코드 전(duration 0)에는 fileInfo.duration으로 대체하고, 그것도 없으면 판정을 미룬다
+  // (로딩 중 가짜 오류를 띄우지 않기 위해). 마커를 고쳐 담지 않는다 — 표시만 한다.
+  const effectiveDuration = duration > 0 ? duration : (fileInfo?.duration ?? 0)
+  const validation = useMemo(() => validateMarkers(
+    markers.map((m) => m.time),
+    {
+      durationSeconds: effectiveDuration,
+      fingerprint: markerFileKey || null,
+      expectedFingerprint: fileKey || null,
+    }
+  ), [markers, effectiveDuration, markerFileKey, fileKey])
+  const validationErrors = effectiveDuration > 0 && !validation.ok ? validation.errors : []
+  const autoSilenceSplit = markers.length === 0
+
   // Build split points for export (used by ProcessButton)
   useEffect(() => {
     // Store markers in global state for ProcessButton to access
@@ -359,6 +391,46 @@ export default function SplitEditor() {
           </div>
         </div>
       )}
+
+      {/* 검증 오류 — 실행 전에 반드시 보인다. 숫자와 순번만, 경로/파일명은 노출하지 않는다. */}
+      {validationErrors.length > 0 && (
+        <div role="alert" style={{
+          borderRadius: 10, padding: '10px 14px',
+          background: 'rgba(244,63,94,0.08)', border: '1px solid var(--rose)'
+        }}>
+          <div style={{ fontSize: 11, fontWeight: 700, color: 'var(--rose)', marginBottom: 6 }}>
+            분할 지점을 확인하세요 — 이대로는 실행할 수 없습니다
+          </div>
+          <ul style={{ margin: 0, paddingLeft: 16, display: 'flex', flexDirection: 'column', gap: 3 }}>
+            {validationErrors.map((e, i) => (
+              <li key={`${e.reasonCode}_${e.index}_${i}`} style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--text-secondary)' }}>
+                {formatSplitMarkerError(e)}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+
+      {/* 마커 0개 = 배치 무음 자동 분할 경로. 조용히 넘어가지 않고 명시한다. */}
+      {autoSilenceSplit && (
+        <div style={{
+          borderRadius: 10, padding: '10px 14px',
+          background: 'var(--bg-card)', border: '1px solid var(--border-subtle)',
+          fontSize: 11, lineHeight: 1.5, color: 'var(--text-secondary)'
+        }}>
+          {AUTO_SILENCE_SPLIT_NOTICE}
+        </div>
+      )}
+
+      {/* 상세(접힘) — 두 자동 감지의 규칙이 다르다는 사실만. 주 흐름에서 반복하지 않는다. */}
+      <details style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+        <summary style={{ cursor: 'pointer' }}>자동 감지 방식 차이</summary>
+        <div style={{ marginTop: 6, lineHeight: 1.6 }}>
+          편집기의 &lsquo;무음 구간 자동 감지&rsquo;는 파형 RMS 기준(약 -46 dBFS, 무음 1.0초 이상)이고,
+          마커 없이 실행할 때의 배치 무음 분할은 ffmpeg silencedetect(-35 dB, 1.5초, 트랙 간 최소 10초)입니다.
+          규칙이 달라 결과도 다를 수 있습니다.
+        </div>
+      </details>
     </div>
   )
 }

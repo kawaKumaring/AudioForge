@@ -17,21 +17,77 @@ stdin config(JSON):
   segments               [{index, text, ref_audio, ref_text, x_vector_only, language_name, out_path}]
                          x_vector_only=True면 x-vector-only(ref_text 무시), False면 ICL(ref_text 필요)
                          language_name은 세그먼트별(Korean/English/Chinese/Japanese)
-stdout: progress/result/error JSON 라인(부모가 실시간 읽음). 각 세그먼트 wav는 raw 저장(후처리 없음).
+stdout: progress/stage/heartbeat/result/error JSON 라인(부모가 실시간 읽음). 각 세그먼트 wav는 raw 저장(후처리 없음).
   result.segments[*]에 prod_tokens/generation_limit/generated_iterations/termination_reason 포함.
   error.code == GENERATION_LIMIT_EXCEEDED 는 상한 도달 — segment_index/generated_iterations/generation_limit(정수)만,
   전사·문장·경로는 절대 포함하지 않는다.
+
+수명주기 이벤트(C1):
+  {"type":"stage","stage":"loading"|"loaded"|"generating", ...}  단계 전이(수치/enum만)
+  {"type":"heartbeat","stage":"loading","seq":N,"elapsed_sec":F}  로딩 중 생존 신호(10~15s 간격)
+  로딩은 blocking 단일 호출(from_pretrained)이라 그 사이 stdout이 전혀 없었다 — 부모의 무응답 timeout이
+  '정상이지만 느린 콜드 로딩'을 죽일 수 있었다. heartbeat는 부모의 '비활성 timer'만 갱신하며,
+  부모가 별도로 두는 '기동 hard deadline'은 절대 연장하지 않는다(멈춘 로딩은 여전히 죽는다).
+  loaded 이후에는 heartbeat를 보내지 않는다 — 생성 구간 무응답 계약(280s)을 그대로 보존하기 위함.
 """
 import sys
 import json
+import threading
+import time
 
 import generation_limit  # 순수 계산(math만). 스크립트 디렉터리(python/)가 sys.path에 있어 import 가능.
 import text_segmenter    # 다국어 token-aware 자동 분할(계약 B). 순수 로직.
 import chunk_paths       # chunk 경로 규칙(bridge·worker 공용 순수 헬퍼).
 
+# heartbeat 주기(초). 부모 무응답 timeout(280s)보다 훨씬 짧아야 하고, 로그를 덮지 않을 만큼은 길어야 한다.
+_HEARTBEAT_SEC = 12.0
+
+# emit 직렬화 락 — heartbeat 스레드와 메인 스레드가 같은 stdout에 쓴다.
+_EMIT_LOCK = threading.Lock()
+
+_T0 = time.monotonic()
+
 
 def emit(msg_type, **kwargs):
-    print(json.dumps({"type": msg_type, **kwargs}, ensure_ascii=False), flush=True)
+    """JSON 한 줄을 stdout에 원자적으로 쓴다.
+
+    print()는 본문과 end('\n')를 '두 번' write 하므로 두 스레드가 섞이면 JSON 라인이 깨진다.
+    문자열을 미리 합쳐 락 아래에서 단일 write 하는 것이 heartbeat 스레드 도입의 전제다."""
+    line = json.dumps({"type": msg_type, **kwargs}, ensure_ascii=False) + "\n"
+    with _EMIT_LOCK:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+
+
+def _elapsed(clock=None):
+    return round((clock or time.monotonic)() - _T0, 2)
+
+
+def _load_with_heartbeat(load_fn, stage="loading", interval=_HEARTBEAT_SEC,
+                         clock=time.monotonic, emit_fn=None):
+    """load_fn()을 실행하는 동안 interval마다 heartbeat를 emit 한다(생존 신호).
+
+    load_fn 자체는 '호출 스레드'에서 그대로 실행된다 — 모델/토치 객체가 다른 스레드로 새지 않는다.
+    heartbeat 스레드는 daemon이며 load_fn 반환/예외 모두에서 finally로 정지·join 된다.
+    → loaded 이후에는 heartbeat가 단 한 개도 나가지 않는다(생성 구간 280s 계약 보존).
+
+    interval/clock/emit_fn 은 테스트 주입점이다(분 단위 sleep 없이 결정적으로 검증)."""
+    e = emit_fn or emit
+    stop = threading.Event()
+    state = {"seq": 0}
+
+    def _beat():
+        while not stop.wait(interval):
+            state["seq"] += 1
+            e("heartbeat", stage=stage, seq=state["seq"], elapsed_sec=_elapsed(clock))
+
+    th = threading.Thread(target=_beat, daemon=True)
+    th.start()
+    try:
+        return load_fn()
+    finally:
+        stop.set()
+        th.join(timeout=max(interval, 1.0))
 
 
 # talker 자기회귀 스텝 카운터 — 세그먼트마다 리셋. RNG/logits 불변(scores 미사용·torch/random 무호출).
@@ -110,10 +166,19 @@ def _generate_segment(model, seg, builder, proc):
     prod_tokens = _prod_tokens(builder, proc, seg["text"])
     seg_limit = generation_limit.compute_max_new_tokens(prod_tokens)
     _COUNTER["n"] = 0
+    # 이 한 호출이 곧 'blocking 생성 구간'이다 — 그 사이 stdout 이 없으므로 production 비활성
+    # timeout 280s 가 재는 창과 정확히 같은 구간이다. 그래서 상한 정책 판단에 쓸 수 있는
+    # seconds_per_iteration 은 이 구간만 재야 한다.
+    #
+    # tts_worker 의 elapsed_seconds 로 대신할 수 없다: 그 타이머는 장치 선택·참조 평가·모델
+    # 로딩·결합·pitch·원자적 배치까지 포함한 '작업 전체' 시간이다. 또 generated_iterations 가
+    # chunk 단위이므로 elapsed 도 chunk 단위여야 나눗셈이 의미를 갖는다.
+    _t_gen = time.monotonic()
     wavs, sr = model.generate_voice_clone(
         text=seg["text"], language=seg.get("language_name", "Korean"),
         ref_audio=seg["ref_audio"], ref_text=ref_text,
         x_vector_only_mode=xvo, max_new_tokens=seg_limit)
+    gen_elapsed = round(time.monotonic() - _t_gen, 3)
     iters = _COUNTER["n"]
     if iters <= 0:
         # 계측 래퍼가 동작하지 않은 것 — 상한이 실제로 걸렸는지 확인 불가. 성공 처리 금지.
@@ -122,7 +187,7 @@ def _generate_segment(model, seg, builder, proc):
     reason = generation_limit.classify_termination(iters, seg_limit)
     return {"wavs": wavs, "sr": sr, "prod_tokens": prod_tokens,
             "generation_limit": seg_limit, "generated_iterations": iters,
-            "termination_reason": reason}
+            "termination_reason": reason, "generation_elapsed_sec": gen_elapsed}
 
 
 class BridgeSegmentTooLong(Exception):
@@ -210,6 +275,8 @@ def _generate_plan(model, plan, builder, proc, n_segments, progress=None):
                      "emotion_id": seg.get("emotion_id"), "production_tokens": int(g["prod_tokens"]),
                      "generation_limit": int(g["generation_limit"]),
                      "generated_iterations": int(g["generated_iterations"]),
+                     # blocking 생성 구간만 잰 값(가산). 없으면 None — 0 으로 위조하지 않는다.
+                     "generation_elapsed_sec": g.get("generation_elapsed_sec"),
                      "termination_reason": g["termination_reason"], "status": "ok"})
         if progress:
             progress(30 + (completed * 60) // total, int(seg["index"]), n_segments, ci, cc, "done")
@@ -225,11 +292,20 @@ def _load_model(model_path, device):
     from qwen_tts import Qwen3TTSModel
     dtype = torch.bfloat16 if str(device).startswith("cuda") else torch.float32
     errors = {}
-    for attn in ("sdpa", "eager"):
+    # sdpa 실패 시 eager 재시도 = '두 번째 전체 로딩'이다. 예전에는 두 시도 모두 stdout이 없어
+    # "한 번 느린 로딩"과 "sdpa 실패 후 두 번째 시도"를 사후에 구분할 수 없었다.
+    # attempt/attn 을 담은 stage=loading 이벤트가 그 모호성을 없앤다(재시도가 눈에 보인다).
+    for attempt, attn in enumerate(("sdpa", "eager"), start=1):
         try:
-            m = Qwen3TTSModel.from_pretrained(
-                model_path, device_map=device, dtype=dtype,
-                attn_implementation=attn, local_files_only=True)
+            emit("stage", stage="loading", attn=attn, attempt=attempt, device=str(device),
+                 elapsed_sec=_elapsed())
+            m = _load_with_heartbeat(
+                lambda: Qwen3TTSModel.from_pretrained(
+                    model_path, device_map=device, dtype=dtype,
+                    attn_implementation=attn, local_files_only=True),
+                stage="loading")
+            emit("stage", stage="loaded", attn=attn, attempt=attempt, dtype=str(dtype),
+                 elapsed_sec=_elapsed())
             emit("progress", percent=25, message=f"모델 로딩 완료 (attn={attn}, dtype={dtype})")
             return m
         except Exception as e:
@@ -280,6 +356,9 @@ def main():
             emit("progress", percent=percent,
                  message=f"합성 중... (문장 {seg_index + 1}/{n_seg}, 조각 {ci + 1}/{cc} {tag})")
 
+        # loaded → generating 전이. 이 시점 이후 heartbeat는 없고, 부모의 무응답 280s 계약이
+        # 기존 그대로 적용된다(생성 구간 안전장치는 이 변경으로 완화되지 않는다).
+        emit("stage", stage="generating", elapsed_sec=_elapsed())
         try:
             done = _generate_plan(model, plan, builder, proc, n, progress=_progress)
         except BridgeGenerationLimit as e:
