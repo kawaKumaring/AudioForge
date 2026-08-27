@@ -4,7 +4,8 @@
 역할(엔진 무관 사실 측정 + 파생 클립 생성):
   - recommend_region(): 10초 초과 파일에서 6~8초의 '좋은 발화 구간'을 자동 추천(무음 적음·클리핑
     없음·연속 발화). 확정이 아니라 UI 기본 제안값이다(사용자가 재생·확정).
-  - analyze_region(): 선택 구간의 길이·무음비율·클리핑·RMS를 측정하고 품질 경고를 만든다.
+  - analyze_region(): 선택 구간의 길이·무음비율·클리핑·RMS + 경계 절단(말 도중에 끊겼는가)을
+    측정하고 품질 경고를 만든다. 경계 절단은 참조 대사 혼입의 직접 원인이라 별도 필드로 낸다.
   - coarse_peaks(): 파형 렌더링용 다운샘플 peak 배열(전체 파일).
   - trim_region(): 선택 구간만 mono/24kHz PCM WAV로 만든다. 원본은 절대 변경하지 않는다.
 
@@ -126,11 +127,21 @@ def analyze_region(path, start_sec, dur_sec):
     sil_ratio = (sil_w / tot_w) if tot_w else 0.0
     actual_dur = n / sr
 
+    # 경계 절단 계측 — 구간이 '말 도중'에 끊겼는지. 혼입(참조 대사 섞임)의 직접 원인이라
+    # 무음비율·클리핑과 같은 등급의 1급 경고로 다룬다(reference_leakage 참조).
+    import reference_leakage as rl
+    trunc = rl.boundary_truncation(mono, sr)
+
     warnings = []
     if actual_dur < 3.0:
         warnings.append(f"길이 부족({actual_dur:.2f}s < 3.0s) — 구간을 늘리세요.")
     elif actual_dur > 10.0:
         warnings.append(f"길이 초과({actual_dur:.2f}s > 10.0s) — 구간을 줄이세요.")
+    if trunc["tail_truncated"]:
+        warnings.append("구간 끝이 말 도중입니다 — 참조 전사에는 있는데 클립에는 없는 말이 생기면 "
+                        "생성 음성 앞부분에 참조 대사가 섞입니다. 말이 끝나는 지점까지 포함하세요.")
+    if trunc["head_truncated"]:
+        warnings.append("구간 시작이 말 도중입니다 — 말이 시작되는 지점부터 포함하세요.")
     if sil_ratio >= 0.40:
         warnings.append(f"무음 비율 높음({sil_ratio:.2f}).")
     if clip_ratio >= 0.05:
@@ -143,6 +154,8 @@ def analyze_region(path, start_sec, dur_sec):
     return {"ok": True, "start_sec": round(start_sec, 3), "dur_sec": round(actual_dur, 3),
             "silence_ratio": round(sil_ratio, 4), "clipping_ratio": round(clip_ratio, 6),
             "rms_dbfs": round(rms_dbfs, 2), "peak": round(peak, 4),
+            "head_truncated": trunc["head_truncated"], "tail_truncated": trunc["tail_truncated"],
+            "boundary_head_dbfs": trunc["head_dbfs"], "boundary_tail_dbfs": trunc["tail_dbfs"],
             "in_range": bool(3.0 <= actual_dur <= 10.0), "warnings": warnings}
 
 
