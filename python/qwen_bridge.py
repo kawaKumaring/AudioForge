@@ -14,6 +14,7 @@
 stdin config(JSON):
   model_path             로컬 스냅샷 디렉터리(오프라인). repo id가 아니라 경로 → HF API 호출 회피.
   device                 "cuda:0" | "cpu"
+  seed                   (선택) 진단 전용 고정 seed. 없으면 미호출 = 기존 동작 그대로.
   segments               [{index, text, ref_audio, ref_text, x_vector_only, language_name, out_path}]
                          x_vector_only=True면 x-vector-only(ref_text 무시), False면 ICL(ref_text 필요)
                          language_name은 세그먼트별(Korean/English/Chinese/Japanese)
@@ -157,6 +158,24 @@ def _prod_tokens(builder, proc, text):
     return n
 
 
+def _seed_rng(seed, chunk_ordinal):
+    """진단 전용 — 고정 seed 로 talker 샘플링을 재현 가능하게 만든다.
+
+    seed 가 None 이면 아무것도 하지 않는다(production 기본값 = 기존 동작 그대로, 계약 불변).
+    chunk 마다 seed+ordinal 로 다시 심는 이유: 한 프로세스에서 여러 chunk 를 이어 생성할 때
+    'N번째 생성' 이라는 프로세스 상태가 결과에 섞이면, 참조 차이 때문인지 앞선 생성 때문인지
+    구분할 수 없다. chunk 별로 RNG 를 고정하면 그 교란이 사라진다 — 캐시·버퍼 잔류를
+    RNG 변화와 분리해 재는 것이 이 계측의 목적이다."""
+    if seed is None:
+        return None
+    import torch
+    s = (int(seed) + int(chunk_ordinal)) % (2 ** 31 - 1)
+    torch.manual_seed(s)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(s)
+    return s
+
+
 def _generate_segment(model, seg, builder, proc):
     """세그먼트 1개 합성 + 안전장치. production token → 동적 상한 → 상한 건 생성 → 반복 계측 → 종료 판정.
     반환: dict(wavs, sr, prod_tokens, generation_limit, generated_iterations, termination_reason).
@@ -246,9 +265,10 @@ def _finalize_wav(wavs, sr, seg_index, chunk_index):
     return d
 
 
-def _generate_plan(model, plan, builder, proc, n_segments, progress=None):
+def _generate_plan(model, plan, builder, proc, n_segments, progress=None, seed=None):
     """chunk plan을 순서대로 생성. total_chunks 기준 진행률(시작/완료). chunk 상한 도달 → BridgeGenerationLimit.
-    progress(percent, seg_index, n_segments, chunk_index, chunk_count, phase) 콜백(수치만)."""
+    progress(percent, seg_index, n_segments, chunk_index, chunk_count, phase) 콜백(수치만).
+    seed 는 진단 전용(None이면 미호출 = 기존 동작)."""
     import soundfile as sf
     total = len(plan)
     completed = 0
@@ -261,6 +281,7 @@ def _generate_plan(model, plan, builder, proc, n_segments, progress=None):
             progress(30 + (completed * 60) // total, int(seg["index"]), n_segments, ci, cc, "start")
         cseg = dict(seg)         # 원본 속성 상속 — text만 chunk로 교체
         cseg["text"] = item["text"]
+        applied_seed = _seed_rng(seed, completed)
         g = _generate_segment(model, cseg, builder, proc)
         if g["termination_reason"] == "generation_limit":
             raise BridgeGenerationLimit(int(seg["index"]), int(ci), seg.get("emotion_id"),
@@ -277,6 +298,7 @@ def _generate_plan(model, plan, builder, proc, n_segments, progress=None):
                      "generated_iterations": int(g["generated_iterations"]),
                      # blocking 생성 구간만 잰 값(가산). 없으면 None — 0 으로 위조하지 않는다.
                      "generation_elapsed_sec": g.get("generation_elapsed_sec"),
+                     "applied_seed": applied_seed,   # 진단 전용. seed 미지정이면 None.
                      "termination_reason": g["termination_reason"], "status": "ok"})
         if progress:
             progress(30 + (completed * 60) // total, int(seg["index"]), n_segments, ci, cc, "done")
@@ -360,7 +382,8 @@ def main():
         # 기존 그대로 적용된다(생성 구간 안전장치는 이 변경으로 완화되지 않는다).
         emit("stage", stage="generating", elapsed_sec=_elapsed())
         try:
-            done = _generate_plan(model, plan, builder, proc, n, progress=_progress)
+            done = _generate_plan(model, plan, builder, proc, n, progress=_progress,
+                                   seed=cfg.get("seed"))
         except BridgeGenerationLimit as e:
             emit("error", code="GENERATION_LIMIT_EXCEEDED", segment_index=e.segment_index,
                  chunk_index=e.chunk_index, emotion_id=e.emotion_id,
