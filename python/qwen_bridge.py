@@ -164,7 +164,8 @@ def _instruct_probe_kwargs(model, seg, probe_context):
     model.generate 의 instruct_ids 명명 파라미터다:
       generate_voice_clone(**kwargs) → _merge_generate_kwargs 가 `dict(kwargs)` 로 시작해
       알려진 샘플링 인자만 덮어쓰므로, 모르는 키는 그대로 model.generate 까지 간다.
-    → **accepted 는 구조적으로 거의 확실하다. honored 는 완전히 미검증이다.**
+    → 코드 경로상 수용될 자리는 있으나 런타임 관측이 없다.
+      **accepted 도 honored 도 미확인이다** — 배선 추적은 관측이 아니다.
     같은 vendor 파일이 `tts_model_size in "0b6"` 에 대해 "instruct is not supported" 라고
     선언하고 있고 우리 스냅샷이 정확히 "0b6" 이다 — 그래서 이것은 기능이 아니라 실험이다.
 

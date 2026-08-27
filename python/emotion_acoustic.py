@@ -482,7 +482,8 @@ def emotion_set_summary(records):
 #    · generate_voice_clone(**kwargs) → _merge_generate_kwargs 는 `merged = dict(kwargs)` 로
 #      시작해 알려진 샘플링 인자만 덮어쓴다 → 모르는 키(instruct_ids)는 그대로 통과한다.
 #    · Qwen3TTSForConditionalGeneration.generate 시그니처에 instruct_ids 가 실제로 있다.
-#    → **accepted 는 구조적으로 거의 확실하다.**
+#    → 코드 경로상 수용될 자리는 있다. 그러나 런타임 관측이 없으므로
+#      **accepted 는 미확인이다** — 배선 추적을 관측으로 승격하지 않는다.
 #  그러나 같은 vendor 파일에 `if tts_model_size in "0b6": instruct = None`
 #  (주석: for 0b6 model, instruct is not supported) 이 있고, 우리 스냅샷은 정확히 "0b6" 이다.
 #  → capability 규칙 2(보수적 자기선언은 신뢰)에 따라 claim 은 unsupported 다.

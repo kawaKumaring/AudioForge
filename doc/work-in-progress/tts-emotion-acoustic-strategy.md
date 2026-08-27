@@ -70,7 +70,9 @@
   `merged = dict(kwargs)` 로 시작해 알려진 샘플링 인자만 덮어쓴다. 모르는 키는 **그대로 통과**한다.
 - `Qwen3TTSForConditionalGeneration.generate` 의 시그니처에 `instruct_ids` 가 실제로 있고,
   `instruct_id is not None` 이면 talker 입력 임베드 앞에 붙인다.
-- 즉 **accepted 는 구조적으로 거의 확실하다.** 예외 없이 받아들여질 것이다.
+- 즉 **코드 경로만 보면 수용될 자리는 있다.** 다만 이것은 배선 추적일 뿐이고,
+  런타임에서 실제로 수용되는지 관측한 적이 없다 — **accepted 는 미확인이다.**
+  관측 없이 accepted 를 확정하지 않는다.
 
 그러나 같은 vendor 파일에서 확인한 반대 방향 사실:
 
