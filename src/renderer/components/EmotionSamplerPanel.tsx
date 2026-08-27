@@ -30,6 +30,7 @@ import {
   EMOTION_SAMPLER_SECTION_TITLE,
   EMOTION_SAMPLER_PHRASE_VERSION,
 } from '../../shared/emotionSampler'
+import { EMOTION_ACOUSTIC_SAMPLER_NOTICE } from '../../shared/emotionAcoustic'
 import type {
   EmotionSampleEntry, EmotionSampleFamily, EmotionSampleTone, EmotionSampleView,
 } from '../../shared/emotionSampler'
@@ -168,6 +169,15 @@ export default function EmotionSamplerPanel({
             overflowWrap: 'anywhere',
           }}>
             {EMOTION_SAMPLER_DISCLAIMER}
+          </p>
+
+          {/* ⚠️ 이 패널은 구조상 기본 목소리 하나만 쓴다 — 감정끼리 차이가 거의 없을 수 있다는 사실을
+              숨기지 않는다. 감정 샘플이 만들어졌다는 것과 감정이 실렸다는 것은 다른 말이다. */}
+          <p style={{
+            fontSize: 11, lineHeight: 1.5, color: 'var(--amber, #f59e0b)', margin: 0,
+            overflowWrap: 'anywhere',
+          }}>
+            {EMOTION_ACOUSTIC_SAMPLER_NOTICE}
           </p>
 
           {!defaultVoiceReady && (

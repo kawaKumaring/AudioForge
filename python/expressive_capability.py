@@ -47,6 +47,9 @@ CAPABILITY_FEATURES = (
     "reference_transcript_icl",           # 참조 전사 기반 ICL(아니면 x-vector-only)
     "deterministic_seed",                 # 동일 seed 로 동일 출력
     "vowel_extend_sustainable_final",     # 받침 ㅇ/ㄴ/ㅁ/ㄹ 늘임을 이 엔진이 실제로 해내는가
+    # 감정별 참조 클립으로 감정 음향이 실제로 실현되는가. 판정 주체는 emotion_acoustic.py 다.
+    # ⚠️ 같은 참조를 쓰면 모델 입력이 동일하므로 이 기능은 구조적으로 degraded 다(태그만 붙는다).
+    "emotion_reference_acoustic",
 )
 
 CAPABILITY_RESOLUTION_REASONS = (
