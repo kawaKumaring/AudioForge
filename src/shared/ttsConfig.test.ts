@@ -2,7 +2,7 @@
 // 실행: npm test  (또는 node --test src/shared/ttsConfig.test.ts)
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildTtsConfig, buildReferencePrompts, deriveRefMode, pruneStaleReferencePrompts, normalizePitchCapability, parseGenerationSummary, finiteNumber, sampleRateOrNull, framesOrNull } from './ttsConfig.ts'
+import { buildTtsConfig, buildReferencePrompts, deriveRefMode, pruneStaleReferencePrompts, normalizePitchCapability, parseGenerationSummary, finiteNumber, sampleRateOrNull, framesOrNull, REFERENCE_CONDITIONING_DEFAULT, isReferenceConditioningMode, restoreReferenceConditioningMode } from './ttsConfig.ts'
 import { TTS_PARSER_VERSION } from './ttsGrammar.ts'
 import { EXPRESSIVE_DEFAULT_MODE, EXPRESSIVE_MODE_FIELD, readExpressiveMode, resolveExpressiveMode } from './expressiveTimeline.ts'
 
@@ -146,13 +146,13 @@ test('지정한 값은 그대로 통과한다', () => {
   assert.equal(c.ttsEngine, 'gptsovits')
 })
 
-test('직렬화 형태에 18개 TTS 키가 모두 존재한다 (필드 누락 방지; I1 parity 2 + I3 tail/emotion 5 + 표현형 모드 1 추가)', () => {
+test('직렬화 형태에 19개 TTS 키가 모두 존재한다 (필드 누락 방지; I1 parity 2 + I3 tail/emotion 5 + 표현형 모드 1 + 참조 conditioning 1 추가)', () => {
   const c = buildTtsConfig({})
   assert.deepEqual(
     Object.keys(c).sort(),
     ['ttsEmotionBoundaryMode', 'ttsEmotionBoundaryPauseMs', 'ttsEmotionRefRegions', 'ttsEmotionRefSources',
       'ttsEmotionRefs', 'ttsEngine', 'ttsExpressiveMode', 'ttsParsedPlanSha256', 'ttsParserVersion', 'ttsPitch',
-      'ttsReferenceOverride', 'ttsReferencePrompts', 'ttsSilenceGap', 'ttsSpeed',
+      'ttsReferenceConditioningMode', 'ttsReferenceOverride', 'ttsReferencePrompts', 'ttsSilenceGap', 'ttsSpeed',
       'ttsTailFadeMs', 'ttsTailMode', 'ttsTailPaddingMs', 'ttsText']
   )
 })
@@ -418,4 +418,48 @@ test('B2a: JSON 왕복 후에도 값이 보존된다(session.options 로 그대�
   const round = JSON.parse(JSON.stringify(c)) as Record<string, unknown>
   assert.equal(round[EXPRESSIVE_MODE_FIELD], 'expressive_v3')
   assert.equal(readExpressiveMode(round).mode, 'expressive_v3')
+})
+
+// ── 참조 conditioning 모드(PHASE 2) — 부재→safe 기본, 계약 밖은 무변형 통과(Python 권위) ──
+
+test('참조 conditioning: 부재 → safe_xvector(안전 기본), legacy 세션 포함', () => {
+  assert.equal(REFERENCE_CONDITIONING_DEFAULT, 'safe_xvector')
+  assert.equal(buildTtsConfig().ttsReferenceConditioningMode, 'safe_xvector')
+  assert.equal(buildTtsConfig({}).ttsReferenceConditioningMode, 'safe_xvector')
+  assert.equal(buildTtsConfig({ ttsReferenceConditioningMode: undefined }).ttsReferenceConditioningMode, 'safe_xvector')
+  assert.equal(buildTtsConfig({ ttsReferenceConditioningMode: null as never }).ttsReferenceConditioningMode, 'safe_xvector')
+})
+
+test('참조 conditioning: 유효 2값은 그대로 직렬화 + JSON 왕복 보존', () => {
+  assert.equal(buildTtsConfig({ ttsReferenceConditioningMode: 'safe_xvector' }).ttsReferenceConditioningMode, 'safe_xvector')
+  const c = buildTtsConfig({ ttsReferenceConditioningMode: 'high_quality_icl' })
+  assert.equal(c.ttsReferenceConditioningMode, 'high_quality_icl')
+  const round = JSON.parse(JSON.stringify(c)) as Record<string, unknown>
+  assert.equal(round.ttsReferenceConditioningMode, 'high_quality_icl')
+})
+
+test('참조 conditioning: 계약 밖 값은 조용히 고치지 않는다(무변형 통과 — 최종 권위는 Python)', () => {
+  for (const bad of ['icl', 'SAFE_XVECTOR', 'xvector_only']) {
+    const c = buildTtsConfig({ ttsReferenceConditioningMode: bad as never })
+    assert.equal(c.ttsReferenceConditioningMode, bad as never, `'${bad}' 는 무변형 통과해야 한다`)
+    assert.equal(isReferenceConditioningMode(c.ttsReferenceConditioningMode), false)
+  }
+})
+
+test('참조 conditioning: 세션 복원 해석 — 부재/비문자열→safe, 유효값 보존, 계약 밖 문자열 통과', () => {
+  assert.equal(restoreReferenceConditioningMode(undefined), 'safe_xvector')
+  assert.equal(restoreReferenceConditioningMode(null), 'safe_xvector')
+  assert.equal(restoreReferenceConditioningMode(''), 'safe_xvector')
+  assert.equal(restoreReferenceConditioningMode(1), 'safe_xvector')
+  assert.equal(restoreReferenceConditioningMode('safe_xvector'), 'safe_xvector')
+  assert.equal(restoreReferenceConditioningMode('high_quality_icl'), 'high_quality_icl')
+  // 계약 밖 문자열은 그대로 — 합성 시 Python 이 구조화 오류로 거부한다(조용한 강등 금지).
+  assert.equal(restoreReferenceConditioningMode('weird_mode'), 'weird_mode' as never)
+})
+
+test('참조 conditioning: 유효값 판별기', () => {
+  assert.equal(isReferenceConditioningMode('safe_xvector'), true)
+  assert.equal(isReferenceConditioningMode('high_quality_icl'), true)
+  assert.equal(isReferenceConditioningMode('auto'), false)
+  assert.equal(isReferenceConditioningMode(undefined), false)
 })

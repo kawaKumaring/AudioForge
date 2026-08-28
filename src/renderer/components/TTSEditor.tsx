@@ -191,7 +191,8 @@ async function runPreview(gen: number, path: string) {
 // 모든 effect/analyze/preflight는 이 단일 컴포넌트에 유지 → 신규 하위 패널 재렌더로 중복 실행되지 않는다.
 export default function TTSEditor() {
   const { mode, status, fileInfo, ttsEmotionRefState, registerEmotionRef, removeEmotionRef, setEmotionRefState, setTtsRefState, ttsRefReady, ttsRefMessage, ttsPitchCapability, setTtsPitchCapability,
-    ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, setTtsExpression } = useAppStore()
+    ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, setTtsExpression,
+    ttsReferenceConditioningMode, setTtsReferenceConditioningMode } = useAppStore()
   // 로컬 상태는 store 값으로 초기화 — 빈 값으로 시작하면 아래 동기화 useEffect가 다른 모드에 다녀온 뒤 store를 덮어써 유실시킴
   const [ttsText, setTtsText] = useState(() => useAppStore.getState().ttsText)
   const [ttsSpeed, setTtsSpeed] = useState(() => useAppStore.getState().ttsSpeed)
@@ -665,6 +666,61 @@ export default function TTSEditor() {
           )}
         </div>
       </TtsVoiceSection>
+
+      {/* ───────── 참조 사용 방식(참조혼입 대응 PHASE 2) ───────── */}
+      {/* store 가 단일 소스. 기본 = 안전 음성 복제(safe_xvector). 고품질(ICL)은 선택은 가능하되
+          합성 시 Python 이 경계 검증 확정 전이라는 안내와 함께 차단한다(조용한 대체 없음). */}
+      <section aria-label="참조 사용 방식" style={flowCard}>
+        <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>
+            참조 사용 방식 <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>(목소리를 어떻게 따라할지)</span>
+          </span>
+          <div role="radiogroup" aria-label="참조 사용 방식 선택" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+            {[
+              {
+                id: 'safe_xvector' as const,
+                label: '안전 음성 복제',
+                desc: '참조 대사 섞임 없음 · 감정 표현은 다소 평탄할 수 있음 (기본, 권장)',
+              },
+              {
+                id: 'high_quality_icl' as const,
+                label: '참조 억양까지 반영',
+                desc: '고품질 · 실험적 — 참조 대사가 결과에 섞일 수 있어 검증 후 제공',
+              },
+            ].map((opt) => {
+              const selected = ttsReferenceConditioningMode === opt.id
+              return (
+                <button
+                  key={opt.id}
+                  role="radio"
+                  aria-checked={selected}
+                  disabled={disabled}
+                  onClick={() => !disabled && setTtsReferenceConditioningMode(opt.id)}
+                  style={{
+                    display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
+                    padding: '8px 12px', borderRadius: 8, cursor: disabled ? 'default' : 'pointer',
+                    fontFamily: 'inherit', textAlign: 'left', width: '100%',
+                    background: selected ? 'var(--bg-elevated)' : 'transparent',
+                    border: selected ? '1px solid var(--accent)' : '1px solid var(--border-subtle)',
+                    opacity: disabled ? 0.6 : 1,
+                  }}
+                >
+                  <span style={{ fontSize: 12, fontWeight: 600, color: selected ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
+                    {selected ? '● ' : '○ '}{opt.label}
+                  </span>
+                  <span style={{ fontSize: 10, lineHeight: 1.5, color: 'var(--text-muted)' }}>{opt.desc}</span>
+                </button>
+              )
+            })}
+          </div>
+          {ttsReferenceConditioningMode === 'high_quality_icl' && (
+            <div role="alert" style={{ fontSize: 10, lineHeight: 1.6, color: 'var(--amber, #f59e0b)', padding: '6px 10px', borderRadius: 6, background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
+              참조 대사가 결과에 섞일 수 있어 <strong>검증 후 제공</strong>됩니다. 검증이 끝나기 전까지는
+              합성을 시작해도 안내와 함께 중단됩니다 — 지금 결과가 필요하면 '안전 음성 복제'를 선택하세요.
+            </div>
+          )}
+        </div>
+      </section>
 
       {/* ───────── [2] 대사 ───────── */}
       <section className="tts-flow-card" aria-label="대사" style={flowCard}>

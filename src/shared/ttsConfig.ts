@@ -127,6 +127,27 @@ export function parseGenerationSummary(metadata: Record<string, unknown> | null 
   return { limit, iters, termination, chunks }
 }
 
+// ── 참조 conditioning 모드(참조혼입 대응 PHASE 2, 단일 권위 계약) ──
+// renderer store → config(ttsReferenceConditioningMode) → separate.py → tts_worker → result/session
+// metadata 전 구간이 이 한 값을 그대로 나른다(job 단위 고정 — 자동 전환·조용한 강등 없음).
+//   safe_xvector     : 안전 음성 복제 — 참조 전사를 합성 조건으로 전달하지 않아 참조 대사 혼입이
+//                      구조적으로 없다(감정 표현은 다소 평탄할 수 있음). 기본값.
+//   high_quality_icl : 참조 억양 반영(고품질·실험적) — 경계 검증 확정 전까지 Python 이 fail-closed
+//                      (ICL_BOUNDARY_POLICY_UNCONFIRMED)로 차단한다.
+// 부재(legacy 세션) → safe_xvector. 값이 있는데 계약 밖이면 renderer 는 고치지 않는다(권위는 Python —
+// INVALID_REFERENCE_CONDITIONING_MODE 구조화 오류. ttsExpressiveMode 와 같은 원칙).
+export type ReferenceConditioningMode = 'safe_xvector' | 'high_quality_icl'
+export const REFERENCE_CONDITIONING_DEFAULT: ReferenceConditioningMode = 'safe_xvector'
+export function isReferenceConditioningMode(v: unknown): v is ReferenceConditioningMode {
+  return v === 'safe_xvector' || v === 'high_quality_icl'
+}
+// 세션 복원용 해석: 부재/비문자열 → 기본(safe). 계약 밖 '문자열'은 그대로 통과시킨다 —
+// 조용한 강등 금지: 합성 시 Python 이 구조화 오류로 거부하고, UI 에는 어느 모드도 선택 표시가 없다.
+export function restoreReferenceConditioningMode(v: unknown): ReferenceConditioningMode {
+  if (typeof v === 'string' && v !== '') return v as ReferenceConditioningMode
+  return REFERENCE_CONDITIONING_DEFAULT
+}
+
 // 참조별 사용자 프롬프트 항목(UI/스토어에서 camelCase로 관리).
 // 식별자('default' 또는 emotionId) → 이 항목.
 export type TtsReferenceMode = 'auto' | 'manual' | 'ref_free'
@@ -176,6 +197,9 @@ export interface TtsInputOptions {
   //    값이 계약 밖이어도 여기서 조용히 고치지 않는다(아래 buildTtsConfig 주석 참고).
   ttsExpressiveMode?: ExpressiveMode
 
+  // 참조 conditioning 모드(PHASE 2). 부재 = safe_xvector(안전 기본). 계약 밖 값은 무변형 통과(Python 권위).
+  ttsReferenceConditioningMode?: ReferenceConditioningMode
+
   // ── 표현 사이클 S1 scaffold(타입 계약만) ──
   // ⚠️ 아래 필드는 '타입 선언'일 뿐이며 이번 S1에서 buildTtsConfig 반환값에 자동 추가되지 않는다.
   //    Python 전달·session 직렬화·metadata·기본값 적용 없음 → runtime 동작 변화 0. 실제 배선은 후속 승인 단계.
@@ -218,6 +242,10 @@ export interface TtsConfig {
   // 표현형 모드 — session/config/metadata 세 캐리어가 같은 키·같은 값을 나른다(계약 §10).
   // 기본 legacy_v2. Python(tts_parity)이 최종 권위이며 계약 밖 값은 EXPRESSIVE_MODE_INVALID.
   ttsExpressiveMode: ExpressiveMode
+  // 참조 conditioning 모드(PHASE 2 단일 권위 계약). 기본 safe_xvector(안전 기본).
+  // Python(tts_worker.resolve_reference_conditioning_mode)이 최종 권위 — 계약 밖 값은
+  // INVALID_REFERENCE_CONDITIONING_MODE, high_quality_icl 은 ICL_BOUNDARY_POLICY_UNCONFIRMED.
+  ttsReferenceConditioningMode: ReferenceConditioningMode
   // 공용 마감 I3: 말끝 finishing + 감정 전환 경계(계약 §2·추가3·추가4). 기본값은 backward-compat(off/현행).
   // new 세션의 auto 기본은 렌더러 스토어가 정한다(정정8: 부재=현행 동작, 자동 마이그레이션 없음).
   ttsTailMode: 'off' | 'auto'
@@ -307,6 +335,9 @@ export function buildTtsConfig(o?: TtsInputOptions, sourceFingerprints?: Record<
     //    (tts_parity.verify_parity → EXPRESSIVE_MODE_INVALID, 모델 로딩 전 차단)이기 때문이다.
     //    ttsParsedPlanSha256 을 무변형 통과시키는 것과 같은 원칙(렌더러는 권위가 아니다).
     ttsExpressiveMode: o?.ttsExpressiveMode ?? EXPRESSIVE_MODE_DEFAULT,
+    // ⚠️ 부재일 때만 안전 기본(safe_xvector)을 채운다. 값이 있는데 계약 밖이면 고치지 않고 그대로
+    //    통과 — 조용한 강등 금지, 최종 판정 권위는 Python(모델 로딩 전 구조화 오류 차단).
+    ttsReferenceConditioningMode: o?.ttsReferenceConditioningMode ?? REFERENCE_CONDITIONING_DEFAULT,
     // I3: 옵션 부재 시 backward-compat(off/현행 동작 보존 — 정정8 "신규 설정 부재 = 현행 동작").
     // new 세션의 auto는 렌더러 스토어 초기값이 명시 전달한다. 숫자 기본은 계약 추가4(120/8/200).
     ttsTailMode: o?.ttsTailMode ?? 'off',
