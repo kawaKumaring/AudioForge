@@ -334,10 +334,16 @@ def assert_alignment(plan):
     return True
 
 
+# ── interim safety gate (임시 기준) ──────────────────────────────────────────
+# 아래 세 수치는 **최종 검증된 기준이 아니다.** 정상 발화의 ASR 삽입·삭제·치환 분포와
+# 실제 위험 경계 사례를 모아 조율하기 전까지의 잠정값이다. 조율 전에는 '통과'를
+# '안전함'으로 읽지 말 것 — 판정은 validated / warning / blocked 로 나누고,
+# 판단 근거가 부족한 입력은 STATUS_UNKNOWN 으로 남긴다.
 BOUNDARY_UNITS = 5              # 머리·꼬리로 보는 음절 수. 혼입은 경계에서 생긴다.
 MAX_INTERNAL_SUB_RATE = 0.20    # 내부 치환 비율이 이보다 크면 '같은 발화'로 보지 않는다.
 MIN_INTERNAL_SUB_TO_BLOCK = 3   # 비율만 쓰면 짧은 문장에서 치환 2개도 막힌다 — 절대 하한을 함께 건다.
 
+STATUS_UNKNOWN = "unknown"      # 너무 짧거나 근거가 부족해 판정할 수 없음(통과 아님)
 STATUS_VALIDATED = "validated"
 STATUS_BLOCKED = "blocked"
 STATUS_WARN = "warning"
@@ -360,6 +366,16 @@ def verify_clip_transcript(ref_units, clip_asr_units, edit_counts_fn=None):
     clip = tuple(clip_asr_units)
     n = len(ref)
     b = min(BOUNDARY_UNITS, max(n // 3, 1))
+
+    if n < 3 or not clip:
+        # 근거가 부족하면 '통과' 로 떨어뜨리지 않는다. 호출부가 사용자 재확인을 받아야 한다.
+        return {"status": STATUS_UNKNOWN, "reason_code": None,
+                "ref_syllables": n, "clip_asr_syllables": len(clip),
+                "insertions": 0, "deletions": 0, "substitutions": 0,
+                "boundary_units": b, "boundary_mismatches": [], "mismatch_where": [],
+                "internal_substitutions": 0, "internal_sub_rate": 0.0,
+                "head_coverage": 0.0, "tail_coverage": 0.0,
+                "timing_mismatch": 0, "aligned": False, "recognizer_variance": 0}
 
     ins = dele = sub = 0
     boundary_hits, internal_sub = [], 0

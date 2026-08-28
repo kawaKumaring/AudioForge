@@ -320,14 +320,21 @@ export default function ReferenceRegionPanel({ path, clipKey, disabled, onState,
       // 승인 여부는 구조화된 blocking 코드로만 정한다. 예전에는 경고 '문구'에 특정 낱말이
       // 들어 있는지로 판단해서, 새로 생긴 '말 도중 절단' 경고가 그 낱말을 안 가져 조용히
       // 승인됐다 — 그 클립이 그대로 ICL 프롬프트가 되어 참조 대사가 섞였다.
-      const blocking = res.metrics.blocking ?? []
-      const ok = blocking.length === 0
+      // 승인 권위는 Python(analyze_region) 하나다. renderer 는 그 계약을 '해석'하지 않는다.
+      // blocking 누락·타입 오류·ready 와의 모순은 전부 승인 거부로 떨어뜨린다(fail-closed).
+      const m = res.metrics
+      const blocking = Array.isArray(m?.blocking) ? m.blocking.filter(c => typeof c === 'string') : null
+      const contractOk = blocking !== null && typeof m?.ready === 'boolean'
+        && m.ready === (blocking.length === 0)
+      const ok = contractOk && m.ready === true
       if (ok) {
         setConfirmedClip(res.clip_path)
         onStateRef.current({ ready: true, clip: res.clip_path, message: '', region: { start, duration: dur } })
       } else {
         setConfirmedClip('')
-        const msg = blocking.map(c => BLOCK_MESSAGE[c] ?? c).join(' · ')
+        const msg = !contractOk
+          ? '구간 검사 결과를 읽지 못했습니다(형식 불일치). 다시 시도하세요.'
+          : (blocking as string[]).map(c => BLOCK_MESSAGE[c] ?? c).join(' · ')
         onStateRef.current({ ready: false, clip: '', message: msg || '구간 품질이 부적합합니다', region: null })
       }
     } catch (e) {

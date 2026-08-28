@@ -29,7 +29,8 @@ def _load(emotion):
     p = os.path.join(FIXTURE_DIR, f"config_{emotion}.json")
     if not os.path.exists(p):
         raise unittest.SkipTest(f"fixture 없음: {p}")
-    return json.load(open(p, encoding="utf-8"))
+    with open(p, encoding="utf-8") as f:      # 핸들 누수 금지 — 반드시 닫는다
+        return json.load(f)
 
 
 class ConfigFixtureTest(unittest.TestCase):
