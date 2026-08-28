@@ -136,13 +136,29 @@ class ResolveQwenRefTextTest(_QwenGlobalIsolation, unittest.TestCase):
             return result
         self._patch(transcribe_worker, "run_transcribe", side_effect=ft)
 
-    def test_manual_icl_no_whisper(self):
+    def test_manual_icl_verifies_against_clip(self):
+        """수동도 정렬 검증을 거친다 — 계약 변경(2026-08-28).
+
+        예전 계약은 '수동이면 Whisper 미호출'이었고, 그 우회로가 참조 대사 혼입의 통로였다:
+        발화 도중 잘린 클립에 원문 전사를 manual 로 붙인 config 가 검증 없이 통과했다.
+        이제 클립을 전사해 대조하고, 맞으면 수동 전사를 그대로 쓴다."""
+        tts_worker._qwen_manual_verify_cache.clear()
         c = []
-        self._mock_whisper({"text": "자동전사", "language": "ko"}, c)
+        self._mock_whisper({"text": "수동문", "language": "ko"}, c)
         ov = {self.ap: {"manual_text": "수동문", "mode": "manual"}}
         txt, xvo = tts_worker._resolve_qwen_ref_text(self.ref, ov, set())
         self.assertEqual((txt, xvo), ("수동문", False))
-        self.assertEqual(c, [], "수동이면 Whisper 미호출")
+        self.assertEqual(len(c), 1, "수동도 검증을 위해 클립을 1회 전사한다")
+
+    def test_manual_mismatch_blocks_generation(self):
+        """오디오에 없는 말이 수동 전사에 있으면 생성 전에 막는다(fail-closed)."""
+        tts_worker._qwen_manual_verify_cache.clear()
+        c = []
+        self._mock_whisper({"text": "수동", "language": "ko"}, c)   # 클립에는 '문'이 없다
+        ov = {self.ap: {"manual_text": "수동문", "mode": "manual"}}
+        with self.assertRaises(tts_worker.QwenReferenceMisalignedError) as cm:
+            tts_worker._resolve_qwen_ref_text(self.ref, ov, set())
+        self.assertEqual(cm.exception.reason_code, tts_worker.REF_MANUAL_MISALIGNED)
 
     def test_ref_free_x_vector_only(self):
         c = []

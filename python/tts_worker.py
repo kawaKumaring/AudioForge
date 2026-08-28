@@ -837,6 +837,82 @@ _QWEN_REF_TRANSCRIBE_MODEL = "small"
 REF_DEGRADE_TRANSCRIPT_UNAVAILABLE = "TRANSCRIPT_UNAVAILABLE"
 
 # transcript_status 값: ok | empty | failed | manual | user_ref_free
+# 수동 전사 정렬 검증 결과 캐시 — 같은 (참조 파일, 수동 문장)이면 감정마다 다시 전사하지 않는다.
+_qwen_manual_verify_cache = {}
+
+# 수동 프롬프트 검증 실패 사유 코드
+REF_MANUAL_MISALIGNED = "REF_MANUAL_MISALIGNED"        # 오디오에 없는 말이 수동 전사에 있다(또는 반대)
+REF_MANUAL_UNVERIFIABLE = "REF_MANUAL_UNVERIFIABLE"    # 전사 자체가 실패해 검증할 수 없다
+
+
+class QwenReferenceMisalignedError(RuntimeError):
+    """수동 참조 전사가 참조 오디오와 어긋남 — 생성 시작 전에 막는다(fail-closed).
+
+    왜 경고가 아니라 차단인가: 이 불일치가 곧 참조 대사 혼입의 원인이고, 경고는 무시된다.
+    실제로 2026-08-27 실행은 잘린 9.0초 클립에 원문 63자 전사를 manual 로 붙인 config 3개로
+    돌았고, manual 이라는 이유로 정렬 검증을 건너뛴 채 통과했다."""
+
+    def __init__(self, reason_code, insertions, deletions, substitutions,
+                 ref_syllables, clip_syllables):
+        self.reason_code = reason_code
+        self.insertions = int(insertions)
+        self.deletions = int(deletions)
+        self.substitutions = int(substitutions)
+        self.ref_syllables = int(ref_syllables)
+        self.clip_syllables = int(clip_syllables)
+        super().__init__(
+            "참조 음성과 수동 전사가 맞지 않습니다("
+            f"{reason_code}: 삽입 {self.insertions} / 삭제 {self.deletions}, "
+            f"전사 {self.ref_syllables}음절 vs 참조 음성 {self.clip_syllables}음절). "
+            "참조 구간을 문장이 끝나는 지점까지 넓히거나, 참조 음성에 실제로 들어 있는 부분만 "
+            "전사에 남기세요.")
+
+
+def _verify_manual_prompt_alignment(ref_audio, manual_text, emit_fn=None):
+    """수동 전사를 자동 전사와 **같은 기준으로** 검증한다. 통과하면 지표 dict, 아니면 예외.
+
+    자동 경로는 클립 자체를 전사해 쓰므로 정렬이 구조적으로 보장되지만, 수동 경로는 사용자가
+    준 문장을 그대로 믿었다. 그 우회로가 이번 사고의 직접 통로였다.
+    삽입·삭제(시간 정렬)만 차단하고 치환(인식기 편차)은 통과시킨다 — 원본·수정본·재현본
+    세 클립 모두 클립 한가운데에서 같은 치환 2음절이 나왔고, 그것까지 막으면 정상 참조도 막힌다."""
+    import hashlib
+    import korean_cer as kc
+    import reference_alignment as ra
+    from reference_transcript import transcribe_reference, STATUS_OK
+
+    try:
+        st = os.stat(ref_audio)
+        key = (os.path.abspath(ref_audio), st.st_size, st.st_mtime_ns,
+               hashlib.sha256(manual_text.encode("utf-8")).hexdigest())
+    except OSError:
+        key = (os.path.abspath(ref_audio), None, None,
+               hashlib.sha256(manual_text.encode("utf-8")).hexdigest())
+    if key in _qwen_manual_verify_cache:
+        return _qwen_manual_verify_cache[key]
+
+    t = transcribe_reference(ref_audio, _QWEN_REF_TRANSCRIBE_MODEL)
+    if t.status != STATUS_OK or not (t.text or "").strip():
+        raise QwenReferenceMisalignedError(REF_MANUAL_UNVERIFIABLE, 0, 0, 0,
+                                           len(kc.syllable_units(kc.normalize_text(manual_text))), 0)
+    ref_units = kc.syllable_units(kc.normalize_text(manual_text))
+    clip_units = kc.syllable_units(kc.normalize_text(t.text))
+    v = ra.verify_clip_transcript(ref_units, clip_units, kc.edit_counts)
+    if emit_fn:
+        emit_fn("tts_reference_alignment", checked=True,
+                insertions=v["insertions"], deletions=v["deletions"],
+                substitutions=v["substitutions"], aligned=v["aligned"],
+                ref_syllables=v["ref_syllables"], clip_syllables=v["clip_asr_syllables"],
+                model=_QWEN_REF_TRANSCRIBE_MODEL)
+    if not v["aligned"]:
+        raise QwenReferenceMisalignedError(
+            REF_MANUAL_MISALIGNED, v["insertions"], v["deletions"], v["substitutions"],
+            v["ref_syllables"], v["clip_asr_syllables"])
+    if len(_qwen_manual_verify_cache) < _QWEN_REF_TEXT_CACHE_MAX:
+        _qwen_manual_verify_cache[key] = v
+    return v
+
+
+# transcript status
 _REF_STATUS_MANUAL = "manual"
 _REF_STATUS_USER_REF_FREE = "user_ref_free"
 
@@ -899,6 +975,9 @@ def _resolve_qwen_ref_text(ref_audio, overrides_by_path, warned, degrade_sink=No
             return "", True
         manual = (ov.get("manual_text") or "").strip()
         if manual:
+            # 수동도 자동과 같은 정렬 검증을 통과해야 한다. 실패하면 여기서 예외 →
+            # 세그먼트를 만들기 전에 멈추므로 생성이 시작되지 않는다(fail-closed).
+            _verify_manual_prompt_alignment(ref_audio, manual, emit_fn=emit)
             _record(_ref_record(emotion_id, "manual", False, None, _REF_STATUS_MANUAL, ""))
             if ("manual", ap) not in warned:
                 warned.add(("manual", ap))

@@ -112,7 +112,9 @@ class DegradeRecordTest(_Base):
         self.assertEqual(self._degraded_events(), [], "정상 전사는 강등 이벤트를 내지 않는다")
 
     def test_manual_records_not_degraded(self):
-        self._whisper(result={"text": "자동전사", "language": "ko"})
+        # 수동도 정렬 검증을 거치므로(2026-08-28 계약) 클립 전사가 수동 문장과 맞아야 통과한다.
+        tts_worker._qwen_manual_verify_cache.clear()
+        self._whisper(result={"text": "수동문", "language": "ko"})
         sink = []
         out = self._resolve(sink, overrides={self.ap: {"manual_text": "수동문", "mode": "manual"}})
         self.assertEqual(out, ("수동문", False))
