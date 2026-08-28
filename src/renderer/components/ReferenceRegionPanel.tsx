@@ -343,7 +343,27 @@ export default function ReferenceRegionPanel({ path, clipKey, disabled, onState,
     if (!path || confirming) return
     setConfirming(true)
     try {
-      const res = await window.api.audio.trimReference(path, start, dur, clipKey) as { clip_path: string; metrics: RegionMetrics }
+      const raw = await window.api.audio.trimReference(path, start, dur, clipKey) as Record<string, unknown>
+      // 실패 응답을 먼저 판정한다. 예전에는 성공 형태로 단언하고 res.metrics 를 읽어서,
+      // Python 이 구조화 차단(REFERENCE_REGION_BLOCKED + blocking)을 보내도 metrics 가 없으니
+      // 실제 사유 대신 '형식 불일치'만 떴다 — 사용자는 무엇을 고쳐야 하는지 알 수 없었다.
+      const failed = raw?.status === 'failed' || typeof raw?.code === 'string'
+      if (failed) {
+        setConfirmedClip('')
+        setEffective(null)
+        setMetrics(null)
+        const codes = Array.isArray(raw.blocking)
+          ? (raw.blocking as unknown[]).filter((c): c is string => typeof c === 'string')
+          : []
+        const msg = raw.code === 'REFERENCE_REGION_BLOCKED' && codes.length > 0
+          ? codes.map(c => BLOCK_MESSAGE[c] ?? c).join(' · ')
+          : (typeof raw.error_message === 'string' && raw.error_message
+              ? raw.error_message
+              : '구간을 확정하지 못했습니다.')
+        onStateRef.current({ ready: false, clip: '', message: msg, region: null })
+        return
+      }
+      const res = raw as unknown as { clip_path: string; metrics: RegionMetrics }
       setMetrics(res.metrics)
       // 승인 여부는 구조화된 blocking 코드로만 정한다. 예전에는 경고 '문구'에 특정 낱말이
       // 들어 있는지로 판단해서, 새로 생긴 '말 도중 절단' 경고가 그 낱말을 안 가져 조용히
