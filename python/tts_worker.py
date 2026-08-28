@@ -1560,6 +1560,16 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                 seg["prefix_text"] = prefix_text
             segments.append(seg)
 
+        # 감정 음향 판정(계약: emotion_acoustic.py) — '이 감정이 실제로 감정처럼 들리는가'.
+        # 여기서 아는 것은 '어떤 참조 파일이 들어갔는가' 뿐이다. 같은 참조면 모델 입력이 동일하므로
+        # 감정 차이가 나올 통로가 없다 → degraded. 전용 참조가 있어도 측정 전에는 unknown 이며,
+        # supported 는 생성 결과를 실제로 재야만 열린다(오늘 이 경로에는 그 측정이 없다).
+        # 기록은 비민감 토큰만: emotion_id / role / state / reason.
+        import emotion_acoustic as _ea
+        _emotion_keys = {eid: ref_cache.get(eid) for eid, _ in parsed if eid != "default"}
+        emotion_acoustic_records = _ea.resolve_emotion_set(default_ref, _emotion_keys)
+        emotion_acoustic_summary = _ea.emotion_set_summary(emotion_acoustic_records)
+
         try:
             try:
                 seg_out = qwen.run_job(segments, device)
@@ -1759,6 +1769,10 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             # 경계 envelope 재현 — 실제 적용 샘플 수.
             "boundary_onset_samples": pinfo.get("boundary_onset_samples"),
             "boundary_offset_samples": pinfo.get("boundary_offset_samples"),
+            # 감정 음향 판정(비민감 토큰만). '태그가 붙었다'와 '감정이 실렸다'를 구분해 남긴다 —
+            # 이 기록이 없으면 결과물만 보고 감정이 반영됐다고 오해할 길이 열린다.
+            "emotion_acoustic": emotion_acoustic_records,
+            "emotion_acoustic_summary": emotion_acoustic_summary,
         }
         return final_path, info
     finally:

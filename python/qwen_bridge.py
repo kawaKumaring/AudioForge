@@ -198,7 +198,43 @@ def _generation_text(seg):
     return prefix_alignment.build_controlled_prefix_text(prefix, seg["text"]), True
 
 
-def _generate_segment(model, seg, builder, proc):
+def _instruct_probe_kwargs(model, seg, probe_context):
+    """instruct_ids 실험 probe — **production 에서는 절대 켜지지 않는다.**
+
+    이 모델(Qwen3-TTS Base)의 voice clone 경로에는 감정 지시 인자가 없다. 유일한 미검증 통로가
+    model.generate 의 instruct_ids 명명 파라미터다:
+      generate_voice_clone(**kwargs) → _merge_generate_kwargs 가 `dict(kwargs)` 로 시작해
+      알려진 샘플링 인자만 덮어쓰므로, 모르는 키는 그대로 model.generate 까지 간다.
+    → 코드 경로상 수용될 자리는 있으나 런타임 관측이 없다.
+      **accepted 도 honored 도 미확인이다** — 배선 추적은 관측이 아니다.
+    같은 vendor 파일이 `tts_model_size in "0b6"` 에 대해 "instruct is not supported" 라고
+    선언하고 있고 우리 스냅샷이 정확히 "0b6" 이다 — 그래서 이것은 기능이 아니라 실험이다.
+
+    켜지는 조건은 둘 다 만족해야 한다:
+      1) probe_context 가 'experiment' (production 이면 요청 여부와 무관하게 꺼진다)
+      2) 세그먼트에 명시적 실험 지시문이 실려 있다
+    production 경로(tts_worker)는 이 키를 쓰지 않으므로 조건 2 도 성립하지 않는다 —
+    이중 차단이며, 기본 경로에서는 generate_voice_clone 호출 인자가 한 글자도 바뀌지 않는다.
+
+    반환: (kwargs, record) — 미시도면 ({}, None). record 에 honored 는 **없다**(여기서 정할 수 없다).
+    """
+    if probe_context != "experiment":
+        return {}, None
+    text = seg.get("instruct_probe_text")
+    if not text:
+        return {}, None
+    # 토큰화 도구는 vendor 의 것을 '읽어서' 쓴다(수정하지 않는다). 부재하면 조용히 넘어가지 않고
+    # 시도했다는 사실과 실패를 그대로 남긴다 — 미시도와 거부는 다른 결론이기 때문이다.
+    builder = getattr(model, "_build_instruct_text", None)
+    tokenize = getattr(model, "_tokenize_texts", None)
+    if not callable(builder) or not callable(tokenize):
+        return {}, {"attempted": True, "accepted": False, "reason": "instruct_tokenizer_absent"}
+    ids = tokenize([builder(str(text))])
+    return {"instruct_ids": [ids[0]]}, {"attempted": True, "accepted": None,
+                                        "reason": "instruct_ids_submitted"}
+
+
+def _generate_segment(model, seg, builder, proc, probe_context="production"):
     """세그먼트 1개 합성 + 안전장치. production token → 동적 상한 → 상한 건 생성 → 반복 계측 → 종료 판정.
     반환: dict(wavs, sr, prod_tokens, generation_limit, generated_iterations, termination_reason).
     counter 미측정(0)·상한 산정 실패는 조용히 통과하지 않고 예외(안전장치 없는 성공 금지).
@@ -206,12 +242,16 @@ def _generate_segment(model, seg, builder, proc):
     controlled-prefix 일 때 상한은 **결합 텍스트 기준**으로 산정한다(정책 자체는 그대로 —
     compute_max_new_tokens 를 다른 공식으로 바꾸지 않는다). 참조 발화만큼 codec 프레임이 늘어나므로
     상한이 부족하면 termination_reason='generation_limit' 으로 드러나고 상위가 구조화 오류를 낸다
-    (잘린 결과를 조용히 채택하지 않는다)."""
+    (잘린 결과를 조용히 채택하지 않는다).
+
+    probe_context: 'production'(기본) | 'experiment'. 기본값에서는 instruct probe 가 완전히 꺼져
+    generate_voice_clone 호출 인자가 이전과 동일하다(동작 불변)."""
     xvo = bool(seg.get("x_vector_only", False))
     ref_text = "" if xvo else (seg.get("ref_text") or "")
     gen_text, controlled_prefix = _generation_text(seg)
     prod_tokens = _prod_tokens(builder, proc, gen_text)
     seg_limit = generation_limit.compute_max_new_tokens(prod_tokens)
+    probe_kwargs, probe = _instruct_probe_kwargs(model, seg, probe_context)
     _COUNTER["n"] = 0
     # 이 한 호출이 곧 'blocking 생성 구간'이다 — 그 사이 stdout 이 없으므로 production 비활성
     # timeout 280s 가 재는 창과 정확히 같은 구간이다. 그래서 상한 정책 판단에 쓸 수 있는
@@ -221,11 +261,17 @@ def _generate_segment(model, seg, builder, proc):
     # 로딩·결합·pitch·원자적 배치까지 포함한 '작업 전체' 시간이다. 또 generated_iterations 가
     # chunk 단위이므로 elapsed 도 chunk 단위여야 나눗셈이 의미를 갖는다.
     _t_gen = time.monotonic()
+    # probe_kwargs 는 기본 경로에서 항상 빈 dict 다 → 호출 인자·동작 불변.
     wavs, sr = model.generate_voice_clone(
         text=gen_text, language=seg.get("language_name", "Korean"),
         ref_audio=seg["ref_audio"], ref_text=ref_text,
-        x_vector_only_mode=xvo, max_new_tokens=seg_limit)
+        x_vector_only_mode=xvo, max_new_tokens=seg_limit, **probe_kwargs)
     gen_elapsed = round(time.monotonic() - _t_gen, 3)
+    if probe is not None and probe.get("accepted") is None:
+        # 예외 없이 여기까지 왔다 = 엔진이 instruct_ids 를 받아들였다(accepted).
+        # ⚠️ honored 는 여기서 절대 정하지 않는다 — 소리가 실제로 달라졌는지는 이 자리에서 알 수 없다.
+        #    판정은 오프라인 분석기가 emotion_acoustic.emotion_result_follow 로 별도 측정해야 한다.
+        probe = dict(probe, accepted=True, reason="instruct_ids_accepted")
     iters = _COUNTER["n"]
     if iters <= 0:
         # 계측 래퍼가 동작하지 않은 것 — 상한이 실제로 걸렸는지 확인 불가. 성공 처리 금지.
@@ -235,7 +281,9 @@ def _generate_segment(model, seg, builder, proc):
     return {"wavs": wavs, "sr": sr, "prod_tokens": prod_tokens,
             "generation_limit": seg_limit, "generated_iterations": iters,
             "termination_reason": reason, "generation_elapsed_sec": gen_elapsed,
-            "controlled_prefix": controlled_prefix}
+            "controlled_prefix": controlled_prefix,
+            # 실험 probe 결과(기본 경로에서는 항상 None). honored 키는 존재하지 않는다.
+            "instruct_probe": probe}
 
 
 class BridgeSegmentTooLong(Exception):
@@ -294,10 +342,12 @@ def _finalize_wav(wavs, sr, seg_index, chunk_index):
     return d
 
 
-def _generate_plan(model, plan, builder, proc, n_segments, progress=None, seed=None):
+def _generate_plan(model, plan, builder, proc, n_segments, progress=None, seed=None,
+                   probe_context="production"):
     """chunk plan을 순서대로 생성. total_chunks 기준 진행률(시작/완료). chunk 상한 도달 → BridgeGenerationLimit.
     progress(percent, seg_index, n_segments, chunk_index, chunk_count, phase) 콜백(수치만).
-    seed 는 진단 전용(None이면 미호출 = 기존 동작)."""
+    seed 는 진단 전용(None이면 미호출 = 기존 동작).
+    probe_context: 기본 'production' — instruct probe 가 꺼진 상태이며 동작이 이전과 동일하다."""
     import soundfile as sf
     total = len(plan)
     completed = 0
@@ -311,7 +361,7 @@ def _generate_plan(model, plan, builder, proc, n_segments, progress=None, seed=N
         cseg = dict(seg)         # 원본 속성 상속 — text만 chunk로 교체
         cseg["text"] = item["text"]
         applied_seed = _seed_rng(seed, completed)
-        g = _generate_segment(model, cseg, builder, proc)
+        g = _generate_segment(model, cseg, builder, proc, probe_context)
         if g["termination_reason"] == "generation_limit":
             raise BridgeGenerationLimit(int(seg["index"]), int(ci), seg.get("emotion_id"),
                                         int(g["generated_iterations"]), int(g["generation_limit"]))
@@ -401,6 +451,9 @@ def main():
     cfg = json.loads(sys.stdin.read())
     model_path = cfg["model_path"]  # 로컬 스냅샷 디렉터리(오프라인)
     device = cfg.get("device", "cuda:0")
+    # instruct probe 컨텍스트. production 워커(tts_worker)는 이 키를 보내지 않으므로 항상 'production'
+    # 이고, 그 값에서는 probe 가 켜지는 길이 없다(실험 하네스만 'experiment' 를 명시한다).
+    probe_context = cfg.get("probe_context", "production")
     segments = cfg.get("segments", [])
     if not segments:
         emit("error", message="합성할 세그먼트가 없습니다.")
@@ -433,7 +486,7 @@ def main():
         emit("stage", stage="generating", elapsed_sec=_elapsed())
         try:
             done = _generate_plan(model, plan, builder, proc, n, progress=_progress,
-                                   seed=cfg.get("seed"))
+                                   seed=cfg.get("seed"), probe_context=probe_context)
         except BridgeGenerationLimit as e:
             emit("error", code="GENERATION_LIMIT_EXCEEDED", segment_index=e.segment_index,
                  chunk_index=e.chunk_index, emotion_id=e.emotion_id,
