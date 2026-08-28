@@ -402,16 +402,24 @@ class FinishAndPlaceIntegration(unittest.TestCase):
         self._leftovers_zero()
 
     # ── 정상 경로 ──
-    def test_off_path_bytes_identical_to_place_final(self):
-        """tail off → place_final_with_pitch와 동일 결과(레거시 회귀 보존)."""
+    def test_off_path_shape_matches_place_final(self):
+        """tail off → place_final_with_pitch와 **길이·sr·pitch가 동일**(레거시 회귀 보존).
+
+        ⚠️ 바이트까지 동일하지는 않다 — 경계 envelope(시작 10ms / 끝 20ms smoothstep)이 tail 설정과
+        무관하게 항상 적용되기 때문이다. 사용자 청취로 확정된 결함의 수정이라 옵션이 아니며,
+        길이·sample rate·cache key 는 그대로다. 자세한 계약·계측은
+        test_boundary_envelope.py 와 doc/boundary-envelope-2026-08-28.md.
+        """
         import soundfile as sf
         cand = self._write("cand.wav", _sine(dur=0.05))
         final = os.path.join(self.dir, "synthesized.wav")
         info = self.tw._finish_and_place(cand, final, 0.0, self.dir, None)
         self.assertTrue(os.path.exists(final))
         data, sr = sf.read(final, dtype="float32")
-        self.assertEqual(len(data), int(0.05 * SR))  # padding 없음(off)
+        self.assertEqual(len(data), int(0.05 * SR))  # padding 없음(off) — envelope은 길이 불변
+        self.assertEqual(int(sr), SR)
         self.assertEqual(info["pitch_semitones"], 0.0)
+        self.assertEqual(info["tail_mode"], "off")
 
     def test_auto_path_applies_tail_and_atomic_replace(self):
         import soundfile as sf

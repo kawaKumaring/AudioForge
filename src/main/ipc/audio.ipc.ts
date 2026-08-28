@@ -6,12 +6,23 @@ import { randomUUID } from 'crypto'
 import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync } from 'fs'
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
-import { createSettlementGuard } from '../services/run-settlement'
+import { createSettlementGuard, createRunSettlement, createRunnerSlot } from '../services/run-settlement'
+import type { RunEnd, RunTerminal } from '../services/run-settlement'
+import { sendToWindow } from '../services/window-send'
 import { createPreviewGuard, runPreview } from '../services/preview-transcribe'
 import { buildTtsConfig, normalizePitchCapability, type TtsInputOptions } from '../../shared/ttsConfig'
 import { sweepQwenJobDirs, listQwenJobDirs } from '../services/qwen-cleanup'
 import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
+import { removeSplitTempDirs, listSplitTempDirs } from '../services/split-temp-cleanup'
 import { createSingleFlight, createKeyedSingleFlight } from '../services/single-flight'
+import { createJobWatchdog, startJobWatch, createStagingGate } from '../services/longform-job'
+import { createTerminalGate } from '../services/run-settlement'
+import type { CancelResponse } from '../../shared/cancelContract'
+import { validateSidecarEvent, SIDECAR_IPC_CHANNEL } from '../../shared/sidecarEvents'
+import type { SidecarEnvelope } from '../../shared/sidecarEvents'
+// 타입만 가져온다 — 참조 라이브러리 모듈을 런타임에 끌어오지 않으므로 순환 의존이 생기지 않는다.
+import type { ReferencePreviewAdapter } from './reference-library.ipc'
+import type { SamplerJob, SamplerRunOutcome } from '../services/sampler-generation'
 
 // execFile(배열 인자)은 cmd.exe를 거치지 않아 시스템 코드페이지(CP949)의
 // 한글 경로 손상 문제에 면역. exec(문자열)은 한글 파일명에서 깨짐 → 금지.
@@ -65,8 +76,20 @@ function saveSetting(key: string, value: unknown): void {
 }
 function savePythonPath(p: string): void { saveSetting('pythonPath', p) }
 
+// 진단 사이드카 검증기를 모든 러너에 주입한다. python-runner는 Electron 없이 node --test로도
+// 로드되므로 검증기를 직접 import하지 않고 주입받는다(주입을 빠뜨리면 fail-closed —
+// 아무것도 전달되지 않고 unknownEventStats에만 집계된다).
+const runnerDeps = { validateSidecar: validateSidecarEvent }
+
+// 검증을 통과한 봉투만 renderer로. main에서 이미 검증했으므로 여기서 추가 정제는 하지 않는다.
+function forwardSidecar(r: PythonRunner, win: BrowserWindow): void {
+  r.on('sidecar', (env: SidecarEnvelope) => { sendToWindow(win, SIDECAR_IPC_CHANNEL, env) })
+}
+
 let runner: PythonRunner | null = null
-let trackRunner: PythonRunner | null = null
+// 트랙 후처리 러너 슬롯. 늦게 도착한 옛 러너의 done이 새 러너를 지우지 못하도록 신원 가드를 쓴다
+// (메인 러너에는 원래 있던 보호가 여기엔 없어 고아 프로세스가 생길 수 있었다 — 감사 R3).
+const trackSlot = createRunnerSlot<PythonRunner>()
 let pythonPath = resolvePythonPath()
 // 취소 lifecycle(공용 마감 K/K2) 조정 상태 — audio:process가 세팅하고 audio:cancel/done이 소비.
 let currentSettle: import('../services/run-settlement').SettlementGuard | null = null
@@ -80,6 +103,21 @@ let cleanupPending = false                                    // 취소 성공�
 let runnerDoneDeferred: { promise: Promise<void>; resolve: () => void } | null = null
 const CANCEL_EXIT_MS_DEFAULT = 8000                           // taskkill 후 tree 종료 확인 대기(bounded). worker timeout과 별개.
 const CLEANUP_DEADLINE_MS = 2500                              // 취소 후 .qwen-job-* 정리 마감(bounded retry).
+// 장문 job 축(무진행/총예산) 점검 주기. 이 값은 '언제 판정하는지'일 뿐 '얼마나 기다리는지'가 아니다 —
+// 실제 상한은 longform-job.ts 의 STALL_MS/jobBudgetMs 가 정한다. 짧게 두면 판정 지연만 줄어든다.
+const JOB_TICK_MS = 15000
+// 장문 감시 축의 E2E 시임. production 값은 절대 바뀌지 않는다 — AF_E2E=1에서만 globalThis 주입값을
+// 읽는다(취소-종료 대기의 __afCancelExitMs, 정리 실패의 __afCleanupFailCount와 같은 선례).
+// 실제 stall/예산은 분 단위라 E2E가 그대로 기다릴 수 없으므로, '축이 존재하고 올바른 순서로
+// 작동하는가'를 초 단위로 재현하기 위한 것이다. 상한 값 자체의 근거는 longform-job.ts가 갖는다.
+function jobWatchSeam(): { inactivityMs?: number; stallMs?: number; tickMs?: number } {
+  if (process.env.AF_E2E !== '1') return {}
+  const g = globalThis as unknown as {
+    __afJobInactivityMs?: number; __afJobStallMs?: number; __afJobTickMs?: number
+  }
+  const pos = (v: unknown) => (typeof v === 'number' && v > 0 ? v : undefined)
+  return { inactivityMs: pos(g.__afJobInactivityMs), stallMs: pos(g.__afJobStallMs), tickMs: pos(g.__afJobTickMs) }
+}
 // 취소-종료 대기 timeout(ms). production 값 불변; AF_E2E=1에서만 globalThis 주입값으로 대체(테스트 결정성).
 function cancelExitMs(): number {
   if (process.env.AF_E2E === '1') {
@@ -175,7 +213,19 @@ async function findFfprobe(): Promise<string> {
   throw new Error('ffprobe를 찾을 수 없습니다. ffmpeg을 설치해주세요.')
 }
 
-export function registerAudioIpc(mainWindow: BrowserWindow): void {
+/**
+ * 오디오 IPC 등록. 반환값은 참조 라이브러리가 쓰는 파이썬 실행 adapter 하나뿐이다 —
+ * 기존 핸들러의 서명·타임아웃·정리·터미널 의미는 그대로다(추가만 했다).
+ * 기존 호출부는 반환값을 무시해도 동작이 같다.
+ */
+export interface AudioIpcAdapters {
+  reference: ReferencePreviewAdapter
+  /** 감정 샘플 1건을 기존 TTS 실행 경로로 만든다. 별도 runner·모델 lifecycle 을 만들지 않는다. */
+  runSamplerTts: (job: SamplerJob) => Promise<SamplerRunOutcome>
+  busyReason: () => string | null
+}
+
+export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   // 영속화된 사용자 지정 python 경로가 있으면 우선 적용(재시작 후에도 유지) — L-6.
   // 사용자의 명시적 선택이 자동 해석(env.json/기본값)보다 우선한다.
   try {
@@ -187,18 +237,27 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
 
   // 앱 시작: 이전 세션이 남긴 stale 파생 참조 폴더 방어 정리(정확한 prefix + tmpdir 직속 폴더만).
   try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ }
+  // 과거 실행이 남긴 split 원본 사본은 **자동 삭제하지 않는다**(사용자 디스크의 큰 파일을 임의로
+  // 지우지 않는다). 개수와 가장 오래된 항목의 시각만 로그로 남겨 상황을 알 수 있게 한다.
+  try {
+    const orphans = listSplitTempDirs(tmpdir())
+    if (orphans.length > 0) {
+      const oldest = orphans.reduce((a, b) => (a.mtimeMs <= b.mtimeMs ? a : b))
+      console.log(`[AudioForge] split 임시 폴더 ${orphans.length}개 잔류(가장 오래된 것: ${new Date(oldest.mtimeMs).toISOString()}). 자동 삭제하지 않습니다.`)
+    }
+  } catch { /* noop */ }
   // 앱 종료: 실행 중인 작업의 프로세스 트리를 kill(고아 자식 방지) + 남은 파생 참조 폴더 정리(공용 마감 K).
   // 앱 종료(공용 마감 K2-I): 실행 트리를 kill하고 '종료 확인'까지 기다린 뒤 실제 quit(고아 자식 방지).
   // before-quit을 1회 preventDefault → bounded tree kill → 재진입 guard 후 quit. 무한 대기 방지(delay backstop).
   let quitCleanupDone = false
   app.on('before-quit', (e) => {
     if (quitCleanupDone) return  // 재진입 → 실제 종료 진행
-    const busy = runner?.isRunning || trackRunner?.isRunning
+    const busy = runner?.isRunning || trackSlot.current?.isRunning
     if (!busy) { try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ } ; quitCleanupDone = true; return }
     e.preventDefault()  // 실행 트리 종료 확인 전까지 종료 보류
     const kills: Promise<unknown>[] = []
     if (runner) kills.push(runner.cancel(3000))
-    if (trackRunner) kills.push(trackRunner.cancel(3000))
+    { const tr = trackSlot.current; if (tr) kills.push(tr.cancel(3000)) }
     Promise.race([Promise.all(kills), delay(3500)])
       .then(() => { try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ } })
       .finally(() => { quitCleanupDone = true; app.quit() })
@@ -299,7 +358,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       const scriptPath = PythonRunner.getScriptPath('separate.py')
       writeFileSync(cfgPath, JSON.stringify({ mode: 'ref-transcribe', input: filePath, output: dirname(filePath) }), 'utf-8')
       return await runPreview({
-        runner: new PythonRunner(pythonPath),
+        runner: new PythonRunner(pythonPath, runnerDeps),
         scriptPath, args: ['--config', cfgPath],
         timeoutMs: 120000,  // Whisper small 로딩+전사 여유. 멈춘 프로세스만 끊음.
         cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
@@ -325,7 +384,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
         const scriptPath = PythonRunner.getScriptPath('separate.py')
         writeFileSync(cfgPath, JSON.stringify({ mode: 'ref-analyze', input: filePath, output: dirname(filePath) }), 'utf-8')
         return await runPreview({
-          runner: new PythonRunner(pythonPath),
+          runner: new PythonRunner(pythonPath, runnerDeps),
           scriptPath, args: ['--config', cfgPath],
           timeoutMs: 60000,  // 파형 peak 스캔 여유. 멈춘 프로세스만 끊음.
           cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
@@ -355,7 +414,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
         regionStart: startSec, regionDur: durSec
       }), 'utf-8')
       return await runPreview({
-        runner: new PythonRunner(pythonPath),
+        runner: new PythonRunner(pythonPath, runnerDeps),
         scriptPath, args: ['--config', cfgPath],
         timeoutMs: 60000,
         cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
@@ -377,7 +436,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
         const scriptPath = PythonRunner.getScriptPath('separate.py')
         writeFileSync(cfgPath, JSON.stringify({ mode: 'qwen-preflight' }), 'utf-8')
         return await runPreview({
-          runner: new PythonRunner(pythonPath),
+          runner: new PythonRunner(pythonPath, runnerDeps),
           scriptPath, args: ['--config', cfgPath],
           timeoutMs: 30000,
           cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
@@ -411,7 +470,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
         const scriptPath = PythonRunner.getScriptPath('separate.py')
         writeFileSync(cfgPath, JSON.stringify({ mode: 'pitch-preflight' }), 'utf-8')
         const raw = await runPreview({
-          runner: new PythonRunner(pythonPath),
+          runner: new PythonRunner(pythonPath, runnerDeps),
           scriptPath, args: ['--config', cfgPath],
           timeoutMs: 35000,
           cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
@@ -469,16 +528,30 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     const nameWithoutExt = basename(filePath, ext)
     const now = new Date()
     const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}-${String(now.getSeconds()).padStart(2, '0')}`
-    const outputDir = join(dirname(filePath), 'AudioForge_output', `${timestamp}_${nameWithoutExt}`)
-    if (!existsSync(outputDir)) mkdirSync(outputDir, { recursive: true })
+    // 폴더명은 초 단위라 같은 초에 두 번 시작하면 같은 폴더를 재사용하게 되고, 워커가 ffmpeg -y로
+    // 덮어써 **이전 결과가 소리 없이 사라진다**(감사 R9). 이미 존재하면 짧은 접미사를 붙여 새 폴더를
+    // 확보한다. 접미사는 첫 충돌부터만 붙으므로 기존 폴더 이름 규칙은 그대로다.
+    const baseOutputDir = join(dirname(filePath), 'AudioForge_output', `${timestamp}_${nameWithoutExt}`)
+    let outputDir = baseOutputDir
+    for (let n = 2; existsSync(outputDir) && n <= 100; n++) outputDir = `${baseOutputDir}_${n}`
+    if (existsSync(outputDir)) {
+      // 100개까지 전부 존재 = 비정상. 덮어쓰지 않고 명시 실패한다.
+      throw Object.assign(new Error('출력 폴더를 만들 수 없습니다. 같은 이름의 폴더가 너무 많습니다.'), { code: 'OUTPUT_DIR_UNAVAILABLE' })
+    }
+    mkdirSync(outputDir, { recursive: true })
     // 방어적: 이 output_dir에 이전 실행이 남긴 Qwen 실행별 임시폴더가 있으면 시작 전에 정리
     // (신규 dir이라 보통 없음). 안전 범위 = 이 output_dir 바로 아래 .qwen-job-* 폴더만.
     if (mode === 'tts') { try { sweepQwenJobDirs(outputDir) } catch { /* noop */ } }
 
+    // 이번 실행 식별자. ① config 파일 이름 충돌 방지(Date.now()는 같은 ms에 겹칠 수 있다)
+    // ② split 워커가 만드는 '원본 전체 사본' 임시폴더 이름에 실려, 취소·강제종료 뒤에도 main이
+    //    이 실행의 폴더만 정확히 지울 수 있게 한다(파이썬 finally는 taskkill에서 실행되지 않는다).
+    const runToken = randomUUID().slice(0, 8)
     // Write all options to JSON config file (avoids spawn encoding issues with Korean paths)
-    const configPath = join(tmpdir(), `audioforge_config_${Date.now()}.json`)
+    const configPath = join(tmpdir(), `audioforge_config_${runToken}.json`)
     const config = {
       mode,
+      runToken,
       input: filePath,
       output: outputDir,
       model: options?.demucsModel || 'htdemucs',
@@ -505,7 +578,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
     console.log(`[AudioForge] Config written to: ${configPath}`)
 
-    runner = new PythonRunner(pythonPath)
+    runner = new PythonRunner(pythonPath, runnerDeps)
     const thisRunner = runner  // 이 실행 인스턴스 고정 — done에서 새 실행의 runner를 null로 덮어쓰지 않도록(clobber 방지).
 
     // 종료 시 UI가 'processing'에 남지 않도록: result/error/watchdog/취소 중 하나로 반드시 '정착'.
@@ -521,8 +594,18 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     // production race 방지: 터미널 신호(result/error)를 즉시 보내지 않고 버퍼링했다가 runner 'done'
     // (자식 프로세스 실제 종료 = backend free) 이후에 전달한다. 이러면 renderer가 완료(done)와
     // '다른 모드로 재처리'를 보는 시점엔 이미 runner=null이라, 결과 직후 재합성해도 "이미 처리 중"이 없다.
-    let pendingResult: unknown = null
+    // 결과는 staging 게이트가 붙든다. 예전에는 pendingResult 변수 하나였고, 그 기준은 '자식
+    // 프로세스가 끝났는가'뿐이었다 — watchdog이 이미 시간 초과로 마감한 뒤에 result가 도착하면
+    // done 경로가 그 결과를 그대로 렌더러에 보냈다(터미널 확정 이후의 결과 공개). 게이트는
+    // '중간 산출물 정리(staging)까지 확인됐을 때만 공개'를 명시적 전제로 만들고, abandon된
+    // 실행에서는 어떤 결과도 나가지 못하게 한다.
+    const stagingGate = createStagingGate<unknown>(
+      (data) => { mainWindow.webContents.send('audio:result', data) },
+      createTerminalGate
+    )
     let pendingError: string | { message?: unknown; code?: unknown } | null = null
+
+    forwardSidecar(runner, mainWindow)
 
     runner.on('progress', (data) => {
       mainWindow.webContents.send('audio:progress', data)
@@ -581,16 +664,25 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
         console.log(`[AudioForge] session.json 저장 실패: ${(err as Error).message}`)
       }
       settle.markSettled()
-      pendingResult = data  // 'done'에서 backend free 확인 후 전달
+      stagingGate.offerFinal(data)  // 공개는 'done'에서 staging 확인 후(markStagingComplete)
     })
 
     runner.on('error', (message) => {
       settle.markSettled()
       // 문자열(spawn/close 오류) 또는 구조화 객체(파싱된 error 라인, code 포함) 그대로 보관 → 'done'에서 정제 전달.
-      pendingError = (message && typeof message === 'object') ? message : String(message)
+      const next = (message && typeof message === 'object') ? message : String(message)
+      // 구조화 오류가 먼저 도착했으면 뒤따르는 일반 문구가 그것을 덮지 않는다.
+      // Python이 error 라인(code 포함)을 내고 비정상 코드로 종료하면 러너가 close에서 '프로세스가
+      // 코드 N로 종료되었습니다'를 한 번 더 emit한다. 예전에는 그 두 번째가 code를 지워버려서
+      // QWEN_NO_RESPONSE·QWEN_LOAD_TIMEOUT 같은 진단이 일반 종료 문구로 뭉개졌다.
+      const hasCode = (v: unknown): boolean =>
+        !!v && typeof v === 'object' && typeof (v as { code?: unknown }).code === 'string'
+      if (pendingError !== null && hasCode(pendingError) && !hasCode(next)) return
+      pendingError = next
     })
 
     // Watchdog: kill if no progress for 5 minutes
+    // ① 비활성 축 — 값·문구·동작 모두 기존 그대로다(아래 두 축이 추가된 것뿐).
     const WATCHDOG_MS = 300000
     let watchdog: ReturnType<typeof setTimeout> | null = null
 
@@ -599,19 +691,60 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       watchdog = setTimeout(() => {
         if (runner?.isRunning) {
           settle.markSettled()
+          stagingGate.abandon()   // 시간 초과로 마감된 실행의 늦은 결과는 공개하지 않는다
           runner.cancel()  // async(무시) — 트리 kill 시도
           sendError('처리 시간이 초과되었습니다 (5분간 응답 없음). Python 환경을 확인해주세요.')
         }
       }, WATCHDOG_MS)
     }
+
+    // ②③ 장문 job 축 — '살아있음'과 '실제로 조각을 만들어냈음'을 구분해 판정한다.
+    // 왜 별도 타이머인가: ①은 'progress 이벤트가 오면 리셋'이라 heartbeat(=Python이 로딩 생존
+    // 신호를 progress로 옮겨 보낸 것)만으로도 무한히 연장된다. 그건 의도된 보호지만(느린 콜드
+    // 로딩을 죽이면 안 된다), 그것 **하나뿐**이면 살아있으나 아무것도 생산하지 않는 job과
+    // 총 길이가 폭주하는 job에 대한 천장이 어디에도 없다. 판정 로직·상수 근거는 longform-job.ts.
+    const seam = jobWatchSeam()
+    const jobWatch = createJobWatchdog({
+      now: () => Date.now(), inactivityMs: seam.inactivityMs, stallMs: seam.stallMs
+    })
+    // 타이머 소유권은 longform-job.startJobWatch 가 갖는다 — 이 파일은 electron 을 import 하므로
+    // node --test 로 로드할 수 없고, 여기에 타이머를 두면 '취소·종료 후 남지 않는다'를 유닛
+    // 테스트로 확인할 방법이 없다. setInterval/clearInterval 을 주입하는 형태라 그쪽에서 검증된다.
+    const jobTick = startJobWatch({
+      watchdog: jobWatch,
+      intervalMs: seam.tickMs ?? JOB_TICK_MS,
+      isRunning: () => runner?.isRunning === true,
+      deps: { setInterval, clearInterval },
+      onBreach: (verdict, r) => {
+        settle.markSettled()
+        // staging 이 끝나기 전에 터미널이 확정됐다 → 뒤늦게 도착하는 결과는 절대 공개하지 않는다.
+        stagingGate.abandon()
+        runner?.cancel()  // async(무시) — 트리 kill 시도
+        sendError(verdict === 'no-forward-progress'
+          ? `합성이 ${Math.round(r.sinceForwardMs / 1000)}초 동안 한 조각도 진행하지 못했습니다 `
+            + `(완료 ${r.completedChunks}조각). 프로세스는 살아 있었지만 결과를 만들지 못했습니다.`
+          : `합성이 이 작업에 허용된 총 시간을 초과했습니다 `
+            + `(경과 ${Math.round(r.elapsedMs / 1000)}초, 완료 ${r.completedChunks}`
+            + `/${r.estimatedTotalChunks ?? '?'}조각).`)
+      }
+    })
+
     // 취소가 watchdog을 즉시 해제할 수 있게 노출(취소는 watchdog 무의미). done에서 정리.
-    currentWatchdogClear = () => { if (watchdog) { clearTimeout(watchdog); watchdog = null } }
+    currentWatchdogClear = () => {
+      if (watchdog) { clearTimeout(watchdog); watchdog = null }
+      jobTick.stop()
+      stagingGate.abandon()   // 취소된 실행의 결과는 공개하지 않는다
+    }
 
     resetWatchdog()
 
     runner.on('done', (code) => {
       if (watchdog) { clearTimeout(watchdog); watchdog = null }
+      jobTick.stop()
       try { unlinkSync(configPath) } catch {}
+      // 성공·오류·취소 어느 경로로 끝나든 이 실행이 만든 split 원본 사본을 지운다. 취소 분기보다
+      // 위에 두어 early return에 걸리지 않게 한다. 다른 실행/과거 orphan은 건드리지 않는다.
+      if (mode === 'split') { try { removeSplitTempDirs(tmpdir(), runToken) } catch { /* noop */ } }
 
       // ── 취소 경로(inflight): done은 '권위'가 아니다. runner를 free로 만들고 관측만 기록·합류시킨다.
       // 부분 결과/오류/스윕/터미널 신호(cancelled)는 모두 audio:cancel 핸들러가 tree 종료·정리 확인 후 보낸다.
@@ -635,16 +768,22 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       // 취소 실패 후 child가 뒤늦게 스스로 종료: 이미 cancel-failed를 보냈으므로 추가 신호 없이 상태만 정리.
       if (cancelState === 'failed') { cancelState = 'none' }
       // 버퍼링한 터미널 신호 전달(정착됨). 없으면 abnormal exit → settle.finish가 오류로 마감(UI 안 멈춤).
-      if (pendingResult !== null) {
-        mainWindow.webContents.send('audio:result', pendingResult)
-      } else if (pendingError !== null) {
+      // tts는 위에서 .qwen-job-* 스윕이 이미 돌았다 — 그 '다음'에만 결과가 공개된다(순서가 계약).
+      // 게이트가 공개하지 못한 경우(결과 없음 / watchdog·취소로 abandon)에만 오류 경로로 내려간다.
+      // watchdog(비활성/무진행/총예산)이 이미 terminal을 보냈으면 여기서 두 번째를 보내지 않는다.
+      // 그 경로들은 abandon()으로 게이트를 닫으므로 outcome이 그 사실의 단일 증거다. 이게 없으면
+      // watchdog이 kill한 자식의 종료 코드(taskkill /F → 1)에서 만들어진 '프로세스가 코드 1로
+      // 종료되었습니다'가 시간 초과 사유를 덮어쓰며 terminal을 2개로 만든다.
+      const terminalAlreadySent = stagingGate.outcome === 'abandoned'
+      if (!stagingGate.markStagingComplete() && pendingError !== null && !terminalAlreadySent) {
         sendError(pendingError)
       }
       settle.finish(code)
     })
 
-    runner.on('progress', () => {
-      resetWatchdog()
+    runner.on('progress', (data) => {
+      resetWatchdog()          // ① 기존 그대로 — 어떤 progress 로도 리셋된다
+      jobWatch.observe(data)   // ②③ 은 여기서 liveness/forward 를 갈라 각자의 축만 갱신한다
     })
 
     // Only pass ASCII config path to Python — no Korean chars in spawn args
@@ -660,7 +799,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
 
   // Process individual track (transcribe/translate)
   ipcMain.handle('audio:process-track', async (_event, trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string }) => {
-    if (trackRunner?.isRunning) {
+    if (trackSlot.current?.isRunning) {
       throw new Error('이미 처리 중인 트랙 작업이 있습니다')
     }
     if (!existsSync(pythonPath)) {
@@ -671,11 +810,11 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       throw new Error(`Python 스크립트를 찾을 수 없습니다: ${scriptPath}`)
     }
 
-    trackRunner = new PythonRunner(pythonPath)
+    const thisRunner = trackSlot.set(new PythonRunner(pythonPath, runnerDeps))
 
     // Korean paths must never be passed as spawn args (CP949 corruption) —
     // same JSON config approach as 'audio:process'
-    const configPath = join(tmpdir(), `audioforge_track_${Date.now()}.json`)
+    const configPath = join(tmpdir(), `audioforge_track_${randomUUID().slice(0, 8)}.json`)  // 같은 ms 충돌 방지
     const config = {
       mode: 'track-process',
       input: trackPath,
@@ -687,45 +826,54 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
     }
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
 
+    // 실행 범위 정리 — 성공·오류·취소·강제종료 어느 경로로 끝나도 done 직전에 1회 실행된다.
+    thisRunner.registerCleanup(() => { try { unlinkSync(configPath) } catch { /* noop */ } })
+
+    // 실행당 터미널 정확히 1개. 여기가 없어서 'exit 0인데 result 없음'이나 시그널 종료 때
+    // TrackList의 처리중 표시가 영구히 남았다(감사 R4) — 트랙 처리에는 취소 버튼도 없다.
+    const settle = createRunSettlement((t: RunTerminal) => {
+      if (t.kind === 'result') { sendToWindow(mainWindow, 'audio:track-result', t.data); return }
+      const message = t.kind === 'cancelled'
+        ? '트랙 처리가 취소되었습니다.'
+        : (t.message ?? '트랙 처리에 실패했습니다.')
+      // TrackList는 track-error로만 처리중 표시를 해제한다 → 취소도 같은 채널로 보낸다.
+      sendToWindow(mainWindow, 'audio:track-error', { message, trackPath, reasonCode: t.reasonCode })
+    })
+
     // Watchdog: kill if no progress for 5 minutes (same policy as main runner)
     const WATCHDOG_MS = 300000
     let watchdog: ReturnType<typeof setTimeout> | null = null
-    const sendTrackError = (message: string) => {
-      mainWindow.webContents.send('audio:track-error', { message, trackPath })
-    }
     const resetWatchdog = () => {
       if (watchdog) clearTimeout(watchdog)
       watchdog = setTimeout(() => {
-        if (trackRunner?.isRunning) {
-          trackRunner.cancel()
-          sendTrackError('트랙 처리 시간이 초과되었습니다 (5분간 응답 없음).')
-        }
+        if (!trackSlot.isCurrent(thisRunner)) return
+        // 먼저 정착시킨 뒤 kill — 뒤따르는 'killed' done이 timeout 사유를 덮지 않게.
+        if (settle.settleError('트랙 처리 시간이 초과되었습니다 (5분간 응답 없음).', 'timeout')) thisRunner.cancel()
       }, WATCHDOG_MS)
     }
     resetWatchdog()
 
-    trackRunner.on('done', () => {
-      if (watchdog) clearTimeout(watchdog)
-      try { unlinkSync(configPath) } catch {}
-      trackRunner = null
-    })
+    forwardSidecar(thisRunner, mainWindow)
 
-    trackRunner.on('progress', (data) => {
+    thisRunner.on('progress', (data) => {
       resetWatchdog()
-      mainWindow.webContents.send('audio:progress', data)
+      sendToWindow(mainWindow, 'audio:progress', data)
     })
-    trackRunner.on('result', (data) => {
-      mainWindow.webContents.send('audio:track-result', data)
-    })
-    trackRunner.on('error', (message) => {
+    thisRunner.on('result', (data) => { settle.settleResult(data) })
+    thisRunner.on('error', (message) => {
       // message가 구조화 객체({message,...})일 수 있으므로 .message 추출(그냥 String()이면 [object Object]).
       const text = typeof message === 'string'
         ? message
         : String((message as { message?: unknown })?.message ?? message)
-      sendTrackError(text)
+      settle.settleError(text, 'error-reported')
+    })
+    thisRunner.on('done', (_code: number | null, end: RunEnd) => {
+      if (watchdog) { clearTimeout(watchdog); watchdog = null }
+      trackSlot.release(thisRunner)   // 신원 가드 — 내가 아직 현재 러너일 때만 비운다
+      settle.finishFromEnd(end)       // 미정착이면 여기서 반드시 터미널 1개(killed→cancelled, 그 외→error)
     })
 
-    trackRunner.run(scriptPath, ['--config', configPath])
+    thisRunner.run(scriptPath, ['--config', configPath])
     return { outputDir }
   })
 
@@ -736,15 +884,20 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
   // 정상 취소의 terminal 신호(audio:cancelled)는 '이 핸들러'가 권위다(공용 마감 K2-B).
   // 순서: cancelling → kill 요청 → tree 종료 확인 → runner done 합류 → bounded cleanup 확인 → cancelled → idle.
   // done 핸들러는 취소 중이면 runner만 free로 만들고 아무 신호도 보내지 않는다.
-  ipcMain.handle('audio:cancel', async () => {
+  // 반환값이 취소 수락의 **권위**다(계약 C2-P0.1). accepted:true = '취소를 접수했고 터미널 이벤트가
+  // 정확히 하나 뒤따른다'는 뜻이며 '취소가 성공했다'는 뜻이 아니다(실패 상세는 audio:cancel-failed가 나른다).
+  // accepted:true인 경우에만 audio:cancelling을 보낸다 — 렌더러는 그 이벤트로만 cancelling으로 전이한다.
+  ipcMain.handle('audio:cancel', async (): Promise<CancelResponse> => {
     // track-process(대화 분할 후처리)는 이번 K/K2 범위 밖 — 단순 취소 유지(별도 열린 결함으로 문서화).
-    if (trackRunner) { trackRunner.cancel(); trackRunner = null }
+    // 트랙 후처리도 전역 취소에 합류시킨다. 여기서 이벤트를 보내지 않는다 —
+    // 러너의 done이 reasonCode 'killed'로 도착해 그쪽 정착이 cancelled 터미널 1개를 보낸다.
+    { const tr = trackSlot.current; if (tr) { tr.cancel(); trackSlot.release(tr) } }
 
     const r = runner
-    if (!r || !r.isRunning) return { ok: true, noop: true }               // 실행 중 아님 → no-op
+    if (!r || !r.isRunning) return { accepted: false, reasonCode: 'NO_ACTIVE_JOB' }   // 실행 중 아님 → 렌더러 상태 불변
     // result/error가 먼저 정착(취소 아님)했으면 늦은 취소는 no-op(계약 4-B/4-C).
-    if (currentSettle?.settled && cancelState === 'none') return { ok: true, noop: true }
-    if (cancelState === 'inflight') return { ok: true, noop: true }        // 이미 취소 진행 중 → 중복 클릭 무시(kill 요청 1회)
+    if (currentSettle?.settled && cancelState === 'none') return { accepted: false, reasonCode: 'ALREADY_SETTLED' }
+    if (cancelState === 'inflight') return { accepted: false, reasonCode: 'ALREADY_CANCELLING' }  // 중복 클릭 → kill 요청 1회
     // 첫 취소면 최초 정착 승자로 마킹(재취소는 이미 settled이므로 재마킹하지 않는다).
     if (cancelState === 'none') currentSettle?.markSettled()
     cancelState = 'inflight'
@@ -762,7 +915,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       cancelState = 'failed'
       const childAlive = r.isRunning
       mainWindow.webContents.send('audio:cancel-failed', { childAlive })
-      return { ok: false, childAlive, reason: res.reason }
+      return { accepted: true }   // 취소는 접수됨(결과는 audio:cancel-failed로 이미 통지)
     }
     // runner done 합류(bounded) — done 핸들러가 runner를 free로 만들었는지 sleep 없이 확인.
     await Promise.race([doneP, delay(3000)])
@@ -776,13 +929,13 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       cancelState = 'none'
       currentSettle = null; currentWatchdogClear = null  // currentOutputDir는 재시도 정리용으로 남긴다
       mainWindow.webContents.send('audio:cancel-failed', { childAlive: false, cleanupPending: true })
-      return { ok: false, cleanupPending: true }
+      return { accepted: true }   // 접수됨(정리 미완은 audio:cancel-failed payload가 통지)
     }
     cancelState = 'none'
     currentSettle = null; currentWatchdogClear = null; currentOutputDir = null
     afPhase('cancelled_sent')
     mainWindow.webContents.send('audio:cancelled')       // ← terminal 신호(권위). renderer가 idle로.
-    return { ok: true }
+    return { accepted: true }
   })
 
   // 파일 reset/변경·감정 삭제/재등록 시 렌더러가 호출 — 파생 참조 클립 폴더 정리(합성 중이면 건드리지 않음).
@@ -962,4 +1115,92 @@ export function registerAudioIpc(mainWindow: BrowserWindow): void {
       return null
     }
   })
+
+  // 참조 라이브러리가 쓸 파이썬 실행 adapter. 기존 analyze/trim 핸들러와 **같은** 방식
+  // (같은 pythonPath·같은 separate.py·같은 runPreview 타임아웃/정리)으로 돌린다.
+  // 이 함수 밖으로 runner·pythonPath 를 내보내지 않기 위해 adapter 형태로만 넘긴다.
+  const referenceAdapter: ReferencePreviewAdapter = {
+    busyReason: () => {
+      if (runner?.isRunning) return '처리 중에는 참조를 등록할 수 없습니다.'
+      if (!existsSync(pythonPath)) return 'Python 실행 파일을 찾을 수 없습니다.'
+      return null
+    },
+    runAnalyze: async (filePath: string) => {
+      const cfgPath = join(tmpdir(), `audioforge_reflib_analyze_${randomUUID()}.json`)
+      try {
+        const scriptPath = PythonRunner.getScriptPath('separate.py')
+        writeFileSync(cfgPath, JSON.stringify({
+          mode: 'ref-analyze', input: filePath, output: dirname(filePath)
+        }), 'utf-8')
+        return await runPreview({
+          runner: new PythonRunner(pythonPath, runnerDeps),
+          scriptPath, args: ['--config', cfgPath],
+          timeoutMs: 60000,
+          cleanup: () => { try { unlinkSync(cfgPath) } catch { /* noop */ } }
+        })
+      } finally {
+        try { unlinkSync(cfgPath) } catch { /* noop */ }
+      }
+    },
+    runTrim: async (filePath: string, startSec: number, durSec: number, outDir: string) => {
+      const cfgPath = join(tmpdir(), `audioforge_reflib_trim_${randomUUID()}.json`)
+      try {
+        mkdirSync(outDir, { recursive: true })
+        const scriptPath = PythonRunner.getScriptPath('separate.py')
+        writeFileSync(cfgPath, JSON.stringify({
+          mode: 'ref-trim', input: filePath, output: outDir,
+          regionStart: startSec, regionDur: durSec
+        }), 'utf-8')
+        return await runPreview({
+          runner: new PythonRunner(pythonPath, runnerDeps),
+          scriptPath, args: ['--config', cfgPath],
+          timeoutMs: 60000,
+          cleanup: () => { try { unlinkSync(cfgPath) } catch { /* noop */ } }
+        })
+      } finally {
+        try { unlinkSync(cfgPath) } catch { /* noop */ }
+      }
+    },
+  }
+
+  // 감정 샘플 실행 — 기존 tts 모드·기존 PythonRunner 를 그대로 쓴다.
+  // generation-limit·watchdog·timeout·CPU/GPU 정책은 건드리지 않는다.
+  const runSamplerTts = async (job: SamplerJob): Promise<SamplerRunOutcome> => {
+    if (runner?.isRunning) return { kind: 'error', code: 'BUSY' }
+    if (!existsSync(pythonPath)) return { kind: 'error', code: 'NO_PYTHON' }
+    const cfgPath = join(tmpdir(), `audioforge_sampler_${randomUUID()}.json`)
+    try {
+      const scriptPath = PythonRunner.getScriptPath('separate.py')
+      writeFileSync(cfgPath, JSON.stringify({
+        mode: 'tts', input: job.referenceAudioPath, output: job.stagingDir,
+        ...buildTtsConfig({
+          ttsText: job.script,
+          ttsReferenceOverride: job.referenceAudioPath,
+          ttsReferencePrompts: {
+            default: { manualText: job.referenceText, promptLang: job.referenceLanguage, mode: 'manual' },
+          },
+        })
+      }), 'utf-8')
+      const res = await runPreview({
+        runner: new PythonRunner(pythonPath, runnerDeps),
+        scriptPath, args: ['--config', cfgPath],
+        timeoutMs: 600000,
+        cleanup: () => { try { unlinkSync(cfgPath) } catch { /* noop */ } }
+      })
+      if (res.status === 'failed' || res.status === 'error') return { kind: 'error' }
+      const out = typeof res.output_path === 'string' ? res.output_path
+        : join(job.stagingDir, 'synthesized.wav')
+      return existsSync(out) ? { kind: 'success', outputPath: out } : { kind: 'no-result' }
+    } catch {
+      return { kind: 'error' }
+    } finally {
+      try { unlinkSync(cfgPath) } catch { /* noop */ }
+    }
+  }
+
+  return {
+    reference: referenceAdapter,
+    runSamplerTts,
+    busyReason: () => (runner?.isRunning ? '다른 작업이 진행 중입니다.' : null),
+  }
 }

@@ -21,3 +21,9 @@ externals/
 .env
 .env.local
 scratch_e2e/
+
+# 참조 혼입 진단 산출물 — WAV/토큰 덤프/전사는 저장소에 넣지 않는다.
+# 계측 스크립트(.py)만 추적하고, 산출물은 manifest 로만 기록한다.
+tmp_leak_analysis/*
+!tmp_leak_analysis/*.py
+tmp_leak_analysis/*PRIVATE*

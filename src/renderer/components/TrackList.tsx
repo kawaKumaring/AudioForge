@@ -97,8 +97,15 @@ const TRACK_STYLES: Record<string, { color: string; glow: string }> = {
   drums:     { color: '#fbbf24', glow: 'rgba(251,191,36,0.12)' },
   bass:      { color: '#34d399', glow: 'rgba(52,211,153,0.12)' },
   other:     { color: '#60a5fa', glow: 'rgba(96,165,250,0.12)' },
-  speaker_a: { color: '#a78bfa', glow: 'rgba(167,139,250,0.15)' },
-  speaker_b: { color: '#22d3ee', glow: 'rgba(34,211,238,0.15)' },
+  // 화자 트랙: 화자 수 선택은 2~5명(Options.tsx)이므로 a~e 를 모두 채운다.
+  // c/d/e 가 비어 있으면 DEFAULT_STYLE(= speaker_a 와 같은 보라)로 떨어져
+  // 3명 이상일 때 트랙을 색으로 구분할 수 없었다. 결정적 매핑(해시·난수 없음),
+  // 색상은 기존 팔레트 규약(400 계열 hex + 같은 색 rgba glow)을 따른다.
+  speaker_a: { color: '#a78bfa', glow: 'rgba(167,139,250,0.15)' },  // violet
+  speaker_b: { color: '#22d3ee', glow: 'rgba(34,211,238,0.15)' },   // cyan
+  speaker_c: { color: '#fbbf24', glow: 'rgba(251,191,36,0.15)' },   // amber
+  speaker_d: { color: '#4ade80', glow: 'rgba(74,222,128,0.15)' },   // green
+  speaker_e: { color: '#f472b6', glow: 'rgba(244,114,182,0.15)' },  // pink
   transcript:{ color: '#34d399', glow: 'rgba(52,211,153,0.12)' },
   translation:{ color: '#22d3ee', glow: 'rgba(34,211,238,0.15)' },
 }

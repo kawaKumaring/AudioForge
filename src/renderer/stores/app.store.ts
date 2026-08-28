@@ -1,6 +1,18 @@
 import { create } from 'zustand'
 import type { SeparationMode, Track, FileInfo } from '../../shared/types'
-import type { TtsReferenceEntry, PitchCapability } from '../../shared/ttsConfig'
+import type { TtsReferenceEntry, PitchCapability, ReferenceConditioningMode } from '../../shared/ttsConfig'
+// 참조 conditioning 모드(PHASE 2) — 기본/복원 해석은 계약 모듈 단일 소유(store 가 규칙을 다시 쓰지 않는다).
+// @ts-ignore TS5097: node --test가 요구하는 명시적 .ts 확장자(위 cancelContract import 주석과 같은 이유).
+import { REFERENCE_CONDITIONING_DEFAULT, restoreReferenceConditioningMode } from '../../shared/ttsConfig.ts'
+// 취소 계약(C2-P0.1)의 순수 술어 — store/UI/테스트가 같은 판정을 공유해 갈라지지 않게 한다.
+// 확장자(.ts)를 명시하는 이유: app.store.ts는 node --test(ESM, 확장자 필수)가 직접 로드하는 유일한 store 파일이라
+// 확장자 없는 상대 경로는 런타임에 ERR_MODULE_NOT_FOUND가 된다. tsconfig의 allowImportingTsExtensions는
+// 이 작업 범위 밖(공유 설정)이므로 TS5097만 국소 억제한다 — 모듈 해석·타입 검사는 그대로 살아 있다.
+// @ts-ignore TS5097: node --test가 요구하는 명시적 .ts 확장자(위 주석 참고).
+import { CANCEL_FAILED_CODE, canBeginCancelling, isCancelCleanupBusy } from '../../shared/cancelContract.ts'
+// 표현형 모드 해석 권위(계약 §10) — 기본값·유효성 규칙을 store 가 따로 쓰지 않는다.
+// @ts-ignore TS5097: node --test가 요구하는 명시적 .ts 확장자(위 cancelContract import 주석과 같은 이유).
+import { EXPRESSIVE_DEFAULT_MODE, resolveExpressiveMode, type ExpressiveMode } from '../../shared/expressiveTimeline.ts'
 
 // 감정별 참조 상태 — 하나의 slot이 통합 브랜치의 config 3필드(§1.2 계약)로 직렬화된다:
 //   source  → ttsEmotionRefSources[id] (사용자 등록 원본 경로, 영속·세션 재현 기준)
@@ -59,6 +71,11 @@ export interface RestorableSession {
     ttsTailFadeMs: number
     ttsEmotionBoundaryMode: 'immediate' | 'pause'
     ttsEmotionBoundaryPauseMs: number
+    // 표현형 모드 스냅샷. 필드 부재(legacy 세션)=legacy_v2 → 구 세션을 여는 것만으로 재현이 바뀌지 않는다.
+    ttsExpressiveMode: ExpressiveMode
+    // 참조 conditioning 모드 스냅샷(PHASE 2). 부재(legacy 세션) → safe_xvector(안전 기본).
+    // 계약 밖 문자열은 그대로 복원(조용한 강등 금지 — 합성 시 Python 이 구조화 오류로 거부).
+    ttsReferenceConditioningMode: ReferenceConditioningMode
   }>
   tracks?: Track[]
 }
@@ -134,7 +151,8 @@ interface AppState {
   error: string | null
   // 구조화 오류 정보(오류 UX 분기용). code + (취소 실패 시) childAlive만 — GENERATION_LIMIT_EXCEEDED/CANCEL_FAILED 분기.
   // 전사·문장·전체경로·스택은 담지 않는다(§미디어 정책).
-  errorInfo: { code?: string; childAlive?: boolean } | null
+  // rawType: 계약 밖 값의 '타입 이름'만(원시값·대사·경로는 절대 담지 않는다 — 비민감 payload 규칙).
+  errorInfo: { code?: string; childAlive?: boolean; rawType?: string | null } | null
   // 사용자 명시 재시도 트리거(단조 증가). ProcessButton이 이 값 변화에서만 재합성 1회 실행.
   retryNonce: number
   tracks: Track[]
@@ -154,6 +172,9 @@ interface AppState {
   ttsEmotionRefState: Record<string, EmotionRefState>
   ttsReferencePrompts: Record<string, TtsReferenceEntry>
   ttsEngine: string
+  // 참조 conditioning 모드(PHASE 2). 기본 safe_xvector(안전 음성 복제 — 참조 대사 혼입 구조적 차단).
+  // high_quality_icl 은 선택 가능하되 합성 시 Python 이 fail-closed 로 차단한다(경계 검증 확정 전).
+  ttsReferenceConditioningMode: ReferenceConditioningMode
   // 참조 준비 상태(합성 버튼 게이팅 + 사유 표시). ttsReferenceClip이 있으면 그 파생 클립을 참조로 전달.
   ttsReferenceClip: string
   ttsRefReady: boolean
@@ -165,6 +186,10 @@ interface AppState {
   ttsTailFadeMs: number
   ttsEmotionBoundaryMode: 'immediate' | 'pause'
   ttsEmotionBoundaryPauseMs: number
+  // 표현형 파서 모드. ⚠️ setter 를 의도적으로 두지 않는다 — v3 합성 경로가 없는 동안
+  // 사용자가 v3 를 고를 방법이 있으면 안 되기 때문이다(죽은 스위치 금지).
+  // 값이 바뀌는 경로는 '세션 복원' 하나뿐이며, 그때도 계약 밖 값은 조용히 고치지 않고 크게 실패시킨다.
+  ttsExpressiveMode: ExpressiveMode
   resultMetadata: Record<string, unknown> | null
 
   setFile: (info: FileInfo, url: string) => void
@@ -182,6 +207,7 @@ interface AppState {
   setDemucsModel: (v: 'htdemucs' | 'htdemucs_ft' | 'roformer' | 'roformer_melband' | 'roformer_ensemble') => void
   setNSpeakers: (v: number) => void
   setTtsReferencePrompts: (v: Record<string, TtsReferenceEntry>) => void
+  setTtsReferenceConditioningMode: (v: ReferenceConditioningMode) => void
   setTtsRefState: (v: { clip?: string; ready?: boolean; message?: string; region?: { start: number; duration: number } | null }) => void
   // 감정 참조: 원본 등록/변경(파생 클립 초기화 + 그 clipKey 정리), 삭제(그 clipKey 정리), 상태 패치(패널 onChange).
   registerEmotionRef: (emotionId: string, source: string) => void
@@ -250,12 +276,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   ttsEmotionRefState: {} as Record<string, EmotionRefState>,
   ttsReferencePrompts: {} as Record<string, TtsReferenceEntry>,
   ttsEngine: 'auto',
+  // 참조 conditioning 모드 — fresh 세션 기본은 안전 음성 복제(safe_xvector).
+  ttsReferenceConditioningMode: REFERENCE_CONDITIONING_DEFAULT,
   // I3: 새(fresh) 세션 기본 = auto(계약 정정8 "new session"). 복원 시 legacy(필드 부재)는 off로 강등.
   ttsTailMode: 'auto' as 'off' | 'auto',
   ttsTailPaddingMs: 120,
   ttsTailFadeMs: 8,
   ttsEmotionBoundaryMode: 'pause' as 'immediate' | 'pause',
   ttsEmotionBoundaryPauseMs: 200,
+  // fresh 세션도 legacy_v2 — v3 는 '명시적으로' 골라야 하고, 아직 고를 방법이 없다.
+  ttsExpressiveMode: EXPRESSIVE_DEFAULT_MODE,
   ttsReferenceClip: '',
   ttsRefReady: false,
   ttsRefMessage: '',
@@ -266,9 +296,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   // 새 기본 참조 = 새 파일이므로 이전 전사(default + 감정 전부)는 새 음성에 결합되면 안 된다 →
   // ttsReferencePrompts 전량 비움(불변식 3·4: stale 전사 ↔ 새 음성 결합 방지).
   setFile: (info, url) => {
-    if (get().status === 'cancelling') return  // 취소 정리 중 새 파일 처리 차단(worker 종료 확인 전 상태 교체 방지)
+    if (isCancelCleanupBusy(get().status)) return  // 취소 정리 중 새 파일 처리 차단(worker 종료 확인 전 상태 교체 방지)
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 전체 파생 클립(기본+감정) 정리
-    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsReferencePrompts: {} })
+    // 분할 마커는 파일에 종속이다. 비우지 않으면 이전 파일의 경계가 새 파일에 그대로 적용돼
+    // (더 긴 파일에서는 오류조차 없이) 완전히 틀린 지점에서 잘린다 — 감사 R2.
+    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsReferencePrompts: {} })
   },
   setMode: (mode) => set({ mode }),
   setTrimSilence: (v) => set({ trimSilence: v }),
@@ -284,8 +316,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   setDemucsModel: (v) => set({ demucsModel: v }),
   setNSpeakers: (v) => set({ nSpeakers: v }),
   setTtsReferencePrompts: (v) => set({ ttsReferencePrompts: v }),
+  setTtsReferenceConditioningMode: (v) => set({ ttsReferenceConditioningMode: v }),
   setTtsPitchCapability: (c) => set({ ttsPitchCapability: c }),
-  setTtsExpression: (patch) => set(patch),
+  // ⚠️ patch 를 그대로 흘리지 않고 허용 키만 통과시킨다. 타입은 컴파일 때만 막아 주는데,
+  //    이 setter 로 ttsExpressiveMode 를 밀어 넣을 수 있으면 'UI 스위치 없음' 보장이 런타임에서 뚫린다
+  //    (v3 합성 경로가 없는 동안 v3 를 켜는 경로가 하나라도 있으면 죽은 스위치가 된다).
+  setTtsExpression: (patch) => set(() => {
+    const allowed = ['ttsTailMode', 'ttsTailPaddingMs', 'ttsTailFadeMs',
+      'ttsEmotionBoundaryMode', 'ttsEmotionBoundaryPauseMs'] as const
+    const out: Record<string, unknown> = {}
+    const src = (patch ?? {}) as Record<string, unknown>
+    for (const k of allowed) if (src[k] !== undefined) out[k] = src[k]
+    return out
+  }),
   setTtsRefState: (v) => set((s) => ({
     ttsReferenceClip: v.clip !== undefined ? v.clip : s.ttsReferenceClip,
     ttsRefReady: v.ready !== undefined ? v.ready : s.ttsRefReady,
@@ -344,12 +387,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   clearError: () => set({ status: 'idle', error: null, errorInfo: null, progressMessage: '' }),
   // 오류 해제 + 재시도 트리거. idle로 되돌려 ProcessButton effect가 재합성 1회 실행하도록.
   // processing/cancelling 중이면 무시(재진입 방지 — 중복 클릭에도 1회만, 진행/취소 중 상태를 뒤엎지 않음).
-  bumpRetry: () => set((s) => (s.status === 'processing' || s.status === 'cancelling')
+  bumpRetry: () => set((s) => (s.status === 'processing' || isCancelCleanupBusy(s.status))
     ? {}
     : { retryNonce: s.retryNonce + 1, status: 'idle', error: null, errorInfo: null, progressMessage: '' }),
-  // 취소 요청 표시(사용자 클릭 또는 main의 audio:cancelling). processing에서, 또는 취소 실패(CANCEL_FAILED) 상태에서
-  // '다시 취소'로 재진입할 때만 cancelling으로. 그 외 상태는 무시(child 생존 중 idle 금지·엉뚱한 전환 방지).
-  beginCancelling: () => set((s) => (s.status === 'processing' || (s.status === 'error' && s.errorInfo?.code === 'CANCEL_FAILED'))
+  // 취소 정리 표시 — 오직 main의 audio:cancelling 이벤트를 받았을 때만 호출한다(계약 C2-P0.1 §4).
+  // 클릭 시점의 낙관적 전환은 금지: main이 no-op으로 끝내면 어떤 터미널 이벤트도 오지 않아 UI가 영구
+  // 'cancelling'에 갇히고, 그 사이 도착한 result/error까지 폐기됐다(이 결함의 원인).
+  // processing에서, 또는 취소 실패(CANCEL_FAILED)에서 '다시 취소'로 재진입할 때만 전환(canBeginCancelling).
+  beginCancelling: () => set((s) => canBeginCancelling(s.status, s.errorInfo?.code)
     ? { status: 'cancelling', progressMessage: '작업을 취소하고 정리하는 중…', error: null, errorInfo: null }
     : {}),
   // 취소 완료(main audio:cancelled) → idle. 부분 결과 미채택.
@@ -358,7 +403,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setCancelFailed: (childAlive) => set({
     status: 'error',
     error: '작업을 취소하지 못했습니다. 프로세스 상태를 확인하거나 앱을 종료하세요.',
-    errorInfo: { code: 'CANCEL_FAILED', childAlive: !!childAlive },
+    errorInfo: { code: CANCEL_FAILED_CODE, childAlive: !!childAlive },
     progressMessage: ''
   }),
   setPlayingTrack: (name) => set({ playingTrack: name }),
@@ -370,6 +415,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     // TTS 스냅샷 복원 — source가 사라진 감정만 재지정 필요로 표시, 나머지는 source+region 보존.
     const emotionState = reconstructEmotionRefState(o.ttsEmotionRefSources, o.ttsEmotionRefRegions, o.ttsEmotionRefs, liveness)
     const prompts = reconstructReferencePrompts(o.ttsReferencePrompts, liveness)
+    // 표현형 모드 복원 — 해석 권위는 계약 함수 하나뿐(store 가 규칙을 다시 쓰지 않는다).
+    //   필드 부재(legacy 세션) → legacy_v2, 조용히 복원해도 무방하다(오늘과 같은 동작).
+    //   값이 있는데 계약 밖(손상·수기편집 session.json) → 조용한 강등 금지. mode 는 안전한 legacy_v2 로
+    //   두되 errorCode 를 그대로 드러내, 세션을 여는 것만으로 재현이 몰래 바뀌지 않게 한다.
+    const expressive = resolveExpressiveMode(o.ttsExpressiveMode)
     // 기본 참조: 파생 override는 temp라 재시작 후 소실 → 항상 clip='' 로 복원.
     //   default source 소실 → 재지정 필요. 원본 직접 사용(override 없음)이었고 살아있음 → 준비됨.
     const defaultAlive = liveness.default === true
@@ -398,6 +448,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       ttsSilenceGap: o.ttsSilenceGap ?? 0.5,
       ttsPitch: o.ttsPitch ?? 0.0,
       ttsEngine: o.ttsEngine ?? 'auto',
+      // 참조 conditioning 모드 — 부재(legacy 세션)=safe_xvector. 계약 밖 문자열은 무변형 통과
+      // (조용한 강등 금지 — 합성 시 Python 이 INVALID_REFERENCE_CONDITIONING_MODE 로 거부).
+      ttsReferenceConditioningMode: restoreReferenceConditioningMode(o.ttsReferenceConditioningMode),
       // I3: legacy 세션(필드 부재)은 off/현행으로 복원 — 구 세션을 여는 것만으로 재현이 조용히 바뀌지 않는다
       // (정정8, 자동 마이그레이션 없음). new 세션은 저장된 값(off|auto) 그대로.
       ttsTailMode: o.ttsTailMode === 'auto' || o.ttsTailMode === 'off' ? o.ttsTailMode : 'off',
@@ -406,6 +459,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       ttsEmotionBoundaryMode: o.ttsEmotionBoundaryMode === 'immediate' || o.ttsEmotionBoundaryMode === 'pause'
         ? o.ttsEmotionBoundaryMode : 'pause',
       ttsEmotionBoundaryPauseMs: o.ttsEmotionBoundaryPauseMs ?? 200,
+      ttsExpressiveMode: expressive.mode,
       ttsEmotionRefState: emotionState,
       ttsReferencePrompts: prompts,
       ttsReferenceClip: '',            // 파생 클립은 temp — 복원 시 항상 비움(§4: stale 클립 결합 금지)
@@ -416,11 +470,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       tracks: session.tracks || [],
       outputDir: dir,
       status: 'done' as const, progress: 100, progressMessage: '이전 결과 불러옴',
-      restorable: null, playingTrack: null, error: null, errorInfo: null
+      restorable: null, playingTrack: null,
+      // 표현형 모드가 계약 밖이면 조용히 넘어가지 않는다. 트랙 복원 자체는 성공했으므로 status 는
+      // done 을 유지하고, 오류 카드로 사실을 드러낸다(닫으면 복원된 결과를 그대로 볼 수 있다).
+      ...(expressive.valid
+        ? { error: null, errorInfo: null }
+        : {
+          error: '세션에 저장된 표현형 모드 값이 올바르지 않습니다. 기본(legacy_v2)으로 복원했습니다.',
+          errorInfo: { code: expressive.errorCode ?? undefined, rawType: expressive.rawType }
+        })
     }
   }),
   reset: () => {
-    if (get().status === 'cancelling') return  // 취소 정리 중 reset 차단(worker 종료 확인 전 상태 초기화 방지)
+    if (isCancelCleanupBusy(get().status)) return  // 취소 정리 중 reset 차단(worker 종료 확인 전 상태 초기화 방지)
     // 세션 리셋 → 파생 참조 클립 폴더 삭제 + 참조/전사/결과 상태 초기화(다른 원본의 상태 잔존 방지).
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }
     set({
@@ -428,6 +490,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       tracks: [], outputDir: null, playingTrack: null, restorable: null, splitMarkers: [], splitLabels: [],
       ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null,
       ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsPitch: 0.0, ttsPitchCapability: null, resultMetadata: null,
+      // 세션 리셋은 표현형 모드도 기본으로 되돌린다(이전 세션의 모드가 새 작업에 눌러앉지 않게).
+      ttsExpressiveMode: EXPRESSIVE_DEFAULT_MODE,
+      // 참조 conditioning 모드도 안전 기본으로 — 이전 세션의 실험적 선택이 새 작업에 눌러앉지 않게.
+      ttsReferenceConditioningMode: REFERENCE_CONDITIONING_DEFAULT,
     })
   }
 }))

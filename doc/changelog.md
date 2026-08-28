@@ -1,5 +1,50 @@
 # AudioForge Changelog
 
+## 2026-08-28 — 경계 envelope: 시작·끝 급절단(클릭) 수정
+
+사용자 청취로 확정된 결함: 합성 음성이 **S자 없이 딱 켜지고 딱 꺼진다.** 상세 계측·선택 근거는
+`doc/boundary-envelope-2026-08-28.md`. 여기엔 요약만 남긴다.
+
+**원인** — 합성 산출은 sample 0 부터 이미 소리를 담고 있다(앞 10ms RMS −29~−32 dBFS, 첫 2ms 프레임이
+최대 프레임의 3.9~8.8%). 디지털 무음에서 한 샘플 만에 켜진다. 실제 녹음은 같은 자리가 0.4% 라
+켜짐이 들리지 않는다. DC 계단이 아니라 **envelope 의 계단**이 원인이다.
+
+**창 길이(실측 확정, 추측 아님)** — 기준은 "경계가 '경계 없는 같은 소재'보다 날카롭지 않을 것".
+발화 한복판을 잘라 최악의 계단을 만들고 무경계 같은 지점과 대조했다.
+- **onset 10ms(240 sample @24k)**: 계단 잔여 −15.7~−19.1 dB, 자연 경계비 −22.0~−23.4 dB.
+  여기서 멈추는 이유는 자음 — 실측된 가장 이른 고역 버스트(8ms)의 감쇠가 0.95 dB 로 1 dB 안이다.
+  12ms 면 2.6 dB 로 커진다. **자음 보존이 최우선 제약이라 이 값이 상한이다.**
+- **offset 20ms(480 sample @24k)**: 계단 잔여 −26.3~−28.0 dB. 40ms 로 늘리면 계단은 11 dB 더 줄지만
+  말끝 20ms 에너지를 5~8 dB 더 지운다.
+- 전체 에너지 손실 0.0003~0.0008 dB. **길이·sample rate·cache key 불변.**
+
+**구현**
+- `audio_finishing.py`: `compute_boundary_plan` / `apply_boundary_envelope` + smoothstep 창
+  (`3u²−2u³` / `1−smoothstep`, 양 끝점 정확히 0). 이중 적용은 `BOUNDARY_DOUBLE_APPLY` 로 차단.
+- `tts_worker._finish_and_place`: 조립이 끝난 최종 배열을 보는 **유일한 지점**이라 단문·장문 모두
+  바깥 경계에만 한 번 걸린다. 내부 chunk 결합은 무변경(청크마다 fade 넣으면 파츠 느낌·공백 발생).
+- 순서는 pitch → 경계 envelope → tail. tail plan 은 envelope **적용 전 원본**으로 산출한다
+  (`already_silent` 판정이 뒤집히지 않게).
+- metadata 에 실제 적용 샘플 수 기록: `boundary_onset_samples` / `boundary_offset_samples`.
+
+**기존 tail 처리와의 관계 — 중복 아닌 보완.** `ttsTailMode` 기본값은 `off` 이고 A2 실행도 `off` 였다
+(= 사용자가 들은 음성엔 fade 가 아예 없었다). tail 은 auto 일 때도 말끝만 다루고 시작 개념이 없다.
+경계 envelope 은 항상 적용되되, tail auto 가 실제로 cosine fade 를 걸 때만 말끝을 양보한다
+(`boundary_offset_samples = 0`). 같은 구간을 두 번 fade 하지 않는다.
+
+**기존 자동 검사가 놓친 이유** — 판정이 `head300_dbfs`/`tail300_dbfs`, 즉 **300ms RMS** 위에서 이뤄졌다.
+클릭은 5~10ms 사건이라 완전히 뭉개진다. 끝 검사는 마지막 10~15ms 의 디지털 무음이 평균을 끌어내려
+속았고(정작 계단은 끝나기 15~45ms 전), 무엇보다 **불연속 자체를 재는 항목이 없었다** —
+전부 구간 레벨이었고 레벨의 변화율이 아니었다.
+
+**테스트** — `python/test_boundary_envelope.py` 29건 신규. 인접 기존 모듈 포함 112건 통과, 실패 0.
+`test_off_path_bytes_identical_to_place_final` → `test_off_path_shape_matches_place_final` 로 개명
+(envelope 이 항상 걸리므로 바이트 동일이 아니라 길이·sr·pitch·subtype 동일이 보증이다. 단언은 강화).
+
+**미확인** — 수정 후 실청취 확인 없음(GPU 재합성 금지). 소재는 A2 3종 + 대조군 1종뿐이라 화자·언어가
+바뀌면 가장 이른 자음 버스트가 8ms 보다 앞설 수 있다. 참고로 국소 계측 기준 **smootherstep 이
+클릭 3.3~5.1 dB 더 억제하면서 자음도 더 보존**하지만, 계약(S자 ease-in-out)을 임의로 바꾸지 않았다.
+
 ## 2026-08-21 — TTS GUI/UX: 긴 참조 구간 선택(3~10초 파생 클립) + 합성 게이팅 + 문구 정정
 
 목표: 합성 백엔드는 완료됐으나 GUI/UX 보완. 특히 10초 초과 참조를 오류로 거부하지 않고 "참조 원본"으로

@@ -9,6 +9,11 @@ import type { ReactNode, CSSProperties } from 'react'
 import { ALL_EMOTIONS, EMOTION_ID_TO_LABEL } from '@/lib/emotions'
 import type { TtsEmotionRegion } from '../../shared/ttsConfig'
 import type { EmotionReferenceManagerProps } from '../types/ttsExpression'
+import {
+  describeEmotionAcoustic,
+  resolveEmotionAcoustic,
+  EMOTION_ACOUSTIC_DEFAULT_VOICE_NOTICE,
+} from '../../shared/emotionAcoustic'
 
 const ID_TO_COLOR: Record<string, string> = (() => {
   const m: Record<string, string> = {}
@@ -42,6 +47,20 @@ const STATUS_COLOR: Record<RefStatus, string> = {
 function statusOf(r: { registered: boolean; ready: boolean }): RefStatus {
   if (!r.registered) return 'default-voice'
   return r.ready ? 'registered' : 'needs-setup'
+}
+
+// 감정 음향 판정용 role — '어떤 파일이 실제로 합성에 들어가는가' 만 본다.
+// 등록만 하고 구간을 확정하지 않았으면(ready=false) 합성에 들어가는 것은 기본 목소리이므로 absent 다.
+// ⚠️ 전용 클립이 붙었다고 해서 감정이 실렸다는 뜻은 아니다 — 그 판정은 실제로 재 봐야 나온다.
+//    그래서 여기서 나오는 최선의 상태는 '확인 전'(unknown)이며, 절대 '됨'이 아니다.
+const ACOUSTIC_TONE_COLOR: Record<string, string> = {
+  ok: 'var(--cyan)',
+  warn: 'var(--amber, #f59e0b)',
+  muted: 'var(--text-muted)',
+}
+function acousticViewOf(r: { emotionId: string; registered: boolean; ready: boolean }) {
+  const role = r.registered && r.ready ? 'distinct' : 'absent'
+  return describeEmotionAcoustic(resolveEmotionAcoustic(r.emotionId, { role }))
 }
 
 // 길이는 값이 있을 때만 문자열을 만든다(없으면 ''). 셸이 실제 길이를 아직 공급하지 않는 경우
@@ -111,7 +130,11 @@ export default function EmotionReferenceManager({
         {readyCount > 0 && <span style={badge('var(--cyan)')}>준비 {readyCount}</span>}
         {needsConfirm > 0 && <span style={badge('var(--rose)')}>확정 필요 {needsConfirm}</span>}
         {registered.length === 0 && (
-          <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>대사의 [감정] 태그는 기본 참조로 합성됩니다</span>
+          // '기본 참조로 합성됩니다' 는 사실이지만 결과를 말해 주지 않는다 —
+          // 태그만 붙고 감정 차이는 거의 들리지 않는다는 것까지 말한다.
+          <span style={{ fontSize: 10, color: 'var(--amber, #f59e0b)' }}>
+            태그는 붙지만 감정 차이는 거의 들리지 않습니다
+          </span>
         )}
         <button
           type="button"
@@ -132,6 +155,11 @@ export default function EmotionReferenceManager({
           aria-label="감정 참조 관리"
           style={{ display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 4px' }}
         >
+          {/* 지금 이 도구가 감정에 대해 실제로 할 수 있는 일을 먼저 말한다(계약: emotionAcoustic). */}
+          <p style={{ fontSize: 11, lineHeight: 1.5, color: 'var(--text-secondary)', margin: 0, overflowWrap: 'anywhere' }}>
+            {EMOTION_ACOUSTIC_DEFAULT_VOICE_NOTICE}
+          </p>
+
           {rows.length === 0 && (
             <p style={{ fontSize: 11, color: 'var(--text-muted)' }}>아직 등록된 감정 음성이 없습니다. 아래에서 감정을 추가하세요.</p>
           )}
@@ -143,6 +171,7 @@ export default function EmotionReferenceManager({
             const regionText = fmtRegion(r.region)
             const status = statusOf(r)
             const durText = fmtDur(r.durationSec)
+            const acoustic = acousticViewOf(r)
             return (
               <div key={r.emotionId} style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 6 }}>
                 <div className="tts-expr-row" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -182,6 +211,14 @@ export default function EmotionReferenceManager({
                   </span>
                   )}
                 </div>
+                {/* 감정이 실제로 들리는지에 대한 한 줄. '등록됨'과 '감정이 실렸다'는 다른 말이므로
+                    등록 상태 배지와 별개로 항상 함께 렌더한다(회색으로만 죽이지 않는다). */}
+                <p style={{
+                  fontSize: 10, lineHeight: 1.5, margin: '3px 0 0',
+                  color: ACOUSTIC_TONE_COLOR[acoustic.tone], overflowWrap: 'anywhere',
+                }}>
+                  {acoustic.notice}
+                </p>
                 {/* 셸 주입 구간 편집기(onChangeRegion 소비). */}
                 {rowOpen && renderRegionEditor && (
                   <div style={{ marginTop: 6 }}>

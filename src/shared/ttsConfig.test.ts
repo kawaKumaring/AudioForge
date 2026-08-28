@@ -2,8 +2,9 @@
 // 실행: npm test  (또는 node --test src/shared/ttsConfig.test.ts)
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildTtsConfig, buildReferencePrompts, deriveRefMode, pruneStaleReferencePrompts, normalizePitchCapability, parseGenerationSummary } from './ttsConfig.ts'
+import { buildTtsConfig, buildReferencePrompts, deriveRefMode, pruneStaleReferencePrompts, normalizePitchCapability, parseGenerationSummary, finiteNumber, sampleRateOrNull, framesOrNull, REFERENCE_CONDITIONING_DEFAULT, isReferenceConditioningMode, restoreReferenceConditioningMode } from './ttsConfig.ts'
 import { TTS_PARSER_VERSION } from './ttsGrammar.ts'
+import { EXPRESSIVE_DEFAULT_MODE, EXPRESSIVE_MODE_FIELD, readExpressiveMode, resolveExpressiveMode } from './expressiveTimeline.ts'
 
 test('parseGenerationSummary: 정상 다중 chunk', () => {
   const g = parseGenerationSummary({
@@ -37,6 +38,60 @@ test('parseGenerationSummary: 잘못된 타입/비정상 chunk는 무시(crash �
   assert.equal(g.limit, null); assert.equal(g.iters, null); assert.equal(g.termination, null)
   assert.equal(g.chunks.length, 1)
   assert.equal(g.chunks[0].production_tokens, null); assert.equal(g.chunks[0].generated_iterations, 5)
+})
+
+test('parseGenerationSummary: frames/output_sample_rate 전달(가산)', () => {
+  const g = parseGenerationSummary({
+    generation_chunks: [
+      { original_segment_index: 0, chunk_index: 0, chunk_count: 1, generated_iterations: 90, generation_limit: 247, termination_reason: 'completed_before_limit', frames: 48000, output_sample_rate: 24000 },
+    ],
+  })
+  assert.ok(g)
+  assert.equal(g.chunks[0].frames, 48000)
+  assert.equal(g.chunks[0].output_sample_rate, 24000)
+  // 행 하나로 길이(초)가 계산된다 — 상위 dict 와 join 하지 않아도 된다.
+  assert.equal(g.chunks[0].frames! / g.chunks[0].output_sample_rate!, 2)
+})
+
+test('parseGenerationSummary: 구 session(새 필드 없음) → null, 절대 0 아님', () => {
+  const g = parseGenerationSummary({
+    generation_chunks: [
+      { original_segment_index: 0, chunk_index: 0, chunk_count: 1, generated_iterations: 90, generation_limit: 247, termination_reason: 'completed_before_limit' },
+    ],
+  })
+  assert.ok(g)
+  assert.equal(g.chunks[0].frames, null)
+  assert.equal(g.chunks[0].output_sample_rate, null)
+  assert.notEqual(g.chunks[0].frames, 0)
+  assert.notEqual(g.chunks[0].output_sample_rate, 0)
+})
+
+test('parseGenerationSummary: 이상 frames/sample rate 는 거절돼 null(crash 없음)', () => {
+  const base = { original_segment_index: 0, chunk_index: 0, chunk_count: 1, termination_reason: 'completed_before_limit' }
+  const g = parseGenerationSummary({
+    generation_chunks: [
+      { ...base, frames: -1, output_sample_rate: 0 },
+      { ...base, chunk_index: 1, frames: NaN, output_sample_rate: Infinity },
+      { ...base, chunk_index: 2, frames: '48000', output_sample_rate: -24000 },
+    ],
+  })
+  assert.ok(g)
+  assert.equal(g.chunks.length, 3)
+  for (const c of g.chunks) {
+    assert.equal(c.frames, null); assert.equal(c.output_sample_rate, null)
+  }
+})
+
+test('telemetry 검증기: NaN/Infinity/음수/0 rate 거절, 0 frames 는 유효', () => {
+  assert.equal(finiteNumber(NaN), null); assert.equal(finiteNumber(Infinity), null)
+  assert.equal(finiteNumber(-Infinity), null); assert.equal(finiteNumber('1'), null)
+  assert.equal(finiteNumber(0), 0)
+  for (const bad of [0, -1, NaN, Infinity, -Infinity, null, undefined, '24000']) {
+    assert.equal(sampleRateOrNull(bad), null)
+  }
+  assert.equal(sampleRateOrNull(24000), 24000)
+  for (const bad of [-1, NaN, Infinity, null, undefined, '0']) assert.equal(framesOrNull(bad), null)
+  assert.equal(framesOrNull(0), 0); assert.equal(framesOrNull(48000), 48000)
 })
 
 test('parseGenerationSummary: generation_chunks 비배열 → chunks 빈 배열', () => {
@@ -91,13 +146,13 @@ test('지정한 값은 그대로 통과한다', () => {
   assert.equal(c.ttsEngine, 'gptsovits')
 })
 
-test('직렬화 형태에 17개 TTS 키가 모두 존재한다 (필드 누락 방지; I1 parity 2 + I3 tail/emotion 5 추가)', () => {
+test('직렬화 형태에 19개 TTS 키가 모두 존재한다 (필드 누락 방지; I1 parity 2 + I3 tail/emotion 5 + 표현형 모드 1 + 참조 conditioning 1 추가)', () => {
   const c = buildTtsConfig({})
   assert.deepEqual(
     Object.keys(c).sort(),
     ['ttsEmotionBoundaryMode', 'ttsEmotionBoundaryPauseMs', 'ttsEmotionRefRegions', 'ttsEmotionRefSources',
-      'ttsEmotionRefs', 'ttsEngine', 'ttsParsedPlanSha256', 'ttsParserVersion', 'ttsPitch',
-      'ttsReferenceOverride', 'ttsReferencePrompts', 'ttsSilenceGap', 'ttsSpeed',
+      'ttsEmotionRefs', 'ttsEngine', 'ttsExpressiveMode', 'ttsParsedPlanSha256', 'ttsParserVersion', 'ttsPitch',
+      'ttsReferenceConditioningMode', 'ttsReferenceOverride', 'ttsReferencePrompts', 'ttsSilenceGap', 'ttsSpeed',
       'ttsTailFadeMs', 'ttsTailMode', 'ttsTailPaddingMs', 'ttsText']
   )
 })
@@ -310,4 +365,101 @@ test('buildTtsConfig: tailPadding/tailFade 값 스왑 없음(서로 다른 키�
   const d = buildTtsConfig({ ttsTailMode: 'auto' })
   assert.equal(d.ttsTailPaddingMs, 120)
   assert.equal(d.ttsTailFadeMs, 8)
+})
+
+// ── B2a: 표현형 모드 carrier(config) ──
+// UI 스위치는 없다. 여기서 검증하는 것은 '값이 어떻게 실려 나가는가'뿐이며,
+// 계약 밖 값의 최종 판정 권위는 Python(tts_parity)이다.
+
+test('B2a: ttsExpressiveMode 기본값 = legacy_v2(부재 = 오늘과 동일)', () => {
+  assert.equal(buildTtsConfig().ttsExpressiveMode, EXPRESSIVE_DEFAULT_MODE)
+  assert.equal(buildTtsConfig({}).ttsExpressiveMode, 'legacy_v2')
+  assert.equal(buildTtsConfig({ ttsText: '안녕' }).ttsExpressiveMode, 'legacy_v2')
+})
+
+test('B2a: 명시값은 무변형 통과(내용 기반 승격 없음)', () => {
+  // 본문에 v3 토큰이 가득해도 플래그가 모드를 정한다.
+  const v3ish = '다 끝났다!? 정말...... 그렇구나~ 마지막.'
+  assert.equal(buildTtsConfig({ ttsText: v3ish }).ttsExpressiveMode, 'legacy_v2')
+  assert.equal(buildTtsConfig({ ttsText: v3ish, ttsExpressiveMode: 'expressive_v3' }).ttsExpressiveMode, 'expressive_v3')
+  assert.equal(buildTtsConfig({ ttsExpressiveMode: 'legacy_v2' }).ttsExpressiveMode, 'legacy_v2')
+})
+
+test('B2a: 계약 밖 값을 조용히 고치지 않는다(Python이 EXPRESSIVE_MODE_INVALID로 차단)', () => {
+  // 렌더러가 여기서 legacy_v2로 되돌리면 사용자는 v3를 요청하고도 아무 신호를 못 받는다.
+  for (const bad of ['expressive_V3', 'v3', '', 'legacy', 3, true]) {
+    const c = buildTtsConfig({ ttsExpressiveMode: bad as never })
+    assert.equal(c.ttsExpressiveMode, bad as never, `${typeof bad} 값은 무변형 통과해야 한다`)
+    assert.equal(resolveExpressiveMode(c.ttsExpressiveMode).valid, false)
+    assert.equal(resolveExpressiveMode(c.ttsExpressiveMode).errorCode, 'EXPRESSIVE_MODE_INVALID')
+  }
+  // null/undefined(부재)만 기본값으로 채운다.
+  assert.equal(buildTtsConfig({ ttsExpressiveMode: undefined }).ttsExpressiveMode, 'legacy_v2')
+  assert.equal(buildTtsConfig({ ttsExpressiveMode: null as never }).ttsExpressiveMode, 'legacy_v2')
+})
+
+test('B2a: 기본값 권위가 미러가 아니라 계약 상수다(드리프트 가드)', () => {
+  // 값을 복사해 두면 계약이 바뀔 때 조용히 어긋난다 — 같은 상수를 참조하는지 고정.
+  assert.equal(EXPRESSIVE_DEFAULT_MODE, 'legacy_v2')
+  assert.equal(buildTtsConfig().ttsExpressiveMode, EXPRESSIVE_DEFAULT_MODE)
+})
+
+test('B2a: config는 session/metadata와 같은 필드 이름을 쓴다(계약 §10 단일 정본 키)', () => {
+  const c = buildTtsConfig({}) as unknown as Record<string, unknown>
+  assert.ok(Object.prototype.hasOwnProperty.call(c, EXPRESSIVE_MODE_FIELD))
+  // snake_case 별칭은 계약이 명시적으로 금지한다(권위가 둘이 되면 안 된다).
+  assert.equal(Object.prototype.hasOwnProperty.call(c, 'tts_expressive_mode'), false)
+  assert.equal(readExpressiveMode(c).mode, 'legacy_v2')
+  assert.equal(readExpressiveMode(c).source, 'explicit')
+})
+
+test('B2a: JSON 왕복 후에도 값이 보존된다(session.options 로 그대로 저장되므로)', () => {
+  const c = buildTtsConfig({ ttsExpressiveMode: 'expressive_v3' })
+  const round = JSON.parse(JSON.stringify(c)) as Record<string, unknown>
+  assert.equal(round[EXPRESSIVE_MODE_FIELD], 'expressive_v3')
+  assert.equal(readExpressiveMode(round).mode, 'expressive_v3')
+})
+
+// ── 참조 conditioning 모드(PHASE 2) — 부재→safe 기본, 계약 밖은 무변형 통과(Python 권위) ──
+
+test('참조 conditioning: 부재 → safe_xvector(안전 기본), legacy 세션 포함', () => {
+  assert.equal(REFERENCE_CONDITIONING_DEFAULT, 'safe_xvector')
+  assert.equal(buildTtsConfig().ttsReferenceConditioningMode, 'safe_xvector')
+  assert.equal(buildTtsConfig({}).ttsReferenceConditioningMode, 'safe_xvector')
+  assert.equal(buildTtsConfig({ ttsReferenceConditioningMode: undefined }).ttsReferenceConditioningMode, 'safe_xvector')
+  assert.equal(buildTtsConfig({ ttsReferenceConditioningMode: null as never }).ttsReferenceConditioningMode, 'safe_xvector')
+})
+
+test('참조 conditioning: 유효 2값은 그대로 직렬화 + JSON 왕복 보존', () => {
+  assert.equal(buildTtsConfig({ ttsReferenceConditioningMode: 'safe_xvector' }).ttsReferenceConditioningMode, 'safe_xvector')
+  const c = buildTtsConfig({ ttsReferenceConditioningMode: 'high_quality_icl' })
+  assert.equal(c.ttsReferenceConditioningMode, 'high_quality_icl')
+  const round = JSON.parse(JSON.stringify(c)) as Record<string, unknown>
+  assert.equal(round.ttsReferenceConditioningMode, 'high_quality_icl')
+})
+
+test('참조 conditioning: 계약 밖 값은 조용히 고치지 않는다(무변형 통과 — 최종 권위는 Python)', () => {
+  for (const bad of ['icl', 'SAFE_XVECTOR', 'xvector_only']) {
+    const c = buildTtsConfig({ ttsReferenceConditioningMode: bad as never })
+    assert.equal(c.ttsReferenceConditioningMode, bad as never, `'${bad}' 는 무변형 통과해야 한다`)
+    assert.equal(isReferenceConditioningMode(c.ttsReferenceConditioningMode), false)
+  }
+})
+
+test('참조 conditioning: 세션 복원 해석 — 부재/비문자열→safe, 유효값 보존, 계약 밖 문자열 통과', () => {
+  assert.equal(restoreReferenceConditioningMode(undefined), 'safe_xvector')
+  assert.equal(restoreReferenceConditioningMode(null), 'safe_xvector')
+  assert.equal(restoreReferenceConditioningMode(''), 'safe_xvector')
+  assert.equal(restoreReferenceConditioningMode(1), 'safe_xvector')
+  assert.equal(restoreReferenceConditioningMode('safe_xvector'), 'safe_xvector')
+  assert.equal(restoreReferenceConditioningMode('high_quality_icl'), 'high_quality_icl')
+  // 계약 밖 문자열은 그대로 — 합성 시 Python 이 구조화 오류로 거부한다(조용한 강등 금지).
+  assert.equal(restoreReferenceConditioningMode('weird_mode'), 'weird_mode' as never)
+})
+
+test('참조 conditioning: 유효값 판별기', () => {
+  assert.equal(isReferenceConditioningMode('safe_xvector'), true)
+  assert.equal(isReferenceConditioningMode('high_quality_icl'), true)
+  assert.equal(isReferenceConditioningMode('auto'), false)
+  assert.equal(isReferenceConditioningMode(undefined), false)
 })

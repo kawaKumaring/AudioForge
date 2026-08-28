@@ -14,24 +14,92 @@
 stdin config(JSON):
   model_path             로컬 스냅샷 디렉터리(오프라인). repo id가 아니라 경로 → HF API 호출 회피.
   device                 "cuda:0" | "cpu"
-  segments               [{index, text, ref_audio, ref_text, x_vector_only, language_name, out_path}]
+  seed                   (선택) 진단 전용 고정 seed. 없으면 미호출 = 기존 동작 그대로.
+  segments               [{index, text, ref_audio, ref_text, x_vector_only, language_name, out_path,
+                          prefix_text?}]
                          x_vector_only=True면 x-vector-only(ref_text 무시), False면 ICL(ref_text 필요)
                          language_name은 세그먼트별(Korean/English/Chinese/Japanese)
-stdout: progress/result/error JSON 라인(부모가 실시간 읽음). 각 세그먼트 wav는 raw 저장(후처리 없음).
+                         prefix_text(선택, 비어있지 않으면 controlled-prefix 모드): 이 chunk 를 생성할 때
+                         목표 대사 앞에 붙여 '의도적으로 먼저 발화시킬' 참조 전사.
+                         ★이 브리지는 controlled-prefix 를 **자르지 않는다**. 파형만으로는 목표 대사
+                         시작을 특정할 수 없고(참조 발화 내부 무음이 더 길다 — prefix_alignment §D 실측),
+                         텍스트(ASR) 정렬이 필요한데 이 venv 에는 whisper 가 없다(설치 금지).
+                         그래서 raw 를 그대로 chunk WAV 로 쓰고 needs_alignment/alignment_request 를
+                         부모에게 넘긴다. 부모(tts_worker)가 정렬·절단을 끝낸 뒤에야 chunk 가 확정된다.
+stdout: progress/stage/heartbeat/result/error JSON 라인(부모가 실시간 읽음). 각 세그먼트 wav는 raw 저장(후처리 없음).
   result.segments[*]에 prod_tokens/generation_limit/generated_iterations/termination_reason 포함.
+  controlled-prefix chunk 는 needs_alignment=True 와 alignment_request(prefix_text/target_text/
+  sample_rate)를 함께 낸다 — 부모 정렬 전용 입력이며 metadata/로그로는 절대 옮기지 않는다.
   error.code == GENERATION_LIMIT_EXCEEDED 는 상한 도달 — segment_index/generated_iterations/generation_limit(정수)만,
   전사·문장·경로는 절대 포함하지 않는다.
+
+수명주기 이벤트(C1):
+  {"type":"stage","stage":"loading"|"loaded"|"generating", ...}  단계 전이(수치/enum만)
+  {"type":"heartbeat","stage":"loading","seq":N,"elapsed_sec":F}  로딩 중 생존 신호(10~15s 간격)
+  로딩은 blocking 단일 호출(from_pretrained)이라 그 사이 stdout이 전혀 없었다 — 부모의 무응답 timeout이
+  '정상이지만 느린 콜드 로딩'을 죽일 수 있었다. heartbeat는 부모의 '비활성 timer'만 갱신하며,
+  부모가 별도로 두는 '기동 hard deadline'은 절대 연장하지 않는다(멈춘 로딩은 여전히 죽는다).
+  loaded 이후에는 heartbeat를 보내지 않는다 — 생성 구간 무응답 계약(280s)을 그대로 보존하기 위함.
 """
 import sys
 import json
+import threading
+import time
 
 import generation_limit  # 순수 계산(math만). 스크립트 디렉터리(python/)가 sys.path에 있어 import 가능.
 import text_segmenter    # 다국어 token-aware 자동 분할(계약 B). 순수 로직.
 import chunk_paths       # chunk 경로 규칙(bridge·worker 공용 순수 헬퍼).
+import prefix_alignment  # controlled-prefix 텍스트 조립 + 파형 자동 경계(순수 stdlib).
+
+# heartbeat 주기(초). 부모 무응답 timeout(280s)보다 훨씬 짧아야 하고, 로그를 덮지 않을 만큼은 길어야 한다.
+_HEARTBEAT_SEC = 12.0
+
+# emit 직렬화 락 — heartbeat 스레드와 메인 스레드가 같은 stdout에 쓴다.
+_EMIT_LOCK = threading.Lock()
+
+_T0 = time.monotonic()
 
 
 def emit(msg_type, **kwargs):
-    print(json.dumps({"type": msg_type, **kwargs}, ensure_ascii=False), flush=True)
+    """JSON 한 줄을 stdout에 원자적으로 쓴다.
+
+    print()는 본문과 end('\n')를 '두 번' write 하므로 두 스레드가 섞이면 JSON 라인이 깨진다.
+    문자열을 미리 합쳐 락 아래에서 단일 write 하는 것이 heartbeat 스레드 도입의 전제다."""
+    line = json.dumps({"type": msg_type, **kwargs}, ensure_ascii=False) + "\n"
+    with _EMIT_LOCK:
+        sys.stdout.write(line)
+        sys.stdout.flush()
+
+
+def _elapsed(clock=None):
+    return round((clock or time.monotonic)() - _T0, 2)
+
+
+def _load_with_heartbeat(load_fn, stage="loading", interval=_HEARTBEAT_SEC,
+                         clock=time.monotonic, emit_fn=None):
+    """load_fn()을 실행하는 동안 interval마다 heartbeat를 emit 한다(생존 신호).
+
+    load_fn 자체는 '호출 스레드'에서 그대로 실행된다 — 모델/토치 객체가 다른 스레드로 새지 않는다.
+    heartbeat 스레드는 daemon이며 load_fn 반환/예외 모두에서 finally로 정지·join 된다.
+    → loaded 이후에는 heartbeat가 단 한 개도 나가지 않는다(생성 구간 280s 계약 보존).
+
+    interval/clock/emit_fn 은 테스트 주입점이다(분 단위 sleep 없이 결정적으로 검증)."""
+    e = emit_fn or emit
+    stop = threading.Event()
+    state = {"seq": 0}
+
+    def _beat():
+        while not stop.wait(interval):
+            state["seq"] += 1
+            e("heartbeat", stage=stage, seq=state["seq"], elapsed_sec=_elapsed(clock))
+
+    th = threading.Thread(target=_beat, daemon=True)
+    th.start()
+    try:
+        return load_fn()
+    finally:
+        stop.set()
+        th.join(timeout=max(interval, 1.0))
 
 
 # talker 자기회귀 스텝 카운터 — 세그먼트마다 리셋. RNG/logits 불변(scores 미사용·torch/random 무호출).
@@ -101,19 +169,109 @@ def _prod_tokens(builder, proc, text):
     return n
 
 
-def _generate_segment(model, seg, builder, proc):
+def _seed_rng(seed, chunk_ordinal):
+    """진단 전용 — 고정 seed 로 talker 샘플링을 재현 가능하게 만든다.
+
+    seed 가 None 이면 아무것도 하지 않는다(production 기본값 = 기존 동작 그대로, 계약 불변).
+    chunk 마다 seed+ordinal 로 다시 심는 이유: 한 프로세스에서 여러 chunk 를 이어 생성할 때
+    'N번째 생성' 이라는 프로세스 상태가 결과에 섞이면, 참조 차이 때문인지 앞선 생성 때문인지
+    구분할 수 없다. chunk 별로 RNG 를 고정하면 그 교란이 사라진다 — 캐시·버퍼 잔류를
+    RNG 변화와 분리해 재는 것이 이 계측의 목적이다."""
+    if seed is None:
+        return None
+    import torch
+    s = (int(seed) + int(chunk_ordinal)) % (2 ** 31 - 1)
+    torch.manual_seed(s)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(s)
+    return s
+
+
+def _generation_text(seg):
+    """이 chunk 를 실제로 모델에 넘길 텍스트.
+
+    controlled-prefix(prefix_text 있음) → [참조 전사][문장 종결][개행][목표 대사] 한 덩어리.
+    그 외 → 목표 대사 그대로(기존 동작 불변)."""
+    prefix = (seg.get("prefix_text") or "").strip()
+    if not prefix:
+        return seg["text"], False
+    return prefix_alignment.build_controlled_prefix_text(prefix, seg["text"]), True
+
+
+def _instruct_probe_kwargs(model, seg, probe_context):
+    """instruct_ids 실험 probe — **production 에서는 절대 켜지지 않는다.**
+
+    이 모델(Qwen3-TTS Base)의 voice clone 경로에는 감정 지시 인자가 없다. 유일한 미검증 통로가
+    model.generate 의 instruct_ids 명명 파라미터다:
+      generate_voice_clone(**kwargs) → _merge_generate_kwargs 가 `dict(kwargs)` 로 시작해
+      알려진 샘플링 인자만 덮어쓰므로, 모르는 키는 그대로 model.generate 까지 간다.
+    → 코드 경로상 수용될 자리는 있으나 런타임 관측이 없다.
+      **accepted 도 honored 도 미확인이다** — 배선 추적은 관측이 아니다.
+    같은 vendor 파일이 `tts_model_size in "0b6"` 에 대해 "instruct is not supported" 라고
+    선언하고 있고 우리 스냅샷이 정확히 "0b6" 이다 — 그래서 이것은 기능이 아니라 실험이다.
+
+    켜지는 조건은 둘 다 만족해야 한다:
+      1) probe_context 가 'experiment' (production 이면 요청 여부와 무관하게 꺼진다)
+      2) 세그먼트에 명시적 실험 지시문이 실려 있다
+    production 경로(tts_worker)는 이 키를 쓰지 않으므로 조건 2 도 성립하지 않는다 —
+    이중 차단이며, 기본 경로에서는 generate_voice_clone 호출 인자가 한 글자도 바뀌지 않는다.
+
+    반환: (kwargs, record) — 미시도면 ({}, None). record 에 honored 는 **없다**(여기서 정할 수 없다).
+    """
+    if probe_context != "experiment":
+        return {}, None
+    text = seg.get("instruct_probe_text")
+    if not text:
+        return {}, None
+    # 토큰화 도구는 vendor 의 것을 '읽어서' 쓴다(수정하지 않는다). 부재하면 조용히 넘어가지 않고
+    # 시도했다는 사실과 실패를 그대로 남긴다 — 미시도와 거부는 다른 결론이기 때문이다.
+    builder = getattr(model, "_build_instruct_text", None)
+    tokenize = getattr(model, "_tokenize_texts", None)
+    if not callable(builder) or not callable(tokenize):
+        return {}, {"attempted": True, "accepted": False, "reason": "instruct_tokenizer_absent"}
+    ids = tokenize([builder(str(text))])
+    return {"instruct_ids": [ids[0]]}, {"attempted": True, "accepted": None,
+                                        "reason": "instruct_ids_submitted"}
+
+
+def _generate_segment(model, seg, builder, proc, probe_context="production"):
     """세그먼트 1개 합성 + 안전장치. production token → 동적 상한 → 상한 건 생성 → 반복 계측 → 종료 판정.
     반환: dict(wavs, sr, prod_tokens, generation_limit, generated_iterations, termination_reason).
-    counter 미측정(0)·상한 산정 실패는 조용히 통과하지 않고 예외(안전장치 없는 성공 금지)."""
+    counter 미측정(0)·상한 산정 실패는 조용히 통과하지 않고 예외(안전장치 없는 성공 금지).
+
+    controlled-prefix 일 때 상한은 **결합 텍스트 기준**으로 산정한다(정책 자체는 그대로 —
+    compute_max_new_tokens 를 다른 공식으로 바꾸지 않는다). 참조 발화만큼 codec 프레임이 늘어나므로
+    상한이 부족하면 termination_reason='generation_limit' 으로 드러나고 상위가 구조화 오류를 낸다
+    (잘린 결과를 조용히 채택하지 않는다).
+
+    probe_context: 'production'(기본) | 'experiment'. 기본값에서는 instruct probe 가 완전히 꺼져
+    generate_voice_clone 호출 인자가 이전과 동일하다(동작 불변)."""
     xvo = bool(seg.get("x_vector_only", False))
     ref_text = "" if xvo else (seg.get("ref_text") or "")
-    prod_tokens = _prod_tokens(builder, proc, seg["text"])
+    gen_text, controlled_prefix = _generation_text(seg)
+    prod_tokens = _prod_tokens(builder, proc, gen_text)
     seg_limit = generation_limit.compute_max_new_tokens(prod_tokens)
+    probe_kwargs, probe = _instruct_probe_kwargs(model, seg, probe_context)
     _COUNTER["n"] = 0
+    # 이 한 호출이 곧 'blocking 생성 구간'이다 — 그 사이 stdout 이 없으므로 production 비활성
+    # timeout 280s 가 재는 창과 정확히 같은 구간이다. 그래서 상한 정책 판단에 쓸 수 있는
+    # seconds_per_iteration 은 이 구간만 재야 한다.
+    #
+    # tts_worker 의 elapsed_seconds 로 대신할 수 없다: 그 타이머는 장치 선택·참조 평가·모델
+    # 로딩·결합·pitch·원자적 배치까지 포함한 '작업 전체' 시간이다. 또 generated_iterations 가
+    # chunk 단위이므로 elapsed 도 chunk 단위여야 나눗셈이 의미를 갖는다.
+    _t_gen = time.monotonic()
+    # probe_kwargs 는 기본 경로에서 항상 빈 dict 다 → 호출 인자·동작 불변.
     wavs, sr = model.generate_voice_clone(
-        text=seg["text"], language=seg.get("language_name", "Korean"),
+        text=gen_text, language=seg.get("language_name", "Korean"),
         ref_audio=seg["ref_audio"], ref_text=ref_text,
-        x_vector_only_mode=xvo, max_new_tokens=seg_limit)
+        x_vector_only_mode=xvo, max_new_tokens=seg_limit, **probe_kwargs)
+    gen_elapsed = round(time.monotonic() - _t_gen, 3)
+    if probe is not None and probe.get("accepted") is None:
+        # 예외 없이 여기까지 왔다 = 엔진이 instruct_ids 를 받아들였다(accepted).
+        # ⚠️ honored 는 여기서 절대 정하지 않는다 — 소리가 실제로 달라졌는지는 이 자리에서 알 수 없다.
+        #    판정은 오프라인 분석기가 emotion_acoustic.emotion_result_follow 로 별도 측정해야 한다.
+        probe = dict(probe, accepted=True, reason="instruct_ids_accepted")
     iters = _COUNTER["n"]
     if iters <= 0:
         # 계측 래퍼가 동작하지 않은 것 — 상한이 실제로 걸렸는지 확인 불가. 성공 처리 금지.
@@ -122,7 +280,10 @@ def _generate_segment(model, seg, builder, proc):
     reason = generation_limit.classify_termination(iters, seg_limit)
     return {"wavs": wavs, "sr": sr, "prod_tokens": prod_tokens,
             "generation_limit": seg_limit, "generated_iterations": iters,
-            "termination_reason": reason}
+            "termination_reason": reason, "generation_elapsed_sec": gen_elapsed,
+            "controlled_prefix": controlled_prefix,
+            # 실험 probe 결과(기본 경로에서는 항상 None). honored 키는 존재하지 않는다.
+            "instruct_probe": probe}
 
 
 class BridgeSegmentTooLong(Exception):
@@ -181,9 +342,12 @@ def _finalize_wav(wavs, sr, seg_index, chunk_index):
     return d
 
 
-def _generate_plan(model, plan, builder, proc, n_segments, progress=None):
+def _generate_plan(model, plan, builder, proc, n_segments, progress=None, seed=None,
+                   probe_context="production"):
     """chunk plan을 순서대로 생성. total_chunks 기준 진행률(시작/완료). chunk 상한 도달 → BridgeGenerationLimit.
-    progress(percent, seg_index, n_segments, chunk_index, chunk_count, phase) 콜백(수치만)."""
+    progress(percent, seg_index, n_segments, chunk_index, chunk_count, phase) 콜백(수치만).
+    seed 는 진단 전용(None이면 미호출 = 기존 동작).
+    probe_context: 기본 'production' — instruct probe 가 꺼진 상태이며 동작이 이전과 동일하다."""
     import soundfile as sf
     total = len(plan)
     completed = 0
@@ -196,11 +360,24 @@ def _generate_plan(model, plan, builder, proc, n_segments, progress=None):
             progress(30 + (completed * 60) // total, int(seg["index"]), n_segments, ci, cc, "start")
         cseg = dict(seg)         # 원본 속성 상속 — text만 chunk로 교체
         cseg["text"] = item["text"]
-        g = _generate_segment(model, cseg, builder, proc)
+        applied_seed = _seed_rng(seed, completed)
+        g = _generate_segment(model, cseg, builder, proc, probe_context)
         if g["termination_reason"] == "generation_limit":
             raise BridgeGenerationLimit(int(seg["index"]), int(ci), seg.get("emotion_id"),
                                         int(g["generated_iterations"]), int(g["generation_limit"]))
         d = _finalize_wav(g["wavs"], g["sr"], seg["index"], ci)
+        alignment_request = None
+        if g.get("controlled_prefix"):
+            # ★여기서 자르지 않는다. 이 raw 는 **중간 산출물**이지 최종 결과가 아니다.
+            # 파형만으로는 목표 대사 시작을 특정할 수 없다(실측: 참조 발화 내부의 문장 간 무음이
+            # 더 길어서 전역 탐색이 0.87s 를 목표 onset 으로 오검출하고 ok=True 로 통과했다 —
+            # prefix_alignment §D). 위치는 텍스트(ASR) 정렬로 먼저 잡아야 하는데 이 venv 에는
+            # whisper 가 없다(설치하지 않는다). 그래서 정렬·절단은 부모가 한다.
+            # 부모는 이 subprocess 가 끝난 뒤에 ASR 을 부르므로 Qwen 과 whisper 는 동시 적재되지 않는다.
+            alignment_request = {"needs_alignment": True,
+                                 "prefix_text": (seg.get("prefix_text") or ""),
+                                 "target_text": item["text"],
+                                 "sample_rate": int(g["sr"])}
         cpath = chunk_paths.chunk_out_path(seg["out_path"], ci)  # 결정적·job_dir 내부
         sf.write(cpath, d, int(g["sr"]))
         completed += 1
@@ -210,6 +387,18 @@ def _generate_plan(model, plan, builder, proc, n_segments, progress=None):
                      "emotion_id": seg.get("emotion_id"), "production_tokens": int(g["prod_tokens"]),
                      "generation_limit": int(g["generation_limit"]),
                      "generated_iterations": int(g["generated_iterations"]),
+                     # blocking 생성 구간만 잰 값(가산). 없으면 None — 0 으로 위조하지 않는다.
+                     "generation_elapsed_sec": g.get("generation_elapsed_sec"),
+                     "applied_seed": applied_seed,   # 진단 전용. seed 미지정이면 None.
+                     # controlled-prefix 이면 raw 그대로 기록됐고 정렬·절단이 남아 있다.
+                     # 절단 기록(reference_alignment/reference_cut_sample)은 부모가 정렬을 끝낸 뒤
+                     # 채운다 — 여기서 None 인 채로 결과가 확정되지 않는다(_align_icl_chunks 가 강제).
+                     "controlled_prefix": bool(g.get("controlled_prefix")),
+                     "needs_alignment": alignment_request is not None,
+                     # 정렬 입력(부모 전용, 1회 소비 후 폐기). bridge stdout → 부모 메모리까지만 산다.
+                     # metadata/로그/세션 어디에도 옮기지 않는다(_align_icl_chunks 가 pop 한다).
+                     "alignment_request": alignment_request,
+                     "reference_alignment": None, "reference_cut_sample": None,
                      "termination_reason": g["termination_reason"], "status": "ok"})
         if progress:
             progress(30 + (completed * 60) // total, int(seg["index"]), n_segments, ci, cc, "done")
@@ -225,11 +414,20 @@ def _load_model(model_path, device):
     from qwen_tts import Qwen3TTSModel
     dtype = torch.bfloat16 if str(device).startswith("cuda") else torch.float32
     errors = {}
-    for attn in ("sdpa", "eager"):
+    # sdpa 실패 시 eager 재시도 = '두 번째 전체 로딩'이다. 예전에는 두 시도 모두 stdout이 없어
+    # "한 번 느린 로딩"과 "sdpa 실패 후 두 번째 시도"를 사후에 구분할 수 없었다.
+    # attempt/attn 을 담은 stage=loading 이벤트가 그 모호성을 없앤다(재시도가 눈에 보인다).
+    for attempt, attn in enumerate(("sdpa", "eager"), start=1):
         try:
-            m = Qwen3TTSModel.from_pretrained(
-                model_path, device_map=device, dtype=dtype,
-                attn_implementation=attn, local_files_only=True)
+            emit("stage", stage="loading", attn=attn, attempt=attempt, device=str(device),
+                 elapsed_sec=_elapsed())
+            m = _load_with_heartbeat(
+                lambda: Qwen3TTSModel.from_pretrained(
+                    model_path, device_map=device, dtype=dtype,
+                    attn_implementation=attn, local_files_only=True),
+                stage="loading")
+            emit("stage", stage="loaded", attn=attn, attempt=attempt, dtype=str(dtype),
+                 elapsed_sec=_elapsed())
             emit("progress", percent=25, message=f"모델 로딩 완료 (attn={attn}, dtype={dtype})")
             return m
         except Exception as e:
@@ -253,6 +451,9 @@ def main():
     cfg = json.loads(sys.stdin.read())
     model_path = cfg["model_path"]  # 로컬 스냅샷 디렉터리(오프라인)
     device = cfg.get("device", "cuda:0")
+    # instruct probe 컨텍스트. production 워커(tts_worker)는 이 키를 보내지 않으므로 항상 'production'
+    # 이고, 그 값에서는 probe 가 켜지는 길이 없다(실험 하네스만 'experiment' 를 명시한다).
+    probe_context = cfg.get("probe_context", "production")
     segments = cfg.get("segments", [])
     if not segments:
         emit("error", message="합성할 세그먼트가 없습니다.")
@@ -280,8 +481,12 @@ def main():
             emit("progress", percent=percent,
                  message=f"합성 중... (문장 {seg_index + 1}/{n_seg}, 조각 {ci + 1}/{cc} {tag})")
 
+        # loaded → generating 전이. 이 시점 이후 heartbeat는 없고, 부모의 무응답 280s 계약이
+        # 기존 그대로 적용된다(생성 구간 안전장치는 이 변경으로 완화되지 않는다).
+        emit("stage", stage="generating", elapsed_sec=_elapsed())
         try:
-            done = _generate_plan(model, plan, builder, proc, n, progress=_progress)
+            done = _generate_plan(model, plan, builder, proc, n, progress=_progress,
+                                   seed=cfg.get("seed"), probe_context=probe_context)
         except BridgeGenerationLimit as e:
             emit("error", code="GENERATION_LIMIT_EXCEEDED", segment_index=e.segment_index,
                  chunk_index=e.chunk_index, emotion_id=e.emotion_id,

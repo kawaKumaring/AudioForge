@@ -12,7 +12,9 @@ Engine selection:
 
 import os
 import re
+import time
 import chunk_paths   # chunk 경로 규칙(bridge와 공용) — 결정적 경로 정확 일치 검증
+import semantic_chunk_planner   # 의미 경계 분류 + 무음 예산(C2). 순수 로직(stdlib only).
 from audio_utils import emit, get_device, find_ffmpeg, patch_torchaudio
 
 # ── Emotion definitions ──
@@ -378,7 +380,23 @@ _QWEN_SNAPSHOT = os.path.join(_QWEN_HF_HOME, "hub",
 _QWEN_REQUIRED = ["config.json", "model.safetensors", "vocab.json", "merges.txt",
                   "tokenizer_config.json", os.path.join("speech_tokenizer", "model.safetensors")]
 # 무응답(진행 없음) 인용 timeout. Electron watchdog(무진행 5분)보다 짧게 잡아 Python이 먼저 정리·오류.
+# ※ 이 값은 '생성 구간' 계약이다(계약 A 산정 근거가 이 280에 묶여 있다) — 절대 키우지 않는다.
 _QWEN_INACTIVITY_SEC = 280
+
+# 기동(모델 로딩) 전용 hard deadline. 무응답 timeout과 '다른 축'이다:
+#   - 무응답 timeout: 마지막 stdout 이후 경과. heartbeat가 갱신한다.
+#   - 기동 deadline : run_job 진입 이후 총 경과. heartbeat가 절대 연장하지 못한다.
+# 로딩은 blocking 단일 호출이라 예전에는 stdout이 전혀 없어, '정상이지만 느린 콜드 로딩'과
+# '멈춘 로딩'을 구분할 수 없었다. heartbeat가 생존을 증명하므로 무응답 timeout을 키우는 대신
+# 별도의 유한한 기동 예산을 둔다 — heartbeat가 계속 와도 이 예산을 넘기면 종료한다.
+_QWEN_STARTUP_DEADLINE_SEC = 600
+
+# 로딩 heartbeat → Electron progress 변환 구간(percent).
+# Electron watchdog(src/main/ipc/audio.ipc.ts WATCHDOG_MS=300000)은 'progress'에서만 리셋되므로,
+# heartbeat를 progress로 옮기지 않으면 기동 deadline을 아무리 늘려도 300s에 Electron이 먼저 죽인다.
+# 브리지가 로딩 완료 시 percent=25를 쓰므로 이 구간은 25 '미만'으로만 움직이고 되돌아가지 않는다.
+_QWEN_LOAD_PCT_MIN = 12
+_QWEN_LOAD_PCT_MAX = 24
 
 
 def _kill_proc_tree(proc):
@@ -393,6 +411,28 @@ def _kill_proc_tree(proc):
             proc.kill()
         except Exception:
             pass
+
+
+class QwenLoadTimeoutError(RuntimeError):
+    """모델 로딩이 기동 hard deadline을 초과(C1). heartbeat가 계속 도착해도 종료한다.
+
+    보안: 정수/enum만 담는다 — 경로·전사·문장 금지.
+    재시도 대상이 아니다: CUDA OOM이 아니므로 상위(_synthesize_qwen_job)의 CPU 1회 재시도
+    분기에 걸리지 않고 그대로 전파된다(자동 재시도·자동 CPU 강등·모델 재다운로드 없음)."""
+
+    def __init__(self, elapsed_sec, deadline_sec, heartbeats_seen, last_stage):
+        self.elapsed_sec = elapsed_sec
+        self.deadline_sec = deadline_sec
+        self.heartbeats_seen = heartbeats_seen
+        self.last_stage = last_stage
+        self.error_payload = {
+            "code": "QWEN_LOAD_TIMEOUT", "elapsed_sec": int(elapsed_sec),
+            "deadline_sec": int(deadline_sec), "heartbeats_seen": int(heartbeats_seen),
+            "last_stage": last_stage,
+        }
+        super().__init__(
+            f"Qwen 모델 로딩이 기동 제한 {int(deadline_sec)}s를 초과했습니다"
+            f"(경과 {int(elapsed_sec)}s, 생존 신호 {int(heartbeats_seen)}회) — 프로세스 종료")
 
 
 class QwenGenerationLimitError(RuntimeError):
@@ -410,6 +450,25 @@ class QwenGenerationLimitError(RuntimeError):
         super().__init__(
             f"GENERATION_LIMIT_EXCEEDED(seg={segment_index}, chunk={chunk_index}, "
             f"emotion={emotion_id}, iters={generated_iterations}, limit={generation_limit})")
+
+
+class QwenIclBoundaryError(RuntimeError):
+    """controlled-prefix 생성물에서 목표 대사 시작 경계를 확정하지 못했다(fail-closed).
+
+    발생 지점은 **부모의 정렬 단계**(_align_icl_chunks)다 — bridge 는 더 이상 자르지 않으므로
+    경계 판정을 하지 않는다. boundary_reason 은 prefix_alignment / icl_alignment 의 사유 코드.
+    보안: segment/chunk index·emotion_id·경계 사유 코드만 — 전사·대사·경로 없음."""
+
+    def __init__(self, segment_index, chunk_index, emotion_id, boundary_reason):
+        self.segment_index = segment_index
+        self.chunk_index = chunk_index
+        self.emotion_id = emotion_id
+        self.boundary_reason = boundary_reason
+        # 진단 보존 폴더 '이름'(절대경로 아님). 보존에 실패했으면 None 으로 남는다.
+        self.diagnostic_dir_name = None
+        super().__init__(
+            f"ICL_BOUNDARY_ALIGNMENT_FAILED(seg={segment_index}, chunk={chunk_index}, "
+            f"emotion={emotion_id}, reason={boundary_reason})")
 
 
 class QwenTextSegmentTooLongError(RuntimeError):
@@ -462,13 +521,28 @@ class QwenTTSEngine(TTSEngine):
     def synthesize_segment(self, text, ref_audio, emotion_id, speed, output_path):
         raise RuntimeError("QwenTTSEngine은 배치(run_job) 전용입니다. synthesize() 배치 경로를 사용하세요.")
 
-    def run_job(self, segments, device):
+    def run_job(self, segments, device, *, inactivity_sec=None, startup_deadline_sec=None,
+                monotonic=None):
         """모델 1회 로딩 후 전 세그먼트 합성. Popen으로 stdout JSON을 실시간 읽어 즉시 progress emit.
-        무응답 시 프로세스 종료·정리 후 명확한 오류. 오프라인(HF_HOME 고정 + bridge local_files_only)."""
+        무응답 시 프로세스 종료·정리 후 명확한 오류. 오프라인(HF_HOME 고정 + bridge local_files_only).
+
+        두 개의 독립된 시계(C1):
+          - 비활성 timer(inactivity_sec, 기본 280): 마지막 stdout 라인 이후 경과. heartbeat가 갱신한다.
+          - 기동 deadline(startup_deadline_sec, 기본 600): run_job 진입 이후 총 경과.
+            stage=loaded 이전에만 적용되고 heartbeat로 절대 연장되지 않는다.
+        stage=loaded 이후에는 기존 무응답 계약(280s)이 '그대로' 적용된다 — 생성 구간은 변경 없음.
+
+        inactivity_sec/startup_deadline_sec/monotonic 은 keyword-only 테스트 주입점이다
+        (production 호출부는 위치 인자 2개 그대로 — 기존 run_job stub들이 계속 유효하다)."""
         import subprocess
         import threading
         import queue
         import json as _json
+        inactivity_sec = _QWEN_INACTIVITY_SEC if inactivity_sec is None else inactivity_sec
+        startup_deadline_sec = (_QWEN_STARTUP_DEADLINE_SEC if startup_deadline_sec is None
+                                else startup_deadline_sec)
+        _now = monotonic or time.monotonic
+        _t0 = _now()
         # 로컬 스냅샷 '경로'로 로드(repo id 아님) → 오프라인에서 HF API 호출 회피. 자동 다운로드 금지.
         cfg = {"model_path": _QWEN_SNAPSHOT, "device": device, "segments": segments}
         env = {**os.environ, "HF_HOME": _QWEN_HF_HOME, "HF_HUB_OFFLINE": "1",
@@ -515,12 +589,39 @@ class QwenTTSEngine(TTSEngine):
         err_msg = None
         gl_err = None   # GENERATION_LIMIT_EXCEEDED(구조화) — 감정 ID 매핑은 상위에서
         tsl_err = None  # TEXT_SEGMENT_TOO_LONG(구조화)
+        loaded = False          # stage=loaded 관측 여부. True면 기동 deadline은 더 이상 적용되지 않는다.
+        stage = "starting"      # 마지막 관측 stage(오류 payload용, 비민감 enum)
+        hb = {"seen": 0, "pct": _QWEN_LOAD_PCT_MIN}  # heartbeat 수신 수 / 마지막 로딩 percent(단조 비감소)
+
+        def _load_timeout():
+            """기동 deadline 초과 — 자식 트리 종료 후 구조화 오류."""
+            _kill_proc_tree(proc)
+            return QwenLoadTimeoutError(_now() - _t0, startup_deadline_sec, hb["seen"], stage)
+
+        def _no_response():
+            """무응답 초과 — 기존 계약 문구·동작 그대로. code만 구조화해 덧붙인다."""
+            _kill_proc_tree(proc)
+            e = RuntimeError(f"Qwen 무응답 {inactivity_sec}s 초과 — 프로세스 종료")
+            e.error_payload = {"code": "QWEN_NO_RESPONSE",
+                               "inactivity_sec": int(inactivity_sec), "last_stage": stage}
+            return e
+
         while True:
+            if loaded:
+                wait = inactivity_sec
+            else:
+                # heartbeat가 아무리 와도 이 남은 예산은 늘지 않는다(요구사항 7).
+                remain = startup_deadline_sec - (_now() - _t0)
+                if remain <= 0:
+                    raise _load_timeout()
+                wait = min(inactivity_sec, remain)
             try:
-                line = q.get(timeout=_QWEN_INACTIVITY_SEC)
+                line = q.get(timeout=wait)
             except queue.Empty:
-                _kill_proc_tree(proc)
-                raise RuntimeError(f"Qwen 무응답 {_QWEN_INACTIVITY_SEC}s 초과 — 프로세스 종료")
+                # wait가 기동 예산 잔량이라 짧았을 수 있다 — 어느 축이 터졌는지 명확히 구분한다.
+                if not loaded and (_now() - _t0) >= startup_deadline_sec:
+                    raise _load_timeout()
+                raise _no_response()
             if line is None:
                 break
             line = line.strip()
@@ -533,6 +634,25 @@ class QwenTTSEngine(TTSEngine):
             t = msg.get("type")
             if t == "progress":
                 emit("progress", percent=msg.get("percent", 0), message=msg.get("message", ""))  # 실시간
+            elif t == "stage":
+                st = msg.get("stage")
+                if st in ("loading", "loaded", "generating"):
+                    stage = st
+                if st == "loaded":
+                    loaded = True   # 이 시점부터 기동 deadline 해제, 무응답 280s 계약 그대로
+                elif st == "loading" and int(msg.get("attempt") or 1) > 1:
+                    # sdpa 실패 후 eager 재시도 = 두 번째 전체 로딩. 사용자에게 보이게 한다
+                    # (한 번 느린 로딩과 재시도를 사후에 구분할 수 있어야 한다).
+                    emit("progress", percent=hb["pct"],
+                         message="모델 로딩 재시도 중... (attn=%s)" % (msg.get("attn"),))
+            elif t == "heartbeat":
+                hb["seen"] += 1
+                # 비활성 timer만 갱신된다(q.get이 반환됐으므로 자동). 기동 deadline은 손대지 않는다.
+                # Electron watchdog(progress에서만 리셋)을 살리기 위해 progress로 옮긴다.
+                hb["pct"] = max(hb["pct"], min(_QWEN_LOAD_PCT_MAX, _QWEN_LOAD_PCT_MIN + hb["seen"]))
+                emit("progress", percent=hb["pct"],
+                     message="모델 로딩 중... (%d초 경과 — 첫 실행은 오래 걸릴 수 있습니다)"
+                             % (int(_now() - _t0),))
             elif t == "error":
                 code = msg.get("code")
                 if code == "GENERATION_LIMIT_EXCEEDED":
@@ -644,6 +764,12 @@ ENGINES = {
     "gptsovits": GPTSoVITSEngine,
 }
 
+# 엔진 선택 계약(구조화 오류 코드). 명시 요청은 조용히 대체되지 않는다 — 자동(auto/None) 선택과 구분.
+ENGINE_UNAVAILABLE = "ENGINE_UNAVAILABLE"          # 지목한 엔진을 쓸 수 없음(대체 금지, 실패로 종료)
+ENGINE_NAME_INVALID = "ENGINE_NAME_INVALID"        # 알 수 없는 엔진 이름(기본 엔진으로 흘리지 않음)
+# 배치형 Qwen('qwen3')은 ENGINES 레지스트리(문장별 엔진)에 없으므로 따로 합집합을 만든다.
+_VALID_ENGINE_NAMES = frozenset(ENGINES) | {"qwen3"}
+
 # Engine instances are cached so loaded models survive across segments —
 # creating a new instance per sentence reloads the model every time.
 _engine_cache = {}
@@ -675,9 +801,16 @@ def _detect_language(text):
 def _select_engine(text, preferred_engine=None):
     """Select best engine for the given text.
     Priority: user preference > GPT-SoVITS (ko/ja) > Kokoro (ja/zh) > F5-TTS (en)
+
+    명시 요청이 문장별 레지스트리에 있으면 그것을 쓴다. 알 수 없는 이름은 '자동'으로 흘리지 않고
+    검증 오류로 끊는다(조용한 기본 엔진 대체 금지). auto/None 만 언어 기반 자동 선택이다.
     """
     if preferred_engine and preferred_engine in ENGINES:
         return _get_engine(preferred_engine)
+    if preferred_engine not in (None, "", "auto") and preferred_engine not in _VALID_ENGINE_NAMES:
+        e = RuntimeError("알 수 없는 음성 엔진 이름입니다 — 지원되는 엔진을 선택하세요.")
+        e.error_payload = {"code": ENGINE_NAME_INVALID}
+        raise e
 
     lang = _detect_language(text)
 
@@ -701,12 +834,22 @@ def _select_engine(text, preferred_engine=None):
 def _select_job_engine(text, preferred_engine=None):
     """작업 전체를 배치형 Qwen으로 라우팅할지 결정. 반환 'qwen3'(배치) 또는 None(문장별 기존 경로).
     한국어 Auto 우선순위: Qwen3 → (미설치 시) 기존 GPT-SoVITS→폴백 경로."""
+    # 엔진명 검증 — 알 수 없는 값을 '자동'으로 흘려보내지 않는다. 사용자가 특정 엔진을 지목했는데
+    # 오타/구값 때문에 조용히 다른 엔진이 쓰이면, 결과물만 보고는 무엇으로 합성됐는지 알 수 없다.
+    if preferred_engine not in (None, "", "auto") and preferred_engine not in _VALID_ENGINE_NAMES:
+        e = RuntimeError("알 수 없는 음성 엔진 이름입니다 — 지원되는 엔진을 선택하세요.")
+        e.error_payload = {"code": ENGINE_NAME_INVALID}
+        raise e
+
     qwen = _get_qwen_engine()
     if preferred_engine == "qwen3":
         if qwen.available():
             return "qwen3"
-        emit("progress", percent=4, message="Qwen 미설치 → GPT-SoVITS/폴백으로 전환")
-        return None
+        # 명시적으로 Qwen 을 지목했는데 쓸 수 없다 → 다른 엔진(kokoro 등)·CPU 로 조용히 대체하지 않는다.
+        # 대체하면 사용자는 '요청한 엔진으로 합성됐다'고 오해한다. 자동 선택(auto)과는 다른 계약이다.
+        e = RuntimeError("Qwen 음성 엔진을 사용할 수 없습니다 — 런타임/모델 구성을 확인하세요.")
+        e.error_payload = {"code": ENGINE_UNAVAILABLE, "requested_engine": "qwen3"}
+        raise e
     if preferred_engine:  # 다른 엔진 명시 → 문장별 기존 경로
         return None
     if _detect_language(text) == "ko" and qwen.available():
@@ -725,22 +868,225 @@ _QWEN_REF_TEXT_CACHE_MAX = 128
 _QWEN_MIN_FREE_MB = 4000
 
 
-def _resolve_qwen_ref_text(ref_audio, overrides_by_path, warned):
+# Qwen 참조 자동 전사에 쓰는 Whisper 모델 이름. GPT 경로와 같은 'small'을 써서 결과가 일치한다.
+_QWEN_REF_TRANSCRIBE_MODEL = "small"
+
+# 강등 사유 코드(C2). 앞 두 개는 reference_transcript의 issue code를 그대로 재사용한다.
+#   TRANSCRIPTION_FAILED    전사 호출/파싱 자체가 실패
+#   EMPTY_TRANSCRIPT        전사가 비었음
+#   REF_FREE_USER           사용자가 명시적으로 ref-free 선택(실패 아님 — 의도된 강등)
+#   TRANSCRIPT_UNAVAILABLE  status는 비-ok인데 error_code가 없는 경우의 보수적 기본값
+REF_DEGRADE_TRANSCRIPT_UNAVAILABLE = "TRANSCRIPT_UNAVAILABLE"
+
+# transcript_status 값: ok | empty | failed | manual | user_ref_free
+# 수동 전사 정렬 검증 결과 캐시 — 같은 (참조 파일, 수동 문장)이면 감정마다 다시 전사하지 않는다.
+_qwen_manual_verify_cache = {}
+
+# 수동 프롬프트 검증 실패 사유 코드
+REF_MANUAL_MISALIGNED = "REF_MANUAL_MISALIGNED"        # 오디오에 없는 말이 수동 전사에 있다(또는 반대)
+REF_MANUAL_UNVERIFIABLE = "REF_MANUAL_UNVERIFIABLE"    # 전사 자체가 실패해 검증할 수 없다
+
+
+# ── 참조 conditioning 모드(단일 권위 계약, 참조혼입 대응) ──
+# renderer store → config(ttsReferenceConditioningMode) → separate.py → synthesize() 전 구간이
+# 이 한 값을 그대로 나른다. job 단위 고정: 실행 중 어떤 segment 에서도 모드가 바뀌지 않으며,
+# 자동 ICL fallback·x-vector 실패 시 조용한 전환이 없다(실패는 명시 실패).
+#   safe_xvector     : 안전 음성 복제. 모든 segment 를 x_vector_only=True 로 강제하고 참조 전사
+#                      (ref_text)를 vendor 호출에 전달하지 않는다 → 참조 대사 혼입(conditioning echo)이
+#                      구조적으로 없다. 음색·감정은 다소 평탄할 수 있다(강등이 아니라 모드의 특성).
+#   high_quality_icl : 참조 억양 반영(ICL) + controlled-prefix. 참조 전사를 목표 대사 앞에 붙여
+#                      '의도적으로' 먼저 발화시킨다. 그 다음이 핵심인데, **파형만으로는 목표 대사
+#                      시작을 특정할 수 없다** — 참조 발화 내부의 문장 간 무음이 진짜 경계보다 길 수
+#                      있어 전역 탐색은 참조 안쪽을 목표 onset 으로 오검출한다(실측, prefix_alignment §D).
+#                      그래서 부모가 ASR 로 목표 대사의 anchor 위치를 먼저 특정하고(_align_icl_chunks),
+#                      그 좁은 창 안에서만 파형 경계 규칙을 적용해 앞을 잘라낸다. bridge 가 낸 raw 는
+#                      중간 산출물이고, 이 정렬을 통과해야만 결과가 확정된다. 어느 신호든 어긋나면
+#                      결과를 발행하지 않고 실패한다
+#                      (ICL_BOUNDARY_ALIGNMENT_FAILED — safe_xvector 로 조용히 갈아타지 않는다).
+REF_CONDITIONING_SAFE_XVECTOR = "safe_xvector"
+REF_CONDITIONING_HIGH_QUALITY_ICL = "high_quality_icl"
+REF_CONDITIONING_MODES = (REF_CONDITIONING_SAFE_XVECTOR, REF_CONDITIONING_HIGH_QUALITY_ICL)
+INVALID_REFERENCE_CONDITIONING_MODE = "INVALID_REFERENCE_CONDITIONING_MODE"
+# high_quality_icl 실패 사유(비민감 code). 전자는 경계 검출 실패, 후자는 붙일 참조 전사 자체가 없음.
+ICL_BOUNDARY_ALIGNMENT_FAILED = "ICL_BOUNDARY_ALIGNMENT_FAILED"
+ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE = "ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE"
+# 두 실패 모두 같은 안내로 끝난다 — 지금 결과가 필요하면 안전 모드를 고르라는 것.
+_ICL_SAFE_MODE_HINT = ("'안전 음성 복제' 모드를 선택하면 참조 대사 혼입 없이 바로 합성할 수 있습니다.")
+
+# ── 모드의 '품질 특성'(강등과는 다른 축) ──────────────────────────────────────
+# reference_conditioning_degraded 는 **'요청한 모드를 그대로 실행했는가'** 만 말한다(조용한 대체
+# 여부). 그 값이 False 라고 해서 '품질 제약이 없다'는 뜻이 아니다 — safe_xvector 는 설계상
+# 참조의 억양/감정을 옮기지 않는 **안전 모드**이고, 그건 실패가 아니라 그 모드의 특성이다.
+# 두 사실이 한 필드에 뭉개지면 metadata 만 보고 "제약 없음"으로 오독된다. 그래서 특성은 별도
+# 필드(reference_conditioning_constraints)에 비민감 enum 토큰으로 따로 적는다.
+# UI 문구("참조 대사 섞임 없음 · 감정 표현은 다소 평탄할 수 있음")와 같은 사실을 가리킨다.
+CONSTRAINT_PROSODY_NOT_TRANSFERRED = "reference_prosody_not_transferred"
+CONSTRAINT_EMOTION_MAY_FLATTEN = "emotion_expression_may_flatten"
+_REF_CONDITIONING_CONSTRAINTS = {
+    REF_CONDITIONING_SAFE_XVECTOR: (CONSTRAINT_PROSODY_NOT_TRANSFERRED,
+                                    CONSTRAINT_EMOTION_MAY_FLATTEN),
+    REF_CONDITIONING_HIGH_QUALITY_ICL: (),
+}
+
+
+def reference_conditioning_constraints(mode):
+    """그 모드가 **설계상** 갖는 품질 제약 토큰 목록(빈 목록 = 알려진 제약 없음).
+
+    강등(degraded)과 구분하기 위한 별도 축이다 — 정상 실행이어도 제약은 있을 수 있다."""
+    return list(_REF_CONDITIONING_CONSTRAINTS.get(mode, ()))
+
+
+def resolve_reference_conditioning_mode(value):
+    """config 경계의 단일 해석. 부재(None/'') = safe_xvector(안전 기본 — legacy 세션 포함).
+    잘못된 값은 조용히 강등하지 않고 구조화 오류(code=INVALID_REFERENCE_CONDITIONING_MODE)로
+    크게 실패한다(GENERATION_LIMIT_EXCEEDED 등 기존 오류 코드 관례와 동일한 error_payload 형태).
+    payload 에는 원시값을 담지 않는다(타입 이름만) — 비민감 payload 규칙."""
+    if value is None or value == "":
+        return REF_CONDITIONING_SAFE_XVECTOR
+    if value in REF_CONDITIONING_MODES:
+        return value
+    e = RuntimeError(
+        "참조 사용 방식 설정이 올바르지 않습니다 — '안전 음성 복제(safe_xvector)' 또는 "
+        "'참조 억양 반영(high_quality_icl)'만 선택할 수 있습니다.")
+    e.error_payload = {"code": INVALID_REFERENCE_CONDITIONING_MODE,
+                       "raw_type": type(value).__name__}
+    raise e
+
+
+class QwenReferenceMisalignedError(RuntimeError):
+    """수동 참조 전사가 참조 오디오와 어긋남 — 생성 시작 전에 막는다(fail-closed).
+
+    왜 경고가 아니라 차단인가: 이 불일치가 곧 참조 대사 혼입의 원인이고, 경고는 무시된다.
+    실제로 2026-08-27 실행은 잘린 9.0초 클립에 원문 63자 전사를 manual 로 붙인 config 3개로
+    돌았고, manual 이라는 이유로 정렬 검증을 건너뛴 채 통과했다."""
+
+    def __init__(self, reason_code, insertions, deletions, substitutions,
+                 ref_syllables, clip_syllables):
+        self.reason_code = reason_code
+        self.insertions = int(insertions)
+        self.deletions = int(deletions)
+        self.substitutions = int(substitutions)
+        self.ref_syllables = int(ref_syllables)
+        self.clip_syllables = int(clip_syllables)
+        super().__init__(
+            "참조 음성과 수동 전사가 맞지 않습니다("
+            f"{reason_code}: 삽입 {self.insertions} / 삭제 {self.deletions}, "
+            f"전사 {self.ref_syllables}음절 vs 참조 음성 {self.clip_syllables}음절). "
+            "참조 구간을 문장이 끝나는 지점까지 넓히거나, 참조 음성에 실제로 들어 있는 부분만 "
+            "전사에 남기세요.")
+
+
+def _verify_manual_prompt_alignment(ref_audio, manual_text, emit_fn=None):
+    """수동 전사를 자동 전사와 **같은 기준으로** 검증한다. 통과하면 지표 dict, 아니면 예외.
+
+    자동 경로는 클립 자체를 전사해 쓰므로 정렬이 구조적으로 보장되지만, 수동 경로는 사용자가
+    준 문장을 그대로 믿었다. 그 우회로가 이번 사고의 직접 통로였다.
+    삽입·삭제(시간 정렬)만 차단하고 치환(인식기 편차)은 통과시킨다 — 원본·수정본·재현본
+    세 클립 모두 클립 한가운데에서 같은 치환 2음절이 나왔고, 그것까지 막으면 정상 참조도 막힌다."""
+    import hashlib
+    import korean_cer as kc
+    import reference_alignment as ra
+    from reference_transcript import transcribe_reference, STATUS_OK
+
+    try:
+        st = os.stat(ref_audio)
+        key = (os.path.abspath(ref_audio), st.st_size, st.st_mtime_ns,
+               hashlib.sha256(manual_text.encode("utf-8")).hexdigest())
+    except OSError:
+        key = (os.path.abspath(ref_audio), None, None,
+               hashlib.sha256(manual_text.encode("utf-8")).hexdigest())
+    if key in _qwen_manual_verify_cache:
+        return _qwen_manual_verify_cache[key]
+
+    t = transcribe_reference(ref_audio, _QWEN_REF_TRANSCRIBE_MODEL)
+    if t.status != STATUS_OK or not (t.text or "").strip():
+        raise QwenReferenceMisalignedError(REF_MANUAL_UNVERIFIABLE, 0, 0, 0,
+                                           len(kc.syllable_units(kc.normalize_text(manual_text))), 0)
+    ref_units = kc.syllable_units(kc.normalize_text(manual_text))
+    clip_units = kc.syllable_units(kc.normalize_text(t.text))
+    v = ra.verify_clip_transcript(ref_units, clip_units, kc.edit_counts)
+    if emit_fn:
+        emit_fn("tts_reference_alignment", checked=True,
+                insertions=v["insertions"], deletions=v["deletions"],
+                substitutions=v["substitutions"], aligned=v["aligned"],
+                ref_syllables=v["ref_syllables"], clip_syllables=v["clip_asr_syllables"],
+                model=_QWEN_REF_TRANSCRIBE_MODEL)
+    if not v["aligned"]:
+        raise QwenReferenceMisalignedError(
+            REF_MANUAL_MISALIGNED, v["insertions"], v["deletions"], v["substitutions"],
+            v["ref_syllables"], v["clip_asr_syllables"])
+    if len(_qwen_manual_verify_cache) < _QWEN_REF_TEXT_CACHE_MAX:
+        _qwen_manual_verify_cache[key] = v
+    return v
+
+
+# transcript status
+_REF_STATUS_MANUAL = "manual"
+_REF_STATUS_USER_REF_FREE = "user_ref_free"
+
+
+def _ref_record(emotion_id, prompt_source, degraded, reason_code, transcript_status, model):
+    """참조 프롬프트 결정의 '비민감 요약' 1건.
+
+    보안 불변식: 경로·전사 전문·예외 메시지는 절대 담지 않는다.
+    특히 reference_transcript.transcribe_reference 는 error_message 에 str(e)[:300] 을 담는데,
+    FileNotFoundError 등은 거기에 전체 경로가 들어간다 — 그래서 error_code 만 옮기고
+    error_message 는 의도적으로 버린다."""
+    return {"emotion_id": emotion_id, "prompt_source": prompt_source,
+            "degraded": bool(degraded), "reason_code": reason_code,
+            "transcript_status": transcript_status, "model": model}
+
+
+def _resolve_qwen_ref_text(ref_audio, overrides_by_path, warned, degrade_sink=None,
+                           emotion_id=None):
     """Qwen용 (ref_text, x_vector_only) 결정 — 수동/자동/ref-free 정책 재사용.
     수동·자동 전사가 비어있지 않으면 ICL(x_vector_only=False). 명시적 ref-free / 전사 실패 / 빈 전사는
-    x-vector-only(True, ref_text 무시). Qwen 공식 구현은 ref_text=""+x_vector_only=False를 거부하므로 필수."""
+    x-vector-only(True, ref_text 무시). Qwen 공식 구현은 ref_text=""+x_vector_only=False를 거부하므로 필수.
+
+    C2: 예전에는 t.status 만 읽고 t.error_code 를 버려서, 전사가 실패해도 사용자에게는 스쳐 지나가는
+    progress 한 줄뿐이었고 실행은 조용히 낮은 품질(x-vector-only)로 계속됐다. 이제 호출마다
+    비민감 요약 1건을 degrade_sink 에 남기고, 강등일 때만 tts_reference_degraded 이벤트를 낸다.
+    x-vector-only 자체는 그대로 유지된다 — 없애는 게 아니라 '보이게' 만드는 변경이다.
+
+    반환 arity는 (ref_text, x_vector_only) 2-tuple 그대로다(기존 호출부·회귀 테스트 보존).
+    degrade_sink/emotion_id 는 keyword 선택 인자다."""
     from reference_transcript import transcribe_reference, MODE_REF_FREE, STATUS_OK
+
+    def _record(rec):
+        if degrade_sink is not None:
+            degrade_sink.append(rec)
+        return rec
+
+    def _announce(rec, ap):
+        """강등일 때만, 참조 1개당 1회 구조화 이벤트. 경로·전사 없음."""
+        if not rec["degraded"]:
+            return
+        if ("degraded", ap, rec["reason_code"]) in warned:
+            return
+        warned.add(("degraded", ap, rec["reason_code"]))
+        emit("tts_reference_degraded", emotion_id=rec["emotion_id"],
+             prompt_source=rec["prompt_source"], degraded_to="x_vector_only",
+             reason_code=rec["reason_code"], transcript_status=rec["transcript_status"],
+             model=rec["model"])
+
     ap = os.path.abspath(ref_audio)
     ov = (overrides_by_path or {}).get(ap)
     if ov:
         if ov.get("mode") == MODE_REF_FREE:
+            rec = _record(_ref_record(emotion_id, "x-vector-only", True, "REF_FREE_USER",
+                                      _REF_STATUS_USER_REF_FREE, ""))
             if ("reffree", ap) not in warned:
                 warned.add(("reffree", ap))
                 emit("progress", percent=7,
                      message="ref-free → Qwen x-vector-only로 강등(ICL 아님, 참조 전사 미사용)")
+            _announce(rec, ap)
             return "", True
         manual = (ov.get("manual_text") or "").strip()
         if manual:
+            # 수동도 자동과 같은 정렬 검증을 통과해야 한다. 실패하면 여기서 예외 →
+            # 세그먼트를 만들기 전에 멈추므로 생성이 시작되지 않는다(fail-closed).
+            _verify_manual_prompt_alignment(ref_audio, manual, emit_fn=emit)
+            _record(_ref_record(emotion_id, "manual", False, None, _REF_STATUS_MANUAL, ""))
             if ("manual", ap) not in warned:
                 warned.add(("manual", ap))
                 emit("progress", percent=7, message=f"참조 전사(수동, ICL): {len(manual)}자")
@@ -751,22 +1097,58 @@ def _resolve_qwen_ref_text(ref_audio, overrides_by_path, warned):
     except OSError:
         key = (ap, None, None)
     if key in _qwen_ref_text_cache:
-        return _qwen_ref_text_cache[key]
-    t = transcribe_reference(ref_audio, "small")
+        # 캐시 적중이어도 요약은 남긴다 — 같은 참조를 쓰는 다른 감정도 메타데이터에 집계돼야 한다.
+        res, crec = _qwen_ref_text_cache[key]
+        _record(dict(crec, emotion_id=emotion_id))
+        return res
+    t = transcribe_reference(ref_audio, _QWEN_REF_TRANSCRIBE_MODEL)
     if t.status == STATUS_OK and (t.text or "").strip():
         res = (t.text, False)
+        rec = _ref_record(emotion_id, "auto", False, None, t.status, _QWEN_REF_TRANSCRIBE_MODEL)
         if ("auto", ap) not in warned:
             warned.add(("auto", ap))
             emit("progress", percent=9, message=f"참조 전사(자동, ICL): {t.language}, {len(t.text)}자")
     else:
         res = ("", True)
+        # error_code 만 옮긴다(error_message 는 경로를 담을 수 있어 절대 옮기지 않는다).
+        rec = _ref_record(emotion_id, "x-vector-only", True,
+                          t.error_code or REF_DEGRADE_TRANSCRIPT_UNAVAILABLE,
+                          t.status, _QWEN_REF_TRANSCRIBE_MODEL)
         if ("autofail", ap) not in warned:
             warned.add(("autofail", ap))
             emit("progress", percent=9,
                  message=f"참조 전사 실패/빈 결과({t.status}) → Qwen x-vector-only로 강등(ICL 아님)")
+    _record(rec)
+    _announce(rec, ap)
     if len(_qwen_ref_text_cache) < _QWEN_REF_TEXT_CACHE_MAX:  # 방어적 상한
-        _qwen_ref_text_cache[key] = res
+        _qwen_ref_text_cache[key] = (res, rec)
     return res
+
+
+def _summarize_ref_degradation(records, default_emotion_id):
+    """참조 결정 요약 리스트 → 재현 메타데이터 5필드(비민감).
+    default 참조의 상태를 대표값으로 쓰고, 강등된 감정 ID 목록을 따로 남긴다."""
+    if not records:
+        return {"reference_prompt_degraded": None, "reference_degrade_reason": None,
+                "reference_transcript_status": None, "reference_transcript_model": None,
+                "reference_degraded_emotions": None}
+    degraded = [r for r in records if r["degraded"]]
+    rep = None
+    for r in records:
+        if r["emotion_id"] == default_emotion_id:
+            rep = r
+            break
+    if rep is None:
+        rep = degraded[0] if degraded else records[0]
+    emos = sorted({str(r["emotion_id"]) for r in degraded if r["emotion_id"] is not None})
+    return {
+        "reference_prompt_degraded": bool(degraded),
+        "reference_degrade_reason": (rep["reason_code"] if rep["degraded"]
+                                     else (degraded[0]["reason_code"] if degraded else None)),
+        "reference_transcript_status": rep["transcript_status"],
+        "reference_transcript_model": rep["model"],
+        "reference_degraded_emotions": emos or None,
+    }
 
 
 def _atempo_segment(inp, speed):
@@ -799,11 +1181,41 @@ def _atempo_segment(inp, speed):
     return out
 
 
+def _positive_int_or_none(v):
+    """양의 정수만 통과, 그 외는 None(= telemetry 규약상 'unavailable').
+    거르는 값: None / bool / 비수치 / NaN / ±Inf / 0 / 음수. 0 같은 위조값을 절대 남기지 않는다.
+    metadata는 합성을 깨뜨리지 않는다는 기존 원칙(frames 조건부 기록과 동일)에 따라 예외를 던지지 않는다."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    if v != v or v in (float("inf"), float("-inf")):   # NaN / ±Inf
+        return None
+    n = int(v)
+    return n if n > 0 else None
+
+
+def _positive_float_or_none(v):
+    """양의 실수만 통과, 그 외는 None(= 'unavailable'). _positive_int_or_none 의 실수판.
+
+    0 을 거르는 이유: 생성 구간은 monotonic 차이라 0.0 이 나오려면 시계 분해능 아래여야 하는데,
+    그건 '측정 안 됨' 과 구분할 수 없다. 나눗셈에서 0 은 조용한 division-by-zero 원인이 되므로
+    통과시키지 않는다. bool 은 int 의 서브클래스라 명시적으로 먼저 거른다."""
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return None
+    if v != v or v in (float("inf"), float("-inf")):   # NaN / ±Inf
+        return None
+    f = float(v)
+    return f if f > 0.0 else None
+
+
 _METADATA_KEYS = [
     "requested_engine", "actual_engine", "model_name", "model_revision", "device",
     "device_selection_source", "prompt_source", "x_vector_only_mode",
     "original_reference_path", "effective_reference_path", "reference_region",
     "reference_transcript_language", "reference_transcript_len", "reference_transcript_sha8",
+    # C2 — 참조 프롬프트 강등 가시화. 사유 코드/상태/모델명만(경로·전사 전문·예외 메시지 없음).
+    # x-vector-only 능력은 그대로 유지되고, '왜 그렇게 됐는지'만 기록에 남는다.
+    "reference_prompt_degraded", "reference_degrade_reason", "reference_transcript_status",
+    "reference_transcript_model", "reference_degraded_emotions",
     "target_language", "seed", "seed_supported", "speed", "speed_postprocessed", "silence_gap",
     "fallback", "fallback_reason", "elapsed_seconds", "output_sample_rate",
     # pitch 후처리(계약 §2.1) — pitch_method는 production에서 "rubberband" | None 둘뿐.
@@ -818,6 +1230,25 @@ _METADATA_KEYS = [
     "explicit_pause_count", "total_pause_ms",
     # 말끝 finishing 재현(계약 §2·추가4) + 감정 전환 경계 모드.
     "tail_mode", "tail_pad_ms", "tail_fade_ms", "tail_fade_applied", "emotion_boundary_mode",
+    # 경계 envelope 재현 — 최종 조립물 **바깥쪽** 시작·끝에 실제로 적용한 샘플 수(길이는 불변).
+    # offset 0 = tail auto 가 말끝 fade 를 가져갔거나 배열이 짧아 clamp 된 경우.
+    "boundary_onset_samples", "boundary_offset_samples",
+    # 표현형 모드(계약 §10). ⚠️ 이웃이 snake_case 라도 이 키만은 camelCase 가 정본이다 —
+    # session/config/metadata 세 캐리어가 '같은 필드 이름'이어야 하고, 계약이 별칭
+    # (tts_expressive_mode)을 명시적으로 금지했다(권위가 둘이 되는 편이 더 나쁘다).
+    "ttsExpressiveMode",
+    # 참조 conditioning 모드(참조혼입 대응). requested=사용자 요청, effective=실제 적용.
+    # ★degraded 의 의미는 **'요청한 모드를 조용히 다른 모드로 바꿨는가'** 하나뿐이다. 자동 전환
+    # 금지 계약이라 두 값은 항상 같거나 실행이 실패하므로 degraded 는 항상 False 다.
+    # degraded=False 는 '품질 제약이 없다'는 뜻이 **아니다** — 모드가 설계상 갖는 제약은
+    # reference_conditioning_constraints 가 따로 말한다(safe_xvector 는 비어 있지 않다).
+    # reference_alignment / reference_cut_sample 은 high_quality_icl 이 실제로 controlled-prefix 를
+    # 잘라냈을 때만 값이 들어간다(샘플 인덱스·dB 만). safe_xvector 는 정렬·절단을 하지 않으므로 null.
+    "reference_conditioning_mode_requested", "reference_conditioning_mode_effective",
+    "reference_conditioning_degraded", "reference_alignment", "reference_cut_sample",
+    "reference_conditioning_failure_code",
+    # 그 모드가 설계상 갖는 품질 제약(비민감 enum 토큰 목록). 빈 목록 = 알려진 제약 없음.
+    "reference_conditioning_constraints",
 ]
 
 
@@ -859,31 +1290,35 @@ def _transcript_meta(ref_text):
 
 
 def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
-    """엔진 무관 공통 최종 단계 + 말끝 finishing(계약 §2 순서: … → 전체 pitch → 최종 조건부 fade →
-    최종 0 padding → 검증 → 원자 교체).
+    """엔진 무관 공통 최종 단계 + 경계 envelope + 말끝 finishing
+    (계약 §2 순서: … → 전체 pitch → 경계 envelope → 최종 조건부 fade → 최종 0 padding → 검증 → 원자 교체).
 
-    - tail off/부재(기본) → 기존 경로 그대로: pitch_shift.place_final_with_pitch가 pitch·검증·원자
-      교체를 담당한다(**동작 변화 0 — 레거시 회귀 보존**).
-    - tail 'auto'(명시 설정 시) → pitch를 work_dir 내부 staged로 배치(final 미접촉) → array로 읽어
-      audio_finishing으로 조건부 fade + 0 padding → 검증(mono·finite·non-empty·sr) → work_dir 내부
-      finished temp에 write → os.replace로 **이 함수만** 최종 final_path를 원자 교체한다.
+    여기가 **조립이 끝난 최종 배열을 보는 단 하나의 지점**이다. 단문이든 장문이든 이 함수는 결과물
+    하나만 보므로, 경계 envelope 을 여기에 걸면 자동으로 "바깥쪽 시작·끝에만 한 번" 이 된다.
+    내부 chunk 경계에는 걸리지 않는다(청크 결합은 _concat_with_boundaries 소관이고 거기는 무변경).
 
-    무손상 계약: auto 경로도 final_path는 모든 검증 통과 후 마지막 os.replace 한 번에만 바뀐다. 그 이전
+    - 경계 envelope: tail 설정과 **무관하게 항상** 적용된다. 사용자 청취로 확정된 결함(시작·끝이
+      S자 없이 딱 켜지고 꺼짐)의 수정이라 옵션이 아니다. 길이·sr·cache key 를 바꾸지 않는다
+      (gain 곱셈뿐, padding 없음). 적용 샘플 수는 반환 dict 에 담겨 metadata 로 나간다.
+    - tail off/부재(기본) → tail 은 아무것도 하지 않는다(padding·fade 0). 경계 envelope 만 적용.
+      길이·subtype·pitch 결과는 레거시와 같고, 달라지는 건 양 끝 gain 뿐이다.
+    - tail 'auto'(명시 설정 시) → 기존대로 조건부 cosine fade + 0 padding 까지. 이때 말끝의 권위는
+      tail 계약이 가지므로 경계 envelope 은 offset 을 0 으로 **양보**한다(이중 fade 금지).
+
+    처리는 pitch를 work_dir 내부 staged로 배치(final 미접촉) → array로 읽어 audio_finishing 적용 →
+    검증(mono·finite·non-empty·sr) → work_dir 내부 finished temp에 write → os.replace로 **이 함수만**
+    최종 final_path를 원자 교체하는 순서다.
+
+    무손상 계약: final_path는 모든 검증 통과 후 마지막 os.replace 한 번에만 바뀐다. 그 이전
     어떤 예외(pitch/검증/finishing)도 final_path(이전 합성 결과)를 건드리지 않는다. staged/finished temp는
     work_dir 안이라 정상/오류/취소(부모 정리) 모두에서 청소된다. pitch_shift.py·K2 취소 권위는 무변경.
-    반환: place_final_with_pitch와 동형 dict(pitch_* + output_sample_rate)."""
+    반환: place_final_with_pitch와 동형 dict(pitch_* + output_sample_rate + tail_* + boundary_*)."""
     import pitch_shift as _ps
     import audio_finishing as _af  # numpy 지연 로드(모듈 최상단 import 회피 — import tts_worker는 numpy 불요)
 
     tail = _af.parse_tail_config(tail_cfg)  # 범위 밖이면 INVALID_TTS_CONFIG(조용한 clamp 없음)
-    if tail.mode == "off":
-        # 레거시 경로와 바이트 단위 동일 — place_final_with_pitch가 final을 원자 교체.
-        _off = dict(_ps.place_final_with_pitch(candidate, final_path, pitch, work_dir))
-        # I4 재현 메타: off는 tail 미적용(패딩/페이드 0).
-        _off.update(tail_mode="off", tail_pad_ms=0, tail_fade_ms=0, tail_fade_applied=False)
-        return _off
 
-    # auto: 원자 교체 전 모든 불변식(A/B/C)을 강제한다. 비유한은 **write 이전에** 차단하고, pending은
+    # 원자 교체 전 모든 불변식(A/B/C)을 강제한다. 비유한은 **write 이전에** 차단하고, pending은
     # **write 후 재오픈**해 다시 검증한다. 어느 단계든 실패면 AudioFinishingError로 pending 삭제 + 기존
     # synthesized.wav 무손상(os.replace 미도달). 오류엔 경로/대사/전사를 담지 않는다.
     import os as _os
@@ -911,10 +1346,16 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
         #   pitch 0 → staged=PCM_16 → pending PCM_16(== 레거시 off pitch0). pitch!=0 → staged=FLOAT →
         #   pending FLOAT(== 레거시 off pitch+1). FLOAT 하드코딩(비패리티) 금지. pitch_shift.py 무변경.
         staged_subtype = _sf.info(staged).subtype
+        # tail plan 은 **envelope 적용 전 원본**으로 산출한다 — already_silent 판정(마지막 5ms peak)이
+        # 우리 offset fade 때문에 뒤바뀌면 tail 계약의 의미가 달라진다. 순서: plan(원본) → envelope → tail.
         plan = _af.compute_tail_plan(data, sr, tail)
-        finished = _af.apply_final_tail(data, sr, plan)
+        # tail 이 실제로 cosine fade 를 걸 때만 말끝을 양보한다(이중 fade 방지). 시작 쪽은 겹칠 게 없다.
+        bplan = _af.compute_boundary_plan(len(data), sr, tail_owns_offset=bool(plan.fade_applied))
+        enveloped = _af.apply_boundary_envelope(data, sr, bplan)
+        finished = _af.apply_final_tail(enveloped, sr, plan)
         # 불변식 B — in-memory: mono·non-empty·finite + 예상 프레임 수 + padding 정확히 0.
         # (여기서 finite가 이미 보장되므로 PCM_16으로 써도 비유한을 숨길 수 없다 — write 전 in-memory 검증.)
+        # envelope 은 길이를 바꾸지 않으므로 기대 프레임 수의 기준은 여전히 len(data)다.
         _af.require_valid_finished(finished, sr, plan, len(data))
         try:
             _sf.write(finished_tmp, finished, sr, subtype=staged_subtype)
@@ -941,18 +1382,139 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
                     pass
     out = dict(pinfo)
     out["output_sample_rate"] = int(sr)
-    # I4 재현 메타: auto tail 적용값(계약 §2). fade_applied는 실제 fade 수행 여부(무음 tail이면 pad만).
-    out.update(tail_mode="auto", tail_pad_ms=int(round(plan.pad_ms)),
-               tail_fade_ms=int(round(plan.fade_ms)), tail_fade_applied=bool(plan.fade_applied))
+    # I4 재현 메타: tail 적용값(계약 §2). off면 padding/fade 0. fade_applied는 실제 fade 수행 여부.
+    if plan.mode == "auto":
+        out.update(tail_mode="auto", tail_pad_ms=int(round(plan.pad_ms)),
+                   tail_fade_ms=int(round(plan.fade_ms)), tail_fade_applied=bool(plan.fade_applied))
+    else:
+        out.update(tail_mode="off", tail_pad_ms=0, tail_fade_ms=0, tail_fade_applied=False)
+    # 경계 envelope 재현 메타 — **실제로 적용한 샘플 수**(clamp 결과 포함). offset 0 은 tail 이 말끝을
+    # 가져갔거나(offset_yielded_to_tail) 배열이 너무 짧아 clamp 된 경우다.
+    out.update(boundary_onset_samples=int(bplan.onset_samples),
+               boundary_offset_samples=int(bplan.offset_samples))
     return out
 
 
+_ALIGNMENT_SUMMARY_KEYS = ("sample_rate", "noise_floor_dbfs", "tail_end_sample", "valley_sample",
+                           "onset_sample", "cut_sample", "valley_dbfs", "lead_samples",
+                           # 창 한정 탐색이었다는 사실(전역 탐색이 아니었다는 증거). 수치만.
+                           "window_start_sample", "window_end_sample", "anchor_start_sample",
+                           # 창을 무엇으로 브래킷했고 anchor 와 얼마나 어긋났는가(수치만).
+                           "prev_word_end_sample", "anchor_offset_samples",
+                           # 어떤 신호로 개시를 인정했는가 — '유성음만 보고 자르지 않았다'는 증거.
+                           "onset_dbfs", "onset_flux", "onset_zcr", "onset_hb_dbfs",
+                           "onset_evidence", "onset_flux_threshold", "baseline_dbfs",
+                           "quiet_frame_count")
+
+
+def _icl_transcribe_fn():
+    """controlled-prefix 정렬용 ASR 진입점 — **기존 경로 그대로 재사용**한다(새 패키지·새 모델 0).
+
+    reference_transcript.py 와 같은 진입점(transcribe_worker._get_whisper_model / run_transcribe)
+    이고 모델도 참조 자동 전사와 같은 _QWEN_REF_TRANSCRIBE_MODEL 이다. run_transcribe 는 이미
+    word_timestamps=True 라 segments[*].words[*]{word,start,end} 를 준다 — 우리가 필요한 건 그것뿐이다.
+
+    language=None(자동): chunk 에는 참조 전사와 목표 대사가 함께 들어 있어 한쪽 언어를 강제하면
+    다른 쪽이 손해를 본다. 참조 전사 검증 경로(_verify_manual_prompt_alignment)도 None 을 쓴다.
+
+    GPU 직렬화: 이 함수는 bridge subprocess 가 끝난 뒤에만 불린다 — Qwen 이 이미 내려간 뒤라
+    whisper 와 동시 적재되지 않는다(별도 락 불필요)."""
+    from transcribe_worker import _get_whisper_model, run_transcribe
+    model = _get_whisper_model(_QWEN_REF_TRANSCRIBE_MODEL)
+    return lambda path: run_transcribe(model, path, None)
+
+
+def _align_icl_chunks(seg_out, transcribe_factory=_icl_transcribe_fn, output_dir=None):
+    """controlled-prefix raw chunk 들을 정렬·절단해 **최종 chunk 로 확정**한다(부모 소유 단계).
+
+    bridge 가 준 raw 는 중간 산출물이다 — 이 단계를 통과하기 전에는 어떤 결과도 확정되지 않는다.
+    실패는 QwenIclBoundaryError(구조화) 로 올려 기존 계약(_synthesize_qwen_job 의 except)이 그대로
+    사용자 오류를 만든다: 결과 미발행 + safe_xvector 로의 조용한 전환 없음 + 자동 재시도 없음.
+
+    정렬 입력(alignment_request)은 여기서 소비하고 즉시 버린다 — 전사 원문이 metadata·세션·로그로
+    새 나가지 않게 하는 유일한 소유 지점이다."""
+    import icl_alignment
+    todo = [e for e in seg_out if e.get("needs_alignment")]
+    if not todo:
+        for e in seg_out:      # 정렬 대상이 아니어도 텍스트는 남기지 않는다
+            e.pop("alignment_request", None)
+        return seg_out
+    todo.sort(key=lambda e: (e.get("original_segment_index"), e.get("chunk_index")))
+    tf = transcribe_factory()
+    total = len(todo)
+    for i, e in enumerate(todo):
+        # 정렬 중에도 진행 표시가 계속 나간다(Electron watchdog 은 progress 로만 리셋된다).
+        emit("progress", percent=90,
+             message=f"참조 구간 경계 정렬 중... ({i + 1}/{total})")
+        req = e.get("alignment_request") or {}
+        try:
+            r = icl_alignment.align_and_trim(e["out_path"], req.get("prefix_text"),
+                                             req.get("target_text"), tf)
+        except icl_alignment.IclAlignmentFailed as af:
+            # 실패하면 job_dir 이 통째로 사라진다 — 그 전에 raw 와 수치 진단을 진단 전용 폴더에
+            # 남긴다(결과가 아니다: 발행하지 않고, 절대경로도 남기지 않는다).
+            import icl_diagnostics
+            kept = icl_diagnostics.preserve_failure(
+                output_dir, e.get("out_path"), af.reason_code, af.detection,
+                e.get("original_segment_index"), e.get("chunk_index"), e.get("emotion_id"))
+            err = QwenIclBoundaryError(e.get("original_segment_index"), e.get("chunk_index"),
+                                       e.get("emotion_id"), af.reason_code)
+            err.diagnostic_dir_name = kept
+            raise err from None
+        e["reference_alignment"] = r["summary"]
+        e["reference_cut_sample"] = r["cut_sample"]
+        e["needs_alignment"] = False
+    for e in seg_out:
+        e.pop("alignment_request", None)   # 텍스트는 이 줄에서 사라진다(전 entry 일괄)
+    return seg_out
+
+
+def _summarize_reference_alignment(ordered_entries):
+    """controlled-prefix 절단 사실을 metadata 용으로 축약한다(샘플 인덱스와 dB 만).
+
+    chunk 마다 자기 경계를 검출하므로 값이 여러 개다. 대표값(첫 chunk)과 전체 범위·합계를 함께
+    남겨 '어디를 얼마나 잘랐는가'가 사후에 확인 가능하게 한다.
+    반환: (alignment_dict, representative_cut_sample).
+    ICL 인데 어떤 chunk 라도 절단 기록이 없으면 — 즉 잘렸는지 확인할 수 없으면 — 조용히 통과시키지
+    않고 RuntimeError(구조화 code)로 실패한다(fail-closed)."""
+    firsts = None
+    cuts = []
+    for e in ordered_entries:
+        rec = e.get("reference_alignment")
+        cut = e.get("reference_cut_sample")
+        if not isinstance(rec, dict) or not isinstance(cut, int) or cut <= 0:
+            _e = RuntimeError(
+                "참조 억양 반영 모드인데 참조 구간 절단 기록이 없습니다 — 잘렸는지 확인할 수 없는 "
+                "결과는 발행하지 않습니다. " + _ICL_SAFE_MODE_HINT)
+            _e.error_payload = {"code": ICL_BOUNDARY_ALIGNMENT_FAILED,
+                                "segment_index": e.get("original_segment_index"),
+                                "chunk_index": e.get("chunk_index"),
+                                "emotion_id": e.get("emotion_id"),
+                                "boundary_reason": "MISSING_ALIGNMENT_RECORD"}
+            raise _e
+        cuts.append(cut)
+        if firsts is None:
+            firsts = {k: rec.get(k) for k in _ALIGNMENT_SUMMARY_KEYS}
+    if firsts is None:
+        return None, None
+    return ({"chunk_count": len(cuts), "first": firsts,
+             "cut_sample_min": min(cuts), "cut_sample_max": max(cuts),
+             "trimmed_samples_total": sum(cuts)}, cuts[0])
+
+
 def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed, silence_gap,
-                         pitch=0.0, tail_cfg=None, boundary_gaps=None):
+                         pitch=0.0, tail_cfg=None, boundary_gaps=None,
+                         reference_conditioning_mode=None):
     """Qwen 배치 합성 — 2B 품질 게이트 재사용, Qwen 전용 VRAM 임계로 장치 선택(ComfyUI 병행 안전),
     모델 1회 로딩. speed: 세그먼트별 atempo 후 사용자 silence_gap으로 결합(1.0은 raw). 임시파일 finally 정리.
     pitch: 결합본(pending)에 rubberband 음높이 후처리(0=무후처리, 계약 §6·§7). 실패는 os.replace 직전
     예외 → finally가 job_dir 정리 → 기존 synthesized.wav 무손상.
+    reference_conditioning_mode: 참조 conditioning 모드. safe_xvector 면 전 segment 를
+      x_vector_only=True 로 강제하고 참조 전사를 vendor 에 전달하지 않는다(_resolve_qwen_ref_text 를
+      아예 타지 않는 상위 게이트 — Whisper 호출 0). high_quality_icl 이면 segment 마다 참조 전사를
+      결정해 ICL 조건으로 넘기고, 동시에 그 전사를 prefix_text 로 실어 controlled-prefix 로 생성한다.
+      bridge 는 자르지 않고 raw 를 돌려주며, run_job 반환 뒤 _align_icl_chunks 가 ASR 정렬 → 창 한정
+      경계 검출 → 절단까지 마쳐야 chunk 가 확정된다. 모드는 job 단위 고정이다.
     반환: (final_path, info) — info는 재현 메타데이터의 런타임 사실(device/source/prompt_source/전사요약 등)."""
     import time
     from reference_audio import assess_reference_file, GPTSOVITS_POLICY
@@ -1006,22 +1568,72 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
     try:
         warned = set()
         segments = []
+        degrade_records = []     # 참조 프롬프트 결정 요약(C2) — 비민감, 세그먼트 수만큼 유계
+        def_emotion_id = None    # 기본 참조를 쓰는 첫 감정 ID(요약의 대표값 선택용)
+        safe_mode = reference_conditioning_mode == REF_CONDITIONING_SAFE_XVECTOR
+        icl_mode = reference_conditioning_mode == REF_CONDITIONING_HIGH_QUALITY_ICL
+        if safe_mode:
+            # 안전 모드 사실을 로그에 1회 명시(조용한 모드 아님 — 사용자가 어떤 조건으로 합성됐는지 안다).
+            emit("progress", percent=5,
+                 message="안전 음성 복제 모드 — 참조 대사(전사)는 합성 조건으로 전달되지 않습니다")
+        elif icl_mode:
+            emit("progress", percent=5,
+                 message="참조 억양 반영 모드 — 참조 대사를 먼저 생성한 뒤 경계를 찾아 잘라냅니다"
+                         "(생성 길이가 늘어 처리 시간이 더 걸립니다)")
         for i, (emotion_id, line_text) in enumerate(parsed):
             ref = ref_cache.get(emotion_id, ref_cache["default"])
-            ref_text, xvo = _resolve_qwen_ref_text(ref, overrides_by_path, warned)
+            prefix_text = None
+            if safe_mode:
+                # 상위 게이트: 전사 기반 ICL 결정(_resolve_qwen_ref_text)을 아예 타지 않는다.
+                # 수동 전사(ttsReferencePrompts)는 라이브러리 표시·검증용으로 보존될 뿐 합성 조건으로는
+                # 전달 0(ref_text=""), Whisper 호출 0, 정렬 검증 호출 0. job 내 전 세그먼트 고정 —
+                # 어떤 segment 도 ICL 로 되돌아가지 않는다(자동 fallback 금지).
+                ref_text, xvo = "", True
+            else:
+                ref_text, xvo = _resolve_qwen_ref_text(ref, overrides_by_path, warned,
+                                                       degrade_sink=degrade_records,
+                                                       emotion_id=emotion_id)
+                if icl_mode:
+                    # 참조 억양 반영은 '참조 전사'가 있어야 성립한다. 전사가 없거나(실패/빈 전사)
+                    # 사용자가 ref-free 를 골라 x-vector 로 떨어졌다면, 조용히 안전 모드처럼 돌지 않고
+                    # 여기서 명시적으로 실패한다(요청한 모드와 다른 결과를 무신호로 주지 않는다).
+                    if xvo or not (ref_text or "").strip():
+                        _e = RuntimeError(
+                            "참조 억양 반영 모드는 참조 음성의 대사(전사)가 필요합니다 — 참조 전사를 "
+                            "직접 입력하거나, 자동 전사가 가능한 참조 구간을 선택하세요. " + _ICL_SAFE_MODE_HINT)
+                        _e.error_payload = {"code": ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE,
+                                            "segment_index": i, "emotion_id": emotion_id}
+                        raise _e
+                    prefix_text = ref_text
             lang_code = _detect_language(line_text)  # 세그먼트별 언어
             lang_codes.append(lang_code)
             lang_name = _QWEN_LANG_NAME.get(lang_code)
             if not lang_name:
                 raise RuntimeError(f"Qwen 미지원 언어(감지 {lang_code}) — 문장: {line_text[:20]}")
             if ref == default_ref and def_source is None:  # 기본 참조의 메타(전문 아닌 요약)
+                def_emotion_id = emotion_id
                 def_xvo = bool(xvo)
                 def_source = _prompt_source_for(ref, overrides_by_path, xvo)
                 def_tr_lang, def_tr_len, def_tr_sha = _transcript_meta(ref_text)
             out_path = os.path.join(job_dir, f"segment_qwen_{i + 1:03d}.wav")
-            segments.append({"index": i, "text": line_text, "ref_audio": ref, "ref_text": ref_text,
-                             "x_vector_only": xvo, "language_name": lang_name, "out_path": out_path,
-                             "emotion_id": emotion_id})  # 태그(비민감) — bridge가 결과·오류에 반환
+            seg = {"index": i, "text": line_text, "ref_audio": ref, "ref_text": ref_text,
+                   "x_vector_only": xvo, "language_name": lang_name, "out_path": out_path,
+                   "emotion_id": emotion_id}  # 태그(비민감) — bridge가 결과·오류에 반환
+            if prefix_text:
+                # controlled-prefix: bridge 가 chunk 마다 [참조 전사][종결][개행][목표 대사]로 조립하고
+                # 생성 뒤 경계를 찾아 앞을 잘라낸다. 자동분할된 chunk 각각이 자기 prefix 를 갖는다.
+                seg["prefix_text"] = prefix_text
+            segments.append(seg)
+
+        # 감정 음향 판정(계약: emotion_acoustic.py) — '이 감정이 실제로 감정처럼 들리는가'.
+        # 여기서 아는 것은 '어떤 참조 파일이 들어갔는가' 뿐이다. 같은 참조면 모델 입력이 동일하므로
+        # 감정 차이가 나올 통로가 없다 → degraded. 전용 참조가 있어도 측정 전에는 unknown 이며,
+        # supported 는 생성 결과를 실제로 재야만 열린다(오늘 이 경로에는 그 측정이 없다).
+        # 기록은 비민감 토큰만: emotion_id / role / state / reason.
+        import emotion_acoustic as _ea
+        _emotion_keys = {eid: ref_cache.get(eid) for eid, _ in parsed if eid != "default"}
+        emotion_acoustic_records = _ea.resolve_emotion_set(default_ref, _emotion_keys)
+        emotion_acoustic_summary = _ea.emotion_set_summary(emotion_acoustic_records)
 
         try:
             try:
@@ -1029,7 +1641,7 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             except RuntimeError as e:
                 # CUDA OOM만 CPU로 1회 가시적 재시도(조용한 재시도 아님). 상한 도달·그 외 예외는 전파.
                 if (device == "cuda:0" and is_cuda_oom(e)
-                        and not isinstance(e, QwenGenerationLimitError)):
+                        and not isinstance(e, (QwenGenerationLimitError, QwenIclBoundaryError))):
                     emit("progress", percent=30, message="GPU 메모리 부족(OOM) → CPU로 1회 재시도(느림)")
                     fallback = True
                     fallback_reason = "CUDA OOM → CPU 재시도"
@@ -1037,6 +1649,31 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                     seg_out = qwen.run_job(segments, "cpu")
                 else:
                     raise
+            # bridge 의 controlled-prefix raw 는 중간 산출물이다 — 여기(부모)에서 ASR 정렬로 목표
+            # 대사 위치를 특정하고 그 좁은 창 안에서 경계를 찾아 잘라낸 뒤에야 chunk 가 확정된다.
+            # bridge subprocess 는 이미 종료됐으므로 Qwen 과 whisper 는 동시 적재되지 않는다.
+            seg_out = _align_icl_chunks(seg_out, output_dir=output_dir)
+        except QwenIclBoundaryError as ibe:
+            # 경계 미확정 → 잘라내지 않은 결과를 발행하지 않는다. safe_xvector 로 자동 전환하지 않고
+            # 사용자에게 모드 선택을 돌려준다(요청한 모드와 다른 결과를 무신호로 주지 않는다).
+            emo = ibe.emotion_id
+            si = ibe.segment_index
+            if emo is None:
+                emo = (parsed[si][0] if isinstance(si, int) and 0 <= si < len(parsed) else "?")
+            _e = RuntimeError(
+                f"ICL_BOUNDARY_ALIGNMENT_FAILED — 감정 '{emo}' 문장에서 참조 대사와 목표 대사의 "
+                f"경계를 확정하지 못해 결과를 발행하지 않았습니다({ibe.boundary_reason}). "
+                f"참조 구간을 문장 단위로 다시 확정하거나, " + _ICL_SAFE_MODE_HINT)
+            _e.error_payload = {
+                "code": ICL_BOUNDARY_ALIGNMENT_FAILED,
+                "segment_index": si if isinstance(si, int) else None,
+                "chunk_index": ibe.chunk_index,
+                "emotion_id": emo,
+                "boundary_reason": ibe.boundary_reason,
+                # 진단 자료가 남은 폴더 '이름'(출력 폴더 하위 .af-icl-diagnostics 안). 절대경로 아님.
+                "diagnostic_dir_name": getattr(ibe, "diagnostic_dir_name", None),
+            }
+            raise _e from None
         except QwenGenerationLimitError as gle:
             # 상한 도달 → 잘린 WAV 미채택. 감정 ID로만 재해석(전사·문장·경로 미포함).
             # 이 예외로 place_final_with_pitch 이전에 빠져나가므로 finally가 job_dir을 지우고
@@ -1046,10 +1683,16 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             if emo is None:  # bridge가 못 준 경우만 parsed로 보강(offending segment 기준)
                 emo = (parsed[si][0] if isinstance(si, int) and 0 <= si < len(parsed) else "?")
             ck = f", 조각 {gle.chunk_index}" if gle.chunk_index is not None else ""
+            # ICL(controlled-prefix)은 참조 대사까지 함께 생성하므로 같은 대사라도 상한에 더 쉽게 닿는다.
+            # 그 사실을 안내에 명시한다(원인을 참조 불일치로만 오인하지 않도록).
+            _icl_note = (" 참조 억양 반영 모드는 참조 대사를 함께 생성하므로 상한에 더 쉽게 도달합니다 — "
+                         "참조 구간을 더 짧은 한 문장으로 줄이거나 '안전 음성 복제' 모드를 사용하세요."
+                         if reference_conditioning_mode == REF_CONDITIONING_HIGH_QUALITY_ICL else "")
             _e = RuntimeError(
                 f"GENERATION_LIMIT_EXCEEDED — 감정 '{emo}' 문장{ck}이 동적 생성 상한"
                 f"(max_new_tokens={gle.generation_limit})에 도달했습니다(생성 반복 {gle.generated_iterations}). "
                 f"참조 오디오와 전사 내용이 맞지 않을 때 나타날 수 있습니다 — 참조 구간/전사를 확인한 뒤 다시 시도하세요."
+                + _icl_note
             )
             # 구조화 payload(renderer까지 정식 code 전달 — 문자열 prefix 추론 금지).
             # 감정 ID·index·수치만 담는다: 전사·문장·전체경로 없음(§미디어 정책).
@@ -1085,6 +1728,10 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         ordered_entries = sorted(seg_out, key=lambda x: (x["original_segment_index"], x["chunk_index"]))
         ordered = [e["out_path"] for e in ordered_entries]
 
+        # controlled-prefix 절단 기록(ICL 전용). 안전 모드/legacy 는 (None, None) — 기록 없음이 정상.
+        align_meta, align_cut = (_summarize_reference_alignment(ordered_entries)
+                                 if icl_mode else (None, None))
+
         # 생성 안전장치 metadata(계약 A/B). 여기 도달 = 전 chunk가 completed_before_limit.
         # scalar 3필드 대표 = generated_iterations/generation_limit 비율 최대 chunk(동률은 (osi,ci) 최소) 한 쌍.
         _cand = [((e["original_segment_index"], e["chunk_index"]), e["generated_iterations"], e["generation_limit"])
@@ -1101,7 +1748,16 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                        "chunk_count": e["chunk_count"], "production_tokens": e.get("production_tokens"),
                        "generation_limit": e.get("generation_limit"),
                        "generated_iterations": e.get("generated_iterations"),
-                       "termination_reason": e.get("termination_reason"), "emotion_id": e.get("emotion_id")}
+                       "termination_reason": e.get("termination_reason"), "emotion_id": e.get("emotion_id"),
+                       # 진단 추가(가산): chunk 행을 자가 완결로 만든다. 이 값이 없으면 소비자가 frames를
+                       # 초로 바꾸려고 상위 dict와 join해야 했다. 출처는 그 chunk를 실제로 기록한 값과
+                       # 동일한 bridge의 int(g["sr"]) (= entry["sr"]) — 두 번째 진실 소스를 만들지 않는다.
+                       "output_sample_rate": _positive_int_or_none(e.get("sr")),
+                       # blocking 생성 구간만 잰 값(가산). qwen_bridge 가 model.generate_voice_clone
+                       # 호출 하나만 감싸 측정한다 — 작업 전체 시간인 elapsed_seconds 와 다른 값이다.
+                       # 없거나 비정상이면 None(= unavailable). 0 으로 위조하지 않는다.
+                       "generation_elapsed_sec": _positive_float_or_none(
+                           e.get("generation_elapsed_sec"))}
                       for e in ordered_entries]
 
         # speed: 1.0=raw, 그 외 chunk별 atempo 후 결합.
@@ -1150,7 +1806,8 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         if _ps.clamp_quantize(pitch) != 0.0:
             emit("progress", percent=93, message=f"음높이 보정 중 ({_ps.clamp_quantize(pitch):+.1f}반음)...")
         # pending은 job_dir 내부(output_dir 하위) → os.replace가 동일 파일시스템 원자 이동.
-        # tail off(기본)면 place_final_with_pitch와 동일. auto면 pitch 뒤 조건부 fade+0 padding까지(계약 §2).
+        # pitch 뒤 경계 envelope(항상) + tail auto면 조건부 fade+0 padding까지(계약 §2).
+        # 경계 envelope 은 이 최종 조립물의 양 끝에만 걸린다 — 내부 문장 경계는 건드리지 않는다.
         pinfo = _finish_and_place(pending_path, final_path, pitch, job_dir, tail_cfg)
         sr = pinfo["output_sample_rate"]
         import time as _time
@@ -1162,6 +1819,7 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             "prompt_source": def_source, "x_vector_only_mode": def_xvo,
             "reference_transcript_language": def_tr_lang, "reference_transcript_len": def_tr_len,
             "reference_transcript_sha8": def_tr_sha, "target_language": tgt,
+            **_summarize_ref_degradation(degrade_records, def_emotion_id),
             "seed": None, "seed_supported": False,
             "speed_postprocessed": bool(abs(float(speed) - 1.0) > 1e-6),
             "fallback": fallback, "fallback_reason": fallback_reason,
@@ -1170,9 +1828,18 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             "pitch_postprocessed": pinfo["pitch_postprocessed"],
             "generation_limit": meta_gen_limit, "generated_iterations": meta_gen_iters,
             "termination_reason": meta_term, "generation_chunks": gen_chunks,
+            # controlled-prefix 절단 실측(ICL 전용, 비민감 수치만). 안전 모드/legacy 는 None.
+            "reference_alignment": align_meta, "reference_cut_sample": align_cut,
             # I4: 말끝 finishing 재현(off/auto·pad·fade·적용여부). _finish_and_place가 반환.
             "tail_mode": pinfo.get("tail_mode"), "tail_pad_ms": pinfo.get("tail_pad_ms"),
             "tail_fade_ms": pinfo.get("tail_fade_ms"), "tail_fade_applied": pinfo.get("tail_fade_applied"),
+            # 경계 envelope 재현 — 실제 적용 샘플 수.
+            "boundary_onset_samples": pinfo.get("boundary_onset_samples"),
+            "boundary_offset_samples": pinfo.get("boundary_offset_samples"),
+            # 감정 음향 판정(비민감 토큰만). '태그가 붙었다'와 '감정이 실렸다'를 구분해 남긴다 —
+            # 이 기록이 없으면 결과물만 보고 감정이 반영됐다고 오해할 길이 열린다.
+            "emotion_acoustic": emotion_acoustic_records,
+            "emotion_acoustic_summary": emotion_acoustic_summary,
         }
         return final_path, info
     finally:
@@ -1306,7 +1973,8 @@ def _concat_with_boundaries(paths, gaps_before, output_path):
 
 
 def _boundary_gaps_from_plan(plan, silence_gap, emotion_boundary_mode="pause",
-                             emotion_boundary_pause_ms=200):
+                             emotion_boundary_pause_ms=200, paragraph_gap=None,
+                             model_tail_ms=None, model_lead_ms=None):
     """공용 마감 I2 — A 소유 파서(tts_grammar) plan → (parsed, gaps_before). 순수(numpy/soundfile 불요).
 
     합성 권위는 Python 파서다. renderer가 보낸 것과 동일 raw를 파서가 이미 (separate.py I1 parity로) 검증했고,
@@ -1315,34 +1983,21 @@ def _boundary_gaps_from_plan(plan, silence_gap, emotion_boundary_mode="pause",
     - parsed: [(emotion_id, spoken_text), ...] — 레거시 shape 유지. emotion 없으면 'default'(기존 라우팅 그대로).
       spoken_text는 **파서 산출 그대로**(정규화 단일 소스=A 파서; parity 해시도 이 값 기준).
     - gaps_before[i]: segment i '앞' 무음 초. [0]=0.0. 경계 우선순위(계약 추가3)는 파서가 boundary_type로
-      **단일 결정**(explicitPause > lineSilenceGap > emotionBoundaryPause > internal) → 여기선 gap 초로 환산만(합산 없음):
-        explicitPause        → 그 segment의 explicitPause pause_ms/1000 (명시값이 자동 gap을 대체, override)
-        lineSilenceGap       → silence_gap (전역 기본)
-        emotionBoundaryPause → immediate: 0.0 / pause: emotion_boundary_pause_ms/1000
-        internal(및 idx 0)   → 0.0
+      **단일 결정**(explicitPause > lineSilenceGap > emotionBoundaryPause > internal) → 여기선 gap 초로 환산만(합산 없음).
+
+    환산은 semantic_chunk_planner 가 소유한다(C2). 이 함수는 그 결과를 받아 shape 만 맞춘다.
+    새 선택 인자는 전부 기본 None 이며, 주지 않으면 값이 이전과 완전히 동일하다:
+      paragraph_gap : 빈 줄(문단) 경계 전용 무음 초. None → 일반 줄바꿈과 같은 silence_gap.
+      model_tail_ms / model_lead_ms : 모델이 낸 말미/앞머리 무음 '측정값'(잰 주체는 이 모듈이 아니다).
+        주면 '말미 + 앱 gap + 앞머리 = 목표' 가 되도록 앱 gap 을 줄인다(합산 방지). 안 주면 보정 없음.
     감정 전환은 immediate|pause만(계약 정정6·정정7). smooth/crossfade는 환산하지 않는다(미지원).
     """
     segs = plan.get("segments", [])
-    parsed = []
-    gaps_before = []
-    for idx, s in enumerate(segs):
-        eid = s.get("emotion_id") or "default"
-        parsed.append((eid, s.get("spoken_text", "")))
-        bt = s.get("boundary_type", "internal")
-        if idx == 0 or bt == "internal":
-            g = 0.0
-        elif bt == "explicitPause":
-            pm = next((p.get("pause_ms") for p in s.get("pauses", [])
-                       if p.get("boundary_type") == "explicitPause"), None)
-            g = (pm / 1000.0) if isinstance(pm, (int, float)) else 0.0
-        elif bt == "lineSilenceGap":
-            g = float(silence_gap)
-        elif bt == "emotionBoundaryPause":
-            g = 0.0 if emotion_boundary_mode == "immediate" else (float(emotion_boundary_pause_ms) / 1000.0)
-        else:
-            g = 0.0
-        gaps_before.append(g)
-    return parsed, gaps_before
+    parsed = [(s.get("emotion_id") or "default", s.get("spoken_text", "")) for s in segs]
+    entries = semantic_chunk_planner.resolve_boundary_gaps(
+        plan, silence_gap, emotion_boundary_mode, emotion_boundary_pause_ms,
+        paragraph_gap, model_tail_ms, model_lead_ms)
+    return parsed, [e["gap_sec"] for e in entries]
 
 
 # ── Main synthesize function ──
@@ -1360,7 +2015,8 @@ def resolve_reference_input(override, input_path):
 
 def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                emotion_refs=None, emotion_ref_sources=None, preferred_engine=None, reference_prompts=None, pitch=0.0,
-               tail_cfg=None, emotion_boundary_mode="pause", emotion_boundary_pause_ms=200):
+               tail_cfg=None, emotion_boundary_mode="pause", emotion_boundary_pause_ms=200,
+               expressive_mode="legacy_v2", reference_conditioning_mode=None):
     """Synthesize speech. Auto-selects engine by language.
     reference_prompts: 식별자(default/emotionId) → {manual_text, prompt_lang, mode} 사용자 override.
     emotion_refs: emotionId → 합성에 쓸 effective 참조 경로(3~10초 클립/유효 원본).
@@ -1370,7 +2026,29 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
       동작 변화 0(레거시 회귀 보존)**. 'auto'는 통합 담당이 config에서 배선할 때만 전달된다(계약 §3).
     emotion_boundary_mode: 감정 전환 경계 정책 immediate|pause(계약 정정6·추가3). 기본 pause(현행 동치, smooth 미지원).
     emotion_boundary_pause_ms: pause 모드의 감정전환 경계 무음 ms. 기본 200(계약 추가4). 두 값은 I3에서 config로
-      배선되며 그 전까지 인라인 감정전환 경계에만 영향(레거시 줄단위 입력은 lineSilenceGap이라 무영향=회귀 보존)."""
+      배선되며 그 전까지 인라인 감정전환 경계에만 영향(레거시 줄단위 입력은 lineSilenceGap이라 무영향=회귀 보존).
+    expressive_mode: 표현형 파서 모드(계약 §10) — result metadata 에 '어느 모드로 만든 결과인가'를 기록해
+      session/config/metadata 3중 일치를 성립시키기 위한 값이다. ⚠️ 합성 동작에는 쓰지 않는다.
+      오늘 이 함수에 도달하는 값은 항상 'legacy_v2' 다(separate.py 가 v3 를 모델 로딩 전에 차단한다).
+      v3 합성이 구현되기 전까지 이 인자로 분기하지 말 것 — 분기하면 그 순간 조용한 v3 경로가 생긴다.
+    reference_conditioning_mode: 참조 conditioning 모드(참조혼입 대응, 단일 권위 계약).
+      production 은 separate.py 가 항상 명시 값을 전달한다. **None/'' 도 safe_xvector 로 해석한다**
+      — 전사 기반 ICL 로 가는 '모드 없는 기본 경로'는 존재하지 않는다(함수 레벨까지 안전 기본).
+      값 검증·fail-closed 는 이 입구가 단일 소유: 잘못된 값 → INVALID_REFERENCE_CONDITIONING_MODE."""
+    # ── 참조 conditioning 모드 판정 — 어떤 파싱/참조 준비/모델 작업보다 먼저(모델 미로딩 차단). ──
+    rc_mode = resolve_reference_conditioning_mode(reference_conditioning_mode)  # invalid → 구조화 오류
+    # 재현 메타(모든 키 상시 존재): requested/effective 는 자동 전환 금지 계약상 항상 동일하다.
+    # reference_alignment / reference_cut_sample 은 여기 넣지 않는다 — 실제 절단을 수행한 합성 경로
+    # (info)가 채우고, 수행하지 않은 경로는 _build_tts_metadata 가 None 으로 채운다(권위 하나).
+    # 실패 경로는 metadata 를 만들기 전에 예외로 끝나므로 failure_code 는 성공 기록상 항상 None 이다.
+    _rc_meta = {
+        "reference_conditioning_mode_requested": rc_mode,
+        "reference_conditioning_mode_effective": rc_mode,
+        # 조용한 모드 대체 없음 = False. '품질 제약 없음'이라는 뜻이 아니다 — 아래가 그걸 말한다.
+        "reference_conditioning_degraded": False,
+        "reference_conditioning_constraints": reference_conditioning_constraints(rc_mode),
+        "reference_conditioning_failure_code": None,
+    }
     emit("status", message="음성 합성 시작", percent=0)
 
     if not emotion_refs:
@@ -1409,6 +2087,8 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         "explicit_pause_count": _sm.get("explicit_pause_count"),
         "total_pause_ms": _sm.get("total_pause_ms"),
         "emotion_boundary_mode": emotion_boundary_mode,
+        # 표현형 모드 캐리어(계약 §10) — camelCase 가 세 캐리어 공통 정본 키.
+        "ttsExpressiveMode": expressive_mode,
     }
     emit("progress", percent=5, message=f"{len(parsed)}개 문장 합성 준비")
 
@@ -1460,16 +2140,17 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         if _select_job_engine(text, preferred_engine) == "qwen3":
             final_path, info = _synthesize_qwen_job(parsed, ref_cache, overrides_by_path,
                                                     output_dir, speed, silence_gap, pitch, tail_cfg,
-                                                    boundary_gaps=boundary_gaps)
+                                                    boundary_gaps=boundary_gaps,
+                                                    reference_conditioning_mode=rc_mode)
             meta = _build_tts_metadata(
                 requested_engine=requested_engine,
                 original_reference_path=reference_audio, effective_reference_path=reference_audio,
                 reference_region=None, speed=float(speed), silence_gap=float(silence_gap),
-                **_plan_meta, **info)
+                **_rc_meta, **_plan_meta, **info)
             tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
             emit("progress", percent=99, message="완료!")
             emit("result", tracks=tracks, outputDir=output_dir, metadata=meta)
-            return
+            return final_path   # C3: 호출부(separate.py)가 실제 산출물을 검증할 수 있게
 
         segment_paths = []
         seg_engines = []
@@ -1502,19 +2183,29 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         # 최종 후보 WAV 완성(단일=세그먼트 그대로, 복수=결합 임시본). speed는 세그먼트 합성 시 이미 반영.
         # 그 뒤 Qwen과 '동일한' 공통 최종 단계(place_final_with_pitch)로 pitch 후처리 + 원자적 배치(계약 §6.1).
         import pitch_shift as _ps
-        if len(segment_paths) == 1:
-            candidate = segment_paths[0]           # output_dir 내부 → os.replace 원자적
-            concat_tmp = None
-        else:
-            concat_tmp = os.path.join(output_dir, ".synth-concat.wav")
-            # I2: 경계별 gap(explicit/line/emotion). segment_paths와 boundary_gaps는 parsed 기준 1:1 정렬
-            # (gaps_before[0]은 무시). 미전달 시 전 경계 silence_gap로 폴백(레거시 동치).
-            if boundary_gaps is not None and len(boundary_gaps) == len(segment_paths):
-                _concat_with_boundaries(segment_paths, boundary_gaps, concat_tmp)
-            else:
-                _concat_with_silence(segment_paths, concat_tmp, silence_gap)
-            candidate = concat_tmp
+        concat_tmp = None
         try:
+            if len(segment_paths) == 1:
+                candidate = segment_paths[0]       # output_dir 내부 → os.replace 원자적
+            else:
+                concat_tmp = os.path.join(output_dir, ".synth-concat.wav")
+                # 결합 직전 재검증(P0-3): 전 세그먼트가 동일 sr·mono·finite·non-empty.
+                # 이 경로는 _select_engine이 **세그먼트마다** 엔진을 고르므로(ttsEngine 기본 'auto'
+                # → preferred_engine None → 언어별 GPT-SoVITS/Kokoro/F5 혼재) 세그먼트 sr이 서로
+                # 다를 수 있다. 두 결합 함수는 모두 **첫 파일 sr**로 전체를 기록하므로, 섞이면 뒤
+                # 세그먼트가 그 sr로 재해석돼 피치·길이가 통째로 변질된다(경계에서 튄다).
+                # 계측 실측(SYNTHETIC): 32000 생성분을 24000으로 기록 시 경계 F0 계단 -4.904반음
+                # (이론 12*log2(24000/32000)=-4.980), 재생 길이 +33.3%, join mel 거리 0.0000→1.6723.
+                # Qwen 경로(_synthesize_qwen_job)는 같은 위험에 이미 이 가드를 쓴다 — 같은 가드를
+                # 이 경로에도 건다(조용한 변질 대신 명확한 중단 + 기존 synthesized.wav 보존).
+                _assert_concat_ready(segment_paths)
+                # I2: 경계별 gap(explicit/line/emotion). segment_paths와 boundary_gaps는 parsed 기준 1:1 정렬
+                # (gaps_before[0]은 무시). 미전달 시 전 경계 silence_gap로 폴백(레거시 동치).
+                if boundary_gaps is not None and len(boundary_gaps) == len(segment_paths):
+                    _concat_with_boundaries(segment_paths, boundary_gaps, concat_tmp)
+                else:
+                    _concat_with_silence(segment_paths, concat_tmp, silence_gap)
+                candidate = concat_tmp
             if _ps.clamp_quantize(pitch) != 0.0:
                 emit("progress", percent=93, message=f"음높이 보정 중 ({_ps.clamp_quantize(pitch):+.1f}반음)...")
             pinfo2 = _finish_and_place(candidate, final_path, pitch, output_dir, tail_cfg)
@@ -1563,13 +2254,18 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             elapsed_seconds=round(_time.monotonic() - _t0, 2), output_sample_rate=out_sr,
             pitch_semitones=pitch_st2, pitch_method=pitch_method2,
             pitch_postprocessed=bool(pitch_st2 != 0.0),
-            # I4: 파서 plan 재현 + 말끝 finishing(pinfo2가 반환).
+            # I4: 파서 plan 재현 + 말끝 finishing(pinfo2가 반환) + 경계 envelope 적용 샘플 수.
             tail_mode=pinfo2.get("tail_mode"), tail_pad_ms=pinfo2.get("tail_pad_ms"),
             tail_fade_ms=pinfo2.get("tail_fade_ms"), tail_fade_applied=pinfo2.get("tail_fade_applied"),
-            **_plan_meta)
+            # B(경계 envelope)의 적용 사실과 leak(참조 conditioning 모드)의 재현 메타를 함께 남긴다 —
+            # 두 기능은 역할이 다르므로 어느 쪽도 다른 쪽을 대체하지 않는다.
+            boundary_onset_samples=pinfo2.get("boundary_onset_samples"),
+            boundary_offset_samples=pinfo2.get("boundary_offset_samples"),
+            **_rc_meta, **_plan_meta)
         tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
         emit("progress", percent=99, message="완료!")
         emit("result", tracks=tracks, outputDir=output_dir, metadata=meta)
+        return final_path   # C3: 호출부(separate.py)가 실제 산출물을 검증할 수 있게
 
     finally:
         for d in tmp_dirs:
