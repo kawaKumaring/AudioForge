@@ -136,13 +136,29 @@ class ResolveQwenRefTextTest(_QwenGlobalIsolation, unittest.TestCase):
             return result
         self._patch(transcribe_worker, "run_transcribe", side_effect=ft)
 
-    def test_manual_icl_no_whisper(self):
+    def test_manual_icl_verifies_against_clip(self):
+        """수동도 정렬 검증을 거친다 — 계약 변경(2026-08-28).
+
+        예전 계약은 '수동이면 Whisper 미호출'이었고, 그 우회로가 참조 대사 혼입의 통로였다:
+        발화 도중 잘린 클립에 원문 전사를 manual 로 붙인 config 가 검증 없이 통과했다.
+        이제 클립을 전사해 대조하고, 맞으면 수동 전사를 그대로 쓴다."""
+        tts_worker._qwen_manual_verify_cache.clear()
         c = []
-        self._mock_whisper({"text": "자동전사", "language": "ko"}, c)
+        self._mock_whisper({"text": "수동문", "language": "ko"}, c)
         ov = {self.ap: {"manual_text": "수동문", "mode": "manual"}}
         txt, xvo = tts_worker._resolve_qwen_ref_text(self.ref, ov, set())
         self.assertEqual((txt, xvo), ("수동문", False))
-        self.assertEqual(c, [], "수동이면 Whisper 미호출")
+        self.assertEqual(len(c), 1, "수동도 검증을 위해 클립을 1회 전사한다")
+
+    def test_manual_mismatch_blocks_generation(self):
+        """오디오에 없는 말이 수동 전사에 있으면 생성 전에 막는다(fail-closed)."""
+        tts_worker._qwen_manual_verify_cache.clear()
+        c = []
+        self._mock_whisper({"text": "수동", "language": "ko"}, c)   # 클립에는 '문'이 없다
+        ov = {self.ap: {"manual_text": "수동문", "mode": "manual"}}
+        with self.assertRaises(tts_worker.QwenReferenceMisalignedError) as cm:
+            tts_worker._resolve_qwen_ref_text(self.ref, ov, set())
+        self.assertEqual(cm.exception.reason_code, tts_worker.REF_MANUAL_MISALIGNED)
 
     def test_ref_free_x_vector_only(self):
         c = []
@@ -666,14 +682,28 @@ class MetadataEmitQwenTest(_QwenGlobalIsolation, unittest.TestCase):
                     side_effect=(lambda m, p, l: {"text": "자동전사문장", "language": "ko"}))
         self._patch(tts_worker.QwenTTSEngine, "available", new=(lambda self: True))
 
+        # controlled-prefix 를 실제로 잘라낸 bridge 결과(샘플 인덱스·dB만). 목표 대사 시작 좌표는
+        # test_prefix_alignment 의 실측 패턴 픽스처와 같다.
+        self.align = {"sample_rate": 24000, "noise_floor_dbfs": -64.52, "tail_end_sample": 2640,
+                      "valley_sample": 4200, "onset_sample": 5040, "cut_sample": 4200,
+                      "valley_dbfs": -90.38, "lead_samples": 840}
+
         def fake_run_job(inner_self, segments, device):
             for s in segments:
                 _write(s["out_path"], 0.3)
-            return [{"original_segment_index": s["index"], "chunk_index": 0, "chunk_count": 1,
+            out = []
+            for s in segments:
+                e = {"original_segment_index": s["index"], "chunk_index": 0, "chunk_count": 1,
                      "out_path": s["out_path"], "sr": 24000, "x_vector_only": s["x_vector_only"],
                      "emotion_id": s.get("emotion_id"), "production_tokens": 20,
                      "generation_limit": 256, "generated_iterations": 100,
-                     "termination_reason": "completed_before_limit", "status": "ok"} for s in segments]
+                     "termination_reason": "completed_before_limit", "status": "ok"}
+                if s.get("prefix_text"):   # ICL 만 절단 기록을 갖는다
+                    e["reference_alignment"] = dict(self.align)
+                    e["reference_cut_sample"] = 4200
+                    e["controlled_prefix"] = True
+                out.append(e)
+            return out
         self._patch(tts_worker.QwenTTSEngine, "run_job", new=fake_run_job)
 
         # speed!=1.0 경로의 ffmpeg 의존 제거 — atempo를 복사로 대체(메타데이터만 검증)
@@ -688,8 +718,11 @@ class MetadataEmitQwenTest(_QwenGlobalIsolation, unittest.TestCase):
         return None
 
     def test_qwen_result_metadata(self):
+        # ICL(prompt_source=auto / x_vector_only=False) 은 참조 억양 반영 모드에서만 성립한다 —
+        # 모드를 명시 전달한다(모드 미전달은 이제 safe_xvector 다).
         tts_worker.synthesize(self.ref, "안녕하세요 첫 문장입니다.", self.out, speed=1.0, silence_gap=0.5,
-                              emotion_refs={}, preferred_engine="qwen3", reference_prompts={})
+                              emotion_refs={}, preferred_engine="qwen3", reference_prompts={},
+                              reference_conditioning_mode="high_quality_icl")
         meta = self._result_meta()
         self.assertIsNotNone(meta, "result에 metadata가 있어야 함")
         self.assertEqual(meta["actual_engine"], "qwen3")
@@ -705,15 +738,19 @@ class MetadataEmitQwenTest(_QwenGlobalIsolation, unittest.TestCase):
         self.assertFalse(meta["speed_postprocessed"])
         self.assertFalse(meta["seed_supported"])
         self.assertIsInstance(meta["elapsed_seconds"], (int, float))
+        # controlled-prefix 절단 실측이 그대로 기록된다(샘플 인덱스·dB).
+        self.assertEqual(meta["reference_cut_sample"], 4200)
+        self.assertEqual(meta["reference_alignment"]["first"]["onset_sample"], 5040)
         # 보안: 어떤 메타 값에도 전사 '전문'이 들어가지 않는다
         blob = _json_dumps(meta)
         self.assertNotIn("자동전사문장", blob)
 
     def test_ref_free_prompt_source_metadata(self):
-        ap = os.path.abspath(self.ref)
+        # 안전 모드를 명시 전달한다(모드 미전달의 암묵 기본에 기대지 않는다).
         tts_worker.synthesize(self.ref, "안녕하세요 문장.", self.out, speed=1.5, silence_gap=0.5,
                               emotion_refs={}, preferred_engine="qwen3",
-                              reference_prompts={"default": {"mode": "ref_free"}})
+                              reference_prompts={"default": {"mode": "ref_free"}},
+                              reference_conditioning_mode="safe_xvector")
         meta = self._result_meta()
         self.assertEqual(meta["prompt_source"], "x-vector-only")
         self.assertTrue(meta["x_vector_only_mode"])

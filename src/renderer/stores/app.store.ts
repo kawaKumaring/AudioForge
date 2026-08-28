@@ -1,6 +1,9 @@
 import { create } from 'zustand'
 import type { SeparationMode, Track, FileInfo } from '../../shared/types'
-import type { TtsReferenceEntry, PitchCapability } from '../../shared/ttsConfig'
+import type { TtsReferenceEntry, PitchCapability, ReferenceConditioningMode } from '../../shared/ttsConfig'
+// 참조 conditioning 모드(PHASE 2) — 기본/복원 해석은 계약 모듈 단일 소유(store 가 규칙을 다시 쓰지 않는다).
+// @ts-ignore TS5097: node --test가 요구하는 명시적 .ts 확장자(위 cancelContract import 주석과 같은 이유).
+import { REFERENCE_CONDITIONING_DEFAULT, restoreReferenceConditioningMode } from '../../shared/ttsConfig.ts'
 // 취소 계약(C2-P0.1)의 순수 술어 — store/UI/테스트가 같은 판정을 공유해 갈라지지 않게 한다.
 // 확장자(.ts)를 명시하는 이유: app.store.ts는 node --test(ESM, 확장자 필수)가 직접 로드하는 유일한 store 파일이라
 // 확장자 없는 상대 경로는 런타임에 ERR_MODULE_NOT_FOUND가 된다. tsconfig의 allowImportingTsExtensions는
@@ -70,6 +73,9 @@ export interface RestorableSession {
     ttsEmotionBoundaryPauseMs: number
     // 표현형 모드 스냅샷. 필드 부재(legacy 세션)=legacy_v2 → 구 세션을 여는 것만으로 재현이 바뀌지 않는다.
     ttsExpressiveMode: ExpressiveMode
+    // 참조 conditioning 모드 스냅샷(PHASE 2). 부재(legacy 세션) → safe_xvector(안전 기본).
+    // 계약 밖 문자열은 그대로 복원(조용한 강등 금지 — 합성 시 Python 이 구조화 오류로 거부).
+    ttsReferenceConditioningMode: ReferenceConditioningMode
   }>
   tracks?: Track[]
 }
@@ -166,6 +172,9 @@ interface AppState {
   ttsEmotionRefState: Record<string, EmotionRefState>
   ttsReferencePrompts: Record<string, TtsReferenceEntry>
   ttsEngine: string
+  // 참조 conditioning 모드(PHASE 2). 기본 safe_xvector(안전 음성 복제 — 참조 대사 혼입 구조적 차단).
+  // high_quality_icl 은 선택 가능하되 합성 시 Python 이 fail-closed 로 차단한다(경계 검증 확정 전).
+  ttsReferenceConditioningMode: ReferenceConditioningMode
   // 참조 준비 상태(합성 버튼 게이팅 + 사유 표시). ttsReferenceClip이 있으면 그 파생 클립을 참조로 전달.
   ttsReferenceClip: string
   ttsRefReady: boolean
@@ -198,6 +207,7 @@ interface AppState {
   setDemucsModel: (v: 'htdemucs' | 'htdemucs_ft' | 'roformer' | 'roformer_melband' | 'roformer_ensemble') => void
   setNSpeakers: (v: number) => void
   setTtsReferencePrompts: (v: Record<string, TtsReferenceEntry>) => void
+  setTtsReferenceConditioningMode: (v: ReferenceConditioningMode) => void
   setTtsRefState: (v: { clip?: string; ready?: boolean; message?: string; region?: { start: number; duration: number } | null }) => void
   // 감정 참조: 원본 등록/변경(파생 클립 초기화 + 그 clipKey 정리), 삭제(그 clipKey 정리), 상태 패치(패널 onChange).
   registerEmotionRef: (emotionId: string, source: string) => void
@@ -266,6 +276,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   ttsEmotionRefState: {} as Record<string, EmotionRefState>,
   ttsReferencePrompts: {} as Record<string, TtsReferenceEntry>,
   ttsEngine: 'auto',
+  // 참조 conditioning 모드 — fresh 세션 기본은 안전 음성 복제(safe_xvector).
+  ttsReferenceConditioningMode: REFERENCE_CONDITIONING_DEFAULT,
   // I3: 새(fresh) 세션 기본 = auto(계약 정정8 "new session"). 복원 시 legacy(필드 부재)는 off로 강등.
   ttsTailMode: 'auto' as 'off' | 'auto',
   ttsTailPaddingMs: 120,
@@ -304,6 +316,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setDemucsModel: (v) => set({ demucsModel: v }),
   setNSpeakers: (v) => set({ nSpeakers: v }),
   setTtsReferencePrompts: (v) => set({ ttsReferencePrompts: v }),
+  setTtsReferenceConditioningMode: (v) => set({ ttsReferenceConditioningMode: v }),
   setTtsPitchCapability: (c) => set({ ttsPitchCapability: c }),
   // ⚠️ patch 를 그대로 흘리지 않고 허용 키만 통과시킨다. 타입은 컴파일 때만 막아 주는데,
   //    이 setter 로 ttsExpressiveMode 를 밀어 넣을 수 있으면 'UI 스위치 없음' 보장이 런타임에서 뚫린다
@@ -435,6 +448,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       ttsSilenceGap: o.ttsSilenceGap ?? 0.5,
       ttsPitch: o.ttsPitch ?? 0.0,
       ttsEngine: o.ttsEngine ?? 'auto',
+      // 참조 conditioning 모드 — 부재(legacy 세션)=safe_xvector. 계약 밖 문자열은 무변형 통과
+      // (조용한 강등 금지 — 합성 시 Python 이 INVALID_REFERENCE_CONDITIONING_MODE 로 거부).
+      ttsReferenceConditioningMode: restoreReferenceConditioningMode(o.ttsReferenceConditioningMode),
       // I3: legacy 세션(필드 부재)은 off/현행으로 복원 — 구 세션을 여는 것만으로 재현이 조용히 바뀌지 않는다
       // (정정8, 자동 마이그레이션 없음). new 세션은 저장된 값(off|auto) 그대로.
       ttsTailMode: o.ttsTailMode === 'auto' || o.ttsTailMode === 'off' ? o.ttsTailMode : 'off',
@@ -476,6 +492,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsPitch: 0.0, ttsPitchCapability: null, resultMetadata: null,
       // 세션 리셋은 표현형 모드도 기본으로 되돌린다(이전 세션의 모드가 새 작업에 눌러앉지 않게).
       ttsExpressiveMode: EXPRESSIVE_DEFAULT_MODE,
+      // 참조 conditioning 모드도 안전 기본으로 — 이전 세션의 실험적 선택이 새 작업에 눌러앉지 않게.
+      ttsReferenceConditioningMode: REFERENCE_CONDITIONING_DEFAULT,
     })
   }
 }))

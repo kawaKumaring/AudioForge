@@ -353,3 +353,48 @@ test('B2a: store에 v3를 켜는 setter가 없다(죽은 스위치 방지)', () 
   const api = useAppStore.getState() as unknown as Record<string, unknown>
   assert.equal(typeof api.setTtsExpressiveMode, 'undefined')
 })
+
+// ── 참조 conditioning 모드 carrier(PHASE 2): store 기본/설정/복원/reset ──
+
+test('참조 conditioning: fresh 세션 기본 = safe_xvector(안전 음성 복제)', () => {
+  useAppStore.getState().reset()
+  assert.equal(useAppStore.getState().ttsReferenceConditioningMode, 'safe_xvector')
+})
+
+test('참조 conditioning: setter 로 선택 가능(UI 배선) + reset 시 안전 기본 복귀', () => {
+  useAppStore.getState().setTtsReferenceConditioningMode('high_quality_icl')
+  assert.equal(useAppStore.getState().ttsReferenceConditioningMode, 'high_quality_icl')
+  useAppStore.getState().reset()
+  assert.equal(useAppStore.getState().ttsReferenceConditioningMode, 'safe_xvector')
+})
+
+test('참조 conditioning: legacy 세션(필드 없음) → safe_xvector 로 복원(안전 기본)', () => {
+  useAppStore.setState({ ttsReferenceConditioningMode: 'high_quality_icl' })
+  useAppStore.getState().restoreSession('C:/out', {
+    mode: 'tts' as const, source: 'C:/in.wav',
+    options: { ttsText: '구 세션' },   // ttsReferenceConditioningMode 없음
+    tracks: [],
+  })
+  assert.equal(useAppStore.getState().ttsReferenceConditioningMode, 'safe_xvector')
+})
+
+test('참조 conditioning: 저장된 명시값은 그대로 복원(session 왕복)', () => {
+  for (const mode of ['safe_xvector', 'high_quality_icl'] as const) {
+    useAppStore.getState().restoreSession('C:/out', {
+      mode: 'tts' as const, source: 'C:/in.wav',
+      options: { ttsText: 'x', ttsReferenceConditioningMode: mode },
+      tracks: [],
+    })
+    assert.equal(useAppStore.getState().ttsReferenceConditioningMode, mode)
+  }
+})
+
+test('참조 conditioning: 계약 밖 문자열은 무변형 복원(조용한 강등 금지 — Python 이 거부)', () => {
+  useAppStore.getState().restoreSession('C:/out', {
+    mode: 'tts' as const, source: 'C:/in.wav',
+    options: { ttsText: 'x', ttsReferenceConditioningMode: 'weird_mode' as never },
+    tracks: [],
+  })
+  // 그대로 실어 보내면 합성 시 Python 이 INVALID_REFERENCE_CONDITIONING_MODE 로 크게 실패한다.
+  assert.equal(useAppStore.getState().ttsReferenceConditioningMode, 'weird_mode' as never)
+})
