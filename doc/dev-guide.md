@@ -144,6 +144,31 @@ ProcessButton.handleProcess()
 11. **watchdog 패턴**: clearTimeout만 하지 말고 반드시 새 타이머 생성
 12. **React Hooks**: early return은 모든 hooks 뒤에 배치
 
+### 파이썬 테스트를 부르는 방법 (2026-08-29 확인)
+
+`python/` 은 패키지가 아니다(`__init__.py` 없음). 테스트들은 `import tts_parity`
+처럼 **평평한 모듈명**으로 서로를 부른다. 그래서 부르는 방법이 결과를 바꾼다.
+
+```
+# 맞다 — python/ 이 top-level dir 로 sys.path 에 들어간다
+<python> -m unittest discover -s python -p "test_*.py"      # 전체
+<python> -m unittest discover -s python -p "test_tts_parity.py"
+<python> python/test_tts_parity.py                          # 파일 직접 실행도 된다
+
+# 틀리다 — 테스트가 아니라 호출이 실패한다
+<python> -m unittest python.test_tts_parity     # ModuleNotFoundError: tts_parity
+<python> -m unittest discover -s python -t .    # ImportError: Start directory is not importable
+```
+
+두 실패는 `develop` ca2533d 에서도 **똑같이** 재현된다. 특정 브랜치의 회귀가
+아니라 호출 방식의 문제이며, 올바른 명령으로는 `test_tts_parity.py` 14건이
+전부 통과한다. 실패를 이유로 테스트를 지우거나 단언을 약화하지 말 것.
+
+`<python>` 은 서드파티 의존이 필요한 테스트 때문에 **메인 환경 파이썬**이어야
+한다(`externals/env.json` 이 가리키는 것). 앱 전용 파이썬(`externals/runtime/
+app-python/...`)은 순수 stdlib 테스트만 돈다 — 그것으로 전체를 돌리면
+`numpy`·`soundfile` 부재로 168건이 에러가 난다(테스트 결함이 아니다).
+
 ## 6. 수정 우선순위
 
 | 순위 | 버그 | 소요 | 이유 |
