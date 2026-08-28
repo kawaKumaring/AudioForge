@@ -11,6 +11,8 @@
   - compute_tail_plan(samples, sr, cfg) -> TailPlan
   - apply_final_tail(samples, sr, plan) -> np.ndarray
   - validate_audio_array(samples, sr) -> AudioStats(dict)
+  - compute_boundary_plan(length, sr, tail_owns_offset) -> BoundaryEnvelopePlan
+  - apply_boundary_envelope(samples, sr, plan) -> np.ndarray
 
 경계(boundary) — 이 브랜치는 텍스트 파서를 구현하지 않는다. A의 파서가 나중에 넘겨줄
 '검증된 duration_ms 서술자'를 **소비**하는 순수 API만 정의한다. 우선순위(비합산):
@@ -20,6 +22,9 @@
 주의(사용자 증상):
   - "말끝이 칼로 자른 듯"(abrupt cut)은 **코드상 유력한 발생 경로**이며 synthetic sine에서 재현된다.
     실제 사용자 음성으로 '해결됨'을 주장하지 않는다. 120ms/8ms 기본값도 실청취 전엔 최적이라 하지 않는다.
+  - "시작·끝이 S자 없이 딱 켜지고 딱 꺼진다"는 **사용자 청취로 확정**됐고, 실제 산출 WAV 계측으로
+    시작 쪽 계단을 재현했다(A2 3종). 대응은 tail 과 별개인 경계 envelope 이며 tail 기본값(off)과
+    무관하게 항상 적용된다 — 자세한 계측은 doc/boundary-envelope-2026-08-28.md.
 """
 
 from dataclasses import dataclass, field
@@ -45,6 +50,22 @@ TAIL_FADE_DEFAULT_MS = 8.0
 SILENCE_WIN_MS = 5.0
 SILENCE_PEAK = 1e-4
 
+# ── 경계 envelope(시작·끝이 "딱 켜지고 딱 꺼지는" 결함) ────────────────────────────
+# 사용자 청취로 확정된 결함이다. 합성 결과는 sample 0 부터 이미 -30 dBFS 대의 소리를 담고
+# 있어서(측정: 앞 10ms RMS -29~-32 dBFS, 첫 2ms 프레임이 최대 프레임의 4~9%) 디지털 무음에서
+# 한 샘플 만에 켜진다. 실제 녹음(reference)은 같은 자리가 최대 프레임의 0.4% 라 켜짐이 들리지 않는다.
+#
+# 창 길이는 추측이 아니라 실측으로 골랐다(doc/boundary-envelope-2026-08-28.md).
+#   · 판정 기준: "경계가 '경계 없는 같은 소재' 보다 날카롭지 않을 것".
+#     발화 한복판을 잘라 최악의 계단을 만든 뒤, 그 지점의 고역 트랜지언트가 자르지 않은 원본의
+#     같은 지점보다 작아지는 최소 길이를 찾았다. onset 10ms 에서 -7.3~-14.4 dB(이미 충분),
+#     offset 20ms 에서 -10.9~-25.4 dB. 그보다 길게 가면 계단은 더 안 줄고 내용만 깎인다.
+#   · 자음 보존이 최우선 제약이다. onset 을 12ms 로 늘리면 실측된 가장 이른 고역 버스트(8ms)의
+#     감쇠가 -0.95 dB → -2.6 dB 로 커진다. 10ms 는 그 버스트를 1 dB 안에서 지킨다.
+# ⚠️ 실측 없이 이 값을 바꾸면 시작 자음이 깎인다. 바꾸려면 문서의 계측을 다시 돌려라.
+BOUNDARY_ONSET_MS = 10.0
+BOUNDARY_OFFSET_MS = 20.0
+
 # emotion 전환 간격 범위(ttsEmotionBoundaryPauseMs 0~1000).
 EMOTION_GAP_MIN_MS = 0.0
 EMOTION_GAP_MAX_MS = 1000.0
@@ -55,7 +76,7 @@ VALID_BOUNDARY_MODES = ("immediate", "pause")
 
 class AudioFinishingError(RuntimeError):
     """finishing 실패. code로 원인 식별(INVALID_TTS_CONFIG / AUDIO_INVALID / AUDIO_SR_MISMATCH /
-    TAIL_DOUBLE_APPLY)."""
+    TAIL_DOUBLE_APPLY / BOUNDARY_DOUBLE_APPLY)."""
 
     def __init__(self, message, code=None):
         super().__init__(message)
@@ -219,6 +240,103 @@ def apply_final_tail(samples, sr, plan: TailPlan) -> np.ndarray:
     if pad_samples > 0:
         body = np.concatenate([body, np.zeros(pad_samples, dtype=np.float32)])
     return body
+
+
+# ────────────────────────── 경계 envelope(시작·끝) ──────────────────────────
+
+@dataclass
+class BoundaryEnvelopePlan:
+    """최종 산출물의 **바깥쪽** 시작·끝에만 걸 envelope 계획.
+
+    onset_samples/offset_samples 는 **실제로 적용한** 샘플 수다(clamp 결과 포함) — metadata 에
+    그대로 기록한다. 길이는 바뀌지 않는다(gain 곱셈뿐, padding 없음).
+
+    ⚠️ 내부 chunk 경계에는 절대 걸지 않는다. 청크마다 걸면 파츠 느낌과 공백이 생긴다.
+       장문도 조립이 끝난 **최종 배열 하나**의 양 끝에만 한 번 건다.
+    """
+    onset_samples: int
+    offset_samples: int
+    sr: int
+    # tail 'auto' 의 cosine fade 가 말끝을 이미 0 으로 만드는 경우 offset 을 양보했다는 표시.
+    # 이중 fade 방지 — 말끝의 권위는 tail 계약이 갖는다.
+    offset_yielded_to_tail: bool = False
+    _applied: bool = field(default=False, repr=False, compare=False)
+
+
+def _smoothstep(u):
+    """계약 곡선 s(u) = 3u² − 2u³ (S자 ease-in-out). 다른 곡선으로 바꾸지 않는다."""
+    return 3.0 * u * u - 2.0 * u * u * u
+
+
+def smoothstep_fade_in_window(n):
+    """길이 n 의 fade-in 창(0→1). 시작점이 **정확히 0** 이 되도록 u = k/n 위상 사용:
+    w[0] = s(0) = 0.0. 끝점은 s((n-1)/n) = 1 − 3/n² 로 1 에 충분히 붙는다
+    (n=240 에서 1 − 5.2e-5) — 창 밖 첫 샘플과의 단차가 가청 이하다."""
+    if n <= 0:
+        return np.ones(0, dtype=np.float32)
+    k = np.arange(n, dtype=np.float64)
+    return _smoothstep(k / float(n)).astype(np.float32)
+
+
+def smoothstep_fade_out_window(n):
+    """길이 n 의 fade-out 창(1→0) = 1 − s(u). 끝점이 **정확히 0** 이 되도록 u = (k+1)/n 위상
+    사용 — 기존 _cosine_fade_window 와 같은 관례다. w[n-1] = 1 − s(1) = 0.0."""
+    if n <= 0:
+        return np.ones(0, dtype=np.float32)
+    k = np.arange(1, n + 1, dtype=np.float64)
+    w = 1.0 - _smoothstep(k / float(n))
+    w[-1] = 0.0  # 부동소수 오차 제거 — 끝점 정확히 0
+    return w.astype(np.float32)
+
+
+def compute_boundary_plan(length, sr, tail_owns_offset=False) -> BoundaryEnvelopePlan:
+    """경계 envelope 계획(순수·결정적). 배열이 아니라 **길이**만 받는다.
+
+    - onset 은 항상 적용한다. tail 처리에는 시작 쪽 개념이 아예 없어 겹칠 여지가 없다.
+    - tail_owns_offset=True(= tail 'auto' 가 실제로 cosine fade 를 걸 때)면 offset 을 0 으로
+      양보한다. 같은 구간에 fade 를 두 번 겹치지 않기 위함이다(중복 아닌 보완).
+    - 짧은 배열에서는 두 창이 겹치지 않게 clamp 한다: onset ≤ len//2, offset ≤ 남은 길이.
+    """
+    sr = int(sr)
+    if sr <= 0:
+        raise AudioFinishingError(f"sr는 양수여야 함: {sr}", code="AUDIO_INVALID")
+    n = int(length)
+    if n < 0:
+        raise AudioFinishingError(f"length는 음수일 수 없음: {n}", code="AUDIO_INVALID")
+
+    onset = int(round(BOUNDARY_ONSET_MS * sr / 1000.0))
+    offset = 0 if tail_owns_offset else int(round(BOUNDARY_OFFSET_MS * sr / 1000.0))
+    onset = max(0, min(onset, n // 2))
+    offset = max(0, min(offset, n - onset))
+    return BoundaryEnvelopePlan(onset_samples=onset, offset_samples=offset, sr=sr,
+                                offset_yielded_to_tail=bool(tail_owns_offset))
+
+
+def apply_boundary_envelope(samples, sr, plan: BoundaryEnvelopePlan) -> np.ndarray:
+    """계획을 적용해 새 배열 반환(입력 비변형·길이 불변). 순수 array — 파일 I/O 없음.
+    같은 plan 재적용 금지(BOUNDARY_DOUBLE_APPLY — 두 번 걸면 gain 이 제곱돼 실제로 들린다)."""
+    if not isinstance(plan, BoundaryEnvelopePlan):
+        raise AudioFinishingError("apply_boundary_envelope: BoundaryEnvelopePlan이 필요합니다",
+                                  code="AUDIO_INVALID")
+    if plan._applied:
+        raise AudioFinishingError("같은 boundary plan을 두 번 적용할 수 없습니다",
+                                  code="BOUNDARY_DOUBLE_APPLY")
+    if int(sr) != int(plan.sr):
+        raise AudioFinishingError(f"sr 불일치: plan.sr={plan.sr} vs sr={sr}", code="AUDIO_SR_MISMATCH")
+
+    arr = _as_mono_float32(samples)
+    if arr.ndim != 1:
+        raise AudioFinishingError(f"mono(1-D)만 처리 가능: ndim={arr.ndim}", code="AUDIO_INVALID")
+
+    plan._applied = True
+    out = arr.copy()
+    on = int(plan.onset_samples)
+    off = int(plan.offset_samples)
+    if on > 0 and out.size > 0:
+        out[:on] = out[:on] * smoothstep_fade_in_window(on)
+    if off > 0 and out.size > 0:
+        out[out.size - off:] = out[out.size - off:] * smoothstep_fade_out_window(off)
+    return out
 
 
 # ────────────────────────── 검증(순수 계산 — reject는 호출부) ──────────────────────────
