@@ -1,0 +1,66 @@
+{
+ "recovery": "20260829 GPT-SoVITS + env.json",
+ "cause": "worktree 정리 중 recursive delete 가 junction 을 따라가 공용 externals 일부를 삭제",
+ "restored": {
+  "env.json": {
+   "path_rel": "externals/env.json",
+   "sha256": "345f7df29f013d00a4e7435fdad924ad31513749d8cd1beb7f118b2489bfcc0c",
+   "verdict": "원본과 동일하게 복원(내용 확인된 단일 키)"
+  },
+  "GPT-SoVITS": {
+   "path_rel": "externals/GPT-SoVITS",
+   "source": "https://github.com/RVC-Boss/GPT-SoVITS.git",
+   "cloned_head": "48b1a0169a28582a8984402f82cf438d3bfa6aca",
+   "original_revision": "미확인(삭제 전 기록 없음)",
+   "verdict": "기능적으로 재구성(원본 revision 미확인)"
+  },
+  "pretrained_models": {
+   "source": "huggingface lj1995/GPT-SoVITS",
+   "cache_ref_main": "336b2ec4e8d4ac74740798dd40af44e74659ecaf",
+   "note": "로컬 HF 캐시는 refs 만 남고 blobs 0 이라 재다운로드",
+   "files": 9,
+   "total_mb": 1050.6,
+   "symlinks": 0,
+   "verdict": "기능적으로 재구성(해시 기록 완료)"
+  }
+ },
+ "damaged_not_repaired": {
+  "gptsovits_venv": {
+   "path_rel": "externals/gptsovits_venv",
+   "damage": "site-packages 의 a~l 구간 삭제(dist-info m~y 만 잔존)",
+   "missing_imports": [
+    "transformers",
+    "librosa",
+    "ffmpeg",
+    "einops",
+    "jieba",
+    "g2p_en",
+    "pytorch_lightning",
+    "pyopenjtalk",
+    "LangSegment",
+    "fast_langdetect",
+    "gradio"
+   ],
+   "intact_imports": [
+    "torch",
+    "numpy",
+    "scipy",
+    "soundfile"
+   ],
+   "verdict": "미복구 — 지시에 따라 임의 수리하지 않음"
+  },
+  "hf_cache_lj1995": {
+   "path": "~/.cache/huggingface/hub/models--lj1995--GPT-SoVITS",
+   "damage": "snapshots/blobs 소실, refs/main 만 잔존",
+   "verdict": "미복구(모델은 staging 으로 재확보)"
+  }
+ },
+ "unaffected_verified": {
+  "qwen3_tts_venv": "torch 2.13.0+cu130 / qwen_tts import OK, dist-info a~u 완전",
+  "qwen3_tts_hf": "스냅샷 5d83992436eae1d760afd27aff78a71d676296fc 존재",
+  "qwen3_tts_1_7b_base": "존재",
+  "separator_models": "존재"
+ },
+ "staging_preserved": "E:\\AudioForge_output\\_recovery-staging\\20260829-gptsovits",
+ "diagnostic_archive": "E:\\AudioForge_output\\_diagnostic-archive\\20260829-worktree-cleanup"
+}
