@@ -92,9 +92,23 @@ class SelectJobEngineTest(_QwenGlobalIsolation, unittest.TestCase):
         self._avail(True)
         self.assertEqual(tts_worker._select_job_engine("아무 문장", "qwen3"), "qwen3")
 
-    def test_preferred_qwen_unavailable_falls_back(self):
+    def test_preferred_qwen_unavailable_fails_closed(self):
+        """계약 변경: 명시적 qwen3 요청은 조용히 폴백하지 않는다.
+
+        예전에는 available()==False 면 progress 한 줄만 남기고 문장별 폴백(kokoro 등)으로 넘어갔다.
+        그 경로에서 사용자는 '요청한 엔진으로 합성됐다'고 오해하거나, 폴백 엔진의 환경 오류만 보게 된다.
+        이제는 ENGINE_UNAVAILABLE 구조화 오류로 끊는다(자동 선택 None/auto 는 여전히 폴백 허용)."""
         self._avail(False)
-        self.assertIsNone(tts_worker._select_job_engine("아무 문장", "qwen3"))
+        with self.assertRaises(RuntimeError) as ctx:
+            tts_worker._select_job_engine("아무 문장", "qwen3")
+        payload = getattr(ctx.exception, "error_payload", {})
+        self.assertEqual(payload.get("code"), tts_worker.ENGINE_UNAVAILABLE)
+        self.assertEqual(payload.get("requested_engine"), "qwen3")
+
+    def test_auto_selection_still_falls_back_when_qwen_unavailable(self):
+        """자동 선택(None)은 기존 계약 그대로 — 폴백이 정상이다(명시 선택과 구분)."""
+        self._avail(False)
+        self.assertIsNone(tts_worker._select_job_engine("아무 문장", None))
 
     def test_preferred_other_engine_uses_per_segment(self):
         self._avail(True)

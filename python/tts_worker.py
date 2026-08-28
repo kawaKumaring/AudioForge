@@ -762,6 +762,12 @@ ENGINES = {
     "gptsovits": GPTSoVITSEngine,
 }
 
+# 엔진 선택 계약(구조화 오류 코드). 명시 요청은 조용히 대체되지 않는다 — 자동(auto/None) 선택과 구분.
+ENGINE_UNAVAILABLE = "ENGINE_UNAVAILABLE"          # 지목한 엔진을 쓸 수 없음(대체 금지, 실패로 종료)
+ENGINE_NAME_INVALID = "ENGINE_NAME_INVALID"        # 알 수 없는 엔진 이름(기본 엔진으로 흘리지 않음)
+# 배치형 Qwen('qwen3')은 ENGINES 레지스트리(문장별 엔진)에 없으므로 따로 합집합을 만든다.
+_VALID_ENGINE_NAMES = frozenset(ENGINES) | {"qwen3"}
+
 # Engine instances are cached so loaded models survive across segments —
 # creating a new instance per sentence reloads the model every time.
 _engine_cache = {}
@@ -793,9 +799,16 @@ def _detect_language(text):
 def _select_engine(text, preferred_engine=None):
     """Select best engine for the given text.
     Priority: user preference > GPT-SoVITS (ko/ja) > Kokoro (ja/zh) > F5-TTS (en)
+
+    명시 요청이 문장별 레지스트리에 있으면 그것을 쓴다. 알 수 없는 이름은 '자동'으로 흘리지 않고
+    검증 오류로 끊는다(조용한 기본 엔진 대체 금지). auto/None 만 언어 기반 자동 선택이다.
     """
     if preferred_engine and preferred_engine in ENGINES:
         return _get_engine(preferred_engine)
+    if preferred_engine not in (None, "", "auto") and preferred_engine not in _VALID_ENGINE_NAMES:
+        e = RuntimeError("알 수 없는 음성 엔진 이름입니다 — 지원되는 엔진을 선택하세요.")
+        e.error_payload = {"code": ENGINE_NAME_INVALID}
+        raise e
 
     lang = _detect_language(text)
 
@@ -819,12 +832,22 @@ def _select_engine(text, preferred_engine=None):
 def _select_job_engine(text, preferred_engine=None):
     """작업 전체를 배치형 Qwen으로 라우팅할지 결정. 반환 'qwen3'(배치) 또는 None(문장별 기존 경로).
     한국어 Auto 우선순위: Qwen3 → (미설치 시) 기존 GPT-SoVITS→폴백 경로."""
+    # 엔진명 검증 — 알 수 없는 값을 '자동'으로 흘려보내지 않는다. 사용자가 특정 엔진을 지목했는데
+    # 오타/구값 때문에 조용히 다른 엔진이 쓰이면, 결과물만 보고는 무엇으로 합성됐는지 알 수 없다.
+    if preferred_engine not in (None, "", "auto") and preferred_engine not in _VALID_ENGINE_NAMES:
+        e = RuntimeError("알 수 없는 음성 엔진 이름입니다 — 지원되는 엔진을 선택하세요.")
+        e.error_payload = {"code": ENGINE_NAME_INVALID}
+        raise e
+
     qwen = _get_qwen_engine()
     if preferred_engine == "qwen3":
         if qwen.available():
             return "qwen3"
-        emit("progress", percent=4, message="Qwen 미설치 → GPT-SoVITS/폴백으로 전환")
-        return None
+        # 명시적으로 Qwen 을 지목했는데 쓸 수 없다 → 다른 엔진(kokoro 등)·CPU 로 조용히 대체하지 않는다.
+        # 대체하면 사용자는 '요청한 엔진으로 합성됐다'고 오해한다. 자동 선택(auto)과는 다른 계약이다.
+        e = RuntimeError("Qwen 음성 엔진을 사용할 수 없습니다 — 런타임/모델 구성을 확인하세요.")
+        e.error_payload = {"code": ENGINE_UNAVAILABLE, "requested_engine": "qwen3"}
+        raise e
     if preferred_engine:  # 다른 엔진 명시 → 문장별 기존 경로
         return None
     if _detect_language(text) == "ko" and qwen.available():
