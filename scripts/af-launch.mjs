@@ -16,15 +16,16 @@
  *   node scripts/af-launch.mjs --check    점검만 (종료코드 0=정상, 1=미비)
  *   node scripts/af-launch.mjs --install  설치까지만 (앱 실행 안 함)
  *   node scripts/af-launch.mjs --plan     설치 계획만 출력
+ *   node scripts/af-launch.mjs --where    설치 위치만 JSON 으로 출력 (내려받지 않음)
  *   node scripts/af-launch.mjs --yes      설치 동의를 비대화식으로 승인
  */
 
 import { spawnSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import {
-  existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync
+  copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync
 } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -33,17 +34,49 @@ const SPEC_PATH = join(REPO, 'python', 'runtime_spec.json')
 
 const argv = process.argv.slice(2)
 const has = (f) => argv.includes(f)
-const MODE = has('--check') ? 'check'
-  : has('--plan') ? 'plan'
-    : has('--install') ? 'install'
-      : 'launch'
+const MODE = has('--where') ? 'where'
+  : has('--check') ? 'check'
+    : has('--plan') ? 'plan'
+      : has('--install') ? 'install'
+        : 'launch'
 
 function log(msg) { process.stdout.write(msg + '\n') }
 function bar() { log('-'.repeat(68)) }
 
+/**
+ * 본체 저장소 루트. 작업 트리에서 실행돼도 본체를 가리킨다.
+ *
+ * python/app_runtime.py 의 main_repo_root() 와 **같은 규칙**이다. 여기서 다시 쓰는
+ * 이유는 닭과 달걀뿐이다 — 파이썬을 어디에 내려받을지 정하려면 파이썬이 없는
+ * 시점에 이 답이 필요하다. 두 구현이 어긋나면 파이썬은 A 에 깔리고 판정은 B 를
+ * 보게 되므로, python/test_app_runtime.py 가 두 구현의 일치를 고정한다.
+ */
+function mainRepoRoot() {
+  const dotGit = join(REPO, '.git')
+  try {
+    if (statSync(dotGit).isDirectory()) return REPO
+  } catch { return REPO }
+  let line
+  try { line = readFileSync(dotGit, 'utf-8').trim() } catch { return REPO }
+  if (!line.startsWith('gitdir:')) return REPO
+  let gitdir = line.slice('gitdir:'.length).trim()
+  if (!isAbsolute(gitdir)) gitdir = join(REPO, gitdir)
+  gitdir = resolve(gitdir)
+  const idx = gitdir.toLowerCase().lastIndexOf(`${sep}worktrees${sep}`)
+  if (idx === -1) return REPO
+  const mainGit = gitdir.slice(0, idx)
+  return basename(mainGit).toLowerCase() === '.git' ? dirname(mainGit) : REPO
+}
+
+/** 앱이 소유한 런타임(전용 파이썬·전용 venv·runtime.json)이 사는 곳. */
 function runtimeRoot() {
   const override = process.env.AUDIOFORGE_RUNTIME_ROOT
-  return override ? resolve(override) : join(REPO, 'externals')
+  return override ? resolve(override) : join(mainRepoRoot(), 'externals', 'runtime')
+}
+
+/** 내려받은 설치 파일 보관소. 같은 자산을 두 번 받지 않기 위해서만 존재한다. */
+function downloadCacheDir() {
+  return join(runtimeRoot(), '.cache', 'downloads')
 }
 
 function readSpec() {
@@ -122,8 +155,27 @@ async function ensureAppPython(spec) {
   mkdirSync(staging, { recursive: true })
   try {
     const tarball = join(staging, i.asset)
-    log('내려받는 중...')
-    const bytes = await download(i.url, tarball)
+    const cached = join(downloadCacheDir(), i.asset)
+
+    // 이미 받아 둔 것이 있으면 다시 받지 않는다. 단 캐시를 믿지는 않는다 —
+    // sha256 이 명세와 맞을 때만 쓰고, 어긋나면 조용히 버리고 새로 받는다.
+    let reused = false
+    if (existsSync(cached)) {
+      if (sha256File(cached) === i.sha256) {
+        log(`내려받기 생략 — 보관된 설치 파일 재사용: ${cached}`)
+        copyFileSync(cached, tarball)
+        reused = true
+      } else {
+        log(`보관된 설치 파일의 sha256 이 명세와 다릅니다. 버리고 새로 받습니다: ${cached}`)
+        try { rmSync(cached) } catch { /* 못 지워도 아래에서 덮어쓴다 */ }
+      }
+    }
+
+    if (!reused) {
+      log('내려받는 중...')
+      const bytes = await download(i.url, tarball)
+      log(`  ${(bytes / 1048576).toFixed(1)} MiB 수신`)
+    }
 
     const digest = sha256File(tarball)
     if (digest !== i.sha256) {
@@ -131,7 +183,18 @@ async function ensureAppPython(spec) {
         `내려받은 파일의 sha256 이 명세와 다릅니다.\n  기대: ${i.sha256}\n  실제: ${digest}\n` +
         '  네트워크 문제이거나 자산이 교체되었습니다. 설치를 중단합니다.')
     }
-    log(`sha256 확인: ${digest} (${(bytes / 1048576).toFixed(1)} MiB)`)
+    log(`sha256 확인: ${digest}`)
+
+    // 검증을 통과한 것만 보관한다. 다음 설치(다른 작업 트리·재설치)가 이것을 쓴다.
+    if (!reused) {
+      try {
+        mkdirSync(downloadCacheDir(), { recursive: true })
+        copyFileSync(tarball, cached)
+        log(`설치 파일 보관: ${cached}`)
+      } catch (e) {
+        log(`  (설치 파일 보관 실패 — 설치는 계속합니다: ${e.message})`)
+      }
+    }
 
     // install_only 배포물은 최상위에 python/ 하나만 들어 있다.
     const tar = spawnSync('tar', ['-xzf', i.asset], { cwd: staging, stdio: 'inherit' })
@@ -218,6 +281,16 @@ function failure(reason, extra) {
 }
 
 async function main() {
+  // --where 는 아무것도 내려받지 않고 위치만 답한다. 파이썬 쪽 app_runtime.py 와
+  // 이 답이 일치하는지를 test_app_runtime.py 가 검사한다.
+  if (MODE === 'where') {
+    log(JSON.stringify({
+      checkout: REPO, main_repo: mainRepoRoot(),
+      runtime_root: runtimeRoot(), download_cache: downloadCacheDir()
+    }))
+    return 0
+  }
+
   let spec
   try {
     spec = readSpec()
@@ -238,12 +311,16 @@ async function main() {
 
   let p = probe(python)
   if (MODE === 'check') {
+    log(`앱 소유 런타임: ${runtimeRoot()}`)
     log(`GPT-SoVITS 환경: ${p.ok ? '정상' : '미비 (' + p.reason + ')'}`)
     if (!p.ok) {
       installer(python, ['status'])
     } else {
-      log(`  python: ${p.python}`)
-      log(`  repo  : ${p.repo}`)
+      log(`  python: ${p.python}  [앱 소유]`)
+      log(`  repo  : ${p.repo}  [외부 참조 — 설치기가 손대지 않음]`)
+      log('  (이 점검은 기록·지문 대조입니다. 실제 import·모델 로딩 확인은')
+      log('   node scripts/af-launch.mjs --install 뒤의 verify, 또는')
+      log('   python python/app_env_installer.py verify 가 합니다.)')
     }
     return p.ok ? 0 : 1
   }

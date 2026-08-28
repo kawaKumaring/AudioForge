@@ -79,53 +79,52 @@ def _dir_size(path):
 
 # ── 계획 ─────────────────────────────────────────────────────────────────
 
+def _canonical(p):
+    """junction/symlink 를 풀어 **실체 경로**를 돌려준다.
+
+    작업 트리의 externals 는 공용 externals 를 가리키는 junction 인 경우가 있다.
+    연결 기록에 junction 경유 경로를 남기면 (1) 그 작업 트리를 지울 때 링크를 따라
+    실제 자산이 함께 지워지고(2026-08-29 사고), (2) 작업 트리가 사라진 뒤에는
+    기록된 경로 자체가 무효가 된다. 기록은 언제나 실체를 가리켜야 한다.
+    """
+    return os.path.realpath(os.path.abspath(p))
+
+
 def _find_repo(spec):
-    """이미 내려받힌 GPT-SoVITS 코드/모델을 찾는다.
+    """이미 내려받아 둔 GPT-SoVITS 코드/모델을 찾는다.
+
+    탐색은 **명시된 곳만** 본다. 예전에는 형제 디렉터리를 훑었는데, 그러면 공용
+    externals 를 가리키는 junction 을 먼저 만나 그 경유 경로를 기록해 버렸다.
+    "먼저 발견한 것"을 답으로 삼는 탐색은 여기서 없앤다.
 
     탐색 순서:
       1. AUDIOFORGE_GPTSOVITS_REPO 환경 변수 (명시 지정)
-      2. runtime.json 에 이미 기록된 repo
-      3. runtime_root()/GPT-SoVITS
-      4. 이 작업 트리의 형제 저장소들의 externals/GPT-SoVITS
-         (작업 트리에는 externals 가 없고 본체 저장소에만 있는 경우를 위해)
+      2. runtime.json 에 이미 기록된 repo (검증을 통과했던 실체 경로)
+      3. assets_root()/GPT-SoVITS  — 본체 저장소의 externals. 작업 트리에서 실행해도
+                                     본체를 보므로 junction 을 거칠 일이 없다.
+      4. runtime_root()/GPT-SoVITS — 런타임 루트를 딴 데로 옮기고 코드도 함께 둔 경우
+    찾은 경로는 모두 realpath 로 풀어 실체만 기록한다.
     반환: (경로 or None, 판단 근거 문자열)
     """
-    def _canonical(p):
-        """junction/symlink 를 풀어 실제 위치를 기록한다.
-
-        작업 트리의 externals 는 공용 externals 를 가리키는 junction 인 경우가 있다.
-        연결 기록에 junction 경유 경로를 남기면, 나중에 그 작업 트리를 정리할 때
-        링크를 따라 실제 자산이 지워지는 사고(2026-08-29)로 이어진다.
-        기록은 언제나 실체를 가리켜야 한다.
-        """
-        return os.path.realpath(os.path.abspath(p))
+    def _usable(p):
+        return os.path.isdir(p) and os.path.isdir(os.path.join(p, "GPT_SoVITS"))
 
     env = os.environ.get("AUDIOFORGE_GPTSOVITS_REPO")
-    if env and os.path.isdir(env):
+    if env and _usable(env):
         return _canonical(env), "AUDIOFORGE_GPTSOVITS_REPO"
 
     comp = rt.get_component(COMPONENT)
-    if comp and comp.get("repo") and os.path.isdir(comp["repo"]):
-        return _canonical(comp["repo"]), "runtime.json"
+    recorded = (comp or {}).get("repo")
+    if recorded and _usable(recorded):
+        return _canonical(recorded), "runtime.json(검증된 기록)"
 
-    cand = os.path.join(rt.runtime_root(), "GPT-SoVITS")
-    if os.path.isdir(cand):
-        return _canonical(cand), "runtime_root"
-
-    # 작업 트리(worktree)에는 externals 가 없을 수 있다. 형제 디렉터리를 한 단계만 본다.
-    # 재귀 탐색은 하지 않는다 — 넓게 훑다가 엉뚱한 것을 잡는 일을 만들지 않는다.
-    repo_parent = os.path.dirname(rt.repo_root())
-    for base in (repo_parent, os.path.dirname(repo_parent)):
-        try:
-            entries = sorted(os.listdir(base))
-        except OSError:
-            continue
-        for name in entries:
-            p = os.path.join(base, name, "externals", "GPT-SoVITS")
-            if os.path.isdir(p) and os.path.isdir(os.path.join(p, "GPT_SoVITS")):
-                real = _canonical(p)
-                via = "" if real.lower() == os.path.abspath(p).lower() else f", {p} 경유"
-                return real, f"형제 저장소 탐색({name}{via})"
+    for base, label in ((rt.assets_root(), "assets_root(본체 externals)"),
+                        (rt.runtime_root(), "runtime_root")):
+        cand = os.path.join(base, "GPT-SoVITS")
+        if _usable(cand):
+            real = _canonical(cand)
+            via = "" if real.lower() == os.path.abspath(cand).lower() else f" ({cand} 경유)"
+            return real, label + via
     return None, "찾지 못함"
 
 
@@ -146,13 +145,12 @@ def _preserved_items(root, repo):
     """이 설치기가 손대지 않는 것 중, 이 기계에 **실제로 있는** 것만 보여 준다.
 
     없는 경로까지 나열하면 안내가 아니라 소음이다.
-    재사용할 코드/모델이 다른 저장소에 있으면 그쪽 이웃도 함께 본다.
+    외부 자산 루트와, 재사용할 코드가 사는 폴더를 함께 본다.
     """
-    roots = [root]
-    if repo:
-        neighbour = os.path.dirname(repo)  # 재사용 코드가 사는 externals
-        if os.path.normcase(neighbour) != os.path.normcase(root):
-            roots.append(neighbour)
+    roots = [rt.assets_root()]
+    for extra in (root, os.path.dirname(repo) if repo else None):
+        if extra and all(os.path.normcase(extra) != os.path.normcase(r) for r in roots):
+            roots.append(extra)
 
     labels = [
         ("gptsovits_venv", "손상된 기존 venv — 보존(수리·삭제하지 않음)"),
@@ -188,6 +186,9 @@ def build_plan():
 
     plan = {
         "runtime_root": root,
+        "assets_root": rt.assets_root(),
+        "main_repo": rt.main_repo_root(),
+        "checkout": rt.repo_root(),
         "config": rt.config_path(),
         "interpreter": {
             "version": interp["python_version"],
@@ -226,7 +227,10 @@ def build_plan():
     plan["blockers"] = []
     if not repo:
         plan["blockers"].append(
-            "GPT-SoVITS 코드 폴더를 찾지 못했습니다. AUDIOFORGE_GPTSOVITS_REPO 로 지정하세요.")
+            "GPT-SoVITS 코드·모델을 찾지 못했습니다. "
+            "이 설치기는 코드·모델을 자동으로 내려받지 않습니다(아직 구현 범위 밖). "
+            f"이미 있다면 AUDIOFORGE_GPTSOVITS_REPO 로 지정하거나 "
+            f"{os.path.join(rt.assets_root(), 'GPT-SoVITS')} 에 두세요.")
     else:
         bad = [m["path"] for m in plan["reuse"]["models"] if not m["ok"]]
         if bad:
@@ -239,8 +243,14 @@ def print_plan(plan):
     _hr()
     print("AudioForge 앱 전용 환경 설치 계획")
     _hr()
-    print(f"설치 위치      : {plan['runtime_root']}")
+    print(f"실행 위치      : {plan['checkout']}")
+    print(f"본체 저장소    : {plan['main_repo']}")
+    print(f"설치 위치      : {plan['runtime_root']}   <- 앱 소유(여기만 만들고 고친다)")
+    print(f"외부 자산      : {plan['assets_root']}   <- 읽기만 함(수정·삭제 안 함)")
     print(f"연결 기록 파일 : {plan['config']}")
+    if os.path.normcase(plan["checkout"]) != os.path.normcase(plan["main_repo"]):
+        print("  (작업 트리에서 실행 중입니다. 런타임은 본체 저장소 밑에 설치되므로")
+        print("   이 작업 트리를 정리해도 설치가 사라지지 않습니다.)")
     print()
     i = plan["interpreter"]
     print("[1] 앱 전용 파이썬 (새로 설치)")
@@ -498,9 +508,31 @@ def link(venv_dir, repo, verification, lock_path=None):
     cfg.setdefault("components", {})
     cfg["components"][COMPONENT] = {
         "status": "linked",
+        # 평면 키는 읽는 쪽(브리지·워커) 호환용. 아래 owned/external 이 의미를 붙인다.
         "python": rt.venv_python(venv_dir),
         "venv": venv_dir,
         "repo": repo,
+        # 앱이 소유한 것 — 설치기가 만들었고, 재설치·갱신·삭제의 대상이다.
+        "owned": {
+            "runtime_root": rt.runtime_root(),
+            "venv": venv_dir,
+            "python": rt.venv_python(venv_dir),
+            "managed": True,
+        },
+        # 외부에서 참조하는 것 — 설치기는 읽기만 한다. 손대지 않는다.
+        "external": {
+            "repo": {
+                "path": repo,
+                "managed": False,
+                "note": "이미 내려받아 둔 GPT-SoVITS 코드·모델. 설치기의 수정·갱신·삭제 대상이 아니다.",
+            },
+        },
+        "recorded_on": {
+            "host": socket.gethostname(),
+            "user": getpass.getuser(),
+            "checkout": rt.repo_root(),
+            "main_repo": rt.main_repo_root(),
+        },
         "fingerprint": rt.venv_fingerprint(venv_dir),
         "verification": {
             "ok": bool(verification.get("ok")),

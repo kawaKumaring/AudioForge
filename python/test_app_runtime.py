@@ -44,14 +44,18 @@ class RuntimeCase(unittest.TestCase):
         self.tmp = tempfile.mkdtemp(prefix="af-rt-")
         self.root = os.path.join(self.tmp, AWKWARD, "externals")
         os.makedirs(self.root)
-        self._saved = os.environ.get("AUDIOFORGE_RUNTIME_ROOT")
+        # 런타임(앱 소유)과 자산(외부 참조) 양쪽을 임시 폴더로 묶어 실제 설치와 격리한다.
+        self._saved = {k: os.environ.get(k)
+                       for k in ("AUDIOFORGE_RUNTIME_ROOT", "AUDIOFORGE_ASSETS_ROOT")}
         os.environ["AUDIOFORGE_RUNTIME_ROOT"] = self.root
+        os.environ["AUDIOFORGE_ASSETS_ROOT"] = self.root
 
     def tearDown(self):
-        if self._saved is None:
-            os.environ.pop("AUDIOFORGE_RUNTIME_ROOT", None)
-        else:
-            os.environ["AUDIOFORGE_RUNTIME_ROOT"] = self._saved
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
         shutil.rmtree(self.tmp, ignore_errors=True)
 
     # ── 도우미: 그럴듯한 venv 와 repo 를 만든다 ──────────────────────────
@@ -75,16 +79,22 @@ class RuntimeCase(unittest.TestCase):
             f.write(b"w" * size)
         return repo
 
-    def _link(self, venv, repo, verified=True, fingerprint=None):
+    def _link(self, venv, repo, verified=True, fingerprint=None, host=None):
         cfg = rt.load_config()
-        cfg["components"]["gptsovits"] = {
+        entry = {
             "status": "linked",
             "python": rt.venv_python(venv),
             "venv": venv,
             "repo": repo,
+            "owned": {"runtime_root": rt.runtime_root(), "venv": venv,
+                      "python": rt.venv_python(venv), "managed": True},
+            "external": {"repo": {"path": repo, "managed": False}},
             "fingerprint": fingerprint if fingerprint is not None else rt.venv_fingerprint(venv),
             "verification": {"ok": verified, "at": "test"},
         }
+        if host is not None:
+            entry["recorded_on"] = {"host": host}
+        cfg["components"]["gptsovits"] = entry
         rt.save_config(cfg)
 
     # ── 경로 해석 ────────────────────────────────────────────────────────
@@ -218,6 +228,169 @@ class RuntimeCase(unittest.TestCase):
         self.assertEqual(paths["source"], "legacy")
         self.assertTrue(paths["python"].endswith(os.path.join("Scripts", "python.exe")))
         self.assertIn("gptsovits_venv", paths["python"])
+
+    def test_legacy_paths_come_from_assets_root_not_runtime_root(self):
+        """예전 venv 는 externals/ 바로 밑에 있었다. 런타임 루트를 옮겨도 거기를 봐야 한다."""
+        other = os.path.join(self.tmp, "다른 런타임")
+        os.makedirs(other)
+        os.environ["AUDIOFORGE_RUNTIME_ROOT"] = other
+        paths = rt.resolve_gptsovits()
+        self.assertTrue(paths["python"].startswith(self.root), paths["python"])
+        self.assertFalse(paths["python"].startswith(other), paths["python"])
+
+    # ── 앱 소유 vs 외부 참조 ─────────────────────────────────────────────
+
+    def test_record_separates_owned_runtime_from_external_asset(self):
+        venv, repo = self._make_venv(), self._make_repo()
+        self._link(venv, repo)
+        comp = rt.load_config()["components"]["gptsovits"]
+        self.assertTrue(comp["owned"]["managed"], "venv 는 앱이 소유·관리한다")
+        self.assertFalse(comp["external"]["repo"]["managed"],
+                         "코드·모델은 외부 참조 — 설치기의 수정·삭제 대상이 아니다")
+        self.assertTrue(rt.resolve_gptsovits()["owned"])
+
+    def test_legacy_resolution_is_not_marked_owned(self):
+        self.assertFalse(rt.resolve_gptsovits()["owned"])
+
+    # ── 다른 PC 안내 ─────────────────────────────────────────────────────
+
+    def test_record_from_other_host_is_named_not_silently_ignored(self):
+        """다른 PC 의 경로가 무효일 때 조용히 예전 경로로 미끄러지지 않는다."""
+        venv, repo = self._make_venv(), self._make_repo()
+        self._link(venv, repo, host="다른PC")
+        shutil.rmtree(venv)  # 그 PC 에만 있던 경로 = 여기엔 없다
+        p = rt.probe_gptsovits(spec=FAKE_SPEC)
+        self.assertFalse(p["ok"])
+        self.assertEqual(p["reason"], "RECORDED_ON_OTHER_HOST")
+        self.assertIn("다른PC", p["details"]["hint"])
+        self.assertEqual(p["source"], "runtime.json",
+                         "폴백하지 않고 기록을 그대로 가리켜야 원인이 보인다")
+
+    def test_same_host_missing_python_keeps_plain_reason(self):
+        venv, repo = self._make_venv(), self._make_repo()
+        self._link(venv, repo, host=rt._hostname())
+        shutil.rmtree(venv)
+        self.assertEqual(rt.probe_gptsovits(spec=FAKE_SPEC)["reason"], "PYTHON_MISSING")
+
+
+class MainRepoRootCase(unittest.TestCase):
+    """작업 트리에서 실행해도 런타임 위치가 본체 저장소를 가리키는가.
+
+    2026-08-29 에 런타임을 작업 트리 안에 만들었다가 트리 정리와 함께 잃었다.
+    여기서 고정하는 것은 "어디에 만들 것인가"의 답이 체크아웃 위치에 흔들리지 않는다는 것.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="af-wt-")
+        self._saved = {k: os.environ.get(k)
+                       for k in ("AUDIOFORGE_RUNTIME_ROOT", "AUDIOFORGE_ASSETS_ROOT")}
+        os.environ.pop("AUDIOFORGE_RUNTIME_ROOT", None)
+        os.environ.pop("AUDIOFORGE_ASSETS_ROOT", None)
+        self._real_repo_root = rt.repo_root
+
+    def tearDown(self):
+        rt.repo_root = self._real_repo_root
+        for k, v in self._saved.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _fake_main(self, name="본체 repo"):
+        main = os.path.join(self.tmp, name)
+        os.makedirs(os.path.join(main, ".git", "worktrees"))
+        return main
+
+    def _fake_worktree(self, main, name="설치기 트리", gitdir=None):
+        wt = os.path.join(self.tmp, name)
+        os.makedirs(wt)
+        target = gitdir or os.path.join(main, ".git", "worktrees", name)
+        with open(os.path.join(wt, ".git"), "w", encoding="utf-8") as f:
+            f.write(f"gitdir: {target.replace(os.sep, '/')}\n")
+        return wt
+
+    def _as_checkout(self, path):
+        rt.repo_root = lambda: path
+
+    def test_plain_clone_is_its_own_main(self):
+        main = self._fake_main()
+        self._as_checkout(main)
+        self.assertEqual(rt.main_repo_root(), main)
+
+    def test_worktree_resolves_to_main_repo(self):
+        main = self._fake_main()
+        wt = self._fake_worktree(main)
+        self._as_checkout(wt)
+        self.assertEqual(rt.main_repo_root(), main)
+
+    def test_runtime_root_is_under_main_repo_not_the_worktree(self):
+        main = self._fake_main()
+        wt = self._fake_worktree(main)
+        self._as_checkout(wt)
+        self.assertEqual(rt.runtime_root(), os.path.join(main, "externals", "runtime"))
+        self.assertEqual(rt.assets_root(), os.path.join(main, "externals"))
+        self.assertNotIn(os.path.basename(wt), rt.runtime_root())
+
+    def test_two_worktrees_of_same_main_agree(self):
+        main = self._fake_main()
+        a, b = self._fake_worktree(main, "트리 A"), self._fake_worktree(main, "트리 B")
+        self._as_checkout(a)
+        first = rt.runtime_root()
+        self._as_checkout(b)
+        self.assertEqual(first, rt.runtime_root())
+
+    def test_explicit_override_wins_over_main_repo(self):
+        main = self._fake_main()
+        self._as_checkout(self._fake_worktree(main))
+        chosen = os.path.join(self.tmp, "지정한 위치")
+        os.environ["AUDIOFORGE_RUNTIME_ROOT"] = chosen
+        self.assertEqual(rt.runtime_root(), os.path.abspath(chosen))
+
+    def test_unparsable_gitdir_falls_back_to_this_checkout(self):
+        """.git 을 못 읽어도 답은 나와야 한다 — 다만 조용히 엉뚱한 곳을 잡지 않는다."""
+        wt = os.path.join(self.tmp, "고아 트리")
+        os.makedirs(wt)
+        with open(os.path.join(wt, ".git"), "w", encoding="utf-8") as f:
+            f.write("이건 gitdir 줄이 아니다\n")
+        self._as_checkout(wt)
+        self.assertEqual(rt.main_repo_root(), wt)
+
+    def test_gitdir_without_worktrees_segment_falls_back(self):
+        main = self._fake_main()
+        wt = self._fake_worktree(main, "이상한 트리", gitdir=os.path.join(self.tmp, "어딘가", ".git"))
+        self._as_checkout(wt)
+        self.assertEqual(rt.main_repo_root(), wt)
+
+
+class LauncherAgreementCase(unittest.TestCase):
+    """런처(Node)와 판정기(Python)가 같은 런타임 루트를 말하는가.
+
+    af-launch.mjs 는 파이썬이 아직 없는 시점에 "어디에 내려받을지"를 정해야 해서
+    같은 규칙을 Node 로 한 번 더 구현한다. 둘이 어긋나면 파이썬은 A 에 깔리고
+    판정은 B 를 보게 되므로 영원히 재설치를 반복한다. 그 상태를 여기서 막는다.
+    """
+
+    def test_node_and_python_agree_on_runtime_root(self):
+        import shutil as _sh
+        import subprocess
+        node = _sh.which("node")
+        if not node:
+            self.skipTest("node 없음 — 이 PC 에서는 일치 검사를 건너뛴다")
+        script = os.path.join(rt.repo_root(), "scripts", "af-launch.mjs")
+        # --where 는 아무것도 내려받지 않고 위치만 답한다. 테스트가 46 MiB 를
+        # 끌고 오면 그건 테스트가 아니라 설치다.
+        r = subprocess.run([node, script, "--where"], capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=120,
+                           cwd=rt.repo_root())
+        self.assertEqual(r.returncode, 0, (r.stdout or "") + (r.stderr or ""))
+        got = json.loads(r.stdout.strip().splitlines()[-1])
+        for key in ("runtime_root", "main_repo"):
+            self.assertEqual(
+                os.path.normcase(os.path.abspath(got[key])),
+                os.path.normcase(os.path.abspath(
+                    rt.runtime_root() if key == "runtime_root" else rt.main_repo_root())),
+                f"{key} 에서 Node 와 Python 의 판단이 다르다")
 
 
 class SpecCase(unittest.TestCase):
