@@ -267,5 +267,57 @@ class WiredPathTest(unittest.TestCase):
         self.assertFalse(os.path.exists(out))   # 실패하면 산출물을 남기지 않는다
 
 
+
+class ClipTranscriptGateTest(unittest.TestCase):
+    """9. 클립 자체를 다시 전사해 ref_text 와 음절 단위로 대조하는 통과 기준.
+
+    실측값을 그대로 고정한다 — 사고 클립은 삭제 3(오디오에 없는 '입니다'가 ref_text 에 있었다),
+    수정 클립은 삭제 0. 두 클립 모두 같은 자리에서 치환 2가 나오는데 그건 인식기 편차라
+    실패로 세지 않는다."""
+
+    def setUp(self):
+        import korean_cer as kc
+        self.ec = kc.edit_counts
+
+    def test_accident_clip_is_rejected(self):
+        ref = tuple("가나다라마바사입니다")
+        clip = tuple("가나다라마바사")            # 오디오에 '입니다'가 없다
+        v = ra.verify_clip_transcript(ref, clip, self.ec)
+        self.assertEqual(v["deletions"], 3)
+        self.assertEqual(v["timing_mismatch"], 3)
+        self.assertFalse(v["aligned"])
+        with self.assertRaises(ra.AlignmentError) as cm:
+            ra.assert_clip_transcript(v)
+        self.assertEqual(cm.exception.code, "CLIP_TEXT_TIMING_MISMATCH")
+
+    def test_fixed_clip_passes(self):
+        ref = tuple("가나다라마바사입니다")
+        clip = tuple("가나다라마바사입니다")
+        v = ra.verify_clip_transcript(ref, clip, self.ec)
+        self.assertEqual(v["timing_mismatch"], 0)
+        self.assertTrue(v["aligned"])
+        self.assertTrue(ra.assert_clip_transcript(v))
+
+    def test_substitution_only_is_warning_not_failure(self):
+        """같은 자리에서 다르게 들린 것은 정렬 결함이 아니다 — 막으면 정상 참조까지 막힌다."""
+        ref = tuple("가나다라마바사")
+        clip = tuple("가나댜랴마바사")           # 같은 길이, 2음절 치환
+        v = ra.verify_clip_transcript(ref, clip, self.ec)
+        self.assertEqual(v["timing_mismatch"], 0)
+        self.assertGreater(v["recognizer_variance"], 0)
+        self.assertTrue(v["aligned"])
+        self.assertTrue(ra.assert_clip_transcript(v))
+
+    def test_extra_audio_not_in_ref_text_is_also_rejected(self):
+        """반대 방향 — ref_text 에는 없는데 오디오에 있는 소리도 같은 현상을 만든다."""
+        ref = tuple("가나다라")
+        clip = tuple("가나다라마바")
+        v = ra.verify_clip_transcript(ref, clip, self.ec)
+        self.assertEqual(v["insertions"], 2)
+        self.assertFalse(v["aligned"])
+        with self.assertRaises(ra.AlignmentError):
+            ra.assert_clip_transcript(v)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

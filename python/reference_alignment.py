@@ -106,20 +106,32 @@ def _cut_point(silence):
     return (a + b) / 2.0
 
 
+USABLE_MIN_SEC = 0.05            # 절단점을 놓을 수 있는 무음의 최소 '쓸 수 있는' 폭
+
+
 def _silence_after(silences, t):
-    """t 이후에 시작하는 첫 무음."""
-    for s in silences:
-        if s[0] >= t - EDGE_TOLERANCE_SEC:
-            return s
+    """t 이후로 쓸 수 있는 첫 무음 — t 를 **품고 있는** 무음도 포함하고, 그 경우 t 이후 부분만 돌려준다.
+
+    전사기(Whisper 등)가 주는 세그먼트 끝은 뒤따르는 쉼 안쪽으로 조금 들어가 있는 일이 흔하다.
+    'start >= t' 로만 찾으면 바로 그 쉼을 건너뛰고 한참 뒤의 쉼을 집어 확장이 불가능해진다
+    (실측: 세그먼트 끝 23.60 이 쉼 23.48~23.72 안에 있어 다음 후보가 25.69 로 튀었다).
+    반환값은 '쓸 수 있는 구간'이라 _cut_point 를 그대로 적용하면 안전한 절단점이 된다."""
+    for a, b in silences:
+        if b >= t - EDGE_TOLERANCE_SEC:
+            lo = max(a, t - EDGE_TOLERANCE_SEC)
+            if b - lo >= USABLE_MIN_SEC:
+                return (lo, b)
     return None
 
 
 def _silence_before(silences, t):
-    """t 이전에 끝나는 마지막 무음."""
+    """t 이전으로 쓸 수 있는 마지막 무음 — t 를 품고 있으면 t 이전 부분만 돌려준다(위와 대칭)."""
     best = None
-    for s in silences:
-        if s[1] <= t + EDGE_TOLERANCE_SEC:
-            best = s
+    for a, b in silences:
+        if a <= t + EDGE_TOLERANCE_SEC:
+            hi = min(b, t + EDGE_TOLERANCE_SEC)
+            if hi - a >= USABLE_MIN_SEC:
+                best = (a, hi)
         else:
             break
     return best
@@ -319,6 +331,42 @@ def assert_alignment(plan):
     for s in plan["excluded"]:
         if s["id"] in inc_ids:
             raise AlignmentError("EXCLUDED_ALSO_INCLUDED", f"id={s['id']}")
+    return True
+
+
+def verify_clip_transcript(ref_units, clip_asr_units, edit_counts_fn):
+    """만들어진 클립을 다시 전사해 ref_text 와 **음절 단위**로 대조한다.
+
+    세그먼트 단위 '완전 포함'만으로는 부족하다는 것이 실측으로 드러났다 — 세그먼트는 들어갔는데
+    그 마지막 어절이 오디오에 없어 그대로 생성물 앞에 붙었다(사고 당시 삭제 3음절).
+    그래서 통과 기준을 클립 자체의 전사로 옮긴다.
+
+    삽입/삭제와 치환을 **분리해서** 본다:
+      · 삽입·삭제 = 오디오에 없는 말이 ref_text 에 있거나 그 반대 = 시간 정렬 결함 → 하드 실패
+      · 치환      = 같은 자리에서 다르게 들린 것 = 인식기 편차. 실측에서 원본·수정본·재현본
+        세 클립 모두 같은 위치에서 같은 치환 2음절이 나왔다(클립 중간, 경계와 무관).
+        이것을 하드 실패로 걸면 정상 참조까지 막히므로 경고로만 남긴다.
+
+    edit_counts_fn 은 주입한다(korean_cer.edit_counts) — 이 모듈은 순수 로직을 유지한다."""
+    ec = edit_counts_fn(tuple(ref_units), tuple(clip_asr_units))
+    ins, dele, sub = int(ec.insertions), int(ec.deletions), int(ec.substitutions)
+    return {
+        "ref_syllables": len(tuple(ref_units)),
+        "clip_asr_syllables": len(tuple(clip_asr_units)),
+        "insertions": ins, "deletions": dele, "substitutions": sub,
+        "timing_mismatch": ins + dele,          # 통과 기준: 0
+        "aligned": (ins + dele) == 0,
+        "recognizer_variance": sub,             # 경고 지표(실패 아님)
+    }
+
+
+def assert_clip_transcript(verdict):
+    """클립 전사 대조가 어긋나면 생성 전에 실패시킨다(fail-closed)."""
+    if not verdict.get("aligned"):
+        raise AlignmentError(
+            "CLIP_TEXT_TIMING_MISMATCH",
+            f"ins={verdict['insertions']} del={verdict['deletions']} "
+            f"(ref {verdict['ref_syllables']}음절 vs 클립 {verdict['clip_asr_syllables']}음절)")
     return True
 
 
