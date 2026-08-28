@@ -6,11 +6,12 @@
     없으면 목표 대사 그대로(기존 동작 불변).
   - 상한: 동적 max_new_tokens 는 **결합 텍스트** 토큰 수로 산정한다(공식 자체는 그대로).
     상한이 모자라면 잘린 결과를 채택하지 않고 GENERATION_LIMIT_EXCEEDED 로 실패한다.
-  - 절단: 생성 파형에서 자동 경계를 찾아 cut 앞을 제거한 뒤에 WAV 를 쓴다(무절단 발행 0).
-    fade/crossfade 없이 잘라내기만 한다 — 절단 지점 이후 샘플은 원본과 바이트 동일.
-  - fail-closed: 경계를 못 찾으면 WAV 를 쓰지 않고 ICL_BOUNDARY_ALIGNMENT_FAILED(사유 코드 동반).
-  - 기록: chunk 결과에 reference_alignment(샘플 인덱스·dB)와 reference_cut_sample 만 남는다
-    (전사 원문·경로 없음).
+  - 절단: **bridge 는 자르지 않는다**. controlled-prefix raw 를 그대로 chunk WAV 로 쓰고
+    needs_alignment/alignment_request 를 부모에게 넘긴다(중간 산출물). 파형만으로는 목표 대사
+    시작을 특정할 수 없고(참조 발화 내부 무음이 더 길다 — prefix_alignment §D 실측) 텍스트 정렬이
+    필요한데 이 venv 에는 whisper 가 없다. 실제 정렬·절단 계약은 test_icl_alignment.py 가 고정한다.
+  - 기록: bridge 단계의 reference_alignment/reference_cut_sample 은 아직 None 이다 —
+    부모가 정렬을 끝낸 뒤에만 채워진다(미정렬 raw 가 결과로 확정될 수 없다).
 """
 import math
 import os
@@ -22,7 +23,6 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import generation_limit as gl  # noqa: E402
-import prefix_alignment as pa  # noqa: E402
 import qwen_bridge  # noqa: E402
 
 SR = 24000
@@ -170,74 +170,48 @@ class _PlanBase(unittest.TestCase):
         return list(d), int(sr)
 
 
-class TrimTest(_PlanBase):
-    def test_written_wav_starts_at_the_cut(self):
+class RawChunkTest(_PlanBase):
+    def test_written_wav_is_the_untrimmed_raw(self):
+        """bridge 는 자르지 않는다 — chunk WAV 는 생성 파형 그대로(길이·샘플 동일)."""
         wave = _prefixed_wave()
-        done = self._run(wave)
-        entry = done[0]
-        self.assertEqual(entry["reference_cut_sample"], 4200)
+        entry = self._run(wave)[0]
         got, sr = self._read(entry["out_path"])
         self.assertEqual(sr, SR)
-        self.assertEqual(len(got), len(wave) - 4200, "cut 앞만 사라진다")
-        # 절단 이후는 손대지 않는다 — fade/crossfade 가 없다는 실측 증거.
-        # (chunk WAV 는 PCM16 로 기록되므로 허용 오차는 양자화 계단 1/32768 보다 크게 잡는다.)
-        for i in (0, 1, 500, 5000, len(got) - 1):
-            self.assertAlmostEqual(got[i], wave[4200 + i], delta=1e-4, msg=f"sample {i}")
-        # 목표 발화 구간(cut 기준 840 샘플 뒤부터)은 진폭이 커서 fade 가 있었다면 즉시 드러난다.
-        for i in (900, 1500, 3000):
-            self.assertAlmostEqual(got[i], wave[4200 + i], delta=1e-4, msg=f"speech sample {i}")
+        self.assertEqual(len(got), len(wave), "raw 길이 그대로")
+        for i in (0, 1, 2639, 4200, 5040, len(wave) - 1):
+            self.assertAlmostEqual(got[i], wave[i], delta=1e-4, msg=f"sample {i}")
 
-    def test_alignment_record_is_numbers_only(self):
+    def test_raw_is_marked_unfinished_and_carries_alignment_input(self):
+        """미정렬 raw 가 최종 결과로 오인될 수 없다 — needs_alignment 와 정렬 입력이 붙는다."""
         entry = self._run(_prefixed_wave())[0]
-        a = entry["reference_alignment"]
-        self.assertEqual(a["tail_end_sample"], 2640)
-        self.assertEqual(a["valley_sample"], 4200)
-        self.assertEqual(a["onset_sample"], 5040)
-        self.assertEqual(a["lead_samples"], 840)
-        self.assertEqual(a["sample_rate"], SR)
-        for k, v in a.items():
-            self.assertIsInstance(v, (int, float), k)
-        blob = repr(entry)
-        self.assertNotIn(REF_TEXT, blob)
-        self.assertNotIn(TARGET_TEXT, blob)
+        self.assertTrue(entry["controlled_prefix"])
+        self.assertTrue(entry["needs_alignment"])
+        self.assertIsNone(entry["reference_cut_sample"], "절단 기록은 부모가 채운다")
+        self.assertIsNone(entry["reference_alignment"])
+        req = entry["alignment_request"]
+        self.assertTrue(req["needs_alignment"])
+        self.assertEqual(req["prefix_text"], REF_TEXT)
+        self.assertEqual(req["target_text"], TARGET_TEXT)
+        self.assertEqual(req["sample_rate"], SR)
 
-    def test_without_prefix_nothing_is_trimmed(self):
-        """안전 모드/기존 경로 회귀 — 절단도 기록도 없다(바이트 불변)."""
+    def test_bridge_no_longer_judges_boundaries(self):
+        """경계 판정은 bridge 에 없다(파형-only 판정은 참조 내부 무음을 고른다 — §D 실측)."""
+        self.assertFalse(hasattr(qwen_bridge, "BridgeIclBoundaryFailed"))
+        import inspect
+        src = inspect.getsource(qwen_bridge._generate_plan)
+        self.assertNotIn("detect_prefix_boundary", src)
+
+    def test_without_prefix_nothing_is_marked(self):
+        """안전 모드/기존 경로 회귀 — 절단도 기록도 정렬 요청도 없다(바이트 불변)."""
         wave = _speech(4800)
         entry = self._run(wave, prefix=None)[0]
         self.assertIsNone(entry["reference_cut_sample"])
         self.assertIsNone(entry["reference_alignment"])
+        self.assertIsNone(entry["alignment_request"])
         self.assertFalse(entry["controlled_prefix"])
+        self.assertFalse(entry["needs_alignment"])
         got, _ = self._read(entry["out_path"])
         self.assertEqual(len(got), len(wave))
-
-
-class BridgeFailClosedTest(_PlanBase):
-    def _assert_fails(self, wave, reason):
-        with self.assertRaises(qwen_bridge.BridgeIclBoundaryFailed) as cm:
-            self._run(wave)
-        self.assertEqual(cm.exception.boundary_reason, reason)
-        self.assertEqual(cm.exception.segment_index, 0)
-        self.assertEqual(cm.exception.chunk_index, 0)
-        self.assertFalse(os.path.exists(qwen_bridge.chunk_paths.chunk_out_path(self.out, 0)),
-                         "경계 미확정이면 WAV 자체를 쓰지 않는다")
-
-    def test_onset_not_found_fails_closed(self):
-        self._assert_fails(_speech(2640) + _noise(20000, 1e-3, 21),
-                           pa.REASON_BOUNDARY_ONSET_NOT_FOUND)
-
-    def test_tail_end_not_found_fails_closed(self):
-        """끊김 없는 발화 — 참조가 어디서 끝났는지 알 수 없으니 절단하지 않는다."""
-        wave = _speech(24000,
-                       envelope=(lambda i: 0.05 + 0.95 * abs(math.sin(math.pi * i / 1200.0))))
-        self._assert_fails(wave, pa.REASON_BOUNDARY_TAIL_END_NOT_FOUND)
-
-    def test_failure_payload_has_no_text(self):
-        with self.assertRaises(qwen_bridge.BridgeIclBoundaryFailed) as cm:
-            self._run(_speech(2640) + _noise(20000, 1e-3, 21))
-        msg = str(cm.exception)
-        self.assertNotIn(REF_TEXT, msg)
-        self.assertNotIn(TARGET_TEXT, msg)
 
 
 if __name__ == "__main__":

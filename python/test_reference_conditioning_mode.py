@@ -11,8 +11,9 @@
     manual 전사는 보존되되 합성 조건 전달 0, job 내 모드 고정(자동 ICL fallback 0).
   - high_quality_icl 배선: 전 segment 가 자기 prefix_text(참조 전사)를 달고 ICL(xvo=False)로 나간다.
     참조 전사를 못 얻으면(전사 실패/빈 전사/사용자 ref-free) 조용히 안전 모드처럼 돌지 않고
-    ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE 로 실패한다. bridge 가 경계를 확정하지 못하면
-    ICL_BOUNDARY_ALIGNMENT_FAILED 로 결과를 발행하지 않는다.
+    ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE 로 실패한다. bridge 의 raw 는 중간 산출물이고,
+    부모가 ASR 정렬 → 창 한정 경계 검출 → 절단까지 마쳐야 결과가 확정된다. 정렬이 어긋나면
+    ICL_BOUNDARY_ALIGNMENT_FAILED 로 결과를 발행하지 않는다(safe_xvector 로의 조용한 전환 없음).
   - metadata 왕복: requested/effective/degraded/alignment/cut_sample/failure_code 키 상시 존재.
     ICL 성공 시 alignment/cut_sample 은 실제 검출 수치(샘플 인덱스·dB)로 채워진다.
   - separate.py 배선: config 키 ttsReferenceConditioningMode → resolve → synthesize 명시 전달.
@@ -150,8 +151,9 @@ class _QwenJobBase(unittest.TestCase):
         self._patch_obj(tts_worker.QwenTTSEngine, "available", new=(lambda self: True))
 
         self.captured_segments = []
-        # bridge 가 controlled-prefix 를 잘라낸 뒤 남기는 절단 기록(ICL 경로에서만 채운다).
-        # 값은 test_prefix_alignment 의 실측 패턴 픽스처와 같은 좌표다.
+        # chunk WAV 를 쓰는 방식(ICL 테스트는 controlled-prefix raw 를 쓰도록 갈아끼운다).
+        self.chunk_writer = lambda path, seg: _write_wav(path, 0.3)
+        # bridge 가 돌려주는 chunk 결과의 추가 필드. dict 이거나 seg → dict 콜러블.
         self.entry_extra = {}
         self.run_job_error = None
 
@@ -160,14 +162,14 @@ class _QwenJobBase(unittest.TestCase):
             if self.run_job_error is not None:
                 raise self.run_job_error
             for s in segments:
-                _write_wav(s["out_path"], 0.3)
+                self.chunk_writer(s["out_path"], s)
             return [dict({"original_segment_index": s["index"], "chunk_index": 0, "chunk_count": 1,
                           "out_path": s["out_path"], "sr": 24000,
                           "x_vector_only": s["x_vector_only"],
                           "emotion_id": s.get("emotion_id"), "production_tokens": 20,
                           "generation_limit": 256, "generated_iterations": 100,
                           "termination_reason": "completed_before_limit", "status": "ok"},
-                         **self.entry_extra)
+                         **(self.entry_extra(s) if callable(self.entry_extra) else self.entry_extra))
                     for s in segments]
         self._patch_obj(tts_worker.QwenTTSEngine, "run_job", new=fake_run_job)
 
@@ -302,24 +304,51 @@ class LegacyDirectCallTest(_QwenJobBase):
             self.assertIsNone(m[k], f"안전 모드는 {k} 를 기록하지 않는다(null)")
 
 
-# 실측 happy 표본과 같은 좌표(SR 24000) — bridge 가 돌려주는 절단 기록의 형태.
-_ALIGN_FIXTURE = {"sample_rate": 24000, "noise_floor_dbfs": -64.52, "tail_end_sample": 2640,
-                  "valley_sample": 4200, "onset_sample": 5040, "cut_sample": 4200,
-                  "valley_dbfs": -90.38, "lead_samples": 840}
+# controlled-prefix 합성 파형·ASR 픽스처는 test_icl_alignment 가 소유한다(중복 정의 금지 —
+# 좌표가 두 곳에 있으면 한쪽만 고쳐지는 순간 이 경로의 회귀가 조용히 죽는다).
+import test_icl_alignment as _fx  # noqa: E402
+
+# 참조 발화의 인식 결과(항상 목표 대사보다 앞선다). 시각은 _fx 의 합성 파형 좌표와 정합.
+_REF_WORDS = [("참조", 0.00, 0.45), ("음성의", 0.45, 1.00),
+              ("원래", 1.30, 1.80), ("대사입니다", 1.80, 2.30)]
 
 
 class IclControlledPrefixTest(_QwenJobBase):
-    """high_quality_icl — controlled-prefix 가 실제로 배선되고 절단 기록이 metadata 까지 온다."""
+    """high_quality_icl — controlled-prefix 가 실제로 배선되고, **부모가 ASR 정렬로 잘라낸**
+    실제 절단 기록이 metadata 까지 온다(정답 창 주입 없음 — 창은 production 코드가 만든다)."""
 
     TEXT = "안녕하세요 첫 문장입니다.\n[기쁨] 좋은 소식이 있어요!\n마지막 문장입니다."
     REF_TEXT = "참조 음성의 원래 대사입니다"
 
     def setUp(self):
         super().setUp()
-        self._patch_obj(transcribe_worker, "run_transcribe",
-                        side_effect=(lambda m, p, l: {"text": self.REF_TEXT, "language": "ko"}))
-        self.entry_extra = {"reference_alignment": dict(_ALIGN_FIXTURE),
-                            "reference_cut_sample": 4200, "controlled_prefix": True}
+        self.chunk_targets = {}      # chunk 경로 → 그 chunk 의 목표 대사(ASR 스텁이 참조)
+        self._patch_obj(transcribe_worker, "run_transcribe", side_effect=self._fake_transcribe)
+        self.chunk_writer = self._write_controlled_prefix_chunk
+        # bridge 가 내는 것과 같은 형태: 미절단 raw + 정렬 요청(부모가 소비하고 버린다).
+        self.entry_extra = lambda s: {
+            "controlled_prefix": True, "needs_alignment": True,
+            "alignment_request": {"needs_alignment": True,
+                                  "prefix_text": s.get("prefix_text") or "",
+                                  "target_text": s["text"], "sample_rate": 24000}}
+
+    def _write_controlled_prefix_chunk(self, path, seg):
+        """bridge 가 남기는 것과 같은 **미절단 raw** — 참조 발화 + (더 긴 참조 내부 무음) + 목표."""
+        import numpy as np
+        import soundfile as sf
+        sf.write(path, np.asarray(_fx._decoy_wave(), dtype="float32"), 24000)
+        self.chunk_targets[os.path.abspath(path)] = seg["text"]
+
+    def _fake_transcribe(self, model, path, language):
+        """참조 클립이면 전사문, chunk 면 단어 타임스탬프(실제 whisper 출력 형태)."""
+        tgt = self.chunk_targets.get(os.path.abspath(path))
+        if tgt is None:
+            return {"text": self.REF_TEXT, "language": "ko"}
+        onset = _fx.TARGET_ONSET / 24000.0
+        words = list(_REF_WORDS)
+        for i, w in enumerate(tgt.split()):
+            words.append((w, onset + i * 0.40, onset + i * 0.40 + 0.38))
+        return _fx._words(words)
 
     def _synth(self, text=None, **kw):
         tts_worker.synthesize(
@@ -358,20 +387,72 @@ class IclControlledPrefixTest(_QwenJobBase):
         self.assertEqual(m["reference_conditioning_mode_effective"], "high_quality_icl")
         self.assertIs(m["reference_conditioning_degraded"], False)
         self.assertIsNone(m["reference_conditioning_failure_code"])
-        self.assertEqual(m["reference_cut_sample"], 4200)
+        cut = _fx.VALLEY_AT
+        self.assertEqual(m["reference_cut_sample"], cut)
         a = m["reference_alignment"]
         self.assertEqual(a["chunk_count"], 3)
-        self.assertEqual(a["cut_sample_min"], 4200)
-        self.assertEqual(a["cut_sample_max"], 4200)
-        self.assertEqual(a["trimmed_samples_total"], 4200 * 3)
-        self.assertEqual(a["first"]["tail_end_sample"], 2640)
-        self.assertEqual(a["first"]["onset_sample"], 5040)
-        self.assertEqual(a["first"]["valley_sample"], 4200)
-        self.assertEqual(a["first"]["lead_samples"], 840)
-        self.assertAlmostEqual(a["first"]["valley_dbfs"], -90.38)
+        self.assertEqual(a["cut_sample_min"], cut)
+        self.assertEqual(a["cut_sample_max"], cut)
+        self.assertEqual(a["trimmed_samples_total"], cut * 3)
+        self.assertEqual(a["first"]["tail_end_sample"], _fx.GAP_START)
+        self.assertEqual(a["first"]["valley_sample"], cut)
+        # 창 한정 탐색이었다는 사실이 기록에 남는다 — 참조 내부의 '더 긴' 무음은 창 밖이다.
+        self.assertEqual(a["first"]["anchor_start_sample"], _fx.TARGET_ONSET)
+        self.assertEqual(a["first"]["window_start_sample"],
+                         _fx.TARGET_ONSET - int(round(0.350 * 24000)))
+        self.assertGreater(a["first"]["window_start_sample"], _fx.REF_A + _fx.DECOY_GAP)
         # 기존 계약 필드와의 정합: 실제 적용 상태는 ICL(자동 전사).
         self.assertEqual(m["prompt_source"], "auto")
         self.assertFalse(m["x_vector_only_mode"])
+
+    def test_chunks_are_actually_trimmed_on_disk(self):
+        """정렬은 '기록'이 아니라 실제 절단이다 — chunk 파일이 cut 만큼 실제로 짧아진다.
+        (job_dir 은 합성 끝에 통째 지워지므로 절단 직후의 실측을 가로채 확인한다.)"""
+        import icl_alignment
+        import soundfile as sf
+        seen = []
+        real = icl_alignment.align_and_trim
+
+        def _spy(path, *a, **kw):
+            r = real(path, *a, **kw)
+            seen.append((r["frames_before"], r["frames_after"], sf.info(path).frames))
+            return r
+        self._patch_obj(icl_alignment, "align_and_trim", new=_spy)
+        self._synth()
+        self.assertEqual(len(seen), 3)
+        for before, after, on_disk in seen:
+            self.assertEqual(before, _fx.TOTAL_N)
+            self.assertEqual(after, _fx.TOTAL_N - _fx.VALLEY_AT)
+            self.assertEqual(on_disk, after, "파일이 실제로 그만큼 짧아졌다")
+
+    def test_alignment_failure_blocks_publication(self):
+        """정렬이 안 되면(여기서는 목표 대사 머리가 인식에 없음) 결과를 발행하지 않는다."""
+        self._patch_obj(transcribe_worker, "run_transcribe",
+                        side_effect=(lambda m, p, l:
+                                     {"text": self.REF_TEXT, "language": "ko"}
+                                     if os.path.abspath(p) not in self.chunk_targets
+                                     else _fx._words(_REF_WORDS)))
+        with self.assertRaises(RuntimeError) as cm:
+            self._synth()
+        p = cm.exception.error_payload
+        self.assertEqual(p["code"], "ICL_BOUNDARY_ALIGNMENT_FAILED")
+        self.assertEqual(p["boundary_reason"], "PREFIX_ALIGN_ANCHOR_NOT_FOUND")
+        self.assertEqual([t for t, _ in self.events].count("result"), 0)
+        self.assertFalse(os.path.exists(os.path.join(self.out, "synthesized.wav")))
+
+    def test_alignment_progress_is_reported(self):
+        """정렬 중에도 진행 표시가 계속 나간다(Electron watchdog 은 progress 로만 리셋된다)."""
+        self._synth()
+        msgs = [k.get("message", "") for t, k in self.events if t == "progress"]
+        aligning = [m for m in msgs if "경계 정렬 중" in m]
+        self.assertEqual(len(aligning), 3, "chunk 마다 1회")
+
+    def test_alignment_input_text_never_reaches_result(self):
+        """정렬 입력(참조 전사·목표 대사)은 소비 후 버려진다 — 결과 payload 어디에도 없다."""
+        self._synth()
+        blob = json.dumps([k for _t, k in self.events], ensure_ascii=False, default=str)
+        self.assertNotIn("alignment_request", blob)
+        self.assertNotIn(self.REF_TEXT, blob)
 
     def test_metadata_has_no_transcript_or_path(self):
         """보안: 절단 기록은 샘플 인덱스와 dB 뿐 — 전사 원문·절대경로가 없다."""

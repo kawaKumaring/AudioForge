@@ -453,7 +453,10 @@ class QwenGenerationLimitError(RuntimeError):
 
 
 class QwenIclBoundaryError(RuntimeError):
-    """controlled-prefix 생성물에서 목표 대사 시작 경계를 확정하지 못했다(bridge fail-closed).
+    """controlled-prefix 생성물에서 목표 대사 시작 경계를 확정하지 못했다(fail-closed).
+
+    발생 지점은 **부모의 정렬 단계**(_align_icl_chunks)다 — bridge 는 더 이상 자르지 않으므로
+    경계 판정을 하지 않는다. boundary_reason 은 prefix_alignment / icl_alignment 의 사유 코드.
     보안: segment/chunk index·emotion_id·경계 사유 코드만 — 전사·대사·경로 없음."""
 
     def __init__(self, segment_index, chunk_index, emotion_id, boundary_reason):
@@ -584,7 +587,6 @@ class QwenTTSEngine(TTSEngine):
         err_msg = None
         gl_err = None   # GENERATION_LIMIT_EXCEEDED(구조화) — 감정 ID 매핑은 상위에서
         tsl_err = None  # TEXT_SEGMENT_TOO_LONG(구조화)
-        icl_err = None  # ICL_BOUNDARY_ALIGNMENT_FAILED(구조화) — controlled-prefix 경계 미확정
         loaded = False          # stage=loaded 관측 여부. True면 기동 deadline은 더 이상 적용되지 않는다.
         stage = "starting"      # 마지막 관측 stage(오류 payload용, 비민감 enum)
         hb = {"seen": 0, "pct": _QWEN_LOAD_PCT_MIN}  # heartbeat 수신 수 / 마지막 로딩 percent(단조 비감소)
@@ -659,10 +661,6 @@ class QwenTTSEngine(TTSEngine):
                     tsl_err = QwenTextSegmentTooLongError(
                         msg.get("segment_index"), msg.get("production_tokens"),
                         msg.get("allowed"), msg.get("emotion_id"))
-                elif code == "ICL_BOUNDARY_ALIGNMENT_FAILED":
-                    icl_err = QwenIclBoundaryError(
-                        msg.get("segment_index"), msg.get("chunk_index"),
-                        msg.get("emotion_id"), msg.get("boundary_reason"))
                 else:
                     err_msg = msg.get("message", "Qwen 오류")
             elif t == "result":
@@ -671,8 +669,6 @@ class QwenTTSEngine(TTSEngine):
             proc.wait(timeout=10)
         except Exception:
             _kill_proc_tree(proc)
-        if icl_err is not None:
-            raise icl_err  # 경계 미확정 — 상위가 안전 모드 안내를 붙여 재해석.
         if tsl_err is not None:
             raise tsl_err  # 분할 불가 — 상위가 감정 ID로 재해석.
         if gl_err is not None:
@@ -874,9 +870,13 @@ REF_MANUAL_UNVERIFIABLE = "REF_MANUAL_UNVERIFIABLE"    # 전사 자체가 실패
 #                      (ref_text)를 vendor 호출에 전달하지 않는다 → 참조 대사 혼입(conditioning echo)이
 #                      구조적으로 없다. 음색·감정은 다소 평탄할 수 있다(강등이 아니라 모드의 특성).
 #   high_quality_icl : 참조 억양 반영(ICL) + controlled-prefix. 참조 전사를 목표 대사 앞에 붙여
-#                      '의도적으로' 먼저 발화시킨 뒤(그래야 어디까지가 참조인지 파형에서 확정할 수
-#                      있다), prefix_alignment 의 자동 경계 규칙으로 목표 대사 시작 직전을 찾아
-#                      그 앞만 잘라낸다. 경계를 못 찾으면 결과를 발행하지 않고 실패한다
+#                      '의도적으로' 먼저 발화시킨다. 그 다음이 핵심인데, **파형만으로는 목표 대사
+#                      시작을 특정할 수 없다** — 참조 발화 내부의 문장 간 무음이 진짜 경계보다 길 수
+#                      있어 전역 탐색은 참조 안쪽을 목표 onset 으로 오검출한다(실측, prefix_alignment §D).
+#                      그래서 부모가 ASR 로 목표 대사의 anchor 위치를 먼저 특정하고(_align_icl_chunks),
+#                      그 좁은 창 안에서만 파형 경계 규칙을 적용해 앞을 잘라낸다. bridge 가 낸 raw 는
+#                      중간 산출물이고, 이 정렬을 통과해야만 결과가 확정된다. 어느 신호든 어긋나면
+#                      결과를 발행하지 않고 실패한다
 #                      (ICL_BOUNDARY_ALIGNMENT_FAILED — safe_xvector 로 조용히 갈아타지 않는다).
 REF_CONDITIONING_SAFE_XVECTOR = "safe_xvector"
 REF_CONDITIONING_HIGH_QUALITY_ICL = "high_quality_icl"
@@ -1325,7 +1325,63 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
 
 
 _ALIGNMENT_SUMMARY_KEYS = ("sample_rate", "noise_floor_dbfs", "tail_end_sample", "valley_sample",
-                           "onset_sample", "cut_sample", "valley_dbfs", "lead_samples")
+                           "onset_sample", "cut_sample", "valley_dbfs", "lead_samples",
+                           # 창 한정 탐색이었다는 사실(전역 탐색이 아니었다는 증거). 수치만.
+                           "window_start_sample", "window_end_sample", "anchor_start_sample")
+
+
+def _icl_transcribe_fn():
+    """controlled-prefix 정렬용 ASR 진입점 — **기존 경로 그대로 재사용**한다(새 패키지·새 모델 0).
+
+    reference_transcript.py 와 같은 진입점(transcribe_worker._get_whisper_model / run_transcribe)
+    이고 모델도 참조 자동 전사와 같은 _QWEN_REF_TRANSCRIBE_MODEL 이다. run_transcribe 는 이미
+    word_timestamps=True 라 segments[*].words[*]{word,start,end} 를 준다 — 우리가 필요한 건 그것뿐이다.
+
+    language=None(자동): chunk 에는 참조 전사와 목표 대사가 함께 들어 있어 한쪽 언어를 강제하면
+    다른 쪽이 손해를 본다. 참조 전사 검증 경로(_verify_manual_prompt_alignment)도 None 을 쓴다.
+
+    GPU 직렬화: 이 함수는 bridge subprocess 가 끝난 뒤에만 불린다 — Qwen 이 이미 내려간 뒤라
+    whisper 와 동시 적재되지 않는다(별도 락 불필요)."""
+    from transcribe_worker import _get_whisper_model, run_transcribe
+    model = _get_whisper_model(_QWEN_REF_TRANSCRIBE_MODEL)
+    return lambda path: run_transcribe(model, path, None)
+
+
+def _align_icl_chunks(seg_out, transcribe_factory=_icl_transcribe_fn):
+    """controlled-prefix raw chunk 들을 정렬·절단해 **최종 chunk 로 확정**한다(부모 소유 단계).
+
+    bridge 가 준 raw 는 중간 산출물이다 — 이 단계를 통과하기 전에는 어떤 결과도 확정되지 않는다.
+    실패는 QwenIclBoundaryError(구조화) 로 올려 기존 계약(_synthesize_qwen_job 의 except)이 그대로
+    사용자 오류를 만든다: 결과 미발행 + safe_xvector 로의 조용한 전환 없음 + 자동 재시도 없음.
+
+    정렬 입력(alignment_request)은 여기서 소비하고 즉시 버린다 — 전사 원문이 metadata·세션·로그로
+    새 나가지 않게 하는 유일한 소유 지점이다."""
+    import icl_alignment
+    todo = [e for e in seg_out if e.get("needs_alignment")]
+    if not todo:
+        for e in seg_out:      # 정렬 대상이 아니어도 텍스트는 남기지 않는다
+            e.pop("alignment_request", None)
+        return seg_out
+    todo.sort(key=lambda e: (e.get("original_segment_index"), e.get("chunk_index")))
+    tf = transcribe_factory()
+    total = len(todo)
+    for i, e in enumerate(todo):
+        # 정렬 중에도 진행 표시가 계속 나간다(Electron watchdog 은 progress 로만 리셋된다).
+        emit("progress", percent=90,
+             message=f"참조 구간 경계 정렬 중... ({i + 1}/{total})")
+        req = e.get("alignment_request") or {}
+        try:
+            r = icl_alignment.align_and_trim(e["out_path"], req.get("prefix_text"),
+                                             req.get("target_text"), tf)
+        except icl_alignment.IclAlignmentFailed as af:
+            raise QwenIclBoundaryError(e.get("original_segment_index"), e.get("chunk_index"),
+                                       e.get("emotion_id"), af.reason_code) from None
+        e["reference_alignment"] = r["summary"]
+        e["reference_cut_sample"] = r["cut_sample"]
+        e["needs_alignment"] = False
+    for e in seg_out:
+        e.pop("alignment_request", None)   # 텍스트는 이 줄에서 사라진다(전 entry 일괄)
+    return seg_out
 
 
 def _summarize_reference_alignment(ordered_entries):
@@ -1371,8 +1427,9 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
     reference_conditioning_mode: 참조 conditioning 모드. safe_xvector 면 전 segment 를
       x_vector_only=True 로 강제하고 참조 전사를 vendor 에 전달하지 않는다(_resolve_qwen_ref_text 를
       아예 타지 않는 상위 게이트 — Whisper 호출 0). high_quality_icl 이면 segment 마다 참조 전사를
-      결정해 ICL 조건으로 넘기고, 동시에 그 전사를 prefix_text 로 실어 controlled-prefix 로 생성한 뒤
-      bridge 가 파형 경계를 찾아 앞을 잘라낸다. 모드는 job 단위 고정이다.
+      결정해 ICL 조건으로 넘기고, 동시에 그 전사를 prefix_text 로 실어 controlled-prefix 로 생성한다.
+      bridge 는 자르지 않고 raw 를 돌려주며, run_job 반환 뒤 _align_icl_chunks 가 ASR 정렬 → 창 한정
+      경계 검출 → 절단까지 마쳐야 chunk 가 확정된다. 모드는 job 단위 고정이다.
     반환: (final_path, info) — info는 재현 메타데이터의 런타임 사실(device/source/prompt_source/전사요약 등)."""
     import time
     from reference_audio import assess_reference_file, GPTSOVITS_POLICY
@@ -1497,6 +1554,10 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                     seg_out = qwen.run_job(segments, "cpu")
                 else:
                     raise
+            # bridge 의 controlled-prefix raw 는 중간 산출물이다 — 여기(부모)에서 ASR 정렬로 목표
+            # 대사 위치를 특정하고 그 좁은 창 안에서 경계를 찾아 잘라낸 뒤에야 chunk 가 확정된다.
+            # bridge subprocess 는 이미 종료됐으므로 Qwen 과 whisper 는 동시 적재되지 않는다.
+            seg_out = _align_icl_chunks(seg_out)
         except QwenIclBoundaryError as ibe:
             # 경계 미확정 → 잘라내지 않은 결과를 발행하지 않는다. safe_xvector 로 자동 전환하지 않고
             # 사용자에게 모드 선택을 돌려준다(요청한 모드와 다른 결과를 무신호로 주지 않는다).

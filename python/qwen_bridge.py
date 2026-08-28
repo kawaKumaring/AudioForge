@@ -20,11 +20,16 @@ stdin config(JSON):
                          x_vector_only=True면 x-vector-only(ref_text 무시), False면 ICL(ref_text 필요)
                          language_name은 세그먼트별(Korean/English/Chinese/Japanese)
                          prefix_text(선택, 비어있지 않으면 controlled-prefix 모드): 이 chunk 를 생성할 때
-                         목표 대사 앞에 붙여 '의도적으로 먼저 발화시킬' 참조 전사. 생성 뒤 파형 경계를
-                         찾아 그 앞을 잘라낸다(prefix_alignment 규칙). 경계를 못 찾으면 잘린 결과를
-                         발행하지 않고 ICL_BOUNDARY_ALIGNMENT_FAILED 로 실패한다(fade/고정 offset 금지).
+                         목표 대사 앞에 붙여 '의도적으로 먼저 발화시킬' 참조 전사.
+                         ★이 브리지는 controlled-prefix 를 **자르지 않는다**. 파형만으로는 목표 대사
+                         시작을 특정할 수 없고(참조 발화 내부 무음이 더 길다 — prefix_alignment §D 실측),
+                         텍스트(ASR) 정렬이 필요한데 이 venv 에는 whisper 가 없다(설치 금지).
+                         그래서 raw 를 그대로 chunk WAV 로 쓰고 needs_alignment/alignment_request 를
+                         부모에게 넘긴다. 부모(tts_worker)가 정렬·절단을 끝낸 뒤에야 chunk 가 확정된다.
 stdout: progress/stage/heartbeat/result/error JSON 라인(부모가 실시간 읽음). 각 세그먼트 wav는 raw 저장(후처리 없음).
   result.segments[*]에 prod_tokens/generation_limit/generated_iterations/termination_reason 포함.
+  controlled-prefix chunk 는 needs_alignment=True 와 alignment_request(prefix_text/target_text/
+  sample_rate)를 함께 낸다 — 부모 정렬 전용 입력이며 metadata/로그로는 절대 옮기지 않는다.
   error.code == GENERATION_LIMIT_EXCEEDED 는 상한 도달 — segment_index/generated_iterations/generation_limit(정수)만,
   전사·문장·경로는 절대 포함하지 않는다.
 
@@ -244,21 +249,6 @@ class BridgeSegmentTooLong(Exception):
         super().__init__(f"TEXT_SEGMENT_TOO_LONG(seg={segment_index})")
 
 
-class BridgeIclBoundaryFailed(Exception):
-    """controlled-prefix 생성물에서 목표 대사 시작 경계를 확정하지 못했다 → 결과 미발행(fail-closed).
-
-    자르지 못한 결과를 그대로 내보내면 참조 대사가 통째로 섞인 음성이 정상처럼 배포된다.
-    시간 고정 절단이나 fade 로 덮지 않고, 여기서 실패로 알리고 안전 모드를 안내한다."""
-
-    def __init__(self, segment_index, chunk_index, emotion_id, boundary_reason):
-        self.segment_index = segment_index
-        self.chunk_index = chunk_index
-        self.emotion_id = emotion_id
-        self.boundary_reason = boundary_reason
-        super().__init__(f"ICL_BOUNDARY_ALIGNMENT_FAILED(seg={segment_index}, "
-                         f"chunk={chunk_index}, reason={boundary_reason})")
-
-
 class BridgeGenerationLimit(Exception):
     """chunk가 동적 상한 도달(계약 A). 잘린 WAV 미채택."""
 
@@ -326,21 +316,18 @@ def _generate_plan(model, plan, builder, proc, n_segments, progress=None, seed=N
             raise BridgeGenerationLimit(int(seg["index"]), int(ci), seg.get("emotion_id"),
                                         int(g["generated_iterations"]), int(g["generation_limit"]))
         d = _finalize_wav(g["wavs"], g["sr"], seg["index"], ci)
-        alignment = None
-        cut_sample = None
+        alignment_request = None
         if g.get("controlled_prefix"):
-            # 참조를 의도적으로 먼저 발화시켰으니, 목표 대사 시작 경계를 찾아 그 앞만 제거한다.
-            # 검출 실패 = 어디까지가 참조인지 모른다 → 자르지도 발행하지도 않는다(fail-closed).
-            det = prefix_alignment.detect_prefix_boundary(d.tolist(), int(g["sr"]))
-            cut_sample = det.get("cut_sample")
-            if not det.get("ok") or not isinstance(cut_sample, int) or not (0 < cut_sample < d.size):
-                raise BridgeIclBoundaryFailed(int(seg["index"]), int(ci), seg.get("emotion_id"),
-                                              det.get("reason_code"))
-            d = d[cut_sample:]
-            if d.size == 0:
-                raise BridgeIclBoundaryFailed(int(seg["index"]), int(ci), seg.get("emotion_id"),
-                                              prefix_alignment.REASON_BOUNDARY_EMPTY_INPUT)
-            alignment = prefix_alignment.boundary_summary(det)
+            # ★여기서 자르지 않는다. 이 raw 는 **중간 산출물**이지 최종 결과가 아니다.
+            # 파형만으로는 목표 대사 시작을 특정할 수 없다(실측: 참조 발화 내부의 문장 간 무음이
+            # 더 길어서 전역 탐색이 0.87s 를 목표 onset 으로 오검출하고 ok=True 로 통과했다 —
+            # prefix_alignment §D). 위치는 텍스트(ASR) 정렬로 먼저 잡아야 하는데 이 venv 에는
+            # whisper 가 없다(설치하지 않는다). 그래서 정렬·절단은 부모가 한다.
+            # 부모는 이 subprocess 가 끝난 뒤에 ASR 을 부르므로 Qwen 과 whisper 는 동시 적재되지 않는다.
+            alignment_request = {"needs_alignment": True,
+                                 "prefix_text": (seg.get("prefix_text") or ""),
+                                 "target_text": item["text"],
+                                 "sample_rate": int(g["sr"])}
         cpath = chunk_paths.chunk_out_path(seg["out_path"], ci)  # 결정적·job_dir 내부
         sf.write(cpath, d, int(g["sr"]))
         completed += 1
@@ -353,9 +340,15 @@ def _generate_plan(model, plan, builder, proc, n_segments, progress=None, seed=N
                      # blocking 생성 구간만 잰 값(가산). 없으면 None — 0 으로 위조하지 않는다.
                      "generation_elapsed_sec": g.get("generation_elapsed_sec"),
                      "applied_seed": applied_seed,   # 진단 전용. seed 미지정이면 None.
-                     # controlled-prefix 절단 사실(비민감 수치만 — 전사·경로 없음). 미사용 chunk 는 None.
+                     # controlled-prefix 이면 raw 그대로 기록됐고 정렬·절단이 남아 있다.
+                     # 절단 기록(reference_alignment/reference_cut_sample)은 부모가 정렬을 끝낸 뒤
+                     # 채운다 — 여기서 None 인 채로 결과가 확정되지 않는다(_align_icl_chunks 가 강제).
                      "controlled_prefix": bool(g.get("controlled_prefix")),
-                     "reference_alignment": alignment, "reference_cut_sample": cut_sample,
+                     "needs_alignment": alignment_request is not None,
+                     # 정렬 입력(부모 전용, 1회 소비 후 폐기). bridge stdout → 부모 메모리까지만 산다.
+                     # metadata/로그/세션 어디에도 옮기지 않는다(_align_icl_chunks 가 pop 한다).
+                     "alignment_request": alignment_request,
+                     "reference_alignment": None, "reference_cut_sample": None,
                      "termination_reason": g["termination_reason"], "status": "ok"})
         if progress:
             progress(30 + (completed * 60) // total, int(seg["index"]), n_segments, ci, cc, "done")
@@ -446,11 +439,6 @@ def main():
                  chunk_index=e.chunk_index, emotion_id=e.emotion_id,
                  generated_iterations=e.generated_iterations, generation_limit=e.generation_limit,
                  termination_reason="generation_limit", status="generation_limit")
-            sys.exit(1)
-        except BridgeIclBoundaryFailed as e:
-            emit("error", code="ICL_BOUNDARY_ALIGNMENT_FAILED", segment_index=e.segment_index,
-                 chunk_index=e.chunk_index, emotion_id=e.emotion_id,
-                 boundary_reason=e.boundary_reason)
             sys.exit(1)
 
         emit("result", segments=done, success=True)
