@@ -18,6 +18,18 @@ speaker-overlap(화자 중첩) 회피는 진단 수준의 확실한 판별이 �
 import os
 import math
 
+# 구간 승인/차단 판정용 안정 코드 — UI 가 경고 '문구'로 승인 여부를 정하면 안 된다.
+# (문자열 매칭은 새 경고가 생겨도 조용히 통과시킨다. 실제로 '말 도중 절단' 경고가 그렇게 새어
+#  나갈 뻔했다 — 문구에 '심각/부족/초과/거의 무음' 이 없어 승인으로 처리됐다.)
+BLOCK_TOO_SHORT = "REGION_TOO_SHORT"
+BLOCK_TOO_LONG = "REGION_TOO_LONG"
+BLOCK_HEAD_TRUNCATED = "REGION_HEAD_TRUNCATED"
+BLOCK_TAIL_TRUNCATED = "REGION_TAIL_TRUNCATED"
+BLOCK_SEVERE_CLIPPING = "REGION_SEVERE_CLIPPING"
+BLOCK_NEAR_SILENT = "REGION_NEAR_SILENT"
+WARN_HIGH_SILENCE = "REGION_HIGH_SILENCE"
+WARN_CLIPPING = "REGION_CLIPPING"
+
 TARGET_SR = 24000            # 파생 참조 클립 샘플레이트(모델 입력)
 DEFAULT_TARGET_SEC = 7.0     # 자동 추천 목표 길이(6~8초 권장의 중앙)
 REC_MIN_SEC = 6.0
@@ -133,10 +145,18 @@ def analyze_region(path, start_sec, dur_sec):
     trunc = rl.boundary_truncation(mono, sr)
 
     warnings = []
+    blocking = []        # 있으면 승인 불가(ready=false)
+    warning_codes = []   # 알리되 막지는 않음
     if actual_dur < 3.0:
         warnings.append(f"길이 부족({actual_dur:.2f}s < 3.0s) — 구간을 늘리세요.")
+        blocking.append(BLOCK_TOO_SHORT)
     elif actual_dur > 10.0:
         warnings.append(f"길이 초과({actual_dur:.2f}s > 10.0s) — 구간을 줄이세요.")
+        blocking.append(BLOCK_TOO_LONG)
+    if trunc["tail_truncated"]:
+        blocking.append(BLOCK_TAIL_TRUNCATED)
+    if trunc["head_truncated"]:
+        blocking.append(BLOCK_HEAD_TRUNCATED)
     if trunc["tail_truncated"]:
         warnings.append("구간 끝이 말 도중입니다 — 참조 전사에는 있는데 클립에는 없는 말이 생기면 "
                         "생성 음성 앞부분에 참조 대사가 섞입니다. 말이 끝나는 지점까지 포함하세요.")
@@ -144,19 +164,25 @@ def analyze_region(path, start_sec, dur_sec):
         warnings.append("구간 시작이 말 도중입니다 — 말이 시작되는 지점부터 포함하세요.")
     if sil_ratio >= 0.40:
         warnings.append(f"무음 비율 높음({sil_ratio:.2f}).")
+        warning_codes.append(WARN_HIGH_SILENCE)
     if clip_ratio >= 0.05:
         warnings.append(f"심각한 클리핑({clip_ratio:.3f}).")
+        blocking.append(BLOCK_SEVERE_CLIPPING)
     elif clip_ratio >= 0.001:
         warnings.append(f"클리핑 감지({clip_ratio:.3f}).")
+        warning_codes.append(WARN_CLIPPING)
     if rms_dbfs <= -55.0:
         warnings.append(f"거의 무음(RMS {rms_dbfs:.1f}dBFS).")
+        blocking.append(BLOCK_NEAR_SILENT)
 
     return {"ok": True, "start_sec": round(start_sec, 3), "dur_sec": round(actual_dur, 3),
             "silence_ratio": round(sil_ratio, 4), "clipping_ratio": round(clip_ratio, 6),
             "rms_dbfs": round(rms_dbfs, 2), "peak": round(peak, 4),
             "head_truncated": trunc["head_truncated"], "tail_truncated": trunc["tail_truncated"],
             "boundary_head_dbfs": trunc["head_dbfs"], "boundary_tail_dbfs": trunc["tail_dbfs"],
-            "in_range": bool(3.0 <= actual_dur <= 10.0), "warnings": warnings}
+            "in_range": bool(3.0 <= actual_dur <= 10.0), "warnings": warnings,
+            "blocking": blocking, "warning_codes": warning_codes,
+            "ready": len(blocking) == 0}
 
 
 def coarse_peaks(path, buckets=400):

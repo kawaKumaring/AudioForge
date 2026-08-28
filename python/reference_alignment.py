@@ -334,38 +334,92 @@ def assert_alignment(plan):
     return True
 
 
-def verify_clip_transcript(ref_units, clip_asr_units, edit_counts_fn):
-    """만들어진 클립을 다시 전사해 ref_text 와 **음절 단위**로 대조한다.
+BOUNDARY_UNITS = 5              # 머리·꼬리로 보는 음절 수. 혼입은 경계에서 생긴다.
+MAX_INTERNAL_SUB_RATE = 0.20    # 내부 치환 비율이 이보다 크면 '같은 발화'로 보지 않는다.
+MIN_INTERNAL_SUB_TO_BLOCK = 3   # 비율만 쓰면 짧은 문장에서 치환 2개도 막힌다 — 절대 하한을 함께 건다.
 
-    세그먼트 단위 '완전 포함'만으로는 부족하다는 것이 실측으로 드러났다 — 세그먼트는 들어갔는데
-    그 마지막 어절이 오디오에 없어 그대로 생성물 앞에 붙었다(사고 당시 삭제 3음절).
-    그래서 통과 기준을 클립 자체의 전사로 옮긴다.
+STATUS_VALIDATED = "validated"
+STATUS_BLOCKED = "blocked"
+STATUS_WARN = "warning"
 
-    삽입/삭제와 치환을 **분리해서** 본다:
-      · 삽입·삭제 = 오디오에 없는 말이 ref_text 에 있거나 그 반대 = 시간 정렬 결함 → 하드 실패
-      · 치환      = 같은 자리에서 다르게 들린 것 = 인식기 편차. 실측에서 원본·수정본·재현본
-        세 클립 모두 같은 위치에서 같은 치환 2음절이 나왔다(클립 중간, 경계와 무관).
-        이것을 하드 실패로 걸면 정상 참조까지 막히므로 경고로만 남긴다.
+REF_BOUNDARY_MISMATCH = "REF_BOUNDARY_MISMATCH"          # 머리/꼬리 불일치 — 하드 실패
+REF_NOT_SAME_UTTERANCE = "REF_NOT_SAME_UTTERANCE"        # 내부 치환 과다 — 하드 실패
+REF_INTERNAL_VARIANCE = "REF_INTERNAL_VARIANCE"          # 경계 무관 내부 편차 — 경고
 
-    edit_counts_fn 은 주입한다(korean_cer.edit_counts) — 이 모듈은 순수 로직을 유지한다."""
-    ec = edit_counts_fn(tuple(ref_units), tuple(clip_asr_units))
-    ins, dele, sub = int(ec.insertions), int(ec.deletions), int(ec.substitutions)
-    return {
-        "ref_syllables": len(tuple(ref_units)),
-        "clip_asr_syllables": len(tuple(clip_asr_units)),
+
+def verify_clip_transcript(ref_units, clip_asr_units, edit_counts_fn=None):
+    """클립 ASR 과 ref_text 를 음절 단위로 맞추되 **편집 위치**까지 본다.
+
+    왜 위치가 필요한가: '삽입+삭제 0, 치환 무제한 허용' 은 길이만 같으면 전혀 다른 문장도
+    통과시킨다. 실제 혼입은 문장 **머리·꼬리**가 어긋날 때 생기므로, 경계 불일치는 막고
+    내부 인식기 편차는 통과시키되 그 양이 과하면 '같은 발화가 아님'으로 막는다.
+
+    edit_counts_fn 은 총량 보고용(선택). 위치 판정은 difflib 로 결정적으로 한다."""
+    import difflib
+    ref = tuple(ref_units)
+    clip = tuple(clip_asr_units)
+    n = len(ref)
+    b = min(BOUNDARY_UNITS, max(n // 3, 1))
+
+    ins = dele = sub = 0
+    boundary_hits, internal_sub = [], 0
+    for tag, i1, i2, j1, j2 in difflib.SequenceMatcher(a=list(ref), b=list(clip)).get_opcodes():
+        if tag == "equal":
+            continue
+        if tag == "insert":
+            ins += (j2 - j1)
+        elif tag == "delete":
+            dele += (i2 - i1)
+        else:
+            sub += max(i2 - i1, j2 - j1)
+        at_head = i1 < b
+        at_tail = i2 > n - b
+        if at_head or at_tail:
+            boundary_hits.append({"tag": tag, "ref_from": i1, "ref_to": i2,
+                                  "where": "head" if at_head else "tail"})
+        elif tag == "replace":
+            internal_sub += (i2 - i1)
+
+    internal_rate = internal_sub / max(n, 1)
+    if boundary_hits:
+        status, code = STATUS_BLOCKED, REF_BOUNDARY_MISMATCH
+    elif internal_sub >= MIN_INTERNAL_SUB_TO_BLOCK and internal_rate > MAX_INTERNAL_SUB_RATE:
+        status, code = STATUS_BLOCKED, REF_NOT_SAME_UTTERANCE
+    elif ins or dele or sub:
+        status, code = STATUS_WARN, REF_INTERNAL_VARIANCE
+    else:
+        status, code = STATUS_VALIDATED, None
+
+    out = {
+        "status": status, "reason_code": code,
+        "ref_syllables": n, "clip_asr_syllables": len(clip),
         "insertions": ins, "deletions": dele, "substitutions": sub,
-        "timing_mismatch": ins + dele,          # 통과 기준: 0
-        "aligned": (ins + dele) == 0,
-        "recognizer_variance": sub,             # 경고 지표(실패 아님)
+        "boundary_units": b,
+        "boundary_mismatches": boundary_hits,
+        "mismatch_where": sorted({h["where"] for h in boundary_hits}) or (["middle"] if (ins or dele or sub) else []),
+        "internal_substitutions": internal_sub,
+        "internal_sub_rate": round(internal_rate, 4),
+        "head_coverage": round(1.0 - sum(1 for h in boundary_hits if h["where"] == "head") / max(b, 1), 4),
+        "tail_coverage": round(1.0 - sum(1 for h in boundary_hits if h["where"] == "tail") / max(b, 1), 4),
+        # 하위호환 — 예전 필드명을 쓰는 호출부가 있다.
+        "timing_mismatch": ins + dele,
+        "aligned": status != STATUS_BLOCKED,
+        "recognizer_variance": internal_sub,
     }
+    if edit_counts_fn is not None:
+        ec = edit_counts_fn(ref, clip)
+        out["edit_counts_total"] = int(ec.substitutions + ec.deletions + ec.insertions)
+    return out
 
 
 def assert_clip_transcript(verdict):
     """클립 전사 대조가 어긋나면 생성 전에 실패시킨다(fail-closed)."""
-    if not verdict.get("aligned"):
+    if verdict.get("status") == STATUS_BLOCKED:
         raise AlignmentError(
-            "CLIP_TEXT_TIMING_MISMATCH",
-            f"ins={verdict['insertions']} del={verdict['deletions']} "
+            verdict.get("reason_code") or "CLIP_TEXT_MISMATCH",
+            f"where={','.join(verdict.get('mismatch_where') or []) or '-'} "
+            f"ins={verdict['insertions']} del={verdict['deletions']} sub={verdict['substitutions']} "
+            f"internal_sub_rate={verdict['internal_sub_rate']} "
             f"(ref {verdict['ref_syllables']}음절 vs 클립 {verdict['clip_asr_syllables']}음절)")
     return True
 

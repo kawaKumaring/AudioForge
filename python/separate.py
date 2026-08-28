@@ -387,6 +387,16 @@ def main():
             out_path = os.path.join(args.output, "reference_clip_24k.wav")
             rr.trim_region(args.input, float(args.region_start), float(args.region_dur), out_path)
             metrics = rr.analyze_region(out_path, 0.0, float(args.region_dur))
+            if metrics.get("blocking"):
+                # 말 도중 절단 등 차단 사유가 있으면 클립을 넘기지 않는다. 경고만 내고
+                # 통과시키면 그 클립이 그대로 ICL 프롬프트가 된다(참조 대사 혼입의 경로).
+                try:
+                    os.remove(out_path)
+                except OSError:
+                    pass
+                emit("error", code="REFERENCE_REGION_BLOCKED",
+                     blocking=metrics["blocking"], metrics=metrics)
+                return
             emit("result", clip_path=out_path, metrics=metrics)
             return
 

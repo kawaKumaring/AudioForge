@@ -288,7 +288,8 @@ class ClipTranscriptGateTest(unittest.TestCase):
         self.assertFalse(v["aligned"])
         with self.assertRaises(ra.AlignmentError) as cm:
             ra.assert_clip_transcript(v)
-        self.assertEqual(cm.exception.code, "CLIP_TEXT_TIMING_MISMATCH")
+        # 사유 코드가 더 구체적으로 갈렸다: 꼬리 누락은 경계 불일치다(내부 편차와 구분).
+        self.assertEqual(cm.exception.code, ra.REF_BOUNDARY_MISMATCH)
 
     def test_fixed_clip_passes(self):
         ref = tuple("가나다라마바사입니다")

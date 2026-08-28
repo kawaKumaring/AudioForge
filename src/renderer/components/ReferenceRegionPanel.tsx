@@ -50,6 +50,24 @@ interface RegionMetrics {
   rms_dbfs: number
   in_range: boolean
   warnings: string[]
+  /** 승인 불가 사유의 안정 코드. 하나라도 있으면 ready=false. 파이썬 analyze_region 이 만든다. */
+  blocking?: string[]
+  /** 알리되 막지는 않는 사유 코드. */
+  warning_codes?: string[]
+  /** 파이썬이 계산한 승인 가능 여부(= blocking 이 비어 있음). */
+  ready?: boolean
+  head_truncated?: boolean
+  tail_truncated?: boolean
+}
+
+/** 차단 코드 → 사용자 문구. 코드가 없으면 파이썬 경고 문구를 그대로 쓴다. */
+const BLOCK_MESSAGE: Record<string, string> = {
+  REGION_TOO_SHORT: '구간이 너무 짧습니다(3초 이상).',
+  REGION_TOO_LONG: '구간이 너무 깁니다(10초 이하).',
+  REGION_HEAD_TRUNCATED: '구간 시작이 말 도중입니다. 말이 시작되는 지점부터 잡으세요.',
+  REGION_TAIL_TRUNCATED: '구간 끝이 말 도중입니다. 말이 끝나는 지점까지 포함하세요.',
+  REGION_SEVERE_CLIPPING: '소리가 심하게 찌그러졌습니다(클리핑).',
+  REGION_NEAR_SILENT: '거의 무음입니다.'
 }
 
 function fmt(s: number | undefined | null) {
@@ -299,13 +317,18 @@ export default function ReferenceRegionPanel({ path, clipKey, disabled, onState,
     try {
       const res = await window.api.audio.trimReference(path, start, dur, clipKey) as { clip_path: string; metrics: RegionMetrics }
       setMetrics(res.metrics)
-      const ok = res.metrics.in_range && !res.metrics.warnings.some(w => w.includes('심각') || w.includes('거의 무음') || w.includes('부족') || w.includes('초과'))
+      // 승인 여부는 구조화된 blocking 코드로만 정한다. 예전에는 경고 '문구'에 특정 낱말이
+      // 들어 있는지로 판단해서, 새로 생긴 '말 도중 절단' 경고가 그 낱말을 안 가져 조용히
+      // 승인됐다 — 그 클립이 그대로 ICL 프롬프트가 되어 참조 대사가 섞였다.
+      const blocking = res.metrics.blocking ?? []
+      const ok = blocking.length === 0
       if (ok) {
         setConfirmedClip(res.clip_path)
         onStateRef.current({ ready: true, clip: res.clip_path, message: '', region: { start, duration: dur } })
       } else {
         setConfirmedClip('')
-        onStateRef.current({ ready: false, clip: '', message: res.metrics.warnings[0] || '구간 품질이 부적합합니다', region: null })
+        const msg = blocking.map(c => BLOCK_MESSAGE[c] ?? c).join(' · ')
+        onStateRef.current({ ready: false, clip: '', message: msg || '구간 품질이 부적합합니다', region: null })
       }
     } catch (e) {
       onStateRef.current({ ready: false, clip: '', message: `파생 참조 생성 실패: ${(e as Error)?.message || ''}`, region: null })
