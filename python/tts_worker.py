@@ -1370,7 +1370,13 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
 _ALIGNMENT_SUMMARY_KEYS = ("sample_rate", "noise_floor_dbfs", "tail_end_sample", "valley_sample",
                            "onset_sample", "cut_sample", "valley_dbfs", "lead_samples",
                            # 창 한정 탐색이었다는 사실(전역 탐색이 아니었다는 증거). 수치만.
-                           "window_start_sample", "window_end_sample", "anchor_start_sample")
+                           "window_start_sample", "window_end_sample", "anchor_start_sample",
+                           # 창을 무엇으로 브래킷했고 anchor 와 얼마나 어긋났는가(수치만).
+                           "prev_word_end_sample", "anchor_offset_samples",
+                           # 어떤 신호로 개시를 인정했는가 — '유성음만 보고 자르지 않았다'는 증거.
+                           "onset_dbfs", "onset_flux", "onset_zcr", "onset_hb_dbfs",
+                           "onset_evidence", "onset_flux_threshold", "baseline_dbfs",
+                           "quiet_frame_count")
 
 
 def _icl_transcribe_fn():

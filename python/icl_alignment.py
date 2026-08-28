@@ -114,10 +114,22 @@ def plan_cut(prefix_text, target_text, asr_result, waveform, sample_rate,
         raise IclAlignmentFailed(pa.REASON_NO_REF_TRIGRAM)
 
     anchor_start_sec = stream[anchor["index"]][1]
+    # 목표 첫 단어 **직전** 발화의 끝. 목표 대사 앞 무음은 정의상 [prev_end, anchor_start] 안에
+    # 있으므로, 이 둘로 창을 브래킷하면 이웃 문장 경계를 후보로 삼을 수 없다(창이 왼쪽으로
+    # 미끄러져 조용히 다른 곳을 자르던 실측 결함의 차단막). 없으면 None — 그때는 lead_sec 로
+    # 되돌아간다(추측으로 만들어 내지 않는다).
+    # 같은 단어의 앞 음절은 건너뛴다(음절은 단어 시각을 공유한다) — '앞선 다른 단어'의 끝이어야
+    # 브래킷이 의미를 갖는다.
+    prev_word_end_sec = None
+    for j in range(anchor["index"] - 1, -1, -1):
+        if stream[j][1] < anchor_start_sec:
+            prev_word_end_sec = float(stream[j][2])
+            break
 
     # s3 — 그 좁은 창 안에서만 파형 규칙. 창 밖 무음은 후보가 될 수 없다.
     det = pa.detect_prefix_boundary_windowed(waveform, sample_rate, anchor_start_sec,
-                                             lead_sec=lead_sec, trail_sec=trail_sec)
+                                             lead_sec=lead_sec, trail_sec=trail_sec,
+                                             prev_word_end_sec=prev_word_end_sec)
     det["anchor_units"] = int(anchor["length"])     # 수치만(어떤 음절인지는 담지 않는다)
     det["ref_trigram_hits"] = int(hits)
     if not det.get("ok"):

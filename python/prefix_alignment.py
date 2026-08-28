@@ -300,6 +300,26 @@ ONSET_SUSTAIN_FRAMES = 3          # 후속 3프레임이
 ONSET_SUSTAIN_MARGIN_DB = 10.0    #   floor+10dB 이상(순간 스파이크 배제)
 MIN_LEAD_SEC = 0.020              # cut → onset 최소 여백(첫 음절 삼킴 방지)
 
+# ── 비유성 개시(마찰음·파열음)를 놓치지 않기 위한 보조 신호 ──────────────────────
+# 유성음 개시만 보면 ㅅ/ㅎ/ㅊ 같은 첫 자음이 이미 시작된 뒤를 개시로 잡아 첫 음절을 삼킨다.
+# 그래서 '스펙트럼 변화 증거'를 셋 중 하나로 받는다(전부 지역 조용 기준 상대값):
+#   E1 광대역 flux 급등 / E2 고주파대 에너지 상승 / E3 zcr 상승
+# 세 신호 중 하나면 되지만, **필수 조건**(광대역 dB 상승 + 지속 3프레임)은 항상 함께 만족해야
+# 한다 — 실제 판별력은 필수 조건이 갖고, E1~E3 는 '느린 잡음 드리프트'와 '발화 개시'를 가른다.
+ONSET_HB_HZ = 2000.0              # 이 위를 고주파대로 본다(마찰·파열 에너지가 실리는 대역)
+ONSET_HB_RISE_DB = 10.0           # E2: 고주파대가 지역 조용 기준보다 10dB 이상 오르면 개시 증거
+ONSET_ZCR_RATIO = 2.0             # E3: zcr 이 지역 조용 기준의 2배 이상이고
+ONSET_ZCR_ABS_MIN = 0.15          #      동시에 절대 최소치 이상(디더 잡음의 zcr 요동 배제)
+# E1 의 절대 하한을 상수로 두지 않는다. 창마다 잡음 바닥이 다르고, 실측상 실제 개시 flux 는
+# 0.0034~0.52 로 두 자릿수 배 흩어져 있어 어떤 상수도 한쪽을 버린다. 대신 **그 창에서 실제로 관측된
+# 무음 프레임 flux 의 최댓값**에 배수를 곱해 쓴다(지역 잡음 수준 대비 상대량).
+ONSET_FLUX_NOISE_MARGIN = 3.0
+ONSET_FLUX_EPS = 1e-4             # 완전 디지털 무음 창에서 임계가 0 이 되지 않게 하는 하한
+# 어떤 증거로 개시를 인정했는지 비트마스크로 남긴다(요약은 '숫자만' 계약을 지킨다 — 문자열 금지).
+EVIDENCE_FLUX = 1
+EVIDENCE_HIGH_BAND = 2
+EVIDENCE_ZCR = 4
+
 # fail-closed 사유 코드(비민감 enum — 상위가 그대로 오류/metadata 에 실을 수 있다)
 REASON_BOUNDARY_OK = "PREFIX_BOUNDARY_OK"
 REASON_BOUNDARY_EMPTY_INPUT = "PREFIX_BOUNDARY_EMPTY_INPUT"
@@ -308,11 +328,24 @@ REASON_BOUNDARY_ONSET_NOT_FOUND = "PREFIX_BOUNDARY_ONSET_NOT_FOUND"
 REASON_BOUNDARY_CUT_NOT_AFTER_TAIL = "PREFIX_BOUNDARY_CUT_NOT_AFTER_TAIL_END"
 REASON_BOUNDARY_LEAD_TOO_SHORT = "PREFIX_BOUNDARY_LEAD_TOO_SHORT"
 
+REASON_BOUNDARY_ONSET_OFF_ANCHOR = "PREFIX_BOUNDARY_ONSET_OFF_ANCHOR"
+REASON_BOUNDARY_CUT_INSIDE_REFERENCE = "PREFIX_BOUNDARY_CUT_INSIDE_REFERENCE"
+
 _BOUNDARY_RESULT_KEYS = (
     "ok", "reason_code", "sample_rate", "frame_samples", "hop_samples", "frame_count",
     "noise_floor_dbfs", "tail_end_sample", "onset_sample", "valley_sample", "cut_sample",
     "valley_dbfs", "lead_samples",
+    # 진단용 관측값(수치만) — 실패 사후 분석이 파형 없이도 가능해야 한다.
+    "onset_dbfs", "onset_flux", "onset_zcr", "onset_hb_dbfs", "onset_evidence",
+    "onset_flux_threshold", "baseline_dbfs", "quiet_frame_count",
 )
+
+
+def _high_band_bin(fft_size, sample_rate, hb_hz):
+    """hb_hz 이상을 덮는 첫 FFT bin. bin 폭 = sample_rate/fft_size."""
+    if sample_rate <= 0 or fft_size <= 0:
+        return 0
+    return max(1, int(math.ceil(hb_hz * fft_size / float(sample_rate))))
 
 
 def _empty_boundary_result(reason_code, sample_rate=None):
@@ -426,13 +459,19 @@ def _magnitude_spectrum(waveform, start, win, window, win_gain, fft_size):
     return [2.0 * abs(buf[k]) / win_gain for k in range(half)]
 
 
-def frame_spectral_signals(waveform, sample_rate, frame_sec=BOUNDARY_FRAME_SEC,
-                           hop_sec=BOUNDARY_HOP_SEC):
-    """프레임별 (flux, zcr) 를 앞에서부터 하나씩 내는 generator.
+def frame_onset_signals(waveform, sample_rate, frame_sec=BOUNDARY_FRAME_SEC,
+                        hop_sec=BOUNDARY_HOP_SEC, hb_hz=None):
+    """프레임별 (flux, zcr, high_band_dbfs) 를 앞에서부터 하나씩 내는 generator.
 
     generator 인 이유: onset 을 찾으면 그 뒤 프레임의 FFT 는 필요 없다. 앞부분만 계산하고 멈춘다.
     flux = Σ_k max(0, m_t[k] − m_{t−1}[k]) (half-wave rectified spectral flux, 첫 프레임은 0.0).
-    zcr  = 프레임 내 부호 변화 비율. 계측 신호로 함께 낸다(판정에는 flux·dB 를 쓴다)."""
+    zcr  = 프레임 내 부호 변화 비율.
+    high_band_dbfs = hb_hz 이상 bin 진폭 합의 dB. 마찰음/파열음은 유성음보다 **먼저** 이 대역에서
+      올라온다 — 유성음 개시만 보는 판정이 첫 자음을 삼키지 않게 하는 독립 신호다.
+
+    세 신호를 함께 내는 이유는 '어떤 개시는 flux 로, 어떤 개시는 고주파/zcr 로 드러나기' 때문이다
+    (실측: 같은 생성물 안 무음 뒤 개시 10건의 flux 는 0.0034~0.156 으로 두 자릿수 배 차이가 난다 —
+     단일 절대 임계로는 나눌 수 없다)."""
     n = len(waveform)
     win, hop, count = frame_geometry(n, sample_rate, frame_sec, hop_sec)
     if count <= 0:
@@ -440,6 +479,7 @@ def frame_spectral_signals(waveform, sample_rate, frame_sec=BOUNDARY_FRAME_SEC,
     window = _hann(win)
     win_gain = sum(window) or 1.0
     fft_size = _next_pow2(win)
+    hb_bin = _high_band_bin(fft_size, sample_rate, ONSET_HB_HZ if hb_hz is None else hb_hz)
     prev = None
     for i in range(count):
         s = i * hop
@@ -451,7 +491,15 @@ def frame_spectral_signals(waveform, sample_rate, frame_sec=BOUNDARY_FRAME_SEC,
         for k in range(s + 1, s + win):
             if (waveform[k] >= 0.0) != (waveform[k - 1] >= 0.0):
                 changes += 1
-        yield flux, (changes / (win - 1) if win > 1 else 0.0)
+        hb = dbfs(sum(mag[hb_bin:])) if hb_bin < len(mag) else _DBFS_FLOOR
+        yield flux, (changes / (win - 1) if win > 1 else 0.0), hb
+
+
+def frame_spectral_signals(waveform, sample_rate, frame_sec=BOUNDARY_FRAME_SEC,
+                           hop_sec=BOUNDARY_HOP_SEC):
+    """frame_onset_signals 의 (flux, zcr) 2-tuple 뷰(기존 호출자 호환)."""
+    for flux, zcr, _hb in frame_onset_signals(waveform, sample_rate, frame_sec, hop_sec):
+        yield flux, zcr
 
 
 def detect_prefix_boundary(waveform, sample_rate, frame_sec=BOUNDARY_FRAME_SEC,
@@ -459,8 +507,10 @@ def detect_prefix_boundary(waveform, sample_rate, frame_sec=BOUNDARY_FRAME_SEC,
                            onset_flux_abs_min=ONSET_FLUX_ABS_MIN):
     """생성물에서 '목표 대사 시작 직전'의 절단 지점을 신호만으로 찾는다(모듈 docstring B 규칙).
 
-    onset_flux_abs_min: onset flux 의 절대 하한. 기본값(전역 탐색용)은 그대로다 — §D 의 창 한정
-    탐색만 실측으로 낮춘 값을 넘긴다(그 근거는 WINDOW_ONSET_FLUX_ABS_MIN 주석).
+    onset_flux_abs_min: E1(flux) 의 절대 하한. 숫자를 주면 그 값을 쓰고(전역 탐색 기본 0.5),
+    **None 이면 그 창에서 관측된 무음 flux 최댓값×ONSET_FLUX_NOISE_MARGIN 으로 유도**한다.
+    §D 의 창 한정 탐색은 None 을 넘긴다 — 창마다 잡음 바닥이 다르고, 상수 하한은 실측상
+    실제 개시의 다수(같은 표본 10건 중 8건)를 놓치기 때문이다.
 
     반환(성공/실패 모두 같은 형태 — 상위가 그대로 기록 가능, 전사·경로 없음):
       {"ok", "reason_code", "sample_rate", "frame_samples", "hop_samples", "frame_count",
@@ -499,37 +549,68 @@ def detect_prefix_boundary(waveform, sample_rate, frame_sec=BOUNDARY_FRAME_SEC,
         return res
     res["tail_end_sample"] = tail_end * hop
 
-    # (4) onset — 지역 조용 기준 대비 flux·dB 동시 급등 + 지속 상승
+    # (4) onset — 필수(광대역 dB 상승 + 지속) + 스펙트럼 변화 증거 1개 이상(E1/E2/E3).
+    #     모든 임계는 '지금까지 관측한 조용한 프레임'이라는 지역 기준 상대값이다.
     quiet_thr = floor + QUIET_BASELINE_MARGIN_DB
     sustain_thr = floor + ONSET_SUSTAIN_MARGIN_DB
     quiet_flux = []
     quiet_db = []
+    quiet_zcr = []
+    quiet_hb = []
     onset = None
-    for i, (flux, _zcr) in enumerate(frame_spectral_signals(waveform, sample_rate,
+    obs = None
+    for i, (flux, zcr, hb) in enumerate(frame_onset_signals(waveform, sample_rate,
                                                             frame_sec, hop_sec)):
         level = dbs[i]
         if i > tail_end:
             base_flux = median(quiet_flux)
             base_db = median(quiet_db)
+            base_zcr = median(quiet_zcr)
+            base_hb = median(quiet_hb)
             if base_flux is None:
                 base_flux = 0.0
             if base_db is None:
                 base_db = floor
-            flux_thr = max(ONSET_FLUX_RATIO * base_flux, onset_flux_abs_min)
-            if flux >= flux_thr and level >= base_db + ONSET_DB_RISE:
-                last = i + ONSET_SUSTAIN_FRAMES
-                if last < count and all(dbs[i + k] >= sustain_thr
-                                        for k in range(1, ONSET_SUSTAIN_FRAMES + 1)):
-                    onset = i
-                    break
+            # E1 절대 하한: 명시값이 있으면 그것(전역 탐색), 없으면 **이 창의 무음 flux 최댓값**×배수.
+            if onset_flux_abs_min is None:
+                noise_abs = max(quiet_flux) * ONSET_FLUX_NOISE_MARGIN if quiet_flux else 0.0
+                abs_min = max(noise_abs, ONSET_FLUX_EPS)
+            else:
+                abs_min = onset_flux_abs_min
+            flux_thr = max(ONSET_FLUX_RATIO * base_flux, abs_min)
+            # 필수 조건 — 이게 실제 판별력을 갖는다(느린 잡음 드리프트는 여기서 걸린다).
+            if level >= base_db + ONSET_DB_RISE:
+                ev = 0
+                if flux >= flux_thr:
+                    ev |= EVIDENCE_FLUX
+                if base_hb is not None and hb >= base_hb + ONSET_HB_RISE_DB:
+                    ev |= EVIDENCE_HIGH_BAND   # 비유성 개시(마찰·파열)를 잡는 독립 신호
+                if (base_zcr is not None and zcr >= max(ONSET_ZCR_RATIO * base_zcr,
+                                                        ONSET_ZCR_ABS_MIN)):
+                    ev |= EVIDENCE_ZCR
+                if ev:
+                    last = i + ONSET_SUSTAIN_FRAMES
+                    if last < count and all(dbs[i + k] >= sustain_thr
+                                            for k in range(1, ONSET_SUSTAIN_FRAMES + 1)):
+                        onset = i
+                        obs = (level, flux, zcr, hb, ev, flux_thr, base_db, len(quiet_flux))
+                        break
         # 지역 기준 갱신은 '판정 뒤'에 — 현재 프레임이 자기 임계를 만들지 않게 한다.
         if level <= quiet_thr:
             quiet_flux.append(flux)
             quiet_db.append(level)
+            quiet_zcr.append(zcr)
+            quiet_hb.append(hb)
     if onset is None:
+        res["quiet_frame_count"] = len(quiet_flux)
         res["reason_code"] = REASON_BOUNDARY_ONSET_NOT_FOUND
         return res
     res["onset_sample"] = onset * hop
+    (res["onset_dbfs"], res["onset_flux"], res["onset_zcr"], res["onset_hb_dbfs"],
+     res["onset_evidence"], res["onset_flux_threshold"], res["baseline_dbfs"],
+     res["quiet_frame_count"]) = (round(obs[0], 2), round(obs[1], 5), round(obs[2], 4),
+                                  round(obs[3], 2), int(obs[4]), round(obs[5], 5),
+                                  round(obs[6], 2), obs[7])
 
     # (5) cut = [tail_end, onset) 최저 RMS valley(동률이면 가장 이른 프레임)
     valley = tail_end
@@ -571,67 +652,103 @@ def detect_prefix_boundary(waveform, sample_rate, frame_sec=BOUNDARY_FRAME_SEC,
 #   → 목표 위치는 **텍스트(ASR 정렬)** 로 먼저 특정하고, 파형 규칙은 그 좁은 창에서만 쓴다.
 #     창 밖의 무음은 후보가 될 수 없다.
 #
-# 창 폭 상수의 근거(고정 절단 offset 이 아니다 — '어디를 볼지'의 범위다. cut 위치는 여전히
-# 신호에서 유도한다):
-#   lead  : anchor 단어 시작에서 **뒤로** 보는 폭. 목표 대사 직전 무음 전체(실측 115~255ms)와
-#           단어 타임스탬프의 시간 정렬 불확실성(whisper word timestamp 는 프레임 정렬 기반이라
-#           수십~100ms 급 편차가 난다)을 함께 덮어야 한다. 255ms + 여유 ≈ 350ms.
-#           동시에 '그 앞 문장의 무음'까지 삼키면 안 된다 — 실측 표본에서 인접 무음 사이 간격은
-#           초 단위라 350ms 는 이웃 무음을 절대 포함하지 않는다.
-#   trail : anchor 단어 시작에서 **앞으로** 보는 폭. 실측 표본에서 whisper 가 보고한 단어 시작
-#           (227520 = 9.480s)은 실제 음향 개시(228240 = 9.510s)보다 30ms **이르다**. 창은 그
-#           개시 프레임과 지속 판정 3프레임(+15ms)까지 담아야 하므로 trail 이 개시 지연 + 25ms
-#           보다 커야 한다. 실측 30ms 에 5배 여유를 둬 150ms. onset 판정은 tail_end 이후 '첫'
-#           자격 프레임이라 trail 을 늘려도 더 뒤의 무음이 후보가 되지는 않는다(창만 넓어진다).
-#           (초기값 50ms 로는 개시 프레임이 창 마지막 프레임이 되어 지속 3프레임을 못 채웠다 —
-#            실측 실패: PREFIX_BOUNDARY_ONSET_NOT_FOUND.)
+# ── 창은 '신뢰할 anchor 범위'로 만든다(고정 절단 offset 이 아니다) ──────────────
+#
+# ★이 창의 근거는 **ASR 단어 타임스탬프의 불확실성**이다. 초기 구현은 표본 하나에서 관측된
+#   오차(+30ms) 를 사실상 상한으로 보고 trail 을 150ms 로 뒀는데, 그건 '오차가 작다'가 아니라
+#   '이 한 번은 작았다'였다. 같은 표본에서 anchor 시각만 실측 오차 범위로 흔들면 판정이 세 구간
+#   으로 갈린다(실측):
+#     오차 +50~+125ms  → PREFIX_BOUNDARY_CUT_AFTER_ANCHOR  (정답 cut 인데 anchor 를 정확한
+#                        상한으로 취급해 거부했다 — 판정 규칙 자체의 결함)
+#     오차 +150~+230ms → PREFIX_BOUNDARY_ONSET_NOT_FOUND   (실제 개시가 창 뒤로 밀려 나갔다)
+#     오차 ≥ +300ms    → **조용히 잘못 자름**(창 전체가 앞 무음으로 미끄러져 0.57s 앞을 cut)
+#   세 번째가 가장 위험하다 — 실패로 알리지도 않는다.
+#
+# 그래서 규칙을 이렇게 바꾼다:
+#   (1) 불확실성을 상수 하나로 **명시**한다: ASR_WORD_TOLERANCE_SEC.
+#   (2) 창의 오른쪽은 anchor + 그 불확실성(+지속 판정 여유). 오른쪽 확장은 안전하다 —
+#       onset 은 tail_end 이후 첫 자격 프레임이라, 창을 뒤로 넓혀도 이미 찾은 개시는 안 바뀌고
+#       '못 찾던 개시'만 창 안으로 들어온다.
+#   (3) 창의 왼쪽은 **anchor 하나가 아니라 두 관측으로 브래킷**한다. 목표 첫 단어 직전의 무음은
+#       정의상 '참조 마지막 단어의 끝'과 '목표 첫 단어의 시작' 사이에 있다. 그래서 왼쪽은
+#       prev_word_end − PREV_WORD_END_MARGIN_SEC 로 잡는다. 왼쪽 확장은 안전하지 않다(실측:
+#       lead 를 0.8s 로 넓히자 0.57s 앞의 다른 개시를 골랐다) — 브래킷이 그 미끄러짐을 막는다.
+#       실측 표본에서 prev_word_end=9.22s, 오검출 개시=8.930s 라 margin 0.20s 면 확실히 밖이다.
+#   (4) anchor 는 상한이 아니라 **불확실성을 가진 기준점**으로 쓴다: 찾은 개시가 anchor 에서
+#       불확실성 이상 떨어져 있으면 다른 곳을 본 것이므로 fail-closed(ONSET_OFF_ANCHOR).
+#
+# 실측 근거(같은 표본, 무음(≥50ms) 뒤 발화 개시 10건에서 ASR 단어 시작과의 어긋남):
+#   잘 대응된 건들 -5 / +20 / +30ms, 대응이 애매한 건들까지 포함하면 ±수백 ms.
+#   400ms 는 관측 최대치 급을 덮으면서, 브래킷 덕분에 이웃 문장으로 넘어가지는 못하는 폭이다.
+ASR_WORD_TOLERANCE_SEC = 0.400
+PREV_WORD_END_MARGIN_SEC = 0.200
+# 지속 판정 3프레임(+15ms)과 프레임 길이(10ms)까지 창에 담기 위한 여유.
+_SUSTAIN_SPAN_SEC = BOUNDARY_FRAME_SEC + ONSET_SUSTAIN_FRAMES * BOUNDARY_HOP_SEC
+
+# prev_word_end 를 모를 때의 기본 폭(브래킷 없이 anchor 하나로만 만들 때).
 ANCHOR_WINDOW_LEAD_SEC = 0.350
-ANCHOR_WINDOW_TRAIL_SEC = 0.150
+ANCHOR_WINDOW_TRAIL_SEC = ASR_WORD_TOLERANCE_SEC + _SUSTAIN_SPAN_SEC
+# 브래킷이 있어도 왼쪽은 이 범위를 벗어나지 않는다 — prev_word_end 자체가 크게 틀렸을 때
+# 창이 이웃 문장까지 미끄러지지 않게 하는 안전대.
+WINDOW_MAX_LOOKBACK_SEC = 0.600
+WINDOW_MIN_LOOKBACK_SEC = 0.120
 # 창은 tail_end(30ms 유지) → valley → onset(+지속 3프레임=15ms) 를 담을 수 있어야 의미가 있다.
 WINDOW_MIN_SEC = 0.120
-
-# 창 안에서 쓰는 onset flux 절대 하한(전역 탐색의 ONSET_FLUX_ABS_MIN=0.5 를 그대로 쓰지 않는다).
-# 실측(같은 표본, 창 [219120,231120)):
-#   - 무음 프레임 flux : 중앙값 ≈ 0.0007, 최대 0.0034
-#   - 실제 목표 대사 개시 프레임 flux = 0.1476 (dB 는 -72.6 → -42.9, +29.7dB 상승)
-#   0.5 를 그대로 걸면 **부드럽게 시작하는 실제 발화**(-42dBFS 급)를 놓친다 — 실측 실패했다.
-#   0.05 는 관측된 무음 최대치의 약 15배이자 실제 개시의 약 1/3 로 양쪽에서 여유가 있다.
-# 낮춰도 안전한 이유: 창 한정 탐색에는 전역 탐색에 없는 제약이 셋 더 있다 —
-#   (a) 탐색 범위가 텍스트로 고정된 400~500ms, (b) cut < anchor 단어 시작, (c) tail_end < cut 과
-#   최소 여백. 오검출이 나더라도 창 폭 안의 수십 ms 이동이지, 다른 문장 경계를 고를 수는 없다.
-WINDOW_ONSET_FLUX_ABS_MIN = 0.05
 
 REASON_BOUNDARY_WINDOW_INVALID = "PREFIX_BOUNDARY_WINDOW_INVALID"
 REASON_BOUNDARY_CUT_AFTER_ANCHOR = "PREFIX_BOUNDARY_CUT_AFTER_ANCHOR"
 
 # 창 결과에만 붙는 좌표 키(전역 좌표). _BOUNDARY_RESULT_KEYS 는 건드리지 않는다 —
 # 전역 탐색 결과와 창 결과를 형태로 구분할 수 있어야 한다.
-WINDOW_RESULT_KEYS = ("window_start_sample", "window_end_sample", "anchor_start_sample")
+WINDOW_RESULT_KEYS = ("window_start_sample", "window_end_sample", "anchor_start_sample",
+                      "prev_word_end_sample", "anchor_offset_samples")
 
 _GLOBALIZED_KEYS = ("tail_end_sample", "onset_sample", "valley_sample", "cut_sample")
 
 
+def _finite_sec(v):
+    return (isinstance(v, (int, float)) and not isinstance(v, bool)
+            and v == v and abs(v) != float("inf") and v >= 0.0)
+
+
 def alignment_window_samples(anchor_start_sec, sample_rate, n_samples,
                              lead_sec=ANCHOR_WINDOW_LEAD_SEC,
-                             trail_sec=ANCHOR_WINDOW_TRAIL_SEC):
-    """anchor 단어 시작 시각 → [start-lead, start+trail) 샘플 창(파형 범위로 클램프).
+                             trail_sec=ANCHOR_WINDOW_TRAIL_SEC,
+                             prev_word_end_sec=None):
+    """anchor 단어 시작(+ 있으면 앞 단어 끝)으로 탐색 창을 만든다(파형 범위로 클램프).
 
-    반환: {"ok","reason_code","window_start_sample","window_end_sample","anchor_start_sample"}.
+    prev_word_end_sec 가 있으면 왼쪽을 그것으로 브래킷한다: 목표 첫 단어 직전의 무음은 정의상
+    '참조 마지막 단어의 끝'과 '목표 첫 단어의 시작' 사이에 있으므로, 그보다 더 앞은 볼 이유가
+    없다(그 앞을 보면 이웃 문장 경계를 고를 수 있다 — 실측 오검출의 원인). 브래킷 결과는
+    [anchor-WINDOW_MAX_LOOKBACK, anchor-WINDOW_MIN_LOOKBACK] 로 클램프한다.
+    prev_word_end_sec 가 없거나 anchor 이후면 lead_sec 로 되돌아간다(기존 동작).
+
+    반환: {"ok","reason_code","window_start_sample","window_end_sample","anchor_start_sample",
+           "prev_word_end_sample"}.
     창이 파형 밖이거나 WINDOW_MIN_SEC 보다 짧으면 ok=False — 넓혀서 구제하지 않는다."""
     r = {"ok": False, "reason_code": REASON_BOUNDARY_WINDOW_INVALID,
-         "window_start_sample": None, "window_end_sample": None, "anchor_start_sample": None}
+         "window_start_sample": None, "window_end_sample": None, "anchor_start_sample": None,
+         "prev_word_end_sample": None}
     if not isinstance(sample_rate, int) or isinstance(sample_rate, bool) or sample_rate <= 0:
         return r
     if not isinstance(n_samples, int) or n_samples <= 0:
         return r
-    if not isinstance(anchor_start_sec, (int, float)) or isinstance(anchor_start_sec, bool):
-        return r
-    if anchor_start_sec != anchor_start_sec or anchor_start_sec < 0.0:   # NaN / 음수
+    if not _finite_sec(anchor_start_sec):
         return r
     anchor = int(round(float(anchor_start_sec) * sample_rate))
     if anchor <= 0 or anchor > n_samples:
         return r   # anchor 가 파형 맨 앞/밖 — 그 앞을 볼 여지가 없다
-    ws = max(0, anchor - int(round(lead_sec * sample_rate)))
+
+    lookback = int(round(lead_sec * sample_rate))
+    if _finite_sec(prev_word_end_sec):
+        r["prev_word_end_sample"] = int(round(float(prev_word_end_sec) * sample_rate))
+        # ASR 이 앞 단어의 끝을 anchor 뒤로 보고하는 경우(단조성이 깨진 인식 결과)는 anchor 로
+        # 클램프한다 — 창을 넓히는 쪽으로 해석하지 않는다(넓히면 이웃 경계가 후보가 된다).
+        prev = min(int(round(float(prev_word_end_sec) * sample_rate)), anchor)
+        bracket = anchor - (prev - int(round(PREV_WORD_END_MARGIN_SEC * sample_rate)))
+        lookback = min(max(bracket, int(round(WINDOW_MIN_LOOKBACK_SEC * sample_rate))),
+                       int(round(WINDOW_MAX_LOOKBACK_SEC * sample_rate)))
+    ws = max(0, anchor - lookback)
     we = min(n_samples, anchor + int(round(trail_sec * sample_rate)))
     if we - ws < int(round(WINDOW_MIN_SEC * sample_rate)):
         return r
@@ -644,25 +761,35 @@ def detect_prefix_boundary_windowed(waveform, sample_rate, anchor_start_sec,
                                     lead_sec=ANCHOR_WINDOW_LEAD_SEC,
                                     trail_sec=ANCHOR_WINDOW_TRAIL_SEC,
                                     frame_sec=BOUNDARY_FRAME_SEC, hop_sec=BOUNDARY_HOP_SEC,
-                                    onset_flux_abs_min=WINDOW_ONSET_FLUX_ABS_MIN):
+                                    onset_flux_abs_min=None,
+                                    prev_word_end_sec=None,
+                                    anchor_tolerance_sec=ASR_WORD_TOLERANCE_SEC):
     """B 규칙(tail_end→onset→valley)을 **창 안에서만** 적용하고 좌표를 전역으로 환산한다.
 
     좌표 변환: 창은 로컬 인덱스를 낸다 → global = window_start_sample + local. 성공/실패 모두
     환산해 사후 확인이 항상 전역 좌표로 가능하게 한다. noise floor·지역 조용 기준도 창 안에서만
     산출되므로, 창 밖의 무음(참조 발화 내부 등)은 어떤 신호에도 기여하지 않는다.
 
-    추가 안전 조건(첫 자음·비유성음 보존): cut 은 anchor 단어 시작보다 **앞**이어야 한다.
-    목표 첫 음절이 마찰음/파열음이면 유성음보다 먼저 시작하므로 '첫 유성음 이전이니 안전'
-    으로는 판단하지 않는다. tail_end 이후·최소 여백 조건은 detect_prefix_boundary 가 보증한다.
+    onset_flux_abs_min=None(기본): E1 의 절대 하한을 창의 무음 flux 에서 유도한다(상수 금지).
+
+    anchor 취급(★변경): anchor 단어 시작은 **정확한 상한이 아니라 불확실성을 가진 기준점**이다.
+    - 첫 음절(마찰음·파열음 포함) 보존은 cut < 검출된 음향 onset − MIN_LEAD 로 보장한다.
+      이건 detect_prefix_boundary 가 신호에서 직접 낸 값이라 ASR 오차의 영향을 받지 않는다.
+    - anchor 는 '같은 곳을 봤는가'를 검사하는 데만 쓴다: |onset − anchor| > 허용 오차면
+      다른 개시를 본 것이므로 자르지 않는다(ONSET_OFF_ANCHOR).
+    - cut 이 anchor + 허용 오차보다도 뒤면 여전히 거부한다(CUT_AFTER_ANCHOR).
+    (예전 규칙 `cut < anchor` 는 ASR 이 개시보다 이르게 보고한 정상 표본을 거부했다 — 실측에서
+     오차 +50~+125ms 구간이 통째로 CUT_AFTER_ANCHOR 로 떨어졌다.)
 
     반환: detect_prefix_boundary 와 같은 키 + WINDOW_RESULT_KEYS. ok=False 면 자르지 않는다."""
     n = 0 if waveform is None else len(waveform)
-    win = alignment_window_samples(anchor_start_sec, sample_rate, n, lead_sec, trail_sec)
+    win = alignment_window_samples(anchor_start_sec, sample_rate, n, lead_sec, trail_sec,
+                                   prev_word_end_sec=prev_word_end_sec)
     if not win["ok"]:
         res = _empty_boundary_result(win["reason_code"],
                                      sample_rate if isinstance(sample_rate, int) else None)
         for k in WINDOW_RESULT_KEYS:
-            res[k] = win[k]
+            res[k] = win.get(k)
         return res
     ws = win["window_start_sample"]
     we = win["window_end_sample"]
@@ -675,10 +802,31 @@ def detect_prefix_boundary_windowed(waveform, sample_rate, anchor_start_sec,
     res["window_start_sample"] = ws
     res["window_end_sample"] = we
     res["anchor_start_sample"] = anchor
-    if res["ok"] and not (isinstance(res["cut_sample"], int) and res["cut_sample"] < anchor):
+    res["prev_word_end_sample"] = win.get("prev_word_end_sample")
+    res["anchor_offset_samples"] = (res["onset_sample"] - anchor
+                                    if isinstance(res.get("onset_sample"), int) else None)
+    if not res["ok"]:
+        return res
+    tol = int(round(max(0.0, anchor_tolerance_sec) * sample_rate))
+    if abs(res["anchor_offset_samples"]) > tol:
+        res["ok"] = False
+        res["cut_sample"] = None
+        res["reason_code"] = REASON_BOUNDARY_ONSET_OFF_ANCHOR
+        return res
+    if not (isinstance(res["cut_sample"], int) and res["cut_sample"] < anchor + tol):
         res["ok"] = False
         res["cut_sample"] = None
         res["reason_code"] = REASON_BOUNDARY_CUT_AFTER_ANCHOR
+        return res
+    # cut 은 '인식된 참조 발화 안'으로 들어가면 안 된다. 들어갔다면 anchor 가 크게 틀려 창이
+    # 통째로 앞 발화로 미끄러진 것이다 — 이때 잘라 봐야 참조 잔여가 남는다. 자르지 않는다.
+    # (창 왼쪽 브래킷은 클램프된 값을 쓰지만, 이 검사는 **원래 보고된** prev_word_end 로 한다.)
+    if _finite_sec(prev_word_end_sec):
+        limit = int(round((float(prev_word_end_sec) - PREV_WORD_END_MARGIN_SEC) * sample_rate))
+        if res["cut_sample"] < limit:
+            res["ok"] = False
+            res["cut_sample"] = None
+            res["reason_code"] = REASON_BOUNDARY_CUT_INSIDE_REFERENCE
     return res
 
 
@@ -696,6 +844,11 @@ def boundary_summary(detection):
         "valley_dbfs": detection.get("valley_dbfs"),
         "lead_samples": detection.get("lead_samples"),
     }
+    # 어떤 신호로 개시를 인정했는지(수치·enum 만) — '유성음만 보고 자르지 않았다'는 사후 증거.
+    for k in ("onset_dbfs", "onset_flux", "onset_zcr", "onset_hb_dbfs", "onset_evidence",
+              "onset_flux_threshold", "baseline_dbfs", "quiet_frame_count"):
+        if detection.get(k) is not None:
+            out[k] = detection[k]
     # 창 탐색이었다면 '어디만 봤는지'도 남긴다 — 전역 탐색이 아니었다는 사실이 기록으로 남아야
     # 한다(수치만, 여전히 비민감). 전역 탐색 결과에는 이 키들이 아예 없다.
     for k in WINDOW_RESULT_KEYS:

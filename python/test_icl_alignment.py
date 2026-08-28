@@ -132,15 +132,29 @@ class WindowedCutTest(_AlignBase):
         self.assertGreater(r["cut_sample"], GAP_START, "진짜 경계 무음 안에서 잘린다")
         self.assertLess(r["cut_sample"], TARGET_ONSET)
 
-    def test_search_window_is_restricted_to_the_anchor(self):
+    def test_search_window_is_bracketed_by_the_two_asr_observations(self):
+        """창의 왼쪽은 anchor 하나가 아니라 '앞 단어 끝'과 함께 브래킷된다.
+
+        목표 첫 단어 직전의 무음은 정의상 [앞 단어 끝, anchor 단어 시작] 안에 있다. 그래서 그보다
+        더 앞은 보지 않는다 — 창이 왼쪽으로 미끄러져 이웃 경계를 고르는 것이 실측 오검출의 원인
+        이었다. 오른쪽은 ASR 단어 시작의 불확실성(ASR_WORD_TOLERANCE_SEC)만큼 연다."""
         s = self._run()["summary"]
+        prev_end = 2.30                                   # _default_asr 의 참조 마지막 단어 끝
+        self.assertEqual(s["prev_word_end_sample"], int(round(prev_end * SR)))
         self.assertEqual(s["window_start_sample"],
-                         TARGET_ONSET - int(round(pa.ANCHOR_WINDOW_LEAD_SEC * SR)))
+                         int(round((prev_end - pa.PREV_WORD_END_MARGIN_SEC) * SR)))
         self.assertEqual(s["window_end_sample"],
                          TARGET_ONSET + int(round(pa.ANCHOR_WINDOW_TRAIL_SEC * SR)))
         self.assertEqual(s["anchor_start_sample"], TARGET_ONSET)
         self.assertGreater(s["window_start_sample"], REF_A + DECOY_GAP,
                            "참조 내부 무음(더 긴 침묵)은 창 밖이라 후보가 될 수 없다")
+
+    def test_window_without_prev_word_falls_back_to_the_anchor_lead(self):
+        """앞 단어 끝을 모르면 브래킷 없이 anchor 기준 lead 로 되돌아간다(추측하지 않는다)."""
+        w = pa.alignment_window_samples(TARGET_ONSET / SR, SR, TOTAL_N)
+        self.assertEqual(w["window_start_sample"],
+                         TARGET_ONSET - int(round(pa.ANCHOR_WINDOW_LEAD_SEC * SR)))
+        self.assertIsNone(w["prev_word_end_sample"])
 
     def test_global_coordinates_are_window_start_plus_local(self):
         """좌표 변환 고정: 같은 창을 직접 잘라 로컬로 재현하면 정확히 offset 만큼 차이난다."""
@@ -270,41 +284,145 @@ class FailClosedTest(_AlignBase):
 
 
 class SoftOnsetCalibrationTest(unittest.TestCase):
-    """실측 회귀: 실제 목표 대사는 **부드럽게** 시작한다(개시 프레임 flux ≈ 0.15, -43dBFS).
+    """실측 회귀: 개시의 세기는 표본마다 두 자릿수 배로 흩어진다 → 절대 상수 임계 금지.
 
-    전역 탐색의 절대 flux 하한 0.5 를 창 안에서도 그대로 쓰면 그 개시를 놓친다 —
-    실제 표본에서 PREFIX_BOUNDARY_ONSET_NOT_FOUND 로 실패했다. 창 전용 하한(0.05)이
-    그 사이를 지나가게 하되, 창 안 무음 flux(≤0.004 급)와는 여전히 한 자릿수 이상 떨어져 있다."""
+    같은 생성물(12.88s) 안에서 무음(≥50ms) 뒤 발화 개시 10건의 flux 를 재면 0.0034 ~ 0.156 이다.
+    이전 구현이 쓰던 창 전용 상수 하한 0.05 는 그 10건 중 **8건을 놓친다** — 우연히 통과한 하나
+    (0.1476)에 맞춰 잡은 값이었다. 그래서 하한을 상수로 두지 않고 '그 창에서 관측된 무음 flux'
+    에서 유도하고(ONSET_FLUX_NOISE_MARGIN), flux 말고도 고주파대/zcr 을 개시 증거로 함께 받는다."""
 
     def _soft_wave(self, amp=0.08):
         return (_speech(REF_A) + _noise(DECOY_GAP, 1e-3, 101) + _speech(REF_B, phase0=0.7)
                 + _noise(1560, 1e-3, 102) + _noise(240, 5e-5, 103) + _noise(2160, 1e-3, 104)
                 + _speech(TARGET_N, amp=amp, f0=210.0))
 
-    def test_thresholds_bracket_the_measured_onset(self):
+    def test_no_constant_window_flux_floor_remains(self):
         self.assertEqual(pa.ONSET_FLUX_ABS_MIN, 0.5, "전역 탐색 기본값은 그대로다")
-        self.assertLess(pa.WINDOW_ONSET_FLUX_ABS_MIN, pa.ONSET_FLUX_ABS_MIN)
-        wave = self._soft_wave()
-        ws = TARGET_ONSET - int(round(pa.ANCHOR_WINDOW_LEAD_SEC * SR))
-        we = TARGET_ONSET + int(round(pa.ANCHOR_WINDOW_TRAIL_SEC * SR))
-        flux = [f for f, _z in pa.frame_spectral_signals(wave[ws:we], SR)]
-        i = (TARGET_ONSET - ws) // 120
-        onset_flux = max(flux[i - 1:i + 2])
-        quiet_flux = max(flux[(GAP_START - ws) // 120 + 2:i - 1])
-        self.assertLess(quiet_flux, pa.WINDOW_ONSET_FLUX_ABS_MIN, "무음은 창 하한 아래")
-        self.assertGreater(onset_flux, pa.WINDOW_ONSET_FLUX_ABS_MIN, "실제 개시는 창 하한 위")
-        self.assertLess(onset_flux, pa.ONSET_FLUX_ABS_MIN, "그러나 전역 하한은 못 넘는다(실측 상황)")
+        self.assertFalse(hasattr(pa, "WINDOW_ONSET_FLUX_ABS_MIN"),
+                         "창 전용 상수 하한은 제거됐다 — 잡음에서 유도한다")
 
-    def test_windowed_finds_it_and_global_threshold_would_not(self):
+    def test_flux_floor_is_derived_from_the_windows_own_silence(self):
+        """유도된 하한은 그 창의 무음 flux 최댓값보다 크고, 실제 개시 flux 보다 작다."""
         wave = self._soft_wave()
-        ws = TARGET_ONSET - int(round(pa.ANCHOR_WINDOW_LEAD_SEC * SR))
-        we = TARGET_ONSET + int(round(pa.ANCHOR_WINDOW_TRAIL_SEC * SR))
+        r = pa.detect_prefix_boundary_windowed(wave, SR, TARGET_ONSET / SR)
+        self.assertTrue(r["ok"], r["reason_code"])
+        ws = r["window_start_sample"]
+        flux = [f for f, _z in pa.frame_spectral_signals(wave[ws:r["window_end_sample"]], SR)]
+        i = (TARGET_ONSET - ws) // 120
+        quiet_flux = max(flux[(GAP_START - ws) // 120 + 2:i - 1])
+        self.assertGreater(r["onset_flux_threshold"], quiet_flux, "무음 최댓값보다는 위")
+        self.assertLess(r["onset_flux_threshold"], pa.ONSET_FLUX_ABS_MIN,
+                        "전역 상수보다는 아래 — 부드러운 개시를 놓치지 않는다")
+
+    def test_windowed_finds_it_and_the_global_constant_would_not(self):
+        wave = self._soft_wave()
         ok = pa.detect_prefix_boundary_windowed(wave, SR, TARGET_ONSET / SR)
         self.assertTrue(ok["ok"], ok["reason_code"])
         self.assertEqual(ok["cut_sample"], VALLEY_AT)
+        ws, we = ok["window_start_sample"], ok["window_end_sample"]
         strict = pa.detect_prefix_boundary(wave[ws:we], SR)   # 기본(전역) 하한 0.5
         self.assertFalse(strict["ok"])
         self.assertEqual(strict["reason_code"], pa.REASON_BOUNDARY_ONSET_NOT_FOUND)
+
+    def test_weak_onset_below_the_old_constant_is_still_found(self):
+        """옛 상수 하한(0.05) 아래인 개시도 찾는다 — 실측 개시 분포의 하위 구간."""
+        wave = self._soft_wave(amp=0.020)
+        r = pa.detect_prefix_boundary_windowed(wave, SR, TARGET_ONSET / SR)
+        self.assertTrue(r["ok"], r["reason_code"])
+        self.assertEqual(r["cut_sample"], VALLEY_AT)
+        self.assertLess(r["onset_flux"], 0.05, "옛 상수 하한 아래인 개시다")
+        self.assertTrue(r["onset_evidence"] & (pa.EVIDENCE_FLUX | pa.EVIDENCE_HIGH_BAND
+                                               | pa.EVIDENCE_ZCR))
+
+
+class AnchorErrorSweepTest(unittest.TestCase):
+    """★핵심 회귀: ASR 단어 시작이 틀려도 **조용히 다른 곳을 자르지 않는다**.
+
+    실측(성공 표본 12.88s)에서 anchor 시각만 흔들면 예전 규칙은 세 구간으로 갈렸다:
+      +50~+125ms → CUT_AFTER_ANCHOR(정답인데 거부) / +150~+230ms → ONSET_NOT_FOUND
+      ≥ +300ms   → **조용히 0.57s 앞을 잘랐다**(실패로 알리지도 않음)
+    허용 결과는 둘뿐이다: 정답 cut, 또는 fail-closed. '다른 cut' 은 절대 나오면 안 된다."""
+
+    def _sweep(self, err_ms):
+        """err_ms > 0 = ASR 이 실제 개시보다 그만큼 **이르게** 보고했다."""
+        wave = _decoy_wave()
+        anchor_sec = (TARGET_ONSET - int(err_ms / 1000.0 * SR)) / SR
+        return pa.detect_prefix_boundary_windowed(
+            wave, SR, anchor_sec, prev_word_end_sec=GAP_START / SR)
+
+    def test_no_silently_different_cut_across_the_error_range(self):
+        seen_ok = 0
+        for err in range(-300, 501, 25):
+            r = self._sweep(err)
+            if r["ok"]:
+                seen_ok += 1
+                self.assertEqual(r["cut_sample"], VALLEY_AT,
+                                 f"{err}ms 에서 다른 지점을 잘랐다(조용한 오검출)")
+            else:
+                self.assertIsNone(r["cut_sample"], f"{err}ms")
+        self.assertGreater(seen_ok, 10, "전부 거부해 버리면 기능이 죽은 것이다")
+
+    def test_the_previously_failing_bands_now_resolve(self):
+        """예전에 CUT_AFTER_ANCHOR / ONSET_NOT_FOUND 로 떨어지던 구간이 정답을 낸다."""
+        for err in (50, 100, 125, 150, 180, 200, 230):
+            r = self._sweep(err)
+            self.assertTrue(r["ok"], f"{err}ms: {r['reason_code']}")
+            self.assertEqual(r["cut_sample"], VALLEY_AT, f"{err}ms")
+
+    def test_cut_never_lands_inside_recognized_reference_speech(self):
+        """anchor 가 참조 발화 안까지 밀려도 참조 안에서 자르지 않는다(fail-closed)."""
+        wave = _decoy_wave()
+        r = pa.detect_prefix_boundary_windowed(
+            wave, SR, (REF_A + DECOY_GAP + 1200) / SR, prev_word_end_sec=GAP_START / SR)
+        self.assertFalse(r["ok"])
+        self.assertIsNone(r["cut_sample"])
+
+
+class UnvoicedOnsetTest(unittest.TestCase):
+    """첫 음절이 **비유성음**(마찰음·파열음)으로 시작해도 그 앞에서 잘라야 한다.
+
+    유성음 개시만 보면 마찰 구간이 이미 지난 뒤를 개시로 잡아 첫 자음을 삼킨다. 그래서 광대역
+    flux 말고도 고주파대 에너지 상승·zcr 상승을 개시 증거로 함께 받는다."""
+
+    # 마찰 구간은 TARGET_ONSET 에서 시작하고, 유성부는 그 n 샘플 뒤에 온다.
+    # ASR 은 유성부 쪽을 단어 시작으로 보고한다고 두는 것이 가장 불리한 조건이다.
+    def _fricative_wave(self, fric_ms=90, fric_amp=0.05):
+        n = int(fric_ms / 1000.0 * SR)
+        rng = random.Random(4242)
+        # 고역 강조 잡음(1차 차분) — 마찰음처럼 2kHz 위에 에너지가 실린다.
+        raw = [rng.random() * 2.0 - 1.0 for _ in range(n + 1)]
+        fric = [fric_amp * (raw[i + 1] - raw[i]) * 0.5 for i in range(n)]
+        return (_speech(REF_A) + _noise(DECOY_GAP, 1e-3, 101) + _speech(REF_B, phase0=0.7)
+                + _noise(1560, 1e-3, 102) + _noise(240, 5e-5, 103) + _noise(2160, 1e-3, 104)
+                + fric + _speech(TARGET_N, amp=0.30, f0=210.0)), n
+
+    def test_cut_precedes_the_fricative_not_the_voiced_part(self):
+        wave, n = self._fricative_wave()
+        r = pa.detect_prefix_boundary_windowed(wave, SR, (TARGET_ONSET + n) / SR)
+        self.assertTrue(r["ok"], r["reason_code"])
+        self.assertLessEqual(r["onset_sample"], TARGET_ONSET + 240,
+                             "개시는 마찰 구간에서 잡힌다(유성부가 아니라)")
+        self.assertLess(r["cut_sample"], TARGET_ONSET,
+                        "cut 은 마찰 시작보다 앞 — 첫 자음을 삼키지 않는다")
+        self.assertTrue(r["onset_evidence"] & (pa.EVIDENCE_HIGH_BAND | pa.EVIDENCE_ZCR),
+                        "비유성 개시는 고주파/zcr 증거로 잡힌다")
+
+    def test_flux_alone_would_not_have_accepted_this_onset(self):
+        """대조군: 조용한 마찰 개시는 flux 상수 하한(옛 창 규칙 0.05)을 넘지 못한다.
+
+        그래도 검출되는 이유는 고주파대 상승이라는 **별도 증거**가 있기 때문이다 — 증거 비트가
+        정확히 EVIDENCE_HIGH_BAND 하나뿐인 것으로 그 사실을 고정한다. flux 만 보던 규칙이었다면
+        이 개시는 없는 것이 되고, 그 뒤 유성부까지 밀려 첫 자음이 잘려 나갔을 것이다."""
+        wave, n = self._fricative_wave(fric_amp=0.010)
+        anchor = TARGET_ONSET + n
+        ws = anchor - int(round(pa.ANCHOR_WINDOW_LEAD_SEC * SR))
+        we = anchor + int(round(pa.ANCHOR_WINDOW_TRAIL_SEC * SR))
+        r = pa.detect_prefix_boundary(wave[ws:we], SR, onset_flux_abs_min=0.05)
+        self.assertTrue(r["ok"], r["reason_code"])
+        self.assertLess(ws + r["onset_sample"], anchor, "마찰 구간에서 잡힌다")
+        self.assertEqual(r["onset_evidence"], pa.EVIDENCE_HIGH_BAND,
+                         "flux 는 자격 미달이고 고주파 증거만으로 인정됐다")
+        self.assertLess(r["onset_flux"], 0.05)
 
 
 class WindowRuleUnitTest(unittest.TestCase):
@@ -336,23 +454,49 @@ class WindowRuleUnitTest(unittest.TestCase):
                      (float("nan"), SR, SR), (1.0, SR, None)):
             self.assertFalse(pa.alignment_window_samples(*args)["ok"], repr(args))
 
-    def test_cut_after_anchor_is_rejected(self):
-        """창 안에서 규칙이 통과해도 cut 이 anchor 뒤면 첫 음절을 삼킨다 → 거부."""
+    def test_onset_far_from_the_anchor_is_rejected(self):
+        """anchor 는 정확한 상한이 아니라 '불확실성을 가진 기준점'이다.
+
+        첫 음절 보존은 cut < 검출된 음향 onset − 최소 여백이 보장한다(신호에서 직접 나온 값이라
+        ASR 오차의 영향을 받지 않는다). anchor 는 '같은 곳을 봤는가'만 검사한다 — 허용 오차보다
+        멀면 다른 개시를 본 것이므로 자르지 않는다."""
         wave = _decoy_wave()
         ok = pa.detect_prefix_boundary_windowed(wave, SR, TARGET_ONSET / SR)
         self.assertTrue(ok["ok"], "정상 anchor 에서는 통과한다")
         self.assertEqual(ok["cut_sample"], VALLEY_AT)
-        # anchor 를 valley 지점까지 당기면 — 창(따라서 검출 결과)은 그대로인데 — cut 이 더 이상
-        # anchor '앞'이 아니게 된다. lead/trail 을 조정해 창은 정확히 같게 유지한다.
-        bad = pa.detect_prefix_boundary_windowed(
-            wave, SR, VALLEY_AT / SR, lead_sec=6000 / SR, trail_sec=6000 / SR)
+        # 허용 오차를 0 으로 조이면 같은 창·같은 검출인데 '기준점과 멀다'는 이유로 거부된다.
+        bad = pa.detect_prefix_boundary_windowed(wave, SR, TARGET_ONSET / SR,
+                                                anchor_tolerance_sec=0.0)
         self.assertEqual(bad["window_start_sample"], ok["window_start_sample"])
         self.assertEqual(bad["window_end_sample"], ok["window_end_sample"])
-        self.assertEqual(bad["anchor_start_sample"], VALLEY_AT)
         self.assertFalse(bad["ok"])
-        self.assertEqual(bad["reason_code"], pa.REASON_BOUNDARY_CUT_AFTER_ANCHOR)
+        self.assertEqual(bad["reason_code"], pa.REASON_BOUNDARY_ONSET_OFF_ANCHOR)
         self.assertIsNone(bad["cut_sample"])
         self.assertEqual(bad["valley_sample"], VALLEY_AT, "관측값은 남긴다(사후 확인용)")
+
+    def test_asr_reporting_the_word_early_no_longer_rejects_a_correct_cut(self):
+        """실측 회귀: ASR 이 개시보다 이르게 보고하면 정답 cut 이 anchor '뒤'가 된다.
+
+        예전 규칙(cut < anchor)은 이걸 통째로 거부했다 — 실측 표본에서 오차 +50~+125ms 구간이
+        전부 PREFIX_BOUNDARY_CUT_AFTER_ANCHOR 였다. anchor 를 불확실성 있는 기준점으로 다루면
+        같은 파형에서 같은 정답 cut 이 나와야 한다."""
+        wave = _decoy_wave()
+        for early_ms in (50, 100, 125, 200):
+            anchor = (TARGET_ONSET - int(early_ms / 1000.0 * SR)) / SR
+            r = pa.detect_prefix_boundary_windowed(wave, SR, anchor)
+            self.assertTrue(r["ok"], f"{early_ms}ms: {r['reason_code']}")
+            self.assertEqual(r["cut_sample"], VALLEY_AT, f"{early_ms}ms")
+
+    def test_cut_inside_recognized_reference_speech_is_rejected(self):
+        """anchor 가 크게 틀려 창이 앞 발화로 미끄러지면, 잘라 봐야 참조 잔여가 남는다 → 거부."""
+        wave = _decoy_wave()
+        # 앞 단어 끝을 '참조 뒤 문장의 끝'으로 정직하게 주되 anchor 는 참조 내부로 밀어 넣는다.
+        r = pa.detect_prefix_boundary_windowed(
+            wave, SR, (REF_A + DECOY_GAP + 2400) / SR,
+            prev_word_end_sec=GAP_START / SR)
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason_code"], pa.REASON_BOUNDARY_CUT_INSIDE_REFERENCE)
+        self.assertIsNone(r["cut_sample"])
 
 
 if __name__ == "__main__":
