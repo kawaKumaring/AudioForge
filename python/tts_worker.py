@@ -452,6 +452,20 @@ class QwenGenerationLimitError(RuntimeError):
             f"emotion={emotion_id}, iters={generated_iterations}, limit={generation_limit})")
 
 
+class QwenIclBoundaryError(RuntimeError):
+    """controlled-prefix 생성물에서 목표 대사 시작 경계를 확정하지 못했다(bridge fail-closed).
+    보안: segment/chunk index·emotion_id·경계 사유 코드만 — 전사·대사·경로 없음."""
+
+    def __init__(self, segment_index, chunk_index, emotion_id, boundary_reason):
+        self.segment_index = segment_index
+        self.chunk_index = chunk_index
+        self.emotion_id = emotion_id
+        self.boundary_reason = boundary_reason
+        super().__init__(
+            f"ICL_BOUNDARY_ALIGNMENT_FAILED(seg={segment_index}, chunk={chunk_index}, "
+            f"emotion={emotion_id}, reason={boundary_reason})")
+
+
 class QwenTextSegmentTooLongError(RuntimeError):
     """자동 분할로도 동적 상한 이내로 못 만든 줄(계약 B). 보안: segment_index/emotion_id/토큰 수만.
     감정 ID 매핑은 상위에서. 대사·전사·경로 미포함."""
@@ -570,6 +584,7 @@ class QwenTTSEngine(TTSEngine):
         err_msg = None
         gl_err = None   # GENERATION_LIMIT_EXCEEDED(구조화) — 감정 ID 매핑은 상위에서
         tsl_err = None  # TEXT_SEGMENT_TOO_LONG(구조화)
+        icl_err = None  # ICL_BOUNDARY_ALIGNMENT_FAILED(구조화) — controlled-prefix 경계 미확정
         loaded = False          # stage=loaded 관측 여부. True면 기동 deadline은 더 이상 적용되지 않는다.
         stage = "starting"      # 마지막 관측 stage(오류 payload용, 비민감 enum)
         hb = {"seen": 0, "pct": _QWEN_LOAD_PCT_MIN}  # heartbeat 수신 수 / 마지막 로딩 percent(단조 비감소)
@@ -644,6 +659,10 @@ class QwenTTSEngine(TTSEngine):
                     tsl_err = QwenTextSegmentTooLongError(
                         msg.get("segment_index"), msg.get("production_tokens"),
                         msg.get("allowed"), msg.get("emotion_id"))
+                elif code == "ICL_BOUNDARY_ALIGNMENT_FAILED":
+                    icl_err = QwenIclBoundaryError(
+                        msg.get("segment_index"), msg.get("chunk_index"),
+                        msg.get("emotion_id"), msg.get("boundary_reason"))
                 else:
                     err_msg = msg.get("message", "Qwen 오류")
             elif t == "result":
@@ -652,6 +671,8 @@ class QwenTTSEngine(TTSEngine):
             proc.wait(timeout=10)
         except Exception:
             _kill_proc_tree(proc)
+        if icl_err is not None:
+            raise icl_err  # 경계 미확정 — 상위가 안전 모드 안내를 붙여 재해석.
         if tsl_err is not None:
             raise tsl_err  # 분할 불가 — 상위가 감정 ID로 재해석.
         if gl_err is not None:
@@ -845,20 +866,27 @@ REF_MANUAL_MISALIGNED = "REF_MANUAL_MISALIGNED"        # 오디오에 없는 말
 REF_MANUAL_UNVERIFIABLE = "REF_MANUAL_UNVERIFIABLE"    # 전사 자체가 실패해 검증할 수 없다
 
 
-# ── 참조 conditioning 모드(단일 권위 계약, 참조혼입 대응 PHASE 2) ──
+# ── 참조 conditioning 모드(단일 권위 계약, 참조혼입 대응) ──
 # renderer store → config(ttsReferenceConditioningMode) → separate.py → synthesize() 전 구간이
 # 이 한 값을 그대로 나른다. job 단위 고정: 실행 중 어떤 segment 에서도 모드가 바뀌지 않으며,
 # 자동 ICL fallback·x-vector 실패 시 조용한 전환이 없다(실패는 명시 실패).
 #   safe_xvector     : 안전 음성 복제. 모든 segment 를 x_vector_only=True 로 강제하고 참조 전사
 #                      (ref_text)를 vendor 호출에 전달하지 않는다 → 참조 대사 혼입(conditioning echo)이
 #                      구조적으로 없다. 음색·감정은 다소 평탄할 수 있다(강등이 아니라 모드의 특성).
-#   high_quality_icl : 참조 억양 반영(ICL). 절단 정책(경계 검증)이 사용자 청취로 확정되기 전이므로
-#                      실행은 fail-closed 로 차단된다(ICL_BOUNDARY_POLICY_UNCONFIRMED).
+#   high_quality_icl : 참조 억양 반영(ICL) + controlled-prefix. 참조 전사를 목표 대사 앞에 붙여
+#                      '의도적으로' 먼저 발화시킨 뒤(그래야 어디까지가 참조인지 파형에서 확정할 수
+#                      있다), prefix_alignment 의 자동 경계 규칙으로 목표 대사 시작 직전을 찾아
+#                      그 앞만 잘라낸다. 경계를 못 찾으면 결과를 발행하지 않고 실패한다
+#                      (ICL_BOUNDARY_ALIGNMENT_FAILED — safe_xvector 로 조용히 갈아타지 않는다).
 REF_CONDITIONING_SAFE_XVECTOR = "safe_xvector"
 REF_CONDITIONING_HIGH_QUALITY_ICL = "high_quality_icl"
 REF_CONDITIONING_MODES = (REF_CONDITIONING_SAFE_XVECTOR, REF_CONDITIONING_HIGH_QUALITY_ICL)
 INVALID_REFERENCE_CONDITIONING_MODE = "INVALID_REFERENCE_CONDITIONING_MODE"
-ICL_BOUNDARY_POLICY_UNCONFIRMED = "ICL_BOUNDARY_POLICY_UNCONFIRMED"
+# high_quality_icl 실패 사유(비민감 code). 전자는 경계 검출 실패, 후자는 붙일 참조 전사 자체가 없음.
+ICL_BOUNDARY_ALIGNMENT_FAILED = "ICL_BOUNDARY_ALIGNMENT_FAILED"
+ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE = "ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE"
+# 두 실패 모두 같은 안내로 끝난다 — 지금 결과가 필요하면 안전 모드를 고르라는 것.
+_ICL_SAFE_MODE_HINT = ("'안전 음성 복제' 모드를 선택하면 참조 대사 혼입 없이 바로 합성할 수 있습니다.")
 
 
 def resolve_reference_conditioning_mode(value):
@@ -1159,11 +1187,11 @@ _METADATA_KEYS = [
     # session/config/metadata 세 캐리어가 '같은 필드 이름'이어야 하고, 계약이 별칭
     # (tts_expressive_mode)을 명시적으로 금지했다(권위가 둘이 되는 편이 더 나쁘다).
     "ttsExpressiveMode",
-    # 참조 conditioning 모드(참조혼입 대응 PHASE 2). requested=사용자 요청, effective=실제 적용.
+    # 참조 conditioning 모드(참조혼입 대응). requested=사용자 요청, effective=실제 적용.
     # 자동 전환 금지 계약이라 두 값은 항상 같거나 실행이 실패한다(degraded 는 그 사실의 기록 —
     # safe_xvector 의 감정 평탄화 가능성은 강등이 아니라 모드의 특성이므로 False).
-    # reference_alignment / reference_cut_sample 은 controlled-prefix 절단 정책이 확정되기 전까지
-    # 항상 null(안전 모드는 정렬·절단을 수행하지 않는다). legacy 호출(모드 미전달)은 전부 null.
+    # reference_alignment / reference_cut_sample 은 high_quality_icl 이 실제로 controlled-prefix 를
+    # 잘라냈을 때만 값이 들어간다(샘플 인덱스·dB 만). safe_xvector 는 정렬·절단을 하지 않으므로 null.
     "reference_conditioning_mode_requested", "reference_conditioning_mode_effective",
     "reference_conditioning_degraded", "reference_alignment", "reference_cut_sample",
     "reference_conditioning_failure_code",
@@ -1296,6 +1324,43 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
     return out
 
 
+_ALIGNMENT_SUMMARY_KEYS = ("sample_rate", "noise_floor_dbfs", "tail_end_sample", "valley_sample",
+                           "onset_sample", "cut_sample", "valley_dbfs", "lead_samples")
+
+
+def _summarize_reference_alignment(ordered_entries):
+    """controlled-prefix 절단 사실을 metadata 용으로 축약한다(샘플 인덱스와 dB 만).
+
+    chunk 마다 자기 경계를 검출하므로 값이 여러 개다. 대표값(첫 chunk)과 전체 범위·합계를 함께
+    남겨 '어디를 얼마나 잘랐는가'가 사후에 확인 가능하게 한다.
+    반환: (alignment_dict, representative_cut_sample).
+    ICL 인데 어떤 chunk 라도 절단 기록이 없으면 — 즉 잘렸는지 확인할 수 없으면 — 조용히 통과시키지
+    않고 RuntimeError(구조화 code)로 실패한다(fail-closed)."""
+    firsts = None
+    cuts = []
+    for e in ordered_entries:
+        rec = e.get("reference_alignment")
+        cut = e.get("reference_cut_sample")
+        if not isinstance(rec, dict) or not isinstance(cut, int) or cut <= 0:
+            _e = RuntimeError(
+                "참조 억양 반영 모드인데 참조 구간 절단 기록이 없습니다 — 잘렸는지 확인할 수 없는 "
+                "결과는 발행하지 않습니다. " + _ICL_SAFE_MODE_HINT)
+            _e.error_payload = {"code": ICL_BOUNDARY_ALIGNMENT_FAILED,
+                                "segment_index": e.get("original_segment_index"),
+                                "chunk_index": e.get("chunk_index"),
+                                "emotion_id": e.get("emotion_id"),
+                                "boundary_reason": "MISSING_ALIGNMENT_RECORD"}
+            raise _e
+        cuts.append(cut)
+        if firsts is None:
+            firsts = {k: rec.get(k) for k in _ALIGNMENT_SUMMARY_KEYS}
+    if firsts is None:
+        return None, None
+    return ({"chunk_count": len(cuts), "first": firsts,
+             "cut_sample_min": min(cuts), "cut_sample_max": max(cuts),
+             "trimmed_samples_total": sum(cuts)}, cuts[0])
+
+
 def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed, silence_gap,
                          pitch=0.0, tail_cfg=None, boundary_gaps=None,
                          reference_conditioning_mode=None):
@@ -1303,10 +1368,11 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
     모델 1회 로딩. speed: 세그먼트별 atempo 후 사용자 silence_gap으로 결합(1.0은 raw). 임시파일 finally 정리.
     pitch: 결합본(pending)에 rubberband 음높이 후처리(0=무후처리, 계약 §6·§7). 실패는 os.replace 직전
     예외 → finally가 job_dir 정리 → 기존 synthesized.wav 무손상.
-    reference_conditioning_mode: 참조 conditioning 모드(PHASE 2). safe_xvector 면 전 segment 를
+    reference_conditioning_mode: 참조 conditioning 모드. safe_xvector 면 전 segment 를
       x_vector_only=True 로 강제하고 참조 전사를 vendor 에 전달하지 않는다(_resolve_qwen_ref_text 를
-      아예 타지 않는 상위 게이트 — Whisper 호출 0). None = legacy 직접 호출(기존 전사 기반 결정 그대로).
-      high_quality_icl 은 synthesize() 입구에서 fail-closed 로 차단되므로 여기 도달하지 않는다.
+      아예 타지 않는 상위 게이트 — Whisper 호출 0). high_quality_icl 이면 segment 마다 참조 전사를
+      결정해 ICL 조건으로 넘기고, 동시에 그 전사를 prefix_text 로 실어 controlled-prefix 로 생성한 뒤
+      bridge 가 파형 경계를 찾아 앞을 잘라낸다. 모드는 job 단위 고정이다.
     반환: (final_path, info) — info는 재현 메타데이터의 런타임 사실(device/source/prompt_source/전사요약 등)."""
     import time
     from reference_audio import assess_reference_file, GPTSOVITS_POLICY
@@ -1363,14 +1429,20 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         degrade_records = []     # 참조 프롬프트 결정 요약(C2) — 비민감, 세그먼트 수만큼 유계
         def_emotion_id = None    # 기본 참조를 쓰는 첫 감정 ID(요약의 대표값 선택용)
         safe_mode = reference_conditioning_mode == REF_CONDITIONING_SAFE_XVECTOR
+        icl_mode = reference_conditioning_mode == REF_CONDITIONING_HIGH_QUALITY_ICL
         if safe_mode:
             # 안전 모드 사실을 로그에 1회 명시(조용한 모드 아님 — 사용자가 어떤 조건으로 합성됐는지 안다).
             emit("progress", percent=5,
                  message="안전 음성 복제 모드 — 참조 대사(전사)는 합성 조건으로 전달되지 않습니다")
+        elif icl_mode:
+            emit("progress", percent=5,
+                 message="참조 억양 반영 모드 — 참조 대사를 먼저 생성한 뒤 경계를 찾아 잘라냅니다"
+                         "(생성 길이가 늘어 처리 시간이 더 걸립니다)")
         for i, (emotion_id, line_text) in enumerate(parsed):
             ref = ref_cache.get(emotion_id, ref_cache["default"])
+            prefix_text = None
             if safe_mode:
-                # 상위 게이트(PHASE 2): 전사 기반 ICL 결정(_resolve_qwen_ref_text)을 아예 타지 않는다.
+                # 상위 게이트: 전사 기반 ICL 결정(_resolve_qwen_ref_text)을 아예 타지 않는다.
                 # 수동 전사(ttsReferencePrompts)는 라이브러리 표시·검증용으로 보존될 뿐 합성 조건으로는
                 # 전달 0(ref_text=""), Whisper 호출 0, 정렬 검증 호출 0. job 내 전 세그먼트 고정 —
                 # 어떤 segment 도 ICL 로 되돌아가지 않는다(자동 fallback 금지).
@@ -1379,6 +1451,18 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                 ref_text, xvo = _resolve_qwen_ref_text(ref, overrides_by_path, warned,
                                                        degrade_sink=degrade_records,
                                                        emotion_id=emotion_id)
+                if icl_mode:
+                    # 참조 억양 반영은 '참조 전사'가 있어야 성립한다. 전사가 없거나(실패/빈 전사)
+                    # 사용자가 ref-free 를 골라 x-vector 로 떨어졌다면, 조용히 안전 모드처럼 돌지 않고
+                    # 여기서 명시적으로 실패한다(요청한 모드와 다른 결과를 무신호로 주지 않는다).
+                    if xvo or not (ref_text or "").strip():
+                        _e = RuntimeError(
+                            "참조 억양 반영 모드는 참조 음성의 대사(전사)가 필요합니다 — 참조 전사를 "
+                            "직접 입력하거나, 자동 전사가 가능한 참조 구간을 선택하세요. " + _ICL_SAFE_MODE_HINT)
+                        _e.error_payload = {"code": ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE,
+                                            "segment_index": i, "emotion_id": emotion_id}
+                        raise _e
+                    prefix_text = ref_text
             lang_code = _detect_language(line_text)  # 세그먼트별 언어
             lang_codes.append(lang_code)
             lang_name = _QWEN_LANG_NAME.get(lang_code)
@@ -1390,9 +1474,14 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                 def_source = _prompt_source_for(ref, overrides_by_path, xvo)
                 def_tr_lang, def_tr_len, def_tr_sha = _transcript_meta(ref_text)
             out_path = os.path.join(job_dir, f"segment_qwen_{i + 1:03d}.wav")
-            segments.append({"index": i, "text": line_text, "ref_audio": ref, "ref_text": ref_text,
-                             "x_vector_only": xvo, "language_name": lang_name, "out_path": out_path,
-                             "emotion_id": emotion_id})  # 태그(비민감) — bridge가 결과·오류에 반환
+            seg = {"index": i, "text": line_text, "ref_audio": ref, "ref_text": ref_text,
+                   "x_vector_only": xvo, "language_name": lang_name, "out_path": out_path,
+                   "emotion_id": emotion_id}  # 태그(비민감) — bridge가 결과·오류에 반환
+            if prefix_text:
+                # controlled-prefix: bridge 가 chunk 마다 [참조 전사][종결][개행][목표 대사]로 조립하고
+                # 생성 뒤 경계를 찾아 앞을 잘라낸다. 자동분할된 chunk 각각이 자기 prefix 를 갖는다.
+                seg["prefix_text"] = prefix_text
+            segments.append(seg)
 
         try:
             try:
@@ -1400,7 +1489,7 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             except RuntimeError as e:
                 # CUDA OOM만 CPU로 1회 가시적 재시도(조용한 재시도 아님). 상한 도달·그 외 예외는 전파.
                 if (device == "cuda:0" and is_cuda_oom(e)
-                        and not isinstance(e, QwenGenerationLimitError)):
+                        and not isinstance(e, (QwenGenerationLimitError, QwenIclBoundaryError))):
                     emit("progress", percent=30, message="GPU 메모리 부족(OOM) → CPU로 1회 재시도(느림)")
                     fallback = True
                     fallback_reason = "CUDA OOM → CPU 재시도"
@@ -1408,6 +1497,25 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                     seg_out = qwen.run_job(segments, "cpu")
                 else:
                     raise
+        except QwenIclBoundaryError as ibe:
+            # 경계 미확정 → 잘라내지 않은 결과를 발행하지 않는다. safe_xvector 로 자동 전환하지 않고
+            # 사용자에게 모드 선택을 돌려준다(요청한 모드와 다른 결과를 무신호로 주지 않는다).
+            emo = ibe.emotion_id
+            si = ibe.segment_index
+            if emo is None:
+                emo = (parsed[si][0] if isinstance(si, int) and 0 <= si < len(parsed) else "?")
+            _e = RuntimeError(
+                f"ICL_BOUNDARY_ALIGNMENT_FAILED — 감정 '{emo}' 문장에서 참조 대사와 목표 대사의 "
+                f"경계를 확정하지 못해 결과를 발행하지 않았습니다({ibe.boundary_reason}). "
+                f"참조 구간을 문장 단위로 다시 확정하거나, " + _ICL_SAFE_MODE_HINT)
+            _e.error_payload = {
+                "code": ICL_BOUNDARY_ALIGNMENT_FAILED,
+                "segment_index": si if isinstance(si, int) else None,
+                "chunk_index": ibe.chunk_index,
+                "emotion_id": emo,
+                "boundary_reason": ibe.boundary_reason,
+            }
+            raise _e from None
         except QwenGenerationLimitError as gle:
             # 상한 도달 → 잘린 WAV 미채택. 감정 ID로만 재해석(전사·문장·경로 미포함).
             # 이 예외로 place_final_with_pitch 이전에 빠져나가므로 finally가 job_dir을 지우고
@@ -1417,10 +1525,16 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             if emo is None:  # bridge가 못 준 경우만 parsed로 보강(offending segment 기준)
                 emo = (parsed[si][0] if isinstance(si, int) and 0 <= si < len(parsed) else "?")
             ck = f", 조각 {gle.chunk_index}" if gle.chunk_index is not None else ""
+            # ICL(controlled-prefix)은 참조 대사까지 함께 생성하므로 같은 대사라도 상한에 더 쉽게 닿는다.
+            # 그 사실을 안내에 명시한다(원인을 참조 불일치로만 오인하지 않도록).
+            _icl_note = (" 참조 억양 반영 모드는 참조 대사를 함께 생성하므로 상한에 더 쉽게 도달합니다 — "
+                         "참조 구간을 더 짧은 한 문장으로 줄이거나 '안전 음성 복제' 모드를 사용하세요."
+                         if reference_conditioning_mode == REF_CONDITIONING_HIGH_QUALITY_ICL else "")
             _e = RuntimeError(
                 f"GENERATION_LIMIT_EXCEEDED — 감정 '{emo}' 문장{ck}이 동적 생성 상한"
                 f"(max_new_tokens={gle.generation_limit})에 도달했습니다(생성 반복 {gle.generated_iterations}). "
                 f"참조 오디오와 전사 내용이 맞지 않을 때 나타날 수 있습니다 — 참조 구간/전사를 확인한 뒤 다시 시도하세요."
+                + _icl_note
             )
             # 구조화 payload(renderer까지 정식 code 전달 — 문자열 prefix 추론 금지).
             # 감정 ID·index·수치만 담는다: 전사·문장·전체경로 없음(§미디어 정책).
@@ -1455,6 +1569,10 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         # chunk 정렬: (original_segment_index, chunk_index). 순서 보존 = 원문 순서.
         ordered_entries = sorted(seg_out, key=lambda x: (x["original_segment_index"], x["chunk_index"]))
         ordered = [e["out_path"] for e in ordered_entries]
+
+        # controlled-prefix 절단 기록(ICL 전용). 안전 모드/legacy 는 (None, None) — 기록 없음이 정상.
+        align_meta, align_cut = (_summarize_reference_alignment(ordered_entries)
+                                 if icl_mode else (None, None))
 
         # 생성 안전장치 metadata(계약 A/B). 여기 도달 = 전 chunk가 completed_before_limit.
         # scalar 3필드 대표 = generated_iterations/generation_limit 비율 최대 chunk(동률은 (osi,ci) 최소) 한 쌍.
@@ -1551,6 +1669,8 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             "pitch_postprocessed": pinfo["pitch_postprocessed"],
             "generation_limit": meta_gen_limit, "generated_iterations": meta_gen_iters,
             "termination_reason": meta_term, "generation_chunks": gen_chunks,
+            # controlled-prefix 절단 실측(ICL 전용, 비민감 수치만). 안전 모드/legacy 는 None.
+            "reference_alignment": align_meta, "reference_cut_sample": align_cut,
             # I4: 말끝 finishing 재현(off/auto·pad·fade·적용여부). _finish_and_place가 반환.
             "tail_mode": pinfo.get("tail_mode"), "tail_pad_ms": pinfo.get("tail_pad_ms"),
             "tail_fade_ms": pinfo.get("tail_fade_ms"), "tail_fade_applied": pinfo.get("tail_fade_applied"),
@@ -1745,34 +1865,20 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
       session/config/metadata 3중 일치를 성립시키기 위한 값이다. ⚠️ 합성 동작에는 쓰지 않는다.
       오늘 이 함수에 도달하는 값은 항상 'legacy_v2' 다(separate.py 가 v3 를 모델 로딩 전에 차단한다).
       v3 합성이 구현되기 전까지 이 인자로 분기하지 말 것 — 분기하면 그 순간 조용한 v3 경로가 생긴다.
-    reference_conditioning_mode: 참조 conditioning 모드(참조혼입 대응 PHASE 2, 단일 권위 계약).
-      production 은 separate.py 가 항상 명시 값을 전달한다(config 키 부재 = legacy 세션 →
-      resolve_reference_conditioning_mode 가 safe_xvector 로 해석). None = legacy '직접 호출'
-      (기존 테스트/구 경로) 보존 — production 에서 None 이 여기 도달하는 경로는 없다.
-      값 검증·fail-closed 는 이 입구가 단일 소유: 잘못된 값 → INVALID_REFERENCE_CONDITIONING_MODE,
-      high_quality_icl → ICL_BOUNDARY_POLICY_UNCONFIRMED(절단 정책 미확정 — 조용한 safe 대체 금지)."""
+    reference_conditioning_mode: 참조 conditioning 모드(참조혼입 대응, 단일 권위 계약).
+      production 은 separate.py 가 항상 명시 값을 전달한다. **None/'' 도 safe_xvector 로 해석한다**
+      — 전사 기반 ICL 로 가는 '모드 없는 기본 경로'는 존재하지 않는다(함수 레벨까지 안전 기본).
+      값 검증·fail-closed 는 이 입구가 단일 소유: 잘못된 값 → INVALID_REFERENCE_CONDITIONING_MODE."""
     # ── 참조 conditioning 모드 판정 — 어떤 파싱/참조 준비/모델 작업보다 먼저(모델 미로딩 차단). ──
-    rc_mode = None
-    if reference_conditioning_mode is not None:
-        rc_mode = resolve_reference_conditioning_mode(reference_conditioning_mode)  # invalid → 구조화 오류
-        if rc_mode == REF_CONDITIONING_HIGH_QUALITY_ICL:
-            # fail-closed 골격(PHASE 2): carrier 는 renderer→config→separate.py→여기까지 전달되지만,
-            # 경계(절단) 검증이 사용자 청취로 확정되기 전이므로 실행은 차단한다.
-            # 조용한 safe_xvector 대체 금지 — 고품질을 요청했는데 안전 모드 결과를 받는 무신호 상황을
-            # 만들지 않는다.
-            _e = RuntimeError(
-                "고품질(참조 억양 반영) 모드는 경계 검증이 확정되기 전까지 사용할 수 없습니다 — "
-                "'안전 음성 복제' 모드를 선택해 다시 시도하세요.")
-            _e.error_payload = {"code": ICL_BOUNDARY_POLICY_UNCONFIRMED, "requested_mode": rc_mode}
-            raise _e
+    rc_mode = resolve_reference_conditioning_mode(reference_conditioning_mode)  # invalid → 구조화 오류
     # 재현 메타(모든 키 상시 존재): requested/effective 는 자동 전환 금지 계약상 항상 동일하다.
-    # alignment/cut_sample 은 절단 정책 확정(PHASE 3) 전까지 항상 null. legacy(None) 호출은 전부 null.
+    # reference_alignment / reference_cut_sample 은 여기 넣지 않는다 — 실제 절단을 수행한 합성 경로
+    # (info)가 채우고, 수행하지 않은 경로는 _build_tts_metadata 가 None 으로 채운다(권위 하나).
+    # 실패 경로는 metadata 를 만들기 전에 예외로 끝나므로 failure_code 는 성공 기록상 항상 None 이다.
     _rc_meta = {
         "reference_conditioning_mode_requested": rc_mode,
         "reference_conditioning_mode_effective": rc_mode,
-        "reference_conditioning_degraded": (False if rc_mode is not None else None),
-        "reference_alignment": None,
-        "reference_cut_sample": None,
+        "reference_conditioning_degraded": False,
         "reference_conditioning_failure_code": None,
     }
     emit("status", message="음성 합성 시작", percent=0)

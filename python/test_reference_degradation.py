@@ -281,8 +281,14 @@ def _write_wav(path, seconds, sr=24000, amp=0.3):
 
 
 class MetadataEndToEndTest(_Base):
-    """synthesize() 전 구간을 태워서, 강등 사유가 실제 result metadata까지 도달하는지 본다.
-    모델은 로딩하지 않는다(run_job 대체) — GPU·Qwen 없음."""
+    """synthesize() 전 구간을 태워서 참조 프롬프트 결정이 result metadata까지 도달하는지 본다.
+    모델은 로딩하지 않는다(run_job 대체) — GPU·Qwen 없음.
+
+    ※ 참조 conditioning 모드 계약 이후: 전사 기반 결정을 타는 유일한 모드는 high_quality_icl 이고,
+      그 모드에서 전사를 못 얻으면 낮은 품질로 계속 가지 않고 fail-closed 로 끝난다. 그래서
+      '강등된 채 결과가 나오는' 경로는 더 이상 존재하지 않는다 — 여기서는 강등 신호(이벤트/sink)가
+      그대로 나가고 결과는 발행되지 않는다는 더 강한 계약을 고정한다. 강등 기록의 형태 자체는
+      DegradeRecordTest / SummaryTest 가 단위로 계속 고정한다."""
 
     def setUp(self):
         super().setUp()
@@ -303,16 +309,35 @@ class MetadataEndToEndTest(_Base):
                     new=(lambda *a, **k: ("cuda", "여유 VRAM 5000/16000MB ≥ 4000MB → GPU (source=nvidia-smi)")))
         self._patch(tts_worker.QwenTTSEngine, "available", new=(lambda self: True))
 
+        self.reached_run_job = []
+
         def fake_run_job(inner_self, segments, device):
+            self.reached_run_job.append(len(segments))
             for s in segments:
                 _write_wav(s["out_path"], 0.3)
-            return [{"original_segment_index": s["index"], "chunk_index": 0, "chunk_count": 1,
+            out = []
+            for s in segments:
+                e = {"original_segment_index": s["index"], "chunk_index": 0, "chunk_count": 1,
                      "out_path": s["out_path"], "sr": 24000, "x_vector_only": s["x_vector_only"],
                      "emotion_id": s.get("emotion_id"), "production_tokens": 20,
                      "generation_limit": 256, "generated_iterations": 100,
                      "termination_reason": "completed_before_limit", "status": "ok"}
-                    for s in segments]
+                if s.get("prefix_text"):   # controlled-prefix 를 잘라낸 사실(샘플 인덱스·dB)
+                    e["reference_alignment"] = {
+                        "sample_rate": 24000, "noise_floor_dbfs": -64.52,
+                        "tail_end_sample": 2640, "valley_sample": 4200, "onset_sample": 5040,
+                        "cut_sample": 4200, "valley_dbfs": -90.38, "lead_samples": 840}
+                    e["reference_cut_sample"] = 4200
+                    e["controlled_prefix"] = True
+                out.append(e)
+            return out
         self._patch(tts_worker.QwenTTSEngine, "run_job", new=fake_run_job)
+
+    def _synth_icl(self, prompts=None):
+        tts_worker.synthesize(self.ref5, "안녕하세요 첫 문장입니다.", self.out, speed=1.0,
+                              silence_gap=0.5, emotion_refs={}, preferred_engine="qwen3",
+                              reference_prompts=prompts if prompts is not None else {},
+                              reference_conditioning_mode="high_quality_icl")
 
     def _meta(self):
         for mt, k in self.events:
@@ -320,31 +345,30 @@ class MetadataEndToEndTest(_Base):
                 return k.get("metadata")
         return None
 
-    def test_metadata_carries_degradation(self):
+    def test_transcript_failure_signals_then_fails_closed(self):
+        """전사 실패 — 강등 신호는 그대로 나가되, 낮은 품질 결과를 발행하지 않는다."""
         self._whisper(raises=RuntimeError("whisper exploded"))
-        tts_worker.synthesize(self.ref5, "안녕하세요 첫 문장입니다.", self.out, speed=1.0,
-                              silence_gap=0.5, emotion_refs={}, preferred_engine="qwen3",
-                              reference_prompts={})
-        m = self._meta()
-        self.assertIsNotNone(m, "result에 metadata가 있어야 함")
-        self.assertTrue(m["reference_prompt_degraded"])
-        self.assertEqual(m["reference_degrade_reason"], "TRANSCRIPTION_FAILED")
-        self.assertEqual(m["reference_transcript_status"], "failed")
-        self.assertEqual(m["reference_transcript_model"], "small")
-        self.assertEqual(m["reference_degraded_emotions"], ["default"])
-        # 기존 필드도 그대로여야 한다(강등 사실 자체는 원래대로 x-vector-only)
-        self.assertEqual(m["prompt_source"], "x-vector-only")
-        self.assertTrue(m["x_vector_only_mode"])
-        # 강등 이벤트가 result보다 먼저 나갔다(실패로 끝나도 사용자가 볼 수 있는 신호)
-        kinds = [t for t, _ in self.events]
-        self.assertIn("tts_reference_degraded", kinds)
-        self.assertLess(kinds.index("tts_reference_degraded"), kinds.index("result"))
+        with self.assertRaises(RuntimeError) as cm:
+            self._synth_icl()
+        # 강등 사유는 여전히 사용자가 볼 수 있는 신호로 나간다(사유 코드·모델명 그대로).
+        evs = self._degraded_events()
+        self.assertEqual(len(evs), 1)
+        self.assertEqual(evs[0]["reason_code"], "TRANSCRIPTION_FAILED")
+        self.assertEqual(evs[0]["transcript_status"], "failed")
+        self.assertEqual(evs[0]["model"], "small")
+        self.assertEqual(evs[0]["emotion_id"], "default")
+        # 결과는 없다 — 요청한 모드와 다른 품질을 무신호로 주지 않는다.
+        self.assertEqual(cm.exception.error_payload["code"], "ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE")
+        self.assertIsNone(self._meta())
+        self.assertEqual(self.reached_run_job, [], "모델 도달 전 차단")
+        # 보안: 오류 payload 에 경로·전사·예외 메시지가 없다
+        blob = json.dumps(cm.exception.error_payload, ensure_ascii=False)
+        for bad in ("whisper exploded", self.tmp, ".wav"):
+            self.assertNotIn(bad, blob)
 
     def test_metadata_none_when_not_degraded(self):
         self._whisper(result={"text": "자동전사문장", "language": "ko"})
-        tts_worker.synthesize(self.ref5, "안녕하세요 첫 문장입니다.", self.out, speed=1.0,
-                              silence_gap=0.5, emotion_refs={}, preferred_engine="qwen3",
-                              reference_prompts={})
+        self._synth_icl()
         m = self._meta()
         self.assertFalse(m["reference_prompt_degraded"])
         self.assertIsNone(m["reference_degrade_reason"])
@@ -352,18 +376,37 @@ class MetadataEndToEndTest(_Base):
         self.assertIsNone(m["reference_degraded_emotions"])
         self.assertEqual(m["prompt_source"], "auto")
         self.assertEqual([t for t, _ in self.events].count("tts_reference_degraded"), 0)
+        # 전사가 확보됐으므로 controlled-prefix 가 실제로 잘렸고 그 수치가 남는다.
+        self.assertEqual(m["reference_cut_sample"], 4200)
+        self.assertEqual(m["reference_alignment"]["first"]["tail_end_sample"], 2640)
         # 보안 회귀: 어떤 메타 값에도 전사 전문이 들어가지 않는다
         self.assertNotIn("자동전사문장", json.dumps(m, ensure_ascii=False))
 
-    def test_metadata_records_user_ref_free(self):
+    def test_user_ref_free_signals_then_fails_closed(self):
+        """사용자 ref-free 선택도 강등 기록은 남기되, ICL 요청과 모순이므로 결과를 내지 않는다."""
         self._whisper(result={"text": "자동전사문장", "language": "ko"})
-        tts_worker.synthesize(self.ref5, "안녕하세요 문장.", self.out, speed=1.0,
+        with self.assertRaises(RuntimeError) as cm:
+            self._synth_icl({"default": {"mode": "ref_free"}})
+        evs = self._degraded_events()
+        self.assertEqual(len(evs), 1)
+        self.assertEqual(evs[0]["reason_code"], "REF_FREE_USER")
+        self.assertEqual(evs[0]["transcript_status"], "user_ref_free")
+        self.assertEqual(cm.exception.error_payload["code"], "ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE")
+        self.assertIsNone(self._meta())
+
+    def test_safe_mode_needs_no_transcript_and_still_produces_result(self):
+        """대비: 안전 모드는 전사를 아예 시도하지 않으므로 같은 조건에서도 결과가 나온다."""
+        self._whisper(raises=RuntimeError("whisper exploded"))
+        tts_worker.synthesize(self.ref5, "안녕하세요 첫 문장입니다.", self.out, speed=1.0,
                               silence_gap=0.5, emotion_refs={}, preferred_engine="qwen3",
-                              reference_prompts={"default": {"mode": "ref_free"}})
+                              reference_prompts={}, reference_conditioning_mode="safe_xvector")
         m = self._meta()
-        self.assertTrue(m["reference_prompt_degraded"])
-        self.assertEqual(m["reference_degrade_reason"], "REF_FREE_USER")
-        self.assertEqual(m["reference_transcript_status"], "user_ref_free")
+        self.assertIsNotNone(m)
+        self.assertEqual(m["prompt_source"], "x-vector-only")
+        self.assertTrue(m["x_vector_only_mode"])
+        self.assertEqual(self._degraded_events(), [], "전사를 시도하지 않았으므로 강등이 아니다")
+        self.assertIsNone(m["reference_alignment"])
+        self.assertIsNone(m["reference_cut_sample"])
 
 
 if __name__ == "__main__":

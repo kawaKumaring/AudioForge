@@ -357,8 +357,9 @@ def main():
                     # metadata 캐리어(계약 §10). 위 게이트를 지났으므로 여기 값은 항상 legacy_v2 다.
                     # 리터럴을 쓰지 않고 실제 해석값을 넘긴다 — 그래야 3중 일치가 '기록'이 아니라 '사실'이 된다.
                     expressive_mode=_emode,
-                    # 참조 conditioning 모드(PHASE 2) — 위에서 해석된 명시 값. high_quality_icl 은
-                    # synthesize 입구가 fail-closed(ICL_BOUNDARY_POLICY_UNCONFIRMED)로 차단한다.
+                    # 참조 conditioning 모드 — 위에서 해석된 명시 값. high_quality_icl 은
+                    # controlled-prefix 로 생성한 뒤 파형 경계를 찾아 참조 구간을 잘라내고,
+                    # 경계를 확정하지 못하면 ICL_BOUNDARY_ALIGNMENT_FAILED 로 실패한다(무음 대체 없음).
                     reference_conditioning_mode=_rc_mode)
                 # 성공 조건은 'result 도달 + 실제 산출물'이다. synthesize가 돌려준 최종 경로가
                 # result가 선언한 tracks에 실제로 들어있는지까지 대조한다(선언과 산출의 드리프트 차단).

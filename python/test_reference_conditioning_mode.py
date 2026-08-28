@@ -1,16 +1,21 @@
 # -*- coding: utf-8 -*-
-"""참조 conditioning 모드(참조혼입 대응 PHASE 2) — 단일 권위 계약 테스트.
+"""참조 conditioning 모드(참조혼입 대응) — 단일 권위 계약 테스트.
 
 고정하는 계약:
   - resolve: 부재(None/'') → safe_xvector(안전 기본, legacy 세션 포함). 유효 2값 통과.
     잘못된 값 → 조용한 강등 없이 구조화 오류(INVALID_REFERENCE_CONDITIONING_MODE), 원시값 미포함.
-  - synthesize 입구: high_quality_icl → fail-closed(ICL_BOUNDARY_POLICY_UNCONFIRMED, 모델/파싱 미진입,
-    조용한 safe 대체 없음). 잘못된 값 → 구조화 오류.
+  - synthesize 입구: 잘못된 값 → 구조화 오류(모델/파싱 미진입).
+    **모드 미전달(None)도 safe_xvector 로 해석한다** — 전사 기반 ICL 로 가는 '모드 없는 기본
+    경로'는 더 이상 존재하지 않는다(legacy 경로 제거).
   - safe_xvector 배선: 전 segment x_vector_only=True + ref_text 미전달(""), Whisper/정렬검증 호출 0,
     manual 전사는 보존되되 합성 조건 전달 0, job 내 모드 고정(자동 ICL fallback 0).
+  - high_quality_icl 배선: 전 segment 가 자기 prefix_text(참조 전사)를 달고 ICL(xvo=False)로 나간다.
+    참조 전사를 못 얻으면(전사 실패/빈 전사/사용자 ref-free) 조용히 안전 모드처럼 돌지 않고
+    ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE 로 실패한다. bridge 가 경계를 확정하지 못하면
+    ICL_BOUNDARY_ALIGNMENT_FAILED 로 결과를 발행하지 않는다.
   - metadata 왕복: requested/effective/degraded/alignment/cut_sample/failure_code 키 상시 존재.
+    ICL 성공 시 alignment/cut_sample 은 실제 검출 수치(샘플 인덱스·dB)로 채워진다.
   - separate.py 배선: config 키 ttsReferenceConditioningMode → resolve → synthesize 명시 전달.
-  - legacy 직접 호출(모드 미전달)은 기존 전사 기반 결정 그대로(기존 테스트 계약 보존).
 
 GPU·Whisper 실모델 없음(run_job 대체).
 """
@@ -72,18 +77,24 @@ class SynthesizeGateTest(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
 
-    def test_icl_fails_closed_before_anything(self):
-        with self.assertRaises(RuntimeError) as cm:
-            tts_worker.synthesize("no_such_ref.wav", "안녕하세요.", "no_such_dir",
-                                  reference_conditioning_mode="high_quality_icl")
-        payload = getattr(cm.exception, "error_payload", None)
-        self.assertIsInstance(payload, dict)
-        self.assertEqual(payload["code"], "ICL_BOUNDARY_POLICY_UNCONFIRMED")
-        # 사용자 안내: 경계 검증 확정 전 + 안전 모드 유도(조용한 대체가 아니라 명시 안내).
-        self.assertIn("경계 검증", str(cm.exception))
-        self.assertIn("안전 음성 복제", str(cm.exception))
-        # 입구 차단 — status/progress 조차 나가기 전(파싱·참조 준비·모델 로딩 미진입).
-        self.assertEqual(self.events, [])
+    def test_legacy_none_is_resolved_to_safe_at_function_level(self):
+        """모드 미전달도 안전 기본으로 해석된다 — 전사 기반 ICL 기본 경로는 존재하지 않는다.
+        (소스 고정: synthesize 가 None 분기 없이 resolver 를 통과시킨다.)"""
+        import inspect
+        src = inspect.getsource(tts_worker.synthesize)
+        self.assertIn("rc_mode = resolve_reference_conditioning_mode(reference_conditioning_mode)",
+                      src)
+        self.assertNotIn("if reference_conditioning_mode is not None:", src,
+                         "None 을 특별 취급하는 legacy 분기가 남아 있으면 안 된다")
+        self.assertEqual(tts_worker.resolve_reference_conditioning_mode(None), "safe_xvector")
+
+    def test_icl_gate_removed(self):
+        """더 이상 입구에서 ICL 을 차단하지 않는다(실제 controlled-prefix 경로가 동작한다)."""
+        self.assertFalse(hasattr(tts_worker, "ICL_BOUNDARY_POLICY_UNCONFIRMED"))
+        self.assertEqual(tts_worker.ICL_BOUNDARY_ALIGNMENT_FAILED,
+                         "ICL_BOUNDARY_ALIGNMENT_FAILED")
+        self.assertEqual(tts_worker.ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE,
+                         "ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE")
 
     def test_invalid_mode_fails_closed_at_entry(self):
         with self.assertRaises(RuntimeError) as cm:
@@ -139,16 +150,24 @@ class _QwenJobBase(unittest.TestCase):
         self._patch_obj(tts_worker.QwenTTSEngine, "available", new=(lambda self: True))
 
         self.captured_segments = []
+        # bridge 가 controlled-prefix 를 잘라낸 뒤 남기는 절단 기록(ICL 경로에서만 채운다).
+        # 값은 test_prefix_alignment 의 실측 패턴 픽스처와 같은 좌표다.
+        self.entry_extra = {}
+        self.run_job_error = None
 
         def fake_run_job(inner_self, segments, device):
             self.captured_segments.append([dict(s) for s in segments])
+            if self.run_job_error is not None:
+                raise self.run_job_error
             for s in segments:
                 _write_wav(s["out_path"], 0.3)
-            return [{"original_segment_index": s["index"], "chunk_index": 0, "chunk_count": 1,
-                     "out_path": s["out_path"], "sr": 24000, "x_vector_only": s["x_vector_only"],
-                     "emotion_id": s.get("emotion_id"), "production_tokens": 20,
-                     "generation_limit": 256, "generated_iterations": 100,
-                     "termination_reason": "completed_before_limit", "status": "ok"}
+            return [dict({"original_segment_index": s["index"], "chunk_index": 0, "chunk_count": 1,
+                          "out_path": s["out_path"], "sr": 24000,
+                          "x_vector_only": s["x_vector_only"],
+                          "emotion_id": s.get("emotion_id"), "production_tokens": 20,
+                          "generation_limit": 256, "generated_iterations": 100,
+                          "termination_reason": "completed_before_limit", "status": "ok"},
+                         **self.entry_extra)
                     for s in segments]
         self._patch_obj(tts_worker.QwenTTSEngine, "run_job", new=fake_run_job)
 
@@ -260,25 +279,176 @@ class SafeModeProductionTest(_QwenJobBase):
 
 
 class LegacyDirectCallTest(_QwenJobBase):
-    """모드 미전달(legacy 직접 호출) — 기존 전사 기반 결정 그대로(회귀 보존).
-    production 은 separate.py 가 항상 명시 값을 전달하므로 이 경로에 오지 않는다."""
+    """모드 미전달(구 직접 호출) — 이제 safe_xvector 로 해석된다(legacy ICL 기본 경로 제거).
+    production 은 separate.py 가 항상 명시 값을 전달하므로 이 경로는 구 호출부/테스트 전용이다."""
 
-    def test_legacy_call_keeps_transcript_based_icl(self):
-        # legacy 경로는 Whisper 를 실제로 탄다 — 성공 전사로 대체.
-        self._patch_obj(transcribe_worker, "run_transcribe",
-                        side_effect=(lambda m, p, l: {"text": "자동전사문장", "language": "ko"}))
+    def test_absent_mode_runs_as_safe_xvector(self):
+        # 안전 모드면 Whisper 를 아예 타지 않는다 — _no_whisper 감시가 그대로 걸려 있다.
         tts_worker.synthesize(self.ref5, "안녕하세요 첫 문장입니다.", self.out, speed=1.0,
                               silence_gap=0.5, emotion_refs={}, preferred_engine="qwen3",
                               reference_prompts={})
         segs = self._flat_segments()
-        self.assertEqual(segs[0]["ref_text"], "자동전사문장", "legacy 호출은 기존 ICL 결정 그대로")
-        self.assertFalse(segs[0]["x_vector_only"])
+        self.assertEqual(segs[0]["ref_text"], "", "모드 미전달도 참조 전사를 전달하지 않는다")
+        self.assertTrue(segs[0]["x_vector_only"])
+        self.assertNotIn("prefix_text", segs[0])
+        self.assertEqual(self.whisper_calls, [])
         m = self._meta()
-        for k in ("reference_conditioning_mode_requested", "reference_conditioning_mode_effective",
-                  "reference_conditioning_degraded", "reference_alignment",
-                  "reference_cut_sample", "reference_conditioning_failure_code"):
+        self.assertEqual(m["reference_conditioning_mode_requested"], "safe_xvector")
+        self.assertEqual(m["reference_conditioning_mode_effective"], "safe_xvector")
+        self.assertIs(m["reference_conditioning_degraded"], False)
+        for k in ("reference_alignment", "reference_cut_sample",
+                  "reference_conditioning_failure_code"):
             self.assertIn(k, m)
-            self.assertIsNone(m[k], f"legacy 호출은 {k} 를 기록하지 않는다(null)")
+            self.assertIsNone(m[k], f"안전 모드는 {k} 를 기록하지 않는다(null)")
+
+
+# 실측 happy 표본과 같은 좌표(SR 24000) — bridge 가 돌려주는 절단 기록의 형태.
+_ALIGN_FIXTURE = {"sample_rate": 24000, "noise_floor_dbfs": -64.52, "tail_end_sample": 2640,
+                  "valley_sample": 4200, "onset_sample": 5040, "cut_sample": 4200,
+                  "valley_dbfs": -90.38, "lead_samples": 840}
+
+
+class IclControlledPrefixTest(_QwenJobBase):
+    """high_quality_icl — controlled-prefix 가 실제로 배선되고 절단 기록이 metadata 까지 온다."""
+
+    TEXT = "안녕하세요 첫 문장입니다.\n[기쁨] 좋은 소식이 있어요!\n마지막 문장입니다."
+    REF_TEXT = "참조 음성의 원래 대사입니다"
+
+    def setUp(self):
+        super().setUp()
+        self._patch_obj(transcribe_worker, "run_transcribe",
+                        side_effect=(lambda m, p, l: {"text": self.REF_TEXT, "language": "ko"}))
+        self.entry_extra = {"reference_alignment": dict(_ALIGN_FIXTURE),
+                            "reference_cut_sample": 4200, "controlled_prefix": True}
+
+    def _synth(self, text=None, **kw):
+        tts_worker.synthesize(
+            self.ref5, text or self.TEXT, self.out, speed=1.0, silence_gap=0.5,
+            emotion_refs={"happy": self.happy_ref},
+            emotion_ref_sources={"happy": self.happy_ref},
+            preferred_engine="qwen3", reference_prompts={},
+            reference_conditioning_mode="high_quality_icl", **kw)
+
+    def test_every_segment_carries_its_own_prefix_and_stays_icl(self):
+        """장문(여러 segment)에서도 segment 마다 자기 controlled-prefix 를 단다 — 모드는 job 고정."""
+        self._synth()
+        segs = self._flat_segments()
+        self.assertEqual(len(segs), 3)
+        for s in segs:
+            self.assertFalse(s["x_vector_only"], f"seg {s['index']} 는 ICL 이어야 한다")
+            self.assertEqual(s["ref_text"], self.REF_TEXT)
+            self.assertEqual(s["prefix_text"], self.REF_TEXT,
+                             f"seg {s['index']} 가 자기 prefix 를 들고 가야 한다")
+        # 감정 참조가 달라도 모드는 바뀌지 않는다(자동 fallback 0).
+        self.assertEqual(len({s["ref_audio"] for s in segs}), 2)
+
+    def test_prefix_text_assembles_into_controlled_prefix(self):
+        """bridge 가 조립할 때 [참조 전사][종결][개행][목표 대사] 가 된다(조립 규칙 단일 소스)."""
+        import prefix_alignment as pa
+        self._synth()
+        s = self._flat_segments()[0]
+        built = pa.build_controlled_prefix_text(s["prefix_text"], s["text"])
+        self.assertTrue(built.startswith(self.REF_TEXT + "."))
+        self.assertEqual(built, self.REF_TEXT + ".\n" + s["text"])
+
+    def test_metadata_carries_real_alignment_values(self):
+        self._synth()
+        m = self._meta()
+        self.assertEqual(m["reference_conditioning_mode_requested"], "high_quality_icl")
+        self.assertEqual(m["reference_conditioning_mode_effective"], "high_quality_icl")
+        self.assertIs(m["reference_conditioning_degraded"], False)
+        self.assertIsNone(m["reference_conditioning_failure_code"])
+        self.assertEqual(m["reference_cut_sample"], 4200)
+        a = m["reference_alignment"]
+        self.assertEqual(a["chunk_count"], 3)
+        self.assertEqual(a["cut_sample_min"], 4200)
+        self.assertEqual(a["cut_sample_max"], 4200)
+        self.assertEqual(a["trimmed_samples_total"], 4200 * 3)
+        self.assertEqual(a["first"]["tail_end_sample"], 2640)
+        self.assertEqual(a["first"]["onset_sample"], 5040)
+        self.assertEqual(a["first"]["valley_sample"], 4200)
+        self.assertEqual(a["first"]["lead_samples"], 840)
+        self.assertAlmostEqual(a["first"]["valley_dbfs"], -90.38)
+        # 기존 계약 필드와의 정합: 실제 적용 상태는 ICL(자동 전사).
+        self.assertEqual(m["prompt_source"], "auto")
+        self.assertFalse(m["x_vector_only_mode"])
+
+    def test_metadata_has_no_transcript_or_path(self):
+        """보안: 절단 기록은 샘플 인덱스와 dB 뿐 — 전사 원문·절대경로가 없다."""
+        self._synth()
+        blob = json.dumps(self._meta()["reference_alignment"], ensure_ascii=False)
+        self.assertNotIn(self.REF_TEXT, blob)
+        self.assertNotIn(self.tmp, blob)
+        self.assertNotIn(".wav", blob)
+
+    def test_icl_announced_once(self):
+        self._synth()
+        msgs = [k.get("message", "") for t, k in self.events if t == "progress"]
+        self.assertEqual(len([m for m in msgs if "참조 억양 반영 모드" in m]), 1)
+
+    def test_missing_alignment_record_fails_closed(self):
+        """절단됐는지 확인할 수 없는 결과는 발행하지 않는다."""
+        self.entry_extra = {}
+        with self.assertRaises(RuntimeError) as cm:
+            self._synth()
+        self.assertEqual(cm.exception.error_payload["code"], "ICL_BOUNDARY_ALIGNMENT_FAILED")
+        self.assertEqual([t for t, _ in self.events].count("result"), 0)
+
+    def test_bridge_boundary_failure_surfaces_as_structured_error(self):
+        self.run_job_error = tts_worker.QwenIclBoundaryError(
+            1, 0, "happy", "PREFIX_BOUNDARY_ONSET_NOT_FOUND")
+        with self.assertRaises(RuntimeError) as cm:
+            self._synth()
+        p = cm.exception.error_payload
+        self.assertEqual(p["code"], "ICL_BOUNDARY_ALIGNMENT_FAILED")
+        self.assertEqual(p["segment_index"], 1)
+        self.assertEqual(p["chunk_index"], 0)
+        self.assertEqual(p["emotion_id"], "happy")
+        self.assertEqual(p["boundary_reason"], "PREFIX_BOUNDARY_ONSET_NOT_FOUND")
+        self.assertIn("안전 음성 복제", str(cm.exception), "안전 모드 선택을 안내한다")
+        self.assertEqual([t for t, _ in self.events].count("result"), 0,
+                         "결과를 발행하지 않는다(조용한 safe 전환도 없다)")
+        blob = json.dumps(p, ensure_ascii=False)
+        self.assertNotIn(self.REF_TEXT, blob)
+
+
+class IclTranscriptRequiredTest(_QwenJobBase):
+    """참조 전사를 못 얻으면 ICL 은 조용히 안전 모드처럼 돌지 않고 명시적으로 실패한다."""
+
+    def _synth(self, prompts):
+        tts_worker.synthesize(self.ref5, "안녕하세요 첫 문장입니다.", self.out, speed=1.0,
+                              silence_gap=0.5, emotion_refs={}, preferred_engine="qwen3",
+                              reference_prompts=prompts,
+                              reference_conditioning_mode="high_quality_icl")
+
+    def _assert_fails_closed(self):
+        with self.assertRaises(RuntimeError) as cm:
+            self._synth({})
+        self.assertEqual(cm.exception.error_payload["code"],
+                         "ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE")
+        self.assertIn("안전 음성 복제", str(cm.exception))
+        self.assertEqual([t for t, _ in self.events].count("result"), 0)
+        self.assertEqual(self.captured_segments, [], "run_job(모델) 도달 전 차단")
+
+    def test_transcription_failure_fails_closed(self):
+        self._patch_obj(transcribe_worker, "run_transcribe",
+                        side_effect=(lambda m, p, l: (_ for _ in ()).throw(RuntimeError("boom"))))
+        self._assert_fails_closed()
+
+    def test_empty_transcript_fails_closed(self):
+        self._patch_obj(transcribe_worker, "run_transcribe",
+                        side_effect=(lambda m, p, l: {"text": "   ", "language": "ko"}))
+        self._assert_fails_closed()
+
+    def test_user_ref_free_fails_closed(self):
+        """사용자 ref-free 선택과 '참조 억양 반영'은 모순 — 조용히 한쪽을 이기지 않는다."""
+        self._patch_obj(transcribe_worker, "run_transcribe",
+                        side_effect=(lambda m, p, l: {"text": "자동전사", "language": "ko"}))
+        with self.assertRaises(RuntimeError) as cm:
+            self._synth({"default": {"mode": "ref_free"}})
+        self.assertEqual(cm.exception.error_payload["code"],
+                         "ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE")
+        self.assertEqual([t for t, _ in self.events].count("result"), 0)
 
 
 class MetadataSchemaTest(unittest.TestCase):
