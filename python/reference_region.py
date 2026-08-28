@@ -318,7 +318,16 @@ def build_aligned_reference(path, requested_start_sec, requested_dur_sec, segmen
 #       → 최종 클립 자체를 전사 → manual_text 가 있으면 그 전사와 대조 → 통과분만 반환.
 # 안전한 무음 경계를 못 찾으면 trim_region 으로 물러서지 않고 차단한다.
 
+# ── 자동 스냅 UX 정책 (숨은 상수가 아니라 명시된 정책) ──────────────────────
+# SNAP_AUTO_SHIFT_SEC : 사용자에게 묻지 않고 조용히 옮겨도 되는 최대 이동량(각 경계).
+#   이 값을 넘으면 "다른 구간을 고른 것"에 가까워지므로 자동 승인하지 않는다.
+# SNAP_MAX_SEARCH_SHIFT_SEC : 제안 후보를 찾을 최대 탐색 반경. 이 밖은 아예 후보가 아니다.
+#   (전체 파일을 뒤져 엉뚱한 발화로 점프하던 결함을 구조적으로 막는다.)
+SNAP_AUTO_SHIFT_SEC = 1.5
+SNAP_MAX_SEARCH_SHIFT_SEC = 5.0
+
 BLOCK_NO_SAFE_BOUNDARY = "REGION_NO_SAFE_BOUNDARY"
+BLOCK_SNAP_RECONFIRM = "REGION_SNAP_RECONFIRM_REQUIRED"
 BLOCK_SNAP_UNSATISFIABLE = "REGION_SNAP_RANGE_UNSATISFIABLE"
 BLOCK_TRANSCRIBE_FAILED = "REGION_TRANSCRIBE_FAILED"
 BLOCK_TEXT_MISMATCH = "REGION_TEXT_MISMATCH"
@@ -327,23 +336,49 @@ WARN_TEXT_UNKNOWN = "REGION_TEXT_UNKNOWN"
 
 
 def snap_region_to_silence(silences, requested_start, requested_end,
-                           min_sec=3.0, max_sec=10.0):
-    """무음 구간의 한가운데들만 후보로 두고, 요청에 가장 가까운 (시작, 끝)을 고른다.
+                           min_sec=3.0, max_sec=10.0,
+                           auto_shift_sec=SNAP_AUTO_SHIFT_SEC,
+                           max_search_shift_sec=SNAP_MAX_SEARCH_SHIFT_SEC):
+    """요청 구간 **주변**의 무음 한가운데만 후보로 두고 (시작, 끝)을 고른다.
 
-    전사·세그먼트를 쓰지 않는다 — 파형 VAD 만으로 정해지므로 렌더러 왕복이 필요 없다.
-    길이 제약(min_sec~max_sec)을 만족하는 조합이 없으면 None(→ 차단). 억지로 늘리거나
-    줄이지 않는다."""
+    왜 주변으로 제한하는가(2026-08-28 결함): 예전 구현은 원본 전체의 모든 무음 조합을 뒤져서,
+    요청 주변에 후보가 없으면 **전혀 다른 발화**를 골랐다. 실측 재현 —
+    silences=[(0,1),(6,7)], 요청 100~107초 → (0.5, 6.5) 반환. 사용자가 100초를 골랐는데
+    0.5초 대사가 참조가 된다. 조용한 점프는 승인 없이 일어나선 안 된다.
+
+    반환 dict(status): 'auto' 는 정책 한도 안의 작은 보정, 'reconfirm' 은 한도를 넘어
+    사용자 재확인이 필요한 제안이다. 후보 자체가 없으면 None(→ 차단).
+    탐색은 정렬된 후보에 bisect 로 창을 잘라 요청 주변만 본다(전체 이중 반복 아님)."""
+    import bisect
     cuts = sorted({round((a + b) / 2.0, 4) for a, b in silences})
+    if not cuts:
+        return None
+
+    def window(center):
+        lo = bisect.bisect_left(cuts, center - max_search_shift_sec)
+        hi = bisect.bisect_right(cuts, center + max_search_shift_sec)
+        return cuts[lo:hi]
+
+    starts, ends = window(requested_start), window(requested_end)
     best = None
-    for s in cuts:
-        for e in cuts:
-            d = e - s
+    for st in starts:
+        for en in ends:
+            d = en - st
             if d < min_sec - 1e-6 or d > max_sec + 1e-6:
                 continue
-            cost = abs(s - requested_start) + abs(e - requested_end)
+            cost = abs(st - requested_start) + abs(en - requested_end)
             if best is None or cost < best[0]:
-                best = (cost, s, e)
-    return None if best is None else (best[1], best[2])
+                best = (cost, st, en)
+    if best is None:
+        return None
+    _, st, en = best
+    shift = max(abs(st - requested_start), abs(en - requested_end))
+    return {"start": st, "end": en,
+            "max_shift_sec": round(shift, 4),
+            "start_shift_sec": round(st - requested_start, 4),
+            "end_shift_sec": round(en - requested_end, 4),
+            "auto_shift_limit_sec": auto_shift_sec,
+            "status": "auto" if shift <= auto_shift_sec + 1e-6 else "reconfirm"}
 
 
 def build_reference_clip(src_path, requested_start_sec, requested_dur_sec, out_path,
@@ -385,12 +420,13 @@ def build_reference_clip(src_path, requested_start_sec, requested_dur_sec, out_p
     if snapped is None:
         return fail(BLOCK_SNAP_UNSATISFIABLE,
                     snap={"silence_count": len(silences), "min_sec": min_sec, "max_sec": max_sec})
-    s, e = snapped
-    res["snap"] = {"silence_count": len(silences),
-                   "start_shift_sec": round(s - req_start, 4),
-                   "end_shift_sec": round(e - req_end, 4)}
+    s, e = snapped["start"], snapped["end"]
+    res["snap"] = dict(snapped, silence_count=len(silences))
     res["effective_region"] = {"start_sec": round(s, 4), "end_sec": round(e, 4),
                                "dur_sec": round(e - s, 4)}
+    if snapped["status"] == "reconfirm":
+        # 정책 한도를 넘는 이동은 자동 승인하지 않는다. 제안 구간만 돌려주고 클립은 만들지 않는다.
+        return fail(BLOCK_SNAP_RECONFIRM)
 
     trim_region(src_path, s, e - s, out_path)
     mono, sr = _load_mono(out_path)

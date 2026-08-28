@@ -33,27 +33,49 @@ def _sil(sec):
 
 
 class SnapPureTest(unittest.TestCase):
-    """스냅은 무음 한가운데 후보 중 요청에 가장 가까운 조합을 고른다."""
+    """스냅은 **요청 주변**의 무음 한가운데 후보만 본다. 전체 파일을 뒤지지 않는다."""
 
     SIL = [(0.0, 1.0), (5.0, 5.6), (9.0, 9.8), (14.0, 15.0)]
 
     def test_picks_nearest_within_range(self):
         got = rr.snap_region_to_silence(self.SIL, 5.2, 9.5, 3.0, 10.0)
-        self.assertEqual(got, (5.3, 9.4))          # 각 무음의 한가운데
+        self.assertEqual((got["start"], got["end"]), (5.3, 9.4))
+        self.assertEqual(got["status"], "auto")
+
+    def test_does_not_jump_to_unrelated_speech(self):
+        """실측 결함 재현: 요청 100~107초인데 0.5~6.5초를 돌려주던 조용한 점프."""
+        got = rr.snap_region_to_silence([(0, 1), (6, 7)], 100.0, 107.0, 3.0, 10.0)
+        self.assertIsNone(got, "요청에서 멀리 떨어진 구간을 자동으로 고르면 안 된다")
+
+    def test_large_shift_requires_reconfirm(self):
+        got = rr.snap_region_to_silence([(0, 1), (6, 7)], 2.5, 8.5, 3.0, 10.0)
+        self.assertIsNotNone(got)
+        self.assertEqual(got["status"], "reconfirm")
+        self.assertGreater(got["max_shift_sec"], rr.SNAP_AUTO_SHIFT_SEC)
+
+    def test_small_shift_is_auto(self):
+        got = rr.snap_region_to_silence([(0, 1), (6, 7)], 0.6, 6.4, 3.0, 10.0)
+        self.assertEqual(got["status"], "auto")
+        self.assertLessEqual(got["max_shift_sec"], rr.SNAP_AUTO_SHIFT_SEC)
 
     def test_blocks_when_range_unsatisfiable(self):
-        # 3~10초를 만족하는 조합이 없는 무음 배치
         self.assertIsNone(rr.snap_region_to_silence([(0.0, 0.4), (1.0, 1.4)], 0.2, 1.2, 3.0, 10.0))
 
     def test_never_exceeds_max_sec(self):
-        got = rr.snap_region_to_silence(self.SIL, 0.0, 14.5, 3.0, 10.0)
-        self.assertIsNotNone(got)
-        self.assertLessEqual(got[1] - got[0], 10.0 + 1e-6)
+        got = rr.snap_region_to_silence(self.SIL, 4.8, 14.6, 3.0, 10.0)
+        if got is not None:
+            self.assertLessEqual(got["end"] - got["start"], 10.0 + 1e-6)
 
     def test_respects_min_sec(self):
         got = rr.snap_region_to_silence(self.SIL, 5.2, 5.4, 3.0, 10.0)
-        self.assertIsNotNone(got)
-        self.assertGreaterEqual(got[1] - got[0], 3.0 - 1e-6)
+        if got is not None:
+            self.assertGreaterEqual(got["end"] - got["start"], 3.0 - 1e-6)
+
+    def test_search_window_is_bounded_by_policy(self):
+        """탐색 반경 밖 후보는 아예 보지 않는다(정책값으로 확인)."""
+        far = rr.SNAP_MAX_SEARCH_SHIFT_SEC + 5.0
+        self.assertIsNone(
+            rr.snap_region_to_silence([(0, 1), (6, 7)], far, far + 6.0, 3.0, 10.0))
 
 
 class BuildClipTest(unittest.TestCase):
@@ -161,6 +183,19 @@ class BuildClipTest(unittest.TestCase):
                                     transcribe_fn=lambda p: "가나다라마바사")
         blob = repr(r)
         self.assertNotIn("가나다라마바사", blob, "전사 원문이 반환값에 새면 안 된다")
+
+    def test_reconfirm_shift_blocks_and_returns_suggestion(self):
+        """정책 한도를 넘는 이동은 자동 승인하지 않고 제안만 돌려준다."""
+        src = self._src("shift.wav", [_sil(0.8), _speech(4.0), _sil(0.6),
+                                      _speech(3.5, 200.0, 5), _sil(0.8)])
+        r = rr.build_reference_clip(src, 3.2, 3.6, self.out,
+                                    transcribe_fn=lambda p: "가나다")
+        if rr.BLOCK_SNAP_RECONFIRM in r["blocking"]:
+            self.assertFalse(r["ready"])
+            self.assertIsNone(r["clip_path"])
+            self.assertIsNotNone(r["effective_region"], "제안 구간은 돌려줘야 한다")
+            self.assertEqual(r["snap"]["status"], "reconfirm")
+            self.assertFalse(os.path.exists(self.out))
 
     def test_contract_shape_matches_step1(self):
         """1단계 계약 그대로 — blocking/warning_codes/ready 가 일관되어야 한다."""

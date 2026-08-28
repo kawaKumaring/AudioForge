@@ -58,6 +58,27 @@ interface RegionMetrics {
   ready?: boolean
   head_truncated?: boolean
   tail_truncated?: boolean
+  /** 사용자가 처음 고른 구간. 기록용. */
+  requested_region?: RegionSpan
+  /** 실제 파생 WAV·모델 입력에 쓰인 구간. **확정 region 과 재현 권위는 이쪽이다.** */
+  effective_region?: RegionSpan
+  /** 자동 스냅 결과(이동량·정책 한도·auto/reconfirm). */
+  snap?: { start_shift_sec?: number; end_shift_sec?: number; max_shift_sec?: number
+           auto_shift_limit_sec?: number; status?: string; silence_count?: number }
+  /** 최종 클립 전사와 manual_text 대조 요약(전사 원문은 담기지 않는다). */
+  validation?: { status?: string; reason_code?: string | null; mismatch_where?: string[] }
+}
+
+interface RegionSpan {
+  start_sec: number
+  end_sec: number
+  dur_sec: number
+}
+
+/** effective_region 이 재현 권위이므로 형식이 어긋나면 승인하지 않는다. */
+function validSpan(r: RegionSpan | undefined): r is RegionSpan {
+  return !!r && [r.start_sec, r.end_sec, r.dur_sec].every(v => typeof v === 'number' && Number.isFinite(v))
+    && r.end_sec > r.start_sec && r.dur_sec > 0
 }
 
 /** 차단 코드 → 사용자 문구. 코드가 없으면 파이썬 경고 문구를 그대로 쓴다. */
@@ -67,7 +88,12 @@ const BLOCK_MESSAGE: Record<string, string> = {
   REGION_HEAD_TRUNCATED: '구간 시작이 말 도중입니다. 말이 시작되는 지점부터 잡으세요.',
   REGION_TAIL_TRUNCATED: '구간 끝이 말 도중입니다. 말이 끝나는 지점까지 포함하세요.',
   REGION_SEVERE_CLIPPING: '소리가 심하게 찌그러졌습니다(클리핑).',
-  REGION_NEAR_SILENT: '거의 무음입니다.'
+  REGION_NEAR_SILENT: '거의 무음입니다.',
+  REGION_NO_SAFE_BOUNDARY: '요청하신 구간 주변에 말이 끊기는 지점이 없습니다. 다른 구간을 골라 주세요.',
+  REGION_SNAP_RANGE_UNSATISFIABLE: '3~10초 안에 들어가는 안전한 구간을 만들 수 없습니다.',
+  REGION_SNAP_RECONFIRM_REQUIRED: '구간을 크게 옮겨야 합니다. 제안된 구간을 확인해 주세요.',
+  REGION_TRANSCRIBE_FAILED: '참조 음성을 인식하지 못했습니다.',
+  REGION_TEXT_MISMATCH: '참조 음성과 입력한 대사가 맞지 않습니다.'
 }
 
 function fmt(s: number | undefined | null) {
@@ -127,6 +153,8 @@ export default function ReferenceRegionPanel({ path, clipKey, disabled, onState,
   const [confirming, setConfirming] = useState(false)
   const [metrics, setMetrics] = useState<RegionMetrics | null>(null)
   const [confirmedClip, setConfirmedClip] = useState<string>('')
+  // 실제로 잘려 나간 구간(재현 권위). 요청 구간과 다를 수 있어 사용자에게 그대로 보여 준다.
+  const [effective, setEffective] = useState<RegionSpan | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   // 구간 종료 타이머는 '어느 세대의 재생을 멈추려던 것인지'를 함께 들고 다닌다 — 옛 세대 타이머는 no-op.
   const stopTimer = useRef<{ id: ReturnType<typeof setTimeout>; gen: number } | null>(null)
@@ -324,14 +352,24 @@ export default function ReferenceRegionPanel({ path, clipKey, disabled, onState,
       // blocking 누락·타입 오류·ready 와의 모순은 전부 승인 거부로 떨어뜨린다(fail-closed).
       const m = res.metrics
       const blocking = Array.isArray(m?.blocking) ? m.blocking.filter(c => typeof c === 'string') : null
+      // effective_region 이 확정 region 의 권위다. 형식이 어긋나면 fail-closed.
+      const eff = m?.effective_region
       const contractOk = blocking !== null && typeof m?.ready === 'boolean'
-        && m.ready === (blocking.length === 0)
+        && m.ready === (blocking.length === 0) && validSpan(eff)
       const ok = contractOk && m.ready === true
       if (ok) {
         setConfirmedClip(res.clip_path)
-        onStateRef.current({ ready: true, clip: res.clip_path, message: '', region: { start, duration: dur } })
+        // 요청 구간이 아니라 **실제로 잘려 나간 구간**을 저장한다. 자동 스냅으로 옮겨졌을 때
+        // 요청값을 저장하면 재현이 어긋난다.
+        const span = eff as RegionSpan
+        setEffective(span)
+        onStateRef.current({
+          ready: true, clip: res.clip_path, message: '',
+          region: { start: span.start_sec, duration: span.dur_sec }
+        })
       } else {
         setConfirmedClip('')
+        setEffective(null)
         const msg = !contractOk
           ? '구간 검사 결과를 읽지 못했습니다(형식 불일치). 다시 시도하세요.'
           : (blocking as string[]).map(c => BLOCK_MESSAGE[c] ?? c).join(' · ')
@@ -470,6 +508,15 @@ export default function ReferenceRegionPanel({ path, clipKey, disabled, onState,
               클리핑 {(metrics.clipping_ratio * 100).toFixed(2)}% · RMS {metrics.rms_dbfs.toFixed(1)}dBFS
               {metrics.warnings.length > 0 && (
                 <div style={{ color: 'var(--rose)', marginTop: 2 }}>⚠ {metrics.warnings.join(' · ')}</div>
+              )}
+              {effective && metrics.effective_region && metrics.requested_region
+                && Math.abs(effective.start_sec - metrics.requested_region.start_sec) > 0.005 && (
+                <div style={{ color: 'var(--amber, #d08700)', marginTop: 2 }}>
+                  구간이 자동 조정됐습니다: {metrics.requested_region.start_sec.toFixed(2)}~
+                  {metrics.requested_region.end_sec.toFixed(2)}초 →{' '}
+                  {effective.start_sec.toFixed(2)}~{effective.end_sec.toFixed(2)}초
+                  {' '}(아래 확정 클립이 실제로 쓰일 소리입니다)
+                </div>
               )}
               {confirmedClip && metrics.warnings.length === 0 && (
                 <span style={{ color: 'var(--cyan)' }}> · 참조 준비 완료</span>
