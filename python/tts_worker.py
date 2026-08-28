@@ -845,6 +845,39 @@ REF_MANUAL_MISALIGNED = "REF_MANUAL_MISALIGNED"        # 오디오에 없는 말
 REF_MANUAL_UNVERIFIABLE = "REF_MANUAL_UNVERIFIABLE"    # 전사 자체가 실패해 검증할 수 없다
 
 
+# ── 참조 conditioning 모드(단일 권위 계약, 참조혼입 대응 PHASE 2) ──
+# renderer store → config(ttsReferenceConditioningMode) → separate.py → synthesize() 전 구간이
+# 이 한 값을 그대로 나른다. job 단위 고정: 실행 중 어떤 segment 에서도 모드가 바뀌지 않으며,
+# 자동 ICL fallback·x-vector 실패 시 조용한 전환이 없다(실패는 명시 실패).
+#   safe_xvector     : 안전 음성 복제. 모든 segment 를 x_vector_only=True 로 강제하고 참조 전사
+#                      (ref_text)를 vendor 호출에 전달하지 않는다 → 참조 대사 혼입(conditioning echo)이
+#                      구조적으로 없다. 음색·감정은 다소 평탄할 수 있다(강등이 아니라 모드의 특성).
+#   high_quality_icl : 참조 억양 반영(ICL). 절단 정책(경계 검증)이 사용자 청취로 확정되기 전이므로
+#                      실행은 fail-closed 로 차단된다(ICL_BOUNDARY_POLICY_UNCONFIRMED).
+REF_CONDITIONING_SAFE_XVECTOR = "safe_xvector"
+REF_CONDITIONING_HIGH_QUALITY_ICL = "high_quality_icl"
+REF_CONDITIONING_MODES = (REF_CONDITIONING_SAFE_XVECTOR, REF_CONDITIONING_HIGH_QUALITY_ICL)
+INVALID_REFERENCE_CONDITIONING_MODE = "INVALID_REFERENCE_CONDITIONING_MODE"
+ICL_BOUNDARY_POLICY_UNCONFIRMED = "ICL_BOUNDARY_POLICY_UNCONFIRMED"
+
+
+def resolve_reference_conditioning_mode(value):
+    """config 경계의 단일 해석. 부재(None/'') = safe_xvector(안전 기본 — legacy 세션 포함).
+    잘못된 값은 조용히 강등하지 않고 구조화 오류(code=INVALID_REFERENCE_CONDITIONING_MODE)로
+    크게 실패한다(GENERATION_LIMIT_EXCEEDED 등 기존 오류 코드 관례와 동일한 error_payload 형태).
+    payload 에는 원시값을 담지 않는다(타입 이름만) — 비민감 payload 규칙."""
+    if value is None or value == "":
+        return REF_CONDITIONING_SAFE_XVECTOR
+    if value in REF_CONDITIONING_MODES:
+        return value
+    e = RuntimeError(
+        "참조 사용 방식 설정이 올바르지 않습니다 — '안전 음성 복제(safe_xvector)' 또는 "
+        "'참조 억양 반영(high_quality_icl)'만 선택할 수 있습니다.")
+    e.error_payload = {"code": INVALID_REFERENCE_CONDITIONING_MODE,
+                       "raw_type": type(value).__name__}
+    raise e
+
+
 class QwenReferenceMisalignedError(RuntimeError):
     """수동 참조 전사가 참조 오디오와 어긋남 — 생성 시작 전에 막는다(fail-closed).
 
@@ -1126,6 +1159,14 @@ _METADATA_KEYS = [
     # session/config/metadata 세 캐리어가 '같은 필드 이름'이어야 하고, 계약이 별칭
     # (tts_expressive_mode)을 명시적으로 금지했다(권위가 둘이 되는 편이 더 나쁘다).
     "ttsExpressiveMode",
+    # 참조 conditioning 모드(참조혼입 대응 PHASE 2). requested=사용자 요청, effective=실제 적용.
+    # 자동 전환 금지 계약이라 두 값은 항상 같거나 실행이 실패한다(degraded 는 그 사실의 기록 —
+    # safe_xvector 의 감정 평탄화 가능성은 강등이 아니라 모드의 특성이므로 False).
+    # reference_alignment / reference_cut_sample 은 controlled-prefix 절단 정책이 확정되기 전까지
+    # 항상 null(안전 모드는 정렬·절단을 수행하지 않는다). legacy 호출(모드 미전달)은 전부 null.
+    "reference_conditioning_mode_requested", "reference_conditioning_mode_effective",
+    "reference_conditioning_degraded", "reference_alignment", "reference_cut_sample",
+    "reference_conditioning_failure_code",
 ]
 
 
@@ -1256,11 +1297,16 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
 
 
 def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed, silence_gap,
-                         pitch=0.0, tail_cfg=None, boundary_gaps=None):
+                         pitch=0.0, tail_cfg=None, boundary_gaps=None,
+                         reference_conditioning_mode=None):
     """Qwen 배치 합성 — 2B 품질 게이트 재사용, Qwen 전용 VRAM 임계로 장치 선택(ComfyUI 병행 안전),
     모델 1회 로딩. speed: 세그먼트별 atempo 후 사용자 silence_gap으로 결합(1.0은 raw). 임시파일 finally 정리.
     pitch: 결합본(pending)에 rubberband 음높이 후처리(0=무후처리, 계약 §6·§7). 실패는 os.replace 직전
     예외 → finally가 job_dir 정리 → 기존 synthesized.wav 무손상.
+    reference_conditioning_mode: 참조 conditioning 모드(PHASE 2). safe_xvector 면 전 segment 를
+      x_vector_only=True 로 강제하고 참조 전사를 vendor 에 전달하지 않는다(_resolve_qwen_ref_text 를
+      아예 타지 않는 상위 게이트 — Whisper 호출 0). None = legacy 직접 호출(기존 전사 기반 결정 그대로).
+      high_quality_icl 은 synthesize() 입구에서 fail-closed 로 차단되므로 여기 도달하지 않는다.
     반환: (final_path, info) — info는 재현 메타데이터의 런타임 사실(device/source/prompt_source/전사요약 등)."""
     import time
     from reference_audio import assess_reference_file, GPTSOVITS_POLICY
@@ -1316,11 +1362,23 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         segments = []
         degrade_records = []     # 참조 프롬프트 결정 요약(C2) — 비민감, 세그먼트 수만큼 유계
         def_emotion_id = None    # 기본 참조를 쓰는 첫 감정 ID(요약의 대표값 선택용)
+        safe_mode = reference_conditioning_mode == REF_CONDITIONING_SAFE_XVECTOR
+        if safe_mode:
+            # 안전 모드 사실을 로그에 1회 명시(조용한 모드 아님 — 사용자가 어떤 조건으로 합성됐는지 안다).
+            emit("progress", percent=5,
+                 message="안전 음성 복제 모드 — 참조 대사(전사)는 합성 조건으로 전달되지 않습니다")
         for i, (emotion_id, line_text) in enumerate(parsed):
             ref = ref_cache.get(emotion_id, ref_cache["default"])
-            ref_text, xvo = _resolve_qwen_ref_text(ref, overrides_by_path, warned,
-                                                   degrade_sink=degrade_records,
-                                                   emotion_id=emotion_id)
+            if safe_mode:
+                # 상위 게이트(PHASE 2): 전사 기반 ICL 결정(_resolve_qwen_ref_text)을 아예 타지 않는다.
+                # 수동 전사(ttsReferencePrompts)는 라이브러리 표시·검증용으로 보존될 뿐 합성 조건으로는
+                # 전달 0(ref_text=""), Whisper 호출 0, 정렬 검증 호출 0. job 내 전 세그먼트 고정 —
+                # 어떤 segment 도 ICL 로 되돌아가지 않는다(자동 fallback 금지).
+                ref_text, xvo = "", True
+            else:
+                ref_text, xvo = _resolve_qwen_ref_text(ref, overrides_by_path, warned,
+                                                       degrade_sink=degrade_records,
+                                                       emotion_id=emotion_id)
             lang_code = _detect_language(line_text)  # 세그먼트별 언어
             lang_codes.append(lang_code)
             lang_name = _QWEN_LANG_NAME.get(lang_code)
@@ -1672,7 +1730,7 @@ def resolve_reference_input(override, input_path):
 def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                emotion_refs=None, emotion_ref_sources=None, preferred_engine=None, reference_prompts=None, pitch=0.0,
                tail_cfg=None, emotion_boundary_mode="pause", emotion_boundary_pause_ms=200,
-               expressive_mode="legacy_v2"):
+               expressive_mode="legacy_v2", reference_conditioning_mode=None):
     """Synthesize speech. Auto-selects engine by language.
     reference_prompts: 식별자(default/emotionId) → {manual_text, prompt_lang, mode} 사용자 override.
     emotion_refs: emotionId → 합성에 쓸 effective 참조 경로(3~10초 클립/유효 원본).
@@ -1686,7 +1744,37 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
     expressive_mode: 표현형 파서 모드(계약 §10) — result metadata 에 '어느 모드로 만든 결과인가'를 기록해
       session/config/metadata 3중 일치를 성립시키기 위한 값이다. ⚠️ 합성 동작에는 쓰지 않는다.
       오늘 이 함수에 도달하는 값은 항상 'legacy_v2' 다(separate.py 가 v3 를 모델 로딩 전에 차단한다).
-      v3 합성이 구현되기 전까지 이 인자로 분기하지 말 것 — 분기하면 그 순간 조용한 v3 경로가 생긴다."""
+      v3 합성이 구현되기 전까지 이 인자로 분기하지 말 것 — 분기하면 그 순간 조용한 v3 경로가 생긴다.
+    reference_conditioning_mode: 참조 conditioning 모드(참조혼입 대응 PHASE 2, 단일 권위 계약).
+      production 은 separate.py 가 항상 명시 값을 전달한다(config 키 부재 = legacy 세션 →
+      resolve_reference_conditioning_mode 가 safe_xvector 로 해석). None = legacy '직접 호출'
+      (기존 테스트/구 경로) 보존 — production 에서 None 이 여기 도달하는 경로는 없다.
+      값 검증·fail-closed 는 이 입구가 단일 소유: 잘못된 값 → INVALID_REFERENCE_CONDITIONING_MODE,
+      high_quality_icl → ICL_BOUNDARY_POLICY_UNCONFIRMED(절단 정책 미확정 — 조용한 safe 대체 금지)."""
+    # ── 참조 conditioning 모드 판정 — 어떤 파싱/참조 준비/모델 작업보다 먼저(모델 미로딩 차단). ──
+    rc_mode = None
+    if reference_conditioning_mode is not None:
+        rc_mode = resolve_reference_conditioning_mode(reference_conditioning_mode)  # invalid → 구조화 오류
+        if rc_mode == REF_CONDITIONING_HIGH_QUALITY_ICL:
+            # fail-closed 골격(PHASE 2): carrier 는 renderer→config→separate.py→여기까지 전달되지만,
+            # 경계(절단) 검증이 사용자 청취로 확정되기 전이므로 실행은 차단한다.
+            # 조용한 safe_xvector 대체 금지 — 고품질을 요청했는데 안전 모드 결과를 받는 무신호 상황을
+            # 만들지 않는다.
+            _e = RuntimeError(
+                "고품질(참조 억양 반영) 모드는 경계 검증이 확정되기 전까지 사용할 수 없습니다 — "
+                "'안전 음성 복제' 모드를 선택해 다시 시도하세요.")
+            _e.error_payload = {"code": ICL_BOUNDARY_POLICY_UNCONFIRMED, "requested_mode": rc_mode}
+            raise _e
+    # 재현 메타(모든 키 상시 존재): requested/effective 는 자동 전환 금지 계약상 항상 동일하다.
+    # alignment/cut_sample 은 절단 정책 확정(PHASE 3) 전까지 항상 null. legacy(None) 호출은 전부 null.
+    _rc_meta = {
+        "reference_conditioning_mode_requested": rc_mode,
+        "reference_conditioning_mode_effective": rc_mode,
+        "reference_conditioning_degraded": (False if rc_mode is not None else None),
+        "reference_alignment": None,
+        "reference_cut_sample": None,
+        "reference_conditioning_failure_code": None,
+    }
     emit("status", message="음성 합성 시작", percent=0)
 
     if not emotion_refs:
@@ -1778,12 +1866,13 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         if _select_job_engine(text, preferred_engine) == "qwen3":
             final_path, info = _synthesize_qwen_job(parsed, ref_cache, overrides_by_path,
                                                     output_dir, speed, silence_gap, pitch, tail_cfg,
-                                                    boundary_gaps=boundary_gaps)
+                                                    boundary_gaps=boundary_gaps,
+                                                    reference_conditioning_mode=rc_mode)
             meta = _build_tts_metadata(
                 requested_engine=requested_engine,
                 original_reference_path=reference_audio, effective_reference_path=reference_audio,
                 reference_region=None, speed=float(speed), silence_gap=float(silence_gap),
-                **_plan_meta, **info)
+                **_rc_meta, **_plan_meta, **info)
             tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
             emit("progress", percent=99, message="완료!")
             emit("result", tracks=tracks, outputDir=output_dir, metadata=meta)
@@ -1894,7 +1983,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             # I4: 파서 plan 재현 + 말끝 finishing(pinfo2가 반환).
             tail_mode=pinfo2.get("tail_mode"), tail_pad_ms=pinfo2.get("tail_pad_ms"),
             tail_fade_ms=pinfo2.get("tail_fade_ms"), tail_fade_applied=pinfo2.get("tail_fade_applied"),
-            **_plan_meta)
+            **_rc_meta, **_plan_meta)
         tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
         emit("progress", percent=99, message="완료!")
         emit("result", tracks=tracks, outputDir=output_dir, metadata=meta)

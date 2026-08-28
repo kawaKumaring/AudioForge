@@ -185,6 +185,10 @@ def main():
         args.tts_emotion_refs = config.get("ttsEmotionRefs", {})
         args.tts_emotion_ref_sources = config.get("ttsEmotionRefSources", {})  # 등록 원본(만료 판정 기준, §5)
         args.tts_engine = config.get("ttsEngine", "auto")
+        # 참조 conditioning 모드(참조혼입 대응 PHASE 2, 단일 권위 계약). 키 부재(legacy 세션)는
+        # None 그대로 두고, 해석(부재→safe_xvector)·값 검증·fail-closed 는 tts_worker 가 단일 소유한다.
+        # 여기서 기본값을 만들거나 값을 고치지 않는다(원시값 전달 — ttsExpressiveMode 와 같은 원칙).
+        args.tts_reference_conditioning_mode = config.get("ttsReferenceConditioningMode", None)
         args.tts_reference_prompts = config.get("ttsReferencePrompts", {})  # 식별자→수동 override
         args.tts_reference_override = config.get("ttsReferenceOverride", "")  # 파생 참조 클립(있으면 기본 참조로 사용)
         args.tts_pitch = config.get("ttsPitch", 0.0)  # 음높이 보정(반음, 후처리). 부재 시 0.0(하위호환·무후처리)
@@ -285,7 +289,18 @@ def main():
                 emit("error", message="표현형(v3) 대사는 아직 합성할 수 없습니다(검증까지만 지원).",
                      code=_tp.EXPRESSIVE_V3_SYNTHESIS_UNSUPPORTED, mode=_emode)
                 return
-            from tts_worker import synthesize
+            from tts_worker import synthesize, resolve_reference_conditioning_mode
+            # 참조 conditioning 모드(PHASE 2) — 부재(legacy 세션) → safe_xvector(안전 기본),
+            # 잘못된 값 → 구조화 오류(INVALID_REFERENCE_CONDITIONING_MODE, 모델 미로딩 차단).
+            # production 은 항상 여기서 해석된 '명시 값'을 synthesize 에 전달한다(job 단위 고정).
+            try:
+                _rc_mode = resolve_reference_conditioning_mode(
+                    getattr(args, "tts_reference_conditioning_mode", None))
+            except RuntimeError as e:
+                _payload = getattr(e, "error_payload", None)
+                emit("error", message=str(e),
+                     **(_payload if isinstance(_payload, dict) else {}))
+                return
             emotion_refs = {}
             if hasattr(args, 'tts_emotion_refs') and args.tts_emotion_refs:
                 emotion_refs = args.tts_emotion_refs if isinstance(args.tts_emotion_refs, dict) else {}
@@ -341,7 +356,10 @@ def main():
                     emotion_boundary_pause_ms=_eb_ms,
                     # metadata 캐리어(계약 §10). 위 게이트를 지났으므로 여기 값은 항상 legacy_v2 다.
                     # 리터럴을 쓰지 않고 실제 해석값을 넘긴다 — 그래야 3중 일치가 '기록'이 아니라 '사실'이 된다.
-                    expressive_mode=_emode)
+                    expressive_mode=_emode,
+                    # 참조 conditioning 모드(PHASE 2) — 위에서 해석된 명시 값. high_quality_icl 은
+                    # synthesize 입구가 fail-closed(ICL_BOUNDARY_POLICY_UNCONFIRMED)로 차단한다.
+                    reference_conditioning_mode=_rc_mode)
                 # 성공 조건은 'result 도달 + 실제 산출물'이다. synthesize가 돌려준 최종 경로가
                 # result가 선언한 tracks에 실제로 들어있는지까지 대조한다(선언과 산출의 드리프트 차단).
                 if _synth_out and not any(_same_path(_synth_out, p) for p in _RUN["outputs"]):
