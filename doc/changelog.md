@@ -1,5 +1,100 @@
 # AudioForge Changelog
 
+## 2026-08-29 (2) — 런타임을 작업 트리 밖, 본체 저장소 밑으로
+
+바로 아래 항목의 설치는 성공했지만 **잘못된 곳에 앉아 있었다.** `runtime_root()`가
+`<이 체크아웃>/externals`였기 때문에, 작업 트리에서 설치기를 돌리면 3.58 GiB짜리
+venv가 그 작업 트리 안에 생겼다. 작업 트리는 지우라고 만드는 것이므로 그 런타임은
+처음부터 수명이 잘못 잡혀 있었다.
+
+**위치를 두 종류로 나눠 이름을 붙였다**
+- `runtime_root()` = `<본체 저장소>/externals/runtime` — **앱 소유**. 전용 파이썬,
+  전용 venv, `runtime.json`. 설치기가 만들고 고칠 수 있는 유일한 영역.
+- `assets_root()` = `<본체 저장소>/externals` — **외부 참조**. GPT-SoVITS 코드·모델,
+  Qwen, 분리 모델. 읽기만 한다.
+
+본체는 `.git` 하나로 판별한다(디렉터리면 여기가 본체, `gitdir: .../.git/worktrees/<이름>`
+파일이면 그 앞부분이 본체의 `.git`). git 명령을 부르지 않는다 — 아직 아무것도 설치되지
+않은 부트스트랩에서도 답해야 하기 때문. `AUDIOFORGE_RUNTIME_ROOT`가 있으면 그쪽이 우선.
+
+**"먼저 발견한 것"으로 경로를 정하지 않는다** — `_find_repo`가 형제 디렉터리를 훑다가
+공용 `externals`를 가리키는 junction을 먼저 만나 그 경유 경로를 기록하던 문제를 없앴다.
+이제 명시된 네 곳(환경변수 → 기록 → `assets_root()` → `runtime_root()`)만 보고,
+찾은 것은 `realpath`로 풀어 실체만 기록한다.
+
+**연결 기록이 소유권을 말한다** — `owned`(managed: true, 재설치·삭제 대상)와
+`external`(managed: false, 손대지 않음)을 나눠 적고, `recorded_on.host`도 남긴다.
+다른 PC의 기록이 무효일 때 조용히 예전 경로로 미끄러지는 대신
+`RECORDED_ON_OTHER_HOST`로 호스트 이름과 함께 알린다.
+
+**지문의 한계를 문서에 적었다** — `venv_fingerprint`는 dist-info 목록과 인터프리터를
+본다. 패키지가 통째로 사라진 것은 잡지만 **dist-info는 남고 본문만 손상된 것은 못 잡는다.**
+그건 `app_env_verify.py`의 실제 import·모델 로딩이 하는 일이고 설치 직후와 `verify`에서만
+돈다. `--check` 통과 = "지난번 그 설치가 그대로 있어 보인다"이지 "지금 import가 된다"가 아니다.
+
+**재다운로드 방지** — 파이썬 설치 파일을 sha256 확인 후
+`<runtime_root>/.cache/downloads/`에 보관하고, 다음 설치에서 sha256이 맞을 때만 재사용한다.
+pip은 자기 캐시를 그대로 쓴다.
+
+**Node/Python 일치 고정** — `af-launch.mjs`는 같은 위치 규칙을 Node로 한 번 더 구현한다
+(파이썬을 어디에 내려받을지 정하려면 파이썬이 없는 시점에 답이 필요하다). 어긋나면
+파이썬은 A에 깔리고 판정은 B를 보므로, `--where`(내려받지 않고 위치만 출력)를 두고
+`test_app_runtime.py`가 두 구현의 답이 같은지 검사한다.
+
+**실측(재구축)** — 공용 위치에 **새 venv를 새로 만들었다**(기존 venv 이동·복사 없음).
+272초 / 114 패키지 / 3.58 GiB. 지문 `9d0d26bc…67cc62`로 직전 환경과 **동일** — 같은
+명세가 같은 결과를 낸다는 뜻. import 32/32, 모델 로딩 4.0초, production 브리지 한국어
+합성 1회 성공(27.6초 → 3.94초 / 32 kHz / mono). 재실행 시 내려받기·재설치 0.
+작업 트리의 직전 성공 환경과 손상된 `externals/gptsovits_venv` **둘 다 보존**.
+
+**테스트** — `test_app_runtime.py` 21건 → 34건(작업 트리 해석 7건, 앱 소유/외부 구분 2건,
+다른 PC 안내 2건, Node↔Python 일치 1건, 자산 루트 폴백 1건 추가).
+
+## 2026-08-29 (1) — 앱 전용 환경 설치·연결 (`run.bat` 한 번으로 재구축)
+
+`run.bat`이 3줄(`cd` + `npm run dev`)이라 환경이 없으면 앱이 그냥 죽었다. 이제
+**환경 검사 → 설치 → 검증 → 연결 → 실행**을 스스로 한다. 상세는 `doc/app-runtime-installer.md`.
+
+**계기** — 작업 트리 정리 중 재귀 삭제가 junction을 따라가 공용 `externals/gptsovits_venv`의
+`site-packages` 중 `a`~`mo` 구간이 사라졌다. 실측 결과 28개 모듈이 import 불가
+(librosa·einops·jieba·g2pk2·ko_pron·fast_langdetect·huggingface_hub·accelerate 등).
+**디렉터리도 `python.exe`도 멀쩡히 남아 있었다** — "폴더가 있으니 정상"이라는 판정이 이 상태를
+통과시킨다는 것이 진짜 문제였다.
+
+**판정 규칙을 바꿨다**
+- 연결은 파일 모양이 아니라 `externals/runtime.json`의 **기록**이다. 기록이 가리키지 않는
+  환경은 존재하더라도 앱에게는 없는 것이다.
+- 기록에 **지문**을 붙인다. venv의 `*.dist-info` 목록 + 인터프리터 크기로 계산하므로
+  패키지가 사라지면 다음 점검에서 `FINGERPRINT_MISMATCH`로 잡힌다. 위 사고가 잡히는 지점.
+- 경로는 `realpath`로 junction을 풀어 기록한다. junction 경유 경로를 남기는 것이 사고의 씨앗이었다.
+
+**신규**
+- `python/runtime_spec.json` — 설치 명세(선언). 인터프리터 태그·sha256·패키지 핀·라이선스·제외 사유.
+- `python/app_runtime.py` — 경로 해석·연결 기록·지문·빠른 점검. 표준 라이브러리만.
+- `python/app_env_installer.py` — 계획 → 동의 → venv → 패키지 → shim → 검증 → 연결.
+- `python/app_env_verify.py` — 설치된 venv 안에서 실제 import + `TTS(cfg)` 모델 로딩 +
+  `clean_text(..., "ko")` 통과까지. **파일 존재로 판정하지 않는다.**
+- `scripts/af-launch.mjs` — 앱 전용 파이썬 확보(여기서만 내려받음) → 판정은 파이썬에 위임 → 앱 실행.
+- `python/test_app_runtime.py` — 21건. 사고 상황(디렉터리는 남고 패키지만 소실) 재현 포함,
+  공백+한글 경로에서 GPU·모델·네트워크 없이 돈다.
+
+**변경**
+- `run.bat` — ASCII + CRLF 유지(한글 안내는 전부 Node/Python 쪽). `chcp 65001`로 한글 출력 보장.
+  실패 시 앱을 띄우지 않고 원인·재개 방법을 보여 준다. 종료코드 0/1/2/3.
+- `python/tts_worker.py` `GPTSoVITSEngine.load()` — 하드코딩 상대경로 대신 `app_runtime`이 해석.
+- `python/gptsovits_bridge.py` — 코드 폴더도 `app_runtime`이 해석(작업 트리에 `externals`가 없어도 됨).
+- `.gitattributes` 신규 — `*.bat eol=crlf` 고정.
+
+**설치 내용(실측)** — CPython 3.12.14(python-build-standalone 20260825, sha256 대조),
+torch/torchaudio 2.11.0+cu130, 총 114 패키지 / venv 3.58 GiB / 277초.
+코드·모델(1.1 GiB)은 이미 받아 둔 것을 재사용해 재다운로드 0.
+손상된 `gptsovits_venv`는 **수리·삭제하지 않고 그대로 보존**하고 옆에 `gptsovits_venv_app`을 새로 만들었다.
+일본어 전용 `pyopenjtalk`는 명세에서 명시적으로 제외(빌드 필요, 이번 범위 밖).
+
+**검증** — import 32/32, CUDA(RTX 5070 Ti)에서 모델 4장 로딩 4.3초, GPU 없는 조건(CPU 폴백)에서도
+2.8초로 통과. 실제 한국어 합성 1회 성공(3.56초/32 kHz/227,884 B). 재실행 시 재설치 없음(0.23초).
+`test_app_runtime.py` 21건 + 인접 기존 테스트 84건 통과.
+
 ## 2026-08-28 — 경계 envelope: 시작·끝 급절단(클릭) 수정
 
 사용자 청취로 확정된 결함: 합성 음성이 **S자 없이 딱 켜지고 딱 꺼진다.** 상세 계측·선택 근거는

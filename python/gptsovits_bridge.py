@@ -48,7 +48,16 @@ def main():
         pass
 
     # GPT-SoVITS를 path에 추가 (repo 루트 + GPT_SoVITS 하위: AR 등 내부 모듈용)
-    sovits_dir = os.path.abspath(os.path.join(py_dir, "..", "externals", "GPT-SoVITS"))
+    # 코드 위치도 runtime.json이 답한다 — 작업 트리처럼 externals가 없는 곳에서도
+    # 이미 내려받아 둔 코드·모델을 그대로 가리킬 수 있어야 한다.
+    try:
+        import app_runtime
+        sovits_dir = app_runtime.resolve_gptsovits()["repo"]
+    except Exception:
+        sovits_dir = os.path.abspath(os.path.join(py_dir, "..", "externals", "GPT-SoVITS"))
+    if not os.path.isdir(sovits_dir):
+        emit("error", message=f"GPT-SoVITS 코드 폴더를 찾을 수 없습니다: {sovits_dir}")
+        sys.exit(1)
     sys.path.insert(0, sovits_dir)
     sys.path.insert(0, os.path.join(sovits_dir, "GPT_SoVITS"))
     # tts_infer.yaml과 모델 경로가 cwd 기준 상대경로이므로 repo 루트로 이동
