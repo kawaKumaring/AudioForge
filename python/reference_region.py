@@ -308,3 +308,128 @@ def build_aligned_reference(path, requested_start_sec, requested_dur_sec, segmen
             "CLIP_BOUNDARY_STILL_TRUNCATED",
             f"head={b['head_dbfs']}dBFS tail={b['tail_dbfs']}dBFS")
     return out_path, plan
+
+
+# ────────── 자동 경계 보정 (2단계, 2026-08-28) ──────────
+#
+# 권위는 Python 이다. 렌더러로 ASR 전문이나 word timestamps 를 왕복시키지 않는다 —
+# 전사 원문이 프로세스 밖으로 나가지 않는다는 이점도 함께 얻는다.
+# 순서: 요청 구간 → 파형 VAD 무음 경계 탐색 → 3~10초 안에서 스냅 → 클립 생성
+#       → 최종 클립 자체를 전사 → manual_text 가 있으면 그 전사와 대조 → 통과분만 반환.
+# 안전한 무음 경계를 못 찾으면 trim_region 으로 물러서지 않고 차단한다.
+
+BLOCK_NO_SAFE_BOUNDARY = "REGION_NO_SAFE_BOUNDARY"
+BLOCK_SNAP_UNSATISFIABLE = "REGION_SNAP_RANGE_UNSATISFIABLE"
+BLOCK_TRANSCRIBE_FAILED = "REGION_TRANSCRIBE_FAILED"
+BLOCK_TEXT_MISMATCH = "REGION_TEXT_MISMATCH"
+WARN_TEXT_INTERNAL_VARIANCE = "REGION_TEXT_INTERNAL_VARIANCE"
+WARN_TEXT_UNKNOWN = "REGION_TEXT_UNKNOWN"
+
+
+def snap_region_to_silence(silences, requested_start, requested_end,
+                           min_sec=3.0, max_sec=10.0):
+    """무음 구간의 한가운데들만 후보로 두고, 요청에 가장 가까운 (시작, 끝)을 고른다.
+
+    전사·세그먼트를 쓰지 않는다 — 파형 VAD 만으로 정해지므로 렌더러 왕복이 필요 없다.
+    길이 제약(min_sec~max_sec)을 만족하는 조합이 없으면 None(→ 차단). 억지로 늘리거나
+    줄이지 않는다."""
+    cuts = sorted({round((a + b) / 2.0, 4) for a, b in silences})
+    best = None
+    for s in cuts:
+        for e in cuts:
+            d = e - s
+            if d < min_sec - 1e-6 or d > max_sec + 1e-6:
+                continue
+            cost = abs(s - requested_start) + abs(e - requested_end)
+            if best is None or cost < best[0]:
+                best = (cost, s, e)
+    return None if best is None else (best[1], best[2])
+
+
+def build_reference_clip(src_path, requested_start_sec, requested_dur_sec, out_path,
+                         manual_text=None, min_sec=3.0, max_sec=10.0,
+                         transcribe_fn=None, whisper_model="small"):
+    """자동 보정된 참조 클립을 만든다. 1단계 계약(blocking/warning_codes/ready)을 그대로 쓴다.
+
+    반환 dict — 실패해도 같은 모양이며 blocking 이 비어 있지 않고 clip_path 가 None 이다.
+    차단이면 만들다 만 WAV 를 남기지 않는다."""
+    import numpy as np
+    import reference_alignment as ra
+    import reference_leakage as rl
+
+    req_start = float(requested_start_sec)
+    req_end = req_start + float(requested_dur_sec)
+    res = {
+        "clip_path": None,
+        "requested_region": {"start_sec": round(req_start, 4), "end_sec": round(req_end, 4),
+                             "dur_sec": round(req_end - req_start, 4)},
+        "effective_region": None,
+        "blocking": [], "warning_codes": [], "ready": False,
+        "validation": None, "snap": None,
+    }
+
+    def fail(code, **extra):
+        res["blocking"].append(code)
+        res.update(extra)
+        try:
+            if os.path.exists(out_path):
+                os.remove(out_path)
+        except OSError:
+            pass
+        return res
+
+    silences = detect_silences(src_path)
+    if not silences:
+        return fail(BLOCK_NO_SAFE_BOUNDARY, snap={"silence_count": 0})
+    snapped = snap_region_to_silence(silences, req_start, req_end, min_sec, max_sec)
+    if snapped is None:
+        return fail(BLOCK_SNAP_UNSATISFIABLE,
+                    snap={"silence_count": len(silences), "min_sec": min_sec, "max_sec": max_sec})
+    s, e = snapped
+    res["snap"] = {"silence_count": len(silences),
+                   "start_shift_sec": round(s - req_start, 4),
+                   "end_shift_sec": round(e - req_end, 4)}
+    res["effective_region"] = {"start_sec": round(s, 4), "end_sec": round(e, 4),
+                               "dur_sec": round(e - s, 4)}
+
+    trim_region(src_path, s, e - s, out_path)
+    mono, sr = _load_mono(out_path)
+    bt = rl.boundary_truncation(np.asarray(mono, dtype=np.float64), sr)
+    res["boundary"] = bt
+    if bt["head_truncated"]:
+        return fail(BLOCK_HEAD_TRUNCATED)
+    if bt["tail_truncated"]:
+        return fail(BLOCK_TAIL_TRUNCATED)
+
+    # 최종 클립 자체를 전사한다 — 원본이 아니라 '실제로 모델에 갈 오디오' 가 기준이다.
+    if transcribe_fn is None:
+        from reference_transcript import transcribe_reference
+        def transcribe_fn(p):  # noqa: E306
+            t = transcribe_reference(p, whisper_model)
+            return (t.text or "") if t.status == "ok" else None
+    clip_text = transcribe_fn(out_path)
+    if clip_text is None or not str(clip_text).strip():
+        return fail(BLOCK_TRANSCRIBE_FAILED)
+
+    if manual_text and str(manual_text).strip():
+        import korean_cer as kc
+        v = ra.verify_clip_transcript(
+            kc.syllable_units(kc.normalize_text(str(manual_text))),
+            kc.syllable_units(kc.normalize_text(str(clip_text))))
+        # 전사 원문은 담지 않는다 — 수치와 상태만.
+        res["validation"] = {k: v[k] for k in
+                             ("status", "reason_code", "ref_syllables", "clip_asr_syllables",
+                              "insertions", "deletions", "substitutions", "mismatch_where",
+                              "internal_sub_rate", "head_coverage", "tail_coverage")}
+        if v["status"] == ra.STATUS_BLOCKED:
+            return fail(BLOCK_TEXT_MISMATCH)
+        if v["status"] == ra.STATUS_UNKNOWN:
+            res["warning_codes"].append(WARN_TEXT_UNKNOWN)
+        elif v["status"] == ra.STATUS_WARN:
+            res["warning_codes"].append(WARN_TEXT_INTERNAL_VARIANCE)
+    else:
+        res["validation"] = {"status": "no_manual_text"}
+
+    res["clip_path"] = out_path
+    res["ready"] = len(res["blocking"]) == 0
+    return res

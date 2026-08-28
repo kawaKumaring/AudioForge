@@ -385,11 +385,28 @@ def main():
             import reference_region as rr
             os.makedirs(args.output, exist_ok=True)
             out_path = os.path.join(args.output, "reference_clip_24k.wav")
-            rr.trim_region(args.input, float(args.region_start), float(args.region_dur), out_path)
-            metrics = rr.analyze_region(out_path, 0.0, float(args.region_dur))
+            # 자동 경계 보정 경로(2단계). 요청 구간을 그대로 자르지 않고 파형 VAD 로
+            # 안전한 무음 경계에 스냅한 뒤, 최종 클립 자체를 전사해 검증한다.
+            # 안전 경계를 못 찾으면 trim_region 으로 물러서지 않고 차단한다.
+            built = rr.build_reference_clip(
+                args.input, float(args.region_start), float(args.region_dur), out_path)
+            if not built["ready"]:
+                emit("error", code="REFERENCE_REGION_BLOCKED",
+                     blocking=built["blocking"],
+                     requested_region=built["requested_region"],
+                     effective_region=built["effective_region"],
+                     validation=built.get("validation"), snap=built.get("snap"))
+                return
+            eff = built["effective_region"]
+            metrics = rr.analyze_region(out_path, 0.0, eff["dur_sec"])
+            # 승인 계약은 1단계 그대로 — blocking/warning_codes/ready 는 한 소스에서 나온다.
+            metrics["warning_codes"] = sorted(set(metrics.get("warning_codes", []))
+                                              | set(built["warning_codes"]))
+            metrics["requested_region"] = built["requested_region"]
+            metrics["effective_region"] = eff
+            metrics["snap"] = built["snap"]
+            metrics["validation"] = built["validation"]
             if metrics.get("blocking"):
-                # 말 도중 절단 등 차단 사유가 있으면 클립을 넘기지 않는다. 경고만 내고
-                # 통과시키면 그 클립이 그대로 ICL 프롬프트가 된다(참조 대사 혼입의 경로).
                 try:
                     os.remove(out_path)
                 except OSError:
