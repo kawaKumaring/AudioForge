@@ -36,8 +36,17 @@ ComfyUI를 켜지 않아도, 심지어 없어도, 아래 패키지를 갖춘 파
 - **일본어 TTS(pyopenjtalk)** — 프리빌트 휠 없음 → VS C++ Build Tools 빌드 필요.
   한/영/중은 빌드 불필요.
 
-**GPT-SoVITS(TTS)** 는 버전 충돌(transformers 4.50) 때문에 **전용 venv**
-(`externals/gptsovits_venv`)로 격리됨. 메인 환경과 별개, `setup_gptsovits.py`로 재현.
+**GPT-SoVITS(TTS)** 는 버전 충돌(transformers 4.50) 때문에 **전용 venv** 로 격리됨.
+메인 환경과 별개다.
+
+> **2026-08-29 이후**: GPT-SoVITS 환경은 `run.bat`이 스스로 설치·검증·연결한다.
+> 설치 위치는 `externals/gptsovits_venv_app`, 연결 기록은 `externals/runtime.json`.
+> 앱 전용 파이썬(python-build-standalone)까지 자동으로 확보하므로 ComfyUI도 시스템
+> 파이썬도 필요 없다. 자세한 내용은 **`doc/app-runtime-installer.md`**.
+>
+> 예전 `setup_gptsovits.py`는 남아 있지만 **실행하지 않는다** — 기존 repo·기존 venv를
+> 전제로 그 venv에 pip 설치와 shim 덮어쓰기를 하기 때문이다.
+> 예전 `externals/gptsovits_venv`도 그대로 두되, 새 설치는 그것을 건드리지 않는다.
 
 ## 환경 해석 구조 (다른 환경에서 사용 시)
 

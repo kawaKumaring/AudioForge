@@ -221,11 +221,21 @@ class GPTSoVITSEngine(TTSEngine):
 
     def load(self):
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        self._venv_python = os.path.join(base_dir, "externals", "gptsovits_venv", "Scripts", "python.exe")
         self._bridge_script = os.path.join(base_dir, "python", "gptsovits_bridge.py")
 
+        # 실행 환경은 app_runtime(=runtime.json)이 답한다. 설치기가 검증을 통과시킨
+        # 환경만 연결되므로, 여기서 얻은 경로는 "있는 것"이 아니라 "검증된 것"이다.
+        # runtime.json이 없으면 예전 관례 경로로 폴백한다(기존 설치 호환).
+        import app_runtime
+        paths = app_runtime.resolve_gptsovits()
+        self._venv_python = paths["python"]
+
         if not os.path.exists(self._venv_python):
-            raise RuntimeError("GPT-SoVITS venv가 설치되지 않았습니다. externals/gptsovits_venv를 확인하세요.")
+            probe = app_runtime.probe_gptsovits()
+            raise RuntimeError(
+                "GPT-SoVITS 실행 환경이 준비되지 않았습니다 "
+                f"({probe['reason']}: {app_runtime.describe(probe['reason'])}). "
+                "run.bat을 실행하면 환경 검사 후 설치·연결을 진행합니다.")
 
     def _transcript_key(self, ref_audio, model_name):
         """전사 캐시 키: 절대경로 + size + mtime_ns + Whisper 모델명.

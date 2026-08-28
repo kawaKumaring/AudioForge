@@ -1,5 +1,50 @@
 # AudioForge Changelog
 
+## 2026-08-29 — 앱 전용 환경 설치·연결 (`run.bat` 한 번으로 재구축)
+
+`run.bat`이 3줄(`cd` + `npm run dev`)이라 환경이 없으면 앱이 그냥 죽었다. 이제
+**환경 검사 → 설치 → 검증 → 연결 → 실행**을 스스로 한다. 상세는 `doc/app-runtime-installer.md`.
+
+**계기** — 작업 트리 정리 중 재귀 삭제가 junction을 따라가 공용 `externals/gptsovits_venv`의
+`site-packages` 중 `a`~`mo` 구간이 사라졌다. 실측 결과 28개 모듈이 import 불가
+(librosa·einops·jieba·g2pk2·ko_pron·fast_langdetect·huggingface_hub·accelerate 등).
+**디렉터리도 `python.exe`도 멀쩡히 남아 있었다** — "폴더가 있으니 정상"이라는 판정이 이 상태를
+통과시킨다는 것이 진짜 문제였다.
+
+**판정 규칙을 바꿨다**
+- 연결은 파일 모양이 아니라 `externals/runtime.json`의 **기록**이다. 기록이 가리키지 않는
+  환경은 존재하더라도 앱에게는 없는 것이다.
+- 기록에 **지문**을 붙인다. venv의 `*.dist-info` 목록 + 인터프리터 크기로 계산하므로
+  패키지가 사라지면 다음 점검에서 `FINGERPRINT_MISMATCH`로 잡힌다. 위 사고가 잡히는 지점.
+- 경로는 `realpath`로 junction을 풀어 기록한다. junction 경유 경로를 남기는 것이 사고의 씨앗이었다.
+
+**신규**
+- `python/runtime_spec.json` — 설치 명세(선언). 인터프리터 태그·sha256·패키지 핀·라이선스·제외 사유.
+- `python/app_runtime.py` — 경로 해석·연결 기록·지문·빠른 점검. 표준 라이브러리만.
+- `python/app_env_installer.py` — 계획 → 동의 → venv → 패키지 → shim → 검증 → 연결.
+- `python/app_env_verify.py` — 설치된 venv 안에서 실제 import + `TTS(cfg)` 모델 로딩 +
+  `clean_text(..., "ko")` 통과까지. **파일 존재로 판정하지 않는다.**
+- `scripts/af-launch.mjs` — 앱 전용 파이썬 확보(여기서만 내려받음) → 판정은 파이썬에 위임 → 앱 실행.
+- `python/test_app_runtime.py` — 21건. 사고 상황(디렉터리는 남고 패키지만 소실) 재현 포함,
+  공백+한글 경로에서 GPU·모델·네트워크 없이 돈다.
+
+**변경**
+- `run.bat` — ASCII + CRLF 유지(한글 안내는 전부 Node/Python 쪽). `chcp 65001`로 한글 출력 보장.
+  실패 시 앱을 띄우지 않고 원인·재개 방법을 보여 준다. 종료코드 0/1/2/3.
+- `python/tts_worker.py` `GPTSoVITSEngine.load()` — 하드코딩 상대경로 대신 `app_runtime`이 해석.
+- `python/gptsovits_bridge.py` — 코드 폴더도 `app_runtime`이 해석(작업 트리에 `externals`가 없어도 됨).
+- `.gitattributes` 신규 — `*.bat eol=crlf` 고정.
+
+**설치 내용(실측)** — CPython 3.12.14(python-build-standalone 20260825, sha256 대조),
+torch/torchaudio 2.11.0+cu130, 총 114 패키지 / venv 3.58 GiB / 277초.
+코드·모델(1.1 GiB)은 이미 받아 둔 것을 재사용해 재다운로드 0.
+손상된 `gptsovits_venv`는 **수리·삭제하지 않고 그대로 보존**하고 옆에 `gptsovits_venv_app`을 새로 만들었다.
+일본어 전용 `pyopenjtalk`는 명세에서 명시적으로 제외(빌드 필요, 이번 범위 밖).
+
+**검증** — import 32/32, CUDA(RTX 5070 Ti)에서 모델 4장 로딩 4.3초, GPU 없는 조건(CPU 폴백)에서도
+2.8초로 통과. 실제 한국어 합성 1회 성공(3.56초/32 kHz/227,884 B). 재실행 시 재설치 없음(0.23초).
+`test_app_runtime.py` 21건 + 인접 기존 테스트 84건 통과.
+
 ## 2026-08-28 — 경계 envelope: 시작·끝 급절단(클릭) 수정
 
 사용자 청취로 확정된 결함: 합성 음성이 **S자 없이 딱 켜지고 딱 꺼진다.** 상세 계측·선택 근거는
