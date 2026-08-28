@@ -319,11 +319,20 @@ def build_aligned_reference(path, requested_start_sec, requested_dur_sec, segmen
 # 안전한 무음 경계를 못 찾으면 trim_region 으로 물러서지 않고 차단한다.
 
 # ── 자동 스냅 UX 정책 (숨은 상수가 아니라 명시된 정책) ──────────────────────
-# SNAP_AUTO_SHIFT_SEC : 사용자에게 묻지 않고 조용히 옮겨도 되는 최대 이동량(각 경계).
-#   이 값을 넘으면 "다른 구간을 고른 것"에 가까워지므로 자동 승인하지 않는다.
-# SNAP_MAX_SEARCH_SHIFT_SEC : 제안 후보를 찾을 최대 탐색 반경. 이 밖은 아예 후보가 아니다.
-#   (전체 파일을 뒤져 엉뚱한 발화로 점프하던 결함을 구조적으로 막는다.)
-SNAP_AUTO_SHIFT_SEC = 1.5
+# 두 값은 역할이 다르다. 섞어 읽으면 안 된다.
+#
+# SNAP_AUTO_SHIFT_SEC = 사용자에게 묻지 않고 조용히 옮겨도 되는 최대 이동량.
+#   **경계 미세조정 수준**이어야 한다. 한국어는 0.2초에도 한 음절이 들어가므로, 이보다 크게
+#   옮기면 "다른 단어·구절을 고른 것"이 되어 사용자가 고른 구간이 아니게 된다.
+#   초기 안전값 0.2초. (이전 1.5초는 너무 커서 다른 구절이 선택될 수 있었다.)
+#
+# SNAP_MAX_SEARCH_SHIFT_SEC = **후보를 찾아볼 반경일 뿐 자동 승인 범위가 아니다.**
+#   이 반경 안에서 찾되, AUTO 한도를 넘는 이동은 REGION_SNAP_RECONFIRM_REQUIRED 로
+#   사용자 재확인을 받는다. 반경 밖은 아예 후보가 아니다(엉뚱한 발화로 점프 차단).
+#
+# 두 수치 모두 실사용 조율 전의 초기 안전값이다. 테스트로 고정해 두었으니 조율할 때는
+# 테스트도 함께 갱신하고, 조율 근거(실제 참조 구간 표본)를 남길 것.
+SNAP_AUTO_SHIFT_SEC = 0.2
 SNAP_MAX_SEARCH_SHIFT_SEC = 5.0
 
 BLOCK_NO_SAFE_BOUNDARY = "REGION_NO_SAFE_BOUNDARY"

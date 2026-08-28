@@ -79,7 +79,7 @@ class RefTrimHandlerTest(unittest.TestCase):
     def test_success_emits_effective_region_and_clip(self):
         src = self._src("ok.wav", [_sil(0.8), _speech(4.0), _sil(0.5),
                                    _speech(3.5, 200.0, 2), _sil(0.8)])
-        ev = self._run(src, 1.0, 7.0)
+        ev = self._run(src, 0.4, 8.8)
         kinds = [t for t, _ in ev]
         self.assertIn("result", kinds, ev)
         _, payload = [e for e in ev if e[0] == "result"][0]

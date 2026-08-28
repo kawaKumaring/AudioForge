@@ -54,9 +54,23 @@ class SnapPureTest(unittest.TestCase):
         self.assertGreater(got["max_shift_sec"], rr.SNAP_AUTO_SHIFT_SEC)
 
     def test_small_shift_is_auto(self):
-        got = rr.snap_region_to_silence([(0, 1), (6, 7)], 0.6, 6.4, 3.0, 10.0)
+        got = rr.snap_region_to_silence([(0, 1), (6, 7)], 0.45, 6.55, 3.0, 10.0)
         self.assertEqual(got["status"], "auto")
         self.assertLessEqual(got["max_shift_sec"], rr.SNAP_AUTO_SHIFT_SEC)
+
+    def test_auto_shift_limit_is_fine_adjustment_only(self):
+        """정책 고정: 자동 승인은 경계 미세조정 수준이어야 한다.
+
+        한국어는 0.2초에도 한 음절이 들어간다 — 이보다 크게 조용히 옮기면 사용자가 고른
+        구간이 아니게 된다. 실사용 조율 전의 초기 안전값이며, 조율 시 이 테스트도 갱신할 것."""
+        self.assertLessEqual(rr.SNAP_AUTO_SHIFT_SEC, 0.2)
+
+    def test_search_radius_is_not_auto_approval_range(self):
+        """탐색 반경(5.0s)은 후보를 찾는 범위일 뿐 자동 승인 범위가 아니다."""
+        self.assertGreater(rr.SNAP_MAX_SEARCH_SHIFT_SEC, rr.SNAP_AUTO_SHIFT_SEC)
+        got = rr.snap_region_to_silence([(0, 1), (6, 7)], 1.0, 6.0, 3.0, 10.0)
+        self.assertIsNotNone(got, "탐색 반경 안이면 후보는 나온다")
+        self.assertEqual(got["status"], "reconfirm", "그러나 자동 승인은 아니다")
 
     def test_blocks_when_range_unsatisfiable(self):
         self.assertIsNone(rr.snap_region_to_silence([(0.0, 0.4), (1.0, 1.4)], 0.2, 1.2, 3.0, 10.0))
@@ -96,18 +110,21 @@ class BuildClipTest(unittest.TestCase):
 
     def test_records_requested_and_effective_region(self):
         src = self._normal()
-        r = rr.build_reference_clip(src, 1.0, 7.0, self.out,
+        r = rr.build_reference_clip(src, 0.4, 8.8, self.out,
                                     transcribe_fn=lambda p: "가나다라마바사")
         self.assertTrue(r["ready"], r)
-        self.assertEqual(r["requested_region"]["start_sec"], 1.0)
-        self.assertEqual(r["requested_region"]["end_sec"], 8.0)
+        self.assertEqual(r["requested_region"]["start_sec"], 0.4)
+        self.assertEqual(r["requested_region"]["end_sec"], 9.2)
         self.assertIsNotNone(r["effective_region"])
-        self.assertNotEqual(r["effective_region"], r["requested_region"])
         self.assertIn("start_shift_sec", r["snap"])
+        self.assertIn("end_shift_sec", r["snap"])
+        # 두 값이 같더라도 **둘 다 기록**되는 것이 계약이다(재현 권위는 effective).
+        self.assertIn("start_sec", r["requested_region"])
+        self.assertIn("start_sec", r["effective_region"])
 
     def test_produced_clip_is_not_truncated(self):
         src = self._normal()
-        r = rr.build_reference_clip(src, 1.0, 7.0, self.out,
+        r = rr.build_reference_clip(src, 0.4, 8.8, self.out,
                                     transcribe_fn=lambda p: "가나다라마바사")
         self.assertTrue(os.path.exists(r["clip_path"]))
         self.assertFalse(r["boundary"]["head_truncated"], r["boundary"])
@@ -115,7 +132,7 @@ class BuildClipTest(unittest.TestCase):
 
     def test_no_silence_blocks_and_leaves_no_clip(self):
         src = self._src("dense.wav", [_speech(12.0)])
-        r = rr.build_reference_clip(src, 1.0, 7.0, self.out,
+        r = rr.build_reference_clip(src, 0.4, 8.8, self.out,
                                     transcribe_fn=lambda p: "가나다")
         self.assertFalse(r["ready"])
         self.assertIn(rr.BLOCK_NO_SAFE_BOUNDARY, r["blocking"])
@@ -132,7 +149,7 @@ class BuildClipTest(unittest.TestCase):
 
     def test_transcribe_failure_blocks(self):
         src = self._normal()
-        r = rr.build_reference_clip(src, 1.0, 7.0, self.out, transcribe_fn=lambda p: None)
+        r = rr.build_reference_clip(src, 0.4, 8.8, self.out, transcribe_fn=lambda p: None)
         self.assertFalse(r["ready"])
         self.assertIn(rr.BLOCK_TRANSCRIBE_FAILED, r["blocking"])
         self.assertFalse(os.path.exists(self.out))
@@ -140,7 +157,7 @@ class BuildClipTest(unittest.TestCase):
     def test_manual_text_tail_mismatch_blocks(self):
         """클립에 없는 꼬리가 manual_text 에 있으면 차단 — 사고 조건 그대로."""
         src = self._normal()
-        r = rr.build_reference_clip(src, 1.0, 7.0, self.out,
+        r = rr.build_reference_clip(src, 0.4, 8.8, self.out,
                                     manual_text="가나다라마바사입니다",
                                     transcribe_fn=lambda p: "가나다라마바사")
         self.assertFalse(r["ready"])
@@ -151,7 +168,7 @@ class BuildClipTest(unittest.TestCase):
 
     def test_manual_text_aligned_passes(self):
         src = self._normal()
-        r = rr.build_reference_clip(src, 1.0, 7.0, self.out,
+        r = rr.build_reference_clip(src, 0.4, 8.8, self.out,
                                     manual_text="가나다라마바사",
                                     transcribe_fn=lambda p: "가나다라마바사")
         self.assertTrue(r["ready"], r)
@@ -160,7 +177,7 @@ class BuildClipTest(unittest.TestCase):
 
     def test_internal_variance_is_warning_not_block(self):
         src = self._normal()
-        r = rr.build_reference_clip(src, 1.0, 7.0, self.out,
+        r = rr.build_reference_clip(src, 0.4, 8.8, self.out,
                                     manual_text="가나다라마바사아자차카타파하",
                                     transcribe_fn=lambda p: "가나다라먀뱌사아자차카타파하")
         self.assertTrue(r["ready"], r)
@@ -169,7 +186,7 @@ class BuildClipTest(unittest.TestCase):
     def test_no_manual_text_still_transcribes_clip(self):
         src = self._normal()
         seen = []
-        r = rr.build_reference_clip(src, 1.0, 7.0, self.out,
+        r = rr.build_reference_clip(src, 0.4, 8.8, self.out,
                                     transcribe_fn=lambda p: seen.append(p) or "가나다")
         self.assertTrue(r["ready"])
         self.assertEqual(len(seen), 1, "최종 클립을 전사해야 한다")
@@ -178,7 +195,7 @@ class BuildClipTest(unittest.TestCase):
 
     def test_validation_carries_no_transcript_text(self):
         src = self._normal()
-        r = rr.build_reference_clip(src, 1.0, 7.0, self.out,
+        r = rr.build_reference_clip(src, 0.4, 8.8, self.out,
                                     manual_text="가나다라마바사",
                                     transcribe_fn=lambda p: "가나다라마바사")
         blob = repr(r)
@@ -202,7 +219,7 @@ class BuildClipTest(unittest.TestCase):
         src = self._normal()
         for mt, tf in (("가나다라마바사", lambda p: "가나다라마바사"),
                        ("가나다라마바사입니다", lambda p: "가나다라마바사")):
-            r = rr.build_reference_clip(src, 1.0, 7.0, self.out, manual_text=mt,
+            r = rr.build_reference_clip(src, 0.4, 8.8, self.out, manual_text=mt,
                                         transcribe_fn=tf)
             self.assertIsInstance(r["blocking"], list)
             self.assertIsInstance(r["warning_codes"], list)
