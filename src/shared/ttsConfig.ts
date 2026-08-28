@@ -127,13 +127,14 @@ export function parseGenerationSummary(metadata: Record<string, unknown> | null 
   return { limit, iters, termination, chunks }
 }
 
-// ── 참조 conditioning 모드(참조혼입 대응 PHASE 2, 단일 권위 계약) ──
+// ── 참조 conditioning 모드(참조혼입 대응, 단일 권위 계약) ──
 // renderer store → config(ttsReferenceConditioningMode) → separate.py → tts_worker → result/session
 // metadata 전 구간이 이 한 값을 그대로 나른다(job 단위 고정 — 자동 전환·조용한 강등 없음).
 //   safe_xvector     : 안전 음성 복제 — 참조 전사를 합성 조건으로 전달하지 않아 참조 대사 혼입이
 //                      구조적으로 없다(감정 표현은 다소 평탄할 수 있음). 기본값.
-//   high_quality_icl : 참조 억양 반영(고품질·실험적) — 경계 검증 확정 전까지 Python 이 fail-closed
-//                      (ICL_BOUNDARY_POLICY_UNCONFIRMED)로 차단한다.
+//   high_quality_icl : 참조 억양 반영 — 참조 대사를 일부러 먼저 생성시킨 뒤 파형 경계를 찾아
+//                      그 앞을 잘라낸다. 경계를 확정하지 못하면 Python 이 결과를 발행하지 않고
+//                      ICL_BOUNDARY_ALIGNMENT_FAILED 로 실패한다(안전 모드로 조용히 바뀌지 않는다).
 // 부재(legacy 세션) → safe_xvector. 값이 있는데 계약 밖이면 renderer 는 고치지 않는다(권위는 Python —
 // INVALID_REFERENCE_CONDITIONING_MODE 구조화 오류. ttsExpressiveMode 와 같은 원칙).
 export type ReferenceConditioningMode = 'safe_xvector' | 'high_quality_icl'
@@ -242,9 +243,9 @@ export interface TtsConfig {
   // 표현형 모드 — session/config/metadata 세 캐리어가 같은 키·같은 값을 나른다(계약 §10).
   // 기본 legacy_v2. Python(tts_parity)이 최종 권위이며 계약 밖 값은 EXPRESSIVE_MODE_INVALID.
   ttsExpressiveMode: ExpressiveMode
-  // 참조 conditioning 모드(PHASE 2 단일 권위 계약). 기본 safe_xvector(안전 기본).
+  // 참조 conditioning 모드(단일 권위 계약). 기본 safe_xvector(안전 기본).
   // Python(tts_worker.resolve_reference_conditioning_mode)이 최종 권위 — 계약 밖 값은
-  // INVALID_REFERENCE_CONDITIONING_MODE, high_quality_icl 은 ICL_BOUNDARY_POLICY_UNCONFIRMED.
+  // INVALID_REFERENCE_CONDITIONING_MODE.
   ttsReferenceConditioningMode: ReferenceConditioningMode
   // 공용 마감 I3: 말끝 finishing + 감정 전환 경계(계약 §2·추가3·추가4). 기본값은 backward-compat(off/현행).
   // new 세션의 auto 기본은 렌더러 스토어가 정한다(정정8: 부재=현행 동작, 자동 마이그레이션 없음).
