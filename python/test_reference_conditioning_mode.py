@@ -261,7 +261,13 @@ class SafeModeProductionTest(_QwenJobBase):
         self.assertIsNotNone(m)
         self.assertEqual(m["reference_conditioning_mode_requested"], "safe_xvector")
         self.assertEqual(m["reference_conditioning_mode_effective"], "safe_xvector")
-        self.assertIs(m["reference_conditioning_degraded"], False)
+        self.assertIs(m["reference_conditioning_degraded"], False,
+                      "조용한 모드 대체 없음 — '품질 제약 없음'이라는 뜻이 아니다")
+        # 그 '제약'은 별도 필드가 명시한다(안전 모드는 비어 있지 않다).
+        self.assertIn(tts_worker.CONSTRAINT_EMOTION_MAY_FLATTEN,
+                      m["reference_conditioning_constraints"])
+        self.assertIn(tts_worker.CONSTRAINT_PROSODY_NOT_TRANSFERRED,
+                      m["reference_conditioning_constraints"])
         self.assertIsNone(m["reference_alignment"], "안전 모드: 내용 정렬 미수행 → null")
         self.assertIsNone(m["reference_cut_sample"], "절단 정책 미확정 → null")
         self.assertIsNone(m["reference_conditioning_failure_code"])
@@ -397,10 +403,15 @@ class IclControlledPrefixTest(_QwenJobBase):
         self.assertEqual(a["first"]["tail_end_sample"], _fx.GAP_START)
         self.assertEqual(a["first"]["valley_sample"], cut)
         # 창 한정 탐색이었다는 사실이 기록에 남는다 — 참조 내부의 '더 긴' 무음은 창 밖이다.
+        # 창의 왼쪽은 '앞 단어 끝'(2.30s)으로 브래킷된다(anchor 하나로 잡지 않는다).
         self.assertEqual(a["first"]["anchor_start_sample"], _fx.TARGET_ONSET)
+        self.assertEqual(a["first"]["prev_word_end_sample"], int(round(2.30 * 24000)))
         self.assertEqual(a["first"]["window_start_sample"],
-                         _fx.TARGET_ONSET - int(round(0.350 * 24000)))
+                         int(round((2.30 - 0.200) * 24000)))
         self.assertGreater(a["first"]["window_start_sample"], _fx.REF_A + _fx.DECOY_GAP)
+        # 어떤 신호로 개시를 인정했는지도 남는다(유성음만 보고 자르지 않았다는 증거).
+        self.assertGreater(a["first"]["onset_evidence"], 0)
+        self.assertIsInstance(a["first"]["onset_flux_threshold"], float)
         # 기존 계약 필드와의 정합: 실제 적용 상태는 ICL(자동 전사).
         self.assertEqual(m["prompt_source"], "auto")
         self.assertFalse(m["x_vector_only_mode"])
@@ -532,10 +543,45 @@ class IclTranscriptRequiredTest(_QwenJobBase):
         self.assertEqual([t for t, _ in self.events].count("result"), 0)
 
 
+class ConstraintSemanticsTest(unittest.TestCase):
+    """'요청 모드를 정상 실행함'과 '품질 제약 없음'은 다른 사실이다 — 한 필드에 뭉개지 않는다.
+
+    degraded 는 조용한 모드 대체 여부만 말한다(자동 전환 금지 계약이라 항상 False). safe_xvector
+    가 설계상 갖는 제약(참조 억양 미전달·감정 평탄화 가능)은 별도 필드로 명시한다 — 그래야
+    metadata 만 보고 '제약 없음'으로 오독되지 않는다. UI 문구와 같은 사실을 가리켜야 한다."""
+
+    def test_safe_mode_declares_its_quality_constraints(self):
+        c = tts_worker.reference_conditioning_constraints(
+            tts_worker.REF_CONDITIONING_SAFE_XVECTOR)
+        self.assertIn(tts_worker.CONSTRAINT_PROSODY_NOT_TRANSFERRED, c)
+        self.assertIn(tts_worker.CONSTRAINT_EMOTION_MAY_FLATTEN, c)
+
+    def test_icl_mode_has_no_declared_constraint(self):
+        self.assertEqual(
+            tts_worker.reference_conditioning_constraints(
+                tts_worker.REF_CONDITIONING_HIGH_QUALITY_ICL), [])
+
+    def test_unknown_mode_declares_nothing(self):
+        self.assertEqual(tts_worker.reference_conditioning_constraints("nope"), [])
+
+    def test_constraints_are_nonsensitive_tokens(self):
+        for mode in tts_worker.REF_CONDITIONING_MODES:
+            for t in tts_worker.reference_conditioning_constraints(mode):
+                self.assertIsInstance(t, str)
+                self.assertTrue(all(ch.islower() or ch == "_" for ch in t), t)
+
+    def test_ui_copy_states_the_same_constraint(self):
+        """UI 문구와 metadata 가 같은 사실을 말해야 한다(조용한 계약 어긋남 금지)."""
+        ui = os.path.join(os.path.dirname(HERE), "src", "renderer", "components", "TTSEditor.tsx")
+        src = open(ui, encoding="utf-8").read()
+        self.assertIn("감정 표현은 다소 평탄할 수 있음", src,
+                      "safe_xvector 의 품질 제약이 UI 에도 적혀 있어야 한다")
+
+
 class MetadataSchemaTest(unittest.TestCase):
     RC_KEYS = ["reference_conditioning_mode_requested", "reference_conditioning_mode_effective",
                "reference_conditioning_degraded", "reference_alignment", "reference_cut_sample",
-               "reference_conditioning_failure_code"]
+               "reference_conditioning_failure_code", "reference_conditioning_constraints"]
 
     def test_keys_in_schema(self):
         for k in self.RC_KEYS:

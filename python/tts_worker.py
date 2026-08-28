@@ -464,6 +464,8 @@ class QwenIclBoundaryError(RuntimeError):
         self.chunk_index = chunk_index
         self.emotion_id = emotion_id
         self.boundary_reason = boundary_reason
+        # 진단 보존 폴더 '이름'(절대경로 아님). 보존에 실패했으면 None 으로 남는다.
+        self.diagnostic_dir_name = None
         super().__init__(
             f"ICL_BOUNDARY_ALIGNMENT_FAILED(seg={segment_index}, chunk={chunk_index}, "
             f"emotion={emotion_id}, reason={boundary_reason})")
@@ -911,6 +913,28 @@ ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE = "ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE"
 # 두 실패 모두 같은 안내로 끝난다 — 지금 결과가 필요하면 안전 모드를 고르라는 것.
 _ICL_SAFE_MODE_HINT = ("'안전 음성 복제' 모드를 선택하면 참조 대사 혼입 없이 바로 합성할 수 있습니다.")
 
+# ── 모드의 '품질 특성'(강등과는 다른 축) ──────────────────────────────────────
+# reference_conditioning_degraded 는 **'요청한 모드를 그대로 실행했는가'** 만 말한다(조용한 대체
+# 여부). 그 값이 False 라고 해서 '품질 제약이 없다'는 뜻이 아니다 — safe_xvector 는 설계상
+# 참조의 억양/감정을 옮기지 않는 **안전 모드**이고, 그건 실패가 아니라 그 모드의 특성이다.
+# 두 사실이 한 필드에 뭉개지면 metadata 만 보고 "제약 없음"으로 오독된다. 그래서 특성은 별도
+# 필드(reference_conditioning_constraints)에 비민감 enum 토큰으로 따로 적는다.
+# UI 문구("참조 대사 섞임 없음 · 감정 표현은 다소 평탄할 수 있음")와 같은 사실을 가리킨다.
+CONSTRAINT_PROSODY_NOT_TRANSFERRED = "reference_prosody_not_transferred"
+CONSTRAINT_EMOTION_MAY_FLATTEN = "emotion_expression_may_flatten"
+_REF_CONDITIONING_CONSTRAINTS = {
+    REF_CONDITIONING_SAFE_XVECTOR: (CONSTRAINT_PROSODY_NOT_TRANSFERRED,
+                                    CONSTRAINT_EMOTION_MAY_FLATTEN),
+    REF_CONDITIONING_HIGH_QUALITY_ICL: (),
+}
+
+
+def reference_conditioning_constraints(mode):
+    """그 모드가 **설계상** 갖는 품질 제약 토큰 목록(빈 목록 = 알려진 제약 없음).
+
+    강등(degraded)과 구분하기 위한 별도 축이다 — 정상 실행이어도 제약은 있을 수 있다."""
+    return list(_REF_CONDITIONING_CONSTRAINTS.get(mode, ()))
+
 
 def resolve_reference_conditioning_mode(value):
     """config 경계의 단일 해석. 부재(None/'') = safe_xvector(안전 기본 — legacy 세션 포함).
@@ -1214,13 +1238,17 @@ _METADATA_KEYS = [
     # (tts_expressive_mode)을 명시적으로 금지했다(권위가 둘이 되는 편이 더 나쁘다).
     "ttsExpressiveMode",
     # 참조 conditioning 모드(참조혼입 대응). requested=사용자 요청, effective=실제 적용.
-    # 자동 전환 금지 계약이라 두 값은 항상 같거나 실행이 실패한다(degraded 는 그 사실의 기록 —
-    # safe_xvector 의 감정 평탄화 가능성은 강등이 아니라 모드의 특성이므로 False).
+    # ★degraded 의 의미는 **'요청한 모드를 조용히 다른 모드로 바꿨는가'** 하나뿐이다. 자동 전환
+    # 금지 계약이라 두 값은 항상 같거나 실행이 실패하므로 degraded 는 항상 False 다.
+    # degraded=False 는 '품질 제약이 없다'는 뜻이 **아니다** — 모드가 설계상 갖는 제약은
+    # reference_conditioning_constraints 가 따로 말한다(safe_xvector 는 비어 있지 않다).
     # reference_alignment / reference_cut_sample 은 high_quality_icl 이 실제로 controlled-prefix 를
     # 잘라냈을 때만 값이 들어간다(샘플 인덱스·dB 만). safe_xvector 는 정렬·절단을 하지 않으므로 null.
     "reference_conditioning_mode_requested", "reference_conditioning_mode_effective",
     "reference_conditioning_degraded", "reference_alignment", "reference_cut_sample",
     "reference_conditioning_failure_code",
+    # 그 모드가 설계상 갖는 품질 제약(비민감 enum 토큰 목록). 빈 목록 = 알려진 제약 없음.
+    "reference_conditioning_constraints",
 ]
 
 
@@ -1396,7 +1424,7 @@ def _icl_transcribe_fn():
     return lambda path: run_transcribe(model, path, None)
 
 
-def _align_icl_chunks(seg_out, transcribe_factory=_icl_transcribe_fn):
+def _align_icl_chunks(seg_out, transcribe_factory=_icl_transcribe_fn, output_dir=None):
     """controlled-prefix raw chunk 들을 정렬·절단해 **최종 chunk 로 확정**한다(부모 소유 단계).
 
     bridge 가 준 raw 는 중간 산출물이다 — 이 단계를 통과하기 전에는 어떤 결과도 확정되지 않는다.
@@ -1423,8 +1451,16 @@ def _align_icl_chunks(seg_out, transcribe_factory=_icl_transcribe_fn):
             r = icl_alignment.align_and_trim(e["out_path"], req.get("prefix_text"),
                                              req.get("target_text"), tf)
         except icl_alignment.IclAlignmentFailed as af:
-            raise QwenIclBoundaryError(e.get("original_segment_index"), e.get("chunk_index"),
-                                       e.get("emotion_id"), af.reason_code) from None
+            # 실패하면 job_dir 이 통째로 사라진다 — 그 전에 raw 와 수치 진단을 진단 전용 폴더에
+            # 남긴다(결과가 아니다: 발행하지 않고, 절대경로도 남기지 않는다).
+            import icl_diagnostics
+            kept = icl_diagnostics.preserve_failure(
+                output_dir, e.get("out_path"), af.reason_code, af.detection,
+                e.get("original_segment_index"), e.get("chunk_index"), e.get("emotion_id"))
+            err = QwenIclBoundaryError(e.get("original_segment_index"), e.get("chunk_index"),
+                                       e.get("emotion_id"), af.reason_code)
+            err.diagnostic_dir_name = kept
+            raise err from None
         e["reference_alignment"] = r["summary"]
         e["reference_cut_sample"] = r["cut_sample"]
         e["needs_alignment"] = False
@@ -1616,7 +1652,7 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             # bridge 의 controlled-prefix raw 는 중간 산출물이다 — 여기(부모)에서 ASR 정렬로 목표
             # 대사 위치를 특정하고 그 좁은 창 안에서 경계를 찾아 잘라낸 뒤에야 chunk 가 확정된다.
             # bridge subprocess 는 이미 종료됐으므로 Qwen 과 whisper 는 동시 적재되지 않는다.
-            seg_out = _align_icl_chunks(seg_out)
+            seg_out = _align_icl_chunks(seg_out, output_dir=output_dir)
         except QwenIclBoundaryError as ibe:
             # 경계 미확정 → 잘라내지 않은 결과를 발행하지 않는다. safe_xvector 로 자동 전환하지 않고
             # 사용자에게 모드 선택을 돌려준다(요청한 모드와 다른 결과를 무신호로 주지 않는다).
@@ -1634,6 +1670,8 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                 "chunk_index": ibe.chunk_index,
                 "emotion_id": emo,
                 "boundary_reason": ibe.boundary_reason,
+                # 진단 자료가 남은 폴더 '이름'(출력 폴더 하위 .af-icl-diagnostics 안). 절대경로 아님.
+                "diagnostic_dir_name": getattr(ibe, "diagnostic_dir_name", None),
             }
             raise _e from None
         except QwenGenerationLimitError as gle:
@@ -2006,7 +2044,9 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
     _rc_meta = {
         "reference_conditioning_mode_requested": rc_mode,
         "reference_conditioning_mode_effective": rc_mode,
+        # 조용한 모드 대체 없음 = False. '품질 제약 없음'이라는 뜻이 아니다 — 아래가 그걸 말한다.
         "reference_conditioning_degraded": False,
+        "reference_conditioning_constraints": reference_conditioning_constraints(rc_mode),
         "reference_conditioning_failure_code": None,
     }
     emit("status", message="음성 합성 시작", percent=0)
