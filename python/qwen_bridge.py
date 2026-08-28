@@ -15,9 +15,14 @@ stdin config(JSON):
   model_path             로컬 스냅샷 디렉터리(오프라인). repo id가 아니라 경로 → HF API 호출 회피.
   device                 "cuda:0" | "cpu"
   seed                   (선택) 진단 전용 고정 seed. 없으면 미호출 = 기존 동작 그대로.
-  segments               [{index, text, ref_audio, ref_text, x_vector_only, language_name, out_path}]
+  segments               [{index, text, ref_audio, ref_text, x_vector_only, language_name, out_path,
+                          prefix_text?}]
                          x_vector_only=True면 x-vector-only(ref_text 무시), False면 ICL(ref_text 필요)
                          language_name은 세그먼트별(Korean/English/Chinese/Japanese)
+                         prefix_text(선택, 비어있지 않으면 controlled-prefix 모드): 이 chunk 를 생성할 때
+                         목표 대사 앞에 붙여 '의도적으로 먼저 발화시킬' 참조 전사. 생성 뒤 파형 경계를
+                         찾아 그 앞을 잘라낸다(prefix_alignment 규칙). 경계를 못 찾으면 잘린 결과를
+                         발행하지 않고 ICL_BOUNDARY_ALIGNMENT_FAILED 로 실패한다(fade/고정 offset 금지).
 stdout: progress/stage/heartbeat/result/error JSON 라인(부모가 실시간 읽음). 각 세그먼트 wav는 raw 저장(후처리 없음).
   result.segments[*]에 prod_tokens/generation_limit/generated_iterations/termination_reason 포함.
   error.code == GENERATION_LIMIT_EXCEEDED 는 상한 도달 — segment_index/generated_iterations/generation_limit(정수)만,
@@ -39,6 +44,7 @@ import time
 import generation_limit  # 순수 계산(math만). 스크립트 디렉터리(python/)가 sys.path에 있어 import 가능.
 import text_segmenter    # 다국어 token-aware 자동 분할(계약 B). 순수 로직.
 import chunk_paths       # chunk 경로 규칙(bridge·worker 공용 순수 헬퍼).
+import prefix_alignment  # controlled-prefix 텍스트 조립 + 파형 자동 경계(순수 stdlib).
 
 # heartbeat 주기(초). 부모 무응답 timeout(280s)보다 훨씬 짧아야 하고, 로그를 덮지 않을 만큼은 길어야 한다.
 _HEARTBEAT_SEC = 12.0
@@ -176,13 +182,30 @@ def _seed_rng(seed, chunk_ordinal):
     return s
 
 
+def _generation_text(seg):
+    """이 chunk 를 실제로 모델에 넘길 텍스트.
+
+    controlled-prefix(prefix_text 있음) → [참조 전사][문장 종결][개행][목표 대사] 한 덩어리.
+    그 외 → 목표 대사 그대로(기존 동작 불변)."""
+    prefix = (seg.get("prefix_text") or "").strip()
+    if not prefix:
+        return seg["text"], False
+    return prefix_alignment.build_controlled_prefix_text(prefix, seg["text"]), True
+
+
 def _generate_segment(model, seg, builder, proc):
     """세그먼트 1개 합성 + 안전장치. production token → 동적 상한 → 상한 건 생성 → 반복 계측 → 종료 판정.
     반환: dict(wavs, sr, prod_tokens, generation_limit, generated_iterations, termination_reason).
-    counter 미측정(0)·상한 산정 실패는 조용히 통과하지 않고 예외(안전장치 없는 성공 금지)."""
+    counter 미측정(0)·상한 산정 실패는 조용히 통과하지 않고 예외(안전장치 없는 성공 금지).
+
+    controlled-prefix 일 때 상한은 **결합 텍스트 기준**으로 산정한다(정책 자체는 그대로 —
+    compute_max_new_tokens 를 다른 공식으로 바꾸지 않는다). 참조 발화만큼 codec 프레임이 늘어나므로
+    상한이 부족하면 termination_reason='generation_limit' 으로 드러나고 상위가 구조화 오류를 낸다
+    (잘린 결과를 조용히 채택하지 않는다)."""
     xvo = bool(seg.get("x_vector_only", False))
     ref_text = "" if xvo else (seg.get("ref_text") or "")
-    prod_tokens = _prod_tokens(builder, proc, seg["text"])
+    gen_text, controlled_prefix = _generation_text(seg)
+    prod_tokens = _prod_tokens(builder, proc, gen_text)
     seg_limit = generation_limit.compute_max_new_tokens(prod_tokens)
     _COUNTER["n"] = 0
     # 이 한 호출이 곧 'blocking 생성 구간'이다 — 그 사이 stdout 이 없으므로 production 비활성
@@ -194,7 +217,7 @@ def _generate_segment(model, seg, builder, proc):
     # chunk 단위이므로 elapsed 도 chunk 단위여야 나눗셈이 의미를 갖는다.
     _t_gen = time.monotonic()
     wavs, sr = model.generate_voice_clone(
-        text=seg["text"], language=seg.get("language_name", "Korean"),
+        text=gen_text, language=seg.get("language_name", "Korean"),
         ref_audio=seg["ref_audio"], ref_text=ref_text,
         x_vector_only_mode=xvo, max_new_tokens=seg_limit)
     gen_elapsed = round(time.monotonic() - _t_gen, 3)
@@ -206,7 +229,8 @@ def _generate_segment(model, seg, builder, proc):
     reason = generation_limit.classify_termination(iters, seg_limit)
     return {"wavs": wavs, "sr": sr, "prod_tokens": prod_tokens,
             "generation_limit": seg_limit, "generated_iterations": iters,
-            "termination_reason": reason, "generation_elapsed_sec": gen_elapsed}
+            "termination_reason": reason, "generation_elapsed_sec": gen_elapsed,
+            "controlled_prefix": controlled_prefix}
 
 
 class BridgeSegmentTooLong(Exception):
@@ -218,6 +242,21 @@ class BridgeSegmentTooLong(Exception):
         self.production_tokens = production_tokens
         self.allowed = allowed
         super().__init__(f"TEXT_SEGMENT_TOO_LONG(seg={segment_index})")
+
+
+class BridgeIclBoundaryFailed(Exception):
+    """controlled-prefix 생성물에서 목표 대사 시작 경계를 확정하지 못했다 → 결과 미발행(fail-closed).
+
+    자르지 못한 결과를 그대로 내보내면 참조 대사가 통째로 섞인 음성이 정상처럼 배포된다.
+    시간 고정 절단이나 fade 로 덮지 않고, 여기서 실패로 알리고 안전 모드를 안내한다."""
+
+    def __init__(self, segment_index, chunk_index, emotion_id, boundary_reason):
+        self.segment_index = segment_index
+        self.chunk_index = chunk_index
+        self.emotion_id = emotion_id
+        self.boundary_reason = boundary_reason
+        super().__init__(f"ICL_BOUNDARY_ALIGNMENT_FAILED(seg={segment_index}, "
+                         f"chunk={chunk_index}, reason={boundary_reason})")
 
 
 class BridgeGenerationLimit(Exception):
@@ -287,6 +326,21 @@ def _generate_plan(model, plan, builder, proc, n_segments, progress=None, seed=N
             raise BridgeGenerationLimit(int(seg["index"]), int(ci), seg.get("emotion_id"),
                                         int(g["generated_iterations"]), int(g["generation_limit"]))
         d = _finalize_wav(g["wavs"], g["sr"], seg["index"], ci)
+        alignment = None
+        cut_sample = None
+        if g.get("controlled_prefix"):
+            # 참조를 의도적으로 먼저 발화시켰으니, 목표 대사 시작 경계를 찾아 그 앞만 제거한다.
+            # 검출 실패 = 어디까지가 참조인지 모른다 → 자르지도 발행하지도 않는다(fail-closed).
+            det = prefix_alignment.detect_prefix_boundary(d.tolist(), int(g["sr"]))
+            cut_sample = det.get("cut_sample")
+            if not det.get("ok") or not isinstance(cut_sample, int) or not (0 < cut_sample < d.size):
+                raise BridgeIclBoundaryFailed(int(seg["index"]), int(ci), seg.get("emotion_id"),
+                                              det.get("reason_code"))
+            d = d[cut_sample:]
+            if d.size == 0:
+                raise BridgeIclBoundaryFailed(int(seg["index"]), int(ci), seg.get("emotion_id"),
+                                              prefix_alignment.REASON_BOUNDARY_EMPTY_INPUT)
+            alignment = prefix_alignment.boundary_summary(det)
         cpath = chunk_paths.chunk_out_path(seg["out_path"], ci)  # 결정적·job_dir 내부
         sf.write(cpath, d, int(g["sr"]))
         completed += 1
@@ -299,6 +353,9 @@ def _generate_plan(model, plan, builder, proc, n_segments, progress=None, seed=N
                      # blocking 생성 구간만 잰 값(가산). 없으면 None — 0 으로 위조하지 않는다.
                      "generation_elapsed_sec": g.get("generation_elapsed_sec"),
                      "applied_seed": applied_seed,   # 진단 전용. seed 미지정이면 None.
+                     # controlled-prefix 절단 사실(비민감 수치만 — 전사·경로 없음). 미사용 chunk 는 None.
+                     "controlled_prefix": bool(g.get("controlled_prefix")),
+                     "reference_alignment": alignment, "reference_cut_sample": cut_sample,
                      "termination_reason": g["termination_reason"], "status": "ok"})
         if progress:
             progress(30 + (completed * 60) // total, int(seg["index"]), n_segments, ci, cc, "done")
@@ -389,6 +446,11 @@ def main():
                  chunk_index=e.chunk_index, emotion_id=e.emotion_id,
                  generated_iterations=e.generated_iterations, generation_limit=e.generation_limit,
                  termination_reason="generation_limit", status="generation_limit")
+            sys.exit(1)
+        except BridgeIclBoundaryFailed as e:
+            emit("error", code="ICL_BOUNDARY_ALIGNMENT_FAILED", segment_index=e.segment_index,
+                 chunk_index=e.chunk_index, emotion_id=e.emotion_id,
+                 boundary_reason=e.boundary_reason)
             sys.exit(1)
 
         emit("result", segments=done, success=True)
