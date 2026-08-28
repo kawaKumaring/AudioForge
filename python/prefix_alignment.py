@@ -8,7 +8,11 @@
 이 모듈이 소유하는 것(전부 순수 함수 — 파일 I/O·모델·전사 호출 없음, stdlib 만):
   A) 텍스트 조립 : build_controlled_prefix_text — [참조 전사][문장 종결][개행][목표 대사]
   B) 파형 경계   : detect_prefix_boundary — tail_end/onset/valley 를 신호에서 찾아 cut 을 낸다
-  C) 내용 정렬   : resolve_prefix_cut — 음절 스트림이 있을 때 쓰는 3-신호 교차검증(선택적 보강)
+  C) 내용 정렬   : resolve_prefix_cut — 음절 스트림이 있을 때 쓰는 3-신호 교차검증
+  D) 창 한정 탐색: detect_prefix_boundary_windowed — 텍스트로 특정한 지점 주변에서만 B 를 적용
+
+★생성 경로가 쓰는 것은 D 다. B 를 파형 전체에 걸면 참조 발화 **내부**의 문장 간 무음을 목표
+  onset 으로 오검출한다(§D 에 실측 수치). B 는 D 의 내부 규칙이자 창 단위 단위테스트용이다.
 
 B 의 규칙(고정 offset 상수 금지 — 전부 신호에서 유도한다):
   1) 10ms 프레임 / 5ms 홉으로 RMS dBFS + spectral flux + zcr 를 잰다.
@@ -451,8 +455,12 @@ def frame_spectral_signals(waveform, sample_rate, frame_sec=BOUNDARY_FRAME_SEC,
 
 
 def detect_prefix_boundary(waveform, sample_rate, frame_sec=BOUNDARY_FRAME_SEC,
-                           hop_sec=BOUNDARY_HOP_SEC):
+                           hop_sec=BOUNDARY_HOP_SEC,
+                           onset_flux_abs_min=ONSET_FLUX_ABS_MIN):
     """생성물에서 '목표 대사 시작 직전'의 절단 지점을 신호만으로 찾는다(모듈 docstring B 규칙).
+
+    onset_flux_abs_min: onset flux 의 절대 하한. 기본값(전역 탐색용)은 그대로다 — §D 의 창 한정
+    탐색만 실측으로 낮춘 값을 넘긴다(그 근거는 WINDOW_ONSET_FLUX_ABS_MIN 주석).
 
     반환(성공/실패 모두 같은 형태 — 상위가 그대로 기록 가능, 전사·경로 없음):
       {"ok", "reason_code", "sample_rate", "frame_samples", "hop_samples", "frame_count",
@@ -507,7 +515,7 @@ def detect_prefix_boundary(waveform, sample_rate, frame_sec=BOUNDARY_FRAME_SEC,
                 base_flux = 0.0
             if base_db is None:
                 base_db = floor
-            flux_thr = max(ONSET_FLUX_RATIO * base_flux, ONSET_FLUX_ABS_MIN)
+            flux_thr = max(ONSET_FLUX_RATIO * base_flux, onset_flux_abs_min)
             if flux >= flux_thr and level >= base_db + ONSET_DB_RISE:
                 last = i + ONSET_SUSTAIN_FRAMES
                 if last < count and all(dbs[i + k] >= sustain_thr
@@ -549,11 +557,136 @@ def detect_prefix_boundary(waveform, sample_rate, frame_sec=BOUNDARY_FRAME_SEC,
     return res
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# D) 텍스트(ASR) 정렬로 좁힌 창 안에서만 B 규칙을 적용한다
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# 왜 창이 필요한가(실측 근거 — 추정 아님):
+#   controlled-prefix 생성물 **전체**에 B 규칙을 걸면 목표 대사가 아니라 '참조 발화 내부의 문장 간
+#   무음'이 먼저 걸린다. 실측 표본(12.88s 생성물)에서 전역 탐색은 cut=20880(0.87s) / onset=22920 을
+#   내고 ok=True 로 반환했다 — 실제 목표 대사는 9.5s 부근이다. 조용히 잘못 잘랐다는 뜻이다.
+#   '가장 긴 침묵' 같은 파형-only 대체 규칙도 실패한다. 같은 표본의 무음 길이 순위:
+#     3.185s=255ms  >  10.530s=170ms  >  9.345s=165ms(진짜 경계)  >  0.830s=115ms
+#   참조 내부 무음이 진짜 경계보다 길다. 즉 파형만으로는 원리적으로 구분되지 않는다.
+#   → 목표 위치는 **텍스트(ASR 정렬)** 로 먼저 특정하고, 파형 규칙은 그 좁은 창에서만 쓴다.
+#     창 밖의 무음은 후보가 될 수 없다.
+#
+# 창 폭 상수의 근거(고정 절단 offset 이 아니다 — '어디를 볼지'의 범위다. cut 위치는 여전히
+# 신호에서 유도한다):
+#   lead  : anchor 단어 시작에서 **뒤로** 보는 폭. 목표 대사 직전 무음 전체(실측 115~255ms)와
+#           단어 타임스탬프의 시간 정렬 불확실성(whisper word timestamp 는 프레임 정렬 기반이라
+#           수십~100ms 급 편차가 난다)을 함께 덮어야 한다. 255ms + 여유 ≈ 350ms.
+#           동시에 '그 앞 문장의 무음'까지 삼키면 안 된다 — 실측 표본에서 인접 무음 사이 간격은
+#           초 단위라 350ms 는 이웃 무음을 절대 포함하지 않는다.
+#   trail : anchor 단어 시작에서 **앞으로** 보는 폭. 실측 표본에서 whisper 가 보고한 단어 시작
+#           (227520 = 9.480s)은 실제 음향 개시(228240 = 9.510s)보다 30ms **이르다**. 창은 그
+#           개시 프레임과 지속 판정 3프레임(+15ms)까지 담아야 하므로 trail 이 개시 지연 + 25ms
+#           보다 커야 한다. 실측 30ms 에 5배 여유를 둬 150ms. onset 판정은 tail_end 이후 '첫'
+#           자격 프레임이라 trail 을 늘려도 더 뒤의 무음이 후보가 되지는 않는다(창만 넓어진다).
+#           (초기값 50ms 로는 개시 프레임이 창 마지막 프레임이 되어 지속 3프레임을 못 채웠다 —
+#            실측 실패: PREFIX_BOUNDARY_ONSET_NOT_FOUND.)
+ANCHOR_WINDOW_LEAD_SEC = 0.350
+ANCHOR_WINDOW_TRAIL_SEC = 0.150
+# 창은 tail_end(30ms 유지) → valley → onset(+지속 3프레임=15ms) 를 담을 수 있어야 의미가 있다.
+WINDOW_MIN_SEC = 0.120
+
+# 창 안에서 쓰는 onset flux 절대 하한(전역 탐색의 ONSET_FLUX_ABS_MIN=0.5 를 그대로 쓰지 않는다).
+# 실측(같은 표본, 창 [219120,231120)):
+#   - 무음 프레임 flux : 중앙값 ≈ 0.0007, 최대 0.0034
+#   - 실제 목표 대사 개시 프레임 flux = 0.1476 (dB 는 -72.6 → -42.9, +29.7dB 상승)
+#   0.5 를 그대로 걸면 **부드럽게 시작하는 실제 발화**(-42dBFS 급)를 놓친다 — 실측 실패했다.
+#   0.05 는 관측된 무음 최대치의 약 15배이자 실제 개시의 약 1/3 로 양쪽에서 여유가 있다.
+# 낮춰도 안전한 이유: 창 한정 탐색에는 전역 탐색에 없는 제약이 셋 더 있다 —
+#   (a) 탐색 범위가 텍스트로 고정된 400~500ms, (b) cut < anchor 단어 시작, (c) tail_end < cut 과
+#   최소 여백. 오검출이 나더라도 창 폭 안의 수십 ms 이동이지, 다른 문장 경계를 고를 수는 없다.
+WINDOW_ONSET_FLUX_ABS_MIN = 0.05
+
+REASON_BOUNDARY_WINDOW_INVALID = "PREFIX_BOUNDARY_WINDOW_INVALID"
+REASON_BOUNDARY_CUT_AFTER_ANCHOR = "PREFIX_BOUNDARY_CUT_AFTER_ANCHOR"
+
+# 창 결과에만 붙는 좌표 키(전역 좌표). _BOUNDARY_RESULT_KEYS 는 건드리지 않는다 —
+# 전역 탐색 결과와 창 결과를 형태로 구분할 수 있어야 한다.
+WINDOW_RESULT_KEYS = ("window_start_sample", "window_end_sample", "anchor_start_sample")
+
+_GLOBALIZED_KEYS = ("tail_end_sample", "onset_sample", "valley_sample", "cut_sample")
+
+
+def alignment_window_samples(anchor_start_sec, sample_rate, n_samples,
+                             lead_sec=ANCHOR_WINDOW_LEAD_SEC,
+                             trail_sec=ANCHOR_WINDOW_TRAIL_SEC):
+    """anchor 단어 시작 시각 → [start-lead, start+trail) 샘플 창(파형 범위로 클램프).
+
+    반환: {"ok","reason_code","window_start_sample","window_end_sample","anchor_start_sample"}.
+    창이 파형 밖이거나 WINDOW_MIN_SEC 보다 짧으면 ok=False — 넓혀서 구제하지 않는다."""
+    r = {"ok": False, "reason_code": REASON_BOUNDARY_WINDOW_INVALID,
+         "window_start_sample": None, "window_end_sample": None, "anchor_start_sample": None}
+    if not isinstance(sample_rate, int) or isinstance(sample_rate, bool) or sample_rate <= 0:
+        return r
+    if not isinstance(n_samples, int) or n_samples <= 0:
+        return r
+    if not isinstance(anchor_start_sec, (int, float)) or isinstance(anchor_start_sec, bool):
+        return r
+    if anchor_start_sec != anchor_start_sec or anchor_start_sec < 0.0:   # NaN / 음수
+        return r
+    anchor = int(round(float(anchor_start_sec) * sample_rate))
+    if anchor <= 0 or anchor > n_samples:
+        return r   # anchor 가 파형 맨 앞/밖 — 그 앞을 볼 여지가 없다
+    ws = max(0, anchor - int(round(lead_sec * sample_rate)))
+    we = min(n_samples, anchor + int(round(trail_sec * sample_rate)))
+    if we - ws < int(round(WINDOW_MIN_SEC * sample_rate)):
+        return r
+    r.update(ok=True, reason_code=REASON_BOUNDARY_OK, window_start_sample=ws,
+             window_end_sample=we, anchor_start_sample=anchor)
+    return r
+
+
+def detect_prefix_boundary_windowed(waveform, sample_rate, anchor_start_sec,
+                                    lead_sec=ANCHOR_WINDOW_LEAD_SEC,
+                                    trail_sec=ANCHOR_WINDOW_TRAIL_SEC,
+                                    frame_sec=BOUNDARY_FRAME_SEC, hop_sec=BOUNDARY_HOP_SEC,
+                                    onset_flux_abs_min=WINDOW_ONSET_FLUX_ABS_MIN):
+    """B 규칙(tail_end→onset→valley)을 **창 안에서만** 적용하고 좌표를 전역으로 환산한다.
+
+    좌표 변환: 창은 로컬 인덱스를 낸다 → global = window_start_sample + local. 성공/실패 모두
+    환산해 사후 확인이 항상 전역 좌표로 가능하게 한다. noise floor·지역 조용 기준도 창 안에서만
+    산출되므로, 창 밖의 무음(참조 발화 내부 등)은 어떤 신호에도 기여하지 않는다.
+
+    추가 안전 조건(첫 자음·비유성음 보존): cut 은 anchor 단어 시작보다 **앞**이어야 한다.
+    목표 첫 음절이 마찰음/파열음이면 유성음보다 먼저 시작하므로 '첫 유성음 이전이니 안전'
+    으로는 판단하지 않는다. tail_end 이후·최소 여백 조건은 detect_prefix_boundary 가 보증한다.
+
+    반환: detect_prefix_boundary 와 같은 키 + WINDOW_RESULT_KEYS. ok=False 면 자르지 않는다."""
+    n = 0 if waveform is None else len(waveform)
+    win = alignment_window_samples(anchor_start_sec, sample_rate, n, lead_sec, trail_sec)
+    if not win["ok"]:
+        res = _empty_boundary_result(win["reason_code"],
+                                     sample_rate if isinstance(sample_rate, int) else None)
+        for k in WINDOW_RESULT_KEYS:
+            res[k] = win[k]
+        return res
+    ws = win["window_start_sample"]
+    we = win["window_end_sample"]
+    anchor = win["anchor_start_sample"]
+    res = detect_prefix_boundary(list(waveform[ws:we]), sample_rate, frame_sec, hop_sec,
+                                 onset_flux_abs_min=onset_flux_abs_min)
+    for k in _GLOBALIZED_KEYS:
+        if isinstance(res.get(k), int):
+            res[k] = ws + res[k]
+    res["window_start_sample"] = ws
+    res["window_end_sample"] = we
+    res["anchor_start_sample"] = anchor
+    if res["ok"] and not (isinstance(res["cut_sample"], int) and res["cut_sample"] < anchor):
+        res["ok"] = False
+        res["cut_sample"] = None
+        res["reason_code"] = REASON_BOUNDARY_CUT_AFTER_ANCHOR
+    return res
+
+
 def boundary_summary(detection):
     """metadata 용 축약(샘플 인덱스와 dB 만 — 전사 원문·경로·시간 문자열 없음)."""
     if not isinstance(detection, dict):
         return None
-    return {
+    out = {
         "sample_rate": detection.get("sample_rate"),
         "noise_floor_dbfs": detection.get("noise_floor_dbfs"),
         "tail_end_sample": detection.get("tail_end_sample"),
@@ -563,3 +696,9 @@ def boundary_summary(detection):
         "valley_dbfs": detection.get("valley_dbfs"),
         "lead_samples": detection.get("lead_samples"),
     }
+    # 창 탐색이었다면 '어디만 봤는지'도 남긴다 — 전역 탐색이 아니었다는 사실이 기록으로 남아야
+    # 한다(수치만, 여전히 비민감). 전역 탐색 결과에는 이 키들이 아예 없다.
+    for k in WINDOW_RESULT_KEYS:
+        if detection.get(k) is not None:
+            out[k] = detection[k]
+    return out
