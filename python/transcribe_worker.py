@@ -60,17 +60,65 @@ def set_translate_model(value):
         set_nllb_model(v)
 
 # Whisper model cache
-_whisper_cache = {"model": None, "name": None}
+_whisper_cache = {"model": None, "name": None, "source": None, "root": None}
+
+
+WHISPER_ROOT_ENV = "AUDIOFORGE_WHISPER_ROOT"
+
+
+class WhisperModelMissing(Exception):
+    """요청한 Whisper 모델 파일이 내부에도 기존 캐시에도 없다.
+
+    예전에는 이 상황에서 whisper 가 조용히 인터넷에서 내려받았다. 오프라인 계약이 있는
+    앱에서 그건 '성공' 이 아니라 숨은 네트워크 의존이므로, 이제 명시적으로 실패한다."""
+
+
+def whisper_model_root():
+    """앱이 소유한 Whisper 가중치 위치. externals 는 이미 모델의 집이다."""
+    override = os.environ.get(WHISPER_ROOT_ENV)
+    if override:
+        return os.path.abspath(override)
+    here = os.path.dirname(os.path.abspath(__file__))
+    try:
+        import app_runtime
+        return os.path.join(app_runtime.assets_root(), "whisper_models")
+    except Exception:
+        return os.path.join(os.path.dirname(here), "externals", "whisper_models")
+
+
+def resolve_whisper_root(model_name):
+    """(download_root, source) — 어디서 온 가중치인지 숨기지 않는다.
+
+    1) 앱 내부(externals/whisper_models)에 <이름>.pt 가 있으면 그것.
+    2) 없으면 기존 전역 캐시에 **이미 존재하는** 파일만 쓴다(다운로드 아님).
+    3) 둘 다 없으면 WhisperModelMissing — 조용히 내려받지 않는다.
+    """
+    fn = "%s.pt" % model_name
+    internal = whisper_model_root()
+    if os.path.isfile(os.path.join(internal, fn)):
+        return internal, "internal"
+    legacy = os.path.join(os.path.expanduser("~"), ".cache", "whisper")
+    if os.path.isfile(os.path.join(legacy, fn)):
+        return legacy, "external_cache"
+    raise WhisperModelMissing(
+        "WHISPER_MODEL_MISSING: %s — 내부 모델 위치에도 기존 캐시에도 없습니다. "
+        "자동 다운로드는 하지 않습니다." % fn)
 
 
 def _get_whisper_model(model_name="large-v3"):
-    """Load or reuse cached Whisper model."""
+    """Load or reuse cached Whisper model.
+
+    download_root 를 **명시 전달**한다. 예전에는 인자를 주지 않아 whisper 가 ~/.cache 를
+    조용히 뒤지고 없으면 내려받았다 — 오프라인 검증이 불가능한 구조였다."""
     import whisper
     import torch
     if _whisper_cache["model"] is None or _whisper_cache["name"] != model_name:
+        root, source = resolve_whisper_root(model_name)
         device = get_device(timeout_sec=10)
-        _whisper_cache["model"] = whisper.load_model(model_name, device=device)
+        _whisper_cache["model"] = whisper.load_model(model_name, device=device, download_root=root)
         _whisper_cache["name"] = model_name
+        _whisper_cache["source"] = source
+        _whisper_cache["root"] = root
     return _whisper_cache["model"]
 
 

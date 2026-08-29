@@ -280,6 +280,34 @@ function failure(reason, extra) {
   bar()
 }
 
+
+/**
+ * 로컬 자산 루트(_local) 표준 구조 확보.
+ *
+ * 규칙은 python/local_assets.py 가 **단일 권위**다. Node 에서 폴더 목록을 다시 쓰면
+ * 두 구현이 갈라지고, 갈라진 순간 어느 쪽이 맞는지 아무도 모르게 된다.
+ * 그래서 여기서는 만들지 않고 물어보기만 한다.
+ * 실패해도 앱 시작을 막지 않는다 — 자산 폴더는 있으면 좋은 것이지 실행 전제가 아니다.
+ */
+function ensureLocalAssets(python) {
+  const r = spawnSync(python,
+    ['-X', 'utf8', '-c',
+     'import sys,json;sys.path.insert(0,r"' + join(REPO, 'python') + '");'
+     + 'import local_assets as la;root,made=la.ensure_structure();'
+     + 'print(json.dumps({"source":la.resolve_source(),"created":made}))'],
+    { encoding: 'utf-8' })
+  if (r.status !== 0) {
+    log('로컬 자산 폴더 확인 실패(앱 실행은 계속합니다).')
+    return
+  }
+  try {
+    const out = JSON.parse((r.stdout || '').trim().split(String.fromCharCode(10)).pop())
+    if (out.created && out.created.length) {
+      log(`로컬 자산 폴더 생성: ${out.created.length}개 (${out.source})`)
+    }
+  } catch { /* 표시용일 뿐이라 조용히 넘어간다 */ }
+}
+
 async function main() {
   // --where 는 아무것도 내려받지 않고 위치만 답한다. 파이썬 쪽 app_runtime.py 와
   // 이 답이 일치하는지를 test_app_runtime.py 가 검사한다.
@@ -347,6 +375,9 @@ async function main() {
   } else {
     log(`환경 점검: 정상 (재설치 없음) — ${p.python}`)
   }
+
+  // 앱 전용 Python 이 확보된 뒤, 앱 시작 전에 딱 한 번.
+  ensureLocalAssets(python)
 
   if (MODE === 'install') {
     log('설치·검증·연결 완료. (--install 이므로 앱은 시작하지 않습니다.)')
