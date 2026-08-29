@@ -3,8 +3,8 @@
 tts_worker.synthesize()의 engine.synthesize_segment 호출까지 정확히 선택되는지 검증.
 
 검증 경로(실제 synthesize를 그대로 호출 — 헬퍼만 따로 테스트하지 않음):
-  ttsEmotionRefs → synthesize() → _parse_line() → emotion_id → ref_cache
-  → engine.synthesize_segment(text, ref, emotion_id, ...)
+  ttsEmotionRefs → synthesize() → tts_grammar.parse_tts_script() → _boundary_gaps_from_plan()
+  → (emotion_id, spoken_text) → ref_cache → engine.synthesize_segment(text, ref, emotion_id, ...)
 
 모델 차단: _select_engine을 가짜 엔진 반환으로 monkeypatch → 실제 GPT-SoVITS/F5/Kokoro
 로딩·추론이 한 번도 일어나지 않는다(_engine_cache 비어 있음 + 실행 시간으로 확인).
@@ -143,25 +143,26 @@ class TtsRoutingTest(unittest.TestCase):
         self.assertLess(elapsed, 5.0, f"모델 없는 라우팅이 5초 미만이어야 함(측정 {elapsed:.2f}s)")
 
     # ── 6-1. 알 수 없는 태그 → default ─────────────────────────────────
-    def test_unknown_tag_falls_back_to_default(self):
-        self._run("[존재하지않는태그] 미지 태그 문장.", {})
-        self._no_error()
-        c = self.fake.calls
-        self.assertEqual(len(c), 1)
-        self.assertEqual(c[0]["emotion_id"], "default")
-        self.assertEqual(c[0]["ref_name"], "default.wav")
-        self.assertEqual(c[0]["text"], "미지 태그 문장.")
+    def test_unknown_tag_blocks_not_silent_default(self):
+        # 계약 정정2(변경): 알 수 없는 태그는 조용히 default로 강등하지 않고 합성을 차단한다.
+        # (I2에서 합성 파싱 권위를 tts_grammar로 일원화 — 옛 _parse_line의 silent default 폴백은 폐기.)
+        # synthesize는 구조화 code(UNKNOWN_TTS_TAG)를 담은 RuntimeError를 던지고, 합성은 진행되지 않는다.
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run("[존재하지않는태그] 미지 태그 문장.", {})
+        payload = getattr(ctx.exception, "error_payload", None)
+        self.assertIsInstance(payload, dict)
+        self.assertEqual(payload.get("code"), "UNKNOWN_TTS_TAG")
+        self.assertEqual(self.fake.calls, [])  # 조용한 합성 진행 없음
 
     # ── 6-2. 등록 경로가 존재하지 않는 감정 참조 → default 폴백 ─────────
-    def test_missing_ref_path_falls_back_to_default(self):
+    def test_missing_ref_path_errors_not_silent_fallback(self):
+        # 계약 §5 불변식3(변경): 등록된 감정의 effective 파일이 없으면(만료) 조용히 default로 폴백하지
+        # 않고 감정 label을 지목한 명확한 오류(RuntimeError)를 낸다. 예전엔 silent default 폴백이었음.
         refs = {"happy": os.path.join(self.tmp, "does_not_exist.wav")}
-        self._run("[기쁨] 파일 없는 기쁨.", refs)
-        self._no_error()
-        c = self.fake.calls
-        self.assertEqual(len(c), 1)
-        # 태그 해석은 happy지만 등록 파일이 없어 참조는 default로 폴백
-        self.assertEqual(c[0]["emotion_id"], "happy")
-        self.assertEqual(c[0]["ref_name"], "default.wav")
+        with self.assertRaises(RuntimeError) as ctx:
+            self._run("[기쁨] 파일 없는 기쁨.", refs)
+        self.assertIn("기쁨", str(ctx.exception))          # 감정 label 지목
+        self.assertEqual(self.fake.calls, [])              # 조용한 합성 진행이 없어야 함
 
     # ── 6-3. 감정 태그 없는 문장 → default 참조 ────────────────────────
     def test_no_tag_uses_default(self):

@@ -1,0 +1,415 @@
+{
+ "schema": 1,
+ "description": "AudioForge 앱 전용 런타임 설치 명세. 설치기가 읽는 유일한 선언 소스이며, 사람이 설치 전에 무엇이 들어오는지 확인하는 문서이기도 하다.",
+ "interpreter": {
+  "name": "CPython (python-build-standalone)",
+  "project": "astral-sh/python-build-standalone",
+  "release_tag": "20260825",
+  "python_version": "3.12.14",
+  "asset": "cpython-3.12.14+20260825-x86_64-pc-windows-msvc-install_only.tar.gz",
+  "url": "https://github.com/astral-sh/python-build-standalone/releases/download/20260825/cpython-3.12.14%2B20260825-x86_64-pc-windows-msvc-install_only.tar.gz",
+  "sha256": "15d25c455ea25d6b24d7e58eabdf744fd0db3cfb977934ae08fd2237acd8ccc1",
+  "download_bytes": 46154932,
+  "install_dir": "app-python/cpython-3.12.14-20260825",
+  "license": "Python Software Foundation License (CPython) + 구성 요소별 BSD/MIT/OpenSSL",
+  "license_url": "https://github.com/astral-sh/python-build-standalone/blob/main/LICENSE",
+  "why": "레지스트리·PATH·시스템 파이썬을 건드리지 않는 디렉터리 단위 설치. 폴더를 지우면 완전히 되돌아간다.",
+  "rationale_version": "3.12 계열 고정 — 기존에 동작하던 GPT-SoVITS venv 가 3.12.10 이었고 torch 2.11+cu130 휠이 cp312 로 제공된다."
+ },
+ "components": {
+  "gptsovits": {
+   "title": "GPT-SoVITS 한국어 음성 합성",
+   "venv_dir": "gptsovits_venv_app",
+   "reuse": {
+    "repo_dir_candidates": [
+     "GPT-SoVITS"
+    ],
+    "note": "코드와 사전학습 모델은 이미 내려받은 것을 그대로 쓴다. 재다운로드하지 않는다."
+   },
+   "license": "GPT-SoVITS 코드 MIT / 사전학습 모델 lj1995/GPT-SoVITS (HuggingFace 배포 조건 준수)",
+   "model_files": [
+    {
+     "path": "GPT_SoVITS/pretrained_models/chinese-hubert-base/config.json",
+     "min_bytes": 500
+    },
+    {
+     "path": "GPT_SoVITS/pretrained_models/chinese-hubert-base/pytorch_model.bin",
+     "min_bytes": 180000000
+    },
+    {
+     "path": "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large/config.json",
+     "min_bytes": 500
+    },
+    {
+     "path": "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large/pytorch_model.bin",
+     "min_bytes": 600000000
+    },
+    {
+     "path": "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large/tokenizer.json",
+     "min_bytes": 100000
+    },
+    {
+     "path": "GPT_SoVITS/pretrained_models/gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt",
+     "min_bytes": 150000000
+    },
+    {
+     "path": "GPT_SoVITS/pretrained_models/gsv-v2final-pretrained/s2G2333k.pth",
+     "min_bytes": 100000000
+    }
+   ],
+   "torch": {
+    "index_url": "https://download.pytorch.org/whl/cu130",
+    "packages": [
+     "torch==2.11.0+cu130",
+     "torchaudio==2.11.0+cu130"
+    ],
+    "why": "설치 대상 GPU(RTX 50 시리즈, Blackwell)는 CUDA 13 계열 휠이 필요하다. 손상 전 환경도 같은 조합이었다.",
+    "license": "PyTorch BSD-3-Clause + NVIDIA CUDA EULA(재배포 런타임 포함)"
+   },
+   "packages": [
+    "numpy==1.26.4",
+    "scipy==1.17.1",
+    "soundfile==0.13.1",
+    "soxr==1.0.0",
+    "librosa==0.10.2",
+    "numba==0.65.0",
+    "transformers==4.50.0",
+    "tokenizers==0.21.4",
+    "peft==0.18.1",
+    "pytorch-lightning==2.6.1",
+    "torchmetrics==1.9.0",
+    "x-transformers==2.17.10",
+    "rotary-embedding-torch==0.8.9",
+    "einops",
+    "huggingface_hub",
+    "safetensors==0.7.0",
+    "sentencepiece==0.2.1",
+    "PyYAML==6.0.3",
+    "packaging==26.0",
+    "regex",
+    "requests",
+    "tqdm==4.67.3",
+    "typeguard==4.5.1",
+    "psutil==7.2.2",
+    "chardet",
+    "ffmpeg-python",
+    "matplotlib",
+    "nltk==3.9.4",
+    "jieba",
+    "cn2an",
+    "pypinyin==0.55.0",
+    "split-lang==2.1.1",
+    "fast-langdetect",
+    "wordsegment==1.3.1",
+    "jamo",
+    "ko-pron",
+    "g2pk2",
+    "g2p-en",
+    "python-mecab-ko==1.3.7"
+   ],
+   "optional_packages": [
+    "ToJyutping",
+    "opencc"
+   ],
+   "excluded_packages": {
+    "pyopenjtalk": "일본어 음소화 전용. 프리빌트 휠이 없어 MSVC 빌드가 필요하다. 이번 범위(한국어 복구)에 불필요하므로 설치하지 않는다.",
+    "gradio": "GPT-SoVITS WebUI 전용. AudioForge 는 브리지로 직접 호출하므로 불필요.",
+    "funasr / faster-whisper / ctranslate2": "GPT-SoVITS 학습·라벨링 도구 전용. 추론 경로에서 쓰지 않는다."
+   },
+   "shims": {
+    "jieba_fast": "jieba 로 위임 (C 확장 빌드 회피)",
+    "eunjeon": "python-mecab-ko 로 위임 (MSVC 빌드 회피)"
+   },
+   "verify": {
+    "imports": [
+     "torch",
+     "torchaudio",
+     "numpy",
+     "scipy",
+     "soundfile",
+     "librosa",
+     "numba",
+     "transformers",
+     "peft",
+     "pytorch_lightning",
+     "torchmetrics",
+     "einops",
+     "huggingface_hub",
+     "yaml",
+     "ffmpeg",
+     "jieba",
+     "jieba_fast",
+     "cn2an",
+     "pypinyin",
+     "split_lang",
+     "fast_langdetect",
+     "wordsegment",
+     "jamo",
+     "ko_pron",
+     "g2pk2",
+     "g2p_en",
+     "mecab",
+     "eunjeon",
+     "x_transformers",
+     "rotary_embedding_torch",
+     "matplotlib",
+     "nltk"
+    ],
+    "deep": "GPT_SoVITS TTS_Config 로드 + TTS 인스턴스 생성(실제 가중치 로딩)까지 수행한다. 파일 존재 확인이 아니라 모델이 실제로 올라가는지를 본다."
+   }
+  }
+ },
+ "assets_schema": 1,
+ "assets": {
+  "app-python": {
+   "engine": "공통",
+   "kind": "interpreter",
+   "source": "astral-sh/python-build-standalone (interpreter 절에 URL·SHA 있음)",
+   "revision": "20260825 / CPython 3.12.14",
+   "requirement": "required",
+   "install_bytes": 46154932,
+   "license": "PSF-2.0 + 구성요소별 BSD/MIT/OpenSSL",
+   "install_rel": "externals/runtime/app-python/cpython-3.12.14-20260825",
+   "verify": "python -c import sys 로 버전 확인 (app_env_verify)"
+  },
+  "gptsovits-venv": {
+   "engine": "GPT-SoVITS",
+   "kind": "venv",
+   "source": "pip (requirements)",
+   "revision": "requirements 고정",
+   "requirement": "required",
+   "install_bytes": null,
+   "license": "구성 패키지별 상이",
+   "install_rel": "externals/runtime/gptsovits_venv_app",
+   "verify": "import 목록 검증(app_env_verify) + venv fingerprint",
+   "note": "다운로드 자산이 아니라 installer 가 생성한다. 절대경로는 runtime.json(비추적)에만 있다."
+  },
+  "qwen3-tts-venv": {
+   "engine": "Qwen3-TTS",
+   "kind": "venv",
+   "source": "pip (requirements)",
+   "revision": "requirements 고정",
+   "requirement": "required",
+   "install_bytes": null,
+   "license": "구성 패키지별 상이",
+   "install_rel": "externals/qwen3_tts_venv",
+   "verify": "import 목록 검증(app_env_verify) + venv fingerprint",
+   "note": "다운로드 자산이 아니라 installer 가 생성한다. 절대경로는 runtime.json(비추적)에만 있다."
+  },
+  "nllb-200-distilled-600M": {
+   "engine": "번역(NLLB) 기본",
+   "kind": "hf_snapshot",
+   "source": "https://huggingface.co/facebook/nllb-200-distilled-600M",
+   "revision": "f8d333a098d19b4fd9a8b18f94170487ad3f821d",
+   "requirement": "required",
+   "install_bytes": 2482646304,
+   "license": "CC-BY-NC-4.0",
+   "files": {
+    "config.json": "f9b4081d3d108e9d06532ea8d92b932c04ed3a15ff2f87e6982f8e14db51fbc5",
+    "generation_config.json": "0bb604cdb8392649176935a447ce994128f170a6908c135a17d0e3dfb8113cb2",
+    "pytorch_model.bin": "c266c2cfd19758b6d09c1fc31ecdf1e485509035f6b51dfe84f1ada83eefcc42",
+    "sentencepiece.bpe.model": "14bb8dfb35c0ffdea7bc01e56cea38b9e3d5efcdcb9c251d6b40538e1aab555a",
+    "special_tokens_map.json": "992bd4ed610d644d6823081937bcc91bb8878dd556cea4ae5327f2480361330e",
+    "tokenizer.json": "e316b82de11d0f951f370943b3c438311629547285129b0b81dadabd01bca665",
+    "tokenizer_config.json": "d1aa8c3697d3e35674f97b5b7e9c99d22b010f528e80140257d97316be90d044"
+   },
+   "install_rel": "externals/hf_models/hub/models--facebook--nllb-200-distilled-600M/snapshots/<revision>",
+   "verify": "model_registry.snapshot_path() + verify_sha256()"
+  },
+  "nllb-200-distilled-1.3B": {
+   "engine": "번역(NLLB) 고품질",
+   "kind": "hf_snapshot",
+   "source": "https://huggingface.co/facebook/nllb-200-distilled-1.3B",
+   "revision": "7be3e24664b38ce1cac29b8aeed6911aa0cf0576",
+   "requirement": "optional",
+   "install_bytes": 5505070575,
+   "license": "CC-BY-NC-4.0",
+   "files": {
+    "config.json": "6918d76e923d6b372a14b8d1d837f27b809bd009943c4ebe943f8e34b2226233",
+    "generation_config.json": "0bb604cdb8392649176935a447ce994128f170a6908c135a17d0e3dfb8113cb2",
+    "pytorch_model.bin": "7e40f838a5aad3d60e9254632ab876bda44340386ca7ebad3e099db7432b04e1",
+    "sentencepiece.bpe.model": "14bb8dfb35c0ffdea7bc01e56cea38b9e3d5efcdcb9c251d6b40538e1aab555a",
+    "special_tokens_map.json": "992bd4ed610d644d6823081937bcc91bb8878dd556cea4ae5327f2480361330e",
+    "tokenizer.json": "e316b82de11d0f951f370943b3c438311629547285129b0b81dadabd01bca665",
+    "tokenizer_config.json": "d1aa8c3697d3e35674f97b5b7e9c99d22b010f528e80140257d97316be90d044"
+   },
+   "install_rel": "externals/hf_models/hub/models--facebook--nllb-200-distilled-1.3B/snapshots/<revision>",
+   "verify": "model_registry.snapshot_path() + verify_sha256()"
+  },
+  "qwen2.5-3b-instruct": {
+   "engine": "번역(LLM) 백엔드",
+   "kind": "hf_snapshot",
+   "source": "https://huggingface.co/Qwen/Qwen2.5-3B-Instruct",
+   "revision": "aa8e72537993ba99e69dfaafa59ed015b17504d1",
+   "requirement": "optional",
+   "install_bytes": 6183451098,
+   "license": "Apache-2.0 계열",
+   "files": {
+    "config.json": "eed00b17e22553979d090fa492e587e92885e328914c8e0b0b78f0a0d3576b3b",
+    "generation_config.json": "ea35dfb6fc5051b01114f9b995820d55dab01ed33ee490f6378b442af82c09f9",
+    "merges.txt": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+    "model-00001-of-00002.safetensors": "67347b23fb4165b652eb6611f5e1f2a06dfcddba8e909df1b2b0b1857bee06c2",
+    "model-00002-of-00002.safetensors": "a40d941d0e7e0b966ad8b62bb6d6b7c88cce1299197b599d9d0a4ce59aabfc1d",
+    "model.safetensors.index.json": "bc8aaa0c87d4335177e01c765f1de0db81661c67c1a72fbfb0d521b09f5ddc56",
+    "tokenizer.json": "c0382117ea329cdf097041132f6d735924b697924d6f6fc3945713e96ce87539",
+    "tokenizer_config.json": "5b5d4f65d0acd3b2d56a35b56d374a36cbc1c8fa5cf3b3febbbfabf22f359583",
+    "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910"
+   },
+   "install_rel": "externals/hf_models/hub/models--Qwen--Qwen2.5-3B-Instruct/snapshots/<revision>",
+   "verify": "model_registry.snapshot_path() + verify_sha256()"
+  },
+  "whisper-small": {
+   "engine": "ASR(Whisper) — 참조 전사·ICL 정렬",
+   "kind": "checkpoint",
+   "source": "openai-whisper 공식 체크포인트(라이브러리 URL 표에 고정)",
+   "revision": "small",
+   "requirement": "required",
+   "install_bytes": 483617219,
+   "license": "MIT",
+   "files": {
+    "small.pt": "9ecf779972d90ba49c06d968637d720dd632c55bbf19d441fb42bf17a411e794"
+   },
+   "install_rel": "externals/whisper_models/small.pt",
+   "verify": "transcribe_worker.resolve_whisper_root() 로 internal 해석 확인"
+  },
+  "whisper-large-v3": {
+   "engine": "ASR(Whisper) — 참조 전사·ICL 정렬",
+   "kind": "checkpoint",
+   "source": "openai-whisper 공식 체크포인트(라이브러리 URL 표에 고정)",
+   "revision": "large-v3",
+   "requirement": "required",
+   "install_bytes": 3087371615,
+   "license": "MIT",
+   "files": {
+    "large-v3.pt": "e5b1a55b89c1367dacf97e3e19bfd829a01529dbfdeefa8caeb59b3f1b81dadb"
+   },
+   "install_rel": "externals/whisper_models/large-v3.pt",
+   "verify": "transcribe_worker.resolve_whisper_root() 로 internal 해석 확인"
+  },
+  "whisper-medium": {
+   "engine": "ASR(Whisper) — 참조 전사·ICL 정렬",
+   "kind": "checkpoint",
+   "source": "openai-whisper 공식 체크포인트(라이브러리 URL 표에 고정)",
+   "revision": "medium",
+   "requirement": "optional_missing",
+   "install_bytes": null,
+   "license": "MIT",
+   "files": {},
+   "install_rel": "externals/whisper_models/medium.pt",
+   "verify": "transcribe_worker.resolve_whisper_root() 로 internal 해석 확인"
+  },
+  "whisper-large-v3-turbo": {
+   "engine": "ASR(Whisper) — 참조 전사·ICL 정렬",
+   "kind": "checkpoint",
+   "source": "openai-whisper 공식 체크포인트(라이브러리 URL 표에 고정)",
+   "revision": "large-v3-turbo",
+   "requirement": "optional_missing",
+   "install_bytes": null,
+   "license": "MIT",
+   "files": {},
+   "install_rel": "externals/whisper_models/large-v3-turbo.pt",
+   "verify": "transcribe_worker.resolve_whisper_root() 로 internal 해석 확인"
+  },
+  "qwen3-tts-production": {
+   "engine": "Qwen3-TTS 합성(기본)",
+   "kind": "engine_asset",
+   "source": "https://huggingface.co/Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+   "revision": null,
+   "requirement": "required",
+   "install_bytes": 2516100932,
+   "license": "Apache-2.0",
+   "file_count": 20,
+   "files": {
+    "hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-Base/snapshots/5d83992436eae1d760afd27aff78a71d676296fc/model.safetensors": "180b3b10eb1c9f1b4db7806d5475bae3071c0243c299d49926bab1da3b6946f6",
+    "hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-Base/snapshots/5d83992436eae1d760afd27aff78a71d676296fc/speech_tokenizer/model.safetensors": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+    "hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-Base/snapshots/5d83992436eae1d760afd27aff78a71d676296fc/vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+    "hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-Base/snapshots/5d83992436eae1d760afd27aff78a71d676296fc/merges.txt": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+    "hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-Base/snapshots/5d83992436eae1d760afd27aff78a71d676296fc/tokenizer_config.json": "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670",
+    "hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-Base/snapshots/5d83992436eae1d760afd27aff78a71d676296fc/config.json": "2e714c787c8edb98b05432685cddb634add2de4d4e645f653d68251ef72ba011",
+    "hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-Base/snapshots/5d83992436eae1d760afd27aff78a71d676296fc/speech_tokenizer/config.json": "ee65bb901c876664ab8707c487157aa1a6ee57c65969b28fb5ec9dc211e68167",
+    "hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-Base/snapshots/5d83992436eae1d760afd27aff78a71d676296fc/generation_config.json": "f1b90b4513f3b34c62851049e2492d7b4c5940daf1276f89c82b8ef04127f3aa",
+    "hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-Base/snapshots/5d83992436eae1d760afd27aff78a71d676296fc/speech_tokenizer/preprocessor_config.json": "fcb3805e597e786d4067706e602f6688524640f8d3396790e2e09b5942fcbdfb",
+    "hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-Base/snapshots/5d83992436eae1d760afd27aff78a71d676296fc/preprocessor_config.json": "efdde1022ea9d76928bf7a9cd53139138f5ba2e466e837f08f6105ab1af1c119",
+    "hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-Base/snapshots/5d83992436eae1d760afd27aff78a71d676296fc/speech_tokenizer/configuration.json": "6bc26d64eb5024b4d1dab5a52371958b429256d6c9d59787f1f5294a54e0cebd",
+    "hub/models--Qwen--Qwen3-TTS-12Hz-0.6B-Base/refs/main": "2d196fe864f85e692d8a7bcc073e05466d75360f2d6704035f5fffa74c087774"
+   },
+   "install_rel": "externals/qwen3_tts_hf",
+   "verify": "디렉터리 존재 + 위 필수 파일 SHA-256 대조",
+   "note": "파일 수가 많아 상위 12개만 명세에 고정한다."
+  },
+  "qwen3-tts-1_7b": {
+   "engine": "Qwen3-TTS 1.7B(비교용)",
+   "kind": "engine_asset",
+   "source": "https://huggingface.co/Qwen (1.7B Base)",
+   "revision": null,
+   "requirement": "optional",
+   "install_bytes": 4544231097,
+   "license": "Apache-2.0",
+   "file_count": 27,
+   "files": {
+    "model.safetensors": "38fc7fc51c5e776e840414b6fd443962e9411b9654888fd7913e4da643cb857c",
+    "speech_tokenizer/model.safetensors": "836b7b357f5ea43e889936a3709af68dfe3751881acefe4ecf0dbd30ba571258",
+    "vocab.json": "ca10d7e9fb3ed18575dd1e277a2579c16d108e32f27439684afa0e10b1440910",
+    "merges.txt": "599bab54075088774b1733fde865d5bd747cbcc7a547c5bc12610e874e26f5e3",
+    "README.md": "621b7e88f1867bc03d817176fc1f7f55f4b5a70654b2a07fdcda1e169efb024b",
+    "tokenizer_config.json": "dc3c31c3bdaedd5016382bb3cbe07323026775ad51f5a4fb564505992ae4a670",
+    "config.json": "b4f01752d15a488abde3e1ab44723ae4f4b9e68a4037257b098b3737893cc1f9",
+    "speech_tokenizer/config.json": "ee65bb901c876664ab8707c487157aa1a6ee57c65969b28fb5ec9dc211e68167",
+    ".gitattributes": "11ad7efa24975ee4b0c3c3a38ed18737f0658a5f75a0a96787b576a78a023361",
+    "generation_config.json": "f1b90b4513f3b34c62851049e2492d7b4c5940daf1276f89c82b8ef04127f3aa",
+    "speech_tokenizer/preprocessor_config.json": "fcb3805e597e786d4067706e602f6688524640f8d3396790e2e09b5942fcbdfb",
+    ".cache/huggingface/download/model.safetensors.metadata": "4dbbc73dfa3c462d8d9c59cf34d43b058036fb0ea4f92c4acc7af5cee79ca85a"
+   },
+   "install_rel": "externals/qwen3_tts_1_7b_base",
+   "verify": "디렉터리 존재 + 위 필수 파일 SHA-256 대조",
+   "note": "파일 수가 많아 상위 12개만 명세에 고정한다."
+  },
+  "gpt-sovits": {
+   "engine": "GPT-SoVITS 합성 코드·가중치",
+   "kind": "engine_asset",
+   "source": "https://github.com/RVC-Boss/GPT-SoVITS + lj1995/GPT-SoVITS 가중치",
+   "revision": null,
+   "requirement": "required",
+   "install_bytes": 1147413470,
+   "license": "MIT(코드) / 가중치 별도",
+   "file_count": 361,
+   "files": {
+    "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large/pytorch_model.bin": "e53a693acc59ace251d143d068096ae0d7b79e4b1b503fa84c9dcf576448c1d8",
+    "GPT_SoVITS/pretrained_models/chinese-hubert-base/pytorch_model.bin": "24164f129c66499d1346e2aa55f183250c223161ec2770c0da3d3b08cf432d3c",
+    "GPT_SoVITS/pretrained_models/gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt": "732f94e63b148066e24c7f9d2637f3374083e637635f07fbdb695dee20ddbe1f",
+    "GPT_SoVITS/pretrained_models/gsv-v2final-pretrained/s2G2333k.pth": "924fdccaa3c574bf139c25c9759aa1ed3b3f99e19a7c529ee996c2bc17663695",
+    "GPT_SoVITS/text/ja_userdic/userdict.csv": "cf3ae9063ee6b171f5553900fcaa813238a8d20bb0917a6a3a0f8d0c35c27962",
+    ".git/objects/pack/pack-91128847542f6fe2997b01f0ab3240381a927999.pack": "68a3871f90dd42223c3047469d21ca2a1e7044e401bcb3b99f0e9c4131e0903b",
+    "GPT_SoVITS/text/engdict_cache.pickle": "9bff9393f4b192d873a11335efc8f124771087b6dc847d34fd240c2846889d2b",
+    "GPT_SoVITS/text/cmudict.rep": "a89a031728feb600a5f2f2c566f66d7e01c7efb7640ff307b9e3c28b82c8d4a9",
+    "GPT_SoVITS/text/cmudict-fast.rep": "d6701402ea9249e4ae1e23ab8a4c216e847d49a30bd9bb206a33b3c7830f0a4a",
+    "GPT_SoVITS/text/g2pw/polyphonic-fix.rep": "0d810a8734db881b44b310c1d31ff9646eb2ba71f9ddd155468c61ab335b7b57",
+    "GPT_SoVITS/text/g2pw/polyphonic.pickle": "e00b04584ccc1453b0b23a272d5392e6e5a380a1c8beb3ab00765e0fea3fa1fa",
+    "GPT_SoVITS/text/namedict_cache.pickle": "559552094c4a6e995213e3fa586330e078ef8cb3a7a95a3109e945111cd2bfc1"
+   },
+   "install_rel": "externals/GPT-SoVITS",
+   "verify": "디렉터리 존재 + 위 필수 파일 SHA-256 대조",
+   "note": "파일 수가 많아 상위 12개만 명세에 고정한다."
+  },
+  "separator-models": {
+   "engine": "음원 분리",
+   "kind": "engine_asset",
+   "source": "UVR/MDX 공식 배포",
+   "revision": null,
+   "requirement": "required",
+   "install_bytes": 1552464842,
+   "license": "모델별 상이",
+   "file_count": 5,
+   "files": {
+    "mel_band_roformer_kim_ft2_bleedless_unwa.ckpt": "3c450bd66a98b49dd03231fc5ebb84121eef8418236b179423c2b171d62b04d9",
+    "model_bs_roformer_ep_317_sdr_12.9755.ckpt": "5b84f37e8d444c8cb30c79d77f613a41c05868ff9c9ac6c7049c00aefae115aa",
+    "download_checks.json": "d3622e1fa19c161d3cf704927711b453d593a3f1eb0f2e0838c3136907935151",
+    "model_bs_roformer_ep_317_sdr_12.9755.yaml": "2bfdd16c656bd9519aba757cc4f8834b7ede675eb1e00ec4772d74ae1c41af7f",
+    "config_mel_band_roformer_kim_ft_unwa.yaml": "c910a0b1493fd3f9cee7a576a7498e44e660510dcaaf5d0d50d5363dde1d0010"
+   },
+   "install_rel": "externals/separator_models",
+   "verify": "디렉터리 존재 + 위 필수 파일 SHA-256 대조",
+   "note": "파일 수가 많아 상위 5개만 명세에 고정한다."
+  }
+ }
+}

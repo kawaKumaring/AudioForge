@@ -9,9 +9,23 @@ export interface PreviewResult {
   text?: string
   language?: string
   error_message?: string
+  // 구조화 오류 계약(참조 구간 차단 등). Python 이 emit 한 구조화 오류를 문자열로 뭉개면
+  // 실제 차단 사유가 사라지고 UI 는 '형식 불일치'만 보여 준다 — 그래서 허용 필드를 명시한다.
+  code?: string
+  blocking?: unknown
+  requested_region?: unknown
+  effective_region?: unknown
+  validation?: unknown
+  snap?: unknown
+  metrics?: unknown
   // analyze/trim/preflight 등은 결과 필드를 최상위로 실어 보낸다(transcript 래핑 없음).
   [key: string]: unknown
 }
+
+// 구조화 오류에서 renderer 로 넘겨도 되는 필드(허용 목록). 이 밖의 것(절대경로·전사 원문·
+// stack 등)은 복사하지 않는다 — 오류라고 해서 민감 정보를 흘려보낼 이유는 없다.
+const ERROR_FIELDS = ['code', 'blocking', 'requested_region', 'effective_region',
+                      'validation', 'snap', 'metrics'] as const
 
 // EventEmitter 기반 러너의 최소 인터페이스(PythonRunner 호환) — 테스트에서 fake 주입.
 export interface PreviewRunnerLike {
@@ -57,6 +71,7 @@ export function runPreview(opts: RunPreviewOpts): Promise<PreviewResult> {
     let settled = false
     let payload: PreviewResult | null = null
     let errMsg: string | null = null
+    let errPayload: PreviewResult | null = null
     let timer: unknown = null
 
     const finish = (res: PreviewResult) => {
@@ -81,10 +96,32 @@ export function runPreview(opts: RunPreviewOpts): Promise<PreviewResult> {
       }
     })
     opts.runner.on('error', (msg) => {
-      if (!errMsg) errMsg = typeof msg === 'string' ? msg : String(msg)
+      // 문자열 오류는 그대로. 구조화 오류는 **허용 필드만** 복사한다 —
+      // String(msg) 로 넘기면 '[object Object]' 가 되어 차단 사유(code/blocking)가 사라지고,
+      // 반대로 객체를 통째로 넘기면 절대경로·전사 원문·스택이 renderer 로 샌다.
+      if (typeof msg === 'string') {
+        if (!errMsg) errMsg = msg
+        return
+      }
+      if (msg && typeof msg === 'object') {
+        const o = msg as Record<string, unknown>
+        if (!errMsg) {
+          const m = o.message
+          errMsg = typeof m === 'string' && m ? m : null
+        }
+        if (!errPayload) {
+          const picked: PreviewResult = {}
+          for (const k of ERROR_FIELDS) {
+            if (o[k] !== undefined) (picked as Record<string, unknown>)[k] = o[k]
+          }
+          // code 하나라도 있어야 구조화 오류로 취급한다(빈 객체를 payload 로 만들지 않는다).
+          if (Object.keys(picked).length > 0) errPayload = picked
+        }
+      }
     })
     opts.runner.on('done', () => {
-      finish(payload ?? { status: 'failed', error_message: errMsg || '전사 실패' })
+      if (payload) { finish(payload); return }
+      finish({ status: 'failed', error_message: errMsg || '전사 실패', ...(errPayload ?? {}) })
     })
 
     timer = setT(() => {

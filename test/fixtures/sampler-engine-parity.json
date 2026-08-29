@@ -1,0 +1,323 @@
+{
+  "_meta": {
+    "purpose": "표현형 운율 ENGINE(python/expressive_capability.py + python/expressive_planner.py)과 감정 샘플러(python/emotion_sampler.py + src/shared/emotionSampler.ts) 사이의 '어휘 경계'를 고정하는 유일 권위. 두 언어의 테스트가 이 파일 하나를 읽는다(python/test_sampler_engine_parity.py, src/shared/samplerEngineParity.test.ts). 어느 한쪽 소스를 고쳐도 이 파일이 함께 바뀌지 않으면 양쪽 테스트가 동시에 깨진다.",
+    "coupling": "이 파일의 canonical sha256(키 정렬·공백 없음·UTF-8)이 두 테스트 파일에 각각 리터럴로 박혀 있다. 픽스처를 고쳐 실패를 무마하면 두 언어의 해시 핀이 동시에 깨진다. 해시 값은 이 파일 안에 두지 않는다(자기참조 금지).",
+    "capability_contract_version": 1,
+    "plan_version": 1,
+    "expressive_contract_version": 3,
+    "sampler_key_version": 3,
+    "sampler_phrase_version": 2,
+    "engine_modules": ["python/expressive_capability.py", "python/expressive_planner.py"],
+    "sampler_modules": ["python/emotion_sampler.py", "src/shared/emotionSampler.ts"],
+    "language_modules": ["python/expressive_timeline.py", "src/shared/expressiveTimeline.ts"],
+    "engine_has_typescript_counterpart": false,
+    "engine_has_no_ts_counterpart_note": "ENGINE 층에는 TS 모듈이 없다. src/shared/ttsExpressionCapabilities.ts 는 tail/emotion-boundary UI 범위 + boolean capability 이며 4상태 어휘가 없다 — expressive_capability.py 의 대응물이 아니다. 따라서 ENGINE 어휘의 TS 쪽 핀은 TS 테스트가 python 소스를 읽어 대조하는 방식으로만 존재한다.",
+    "not_the_counterpart": "src/shared/ttsExpressionCapabilities.ts",
+    "axes_note": "engine capability 상태와 sampler 샘플 상태는 서로 다른 축이다. 전자는 '이 엔진이 이 기능을 해낼 수 있는가', 후자는 '이 미리듣기 한 행이 지금 어떤 결과인가'. 집합 동일성을 요구하지 않고 MAPPING 을 고정한다."
+  },
+
+  "engine": {
+    "capability_states": ["supported", "degraded", "unsupported", "unknown"],
+    "unverified_state": "unknown",
+    "capability_state_rank": { "unsupported": 0, "degraded": 1, "supported": 2 },
+    "capability_resolution_reasons": [
+      "probe_confirmed", "probe_not_honored", "probe_rejected", "probe_absent",
+      "engine_declared_unsupported", "claim_caps_evidence"
+    ],
+    "punctuation_realizations": ["model_native", "post_process", "unsupported"],
+    "capability_vowel_extend_classes": ["open_vowel", "sustainable_final", "non_sustainable_final"],
+    "capability_vowel_extend_adapter_classes": ["final_consonant_unclassified", "no_target"],
+    "capability_vowel_extend_all_classes": [
+      "open_vowel", "sustainable_final", "non_sustainable_final",
+      "final_consonant_unclassified", "no_target"
+    ],
+    "vowel_extend_verdict_reasons": [
+      "OPEN_VOWEL_ENGINE_STATE", "SUSTAINABLE_FINAL_UNVERIFIED",
+      "NON_SUSTAINABLE_FINAL_DEGRADED", "CLASSIFICATION_UNAVAILABLE", "NO_TARGET"
+    ],
+    "unsupported_codes": [
+      "PROSODY_NO_REALIZATION", "VOWEL_EXTEND_NO_TARGET", "VOWEL_EXTEND_NOT_REALIZABLE",
+      "LAUGH_NO_STRATEGY", "UNIT_EXCEEDS_GENERATION_LIMIT"
+    ],
+    "degradation_codes": [
+      "REFERENCE_X_VECTOR_ONLY", "EMOTION_HARD_JOIN", "EMOTION_OVERLAP_EXPERIMENTAL",
+      "MID_UNIT_EMOTION_TRANSITION_DEFERRED", "NON_DETERMINISTIC_SEED",
+      "PUNCTUATION_POST_PROCESS_ONLY", "LAUGH_CACHED_SAMPLE",
+      "LAUGH_VOICE_TRANSFORM_EXPERIMENTAL", "VOWEL_EXTEND_NON_SUSTAINABLE_FINAL",
+      "CAPABILITY_UNVERIFIED"
+    ],
+    "strategy_reason_codes": [
+      "CONTINUOUS_WEIGHTS_SUPPORTED", "INLINE_INSTRUCTION_SUPPORTED",
+      "NO_INLINE_SUPPORT_FALLBACK_OVERLAP", "NO_CONTEXT_SUPPORT_LAST_RESORT",
+      "CAPABILITY_UNVERIFIED_FALLBACK"
+    ],
+    "laugh_strategy_reasons": [
+      "NATIVE_INSTRUCTION_SUPPORTED", "NO_NATIVE_FALLBACK_SAME_CONDITIONING",
+      "NO_GENERATION_FALLBACK_CACHED_SAMPLE", "NO_CACHE_FALLBACK_VOICE_TRANSFORM",
+      "NO_STRATEGY_AVAILABLE"
+    ]
+  },
+
+  "sampler": {
+    "capability_states_mirror": ["supported", "degraded", "unsupported", "unknown"],
+    "capability_states_mirror_symbol": "EMOTION_SAMPLER_CAPABILITY_STATES",
+    "outcome_states": [
+      "idle", "generating", "ready", "degraded", "limitExceeded", "failed",
+      "unsupported", "unverified"
+    ],
+    "outcome_states_symbol": "EMOTION_SAMPLE_STATES",
+    "reason_codes": [
+      "SAMPLER_XVECTOR_ONLY", "SAMPLER_GENERATION_LIMIT", "SAMPLER_ENGINE_ERROR",
+      "SAMPLER_REFERENCE_MISSING", "SAMPLER_CANCELLED", "SAMPLER_UNKNOWN",
+      "LAUGH_NO_STRATEGY", "VOWEL_EXTEND_NOT_REALIZABLE", "CAPABILITY_UNVERIFIED"
+    ],
+    "state_reasons": {
+      "idle": [],
+      "generating": [],
+      "ready": [],
+      "degraded": ["SAMPLER_XVECTOR_ONLY"],
+      "limitExceeded": ["SAMPLER_GENERATION_LIMIT"],
+      "failed": ["SAMPLER_ENGINE_ERROR", "SAMPLER_REFERENCE_MISSING", "SAMPLER_CANCELLED", "SAMPLER_UNKNOWN"],
+      "unsupported": ["LAUGH_NO_STRATEGY", "VOWEL_EXTEND_NOT_REALIZABLE"],
+      "unverified": ["CAPABILITY_UNVERIFIED"]
+    },
+    "sampler_only_reason_codes": [
+      "SAMPLER_XVECTOR_ONLY", "SAMPLER_GENERATION_LIMIT", "SAMPLER_ENGINE_ERROR",
+      "SAMPLER_REFERENCE_MISSING", "SAMPLER_CANCELLED", "SAMPLER_UNKNOWN"
+    ]
+  },
+
+  "state_axis_mapping": {
+    "note": "engine capability 상태 → sampler 초기 outcome 상태. 두 축을 하나의 어휘로 합치지 않는다. 'unverified' 는 engine 'unknown' 의 sampler 쪽 이름이고, engine 'degraded' 도 같은 칸으로 들어간다(D4 참조).",
+    "capability_state_to_outcome_state": {
+      "supported": "idle",
+      "degraded": "unverified",
+      "unsupported": "unsupported",
+      "unknown": "unverified"
+    },
+    "usable_capability_states": ["supported"],
+    "engine_unknown_is_named_unverified_in_sampler": true,
+    "outcome_states_unreachable_from_capability": [
+      "generating", "ready", "degraded", "limitExceeded", "failed"
+    ],
+    "sampler_has_no_outcome_state_named_supported": true,
+    "supported_maps_to_outcome": "idle"
+  },
+
+  "shared_reason_codes": [
+    {
+      "code": "LAUGH_NO_STRATEGY",
+      "engine_home": "UNSUPPORTED_CODES",
+      "engine_ref": "python/expressive_planner.py:260",
+      "sampler_ref_ts": "src/shared/emotionSampler.ts:112",
+      "sampler_ref_py": "python/emotion_sampler.py:96",
+      "sampler_outcome_state": "unsupported"
+    },
+    {
+      "code": "VOWEL_EXTEND_NOT_REALIZABLE",
+      "engine_home": "UNSUPPORTED_CODES",
+      "engine_ref": "python/expressive_planner.py:259",
+      "sampler_ref_ts": "src/shared/emotionSampler.ts:113",
+      "sampler_ref_py": "python/emotion_sampler.py:97",
+      "sampler_outcome_state": "unsupported"
+    },
+    {
+      "code": "CAPABILITY_UNVERIFIED",
+      "engine_home": "DEGRADATION_CODES",
+      "engine_ref": "python/expressive_planner.py:253",
+      "sampler_ref_ts": "src/shared/emotionSampler.ts:114",
+      "sampler_ref_py": "python/emotion_sampler.py:98",
+      "sampler_outcome_state": "unverified"
+    }
+  ],
+
+  "engine_only_vocabulary": [
+    {
+      "symbol": "CAPABILITY_UNVERIFIED_FALLBACK",
+      "engine_ref": "python/expressive_planner.py:97",
+      "sampler_counterpart": null,
+      "why": "전략 A/B/C 선택 사유다. 샘플러는 전략을 고르지 않는다(한 행을 그대로 미리듣기). 엔진은 이 사유를 planner:770-771 에서 공유 코드 CAPABILITY_UNVERIFIED 로 투영하며, 샘플러가 보는 것은 그 투영값이다."
+    },
+    {
+      "symbol": "PUNCTUATION_REALIZATIONS",
+      "engine_ref": "python/expressive_planner.py:120",
+      "sampler_counterpart": null,
+      "why": "구두점을 어떻게 실현하는가(네이티브/후처리/불가) 축이다. TS 에는 planner 모듈 자체가 없고 샘플러는 실현 방식을 고르지 않는다. 멤버 unsupported 는 capability 상태의 unsupported 와 글자만 같고 다른 축이다."
+    },
+    {
+      "symbol": "PROSODY_NO_REALIZATION",
+      "engine_ref": "python/expressive_planner.py:257",
+      "sampler_counterpart": null,
+      "why": "네이티브도 후처리도 없는 구두점 — 샘플러는 후처리 경로를 갖지 않아 이 상태를 표현할 대상이 없다."
+    },
+    {
+      "symbol": "VOWEL_EXTEND_NO_TARGET",
+      "engine_ref": "python/expressive_planner.py:258",
+      "sampler_counterpart": null,
+      "why": "늘일 대상 자체가 없는 경우. 샘플러 카탈로그의 '~' 행은 호스트 문구가 고정되어 있어 대상이 항상 존재한다."
+    },
+    {
+      "symbol": "UNIT_EXCEEDS_GENERATION_LIMIT",
+      "engine_ref": "python/expressive_planner.py:261",
+      "sampler_counterpart": null,
+      "why": "청킹 축. 샘플러는 한 줄만 합성하므로 청크 상한 초과가 없다(생성 횟수 상한은 SAMPLER_GENERATION_LIMIT 로 따로 있다)."
+    }
+  ],
+
+  "language_contract": {
+    "note": "items 4~6 — 언어 계약 어휘. 이 값은 test/fixtures/expressive-timeline-v3.json 의 _meta 와도 반드시 같아야 한다(권위 이중화 금지: 양쪽 테스트가 두 픽스처를 서로 대조한다).",
+    "local_prosody_kinds": ["firm_end", "fade_end", "emphasis", "question_rise", "shock_rise", "vowel_extend"],
+    "laugh_styles": ["chuckle", "breathy", "bashful", "open", "high_giggle"],
+    "laugh_positions": ["leading", "inline", "trailing", "standalone"],
+    "vowel_extend_classes": ["open_vowel", "sustainable_final", "non_sustainable_final", "undeterminable"],
+    "language_layer_asserts_acoustic_quality": false,
+    "sustainable_final_is_acoustically_verified": false,
+    "order_note": "이 네 집합은 순서에 의미가 없다(카운트 인덱스 표가 아니다). 그래도 두 언어가 같은 순서로 선언하도록 리스트 동일성으로 고정한다 — 순서 차이는 드리프트의 첫 징후다. 순서가 실제로 의미 있는 표(*_BY_COUNT)는 expressive-timeline-v3.json 쪽에서 고정한다."
+  },
+
+  "punctuation_kind_vectors": [
+    { "id": "single-dot-is-firm-end", "input": "끝.", "kind": "firm_end", "event_count": 1 },
+    { "id": "two-dots-is-fade-end", "input": "끝..", "kind": "fade_end", "event_count": 1 },
+    { "id": "three-dots-is-fade-end", "input": "끝...", "kind": "fade_end", "event_count": 1 },
+    { "id": "bang-is-emphasis", "input": "좋아!", "kind": "emphasis", "event_count": 1 },
+    { "id": "question-is-question-rise", "input": "정말?", "kind": "question_rise", "event_count": 1 },
+    { "id": "bangq-is-shock-rise", "input": "몰라!?", "kind": "shock_rise", "event_count": 1 },
+    { "id": "qbang-alias-is-one-shock-rise", "input": "몰라?!", "kind": "shock_rise", "event_count": 1 },
+    { "id": "tilde-is-vowel-extend", "input": "그래~", "kind": "vowel_extend", "event_count": 1 }
+  ],
+
+  "punctuation_alias_pairs": [
+    {
+      "id": "qbang-is-alias-of-bangq",
+      "canonical_input": "몰라!?",
+      "alias_input": "몰라?!",
+      "kind": "shock_rise",
+      "event_count": 1,
+      "raw_token_differs": true
+    }
+  ],
+
+  "dot_run_rule": {
+    "note": "홑점 1개는 firm_end, 2개 이상은 fade_end. 점 런은 항상 하나의 토큰이다.",
+    "firm_end_max_count": 1,
+    "fade_end_min_count": 2
+  },
+
+  "vowel_extend_class_vectors": [
+    { "id": "open-vowel", "input": "가~", "classification": "open_vowel" },
+    { "id": "sustainable-final-ieung", "input": "강~", "classification": "sustainable_final" },
+    { "id": "non-sustainable-final", "input": "갑~", "classification": "non_sustainable_final" },
+    { "id": "undeterminable-han", "input": "好~", "classification": "undeterminable" }
+  ],
+
+  "vowel_extend_verdicts": {
+    "note": "미검증 프로필(expressive_capability.unknown_profile())에서의 엔진 판정과 샘플러 판정을 나란히 고정한다. states_agree=false 는 기록된 divergence 이며 테스트가 그 불일치가 여전히 그대로인지 확인한다 — 누가 production 을 고쳐 일치시키면 테스트가 깨져 이 표를 갱신하게 만든다.",
+    "profile": "unknown_profile",
+    "rows": [
+      {
+        "classification": "open_vowel",
+        "engine_state": "unknown", "engine_reason": "OPEN_VOWEL_ENGINE_STATE",
+        "sampler_state": "unknown", "sampler_reason": "CAPABILITY_UNVERIFIED",
+        "states_agree": true, "divergence_id": null
+      },
+      {
+        "classification": "sustainable_final",
+        "engine_state": "unknown", "engine_reason": "SUSTAINABLE_FINAL_UNVERIFIED",
+        "sampler_state": "unknown", "sampler_reason": "CAPABILITY_UNVERIFIED",
+        "states_agree": true, "divergence_id": null
+      },
+      {
+        "classification": "non_sustainable_final",
+        "engine_state": "degraded", "engine_reason": "NON_SUSTAINABLE_FINAL_DEGRADED",
+        "sampler_state": "unsupported", "sampler_reason": "VOWEL_EXTEND_NOT_REALIZABLE",
+        "states_agree": false, "divergence_id": "D1"
+      },
+      {
+        "classification": "undeterminable",
+        "engine_state": "unsupported", "engine_reason": "NO_TARGET",
+        "sampler_state": "unknown", "sampler_reason": "CAPABILITY_UNVERIFIED",
+        "states_agree": false, "divergence_id": "D2"
+      }
+    ]
+  },
+
+  "laugh_verdict": {
+    "note": "미검증 프로필에서 웃음은 전략 A~D 가 모두 불가 → 엔진은 LAUGH_NO_STRATEGY. 샘플러의 웃음 행 선언 capability 도 unsupported/LAUGH_NO_STRATEGY 다. 여기는 일치한다.",
+    "profile": "unknown_profile",
+    "engine_strategy_reason": "NO_STRATEGY_AVAILABLE",
+    "engine_unsupported_code": "LAUGH_NO_STRATEGY",
+    "sampler_capability_state": "unsupported",
+    "sampler_capability_reason": "LAUGH_NO_STRATEGY",
+    "sampler_outcome_state": "unsupported",
+    "agrees": true
+  },
+
+  "known_divergences": [
+    {
+      "id": "D1",
+      "title": "'~' 지속 불가 받침의 상태값이 다르다",
+      "engine": "expressive_capability.resolve_vowel_extend_capability(non_sustainable_final) → state='degraded', reason='NON_SUSTAINABLE_FINAL_DEGRADED' (python/expressive_capability.py:368-369)",
+      "sampler": "capabilityForVowelExtend('non_sustainable_final') → state='unsupported', reason='VOWEL_EXTEND_NOT_REALIZABLE' (src/shared/emotionSampler.ts:1026-1029, python/emotion_sampler.py:784-789)",
+      "shared_part": "사유 코드는 엔진의 planner 층과 일치한다 — expressive_planner.py:1158-1161 이 같은 경우를 realization='unsupported' + VOWEL_EXTEND_NOT_REALIZABLE 로 투영한다.",
+      "why_not_fixable_by_test": "엔진은 capability 상태(degraded)와 planner 실현(unsupported)을 두 필드로 나눠 답한다. 샘플러는 그 둘을 한 필드로 합쳐 놨다. 맞추려면 어느 한쪽의 production 필드 구조/값을 바꿔야 하며, 그것은 테스트의 권한이 아니다."
+    },
+    {
+      "id": "D2",
+      "title": "언어 계약의 undeterminable 이 엔진 capability 어휘에 없다",
+      "engine": "expressive_capability.VOWEL_EXTEND_CLASSES = ('open_vowel','sustainable_final','non_sustainable_final') — 3개 (python/expressive_capability.py:299). VOWEL_EXTEND_ALL_CLASSES(:304) 에도 undeterminable 이 없어 classify_vowel_extend 가 구계약 어댑터로 떨어지고 결과가 no_target → 최종 판정 unsupported/NO_TARGET 이 된다.",
+      "sampler": "capabilityForVowelExtend('undeterminable') → unknown/CAPABILITY_UNVERIFIED (판정 불가를 확인 안 됨으로 취급)",
+      "language_contract": "expressive_timeline.VOWEL_EXTEND_CLASSES 는 4개로 undeterminable 을 포함한다 (python/expressive_timeline.py:55-57, src/shared/expressiveTimeline.ts:137-139) — 언어 계약과 엔진 capability 가 같은 상수명으로 서로 다른 집합을 쓴다.",
+      "why_not_fixable_by_test": "엔진 어휘에 undeterminable 을 추가하는 것은 production vocabulary 변경이다. 판정 불가를 대상 없음으로 접는 현재 엔진 동작이 옳은지는 별도 결정 사항이며 테스트가 대신 결정할 수 없다."
+    },
+    {
+      "id": "D3",
+      "title": "상태 이름이 다른 것이 아니라 축이 다르다",
+      "engine": "CAPABILITY_STATES = ('supported','degraded','unsupported','unknown') — capability 축 (python/expressive_capability.py:31)",
+      "sampler": "EMOTION_SAMPLE_STATES = 8개 — 미리듣기 한 행의 결과 축 (src/shared/emotionSampler.ts:79-88, python/emotion_sampler.py:65-74)",
+      "resolution": "집합 동일성을 요구하지 않는다. 샘플러는 엔진의 4상태 어휘를 EMOTION_SAMPLER_CAPABILITY_STATES 로 따로 미러링하고 있고(src/shared/emotionSampler.ts:988, python/emotion_sampler.py:758) 그 미러는 엔진과 바이트 동일하다. 두 축의 연결은 state_axis_mapping 으로 고정한다.",
+      "why_not_fixable_by_test": "두 축을 한 어휘로 합치는 것은 설계 변경이다. unverified 를 unknown 으로 rename 하거나 그 반대는 production 식별자 변경이므로 테스트가 결정하지 않는다."
+    },
+    {
+      "id": "D4",
+      "title": "엔진 capability degraded 를 샘플러가 구별해 표시하지 못한다",
+      "engine": "capability 상태 degraded = 입력은 받았지만 효과가 관측되지 않음 (python/expressive_capability.py:100-101)",
+      "sampler": "state_for_capability('degraded') → 'unverified' (src/shared/emotionSampler.ts:1039-1043, python/emotion_sampler.py:797-804). 샘플러의 degraded outcome 은 SAMPLER_XVECTOR_ONLY 전용이라 capability 강등을 담지 않는다.",
+      "why_not_fixable_by_test": "샘플러 degraded 의 의미(참조 전사 없이 생성됨)를 재정의하거나 새 outcome 상태를 추가해야 한다 — 둘 다 production 어휘 변경이다."
+    },
+    {
+      "id": "D5",
+      "title": "x-vector-only 강등 코드 이름이 두 개다",
+      "engine": "REFERENCE_X_VECTOR_ONLY (python/expressive_planner.py:244)",
+      "sampler": "SAMPLER_XVECTOR_ONLY (src/shared/emotionSampler.ts:103, python/emotion_sampler.py:87)",
+      "why_not_fixable_by_test": "같은 개념의 두 이름이다. 어느 한쪽을 rename 하는 것은 production 식별자 변경이며 테스트의 권한이 아니다. 여기에 기록만 한다."
+    },
+    {
+      "id": "D6",
+      "title": "CAPABILITY_UNVERIFIED 의 소속 분류가 다르다",
+      "engine": "DEGRADATION_CODES 의 멤버 (python/expressive_planner.py:253) — 강등으로 분류",
+      "sampler": "unverified outcome 상태의 유일한 사유 코드이며 degraded 의 사유가 될 수 없다 (EMOTION_SAMPLE_STATE_REASONS)",
+      "why_not_fixable_by_test": "같은 문자열이 두 층에서 다르게 분류된다. 엔진이 이 코드를 별도 분류로 옮기거나 샘플러가 degraded 로 받아들이게 하는 것은 production 결정이다. 문자열 자체는 바이트 동일하므로 그 부분은 강제한다."
+    },
+    {
+      "id": "D7",
+      "title": "PUNCTUATION_REALIZATIONS 는 TS 대응물이 없다",
+      "engine": "('model_native','post_process','unsupported') (python/expressive_planner.py:120)",
+      "sampler": "대응물 없음. TS 에는 planner 모듈이 존재하지 않는다.",
+      "why_not_fixable_by_test": "TS 쪽에 없는 것을 테스트가 만들 수는 없다. TS 테스트가 python 소스를 읽어 이 튜플을 대조하는 방식으로만 핀을 걸 수 있고, 그렇게 했다."
+    },
+    {
+      "id": "D8",
+      "title": "CAPABILITY_UNVERIFIED_FALLBACK 은 의도적으로 샘플러 대응물이 없다",
+      "engine": "STRATEGY_REASON_CODES 멤버 (python/expressive_planner.py:97), 사용처 :528 / :533. planner:770-771 에서 공유 코드 CAPABILITY_UNVERIFIED 로 투영된다.",
+      "sampler": "대응물 없음(의도적). 샘플러는 감정 전이 전략 A/B/C 를 고르지 않는다.",
+      "why_not_fixable_by_test": "없는 것이 정답인 경우다. 테스트는 없음을 고정하고, 엔진이 이 코드를 공유 코드로 투영하는 지점을 함께 고정한다."
+    },
+    {
+      "id": "D9",
+      "title": "엔진 전용 코드 다수는 샘플러 축에 존재할 수 없다",
+      "engine": "UNSUPPORTED_CODES 중 PROSODY_NO_REALIZATION / VOWEL_EXTEND_NO_TARGET / UNIT_EXCEEDS_GENERATION_LIMIT, DEGRADATION_CODES 중 CAPABILITY_UNVERIFIED 를 제외한 전부",
+      "sampler": "대응물 없음",
+      "why_not_fixable_by_test": "청킹·전략·seed·후처리 축은 샘플러에 존재하지 않는다(한 행 · 한 줄 · 후처리 없음). 대응물을 만드는 것은 기능 추가다."
+    }
+  ]
+}

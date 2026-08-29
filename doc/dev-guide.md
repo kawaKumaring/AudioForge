@@ -144,6 +144,31 @@ ProcessButton.handleProcess()
 11. **watchdog 패턴**: clearTimeout만 하지 말고 반드시 새 타이머 생성
 12. **React Hooks**: early return은 모든 hooks 뒤에 배치
 
+### 파이썬 테스트를 부르는 방법 (2026-08-29 확인)
+
+`python/` 은 패키지가 아니다(`__init__.py` 없음). 테스트들은 `import tts_parity`
+처럼 **평평한 모듈명**으로 서로를 부른다. 그래서 부르는 방법이 결과를 바꾼다.
+
+```
+# 맞다 — python/ 이 top-level dir 로 sys.path 에 들어간다
+<python> -m unittest discover -s python -p "test_*.py"      # 전체
+<python> -m unittest discover -s python -p "test_tts_parity.py"
+<python> python/test_tts_parity.py                          # 파일 직접 실행도 된다
+
+# 틀리다 — 테스트가 아니라 호출이 실패한다
+<python> -m unittest python.test_tts_parity     # ModuleNotFoundError: tts_parity
+<python> -m unittest discover -s python -t .    # ImportError: Start directory is not importable
+```
+
+두 실패는 `develop` ca2533d 에서도 **똑같이** 재현된다. 특정 브랜치의 회귀가
+아니라 호출 방식의 문제이며, 올바른 명령으로는 `test_tts_parity.py` 14건이
+전부 통과한다. 실패를 이유로 테스트를 지우거나 단언을 약화하지 말 것.
+
+`<python>` 은 서드파티 의존이 필요한 테스트 때문에 **메인 환경 파이썬**이어야
+한다(`externals/env.json` 이 가리키는 것). 앱 전용 파이썬(`externals/runtime/
+app-python/...`)은 순수 stdlib 테스트만 돈다 — 그것으로 전체를 돌리면
+`numpy`·`soundfile` 부재로 168건이 에러가 난다(테스트 결함이 아니다).
+
 ## 6. 수정 우선순위
 
 | 순위 | 버그 | 소요 | 이유 |
@@ -182,3 +207,30 @@ ProcessButton.tsx       91줄  시작/취소 (리스너 수정됨)
 app.store.ts            86줄  전역 상태
 기타                   265줄  Waveform, ModeSelector, ProgressBar, preload, types
 ```
+
+### 로컬 자산 위치 계약 (2026-08-29)
+
+파일이 흩어지지 않게 하는 규칙. 어디에 쓸지 사람 기억에 맡기지 않는다.
+
+| 무엇 | 어디 | 권위 |
+|---|---|---|
+| 모델·venv·엔진 코드 | `externals/` | 이미 있는 것, 이동하지 않음 |
+| 앱이 만드는 자산·기록 | `_local/` (본체 저장소, Git 비추적) | `python/local_assets.py` |
+| 사용자 최종 출력 | 사용자가 앱에서 고른 경로 | 이 계약 대상 아님 |
+
+- 개발 하네스 출력은 `local_assets.run_output_dir(run_id)` /
+  `run_diagnostics_dir(run_id)` 만 쓴다. `AF_OUT`·E 드라이브 하드코딩·cwd 기본 출력 금지.
+  `_local` 밖으로 쓰려면 `--allow-external-output` 을 명시해야 한다(테스트가 강제).
+- ICL 실패 진단은 사용자 출력 폴더가 아니라 `_local/artifacts/diagnostics` 로 간다.
+- `_local/runtime` 은 만들지 않는다 — 실제 런타임은 `externals/runtime` 이다.
+- worktree 안에는 `_local` 을 만들지 않는다. 본체 저장소 실체를 참조한다.
+
+### 모델 해석 계약
+
+- HF 형식 모델은 `model_registry.snapshot_path(repo_id)` 가 주는 **로컬 snapshot 절대경로**를
+  `from_pretrained()` 첫 인자로 넘긴다. `cache_dir=` 는 앰비언트 `HUGGINGFACE_HUB_CACHE` 에
+  져서 격리 환경에서 네트워크로 샜다(실측). process 전역 `HF_HOME` 변경도 쓰지 않는다.
+- whisper 는 `resolve_whisper_root(name)` 로 `download_root` 를 명시 전달한다.
+- 없는 모델은 조용히 내려받지 않고 `WHISPER_MODEL_MISSING` /
+  `MODEL_NOT_IN_MANIFEST` / `OPTIONAL_MODEL_NOT_INSTALLED` 로 실패한다.
+- 내부 모델 목록·revision·SHA-256 은 `externals/model-manifest.json`(비추적).

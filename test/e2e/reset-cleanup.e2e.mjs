@@ -1,10 +1,13 @@
 // reset 정리 회귀 — 구간 확정으로 파생 클립 폴더 생성 후 store.reset()이 그 폴더를 실제 삭제하는지.
 // 합성 없이 빠름. 실행: node test/e2e/reset-cleanup.e2e.mjs  (사전 npm run build)
 import { _electron as electron } from 'playwright'
+import { randomUUID } from 'crypto'
 import fs from 'fs'; import path from 'path'; import os from 'os'
-import { isolatedInput, cleanupIsolated, snapshotTree } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, snapshotTree, makeSyntheticWav, cleanupSyntheticWav } from './_e2e-helper.mjs'
 const APP = process.cwd()
-const SRC = path.join(APP, 'resources', 'speaker_b.wav')
+// 사용자 미디어 미사용: AF_E2E_REFERENCE가 있으면 그것을, 없으면 이번 실행 전용 synthetic WAV(30s)를 생성해 쓴다.
+const SYNTH = (process.env.AF_E2E_REFERENCE || '').trim() ? null : makeSyntheticWav(path.join(os.tmpdir(), 'af_e2e_synth_' + randomUUID() + '.wav'), 30)
+const SRC = SYNTH || process.env.AF_E2E_REFERENCE.trim()
 const RES_DIR = path.join(APP, 'resources')
 let failed = 0; const ok = (c, m) => { console.log(c ? '[e2e] PASS' : '[e2e] FAIL', m); if (!c) failed++ }
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
@@ -21,7 +24,8 @@ try {
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
     s.getState().setMode('tts')
   }, REF)
-  await win.waitForFunction(() => /111\.08/.test(document.getElementById('root')?.innerText || ''), undefined, { timeout: 30000 })
+  // 참조 분석 완료 = '이 구간으로 확정' 버튼 등장(지속시간 텍스트 하드코딩 대신 의미 기반 대기 — synthetic 길이 무관).
+  await win.getByText('이 구간으로 확정').waitFor({ timeout: 30000 })
   const before = refclipDirs().length
   await win.getByText('이 구간으로 확정').click({ timeout: 20000 })
   await win.waitForFunction(() => window.__afStore?.getState().ttsRefReady === true, undefined, { timeout: 40000 })
@@ -46,6 +50,7 @@ try {
   try { await app.close() } catch { /* ignore */ }
   ok(snapshotTree(RES_DIR) === resBefore, 'resources/ 원본 불변')
   cleanupIsolated(ISO)  // 예외에도 반드시 정리
+  if (SYNTH) cleanupSyntheticWav(SYNTH)  // 이번 실행이 만든 synthetic 소스만 정리
 }
 console.log('[e2e] SUMMARY', JSON.stringify({ failed }))
 process.exit(failed === 0 ? 0 : 1)

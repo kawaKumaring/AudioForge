@@ -14,6 +14,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _vendor_crop_fixture as _vcf
 import tts_worker
 import reference_audio as ra
 import reference_transcript as rt  # noqa: F401 (STATUS_OK 등 상수 사용 경로 확인용)
@@ -92,9 +93,23 @@ class SelectJobEngineTest(_QwenGlobalIsolation, unittest.TestCase):
         self._avail(True)
         self.assertEqual(tts_worker._select_job_engine("아무 문장", "qwen3"), "qwen3")
 
-    def test_preferred_qwen_unavailable_falls_back(self):
+    def test_preferred_qwen_unavailable_fails_closed(self):
+        """계약 변경: 명시적 qwen3 요청은 조용히 폴백하지 않는다.
+
+        예전에는 available()==False 면 progress 한 줄만 남기고 문장별 폴백(kokoro 등)으로 넘어갔다.
+        그 경로에서 사용자는 '요청한 엔진으로 합성됐다'고 오해하거나, 폴백 엔진의 환경 오류만 보게 된다.
+        이제는 ENGINE_UNAVAILABLE 구조화 오류로 끊는다(자동 선택 None/auto 는 여전히 폴백 허용)."""
         self._avail(False)
-        self.assertIsNone(tts_worker._select_job_engine("아무 문장", "qwen3"))
+        with self.assertRaises(RuntimeError) as ctx:
+            tts_worker._select_job_engine("아무 문장", "qwen3")
+        payload = getattr(ctx.exception, "error_payload", {})
+        self.assertEqual(payload.get("code"), tts_worker.ENGINE_UNAVAILABLE)
+        self.assertEqual(payload.get("requested_engine"), "qwen3")
+
+    def test_auto_selection_still_falls_back_when_qwen_unavailable(self):
+        """자동 선택(None)은 기존 계약 그대로 — 폴백이 정상이다(명시 선택과 구분)."""
+        self._avail(False)
+        self.assertIsNone(tts_worker._select_job_engine("아무 문장", None))
 
     def test_preferred_other_engine_uses_per_segment(self):
         self._avail(True)
@@ -136,13 +151,29 @@ class ResolveQwenRefTextTest(_QwenGlobalIsolation, unittest.TestCase):
             return result
         self._patch(transcribe_worker, "run_transcribe", side_effect=ft)
 
-    def test_manual_icl_no_whisper(self):
+    def test_manual_icl_verifies_against_clip(self):
+        """수동도 정렬 검증을 거친다 — 계약 변경(2026-08-28).
+
+        예전 계약은 '수동이면 Whisper 미호출'이었고, 그 우회로가 참조 대사 혼입의 통로였다:
+        발화 도중 잘린 클립에 원문 전사를 manual 로 붙인 config 가 검증 없이 통과했다.
+        이제 클립을 전사해 대조하고, 맞으면 수동 전사를 그대로 쓴다."""
+        tts_worker._qwen_manual_verify_cache.clear()
         c = []
-        self._mock_whisper({"text": "자동전사", "language": "ko"}, c)
+        self._mock_whisper({"text": "수동문", "language": "ko"}, c)
         ov = {self.ap: {"manual_text": "수동문", "mode": "manual"}}
         txt, xvo = tts_worker._resolve_qwen_ref_text(self.ref, ov, set())
         self.assertEqual((txt, xvo), ("수동문", False))
-        self.assertEqual(c, [], "수동이면 Whisper 미호출")
+        self.assertEqual(len(c), 1, "수동도 검증을 위해 클립을 1회 전사한다")
+
+    def test_manual_mismatch_blocks_generation(self):
+        """오디오에 없는 말이 수동 전사에 있으면 생성 전에 막는다(fail-closed)."""
+        tts_worker._qwen_manual_verify_cache.clear()
+        c = []
+        self._mock_whisper({"text": "수동", "language": "ko"}, c)   # 클립에는 '문'이 없다
+        ov = {self.ap: {"manual_text": "수동문", "mode": "manual"}}
+        with self.assertRaises(tts_worker.QwenReferenceMisalignedError) as cm:
+            tts_worker._resolve_qwen_ref_text(self.ref, ov, set())
+        self.assertEqual(cm.exception.reason_code, tts_worker.REF_MANUAL_MISALIGNED)
 
     def test_ref_free_x_vector_only(self):
         c = []
@@ -217,35 +248,128 @@ class RunJobRealtimeTest(_QwenGlobalIsolation, unittest.TestCase):
 
 
 class ValidateSegOutTest(_QwenGlobalIsolation, unittest.TestCase):
+    """chunk 계약(§2) 검증: 경로 job_dir 내부·original_segment_index 연속·chunk_index 완전·chunk_count 일치·
+    status=ok·존재/0바이트/sr/finite. 단일/다중 chunk 정상 + 각 위반 차단."""
     def setUp(self):
         self._isolate_globals()
         self._silence_emit()
-        self.tmp = tempfile.mkdtemp(prefix="af_qwenval_")
+        self.tmp = tempfile.mkdtemp(prefix="af_qwenval_")   # = job_dir
+        self.other = tempfile.mkdtemp(prefix="af_qwenval_out_")
         self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+        self.addCleanup(lambda: shutil.rmtree(self.other, ignore_errors=True))
 
-    def _seg(self, i):
-        p = os.path.join(self.tmp, f"s{i}.wav")
-        return {"index": i, "out_path": p}, p
+    def _segs(self, n):
+        return [{"index": i, "out_path": os.path.join(self.tmp, f"segment_qwen_{i + 1:03d}.wav")}
+                for i in range(n)]
 
-    def test_ok(self):
-        (s0, p0) = self._seg(0)
-        _write(p0, 0.2)
-        out = tts_worker.QwenTTSEngine._validate_seg_out(
-            [{"index": 0, "out_path": p0}], [s0])
-        self.assertEqual(out[0]["index"], 0)
+    def _expected(self, osi, ci):
+        return os.path.join(self.tmp, f"segment_qwen_{osi + 1:03d}_c{ci:03d}.wav")
 
-    def test_missing_index_raises(self):
-        (s0, p0), (s1, p1) = self._seg(0), self._seg(1)
-        _write(p0, 0.2)
+    def _chunk(self, osi, ci, cc, write=True, path=None, status="ok"):
+        p = path or self._expected(osi, ci)
+        if write:
+            _write(p, 0.2)
+        return {"original_segment_index": osi, "chunk_index": ci, "chunk_count": cc, "out_path": p,
+                "sr": 24000, "x_vector_only": False, "emotion_id": "default", "production_tokens": 20,
+                "generation_limit": 256, "generated_iterations": 100,
+                "termination_reason": "completed_before_limit", "status": status}
+
+    def _val(self, seg_out, n):
+        return tts_worker.QwenTTSEngine._validate_seg_out(seg_out, self._segs(n))
+
+    def test_ok_single_chunk(self):
+        out = self._val([self._chunk(0, 0, 1)], 1)
+        self.assertEqual(out[0]["original_segment_index"], 0)
+
+    def test_ok_multi_chunk(self):
+        self._val([self._chunk(0, 0, 3), self._chunk(0, 1, 3), self._chunk(0, 2, 3)], 1)
+
+    def test_missing_chunk_raises(self):
+        with self.assertRaises(RuntimeError):   # cc=2 인데 ci=1 없음
+            self._val([self._chunk(0, 0, 2)], 1)
+
+    def test_dup_chunk_raises(self):
         with self.assertRaises(RuntimeError):
-            tts_worker.QwenTTSEngine._validate_seg_out([{"index": 0, "out_path": p0}], [s0, s1])
+            self._val([self._chunk(0, 0, 2), self._chunk(0, 0, 2)], 1)
+
+    def test_chunk_count_mismatch_raises(self):
+        with self.assertRaises(RuntimeError):   # 같은 seg 인데 cc 다름
+            self._val([self._chunk(0, 0, 2), self._chunk(0, 1, 3)], 1)
+
+    def test_missing_original_segment_raises(self):
+        with self.assertRaises(RuntimeError):   # segment 2개인데 osi=0만
+            self._val([self._chunk(0, 0, 1)], 2)
+
+    def test_path_escape_raises(self):
+        bad = os.path.join(self.other, "x_c000.wav")   # job_dir 밖
+        with self.assertRaises(RuntimeError):
+            self._val([self._chunk(0, 0, 1, path=bad)], 1)
+
+    def test_bad_status_raises(self):
+        with self.assertRaises(RuntimeError):
+            self._val([self._chunk(0, 0, 1, status="generation_limit")], 1)
 
     def test_zero_byte_raises(self):
-        (s0, p0) = self._seg(0)
-        with open(p0, "wb"):  # 0바이트
+        p = os.path.join(self.tmp, "segment_qwen_001_c000.wav")
+        with open(p, "wb"):  # 0바이트
             pass
         with self.assertRaises(RuntimeError):
-            tts_worker.QwenTTSEngine._validate_seg_out([{"index": 0, "out_path": p0}], [s0])
+            self._val([self._chunk(0, 0, 1, write=False, path=p)], 1)
+
+    # ── P0-2 경로 정확 일치 ──
+    def test_wrong_basename_raises(self):
+        bad = os.path.join(self.tmp, "wrong_name.wav")   # job_dir 내부지만 결정적 규칙 위반
+        _write(bad, 0.2)
+        with self.assertRaises(RuntimeError):
+            self._val([self._chunk(0, 0, 1, write=False, path=bad)], 1)
+
+    def test_cross_segment_path_raises(self):
+        # seg0의 chunk인데 out_path가 seg1의 chunk 경로 → 기대 경로 불일치
+        cross = os.path.join(self.tmp, "segment_qwen_002_c000.wav")
+        _write(cross, 0.2)
+        with self.assertRaises(RuntimeError):
+            self._val([self._chunk(0, 0, 1, write=False, path=cross)], 2)
+
+    def test_realpath_escape_raises(self):
+        # .. 로 job_dir 밖을 가리키면 realpath 기준 기대 경로와 불일치
+        escaped = os.path.join(self.tmp, "..", os.path.basename(self.other), "segment_qwen_001_c000.wav")
+        _write(escaped, 0.2)
+        with self.assertRaises(RuntimeError):
+            self._val([self._chunk(0, 0, 1, write=False, path=escaped)], 1)
+
+    # ── P0-3 sr/채널 일관성 ──
+    def _write_sr(self, path, sr, stereo=False):
+        import numpy as np
+        import soundfile as sf
+        n = int(0.2 * sr)
+        t = np.arange(n) / sr
+        mono = (0.3 * np.sin(2 * np.pi * 220 * t)).astype("float32")
+        data = np.stack([mono, mono], axis=1) if stereo else mono
+        sf.write(path, data, sr)
+
+    def test_metadata_sr_mismatch_raises(self):
+        p = self._expected(0, 0)
+        self._write_sr(p, 24000)
+        e = self._chunk(0, 0, 1, write=False, path=p)
+        e["sr"] = 48000            # 위조된 metadata sr
+        with self.assertRaises(RuntimeError):
+            self._val([e], 1)
+
+    def test_chunk_sr_mismatch_raises(self):
+        p0 = self._expected(0, 0)
+        p1 = self._expected(0, 1)
+        self._write_sr(p0, 24000)
+        self._write_sr(p1, 48000)
+        e0 = self._chunk(0, 0, 2, write=False, path=p0); e0["sr"] = 24000
+        e1 = self._chunk(0, 1, 2, write=False, path=p1); e1["sr"] = 48000
+        with self.assertRaises(RuntimeError):
+            self._val([e0, e1], 1)
+
+    def test_stereo_chunk_raises(self):
+        p = self._expected(0, 0)
+        self._write_sr(p, 24000, stereo=True)
+        with self.assertRaises(RuntimeError):
+            self._val([self._chunk(0, 0, 1, write=False, path=p)], 1)
 
 
 class QwenBatchPathTest(_QwenGlobalIsolation, unittest.TestCase):
@@ -278,8 +402,15 @@ class QwenBatchPathTest(_QwenGlobalIsolation, unittest.TestCase):
                          "ref_texts": [s["ref_text"] for s in segments]})
             for s in segments:
                 _write(s["out_path"], 0.3)
-            return [{"index": s["index"], "out_path": s["out_path"], "sr": 24000,
-                     "x_vector_only": s["x_vector_only"]} for s in segments]
+            out = []
+            for s in segments:
+                e = {"original_segment_index": s["index"], "chunk_index": 0, "chunk_count": 1,
+                     "out_path": s["out_path"], "sr": 24000, "x_vector_only": s["x_vector_only"],
+                     "emotion_id": s.get("emotion_id"), "production_tokens": 20,
+                     "generation_limit": 256, "generated_iterations": 100,
+                     "termination_reason": "completed_before_limit", "status": "ok"}
+                out.append(_vcf.attach(e, s))      # native 기본 경로 발행 근거
+            return out
         return fake_run_job
 
     def test_routes_to_qwen_batch_once_and_per_segment_language(self):
@@ -310,20 +441,21 @@ class QwenBatchPathTest(_QwenGlobalIsolation, unittest.TestCase):
             shutil.copyfile(inp, out)
             return out
         self._patch(tts_worker, "_atempo_segment", new=fake_atempo)
-        gap_seen = []
-        real_concat = tts_worker._concat_with_silence
+        gaps_seen = []
+        real_concat = tts_worker._concat_with_boundaries
 
-        def spy_concat(paths, out_path, gap):
-            gap_seen.append(gap)
-            return real_concat(paths, out_path, gap)
-        self._patch(tts_worker, "_concat_with_silence", new=spy_concat)
+        def spy_concat(paths, gaps_before, out_path):
+            gaps_seen.append(list(gaps_before))
+            return real_concat(paths, gaps_before, out_path)
+        self._patch(tts_worker, "_concat_with_boundaries", new=spy_concat)
 
-        text = "첫 문장입니다.\n둘째 문장입니다."
+        text = "첫 문장입니다.\n둘째 문장입니다."   # 2개 원본 segment(각 1 chunk)
         tts_worker.synthesize(self.ref, text, self.out, speed=1.5, silence_gap=0.75,
                               emotion_refs={}, preferred_engine="qwen3", reference_prompts={})
         self.assertEqual(len(atempo_hits), 2, "속도는 최종 결합본이 아니라 세그먼트별로 적용")
         self.assertTrue(all(abs(s - 1.5) < 1e-9 for _, s in atempo_hits))
-        self.assertEqual(gap_seen, [0.75], "결합 시 사용자 silence_gap 유지")
+        # 첫 항목 gap 0, 원 segment 경계(0→1)에 사용자 silence_gap 0.75
+        self.assertEqual(gaps_seen, [[0.0, 0.75]], "원 segment 경계에 사용자 silence_gap 유지")
         self.assertTrue(os.path.exists(os.path.join(self.out, "synthesized.wav")))
 
     def test_long_emotion_ref_blocks_with_emotion_id(self):
@@ -428,8 +560,15 @@ class AtomicFinalReplaceTest(_QwenGlobalIsolation, unittest.TestCase):
         def fake_run_job(inner_self, segments, device):
             for s in segments:
                 _write(s["out_path"], 0.3)
-            return [{"index": s["index"], "out_path": s["out_path"], "sr": 24000,
-                     "x_vector_only": s["x_vector_only"]} for s in segments]
+            out = []
+            for s in segments:
+                e = {"original_segment_index": s["index"], "chunk_index": 0, "chunk_count": 1,
+                     "out_path": s["out_path"], "sr": 24000, "x_vector_only": s["x_vector_only"],
+                     "emotion_id": s.get("emotion_id"), "production_tokens": 20,
+                     "generation_limit": 256, "generated_iterations": 100,
+                     "termination_reason": "completed_before_limit", "status": "ok"}
+                out.append(_vcf.attach(e, s))      # native 기본 경로 발행 근거
+            return out
         self._patch(tts_worker.QwenTTSEngine, "run_job", new=fake_run_job)
 
     def _preexisting_final(self):
@@ -445,11 +584,11 @@ class AtomicFinalReplaceTest(_QwenGlobalIsolation, unittest.TestCase):
     def test_existing_final_preserved_on_concat_failure(self):
         marker = self._preexisting_final()
 
-        def raise_concat(paths, out_path, gap):
+        def raise_concat(paths, gaps_before, out_path):
             with open(out_path, "wb") as f:  # 부분 pending 생성 후 예외
                 f.write(b"partial")
             raise RuntimeError("concat boom")
-        self._patch(tts_worker, "_concat_with_silence", new=raise_concat)
+        self._patch(tts_worker, "_concat_with_boundaries", new=raise_concat)
         with self.assertRaises(RuntimeError):
             tts_worker.synthesize(self.ref, "한 문장입니다.", self.out, speed=1.0, silence_gap=0.5,
                                   emotion_refs={}, preferred_engine="qwen3", reference_prompts={})
@@ -460,10 +599,10 @@ class AtomicFinalReplaceTest(_QwenGlobalIsolation, unittest.TestCase):
     def test_existing_final_preserved_on_validation_failure(self):
         marker = self._preexisting_final()
 
-        def zero_byte_concat(paths, out_path, gap):
+        def zero_byte_concat(paths, gaps_before, out_path):
             with open(out_path, "wb"):  # 0바이트 pending → 검증 실패
                 pass
-        self._patch(tts_worker, "_concat_with_silence", new=zero_byte_concat)
+        self._patch(tts_worker, "_concat_with_boundaries", new=zero_byte_concat)
         with self.assertRaises(RuntimeError):
             tts_worker.synthesize(self.ref, "한 문장입니다.", self.out, speed=1.0, silence_gap=0.5,
                                   emotion_refs={}, preferred_engine="qwen3", reference_prompts={})
@@ -566,11 +705,28 @@ class MetadataEmitQwenTest(_QwenGlobalIsolation, unittest.TestCase):
                     side_effect=(lambda m, p, l: {"text": "자동전사문장", "language": "ko"}))
         self._patch(tts_worker.QwenTTSEngine, "available", new=(lambda self: True))
 
+        # controlled-prefix 를 실제로 잘라낸 bridge 결과(샘플 인덱스·dB만). 목표 대사 시작 좌표는
+        # test_prefix_alignment 의 실측 패턴 픽스처와 같다.
+        self.align = {"sample_rate": 24000, "noise_floor_dbfs": -64.52, "tail_end_sample": 2640,
+                      "valley_sample": 4200, "onset_sample": 5040, "cut_sample": 4200,
+                      "valley_dbfs": -90.38, "lead_samples": 840}
+
         def fake_run_job(inner_self, segments, device):
             for s in segments:
                 _write(s["out_path"], 0.3)
-            return [{"index": s["index"], "out_path": s["out_path"], "sr": 24000,
-                     "x_vector_only": s["x_vector_only"]} for s in segments]
+            out = []
+            for s in segments:
+                e = {"original_segment_index": s["index"], "chunk_index": 0, "chunk_count": 1,
+                     "out_path": s["out_path"], "sr": 24000, "x_vector_only": s["x_vector_only"],
+                     "emotion_id": s.get("emotion_id"), "production_tokens": 20,
+                     "generation_limit": 256, "generated_iterations": 100,
+                     "termination_reason": "completed_before_limit", "status": "ok"}
+                if s.get("prefix_text"):   # ICL 만 절단 기록을 갖는다
+                    e["reference_alignment"] = dict(self.align)
+                    e["reference_cut_sample"] = 4200
+                    e["controlled_prefix"] = True
+                out.append(_vcf.attach(e, s))
+            return out
         self._patch(tts_worker.QwenTTSEngine, "run_job", new=fake_run_job)
 
         # speed!=1.0 경로의 ffmpeg 의존 제거 — atempo를 복사로 대체(메타데이터만 검증)
@@ -585,8 +741,11 @@ class MetadataEmitQwenTest(_QwenGlobalIsolation, unittest.TestCase):
         return None
 
     def test_qwen_result_metadata(self):
+        # ICL(prompt_source=auto / x_vector_only=False) 은 참조 억양 반영 모드에서만 성립한다 —
+        # 모드를 명시 전달한다(모드 미전달은 이제 safe_xvector 다).
         tts_worker.synthesize(self.ref, "안녕하세요 첫 문장입니다.", self.out, speed=1.0, silence_gap=0.5,
-                              emotion_refs={}, preferred_engine="qwen3", reference_prompts={})
+                              emotion_refs={}, preferred_engine="qwen3", reference_prompts={},
+                              reference_conditioning_mode="high_quality_icl")
         meta = self._result_meta()
         self.assertIsNotNone(meta, "result에 metadata가 있어야 함")
         self.assertEqual(meta["actual_engine"], "qwen3")
@@ -602,15 +761,22 @@ class MetadataEmitQwenTest(_QwenGlobalIsolation, unittest.TestCase):
         self.assertFalse(meta["speed_postprocessed"])
         self.assertFalse(meta["seed_supported"])
         self.assertIsInstance(meta["elapsed_seconds"], (int, float))
+        # controlled-prefix 절단 실측이 그대로 기록된다(샘플 인덱스·dB).
+        # production 기본 = vendor native ICL. 외부 ASR 절단이 없으므로 alignment 좌표는 없고
+        # 발행 근거는 vendor_internal_crop_record 다. legacy 절단 수치 계약은
+        # test_reference_conditioning_mode 의 legacy 클래스가 고정한다.
+        self.assertIsNone(meta["reference_cut_sample"])
+        self.assertIsNone(meta["reference_alignment"])
         # 보안: 어떤 메타 값에도 전사 '전문'이 들어가지 않는다
         blob = _json_dumps(meta)
         self.assertNotIn("자동전사문장", blob)
 
     def test_ref_free_prompt_source_metadata(self):
-        ap = os.path.abspath(self.ref)
+        # 안전 모드를 명시 전달한다(모드 미전달의 암묵 기본에 기대지 않는다).
         tts_worker.synthesize(self.ref, "안녕하세요 문장.", self.out, speed=1.5, silence_gap=0.5,
                               emotion_refs={}, preferred_engine="qwen3",
-                              reference_prompts={"default": {"mode": "ref_free"}})
+                              reference_prompts={"default": {"mode": "ref_free"}},
+                              reference_conditioning_mode="safe_xvector")
         meta = self._result_meta()
         self.assertEqual(meta["prompt_source"], "x-vector-only")
         self.assertTrue(meta["x_vector_only_mode"])

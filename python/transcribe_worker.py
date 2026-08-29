@@ -60,17 +60,65 @@ def set_translate_model(value):
         set_nllb_model(v)
 
 # Whisper model cache
-_whisper_cache = {"model": None, "name": None}
+_whisper_cache = {"model": None, "name": None, "source": None, "root": None}
+
+
+WHISPER_ROOT_ENV = "AUDIOFORGE_WHISPER_ROOT"
+
+
+class WhisperModelMissing(Exception):
+    """요청한 Whisper 모델 파일이 내부에도 기존 캐시에도 없다.
+
+    예전에는 이 상황에서 whisper 가 조용히 인터넷에서 내려받았다. 오프라인 계약이 있는
+    앱에서 그건 '성공' 이 아니라 숨은 네트워크 의존이므로, 이제 명시적으로 실패한다."""
+
+
+def whisper_model_root():
+    """앱이 소유한 Whisper 가중치 위치. externals 는 이미 모델의 집이다."""
+    override = os.environ.get(WHISPER_ROOT_ENV)
+    if override:
+        return os.path.abspath(override)
+    here = os.path.dirname(os.path.abspath(__file__))
+    try:
+        import app_runtime
+        return os.path.join(app_runtime.assets_root(), "whisper_models")
+    except Exception:
+        return os.path.join(os.path.dirname(here), "externals", "whisper_models")
+
+
+def resolve_whisper_root(model_name):
+    """(download_root, source) — 어디서 온 가중치인지 숨기지 않는다.
+
+    1) 앱 내부(externals/whisper_models)에 <이름>.pt 가 있으면 그것.
+    2) 없으면 기존 전역 캐시에 **이미 존재하는** 파일만 쓴다(다운로드 아님).
+    3) 둘 다 없으면 WhisperModelMissing — 조용히 내려받지 않는다.
+    """
+    fn = "%s.pt" % model_name
+    internal = whisper_model_root()
+    if os.path.isfile(os.path.join(internal, fn)):
+        return internal, "internal"
+    legacy = os.path.join(os.path.expanduser("~"), ".cache", "whisper")
+    if os.path.isfile(os.path.join(legacy, fn)):
+        return legacy, "external_cache"
+    raise WhisperModelMissing(
+        "WHISPER_MODEL_MISSING: %s — 내부 모델 위치에도 기존 캐시에도 없습니다. "
+        "자동 다운로드는 하지 않습니다." % fn)
 
 
 def _get_whisper_model(model_name="large-v3"):
-    """Load or reuse cached Whisper model."""
+    """Load or reuse cached Whisper model.
+
+    download_root 를 **명시 전달**한다. 예전에는 인자를 주지 않아 whisper 가 ~/.cache 를
+    조용히 뒤지고 없으면 내려받았다 — 오프라인 검증이 불가능한 구조였다."""
     import whisper
     import torch
     if _whisper_cache["model"] is None or _whisper_cache["name"] != model_name:
+        root, source = resolve_whisper_root(model_name)
         device = get_device(timeout_sec=10)
-        _whisper_cache["model"] = whisper.load_model(model_name, device=device)
+        _whisper_cache["model"] = whisper.load_model(model_name, device=device, download_root=root)
         _whisper_cache["name"] = model_name
+        _whisper_cache["source"] = source
+        _whisper_cache["root"] = root
     return _whisper_cache["model"]
 
 
@@ -79,6 +127,33 @@ def _norm_lang(lang):
     if not lang or lang in ("auto", "none", ""):
         return None
     return lang
+
+
+def _emit_silence_shadow(rms_values, durations, raw_legacy_kept, threshold):
+    """무음 게이트 shadow 관측(Phase 1) — canonical apply_silence_policy '후보'를
+    legacy 결과와 카운트만 비교해 emit 한다. **관측 전용**: 실제 keep/drop 은
+    _filter_silent_segments 의 legacy 로직이 그대로 결정하며, 이 함수는 어떤 것도
+    바꾸지 않는다(threshold 불변). payload 는 안전한 정수/불리언만 — 전사 본문·경로
+    미포함. 실패해도 전사·출력에 영향 없음(unavailable 상태만 emit)."""
+    try:
+        import asr_canonical as ac
+        n = len(rms_values)
+        legacy_guard = raw_legacy_kept < n * 0.4
+        legacy_kept = n if legacy_guard else raw_legacy_kept
+        # 정책 후보는 legacy 와 동일한 (rms, 0길이=측정불가) 입력으로 계산 —
+        # 카운트가 일치해야(agreement=True) 배선 전 정합이 확인된다.
+        dec = ac.apply_silence_policy(rms_values, threshold=threshold, durations=durations)
+        emit("asrSilenceShadow",
+             segmentCount=int(n),
+             legacyKept=int(legacy_kept),
+             policyKept=int(dec.kept_count),
+             guardTriggered=bool(dec.guard_tripped),
+             agreement=bool(legacy_kept == dec.kept_count
+                            and legacy_guard == dec.guard_tripped),
+             thresholdSnapshot=float(threshold))
+    except Exception:
+        # shadow 실패는 비치명적 — 관측만, 결정에 영향 없음. 안전 코드만 노출.
+        emit("asrSilenceShadow", status="unavailable")
 
 
 def _filter_silent_segments(result, audio_path, rms_threshold=0.005):
@@ -101,16 +176,24 @@ def _filter_silent_segments(result, audio_path, rms_threshold=0.005):
         data = data.mean(axis=1)
     total = len(data)
     kept = []
+    shadow_rms = []    # shadow 관측용: 세그먼트별 RMS(측정 불가=None)
+    shadow_dur = []    # shadow 관측용: 측정가능=1.0 / 0길이(b<=a)=0.0 (legacy 정합)
     for s in segs:
         a = int(max(0.0, s.get("start", 0.0)) * sr)
         b = int(min(total / sr, s.get("end", 0.0)) * sr)
         if b <= a:
             kept.append(s)
+            shadow_rms.append(None)
+            shadow_dur.append(0.0)
             continue
         seg = data[a:b]
         rms = float(np.sqrt(np.mean(seg ** 2)))
+        shadow_rms.append(rms)
+        shadow_dur.append(1.0)
         if rms >= rms_threshold:
             kept.append(s)
+    # shadow 관측(카운트 비교만, 결정 미변경) — legacy 의 실제 keep 수(raw)를 넘긴다.
+    _emit_silence_shadow(shadow_rms, shadow_dur, len(kept), rms_threshold)
     # 과삭제 가드: 너무 많이 지우면(레벨 스케일 이상) 원본 유지
     if len(kept) < len(segs) * 0.4:
         return result
@@ -243,10 +326,13 @@ def _get_llm(model_name):
     if _llm_cache["model"] is None or _llm_cache["name"] != model_name:
         device = get_device(timeout_sec=10)
         emit("progress", percent=72,
-             message=f"LLM 번역 모델 로딩 중... ({model_name.split('/')[-1]}, 최초 1회 대용량 다운로드)")
-        tok = AutoTokenizer.from_pretrained(model_name)
+             message=f"LLM 번역 모델 로딩 중... ({model_name.split('/')[-1]})")
+        # repo id 가 아니라 내부 snapshot 절대경로. 전역 캐시·네트워크로 새지 않는다.
+        import model_registry
+        snap = model_registry.snapshot_path(model_name)
+        tok = AutoTokenizer.from_pretrained(snap, local_files_only=True)
         model = AutoModelForCausalLM.from_pretrained(
-            model_name, torch_dtype=torch.bfloat16).to(device)
+            snap, torch_dtype=torch.bfloat16, local_files_only=True).to(device)
         model.eval()
         _llm_cache.update({"model": model, "tokenizer": tok, "name": model_name})
     return _llm_cache["model"], _llm_cache["tokenizer"]
@@ -400,9 +486,18 @@ def _translate_nllb(text: str, src_lang: str):
 
     if _nllb_cache["model"] is None or _nllb_cache["src_lang"] != nllb_src:
         emit("progress", percent=72, message=f"번역 모델 로딩 중... ({model_name.split('-')[-1]})")
-        _nllb_cache["tokenizer"] = AutoTokenizer.from_pretrained(model_name, src_lang=nllb_src)
+        # repo id 가 아니라 **내부 snapshot 절대경로**를 첫 인자로 준다.
+        # cache_dir 는 앰비언트 HUGGINGFACE_HUB_CACHE 에 지는 경로가 있어 격리에서 새어 나갔다.
+        # 경로를 직접 주면 hub 해석 자체가 일어나지 않는다.
+        import model_registry
+        snap = model_registry.snapshot_path(model_name)
+        _nllb_cache["source"] = "internal_snapshot"
+        _nllb_cache["snapshot"] = snap
+        _nllb_cache["tokenizer"] = AutoTokenizer.from_pretrained(
+            snap, src_lang=nllb_src, local_files_only=True)
         if _nllb_cache["model"] is None:
-            _nllb_cache["model"] = AutoModelForSeq2SeqLM.from_pretrained(model_name).to(device)
+            _nllb_cache["model"] = AutoModelForSeq2SeqLM.from_pretrained(
+                snap, local_files_only=True).to(device)
         _nllb_cache["src_lang"] = nllb_src
 
     tokenizer = _nllb_cache["tokenizer"]
@@ -471,6 +566,54 @@ def write_translation_timeline(output_dir, base, src_lang):
     return tl_path
 
 
+def _redacted_segment(seg_dict):
+    """canonical 세그먼트 dict 에서 전사 본문(segment.text / word.text)만 제거한
+    body-free 뷰. timing·confidence·status·word 타임스탬프 구조는 보존한다.
+    (본문은 이미 TXT/SRT 파일에만 존재 — 이벤트/로그 채널로는 내보내지 않는다.)"""
+    d = {k: v for k, v in seg_dict.items() if k != "text"}
+    d["words"] = [{k: v for k, v in w.items() if k != "text"}
+                  for w in seg_dict.get("words", [])]
+    return d
+
+
+def _asr_sidecar_payload(result, language):
+    """canonical ASR sidecar 를 in-memory versioned payload 로 생성(순수, Phase 1).
+
+    ★ 파일을 절대 쓰지 않는다(영속화는 atomic publish 계약 전까지 보류). 이 payload 는
+      앱 내부 이벤트(asrTranscriptSidecar)로만 흐르며, 기존 TXT/timestamps/SRT/timeline
+      출력에는 전혀 관여하지 않는다(그 파일들은 이미 확정·저장됨).
+    ★ 전사 본문(segment.text / word.text)은 payload 에 넣지 않는다 — 본문은 TXT/SRT
+      파일에만 두고, 이벤트에는 timing·provenance·confidence·status 구조만 싣는다.
+      provenance 는 재현/감사용 메타(모델·task·게이트 파라미터)만 담는다.
+
+    모델명은 로드된 whisper 캐시에서 읽어 시그니처를 바꾸지 않는다(순수 additive).
+    결정적: canonical 정렬 + 고정 소수 → 같은 입력=같은 payload.
+    """
+    import asr_canonical as ac
+    segs = ac.segments_from_whisper(result.get("segments") or [], language=language)
+    transcript = ac.CanonicalTranscript(
+        segments=segs,
+        language=language,
+        provenance={
+            "model": str(_whisper_cache.get("name") or "unknown"),
+            "task": "transcribe",
+            "hallucination_silence_threshold": str(ac.HALLUCINATION_SILENCE_SEC),
+            "rms_threshold": str(ac.DEFAULT_RMS_THRESHOLD),
+        },
+    )
+    prov = transcript.provenance
+    return {
+        "schema": ac.SCHEMA_ID,
+        "schemaVersion": ac.SCHEMA_VERSION,
+        "language": language,
+        "segmentCount": len(segs),
+        "provenance": {k: prov[k] for k in sorted(prov)},
+        # body-free 세그먼트 구조(timing·confidence·status·word 타임스탬프, 본문 제외).
+        "segments": [_redacted_segment(s.to_dict()) for s in transcript.sorted_segments()],
+        "summary": ac.log_safe_summary(transcript),  # 본문 없는 감사용 요약
+    }
+
+
 def _save_transcription(result, audio_path, output_dir, do_srt=False, do_translate=False,
                         base_name=None):
     """Save transcription results (txt, timestamps, srt, translation).
@@ -504,6 +647,15 @@ def _save_transcription(result, audio_path, output_dir, do_srt=False, do_transla
                 f.write(translated)
         # 세그먼트별 타임라인 번역 파일도 생성 ([시작 → 끝] 번역)
         write_translation_timeline(output_dir, base, language)
+
+    # ── canonical ASR sidecar (in-memory, versioned payload) — Phase 1 additive ──
+    # 위 TXT/timestamps/SRT/timeline 은 이미 확정·저장됨(바이트 불변). 여기서는 같은
+    # result 를 canonical 로 표준화해 versioned payload 로만 방출한다(파일 미생성).
+    # 실패해도 전사 파일 산출에는 영향 없음 — 안전 상태만 emit(본문·경로·traceback 금지).
+    try:
+        emit("asrTranscriptSidecar", **_asr_sidecar_payload(result, language))
+    except Exception:
+        emit("asrTranscriptSidecarError", status="unavailable")
 
     return {"text": text, "language": language, "txt_path": txt_path, "translated_text": translated}
 

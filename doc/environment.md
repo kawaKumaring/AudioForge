@@ -36,8 +36,28 @@ ComfyUI를 켜지 않아도, 심지어 없어도, 아래 패키지를 갖춘 파
 - **일본어 TTS(pyopenjtalk)** — 프리빌트 휠 없음 → VS C++ Build Tools 빌드 필요.
   한/영/중은 빌드 불필요.
 
-**GPT-SoVITS(TTS)** 는 버전 충돌(transformers 4.50) 때문에 **전용 venv**
-(`externals/gptsovits_venv`)로 격리됨. 메인 환경과 별개, `setup_gptsovits.py`로 재현.
+**GPT-SoVITS(TTS)** 는 버전 충돌(transformers 4.50) 때문에 **전용 venv** 로 격리됨.
+메인 환경과 별개다.
+
+> **2026-08-29 이후**: GPT-SoVITS 환경은 `run.bat`이 스스로 설치·검증·연결한다.
+> 앱 전용 파이썬(python-build-standalone)까지 자동으로 확보하므로 ComfyUI도 시스템
+> 파이썬도 필요 없다. 자세한 내용은 **`doc/app-runtime-installer.md`**.
+>
+> 위치는 두 종류로 나뉜다. **앱이 소유한 것**은 `<본체 저장소>/externals/runtime/`
+> (`app-python/`, `gptsovits_venv_app/`, `runtime.json`) — 설치기가 만들고 고치는
+> 유일한 영역이다. **외부에서 참조하는 것**은 `<본체 저장소>/externals/`
+> (`GPT-SoVITS/`, `qwen3_tts_venv/`, `separator_models/`, `env.json`) — 읽기만 한다.
+>
+> "본체 저장소" 기준인 것이 핵심이다. 작업 트리(worktree)에서 `run.bat`을 돌려도
+> 런타임은 본체 밑에 설치되므로, 작업 트리를 정리해도 설치가 사라지지 않는다.
+> 다른 곳에 두고 싶으면 `AUDIOFORGE_RUNTIME_ROOT`를 명시한다(최우선).
+>
+> 아직 자동이 아닌 것: **Node.js 설치**(런처가 Node로 돌아 자동화 불가)와
+> **GPT-SoVITS 코드·모델 내려받기**. 둘 다 없으면 안내하고 멈춘다.
+>
+> 예전 `setup_gptsovits.py`는 남아 있지만 **실행하지 않는다** — 기존 repo·기존 venv를
+> 전제로 그 venv에 pip 설치와 shim 덮어쓰기를 하기 때문이다.
+> 예전 `externals/gptsovits_venv`도 그대로 두되, 새 설치는 그것을 건드리지 않는다.
 
 ## 환경 해석 구조 (다른 환경에서 사용 시)
 

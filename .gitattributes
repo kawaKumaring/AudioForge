@@ -1,0 +1,8 @@
+# Windows 배치 파일은 반드시 CRLF. LF 로 체크아웃되면 cmd.exe 가 줄을 조각내
+# 파싱해 스크립트가 절반만 동작한다(조용히 실패하므로 발견이 늦다).
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 감정 대사 fixture 는 양쪽 언어가 같은 바이트를 보고 지문을 대조한다.
+# CRLF 변환이 끼면 파일 단위 SHA-256 이 플랫폼마다 달라진다.
+python/fixtures/*.json text eol=lf

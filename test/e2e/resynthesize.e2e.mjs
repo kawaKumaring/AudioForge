@@ -11,7 +11,7 @@ const WAIT_MS = 350000
 const APP = process.cwd()
 const SRC = path.join(APP, 'resources', 'speaker_b.wav')
 const RES_DIR = path.join(APP, 'resources')
-const SHOT = path.join(APP, '작업파일', 'e2e_shots'); fs.mkdirSync(SHOT, { recursive: true })
+const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots'); fs.mkdirSync(SHOT, { recursive: true })
 let failed = 0; const ok = (c, m) => { console.log(c ? '[e2e] PASS' : '[e2e] FAIL', m); if (!c) failed++ }
 const resBefore = snapshotTree(RES_DIR)
 const { dir: ISO, input: REF } = isolatedInput(SRC)

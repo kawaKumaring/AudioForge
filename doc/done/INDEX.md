@@ -19,6 +19,7 @@
 
 | 날짜 | 핵심 (한 일) | 커밋 | 상세 위치 |
 |------|-------------|------|-----------|
+| 08-28 | 경계 envelope: 시작·끝 급절단(클릭) 수정(onset 10ms/offset 20ms, 실측 확정) | `63ce38b` | boundary-envelope-2026-08-28.md 전체 |
 | 08-21 | TTS GUI/UX: 긴 참조 3~10초 구간 선택(파생 클립)·합성 게이팅·문구 정정 | 동일 커밋 | changelog §"TTS GUI/UX: 긴 참조 구간 선택(3~10초 파생 클립) + 합성 게이팅 + 문구 정정" |
 | 08-21 | 실측 안정화: WDDM Auto VRAM 측정(nvidia-smi) 분리 + Qwen 취소 잔존물 정리 | `19f777c` | changelog §"실측 안정화: WDDM Auto VRAM 측정 출처 분리 + Qwen 취소 잔존물 정리" |
 | 08-21 | Qwen3-TTS 엔진 연동(한국어 Auto 우선, job bridge 모델 1회) | 동일 커밋 | changelog §"Qwen3-TTS 엔진 연동 (한국어 Auto 우선순위, job bridge 모델 1회 로딩)" |

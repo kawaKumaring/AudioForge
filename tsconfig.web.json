@@ -21,7 +21,8 @@
   "include": [
     "src/renderer/**/*.ts",
     "src/renderer/**/*.tsx",
-    "src/shared/**/*.ts"
+    "src/shared/**/*.ts",
+    "python/fixtures/*.json"
   ],
   "exclude": [
     "src/**/*.test.ts"
