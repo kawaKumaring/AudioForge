@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """감정·표현 고정 대사 fixture 로더(Python 쪽 유일 소비 지점).
 
-권위는 `python/fixtures/emotion-scripts.v1.json` **파일 하나**다. 이 모듈은 문자열 사본을
+권위는 `python/fixtures/emotion-scripts.v2.json` **파일 하나**다. 이 모듈은 문자열 사본을
 갖지 않으며, 대사를 여기에 하드코딩하지 않는다. TypeScript 쪽 로더(src/shared/emotionScripts.ts)는
 같은 파일을 import 해서 같은 값을 얻는다 — 생성된 mirror 파일은 존재하지 않는다.
 
@@ -17,7 +17,7 @@ import os
 import hashlib
 
 SCHEMA_VERSION = 2
-FIXTURE_FILENAME = "emotion-scripts.v1.json"
+FIXTURE_FILENAME = "emotion-scripts.v2.json"
 SCRIPT_KINDS = ("preview_short", "validation_medium", "continuity_long")
 
 
@@ -25,7 +25,19 @@ class EmotionScriptsError(Exception):
     """fixture 부재·손상·지문 불일치. 조용한 폴백 대신 이 예외로 즉시 실패한다."""
 
 
+#: 패키징 환경 주입점. 설정되면 `<이 값>/python/fixtures/<파일>` 을 본다.
+#: source tree 가 없는 설치 환경에서 main 프로세스가 process.resourcesPath 를 넘겨 주는 자리이며,
+#: 테스트는 임시 디렉터리를 넣어 그 환경을 모사한다.
+RESOURCES_ENV = "AUDIOFORGE_RESOURCES_PATH"
+
+
 def fixture_path():
+    """fixture 실제 경로. 주입된 resourcesPath 가 있으면 그쪽만 본다 — 개발 트리로 되돌아가지 않는다.
+
+    구버전 파일명으로의 조용한 fallback 은 없다. v2 가 없으면 v1 이 있어도 실패한다."""
+    root = os.environ.get(RESOURCES_ENV)
+    if root:
+        return os.path.join(root, "python", "fixtures", FIXTURE_FILENAME)
     return os.path.join(os.path.dirname(os.path.abspath(__file__)), "fixtures", FIXTURE_FILENAME)
 
 
@@ -42,30 +54,40 @@ def compute_fingerprint(doc):
 
 
 _cache = None
+_cache_key = None
+
+
+def reset_cache():
+    """주입 경로를 바꾼 뒤 다시 읽게 한다(테스트용)."""
+    global _cache, _cache_key
+    _cache = None
+    _cache_key = None
 
 
 def load(verify=True):
     """fixture 를 읽어 dict 로 반환. verify=True 면 schema/지문까지 검사한다."""
-    global _cache
-    if _cache is not None:
-        return _cache
+    global _cache, _cache_key
     p = fixture_path()
+    if _cache is not None and _cache_key == p:
+        return _cache
     if not os.path.isfile(p):
+        # 절대 경로는 담지 않는다 — 오류 메시지가 개발 트리 위치를 노출하면 안 된다.
         raise EmotionScriptsError(
-            "EMOTION_SCRIPTS_FIXTURE_MISSING: %s 없음 — 내장 사본으로 대체하지 않는다." % FIXTURE_FILENAME)
+            "FIXTURE_NOT_FOUND: %s 없음 — 내장 사본으로 대체하지 않는다." % FIXTURE_FILENAME)
     try:
         with open(p, encoding="utf-8") as f:
             doc = json.load(f)
     except Exception as e:
-        raise EmotionScriptsError("EMOTION_SCRIPTS_FIXTURE_UNREADABLE: %s" % type(e).__name__)
+        raise EmotionScriptsError("FIXTURE_UNREADABLE: %s" % type(e).__name__)
     if verify:
         if doc.get("schema_version") != SCHEMA_VERSION:
             raise EmotionScriptsError(
-                "EMOTION_SCRIPTS_SCHEMA_MISMATCH: %r != %d" % (doc.get("schema_version"), SCHEMA_VERSION))
+                "FIXTURE_SCHEMA_MISMATCH: %r != %d" % (doc.get("schema_version"), SCHEMA_VERSION))
         want = compute_fingerprint(doc)
         if doc.get("fixture_fingerprint") != want:
-            raise EmotionScriptsError("EMOTION_SCRIPTS_FINGERPRINT_MISMATCH")
+            raise EmotionScriptsError("FIXTURE_FINGERPRINT_MISMATCH")
     _cache = doc
+    _cache_key = p
     return doc
 
 

@@ -1,6 +1,6 @@
 // 감정·표현 고정 대사 fixture 로더(TypeScript 쪽 유일 소비 지점).
 //
-// 권위는 `python/fixtures/emotion-scripts.v1.json` **파일 하나**다. 이 모듈은 대사 문자열을
+// 권위는 `python/fixtures/emotion-scripts.v2.json` **파일 하나**다. 이 모듈은 대사 문자열을
 // 하나도 갖지 않는다 — 전부 그 JSON 에서 온다. Python 로더(python/emotion_scripts.py)는
 // 같은 파일을 읽는다. 생성된 mirror 파일은 존재하지 않는다.
 //
@@ -11,7 +11,7 @@
 //
 // 번들러는 이 JSON 을 빌드 시점에 값으로 인라인한다. 따라서 런타임 경로 탐색이 없고,
 // 조용한 폴백이 끼어들 자리도 없다 — 파일이 없으면 빌드가 실패한다.
-import fixture from '../../python/fixtures/emotion-scripts.v1.json' with { type: 'json' }
+import fixture from '../../python/fixtures/emotion-scripts.v2.json' with { type: 'json' }
 
 export const EMOTION_SCRIPTS_SCHEMA_VERSION = 2
 

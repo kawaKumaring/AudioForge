@@ -12,7 +12,7 @@ import {
   canonicalJson,
 } from './emotionScripts.ts'
 
-const FIXTURE = fileURLToPath(new URL('../../python/fixtures/emotion-scripts.v1.json', import.meta.url))
+const FIXTURE = fileURLToPath(new URL('../../python/fixtures/emotion-scripts.v2.json', import.meta.url))
 
 test('실제 JSON 파일은 정확히 1개이며 TS 는 그 파일을 읽는다', () => {
   const raw = JSON.parse(readFileSync(FIXTURE, 'utf-8'))
