@@ -1470,7 +1470,11 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
     return out
 
 
-_ALIGNMENT_SUMMARY_KEYS = ("sample_rate", "noise_floor_dbfs", "tail_end_sample", "valley_sample",
+_ALIGNMENT_SUMMARY_KEYS = ("align_anchor_kind", "align_anchor_units", "align_stage",
+                           # 어떤 anchor 로 경계를 잡았는가(TARGET_HEAD=목표 머리 / REFERENCE_TAIL=
+                           # 참조 꼬리 보조 경로)와 머리 anchor 가 얼마나 맞았는가. 비민감 enum·수치.
+                           "align_head_longest_units", "align_ref_tail_longest_units",
+                           "sample_rate", "noise_floor_dbfs", "tail_end_sample", "valley_sample",
                            "onset_sample", "cut_sample", "valley_dbfs", "lead_samples",
                            # 창 한정 탐색이었다는 사실(전역 탐색이 아니었다는 증거). 수치만.
                            "window_start_sample", "window_end_sample", "anchor_start_sample",
@@ -1554,6 +1558,7 @@ def _summarize_reference_alignment(ordered_entries):
     않고 RuntimeError(구조화 code)로 실패한다(fail-closed)."""
     firsts = None
     cuts = []
+    kinds = []
     for e in ordered_entries:
         rec = e.get("reference_alignment")
         cut = e.get("reference_cut_sample")
@@ -1568,11 +1573,15 @@ def _summarize_reference_alignment(ordered_entries):
                                 "boundary_reason": "MISSING_ALIGNMENT_RECORD"}
             raise _e
         cuts.append(cut)
+        kinds.append(rec.get("align_anchor_kind"))
         if firsts is None:
             firsts = {k: rec.get(k) for k in _ALIGNMENT_SUMMARY_KEYS}
     if firsts is None:
         return None, None
+    # chunk 별 절단 지점과 anchor 종류를 순서대로 남긴다(대표값 first 만으로는 '어떤 chunk 가
+    # 보조 경로로 풀렸는가'를 사후에 알 수 없다). 값은 샘플 인덱스와 비민감 enum 뿐이다.
     return ({"chunk_count": len(cuts), "first": firsts,
+             "cut_samples": list(cuts), "anchor_kinds": list(kinds),
              "cut_sample_min": min(cuts), "cut_sample_max": max(cuts),
              "trimmed_samples_total": sum(cuts)}, cuts[0])
 
@@ -1581,7 +1590,11 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                          pitch=0.0, tail_cfg=None, boundary_gaps=None,
                          reference_conditioning_mode=None):
     """Qwen 배치 합성 — 2B 품질 게이트 재사용, Qwen 전용 VRAM 임계로 장치 선택(ComfyUI 병행 안전),
-    모델 1회 로딩. speed: 세그먼트별 atempo 후 사용자 silence_gap으로 결합(1.0은 raw). 임시파일 finally 정리.
+    모델 1회 로딩. speed: chunk별 atempo 후 결합(1.0은 raw). 임시파일 finally 정리.
+    ⚠️ **결합 무음은 원 segment 경계에만 들어간다.** 한 문장이 자동분할된 내부 chunk 경계의 gap은
+      언제나 0.0이다(§5 불변, 아래 gaps 루프가 그 규칙의 단일 소스). '문장 안에서도 chunk마다
+      silence_gap만큼 무음이 들어간다'는 해석은 사실이 아니다 — 실측(생성물 결합 layout)에서도
+      gap_before_samples가 0이 아닌 자리는 원 segment 경계뿐이었다.
     pitch: 결합본(pending)에 rubberband 음높이 후처리(0=무후처리, 계약 §6·§7). 실패는 os.replace 직전
     예외 → finally가 job_dir 정리 → 기존 synthesized.wav 무손상.
     reference_conditioning_mode: 참조 conditioning 모드. safe_xvector 면 전 segment 를

@@ -63,8 +63,11 @@ Qwen(qwen3) 합성 결과가 원 화자보다 약간 낮게 들린다. 합성 �
 
 - 실행별 임시 폴더 `job_dir = mkdtemp(prefix=".qwen-job-", dir=output_dir)`를 output_dir **내부**에 만든다
   (동일 파일시스템이라 `os.replace`가 원자적).
-- 세그먼트 raw → (speed≠1이면 세그먼트별 `_atempo_segment`) → `_concat_with_silence(use, pending_path)`로
+- chunk raw → (speed≠1이면 chunk별 `_atempo_segment`) → `_concat_with_boundaries(use, gaps, pending_path)`로
   `job_dir/pending.wav` 생성.
+  ※ 갱신(2026-08-29): 이 경로는 더 이상 `_concat_with_silence`(항목마다 무음)를 쓰지 않는다.
+  `gaps`는 **원 segment 경계에만** 값이 있고 자동분할 내부 chunk 경계는 항상 `0.0`이다 —
+  "문장 안에서도 chunk마다 무음이 들어간다"는 읽기는 사실이 아니다.
 - pending을 **검증**(존재/non-empty/SR>0/finite)한 뒤에만 `os.replace(pending_path, final_path)`로
   `output_dir/synthesized.wav` 교체.
 - 정상/오류 공통으로 `finally: shutil.rmtree(job_dir)`. 실패 시 `os.replace`에 도달하지 않아

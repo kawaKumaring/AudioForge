@@ -502,15 +502,35 @@ def frame_spectral_signals(waveform, sample_rate, frame_sec=BOUNDARY_FRAME_SEC,
         yield flux, zcr
 
 
+def _sustain_level(dbs, sustain_dbs, k):
+    """지속 판정용 프레임 k 의 dBFS. 창 안이면 dbs, 창 **바로 오른쪽 밖**이면 sustain_dbs.
+
+    창 밖 값을 여기서만 쓰는 이유(P4): 개시 후보는 언제나 창 안에서만 고른다. 다만 그 후보가
+    창의 마지막 허용 프레임에 걸리면 지속 판정에 필요한 뒤 프레임이 창 밖으로 밀려 나가
+    '개시 없음'으로 보고됐다 — 실제로는 개시를 못 찾은 게 아니라 **확인할 자료가 잘린** 것이다.
+    없으면 None(0.0 으로 위조하지 않는다 — 호출자가 부재를 알고 fail-closed 한다)."""
+    if k < len(dbs):
+        return dbs[k]
+    j = k - len(dbs)
+    if sustain_dbs is not None and 0 <= j < len(sustain_dbs):
+        return sustain_dbs[j]
+    return None
+
+
 def detect_prefix_boundary(waveform, sample_rate, frame_sec=BOUNDARY_FRAME_SEC,
                            hop_sec=BOUNDARY_HOP_SEC,
-                           onset_flux_abs_min=ONSET_FLUX_ABS_MIN):
+                           onset_flux_abs_min=ONSET_FLUX_ABS_MIN,
+                           sustain_dbs=None):
     """생성물에서 '목표 대사 시작 직전'의 절단 지점을 신호만으로 찾는다(모듈 docstring B 규칙).
 
     onset_flux_abs_min: E1(flux) 의 절대 하한. 숫자를 주면 그 값을 쓰고(전역 탐색 기본 0.5),
     **None 이면 그 창에서 관측된 무음 flux 최댓값×ONSET_FLUX_NOISE_MARGIN 으로 유도**한다.
     §D 의 창 한정 탐색은 None 을 넘긴다 — 창마다 잡음 바닥이 다르고, 상수 하한은 실측상
     실제 개시의 다수(같은 표본 10건 중 8건)를 놓치기 때문이다.
+
+    sustain_dbs(P4): 이 파형 **바로 뒤**로 이어지는 프레임들의 dBFS(같은 창/홉 격자). 지속 판정
+    (ONSET_SUSTAIN_FRAMES)에만 쓴다 — noise floor·지역 조용 기준·개시 후보 집합에는 들어가지
+    않으므로 임계값은 하나도 달라지지 않는다. None 이면 예전과 완전히 같다.
 
     반환(성공/실패 모두 같은 형태 — 상위가 그대로 기록 가능, 전사·경로 없음):
       {"ok", "reason_code", "sample_rate", "frame_samples", "hop_samples", "frame_count",
@@ -589,9 +609,11 @@ def detect_prefix_boundary(waveform, sample_rate, frame_sec=BOUNDARY_FRAME_SEC,
                                                         ONSET_ZCR_ABS_MIN)):
                     ev |= EVIDENCE_ZCR
                 if ev:
-                    last = i + ONSET_SUSTAIN_FRAMES
-                    if last < count and all(dbs[i + k] >= sustain_thr
-                                            for k in range(1, ONSET_SUSTAIN_FRAMES + 1)):
+                    # 지속 판정(P4): 뒤 3프레임은 창 안이면 dbs, 창 오른쪽 바로 밖이면
+                    # sustain_dbs 에서 읽는다. 하나라도 자료가 없으면(None) 인정하지 않는다.
+                    _lv = [_sustain_level(dbs, sustain_dbs, i + k)
+                           for k in range(1, ONSET_SUSTAIN_FRAMES + 1)]
+                    if all(v is not None and v >= sustain_thr for v in _lv):
                         onset = i
                         obs = (level, flux, zcr, hb, ev, flux_thr, base_db, len(quiet_flux))
                         break
@@ -794,8 +816,19 @@ def detect_prefix_boundary_windowed(waveform, sample_rate, anchor_start_sec,
     ws = win["window_start_sample"]
     we = win["window_end_sample"]
     anchor = win["anchor_start_sample"]
+    # P4 — 창의 마지막 허용 프레임에서 개시가 잡히면 지속 판정 프레임이 창 밖으로 밀린다.
+    # 그 몇 프레임의 **레벨만** 원 파형에서 미리 재어 넘긴다(창 자체는 그대로 — floor·지역
+    # 조용 기준·개시 후보 집합 무변경). 원 파형에 없으면 넘기지 않는다(만들어 내지 않는다).
+    _win_n, _hop_n, _cnt = frame_geometry(we - ws, sample_rate, frame_sec, hop_sec)
+    sustain_dbs = []
+    for k in range(_cnt, _cnt + ONSET_SUSTAIN_FRAMES):
+        s = ws + k * _hop_n
+        if s < 0 or s + _win_n > n:
+            break
+        sustain_dbs.append(dbfs(rms(waveform[s:s + _win_n])))
     res = detect_prefix_boundary(list(waveform[ws:we]), sample_rate, frame_sec, hop_sec,
-                                 onset_flux_abs_min=onset_flux_abs_min)
+                                 onset_flux_abs_min=onset_flux_abs_min,
+                                 sustain_dbs=sustain_dbs or None)
     for k in _GLOBALIZED_KEYS:
         if isinstance(res.get(k), int):
             res[k] = ws + res[k]

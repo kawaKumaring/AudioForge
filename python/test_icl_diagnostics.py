@@ -98,6 +98,80 @@ class PreserveTest(unittest.TestCase):
                 self.fail(f"진단 보존이 예외를 냈다: {e!r}")
 
 
+class AlignmentDiagnosticJsonTest(unittest.TestCase):
+    """[회귀 8] P2 — 실제 정렬 실패에서 나온 detection 이 진단 JSON 에 어떻게 남는가.
+
+    스텁 dict 가 아니라 icl_alignment.plan_cut 이 실제로 만든 detection 을 그대로 흘려 넣는다 —
+    '기록하기로 한 수치가 진짜 기록되는가'와 '텍스트가 한 글자도 새지 않는가'를 동시에 본다."""
+
+    def setUp(self):
+        self.out = tempfile.mkdtemp(prefix="af_diag_align_")
+        self.addCleanup(lambda: shutil.rmtree(self.out, ignore_errors=True))
+        self.raw = os.path.join(self.out, "segment_qwen_001_c000.wav")
+        import numpy as np
+        import soundfile as sf
+        sf.write(self.raw, np.zeros(2400, dtype="float32"), 24000)
+
+    @staticmethod
+    def _fail(asr, wave=None):
+        import icl_alignment as ia
+        import test_icl_alignment as fx
+        try:
+            ia.plan_cut(fx.REF_TEXT, fx.TARGET_TEXT, asr,
+                        fx._decoy_wave() if wave is None else wave, fx.SR)
+        except ia.IclAlignmentFailed as af:
+            return af
+        raise AssertionError("실패가 나야 하는 픽스처인데 통과했다")
+
+    def _report(self, af):
+        name = dg.preserve_failure(self.out, self.raw, af.reason_code, af.detection, 0, 0, "happy")
+        self.assertIsNotNone(name)
+        p = os.path.join(self.out, dg.DIAGNOSTIC_DIR_NAME, name, dg.REPORT_NAME)
+        blob = open(p, encoding="utf-8").read()
+        return json.loads(blob), blob
+
+    def test_the_nine_recorded_numbers_are_present(self):
+        import test_icl_alignment as fx
+        af = self._fail(fx._head_corrupted_asr(
+            ref_words=[("참조", 0.00, 0.45), ("음성의", 0.45, 1.00),
+                       ("원래", 1.30, 1.80), ("대사임다", 1.80, 2.30)]))
+        rep, _blob = self._report(af)
+        d = rep["detection"]
+        self.assertEqual(d["align_asr_units"], 27)          # ASR 스트림 음절 길이
+        self.assertEqual(d["align_target_units"], 16)       # 목표 음절 길이
+        self.assertEqual(d["align_reference_units"], 12)    # 참조 음절 길이
+        for n in range(1, 6):                               # 목표 머리 길이별 매치 개수
+            self.assertIn("align_head_match_n%d" % n, d)
+        for n in range(3, 6):                               # 참조 꼬리 길이별 매치 개수
+            self.assertIn("align_ref_tail_match_n%d" % n, d)
+        self.assertEqual(d["align_head_longest_units"], 2)  # 최장 일치 길이
+        self.assertEqual(d["align_ref_tail_longest_units"], 0)
+        self.assertEqual(d["align_stage"], "ALIGN_STAGE_REFERENCE_TAIL_ANCHOR")  # 최종 실패 단계
+        self.assertEqual(d["align_ref_tail_reason"], "ICL_ALIGN_REF_TAIL_NOT_FOUND")
+
+    def test_selected_anchor_kind_and_position_survive_the_filter(self):
+        """anchor 를 고른 뒤 파형에서 막힌 경우 — 종류·위치·시각이 그대로 남는다."""
+        import test_icl_alignment as fx
+        af = self._fail(fx._head_corrupted_asr(), wave=fx._speech(fx.TOTAL_N))
+        rep, _blob = self._report(af)
+        d = rep["detection"]
+        self.assertEqual(d["align_anchor_kind"], "REFERENCE_TAIL")   # 선택된 anchor 종류
+        self.assertIsInstance(d["align_anchor_stream_index"], int)   # 선택된 anchor 위치
+        self.assertAlmostEqual(d["align_anchor_time_sec"], 2.30, places=4)
+        self.assertIn(d["align_anchor_units"], (3, 4, 5))
+        self.assertEqual(d["align_stage"], "ALIGN_STAGE_BOUNDARY")
+
+    def test_no_transcript_no_dialogue_no_absolute_path(self):
+        import test_icl_alignment as fx
+        for af in (self._fail(fx._head_corrupted_asr(
+                       ref_words=[("참조", 0.0, 0.45), ("대사임다", 1.8, 2.3)])),
+                   self._fail(fx._head_corrupted_asr(), wave=fx._speech(fx.TOTAL_N))):
+            _rep, blob = self._report(af)
+            for secret in (fx.REF_TEXT, fx.TARGET_TEXT, "안녕", "참조", "대사",
+                           self.out, self.raw, ".wav", ":\\", ":/"):
+                self.assertNotIn(secret, blob, secret[:16])
+
+
 class WiringTest(unittest.TestCase):
     """tts_worker 배선 — 실패 지점에서 실제로 호출되고, 폴더 '이름'만 오류에 실린다."""
 

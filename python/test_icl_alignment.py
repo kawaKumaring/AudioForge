@@ -190,10 +190,20 @@ class WindowedCutTest(_AlignBase):
         self.assertLess(s["tail_end_sample"], s["cut_sample"], "tail_end 이후여야 한다")
         self.assertGreaterEqual(s["lead_samples"], int(round(pa.MIN_LEAD_SEC * SR)))
 
-    def test_summary_is_numbers_only(self):
+    def test_summary_is_numbers_and_canonical_enums_only(self):
+        """요약에 담기는 것은 수치, 아니면 **canonical enum**(대문자·숫자·밑줄)뿐이다.
+
+        enum 을 허용 범위에 명시한 이유: P2 진단이 'anchor 종류'와 '실패 단계'를 남기는데, 그
+        값은 진단 JSON 의 개인정보 필터(icl_diagnostics._numbers_only)가 통과시키는 것과 정확히
+        같은 형태다. 즉 필터를 느슨하게 만들지 않고도 통과하는 값만 쓴다 — 전사·대사·경로는
+        이 술어를 절대 통과하지 못한다."""
         r = self._run()
         for k, v in r["summary"].items():
-            self.assertIsInstance(v, (int, float), k)
+            if isinstance(v, str):
+                self.assertTrue(v and all(c.isupper() or c.isdigit() or c == "_" for c in v),
+                                f"{k}={v!r} 은 canonical enum 이 아니다")
+            else:
+                self.assertIsInstance(v, (int, float), k)
         blob = repr(r)
         self.assertNotIn(REF_TEXT, blob)
         self.assertNotIn(TARGET_TEXT, blob)
@@ -225,12 +235,17 @@ class FailClosedTest(_AlignBase):
                            asr=_words([("참조", 0.0, 0.45), ("음성의", 0.45, 1.0),
                                        ("원래", 1.3, 1.8), ("대사입니다", 1.8, 2.3)]))
 
-    def test_anchor_ambiguous_fails(self):
-        """목표 머리가 두 번 이상 나오면 어느 쪽인지 확정할 수 없다."""
+    def test_anchor_ambiguous_and_reference_tail_ambiguous_fails(self):
+        """1차(목표 머리)가 중복이고 2차(참조 꼬리)도 확실하지 않으면 자르지 않는다.
+
+        보고하는 사유는 **1차의 것**이다 — 2차는 1차가 막혔을 때만 도는 보조 경로이고,
+        상위(auto 전환·오류 payload)가 보는 계약은 예전 그대로여야 한다.
+        (1차만 중복이고 2차가 유일하면 잘린다 — ReferenceTailAnchorTest 가 그 쪽을 고정한다.)"""
         onset = TARGET_ONSET / SR
         self._assert_fails(pa.REASON_ANCHOR_AMBIGUOUS,
                            asr=_words([("안녕하세요", 0.0, 0.6), ("참조", 0.6, 1.0),
-                                       ("원래", 1.3, 1.8), ("대사입니다", 1.8, 2.3),
+                                       ("대사입니다", 1.0, 1.4),      # 참조 꼬리 1회
+                                       ("원래", 1.5, 1.8), ("대사입니다", 1.8, 2.3),  # 꼬리 2회 → 중복
                                        ("안녕하세요", onset, onset + 0.7),
                                        ("오늘", onset + 0.7, onset + 1.0)]))
 
@@ -496,6 +511,243 @@ class WindowRuleUnitTest(unittest.TestCase):
             prev_word_end_sec=GAP_START / SR)
         self.assertFalse(r["ok"])
         self.assertEqual(r["reason_code"], pa.REASON_BOUNDARY_CUT_INSIDE_REFERENCE)
+        self.assertIsNone(r["cut_sample"])
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# P1 — 참조 꼬리 기반 보조 anchor(1차가 실패했을 때만)
+# ══════════════════════════════════════════════════════════════════════════════
+#
+# 실측 근거(보존 진단 20260829-053822-s0-c0): 목표 chunk 가 9음절뿐인데 ASR 오류가 **머리**에
+# 몰리면(index 2 삭제 / 3 치환) 접두 n-gram 매치가 n=1→3건, n=2→1건, n≥3→0건으로 무너진다.
+# 즉 머리 anchor 는 원리적으로 못 잡는다. 반면 같은 스트림에서 참조 58음절 재발화의 편집거리는
+# 1/58 이었고, 참조 마지막 단어 끝을 기준점으로 주면 같은 파형 규칙이 그대로 풀렸다.
+#
+# 아래 픽스처는 그 구조를 그대로 재현한다 — 목표 머리만 망가뜨리고(안녕하세요→안녕핫새요)
+# 참조는 정확히 인식된 스트림.
+
+def _head_corrupted_asr(onset_sec=TARGET_ONSET / SR, ref_words=None):
+    """참조는 정확, **목표 머리만** 인식 오류. 머리 anchor(3~5음절)는 0건이 된다."""
+    ref = ref_words if ref_words is not None else [
+        ("참조", 0.00, 0.45), ("음성의", 0.45, 1.00),
+        ("원래", 1.30, 1.80), ("대사입니다", 1.80, 2.30)]
+    return _words(ref + [
+        ("안녕핫새요", onset_sec, onset_sec + 0.70),      # 머리 3음절이 어긋난다
+        ("오늘", onset_sec + 0.70, onset_sec + 1.05),
+        ("좋은", onset_sec + 1.05, onset_sec + 1.40),
+        ("소식이", onset_sec + 1.40, onset_sec + 1.75),
+        ("있습니다", onset_sec + 1.75, onset_sec + 2.00),
+    ])
+
+
+class ReferenceTailAnchorTest(_AlignBase):
+    """2차 경로의 계약 — 확실할 때만 쓰고, 아니면 예전처럼 실패한다."""
+
+    def test_regression1_target_head_path_is_byte_for_byte_the_old_path(self):
+        """[회귀 1] 1차가 성공하는 표본의 cut 은 기존 경로와 **완전히 같다**.
+
+        '같다'를 요약값 비교로 끝내지 않고, production 이 만든 창 파라미터를 그대로 써서
+        prefix_alignment 를 직접 호출한 결과와 좌표 전체를 대조한다."""
+        r = self._run()
+        s = r["summary"]
+        self.assertEqual(s["align_anchor_kind"], ia.ANCHOR_KIND_TARGET_HEAD)
+        self.assertEqual(r["cut_sample"], VALLEY_AT)
+        direct = pa.detect_prefix_boundary_windowed(
+            self.wave, SR, TARGET_ONSET / SR, prev_word_end_sec=2.30)
+        self.assertTrue(direct["ok"], direct["reason_code"])
+        for k in ("tail_end_sample", "valley_sample", "onset_sample", "cut_sample",
+                  "window_start_sample", "window_end_sample", "anchor_start_sample",
+                  "lead_samples", "noise_floor_dbfs"):
+            self.assertEqual(s[k], direct[k], k)
+
+    def test_regression2_head_asr_error_plus_unique_reference_tail_resolves(self):
+        """[회귀 2] 목표 머리가 인식 오류로 사라져도, 참조 꼬리가 유일하면 같은 경계를 찾는다."""
+        r = self._run(asr=_head_corrupted_asr())
+        s = r["summary"]
+        self.assertEqual(s["align_anchor_kind"], ia.ANCHOR_KIND_REFERENCE_TAIL)
+        self.assertEqual(r["cut_sample"], VALLEY_AT, "1차 경로와 같은 지점을 찾는다")
+        self.assertEqual(s["tail_end_sample"], GAP_START)
+        # 기준점은 참조 마지막 단위의 **끝** 시각(2.30s)이다 — 목표 첫 단어 시작이 아니다.
+        self.assertEqual(s["anchor_start_sample"], int(round(2.30 * SR)))
+        # 머리 anchor 가 왜 못 잡았는지가 수치로 남는다(실측과 같은 붕괴 모양).
+        self.assertEqual(s["align_head_match_n3"], 0)
+        self.assertEqual(s["align_head_longest_units"], 2)
+        self.assertEqual(s["align_ref_tail_match_n3"], 1)
+        self.assertEqual(s["align_stage"], ia.STAGE_NONE)
+        # 실제로 잘렸다(기록이 아니라 파일).
+        got, _sr = self._read(self.path)
+        self.assertEqual(len(got), TOTAL_N - VALLEY_AT)
+
+    def _assert_tail_reason(self, tail_reason, asr, target=TARGET_TEXT, prefix=REF_TEXT,
+                            head_reason=pa.REASON_ANCHOR_NOT_FOUND):
+        """2차가 막히면 **1차의 사유**로 실패하고, 2차의 사유는 진단 수치에만 남는다."""
+        before = os.path.getsize(self.path)
+        with self.assertRaises(ia.IclAlignmentFailed) as cm:
+            self._run(asr=asr, target=target, prefix=prefix)
+        self.assertEqual(cm.exception.reason_code, head_reason)
+        d = cm.exception.detection
+        self.assertIsInstance(d, dict)
+        self.assertEqual(d["align_ref_tail_reason"], tail_reason)
+        self.assertEqual(d["align_stage"], ia.STAGE_REFERENCE_TAIL_ANCHOR)
+        self.assertNotIn("align_anchor_kind", d, "anchor 를 고르지 못했으면 종류도 없다")
+        # [회귀 7] 근거가 부족하면 결과가 만들어지지 않는다 — raw 는 손도 대지 않는다.
+        self.assertEqual(os.path.getsize(self.path), before)
+        got, _sr = self._read(self.path)
+        self.assertEqual(len(got), TOTAL_N)
+        self.assertEqual([n for n in os.listdir(self.tmp) if n != os.path.basename(self.path)],
+                         [], "임시 절단본이 남지 않는다")
+        return d
+
+    def test_regression3_reference_tail_that_also_occurs_in_the_target_fails_closed(self):
+        """[회귀 3] 참조 꼬리 문구가 목표 대사에도 있으면 경계가 모호하다 → 자르지 않는다."""
+        target = "그것도 결국 대사입니다"          # 참조 꼬리(…대사입니다)를 그대로 품고 있다
+        onset = TARGET_ONSET / SR
+        asr = _words([("참조", 0.00, 0.45), ("음성의", 0.45, 1.00),
+                      ("원래", 1.30, 1.80), ("대사입니다", 1.80, 2.30),
+                      ("그것또", onset, onset + 0.50),        # 목표 머리 인식 오류
+                      ("결국", onset + 0.50, onset + 0.90),
+                      ("대사입니다", onset + 0.90, onset + 1.60)])
+        d = self._assert_tail_reason(ia.REASON_REF_TAIL_IN_TARGET, asr, target=target)
+        self.assertEqual(d["align_head_match_n3"], 0)
+
+    def test_regression4_duplicate_reference_tail_fails_closed(self):
+        """[회귀 4] 참조 꼬리가 스트림에 두 번 나오면 어느 쪽이 끝인지 모른다 → 자르지 않는다."""
+        self._assert_tail_reason(
+            ia.REASON_REF_TAIL_AMBIGUOUS,
+            _head_corrupted_asr(ref_words=[("참조", 0.00, 0.45), ("대사입니다", 0.45, 0.95),
+                                           ("원래", 1.30, 1.80), ("대사입니다", 1.80, 2.30)]))
+
+    def test_regression5_undetected_reference_tail_fails_closed(self):
+        """[회귀 5] 참조 꼬리가 인식 결과에 없으면 기준점을 만들 수 없다 → 자르지 않는다."""
+        self._assert_tail_reason(
+            ia.REASON_REF_TAIL_NOT_FOUND,
+            _head_corrupted_asr(ref_words=[("참조", 0.00, 0.45), ("음성의", 0.45, 1.00),
+                                           ("원래", 1.30, 1.80), ("대사임다", 1.80, 2.30)]))
+
+    def test_no_speech_after_the_reference_tail_fails_closed(self):
+        """참조만 말하고 끝난 생성물이면 자를 이유가 없다(꼬리 뒤 발화 부재)."""
+        self._assert_tail_reason(
+            ia.REASON_REF_TAIL_NO_SPEECH_AFTER,
+            _words([("참조", 0.00, 0.45), ("음성의", 0.45, 1.00),
+                    ("원래", 1.30, 1.80), ("대사입니다", 1.80, 2.30)]))
+
+    def test_cut_inside_the_reference_is_rejected_on_the_tail_path(self):
+        """2차 경로에도 '참조 안을 자르지 않는다'는 선이 있다.
+
+        참조 마지막 단어 끝을 실제보다 **한참 뒤**로 보고하게 만들면(인식 시각 오류), 검출된
+        cut 은 그 기준점보다 여유값 이상 앞이 된다 → CUT_INSIDE_REFERENCE 로 거부."""
+        late = (TARGET_ONSET + 8000) / SR
+        asr = _head_corrupted_asr(ref_words=[("참조", 0.00, 0.45), ("음성의", 0.45, 1.00),
+                                             ("원래", 1.30, 1.80), ("대사입니다", 1.80, late)])
+        before = os.path.getsize(self.path)
+        with self.assertRaises(ia.IclAlignmentFailed) as cm:
+            self._run(asr=asr)
+        self.assertIn(cm.exception.reason_code,
+                      (pa.REASON_BOUNDARY_CUT_INSIDE_REFERENCE,
+                       pa.REASON_BOUNDARY_ONSET_OFF_ANCHOR,
+                       pa.REASON_BOUNDARY_CUT_AFTER_ANCHOR,
+                       pa.REASON_BOUNDARY_ONSET_NOT_FOUND))
+        self.assertEqual(os.path.getsize(self.path), before)
+
+
+class AlignmentDiagnosticsTest(_AlignBase):
+    """P2 — 비민감 정렬 진단. 수치와 canonical enum 만, 텍스트는 한 글자도 없다."""
+
+    def test_failure_detection_carries_the_numbers_that_explain_it(self):
+        with self.assertRaises(ia.IclAlignmentFailed) as cm:
+            self._run(asr=_head_corrupted_asr(
+                ref_words=[("참조", 0.00, 0.45), ("음성의", 0.45, 1.00),
+                           ("원래", 1.30, 1.80), ("대사임다", 1.80, 2.30)]))
+        d = cm.exception.detection
+        # ASR 스트림 / 목표 / 참조 음절 길이
+        self.assertEqual(d["align_target_units"], 16)
+        self.assertEqual(d["align_reference_units"], 12)
+        self.assertGreater(d["align_asr_units"], 0)
+        # 길이별 매치 개수(목표 머리 · 참조 꼬리)와 최장 일치 길이
+        for n in range(1, 6):
+            self.assertIsInstance(d["align_head_match_n%d" % n], int)
+        for n in range(3, 6):
+            self.assertIsInstance(d["align_ref_tail_match_n%d" % n], int)
+        self.assertEqual(d["align_head_longest_units"], 2)
+        self.assertEqual(d["align_ref_tail_longest_units"], 0)
+        # 최종 실패 단계
+        self.assertEqual(d["align_stage"], ia.STAGE_REFERENCE_TAIL_ANCHOR)
+
+    def test_diagnostics_contain_no_text_at_all(self):
+        with self.assertRaises(ia.IclAlignmentFailed) as cm:
+            self._run(asr=_head_corrupted_asr(
+                ref_words=[("참조", 0.00, 0.45), ("대사임다", 1.80, 2.30)]))
+        blob = repr(cm.exception.detection)
+        for secret in (REF_TEXT, TARGET_TEXT, "안녕", "참조 ", self.tmp, ".wav"):
+            self.assertNotIn(secret, blob, secret[:12])
+
+    def test_success_records_which_anchor_did_the_work(self):
+        for asr, kind in ((None, ia.ANCHOR_KIND_TARGET_HEAD),
+                          (_head_corrupted_asr(), ia.ANCHOR_KIND_REFERENCE_TAIL)):
+            self._write(self.path, self.wave)          # raw 로 되돌리고 다시
+            s = self._run(asr=asr)["summary"]
+            self.assertEqual(s["align_anchor_kind"], kind)
+            self.assertEqual(s["align_stage"], ia.STAGE_NONE)
+            self.assertIn(s["align_anchor_units"], (3, 4, 5))
+            self.assertIsInstance(s["align_anchor_stream_index"], int)
+            self.assertIsInstance(s["align_anchor_time_sec"], float)
+
+
+class WindowRightEdgeTest(unittest.TestCase):
+    """P4 — 개시가 창의 마지막 허용 위치에 걸릴 때 지속 판정 프레임이 창 밖으로 밀리던 문제.
+
+    실측(합성 표본): 개시 프레임 59040 은 창 끝이 59640(=59040+창240+3홉360) 이상일 때만
+    지속 3프레임을 창 안에서 확인할 수 있었다. 창 끝이 59280~59520 이면 개시를 **찾지 못했다고**
+    보고했는데, 실제로는 개시를 못 찾은 게 아니라 확인할 자료가 잘린 것이다.
+    고친 뒤에는 그 구간에서도 개시를 찾고, 거부하더라도 **정확한 사유**로 거부한다.
+
+    ★임계값·허용 오차는 하나도 바꾸지 않았다 — 창 밖 프레임의 '레벨'만 지속 판정에 넘긴다."""
+
+    ONSET_FRAME = 59040          # 실제 개시(59160)를 걸치는 프레임의 시작
+    SUSTAIN_SPAN = 240 + 3 * 120  # 창 240 + 지속 3홉
+
+    def _at(self, we, **kw):
+        trail_n = int(round(pa.ANCHOR_WINDOW_TRAIL_SEC * SR))
+        return pa.detect_prefix_boundary_windowed(
+            _decoy_wave(), SR, (we - trail_n) / SR, **kw)
+
+    # 개시 프레임이 창 안에 '들어는 오지만'(끝 ≥ 59040+240) 지속 3프레임은 밖으로 밀리는 구간.
+    TRUNCATED_ENDS = (59040 + 240, 59040 + 360, 59040 + 480)
+
+    def test_regression6_onset_at_the_window_right_edge_is_now_detected(self):
+        """[회귀 6] 지속 프레임이 창 밖으로 밀리는 구간에서도 개시를 찾는다."""
+        for we in self.TRUNCATED_ENDS:
+            r = self._at(we)
+            self.assertEqual(r["onset_sample"], self.ONSET_FRAME,
+                             f"we={we}: 개시를 찾지 못했다고 보고하면 안 된다")
+            self.assertEqual(r["window_end_sample"], we)
+            # 기준점에서 허용 오차보다 멀어 거부되지만, **사유가 정확하다**
+            # (예전에는 ONSET_NOT_FOUND 라 임계값을 의심하게 만들었다).
+            self.assertEqual(r["reason_code"], pa.REASON_BOUNDARY_ONSET_OFF_ANCHOR)
+            self.assertIsNone(r["cut_sample"], "거부는 그대로 fail-closed")
+
+    def test_the_same_window_resolves_when_the_anchor_is_close_enough(self):
+        """허용 오차 안이면 그 구간에서도 정상 cut 이 나온다(검출 자체가 살아 있다는 증거)."""
+        for we in self.TRUNCATED_ENDS:
+            r = self._at(we, anchor_tolerance_sec=0.5)
+            self.assertTrue(r["ok"], f"we={we}: {r['reason_code']}")
+            self.assertEqual(r["cut_sample"], VALLEY_AT)
+
+    def test_existing_successes_keep_the_same_cut(self):
+        """[회귀 1의 짝] 이미 성공하던 창들의 cut 은 한 샘플도 달라지지 않는다."""
+        for we in range(self.ONSET_FRAME + self.SUSTAIN_SPAN, self.ONSET_FRAME + 1801, 120):
+            r = self._at(we)
+            self.assertTrue(r["ok"], f"we={we}: {r['reason_code']}")
+            self.assertEqual(r["cut_sample"], VALLEY_AT, f"we={we}")
+
+    def test_no_lookahead_is_invented_past_the_end_of_the_waveform(self):
+        """파형이 거기서 끝나면 지속 판정 자료를 만들어 내지 않는다(여전히 fail-closed)."""
+        wave = _decoy_wave()[:self.ONSET_FRAME + 360]
+        trail_n = int(round(pa.ANCHOR_WINDOW_TRAIL_SEC * SR))
+        r = pa.detect_prefix_boundary_windowed(
+            wave, SR, (self.ONSET_FRAME + 360 - trail_n) / SR, anchor_tolerance_sec=0.5)
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason_code"], pa.REASON_BOUNDARY_ONSET_NOT_FOUND)
         self.assertIsNone(r["cut_sample"])
 
 
