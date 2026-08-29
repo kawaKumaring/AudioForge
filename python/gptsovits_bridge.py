@@ -70,9 +70,18 @@ def main():
         emit("progress", percent=15, message="GPT-SoVITS 설정 로딩 중...")
         # tts_infer.yaml의 custom 프로파일 사용 (v2). CUDA 없으면 __init__이 CPU로 자동 강등.
         tts_config = TTS_Config("GPT_SoVITS/configs/tts_infer.yaml")
+        # device 계보를 남긴다 — 나중에 'GPU 로 돌았나' 를 결과만 보고 답할 수 있어야 한다.
+        requested_device = str(getattr(tts_config, "device", "") or "")
+        device_selection_source = "tts_infer.yaml"
+        fallback = False
+        fallback_reason = None
         if not torch.cuda.is_available():
             tts_config.device = "cpu"
             tts_config.is_half = False
+            device_selection_source = "torch.cuda.is_available()"
+            if requested_device and not requested_device.startswith("cpu"):
+                fallback = True
+                fallback_reason = "CUDA_UNAVAILABLE"
 
         emit("progress", percent=35, message=f"GPT-SoVITS 모델 로딩 중... ({tts_config.device})")
         tts = TTS(tts_config)
@@ -133,7 +142,19 @@ def main():
             combined = np.concatenate(chunks)
             sf.write(output_path, combined, sr)
             emit("progress", percent=95, message="저장 완료")
-            emit("result", output_path=output_path, success=True)
+            actual_device = str(getattr(getattr(tts, "configs", None), "device", "")
+                                or getattr(tts_config, "device", "") or "")
+            if (not fallback and requested_device
+                    and not requested_device.startswith("cpu")
+                    and actual_device.startswith("cpu")):
+                # 요청은 GPU 였는데 실제로 CPU 로 내려간 경우 — 성공으로 포장하지 않는다.
+                fallback = True
+                fallback_reason = "DEVICE_DOWNGRADED_AT_LOAD"
+            emit("result", output_path=output_path, success=True,
+                 requested_device=requested_device or None,
+                 actual_device=actual_device or None,
+                 device_selection_source=device_selection_source,
+                 fallback=fallback, fallback_reason=fallback_reason)
         else:
             emit("error", message="합성 결과가 없습니다.")
             sys.exit(1)

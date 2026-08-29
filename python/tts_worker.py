@@ -206,6 +206,7 @@ class GPTSoVITSEngine(TTSEngine):
         self._warned_transcripts = set()  # (transcript_key, code) → 전사 강등 경고 1회만
         self._announced_transcripts = set()  # transcript_key → 전사 완료 메시지 1회만(로그 오염 방지)
         self._prompt_overrides = {}  # abspath → {manual_text, prompt_lang, mode} (사용자 수동 override)
+        self._last_device_info = {}  # bridge 가 보고한 device 계보(요청/실제/강등)
 
     def set_prompt_overrides(self, overrides_by_path):
         """경로별 사용자 프롬프트 override 설정. 매 작업 시작 시 호출(빈 dict면 이전 override 해제)."""
@@ -369,6 +370,12 @@ class GPTSoVITSEngine(TTSEngine):
                 continue
             try:
                 msg = json.loads(line)
+                if msg.get("type") == "result":
+                    # bridge 가 실제로 잡은 device 계보. 여기서 추측해 채우지 않는다.
+                    self._last_device_info = {
+                        k: msg.get(k) for k in
+                        ("requested_device", "actual_device", "device_selection_source",
+                         "fallback", "fallback_reason") if k in msg}
                 if msg.get("type") == "error":
                     raise RuntimeError(msg.get("message", "Unknown error"))
                 if msg.get("type") == "progress":
@@ -1330,6 +1337,9 @@ _METADATA_KEYS = [
     "reference_conditioning_icl_attempted", "reference_conditioning_icl_published",
     "reference_conditioning_auto_fallback", "reference_conditioning_attempts",
     "reference_conditioning_notice",
+
+    # GPT-SoVITS device 계보(bridge 보고값 그대로)
+    "requested_device", "actual_device",
 ]
 
 
@@ -2546,9 +2556,19 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         engines_used = sorted(set(seg_engines))
         # qwen3를 요청했는데 per-segment로 왔으면 폴백(미설치/미선택)
         fb = (requested_engine == "qwen3")
+        # GPT-SoVITS 가 실제로 어떤 device 로 돌았는지 bridge 가 보고한 값을 그대로 싣는다.
+        # 여기서 추측해 채우지 않는다 — 모르면 없는 채로 둔다.
+        _gsv_dev = {}
+        try:
+            if "gptsovits" in _engine_cache:
+                _gsv_dev = dict(getattr(_engine_cache["gptsovits"], "_last_device_info", {}) or {})
+        except Exception:
+            _gsv_dev = {}
         meta = _build_tts_metadata(
             requested_engine=requested_engine, actual_engine=",".join(engines_used),
-            device=None, device_selection_source=None, prompt_source=p_src,
+            device=_gsv_dev.get("actual_device"),
+            device_selection_source=_gsv_dev.get("device_selection_source"),
+            prompt_source=p_src,
             x_vector_only_mode=None, original_reference_path=reference_audio,
             effective_reference_path=reference_audio, reference_region=None,
             target_language=tgt2, seed=None, seed_supported=False,
@@ -2568,6 +2588,8 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             # 시도도 발행도 전환도 없었다는 사실을 그대로 적는다(effective 를 임의의 구체값으로
             # 바꿔 적으면 하지 않은 일을 했다고 기록하게 된다). 무엇을 실제로 돌렸는지는
             # actual_engine 이 말한다.
+            **{k: v for k, v in _gsv_dev.items()
+               if k in ("requested_device", "actual_device", "fallback_reason")},
             **_reference_conditioning_meta(rc_mode, rc_mode, icl_attempted=False,
                                            icl_published=False, auto_fallback=False),
             **_plan_meta)
