@@ -58,51 +58,38 @@ class TestWhisperResolution(unittest.TestCase):
         self.assertNotIn("whisper.load_model(model_name, device=device)", src)
 
 
-class TestHfModelResolution(unittest.TestCase):
-    """HF 형식 모델(NLLB·Qwen2.5)도 조용히 내려받지 않는다."""
+class TestNoGlobalHfFallback(unittest.TestCase):
+    """production 에서 HF repo id 를 from_pretrained 에 직접 넘기는 호출이 0건인지."""
 
-    def setUp(self):
-        self._env = os.environ.get(tw.HF_ROOT_ENV)
-        self.tmp = tempfile.mkdtemp(prefix="af-hf-")
+    def test_no_repo_id_passed_to_from_pretrained(self):
+        import re
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        bad = []
+        for base in (os.path.join(root, "python"), os.path.join(root, "src")):
+            for dp, dns, fns in os.walk(base):
+                dns[:] = [d for d in dns if d not in ("__pycache__", "node_modules")]
+                for fn in fns:
+                    if not fn.endswith((".py", ".ts")) or fn.startswith("test_") or ".test." in fn:
+                        continue
+                    fp = os.path.join(dp, fn)
+                    txt = open(fp, encoding="utf-8", errors="replace").read()
+                    # from_pretrained 에 따옴표로 시작하는 리터럴 repo id 나 model_name 변수를
+                    # 그대로 넘기면 hub 해석이 일어난다. snapshot 경로 변수만 허용.
+                    for m in re.finditer(r"from_pretrained\(\s*([A-Za-z_\"'][^,\)]*)", txt):
+                        arg = m.group(1).strip()
+                        if arg in ("snap", "model_path"):
+                            continue
+                        if arg.startswith(('"', "'")):
+                            bad.append("%s :: %s" % (fn, arg[:40]))
+                        elif arg in ("model_name", "repo_id"):
+                            bad.append("%s :: %s" % (fn, arg))
+        self.assertEqual(bad, [], "전역 캐시로 샐 수 있는 호출: %s" % bad)
 
-    def tearDown(self):
-        if self._env is None:
-            os.environ.pop(tw.HF_ROOT_ENV, None)
-        else:
-            os.environ[tw.HF_ROOT_ENV] = self._env
-        shutil.rmtree(self.tmp, ignore_errors=True)
-
-    def test_missing_repo_raises_not_downloads(self):
-        os.environ[tw.HF_ROOT_ENV] = self.tmp
-        with self.assertRaises(tw.OptionalModelNotInstalled) as cm:
-            tw.resolve_hf_cache_dir("acme/__definitely_not_installed__")
-        self.assertIn("OPTIONAL_MODEL_NOT_INSTALLED", str(cm.exception))
-        self.assertTrue(cm.exception.searched, "어디를 찾았는지 알려줘야 한다")
-
-    def test_internal_beats_external(self):
-        os.environ[tw.HF_ROOT_ENV] = self.tmp
-        repo = "facebook/nllb-200-distilled-600M"
-        d = os.path.join(self.tmp, "hub", tw._hub_dir_name(repo))
-        os.makedirs(d)
-        cdir, source = tw.resolve_hf_cache_dir(repo)
-        self.assertEqual(source, "internal")
-        self.assertEqual(os.path.normcase(cdir), os.path.normcase(os.path.join(self.tmp, "hub")))
-
-    def test_cache_dir_is_hub_level_not_parent(self):
-        # 부모(HF_HOME)를 넘기면 transformers 가 못 찾고 네트워크로 나간다 — 실제로 겪은 실패.
-        os.environ[tw.HF_ROOT_ENV] = self.tmp
-        repo = "acme/x"
-        d = os.path.join(self.tmp, "hub", tw._hub_dir_name(repo))
-        os.makedirs(d)
-        cdir, _ = tw.resolve_hf_cache_dir(repo)
-        self.assertTrue(os.path.isdir(os.path.join(cdir, tw._hub_dir_name(repo))),
-                        "cache_dir 는 models--* 를 직접 담은 디렉터리여야 한다")
-
-    def test_loader_passes_local_files_only(self):
+    def test_resolve_hf_cache_dir_removed(self):
         src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "transcribe_worker.py"), encoding="utf-8").read()
-        self.assertIn("local_files_only=True", src)
-        self.assertNotIn("AutoTokenizer.from_pretrained(model_name, src_lang=nllb_src)", src)
+        self.assertNotIn("def resolve_hf_cache_dir", src, "죽은 cache_dir 경로가 남아 있다")
+        self.assertIn("model_registry.snapshot_path", src)
 
 
 if __name__ == "__main__":
