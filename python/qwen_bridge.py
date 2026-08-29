@@ -41,6 +41,7 @@ stdout: progress/stage/heartbeat/result/error JSON 라인(부모가 실시간 �
   부모가 별도로 두는 '기동 hard deadline'은 절대 연장하지 않는다(멈춘 로딩은 여전히 죽는다).
   loaded 이후에는 heartbeat를 보내지 않는다 — 생성 구간 무응답 계약(280s)을 그대로 보존하기 위함.
 """
+import os
 import sys
 import json
 import threading
@@ -309,14 +310,53 @@ class BridgeGenerationLimit(Exception):
         super().__init__(f"GENERATION_LIMIT_EXCEEDED(seg={segment_index}, chunk={chunk_index})")
 
 
+DIAG_CAP_ENV = "AUDIOFORGE_DIAG_SEGMENT_TOKEN_CAP"
+DIAG_SENTENCE_ENV = "AUDIOFORGE_DIAG_SENTENCE_FIRST"
+
+
+def _diag_cap(default_cap):
+    """진단 전용 분할 상한 override.
+
+    production 기본값은 generation_limit.max_segment_tokens() 그대로다. 이 훅은
+    분할 정책 비교 하네스가 같은 코드 경로로 다른 상한을 재보기 위한 것이며,
+    환경변수가 없으면 **한 글자도 다르게 동작하지 않는다**.
+    상한을 올려도 동적 상한(ABS_LIMIT)과 termination 판정은 그대로 적용되므로,
+    과도한 값을 주면 generation_limit 으로 드러나지 조용히 잘리지 않는다.
+    """
+    raw = os.environ.get(DIAG_CAP_ENV)
+    if not raw:
+        return default_cap, False
+    try:
+        v = int(raw)
+    except ValueError:
+        raise RuntimeError("DIAG_CAP_INVALID: %s=%r" % (DIAG_CAP_ENV, raw))
+    if v <= 0:
+        raise RuntimeError("DIAG_CAP_INVALID: %s=%r" % (DIAG_CAP_ENV, raw))
+    return v, True
+
+
 def _build_chunk_plan(segments, builder, proc, max_seg_tok):
     """전 원본 segment를 먼저 분할(생성 없음). 하나라도 분할 실패면 BridgeSegmentTooLong →
     생성 루프에 진입하지 않아 generate 호출 0. 반환: [{seg, chunk_index, chunk_count, text}]."""
     plan = []
+    max_seg_tok, diag = _diag_cap(max_seg_tok)
+    sentence_first = bool(os.environ.get(DIAG_SENTENCE_ENV))
+    if diag or sentence_first:
+        emit("stage", stage="diagnostic_split", cap=max_seg_tok, sentence_first=sentence_first)
     for seg in segments:
         try:
-            chunks = text_segmenter.split_for_generation(
-                seg["text"], lambda t: _prod_tokens(builder, proc, t), max_seg_tok)
+            count = lambda t: _prod_tokens(builder, proc, t)
+            if sentence_first:
+                # 진단 전용: 문장 경계를 넘겨 병합하지 않는다.
+                chunks = []
+                for snt in text_segmenter._cut_after(
+                        seg["text"], text_segmenter.SENTENCE_ENDERS, eat_closers=True):
+                    if not snt.strip():
+                        continue
+                    chunks.extend([snt] if count(snt) <= max_seg_tok
+                                  else text_segmenter.split_for_generation(snt, count, max_seg_tok))
+            else:
+                chunks = text_segmenter.split_for_generation(seg["text"], count, max_seg_tok)
         except text_segmenter.SegmentTooLong as e:
             raise BridgeSegmentTooLong(int(seg["index"]), seg.get("emotion_id"),
                                        int(e.prod_tokens), int(e.max_tokens))
