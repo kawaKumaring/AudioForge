@@ -1556,6 +1556,11 @@ def _align_icl_chunks(seg_out, transcribe_factory=_icl_transcribe_fn, output_dir
         for e in seg_out:      # 정렬 대상이 아니어도 텍스트는 남기지 않는다
             e.pop("alignment_request", None)
         return seg_out
+    # global chunk index 를 여기서 못박는다. segment-local chunk_index 를 그대로 쓰면
+    # segment 가 둘 이상일 때 0,1,2 / 0,1 이 겹쳐 raw·aligned 가 서로를 덮어쓴다
+    # (실측으로 확인한 결함 — final 은 조립 순서라 global 이었고 둘이 어긋났다).
+    for _g, _e in enumerate(seg_out):
+        _e["global_chunk_index"] = _g
     todo.sort(key=lambda e: (e.get("original_segment_index"), e.get("chunk_index")))
     # 계측(opt-in). 비활성이면 recorder.active=False 라 아래 호출들이 즉시 반환한다 —
     # 배열 복사·SHA·무음 분석·폴더 생성이 하나도 일어나지 않는다.
@@ -1954,6 +1959,20 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
 
         emit("progress", percent=90, message="문장 이어붙이기 중...")
         _layout = _concat_with_boundaries(use, gaps, pending_path)  # 내부 0 / 원 segment 경계 silence_gap
+        if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
+            # 결합본을 읽어 join preview 를 파생하고 manifest/timeline 을 쓴다.
+            # 실패해도 합성 결과에는 영향이 없다.
+            try:
+                import soundfile as _sf
+                _fin, _fsr = _sf.read(pending_path, dtype="float32")
+                _CONCAT_RECORDER.write("ok", final_arr=_fin, sr=_fsr,
+                                       extra={"layout_chunks": len(_layout)})
+            except Exception as _exc:
+                try:
+                    _CONCAT_RECORDER.write("failed",
+                                           extra={"instrumentation_error": type(_exc).__name__})
+                except Exception:
+                    pass
         # 진단 전용: 각 chunk의 결합본 내 위치를 metadata에 남긴다(오디오 출력 불변, 수치만).
         # 이 값이 없으면 join 지점을 사후에 찾을 수 없어 경계 품질을 실측할 수 없다.
         # 기준 파일은 **pitch 적용 전 pending**이다. pitch=0이면 최종 synthesized.wav와 동일 좌표지만,

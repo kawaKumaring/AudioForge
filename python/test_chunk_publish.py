@@ -198,3 +198,44 @@ class TestWiringInertWhenDisabled(unittest.TestCase):
         # 계측 실패가 합성을 막지 않는다.
         r = cp.ChunkRecorder()
         self.tw._diag_stage(r, "raw", {"out_path": "/nonexistent/x.wav"})
+
+
+class TestGlobalIndexContract(unittest.TestCase):
+    """segment 가 둘 이상일 때 raw/aligned/final 이 같은 global index 를 써야 한다."""
+
+    def test_global_index_assigned_before_alignment(self):
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "tts_worker.py"), encoding="utf-8").read()
+        self.assertIn('_e["global_chunk_index"] = _g', src,
+                      "global index 를 못박지 않으면 segment-local 과 충돌한다")
+        i_assign = src.index('_e["global_chunk_index"] = _g')
+        i_use = src.index('_diag_stage(_rec, "raw"')
+        self.assertLess(i_assign, i_use, "global index 배정이 사용보다 뒤에 있다")
+
+    def test_manifest_write_is_wired(self):
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "tts_worker.py"), encoding="utf-8").read()
+        self.assertIn('_CONCAT_RECORDER.write("ok"', src,
+                      "manifest/timeline/join preview 를 쓰는 호출이 없다")
+
+    def test_two_segments_do_not_collide(self):
+        tmp = tempfile.mkdtemp(prefix="af-gi-")
+        e = {k: os.environ.get(k) for k in (cp.ENV, la.LOCAL_ROOT_ENV)}
+        try:
+            os.environ[la.LOCAL_ROOT_ENV] = tmp
+            os.environ[cp.ENV] = "gi-run"
+            r = cp.ChunkRecorder()
+            # segment0 local 0,1,2 -> global 0,1,2 / segment1 local 0,1 -> global 3,4
+            for g, (seg, loc) in enumerate([(0, 0), (0, 1), (0, 2), (1, 0), (1, 1)]):
+                r.raw(g, tone(0.2 + g * 0.05), SR, segment=seg, segment_chunk_index=loc)
+            self.assertEqual(len(r.rows), 5, "global index 가 겹쳐 덮어썼다")
+            for g in range(5):
+                self.assertTrue(os.path.isfile(
+                    os.path.join(r.root, "chunks", "chunk-%03d-raw.wav" % g)))
+        finally:
+            for k, v in e.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+            shutil.rmtree(tmp, ignore_errors=True)
