@@ -17,6 +17,7 @@
     "src/main/**/*.ts",
     "src/preload/**/*.ts",
     "src/shared/**/*.ts",
+    "python/fixtures/*.json",
     "electron.vite.config.ts"
   ],
   "exclude": [
