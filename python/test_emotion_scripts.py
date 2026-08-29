@@ -101,26 +101,54 @@ class TestEmotionScripts(unittest.TestCase):
                 self.assertNotIn(bare, sp,
                                  "%s 대사가 감정 이름을 말한다" % e["emotion_id"])
 
-    # 9. preview_short 는 안전 token 한도 통과(문자 상한으로 보수적 확인)
-    def test_preview_within_safe_budget(self):
+    # 9. preview_short 는 **실제 tokenizer 로 잰** production token 이 안전 한도 이내
+    #    (글자 수로 통과를 주장하지 않는다 — 33 은 글자가 아니라 token 기준이다)
+    def test_preview_within_token_budget(self):
         import generation_limit
         cap = generation_limit.max_segment_tokens()
-        self.assertEqual(cap, 33)
+        self.assertEqual(self.doc["max_segment_tokens_at_authoring"], cap,
+                         "작성 당시 상한과 현재 상한이 달라졌다 — fixture 재측정 필요")
+        for e in self.doc["emotions"]:
+            n = e["contextual"]["preview_short"]["production_tokens"]
+            self.assertIsInstance(n, int)
+            self.assertLessEqual(n, cap, "%s preview %d token > %d" % (e["emotion_id"], n, cap))
+
+    # 9b. 기록된 production_tokens 가 실제 tokenizer 와 일치하는지 재측정(가능한 환경에서만)
+    def test_recorded_tokens_match_real_tokenizer(self):
+        try:
+            from transformers import AutoProcessor
+        except Exception:
+            self.skipTest("transformers 없음 — qwen3_tts_venv 에서만 재측정")
+        mp = "E:/AI_Project/claudeCodeVsCode/apps/development/AudioForge/externals/qwen3_tts_1_7b_base"
+        if not os.path.isdir(mp):
+            self.skipTest("로컬 스냅샷 없음")
+        proc = AutoProcessor.from_pretrained(mp, trust_remote_code=True)
+
+        def ptok(t):
+            at = "<|im_start|>assistant" + chr(10) + t + "<|im_end|>" + chr(10) + "<|im_start|>assistant" + chr(10)
+            return int(proc(text=at, return_tensors="pt")["input_ids"].shape[-1])
+
         for e in self.doc["emotions"]:
             sp, _ = spoken(e["contextual"]["preview_short"]["text"])
-            # 한국어는 실측상 1자당 최대 약 1.0 token(골든 141 chunk: 33자 → 33 token).
-            self.assertLessEqual(len(sp), cap,
-                                 "%s preview 가 안전 한도 초과 가능" % e["emotion_id"])
+            self.assertEqual(ptok(sp), e["contextual"]["preview_short"]["production_tokens"],
+                             "%s 기록 토큰 불일치" % e["emotion_id"])
 
-    # 10. validation_medium 2~3문장 / continuity_long 여러 문단
+    # 10. medium 2~3문장 / long 문단 3개 이상 — production sentence splitter 규칙으로 센다
     def test_shape_of_medium_and_long(self):
+        import text_segmenter as ts
+
+        def sents(x):
+            return [y for y in ts._cut_after(x, ts.SENTENCE_ENDERS, eat_closers=True) if y.strip()]
+
         for e in self.doc["emotions"]:
-            sp, _ = spoken(e["contextual"]["validation_medium"]["text"])
-            n = sum(sp.count(c) for c in ".!?")
+            m = e["contextual"]["validation_medium"]
+            sp, _ = spoken(m["text"])
+            n = len(sents(sp))
+            self.assertEqual(n, m["sentence_count"], "%s 기록 문장수 불일치" % e["emotion_id"])
             self.assertGreaterEqual(n, 2, "%s medium 문장 부족" % e["emotion_id"])
-            self.assertLessEqual(n, 4, "%s medium 문장 과다" % e["emotion_id"])
-            lg = e["contextual"]["continuity_long"]["text"]
-            self.assertGreaterEqual(lg.count("\n\n"), 2,
+            self.assertLessEqual(n, 3, "%s medium 문장 초과(2~3 계약)" % e["emotion_id"])
+            lg = e["contextual"]["continuity_long"]
+            self.assertGreaterEqual(lg["paragraph_count"], 3,
                                     "%s long 문단 부족" % e["emotion_id"])
 
     # 11. fixture fingerprint 결정성
@@ -148,6 +176,26 @@ class TestEmotionScripts(unittest.TestCase):
             self.assertEqual(e["capability_status_at_authoring"], "unknown")
         for r in es.expression_rows():
             self.assertEqual(r["capability_status_at_authoring"], "unknown")
+
+    # 13b. fixture 의 capability 값은 **런타임 권위가 아니다** — 판정 모듈이 이 필드를 읽지 않는다
+    def test_capability_field_is_not_runtime_authority(self):
+        here = os.path.dirname(os.path.abspath(__file__))
+        root = os.path.dirname(here)
+        targets = [
+            os.path.join(here, "expressive_capability.py"),
+            os.path.join(here, "emotion_sampler.py"),
+            os.path.join(here, "tts_worker.py"),
+            os.path.join(root, "src", "shared", "emotionSampler.ts"),
+            os.path.join(root, "src", "shared", "ttsExpressionCapabilities.ts"),
+        ]
+        for t in targets:
+            if not os.path.isfile(t):
+                continue
+            body = open(t, encoding="utf-8").read()
+            self.assertNotIn("capability_status_at_authoring", body,
+                             "%s 가 fixture 의 작성시 capability 를 읽는다" % os.path.basename(t))
+            self.assertNotIn("emotion_scripts", body,
+                             "%s 가 대사 fixture 로 지원 여부를 판정할 위험" % os.path.basename(t))
 
     # 14. 폴백 금지 — 경로가 없으면 명시적 실패
     def test_missing_file_raises(self):

@@ -16,7 +16,7 @@ import json
 import os
 import hashlib
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 FIXTURE_FILENAME = "emotion-scripts.v1.json"
 SCRIPT_KINDS = ("preview_short", "validation_medium", "continuity_long")
 

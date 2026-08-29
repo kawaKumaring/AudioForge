@@ -83,3 +83,31 @@ test('TS 문자열 사본 0 — 로더 소스에 대사 리터럴이 없다', ()
   const m = body.match(/'[^']*[가-힣]{3,}[^']*'/g)
   assert.equal(m, null, `로더에 한글 리터럴이 있다: ${m?.join(' | ')}`)
 })
+
+test('fixture 의 capability 값은 런타임 권위가 아니다 — 판정 모듈이 읽지 않는다', () => {
+  const targets = ['./emotionSampler.ts', './ttsExpressionCapabilities.ts', './expressiveTimeline.ts']
+  for (const rel of targets) {
+    const body = readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf-8')
+    assert.ok(!body.includes('capability_status_at_authoring'),
+      `${rel} 가 fixture 의 작성시 capability 를 읽는다`)
+    assert.ok(!body.includes('emotionScripts'),
+      `${rel} 가 대사 fixture 로 지원 여부를 판정할 위험`)
+  }
+})
+
+test('preview 는 실제 tokenizer 로 잰 production token 이 기록돼 있고 한도 이내다', () => {
+  for (const id of emotionIds()) {
+    const b = emotionEntry(id).contextual.preview_short
+    assert.equal(typeof b.production_tokens, 'number')
+    assert.ok(b.production_tokens <= 33, `${id} preview ${b.production_tokens} token > 33`)
+  }
+})
+
+test('medium 은 2~3문장 / long 은 문단 3개 이상', () => {
+  for (const id of emotionIds()) {
+    const e = emotionEntry(id)
+    const n = e.contextual.validation_medium.sentence_count
+    assert.ok(n >= 2 && n <= 3, `${id} medium ${n}문장`)
+    assert.ok(e.contextual.continuity_long.paragraph_count >= 3, `${id} long 문단 부족`)
+  }
+})

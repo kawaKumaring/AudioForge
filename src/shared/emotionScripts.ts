@@ -13,7 +13,7 @@
 // 조용한 폴백이 끼어들 자리도 없다 — 파일이 없으면 빌드가 실패한다.
 import fixture from '../../python/fixtures/emotion-scripts.v1.json' with { type: 'json' }
 
-export const EMOTION_SCRIPTS_SCHEMA_VERSION = 1
+export const EMOTION_SCRIPTS_SCHEMA_VERSION = 2
 
 export type EmotionScriptKind = 'preview_short' | 'validation_medium' | 'continuity_long'
 
@@ -25,6 +25,11 @@ export interface EmotionScriptBlock {
   expected_spoken_text_sha256: string
   expected_parser_events: string[]
   chars: number
+  syllables: number
+  /** production 과 동일 경로(vendor 템플릿 + 실제 processor)로 잰 입력 토큰 수. 글자 수 추정이 아니다. */
+  production_tokens: number
+  sentence_count: number
+  paragraph_count: number
 }
 
 export interface EmotionScriptEntry {
@@ -55,6 +60,7 @@ interface EmotionScriptsDoc {
   schema_version: number
   language: string
   expressive_contract_version: number
+  max_segment_tokens_at_authoring: number
   expressive_contract_fingerprint: string
   fixture_fingerprint: string
   controlled_text: string
