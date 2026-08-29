@@ -106,7 +106,8 @@
 | 오디오 I/O | soundfile + ffmpeg 8.1 |
 
 ## 향후 예정
-- 노래 음성 변환 (SVC): RVC/So-VITS-SVC (doc/future-svc.md 참조)
+- 전체 제품 순서와 신규 기능 후보: [제품 로드맵](roadmap.md)
+- 노래 음성 변환 (SVC): RVC/So-VITS-SVC ([가창 모드 계획](future-svc.md))
 - 상황 기반 호흡·환경음 생성 및 자동 믹싱 (doc/future-ambient-audio.md 참조)
 - Python separate.py 추가 모듈 분리
 - audio.ipc.ts 분리
