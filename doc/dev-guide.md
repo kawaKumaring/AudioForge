@@ -207,3 +207,30 @@ ProcessButton.tsx       91줄  시작/취소 (리스너 수정됨)
 app.store.ts            86줄  전역 상태
 기타                   265줄  Waveform, ModeSelector, ProgressBar, preload, types
 ```
+
+### 로컬 자산 위치 계약 (2026-08-29)
+
+파일이 흩어지지 않게 하는 규칙. 어디에 쓸지 사람 기억에 맡기지 않는다.
+
+| 무엇 | 어디 | 권위 |
+|---|---|---|
+| 모델·venv·엔진 코드 | `externals/` | 이미 있는 것, 이동하지 않음 |
+| 앱이 만드는 자산·기록 | `_local/` (본체 저장소, Git 비추적) | `python/local_assets.py` |
+| 사용자 최종 출력 | 사용자가 앱에서 고른 경로 | 이 계약 대상 아님 |
+
+- 개발 하네스 출력은 `local_assets.run_output_dir(run_id)` /
+  `run_diagnostics_dir(run_id)` 만 쓴다. `AF_OUT`·E 드라이브 하드코딩·cwd 기본 출력 금지.
+  `_local` 밖으로 쓰려면 `--allow-external-output` 을 명시해야 한다(테스트가 강제).
+- ICL 실패 진단은 사용자 출력 폴더가 아니라 `_local/artifacts/diagnostics` 로 간다.
+- `_local/runtime` 은 만들지 않는다 — 실제 런타임은 `externals/runtime` 이다.
+- worktree 안에는 `_local` 을 만들지 않는다. 본체 저장소 실체를 참조한다.
+
+### 모델 해석 계약
+
+- HF 형식 모델은 `model_registry.snapshot_path(repo_id)` 가 주는 **로컬 snapshot 절대경로**를
+  `from_pretrained()` 첫 인자로 넘긴다. `cache_dir=` 는 앰비언트 `HUGGINGFACE_HUB_CACHE` 에
+  져서 격리 환경에서 네트워크로 샜다(실측). process 전역 `HF_HOME` 변경도 쓰지 않는다.
+- whisper 는 `resolve_whisper_root(name)` 로 `download_root` 를 명시 전달한다.
+- 없는 모델은 조용히 내려받지 않고 `WHISPER_MODEL_MISSING` /
+  `MODEL_NOT_IN_MANIFEST` / `OPTIONAL_MODEL_NOT_INSTALLED` 로 실패한다.
+- 내부 모델 목록·revision·SHA-256 은 `externals/model-manifest.json`(비추적).
