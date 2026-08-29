@@ -24,6 +24,8 @@ B 의 규칙(고정 offset 상수 금지 — 전부 신호에서 유도한다):
      ★전역 median 을 쓰면 발화 flux 가 섞여 임계가 부풀어 검출이 실패한다(실측 실패 사례).
        반드시 '조용한 프레임만' 모은 지역 기준이어야 한다.
   5) cut = [tail_end, onset) 구간의 최저 RMS valley.
+  5-1) 그 valley 가 (onset - cut) ≥ 20ms 를 **어길 때만**, [tail_end, onset-20ms] 안에서 잡음
+     바닥(floor) 이하인 **가장 늦은** 프레임을 다시 찾는다(§B5-1). 만족하면 5)의 결과 그대로다.
   6) 안전 조건 tail_end < cut 그리고 (onset - cut) ≥ 20ms. 불충족이면 fail-closed(절단하지 않는다).
   fade/crossfade/S-curve 는 이 모듈에 없다 — 잔여를 은폐하지 않고, 못 자르면 실패로 알린다.
 
@@ -338,6 +340,9 @@ _BOUNDARY_RESULT_KEYS = (
     # 진단용 관측값(수치만) — 실패 사후 분석이 파형 없이도 가능해야 한다.
     "onset_dbfs", "onset_flux", "onset_zcr", "onset_hb_dbfs", "onset_evidence",
     "onset_flux_threshold", "baseline_dbfs", "quiet_frame_count",
+    # §B5-1 보조 탐색(최저 valley 가 최소 여백을 어길 때만 채워진다 — 평소엔 전부 None).
+    "lead_fallback_applied", "lead_fallback_candidates",
+    "lead_fallback_cut_sample", "lead_fallback_cut_dbfs",
 )
 
 
@@ -517,6 +522,44 @@ def _sustain_level(dbs, sustain_dbs, k):
     return None
 
 
+def latest_safe_cut_frame(dbs, tail_end, onset, hop, min_lead_samples, floor_dbfs):
+    """§B5-1 — 최저 valley 가 최소 여백을 못 지킬 때 쓰는 **보조** 절단 후보.
+
+    왜 필요한가(실측 근거 — 추정 아님): 보존 진단 20260829-064419-s1-c2 에서 tail_end=202440 /
+    onset=203400 이고 최저 valley 는 203040(여백 360샘플=15ms)이라 최소 여백 480샘플(20ms)에
+    120샘플 모자라 fail-closed 했다. 그런데 같은 구간에는 안전한 후보가 실제로 있었다 —
+    202920 은 RMS -66.50dBFS 로 최저 valley(-66.52dB)와 0.02dB 차이(실질 같은 조용함)이고
+    잡음 바닥(-63.78dB)보다 2.72dB **더** 조용하며 여백은 정확히 480샘플(20.0ms)이다.
+    즉 '자를 곳이 없다'가 아니라 '가장 조용한 한 점만 보느라 20ms 앞의 같은 침묵을 못 봤다'였다.
+
+    규칙(임계값을 새로 만들지도, 기존 임계를 낮추지도 않는다):
+      · 탐색 범위 = (tail_end, onset - min_lead] — 왼쪽은 기존 안전 조건 tail_end < cut 을 그대로
+        따르고(그래서 열린 구간), 오른쪽은 여백 조건을 **만족하는 마지막 프레임**이다.
+        범위가 비면 None(구제하지 않는다).
+      · 조용함 기준 = 그 창의 **noise floor 이하**(여유 0). tail_end 가 쓰는 floor+3dB 보다
+        오히려 엄격하다 — '창에서 관측된 침묵 수준만큼 조용한 프레임'만 후보가 된다. 새 상수도
+        고정 offset 도 없다(floor 는 이미 신호에서 유도된 값이다).
+      · 그 중 **가장 늦은** 프레임을 고른다. 늦을수록 참조 잔여를 더 많이 걷어내고, 여백은 범위
+        정의상 언제나 min_lead 이상이라 첫 자음은 그대로 남는다.
+      · 클릭: 채택 지점은 창의 잡음 바닥 이하 프레임이다 — 최저 valley 가 클릭 없이 잘린다고
+        보는 근거(그 지점이 침묵이라는 사실)와 **같은 근거**를 쓴다. 별도 임계를 만들지 않는다.
+
+    반환: (frame_index|None, 조건을 만족한 프레임 수). 부작용 없음(순수)."""
+    if hop <= 0 or floor_dbfs is None:
+        return None, 0
+    # 여백 조건 (onset - i) * hop >= min_lead_samples 를 만족하는 마지막 프레임.
+    last = onset - int(math.ceil(max(0, min_lead_samples) / float(hop)))
+    last = min(last, len(dbs) - 1, onset - 1)
+    count = 0
+    chosen = None
+    for i in range(last, tail_end, -1):
+        if dbs[i] <= floor_dbfs:
+            count += 1
+            if chosen is None:
+                chosen = i
+    return chosen, count
+
+
 def detect_prefix_boundary(waveform, sample_rate, frame_sec=BOUNDARY_FRAME_SEC,
                            hop_sec=BOUNDARY_HOP_SEC,
                            onset_flux_abs_min=ONSET_FLUX_ABS_MIN,
@@ -650,10 +693,25 @@ def detect_prefix_boundary(waveform, sample_rate, frame_sec=BOUNDARY_FRAME_SEC,
         res["cut_sample"] = None
         res["reason_code"] = REASON_BOUNDARY_CUT_NOT_AFTER_TAIL
         return res
-    if res["lead_samples"] < int(round(MIN_LEAD_SEC * sample_rate)):
-        res["cut_sample"] = None
-        res["reason_code"] = REASON_BOUNDARY_LEAD_TOO_SHORT
-        return res
+    min_lead = int(round(MIN_LEAD_SEC * sample_rate))
+    if res["lead_samples"] < min_lead:
+        # §B5-1 — 여백을 어길 때**만** 보조 탐색. 만족하면 이 블록은 아예 실행되지 않으므로
+        # 기존 경로의 값(cut_sample/lead_samples/valley_*)은 한 개도 달라지지 않는다.
+        alt, alt_count = latest_safe_cut_frame(dbs, tail_end, onset, hop, min_lead, floor)
+        res["lead_fallback_candidates"] = alt_count
+        if alt is None:
+            # 안전 후보가 없다 — 기존과 똑같이 자르지 않는다(임계를 낮춰 구제하지 않는다).
+            res["lead_fallback_applied"] = 0
+            res["cut_sample"] = None
+            res["reason_code"] = REASON_BOUNDARY_LEAD_TOO_SHORT
+            return res
+        res["lead_fallback_applied"] = 1
+        res["lead_fallback_cut_sample"] = alt * hop
+        res["lead_fallback_cut_dbfs"] = round(dbs[alt], 2)
+        # valley_sample/valley_dbfs 는 '최저 RMS 관측값' 그대로 둔다(사후에 왜 보조로 갔는지
+        # 보이게). 실제 절단 지점과 여백만 채택 후보로 바꾼다.
+        res["cut_sample"] = alt * hop
+        res["lead_samples"] = (onset - alt) * hop
 
     res["ok"] = True
     res["reason_code"] = REASON_BOUNDARY_OK
@@ -725,7 +783,8 @@ REASON_BOUNDARY_CUT_AFTER_ANCHOR = "PREFIX_BOUNDARY_CUT_AFTER_ANCHOR"
 WINDOW_RESULT_KEYS = ("window_start_sample", "window_end_sample", "anchor_start_sample",
                       "prev_word_end_sample", "anchor_offset_samples")
 
-_GLOBALIZED_KEYS = ("tail_end_sample", "onset_sample", "valley_sample", "cut_sample")
+_GLOBALIZED_KEYS = ("tail_end_sample", "onset_sample", "valley_sample", "cut_sample",
+                    "lead_fallback_cut_sample")
 
 
 def _finite_sec(v):
@@ -879,7 +938,10 @@ def boundary_summary(detection):
     }
     # 어떤 신호로 개시를 인정했는지(수치·enum 만) — '유성음만 보고 자르지 않았다'는 사후 증거.
     for k in ("onset_dbfs", "onset_flux", "onset_zcr", "onset_hb_dbfs", "onset_evidence",
-              "onset_flux_threshold", "baseline_dbfs", "quiet_frame_count"):
+              "onset_flux_threshold", "baseline_dbfs", "quiet_frame_count",
+              # §B5-1 보조 탐색을 탔는가(탔을 때만 존재 — 평소 요약은 예전과 동일하다).
+              "lead_fallback_applied", "lead_fallback_candidates",
+              "lead_fallback_cut_sample", "lead_fallback_cut_dbfs"):
         if detection.get(k) is not None:
             out[k] = detection[k]
     # 창 탐색이었다면 '어디만 봤는지'도 남긴다 — 전역 탐색이 아니었다는 사실이 기록으로 남아야

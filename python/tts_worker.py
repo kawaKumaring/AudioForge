@@ -1483,7 +1483,29 @@ _ALIGNMENT_SUMMARY_KEYS = ("align_anchor_kind", "align_anchor_units", "align_sta
                            # 어떤 신호로 개시를 인정했는가 — '유성음만 보고 자르지 않았다'는 증거.
                            "onset_dbfs", "onset_flux", "onset_zcr", "onset_hb_dbfs",
                            "onset_evidence", "onset_flux_threshold", "baseline_dbfs",
-                           "quiet_frame_count")
+                           "quiet_frame_count",
+                           # 최저 valley 가 최소 여백을 못 지켜 보조 후보로 잘랐는가(§B5-1).
+                           "lead_fallback_applied", "lead_fallback_cut_sample")
+
+
+# chunk 별 누적 요약에 담을 항목(전부 수치이거나 canonical 대문자 enum — 진단 필터를 통과한다).
+# '앞에서 성공한 chunk 들이 어디를 어떻게 잘랐는가'를 실패 진단 안에 함께 남기기 위한 것이다.
+_ICL_CHUNK_HISTORY_KEYS = ("align_anchor_kind", "align_stage", "tail_end_sample", "onset_sample",
+                           "valley_sample", "cut_sample", "lead_samples",
+                           "lead_fallback_applied", "lead_fallback_cut_sample")
+
+
+def _icl_chunk_record(entry, source, reason_code, ok):
+    """chunk 하나의 비민감 요약(수치·enum 만) — 전사 원문·대사·경로는 애초에 담지 않는다."""
+    rec = {"segment_index": entry.get("original_segment_index"),
+           "chunk_index": entry.get("chunk_index"),
+           "ok": 1 if ok else 0,
+           "reason_code": reason_code}
+    for k in _ICL_CHUNK_HISTORY_KEYS:
+        v = (source or {}).get(k)
+        if v is not None:
+            rec[k] = v
+    return {k: v for k, v in rec.items() if v is not None}
 
 
 def _icl_transcribe_fn():
@@ -1521,6 +1543,7 @@ def _align_icl_chunks(seg_out, transcribe_factory=_icl_transcribe_fn, output_dir
     todo.sort(key=lambda e: (e.get("original_segment_index"), e.get("chunk_index")))
     tf = transcribe_factory()
     total = len(todo)
+    history = []   # 여기까지 처리한 chunk 의 비민감 요약(성공분 포함) — 실패 진단에 함께 남긴다
     for i, e in enumerate(todo):
         # 정렬 중에도 진행 표시가 계속 나간다(Electron watchdog 은 progress 로만 리셋된다).
         emit("progress", percent=90,
@@ -1533,9 +1556,13 @@ def _align_icl_chunks(seg_out, transcribe_factory=_icl_transcribe_fn, output_dir
             # 실패하면 job_dir 이 통째로 사라진다 — 그 전에 raw 와 수치 진단을 진단 전용 폴더에
             # 남긴다(결과가 아니다: 발행하지 않고, 절대경로도 남기지 않는다).
             import icl_diagnostics
+            # 실패한 chunk 도 같은 형식으로 이력에 넣는다 — 앞의 성공들과 한 줄에 놓고 봐야
+            # '어디까지 되다가 무엇이 막혔는지'가 읽힌다.
+            history.append(_icl_chunk_record(e, af.detection, af.reason_code, False))
             kept = icl_diagnostics.preserve_failure(
                 output_dir, e.get("out_path"), af.reason_code, af.detection,
-                e.get("original_segment_index"), e.get("chunk_index"), e.get("emotion_id"))
+                e.get("original_segment_index"), e.get("chunk_index"), e.get("emotion_id"),
+                chunk_history=history)
             err = QwenIclBoundaryError(e.get("original_segment_index"), e.get("chunk_index"),
                                        e.get("emotion_id"), af.reason_code)
             err.diagnostic_dir_name = kept
@@ -1543,6 +1570,8 @@ def _align_icl_chunks(seg_out, transcribe_factory=_icl_transcribe_fn, output_dir
         e["reference_alignment"] = r["summary"]
         e["reference_cut_sample"] = r["cut_sample"]
         e["needs_alignment"] = False
+        history.append(_icl_chunk_record(e, r["summary"],
+                                         icl_alignment.pa.REASON_BOUNDARY_OK, True))
     for e in seg_out:
         e.pop("alignment_request", None)   # 텍스트는 이 줄에서 사라진다(전 entry 일괄)
     return seg_out

@@ -89,6 +89,70 @@ class PreserveTest(unittest.TestCase):
         self.assertEqual(len(kept), dg.MAX_KEPT)
         self.assertEqual(kept, sorted(names)[-dg.MAX_KEPT:], "오래된 것부터 지운다")
 
+    def _history(self):
+        """앞의 두 chunk 는 성공, 마지막이 실패 — 누적 요약에 담길 형태 그대로."""
+        return [
+            {"segment_index": 0, "chunk_index": 0, "ok": 1, "reason_code": "PREFIX_BOUNDARY_OK",
+             "align_anchor_kind": "TARGET_HEAD", "align_stage": "ALIGN_STAGE_NONE",
+             "tail_end_sample": 207960, "onset_sample": 211080, "cut_sample": 209760,
+             "lead_samples": 1320},
+            {"segment_index": 1, "chunk_index": 0, "ok": 1, "reason_code": "PREFIX_BOUNDARY_OK",
+             "align_anchor_kind": "REFERENCE_TAIL", "align_stage": "ALIGN_STAGE_NONE",
+             "cut_sample": 120240, "lead_samples": 600, "lead_fallback_applied": 1,
+             # 아래 둘은 절대 새 나가면 안 되는 값 — 필터가 지워야 한다.
+             "leaked_text": SECRET_REF, "leaked_path": "E:/secret/output/x.wav"},
+            {"segment_index": 1, "chunk_index": 2, "ok": 0,
+             "reason_code": "PREFIX_BOUNDARY_LEAD_TOO_SHORT",
+             "tail_end_sample": 202440, "onset_sample": 203400, "valley_sample": 203040,
+             "lead_samples": 360, "lead_fallback_applied": 0},
+        ]
+
+    def test_earlier_chunks_survive_the_failure_of_a_later_one(self):
+        """[8] 뒤 chunk 가 막혀도 앞에서 성공한 chunk 의 수치가 진단에 남는다."""
+        name = dg.preserve_failure(self.out, self.raw, "PREFIX_BOUNDARY_LEAD_TOO_SHORT",
+                                   self._detection(), 1, 2, "happy",
+                                   chunk_history=self._history())
+        p = os.path.join(self.out, dg.DIAGNOSTIC_DIR_NAME, name, dg.REPORT_NAME)
+        rep = json.loads(open(p, encoding="utf-8").read())
+        chunks = rep["chunks"]
+        self.assertEqual(len(chunks), 3, "성공 2 + 실패 1 이 순서대로 남는다")
+        self.assertEqual([c["ok"] for c in chunks], [1, 1, 0])
+        self.assertEqual(chunks[0]["cut_sample"], 209760)
+        self.assertEqual(chunks[0]["align_anchor_kind"], "TARGET_HEAD")
+        self.assertEqual(chunks[1]["align_anchor_kind"], "REFERENCE_TAIL")
+        self.assertEqual(chunks[1]["lead_fallback_applied"], 1)
+        self.assertEqual(chunks[2]["reason_code"], "PREFIX_BOUNDARY_LEAD_TOO_SHORT")
+        self.assertEqual(chunks[2]["lead_samples"], 360)
+
+    def test_chunk_history_is_numbers_and_nonsensitive_enums_only(self):
+        """[8] 누적 요약도 detection 과 **같은 필터**를 지난다 — 대사·경로는 통과하지 못한다."""
+        name = dg.preserve_failure(self.out, self.raw, "PREFIX_BOUNDARY_LEAD_TOO_SHORT",
+                                   self._detection(), 1, 2, "happy",
+                                   chunk_history=self._history())
+        p = os.path.join(self.out, dg.DIAGNOSTIC_DIR_NAME, name, dg.REPORT_NAME)
+        blob = open(p, encoding="utf-8").read()
+        for secret in (SECRET_REF, SECRET_TARGET, "secret", "E:/", ":\\", ".wav",
+                       self.out, self.raw):
+            self.assertNotIn(secret, blob, secret[:20])
+        rep = json.loads(blob)
+        for c in rep["chunks"]:
+            self.assertNotIn("leaked_text", c)
+            self.assertNotIn("leaked_path", c)
+            for k, v in c.items():
+                if isinstance(v, str):
+                    self.assertTrue(all(ch.isupper() or ch.isdigit() or ch == "_" for ch in v), k)
+
+    def test_history_does_not_publish_any_result_file(self):
+        """[9] 실패 경로가 발행하는 결과 파일은 0 이다(누적 요약이 생겨도 마찬가지)."""
+        dg.preserve_failure(self.out, self.raw, "PREFIX_BOUNDARY_LEAD_TOO_SHORT",
+                            self._detection(), 1, 2, "happy", chunk_history=self._history())
+        self.assertEqual([n for n in os.listdir(self.out) if not n.startswith(".")], [],
+                         "출력 폴더에 결과가 생기지 않는다(진단 폴더는 숨김 전용 이름)")
+        root = os.path.join(self.out, dg.DIAGNOSTIC_DIR_NAME)
+        kept = os.path.join(root, os.listdir(root)[0])
+        self.assertEqual(sorted(os.listdir(kept)), sorted([dg.RAW_NAME, dg.REPORT_NAME]),
+                         "진단 폴더 안에도 raw 와 리포트 말고는 없다")
+
     def test_never_raises(self):
         for args in ((None, self.raw), ("E:/does/not/exist/at/all", self.raw),
                      (self.out, None), (self.out, os.path.join(self.job, "missing.wav"))):
@@ -96,6 +160,11 @@ class PreserveTest(unittest.TestCase):
                 dg.preserve_failure(args[0], args[1], "X", {"a": 1}, 0, 0)
             except Exception as e:            # noqa: BLE001
                 self.fail(f"진단 보존이 예외를 냈다: {e!r}")
+        for bad in ("문자열", 42, [None, "x", {"ok": 1}], {"a": 1}):
+            try:
+                dg.preserve_failure(self.out, self.raw, "X", {"a": 1}, 0, 0, chunk_history=bad)
+            except Exception as e:            # noqa: BLE001
+                self.fail(f"이상한 누적 요약이 예외를 냈다: {e!r}")
 
 
 class AlignmentDiagnosticJsonTest(unittest.TestCase):
@@ -186,6 +255,12 @@ class WiringTest(unittest.TestCase):
 
     def test_payload_carries_a_name_not_a_path(self):
         self.assertIn('"diagnostic_dir_name": getattr(ibe, "diagnostic_dir_name", None)', self.src)
+
+    def test_successful_chunks_are_accumulated_before_the_failure(self):
+        """[8] 성공한 chunk 도 이력에 쌓고, 실패 시 그 이력을 진단으로 넘긴다."""
+        self.assertIn("chunk_history=history", self.src)
+        self.assertIn("history.append(_icl_chunk_record(e, r[\"summary\"]", self.src)
+        self.assertIn("history.append(_icl_chunk_record(e, af.detection", self.src)
 
 
 if __name__ == "__main__":

@@ -10,6 +10,7 @@
   - 여기 남는 것은 **결과가 아니다**. 최종 사용자 결과 경로로 발행하지 않고, 결과 metadata 에도
     절대경로를 싣지 않는다(남기는 것은 폴더 '이름'뿐).
   - 전사 원문·목표 대사·절대경로를 쓰지 않는다. 수치와 비민감 enum, 그리고 raw 의 sha8 만.
+    (실패 chunk 앞에서 **성공한** chunk 들의 누적 요약도 같은 필터를 통과한 수치뿐이다.)
   - 어떤 실패도 위로 던지지 않는다. 진단 보존이 실패했다고 합성 실패의 사유가 바뀌면 안 된다.
   - 무한히 쌓이지 않는다(MAX_KEPT 개 초과분은 오래된 것부터 지운다).
 """
@@ -41,6 +42,27 @@ def _numbers_only(detection):
     return out
 
 
+def _chunk_history(items):
+    """chunk 별 누적 요약을 detection 과 **같은 필터**로 통과시킨다(수치·대문자 enum 만).
+
+    왜 필요한가: 정렬은 chunk 를 앞에서부터 처리하다가 하나가 막히면 거기서 job 이 끝난다.
+    지금까지 남는 것은 '막힌 그 chunk' 뿐이라, 앞의 chunk 들이 어떤 anchor 로 어디를 잘라
+    성공했는지는 실패와 함께 사라졌다(실측: 9개 중 6개 성공 후 s1-c2 에서 실패 — 그 6개의
+    좌표가 남지 않았다). 성공 chunk 의 **수치**만 함께 남기면 실패를 그 흐름 안에서 읽을 수 있다.
+
+    ★남는 것은 여전히 수치와 비민감 enum 뿐이다 — _numbers_only 를 그대로 재사용하므로
+    전사 원문·목표 대사·절대경로는 필터를 통과할 수 없다(소문자·슬래시·공백이 섞인 문자열은
+    전부 버려진다). 성공 chunk 의 WAV 를 남기는 것은 이 함수의 일이 아니다."""
+    out = []
+    if not isinstance(items, (list, tuple)):
+        return out
+    for item in items:
+        rec = _numbers_only(item)
+        if rec:
+            out.append(rec)
+    return out
+
+
 def _sha8(path):
     try:
         h = hashlib.sha256()
@@ -63,7 +85,8 @@ def _prune(root, keep=MAX_KEPT):
 
 
 def preserve_failure(output_dir, wav_path, reason_code, detection=None,
-                     segment_index=None, chunk_index=None, emotion_id=None):
+                     segment_index=None, chunk_index=None, emotion_id=None,
+                     chunk_history=None):
     """실패한 raw 와 수치 진단을 남기고 **폴더 이름**을 돌려준다(절대경로 아님).
 
     어떤 예외도 밖으로 내지 않는다 — 실패하면 None 을 돌려주고 조용히 포기한다."""
@@ -111,6 +134,9 @@ def preserve_failure(output_dir, wav_path, reason_code, detection=None,
             "raw_frames": frames,
             "raw_sample_rate": sample_rate,
             "detection": _numbers_only(detection),
+            # 이 job 에서 여기까지 처리한 chunk 들의 비민감 요약(성공분 포함) — 실패한 chunk 만
+            # 남기면 '앞에서 무엇이 성공했는지'가 사라진다.
+            "chunks": _chunk_history(chunk_history),
         }
         with open(os.path.join(target, REPORT_NAME), "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2, sort_keys=True)

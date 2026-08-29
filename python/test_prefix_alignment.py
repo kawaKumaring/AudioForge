@@ -295,6 +295,30 @@ def _happy_generation():
             + _speech(12000))
 
 
+def _short_lead_generation():
+    """최저 골이 개시에 붙어 여백이 20ms 에 못 미치지만, **그 앞에 안전 후보가 있는** 생성물.
+
+    무음 구간(50ms)의 잡음이 단조 감쇠해 가장 깊은 지점이 개시 직전(여백 5ms)에 놓인다.
+    P5 이전에는 이 상황을 통째로 fail-closed 했다 — 20ms 앞에도 잡음 바닥 이하인 프레임이
+    실제로 있는데도 '가장 조용한 한 점'만 봤기 때문이다."""
+    gap = 1200  # 50ms — tail_end(30ms) 는 성립하되 최저점의 여백은 모자라게 만든다
+    rng = random.Random(31)
+    ramp = [1e-3 * (1.0 - 0.99 * (i / gap)) * (rng.random() * 2.0 - 1.0) for i in range(gap)]
+    return _speech(2640) + ramp + _speech(4800)
+
+
+def _slow_residue_then_late_dip():
+    """[tail_end, onset-20ms] 안이 전부 잡음 바닥보다 **위**인 생성물(보조 후보 없음).
+
+    참조 잔여가 천천히 죽어 여백 구간에서는 아직 바닥에 닿지 않았고, 진짜 침묵은 개시 직전
+    15ms 에만 있다. 좌표(hop=120): tail_end 프레임 10 · 개시 프레임 16 · 최저 골 프레임 15.
+    여백 조건을 만족하는 마지막 프레임은 12 인데 11·12 는 바닥보다 위 → 자르지 않는다."""
+    return (_speech(1200)
+            + _floor_noise(360, 1.35e-3, seed=51)     # [1200,1560) 잔여 — 바닥보다 위
+            + _floor_noise(480, 1.0e-3, seed=52)      # [1560,2040) 진짜 침묵(개시 직전)
+            + _speech(1680, amp=0.35, f0=210.0))
+
+
 class FrameMeasurementTest(unittest.TestCase):
     def test_frame_geometry_10ms_5ms(self):
         win, hop, count = pa.frame_geometry(24000, SR24)
@@ -404,14 +428,17 @@ class BoundaryFailClosedTest(unittest.TestCase):
         self._assert_failed(det, pa.REASON_BOUNDARY_ONSET_NOT_FOUND)
         self.assertEqual(det["tail_end_sample"], 2640, "tail_end 까지는 찾았다는 사실은 남는다")
 
-    def test_lead_too_short_when_valley_hugs_the_onset(self):
-        """골이 목표 발화 직전에 붙어 여백이 20ms 미만 → 첫 음절을 삼킬 위험 → 절단 금지."""
-        gap = 1200  # 50ms — tail_end(30ms) 는 성립하되 여백은 모자라게 만든다
-        rng = random.Random(31)
-        ramp = [1e-3 * (1.0 - 0.99 * (i / gap)) * (rng.random() * 2.0 - 1.0) for i in range(gap)]
-        det = pa.detect_prefix_boundary(_speech(2640) + ramp + _speech(4800), SR24)
+    def test_lead_too_short_when_no_feasible_frame_reaches_the_noise_floor(self):
+        """여백이 모자라고 **보조 후보도 없으면** 예전과 똑같이 자르지 않는다.
+
+        P5 이후에도 fail-closed 가 살아 있다는 회귀다. 이 픽스처의 [tail_end, onset-20ms] 안
+        프레임은 잡음 바닥보다 위(잔여가 아직 안 죽었다) — 임계를 낮춰 구제하지 않는다."""
+        det = pa.detect_prefix_boundary(_slow_residue_then_late_dip(), SR24)
         self._assert_failed(det, pa.REASON_BOUNDARY_LEAD_TOO_SHORT)
         self.assertIsNotNone(det["valley_sample"], "왜 실패했는지 볼 수 있게 관측값은 남긴다")
+        self.assertEqual(det["lead_fallback_applied"], 0)
+        self.assertEqual(det["lead_fallback_candidates"], 0, "조건을 만족한 후보가 하나도 없다")
+        self.assertIsNone(det["lead_fallback_cut_sample"])
 
     def test_cut_not_after_tail_end_when_valley_is_the_first_quiet_frame(self):
         """가장 조용한 지점이 tail_end 자신이면(이후가 계속 커지면) 안전 조건 tail_end < cut 불충족."""
@@ -432,6 +459,107 @@ class BoundaryFailClosedTest(unittest.TestCase):
             self.assertIsInstance(v, (int, float), k)
         self.assertNotIn("reason_code", s)
         self.assertIsNone(pa.boundary_summary(None))
+
+
+class LeadFallbackTest(unittest.TestCase):
+    """§B5-1 — 최저 골이 최소 여백을 어길 때만 도는 보조 후보 탐색.
+
+    실측 근거(보존 진단 20260829-064419-s1-c2, 24kHz): tail_end 202440 / 최저 골 203040 /
+    개시 203400 → 여백 360샘플(15ms)로 480샘플(20ms)에 모자라 fail-closed 했다. 그런데 같은
+    구간의 202920 은 -66.50dBFS(최저 골 -66.52dB 와 0.02dB 차이, 잡음 바닥 -63.78dB 보다
+    2.72dB 아래)이고 여백은 정확히 480샘플이었다 — 안전 후보가 실제로 있었다."""
+
+    def test_primary_valley_is_untouched_when_the_lead_is_enough(self):
+        """[1·7] 여백이 충분하면 보조 탐색은 아예 돌지 않는다 — 기존 값이 한 개도 안 바뀐다."""
+        det = pa.detect_prefix_boundary(_happy_generation(), SR24)
+        self.assertTrue(det["ok"], det["reason_code"])
+        self.assertEqual(det["cut_sample"], 4200)          # 기존 성공 픽스처의 절단 지점 불변
+        self.assertEqual(det["valley_sample"], 4200)
+        self.assertEqual(det["lead_samples"], 840)
+        for k in ("lead_fallback_applied", "lead_fallback_candidates",
+                  "lead_fallback_cut_sample", "lead_fallback_cut_dbfs"):
+            self.assertIsNone(det[k], f"{k} — 보조 탐색을 타지 않았다는 사실이 남아야 한다")
+
+    def test_short_lead_takes_the_latest_safe_candidate(self):
+        """[2] 여백이 모자라면 [tail_end, onset-20ms] 안 '바닥 이하인 가장 늦은 프레임'을 고른다."""
+        wave = _short_lead_generation()
+        det = pa.detect_prefix_boundary(wave, SR24)
+        self.assertTrue(det["ok"], det["reason_code"])
+        self.assertEqual(det["lead_fallback_applied"], 1)
+        self.assertEqual(det["valley_sample"], 3600, "최저 골 관측값은 그대로 남는다")
+        self.assertEqual((det["onset_sample"] - det["valley_sample"]), 120,
+                         "기본 골의 여백은 5ms — 그래서 보조 탐색이 돌았다")
+        self.assertEqual(det["cut_sample"], 3240)
+        self.assertEqual(det["cut_sample"], det["lead_fallback_cut_sample"])
+        self.assertEqual(det["lead_samples"], int(round(pa.MIN_LEAD_SEC * SR24)))
+        self.assertGreater(det["cut_sample"], det["tail_end_sample"])
+        dbs = pa.frame_levels_dbfs(wave, SR24)
+        self.assertLessEqual(dbs[det["cut_sample"] // 120], det["noise_floor_dbfs"],
+                             "채택 지점은 그 창의 잡음 바닥 이하다")
+
+    def test_fail_closed_when_every_feasible_frame_is_above_the_floor(self):
+        """[3] 후보 구간이 비어 있지 않아도 에너지 조건을 못 넘기면 자르지 않는다."""
+        det = pa.detect_prefix_boundary(_slow_residue_then_late_dip(), SR24)
+        self.assertFalse(det["ok"])
+        self.assertEqual(det["reason_code"], pa.REASON_BOUNDARY_LEAD_TOO_SHORT)
+        self.assertIsNone(det["cut_sample"])
+        self.assertEqual(det["lead_fallback_candidates"], 0)
+        hop = det["hop_samples"]
+        te, on = det["tail_end_sample"] // hop, det["onset_sample"] // hop
+        self.assertGreater(on - 4, te, "후보 구간 자체는 비어 있지 않다(에너지에서 막힌 것이다)")
+
+    def test_empty_feasible_interval_yields_no_candidate(self):
+        """[4] 후보 구간이 비면 None — 넓혀서 구제하지 않는다.
+
+        ★파형 경로에서는 이 분기가 사실상 도달 불가다: tail_end 는 6프레임(30ms) 연속 무음의
+        첫 프레임이고 개시는 그 무음 안에서 성립할 수 없으므로 onset ≥ tail_end+6 이며,
+        여백 4프레임(20ms)을 빼도 tail_end+2 가 남는다. 그래도 계약은 함수 자체로 고정한다."""
+        dbs = [-90.0] * 40                      # 전 프레임이 바닥 이하 — 막는 건 범위뿐이다
+        self.assertEqual(pa.latest_safe_cut_frame(dbs, 10, 14, 120, 480, -60.0), (None, 0),
+                         "onset-4 == tail_end → 열린 구간 (10, 10] 은 비어 있다")
+        self.assertEqual(pa.latest_safe_cut_frame(dbs, 10, 13, 120, 480, -60.0), (None, 0))
+        self.assertEqual(pa.latest_safe_cut_frame(dbs, 10, 15, 120, 480, -60.0), (11, 1),
+                         "한 프레임만 들어오면 그 하나가 채택된다")
+
+    def test_candidate_at_or_before_tail_end_is_rejected(self):
+        """[5] tail_end 자신과 그 앞은 후보가 아니다(기존 안전 조건 tail_end < cut 그대로)."""
+        dbs = [-90.0] * 40
+        for i in range(11, 40):
+            dbs[i] = -10.0                      # tail_end 앞·자신만 조용하게 둔다
+        self.assertEqual(pa.latest_safe_cut_frame(dbs, 10, 20, 120, 480, -60.0), (None, 0))
+        dbs[11] = -90.0
+        self.assertEqual(pa.latest_safe_cut_frame(dbs, 10, 20, 120, 480, -60.0), (11, 1))
+
+    def test_first_consonant_burst_is_not_swallowed(self):
+        """[6] 목표가 마찰음으로 시작해도 보조 후보는 그 버스트보다 최소 여백만큼 앞이다."""
+        rng = random.Random(77)
+        gap = 1200
+        ramp = [1e-3 * (1.0 - 0.99 * (i / gap)) * (rng.random() * 2.0 - 1.0) for i in range(gap)]
+        white = [rng.random() * 2.0 - 1.0 for _ in range(481)]
+        burst = [0.05 * (white[i + 1] - white[i]) for i in range(480)]   # 20ms 고역 자음
+        burst_start = 2640 + gap
+        det = pa.detect_prefix_boundary(_speech(2640) + ramp + burst + _speech(4800), SR24)
+        self.assertTrue(det["ok"], det["reason_code"])
+        self.assertLessEqual(det["cut_sample"], burst_start - int(round(pa.MIN_LEAD_SEC * SR24)),
+                             "첫 자음 시작보다 최소 여백 이상 앞에서 자른다")
+        self.assertGreater(det["cut_sample"], det["tail_end_sample"])
+
+    def test_measured_failure_sample_selects_202920(self):
+        """[실측 재현] 20260829-064419-s1-c2 의 프레임 dBFS 로 후보 선택만 재현한다.
+
+        파형을 다시 열지 않고 **보고된 수치**만으로 규칙을 검증한다(hop 120 격자 위의 값).
+        기대: 202920(-66.50dB, 바닥 -63.78dB 이하) 채택 · 여백 정확히 480샘플."""
+        hop, floor = 120, -63.78
+        measured = {202440: -61.19, 202560: -62.49, 202680: -64.61,
+                    202800: -66.27, 202920: -66.50, 203040: -66.52}
+        onset_frame = 203400 // hop
+        dbs = [-20.0] * (onset_frame + 4)
+        for sample, level in measured.items():
+            dbs[sample // hop] = level
+        frame, count = pa.latest_safe_cut_frame(dbs, 202440 // hop, onset_frame, hop, 480, floor)
+        self.assertEqual(frame * hop, 202920, "실패 표본에서 코드가 고르는 지점")
+        self.assertEqual(count, 3, "202680·202800·202920 세 프레임이 조건을 만족한다")
+        self.assertEqual((onset_frame - frame) * hop, 480, "여백은 정확히 20.0ms")
 
 
 class LocalBaselineTest(unittest.TestCase):
