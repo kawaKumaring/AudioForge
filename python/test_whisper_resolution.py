@@ -58,5 +58,52 @@ class TestWhisperResolution(unittest.TestCase):
         self.assertNotIn("whisper.load_model(model_name, device=device)", src)
 
 
+class TestHfModelResolution(unittest.TestCase):
+    """HF 형식 모델(NLLB·Qwen2.5)도 조용히 내려받지 않는다."""
+
+    def setUp(self):
+        self._env = os.environ.get(tw.HF_ROOT_ENV)
+        self.tmp = tempfile.mkdtemp(prefix="af-hf-")
+
+    def tearDown(self):
+        if self._env is None:
+            os.environ.pop(tw.HF_ROOT_ENV, None)
+        else:
+            os.environ[tw.HF_ROOT_ENV] = self._env
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_missing_repo_raises_not_downloads(self):
+        os.environ[tw.HF_ROOT_ENV] = self.tmp
+        with self.assertRaises(tw.OptionalModelNotInstalled) as cm:
+            tw.resolve_hf_cache_dir("acme/__definitely_not_installed__")
+        self.assertIn("OPTIONAL_MODEL_NOT_INSTALLED", str(cm.exception))
+        self.assertTrue(cm.exception.searched, "어디를 찾았는지 알려줘야 한다")
+
+    def test_internal_beats_external(self):
+        os.environ[tw.HF_ROOT_ENV] = self.tmp
+        repo = "facebook/nllb-200-distilled-600M"
+        d = os.path.join(self.tmp, "hub", tw._hub_dir_name(repo))
+        os.makedirs(d)
+        cdir, source = tw.resolve_hf_cache_dir(repo)
+        self.assertEqual(source, "internal")
+        self.assertEqual(os.path.normcase(cdir), os.path.normcase(os.path.join(self.tmp, "hub")))
+
+    def test_cache_dir_is_hub_level_not_parent(self):
+        # 부모(HF_HOME)를 넘기면 transformers 가 못 찾고 네트워크로 나간다 — 실제로 겪은 실패.
+        os.environ[tw.HF_ROOT_ENV] = self.tmp
+        repo = "acme/x"
+        d = os.path.join(self.tmp, "hub", tw._hub_dir_name(repo))
+        os.makedirs(d)
+        cdir, _ = tw.resolve_hf_cache_dir(repo)
+        self.assertTrue(os.path.isdir(os.path.join(cdir, tw._hub_dir_name(repo))),
+                        "cache_dir 는 models--* 를 직접 담은 디렉터리여야 한다")
+
+    def test_loader_passes_local_files_only(self):
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "transcribe_worker.py"), encoding="utf-8").read()
+        self.assertIn("local_files_only=True", src)
+        self.assertNotIn("AutoTokenizer.from_pretrained(model_name, src_lang=nllb_src)", src)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

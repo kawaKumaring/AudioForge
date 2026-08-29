@@ -59,6 +59,64 @@ def set_translate_model(value):
         _translate_backend["mode"] = "nllb"
         set_nllb_model(v)
 
+HF_ROOT_ENV = "AUDIOFORGE_HF_ROOT"
+
+
+class OptionalModelNotInstalled(Exception):
+    """사용자가 고를 수 있는 모델인데 어디에도 설치돼 있지 않다.
+
+    조용히 인터넷에서 받아 오지 않는다 — 그건 오프라인 계약을 깨고, 사용자는 수 GB 가
+    받아지는 줄도 모른 채 기다리게 된다. 어떤 모델이 왜 없는지 알려주고 멈춘다."""
+
+    def __init__(self, repo_id, searched):
+        self.repo_id = repo_id
+        self.searched = searched
+        super().__init__("OPTIONAL_MODEL_NOT_INSTALLED: %s" % repo_id)
+
+
+def hf_model_root():
+    """앱이 관리하는 HF 형식 모델 위치(externals). 전역 캐시와 분리한다."""
+    override = os.environ.get(HF_ROOT_ENV)
+    if override:
+        return os.path.abspath(override)
+    here = os.path.dirname(os.path.abspath(__file__))
+    try:
+        import app_runtime
+        return os.path.join(app_runtime.assets_root(), "hf_models")
+    except Exception:
+        return os.path.join(os.path.dirname(here), "externals", "hf_models")
+
+
+def _hub_dir_name(repo_id):
+    return "models--" + repo_id.replace("/", "--")
+
+
+def resolve_hf_cache_dir(repo_id):
+    """(cache_dir, source) — from_pretrained 에 넘길 캐시 루트를 **명시**한다.
+
+    1) 앱 관리 위치에 해당 repo 가 있으면 그것
+    2) 없으면 기존 전역 캐시에 **이미 있는** repo 만 사용(다운로드 아님)
+    3) 둘 다 없으면 OptionalModelNotInstalled — 자동 다운로드 금지
+    전역 캐시는 다른 앱 소유일 수 있으므로 읽기만 하고 건드리지 않는다.
+    """
+    # cache_dir 는 `models--*` 를 **직접** 담은 디렉터리다(= HUGGINGFACE_HUB_CACHE).
+    # 그 부모(HF_HOME)를 넘기면 transformers 가 못 찾고 네트워크로 나간다.
+    name = _hub_dir_name(repo_id)
+    searched = []
+    internal = hf_model_root()
+    for cand in (os.path.join(internal, "hub"), internal):
+        searched.append(cand)
+        if os.path.isdir(os.path.join(cand, name)):
+            return cand, "internal"
+    hf_home = os.environ.get("HF_HOME")
+    legacy = (os.path.join(hf_home, "hub") if hf_home
+              else os.path.join(os.path.expanduser("~"), ".cache", "huggingface", "hub"))
+    searched.append(legacy)
+    if os.path.isdir(os.path.join(legacy, name)):
+        return legacy, "external_cache"
+    raise OptionalModelNotInstalled(repo_id, searched)
+
+
 # Whisper model cache
 _whisper_cache = {"model": None, "name": None, "source": None, "root": None}
 
@@ -483,9 +541,14 @@ def _translate_nllb(text: str, src_lang: str):
 
     if _nllb_cache["model"] is None or _nllb_cache["src_lang"] != nllb_src:
         emit("progress", percent=72, message=f"번역 모델 로딩 중... ({model_name.split('-')[-1]})")
-        _nllb_cache["tokenizer"] = AutoTokenizer.from_pretrained(model_name, src_lang=nllb_src)
+        # cache_dir 를 명시하지 않으면 전역 캐시를 조용히 뒤지고 없으면 내려받는다.
+        cdir, csrc = resolve_hf_cache_dir(model_name)
+        _nllb_cache["source"] = csrc
+        _nllb_cache["tokenizer"] = AutoTokenizer.from_pretrained(
+            model_name, src_lang=nllb_src, cache_dir=cdir, local_files_only=True)
         if _nllb_cache["model"] is None:
-            _nllb_cache["model"] = AutoModelForSeq2SeqLM.from_pretrained(model_name).to(device)
+            _nllb_cache["model"] = AutoModelForSeq2SeqLM.from_pretrained(
+                model_name, cache_dir=cdir, local_files_only=True).to(device)
         _nllb_cache["src_lang"] = nllb_src
 
     tokenizer = _nllb_cache["tokenizer"]
