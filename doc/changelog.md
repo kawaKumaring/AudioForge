@@ -1,5 +1,52 @@
 # AudioForge Changelog
 
+## 2026-08-29 (7) — B envelope 1단계: 조립 중 열리는 segment 경계에만 fade
+
+경계 fade 는 지금까지 **최종 파일의 바깥 시작·끝** 한 곳에만 걸렸다(`_finish_and_place`).
+문장과 문장 사이, 즉 독립 생성된 조각을 이어 붙이며 휴지가 생기는 자리는 여전히 딱 켜지고 꺼졌다.
+
+**경계 정보는 이미 계산되는데 버려지고 있었다.** `classify_plan_boundaries()` 가 segment 마다
+`kind ∈ {internal, emotion, line, paragraph, explicitPause}` 를 내는데
+`_boundary_gaps_from_plan` 이 `gap_sec` 만 꺼내고 kind 를 버렸다. 그래서 오디오 조립 단계에
+"진짜 문장 경계"와 "문장 내부 자동 chunk 경계"를 구분할 재료가 아예 없었다. 이번 변경의 절반은
+그 값을 3번째 반환값으로 함께 돌려주는 것뿐이다.
+※ `original_segment_index` 는 문장이 아니다 — 파서가 끊는 지점은 줄바꿈 / 감정 태그 / `[쉼 N]`
+셋뿐이고 마침표·물음표·쉼표는 파서에 없다.
+
+**적용 규칙(사용자 확정).** `line`/`paragraph`/`explicitPause` 경계에서만 **앞 segment 의 마지막
+chunk 끝**에 inverted ease-out, **뒤 segment 의 첫 chunk 시작**에 ease-in. `internal`·`emotion` 과
+문장 내부 chunk 경계는 **적용 0**. 마침표마다 chunk 를 강제로 나누는 일(2단계)은 하지 않았다.
+텍스트를 다시 파싱하거나 문장부호 규칙을 새로 만들지 않는다 — 판정 재료는 파서 kind 하나뿐이다.
+
+**중복은 구조적으로 막힌다.** 경계는 segment 그룹과 그룹 '사이'에만 존재하므로 첫 그룹의 시작과
+마지막 그룹의 끝은 후보 집합에 들어갈 수 없다. 조건문이 아니라 자료구조가 그렇다. 새 헬퍼가 그
+사실을 실제로 단언하고, 그 두 자리는 `_finish_and_place` 단일 권위로 남는다.
+
+- 새 헬퍼 `_apply_segment_envelopes` 를 `_concat_with_boundaries` **직전**에 부른다(조각이 아직
+  개별 파일인 마지막 자리). `_concat_with_boundaries`·`_finish_and_place` 는 **무변경**.
+- 창·곡선·길이 **무변경**(onset 10 ms / offset 20 ms / smoothstep). gain 곱셈뿐이라 길이 불변 →
+  `frames`/`gap_before_samples`/`start_sample` 진단과 pause 값이 그대로다.
+- 원본 chunk 파일을 덮어쓰지 않고 수정본을 새로 쓴다(정렬·진단 산출물 보존). subtype 을 보존하므로
+  창 **밖**은 PCM_16 에서도 비트 단위로 같다(왕복 무손실 실측).
+- metadata 추가: `segment_envelope_onset_count` / `_offset_count` / `_kind_counts` / `_applied`.
+
+**GPU 실측**(2 segment / 9 chunk, ICL auto, 직전과 같은 입력). 적용 onset 1 · offset 1 ·
+`{"line": 1}` — 좌표 offset=`[0,3]` / onset=`[1,0]` 으로 첫 chunk 시작과 마지막 chunk 끝은 기록에
+등장하지 않는다(중복 0). 경계 직전 480샘플 peak `0.000031`(envelope 없던 직전 실행은 `0.005280`),
+`sample_jump` 0.00000. 경계 직후 onset 창 안 peak `0.000275`, 첫 유의 신호는 810샘플(33.8 ms) 뒤라
+10 ms 창이 첫 자음에 닿지 않는다. 선언 gap 은 두 실행 모두 9600샘플(400 ms)로 동일하다.
+길이 633,504 + tail padding 2,880 = 636,384, 비유한 0. 상세는
+`doc/boundary-envelope-2026-08-28.md` §10.
+
+**회귀** `python/test_segment_envelope.py` 13건 — 한 문장 여러 chunk→시작1·끝1 / 여러 문장→각 1회 /
+내부 chunk 0회 / 쉼표 0회 / 감정 태그 0회 / 줄바꿈·문단·명시적 쉼 적용 / 최종 파일 양 끝 무접촉을
+인덱스로 단언 / 8 ms 자음 버스트 보존 / pause layout 동일 / 곡선 시작0·역곡선 끝0(창 함수의 실제
+끝값 특성 존중) / PCM_16 창 밖 비트 동일 / NaN·clipping·길이 변화 없음. 쉼표·감정 케이스는 kind 가
+각각 `internal`/`emotion` 임을 **먼저 단언**한 뒤 결과 배열의 기울어진 구간을 센다.
+
+**남은 것** 실청취 미확인. 문단·명시적 쉼 경계와 경계가 여러 개인 장문은 SYNTHETIC 단위테스트로만
+고정돼 있고 GPU 산출물로 재지 않았다. 2단계(마침표 문장 분리)는 범위 밖이다.
+
 ## 2026-08-29 (6) — 여백이 15ms 라고 포기하지 않는다(보조 절단 후보) + 실패 진단에 앞 chunk 보존
 
 P1/P2/P4 를 넣고 GPU 로 실제 생성해 보니 9개 chunk 중 **6개가 정렬에 성공**하고 7번째

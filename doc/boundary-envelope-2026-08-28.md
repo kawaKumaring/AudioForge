@@ -203,3 +203,78 @@ smoothstep 인지), plan/clamp, 길이·sample rate 불변, 입력 비변형, �
   가져가는데, 이번 계측 기준으로는 20 ms 가 필요했다. 즉 auto 의 말끝은 우리 기준보다 짧은 창으로
   남는다. tail 계약을 침범하지 않기로 한 결정이며, 필요하면 별도 논의 대상이다.
 - **renderer/TS 쪽은 건드리지 않았다.** 새 config 필드를 만들지 않았으므로 배선도 parity 상수도 없다.
+
+## 10. B envelope 1단계 — 조립 중 열리는 segment 경계 (2026-08-29 추가)
+
+§4 의 배선은 `_finish_and_place` 한 곳뿐이었다. 그래서 **최종 파일의 바깥 시작·끝**만 S자를 얻고,
+문장과 문장 사이에서 딱 켜지고 꺼지는 자리는 그대로 남았다. 그 자리에 같은 창을 건다.
+
+### 10.1 경계 정보는 계산되고 있었는데 버려졌다
+
+`semantic_chunk_planner.classify_plan_boundaries()` 는 segment 마다
+`kind ∈ {internal, emotion, line, paragraph, explicitPause}` 를 낸다. 그런데
+`tts_worker._boundary_gaps_from_plan` 이 `[e["gap_sec"] for e in entries]` 만 꺼내고 kind 를 버렸다.
+그래서 오디오 조립 단계에는 "휴지가 있는 진짜 문장 경계"와 "문장 내부 자동 chunk 경계"를 구분할
+재료가 **아예 없었다**. 이번 변경의 절반은 그 값을 버리지 않고 함께 돌려주는 것뿐이다(3번째 반환값).
+
+※ `original_segment_index` 는 문장이 아니다. 파서가 segment 를 끊는 지점은 **줄바꿈 / 감정 태그 /
+`[쉼 N]` 명시적 쉼** 셋뿐이고 마침표·물음표·느낌표·쉼표는 파서에 없다. `sentence` kind 는 상수에
+자리만 있고 매핑이 없어 현재 생성되지 않는다.
+
+### 10.2 어디에 거는가 (사용자 확정 계약)
+
+- `kind ∈ {line, paragraph, explicitPause}` — **열린 경계**. 앞 segment 의 **마지막 chunk 끝**에
+  inverted ease-out(1→0), 뒤 segment 의 **첫 chunk 시작**에 ease-in(0→1).
+- `kind ∈ {internal, emotion}` — **적용 0**. 같은 문장 안에서 이어진 마침표 문장도, 자동분할이
+  만든 문장 내부 chunk 경계도 접합 지점이 아니다.
+- 마침표마다 강제로 chunk 를 나누는 일(2단계)은 하지 않았다.
+- 텍스트를 다시 파싱하거나 문장부호 규칙을 새로 만들지 않는다 — 판정 재료는 파서 kind 하나뿐이다.
+
+### 10.3 최종 파일 양 끝과의 중복을 구조적으로 막는 방법
+
+경계는 segment 그룹과 그룹 **'사이'** 에만 존재한다. 따라서 첫 그룹의 첫 chunk 시작과 마지막
+그룹의 마지막 chunk 끝은 후보 집합에 **들어갈 수 없다**. 조건문으로 빼는 것이 아니라 자료구조가
+그렇게 생겼다. `_apply_segment_envelopes` 는 그 사실을 실제로 단언하고(위반 시 RuntimeError),
+그 두 자리는 §4 대로 `_finish_and_place` 단일 권위로 남는다.
+
+### 10.4 무엇을 어디에 넣었나
+
+`python/tts_worker.py` 에 `_apply_segment_envelopes` 를 새로 두고 `_concat_with_boundaries`
+**직전**에 부른다(조각이 아직 개별 파일인 마지막 자리 — 결합 뒤에는 무음이 이미 들어가 어디가
+경계였는지 배열만 보고 알 수 없다). 창·곡선·길이는 §3·§4 그대로 재사용한다(onset 10 ms /
+offset 20 ms / smoothstep). `_concat_with_boundaries` 와 `_finish_and_place` 는 **무변경**이다.
+
+길이는 바뀌지 않는다 — gain 곱셈뿐이라 `frames`/`gap_before_samples`/`start_sample` 진단이 이
+단계 전후로 동일하고, pause 값도 흔들리지 않는다. 원본 chunk 파일은 덮어쓰지 않고 수정본을
+work_dir 에 새로 쓴다(정렬·진단 산출물 보존). subtype 을 보존하므로 창 **밖**은 PCM_16 에서도
+비트 단위로 같다(왕복 무손실 실측).
+
+metadata 는 `segment_envelope_onset_count` / `segment_envelope_offset_count` /
+`segment_envelope_kind_counts` / `segment_envelope_applied`(경계마다 앞·뒤 chunk 좌표와 샘플 수).
+최종 파일 양 끝을 말하는 `boundary_onset_samples` / `boundary_offset_samples` 와는 **다른 자리**다.
+
+### 10.5 GPU 실측 (2026-08-29, 2 segment / 9 chunk, ICL auto)
+
+§9 의 "GPU 재합성을 하지 않았다"와 "장문(다중 chunk) 조립물에서 실측하지 않았다"를 이번에 해소했다.
+
+- 적용 횟수: onset 1 · offset 1 · `{"line": 1}`. 2 segment → 경계 1개 → 정확히 한 쌍.
+  좌표는 offset=`[0, 3]`(segment 0 의 마지막 chunk) / onset=`[1, 0]`(segment 1 의 첫 chunk).
+  **첫 chunk `[0,0]` 의 시작과 마지막 chunk `[1,4]` 의 끝은 기록에 등장하지 않는다** — 중복 0.
+- 경계 join(228219) 직전 480샘플 peak `0.000031`(사실상 디지털 무음). 같은 자리를 envelope 없이
+  만든 직전 실행은 `0.005280` 이었다. `sample_jump` 0.00000.
+- 경계 직후 onset 창(240샘플) 안 peak `0.000275`, 첫 유의 신호(|x|>0.005)는 **810샘플(33.8 ms)**
+  뒤 — 10 ms 창은 첫 자음에 닿지 않는다.
+- 선언 gap 은 두 실행 모두 **9600샘플(400 ms)로 동일**하다(pause 계약 불변). 다만 파형에서 잰
+  '들리지 않는 구간'은 400.2 ms → 438.1 ms 로 늘었다. 말미 20 ms 가 fade 로 0 에 닿았기 때문이며,
+  두 실행의 생성 파형 자체가 다르므로(seed 미지원) 이 차이를 전부 envelope 몫으로 볼 수는 없다.
+  **체감 쉼이 최대 onset+offset(30 ms)만큼 길어지는 것은 이 계약의 당연한 결과**다.
+- 길이: chunk frames + gap 합계 633,504 → 최종 636,384(+2,880 = tail padding 120 ms). 직전 실행과
+  같은 +2,880 이다. 비유한 0, peak 0.6874.
+
+### 10.6 아직 확인하지 못한 것
+
+- **실청취 확인이 없다.** 경계가 부드러워졌다는 주장은 위 수치까지다.
+- **경계가 1개뿐인 소재로만 실측했다.** 문단(`paragraph`)·명시적 쉼(`explicitPause`) 경계와
+  경계가 여러 개인 장문은 단위테스트(SYNTHETIC)로만 고정돼 있고 GPU 산출물로 재지 않았다.
+- **2단계(마침표 문장 분리)는 범위 밖이다.** 같은 chunk 안에서 이어진 마침표 문장은 지금도
+  접합 지점이 아니며, 그 자리를 다루려면 chunk 분할 자체를 바꿔야 한다.
