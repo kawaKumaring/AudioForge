@@ -2,7 +2,7 @@
 // 실행: npm test  (또는 node --test src/shared/ttsConfig.test.ts)
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { buildTtsConfig, buildReferencePrompts, deriveRefMode, pruneStaleReferencePrompts, normalizePitchCapability, parseGenerationSummary, finiteNumber, sampleRateOrNull, framesOrNull, REFERENCE_CONDITIONING_DEFAULT, isReferenceConditioningMode, restoreReferenceConditioningMode } from './ttsConfig.ts'
+import { buildTtsConfig, buildReferencePrompts, deriveRefMode, pruneStaleReferencePrompts, normalizePitchCapability, parseGenerationSummary, finiteNumber, sampleRateOrNull, framesOrNull, REFERENCE_CONDITIONING_DEFAULT, REFERENCE_CONDITIONING_RECOMMENDED, isReferenceConditioningMode, restoreReferenceConditioningMode } from './ttsConfig.ts'
 import { TTS_PARSER_VERSION } from './ttsGrammar.ts'
 import { EXPRESSIVE_DEFAULT_MODE, EXPRESSIVE_MODE_FIELD, readExpressiveMode, resolveExpressiveMode } from './expressiveTimeline.ts'
 
@@ -430,12 +430,20 @@ test('참조 conditioning: 부재 → safe_xvector(안전 기본), legacy 세션
   assert.equal(buildTtsConfig({ ttsReferenceConditioningMode: null as never }).ttsReferenceConditioningMode, 'safe_xvector')
 })
 
-test('참조 conditioning: 유효 2값은 그대로 직렬화 + JSON 왕복 보존', () => {
-  assert.equal(buildTtsConfig({ ttsReferenceConditioningMode: 'safe_xvector' }).ttsReferenceConditioningMode, 'safe_xvector')
-  const c = buildTtsConfig({ ttsReferenceConditioningMode: 'high_quality_icl' })
-  assert.equal(c.ttsReferenceConditioningMode, 'high_quality_icl')
-  const round = JSON.parse(JSON.stringify(c)) as Record<string, unknown>
-  assert.equal(round.ttsReferenceConditioningMode, 'high_quality_icl')
+test('참조 conditioning: 유효값은 그대로 직렬화 + JSON 왕복 보존', () => {
+  for (const mode of ['auto', 'safe_xvector', 'high_quality_icl'] as const) {
+    const c = buildTtsConfig({ ttsReferenceConditioningMode: mode })
+    assert.equal(c.ttsReferenceConditioningMode, mode)
+    const round = JSON.parse(JSON.stringify(c)) as Record<string, unknown>
+    assert.equal(round.ttsReferenceConditioningMode, mode)
+  }
+})
+
+test('참조 conditioning: 추천값(auto)과 부재 기본(safe)은 서로 다른 상수다', () => {
+  // 부재 = "auto 를 고른 적이 없다" → 안전 해석. 추천 = 새 세션에서 UI 가 처음 골라 두는 값.
+  assert.equal(REFERENCE_CONDITIONING_DEFAULT, 'safe_xvector')
+  assert.equal(REFERENCE_CONDITIONING_RECOMMENDED, 'auto')
+  assert.equal(buildTtsConfig({ ttsReferenceConditioningMode: 'auto' }).ttsReferenceConditioningMode, 'auto')
 })
 
 test('참조 conditioning: 계약 밖 값은 조용히 고치지 않는다(무변형 통과 — 최종 권위는 Python)', () => {
@@ -452,14 +460,21 @@ test('참조 conditioning: 세션 복원 해석 — 부재/비문자열→safe, 
   assert.equal(restoreReferenceConditioningMode(''), 'safe_xvector')
   assert.equal(restoreReferenceConditioningMode(1), 'safe_xvector')
   assert.equal(restoreReferenceConditioningMode('safe_xvector'), 'safe_xvector')
-  assert.equal(restoreReferenceConditioningMode('high_quality_icl'), 'high_quality_icl')
+  assert.equal(restoreReferenceConditioningMode('auto'), 'auto')
   // 계약 밖 문자열은 그대로 — 합성 시 Python 이 구조화 오류로 거부한다(조용한 강등 금지).
   assert.equal(restoreReferenceConditioningMode('weird_mode'), 'weird_mode' as never)
 })
 
+test('참조 conditioning: 저장된 high_quality_icl 은 auto 로 복원된다(선택지 2개 정리)', () => {
+  // 구 UI 의 명시 선택. 대응 라디오가 사라졌으므로 그대로 두면 "아무것도 선택 안 됨"이 된다.
+  // auto 도 ICL 을 먼저 시도하므로 의도는 그대로고, 정렬 실패가 오류 대신 안정 결과로 끝날 뿐이다.
+  assert.equal(restoreReferenceConditioningMode('high_quality_icl'), 'auto')
+})
+
 test('참조 conditioning: 유효값 판별기', () => {
+  assert.equal(isReferenceConditioningMode('auto'), true)
   assert.equal(isReferenceConditioningMode('safe_xvector'), true)
   assert.equal(isReferenceConditioningMode('high_quality_icl'), true)
-  assert.equal(isReferenceConditioningMode('auto'), false)
+  assert.equal(isReferenceConditioningMode('weird_mode'), false)
   assert.equal(isReferenceConditioningMode(undefined), false)
 })

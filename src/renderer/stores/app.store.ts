@@ -3,7 +3,7 @@ import type { SeparationMode, Track, FileInfo } from '../../shared/types'
 import type { TtsReferenceEntry, PitchCapability, ReferenceConditioningMode } from '../../shared/ttsConfig'
 // 참조 conditioning 모드(PHASE 2) — 기본/복원 해석은 계약 모듈 단일 소유(store 가 규칙을 다시 쓰지 않는다).
 // @ts-ignore TS5097: node --test가 요구하는 명시적 .ts 확장자(위 cancelContract import 주석과 같은 이유).
-import { REFERENCE_CONDITIONING_DEFAULT, restoreReferenceConditioningMode } from '../../shared/ttsConfig.ts'
+import { REFERENCE_CONDITIONING_RECOMMENDED, restoreReferenceConditioningMode } from '../../shared/ttsConfig.ts'
 // 취소 계약(C2-P0.1)의 순수 술어 — store/UI/테스트가 같은 판정을 공유해 갈라지지 않게 한다.
 // 확장자(.ts)를 명시하는 이유: app.store.ts는 node --test(ESM, 확장자 필수)가 직접 로드하는 유일한 store 파일이라
 // 확장자 없는 상대 경로는 런타임에 ERR_MODULE_NOT_FOUND가 된다. tsconfig의 allowImportingTsExtensions는
@@ -172,8 +172,9 @@ interface AppState {
   ttsEmotionRefState: Record<string, EmotionRefState>
   ttsReferencePrompts: Record<string, TtsReferenceEntry>
   ttsEngine: string
-  // 참조 conditioning 모드(PHASE 2). 기본 safe_xvector(안전 음성 복제 — 참조 대사 혼입 구조적 차단).
-  // high_quality_icl 은 선택 가능하되 합성 시 Python 이 fail-closed 로 차단한다(경계 검증 확정 전).
+  // 참조 conditioning 모드(PHASE 2). fresh 세션 기본 = auto(자동, 추천) — ICL 을 먼저 시도하고
+  // 경계 정렬에 실패하면 안정 방식(safe_xvector)으로 정확히 1회 전환한다(잘리지 않은 ICL 결과는
+  // 어느 경우에도 발행되지 않는다). UI 선택지는 auto / safe_xvector 두 가지뿐이다.
   ttsReferenceConditioningMode: ReferenceConditioningMode
   // 참조 준비 상태(합성 버튼 게이팅 + 사유 표시). ttsReferenceClip이 있으면 그 파생 클립을 참조로 전달.
   ttsReferenceClip: string
@@ -276,8 +277,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   ttsEmotionRefState: {} as Record<string, EmotionRefState>,
   ttsReferencePrompts: {} as Record<string, TtsReferenceEntry>,
   ttsEngine: 'auto',
-  // 참조 conditioning 모드 — fresh 세션 기본은 안전 음성 복제(safe_xvector).
-  ttsReferenceConditioningMode: REFERENCE_CONDITIONING_DEFAULT,
+  // 참조 conditioning 모드 — fresh 세션 기본은 자동(auto, 추천). ICL 을 먼저 시도하고 경계 정렬에
+  // 실패하면 같은 작업 안에서 안정 방식으로 1회 전환한다(실패로 끝나지 않는다).
+  // 값이 '부재'인 legacy 세션 복원은 여기가 아니라 restoreReferenceConditioningMode 가 맡고,
+  // 그쪽 기본은 여전히 safe_xvector 다(고른 적 없는 값을 auto 로 승격하지 않는다).
+  ttsReferenceConditioningMode: REFERENCE_CONDITIONING_RECOMMENDED,
   // I3: 새(fresh) 세션 기본 = auto(계약 정정8 "new session"). 복원 시 legacy(필드 부재)는 off로 강등.
   ttsTailMode: 'auto' as 'off' | 'auto',
   ttsTailPaddingMs: 120,
@@ -492,8 +496,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsPitch: 0.0, ttsPitchCapability: null, resultMetadata: null,
       // 세션 리셋은 표현형 모드도 기본으로 되돌린다(이전 세션의 모드가 새 작업에 눌러앉지 않게).
       ttsExpressiveMode: EXPRESSIVE_DEFAULT_MODE,
-      // 참조 conditioning 모드도 안전 기본으로 — 이전 세션의 실험적 선택이 새 작업에 눌러앉지 않게.
-      ttsReferenceConditioningMode: REFERENCE_CONDITIONING_DEFAULT,
+      // 참조 conditioning 모드도 fresh 세션과 같은 추천값으로 — 이전 세션의 선택이 새 작업에
+      // 눌러앉지 않게 한다(초기값과 reset 값이 다르면 "리셋했더니 설정이 달라졌다"가 된다).
+      ttsReferenceConditioningMode: REFERENCE_CONDITIONING_RECOMMENDED,
     })
   }
 }))

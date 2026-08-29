@@ -257,6 +257,28 @@ test('stdout 파싱 의미 유지: progress/status/result/error', () => {
   c.emit('close', 0, null)
 })
 
+test('progress 의 job_restarted 는 감시기까지 전달된다(그 외 임의 필드는 버린다)', () => {
+  // 참조 사용 방식 '자동'이 안정 방식으로 전환할 때 Python 이 싣는 기계용 선언.
+  // 여기서 떨어뜨리면 longform 감시기가 2회차를 '재전송'으로만 보고 무진행으로 오판한다.
+  const sp = makeSpawnFake()
+  const runner = new PythonRunner('python', { spawn: sp.fn })
+  const got: Record<string, unknown>[] = []
+  runner.on('progress', (d: Record<string, unknown>) => got.push(d))
+  runner.run('script.py', [])
+  const c = sp.children[0]
+  const feed = (o: unknown) =>
+    c.stdout.emit('data', Buffer.from(JSON.stringify(o) + '\n', 'utf-8'))
+  feed({ type: 'progress', percent: 5, message: '전환', job_restarted: true })
+  feed({ type: 'progress', percent: 6, message: '보통', job_restarted: false, secret: 'x' })
+  feed({ type: 'progress', percent: 7, message: '보통2', unrelated: 'y' })
+  assert.deepEqual(got, [
+    { percent: 5, message: '전환', job_restarted: true },
+    { percent: 6, message: '보통' },
+    { percent: 7, message: '보통2' },
+  ])
+  c.emit('close', 0, null)
+})
+
 test('마지막 개행 없는 줄도 close에서 flush된다(기존 동작 유지)', () => {
   const sp = makeSpawnFake()
   const runner = new PythonRunner('python', { spawn: sp.fn })

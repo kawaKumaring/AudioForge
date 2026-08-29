@@ -138,16 +138,31 @@ export function parseGenerationSummary(metadata: Record<string, unknown> | null 
 //                      그래서 생성 뒤 정렬 단계가 추가로 걸린다(시간이 조금 더 든다).
 //                      경계를 확정하지 못하면 Python 이 결과를 발행하지 않고
 //                      ICL_BOUNDARY_ALIGNMENT_FAILED 로 실패한다(안전 모드로 조용히 바뀌지 않는다).
+//   auto             : 자동 — high_quality_icl 로 먼저 시도하고, 경계 정렬에 실패하면 그 ICL 결과를
+//                      폐기한 뒤 같은 작업 안에서 safe_xvector 로 **정확히 1회** 전환해 결과를 만든다
+//                      (전환은 최대 1회, safe 까지 실패하면 그대로 실패). 정렬 실패분은 발행되지
+//                      않으므로 참조 대사가 섞인 결과가 나갈 통로는 auto 에서도 없다.
+//                      ★사용자에게 제공되는 의미는 auto(자동) / safe_xvector(안정 우선) 둘뿐이다 —
+//                       high_quality_icl 은 계약상 유효하지만 UI 선택지가 아니다(아래 복원 규칙 참고).
 // 부재(legacy 세션) → safe_xvector. 값이 있는데 계약 밖이면 renderer 는 고치지 않는다(권위는 Python —
 // INVALID_REFERENCE_CONDITIONING_MODE 구조화 오류. ttsExpressiveMode 와 같은 원칙).
-export type ReferenceConditioningMode = 'safe_xvector' | 'high_quality_icl'
+export type ReferenceConditioningMode = 'auto' | 'safe_xvector' | 'high_quality_icl'
+// 부재(legacy 세션/구 config)일 때 채우는 안전 기본. **새 세션의 초기 선택과는 다른 값**이다 —
+// 값이 없다는 것은 "그때 auto 를 고른 적이 없다"는 뜻이므로 안전 쪽으로 해석한다.
 export const REFERENCE_CONDITIONING_DEFAULT: ReferenceConditioningMode = 'safe_xvector'
+// 새 세션에서 UI 가 처음 선택해 두는 값(= 추천). 안전 기본과 분리해 둔 이유는 위 주석대로다.
+export const REFERENCE_CONDITIONING_RECOMMENDED: ReferenceConditioningMode = 'auto'
 export function isReferenceConditioningMode(v: unknown): v is ReferenceConditioningMode {
-  return v === 'safe_xvector' || v === 'high_quality_icl'
+  return v === 'auto' || v === 'safe_xvector' || v === 'high_quality_icl'
 }
 // 세션 복원용 해석: 부재/비문자열 → 기본(safe). 계약 밖 '문자열'은 그대로 통과시킨다 —
 // 조용한 강등 금지: 합성 시 Python 이 구조화 오류로 거부하고, UI 에는 어느 모드도 선택 표시가 없다.
+// 예외 하나: 저장된 'high_quality_icl'(구 UI 의 명시 선택)은 'auto' 로 옮긴다. UI 선택지가 두
+// 가지로 정리되면서 그 값에 대응하는 라디오가 사라졌고, 그대로 두면 복원 화면에 아무것도 선택되지
+// 않은 상태가 된다. auto 는 ICL 을 먼저 시도한다는 점에서 사용자가 고른 의도를 그대로 지키며,
+// 달라지는 것은 정렬 실패 시 '오류'가 아니라 '안정 방식 결과'로 끝난다는 점뿐이다(강등 아님).
 export function restoreReferenceConditioningMode(v: unknown): ReferenceConditioningMode {
+  if (v === 'high_quality_icl') return 'auto'
   if (typeof v === 'string' && v !== '') return v as ReferenceConditioningMode
   return REFERENCE_CONDITIONING_DEFAULT
 }

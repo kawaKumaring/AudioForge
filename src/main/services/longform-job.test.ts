@@ -12,7 +12,8 @@ import { PythonRunner } from './python-runner.ts'
 import { createTerminalGate } from './run-settlement.ts'
 import {
   createJobWatchdog, createChunkLedger, createStagingGate, parseChunkPosition, startJobWatch,
-  jobBudgetMs, INACTIVITY_MS, STALL_MS, LOAD_BUDGET_MS, PER_CHUNK_BUDGET_MS, SELF_REPORT_GRACE_MS
+  jobBudgetMs, INACTIVITY_MS, STALL_MS, LOAD_BUDGET_MS, PER_CHUNK_BUDGET_MS, SELF_REPORT_GRACE_MS,
+  MAX_JOB_RESTARTS
 } from './longform-job.ts'
 
 // ── 가상 시계 ────────────────────────────────────────────────────────────────
@@ -197,6 +198,88 @@ test('forward progress 는 stall 축을 갱신한다 — 조각이 계속 나오
     assert.equal(wd.evaluate(), 'ok')
   }
   assert.equal(wd.ledger.completedCount, 30)
+})
+
+// ── ④ 재시작(참조 사용 방식 '자동'의 안정 방식 전환) ─────────────────────────
+// 2회차는 1회차와 같은 조각 번호를 다시 낸다. 재시작 신호가 없으면 원장이 그걸 전부 '재전송'으로
+// 보고 forward 축이 멈춘 채 흘러 정상 작업이 무진행으로 오판된다.
+
+test('재시작 신호 없이 같은 조각을 다시 내면 전진으로 세지 않는다(재시작 신호가 필요한 이유)', () => {
+  const clock = makeClock()
+  const wd = createJobWatchdog({ now: clock.now })
+  for (let seg = 0; seg < 3; seg++) {
+    clock.advance(10_000)
+    assert.equal(wd.observe({ percent: 40, message: chunkMsg(seg, 3, 0, 1, '완료') }), 'forward')
+  }
+  // 같은 조각을 그대로 다시 완료 — 원장은 단조 증가라 전진이 아니다.
+  for (let seg = 0; seg < 3; seg++) {
+    clock.advance(10_000)
+    assert.equal(wd.observe({ percent: 40, message: chunkMsg(seg, 3, 0, 1, '완료') }), 'liveness')
+  }
+  assert.equal(wd.ledger.completedCount, 3)
+})
+
+test('재시작 신호는 원장을 비우고 세 축을 다시 잰다 — 2회차 조각이 다시 전진으로 센다', () => {
+  const clock = makeClock()
+  const wd = createJobWatchdog({ now: clock.now })
+  for (let seg = 0; seg < 3; seg++) {
+    clock.advance(10_000)
+    wd.observe({ percent: 40, message: chunkMsg(seg, 3, 0, 1, '완료') })
+  }
+  assert.equal(wd.ledger.completedCount, 3)
+  clock.advance(5_000)
+  assert.equal(wd.observe({ percent: 5, message: '목소리 느낌을 더 살리는 데 실패해 안정 방식으로 만들었습니다.', job_restarted: true }), 'liveness')
+  assert.equal(wd.restarts, 1)
+  assert.equal(wd.ledger.completedCount, 0, '폐기된 조각은 완료로 남지 않는다')
+  assert.equal(wd.startedAtMs, clock.now(), '총 예산도 이 라운드 기준으로 다시 잰다')
+  assert.equal(wd.report().sinceForwardMs, 0)
+  for (let seg = 0; seg < 3; seg++) {
+    clock.advance(10_000)
+    assert.equal(wd.observe({ percent: 40, message: chunkMsg(seg, 3, 0, 1, '완료') }), 'forward',
+      '2회차의 같은 번호 조각도 이번 라운드에서는 처음 보는 조각이다')
+  }
+  assert.equal(wd.evaluate(), 'ok')
+})
+
+test('재시작이 stall 축을 넘겨 준다 — 긴 2회차가 무진행으로 오판되지 않는다', () => {
+  const clock = makeClock()
+  const wd = createJobWatchdog({ now: clock.now })
+  clock.advance(10_000)
+  wd.observe({ percent: 40, message: chunkMsg(0, 1, 0, 1, '완료') })
+  clock.advance(5_000)
+  wd.observe({ percent: 5, message: '전환', job_restarted: true })
+  // 재시작 직후부터 stall 직전까지 흘러도(생존 신호는 계속 온다) 아직 살아 있고,
+  // 그 시점에 나온 '같은 번호' 조각이 이번 라운드에서는 전진으로 세어 축을 다시 민다.
+  const restartAt = clock.now()
+  while (clock.now() - restartAt < STALL_MS - 100_000) {
+    clock.advance(100_000)
+    wd.observe({ percent: 24, message: '모델 로딩 중...' })
+  }
+  assert.equal(wd.evaluate(), 'ok', '재시작 이전의 forward 시각으로 재면 여기서 이미 죽는다')
+  assert.equal(wd.observe({ percent: 40, message: chunkMsg(0, 1, 0, 1, '완료') }), 'forward')
+  assert.equal(wd.evaluate(), 'ok')
+})
+
+test('재시작은 최대 1회만 인정된다 — 반복 신호로 예산을 무한 연장할 수 없다', () => {
+  assert.equal(MAX_JOB_RESTARTS, 1, 'Python 의 전환 최대 1회 계약과 같은 수')
+  const clock = makeClock()
+  const wd = createJobWatchdog({ now: clock.now })
+  clock.advance(1_000)
+  wd.observe({ percent: 5, message: '전환', job_restarted: true })
+  const afterFirst = wd.startedAtMs
+  assert.equal(wd.restarts, 1)
+  // 두 번째 이후는 그냥 liveness — 축이 다시 밀리지 않는다.
+  clock.advance(100_000)
+  assert.equal(wd.observe({ percent: 5, message: '전환', job_restarted: true }), 'liveness')
+  assert.equal(wd.restarts, 1)
+  assert.equal(wd.startedAtMs, afterFirst, '두 번째 재시작은 축을 밀지 못한다')
+  // 그래서 stall 축은 정상적으로 발화한다(무한 연장 통로 없음).
+  // 살아있다는 신호는 계속 준다 — 비활성 축이 먼저 잡으면 stall 을 시험한 것이 아니다.
+  while (clock.now() - afterFirst < STALL_MS) {
+    clock.advance(100_000)
+    wd.observe({ percent: 24, message: '모델 로딩 중...' })
+  }
+  assert.equal(wd.evaluate(), 'no-forward-progress')
 })
 
 test('아무 신호도 없으면 비활성 축이 잡는다(기존 300000 그대로, 값 변경 없음)', () => {

@@ -356,20 +356,20 @@ test('B2a: store에 v3를 켜는 setter가 없다(죽은 스위치 방지)', () 
 
 // ── 참조 conditioning 모드 carrier(PHASE 2): store 기본/설정/복원/reset ──
 
-test('참조 conditioning: fresh 세션 기본 = safe_xvector(안전 음성 복제)', () => {
+test('참조 conditioning: fresh 세션 기본 = auto(자동, 추천)', () => {
   useAppStore.getState().reset()
-  assert.equal(useAppStore.getState().ttsReferenceConditioningMode, 'safe_xvector')
+  assert.equal(useAppStore.getState().ttsReferenceConditioningMode, 'auto')
 })
 
-test('참조 conditioning: setter 로 선택 가능(UI 배선) + reset 시 안전 기본 복귀', () => {
-  useAppStore.getState().setTtsReferenceConditioningMode('high_quality_icl')
-  assert.equal(useAppStore.getState().ttsReferenceConditioningMode, 'high_quality_icl')
-  useAppStore.getState().reset()
+test('참조 conditioning: setter 로 선택 가능(UI 배선) + reset 시 추천값 복귀', () => {
+  useAppStore.getState().setTtsReferenceConditioningMode('safe_xvector')
   assert.equal(useAppStore.getState().ttsReferenceConditioningMode, 'safe_xvector')
+  useAppStore.getState().reset()
+  assert.equal(useAppStore.getState().ttsReferenceConditioningMode, 'auto')
 })
 
 test('참조 conditioning: legacy 세션(필드 없음) → safe_xvector 로 복원(안전 기본)', () => {
-  useAppStore.setState({ ttsReferenceConditioningMode: 'high_quality_icl' })
+  useAppStore.setState({ ttsReferenceConditioningMode: 'auto' })
   useAppStore.getState().restoreSession('C:/out', {
     mode: 'tts' as const, source: 'C:/in.wav',
     options: { ttsText: '구 세션' },   // ttsReferenceConditioningMode 없음
@@ -379,7 +379,7 @@ test('참조 conditioning: legacy 세션(필드 없음) → safe_xvector 로 복
 })
 
 test('참조 conditioning: 저장된 명시값은 그대로 복원(session 왕복)', () => {
-  for (const mode of ['safe_xvector', 'high_quality_icl'] as const) {
+  for (const mode of ['safe_xvector', 'auto'] as const) {
     useAppStore.getState().restoreSession('C:/out', {
       mode: 'tts' as const, source: 'C:/in.wav',
       options: { ttsText: 'x', ttsReferenceConditioningMode: mode },
@@ -387,6 +387,15 @@ test('참조 conditioning: 저장된 명시값은 그대로 복원(session 왕�
     })
     assert.equal(useAppStore.getState().ttsReferenceConditioningMode, mode)
   }
+})
+
+test('참조 conditioning: 구 세션의 high_quality_icl 은 auto 로 복원된다(선택지 2개 정리)', () => {
+  useAppStore.getState().restoreSession('C:/out', {
+    mode: 'tts' as const, source: 'C:/in.wav',
+    options: { ttsText: 'x', ttsReferenceConditioningMode: 'high_quality_icl' },
+    tracks: [],
+  })
+  assert.equal(useAppStore.getState().ttsReferenceConditioningMode, 'auto')
 })
 
 test('참조 conditioning: 계약 밖 문자열은 무변형 복원(조용한 강등 금지 — Python 이 거부)', () => {

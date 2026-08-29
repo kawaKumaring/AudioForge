@@ -668,9 +668,9 @@ export default function TTSEditor() {
       </TtsVoiceSection>
 
       {/* ───────── 참조 사용 방식(참조혼입 대응) ───────── */}
-      {/* store 가 단일 소스. 기본 = 안전 음성 복제(safe_xvector). 참조 억양 반영(ICL)은 참조 대사를
-          먼저 생성시킨 뒤 파형 경계를 찾아 잘라낸다 — 경계를 못 찾으면 결과를 발행하지 않고 실패한다
-          (조용한 안전 모드 대체 없음). */}
+      {/* store 가 단일 소스. 선택지는 두 가지 의미뿐이다 — 자동(auto, 추천) / 안정 우선(safe_xvector).
+          자동은 참조 억양 반영(ICL)을 먼저 시도하고, 경계를 못 찾으면 그 결과를 버리고 같은 작업 안에서
+          안정 방식으로 한 번만 바꿔 결과를 만든다. 잘리지 않은 ICL 결과는 어느 쪽에서도 발행되지 않는다. */}
       <section aria-label="참조 사용 방식" style={flowCard}>
         <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
           <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>
@@ -679,14 +679,14 @@ export default function TTSEditor() {
           <div role="radiogroup" aria-label="참조 사용 방식 선택" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
             {[
               {
-                id: 'safe_xvector' as const,
-                label: '안전 음성 복제',
-                desc: '참조 대사 섞임 없음 · 감정 표현은 다소 평탄할 수 있음 (기본, 권장)',
+                id: 'auto' as const,
+                label: '자동 (추천)',
+                desc: '목소리 느낌을 최대한 살려 보고, 잘 안 되면 안정 방식으로 자동 전환 (합성 시간 증가)',
               },
               {
-                id: 'high_quality_icl' as const,
-                label: '참조 억양까지 반영',
-                desc: '참조 억양·감정을 더 살림 · 참조 대사는 자동으로 잘라냄 (합성 시간 증가)',
+                id: 'safe_xvector' as const,
+                label: '안정 우선',
+                desc: '참조 대사 섞임 없음 · 감정 표현은 다소 평탄할 수 있음 (가장 빠름)',
               },
             ].map((opt) => {
               const selected = ttsReferenceConditioningMode === opt.id
@@ -714,12 +714,11 @@ export default function TTSEditor() {
               )
             })}
           </div>
-          {ttsReferenceConditioningMode === 'high_quality_icl' && (
-            <div role="alert" style={{ fontSize: 10, lineHeight: 1.6, color: 'var(--amber, #f59e0b)', padding: '6px 10px', borderRadius: 6, background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
-              참조 대사를 일부러 먼저 만들게 한 뒤 <strong>그 부분을 잘라냅니다</strong>. 말로 들리는 참조 대사는
-              남지 않지만, 아주 짧은 소리 흔적이 남을 수 있고 합성 시간이 늘어납니다. 자를 지점을 찾지
-              못하면 결과를 내지 않고 안내와 함께 중단됩니다 — 그때는 '안전 음성 복제'를 선택하세요.
-              이 방식은 참조 음성의 대사(전사)가 있어야 동작합니다.
+          {(ttsReferenceConditioningMode === 'auto' || ttsReferenceConditioningMode === 'high_quality_icl') && (
+            <div style={{ fontSize: 10, lineHeight: 1.6, color: 'var(--text-muted)', padding: '6px 10px', borderRadius: 6, background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
+              참조 대사를 일부러 먼저 만들게 한 뒤 <strong>그 부분을 잘라냅니다</strong>. 잘라낼 지점을 찾지
+              못하면 그 결과는 버리고 <strong>안정 방식으로 한 번만 바꿔</strong> 결과를 만듭니다 —
+              그때는 완료 화면에 그 사실을 알려 드립니다. 합성 시간은 늘어납니다.
             </div>
           )}
         </div>

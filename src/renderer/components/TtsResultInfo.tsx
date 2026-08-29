@@ -54,6 +54,17 @@ export default function TtsResultInfo() {
   const emoBoundary = m.emotion_boundary_mode === 'immediate' || m.emotion_boundary_mode === 'pause'
     ? m.emotion_boundary_mode : null
   const hasExprMeta = tailMode != null || parserVer != null
+  // 참조 사용 방식(자동 모드) — 사용자에게 보이는 것은 Python 이 정한 **문구 하나**뿐이다.
+  // 내부 code(ICL_BOUNDARY_ALIGNMENT_FAILED 등)와 requested→effective 는 접힌 상세 진단에서만 본다.
+  const rcNotice = typeof m.reference_conditioning_notice === 'string' && m.reference_conditioning_notice
+    ? m.reference_conditioning_notice : null
+  const rcFailureCode = typeof m.reference_conditioning_failure_code === 'string'
+    ? m.reference_conditioning_failure_code : null
+  const rcRequested = typeof m.reference_conditioning_mode_requested === 'string'
+    ? m.reference_conditioning_mode_requested : null
+  const rcEffective = typeof m.reference_conditioning_mode_effective === 'string'
+    ? m.reference_conditioning_mode_effective : null
+  const rcSwitched = m.reference_conditioning_auto_fallback === true
 
   // requested 'auto'가 아니고 requested≠actual이면 명확한 폴백/전환 표시
   const requestedIsAuto = requested === 'auto'
@@ -127,9 +138,14 @@ export default function TtsResultInfo() {
       {fallback && Boolean(m.fallback_reason) && (
         <div style={{ fontSize: 11, color: 'var(--rose)' }}>⚠ 폴백 사유: {String(m.fallback_reason)}</div>
       )}
+      {/* 자동 모드가 안정 방식으로 바꿔 만들었을 때의 **유일한** 사용자 문구(권위는 Python metadata).
+          여기에 내부 code 를 덧붙이지 않는다 — code 는 아래 '상세 정보' 안에만 있다. */}
+      {rcNotice && (
+        <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{rcNotice}</div>
+      )}
       {/* 구현 상세(접기) — 기술 구현명·자동분할 조각별 수치는 기본 노출에서 숨기고 원하는 사용자만 펼쳐 본다.
           문장·전사·전체 경로는 담지 않는다(스키마상 없음). 구 session(기술 필드 없음)은 이 영역 자체를 숨김. */}
-      {((pitchPost && pitchMethod) || hasExprMeta || (gen && gen.chunks.length > 0)) && (
+      {((pitchPost && pitchMethod) || hasExprMeta || rcSwitched || (gen && gen.chunks.length > 0)) && (
         <details style={{ fontSize: 11, color: 'var(--text-muted)' }}>
           <summary style={{ cursor: 'pointer', color: 'var(--text-secondary)', width: 'fit-content' }}>상세 정보</summary>
           <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
@@ -139,6 +155,10 @@ export default function TtsResultInfo() {
             {explicitPauses > 0 && <span style={chip()}>명시적 쉼 {explicitPauses}회</span>}
             {segCount != null && <span style={chip()}>문장 {segCount}개</span>}
             {parserVer != null && planSha8 && <span style={chip()}>파서 v{parserVer} · {planSha8}</span>}
+            {rcSwitched && rcRequested && rcEffective && (
+              <span style={chip()}>참조 사용 방식: {rcRequested} → {rcEffective}</span>
+            )}
+            {rcSwitched && rcFailureCode && <span style={chip()}>전환 사유 코드: {rcFailureCode}</span>}
           </div>
           {gen && gen.chunks.length > 0 && (
             <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4, overflowX: 'auto' }}>

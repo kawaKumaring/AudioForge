@@ -43,14 +43,12 @@ class ResolveModeTest(unittest.TestCase):
         self.assertEqual(tts_worker.resolve_reference_conditioning_mode(""), "safe_xvector")
 
     def test_valid_values_pass_through(self):
-        self.assertEqual(tts_worker.resolve_reference_conditioning_mode("safe_xvector"),
-                         "safe_xvector")
-        self.assertEqual(tts_worker.resolve_reference_conditioning_mode("high_quality_icl"),
-                         "high_quality_icl")
+        for mode in ("auto", "safe_xvector", "high_quality_icl"):
+            self.assertEqual(tts_worker.resolve_reference_conditioning_mode(mode), mode)
 
     def test_invalid_value_raises_structured_error(self):
         """조용한 강등 금지 — 계약 밖 값은 구조화 오류로 크게 실패한다."""
-        for bad in ("icl", "SAFE_XVECTOR", "xvector", 1, True, ["safe_xvector"], {"m": 1}):
+        for bad in ("icl", "SAFE_XVECTOR", "xvector", "AUTO", 1, True, ["safe_xvector"], {"m": 1}):
             with self.assertRaises(RuntimeError) as cm:
                 tts_worker.resolve_reference_conditioning_mode(bad)
             payload = getattr(cm.exception, "error_payload", None)
@@ -271,6 +269,12 @@ class SafeModeProductionTest(_QwenJobBase):
         self.assertIsNone(m["reference_alignment"], "안전 모드: 내용 정렬 미수행 → null")
         self.assertIsNone(m["reference_cut_sample"], "절단 정책 미확정 → null")
         self.assertIsNone(m["reference_conditioning_failure_code"])
+        # 안정 우선을 명시 요청했으므로 ICL 은 시도조차 하지 않고 전환도 없다(시도 1회).
+        self.assertIs(m["reference_conditioning_icl_attempted"], False)
+        self.assertIs(m["reference_conditioning_icl_published"], False)
+        self.assertIs(m["reference_conditioning_auto_fallback"], False)
+        self.assertEqual(m["reference_conditioning_attempts"], 1)
+        self.assertIsNone(m["reference_conditioning_notice"], "전환하지 않았으면 문구도 없다")
         # 기존 계약 필드와의 정합: 실제 적용 상태는 x-vector-only 다.
         self.assertEqual(m["prompt_source"], "x-vector-only")
         self.assertTrue(m["x_vector_only_mode"])
@@ -319,10 +323,12 @@ _REF_WORDS = [("참조", 0.00, 0.45), ("음성의", 0.45, 1.00),
               ("원래", 1.30, 1.80), ("대사입니다", 1.80, 2.30)]
 
 
-class IclControlledPrefixTest(_QwenJobBase):
-    """high_quality_icl — controlled-prefix 가 실제로 배선되고, **부모가 ASR 정렬로 잘라낸**
-    실제 절단 기록이 metadata 까지 온다(정답 창 주입 없음 — 창은 production 코드가 만든다)."""
+class _IclFixtureBase(_QwenJobBase):
+    """controlled-prefix 경로 픽스처(모델·GPU·Whisper 없음). RC_MODE 만 갈아 끼워 재사용한다 —
+    high_quality_icl(명시 요청)과 auto(자동)가 **같은 파형·같은 ASR 스텁** 위에서 비교돼야
+    "무엇이 달라졌는가"가 모드 차이 하나로 좁혀진다."""
 
+    RC_MODE = None                                     # 하위 클래스가 정한다
     TEXT = "안녕하세요 첫 문장입니다.\n[기쁨] 좋은 소식이 있어요!\n마지막 문장입니다."
     REF_TEXT = "참조 음성의 원래 대사입니다"
 
@@ -332,11 +338,15 @@ class IclControlledPrefixTest(_QwenJobBase):
         self._patch_obj(transcribe_worker, "run_transcribe", side_effect=self._fake_transcribe)
         self.chunk_writer = self._write_controlled_prefix_chunk
         # bridge 가 내는 것과 같은 형태: 미절단 raw + 정렬 요청(부모가 소비하고 버린다).
-        self.entry_extra = lambda s: {
+        # ⚠️ controlled-prefix 를 실제로 단 segment 에만 붙인다 — 실제 bridge 와 같다. 이 조건이
+        #    없으면 prefix 없는 안전 모드 chunk 에까지 정렬을 요구하게 되어, auto 의 safe 전환
+        #    시도가 픽스처 때문에 실패한다(테스트가 production 을 잘못 모사하는 경우).
+        self.entry_extra = lambda s: ({
             "controlled_prefix": True, "needs_alignment": True,
             "alignment_request": {"needs_alignment": True,
                                   "prefix_text": s.get("prefix_text") or "",
                                   "target_text": s["text"], "sample_rate": 24000}}
+            if s.get("prefix_text") else {})
 
     def _write_controlled_prefix_chunk(self, path, seg):
         """bridge 가 남기는 것과 같은 **미절단 raw** — 참조 발화 + (더 긴 참조 내부 무음) + 목표."""
@@ -362,7 +372,15 @@ class IclControlledPrefixTest(_QwenJobBase):
             emotion_refs={"happy": self.happy_ref},
             emotion_ref_sources={"happy": self.happy_ref},
             preferred_engine="qwen3", reference_prompts={},
-            reference_conditioning_mode="high_quality_icl", **kw)
+            reference_conditioning_mode=self.RC_MODE, **kw)
+
+
+class IclControlledPrefixTest(_IclFixtureBase):
+    """high_quality_icl — controlled-prefix 가 실제로 배선되고, **부모가 ASR 정렬로 잘라낸**
+    실제 절단 기록이 metadata 까지 온다(정답 창 주입 없음 — 창은 production 코드가 만든다).
+    명시 요청이므로 정렬 실패는 **전환 없이** 실패로 끝난다(자동 전환은 auto 만의 일)."""
+
+    RC_MODE = "high_quality_icl"
 
     def test_every_segment_carries_its_own_prefix_and_stays_icl(self):
         """장문(여러 segment)에서도 segment 마다 자기 controlled-prefix 를 단다 — 모드는 job 고정."""
@@ -393,6 +411,12 @@ class IclControlledPrefixTest(_QwenJobBase):
         self.assertEqual(m["reference_conditioning_mode_effective"], "high_quality_icl")
         self.assertIs(m["reference_conditioning_degraded"], False)
         self.assertIsNone(m["reference_conditioning_failure_code"])
+        # ICL 을 시도했고 그 결과를 발행했다(전환 없음, 시도 1회).
+        self.assertIs(m["reference_conditioning_icl_attempted"], True)
+        self.assertIs(m["reference_conditioning_icl_published"], True)
+        self.assertIs(m["reference_conditioning_auto_fallback"], False)
+        self.assertEqual(m["reference_conditioning_attempts"], 1)
+        self.assertIsNone(m["reference_conditioning_notice"])
         cut = _fx.VALLEY_AT
         self.assertEqual(m["reference_cut_sample"], cut)
         a = m["reference_alignment"]
@@ -543,6 +567,197 @@ class IclTranscriptRequiredTest(_QwenJobBase):
         self.assertEqual([t for t, _ in self.events].count("result"), 0)
 
 
+class AutoModeTest(_IclFixtureBase):
+    """auto(자동) — ICL 을 먼저 시도하고, **정렬이 성립하지 않은 경우에만** 그 결과를 버리고
+    safe_xvector 로 정확히 1회 전환한다.
+
+    이 클래스가 고정하는 것(하나라도 깨지면 계약이 무너진다):
+      1. ICL 성공 → ICL 결과 1개 발행, 전환 없음(시도 1회).
+      2. 정렬 실패 → 잘못된 ICL 결과 0개(디스크에도 남지 않음), safe 결과 1개, fallback metadata 정확.
+      3. 전환은 **최대 1회** — safe 까지 실패하면 3번째 시도 없이 그대로 실패한다.
+      4. 정렬과 무관한 실패(생성 상한 등)는 전환하지 않는다(모드를 바꿔도 해결되지 않는 문제).
+      5. terminal(result/error)은 정확히 1회.
+      6. 사용자에게 나가는 문구는 하나뿐이고 내부 code·전사·경로는 그 경로로 새지 않는다.
+    """
+
+    RC_MODE = "auto"
+
+    def _terminal_count(self):
+        return len([t for t, _ in self.events if t in ("result", "error")])
+
+    def _break_alignment(self):
+        """chunk 인식 결과에 목표 대사 머리가 없게 만든다 → PREFIX_ALIGN_ANCHOR_NOT_FOUND."""
+        self._patch_obj(transcribe_worker, "run_transcribe",
+                        side_effect=(lambda m, p, l:
+                                     {"text": self.REF_TEXT, "language": "ko"}
+                                     if os.path.abspath(p) not in self.chunk_targets
+                                     else _fx._words(_REF_WORDS)))
+
+    # ── 1. ICL 성공 ────────────────────────────────────────────────────────
+    def test_icl_success_publishes_icl_result_without_switching(self):
+        self._synth()
+        m = self._meta()
+        self.assertEqual(m["reference_conditioning_mode_requested"], "auto")
+        self.assertEqual(m["reference_conditioning_mode_effective"], "high_quality_icl")
+        self.assertIs(m["reference_conditioning_icl_attempted"], True)
+        self.assertIs(m["reference_conditioning_icl_published"], True)
+        self.assertIs(m["reference_conditioning_auto_fallback"], False)
+        self.assertIs(m["reference_conditioning_degraded"], False)
+        self.assertIsNone(m["reference_conditioning_failure_code"])
+        self.assertIsNone(m["reference_conditioning_notice"])
+        self.assertEqual(m["reference_conditioning_attempts"], 1)
+        self.assertEqual(m["reference_cut_sample"], _fx.VALLEY_AT, "실제 절단 기록이 남는다")
+        self.assertEqual(len(self.captured_segments), 1, "성공하면 job 은 한 번만 돈다")
+        self.assertEqual(self._terminal_count(), 1)
+        self.assertTrue(os.path.exists(os.path.join(self.out, "synthesized.wav")))
+
+    # ── 2. 정렬 실패 → 폐기 후 safe 1회 전환 ───────────────────────────────
+    def test_alignment_failure_discards_icl_and_switches_to_safe_once(self):
+        self._break_alignment()
+        self._synth()
+        m = self._meta()
+        self.assertEqual(m["reference_conditioning_mode_requested"], "auto")
+        self.assertEqual(m["reference_conditioning_mode_effective"], "safe_xvector")
+        self.assertIs(m["reference_conditioning_icl_attempted"], True)
+        self.assertIs(m["reference_conditioning_icl_published"], False,
+                      "정렬 실패분은 절대 발행하지 않는다")
+        self.assertIs(m["reference_conditioning_auto_fallback"], True)
+        self.assertIs(m["reference_conditioning_degraded"], True)
+        self.assertEqual(m["reference_conditioning_failure_code"],
+                         "ICL_BOUNDARY_ALIGNMENT_FAILED")
+        self.assertEqual(m["reference_conditioning_notice"],
+                         tts_worker.REFERENCE_CONDITIONING_FALLBACK_NOTICE)
+        self.assertEqual(m["reference_conditioning_attempts"], 2)
+        # 전환 뒤 기록은 안전 모드의 것이다 — 절단 기록은 없고(정렬 미수행) 제약은 안전 모드의 것.
+        self.assertIsNone(m["reference_alignment"])
+        self.assertIsNone(m["reference_cut_sample"])
+        self.assertIn(tts_worker.CONSTRAINT_EMOTION_MAY_FLATTEN,
+                      m["reference_conditioning_constraints"])
+        self.assertEqual(m["prompt_source"], "x-vector-only")
+        # 결과는 정확히 하나 — safe 로 만든 것.
+        self.assertEqual(self._terminal_count(), 1)
+        self.assertEqual([t for t, _ in self.events].count("result"), 1)
+        self.assertTrue(os.path.exists(os.path.join(self.out, "synthesized.wav")))
+
+    def test_two_attempts_are_icl_then_safe(self):
+        """실제로 무엇을 두 번 돌렸는지 — 1차는 prefix 를 단 ICL, 2차는 전사 미전달 safe."""
+        self._break_alignment()
+        self._synth()
+        self.assertEqual(len(self.captured_segments), 2, "job 은 정확히 두 번(전환 1회)")
+        first, second = self.captured_segments
+        for s in first:
+            self.assertFalse(s["x_vector_only"])
+            self.assertEqual(s["prefix_text"], self.REF_TEXT)
+        for s in second:
+            self.assertTrue(s["x_vector_only"], "전환 후에는 x-vector 전용")
+            self.assertEqual(s["ref_text"], "", "전환 후에는 참조 전사를 전달하지 않는다")
+            self.assertNotIn("prefix_text", s, "전환 후에는 controlled-prefix 가 없다")
+
+    # ── 3. 전환은 최대 1회 ─────────────────────────────────────────────────
+    def test_switch_happens_at_most_once(self):
+        """safe 까지 실패하면 3번째 시도 없이 그대로 실패한다(재시도 루프 없음)."""
+        self.run_job_error = tts_worker.QwenIclBoundaryError(
+            0, 0, "default", "PREFIX_BOUNDARY_ONSET_NOT_FOUND")
+        with self.assertRaises(RuntimeError) as cm:
+            self._synth()
+        self.assertEqual(cm.exception.error_payload["code"], "ICL_BOUNDARY_ALIGNMENT_FAILED")
+        self.assertEqual(len(self.captured_segments), 2, "시도는 2회를 넘지 않는다")
+        self.assertEqual([t for t, _ in self.events].count("result"), 0)
+        self.assertFalse(os.path.exists(os.path.join(self.out, "synthesized.wav")))
+
+    # ── 4. 정렬과 무관한 실패는 전환하지 않는다 ─────────────────────────────
+    def test_generation_limit_does_not_trigger_switch(self):
+        """모드를 바꿔도 해결되지 않는 실패까지 자동 전환하면 원인이 사용자에게서 사라진다."""
+        self.run_job_error = tts_worker.QwenGenerationLimitError(
+            0, 256, 256, emotion_id="default", chunk_index=0)
+        with self.assertRaises(RuntimeError) as cm:
+            self._synth()
+        self.assertEqual(cm.exception.error_payload["code"], "GENERATION_LIMIT_EXCEEDED")
+        self.assertEqual(len(self.captured_segments), 1, "전환하지 않는다(시도 1회)")
+        self.assertEqual([t for t, _ in self.events].count("result"), 0)
+
+    # ── 참조 전사가 없어 ICL 이 성립하지 않는 경우도 전환 대상 ───────────────
+    def test_missing_reference_transcript_switches_to_safe(self):
+        self._patch_obj(transcribe_worker, "run_transcribe",
+                        side_effect=(lambda m, p, l: {"text": "   ", "language": "ko"}))
+        self._synth()
+        m = self._meta()
+        self.assertEqual(m["reference_conditioning_mode_effective"], "safe_xvector")
+        self.assertEqual(m["reference_conditioning_failure_code"],
+                         "ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE")
+        self.assertEqual(m["reference_conditioning_attempts"], 2)
+        self.assertIs(m["reference_conditioning_icl_published"], False)
+        # 1차는 모델 도달 전에 막히므로 run_job 은 safe 한 번만 돈다.
+        self.assertEqual(len(self.captured_segments), 1)
+        self.assertEqual(self._terminal_count(), 1)
+
+    # ── 6. 사용자 문구는 하나, 내부 code·전사·경로는 새지 않는다 ─────────────
+    def test_single_user_message_and_no_internal_code_in_messages(self):
+        self._break_alignment()
+        self._synth()
+        msgs = [k.get("message", "") for t, k in self.events if t in ("progress", "status")]
+        self.assertEqual(len([m for m in msgs
+                              if m == tts_worker.REFERENCE_CONDITIONING_FALLBACK_NOTICE]), 1,
+                         "전환 문구는 정확히 한 번")
+        for msg in msgs:
+            self.assertNotIn("ICL_BOUNDARY", msg, "내부 code 는 기본 UI 경로로 나가지 않는다")
+            self.assertNotIn("PREFIX_ALIGN", msg)
+            self.assertNotIn(self.REF_TEXT, msg, "참조 전사 원문은 어디에도 나가지 않는다")
+            self.assertNotIn(self.tmp, msg, "절대경로는 나가지 않는다")
+
+    def test_switch_declares_job_restart_for_the_watchdog(self):
+        """2회차는 같은 조각 번호를 다시 낸다 — 이 선언이 없으면 Electron 감시가 '재전송'으로만
+        보고 긴 2회차를 무진행으로 오판해 죽인다(기계용 필드, 표시 문구와는 별개)."""
+        self._break_alignment()
+        self._synth()
+        restarts = [k for t, k in self.events
+                    if t == "progress" and k.get("job_restarted") is True]
+        self.assertEqual(len(restarts), 1, "재시작 선언은 전환 시 정확히 한 번")
+        self.assertEqual(restarts[0].get("message"),
+                         tts_worker.REFERENCE_CONDITIONING_FALLBACK_NOTICE)
+
+    def test_no_restart_declared_when_icl_succeeds(self):
+        self._synth()
+        self.assertEqual([k for t, k in self.events
+                          if t == "progress" and k.get("job_restarted") is True], [])
+
+    def test_fallback_metadata_carries_no_transcript_or_path(self):
+        self._break_alignment()
+        self._synth()
+        blob = json.dumps(self._meta(), ensure_ascii=False, default=str)
+        self.assertNotIn(self.REF_TEXT, blob)
+        self.assertNotIn(self.tmp, blob)
+
+
+class SafeFirstNoIclWorkTest(_IclFixtureBase):
+    """안정 우선(safe_xvector) — ICL 시도도, ASR 정렬도 **호출 0**. 자동 전환도 없다."""
+
+    RC_MODE = "safe_xvector"
+
+    def test_no_icl_and_no_alignment_calls(self):
+        import icl_alignment
+        calls = []
+        self._patch_obj(icl_alignment, "align_and_trim",
+                        new=(lambda *a, **k: calls.append(a)))
+        # 안전 모드에서 Whisper 가 호출되면 _QwenJobBase 의 감시가 AssertionError 를 던진다.
+        self._patch_obj(transcribe_worker, "run_transcribe",
+                        side_effect=(lambda *a, **k: (_ for _ in ()).throw(
+                            AssertionError("safe_xvector 에서 전사가 호출되면 안 된다"))))
+        self._synth()
+        self.assertEqual(calls, [], "정렬(ASR 창 탐색·절단)은 한 번도 호출되지 않는다")
+        segs = self._flat_segments()                    # run_job 은 정확히 1회
+        for s in segs:
+            self.assertTrue(s["x_vector_only"])
+            self.assertNotIn("prefix_text", s)
+        m = self._meta()
+        self.assertEqual(m["reference_conditioning_mode_requested"], "safe_xvector")
+        self.assertEqual(m["reference_conditioning_mode_effective"], "safe_xvector")
+        self.assertIs(m["reference_conditioning_icl_attempted"], False)
+        self.assertIs(m["reference_conditioning_auto_fallback"], False)
+        self.assertEqual(m["reference_conditioning_attempts"], 1)
+        self.assertEqual([t for t, _ in self.events].count("result"), 1)
+
+
 class ConstraintSemanticsTest(unittest.TestCase):
     """'요청 모드를 정상 실행함'과 '품질 제약 없음'은 다른 사실이다 — 한 필드에 뭉개지 않는다.
 
@@ -581,7 +796,11 @@ class ConstraintSemanticsTest(unittest.TestCase):
 class MetadataSchemaTest(unittest.TestCase):
     RC_KEYS = ["reference_conditioning_mode_requested", "reference_conditioning_mode_effective",
                "reference_conditioning_degraded", "reference_alignment", "reference_cut_sample",
-               "reference_conditioning_failure_code", "reference_conditioning_constraints"]
+               "reference_conditioning_failure_code", "reference_conditioning_constraints",
+               # auto(자동 모드) 재현 필드 — 무엇을 시도했고 무엇을 발행했는지.
+               "reference_conditioning_icl_attempted", "reference_conditioning_icl_published",
+               "reference_conditioning_auto_fallback", "reference_conditioning_attempts",
+               "reference_conditioning_notice"]
 
     def test_keys_in_schema(self):
         for k in self.RC_KEYS:

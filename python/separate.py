@@ -292,7 +292,9 @@ def main():
             from tts_worker import synthesize, resolve_reference_conditioning_mode
             # 참조 conditioning 모드(PHASE 2) — 부재(legacy 세션) → safe_xvector(안전 기본),
             # 잘못된 값 → 구조화 오류(INVALID_REFERENCE_CONDITIONING_MODE, 모델 미로딩 차단).
-            # production 은 항상 여기서 해석된 '명시 값'을 synthesize 에 전달한다(job 단위 고정).
+            # production 은 항상 여기서 해석된 '명시 값'을 synthesize 에 전달한다.
+            # 'auto'(자동)의 해석 — ICL 1회 시도 → 정렬 실패 시 safe_xvector 로 정확히 1회 전환 —
+            # 은 tts_worker.synthesize 가 단일 소유한다. 여기서는 값을 나르기만 한다.
             try:
                 _rc_mode = resolve_reference_conditioning_mode(
                     getattr(args, "tts_reference_conditioning_mode", None))

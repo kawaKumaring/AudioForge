@@ -899,8 +899,15 @@ REF_MANUAL_UNVERIFIABLE = "REF_MANUAL_UNVERIFIABLE"    # 전사 자체가 실패
 
 # ── 참조 conditioning 모드(단일 권위 계약, 참조혼입 대응) ──
 # renderer store → config(ttsReferenceConditioningMode) → separate.py → synthesize() 전 구간이
-# 이 한 값을 그대로 나른다. job 단위 고정: 실행 중 어떤 segment 에서도 모드가 바뀌지 않으며,
-# 자동 ICL fallback·x-vector 실패 시 조용한 전환이 없다(실패는 명시 실패).
+# 이 한 값을 그대로 나른다. **segment 단위 전환은 여전히 없다** — 한 번 정한 실행 모드는 그 job 의
+# 전 segment 에 그대로 적용된다. 유일한 예외가 auto 이며, 그 전환도 job 을 통째로 다시 도는
+# '작업 단위 1회'다(segment 중간에 모드가 갈리는 일은 어느 모드에서도 없다).
+#   auto             : 자동(사용자 표시 기본 선택). high_quality_icl 로 **먼저 한 번** 시도하고,
+#                      경계 정렬이 실패하면 그 ICL 결과를 **폐기**한 뒤 같은 작업 안에서
+#                      safe_xvector 로 **정확히 1회** 전환해 결과를 만든다. 전환은 최대 1회이며
+#                      safe 까지 실패하면 그대로 실패한다(반복 재시도 없음).
+#                      정렬 실패분은 절대 발행하지 않으므로 '참조 대사가 섞인 결과'가 나갈 통로는
+#                      auto 에서도 열리지 않는다 — 바뀌는 것은 "실패로 끝나는가"뿐이다.
 #   safe_xvector     : 안전 음성 복제. 모든 segment 를 x_vector_only=True 로 강제하고 참조 전사
 #                      (ref_text)를 vendor 호출에 전달하지 않는다 → 참조 대사 혼입(conditioning echo)이
 #                      구조적으로 없다. 음색·감정은 다소 평탄할 수 있다(강등이 아니라 모드의 특성).
@@ -912,16 +919,32 @@ REF_MANUAL_UNVERIFIABLE = "REF_MANUAL_UNVERIFIABLE"    # 전사 자체가 실패
 #                      그 좁은 창 안에서만 파형 경계 규칙을 적용해 앞을 잘라낸다. bridge 가 낸 raw 는
 #                      중간 산출물이고, 이 정렬을 통과해야만 결과가 확정된다. 어느 신호든 어긋나면
 #                      결과를 발행하지 않고 실패한다
-#                      (ICL_BOUNDARY_ALIGNMENT_FAILED — safe_xvector 로 조용히 갈아타지 않는다).
+#                      (ICL_BOUNDARY_ALIGNMENT_FAILED — 이 모드 단독으로는 safe 로 갈아타지 않는다.
+#                       자동 전환을 원하면 auto 를 고른다).
+REF_CONDITIONING_AUTO = "auto"
 REF_CONDITIONING_SAFE_XVECTOR = "safe_xvector"
 REF_CONDITIONING_HIGH_QUALITY_ICL = "high_quality_icl"
-REF_CONDITIONING_MODES = (REF_CONDITIONING_SAFE_XVECTOR, REF_CONDITIONING_HIGH_QUALITY_ICL)
+REF_CONDITIONING_MODES = (REF_CONDITIONING_AUTO, REF_CONDITIONING_SAFE_XVECTOR,
+                          REF_CONDITIONING_HIGH_QUALITY_ICL)
 INVALID_REFERENCE_CONDITIONING_MODE = "INVALID_REFERENCE_CONDITIONING_MODE"
 # high_quality_icl 실패 사유(비민감 code). 전자는 경계 검출 실패, 후자는 붙일 참조 전사 자체가 없음.
 ICL_BOUNDARY_ALIGNMENT_FAILED = "ICL_BOUNDARY_ALIGNMENT_FAILED"
 ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE = "ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE"
 # 두 실패 모두 같은 안내로 끝난다 — 지금 결과가 필요하면 안전 모드를 고르라는 것.
 _ICL_SAFE_MODE_HINT = ("'안전 음성 복제' 모드를 선택하면 참조 대사 혼입 없이 바로 합성할 수 있습니다.")
+
+# ── auto 의 전환 방아쇠(정확히 이 code 들만) ──────────────────────────────────
+# **ICL 이라는 방식 자체가 성립하지 않은 경우**만 담는다: 경계를 확정하지 못했거나(정렬 실패),
+# 애초에 붙일 참조 전사가 없었거나. 이때 safe_xvector 는 같은 입력으로 성공할 수 있는 다른 방식이다.
+# 여기에 없는 실패(GENERATION_LIMIT_EXCEEDED / TEXT_SEGMENT_TOO_LONG / 참조 품질 게이트 / OOM /
+# 취소 / INVALID_* 등)는 모드를 바꾼다고 해결되는 문제가 아니므로 **전환하지 않고 그대로 실패**한다
+# — 방아쇠를 넓히면 "무엇을 고쳐야 하는지"가 사용자에게서 사라지고 시간만 두 배로 쓴다.
+AUTO_FALLBACK_TRIGGER_CODES = (ICL_BOUNDARY_ALIGNMENT_FAILED,
+                               ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE)
+# auto 전환 시 사용자에게 보여 주는 **유일한** 문구. 내부 code(ICL_BOUNDARY_ALIGNMENT_FAILED 등)는
+# 여기 섞지 않는다 — code 는 metadata(reference_conditioning_failure_code)에만 남고 UI 의 접힌
+# 상세 진단에서만 보인다.
+REFERENCE_CONDITIONING_FALLBACK_NOTICE = "목소리 느낌을 더 살리는 데 실패해 안정 방식으로 만들었습니다."
 
 # ── 모드의 '품질 특성'(강등과는 다른 축) ──────────────────────────────────────
 # reference_conditioning_degraded 는 **'요청한 모드를 그대로 실행했는가'** 만 말한다(조용한 대체
@@ -933,6 +956,9 @@ _ICL_SAFE_MODE_HINT = ("'안전 음성 복제' 모드를 선택하면 참조 대
 CONSTRAINT_PROSODY_NOT_TRANSFERRED = "reference_prosody_not_transferred"
 CONSTRAINT_EMOTION_MAY_FLATTEN = "emotion_expression_may_flatten"
 _REF_CONDITIONING_CONSTRAINTS = {
+    # auto 는 '요청'이지 실행이 아니다 — 실제 제약은 어느 쪽으로 끝났느냐(effective)가 정한다.
+    # 그래서 metadata 는 항상 effective 모드로 이 표를 조회한다(auto 로 조회할 일이 없어야 정상).
+    REF_CONDITIONING_AUTO: (),
     REF_CONDITIONING_SAFE_XVECTOR: (CONSTRAINT_PROSODY_NOT_TRANSFERRED,
                                     CONSTRAINT_EMOTION_MAY_FLATTEN),
     REF_CONDITIONING_HIGH_QUALITY_ICL: (),
@@ -946,6 +972,30 @@ def reference_conditioning_constraints(mode):
     return list(_REF_CONDITIONING_CONSTRAINTS.get(mode, ()))
 
 
+def _reference_conditioning_meta(requested, effective, *, icl_attempted, icl_published,
+                                 auto_fallback, failure_code=None, attempts=1):
+    """참조 conditioning 재현 metadata 한 벌(모든 키 상시 존재, 비민감).
+
+    **결과가 확정된 뒤에** 부른다 — 무엇을 실행했는지 다 알고 나서 기록해야 requested/effective 가
+    실제와 어긋나지 않는다(시도 전에 미리 쓰면 auto 전환이 기록에 반영되지 않는다).
+    constraints 는 항상 **effective** 로 조회한다: 사용자가 auto 를 골랐어도 실제 제약은 어느
+    쪽으로 끝났느냐가 정한다."""
+    return {
+        "reference_conditioning_mode_requested": requested,
+        "reference_conditioning_mode_effective": effective,
+        "reference_conditioning_degraded": bool(auto_fallback),
+        "reference_conditioning_constraints": reference_conditioning_constraints(effective),
+        "reference_conditioning_failure_code": failure_code,
+        "reference_conditioning_icl_attempted": bool(icl_attempted),
+        "reference_conditioning_icl_published": bool(icl_published),
+        "reference_conditioning_auto_fallback": bool(auto_fallback),
+        "reference_conditioning_attempts": int(attempts),
+        # 사용자 표시 문구는 전환했을 때 하나뿐. 내부 code 는 여기 섞지 않는다.
+        "reference_conditioning_notice": (REFERENCE_CONDITIONING_FALLBACK_NOTICE
+                                          if auto_fallback else None),
+    }
+
+
 def resolve_reference_conditioning_mode(value):
     """config 경계의 단일 해석. 부재(None/'') = safe_xvector(안전 기본 — legacy 세션 포함).
     잘못된 값은 조용히 강등하지 않고 구조화 오류(code=INVALID_REFERENCE_CONDITIONING_MODE)로
@@ -956,7 +1006,7 @@ def resolve_reference_conditioning_mode(value):
     if value in REF_CONDITIONING_MODES:
         return value
     e = RuntimeError(
-        "참조 사용 방식 설정이 올바르지 않습니다 — '안전 음성 복제(safe_xvector)' 또는 "
+        "참조 사용 방식 설정이 올바르지 않습니다 — '자동(auto)', '안전 음성 복제(safe_xvector)', "
         "'참조 억양 반영(high_quality_icl)'만 선택할 수 있습니다.")
     e.error_payload = {"code": INVALID_REFERENCE_CONDITIONING_MODE,
                        "raw_type": type(value).__name__}
@@ -1247,18 +1297,33 @@ _METADATA_KEYS = [
     # session/config/metadata 세 캐리어가 '같은 필드 이름'이어야 하고, 계약이 별칭
     # (tts_expressive_mode)을 명시적으로 금지했다(권위가 둘이 되는 편이 더 나쁘다).
     "ttsExpressiveMode",
-    # 참조 conditioning 모드(참조혼입 대응). requested=사용자 요청, effective=실제 적용.
-    # ★degraded 의 의미는 **'요청한 모드를 조용히 다른 모드로 바꿨는가'** 하나뿐이다. 자동 전환
-    # 금지 계약이라 두 값은 항상 같거나 실행이 실패하므로 degraded 는 항상 False 다.
-    # degraded=False 는 '품질 제약이 없다'는 뜻이 **아니다** — 모드가 설계상 갖는 제약은
-    # reference_conditioning_constraints 가 따로 말한다(safe_xvector 는 비어 있지 않다).
-    # reference_alignment / reference_cut_sample 은 high_quality_icl 이 실제로 controlled-prefix 를
+    # 참조 conditioning 모드(참조혼입 대응). requested=사용자 요청('auto' 포함), effective=실제로
+    # 결과를 만든 모드. 두 값이 다를 수 있는 경우는 **auto 뿐**이다(auto→high_quality_icl 또는
+    # auto→safe_xvector). safe_xvector·high_quality_icl 를 명시 요청했으면 두 값은 항상 같고,
+    # 같지 않을 바에는 실행이 실패한다(조용한 대체 없음은 그대로다).
+    # ★degraded 의 의미는 **'사용자가 기대한 품질 경로를 그대로 실행했는가'** 하나뿐이다 —
+    # auto 가 ICL 실패로 safe 로 전환했을 때만 True 다. degraded=False 는 '품질 제약이 없다'는
+    # 뜻이 **아니다**(모드가 설계상 갖는 제약은 reference_conditioning_constraints 가 말한다).
+    # reference_alignment / reference_cut_sample 은 ICL 이 실제로 controlled-prefix 를
     # 잘라냈을 때만 값이 들어간다(샘플 인덱스·dB 만). safe_xvector 는 정렬·절단을 하지 않으므로 null.
     "reference_conditioning_mode_requested", "reference_conditioning_mode_effective",
     "reference_conditioning_degraded", "reference_alignment", "reference_cut_sample",
+    # 전환을 부른 canonical code(ICL_BOUNDARY_ALIGNMENT_FAILED 등). 전환이 없었으면 null.
+    # ⚠️ 이 code 는 기본 UI 에 띄우지 않는다 — 사용자 문구는 notice 하나뿐이고 code 는 상세 진단용.
     "reference_conditioning_failure_code",
     # 그 모드가 설계상 갖는 품질 제약(비민감 enum 토큰 목록). 빈 목록 = 알려진 제약 없음.
     "reference_conditioning_constraints",
+    # ── auto(자동 모드) 재현 3필드 + 사용자 문구 ──
+    # icl_attempted : ICL 시도를 실제로 걸었는가(safe 요청/ICL 단계가 없는 엔진이면 False).
+    # icl_published : **ICL 로 만든 결과를 발행했는가**. 정렬 실패분은 폐기되므로 그때 False 다 —
+    #                 "참조 대사가 섞였을 수 있는 결과가 나갔는가"를 사후에 판정하는 필드.
+    # auto_fallback : ICL 실패로 safe_xvector 로 **자동 전환**했는가(전환은 작업당 최대 1회).
+    # attempts      : 이 작업에서 실제로 돌린 합성 시도 횟수. auto 전환 시 2, 그 외 항상 1.
+    #                 2 를 넘는 값이 나오면 그것 자체가 '반복 재시도 금지' 계약 위반의 증거다.
+    # notice        : 사용자에게 보여 줄 단 하나의 문구(전환했을 때만, 그 외 null).
+    "reference_conditioning_icl_attempted", "reference_conditioning_icl_published",
+    "reference_conditioning_auto_fallback", "reference_conditioning_attempts",
+    "reference_conditioning_notice",
 ]
 
 
@@ -1525,6 +1590,9 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
       결정해 ICL 조건으로 넘기고, 동시에 그 전사를 prefix_text 로 실어 controlled-prefix 로 생성한다.
       bridge 는 자르지 않고 raw 를 돌려주며, run_job 반환 뒤 _align_icl_chunks 가 ASR 정렬 → 창 한정
       경계 검출 → 절단까지 마쳐야 chunk 가 확정된다. 모드는 job 단위 고정이다.
+      ⚠️ **여기에는 'auto' 가 오지 않는다** — auto 의 해석(ICL 시도 → 실패 시 safe 1회 전환)은 호출부
+      (synthesize)가 소유하고, 이 함수는 언제나 '실행할 구체 모드' 하나만 받는다. 구체값이 아닌 값이
+      들어오면 아래에서 즉시 실패한다(모르는 모드를 조용히 ICL 처럼 도는 통로를 막는다).
     반환: (final_path, info) — info는 재현 메타데이터의 런타임 사실(device/source/prompt_source/전사요약 등)."""
     import time
     from reference_audio import assess_reference_file, GPTSOVITS_POLICY
@@ -1582,6 +1650,15 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         def_emotion_id = None    # 기본 참조를 쓰는 첫 감정 ID(요약의 대표값 선택용)
         safe_mode = reference_conditioning_mode == REF_CONDITIONING_SAFE_XVECTOR
         icl_mode = reference_conditioning_mode == REF_CONDITIONING_HIGH_QUALITY_ICL
+        if reference_conditioning_mode is not None and not (safe_mode or icl_mode):
+            # 값이 있는데 구체 모드가 아니면(auto 나 오타) 조용히 ICL 처럼 돌지 않는다.
+            # auto 의 해석은 synthesize 소유이므로 여기까지 내려오면 배선이 깨진 것이다.
+            # (None 은 이 함수를 직접 부르는 구 호출부/단위테스트의 legacy 경로라 건드리지 않는다 —
+            #  production 은 synthesize 가 언제나 해석된 구체값을 넘긴다.)
+            _e = RuntimeError("참조 사용 방식이 확정되지 않은 채 합성에 진입했습니다.")
+            _e.error_payload = {"code": INVALID_REFERENCE_CONDITIONING_MODE,
+                                "raw_type": type(reference_conditioning_mode).__name__}
+            raise _e
         if safe_mode:
             # 안전 모드 사실을 로그에 1회 명시(조용한 모드 아님 — 사용자가 어떤 조건으로 합성됐는지 안다).
             emit("progress", percent=5,
@@ -2044,21 +2121,14 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
     reference_conditioning_mode: 참조 conditioning 모드(참조혼입 대응, 단일 권위 계약).
       production 은 separate.py 가 항상 명시 값을 전달한다. **None/'' 도 safe_xvector 로 해석한다**
       — 전사 기반 ICL 로 가는 '모드 없는 기본 경로'는 존재하지 않는다(함수 레벨까지 안전 기본).
-      값 검증·fail-closed 는 이 입구가 단일 소유: 잘못된 값 → INVALID_REFERENCE_CONDITIONING_MODE."""
+      값 검증·fail-closed 는 이 입구가 단일 소유: 잘못된 값 → INVALID_REFERENCE_CONDITIONING_MODE.
+      'auto' 는 ICL 1회 시도 후 정렬 실패 시 safe_xvector 로 정확히 1회 전환한다(아래 Qwen 분기)."""
     # ── 참조 conditioning 모드 판정 — 어떤 파싱/참조 준비/모델 작업보다 먼저(모델 미로딩 차단). ──
     rc_mode = resolve_reference_conditioning_mode(reference_conditioning_mode)  # invalid → 구조화 오류
-    # 재현 메타(모든 키 상시 존재): requested/effective 는 자동 전환 금지 계약상 항상 동일하다.
-    # reference_alignment / reference_cut_sample 은 여기 넣지 않는다 — 실제 절단을 수행한 합성 경로
-    # (info)가 채우고, 수행하지 않은 경로는 _build_tts_metadata 가 None 으로 채운다(권위 하나).
-    # 실패 경로는 metadata 를 만들기 전에 예외로 끝나므로 failure_code 는 성공 기록상 항상 None 이다.
-    _rc_meta = {
-        "reference_conditioning_mode_requested": rc_mode,
-        "reference_conditioning_mode_effective": rc_mode,
-        # 조용한 모드 대체 없음 = False. '품질 제약 없음'이라는 뜻이 아니다 — 아래가 그걸 말한다.
-        "reference_conditioning_degraded": False,
-        "reference_conditioning_constraints": reference_conditioning_constraints(rc_mode),
-        "reference_conditioning_failure_code": None,
-    }
+    # 재현 메타는 **결과가 확정된 뒤** _reference_conditioning_meta 로 만든다(여기서 미리 만들면
+    # auto 전환이 기록에 반영되지 않는다). reference_alignment / reference_cut_sample 도 여기서
+    # 만들지 않는다 — 실제 절단을 수행한 합성 경로(info)가 채우고, 수행하지 않은 경로는
+    # _build_tts_metadata 가 None 으로 채운다(권위 하나).
     emit("status", message="음성 합성 시작", percent=0)
 
     if not emotion_refs:
@@ -2148,10 +2218,47 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         # 배치형 엔진(Qwen3) 라우팅: 한국어 Auto 우선순위 Qwen3 → GPT-SoVITS → 폴백.
         # 모델 1회 로딩으로 전 문장 처리(문장별 프로세스 금지).
         if _select_job_engine(text, preferred_engine) == "qwen3":
-            final_path, info = _synthesize_qwen_job(parsed, ref_cache, overrides_by_path,
-                                                    output_dir, speed, silence_gap, pitch, tail_cfg,
-                                                    boundary_gaps=boundary_gaps,
-                                                    reference_conditioning_mode=rc_mode)
+            # ── auto: ICL 먼저 1회 → 정렬 실패면 그 결과를 버리고 safe 로 정확히 1회 전환 ──
+            # 전환을 **여기**에서 하는 이유: _synthesize_qwen_job 은 실패하면 job_dir 을 통째로 지우고
+            # final_path(=synthesized.wav)에 손대지 않은 채 예외로 나온다. 즉 정렬 실패분은 이 지점에
+            # 도달할 때 이미 폐기돼 있고(디스크에 남지 않고, tracks 로도 나가지 않는다), emit("result")
+            # 는 아래에서 성공한 한 번만 나간다 — terminal 중복이 생길 통로가 없다.
+            _auto = rc_mode == REF_CONDITIONING_AUTO
+            _attempt_mode = REF_CONDITIONING_HIGH_QUALITY_ICL if _auto else rc_mode
+            _icl_attempted = _attempt_mode == REF_CONDITIONING_HIGH_QUALITY_ICL
+            _auto_fallback = False
+            _failure_code = None
+            _attempts = 1
+            try:
+                final_path, info = _synthesize_qwen_job(parsed, ref_cache, overrides_by_path,
+                                                        output_dir, speed, silence_gap, pitch, tail_cfg,
+                                                        boundary_gaps=boundary_gaps,
+                                                        reference_conditioning_mode=_attempt_mode)
+            except RuntimeError as _icl_err:
+                _code = (getattr(_icl_err, "error_payload", None) or {}).get("code")
+                if not (_auto and _code in AUTO_FALLBACK_TRIGGER_CODES):
+                    raise      # auto 가 아니거나 ICL 성립 실패가 아닌 오류 → 그대로 실패(전환 없음)
+                # 전환은 여기 한 곳뿐이고 재시도 루프가 아니다. 아래 호출은 try 밖이라
+                # safe 까지 실패하면 그 예외가 그대로 올라간다(2회를 넘는 시도가 구조적으로 불가능).
+                _auto_fallback = True
+                _failure_code = _code
+                _attempt_mode = REF_CONDITIONING_SAFE_XVECTOR
+                _attempts = 2
+                # job_restarted: 1회차 산출물을 통째로 버리고 처음부터 다시 만든다는 **기계용** 선언.
+                # Electron 감시(longform-job)는 조각 완료를 단조 원장으로 세므로, 이 신호가 없으면
+                # 2회차의 같은 번호 조각들이 전부 '재전송'으로 보여 긴 작업이 무진행으로 오판돼 죽는다.
+                # 사용자에게 나가는 것은 message 하나뿐이고 내부 code 는 여기 싣지 않는다.
+                emit("progress", percent=5, message=REFERENCE_CONDITIONING_FALLBACK_NOTICE,
+                     job_restarted=True)
+                final_path, info = _synthesize_qwen_job(parsed, ref_cache, overrides_by_path,
+                                                        output_dir, speed, silence_gap, pitch, tail_cfg,
+                                                        boundary_gaps=boundary_gaps,
+                                                        reference_conditioning_mode=_attempt_mode)
+            _rc_meta = _reference_conditioning_meta(
+                rc_mode, _attempt_mode, icl_attempted=_icl_attempted,
+                # 발행된 결과가 ICL 산이었을 때만 True — 전환했다면 발행된 것은 safe 결과다.
+                icl_published=(_attempt_mode == REF_CONDITIONING_HIGH_QUALITY_ICL),
+                auto_fallback=_auto_fallback, failure_code=_failure_code, attempts=_attempts)
             meta = _build_tts_metadata(
                 requested_engine=requested_engine,
                 original_reference_path=reference_audio, effective_reference_path=reference_audio,
@@ -2271,7 +2378,13 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             # 두 기능은 역할이 다르므로 어느 쪽도 다른 쪽을 대체하지 않는다.
             boundary_onset_samples=pinfo2.get("boundary_onset_samples"),
             boundary_offset_samples=pinfo2.get("boundary_offset_samples"),
-            **_rc_meta, **_plan_meta)
+            # per-segment 엔진(GPT-SoVITS/F5/Kokoro)에는 controlled-prefix ICL 단계 자체가 없다 —
+            # 시도도 발행도 전환도 없었다는 사실을 그대로 적는다(effective 를 임의의 구체값으로
+            # 바꿔 적으면 하지 않은 일을 했다고 기록하게 된다). 무엇을 실제로 돌렸는지는
+            # actual_engine 이 말한다.
+            **_reference_conditioning_meta(rc_mode, rc_mode, icl_attempted=False,
+                                           icl_published=False, auto_fallback=False),
+            **_plan_meta)
         tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
         emit("progress", percent=99, message="완료!")
         emit("result", tracks=tracks, outputDir=output_dir, metadata=meta)

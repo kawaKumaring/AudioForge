@@ -64,6 +64,20 @@ export const SELF_REPORT_GRACE_MS = 30_000
 export const LOAD_BUDGET_MS = 600_000
 export const PER_CHUNK_BUDGET_MS = INACTIVITY_MS
 
+/**
+ * ④ '작업이 스스로 되돌아가 처음부터 다시 만든다' 를 인정하는 최대 횟수.
+ *
+ * 왜 필요한가: 참조 사용 방식 '자동'은 참조 억양(ICL)으로 먼저 만들어 보고, 경계 정렬이 실패하면
+ * **그 결과를 통째로 버리고** 안정 방식으로 한 번 더 만든다(python/tts_worker.py). 2회차는 1회차와
+ * **같은 조각 번호**를 다시 낸다 — 원장은 단조 증가라 그 완료들을 전부 '재전송(liveness)' 으로
+ * 보고, 그러면 2회차 내내 forward 축이 갱신되지 않아 긴 작업이 stall 로 오판돼 죽는다.
+ * 그래서 재시작 신호를 받으면 원장을 새로 깔고 축들을 그 시점부터 다시 잰다.
+ *
+ * 왜 상한이 1 인가: Python 계약이 '전환 최대 1회' 다. 같은 수를 여기서도 강제해, 신호가 반복돼도
+ * 예산이 무한히 늘어나는 통로를 만들지 않는다(계층이 둘 다 같은 천장을 갖는다).
+ */
+export const MAX_JOB_RESTARTS = 1
+
 export function jobBudgetMs(chunkCount: number | null | undefined): number {
   if (typeof chunkCount !== 'number' || !Number.isFinite(chunkCount) || chunkCount <= 0) {
     return Number.POSITIVE_INFINITY
@@ -263,8 +277,12 @@ export interface JobWatchdogOptions {
 }
 
 export interface JobWatchdog {
-  /** 러너 progress 를 먹인다. 반환값은 이 신호를 어떻게 판정했는지. */
-  observe(signal: { percent?: unknown; message?: unknown }): SignalKind
+  /**
+   * 러너 progress 를 먹인다. 반환값은 이 신호를 어떻게 판정했는지.
+   * job_restarted=true 는 '지금까지 만든 것을 버리고 처음부터 다시 만든다'는 선언이다
+   * (MAX_JOB_RESTARTS 회까지만 인정). 인정되면 원장을 비우고 세 축을 그 시점부터 다시 잰다.
+   */
+  observe(signal: { percent?: unknown; message?: unknown; job_restarted?: unknown }): SignalKind
   /** 지금 시점의 판정. 부수효과 없음 — 호출해도 타이머가 갱신되지 않는다. */
   evaluate(): WatchVerdict
   /** job 전체 조각 수를 확정적으로 알게 됐을 때(결과 metadata 의 chunk_count 등). */
@@ -272,6 +290,8 @@ export interface JobWatchdog {
   report(): LongformProgressReport
   readonly ledger: ChunkLedger
   readonly startedAtMs: number
+  /** 인정된 재시작 횟수(0 또는 1). 계약 위반을 사후에 확인할 수 있게 노출한다. */
+  readonly restarts: number
   /** 현재 job 예산(ms). 총량 추정이 없으면 Infinity. */
   readonly budgetMs: number
 }
@@ -280,8 +300,9 @@ export function createJobWatchdog(opts: JobWatchdogOptions): JobWatchdog {
   const now = opts.now
   const inactivityMs = opts.inactivityMs ?? INACTIVITY_MS
   const stallMs = opts.stallMs ?? STALL_MS
-  const ledger = opts.ledger ?? createChunkLedger()
-  const startedAtMs = now()
+  let ledger = opts.ledger ?? createChunkLedger()
+  let startedAtMs = now()
+  let restarts = 0                    // ④ 인정된 재시작 횟수(MAX_JOB_RESTARTS 까지)
   let lastSignalAtMs = startedAtMs    // ① liveness/forward 둘 다 갱신
   let lastForwardAtMs = startedAtMs   // ② forward 만 갱신
   let lastPosition: ChunkPosition | null = null
@@ -302,6 +323,19 @@ export function createJobWatchdog(opts: JobWatchdogOptions): JobWatchdog {
     observe(signal) {
       const t = now()
       lastSignalAtMs = t                       // ① 은 어떤 신호로도 갱신된다(느린 콜드 로딩 보호)
+      // ④ 재시작 선언 — 앞서 만든 조각들은 폐기됐으므로 '완료' 로 남겨 두면 안 되고(원장을 비운다),
+      // 다시 만드는 시간을 앞 라운드의 축으로 재면 정상 작업이 stall 로 오판된다(축을 다시 잰다).
+      // 상한을 넘은 재시작 신호는 그냥 liveness 로 흘린다 — 예산 무한 연장 통로를 막는다.
+      if (signal?.job_restarted === true) {
+        if (restarts < MAX_JOB_RESTARTS) {
+          restarts += 1
+          ledger = createChunkLedger()
+          startedAtMs = t
+          lastForwardAtMs = t
+          lastPosition = null
+        }
+        return 'liveness'
+      }
       const pos = parseChunkPosition(signal?.message)
       if (!pos) return 'liveness'
       lastPosition = pos
@@ -346,6 +380,7 @@ export function createJobWatchdog(opts: JobWatchdogOptions): JobWatchdog {
     },
     get ledger() { return ledger },
     get startedAtMs() { return startedAtMs },
+    get restarts() { return restarts },
     get budgetMs() { return jobBudgetMs(totalChunks()) }
   }
 }

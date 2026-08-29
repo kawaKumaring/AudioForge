@@ -298,7 +298,14 @@ export class PythonRunner extends EventEmitter {
       try {
         const msg = JSON.parse(trimmed)
         if (msg.type === 'progress' || msg.type === 'status') {
-          this.emit('progress', { percent: msg.percent ?? 0, message: msg.message ?? '' })
+          // job_restarted 는 '지금까지 만든 것을 버리고 처음부터 다시 만든다'는 기계용 선언이다
+          // (참조 사용 방식 '자동'의 안정 방식 전환). 감시기(longform-job)가 조각 원장을 비우고
+          // 축을 다시 재는 데 쓰는 유일한 신호라, 여기서 떨어뜨리면 긴 2회차가 무진행으로 오판된다.
+          // 다른 임의 필드는 그대로 버린다 — 표시 경로에 실릴 수 있는 값을 늘리지 않는다.
+          this.emit('progress', {
+            percent: msg.percent ?? 0, message: msg.message ?? '',
+            ...(msg.job_restarted === true ? { job_restarted: true as const } : {})
+          })
         } else if (msg.type === 'result') {
           this.emit('result', msg)
         } else if (msg.type === 'error') {
