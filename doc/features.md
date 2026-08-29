@@ -107,5 +107,6 @@
 
 ## 향후 예정
 - 노래 음성 변환 (SVC): RVC/So-VITS-SVC (doc/future-svc.md 참조)
+- 상황 기반 호흡·환경음 생성 및 자동 믹싱 (doc/future-ambient-audio.md 참조)
 - Python separate.py 추가 모듈 분리
 - audio.ipc.ts 분리
