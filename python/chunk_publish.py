@@ -181,7 +181,10 @@ class ChunkRecorder:
         r["final_end_sec"] = round((start_sample + len(arr)) / float(sr), 4)
         r["gap_before_samples"] = int(gap_before)
         r["gap_before_ms"] = round(gap_before / float(sr) * 1000.0, 1)
-        r["envelope"] = envelope or {"applied": False}
+        if envelope is not None:
+            r["envelope"] = envelope
+        elif "envelope" not in r:                # 주석 단계에서 넣었으면 덮어쓰지 않는다
+            r["envelope"] = {"applied": False}
         al = r.get("aligned") or {}
         if al.get("frames"):
             r["assembly_delta_samples"] = int(len(arr)) - int(al["frames"])

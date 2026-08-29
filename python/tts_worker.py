@@ -1957,6 +1957,10 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                 gaps.append(float(silence_gap))
             prev_osi = osi
 
+        if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
+            _diag_annotate(_CONCAT_RECORDER, ordered_entries, boundary_kinds,
+                           segenv_meta, gaps)
+
         emit("progress", percent=90, message="문장 이어붙이기 중...")
         _layout = _concat_with_boundaries(use, gaps, pending_path)  # 내부 0 / 원 segment 경계 silence_gap
         if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
@@ -2257,6 +2261,65 @@ def _diag_recorder():
         return None            # 계측 실패가 합성을 막지 않는다
 
 
+def _diag_annotate(rec, ordered_entries, boundary_kinds, segenv_meta, gaps):
+    """조립 직전에 경계 종류·segment-local 번호·envelope 적용을 recorder 에 기록한다.
+
+    추론으로 채우지 않는다 — 근거가 없는 항목은 'unknown' 으로 남긴다.
+    chunk 의 원문 텍스트는 여기서 읽지 않는다(해시·인덱스만 다룬다)."""
+    try:
+        import chunk_publish
+        # segment 별로 몇 번째 chunk 인지 세어 segment-local 번호를 복원한다.
+        local, seen = {}, {}
+        prev_osi = None
+        for g, e in enumerate(ordered_entries):
+            osi = e.get("original_segment_index")
+            seen[osi] = seen.get(osi, -1) + 1
+            local[g] = seen[osi]
+        # envelope 좌표: _apply_segment_envelopes 가 돌려준 메타에서 chunk 위치를 찾는다.
+        # segment_envelope_applied 는 (segment_index, segment-local chunk_index) 쌍을 준다.
+        # ordered_entries 를 훑어 그 쌍을 global index 로 되돌린다.
+        pair_to_g = {}
+        for g, e in enumerate(ordered_entries):
+            pair_to_g[(e.get("original_segment_index"), e.get("chunk_index"))] = g
+        env_at = {}
+        for rec_e in ((segenv_meta or {}).get("segment_envelope_applied") or ()):
+            for side in ("offset_chunk", "onset_chunk"):
+                pair = rec_e.get(side)
+                if not pair:
+                    continue
+                g = pair_to_g.get((pair[0], pair[1]))
+                if g is None:
+                    continue
+                slot = env_at.setdefault(g, {"applied": True, "sides": [],
+                                             "kind": rec_e.get("kind")})
+                slot["sides"].append(side.replace("_chunk", ""))
+        prev_osi = None
+        for g, e in enumerate(ordered_entries):
+            osi = e.get("original_segment_index")
+            same_segment = (prev_osi is not None and osi == prev_osi)
+            kind = "unknown"
+            if g == 0:
+                kind = None                      # 첫 chunk 앞에는 경계가 없다
+            elif not same_segment:
+                bk = None
+                if boundary_kinds is not None and 0 <= osi < len(boundary_kinds):
+                    bk = boundary_kinds[osi]
+                kind = {"line": "line_break", "paragraph": "blank_line_paragraph",
+                        "explicitPause": "explicit_pause", "emotion": "emotion_change",
+                        "sentence": "same_line_sentence"}.get(bk, "unknown")
+            else:
+                # 같은 segment 안의 분할 — 앞 chunk 텍스트의 마지막 글자로만 판정한다.
+                prev_text = (ordered_entries[g - 1] or {}).get("text")
+                kind = (chunk_publish.classify_boundary(prev_text, True, 0, False, None)
+                        if prev_text else "unknown")
+            rec.note(g, segment=osi, segment_chunk_index=local[g],
+                     boundary_kind=kind,
+                     envelope=env_at.get(g, {"applied": False}))
+            prev_osi = osi
+    except Exception:
+        pass                                     # 계측 실패가 합성을 막지 않는다
+
+
 def _diag_stage(rec, stage, e, **meta):
     """entry 의 현재 WAV 를 해당 단계로 발행. 실패해도 합성 결과를 바꾸지 않는다."""
     try:
@@ -2314,7 +2377,8 @@ def _concat_with_boundaries(paths, gaps_before, output_path):
         layout.append({"frames": frames, "gap_before_samples": gap_samples, "start_sample": cursor})
         if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
             # 여기 data 가 곧 결합본에 들어가는 파형이다 — final 의 SHA 가 이것과 같아야 한다.
-            _CONCAT_RECORDER.final(i, data, target_sr, cursor, gap_samples)
+            _CONCAT_RECORDER.final(i, data, target_sr, cursor, gap_samples,
+                                   envelope=None)   # 주석 단계에서 넣은 값을 유지
         out.append(data)
         cursor += frames
     combined = np.concatenate(out) if out else np.zeros(0, dtype=np.float32)
