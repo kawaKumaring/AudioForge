@@ -134,3 +134,71 @@ def manifests_dir():
 def is_managed(rel):
     """앱이 수명 정책(보존 개수 제한 등)을 적용해도 되는 구역인가."""
     return rel.replace("\\", "/").strip("/") in MANAGED_SUBDIRS
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 개발 산출물 경로 계약
+#
+# 저장소가 소유한 하네스(합성 검증·진단·GPU 확인)는 **여기 말고 다른 곳에 쓰지 않는다.**
+# 예전에는 실행할 때마다 사람이 경로를 골랐고, 그래서 E:\AudioForge_output 아래에
+# _af_* 폴더가 여섯 개나 생겼다. 규칙을 사람 기억에 두면 반드시 다시 흩어진다.
+#
+# 사용자가 앱에서 고른 최종 출력 경로는 이 계약의 대상이 아니다 — 그건 사용자 것이다.
+# ─────────────────────────────────────────────────────────────────────────────
+
+EXTERNAL_OVERRIDE_FLAG = "--allow-external-output"
+
+
+class ExternalOutputBlocked(Exception):
+    """개발 하네스가 _local 밖으로 쓰려 했다. 명시 override 없이는 막는다."""
+
+
+def _run_scoped(kind, run_id):
+    if kind not in ("generated", "diagnostics"):
+        raise ValueError("kind must be 'generated' or 'diagnostics'")
+    rid = str(run_id or "").strip()
+    if (not rid or any(c in rid for c in r'\\/:*?"<>|')
+            or any(ord(c) < 32 for c in rid)):
+        raise ValueError("run_id 가 비었거나 경로 문자를 포함한다: %r" % run_id)
+    p = os.path.join(local_root(), "artifacts", kind, rid)
+    os.makedirs(p, exist_ok=True)
+    return p
+
+
+def run_output_dir(run_id):
+    """개발 하네스의 생성물 위치 — _local/artifacts/generated/<run-id>."""
+    return _run_scoped("generated", run_id)
+
+
+def run_diagnostics_dir(run_id):
+    """개발 하네스의 진단 위치 — _local/artifacts/diagnostics/<run-id>."""
+    return _run_scoped("diagnostics", run_id)
+
+
+def drafts_dir():
+    return _sub("artifacts/drafts")
+
+
+def recovery_dir():
+    return _sub("artifacts/recovery")
+
+
+def assert_inside_local(path, argv=None):
+    """개발 도구의 출력 경로가 _local 안인지 확인한다.
+
+    argv 에 EXTERNAL_OVERRIDE_FLAG 가 있으면 통과시킨다 — 밖으로 쓰는 일이 불가능해야 하는
+    건 아니고, **모르는 사이에** 밖으로 나가는 일이 없어야 한다.
+    """
+    root = os.path.realpath(local_root())
+    real = os.path.realpath(path)
+    # 드라이브가 다르면 commonpath 가 ValueError 를 던진다 — 그건 '바깥' 이라는 뜻이지 오류가 아니다.
+    try:
+        inside = os.path.commonpath([root, real]) == root
+    except ValueError:
+        inside = False
+    if inside:
+        return real
+    if argv and EXTERNAL_OVERRIDE_FLAG in argv:
+        return real
+    raise ExternalOutputBlocked(
+        "DEV_OUTPUT_OUTSIDE_LOCAL: 개발 산출물은 _local 안에 써야 한다. "
+        "정말 밖으로 써야 하면 %s 를 명시하라." % EXTERNAL_OVERRIDE_FLAG)

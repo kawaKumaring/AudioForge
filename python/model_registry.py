@@ -72,7 +72,12 @@ def snapshot_path(repo_id, verify_files=True):
     if not os.path.isdir(snap):
         raise ModelRegistryError("MODEL_SNAPSHOT_NOT_FOUND: %s@%s" % (repo_id, rev[:12]))
     real = os.path.realpath(snap)
-    if not os.path.realpath(root) == os.path.commonpath([os.path.realpath(root), real]):
+    rroot = os.path.realpath(root)
+    try:                       # 드라이브가 다르면 ValueError — 그건 '바깥' 이다.
+        inside = os.path.commonpath([rroot, real]) == rroot
+    except ValueError:
+        inside = False
+    if not inside:
         raise ModelRegistryError("MODEL_SNAPSHOT_OUTSIDE_EXTERNALS: %s" % repo_id)
     # refs/main 이 있으면 manifest revision 과 일치해야 한다(둘이 갈라지면 조용히 옛 것을 쓴다).
     ref = os.path.join(root, HF_SUBDIR, hub_dir_name(repo_id), "refs", "main")

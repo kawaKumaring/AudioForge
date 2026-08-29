@@ -144,3 +144,65 @@ class TestNoAbsolutePathsInSource(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestDevOutputContract(unittest.TestCase):
+    """개발 하네스 출력이 _local 밖으로 새지 않는다."""
+
+    def setUp(self):
+        self._env = os.environ.get(la.LOCAL_ROOT_ENV)
+        self.tmp = tempfile.mkdtemp(prefix="af-dev-out-")
+        os.environ[la.LOCAL_ROOT_ENV] = self.tmp
+
+    def tearDown(self):
+        if self._env is None:
+            os.environ.pop(la.LOCAL_ROOT_ENV, None)
+        else:
+            os.environ[la.LOCAL_ROOT_ENV] = self._env
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def test_run_dirs_are_under_local(self):
+        for fn, kind in ((la.run_output_dir, "generated"), (la.run_diagnostics_dir, "diagnostics")):
+            p = fn("run-001")
+            self.assertTrue(os.path.isdir(p))
+            self.assertEqual(os.path.normcase(p),
+                             os.path.normcase(os.path.join(self.tmp, "artifacts", kind, "run-001")))
+
+    def test_bad_run_id_rejected(self):
+        for bad in ("", "  ", "a/b", "a" + chr(92) + "b", "a:b", "a*b", "a" + chr(8) + "b"):
+            with self.assertRaises(ValueError):
+                la.run_output_dir(bad)
+
+    def test_external_output_blocked_without_flag(self):
+        with self.assertRaises(la.ExternalOutputBlocked) as cm:
+            la.assert_inside_local(r"E:\AudioForge_output\whatever")
+        self.assertIn("DEV_OUTPUT_OUTSIDE_LOCAL", str(cm.exception))
+
+    def test_external_output_allowed_with_explicit_flag(self):
+        got = la.assert_inside_local(r"E:\AudioForge_output\whatever",
+                                     argv=["x", la.EXTERNAL_OVERRIDE_FLAG])
+        self.assertTrue(got)
+
+    def test_inside_local_passes(self):
+        p = la.run_output_dir("run-002")
+        self.assertTrue(la.assert_inside_local(p))
+
+    def test_no_harness_defaults_to_external_drive(self):
+        # 저장소 소유 하네스가 AF_OUT/E: 하드코딩을 기본 출력으로 쓰지 않는지.
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        import re
+        bad = []
+        pat = re.compile(r'AF_OUT|["\']E:[\/]AudioForge_output')
+        for base in (os.path.join(root, "python"), os.path.join(root, "scripts")):
+            if not os.path.isdir(base):
+                continue
+            for dp, dns, fns in os.walk(base):
+                dns[:] = [d for d in dns if d not in ("__pycache__", "node_modules")]
+                for fn in fns:
+                    if not fn.endswith((".py", ".mjs")) or fn.startswith("test_"):
+                        continue
+                    fp = os.path.join(dp, fn)
+                    txt = open(fp, encoding="utf-8", errors="replace").read()
+                    if pat.search(txt):
+                        bad.append(os.path.relpath(fp, root))
+        self.assertEqual(bad, [], "하네스가 외부 경로를 기본 출력으로 쓴다: %s" % bad)
