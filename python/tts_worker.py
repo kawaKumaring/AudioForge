@@ -1557,6 +1557,14 @@ def _align_icl_chunks(seg_out, transcribe_factory=_icl_transcribe_fn, output_dir
             e.pop("alignment_request", None)
         return seg_out
     todo.sort(key=lambda e: (e.get("original_segment_index"), e.get("chunk_index")))
+    # 계측(opt-in). 비활성이면 recorder.active=False 라 아래 호출들이 즉시 반환한다 —
+    # 배열 복사·SHA·무음 분석·폴더 생성이 하나도 일어나지 않는다.
+    import chunk_publish
+    global _CONCAT_RECORDER
+    _rec = _diag_recorder()
+    if _rec is not None and _rec.active:
+        # 조립 단계도 같은 recorder 를 써야 raw/aligned/final 이 같은 index 를 공유한다.
+        _CONCAT_RECORDER = _rec
     tf = transcribe_factory()
     total = len(todo)
     history = []   # 여기까지 처리한 chunk 의 비민감 요약(성공분 포함) — 실패 진단에 함께 남긴다
@@ -1565,6 +1573,8 @@ def _align_icl_chunks(seg_out, transcribe_factory=_icl_transcribe_fn, output_dir
         emit("progress", percent=90,
              message=f"참조 구간 경계 정렬 중... ({i + 1}/{total})")
         req = e.get("alignment_request") or {}
+        if _rec is not None and _rec.active:
+            _diag_stage(_rec, "raw", e)
         try:
             r = icl_alignment.align_and_trim(e["out_path"], req.get("prefix_text"),
                                              req.get("target_text"), tf)
@@ -1586,6 +1596,10 @@ def _align_icl_chunks(seg_out, transcribe_factory=_icl_transcribe_fn, output_dir
         e["reference_alignment"] = r["summary"]
         e["reference_cut_sample"] = r["cut_sample"]
         e["needs_alignment"] = False
+        if _rec is not None and _rec.active:
+            _diag_stage(_rec, "aligned", e,
+                        anchor_kind=(r["summary"] or {}).get("anchor_kind"),
+                        reference_cut_sample=r.get("cut_sample"))
         history.append(_icl_chunk_record(e, r["summary"],
                                          icl_alignment.pa.REASON_BOUNDARY_OK, True))
     for e in seg_out:
@@ -2209,6 +2223,43 @@ def _apply_segment_envelopes(paths, ordered_entries, boundary_kinds, work_dir):
     return new_paths, meta
 
 
+#: 조립 단계 계측용 recorder(모듈 전역). 비활성이면 None 이라 조립 경로가 기존과 동일하다.
+_CONCAT_RECORDER = None
+
+
+def _diag_recorder():
+    """계측이 켜져 있을 때만 recorder 를 만든다. 꺼져 있으면 None."""
+    try:
+        import chunk_publish
+        if not chunk_publish.enabled():
+            return None
+        return chunk_publish.ChunkRecorder()
+    except Exception:
+        return None            # 계측 실패가 합성을 막지 않는다
+
+
+def _diag_stage(rec, stage, e, **meta):
+    """entry 의 현재 WAV 를 해당 단계로 발행. 실패해도 합성 결과를 바꾸지 않는다."""
+    try:
+        import soundfile as sf
+        p = e.get("out_path")
+        if not p or not os.path.isfile(p):
+            return
+        arr, sr = sf.read(p, dtype="float32")
+        gidx = int(e.get("global_chunk_index", e.get("chunk_index") or 0))
+        fn = rec.raw if stage == "raw" else rec.aligned
+        fn(gidx, arr, sr,
+           segment=e.get("original_segment_index"),
+           segment_chunk_index=e.get("chunk_index"),
+           emotion_id=e.get("emotion_id"), **meta)
+    except Exception as exc:                      # 계측 실패는 기록만 하고 넘어간다
+        try:
+            rec.note(int(e.get("global_chunk_index", e.get("chunk_index") or 0)),
+                     instrumentation_error="%s:%s" % (stage, type(exc).__name__))
+        except Exception:
+            pass
+
+
 def _concat_with_boundaries(paths, gaps_before, output_path):
     """paths를 순서대로 이어붙이되 각 항목 '앞'에 gaps_before[i]초 무음 삽입(계약 B).
     자동분할 내부 chunk 사이 gap=0(연속), 원래 segment 경계에만 사용자 silence_gap. gaps_before[0]은 0.
@@ -2242,6 +2293,9 @@ def _concat_with_boundaries(paths, gaps_before, output_path):
             cursor += gap_samples
         frames = int(data.shape[0])
         layout.append({"frames": frames, "gap_before_samples": gap_samples, "start_sample": cursor})
+        if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
+            # 여기 data 가 곧 결합본에 들어가는 파형이다 — final 의 SHA 가 이것과 같아야 한다.
+            _CONCAT_RECORDER.final(i, data, target_sr, cursor, gap_samples)
         out.append(data)
         cursor += frames
     combined = np.concatenate(out) if out else np.zeros(0, dtype=np.float32)

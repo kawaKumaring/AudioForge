@@ -153,3 +153,48 @@ class TestBoundaryKinds(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class TestWiringInertWhenDisabled(unittest.TestCase):
+    """계측이 꺼져 있으면 합성 경로가 기존과 완전히 같아야 한다."""
+
+    def setUp(self):
+        self._e = os.environ.get(cp.ENV)
+        os.environ.pop(cp.ENV, None)
+        import tts_worker
+        self.tw = tts_worker
+        self.tw._CONCAT_RECORDER = None
+
+    def tearDown(self):
+        if self._e is not None:
+            os.environ[cp.ENV] = self._e
+        self.tw._CONCAT_RECORDER = None
+
+    def test_recorder_is_none_when_disabled(self):
+        self.assertIsNone(self.tw._diag_recorder(), "비활성인데 recorder 를 만들었다")
+
+    def test_concat_output_identical_with_and_without_recorder(self):
+        import soundfile as sf
+        d = tempfile.mkdtemp(prefix="af-cc-")
+        try:
+            paths = []
+            for i, f in enumerate((200.0, 300.0)):
+                p = os.path.join(d, "c%d.wav" % i)
+                sf.write(p, tone(0.3, f), SR)
+                paths.append(p)
+            a = os.path.join(d, "a.wav")
+            self.tw._CONCAT_RECORDER = None
+            la_a = self.tw._concat_with_boundaries(paths, [0.0, 0.4], a)
+            # recorder 가 꺼져 있으면 두 번째 실행도 바이트가 같아야 한다
+            b = os.path.join(d, "b.wav")
+            la_b = self.tw._concat_with_boundaries(paths, [0.0, 0.4], b)
+            self.assertEqual(la_a, la_b)
+            self.assertEqual(open(a, "rb").read(), open(b, "rb").read(),
+                             "비활성 경로에서 결합 결과가 달라졌다")
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+    def test_diag_stage_never_raises(self):
+        # 계측 실패가 합성을 막지 않는다.
+        r = cp.ChunkRecorder()
+        self.tw._diag_stage(r, "raw", {"out_path": "/nonexistent/x.wav"})
