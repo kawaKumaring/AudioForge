@@ -67,9 +67,15 @@ def _hop_frames(mono, sr):
 
 def recommend_region(path, target_sec=DEFAULT_TARGET_SEC,
                      min_sec=REC_MIN_SEC, max_sec=REC_MAX_SEC):
-    """10초 초과 파일에서 좋은 발화 구간 [start,dur]을 추천. 반환 dict(초 단위).
-    점수 = 연속 발화(비무음) 비율 − 클리핑 페널티. 여러 후보 중 최고점 창을 고른다.
-    파일이 target보다 짧으면 전체를 반환(호출부가 3~10초 판단)."""
+    """10초 초과 파일에서 **확정 가능한** 좋은 발화 구간을 추천한다.
+
+    추천값은 곧바로 :func:`build_reference_clip` 에 전달된다. 따라서 단순히 발화가 빽빽한
+    고정 길이 창을 고르면 안 된다. 이전 구현은 그런 창을 추천한 뒤 확정 단계에서는 양 끝의
+    무음 경계를 요구해, 앱이 스스로 추천한 구간을 스스로 거부했다. 여기서는 확정기와 같은
+    ``detect_silences`` 경계의 중심끼리만 후보로 삼는다.
+
+    6~8초 후보를 우선하고 없으면 모델 허용 범위인 3~10초로 넓힌다. 어느 쪽에도 안전한
+    경계 쌍이 없으면 임의 절단을 추천하지 않고 ``ok=False`` 를 반환한다."""
     import numpy as np
     mono, sr = _load_mono(path)
     dur = len(mono) / sr if sr > 0 else 0.0
@@ -85,27 +91,55 @@ def recommend_region(path, target_sec=DEFAULT_TARGET_SEC,
     rms, clip, hop = _hop_frames(mono, sr)
     sil_lin = 10.0 ** (SILENCE_DBFS / 20.0)
     speech = (rms >= sil_lin).astype(np.float64)         # 1=발화, 0=무음
-    win_hops = max(1, int(round(win_sec / HOP_SEC)))
-    if win_hops >= len(speech):
-        return {"ok": True, "start_sec": 0.0, "dur_sec": round(dur, 3),
-                "duration_sec": round(dur, 3), "whole_file": True}
 
-    # 슬라이딩 창 누적합으로 각 위치의 발화비율·클리핑비율 계산
+    # 확정기와 같은 무음 검출기를 쓰고, 실제 절단점과 동일하게 각 무음의 중심을 후보로 둔다.
+    # 파일 양 끝도 그 주변이 무음일 때만 후보에 넣는다. 발화 중인 파일 끝을 안전 경계로
+    # 가장하지 않는다.
+    silences = detect_silences(path)
+    cuts = sorted({round((a + b) / 2.0, 4) for a, b in silences})
+    if rms.size:
+        if rms[0] < sil_lin:
+            cuts.append(0.0)
+        if rms[-1] < sil_lin:
+            cuts.append(round(dur, 4))
+    cuts = sorted(set(cuts))
+
+    # 누적합으로 임의 경계 쌍의 발화비율·클리핑비율을 빠르게 계산한다.
     sp_cs = np.concatenate([[0.0], np.cumsum(speech)])
     cl_cs = np.concatenate([[0.0], np.cumsum(clip)])
-    best_i, best_score = 0, -1e9
-    step = max(1, int(round(0.2 / HOP_SEC)))  # 0.2s 간격으로 후보 탐색(과밀 방지)
-    for i in range(0, len(speech) - win_hops + 1, step):
-        sp = (sp_cs[i + win_hops] - sp_cs[i]) / win_hops        # 발화 비율
-        cl = (cl_cs[i + win_hops] - cl_cs[i]) / win_hops        # 클리핑 비율
-        score = sp - 3.0 * cl                                   # 클리핑 강하게 페널티
-        if score > best_score:
-            best_score, best_i = score, i
-    start_sec = round(best_i * HOP_SEC, 3)
-    start_sec = max(0.0, min(start_sec, dur - win_sec))
-    return {"ok": True, "start_sec": round(start_sec, 3), "dur_sec": round(win_sec, 3),
+
+    def best_between(lo, hi):
+        import bisect
+        best = None
+        for st in cuts:
+            # 전체 cuts×cuts를 만들지 않는다. 긴 녹음에서도 이 시작점으로부터 허용 길이에
+            # 들어오는 끝 경계만 본다.
+            left = bisect.bisect_left(cuts, st + lo - 1e-6)
+            right = bisect.bisect_right(cuts, st + hi + 1e-6)
+            for en in cuts[left:right]:
+                d = en - st
+                a = max(0, min(len(speech), int(round(st / HOP_SEC))))
+                b = max(a + 1, min(len(speech), int(round(en / HOP_SEC))))
+                sp = (sp_cs[b] - sp_cs[a]) / (b - a)
+                cl = (cl_cs[b] - cl_cs[a]) / (b - a)
+                # 음성 밀도·클리핑이 주 권위. 동률이면 목표 7초에 가까운 쪽, 그 다음 앞쪽.
+                rank = (float(sp - 3.0 * cl), -abs(d - win_sec), -st)
+                if best is None or rank > best[0]:
+                    best = (rank, st, en, sp)
+        return best
+
+    best = best_between(float(min_sec), float(max_sec))
+    if best is None:
+        best = best_between(3.0, 10.0)
+    if best is None:
+        return {"ok": False, "reason": "no_safe_boundary_pair",
+                "duration_sec": round(dur, 3), "whole_file": False,
+                "silence_count": len(silences)}
+
+    _, st, en, sp = best
+    return {"ok": True, "start_sec": round(st, 3), "dur_sec": round(en - st, 3),
             "duration_sec": round(dur, 3), "whole_file": False,
-            "speech_ratio": round(float(best_score), 4)}
+            "speech_ratio": round(float(sp), 4), "safe_boundaries": True}
 
 
 def analyze_region(path, start_sec, dur_sec):

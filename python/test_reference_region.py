@@ -33,13 +33,32 @@ class ReferenceRegionTest(unittest.TestCase):
 
     def test_recommend_in_speech_and_length(self):
         r = rr.recommend_region(self.src)
-        self.assertTrue(r["ok"])
-        self.assertFalse(r["whole_file"])
-        self.assertTrue(rr.REC_MIN_SEC <= r["dur_sec"] <= rr.REC_MAX_SEC, r)
-        # 추천 구간은 발화 구간([5,15) 또는 [18,28)) 내에서 시작해야 함(무음 [0,5) 아님)
-        s = r["start_sec"]
-        self.assertTrue((5.0 <= s <= 15.0) or (18.0 <= s <= 28.0),
-                        f"추천 시작 {s}s가 발화 구간이 아님")
+        # 이 fixture에는 3~10초 간격의 무음 경계 쌍이 없다. 발화 한가운데를 임의로 잘라
+        # 추천한 뒤 확정기에서 거부하게 만들지 않는다.
+        self.assertFalse(r["ok"])
+        self.assertEqual(r["reason"], "no_safe_boundary_pair")
+
+    def test_recommendation_is_accepted_by_confirmation_contract(self):
+        import numpy as np
+        import soundfile as sf
+        safe = os.path.join(self.tmp, "safe-long.wav")
+        sr = 24000
+        tone = lambda sec: (0.3 * np.sin(2 * np.pi * 180 * np.arange(int(sec * sr)) / sr)).astype("float32")
+        # 무음 중심 0.5 → 7.5 = 7초. 추천기가 이 안전 경계 쌍을 골라야 한다.
+        sf.write(safe, np.concatenate([
+            np.zeros(sr, dtype="float32"), tone(6.0),
+            np.zeros(sr, dtype="float32"), tone(6.0),
+            np.zeros(sr, dtype="float32"),
+        ]), sr)
+        r = rr.recommend_region(safe)
+        self.assertTrue(r["ok"], r)
+        self.assertTrue(r["safe_boundaries"])
+        out = os.path.join(self.tmp, "recommended.wav")
+        built = rr.build_reference_clip(
+            safe, r["start_sec"], r["dur_sec"], out,
+            transcribe_fn=lambda _p: "추천 구간 확인")
+        self.assertTrue(built["ready"], built)
+        self.assertTrue(os.path.exists(out))
 
     def test_recommend_short_file_whole(self):
         short = os.path.join(self.tmp, "short.wav")
