@@ -35,11 +35,17 @@ const FFPROBE_PATHS = [
 ]
 
 // AI 패키지가 설치된 Python을 참조 (의존 대상은 ComfyUI 앱이 아니라 그 패키지들).
-// 우선순위: externals/env.json(setup_env.py가 기록) → 하드코딩 기본값 → 시스템 python.
-const DEFAULT_PYTHON = 'E:/AI/ComfyUI_windows_portable_python3.12/python_embeded/python.exe'
-
+//
+// 특정 PC 의 절대경로를 코드에 두지 않는다. 그런 기본값은 그 PC 에서만 맞고 다른 PC 에서는
+// 조용히 틀린 파이썬을 고르거나, 없는 경로를 찾다가 시스템 python 으로 흘러내린다.
+// 연결은 '추측' 이 아니라 '기록' 이어야 한다.
+//
+// 우선순위: 환경변수 AUDIOFORGE_PYTHON → externals/env.json(setup_env.py 가 기록)
+//           → 앱 전용 runtime(externals/runtime/runtime.json) → 시스템 python
+// ComfyUI 임베디드 파이썬은 사용자가 위 경로 중 하나로 **명시 연결했을 때만** 쓰인다.
 function resolvePythonPath(): string {
-  // 1. setup_env.py가 해석해 기록한 경로
+  const env = process.env.AUDIOFORGE_PYTHON
+  if (env && existsSync(env)) return env
   try {
     const cfg = join(__dirname, '..', '..', 'externals', 'env.json')
     if (existsSync(cfg)) {
@@ -47,9 +53,13 @@ function resolvePythonPath(): string {
       if (p && existsSync(p)) return p
     }
   } catch { /* fall through */ }
-  // 2. 하드코딩 기본값(ComfyUI 임베디드) — 있으면
-  if (existsSync(DEFAULT_PYTHON)) return DEFAULT_PYTHON
-  // 3. 시스템 python
+  try {
+    const rt = join(__dirname, '..', '..', 'externals', 'runtime', 'runtime.json')
+    if (existsSync(rt)) {
+      const p = JSON.parse(readFileSync(rt, 'utf-8')).python
+      if (p && existsSync(p)) return p
+    }
+  } catch { /* fall through */ }
   return 'python'
 }
 

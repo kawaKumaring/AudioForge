@@ -36,15 +36,18 @@ from env_check import REQUIRED  # 패키지 목록 단일 소스  # noqa: E402
 
 
 def _comfyui_candidates():
-    """ComfyUI 임베디드 파이썬 흔한 위치 (best-effort)."""
+    """설정으로 명시된 외부 파이썬만 후보로 낸다.
+
+    예전에는 특정 PC 의 절대경로와 드라이브 문자 조합을 훑었다. 그 방식은 이 PC 에서만
+    맞고, 다른 PC 에서는 엉뚱한 설치본을 집거나 조용히 실패한다. 외부 파이썬은
+    **사용자가 명시 연결했을 때만** 쓰는 EXTERNAL_READ_ONLY 자원이므로 추측하지 않는다.
+
+    연결 방법: AUDIOFORGE_PYTHON 환경변수 또는 externals/env.json 의 python 항목.
+    """
     cands = []
-    # 현재 하드코딩 기본값
-    cands.append("E:/AI/ComfyUI_windows_portable_python3.12/python_embeded/python.exe")
-    # 드라이브별 흔한 경로
-    for drive in ("C:", "D:", "E:", "F:"):
-        for name in ("ComfyUI_windows_portable_python3.12", "ComfyUI_windows_portable"):
-            cands.append(f"{drive}/AI/{name}/python_embeded/python.exe")
-            cands.append(f"{drive}/{name}/python_embeded/python.exe")
+    ext = os.environ.get("AUDIOFORGE_EXTERNAL_PYTHON")
+    if ext:
+        cands.append(ext)
     return cands
 
 

@@ -26,6 +26,13 @@ class PreserveTest(unittest.TestCase):
     def setUp(self):
         self.out = tempfile.mkdtemp(prefix="af_diag_out_")
         self.addCleanup(lambda: shutil.rmtree(self.out, ignore_errors=True))
+        # 진단은 사용자 출력 폴더가 아니라 _local/artifacts/diagnostics 로 간다(계약 변경).
+        self.local = tempfile.mkdtemp(prefix="af_diag_local_")
+        self.addCleanup(lambda: shutil.rmtree(self.local, ignore_errors=True))
+        os.environ["AUDIOFORGE_LOCAL_ROOT"] = self.local
+        self.addCleanup(lambda: os.environ.pop("AUDIOFORGE_LOCAL_ROOT", None))
+        self.diag_root = os.path.join(self.local, "artifacts", "diagnostics",
+                                      dg.DIAGNOSTIC_DIR_NAME)
         self.job = os.path.join(self.out, ".qwen-job-test")
         os.makedirs(self.job)
         self.raw = os.path.join(self.job, "segment_qwen_001_c000.wav")
@@ -50,13 +57,13 @@ class PreserveTest(unittest.TestCase):
         name = self._preserve()
         self.assertIsNotNone(name)
         shutil.rmtree(self.job, ignore_errors=True)   # job_dir 통째 정리(실제 finally 와 같은 동작)
-        d = os.path.join(self.out, dg.DIAGNOSTIC_DIR_NAME, name)
+        d = os.path.join(self.diag_root, name)
         self.assertTrue(os.path.isfile(os.path.join(d, dg.RAW_NAME)), "raw 가 남는다")
         self.assertTrue(os.path.isfile(os.path.join(d, dg.REPORT_NAME)))
 
     def test_report_is_numbers_and_nonsensitive_enums_only(self):
         name = self._preserve()
-        p = os.path.join(self.out, dg.DIAGNOSTIC_DIR_NAME, name, dg.REPORT_NAME)
+        p = os.path.join(self.diag_root, name, dg.REPORT_NAME)
         blob = open(p, encoding="utf-8").read()
         for secret in (SECRET_REF, SECRET_TARGET, "secret", self.out, self.raw):
             self.assertNotIn(secret, blob, secret[:20])
@@ -75,7 +82,10 @@ class PreserveTest(unittest.TestCase):
         self._preserve()
         self.assertEqual([n for n in os.listdir(self.out) if n.endswith(".wav")], [])
         entries = sorted(os.listdir(self.out))
-        self.assertIn(dg.DIAGNOSTIC_DIR_NAME, entries)
+        # 새 계약: 사용자 출력 폴더에는 진단이 생기지 않는다.
+        self.assertNotIn(dg.DIAGNOSTIC_DIR_NAME, entries,
+                         "진단이 사용자 출력 폴더를 오염시킨다")
+        self.assertTrue(os.path.isdir(self.diag_root), "_local 에 진단이 생기지 않았다")
         self.assertTrue(dg.DIAGNOSTIC_DIR_NAME.startswith("."), "숨김 · 전용 이름")
         self.assertFalse(dg.DIAGNOSTIC_DIR_NAME.startswith(".qwen-job-"),
                          "job 정리 스윕(.qwen-job-*)의 대상이 아니다")
@@ -84,7 +94,7 @@ class PreserveTest(unittest.TestCase):
         names = []
         for _ in range(dg.MAX_KEPT + 3):
             names.append(self._preserve())
-        root = os.path.join(self.out, dg.DIAGNOSTIC_DIR_NAME)
+        root = self.diag_root
         kept = sorted(os.listdir(root))
         self.assertEqual(len(kept), dg.MAX_KEPT)
         self.assertEqual(kept, sorted(names)[-dg.MAX_KEPT:], "오래된 것부터 지운다")
@@ -112,7 +122,7 @@ class PreserveTest(unittest.TestCase):
         name = dg.preserve_failure(self.out, self.raw, "PREFIX_BOUNDARY_LEAD_TOO_SHORT",
                                    self._detection(), 1, 2, "happy",
                                    chunk_history=self._history())
-        p = os.path.join(self.out, dg.DIAGNOSTIC_DIR_NAME, name, dg.REPORT_NAME)
+        p = os.path.join(self.diag_root, name, dg.REPORT_NAME)
         rep = json.loads(open(p, encoding="utf-8").read())
         chunks = rep["chunks"]
         self.assertEqual(len(chunks), 3, "성공 2 + 실패 1 이 순서대로 남는다")
@@ -129,7 +139,7 @@ class PreserveTest(unittest.TestCase):
         name = dg.preserve_failure(self.out, self.raw, "PREFIX_BOUNDARY_LEAD_TOO_SHORT",
                                    self._detection(), 1, 2, "happy",
                                    chunk_history=self._history())
-        p = os.path.join(self.out, dg.DIAGNOSTIC_DIR_NAME, name, dg.REPORT_NAME)
+        p = os.path.join(self.diag_root, name, dg.REPORT_NAME)
         blob = open(p, encoding="utf-8").read()
         for secret in (SECRET_REF, SECRET_TARGET, "secret", "E:/", ":\\", ".wav",
                        self.out, self.raw):
@@ -148,7 +158,7 @@ class PreserveTest(unittest.TestCase):
                             self._detection(), 1, 2, "happy", chunk_history=self._history())
         self.assertEqual([n for n in os.listdir(self.out) if not n.startswith(".")], [],
                          "출력 폴더에 결과가 생기지 않는다(진단 폴더는 숨김 전용 이름)")
-        root = os.path.join(self.out, dg.DIAGNOSTIC_DIR_NAME)
+        root = self.diag_root
         kept = os.path.join(root, os.listdir(root)[0])
         self.assertEqual(sorted(os.listdir(kept)), sorted([dg.RAW_NAME, dg.REPORT_NAME]),
                          "진단 폴더 안에도 raw 와 리포트 말고는 없다")
@@ -176,6 +186,13 @@ class AlignmentDiagnosticJsonTest(unittest.TestCase):
     def setUp(self):
         self.out = tempfile.mkdtemp(prefix="af_diag_align_")
         self.addCleanup(lambda: shutil.rmtree(self.out, ignore_errors=True))
+        # 진단은 사용자 출력 폴더가 아니라 _local/artifacts/diagnostics 로 간다(계약 변경).
+        self.local = tempfile.mkdtemp(prefix="af_diag_local_")
+        self.addCleanup(lambda: shutil.rmtree(self.local, ignore_errors=True))
+        os.environ["AUDIOFORGE_LOCAL_ROOT"] = self.local
+        self.addCleanup(lambda: os.environ.pop("AUDIOFORGE_LOCAL_ROOT", None))
+        self.diag_root = os.path.join(self.local, "artifacts", "diagnostics",
+                                      dg.DIAGNOSTIC_DIR_NAME)
         self.raw = os.path.join(self.out, "segment_qwen_001_c000.wav")
         import numpy as np
         import soundfile as sf
@@ -195,7 +212,7 @@ class AlignmentDiagnosticJsonTest(unittest.TestCase):
     def _report(self, af):
         name = dg.preserve_failure(self.out, self.raw, af.reason_code, af.detection, 0, 0, "happy")
         self.assertIsNotNone(name)
-        p = os.path.join(self.out, dg.DIAGNOSTIC_DIR_NAME, name, dg.REPORT_NAME)
+        p = os.path.join(self.diag_root, name, dg.REPORT_NAME)
         blob = open(p, encoding="utf-8").read()
         return json.loads(blob), blob
 

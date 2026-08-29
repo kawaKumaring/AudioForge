@@ -84,6 +84,25 @@ def _prune(root, keep=MAX_KEPT):
         shutil.rmtree(os.path.join(root, name), ignore_errors=True)
 
 
+def diagnostics_root(output_dir=None):
+    """진단이 쌓이는 곳 — **사용자 결과 폴더가 아니라** 앱의 로컬 자산 루트다.
+
+    사용자가 고른 출력 폴더에 앱 내부 진단이 섞이면 사용자가 지우기도 애매하고,
+    보존 개수 정책이 사용자 파일 옆에서 도는 모양이 된다. 그래서 _local 로 분리한다.
+
+    local_assets 를 못 쓰는 환경(구 배치·부분 설치)에서는 조용히 사용자 폴더로
+    되돌아가지 않는다 — output_dir 이 명시로 주어졌을 때만 그쪽을 쓴다.
+    """
+    try:
+        import local_assets
+        return os.path.join(local_assets.diagnostics_dir(), DIAGNOSTIC_DIR_NAME)
+    except Exception:
+        pass
+    if output_dir and os.path.isdir(output_dir):
+        return os.path.join(output_dir, DIAGNOSTIC_DIR_NAME)
+    return None
+
+
 def preserve_failure(output_dir, wav_path, reason_code, detection=None,
                      segment_index=None, chunk_index=None, emotion_id=None,
                      chunk_history=None):
@@ -91,9 +110,9 @@ def preserve_failure(output_dir, wav_path, reason_code, detection=None,
 
     어떤 예외도 밖으로 내지 않는다 — 실패하면 None 을 돌려주고 조용히 포기한다."""
     try:
-        if not output_dir or not os.path.isdir(output_dir):
+        root = diagnostics_root(output_dir)
+        if root is None:
             return None
-        root = os.path.join(output_dir, DIAGNOSTIC_DIR_NAME)
         os.makedirs(root, exist_ok=True)
         stamp = time.strftime("%Y%m%d-%H%M%S", time.gmtime())
         name = "{0}-s{1}-c{2}".format(stamp,
