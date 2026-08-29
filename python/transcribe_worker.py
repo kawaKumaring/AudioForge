@@ -541,14 +541,18 @@ def _translate_nllb(text: str, src_lang: str):
 
     if _nllb_cache["model"] is None or _nllb_cache["src_lang"] != nllb_src:
         emit("progress", percent=72, message=f"번역 모델 로딩 중... ({model_name.split('-')[-1]})")
-        # cache_dir 를 명시하지 않으면 전역 캐시를 조용히 뒤지고 없으면 내려받는다.
-        cdir, csrc = resolve_hf_cache_dir(model_name)
-        _nllb_cache["source"] = csrc
+        # repo id 가 아니라 **내부 snapshot 절대경로**를 첫 인자로 준다.
+        # cache_dir 는 앰비언트 HUGGINGFACE_HUB_CACHE 에 지는 경로가 있어 격리에서 새어 나갔다.
+        # 경로를 직접 주면 hub 해석 자체가 일어나지 않는다.
+        import model_registry
+        snap = model_registry.snapshot_path(model_name)
+        _nllb_cache["source"] = "internal_snapshot"
+        _nllb_cache["snapshot"] = snap
         _nllb_cache["tokenizer"] = AutoTokenizer.from_pretrained(
-            model_name, src_lang=nllb_src, cache_dir=cdir, local_files_only=True)
+            snap, src_lang=nllb_src, local_files_only=True)
         if _nllb_cache["model"] is None:
             _nllb_cache["model"] = AutoModelForSeq2SeqLM.from_pretrained(
-                model_name, cache_dir=cdir, local_files_only=True).to(device)
+                snap, local_files_only=True).to(device)
         _nllb_cache["src_lang"] = nllb_src
 
     tokenizer = _nllb_cache["tokenizer"]
