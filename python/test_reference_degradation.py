@@ -24,6 +24,7 @@ from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import transcribe_worker  # noqa: E402
+import _vendor_crop_fixture as _vcf
 import tts_worker  # noqa: E402
 
 
@@ -329,6 +330,7 @@ class MetadataEndToEndTest(_Base):
                         "cut_sample": 4200, "valley_dbfs": -90.38, "lead_samples": 840}
                     e["reference_cut_sample"] = 4200
                     e["controlled_prefix"] = True
+                _vcf.attach(e, s)
                 out.append(e)
             return out
         self._patch(tts_worker.QwenTTSEngine, "run_job", new=fake_run_job)
@@ -376,9 +378,11 @@ class MetadataEndToEndTest(_Base):
         self.assertIsNone(m["reference_degraded_emotions"])
         self.assertEqual(m["prompt_source"], "auto")
         self.assertEqual([t for t, _ in self.events].count("tts_reference_degraded"), 0)
-        # 전사가 확보됐으므로 controlled-prefix 가 실제로 잘렸고 그 수치가 남는다.
-        self.assertEqual(m["reference_cut_sample"], 4200)
-        self.assertEqual(m["reference_alignment"]["first"]["tail_end_sample"], 2640)
+        # production 기본은 vendor native ICL 이다 — 외부 ASR 절단이 없으므로 alignment 좌표가
+        # 남지 않는다(발행 근거는 vendor_internal_crop_record). legacy controlled-prefix 의
+        # 절단 수치 계약은 test_reference_conditioning_mode 의 legacy 클래스가 고정한다.
+        self.assertIsNone(m["reference_cut_sample"])
+        self.assertIsNone(m["reference_alignment"])
         # 보안 회귀: 어떤 메타 값에도 전사 전문이 들어가지 않는다
         self.assertNotIn("자동전사문장", json.dumps(m, ensure_ascii=False))
 

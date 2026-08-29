@@ -20,6 +20,7 @@
 
 GPU·Whisper 실모델 없음(run_job 대체).
 """
+import hashlib
 import json
 import os
 import re
@@ -27,6 +28,8 @@ import shutil
 import sys
 import tempfile
 import unittest
+import numpy as np
+import soundfile as sf
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -332,6 +335,21 @@ class _IclFixtureBase(_QwenJobBase):
     TEXT = "안녕하세요 첫 문장입니다.\n[기쁨] 좋은 소식이 있어요!\n마지막 문장입니다."
     REF_TEXT = "참조 음성의 원래 대사입니다"
 
+    def _enable_legacy_controlled_prefix(self):
+        """legacy rollback 경로를 **명시적으로** 켠다. production 기본은 vendor native ICL 이라
+        이 호출 없이는 prefix_text 가 조립되지 않는다. controlled-prefix 계약을 검증하는
+        테스트만 부른다."""
+        import os as _os
+        prev = _os.environ.get("AUDIOFORGE_LEGACY_CONTROLLED_PREFIX")
+        _os.environ["AUDIOFORGE_LEGACY_CONTROLLED_PREFIX"] = "1"
+
+        def _restore():
+            if prev is None:
+                _os.environ.pop("AUDIOFORGE_LEGACY_CONTROLLED_PREFIX", None)
+            else:
+                _os.environ["AUDIOFORGE_LEGACY_CONTROLLED_PREFIX"] = prev
+        self.addCleanup(_restore)
+
     def setUp(self):
         super().setUp()
         self.chunk_targets = {}      # chunk 경로 → 그 chunk 의 목표 대사(ASR 스텁이 참조)
@@ -381,6 +399,10 @@ class IclControlledPrefixTest(_IclFixtureBase):
     명시 요청이므로 정렬 실패는 **전환 없이** 실패로 끝난다(자동 전환은 auto 만의 일)."""
 
     RC_MODE = "high_quality_icl"
+
+    def setUp(self):
+        super().setUp()
+        self._enable_legacy_controlled_prefix()      # legacy 계약 전용
 
     def test_every_segment_carries_its_own_prefix_and_stays_icl(self):
         """장문(여러 segment)에서도 segment 마다 자기 controlled-prefix 를 단다 — 모드는 job 고정."""
@@ -567,7 +589,7 @@ class IclTranscriptRequiredTest(_QwenJobBase):
         self.assertEqual([t for t, _ in self.events].count("result"), 0)
 
 
-class AutoModeTest(_IclFixtureBase):
+class LegacyAutoModeTest(_IclFixtureBase):
     """auto(자동) — ICL 을 먼저 시도하고, **정렬이 성립하지 않은 경우에만** 그 결과를 버리고
     safe_xvector 로 정확히 1회 전환한다.
 
@@ -581,6 +603,10 @@ class AutoModeTest(_IclFixtureBase):
     """
 
     RC_MODE = "auto"
+
+    def setUp(self):
+        super().setUp()
+        self._enable_legacy_controlled_prefix()      # legacy auto 계약
 
     def _terminal_count(self):
         return len([t for t, _ in self.events if t in ("result", "error")])
@@ -848,3 +874,88 @@ class PromptSourceRegressionTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+class NativeAutoModeTest(_QwenJobBase):
+    """auto(자동) — **production 기본 경로**인 vendor native ICL 계약.
+
+    legacy controlled-prefix env 를 켜지 않는다. 따라서:
+      · prefix_text 가 조립되지 않는다(controlled-prefix 0)
+      · 외부 ASR alignment·trim 이 호출되지 않는다(external alignment 0)
+      · 발행 근거는 vendor_internal_crop_record 다
+    이 클래스가 고정하는 것: crop record 가 없거나 무효면 auto 는 safe 로 **정확히 1회**
+    전환하고, 명시 high_quality_icl 은 같은 조건에서 fail-closed 다.
+    """
+
+    RC_MODE = "auto"
+    TEXT = "안녕하세요 첫 문장입니다."
+    REF_TEXT = "참조 음성의 원래 대사입니다"
+
+    def test_legacy_env_is_not_set(self):
+        """이 계약은 legacy rollback 을 켜지 않는다는 사실 자체가 전제다."""
+        self.assertNotEqual(os.environ.get("AUDIOFORGE_LEGACY_CONTROLLED_PREFIX"), "1")
+
+    def test_missing_crop_record_is_an_auto_fallback_trigger(self):
+        """vendor native 경로의 발행 근거 부재는 auto 에서 safe 전환 사유다."""
+        self.assertIn(tts_worker.MISSING_OR_INVALID_VENDOR_CROP_RECORD,
+                      tts_worker.AUTO_FALLBACK_TRIGGER_CODES)
+
+    def test_explicit_icl_does_not_auto_switch_on_invalid_crop_record(self):
+        """명시 high_quality_icl 은 같은 사유로 전환하지 않는다 — fail-closed 다.
+
+        전환 여부는 요청 모드로 갈린다(auto 만 전환). trigger 목록에 있다는 사실이
+        명시 요청까지 전환시킨다는 뜻이 아님을 고정한다.
+        """
+        self.assertEqual(tts_worker.resolve_reference_conditioning_mode("high_quality_icl"),
+                         "high_quality_icl")
+
+    def test_invalid_crop_record_blocks_publication(self):
+        """무효 crop record 는 발행되지 않는다 — 전용 code 로 실패한다."""
+        d = tempfile.mkdtemp()
+        wav = os.path.join(d, "c.wav")
+        arr = np.zeros(2400, dtype=np.float32)
+        arr[::7] = 0.2
+        sf.write(wav, arr, 24000, subtype="FLOAT")
+        rec = {"schema_version": tts_worker.VENDOR_CROP_SCHEMA,
+               "crop_contract_version": 2, "model_revision": "r", "sample_rate": 24000,
+               "prefix_text_enabled": False, "x_vector_only_mode": False,
+               "reference_audio_sha256": "a" * 64, "reference_text_sha256": "b" * 64,
+               "target_script_sha256": "c" * 64, "ref_code_frames": 10,
+               "generated_code_frames": 5, "total_code_frames": 15,
+               "returned_samples": int(arr.shape[0]),
+               "returned_pcm_sha256": "0" * 64,          # ← 발행 대상과 불일치
+               "crop_authority": "vendor_native_ref_code",
+               "crop_coordinates_observed": False,
+               "termination_reason": "completed_before_limit",
+               "external_alignment_calls": 0}
+        entry = {"out_path": wav, "original_segment_index": 0, "chunk_index": 0,
+                 "emotion_id": "default", "vendor_crop_record": rec}
+        with self.assertRaises(RuntimeError) as cm:
+            tts_worker._summarize_reference_alignment([entry])
+        self.assertEqual(cm.exception.error_payload["code"],
+                         tts_worker.MISSING_OR_INVALID_VENDOR_CROP_RECORD)
+
+    def test_native_record_publishes_without_external_alignment(self):
+        """유효 record 면 통과하고, ASR alignment 요약은 만들어지지 않는다(외부 절단 0)."""
+        d = tempfile.mkdtemp()
+        wav = os.path.join(d, "c.wav")
+        arr = np.zeros(2400, dtype=np.float32)
+        arr[::7] = 0.2
+        sf.write(wav, arr, 24000, subtype="FLOAT")
+        rec = {"schema_version": tts_worker.VENDOR_CROP_SCHEMA,
+               "crop_contract_version": 2, "model_revision": "r", "sample_rate": 24000,
+               "prefix_text_enabled": False, "x_vector_only_mode": False,
+               "reference_audio_sha256": "a" * 64, "reference_text_sha256": "b" * 64,
+               "target_script_sha256": "c" * 64, "ref_code_frames": 10,
+               "generated_code_frames": 5, "total_code_frames": 15,
+               "returned_samples": int(arr.shape[0]),
+               "returned_pcm_sha256": hashlib.sha256(open(wav, "rb").read()).hexdigest(),
+               "crop_authority": "vendor_native_ref_code",
+               "crop_coordinates_observed": False,
+               "termination_reason": "completed_before_limit",
+               "external_alignment_calls": 0}
+        entry = {"out_path": wav, "original_segment_index": 0, "chunk_index": 0,
+                 "emotion_id": "default", "vendor_crop_record": rec}
+        summary, cut = tts_worker._summarize_reference_alignment([entry])
+        self.assertIsNone(summary, "vendor native 경로는 ASR alignment 요약을 만들지 않는다")
+        self.assertIsNone(cut)

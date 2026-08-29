@@ -399,6 +399,14 @@ _QWEN_REQUIRED = ["config.json", "model.safetensors", "vocab.json", "merges.txt"
 # 무응답(진행 없음) 인용 timeout. Electron watchdog(무진행 5분)보다 짧게 잡아 Python이 먼저 정리·오류.
 # ※ 이 값은 '생성 구간' 계약이다(계약 A 산정 근거가 이 280에 묶여 있다) — 절대 키우지 않는다.
 _QWEN_INACTIVITY_SEC = 280
+# 진단 전용: 무응답 종료를 끈다. production 계약(280s)은 그대로이고 이 훅은
+# 환경변수가 있을 때만 산다. 장문 단일 호출의 실제 능력을 재려면 시간 제한이
+# 먼저 걸려서는 안 된다 — 다만 사용자가 직접 취소할 수 있어야 한다.
+if os.environ.get("AUDIOFORGE_DIAG_NO_INACTIVITY_TIMEOUT") == "1":
+    # None 이 아니라 큰 유한값을 쓴다 — 로딩 단계의 min(inactivity, remain) 산술이
+    # None 에서 TypeError 로 죽기 때문이다. 24시간이면 사실상 제한 없음이고,
+    # 사용자는 언제든 직접 취소할 수 있다.
+    _QWEN_INACTIVITY_SEC = 86400
 
 # 기동(모델 로딩) 전용 hard deadline. 무응답 timeout과 '다른 축'이다:
 #   - 무응답 timeout: 마지막 stdout 이후 경과. heartbeat가 갱신한다.
@@ -946,8 +954,13 @@ _ICL_SAFE_MODE_HINT = ("'안전 음성 복제' 모드를 선택하면 참조 대
 # 여기에 없는 실패(GENERATION_LIMIT_EXCEEDED / TEXT_SEGMENT_TOO_LONG / 참조 품질 게이트 / OOM /
 # 취소 / INVALID_* 등)는 모드를 바꾼다고 해결되는 문제가 아니므로 **전환하지 않고 그대로 실패**한다
 # — 방아쇠를 넓히면 "무엇을 고쳐야 하는지"가 사용자에게서 사라지고 시간만 두 배로 쓴다.
+MISSING_OR_INVALID_VENDOR_CROP_RECORD = "MISSING_OR_INVALID_VENDOR_CROP_RECORD"
 AUTO_FALLBACK_TRIGGER_CODES = (ICL_BOUNDARY_ALIGNMENT_FAILED,
-                               ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE)
+                               ICL_REFERENCE_TRANSCRIPT_UNAVAILABLE,
+                               # vendor native ICL 경로의 발행 근거가 없거나 무효인 경우도
+                               # auto 에서는 safe 로 **정확히 1회** 전환한다. 명시
+                               # high_quality_icl 요청은 여기 해당하지 않고 fail-closed 다.
+                               MISSING_OR_INVALID_VENDOR_CROP_RECORD)
 # auto 전환 시 사용자에게 보여 주는 **유일한** 문구. 내부 code(ICL_BOUNDARY_ALIGNMENT_FAILED 등)는
 # 여기 섞지 않는다 — code 는 metadata(reference_conditioning_failure_code)에만 남고 UI 의 접힌
 # 상세 진단에서만 보인다.
@@ -1612,6 +1625,73 @@ def _align_icl_chunks(seg_out, transcribe_factory=_icl_transcribe_fn, output_dir
     return seg_out
 
 
+VENDOR_CROP_SCHEMA = "af-vendor-internal-crop/2"
+_VENDOR_CROP_REQUIRED = (
+    "schema_version", "crop_contract_version", "model_revision", "sample_rate",
+    "prefix_text_enabled", "x_vector_only_mode", "reference_audio_sha256",
+    "reference_text_sha256", "target_script_sha256", "ref_code_frames",
+    "generated_code_frames", "total_code_frames", "returned_samples",
+    "returned_pcm_sha256", "crop_authority", "crop_coordinates_observed",
+    "termination_reason", "external_alignment_calls")
+
+
+def validate_vendor_crop_record(rec, wav_path):
+    """vendor native ICL 발행 근거 검증. 통과하면 None, 실패하면 사유 문자열.
+
+    ASR alignment record 와 **다른 권위**다. 값을 보정하지 않고 불일치면 실패시킨다.
+    observed_crop_frame_delta 는 기록만 하고 특정 값을 정상으로 못박지 않는다."""
+    import hashlib
+    import numpy as _np
+    import soundfile as _sf
+    if not isinstance(rec, dict):
+        return "record_not_dict"
+    if rec.get("schema_version") != VENDOR_CROP_SCHEMA:
+        return "schema_mismatch"
+    for k in _VENDOR_CROP_REQUIRED:
+        if rec.get(k) is None:
+            return "missing_field:" + k
+    if rec.get("prefix_text_enabled") is not False:
+        return "prefix_text_enabled_must_be_false"
+    if rec.get("x_vector_only_mode") is not False:
+        return "x_vector_only_mode_must_be_false"
+    if rec.get("termination_reason") != "completed_before_limit":
+        return "termination_not_completed_before_limit"
+    if int(rec["external_alignment_calls"]) != 0:   # 0 은 falsy — or 기본값 금지
+        return "external_alignment_calls_not_zero"
+    if rec.get("crop_authority") != "vendor_native_ref_code":
+        return "crop_authority_mismatch"
+    if rec.get("crop_coordinates_observed") is not False:
+        return "crop_coordinates_observed_must_be_false"
+    ref_f, gen_f = int(rec["ref_code_frames"]), int(rec["generated_code_frames"])
+    tot_f, ret = int(rec["total_code_frames"]), int(rec["returned_samples"])
+    if ref_f <= 0 or gen_f <= 0 or tot_f != ref_f + gen_f:
+        return "frame_invariant_failed"
+    if ret <= 0:
+        return "returned_samples_not_positive"
+    try:
+        arr, sr = _sf.read(wav_path, dtype="float32")
+    except Exception:
+        return "wav_unreadable"
+    if getattr(arr, "ndim", 1) > 1:
+        arr = arr.mean(axis=1)
+    if int(sr) != int(rec["sample_rate"]):
+        return "sample_rate_mismatch"
+    if int(arr.shape[0]) != ret:
+        return "returned_samples_length_mismatch"
+    if int(arr.shape[0]) == 0:
+        return "empty_waveform"
+    if not bool(_np.all(_np.isfinite(arr))):
+        return "nan_or_inf"
+    if int(_np.sum(_np.abs(arr) >= 0.999)) > 0:
+        return "clipping"
+    try:
+        if hashlib.sha256(open(wav_path, "rb").read()).hexdigest() != rec["returned_pcm_sha256"]:
+            return "pcm_sha_mismatch"
+    except Exception:
+        return "wav_unreadable"
+    return None
+
+
 def _summarize_reference_alignment(ordered_entries):
     """controlled-prefix 절단 사실을 metadata 용으로 축약한다(샘플 인덱스와 dB 만).
 
@@ -1626,7 +1706,34 @@ def _summarize_reference_alignment(ordered_entries):
     for e in ordered_entries:
         rec = e.get("reference_alignment")
         cut = e.get("reference_cut_sample")
-        if not isinstance(rec, dict) or not isinstance(cut, int) or cut <= 0:
+        vrec = e.get("vendor_crop_record")
+        has_asr = isinstance(rec, dict) and isinstance(cut, int) and cut > 0
+        has_vendor = isinstance(vrec, dict)
+        if has_asr and has_vendor:
+            # 두 권위가 동시에 있으면 이중 절단 경로다. 조용히 하나를 고르지 않는다.
+            _e = RuntimeError(
+                "참조 절단 기록이 두 종류로 동시에 존재합니다 — 어느 경로로 잘렸는지 확정할 수 "
+                "없는 결과는 발행하지 않습니다. " + _ICL_SAFE_MODE_HINT)
+            _e.error_payload = {"code": ICL_BOUNDARY_ALIGNMENT_FAILED,
+                                "segment_index": e.get("original_segment_index"),
+                                "chunk_index": e.get("chunk_index"),
+                                "emotion_id": e.get("emotion_id"),
+                                "boundary_reason": "DUAL_CROP_RECORD"}
+            raise _e
+        if has_vendor:
+            _why = validate_vendor_crop_record(vrec, e.get("out_path"))
+            if _why:
+                _e = RuntimeError(
+                    "vendor 참조 절단 기록이 유효하지 않습니다 — 검증되지 않은 결과는 발행하지 "
+                    "않습니다. " + _ICL_SAFE_MODE_HINT)
+                _e.error_payload = {"code": MISSING_OR_INVALID_VENDOR_CROP_RECORD,
+                                    "segment_index": e.get("original_segment_index"),
+                                    "chunk_index": e.get("chunk_index"),
+                                    "emotion_id": e.get("emotion_id"),
+                                    "boundary_reason": _why}
+                raise _e
+            continue          # vendor 권위로 통과 — ASR 요약에는 넣지 않는다
+        if not has_asr:
             _e = RuntimeError(
                 "참조 억양 반영 모드인데 참조 구간 절단 기록이 없습니다 — 잘렸는지 확인할 수 없는 "
                 "결과는 발행하지 않습니다. " + _ICL_SAFE_MODE_HINT)
@@ -1747,6 +1854,17 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             emit("progress", percent=5,
                  message="참조 억양 반영 모드 — 참조 대사를 먼저 생성한 뒤 경계를 찾아 잘라냅니다"
                          "(생성 길이가 늘어 처리 시간이 더 걸립니다)")
+        # OVERTEST 진단 전용: parser 가 빈 줄로 나눈 문단을 **호출 단위로만** 하나로 합친다.
+        # 글자·문장부호·문단 순서를 바꾸지 않고 줄바꿈으로 이어 붙인다(원문 보존).
+        # 감정 태그가 서로 다르면 합치지 않는다 — 생성 조건이 달라지기 때문이다.
+        if os.environ.get("AUDIOFORGE_DIAG_MERGE_SEGMENTS") == "1":
+            _eids = {e for e, _ in parsed}
+            if len(_eids) > 1:
+                raise RuntimeError(
+                    "DIAG_MERGE_REFUSED: 감정 태그가 %d 종류라 합치면 조건이 달라진다" % len(_eids))
+            _merged = chr(10).join(t for _, t in parsed)
+            parsed = [(parsed[0][0], _merged)]
+            emit("stage", stage="diagnostic_merge_segments", segments=1, chars=len(_merged))
         for i, (emotion_id, line_text) in enumerate(parsed):
             ref = ref_cache.get(emotion_id, ref_cache["default"])
             prefix_text = None
@@ -1786,7 +1904,12 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             seg = {"index": i, "text": line_text, "ref_audio": ref, "ref_text": ref_text,
                    "x_vector_only": xvo, "language_name": lang_name, "out_path": out_path,
                    "emotion_id": emotion_id}  # 태그(비민감) — bridge가 결과·오류에 반환
-            if prefix_text:
+            # 기본 경로 = vendor native ICL(ref_code conditioning + vendor 내부 crop).
+            # controlled-prefix 는 legacy rollback 전용 opt-in 이다 —
+            # 참조를 목표 앞에 재발화시키고 외부 ASR 로 잘라내던 경로다.
+            if prefix_text and os.environ.get("AUDIOFORGE_LEGACY_CONTROLLED_PREFIX") == "1":
+                # 진단 전용: controlled-prefix 주입을 끄고 vendor native ICL 만 쓴다.
+                # ref_text 는 seg 에 그대로 남아 vendor conditioning 으로 전달된다.
                 # controlled-prefix: bridge 가 chunk 마다 [참조 전사][종결][개행][목표 대사]로 조립하고
                 # 생성 뒤 경계를 찾아 앞을 잘라낸다. 자동분할된 chunk 각각이 자기 prefix 를 갖는다.
                 seg["prefix_text"] = prefix_text

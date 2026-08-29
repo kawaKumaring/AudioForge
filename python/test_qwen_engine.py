@@ -14,6 +14,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _vendor_crop_fixture as _vcf
 import tts_worker
 import reference_audio as ra
 import reference_transcript as rt  # noqa: F401 (STATUS_OK 등 상수 사용 경로 확인용)
@@ -401,11 +402,15 @@ class QwenBatchPathTest(_QwenGlobalIsolation, unittest.TestCase):
                          "ref_texts": [s["ref_text"] for s in segments]})
             for s in segments:
                 _write(s["out_path"], 0.3)
-            return [{"original_segment_index": s["index"], "chunk_index": 0, "chunk_count": 1,
+            out = []
+            for s in segments:
+                e = {"original_segment_index": s["index"], "chunk_index": 0, "chunk_count": 1,
                      "out_path": s["out_path"], "sr": 24000, "x_vector_only": s["x_vector_only"],
                      "emotion_id": s.get("emotion_id"), "production_tokens": 20,
                      "generation_limit": 256, "generated_iterations": 100,
-                     "termination_reason": "completed_before_limit", "status": "ok"} for s in segments]
+                     "termination_reason": "completed_before_limit", "status": "ok"}
+                out.append(_vcf.attach(e, s))      # native 기본 경로 발행 근거
+            return out
         return fake_run_job
 
     def test_routes_to_qwen_batch_once_and_per_segment_language(self):
@@ -555,11 +560,15 @@ class AtomicFinalReplaceTest(_QwenGlobalIsolation, unittest.TestCase):
         def fake_run_job(inner_self, segments, device):
             for s in segments:
                 _write(s["out_path"], 0.3)
-            return [{"original_segment_index": s["index"], "chunk_index": 0, "chunk_count": 1,
+            out = []
+            for s in segments:
+                e = {"original_segment_index": s["index"], "chunk_index": 0, "chunk_count": 1,
                      "out_path": s["out_path"], "sr": 24000, "x_vector_only": s["x_vector_only"],
                      "emotion_id": s.get("emotion_id"), "production_tokens": 20,
                      "generation_limit": 256, "generated_iterations": 100,
-                     "termination_reason": "completed_before_limit", "status": "ok"} for s in segments]
+                     "termination_reason": "completed_before_limit", "status": "ok"}
+                out.append(_vcf.attach(e, s))      # native 기본 경로 발행 근거
+            return out
         self._patch(tts_worker.QwenTTSEngine, "run_job", new=fake_run_job)
 
     def _preexisting_final(self):
@@ -716,7 +725,7 @@ class MetadataEmitQwenTest(_QwenGlobalIsolation, unittest.TestCase):
                     e["reference_alignment"] = dict(self.align)
                     e["reference_cut_sample"] = 4200
                     e["controlled_prefix"] = True
-                out.append(e)
+                out.append(_vcf.attach(e, s))
             return out
         self._patch(tts_worker.QwenTTSEngine, "run_job", new=fake_run_job)
 
@@ -753,8 +762,11 @@ class MetadataEmitQwenTest(_QwenGlobalIsolation, unittest.TestCase):
         self.assertFalse(meta["seed_supported"])
         self.assertIsInstance(meta["elapsed_seconds"], (int, float))
         # controlled-prefix 절단 실측이 그대로 기록된다(샘플 인덱스·dB).
-        self.assertEqual(meta["reference_cut_sample"], 4200)
-        self.assertEqual(meta["reference_alignment"]["first"]["onset_sample"], 5040)
+        # production 기본 = vendor native ICL. 외부 ASR 절단이 없으므로 alignment 좌표는 없고
+        # 발행 근거는 vendor_internal_crop_record 다. legacy 절단 수치 계약은
+        # test_reference_conditioning_mode 의 legacy 클래스가 고정한다.
+        self.assertIsNone(meta["reference_cut_sample"])
+        self.assertIsNone(meta["reference_alignment"])
         # 보안: 어떤 메타 값에도 전사 '전문'이 들어가지 않는다
         blob = _json_dumps(meta)
         self.assertNotIn("자동전사문장", blob)

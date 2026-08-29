@@ -124,6 +124,15 @@ def _install_talker_counter(model):
     class _StepCounter(StoppingCriteria):
         def __call__(self, input_ids, scores, **kw):
             _COUNTER["n"] += 1
+            # 협조적 정지: 플래그 파일이 생기면 True 를 반환해 generate 를 **정상 반환**시킨다.
+            # 강제 kill 과 달리 지금까지의 codes 가 decode 를 거쳐 파형이 된다.
+            # scores 미사용·난수 미사용은 그대로라 생성 분포는 불변이다.
+            if _COUNTER["n"] % _STOP_CHECK_EVERY == 0:
+                fp = os.environ.get(DIAG_STOP_FLAG_ENV)
+                if fp and os.path.exists(fp):
+                    _STOP["requested"] = True
+                    _STOP["at_step"] = _COUNTER["n"]
+                    return True
             return False
 
     orig = talker.generate
@@ -196,7 +205,8 @@ def _generation_text(seg):
     prefix = (seg.get("prefix_text") or "").strip()
     if not prefix:
         return seg["text"], False
-    return prefix_alignment.build_controlled_prefix_text(prefix, seg["text"]), True
+    _pfx = prefix_alignment.build_controlled_prefix_text(prefix, seg["text"])
+    return _pfx, True
 
 
 def _instruct_probe_kwargs(model, seg, probe_context):
@@ -252,6 +262,11 @@ def _generate_segment(model, seg, builder, proc, probe_context="production"):
     gen_text, controlled_prefix = _generation_text(seg)
     prod_tokens = _prod_tokens(builder, proc, gen_text)
     seg_limit = generation_limit.compute_max_new_tokens(prod_tokens)
+    _dmax = _diag_max_new_tokens()
+    if _dmax is not None:
+        # 진단 상한. termination 판정(classify_termination)은 이 값 기준으로 그대로 돈다 —
+        # 상한 도달이면 generation_limit 으로 드러나지 조용히 잘린 결과를 채택하지 않는다.
+        seg_limit = _dmax
     probe_kwargs, probe = _instruct_probe_kwargs(model, seg, probe_context)
     _COUNTER["n"] = 0
     # 이 한 호출이 곧 'blocking 생성 구간'이다 — 그 사이 stdout 이 없으므로 production 비활성
@@ -279,6 +294,11 @@ def _generate_segment(model, seg, builder, proc, probe_context="production"):
         raise RuntimeError(
             "TTS_COMPAT: talker 반복 계측값이 0 — StoppingCriteria 계측 경로 미동작. 안전장치 없이 통과 금지.")
     reason = generation_limit.classify_termination(iters, seg_limit)
+    if _STOP["requested"]:
+        # 사용자 중지는 eos 도 generation_limit 도 아니다. 별도 사유로 남긴다.
+        reason = "cooperative_stop"
+        emit("stage", stage="cooperative_stop", at_step=int(_STOP["at_step"] or iters),
+             generated_iterations=int(iters))
     return {"wavs": wavs, "sr": sr, "prod_tokens": prod_tokens,
             "generation_limit": seg_limit, "generated_iterations": iters,
             "termination_reason": reason, "generation_elapsed_sec": gen_elapsed,
@@ -311,6 +331,40 @@ class BridgeGenerationLimit(Exception):
 
 
 DIAG_CAP_ENV = "AUDIOFORGE_DIAG_SEGMENT_TOKEN_CAP"
+DIAG_SINGLE_ENV = "AUDIOFORGE_DIAG_SINGLE_CHUNK_OVERTEST"
+DIAG_MAXNEW_ENV = "AUDIOFORGE_DIAG_MAX_NEW_TOKENS"
+DIAG_STOP_FLAG_ENV = "AUDIOFORGE_DIAG_STOP_FLAG"
+_STOP_CHECK_EVERY = 16   # step 마다 stat() 하면 느려진다. 16 step ~ 1.3초 지연.
+_STOP = {"requested": False, "at_step": None}
+
+
+def _diag_flag(name):
+    """진단 플래그. 값이 있으면 켠다. 잘못된 값은 조용히 무시하지 않는다."""
+    v = (os.environ.get(name) or "").strip()
+    if not v:
+        return False
+    if v not in ("1", "true", "True"):
+        raise RuntimeError("DIAG_FLAG_INVALID: %s=%r (1 만 허용)" % (name, v))
+    return True
+
+
+def _diag_max_new_tokens():
+    """진단 전용 codec 생성 상한. 분할 기준이 아니라 runaway 방지 안전장치다.
+
+    production 은 generation_limit 이 유일 권위이고 이 훅은 환경변수가 있을 때만 산다.
+    조용한 clamp 를 하지 않는다 — 범위를 벗어나면 실패시킨다."""
+    raw = (os.environ.get(DIAG_MAXNEW_ENV) or "").strip()
+    if not raw:
+        return None
+    try:
+        v = int(raw)
+    except ValueError:
+        raise RuntimeError("DIAG_MAXNEW_INVALID: %s=%r" % (DIAG_MAXNEW_ENV, raw))
+    # 상한은 모델 architecture(talker max_position_embeddings=32768)를 따른다.
+    # 예전에 임의로 둔 4096 은 근거가 없었고 실제로 6144 요청을 막았다.
+    if not (1 <= v <= 32768):
+        raise RuntimeError("DIAG_MAXNEW_OUT_OF_RANGE: %s=%d (1~32768)" % (DIAG_MAXNEW_ENV, v))
+    return v
 DIAG_SENTENCE_ENV = "AUDIOFORGE_DIAG_SENTENCE_FIRST"
 
 
@@ -339,6 +393,12 @@ def _build_chunk_plan(segments, builder, proc, max_seg_tok):
     """전 원본 segment를 먼저 분할(생성 없음). 하나라도 분할 실패면 BridgeSegmentTooLong →
     생성 루프에 진입하지 않아 generate 호출 0. 반환: [{seg, chunk_index, chunk_count, text}]."""
     plan = []
+    if _diag_flag(DIAG_SINGLE_ENV):
+        # 분할하지 않는다. 250자 전체가 vendor 호출 한 번의 target 이 된다.
+        emit("stage", stage="diagnostic_single_chunk", segments=len(segments))
+        for seg in segments:
+            plan.append({"seg": seg, "chunk_index": 0, "chunk_count": 1, "text": seg["text"]})
+        return plan
     max_seg_tok, diag = _diag_cap(max_seg_tok)
     sentence_first = bool(os.environ.get(DIAG_SENTENCE_ENV))
     if diag or sentence_first:
@@ -364,6 +424,149 @@ def _build_chunk_plan(segments, builder, proc, max_seg_tok):
         for ci, ctext in enumerate(chunks):
             plan.append({"seg": seg, "chunk_index": ci, "chunk_count": cc, "text": ctext})
     return plan
+
+
+VENDOR_CROP_SCHEMA = "af-vendor-internal-crop/2"
+VENDOR_CROP_CONTRACT_VERSION = 2
+VENDOR_CROP_AUTHORITY = "vendor_native_ref_code"
+VENDOR_CROP_ALGORITHM_ID = "qwen3_tts.generate_voice_clone.proportional_ref_code_crop"
+
+
+def _sha_bytes(b):
+    import hashlib
+    return hashlib.sha256(b).hexdigest()
+
+
+def _sha_text(t):
+    return _sha_bytes((t or "").encode("utf-8"))
+
+
+def _ref_code_frames(model, seg):
+    """참조 오디오를 vendor 와 같은 tokenizer 로 인코딩해 ref_code 프레임 수를 얻는다.
+
+    vendor 가 이 값을 반환하지 않으므로 발행 근거로 쓰려면 직접 재현해야 한다.
+    실패하면 None — 상위가 fail-closed 한다(추정값으로 채우지 않는다)."""
+    try:
+        import soundfile as _sf
+        wav, sr = _sf.read(seg["ref_audio"])
+        if getattr(wav, "ndim", 1) > 1:
+            wav = wav.mean(axis=1)
+        enc = model.model.speech_tokenizer.encode(wav, sr=sr)
+        codes = enc.audio_codes[0]
+        return int(codes.shape[0])
+    except Exception:
+        return None
+
+
+def _build_vendor_crop_record(model, seg, g, d, sr, wav_path):
+    """vendor 내부 codec-frame crop 의 발행 근거. 값을 만들어 내지 않고 실측만 담는다.
+
+    ASR alignment record 와 **별개 권위**다. 둘이 동시에 존재하면 상위가 실패시킨다.
+    필드가 하나라도 없으면 None 을 돌려 fail-closed 로 보낸다."""
+    import numpy as _np
+    ref_frames = _ref_code_frames(model, seg)
+    gen_frames = int(g.get("generated_iterations") or 0)
+    if not ref_frames or gen_frames <= 0:
+        return None
+    arr = _np.asarray(d, dtype="float32")
+    returned = int(arr.shape[0])
+    total_frames = ref_frames + gen_frames
+    if returned <= 0:
+        return None
+    if not bool(_np.all(_np.isfinite(arr))) or int(_np.sum(_np.abs(arr) >= 0.999)) > 0:
+        return None
+    return {
+        "schema_version": VENDOR_CROP_SCHEMA,
+        "crop_contract_version": VENDOR_CROP_CONTRACT_VERSION,
+        "model_revision": str(getattr(model, "_af_model_revision", "") or
+                              os.environ.get("AUDIOFORGE_QWEN_REVISION") or "UNKNOWN"),
+        "sample_rate": int(sr),
+        "prefix_text_enabled": False,
+        "x_vector_only_mode": bool(seg.get("x_vector_only")),
+        "reference_audio_sha256": _sha_bytes(open(seg["ref_audio"], "rb").read()),
+        "reference_text_sha256": _sha_text(seg.get("ref_text")),
+        "target_script_sha256": _sha_text(seg.get("text")),
+        "ref_code_frames": ref_frames,
+        "generated_code_frames": gen_frames,
+        "total_code_frames": total_frames,
+        "returned_samples": returned,
+        # 발행 대상 파일 자체의 바이트로 묶는다 — 메모리 float32 는 기록 형식과 값이 달라
+        # 검증 측과 절대 일치하지 않는다.
+        "returned_pcm_sha256": _sha_bytes(open(wav_path, "rb").read()),
+        "crop_authority": VENDOR_CROP_AUTHORITY,
+        # ★ decoded_total/cut 좌표는 vendor 가 반환하지 않는다. 역산해서 관측값인 척하지 않는다.
+        "crop_coordinates_observed": False,
+        "termination_reason": g.get("termination_reason"),
+        "external_alignment_calls": 0,
+    }
+
+
+def _vendor_returned(dirpath, d, sr, g, seg, ci):
+    """vendor 반환 PCM 을 temp -> 재검증 -> SHA -> atomic rename 으로 보존(진단 전용)."""
+    try:
+        import hashlib
+        import numpy as _np, soundfile as _sf
+        os.makedirs(dirpath, exist_ok=True)
+        base = os.path.join(dirpath, "vendor-returned-target-only")
+        tmp = base + ".part"
+        _sf.write(tmp, _np.ascontiguousarray(_np.asarray(d, dtype="float32")), sr,
+                  format="WAV", subtype="PCM_16")
+        chk, _csr = _sf.read(tmp)
+        if _csr != sr or chk.shape[0] != int(_np.asarray(d).shape[0]):
+            raise RuntimeError("VENDOR_RETURNED_VERIFY_FAILED")
+        wav_sha = hashlib.sha256(open(tmp, "rb").read()).hexdigest()
+        gen = int(g.get("generated_iterations") or 0)
+        rec = {"source_run_id": os.path.basename(dirpath),
+               "prefix_text_enabled": False,
+               "generated_code_frames": gen,
+               "returned_samples": int(_np.asarray(d).shape[0]),
+               "sample_rate": sr,
+               "codec_hop_samples": CODEC_HOP_SAMPLES,
+               "crop_formula": "cut = int(ref_len / total_len * decoded_total_samples)",
+               "ref_code_frames": "UNKNOWN",
+               "total_code_frames": "UNKNOWN",
+               "decoded_total_samples": "UNKNOWN",
+               "vendor_internal_cut_samples": "UNKNOWN",
+               "predicted_returned_samples_if_exact": gen * CODEC_HOP_SAMPLES,
+               "output_wav_sha256": wav_sha,
+               "external_alignment_calls": 0,
+               "production_result": False,
+               "diagnostic_only": True}
+        jt = base + ".json.part"
+        with open(jt, "w", encoding="utf-8") as fh:
+            json.dump(rec, fh, ensure_ascii=False, indent=1)
+        os.replace(tmp, base + ".wav")
+        os.replace(jt, base + ".json")
+        emit("stage", stage="vendor_returned_kept", samples=rec["returned_samples"],
+             generated_code_frames=gen)
+    except Exception as e:
+        emit("stage", stage="vendor_returned_failed", reason=type(e).__name__)
+
+
+def _diag_save_raw(g, tag):
+    """진단 전용: 발행되지 않는 파형을 진단 폴더에 남긴다. 발행 계약은 건드리지 않는다.
+
+    폐기해 버리면 "어디서부터 무너졌는가" 를 영영 들을 수 없다. 실패해도 생성 흐름은 막지 않는다.
+    """
+    if os.environ.get("AUDIOFORGE_DIAG_KEEP_LIMIT_WAVEFORM") != "1":
+        return
+    try:
+        import numpy as _np, soundfile as _sf
+        base = os.environ.get("AUDIOFORGE_DIAG_LIMIT_WAVEFORM_PATH")
+        if not base:
+            return
+        root, ext = os.path.splitext(base)
+        dst = root + "-" + tag + (ext or ".wav")
+        os.makedirs(os.path.dirname(dst), exist_ok=True)
+        d = g["wavs"][0] if isinstance(g["wavs"], list) else g["wavs"]
+        d = _np.asarray(d, dtype="float32")
+        if d.ndim > 1:
+            d = d.mean(axis=1)
+        _sf.write(dst, _np.ascontiguousarray(d), int(g["sr"]))
+        emit("stage", stage="diagnostic_raw_kept", tag=tag,
+             frames=int(d.size), sr=int(g["sr"]))
+    except Exception as e:
+        emit("stage", stage="diagnostic_raw_failed", tag=tag, reason=type(e).__name__)
 
 
 def _finalize_wav(wavs, sr, seg_index, chunk_index):
@@ -402,10 +605,19 @@ def _generate_plan(model, plan, builder, proc, n_segments, progress=None, seed=N
         cseg["text"] = item["text"]
         applied_seed = _seed_rng(seed, completed)
         g = _generate_segment(model, cseg, builder, proc, probe_context)
+        if g["termination_reason"] == "cooperative_stop":
+            _diag_save_raw(g, "cooperative-stop")
         if g["termination_reason"] == "generation_limit":
+            _diag_save_raw(g, "limit-reached")
             raise BridgeGenerationLimit(int(seg["index"]), int(ci), seg.get("emotion_id"),
                                         int(g["generated_iterations"]), int(g["generation_limit"]))
         d = _finalize_wav(g["wavs"], g["sr"], seg["index"], ci)
+        _vdir = os.environ.get("AUDIOFORGE_DIAG_VENDOR_RETURNED_DIR")
+        if _vdir and not g.get("controlled_prefix"):
+            # 진단 전용: vendor 내부 codec-frame crop 이 끝나고 외부 alignment 이전에
+            # 반환된 PCM. controlled-prefix raw 와 구분되는 이름을 쓴다.
+            _vendor_returned(_vdir, d, int(g["sr"]), g, seg, ci)
+
         alignment_request = None
         if g.get("controlled_prefix"):
             # ★여기서 자르지 않는다. 이 raw 는 **중간 산출물**이지 최종 결과가 아니다.
@@ -434,6 +646,12 @@ def _generate_plan(model, plan, builder, proc, n_segments, progress=None, seed=N
                      # 절단 기록(reference_alignment/reference_cut_sample)은 부모가 정렬을 끝낸 뒤
                      # 채운다 — 여기서 None 인 채로 결과가 확정되지 않는다(_align_icl_chunks 가 강제).
                      "controlled_prefix": bool(g.get("controlled_prefix")),
+                     # vendor native ICL(= controlled-prefix 없음, x-vector 아님)일 때만
+                     # 발행 근거를 만든다. 실패하면 None 이라 상위가 fail-closed 한다.
+                     "vendor_crop_record": (
+                         _build_vendor_crop_record(model, seg, g, d, g["sr"], cpath)
+                         if (not g.get("controlled_prefix")
+                             and not seg.get("x_vector_only")) else None),
                      "needs_alignment": alignment_request is not None,
                      # 정렬 입력(부모 전용, 1회 소비 후 폐기). bridge stdout → 부모 메모리까지만 산다.
                      # metadata/로그/세션 어디에도 옮기지 않는다(_align_icl_chunks 가 pop 한다).
