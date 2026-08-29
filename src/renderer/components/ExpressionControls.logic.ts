@@ -7,11 +7,16 @@ export interface PresetValues { pitchSemitones: number; speed: number; sentenceG
 export interface ExpressionPreset { id: string; label: string; values: PresetValues }
 
 // 프리셋 값은 보수적(연구 tts-prosody-control §4: pitch ±1 이내로 유사도 보호). 전부 후처리 축.
+//
+// 이름은 '무엇을 하는 값인가'가 아니라 '어떻게 들리는가'로 짓는다(기본 화면에 그대로 나온다).
+// PHASE B 에서 '원본/낮고 차분/중성적/밝고 가볍게' → '자연스럽게/차분하게/밝게/무겁게'.
+//   · 'neutral'(중성적)은 'original'과 값이 완전히 같은 중복 항목이었다 → 실제로 다른 소리를 내는
+//     'heavy_slow'(무겁게: 낮고 느리고 사이를 길게)로 바꿔 네 칸이 서로 다른 결과를 갖게 했다.
 export const EXPRESSION_PRESETS: readonly ExpressionPreset[] = Object.freeze([
-  { id: 'original', label: '원본', values: { pitchSemitones: 0, speed: 1.0, sentenceGapMs: 500 } },
-  { id: 'calm_low', label: '낮고 차분', values: { pitchSemitones: -1, speed: 0.95, sentenceGapMs: 650 } },
-  { id: 'neutral', label: '중성적', values: { pitchSemitones: 0, speed: 1.0, sentenceGapMs: 500 } },
-  { id: 'bright_light', label: '밝고 가볍게', values: { pitchSemitones: 1, speed: 1.05, sentenceGapMs: 400 } },
+  { id: 'original', label: '자연스럽게', values: { pitchSemitones: 0, speed: 1.0, sentenceGapMs: 500 } },
+  { id: 'calm_low', label: '차분하게', values: { pitchSemitones: -1, speed: 0.95, sentenceGapMs: 650 } },
+  { id: 'bright_light', label: '밝게', values: { pitchSemitones: 1, speed: 1.05, sentenceGapMs: 400 } },
+  { id: 'heavy_slow', label: '무겁게', values: { pitchSemitones: -1, speed: 0.9, sentenceGapMs: 700 } },
 ])
 export const EXPRESSION_PRESET_IDS: readonly string[] = EXPRESSION_PRESETS.map(p => p.id)
 

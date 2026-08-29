@@ -13,7 +13,7 @@
 // ⚠️ TTSEditor 셸 배선은 I5. 이 파일은 셸에 스스로 연결하지 않는다.
 // props 계약: src/renderer/types/ttsExpression.ts ExpressionControlsProps / ExpressionCapabilities.
 import { useState } from 'react'
-import type { CSSProperties } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import type { ExpressionControlsProps, ExpressionCapabilities } from '../types/ttsExpression'
 // 순수 로직은 별도 모듈(React/JSX 비의존)에서 가져온다 — node --test가 로더 없이 실행할 수 있도록.
 import {
@@ -46,6 +46,15 @@ const WITHHELD_META: CtrlMeta[] = [
 export interface ExpressionControlsLocalProps extends ExpressionControlsProps {
   showSettingHelp?: boolean
   disabled?: boolean
+  /**
+   * PHASE B — 같은 축을 두 자리에 나눠 건다(값·핸들러는 셸 하나가 소유하므로 항상 같은 값이다).
+   *   'basic'    : 기본 화면 [3] 말하는 느낌 — 프리셋 + 음높이·속도만.
+   *   'advanced' : 고급 설정 > 표현 — 세부 조절 스위치 + 문장 간격 + 미지원 축 안내.
+   * 미지정 시 'basic'.
+   */
+  section?: 'basic' | 'advanced'
+  /** 기본 화면에서 [3] 카드 안에 셸이 끼워 넣는 것(감정 미리듣기). advanced 에서는 무시. */
+  children?: ReactNode
 }
 
 export default function ExpressionControls({
@@ -58,8 +67,9 @@ export default function ExpressionControls({
   onChange,
   showSettingHelp = false,
   disabled = false,
+  section = 'basic',
+  children,
 }: ExpressionControlsLocalProps) {
-  const [expanded, setExpanded] = useState(false)
   const [openHelp, setOpenHelp] = useState<Record<string, boolean>>({})
   const [openDetail, setOpenDetail] = useState<Record<string, boolean>>({})
 
@@ -70,25 +80,65 @@ export default function ExpressionControls({
   const summary = summarizeExpression(presetId, values, capabilities)
   const fineDisabled = disabled || !fineTuneEnabled
 
+  // ── 고급 설정 > 표현 ─────────────────────────────────────────────────────
+  // 기본 화면에서 덜어낸 것들(세부 조절 스위치·문장 간격·미지원 축 안내)이 여기로 왔다. 사라진 것은 없다.
+  if (section === 'advanced') {
+    return (
+      <section aria-label="표현 세부" style={{ display: 'flex', flexDirection: 'column', gap: 12, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
+          <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>표현 세부</span>
+          <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--cyan)', background: 'var(--cyan-glow)', padding: '2px 7px', borderRadius: 5, letterSpacing: '0.02em' }}>
+            재합성 없이 적용
+          </span>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1, minWidth: 140 }}>{summary}</span>
+        </div>
+
+        <div className="tts-expr-row" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-secondary)', cursor: disabled ? 'not-allowed' : 'pointer' }}>
+            <input type="checkbox" checked={fineTuneEnabled} disabled={disabled} onChange={(e) => onToggleFineTune(e.target.checked)} />
+            세부 조절 사용
+          </label>
+          <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+            {fineTuneEnabled ? '세부값이 프리셋을 덮어씁니다' : '프리셋 값만 적용됩니다'}
+          </span>
+        </div>
+
+        {capabilities.sentenceGap && (
+          <SliderRow
+            metaKey="sentenceGap" label="문장 간격" valueText={fmtSec(values.sentenceGapMs)}
+            min={0} max={2000} step={50} value={values.sentenceGapMs} disabled={fineDisabled}
+            ariaValueText={fmtSec(values.sentenceGapMs)}
+            help={SUPPORTED_META[2].help} detail={SUPPORTED_META[2].detail}
+            helpVisible={helpVisible('sentenceGap')} onToggleHelp={() => toggleHelp('sentenceGap')}
+            detailVisible={!!openDetail['sentenceGap']} onToggleDetail={() => toggleDetail('sentenceGap')}
+            onChange={(v) => onChange({ sentenceGapMs: v })}
+          />
+        )}
+
+        {/* 미지원 축(capability=false) — 비활성 안내. 가짜 슬라이더/가짜 값 없음. */}
+        {WITHHELD_META.filter(m => !capabilities[m.key]).map(m => (
+          <div key={m.key} className="tts-expr-row" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', opacity: 0.5 }}>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', minWidth: 92 }}>{m.label}</span>
+            <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', background: 'var(--bg-elevated)', padding: '2px 7px', borderRadius: 5 }}>준비 중</span>
+            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{m.help} {m.detail}</span>
+          </div>
+        ))}
+      </section>
+    )
+  }
+
+  // ── 기본 화면 [3] 말하는 느낌 ────────────────────────────────────────────
   return (
-    <section className="tts-flow-card" aria-label="표현" style={{ borderRadius: 12, background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', overflow: 'hidden' }}>
+    <section className="tts-flow-card" aria-label="말하는 느낌" style={{ borderRadius: 12, background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', overflow: 'hidden' }}>
       <header className="tts-flow-head" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
         <span aria-hidden="true" style={flowNum}>3</span>
-        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>표현</span>
-        {/* 축 성격(정보 배지 — 버튼 아님). 재합성 없이 결과에 적용되는 후처리 축. */}
-        <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--cyan)', background: 'var(--cyan-glow)', padding: '2px 7px', borderRadius: 5, letterSpacing: '0.02em' }}>
-          재합성 없이 적용
-        </span>
+        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>말하는 느낌</span>
         <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1, minWidth: 140 }}>{summary}</span>
-        <button type="button" onClick={() => setExpanded(e => !e)} aria-expanded={expanded} aria-controls="tts-expr-fine"
-          style={btn('var(--bg-elevated)', 'var(--text-secondary)')}>
-          {expanded ? '접기' : '펼치기'}
-        </button>
       </header>
 
       <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>
         {/* 프리셋 */}
-        <div role="group" aria-label="표현 프리셋" className="tts-expr-row" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <div role="group" aria-label="말하는 느낌 프리셋" className="tts-expr-row" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 11, color: 'var(--text-muted)', minWidth: 44 }}>프리셋</span>
           {EXPRESSION_PRESETS.map(p => {
             const active = p.id === presetId
@@ -102,25 +152,14 @@ export default function ExpressionControls({
           })}
         </div>
 
-        {/* 세부 조절 사용(enable) — 펼치기/접기와 별개 */}
-        <div className="tts-expr-row" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
-          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: 'var(--text-secondary)', cursor: disabled ? 'not-allowed' : 'pointer' }}>
-            <input type="checkbox" checked={fineTuneEnabled} disabled={disabled} onChange={(e) => onToggleFineTune(e.target.checked)} />
-            세부 조절 사용
-          </label>
-          <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-            {fineTuneEnabled ? '세부값이 프리셋을 덮어씁니다' : '프리셋 값만 적용됩니다'}
-          </span>
-        </div>
-
-        {/* 기본 노출 축 — 음높이·속도는 사용 빈도가 높아 접지 않는다(프리셋과 같은 층).
-            문장 간격/말끝/감정 전환 같은 나머지는 아래 펼침 영역과 '세부 표현'에 둔다. */}
+        {/* 기본 노출 축 — 음높이·속도만. 문장 간격·말끝·감정 전환은 '고급 설정'으로 옮겼다(삭제 아님).
+            여기서는 '세부 조절 사용' 체크 없이 바로 움직일 수 있다 — 움직이는 순간 셸이 그 스위치를 켠다. */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
           {/* pitch */}
           {capabilities.pitch && (
             <SliderRow
               metaKey="pitch" label="음높이" valueText={fmtPitch(values.pitchSemitones)}
-              min={-2} max={2} step={0.5} value={values.pitchSemitones} disabled={fineDisabled}
+              min={-2} max={2} step={0.5} value={values.pitchSemitones} disabled={disabled}
               ariaValueText={fmtPitch(values.pitchSemitones)}
               endLabels={['낮고 묵직함', '높고 가볍게']}
               help={SUPPORTED_META[0].help} detail={SUPPORTED_META[0].detail}
@@ -133,7 +172,7 @@ export default function ExpressionControls({
           {capabilities.speed && (
             <SliderRow
               metaKey="speed" label="속도" valueText={fmtSpeed(values.speed)}
-              min={0.5} max={2.0} step={0.05} value={values.speed} disabled={fineDisabled}
+              min={0.5} max={2.0} step={0.05} value={values.speed} disabled={disabled}
               ariaValueText={fmtSpeed(values.speed)}
               help={SUPPORTED_META[1].help} detail={SUPPORTED_META[1].detail}
               helpVisible={helpVisible('speed')} onToggleHelp={() => toggleHelp('speed')}
@@ -143,32 +182,8 @@ export default function ExpressionControls({
           )}
         </div>
 
-        {/* 세부 컨트롤(펼침) */}
-        {expanded && (
-          <div id="tts-expr-fine" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-            {/* sentenceGap */}
-            {capabilities.sentenceGap && (
-              <SliderRow
-                metaKey="sentenceGap" label="문장 간격" valueText={fmtSec(values.sentenceGapMs)}
-                min={0} max={2000} step={50} value={values.sentenceGapMs} disabled={fineDisabled}
-                ariaValueText={fmtSec(values.sentenceGapMs)}
-                help={SUPPORTED_META[2].help} detail={SUPPORTED_META[2].detail}
-                helpVisible={helpVisible('sentenceGap')} onToggleHelp={() => toggleHelp('sentenceGap')}
-                detailVisible={!!openDetail['sentenceGap']} onToggleDetail={() => toggleDetail('sentenceGap')}
-                onChange={(v) => onChange({ sentenceGapMs: v })}
-              />
-            )}
-
-            {/* 미지원 축(capability=false) — 비활성 안내. 가짜 슬라이더/가짜 값 없음. */}
-            {WITHHELD_META.filter(m => !capabilities[m.key]).map(m => (
-              <div key={m.key} className="tts-expr-row" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', opacity: 0.5 }}>
-                <span style={{ fontSize: 11, color: 'var(--text-muted)', minWidth: 92 }}>{m.label}</span>
-                <span style={{ fontSize: 9, fontWeight: 700, color: 'var(--text-muted)', background: 'var(--bg-elevated)', padding: '2px 7px', borderRadius: 5 }}>준비 중</span>
-                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>{m.help} {m.detail}</span>
-              </div>
-            ))}
-          </div>
-        )}
+        {/* 셸 주입(감정 미리듣기) */}
+        {children}
       </div>
     </section>
   )

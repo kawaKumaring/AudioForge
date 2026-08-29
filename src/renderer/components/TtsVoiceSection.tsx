@@ -11,6 +11,13 @@ export interface TtsVoiceSectionLocalProps extends TtsVoiceSectionProps {
   children?: ReactNode
   /** 셸이 주입하는 감정 참조 관리자(EmotionReferenceManager). */
   emotionManager?: ReactNode
+  /**
+   * 헤더의 '설정 설명 표시' 스위치를 이 자리에 그릴지(PHASE B). 기본 화면에서는 고급 설정 헤더로
+   * 옮겼기 때문에 false 로 온다. 계약(onToggleSettingHelp)은 그대로 살아 있다.
+   */
+  showHelpToggle?: boolean
+  /** 헤더 상태줄을 셸이 직접 그릴 때(기본 화면). 미지정이면 기존 referenceReady/Message 문구. */
+  statusSlot?: ReactNode
 }
 
 const card: CSSProperties = {
@@ -24,6 +31,8 @@ export default function TtsVoiceSection({
   onToggleSettingHelp,
   children,
   emotionManager,
+  showHelpToggle = true,
+  statusSlot,
 }: TtsVoiceSectionLocalProps) {
   const statusText = referenceReady
     ? '참조 음성 준비됨'
@@ -37,22 +46,27 @@ export default function TtsVoiceSection({
       }}>
         <span aria-hidden="true" className="tts-flow-num" style={flowNum}>1</span>
         <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>목소리</span>
-        <span
-          role="status"
-          aria-live="polite"
-          style={{ fontSize: 11, color: referenceReady ? 'var(--cyan)' : 'var(--text-muted)', flex: 1, minWidth: 120 }}
-        >
-          {statusText}
-        </span>
-        {/* 전역 '설정 설명 표시' — 모든 ⓘ 한 문장 설명을 기본 펼침(입문자)/접힘(숙련자)으로 전환. */}
-        <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
-          <input
-            type="checkbox"
-            checked={showSettingHelp}
-            onChange={(e) => onToggleSettingHelp(e.target.checked)}
-          />
-          설정 설명 표시
-        </label>
+        {statusSlot ?? (
+          <span
+            role="status"
+            aria-live="polite"
+            style={{ fontSize: 11, color: referenceReady ? 'var(--cyan)' : 'var(--text-muted)', flex: 1, minWidth: 120 }}
+          >
+            {statusText}
+          </span>
+        )}
+        {/* 전역 '설정 설명 표시' — 모든 ⓘ 한 문장 설명을 기본 펼침(입문자)/접힘(숙련자)으로 전환.
+            PHASE B: 기본 화면에서는 고급 설정 헤더로 옮겨 여기서는 그리지 않는다(스위치 자체는 그대로). */}
+        {showHelpToggle && (
+          <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11, color: 'var(--text-secondary)', cursor: 'pointer', whiteSpace: 'nowrap' }}>
+            <input
+              type="checkbox"
+              checked={showSettingHelp}
+              onChange={(e) => onToggleSettingHelp(e.target.checked)}
+            />
+            설정 설명 표시
+          </label>
+        )}
       </header>
 
       <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 12 }}>

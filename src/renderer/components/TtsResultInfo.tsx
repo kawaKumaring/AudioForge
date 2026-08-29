@@ -99,7 +99,20 @@ export default function TtsResultInfo() {
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{headline}</span>
         )}
       </div>
-      <div style={rowWrap}>
+      {/* 자동 모드가 안정 방식으로 바꿔 만들었을 때의 **유일한** 사용자 문구(권위는 Python metadata).
+          여기에 내부 code 를 덧붙이지 않는다 — code 는 아래 '상세 정보' 안에만 있다. */}
+      {rcNotice && (
+        <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{rcNotice}</div>
+      )}
+      {fallback && Boolean(m.fallback_reason) && (
+        <div style={{ fontSize: 11, color: 'var(--rose)' }}>⚠ 폴백 사유: {String(m.fallback_reason)}</div>
+      )}
+      {/* 구현 상세(접기) — PHASE B 에서 합성 정보 배지 전체가 이 안으로 들어왔다.
+          기본 화면에는 '무슨 일이 있었는가'(headline·전환 안내)만 남고, 수치·기술명은 펼쳐야 보인다.
+          문장·전사·전체 경로는 담지 않는다(스키마상 없음). */}
+      <details style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+        <summary style={{ cursor: 'pointer', color: 'var(--text-secondary)', width: 'fit-content' }}>상세 정보</summary>
+        <div style={{ marginTop: 6, ...rowWrap }}>
         <span style={chip('var(--rose)')}>실제 엔진: <strong style={{ color: 'var(--text-primary)' }}>{engineName(actual)}</strong></span>
         {device && <span style={chip('var(--cyan)')}>장치: <strong style={{ color: 'var(--text-primary)' }}>{device}</strong></span>}
         {promptMode && <span style={chip()}>참조 방식: {promptMode}</span>}
@@ -122,33 +135,22 @@ export default function TtsResultInfo() {
         )}
       </div>
       {emoNames && Object.keys(emoNames).length > 0 && (
-        <div style={rowWrap}>
-          {Object.entries(emoNames).map(([id, name]) => {
-            const r = emoRegions?.[id]
-            const hasR = r && typeof r.start === 'number' && typeof r.duration === 'number'
-            return (
-              <span key={id} style={chip('var(--accent)')}>
-                감정 참조 [{EMO_LABEL[id] || id}]: {name}
-                {hasR && ` (${r!.start!.toFixed(1)}~${(r!.start! + r!.duration!).toFixed(1)}초)`}
-              </span>
-            )
-          })}
-        </div>
-      )}
-      {fallback && Boolean(m.fallback_reason) && (
-        <div style={{ fontSize: 11, color: 'var(--rose)' }}>⚠ 폴백 사유: {String(m.fallback_reason)}</div>
-      )}
-      {/* 자동 모드가 안정 방식으로 바꿔 만들었을 때의 **유일한** 사용자 문구(권위는 Python metadata).
-          여기에 내부 code 를 덧붙이지 않는다 — code 는 아래 '상세 정보' 안에만 있다. */}
-      {rcNotice && (
-        <div style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{rcNotice}</div>
-      )}
-      {/* 구현 상세(접기) — 기술 구현명·자동분할 조각별 수치는 기본 노출에서 숨기고 원하는 사용자만 펼쳐 본다.
-          문장·전사·전체 경로는 담지 않는다(스키마상 없음). 구 session(기술 필드 없음)은 이 영역 자체를 숨김. */}
-      {((pitchPost && pitchMethod) || hasExprMeta || rcSwitched || (gen && gen.chunks.length > 0)) && (
-        <details style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-          <summary style={{ cursor: 'pointer', color: 'var(--text-secondary)', width: 'fit-content' }}>상세 정보</summary>
-          <div style={{ marginTop: 6, display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+          <div style={rowWrap}>
+            {Object.entries(emoNames).map(([id, name]) => {
+              const r = emoRegions?.[id]
+              const hasR = r && typeof r.start === 'number' && typeof r.duration === 'number'
+              return (
+                <span key={id} style={chip('var(--accent)')}>
+                  감정 참조 [{EMO_LABEL[id] || id}]: {name}
+                  {hasR && ` (${r!.start!.toFixed(1)}~${(r!.start! + r!.duration!).toFixed(1)}초)`}
+                </span>
+              )
+            })}
+          </div>
+        )}
+        {/* 구현 상세 — 기술 구현명·자동분할 조각별 수치. 구 session(기술 필드 없음)은 이 줄들이 비어 있다. */}
+        {((pitchPost && pitchMethod) || hasExprMeta || rcSwitched) && (
+          <div style={{ marginTop: 6, ...rowWrap }}>
             {pitchPost && pitchMethod && <span style={chip()}>음높이 구현: {pitchMethod}</span>}
             {tailMode && <span style={chip()}>말끝 다듬기: {tailMode === 'auto' ? `자동${tailPad != null ? ` (여백 ${tailPad}ms${tailFadeApplied ? ', 페이드' : ''})` : ''}` : '끔'}</span>}
             {emoBoundary && <span style={chip()}>감정 전환: {emoBoundary === 'pause' ? '쉼 후' : '즉시'}</span>}
@@ -160,28 +162,28 @@ export default function TtsResultInfo() {
             )}
             {rcSwitched && rcFailureCode && <span style={chip()}>전환 사유 코드: {rcFailureCode}</span>}
           </div>
-          {gen && gen.chunks.length > 0 && (
-            <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4, overflowX: 'auto' }}>
-              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>자동 분할 조각 ({gen.chunks.length})</span>
-              {gen.chunks.map((c, i) => (
-                <div key={`${c.original_segment_index}-${c.chunk_index}-${i}`} style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-                  <span style={chip()}>문장 {c.original_segment_index + 1} · 조각 {c.chunk_index + 1}/{c.chunk_count}</span>
-                  {c.production_tokens != null && <span style={chip()}>토큰 {c.production_tokens}</span>}
-                  {c.generated_iterations != null && c.generation_limit != null && (
-                    <span style={chip()}>반복 {c.generated_iterations}/{c.generation_limit}</span>
-                  )}
-                  <span style={chip(c.termination_reason === 'generation_limit' ? 'var(--rose)' : undefined)}>
-                    {c.termination_reason === 'generation_limit' ? '상한 도달' : '상한 전 완료'}
-                  </span>
-                  {c.emotion_id && c.emotion_id !== 'default' && (
-                    <span style={chip('var(--accent)')}>감정 {EMO_LABEL[c.emotion_id] || c.emotion_id}</span>
-                  )}
-                </div>
-              ))}
-            </div>
-          )}
-        </details>
-      )}
+        )}
+        {gen && gen.chunks.length > 0 && (
+          <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 4, overflowX: 'auto' }}>
+            <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>자동 분할 조각 ({gen.chunks.length})</span>
+            {gen.chunks.map((c, i) => (
+              <div key={`${c.original_segment_index}-${c.chunk_index}-${i}`} style={{ display: 'flex', flexWrap: 'wrap', gap: 6 }}>
+                <span style={chip()}>문장 {c.original_segment_index + 1} · 조각 {c.chunk_index + 1}/{c.chunk_count}</span>
+                {c.production_tokens != null && <span style={chip()}>토큰 {c.production_tokens}</span>}
+                {c.generated_iterations != null && c.generation_limit != null && (
+                  <span style={chip()}>반복 {c.generated_iterations}/{c.generation_limit}</span>
+                )}
+                <span style={chip(c.termination_reason === 'generation_limit' ? 'var(--rose)' : undefined)}>
+                  {c.termination_reason === 'generation_limit' ? '상한 도달' : '상한 전 완료'}
+                </span>
+                {c.emotion_id && c.emotion_id !== 'default' && (
+                  <span style={chip('var(--accent)')}>감정 {EMO_LABEL[c.emotion_id] || c.emotion_id}</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </details>
     </div>
   )
 }

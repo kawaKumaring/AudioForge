@@ -26,6 +26,13 @@ import {
 import EmotionScriptEditor, { type EmotionScriptEditorHandle } from './EmotionScriptEditor'
 import { EMOTION_GROUPS, ALL_EMOTIONS, FREQUENT_TAGS, parseUsedEmotionIds } from '@/lib/emotions'
 import type { Emotion } from '@/lib/emotions'
+import TtsAdvancedSettings, { type TtsAdvancedTab } from './TtsAdvancedSettings'
+import TtsEmotionQuickPreview from './TtsEmotionQuickPreview'
+import { setTtsAdvancedOpener } from '@/lib/ttsAdvancedOpen'
+
+// 기본 화면 감정 미리듣기 3종. 카탈로그(EMOTION_SAMPLE_ROWS)에 이미 있는 행만 쓴다 —
+// 새 대본·새 문구를 만들지 않는다(표준 문구 버전 계약을 건드리지 않기 위해서다).
+const QUICK_EMOTION_ROW_IDS = ['emotion_happy', 'emotion_angry', 'emotion_sad'] as const
 
 const EXAMPLE_TEXT = "안녕하세요. 오늘 좋은 소식이 있어요.\n[기쁨] 드디어 프로젝트가 완성됐습니다!\n[슬픔] 하지만 아쉽게도 일정이 늦어졌어요."
 
@@ -190,7 +197,7 @@ async function runPreview(gen: number, path: string) {
 // ExpressionControls를 실제 props 계약으로 배선한다. 편집 알고리즘은 A 컴포넌트가 소유(I5-b는 그 동작 검증).
 // 모든 effect/analyze/preflight는 이 단일 컴포넌트에 유지 → 신규 하위 패널 재렌더로 중복 실행되지 않는다.
 export default function TTSEditor() {
-  const { mode, status, fileInfo, ttsEmotionRefState, registerEmotionRef, removeEmotionRef, setEmotionRefState, setTtsRefState, ttsRefReady, ttsRefMessage, ttsPitchCapability, setTtsPitchCapability,
+  const { mode, status, fileInfo, ttsEmotionRefState, registerEmotionRef, removeEmotionRef, setEmotionRefState, setTtsRefState, ttsRefReady, ttsRefMessage, ttsReferenceClip, ttsPitchCapability, setTtsPitchCapability,
     ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, setTtsExpression,
     ttsReferenceConditioningMode, setTtsReferenceConditioningMode } = useAppStore()
   // 로컬 상태는 store 값으로 초기화 — 빈 값으로 시작하면 아래 동기화 useEffect가 다른 모드에 다녀온 뒤 store를 덮어써 유실시킴
@@ -336,7 +343,17 @@ export default function TTSEditor() {
   }
   const [txLoading, setTxLoading] = useState<string | null>(null)
   const [preflight, setPreflight] = useState<{ available?: boolean; snapshot_ok?: boolean; device_expected?: string; reason?: string } | null>(null)
-  const [showAdvanced, setShowAdvanced] = useState(false)
+  // ── PHASE B 기본 화면 상태 ──
+  // 고급 설정(4탭)의 열림·탭은 셸이 소유한다 — 결과 오류 카드가 특정 자리를 열어 달라고 요청할 수 있어야 한다.
+  const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [advancedTab, setAdvancedTab] = useState<TtsAdvancedTab>('voice')
+  // '사용 구간 바꾸기' — 평소에는 접혀 있고, 앱이 자동으로 고른 구간을 그대로 쓴다.
+  const [regionOpen, setRegionOpen] = useState(false)
+  const [showRefModeHelp, setShowRefModeHelp] = useState(false)
+  // 감정 미리듣기(기본 화면 3종) — 사용자가 버튼을 눌러야 시작하고, 한 번에 하나씩 직렬로 만든다.
+  const [quickPreparing, setQuickPreparing] = useState(false)
+  const [quickBusyRow, setQuickBusyRow] = useState<string | null>(null)
+  const [quickNotice, setQuickNotice] = useState<string | null>(null)
   const [showAllTags, setShowAllTags] = useState(false)
   // I5-a 표현 흐름 UI 상태(셸 로컬 — '고급 기능(세부 조절)'과 '패널 펼치기'는 컴포넌트가 각자 별도 관리, 정정 I5-c).
   const [presetId, setPresetId] = useState('original')
@@ -382,6 +399,141 @@ export default function TTSEditor() {
     setReferencePreviewErrorSink(setPreviewError)
     return () => { setReferencePreviewErrorSink(null); stopReferencePreview() }
   }, [])
+
+  // 결과 오류 카드의 '참조 전사 확인'이 고급 설정 > 음성의 전사 자리를 열 수 있게 한다.
+  // (전사 패널이 접힌 고급 안으로 들어가면서 DOM 에 없을 수 있게 됐다 — 막다른 길 방지.)
+  useEffect(() => {
+    setTtsAdvancedOpener((target) => {
+      if (target !== 'referenceTranscript') return
+      setAdvancedOpen(true)
+      setAdvancedTab('voice')
+      setShowRefPrompts(true)
+    })
+    return () => setTtsAdvancedOpener(null)
+  }, [])
+
+  // ── 목소리 교체(기본 화면 '다른 목소리 선택') ────────────────────────────
+  // TTS 에서 참조 목소리는 곧 지금 올린 파일이다. 새 IPC 를 만들지 않고 기존 파일 적재 경로를 그대로 쓴다.
+  // setFile 이 이전 파생 클립·준비 상태·전사를 정리하므로 다른 원본의 흔적이 새 목소리에 섞이지 않는다.
+  const pickAnotherVoice = async (): Promise<void> => {
+    if (disabled) return
+    const p = await window.api.audio.selectFile()
+    if (!p) return
+    try {
+      const info = await window.api.audio.getFileInfo(p)
+      const url = await window.api.audio.getFileUrl(p)
+      ensuredReferenceKey.current = ''
+      setSamplerKeys({})
+      setQuickNotice(null)
+      setRegionOpen(false)
+      useAppStore.getState().setFile(info, url)
+    } catch {
+      setQuickNotice('이 파일을 열 수 없습니다. 다른 파일을 골라 주세요.')
+    }
+  }
+
+  // ── 감정 미리듣기용 목소리 준비(앱 내부 자동 처리) ────────────────────────
+  // 샘플러는 '보관함에 저장된 참조 + 그 전사'를 요구한다. 그 저장·해시·재사용은 사용자에게 보일 일이
+  // 아니므로(PHASE B) 여기서 조용히 해 둔다. 다만 **사용자가 버튼을 누른 뒤에만** 한다 —
+  // 화면에 들어왔다는 이유로 파이썬을 돌리지 않는다.
+  const ensuredReferenceKey = useRef<string>('')
+  const ensureReferenceForSampler = async (): Promise<{ ok: true; referenceId: string } | { ok: false; message: string }> => {
+    if (!fileInfo?.path) return { ok: false, message: '먼저 목소리로 쓸 소리 파일을 올려 주세요.' }
+    if (!ttsRefReady) return { ok: false, message: ttsRefMessage || '목소리를 준비하는 중입니다. 잠시 뒤 다시 눌러 주세요.' }
+
+    // 미리듣기가 실제 합성과 **같은 소리**를 쓰게 구간을 명시한다.
+    //   · 10초 초과 원본 → 확정된 구간(ttsReferenceRegion)
+    //   · 3~10초 원본     → 원본 전체(구간 개념이 없다) = 0부터 파일 길이
+    // 구간을 비워 보내면 main 이 자기 기본값으로 다른 데를 자를 수 있어, 들어 본 목소리와 합성 목소리가
+    // 어긋난다. 그래서 어느 경우에도 값을 준다.
+    const confirmed = useAppStore.getState().ttsReferenceRegion
+    const wholeSec = Math.min(10, fileInfo.duration || 0)
+    const region = confirmed ?? (wholeSec > 0 ? { start: 0, duration: wholeSec } : null)
+    const key = `${fileInfo.path}|${region ? `${region.start.toFixed(3)}:${region.duration.toFixed(3)}` : 'whole'}`
+
+    // 이미 이 목소리로 준비돼 있고 선택도 살아 있으면 다시 저장하지 않는다(중복 파이썬 실행 방지).
+    const before = await window.api.referenceLibrary.list()
+    setRefAssets({ status: before.status, items: before.items })
+    const already = before.items.find((i) => i.selected)
+    if (ensuredReferenceKey.current === key && already && already.ready && already.transcript === 'present') {
+      return { ok: true, referenceId: already.referenceId }
+    }
+
+    // 전사 확보 — 사용자가 직접 확정해 둔 것이 있으면 그것을 쓰고, 없으면 앱이 스스로 인식한다.
+    // 인식 결과는 어디에도 표시하지 않는다(내용 미노출). 실패하면 그대로 알리고 멈춘다.
+    let transcript = (refPrompts['default']?.manualText || '').trim()
+    let transcriptLanguage = refPrompts['default']?.promptLang || ''
+    if (!transcript) {
+      try {
+        const t = await window.api.audio.transcribeReference(ttsReferenceClip || fileInfo.path) as {
+          status?: string; text?: string; language?: string
+        }
+        if (t?.status === 'ok' && (t.text || '').trim()) {
+          transcript = (t.text as string).trim()
+          transcriptLanguage = t.language || ''
+        }
+      } catch { /* 아래 공통 실패 문구로 떨어진다 */ }
+    }
+    if (!transcript) {
+      return { ok: false, message: '목소리가 무슨 말을 하는지 확인하지 못해 미리듣기를 만들 수 없습니다. 더 또렷한 구간을 골라 주세요.' }
+    }
+
+    const imported = await window.api.referenceLibrary.import({
+      filePath: fileInfo.path,
+      regionStartMs: region ? Math.round(region.start * 1000) : undefined,
+      regionDurationMs: region ? Math.round(region.duration * 1000) : undefined,
+      transcript,
+      transcriptLanguage,
+    })
+    if (!imported.ok) {
+      return { ok: false, message: REF_ASSET_FAILURE_TEXT[imported.reason] ?? '목소리를 미리듣기에 쓸 수 있게 준비하지 못했습니다.' }
+    }
+    const selected = await window.api.referenceLibrary.select(imported.referenceId)
+    if (!selected.ok) {
+      return { ok: false, message: '준비한 목소리를 사용할 수 없습니다. 다른 구간을 골라 주세요.' }
+    }
+    ensuredReferenceKey.current = key
+    await refreshRefAssets()
+    return { ok: true, referenceId: imported.referenceId }
+  }
+
+  // 기쁨 → 화남 → 슬픔을 **직렬**로 만든다. 하나가 끝나야 다음이 시작한다(동시 실행 없음).
+  // 이미 만들어 둔 것(캐시)은 건너뛴다 — '다시 만들기'도 캐시를 지우지 않고 없는 것만 채운다.
+  const runQuickEmotionPreview = async (): Promise<void> => {
+    if (quickPreparing || quickBusyRow) return
+    setQuickNotice(null)
+    setQuickPreparing(true)
+    const ready = await ensureReferenceForSampler()
+    setQuickPreparing(false)
+    if (!ready.ok) { setQuickNotice(ready.message); return }
+
+    const made: Record<string, string> = { ...samplerKeys }
+    for (const rowId of QUICK_EMOTION_ROW_IDS) {
+      if (made[rowId]) continue
+      setQuickBusyRow(rowId)
+      try {
+        const res = await window.api.sampler.generate({ referenceId: ready.referenceId, rowId })
+        if (res.ok) {
+          made[rowId] = res.cacheKey
+          setSamplerKeys((p) => ({ ...p, [rowId]: res.cacheKey }))
+        } else {
+          setQuickNotice(SAMPLER_FAILURE_TEXT[res.reason] ?? '미리듣기를 만들지 못했습니다.')
+          break
+        }
+      } catch {
+        setQuickNotice('미리듣기를 만들지 못했습니다.')
+        break
+      } finally {
+        setQuickBusyRow(null)
+      }
+    }
+    // 고급 설정의 전체 목록에서도 같은 행을 볼 수 있게 목록에 넣어 둔다(같은 캐시를 공유한다).
+    setSamplerRows((r) => {
+      const next = [...r]
+      for (const id of QUICK_EMOTION_ROW_IDS) if (!next.includes(id)) next.push(id)
+      return next
+    })
+  }
 
   const updateRef = (id: string, patch: Partial<TtsReferenceEntry>) =>
     setRefPrompts(prev => ({ ...prev, [id]: { ...(prev[id] || {}), ...patch } }))
@@ -494,6 +646,9 @@ export default function TTSEditor() {
     sentenceGapMs: Math.round(ttsSilenceGap * 1000),
   }
   const onExprChange = (patch: Partial<{ pitchSemitones: number; speed: number; sentenceGapMs: number }>) => {
+    // 기본 화면의 음높이·속도는 '세부 조절 사용' 체크 없이 바로 움직인다(PHASE B).
+    // 값을 손대는 순간 그 스위치를 켜 두어야 고급 설정의 '프리셋 값만 적용' 표시와 실제 값이 어긋나지 않는다.
+    if (!fineTuneEnabled) setFineTuneEnabled(true)
     if (patch.pitchSemitones !== undefined) setTtsPitch(patch.pitchSemitones)
     if (patch.speed !== undefined) setTtsSpeed(patch.speed)
     if (patch.sentenceGapMs !== undefined) setTtsSilenceGap(patch.sentenceGapMs / 1000)
@@ -507,222 +662,192 @@ export default function TTSEditor() {
   const flowCard: CSSProperties = { borderRadius: 12, background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', overflow: 'hidden' }
   const flowHead: CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)' }
   const flowNum: CSSProperties = { width: 22, height: 22, borderRadius: 6, background: 'var(--bg-elevated)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: 'var(--accent)', flexShrink: 0 }
+  const plainBtn = (bg: string, color: string, off = false): CSSProperties => ({
+    fontSize: 11, fontWeight: 600, padding: '6px 12px', borderRadius: 6, border: 'none',
+    cursor: off ? 'not-allowed' : 'pointer', background: bg, color, fontFamily: 'inherit',
+    opacity: off ? 0.45 : 1, whiteSpace: 'nowrap',
+  })
+
+  // ── 기본 화면이 보여 줄 목소리 상태 ──────────────────────────────────────
+  // 내부 용어(requested/effective region · snap · ready · capability)는 여기 오지 않는다.
+  // 실제 안전 오류(너무 짧음/긺 · 말 도중 절단 · 전사 실패 · 대사 불일치)는 ReferenceRegionPanel /
+  // trim 계약이 만든 사용자 문구가 ttsRefMessage 로 그대로 올라온다 — 그 문장을 그대로 보여 준다.
+  // 아직 아무 문구도 오지 않은 순간(분석 시작 직전)도 '준비 중'이다 — 빈 상태를 문제처럼 보이게 하지 않는다.
+  const voicePreparing = !ttsRefReady && (!ttsRefMessage || /중입니다|중\.\.\.|고르는 중/.test(ttsRefMessage))
+  const voiceProblem = !ttsRefReady && !voicePreparing
+  const voiceStatusText = ttsRefReady ? '준비됨' : (voicePreparing ? '준비하는 중…' : ttsRefMessage)
+  const voiceStatusColor = ttsRefReady ? 'var(--cyan)' : (voiceProblem ? 'var(--rose)' : 'var(--text-muted)')
+
+  // ── 감정 미리듣기(기본 3종) ──────────────────────────────────────────────
+  const quickRows = QUICK_EMOTION_ROW_IDS.map((rowId) => ({
+    rowId,
+    label: EMOTION_SAMPLE_ROWS.find((r) => r.rowId === rowId)?.label ?? rowId,
+    ready: !!samplerKeys[rowId],
+  }))
+
+  // ── 음높이 막다른 길 방지 ────────────────────────────────────────────────
+  // 음높이를 못 쓰는 환경에서는 슬라이더가 숨겨진다. 그런데 저장된 값이 0이 아니면 합성이 막힌다
+  // (ProcessButton gate). 되돌릴 수단까지 고급 안으로 숨기면 빠져나올 길이 없어지므로,
+  // '실제로 막혔을 때만' 되돌리기 버튼을 기본 화면에 남긴다.
+  const pitchDeadEnd = !pitchSupported && ttsPitch !== 0
+
+  const engineLabel = ({ auto: '자동', qwen3: 'Qwen3', gptsovits: 'GPT-SoVITS', f5tts: 'F5', kokoro: 'Kokoro' } as Record<string, string>)[ttsEngine] || ttsEngine
+  const refModeLabel = ttsReferenceConditioningMode === 'safe_xvector' ? '안정 우선' : '자동(추천)'
+
+  // 참조 전사 패널(고급 설정 > 음성) — 기존 구현 그대로. id 는 오류 카드의 스크롤 대상이라 유지한다.
+  const referenceTranscriptPanel = (
+    <div id="tts-reference-transcript" style={flowCard}>
+      <button onClick={() => setShowRefPrompts(!showRefPrompts)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', padding: '10px 16px', border: 'none', cursor: 'pointer', background: 'transparent', fontFamily: 'inherit', outline: 'none' }} aria-expanded={showRefPrompts}>
+        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>참조 전사 <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>(선택 — 수동 입력·언어)</span></span>
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" style={{ transform: showRefPrompts ? 'rotate(180deg)' : 'rotate(0)', transition: 'transform 0.2s' }}><polyline points="6 9 12 15 18 9" /></svg>
+      </button>
+      {showRefPrompts && (
+        <div style={{ padding: '0 16px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            참조 음성이 무슨 말을 하는지 적어두면 목소리를 더 정확히 흉내 냅니다. 자동 전사가 틀리면 직접 고치거나 입력하세요.
+            비워두면 자동 전사를 사용합니다. (10초 초과 파일은 확정한 구간만 전사합니다.)
+          </div>
+          {[
+            { id: 'default', label: '기본 참조', path: fileInfo?.path || '', sourcePath: fileInfo?.path || '' },
+            ...ALL_EMOTIONS.filter(e => e.id !== 'default' && ttsEmotionRefState[e.id]?.source)
+              .map(e => ({ id: e.id, label: e.label, path: ttsEmotionRefState[e.id].clip || ttsEmotionRefState[e.id].source, sourcePath: ttsEmotionRefState[e.id].source }))
+          ].map(ref => {
+            const entry = refPrompts[ref.id] || {}
+            const effMode = deriveRefMode(entry)
+            const refFree = effMode === 'ref_free'
+            const eff = refFree ? '화자 특성만' : (effMode === 'manual' ? '직접 입력' : '자동 전사')
+            const effColor = refFree ? 'var(--text-muted)' : (effMode === 'manual' ? 'var(--rose)' : 'var(--cyan)')
+            return (
+              <div key={ref.id} style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 5 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', minWidth: 62 }}>{ref.label}</span>
+                  <span style={{ fontSize: 9, fontWeight: 600, color: effColor, padding: '1px 6px', borderRadius: 4, background: 'var(--bg-elevated)' }}>{eff}</span>
+                  <button onClick={() => autoTranscribe(ref.id, ref.path)} disabled={disabled || !ref.path || !!txLoading} style={{ padding: '3px 10px', borderRadius: 5, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 500, fontFamily: 'inherit', background: 'var(--bg-elevated)', color: 'var(--text-secondary)', opacity: (disabled || !ref.path || !!txLoading) ? 0.5 : 1, marginLeft: 'auto' }}>
+                    {txLoading === ref.id ? '전사 중...' : '자동 전사'}
+                  </button>
+                </div>
+                {entry.autoStatus === 'ok' && (
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 9, color: 'var(--text-muted)' }}>
+                    <span style={{ flex: 1 }}>자동 전사 완료: {entry.autoLang || '?'} · {(entry.autoText || '').length}자</span>
+                    <button onClick={() => useAutoAsManual(ref.id, ref.sourcePath)} disabled={disabled || refFree || !entry.autoText} style={{ padding: '2px 8px', borderRadius: 4, border: 'none', cursor: 'pointer', fontSize: 9, fontWeight: 600, fontFamily: 'inherit', background: 'var(--accent-glow, rgba(56,189,248,0.15))', color: 'var(--cyan)', opacity: (disabled || refFree || !entry.autoText) ? 0.5 : 1 }}>수정하여 사용</button>
+                  </div>
+                )}
+                {entry.autoStatus && entry.autoStatus !== 'ok' && (
+                  <div style={{ fontSize: 9, color: 'var(--rose)' }}>자동 전사 실패({entry.autoStatus}): {entry.autoError || '알 수 없는 오류'}</div>
+                )}
+                <textarea value={entry.manualText || ''} onChange={(e) => onManualEdit(ref.id, e.target.value)}
+                  onBlur={() => { if ((entry.manualText || '').trim() && !refFree) void stampFingerprint(ref.id, ref.sourcePath) }}
+                  disabled={disabled || refFree}
+                  placeholder="수동 전사문 (비우면 자동 전사 사용). '자동 전사' 후 '수정하여 사용'으로 불러올 수 있습니다."
+                  style={{ width: '100%', height: 42, resize: 'vertical', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontFamily: "'Inter', sans-serif", fontSize: 11, outline: 'none', opacity: (disabled || refFree) ? 0.5 : 1 }} />
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>언어</span>
+                  <select value={entry.promptLang || ''} onChange={(e) => updateRef(ref.id, { promptLang: e.target.value })} disabled={disabled} style={{ fontSize: 10, padding: '2px 6px', borderRadius: 5, border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-secondary)', fontFamily: 'inherit' }}>
+                    {PROMPT_LANGS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                  </select>
+                  <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--text-muted)', cursor: 'pointer' }}>
+                    <input type="checkbox" checked={refFree} disabled={disabled} onChange={(e) => onRefFreeToggle(ref.id, e.target.checked)} />
+                    화자 특성만 사용 (전사문 없이 · 유사도 저하 가능)
+                  </label>
+                </div>
+              </div>
+            )
+          })}
+        </div>
+      )}
+    </div>
+  )
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {/* ───────── [1] 목소리 ───────── */}
+      {/* ───────── [1] 목소리 ─────────
+          기본 화면에 남는 것은 셋뿐이다: 선택한 목소리(+재생) / 다른 목소리 선택 / 사용 구간 바꾸기.
+          보관함·감정별 목소리·참조 전사는 '고급 설정 > 음성'으로 옮겼다(숨긴 것이지 없앤 것이 아니다). */}
       <TtsVoiceSection
         referenceReady={ttsRefReady}
         referenceMessage={ttsRefMessage}
         showSettingHelp={showSettingHelp}
         onToggleSettingHelp={setShowSettingHelp}
-        emotionManager={
-          <>
-            <EmotionReferenceManager
-              refs={managerRefs}
-              onRegister={(id, src) => registerEmotionRef(id, src)}
-              onRemove={(id) => removeEmotionRef(id)}
-              onPreview={(id) => previewLocalFile(emotionEffectivePath(ttsEmotionRefState[id]) || ttsEmotionRefState[id]?.source || '')}
-              onChangeRegion={(id, region) => setEmotionRefState(id, { region })}
-              requestSource={requestEmotionSource}
-              renderRegionEditor={renderEmotionRegion}
-              usedEmotionIds={usedEmotionIdList}
-              disabled={disabled}
-            />
-            {/* 미리듣기 실패는 삼키지 않고 보여준다(사용자 언어·경로 미노출·자동 재시도 없음) */}
-            {previewError && (
-              <div role="alert" style={{ fontSize: 10, lineHeight: 1.6, color: 'var(--rose)', padding: '6px 10px', borderRadius: 6, background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
-                {previewError}
-              </div>
-            )}
-            {/* 미등록 안내는 관리 목록의 '기본 목소리 사용' 행이 대신한다(같은 사실을 두 곳에 쓰지 않음).
-                목록을 열지 않아도 보이도록 요약 한 줄만 남긴다. */}
-            {usedUnregistered.length > 0 && (
-              <div style={{ fontSize: 10, lineHeight: 1.6, color: 'var(--text-secondary)', padding: '6px 10px', borderRadius: 6, background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
-                대사에 쓰인 <span style={{ color: 'var(--text-muted)' }}>{usedUnregistered.map(e => e.label).join(', ')}</span> 은(는) <strong style={{ color: 'var(--text-primary)' }}>기본 목소리</strong>로 합성됩니다.
-              </div>
-            )}
-          </>
+        showHelpToggle={false}
+        statusSlot={
+          <span role="status" aria-live="polite" style={{ fontSize: 11, color: voiceStatusColor, flex: 1, minWidth: 140 }}>
+            {voiceStatusText}
+          </span>
         }
       >
-        {/* 참조 목소리 보관함 — 저장해 둔 참조 자산 관리. 감정 참조 등록·구간 편집과 별개 섹션이다. */}
-        <ReferenceAssetLibraryPanel
-          status={refAssets.status}
-          items={refAssets.items}
-          hasConfirmedRegion={!!fileInfo?.path && !!ttsReferenceRegion}
-          busy={disabled}
-          importing={refAssetBusy}
-          disabled={disabled}
-          notice={refAssetNotice}
-          onRefresh={refreshRefAssets}
-          onImport={importCurrentReference}
-          onSelect={selectRefAsset}
-          onRemove={removeRefAsset}
-        />
-
-        {/* 감정·표현 미리듣기 — 참조 보관함·감정 참조 등록과 별개 섹션. */}
-        <EmotionSamplerPanel
-          rows={samplerEntries}
-          cachedFileRowIds={Object.keys(samplerKeys)}
-          defaultVoiceReady={samplerReferenceReady}
-          disabled={disabled || samplerBusyRow !== null}
-          onGenerate={generateSample}
-          onAudition={auditionSample}
-          onDelete={deleteSample}
-          onAddRow={(rowId) => { setSamplerRows((r) => (r.includes(rowId) ? r : [...r, rowId])); void refreshSamplerCache() }}
-          onRemoveRow={(rowId) => { stopSamplerPreview(); setSamplerRows((r) => r.filter((x) => x !== rowId)) }}
-        />
-        {samplerNotice && (
-          <p style={{ fontSize: 11, color: 'var(--rose)', margin: 0, overflowWrap: 'anywhere' }}>{samplerNotice}</p>
-        )}
-
-        {/* 기본 참조 음성 패널(셸 주입) — 단 1회 마운트. */}
-        {fileInfo?.path && (
-          <ReferenceRegionPanel clipKey="default" path={fileInfo.path} disabled={disabled} onState={setTtsRefState} label="참조 음성" />
-        )}
-        {/* Guide */}
-        <div style={{ borderRadius: 12, padding: '12px 16px', background: 'rgba(251,113,133,0.05)', border: '1px solid rgba(251,113,133,0.12)', fontSize: 12, lineHeight: 1.7, color: 'var(--text-secondary)' }}>
-          <strong style={{ color: 'var(--rose)' }}>참조 음성</strong> = 위에 올린 파일의 목소리를 흉내 냅니다.
-          감정별 음성을 추가 등록하면 대사마다 <code style={{ background: 'var(--bg-elevated)', padding: '1px 4px', borderRadius: 3 }}>[기쁨]</code> 태그로 감정을 지정할 수 있습니다.
-          <br />한국어 · 영어 · 일본어 · 중국어 지원. 영어 목소리로 한국어 대사도 가능합니다.
-        </div>
-        {/* Qwen preflight 배지 */}
-        {preflight && (() => {
-          const ok = preflight.available === true
-          const snapMissing = !ok && preflight.snapshot_ok === false
-          const dev = preflight.device_expected
-          const msg = ok
-            ? (dev === 'gpu' ? 'Qwen3 준비됨 · 완전 로컬 · GPU 예상' : dev === 'cpu' ? 'Qwen3 준비됨 · 완전 로컬 · VRAM 부족으로 CPU 예상' : 'Qwen3 준비됨 · 완전 로컬')
-            : (snapMissing ? 'Qwen3 모델 스냅샷 누락 · 자동 선택 시 GPT-SoVITS 사용 예정' : 'Qwen3 미설치 · 자동 선택 시 GPT-SoVITS 사용 예정')
-          const color = ok ? 'var(--cyan)' : 'var(--text-muted)'
-          return (
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 11, color, padding: '2px 2px' }}>
-              <span style={{ width: 7, height: 7, borderRadius: '50%', background: ok ? 'var(--cyan)' : 'var(--text-muted)', flexShrink: 0 }} />
-              <span>{msg}</span>
-              <span style={{ color: 'var(--text-muted)' }}>· 예상값(실제 결과는 합성 후 표시)</span>
-            </div>
-          )
-        })()}
-        {/* 참조 전사(선택 — 수동 입력·언어). 신규 패널에 대응 없어 셸이 그대로 보존(무손실). */}
-        <div id="tts-reference-transcript" style={flowCard}>
-          <button onClick={() => setShowRefPrompts(!showRefPrompts)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', padding: '10px 16px', border: 'none', cursor: 'pointer', background: 'transparent', fontFamily: 'inherit', outline: 'none' }} aria-expanded={showRefPrompts}>
-            <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>참조 전사 <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>(선택 — 수동 입력·언어)</span></span>
-            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" style={{ transform: showRefPrompts ? 'rotate(180deg)' : 'rotate(0)', transition: 'transform 0.2s' }}><polyline points="6 9 12 15 18 9" /></svg>
-          </button>
-          {showRefPrompts && (
-            <div style={{ padding: '0 16px 12px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-              <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-                참조 음성이 무슨 말을 하는지 적어두면 목소리를 더 정확히 흉내 냅니다. 자동 전사가 틀리면 직접 고치거나 입력하세요.
-                비워두면 자동 전사를 사용합니다. (10초 초과 파일은 확정한 구간만 전사합니다.)
-              </div>
-              {[
-                { id: 'default', label: '기본 참조', path: fileInfo?.path || '', sourcePath: fileInfo?.path || '' },
-                ...ALL_EMOTIONS.filter(e => e.id !== 'default' && ttsEmotionRefState[e.id]?.source)
-                  .map(e => ({ id: e.id, label: e.label, path: ttsEmotionRefState[e.id].clip || ttsEmotionRefState[e.id].source, sourcePath: ttsEmotionRefState[e.id].source }))
-              ].map(ref => {
-                const entry = refPrompts[ref.id] || {}
-                const effMode = deriveRefMode(entry)
-                const refFree = effMode === 'ref_free'
-                const eff = refFree ? '화자 특성만' : (effMode === 'manual' ? '직접 입력' : '자동 전사')
-                const effColor = refFree ? 'var(--text-muted)' : (effMode === 'manual' ? 'var(--rose)' : 'var(--cyan)')
-                return (
-                  <div key={ref.id} style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 8, display: 'flex', flexDirection: 'column', gap: 5 }}>
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)', minWidth: 62 }}>{ref.label}</span>
-                      <span style={{ fontSize: 9, fontWeight: 600, color: effColor, padding: '1px 6px', borderRadius: 4, background: 'var(--bg-elevated)' }}>{eff}</span>
-                      <span style={{ flex: 1, fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{ref.path ? ref.path.split(/[/\\]/).pop() : '파일 없음'}</span>
-                      <button onClick={() => autoTranscribe(ref.id, ref.path)} disabled={disabled || !ref.path || !!txLoading} style={{ padding: '3px 10px', borderRadius: 5, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 500, fontFamily: 'inherit', background: 'var(--bg-elevated)', color: 'var(--text-secondary)', opacity: (disabled || !ref.path || !!txLoading) ? 0.5 : 1 }}>
-                        {txLoading === ref.id ? '전사 중...' : '자동 전사'}
-                      </button>
-                    </div>
-                    {entry.autoStatus === 'ok' && (
-                      <div style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 9, color: 'var(--text-muted)' }}>
-                        <span style={{ flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>자동 전사: {entry.autoLang || '?'} · {(entry.autoText || '').length}자 · "{(entry.autoText || '').slice(0, 30)}"</span>
-                        <button onClick={() => useAutoAsManual(ref.id, ref.sourcePath)} disabled={disabled || refFree || !entry.autoText} style={{ padding: '2px 8px', borderRadius: 4, border: 'none', cursor: 'pointer', fontSize: 9, fontWeight: 600, fontFamily: 'inherit', background: 'var(--accent-glow, rgba(56,189,248,0.15))', color: 'var(--cyan)', opacity: (disabled || refFree || !entry.autoText) ? 0.5 : 1 }}>수정하여 사용</button>
-                      </div>
-                    )}
-                    {entry.autoStatus && entry.autoStatus !== 'ok' && (
-                      <div style={{ fontSize: 9, color: 'var(--rose)' }}>자동 전사 실패({entry.autoStatus}): {entry.autoError || '알 수 없는 오류'}</div>
-                    )}
-                    <textarea value={entry.manualText || ''} onChange={(e) => onManualEdit(ref.id, e.target.value)}
-                      onBlur={() => { if ((entry.manualText || '').trim() && !refFree) void stampFingerprint(ref.id, ref.sourcePath) }}
-                      disabled={disabled || refFree}
-                      placeholder="수동 전사문 (비우면 자동 전사 사용). '자동 전사' 후 '수정하여 사용'으로 불러올 수 있습니다."
-                      style={{ width: '100%', height: 42, resize: 'vertical', padding: '6px 8px', borderRadius: 6, border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-primary)', fontFamily: "'Inter', sans-serif", fontSize: 11, outline: 'none', opacity: (disabled || refFree) ? 0.5 : 1 }} />
-                    <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                      <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>언어</span>
-                      <select value={entry.promptLang || ''} onChange={(e) => updateRef(ref.id, { promptLang: e.target.value })} disabled={disabled} style={{ fontSize: 10, padding: '2px 6px', borderRadius: 5, border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', color: 'var(--text-secondary)', fontFamily: 'inherit' }}>
-                        {PROMPT_LANGS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-                      </select>
-                      <label style={{ display: 'flex', alignItems: 'center', gap: 4, fontSize: 10, color: 'var(--text-muted)', cursor: 'pointer' }}>
-                        <input type="checkbox" checked={refFree} disabled={disabled} onChange={(e) => onRefFreeToggle(ref.id, e.target.checked)} />
-                        화자 특성만 사용 (전사문 없이 · 유사도 저하 가능)
-                      </label>
-                    </div>
-                  </div>
-                )
-              })}
-            </div>
-          )}
-        </div>
-      </TtsVoiceSection>
-
-      {/* ───────── 참조 사용 방식(참조혼입 대응) ───────── */}
-      {/* store 가 단일 소스. 선택지는 두 가지 의미뿐이다 — 자동(auto, 추천) / 안정 우선(safe_xvector).
-          자동은 참조 억양 반영(ICL)을 먼저 시도하고, 경계를 못 찾으면 그 결과를 버리고 같은 작업 안에서
-          안정 방식으로 한 번만 바꿔 결과를 만든다. 잘리지 않은 ICL 결과는 어느 쪽에서도 발행되지 않는다. */}
-      <section aria-label="참조 사용 방식" style={flowCard}>
-        <div style={{ padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>
-            참조 사용 방식 <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>(목소리를 어떻게 따라할지)</span>
+        {/* 선택한 목소리 + 세 가지 조작 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0, padding: '8px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+          <span style={{ fontSize: 12, color: 'var(--text-secondary)', minWidth: 0 }}>
+            지금 쓰는 목소리 — <strong style={{ color: 'var(--text-primary)' }}>올린 파일의 목소리</strong>
           </span>
-          <div role="radiogroup" aria-label="참조 사용 방식 선택" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-            {[
-              {
-                id: 'auto' as const,
-                label: '자동 (추천)',
-                desc: '목소리 느낌을 최대한 살려 보고, 잘 안 되면 안정 방식으로 자동 전환 (합성 시간 증가)',
-              },
-              {
-                id: 'safe_xvector' as const,
-                label: '안정 우선',
-                desc: '참조 대사 섞임 없음 · 감정 표현은 다소 평탄할 수 있음 (가장 빠름)',
-              },
-            ].map((opt) => {
-              const selected = ttsReferenceConditioningMode === opt.id
-              return (
-                <button
-                  key={opt.id}
-                  role="radio"
-                  aria-checked={selected}
-                  disabled={disabled}
-                  onClick={() => !disabled && setTtsReferenceConditioningMode(opt.id)}
-                  style={{
-                    display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 2,
-                    padding: '8px 12px', borderRadius: 8, cursor: disabled ? 'default' : 'pointer',
-                    fontFamily: 'inherit', textAlign: 'left', width: '100%',
-                    background: selected ? 'var(--bg-elevated)' : 'transparent',
-                    border: selected ? '1px solid var(--accent)' : '1px solid var(--border-subtle)',
-                    opacity: disabled ? 0.6 : 1,
-                  }}
-                >
-                  <span style={{ fontSize: 12, fontWeight: 600, color: selected ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
-                    {selected ? '● ' : '○ '}{opt.label}
-                  </span>
-                  <span style={{ fontSize: 10, lineHeight: 1.5, color: 'var(--text-muted)' }}>{opt.desc}</span>
-                </button>
-              )
-            })}
-          </div>
-          {(ttsReferenceConditioningMode === 'auto' || ttsReferenceConditioningMode === 'high_quality_icl') && (
-            <div style={{ fontSize: 10, lineHeight: 1.6, color: 'var(--text-muted)', padding: '6px 10px', borderRadius: 6, background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
-              참조 대사를 일부러 먼저 만들게 한 뒤 <strong>그 부분을 잘라냅니다</strong>. 잘라낼 지점을 찾지
-              못하면 그 결과는 버리고 <strong>안정 방식으로 한 번만 바꿔</strong> 결과를 만듭니다 —
-              그때는 완료 화면에 그 사실을 알려 드립니다. 합성 시간은 늘어납니다.
-            </div>
-          )}
+          <span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', marginLeft: 'auto' }}>
+            <button type="button" onClick={() => previewLocalFile(ttsReferenceClip || fileInfo?.path || '')}
+              disabled={disabled || !fileInfo?.path} aria-label="지금 쓰는 목소리 재생"
+              style={plainBtn('var(--bg-card)', 'var(--text-secondary)', disabled || !fileInfo?.path)}>▶ 재생</button>
+            <button type="button" onClick={() => { void pickAnotherVoice() }} disabled={disabled}
+              aria-label="다른 목소리 선택"
+              style={plainBtn('var(--bg-card)', 'var(--cyan)', disabled)}>다른 목소리 선택</button>
+            <button type="button" onClick={() => setRegionOpen(v => !v)} disabled={disabled || !fileInfo?.path}
+              aria-expanded={regionOpen} aria-label="사용 구간 바꾸기"
+              style={plainBtn('var(--bg-card)', 'var(--text-secondary)', disabled || !fileInfo?.path)}>
+              {regionOpen ? '구간 편집 닫기' : '사용 구간 바꾸기'}
+            </button>
+          </span>
         </div>
-      </section>
+
+        {/* 미리듣기 실패는 삼키지 않고 보여준다(사용자 언어·경로 미노출·자동 재시도 없음) */}
+        {previewError && (
+          <div role="alert" style={{ fontSize: 11, lineHeight: 1.6, color: 'var(--rose)', padding: '6px 10px', borderRadius: 6, background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
+            {previewError}
+          </div>
+        )}
+
+        {/* 기본 참조 음성 패널(셸 주입) — 단 1회 마운트.
+            접혀 있어도 분석과 '안전한 3~10초 구간 자동 확정'은 계속 돈다. 펼치면 예전 파형·슬라이더가 그대로 나온다. */}
+        {fileInfo?.path && (
+          <ReferenceRegionPanel
+            clipKey="default"
+            path={fileInfo.path}
+            disabled={disabled}
+            onState={setTtsRefState}
+            label="참조 음성"
+            open={regionOpen}
+            autoConfirm
+            plainStatus={!regionOpen}
+          />
+        )}
+
+        {/* 참조 사용 방식 — 화면에 나오는 것은 두 가지 이름뿐이다.
+            ICL·x-vector·ASR 정렬 같은 기술 명칭은 ⓘ 한 줄과 '고급 설정 > 엔진·진단'에만 있다. */}
+        <div role="radiogroup" aria-label="참조 사용 방식" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0, borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>참조 방식</span>
+          {[
+            { id: 'auto' as const, label: '자동(추천)', tip: '목소리 느낌을 최대한 살려 보고, 잘 안 되면 안정 방식으로 자동 전환합니다. 합성 시간이 늘어납니다.' },
+            // ⚠️ 이 문구는 metadata 의 품질 제약(CONSTRAINT_EMOTION_MAY_FLATTEN)과 같은 사실을 말해야 한다 —
+            //    python/test_reference_conditioning_mode.py 가 '감정 표현은 다소 평탄할 수 있음' 을 대조한다.
+            { id: 'safe_xvector' as const, label: '안정 우선', tip: '참조 대사 섞임 없음 · 감정 표현은 다소 평탄할 수 있음 (가장 빠름)' },
+          ].map((opt) => {
+            const selected = ttsReferenceConditioningMode === opt.id
+            return (
+              <button key={opt.id} type="button" role="radio" aria-checked={selected} disabled={disabled}
+                title={opt.tip}
+                onClick={() => !disabled && setTtsReferenceConditioningMode(opt.id)}
+                style={plainBtn(selected ? 'var(--rose)' : 'var(--bg-elevated)', selected ? '#fff' : 'var(--text-secondary)', disabled)}>
+                {opt.label}
+              </button>
+            )
+          })}
+          <button type="button" onClick={() => setShowRefModeHelp(v => !v)} aria-expanded={showRefModeHelp}
+            aria-label="참조 방식 설명" aria-controls="tts-refmode-help"
+            style={{ width: 18, height: 18, borderRadius: '50%', border: '1px solid var(--text-muted)', background: 'transparent', color: 'var(--text-muted)', fontSize: 11, fontStyle: 'italic', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontFamily: 'inherit' }}>i</button>
+        </div>
+        {(showRefModeHelp || showSettingHelp) && (
+          <p id="tts-refmode-help" style={{ fontSize: 11, lineHeight: 1.6, color: 'var(--text-muted)', margin: 0 }}>
+            자동은 목소리 느낌을 더 살려 보고, 실패하면 같은 작업 안에서 안정 방식으로 한 번만 바꿔 만듭니다.
+            바뀌면 완료 화면에 그 사실을 알려 드립니다.
+          </p>
+        )}
+      </TtsVoiceSection>
 
       {/* ───────── [2] 대사 ───────── */}
       <section className="tts-flow-card" aria-label="대사" style={flowCard}>
@@ -790,10 +915,17 @@ export default function TTSEditor() {
             disabled={disabled}
             refStates={Object.fromEntries(nonDefaultEmotions.map(e => [e.id, { registered: !!ttsEmotionRefState[e.id]?.source, ready: !!ttsEmotionRefState[e.id]?.ready }]))}
           />
+          {/* 대사에 쓴 감정 중 전용 목소리가 없는 것 — 짧은 사실 한 줄(등록은 고급 설정 > 음성). */}
+          {usedUnregistered.length > 0 && (
+            <div style={{ fontSize: 11, lineHeight: 1.6, color: 'var(--text-secondary)' }}>
+              대사에 쓴 <span style={{ color: 'var(--text-muted)' }}>{usedUnregistered.map(e => e.label).join(', ')}</span> 은(는) <strong style={{ color: 'var(--text-primary)' }}>기본 목소리</strong>로 만들어집니다.
+            </div>
+          )}
         </div>
       </section>
 
-      {/* ───────── [3] 표현 ───────── */}
+      {/* ───────── [3] 말하는 느낌 ─────────
+          프리셋 + 음높이·속도만. 문장 간격·말끝·감정 전환은 고급 설정으로 옮겼다. */}
       <ExpressionControls
         capabilities={capabilities}
         presetId={presetId}
@@ -804,49 +936,135 @@ export default function TTSEditor() {
         onChange={onExprChange}
         showSettingHelp={showSettingHelp}
         disabled={disabled}
-      />
-      {/* pitch capability 사유(미지원/미확인) — ExpressionControls는 슬라이더만 숨기므로 사유는 셸이 보존 표시(§6). */}
-      {(pitchProbedUnsupported || pitchUnknown) && (
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 10, lineHeight: 1.5, color: pitchProbedUnsupported ? 'var(--rose)' : 'var(--text-muted)', padding: '2px 4px' }}>
-          <span style={{ flex: 1, minWidth: 180 }}>
+        section="basic"
+      >
+        <TtsEmotionQuickPreview
+          rows={quickRows}
+          enabled={ttsRefReady && !disabled}
+          preparing={quickPreparing}
+          busyRowId={quickBusyRow}
+          notice={quickNotice}
+          disabledNotice={ttsRefReady ? null : '목소리가 준비되면 만들 수 있습니다.'}
+          onGenerate={() => { void runQuickEmotionPreview() }}
+          onPlay={(rowId) => { void auditionSample(rowId) }}
+        />
+      </ExpressionControls>
+
+      {/* 음높이를 못 쓰는 환경 + 저장된 값이 0이 아님 = 합성이 막힌 상태. 빠져나올 버튼만 남긴다.
+          (지원 여부의 자세한 사유는 고급 설정 > 엔진·진단에 있다.) */}
+      {pitchDeadEnd && (
+        <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 11, color: 'var(--rose)', padding: '8px 12px', borderRadius: 8, background: 'var(--bg-card)', border: '1px solid var(--border-subtle)' }}>
+          <span style={{ flex: 1, minWidth: 200 }}>
             {pitchProbedUnsupported
-              ? `이 환경에서는 음높이 보정을 사용할 수 없습니다${pitchCap?.reason ? ` — ${pitchCap.reason}` : ''}. 저장된 음높이 값이 있으면 원본(0)으로 되돌린 뒤 합성하세요.`
-              : '음높이 보정 지원 여부를 확인하는 중입니다. 확인 전에는 음높이를 조절할 수 없습니다(원본 0으로 합성됩니다).'}
+              ? '이 컴퓨터에서는 음높이 조절을 쓸 수 없어 지금 설정으로는 만들 수 없습니다.'
+              : '음높이 조절을 쓸 수 있는지 확인하는 중이라 지금 설정으로는 만들 수 없습니다.'}
           </span>
-          {/* 기존 '원본(0)' 리셋 보존(§6 계약): capability와 무관하게 저장된 nonzero pitch를 0으로 되돌려 합성 차단을 푼다.
-              (미지원 시 ExpressionControls가 슬라이더를 숨겨 리셋 경로가 사라지는 막다른 길 방지.) */}
-          {ttsPitch !== 0 && (
-            <button onClick={() => !disabled && setTtsPitch(0)} disabled={disabled}
-              title="음높이를 원본(0)으로 되돌립니다" style={{ padding: '2px 8px', borderRadius: 4, border: 'none', cursor: disabled ? 'default' : 'pointer', fontSize: 9, fontWeight: 600, fontFamily: 'inherit', background: 'var(--bg-elevated)', color: 'var(--text-secondary)', opacity: disabled ? 0.4 : 1, whiteSpace: 'nowrap' }}>
-              음높이 원본(0)으로 ({ttsPitch > 0 ? '+' : ''}{ttsPitch.toFixed(1)}반음)
-            </button>
-          )}
+          <button onClick={() => !disabled && setTtsPitch(0)} disabled={disabled}
+            aria-label="음높이를 원래대로 되돌리기"
+            style={plainBtn('var(--rose)', '#fff', disabled)}>음높이 원래대로</button>
         </div>
       )}
 
-      {/* 세부 표현(통합 소유 블록) — 말끝 finishing + 감정 전환 경계. ExpressionControls(C) 아래 별도 배치. */}
-      <TtsExpressionDetail
-        capability={resolveExpressionCapability()}
-        tailMode={ttsTailMode}
-        tailPaddingMs={ttsTailPaddingMs}
-        tailFadeMs={ttsTailFadeMs}
-        emotionMode={ttsEmotionBoundaryMode}
-        emotionPauseMs={ttsEmotionBoundaryPauseMs}
-        fineTune={detailFineTune}
+      {/* ───────── 고급 설정(4탭) ───────── */}
+      <TtsAdvancedSettings
+        open={advancedOpen}
+        onToggle={setAdvancedOpen}
+        tab={advancedTab}
+        onTab={setAdvancedTab}
+        summary={`참조 방식 ${refModeLabel} · 엔진 ${engineLabel}`}
         showSettingHelp={showSettingHelp}
-        disabled={disabled}
-        onChange={(patch) => setTtsExpression(patch)}
-        onToggleFineTune={setDetailFineTune}
-      />
-
-      {/* 고급: 엔진 직접 선택(표현축 아님 → 셸이 별도 배치, 기본 접힘). */}
-      <div style={flowCard}>
-        <button onClick={() => setShowAdvanced(v => !v)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', padding: '10px 16px', border: 'none', cursor: 'pointer', background: 'transparent', fontFamily: 'inherit', outline: 'none' }} aria-expanded={showAdvanced}>
-          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>고급 <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>(엔진 직접 선택)</span></span>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" style={{ transform: showAdvanced ? 'rotate(180deg)' : 'rotate(0)', transition: 'transform 0.2s' }}><polyline points="6 9 12 15 18 9" /></svg>
-        </button>
-        {showAdvanced && (
-          <div style={{ padding: '0 16px 12px' }}>
+        onToggleSettingHelp={setShowSettingHelp}
+        voice={
+          <>
+            {/* 감정별 전용 목소리 등록·구간·삭제 (기존 EmotionReferenceManager 그대로) */}
+            <EmotionReferenceManager
+              refs={managerRefs}
+              onRegister={(id, src) => registerEmotionRef(id, src)}
+              onRemove={(id) => removeEmotionRef(id)}
+              onPreview={(id) => previewLocalFile(emotionEffectivePath(ttsEmotionRefState[id]) || ttsEmotionRefState[id]?.source || '')}
+              onChangeRegion={(id, region) => setEmotionRefState(id, { region })}
+              requestSource={requestEmotionSource}
+              renderRegionEditor={renderEmotionRegion}
+              usedEmotionIds={usedEmotionIdList}
+              disabled={disabled}
+            />
+            {/* 참조 목소리 보관함 — 저장해 둔 참조 자산 관리. 감정 참조 등록·구간 편집과 별개 섹션이다. */}
+            <ReferenceAssetLibraryPanel
+              status={refAssets.status}
+              items={refAssets.items}
+              hasConfirmedRegion={!!fileInfo?.path && !!ttsReferenceRegion}
+              busy={disabled}
+              importing={refAssetBusy}
+              disabled={disabled}
+              notice={refAssetNotice}
+              onRefresh={refreshRefAssets}
+              onImport={importCurrentReference}
+              onSelect={selectRefAsset}
+              onRemove={removeRefAsset}
+            />
+            {referenceTranscriptPanel}
+            <div style={{ borderRadius: 12, padding: '12px 16px', background: 'rgba(251,113,133,0.05)', border: '1px solid rgba(251,113,133,0.12)', fontSize: 12, lineHeight: 1.7, color: 'var(--text-secondary)' }}>
+              <strong style={{ color: 'var(--rose)' }}>참조 음성</strong> = 위에 올린 파일의 목소리를 흉내 냅니다.
+              감정별 음성을 추가 등록하면 대사마다 <code style={{ background: 'var(--bg-elevated)', padding: '1px 4px', borderRadius: 3 }}>[기쁨]</code> 태그로 감정을 지정할 수 있습니다.
+              <br />한국어 · 영어 · 일본어 · 중국어 지원. 영어 목소리로 한국어 대사도 가능합니다.
+            </div>
+          </>
+        }
+        expression={
+          <>
+            <ExpressionControls
+              capabilities={capabilities}
+              presetId={presetId}
+              fineTuneEnabled={fineTuneEnabled}
+              values={exprValues}
+              onPreset={onPreset}
+              onToggleFineTune={setFineTuneEnabled}
+              onChange={onExprChange}
+              showSettingHelp={showSettingHelp}
+              disabled={disabled}
+              section="advanced"
+            />
+            {/* 감정·표현 미리듣기 전체 목록 — 지원 안 됨/미검증 상태와 사유는 여기에 그대로 있다. */}
+            <EmotionSamplerPanel
+              rows={samplerEntries}
+              cachedFileRowIds={Object.keys(samplerKeys)}
+              defaultVoiceReady={samplerReferenceReady}
+              disabled={disabled || samplerBusyRow !== null}
+              onGenerate={generateSample}
+              onAudition={auditionSample}
+              onDelete={deleteSample}
+              onAddRow={(rowId) => { setSamplerRows((r) => (r.includes(rowId) ? r : [...r, rowId])); void refreshSamplerCache() }}
+              onRemoveRow={(rowId) => { stopSamplerPreview(); setSamplerRows((r) => r.filter((x) => x !== rowId)) }}
+            />
+            {samplerNotice && (
+              <p style={{ fontSize: 11, color: 'var(--rose)', margin: 0, overflowWrap: 'anywhere' }}>{samplerNotice}</p>
+            )}
+          </>
+        }
+        output={
+          <>
+            {/* 말끝 다듬기 · 끝 여백 · 페이드 · 감정 전환 간격 — 결과 소리의 끝맺음과 사이 */}
+            <TtsExpressionDetail
+              capability={resolveExpressionCapability()}
+              tailMode={ttsTailMode}
+              tailPaddingMs={ttsTailPaddingMs}
+              tailFadeMs={ttsTailFadeMs}
+              emotionMode={ttsEmotionBoundaryMode}
+              emotionPauseMs={ttsEmotionBoundaryPauseMs}
+              fineTune={detailFineTune}
+              showSettingHelp={showSettingHelp}
+              disabled={disabled}
+              onChange={(patch) => setTtsExpression(patch)}
+              onToggleFineTune={setDetailFineTune}
+            />
+            <p style={{ fontSize: 11, lineHeight: 1.6, color: 'var(--text-muted)', margin: 0 }}>
+              합성 결과는 WAV로 저장됩니다. 음성 합성에서는 파일 형식 변환을 제공하지 않습니다 —
+              실제 샘플레이트 등 결과 수치는 만든 뒤 결과 아래 <strong>상세 정보</strong>에서 확인할 수 있습니다.
+            </p>
+          </>
+        }
+        engine={
+          <>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', borderRadius: 10, padding: '8px 14px', width: '100%', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
               <span style={{ fontSize: 11, color: 'var(--text-muted)' }} title="목소리를 합성하는 AI 엔진 선택">엔진</span>
               {[
@@ -856,12 +1074,67 @@ export default function TTSEditor() {
                 { id: 'f5tts', label: 'F5', hint: '영어 중심의 고품질 보이스 클로닝' },
                 { id: 'kokoro', label: 'Kokoro', hint: '한/일/중/영 다국어 폴백 엔진, 가벼움' },
               ].map(e => (
-                <button key={e.id} onClick={() => !disabled && setTtsEngine(e.id)} disabled={disabled} title={e.hint} style={{ padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer', fontSize: 9, fontWeight: 600, fontFamily: 'inherit', background: ttsEngine === e.id ? 'var(--rose)' : 'transparent', color: ttsEngine === e.id ? '#fff' : 'var(--text-muted)' }}>{e.label}</button>
+                <button key={e.id} onClick={() => !disabled && setTtsEngine(e.id)} disabled={disabled} title={e.hint} style={{ padding: '3px 9px', borderRadius: 4, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 600, fontFamily: 'inherit', background: ttsEngine === e.id ? 'var(--rose)' : 'transparent', color: ttsEngine === e.id ? '#fff' : 'var(--text-muted)' }}>{e.label}</button>
               ))}
             </div>
-          </div>
-        )}
-      </div>
+
+            {/* Qwen preflight 배지 — 예상값(실행 결과는 결과 화면 metadata가 최종) */}
+            {preflight && (() => {
+              const ok = preflight.available === true
+              const snapMissing = !ok && preflight.snapshot_ok === false
+              const dev = preflight.device_expected
+              const msg = ok
+                ? (dev === 'gpu' ? 'Qwen3 준비됨 · 완전 로컬 · GPU 예상' : dev === 'cpu' ? 'Qwen3 준비됨 · 완전 로컬 · VRAM 부족으로 CPU 예상' : 'Qwen3 준비됨 · 완전 로컬')
+                : (snapMissing ? 'Qwen3 모델 스냅샷 누락 · 자동 선택 시 GPT-SoVITS 사용 예정' : 'Qwen3 미설치 · 자동 선택 시 GPT-SoVITS 사용 예정')
+              const color = ok ? 'var(--cyan)' : 'var(--text-muted)'
+              return (
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 11, color }}>
+                  <span style={{ width: 7, height: 7, borderRadius: '50%', background: ok ? 'var(--cyan)' : 'var(--text-muted)', flexShrink: 0 }} />
+                  <span>{msg}</span>
+                  <span style={{ color: 'var(--text-muted)' }}>· 예상값(실제 결과는 합성 후 표시)</span>
+                </div>
+              )
+            })()}
+
+            {/* pitch capability 사유(미지원/미확인) — 기본 화면에서는 '막혔을 때 되돌리기'만 남기고 사유는 여기에 둔다(§6). */}
+            {(pitchProbedUnsupported || pitchUnknown) && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', fontSize: 11, lineHeight: 1.5, color: pitchProbedUnsupported ? 'var(--rose)' : 'var(--text-muted)' }}>
+                <span style={{ flex: 1, minWidth: 200 }}>
+                  {pitchProbedUnsupported
+                    ? `이 환경에서는 음높이 보정을 사용할 수 없습니다${pitchCap?.reason ? ` — ${pitchCap.reason}` : ''}. 저장된 음높이 값이 있으면 원본(0)으로 되돌린 뒤 합성하세요.`
+                    : '음높이 보정 지원 여부를 확인하는 중입니다. 확인 전에는 음높이를 조절할 수 없습니다(원본 0으로 합성됩니다).'}
+                </span>
+                {ttsPitch !== 0 && (
+                  <button onClick={() => !disabled && setTtsPitch(0)} disabled={disabled}
+                    title="음높이를 원본(0)으로 되돌립니다"
+                    style={plainBtn('var(--bg-elevated)', 'var(--text-secondary)', disabled)}>
+                    음높이 원본(0)으로 ({ttsPitch > 0 ? '+' : ''}{ttsPitch.toFixed(1)}반음)
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* 참조 사용 방식의 내부 동작 — 기본 화면에서 덜어낸 긴 설명이 여기 그대로 있다. */}
+            <div style={{ fontSize: 11, lineHeight: 1.7, color: 'var(--text-secondary)', borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+              <div style={{ fontWeight: 700, color: 'var(--text-primary)', marginBottom: 4 }}>참조 사용 방식: {refModeLabel}</div>
+              자동은 참조 억양 반영(ICL)을 먼저 시도합니다 — 참조 대사를 일부러 먼저 만들게 한 뒤 그 부분을 잘라냅니다.
+              잘라낼 지점을 ASR 정렬로 찾지 못하면 그 결과는 발행하지 않고 <strong>안정 방식(x-vector)으로 한 번만</strong> 바꿔 결과를 만듭니다.
+              전환 여부·사유 코드(예: 정렬 실패)와 requested→effective 값은 합성 후 결과 아래 <strong>상세 정보</strong>에 남습니다.
+            </div>
+          </>
+        }
+      />
+
+      {/* ───────── [4] 음성 만들기 ─────────
+          실제 버튼은 바로 아래 ProcessButton(App 이 항상 같은 자리에 그린다). 여기서는 단계 표시만 한다 —
+          버튼을 두 곳에 두면 '어느 것을 눌러야 하는가'가 생긴다. */}
+      <section aria-label="음성 만들기" style={flowCard}>
+        <header className="tts-flow-head" style={{ ...flowHead, borderBottom: 'none' }}>
+          <span aria-hidden="true" style={flowNum}>4</span>
+          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>음성 만들기</span>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1, minWidth: 140 }}>아래 버튼을 누르면 시작합니다</span>
+        </header>
+      </section>
     </div>
   )
 }

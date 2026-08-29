@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import WaveSurfer from 'wavesurfer.js'
 import { useAppStore } from '@/stores/app.store'
+import { openTtsAdvanced } from '@/lib/ttsAdvancedOpen'
 
 function hexToRgba(hex: string, alpha: number): string {
   const h = hex.replace('#', '')
@@ -371,10 +372,13 @@ export default function TrackList() {
     const isCancelFailed = errorInfo?.code === 'CANCEL_FAILED'
     const scrollToTranscript = () => {
       clearError()
-      // 오류 해제 후 참조 전사 섹션으로 스크롤(전사-오디오 불일치 점검 유도). 다음 프레임에 실행(레이아웃 안정 후).
-      requestAnimationFrame(() => {
+      // PHASE B: 참조 전사는 '고급 설정 > 음성' 안으로 들어갔다. 접혀 있으면 DOM 에 없으므로
+      // 먼저 그 자리를 열어 달라고 요청한 뒤 스크롤한다(요청이 없으면 아무 일도 안 하는 막다른 길이 된다).
+      openTtsAdvanced('referenceTranscript')
+      // 열기 → 렌더 → 레이아웃까지 기다린 뒤 스크롤(두 프레임).
+      requestAnimationFrame(() => requestAnimationFrame(() => {
         document.getElementById('tts-reference-transcript')?.scrollIntoView({ behavior: 'smooth', block: 'center' })
-      })
+      }))
     }
     return (
       <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}

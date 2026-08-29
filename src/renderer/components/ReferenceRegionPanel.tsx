@@ -28,6 +28,22 @@ interface ReferenceRegionPanelProps {
   disabled: boolean                     // 합성 중 등 조작 불가
   onState: (s: RefStatePatch) => void   // 준비 상태 변경을 store slot에 반영
   label?: string                        // 헤더 표시명(감정 label). 기본 참조는 '참조 음성'
+  /**
+   * 구간 편집 UI 를 펼쳐 보여줄지(PHASE B). false 면 분석·자동 확정은 그대로 돌지만
+   * 파형·슬라이더·확정 버튼 같은 내부 도구는 화면에 나오지 않는다(마운트는 유지 — 재분석 금지).
+   * 미지정 시 true(기존 동작 그대로).
+   */
+  open?: boolean
+  /**
+   * 분석 직후 추천 구간으로 **한 번만** 자동 확정한다(PHASE B — 사용자가 구간을 고르지 않아도 됨).
+   * 파일 하나당 1회. 실패하면 재시도하지 않고 사유만 올린다(무한 확정 루프 금지).
+   */
+  autoConfirm?: boolean
+  /**
+   * 상태 문구를 기본 화면용 평이한 말로 낸다(요청/실제 구간·확정 같은 내부 용어 숨김).
+   * 실제 안전 오류(너무 짧음/길음·말 도중 절단·전사 실패·대사 불일치) 문구는 그대로 간다.
+   */
+  plainStatus?: boolean
 }
 
 interface Analysis {
@@ -143,7 +159,15 @@ function waitUntilLoaded(el: HTMLAudioElement, timeoutMs = 4000): Promise<boolea
   })
 }
 
-export default function ReferenceRegionPanel({ path, clipKey, disabled, onState, label = '참조 음성' }: ReferenceRegionPanelProps) {
+export default function ReferenceRegionPanel({
+  path, clipKey, disabled, onState, label = '참조 음성',
+  open = true, autoConfirm = false, plainStatus = false,
+}: ReferenceRegionPanelProps) {
+  // 기본 화면(plainStatus)에서는 같은 사실을 쉬운 말로 낸다. 안전 오류 문구는 어느 쪽에서도 바꾸지 않는다.
+  // ref 로 읽는 이유: runAnalyze(useCallback)에 잡힌 옛 closure 도 지금 값을 봐야 한다(재분석 유발 금지).
+  const plainRef = useRef(plainStatus)
+  plainRef.current = plainStatus
+  const say = useCallback((expert: string, plain: string) => (plainRef.current ? plain : expert), [])
   const [fileUrl, setFileUrl] = useState<string | null>(null)
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
   const [loading, setLoading] = useState(false)
@@ -185,7 +209,7 @@ export default function ReferenceRegionPanel({ path, clipKey, disabled, onState,
     if (!path) return
     setAnalysis(null); setMetrics(null); setConfirmedClip(''); setAnalyzeError(null)
     setLoading(true)
-    onStateRef.current({ ready: false, clip: '', message: '참조 음성을 분석 중입니다...', region: null })
+    onStateRef.current({ ready: false, clip: '', message: say('참조 음성을 분석 중입니다...', '목소리를 살펴보는 중입니다…'), region: null })
     try {
       const a = await window.api.audio.analyzeReference(path, clipKey) as Analysis & { error_message?: string; reason?: string }
       if (signal?.cancelled) return
@@ -199,7 +223,11 @@ export default function ReferenceRegionPanel({ path, clipKey, disabled, onState,
       } else if (a.needs_region) {
         const r = a.recommend
         if (r && r.ok) { setStart(r.start_sec); setDur(Math.min(MAX_SEC, Math.max(MIN_SEC, r.dur_sec))) }
-        onStateRef.current({ ready: false, clip: '', message: '참조 구간(3~10초)을 확정하세요', region: null })
+        onStateRef.current({
+          ready: false, clip: '',
+          message: say('참조 구간(3~10초)을 확정하세요', '목소리에서 쓸 부분을 고르는 중입니다…'),
+          region: null,
+        })
       } else if (a.valid_whole) {
         // 3~10초 + 품질 통과 → 원본을 그대로 참조로 사용(파생 클립 불필요, effective==원본)
         onStateRef.current({ ready: true, clip: '', message: '', region: null })
@@ -211,11 +239,15 @@ export default function ReferenceRegionPanel({ path, clipKey, disabled, onState,
       if (signal?.cancelled) return
       const msg = (e as Error)?.message || '참조 분석 실패'
       setAnalyzeError(msg)
-      onStateRef.current({ ready: false, clip: '', message: `참조 분석 실패: ${msg}`, region: null })
+      onStateRef.current({
+        ready: false, clip: '',
+        message: say(`참조 분석 실패: ${msg}`, '이 파일에서 목소리를 확인하지 못했습니다.'),
+        region: null,
+      })
     } finally {
       if (!signal?.cancelled) setLoading(false)
     }
-  }, [path, clipKey])
+  }, [path, clipKey, say])
 
   // 파일이 바뀌면 분석(StrictMode 중복 setup에도 main single-flight로 subprocess 1회).
   useEffect(() => {
@@ -229,7 +261,11 @@ export default function ReferenceRegionPanel({ path, clipKey, disabled, onState,
   useEffect(() => {
     if (analysis?.needs_region) {
       setConfirmedClip(''); setMetrics(null)
-      onStateRef.current({ ready: false, clip: '', message: '구간을 변경했습니다 — 다시 확정하세요', region: null })
+      onStateRef.current({
+        ready: false, clip: '',
+        message: say('구간을 변경했습니다 — 다시 확정하세요', '목소리에서 쓸 부분을 고르는 중입니다…'),
+        region: null,
+      })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [start, dur])
@@ -339,11 +375,15 @@ export default function ReferenceRegionPanel({ path, clipKey, disabled, onState,
     })()
   }
 
-  const confirmRegion = async () => {
+  // startOverride/durOverride: 자동 확정이 '분석이 방금 추천한 값'을 그대로 쓰기 위한 통로.
+  // (state 는 같은 커밋에서 아직 갱신 전일 수 있어 값을 인자로 받는다. 사용자 확정은 인자 없이 state 사용.)
+  const confirmRegion = async (startOverride?: number, durOverride?: number) => {
     if (!path || confirming) return
+    const startSec = startOverride ?? start
+    const durSec = durOverride ?? dur
     setConfirming(true)
     try {
-      const raw = await window.api.audio.trimReference(path, start, dur, clipKey) as Record<string, unknown>
+      const raw = await window.api.audio.trimReference(path, startSec, durSec, clipKey) as Record<string, unknown>
       // 실패 응답을 먼저 판정한다. 예전에는 성공 형태로 단언하고 res.metrics 를 읽어서,
       // Python 이 구조화 차단(REFERENCE_REGION_BLOCKED + blocking)을 보내도 metrics 가 없으니
       // 실제 사유 대신 '형식 불일치'만 떴다 — 사용자는 무엇을 고쳐야 하는지 알 수 없었다.
@@ -391,18 +431,57 @@ export default function ReferenceRegionPanel({ path, clipKey, disabled, onState,
         setConfirmedClip('')
         setEffective(null)
         const msg = !contractOk
-          ? '구간 검사 결과를 읽지 못했습니다(형식 불일치). 다시 시도하세요.'
+          ? say('구간 검사 결과를 읽지 못했습니다(형식 불일치). 다시 시도하세요.', '목소리 구간을 확인하지 못했습니다. 다시 시도해 주세요.')
           : (blocking as string[]).map(c => BLOCK_MESSAGE[c] ?? c).join(' · ')
         onStateRef.current({ ready: false, clip: '', message: msg || '구간 품질이 부적합합니다', region: null })
       }
     } catch (e) {
-      onStateRef.current({ ready: false, clip: '', message: `파생 참조 생성 실패: ${(e as Error)?.message || ''}`, region: null })
+      onStateRef.current({
+        ready: false, clip: '',
+        message: say(`파생 참조 생성 실패: ${(e as Error)?.message || ''}`, '목소리 구간을 준비하지 못했습니다. 다시 시도해 주세요.'),
+        region: null,
+      })
     } finally {
       setConfirming(false)
     }
   }
 
+  // ── 자동 구간 확정(PHASE B) ──────────────────────────────────────────────
+  // 10초를 넘는 파일에서 사용자가 파형을 붙들고 있지 않아도 되게, 분석이 추천한 안전 구간으로
+  // **파일당 정확히 1회** 확정을 시도한다. 실패하면 사유(BLOCK_MESSAGE)가 그대로 상위로 올라가고
+  // 여기서 다시 시도하지 않는다 — 확정 실패 → 재시도 → 실패의 순환을 만들지 않기 위해서다.
+  // 사용자가 '사용 구간 바꾸기'로 직접 조정한 뒤에는 기존대로 본인이 확정한다(자동 개입 없음).
+  const autoConfirmedKey = useRef<string>('')
+  useEffect(() => {
+    if (!autoConfirm || !path || !analysis || !analysis.needs_region) return
+    const r = analysis.recommend
+    if (!r || !r.ok) return                       // 추천이 없으면 임의로 고르지 않는다
+    const key = `${clipKey} ${path}`
+    if (autoConfirmedKey.current === key) return
+    autoConfirmedKey.current = key
+    void confirmRegion(r.start_sec, Math.min(MAX_SEC, Math.max(MIN_SEC, r.dur_sec)))
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autoConfirm, path, clipKey, analysis])
+
   if (!path) return null
+
+  // 접힌 상태(기본 화면): 분석·자동 확정은 계속 돌지만 내부 도구는 그리지 않는다.
+  // 단 '분석 자체가 실패'한 것은 사용자가 손쓸 수 있는 실제 오류이므로 재시도 경로를 남긴다.
+  if (!open) {
+    if (!analyzeError) return null
+    return (
+      <div role="alert" style={{
+        display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap',
+        borderRadius: 8, background: 'var(--bg-elevated)', padding: '8px 12px',
+      }}>
+        <span style={{ fontSize: 11, color: 'var(--rose)', flex: 1, minWidth: 160 }}>
+          이 파일에서 목소리를 확인하지 못했습니다.
+        </span>
+        <button onClick={() => runAnalyze()} disabled={disabled || loading} aria-label="목소리 다시 확인"
+          style={btn('var(--rose)', '#fff')}>다시 시도</button>
+      </div>
+    )
+  }
 
   const card: CSSProperties = {
     borderRadius: 12, background: 'var(--bg-card)', border: '1px solid var(--border-subtle)',
@@ -505,7 +584,7 @@ export default function ReferenceRegionPanel({ path, clipKey, disabled, onState,
             <button onClick={playRegion} disabled={disabled} data-af-preview-phase={previewPhase}
               style={btn('var(--bg-elevated)', 'var(--text-secondary)')}>▶ 구간 미리듣기</button>
             <button onClick={stopPlay} disabled={disabled} style={btn('var(--bg-elevated)', 'var(--text-muted)')}>■ 정지</button>
-            <button onClick={confirmRegion} disabled={disabled || confirming}
+            <button onClick={() => { void confirmRegion() }} disabled={disabled || confirming}
               style={btn(confirmedClip ? 'var(--bg-elevated)' : 'var(--rose)', confirmedClip ? 'var(--cyan)' : '#fff')}>
               {confirming ? '생성 중...' : confirmedClip ? '✓ 확정됨 (다시 확정)' : '이 구간으로 확정'}
             </button>
