@@ -10,7 +10,7 @@ import { isolatedInput, cleanupIsolated, snapshotTree } from './_e2e-helper.mjs'
 const APP = process.cwd()
 const SRC = path.join(APP, 'resources', 'speaker_b.wav')
 const RES_DIR = path.join(APP, 'resources')
-const SHOT = path.join(APP, '작업파일', 'e2e_shots')
+const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots')
 fs.mkdirSync(SHOT, { recursive: true })
 const logLines = []
 const log = (...a) => { const s = a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '); logLines.push(s); console.log('[e2e]', s) }

@@ -3,7 +3,7 @@
 // C 감정 요약 배지 store 일치 / D 반응형(800x600·125/150% zoom) 수평 스크롤·겹침 없음.
 // 실행: npm run test:e2e:tts-editor-ux  (사전 npm run build). 실합성 없음 → GPU 불필요.
 // 참조 자산: AF_E2E_REFERENCE 우선, 없으면 resources/speaker_b.wav fallback(파일 주입해 tts 모드 진입용, 합성 안 함).
-// 출력/로그는 gitignore된 작업파일/e2e_shots/만. 사용자 절대경로 하드코딩 금지.
+// 출력/로그는 비추적 _local/artifacts/diagnostics/e2e-shots 만. 사용자 절대경로 하드코딩 금지.
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
 import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenVenvPids } from './_e2e-helper.mjs'
@@ -13,7 +13,7 @@ const REF_ENV = process.env.AF_E2E_REFERENCE
 const FALLBACK = path.join(APP, 'resources', 'speaker_b.wav')
 const SRC = REF_ENV && REF_ENV.trim() ? REF_ENV.trim() : FALLBACK
 const RES_DIR = path.join(APP, 'resources')
-const SHOT = path.join(APP, '작업파일', 'e2e_shots'); fs.mkdirSync(SHOT, { recursive: true })
+const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots'); fs.mkdirSync(SHOT, { recursive: true })
 let failed = 0
 const logLines = []
 const log = (...a) => { const s = a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '); logLines.push(s); console.log('[editor-ux]', s) }

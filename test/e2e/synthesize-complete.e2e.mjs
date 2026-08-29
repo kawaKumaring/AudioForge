@@ -17,7 +17,7 @@ const WAIT_MS = 350000  // > watchdog 300 > 무응답 280 (위 근거 참조)
 const APP = process.cwd()
 const SRC = requireE2EReference()   // 명시 AF_E2E_REFERENCE 단일 권위(speaker_b.wav 하드코딩·fallback 없음)
 const RES_DIR = path.join(APP, 'resources')
-const SHOT = path.join(APP, '작업파일', 'e2e_shots')
+const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots')
 const PY = 'E:/AI/ComfyUI_windows_portable_python3.12/python_embeded/python.exe'
 fs.mkdirSync(SHOT, { recursive: true })
 let failed = 0

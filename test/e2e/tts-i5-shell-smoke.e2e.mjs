@@ -108,7 +108,7 @@ try {
   const reRootLen = await win.evaluate(() => (document.getElementById('root')?.innerText || '').length)
   ok(reRootLen > 50, `재진입 후 검은 화면 아님(${reRootLen}자)`)
 
-  await win.screenshot({ path: path.join(APP, '작업파일', 'e2e_shots', 'i5-smoke.png') }).catch(() => {})
+  await win.screenshot({ path: path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots', 'i5-smoke.png') }).catch(() => {})
 } catch (e) {
   failed++; log('EXCEPTION', e?.message || String(e))
 } finally {

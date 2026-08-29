@@ -110,7 +110,7 @@ try {
   // 합성 버튼 차단 확인(ProcessButton disabled 또는 차단 사유). 최소한 pageerror 없이 오류가 표면화.
   ok(pageErrors.length === 0, `pageerror 0 (=${pageErrors.length}${pageErrors[0] ? ': ' + pageErrors[0] : ''})`)
 
-  await win.screenshot({ path: path.join(APP, '작업파일', 'e2e_shots', 'i5b-editor.png') }).catch(() => {})
+  await win.screenshot({ path: path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots', 'i5b-editor.png') }).catch(() => {})
 } catch (e) {
   failed++; log('EXCEPTION', e?.message || String(e))
 } finally {

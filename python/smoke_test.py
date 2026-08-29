@@ -139,15 +139,47 @@ def _check_emotions():
     return True, f"TS {len(ts_ids)}종 ⊆ Python 정의 일치"
 
 
+SAMPLE_ENV = "AUDIOFORGE_SMOKE_SAMPLE"
+INPUT_NOT_CONFIGURED = "INPUT_ASSET_NOT_CONFIGURED"
+
+
 def _find_sample():
-    """작업파일/ 폴더에서 첫 오디오 샘플 탐색."""
-    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    work = os.path.join(base, "작업파일")
-    if not os.path.isdir(work):
-        return None
-    for f in sorted(os.listdir(work)):
-        if f.lower().endswith((".m4a", ".wav", ".mp3", ".flac")):
-            return os.path.join(work, f)
+    """스모크 입력 해석 — **임의 폴더에서 '먼저 발견한 음원'을 고르지 않는다.**
+
+    예전에는 저장소 루트의 작업파일/ 을 훑어 첫 오디오를 집었다. 그 폴더에는 개인 녹음이
+    섞여 있었고, 테스트가 무엇을 읽을지 아무도 통제하지 못했다.
+
+    우선순위(위가 이긴다):
+      1. --sample 인자 (호출부에서 처리)
+      2. AUDIOFORGE_SMOKE_SAMPLE 환경변수
+      3. 저장소의 승인된 비개인 fixture (resources/speaker_b.wav — E2E 가 이미 쓰는 자산)
+      4. _local/assets/originals 의 manifest 등재 자산
+    아무것도 없으면 None 을 돌려주고 호출부가 INPUT_ASSET_NOT_CONFIGURED 로 알린다.
+    """
+    env = os.environ.get(SAMPLE_ENV)
+    if env and os.path.isfile(env):
+        return env
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    roots = [os.path.dirname(os.path.dirname(os.path.abspath(__file__)))]
+    try:
+        import app_runtime
+        roots.append(app_runtime.main_repo_root())   # worktree 에서도 본체 fixture 를 본다
+    except Exception:
+        pass
+    for r in roots:
+        fixture = os.path.join(r, "resources", "speaker_b.wav")
+        if os.path.isfile(fixture):
+            return fixture
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import local_assets
+        orig = local_assets.originals_dir()
+        for dp, _, fns in os.walk(orig):
+            for f in sorted(fns):
+                if f.lower().endswith((".wav", ".flac", ".m4a", ".mp3")):
+                    return os.path.join(dp, f)
+    except Exception:
+        pass
     return None
 
 
@@ -225,6 +257,9 @@ def main():
 
     # ── 실제 음성이 필요한 모드 ──
     sample = args.sample or _find_sample()
+    if not sample:
+        print(f"{YELLOW}{INPUT_NOT_CONFIGURED}{RESET}: 스모크 입력이 설정되지 않았습니다. "
+              f"--sample 또는 {SAMPLE_ENV} 를 지정하거나 resources/speaker_b.wav 를 두세요.")
     if sample and os.path.exists(sample):
         # transcribe + translate: C-1(번역 torch NameError) 회귀 감지 경로
         tr_out = os.path.join(work_dir, "tr_out")

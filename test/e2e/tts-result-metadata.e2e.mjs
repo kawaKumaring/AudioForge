@@ -9,7 +9,7 @@ const APP = process.cwd()
 const REF_ENV = process.env.AF_E2E_REFERENCE
 const SRC = REF_ENV && REF_ENV.trim() ? REF_ENV.trim() : path.join(APP, 'resources', 'speaker_b.wav')
 const RES_DIR = path.join(APP, 'resources')
-const SHOT = path.join(APP, '작업파일', 'e2e_shots'); fs.mkdirSync(SHOT, { recursive: true })
+const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots'); fs.mkdirSync(SHOT, { recursive: true })
 let failed = 0
 const logLines = []
 const log = (...a) => { const s = a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '); logLines.push(s); console.log('[result-meta]', s) }

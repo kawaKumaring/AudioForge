@@ -6,7 +6,7 @@
 //   npm run test:e2e:tts-autosplit
 // 참조 자산: AF_E2E_REFERENCE 환경변수 경로 우선, 없으면 resources/speaker_b.wav fallback.
 //   둘 다 없으면 prerequisite 오류로 종료(사용자 경로 하드코딩 금지).
-// 출력/스크린샷/로그는 gitignore된 작업파일/e2e_shots 격리 경로에만. resources 원본 전후 snapshot 불변.
+// 출력/스크린샷/로그는 비추적 _local/artifacts/diagnostics/e2e-shots에만. resources 원본 전후 snapshot 불변.
 // chunk 시작/완료 progress의 완전한 단조·경계 단언은 python/test_autosplit_bridge.py(단위)에서 고정하고,
 // 여기서는 그 시작/완료 진행이 실제 앱 UI에 표면화되는지를 확인한다.
 import { _electron as electron } from 'playwright'
@@ -17,7 +17,7 @@ const WAIT_MS = 350000
 const APP = process.cwd()
 const SRC = requireE2EReference()   // 명시 AF_E2E_REFERENCE 단일 권위(speaker_b.wav 하드코딩·fallback 없음)
 const RES_DIR = path.join(APP, 'resources')
-const SHOT = path.join(APP, '작업파일', 'e2e_shots'); fs.mkdirSync(SHOT, { recursive: true })
+const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots'); fs.mkdirSync(SHOT, { recursive: true })
 let failed = 0
 const logLines = []
 const log = (...a) => { const s = a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '); logLines.push(s); console.log('[autosplit]', s) }

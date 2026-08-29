@@ -136,7 +136,7 @@ try {
   ok(s4.ovTop !== null && Math.abs(s4.ovTop - s4.st) <= 2, `overlay scroll offset이 textarea와 동기(ov=${s4.ovTop}, ta=${s4.st})`)
 
   ok(pageErrors.length === 0, `pageerror 0 (=${pageErrors.length}${pageErrors[0] ? ': ' + pageErrors[0] : ''})`)
-  await win.screenshot({ path: path.join(APP, '작업파일', 'e2e_shots', 'i5b-restore.png') }).catch(() => {})
+  await win.screenshot({ path: path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots', 'i5b-restore.png') }).catch(() => {})
 } catch (e) {
   failed++; log('EXCEPTION', e?.message || String(e))
 } finally {

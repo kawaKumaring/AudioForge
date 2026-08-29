@@ -123,7 +123,7 @@ try {
   ok(aria.hasExpanded && aria.hasPressed && aria.allRangeLabeled, `aria(expanded/pressed/range label) 존재`)
 
   ok(pageErrors.length === 0, `pageerror 0 (=${pageErrors.length}${pageErrors[0] ? ': ' + pageErrors[0] : ''})`)
-  await win.screenshot({ path: path.join(APP, '작업파일', 'e2e_shots', 'i5c-detail.png') }).catch(() => {})
+  await win.screenshot({ path: path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots', 'i5c-detail.png') }).catch(() => {})
 } catch (e) {
   failed++; log('EXCEPTION', e?.message || String(e))
 } finally {
