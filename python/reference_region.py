@@ -433,10 +433,16 @@ def build_reference_clip(src_path, requested_start_sec, requested_dur_sec, out_p
     res["snap"] = dict(snapped, silence_count=len(silences))
     res["effective_region"] = {"start_sec": round(s, 4), "end_sec": round(e, 4),
                                "dur_sec": round(e - s, 4)}
-    if snapped["status"] == "reconfirm":
-        # 정책 한도를 넘는 이동은 자동 승인하지 않는다. 제안 구간만 돌려주고 클립은 만들지 않는다.
-        return fail(BLOCK_SNAP_RECONFIRM)
-
+    # 자동 보정 이동량이 정책 한도를 넘어도 여기서 막지 않는다.
+    #
+    # 예전에는 status=='reconfirm' 이면 REGION_SNAP_RECONFIRM_REQUIRED 로 차단하고 제안 구간만
+    # 돌려줬는데, UI 에 그 제안을 '승인'하는 수단이 없었다. 그래서 사용자가 구간을 다시 골라도
+    # 같은 자동 보정이 다시 일어나 또 막히는 순환이 생겼다 — 합성으로 갈 길이 아예 없었다.
+    # 이제는 분석기가 찾은 effective_region 을 그대로 적용해 클립을 만든다.
+    # 이동량과 snap 정보는 res["snap"]·res["effective_region"] 에 그대로 남아 재현·진단에 쓰인다.
+    #
+    # 실제 안전 오류(길이 3~10초 위반, 안전 경계 없음, 시작·끝 절단, 전사 실패, manual_text 불일치)는
+    # 아래에서 그대로 차단한다 — 완화한 것은 '자동 이동이 크다'는 사실 하나뿐이다.
     trim_region(src_path, s, e - s, out_path)
     mono, sr = _load_mono(out_path)
     bt = rl.boundary_truncation(np.asarray(mono, dtype=np.float64), sr)

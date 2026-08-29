@@ -201,18 +201,50 @@ class BuildClipTest(unittest.TestCase):
         blob = repr(r)
         self.assertNotIn("가나다라마바사", blob, "전사 원문이 반환값에 새면 안 된다")
 
-    def test_reconfirm_shift_blocks_and_returns_suggestion(self):
-        """정책 한도를 넘는 이동은 자동 승인하지 않고 제안만 돌려준다."""
+    def test_large_shift_is_applied_not_blocked(self):
+        """큰 자동 이동은 차단 사유가 아니다 — 보정된 구간으로 클립을 만들고 준비 상태가 된다.
+
+        예전에는 status=='reconfirm' 이면 REGION_SNAP_RECONFIRM_REQUIRED 로 막고 제안만 돌려줬는데,
+        UI 에 그 제안을 승인하는 수단이 없어서 사용자가 구간을 다시 골라도 같은 보정이 다시 일어나
+        영원히 막히는 순환이 됐다. 이제는 분석기가 찾은 구간을 그대로 적용한다."""
         src = self._src("shift.wav", [_sil(0.8), _speech(4.0), _sil(0.6),
                                       _speech(3.5, 200.0, 5), _sil(0.8)])
         r = rr.build_reference_clip(src, 3.2, 3.6, self.out,
                                     transcribe_fn=lambda p: "가나다")
-        if rr.BLOCK_SNAP_RECONFIRM in r["blocking"]:
-            self.assertFalse(r["ready"])
-            self.assertIsNone(r["clip_path"])
-            self.assertIsNotNone(r["effective_region"], "제안 구간은 돌려줘야 한다")
-            self.assertEqual(r["snap"]["status"], "reconfirm")
-            self.assertFalse(os.path.exists(self.out))
+        self.assertNotIn(rr.BLOCK_SNAP_RECONFIRM, r["blocking"],
+                         "자동 이동이 크다는 이유만으로 막으면 안 된다")
+        if r["snap"] and r["snap"].get("status") == "reconfirm":
+            # 큰 이동이 실제로 일어난 표본 — 그래도 통과해야 한다.
+            self.assertTrue(r["ready"], "보정된 구간으로 준비 상태가 되어야 한다")
+            self.assertIsNotNone(r["clip_path"], "실제 클립을 만들어야 한다")
+            self.assertTrue(os.path.exists(self.out))
+            eff = r["effective_region"]
+            self.assertIsNotNone(eff)
+            self.assertGreaterEqual(eff["dur_sec"], 3.0)
+            self.assertLessEqual(eff["dur_sec"], 10.0)
+            # 진단 정보는 그대로 남는다(재현·추적용).
+            self.assertIsNotNone(r["requested_region"])
+            self.assertIn("status", r["snap"])
+
+    def test_real_safety_errors_still_block(self):
+        """완화한 것은 '이동이 크다' 하나뿐 — 실제 안전 오류는 그대로 막는다."""
+        # 안전한 발화 경계가 없음(무음 없이 통짜 발화)
+        src = self._src("nosil.wav", [_speech(12.0)])
+        r = rr.build_reference_clip(src, 1.0, 5.0, self.out,
+                                    transcribe_fn=lambda p: "가나다")
+        self.assertFalse(r["ready"])
+        self.assertTrue(len(r["blocking"]) > 0, "안전 경계 없음은 계속 차단")
+        # 전사 실패
+        src2 = self._normal()
+        r2 = rr.build_reference_clip(src2, 0.4, 8.8, self.out, transcribe_fn=lambda p: None)
+        self.assertFalse(r2["ready"])
+        self.assertIn(rr.BLOCK_TRANSCRIBE_FAILED, r2["blocking"])
+        # manual_text 불일치
+        r3 = rr.build_reference_clip(src2, 0.4, 8.8, self.out,
+                                     manual_text="전혀 다른 문장입니다",
+                                     transcribe_fn=lambda p: "가나다라마바사")
+        self.assertFalse(r3["ready"])
+        self.assertIn(rr.BLOCK_TEXT_MISMATCH, r3["blocking"])
 
     def test_contract_shape_matches_step1(self):
         """1단계 계약 그대로 — blocking/warning_codes/ready 가 일관되어야 한다."""
