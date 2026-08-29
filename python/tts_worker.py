@@ -1293,6 +1293,12 @@ _METADATA_KEYS = [
     # 경계 envelope 재현 — 최종 조립물 **바깥쪽** 시작·끝에 실제로 적용한 샘플 수(길이는 불변).
     # offset 0 = tail auto 가 말끝 fade 를 가져갔거나 배열이 짧아 clamp 된 경우.
     "boundary_onset_samples", "boundary_offset_samples",
+    # B envelope 1단계 — 조립 중 열린 **내부 segment 경계**에 건 envelope 재현.
+    # onset/offset_count 는 실제로 샘플이 걸린 chunk 수, kind_counts 는 경계 종류별 횟수,
+    # applied 는 경계마다 (앞 chunk 끝 / 뒤 chunk 시작) 좌표와 샘플 수. 대사·경로 없음.
+    # 최종 파일 양 끝은 boundary_onset_samples/boundary_offset_samples 가 따로 말한다(중복 아님).
+    "segment_envelope_onset_count", "segment_envelope_offset_count",
+    "segment_envelope_kind_counts", "segment_envelope_applied",
     # 표현형 모드(계약 §10). ⚠️ 이웃이 snake_case 라도 이 키만은 camelCase 가 정본이다 —
     # session/config/metadata 세 캐리어가 '같은 필드 이름'이어야 하고, 계약이 별칭
     # (tts_expressive_mode)을 명시적으로 금지했다(권위가 둘이 되는 편이 더 나쁘다).
@@ -1616,7 +1622,7 @@ def _summarize_reference_alignment(ordered_entries):
 
 
 def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed, silence_gap,
-                         pitch=0.0, tail_cfg=None, boundary_gaps=None,
+                         pitch=0.0, tail_cfg=None, boundary_gaps=None, boundary_kinds=None,
                          reference_conditioning_mode=None):
     """Qwen 배치 합성 — 2B 품질 게이트 재사용, Qwen 전용 VRAM 임계로 장치 선택(ComfyUI 병행 안전),
     모델 1회 로딩. speed: chunk별 atempo 후 결합(1.0은 raw). 임시파일 finally 정리.
@@ -1624,6 +1630,9 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
       언제나 0.0이다(§5 불변, 아래 gaps 루프가 그 규칙의 단일 소스). '문장 안에서도 chunk마다
       silence_gap만큼 무음이 들어간다'는 해석은 사실이 아니다 — 실측(생성물 결합 layout)에서도
       gap_before_samples가 0이 아닌 자리는 원 segment 경계뿐이었다.
+    boundary_kinds: segment i '앞' 경계의 의미 종류 목록(_boundary_gaps_from_plan 3번째 반환값).
+      gap 초와 **같은 경계**를 가리키는 짝이며, B envelope 1단계가 '어느 경계에 fade 를 열지'를
+      이 값만으로 판정한다(텍스트 재파싱·문장부호 규칙 없음). None 이면 envelope 적용 0.
     pitch: 결합본(pending)에 rubberband 음높이 후처리(0=무후처리, 계약 §6·§7). 실패는 os.replace 직전
     예외 → finally가 job_dir 정리 → 기존 synthesized.wav 무손상.
     reference_conditioning_mode: 참조 conditioning 모드. safe_xvector 면 전 segment 를
@@ -1894,6 +1903,12 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         if abs(float(speed) - 1.0) > 1e-6:
             use = [_atempo_segment(p, float(speed)) for p in ordered]  # 실패는 명확한 예외
 
+        # B envelope 1단계 — 결합 **직전**, 아직 조각이 개별 파일일 때 segment 경계 안쪽 양면에 fade.
+        # kind 가 line/paragraph/explicitPause 인 경계에만 걸고 internal/emotion 은 0 이다.
+        # 길이 불변이라 아래 layout 진단(frames/start_sample)은 이 단계와 무관하게 그대로 유효하다.
+        # _assert_concat_ready 보다 **먼저** 두어 envelope 산출물까지 같은 검증을 통과하게 한다.
+        use, segenv_meta = _apply_segment_envelopes(use, ordered_entries, boundary_kinds, job_dir)
+
         # 결합 직전 재검증(P0-3): speed 후처리 포함 모든 chunk가 동일 sr·mono·finite·non-empty.
         # (첫 파일 sr로 저장하므로 sr 혼입 시 뒤 chunk 속도/길이 변질 → 명확히 중단, 기존 wav 보존.)
         _assert_concat_ready(use)
@@ -1965,6 +1980,9 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             # 경계 envelope 재현 — 실제 적용 샘플 수.
             "boundary_onset_samples": pinfo.get("boundary_onset_samples"),
             "boundary_offset_samples": pinfo.get("boundary_offset_samples"),
+            # B envelope 1단계 재현 — 내부 segment 경계에 실제로 건 onset/offset 횟수와 kind별 횟수.
+            # 최종 파일 양 끝(boundary_*_samples)과는 서로 다른 자리다(구조적 중복 차단).
+            **segenv_meta,
             # 감정 음향 판정(비민감 토큰만). '태그가 붙었다'와 '감정이 실렸다'를 구분해 남긴다 —
             # 이 기록이 없으면 결과물만 보고 감정이 반영됐다고 오해할 길이 열린다.
             "emotion_acoustic": emotion_acoustic_records,
@@ -2061,6 +2079,126 @@ def _assert_concat_ready(paths):
             raise RuntimeError(f"결합 전 빈/비유한 오디오: {os.path.basename(p)}")
 
 
+# segment envelope 를 여는 경계 종류. 여기 없는 종류(internal/emotion)는 **적용 0** 이다.
+#  - internal    : 같은 문장 안(자동분할 chunk 경계 포함) — 붙여 놓으면 연속이라 건드릴 자리가 아니다.
+#  - emotion     : 감정 전환. 분할 사유가 아니고(planner 규칙 4) 사용자가 적용 대상에서 제외했다.
+# line/paragraph/explicitPause 만이 '독립 생성된 segment 를 조립하며 휴지가 존재하는 경계'다.
+SEGMENT_ENVELOPE_KINDS = ("line", "paragraph", "explicitPause")
+
+
+def _segment_envelope_plan(length, sr, want_onset, want_offset):
+    """chunk 하나에 걸 segment envelope 계획. 창 길이·곡선은 audio_finishing 계약 그대로 재사용한다
+    (onset 10ms / offset 20ms / smoothstep 3u²−2u³). 여기서 새 임계값을 만들지 않는다.
+    짧은 배열에서 두 창이 겹치지 않게 compute_boundary_plan 과 같은 규칙으로 clamp 한다."""
+    import audio_finishing as _af
+    sr = int(sr)
+    n = int(length)
+    onset = int(round(_af.BOUNDARY_ONSET_MS * sr / 1000.0)) if want_onset else 0
+    offset = int(round(_af.BOUNDARY_OFFSET_MS * sr / 1000.0)) if want_offset else 0
+    onset = max(0, min(onset, n // 2))
+    offset = max(0, min(offset, n - onset))
+    return _af.BoundaryEnvelopePlan(onset_samples=onset, offset_samples=offset, sr=sr)
+
+
+def _apply_segment_envelopes(paths, ordered_entries, boundary_kinds, work_dir):
+    """B envelope 1단계 — **조립 중 열리는 segment 경계**의 안쪽 양면에 fade 를 건다(길이 불변).
+
+    무엇을 하는가: ordered_entries 를 original_segment_index 로 묶어 segment 그룹을 만들고,
+    그룹 사이 경계의 kind 가 SEGMENT_ENVELOPE_KINDS 면 **앞 그룹의 마지막 chunk 끝**에 inverted
+    ease-out(1→0)을, **뒤 그룹의 첫 chunk 시작**에 ease-in(0→1)을 곱한다. 그 외 경계는 손대지 않는다.
+
+    왜 여기인가: 이 지점이 '독립 생성된 조각들'을 아직 개별 파일로 들고 있는 마지막 자리다.
+    _concat_with_boundaries 뒤에는 무음이 이미 삽입돼 어디가 경계였는지 배열만 보고는 알 수 없다.
+
+    ★최종 파일 양 끝과의 중복은 **구조적으로** 막힌다: 경계는 그룹과 그룹 '사이'에만 있으므로
+      첫 그룹의 첫 chunk 시작과 마지막 그룹의 마지막 chunk 끝은 후보 집합에 들어갈 수 없다.
+      그 둘은 _finish_and_place 의 단일 권위 몫이다. 아래에서 그 사실을 실제로 단언한다.
+
+    길이 불변: gain 곱셈뿐이라 프레임 수가 바뀌지 않는다 → _concat_with_boundaries 가 내는
+    frames/gap_before_samples/start_sample 진단은 이 단계 전후로 동일하다.
+
+    원본 chunk 파일은 덮어쓰지 않는다(진단·정렬 산출물 보존). 수정본은 work_dir 안 새 파일로 쓰고
+    그 경로로 바꾼 리스트를 돌려준다.
+
+    반환: (new_paths, meta). meta 는 metadata 로 나가는 수치만 담는다(경로·대사 없음).
+    """
+    import soundfile as sf
+    import audio_finishing as _af
+
+    meta = {"segment_envelope_onset_count": 0, "segment_envelope_offset_count": 0,
+            "segment_envelope_kind_counts": {}, "segment_envelope_applied": []}
+    if not paths or len(paths) != len(ordered_entries) or not boundary_kinds:
+        # 진단/구 경로 안전: 정렬이 어긋나면 잘못된 자리에 거는 대신 아무것도 하지 않는다.
+        return list(paths), meta
+
+    # 1) chunk 위치를 원 segment 로 묶는다(ordered_entries 는 이미 (osi, ci) 정렬).
+    groups = []            # [[osi, first_pos, last_pos], ...]
+    for pos, e in enumerate(ordered_entries):
+        osi = e["original_segment_index"]
+        if groups and groups[-1][0] == osi:
+            groups[-1][2] = pos
+        else:
+            groups.append([osi, pos, pos])
+
+    # 2) 경계마다 '열렸는가'를 kind 로만 판정한다(텍스트 재파싱 없음).
+    want_onset, want_offset = {}, {}
+    for gi in range(1, len(groups)):
+        osi = groups[gi][0]
+        kind = boundary_kinds[osi] if 0 <= osi < len(boundary_kinds) else None
+        if kind not in SEGMENT_ENVELOPE_KINDS:
+            continue
+        prev_last, cur_first = groups[gi - 1][2], groups[gi][1]
+        want_offset[prev_last] = kind
+        want_onset[cur_first] = kind
+        meta["segment_envelope_applied"].append({
+            "boundary_segment_index": int(osi), "kind": kind,
+            "offset_chunk": [int(ordered_entries[prev_last]["original_segment_index"]),
+                             int(ordered_entries[prev_last]["chunk_index"])],
+            "onset_chunk": [int(ordered_entries[cur_first]["original_segment_index"]),
+                            int(ordered_entries[cur_first]["chunk_index"])],
+        })
+
+    # ★중복 차단 단언 — 첫 chunk 의 시작과 마지막 chunk 의 끝은 절대 대상이 아니다.
+    if 0 in want_onset or (len(paths) - 1) in want_offset:
+        raise RuntimeError("segment envelope: 최종 파일 양 끝은 _finish_and_place 권위다(중복 금지)")
+
+    if not want_onset and not want_offset:
+        return list(paths), meta
+
+    # 3) 대상 chunk 만 새 파일로 다시 쓴다(원본 무변경, sr·subtype·프레임 수 보존).
+    new_paths = list(paths)
+    for pos in sorted(set(want_onset) | set(want_offset)):
+        src = paths[pos]
+        data, sr = sf.read(src, dtype="float32")
+        subtype = sf.info(src).subtype
+        plan = _segment_envelope_plan(len(data), sr, pos in want_onset, pos in want_offset)
+        out = _af.apply_boundary_envelope(data, sr, plan)
+        if len(out) != len(data):
+            raise RuntimeError("segment envelope: 길이가 변했습니다(계약 위반)")
+        dst = os.path.join(work_dir, ".af-segenv-%04d.wav" % pos)
+        sf.write(dst, out, sr, subtype=subtype)
+        new_paths[pos] = dst
+        if plan.onset_samples > 0:
+            meta["segment_envelope_onset_count"] += 1
+        if plan.offset_samples > 0:
+            meta["segment_envelope_offset_count"] += 1
+        for rec in meta["segment_envelope_applied"]:
+            if pos in want_onset and rec["onset_chunk"] == [
+                    int(ordered_entries[pos]["original_segment_index"]),
+                    int(ordered_entries[pos]["chunk_index"])]:
+                rec["onset_samples"] = int(plan.onset_samples)
+            if pos in want_offset and rec["offset_chunk"] == [
+                    int(ordered_entries[pos]["original_segment_index"]),
+                    int(ordered_entries[pos]["chunk_index"])]:
+                rec["offset_samples"] = int(plan.offset_samples)
+
+    counts = {}
+    for rec in meta["segment_envelope_applied"]:
+        counts[rec["kind"]] = counts.get(rec["kind"], 0) + 1
+    meta["segment_envelope_kind_counts"] = counts
+    return new_paths, meta
+
+
 def _concat_with_boundaries(paths, gaps_before, output_path):
     """paths를 순서대로 이어붙이되 각 항목 '앞'에 gaps_before[i]초 무음 삽입(계약 B).
     자동분할 내부 chunk 사이 gap=0(연속), 원래 segment 경계에만 사용자 silence_gap. gaps_before[0]은 0.
@@ -2113,6 +2251,10 @@ def _boundary_gaps_from_plan(plan, silence_gap, emotion_boundary_mode="pause",
       spoken_text는 **파서 산출 그대로**(정규화 단일 소스=A 파서; parity 해시도 이 값 기준).
     - gaps_before[i]: segment i '앞' 무음 초. [0]=0.0. 경계 우선순위(계약 추가3)는 파서가 boundary_type로
       **단일 결정**(explicitPause > lineSilenceGap > emotionBoundaryPause > internal) → 여기선 gap 초로 환산만(합산 없음).
+    - kinds[i]: segment i '앞' 경계의 **의미 종류**(classify_plan_boundaries 의 kind 그대로:
+      internal|emotion|line|paragraph|explicitPause). 예전엔 gap 초만 꺼내고 이 값을 버렸다 —
+      그래서 "휴지가 있는 진짜 문장 경계"와 "감정 전환/문장 내부"를 오디오 조립 단계에서 구분할 수
+      없었다. 여기서 함께 돌려주고 조립부가 segment envelope 판단에 쓴다(재파싱·문장부호 규칙 없음).
 
     환산은 semantic_chunk_planner 가 소유한다(C2). 이 함수는 그 결과를 받아 shape 만 맞춘다.
     새 선택 인자는 전부 기본 None 이며, 주지 않으면 값이 이전과 완전히 동일하다:
@@ -2126,7 +2268,7 @@ def _boundary_gaps_from_plan(plan, silence_gap, emotion_boundary_mode="pause",
     entries = semantic_chunk_planner.resolve_boundary_gaps(
         plan, silence_gap, emotion_boundary_mode, emotion_boundary_pause_ms,
         paragraph_gap, model_tail_ms, model_lead_ms)
-    return parsed, [e["gap_sec"] for e in entries]
+    return parsed, [e["gap_sec"] for e in entries], [e["kind"] for e in entries]
 
 
 # ── Main synthesize function ──
@@ -2194,7 +2336,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         _e.error_payload = {"code": _err.get("code", "TTS_PARSE_ERROR")}
         raise _e
     _plan = _pres["plan"]
-    parsed, boundary_gaps = _boundary_gaps_from_plan(
+    parsed, boundary_gaps, boundary_kinds = _boundary_gaps_from_plan(
         _plan, silence_gap, emotion_boundary_mode, emotion_boundary_pause_ms)
     if not parsed:
         emit("error", message="합성할 텍스트가 없습니다.")
@@ -2275,6 +2417,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                 final_path, info = _synthesize_qwen_job(parsed, ref_cache, overrides_by_path,
                                                         output_dir, speed, silence_gap, pitch, tail_cfg,
                                                         boundary_gaps=boundary_gaps,
+                                                        boundary_kinds=boundary_kinds,
                                                         reference_conditioning_mode=_attempt_mode)
             except RuntimeError as _icl_err:
                 _code = (getattr(_icl_err, "error_payload", None) or {}).get("code")
@@ -2295,6 +2438,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                 final_path, info = _synthesize_qwen_job(parsed, ref_cache, overrides_by_path,
                                                         output_dir, speed, silence_gap, pitch, tail_cfg,
                                                         boundary_gaps=boundary_gaps,
+                                                        boundary_kinds=boundary_kinds,
                                                         reference_conditioning_mode=_attempt_mode)
             _rc_meta = _reference_conditioning_meta(
                 rc_mode, _attempt_mode, icl_attempted=_icl_attempted,

@@ -369,7 +369,7 @@ class Rule8LegacyUnchangedTest(unittest.TestCase):
 
     def test_production_path_reproduces_legacy_gaps_exactly(self):
         for raw, mode, expected in LEGACY_GAPS:
-            _, got = w._boundary_gaps_from_plan(plan_of(raw), SG, mode, EPMS)
+            _, got, _ = w._boundary_gaps_from_plan(plan_of(raw), SG, mode, EPMS)
             self.assertEqual(got, expected, "%r/%s" % (raw[:12], mode))
 
     def test_no_second_to_ms_round_trip(self):

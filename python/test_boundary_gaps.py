@@ -22,7 +22,7 @@ EPMS = 200         # emotion_boundary_pause_ms = 0.2s
 
 def gaps(raw, mode="pause"):
     plan = g.parse_tts_script(raw)["plan"]
-    parsed, gb = w._boundary_gaps_from_plan(plan, SG, mode, EPMS)
+    parsed, gb, _kinds = w._boundary_gaps_from_plan(plan, SG, mode, EPMS)
     return parsed, gb
 
 
@@ -75,7 +75,7 @@ class BoundaryGapsTest(unittest.TestCase):
     def test_default_mode_args(self):
         # 기본 인자(pause, 200) — synthesize 기본값과 동일해야 한다.
         plan = g.parse_tts_script("[기쁨] 안녕 [명랑] 반가워")["plan"]
-        _, gb = w._boundary_gaps_from_plan(plan, SG)
+        _, gb, _ = w._boundary_gaps_from_plan(plan, SG)
         self.assertEqual(gb, [0.0, 0.2])
 
 
