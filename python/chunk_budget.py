@@ -91,10 +91,18 @@ def budget_for(production_tokens, reference_prefix_tokens=0, reference_replay_fr
 
 
 def max_production_tokens(reference_prefix_tokens=0, reference_replay_frames=0):
-    """`fits` 를 만족하는 최대 production token 수 — **분할 상한은 여기서 파생된다.**
+    """분할 상한 — 예산(fits)과 **실증된 종료 상한**의 더 작은 쪽이다.
 
-    분할 상한을 따로 두지 않으므로, 상한만 올리고 생성 예산은 그대로인 상태가 생길 수 없다.
+    예산만으로는 부족하다. 예산에 들어와도 EOS 에 닿지 못하면 결과가 없다(goback 실측).
+    그래서 두 조건을 함께 만족하는 값만 단일 호출로 허용한다. 상한만 올리고 생성 예산은
+    그대로인 상태도, 예산만 보고 종료를 무시하는 상태도 코드상 존재할 수 없다.
     """
+    return min(_max_budget_tokens(reference_prefix_tokens, reference_replay_frames),
+               termination_ceiling())
+
+
+def _max_budget_tokens(reference_prefix_tokens=0, reference_replay_frames=0):
+    """예산(fits) 만 보는 상한. 종료 안전성은 보지 않는다 — 호출자가 결합한다."""
     lo, hi, best = 1, 1, None
     # 상한을 지수적으로 넓힌 뒤 이분 탐색한다(tier 가 유한하므로 반드시 수렴한다).
     while budget_for(hi, reference_prefix_tokens, reference_replay_frames)["fits"]:
@@ -115,3 +123,35 @@ def max_production_tokens(reference_prefix_tokens=0, reference_replay_frames=0):
 def legacy_max_segment_tokens():
     """이관 확인용 — 예전 고정 분할 상한. production 경로에서는 쓰지 않는다."""
     return generation_limit.max_segment_tokens()
+
+# ── 종료 안전 상한(termination ceiling) ────────────────────────────────────────
+# 예산에 들어온다고 단일 호출이 **끝난다는** 보장은 없다. goback 1054 token 은 예산
+# (tier 3072) 안이었는데도 EOS 없이 limit 에 닿았다(LONGFORM_SINGLE_CALL_TERMINATION_UNSAFE).
+# 그 3072 iterations 는 censored 관측이므로 frame/token 앵커 학습에 넣지 않는다.
+#
+# 따라서 예산과 별개로 **실증된 종료 상한**이 필요하다. 아래 값은 자연 종료가 확인된
+# 최대 production token 이며, 확인되지 않은 구간은 extrapolate 하지 않고 분할 대상이다.
+TERMINATION_CEILING = {
+    "production_tokens": 191,
+    "provenance": {
+        "token_definition": "production_tokens (assistant template 포함)",
+        "runs": ["vendor-icl-2", "vendor-icl-3", "prod-smoke-vendor-icl"],
+        "script_sha256_prefix": "7147ef51d189049f",
+        "conditioning_mode": "high_quality_icl (vendor native ref-code ICL)",
+        "generation_tier": 768,
+        "largest_natural_termination": 191,
+        "smallest_observed_failure": 1054,
+        "failure_run": "goback-vendor-native-1 (EOS 없이 3072 iterations)",
+        "verified_on": "2026-08-30",
+    },
+}
+
+
+def termination_ceiling():
+    """자연 종료가 실증된 최대 production token. 이 위는 분할 대상이다."""
+    return int(TERMINATION_CEILING["production_tokens"])
+
+
+def terminates_safely(production_tokens):
+    """이 chunk 하나가 자연 종료한다고 **실증된 범위** 안인가."""
+    return int(production_tokens) <= termination_ceiling()
