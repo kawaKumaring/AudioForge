@@ -50,7 +50,11 @@ try {
     'app.getVersion() 은 package.json version 이거나 Electron 런타임 버전이다',
     `${runtime.reported} / pkg ${appVersion} / electron ${runtime.electron}`)
   const text = (await label.textContent() || '').trim()
-  ok(text === `v${appVersion}`, '표시 문자열이 package.json version 이다', text)
+  // develop 계열은 표시 시점에 build metadata 의 short SHA 를 합친다.
+  const expected = /-dev(\.|$|-)/.test(appVersion) && meta && meta.commit && !appVersion.includes('+')
+    ? `v${appVersion}+${meta.commit}`
+    : `v${appVersion}`
+  ok(text === expected, '표시 문자열이 package.json version 에서 온다', `${text} / ${expected}`)
   ok(text !== `v${runtime.electron}`, 'Electron 런타임 버전이 화면에 새지 않는다')
   ok(!text.includes('AudioForge'), 'AudioForge 를 반복하지 않는다')
 

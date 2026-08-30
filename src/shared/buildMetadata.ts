@@ -75,9 +75,18 @@ export function resolveBuildInfo(
   return { version, commit, date, channel }
 }
 
-/** 화면에 늘 보이는 한 줄. `AudioForge` 를 반복하지 않는다. */
-export function versionLabel(info: Pick<AppBuildInfo, 'version'>): string {
-  return `v${info.version}`
+/**
+ * 화면에 늘 보이는 한 줄. `AudioForge` 를 반복하지 않는다.
+ *
+ * develop 계열(`-dev`)은 어느 커밋에서 나온 빌드인지가 곧 정체성이라 build metadata 의
+ * short SHA 를 `+` 뒤에 붙인다 — package.json 에 SHA 를 적어 두면 커밋할 때마다 낡기 때문에
+ * **표시 시점에** 합친다. version 문자열이 이미 자기 build metadata(`+…`)를 들고 있거나
+ * 커밋을 모르면 그대로 둔다. rc·정식 릴리스에는 붙이지 않는다.
+ */
+export function versionLabel(info: Pick<AppBuildInfo, 'version' | 'commit'>): string {
+  const v = info.version
+  const wantsCommit = channelForVersion(v) === CHANNEL_DEVELOPMENT && !v.includes('+')
+  return wantsCommit && info.commit ? `v${v}+${info.commit}` : `v${v}`
 }
 
 /**
