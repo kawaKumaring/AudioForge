@@ -192,6 +192,24 @@ class VendorNativePathTest(_BundleJobBase):
             self.assertLessEqual(os.path.getmtime(p), mt_manifest + 1e-6,
                                  "%s 가 manifest 뒤에 쓰였다" % n)
 
+    def test_build_metadata_is_recorded_from_the_same_authority_as_the_ui(self):
+        """구형 out 빌드와 최신 master 실행을 구분하려면 기록에 build 좌표가 있어야 한다."""
+        import json as _json
+        self._synth()
+        m = self._manifest()
+        for k in ("app_version", "build_commit", "build_date", "release_channel"):
+            self.assertIn(k, m, "run bundle 에 %s 가 없다" % k)
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        with open(os.path.join(root, "package.json"), encoding="utf-8") as f:
+            pkg_version = _json.load(f).get("version")
+        self.assertEqual(m["app_version"], pkg_version,
+                         "UI 와 기록의 version 권위가 갈라졌다")
+        # 중간 기록(run-open.json)도 같은 좌표를 들고 있어야 취소·강제 종료를 구분할 수 있다.
+        with open(os.path.join(self._bundle_root(), cp.OPEN_RECORD_NAME), encoding="utf-8") as f:
+            opened = _json.load(f)
+        for k in ("app_version", "build_commit", "build_date", "release_channel"):
+            self.assertEqual(opened.get(k), m.get(k), "중간 기록과 manifest 가 다르다: %s" % k)
+
     def test_macro_gain_and_envelope_decisions_are_recorded(self):
         self._synth()
         h = self._manifest()["header"]
@@ -278,6 +296,79 @@ class StatusMappingTest(unittest.TestCase):
     def test_partial_codes_are_named_not_guessed(self):
         self.assertIn("GENERATION_LIMIT_EXCEEDED", tts_worker._PARTIAL_ERROR_CODES)
         self.assertIn("JOB_WALL_TIME_EXCEEDED", tts_worker._PARTIAL_ERROR_CODES)
+
+
+class BuildMetadataAuthorityTest(unittest.TestCase):
+    """version 은 package.json, commit·date·channel 은 build 시 생성 파일이 권위다."""
+
+    def _root(self):
+        return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def test_version_comes_from_package_json(self):
+        import json as _json
+        with open(os.path.join(self._root(), "package.json"), encoding="utf-8") as f:
+            self.assertEqual(cp.app_version(), _json.load(f).get("version"))
+
+    def test_channel_is_derived_from_the_version_suffix(self):
+        self.assertEqual(cp._channel_for_version("1.1.0-rc.1"), "Release Candidate")
+        self.assertEqual(cp._channel_for_version("1.2.0-dev+abc1234"), "Development")
+        self.assertEqual(cp._channel_for_version("1.1.0"), "Stable")
+        self.assertIsNone(cp._channel_for_version("1.1.0-beta.2"),
+                          "모르는 접미사를 지어내지 않는다")
+        self.assertIsNone(cp._channel_for_version(""))
+
+    def test_missing_or_malformed_metadata_degrades_to_unknown(self):
+        """생성 파일이 없거나 형식이 틀려도 version 은 살아 있고 나머지는 None 이다."""
+        import json as _json
+        import shutil as _shutil
+        import tempfile as _tempfile
+        real = os.path.join(self._root(), "build-metadata.json")
+        tmp = _tempfile.mkdtemp(prefix="af_bm_")
+        backup = None
+        try:
+            if os.path.isfile(real):
+                backup = os.path.join(tmp, "build-metadata.json")
+                _shutil.copy2(real, backup)
+                os.remove(real)
+            meta = cp.build_metadata()
+            self.assertTrue(meta["app_version"], "version 은 package.json 에서 계속 나온다")
+            self.assertIsNone(meta["build_commit"])
+            self.assertIsNone(meta["build_date"])
+            self.assertEqual(meta["release_channel"],
+                             cp._channel_for_version(meta["app_version"]),
+                             "channel 은 version 에서 유도된다")
+            with open(real, "w", encoding="utf-8", newline=chr(10)) as f:
+                _json.dump({"commit": "not-a-sha", "date": "30/08/2026", "channel": "  "}, f)
+            bad = cp.build_metadata()
+            self.assertIsNone(bad["build_commit"], "형식이 틀린 값을 그대로 싣지 않는다")
+            self.assertIsNone(bad["build_date"])
+            self.assertEqual(bad["release_channel"],
+                             cp._channel_for_version(bad["app_version"]))
+        finally:
+            if os.path.isfile(real):
+                os.remove(real)
+            if backup:
+                _shutil.copy2(backup, real)
+            _shutil.rmtree(tmp, ignore_errors=True)
+
+    def test_generated_metadata_matches_when_present(self):
+        import json as _json
+        p = os.path.join(self._root(), "build-metadata.json")
+        if not os.path.isfile(p):
+            self.skipTest("build-metadata.json 미생성(개발 환경)")
+        with open(p, encoding="utf-8") as f:
+            raw = _json.load(f)
+        meta = cp.build_metadata()
+        self.assertEqual(meta["app_version"], raw.get("version"),
+                         "생성 파일과 package.json 의 version 이 어긋났다")
+        self.assertEqual(meta["build_commit"], raw.get("commit"))
+        self.assertEqual(meta["build_date"], raw.get("date"))
+        self.assertEqual(meta["release_channel"], raw.get("channel"))
+
+    def test_no_absolute_paths_in_metadata(self):
+        blob = str(cp.build_metadata())
+        for marker in (":\\", "://", "/Users/", "C:"):
+            self.assertNotIn(marker, blob, "빌드 머신 경로가 새면 안 된다")
 
 
 class GitHygieneTest(unittest.TestCase):

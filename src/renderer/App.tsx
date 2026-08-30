@@ -9,6 +9,7 @@ import Options from '@/components/Options'
 import SplitEditor from '@/components/SplitEditor'
 import TTSEditor from '@/components/TTSEditor'
 import TtsResultInfo from '@/components/TtsResultInfo'
+import AppVersionLabel from '@/components/AppVersionLabel'
 
 export default function App() {
   const { fileInfo, mode, status, reset, restorable, restoreSession, setRestorable } = useAppStore()
@@ -90,6 +91,8 @@ export default function App() {
               </svg>
               이전 결과 폴더 열기
             </button>
+            {/* 버전 표시 — 중앙 축 그대로, 버튼 아래 16px. 상단 로고 옆에는 두지 않는다. */}
+            <AppVersionLabel />
           </div>
         </div>
       ) : (

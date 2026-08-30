@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
+import type { AppBuildInfo } from '../shared/buildMetadata'
 import type { CancelResponseLike } from '../shared/cancelContract'
 import { SIDECAR_IPC_CHANNEL } from '../shared/sidecarEvents'
 import type { SidecarEnvelope } from '../shared/sidecarEvents'
@@ -99,7 +100,9 @@ const api = {
   },
   app: {
     openFolder: (path: string) => ipcRenderer.invoke('app:open-folder', path),
-    readTextFile: (path: string) => ipcRenderer.invoke('app:read-text-file', path)
+    readTextFile: (path: string) => ipcRenderer.invoke('app:read-text-file', path),
+    // 앱 버전·빌드 정보 — 인자 없는 read-only 조회. 경로를 주고받지 않는다.
+    getBuildInfo: (): Promise<AppBuildInfo> => ipcRenderer.invoke('app:get-build-info')
   },
   // 참조 라이브러리 — renderer 는 논리 ID 만 다룬다. import 요청의 filePath 하나만 경로이고,
   // 어떤 응답에도 절대 경로가 들어오지 않는다(main 이 논리 메타데이터만 돌려준다).

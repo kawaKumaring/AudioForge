@@ -8,6 +8,7 @@ import { createHash, randomUUID } from 'crypto'
 import { statSync } from 'fs'
 import { pathToFileURL } from 'url'
 import { registerAudioIpc } from './ipc/audio.ipc'
+import { registerAppVersionIpc } from './ipc/app-version.ipc'
 import { registerReferenceLibraryIpc } from './ipc/reference-library.ipc'
 import { createReferenceStore } from './services/reference-store'
 import { createTranscriptStore } from './services/reference-transcript'
@@ -110,6 +111,7 @@ function createWindow(): void {
   // Prevent Electron from navigating when files are dropped
   wc.on('will-navigate', (e) => e.preventDefault())
 
+  registerAppVersionIpc()
   const previewAdapter = registerAudioIpc(mainWindow)
 
   // 참조 라이브러리 — 저장 루트·선택 상태는 앱 소유 userData 안에만 둔다.

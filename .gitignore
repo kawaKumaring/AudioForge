@@ -34,3 +34,6 @@ scratch_e2e/
 # 음성·모델·venv·전사·토큰이 저장소로 새지 않게 하는 것이 이 규칙의 목적이다.
 # worktree 안에는 _local 을 만들지 않는다 — 본체 저장소의 실체를 설정 경로로 참조한다.
 /_local/
+
+# build 시 생성한다(커밋하지 않는다). 없으면 앱은 version 만 보여준다.
+/build-metadata.json
