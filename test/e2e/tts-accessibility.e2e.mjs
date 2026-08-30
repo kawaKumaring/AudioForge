@@ -7,7 +7,14 @@ import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenVenvPids
 
 const APP = process.cwd()
 const REF_ENV = process.env.AF_E2E_REFERENCE
-const SRC = REF_ENV && REF_ENV.trim() ? REF_ENV.trim() : path.join(APP, 'resources', 'speaker_b.wav')
+// 작업 트리에는 resources/ 가 없다(본체 저장소에만 있다). 그래서 env 를 잊으면 게이트가
+// 조용히 건너뛰어졌다 — 본체 경로까지 후보로 둔다.
+const REF_FALLBACKS = [
+  path.join(APP, 'resources', 'speaker_b.wav'),
+  path.join(APP, '..', '..', 'AudioForge', 'resources', 'speaker_b.wav'),
+]
+const SRC = REF_ENV && REF_ENV.trim() ? REF_ENV.trim()
+  : (REF_FALLBACKS.find((c) => fs.existsSync(c)) || REF_FALLBACKS[0])
 const RES_DIR = path.join(APP, 'resources')
 const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots'); fs.mkdirSync(SHOT, { recursive: true })
 let failed = 0

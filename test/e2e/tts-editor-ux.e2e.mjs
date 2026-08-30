@@ -1,6 +1,6 @@
 // TTSEditor UX E2E (mock/synthetic, GPU·Qwen·Whisper·실합성 없음) — UX-2 검증.
 // A pitch slider 키보드·clamp·reset·store 동기 / B 감정 태그 caret 삽입(끝 append 아님) /
-// C 감정 요약 배지 store 일치 / D 반응형(800x600·125/150% zoom) 수평 스크롤·겹침 없음.
+// C 감정 요약 배지 store 일치(고급 설정 > 음성 탭) / D 반응형(800x600·125/150% zoom) 수평 스크롤·겹침 없음.
 // 실행: npm run test:e2e:tts-editor-ux  (사전 npm run build). 실합성 없음 → GPU 불필요.
 // 참조 자산: AF_E2E_REFERENCE 우선, 없으면 resources/speaker_b.wav fallback(파일 주입해 tts 모드 진입용, 합성 안 함).
 // 출력/로그는 비추적 _local/artifacts/diagnostics/e2e-shots 만. 사용자 절대경로 하드코딩 금지.
@@ -10,7 +10,13 @@ import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenVenvPids
 
 const APP = process.cwd()
 const REF_ENV = process.env.AF_E2E_REFERENCE
-const FALLBACK = path.join(APP, 'resources', 'speaker_b.wav')
+// 작업 트리에는 resources/ 가 없다(본체 저장소에만 있다). 그래서 env 를 잊으면 게이트가
+// 조용히 건너뛰어졌다 — 본체 경로까지 후보로 둔다.
+const REF_FALLBACKS = [
+  path.join(APP, 'resources', 'speaker_b.wav'),
+  path.join(APP, '..', '..', 'AudioForge', 'resources', 'speaker_b.wav'),
+]
+const FALLBACK = REF_FALLBACKS.find((c) => fs.existsSync(c)) || REF_FALLBACKS[0]
 const SRC = REF_ENV && REF_ENV.trim() ? REF_ENV.trim() : FALLBACK
 const RES_DIR = path.join(APP, 'resources')
 const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots'); fs.mkdirSync(SHOT, { recursive: true })
@@ -43,18 +49,26 @@ try {
   }, REF)
   await win.waitForFunction(() => /\d/.test(document.getElementById('root')?.innerText || ''), undefined, { timeout: 30000 })
 
-  // ── A. pitch slider (4-flow: 표현 흐름 ExpressionControls, '세부 조절' 뒤) ──
+  // ── A. pitch slider (표현 흐름 ExpressionControls) ──
   // 구 '고급 설정'의 datalist 슬라이더(input[list=tts-pitch-ticks]) + '원본(0)' 버튼 + 중앙 눈금은 재설계로 이동:
-  //   pitch → ExpressionControls의 음높이 SliderRow(role=slider, name=음높이). 접근: 표현 카드 펼치기 + '세부 조절 사용'.
+  //   pitch → ExpressionControls의 음높이 SliderRow(role=slider, name=음높이).
   //   '원본(0)' 리셋 → 슬라이더를 0으로(동일 기능). 중앙 눈금 → 방향 라벨(낮고 묵직함/높고 가볍게)로 대체.
+  //
+  // 이관(2026-08-31): 이 블록은 `section[aria-label="표현"]` 을 찾다가 8초 타임아웃으로 실패하고
+  // 있었다. 그런 이름의 섹션은 **없다** — 재설계 뒤 기본 화면은 `말하는 느낌`, 고급 쪽은
+  // `표현 세부` 다. 제품 게이팅은 정상이고 테스트가 낡은 쪽이었다.
+  // 옛 접근 절차(카드 펼치기 → '세부 조절 사용' 체크)도 사라졌다. 지금 계약은 음높이·속도가
+  // **기본 노출 축**이라는 것이므로, 그 두 단계를 지우는 대신 '추가 조작 없이 활성' 을
+  // 단언한다 — 옛 단언(`capability 지원 + 세부 조절 → 활성`)보다 좁지 않고 더 강하다.
   await win.waitForFunction(() => window.__afStore.getState().ttsPitchCapability?.supported === true, undefined, { timeout: 15000 })
-  const exprSec = win.locator('section[aria-label="표현"]')
-  await exprSec.getByRole('button', { name: '펼치기' }).click({ timeout: 8000 })
-  await exprSec.getByText('세부 조절 사용', { exact: false }).locator('input[type="checkbox"]').check()
+  const exprSec = win.locator('section[aria-label="말하는 느낌"]')
+  await exprSec.waitFor({ timeout: 8000 })
+  ok(await exprSec.getByRole('button', { name: '펼치기' }).count() === 0,
+    "기본 화면 '말하는 느낌' 은 펼치기 없이 바로 보인다")
   const pitch = exprSec.getByRole('slider', { name: '음높이' })
   await pitch.waitFor({ timeout: 8000 })
   const disabledNow = await pitch.isDisabled()
-  ok(!disabledNow, `capability 지원 + 세부 조절 → pitch slider 활성(disabled=${disabledNow})`)
+  ok(!disabledNow, `capability 지원 → pitch slider 가 추가 조작 없이 활성(disabled=${disabledNow})`)
   await win.evaluate(() => window.__afStore.setState({ ttsPitch: 0 }))
   await pitch.focus()
   await win.keyboard.press('ArrowRight')
@@ -114,9 +128,16 @@ try {
   await ta.fill('[기쁨] 안녕 [슬픔] 잘가')
   await win.evaluate(() => window.__afStore.getState().registerEmotionRef('happy', 'X:/synthetic/happy_src.wav'))
   await win.waitForTimeout(200)
+  // 이관(2026-08-31): 이 배지는 기본 화면에 없다. 재설계로 EmotionReferenceManager 가
+  // '고급 설정 > 음성' 탭 안으로 들어갔고(TTSEditor 의 voice 슬롯), 고급 설정은 기본이 닫힘이다.
+  // 제품 배치가 맞고 테스트가 낡았던 쪽이므로, 배지 단언을 지우는 대신 **도달 경로까지**
+  // 함께 검사한다 — 열기 → 음성 탭 → 배지.
+  const adv = win.locator('section[aria-label="고급 설정"]')
+  await adv.getByRole('button', { name: '열기' }).click({ timeout: 8000 })
+  await adv.getByRole('tab', { name: '음성' }).click({ timeout: 8000 })
+  await win.waitForTimeout(250)
   const badgeTxt = await win.evaluate(() => document.getElementById('root')?.innerText || '')
-  // 4-flow: 감정 요약은 EmotionReferenceManager('목소리' 흐름) — "감정 음성 N개 등록됨" + 준비/확정 배지.
-  // (구 '감정별 음성 등록' 아코디언 요약이 이동한 위치.) 수치·상태가 요약에 반영되는지 확인.
+  // 4-flow: 감정 요약은 EmotionReferenceManager — "감정 음성 N개 등록됨" + 준비/확정 배지.
   ok(/감정 음성/.test(badgeTxt) && /등록|준비|확정/.test(badgeTxt), '감정 요약 상태 배지 렌더(EmotionReferenceManager)')
   const st = await win.evaluate(() => {
     const s = window.__afStore.getState()
@@ -131,10 +152,14 @@ try {
     await win.waitForTimeout(120)
     const r = await win.evaluate(() => ({
       hscroll: document.documentElement.scrollWidth > document.documentElement.clientWidth + 2,
-      // 구 '고급 설정' 마커 → 신 4-flow의 '세부 표현' 블록(항상 tts 모드에 존재)으로 도달성 확인.
-      flowVisible: /세부 표현/.test(document.getElementById('root')?.innerText || ''),
+      // 이관(2026-08-31): 마커를 '세부 표현' 에서 **기본 화면에 실제로 있는 것**으로 바꾼다.
+      // '세부 표현' 은 고급 설정 안으로 들어가 기본 화면 innerText 에 없다 — 그것을 도달성
+      // 지표로 쓰면 창 크기와 무관하게 늘 false 다. 검사 의도(좁은 화면에서도 주 흐름이
+      // 무너지지 않는다)는 기본 화면의 두 축으로 그대로 지킨다.
+      flowVisible: !!document.querySelector('section[aria-label="말하는 느낌"]')
+        && !!document.querySelector('section[aria-label="대사"] textarea'),
     }))
-    ok(!r.hscroll && r.flowVisible, `반응형 ${w}x${h} zoom${zoom}: 수평스크롤=${r.hscroll}, 세부표현 표시=${r.flowVisible}`)
+    ok(!r.hscroll && r.flowVisible, `반응형 ${w}x${h} zoom${zoom}: 수평스크롤=${r.hscroll}, 주 흐름 표시=${r.flowVisible}`)
   }
   await win.evaluate(() => { document.body.style.zoom = '1' })
   await win.setViewportSize({ width: 1280, height: 800 })
