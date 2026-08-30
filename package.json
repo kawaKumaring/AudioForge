@@ -19,6 +19,7 @@
     "test:e2e:analysis-panel": "node test/e2e/analysis-panel.e2e.mjs",
     "test:e2e:analysis-dev": "node test/e2e/analysis-dev-path.e2e.mjs",
     "test:e2e:analysis-dev-kill": "node test/e2e/analysis-dev-path.e2e.mjs --exit=tree",
+    "test:e2e:analysis-phase45": "node test/e2e/analysis-phase45.e2e.mjs",
     "test:e2e:analysis": "node test/e2e/analysis-lifecycle.e2e.mjs",
     "test:e2e:app-version": "node test/e2e/app-version.e2e.mjs",
     "test:e2e:tts-accessibility": "node test/e2e/tts-accessibility.e2e.mjs",

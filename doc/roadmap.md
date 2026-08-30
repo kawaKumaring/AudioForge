@@ -148,6 +148,38 @@ read-only 감사 결과(2026-08-30, GPU 미사용):
 - goback은 run bundle과 동적 예산이 준비된 뒤 vendor native ICL로 실행한다.
 - ASR coverage, leading deletion, EOS, 음량/F0 변화는 보조 측정이고 장문 품질 PASS는 청취 전 선언하지 않는다.
 
+### 5. 입력 추정 UI (PHASE 0~5)
+
+대사를 넣는 동안 예상 음성 길이·예상 작업 시간·생성 묶음 수를 읽기 전용으로 보여 준다.
+편집기 안을 건드리지 않고 패널 하나로만 말한다.
+
+세 축을 섞지 않는다.
+
+- `source_paragraphs` — 사용자가 Enter 로 나눈 문단
+- `segments` — 파서가 본 대사 구간
+- `chunks` — 실제 모델 호출 묶음
+
+권위는 전부 production 파이썬이다. tokenizer·splitter·시간 공식을 TS 에서 다시 쓰지 않는다.
+미리보기의 `planned_calls` 는 실제 splitter 의 chunk 수와 같아야 하고, 그 등식은
+`python/test_input_analysis_authority.py` 가 고정한다.
+
+**PHASE 4·5 실측** (`develop@a809a4b` 기준, 고아 worker 0 확인 상태)
+
+- tokenizer 콜드 로드 6.3초 / 이후 분석 1~40ms. GPU·TTS 모델은 로드하지 않는다.
+- sample_4 3,253자 18문단 → 묶음 18, 분석 15~17ms.
+- goback 1,464자 1문단 → 묶음 3, 분석 42ms.
+- 타이핑 60회 입력 지연 p50 6.1ms / p95 6.2ms, long task 0건.
+- 분석 20회 뒤 상주 worker 메모리 증가 0MiB.
+- 화면 묶음 수 == planner chunk 수 (goback·sample_4·다문단 전부 일치).
+- 1280x800 / 900x700 / 860x540 에서 가로 넘침 0, 패널 유무가 대사 입력 상자를 바꾸지 않는다.
+
+**신뢰도 라벨의 실제 도달 범위** — `MEASURED_FRAME_RANGE = (396, 1342)` 는 단일 호출
+관측에서 나온 job 전체 frame 범위다. 그래서 여러 묶음으로 갈리는 입력은 전부 `외삽` 이
+된다. 승인 대본 두 편(goback 1,054 token / sample_4 2,397 token)도 그렇다. 실측 라벨은
+goback 앞 400자 같은 단일 묶음 중간 길이에서 나온다. 이것은 결함이 아니라 정직한 표기이지만,
+사용자가 보는 화면에서 라벨이 사실상 늘 `외삽` 이라는 점은 UI 인수에서 판단할 문제다.
+
+
 ## 제품 기능 로드맵
 
 ### 5. TTS 감정·표현 UX 완결
@@ -310,7 +342,7 @@ Demucs/RoFormer 보컬 분리, 가사 전사·번역, phoneme timing, pitch curv
 | 장문 동적 예산 | 계획 | `budget_for` 계약과 planner/generator parity |
 | goback 장문 | 대기 | run bundle·동적 예산 후 GPU 및 청취 |
 | sample_4 스트레스 | 대기 | EOS·반복·부분 결과·시간 기록 |
-| 입력/문단 시간 estimator | 계획 | 통제 실측과 신뢰도 표기 |
+| 입력/문단 시간 estimator | 구현 완료, UI 인수 대기 | `develop@a809a4b`+ — 아래 §5 |
 | 감정 장문·fixture v3 | 계획 | 화자·감정·gain 안정성과 청취 |
 | 음악·대화 텍스트 분할 | 계획 | 화자·타임라인·번역 parity |
 | 음성 대사 언어 변환 | 연구/설계 | 로컬 종단 prototype |
