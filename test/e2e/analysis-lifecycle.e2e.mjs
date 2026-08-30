@@ -11,6 +11,9 @@
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
+import {
+  killWorkerPids, listAnalysisWorkers, newWorkerPids, waitForGone, workerPidSet,
+} from './_analysis-workers.mjs'
 import { execSync } from 'child_process'
 
 const APP = process.cwd()
@@ -31,17 +34,10 @@ const gobackCandidates = [
 const gobackPath = gobackCandidates.find((p) => fs.existsSync(p))
 const LONG = gobackPath ? fs.readFileSync(gobackPath, 'utf-8') : null
 
-// 자기가 띄운 분석 worker 만 센다. 다른 python·합성 프로세스는 건드리지 않는다.
-const countAnalysisWorkers = () => {
-  const q = 'Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '
-    + String.fromCharCode(39) + '*analysis_worker.py*' + String.fromCharCode(39)
-    + ' } | Measure-Object | Select-Object -ExpandProperty Count'
-  try {
-    return parseInt(execSync('powershell -NoProfile -Command "' + q + '"',
-      { encoding: 'utf-8' }).trim(), 10) || 0
-  } catch { return -1 }
-}
-const workersBefore = countAnalysisWorkers()
+// 종료 계약은 **PID** 로 본다. 개수 비교는 질의를 실행하는 powershell 이 자기 명령줄 때문에
+// 스스로를 세어 실제 worker 가 0 이어도 통과시켰다.
+const workersBefore = workerPidSet()
+let spawnedWorkerPids = null
 
 const app = await electron.launch({
   args: ['out/main/index.js'], cwd: APP, env: { ...process.env, AF_E2E: '1' },
@@ -109,16 +105,11 @@ try {
   ok(burst[burst.length - 1].ok === true, '마지막 요청은 결과를 받는다')
 
   // ── 죽은 파이프: 앱이 살아 있고 응답이 온다 ───────────────────────────────
-  // 테스트 프로세스에서 직접 죽인다 — analysis_worker 만 고른다(다른 python 은 건드리지 않는다).
-  const killed = (() => {
-    const ps = 'Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '
-      + String.fromCharCode(39) + '*analysis_worker.py*' + String.fromCharCode(39)
-      + ' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force }'
-    try {
-      execSync('powershell -NoProfile -Command "' + ps + '"', { stdio: 'ignore' })
-      return true
-    } catch { return false }
-  })()
+  // **PID 로** 죽인다. 명령줄 문자열로 고르던 방식은 powershell 자신을 목록에 넣었고,
+  // 따옴표가 어긋난 뒤에는 아무것도 죽이지 않은 채 이 검사를 껍데기로 만들었다.
+  const before = listAnalysisWorkers() ?? []
+  const killed = killWorkerPids(before.map((w) => w.pid))
+  ok(killed > 0, 'worker 를 실제로 강제 종료했다(검사 전제)', `killed=${killed}/${before.length}`)
   log('INFO worker 강제 종료', killed)
   const afterKill = await call('종료 뒤 첫 요청입니다.', 'e4')
   ok(typeof afterKill.ok === 'boolean', '죽은 뒤에도 응답이 온다(매달리지 않는다)',
@@ -126,6 +117,10 @@ try {
   ok(afterKill.ms < 25000, '타임아웃 전에 끝난다', `${afterKill.ms}ms`)
   const recovered = await call('복구 뒤 요청입니다.', 'e5')
   ok(recovered.ok === true, '새 worker 로 복구된다', `${recovered.ms}ms`)
+  // 종료 계약이 볼 대상은 **지금 살아 있는** worker 다(중간에 일부러 죽인 것 말고).
+  spawnedWorkerPids = newWorkerPids(workersBefore)
+  ok((spawnedWorkerPids ?? []).length > 0, '복구된 worker 프로세스가 실재한다',
+    `pids=${(spawnedWorkerPids ?? []).length}`)
 
   // ── GPU·모델 로딩 0 ───────────────────────────────────────────────────────
   const gpu = (() => {
@@ -145,15 +140,14 @@ try {
   await app.close().catch(() => {})
 }
 
-// 종료 뒤 자기가 만든 worker 가 남지 않아야 한다(정상·실패·예외 어느 경로든 여기를 지난다).
+// 종료 계약 — 이 테스트가 띄운 PID 가 실제로 사라졌는지 본다.
 {
-  let after = countAnalysisWorkers()
-  for (let i = 0; i < 20 && after > workersBefore; i += 1) {
-    await new Promise((r) => setTimeout(r, 250))
-    after = countAnalysisWorkers()
-  }
-  ok(workersBefore < 0 || after <= workersBefore,
-    '종료 뒤 analysis worker 고아 0', `before=${workersBefore} after=${after}`)
+  const created = spawnedWorkerPids ?? []
+  ok(workersBefore === null || created.length > 0,
+    '테스트가 분석 worker 를 실제로 띄웠다', `pids=${created.length}`)
+  const stillAlive = created.length ? await waitForGone(created) : []
+  ok(stillAlive === null || stillAlive.length === 0,
+    '종료 뒤 그 worker PID 가 사라졌다', `띄움=${created.length} 잔존=${(stillAlive ?? []).length}`)
 }
 
 log(failed === 0 ? '전부 통과' : `실패 ${failed}건`)

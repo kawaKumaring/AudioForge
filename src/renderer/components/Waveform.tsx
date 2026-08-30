@@ -72,7 +72,16 @@ export default function Waveform() {
     ws.on('pause', () => setIsPlaying(false))
     ws.on('timeupdate', (t) => setCurrentTime(formatTime(t)))
     ws.on('decode', (d) => { setDuration(formatTime(d)); setDecoded(true) })
-    ws.load(fileUrl)
+    // 개발 실행의 StrictMode 는 이 effect 를 setup -> cleanup -> setup 으로 두 번 부른다.
+    // 그러면 load() 가 끝나기 전에 destroy() 가 돌고, wavesurfer 내부 AbortController 가
+    // 그 요청을 끊어 `AbortError` 가 처리되지 않은 거부로 남는다 — 화면은 멀쩡하지만
+    // renderer 에 uncaught 오류가 쌓여 진짜 오류를 가린다.
+    // 끊긴 로드는 **정상적인 정리의 결과**이므로 여기서만 삼킨다. 그 밖의 로드 실패는
+    // 그대로 올려 보낸다 — 파일을 못 읽은 것을 조용히 감추면 안 된다.
+    void ws.load(fileUrl).catch((err: unknown) => {
+      if ((err as Error)?.name === 'AbortError') return
+      throw err
+    })
     wsRef.current = ws
 
     return () => { ws.destroy(); wsRef.current = null; regionsRef.current = null; setIsPlaying(false) }

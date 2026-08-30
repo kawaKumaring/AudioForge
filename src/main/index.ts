@@ -42,6 +42,16 @@ if (process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA) {
   try { app.setPath('userData', process.env.AF_E2E_USER_DATA) } catch { /* noop */ }
 }
 
+// 개발 경로(`npm run dev`) 자동 검증용 디버깅 포트.
+// 사용자가 실제로 쓰는 실행은 `run.bat -> af-launch.mjs -> npm run dev` 이고, 그 경로에만
+// React 개발 빌드의 StrictMode 이중 effect 가 있다. production 번들을 띄우는 기존 E2E 는
+// 그 조건을 재현하지 못해 실제 결함을 놓쳤다. 그 경로를 붙잡으려면 이미 떠 있는 Electron 에
+// 붙어야 하므로 여기서 포트를 연다 — **AF_E2E=1 이고 포트가 명시됐을 때만**.
+if (process.env.AF_E2E === '1' && /^\d+$/.test(process.env.AF_E2E_CDP_PORT ?? '')) {
+  app.commandLine.appendSwitch('remote-debugging-port', process.env.AF_E2E_CDP_PORT as string)
+  app.commandLine.appendSwitch('remote-allow-origins', '*')
+}
+
 // ── 선택된 참조 — 논리 ID 하나만 앱 소유 위치에 남긴다(절대 경로 저장 금지) ──
 // 앱의 다른 설정(settings.json)과 파일을 나누어 동시 쓰기 충돌을 피한다.
 function selectionFilePath(): string {
