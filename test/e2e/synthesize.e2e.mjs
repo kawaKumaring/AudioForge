@@ -8,8 +8,15 @@ import path from 'path'
 import { isolatedInput, cleanupIsolated, snapshotTree } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
-const SRC = path.join(APP, 'resources', 'speaker_b.wav')
-const RES_DIR = path.join(APP, 'resources')
+// 작업 트리에는 resources/ 가 없다(본체 저장소에만 있다). 후보를 두어 게이트가 조용히
+// 건너뛰어지지 않게 한다. **자동 검색·복사는 하지 않는다** — 정해진 두 자리만 본다.
+// (실 Qwen 게이트의 `AF_E2E_REFERENCE` 계약은 여기와 무관하며 그대로다.)
+const SRC = [
+  path.join(APP, 'resources', 'speaker_b.wav'),
+  path.join(APP, '..', '..', 'AudioForge', 'resources', 'speaker_b.wav'),
+].find((c) => fs.existsSync(c)) || path.join(APP, 'resources', 'speaker_b.wav')
+// 불변 검사도 실제로 쓰는 그 resources/ 를 봐야 의미가 있다.
+const RES_DIR = path.dirname(SRC)
 const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots')
 fs.mkdirSync(SHOT, { recursive: true })
 const logLines = []
@@ -80,19 +87,31 @@ try {
     const url = await window.api.audio.getFileUrl(p)
     s.getState().setFile(info, url); s.getState().setMode('tts')
   }, REF)
-  await win.waitForFunction(() => /111\.08/.test(document.getElementById('root')?.innerText || ''), undefined, { timeout: 30000 })
+  // 이관(2026-08-31): 화면의 길이 표기가 `111.08초` 에서 `1:51`(분:초) 로 바뀌었다.
+  // 표기 문자열 하나에만 매달리면 같은 자리에서 또 낡으므로 둘로 나눠 단언한다.
+  //   · 자산 신원 — 앱이 읽어 낸 길이가 이 승인 자산의 길이(111.08초)와 같다
+  //   · 표시 계약 — 화면이 현재 형식(1:51)으로 그 길이를 보여 준다
+  await win.waitForFunction(
+    () => (window.__afStore?.getState().fileInfo?.duration ?? 0) > 0, undefined, { timeout: 30000 })
+  const dur = await win.evaluate(() => window.__afStore.getState().fileInfo.duration)
+  ok(Math.abs(dur - 111.08) < 0.05, `분석 길이 = 승인 자산 길이(${dur.toFixed(2)}초)`)
   const tts = await measure()
   await win.screenshot({ path: path.join(SHOT, 'e2e_02_tts.png') })
-  ok(/111\.08/.test(tts.txt), '111.08초 분석 결과 표시')
+  ok(/1:51/.test(tts.txt), '길이 표시(1:51)')
   const spawnedAnalyze = mainOut.join('').includes('refanalyze')
   const spawnedPreflight = mainOut.join('').includes('qwenpre')
   ok(spawnedAnalyze && spawnedPreflight, 'analyze + preflight 동시 초기화(둘 다 spawn)')
   ok(pageErrors.length === 0 && crashes.length === 0, 'TTS 진입: pageerror/crash 0')
 
-  // 3) 구간 확정 → 파생 클립 ready
-  await win.getByText('이 구간으로 확정').click({ timeout: 20000 })
-  await win.waitForFunction(() => window.__afStore?.getState().ttsRefReady === true, undefined, { timeout: 40000 })
-  ok(true, '구간 확정 → ttsRefReady=true')
+  // 3) 파생 클립 ready
+  // 이관(2026-08-31): 수동 '이 구간으로 확정' 버튼은 기본 화면에서 사라졌다. 지금은 앱이
+  // 고른 구간을 그대로 쓰고, 바꾸고 싶을 때만 '사용 구간 바꾸기' 로 편집기를 편다
+  // (TTSEditor 의 regionOpen). 결과 단언(ttsRefReady)은 그대로 두고, 수동 경로는
+  // 도달성으로 확인한다 — 사라진 버튼을 계속 클릭하려 들면 이 자리에서 또 낡는다.
+  await win.waitForFunction(() => window.__afStore?.getState().ttsRefReady === true, undefined, { timeout: 60000 })
+  ok(true, '파일을 올리면 파생 참조 클립이 준비된다(수동 확정 없이)')
+  ok(await win.getByRole('button', { name: '사용 구간 바꾸기' }).count() > 0,
+    "'사용 구간 바꾸기' 로 구간 편집에 닿는다")
   await win.evaluate(() => window.__afStore.setState({ ttsText: '안녕하세요. 테스트 문장입니다.' }))
 
   // 4) 합성 클릭 → audio:process 1회 + processing UI + 검은 화면/크래시 없음
