@@ -16,7 +16,15 @@ import {
  * debounce 는 "입력이 멈췄는가" 를 보는 값이고 성능 목표가 아니다. 분석 자체는 상주 worker
  * 에서 실측 0~0.02초라 지연의 대부분은 사람의 타이핑 간격이다.
  */
+/**
+ * 입력이 멈췄는지 보는 **UX 조절값**이다. 권위 모델 상수가 아니다 —
+ * 분석 자체는 상주 worker 에서 실측 0~0.02초라 체감 지연의 대부분은 사람의 타이핑 간격이다.
+ * 바꾸려면 연속 요청 수와 체감 지연 실측을 근거로 남긴다.
+ */
 export const ANALYSIS_DEBOUNCE_MS = 400
+
+/** composition 을 볼 범위. TTS 대사 편집기 안쪽에서 난 조합만 분석을 억제한다. */
+export const TTS_EDITOR_SCOPE_SELECTOR = '[data-af-tts-editor]'
 
 export type AnalysisStatus =
   | 'idle'          // 입력이 없다
@@ -38,10 +46,11 @@ let requestCounter = 0
 export function useInputAnalysis(
   text: string,
   opts: { enabled?: boolean; mode?: string; referenceConditioningMode?: string;
-          debounceMs?: number } = {}
+          debounceMs?: number; scopeSelector?: string } = {}
 ): UseInputAnalysis {
   const enabled = opts.enabled !== false
   const debounceMs = opts.debounceMs ?? ANALYSIS_DEBOUNCE_MS
+  const scopeSelector = opts.scopeSelector ?? TTS_EDITOR_SCOPE_SELECTOR
   const [status, setStatus] = useState<AnalysisStatus>('idle')
   const [result, setResult] = useState<AnalysisResult | null>(null)
   const composing = useRef(false)
@@ -64,17 +73,28 @@ export function useInputAnalysis(
   }, [])
 
   // IME 조합 억제 — **편집기 컴포넌트를 건드리지 않는다.** composition 이벤트는 버블하므로
-  // document 에서 듣는다(편집기의 caret·IME 책임 영역을 침범하지 않기 위한 선택이다).
+  // document 에서 듣되, **TTS 대사 편집기 안쪽에서 난 것만** 본다.
+  //
+  // 범위를 안 걸면 같은 화면의 검색창·참조 전사 입력·다른 모드의 input 에서 한글을 쳐도
+  // 분석이 억제되거나 다시 돈다. 편집기 컴포넌트에 props 를 심지 않고 안정된 data 속성으로
+  // 판정한다(그 컴포넌트가 caret·IME 책임을 갖고 있어 침범하지 않는다).
   useEffect(() => {
-    const start = () => { composing.current = true }
-    const end = () => { composing.current = false }
+    if (!enabled) { composing.current = false; return }
+    const inScope = (e: Event) => {
+      const t = e.target
+      return t instanceof Element && !!t.closest(scopeSelector)
+    }
+    const start = (e: Event) => { if (inScope(e)) composing.current = true }
+    const end = (e: Event) => { if (inScope(e)) composing.current = false }
     document.addEventListener('compositionstart', start)
     document.addEventListener('compositionend', end)
     return () => {
       document.removeEventListener('compositionstart', start)
       document.removeEventListener('compositionend', end)
+      // 모드 전환·unmount 뒤에 남은 조합 상태가 다음 마운트로 새지 않게 한다.
+      composing.current = false
     }
-  }, [])
+  }, [enabled, scopeSelector])
 
   useEffect(() => {
     if (!enabled) return

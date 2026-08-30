@@ -64,8 +64,11 @@ export default function InputAnalysisPanel(props: {
         >
           {open ? '▾' : '▸'} 대사 분석
         </button>
+        {/* 결과 요약은 live 영역이 아니다 — 타이핑마다 전체를 낭독하면 방해가 된다.
+            흐리게만 두지 않고 접근성 이름으로도 '이전 입력의 예상값' 임을 말한다. */}
         <span
           data-testid="input-analysis-summary"
+          aria-label={head ? (stale ? `이전 입력의 예상값: ${head}` : head) : undefined}
           style={{
             ...muted, flex: 1, minWidth: 0, opacity: stale ? 0.55 : 1,
             overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
@@ -73,11 +76,15 @@ export default function InputAnalysisPanel(props: {
         >
           {head ?? statusText ?? ''}
         </span>
-        {statusText && head && (
-          <span data-testid="input-analysis-status" style={{ ...muted, flexShrink: 0, opacity: 0.8 }}>
-            {statusText}
-          </span>
-        )}
+        {/* 상태 변화만 알린다. 결과 표는 사용자가 탐색할 때 읽히면 된다. */}
+        <span
+          data-testid="input-analysis-status"
+          role="status"
+          aria-live="polite"
+          style={{ ...muted, flexShrink: 0, opacity: 0.8 }}
+        >
+          {head ? (statusText ?? '') : ''}
+        </span>
       </div>
 
       {open && result && (
@@ -107,7 +114,8 @@ function ParagraphList(props: { result: AnalysisResult; sourceText: string; stal
   const { result, sourceText, stale } = props
   if (!result.sourceParagraphs.length) return null
   return (
-    <div data-testid="analysis-paragraphs"
+    <div data-testid="analysis-paragraphs" aria-live="off"
+      aria-label={stale ? '이전 입력의 문단별 예상값' : '문단별 예상값'}
       style={{ display: 'flex', flexDirection: 'column', gap: 3, opacity: stale ? 0.55 : 1 }}>
       {result.sourceParagraphs.map((p) => {
         const s = paragraphSummary(result, p.index)
@@ -144,7 +152,8 @@ function SplitList(props: { result: AnalysisResult; stale: boolean }) {
   const rows = splitRows(props.result)
   if (!rows.length) return null
   return (
-    <div data-testid="analysis-splits"
+    <div data-testid="analysis-splits" aria-live="off"
+      aria-label={props.stale ? '이전 입력의 분할 위치' : '분할 위치'}
       style={{ display: 'flex', flexDirection: 'column', gap: 2, opacity: props.stale ? 0.55 : 1 }}>
       <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>분할 위치</span>
       {rows.map((r) => (

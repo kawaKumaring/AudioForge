@@ -908,6 +908,9 @@ export default function TTSEditor() {
           </div>
           {/* A 소유 편집기(caret/IME/overlay/오류 = A). 셸은 value/onChange + 삽입 handle만 배선.
               팔레트가 위로 올라가도 이 편집기가 [2] 대사 섹션의 첫 textarea라는 계약은 유지된다. */}
+          {/* IME 조합 판정 범위. 이 안쪽 composition 만 분석을 억제한다
+              (편집기 컴포넌트 자체는 건드리지 않는다). */}
+          <div data-af-tts-editor="">
           <EmotionScriptEditor
             ref={editorRef}
             value={ttsText}
@@ -919,6 +922,7 @@ export default function TTSEditor() {
             disabled={disabled}
             refStates={Object.fromEntries(nonDefaultEmotions.map(e => [e.id, { registered: !!ttsEmotionRefState[e.id]?.source, ready: !!ttsEmotionRefState[e.id]?.ready }]))}
           />
+          </div>
           {/* 대사 작성 보조 — 읽기 전용. textarea 내부를 건드리지 않고 별도 목록으로만 보여 준다. */}
           <InputAnalysisPanel status={analysis.status} result={analysis.result} sourceText={ttsText} />
           {/* 대사에 쓴 감정 중 전용 목소리가 없는 것 — 짧은 사실 한 줄(등록은 고급 설정 > 음성). */}
