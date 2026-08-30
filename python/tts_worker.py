@@ -12,6 +12,7 @@ Engine selection:
 
 import os
 import re
+import sys
 import time
 import chunk_paths   # chunk 경로 규칙(bridge와 공용) — 결정적 경로 정확 일치 검증
 import semantic_chunk_planner   # 의미 경계 분류 + 무음 예산(C2). 순수 로직(stdlib only).
@@ -398,6 +399,82 @@ _QWEN_REQUIRED = ["config.json", "model.safetensors", "vocab.json", "merges.txt"
                   "tokenizer_config.json", os.path.join("speech_tokenizer", "model.safetensors")]
 # 무응답(진행 없음) 인용 timeout. Electron watchdog(무진행 5분)보다 짧게 잡아 Python이 먼저 정리·오류.
 # ※ 이 값은 '생성 구간' 계약이다(계약 A 산정 근거가 이 280에 묶여 있다) — 절대 키우지 않는다.
+# ── 작업 전체 벽시계 천장 ──────────────────────────────────────────────────────
+# progress watchdog(무응답)·generation limit(생성량)과 **별개 축**이다. 둘 다 정상인데도
+# 작업이 끝없이 길어지는 경우가 있다 — chunk 가 많고 각각은 정상 종료하는 장문이 그렇다.
+# 사용자가 무한정 기다리지 않도록 작업 수락부터 terminal 까지 누적 시간에 절대 상한을 둔다.
+MAX_JOB_WALL_TIME_SEC = 3600
+JOB_WALL_TIME_EXCEEDED = "JOB_WALL_TIME_EXCEEDED"
+
+
+class JobWallTimeExceeded(RuntimeError):
+    """작업 전체 시간 천장 초과. partial 은 진단에만 남기고 정상 발행하지 않는다."""
+
+    def __init__(self, elapsed_sec, limit_sec, completed_chunks=None):
+        self.elapsed_sec = float(elapsed_sec)
+        self.limit_sec = int(limit_sec)
+        self.completed_chunks = completed_chunks
+        super().__init__("작업 시간 %.0f초가 상한 %d초를 넘었습니다 — 결과를 발행하지 않습니다."
+                         % (elapsed_sec, limit_sec))
+        self.error_payload = {"code": JOB_WALL_TIME_EXCEEDED,
+                              "elapsed_sec": round(float(elapsed_sec), 1),
+                              "limit_sec": int(limit_sec),
+                              "completed_chunks": completed_chunks}
+
+
+class JobWallClock:
+    """작업 수락 시각을 잡고 누적 경과를 판정한다. 시작 시각은 한 번만 정해진다.
+
+    시간 소스를 주입받는다 — 모듈 전역 시계에 의존하면 호출부마다 다른 시계를 쓰게 되고
+    테스트에서도 서로의 mock 을 밟는다.
+    """
+
+    def __init__(self, limit_sec=None, clock=None):
+        import time as _time
+        self._clock = clock or _time.monotonic
+        self.limit_sec = int(MAX_JOB_WALL_TIME_SEC if limit_sec is None else limit_sec)
+        self.started_at = self._clock()
+
+    def elapsed(self):
+        return self._clock() - self.started_at
+
+    def exceeded(self):
+        return self.elapsed() > self.limit_sec
+
+    def check(self, completed_chunks=None):
+        """초과면 예외. 초과가 아니면 경과를 돌려준다.
+
+        시계는 **한 번만** 읽는다 — 두 번 읽으면 판정과 보고가 서로 다른 시각이 된다.
+        """
+        el = self.elapsed()
+        if el > self.limit_sec:
+            raise JobWallTimeExceeded(el, self.limit_sec, completed_chunks)
+        return el
+
+
+_QWEN_PROGRESS_PROBE_ROUNDS = 3     # 무응답 판정 전에 GPU 활동을 확인하는 연속 횟수
+
+
+def _gpu_busy():
+    """이 호스트의 GPU 가 실제로 일하고 있는가. 판정 불가면 True(=계속 기다린다).
+
+    util 은 CPU 후처리·동기화·커널 사이 공백에서도 0 이 될 수 있으므로 util 하나로
+    hang 을 단정하지 않는다. 메모리 사용까지 함께 보고, 조회 자체가 실패하면
+    '모른다' 이므로 종료 근거로 쓰지 않는다.
+    """
+    try:
+        import subprocess as _sp
+        r = _sp.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used",
+                     "--format=csv,noheader,nounits"],
+                    capture_output=True, text=True, timeout=8)
+        if r.returncode != 0:
+            return True
+        util, mem = [int(x.strip()) for x in r.stdout.strip().splitlines()[0].split(",")]
+        return util > 0 or mem > 1500
+    except Exception:
+        return True
+
+
 _QWEN_INACTIVITY_SEC = 280
 # 진단 전용: 무응답 종료를 끈다. production 계약(280s)은 그대로이고 이 훅은
 # 환경변수가 있을 때만 산다. 장문 단일 호출의 실제 능력을 재려면 시간 제한이
@@ -623,8 +700,24 @@ class QwenTTSEngine(TTSEngine):
             _kill_proc_tree(proc)
             return QwenLoadTimeoutError(_now() - _t0, startup_deadline_sec, hb["seen"], stage)
 
+        _quiet_rounds = {"n": 0}
+
         def _no_response():
-            """무응답 초과 — 기존 계약 문구·동작 그대로. code만 구조화해 덧붙인다."""
+            """무응답 초과. 다만 **시간만으로 종료하지 않는다**.
+
+            장문 단일 호출은 vendor blocking 구간에서 정상적으로 아무 메시지도 내지 않는다.
+            그래서 여기서 GPU 활동을 먼저 본다 — 살아 있으면 '진행 확인 중' 으로 보고 계속
+            기다리고, 연속 %d 회 활동이 없을 때만 hang 으로 판정한다. 프로세스가 이미
+            죽었으면 그 자체가 실패 확정이므로 즉시 종료한다.
+            """ % _QWEN_PROGRESS_PROBE_ROUNDS
+            if proc.poll() is None and _gpu_busy():
+                _quiet_rounds["n"] = 0
+                emit("progress", percent=60,
+                     message="합성 중... (긴 문장은 시간이 더 걸립니다)")
+                return None                      # 계속 기다린다
+            _quiet_rounds["n"] += 1
+            if proc.poll() is None and _quiet_rounds["n"] < _QWEN_PROGRESS_PROBE_ROUNDS:
+                return None
             _kill_proc_tree(proc)
             e = RuntimeError(f"Qwen 무응답 {inactivity_sec}s 초과 — 프로세스 종료")
             e.error_payload = {"code": "QWEN_NO_RESPONSE",
@@ -646,7 +739,10 @@ class QwenTTSEngine(TTSEngine):
                 # wait가 기동 예산 잔량이라 짧았을 수 있다 — 어느 축이 터졌는지 명확히 구분한다.
                 if not loaded and (_now() - _t0) >= startup_deadline_sec:
                     raise _load_timeout()
-                raise _no_response()
+                _e = _no_response()
+                if _e is not None:
+                    raise _e
+                continue                 # GPU 가 살아 있다 — 계속 기다린다
             if line is None:
                 break
             line = line.strip()
@@ -1319,6 +1415,13 @@ _METADATA_KEYS = [
     # 최종 파일 양 끝은 boundary_onset_samples/boundary_offset_samples 가 따로 말한다(중복 아님).
     "segment_envelope_onset_count", "segment_envelope_offset_count",
     "segment_envelope_kind_counts", "segment_envelope_applied",
+    # macro gain drift 보정(연기·믹싱·공간 세 축 분리) — 조립 트랙 하나에 한 번 건 보정의 재현값.
+    # reason 은 APPLIED / BELOW_GATE / TOO_SHORT / NO_ACTIVE_SPEECH / FULLY_PROTECTED / UNAVAILABLE.
+    # curve_sha8 은 보정 곡선 수치 배열의 지문이다(대사·경로가 아니다).
+    "macro_gain_applied", "macro_gain_reason", "macro_gain_statistic_db", "macro_gain_gate_db",
+    "macro_gain_max_boost_db", "macro_gain_curve_sha8", "macro_gain_headroom_cap_db",
+    "macro_gain_protected_span_count", "macro_gain_trend_window_sec",
+    "macro_gain_level_window_sec",
     # 표현형 모드(계약 §10). ⚠️ 이웃이 snake_case 라도 이 키만은 camelCase 가 정본이다 —
     # session/config/metadata 세 캐리어가 '같은 필드 이름'이어야 하고, 계약이 별칭
     # (tts_expressive_mode)을 명시적으로 금지했다(권위가 둘이 되는 편이 더 나쁘다).
@@ -1393,7 +1496,8 @@ def _transcript_meta(ref_text):
     return _detect_language(t), len(t), hashlib.sha256(t.encode("utf-8")).hexdigest()[:8]
 
 
-def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
+def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None,
+                      macro_protected_spans=None):
     """엔진 무관 공통 최종 단계 + 경계 envelope + 말끝 finishing
     (계약 §2 순서: … → 전체 pitch → 경계 envelope → 최종 조건부 fade → 최종 0 padding → 검증 → 원자 교체).
 
@@ -1419,6 +1523,8 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
     반환: place_final_with_pitch와 동형 dict(pitch_* + output_sample_rate + tail_* + boundary_*)."""
     import pitch_shift as _ps
     import audio_finishing as _af  # numpy 지연 로드(모듈 최상단 import 회피 — import tts_worker는 numpy 불요)
+
+    import macro_gain as _mg   # numpy 지연 로드 — audio_finishing 과 같은 이유다
 
     tail = _af.parse_tail_config(tail_cfg)  # 범위 밖이면 INVALID_TTS_CONFIG(조용한 clamp 없음)
 
@@ -1453,9 +1559,16 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
         # tail plan 은 **envelope 적용 전 원본**으로 산출한다 — already_silent 판정(마지막 5ms peak)이
         # 우리 offset fade 때문에 뒤바뀌면 tail 계약의 의미가 달라진다. 순서: plan(원본) → envelope → tail.
         plan = _af.compute_tail_plan(data, sr, tail)
+        # macro gain — **조립이 끝난 트랙 하나**에 한 번만 건다. chunk 별로 걸지 않는다.
+        # 경계 envelope 보다 **먼저** 두어 바깥쪽 10 ms/20 ms fade 가 말끝의 마지막 권위로 남는다.
+        # tail plan 은 위에서 이미 원본으로 산출했다 — boost 가 already_silent 판정을 뒤집지 않는다.
+        mgplan = _mg.compute_macro_gain_plan(data, sr, protected_spans=macro_protected_spans)
+        corrected = _mg.apply_macro_gain(data, sr, mgplan)
+        if len(corrected) != len(data):
+            raise _af.AudioFinishingError("macro gain 이 길이를 바꿨습니다", code="AUDIO_INVALID")
         # tail 이 실제로 cosine fade 를 걸 때만 말끝을 양보한다(이중 fade 방지). 시작 쪽은 겹칠 게 없다.
-        bplan = _af.compute_boundary_plan(len(data), sr, tail_owns_offset=bool(plan.fade_applied))
-        enveloped = _af.apply_boundary_envelope(data, sr, bplan)
+        bplan = _af.compute_boundary_plan(len(corrected), sr, tail_owns_offset=bool(plan.fade_applied))
+        enveloped = _af.apply_boundary_envelope(corrected, sr, bplan)
         finished = _af.apply_final_tail(enveloped, sr, plan)
         # 불변식 B — in-memory: mono·non-empty·finite + 예상 프레임 수 + padding 정확히 0.
         # (여기서 finite가 이미 보장되므로 PCM_16으로 써도 비유한을 숨길 수 없다 — write 전 in-memory 검증.)
@@ -1496,6 +1609,8 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
     # 가져갔거나(offset_yielded_to_tail) 배열이 너무 짧아 clamp 된 경우다.
     out.update(boundary_onset_samples=int(bplan.onset_samples),
                boundary_offset_samples=int(bplan.offset_samples))
+    # macro gain 재현 메타 — 적용 여부·통계·게이트·최대 boost·곡선 지문. 대사·경로 없음.
+    out.update(_mg.plan_metadata(mgplan))
     return out
 
 
@@ -1579,9 +1694,11 @@ def _align_icl_chunks(seg_out, transcribe_factory=_icl_transcribe_fn, output_dir
     # 배열 복사·SHA·무음 분석·폴더 생성이 하나도 일어나지 않는다.
     import chunk_publish
     global _CONCAT_RECORDER
-    _rec = _diag_recorder()
+    # 기록은 synthesize 입구에서 이미 열렸다 — 여기서 새로 만들면 legacy 경로에만 기록이 생긴다
+    # (실측 결함: vendor native ICL 은 이 함수를 지나지 않아 번들이 통째로 비었다).
+    _rec = _CONCAT_RECORDER if (_CONCAT_RECORDER is not None
+                                and _CONCAT_RECORDER.active) else _diag_recorder()
     if _rec is not None and _rec.active:
-        # 조립 단계도 같은 recorder 를 써야 raw/aligned/final 이 같은 index 를 공유한다.
         _CONCAT_RECORDER = _rec
     tf = transcribe_factory()
     total = len(todo)
@@ -1927,7 +2044,11 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
 
         try:
             try:
+                _job_clock = JobWallClock()
                 seg_out = qwen.run_job(segments, device)
+                # 생성이 끝난 직후에 본다 — 정렬·조립 전에 초과를 확정해
+                # 헛수고를 늘리지 않는다. partial 은 진단에만 남는다.
+                _job_clock.check(completed_chunks=len(seg_out or []))
             except RuntimeError as e:
                 # CUDA OOM만 CPU로 1회 가시적 재시도(조용한 재시도 아님). 상한 도달·그 외 예외는 전파.
                 if (device == "cuda:0" and is_cuda_oom(e)
@@ -2081,23 +2202,25 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             prev_osi = osi
 
         if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
+            # vendor native·legacy·safe_xvector 어느 경로든 여기를 지난다.
+            _run_record_entries(_CONCAT_RECORDER, ordered_entries)
             _diag_annotate(_CONCAT_RECORDER, ordered_entries, boundary_kinds,
                            segenv_meta, gaps)
 
         emit("progress", percent=90, message="문장 이어붙이기 중...")
         _layout = _concat_with_boundaries(use, gaps, pending_path)  # 내부 0 / 원 segment 경계 silence_gap
         if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
-            # 결합본을 읽어 join preview 를 파생하고 manifest/timeline 을 쓴다.
-            # 실패해도 합성 결과에는 영향이 없다.
+            # 결합본은 join preview 파생용으로 **들고만** 있는다. manifest 는 synthesize 가
+            # 마지막에 한 번 발행한다(manifest 존재 = 번들 완결이라는 계약을 지키기 위해서다).
             try:
                 import soundfile as _sf
                 _fin, _fsr = _sf.read(pending_path, dtype="float32")
-                _CONCAT_RECORDER.write("ok", final_arr=_fin, sr=_fsr,
-                                       extra={"layout_chunks": len(_layout)})
+                _CONCAT_RECORDER.stash_final(_fin, _fsr)
+                _CONCAT_RECORDER.set_run_header(layout_chunks=len(_layout))
             except Exception as _exc:
                 try:
-                    _CONCAT_RECORDER.write("failed",
-                                           extra={"instrumentation_error": type(_exc).__name__})
+                    _CONCAT_RECORDER.set_run_header(
+                        instrumentation_error=type(_exc).__name__)
                 except Exception:
                     pass
         # 진단 전용: 각 chunk의 결합본 내 위치를 metadata에 남긴다(오디오 출력 불변, 수치만).
@@ -2150,6 +2273,8 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             # 경계 envelope 재현 — 실제 적용 샘플 수.
             "boundary_onset_samples": pinfo.get("boundary_onset_samples"),
             "boundary_offset_samples": pinfo.get("boundary_offset_samples"),
+            # macro gain drift 보정 재현값(연기·믹싱·공간 세 축 분리).
+            **{k: pinfo.get(k) for k in _MACRO_GAIN_META_KEYS},
             # B envelope 1단계 재현 — 내부 segment 경계에 실제로 건 onset/offset 횟수와 kind별 횟수.
             # 최종 파일 양 끝(boundary_*_samples)과는 서로 다른 자리다(구조적 중복 차단).
             **segenv_meta,
@@ -2384,6 +2509,143 @@ def _diag_recorder():
         return None            # 계측 실패가 합성을 막지 않는다
 
 
+# ── run bundle 수명 — **모든** TTS 생성이 기록을 남긴다(진단 스위치와 무관) ──────────
+#: 결과 metadata 에서 헤더로 승격할 비민감 키. 경로·대사·전사는 여기 없다.
+#: _finish_and_place 가 돌려주는 macro gain 재현 키(단일 출처).
+_MACRO_GAIN_META_KEYS = (
+    "macro_gain_applied", "macro_gain_reason", "macro_gain_statistic_db", "macro_gain_gate_db",
+    "macro_gain_max_boost_db", "macro_gain_curve_sha8", "macro_gain_headroom_cap_db",
+    "macro_gain_protected_span_count", "macro_gain_trend_window_sec",
+    "macro_gain_level_window_sec")
+
+_RUN_HEADER_FROM_METADATA = (
+    "actual_engine", "model_name", "model_revision", "device", "device_selection_source",
+    "target_language", "output_sample_rate", "generation_limit", "generated_iterations",
+    "termination_reason", "parser_version", "parsed_plan_sha8", "segment_count", "chunk_count",
+    "reference_conditioning_mode_requested", "reference_conditioning_mode_effective",
+    "reference_conditioning_auto_fallback", "reference_conditioning_attempts",
+    "reference_conditioning_icl_published", "fallback", "fallback_reason",
+    "speed_postprocessed", "pitch_postprocessed", "silence_gap",
+    "boundary_onset_samples", "boundary_offset_samples",
+    "segment_envelope_onset_count", "segment_envelope_offset_count",
+    "macro_gain_applied", "macro_gain_reason", "macro_gain_max_boost_db",
+    "macro_gain_statistic_db", "macro_gain_curve_sha8", "elapsed_seconds")
+
+#: 부분 결과를 보존한 채 끝난 실패 코드. 이 경우 상태는 failed 가 아니라 partial 이다.
+_PARTIAL_ERROR_CODES = ("GENERATION_LIMIT_EXCEEDED", "JOB_WALL_TIME_EXCEEDED")
+_CANCEL_ERROR_CODES = ("CANCELLED", "TTS_CANCELLED")
+
+
+def _run_record_begin(text, output_dir, rc_mode, speed, silence_gap, pitch, expressive_mode):
+    """작업 시작 즉시 중간 기록을 남긴다 — 취소·강제 종료로 manifest 에 못 가도 흔적이 있다."""
+    global _CONCAT_RECORDER
+    _CONCAT_RECORDER = None
+    try:
+        import hashlib
+        import chunk_publish
+        rec = chunk_publish.ChunkRecorder()
+        if not rec.active:
+            return None
+        rec.set_run_header(
+            input_chars=len(text or ""),
+            raw_text_sha256=hashlib.sha256((text or "").encode("utf-8")).hexdigest(),
+            reference_conditioning_mode_requested=rc_mode,
+            speed=float(speed), silence_gap=float(silence_gap),
+            pitch_semitones=float(pitch), expressive_mode=expressive_mode,
+            # 절대경로는 남기지 않는다 — 폴더 이름만.
+            output_dir_basename=os.path.basename(os.path.normpath(output_dir or "")))
+        # 대본 원문은 private JSON 에만 들어간다(manifest 로는 SHA·길이만 나간다).
+        rec.set_script(text or "", None)
+        rec.open()
+        _CONCAT_RECORDER = rec
+        return rec
+    except Exception:
+        return None            # 기록 실패가 합성을 막지 않는다
+
+
+def _run_record_normalized(text):
+    """정규화 대본을 private 기록에 덧붙인다. 파서가 권위이고 여기서 재해석하지 않는다."""
+    rec = _CONCAT_RECORDER
+    if rec is None or not rec.active:
+        return
+    try:
+        import tts_grammar
+        segs = tts_grammar.parse_tts_script(text or "")["plan"]["segments"]
+        rec.set_script(text or "",
+                       chr(10).join(s.get("spoken_text", "") for s in segs))
+    except Exception:
+        pass                   # 기록 실패가 합성을 막지 않는다
+
+
+def _run_record_entries(rec, ordered_entries):
+    """chunk 좌표·대사·생성 근거를 기록한다. 대사는 private, 좌표·수치는 manifest."""
+    if rec is None or not rec.active:
+        return
+    try:
+        for g, e in enumerate(ordered_entries):
+            rec.record_chunk_text(
+                g, e.get("text") or "",
+                production_tokens=e.get("production_tokens"),
+                segment=e.get("original_segment_index"),
+                local_chunk_index=e.get("chunk_index"), model_call_index=g)
+            vcr = e.get("vendor_crop_record")
+            rec.record_generation(
+                g, generation_limit=e.get("generation_limit"),
+                generated_iterations=e.get("generated_iterations"),
+                termination_reason=e.get("termination_reason"),
+                vendor_crop_record=vcr,
+                external_alignment_calls=(0 if vcr is not None else None),
+                elapsed_sec=e.get("generation_elapsed_sec"))
+            # vendor native 는 반환 PCM 이 곧 chunk 파형이다 — 그 사실을 단계로 남긴다.
+            _diag_stage(rec, "vendor_returned" if not e.get("controlled_prefix") else "raw",
+                        e, gidx=g)
+    except Exception:
+        pass                   # 기록 실패가 합성을 막지 않는다
+
+
+def _run_record_finish(status, error_code=None, extra=None):
+    """manifest 를 **마지막에 한 번** 발행한다. 실패해도 사용자 WAV 를 건드리지 않는다."""
+    rec = _CONCAT_RECORDER
+    if rec is None or not getattr(rec, "active", False):
+        return
+    try:
+        if error_code:
+            rec.set_run_header(error_code=str(error_code))
+        rec.write(status, extra=extra)
+    except Exception as exc:
+        # 기록 실패는 원래 오류를 덮지 않는다. WAV 는 이미 발행됐고 그대로 둔다.
+        rec.record_error = type(exc).__name__
+        try:
+            import chunk_publish
+            chunk_publish._atomic_json(
+                {"schema": chunk_publish.SCHEMA_VERSION, "run_id": chunk_publish.run_id(),
+                 "status": "RECORD_INCOMPLETE", "reason": type(exc).__name__,
+                 "recoverable": True},
+                os.path.join(rec.root, "record-incomplete.json"))
+        except Exception:
+            pass
+        try:
+            emit("warning", code="RECORD_INCOMPLETE", reason=type(exc).__name__)
+        except Exception:
+            pass
+
+
+def _run_record_status_for(exc):
+    """예외를 상태·코드로 옮긴다. 부분 보존 실패는 failed 가 아니라 partial 이다."""
+    if exc is None:
+        return "ok", None
+    # 구조화 payload 가 이 프로젝트의 오류 code 권위다(문자열 prefix 추론 금지).
+    payload = getattr(exc, "error_payload", None)
+    code = ((payload or {}).get("code") if isinstance(payload, dict) else None)
+    code = str(code or getattr(exc, "code", None) or type(exc).__name__)
+    if code in _CANCEL_ERROR_CODES:
+        return "cancelled", code
+    if code in _PARTIAL_ERROR_CODES or isinstance(exc, QwenGenerationLimitError):
+        return "partial", ("GENERATION_LIMIT_EXCEEDED"
+                           if isinstance(exc, QwenGenerationLimitError) else code)
+    return "failed", code
+
+
 def _diag_annotate(rec, ordered_entries, boundary_kinds, segenv_meta, gaps):
     """조립 직전에 경계 종류·segment-local 번호·envelope 적용을 recorder 에 기록한다.
 
@@ -2443,16 +2705,22 @@ def _diag_annotate(rec, ordered_entries, boundary_kinds, segenv_meta, gaps):
         pass                                     # 계측 실패가 합성을 막지 않는다
 
 
-def _diag_stage(rec, stage, e, **meta):
-    """entry 의 현재 WAV 를 해당 단계로 발행. 실패해도 합성 결과를 바꾸지 않는다."""
+def _diag_stage(rec, stage, e, gidx=None, **meta):
+    """entry 의 현재 WAV 를 해당 단계로 발행. 실패해도 합성 결과를 바꾸지 않는다.
+
+    gidx 를 명시하지 않으면 entry 가 들고 있는 global index 를 쓴다. 조립 경로처럼 entry 에
+    global index 가 아직 없는 곳에서는 **반드시** 넘겨야 한다 — 안 그러면 segment-local
+    chunk_index 로 떨어져 서로 덮어쓴다(실측 결함)."""
     try:
         import soundfile as sf
         p = e.get("out_path")
         if not p or not os.path.isfile(p):
             return
         arr, sr = sf.read(p, dtype="float32")
-        gidx = int(e.get("global_chunk_index", e.get("chunk_index") or 0))
-        fn = rec.raw if stage == "raw" else rec.aligned
+        if gidx is None:
+            gidx = int(e.get("global_chunk_index", e.get("chunk_index") or 0))
+        gidx = int(gidx)
+        fn = {"raw": rec.raw, "vendor_returned": rec.vendor_returned}.get(stage, rec.aligned)
         fn(gidx, arr, sr,
            segment=e.get("original_segment_index"),
            segment_chunk_index=e.get("chunk_index"),
@@ -2584,6 +2852,9 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
     # 만들지 않는다 — 실제 절단을 수행한 합성 경로(info)가 채우고, 수행하지 않은 경로는
     # _build_tts_metadata 가 None 으로 채운다(권위 하나).
     emit("status", message="음성 합성 시작", percent=0)
+    # 기록은 **모든** 생성에서 열린다. 진단 스위치는 stage WAV 를 켤 뿐이다.
+    _run_record_begin(text, output_dir, rc_mode, speed, silence_gap, pitch, expressive_mode)
+    _rr = {"status": "failed", "error_code": None}
 
     if not emotion_refs:
         emotion_refs = {}
@@ -2606,6 +2877,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         _e.error_payload = {"code": _err.get("code", "TTS_PARSE_ERROR")}
         raise _e
     _plan = _pres["plan"]
+    _run_record_normalized(text)
     parsed, boundary_gaps, boundary_kinds = _boundary_gaps_from_plan(
         _plan, silence_gap, emotion_boundary_mode, emotion_boundary_pause_ms)
     if not parsed:
@@ -2721,6 +2993,11 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                 reference_region=None, speed=float(speed), silence_gap=float(silence_gap),
                 **_rc_meta, **_plan_meta, **info)
             tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
+            _rr["status"] = "ok"
+            if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
+                _CONCAT_RECORDER.set_result(final_path)
+                _CONCAT_RECORDER.set_run_header(
+                    **{k: meta.get(k) for k in _RUN_HEADER_FROM_METADATA if k in meta})
             emit("progress", percent=99, message="완료!")
             emit("result", tracks=tracks, outputDir=output_dir, metadata=meta)
             return final_path   # C3: 호출부(separate.py)가 실제 산출물을 검증할 수 있게
@@ -2844,6 +3121,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             # 두 기능은 역할이 다르므로 어느 쪽도 다른 쪽을 대체하지 않는다.
             boundary_onset_samples=pinfo2.get("boundary_onset_samples"),
             boundary_offset_samples=pinfo2.get("boundary_offset_samples"),
+            **{k: pinfo2.get(k) for k in _MACRO_GAIN_META_KEYS},
             # per-segment 엔진(GPT-SoVITS/F5/Kokoro)에는 controlled-prefix ICL 단계 자체가 없다 —
             # 시도도 발행도 전환도 없었다는 사실을 그대로 적는다(effective 를 임의의 구체값으로
             # 바꿔 적으면 하지 않은 일을 했다고 기록하게 된다). 무엇을 실제로 돌렸는지는
@@ -2854,11 +3132,28 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                                            icl_published=False, auto_fallback=False),
             **_plan_meta)
         tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
+        _rr["status"] = "ok"
+        if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
+            _CONCAT_RECORDER.set_result(final_path)
+            _CONCAT_RECORDER.set_run_header(
+                **{k: meta.get(k) for k in _RUN_HEADER_FROM_METADATA if k in meta})
         emit("progress", percent=99, message="완료!")
         emit("result", tracks=tracks, outputDir=output_dir, metadata=meta)
         return final_path   # C3: 호출부(separate.py)가 실제 산출물을 검증할 수 있게
 
     finally:
+        # manifest 를 **마지막에 한 번** 발행한다. 여기까지 못 오면(취소·강제 종료) 번들에는
+        # run-open.json 만 남고 읽는 쪽이 INCOMPLETE 로 판정한다.
+        try:
+            _exc = sys.exc_info()[1]
+            _st, _code = ((_rr["status"], None) if _exc is None
+                          else _run_record_status_for(_exc))
+            if _rr["status"] == "ok" and _exc is None:
+                _st, _code = "ok", None
+            _run_record_finish(_st, _code,
+                               extra={"elapsed_seconds": round(_time.monotonic() - _t0, 3)})
+        except Exception:
+            pass                     # 기록 마감 실패가 사용자 WAV 나 원래 오류를 덮지 않는다
         for d in tmp_dirs:
             try:
                 import shutil

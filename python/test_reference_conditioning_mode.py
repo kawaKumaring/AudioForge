@@ -140,6 +140,23 @@ class _QwenJobBase(unittest.TestCase):
 
         self.tmp = tempfile.mkdtemp(prefix="af_refcond_")
         self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+        # synthesize 는 이제 **항상** run bundle 을 남긴다. 테스트가 앱 관리 영역(_local)에
+        # 기록을 쌓지 않도록 임시 루트로 돌린다(제품 동작이 아니라 테스트 위생).
+        import chunk_publish as _cp
+        import local_assets as _la
+        _snap = {k: os.environ.get(k) for k in (_la.LOCAL_ROOT_ENV, _cp.ENV)}
+        os.environ[_la.LOCAL_ROOT_ENV] = os.path.join(self.tmp, "_local")
+        os.environ.pop(_cp.ENV, None)
+        _cp._AUTO_RUN_ID = None
+
+        def _restore_local_root():
+            for k, v in _snap.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+            _cp._AUTO_RUN_ID = None
+        self.addCleanup(_restore_local_root)
         self.ref5 = os.path.join(self.tmp, "ref5.wav")
         _write_wav(self.ref5, 5.0)
         self.happy_ref = os.path.join(self.tmp, "happy4.wav")

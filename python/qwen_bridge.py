@@ -47,6 +47,7 @@ import json
 import threading
 import time
 
+import chunk_budget
 import generation_limit  # 순수 계산(math만). 스크립트 디렉터리(python/)가 sys.path에 있어 import 가능.
 import text_segmenter    # 다국어 token-aware 자동 분할(계약 B). 순수 로직.
 import chunk_paths       # chunk 경로 규칙(bridge·worker 공용 순수 헬퍼).
@@ -261,7 +262,10 @@ def _generate_segment(model, seg, builder, proc, probe_context="production"):
     ref_text = "" if xvo else (seg.get("ref_text") or "")
     gen_text, controlled_prefix = _generation_text(seg)
     prod_tokens = _prod_tokens(builder, proc, gen_text)
-    seg_limit = generation_limit.compute_max_new_tokens(prod_tokens)
+    # 분할과 같은 예산 함수를 쓴다. fits 가 아니면 애초에 이 chunk 가 만들어지지 않는다.
+    _b = chunk_budget.budget_for(
+        prod_tokens, reference_replay_frames=(83 if controlled_prefix else 0))
+    seg_limit = _b["generation_limit"] or generation_limit.compute_max_new_tokens(prod_tokens)
     _dmax = _diag_max_new_tokens()
     if _dmax is not None:
         # 진단 상한. termination 판정(classify_termination)은 이 값 기준으로 그대로 돈다 —
@@ -543,6 +547,41 @@ def _vendor_returned(dirpath, d, sr, g, seg, ci):
         emit("stage", stage="vendor_returned_failed", reason=type(e).__name__)
 
 
+def _save_generation_limit_partial(g, seg, ci):
+    """generation limit 도달 파형을 run bundle 진단 영역에 보존한다(발행 아님)."""
+    try:
+        import numpy as _np, soundfile as _sf
+        import chunk_publish
+        if not chunk_publish.enabled():
+            return
+        import local_assets
+        root = local_assets.run_diagnostics_dir(chunk_publish.run_id())
+        local_assets.assert_inside_local(root)
+        os.makedirs(root, exist_ok=True)
+        d = g["wavs"][0] if isinstance(g["wavs"], list) else g["wavs"]
+        d = _np.asarray(d, dtype="float32")
+        if d.ndim > 1:
+            d = d.mean(axis=1)
+        base = os.path.join(root, "chunk-%03d-generation-limit-partial" % int(ci))
+        tmp = base + ".part"
+        _sf.write(tmp, _np.ascontiguousarray(d), int(g["sr"]),
+                  format="WAV", subtype="PCM_16")
+        os.replace(tmp, base + ".wav")
+        with open(base + ".json", "w", encoding="utf-8", newline=chr(10)) as fh:
+            json.dump({"kind": "generation-limit-partial",
+                       "production_result": False, "diagnostic_only": True,
+                       "segment_index": int(seg["index"]), "chunk_index": int(ci),
+                       "generated_iterations": int(g.get("generated_iterations") or 0),
+                       "generation_limit": int(g.get("generation_limit") or 0),
+                       "termination_reason": g.get("termination_reason"),
+                       "samples": int(d.size), "sample_rate": int(g["sr"])},
+                      fh, ensure_ascii=False, indent=1)
+        emit("stage", stage="generation_limit_partial_kept", samples=int(d.size))
+    except Exception as e:
+        # 보존 실패는 원래 오류를 가리지 않는다.
+        emit("stage", stage="generation_limit_partial_failed", reason=type(e).__name__)
+
+
 def _diag_save_raw(g, tag):
     """진단 전용: 발행되지 않는 파형을 진단 폴더에 남긴다. 발행 계약은 건드리지 않는다.
 
@@ -609,6 +648,10 @@ def _generate_plan(model, plan, builder, proc, n_segments, progress=None, seed=N
             _diag_save_raw(g, "cooperative-stop")
         if g["termination_reason"] == "generation_limit":
             _diag_save_raw(g, "limit-reached")
+            # production 경로에서도 limit 직전 파형을 진단 영역에만 남긴다. 발행하지 않는다 —
+            # 폐기하면 "어디서부터 안 끝났는가" 를 영영 들을 수 없다. 보존 실패가 원래
+            # termination 오류를 가려서는 안 되므로 예외를 삼키고 사유만 알린다.
+            _save_generation_limit_partial(g, seg, ci)
             raise BridgeGenerationLimit(int(seg["index"]), int(ci), seg.get("emotion_id"),
                                         int(g["generated_iterations"]), int(g["generation_limit"]))
         d = _finalize_wav(g["wavs"], g["sr"], seg["index"], ci)
@@ -635,6 +678,9 @@ def _generate_plan(model, plan, builder, proc, n_segments, progress=None, seed=N
         completed += 1
         done.append({"original_segment_index": int(seg["index"]), "chunk_index": int(ci),
                      "chunk_count": int(cc), "out_path": cpath, "sr": int(g["sr"]),
+                     # 이 호출에 실제로 넘어간 대사. 부모는 이것을 **private 기록에만** 옮긴다
+                     # (manifest·timeline·로그로 나가면 안 된다 — run bundle 계약).
+                     "text": item["text"],
                      "x_vector_only": bool(seg.get("x_vector_only", False)),
                      "emotion_id": seg.get("emotion_id"), "production_tokens": int(g["prod_tokens"]),
                      "generation_limit": int(g["generation_limit"]),
@@ -725,7 +771,10 @@ def main():
         n = len(segments)
 
         # 1단계: 전 segment 선분할(생성 없음). 실패 시 여기서 종료 → generate 호출 0(뒤 실패로 앞 낭비 방지).
-        max_seg_tok = generation_limit.max_segment_tokens()
+        # 분할 상한을 고정 상수로 두지 않는다 — 생성 예산 함수가 낳는다.
+        # 이렇게 해야 "분할 상한만 올리고 생성 예산은 그대로" 인 상태가 생길 수 없다.
+        _replay = 83 if any(sg.get("prefix_text") for sg in segments) else 0
+        max_seg_tok = chunk_budget.max_production_tokens(reference_replay_frames=_replay)
         try:
             plan = _build_chunk_plan(segments, builder, proc, max_seg_tok)
         except BridgeSegmentTooLong as e:

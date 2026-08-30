@@ -243,3 +243,46 @@ ICL 프롬프트로 들어간다. 실제 실패 참조는 `tail_truncated = True
   **현재 계측으로 못 잡은 것**으로 남긴다.
 - **경계 절단 경고의 임계(−40 dBFS · 120 ms)를 실제 사용 데이터로 조율하지 못했다.**
   실패 참조 1건과 합성 신호로만 확인했다.
+
+---
+
+## 최종 결론 (2026-08-30)
+
+이 조사는 종료됐다. 계측 스크립트(`tmp_leak_analysis/`)와 그 산출물 목록은 현행 tree 에서
+제거했고, 원본은 `_local/artifacts/recovery/tmp-leak-analysis-removal/` 에 SHA 검증과 함께
+보존돼 있다. 아래는 archive 에 남지 않은 결론만 옮긴 것이다.
+
+### vendor 내부 crop 전수 결과
+
+vendor(`generate_voice_clone`)는 참조 오디오를 `ref_code` 로 인코딩해 생성 코드 앞에 붙였다가
+디코딩 후 `cut = int(ref_len / total_len * decoded_samples)` 로 잘라 낸다. 누수분석 표본
+15건에서 `cut_samples` 와 `exact_ref_samples` 를 대조한 결과는 **14건 일치, 1건 −1 sample**
+(0.042 ms, `int()` 절사)이다. 이 값은 현재 codec·decoder 조건의 실측이며 다른 revision 으로
+일반화하지 않는다.
+
+### controlled-prefix 와 vendor native 전환의 관계
+
+당시 도입한 controlled-prefix 는 참조 전사를 목표 대사 앞에 텍스트로 넣어 모델이 참조를 먼저
+발화하게 하고, 부모가 ASR 앵커로 그 앞을 잘라 내는 방식이었다. 이 경로에는 두 결함이 있었다.
+
+- 호출마다 참조 재발화 약 83 frame 이 생성됐다가 폐기된다.
+- 목표 첫 음절이 ASR 에서 치환되면 `TARGET_HEAD` 앵커(`target_units[:n]`, n=3..5)가 전멸해
+  약한 `REFERENCE_TAIL` 2차 경로로 떨어지고, 그 경로의 cut guard 가 절단을 거부한다.
+  실제로 저에너지 첫 음절이 절단으로 손상되는 사례가 사용자 청취로 확인됐다.
+
+vendor 는 참조를 **재발화시키지 않는다** — `ref_code` 를 prepend 했다가 프레임 비율로 잘라
+낼 뿐이다. 따라서 외부 ASR 절단이 필요 없고, 참조 재발화 비용과 첫말 손상 경로가 함께
+사라진다. 이 근거로 `high_quality_icl` 의 기본 경로를 vendor native ICL 로 전환했고
+(develop `a754e53`, master `fa0e907`), controlled-prefix 는
+`AUDIOFORGE_LEGACY_CONTROLLED_PREFIX` opt-in rollback 전용으로 남겼다.
+
+발행 권위는 둘로 나뉜다 — vendor native 는 `vendor_internal_crop_record`, legacy 는 기존 ASR
+alignment record 이며, 동시에 존재하면 이중 절단 경로이므로 실패한다. crop record 는 좌표
+증명이 아니라 **검증된 경로를 사용했다는 실행 증명**이다. vendor 가 반환하지 않는
+`decoded_total_samples`·`cut` 은 기록하지 않고 `crop_coordinates_observed: false` 로 명시한다.
+
+### 음향 지표에 대한 기록
+
+참조 혼입 여부를 무성음 비율·ZCR·고역 비중으로 판별하려는 시도는 **판별력이 없다**는 것이
+두 차례 독립적으로 확인됐다(2026-08-28 `38eddc6`, 2026-08-30 재확인). 정상 마찰 자음과
+잡음이 같은 후보로 잡히므로 production noise detector 로 구현하지 않는다.
