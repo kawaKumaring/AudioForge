@@ -9,6 +9,8 @@ import { statSync } from 'fs'
 import { pathToFileURL } from 'url'
 import { registerAudioIpc } from './ipc/audio.ipc'
 import { registerAppVersionIpc } from './ipc/app-version.ipc'
+import { disposeAnalysisIpc, registerAnalysisIpc } from './ipc/analysis.ipc'
+import { currentPythonPath } from './ipc/audio.ipc'
 import { registerReferenceLibraryIpc } from './ipc/reference-library.ipc'
 import { createReferenceStore } from './services/reference-store'
 import { createTranscriptStore } from './services/reference-transcript'
@@ -113,6 +115,8 @@ function createWindow(): void {
 
   registerAppVersionIpc()
   const previewAdapter = registerAudioIpc(mainWindow)
+  // 입력 분석 — GPU 를 쓰지 않는 상주 CPU worker. audio.ipc 와 같은 인터프리터를 쓴다.
+  registerAnalysisIpc({ pythonPath: currentPythonPath })
 
   // 참조 라이브러리 — 저장 루트·선택 상태는 앱 소유 userData 안에만 둔다.
   // 파이썬 실행은 audio.ipc 가 만든 adapter 를 그대로 쓴다(같은 pythonPath·타임아웃·정리).
@@ -298,6 +302,12 @@ if (!gotLock) {
   })
 }
 
+app.on('before-quit', () => {
+  // 분석은 편집 보조일 뿐이므로 종료를 붙들지 않는다 — 대기 요청을 취소하고 프로세스를 닫는다.
+  disposeAnalysisIpc()
+})
+
 app.on('window-all-closed', () => {
+  disposeAnalysisIpc()
   if (process.platform !== 'darwin') app.quit()
 })

@@ -101,6 +101,10 @@ let runner: PythonRunner | null = null
 // (메인 러너에는 원래 있던 보호가 여기엔 없어 고아 프로세스가 생길 수 있었다 — 감사 R3).
 const trackSlot = createRunnerSlot<PythonRunner>()
 let pythonPath = resolvePythonPath()
+
+/** 분석 worker 도 **같은 인터프리터**를 쓴다(설치 상태가 갈라지지 않게).
+ *  audio.ipc 가 런타임에 경로를 바꾸면 그 값을 그대로 따라간다. */
+export function currentPythonPath(): string { return pythonPath }
 // 취소 lifecycle(공용 마감 K/K2) 조정 상태 — audio:process가 세팅하고 audio:cancel/done이 소비.
 let currentSettle: import('../services/run-settlement').SettlementGuard | null = null
 // 취소 진행 상태: none=취소 안 함 / inflight=취소 요청 후 종료·정리 대기 / failed=kill 확인 실패(재취소 허용).

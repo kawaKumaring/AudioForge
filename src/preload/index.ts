@@ -1,5 +1,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { AppBuildInfo } from '../shared/buildMetadata'
+import { ANALYSIS_CANCEL_CHANNEL, ANALYSIS_CHANNEL } from '../shared/inputAnalysis'
+import type { AnalysisRequest, AnalysisResponse } from '../shared/inputAnalysis'
 import type { CancelResponseLike } from '../shared/cancelContract'
 import { SIDECAR_IPC_CHANNEL } from '../shared/sidecarEvents'
 import type { SidecarEnvelope } from '../shared/sidecarEvents'
@@ -126,6 +128,12 @@ const api = {
       ipcRenderer.invoke(SAMPLER_CHANNELS.remove, request),
     previewUrl: (request: SamplerCacheKeyRequest): Promise<SamplerPreviewUrlResponse> =>
       ipcRenderer.invoke(SAMPLER_CHANNELS.previewUrl, request)
+  },
+  // 입력 분석 — read-only 조회 하나와 취소 하나. 응답에는 대사 원문이 없고 offset 만 온다.
+  analysis: {
+    analyze: (req: AnalysisRequest): Promise<AnalysisResponse> =>
+      ipcRenderer.invoke(ANALYSIS_CHANNEL, req),
+    cancel: (): Promise<{ cancelled: number }> => ipcRenderer.invoke(ANALYSIS_CANCEL_CHANNEL)
   },
   utils: {
     getPathForFile: (file: File) => webUtils.getPathForFile(file),
