@@ -6,10 +6,20 @@
 UI 가 보여 주는 "몇 묶음, 얼마나 걸림" 이 실제 생성과 어긋나면 안내가 아니라 오정보다.
 그래서 문단·문장 분리와 분할 계획을 TS 에 다시 구현하지 않고 production 경로를 그대로 부른다.
 
-  문단   tts_grammar.parse_tts_script
-  문장   text_segmenter._cut_after(SENTENCE_ENDERS)
-  분할   text_segmenter.split_for_generation + chunk_budget.max_production_tokens
-  토큰   호출자가 주입하는 production tokenizer (qwen_bridge._prod_tokens 와 동일 경로)
+  문단·segment  tts_grammar.parse_tts_script  (감정 태그·명시적 쉼을 뗀 spoken_text 와 원문 offset)
+  분할          text_segmenter.split_for_generation + chunk_budget.max_production_tokens
+  토큰          호출자가 주입하는 production tokenizer (qwen_bridge._prod_tokens 와 동일 경로)
+  예산          chunk_budget.budget_for  (generation tier)
+
+**원문 줄을 그대로 문단으로 세지 않는다.** 생성에 들어가는 것은 `spoken_text` 라서
+`[기쁨]` 같은 태그가 붙은 줄은 원문 길이와 토큰 수가 다르다(실측). 그 차이를 무시하면
+planned calls 가 실제 호출 수와 어긋난다.
+
+두 가지 시간을 구분한다
+-----------------------
+`estimated_audio_seconds` 는 **결과 음성 길이**, `estimated_wall_seconds` 는 **기다리는 시간**이다.
+참조 재발화(legacy controlled-prefix)는 생성은 하지만 vendor 가 잘라내므로 **작업 시간에만**
+들어가고 음성 길이에는 들어가지 않는다.
 
 시간 모델
 ---------
@@ -22,8 +32,12 @@ UI 가 보여 주는 "몇 묶음, 얼마나 걸림" 이 실제 생성과 어긋�
 
 통제 표본이 없는 모드(safe_xvector, auto)는 숫자를 만들지 않고 insufficient_data 로 답한다.
 """
+import hashlib
+
 import chunk_budget
 import text_segmenter as ts
+
+SCHEMA_VERSION = 2
 
 # 시간 모델 계수(model.md). 회귀 잔차 sd 7.49 s.
 _C_RANGE = (0.18, 0.22)
@@ -42,24 +56,99 @@ CONFIDENCE_INSUFFICIENT = "insufficient_data"
 # 통제 표본이 있는 모드. 나머지는 숫자를 내지 않는다.
 _MODES_WITH_SAMPLES = ("high_quality_icl",)
 
+# 왜 이 chunk 가 여기서 끝났는가(비민감 enum). UI 문구는 renderer 가 붙인다.
+SPLIT_USER_PARAGRAPH = "user_paragraph"     # 사용자가 Enter 로 나눈 경계
+SPLIT_SENTENCE_END = "sentence_end"         # 마침표·느낌표·물음표
+SPLIT_CLAUSE = "clause"                     # 쉼표·절 — 긴 단일 문장에서만
+SPLIT_FORCED_CHARACTER = "forced_character"  # 문장부호가 없어 문자 단위로 잘랐다
+SPLIT_END_OF_INPUT = "end_of_input"
+
+WARN_SOURCE_OFFSETS_APPROXIMATE = "SOURCE_OFFSETS_APPROXIMATE"
+WARN_SEGMENT_TOO_LONG = "SEGMENT_TOO_LONG"
+
+
+class AnalysisError(Exception):
+    def __init__(self, message, code="INPUT_ANALYSIS_FAILED"):
+        super().__init__(message)
+        self.code = code
+
 
 def _split_sentences(text):
     return [p for p in ts._cut_after(text, ts.SENTENCE_ENDERS, eat_closers=True) if p.strip()]
 
 
-def paragraphs_of(text):
-    """Enter 는 사용자가 지정한 문단 경계다. 비어 있지 않은 줄만 문단이 된다.
+def _segments_of(text):
+    """production parser 가 보는 segment. 실패하면 원문 줄로 물러나되 그 사실을 남긴다."""
+    try:
+        import tts_grammar
+        plan = tts_grammar.parse_tts_script(text or "")["plan"]
+        out = []
+        for i, s in enumerate(plan.get("segments") or ()):
+            off = s.get("offset") or {}
+            out.append({
+                "index": i,
+                "line_index": s.get("original_line_index"),
+                "text": s.get("spoken_text") or "",
+                "emotion_id": s.get("emotion_id"),
+                "boundary_type": s.get("boundary_type"),
+                "source_start": int(off.get("ui_start_utf16") or 0),
+                "source_end": int(off.get("ui_end_utf16") or 0),
+            })
+        return out, True
+    except Exception:
+        return _lines_fallback(text), False
 
-    연속 빈 줄은 문단을 만들지 않는다 — 휴지일 뿐이다. 자동 줄바꿈은 경계가 아니다
-    (원문 문자열에 개행이 없으면 경계도 없다).
-    """
+
+def _lines_fallback(text):
+    """parser 를 못 쓸 때의 최소 경로 — 빈 줄이 아닌 원문 줄. 근사임을 호출부가 표시한다."""
     out, char = [], 0
     for raw in (text or "").split(chr(10)):
         if raw.strip():
-            out.append({"index": len(out), "char_start": char, "char_end": char + len(raw),
-                        "text": raw})
+            out.append({"index": len(out), "line_index": len(out), "text": raw,
+                        "emotion_id": None, "boundary_type": None,
+                        "source_start": char, "source_end": char + len(raw)})
         char += len(raw) + 1
     return out
+
+
+def paragraphs_of(text):
+    """사용자가 보는 문단 = production segment. 감정 태그·쉼 표기는 이미 떼어져 있다."""
+    segs, _exact = _segments_of(text)
+    return segs
+
+
+def _split_reason(chunk_text, is_last_of_segment, boundary_type, is_last_overall):
+    """이 chunk 가 **왜** 여기서 끝났는가. 실제로 쓰인 경계만 말한다."""
+    if is_last_of_segment:
+        if is_last_overall:
+            return SPLIT_END_OF_INPUT
+        return SPLIT_USER_PARAGRAPH
+    tail = (chunk_text or "").rstrip("".join(ts.CLOSERS))
+    if tail and tail[-1] in ts.SENTENCE_ENDERS:
+        return SPLIT_SENTENCE_END
+    if tail and tail[-1] in ts.CLAUSE_DELIMS:
+        return SPLIT_CLAUSE
+    return SPLIT_FORCED_CHARACTER
+
+
+def _chunk_spans(source, seg, chunks):
+    """chunk 를 **원문 좌표**로 되돌린다.
+
+    spoken_text 는 감정 태그를 뗀 결과라 원문과 길이가 다르다. 원문 구간 안에서 spoken_text 를
+    찾아 기준점을 잡고, 못 찾으면(중간에 표기가 빠진 경우) 근사임을 알린다.
+    """
+    base = source.find(seg["text"], seg["source_start"], max(seg["source_end"], seg["source_start"]))
+    exact = base >= 0 and bool(seg["text"])
+    if not exact:
+        base = seg["source_start"]
+    spans, cursor = [], base
+    for c in chunks:
+        if exact:
+            spans.append((cursor, cursor + len(c)))
+            cursor += len(c)
+        else:
+            spans.append((seg["source_start"], seg["source_end"]))
+    return spans, exact
 
 
 def analyze(text, count_tokens, mode="high_quality_icl", reference_replay_frames=0):
@@ -67,48 +156,116 @@ def analyze(text, count_tokens, mode="high_quality_icl", reference_replay_frames
 
     count_tokens: str -> int (production tokenizer). 주입받아 여기서 모델을 로드하지 않는다.
     """
-    paras = paragraphs_of(text)
+    source = text or ""
+    segs, parser_ok = _segments_of(source)
     cap = chunk_budget.max_production_tokens(reference_replay_frames=reference_replay_frames)
-    per_para, total_calls, total_frames, total_tokens = [], 0, 0.0, 0
-    for p in paras:
-        tok = count_tokens(p["text"])
-        # 문단이 예산을 넘을 때만 문장·절 단위로 하향 분할한다.
-        chunks = ([p["text"]] if tok <= cap
-                  else ts.split_for_generation(p["text"], count_tokens, cap))
-        assert "".join(chunks) == p["text"], "분할이 원문을 보존하지 않음"
-        frames = sum(chunk_budget.predict_frames(max(1, count_tokens(c)))["high"] for c in chunks)
-        frames += reference_replay_frames * len(chunks)
+    warnings = [] if parser_ok else [WARN_SOURCE_OFFSETS_APPROXIMATE]
+
+    per_para, chunk_rows = [], []
+    total_calls = total_tokens = 0
+    audio_lo = audio_hi = 0.0
+    gen_lo = gen_hi = 0.0
+
+    for si, seg in enumerate(segs):
+        tok = count_tokens(seg["text"])
+        try:
+            chunks = ([seg["text"]] if tok <= cap
+                      else ts.split_for_generation(seg["text"], count_tokens, cap))
+        except ts.SegmentTooLong:
+            chunks = [seg["text"]]
+            if WARN_SEGMENT_TOO_LONG not in warnings:
+                warnings.append(WARN_SEGMENT_TOO_LONG)
+        if "".join(chunks) != seg["text"]:
+            raise AnalysisError("분할이 원문을 보존하지 않음", code="SPLIT_LOST_SOURCE")
+
+        spans, exact = _chunk_spans(source, seg, chunks)
+        if not exact and WARN_SOURCE_OFFSETS_APPROXIMATE not in warnings:
+            warnings.append(WARN_SOURCE_OFFSETS_APPROXIMATE)
+
+        p_audio_lo = p_audio_hi = 0.0
+        p_gen_frames = 0.0
+        for ci, ctext in enumerate(chunks):
+            ctok = max(1, count_tokens(ctext))
+            frames = chunk_budget.predict_audio_frames(ctok)
+            budget = chunk_budget.budget_for(ctok, reference_replay_frames=reference_replay_frames)
+            last_seg = ci == len(chunks) - 1
+            chunk_rows.append({
+                "global_index": len(chunk_rows),
+                "paragraph_index": si, "segment_index": si, "local_chunk_index": ci,
+                "source_start": spans[ci][0], "source_end": spans[ci][1],
+                "source_offsets_exact": bool(exact),
+                "chars": len(ctext),
+                "production_tokens": ctok,
+                "combined_prompt_tokens": budget["combined_prompt_tokens"],
+                "generation_tier": budget["generation_limit"],
+                "fits_budget": bool(budget["fits"]),
+                "boundary_kind": seg.get("boundary_type"),
+                "split_reason": _split_reason(
+                    ctext, last_seg, seg.get("boundary_type"),
+                    last_seg and si == len(segs) - 1),
+                "estimated_audio_seconds": {"min": round(frames["min"] / FPS, 1),
+                                            "max": round(frames["max"] / FPS, 1)},
+            })
+            p_audio_lo += frames["min"]
+            p_audio_hi += frames["max"]
+            # 작업 시간에는 참조 재발화까지 들어간다 — 생성은 했고 잘라냈을 뿐이다.
+            p_gen_frames += frames["max"] + max(0, reference_replay_frames)
+
+        p_est = _estimate_seconds(p_gen_frames, len(chunks), mode)
         per_para.append({
-            "index": p["index"], "chars": len(p["text"]),
-            "char_start": p["char_start"], "char_end": p["char_end"],
-            "sentence_count": len(_split_sentences(p["text"])),
-            "production_tokens": tok, "planned_calls": len(chunks),
+            "index": si,
+            "line_index": seg.get("line_index"),
+            "source_start": seg["source_start"], "source_end": seg["source_end"],
+            "chars": len(seg["text"]),
+            "sentence_count": len(_split_sentences(seg["text"])),
+            "emotion_id": seg.get("emotion_id"),
+            "boundary_kind": seg.get("boundary_type"),
+            "production_tokens": tok,
+            "planned_calls": len(chunks),
             "auto_split": len(chunks) > 1,
-            "estimated_audio_seconds": round(frames / FPS, 1),
+            "estimated_audio_seconds": {"min": round(p_audio_lo / FPS, 1),
+                                        "max": round(p_audio_hi / FPS, 1)},
+            "estimated_wall_seconds": p_est["seconds"],
         })
         total_calls += len(chunks)
-        total_frames += frames
         total_tokens += tok
-    est = _estimate_seconds(total_frames, total_calls, mode)
+        audio_lo += p_audio_lo
+        audio_hi += p_audio_hi
+        gen_lo += p_gen_frames
+        gen_hi += p_gen_frames
+
+    est = _estimate_seconds(gen_hi, total_calls, mode)
     return {
-        "chars": len(text or ""),
-        "paragraph_count": len(paras),
+        "schema_version": SCHEMA_VERSION,
+        "source_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+        "character_count": len(source),
+        "paragraph_count": len(segs),
         "sentence_count": sum(p["sentence_count"] for p in per_para),
         "production_tokens": total_tokens,
         "planned_calls": total_calls,
         "split_cap_production_tokens": cap,
-        "estimated_audio_seconds": round(total_frames / FPS, 1),
-        "estimated_generation_seconds": est["seconds"],
+        "estimated_audio_seconds": {"min": round(audio_lo / FPS, 1),
+                                    "max": round(audio_hi / FPS, 1)},
+        "estimated_wall_seconds": est["seconds"],
         "confidence": est["confidence"],
+        "confidence_reason": est["reason"],
         "mode": mode,
+        "reference_replay_frames": int(max(0, reference_replay_frames)),
+        "parser_authority": bool(parser_ok),
+        "warnings": warnings,
         "paragraphs": per_para,
+        "chunks": chunk_rows,
     }
 
 
 def _estimate_seconds(total_frames, calls, mode):
     """모드에 통제 표본이 없으면 숫자를 만들지 않는다."""
-    if mode not in _MODES_WITH_SAMPLES or calls <= 0:
-        return {"seconds": None, "confidence": CONFIDENCE_INSUFFICIENT}
+    if calls <= 0:
+        return {"seconds": None, "confidence": CONFIDENCE_INSUFFICIENT,
+                "reason": "EMPTY_INPUT"}
+    if mode not in _MODES_WITH_SAMPLES:
+        return {"seconds": None, "confidence": CONFIDENCE_INSUFFICIENT,
+                "reason": "NO_CONTROLLED_SAMPLES_FOR_MODE"}
     lo = hi = None
     for c in _C_RANGE:
         job = _FIT_A - c * _FIT_TARGET
@@ -119,4 +276,6 @@ def _estimate_seconds(total_frames, calls, mode):
     lo, hi = max(0.0, lo - _Z * _RESID_SD), hi + _Z * _RESID_SD
     inside = MEASURED_FRAME_RANGE[0] <= total_frames <= MEASURED_FRAME_RANGE[1]
     return {"seconds": {"min": round(lo, 1), "max": round(hi, 1)},
-            "confidence": CONFIDENCE_MEASURED if inside else CONFIDENCE_EXTRAPOLATED}
+            "confidence": CONFIDENCE_MEASURED if inside else CONFIDENCE_EXTRAPOLATED,
+            "reason": ("WITHIN_MEASURED_FRAME_RANGE" if inside
+                       else "OUTSIDE_MEASURED_FRAME_RANGE")}
