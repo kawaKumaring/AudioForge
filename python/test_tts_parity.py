@@ -47,11 +47,29 @@ class VerifyParityTest(unittest.TestCase):
         errs = tts_parity.verify_parity("[기쁨] 안녕하세요!", self._hash("[기쁨] 안녕하세요."))
         self.assertEqual([e["code"] for e in errs], ["PARSER_PARITY_MISMATCH"])
 
-    def test_newline_diff_blocks_before_model(self):
-        # 중간 계층이 CRLF→LF로 조용히 뭉개면 renderer(CRLF) 해시 ≠ Python(LF) 재파싱 → 차단.
+    def test_crlf_and_lf_are_the_same_script(self):
+        """줄 끝 표기는 대본의 내용이 아니다.
+
+        예전에는 CRLF→LF 를 '조용히 뭉개는 것' 으로 보고 차단했지만, CR 이 spoken text 에
+        남으면 tokenizer 결과·chunk 계획·실제 발화·시간 예측이 LF 입력과 갈라진다(실측).
+        그래서 **공용 parser 입력 경계**에서 정규화하기로 했고, 두 표기는 같은 계획이 된다.
+        """
         crlf_hash = self._hash("[기쁨] 첫째 줄.\r\n[슬픔] 둘째 줄.")
-        errs = tts_parity.verify_parity("[기쁨] 첫째 줄.\n[슬픔] 둘째 줄.", crlf_hash)
-        self.assertEqual([e["code"] for e in errs], ["PARSER_PARITY_MISMATCH"])
+        lf_hash = self._hash("[기쁨] 첫째 줄.\n[슬픔] 둘째 줄.")
+        cr_hash = self._hash("[기쁨] 첫째 줄.\r[슬픔] 둘째 줄.")
+        self.assertEqual(crlf_hash, lf_hash, "CRLF 와 LF 가 다른 계획을 만든다")
+        self.assertEqual(cr_hash, lf_hash, "단독 CR 이 다른 계획을 만든다")
+        self.assertEqual(tts_parity.verify_parity("[기쁨] 첫째 줄.\n[슬픔] 둘째 줄.", crlf_hash), [])
+
+    def test_real_script_difference_still_blocks_before_model(self):
+        """정규화는 줄 끝만 건드린다 — 내용이 다르면 그대로 차단해야 한다."""
+        base = self._hash("[기쁨] 첫째 줄.\n[슬픔] 둘째 줄.")
+        for other in ("[기쁨] 첫째 줄.\n\n[슬픔] 둘째 줄.",      # 빈 줄이 하나 늘었다
+                      "[기쁨] 첫째 줄.\n[기쁨] 둘째 줄.",         # 감정이 바뀌었다
+                      "[기쁨] 첫째 줄!\n[슬픔] 둘째 줄."):        # 문장부호가 바뀌었다
+            errs = tts_parity.verify_parity(other, base)
+            self.assertEqual([e["code"] for e in errs], ["PARSER_PARITY_MISMATCH"],
+                             "내용이 다른데 통과했다")
 
     # ── I1 보강 3: 구조화 code가 문자열로 뭉개지지 않고 전달 + 대사 전문/경로 미포함 ──
     def test_empty_emotion_segment_propagates(self):

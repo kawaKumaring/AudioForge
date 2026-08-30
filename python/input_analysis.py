@@ -11,9 +11,21 @@ UI 가 보여 주는 "몇 묶음, 얼마나 걸림" 이 실제 생성과 어긋�
   토큰          호출자가 주입하는 production tokenizer (qwen_bridge._prod_tokens 와 동일 경로)
   예산          chunk_budget.budget_for  (generation tier)
 
-**원문 줄을 그대로 문단으로 세지 않는다.** 생성에 들어가는 것은 `spoken_text` 라서
-`[기쁨]` 같은 태그가 붙은 줄은 원문 길이와 토큰 수가 다르다(실측). 그 차이를 무시하면
-planned calls 가 실제 호출 수와 어긋난다.
+세 축을 섞지 않는다
+-------------------
+  source_paragraphs  사용자가 Enter 로 만든 문단. 화면에서 "문단" 은 이것 하나뿐이다.
+  segments           parser 가 만든 **대사 구간**. 감정 태그·명시적 쉼도 구간을 만든다.
+  chunks             실제 model call 계획. 구간이 예산을 넘을 때만 더 쪼개진다.
+
+한 줄 안에서 감정이 바뀌면 구간은 늘지만 문단은 그대로다. 그걸 문단 수로 세면 화면이
+없는 문단을 있다고 말하게 된다. chunk 행은 두 축의 index 를 모두 들고 있다.
+
+생성에 들어가는 것은 `spoken_text` 라서 `[기쁨]` 같은 태그가 붙은 줄은 원문 길이와 토큰
+수가 다르다(실측). 그 차이를 무시하면 planned calls 가 실제 호출 수와 어긋난다.
+
+줄 끝 표기는 파서 입구에서 정규화된다(CRLF·단독 CR → LF). 따라서 LF 와 CRLF 는 같은 계획을
+만들고, `source_sha256` 은 원문 기준, `normalized_sha256` 은 파서가 실제로 본 것 기준이다.
+offset 은 언제나 **사용자가 입력한 원문 좌표**다.
 
 두 가지 시간을 구분한다
 -----------------------
@@ -37,7 +49,7 @@ import hashlib
 import chunk_budget
 import text_segmenter as ts
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 # 시간 모델 계수(model.md). 회귀 잔차 sd 7.49 s.
 _C_RANGE = (0.18, 0.22)
@@ -111,8 +123,51 @@ def _lines_fallback(text):
     return out
 
 
+def source_paragraphs_of(text):
+    """**사용자가 Enter 로 만든 문단.** 화면에서 "문단" 이라고 부르는 것은 이것 하나뿐이다.
+
+    parser segment 와 섞지 않는다 — 감정 태그나 명시적 쉼도 segment 를 만들지만, 그건 사용자가
+    문단을 나눈 것이 아니다. 그걸 문단 수로 세면 화면이 없는 문단을 있다고 말하게 된다.
+
+    좌표는 **원문 기준**이다. CRLF·단독 CR 도 줄 끝으로 보되(파서와 같은 규칙) 원문 offset 을
+    그대로 돌려준다. 빈 줄은 문단이 아니지만 `blank_lines_before` 로 관계를 보존한다.
+    """
+    import tts_grammar
+    src = text or ""
+    norm, u16_map, _cp = tts_grammar.normalize_line_endings(src)
+    out, blank = [], 0
+    pos = 0
+    for line in norm.split(chr(10)):
+        if line.strip():
+            out.append({
+                "index": len(out),
+                "line_index": None,          # 아래에서 정규화 줄 번호를 채운다
+                "source_start": u16_map[pos] if pos < len(u16_map) else u16_map[-1],
+                "source_end": (u16_map[pos + len(line)] if pos + len(line) < len(u16_map)
+                               else u16_map[-1]),
+                "chars": len(line),
+                "blank_lines_before": blank,
+            })
+            blank = 0
+        else:
+            blank += 1
+        pos += len(line) + 1
+    # 정규화본의 줄 번호 = parser 의 original_line_index 와 같은 좌표계다.
+    li, k = 0, 0
+    for line in norm.split(chr(10)):
+        if line.strip():
+            out[k]["line_index"] = li
+            k += 1
+        li += 1
+    return out
+
+
 def paragraphs_of(text):
-    """사용자가 보는 문단 = production segment. 감정 태그·쉼 표기는 이미 떼어져 있다."""
+    """production parser 가 만든 **대사 구간**(segment). 문단과 다른 축이다.
+
+    이름을 유지하는 이유는 planner parity 테스트가 이 경로로 실제 분할을 재현하기 때문이다.
+    화면 문구는 `source_paragraphs_of` 쪽을 "문단" 으로 쓴다.
+    """
     segs, _exact = _segments_of(text)
     return segs
 
@@ -158,6 +213,10 @@ def analyze(text, count_tokens, mode="high_quality_icl", reference_replay_frames
     """
     source = text or ""
     segs, parser_ok = _segments_of(source)
+    src_paras = source_paragraphs_of(source)
+    # parser 의 original_line_index → 사용자 문단 index. 못 맞추면 None(추측하지 않는다).
+    line_to_para = {p["line_index"]: p["index"] for p in src_paras
+                    if p["line_index"] is not None}
     cap = chunk_budget.max_production_tokens(reference_replay_frames=reference_replay_frames)
     warnings = [] if parser_ok else [WARN_SOURCE_OFFSETS_APPROXIMATE]
 
@@ -191,7 +250,9 @@ def analyze(text, count_tokens, mode="high_quality_icl", reference_replay_frames
             last_seg = ci == len(chunks) - 1
             chunk_rows.append({
                 "global_index": len(chunk_rows),
-                "paragraph_index": si, "segment_index": si, "local_chunk_index": ci,
+                # 두 축을 모두 건다 — 사용자 문단과 parser 구간은 1:1 이 아니다.
+                "source_paragraph_index": line_to_para.get(seg.get("line_index")),
+                "segment_index": si, "local_chunk_index": ci,
                 "source_start": spans[ci][0], "source_end": spans[ci][1],
                 "source_offsets_exact": bool(exact),
                 "chars": len(ctext),
@@ -214,6 +275,7 @@ def analyze(text, count_tokens, mode="high_quality_icl", reference_replay_frames
         p_est = _estimate_seconds(p_gen_frames, len(chunks), mode)
         per_para.append({
             "index": si,
+            "source_paragraph_index": line_to_para.get(seg.get("line_index")),
             "line_index": seg.get("line_index"),
             "source_start": seg["source_start"], "source_end": seg["source_end"],
             "chars": len(seg["text"]),
@@ -237,9 +299,14 @@ def analyze(text, count_tokens, mode="high_quality_icl", reference_replay_frames
     est = _estimate_seconds(gen_hi, total_calls, mode)
     return {
         "schema_version": SCHEMA_VERSION,
+        # 원문 SHA 는 사용자가 입력한 그대로, 정규화 SHA 는 파서가 실제로 본 것.
         "source_sha256": hashlib.sha256(source.encode("utf-8")).hexdigest(),
+        "normalized_sha256": _normalized_sha256(source),
         "character_count": len(source),
-        "paragraph_count": len(segs),
+        # 문단은 사용자의 Enter 경계, segment 는 parser 가 만든 대사 구간이다. 섞지 않는다.
+        "source_paragraph_count": len(src_paras),
+        "segment_count": len(segs),
+        "paragraph_count": len(src_paras),
         "sentence_count": sum(p["sentence_count"] for p in per_para),
         "production_tokens": total_tokens,
         "planned_calls": total_calls,
@@ -253,9 +320,21 @@ def analyze(text, count_tokens, mode="high_quality_icl", reference_replay_frames
         "reference_replay_frames": int(max(0, reference_replay_frames)),
         "parser_authority": bool(parser_ok),
         "warnings": warnings,
-        "paragraphs": per_para,
+        "source_paragraphs": src_paras,
+        "segments": per_para,
+        "paragraphs": per_para,      # 하위 호환 별칭(구 소비자). 새 코드는 segments 를 쓴다.
         "chunks": chunk_rows,
     }
+
+
+def _normalized_sha256(source):
+    """파서가 실제로 본 문자열의 SHA. 줄 끝 표기만 다른 두 입력은 같은 값이 된다."""
+    try:
+        import tts_grammar
+        norm, _u, _c = tts_grammar.normalize_line_endings(source or "")
+    except Exception:
+        norm = source or ""
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()
 
 
 def _estimate_seconds(total_frames, calls, mode):

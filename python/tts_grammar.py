@@ -100,6 +100,87 @@ def _utf16_len(ch):
     return 2 if ord(ch) > 0xFFFF else 1
 
 
+# ── 줄 끝 정규화(공용 parser 입력 경계) ──────────────────────────────────────
+# Windows 에서 붙여넣은 CRLF 의 CR 이 spoken_text 에 남으면 tokenizer 결과·chunk 계획·
+# 실제 발화·시간 예측이 LF 입력과 갈라진다(실측). 그래서 **파서 입구에서** 정규화한다.
+# 사용자가 입력한 원문은 건드리지 않는다 — 정규화는 파서 내부에서만 일어나고, 밖으로 나가는
+# offset 은 아래 map 으로 **원문 좌표**로 되돌린다.
+
+def normalize_line_endings(raw):
+    """CRLF 와 단독 CR 을 LF 로. 반환 (normalized, u16_map, cp_map).
+
+    u16_map[n] = 정규화본의 UTF-16 index n 에 대응하는 **원문** UTF-16 index.
+    cp_map[n]  = 정규화본의 code point index n 에 대응하는 원문 code point index.
+    두 map 모두 끝 경계를 담아 길이가 하나 더 길다(슬라이스 끝 좌표를 되돌리기 위해서다).
+    """
+    src = raw or ""
+    out, u16_map, cp_map = [], [], []
+    su16, i, n = 0, 0, len(src)
+    while i < n:
+        ch = src[i]
+        if ch == "\r":
+            cp_map.append(i)
+            u16_map.append(su16)
+            out.append("\n")
+            if i + 1 < n and src[i + 1] == "\n":
+                su16 += 2            # CRLF 두 글자를 한 LF 로
+                i += 2
+            else:
+                su16 += 1            # 단독 CR
+                i += 1
+            continue
+        cp_map.append(i)
+        w = _utf16_len(ch)
+        for k in range(w):
+            u16_map.append(su16 + k)
+        out.append(ch)
+        su16 += w
+        i += 1
+    cp_map.append(n)
+    u16_map.append(su16)
+    return "".join(out), u16_map, cp_map
+
+
+def _map_u16(u16_map, value):
+    if value is None:
+        return None
+    v = int(value)
+    if v < 0:
+        return v
+    return u16_map[v] if v < len(u16_map) else u16_map[-1]
+
+
+def _map_cp(cp_map, value):
+    if value is None:
+        return None
+    v = int(value)
+    if v < 0:
+        return v
+    return cp_map[v] if v < len(cp_map) else cp_map[-1]
+
+
+def _remap_offset(off, u16_map, cp_map):
+    if not isinstance(off, dict):
+        return
+    for k in ("ui_start_utf16", "ui_end_utf16"):
+        if k in off:
+            off[k] = _map_u16(u16_map, off[k])
+    for k in ("text_start_codepoint", "text_end_codepoint"):
+        if k in off:
+            off[k] = _map_cp(cp_map, off[k])
+
+
+def _remap_plan_offsets(segments, errors, u16_map, cp_map):
+    """정규화 좌표로 만들어진 offset 을 전부 원문 좌표로 되돌린다."""
+    for seg in segments:
+        _remap_offset(seg.get("offset"), u16_map, cp_map)
+        for b in seg.get("pauses") or ():
+            _remap_offset(b.get("offset"), u16_map, cp_map)
+    for e in errors or ():
+        cur = getattr(e, "ui_offset_utf16", None)
+        if cur is not None:
+            e.ui_offset_utf16 = _map_u16(u16_map, cur)
+
 def _validate_pause_arg(arg):
     if not _PAUSE_ARG_RE.match(arg):
         return {"type": "pauseInvalid", "arg": arg, "reason": "format"}
@@ -277,7 +358,10 @@ def parse_tts_script(raw, resolve_emotion=None):
     """
     if resolve_emotion is None:
         resolve_emotion = default_resolve_emotion
-    text = raw or ""
+    source = raw or ""
+    # 파서 입력 경계에서만 정규화한다. 원문 문자열 자체는 어디서도 바꾸지 않는다.
+    text, _u16_map, _cp_map = normalize_line_endings(source)
+    _needs_remap = text != source
     pieces = _tokenize(text, resolve_emotion)
     errors = []
 
@@ -423,6 +507,10 @@ def parse_tts_script(raw, resolve_emotion=None):
                 explicit_pause_count += 1
                 total_pause_ms += b["pause_ms"]
 
+    if _needs_remap:
+        # spoken_text·plan sha 는 정규화본 기준(LF 와 CRLF 가 같은 계획을 만든다).
+        # 밖으로 나가는 좌표만 원문으로 되돌린다.
+        _remap_plan_offsets(segments, errors, _u16_map, _cp_map)
     full_sha256 = _compute_plan_full_sha256(segments, boundary_types)
     plan_sha8 = full_sha256[:8]
 
