@@ -91,14 +91,18 @@ def budget_for(production_tokens, reference_prefix_tokens=0, reference_replay_fr
 
 
 def max_production_tokens(reference_prefix_tokens=0, reference_replay_frames=0):
-    """분할 상한 — 예산(fits)과 **실증된 종료 상한**의 더 작은 쪽이다.
+    """분할 상한 = min(예산 fits, 종료 상한, 품질 운영 상한).
+
+    세 축이 각각 다른 것을 말한다 — 예산은 "생성 예산 안에 들어오는가", 종료 상한은
+    "EOS 에 닿는가", 품질 상한은 "끝까지 들을 만한가" 다. 종료했다고 품질이 유지되는 것은
+    아니다(563 실측). 그래서 planner 는 셋 중 가장 보수적인 값을 쓴다.
 
     예산만으로는 부족하다. 예산에 들어와도 EOS 에 닿지 못하면 결과가 없다(goback 실측).
     그래서 두 조건을 함께 만족하는 값만 단일 호출로 허용한다. 상한만 올리고 생성 예산은
     그대로인 상태도, 예산만 보고 종료를 무시하는 상태도 코드상 존재할 수 없다.
     """
     return min(_max_budget_tokens(reference_prefix_tokens, reference_replay_frames),
-               termination_ceiling())
+               termination_ceiling(), quality_operating_ceiling())
 
 
 def _max_budget_tokens(reference_prefix_tokens=0, reference_replay_frames=0):
@@ -131,30 +135,66 @@ def legacy_max_segment_tokens():
 #
 # 따라서 예산과 별개로 **실증된 종료 상한**이 필요하다. 아래 값은 자연 종료가 확인된
 # 최대 production token 이며, 확인되지 않은 구간은 extrapolate 하지 않고 분할 대상이다.
+# ① 기술적 상한 — EOS 자연 종료가 확인된 최대값. 모델의 절대 한계가 아니다.
+TERMINATION_CEILING_PRODUCTION_TOKENS = 563
 TERMINATION_CEILING = {
-    "production_tokens": 563,
+    "production_tokens": TERMINATION_CEILING_PRODUCTION_TOKENS,
     "provenance": {
         "token_definition": "production_tokens (assistant template 포함)",
         "conditioning_mode": "high_quality_icl (vendor native ref-code ICL)",
         "generation_tier": 1536,
         "verified_on": "2026-08-30",
-        # 두 텍스트가 모두 자연 종료한 최대값을 쓴다. 한쪽만 성공한 값은 채택하지 않는다.
         "validated_runs": [
-            {"run": "envelope-goback-576", "script_sha256_prefix": "goback prefix",
-             "production_tokens": 563, "generated_iterations": 1106,
-             "termination": "completed_before_limit"},
-            {"run": "envelope-sample4-576", "script_sha256_prefix": "sample_4 prefix",
-             "production_tokens": 572, "generated_iterations": 1135,
-             "termination": "completed_before_limit"},
+            {"run": "envelope-goback-576", "production_tokens": 563,
+             "generated_iterations": 1106, "termination": "completed_before_limit"},
+            {"run": "envelope-sample4-576", "production_tokens": 572,
+             "generated_iterations": 1135, "termination": "completed_before_limit"},
             {"run": "envelope-goback-384", "production_tokens": 379,
              "generated_iterations": 661, "termination": "completed_before_limit"},
         ],
         "largest_natural_termination": 563,
         "smallest_observed_failure": 1054,
         "failure_run": "goback-vendor-native-1 (EOS 없이 3072 iterations, censored)",
-        "note": "563~1054 구간은 미측정이다. extrapolate 하지 않고 분할 대상으로 둔다.",
+        "note": ("종료 가능성만 말한다. 563 은 사용자 청취에서 goback 이 무너졌으므로 "
+                 "production 단일 호출 허용 근거로 쓰지 않는다."),
     },
 }
+
+# ② 품질 운영 상한 — production planner 가 실제로 쓰는 보수적 상한.
+#    563 은 종료했지만 goback 에서 약 52s 이후 기계적 울림·말끝 끊김, 1:24 이후 gain 감소가
+#    청취로 확인됐다(QUALITY_FAIL_LONGFORM_DRIFT). 같은 범위에서 sample_4 572 는 온전했으므로
+#    "563 이상이면 항상 붕괴" 도 아니다 — CONTENT_OR_STOCHASTIC_LONGFORM_QUALITY_DRIFT.
+#    그래서 두 대본이 **모두 청취 통과한** 379 를 운영 상한으로 삼는다.
+QUALITY_OPERATING_CEILING_PRODUCTION_TOKENS = 379
+QUALITY_OPERATING_CEILING = {
+    "production_tokens": QUALITY_OPERATING_CEILING_PRODUCTION_TOKENS,
+    "provenance": {
+        "token_definition": "production_tokens (assistant template 포함)",
+        "conditioning_mode": "high_quality_icl (vendor native ref-code ICL)",
+        "model_revision": "5d83992436eae1d760afd27aff78a71d676296fc",
+        "parser_version": 2,
+        "verified_on": "2026-08-30",
+        "listening_passed": [
+            {"run": "envelope-goback-384", "production_tokens": 379,
+             "verdict": "QUALITY_PASS", "seconds": 52.8},
+            {"run": "envelope-sample4-576", "production_tokens": 572,
+             "verdict": "QUALITY_PASS", "seconds": 90.7},
+        ],
+        "listening_failed": [
+            {"run": "envelope-goback-576", "production_tokens": 563,
+             "verdict": "QUALITY_FAIL_LONGFORM_DRIFT",
+             "onset_sec": 52, "tint_sec": 67, "gain_drop_sec": 84},
+        ],
+        "state": "CONTENT_OR_STOCHASTIC_LONGFORM_QUALITY_DRIFT",
+        "raise_policy": ("복수 대본·복수 실행에서 청취 통과가 누적될 때만 상향 검토한다. "
+                         "자동 계측으로 올리지 않는다."),
+    },
+}
+
+
+def quality_operating_ceiling():
+    """production planner 가 쓰는 보수적 상한. 청취 통과가 근거다."""
+    return int(QUALITY_OPERATING_CEILING_PRODUCTION_TOKENS)
 
 
 def termination_ceiling():

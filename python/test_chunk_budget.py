@@ -110,9 +110,10 @@ class SplitterIntegrationTest(unittest.TestCase):
 class TerminationCeilingTest(unittest.TestCase):
     """예산에 들어와도 EOS 에 닿지 못하면 결과가 없다 — 종료 상한은 별개 축이다."""
 
-    def test_split_cap_is_min_of_budget_and_ceiling(self):
-        self.assertEqual(cb.max_production_tokens(),
-                         min(cb._max_budget_tokens(), cb.termination_ceiling()))
+    def test_split_cap_never_exceeds_termination_ceiling(self):
+        """종료 상한은 상한 중 하나다 — planner 는 품질 상한까지 함께 보므로 더 낮을 수 있다."""
+        self.assertLessEqual(cb.max_production_tokens(), cb.termination_ceiling())
+        self.assertLessEqual(cb.max_production_tokens(), cb._max_budget_tokens())
 
     def test_ceiling_binds_below_budget(self):
         """실측상 종료 상한이 예산 상한보다 낮다 — 예산만 보면 안 된다."""
@@ -139,6 +140,47 @@ class TerminationCeilingTest(unittest.TestCase):
         """3072 iterations 는 censored 다 — frame/token 앵커에 들어가면 안 된다."""
         self.assertLess(cb.FRAMES_PER_PRODUCTION_TOKEN, 2.0,
                         "2.91 frame/token(censored) 이 앵커로 새어 들어갔다")
+
+    def test_does_not_regress_to_33(self):
+        self.assertGreater(cb.max_production_tokens(), 33)
+
+
+class QualityOperatingCeilingTest(unittest.TestCase):
+    """종료했다고 품질이 유지되는 것은 아니다 — 세 축을 따로 본다."""
+
+    def test_planner_cap_is_min_of_three_axes(self):
+        self.assertEqual(cb.max_production_tokens(),
+                         min(cb._max_budget_tokens(), cb.termination_ceiling(),
+                             cb.quality_operating_ceiling()))
+
+    def test_quality_ceiling_binds(self):
+        """품질 상한이 가장 보수적이라 planner 를 실제로 제한한다."""
+        self.assertLess(cb.quality_operating_ceiling(), cb.termination_ceiling())
+        self.assertEqual(cb.max_production_tokens(), cb.quality_operating_ceiling())
+
+    def test_boundary_379_and_380(self):
+        cap = cb.max_production_tokens()
+        self.assertEqual(cap, 379)
+        self.assertTrue(cb.budget_for(379)["fits"])
+        self.assertGreater(380, cap, "380 은 분할 대상이어야 한다")
+
+    def test_termination_ceiling_is_not_a_production_allowance(self):
+        """563 을 단일 호출 허용 근거로 쓰지 않는다."""
+        self.assertGreater(cb.termination_ceiling(), cb.max_production_tokens())
+        self.assertIn("production 단일 호출 허용 근거로 쓰지 않는다",
+                      cb.TERMINATION_CEILING["provenance"]["note"])
+
+    def test_quality_provenance_records_listening(self):
+        p = cb.QUALITY_OPERATING_CEILING["provenance"]
+        for k in ("token_definition", "conditioning_mode", "model_revision",
+                  "parser_version", "verified_on", "listening_passed",
+                  "listening_failed", "state", "raise_policy"):
+            self.assertIn(k, p)
+        self.assertGreaterEqual(len(p["listening_passed"]), 2,
+                                "두 대본 이상에서 청취 통과해야 운영 상한이 된다")
+        self.assertTrue(p["listening_failed"], "실패 관측도 함께 남긴다")
+        self.assertLessEqual(cb.quality_operating_ceiling(),
+                             min(r["production_tokens"] for r in p["listening_passed"]))
 
     def test_does_not_regress_to_33(self):
         self.assertGreater(cb.max_production_tokens(), 33)
