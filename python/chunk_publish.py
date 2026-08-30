@@ -126,6 +126,25 @@ def low_energy_run(arr, sr, from_end=False, floor_db=-50.0, max_ms=2000):
     return round(n / sr * 1000.0, 1)
 
 
+PRIVATE_SUFFIX = ".private.json"
+PRIVACY_PRIVATE = "private"
+PRIVACY_NON_SENSITIVE = "non_sensitive"
+
+
+def _atomic_json(payload, dst):
+    """temp write -> 재읽기 SHA 검증 -> atomic rename. 검증 실패 시 .part 를 남기고 예외."""
+    import hashlib
+    tmp = dst + ".part"
+    body = json.dumps(payload, ensure_ascii=False, indent=1)
+    with open(tmp, "w", encoding="utf-8", newline=chr(10)) as f:
+        f.write(body)
+    raw = open(tmp, "rb").read()
+    if hashlib.sha256(raw).hexdigest() != hashlib.sha256(body.encode("utf-8")).hexdigest():
+        raise RuntimeError("RUN_BUNDLE_JSON_VERIFY_FAILED: " + os.path.basename(dst))
+    os.replace(tmp, dst)
+    return hashlib.sha256(raw).hexdigest()
+
+
 class ChunkRecorder:
     """한 run 의 chunk 기록. 비활성이면 모든 메서드가 즉시 반환한다."""
 
@@ -133,6 +152,10 @@ class ChunkRecorder:
         self.active = enabled()
         self.rows = {}
         self.root = None
+        self.script = None          # script.private.json 내용(원문 포함)
+        self.script_sha = None      # 단계별 추적용 script SHA
+        self.artifacts = []         # {path, sha256, privacy_class, export_allowed}
+        self.chunk_private = {}     # global chunk index -> chunk-NNN.private.json 내용
         if self.active:
             import local_assets
             self.root = local_assets.run_output_dir(run_id())
@@ -231,6 +254,77 @@ class ChunkRecorder:
             })
         return joins
 
+    # ── run bundle 확장 ────────────────────────────────────────────────────
+    def _register(self, rel, sha, private):
+        self.artifacts.append({"path": rel, "sha256": sha,
+                               "privacy_class": PRIVACY_PRIVATE if private else PRIVACY_NON_SENSITIVE,
+                               "export_allowed": not private})
+
+    def set_script(self, raw_text, normalized_text, paragraphs=None, sentences=None):
+        """원문·정규화 문자열은 private JSON 에만 남기고, 밖으로는 SHA·길이·수치만 낸다."""
+        if not self.active:
+            return None
+        import hashlib
+        self.script_sha = hashlib.sha256((raw_text or "").encode("utf-8")).hexdigest()
+        self.script = {
+            "schema": "af-run-script-private/1", "run_id": run_id(), "private": True,
+            "raw_text": raw_text, "raw_sha256": self.script_sha,
+            "normalized_text": normalized_text,
+            "normalized_sha256": hashlib.sha256((normalized_text or "").encode("utf-8")).hexdigest(),
+            "chars": len(raw_text or ""),
+            "paragraphs": paragraphs or [], "sentences": sentences or [],
+        }
+        return self.script_sha
+
+    def record_chunk_text(self, gidx, chunk_text, source_char_range=None,
+                          production_tokens=None, combined_prompt_tokens=None,
+                          controlled_prefix_text=None, reference_transcript=None,
+                          segment=None, paragraph=None, local_chunk_index=None,
+                          model_call_index=None):
+        """이 호출에 실제로 넘어간 대사. 원문은 private, 좌표·수치는 manifest 로 간다."""
+        if not self.active:
+            return
+        import hashlib
+        g = int(gidx)
+        self.chunk_private[g] = {
+            "schema": "af-run-chunk-private/1", "run_id": run_id(), "private": True,
+            "chunk_index": g, "chunk_text": chunk_text,
+            "chunk_text_sha256": hashlib.sha256((chunk_text or "").encode("utf-8")).hexdigest(),
+            "controlled_prefix_text": controlled_prefix_text,
+            "reference_transcript": reference_transcript,
+        }
+        r = self._row(g)
+        r.update({k: v for k, v in (
+            ("source_char_range", source_char_range),
+            ("production_tokens", production_tokens),
+            ("combined_prompt_tokens", combined_prompt_tokens),
+            ("segment_index", segment), ("paragraph_index", paragraph),
+            ("local_chunk_index", local_chunk_index),
+            ("model_call_index", model_call_index),
+            ("chunk_text_sha256", self.chunk_private[g]["chunk_text_sha256"]),
+            ("script_sha256", self.script_sha),
+        ) if v is not None})
+
+    def record_generation(self, gidx, generation_limit=None, generated_iterations=None,
+                          termination_reason=None, vendor_crop_record=None,
+                          external_alignment_calls=None, fallback=None, retries=None,
+                          elapsed_sec=None, partial=None):
+        """생성·종료·발행 근거. vendor crop record 는 SHA 만 승격하고 원본은 chunk private 에."""
+        if not self.active:
+            return
+        r = self._row(int(gidx))
+        r.update({k: v for k, v in (
+            ("generation_limit", generation_limit),
+            ("generated_iterations", generated_iterations),
+            ("termination_reason", termination_reason),
+            ("external_alignment_calls", external_alignment_calls),
+            ("fallback", fallback), ("retries", retries),
+            ("elapsed_sec", elapsed_sec), ("partial", partial),
+        ) if v is not None})
+        if vendor_crop_record is not None:
+            r["vendor_crop_record"] = vendor_crop_record
+            r["crop_authority"] = vendor_crop_record.get("crop_authority")
+
     def write(self, status, final_arr=None, sr=None, extra=None):
         """manifest.json + timeline.json. status: ok | failed."""
         if not self.active:
@@ -241,20 +335,30 @@ class ChunkRecorder:
         if extra:
             doc.update({k: v for k, v in extra.items()
                         if k not in ("text", "transcript", "ttsText")})
-        for name, payload in (("manifest.json", doc),
-                              ("timeline.json", {"schema": 1, "run_id": run_id(),
-                                                 "sample_rate": sr,
-                                                 "chunks": [
-                                                     {k: c.get(k) for k in
-                                                      ("chunk_index", "segment", "boundary_kind",
-                                                       "final_start_sample", "final_end_sample",
-                                                       "final_start_sec", "final_end_sec",
-                                                       "gap_before_samples")}
-                                                     for c in self.ordered()],
-                                                 "joins": joins})):
-            p = os.path.join(self.root, name)
-            tmp = p + ".part"
-            with open(tmp, "w", encoding="utf-8", newline="\n") as f:
-                json.dump(payload, f, ensure_ascii=False, indent=1)
-            os.replace(tmp, p)
+        # ① private JSON 을 먼저 쓴다(원문·전사는 여기에만 있다).
+        for rel, payload in ([("script" + PRIVATE_SUFFIX, self.script)] if self.script else []) +                 [("chunks/chunk-%03d%s" % (g, PRIVATE_SUFFIX), pv)
+                 for g, pv in sorted(self.chunk_private.items())]:
+            dst = os.path.join(self.root, rel.replace("/", os.sep))
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            self._register(rel, _atomic_json(payload, dst), private=True)
+
+        # ② timeline. 좌표·수치만 담는다.
+        tl = {"schema": 1, "run_id": run_id(), "sample_rate": sr,
+              "chunks": [{k: c.get(k) for k in
+                          ("chunk_index", "segment", "segment_index", "paragraph_index",
+                           "local_chunk_index", "model_call_index", "boundary_kind",
+                           "source_char_range", "final_start_sample", "final_end_sample",
+                           "final_start_sec", "final_end_sec", "gap_before_samples")}
+                         for c in self.ordered()],
+              "joins": joins}
+        self._register("timeline.json",
+                       _atomic_json(tl, os.path.join(self.root, "timeline.json")), private=False)
+
+        # ③ manifest 는 **마지막**에 발행한다 — 존재 자체가 번들 완결 신호다.
+        #    자기 SHA 는 담지 않는다(자기 참조 불가). 분류 없는 artifact 는 private 취급이다.
+        doc["script_sha256"] = self.script_sha
+        doc["artifacts"] = list(self.artifacts)
+        doc["private_files"] = [a["path"] for a in self.artifacts
+                                if a["privacy_class"] == PRIVACY_PRIVATE]
+        _atomic_json(doc, os.path.join(self.root, "manifest.json"))
         return self.root
