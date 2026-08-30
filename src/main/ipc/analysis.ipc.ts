@@ -2,7 +2,7 @@ import { ipcMain } from 'electron'
 import { spawn } from 'child_process'
 import { join } from 'path'
 import {
-  ANALYSIS_CANCEL_CHANNEL, ANALYSIS_CHANNEL, toAnalysisResult,
+  ANALYSIS_CANCEL_CHANNEL, ANALYSIS_CHANNEL, ANALYSIS_PREWARM_CHANNEL, toAnalysisResult,
   type AnalysisRequest, type AnalysisResponse,
 } from '../../shared/inputAnalysis'
 import { AnalysisWorker, sha256Hex } from '../services/analysis-worker'
@@ -54,6 +54,8 @@ export function registerAnalysisIpc(deps: { pythonPath: () => string }): Analysi
   })
 
   ipcMain.handle(ANALYSIS_CANCEL_CHANNEL, () => ({ cancelled: worker!.cancelPending() }))
+  // 낮은 우선순위 준비. 실패는 조용히 false 이고 사용자 작업을 막지 않는다.
+  ipcMain.handle(ANALYSIS_PREWARM_CHANNEL, async () => ({ ready: await worker!.prewarm() }))
   return worker
 }
 

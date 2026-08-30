@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { AppBuildInfo } from '../shared/buildMetadata'
-import { ANALYSIS_CANCEL_CHANNEL, ANALYSIS_CHANNEL } from '../shared/inputAnalysis'
+import {
+  ANALYSIS_CANCEL_CHANNEL, ANALYSIS_CHANNEL, ANALYSIS_PREWARM_CHANNEL,
+} from '../shared/inputAnalysis'
 import type { AnalysisRequest, AnalysisResponse } from '../shared/inputAnalysis'
 import type { CancelResponseLike } from '../shared/cancelContract'
 import { SIDECAR_IPC_CHANNEL } from '../shared/sidecarEvents'
@@ -133,7 +135,8 @@ const api = {
   analysis: {
     analyze: (req: AnalysisRequest): Promise<AnalysisResponse> =>
       ipcRenderer.invoke(ANALYSIS_CHANNEL, req),
-    cancel: (): Promise<{ cancelled: number }> => ipcRenderer.invoke(ANALYSIS_CANCEL_CHANNEL)
+    cancel: (): Promise<{ cancelled: number }> => ipcRenderer.invoke(ANALYSIS_CANCEL_CHANNEL),
+    prewarm: (): Promise<{ ready: boolean }> => ipcRenderer.invoke(ANALYSIS_PREWARM_CHANNEL)
   },
   utils: {
     getPathForFile: (file: File) => webUtils.getPathForFile(file),

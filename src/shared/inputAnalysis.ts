@@ -12,6 +12,8 @@
 
 export const ANALYSIS_CHANNEL = 'analysis:analyze'
 export const ANALYSIS_CANCEL_CHANNEL = 'analysis:cancel'
+/** 사용자 텍스트 없이 tokenizer 만 데운다. 실패해도 이후 분석을 막지 않는다. */
+export const ANALYSIS_PREWARM_CHANNEL = 'analysis:prewarm'
 
 /** Python `input_analysis.SCHEMA_VERSION` 과 같아야 한다. 다르면 renderer 가 결과를 버린다. */
 export const ANALYSIS_SCHEMA_VERSION = 3

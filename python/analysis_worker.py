@@ -18,12 +18,19 @@ GPU 를 쓰지 않고 TTS 모델을 로드하지 않는다. 필요한 것은 **t
 분석 요청에서 지연 로드한다. tokenizer 를 못 얻으면 분석을 포기하지 않고 근사 토큰으로
 답하되 `TOKENIZER_UNAVAILABLE` 경고와 낮은 신뢰도를 함께 낸다 — 편집을 막지 않는 쪽이 낫다.
 
-취소
-----
-요청을 순서대로 처리하고 응답에 `request_id` 와 `source_sha256` 을 그대로 실어 보낸다.
-늦게 도착한 응답을 버리는 판단은 호출부(main)가 한다 — worker 는 거짓말하지 않는 것만 맡는다.
-`{"type":"drop_before","request_seq":N}` 을 받으면 아직 처리하지 않은 그보다 오래된 요청을
-버린다(이미 처리 중인 것은 끝까지 간다 — 분석은 짧다).
+낡은 요청 — 무엇을 보장하고 무엇을 보장하지 않는가
+--------------------------------------------------
+`{"type":"drop_before","request_seq":N}` 은 **아직 시작하지 않은 대기 요청**을 건너뛰게 한다.
+이미 계산에 들어간 요청은 단일 프로세스 구조상 중간에서 끊기지 않고 끝까지 간다(분석은
+짧으므로 그대로 두는 편이 낫다 — 강제로 끊자고 worker 를 죽이지 않는다).
+
+따라서 **이미 계산된 낡은 응답을 버리는 것은 drop_before 가 아니라** 호출부의 몫이다.
+main 과 renderer 가 `request_id` 와 원문 SHA 로 판정한다. worker 는 두 값을 그대로 실어
+보내 거짓말하지 않는 것만 맡는다.
+
+`{"type":"prewarm"}` 은 **사용자 텍스트 없이** tokenizer 만 미리 로드한다. 첫 분석의 콜드
+로드(실측 약 7.9초)를 사용자가 타이핑을 시작하기 전으로 옮기기 위한 것이고, 실패해도
+`ok:false` 를 돌려줄 뿐 이후 분석을 막지 않는다.
 """
 import hashlib
 import json
@@ -163,6 +170,15 @@ def main():
         kind = req.get("type")
         if kind == "shutdown":
             break
+        if kind == "prewarm":
+            # 사용자 텍스트 없이 tokenizer 만 데운다. GPU·모델은 건드리지 않는다.
+            loaded = _load_tokenizer()
+            sys.stdout.write(json.dumps(
+                {"type": "prewarm", "protocol_version": PROTOCOL_VERSION,
+                 "ok": loaded == TOKENIZER_PRODUCTION, "tokenizer": loaded,
+                 "reason": _STATE.get("load_error")}, ensure_ascii=False) + chr(10))
+            sys.stdout.flush()
+            continue
         if kind == "drop_before":
             try:
                 drop_before = max(drop_before, int(req.get("request_seq") or 0))
@@ -176,7 +192,8 @@ def main():
         except Exception:
             seq = 0
         if seq and seq < drop_before:
-            # 이미 낡은 요청이다 — 계산하지 않고 그 사실만 알린다.
+            # 아직 시작하지 않은 대기 요청이 낡았다 — 계산을 생략하고 그 사실만 알린다.
+            # (이미 계산 중인 요청에는 해당하지 않는다. 그건 호출부가 SHA 로 버린다.)
             resp = {"type": "analysis", "request_id": req.get("request_id"),
                     "protocol_version": PROTOCOL_VERSION, "ok": False, "code": "SUPERSEDED"}
         else:

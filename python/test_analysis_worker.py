@@ -4,7 +4,8 @@
 여기서 고정하는 것:
   · 요청 하나에 응답 한 줄, `request_id` 와 `source_sha256` 을 그대로 돌려준다
   · 본문과 SHA 가 어긋나면 계산하지 않고 SOURCE_SHA_MISMATCH 로 답한다
-  · 낡은 요청(`drop_before` 이전)은 계산하지 않고 SUPERSEDED 로 답한다
+  · **아직 시작하지 않은** 낡은 대기 요청(`drop_before` 이전)은 계산을 생략하고 SUPERSEDED
+    로 답한다. 이미 계산 중인 요청은 끝까지 가고, 그 결과는 호출부가 SHA 로 버린다
   · 응답에 대사 원문·chunk 텍스트가 들어가지 않는다(좌표만)
   · tokenizer 를 못 얻어도 실패하지 않고 근사로 답하되 그 사실을 드러낸다
   · 세 축(source_paragraphs / segments / chunks)이 응답에 그대로 있다
@@ -163,7 +164,11 @@ class NoGpuTest(unittest.TestCase):
 
 
 class DropBeforeTest(unittest.TestCase):
-    """낡은 요청은 계산하지 않는다 — main 이 버리기 전에 worker 도 아낀다."""
+    """**대기 중인** 낡은 요청만 생략한다.
+
+    이미 계산에 들어간 요청은 단일 프로세스 구조상 끊기지 않는다 — 그 결과를 버리는 것은
+    호출부의 request_id/SHA 판정이지 drop_before 가 아니다.
+    """
 
     def _run(self, lines):
         out = io.StringIO()
@@ -191,6 +196,47 @@ class DropBeforeTest(unittest.TestCase):
         self.assertEqual(res[0]["code"], "SUPERSEDED")
         self.assertNotIn("chunks", res[0], "낡은 요청을 계산하면 안 된다")
         self.assertTrue(res[1]["ok"])
+
+    def test_prewarm_loads_the_tokenizer_without_user_text(self):
+        """콜드 로드를 타이핑 전으로 옮긴다 — 사용자 텍스트는 관여하지 않는다."""
+        calls = []
+
+        def fake_load():
+            calls.append(1)
+            aw._STATE["kind"] = aw.TOKENIZER_PRODUCTION
+            return aw.TOKENIZER_PRODUCTION
+
+        with mock.patch.object(aw, "_load_tokenizer", side_effect=fake_load):
+            msgs = self._run([
+                json.dumps({"type": "prewarm"}) + NL,
+                json.dumps({"type": "shutdown"}) + NL,
+            ])
+        pre = [m for m in msgs if m["type"] == "prewarm"]
+        self.assertEqual(len(pre), 1)
+        self.assertTrue(pre[0]["ok"])
+        self.assertEqual(pre[0]["tokenizer"], aw.TOKENIZER_PRODUCTION)
+        self.assertEqual(len(calls), 1, "prewarm 이 tokenizer 를 데우지 않았다")
+        self.assertNotIn("chunks", pre[0], "prewarm 은 분석이 아니다")
+
+    def test_prewarm_failure_is_reported_without_stopping_the_worker(self):
+        def fake_load():
+            aw._STATE["kind"] = aw.TOKENIZER_APPROXIMATE
+            aw._STATE["load_error"] = "MODEL_DIR_NOT_FOUND"
+            return aw.TOKENIZER_APPROXIMATE
+
+        with mock.patch.object(aw, "_load_tokenizer", side_effect=fake_load):
+            msgs = self._run([
+                json.dumps({"type": "prewarm"}) + NL,
+                json.dumps({"type": "analyze", "request_id": "a", "request_seq": 1,
+                            "text": "가"}, ensure_ascii=False) + NL,
+                json.dumps({"type": "shutdown"}) + NL,
+            ])
+        pre = [m for m in msgs if m["type"] == "prewarm"][0]
+        self.assertFalse(pre["ok"])
+        self.assertEqual(pre["reason"], "MODEL_DIR_NOT_FOUND")
+        res = [m for m in msgs if m["type"] == "analysis"]
+        self.assertEqual(len(res), 1, "prewarm 실패가 이후 분석을 막으면 안 된다")
+        self.assertTrue(res[0]["ok"])
 
     def test_malformed_lines_do_not_stop_the_worker(self):
         msgs = self._run([

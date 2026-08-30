@@ -10,7 +10,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
-import { AnalysisWorker, MAX_RESTARTS, sha256Hex } from './analysis-worker.ts'
+import { AnalysisWorker, MAX_CONSECUTIVE_FAILURES, sha256Hex } from './analysis-worker.ts'
 
 class FakeStream extends EventEmitter {
   written: string[] = []
@@ -75,11 +75,12 @@ test('요청 본문에 원문 SHA 를 함께 보낸다', async () => {
   await p
 })
 
-test('이전 요청의 늦은 응답은 SUPERSEDED 로 버린다', async () => {
+test('이미 계산된 낡은 응답은 SUPERSEDED 로 버린다', async () => {
   const { w, last } = make()
   const first = w.analyze({ requestId: 'old', text: '가' })
   const second = w.analyze({ requestId: 'new', text: '가나' })
-  // worker 가 순서를 지켜 답해도, 그 사이 새 요청이 들어왔으면 옛 결과는 화면에 가면 안 된다.
+  // 이미 계산에 들어간 요청은 중간에 끊기지 않는다 — 답이 와도 화면에 가면 안 된다.
+  // 이 폐기는 drop_before 가 아니라 request_id/SHA 판정이 한다.
   last().reply(ok('old', sha256Hex('가')))
   last().reply(ok('new', sha256Hex('가나')))
   const r1 = await first as Record<string, unknown>
@@ -89,12 +90,14 @@ test('이전 요청의 늦은 응답은 SUPERSEDED 로 버린다', async () => {
   assert.equal(r2.ok, true)
 })
 
-test('새 요청은 worker 에게도 옛 요청을 버리라고 알린다', async () => {
+test('새 요청은 worker 에게 아직 시작하지 않은 대기 요청을 건너뛰라고 알린다', async () => {
+  // drop_before 는 **큐에 남은** 요청만 생략시킨다. 이미 계산 중인 것은 끝까지 가고,
+  // 그 결과는 SUPERSEDED 판정에서 버려진다.
   const { w, last } = make()
   const p = w.analyze({ requestId: 'a', text: '가' })
   const drops = last().stdin.written.map((l) => JSON.parse(l) as Record<string, unknown>)
     .filter((m) => m.type === 'drop_before')
-  assert.ok(drops.length >= 1, 'drop_before 를 보내지 않으면 worker 가 낡은 것을 계산한다')
+  assert.ok(drops.length >= 1, 'drop_before 가 없으면 대기 중인 낡은 요청까지 계산한다')
   last().reply(ok('a', sha256Hex('가')))
   await p
 })
@@ -127,14 +130,86 @@ test('프로세스를 못 띄워도 편집을 막지 않는다', async () => {
   assert.equal(r.code, 'WORKER_UNAVAILABLE')
 })
 
-test('되살리기는 유한하다', async () => {
+test('연속 실패가 상한에 닿으면 잠시 분석을 접는다', async () => {
   const { w } = make({ failSpawn: true })
-  for (let i = 0; i <= MAX_RESTARTS + 2; i += 1) {
+  for (let i = 0; i < MAX_CONSECUTIVE_FAILURES + 2; i += 1) {
     await w.analyze({ requestId: `r${i}`, text: '가' })
   }
-  assert.ok(w.restartCount > MAX_RESTARTS, '무한 재시작은 배터리를 태운다')
+  assert.equal(w.consecutiveFailureCount >= MAX_CONSECUTIVE_FAILURES, true,
+    '무한 재시작은 배터리를 태운다')
   const r = await w.analyze({ requestId: 'last', text: '가' }) as Record<string, unknown>
   assert.equal(r.code, 'WORKER_UNAVAILABLE')
+})
+
+test('상한은 **연속** 실패 기준이다 — 성공하면 초기화된다', async () => {
+  // 앱 수명 동안 드문드문 세 번 죽었다고 남은 세션 내내 분석이 꺼지면 안 된다.
+  const procs: FakeProc[] = []
+  let fail = false
+  const w = new AnalysisWorker({
+    spawn: (() => {
+      if (fail) throw new Error('spawn 실패')
+      const p = new FakeProc()
+      procs.push(p)
+      return p as never
+    }) as never,
+    pythonPath: () => 'python',
+    scriptPath: () => 'analysis_worker.py',
+    timeoutMs: 30_000,
+  })
+  for (let round = 0; round < 3; round += 1) {
+    fail = true
+    // 살아 있는 프로세스가 있으면 spawn 자체가 일어나지 않는다 — 한 번만 죽인다.
+    // (죽은 프로세스에 exit 를 또 쏘면 실패가 두 번 세어진다.)
+    if (procs.length) procs[procs.length - 1].emit('exit')
+    let guard = 0
+    while (w.consecutiveFailureCount < MAX_CONSECUTIVE_FAILURES - 1 && guard < 10) {
+      guard += 1
+      const r = await w.analyze({ requestId: `f${round}-${guard}`, text: '가' }) as Record<string, unknown>
+      assert.equal(r.code, 'WORKER_UNAVAILABLE')
+    }
+    assert.equal(w.consecutiveFailureCount, MAX_CONSECUTIVE_FAILURES - 1,
+      '상한 직전까지만 쌓았는지 확인')
+    fail = false
+    const p = w.analyze({ requestId: `ok${round}`, text: '가' })
+    procs[procs.length - 1].reply(ok(`ok${round}`, sha256Hex('가')))
+    assert.equal(((await p) as Record<string, unknown>).ok, true)
+    assert.equal(w.consecutiveFailureCount, 0, '성공했는데 실패 기록이 남아 있다')
+  }
+  assert.ok(w.restartCount >= (MAX_CONSECUTIVE_FAILURES - 1) * 3,
+    '총 재시작은 계속 세되 상한 판정에는 쓰지 않는다')
+})
+
+test('prewarm 은 사용자 텍스트 없이 tokenizer 만 데운다', async () => {
+  const { w, last } = make()
+  const p = w.prewarm(1000)
+  const sent = last().stdin.written.map((l) => JSON.parse(l) as Record<string, unknown>)
+  assert.deepEqual(sent.filter((m) => m.type === 'prewarm'), [{ type: 'prewarm' }],
+    'prewarm 요청에 사용자 텍스트가 실리면 안 된다')
+  assert.equal(sent.some((m) => m.type === 'analyze'), false)
+  last().reply({ type: 'prewarm', ok: true, tokenizer: 'production' })
+  assert.equal(await p, true)
+})
+
+test('prewarm 실패는 조용하고 이후 분석을 막지 않는다', async () => {
+  const { w, last } = make()
+  const p = w.prewarm(20)
+  assert.equal(await p, false, '타임아웃이면 그냥 false 다')
+  const a = w.analyze({ requestId: 'a', text: '가' })
+  last().reply(ok('a', sha256Hex('가')))
+  assert.equal(((await a) as Record<string, unknown>).ok, true)
+})
+
+test('handshake 는 연속 실패 기록을 지운다', async () => {
+  const { w, last } = make()
+  const p = w.analyze({ requestId: 'a', text: '가' })   // 여기서 프로세스가 떠 있다
+  last().emit('exit')                                    // 한 번 죽어 실패가 하나 쌓인다
+  await p
+  assert.equal(w.consecutiveFailureCount, 1)
+  const p2 = w.analyze({ requestId: 'b', text: '나' })   // 새로 띄운다
+  last().reply({ type: 'ready', protocol_version: 1 })   // handshake 만 와도 살아 있는 것이다
+  assert.equal(w.consecutiveFailureCount, 0)
+  last().reply(ok('b', sha256Hex('나')))
+  await p2
 })
 
 test('모드 전환·파일 변경은 대기 요청을 정리한다', async () => {
