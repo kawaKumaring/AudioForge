@@ -26,13 +26,10 @@ if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) {
   process.exit(2)
 }
 
-// 승인 대본은 본체 저장소의 resources 에 있다(worktree 에는 없다).
-const gobackCandidates = [
-  path.join(APP, 'resources', 'reference-audio', 'goback', 'goback-longform.txt'),
-  path.join(APP, '..', '..', 'AudioForge', 'resources', 'reference-audio', 'goback', 'goback-longform.txt'),
-]
-const gobackPath = gobackCandidates.find((p) => fs.existsSync(p))
-const LONG = gobackPath ? fs.readFileSync(gobackPath, 'utf-8') : null
+// 승인 대본은 저장소에 추적되지 않는다. 경로를 코드에 박으면 그 PC 에서만 되는 측정이
+// 되므로 **환경 변수로만** 받는다. 없으면 장문 측정만 건너뛰고 그 사실을 로그로 남긴다.
+const gobackPath = (process.env.AF_E2E_GOBACK_SCRIPT || '').trim()
+const LONG = gobackPath && fs.existsSync(gobackPath) ? fs.readFileSync(gobackPath, 'utf-8') : null
 
 // 종료 계약은 **PID** 로 본다. 개수 비교는 질의를 실행하는 powershell 이 자기 명령줄 때문에
 // 스스로를 세어 실제 worker 가 0 이어도 통과시켰다.
@@ -88,7 +85,7 @@ try {
     ok(long.ok === true, `goback ${LONG.length}자 분석 성공`,
       `${long.ms}ms 문단=${long.paras} 구간=${long.segs} 묶음=${long.calls} conf=${long.conf}`)
   } else {
-    log('INFO goback 대본 없음 — 장문 측정 생략')
+    log('INFO goback 대본 없음 — 장문 측정 생략(AF_E2E_GOBACK_SCRIPT 로 지정한다)')
   }
 
   // ── 빠른 연속 입력: 마지막 것만 살아남는다 ────────────────────────────────

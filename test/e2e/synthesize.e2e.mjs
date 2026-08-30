@@ -8,15 +8,19 @@ import path from 'path'
 import { isolatedInput, cleanupIsolated, snapshotTree } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
-// 작업 트리에는 resources/ 가 없다(본체 저장소에만 있다). 후보를 두어 게이트가 조용히
-// 건너뛰어지지 않게 한다. **자동 검색·복사는 하지 않는다** — 정해진 두 자리만 본다.
-// (실 Qwen 게이트의 `AF_E2E_REFERENCE` 계약은 여기와 무관하며 그대로다.)
+// 이 테스트는 **실제 말이 든 오디오**가 있어야 한다. 참조 클립은 무음 경계로 잘린 뒤
+// Whisper 로 전사되고, 전사가 비면 앱이 BLOCK_TRANSCRIBE_FAILED 로 막는다(정상 동작).
+// 합성 사인파로는 그 경로를 지날 수 없다.
+//
+// 저장소에는 그런 자산이 추적돼 있지 않다. 그렇다고 본체 저장소의 미추적 `resources/` 를
+// 뒤지면 그 PC 에서만 되는 검증이 된다 — detached clean worktree 에서 실제로 그렇게
+// 통과해 버렸다. 그래서 **저장소 안의 자리와 명시 env 만** 본다. 없으면 통과시키지 않고
+// 전제 미충족으로 멈춘다(조용한 초록 금지).
 const SRC = [
+  (process.env.AF_E2E_REFERENCE || '').trim(),
   path.join(APP, 'resources', 'speaker_b.wav'),
-  path.join(APP, '..', '..', 'AudioForge', 'resources', 'speaker_b.wav'),
-].find((c) => fs.existsSync(c)) || path.join(APP, 'resources', 'speaker_b.wav')
-// 불변 검사도 실제로 쓰는 그 resources/ 를 봐야 의미가 있다.
-const RES_DIR = path.dirname(SRC)
+].find((c) => c && fs.existsSync(c)) || null
+const RES_DIR = path.join(APP, 'resources')
 const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots')
 fs.mkdirSync(SHOT, { recursive: true })
 const logLines = []
@@ -39,7 +43,10 @@ function collectDirs(base) {
   return out
 }
 
-if (!fs.existsSync(SRC)) { console.error('필수 검증 파일 없음:', SRC); process.exit(2) }
+if (!SRC || !fs.existsSync(SRC)) {
+  console.error('prerequisite: 참조 자산 없음 — AF_E2E_REFERENCE 또는 resources/speaker_b.wav')
+  process.exit(2)
+}
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요: npm run build'); process.exit(2) }
 
 // resources/를 삭제하지 않는다 — 입력을 격리 tmp로 복사해 주입, 출력도 그 안(dirname(input)/AudioForge_output).
@@ -94,10 +101,13 @@ try {
   await win.waitForFunction(
     () => (window.__afStore?.getState().fileInfo?.duration ?? 0) > 0, undefined, { timeout: 30000 })
   const dur = await win.evaluate(() => window.__afStore.getState().fileInfo.duration)
-  ok(Math.abs(dur - 111.08) < 0.05, `분석 길이 = 승인 자산 길이(${dur.toFixed(2)}초)`)
+  ok(dur > 0, `앱이 읽은 길이(${dur.toFixed(2)}초)`)
   const tts = await measure()
   await win.screenshot({ path: path.join(SHOT, 'e2e_02_tts.png') })
-  ok(/1:51/.test(tts.txt), '길이 표시(1:51)')
+  // 특정 자산의 숫자를 박지 않는다 — 자산이 바뀌면 또 낡는다. 화면 표기가 **앱이 읽은 값과
+  // 같은지**를 본다(m:ss). 자산이 무엇이든 이 계약은 같다.
+  const mmss = `${Math.floor(dur / 60)}:${String(Math.floor(dur % 60)).padStart(2, '0')}`
+  ok(tts.txt.includes(mmss), `길이 표시가 읽은 값과 일치(${mmss})`)
   const spawnedAnalyze = mainOut.join('').includes('refanalyze')
   const spawnedPreflight = mainOut.join('').includes('qwenpre')
   ok(spawnedAnalyze && spawnedPreflight, 'analyze + preflight 동시 초기화(둘 다 spawn)')

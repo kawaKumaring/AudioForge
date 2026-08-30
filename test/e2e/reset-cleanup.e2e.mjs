@@ -8,17 +8,11 @@ const APP = process.cwd()
 // 검사하려면 실제 말이 든 승인 자산이 필요하다. 합성 사인파로는 앱이 정당하게 거절한다
 // ("요청하신 구간 주변에 말이 끊기는 지점이 없습니다") — 끊김을 넣어 봐도 마찬가지였다.
 // 그래서 fixture 를 억지로 통과시키지 않고, 자산이 없으면 전제 미충족으로 건너뛴다.
-const REF_CANDIDATES = [
+const SRC = [
   (process.env.AF_E2E_REFERENCE || '').trim(),
   path.join(APP, 'resources', 'speaker_b.wav'),
-  path.join(APP, '..', '..', 'AudioForge', 'resources', 'speaker_b.wav'),
-].filter(Boolean)
-const SRC = REF_CANDIDATES.find((c) => fs.existsSync(c)) || null
-// 불변 검사는 실제로 존재하는 resources/ 를 봐야 뜻이 있다(작업 트리에는 없다).
-const RES_DIR = [
-  path.join(APP, 'resources'),
-  path.join(APP, '..', '..', 'AudioForge', 'resources'),
-].find((c) => fs.existsSync(c)) || path.join(APP, 'resources')
+].find((c) => c && fs.existsSync(c)) || null
+const RES_DIR = path.join(APP, 'resources')
 let failed = 0; const ok = (c, m) => { console.log(c ? '[e2e] PASS' : '[e2e] FAIL', m); if (!c) failed++ }
 if (!SRC) { console.error('prerequisite: 참조 자산 없음(AF_E2E_REFERENCE 또는 resources/speaker_b.wav)'); process.exit(2) }
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }

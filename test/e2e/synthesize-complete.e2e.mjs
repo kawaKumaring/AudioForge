@@ -18,7 +18,12 @@ const APP = process.cwd()
 const SRC = requireE2EReference()   // 명시 AF_E2E_REFERENCE 단일 권위(speaker_b.wav 하드코딩·fallback 없음)
 const RES_DIR = path.join(APP, 'resources')
 const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots')
-const PY = 'E:/AI/ComfyUI_windows_portable_python3.12/python_embeded/python.exe'
+// 검증용 파이썬. 특정 PC 의 절대 경로를 박으면 다른 곳에서 재현되지 않는다 — 명시 env 로만 받는다.
+const PY = (process.env.AF_E2E_PYTHON || '').trim()
+if (!PY || !fs.existsSync(PY)) {
+  console.error('prerequisite: AF_E2E_PYTHON 미설정 또는 경로 없음 — 검증용 파이썬이 필요합니다.')
+  process.exit(2)
+}
 fs.mkdirSync(SHOT, { recursive: true })
 let failed = 0
 const logLines = []

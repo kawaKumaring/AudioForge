@@ -2,22 +2,22 @@
 // A pitch slider 키보드·clamp·reset·store 동기 / B 감정 태그 caret 삽입(끝 append 아님) /
 // C 감정 요약 배지 store 일치(고급 설정 > 음성 탭) / D 반응형(800x600·125/150% zoom) 수평 스크롤·겹침 없음.
 // 실행: npm run test:e2e:tts-editor-ux  (사전 npm run build). 실합성 없음 → GPU 불필요.
-// 참조 자산: AF_E2E_REFERENCE 우선, 없으면 resources/speaker_b.wav fallback(파일 주입해 tts 모드 진입용, 합성 안 함).
+// 참조 자산: AF_E2E_REFERENCE 우선, 없으면 이번 실행 전용 합성 WAV(파일 주입해 tts 모드 진입용, 합성 안 함).
 // 출력/로그는 비추적 _local/artifacts/diagnostics/e2e-shots 만. 사용자 절대경로 하드코딩 금지.
 import { _electron as electron } from 'playwright'
-import fs from 'fs'; import path from 'path'
-import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenVenvPids } from './_e2e-helper.mjs'
+import fs from 'fs'; import path from 'path'; import os from 'os'
+import {
+  isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenVenvPids,
+  makeSyntheticWav, cleanupSyntheticWav,
+} from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const REF_ENV = process.env.AF_E2E_REFERENCE
-// 작업 트리에는 resources/ 가 없다(본체 저장소에만 있다). 그래서 env 를 잊으면 게이트가
-// 조용히 건너뛰어졌다 — 본체 경로까지 후보로 둔다.
-const REF_FALLBACKS = [
-  path.join(APP, 'resources', 'speaker_b.wav'),
-  path.join(APP, '..', '..', 'AudioForge', 'resources', 'speaker_b.wav'),
-]
-const FALLBACK = REF_FALLBACKS.find((c) => fs.existsSync(c)) || REF_FALLBACKS[0]
-const SRC = REF_ENV && REF_ENV.trim() ? REF_ENV.trim() : FALLBACK
+// 저장소에 추적된 오디오 자산은 없다. 이 테스트는 '파일 하나' 만 있으면 되므로 이번 실행
+// 전용 합성 WAV 를 쓴다. 본체 저장소를 뒤지면 그 PC 에서만 되는 검증이 된다.
+const SYNTH = makeSyntheticWav(
+  path.join(os.tmpdir(), 'af_e2e_' + randomUUID() + '.wav'), 12)
+const SRC = REF_ENV && REF_ENV.trim() ? REF_ENV.trim() : SYNTH
 const RES_DIR = path.join(APP, 'resources')
 const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots'); fs.mkdirSync(SHOT, { recursive: true })
 let failed = 0
@@ -181,6 +181,7 @@ try {
   ok(refClipDirs().length === 0, '종료 후 refclip 임시폴더 0')
   ok(snapshotTree(RES_DIR) === resBefore, 'resources/ 원본 불변')
   cleanupIsolated(ISO)
+  cleanupSyntheticWav(SYNTH)
   fs.writeFileSync(path.join(SHOT, 'tts-editor-ux_log.txt'), logLines.join('\n') + '\n\n--- main ---\n' + mainOut.join(''), 'utf-8')
 }
 log('SUMMARY', JSON.stringify({ failed, pageErrors: pageErrors.length, crashes: crashes.length }))

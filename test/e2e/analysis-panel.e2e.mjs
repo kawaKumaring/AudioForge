@@ -8,6 +8,9 @@
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
+import os from 'os'
+import { randomUUID } from 'crypto'
+import { makeSyntheticWav, cleanupSyntheticWav } from './_e2e-helper.mjs'
 import { newWorkerPids, waitForGone, workerPidSet } from './_analysis-workers.mjs'
 import crypto from 'crypto'
 
@@ -21,14 +24,13 @@ if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) {
   process.exit(2)
 }
 
-const REF = (() => {
-  const cands = [
-    path.join(APP, 'resources', 'speaker_b.wav'),
-    path.join(APP, '..', '..', 'AudioForge', 'resources', 'speaker_b.wav'),
-  ]
-  return cands.find((p) => fs.existsSync(p)) || null
-})()
-if (!REF) { console.error('참조 자산 없음'); process.exit(2) }
+// 저장소에는 추적된 오디오 자산이 **하나도 없다**. 이 테스트가 필요한 것은 '파일 하나' 뿐이고
+// (참조 클립 확정·전사 경로를 타지 않는다) 그래서 이번 실행 전용 합성 WAV 를 만들어 쓴다.
+// 본체 저장소의 미추적 `resources/` 를 뒤지면 clean clone·다른 PC·CI 에서 재현되지 않는
+// 검증이 된다 — 실제로 detached clean worktree 에서 그 경로로 통과해 버렸다.
+const SYNTH = makeSyntheticWav(
+  path.join(os.tmpdir(), 'af_e2e_' + randomUUID() + '.wav'), 12)
+const REF = (process.env.AF_E2E_REFERENCE || '').trim() || SYNTH
 
 const SCRIPT = '첫 줄입니다. 두 번째 문장입니다.\n[기쁨] 둘째 줄입니다.'
 const SHA8 = crypto.createHash('sha256').update(SCRIPT, 'utf-8').digest('hex').slice(0, 8)
@@ -155,6 +157,8 @@ try {
   ok(stillAlive === null || stillAlive.length === 0,
     '종료 뒤 그 worker PID 가 사라졌다', `띄움=${created.length} 잔존=${(stillAlive ?? []).length}`)
 }
+
+cleanupSyntheticWav(SYNTH)
 
 log(failed === 0 ? '전부 통과' : `실패 ${failed}건`)
 process.exit(failed === 0 ? 0 : 1)

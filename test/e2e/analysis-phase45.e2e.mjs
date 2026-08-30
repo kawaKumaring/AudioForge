@@ -10,9 +10,12 @@
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
+import os from 'os'
 import crypto from 'crypto'
+import { randomUUID } from 'crypto'
 import { execSync } from 'child_process'
 import { listAnalysisWorkers, newWorkerPids, waitForGone, workerPidSet } from './_analysis-workers.mjs'
+import { makeSyntheticWav, cleanupSyntheticWav } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 let failed = 0
@@ -22,29 +25,25 @@ const info = (m, extra = '') => log('INFO', m, extra)
 
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
 
-const findFirst = (cands) => cands.find((p) => fs.existsSync(p)) || null
-const REF = findFirst([
-  path.join(APP, 'resources', 'speaker_b.wav'),
-  path.join(APP, '..', '..', 'AudioForge', 'resources', 'speaker_b.wav'),
-])
-if (!REF) { console.error('참조 자산 없음'); process.exit(2) }
+// 저장소에는 추적된 오디오 자산이 **하나도 없다**. 이 테스트가 필요한 것은 '파일 하나' 뿐이고
+// (참조 클립 확정·전사 경로를 타지 않는다) 그래서 이번 실행 전용 합성 WAV 를 만들어 쓴다.
+// 본체 저장소의 미추적 `resources/` 를 뒤지면 clean clone·다른 PC·CI 에서 재현되지 않는
+// 검증이 된다 — 실제로 detached clean worktree 에서 그 경로로 통과해 버렸다.
+const SYNTH = makeSyntheticWav(
+  path.join(os.tmpdir(), 'af_e2e_' + randomUUID() + '.wav'), 12)
+const REF = (process.env.AF_E2E_REFERENCE || '').trim() || SYNTH
 
 // 승인 대본만 쓴다. 길이·감정 변수를 섞은 임의 시나리오를 새로 만들지 않는다.
-const GOBACK = (() => {
-  const p = findFirst([
-    path.join(APP, 'resources', 'reference-audio', 'goback', 'goback-longform.txt'),
-    path.join(APP, '..', '..', 'AudioForge', 'resources', 'reference-audio', 'goback', 'goback-longform.txt'),
-  ])
-  return p ? fs.readFileSync(p, 'utf-8') : null
-})()
-const SAMPLE4 = (() => {
-  const p = findFirst([
-    path.join(APP, '..', '..', 'AudioForge', '_local', 'artifacts', 'generated',
-      'unrestricted-full-sample4-overtest', '_config.json'),
-  ])
-  if (!p) return null
-  try { return JSON.parse(fs.readFileSync(p, 'utf-8')).ttsText || null } catch { return null }
-})()
+// 두 대본 모두 저장소에 추적되지 않는다. **경로를 코드에 박지 않고** 환경 변수로만 받는다 —
+// 박아 두면 그 PC 에서만 되는 측정이 되고, 없는 곳에서는 조용히 건너뛴 것을 알 수 없다.
+const readIfSet = (envName, pick) => {
+  const p = (process.env[envName] || '').trim()
+  if (!p || !fs.existsSync(p)) return null
+  try { return pick(fs.readFileSync(p, 'utf-8')) } catch { return null }
+}
+const GOBACK = readIfSet('AF_E2E_GOBACK_SCRIPT', (t) => t)
+const SAMPLE4 = readIfSet('AF_E2E_SAMPLE4_SCRIPT',
+  (t) => (t.trimStart().startsWith('{') ? (JSON.parse(t).ttsText || null) : t))
 
 const sha8 = (s) => crypto.createHash('sha256').update(s, 'utf-8').digest('hex').slice(0, 8)
 const SHORT = '짧은 문장입니다.'
@@ -157,14 +156,14 @@ try {
       `1회=${r.ms}ms 2회=${r2.ms}ms`)
     ok(r.chunkRows === r.calls, 'chunk 행 수 == 묶음 수', `${r.chunkRows} vs ${r.calls}`)
   } else {
-    info('sample_4 대본 없음 — 일반 장문 측정 생략(임의 대본으로 대체하지 않는다)')
+    info('sample_4 대본 없음 — 측정 생략(AF_E2E_SAMPLE4_SCRIPT 로 지정한다)')
   }
   if (GOBACK) {
     const r = await analyzeDirect(GOBACK, 'gb')
     ok(r.ok === true, `goback ${GOBACK.length}자 분석 성공`,
       `${r.ms}ms 문단=${r.paras} 구간=${r.segs} 묶음=${r.calls} conf=${r.conf}`)
   } else {
-    info('goback 대본 없음 — 감정 장문 측정 생략')
+    info('goback 대본 없음 — 측정 생략(AF_E2E_GOBACK_SCRIPT 로 지정한다)')
   }
 
   // P4-1b. 신뢰도 표시가 죽은 라벨이 아닌지 — 실측 범위에 드는 입력이 실제로 있는가.
@@ -485,8 +484,12 @@ try {
   const outPath = path.join(outDir, 'input-estimator-review.json')
   fs.writeFileSync(outPath, JSON.stringify({ generatedFor: 'INPUT_ESTIMATOR_UI_REVIEW', material },
     null, 2), 'utf-8')
-  ok(material.filter((m) => !m.skipped).length >= 4, '사용자 확인 자료 수집',
-    `${material.filter((m) => !m.skipped).length}개 시나리오 → _local/artifacts/diagnostics/`)
+  // 승인 대본 둘은 저장소에 없을 수 있다(env 로만 받는다). 그래서 **자산 없이도 항상
+  // 가능한 시나리오**를 기준으로 삼고, 건너뛴 것은 개수로 드러낸다 — 조용히 줄어들면 안 된다.
+  const collected = material.filter((m) => !m.skipped).length
+  const skipped = material.filter((m) => m.skipped).length
+  ok(collected >= 3, '사용자 확인 자료 수집(자산 없이 가능한 시나리오)',
+    `수집 ${collected} / 건너뜀 ${skipped} → _local/artifacts/diagnostics/`)
   for (const m of material) {
     if (m.skipped) { info(`자료[${m.name}]`, m.skipped); continue }
     info(`자료[${m.name}]`, `${m.chars}자 sha8=${m.sha8} status=${m.status} | ${m.summary}`)
@@ -512,6 +515,8 @@ try {
   ok(stillAlive === null || stillAlive.length === 0,
     '종료 뒤 그 worker PID 가 사라졌다', `띄움=${created.length} 잔존=${(stillAlive ?? []).length}`)
 }
+
+cleanupSyntheticWav(SYNTH)
 
 log(failed === 0 ? '전부 통과' : `실패 ${failed}건`)
 process.exit(failed === 0 ? 0 : 1)
