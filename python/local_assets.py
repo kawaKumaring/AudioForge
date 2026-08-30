@@ -153,8 +153,8 @@ class ExternalOutputBlocked(Exception):
 
 
 def _run_scoped(kind, run_id):
-    if kind not in ("generated", "diagnostics"):
-        raise ValueError("kind must be 'generated' or 'diagnostics'")
+    if kind not in ("generated", "diagnostics", "runs"):
+        raise ValueError("kind must be 'generated', 'diagnostics' or 'runs'")
     rid = str(run_id or "").strip()
     if (not rid or any(c in rid for c in r'\\/:*?"<>|')
             or any(ord(c) < 32 for c in rid)):
@@ -167,6 +167,14 @@ def _run_scoped(kind, run_id):
 def run_output_dir(run_id):
     """개발 하네스의 생성물 위치 — _local/artifacts/generated/<run-id>."""
     return _run_scoped("generated", run_id)
+
+
+def run_record_dir(run_id):
+    """**모든** TTS 생성이 남기는 재현 기록 — _local/artifacts/runs/<run-id>.
+
+    진단 스위치와 무관하게 항상 여기에 쌓인다. 사용자 최종 출력 폴더가 아니라
+    앱 관리 영역이다."""
+    return _run_scoped("runs", run_id)
 
 
 def run_diagnostics_dir(run_id):

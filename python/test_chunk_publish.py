@@ -40,16 +40,50 @@ class Base(unittest.TestCase):
         shutil.rmtree(self.tmp, ignore_errors=True)
 
 
-class TestDisabled(Base):
-    def test_no_env_means_no_side_effect(self):
+class TestAlwaysRecords(Base):
+    """기록은 환경변수에 걸려 있지 않다 — 바뀐 것은 stage WAV 를 남기느냐뿐이다."""
+
+    def test_no_env_still_records_but_keeps_no_stage_wavs(self):
         os.environ.pop(cp.ENV, None)
+        cp._AUTO_RUN_ID = None
+        try:
+            r = cp.ChunkRecorder()
+            self.assertTrue(r.active, "모든 TTS 생성은 기록을 남긴다")
+            self.assertFalse(r.stage_wavs, "진단이 꺼져 있으면 stage WAV 는 저장하지 않는다")
+            r.raw(0, tone(0.1), SR)
+            r.aligned(0, tone(0.1), SR)
+            r.final(0, tone(0.1), SR, 0, 0)
+            self.assertIsNotNone(r.write("ok"))
+            self.assertTrue(os.path.isfile(os.path.join(r.root, cp.MANIFEST_NAME)))
+            self.assertFalse(os.path.isdir(os.path.join(r.root, "chunks")),
+                             "stage WAV 가 꺼졌는데 파형이 저장됐다")
+            # 파형은 없어도 단계별 PCM SHA 는 남는다 — 어느 단계가 어느 파형인지 대조 가능.
+            row = r.ordered()[0]
+            for stage in ("raw", "aligned", "final"):
+                self.assertIn("array_sha256", row[stage])
+        finally:
+            cp._AUTO_RUN_ID = None
+
+    def test_auto_run_id_is_shared_with_child_processes(self):
+        os.environ.pop(cp.ENV, None)
+        cp._AUTO_RUN_ID = None
+        try:
+            rid = cp.run_id()
+            self.assertTrue(rid)
+            self.assertEqual(os.environ.get(cp.ENV), rid,
+                             "자식 프로세스가 같은 run-id 를 못 보면 기록이 갈라진다")
+            self.assertEqual(cp.run_id(), rid, "같은 작업 안에서 run-id 가 바뀌면 안 된다")
+        finally:
+            cp._AUTO_RUN_ID = None
+
+    def test_missing_manifest_reads_as_incomplete(self):
         r = cp.ChunkRecorder()
-        self.assertFalse(r.active)
-        r.raw(0, tone(0.1), SR)
-        r.aligned(0, tone(0.1), SR)
-        r.final(0, tone(0.1), SR, 0, 0)
-        self.assertIsNone(r.write("ok"))
-        self.assertFalse(os.path.isdir(os.path.join(self.tmp, "artifacts", "generated", "t-run")))
+        r.open()
+        self.assertEqual(cp.read_run_status(r.root), cp.STATUS_INCOMPLETE,
+                         "중간 기록만 있으면 INCOMPLETE 다")
+        self.assertTrue(os.path.isfile(os.path.join(r.root, cp.OPEN_RECORD_NAME)))
+        r.write("ok")
+        self.assertEqual(cp.read_run_status(r.root), "ok")
 
 
 class TestPublish(Base):
@@ -156,22 +190,33 @@ if __name__ == "__main__":
 
 
 class TestWiringInertWhenDisabled(unittest.TestCase):
-    """계측이 꺼져 있으면 합성 경로가 기존과 완전히 같아야 한다."""
+    """진단이 꺼져 있어도 **기록은 남는다.** 대신 오디오 산출 바이트는 완전히 같아야 한다."""
 
     def setUp(self):
-        self._e = os.environ.get(cp.ENV)
+        self._e = {k: os.environ.get(k) for k in (cp.ENV, la.LOCAL_ROOT_ENV)}
+        self._tmp = tempfile.mkdtemp(prefix="af-inert-")
         os.environ.pop(cp.ENV, None)
+        os.environ[la.LOCAL_ROOT_ENV] = self._tmp
+        cp._AUTO_RUN_ID = None
         import tts_worker
         self.tw = tts_worker
         self.tw._CONCAT_RECORDER = None
 
     def tearDown(self):
-        if self._e is not None:
-            os.environ[cp.ENV] = self._e
+        for k, v in self._e.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        cp._AUTO_RUN_ID = None
         self.tw._CONCAT_RECORDER = None
+        shutil.rmtree(self._tmp, ignore_errors=True)
 
-    def test_recorder_is_none_when_disabled(self):
-        self.assertIsNone(self.tw._diag_recorder(), "비활성인데 recorder 를 만들었다")
+    def test_recorder_exists_but_keeps_no_stage_wavs(self):
+        r = self.tw._diag_recorder()
+        self.assertIsNotNone(r, "모든 TTS 생성은 기록을 남긴다")
+        self.assertTrue(r.active)
+        self.assertFalse(r.stage_wavs, "진단이 꺼졌는데 stage WAV 를 저장한다")
 
     def test_concat_output_identical_with_and_without_recorder(self):
         import soundfile as sf
@@ -212,11 +257,29 @@ class TestGlobalIndexContract(unittest.TestCase):
         i_use = src.index('_diag_stage(_rec, "raw"')
         self.assertLess(i_assign, i_use, "global index 배정이 사용보다 뒤에 있다")
 
-    def test_manifest_write_is_wired(self):
+    def test_manifest_write_is_wired_once_at_the_end(self):
+        """manifest 는 조립부가 아니라 synthesize 마감에서 **한 번** 발행된다."""
         src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "tts_worker.py"), encoding="utf-8").read()
-        self.assertIn('_CONCAT_RECORDER.write("ok"', src,
-                      "manifest/timeline/join preview 를 쓰는 호출이 없다")
+        self.assertIn("_CONCAT_RECORDER.stash_final(", src,
+                      "조립본을 들고 있지 않으면 join preview 를 파생할 수 없다")
+        self.assertIn("def _run_record_finish(", src, "마감 발행 지점이 없다")
+        self.assertIn("_run_record_finish(_st, _code", src, "finally 마감 배선이 없다")
+        self.assertNotIn('_CONCAT_RECORDER.write("ok"', src,
+                         "조립부가 manifest 를 먼저 쓰면 'manifest 존재 = 완결' 계약이 깨진다")
+
+    def test_recorder_is_created_at_synthesize_entry_not_only_in_icl_alignment(self):
+        """vendor native ICL 은 _align_icl_chunks 를 지나지 않는다 — 실측으로 확인한 결함."""
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "tts_worker.py"), encoding="utf-8").read()
+        i_begin = src.index("def _run_record_begin(")
+        i_call = src.index("_run_record_begin(text, output_dir, rc_mode")
+        i_align = src.index("def _align_icl_chunks(")
+        self.assertLess(i_begin, i_call)
+        self.assertGreater(i_call, i_align,
+                           "기록 생성이 정렬 경로 안에만 있으면 native 경로가 비어 버린다")
+        self.assertIn("_run_record_entries(_CONCAT_RECORDER, ordered_entries)", src,
+                      "모든 경로가 지나는 조립 지점에서 chunk 를 기록해야 한다")
 
     def test_two_segments_do_not_collide(self):
         tmp = tempfile.mkdtemp(prefix="af-gi-")

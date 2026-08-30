@@ -61,6 +61,22 @@ class FakeEngine(tts_worker.TTSEngine):
 class TtsRoutingTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="af_tts_test_")
+        # synthesize 는 항상 run bundle 을 남긴다 — 앱 관리 영역(_local)을 오염시키지 않는다.
+        import chunk_publish as _cp
+        import local_assets as _la
+        _snap = {k: os.environ.get(k) for k in (_la.LOCAL_ROOT_ENV, _cp.ENV)}
+        os.environ[_la.LOCAL_ROOT_ENV] = os.path.join(self.tmp, "_local")
+        os.environ.pop(_cp.ENV, None)
+        _cp._AUTO_RUN_ID = None
+
+        def _restore_local_root():
+            for k, v in _snap.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+            _cp._AUTO_RUN_ID = None
+        self.addCleanup(_restore_local_root)
         self.out = os.path.join(self.tmp, "out")
         os.makedirs(self.out, exist_ok=True)
         # 참조 WAV 3개

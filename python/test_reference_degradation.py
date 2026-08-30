@@ -27,6 +27,9 @@ import transcribe_worker  # noqa: E402
 import _vendor_crop_fixture as _vcf
 import tts_worker  # noqa: E402
 
+# 합성 경로를 도는 테스트는 run bundle 을 만든다 — 앱 관리 영역 대신 임시 루트로 돌린다.
+from _local_isolation import setUpModule, tearDownModule   # noqa: F401
+
 
 class _Base(unittest.TestCase):
     def setUp(self):

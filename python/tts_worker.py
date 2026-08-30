@@ -12,6 +12,7 @@ Engine selection:
 
 import os
 import re
+import sys
 import time
 import chunk_paths   # chunk 경로 규칙(bridge와 공용) — 결정적 경로 정확 일치 검증
 import semantic_chunk_planner   # 의미 경계 분류 + 무음 예산(C2). 순수 로직(stdlib only).
@@ -1693,9 +1694,11 @@ def _align_icl_chunks(seg_out, transcribe_factory=_icl_transcribe_fn, output_dir
     # 배열 복사·SHA·무음 분석·폴더 생성이 하나도 일어나지 않는다.
     import chunk_publish
     global _CONCAT_RECORDER
-    _rec = _diag_recorder()
+    # 기록은 synthesize 입구에서 이미 열렸다 — 여기서 새로 만들면 legacy 경로에만 기록이 생긴다
+    # (실측 결함: vendor native ICL 은 이 함수를 지나지 않아 번들이 통째로 비었다).
+    _rec = _CONCAT_RECORDER if (_CONCAT_RECORDER is not None
+                                and _CONCAT_RECORDER.active) else _diag_recorder()
     if _rec is not None and _rec.active:
-        # 조립 단계도 같은 recorder 를 써야 raw/aligned/final 이 같은 index 를 공유한다.
         _CONCAT_RECORDER = _rec
     tf = transcribe_factory()
     total = len(todo)
@@ -2199,23 +2202,25 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             prev_osi = osi
 
         if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
+            # vendor native·legacy·safe_xvector 어느 경로든 여기를 지난다.
+            _run_record_entries(_CONCAT_RECORDER, ordered_entries)
             _diag_annotate(_CONCAT_RECORDER, ordered_entries, boundary_kinds,
                            segenv_meta, gaps)
 
         emit("progress", percent=90, message="문장 이어붙이기 중...")
         _layout = _concat_with_boundaries(use, gaps, pending_path)  # 내부 0 / 원 segment 경계 silence_gap
         if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
-            # 결합본을 읽어 join preview 를 파생하고 manifest/timeline 을 쓴다.
-            # 실패해도 합성 결과에는 영향이 없다.
+            # 결합본은 join preview 파생용으로 **들고만** 있는다. manifest 는 synthesize 가
+            # 마지막에 한 번 발행한다(manifest 존재 = 번들 완결이라는 계약을 지키기 위해서다).
             try:
                 import soundfile as _sf
                 _fin, _fsr = _sf.read(pending_path, dtype="float32")
-                _CONCAT_RECORDER.write("ok", final_arr=_fin, sr=_fsr,
-                                       extra={"layout_chunks": len(_layout)})
+                _CONCAT_RECORDER.stash_final(_fin, _fsr)
+                _CONCAT_RECORDER.set_run_header(layout_chunks=len(_layout))
             except Exception as _exc:
                 try:
-                    _CONCAT_RECORDER.write("failed",
-                                           extra={"instrumentation_error": type(_exc).__name__})
+                    _CONCAT_RECORDER.set_run_header(
+                        instrumentation_error=type(_exc).__name__)
                 except Exception:
                     pass
         # 진단 전용: 각 chunk의 결합본 내 위치를 metadata에 남긴다(오디오 출력 불변, 수치만).
@@ -2268,6 +2273,8 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             # 경계 envelope 재현 — 실제 적용 샘플 수.
             "boundary_onset_samples": pinfo.get("boundary_onset_samples"),
             "boundary_offset_samples": pinfo.get("boundary_offset_samples"),
+            # macro gain drift 보정 재현값(연기·믹싱·공간 세 축 분리).
+            **{k: pinfo.get(k) for k in _MACRO_GAIN_META_KEYS},
             # B envelope 1단계 재현 — 내부 segment 경계에 실제로 건 onset/offset 횟수와 kind별 횟수.
             # 최종 파일 양 끝(boundary_*_samples)과는 서로 다른 자리다(구조적 중복 차단).
             **segenv_meta,
@@ -2502,6 +2509,143 @@ def _diag_recorder():
         return None            # 계측 실패가 합성을 막지 않는다
 
 
+# ── run bundle 수명 — **모든** TTS 생성이 기록을 남긴다(진단 스위치와 무관) ──────────
+#: 결과 metadata 에서 헤더로 승격할 비민감 키. 경로·대사·전사는 여기 없다.
+#: _finish_and_place 가 돌려주는 macro gain 재현 키(단일 출처).
+_MACRO_GAIN_META_KEYS = (
+    "macro_gain_applied", "macro_gain_reason", "macro_gain_statistic_db", "macro_gain_gate_db",
+    "macro_gain_max_boost_db", "macro_gain_curve_sha8", "macro_gain_headroom_cap_db",
+    "macro_gain_protected_span_count", "macro_gain_trend_window_sec",
+    "macro_gain_level_window_sec")
+
+_RUN_HEADER_FROM_METADATA = (
+    "actual_engine", "model_name", "model_revision", "device", "device_selection_source",
+    "target_language", "output_sample_rate", "generation_limit", "generated_iterations",
+    "termination_reason", "parser_version", "parsed_plan_sha8", "segment_count", "chunk_count",
+    "reference_conditioning_mode_requested", "reference_conditioning_mode_effective",
+    "reference_conditioning_auto_fallback", "reference_conditioning_attempts",
+    "reference_conditioning_icl_published", "fallback", "fallback_reason",
+    "speed_postprocessed", "pitch_postprocessed", "silence_gap",
+    "boundary_onset_samples", "boundary_offset_samples",
+    "segment_envelope_onset_count", "segment_envelope_offset_count",
+    "macro_gain_applied", "macro_gain_reason", "macro_gain_max_boost_db",
+    "macro_gain_statistic_db", "macro_gain_curve_sha8", "elapsed_seconds")
+
+#: 부분 결과를 보존한 채 끝난 실패 코드. 이 경우 상태는 failed 가 아니라 partial 이다.
+_PARTIAL_ERROR_CODES = ("GENERATION_LIMIT_EXCEEDED", "JOB_WALL_TIME_EXCEEDED")
+_CANCEL_ERROR_CODES = ("CANCELLED", "TTS_CANCELLED")
+
+
+def _run_record_begin(text, output_dir, rc_mode, speed, silence_gap, pitch, expressive_mode):
+    """작업 시작 즉시 중간 기록을 남긴다 — 취소·강제 종료로 manifest 에 못 가도 흔적이 있다."""
+    global _CONCAT_RECORDER
+    _CONCAT_RECORDER = None
+    try:
+        import hashlib
+        import chunk_publish
+        rec = chunk_publish.ChunkRecorder()
+        if not rec.active:
+            return None
+        rec.set_run_header(
+            input_chars=len(text or ""),
+            raw_text_sha256=hashlib.sha256((text or "").encode("utf-8")).hexdigest(),
+            reference_conditioning_mode_requested=rc_mode,
+            speed=float(speed), silence_gap=float(silence_gap),
+            pitch_semitones=float(pitch), expressive_mode=expressive_mode,
+            # 절대경로는 남기지 않는다 — 폴더 이름만.
+            output_dir_basename=os.path.basename(os.path.normpath(output_dir or "")))
+        # 대본 원문은 private JSON 에만 들어간다(manifest 로는 SHA·길이만 나간다).
+        rec.set_script(text or "", None)
+        rec.open()
+        _CONCAT_RECORDER = rec
+        return rec
+    except Exception:
+        return None            # 기록 실패가 합성을 막지 않는다
+
+
+def _run_record_normalized(text):
+    """정규화 대본을 private 기록에 덧붙인다. 파서가 권위이고 여기서 재해석하지 않는다."""
+    rec = _CONCAT_RECORDER
+    if rec is None or not rec.active:
+        return
+    try:
+        import tts_grammar
+        segs = tts_grammar.parse_tts_script(text or "")["plan"]["segments"]
+        rec.set_script(text or "",
+                       chr(10).join(s.get("spoken_text", "") for s in segs))
+    except Exception:
+        pass                   # 기록 실패가 합성을 막지 않는다
+
+
+def _run_record_entries(rec, ordered_entries):
+    """chunk 좌표·대사·생성 근거를 기록한다. 대사는 private, 좌표·수치는 manifest."""
+    if rec is None or not rec.active:
+        return
+    try:
+        for g, e in enumerate(ordered_entries):
+            rec.record_chunk_text(
+                g, e.get("text") or "",
+                production_tokens=e.get("production_tokens"),
+                segment=e.get("original_segment_index"),
+                local_chunk_index=e.get("chunk_index"), model_call_index=g)
+            vcr = e.get("vendor_crop_record")
+            rec.record_generation(
+                g, generation_limit=e.get("generation_limit"),
+                generated_iterations=e.get("generated_iterations"),
+                termination_reason=e.get("termination_reason"),
+                vendor_crop_record=vcr,
+                external_alignment_calls=(0 if vcr is not None else None),
+                elapsed_sec=e.get("generation_elapsed_sec"))
+            # vendor native 는 반환 PCM 이 곧 chunk 파형이다 — 그 사실을 단계로 남긴다.
+            _diag_stage(rec, "vendor_returned" if not e.get("controlled_prefix") else "raw",
+                        e, gidx=g)
+    except Exception:
+        pass                   # 기록 실패가 합성을 막지 않는다
+
+
+def _run_record_finish(status, error_code=None, extra=None):
+    """manifest 를 **마지막에 한 번** 발행한다. 실패해도 사용자 WAV 를 건드리지 않는다."""
+    rec = _CONCAT_RECORDER
+    if rec is None or not getattr(rec, "active", False):
+        return
+    try:
+        if error_code:
+            rec.set_run_header(error_code=str(error_code))
+        rec.write(status, extra=extra)
+    except Exception as exc:
+        # 기록 실패는 원래 오류를 덮지 않는다. WAV 는 이미 발행됐고 그대로 둔다.
+        rec.record_error = type(exc).__name__
+        try:
+            import chunk_publish
+            chunk_publish._atomic_json(
+                {"schema": chunk_publish.SCHEMA_VERSION, "run_id": chunk_publish.run_id(),
+                 "status": "RECORD_INCOMPLETE", "reason": type(exc).__name__,
+                 "recoverable": True},
+                os.path.join(rec.root, "record-incomplete.json"))
+        except Exception:
+            pass
+        try:
+            emit("warning", code="RECORD_INCOMPLETE", reason=type(exc).__name__)
+        except Exception:
+            pass
+
+
+def _run_record_status_for(exc):
+    """예외를 상태·코드로 옮긴다. 부분 보존 실패는 failed 가 아니라 partial 이다."""
+    if exc is None:
+        return "ok", None
+    # 구조화 payload 가 이 프로젝트의 오류 code 권위다(문자열 prefix 추론 금지).
+    payload = getattr(exc, "error_payload", None)
+    code = ((payload or {}).get("code") if isinstance(payload, dict) else None)
+    code = str(code or getattr(exc, "code", None) or type(exc).__name__)
+    if code in _CANCEL_ERROR_CODES:
+        return "cancelled", code
+    if code in _PARTIAL_ERROR_CODES or isinstance(exc, QwenGenerationLimitError):
+        return "partial", ("GENERATION_LIMIT_EXCEEDED"
+                           if isinstance(exc, QwenGenerationLimitError) else code)
+    return "failed", code
+
+
 def _diag_annotate(rec, ordered_entries, boundary_kinds, segenv_meta, gaps):
     """조립 직전에 경계 종류·segment-local 번호·envelope 적용을 recorder 에 기록한다.
 
@@ -2561,16 +2705,22 @@ def _diag_annotate(rec, ordered_entries, boundary_kinds, segenv_meta, gaps):
         pass                                     # 계측 실패가 합성을 막지 않는다
 
 
-def _diag_stage(rec, stage, e, **meta):
-    """entry 의 현재 WAV 를 해당 단계로 발행. 실패해도 합성 결과를 바꾸지 않는다."""
+def _diag_stage(rec, stage, e, gidx=None, **meta):
+    """entry 의 현재 WAV 를 해당 단계로 발행. 실패해도 합성 결과를 바꾸지 않는다.
+
+    gidx 를 명시하지 않으면 entry 가 들고 있는 global index 를 쓴다. 조립 경로처럼 entry 에
+    global index 가 아직 없는 곳에서는 **반드시** 넘겨야 한다 — 안 그러면 segment-local
+    chunk_index 로 떨어져 서로 덮어쓴다(실측 결함)."""
     try:
         import soundfile as sf
         p = e.get("out_path")
         if not p or not os.path.isfile(p):
             return
         arr, sr = sf.read(p, dtype="float32")
-        gidx = int(e.get("global_chunk_index", e.get("chunk_index") or 0))
-        fn = rec.raw if stage == "raw" else rec.aligned
+        if gidx is None:
+            gidx = int(e.get("global_chunk_index", e.get("chunk_index") or 0))
+        gidx = int(gidx)
+        fn = {"raw": rec.raw, "vendor_returned": rec.vendor_returned}.get(stage, rec.aligned)
         fn(gidx, arr, sr,
            segment=e.get("original_segment_index"),
            segment_chunk_index=e.get("chunk_index"),
@@ -2702,6 +2852,9 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
     # 만들지 않는다 — 실제 절단을 수행한 합성 경로(info)가 채우고, 수행하지 않은 경로는
     # _build_tts_metadata 가 None 으로 채운다(권위 하나).
     emit("status", message="음성 합성 시작", percent=0)
+    # 기록은 **모든** 생성에서 열린다. 진단 스위치는 stage WAV 를 켤 뿐이다.
+    _run_record_begin(text, output_dir, rc_mode, speed, silence_gap, pitch, expressive_mode)
+    _rr = {"status": "failed", "error_code": None}
 
     if not emotion_refs:
         emotion_refs = {}
@@ -2724,6 +2877,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         _e.error_payload = {"code": _err.get("code", "TTS_PARSE_ERROR")}
         raise _e
     _plan = _pres["plan"]
+    _run_record_normalized(text)
     parsed, boundary_gaps, boundary_kinds = _boundary_gaps_from_plan(
         _plan, silence_gap, emotion_boundary_mode, emotion_boundary_pause_ms)
     if not parsed:
@@ -2839,6 +2993,11 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                 reference_region=None, speed=float(speed), silence_gap=float(silence_gap),
                 **_rc_meta, **_plan_meta, **info)
             tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
+            _rr["status"] = "ok"
+            if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
+                _CONCAT_RECORDER.set_result(final_path)
+                _CONCAT_RECORDER.set_run_header(
+                    **{k: meta.get(k) for k in _RUN_HEADER_FROM_METADATA if k in meta})
             emit("progress", percent=99, message="완료!")
             emit("result", tracks=tracks, outputDir=output_dir, metadata=meta)
             return final_path   # C3: 호출부(separate.py)가 실제 산출물을 검증할 수 있게
@@ -2962,6 +3121,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             # 두 기능은 역할이 다르므로 어느 쪽도 다른 쪽을 대체하지 않는다.
             boundary_onset_samples=pinfo2.get("boundary_onset_samples"),
             boundary_offset_samples=pinfo2.get("boundary_offset_samples"),
+            **{k: pinfo2.get(k) for k in _MACRO_GAIN_META_KEYS},
             # per-segment 엔진(GPT-SoVITS/F5/Kokoro)에는 controlled-prefix ICL 단계 자체가 없다 —
             # 시도도 발행도 전환도 없었다는 사실을 그대로 적는다(effective 를 임의의 구체값으로
             # 바꿔 적으면 하지 않은 일을 했다고 기록하게 된다). 무엇을 실제로 돌렸는지는
@@ -2972,11 +3132,28 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                                            icl_published=False, auto_fallback=False),
             **_plan_meta)
         tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
+        _rr["status"] = "ok"
+        if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
+            _CONCAT_RECORDER.set_result(final_path)
+            _CONCAT_RECORDER.set_run_header(
+                **{k: meta.get(k) for k in _RUN_HEADER_FROM_METADATA if k in meta})
         emit("progress", percent=99, message="완료!")
         emit("result", tracks=tracks, outputDir=output_dir, metadata=meta)
         return final_path   # C3: 호출부(separate.py)가 실제 산출물을 검증할 수 있게
 
     finally:
+        # manifest 를 **마지막에 한 번** 발행한다. 여기까지 못 오면(취소·강제 종료) 번들에는
+        # run-open.json 만 남고 읽는 쪽이 INCOMPLETE 로 판정한다.
+        try:
+            _exc = sys.exc_info()[1]
+            _st, _code = ((_rr["status"], None) if _exc is None
+                          else _run_record_status_for(_exc))
+            if _rr["status"] == "ok" and _exc is None:
+                _st, _code = "ok", None
+            _run_record_finish(_st, _code,
+                               extra={"elapsed_seconds": round(_time.monotonic() - _t0, 3)})
+        except Exception:
+            pass                     # 기록 마감 실패가 사용자 WAV 나 원래 오류를 덮지 않는다
         for d in tmp_dirs:
             try:
                 import shutil

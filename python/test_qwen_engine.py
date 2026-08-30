@@ -20,6 +20,9 @@ import reference_audio as ra
 import reference_transcript as rt  # noqa: F401 (STATUS_OK 등 상수 사용 경로 확인용)
 import transcribe_worker
 
+# 합성 경로를 도는 테스트는 run bundle 을 만든다 — 앱 관리 영역 대신 임시 루트로 돌린다.
+from _local_isolation import setUpModule, tearDownModule   # noqa: F401
+
 
 def _write(path, seconds, sr=24000, amp=0.3):
     import numpy as np

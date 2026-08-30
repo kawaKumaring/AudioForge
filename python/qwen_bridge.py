@@ -678,6 +678,9 @@ def _generate_plan(model, plan, builder, proc, n_segments, progress=None, seed=N
         completed += 1
         done.append({"original_segment_index": int(seg["index"]), "chunk_index": int(ci),
                      "chunk_count": int(cc), "out_path": cpath, "sr": int(g["sr"]),
+                     # 이 호출에 실제로 넘어간 대사. 부모는 이것을 **private 기록에만** 옮긴다
+                     # (manifest·timeline·로그로 나가면 안 된다 — run bundle 계약).
+                     "text": item["text"],
                      "x_vector_only": bool(seg.get("x_vector_only", False)),
                      "emotion_id": seg.get("emotion_id"), "production_tokens": int(g["prod_tokens"]),
                      "generation_limit": int(g["generation_limit"]),
