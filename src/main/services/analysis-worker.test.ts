@@ -14,10 +14,33 @@ import { AnalysisWorker, MAX_CONSECUTIVE_FAILURES, sha256Hex } from './analysis-
 
 class FakeStream extends EventEmitter {
   written: string[] = []
+  writable = true
+  destroyed = false
+  writableEnded = false
+  /** 다음 write 를 이 오류로 실패시킨다(EPIPE 흉내 — callback 으로 온다). */
+  failNext: NodeJS.ErrnoException | null = null
+  /** write 를 동기 예외로 던진다. */
+  throwOnWrite: Error | null = null
   setEncoding() { /* 실제 스트림 흉내 */ }
-  write(s: string) { this.written.push(s); return true }
-  end() { /* noop */ }
+  write(s: string, cb?: (err?: Error | null) => void) {
+    if (this.throwOnWrite) throw this.throwOnWrite
+    this.written.push(s)
+    const err = this.failNext
+    this.failNext = null
+    if (cb) queueMicrotask(() => cb(err ?? null))   // 실제 스트림처럼 비동기
+    return true
+  }
+  end() { this.writableEnded = true }
+  close() { this.writable = false; this.destroyed = true }
 }
+
+const epipe = (): NodeJS.ErrnoException => {
+  const e = new Error('write EPIPE') as NodeJS.ErrnoException
+  e.code = 'EPIPE'
+  return e
+}
+
+const tick = () => new Promise<void>((r) => setTimeout(r, 0))
 
 class FakeProc extends EventEmitter {
   stdin = new FakeStream()
@@ -25,7 +48,16 @@ class FakeProc extends EventEmitter {
   stderr = new FakeStream()
   exitCode: number | null = null
   killed = false
-  kill() { this.killed = true; this.exitCode = 1; this.emit('exit'); return true }
+  kill() {
+    if (this.killed) return true
+    this.killed = true
+    this.exitCode = 1
+    this.stdin.close()
+    this.emit('exit')
+    return true
+  }
+  /** 프로세스는 아직 살아 있다고 보이지만 파이프만 닫힌 상태. */
+  breakPipe() { this.stdin.close() }
   /** worker 가 한 줄 응답을 보낸 것처럼 만든다. */
   reply(obj: Record<string, unknown>) { this.stdout.emit('data', JSON.stringify(obj) + '\n') }
   requests() {
@@ -254,4 +286,156 @@ test('여러 줄이 한 번에 와도 나눠 읽는다', async () => {
     JSON.stringify(ok('a', sha256Hex('가'))) + '\n' + JSON.stringify(ok('b', sha256Hex('나'))) + '\n')
   assert.equal(((await p1) as Record<string, unknown>).code, 'SUPERSEDED')
   assert.equal(((await p2) as Record<string, unknown>).ok, true)
+})
+
+// ── 죽은 파이프 경쟁 조건 회귀 ────────────────────────────────────────────────
+// 실제 앱에서 `Uncaught Exception: Error: write EPIPE` 로 main 이 터졌다. 아래가 그 경로들이다.
+// 어느 경우에도 예외가 밖으로 나가지 않고, 요청은 유한 시간 안에 구조화 응답으로 끝나야 한다.
+
+test('1. spawn 직후 종료된 worker 에 써도 예외가 나가지 않는다', async () => {
+  const { w, last } = make()
+  const p1 = w.analyze({ requestId: 'a', text: '가' })
+  last().emit('exit')                       // 첫 요청 도중 죽는다
+  assert.equal(((await p1) as Record<string, unknown>).code, 'WORKER_UNAVAILABLE')
+  const before = last()
+  const p2 = w.analyze({ requestId: 'b', text: '나' })
+  assert.notEqual(last(), before, '죽은 worker 에 요청을 다시 썼다')
+  last().reply(ok('b', sha256Hex('나')))
+  assert.equal(((await p2) as Record<string, unknown>).ok, true)
+})
+
+test('2. prewarm 전송 중 stdin 이 닫혀도 조용히 끝난다', async () => {
+  const { w, last } = make()
+  const started = w.prewarm(60_000)
+  last().breakPipe()                        // 파이프만 닫히고 exit 는 아직 안 온다
+  last().emit('close')                      // 뒤늦게 close 가 온다
+  assert.equal(await started, false, 'prewarm 이 타임아웃까지 매달리면 준비 상태가 안 풀린다')
+})
+
+test('3. analyze 전송 직전 파이프가 닫혀도 즉시 fail-open 으로 끝난다', async () => {
+  const { w, last } = make()
+  const p0 = w.analyze({ requestId: 'warm', text: '가' })
+  last().reply(ok('warm', sha256Hex('가')))
+  await p0
+  last().breakPipe()                        // 쓰기 직전에 파이프가 닫혔다
+  const t0 = Date.now()
+  const r = await w.analyze({ requestId: 'a', text: '나' }) as Record<string, unknown>
+  assert.equal(r.ok, false)
+  assert.equal(r.code, 'WORKER_UNAVAILABLE')
+  assert.ok(Date.now() - t0 < 1000, '타임아웃(30초)을 기다리면 UI 가 붙잡힌다')
+})
+
+test('4. write callback 으로 오는 EPIPE 를 실패로 다룬다', async () => {
+  const { w, last } = make()
+  const p0 = w.analyze({ requestId: 'warm', text: '가' })
+  last().reply(ok('warm', sha256Hex('가')))
+  await p0
+  last().stdin.failNext = epipe()           // 동기 예외가 아니라 callback 오류로 온다
+  const p = w.analyze({ requestId: 'a', text: '나' })
+  await tick()
+  const r = await p as Record<string, unknown>
+  assert.equal(r.ok, false)
+  assert.equal(w.alive, false, 'EPIPE 를 받고도 살아 있다고 보면 계속 쓰게 된다')
+})
+
+test('4b. write 가 동기 예외를 던져도 예외가 밖으로 나가지 않는다', async () => {
+  const { w, last } = make()
+  const p0 = w.analyze({ requestId: 'warm', text: '가' })
+  last().reply(ok('warm', sha256Hex('가')))
+  await p0
+  last().stdin.throwOnWrite = epipe()
+  const r = await w.analyze({ requestId: 'a', text: '나' }) as Record<string, unknown>
+  assert.equal(r.code, 'WORKER_UNAVAILABLE')
+})
+
+test('5. stdin error 와 process close 가 겹쳐도 무효화는 한 번뿐이다', async () => {
+  const events: string[] = []
+  const procs: FakeProc[] = []
+  const w = new AnalysisWorker({
+    spawn: (() => { const p = new FakeProc(); procs.push(p); return p as never }) as never,
+    pythonPath: () => 'python', scriptPath: () => 's.py', timeoutMs: 5000,
+    onEvent: (e) => { if (e === 'worker_invalidated') events.push(e) },
+  })
+  const p = w.analyze({ requestId: 'a', text: '가' })
+  const proc = procs[0]
+  proc.stdin.emit('error', epipe())
+  proc.emit('exit')
+  proc.emit('close')
+  const r = await p as Record<string, unknown>
+  assert.equal(r.code, 'WORKER_UNAVAILABLE')
+  assert.equal(events.length, 1, '무효화가 여러 번 돌면 실패 횟수가 부풀려진다')
+  assert.equal(w.consecutiveFailureCount, 1)
+})
+
+test('6. pending 여러 개가 있을 때 죽으면 전부 끝난다', async () => {
+  const { w, last } = make()
+  const a = w.analyze({ requestId: 'a', text: '가' })
+  const b = w.analyze({ requestId: 'b', text: '나' })
+  const c = w.analyze({ requestId: 'c', text: '다' })
+  last().emit('exit')
+  for (const r of [await a, await b, await c] as Record<string, unknown>[]) {
+    assert.equal(r.ok, false)
+    assert.equal(r.code, 'WORKER_UNAVAILABLE')
+  }
+})
+
+test('7. 실패 뒤 새 worker 로 복구해 warm 분석이 성공한다', async () => {
+  const { w, last, procs } = make()
+  const p1 = w.analyze({ requestId: 'a', text: '가' })
+  last().emit('exit')
+  await p1
+  const p2 = w.analyze({ requestId: 'b', text: '나' })
+  assert.equal(procs.length, 2, '새 worker 를 띄우지 않았다')
+  last().reply({ type: 'ready', protocol_version: 1 })
+  last().reply(ok('b', sha256Hex('나')))
+  assert.equal(((await p2) as Record<string, unknown>).ok, true)
+  assert.equal(w.consecutiveFailureCount, 0, '성공했으면 실패 기록이 없어야 한다')
+})
+
+test('8. 모든 실패 경로에서 대기 상태가 유한 시간에 풀린다', async () => {
+  const { w, last } = make({ timeoutMs: 60_000 })
+  const warm = w.prewarm(60_000)
+  const a = w.analyze({ requestId: 'a', text: '가' })
+  const t0 = Date.now()
+  last().emit('exit')
+  assert.equal(await warm, false)
+  assert.equal(((await a) as Record<string, unknown>).code, 'WORKER_UNAVAILABLE')
+  assert.ok(Date.now() - t0 < 1000, 'UI 가 준비 중에 매달린다')
+})
+
+test('닫힌 stdin 에는 아예 쓰지 않는다', async () => {
+  const { w, last } = make()
+  const p0 = w.analyze({ requestId: 'warm', text: '가' })
+  last().reply(ok('warm', sha256Hex('가')))
+  await p0
+  const proc = last()
+  const before = proc.stdin.written.length
+  proc.breakPipe()
+  await w.analyze({ requestId: 'a', text: '나' })
+  assert.equal(proc.stdin.written.length, before, '닫힌 파이프에 썼다')
+})
+
+test('dispose 는 실패 횟수를 올리지 않는다', async () => {
+  const { w, last } = make()
+  const p = w.analyze({ requestId: 'a', text: '가' })
+  w.dispose()
+  assert.equal(((await p) as Record<string, unknown>).code, 'CANCELLED')
+  last().emit('exit')
+  await tick()
+  assert.equal(w.consecutiveFailureCount, 0, '의도한 종료를 실패로 세면 안 된다')
+})
+
+test('진단 훅에 사용자 원문이 넘어가지 않는다', async () => {
+  const seen: Record<string, unknown>[] = []
+  const procs: FakeProc[] = []
+  const w = new AnalysisWorker({
+    spawn: (() => { const p = new FakeProc(); procs.push(p); return p as never }) as never,
+    pythonPath: () => 'python', scriptPath: () => 's.py', timeoutMs: 5000,
+    onEvent: (e, f) => seen.push({ e, ...f }),
+  })
+  const p = w.analyze({ requestId: 'a', text: '비밀 대사입니다' })
+  procs[0].emit('exit')
+  await p
+  assert.equal(JSON.stringify(seen).includes('비밀 대사'), false, '진단 로그로 원문이 샜다')
+  assert.ok(seen.length > 0)
 })

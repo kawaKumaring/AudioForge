@@ -15,6 +15,7 @@
     "test:e2e:tts-autosplit": "node test/e2e/tts-autosplit-complete.e2e.mjs",
     "test:e2e:tts-editor-ux": "node test/e2e/tts-editor-ux.e2e.mjs",
     "test:e2e:tts-pitch-capability": "node test/e2e/tts-pitch-capability.e2e.mjs",
+    "test:e2e:analysis": "node test/e2e/analysis-lifecycle.e2e.mjs",
     "test:e2e:app-version": "node test/e2e/app-version.e2e.mjs",
     "test:e2e:tts-accessibility": "node test/e2e/tts-accessibility.e2e.mjs",
     "test:e2e:tts-i5-smoke": "node test/e2e/tts-i5-shell-smoke.e2e.mjs",
