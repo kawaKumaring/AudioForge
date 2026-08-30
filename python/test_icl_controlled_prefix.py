@@ -22,6 +22,7 @@ import tempfile
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import chunk_budget as cb
 import generation_limit as gl  # noqa: E402
 import qwen_bridge  # noqa: E402
 
@@ -124,7 +125,9 @@ class GenerateSegmentTest(unittest.TestCase):
         combined = REF_TEXT + ".\n" + TARGET_TEXT
         self.assertEqual(m.received["text"], combined, "모델에 결합 텍스트가 간다")
         self.assertEqual(out["prod_tokens"], len(combined))
-        self.assertEqual(out["generation_limit"], gl.compute_max_new_tokens(len(combined)))
+        # controlled-prefix 는 참조를 재발화하므로 예산에 replay frame 이 들어간다.
+        self.assertEqual(out["generation_limit"],
+                         cb.budget_for(len(combined), reference_replay_frames=83)["generation_limit"])
         self.assertGreater(out["prod_tokens"], len(TARGET_TEXT), "목표 대사만 셌으면 과소평가된다")
         self.assertTrue(out["controlled_prefix"])
 
@@ -144,7 +147,7 @@ class GenerateSegmentTest(unittest.TestCase):
     def test_limit_reached_is_reported_not_silently_truncated(self):
         proc = _FakeProc()
         combined_tokens = len(REF_TEXT + ".\n" + TARGET_TEXT)
-        limit = gl.compute_max_new_tokens(combined_tokens)
+        limit = cb.budget_for(combined_tokens, reference_replay_frames=83)["generation_limit"]
         m = _FakeGenModel(_prefixed_wave(), sim_iters=limit)
         out = qwen_bridge._generate_segment(m, _seg(), self.builder, proc)
         self.assertEqual(out["termination_reason"], "generation_limit")

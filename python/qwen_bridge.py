@@ -47,6 +47,7 @@ import json
 import threading
 import time
 
+import chunk_budget
 import generation_limit  # 순수 계산(math만). 스크립트 디렉터리(python/)가 sys.path에 있어 import 가능.
 import text_segmenter    # 다국어 token-aware 자동 분할(계약 B). 순수 로직.
 import chunk_paths       # chunk 경로 규칙(bridge·worker 공용 순수 헬퍼).
@@ -261,7 +262,10 @@ def _generate_segment(model, seg, builder, proc, probe_context="production"):
     ref_text = "" if xvo else (seg.get("ref_text") or "")
     gen_text, controlled_prefix = _generation_text(seg)
     prod_tokens = _prod_tokens(builder, proc, gen_text)
-    seg_limit = generation_limit.compute_max_new_tokens(prod_tokens)
+    # 분할과 같은 예산 함수를 쓴다. fits 가 아니면 애초에 이 chunk 가 만들어지지 않는다.
+    _b = chunk_budget.budget_for(
+        prod_tokens, reference_replay_frames=(83 if controlled_prefix else 0))
+    seg_limit = _b["generation_limit"] or generation_limit.compute_max_new_tokens(prod_tokens)
     _dmax = _diag_max_new_tokens()
     if _dmax is not None:
         # 진단 상한. termination 판정(classify_termination)은 이 값 기준으로 그대로 돈다 —
@@ -725,7 +729,10 @@ def main():
         n = len(segments)
 
         # 1단계: 전 segment 선분할(생성 없음). 실패 시 여기서 종료 → generate 호출 0(뒤 실패로 앞 낭비 방지).
-        max_seg_tok = generation_limit.max_segment_tokens()
+        # 분할 상한을 고정 상수로 두지 않는다 — 생성 예산 함수가 낳는다.
+        # 이렇게 해야 "분할 상한만 올리고 생성 예산은 그대로" 인 상태가 생길 수 없다.
+        _replay = 83 if any(sg.get("prefix_text") for sg in segments) else 0
+        max_seg_tok = chunk_budget.max_production_tokens(reference_replay_frames=_replay)
         try:
             plan = _build_chunk_plan(segments, builder, proc, max_seg_tok)
         except BridgeSegmentTooLong as e:

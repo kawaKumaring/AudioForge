@@ -20,6 +20,7 @@ import unittest
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import chunk_budget as cb
 import generation_limit as gl
 import qwen_bridge
 import tts_worker
@@ -269,11 +270,13 @@ class GenerateSegmentContractTest(unittest.TestCase):
         qwen_bridge._COUNTER["n"] = 0
 
     def test_max_new_tokens_forwarded_from_prod_tokens(self):
-        # prod_tokens=30(채택 범위) → seg_limit=compute(30) 가 generate_voice_clone(max_new_tokens=)로 전달.
+        # prod_tokens=30 → seg_limit 은 **budget_for 단일 권위**에서 나온다.
+        # 분할 상한과 생성 예산을 같은 함수가 낳으므로 둘이 어긋날 수 없다.
+        expected = cb.budget_for(30)["generation_limit"]
         m = _FakeGenModel(sim_iters=100)
         out = qwen_bridge._generate_segment(m, _seg(), self.builder, _FakeProc(30))
-        self.assertEqual(m.received["max_new_tokens"], gl.compute_max_new_tokens(30))
-        self.assertEqual(out["generation_limit"], gl.compute_max_new_tokens(30))
+        self.assertEqual(m.received["max_new_tokens"], expected)
+        self.assertEqual(out["generation_limit"], expected)
         self.assertEqual(out["generated_iterations"], 100)
         self.assertEqual(out["termination_reason"], "completed_before_limit")
 
@@ -284,7 +287,7 @@ class GenerateSegmentContractTest(unittest.TestCase):
         self.assertEqual(m.received["ref_text"], "")   # x-vector-only → ref_text 무시
 
     def test_offbyone_boundary(self):
-        limit = gl.compute_max_new_tokens(30)
+        limit = cb.budget_for(30)["generation_limit"]
         for delta, expect in ((-1, "completed_before_limit"), (0, "generation_limit"),
                               (1, "generation_limit")):
             m = _FakeGenModel(sim_iters=limit + delta)
