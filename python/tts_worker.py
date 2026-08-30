@@ -398,6 +398,59 @@ _QWEN_REQUIRED = ["config.json", "model.safetensors", "vocab.json", "merges.txt"
                   "tokenizer_config.json", os.path.join("speech_tokenizer", "model.safetensors")]
 # 무응답(진행 없음) 인용 timeout. Electron watchdog(무진행 5분)보다 짧게 잡아 Python이 먼저 정리·오류.
 # ※ 이 값은 '생성 구간' 계약이다(계약 A 산정 근거가 이 280에 묶여 있다) — 절대 키우지 않는다.
+# ── 작업 전체 벽시계 천장 ──────────────────────────────────────────────────────
+# progress watchdog(무응답)·generation limit(생성량)과 **별개 축**이다. 둘 다 정상인데도
+# 작업이 끝없이 길어지는 경우가 있다 — chunk 가 많고 각각은 정상 종료하는 장문이 그렇다.
+# 사용자가 무한정 기다리지 않도록 작업 수락부터 terminal 까지 누적 시간에 절대 상한을 둔다.
+MAX_JOB_WALL_TIME_SEC = 3600
+JOB_WALL_TIME_EXCEEDED = "JOB_WALL_TIME_EXCEEDED"
+
+
+class JobWallTimeExceeded(RuntimeError):
+    """작업 전체 시간 천장 초과. partial 은 진단에만 남기고 정상 발행하지 않는다."""
+
+    def __init__(self, elapsed_sec, limit_sec, completed_chunks=None):
+        self.elapsed_sec = float(elapsed_sec)
+        self.limit_sec = int(limit_sec)
+        self.completed_chunks = completed_chunks
+        super().__init__("작업 시간 %.0f초가 상한 %d초를 넘었습니다 — 결과를 발행하지 않습니다."
+                         % (elapsed_sec, limit_sec))
+        self.error_payload = {"code": JOB_WALL_TIME_EXCEEDED,
+                              "elapsed_sec": round(float(elapsed_sec), 1),
+                              "limit_sec": int(limit_sec),
+                              "completed_chunks": completed_chunks}
+
+
+class JobWallClock:
+    """작업 수락 시각을 잡고 누적 경과를 판정한다. 시작 시각은 한 번만 정해진다.
+
+    시간 소스를 주입받는다 — 모듈 전역 시계에 의존하면 호출부마다 다른 시계를 쓰게 되고
+    테스트에서도 서로의 mock 을 밟는다.
+    """
+
+    def __init__(self, limit_sec=None, clock=None):
+        import time as _time
+        self._clock = clock or _time.monotonic
+        self.limit_sec = int(MAX_JOB_WALL_TIME_SEC if limit_sec is None else limit_sec)
+        self.started_at = self._clock()
+
+    def elapsed(self):
+        return self._clock() - self.started_at
+
+    def exceeded(self):
+        return self.elapsed() > self.limit_sec
+
+    def check(self, completed_chunks=None):
+        """초과면 예외. 초과가 아니면 경과를 돌려준다.
+
+        시계는 **한 번만** 읽는다 — 두 번 읽으면 판정과 보고가 서로 다른 시각이 된다.
+        """
+        el = self.elapsed()
+        if el > self.limit_sec:
+            raise JobWallTimeExceeded(el, self.limit_sec, completed_chunks)
+        return el
+
+
 _QWEN_PROGRESS_PROBE_ROUNDS = 3     # 무응답 판정 전에 GPU 활동을 확인하는 연속 횟수
 
 
@@ -1969,7 +2022,11 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
 
         try:
             try:
+                _job_clock = JobWallClock()
                 seg_out = qwen.run_job(segments, device)
+                # 생성이 끝난 직후에 본다 — 정렬·조립 전에 초과를 확정해
+                # 헛수고를 늘리지 않는다. partial 은 진단에만 남는다.
+                _job_clock.check(completed_chunks=len(seg_out or []))
             except RuntimeError as e:
                 # CUDA OOM만 CPU로 1회 가시적 재시도(조용한 재시도 아님). 상한 도달·그 외 예외는 전파.
                 if (device == "cuda:0" and is_cuda_oom(e)
