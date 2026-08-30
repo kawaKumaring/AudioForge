@@ -398,6 +398,29 @@ _QWEN_REQUIRED = ["config.json", "model.safetensors", "vocab.json", "merges.txt"
                   "tokenizer_config.json", os.path.join("speech_tokenizer", "model.safetensors")]
 # 무응답(진행 없음) 인용 timeout. Electron watchdog(무진행 5분)보다 짧게 잡아 Python이 먼저 정리·오류.
 # ※ 이 값은 '생성 구간' 계약이다(계약 A 산정 근거가 이 280에 묶여 있다) — 절대 키우지 않는다.
+_QWEN_PROGRESS_PROBE_ROUNDS = 3     # 무응답 판정 전에 GPU 활동을 확인하는 연속 횟수
+
+
+def _gpu_busy():
+    """이 호스트의 GPU 가 실제로 일하고 있는가. 판정 불가면 True(=계속 기다린다).
+
+    util 은 CPU 후처리·동기화·커널 사이 공백에서도 0 이 될 수 있으므로 util 하나로
+    hang 을 단정하지 않는다. 메모리 사용까지 함께 보고, 조회 자체가 실패하면
+    '모른다' 이므로 종료 근거로 쓰지 않는다.
+    """
+    try:
+        import subprocess as _sp
+        r = _sp.run(["nvidia-smi", "--query-gpu=utilization.gpu,memory.used",
+                     "--format=csv,noheader,nounits"],
+                    capture_output=True, text=True, timeout=8)
+        if r.returncode != 0:
+            return True
+        util, mem = [int(x.strip()) for x in r.stdout.strip().splitlines()[0].split(",")]
+        return util > 0 or mem > 1500
+    except Exception:
+        return True
+
+
 _QWEN_INACTIVITY_SEC = 280
 # 진단 전용: 무응답 종료를 끈다. production 계약(280s)은 그대로이고 이 훅은
 # 환경변수가 있을 때만 산다. 장문 단일 호출의 실제 능력을 재려면 시간 제한이
@@ -623,8 +646,24 @@ class QwenTTSEngine(TTSEngine):
             _kill_proc_tree(proc)
             return QwenLoadTimeoutError(_now() - _t0, startup_deadline_sec, hb["seen"], stage)
 
+        _quiet_rounds = {"n": 0}
+
         def _no_response():
-            """무응답 초과 — 기존 계약 문구·동작 그대로. code만 구조화해 덧붙인다."""
+            """무응답 초과. 다만 **시간만으로 종료하지 않는다**.
+
+            장문 단일 호출은 vendor blocking 구간에서 정상적으로 아무 메시지도 내지 않는다.
+            그래서 여기서 GPU 활동을 먼저 본다 — 살아 있으면 '진행 확인 중' 으로 보고 계속
+            기다리고, 연속 %d 회 활동이 없을 때만 hang 으로 판정한다. 프로세스가 이미
+            죽었으면 그 자체가 실패 확정이므로 즉시 종료한다.
+            """ % _QWEN_PROGRESS_PROBE_ROUNDS
+            if proc.poll() is None and _gpu_busy():
+                _quiet_rounds["n"] = 0
+                emit("progress", percent=60,
+                     message="합성 중... (긴 문장은 시간이 더 걸립니다)")
+                return None                      # 계속 기다린다
+            _quiet_rounds["n"] += 1
+            if proc.poll() is None and _quiet_rounds["n"] < _QWEN_PROGRESS_PROBE_ROUNDS:
+                return None
             _kill_proc_tree(proc)
             e = RuntimeError(f"Qwen 무응답 {inactivity_sec}s 초과 — 프로세스 종료")
             e.error_payload = {"code": "QWEN_NO_RESPONSE",
@@ -646,7 +685,10 @@ class QwenTTSEngine(TTSEngine):
                 # wait가 기동 예산 잔량이라 짧았을 수 있다 — 어느 축이 터졌는지 명확히 구분한다.
                 if not loaded and (_now() - _t0) >= startup_deadline_sec:
                     raise _load_timeout()
-                raise _no_response()
+                _e = _no_response()
+                if _e is not None:
+                    raise _e
+                continue                 # GPU 가 살아 있다 — 계속 기다린다
             if line is None:
                 break
             line = line.strip()
