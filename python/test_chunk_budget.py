@@ -77,7 +77,9 @@ class BudgetDerivationTest(unittest.TestCase):
                 cb.budget_for(bad)
 
     def test_provenance_is_recorded(self):
-        self.assertIn("vendor-icl", cb.budget_for(100)["frames_anchor_provenance"])
+        prov = cb.budget_for(100)["frames_anchor_provenance"]
+        self.assertIn("자연 종료", prov, "앵커가 어떤 관측에서 왔는지 남아야 한다")
+        self.assertIn("censored", prov, "censored 관측 제외 사실이 명시돼야 한다")
 
 
 class SplitterIntegrationTest(unittest.TestCase):
@@ -122,11 +124,16 @@ class TerminationCeilingTest(unittest.TestCase):
 
     def test_ceiling_has_provenance(self):
         p = cb.TERMINATION_CEILING["provenance"]
-        for k in ("token_definition", "runs", "script_sha256_prefix", "conditioning_mode",
+        for k in ("token_definition", "validated_runs", "conditioning_mode",
                   "generation_tier", "largest_natural_termination",
-                  "smallest_observed_failure", "verified_on"):
+                  "smallest_observed_failure", "failure_run", "verified_on", "note"):
             self.assertIn(k, p, "provenance 없이 상한을 쓰지 않는다: %s" % k)
         self.assertLess(p["largest_natural_termination"], p["smallest_observed_failure"])
+        # 두 텍스트 이상에서 자연 종료한 것만 채택한다
+        ok = [r for r in p["validated_runs"] if r["termination"] == "completed_before_limit"]
+        self.assertGreaterEqual(len(ok), 2, "교차 검증 없이 ceiling 을 올리지 않는다")
+        self.assertLessEqual(p["largest_natural_termination"],
+                             max(r["production_tokens"] for r in ok))
 
     def test_censored_observation_is_not_an_anchor(self):
         """3072 iterations 는 censored 다 — frame/token 앵커에 들어가면 안 된다."""

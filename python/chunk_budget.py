@@ -25,8 +25,8 @@ import math
 import generation_limit
 
 # 실측 앵커: vendor-icl-2/3 (250자, production 191 token -> 339 frame). 단일 표본이다.
-FRAMES_PER_PRODUCTION_TOKEN = 339.0 / 191.0
-FRAMES_ANCHOR_PROVENANCE = "vendor-icl-2/3 (250 chars, production 191 tok -> 339 frames)"
+FRAMES_PER_PRODUCTION_TOKEN = 1.984      # 자연 종료 실측 최대(sample4 572tok/1135frame)
+FRAMES_ANCHOR_PROVENANCE = ("자연 종료 실측 4건 중 최대 비율: 191->339(1.775), 379->661(1.744), 563->1106(1.964), 572->1135(1.984). censored 관측 제외")
 
 # 예상 frame 의 불확실성 여유. 상한 쪽으로만 둔다.
 FRAME_UPPER_MARGIN = 1.25
@@ -132,17 +132,27 @@ def legacy_max_segment_tokens():
 # 따라서 예산과 별개로 **실증된 종료 상한**이 필요하다. 아래 값은 자연 종료가 확인된
 # 최대 production token 이며, 확인되지 않은 구간은 extrapolate 하지 않고 분할 대상이다.
 TERMINATION_CEILING = {
-    "production_tokens": 191,
+    "production_tokens": 563,
     "provenance": {
         "token_definition": "production_tokens (assistant template 포함)",
-        "runs": ["vendor-icl-2", "vendor-icl-3", "prod-smoke-vendor-icl"],
-        "script_sha256_prefix": "7147ef51d189049f",
         "conditioning_mode": "high_quality_icl (vendor native ref-code ICL)",
-        "generation_tier": 768,
-        "largest_natural_termination": 191,
-        "smallest_observed_failure": 1054,
-        "failure_run": "goback-vendor-native-1 (EOS 없이 3072 iterations)",
+        "generation_tier": 1536,
         "verified_on": "2026-08-30",
+        # 두 텍스트가 모두 자연 종료한 최대값을 쓴다. 한쪽만 성공한 값은 채택하지 않는다.
+        "validated_runs": [
+            {"run": "envelope-goback-576", "script_sha256_prefix": "goback prefix",
+             "production_tokens": 563, "generated_iterations": 1106,
+             "termination": "completed_before_limit"},
+            {"run": "envelope-sample4-576", "script_sha256_prefix": "sample_4 prefix",
+             "production_tokens": 572, "generated_iterations": 1135,
+             "termination": "completed_before_limit"},
+            {"run": "envelope-goback-384", "production_tokens": 379,
+             "generated_iterations": 661, "termination": "completed_before_limit"},
+        ],
+        "largest_natural_termination": 563,
+        "smallest_observed_failure": 1054,
+        "failure_run": "goback-vendor-native-1 (EOS 없이 3072 iterations, censored)",
+        "note": "563~1054 구간은 미측정이다. extrapolate 하지 않고 분할 대상으로 둔다.",
     },
 }
 
