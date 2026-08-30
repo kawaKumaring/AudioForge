@@ -4,6 +4,7 @@
   "description": "AI-powered audio source separation tool",
   "main": "./out/main/index.js",
   "scripts": {
+    "predev": "node scripts/generate-build-metadata.mjs",
     "dev": "electron-vite dev",
     "prebuild": "node scripts/generate-build-metadata.mjs",
     "build": "electron-vite build",
