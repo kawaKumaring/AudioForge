@@ -199,6 +199,28 @@ export function toAnalysisResult(
   }
 }
 
+/**
+ * 응답 신원 검증 — **SHA 검증을 건너뛰지 않는다.**
+ *
+ * 원문 SHA 의 권위는 main 에 있다. main 은 자기가 보낸 본문으로 SHA 를 다시 계산해 worker
+ * 응답과 대조하고, 어긋나면 SOURCE_SHA_MISMATCH 로 바꿔 돌려준다. 따라서 성공 응답이 왔다는
+ * 것 자체가 "이 요청이 실어 보낸 본문과 같은 입력의 결과" 라는 뜻이다. renderer 는 그 사슬을
+ * requestId 로 잇고, 자기 쪽에서 SHA 를 구할 수 있으면 한 번 더 대조한다 — 동기 SHA 구현을
+ * 새로 중복 작성하지 않고 이미 있는 권위를 쓴다.
+ *
+ * expectedSourceSha 가 null 이면 renderer 가 SHA 를 계산할 수 없는 환경이라는 뜻이고,
+ * 그때도 검증이 사라지는 것이 아니라 main 의 대조에 의존한다.
+ */
+export function verifyResponseIdentity(
+  res: AnalysisResponse, expectedRequestId: string, expectedSourceSha: string | null
+): res is AnalysisSuccess {
+  if (!res.ok) return false
+  if (res.requestId !== expectedRequestId) return false
+  if (!res.result.sourceSha256) return false        // 신원 없는 결과는 쓰지 않는다
+  if (expectedSourceSha === null) return true       // main 이 이미 대조했다
+  return res.result.sourceSha256 === expectedSourceSha
+}
+
 /** 이 응답을 renderer 상태에 반영해도 되는가 — 늦게 온 결과를 지우는 단일 판정. */
 export function isCurrentResponse(
   res: AnalysisResponse, expectedRequestId: string, expectedSourceSha: string

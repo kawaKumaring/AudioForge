@@ -1,5 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { isCurrentResponse, type AnalysisResponse, type AnalysisResult } from '../../shared/inputAnalysis'
+import {
+  verifyResponseIdentity, type AnalysisResponse, type AnalysisResult,
+} from '../../shared/inputAnalysis'
 
 /**
  * 대사 입력 분석 훅 — 편집을 방해하지 않는 것이 첫 번째 규칙이다.
@@ -37,6 +39,12 @@ export const ANALYSIS_DEBOUNCE_MS = 400
  */
 export const ANALYSIS_WATCHDOG_MS = 12_000
 
+/**
+ * 추월·취소로 답을 못 받았을 때 **같은 입력**을 다시 물어보는 횟수 상한.
+ * 반복 취소가 오면 재요청 루프가 되므로 유한해야 한다 — 넘으면 unavailable 로 끝낸다.
+ */
+export const MAX_SUPERSEDED_RETRIES = 1
+
 /** composition 을 볼 범위. TTS 대사 편집기 안쪽에서 난 조합만 분석을 억제한다. */
 export const TTS_EDITOR_SCOPE_SELECTOR = '[data-af-tts-editor]'
 
@@ -56,7 +64,10 @@ export interface UseInputAnalysis {
 
 let requestCounter = 0
 
-/** 원문 SHA. 보안 컨텍스트가 아니면 null — 그때는 requestId 로만 판정한다(가용성 우선). */
+/**
+ * 원문 SHA. `crypto.subtle` 을 못 쓰는 컨텍스트면 null 이고, 그때는 main 이 이미 수행한
+ * SHA 대조에 의존한다(renderer 에 동기 SHA 구현을 새로 두지 않는다).
+ */
 async function sha256(text: string): Promise<string | null> {
   try {
     const buf = new TextEncoder().encode(text)
@@ -82,7 +93,6 @@ export function useInputAnalysis(
   const inflight = useRef<string | null>(null)
   const everSucceeded = useRef(false)
   const alive = useRef(true)
-  const retried = useRef<Set<string>>(new Set())
 
   const setComposing = useCallback((v: boolean) => { composing.current = v }, [])
 
@@ -164,20 +174,19 @@ export function useInputAnalysis(
         if (!res.ok && (res.code === 'SUPERSEDED' || res.code === 'CANCELLED')) {
           // 추월·취소인데 더 새 요청이 없다 — 여기서 그냥 돌아가면 `준비 중…` 에 갇힌다.
           // 같은 입력으로 딱 한 번 다시 물어본다.
-          if (attempt === 0 && !retried.current.has(sent)) {
-            retried.current.add(sent)
-            send(1)
+          if (attempt < MAX_SUPERSEDED_RETRIES) {
+            send(attempt + 1)          // 유한 상한 — 반복 취소가 와도 루프가 되지 않는다
             return
           }
           clearWatchdog()
           setStatus('unavailable')
           return
         }
+        // 신원 검증은 건너뛰지 않는다. renderer 가 SHA 를 구할 수 있으면 대조하고,
+        // 못 구하면 main 이 이미 한 대조에 의존한다(구현을 새로 만들지 않는다).
         const sha = await sha256(sent)
         if (!alive.current || inflight.current !== requestId) return
-        const current = sha === null
-          ? (res.ok && res.requestId === requestId)
-          : isCurrentResponse(res, requestId, sha)
+        const current = verifyResponseIdentity(res, requestId, sha)
         clearWatchdog()
         if (!current || !res.ok) {
           setStatus('unavailable')
