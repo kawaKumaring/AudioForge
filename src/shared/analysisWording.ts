@@ -41,9 +41,12 @@ export function summaryLine(r: AnalysisResult | null): string {
   if (!r) return ''
   const audio = formatRange(r.estimatedAudioSeconds)
   const wall = canShowWallTime(r) ? formatRange(r.estimatedWallSeconds) : INSUFFICIENT_TEXT
+  // 작업 시간에는 대사 길이와 무관한 모델 준비 비용이 한 번 들어간다. 그 사실을 여기서
+  // 말하지 않으면 짧은 대사에서 '2초짜리 음성인데 왜 1분인가' 로 읽힌다.
+  const wallText = canShowWallTime(r) ? `${wall}(모델 준비 포함)` : wall
   const parts = [
     audio ? `예상 음성 ${audio}` : null,
-    `예상 작업 ${wall}`,
+    `예상 작업 ${wallText}`,
     `${r.plannedCalls}개 묶음`,
   ].filter(Boolean)
   return parts.join(' · ')
@@ -60,7 +63,8 @@ export function paragraphSummary(
     min: segs.reduce((n, s) => n + s.estimatedAudioSeconds.min, 0),
     max: segs.reduce((n, s) => n + s.estimatedAudioSeconds.max, 0),
   }
-  const wallParts = segs.map((s) => s.estimatedWallSeconds)
+  // 문단 줄은 **한계 비용**을 더한다. 전체 작업 시간을 문단마다 쓰면 합이 요약보다 커진다.
+  const wallParts = segs.map((s) => s.estimatedWallSecondsMarginal)
   const wall = canShowWallTime(r) && wallParts.every(Boolean)
     ? formatRange({
       min: wallParts.reduce((n, w) => n + (w?.min ?? 0), 0),
@@ -115,3 +119,14 @@ export function confidenceLabel(r: AnalysisResult | null): string {
     default: return INSUFFICIENT_TEXT
   }
 }
+
+/** 상세 보기 한 줄 — 요약의 `(모델 준비 포함)` 이 무엇인지 수치로 밝힌다. */
+export function preparationNote(r: AnalysisResult | null): string | null {
+  if (!r || !canShowWallTime(r)) return null
+  const prep = formatRange(r.preparationSeconds)
+  if (!prep) return null
+  return `예상 작업 시간에는 대사 길이와 무관한 모델 준비 시간 ${prep} 가 한 번 들어 있습니다.`
+}
+
+/** 문단 줄의 시간이 무엇인지 — 합이 요약과 다른 이유. */
+export const PARAGRAPH_WALL_NOTE = '문단별 작업 시간은 그 문단이 더 얹는 시간입니다(준비 시간 제외).'

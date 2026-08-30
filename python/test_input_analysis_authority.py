@@ -232,5 +232,41 @@ class PlannerParityTest(unittest.TestCase):
                                  r["planned_calls"])
 
 
+class WallTimeDecompositionTest(unittest.TestCase):
+    """문단 줄의 시간과 요약의 시간이 서로 어긋나면 안 된다.
+
+    작업 시간에는 대사 길이와 무관한 모델 준비 비용이 **작업당 한 번** 든다. 문단마다
+    그것을 다시 세면 문단 줄의 합이 전체 예상보다 커진다 — 실제로 3문단 입력에서 총
+    59~109초인데 문단 합이 144~281초였다. 그래서 문단은 한계 비용만 말한다.
+    """
+
+    def test_paragraph_wall_never_exceeds_the_whole_job(self):
+        t = "첫 문단입니다. 이어지는 문장입니다." + chr(10) * 2             + "둘째 문단입니다." + chr(10) + "셋째 문단입니다."
+        r = ia.analyze(t, _count)
+        total = r["estimated_wall_seconds"]
+        self.assertIsNotNone(total)
+        parts = [s["estimated_wall_seconds_marginal"] for s in r["segments"]]
+        self.assertTrue(all(p is not None for p in parts))
+        self.assertLessEqual(sum(p["max"] for p in parts), total["max"],
+                             "문단 합이 전체 작업 시간을 넘으면 화면의 숫자가 어긋난다")
+
+    def test_preparation_is_reported_and_is_the_fixed_part(self):
+        r = ia.analyze("문장입니다.", _count)
+        prep = r["preparation_seconds"]
+        self.assertIsNotNone(prep)
+        # 준비 비용은 대사 길이와 무관하다 — 길이가 달라도 같은 값이어야 한다.
+        long_r = ia.analyze("가나다라마. " * 60, _count)
+        self.assertEqual(prep, long_r["preparation_seconds"])
+        # 그리고 전체 작업 시간의 대부분을 짧은 입력에서 차지한다.
+        self.assertGreater(prep["min"], 0.0)
+        self.assertLess(prep["max"], r["estimated_wall_seconds"]["max"])
+
+    def test_segment_no_longer_carries_whole_job_time(self):
+        r = ia.analyze("문장입니다.", _count)
+        for seg in r["segments"]:
+            self.assertNotIn("estimated_wall_seconds", seg,
+                             "문단에 전체 작업 시간을 그대로 두면 다시 어긋난다")
+
+
 if __name__ == "__main__":
     unittest.main()

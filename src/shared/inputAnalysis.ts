@@ -16,7 +16,7 @@ export const ANALYSIS_CANCEL_CHANNEL = 'analysis:cancel'
 export const ANALYSIS_PREWARM_CHANNEL = 'analysis:prewarm'
 
 /** Python `input_analysis.SCHEMA_VERSION` 과 같아야 한다. 다르면 renderer 가 결과를 버린다. */
-export const ANALYSIS_SCHEMA_VERSION = 3
+export const ANALYSIS_SCHEMA_VERSION = 4
 
 export type AnalysisConfidence = 'measured' | 'extrapolated' | 'insufficient_data'
 
@@ -48,7 +48,14 @@ export interface AnalysisSegment {
   plannedCalls: number
   autoSplit: boolean
   estimatedAudioSeconds: Range
-  estimatedWallSeconds: Range | null
+  /**
+   * 이 문단 **하나 때문에 더 걸리는** 시간. 전체 작업 시간이 아니다.
+   *
+   * 모델 준비 비용은 대사 길이와 무관하게 작업당 한 번만 든다. 문단마다 그것을 다시
+   * 세면 문단 줄의 합이 요약의 전체 시간보다 커져 화면의 숫자가 서로 어긋난다.
+   * 준비 비용은 요약 한 줄이 한 번 포함한다.
+   */
+  estimatedWallSecondsMarginal: Range | null
 }
 
 export interface AnalysisChunk {
@@ -85,6 +92,8 @@ export interface AnalysisResult {
   splitCapProductionTokens: number
   estimatedAudioSeconds: Range
   estimatedWallSeconds: Range | null
+  /** 위 작업 시간에 들어 있는 고정 모델 준비 비용. */
+  preparationSeconds: Range | null
   confidence: AnalysisConfidence
   confidenceReason: string
   mode: string
@@ -151,6 +160,7 @@ export function toAnalysisResult(
     splitCapProductionTokens: num(raw.split_cap_production_tokens),
     estimatedAudioSeconds: range(raw.estimated_audio_seconds),
     estimatedWallSeconds: rangeOrNull(raw.estimated_wall_seconds),
+    preparationSeconds: rangeOrNull(raw.preparation_seconds),
     confidence: (raw.confidence as AnalysisConfidence) ?? 'insufficient_data',
     confidenceReason: String(raw.confidence_reason ?? ''),
     mode: String(raw.mode ?? ''),
@@ -177,7 +187,7 @@ export function toAnalysisResult(
       plannedCalls: num(s.planned_calls),
       autoSplit: Boolean(s.auto_split),
       estimatedAudioSeconds: range(s.estimated_audio_seconds),
-      estimatedWallSeconds: rangeOrNull(s.estimated_wall_seconds),
+      estimatedWallSecondsMarginal: rangeOrNull(s.estimated_wall_seconds_marginal),
     })),
     chunks: chunks.map((c: Record<string, unknown>) => ({
       globalIndex: num(c.global_index),

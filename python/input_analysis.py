@@ -30,6 +30,9 @@ offset 은 언제나 **사용자가 입력한 원문 좌표**다.
 두 가지 시간을 구분한다
 -----------------------
 `estimated_audio_seconds` 는 **결과 음성 길이**, `estimated_wall_seconds` 는 **기다리는 시간**이다.
+작업 시간에는 대사 길이와 무관한 모델 준비 비용이 한 번 들어간다. 그래서 문단 줄은
+`estimated_wall_seconds_marginal`(그 문단이 더 얹는 시간)만 쓴다 — 문단마다 준비 비용을
+다시 세면 문단 합이 전체보다 커진다.
 참조 재발화(legacy controlled-prefix)는 생성은 하지만 vendor 가 잘라내므로 **작업 시간에만**
 들어가고 음성 길이에는 들어가지 않는다.
 
@@ -49,7 +52,7 @@ import hashlib
 import chunk_budget
 import text_segmenter as ts
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 
 # 시간 모델 계수(model.md). 회귀 잔차 sd 7.49 s.
 _C_RANGE = (0.18, 0.22)
@@ -272,7 +275,6 @@ def analyze(text, count_tokens, mode="high_quality_icl", reference_replay_frames
             # 작업 시간에는 참조 재발화까지 들어간다 — 생성은 했고 잘라냈을 뿐이다.
             p_gen_frames += frames["max"] + max(0, reference_replay_frames)
 
-        p_est = _estimate_seconds(p_gen_frames, len(chunks), mode)
         per_para.append({
             "index": si,
             "source_paragraph_index": line_to_para.get(seg.get("line_index")),
@@ -287,7 +289,9 @@ def analyze(text, count_tokens, mode="high_quality_icl", reference_replay_frames
             "auto_split": len(chunks) > 1,
             "estimated_audio_seconds": {"min": round(p_audio_lo / FPS, 1),
                                         "max": round(p_audio_hi / FPS, 1)},
-            "estimated_wall_seconds": p_est["seconds"],
+            # 전체 작업 시간이 아니라 **이 문단이 더 얹는 시간**이다(위 함수 주석 참고).
+            "estimated_wall_seconds_marginal": _estimate_marginal_seconds(
+                p_gen_frames, len(chunks), mode),
         })
         total_calls += len(chunks)
         total_tokens += tok
@@ -314,6 +318,8 @@ def analyze(text, count_tokens, mode="high_quality_icl", reference_replay_frames
         "estimated_audio_seconds": {"min": round(audio_lo / FPS, 1),
                                     "max": round(audio_hi / FPS, 1)},
         "estimated_wall_seconds": est["seconds"],
+        # 위 작업 시간에 들어 있는 고정 준비 비용. UI 가 "모델 준비 포함" 을 말할 근거다.
+        "preparation_seconds": _preparation_seconds(mode) if est["seconds"] else None,
         "confidence": est["confidence"],
         "confidence_reason": est["reason"],
         "mode": mode,
@@ -335,6 +341,37 @@ def _normalized_sha256(source):
     except Exception:
         norm = source or ""
     return hashlib.sha256(norm.encode("utf-8")).hexdigest()
+
+
+def _preparation_seconds(mode):
+    """모델을 준비하는 데 드는 고정 시간. 대사 길이와 무관하게 **작업당 한 번** 든다."""
+    if mode not in _MODES_WITH_SAMPLES:
+        return None
+    lo = hi = None
+    for c in _C_RANGE:
+        job = _FIT_A - c * _FIT_TARGET
+        lo = job if lo is None else min(lo, job)
+        hi = job if hi is None else max(hi, job)
+    return {"min": round(max(0.0, lo), 1), "max": round(hi, 1)}
+
+
+def _estimate_marginal_seconds(frames, calls, mode):
+    """이 문단 **하나 때문에 더 걸리는** 시간.
+
+    문단 줄에 전체 작업 시간을 그대로 쓰면 안 된다. 고정 준비 비용이 문단마다 한 번씩
+    들어가 문단 줄의 합이 전체 예상보다 커진다(실제로 3문단에서 총 59~109초인데 문단
+    합이 144~281초로 나왔다). 화면에서 앞뒤가 맞지 않는 숫자가 되므로, 문단 줄은
+    **준비 비용을 뺀 한계 비용**만 말한다. 준비 비용은 요약 한 줄이 한 번 포함한다.
+    """
+    if calls <= 0 or mode not in _MODES_WITH_SAMPLES:
+        return None
+    lo = hi = None
+    for c in _C_RANGE:
+        per_call = max(0.0, _FIT_K - 83.0 * c)
+        t = per_call * calls + c * frames
+        lo = t if lo is None else min(lo, t)
+        hi = t if hi is None else max(hi, t)
+    return {"min": round(max(0.0, lo), 1), "max": round(hi, 1)}
 
 
 def _estimate_seconds(total_frames, calls, mode):

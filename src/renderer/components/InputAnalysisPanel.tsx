@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
-  INSUFFICIENT_TEXT, canShowWallTime, confidenceLabel, formatRange, paragraphSummary,
-  splitRows, summaryLine,
+  INSUFFICIENT_TEXT, PARAGRAPH_WALL_NOTE, canShowWallTime, confidenceLabel, formatRange,
+  paragraphSummary, preparationNote, splitRows, summaryLine,
 } from '../../shared/analysisWording'
 import type { AnalysisResult } from '../../shared/inputAnalysis'
 import type { AnalysisStatus } from '../hooks/useInputAnalysis'
@@ -188,7 +188,12 @@ function DetailBlock({ result }: { result: AnalysisResult }) {
       <span style={muted}>
         production token {result.productionTokens} · 분할 상한 {result.splitCapProductionTokens}
       </span>
-      <span style={muted}>
+      {preparationNote(result) && (
+        <span data-testid="analysis-prep-note" style={muted}>{preparationNote(result)}</span>
+      )}
+      <span style={muted}>{PARAGRAPH_WALL_NOTE}</span>
+      {/* 신뢰도는 여기에만 둔다 — 장문에서는 거의 늘 '외삽' 이라 요약 줄에 두면 잡음이 된다. */}
+      <span data-testid="analysis-confidence" style={muted}>
         {confidenceLabel(result)}
         {result.confidenceReason ? ` (${result.confidenceReason})` : ''}
       </span>
