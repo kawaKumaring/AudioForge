@@ -42,6 +42,53 @@
 - 실패·부분 생성도 원인을 조사할 수 있게 진단 영역에 보존하되 정상 결과처럼 발행하지 않는다.
 - capability가 실증되지 않은 감정, formant, 가성, breathiness, 환경음 기능을 지원됨으로 표시하지 않는다.
 
+## 연기·믹싱·공간 — 세 축을 섞지 않는다
+
+**연기·언성과 음원 파일의 gain 은 같은 축이 아니다.** 세 축을 코드·metadata·UI에서 분리한다.
+
+- `performance_prosody` — 감정, 언성, 저음, 속삭임, 발성 힘.
+  F0 contour, spectral tilt·배음, breathiness, articulation, tempo, 호흡으로 표현한다.
+- `mix_loudness` — 결과 트랙의 청취 음량. 감정과 독립인 믹싱 축이다.
+- `spatial_automation` — 멀어짐, 다가옴, 문 밖, 마이크 거리.
+  gain **과 함께** 고역 감쇠, direct/reverb 비율, 공간감을 움직인다.
+
+규칙:
+
+- 트랙 gain 을 키우는 것은 언성을 높이는 것이 **아니다**. 줄이는 것은 저음·속삭임을 구현하는 것이 **아니다**.
+- 대사는 기본적으로 **안정된 청취 loudness** 를 유지한다.
+- 단어 강조와 짧은 감정적 강약은 보존한다.
+- 수십 초에 걸친 **점진적 gain drift 는 감정 표현으로 인정하지 않는다.**
+- 점진적 fade-in/fade-out 은 `[멀어짐]`, `[다가옴]` 같은 **명시적 공간 연출이 있을 때만** 쓴다.
+- UI 문구에서 "언성을 높임 = gain 증가", "저음 = gain 감소" 표현을 **금지**한다.
+  음량 슬라이더는 `mix_loudness`, 연기 지시는 `performance_prosody`, 거리 연출은
+  `spatial_automation` 으로 이름과 설명을 나눈다.
+
+### goback 말끝 감쇠 — 상태 `ENDING_GAIN_ATTENUATION_INSTEAD_OF_LOW_TONE`
+
+`goback-split-production-1` (3 chunk / 377·376·320 token) 사용자 청취 판정:
+
+- PASS — 3 chunk 분할, 두 join, 장문 전체 안정성, 379 token quality ceiling
+- FAIL — 마지막 chunk 에서 저음 대신 gain 이 점진 감소하고 마지막 발화가 잘린 듯 들린다
+
+마지막 chunk 는 320 token 으로 quality ceiling 379 보다 짧다. 따라서 **ceiling 을 더 낮추거나
+추가 분할로 해결하지 않는다.** 379 ceiling 은 유지한다. 장문 termination 문제와 연기 표현
+문제는 서로 다른 축이다.
+
+read-only 감사 결과(2026-08-30, GPU 미사용):
+
+- 후처리는 조립본의 **앞 240 샘플(10 ms) 과 뒤 480 샘플(20 ms)** 만 바꾼다. 내부 변경 0 샘플 —
+  같은 후처리 설정의 단일 chunk run 2건에서 sample 단위로 실측했다.
+- 결합은 순수 concat 이며 어떤 배율도 곱하지 않는다. `segment envelope` 적용 0, `tail` off,
+  `speed` 1.0 미적용, `pitch` 0.0 미적용.
+- chunk-2 는 마지막 20초 active RMS 가 **−0.296 dB/s** 로 떨어지는데 F0 중앙값은 192 Hz 로
+  거의 평평하다. 청취 PASS 대조군은 A-379 **+0.061**, C-572 **+0.029** dB/s 다.
+- 따라서 판정은 `MODEL_GAIN_PROXY_FOR_PROSODY` — 모델이 친밀한 register 를 F0·음색이 아니라
+  **gain 으로 대신 표현한다.** postprocess 결함(`POSTPROCESS_GAIN_DEFECT`)과
+  전체 fade 결함(`GLOBAL_FINAL_FADE_DEFECT`)은 배제됐다.
+- 보정 후보는 느린 macro 추세만 boost-only 로 되돌리고 짧은 강약은 건드리지 않는다.
+  전체 normalization, compressor, limiter, AGC, chunk 별 동일 gain 은 쓰지 않는다.
+  **사용자 청취 전에는 production 에 적용하지 않는다.**
+
 ## 즉시 진행할 기반 작업
 
 ### 0. 종료된 진단 코드 정리
