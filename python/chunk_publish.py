@@ -131,15 +131,62 @@ def read_run_status(root):
         return STATUS_INCOMPLETE
 
 
+def _repo_root():
+    return os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+
 def app_version():
-    """package.json 의 version. 못 읽으면 None — 지어내지 않는다."""
-    p = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "package.json")
+    """package.json 의 version. 화면의 app.getVersion() 과 같은 권위다. 못 읽으면 None."""
     try:
-        with open(p, encoding="utf-8") as f:
+        with open(os.path.join(_repo_root(), "package.json"), encoding="utf-8") as f:
             v = json.load(f).get("version")
         return str(v) if v else None
     except Exception:
         return None
+
+
+def _channel_for_version(version):
+    """semver pre-release 표기에서 채널을 유도한다(src/shared/buildMetadata.ts 와 같은 규칙)."""
+    import re
+    v = (version or "").strip()
+    if not v:
+        return None
+    if re.search(r"-rc(\.|$|-)", v, re.I):
+        return "Release Candidate"
+    if re.search(r"-dev(\.|\+|$|-)", v, re.I):
+        return "Development"
+    if "-" in v:
+        return None            # 아는 접미사가 아니면 지어내지 않는다
+    return "Stable"
+
+
+def build_metadata():
+    """화면과 기록이 **같이 보는** build 정보.
+
+    version 권위는 package.json 이고 commit·date·channel 은 build 시 만든
+    `build-metadata.json` 이다. 파일이 없거나 값이 형식에 안 맞으면 그 항목만 None 이다 —
+    구형 out 빌드와 최신 master 실행을 구분하려면 '모른다' 가 거짓말보다 낫다.
+    """
+    import re
+    version = app_version()
+    raw = {}
+    try:
+        with open(os.path.join(_repo_root(), "build-metadata.json"), encoding="utf-8") as f:
+            loaded = json.load(f)
+        if isinstance(loaded, dict):
+            raw = loaded
+    except Exception:
+        raw = {}
+    commit = raw.get("commit")
+    commit = commit.strip().lower() if (isinstance(commit, str)
+                                        and re.fullmatch(r"[0-9a-fA-F]{7,40}", commit.strip())) else None
+    date = raw.get("date")
+    date = date.strip() if (isinstance(date, str)
+                            and re.fullmatch(r"\d{4}-\d{2}-\d{2}", date.strip())) else None
+    channel = raw.get("channel")
+    channel = channel.strip() if (isinstance(channel, str) and channel.strip())         else _channel_for_version(version)
+    return {"app_version": version, "build_commit": commit,
+            "build_date": date, "release_channel": channel}
 
 
 def _now_iso():
@@ -469,7 +516,7 @@ class ChunkRecorder:
             return None
         os.makedirs(self.root, exist_ok=True)
         payload = {"schema": SCHEMA_VERSION, "run_id": run_id(), "status": "open",
-                   "app_version": app_version(), "created_at": _now_iso(),
+                   "created_at": _now_iso(), **build_metadata(),
                    "header": dict(self.header)}
         _atomic_json(payload, os.path.join(self.root, OPEN_RECORD_NAME))
         self.opened = True
@@ -483,7 +530,9 @@ class ChunkRecorder:
             final_arr, sr = self._final
         joins = self.build_joins(final_arr, sr) if final_arr is not None else []
         doc = {"schema": SCHEMA_VERSION, "run_id": run_id(), "status": status,
-               "app_version": app_version(), "created_at": _now_iso(),
+               "created_at": _now_iso(),
+               # 화면 표시와 같은 build 권위 — 구형 out 빌드와 최신 master 실행을 구분한다.
+               **build_metadata(),
                "stage_wavs_kept": bool(self.stage_wavs),
                "header": dict(self.header), "result": self.result,
                "stage_elapsed": list(self.stages),

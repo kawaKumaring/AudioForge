@@ -1,10 +1,11 @@
 {
   "name": "audio-forge",
-  "version": "1.0.0",
+  "version": "1.1.0-rc.1",
   "description": "AI-powered audio source separation tool",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
+    "prebuild": "node scripts/generate-build-metadata.mjs",
     "build": "electron-vite build",
     "preview": "electron-vite preview",
     "test": "node --test \"src/**/*.test.ts\"",
@@ -14,6 +15,7 @@
     "test:e2e:tts-autosplit": "node test/e2e/tts-autosplit-complete.e2e.mjs",
     "test:e2e:tts-editor-ux": "node test/e2e/tts-editor-ux.e2e.mjs",
     "test:e2e:tts-pitch-capability": "node test/e2e/tts-pitch-capability.e2e.mjs",
+    "test:e2e:app-version": "node test/e2e/app-version.e2e.mjs",
     "test:e2e:tts-accessibility": "node test/e2e/tts-accessibility.e2e.mjs",
     "test:e2e:tts-i5-smoke": "node test/e2e/tts-i5-shell-smoke.e2e.mjs",
     "test:e2e:tts-i5b-editor": "node test/e2e/tts-i5b-editor.e2e.mjs",
