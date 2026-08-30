@@ -1414,6 +1414,13 @@ _METADATA_KEYS = [
     # 최종 파일 양 끝은 boundary_onset_samples/boundary_offset_samples 가 따로 말한다(중복 아님).
     "segment_envelope_onset_count", "segment_envelope_offset_count",
     "segment_envelope_kind_counts", "segment_envelope_applied",
+    # macro gain drift 보정(연기·믹싱·공간 세 축 분리) — 조립 트랙 하나에 한 번 건 보정의 재현값.
+    # reason 은 APPLIED / BELOW_GATE / TOO_SHORT / NO_ACTIVE_SPEECH / FULLY_PROTECTED / UNAVAILABLE.
+    # curve_sha8 은 보정 곡선 수치 배열의 지문이다(대사·경로가 아니다).
+    "macro_gain_applied", "macro_gain_reason", "macro_gain_statistic_db", "macro_gain_gate_db",
+    "macro_gain_max_boost_db", "macro_gain_curve_sha8", "macro_gain_headroom_cap_db",
+    "macro_gain_protected_span_count", "macro_gain_trend_window_sec",
+    "macro_gain_level_window_sec",
     # 표현형 모드(계약 §10). ⚠️ 이웃이 snake_case 라도 이 키만은 camelCase 가 정본이다 —
     # session/config/metadata 세 캐리어가 '같은 필드 이름'이어야 하고, 계약이 별칭
     # (tts_expressive_mode)을 명시적으로 금지했다(권위가 둘이 되는 편이 더 나쁘다).
@@ -1488,7 +1495,8 @@ def _transcript_meta(ref_text):
     return _detect_language(t), len(t), hashlib.sha256(t.encode("utf-8")).hexdigest()[:8]
 
 
-def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
+def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None,
+                      macro_protected_spans=None):
     """엔진 무관 공통 최종 단계 + 경계 envelope + 말끝 finishing
     (계약 §2 순서: … → 전체 pitch → 경계 envelope → 최종 조건부 fade → 최종 0 padding → 검증 → 원자 교체).
 
@@ -1514,6 +1522,8 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
     반환: place_final_with_pitch와 동형 dict(pitch_* + output_sample_rate + tail_* + boundary_*)."""
     import pitch_shift as _ps
     import audio_finishing as _af  # numpy 지연 로드(모듈 최상단 import 회피 — import tts_worker는 numpy 불요)
+
+    import macro_gain as _mg   # numpy 지연 로드 — audio_finishing 과 같은 이유다
 
     tail = _af.parse_tail_config(tail_cfg)  # 범위 밖이면 INVALID_TTS_CONFIG(조용한 clamp 없음)
 
@@ -1548,9 +1558,16 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
         # tail plan 은 **envelope 적용 전 원본**으로 산출한다 — already_silent 판정(마지막 5ms peak)이
         # 우리 offset fade 때문에 뒤바뀌면 tail 계약의 의미가 달라진다. 순서: plan(원본) → envelope → tail.
         plan = _af.compute_tail_plan(data, sr, tail)
+        # macro gain — **조립이 끝난 트랙 하나**에 한 번만 건다. chunk 별로 걸지 않는다.
+        # 경계 envelope 보다 **먼저** 두어 바깥쪽 10 ms/20 ms fade 가 말끝의 마지막 권위로 남는다.
+        # tail plan 은 위에서 이미 원본으로 산출했다 — boost 가 already_silent 판정을 뒤집지 않는다.
+        mgplan = _mg.compute_macro_gain_plan(data, sr, protected_spans=macro_protected_spans)
+        corrected = _mg.apply_macro_gain(data, sr, mgplan)
+        if len(corrected) != len(data):
+            raise _af.AudioFinishingError("macro gain 이 길이를 바꿨습니다", code="AUDIO_INVALID")
         # tail 이 실제로 cosine fade 를 걸 때만 말끝을 양보한다(이중 fade 방지). 시작 쪽은 겹칠 게 없다.
-        bplan = _af.compute_boundary_plan(len(data), sr, tail_owns_offset=bool(plan.fade_applied))
-        enveloped = _af.apply_boundary_envelope(data, sr, bplan)
+        bplan = _af.compute_boundary_plan(len(corrected), sr, tail_owns_offset=bool(plan.fade_applied))
+        enveloped = _af.apply_boundary_envelope(corrected, sr, bplan)
         finished = _af.apply_final_tail(enveloped, sr, plan)
         # 불변식 B — in-memory: mono·non-empty·finite + 예상 프레임 수 + padding 정확히 0.
         # (여기서 finite가 이미 보장되므로 PCM_16으로 써도 비유한을 숨길 수 없다 — write 전 in-memory 검증.)
@@ -1591,6 +1608,8 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None):
     # 가져갔거나(offset_yielded_to_tail) 배열이 너무 짧아 clamp 된 경우다.
     out.update(boundary_onset_samples=int(bplan.onset_samples),
                boundary_offset_samples=int(bplan.offset_samples))
+    # macro gain 재현 메타 — 적용 여부·통계·게이트·최대 boost·곡선 지문. 대사·경로 없음.
+    out.update(_mg.plan_metadata(mgplan))
     return out
 
 
