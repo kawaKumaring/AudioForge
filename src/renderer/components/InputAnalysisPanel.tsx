@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import {
   INSUFFICIENT_TEXT, canShowWallTime, confidenceLabel, formatRange, paragraphSummary,
   splitRows, summaryLine,
@@ -168,8 +168,19 @@ function SplitList(props: { result: AnalysisResult; stale: boolean }) {
 
 function DetailBlock({ result }: { result: AnalysisResult }) {
   const muted: React.CSSProperties = { fontSize: 11, color: 'var(--text-muted)' }
+  // 어느 빌드를 보고 있는지 여기서도 확인할 수 있어야 한다 — 시작 화면을 지나면
+  // 하단 버전 줄이 보이지 않아 stale 빌드를 가릴 수 없었다(실제로 겪은 문제).
+  const [build, setBuild] = useState<string | null>(null)
+  useEffect(() => {
+    let on = true
+    window.api?.app?.getBuildInfo?.()
+      .then((b) => { if (on) setBuild(b?.commit ? `v${b.version}+${b.commit}` : `v${b?.version ?? '?'}`) })
+      .catch(() => {})
+    return () => { on = false }
+  }, [])
   return (
     <div data-testid="analysis-detail" style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
+      {build && <span data-testid="analysis-build" style={muted}>빌드 {build}</span>}
       <span style={muted}>
         문단 {result.sourceParagraphCount} · 대사 구간 {result.segmentCount} ·
         생성 묶음 {result.plannedCalls}
