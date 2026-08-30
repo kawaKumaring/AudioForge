@@ -95,6 +95,11 @@ export function useInputAnalysis(
   }, [])
 
   useEffect(() => {
+    // ★ 재진입마다 살린다. StrictMode(개발) 는 mount -> cleanup -> mount 로 effect 를 두 번
+    //   부르는데, cleanup 에서 내려둔 alive 를 여기서 되돌리지 않으면 그 인스턴스는 영원히
+    //   죽은 것으로 남아 모든 응답과 watchdog 이 무시된다 — 개발 실행에서만 나던 무한
+    //   `준비 중…` 의 실제 원인이다(production 번들은 이중 호출이 없어 드러나지 않았다).
+    alive.current = true
     counters.mount += 1
     trace('mount', { n: counters.mount })
     return () => {
