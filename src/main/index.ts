@@ -302,6 +302,14 @@ if (!gotLock) {
   })
 }
 
+// Electron 이 정상 경로를 못 타고 내려가도(dev 서버 종료·창 강제 종료) 자기가 띄운
+// 분석 worker 는 함께 내려가야 한다. app 훅만으로는 부족해 process 수준에서도 건다.
+app.on('will-quit', () => { disposeAnalysisIpc() })
+process.once('exit', () => { disposeAnalysisIpc() })
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+  process.once(sig, () => { disposeAnalysisIpc(); app.quit() })
+}
+
 app.on('before-quit', () => {
   // 분석은 편집 보조일 뿐이므로 종료를 붙들지 않는다 — 대기 요청을 취소하고 프로세스를 닫는다.
   disposeAnalysisIpc()

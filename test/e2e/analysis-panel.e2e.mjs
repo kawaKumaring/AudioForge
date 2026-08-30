@@ -8,6 +8,7 @@
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
+import { execSync } from 'child_process'
 import crypto from 'crypto'
 
 const APP = process.cwd()
@@ -31,6 +32,18 @@ if (!REF) { console.error('참조 자산 없음'); process.exit(2) }
 
 const SCRIPT = '첫 줄입니다. 두 번째 문장입니다.\n[기쁨] 둘째 줄입니다.'
 const SHA8 = crypto.createHash('sha256').update(SCRIPT, 'utf-8').digest('hex').slice(0, 8)
+
+// 자기가 띄운 분석 worker 만 센다. 다른 python·합성 프로세스는 건드리지 않는다.
+const countAnalysisWorkers = () => {
+  const q = 'Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '
+    + String.fromCharCode(39) + '*analysis_worker.py*' + String.fromCharCode(39)
+    + ' } | Measure-Object | Select-Object -ExpandProperty Count'
+  try {
+    return parseInt(execSync('powershell -NoProfile -Command "' + q + '"',
+      { encoding: 'utf-8' }).trim(), 10) || 0
+  } catch { return -1 }
+}
+const workersBefore = countAnalysisWorkers()
 
 const app = await electron.launch({
   args: ['out/main/index.js'], cwd: APP, env: { ...process.env, AF_E2E: '1' },
@@ -133,6 +146,17 @@ try {
   ok(false, `예외: ${e && e.message}`)
 } finally {
   await app.close().catch(() => {})
+}
+
+// 종료 뒤 자기가 만든 worker 가 남지 않아야 한다(정상·실패·예외 어느 경로든 여기를 지난다).
+{
+  let after = countAnalysisWorkers()
+  for (let i = 0; i < 20 && after > workersBefore; i += 1) {
+    await new Promise((r) => setTimeout(r, 250))
+    after = countAnalysisWorkers()
+  }
+  ok(workersBefore < 0 || after <= workersBefore,
+    '종료 뒤 analysis worker 고아 0', `before=${workersBefore} after=${after}`)
 }
 
 log(failed === 0 ? '전부 통과' : `실패 ${failed}건`)
