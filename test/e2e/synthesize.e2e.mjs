@@ -5,11 +5,20 @@
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
-import { isolatedInput, cleanupIsolated, snapshotTree } from './_e2e-helper.mjs'
+import {
+  isolatedInput, cleanupIsolated, snapshotTree,
+  isolatedUserData, userDataIsPristine, userDataArtifacts, cleanupUserData,
+  realUserDataFingerprint,
+} from './_e2e-helper.mjs'
 
 const APP = process.cwd()
-const SRC = path.join(APP, 'resources', 'speaker_b.wav')
-const RES_DIR = path.join(APP, 'resources')
+// 참조 클립 생성(무음 경계로 자른 뒤 전사)을 지나야 하므로 **실제 말이 든 오디오**가 필요하다.
+// 합성 사인파로는 지날 수 없다 — 전사가 비면 앱이 BLOCK_TRANSCRIBE_FAILED 로 막는다(정상 동작).
+// 그래서 저장소가 직접 가진 fixture 하나만 쓴다. 저장소 밖을 보지 않으므로 clean clone·
+// 다른 PC·CI 어디서나 같은 결과가 난다. 출처·SHA·좌표는 doc/test-fixtures.md 에 있다.
+const FIXTURE = path.join(APP, 'test', 'fixtures', 'audio', 'ko-speech-7s.wav')
+const SRC = fs.existsSync(FIXTURE) ? FIXTURE : null
+const RES_DIR = path.dirname(FIXTURE)   // 불변 검사 대상 = fixture 폴더
 const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots')
 fs.mkdirSync(SHOT, { recursive: true })
 const logLines = []
@@ -32,7 +41,7 @@ function collectDirs(base) {
   return out
 }
 
-if (!fs.existsSync(SRC)) { console.error('필수 검증 파일 없음:', SRC); process.exit(2) }
+if (!SRC) { console.error(`fixture 없음: ${FIXTURE}`); process.exit(2) }
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요: npm run build'); process.exit(2) }
 
 // resources/를 삭제하지 않는다 — 입력을 격리 tmp로 복사해 주입, 출력도 그 안(dirname(input)/AudioForge_output).
@@ -43,7 +52,13 @@ const OUT_BASE = path.join(path.dirname(REF), 'AudioForge_output')
 const pageErrors = [], consoleErrors = [], crashes = []
 const mainOut = []
 
-const app = await electron.launch({ args: ['out/main/index.js'], cwd: APP, env: { ...process.env, AF_E2E: '1' } })
+// ── userData 격리 ────────────────────────────────────────────────────────────
+// 실제 userData 를 쓰면 이전에 고른 참조가 남아 있어 앱이 곧바로 ready 가 되고, 주입한
+// fixture 로 파생 클립을 만들지 않는다. 그러면 초록이 나와도 검증한 것이 없다.
+const UD = isolatedUserData()
+const realBefore = realUserDataFingerprint()
+
+const app = await electron.launch({ args: ['out/main/index.js'], cwd: APP, env: { ...process.env, AF_E2E: '1', AF_E2E_USER_DATA: UD } })
 app.process().stdout.on('data', d => mainOut.push(String(d)))
 app.process().stderr.on('data', d => mainOut.push(String(d)))
 const win = await app.firstWindow()
@@ -80,19 +95,34 @@ try {
     const url = await window.api.audio.getFileUrl(p)
     s.getState().setFile(info, url); s.getState().setMode('tts')
   }, REF)
-  await win.waitForFunction(() => /111\.08/.test(document.getElementById('root')?.innerText || ''), undefined, { timeout: 30000 })
+  // 이관(2026-08-31): 화면의 길이 표기가 `111.08초` 에서 `1:51`(분:초) 로 바뀌었다.
+  // 표기 문자열 하나에만 매달리면 같은 자리에서 또 낡으므로 둘로 나눠 단언한다.
+  //   · 자산 신원 — 앱이 읽어 낸 길이가 이 승인 자산의 길이(111.08초)와 같다
+  //   · 표시 계약 — 화면이 현재 형식(1:51)으로 그 길이를 보여 준다
+  await win.waitForFunction(
+    () => (window.__afStore?.getState().fileInfo?.duration ?? 0) > 0, undefined, { timeout: 30000 })
+  const dur = await win.evaluate(() => window.__afStore.getState().fileInfo.duration)
+  ok(dur > 0, `앱이 읽은 길이(${dur.toFixed(2)}초)`)
   const tts = await measure()
   await win.screenshot({ path: path.join(SHOT, 'e2e_02_tts.png') })
-  ok(/111\.08/.test(tts.txt), '111.08초 분석 결과 표시')
+  // 특정 자산의 숫자를 박지 않는다 — 자산이 바뀌면 또 낡는다. 화면 표기가 **앱이 읽은 값과
+  // 같은지**를 본다(m:ss). 자산이 무엇이든 이 계약은 같다.
+  const mmss = `${Math.floor(dur / 60)}:${String(Math.floor(dur % 60)).padStart(2, '0')}`
+  ok(tts.txt.includes(mmss), `길이 표시가 읽은 값과 일치(${mmss})`)
   const spawnedAnalyze = mainOut.join('').includes('refanalyze')
   const spawnedPreflight = mainOut.join('').includes('qwenpre')
   ok(spawnedAnalyze && spawnedPreflight, 'analyze + preflight 동시 초기화(둘 다 spawn)')
   ok(pageErrors.length === 0 && crashes.length === 0, 'TTS 진입: pageerror/crash 0')
 
-  // 3) 구간 확정 → 파생 클립 ready
-  await win.getByText('이 구간으로 확정').click({ timeout: 20000 })
-  await win.waitForFunction(() => window.__afStore?.getState().ttsRefReady === true, undefined, { timeout: 40000 })
-  ok(true, '구간 확정 → ttsRefReady=true')
+  // 3) 파생 클립 ready
+  // 이관(2026-08-31): 수동 '이 구간으로 확정' 버튼은 기본 화면에서 사라졌다. 지금은 앱이
+  // 고른 구간을 그대로 쓰고, 바꾸고 싶을 때만 '사용 구간 바꾸기' 로 편집기를 편다
+  // (TTSEditor 의 regionOpen). 결과 단언(ttsRefReady)은 그대로 두고, 수동 경로는
+  // 도달성으로 확인한다 — 사라진 버튼을 계속 클릭하려 들면 이 자리에서 또 낡는다.
+  await win.waitForFunction(() => window.__afStore?.getState().ttsRefReady === true, undefined, { timeout: 60000 })
+  ok(true, '파일을 올리면 파생 참조 클립이 준비된다(수동 확정 없이)')
+  ok(await win.getByRole('button', { name: '사용 구간 바꾸기' }).count() > 0,
+    "'사용 구간 바꾸기' 로 구간 편집에 닿는다")
   await win.evaluate(() => window.__afStore.setState({ ttsText: '안녕하세요. 테스트 문장입니다.' }))
 
   // 4) 합성 클릭 → audio:process 1회 + processing UI + 검은 화면/크래시 없음
@@ -159,11 +189,24 @@ try {
   const leftover = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('audioforge_refclip_'))
   ok(leftover.length === 0, `종료 후 파생 참조 임시폴더 정리(leftover=${leftover.length})`)
   // 원본 resources/ 불변 단언 후 격리 폴더만 삭제(예외에도 반드시)
-  ok(snapshotTree(RES_DIR) === resBefore, 'resources/ 원본·기존 출력 불변(size/hash/목록)')
+  ok(snapshotTree(RES_DIR) === resBefore, "fixture 원본 불변(size/hash/목록)")
   cleanupIsolated(ISO)
 
   fs.writeFileSync(path.join(SHOT, 'e2e_log.txt'), logLines.join('\n') + '\n\n--- main ---\n' + mainOut.join(''), 'utf-8')
 }
+// 격리 계약 — 이 흐름은 **보관함 등록을 하지 않는다**. 그러므로 reference-library 는
+// 애초에 생기지 않아야 한다. "생겼다면 안쪽에" 같은 조건부는 실제 계약이 아니다.
+const udLib = userDataArtifacts(UD)
+ok(udLib.length === 0,
+  `임시 userData 의 reference-library 미생성 (${udLib.length}개${udLib.length ? ': ' + udLib.join(',') : ''})`)
+ok(realUserDataFingerprint() === realBefore, '실제 userData 변경 0건(이름·크기·mtime)')
+if (failed === 0) {
+  const why = cleanupUserData(UD)
+  ok(why === null, `임시 userData 정리${why ? ' 거부: ' + why : ''}`)
+} else {
+  console.log('[e2e] INFO 실패로 임시 userData 를 남긴다:', UD)
+}
+
 if (pageErrors.length) log('PAGEERRORS', pageErrors.join(' | '))
 log('SUMMARY', { failed, pageErrors: pageErrors.length, consoleErrors: consoleErrors.length, crashes: crashes.length, shots: SHOT })
 process.exit(failed === 0 ? 0 : 1)

@@ -68,9 +68,18 @@ test('완전한 metadata 는 그대로 쓰인다', () => {
 })
 
 test('기본 표시는 v + version 뿐 — AudioForge 를 반복하지 않는다', () => {
-  const label = versionLabel({ version: '1.1.0-rc.1' })
-  assert.equal(label, 'v1.1.0-rc.1')
+  const label = versionLabel({ version: '1.1.0-rc.1', commit: '4bbb5d0' })
+  assert.equal(label, 'v1.1.0-rc.1', 'rc 에는 커밋을 붙이지 않는다')
   assert.equal(label.includes('AudioForge'), false)
+  assert.equal(versionLabel({ version: '1.1.0', commit: '4bbb5d0' }), 'v1.1.0')
+})
+
+test('develop 계열만 표시 시점에 short SHA 를 합친다', () => {
+  assert.equal(versionLabel({ version: '1.2.0-dev', commit: '693d076' }), 'v1.2.0-dev+693d076')
+  assert.equal(versionLabel({ version: '1.2.0-dev', commit: null }), 'v1.2.0-dev',
+    '커밋을 모르면 지어내지 않는다')
+  assert.equal(versionLabel({ version: '1.2.0-dev+abc1234', commit: '693d076' }),
+    'v1.2.0-dev+abc1234', '이미 자기 build metadata 가 있으면 덧붙이지 않는다')
 })
 
 test('상세 설명에는 경로가 들어가지 않는다', () => {
@@ -115,8 +124,11 @@ test('없는 파일과 깨진 파일은 모두 없음으로 다룬다', () => {
 
 test('package.json version 이 단일 권위다 — 화면 문자열을 따로 두지 않는다', () => {
   const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf-8'))
-  assert.equal(pkg.version, '1.1.0-rc.1')
-  assert.equal(versionLabel({ version: pkg.version }), 'v1.1.0-rc.1')
+  assert.equal(pkg.version, '1.2.0-rc.1', 'release candidate 버전')
+  assert.equal(versionLabel({ version: pkg.version, commit: null }), `v${pkg.version}`)
+  // rc 에는 short SHA 를 붙이지 않는다 — 커밋이 있어도 표시가 바뀌지 않아야 한다.
+  assert.equal(versionLabel({ version: pkg.version, commit: 'abc1234' }), `v${pkg.version}`,
+    'rc 표시에 +<short-sha> 를 붙이면 안 된다')
   // renderer 소스에 버전 문자열이 하드코딩돼 있지 않은지 본다.
   const label = readFileSync(
     join(repoRoot, 'src', 'renderer', 'components', 'AppVersionLabel.tsx'), 'utf-8')

@@ -39,6 +39,21 @@ BUDGET_TIERS = (256, 512, 768, 1024, 1536, 2048, 3072, 4096)
 ARCHITECTURE_LIMIT = 32768
 
 
+#: 자연 종료 실측의 frame/token 비 **구간**. 예산에는 상한(FRAMES_PER_PRODUCTION_TOKEN)을
+#: 쓰지만, "결과 음성이 몇 초인가" 는 한 값으로 답할 수 없어 구간으로 낸다.
+#: 191->339(1.775) / 379->661(1.744) / 563->1106(1.964) / 572->1135(1.984). censored 관측 제외.
+AUDIO_FRAMES_PER_PRODUCTION_TOKEN_RANGE = (1.744, 1.984)
+
+
+def predict_audio_frames(production_tokens):
+    """**결과 음성** frame 구간. 예산 여유(FRAME_UPPER_MARGIN)를 섞지 않는다 —
+    그 여유는 '생성이 넘치지 않게' 하려는 값이지 길이 추정이 아니다."""
+    if not isinstance(production_tokens, int) or production_tokens <= 0:
+        raise ValueError("production_tokens must be positive int, got %r" % (production_tokens,))
+    lo, hi = AUDIO_FRAMES_PER_PRODUCTION_TOKEN_RANGE
+    return {"min": lo * production_tokens, "max": hi * production_tokens}
+
+
 def predict_frames(production_tokens):
     """production token 으로 목표 발화 frame 을 추정한다. 상한 쪽 값을 함께 낸다."""
     if not isinstance(production_tokens, int) or production_tokens <= 0:

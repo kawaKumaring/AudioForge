@@ -329,9 +329,68 @@ interface OpenSeg {
  * raw ttsText → ParseResult(parser_version=2). Python tts_grammar.parse_tts_script와 동형.
  * 성공: 정규화 segments + summary + fullSha256. 실패: 구조화 오류(대사 전문 없음).
  */
+// ── 줄 끝 정규화(공용 parser 입력 경계) ─────────────────────────────────────
+// Windows 에서 붙여넣은 CRLF 의 CR 이 spoken text 에 남으면 tokenizer 결과·chunk 계획·
+// 실제 발화·시간 예측이 LF 입력과 갈라진다(실측). 그래서 **파서 입구에서** 정규화한다.
+// 사용자가 입력한 원문은 건드리지 않는다 — 밖으로 나가는 offset 은 map 으로 원문 좌표로
+// 되돌린다. Python 쪽 `tts_grammar.normalize_line_endings` 와 같은 규칙이다.
+
+export interface LineEndingNormalization {
+  text: string
+  /** 정규화본 UTF-16 index -> 원문 UTF-16 index. 끝 경계까지 담아 길이가 하나 더 길다. */
+  u16Map: number[]
+  /** 정규화본 code point index -> 원문 code point index. */
+  cpMap: number[]
+  changed: boolean
+}
+
+export function normalizeLineEndings(raw: string): LineEndingNormalization {
+  const src = raw ?? ''
+  const out: string[] = []
+  const u16Map: number[] = []
+  const cpMap: number[] = []
+  let su16 = 0
+  let cpIndex = 0
+  const cps = Array.from(src)
+  for (let i = 0; i < cps.length; i += 1) {
+    const ch = cps[i]
+    if (ch === '\r') {
+      cpMap.push(cpIndex)
+      u16Map.push(su16)
+      out.push('\n')
+      if (i + 1 < cps.length && cps[i + 1] === '\n') {
+        su16 += 2
+        cpIndex += 2
+        i += 1
+      } else {
+        su16 += 1
+        cpIndex += 1
+      }
+      continue
+    }
+    cpMap.push(cpIndex)
+    const w = ch.length
+    for (let k = 0; k < w; k += 1) u16Map.push(su16 + k)
+    out.push(ch)
+    su16 += w
+    cpIndex += 1
+  }
+  cpMap.push(cpIndex)
+  u16Map.push(su16)
+  const text = out.join('')
+  return { text, u16Map, cpMap, changed: text !== src }
+}
+
+function mapIndex(map: number[], value: number | undefined): number | undefined {
+  if (value === undefined || value === null || value < 0) return value
+  return value < map.length ? map[value] : map[map.length - 1]
+}
+
 export function parseTtsScript(raw: string, opts?: ParseOptions): ParseResult {
   const resolveEmotion = opts?.resolveEmotion ?? defaultResolveEmotion
-  const text = raw ?? ''
+  // 파서 입력 경계에서만 정규화한다. 원문 문자열 자체는 어디서도 바꾸지 않는다.
+  const norm = normalizeLineEndings(raw ?? '')
+  const text = norm.text
   const pieces = tokenize(text, resolveEmotion)
   const errors: TtsGrammarError[] = []
 
@@ -487,6 +546,29 @@ export function parseTtsScript(raw: string, opts?: ParseOptions): ParseResult {
     }
   }
 
+  if (norm.changed) {
+    // spoken text·plan sha 는 정규화본 기준이라 LF 와 CRLF 가 같은 계획을 만든다.
+    // 밖으로 나가는 좌표만 원문으로 되돌린다.
+    for (const seg of segments) {
+      seg.offset = {
+        uiStartUtf16: mapIndex(norm.u16Map, seg.offset.uiStartUtf16) as number,
+        uiEndUtf16: mapIndex(norm.u16Map, seg.offset.uiEndUtf16) as number,
+        textStartCodepoint: mapIndex(norm.cpMap, seg.offset.textStartCodepoint) as number,
+        textEndCodepoint: mapIndex(norm.cpMap, seg.offset.textEndCodepoint) as number,
+      }
+      for (const b of seg.pauses ?? []) {
+        b.offset = {
+          uiStartUtf16: mapIndex(norm.u16Map, b.offset.uiStartUtf16) as number,
+          uiEndUtf16: mapIndex(norm.u16Map, b.offset.uiEndUtf16) as number,
+          textStartCodepoint: mapIndex(norm.cpMap, b.offset.textStartCodepoint) as number,
+          textEndCodepoint: mapIndex(norm.cpMap, b.offset.textEndCodepoint) as number,
+        }
+      }
+    }
+    for (const e of errors) {
+      if (e.uiOffsetUtf16 !== undefined) e.uiOffsetUtf16 = mapIndex(norm.u16Map, e.uiOffsetUtf16)
+    }
+  }
   const fullSha256 = computePlanFullSha256(segments, boundaryTypes)
   const planSha8 = fullSha256.slice(0, 8) as ParsedPlanSha8
 

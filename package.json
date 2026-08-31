@@ -1,9 +1,10 @@
 {
   "name": "audio-forge",
-  "version": "1.1.0-rc.1",
+  "version": "1.2.0-rc.1",
   "description": "AI-powered audio source separation tool",
   "main": "./out/main/index.js",
   "scripts": {
+    "predev": "node scripts/generate-build-metadata.mjs",
     "dev": "electron-vite dev",
     "prebuild": "node scripts/generate-build-metadata.mjs",
     "build": "electron-vite build",
@@ -15,6 +16,11 @@
     "test:e2e:tts-autosplit": "node test/e2e/tts-autosplit-complete.e2e.mjs",
     "test:e2e:tts-editor-ux": "node test/e2e/tts-editor-ux.e2e.mjs",
     "test:e2e:tts-pitch-capability": "node test/e2e/tts-pitch-capability.e2e.mjs",
+    "test:e2e:analysis-panel": "node test/e2e/analysis-panel.e2e.mjs",
+    "test:e2e:analysis-dev": "node test/e2e/analysis-dev-path.e2e.mjs",
+    "test:e2e:analysis-dev-kill": "node test/e2e/analysis-dev-path.e2e.mjs --exit=tree",
+    "test:e2e:analysis-phase45": "node test/e2e/analysis-phase45.e2e.mjs",
+    "test:e2e:analysis": "node test/e2e/analysis-lifecycle.e2e.mjs",
     "test:e2e:app-version": "node test/e2e/app-version.e2e.mjs",
     "test:e2e:tts-accessibility": "node test/e2e/tts-accessibility.e2e.mjs",
     "test:e2e:tts-i5-smoke": "node test/e2e/tts-i5-shell-smoke.e2e.mjs",

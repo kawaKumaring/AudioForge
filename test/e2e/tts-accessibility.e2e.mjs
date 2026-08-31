@@ -2,12 +2,19 @@
 // 키보드 도달·focus-visible·ARIA(progressbar/alert/status/expanded/label)·반응형·대비/조작영역(참고)·
 // 진행 단계·오류 카드(원시 미노출·재시도 접근)·취소 스타일 렌더. 실행: npm run test:e2e:tts-accessibility
 import { _electron as electron } from 'playwright'
-import fs from 'fs'; import path from 'path'
-import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenVenvPids } from './_e2e-helper.mjs'
+import fs from 'fs'; import path from 'path'; import os from 'os'
+import {
+  isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenVenvPids,
+  makeSyntheticWav, cleanupSyntheticWav,
+} from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const REF_ENV = process.env.AF_E2E_REFERENCE
-const SRC = REF_ENV && REF_ENV.trim() ? REF_ENV.trim() : path.join(APP, 'resources', 'speaker_b.wav')
+// 저장소에 추적된 오디오 자산은 없다. 이 테스트는 '파일 하나' 만 있으면 되므로 이번 실행
+// 전용 합성 WAV 를 쓴다. 본체 저장소를 뒤지면 그 PC 에서만 되는 검증이 된다.
+const SYNTH = makeSyntheticWav(
+  path.join(os.tmpdir(), 'af_e2e_' + randomUUID() + '.wav'), 12)
+const SRC = REF_ENV && REF_ENV.trim() ? REF_ENV.trim() : SYNTH
 const RES_DIR = path.join(APP, 'resources')
 const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots'); fs.mkdirSync(SHOT, { recursive: true })
 let failed = 0
@@ -185,6 +192,7 @@ try {
   ok(refClipDirs().length === 0, '종료 후 refclip 임시폴더 0')
   ok(snapshotTree(RES_DIR) === resBefore, 'resources/ 원본 불변')
   cleanupIsolated(ISO.dir)
+  cleanupSyntheticWav(SYNTH)
   fs.writeFileSync(path.join(SHOT, 'tts-accessibility_log.txt'), logLines.join('\n'), 'utf-8')
 }
 log('SUMMARY', JSON.stringify({ failed, pageErrors: pageErrors.length, crashes: crashes.length }))

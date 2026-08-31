@@ -11,6 +11,11 @@ import input_analysis as ia
 import text_segmenter as ts
 
 
+def para_text(source, para):
+    """문단의 원문 구간. analyze 가 돌려준 좌표로만 자른다."""
+    return source[para["source_start"]:para["source_end"]]
+
+
 def _count(t):
     """1자 = 1 production token 근사. 실제 tokenizer 는 주입되므로 계약만 본다."""
     return max(1, len(t))
@@ -33,8 +38,10 @@ class ParagraphRuleTest(unittest.TestCase):
     def test_paragraph_offsets_are_recorded(self):
         t = "가나다." + chr(10) + "라마바."
         r = ia.analyze(t, _count)
-        self.assertEqual(r["paragraphs"][0]["char_start"], 0)
-        self.assertEqual(r["paragraphs"][1]["char_start"], len("가나다.") + 1)
+        self.assertEqual(r["paragraphs"][0]["source_start"], 0)
+        self.assertEqual(r["paragraphs"][1]["source_start"], len("가나다.") + 1)
+        for para in r["paragraphs"]:
+            self.assertEqual(t[para["source_start"]:para["source_end"]], para_text(t, para))
 
 
 class PlannerParityTest(unittest.TestCase):
@@ -85,32 +92,38 @@ class EstimateTest(unittest.TestCase):
         r = ia.analyze("문장입니다. " * 20, _count)
         self.assertIn(r["confidence"],
                       (ia.CONFIDENCE_MEASURED, ia.CONFIDENCE_EXTRAPOLATED))
-        self.assertIsNotNone(r["estimated_generation_seconds"])
-        self.assertLess(r["estimated_generation_seconds"]["min"],
-                        r["estimated_generation_seconds"]["max"])
+        self.assertIsNotNone(r["estimated_wall_seconds"])
+        self.assertLess(r["estimated_wall_seconds"]["min"],
+                        r["estimated_wall_seconds"]["max"])
+        self.assertTrue(r["confidence_reason"])
 
     def test_untested_modes_do_not_invent_numbers(self):
         for mode in ("safe_xvector", "auto"):
             r = ia.analyze("문장입니다.", _count, mode=mode)
             self.assertEqual(r["confidence"], ia.CONFIDENCE_INSUFFICIENT)
-            self.assertIsNone(r["estimated_generation_seconds"],
+            self.assertIsNone(r["estimated_wall_seconds"],
                               "%s 는 통제 표본이 없어 숫자를 내면 안 된다" % mode)
+            self.assertEqual(r["confidence_reason"], "NO_CONTROLLED_SAMPLES_FOR_MODE")
 
     def test_extrapolated_outside_measured_frames(self):
         r = ia.analyze("문장입니다. " * 400, _count)
         self.assertEqual(r["confidence"], ia.CONFIDENCE_EXTRAPOLATED)
 
-    def test_audio_estimate_is_positive_and_monotonic(self):
+    def test_audio_estimate_is_a_positive_monotonic_range(self):
         short = ia.analyze("문장입니다.", _count)["estimated_audio_seconds"]
         long = ia.analyze("문장입니다. " * 10, _count)["estimated_audio_seconds"]
-        self.assertGreater(short, 0)
-        self.assertGreater(long, short)
+        self.assertGreater(short["min"], 0)
+        self.assertLessEqual(short["min"], short["max"])
+        self.assertGreater(long["min"], short["min"])
+        self.assertGreater(long["max"], short["max"])
 
     def test_empty_input_is_safe(self):
         r = ia.analyze("", _count)
         self.assertEqual(r["paragraph_count"], 0)
         self.assertEqual(r["planned_calls"], 0)
         self.assertEqual(r["confidence"], ia.CONFIDENCE_INSUFFICIENT)
+        self.assertEqual(r["confidence_reason"], "EMPTY_INPUT")
+        self.assertEqual(r["chunks"], [])
 
 
 class NoDuplicateImplementationTest(unittest.TestCase):
@@ -119,6 +132,8 @@ class NoDuplicateImplementationTest(unittest.TestCase):
         self.assertIn("text_segmenter", src)
         self.assertIn("chunk_budget", src)
         self.assertNotIn("SENTENCE_ENDERS = ", src, "문장 분리기를 재구현하면 안 된다")
+        self.assertIn("tts_grammar", src, "문단 경계는 production parser 가 정한다")
+        self.assertNotIn("    assert ", src, "라이브러리에서 assert 는 -O 로 사라진다")
 
 
 if __name__ == "__main__":

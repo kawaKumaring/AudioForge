@@ -9,6 +9,8 @@ import { statSync } from 'fs'
 import { pathToFileURL } from 'url'
 import { registerAudioIpc } from './ipc/audio.ipc'
 import { registerAppVersionIpc } from './ipc/app-version.ipc'
+import { disposeAnalysisIpc, registerAnalysisIpc } from './ipc/analysis.ipc'
+import { currentPythonPath } from './ipc/audio.ipc'
 import { registerReferenceLibraryIpc } from './ipc/reference-library.ipc'
 import { createReferenceStore } from './services/reference-store'
 import { createTranscriptStore } from './services/reference-transcript'
@@ -38,6 +40,16 @@ let samplerCache: SamplerCache | null = null
 // production 실행에서는 이 분기가 동작하지 않는다.
 if (process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA) {
   try { app.setPath('userData', process.env.AF_E2E_USER_DATA) } catch { /* noop */ }
+}
+
+// 개발 경로(`npm run dev`) 자동 검증용 디버깅 포트.
+// 사용자가 실제로 쓰는 실행은 `run.bat -> af-launch.mjs -> npm run dev` 이고, 그 경로에만
+// React 개발 빌드의 StrictMode 이중 effect 가 있다. production 번들을 띄우는 기존 E2E 는
+// 그 조건을 재현하지 못해 실제 결함을 놓쳤다. 그 경로를 붙잡으려면 이미 떠 있는 Electron 에
+// 붙어야 하므로 여기서 포트를 연다 — **AF_E2E=1 이고 포트가 명시됐을 때만**.
+if (process.env.AF_E2E === '1' && /^\d+$/.test(process.env.AF_E2E_CDP_PORT ?? '')) {
+  app.commandLine.appendSwitch('remote-debugging-port', process.env.AF_E2E_CDP_PORT as string)
+  app.commandLine.appendSwitch('remote-allow-origins', '*')
 }
 
 // ── 선택된 참조 — 논리 ID 하나만 앱 소유 위치에 남긴다(절대 경로 저장 금지) ──
@@ -113,6 +125,8 @@ function createWindow(): void {
 
   registerAppVersionIpc()
   const previewAdapter = registerAudioIpc(mainWindow)
+  // 입력 분석 — GPU 를 쓰지 않는 상주 CPU worker. audio.ipc 와 같은 인터프리터를 쓴다.
+  registerAnalysisIpc({ pythonPath: currentPythonPath })
 
   // 참조 라이브러리 — 저장 루트·선택 상태는 앱 소유 userData 안에만 둔다.
   // 파이썬 실행은 audio.ipc 가 만든 adapter 를 그대로 쓴다(같은 pythonPath·타임아웃·정리).
@@ -298,6 +312,20 @@ if (!gotLock) {
   })
 }
 
+// Electron 이 정상 경로를 못 타고 내려가도(dev 서버 종료·창 강제 종료) 자기가 띄운
+// 분석 worker 는 함께 내려가야 한다. app 훅만으로는 부족해 process 수준에서도 건다.
+app.on('will-quit', () => { disposeAnalysisIpc() })
+process.once('exit', () => { disposeAnalysisIpc() })
+for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+  process.once(sig, () => { disposeAnalysisIpc(); app.quit() })
+}
+
+app.on('before-quit', () => {
+  // 분석은 편집 보조일 뿐이므로 종료를 붙들지 않는다 — 대기 요청을 취소하고 프로세스를 닫는다.
+  disposeAnalysisIpc()
+})
+
 app.on('window-all-closed', () => {
+  disposeAnalysisIpc()
   if (process.platform !== 'darwin') app.quit()
 })
