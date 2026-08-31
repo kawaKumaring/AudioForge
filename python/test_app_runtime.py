@@ -414,6 +414,21 @@ class SpecCase(unittest.TestCase):
         for m in c["model_files"]:
             self.assertGreater(m["min_bytes"], 0)
 
+    def test_hubert_preprocessor_config_is_required(self):
+        """2026-08-31 복구 검증이 찾은 명세 결함의 회귀.
+
+        `Wav2Vec2FeatureExtractor.from_pretrained(..., local_files_only=True)` 는
+        `chinese-hubert-base/preprocessor_config.json` 을 요구한다. 이 파일이 필수 목록에
+        없으면 s1·s2·BERT·CNHuBERT 가중치까지 다 읽은 뒤 deep verify 가 막힌다.
+        """
+        rel = "GPT_SoVITS/pretrained_models/chinese-hubert-base/preprocessor_config.json"
+        c = self.spec["components"]["gptsovits"]
+        entry = next((m for m in c["model_files"] if m["path"] == rel), None)
+        self.assertIsNotNone(entry, "필수 모델 목록에 preprocessor_config.json 이 있어야 한다")
+        self.assertGreater(entry["min_bytes"], 0)
+        # SHA 는 자산 목록이 권위다. 둘이 어긋나면 어느 쪽을 믿을지 알 수 없다.
+        self.assertEqual(entry["sha256"], self.spec["assets"]["gpt-sovits"]["files"][rel])
+
     def test_japanese_only_dependency_is_explicitly_excluded(self):
         """이번 범위는 한국어 복구다. 일본어 전용 의존성이 슬며시 들어오지 않게 고정."""
         c = self.spec["components"]["gptsovits"]

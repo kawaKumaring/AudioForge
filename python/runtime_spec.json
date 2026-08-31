@@ -33,6 +33,12 @@
      "min_bytes": 500
     },
     {
+     "path": "GPT_SoVITS/pretrained_models/chinese-hubert-base/preprocessor_config.json",
+     "min_bytes": 100,
+     "sha256": "dcd684124d06722947939d41ea6ae58dbf10968c60a11a29f23ddc602c64a29b",
+     "why": "Wav2Vec2FeatureExtractor.from_pretrained(local_files_only=True) 가 요구한다. 이 파일이 없으면 deep verify 가 BLOCK 된다(2026-08-31 복구 검증이 발견)."
+    },
+    {
      "path": "GPT_SoVITS/pretrained_models/chinese-hubert-base/pytorch_model.bin",
      "min_bytes": 180000000
     },
@@ -376,6 +382,7 @@
    "files": {
     "GPT_SoVITS/pretrained_models/chinese-roberta-wwm-ext-large/pytorch_model.bin": "e53a693acc59ace251d143d068096ae0d7b79e4b1b503fa84c9dcf576448c1d8",
     "GPT_SoVITS/pretrained_models/chinese-hubert-base/pytorch_model.bin": "24164f129c66499d1346e2aa55f183250c223161ec2770c0da3d3b08cf432d3c",
+    "GPT_SoVITS/pretrained_models/chinese-hubert-base/preprocessor_config.json": "dcd684124d06722947939d41ea6ae58dbf10968c60a11a29f23ddc602c64a29b",
     "GPT_SoVITS/pretrained_models/gsv-v2final-pretrained/s1bert25hz-5kh-longer-epoch=12-step=369668.ckpt": "732f94e63b148066e24c7f9d2637f3374083e637635f07fbdb695dee20ddbe1f",
     "GPT_SoVITS/pretrained_models/gsv-v2final-pretrained/s2G2333k.pth": "924fdccaa3c574bf139c25c9759aa1ed3b3f99e19a7c529ee996c2bc17663695",
     "GPT_SoVITS/text/ja_userdic/userdict.csv": "cf3ae9063ee6b171f5553900fcaa813238a8d20bb0917a6a3a0f8d0c35c27962",
