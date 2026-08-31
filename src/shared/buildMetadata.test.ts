@@ -124,8 +124,11 @@ test('없는 파일과 깨진 파일은 모두 없음으로 다룬다', () => {
 
 test('package.json version 이 단일 권위다 — 화면 문자열을 따로 두지 않는다', () => {
   const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf-8'))
-  assert.equal(pkg.version, '1.2.0-dev', 'develop 계열 버전')
+  assert.equal(pkg.version, '1.2.0-rc.1', 'release candidate 버전')
   assert.equal(versionLabel({ version: pkg.version, commit: null }), `v${pkg.version}`)
+  // rc 에는 short SHA 를 붙이지 않는다 — 커밋이 있어도 표시가 바뀌지 않아야 한다.
+  assert.equal(versionLabel({ version: pkg.version, commit: 'abc1234' }), `v${pkg.version}`,
+    'rc 표시에 +<short-sha> 를 붙이면 안 된다')
   // renderer 소스에 버전 문자열이 하드코딩돼 있지 않은지 본다.
   const label = readFileSync(
     join(repoRoot, 'src', 'renderer', 'components', 'AppVersionLabel.tsx'), 'utf-8')

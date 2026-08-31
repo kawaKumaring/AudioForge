@@ -3,6 +3,7 @@ import {
   INSUFFICIENT_TEXT, PARAGRAPH_WALL_NOTE, canShowWallTime, confidenceLabel, formatRange,
   paragraphSummary, preparationNote, splitRows, summaryLine,
 } from '../../shared/analysisWording'
+import { versionLabel } from '../../shared/buildMetadata'
 import type { AnalysisResult } from '../../shared/inputAnalysis'
 import type { AnalysisStatus } from '../hooks/useInputAnalysis'
 
@@ -174,7 +175,8 @@ function DetailBlock({ result }: { result: AnalysisResult }) {
   useEffect(() => {
     let on = true
     window.api?.app?.getBuildInfo?.()
-      .then((b) => { if (on) setBuild(b?.commit ? `v${b.version}+${b.commit}` : `v${b?.version ?? '?'}`) })
+      // 표시 규칙은 versionLabel 하나가 소유한다. 여기서 손으로 합치면 rc 에도 +sha 가 붙는다.
+      .then((b) => { if (on) setBuild(b ? versionLabel(b) : null) })
       .catch(() => {})
     return () => { on = false }
   }, [])
