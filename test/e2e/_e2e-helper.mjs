@@ -194,3 +194,76 @@ export function nvidiaSmiGpu0() {
     return { used, free }
   } catch { return null }
 }
+
+// ── E2E 전용 userData 격리 ────────────────────────────────────────────────────
+//
+// 앱은 `AF_E2E=1` + `AF_E2E_USER_DATA` 일 때만 userData 를 옮긴다. 이걸 주지 않으면
+// 테스트가 **사용자의 실제 userData** 를 쓴다. 거기에 이전에 고른 참조가 남아 있으면
+// 파일을 새로 넣어도 앱이 곧바로 ready 가 되어 파생 클립을 만들지 않는다 — 실제로
+// reset-cleanup 이 그 이유로 깨졌고, synthesize 는 그 이유로 4초 만에 '통과' 했다.
+// 검증한 것이 없는 초록이 가장 나쁘다.
+
+const USER_DATA_PREFIX = 'audioforge-e2e-userdata-'
+
+/** 이번 실행 전용 빈 userData 를 만든다. 반환 경로는 절대경로다. */
+export function isolatedUserData() {
+  const dir = path.join(os.tmpdir(), USER_DATA_PREFIX + randomUUID())
+  fs.mkdirSync(dir, { recursive: true })
+  return dir
+}
+
+/** 시작 시점에 정말 비어 있는지 — 남은 선택 참조·클립이 하나도 없어야 한다. */
+export function userDataIsPristine(dir) {
+  const lib = path.join(dir, 'reference-library')
+  if (fs.existsSync(path.join(lib, 'selection.json'))) return false
+  let files = []
+  try { files = fs.readdirSync(lib) } catch { return true }   // 폴더 자체가 없으면 깨끗하다
+  return files.length === 0
+}
+
+/** 이 userData 안에 실제로 생긴 것들(참조 라이브러리 파일 목록). */
+export function userDataArtifacts(dir) {
+  const lib = path.join(dir, 'reference-library')
+  try { return fs.readdirSync(lib).sort() } catch { return [] }
+}
+
+/**
+ * 임시 userData 정리 — **이번 테스트가 만든 정확히 그 경로 하나만** 지운다.
+ *
+ * 링크를 품은 트리를 재귀 삭제해 공용 자산을 지운 사고가 있었다. 그래서 지우기 전에
+ * 절대경로·부모가 tmpdir·정해진 prefix·reparse point 아님을 모두 확인하고, 하나라도
+ * 어긋나면 지우지 않고 사유를 돌려준다. 실패한 실행은 호출부가 아예 부르지 않는다.
+ */
+export function cleanupUserData(dir) {
+  if (!dir || !path.isAbsolute(dir)) return 'ABS_PATH_아님'
+  if (path.dirname(dir) !== os.tmpdir()) return '부모가_tmpdir_아님'
+  if (!path.basename(dir).startsWith(USER_DATA_PREFIX)) return 'prefix_불일치'
+  let st
+  try { st = fs.lstatSync(dir) } catch { return '이미_없음' }
+  if (st.isSymbolicLink() || (st.mode & 0o170000) === 0o120000) return 'reparse_point_삭제안함'
+  try { fs.rmSync(dir, { recursive: true, force: true }); return null } catch (e) { return String(e && e.code) }
+}
+
+/**
+ * 사용자의 **실제** userData 지문 — 이름·크기·mtime 만. 내용은 읽지 않는다.
+ * 테스트가 실제 사용자 자산을 건드리지 않았음을 전후 비교로 보이기 위한 것이다.
+ */
+export function realUserDataFingerprint() {
+  const root = path.join(process.env.APPDATA || '', 'audio-forge')
+  const rows = []
+  function walk(d, rel) {
+    let ents = []
+    try { ents = fs.readdirSync(d, { withFileTypes: true }) } catch { return }
+    for (const e of ents.sort((a, b) => a.name.localeCompare(b.name))) {
+      const full = path.join(d, e.name), r = rel ? rel + '/' + e.name : e.name
+      if (e.isDirectory()) { rows.push('D ' + r); walk(full, r) }
+      else {
+        let s
+        try { s = fs.statSync(full) } catch { rows.push('F ' + r + ' ?'); continue }
+        rows.push(`F ${r} ${s.size} ${s.mtimeMs}`)
+      }
+    }
+  }
+  walk(root, '')
+  return rows.join('\n')
+}

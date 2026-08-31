@@ -5,7 +5,11 @@
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
-import { isolatedInput, cleanupIsolated, snapshotTree } from './_e2e-helper.mjs'
+import {
+  isolatedInput, cleanupIsolated, snapshotTree,
+  isolatedUserData, userDataIsPristine, userDataArtifacts, cleanupUserData,
+  realUserDataFingerprint,
+} from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 // 참조 클립 생성(무음 경계로 자른 뒤 전사)을 지나야 하므로 **실제 말이 든 오디오**가 필요하다.
@@ -48,7 +52,13 @@ const OUT_BASE = path.join(path.dirname(REF), 'AudioForge_output')
 const pageErrors = [], consoleErrors = [], crashes = []
 const mainOut = []
 
-const app = await electron.launch({ args: ['out/main/index.js'], cwd: APP, env: { ...process.env, AF_E2E: '1' } })
+// ── userData 격리 ────────────────────────────────────────────────────────────
+// 실제 userData 를 쓰면 이전에 고른 참조가 남아 있어 앱이 곧바로 ready 가 되고, 주입한
+// fixture 로 파생 클립을 만들지 않는다. 그러면 초록이 나와도 검증한 것이 없다.
+const UD = isolatedUserData()
+const realBefore = realUserDataFingerprint()
+
+const app = await electron.launch({ args: ['out/main/index.js'], cwd: APP, env: { ...process.env, AF_E2E: '1', AF_E2E_USER_DATA: UD } })
 app.process().stdout.on('data', d => mainOut.push(String(d)))
 app.process().stderr.on('data', d => mainOut.push(String(d)))
 const win = await app.firstWindow()
@@ -184,6 +194,19 @@ try {
 
   fs.writeFileSync(path.join(SHOT, 'e2e_log.txt'), logLines.join('\n') + '\n\n--- main ---\n' + mainOut.join(''), 'utf-8')
 }
+// 격리 계약 — 이 흐름은 **보관함 등록을 하지 않는다**. 그러므로 reference-library 는
+// 애초에 생기지 않아야 한다. "생겼다면 안쪽에" 같은 조건부는 실제 계약이 아니다.
+const udLib = userDataArtifacts(UD)
+ok(udLib.length === 0,
+  `임시 userData 의 reference-library 미생성 (${udLib.length}개${udLib.length ? ': ' + udLib.join(',') : ''})`)
+ok(realUserDataFingerprint() === realBefore, '실제 userData 변경 0건(이름·크기·mtime)')
+if (failed === 0) {
+  const why = cleanupUserData(UD)
+  ok(why === null, `임시 userData 정리${why ? ' 거부: ' + why : ''}`)
+} else {
+  console.log('[e2e] INFO 실패로 임시 userData 를 남긴다:', UD)
+}
+
 if (pageErrors.length) log('PAGEERRORS', pageErrors.join(' | '))
 log('SUMMARY', { failed, pageErrors: pageErrors.length, consoleErrors: consoleErrors.length, crashes: crashes.length, shots: SHOT })
 process.exit(failed === 0 ? 0 : 1)

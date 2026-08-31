@@ -91,19 +91,36 @@ test('음성이 필요한 E2E 는 저장소가 가진 fixture 만 쓴다', () =>
   }
 })
 
-test('fixture 가 저장소에 실재하고 계약대로다', () => {
-  const p = fileURLToPath(new URL('../../test/fixtures/audio/ko-speech-7s.wav', import.meta.url))
-  assert.ok(existsSync(p), 'fixture 파일이 저장소에 있어야 한다')
-  const buf = readFileSync(p)
-  // RIFF/WAVE 헤더에서 형식과 길이를 읽는다(디코딩하지 않는다).
-  assert.equal(buf.subarray(0, 4).toString('ascii'), 'RIFF')
-  assert.equal(buf.subarray(8, 12).toString('ascii'), 'WAVE')
-  assert.equal(buf.readUInt16LE(20), 1, 'PCM 이어야 한다')
-  assert.equal(buf.readUInt16LE(22), 1, 'mono 여야 한다')
-  assert.equal(buf.readUInt32LE(24), 24000, '24kHz 여야 한다')
-  assert.equal(buf.readUInt16LE(34), 16, '16-bit 여야 한다')
-  const seconds = buf.readUInt32LE(40) / (24000 * 2)
-  assert.ok(seconds >= 5 && seconds <= 8, `5~8초여야 한다: ${seconds.toFixed(2)}초`)
+test('음성 fixture 두 개가 각자의 계약대로 실재한다', () => {
+  // 목적이 다르므로 파일도 둘이다. 7.5초는 3~10초 band 라 앱이 원본을 그대로 참조로 쓰는
+  // `valid_whole` 경로를, 18초는 구간을 잘라 파생 클립을 만드는 `needs_region` 경로를 탄다.
+  // 하나로 합치면 두 경로 중 하나는 검증하지 못한다.
+  const cases = [
+    { name: 'ko-speech-7s.wav', min: 5, max: 8 },
+    { name: 'ko-speech-region-18s.wav', min: 10.001, max: 20 },
+  ]
+  for (const c of cases) {
+    const p = fileURLToPath(new URL(`../../test/fixtures/audio/${c.name}`, import.meta.url))
+    assert.ok(existsSync(p), `${c.name} 이 저장소에 있어야 한다`)
+    const buf = readFileSync(p)
+    // RIFF/WAVE 헤더에서 형식과 길이를 읽는다(디코딩하지 않는다).
+    assert.equal(buf.subarray(0, 4).toString('ascii'), 'RIFF', c.name)
+    assert.equal(buf.subarray(8, 12).toString('ascii'), 'WAVE', c.name)
+    assert.equal(buf.readUInt16LE(20), 1, `${c.name}: PCM 이어야 한다`)
+    assert.equal(buf.readUInt16LE(22), 1, `${c.name}: mono 여야 한다`)
+    assert.equal(buf.readUInt32LE(24), 24000, `${c.name}: 24kHz 여야 한다`)
+    assert.equal(buf.readUInt16LE(34), 16, `${c.name}: 16-bit 여야 한다`)
+    const seconds = buf.readUInt32LE(40) / (24000 * 2)
+    assert.ok(seconds >= c.min && seconds <= c.max,
+      `${c.name}: ${c.min}~${c.max}초여야 한다 (실제 ${seconds.toFixed(2)}초)`)
+  }
+})
+
+test('두 E2E 가 서로 다른 fixture 를 쓴다', () => {
+  const syn = readFileSync(join(E2E_DIR, 'synthesize.e2e.mjs'), 'utf-8')
+  const rst = readFileSync(join(E2E_DIR, 'reset-cleanup.e2e.mjs'), 'utf-8')
+  assert.ok(syn.includes("'ko-speech-7s.wav'"), 'synthesize 는 valid_whole 경로용 7.5초')
+  assert.ok(rst.includes("'ko-speech-region-18s.wav'"), 'reset-cleanup 은 needs_region 경로용 18초')
 })
 
 test('대본 fixture 는 환경 변수로만 받는다', () => {
