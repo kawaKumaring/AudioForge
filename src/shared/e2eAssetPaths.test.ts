@@ -79,13 +79,31 @@ test('E2E 가 저장소 밖 자산을 찾아 나가지 않는다', () => {
     `추적되지 않은 사용자 자산에 기대면 clean clone 에서 재현되지 않는다:\n${bad.join('\n')}`)
 })
 
-test('음성 자산이 필요한 E2E 는 없을 때 통과하지 않고 멈춘다', () => {
+test('음성이 필요한 E2E 는 저장소가 가진 fixture 만 쓴다', () => {
   // 이 둘은 참조 클립 생성(무음 경계 + 전사)을 지나야 해서 실제 말이 든 오디오가 필요하다.
+  // 그 자산은 이제 저장소 안에 있다 — 밖을 보지 않으므로 어디서 받아도 같은 결과가 난다.
   for (const f of ['synthesize.e2e.mjs', 'reset-cleanup.e2e.mjs']) {
     const src = readFileSync(join(E2E_DIR, f), 'utf-8')
-    assert.ok(src.includes('AF_E2E_REFERENCE'), `${f}: 명시 env 경로가 있어야 한다`)
-    assert.ok(/process\.exit\(2\)/.test(src), `${f}: 자산이 없으면 전제 미충족으로 멈춰야 한다`)
+    assert.ok(src.includes("'test', 'fixtures', 'audio'"), `${f}: 저장소 fixture 를 써야 한다`)
+    assert.ok(!src.includes('AF_E2E_REFERENCE'),
+      `${f}: 바깥 자산으로 갈아탈 우회로를 남기지 않는다`)
+    assert.ok(/process\.exit\(2\)/.test(src), `${f}: fixture 가 없으면 멈춰야 한다`)
   }
+})
+
+test('fixture 가 저장소에 실재하고 계약대로다', () => {
+  const p = fileURLToPath(new URL('../../test/fixtures/audio/ko-speech-7s.wav', import.meta.url))
+  assert.ok(existsSync(p), 'fixture 파일이 저장소에 있어야 한다')
+  const buf = readFileSync(p)
+  // RIFF/WAVE 헤더에서 형식과 길이를 읽는다(디코딩하지 않는다).
+  assert.equal(buf.subarray(0, 4).toString('ascii'), 'RIFF')
+  assert.equal(buf.subarray(8, 12).toString('ascii'), 'WAVE')
+  assert.equal(buf.readUInt16LE(20), 1, 'PCM 이어야 한다')
+  assert.equal(buf.readUInt16LE(22), 1, 'mono 여야 한다')
+  assert.equal(buf.readUInt32LE(24), 24000, '24kHz 여야 한다')
+  assert.equal(buf.readUInt16LE(34), 16, '16-bit 여야 한다')
+  const seconds = buf.readUInt32LE(40) / (24000 * 2)
+  assert.ok(seconds >= 5 && seconds <= 8, `5~8초여야 한다: ${seconds.toFixed(2)}초`)
 })
 
 test('대본 fixture 는 환경 변수로만 받는다', () => {

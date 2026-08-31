@@ -8,19 +8,13 @@ import path from 'path'
 import { isolatedInput, cleanupIsolated, snapshotTree } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
-// 이 테스트는 **실제 말이 든 오디오**가 있어야 한다. 참조 클립은 무음 경계로 잘린 뒤
-// Whisper 로 전사되고, 전사가 비면 앱이 BLOCK_TRANSCRIBE_FAILED 로 막는다(정상 동작).
-// 합성 사인파로는 그 경로를 지날 수 없다.
-//
-// 저장소에는 그런 자산이 추적돼 있지 않다. 그렇다고 본체 저장소의 미추적 `resources/` 를
-// 뒤지면 그 PC 에서만 되는 검증이 된다 — detached clean worktree 에서 실제로 그렇게
-// 통과해 버렸다. 그래서 **저장소 안의 자리와 명시 env 만** 본다. 없으면 통과시키지 않고
-// 전제 미충족으로 멈춘다(조용한 초록 금지).
-const SRC = [
-  (process.env.AF_E2E_REFERENCE || '').trim(),
-  path.join(APP, 'resources', 'speaker_b.wav'),
-].find((c) => c && fs.existsSync(c)) || null
-const RES_DIR = path.join(APP, 'resources')
+// 참조 클립 생성(무음 경계로 자른 뒤 전사)을 지나야 하므로 **실제 말이 든 오디오**가 필요하다.
+// 합성 사인파로는 지날 수 없다 — 전사가 비면 앱이 BLOCK_TRANSCRIBE_FAILED 로 막는다(정상 동작).
+// 그래서 저장소가 직접 가진 fixture 하나만 쓴다. 저장소 밖을 보지 않으므로 clean clone·
+// 다른 PC·CI 어디서나 같은 결과가 난다. 출처·SHA·좌표는 doc/test-fixtures.md 에 있다.
+const FIXTURE = path.join(APP, 'test', 'fixtures', 'audio', 'ko-speech-7s.wav')
+const SRC = fs.existsSync(FIXTURE) ? FIXTURE : null
+const RES_DIR = path.dirname(FIXTURE)   // 불변 검사 대상 = fixture 폴더
 const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots')
 fs.mkdirSync(SHOT, { recursive: true })
 const logLines = []
@@ -43,10 +37,7 @@ function collectDirs(base) {
   return out
 }
 
-if (!SRC || !fs.existsSync(SRC)) {
-  console.error('prerequisite: 참조 자산 없음 — AF_E2E_REFERENCE 또는 resources/speaker_b.wav')
-  process.exit(2)
-}
+if (!SRC) { console.error(`fixture 없음: ${FIXTURE}`); process.exit(2) }
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요: npm run build'); process.exit(2) }
 
 // resources/를 삭제하지 않는다 — 입력을 격리 tmp로 복사해 주입, 출력도 그 안(dirname(input)/AudioForge_output).
@@ -188,7 +179,7 @@ try {
   const leftover = fs.readdirSync(os.tmpdir()).filter(n => n.startsWith('audioforge_refclip_'))
   ok(leftover.length === 0, `종료 후 파생 참조 임시폴더 정리(leftover=${leftover.length})`)
   // 원본 resources/ 불변 단언 후 격리 폴더만 삭제(예외에도 반드시)
-  ok(snapshotTree(RES_DIR) === resBefore, 'resources/ 원본·기존 출력 불변(size/hash/목록)')
+  ok(snapshotTree(RES_DIR) === resBefore, "fixture 원본 불변(size/hash/목록)")
   cleanupIsolated(ISO)
 
   fs.writeFileSync(path.join(SHOT, 'e2e_log.txt'), logLines.join('\n') + '\n\n--- main ---\n' + mainOut.join(''), 'utf-8')

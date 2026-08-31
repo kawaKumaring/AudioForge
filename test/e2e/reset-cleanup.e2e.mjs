@@ -4,17 +4,15 @@ import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'; import os from 'os'
 import { isolatedInput, cleanupIsolated, snapshotTree } from './_e2e-helper.mjs'
 const APP = process.cwd()
-// 소스 선택. 파생 참조 클립은 **말이 끊기는 자리**를 찾아 잘라 만들어지므로, 그 경로를
-// 검사하려면 실제 말이 든 승인 자산이 필요하다. 합성 사인파로는 앱이 정당하게 거절한다
-// ("요청하신 구간 주변에 말이 끊기는 지점이 없습니다") — 끊김을 넣어 봐도 마찬가지였다.
-// 그래서 fixture 를 억지로 통과시키지 않고, 자산이 없으면 전제 미충족으로 건너뛴다.
-const SRC = [
-  (process.env.AF_E2E_REFERENCE || '').trim(),
-  path.join(APP, 'resources', 'speaker_b.wav'),
-].find((c) => c && fs.existsSync(c)) || null
-const RES_DIR = path.join(APP, 'resources')
+// 참조 클립 생성(무음 경계로 자른 뒤 전사)을 지나야 하므로 **실제 말이 든 오디오**가 필요하다.
+// 합성 사인파로는 지날 수 없다 — 전사가 비면 앱이 BLOCK_TRANSCRIBE_FAILED 로 막는다(정상 동작).
+// 그래서 저장소가 직접 가진 fixture 하나만 쓴다. 저장소 밖을 보지 않으므로 clean clone·
+// 다른 PC·CI 어디서나 같은 결과가 난다. 출처·SHA·좌표는 doc/test-fixtures.md 에 있다.
+const FIXTURE = path.join(APP, 'test', 'fixtures', 'audio', 'ko-speech-7s.wav')
+const SRC = fs.existsSync(FIXTURE) ? FIXTURE : null
+const RES_DIR = path.dirname(FIXTURE)   // 불변 검사 대상 = fixture 폴더
 let failed = 0; const ok = (c, m) => { console.log(c ? '[e2e] PASS' : '[e2e] FAIL', m); if (!c) failed++ }
-if (!SRC) { console.error('prerequisite: 참조 자산 없음(AF_E2E_REFERENCE 또는 resources/speaker_b.wav)'); process.exit(2) }
+if (!SRC) { console.error(`fixture 없음: ${FIXTURE}`); process.exit(2) }
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
 const resBefore = snapshotTree(RES_DIR)
 const { dir: ISO, input: REF } = isolatedInput(SRC)
@@ -54,7 +52,7 @@ try {
   failed++; console.log('[e2e] EXCEPTION', e?.message || String(e))
 } finally {
   try { await app.close() } catch { /* ignore */ }
-  ok(snapshotTree(RES_DIR) === resBefore, 'resources/ 원본 불변')
+  ok(snapshotTree(RES_DIR) === resBefore, 'fixture 원본 불변')
   cleanupIsolated(ISO)  // 예외에도 반드시 정리
 }
 console.log('[e2e] SUMMARY', JSON.stringify({ failed }))
