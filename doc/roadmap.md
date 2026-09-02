@@ -214,7 +214,7 @@ goback 앞 400자 같은 단일 묶음 중간 길이에서 나온다. 이것은 
 
 | 버전 | 묶음 | 세부 |
 |---|---|---|
-| 1.3 | 공용 구조·미리보기 | [§10](script-scene-architecture.md) |
+| 1.3 | 공용 구조·미리보기 | [§10](script-scene-architecture.md) — PHASE 0~3 구현 완료 |
 | 1.4 | 다화자·감정 | [§10](script-scene-architecture.md) |
 | 1.5 | 음성 언어 변환 | [§10](script-scene-architecture.md) |
 | 1.6 | 환경음·공간 연출 | [§10](script-scene-architecture.md) |
@@ -402,8 +402,8 @@ worktree junction 금지)은 [script-scene-architecture.md §15](script-scene-ar
 | 가창 SVC | 상세 계획 존재 | 별도 MVP 승인 |
 | MIDI/MusicXML 가창 | 후속 연구 | SVC 이후 |
 | 상황 기반 환경음 | 상세 계획 존재 | 1.6 단계로 편입 — 아래 §13 |
-| 1.3 공용 구조·미리보기 | 설계 확정, 구현 미착수 | plan schema·parity·미리보기 parity |
-| 1.4 다화자·감정 | 설계 확정 | 1.3 계약 위에서 착수 |
+| 1.3 공용 구조·미리보기 | PHASE 0~3 구현 완료, 사용자 인수 대기 | develop `1c1e630` · 계획·경고·읽기 전용 화면 |
+| 1.4 다화자·감정 | 설계 확정 | 1.3 인수 뒤 착수 — plan 의 `speakers` 축부터 |
 | 1.5 음성 언어 변환 | 설계 확정 | 1.4 계약 위에서 착수 |
 | 1.6 환경음·공간 연출 | 설계 확정 | 1.5 계약 위에서 착수 |
 | 2.0 가창·음악 목소리 변환 | 별도 MVP 승인 대기 | 1.3~1.6 계약 안정 |
