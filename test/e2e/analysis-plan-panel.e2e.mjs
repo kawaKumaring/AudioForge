@@ -181,9 +181,32 @@ try {
       warningText: all('[data-testid="analysis-plan-warning"]')
         .map((el) => Array.from(el.children).slice(0, 2).map(text).join(' · ')),
       approximate: !!t('[data-testid="analysis-plan-approximate"]'),
+      // 아직 없는 축은 상세 정보 안에만 있어야 한다 — 기본 화면에서는 0개여야 한다.
       reservedAxes: all('[data-testid="analysis-reserved-axis"]').map(text),
+      detailOpen: t('[data-testid="analysis-detail"]') !== null,
+      /**
+       * 합성 시작 자리의 상태.
+       *
+       * 이 자리는 두 모습을 가진다 — 준비가 끝나면 누를 수 있는 버튼, 준비가 덜 됐으면
+       * 사유를 적은 안내(`aria-disabled`). E2E 환경은 참조 구간을 확정하지 않으므로
+       * 후자가 정상이다. 그래서 "눌리는가" 가 아니라 **경고가 이 상태를 바꾸는가**를 본다.
+       */
+      synth: (() => {
+        const btn = document.querySelector('button[aria-label="음성 합성 시작"]')
+        if (btn) return { kind: 'action', disabled: !!btn.disabled, text: '' }
+        const blocked = Array.from(document.querySelectorAll('[aria-disabled="true"]'))
+          .find((el) => (el.textContent || '').includes('음성 합성 시작'))
+        if (blocked) return { kind: 'blocked', disabled: true, text: (blocked.textContent || '').trim() }
+        return { kind: 'absent', disabled: null, text: '' }
+      })(),
     }
   })
+
+  /** 상세 정보를 펼친다(사용자가 누르는 것과 같은 경로). */
+  const openDetail = async () => {
+    await page.click('[data-testid="input-analysis-detail-toggle"]')
+    await sleep(200)          // React 재렌더를 기다린다 — 즉시 읽으면 이전 상태를 본다
+  }
 
   const typeScript = (script) => page.evaluate((s) => {
     const ta = document.querySelector('section[aria-label="대사"] textarea')
@@ -248,8 +271,13 @@ try {
       `[${c.id}] 파서 권위 상태가 예상과 같다`, String(plan.parserAuthority))
     ok(screen.approximate === !c.expect.authority,
       `[${c.id}] 근사 안내는 물러난 경우에만 뜬다`, String(screen.approximate))
-    ok(screen.reservedAxes.length === 6 && screen.reservedAxes.every((s) => s.endsWith('0')),
-      `[${c.id}] 앞으로 들어올 축 6개가 값 없이 표시된다`, screen.reservedAxes.join(' '))
+    ok(screen.reservedAxes.length === 0,
+      `[${c.id}] 아직 없는 축이 기본 화면을 채우지 않는다`, `${screen.reservedAxes.length}개`)
+    // 경고 문구가 합성 자리에 새어 들어가면 그것이 곧 "경고가 막았다" 로 읽힌다.
+    const warningWords = ['닫히지 않은', '알 수 없는 표기', '말이 없는', '겹치는 지시']
+    ok(!warningWords.some((w) => screen.synth.text.includes(w)),
+      `[${c.id}] 합성 자리에 사전 경고가 끼어들지 않는다`,
+      `${screen.synth.kind}`)
 
     material.push({
       case: c.id,
@@ -264,7 +292,8 @@ try {
         emotionRows: screen.emotionText,
         warningRows: screen.warningText,
         approximate: screen.approximate,
-        reservedAxes: screen.reservedAxes,
+        reservedAxesInDefaultView: screen.reservedAxes.length,
+        synth: screen.synth.kind + (screen.synth.text ? ' :: ' + screen.synth.text : ''),
       },
       plan: {
         paragraphs: plan.sourceParagraphs.length, utterances: plan.utterances.length,
@@ -276,6 +305,37 @@ try {
       },
     })
   }
+
+  // ── 경고가 합성 자리를 바꾸지 않는다 ──────────────────────────────────────
+  // 경고 없는 대본과 경고 있는 대본에서 이 자리가 **같아야** 한다. (파서 오류가 있는
+  // 대본은 v1.2.0 부터 생성 시작 자체를 막는다 — 그건 fail-closed 정책이고 미리보기
+  // 경고와 다른 층이라 비교 대상이 아니다.)
+  const synthAt = {}
+  for (const id of ['structure', 'warned']) {
+    const c = CASES.find((x) => x.id === id)
+    await typeScript(c.text)
+    await waitReady(30000)
+    const st = await readPanel()
+    synthAt[id] = st.synth.kind + '|' + st.synth.text
+  }
+  ok(synthAt.structure === synthAt.warned,
+    '사전 경고가 합성 자리의 상태를 바꾸지 않는다',
+    `${synthAt.structure} vs ${synthAt.warned}`)
+
+  // ── 상세 정보를 펼치면 아직 없는 축이 보인다 ──────────────────────────────
+  await openDetail()
+  const detail = await readPanel()
+  ok(detail.detailOpen, '상세 정보가 펼쳐진다')
+  ok(detail.reservedAxes.length === 6 && detail.reservedAxes.every((s) => s.endsWith('0')),
+    '상세 정보에 앞으로 들어올 축 6개가 값 없이 표시된다', detail.reservedAxes.join(' '))
+
+  // ── 버전 표시 ─────────────────────────────────────────────────────────────
+  const shown = await page.evaluate(() => {
+    const el = document.querySelector('[data-testid="analysis-build"]')
+    return (el?.textContent || '').trim()
+  })
+  ok(/^빌드 v\d+\.\d+\.\d+-dev\+[0-9a-f]{7}$/.test(shown),
+    '개발 빌드 표시가 버전 + short SHA 다', shown)
 
   // ── 위생 ──────────────────────────────────────────────────────────────────
   ok(pageErrors.length === 0, 'renderer 에서 잡히지 않은 오류가 없다',

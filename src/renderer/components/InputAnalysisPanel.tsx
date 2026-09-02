@@ -102,7 +102,6 @@ export default function InputAnalysisPanel(props: {
           <ParagraphList result={result} sourceText={sourceText} stale={stale} />
           <EmotionSpanList result={result} sourceText={sourceText} stale={stale} />
           <SplitList result={result} stale={stale} />
-          <ReservedAxisList />
           <button
             type="button"
             onClick={() => setShowDetail((v) => !v)}
@@ -289,8 +288,11 @@ function PlanWarningList(props: { result: AnalysisResult; sourceText: string }) 
 }
 
 /**
- * 앞으로 지시가 들어올 자리. 지금은 비어 있다는 사실 자체가 정보다 —
- * 화면이 없는 값을 채워 보여 주지 않는다는 것도 여기서 드러난다.
+ * 앞으로 지시가 들어올 자리. **상세 정보 안에만** 둔다.
+ *
+ * 비어 있다는 사실 자체가 정보이긴 하지만, 기본 화면에 값 0 여섯 개를 항상 늘어놓으면
+ * 지금 실제로 쓰는 숫자가 그만큼 뒤로 밀린다. 그래서 알고 싶을 때 펼쳐 보는 자리로 옮겼다.
+ * 없는 값을 채워 보여 주지 않는다는 원칙은 그대로다.
  */
 function ReservedAxisList() {
   return (
@@ -370,6 +372,9 @@ function DetailBlock({ result }: { result: AnalysisResult }) {
       {result.warnings.length > 0 && (
         <span style={muted}>참고: {result.warnings.join(', ')}</span>
       )}
+      {/* 아직 없는 축은 여기까지 들어와서 본다 — 기본 화면에 늘 0 여섯 개를 늘어놓으면
+          지금 쓰는 정보가 그만큼 뒤로 밀린다(사용자 판단). */}
+      <ReservedAxisList />
     </div>
   )
 }

@@ -63,6 +63,17 @@ test('PHASE 3 이 요구한 다섯 가지가 화면에 있다', () => {
   }
 })
 
+test('아직 없는 축은 상세 정보 안에만 있다', () => {
+  // 기본 화면에 값 0 여섯 개를 항상 늘어놓으면 지금 쓰는 숫자가 그만큼 뒤로 밀린다.
+  // 판정은 사용자 것이고, 여기서는 그 자리가 지켜지는지만 본다.
+  const detailAt = CODE.indexOf('function DetailBlock')
+  assert.ok(detailAt > 0, 'DetailBlock 이 있어야 한다')
+  const main = CODE.slice(0, detailAt)
+  const detail = CODE.slice(detailAt)
+  assert.equal(main.includes('<ReservedAxisList'), false, '기본 화면에 두지 않는다')
+  assert.ok(detail.includes('<ReservedAxisList'), '상세 정보 안에 있어야 한다')
+})
+
 test('경고는 합성을 막는 장치를 달지 않는다', () => {
   // 이 패널은 읽기 전용이다. 버튼을 잠그거나 합성 경로를 건드리는 코드가 있으면 안 된다.
   for (const forbidden of ['disabled=', 'canSynthesize', 'blockSynthesis', 'setText(']) {
