@@ -30,7 +30,7 @@ class BoundaryGapsTest(unittest.TestCase):
     def test_two_plain_lines_line_silence_gap(self):
         # 레거시 줄단위 입력: 감정 없음, 줄 경계 = silence_gap(회귀 보존).
         parsed, gb = gaps("안녕하세요.\n반갑습니다.")
-        self.assertEqual([e for e, _ in parsed], ["default", "default"])
+        self.assertEqual([e for e, _t, _sp in parsed], ["default", "default"])
         self.assertEqual(gb, [0.0, SG])
 
     def test_single_segment_no_leading_gap(self):
@@ -41,7 +41,7 @@ class BoundaryGapsTest(unittest.TestCase):
     def test_inline_emotion_change_pause_mode(self):
         # 같은 줄 인라인 감정 전환 = emotionBoundaryPause → pause 모드는 0.2, silence_gap(0.3) 아님.
         parsed, gb = gaps("[기쁨] 안녕 [명랑] 반가워", mode="pause")
-        self.assertEqual([e for e, _ in parsed], ["happy", "cheerful"])
+        self.assertEqual([e for e, _t, _sp in parsed], ["happy", "cheerful"])
         self.assertEqual(gb, [0.0, EPMS / 1000.0])
 
     def test_inline_emotion_change_immediate_mode(self):
@@ -61,7 +61,7 @@ class BoundaryGapsTest(unittest.TestCase):
         # 감정이 '줄바꿈'에서 바뀌면 lineSilenceGap만 적용(감정 pause 추가 안 함) — 계약 추가3.
         # → gap = silence_gap(0.3), emotion pause(0.2) 아님. 우선순위 line > emotion 증명.
         parsed, gb = gaps("[기쁨] 첫째 줄.\n[슬픔] 둘째 줄.", mode="pause")
-        self.assertEqual([e for e, _ in parsed], ["happy", "sad"])
+        self.assertEqual([e for e, _t, _sp in parsed], ["happy", "sad"])
         self.assertEqual(gb, [0.0, SG])
 
     def test_spoken_text_verbatim_no_restrip(self):

@@ -1876,7 +1876,8 @@ def _summarize_reference_alignment(ordered_entries):
 
 def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed, silence_gap,
                          pitch=0.0, tail_cfg=None, boundary_gaps=None, boundary_kinds=None,
-                         reference_conditioning_mode=None):
+                         reference_conditioning_mode=None, ref_table=None,
+                         speaker_labels=None):
     """Qwen 배치 합성 — 2B 품질 게이트 재사용, Qwen 전용 VRAM 임계로 장치 선택(ComfyUI 병행 안전),
     모델 1회 로딩. speed: chunk별 atempo 후 결합(1.0은 raw). 임시파일 finally 정리.
     ⚠️ **결합 무음은 원 segment 경계에만 들어간다.** 한 문장이 자동분할된 내부 chunk 경계의 gap은
@@ -1940,6 +1941,14 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
     final_path = os.path.join(output_dir, "synthesized.wav")
     pending_path = os.path.join(job_dir, "pending.wav")
     default_ref = ref_cache["default"]
+    if ref_table is None:
+        # 표가 없으면 오늘까지의 규칙(감정 → 기본)만 있는 표를 세운다. 화자 없는 호출
+        # (구 경로·테스트)에서 동작이 달라지지 않게 하기 위한 것이고, 화자가 있으면
+        # 호출부가 반드시 표를 넘긴다.
+        ref_table = _sr.ReferenceTable(
+            default_ref=default_ref,
+            emotion_refs={k: v for k, v in ref_cache.items() if k != "default"})
+    reference_rows = []
     def_source = None
     def_xvo = None
     def_tr_lang = def_tr_len = def_tr_sha = None
@@ -1975,15 +1984,24 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         # 글자·문장부호·문단 순서를 바꾸지 않고 줄바꿈으로 이어 붙인다(원문 보존).
         # 감정 태그가 서로 다르면 합치지 않는다 — 생성 조건이 달라지기 때문이다.
         if os.environ.get("AUDIOFORGE_DIAG_MERGE_SEGMENTS") == "1":
-            _eids = {e for e, _ in parsed}
+            _eids = {e for e, _t, _sp in parsed}
             if len(_eids) > 1:
                 raise RuntimeError(
                     "DIAG_MERGE_REFUSED: 감정 태그가 %d 종류라 합치면 조건이 달라진다" % len(_eids))
-            _merged = chr(10).join(t for _, t in parsed)
-            parsed = [(parsed[0][0], _merged)]
+            # 화자가 다르면 더더욱 합칠 수 없다 — 목소리가 달라진다.
+            _spks = {sp for _e, _t, sp in parsed}
+            if len(_spks) > 1:
+                raise RuntimeError(
+                    "DIAG_MERGE_REFUSED: 화자가 %d 명이라 합치면 목소리가 달라진다" % len(_spks))
+            _merged = chr(10).join(t for _e, t, _sp in parsed)
+            parsed = [(parsed[0][0], _merged, parsed[0][2])]
             emit("stage", stage="diagnostic_merge_segments", segments=1, chars=len(_merged))
-        for i, (emotion_id, line_text) in enumerate(parsed):
-            ref = ref_cache.get(emotion_id, ref_cache["default"])
+        for i, (emotion_id, line_text, speaker_id) in enumerate(parsed):
+            # 참조는 표 하나가 정한다(speaker_refs.ReferenceTable). 여기서 폴백 규칙을
+            # 다시 쓰지 않는다 — 조용한 대체가 생기는 자리가 정확히 여기였다.
+            _rr_row = ref_table.resolve(speaker_id, emotion_id)
+            ref = _rr_row["path"]
+            reference_rows.append(dict(_rr_row, segment_index=i))
             prefix_text = None
             if safe_mode:
                 # 상위 게이트: 전사 기반 ICL 결정(_resolve_qwen_ref_text)을 아예 타지 않는다.
@@ -2020,7 +2038,12 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             out_path = os.path.join(job_dir, f"segment_qwen_{i + 1:03d}.wav")
             seg = {"index": i, "text": line_text, "ref_audio": ref, "ref_text": ref_text,
                    "x_vector_only": xvo, "language_name": lang_name, "out_path": out_path,
-                   "emotion_id": emotion_id}  # 태그(비민감) — bridge가 결과·오류에 반환
+                   # 태그(비민감) — bridge 가 결과·오류에 그대로 반환한다. 화자는 불투명
+                   # 토큰으로만 싣는다(표시 이름은 private 기록의 몫).
+                   "emotion_id": emotion_id,
+                   "speaker_ref": _rr_row["speaker_ref"],
+                   "reference_id": _rr_row["reference_id"],
+                   "reference_source": _rr_row["source"]}
             # 기본 경로 = vendor native ICL(ref_code conditioning + vendor 내부 crop).
             # controlled-prefix 는 legacy rollback 전용 opt-in 이다 —
             # 참조를 목표 앞에 재발화시키고 외부 ASR 로 잘라내던 경로다.
@@ -2038,9 +2061,17 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         # supported 는 생성 결과를 실제로 재야만 열린다(오늘 이 경로에는 그 측정이 없다).
         # 기록은 비민감 토큰만: emotion_id / role / state / reason.
         import emotion_acoustic as _ea
-        _emotion_keys = {eid: ref_cache.get(eid) for eid, _ in parsed if eid != "default"}
+        _emotion_keys = {eid: ref_cache.get(eid) for eid, _t, _sp in parsed if eid != "default"}
         emotion_acoustic_records = _ea.resolve_emotion_set(default_ref, _emotion_keys)
         emotion_acoustic_summary = _ea.emotion_set_summary(emotion_acoustic_records)
+
+        # 발화 → 화자·참조 표를 기록에 올린다. chunk 행이 이 표를 보고 자기 화자를 채운다
+        # (chunk 가 갈려도 같은 발화의 chunk 는 같은 화자·참조를 갖는다).
+        if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
+            try:
+                _CONCAT_RECORDER.set_speaker_map(reference_rows, labels=speaker_labels)
+            except Exception:
+                pass               # 기록 실패가 합성을 막지 않는다
 
         try:
             try:
@@ -2777,6 +2808,9 @@ def _concat_with_boundaries(paths, gaps_before, output_path):
     return layout
 
 
+import speaker_refs as _sr
+
+
 def _boundary_gaps_from_plan(plan, silence_gap, emotion_boundary_mode="pause",
                              emotion_boundary_pause_ms=200, paragraph_gap=None,
                              model_tail_ms=None, model_lead_ms=None):
@@ -2802,7 +2836,11 @@ def _boundary_gaps_from_plan(plan, silence_gap, emotion_boundary_mode="pause",
     감정 전환은 immediate|pause만(계약 정정6·정정7). smooth/crossfade는 환산하지 않는다(미지원).
     """
     segs = plan.get("segments", [])
-    parsed = [(s.get("emotion_id") or "default", s.get("spoken_text", "")) for s in segs]
+    # 행 모양: (emotion_id, spoken_text, speaker_id). 앞의 두 자리는 v1.3.0 과 같아서
+    # 기존 소비자가 그대로 동작하고, 화자만 뒤에 실려 chunk 까지 따라간다.
+    # 여기가 계획이 좁아지는 **유일한 지점**이라 화자도 이 한 곳에서 넓힌다.
+    parsed = [(s.get("emotion_id") or "default", s.get("spoken_text", ""), s.get("speaker_id"))
+              for s in segs]
     entries = semantic_chunk_planner.resolve_boundary_gaps(
         plan, silence_gap, emotion_boundary_mode, emotion_boundary_pause_ms,
         paragraph_gap, model_tail_ms, model_lead_ms)
@@ -2825,7 +2863,9 @@ def resolve_reference_input(override, input_path):
 def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                emotion_refs=None, emotion_ref_sources=None, preferred_engine=None, reference_prompts=None, pitch=0.0,
                tail_cfg=None, emotion_boundary_mode="pause", emotion_boundary_pause_ms=200,
-               expressive_mode="legacy_v2", reference_conditioning_mode=None):
+               expressive_mode="legacy_v2", reference_conditioning_mode=None,
+               speaker_refs=None, speaker_ref_sources=None, speaker_emotion_refs=None,
+               speaker_labels=None):
     """Synthesize speech. Auto-selects engine by language.
     reference_prompts: 식별자(default/emotionId) → {manual_text, prompt_lang, mode} 사용자 override.
     emotion_refs: emotionId → 합성에 쓸 effective 참조 경로(3~10초 클립/유효 원본).
@@ -2844,7 +2884,12 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
       production 은 separate.py 가 항상 명시 값을 전달한다. **None/'' 도 safe_xvector 로 해석한다**
       — 전사 기반 ICL 로 가는 '모드 없는 기본 경로'는 존재하지 않는다(함수 레벨까지 안전 기본).
       값 검증·fail-closed 는 이 입구가 단일 소유: 잘못된 값 → INVALID_REFERENCE_CONDITIONING_MODE.
-      'auto' 는 ICL 1회 시도 후 정렬 실패 시 safe_xvector 로 정확히 1회 전환한다(아래 Qwen 분기)."""
+      'auto' 는 ICL 1회 시도 후 정렬 실패 시 safe_xvector 로 정확히 1회 전환한다(아래 Qwen 분기).
+    speaker_refs: 화자 id → 합성에 쓸 참조 경로. `speaker_ref_sources` 는 등록 사실(원본 경로)이고
+      둘의 역할이 다르다 — 등록됐는데 파일이 없으면 조용히 다른 목소리로 대체하지 않고 막는다.
+    speaker_emotion_refs: `speaker_refs.emotion_key(화자, 감정)` → 경로. `(화자, 감정)` 전용 참조.
+    speaker_labels: 화자 id → 사용자가 쓴 표시 이름. **기록 전용**이며 private JSON 에만 남는다.
+      합성 조건으로는 쓰이지 않는다(같은 사람을 다르게 적었을 뿐이면 목소리는 같다)."""
     # ── 참조 conditioning 모드 판정 — 어떤 파싱/참조 준비/모델 작업보다 먼저(모델 미로딩 차단). ──
     rc_mode = resolve_reference_conditioning_mode(reference_conditioning_mode)  # invalid → 구조화 오류
     # 재현 메타는 **결과가 확정된 뒤** _reference_conditioning_meta 로 만든다(여기서 미리 만들면
@@ -2911,7 +2956,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         #  등록 기준 = emotion_ref_sources(원본 등록 사실). 등록됐는데 effective가 없거나 만료면 명확한 오류를
         #  던진다(silent fallback 금지 — 예전엔 파일 없으면 조용히 건너뛰어 기본 참조로 대체됐다).
         #  미등록 사용 감정은 ref_cache에 넣지 않아 아래 라우팅에서 기본 참조로 폴백된다.
-        used_emotion_ids = {eid for eid, _ in parsed if eid != "default"}
+        used_emotion_ids = {eid for eid, _t, _sp in parsed if eid != "default"}
         for eid in used_emotion_ids:
             # 등록 판정: sources(원본 등록, 계약상 진실) 또는 effective(refs)에 존재. production은 sources가
             # 준비된 것(refs)을 포함하므로 sources 기준과 동치이고, sources 없이 refs만 주어지는 호출(구 경로/
@@ -2928,6 +2973,56 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                 tmp_dirs.append(tmp)
             ref_cache[eid] = wav
         # (4) 미사용 감정은 위 루프(used_emotion_ids)에 없으므로 준비·검증·전달되지 않는다.
+
+        # ── 화자별 참조 준비 ─────────────────────────────────────────────
+        # 감정 참조와 같은 방식으로 준비한다(같은 `_prepare_ref`). 대본에 실제로 나온
+        # 화자만 준비하고, 등록되지 않았거나 파일이 없으면 **모델을 올리기 전에** 막는다.
+        _used_speaker_ids = [sp for _e, _t, sp in parsed if sp]
+        _registered_speakers = set((speaker_ref_sources or {}).keys()) | set(
+            (speaker_refs or {}).keys())
+        _prepared_speaker = {}
+        _prepared_pair = {}
+        for sid in dict.fromkeys(_used_speaker_ids):
+            if sid not in _registered_speakers:
+                raise _sr.SpeakerReferenceError(_sr.SPEAKER_NOT_REGISTERED, sid)
+            src = (speaker_refs or {}).get(sid)
+            if not (src and os.path.exists(src)):
+                raise _sr.SpeakerReferenceError(_sr.SPEAKER_REFERENCE_NOT_READY, sid)
+            wav, tmp = _prepare_ref(src)
+            if tmp:
+                tmp_dirs.append(tmp)
+            _prepared_speaker[sid] = wav
+        for key, src in (speaker_emotion_refs or {}).items():
+            sid = str(key).split(chr(31))[0]
+            if sid not in _prepared_speaker:
+                continue          # 대본에 안 나온 화자의 전용 참조는 준비하지 않는다
+            if not (src and os.path.exists(src)):
+                raise _sr.SpeakerReferenceError(_sr.SPEAKER_REFERENCE_NOT_READY, sid)
+            wav, tmp = _prepare_ref(src)
+            if tmp:
+                tmp_dirs.append(tmp)
+            _prepared_pair[key] = wav
+
+        # 참조 선택의 단일 권위. 폴백 규칙을 생성 루프에서 다시 쓰지 않는다.
+        ref_table = _sr.ReferenceTable(
+            default_ref=ref_wav,
+            emotion_refs={k: v for k, v in ref_cache.items() if k != "default"},
+            speaker_refs=_prepared_speaker,
+            speaker_emotion_refs=_prepared_pair,
+            registered_speakers=set(_prepared_speaker.keys()))
+        # 전수 점검을 먼저 한다 — 모델을 올린 뒤 절반 만들고 막히면 헛수고가 된다.
+        ref_table.preflight([(sp, e) for e, _t, sp in parsed])
+        _speaker_duplicates = ref_table.duplicate_paths()
+        if _speaker_duplicates:
+            # 막지 않는다(같은 목소리를 여럿에 쓰는 것은 사용자의 선택). 사실만 알린다.
+            emit("stage", stage="speaker_reference_shared",
+                 groups=len(_speaker_duplicates),
+                 speakers=sum(len(v) for v in _speaker_duplicates.values()))
+        _speaker_label_map = {}
+        for sid in _prepared_speaker:
+            _label = (speaker_labels or {}).get(sid)
+            if _label:
+                _speaker_label_map[_sr.opaque_speaker_ref(sid)] = _label
 
         # 사용자 프롬프트 override(식별자 기준)를 준비된 참조 '경로' 기준으로 매핑해 GPT 엔진에 전달.
         # 항상 설정(빈 dict 포함)해 이전 작업의 override가 남지 않게 한다.
@@ -2960,7 +3055,9 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                                                         output_dir, speed, silence_gap, pitch, tail_cfg,
                                                         boundary_gaps=boundary_gaps,
                                                         boundary_kinds=boundary_kinds,
-                                                        reference_conditioning_mode=_attempt_mode)
+                                                        reference_conditioning_mode=_attempt_mode,
+                                                        ref_table=ref_table,
+                                                        speaker_labels=_speaker_label_map)
             except RuntimeError as _icl_err:
                 _code = (getattr(_icl_err, "error_payload", None) or {}).get("code")
                 if not (_auto and _code in AUTO_FALLBACK_TRIGGER_CODES):
@@ -2981,7 +3078,9 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                                                         output_dir, speed, silence_gap, pitch, tail_cfg,
                                                         boundary_gaps=boundary_gaps,
                                                         boundary_kinds=boundary_kinds,
-                                                        reference_conditioning_mode=_attempt_mode)
+                                                        reference_conditioning_mode=_attempt_mode,
+                                                        ref_table=ref_table,
+                                                        speaker_labels=_speaker_label_map)
             _rc_meta = _reference_conditioning_meta(
                 rc_mode, _attempt_mode, icl_attempted=_icl_attempted,
                 # 발행된 결과가 ICL 산이었을 때만 True — 전환했다면 발행된 것은 safe 결과다.
@@ -3005,9 +3104,9 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         segment_paths = []
         seg_engines = []
 
-        for i, (emotion_id, line_text) in enumerate(parsed):
+        for i, (emotion_id, line_text, speaker_id) in enumerate(parsed):
             pct = 25 + int((i / len(parsed)) * 60)
-            ref = ref_cache.get(emotion_id, ref_cache["default"])
+            ref = ref_table.resolve(speaker_id, emotion_id)["path"]
             emotion_label = next((k for k, v in EMOTION_TAGS.items() if v == emotion_id), emotion_id)
 
             # Select engine based on text language
@@ -3088,7 +3187,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             p_src = "manual"
         else:
             p_src = "auto"
-        lang_codes2 = [_detect_language(t) for _, t in parsed]
+        lang_codes2 = [_detect_language(t) for _e, t, _sp in parsed]
         tgt2 = max(set(lang_codes2), key=lang_codes2.count) if lang_codes2 else None
         engines_used = sorted(set(seg_engines))
         # qwen3를 요청했는데 per-segment로 왔으면 폴백(미설치/미선택)

@@ -284,6 +284,10 @@ class ChunkRecorder:
         self.script_sha = None      # 단계별 추적용 script SHA
         self.artifacts = []         # {path, sha256, privacy_class, export_allowed}
         self.chunk_private = {}     # global chunk index -> chunk-NNN.private.json 내용
+        # 발화 -> 화자·참조(불투명 토큰). manifest 로 나간다.
+        self.speaker_map = {}
+        # 화자 표시 이름. private JSON 에만 남는다.
+        self.speaker_private = None
         self.header = {}            # 항상 남는 비민감 헤더
         self.result = None          # 최종 WAV 연결(복사 아님 — basename/길이/SHA)
         self.stages = []            # 단계별 elapsed
@@ -427,6 +431,35 @@ class ChunkRecorder:
         }
         return self.script_sha
 
+    def set_speaker_map(self, rows, labels=None):
+        """발화(segment) → 화자·참조 표. chunk 행이 이 표를 보고 자기 화자를 채운다.
+
+        manifest 로 나가는 것은 **불투명 토큰과 SHA 뿐**이다 — `spk_…` / `ref_…` / 어느
+        우선순위 규칙이 쓰였는지. 사용자가 쓴 화자 표시 이름은 `labels` 로 받아 private
+        JSON 에만 둔다(개인 정보가 될 수 있다).
+
+        새 recorder 를 만들지 않는다. 기존 chunk 행에 필드를 얹는 것이 전부다.
+        """
+        if not self.active:
+            return
+        self.speaker_map = {}
+        for r in rows or ():
+            si = r.get("segment_index")
+            if si is None:
+                continue
+            self.speaker_map[int(si)] = {
+                "speaker_ref": r.get("speaker_ref"),
+                "reference_id": r.get("reference_id"),
+                "reference_sha256": r.get("reference_sha256"),
+                "reference_source": r.get("source") or r.get("reference_source"),
+            }
+        if labels:
+            self.speaker_private = {
+                "schema": "af-run-speakers-private/1", "run_id": run_id(), "private": True,
+                # 표시 이름은 여기까지만 온다. manifest 에는 spk_ 토큰만 나간다.
+                "labels": {opaque: label for opaque, label in labels.items()},
+            }
+
     def record_chunk_text(self, gidx, chunk_text, source_char_range=None,
                           production_tokens=None, combined_prompt_tokens=None,
                           controlled_prefix_text=None, reference_transcript=None,
@@ -455,6 +488,13 @@ class ChunkRecorder:
             ("chunk_text_sha256", self.chunk_private[g]["chunk_text_sha256"]),
             ("script_sha256", self.script_sha),
         ) if v is not None})
+        # 이 묶음이 누구의 말이고 어느 참조를 썼는가. 발화 좌표로 찾는다 —
+        # chunk 가 갈려도 같은 발화의 chunk 는 같은 화자·참조를 갖는다.
+        spk = getattr(self, "speaker_map", None)
+        if spk and segment is not None:
+            row = spk.get(int(segment))
+            if row:
+                r.update({k: v for k, v in row.items() if v is not None})
 
     def record_generation(self, gidx, generation_limit=None, generated_iterations=None,
                           termination_reason=None, vendor_crop_record=None,
@@ -541,7 +581,11 @@ class ChunkRecorder:
             doc.update({k: v for k, v in extra.items()
                         if k not in ("text", "transcript", "ttsText")})
         # ① private JSON 을 먼저 쓴다(원문·전사는 여기에만 있다).
-        for rel, payload in ([("script" + PRIVATE_SUFFIX, self.script)] if self.script else []) +                 [("chunks/chunk-%03d%s" % (g, PRIVATE_SUFFIX), pv)
+        _private_docs = ([("script" + PRIVATE_SUFFIX, self.script)] if self.script else [])
+        # 화자 표시 이름은 사용자가 쓴 문자열이라 개인 정보가 될 수 있다 — private 로만.
+        if self.speaker_private:
+            _private_docs.append(("speakers" + PRIVATE_SUFFIX, self.speaker_private))
+        for rel, payload in _private_docs +                 [("chunks/chunk-%03d%s" % (g, PRIVATE_SUFFIX), pv)
                  for g, pv in sorted(self.chunk_private.items())]:
             dst = os.path.join(self.root, rel.replace("/", os.sep))
             os.makedirs(os.path.dirname(dst), exist_ok=True)

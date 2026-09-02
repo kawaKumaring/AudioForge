@@ -183,6 +183,11 @@ def main():
         args.tts_speed = config.get("ttsSpeed", 1.0)
         args.tts_silence_gap = config.get("ttsSilenceGap", 0.5)
         args.tts_emotion_refs = config.get("ttsEmotionRefs", {})
+        # 화자별 참조(v1.4). 없으면 빈 dict — 기존 대본 동작은 그대로다.
+        args.tts_speaker_refs = config.get("ttsSpeakerRefs", {})
+        args.tts_speaker_ref_sources = config.get("ttsSpeakerRefSources", {})
+        args.tts_speaker_emotion_refs = config.get("ttsSpeakerEmotionRefs", {})
+        args.tts_speaker_labels = config.get("ttsSpeakerLabels", {})
         args.tts_emotion_ref_sources = config.get("ttsEmotionRefSources", {})  # 등록 원본(만료 판정 기준, §5)
         args.tts_engine = config.get("ttsEngine", "auto")
         # 참조 conditioning 모드(참조혼입 대응 PHASE 2, 단일 권위 계약). 키 부재(legacy 세션)는
@@ -303,6 +308,11 @@ def main():
                 emit("error", message=str(e),
                      **(_payload if isinstance(_payload, dict) else {}))
                 return
+            def _dict_arg(a, name):
+                """config 에서 온 dict 만 통과시킨다. 모양이 다르면 없는 것으로 본다."""
+                v = getattr(a, name, None)
+                return v if isinstance(v, dict) else {}
+
             emotion_refs = {}
             if hasattr(args, 'tts_emotion_refs') and args.tts_emotion_refs:
                 emotion_refs = args.tts_emotion_refs if isinstance(args.tts_emotion_refs, dict) else {}
@@ -350,6 +360,10 @@ def main():
                     ref_input, args.tts_text, args.output,
                     speed=args.tts_speed, silence_gap=args.tts_silence_gap,
                     emotion_refs=emotion_refs, emotion_ref_sources=emotion_ref_sources,
+                    speaker_refs=_dict_arg(args, "tts_speaker_refs"),
+                    speaker_ref_sources=_dict_arg(args, "tts_speaker_ref_sources"),
+                    speaker_emotion_refs=_dict_arg(args, "tts_speaker_emotion_refs"),
+                    speaker_labels=_dict_arg(args, "tts_speaker_labels"),
                     preferred_engine=preferred_engine,
                     reference_prompts=ref_prompts,
                     pitch=getattr(args, "tts_pitch", 0.0),
