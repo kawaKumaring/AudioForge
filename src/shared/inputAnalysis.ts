@@ -8,6 +8,11 @@
  *
  * 모든 offset 은 **사용자가 입력한 원문 좌표**다(정규화 좌표가 아니다). 응답에는 대사 원문이
  * 들어가지 않는다 — renderer 는 offset 으로 자기 textarea 값에서 잘라 쓴다.
+ *
+ * `plan` 은 `script_plan` 이 만든 **공용 계획**이고 새 화면은 그것만 본다(발화·감정 구간·
+ * 쉼·문장 경계·생성 묶음·사전 경고가 한 곳에 있다). 위의 세 배열은 기존 소비자를 위한
+ * 별칭으로 남는다 — `plan.utterances[i]` 와 `segments[i]` 는 같은 행이고(구조 대 추정치)
+ * 색인으로 이어진다.
  */
 
 export const ANALYSIS_CHANNEL = 'analysis:analyze'
@@ -16,7 +21,7 @@ export const ANALYSIS_CANCEL_CHANNEL = 'analysis:cancel'
 export const ANALYSIS_PREWARM_CHANNEL = 'analysis:prewarm'
 
 /** Python `input_analysis.SCHEMA_VERSION` 과 같아야 한다. 다르면 renderer 가 결과를 버린다. */
-export const ANALYSIS_SCHEMA_VERSION = 4
+export const ANALYSIS_SCHEMA_VERSION = 5
 
 export type AnalysisConfidence = 'measured' | 'extrapolated' | 'insufficient_data'
 
@@ -76,6 +81,225 @@ export interface AnalysisChunk {
   estimatedAudioSeconds: Range
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 공용 Script Plan 계약 — Python `python/script_plan.py` 의 거울.
+//
+// 왜 여기 있나: plan 은 이 응답의 일부이고, snake_case → camelCase 매핑은 이 파일 하나가
+// 맡는다. 매핑이 두 곳에 있으면 언젠가 갈라진다.
+// 같은 구조를 만드는 TS 빌더와 parity 검사는 `scriptPlan.parity.test.ts` 에 있다 —
+// 앱은 빌더가 필요 없다(생성 권위는 Python 이고 화면은 그 계획을 보여 줄 뿐이다).
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Python `script_plan.PLAN_SCHEMA_VERSION` 과 같아야 한다. */
+export const PLAN_SCHEMA_VERSION = 1
+
+export const WARN_UNCLOSED_TAG = 'UNCLOSED_TAG'
+export const WARN_UNKNOWN_DIRECTIVE = 'UNKNOWN_DIRECTIVE'
+export const WARN_EMPTY_UTTERANCE = 'EMPTY_UTTERANCE'
+export const WARN_CONFLICTING_DIRECTIVES = 'CONFLICTING_DIRECTIVES'
+export const WARN_DIRECTIVE_ONLY_PARAGRAPH = 'DIRECTIVE_ONLY_PARAGRAPH'
+
+/**
+ * 사전 경고 코드(비민감 enum). 문구는 renderer 가 붙인다.
+ * 경고는 **합성을 막지 않고 원문을 고치지도 않는다.** 알려 주는 것이 전부다.
+ */
+export const PLAN_WARNING_CODES = [
+  WARN_UNCLOSED_TAG,
+  WARN_UNKNOWN_DIRECTIVE,
+  WARN_EMPTY_UTTERANCE,
+  WARN_CONFLICTING_DIRECTIVES,
+  WARN_DIRECTIVE_ONLY_PARAGRAPH,
+] as const
+export type PlanWarningCode = typeof PLAN_WARNING_CODES[number]
+
+/**
+ * v1.2.0 문법에 지시가 없는 축. Python 응답에는 **항상 빈 배열**로 들어온다.
+ * 이름을 지금 정해 두는 이유는 화면이 "앞으로 여기에 들어온다" 고 말할 근거가 필요하고,
+ * 소비자가 없는 축을 스스로 지어내면 안 되기 때문이다.
+ */
+export const RESERVED_AXES = [
+  'speakers', 'prosody', 'actions', 'ambience', 'music', 'spatial',
+] as const
+export type ReservedAxis = typeof RESERVED_AXES[number]
+
+/** 좌표는 언제나 **사용자가 입력한 원문** 기준이다(정규화 좌표가 아니다). */
+export interface PlanSpan {
+  /** UI selection 정합용 UTF-16 offset. */
+  sourceStart: number
+  sourceEnd: number
+  /** 텍스트 처리용 code point offset. */
+  textStart: number
+  textEnd: number
+}
+
+export interface PlanParagraph extends PlanSpan {
+  index: number
+  lineIndex: number | null
+  chars: number
+  blankLinesBefore: number
+}
+
+/** 한 덩어리의 말. 구간은 **자기 지시를 포함한다**(`[기쁨]` 까지). */
+export interface PlanUtterance extends PlanSpan {
+  index: number
+  sourceParagraphIndex: number | null
+  lineIndex: number | null
+  /** v1.4 의 축. 지금은 항상 null — 화면이 지어내지 않게 자리를 둔다. */
+  speakerId: string | null
+  emotionId: string | null
+  boundaryKind: string | null
+  chars: number
+  sourceOffsetsExact: boolean
+}
+
+export interface PlanEmotionSpan extends PlanSpan {
+  index: number
+  emotionId: string
+  /** 세기는 v1.2.0 문법에 없다. 항상 null. */
+  intensity: number | null
+  utteranceStart: number
+  utteranceEnd: number
+}
+
+export interface PlanPause extends PlanSpan {
+  index: number
+  utteranceIndex: number
+  pauseMs: number
+  boundaryType: string | null
+}
+
+export interface PlanWarning {
+  code: PlanWarningCode
+  lineIndex: number | null
+  sourceStart: number | null
+  sourceEnd: number | null
+  textStart: number | null
+  textEnd: number | null
+  /** 비민감 사유(예: 'adjacent_duplicate'). */
+  reason: string | null
+  /** 해석하지 못한 표기 이름. 대사 원문이 아니다. */
+  tag?: string
+}
+
+/** 파서 한 번으로 만들어지는 층. TS/Python 이 같은 값을 내야 하는 부분이다. */
+export interface ScriptPlanStructure {
+  planSchemaVersion: number
+  parserVersion: number
+  /** 사용자가 입력한 원문 그대로의 SHA. */
+  sourceSha256: string
+  /** 파서가 실제로 본 문자열(줄 끝 정규화본)의 SHA. */
+  normalizedSha256: string
+  /** false = 구조화 오류로 원문 줄로 물러났다(좌표는 근사). */
+  parserAuthority: boolean
+  sourceParagraphs: PlanParagraph[]
+  utterances: PlanUtterance[]
+  emotions: PlanEmotionSpan[]
+  pauses: PlanPause[]
+  warnings: PlanWarning[]
+  structureSha256: string
+}
+
+/** snake_case(Python) → camelCase(TS). 모르는 키는 버리고 없는 값은 만들지 않는다. */
+export function toScriptPlanStructure(raw: unknown): ScriptPlanStructure | null {
+  if (raw == null || typeof raw !== 'object') return null
+  const r = raw as Record<string, unknown>
+  const num = (v: unknown, d = 0) => (typeof v === 'number' && Number.isFinite(v) ? v : d)
+  const numOrNull = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
+  const strOrNull = (v: unknown) => (typeof v === 'string' && v ? v : null)
+  const arr = (v: unknown) => (Array.isArray(v) ? (v as Record<string, unknown>[]) : [])
+  if (num(r.plan_schema_version, -1) !== PLAN_SCHEMA_VERSION) return null
+  const codes = new Set<string>(PLAN_WARNING_CODES)
+  return {
+    planSchemaVersion: num(r.plan_schema_version),
+    parserVersion: num(r.parser_version),
+    sourceSha256: String(r.source_sha256 ?? ''),
+    normalizedSha256: String(r.normalized_sha256 ?? ''),
+    parserAuthority: Boolean(r.parser_authority),
+    sourceParagraphs: arr(r.source_paragraphs).map((p) => ({
+      index: num(p.index),
+      lineIndex: numOrNull(p.line_index),
+      sourceStart: num(p.source_start),
+      sourceEnd: num(p.source_end),
+      textStart: num(p.text_start),
+      textEnd: num(p.text_end),
+      chars: num(p.chars),
+      blankLinesBefore: num(p.blank_lines_before),
+    })),
+    utterances: arr(r.utterances).map((u) => ({
+      index: num(u.index),
+      sourceParagraphIndex: numOrNull(u.source_paragraph_index),
+      lineIndex: numOrNull(u.line_index),
+      speakerId: strOrNull(u.speaker_id),
+      emotionId: strOrNull(u.emotion_id),
+      boundaryKind: strOrNull(u.boundary_kind),
+      sourceStart: num(u.source_start),
+      sourceEnd: num(u.source_end),
+      textStart: num(u.text_start),
+      textEnd: num(u.text_end),
+      chars: num(u.chars),
+      sourceOffsetsExact: Boolean(u.source_offsets_exact),
+    })),
+    emotions: arr(r.emotions).map((e) => ({
+      index: num(e.index),
+      emotionId: String(e.emotion_id ?? ''),
+      intensity: numOrNull(e.intensity),
+      utteranceStart: num(e.utterance_start),
+      utteranceEnd: num(e.utterance_end),
+      sourceStart: num(e.source_start),
+      sourceEnd: num(e.source_end),
+      textStart: num(e.text_start),
+      textEnd: num(e.text_end),
+    })),
+    pauses: arr(r.pauses).map((p) => ({
+      index: num(p.index),
+      utteranceIndex: num(p.utterance_index),
+      pauseMs: num(p.pause_ms),
+      boundaryType: strOrNull(p.boundary_type),
+      sourceStart: num(p.source_start),
+      sourceEnd: num(p.source_end),
+      textStart: num(p.text_start),
+      textEnd: num(p.text_end),
+    })),
+    // 모르는 코드는 버린다 — 화면이 문구를 붙일 수 없는 경고를 표시하지 않는다.
+    warnings: arr(r.warnings)
+      .filter((w) => typeof w.code === 'string' && codes.has(w.code as string))
+      .map((w) => {
+        const out: PlanWarning = {
+          code: w.code as PlanWarningCode,
+          lineIndex: numOrNull(w.line_index),
+          sourceStart: numOrNull(w.source_start),
+          sourceEnd: numOrNull(w.source_end),
+          textStart: numOrNull(w.text_start),
+          textEnd: numOrNull(w.text_end),
+          reason: strOrNull(w.reason),
+        }
+        const tag = strOrNull(w.tag)
+        if (tag != null) out.tag = tag
+        return out
+      }),
+    structureSha256: String(r.structure_sha256 ?? ''),
+  }
+}
+
+/**
+ * 발화 안의 문장 경계. 문장 나누기는 Python `text_segmenter` 권위라 TS 에서 다시 나누지
+ * 않는다 — 그래서 좌표 규칙도 chunk 행과 같다(정확하지 않을 수 있으면 행마다 밝힌다).
+ */
+export interface PlanSentence {
+  index: number
+  utteranceIndex: number
+  sourceStart: number
+  sourceEnd: number
+  sourceOffsetsExact: boolean
+  chars: number
+}
+
+/** 공용 계획 — 구조 층(TS/Python parity) + Python 권위 층(문장 경계·생성 묶음). */
+export interface ScriptPlan extends ScriptPlanStructure {
+  sentences: PlanSentence[]
+  chunks: AnalysisChunk[]
+}
+
 export interface AnalysisResult {
   schemaVersion: number
   requestId: string
@@ -101,6 +325,8 @@ export interface AnalysisResult {
   sourceParagraphs: SourceParagraph[]
   segments: AnalysisSegment[]
   chunks: AnalysisChunk[]
+  /** 새 화면이 보는 단일 계획. schema v5 부터 항상 있다. */
+  plan: ScriptPlan
 }
 
 export type AnalysisFailureCode =
@@ -146,7 +372,43 @@ export function toAnalysisResult(
   const paras = Array.isArray(raw.source_paragraphs) ? raw.source_paragraphs : []
   const segs = Array.isArray(raw.segments) ? raw.segments : []
   const chunks = Array.isArray(raw.chunks) ? raw.chunks : []
+  const toChunk = (c: Record<string, unknown>): AnalysisChunk => ({
+    globalIndex: num(c.global_index),
+    sourceParagraphIndex: idxOrNull(c.source_paragraph_index),
+    segmentIndex: num(c.segment_index),
+    localChunkIndex: num(c.local_chunk_index),
+    sourceStart: num(c.source_start),
+    sourceEnd: num(c.source_end),
+    sourceOffsetsExact: Boolean(c.source_offsets_exact),
+    chars: num(c.chars),
+    productionTokens: num(c.production_tokens),
+    combinedPromptTokens: num(c.combined_prompt_tokens),
+    generationTier: idxOrNull(c.generation_tier),
+    fitsBudget: Boolean(c.fits_budget),
+    boundaryKind: strOrNull(c.boundary_kind),
+    splitReason: (c.split_reason as SplitReason) ?? 'end_of_input',
+    estimatedAudioSeconds: range(c.estimated_audio_seconds),
+  })
+  // plan 이 없거나 버전이 다르면 결과를 쓰지 않는다 — 화면이 반쪽 계획을 보여 주면 안 된다.
+  const rawPlan = (raw.plan ?? null) as Record<string, unknown> | null
+  const structure = toScriptPlanStructure(rawPlan)
+  if (structure === null || rawPlan === null) return null
+  const planChunks = Array.isArray(rawPlan.chunks) ? rawPlan.chunks : []
+  const planSentences = Array.isArray(rawPlan.sentences) ? rawPlan.sentences : []
+  const plan: ScriptPlan = {
+    ...structure,
+    sentences: (planSentences as Record<string, unknown>[]).map((t) => ({
+      index: num(t.index),
+      utteranceIndex: num(t.utterance_index),
+      sourceStart: num(t.source_start),
+      sourceEnd: num(t.source_end),
+      sourceOffsetsExact: Boolean(t.source_offsets_exact),
+      chars: num(t.chars),
+    })),
+    chunks: (planChunks as Record<string, unknown>[]).map(toChunk),
+  }
   return {
+    plan,
     schemaVersion: num(raw.schema_version),
     requestId,
     sourceSha256: String(raw.source_sha256 ?? ''),
@@ -189,23 +451,7 @@ export function toAnalysisResult(
       estimatedAudioSeconds: range(s.estimated_audio_seconds),
       estimatedWallSecondsMarginal: rangeOrNull(s.estimated_wall_seconds_marginal),
     })),
-    chunks: chunks.map((c: Record<string, unknown>) => ({
-      globalIndex: num(c.global_index),
-      sourceParagraphIndex: idxOrNull(c.source_paragraph_index),
-      segmentIndex: num(c.segment_index),
-      localChunkIndex: num(c.local_chunk_index),
-      sourceStart: num(c.source_start),
-      sourceEnd: num(c.source_end),
-      sourceOffsetsExact: Boolean(c.source_offsets_exact),
-      chars: num(c.chars),
-      productionTokens: num(c.production_tokens),
-      combinedPromptTokens: num(c.combined_prompt_tokens),
-      generationTier: idxOrNull(c.generation_tier),
-      fitsBudget: Boolean(c.fits_budget),
-      boundaryKind: strOrNull(c.boundary_kind),
-      splitReason: (c.split_reason as SplitReason) ?? 'end_of_input',
-      estimatedAudioSeconds: range(c.estimated_audio_seconds),
-    })),
+    chunks: chunks.map((c: Record<string, unknown>) => toChunk(c)),
   }
 }
 

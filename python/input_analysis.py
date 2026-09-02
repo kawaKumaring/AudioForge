@@ -6,7 +6,7 @@
 UI 가 보여 주는 "몇 묶음, 얼마나 걸림" 이 실제 생성과 어긋나면 안내가 아니라 오정보다.
 그래서 문단·문장 분리와 분할 계획을 TS 에 다시 구현하지 않고 production 경로를 그대로 부른다.
 
-  문단·segment  tts_grammar.parse_tts_script  (감정 태그·명시적 쉼을 뗀 spoken_text 와 원문 offset)
+  해석          script_plan.parse_units  (대본을 **한 번** 읽는 유일한 경로)
   분할          text_segmenter.split_for_generation + chunk_budget.max_production_tokens
   토큰          호출자가 주입하는 production tokenizer (qwen_bridge._prod_tokens 와 동일 경로)
   예산          chunk_budget.budget_for  (generation tier)
@@ -16,6 +16,13 @@ UI 가 보여 주는 "몇 묶음, 얼마나 걸림" 이 실제 생성과 어긋�
   source_paragraphs  사용자가 Enter 로 만든 문단. 화면에서 "문단" 은 이것 하나뿐이다.
   segments           parser 가 만든 **대사 구간**. 감정 태그·명시적 쉼도 구간을 만든다.
   chunks             실제 model call 계획. 구간이 예산을 넘을 때만 더 쪼개진다.
+
+응답의 `plan`
+-------------
+`plan` 은 `script_plan` 이 만든 **공용 계획**이고 새 소비자는 그것만 본다. 여기에 발화·감정
+구간·쉼·문장 경계·생성 묶음·사전 경고가 한 곳에 모여 있다. 최상위의 `source_paragraphs`
+`segments` `paragraphs` `chunks` 는 기존 소비자를 위한 별칭으로 남는다 — `plan.utterances[i]`
+와 최상위 `segments[i]` 는 **같은 행**이고(구조 대 추정치), 색인으로 이어진다.
 
 한 줄 안에서 감정이 바뀌면 구간은 늘지만 문단은 그대로다. 그걸 문단 수로 세면 화면이
 없는 문단을 있다고 말하게 된다. chunk 행은 두 축의 index 를 모두 들고 있다.
@@ -50,9 +57,10 @@ offset 은 언제나 **사용자가 입력한 원문 좌표**다.
 import hashlib
 
 import chunk_budget
+import script_plan
 import text_segmenter as ts
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # 시간 모델 계수(model.md). 회귀 잔차 sd 7.49 s.
 _C_RANGE = (0.18, 0.22)
@@ -93,76 +101,14 @@ def _split_sentences(text):
 
 
 def _segments_of(text):
-    """production parser 가 보는 segment. 실패하면 원문 줄로 물러나되 그 사실을 남긴다."""
-    try:
-        import tts_grammar
-        plan = tts_grammar.parse_tts_script(text or "")["plan"]
-        out = []
-        for i, s in enumerate(plan.get("segments") or ()):
-            off = s.get("offset") or {}
-            out.append({
-                "index": i,
-                "line_index": s.get("original_line_index"),
-                "text": s.get("spoken_text") or "",
-                "emotion_id": s.get("emotion_id"),
-                "boundary_type": s.get("boundary_type"),
-                "source_start": int(off.get("ui_start_utf16") or 0),
-                "source_end": int(off.get("ui_end_utf16") or 0),
-            })
-        return out, True
-    except Exception:
-        return _lines_fallback(text), False
-
-
-def _lines_fallback(text):
-    """parser 를 못 쓸 때의 최소 경로 — 빈 줄이 아닌 원문 줄. 근사임을 호출부가 표시한다."""
-    out, char = [], 0
-    for raw in (text or "").split(chr(10)):
-        if raw.strip():
-            out.append({"index": len(out), "line_index": len(out), "text": raw,
-                        "emotion_id": None, "boundary_type": None,
-                        "source_start": char, "source_end": char + len(raw)})
-        char += len(raw) + 1
-    return out
+    """production 이 보는 발화 목록. 해석은 `script_plan` 한 곳에서만 한다."""
+    units, authority, _warnings = script_plan.parse_units(text)
+    return units, authority
 
 
 def source_paragraphs_of(text):
-    """**사용자가 Enter 로 만든 문단.** 화면에서 "문단" 이라고 부르는 것은 이것 하나뿐이다.
-
-    parser segment 와 섞지 않는다 — 감정 태그나 명시적 쉼도 segment 를 만들지만, 그건 사용자가
-    문단을 나눈 것이 아니다. 그걸 문단 수로 세면 화면이 없는 문단을 있다고 말하게 된다.
-
-    좌표는 **원문 기준**이다. CRLF·단독 CR 도 줄 끝으로 보되(파서와 같은 규칙) 원문 offset 을
-    그대로 돌려준다. 빈 줄은 문단이 아니지만 `blank_lines_before` 로 관계를 보존한다.
-    """
-    import tts_grammar
-    src = text or ""
-    norm, u16_map, _cp = tts_grammar.normalize_line_endings(src)
-    out, blank = [], 0
-    pos = 0
-    for line in norm.split(chr(10)):
-        if line.strip():
-            out.append({
-                "index": len(out),
-                "line_index": None,          # 아래에서 정규화 줄 번호를 채운다
-                "source_start": u16_map[pos] if pos < len(u16_map) else u16_map[-1],
-                "source_end": (u16_map[pos + len(line)] if pos + len(line) < len(u16_map)
-                               else u16_map[-1]),
-                "chars": len(line),
-                "blank_lines_before": blank,
-            })
-            blank = 0
-        else:
-            blank += 1
-        pos += len(line) + 1
-    # 정규화본의 줄 번호 = parser 의 original_line_index 와 같은 좌표계다.
-    li, k = 0, 0
-    for line in norm.split(chr(10)):
-        if line.strip():
-            out[k]["line_index"] = li
-            k += 1
-        li += 1
-    return out
+    """**사용자가 Enter 로 만든 문단.** 구현은 `script_plan.source_paragraphs` 하나뿐이다."""
+    return script_plan.source_paragraphs(text)
 
 
 def paragraphs_of(text):
@@ -209,13 +155,38 @@ def _chunk_spans(source, seg, chunks):
     return spans, exact
 
 
+def _sentence_rows(source, seg, first_index):
+    """발화 안의 **문장 경계**. 좌표 규칙은 chunk 행과 같다.
+
+    문장 나누기는 `text_segmenter` 의 권위다 — TS 에 다시 구현하지 않는다. 그래서 이 축은
+    plan 의 Python 권위 층에 속하고, 좌표도 chunk 와 같은 방식(발화 본문을 원문에서 찾아
+    기준점을 잡는다)으로 되돌린다. 못 찾으면 근사임을 행마다 밝힌다.
+    """
+    pieces = ts._cut_after(seg["text"], ts.SENTENCE_ENDERS, eat_closers=True)
+    spans, exact = _chunk_spans(source, seg, pieces)
+    rows = []
+    for i, piece in enumerate(pieces):
+        if not piece.strip():
+            continue                      # 공백뿐인 조각은 문장이 아니다(좌표만 소비한다)
+        rows.append({
+            "index": first_index + len(rows),
+            "utterance_index": seg["index"],
+            "source_start": spans[i][0],
+            "source_end": spans[i][1],
+            "source_offsets_exact": bool(exact),
+            "chars": len(piece),
+        })
+    return rows
+
+
 def analyze(text, count_tokens, mode="high_quality_icl", reference_replay_frames=0):
     """입력을 production 권위로 분석한다. 반환은 UI 가 그대로 쓸 수 있는 수치다.
 
     count_tokens: str -> int (production tokenizer). 주입받아 여기서 모델을 로드하지 않는다.
     """
     source = text or ""
-    segs, parser_ok = _segments_of(source)
+    # 대본을 여기서 **한 번** 읽는다. 이 뒤로 어느 소비자도 다시 파싱하지 않는다.
+    segs, parser_ok, plan_warnings = script_plan.parse_units(source)
     src_paras = source_paragraphs_of(source)
     # parser 의 original_line_index → 사용자 문단 index. 못 맞추면 None(추측하지 않는다).
     line_to_para = {p["line_index"]: p["index"] for p in src_paras
@@ -223,7 +194,7 @@ def analyze(text, count_tokens, mode="high_quality_icl", reference_replay_frames
     cap = chunk_budget.max_production_tokens(reference_replay_frames=reference_replay_frames)
     warnings = [] if parser_ok else [WARN_SOURCE_OFFSETS_APPROXIMATE]
 
-    per_para, chunk_rows = [], []
+    per_para, chunk_rows, sentence_rows = [], [], []
     total_calls = total_tokens = 0
     audio_lo = audio_hi = 0.0
     gen_lo = gen_hi = 0.0
@@ -243,6 +214,7 @@ def analyze(text, count_tokens, mode="high_quality_icl", reference_replay_frames
         spans, exact = _chunk_spans(source, seg, chunks)
         if not exact and WARN_SOURCE_OFFSETS_APPROXIMATE not in warnings:
             warnings.append(WARN_SOURCE_OFFSETS_APPROXIMATE)
+        sentence_rows.extend(_sentence_rows(source, seg, len(sentence_rows)))
 
         p_audio_lo = p_audio_hi = 0.0
         p_gen_frames = 0.0
@@ -263,9 +235,9 @@ def analyze(text, count_tokens, mode="high_quality_icl", reference_replay_frames
                 "combined_prompt_tokens": budget["combined_prompt_tokens"],
                 "generation_tier": budget["generation_limit"],
                 "fits_budget": bool(budget["fits"]),
-                "boundary_kind": seg.get("boundary_type"),
+                "boundary_kind": seg.get("boundary_kind"),
                 "split_reason": _split_reason(
-                    ctext, last_seg, seg.get("boundary_type"),
+                    ctext, last_seg, seg.get("boundary_kind"),
                     last_seg and si == len(segs) - 1),
                 "estimated_audio_seconds": {"min": round(frames["min"] / FPS, 1),
                                             "max": round(frames["max"] / FPS, 1)},
@@ -283,7 +255,7 @@ def analyze(text, count_tokens, mode="high_quality_icl", reference_replay_frames
             "chars": len(seg["text"]),
             "sentence_count": len(_split_sentences(seg["text"])),
             "emotion_id": seg.get("emotion_id"),
-            "boundary_kind": seg.get("boundary_type"),
+            "boundary_kind": seg.get("boundary_kind"),
             "production_tokens": tok,
             "planned_calls": len(chunks),
             "auto_split": len(chunks) > 1,
@@ -301,6 +273,11 @@ def analyze(text, count_tokens, mode="high_quality_icl", reference_replay_frames
         gen_hi += p_gen_frames
 
     est = _estimate_seconds(gen_hi, total_calls, mode)
+    # 공용 계획. 같은 해석 결과에 Python 권위 층(문장 경계·생성 묶음)을 얹어 완성한다.
+    plan = script_plan.structure_from_units(
+        source, segs, parser_ok, plan_warnings, paragraphs=src_paras)
+    plan["sentences"] = sentence_rows
+    plan["chunks"] = chunk_rows
     return {
         "schema_version": SCHEMA_VERSION,
         # 원문 SHA 는 사용자가 입력한 그대로, 정규화 SHA 는 파서가 실제로 본 것.
@@ -330,6 +307,8 @@ def analyze(text, count_tokens, mode="high_quality_icl", reference_replay_frames
         "segments": per_para,
         "paragraphs": per_para,      # 하위 호환 별칭(구 소비자). 새 코드는 segments 를 쓴다.
         "chunks": chunk_rows,
+        # 새 소비자는 이것만 본다. 위의 세 배열은 기존 소비자를 위한 별칭이다.
+        "plan": plan,
     }
 
 

@@ -212,8 +212,13 @@ def _classify_bracket(inner, resolve_emotion):
     return {"type": "literalize"}
 
 
-def _tokenize(raw, resolve_emotion):
-    """원문을 pieces 리스트로. 각 piece dict: kind + 전역 offset(u16/cp) + lineIndex."""
+def _tokenize(raw, resolve_emotion, unclosed_out=None):
+    """원문을 pieces 리스트로. 각 piece dict: kind + 전역 offset(u16/cp) + lineIndex.
+
+    `unclosed_out` 을 주면 닫히지 않은 `[` 의 위치를 거기에 담는다. 파서는 그 `[` 를
+    리터럴로 다루므로 오류가 아니다 — 다만 사용자가 태그를 의도했을 수 있어 알려야 하고,
+    브래킷 규칙은 여기 한 곳에만 있어야 하므로 판정도 여기서 한다.
+    """
     chars = list(raw)  # code point 리스트
     pieces = []
     i = 0
@@ -295,6 +300,9 @@ def _tokenize(raw, resolve_emotion):
                 inner_chars.append(cj)
                 j += 1
             if close == -1:
+                if unclosed_out is not None:
+                    unclosed_out.append({"ui_offset_utf16": u16, "text_offset_codepoint": cp,
+                                         "line_index": line_index})
                 if lit_start is None:
                     lit_start = here()
                 lit_text.append("[")
@@ -345,6 +353,26 @@ def _tokenize(raw, resolve_emotion):
         i += 1
     flush_lit()
     return pieces
+
+
+def unclosed_tag_offsets(raw, resolve_emotion=None):
+    """닫히지 않은 `[` 의 **원문 좌표** 목록.
+
+    파서는 이것을 리터럴로 삼아 계속 진행한다(오류가 아니다). 그래서 `[기쁨` 처럼 쓴 줄은
+    조용히 대사 안에 대괄호가 남는다. 사전 경고가 그 사실을 말해야 하므로 위치를 따로 낸다.
+    합성을 막지도, 원문을 고치지도 않는다.
+    """
+    if resolve_emotion is None:
+        resolve_emotion = default_resolve_emotion
+    source = raw or ""
+    text, u16_map, cp_map = normalize_line_endings(source)
+    found = []
+    _tokenize(text, resolve_emotion, unclosed_out=found)
+    if text != source:
+        for o in found:
+            o["ui_offset_utf16"] = _map_u16(u16_map, o["ui_offset_utf16"])
+            o["text_offset_codepoint"] = _map_cp(cp_map, o["text_offset_codepoint"])
+    return found
 
 
 def parse_tts_script(raw, resolve_emotion=None):
@@ -473,6 +501,10 @@ def parse_tts_script(raw, resolve_emotion=None):
     flush_open()
 
     if errors:
+        # 성공 경로와 같은 계약: 밖으로 나가는 좌표는 언제나 원문 기준이다.
+        # (전에는 실패 경로만 정규화 좌표로 나가 CRLF 입력에서 위치가 어긋났다.)
+        if _needs_remap:
+            _remap_plan_offsets((), errors, _u16_map, _cp_map)
         return {"ok": False, "errors": [e.to_dict() for e in errors], "error_objs": errors}
 
     # 경계 타입(추가계약3 우선순위, 합산 금지)
@@ -593,6 +625,16 @@ def _canonicalize(v):
         keys = sorted(v.keys())
         return "{" + ",".join(_json_escape(k) + ":" + _canonicalize(v[k]) for k in keys) + "}"
     raise TypeError("canonical: 미지원 타입 %r" % type(v))
+
+
+def canonical_json(value):
+    """구조 해시용 결정적 직렬화. TS `canonicalJson` 과 같은 문자열이어야 한다.
+
+    규칙: object key 알파벳 정렬, 배열 순서 유지, 공백 없음, 정수만(float 금지).
+    plan hash 를 이 파일 밖(예: script_plan)에서 계산할 때 알고리즘을 다시 쓰지 않게
+    공개한다 — 직렬화가 두 곳에 있으면 언젠가 갈라진다.
+    """
+    return _canonicalize(value)
 
 
 def _sha256_hex(data_bytes):
