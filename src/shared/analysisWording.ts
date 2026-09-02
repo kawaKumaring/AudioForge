@@ -8,7 +8,9 @@
  *
  * 숫자를 지어내지 않는다 — 자료가 없으면 문구로 그렇게 말한다.
  */
-import type { AnalysisResult, Range, SplitReason } from './inputAnalysis'
+import type {
+  AnalysisResult, PlanWarning, PlanWarningCode, Range, ReservedAxis, SplitReason,
+} from './inputAnalysis'
 
 /** 사람이 읽는 길이. 1분 미만은 초로만 말한다. */
 export function formatDuration(seconds: number): string {
@@ -130,3 +132,144 @@ export function preparationNote(r: AnalysisResult | null): string | null {
 
 /** 문단 줄의 시간이 무엇인지 — 합이 요약과 다른 이유. */
 export const PARAGRAPH_WALL_NOTE = '문단별 작업 시간은 그 문단이 더 얹는 시간입니다(준비 시간 제외).'
+
+// ── 공용 계획을 읽는 문구 ─────────────────────────────────────────────────────
+// 화면은 계획을 **다시 해석하지 않는다.** 여기 있는 것은 계획의 행을 사람 말로 바꾸는
+// 순수 함수뿐이고, 문단을 다시 세거나 대본을 다시 나누는 코드는 하나도 없다.
+
+/** 세 축의 관계 한 줄. 같은 이름으로 부르지 않는다. */
+export function axisRelationLine(r: AnalysisResult | null): string {
+  if (!r) return ''
+  const p = r.plan.sourceParagraphs.length
+  const u = r.plan.utterances.length
+  const c = r.plan.chunks.length
+  return `문단 ${p} · 발화 ${u} · 생성 묶음 ${c}`
+}
+
+export const AXIS_NOTE =
+  '문단은 Enter 로 나눈 것, 발화는 지시가 나눈 말, 생성 묶음은 실제 모델 호출입니다.'
+
+/** 문단 하나에 속한 발화들. 계획에 있는 그대로 골라 낸다. */
+export function utteranceRows(r: AnalysisResult | null, paragraphIndex: number): {
+  index: number
+  emotionId: string | null
+  chars: number
+  calls: number
+  autoSplit: boolean
+  sourceStart: number
+  sourceEnd: number
+  approximate: boolean
+}[] {
+  if (!r) return []
+  return r.plan.utterances
+    .filter((u) => u.sourceParagraphIndex === paragraphIndex)
+    .map((u) => {
+      const mine = r.plan.chunks.filter((c) => c.segmentIndex === u.index)
+      return {
+        index: u.index,
+        emotionId: u.emotionId,
+        chars: u.chars,
+        calls: mine.length,
+        autoSplit: mine.length > 1,
+        sourceStart: u.sourceStart,
+        sourceEnd: u.sourceEnd,
+        approximate: !u.sourceOffsetsExact,
+      }
+    })
+}
+
+/** 감정 구간. 발화마다 한 줄씩 늘어놓지 않고 이어지는 구간으로 말한다. */
+export function emotionSpanRows(r: AnalysisResult | null): {
+  index: number
+  emotionId: string
+  utteranceLabel: string
+  sourceStart: number
+  sourceEnd: number
+}[] {
+  if (!r) return []
+  return r.plan.emotions.map((e) => ({
+    index: e.index,
+    emotionId: e.emotionId,
+    utteranceLabel: e.utteranceStart === e.utteranceEnd
+      ? `발화 ${e.utteranceStart + 1}`
+      : `발화 ${e.utteranceStart + 1}~${e.utteranceEnd + 1}`,
+    sourceStart: e.sourceStart,
+    sourceEnd: e.sourceEnd,
+  }))
+}
+
+/** 사전 경고를 사용자 언어로. 내부 코드는 화면에 쓰지 않는다. */
+export const PLAN_WARNING_LABEL: Record<PlanWarningCode, string> = {
+  UNCLOSED_TAG: '닫히지 않은 표기',
+  UNKNOWN_DIRECTIVE: '알 수 없는 표기',
+  EMPTY_UTTERANCE: '말이 없는 지시',
+  CONFLICTING_DIRECTIVES: '겹치는 지시',
+  DIRECTIVE_ONLY_PARAGRAPH: '말이 없는 문단',
+}
+
+/** 무엇이 일어나는지 한 마디. 고치라고 명령하지 않는다 — 사실만 말한다. */
+export const PLAN_WARNING_HINT: Record<PlanWarningCode, string> = {
+  UNCLOSED_TAG: '대괄호가 닫히지 않아 그대로 대사에 남습니다',
+  UNKNOWN_DIRECTIVE: '이 표기를 해석하지 못해 예상값이 근사입니다',
+  EMPTY_UTTERANCE: '지시 뒤에 말이 없어 소리가 나지 않습니다',
+  CONFLICTING_DIRECTIVES: '연달아 놓인 지시가 서로 부딪칩니다',
+  DIRECTIVE_ONLY_PARAGRAPH: '이 문단에는 말이 없어 소리가 나지 않습니다',
+}
+
+export const PLAN_WARNING_NOTE =
+  '경고가 있어도 합성은 그대로 됩니다. 원문을 자동으로 고치지 않습니다.'
+
+/** 경고 위치를 사람이 찾을 수 있는 말로. 줄을 알면 줄로, 모르면 글자 수로 말한다. */
+export function warningWhere(w: PlanWarning): string {
+  if (w.lineIndex !== null) return `${w.lineIndex + 1}번째 줄`
+  if (w.sourceStart !== null) return `${w.sourceStart + 1}번째 글자`
+  return '위치 불명'
+}
+
+export function planWarningRows(r: AnalysisResult | null): {
+  key: string
+  code: PlanWarningCode
+  label: string
+  hint: string
+  where: string
+  sourceStart: number | null
+  sourceEnd: number | null
+  tag?: string
+}[] {
+  if (!r) return []
+  return r.plan.warnings.map((w, i) => ({
+    key: `${w.code}:${w.sourceStart ?? -1}:${i}`,
+    code: w.code,
+    label: PLAN_WARNING_LABEL[w.code] ?? w.code,
+    hint: PLAN_WARNING_HINT[w.code] ?? '',
+    where: warningWhere(w),
+    sourceStart: w.sourceStart,
+    sourceEnd: w.sourceEnd,
+    ...(w.tag ? { tag: w.tag } : {}),
+  }))
+}
+
+/**
+ * 앞으로 지시가 들어올 자리. 지금은 문법에 없어 **언제나 비어 있다.**
+ *
+ * 화면에 이름만 두는 이유는, 사용자가 "이건 아직 안 되는 것" 을 알 수 있어야 하고
+ * 계획에 그 축이 실제로 선언돼 있기 때문이다. 없는 값을 채워 보여 주지 않는다.
+ */
+export const RESERVED_AXIS_LABELS: { axis: ReservedAxis; label: string }[] = [
+  { axis: 'speakers', label: '화자' },
+  { axis: 'prosody', label: '표현 세기' },
+  { axis: 'actions', label: '행동' },
+  { axis: 'ambience', label: '환경음' },
+  { axis: 'music', label: '음악' },
+  { axis: 'spatial', label: '거리·공간' },
+]
+
+export const RESERVED_AXIS_NOTE = '아직 대본 문법에 없습니다. 다음 단계에서 들어옵니다.'
+
+/** 계획이 근사인가 — 구조화 오류로 원문 줄로 물러난 상태. */
+export function planIsApproximate(r: AnalysisResult | null): boolean {
+  return !!r && !r.plan.parserAuthority
+}
+
+export const PLAN_APPROXIMATE_NOTE =
+  '표기를 해석하지 못해 줄 단위로 계산했습니다. 위치와 예상값이 근사입니다.'
