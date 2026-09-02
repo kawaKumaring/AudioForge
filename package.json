@@ -1,6 +1,6 @@
 {
   "name": "audio-forge",
-  "version": "1.3.0-rc.1",
+  "version": "1.3.0",
   "description": "AI-powered audio source separation tool",
   "main": "./out/main/index.js",
   "scripts": {
