@@ -60,7 +60,7 @@ import chunk_budget
 import script_plan
 import text_segmenter as ts
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 # 시간 모델 계수(model.md). 회귀 잔차 sd 7.49 s.
 _C_RANGE = (0.18, 0.22)
@@ -227,6 +227,9 @@ def analyze(text, count_tokens, mode="high_quality_icl", reference_replay_frames
                 "global_index": len(chunk_rows),
                 # 두 축을 모두 건다 — 사용자 문단과 parser 구간은 1:1 이 아니다.
                 "source_paragraph_index": line_to_para.get(seg.get("line_index")),
+                # chunk 가 갈려도 누구의 말인지 잃지 않는다 — 생성 단계가 대본을 다시
+                # 해석하지 않고 이 값을 그대로 쓴다(실제 배선은 v1.4 PHASE 3).
+                "speaker_id": seg.get("speaker_id"),
                 "segment_index": si, "local_chunk_index": ci,
                 "source_start": spans[ci][0], "source_end": spans[ci][1],
                 "source_offsets_exact": bool(exact),
@@ -254,6 +257,7 @@ def analyze(text, count_tokens, mode="high_quality_icl", reference_replay_frames
             "source_start": seg["source_start"], "source_end": seg["source_end"],
             "chars": len(seg["text"]),
             "sentence_count": len(_split_sentences(seg["text"])),
+            "speaker_id": seg.get("speaker_id"),
             "emotion_id": seg.get("emotion_id"),
             "boundary_kind": seg.get("boundary_kind"),
             "production_tokens": tok,

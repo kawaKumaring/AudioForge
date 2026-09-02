@@ -128,7 +128,9 @@ class ExpressiveV2InvariantTest(unittest.TestCase):
             r = tg.parse_tts_script(src)
             self.assertTrue(r["ok"], "v2 pinned 입력은 성공 파싱")
             self.assertEqual(r["plan"]["full_sha256"], expected)
-            self.assertEqual(r["plan"]["parser_version"], 2)
+            # 지문이 그대로인 것이 본론이다. 파서 계약 버전은 v1.4 에서 3 이 됐고,
+            # 그것이 지문에 영향을 주지 않는다는 것이 여기서 함께 증명된다.
+            self.assertEqual(r["plan"]["parser_version"], tg.TTS_PARSER_VERSION)
 
     def test_a2_v2_corpus_hashes_unchanged(self):
         self.assertGreaterEqual(len(self.legacy), 20)
@@ -136,7 +138,8 @@ class ExpressiveV2InvariantTest(unittest.TestCase):
             r = tg.parse_tts_script(row["input"])
             self.assertTrue(r["ok"])
             self.assertEqual(r["plan"]["full_sha256"], row["v2_full_sha256"])
-            self.assertEqual(r["plan"]["parser_version"], row["v2_parser_version"])
+            # fixture 의 v2_parser_version 은 corpus 를 만든 당시의 기록(2)이다.
+            self.assertEqual(row["v2_parser_version"], 2)
             self.assertEqual(r["plan"]["parser_version"], tg.TTS_PARSER_VERSION)
 
     def test_a3_expressive_tokens_do_not_change_v2(self):
@@ -147,7 +150,7 @@ class ExpressiveV2InvariantTest(unittest.TestCase):
         # 나머지 표현형 토큰은 v2 에서 리터럴 텍스트로 남는다(오늘과 동일).
         r = tg.parse_tts_script(ALL_TOKEN_NO_LAUGH)
         self.assertTrue(r["ok"])
-        self.assertEqual(r["plan"]["parser_version"], 2)
+        self.assertEqual(r["plan"]["parser_version"], tg.TTS_PARSER_VERSION)
         self.assertEqual(len(r["plan"]["segments"]), 1)
         self.assertEqual(r["plan"]["segments"][0]["spoken_text"], ALL_TOKEN_NO_LAUGH)
 
@@ -202,7 +205,10 @@ class ExpressiveModeSelectionTest(unittest.TestCase):
         self.assertEqual(r["effective_version"], 2)
         v2 = tg.parse_tts_script("[기쁨] 안녕하세요.")
         self.assertTrue(v2["ok"])
-        self.assertEqual(v2["plan"]["parser_version"], 2)
+        # 레거시 세션을 복원해도 자동 전환이 없다는 것이 요점이고, 파서 계약 버전은
+        # 대본 내용과 무관하게 현재 값이다(의미 지문은 v2 시절과 같다).
+        self.assertEqual(v2["plan"]["parser_version"], tg.TTS_PARSER_VERSION)
+        self.assertEqual(tg.SEMANTIC_PLAN_HASH_VERSION, 2)
 
     def test_b4_mode_version_table(self):
         self.assertEqual(list(ex.EXPRESSIVE_MODES), [L2, V3])
@@ -744,7 +750,10 @@ class ExpressiveTsSourceDriftTest(unittest.TestCase):
         self.assertEqual(m.group(1), "legacy_v2")
 
     def test_g9_legacy_version_matches_tts_grammar(self):
-        self.assertEqual(ex.EXPRESSIVE_LEGACY_PLAN_VERSION, tg.TTS_PARSER_VERSION)
+        # 파서 계약 버전이 아니라 **의미 hash 스키마**를 거울로 삼는다. 이 레이어의 약속은
+        # "wire plan 의 뜻을 건드리지 않는다" 이고, v1.4 에서 두 축이 갈라졌다.
+        self.assertEqual(ex.EXPRESSIVE_LEGACY_PLAN_VERSION, tg.SEMANTIC_PLAN_HASH_VERSION)
+        self.assertNotEqual(tg.TTS_PARSER_VERSION, tg.SEMANTIC_PLAN_HASH_VERSION)
 
     def test_g10_ts_module_has_no_runtime_cross_import(self):
         """자립 모듈 불변식 — 런타임 import 가 들어오면 node --test 가 해석하지 못한다."""

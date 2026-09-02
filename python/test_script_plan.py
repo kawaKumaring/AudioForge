@@ -226,7 +226,7 @@ class AnalysisPlanTest(unittest.TestCase):
         self.plan = self.res["plan"]
 
     def test_schema_version_moved_together(self):
-        self.assertEqual(self.res["schema_version"], 5)
+        self.assertEqual(self.res["schema_version"], 6)
         self.assertEqual(self.plan["plan_schema_version"], sp.PLAN_SCHEMA_VERSION)
         self.assertEqual(self.plan["parser_version"], tg.TTS_PARSER_VERSION)
 
@@ -276,6 +276,34 @@ class AnalysisPlanTest(unittest.TestCase):
             tok = _count(u["text"])
             total += 1 if tok <= cap else len(ts.split_for_generation(u["text"], _count, cap))
         self.assertEqual(self.res["planned_calls"], total)
+
+    def test_speakers_axis_travels_with_the_plan(self):
+        """화자 축이 계획·발화 행·chunk 행에 같은 값으로 실려 온다.
+
+        chunk 가 갈려도 누구의 말인지 잃지 않아야 한다 — 생성 단계가 대본을 다시 해석하지
+        않고 이 값을 그대로 쓸 수 있어야 하기 때문이다(배선은 PHASE 3).
+        """
+        text = ("[화자 민수] 안녕하세요." + LF + "[화자 영희] 반갑습니다." + LF
+                + "저도 반가워요.")
+        res = ia.analyze(text, _count)
+        plan = res["plan"]
+        self.assertEqual([(k["speaker_id"], k["label"], k["utterance_count"])
+                          for k in plan["speakers"]],
+                         [("민수", "민수", 1), ("영희", "영희", 2)])
+        self.assertEqual([u["speaker_id"] for u in plan["utterances"]],
+                         ["민수", "영희", "영희"])
+        self.assertEqual([s["speaker_id"] for s in res["segments"]],
+                         ["민수", "영희", "영희"])
+        for c in plan["chunks"]:
+            u = plan["utterances"][c["segment_index"]]
+            self.assertEqual(c["speaker_id"], u["speaker_id"],
+                             "chunk 의 화자가 자기 발화의 화자와 달라졌다")
+
+    def test_legacy_script_has_no_speakers(self):
+        res = ia.analyze("[기쁨] 안녕하세요." + LF + "둘째 줄.", _count)
+        self.assertEqual(res["plan"]["speakers"], [])
+        self.assertTrue(all(u["speaker_id"] is None for u in res["plan"]["utterances"]))
+        self.assertTrue(all(c["speaker_id"] is None for c in res["plan"]["chunks"]))
 
     def test_response_carries_no_script_text(self):
         blob = json.dumps(self.res, ensure_ascii=False)

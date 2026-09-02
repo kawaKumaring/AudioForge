@@ -8,7 +8,7 @@ import type { ExpressiveMode } from './expressiveTimeline'
 // ⚠️ 왜 import 가 아니라 미러인가: 이 파일은 main/preload/renderer 세 번들에 모두 들어가고,
 //    node --test 가 직접 로드한다(확장자 필수) ↔ tsc 는 moduleResolution:bundler 라 '.ts' 확장자를
 //    금지한다(TS5097). 두 조건을 동시에 만족하는 런타임 import 형태가 없다.
-//    ttsParserVersion(=2) 과 같은 처리이며, 드리프트는 ttsConfig.test.ts 가 계약 모듈을 직접 읽어
+//    ttsParserVersion(=3) 과 같은 처리이며, 드리프트는 ttsConfig.test.ts 가 계약 모듈을 직접 읽어
 //    '값 일치'로 고정한다(테스트 파일은 tsconfig exclude 대상이라 .ts import 가 허용된다).
 const EXPRESSIVE_MODE_DEFAULT: ExpressiveMode = 'legacy_v2'
 
@@ -222,7 +222,7 @@ export interface TtsInputOptions {
   // ── 표현 사이클 S1 scaffold(타입 계약만) ──
   // ⚠️ 아래 필드는 '타입 선언'일 뿐이며 이번 S1에서 buildTtsConfig 반환값에 자동 추가되지 않는다.
   //    Python 전달·session 직렬화·metadata·기본값 적용 없음 → runtime 동작 변화 0. 실제 배선은 후속 승인 단계.
-  ttsParserVersion?: 2                                        // 신규 문법 버전(legacy=암묵적 v1)
+  ttsParserVersion?: 3                                        // 문법 계약 버전(v1.4: 화자 표기 추가)
   ttsParsedPlanSha256?: string                               // renderer 파싱 결과 full sha256(Python parity 비교용; metadata엔 sha8만)
   ttsTailMode?: 'off' | 'auto'                               // 말끝 다듬기(legacy=off, new=auto). 미배선
   ttsTailPaddingMs?: number                                  // 끝 여백(new 기본 120, 허용 0~300). 미배선
@@ -348,7 +348,10 @@ export function buildTtsConfig(o?: TtsInputOptions, sourceFingerprints?: Record<
     ttsParsedPlanSha256: o?.ttsParsedPlanSha256 ?? '',
     // 기본값 2 = ttsGrammar.TTS_PARSER_VERSION(권위). 여기선 런타임 cross-module import를 피하려 상수 미러(=2).
     // 드리프트 방지는 ttsGrammar/tts_grammar parity fixture + parser_version 계약이 담당.
-    ttsParserVersion: o?.ttsParserVersion ?? 2,
+    // 폴백 값은 파서 계약 버전과 같아야 한다(단일 권위). 값을 손으로 적어 둔 이유는
+    // 이 모듈이 세 번들에 모두 들어가 런타임 import 를 쓸 수 없기 때문이고,
+    // 드리프트는 ttsConfig.test.ts 가 ttsGrammar 를 직접 읽어 잡는다.
+    ttsParserVersion: o?.ttsParserVersion ?? 3,
     // ⚠️ 부재(null/undefined)일 때만 기본값을 채운다. '값이 있는데 계약 밖'이면 여기서 고치지 않고
     //    그대로 통과시킨다 — 조용한 legacy_v2 강등은 금지이고, 최종 판정 권위는 Python
     //    (tts_parity.verify_parity → EXPRESSIVE_MODE_INVALID, 모델 로딩 전 차단)이기 때문이다.

@@ -2,7 +2,20 @@
 // ⚠️ 이 파일은 '타입·계약 상수'만 정의한다. 실제 parser 구현·태그 삽입·overlay·runtime config 배선·합성 경로 변경은
 //    포함하지 않는다(그건 Agent A/B 구현 단계). parser_version=2(legacy 단일 태그=암묵적 v1과 구분).
 
-export const TTS_PARSER_VERSION = 2 as const
+export const TTS_PARSER_VERSION = 3 as const
+
+/**
+ * 의미 기반 plan hash 입력의 스키마 버전. **파서 계약 버전과 다른 축이다.**
+ *
+ * `parser_version` 을 hash 입력에 그대로 넣으면 문법을 넓힐 때마다 기존 대본의 지문이
+ * 달라진다. 그 지문이 renderer↔Python parity 기준이라, 의미가 하나도 안 바뀐 대본이
+ * `PARSER_PARITY_MISMATCH` 로 막히게 된다. 그래서 "무엇을 해석할 수 있는가"(파서 계약)와
+ * "이 대본이 무엇을 뜻하는가"(의미 hash)를 따로 센다.
+ *
+ * 이 값은 hash 입력의 구성이 바뀔 때만 올린다. 버전을 숨기는 것이 아니다 —
+ * `parser_version=3` 은 plan·config·metadata·run bundle 에 그대로 나간다.
+ */
+export const SEMANTIC_PLAN_HASH_VERSION = 2 as const
 
 // 구조화 오류 코드(문자열 prefix 추론 금지 — renderer/Python 공용 집합). 대사 전문·오디오 바이트는 payload에 넣지 않는다.
 export const TTS_GRAMMAR_ERROR_CODES = [
@@ -11,6 +24,7 @@ export const TTS_GRAMMAR_ERROR_CODES = [
   'EMPTY_EMOTION_SEGMENT',  // spoken text 없는 감정 구간(연속 태그 등) → 합성 차단
   'PARSER_PARITY_MISMATCH', // renderer full sha256 ≠ Python 재파싱 → 모델 로딩 전 차단
   'INVALID_TTS_CONFIG',     // config 값 범위 밖(Python 권위 검증, 조용한 clamp 금지)
+  'INVALID_SPEAKER_TAG',    // [화자] 이름 없음 / 허용 문자 밖 / 형식 위반 → 합성 차단
 ] as const
 export type TtsGrammarErrorCode = typeof TTS_GRAMMAR_ERROR_CODES[number]
 
@@ -52,6 +66,10 @@ export interface PauseBoundary {
 // 파싱된 감정 구간(태그 ~ 다음 태그/줄 끝). spoken_text는 control token 제거 후 실제 발화 텍스트.
 export interface ParsedEmotionSegment {
   originalLineIndex: number
+  /** null = 화자 지정 없음(기본 화자). 내부 stable id(정규화). */
+  speakerId: string | null
+  /** 사용자가 쓴 그대로의 표시 이름. id 와 역할이 다르다. */
+  speakerLabel: string | null
   /** null = 선두 감정 태그 없음(기본 참조가 담당; used에 포함되지 않음). */
   emotionId: string | null
   spokenText: string
@@ -78,6 +96,8 @@ export interface ParsedPlanSummary {
   explicitPauseCount: number
   totalPauseMs: number
   usedEmotionIds: string[]
+  /** 대본에 등장한 화자 id(첫 등장 순서). 화자 표기가 없으면 빈 배열. */
+  usedSpeakerIds: string[]
   /** metadata/GUI 표시용(8 hex). */
   planSha8: ParsedPlanSha8
 }
@@ -133,6 +153,23 @@ export const TTS_EMOTION_LABEL_TO_ID: Readonly<Record<string, string>> = Object.
 
 // 쉼 태그 별칭(둘 다 id는 'pause'). 범위 0.05~5.0초.
 export const TTS_PAUSE_NAMES: ReadonlySet<string> = new Set(['쉼', 'pause'])
+/** 화자 표기의 예약 접두어. 이 둘만 화자로 읽는다 — 다른 대괄호 표현을 화자로 오인하지 않는다. */
+export const TTS_SPEAKER_NAMES: ReadonlySet<string> = new Set(['화자', 'speaker'])
+/** 기본 화자로 돌아가는 이름. 앞의 화자 지정을 해제하고 기본 참조로 되돌린다. */
+export const TTS_DEFAULT_SPEAKER_NAMES: ReadonlySet<string> = new Set(['기본', 'default'])
+/** 화자 식별자에 허용하는 문자: 한국어 음절·영문·숫자·밑줄·붙임표. */
+const SPEAKER_ID_RE = /^[0-9A-Za-z_\-\u3131-\u318E\uAC00-\uD7A3]+$/
+
+/**
+ * 표시 이름 → **내부 stable id**.
+ *
+ * 화면에 보이는 것은 사용자가 쓴 그대로(`speakerLabel`)이고, 계획·생성·기록이 쓰는 것은 이
+ * 정규화된 id 다. `[speaker Minsu]` 와 `[speaker minsu]` 가 같은 사람이어야 하면서도 화면에는
+ * 쓴 표기가 보여야 하기 때문이다. Python `normalize_speaker_id` 와 같은 결과여야 한다.
+ */
+export function normalizeSpeakerId(name: string): string {
+  return (name ?? '').trim().normalize('NFC').toLowerCase()
+}
 export const TTS_PAUSE_MIN_SEC = 0.05
 export const TTS_PAUSE_MAX_SEC = 5.0
 // 'used'에서 제외되는 감정(기본 참조가 담당 — 감정 참조 게이팅 대상 아님).
@@ -156,6 +193,8 @@ function defaultResolveEmotion(name: string): string | null {
 // ── 브래킷 내부 분류 ──
 type BracketClass =
   | { type: 'emotion'; id: string; name: string }
+  | { type: 'speaker'; id: string | null; name: string }
+  | { type: 'speakerInvalid'; arg: string; reason: string }
   | { type: 'pause'; seconds: number; ms: number; arg: string }
   | { type: 'pauseInvalid'; arg: string; reason: string }
   | { type: 'unknown'; name: string }
@@ -181,7 +220,18 @@ function classifyBracket(inner: string, resolveEmotion: (n: string) => string | 
     const eid = resolveEmotion(name)
     if (eid != null) return { type: 'emotion', id: eid, name }
     if (TTS_PAUSE_NAMES.has(name)) return { type: 'pauseInvalid', arg: '', reason: 'missing_arg' }
+    // 이름이 없는 `[화자]` 는 조용히 지나가지 않는다 — 무엇을 뜻하는지 알 수 없다.
+    if (TTS_SPEAKER_NAMES.has(name)) return { type: 'speakerInvalid', arg: '', reason: 'missing_name' }
     return { type: 'unknown', name }
+  }
+  if (TTS_SPEAKER_NAMES.has(parts[0])) {
+    if (parts.length !== 2) {
+      return { type: 'speakerInvalid', arg: parts.slice(1).join(' '), reason: 'format' }
+    }
+    const raw = parts[1]
+    if (TTS_DEFAULT_SPEAKER_NAMES.has(raw)) return { type: 'speaker', id: null, name: raw }
+    if (!SPEAKER_ID_RE.test(raw)) return { type: 'speakerInvalid', arg: raw, reason: 'charset' }
+    return { type: 'speaker', id: normalizeSpeakerId(raw), name: raw }
   }
   if (TTS_PAUSE_NAMES.has(parts[0])) {
     // 쉼/pause + 인자. 인자가 정확히 하나가 아니면 형식 오류.
@@ -199,6 +249,8 @@ type Piece =
   | { kind: 'lit'; text: string; start: Pos; end: Pos; lineIndex: number }
   | { kind: 'emotion'; id: string; name: string; start: Pos; end: Pos; lineIndex: number }
   | { kind: 'pause'; ms: number; seconds: number; start: Pos; end: Pos; lineIndex: number }
+  | { kind: 'speaker'; id: string | null; name: string; start: Pos; end: Pos; lineIndex: number }
+  | { kind: 'speakerInvalid'; arg: string; reason: string; start: Pos; end: Pos; lineIndex: number }
   | { kind: 'pauseInvalid'; arg: string; reason: string; start: Pos; end: Pos; lineIndex: number }
   | { kind: 'unknown'; name: string; start: Pos; end: Pos; lineIndex: number }
   | { kind: 'linebreak'; start: Pos; end: Pos; lineIndex: number }
@@ -314,6 +366,10 @@ function tokenize(
         pieces.push({ kind: 'emotion', id: cls.id, name: cls.name, start: startPos, end: endPos, lineIndex })
       } else if (cls.type === 'pause') {
         pieces.push({ kind: 'pause', ms: cls.ms, seconds: cls.seconds, start: startPos, end: endPos, lineIndex })
+      } else if (cls.type === 'speaker') {
+        pieces.push({ kind: 'speaker', id: cls.id, name: cls.name, start: startPos, end: endPos, lineIndex })
+      } else if (cls.type === 'speakerInvalid') {
+        pieces.push({ kind: 'speakerInvalid', arg: cls.arg, reason: cls.reason, start: startPos, end: endPos, lineIndex })
       } else if (cls.type === 'pauseInvalid') {
         pieces.push({ kind: 'pauseInvalid', arg: cls.arg, reason: cls.reason, start: startPos, end: endPos, lineIndex })
       } else {
@@ -336,6 +392,8 @@ function lstrip(s: string): string {
 }
 
 interface OpenSeg {
+  speakerId: string | null
+  speakerLabel: string | null
   emotionId: string | null
   emotionName: string | null // EMPTY 오류 tag용
   parts: string[]
@@ -443,9 +501,14 @@ export function parseTtsScript(raw: string, opts?: ParseOptions): ParseResult {
   // 활성 감정(줄 안에서 쉼 경계를 넘어 유지, 줄바꿈에서 리셋 — 줄별 독립 감정).
   let curEmotion: string | null = null
   let curEmotionName: string | null = null
+  // 활성 화자. **줄바꿈에서 리셋하지 않는다** — 다음 화자 표기까지 유지된다(v1.4 확정).
+  // 감정과 다른 축이다: 하나는 인물이 누구인가, 다른 하나는 그 줄을 어떻게 말하는가.
+  let curSpeaker: string | null = null
+  let curSpeakerLabel: string | null = null
 
   const newOpen = (lineIndex: number, start: Pos | null): OpenSeg => {
     const o: OpenSeg = {
+      speakerId: curSpeaker, speakerLabel: curSpeakerLabel,
       emotionId: curEmotion, emotionName: curEmotionName, parts: [], start, end: start, lineIndex,
       leadingPauseMs: pendingPauseMs, leadingPauseSec: pendingPauseSec,
     }
@@ -481,6 +544,9 @@ export function parseTtsScript(raw: string, opts?: ParseOptions): ParseResult {
     }
     segments.push({
       originalLineIndex: open.lineIndex,
+      // 내부 stable id 와 화면 표시 이름을 나눠 싣는다(id 는 정규화, label 은 쓴 그대로).
+      speakerId: open.speakerId,
+      speakerLabel: open.speakerLabel,
       emotionId: open.emotionId,
       spokenText: spoken,
       offset: { uiStartUtf16: start.u16, uiEndUtf16: end.u16, textStartCodepoint: start.cp, textEndCodepoint: end.cp },
@@ -506,6 +572,20 @@ export function parseTtsScript(raw: string, opts?: ParseOptions): ParseResult {
       if (stripNextWS) { t = lstrip(t); stripNextWS = false }
       open.parts.push(t)
       open.end = p.end
+      continue
+    }
+    if (p.kind === 'speakerInvalid') {
+      // 해석하지 못한 화자 표기는 **이전 화자를 바꾸지 않는다.** 오류로만 남는다.
+      errors.push({ code: 'INVALID_SPEAKER_TAG', arg: p.arg, reason: p.reason, uiOffsetUtf16: p.start.u16 })
+      continue
+    }
+    if (p.kind === 'speaker') {
+      // 화자 표기는 **항상 앞의 말을 닫는다**(감정 태그와 다르다). 감정은 앞에 감정이 없던
+      // 구간에 소급 적용되지만, 화자는 그럴 수 없다 — 태그 앞의 말은 그 사람이 한 말이 아니다.
+      flushOpen()
+      curSpeaker = p.id
+      curSpeakerLabel = p.id == null ? null : p.name
+      stripNextWS = true
       continue
     }
     if (p.kind === 'emotion') {
@@ -543,6 +623,7 @@ export function parseTtsScript(raw: string, opts?: ParseOptions): ParseResult {
       stripNextWS = false
       curEmotion = null      // 줄별 독립 감정(legacy _parse_line 동형)
       curEmotionName = null
+      // curSpeaker 는 그대로 둔다 — 화자는 다음 화자 표기까지 유지된다.
       continue
     }
   }
@@ -589,6 +670,13 @@ export function parseTtsScript(raw: string, opts?: ParseOptions): ParseResult {
     }
   }
 
+  const usedSpeakerIds: string[] = []
+  const seenSpeakers = new Set<string>()
+  for (const seg of segments) {
+    const sid = seg.speakerId
+    if (sid != null && !seenSpeakers.has(sid)) { seenSpeakers.add(sid); usedSpeakerIds.push(sid) }
+  }
+
   let explicitPauseCount = 0
   let totalPauseMs = 0
   for (const s of segments) {
@@ -630,6 +718,7 @@ export function parseTtsScript(raw: string, opts?: ParseOptions): ParseResult {
     explicitPauseCount,
     totalPauseMs,
     usedEmotionIds,
+    usedSpeakerIds,
     planSha8,
   }
   const plan: ParsedPlan = {
@@ -702,12 +791,21 @@ function utf8Bytes(s: string): Uint8Array {
   return new TextEncoder().encode(s)
 }
 
+/**
+ * 대본이 **무엇을 뜻하는가**의 지문. 파서 계약 버전은 여기 들어가지 않는다.
+ *
+ * 1. `parser_version` 대신 `SEMANTIC_PLAN_HASH_VERSION` 을 쓴다 — 문법을 넓혀 파서 버전이
+ *    올라가도 의미가 같은 대본의 지문은 그대로여야 한다.
+ * 2. 화자는 **화자 표기가 실제로 있는 대본에서만** 입력에 들어간다. 그래서 v1.3.0 대본의
+ *    지문은 한 바이트도 달라지지 않는다. 화자가 하나라도 있으면 모든 segment 에 키가 붙는다.
+ */
 function computePlanFullSha256(segments: ParsedEmotionSegment[], boundaryTypes: TransitionBoundaryType[]): string {
+  const hasSpeaker = segments.some((s) => s.speakerId != null)
   const canonSegments: CanonValue[] = segments.map((s, i) => {
     let pauseMs = 0
     for (const b of s.pauses) if (b.boundaryType === 'explicitPause') pauseMs = b.pauseMs
     const bytes = utf8Bytes(s.spokenText)
-    return {
+    const row: { [k: string]: CanonValue } = {
       boundary: boundaryTypes[i],
       emotion_id: s.emotionId,
       i,
@@ -716,9 +814,12 @@ function computePlanFullSha256(segments: ParsedEmotionSegment[], boundaryTypes: 
       text_bytes: bytes.length,
       text_sha256: sha256Hex(bytes),
     }
+    // 표시 이름은 넣지 않는다 — 같은 사람을 다르게 적었을 뿐이면 의미는 같다.
+    if (hasSpeaker) row.speaker_id = s.speakerId
+    return row
   })
   const canonObj: CanonValue = {
-    parser_version: TTS_PARSER_VERSION,
+    parser_version: SEMANTIC_PLAN_HASH_VERSION,
     segment_count: segments.length,
     segments: canonSegments,
   }

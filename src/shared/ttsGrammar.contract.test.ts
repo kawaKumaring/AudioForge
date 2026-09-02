@@ -16,10 +16,12 @@ const errors = fx.error || []
 const allIds = [...valid, ...errors].map((c: { id?: string }) => c.id)
 const names = [...valid, ...errors].map((c: { name?: string }) => String(c.name || '')).join(' | ')
 
-test('parser_version = 2 (shared 상수와 일치)', () => {
+test('두 버전 축 — 파서 계약 3, v2 시절 fixture 기록 2', () => {
+  // fixture 는 v2 시절 corpus 다. 그 case 들은 지금도 같은 결과를 내야 하고(별도 테스트),
+  // 파서 계약 버전은 화자 문법이 생겨 3 으로 올라갔다. 둘을 같은 값으로 묶지 않는다.
   assert.equal(meta.parser_version, 2)
   assert.equal(meta.schema_version, 2)
-  assert.equal(TTS_PARSER_VERSION, 2)
+  assert.equal(TTS_PARSER_VERSION, 3)
 })
 
 test('case id 유일(중복 금지)', () => {

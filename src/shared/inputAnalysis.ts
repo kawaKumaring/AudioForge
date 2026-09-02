@@ -21,7 +21,7 @@ export const ANALYSIS_CANCEL_CHANNEL = 'analysis:cancel'
 export const ANALYSIS_PREWARM_CHANNEL = 'analysis:prewarm'
 
 /** Python `input_analysis.SCHEMA_VERSION` 과 같아야 한다. 다르면 renderer 가 결과를 버린다. */
-export const ANALYSIS_SCHEMA_VERSION = 5
+export const ANALYSIS_SCHEMA_VERSION = 6
 
 export type AnalysisConfidence = 'measured' | 'extrapolated' | 'insufficient_data'
 
@@ -43,6 +43,8 @@ export interface AnalysisSegment {
   index: number
   sourceParagraphIndex: number | null
   lineIndex: number | null
+  /** 이 발화의 화자(내부 stable id). null = 기본 화자. */
+  speakerId: string | null
   sourceStart: number
   sourceEnd: number
   chars: number
@@ -66,6 +68,11 @@ export interface AnalysisSegment {
 export interface AnalysisChunk {
   globalIndex: number
   sourceParagraphIndex: number | null
+  /**
+   * 이 묶음이 누구의 말인가. chunk 가 갈려도 화자 연결을 잃지 않는다 —
+   * 생성 단계가 대본을 다시 해석하지 않고 이 값을 그대로 쓴다(배선은 v1.4 PHASE 3).
+   */
+  speakerId: string | null
   segmentIndex: number
   localChunkIndex: number
   sourceStart: number
@@ -91,13 +98,15 @@ export interface AnalysisChunk {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /** Python `script_plan.PLAN_SCHEMA_VERSION` 과 같아야 한다. */
-export const PLAN_SCHEMA_VERSION = 1
+export const PLAN_SCHEMA_VERSION = 2
 
 export const WARN_UNCLOSED_TAG = 'UNCLOSED_TAG'
 export const WARN_UNKNOWN_DIRECTIVE = 'UNKNOWN_DIRECTIVE'
 export const WARN_EMPTY_UTTERANCE = 'EMPTY_UTTERANCE'
 export const WARN_CONFLICTING_DIRECTIVES = 'CONFLICTING_DIRECTIVES'
 export const WARN_DIRECTIVE_ONLY_PARAGRAPH = 'DIRECTIVE_ONLY_PARAGRAPH'
+export const WARN_INVALID_SPEAKER = 'INVALID_SPEAKER'
+export const WARN_SPEAKER_LABEL_VARIANT = 'SPEAKER_LABEL_VARIANT'
 
 /**
  * 사전 경고 코드(비민감 enum). 문구는 renderer 가 붙인다.
@@ -109,6 +118,8 @@ export const PLAN_WARNING_CODES = [
   WARN_EMPTY_UTTERANCE,
   WARN_CONFLICTING_DIRECTIVES,
   WARN_DIRECTIVE_ONLY_PARAGRAPH,
+  WARN_INVALID_SPEAKER,
+  WARN_SPEAKER_LABEL_VARIANT,
 ] as const
 export type PlanWarningCode = typeof PLAN_WARNING_CODES[number]
 
@@ -118,7 +129,7 @@ export type PlanWarningCode = typeof PLAN_WARNING_CODES[number]
  * 소비자가 없는 축을 스스로 지어내면 안 되기 때문이다.
  */
 export const RESERVED_AXES = [
-  'speakers', 'prosody', 'actions', 'ambience', 'music', 'spatial',
+  'prosody', 'actions', 'ambience', 'music', 'spatial',
 ] as const
 export type ReservedAxis = typeof RESERVED_AXES[number]
 
@@ -139,13 +150,31 @@ export interface PlanParagraph extends PlanSpan {
   blankLinesBefore: number
 }
 
+/**
+ * 대본에 등장한 인물. 발화마다 한 줄씩이 아니라 인물 단위다.
+ *
+ * `speakerId` 는 내부 stable id(정규화), `label` 은 **처음 쓴 표기**다. 화면에는 사용자가
+ * 쓴 이름이 보여야 하고 계획·생성·기록은 흔들리지 않는 id 를 써야 한다.
+ * 기본 화자(화자 표기 없음 / `[화자 기본]`)는 인물로 등록된 것이 아니라 여기 나오지 않는다.
+ */
+export interface PlanSpeaker {
+  index: number
+  speakerId: string
+  label: string
+  utteranceCount: number
+  firstUtteranceIndex: number
+  sourceStart: number
+}
+
 /** 한 덩어리의 말. 구간은 **자기 지시를 포함한다**(`[기쁨]` 까지). */
 export interface PlanUtterance extends PlanSpan {
   index: number
   sourceParagraphIndex: number | null
   lineIndex: number | null
-  /** v1.4 의 축. 지금은 항상 null — 화면이 지어내지 않게 자리를 둔다. */
+  /** null = 화자 지정 없음(기본 화자). 내부 stable id. */
   speakerId: string | null
+  /** 사용자가 쓴 그대로의 표시 이름. id 와 역할이 다르다. */
+  speakerLabel: string | null
   emotionId: string | null
   boundaryKind: string | null
   chars: number
@@ -192,6 +221,7 @@ export interface ScriptPlanStructure {
   /** false = 구조화 오류로 원문 줄로 물러났다(좌표는 근사). */
   parserAuthority: boolean
   sourceParagraphs: PlanParagraph[]
+  speakers: PlanSpeaker[]
   utterances: PlanUtterance[]
   emotions: PlanEmotionSpan[]
   pauses: PlanPause[]
@@ -215,6 +245,14 @@ export function toScriptPlanStructure(raw: unknown): ScriptPlanStructure | null 
     sourceSha256: String(r.source_sha256 ?? ''),
     normalizedSha256: String(r.normalized_sha256 ?? ''),
     parserAuthority: Boolean(r.parser_authority),
+    speakers: arr(r.speakers).map((k) => ({
+      index: num(k.index),
+      speakerId: String(k.speaker_id ?? ''),
+      label: String(k.label ?? ''),
+      utteranceCount: num(k.utterance_count),
+      firstUtteranceIndex: num(k.first_utterance_index),
+      sourceStart: num(k.source_start),
+    })),
     sourceParagraphs: arr(r.source_paragraphs).map((p) => ({
       index: num(p.index),
       lineIndex: numOrNull(p.line_index),
@@ -230,6 +268,7 @@ export function toScriptPlanStructure(raw: unknown): ScriptPlanStructure | null 
       sourceParagraphIndex: numOrNull(u.source_paragraph_index),
       lineIndex: numOrNull(u.line_index),
       speakerId: strOrNull(u.speaker_id),
+      speakerLabel: strOrNull(u.speaker_label),
       emotionId: strOrNull(u.emotion_id),
       boundaryKind: strOrNull(u.boundary_kind),
       sourceStart: num(u.source_start),
@@ -375,6 +414,7 @@ export function toAnalysisResult(
   const toChunk = (c: Record<string, unknown>): AnalysisChunk => ({
     globalIndex: num(c.global_index),
     sourceParagraphIndex: idxOrNull(c.source_paragraph_index),
+    speakerId: strOrNull(c.speaker_id),
     segmentIndex: num(c.segment_index),
     localChunkIndex: num(c.local_chunk_index),
     sourceStart: num(c.source_start),
@@ -439,6 +479,7 @@ export function toAnalysisResult(
       index: num(s.index),
       sourceParagraphIndex: idxOrNull(s.source_paragraph_index),
       lineIndex: idxOrNull(s.line_index),
+      speakerId: strOrNull(s.speaker_id),
       sourceStart: num(s.source_start),
       sourceEnd: num(s.source_end),
       chars: num(s.chars),

@@ -39,7 +39,8 @@ import {
   type ExpressiveMode, type ExpressiveTimeline, type ExpressiveParseResult,
 } from './expressiveTimeline.ts'
 import {
-  parseTtsScript, TTS_PARSER_VERSION, TTS_EMOTION_LABEL_TO_ID, TTS_PAUSE_NAMES, sha256Hex,
+  parseTtsScript, SEMANTIC_PLAN_HASH_VERSION, TTS_PARSER_VERSION, TTS_EMOTION_LABEL_TO_ID,
+  TTS_PAUSE_NAMES, sha256Hex,
 } from './ttsGrammar.ts'
 
 const fxPath = fileURLToPath(new URL('../../test/fixtures/expressive-timeline-v3.json', import.meta.url))
@@ -71,8 +72,10 @@ test('A1: v2 pinned 벡터 전부 오늘과 동일한 full sha256 (표현형 레
     const r = parseTtsScript(input)
     assert.equal(r.ok, true, 'v2 pinned 입력은 성공 파싱')
     if (!r.ok) continue
+    // 지문이 그대로인 것이 이 테스트의 본론이다. 파서 계약 버전은 v1.4 에서 3 이 됐고,
+     // 그것이 지문에 영향을 주지 않는다는 것이 여기서 함께 증명된다.
     assert.equal(r.plan.fullSha256, expected)
-    assert.equal(r.plan.parserVersion, 2)
+    assert.equal(r.plan.parserVersion, TTS_PARSER_VERSION)
   }
 })
 
@@ -83,7 +86,9 @@ test('A2: v2 conformance corpus 전부 고정 해시 재현 (fixture legacy_no_m
     assert.equal(r.ok, true)
     if (!r.ok) continue
     assert.equal(r.plan.fullSha256, row.v2_full_sha256, 'v2 full sha256 변화 없음')
-    assert.equal(r.plan.parserVersion, row.v2_parser_version)
+    // fixture 의 `v2_parser_version` 은 이 corpus 를 만든 당시의 기록(2)이다. 지금 파서는
+    // 3 이며, 같은 입력에서 지문이 같다는 것이 곧 "새 문법이 기존 대본을 건드리지 않았다".
+    assert.equal(row.v2_parser_version, 2, 'fixture 는 v2 시절 기록이다')
     assert.equal(r.plan.parserVersion, TTS_PARSER_VERSION)
   }
 })
@@ -99,7 +104,7 @@ test('A3: 표현형 토큰(!? / ...... / ~ / [ㅋㅋ])이 있어도 v2 파서는
   const r = parseTtsScript(noLaugh)
   assert.equal(r.ok, true)
   if (!r.ok) return
-  assert.equal(r.plan.parserVersion, 2)
+  assert.equal(r.plan.parserVersion, TTS_PARSER_VERSION)
   assert.equal(r.plan.segments.length, 1)
   assert.equal(r.plan.segments[0].spokenText, noLaugh, 'v2 는 문장부호를 텍스트로 그대로 둔다')
 })
@@ -732,8 +737,12 @@ test('G2: 쉼 이름 거울 일치', () => {
   assert.deepEqual([...EXPRESSIVE_PAUSE_NAMES].sort(), [...TTS_PAUSE_NAMES].sort())
 })
 
-test('G3: legacy plan 버전 상수가 ttsGrammar.TTS_PARSER_VERSION 과 일치', () => {
-  assert.equal(EXPRESSIVE_LEGACY_PLAN_VERSION, TTS_PARSER_VERSION)
+test('G3: legacy plan 버전 상수가 ttsGrammar 의 **의미 hash 스키마**와 일치', () => {
+  // 파서 계약 버전이 아니다. 이 레이어의 약속은 "wire plan 의 뜻을 건드리지 않는다" 이고,
+  // 그 뜻의 지문 스키마가 기준이다. v1.4 에서 파서는 3, 의미 스키마는 2 로 갈라졌다.
+  assert.equal(EXPRESSIVE_LEGACY_PLAN_VERSION, SEMANTIC_PLAN_HASH_VERSION)
+  assert.notEqual(TTS_PARSER_VERSION, SEMANTIC_PLAN_HASH_VERSION,
+    '두 축이 실제로 갈라져 있어야 이 단언에 뜻이 있다')
 })
 
 test('G4: sha256 거울이 ttsGrammar / node crypto 와 동일', () => {

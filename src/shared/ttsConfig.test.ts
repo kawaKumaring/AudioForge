@@ -106,12 +106,14 @@ test('ttsEmotionRefs가 config에 전달된다 (전달 경로 끊김 회귀)', (
 })
 
 test('I1: ttsParsedPlanSha256/ttsParserVersion 전달(parity 배선) + 기본값', () => {
+  // 값이 오면 그대로 나른다 — 여기서 고치지 않는다(구 세션의 2 도 그대로 통과한다).
   const c = buildTtsConfig({ ttsParsedPlanSha256: 'a'.repeat(64), ttsParserVersion: 2 })
   assert.equal(c.ttsParsedPlanSha256, 'a'.repeat(64))
   assert.equal(c.ttsParserVersion, 2)
-  const d = buildTtsConfig({})  // 미제공 → sha ''(parity 미강제), version 기본 2
+  // 미제공 → sha ''(parity 미강제), version 은 현재 파서 계약 버전.
+  const d = buildTtsConfig({})
   assert.equal(d.ttsParsedPlanSha256, '')
-  assert.equal(d.ttsParserVersion, 2)
+  assert.equal(d.ttsParserVersion, 3)
 })
 
 test('ttsSilenceGap=0 이 0.5로 변질되지 않는다 (|| → ?? 회귀)', () => {

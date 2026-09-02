@@ -152,6 +152,10 @@ export const AXIS_NOTE =
 /** 문단 하나에 속한 발화들. 계획에 있는 그대로 골라 낸다. */
 export function utteranceRows(r: AnalysisResult | null, paragraphIndex: number): {
   index: number
+  /** 내부 stable id(null = 기본 화자). */
+  speakerId: string | null
+  /** 화면에 보여 줄 이름(사용자가 쓴 그대로). */
+  speakerLabel: string | null
   emotionId: string | null
   chars: number
   calls: number
@@ -167,6 +171,8 @@ export function utteranceRows(r: AnalysisResult | null, paragraphIndex: number):
       const mine = r.plan.chunks.filter((c) => c.segmentIndex === u.index)
       return {
         index: u.index,
+        speakerId: u.speakerId,
+        speakerLabel: u.speakerLabel,
         emotionId: u.emotionId,
         chars: u.chars,
         calls: mine.length,
@@ -205,6 +211,8 @@ export const PLAN_WARNING_LABEL: Record<PlanWarningCode, string> = {
   EMPTY_UTTERANCE: '말이 없는 지시',
   CONFLICTING_DIRECTIVES: '겹치는 지시',
   DIRECTIVE_ONLY_PARAGRAPH: '말이 없는 문단',
+  INVALID_SPEAKER: '잘못된 화자 표기',
+  SPEAKER_LABEL_VARIANT: '같은 화자를 다르게 적음',
 }
 
 /**
@@ -225,6 +233,10 @@ export const PLAN_WARNING_BLOCKS: Record<PlanWarningCode, boolean> = {
   EMPTY_UTTERANCE: true,
   CONFLICTING_DIRECTIVES: true,
   DIRECTIVE_ONLY_PARAGRAPH: false,
+  // 파서가 거부한다(INVALID_SPEAKER_TAG) → 예전과 같은 차단이다.
+  INVALID_SPEAKER: true,
+  // 파서는 같은 화자로 묶어 정상 생성한다 — 알려만 준다.
+  SPEAKER_LABEL_VARIANT: false,
 }
 
 /** 두 층의 이름. 화면 문구는 여기 하나에서만 나온다. */
@@ -240,6 +252,8 @@ export const PLAN_WARNING_HINT: Record<PlanWarningCode, string> = {
   EMPTY_UTTERANCE: '지시 뒤에 말이 없습니다. 합성이 차단됩니다',
   CONFLICTING_DIRECTIVES: '연달아 놓인 지시가 서로 부딪칩니다. 합성이 차단됩니다',
   DIRECTIVE_ONLY_PARAGRAPH: '이 문단에는 말이 없어 소리가 나지 않습니다',
+  INVALID_SPEAKER: '화자 이름이 없거나 쓸 수 없는 문자입니다. 합성이 차단됩니다',
+  SPEAKER_LABEL_VARIANT: '같은 화자로 묶였습니다(표기만 다릅니다)',
 }
 
 /**
@@ -304,7 +318,6 @@ export function planWarningRows(r: AnalysisResult | null): {
  * 계획에 그 축이 실제로 선언돼 있기 때문이다. 없는 값을 채워 보여 주지 않는다.
  */
 export const RESERVED_AXIS_LABELS: { axis: ReservedAxis; label: string }[] = [
-  { axis: 'speakers', label: '화자' },
   { axis: 'prosody', label: '표현 세기' },
   { axis: 'actions', label: '행동' },
   { axis: 'ambience', label: '환경음' },
@@ -321,3 +334,40 @@ export function planIsApproximate(r: AnalysisResult | null): boolean {
 
 export const PLAN_APPROXIMATE_NOTE =
   '표기를 해석하지 못해 줄 단위로 계산했습니다. 위치와 예상값이 근사입니다.'
+
+/**
+ * 화면에 보여 줄 화자 목록.
+ *
+ * 표시 이름은 사용자가 쓴 그대로이고, 개수는 계획의 발화 행에서 이미 세어져 온다 —
+ * 화면이 다시 세지 않는다.
+ *
+ * 참조 준비 상태는 여기서 만들지 않는다. v1.4 PHASE 2 에는 화자별 참조 지정이 아직 없고,
+ * 모든 화자가 기본 참조를 쓴다. 없는 상태를 지어내지 않기 위해 그 사실만 문구로 말한다.
+ */
+export function speakerRows(r: AnalysisResult | null): {
+  index: number
+  speakerId: string
+  label: string
+  utteranceCount: number
+  sourceStart: number
+}[] {
+  if (!r) return []
+  return r.plan.speakers.map((s) => ({
+    index: s.index,
+    speakerId: s.speakerId,
+    label: s.label,
+    utteranceCount: s.utteranceCount,
+    sourceStart: s.sourceStart,
+  }))
+}
+
+/** 기본 화자로 말하는 발화 수. 화자를 지정하지 않은 말이 얼마나 있는지. */
+export function defaultSpeakerUtteranceCount(r: AnalysisResult | null): number {
+  if (!r) return 0
+  return r.plan.utterances.filter((u) => u.speakerId === null).length
+}
+
+export const SPEAKER_REFERENCE_NOTE =
+  '모든 화자가 지금은 기본 참조를 씁니다. 화자별 참조 지정은 다음 단계에서 들어옵니다.'
+
+export const DEFAULT_SPEAKER_LABEL = '지정 없음(기본 참조)'

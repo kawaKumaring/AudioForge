@@ -2,18 +2,19 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  AXIS_NOTE, INSUFFICIENT_TEXT, PLAN_KIND_LABEL, PLAN_WARNING_BLOCKS, PLAN_WARNING_HINT,
-  PLAN_WARNING_LABEL, RESERVED_AXIS_LABELS, SPLIT_REASON_LABEL, axisRelationLine,
-  canShowWallTime, confidenceLabel, emotionSpanRows, formatDuration, formatRange,
-  isForcedSplit, paragraphSummary, planIsApproximate, planWarningNote, planWarningRows,
-  preparationNote, splitRows, summaryLine, utteranceRows, warningWhere,
+  AXIS_NOTE, DEFAULT_SPEAKER_LABEL, INSUFFICIENT_TEXT, PLAN_KIND_LABEL, PLAN_WARNING_BLOCKS,
+  PLAN_WARNING_HINT, PLAN_WARNING_LABEL, RESERVED_AXIS_LABELS, SPEAKER_REFERENCE_NOTE,
+  SPLIT_REASON_LABEL, axisRelationLine, canShowWallTime, confidenceLabel,
+  defaultSpeakerUtteranceCount, emotionSpanRows, formatDuration, formatRange, isForcedSplit,
+  paragraphSummary, planIsApproximate, planWarningNote, planWarningRows, preparationNote,
+  speakerRows, splitRows, summaryLine, utteranceRows, warningWhere,
 } from './analysisWording.ts'
 import type {
-  AnalysisChunk, AnalysisResult, PlanUtterance, PlanWarning, ScriptPlan,
+  AnalysisChunk, AnalysisResult, PlanSpeaker, PlanUtterance, PlanWarning, ScriptPlan,
 } from './inputAnalysis.ts'
 
 const chunk = (over: Partial<AnalysisChunk> = {}): AnalysisChunk => ({
-  globalIndex: 0, sourceParagraphIndex: 0, segmentIndex: 0, localChunkIndex: 0,
+  globalIndex: 0, sourceParagraphIndex: 0, speakerId: null, segmentIndex: 0, localChunkIndex: 0,
   sourceStart: 0, sourceEnd: 10, sourceOffsetsExact: true, chars: 10, productionTokens: 20,
   combinedPromptTokens: 57, generationTier: 256, fitsBudget: true, boundaryKind: null,
   splitReason: 'end_of_input', estimatedAudioSeconds: { min: 130, max: 155 },
@@ -21,7 +22,8 @@ const chunk = (over: Partial<AnalysisChunk> = {}): AnalysisChunk => ({
 })
 
 const utterance = (over: Partial<PlanUtterance> = {}): PlanUtterance => ({
-  index: 0, sourceParagraphIndex: 0, lineIndex: 0, speakerId: null, emotionId: null,
+  index: 0, sourceParagraphIndex: 0, lineIndex: 0, speakerId: null, speakerLabel: null,
+  emotionId: null,
   boundaryKind: null, sourceStart: 0, sourceEnd: 10, textStart: 0, textEnd: 10, chars: 10,
   sourceOffsetsExact: true,
   ...over,
@@ -36,7 +38,7 @@ const plan = (over: Partial<ScriptPlan> = {}): ScriptPlan => ({
     chars: 10, blankLinesBefore: 0,
   }],
   utterances: [utterance()],
-  emotions: [], pauses: [], warnings: [], sentences: [],
+  speakers: [], emotions: [], pauses: [], warnings: [], sentences: [],
   chunks: [chunk()],
   structureSha256: 'deadbeef',
   ...over,
@@ -54,7 +56,8 @@ const base = (over: Partial<AnalysisResult> = {}): AnalysisResult => ({
   mode: 'high_quality_icl', warnings: [],
   sourceParagraphs: [{ index: 0, lineIndex: 0, sourceStart: 0, sourceEnd: 10, chars: 10, blankLinesBefore: 0 }],
   segments: [{
-    index: 0, sourceParagraphIndex: 0, lineIndex: 0, sourceStart: 0, sourceEnd: 10, chars: 10,
+    index: 0, sourceParagraphIndex: 0, lineIndex: 0, speakerId: null,
+    sourceStart: 0, sourceEnd: 10, chars: 10,
     sentenceCount: 1, emotionId: null, boundaryKind: null, productionTokens: 20, plannedCalls: 1,
     autoSplit: false, estimatedAudioSeconds: { min: 130, max: 155 },
     estimatedWallSecondsMarginal: { min: 300, max: 410 },
@@ -359,7 +362,7 @@ test('목록 아래 한 줄은 섞인 내용에 따라 달라진다', () => {
 
 test('모든 경고 코드에 문구가 있다 — 코드가 그대로 노출되지 않는다', () => {
   const codes = Object.keys(PLAN_WARNING_LABEL) as (keyof typeof PLAN_WARNING_LABEL)[]
-  assert.equal(codes.length, 5)
+  assert.equal(codes.length, 7, 'v1.4 에서 화자 진단 둘이 늘었다')
   for (const code of codes) {
     assert.ok(PLAN_WARNING_LABEL[code].length > 0, code)
     assert.ok(PLAN_WARNING_HINT[code].length > 0, code)
@@ -372,10 +375,80 @@ test('파서가 물러났으면 근사임을 화면이 말한다', () => {
 })
 
 test('앞으로 들어올 축은 이름만 있고 값이 없다', () => {
+  // 화자는 v1.4 에서 실제 축이 되어 이 목록에서 빠졌다.
   assert.deepEqual(RESERVED_AXIS_LABELS.map((a) => a.axis),
-    ['speakers', 'prosody', 'actions', 'ambience', 'music', 'spatial'])
+    ['prosody', 'actions', 'ambience', 'music', 'spatial'])
   for (const a of RESERVED_AXIS_LABELS) {
     assert.ok(a.label.length > 0)
     assert.equal(/[a-z]/.test(a.label), false, '화면 문구는 한국어다')
   }
+})
+
+// ── 화자 문구(v1.4) ─────────────────────────────────────────────────────────
+
+const speaker = (over: Partial<PlanSpeaker> = {}): PlanSpeaker => ({
+  index: 0, speakerId: 'minsu', label: '민수', utteranceCount: 1,
+  firstUtteranceIndex: 0, sourceStart: 0, ...over,
+})
+
+test('화자 목록은 계획이 센 값을 그대로 읽는다', () => {
+  const r = base({
+    plan: plan({
+      speakers: [
+        speaker({ index: 0, speakerId: 'minsu', label: '민수', utteranceCount: 2 }),
+        speaker({ index: 1, speakerId: 'younghee', label: '영희', utteranceCount: 1, sourceStart: 20 }),
+      ],
+      utterances: [
+        utterance({ index: 0, speakerId: 'minsu', speakerLabel: '민수' }),
+        utterance({ index: 1, speakerId: 'minsu', speakerLabel: '민수' }),
+        utterance({ index: 2, speakerId: 'younghee', speakerLabel: '영희' }),
+      ],
+    }),
+  })
+  const rows = speakerRows(r)
+  assert.deepEqual(rows.map((k) => [k.label, k.utteranceCount]), [['민수', 2], ['영희', 1]])
+  assert.equal(defaultSpeakerUtteranceCount(r), 0)
+  assert.deepEqual(speakerRows(base()), [], '화자 표기가 없으면 목록도 없다')
+})
+
+test('화자를 지정하지 않은 말이 몇 개인지 센다', () => {
+  const r = base({
+    plan: plan({
+      speakers: [speaker({ utteranceCount: 1 })],
+      utterances: [
+        utterance({ index: 0, speakerId: null }),
+        utterance({ index: 1, speakerId: 'minsu', speakerLabel: '민수' }),
+      ],
+    }),
+  })
+  assert.equal(defaultSpeakerUtteranceCount(r), 1)
+  assert.ok(DEFAULT_SPEAKER_LABEL.includes('기본'))
+})
+
+test('화자별 참조가 아직 없다는 사실을 문구로 말한다', () => {
+  // 없는 상태를 지어내지 않는다 — PHASE 2 에는 화자별 참조 지정이 없다.
+  assert.ok(SPEAKER_REFERENCE_NOTE.includes('기본 참조'))
+  assert.ok(SPEAKER_REFERENCE_NOTE.includes('다음 단계'))
+})
+
+test('화자 진단의 차단 여부가 파서 계약과 맞는다', () => {
+  // `[화자]` 는 파서가 거부한다 → 예전과 같은 차단. 표기 차이는 파서가 통과시킨다 → 경고.
+  assert.equal(PLAN_WARNING_BLOCKS.INVALID_SPEAKER, true)
+  assert.equal(PLAN_WARNING_BLOCKS.SPEAKER_LABEL_VARIANT, false)
+  assert.ok(PLAN_WARNING_HINT.INVALID_SPEAKER.includes('합성이 차단됩니다'))
+  assert.equal(PLAN_WARNING_HINT.SPEAKER_LABEL_VARIANT.includes('차단'), false)
+  const r = base({
+    plan: plan({
+      // 계획은 경고를 위치 순으로 정렬해 보낸다. 문구 층은 그 순서를 바꾸지 않는다 —
+      // 화면에서 대본을 훑는 순서와 같아야 한다.
+      warnings: [
+        warn({ code: 'INVALID_SPEAKER', sourceStart: 0 }),
+        warn({ code: 'SPEAKER_LABEL_VARIANT', lineIndex: 1, sourceStart: 10 }),
+      ],
+    }),
+  })
+  const rows = planWarningRows(r)
+  assert.deepEqual(rows.map((w) => w.kindLabel),
+    [PLAN_KIND_LABEL.blocking, PLAN_KIND_LABEL.advisory])
+  assert.deepEqual(rows.map((w) => w.label), ['잘못된 화자 표기', '같은 화자를 다르게 적음'])
 })

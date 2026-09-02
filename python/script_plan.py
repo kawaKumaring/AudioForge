@@ -18,10 +18,14 @@ estimator 가 각자 읽었다. 화자·환경음·공간 지시가 들어오면
 축을 섞지 않는다
 ----------------
   source_paragraphs  사용자가 Enter 로 나눈 문단
+  speakers           대본에 등장한 인물(내부 stable id + 화면 표시 이름)
   utterances         파서가 만든 **한 덩어리의 말**(= v1.2.0 의 segment 와 같은 행)
   emotions           연속한 발화가 같은 감정을 유지하는 **구간**
   pauses             명시적 쉼
   chunks             실제 model call 계획 — 여기가 아니라 `input_analysis` 가 채운다
+
+화자는 사용자의 의도이고 chunk 는 실행 계획이다. 예산이 바뀌어 chunk 가 더 갈려도 어느
+말이 누구의 것인지는 바뀌지 않는다 — 그래서 화자는 발화 행에 붙고 chunk 는 발화를 가리킨다.
 
 문단 != 발화 != 묶음이다. 한 문단 안에서 감정이 바뀌면 발화는 늘지만 문단은 그대로고, 한
 발화가 예산을 넘으면 여러 묶음으로 갈린다. `chunks` 만 성격이 다르다 — 나머지는 사용자의
@@ -29,8 +33,8 @@ estimator 가 각자 읽었다. 화자·환경음·공간 지시가 들어오면
 
 아직 비어 있는 축
 -----------------
-`speakers`·`prosody`·`actions`·`ambience`·`music`·`spatial` 은 v1.2.0 문법에 해당 지시가
-없어서 **항상 빈 배열**이다. 그래도 여기에 선언해 둔다 — 화면이 "앞으로 여기에 들어온다"
+`prosody`·`actions`·`ambience`·`music`·`spatial` 은 아직 문법에 해당 지시가 없어서
+**항상 빈 배열**이다(`speakers` 는 v1.4 에서 실제 축이 됐다). 그래도 여기에 선언해 둔다 — 화면이 "앞으로 여기에 들어온다"
 고 말할 근거가 코드에 있어야 하고, 소비자가 없는 축을 스스로 지어내면 안 되기 때문이다.
 
 TS 와의 parity
@@ -43,7 +47,7 @@ import hashlib
 
 import tts_grammar
 
-PLAN_SCHEMA_VERSION = 1
+PLAN_SCHEMA_VERSION = 2
 
 # 사전 경고(비민감 enum). 문구는 renderer 가 붙인다.
 # 경고는 **합성을 막지 않고 원문을 고치지도 않는다.** 알려 주는 것이 전부다.
@@ -52,6 +56,8 @@ WARN_UNKNOWN_DIRECTIVE = "UNKNOWN_DIRECTIVE"             # 해석할 수 없는 
 WARN_EMPTY_UTTERANCE = "EMPTY_UTTERANCE"                 # 지시는 있는데 말이 없다
 WARN_CONFLICTING_DIRECTIVES = "CONFLICTING_DIRECTIVES"   # 연속한 지시가 서로 부딪친다
 WARN_DIRECTIVE_ONLY_PARAGRAPH = "DIRECTIVE_ONLY_PARAGRAPH"  # 문단 전체가 지시뿐이다
+WARN_INVALID_SPEAKER = "INVALID_SPEAKER"                 # `[화자]` 이름 없음·허용 문자 밖
+WARN_SPEAKER_LABEL_VARIANT = "SPEAKER_LABEL_VARIANT"     # 같은 화자를 두 가지로 적었다
 
 PLAN_WARNING_CODES = (
     WARN_UNCLOSED_TAG,
@@ -59,10 +65,12 @@ PLAN_WARNING_CODES = (
     WARN_EMPTY_UTTERANCE,
     WARN_CONFLICTING_DIRECTIVES,
     WARN_DIRECTIVE_ONLY_PARAGRAPH,
+    WARN_INVALID_SPEAKER,
+    WARN_SPEAKER_LABEL_VARIANT,
 )
 
 # v1.2.0 문법에 지시가 없는 축. 항상 빈 배열이지만 이름은 지금 정해 둔다.
-RESERVED_AXES = ("speakers", "prosody", "actions", "ambience", "music", "spatial")
+RESERVED_AXES = ("prosody", "actions", "ambience", "music", "spatial")
 
 
 def _warning(code, line_index, u16_start, u16_end, cp_start, cp_end, reason=None, tag=None):
@@ -167,6 +175,8 @@ def parse_units(text):
                 "index": i,
                 "line_index": s.get("original_line_index"),
                 "text": s.get("spoken_text") or "",
+                "speaker_id": s.get("speaker_id"),
+                "speaker_label": s.get("speaker_label"),
                 "emotion_id": s.get("emotion_id"),
                 "boundary_kind": s.get("boundary_type"),
                 "source_start": int(off.get("ui_start_utf16") or 0),
@@ -185,6 +195,9 @@ def parse_units(text):
             "index": r["index"],
             "line_index": r["line_index"],
             "text": r["text"],
+            # 파서를 못 썼으면 화자를 **모른다.** 지어내지 않고 비워 둔다.
+            "speaker_id": None,
+            "speaker_label": None,
             "emotion_id": None,
             "boundary_kind": None,
             "source_start": r["source_start"],
@@ -206,7 +219,9 @@ def _warning_from_parse_error(err):
     reason = err.get("reason")
     tag = err.get("tag")
     off = err.get("ui_offset_utf16")
-    if code == "UNKNOWN_TTS_TAG":
+    if code == "INVALID_SPEAKER_TAG":
+        out = WARN_INVALID_SPEAKER
+    elif code == "UNKNOWN_TTS_TAG":
         out = WARN_UNKNOWN_DIRECTIVE
     elif code == "EMPTY_EMOTION_SEGMENT":
         out = WARN_EMPTY_UTTERANCE
@@ -249,6 +264,58 @@ def _emotion_spans(units):
             "text_end": u["text_end"],
         })
     return spans
+
+
+def _speaker_rows(units):
+    """대본에 등장한 인물. 발화마다 한 줄씩이 아니라 인물 단위다.
+
+    `id` 는 내부 stable id(정규화), `label` 은 **처음 쓴 표기**다. 화면에는 사용자가 쓴
+    이름이 보여야 하고 계획·생성·기록은 흔들리지 않는 id 를 써야 한다.
+
+    기본 화자(화자 표기가 없거나 `[화자 기본]`)는 여기 나오지 않는다 — 인물로 등록된 것이
+    아니라 "지정하지 않음" 이기 때문이다. 화면은 기본 참조를 쓴다고 말하면 된다.
+    """
+    rows = []
+    index_of = {}
+    for u in units:
+        sid = u.get("speaker_id")
+        if sid is None:
+            continue
+        if sid not in index_of:
+            index_of[sid] = len(rows)
+            rows.append({
+                "index": len(rows),
+                "speaker_id": sid,
+                "label": u.get("speaker_label") or sid,
+                "utterance_count": 0,
+                "first_utterance_index": u["index"],
+                "source_start": u["source_start"],
+            })
+        rows[index_of[sid]]["utterance_count"] += 1
+    return rows
+
+
+def _speaker_label_variants(units, speakers):
+    """같은 인물을 두 가지 표기로 적었다 — 알려만 준다(합성은 된다).
+
+    `[speaker Minsu]` 와 `[speaker minsu]` 는 같은 id 로 모이므로 생성에는 문제가 없다.
+    다만 사용자는 두 사람으로 적었다고 생각할 수 있어 그 사실을 말해 준다.
+    """
+    first = {r["speaker_id"]: r["label"] for r in speakers}
+    seen = set()
+    out = []
+    for u in units:
+        sid = u.get("speaker_id")
+        label = u.get("speaker_label")
+        if sid is None or label is None:
+            continue
+        if label == first.get(sid) or (sid, label) in seen:
+            continue
+        seen.add((sid, label))
+        out.append(_warning(WARN_SPEAKER_LABEL_VARIANT, u.get("line_index"),
+                            u["source_start"], u["source_end"],
+                            u["text_start"], u["text_end"], reason="label_differs"))
+    return out
 
 
 def _pause_rows(units):
@@ -313,8 +380,8 @@ def structure_from_units(source, units, parser_authority, warnings, paragraphs=N
             "index": u["index"],
             "source_paragraph_index": line_to_para.get(u.get("line_index")),
             "line_index": u.get("line_index"),
-            # 화자는 v1.4 의 축이다. 지금은 항상 None — 화면이 지어내지 않게 자리를 둔다.
-            "speaker_id": None,
+            "speaker_id": u.get("speaker_id"),
+            "speaker_label": u.get("speaker_label"),
             "emotion_id": u.get("emotion_id"),
             "boundary_kind": u.get("boundary_kind"),
             "source_start": u["source_start"],
@@ -326,7 +393,9 @@ def structure_from_units(source, units, parser_authority, warnings, paragraphs=N
             "source_offsets_exact": bool(parser_authority),
         })
 
-    all_warnings = list(warnings) + _directive_only_paragraphs(paras, utterances)
+    speakers = _speaker_rows(utterances)
+    all_warnings = (list(warnings) + _directive_only_paragraphs(paras, utterances)
+                    + _speaker_label_variants(utterances, speakers))
     all_warnings.sort(key=_warning_sort_key)
 
     structure = {
@@ -339,6 +408,7 @@ def structure_from_units(source, units, parser_authority, warnings, paragraphs=N
             tts_grammar.normalize_line_endings(src)[0].encode("utf-8")).hexdigest(),
         "parser_authority": bool(parser_authority),
         "source_paragraphs": paras,
+        "speakers": speakers,
         "utterances": utterances,
         "emotions": _emotion_spans(utterances),
         "pauses": _pause_rows(units),
@@ -364,6 +434,8 @@ def build_structure(text):
 _HASH_UTTERANCE_KEYS = ("index", "source_paragraph_index", "line_index", "speaker_id",
                         "emotion_id", "boundary_kind", "source_start", "source_end",
                         "text_start", "text_end", "chars", "source_offsets_exact")
+_HASH_SPEAKER_KEYS = ("index", "speaker_id", "label", "utterance_count",
+                      "first_utterance_index", "source_start")
 _HASH_PARAGRAPH_KEYS = ("index", "line_index", "source_start", "source_end",
                         "text_start", "text_end", "chars", "blank_lines_before")
 _HASH_EMOTION_KEYS = ("index", "emotion_id", "intensity", "utterance_start", "utterance_end",
@@ -391,6 +463,7 @@ def structure_sha256(structure):
         "normalized_sha256": structure["normalized_sha256"],
         "parser_authority": bool(structure["parser_authority"]),
         "source_paragraphs": _pick(structure["source_paragraphs"], _HASH_PARAGRAPH_KEYS),
+        "speakers": _pick(structure["speakers"], _HASH_SPEAKER_KEYS),
         "utterances": _pick(structure["utterances"], _HASH_UTTERANCE_KEYS),
         "emotions": _pick(structure["emotions"], _HASH_EMOTION_KEYS),
         "pauses": _pick(structure["pauses"], _HASH_PAUSE_KEYS),

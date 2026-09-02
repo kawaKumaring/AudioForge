@@ -10,7 +10,19 @@ import hashlib
 import re
 import unicodedata  # noqa: F401 (미사용이지만 code-point 의미 문서화용 자리)
 
-TTS_PARSER_VERSION = 2
+TTS_PARSER_VERSION = 3
+
+# 의미 기반 plan hash 입력의 스키마 버전. **파서 계약 버전과 다른 축이다.**
+#
+# 왜 분리하나: parser_version 을 hash 입력에 그대로 넣으면 문법을 넓힐 때마다 기존 대본의
+# hash 가 달라진다. 그 hash 는 renderer↔Python parity 기준이라, 의미가 하나도 안 바뀐 대본이
+# PARSER_PARITY_MISMATCH 로 막히게 된다. 그래서 "무엇을 해석할 수 있는가"(파서 계약)와
+# "이 대본이 무엇을 뜻하는가"(의미 hash)를 따로 센다.
+#
+# 이 값은 **hash 입력의 구성이 바뀔 때만** 올린다. v1.4 의 화자 축은 화자 표기가 실제로
+# 있는 대본에서만 입력에 더해지므로(아래 _compute_plan_full_sha256) 기존 대본의 값은 그대로다.
+# 버전을 숨기는 것이 아니다 — parser_version=3 은 plan·config·metadata·run bundle 에 그대로 나간다.
+SEMANTIC_PLAN_HASH_VERSION = 2
 
 TTS_GRAMMAR_ERROR_CODES = (
     "UNKNOWN_TTS_TAG",
@@ -18,6 +30,7 @@ TTS_GRAMMAR_ERROR_CODES = (
     "EMPTY_EMOTION_SEGMENT",
     "PARSER_PARITY_MISMATCH",
     "INVALID_TTS_CONFIG",
+    "INVALID_SPEAKER_TAG",    # [화자] 이름 없음 / 허용 문자 밖 / 형식 위반 → 합성 차단
 )
 
 # 감정 label(한글)/id(영문) → emotionId. python/tts_worker.py EMOTION_TAGS 의 거울.
@@ -54,6 +67,12 @@ TTS_EMOTION_LABEL_TO_ID = {
 }
 
 TTS_PAUSE_NAMES = {"쉼", "pause"}
+# 화자 표기의 예약 접두어. 이 둘만 화자로 읽는다 — 다른 대괄호 표현을 화자로 오인하지 않는다.
+TTS_SPEAKER_NAMES = {"화자", "speaker"}
+# 기본 화자로 돌아가는 이름. 앞의 화자 지정을 해제하고 기본 참조로 되돌린다.
+TTS_DEFAULT_SPEAKER_NAMES = {"기본", "default"}
+# 화자 식별자에 허용하는 문자: 한국어 음절·영문·숫자·밑줄·붙임표.
+_SPEAKER_ID_RE = re.compile("^[0-9A-Za-z_\\-\u3131-\u318E\uAC00-\uD7A3]+$")
 TTS_PAUSE_MIN_SEC = 0.05
 TTS_PAUSE_MAX_SEC = 5.0
 TTS_NON_REFERENCE_EMOTION_IDS = {"default"}
@@ -89,6 +108,19 @@ class TtsGrammarError:
 
     def __repr__(self):
         return "TtsGrammarError(%r)" % (self.to_dict(),)
+
+
+def normalize_speaker_id(name):
+    """표시 이름 → **내부 stable id**.
+
+    화면에 보이는 것은 사용자가 쓴 그대로(`label`)이고, 계획·생성·기록이 쓰는 것은 이
+    정규화된 id 다. 둘을 구분해 두는 이유는 `[speaker Minsu]` 와 `[speaker minsu]` 가
+    같은 사람이어야 하고, 그러면서도 화면에는 사용자가 쓴 표기가 보여야 하기 때문이다.
+
+    NFC 로 모으고 소문자로 내린다(한글은 소문자 변환이 무연산이다).
+    """
+    import unicodedata
+    return unicodedata.normalize("NFC", (name or "").strip()).lower()
 
 
 def default_resolve_emotion(name):
@@ -203,7 +235,21 @@ def _classify_bracket(inner, resolve_emotion):
             return {"type": "emotion", "id": eid, "name": name}
         if name in TTS_PAUSE_NAMES:
             return {"type": "pauseInvalid", "arg": "", "reason": "missing_arg"}
+        if name in TTS_SPEAKER_NAMES:
+            return {"type": "speakerInvalid", "arg": "", "reason": "missing_name"}
         return {"type": "unknown", "name": name}
+    if parts[0] in TTS_SPEAKER_NAMES:
+        # 이름이 없는 `[화자]` 는 조용히 지나가지 않는다 — 무엇을 뜻하는지 알 수 없다.
+        if len(parts) == 1:
+            return {"type": "speakerInvalid", "arg": "", "reason": "missing_name"}
+        if len(parts) != 2:
+            return {"type": "speakerInvalid", "arg": " ".join(parts[1:]), "reason": "format"}
+        raw = parts[1]
+        if raw in TTS_DEFAULT_SPEAKER_NAMES:
+            return {"type": "speaker", "id": None, "name": raw}
+        if not _SPEAKER_ID_RE.match(raw):
+            return {"type": "speakerInvalid", "arg": raw, "reason": "charset"}
+        return {"type": "speaker", "id": normalize_speaker_id(raw), "name": raw}
     if parts[0] in TTS_PAUSE_NAMES:
         if len(parts) != 2:
             return {"type": "pauseInvalid", "arg": " ".join(parts[1:]), "reason": "format"}
@@ -336,6 +382,13 @@ def _tokenize(raw, resolve_emotion, unclosed_out=None):
             elif cls["type"] == "pause":
                 pieces.append({"kind": "pause", "ms": cls["ms"], "seconds": cls["seconds"],
                                "start": start_pos, "end": end_pos, "line": line_index})
+            elif cls["type"] == "speaker":
+                pieces.append({"kind": "speaker", "id": cls["id"], "name": cls["name"],
+                               "start": start_pos, "end": end_pos, "line": line_index})
+            elif cls["type"] == "speakerInvalid":
+                pieces.append({"kind": "speakerInvalid", "arg": cls["arg"],
+                               "reason": cls["reason"],
+                               "start": start_pos, "end": end_pos, "line": line_index})
             elif cls["type"] == "pauseInvalid":
                 pieces.append({"kind": "pauseInvalid", "arg": cls["arg"], "reason": cls["reason"],
                                "start": start_pos, "end": end_pos, "line": line_index})
@@ -379,10 +432,27 @@ def parse_tts_script(raw, resolve_emotion=None):
     """raw ttsText → dict. 성공: {ok:True, plan:{...}}. 실패: {ok:False, errors:[dict...]}.
 
     plan 구조(정규화): {
-      parser_version, segments:[{original_line_index, emotion_id, spoken_text,
+      parser_version, segments:[{original_line_index, speaker_id, speaker_label, emotion_id,
+        spoken_text,
         offset:{ui_start_utf16,ui_end_utf16,text_start_codepoint,text_end_codepoint},
         pauses:[{pause_ms, boundary_type, offset:{...}}], boundary_type}],
       summary:{...}, full_sha256 }
+
+    화자 지속 규칙(v1.4 확정)
+    ------------------------
+    화자는 **다음 화자 표기가 나올 때까지 유지**된다. 줄바꿈·빈 줄·문단 경계·쉼 지시는
+    화자를 초기화하지 않는다. 대본 관습이 "바뀔 때만 적는다" 이고, 대화문에서 줄마다 화자를
+    다시 쓰게 하면 쓰기 어려워진다.
+
+    감정은 기존 계약대로 **줄 단위로 초기화**된다. 두 규칙을 섞지 않는다 — 하나는 인물이
+    누구인가이고 다른 하나는 그 줄을 어떻게 말하는가다.
+
+    화자 표기는 **항상 앞의 말을 닫는다**(감정 태그와 다르다). 감정 태그는 앞에 감정이 없던
+    구간에 소급 적용되지만, 화자는 그럴 수 없다 — 태그 앞의 말은 그 사람이 한 말이 아니다.
+
+    `[화자 기본]`/`[speaker default]` 는 화자 지정을 해제해 기본 참조로 되돌린다.
+    잘못된 화자 표기(`[화자]`, 허용 문자 밖)는 구조화 오류이며, **이전 화자 상태를 바꾸지
+    않는다** — 해석하지 못한 표기가 인물을 조용히 갈아치우면 안 된다.
     """
     if resolve_emotion is None:
         resolve_emotion = default_resolve_emotion
@@ -400,11 +470,15 @@ def parse_tts_script(raw, resolve_emotion=None):
     strip_next_ws = False
     cur_emotion = None
     cur_emotion_name = None
+    # 화자는 줄바꿈에서 초기화되지 않는다(감정과 다른 축이다).
+    cur_speaker = None
+    cur_speaker_label = None
 
     def new_open(line_index, start):
         nonlocal pending_pause_ms, pending_pause_sec
         o = {
             "emotion_id": cur_emotion, "emotion_name": cur_emotion_name,
+            "speaker_id": cur_speaker, "speaker_label": cur_speaker_label,
             "parts": [], "start": start, "end": start, "line": line_index,
             "leading_pause_ms": pending_pause_ms, "leading_pause_sec": pending_pause_sec,
         }
@@ -438,6 +512,9 @@ def parse_tts_script(raw, resolve_emotion=None):
             })
         segments.append({
             "original_line_index": open_seg["line"],
+            # 내부 stable id 와 화면 표시 이름을 나눠 싣는다(id 는 정규화, label 은 쓴 그대로).
+            "speaker_id": open_seg["speaker_id"],
+            "speaker_label": open_seg["speaker_label"],
             "emotion_id": open_seg["emotion_id"],
             "spoken_text": spoken,
             "offset": {"ui_start_utf16": start[0], "ui_end_utf16": end[0],
@@ -450,6 +527,19 @@ def parse_tts_script(raw, resolve_emotion=None):
         kind = p["kind"]
         if kind == "unknown":
             errors.append(TtsGrammarError("UNKNOWN_TTS_TAG", tag=p["name"], ui_offset_utf16=p["start"][0]))
+            continue
+        if kind == "speakerInvalid":
+            # 해석하지 못한 화자 표기는 **이전 화자를 바꾸지 않는다.** 오류로만 남는다.
+            errors.append(TtsGrammarError("INVALID_SPEAKER_TAG", arg=p["arg"],
+                                          reason=p["reason"],
+                                          ui_offset_utf16=p["start"][0]))
+            continue
+        if kind == "speaker":
+            # 화자가 바뀌면 지금까지 모은 말은 이전 화자의 것이므로 먼저 닫는다.
+            flush_open()
+            cur_speaker = p["id"]
+            cur_speaker_label = None if p["id"] is None else p["name"]
+            strip_next_ws = True
             continue
         if kind == "pauseInvalid":
             errors.append(TtsGrammarError("INVALID_PAUSE_TAG", arg=p["arg"], reason=p["reason"],
@@ -497,6 +587,7 @@ def parse_tts_script(raw, resolve_emotion=None):
             strip_next_ws = False
             cur_emotion = None
             cur_emotion_name = None
+            # cur_speaker 는 그대로 둔다 — 화자는 다음 화자 표기까지 유지된다.
             continue
     flush_open()
 
@@ -531,6 +622,14 @@ def parse_tts_script(raw, resolve_emotion=None):
             seen.add(eid)
             used_emotion_ids.append(eid)
 
+    used_speaker_ids = []
+    _seen_spk = set()
+    for seg in segments:
+        sid = seg["speaker_id"]
+        if sid is not None and sid not in _seen_spk:
+            _seen_spk.add(sid)
+            used_speaker_ids.append(sid)
+
     explicit_pause_count = 0
     total_pause_ms = 0
     for s in segments:
@@ -553,6 +652,8 @@ def parse_tts_script(raw, resolve_emotion=None):
         "explicit_pause_count": explicit_pause_count,
         "total_pause_ms": total_pause_ms,
         "used_emotion_ids": used_emotion_ids,
+        # 화자 표기를 쓰지 않은 대본에서는 빈 목록이다(기본 화자 하나).
+        "used_speaker_ids": used_speaker_ids,
         "plan_sha8": plan_sha8,
     }
     plan = {
@@ -642,6 +743,19 @@ def _sha256_hex(data_bytes):
 
 
 def _compute_plan_full_sha256(segments, boundary_types):
+    """대본이 **무엇을 뜻하는가**의 지문. 파서 계약 버전은 여기 들어가지 않는다.
+
+    두 가지를 지킨다.
+
+    1. `parser_version` 대신 `SEMANTIC_PLAN_HASH_VERSION` 을 쓴다. 문법을 넓혀 파서 버전이
+       올라가도, 의미가 같은 대본의 지문은 그대로여야 한다 — 이 값이 곧 renderer↔Python
+       parity 기준이라 흔들리면 의미가 안 바뀐 대본이 PARSER_PARITY_MISMATCH 로 막힌다.
+       (버전을 숨기는 것이 아니다. parser_version=3 은 plan·config·metadata 로 그대로 나간다.)
+    2. 화자는 **화자 표기가 실제로 있는 대본에서만** 입력에 들어간다. 그래서 v1.3.0 대본의
+       지문은 한 바이트도 달라지지 않는다. 화자가 하나라도 있으면 모든 segment 에 키가
+       붙는다(같은 대본에서 키가 들쭉날쭉하지 않게).
+    """
+    has_speaker = any(s.get("speaker_id") is not None for s in segments)
     canon_segments = []
     for i, s in enumerate(segments):
         pause_ms = 0
@@ -649,7 +763,7 @@ def _compute_plan_full_sha256(segments, boundary_types):
             if b["boundary_type"] == "explicitPause":
                 pause_ms = b["pause_ms"]
         text_bytes = s["spoken_text"].encode("utf-8")
-        canon_segments.append({
+        row = {
             "boundary": boundary_types[i],
             "emotion_id": s["emotion_id"],
             "i": i,
@@ -657,9 +771,13 @@ def _compute_plan_full_sha256(segments, boundary_types):
             "pause_ms": pause_ms,
             "text_bytes": len(text_bytes),
             "text_sha256": _sha256_hex(text_bytes),
-        })
+        }
+        if has_speaker:
+            # 표시 이름(label)은 넣지 않는다 — 같은 사람을 다르게 적었을 뿐이면 의미는 같다.
+            row["speaker_id"] = s.get("speaker_id")
+        canon_segments.append(row)
     canon_obj = {
-        "parser_version": TTS_PARSER_VERSION,
+        "parser_version": SEMANTIC_PLAN_HASH_VERSION,
         "segment_count": len(segments),
         "segments": canon_segments,
     }
