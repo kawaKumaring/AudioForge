@@ -58,6 +58,12 @@ export interface ParsedEmotionSegment {
   offset: DualOffset
   /** 이 구간에 종속된 명시적 쉼(경계). */
   pauses: PauseBoundary[]
+  /**
+   * 이 구간 **앞의** 경계 타입(우선순위 하나만, 합산 아님). 파싱이 끝난 뒤 채워진다.
+   * Python `tts_grammar` 는 segment 에 `boundary_type` 을 실어 보내는데 TS 쪽은 배열로만
+   * 들고 있어 plan 을 만들 때 값이 비었다 — 같은 계획을 내야 하므로 여기에도 붙인다.
+   */
+  boundaryType?: TransitionBoundaryType
 }
 
 // full internal hash(무결성 비교용) vs metadata 표시용 sha8을 타입으로 구분(혼용 방지).
@@ -201,8 +207,20 @@ function u16len(s: string): number {
   return s.length // JS string length = UTF-16 code unit 수
 }
 
+/** 닫히지 않은 `[` 의 위치(원문 좌표). 파서는 이것을 리터럴로 다루므로 오류가 아니다. */
+export interface UnclosedTagOffset {
+  uiOffsetUtf16: number
+  textOffsetCodepoint: number
+  lineIndex: number
+}
+
 // 원문을 code point 단위로 순회하며 pieces 생성(전역 offset 부착).
-function tokenize(raw: string, resolveEmotion: (n: string) => string | null): Piece[] {
+// `unclosedOut` 을 주면 닫히지 않은 `[` 위치를 담는다 — 브래킷 규칙은 여기 한 곳에만 둔다.
+function tokenize(
+  raw: string,
+  resolveEmotion: (n: string) => string | null,
+  unclosedOut?: UnclosedTagOffset[],
+): Piece[] {
   const chars = Array.from(raw) // code point 배열
   const pieces: Piece[] = []
   let i = 0
@@ -270,7 +288,10 @@ function tokenize(raw: string, resolveEmotion: (n: string) => string | null): Pi
         inner += cj; j += 1
       }
       if (close === -1) {
-        // 안 닫힘 → '[' 리터럴
+        // 안 닫힘 → '[' 리터럴. 사용자가 태그를 의도했을 수 있으니 위치만 알린다.
+        if (unclosedOut != null) {
+          unclosedOut.push({ uiOffsetUtf16: u16, textOffsetCodepoint: cp, lineIndex })
+        }
         appendLit('['); i += 1; continue
       }
       const cls = classifyBracket(inner, resolveEmotion)
@@ -384,6 +405,26 @@ export function normalizeLineEndings(raw: string): LineEndingNormalization {
 function mapIndex(map: number[], value: number | undefined): number | undefined {
   if (value === undefined || value === null || value < 0) return value
   return value < map.length ? map[value] : map[map.length - 1]
+}
+
+/**
+ * 닫히지 않은 `[` 의 **원문 좌표** 목록.
+ *
+ * 파서는 이것을 리터럴로 삼아 계속 진행한다(오류가 아니다). 그래서 `[기쁨` 처럼 쓴 줄은
+ * 조용히 대사 안에 대괄호가 남는다. 사전 경고가 그 사실을 말해야 하므로 위치를 따로 낸다.
+ * 합성을 막지도, 원문을 고치지도 않는다.
+ */
+export function unclosedTagOffsets(raw: string, opts?: ParseOptions): UnclosedTagOffset[] {
+  const resolveEmotion = opts?.resolveEmotion ?? defaultResolveEmotion
+  const norm = normalizeLineEndings(raw ?? '')
+  const found: UnclosedTagOffset[] = []
+  tokenize(norm.text, resolveEmotion, found)
+  if (!norm.changed) return found
+  return found.map((o) => ({
+    uiOffsetUtf16: mapIndex(norm.u16Map, o.uiOffsetUtf16) as number,
+    textOffsetCodepoint: mapIndex(norm.cpMap, o.textOffsetCodepoint) as number,
+    lineIndex: o.lineIndex,
+  }))
 }
 
 export function parseTtsScript(raw: string, opts?: ParseOptions): ParseResult {
@@ -507,7 +548,16 @@ export function parseTtsScript(raw: string, opts?: ParseOptions): ParseResult {
   }
   flushOpen()
 
-  if (errors.length > 0) return { ok: false, errors }
+  if (errors.length > 0) {
+    // 성공 경로와 같은 계약: 밖으로 나가는 좌표는 언제나 원문 기준이다.
+    // (전에는 실패 경로만 정규화 좌표로 나가 CRLF 입력에서 위치가 어긋났다.)
+    if (norm.changed) {
+      for (const e of errors) {
+        if (e.uiOffsetUtf16 !== undefined) e.uiOffsetUtf16 = mapIndex(norm.u16Map, e.uiOffsetUtf16)
+      }
+    }
+    return { ok: false, errors }
+  }
 
   // 경계 타입 부여(추가계약3 우선순위, 합산 금지). segment[0]은 선행 경계 없음.
   const boundaryTypes: TransitionBoundaryType[] = []
@@ -526,6 +576,7 @@ export function parseTtsScript(raw: string, opts?: ParseOptions): ParseResult {
       bt = 'internal'
     }
     boundaryTypes.push(bt)
+    s.boundaryType = bt
   }
 
   // used emotion ids(첫 등장 순서, default/null 제외)
@@ -634,6 +685,18 @@ function jsonEscape(s: string): string {
   }
   return out + '"'
 }
+
+/**
+ * 구조 해시용 결정적 직렬화. Python `tts_grammar.canonical_json` 과 같은 문자열이어야 한다.
+ *
+ * plan hash 를 이 파일 밖(예: scriptPlan)에서 계산할 때 알고리즘을 다시 쓰지 않게 공개한다 —
+ * 직렬화가 두 곳에 있으면 언젠가 갈라진다.
+ */
+export function canonicalJson(value: CanonValue): string {
+  return canonicalize(value)
+}
+
+export type { CanonValue }
 
 function utf8Bytes(s: string): Uint8Array {
   return new TextEncoder().encode(s)

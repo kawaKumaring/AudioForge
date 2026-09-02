@@ -7,6 +7,10 @@
 
 ## 현재 기준선
 
+기준선은 정식 **v1.2.0**이다(사용자 일반 사용 테스트 인수 통과).
+v1.2.0에서 완료된 것과 남은 한계는 [script-scene-architecture.md §1](script-scene-architecture.md)에
+정리한다 — 여기서 되풀이하지 않는다.
+
 ### 음성 합성
 
 - `high_quality_icl`의 기본 경로는 Qwen vendor native ICL이다.
@@ -202,6 +206,28 @@ goback 앞 400자 같은 단일 묶음 중간 길이에서 나온다. 이것은 
 사용자가 보는 화면에서 라벨이 사실상 늘 `외삽` 이라는 점은 UI 인수에서 판단할 문제다.
 
 
+## 13. 향후 단계와 버전 계획
+
+구조와 계약은 [script-scene-architecture.md](script-scene-architecture.md)가 소유한다.
+여기서는 단계와 순서만 둔다. 각 단계는 앞 단계의 계약 위에서만 시작하고, 사용자 인수를
+받은 뒤 다음으로 넘어간다.
+
+| 버전 | 묶음 | 세부 |
+|---|---|---|
+| 1.3 | 공용 구조·미리보기 | [§10](script-scene-architecture.md) — PHASE 0~3 구현 완료 |
+| 1.4 | 다화자·감정 | [§10](script-scene-architecture.md) |
+| 1.5 | 음성 언어 변환 | [§10](script-scene-architecture.md) |
+| 1.6 | 환경음·공간 연출 | [§10](script-scene-architecture.md) |
+| 2.0 | 가창·음악 목소리 변환 | [§10](script-scene-architecture.md) |
+
+버전은 기능 묶음의 이름이고 일정 약속이 아니다.
+
+상위 모델 비교는 공용 구조가 선 **뒤에** adapter 방식으로 한다
+([§12](script-scene-architecture.md)). 지금 비교하면 모델 차이와 파이프라인 차이가 섞인다.
+
+아래 `제품 기능 로드맵`의 항목들은 이 버전 계획으로 편입된다. 개별 기능의 의도는 아래에
+그대로 남기고, 순서와 계약은 위 표와 세부 문서를 따른다.
+
 ## 제품 기능 로드맵
 
 ### 5. TTS 감정·표현 UX 완결
@@ -340,6 +366,10 @@ Demucs/RoFormer 보컬 분리, 가사 전사·번역, phoneme timing, pitch curv
 
 ## 공통 완료 게이트
 
+검증 범위 정책(문서 단계 무검증 · 구현 중 표적 우선 · 전체 회귀는 최종 후보에서 한 번 ·
+worktree junction 금지)은 [script-scene-architecture.md §15](script-scene-architecture.md)에
+있다.
+
 각 단계는 다음 조건을 만족해야 완료로 표시한다.
 
 - 계약 문서와 실제 구현 대조
@@ -364,12 +394,17 @@ Demucs/RoFormer 보컬 분리, 가사 전사·번역, phoneme timing, pitch curv
 | 장문 동적 예산 | 계획 | `budget_for` 계약과 planner/generator parity |
 | goback 장문 | 대기 | run bundle·동적 예산 후 GPU 및 청취 |
 | sample_4 스트레스 | 대기 | EOS·반복·부분 결과·시간 기록 |
-| 입력/문단 시간 estimator | UI 인수 완료, master 병합 승인 대기 | 아래 §5 |
+| 입력/문단 시간 estimator | 완료 | `master@005dd3b` (v1.2.0) |
 | 감정 장문·fixture v3 | 계획 | 화자·감정·gain 안정성과 청취 |
 | 음악·대화 텍스트 분할 | 계획 | 화자·타임라인·번역 parity |
 | 음성 대사 언어 변환 | 연구/설계 | 로컬 종단 prototype |
 | 상위 모델 비교 | 연구 | 동일 조건 benchmark |
 | 가창 SVC | 상세 계획 존재 | 별도 MVP 승인 |
 | MIDI/MusicXML 가창 | 후속 연구 | SVC 이후 |
-| 상황 기반 환경음 | 상세 계획 존재 | 장문·감정 안정화 이후 |
+| 상황 기반 환경음 | 상세 계획 존재 | 1.6 단계로 편입 — 아래 §13 |
+| 1.3 공용 구조·미리보기 | PHASE 0~3 구현 완료, 사용자 인수 대기 | develop `1c1e630` · 계획·경고·읽기 전용 화면 |
+| 1.4 다화자·감정 | 설계 확정 | 1.3 인수 뒤 착수 — plan 의 `speakers` 축부터 |
+| 1.5 음성 언어 변환 | 설계 확정 | 1.4 계약 위에서 착수 |
+| 1.6 환경음·공간 연출 | 설계 확정 | 1.5 계약 위에서 착수 |
+| 2.0 가창·음악 목소리 변환 | 별도 MVP 승인 대기 | 1.3~1.6 계약 안정 |
 
