@@ -26,13 +26,14 @@ import {
   WARN_CONFLICTING_DIRECTIVES, WARN_DIRECTIVE_ONLY_PARAGRAPH, WARN_EMPTY_UTTERANCE,
   WARN_UNCLOSED_TAG, WARN_UNKNOWN_DIRECTIVE, toScriptPlanStructure,
 } from './inputAnalysis.ts'
+import { PLAN_WARNING_BLOCKS } from './analysisWording.ts'
 import type {
   PlanParagraph, PlanSpan, PlanUtterance, PlanEmotionSpan, PlanPause, PlanWarning,
   PlanWarningCode, ScriptPlanStructure,
 } from './inputAnalysis.ts'
 import {
-  TTS_PARSER_VERSION, canonicalJson, normalizeLineEndings, parseTtsScript,
-  sha256HexOfString, unclosedTagOffsets,
+  TTS_GRAMMAR_ERROR_CODES, TTS_PARSER_VERSION, canonicalJson, normalizeLineEndings,
+  parseTtsScript, sha256HexOfString, unclosedTagOffsets,
 } from './ttsGrammar.ts'
 import type { CanonValue, TtsGrammarError } from './ttsGrammar.ts'
 
@@ -597,4 +598,45 @@ test('매퍼는 버전이 다른 payload 를 받지 않는다', () => {
   assert.ok(ok)
   assert.deepEqual(ok.warnings.map((w) => w.code), ['UNCLOSED_TAG'],
     '문구를 붙일 수 없는 코드는 버린다')
+})
+
+test('파서 오류에서 온 진단은 전부 차단으로 표시된다', () => {
+  // 미리보기는 새로 막지 않는다. 그래서 "차단" 표는 파서 계약의 거울이어야 한다 —
+  // 파서 오류를 진단으로 옮긴 코드가 하나라도 `경고` 로 표시되면 사용자는 고칠 것을
+  // 고치지 않고 합성이 막히는 이유를 알 수 없다.
+  const fromErrors = new Set<string>()
+  for (const code of TTS_GRAMMAR_ERROR_CODES) {
+    for (const reason of ['format', 'range', 'missing_arg', 'adjacent_duplicate', undefined]) {
+      const w = warningFromParseError({ code, reason } as TtsGrammarError)
+      fromErrors.add(w.code)
+    }
+  }
+  for (const code of fromErrors) {
+    assert.equal(PLAN_WARNING_BLOCKS[code as keyof typeof PLAN_WARNING_BLOCKS], true,
+      `${code} 는 파서 오류에서 나오므로 차단으로 표시돼야 한다`)
+  }
+  // 파서가 정상 통과한 뒤 붙는 두 진단은 그 집합에 없다(그래서 비차단이다).
+  assert.equal(fromErrors.has(WARN_UNCLOSED_TAG), false)
+  assert.equal(fromErrors.has(WARN_DIRECTIVE_ONLY_PARAGRAPH), false)
+  assert.equal(PLAN_WARNING_BLOCKS[WARN_UNCLOSED_TAG], false)
+  assert.equal(PLAN_WARNING_BLOCKS[WARN_DIRECTIVE_ONLY_PARAGRAPH], false)
+})
+
+test('차단으로 표시되는 대본은 실제로 파서가 거부한다', () => {
+  // 표시와 실제가 어긋나지 않는지 대본으로 확인한다(fixture 와 같은 입력들).
+  for (const [text, blocks] of [
+    ['[없는감정] 안녕', true],
+    ['[기쁨]', true],
+    ['안녕. [쉼 1.0][쉼 1.0] 또 안녕.', true],
+    ['[기쁨 안녕', false],
+    ['[쉼 1.0]' + LF + '[기쁨] 안녕.', false],
+  ] as [string, boolean][]) {
+    const rows = build(text).warnings
+    assert.ok(rows.length > 0, `진단이 있어야 한다: len=${text.length}`)
+    const marked = rows.some((w) => PLAN_WARNING_BLOCKS[w.code])
+    assert.equal(marked, blocks, `차단 표시가 어긋난다: len=${text.length}`)
+    // 파서가 거부하는가 — 합성 시작이 막히는 실제 조건이다.
+    assert.equal(parseTtsScript(text).ok === false, blocks,
+      `표시와 파서 판정이 어긋난다: len=${text.length}`)
+  }
 })

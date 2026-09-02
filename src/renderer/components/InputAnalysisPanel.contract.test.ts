@@ -74,6 +74,16 @@ test('아직 없는 축은 상세 정보 안에만 있다', () => {
   assert.ok(detail.includes('<ReservedAxisList'), '상세 정보 안에 있어야 한다')
 })
 
+test('차단 오류와 비차단 경고를 갈라 그린다', () => {
+  // 이름(오류/경고)과 색을 모두 다르게 한다 — 색만으로 가르면 색을 구분하기 어려운
+  // 사용자에게는 아무 차이가 없다. 판정 자체는 wording 이 소유한다(화면이 정하지 않는다).
+  assert.ok(CODE.includes('data-blocking'), '행마다 차단 여부를 남겨야 한다')
+  assert.ok(CODE.includes('w.kindLabel'), '이름은 wording 이 준 것을 쓴다')
+  assert.equal(/['"`]오류['"`]/.test(CODE), false, '화면에 이름을 하드코딩하면 출처가 둘이 된다')
+  assert.ok(CODE.includes('w.blocking ?'), '색도 차단 여부로 갈라야 한다')
+  assert.ok(CODE.includes('planWarningNote'), '목록 아래 문구도 wording 이 소유한다')
+})
+
 test('경고는 합성을 막는 장치를 달지 않는다', () => {
   // 이 패널은 읽기 전용이다. 버튼을 잠그거나 합성 경로를 건드리는 코드가 있으면 안 된다.
   for (const forbidden of ['disabled=', 'canSynthesize', 'blockSynthesis', 'setText(']) {

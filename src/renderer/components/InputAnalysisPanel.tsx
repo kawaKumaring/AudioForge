@@ -1,9 +1,9 @@
 import { useEffect, useState } from 'react'
 import {
-  AXIS_NOTE, INSUFFICIENT_TEXT, PARAGRAPH_WALL_NOTE, PLAN_APPROXIMATE_NOTE, PLAN_WARNING_NOTE,
+  AXIS_NOTE, INSUFFICIENT_TEXT, PARAGRAPH_WALL_NOTE, PLAN_APPROXIMATE_NOTE,
   RESERVED_AXIS_LABELS, RESERVED_AXIS_NOTE, axisRelationLine, canShowWallTime, confidenceLabel,
-  emotionSpanRows, formatRange, paragraphSummary, planIsApproximate, planWarningRows,
-  preparationNote, splitRows, summaryLine, utteranceRows,
+  emotionSpanRows, formatRange, paragraphSummary, planIsApproximate, planWarningNote,
+  planWarningRows, preparationNote, splitRows, summaryLine, utteranceRows,
 } from '../../shared/analysisWording'
 import { versionLabel } from '../../shared/buildMetadata'
 import type { AnalysisResult } from '../../shared/inputAnalysis'
@@ -244,14 +244,19 @@ function EmotionSpanList(props: { result: AnalysisResult; sourceText: string; st
 }
 
 /**
- * 사전 경고 — 위치와 무슨 일이 일어나는지만 말한다.
+ * 대본 표기 진단 — 위치와 무슨 일이 일어나는지만 말한다.
  *
- * 합성을 막지 않고 원문을 고치지도 않는다. 그래서 오류 카드처럼 크게 띄우지 않고,
- * 목록 맨 위에 조용히 둔다.
+ * **차단 오류와 비차단 경고를 같은 말로 부르지 않는다.** 둘을 한 덩어리로 보이면 사용자가
+ * 무엇을 고쳐야 합성이 되는지 알 수 없다. 차단 여부는 `v1.2.0` 부터 있던 파서 계약에서
+ * 그대로 온다 — 이 패널은 아무것도 새로 막지 않고 이름과 색만 갈라 놓는다.
+ *
+ * 오류라도 카드로 크게 띄우지 않는다. 대사 편집기 아래에 이미 붉은 줄로 사유가 뜨고,
+ * 여기는 그 사실을 위치와 함께 한 번 더 말하는 자리다.
  */
 function PlanWarningList(props: { result: AnalysisResult; sourceText: string }) {
   const rows = planWarningRows(props.result)
   const approximate = planIsApproximate(props.result)
+  const note = planWarningNote(props.result)
   if (!rows.length && !approximate) return null
   return (
     <div data-testid="analysis-plan-warnings"
@@ -259,9 +264,21 @@ function PlanWarningList(props: { result: AnalysisResult; sourceText: string }) 
       style={{ display: 'flex', flexDirection: 'column', gap: 2 }}>
       {rows.map((w) => (
         <div key={w.key} data-testid="analysis-plan-warning" data-code={w.code}
+          data-blocking={w.blocking ? 'true' : 'false'}
           style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap',
             fontSize: 11, color: 'var(--text-muted)', minWidth: 0 }}>
-          <span style={{ color: 'var(--amber, var(--text-secondary))', flexShrink: 0 }}>
+          {/* 이름부터 다르다. 색만으로 가르면 색을 구분하기 어려운 사용자에게 전달되지 않는다. */}
+          <span data-testid="analysis-plan-warning-kind"
+            style={{
+              flexShrink: 0, fontWeight: 600,
+              color: w.blocking ? 'var(--rose)' : 'var(--amber, var(--text-secondary))',
+            }}>
+            {w.kindLabel}
+          </span>
+          <span style={{
+            flexShrink: 0,
+            color: w.blocking ? 'var(--rose)' : 'var(--amber, var(--text-secondary))',
+          }}>
             {w.label}
           </span>
           <span style={{ flexShrink: 0 }}>{w.where}</span>
@@ -278,9 +295,10 @@ function PlanWarningList(props: { result: AnalysisResult; sourceText: string }) 
           {PLAN_APPROXIMATE_NOTE}
         </span>
       )}
-      {rows.length > 0 && (
-        <span style={{ fontSize: 11, color: 'var(--text-muted)', opacity: 0.7 }}>
-          {PLAN_WARNING_NOTE}
+      {note && (
+        <span data-testid="analysis-plan-warning-note"
+          style={{ fontSize: 11, color: 'var(--text-muted)', opacity: 0.7 }}>
+          {note}
         </span>
       )}
     </div>

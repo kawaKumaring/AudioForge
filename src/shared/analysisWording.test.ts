@@ -2,10 +2,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  AXIS_NOTE, INSUFFICIENT_TEXT, PLAN_WARNING_HINT, PLAN_WARNING_LABEL, RESERVED_AXIS_LABELS,
-  SPLIT_REASON_LABEL, axisRelationLine, canShowWallTime, confidenceLabel, emotionSpanRows,
-  formatDuration, formatRange, isForcedSplit, paragraphSummary, planIsApproximate,
-  planWarningRows, preparationNote, splitRows, summaryLine, utteranceRows, warningWhere,
+  AXIS_NOTE, INSUFFICIENT_TEXT, PLAN_KIND_LABEL, PLAN_WARNING_BLOCKS, PLAN_WARNING_HINT,
+  PLAN_WARNING_LABEL, RESERVED_AXIS_LABELS, SPLIT_REASON_LABEL, axisRelationLine,
+  canShowWallTime, confidenceLabel, emotionSpanRows, formatDuration, formatRange,
+  isForcedSplit, paragraphSummary, planIsApproximate, planWarningNote, planWarningRows,
+  preparationNote, splitRows, summaryLine, utteranceRows, warningWhere,
 } from './analysisWording.ts'
 import type {
   AnalysisChunk, AnalysisResult, PlanUtterance, PlanWarning, ScriptPlan,
@@ -310,6 +311,50 @@ test('경고 위치는 줄을 알면 줄로, 모르면 글자로 말한다', () 
   assert.equal(warningWhere(warn({ lineIndex: 0 })), '1번째 줄')
   assert.equal(warningWhere(warn({ sourceStart: 0 })), '1번째 글자')
   assert.equal(warningWhere(warn({})), '위치 불명', '모르는 위치를 지어내지 않는다')
+})
+
+test('차단 오류와 비차단 경고를 다른 이름으로 부른다', () => {
+  // 같은 목록에 섞여 있어도 사용자는 무엇을 고쳐야 합성이 되는지 알 수 있어야 한다.
+  const r = base({
+    plan: plan({
+      warnings: [
+        warn({ code: 'UNCLOSED_TAG', lineIndex: 0, sourceStart: 0 }),
+        warn({ code: 'UNKNOWN_DIRECTIVE', sourceStart: 5, reason: 'format' }),
+      ],
+    }),
+  })
+  const rows = planWarningRows(r)
+  assert.deepEqual(rows.map((w) => w.blocking), [false, true])
+  assert.deepEqual(rows.map((w) => w.kindLabel), [PLAN_KIND_LABEL.advisory, PLAN_KIND_LABEL.blocking])
+  assert.equal(PLAN_KIND_LABEL.blocking, '오류')
+  assert.equal(PLAN_KIND_LABEL.advisory, '경고')
+})
+
+test('차단되는 것만 합성이 차단된다고 말한다', () => {
+  for (const code of Object.keys(PLAN_WARNING_BLOCKS) as (keyof typeof PLAN_WARNING_BLOCKS)[]) {
+    const says = PLAN_WARNING_HINT[code].includes('합성이 차단됩니다')
+    assert.equal(says, PLAN_WARNING_BLOCKS[code],
+      `${code}: 차단 여부와 문구가 어긋난다`)
+  }
+  // 파서가 정상 통과하는 두 가지는 예전에도 막지 않았고 지금도 막지 않는다.
+  assert.equal(PLAN_WARNING_BLOCKS.UNCLOSED_TAG, false)
+  assert.equal(PLAN_WARNING_BLOCKS.DIRECTIVE_ONLY_PARAGRAPH, false)
+})
+
+test('목록 아래 한 줄은 섞인 내용에 따라 달라진다', () => {
+  const withCodes = (codes: (keyof typeof PLAN_WARNING_BLOCKS)[]) => base({
+    plan: plan({ warnings: codes.map((code, i) => warn({ code, sourceStart: i })) }),
+  })
+  assert.equal(planWarningNote(base()), null, '진단이 없으면 문구도 없다')
+  const advisory = planWarningNote(withCodes(['UNCLOSED_TAG'])) ?? ''
+  assert.ok(advisory.includes('경고는 합성을 막지 않습니다'))
+  assert.equal(advisory.includes('오류'), false)
+  const blocking = planWarningNote(withCodes(['UNKNOWN_DIRECTIVE'])) ?? ''
+  assert.ok(blocking.includes('오류를 고쳐야'))
+  // 오류가 있는 화면에 "경고가 있어도 합성은 된다" 만 남으면 거짓이 된다.
+  assert.equal(/^경고/.test(blocking), false)
+  const both = planWarningNote(withCodes(['UNCLOSED_TAG', 'UNKNOWN_DIRECTIVE'])) ?? ''
+  assert.ok(both.includes('오류는 고쳐야') && both.includes('경고는 합성을 막지 않습니다'))
 })
 
 test('모든 경고 코드에 문구가 있다 — 코드가 그대로 노출되지 않는다', () => {

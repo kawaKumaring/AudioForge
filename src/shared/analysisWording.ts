@@ -207,17 +207,56 @@ export const PLAN_WARNING_LABEL: Record<PlanWarningCode, string> = {
   DIRECTIVE_ONLY_PARAGRAPH: '말이 없는 문단',
 }
 
-/** 무엇이 일어나는지 한 마디. 고치라고 명령하지 않는다 — 사실만 말한다. */
+/**
+ * 이 진단이 **합성을 막는가.**
+ *
+ * 미리보기가 새로 막는 것은 하나도 없다. 이 표는 `v1.2.0` 부터 있던 파서 계약을 그대로
+ * 옮긴 것이다 — 파서 오류(`UNKNOWN_TTS_TAG`·`INVALID_PAUSE_TAG`·`EMPTY_EMOTION_SEGMENT`)를
+ * 진단으로 바꾼 세 코드는 예전과 똑같이 합성 시작에서 막히고, 파서가 정상 통과한 두 코드
+ * (닫히지 않은 대괄호는 리터럴로 지나가고, 쉼만 있는 문단은 유효한 지시다)는 막지 않는다.
+ *
+ * 화면에서 둘을 같은 `경고` 로 보이면 사용자가 무엇을 고쳐야 합성이 되는지 알 수 없다.
+ * 그래서 **표시만** 갈라 놓는다. 이 값으로 버튼을 잠그거나 요청을 거르지 않는다.
+ * (`scriptPlan.parity.test.ts` 가 파서 오류에서 나온 코드가 전부 여기 true 인지 대조한다.)
+ */
+export const PLAN_WARNING_BLOCKS: Record<PlanWarningCode, boolean> = {
+  UNCLOSED_TAG: false,
+  UNKNOWN_DIRECTIVE: true,
+  EMPTY_UTTERANCE: true,
+  CONFLICTING_DIRECTIVES: true,
+  DIRECTIVE_ONLY_PARAGRAPH: false,
+}
+
+/** 두 층의 이름. 화면 문구는 여기 하나에서만 나온다. */
+export const PLAN_KIND_LABEL = { blocking: '오류', advisory: '경고' } as const
+
+/**
+ * 무엇이 일어나는지 한 마디. 고치라고 명령하지 않는다 — 사실만 말한다.
+ * 차단되는 것은 `합성이 차단됩니다` 로 끝낸다. 대사 편집기 아래 붉은 줄과 같은 표현이다.
+ */
 export const PLAN_WARNING_HINT: Record<PlanWarningCode, string> = {
   UNCLOSED_TAG: '대괄호가 닫히지 않아 그대로 대사에 남습니다',
-  UNKNOWN_DIRECTIVE: '이 표기를 해석하지 못해 예상값이 근사입니다',
-  EMPTY_UTTERANCE: '지시 뒤에 말이 없어 소리가 나지 않습니다',
-  CONFLICTING_DIRECTIVES: '연달아 놓인 지시가 서로 부딪칩니다',
+  UNKNOWN_DIRECTIVE: '이 표기를 해석할 수 없습니다. 합성이 차단됩니다',
+  EMPTY_UTTERANCE: '지시 뒤에 말이 없습니다. 합성이 차단됩니다',
+  CONFLICTING_DIRECTIVES: '연달아 놓인 지시가 서로 부딪칩니다. 합성이 차단됩니다',
   DIRECTIVE_ONLY_PARAGRAPH: '이 문단에는 말이 없어 소리가 나지 않습니다',
 }
 
-export const PLAN_WARNING_NOTE =
-  '경고가 있어도 합성은 그대로 됩니다. 원문을 자동으로 고치지 않습니다.'
+/**
+ * 목록 아래 한 줄. 차단이 섞여 있는지에 따라 말이 달라진다 —
+ * "경고가 있어도 합성은 된다" 를 오류가 있는 화면에 그대로 두면 거짓이 된다.
+ */
+export function planWarningNote(r: AnalysisResult | null): string | null {
+  const rows = planWarningRows(r)
+  if (!rows.length) return null
+  const blocking = rows.some((w) => w.blocking)
+  const advisory = rows.some((w) => !w.blocking)
+  if (blocking && advisory) {
+    return '오류는 고쳐야 합성이 시작됩니다. 경고는 합성을 막지 않습니다. 원문을 자동으로 고치지 않습니다.'
+  }
+  if (blocking) return '오류를 고쳐야 합성이 시작됩니다. 원문을 자동으로 고치지 않습니다.'
+  return '경고는 합성을 막지 않습니다. 원문을 자동으로 고치지 않습니다.'
+}
 
 /** 경고 위치를 사람이 찾을 수 있는 말로. 줄을 알면 줄로, 모르면 글자 수로 말한다. */
 export function warningWhere(w: PlanWarning): string {
@@ -229,6 +268,10 @@ export function warningWhere(w: PlanWarning): string {
 export function planWarningRows(r: AnalysisResult | null): {
   key: string
   code: PlanWarningCode
+  /** true = 예전부터 합성 시작을 막던 파서 오류. 미리보기가 새로 막는 것은 없다. */
+  blocking: boolean
+  /** `오류` 또는 `경고`. 화면이 이 둘을 같은 말로 부르지 않게 한다. */
+  kindLabel: string
   label: string
   hint: string
   where: string
@@ -237,16 +280,21 @@ export function planWarningRows(r: AnalysisResult | null): {
   tag?: string
 }[] {
   if (!r) return []
-  return r.plan.warnings.map((w, i) => ({
-    key: `${w.code}:${w.sourceStart ?? -1}:${i}`,
-    code: w.code,
-    label: PLAN_WARNING_LABEL[w.code] ?? w.code,
-    hint: PLAN_WARNING_HINT[w.code] ?? '',
-    where: warningWhere(w),
-    sourceStart: w.sourceStart,
-    sourceEnd: w.sourceEnd,
-    ...(w.tag ? { tag: w.tag } : {}),
-  }))
+  return r.plan.warnings.map((w, i) => {
+    const blocking = PLAN_WARNING_BLOCKS[w.code] === true
+    return {
+      key: `${w.code}:${w.sourceStart ?? -1}:${i}`,
+      code: w.code,
+      blocking,
+      kindLabel: blocking ? PLAN_KIND_LABEL.blocking : PLAN_KIND_LABEL.advisory,
+      label: PLAN_WARNING_LABEL[w.code] ?? w.code,
+      hint: PLAN_WARNING_HINT[w.code] ?? '',
+      where: warningWhere(w),
+      sourceStart: w.sourceStart,
+      sourceEnd: w.sourceEnd,
+      ...(w.tag ? { tag: w.tag } : {}),
+    }
+  })
 }
 
 /**

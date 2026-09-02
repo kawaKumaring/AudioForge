@@ -178,8 +178,11 @@ try {
       splits: all('[data-testid="analysis-splits"] > div').length,
       warningCodes: all('[data-testid="analysis-plan-warning"]')
         .map((el) => el.getAttribute('data-code')),
+      // 행 앞머리 셋(오류/경고 · 이름 · 위치)만 담는다. 뒤의 설명·미리보기는 담지 않는다.
       warningText: all('[data-testid="analysis-plan-warning"]')
-        .map((el) => Array.from(el.children).slice(0, 2).map(text).join(' · ')),
+        .map((el) => Array.from(el.children).slice(0, 3).map(text).join(' · ')),
+      warningKinds: all('[data-testid="analysis-plan-warning"]')
+        .map((el) => el.getAttribute('data-blocking')),
       approximate: !!t('[data-testid="analysis-plan-approximate"]'),
       // 아직 없는 축은 상세 정보 안에만 있어야 한다 — 기본 화면에서는 0개여야 한다.
       reservedAxes: all('[data-testid="analysis-reserved-axis"]').map(text),
