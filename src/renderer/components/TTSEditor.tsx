@@ -30,6 +30,12 @@ import TtsAdvancedSettings, { type TtsAdvancedTab } from './TtsAdvancedSettings'
 import TtsEmotionQuickPreview from './TtsEmotionQuickPreview'
 import { setTtsAdvancedOpener } from '@/lib/ttsAdvancedOpen'
 import InputAnalysisPanel from './InputAnalysisPanel'
+import SpeakerReferenceManager from './SpeakerReferenceManager'
+import type { SpeakerRow } from './SpeakerReferenceManager'
+import {
+  resolveReferenceDecision, sharedReferenceGroups, speakerEmotionKey,
+} from '../../shared/speakerReference'
+import { speakerRows as planSpeakerRows, defaultSpeakerUtteranceCount } from '../../shared/analysisWording'
 import { useInputAnalysis } from '../hooks/useInputAnalysis'
 
 // 기본 화면 감정 미리듣기 3종. 카탈로그(EMOTION_SAMPLE_ROWS)에 이미 있는 행만 쓴다 —
@@ -199,7 +205,9 @@ async function runPreview(gen: number, path: string) {
 // ExpressionControls를 실제 props 계약으로 배선한다. 편집 알고리즘은 A 컴포넌트가 소유(I5-b는 그 동작 검증).
 // 모든 effect/analyze/preflight는 이 단일 컴포넌트에 유지 → 신규 하위 패널 재렌더로 중복 실행되지 않는다.
 export default function TTSEditor() {
-  const { mode, status, fileInfo, ttsEmotionRefState, registerEmotionRef, removeEmotionRef, setEmotionRefState, setTtsRefState, ttsRefReady, ttsRefMessage, ttsReferenceClip, ttsPitchCapability, setTtsPitchCapability,
+  const { mode, status, fileInfo, ttsEmotionRefState, ttsSpeakerRefState, ttsSpeakerLabels,
+    registerSpeakerRef, removeSpeakerRef, setSpeakerRefState,
+    registerEmotionRef, removeEmotionRef, setEmotionRefState, setTtsRefState, ttsRefReady, ttsRefMessage, ttsReferenceClip, ttsPitchCapability, setTtsPitchCapability,
     ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, setTtsExpression,
     ttsReferenceConditioningMode, setTtsReferenceConditioningMode } = useAppStore()
   // 로컬 상태는 store 값으로 초기화 — 빈 값으로 시작하면 아래 동기화 useEffect가 다른 모드에 다녀온 뒤 store를 덮어써 유실시킴
@@ -610,6 +618,61 @@ export default function TTSEditor() {
   // 목록 상단 우선순위(첫 등장 순). Set 순회 = 첫 등장 순.
   const usedEmotionIdList = [...usedIds]
 
+  // ── 화자별 목소리 ────────────────────────────────────────────────────────
+  // 인물 목록·발화 수는 **계획이 센 값**이다(화면이 다시 세지 않는다). 준비 여부는 store,
+  // 실제로 어느 목소리가 쓰일지는 공용 판정(Python 권위의 거울)이 정한다.
+  const speakerReadiness = {
+    defaultReady: !!ttsRefReady,
+    registeredSpeakers: Object.keys(ttsSpeakerRefState),
+    speakerReady: Object.fromEntries(
+      Object.entries(ttsSpeakerRefState).map(([id, s]) => [id, !!s.ready])),
+    // `(화자, 감정)` 전용 참조는 아직 등록 UI 가 없다 — 판정 표에는 자리가 있다.
+    speakerEmotionReady: {} as Record<string, boolean>,
+    emotionReady: Object.fromEntries(
+      Object.entries(ttsEmotionRefState).map(([id, s]) => [id, !!s.ready])),
+  }
+  const speakerFingerprints = Object.fromEntries(
+    Object.entries(ttsSpeakerRefState).map(([id, s]) => [id, s.ready ? (s.clip || s.source) : '']))
+  const sharedGroups = sharedReferenceGroups(speakerFingerprints)
+  const speakerLabelOf = (id: string) => ttsSpeakerLabels[id] || id
+  const speakerUiRows: SpeakerRow[] = planSpeakerRows(analysis.result).map((k) => {
+    const slot = ttsSpeakerRefState[k.speakerId]
+    const fp = speakerFingerprints[k.speakerId]
+    const shared = (fp && sharedGroups[fp] ? sharedGroups[fp] : [])
+      .filter((id) => id !== k.speakerId).map(speakerLabelOf)
+    return {
+      speakerId: k.speakerId,
+      label: k.label,
+      utteranceCount: k.utteranceCount,
+      registered: !!slot,
+      ready: !!slot?.ready,
+      message: slot?.message || '',
+      // 폴더는 화면에 내보내지 않는다 — 파일 이름만.
+      fileName: (slot?.source || '').split(/[\\/]/).pop() || '',
+      sharedWith: shared,
+      decision: resolveReferenceDecision(k.speakerId, null, speakerReadiness),
+    }
+  })
+  const requestSpeakerSource = async (): Promise<string | null> => {
+    const p = await window.api.audio.selectFile()
+    return p || null
+  }
+  // 구간 편집기는 감정과 **같은 것**을 쓴다(clipKey 만 화자용으로 분리).
+  const renderSpeakerRegion = (speakerId: string) => {
+    const src = ttsSpeakerRefState[speakerId]?.source || ''
+    if (!src) return null
+    return (
+      <ReferenceRegionPanel
+        key={src}
+        clipKey={'spk:' + speakerId}
+        path={src}
+        disabled={disabled}
+        onState={(s) => setSpeakerRefState(speakerId, s)}
+        label={`${speakerLabelOf(speakerId)} 목소리`}
+      />
+    )
+  }
+
   // 셸이 파일 선택 다이얼로그를 주입(EmotionReferenceManager는 파일 I/O를 하지 않음).
   const requestEmotionSource = async (): Promise<string | null> => {
     const p = await window.api.audio.selectFile()
@@ -986,6 +1049,18 @@ export default function TTSEditor() {
         onToggleSettingHelp={setShowSettingHelp}
         voice={
           <>
+            {/* 인물별 목소리 — 대본에 화자 표기가 있을 때만 나타난다. */}
+            <SpeakerReferenceManager
+              rows={speakerUiRows}
+              defaultSpeakerUtterances={defaultSpeakerUtteranceCount(analysis.result)}
+              disabled={disabled}
+              onRegister={(id, src, label) => registerSpeakerRef(id, src, label)}
+              onRemove={(id) => removeSpeakerRef(id)}
+              onPreview={(id) => previewLocalFile(
+                ttsSpeakerRefState[id]?.clip || ttsSpeakerRefState[id]?.source || '')}
+              requestSource={requestSpeakerSource}
+              renderRegionEditor={renderSpeakerRegion}
+            />
             {/* 감정별 전용 목소리 등록·구간·삭제 (기존 EmotionReferenceManager 그대로) */}
             <EmotionReferenceManager
               refs={managerRefs}

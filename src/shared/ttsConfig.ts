@@ -205,6 +205,15 @@ export interface TtsInputOptions {
   ttsEmotionRefSources?: Record<string, string>
   // source에서 effective를 만든 구간(초). 재현/기록용(합성 입력 무영향).
   ttsEmotionRefRegions?: Record<string, TtsEmotionRegion>
+  // ── 화자별 참조(v1.4) ──
+  // 합성에 실제 쓸 화자별 effective 경로. 키는 파서가 만든 **내부 stable id** 다.
+  ttsSpeakerRefs?: Record<string, string>
+  // 사용자가 등록한 원본 경로(등록 사실). Python 의 등록 판정 기준이며 effective 와 역할이 다르다.
+  ttsSpeakerRefSources?: Record<string, string>
+  // `(화자, 감정)` 전용 참조. 키는 `speakerEmotionKey(화자, 감정)`.
+  ttsSpeakerEmotionRefs?: Record<string, string>
+  // 화자 표시 이름. **기록 전용**이며 private JSON 에만 남는다(합성 조건이 아니다).
+  ttsSpeakerLabels?: Record<string, string>
   ttsEngine?: string
   ttsReferencePrompts?: Record<string, TtsReferenceEntry>
   // 10초 초과 원본에서 사용자가 확정한 3~10초 파생 참조 클립(mono/24k). 설정 시 기본 참조로 이것을 쓴다.
@@ -251,6 +260,10 @@ export interface TtsConfig {
   ttsEmotionRefs: Record<string, string>
   ttsEmotionRefSources: Record<string, string>
   ttsEmotionRefRegions: Record<string, TtsEmotionRegion>
+  ttsSpeakerRefs: Record<string, string>
+  ttsSpeakerRefSources: Record<string, string>
+  ttsSpeakerEmotionRefs: Record<string, string>
+  ttsSpeakerLabels: Record<string, string>
   ttsEngine: string
   ttsReferencePrompts: Record<string, TtsReferencePromptConfig>
   ttsReferenceOverride: string
@@ -342,6 +355,11 @@ export function buildTtsConfig(o?: TtsInputOptions, sourceFingerprints?: Record<
     ttsEmotionRefs: o?.ttsEmotionRefs ?? {},
     ttsEmotionRefSources: o?.ttsEmotionRefSources ?? {},
     ttsEmotionRefRegions: o?.ttsEmotionRefRegions ?? {},
+    // 화자별 참조. 부재 = 빈 dict = 화자 문법을 쓰지 않은 기존 동작.
+    ttsSpeakerRefs: o?.ttsSpeakerRefs ?? {},
+    ttsSpeakerRefSources: o?.ttsSpeakerRefSources ?? {},
+    ttsSpeakerEmotionRefs: o?.ttsSpeakerEmotionRefs ?? {},
+    ttsSpeakerLabels: o?.ttsSpeakerLabels ?? {},
     ttsEngine: o?.ttsEngine ?? 'auto',
     ttsReferencePrompts: buildReferencePrompts(prompts),
     ttsReferenceOverride: o?.ttsReferenceOverride ?? '',

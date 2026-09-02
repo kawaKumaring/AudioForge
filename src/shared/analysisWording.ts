@@ -11,6 +11,7 @@
 import type {
   AnalysisResult, PlanWarning, PlanWarningCode, Range, ReservedAxis, SplitReason,
 } from './inputAnalysis'
+import type { ReferenceDecision, ReferenceSource, SpeakerReferenceFailure } from './speakerReference'
 
 /** 사람이 읽는 길이. 1분 미만은 초로만 말한다. */
 export function formatDuration(seconds: number): string {
@@ -371,3 +372,22 @@ export const SPEAKER_REFERENCE_NOTE =
   '모든 화자가 지금은 기본 참조를 씁니다. 화자별 참조 지정은 다음 단계에서 들어옵니다.'
 
 export const DEFAULT_SPEAKER_LABEL = '지정 없음(기본 참조)'
+
+/** 어느 목소리가 쓰이는가 — 규칙 이름을 사용자 말로. */
+export const REFERENCE_SOURCE_LABEL: Record<ReferenceSource, string> = {
+  speaker_emotion: '이 인물의 감정별 목소리',
+  speaker: '이 인물의 목소리',
+  emotion: '감정별 목소리',
+  default: '기본 목소리',
+}
+
+/** 막힌 이유를 사용자 말로. 내부 코드를 화면에 쓰지 않는다. */
+export const SPEAKER_BLOCK_LABEL: Record<SpeakerReferenceFailure, string> = {
+  SPEAKER_NOT_REGISTERED: '목소리를 지정하지 않았습니다',
+  SPEAKER_REFERENCE_NOT_READY: '목소리 준비가 끝나지 않았습니다',
+  DEFAULT_REFERENCE_MISSING: '기본 목소리가 없습니다',
+}
+
+export function referenceDecisionText(d: ReferenceDecision): string {
+  return d.ok ? REFERENCE_SOURCE_LABEL[d.source] : SPEAKER_BLOCK_LABEL[d.code]
+}

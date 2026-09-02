@@ -1,0 +1,1467 @@
+{
+  "_meta": {
+    "schema": 1,
+    "authority": "python/speaker_refs.py",
+    "note": "화면 판정과 생성 판정이 갈라지지 않게 두 구현을 같은 case 로 묶는다."
+  },
+  "cases": [
+    {
+      "setup": "legacy_only_default",
+      "speakerId": null,
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": true,
+        "source": "default"
+      }
+    },
+    {
+      "setup": "legacy_only_default",
+      "speakerId": null,
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": true,
+        "source": "default"
+      }
+    },
+    {
+      "setup": "legacy_only_default",
+      "speakerId": null,
+      "emotionId": "sad",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": true,
+        "source": "default"
+      }
+    },
+    {
+      "setup": "legacy_only_default",
+      "speakerId": "minsu",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "legacy_only_default",
+      "speakerId": "minsu",
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "legacy_only_default",
+      "speakerId": "minsu",
+      "emotionId": "sad",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "legacy_only_default",
+      "speakerId": "younghee",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "legacy_only_default",
+      "speakerId": "younghee",
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "legacy_only_default",
+      "speakerId": "chulsoo",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "legacy_with_emotion",
+      "speakerId": null,
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": true,
+        "source": "default"
+      }
+    },
+    {
+      "setup": "legacy_with_emotion",
+      "speakerId": null,
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": true,
+        "source": "emotion"
+      }
+    },
+    {
+      "setup": "legacy_with_emotion",
+      "speakerId": null,
+      "emotionId": "sad",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": true,
+        "source": "default"
+      }
+    },
+    {
+      "setup": "legacy_with_emotion",
+      "speakerId": "minsu",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "legacy_with_emotion",
+      "speakerId": "minsu",
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "legacy_with_emotion",
+      "speakerId": "minsu",
+      "emotionId": "sad",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "legacy_with_emotion",
+      "speakerId": "younghee",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "legacy_with_emotion",
+      "speakerId": "younghee",
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "legacy_with_emotion",
+      "speakerId": "chulsoo",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "legacy_no_default",
+      "speakerId": null,
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": false,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "DEFAULT_REFERENCE_MISSING"
+      }
+    },
+    {
+      "setup": "legacy_no_default",
+      "speakerId": null,
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": false,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": true,
+        "source": "emotion"
+      }
+    },
+    {
+      "setup": "legacy_no_default",
+      "speakerId": null,
+      "emotionId": "sad",
+      "readiness": {
+        "defaultReady": false,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "DEFAULT_REFERENCE_MISSING"
+      }
+    },
+    {
+      "setup": "legacy_no_default",
+      "speakerId": "minsu",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": false,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "legacy_no_default",
+      "speakerId": "minsu",
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": false,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "legacy_no_default",
+      "speakerId": "minsu",
+      "emotionId": "sad",
+      "readiness": {
+        "defaultReady": false,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "legacy_no_default",
+      "speakerId": "younghee",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": false,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "legacy_no_default",
+      "speakerId": "younghee",
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": false,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "legacy_no_default",
+      "speakerId": "chulsoo",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": false,
+        "registeredSpeakers": [],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "speaker_ready",
+      "speakerId": null,
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {
+          "minsu": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": true,
+        "source": "default"
+      }
+    },
+    {
+      "setup": "speaker_ready",
+      "speakerId": null,
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {
+          "minsu": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": true,
+        "source": "emotion"
+      }
+    },
+    {
+      "setup": "speaker_ready",
+      "speakerId": null,
+      "emotionId": "sad",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {
+          "minsu": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": true,
+        "source": "default"
+      }
+    },
+    {
+      "setup": "speaker_ready",
+      "speakerId": "minsu",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {
+          "minsu": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": true,
+        "source": "speaker"
+      }
+    },
+    {
+      "setup": "speaker_ready",
+      "speakerId": "minsu",
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {
+          "minsu": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": true,
+        "source": "speaker"
+      }
+    },
+    {
+      "setup": "speaker_ready",
+      "speakerId": "minsu",
+      "emotionId": "sad",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {
+          "minsu": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": true,
+        "source": "speaker"
+      }
+    },
+    {
+      "setup": "speaker_ready",
+      "speakerId": "younghee",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {
+          "minsu": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "speaker_ready",
+      "speakerId": "younghee",
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {
+          "minsu": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "speaker_ready",
+      "speakerId": "chulsoo",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {
+          "minsu": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "speaker_pair",
+      "speakerId": null,
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {
+          "minsu": true
+        },
+        "speakerEmotionReady": {
+          "minsu\u001fhappy": true
+        },
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": true,
+        "source": "default"
+      }
+    },
+    {
+      "setup": "speaker_pair",
+      "speakerId": null,
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {
+          "minsu": true
+        },
+        "speakerEmotionReady": {
+          "minsu\u001fhappy": true
+        },
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": true,
+        "source": "emotion"
+      }
+    },
+    {
+      "setup": "speaker_pair",
+      "speakerId": null,
+      "emotionId": "sad",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {
+          "minsu": true
+        },
+        "speakerEmotionReady": {
+          "minsu\u001fhappy": true
+        },
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": true,
+        "source": "default"
+      }
+    },
+    {
+      "setup": "speaker_pair",
+      "speakerId": "minsu",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {
+          "minsu": true
+        },
+        "speakerEmotionReady": {
+          "minsu\u001fhappy": true
+        },
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": true,
+        "source": "speaker"
+      }
+    },
+    {
+      "setup": "speaker_pair",
+      "speakerId": "minsu",
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {
+          "minsu": true
+        },
+        "speakerEmotionReady": {
+          "minsu\u001fhappy": true
+        },
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": true,
+        "source": "speaker_emotion"
+      }
+    },
+    {
+      "setup": "speaker_pair",
+      "speakerId": "minsu",
+      "emotionId": "sad",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {
+          "minsu": true
+        },
+        "speakerEmotionReady": {
+          "minsu\u001fhappy": true
+        },
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": true,
+        "source": "speaker"
+      }
+    },
+    {
+      "setup": "speaker_pair",
+      "speakerId": "younghee",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {
+          "minsu": true
+        },
+        "speakerEmotionReady": {
+          "minsu\u001fhappy": true
+        },
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "speaker_pair",
+      "speakerId": "younghee",
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {
+          "minsu": true
+        },
+        "speakerEmotionReady": {
+          "minsu\u001fhappy": true
+        },
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "speaker_pair",
+      "speakerId": "chulsoo",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {
+          "minsu": true
+        },
+        "speakerEmotionReady": {
+          "minsu\u001fhappy": true
+        },
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "speaker_registered_not_ready",
+      "speakerId": null,
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": true,
+        "source": "default"
+      }
+    },
+    {
+      "setup": "speaker_registered_not_ready",
+      "speakerId": null,
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": true,
+        "source": "emotion"
+      }
+    },
+    {
+      "setup": "speaker_registered_not_ready",
+      "speakerId": null,
+      "emotionId": "sad",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": true,
+        "source": "default"
+      }
+    },
+    {
+      "setup": "speaker_registered_not_ready",
+      "speakerId": "minsu",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_REFERENCE_NOT_READY"
+      }
+    },
+    {
+      "setup": "speaker_registered_not_ready",
+      "speakerId": "minsu",
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_REFERENCE_NOT_READY"
+      }
+    },
+    {
+      "setup": "speaker_registered_not_ready",
+      "speakerId": "minsu",
+      "emotionId": "sad",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_REFERENCE_NOT_READY"
+      }
+    },
+    {
+      "setup": "speaker_registered_not_ready",
+      "speakerId": "younghee",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "speaker_registered_not_ready",
+      "speakerId": "younghee",
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "speaker_registered_not_ready",
+      "speakerId": "chulsoo",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu"
+        ],
+        "speakerReady": {},
+        "speakerEmotionReady": {},
+        "emotionReady": {
+          "happy": true
+        }
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "two_speakers",
+      "speakerId": null,
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu",
+          "younghee"
+        ],
+        "speakerReady": {
+          "minsu": true,
+          "younghee": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": true,
+        "source": "default"
+      }
+    },
+    {
+      "setup": "two_speakers",
+      "speakerId": null,
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu",
+          "younghee"
+        ],
+        "speakerReady": {
+          "minsu": true,
+          "younghee": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": true,
+        "source": "default"
+      }
+    },
+    {
+      "setup": "two_speakers",
+      "speakerId": null,
+      "emotionId": "sad",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu",
+          "younghee"
+        ],
+        "speakerReady": {
+          "minsu": true,
+          "younghee": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": true,
+        "source": "default"
+      }
+    },
+    {
+      "setup": "two_speakers",
+      "speakerId": "minsu",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu",
+          "younghee"
+        ],
+        "speakerReady": {
+          "minsu": true,
+          "younghee": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": true,
+        "source": "speaker"
+      }
+    },
+    {
+      "setup": "two_speakers",
+      "speakerId": "minsu",
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu",
+          "younghee"
+        ],
+        "speakerReady": {
+          "minsu": true,
+          "younghee": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": true,
+        "source": "speaker"
+      }
+    },
+    {
+      "setup": "two_speakers",
+      "speakerId": "minsu",
+      "emotionId": "sad",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu",
+          "younghee"
+        ],
+        "speakerReady": {
+          "minsu": true,
+          "younghee": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": true,
+        "source": "speaker"
+      }
+    },
+    {
+      "setup": "two_speakers",
+      "speakerId": "younghee",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu",
+          "younghee"
+        ],
+        "speakerReady": {
+          "minsu": true,
+          "younghee": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": true,
+        "source": "speaker"
+      }
+    },
+    {
+      "setup": "two_speakers",
+      "speakerId": "younghee",
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu",
+          "younghee"
+        ],
+        "speakerReady": {
+          "minsu": true,
+          "younghee": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": true,
+        "source": "speaker"
+      }
+    },
+    {
+      "setup": "two_speakers",
+      "speakerId": "chulsoo",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu",
+          "younghee"
+        ],
+        "speakerReady": {
+          "minsu": true,
+          "younghee": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    },
+    {
+      "setup": "shared_file",
+      "speakerId": null,
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu",
+          "younghee"
+        ],
+        "speakerReady": {
+          "minsu": true,
+          "younghee": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": true,
+        "source": "default"
+      }
+    },
+    {
+      "setup": "shared_file",
+      "speakerId": null,
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu",
+          "younghee"
+        ],
+        "speakerReady": {
+          "minsu": true,
+          "younghee": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": true,
+        "source": "default"
+      }
+    },
+    {
+      "setup": "shared_file",
+      "speakerId": null,
+      "emotionId": "sad",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu",
+          "younghee"
+        ],
+        "speakerReady": {
+          "minsu": true,
+          "younghee": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": true,
+        "source": "default"
+      }
+    },
+    {
+      "setup": "shared_file",
+      "speakerId": "minsu",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu",
+          "younghee"
+        ],
+        "speakerReady": {
+          "minsu": true,
+          "younghee": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": true,
+        "source": "speaker"
+      }
+    },
+    {
+      "setup": "shared_file",
+      "speakerId": "minsu",
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu",
+          "younghee"
+        ],
+        "speakerReady": {
+          "minsu": true,
+          "younghee": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": true,
+        "source": "speaker"
+      }
+    },
+    {
+      "setup": "shared_file",
+      "speakerId": "minsu",
+      "emotionId": "sad",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu",
+          "younghee"
+        ],
+        "speakerReady": {
+          "minsu": true,
+          "younghee": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": true,
+        "source": "speaker"
+      }
+    },
+    {
+      "setup": "shared_file",
+      "speakerId": "younghee",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu",
+          "younghee"
+        ],
+        "speakerReady": {
+          "minsu": true,
+          "younghee": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": true,
+        "source": "speaker"
+      }
+    },
+    {
+      "setup": "shared_file",
+      "speakerId": "younghee",
+      "emotionId": "happy",
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu",
+          "younghee"
+        ],
+        "speakerReady": {
+          "minsu": true,
+          "younghee": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": true,
+        "source": "speaker"
+      }
+    },
+    {
+      "setup": "shared_file",
+      "speakerId": "chulsoo",
+      "emotionId": null,
+      "readiness": {
+        "defaultReady": true,
+        "registeredSpeakers": [
+          "minsu",
+          "younghee"
+        ],
+        "speakerReady": {
+          "minsu": true,
+          "younghee": true
+        },
+        "speakerEmotionReady": {},
+        "emotionReady": {}
+      },
+      "expected": {
+        "ok": false,
+        "code": "SPEAKER_NOT_REGISTERED"
+      }
+    }
+  ]
+}
