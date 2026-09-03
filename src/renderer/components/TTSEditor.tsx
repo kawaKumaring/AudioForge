@@ -24,7 +24,7 @@ import {
   type PreviewSession, type PreviewEvent,
 } from '../../shared/previewSession'
 import EmotionScriptEditor, { type EmotionScriptEditorHandle } from './EmotionScriptEditor'
-import { EMOTION_GROUPS, ALL_EMOTIONS, FREQUENT_TAGS, parseUsedEmotionIds } from '@/lib/emotions'
+import { EMOTION_GROUPS, ALL_EMOTIONS, FREQUENT_TAGS, parseUsedEmotionIds, EMOTION_ID_TO_LABEL } from '@/lib/emotions'
 import type { Emotion } from '@/lib/emotions'
 import TtsAdvancedSettings, { type TtsAdvancedTab } from './TtsAdvancedSettings'
 import TtsEmotionQuickPreview from './TtsEmotionQuickPreview'
@@ -32,6 +32,10 @@ import { setTtsAdvancedOpener } from '@/lib/ttsAdvancedOpen'
 import InputAnalysisPanel from './InputAnalysisPanel'
 import SpeakerReferenceManager from './SpeakerReferenceManager'
 import VoiceCastManager from './VoiceCastManager'
+import DialogueTabs, { type DialogueTab } from './DialogueTabs'
+import MultiSpeakerDialogue from './MultiSpeakerDialogue'
+import { useDialogueProjection } from '../hooks/useDialogueProjection'
+import { normalizeSpeakerId } from '../../shared/ttsGrammar'
 import { useVoiceCastRegistry } from '../hooks/useVoiceCastRegistry'
 import {
   castRegistry, findVoiceCast, toSpeakerEmotionRefs,
@@ -659,6 +663,25 @@ export default function TTSEditor() {
       decision: resolveReferenceDecision(k.speakerId, null, speakerReadiness),
     }
   })
+  // ── 한 명 | 여러 명 (보기 전환일 뿐 — 탭 자체는 원문을 쓰지 않는다) ──
+  const [dialogueTab, setDialogueTab] = useState<DialogueTab>('single')
+  // 권위는 ttsText 하나. 이 훅은 계획을 projection 으로 보여 주고 명령을 patcher 로 되쓴다.
+  const dialogue = useDialogueProjection(ttsText, (next) => { if (!disabled) setTtsText(next) },
+    analysis.result)
+  const emotionTagOf = (id: string) => '[' + (EMOTION_ID_TO_LABEL[id] ?? id) + ']'
+  const speakerVoiceOf = (speakerId: string) => {
+    const row = speakerUiRows.find((r) => r.speakerId === speakerId)
+    if (row) return { registered: row.registered, ready: row.ready, fileName: row.fileName, decision: row.decision }
+    // 원문에 아직 없는 인물(pending)도 같은 store 슬롯을 본다.
+    const slot = ttsSpeakerRefState[speakerId]
+    if (!slot) return null
+    return {
+      registered: true, ready: !!slot.ready,
+      fileName: (slot.source || '').split(/[\\/]/).pop() || '',
+      decision: resolveReferenceDecision(speakerId, null, speakerReadiness),
+    }
+  }
+
   const requestSpeakerSource = async (): Promise<string | null> => {
     const p = await window.api.audio.selectFile()
     return p || null
@@ -964,6 +987,7 @@ export default function TTSEditor() {
           {!ttsText.trim() && (
             <button onClick={() => !disabled && setTtsText(EXAMPLE_TEXT)} disabled={disabled} style={{ padding: '3px 10px', borderRadius: 5, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600, fontFamily: 'inherit', background: 'var(--bg-elevated)', color: 'var(--cyan)' }}>예문 불러오기</button>
           )}
+          <DialogueTabs tab={dialogueTab} onTab={setDialogueTab} disabled={disabled} />
         </header>
         <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
           {/* 감정 태그 삽입 팔레트(셸) — **편집기 바로 위**. A의 imperative handle 호출(실제 caret/선택
@@ -1006,6 +1030,26 @@ export default function TTSEditor() {
               ))
             )}
           </div>
+          {/* 여러 명 — 원문 위의 projection. 표현 불가면 이유만 말하고 아래 원문 편집기가 그대로 남는다.
+              한 명 탭에서는 아예 그리지 않는다(기존 화면 불변). */}
+          {dialogueTab === 'multi' && (
+            <MultiSpeakerDialogue
+              projection={dialogue}
+              emotions={ALL_EMOTIONS.map((e) => ({ id: e.id, label: e.label }))}
+              emotionTagOf={emotionTagOf}
+              speakerIdOf={normalizeSpeakerId}
+              voiceOf={speakerVoiceOf}
+              onAssignVoice={(id, label) => { void (async () => {
+                const src = await requestSpeakerSource()
+                if (src) registerSpeakerRef(id, src, label)
+              })() }}
+              onRemoveVoice={(id) => removeSpeakerRef(id)}
+              onPreviewVoice={(id) => previewLocalFile(
+                ttsSpeakerRefState[id]?.clip || ttsSpeakerRefState[id]?.source || '')}
+              renderRegionEditor={renderSpeakerRegion}
+              disabled={disabled}
+            />
+          )}
           {/* A 소유 편집기(caret/IME/overlay/오류 = A). 셸은 value/onChange + 삽입 handle만 배선.
               팔레트가 위로 올라가도 이 편집기가 [2] 대사 섹션의 첫 textarea라는 계약은 유지된다. */}
           {/* IME 조합 판정 범위. 이 안쪽 composition 만 분석을 억제한다
@@ -1086,7 +1130,12 @@ export default function TTSEditor() {
         onToggleSettingHelp={setShowSettingHelp}
         voice={
           <>
-            {/* 배역 세트 — 인물별·감정별 후보 등록과 선택. 적용은 사용자가 누른다. */}
+            {/* 목소리 구성 저장/불러오기 — 선택 기능. 기본 절차에서는 접혀 있고, 배역 세트는
+                사용자가 이 안에서 저장을 누를 때만 만들어진다. */}
+            <details data-testid="voice-config-save-load" style={{ minWidth: 0 }}>
+              <summary style={{ fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' }}>
+                목소리 구성 저장/불러오기
+              </summary>
             <VoiceCastManager
               casts={voiceCast.casts}
               assets={voiceCast.assets}
@@ -1112,6 +1161,7 @@ export default function TTSEditor() {
                 void voiceCast.unregisterCandidate(castId, sid, eid, cid)
               }}
             />
+            </details>
             {/* 인물별 목소리 — 대본에 화자 표기가 있을 때만 나타난다. */}
             <SpeakerReferenceManager
               rows={speakerUiRows}
