@@ -11,7 +11,10 @@
 import type {
   AnalysisResult, PlanWarning, PlanWarningCode, Range, ReservedAxis, SplitReason,
 } from './inputAnalysis'
-import type { ReferenceDecision, ReferenceSource, SpeakerReferenceFailure } from './speakerReference'
+import type {
+  EmotionMatchState, EmotionMatchView, ReferenceDecision, ReferenceSource,
+  SpeakerReferenceFailure,
+} from './speakerReference'
 
 /** 사람이 읽는 길이. 1분 미만은 초로만 말한다. */
 export function formatDuration(seconds: number): string {
@@ -390,4 +393,66 @@ export const SPEAKER_BLOCK_LABEL: Record<SpeakerReferenceFailure, string> = {
 
 export function referenceDecisionText(d: ReferenceDecision): string {
   return d.ok ? REFERENCE_SOURCE_LABEL[d.source] : SPEAKER_BLOCK_LABEL[d.code]
+}
+
+/**
+ * 감정 참조 선택을 사용자 말로.
+ *
+ * 여기서 절대 하지 않는 말: "감정 음률 적용 완료". 이 단계에서 일어난 일은 **참조를
+ * 골랐다**까지이고, 모델에 감정 곡선을 넘긴 것이 아니다. 고른 것을 적용했다고 적으면
+ * 사용자는 들리지 않는 변화를 기다리게 된다.
+ */
+export const EMOTION_MATCH_LABEL: Record<EmotionMatchState, string> = {
+  reference_matched: '감정에 맞는 참조 선택',
+  insufficient_candidates: '감정 참조 자료 부족',
+  no_reliable_candidate: '감정 참조 자료 부족',
+  no_target_profile: '감정 참조 자료 부족',
+  unsupported: '',
+}
+
+/** 왜 자료가 부족한가 — 상세 정보에만 쓴다. */
+export const EMOTION_MATCH_DETAIL: Record<EmotionMatchState, string> = {
+  reference_matched: '요청한 감정과 가장 가까운 이 인물의 참조를 골랐습니다.',
+  insufficient_candidates: '이 인물의 참조가 하나뿐이라 고를 여지가 없습니다.',
+  no_reliable_candidate: '이 인물의 참조 중 요청한 감정에 가까운 것이 없습니다.',
+  no_target_profile: '요청한 감정의 기준이 될 참조가 없습니다.',
+  unsupported: '이 발화에는 감정 참조 선택이 쓰이지 않습니다.',
+}
+
+/** 지금 모델의 한계. 상세 정보에만 쓴다(기본 화면을 경고로 채우지 않는다). */
+export const MODEL_EMOTION_CONTROL_NOTE =
+  '현재 모델은 감정 곡선 직접 제어를 지원하지 않음'
+
+/** 기본 화면에 나갈 한 줄. 빈 문자열이면 아무것도 그리지 않는다. */
+export function emotionMatchText(e: EmotionMatchView | null | undefined): string {
+  if (!e) return ''
+  return EMOTION_MATCH_LABEL[e.state]
+}
+
+/**
+ * 상세 정보에 나갈 줄들. 점수·유사도 같은 내부 숫자는 **여기에만** 온다.
+ *
+ * 모델이 감정 곡선을 직접 받지 못한다는 사실은 상태와 무관하게 늘 적는다 — 참조를 잘
+ * 골랐다는 말만 보면 음률까지 옮겨진 것으로 읽히기 때문이다.
+ */
+export function emotionMatchDetailLines(e: EmotionMatchView | null | undefined): string[] {
+  if (!e) return []
+  const out = [EMOTION_MATCH_DETAIL[e.state]]
+  if (e.candidatesConsidered > 0) out.push(`후보 ${e.candidatesConsidered}개를 비교했습니다.`)
+  if (e.score != null) out.push(`일치도 ${e.score.toFixed(2)} (기준 ${e.minScore.toFixed(2)})`)
+  if (e.runnerUpScore != null) out.push(`다음 후보 ${e.runnerUpScore.toFixed(2)}`)
+  for (const [axis, value] of Object.entries(e.axisScores ?? {})) {
+    out.push(`${EMOTION_AXIS_LABEL[axis] ?? axis} ${value.toFixed(2)}`)
+  }
+  out.push(MODEL_EMOTION_CONTROL_NOTE)
+  return out.filter((line) => line.length > 0)
+}
+
+/** 축 이름을 사용자 말로. 내부 축 이름을 화면에 그대로 쓰지 않는다. */
+export const EMOTION_AXIS_LABEL: Record<string, string> = {
+  relative_f0: '억양 높낮이',
+  relative_energy: '세기 강약',
+  rhythm: '말 빠르기',
+  pause_tail: '쉼과 말끝',
+  trajectory: '전체 흐름',
 }

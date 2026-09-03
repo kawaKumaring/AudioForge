@@ -20,7 +20,8 @@
       "post_applied",
       "unsupported"
     ],
-    "not_applied": "이 프로필은 아직 어떤 생성에도 적용되지 않았다(analyzed 단계)."
+    "not_applied": "이 프로필은 아직 어떤 생성에도 적용되지 않았다(analyzed 단계).",
+    "quality_baseline": "출처가 clean_speech 로 확인되지 않은 클립은 품질 기준(golden)이 되지 못한다. 음악에서 분리한 보컬은 반주 잔향이 연기로 측정되므로 특히 그렇다. 결정성·스키마 검증에는 그대로 쓴다. 자동 dereverb·denoise·정규화로 자격을 만들지 않는다."
   },
   "profile": {
     "schema": "af-emotion-profile/3",
@@ -397,10 +398,12 @@
       },
       "sample_rate": 24000,
       "analysis_ms": 7500,
+      "source_kind": "unknown",
+      "quality_baseline_eligible": false,
       "warnings": [
         "ASR_TIMING_ABSENT"
       ]
     },
-    "profile_id": "ep3_820e66c0164f6caf"
+    "profile_id": "ep3_731a25b8d155cb4e"
   }
 }

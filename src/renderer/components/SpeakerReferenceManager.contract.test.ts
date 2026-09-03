@@ -9,8 +9,15 @@ import { fileURLToPath } from 'node:url'
 
 // `.tsx` 는 node 가 타입만 벗겨 낼 수 없다(JSX 미지원) — 그래서 문구는 공용 모듈에 있고
 // 여기서는 그것을 가져온다. 컴포넌트 자체는 소스로만 검사한다.
-import { referenceDecisionText } from '../../shared/analysisWording.ts'
-import { REFERENCE_SOURCES, SPEAKER_REFERENCE_FAILURES } from '../../shared/speakerReference.ts'
+import {
+  EMOTION_MATCH_LABEL, MODEL_EMOTION_CONTROL_NOTE, emotionMatchDetailLines,
+  emotionMatchText, referenceDecisionText,
+} from '../../shared/analysisWording.ts'
+import {
+  EMOTION_MATCH_STATES, REFERENCE_SOURCES, SPEAKER_REFERENCE_FAILURES,
+  emotionReferenceChosen,
+} from '../../shared/speakerReference.ts'
+import type { EmotionMatchView } from '../../shared/speakerReference.ts'
 
 const read = (rel: string) =>
   readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf-8')
@@ -87,4 +94,81 @@ test('파일 선택은 셸이 주입한다 — 컴포넌트가 파일 I/O 를 �
 test('구간 편집기는 감정과 같은 것을 쓴다 — clipKey 만 화자용으로 분리한다', () => {
   assert.ok(EDITOR.includes("clipKey={'spk:' + speakerId}"),
     '새 패널을 만들지 않고 기존 ReferenceRegionPanel 을 쓴다')
+})
+
+// ── 감정 참조 선택 (PHASE E2) ───────────────────────────────────────────────
+
+const matchView = (over: Partial<EmotionMatchView> = {}): EmotionMatchView => ({
+  state: 'reference_matched', selectionMethod: 'profile_match', score: 0.82,
+  minScore: 0.55, runnerUpScore: 0.61, candidatesConsidered: 3,
+  axisScores: { relative_f0: 0.9, rhythm: 0.4 }, ...over,
+})
+
+test('고른 것을 적용했다고 말하지 않는다', () => {
+  // 이 단계에서 일어난 일은 참조 선택까지다. "적용 완료" 는 들리지 않는 변화를 약속한다.
+  const everything = [
+    ...Object.values(EMOTION_MATCH_LABEL),
+    ...emotionMatchDetailLines(matchView()),
+    MANAGER,
+  ].join('\n')
+  for (const forbidden of ['적용 완료', '음률 적용', '감정 적용됨', '감정이 적용']) {
+    assert.equal(everything.includes(forbidden), false, `과장된 문구: ${forbidden}`)
+  }
+})
+
+test('선택 결과마다 사용자 문구가 있다', () => {
+  for (const state of EMOTION_MATCH_STATES) {
+    const text = emotionMatchText(matchView({ state }))
+    if (state === 'unsupported') {
+      assert.equal(text, '', '쓰이지 않는 축을 화면에 그리지 않는다')
+      continue
+    }
+    assert.ok(text.length > 0, `문구가 없다: ${state}`)
+    assert.equal(/[a-z_]{4,}/.test(text), false, `내부 코드가 화면에 나간다: ${text}`)
+  }
+  assert.equal(emotionMatchText(matchView({ state: 'reference_matched' })),
+    '감정에 맞는 참조 선택')
+  for (const short of ['insufficient_candidates', 'no_reliable_candidate', 'no_target_profile'] as const) {
+    assert.equal(emotionMatchText(matchView({ state: short })), '감정 참조 자료 부족')
+  }
+})
+
+test('내부 점수는 기본 화면이 아니라 상세 정보에만 있다', () => {
+  const view = matchView()
+  // 기본 한 줄에는 숫자가 없다.
+  assert.equal(/\d/.test(emotionMatchText(view)), false, '기본 화면에 숫자가 나갔다')
+  const detail = emotionMatchDetailLines(view).join(' ')
+  assert.ok(detail.includes('0.82'), '상세 정보에 일치도가 있어야 한다')
+  assert.ok(detail.includes('0.61'), '상세 정보에 다음 후보 점수가 있어야 한다')
+  // 축 이름도 내부 표기가 아니라 사용자 말로 나간다.
+  assert.equal(detail.includes('relative_f0'), false, '내부 축 이름이 화면에 나간다')
+  assert.ok(detail.includes('억양 높낮이'))
+  // 컴포넌트는 점수를 기본 줄이 아니라 <details> 안에만 그린다.
+  assert.ok(/<details[^>]*speaker-emotion-detail/.test(MANAGER)
+    || MANAGER.includes('speaker-emotion-detail'), '상세 정보 영역이 있어야 한다')
+  assert.ok(MANAGER.includes('emotionMatchDetailLines'), '상세 줄은 공용 함수에서 온다')
+})
+
+test('모델 한계는 상태와 무관하게 상세 정보에 늘 적는다', () => {
+  for (const state of EMOTION_MATCH_STATES) {
+    const lines = emotionMatchDetailLines(matchView({ state }))
+    assert.ok(lines.includes(MODEL_EMOTION_CONTROL_NOTE),
+      `모델 한계가 빠졌다: ${state}`)
+  }
+  assert.equal(MODEL_EMOTION_CONTROL_NOTE, '현재 모델은 감정 곡선 직접 제어를 지원하지 않음')
+})
+
+test('참조를 골랐다고 인정하는 상태는 하나뿐이다', () => {
+  for (const state of EMOTION_MATCH_STATES) {
+    assert.equal(emotionReferenceChosen(matchView({ state })),
+      state === 'reference_matched', `상태 판정이 틀렸다: ${state}`)
+  }
+  assert.equal(emotionReferenceChosen(null), false)
+})
+
+test('감정 축이 없으면 아무것도 그리지 않는다', () => {
+  assert.equal(emotionMatchText(null), '')
+  assert.deepEqual(emotionMatchDetailLines(undefined), [])
+  assert.ok(MANAGER.includes("emotionMatchText(r.emotion) !== ''"),
+    '감정 축이 없는 작업에 빈 칸을 만들지 않는다')
 })

@@ -75,6 +75,30 @@ class FixtureTest(unittest.TestCase):
             self.assertNotIn("semitone_anchors", row)
             self.assertNotIn("relative_f0", row)
 
+    def test_source_provenance_is_declared_not_guessed(self):
+        """어디서 온 클립인지 프로필이 스스로 말해야 한다."""
+        prov = self.profile["provenance"]
+        self.assertIn(prov["source_kind"], ea.SOURCE_KINDS)
+        self.assertEqual(prov["source_kind"], "unknown",
+                         "이 자산의 출처를 확인한 적이 없다 — 깨끗하다고 적으면 안 된다")
+
+    def test_this_fixture_is_not_a_quality_baseline(self):
+        """출처를 모르는 클립을 그 감정의 표준으로 삼지 않는다.
+
+        결정성·스키마 검증에는 그대로 쓴다. 막는 것은 "이것이 기준이다"라는 말뿐이다.
+        """
+        self.assertFalse(self.profile["provenance"]["quality_baseline_eligible"])
+        self.assertIn("품질 기준", self.doc["_meta"]["quality_baseline"])
+
+    def test_separated_stems_can_never_become_a_baseline(self):
+        """음악에서 분리한 보컬은 어떤 경우에도 기준이 되지 못한다."""
+        self.assertFalse(ea.quality_baseline_eligible("separated_stem", []))
+        self.assertFalse(ea.quality_baseline_eligible("unknown", []))
+        self.assertTrue(ea.quality_baseline_eligible("clean_speech", []))
+        # 깨끗하다고 선언해도 잔향 의심이 붙으면 기준이 아니다.
+        self.assertFalse(ea.quality_baseline_eligible(
+            "clean_speech", [ea.WARN_BACKGROUND_OR_REVERB]))
+
     def test_fixture_carries_no_paths_or_script(self):
         blob = json.dumps(self.doc, ensure_ascii=False)
         for leak in (":/", ".wav", "E:", "AudioForge"):

@@ -119,8 +119,12 @@ class OwnershipTest(unittest.TestCase):
                       "화자가 섞이는 병합을 막는 자리가 있어야 한다")
 
 
-class RunBundleTest(unittest.TestCase):
-    """manifest 는 불투명 토큰만, 표시 이름·대본은 private 만."""
+class _RecorderCase(unittest.TestCase):
+    """격리된 임시 userData 에 기록기 하나. 테스트는 없고 준비만 한다.
+
+    기반 클래스로 뽑은 이유는 하나다 — 이것을 상속해 테스트를 얹으면 부모의 테스트까지
+    다시 돌아 같은 검증이 두 번 실행된다.
+    """
 
     def setUp(self):
         self.tmp = tempfile.mkdtemp()
@@ -139,6 +143,10 @@ class RunBundleTest(unittest.TestCase):
             else:
                 os.environ[k] = v
         shutil.rmtree(self.tmp, ignore_errors=True)
+
+
+class RunBundleTest(_RecorderCase):
+    """manifest 는 불투명 토큰만, 표시 이름·대본은 private 만."""
 
     def _write_two_speakers(self):
         t = _table(speaker_refs={"민수": A, "영희": B})
@@ -209,6 +217,72 @@ class RunBundleTest(unittest.TestCase):
         self.assertNotIn("speaker_ref", man["chunks"][0],
                          "화자를 안 쓴 작업에 빈 화자 칸을 만들지 않는다")
         self.assertFalse(os.path.exists(os.path.join(self.rec.root, "speakers.private.json")))
+
+
+class EmotionMatchRunBundleTest(_RecorderCase):
+    """감정 선택 근거가 chunk 행까지 오되, 이름·경로·대사는 오지 않는다."""
+
+    def _write_with_emotion_match(self, match):
+        t = _table(speaker_refs={"민수": A})
+        row = dict(t.resolve("민수", "default"), segment_index=0, emotion_match=match)
+        self.rec.set_speaker_map([row], labels={sr.opaque_speaker_ref("민수"): "민수"})
+        arr = (0.2 * np.sin(2 * np.pi * 180.0 * np.arange(SR // 4) / SR)).astype(np.float32)
+        for g in (0, 1):
+            self.rec.raw(g, arr, SR)
+            self.rec.record_chunk_text(g, "문장 %d 입니다." % g, segment=0,
+                                       local_chunk_index=g, model_call_index=g)
+        self.rec.write("ok", final_arr=arr, sr=SR)
+        return json.load(open(os.path.join(self.rec.root, "manifest.json"),
+                              encoding="utf-8"))
+
+    def _real_match(self):
+        """진짜 선택기가 만든 기록을 쓴다 — 손으로 지은 dict 로는 계약이 안 굳는다."""
+        import emotion_acoustic as ea
+
+        def tone(f0, vib):
+            n = np.arange(int(SR * 1.2)) / float(SR)
+            f = f0 * (1.0 + vib * np.sin(2.0 * np.pi * n / 1.2))
+            return (0.3 * np.sin(2.0 * np.pi * np.cumsum(f) / float(SR))).astype(np.float64)
+
+        target = ea.analyze_profile_v3(tone(180.0, 0.20), SR)
+        profiles = {A: ea.analyze_profile_v3(tone(180.0, 0.19), SR),
+                    B: ea.analyze_profile_v3(tone(180.0, 0.01), SR)}
+        t = _table(speaker_refs={"민수": A},
+                   speaker_emotion_refs={sr.emotion_key("민수", "calm"): B},
+                   target_profiles={"joy": target}, profile_of=profiles.get)
+        return t.resolve_with_emotion("민수", "joy")["emotion_match"]
+
+    def test_selection_evidence_reaches_every_chunk_of_the_utterance(self):
+        match = self._real_match()
+        man = self._write_with_emotion_match(match)
+        for chunk in man["chunks"]:
+            got = chunk["emotion_match"]
+            self.assertEqual(got["state"], match["state"])
+            self.assertEqual(got["selection_method"], sr.SELECTION_PROFILE_MATCH)
+            self.assertEqual(got["reference_id"], match["reference_id"])
+            self.assertIsNotNone(got["score"])
+            self.assertEqual(got["min_score"], sr.EMOTION_MATCH_MIN_SCORE)
+
+    def test_recorded_states_never_claim_model_or_post_application(self):
+        man = self._write_with_emotion_match(self._real_match())
+        for chunk in man["chunks"]:
+            states = chunk["emotion_match"]["application_states"]
+            for never in sr.NEVER_APPLIED_STATES:
+                self.assertFalse(states[never],
+                                 "기록이 %s 를 참으로 적었다" % never)
+
+    def test_evidence_leaks_no_names_paths_or_script(self):
+        man = self._write_with_emotion_match(self._real_match())
+        blob = json.dumps(man, ensure_ascii=False)
+        for leak in ("민수", "minsu.wav", "younghee", "문장 0 입니다", ":/"):
+            self.assertNotIn(leak, blob, "manifest 로 새면 안 된다: %s" % leak)
+
+    def test_runs_without_emotion_selection_have_no_empty_match_column(self):
+        """고를 일이 없었던 작업에 빈 감정 칸을 만들지 않는다."""
+        man = self._write_with_emotion_match(None)
+        for chunk in man["chunks"]:
+            self.assertNotIn("emotion_match", chunk)
+            self.assertTrue(chunk["speaker_ref"].startswith("spk_"))
 
 
 if __name__ == "__main__":

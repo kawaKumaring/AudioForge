@@ -803,13 +803,40 @@ PROFILE_V3_LOW_VOICED_RATIO = 0.35
 #: 상대 에너지에서 강세 후보로 볼 문턱(중앙값 대비 dB).
 PROFILE_V3_STRESS_DB = 3.0
 
+#: 이 클립이 어디서 왔는가. 호출부가 아는 사실이고, 분석기가 추측하지 않는다.
+#:   clean_speech    — 말만 녹음된 자료
+#:   separated_stem  — 음악에서 분리한 보컬. 잔향·반주 누출이 남아 있을 수 있다
+#:   unknown         — 출처를 모른다(기본값)
+SOURCE_KINDS = ("unknown", "clean_speech", "separated_stem")
+
 WARN_LOW_VOICED_RATIO = "LOW_VOICED_RATIO"
 WARN_ASR_ABSENT = "ASR_TIMING_ABSENT"
 WARN_BACKGROUND_OR_REVERB = "BACKGROUND_OR_REVERB_POSSIBLE"
 WARN_SHORT_CLIP = "SHORT_CLIP"
+WARN_SEPARATED_STEM = "SEPARATED_STEM_SOURCE"
 
 PROFILE_V3_WARNINGS = (WARN_LOW_VOICED_RATIO, WARN_ASR_ABSENT,
-                       WARN_BACKGROUND_OR_REVERB, WARN_SHORT_CLIP)
+                       WARN_BACKGROUND_OR_REVERB, WARN_SHORT_CLIP,
+                       WARN_SEPARATED_STEM)
+
+
+def quality_baseline_eligible(source_kind, warnings):
+    """이 프로필을 **감정 기준(golden)** 으로 삼아도 되는가.
+
+    음악에서 분리한 보컬은 안 된다 — 반주가 남긴 잔향이 연기로 측정된다. 출처를 모르는
+    클립도 안 된다(모르는 것을 깨끗하다고 볼 수는 없다). 배경음·잔향 의심이나 유성 비율
+    경고가 붙은 클립도 기준이 되지 못한다.
+
+    자격이 없다고 해서 쓸 수 없다는 뜻은 아니다 — 결정성·스키마 검증에는 그대로 쓴다.
+    막는 것은 "이것이 그 감정의 표준이다"라고 말하는 일뿐이다.
+
+    자동 dereverb·denoise·정규화로 자격을 만들어 내지 않는다. 그것은 잰 값을 바꾸는
+    일이지 자료를 좋게 만드는 일이 아니다.
+    """
+    if source_kind != "clean_speech":
+        return False
+    blocking = {WARN_BACKGROUND_OR_REVERB, WARN_LOW_VOICED_RATIO, WARN_SEPARATED_STEM}
+    return not (blocking & set(warnings or ()))
 
 
 def _resample_anchors(values, positions, count=PROFILE_V3_ANCHORS):
@@ -1031,13 +1058,15 @@ def _trajectory_axis(f0_anchors, energy_axis):
 
 
 def analyze_profile_v3(signal, sr, source_id=None, source_sha256=None,
-                       word_timings=None, reference_median_hz=None, transcript_chars=0):
+                       word_timings=None, reference_median_hz=None, transcript_chars=0,
+                       source_kind="unknown"):
     """클립 하나 → 시간축 감정 프로필 v3.
 
     signal: mono float 배열. `sr`: 표본율.
     source_id/source_sha256: 어느 자산에서 나왔는지(**경로가 아니라 id 와 SHA**).
     word_timings: [{start, end}] 초 단위. 없으면 리듬 축이 unsupported 다(지어내지 않는다).
     reference_median_hz: 화자 기준 F0. 주면 그 기준으로 상대화한다(다른 화자의 연기를 옮길 때).
+    source_kind: `SOURCE_KINDS` 중 하나. 호출부가 아는 사실이며 분석기가 추측하지 않는다.
 
     판정하지 않는다. 못 잰 축은 숫자를 내지 않는다.
     """
@@ -1056,7 +1085,12 @@ def analyze_profile_v3(signal, sr, source_id=None, source_sha256=None,
     n = min(f0.size, rms.size)
     f0, rms = f0[:n], rms[:n]
 
+    if source_kind not in SOURCE_KINDS:
+        raise EmotionAcousticError("unknown source_kind")
     warnings = []
+    if source_kind == "separated_stem":
+        # 음악에서 뜯어낸 목소리다 — 반주 잔향이 남아 있을 수 있다는 사실을 프로필에 붙인다.
+        warnings.append(WARN_SEPARATED_STEM)
     total_ms = 1000.0 * x.size / max(1, sr)
     if total_ms < 1000.0:
         warnings.append(WARN_SHORT_CLIP)
@@ -1111,6 +1145,11 @@ def analyze_profile_v3(signal, sr, source_id=None, source_sha256=None,
             },
             "sample_rate": int(sr),
             "analysis_ms": int(round(total_ms)),
+            "source_kind": source_kind,
+            # 이 프로필을 그 감정의 "표준"으로 삼아도 되는가. 잔향 의심이 붙은 클립과
+            # 출처를 모르는 클립은 기준이 되지 못한다(쓰지 못한다는 뜻은 아니다).
+            "quality_baseline_eligible": quality_baseline_eligible(
+                source_kind, sorted(set(warnings))),
             "warnings": sorted(set(warnings)),
         },
     }
@@ -1132,3 +1171,192 @@ def _canonical_json(v):
     """결정적 직렬화(키 정렬·공백 없음). float 은 반올림된 값만 들어온다."""
     import json
     return json.dumps(v, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. 프로필 대조 — "이 후보가 요청한 감정처럼 들리는가" (PHASE E2)
+#
+#   축을 새로 만들지 않는다. 8절이 이미 낸 v3 프로필 두 개를 놓고 **거리**만 잰다.
+#   비교 가능한 축만 점수에 들어가고, 못 잰 축은 0 점이 아니라 **제외**다(모르는 것을
+#   나쁘다고 적으면 후보 순위가 자료 부족에 좌우된다).
+#
+#   여기서 만드는 것은 점수뿐이다. 어느 참조를 쓸지 정하는 것은 speaker_refs 의 몫이고,
+#   모델에 무엇을 넘기는지와는 아무 관계가 없다.
+# ─────────────────────────────────────────────────────────────────────────────
+
+EMOTION_MATCH_SCHEMA = "af-emotion-match/1"
+EMOTION_MATCH_VERSION = 1
+
+#: 축 가중치. F0 곡선과 전체 궤적이 감정 연기의 대부분을 지고, 강세·쉼이 보조한다.
+#: 리듬은 단어 해상도까지만 재므로 애초에 낮다(게다가 approximate 감쇄를 또 받는다).
+PROFILE_MATCH_WEIGHTS = {
+    "relative_f0": 0.35,
+    "trajectory": 0.30,
+    "relative_energy": 0.15,
+    "pause_tail": 0.15,
+    "rhythm": 0.05,
+}
+
+#: approximate 축의 가중치 감쇄. 재긴 했으나 해상도가 낮다는 사실을 점수에 반영한다.
+APPROXIMATE_WEIGHT_FACTOR = 0.25
+
+#: 거리 → 유사도 환산 기준. 이만큼 차이 나면 유사도가 정확히 0.5 다.
+MATCH_SCALE_SEMITONES = 3.0   # F0·궤적(반음)
+MATCH_SCALE_DB = 4.0          # 상대 에너지(dB)
+MATCH_SCALE_RATE = 0.30       # 리듬(앞뒤 속도비 차)
+
+#: 축이 점수에서 빠진 이유(비민감 enum).
+MATCH_AXIS_EXCLUDED = "excluded"
+MATCH_EXCLUSION_REASONS = (
+    "AXIS_NOT_MEASURED",     # 한쪽이라도 insufficient — 숫자가 없다
+    "AXIS_UNSUPPORTED",      # 검출기가 없다(예: ASR 타이밍 부재)
+    "AXIS_SHAPE_MISMATCH",   # 좌표 개수가 달라 같은 자리끼리 뺄 수 없다
+)
+
+_COMPARABLE_STATES = ("analyzed", "approximate")
+
+
+def _similarity(distance):
+    """거리(척도 단위) → 0~1 유사도. `distance == 1` 이면 0.5.
+
+    지수가 아니라 `1/(1+d)` 인 이유는 큰 차이에서도 순위가 무너지지 않게 하기 위해서다 —
+    유사도가 바닥에 눌리면 명백히 다른 두 후보가 같은 점수로 보인다.
+    """
+    d = max(0.0, float(distance))
+    return 1.0 / (1.0 + d)
+
+
+def _rms_delta(a, b):
+    """같은 자리 좌표끼리의 RMS 차. 길이가 다르면 None(맞춰 늘이지 않는다)."""
+    if not a or not b or len(a) != len(b):
+        return None
+    total = 0.0
+    for pa, pb in zip(a, b):
+        total += (float(pa[1]) - float(pb[1])) ** 2
+    return math.sqrt(total / len(a))
+
+
+def _axis_pair_state(target_axis, candidate_axis):
+    """두 축을 함께 쓸 수 있는가. 못 쓰면 (None, 사유)."""
+    ts = (target_axis or {}).get("state")
+    cs = (candidate_axis or {}).get("state")
+    for s in (ts, cs):
+        if s == "unsupported":
+            return None, "AXIS_UNSUPPORTED"
+        if s not in _COMPARABLE_STATES:
+            return None, "AXIS_NOT_MEASURED"
+    # 한쪽이라도 approximate 면 축 전체를 approximate 로 본다(높은 쪽을 믿지 않는다).
+    return ("approximate" if "approximate" in (ts, cs) else "analyzed"), None
+
+
+def _distance_relative_f0(t, c):
+    d = _rms_delta(t.get("semitone_anchors"), c.get("semitone_anchors"))
+    if d is None:
+        return None
+    return d / MATCH_SCALE_SEMITONES
+
+
+def _distance_relative_energy(t, c):
+    d = _rms_delta(t.get("relative_db_anchors"), c.get("relative_db_anchors"))
+    if d is None:
+        return None
+    return d / MATCH_SCALE_DB
+
+
+def _distance_trajectory(t, c):
+    """시작·중간·끝 F0 와 방향 전환 횟수. 곡선의 '모양'을 본다."""
+    ta = ((t.get("start_mid_end") or {}).get("f0_semitones")) or []
+    ca = ((c.get("start_mid_end") or {}).get("f0_semitones")) or []
+    if len(ta) != 3 or len(ca) != 3 or any(v is None for v in ta + ca):
+        return None
+    sq = sum((float(x) - float(y)) ** 2 for x, y in zip(ta, ca)) / 3.0
+    base = math.sqrt(sq) / MATCH_SCALE_SEMITONES
+    # 방향 전환 횟수 차 — 한 번 차이를 0.5 반음쯤의 무게로 본다.
+    turns = abs(len(t.get("turning_points") or []) - len(c.get("turning_points") or []))
+    return base + (turns * 0.5) / MATCH_SCALE_SEMITONES
+
+
+def _distance_pause_tail(t, c):
+    """쉼의 개수와 말끝 처리. 둘 다 길이에 무관한 형태로 만든다."""
+    tc, cc = int(t.get("pause_count") or 0), int(c.get("pause_count") or 0)
+    denom = max(1, tc, cc)
+    d_pause = abs(tc - cc) / float(denom)
+    tt, ct = t.get("final_voiced") or {}, c.get("final_voiced") or {}
+    if tt.get("state") == "analyzed" and ct.get("state") == "analyzed":
+        d_tail = abs(float(tt["final_f0_delta_semitones"])
+                     - float(ct["final_f0_delta_semitones"])) / MATCH_SCALE_SEMITONES
+        return 0.5 * d_pause + 0.5 * d_tail
+    # 말끝을 못 쟀으면 쉼만으로 판단한다(없는 값을 0 으로 채우지 않는다).
+    return d_pause
+
+
+def _distance_rhythm(t, c):
+    tr, cr = t.get("rate_change_ratio"), c.get("rate_change_ratio")
+    if tr is None or cr is None:
+        return None
+    return abs(float(tr) - float(cr)) / MATCH_SCALE_RATE
+
+
+_AXIS_DISTANCE = {
+    "relative_f0": _distance_relative_f0,
+    "relative_energy": _distance_relative_energy,
+    "rhythm": _distance_rhythm,
+    "pause_tail": _distance_pause_tail,
+    "trajectory": _distance_trajectory,
+}
+
+
+def compare_profiles_v3(target, candidate):
+    """v3 프로필 두 개 → 축별 유사도와 종합 점수.
+
+    target: 요청한 감정의 기준 프로필. candidate: 후보 참조에서 잰 프로필.
+    둘 다 `analyze_profile_v3` 가 낸 모양이어야 한다.
+
+    반환에는 **점수와 축 이름만** 담긴다 — 경로·표시 이름·대사가 들어갈 자리가 없다.
+    비교할 축이 하나도 없으면 `score` 는 None 이다(0 이 아니다 — 0 은 '많이 다르다'는
+    뜻이고, 여기서는 '모른다'가 사실이다).
+    """
+    if not isinstance(target, dict) or not isinstance(candidate, dict):
+        raise EmotionAcousticError("profile dict required")
+    axes, excluded = {}, []
+    weighted, weight_total = 0.0, 0.0
+    for axis in PROFILE_V3_AXES:
+        t_axis, c_axis = target.get(axis) or {}, candidate.get(axis) or {}
+        state, reason = _axis_pair_state(t_axis, c_axis)
+        if state is None:
+            excluded.append({"axis": axis, "reason": reason})
+            continue
+        distance = _AXIS_DISTANCE[axis](t_axis, c_axis)
+        if distance is None:
+            excluded.append({"axis": axis, "reason": "AXIS_SHAPE_MISMATCH"})
+            continue
+        weight = PROFILE_MATCH_WEIGHTS[axis]
+        if state == "approximate":
+            weight *= APPROXIMATE_WEIGHT_FACTOR
+        sim = _similarity(distance)
+        axes[axis] = {
+            "state": state,
+            "distance": round(float(distance), 4),
+            "similarity": round(sim, 4),
+            "weight": round(weight, 4),
+        }
+        if state == "approximate":
+            axes[axis]["why_downweighted"] = "축 해상도가 낮아 가중치를 %.2f 배로 줄였다" % (
+                APPROXIMATE_WEIGHT_FACTOR,)
+        weighted += weight * sim
+        weight_total += weight
+    score = round(weighted / weight_total, 4) if weight_total > 0 else None
+    return {
+        "schema": EMOTION_MATCH_SCHEMA,
+        "match_version": EMOTION_MATCH_VERSION,
+        "score": score,
+        "weight_total": round(weight_total, 4),
+        "axes": axes,
+        "axes_used": sorted(axes.keys()),
+        "axes_excluded": excluded,
+        "target_profile_id": target.get("profile_id"),
+        "candidate_profile_id": candidate.get("profile_id"),
+        # 이 값이 무엇이 아닌지 기록에 남긴다 — 점수는 참조 선택 근거일 뿐이고
+        # 모델에 넘어가는 제어값이 아니다.
+        "not_a_model_control": True,
+    }

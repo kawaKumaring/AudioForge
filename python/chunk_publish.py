@@ -452,6 +452,9 @@ class ChunkRecorder:
                 "reference_id": r.get("reference_id"),
                 "reference_sha256": r.get("reference_sha256"),
                 "reference_source": r.get("source") or r.get("reference_source"),
+                # 감정 참조를 **어떻게 골랐는가**. 점수·축 이름·불투명 id 뿐이고
+                # 표시 이름·경로·대사가 들어갈 자리가 없다(speaker_refs 가 만든 그대로).
+                "emotion_match": r.get("emotion_match"),
             }
         if labels:
             self.speaker_private = {

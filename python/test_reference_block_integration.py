@@ -143,7 +143,9 @@ class SynthesizeNeverCallsModelTest(unittest.TestCase):
                                           "manual_text": "가나다라마바사아자차입니다"}}
         with self.assertRaises(Exception) as cm:
             tw._synthesize_qwen_job(
-                parsed=[("default", "합성할 문장")],
+                # (감정, 대사, 화자) 3-튜플 — v1.4 에서 화자 축이 생긴 뒤의 계약이다.
+                # 2-튜플로 부르면 언패킹에서 먼저 터져 이 검사가 통째로 죽는다.
+                parsed=[("default", "합성할 문장", None)],
                 ref_cache={"default": self.ref},
                 overrides_by_path=ov,
                 output_dir=self.tmp, speed=1.0, silence_gap=0.5)
@@ -157,7 +159,9 @@ class SynthesizeNeverCallsModelTest(unittest.TestCase):
         ov = {os.path.abspath(self.ref): {"mode": "manual", "manual_text": "가나다라마바사"}}
         try:
             tw._synthesize_qwen_job(
-                parsed=[("default", "합성할 문장")],
+                # (감정, 대사, 화자) 3-튜플 — v1.4 에서 화자 축이 생긴 뒤의 계약이다.
+                # 2-튜플로 부르면 언패킹에서 먼저 터져 이 검사가 통째로 죽는다.
+                parsed=[("default", "합성할 문장", None)],
                 ref_cache={"default": self.ref},
                 overrides_by_path=ov,
                 output_dir=self.tmp, speed=1.0, silence_gap=0.5)

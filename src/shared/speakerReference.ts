@@ -109,3 +109,40 @@ export function sharedReferenceGroups(
   }
   return out
 }
+
+/**
+ * 감정 참조 선택의 결과 — 화면이 읽는 형태.
+ *
+ * 권위는 Python `speaker_refs.resolve_with_emotion` 이다. 여기서는 그 기록을 화면이
+ * 다룰 수 있는 모양으로 받을 뿐이고, 점수를 다시 계산하지 않는다.
+ *
+ * 담기지 않는 것: 파일 경로, 화자 표시 이름, 대사. 담기는 것은 상태와 숫자뿐이다.
+ */
+export const EMOTION_MATCH_STATES = [
+  'reference_matched', 'insufficient_candidates', 'no_reliable_candidate',
+  'no_target_profile', 'unsupported',
+] as const
+export type EmotionMatchState = typeof EMOTION_MATCH_STATES[number]
+
+export const EMOTION_SELECTION_METHODS = [
+  'explicit', 'profile_match', 'speaker_default',
+] as const
+export type EmotionSelectionMethod = typeof EMOTION_SELECTION_METHODS[number]
+
+export interface EmotionMatchView {
+  state: EmotionMatchState
+  selectionMethod: EmotionSelectionMethod
+  /** 종합 점수. 재지 못했으면 null 이다(0 이 아니다 — 0 은 "많이 다르다"는 뜻이다). */
+  score: number | null
+  minScore: number
+  runnerUpScore: number | null
+  candidatesConsidered: number
+  /** 축 이름 → 유사도. 화면 기본에는 내보내지 않는다(상세 정보에만). */
+  axisScores?: Readonly<Record<string, number>>
+}
+
+/** 감정 참조를 실제로 고른 상태인가. 이 두 가지 말고는 고른 것이 아니다. */
+export function emotionReferenceChosen(e: EmotionMatchView | null | undefined): boolean {
+  if (!e) return false
+  return e.state === 'reference_matched'
+}

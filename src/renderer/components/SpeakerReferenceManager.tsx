@@ -1,6 +1,8 @@
 import type { ReactNode } from 'react'
-import { DEFAULT_SPEAKER_LABEL, referenceDecisionText } from '../../shared/analysisWording'
-import type { ReferenceDecision } from '../../shared/speakerReference'
+import {
+  DEFAULT_SPEAKER_LABEL, emotionMatchDetailLines, emotionMatchText, referenceDecisionText,
+} from '../../shared/analysisWording'
+import type { EmotionMatchView, ReferenceDecision } from '../../shared/speakerReference'
 
 /**
  * 화자별 참조 목소리 등록 — 대본에 등장한 인물마다 어느 목소리로 만들지 지정한다.
@@ -33,6 +35,13 @@ export interface SpeakerRow {
   sharedWith: string[]
   /** 이 화자의 발화가 실제로 어느 규칙으로 참조를 얻는가 — 또는 왜 막히는가. */
   decision: ReferenceDecision
+  /**
+   * 감정 참조 선택의 결과. 없으면 감정 축을 화면에 그리지 않는다.
+   *
+   * 이것이 있다고 해서 감정 음률이 적용된 것이 아니다 — 고른 것은 **참조 파일**이다.
+   * 그래서 화면 문구도 "선택"까지만 말한다.
+   */
+  emotion?: EmotionMatchView | null
 }
 
 export default function SpeakerReferenceManager(props: {
@@ -115,6 +124,32 @@ export default function SpeakerReferenceManager(props: {
                 textOverflow: 'ellipsis', whiteSpace: 'nowrap',
               }}>{r.fileName}</span>
               {r.message && <span style={{ flexShrink: 0, color: 'var(--amber, var(--text-secondary))' }}>{r.message}</span>}
+            </div>
+          )}
+          {emotionMatchText(r.emotion) !== '' && (
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 3, minWidth: 0 }}>
+              {/* 기본 화면에는 상태 한 줄만. 점수·유사도는 아래 상세 정보에만 둔다. */}
+              <span data-testid="speaker-emotion-match"
+                data-state={r.emotion?.state}
+                style={{
+                  fontSize: 11, flexShrink: 0,
+                  color: r.emotion?.state === 'reference_matched'
+                    ? 'var(--text-secondary)' : 'var(--text-muted)',
+                }}>
+                {emotionMatchText(r.emotion)}
+              </span>
+              <details data-testid="speaker-emotion-detail">
+                <summary style={{ fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' }}>
+                  상세 정보
+                </summary>
+                <div style={{ display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 3 }}>
+                  {emotionMatchDetailLines(r.emotion).map((line) => (
+                    <span key={line} style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+                      {line}
+                    </span>
+                  ))}
+                </div>
+              </details>
             </div>
           )}
           {r.sharedWith.length > 0 && (

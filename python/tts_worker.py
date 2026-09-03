@@ -1999,7 +1999,8 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         for i, (emotion_id, line_text, speaker_id) in enumerate(parsed):
             # 참조는 표 하나가 정한다(speaker_refs.ReferenceTable). 여기서 폴백 규칙을
             # 다시 쓰지 않는다 — 조용한 대체가 생기는 자리가 정확히 여기였다.
-            _rr_row = ref_table.resolve(speaker_id, emotion_id)
+            # 감정 프로필 선택까지 포함한 조회. 프로필이 없으면 resolve() 와 같은 답이다.
+            _rr_row = ref_table.resolve_with_emotion(speaker_id, emotion_id)
             ref = _rr_row["path"]
             reference_rows.append(dict(_rr_row, segment_index=i))
             prefix_text = None
@@ -3003,13 +3004,47 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                 tmp_dirs.append(tmp)
             _prepared_pair[key] = wav
 
+        # ── 감정 프로필(참조 선택용) ─────────────────────────────────
+        # GPU 없음. 감정 참조 클립을 emotion_acoustic 의 v3 분석기로 재서 "이 감정이
+        # 어떻게 들리는가"의 기준을 만들고, 화자의 클립 중 그 기준에 가까운 것을 고르게
+        # 한다. 분석이 실패하면 **감정 선택만 포기**한다 — 합성은 그대로 간다.
+        # 이 값들은 참조를 고르는 데만 쓰이며 모델 호출 인자를 한 글자도 바꾸지 않는다.
+        import emotion_acoustic as _ea_profile
+        _v3_cache = {}
+
+        def _profile_of_ref(_path):
+            if _path in _v3_cache:
+                return _v3_cache[_path]
+            _profile = None
+            try:
+                import soundfile as _sf_p
+                _data, _sr_hz = _sf_p.read(_path, dtype="float64", always_2d=True)
+                _profile = _ea_profile.analyze_profile_v3(_data[:, 0], _sr_hz)
+            except Exception:
+                _profile = None     # 못 재면 모른다고 둔다(지어내지 않는다)
+            _v3_cache[_path] = _profile
+            return _profile
+
+        _target_profiles = {}
+        for _eid_p, _epath_p in ref_cache.items():
+            if _eid_p == "default":
+                continue
+            _p = _profile_of_ref(_epath_p)
+            if _p is not None:
+                _target_profiles[_eid_p] = _p
+        if _target_profiles:
+            emit("stage", stage="emotion_profile_analyzed",
+                 emotions=len(_target_profiles))
+
         # 참조 선택의 단일 권위. 폴백 규칙을 생성 루프에서 다시 쓰지 않는다.
         ref_table = _sr.ReferenceTable(
             default_ref=ref_wav,
             emotion_refs={k: v for k, v in ref_cache.items() if k != "default"},
             speaker_refs=_prepared_speaker,
             speaker_emotion_refs=_prepared_pair,
-            registered_speakers=set(_prepared_speaker.keys()))
+            registered_speakers=set(_prepared_speaker.keys()),
+            target_profiles=_target_profiles,
+            profile_of=_profile_of_ref)
         # 전수 점검을 먼저 한다 — 모델을 올린 뒤 절반 만들고 막히면 헛수고가 된다.
         ref_table.preflight([(sp, e) for e, _t, sp in parsed])
         _speaker_duplicates = ref_table.duplicate_paths()
@@ -3106,7 +3141,8 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
 
         for i, (emotion_id, line_text, speaker_id) in enumerate(parsed):
             pct = 25 + int((i / len(parsed)) * 60)
-            ref = ref_table.resolve(speaker_id, emotion_id)["path"]
+            # 화면·Qwen 경로와 같은 표를 같은 방식으로 본다(두 경로가 다른 참조를 쓰면 안 된다).
+            ref = ref_table.resolve_with_emotion(speaker_id, emotion_id)["path"]
             emotion_label = next((k for k, v in EMOTION_TAGS.items() if v == emotion_id), emotion_id)
 
             # Select engine based on text language
