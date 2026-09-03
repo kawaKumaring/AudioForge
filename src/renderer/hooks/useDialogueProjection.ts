@@ -16,7 +16,7 @@
  *   · 늦게 온 분석 결과는 `ttsText` 를 건드리지 않는다 — 결과는 읽기 전용 projection 에만
  *     들어온다.
  */
-import { useCallback, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import type { AnalysisResult } from '../../shared/inputAnalysis'
 import { PLAN_WARNING_BLOCKS } from '../../shared/analysisWording'
@@ -25,7 +25,7 @@ import {
   canMove, changeBaseEmotion, changeSpeaker, commitDecision, createInitialDialogue,
   deleteUtterance, insertUtteranceAfter, moveUtterance, replaceUtteranceBody, sliceOf,
   structurable, structuredEditingAllowed, structuredPatchAllowed, utteranceParts,
-  validateSpeakerLabel, groupUtteranceRows,
+  validateSpeakerLabel, groupUtteranceRows, TRANSIENT_BLOCKERS,
 } from '../../shared/dialogueSourcePatcher'
 import type {
   PatchResult, StructureVerdict, UtteranceView,
@@ -86,9 +86,13 @@ export interface DialogueProjection {
   draftOf: (index: number) => string | null
   beginDraft: (index: number) => void
   updateDraft: (index: number, body: string) => void
-  /** 반영. 낡았으면 덮어쓰지 않고 draft 를 버린다('resync'). */
+  /**
+   * 반영. 원문이 그 사이 바뀌었으면 덮어쓰지 않고 draft 를 버린다('resync').
+   * 원문은 그대로인데 계획만 아직 따라오지 않았으면(PLAN_MISSING/PLAN_STALE) draft 를 **보류**하고
+   * 계획이 오면 그때 반영한다('deferred') — 늦은 분석이 사용자 글을 되돌리지 않는다.
+   */
   commitDraft: (index: number, opts?: { advanced?: boolean }) =>
-    'commit' | 'resync' | 'noop' | 'refused'
+    'commit' | 'resync' | 'noop' | 'refused' | 'deferred'
   discardDraft: (index: number) => void
 }
 
@@ -119,7 +123,16 @@ export function useDialogueProjection(
   const textSha = useMemo(() => samplerSha256Hex(text), [text])
   const plan = result?.plan ?? null
 
-  const views = useMemo(() => toViews(text, result), [text, result])
+  // 계획 좌표는 계획이 만들어진 원문에서만 뜻이 있다. 원문이 바뀐 뒤 계획이 따라오기 전(PLAN_STALE)
+  // 에는 마지막으로 맞았던 (원문, 계획) 짝 위에서 행을 그린다 — 낡은 좌표를 새 원문에 대면
+  // 잠깐 엉뚱한 조각이 보인다. 좌표 의존 명령은 그동안 잠기므로 이 스냅샷으로 쓰는 일은 없다.
+  const planTextRef = useRef<{ sha: string; text: string } | null>(null)
+  if (plan && plan.sourceSha256 === textSha) planTextRef.current = { sha: textSha, text }
+  const projectionText = (plan && planTextRef.current && planTextRef.current.sha === plan.sourceSha256)
+    ? planTextRef.current.text
+    : text
+
+  const views = useMemo(() => toViews(projectionText, result), [projectionText, result])
 
   const verdict = useMemo<StructureVerdict>(() => structurable({
     text,
@@ -135,13 +148,13 @@ export function useDialogueProjection(
   const patchAllowed = structuredPatchAllowed(verdict)
 
   const rows = useMemo<DialogueRow[]>(() => views.map((v) => {
-    const slice = sliceOf(text, v)
+    const slice = sliceOf(projectionText, v)
     const parts = utteranceParts(slice)
     return {
       view: v, slice, body: parts.body.trim(),
       hasMidEmotionTags: /\[[^\]]*\]/.test(parts.body),
     }
-  }), [text, views])
+  }), [projectionText, views])
 
   // 아직 원문에 없는 인물. 이름만 있는 카드이며 어디에도 저장되지 않는다.
   const [pending, setPending] = useState<PendingSpeaker[]>([])
@@ -251,7 +264,8 @@ export function useDialogueProjection(
   }, [verdict.initialCreationAllowed, apply, text])
 
   // ── 본문 draft ──
-  const [drafts, setDrafts] = useState<Record<number, { body: string; capturedSha: string }>>({})
+  type Draft = { body: string; capturedSha: string; pendingCommit?: { advanced: boolean } }
+  const [drafts, setDrafts] = useState<Record<number, Draft>>({})
   const draftOf = useCallback((index: number) => drafts[index]?.body ?? null, [drafts])
   const beginDraft = useCallback((index: number) => {
     setDrafts((d) => d[index] ? d : {
@@ -273,6 +287,14 @@ export function useDialogueProjection(
     const committed = rows[index]?.body ?? ''
     const decision = commitDecision(d.capturedSha, textSha, d.body, committed)
     if (decision === 'noop') { discardDraft(index); return 'noop' as const }
+    if (decision === 'commit' && !patchAllowed
+      && verdict.blockers.every((b) => (TRANSIENT_BLOCKERS as readonly string[]).includes(b))) {
+      // 원문은 그대로, 계획만 아직이다. 초안을 버리지 않고 보류한다 — 아래 effect 가 계획이 오면 반영한다.
+      setDrafts((cur) => cur[index]
+        ? { ...cur, [index]: { ...cur[index], pendingCommit: { advanced: !!opts.advanced } } }
+        : cur)
+      return 'deferred' as const
+    }
     if (decision === 'resync' || !patchAllowed) {
       // 그 사이 원문이 바뀌었거나 좌표가 낡았다 — 덮어쓰지 않고 최신 원문에 맞춘다.
       discardDraft(index)
@@ -285,6 +307,15 @@ export function useDialogueProjection(
     discardDraft(index)
     return apply(res) === null ? 'commit' as const : 'refused' as const
   }, [drafts, rows, textSha, patchAllowed, verdict.blockers, text, views, apply, discardDraft])
+
+  // 보류된 초안 — 계획이 따라와 좌표가 살아나면 한 번 반영한다. 그 사이 원문이 바뀌었으면
+  // commitDraft 가 resync 로 정리한다(덮어쓰지 않음). 어느 경로든 draft 는 지워지므로 되돌지 않는다.
+  useEffect(() => {
+    if (!patchAllowed) return
+    for (const [k, d] of Object.entries(drafts)) {
+      if (d.pendingCommit) commitDraft(Number(k), { advanced: d.pendingCommit.advanced })
+    }
+  }, [patchAllowed, drafts, commitDraft])
 
   return {
     verdict, editingAllowed, patchAllowed, speakers, rows, textSha, lastRefusal,

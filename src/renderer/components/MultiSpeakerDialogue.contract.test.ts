@@ -104,6 +104,13 @@ test('좌표 의존 명령은 patchAllowed 게이트를 지난다', () => {
 test('본문 draft 는 붙잡은 SHA 로 반영하고 낡으면 resync 한다', () => {
   assert.ok(HOOK.includes('commitDecision(d.capturedSha, textSha'))
   assert.ok(HOOK.includes("decision === 'resync'"))
+  // 원문은 같고 계획만 늦으면 초안을 버리지 않고 보류한다(늦은 분석이 사용자 글을 되돌리지 않는다).
+  assert.ok(HOOK.includes("return 'deferred' as const"), '보류 경로')
+  assert.ok(HOOK.includes('pendingCommit'), '보류 표시')
+  assert.ok(HOOK.includes('TRANSIENT_BLOCKERS as readonly string[]'), '일시적 차단에만 보류')
+  // 행은 계획과 SHA 가 맞는 원문 스냅샷 위에서만 그린다(낡은 좌표를 새 원문에 대지 않는다).
+  assert.ok(HOOK.includes('toViews(projectionText, result)'), '스냅샷 projection')
+  assert.ok(HOOK.includes('sliceOf(projectionText, v)'), '스냅샷 slice')
   assert.ok(HOOK.includes('capturedSha: d.capturedSha, currentSha: textSha'))
   // 화면은 blur / Ctrl+Enter 에 한 번 반영한다 — 글자마다 반영하지 않는다.
   assert.ok(MULTI.includes('onBlur={() => p.commitDraft(i)}'))
