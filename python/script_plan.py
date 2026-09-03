@@ -338,7 +338,7 @@ def _pause_rows(units):
     return rows
 
 
-def _directive_only_paragraphs(paragraphs, utterances):
+def _directive_only_paragraphs(paragraphs, utterances, line_rows=None):
     """문단 전체가 지시뿐이다 — 말이 하나도 없다.
 
     `[쉼 1.0]` 만 있는 문단이 그렇다. 파서는 이것을 오류로 보지 않으므로(쉼은 유효한
@@ -353,9 +353,14 @@ def _directive_only_paragraphs(paragraphs, utterances):
         pi = u.get("source_paragraph_index")
         if pi is not None and u["chars"] > 0:
             spoken.add(pi)
+    text_of = {r["index"]: r.get("text", "") for r in (line_rows or ())}
     out = []
     for p in paragraphs:
         if p["index"] in spoken:
+            continue
+        # 화자 표기만 있는 줄은 대화 대본의 형식이다 — 빠뜨린 말이 아니다.
+        # 판정은 문법이 소유한다(여기서 브래킷 규칙을 다시 쓰지 않는다).
+        if tts_grammar.is_speaker_only_directive(text_of.get(p["index"])):
             continue
         out.append(_warning(
             WARN_DIRECTIVE_ONLY_PARAGRAPH, p["line_index"],
@@ -394,7 +399,8 @@ def structure_from_units(source, units, parser_authority, warnings, paragraphs=N
         })
 
     speakers = _speaker_rows(utterances)
-    all_warnings = (list(warnings) + _directive_only_paragraphs(paras, utterances)
+    all_warnings = (list(warnings)
+                    + _directive_only_paragraphs(paras, utterances, _line_rows(src))
                     + _speaker_label_variants(utterances, speakers))
     all_warnings.sort(key=_warning_sort_key)
 

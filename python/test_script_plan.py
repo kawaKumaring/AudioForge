@@ -176,6 +176,34 @@ class WarningTest(unittest.TestCase):
                      "그냥 대사입니다."):
             self.assertEqual(sp.build_structure(text)["warnings"], [], text)
 
+    def test_speaker_only_line_is_not_a_missing_utterance(self):
+        """대화 대본은 `[화자 민수]` 를 자기 줄에 둔다 — 그 줄은 빠뜨린 말이 아니라 형식이다."""
+        d = LF.join(["[화자 민수]", "안녕하세요.", "", "[화자 지은]", "괜찮아요."])
+        st = sp.build_structure(d)
+        self.assertEqual([w["code"] for w in st["warnings"]], [], "형식 때문에 경고가 울리면 안 된다")
+        self.assertEqual([u["speaker_id"] for u in st["utterances"]], ["민수", "지은"])
+        # 화자 표기 줄은 문단으로는 남는다(좌표가 사라지지 않는다).
+        self.assertEqual(len(st["source_paragraphs"]), 4)
+
+    def test_only_valid_speaker_lines_are_excused(self):
+        """잘못된 화자 표기·다른 지시·무의미한 문단은 기존 판정 그대로."""
+        # 쉼만 있는 문단 — 여전히 경고한다.
+        self.assertIn(sp.WARN_DIRECTIVE_ONLY_PARAGRAPH,
+                      self._codes("[쉼 1.0]" + LF + "[기쁨] 안녕."))
+        # 잘못된 화자 표기 — 파서가 거부하므로 화자 줄 면제가 적용되지 않는다.
+        self.assertEqual(self._codes("[화자]" + LF + "안녕."), [sp.WARN_INVALID_SPEAKER])
+        # 기본 화자로 되돌리는 줄도 정상 화자 표기다.
+        self.assertEqual(self._codes("[화자 기본]" + LF + "기본 목소리로."), [])
+
+    def test_grammar_owns_the_speaker_only_judgement(self):
+        """계획 층이 브래킷 규칙을 다시 쓰지 않는다 — 문법에게 묻는다."""
+        for line, want in (("[화자 민수]", True), ("[speaker minsu]", True),
+                           ("[화자 기본]", True), ("[화자]", False),
+                           ("[화자 민 수]", False), ("[화자 @@]", False),
+                           ("[쉼 1.0]", False), ("[기쁨]", False),
+                           ("[화자 민수] 안녕.", False), ("안녕하세요.", False)):
+            self.assertEqual(tg.is_speaker_only_directive(line), want, line)
+
     def test_warnings_are_ordered_by_position(self):
         st = sp.build_structure("[기쁨 안녕" + LF + "[쉼 1.0]")
         starts = [w["source_start"] for w in st["warnings"]]

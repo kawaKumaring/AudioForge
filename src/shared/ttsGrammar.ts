@@ -466,6 +466,25 @@ function mapIndex(map: number[], value: number | undefined): number | undefined 
 }
 
 /**
+ * 이 줄이 **정상 화자 표기 하나뿐**인가.
+ *
+ * 대화 대본은 `[화자 민수]` 를 자기 줄에 두고 다음 줄에 대사를 쓴다. 그 줄은 말이 없지만
+ * 빠뜨린 것이 아니라 형식이다. 계획 층이 그 사실을 알아야 헛된 경고를 내지 않는다.
+ *
+ * 판정은 브래킷 분류를 그대로 쓴다(새로 파싱하지 않는다). `[화자]`·`[화자 민 수]`·
+ * `[쉼 1.0]`·알 수 없는 표기는 false 이고 기존 판정이 유지된다. `[화자 기본]` 은 true 다.
+ * Python `tts_grammar.is_speaker_only_directive` 와 같은 답을 내야 한다.
+ */
+export function isSpeakerOnlyDirective(line: string, opts?: ParseOptions): boolean {
+  const resolveEmotion = opts?.resolveEmotion ?? defaultResolveEmotion
+  const t = (line ?? '').trim()
+  if (t.length < 3 || !t.startsWith('[') || !t.endsWith(']')) return false
+  const inner = t.slice(1, -1)
+  if (inner.includes('[') || inner.includes(']')) return false
+  return classifyBracket(inner, resolveEmotion).type === 'speaker'
+}
+
+/**
  * 닫히지 않은 `[` 의 **원문 좌표** 목록.
  *
  * 파서는 이것을 리터럴로 삼아 계속 진행한다(오류가 아니다). 그래서 `[기쁨` 처럼 쓴 줄은

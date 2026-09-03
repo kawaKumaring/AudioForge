@@ -408,6 +408,27 @@ def _tokenize(raw, resolve_emotion, unclosed_out=None):
     return pieces
 
 
+def is_speaker_only_directive(line):
+    """이 줄이 **정상 화자 표기 하나뿐**인가.
+
+    대화 대본은 `[화자 민수]` 를 자기 줄에 두고 다음 줄에 대사를 쓴다. 그 줄은 말이 없지만
+    빠뜨린 것이 아니라 **형식**이다. 계획 층이 그 사실을 알아야 헛된 경고를 내지 않는다.
+
+    판정은 브래킷 분류를 그대로 쓴다(새로 파싱하지 않는다). 따라서
+      · `[화자]`(이름 없음) · `[화자 민 수]`(공백) · `[화자 @@]`(허용 밖) → False
+      · `[쉼 1.0]` · `[기쁨]` · 알 수 없는 표기 → False
+      · `[화자 민수]` · `[speaker minsu]` · `[화자 기본]` → True
+    기존 판정은 그대로 유지되고, 정상 화자 줄만 빠진다.
+    """
+    t = (line or "").strip()
+    if len(t) < 3 or not t.startswith("[") or not t.endswith("]"):
+        return False
+    inner = t[1:-1]
+    if "[" in inner or "]" in inner:
+        return False                      # 한 줄에 표기가 둘 이상이면 이 규칙 밖이다
+    return _classify_bracket(inner, default_resolve_emotion).get("type") == "speaker"
+
+
 def unclosed_tag_offsets(raw, resolve_emotion=None):
     """닫히지 않은 `[` 의 **원문 좌표** 목록.
 

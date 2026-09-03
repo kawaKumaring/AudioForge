@@ -34,11 +34,31 @@ import type {
 } from './inputAnalysis.ts'
 import {
   SEMANTIC_PLAN_HASH_VERSION, TTS_GRAMMAR_ERROR_CODES, TTS_PARSER_VERSION, canonicalJson,
-  normalizeLineEndings, parseTtsScript, sha256HexOfString, unclosedTagOffsets,
+  isSpeakerOnlyDirective, normalizeLineEndings, parseTtsScript, sha256HexOfString,
+  unclosedTagOffsets,
 } from './ttsGrammar.ts'
-import type { CanonValue, TtsGrammarError } from './ttsGrammar.ts'
+import type {
+  CanonValue, LineEndingNormalization, ParseResult, TtsGrammarError, UnclosedTagOffset,
+} from './ttsGrammar.ts'
 
 // ── TS 거울 ──────────────────────────────────────────────────────────────────
+
+/**
+ * 거울이 쓰는 파서 창구. 구현은 `ttsGrammar` 하나뿐이다(별도 파서를 만들지 않는다).
+ *
+ * ⚠️ 이 선언은 거울을 이 파일로 옮길 때 누락됐다가 되살아났다. 테스트 파일은 tsconfig 의
+ *    exclude 대상이라 tsc 가 검사하지 않고, node 는 타입을 벗겨 내기만 해서 그 사실이
+ *    드러나지 않았다. 타입이 없으면 port 에 무엇이 필요한지 아무도 못 읽는다.
+ */
+interface PlanParserPort {
+  parserVersion: number
+  parse: (raw: string) => ParseResult
+  normalize: (raw: string) => LineEndingNormalization
+  unclosedTags: (raw: string) => UnclosedTagOffset[]
+  isSpeakerOnlyDirective: (line: string) => boolean
+  sha256OfString: (s: string) => string
+  canonicalJson: (v: CanonValue) => string
+}
 
 function cpLength(s: string): number {
   return Array.from(s).length
@@ -315,15 +335,19 @@ function pauseRows(units: Unit[]): PlanPause[] {
  * 경우에는 모든 줄이 발화가 되므로 이 경고가 헛되게 울리지 않는다.
  */
 function directiveOnlyParagraphs(
-  paragraphs: PlanParagraph[], utterances: PlanUtterance[]
+  paragraphs: PlanParagraph[], utterances: PlanUtterance[],
+  rows: LineRow[], port: PlanParserPort
 ): PlanWarning[] {
   const spoken = new Set<number>()
   for (const u of utterances) {
     if (u.sourceParagraphIndex != null && u.chars > 0) spoken.add(u.sourceParagraphIndex)
   }
+  const textOf = new Map<number, string>(rows.map((r) => [r.index, r.text]))
   const out: PlanWarning[] = []
   for (const p of paragraphs) {
     if (spoken.has(p.index)) continue
+    // 화자 표기만 있는 줄은 대화 대본의 형식이다. 판정은 문법이 소유한다.
+    if (port.isSpeakerOnlyDirective(textOf.get(p.index) ?? '')) continue
     out.push(warning(
       WARN_DIRECTIVE_ONLY_PARAGRAPH, p.lineIndex,
       p.sourceStart, p.sourceEnd, p.textStart, p.textEnd))
@@ -361,7 +385,7 @@ function buildScriptStructure(raw: string, port: PlanParserPort): ScriptPlanStru
   const speakers = speakerRows(utterances)
   const all = [
     ...warnings,
-    ...directiveOnlyParagraphs(paragraphs, utterances),
+    ...directiveOnlyParagraphs(paragraphs, utterances, lineRows(source, port), port),
     ...speakerLabelVariants(utterances, speakers),
   ]
   all.sort((a, b) => {
@@ -481,6 +505,7 @@ const PORT: PlanParserPort = {
   parse: (raw) => parseTtsScript(raw),
   normalize: (raw) => normalizeLineEndings(raw),
   unclosedTags: (raw) => unclosedTagOffsets(raw),
+  isSpeakerOnlyDirective: (line) => isSpeakerOnlyDirective(line),
   sha256OfString: (s) => sha256HexOfString(s),
   canonicalJson: (v) => canonicalJson(v),
 }
@@ -777,4 +802,32 @@ test('파서가 물러나면 화자를 지어내지 않는다', () => {
   assert.equal(s.parserAuthority, false)
   assert.deepEqual(s.utterances.map((u) => u.speakerId), [null, null])
   assert.deepEqual(s.speakers, [])
+})
+
+test('화자 표기만 있는 줄은 빠뜨린 말이 아니다', () => {
+  // 대화 대본은 `[화자 민수]` 를 자기 줄에 두고 다음 줄에 대사를 쓴다 — 그것이 형식이다.
+  const d = ['[화자 민수]', '안녕하세요.', '', '[화자 지은]', '괜찮아요.'].join(LF)
+  const s = build(d)
+  assert.deepEqual(s.warnings, [], '형식 때문에 경고가 울리면 안 된다')
+  assert.deepEqual(s.utterances.map((u) => u.speakerId), ['민수', '지은'])
+  assert.equal(s.sourceParagraphs.length, 4, '화자 줄도 문단으로는 남는다')
+})
+
+test('정상 화자 줄만 면제된다 — 나머지는 기존 판정 유지', () => {
+  assert.deepEqual(build('[쉼 1.0]' + LF + '[기쁨] 안녕.').warnings.map((w) => w.code),
+    [WARN_DIRECTIVE_ONLY_PARAGRAPH], '쉼만 있는 문단은 여전히 경고한다')
+  assert.deepEqual(build('[화자]' + LF + '안녕.').warnings.map((w) => w.code),
+    [WARN_INVALID_SPEAKER], '잘못된 화자 표기는 차단 오류 그대로')
+  assert.deepEqual(build('[화자 기본]' + LF + '기본 목소리로.').warnings, [],
+    '기본으로 되돌리는 줄도 정상 화자 표기다')
+})
+
+test('화자 줄 판정은 문법이 소유한다', () => {
+  for (const [line, want] of [
+    ['[화자 민수]', true], ['[speaker minsu]', true], ['[화자 기본]', true],
+    ['[화자]', false], ['[화자 민 수]', false], ['[화자 @@]', false],
+    ['[쉼 1.0]', false], ['[기쁨]', false], ['[화자 민수] 안녕.', false], ['안녕하세요.', false],
+  ] as [string, boolean][]) {
+    assert.equal(isSpeakerOnlyDirective(line), want, line)
+  }
 })
