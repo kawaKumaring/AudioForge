@@ -567,3 +567,60 @@ test('없는 발화를 가리키면 아무것도 하지 않는다', () => {
     assert.equal(out.text, text)
   }
 })
+
+// ── 본문 교체 ──────────────────────────────────────────────────────────────
+
+test('본문만 바꾸고 화자 표기와 기본 감정은 그대로 둔다', async () => {
+  const { replaceUtteranceBody, utteranceParts } = await import('./dialogueSourcePatcher.ts')
+  const text = '[화자 민수]\n[기쁨] 정말 잘됐어\n[화자 지은]\n응'
+  const a = viewOf(text, 0, '[화자 민수]\n[기쁨] 정말 잘됐어', '민수', true)
+  const b = viewOf(text, 1, '[화자 지은]\n응', '지은', true)
+  assert.deepEqual(utteranceParts(sliceOf(text, a)),
+    { speakerPart: '[화자 민수]\n', emotionPart: '[기쁨] ', body: '정말 잘됐어' })
+  const out = replaceUtteranceBody(text, [a, b], 0, '아직 확정은 아니야')
+  assert.equal(out.text, '[화자 민수]\n[기쁨] 아직 확정은 아니야\n[화자 지은]\n응')
+  // 구간 밖(뒤 발화)은 글자 그대로다.
+  assert.ok(out.text.endsWith('[화자 지은]\n응'))
+})
+
+test('기본 화면 본문 교체는 중간 감정 태그를 잃지 않는다', async () => {
+  const { replaceUtteranceBody } = await import('./dialogueSourcePatcher.ts')
+  const text = '[화자 민수]\n[기쁨] 정말 [슬픔] 아니야'
+  const u = viewOf(text, 0, text, '민수', true)
+  // 태그가 빠진 본문 → 거부.
+  const lost = replaceUtteranceBody(text, [u], 0, '정말 아니야')
+  assert.equal(lost.changed, false)
+  assert.equal(lost.refusedCode, 'MID_EMOTION_WOULD_BE_LOST')
+  assert.equal(lost.text, text)
+  // 태그를 그대로 들고 오면 된다.
+  const kept = replaceUtteranceBody(text, [u], 0, '진짜 [슬픔] 아니야')
+  assert.equal(kept.text, '[화자 민수]\n[기쁨] 진짜 [슬픔] 아니야')
+  // 고급 편집기만 태그 변경을 허용한다.
+  const advanced = replaceUtteranceBody(text, [u], 0, '정말 아니야',
+    { allowEmotionTagChange: true })
+  assert.equal(advanced.text, '[화자 민수]\n[기쁨] 정말 아니야')
+})
+
+test('본문 교체는 빈 대사와 낡은 SHA 를 거부한다', async () => {
+  const { replaceUtteranceBody } = await import('./dialogueSourcePatcher.ts')
+  const text = '[화자 민수]\n안녕'
+  const u = viewOf(text, 0, text, '민수', true)
+  const empty = replaceUtteranceBody(text, [u], 0, '   ')
+  assert.equal(empty.changed, false)
+  assert.equal(empty.refusedCode, 'LINE_EMPTY')
+  const stale = replaceUtteranceBody(text, [u], 0, '바뀜',
+    { capturedSha: 'sha-old', currentSha: 'sha-new' })
+  assert.equal(stale.changed, false)
+  assert.equal(stale.refusedCode, 'STALE_SOURCE')
+  assert.equal(stale.text, text)
+  const fresh = replaceUtteranceBody(text, [u], 0, '바뀜',
+    { capturedSha: 'sha-a', currentSha: 'sha-a' })
+  assert.equal(fresh.text, '[화자 민수]\n바뀜')
+  // 같은 본문이면 원문을 건드리지 않는다.
+  assert.equal(replaceUtteranceBody(text, [u], 0, '안녕').refusedCode, 'NO_CHANGE')
+  // 물려받은 발화(화자 표기 없음)도 본문만 바뀐다.
+  const t2 = '[화자 민수]\n첫\n둘'
+  const second = viewOf(t2, 1, '둘', '민수', false)
+  assert.equal(replaceUtteranceBody(t2, [viewOf(t2, 0, '[화자 민수]\n첫', '민수', true), second],
+    1, '셋').text, '[화자 민수]\n첫\n셋')
+})

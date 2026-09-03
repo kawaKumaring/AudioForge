@@ -491,3 +491,50 @@ export function moveUtterance(
     + text.slice(b.sourceEnd)
   return { text: out, changed: true, refusedCode: null }
 }
+
+/**
+ * 발화 **본문**만 바꾼다 — 화자 표기와 맨 앞 기본 감정 태그는 그대로 둔다.
+ *
+ * 본문은 화자 표기·기본 감정 태그 뒤의 나머지다. 대사 중간 감정 태그는 본문 안에 있으므로,
+ * 기본 화면에서 본문을 고칠 때 그 태그가 사라지면 안 된다. 그래서 태그 수가 줄어들면
+ * 기본값에서는 거부한다(`MID_EMOTION_WOULD_BE_LOST`). `대사 중간에 감정 바꾸기` 편집기만
+ * `allowEmotionTagChange` 로 그 보호를 푼다 — 사용자가 태그를 보면서 직접 고치는 자리다.
+ *
+ * `capturedSha`/`currentSha` 를 주면 둘이 다를 때 거부한다(`STALE_SOURCE`). 좌표가 낡은
+ * 채로 구간을 덮어쓰는 사고를 명령 자체에서도 막는다.
+ */
+export function utteranceParts(
+  slice: string
+): { speakerPart: string; emotionPart: string; body: string } {
+  const m = slice.match(/^(\s*\[\s*(?:화자|speaker)\s+[^\]]*\]\s*)?(\[[^\]\s]+\]\s*)?/)
+  const speakerPart = m?.[1] ?? ''
+  const emotionPart = m?.[2] ?? ''
+  return { speakerPart, emotionPart, body: slice.slice(speakerPart.length + emotionPart.length) }
+}
+
+export function replaceUtteranceBody(
+  text: string, utterances: readonly UtteranceView[], index: number, newBody: string,
+  opts: { allowEmotionTagChange?: boolean; capturedSha?: string | null;
+    currentSha?: string | null } = {}
+): PatchResult {
+  const u = utterances[index]
+  if (!u) return unchanged(text, 'UTTERANCE_NOT_FOUND')
+  if (opts.capturedSha != null && opts.currentSha != null
+    && opts.capturedSha !== opts.currentSha) {
+    return unchanged(text, 'STALE_SOURCE')
+  }
+  const body = newBody.replace(/\r?\n/g, ' ').trim()
+  if (!body) return unchanged(text, 'LINE_EMPTY')
+  const slice = sliceOf(text, u)
+  const { speakerPart, emotionPart, body: oldBody } = utteranceParts(slice)
+  if (oldBody.trim() === body) return unchanged(text, 'NO_CHANGE')
+  const countTags = (s: string) => (s.match(/\[[^\]]*\]/g) ?? []).length
+  if (!opts.allowEmotionTagChange && countTags(body) < countTags(oldBody)) {
+    return unchanged(text, 'MID_EMOTION_WOULD_BE_LOST')
+  }
+  const replaced = `${speakerPart}${emotionPart}${body}`
+  return {
+    text: text.slice(0, u.sourceStart) + replaced + text.slice(u.sourceEnd),
+    changed: true, refusedCode: null,
+  }
+}
