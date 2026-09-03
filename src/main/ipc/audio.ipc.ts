@@ -3,7 +3,10 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { join, basename, dirname, extname, resolve } from 'path'
 import { randomUUID } from 'crypto'
-import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync } from 'fs'
+import {
+  existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync, readFileSync, readdirSync,
+  statSync,
+} from 'fs'
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
 import { createSettlementGuard, createRunSettlement, createRunnerSlot } from '../services/run-settlement'
@@ -19,6 +22,7 @@ import { createJobWatchdog, startJobWatch, createStagingGate } from '../services
 import { createTerminalGate } from '../services/run-settlement'
 import type { CancelResponse } from '../../shared/cancelContract'
 import { validateSidecarEvent, SIDECAR_IPC_CHANNEL } from '../../shared/sidecarEvents'
+import { CANDIDATE_STORAGE_KEY } from '../../shared/emotionCandidateRegistry'
 import type { SidecarEnvelope } from '../../shared/sidecarEvents'
 // 타입만 가져온다 — 참조 라이브러리 모듈을 런타임에 끌어오지 않으므로 순환 의존이 생기지 않는다.
 import type { ReferencePreviewAdapter } from './reference-library.ipc'
@@ -75,12 +79,19 @@ function loadSettings(): Record<string, unknown> {
   } catch { /* ignore */ }
   return {}
 }
+// 원자적 교체로 쓴다 — 쓰다 죽어도 기존 정상 설정이 남아야 한다.
+// (이 파일에는 pythonPath 도 들어 있어, 잘린 파일 하나가 여러 설정을 함께 날린다.)
 function saveSetting(key: string, value: unknown): void {
+  const target = settingsFilePath()
+  const tmp = `${target}.${process.pid}.tmp`
   try {
     const s = loadSettings()
-    s[key] = value
-    writeFileSync(settingsFilePath(), JSON.stringify(s, null, 2), 'utf-8')
+    if (value === undefined) delete s[key]
+    else s[key] = value
+    writeFileSync(tmp, JSON.stringify(s, null, 2), 'utf-8')
+    renameSync(tmp, target)   // 같은 볼륨 내 rename — 부분 기록이 보이지 않는다
   } catch (err) {
+    try { if (existsSync(tmp)) unlinkSync(tmp) } catch { /* 임시본 잔존만 남는다 */ }
     console.log(`[AudioForge] 설정 저장 실패: ${(err as Error).message}`)
   }
 }
@@ -1096,13 +1107,21 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   })
 
   ipcMain.handle('settings:get', () => {
-    return { pythonPath }
+    // 후보 등록부는 합성과 무관하게 살아 있어야 한다 — 합성하지 않고 앱을 닫아도
+    // 복원돼야 하므로 여기서 함께 돌려준다. Python 이 읽는 생성 config 와 다른 파일이다.
+    return { pythonPath, [CANDIDATE_STORAGE_KEY]: loadSettings()[CANDIDATE_STORAGE_KEY] ?? null }
   })
 
   ipcMain.handle('settings:set', (_event, key: string, value: unknown) => {
     if (key === 'pythonPath' && typeof value === 'string') {
       pythonPath = value
       savePythonPath(value)  // L-6: 영속화
+      return
+    }
+    // 감정 후보 등록부. 값은 renderer 가 만든 직렬화 구조 그대로이며(스키마 버전 포함),
+    // 해석 권위는 shared `deserializeCandidateState` 다 — main 은 옮기기만 한다.
+    if (key === CANDIDATE_STORAGE_KEY) {
+      saveSetting(CANDIDATE_STORAGE_KEY, value ?? undefined)
     }
   })
 

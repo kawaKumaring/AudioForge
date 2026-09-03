@@ -38,10 +38,39 @@ export const USER_CHOICE_NO_EMOTION_REF = 'no_emotion_ref'
 
 export const CANDIDATE_REGISTRY_SCHEMA_VERSION = 1
 
-/** 구간(초). `null` 은 "원본을 그대로 쓴다"는 뜻이며 구간 미확정과 다르다. */
+/**
+ * 구간. `null` 은 "원본을 그대로 쓴다"는 뜻이며 구간 미확정과 다르다.
+ *
+ * **identity 는 frame 이다.** 초 좌표만으로 자산을 식별하면 1ms 안의 서로 다른 구간이
+ * 같은 것으로 접힌다. 초 좌표는 화면 표시와 복원용으로 함께 보관한다 — 기존 region 계약이
+ * 초 단위이기 때문이다.
+ */
 export interface CandidateRegion {
+  /** 표시·복원용. identity 아님. */
   start: number
   duration: number
+  /** canonical identity — 같은 assetId 는 **같은 PCM 구간**을 뜻해야 한다. */
+  sampleRate: number
+  startFrame: number
+  endFrame: number
+}
+
+/**
+ * 초 좌표 → frame 좌표. 결정적으로 반올림한다.
+ *
+ * 기존 계약(ReferenceRegionPanel·trim 경로)이 초를 쓰므로 초를 버리지 않고, frame 을
+ * 함께 계산해 identity 로 쓴다. 같은 (초, 표본율) 입력이면 항상 같은 frame 이 나온다.
+ */
+export function regionFromSeconds(
+  start: number, duration: number, sampleRate: number
+): CandidateRegion {
+  if (!Number.isFinite(sampleRate) || sampleRate <= 0) {
+    throw new Error('regionFromSeconds: sampleRate 가 필요하다(자산 identity 의 일부다)')
+  }
+  const sr = Math.round(sampleRate)
+  const startFrame = Math.max(0, Math.round(start * sr))
+  const endFrame = Math.max(startFrame, Math.round((start + duration) * sr))
+  return { start, duration, sampleRate: sr, startFrame, endFrame }
 }
 
 /**
@@ -49,15 +78,26 @@ export interface CandidateRegion {
  *   ready        — 그대로 합성에 쓸 수 있다
  *   needs_region — 원본이 10초를 넘어 구간을 확정해야 한다
  *   expired      — 원본이나 파생 클립이 사라졌다. **조용히 다른 후보로 바꾸지 않는다.**
+ *   changed      — 경로는 그대로인데 **내용(SHA)이 달라졌다.** 같은 자산으로 쓰지 않는다.
  *   error        — 참조로 쓸 수 없는 파일이다(품질 부적합·디코딩 실패)
  */
-export const CANDIDATE_LIFECYCLE = ['ready', 'needs_region', 'expired', 'error'] as const
+export const CANDIDATE_LIFECYCLE = [
+  'ready', 'needs_region', 'expired', 'changed', 'error',
+] as const
 export type CandidateLifecycle = typeof CANDIDATE_LIFECYCLE[number]
 
 /** 등록된 후보 한 줄. 설정·세션에 그대로 직렬화된다. */
 export interface EmotionCandidateRecord {
-  /** 불투명 id. 내용 SHA 와 구간에서 나온다 — 표시 이름이 들어가지 않는다. */
+  /**
+   * 이 슬롯(화자+감정)에 등록된 **후보**의 identity. 선택·삭제·복원이 이것을 가리킨다.
+   * `assetId` + 화자 id + 감정 id 에서 나오며, 표시 이름과 원본 경로는 입력이 아니다.
+   */
   candidateId: string
+  /**
+   * **물리 자산**(오디오 내용 + 구간)의 identity. 여러 화자·감정 후보가 공유할 수 있고,
+   * 파생 클립의 수명과 refcount 를 소유한다.
+   */
+  assetId: string
   /** 파서가 만든 내부 stable id. 표시 이름이 아니다. */
   speakerId: string
   /** **사용자가 직접 지정한** 감정. 앱이 자동 분류하지 않는다. */
@@ -105,33 +145,67 @@ export const EMPTY_REGISTRY: CandidateRegistry = {
   records: [],
 }
 
+/**
+ * 중립 감정의 id. **화자의 기본 목소리와 다른 개념이다.**
+ *
+ *   · speaker default voice  — 그 인물의 기준 목소리. `ttsSpeakerRefState[speakerId]` 가
+ *     소유하며 이 등록부에 들어오지 않는다. 감정 후보를 다 지워도 사라지지 않는다.
+ *   · neutral emotion candidate — 감정 비교의 **원점**으로 등록한 후보. 이 등록부의
+ *     `emotionId === NEUTRAL_EMOTION_ID` 행이며, 해제하면 이 후보만 사라진다.
+ *
+ * 파일럿의 중립 녹음은 후자다. 둘을 같은 것으로 취급하면 중립 후보를 지우는 순간 그
+ * 인물의 목소리가 사라진다.
+ */
+export const NEUTRAL_EMOTION_ID = 'default'
+
+/** 이 등록부가 화자 기본 목소리를 담고 있지 않은가 — 구조적으로 항상 참이어야 한다. */
+export function holdsOnlyEmotionCandidates(registry: CandidateRegistry): boolean {
+  return registry.records.every((r) => !!r.speakerId && !!r.emotionId)
+}
+
 /** (화자, 감정) 키. Python `speaker_refs.emotion_key` 와 같은 문자열이다. */
 export function slotKey(speakerId: string, emotionId: string): string {
   return `${speakerId}${String.fromCharCode(31)}${emotionId || 'default'}`
 }
 
-/** 구간을 정수 토큰으로. 부동소수 표기 차이로 id 가 흔들리지 않게 한다. */
+/** 구간을 frame 토큰으로. 1ms 안의 다른 구간이 같은 토큰이 되지 않는다. */
 function regionToken(region: CandidateRegion | null): string {
-  if (!region) return 'w'
-  const s = Math.round(region.start * 1000)
-  const d = Math.round(region.duration * 1000)
-  return `r${s}-${d}`
+  if (!region) return 'whole'
+  return `f${region.startFrame}-${region.endFrame}@${region.sampleRate}`
 }
 
 /**
- * 후보 id. **내용 SHA + 구간**에서만 나온다.
+ * **물리 자산** id — 오디오 내용과 구간의 identity.
  *
- * 화자·감정을 넣지 않는 이유가 두 개다. (1) 표시 이름이 id 로 새지 않는다.
- * (2) 같은 파일의 같은 구간은 어느 인물에게 등록해도 같은 파생 클립을 쓰므로, 클립을
- * 공유하고 있다는 사실이 id 에서 그대로 드러난다 — 후보 하나를 지울 때 남이 쓰는 클립을
- * 지우지 않으려면 이 사실이 필요하다.
+ * 같은 파일의 같은 PCM 구간은 어느 화자·감정에 등록해도 같은 `assetId` 다. 파생 클립을
+ * 공유한다는 사실이 여기서 드러나야, 후보 하나를 지울 때 남이 쓰는 클립을 지우지 않는다.
  *
- * 조회는 언제나 (화자, 감정)으로 좁혀서 한다. 기록에도 화자·감정이 함께 나가므로
- * 같은 id 가 다른 슬롯에 있어도 뜻이 헷갈리지 않는다.
+ * 표시 이름·원본 경로는 입력이 아니다. 내용 SHA 와 frame 좌표뿐이다.
  */
-export function makeCandidateId(sourceSha256: string, region: CandidateRegion | null): string {
-  const head = (sourceSha256 || '').slice(0, 12) || 'unknown00000'
-  return `cand_${head}_${regionToken(region)}`
+export function makeAssetId(sourceSha256: string, region: CandidateRegion | null): string {
+  const head = (sourceSha256 || '').slice(0, 16) || 'unknown000000000'
+  return `asset_${head}_${regionToken(region)}`
+}
+
+/** 문자열 → hex 해시. 값 import 금지 규약 때문에 **주입받는다**(사본을 만들지 않는다). */
+export type HashHex = (input: string) => string
+
+/**
+ * **후보 등록** id — 특정 (화자, 감정) 슬롯에 등록된 후보의 identity.
+ *
+ * 같은 자산을 다른 화자나 다른 감정에 등록하면 서로 다른 id 가 나온다. 같은 슬롯에 같은
+ * 자산을 다시 등록하면 같은 id 가 나와 중복이 생기지 않는다.
+ *
+ * 입력은 `assetId` + **내부 stable** 화자 id + 감정 id 뿐이다 — 사용자가 쓴 표시 이름과
+ * 원본 경로는 들어가지 않는다. 해시 함수는 주입받는다: 저장소 규약상 공용 모듈끼리 값
+ * import 를 할 수 없고, sha256 사본을 하나 더 만드는 것보다 주입이 낫다.
+ */
+export function makeCandidateId(
+  assetId: string, speakerId: string, emotionId: string, hashHex: HashHex
+): string {
+  const US = String.fromCharCode(31)
+  const digest = hashHex([assetId, speakerId, emotionId || 'default'].join(US))
+  return `cand_${digest.slice(0, 16)}`
 }
 
 /** 음악에서 분리한 목소리와 품질 부적합은 자동 추천 대상이 아니다. */
@@ -154,11 +228,21 @@ export const CANDIDATE_MAX_SEC = 10.0
  */
 export function evaluateLifecycle(
   record: Pick<EmotionCandidateRecord,
-  'sourceDurationSec' | 'region' | 'effectiveClipId' | 'qualityState'>,
-  present: { sourcePresent: boolean; clipPresent: boolean }
+  'sourceDurationSec' | 'region' | 'effectiveClipId' | 'qualityState' | 'sourceSha256'>,
+  present: {
+    sourcePresent: boolean
+    clipPresent: boolean
+    /** 지금 디스크에 있는 원본의 SHA. 모르면 생략한다(모름을 같음으로 보지 않는다). */
+    currentSourceSha256?: string | null
+  }
 ): { lifecycle: CandidateLifecycle; lifecycleCode: string | null } {
   if (!present.sourcePresent) {
     return { lifecycle: 'expired', lifecycleCode: 'SOURCE_FILE_MISSING' }
+  }
+  // 경로가 살아 있어도 내용이 바뀌었으면 같은 자산이 아니다. 다시 쓰지 않는다 —
+  // 사용자가 등록했던 목소리가 조용히 다른 소리로 바뀌는 것이 가장 나쁜 실패다.
+  if (present.currentSourceSha256 && present.currentSourceSha256 !== record.sourceSha256) {
+    return { lifecycle: 'changed', lifecycleCode: 'SOURCE_SHA_MISMATCH' }
   }
   if (record.qualityState === 'invalid') {
     return { lifecycle: 'error', lifecycleCode: 'REFERENCE_QUALITY_INVALID' }
@@ -196,10 +280,15 @@ export function candidatesFor(
     (r) => r.speakerId === speakerId && r.emotionId === (emotionId || 'default'))
 }
 
-/** 이 파생 클립을 쓰는 후보 수. 0 이 되기 전에는 클립을 지우지 않는다. */
-export function clipRefCount(registry: CandidateRegistry, clipId: string | null): number {
-  if (!clipId) return 0
-  return registry.records.filter((r) => r.effectiveClipId === clipId).length
+/**
+ * 이 **자산**을 참조하는 후보 수. 파생 클립의 수명은 자산이 소유한다.
+ *
+ * 후보 id 로 세면 안 된다 — 같은 자산이 여러 화자·감정에 등록돼 있으면 후보 id 는 서로
+ * 다르지만 파생 클립은 하나이기 때문이다.
+ */
+export function assetRefCount(registry: CandidateRegistry, assetId: string | null): number {
+  if (!assetId) return 0
+  return registry.records.filter((r) => r.assetId === assetId).length
 }
 
 // ── 변경 ────────────────────────────────────────────────────────────────────
@@ -223,12 +312,18 @@ export function registerCandidate(
 /**
  * 후보 해제. **원본 파일을 지우는 일이 아니다.**
  *
- * 반환의 `releasableClipIds` 는 이제 아무 후보도 쓰지 않는 파생 클립이다. 다른 후보가
- * 아직 쓰고 있는 클립은 여기 들어가지 않는다 — 남의 클립을 조기에 지우면 그 후보가
- * `expired` 로 떨어진다.
+ * 지우는 것은 이 슬롯의 등록 하나뿐이다. 다른 화자·감정의 후보는 그대로 남는다.
+ *
+ * 반환의 `releasableClipIds` 는 **앱이 만든 임시 파생 클립** 중 이제 아무 후보도, 아무
+ * 선택도 그 자산을 가리키지 않는 것이다. 하나라도 남아 있으면 비어 있다 — 남이 쓰는
+ * 클립을 조기에 지우면 그 후보가 `expired` 로 떨어진다.
+ *
+ * 구간 없이 원본을 그대로 쓰는 후보는 `effectiveClipId` 가 없다. 즉 이 함수가 놓아 주는
+ * 대상에 **사용자 원본은 구조적으로 들어갈 수 없다.**
  */
 export function removeCandidate(
-  registry: CandidateRegistry, speakerId: string, emotionId: string, candidateId: string
+  registry: CandidateRegistry, speakerId: string, emotionId: string, candidateId: string,
+  selections: Readonly<Record<string, string>> = {}
 ): { registry: CandidateRegistry; releasableClipIds: string[] } {
   const eid = emotionId || 'default'
   const target = registry.records.find(
@@ -239,8 +334,14 @@ export function removeCandidate(
     records: registry.records.filter((r) => r !== target),
   }
   const clip = target.effectiveClipId
-  const releasable = clip && clipRefCount(next, clip) === 0 ? [clip] : []
-  return { registry: next, releasableClipIds: releasable }
+  if (!clip) return { registry: next, releasableClipIds: [] }
+  // 자산을 참조하는 후보가 남아 있으면 놓아 주지 않는다.
+  if (assetRefCount(next, target.assetId) > 0) {
+    return { registry: next, releasableClipIds: [] }
+  }
+  // 남은 선택이 이 후보를 가리키고 있으면(정리 전) 아직 참조가 있는 것으로 본다.
+  const stillSelected = Object.values(selections).includes(candidateId)
+  return { registry: next, releasableClipIds: stillSelected ? [] : [clip] }
 }
 
 /**
@@ -396,5 +497,80 @@ export function selectionRecordFor(
     insufficientCandidates: res.insufficientCandidates,
     candidateCount: candidatesFor(registry, speakerId, emotionId).length,
     blockedCode: res.blockedCode,
+  }
+}
+
+// ── 영속 계약 ───────────────────────────────────────────────────────────────
+//
+//   등록은 **합성과 무관하게** 살아 있어야 한다. 후보를 등록하고 합성하지 않은 채 앱을
+//   닫아도 복원돼야 한다. 그래서 저장 시점은 합성이 아니라 **변경 시점**이다 —
+//   후보 추가 / 제거 / 구간 확정 / 수동 선택 / 선택 해제.
+//
+//   저장 위치는 기존 `settings:set` 채널이 쓰는 `userData/settings.json` 의 한 키다.
+//   Python 이 읽는 생성 config(`options`)와 **다른 파일**이므로, 후보 목록이 생성기로
+//   갈 통로가 구조적으로 없다.
+
+/** `settings.json` 안의 키 하나. 다른 설정과 같은 파일이지만 값은 이 키 아래에만 있다. */
+export const CANDIDATE_STORAGE_KEY = 'emotionCandidateRegistry'
+
+/** 저장 파일에 함께 적는 스키마 버전. 모르는 버전은 조용히 해석하지 않는다. */
+export const CANDIDATE_STORAGE_SCHEMA_VERSION = CANDIDATE_REGISTRY_SCHEMA_VERSION
+
+export interface StoredCandidateState {
+  schemaVersion: number
+  records: readonly EmotionCandidateRecord[]
+  /** `slotKey` → 후보 id 또는 기본/사용 안 함 토큰. */
+  selections: Readonly<Record<string, string>>
+}
+
+/** 저장할 형태. 표시 이름은 애초에 이 구조에 없다(원본 경로는 local 전용으로 남는다). */
+export function serializeCandidateState(
+  registry: CandidateRegistry, selections: Readonly<Record<string, string>>
+): StoredCandidateState {
+  return {
+    schemaVersion: CANDIDATE_STORAGE_SCHEMA_VERSION,
+    records: registry.records,
+    selections: { ...selections },
+  }
+}
+
+/**
+ * 저장된 형태 → 등록부. **복원 실패를 다른 후보로 메우지 않는다.**
+ *
+ * 없거나 손상됐거나 모르는 버전이면 빈 등록부와 사유를 돌려준다. 절반만 읽어 "복원됨"
+ * 으로 보이게 하지 않는다 — 그러면 사용자가 고른 목소리가 조용히 달라진다.
+ */
+export function deserializeCandidateState(raw: unknown): {
+  registry: CandidateRegistry
+  selections: Record<string, string>
+  error: string | null
+} {
+  const empty = { registry: EMPTY_REGISTRY, selections: {} as Record<string, string> }
+  if (raw == null) return { ...empty, error: 'ABSENT' }
+  if (typeof raw !== 'object') return { ...empty, error: 'MALFORMED' }
+  const o = raw as Partial<StoredCandidateState>
+  if (o.schemaVersion !== CANDIDATE_STORAGE_SCHEMA_VERSION) {
+    return { ...empty, error: 'SCHEMA_VERSION_UNSUPPORTED' }
+  }
+  if (!Array.isArray(o.records)) return { ...empty, error: 'MALFORMED' }
+  // 한 줄이라도 모양이 어긋나면 전체를 버린다. 부분 복원은 조용한 변경과 구분되지 않는다.
+  for (const r of o.records) {
+    if (!r || typeof r !== 'object') return { ...empty, error: 'MALFORMED' }
+    const need = ['candidateId', 'assetId', 'speakerId', 'emotionId',
+      'sourcePath', 'sourceSha256'] as const
+    for (const k of need) {
+      if (typeof (r as Record<string, unknown>)[k] !== 'string') {
+        return { ...empty, error: 'MALFORMED' }
+      }
+    }
+  }
+  const selections: Record<string, string> = {}
+  for (const [k, v] of Object.entries(o.selections ?? {})) {
+    if (typeof v === 'string' && v) selections[k] = v
+  }
+  return {
+    registry: { schemaVersion: CANDIDATE_STORAGE_SCHEMA_VERSION, records: o.records },
+    selections,
+    error: null,
   }
 }
