@@ -50,6 +50,10 @@ CAPABILITY_FEATURES = (
     # 감정별 참조 클립으로 감정 음향이 실제로 실현되는가. 판정 주체는 emotion_acoustic.py 다.
     # ⚠️ 같은 참조를 쓰면 모델 입력이 동일하므로 이 기능은 구조적으로 degraded 다(태그만 붙는다).
     "emotion_reference_acoustic",
+    # ── PHASE E3 에서 감사한 축 ────────────────────────────────────────────
+    "f0_contour_input",                   # 시간축 F0 곡선을 모델에 직접 넣을 수 있는가
+    "duration_pause_control",             # 길이·쉼을 모델 인자로 지시할 수 있는가
+    "speaker_clone_with_emotion_control", # 사용자 목소리 복제와 감정 지시를 **동시에**
 )
 
 CAPABILITY_RESOLUTION_REASONS = (
@@ -383,4 +387,173 @@ def resolve_vowel_extend_capability(vowel_record, profile: CapabilityProfile) ->
         "allowed_post_process": bool(allowed),
         "natural_extension_claimed": False,   # 어떤 경로에서도 '자연스럽게 늘어난다' 고 주장하지 않는다
         "final_consonant_repeat_allowed": False,   # 명시적 금지
+    }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. 설치된 로컬 모델 감사 (PHASE E3)
+#
+#   GPU 도, 모델 로딩도, 다운로드도 없다. 근거는 **디스크에 있는 파일**뿐이다 —
+#   각 스냅샷의 config.json, vendor 모델 카드, vendor 추론 코드, 그리고 우리 adapter.
+#
+#   크다는 이유로 supported 라고 적지 않는다. 근거가 없으면 unknown 이고, vendor 가
+#   스스로 못 한다고 하면 unsupported 다. 이 표에서 supported 는 한 칸도 나오지 않는데,
+#   그것이 지금 이 저장소가 가진 사실이다.
+# ─────────────────────────────────────────────────────────────────────────────
+
+LOCAL_MODEL_AUDIT_VERSION = 1
+
+#: 왜 그렇게 적었는가(비민감 enum). 경로·가중치·사용자 자료를 담지 않는다.
+EV_CARD_NO_INSTRUCTION = "VENDOR_CARD_NO_INSTRUCTION_CONTROL"  # 모델 카드 표의 해당 칸이 비어 있다
+EV_CODE_DECLARED_UNSUPPORTED = "VENDOR_CODE_DECLARED_UNSUPPORTED"
+EV_NO_SUCH_PARAMETER = "NO_SUCH_PARAMETER"          # 추론 API 에 그런 인자가 없다
+EV_ENTRY_POINT_REFUSES = "ENTRY_POINT_REFUSES_MODEL_TYPE"  # 그 함수가 이 모델 종류를 거부한다
+EV_PARAM_REACHABLE_UNTESTED = "PARAMETER_REACHABLE_UNTESTED"
+EV_MECHANISM_UNVERIFIED = "MECHANISM_PRESENT_EFFECT_UNVERIFIED"
+EV_VARIANT_NOT_INSTALLED = "VARIANT_NOT_INSTALLED"
+EV_ADAPTER_PATH_PINNED = "ADAPTER_PATH_PINNED"      # adapter 가 다른 스냅샷 경로에 고정돼 있다
+
+AUDIT_EVIDENCE = (
+    EV_CARD_NO_INSTRUCTION, EV_CODE_DECLARED_UNSUPPORTED, EV_NO_SUCH_PARAMETER,
+    EV_ENTRY_POINT_REFUSES, EV_PARAM_REACHABLE_UNTESTED, EV_MECHANISM_UNVERIFIED,
+    EV_VARIANT_NOT_INSTALLED, EV_ADAPTER_PATH_PINNED,
+)
+
+#: 이번 감사가 보는 축. 사용자가 물은 항목 그대로다.
+AUDIT_FEATURES = (
+    "emotion_instruction_text",            # emotion/instruct 입력
+    "continuous_emotion_weights",          # 연속 intensity
+    "f0_contour_input",                    # F0 contour 직접 입력
+    "duration_pause_control",              # duration·pause 제어
+    "emotion_reference_acoustic",          # reference audio 기반 표현 전달
+    "speaker_clone_with_emotion_control",  # 복제와 감정 제어 동시
+)
+
+#: 감사한 모델. `installed` 는 저장소가 실제로 가진 것이고, 나머지는 같은 계열에서
+#: 감정 지시를 선언한 변종이다(설치돼 있지 않다 — 그래서 판정이 아니라 후보다).
+AUDIT_MODELS = ("qwen3_tts_0b6_base", "qwen3_tts_1b7_base",
+                "qwen3_tts_1b7_custom_voice", "qwen3_tts_1b7_voice_design")
+
+#: 두 Base 스냅샷이 공유하는 판정. 크기만 다르고 종류(`tts_model_type: base`)가 같다.
+#:
+#: 핵심 사실 하나: 이 계열에서 **목소리 복제는 Base 만** 되고 **감정 지시는 Base 만
+#: 안 된다.** 둘이 겹치는 변종이 아예 없다 — 그래서 마지막 축이 unsupported 다.
+_BASE_CLAIMS = {
+    # 모델 카드의 Instruction Control 칸이 Base 행에서만 비어 있다(CustomVoice/VoiceDesign 은 ✅).
+    "emotion_instruction_text": ("unsupported", EV_CARD_NO_INSTRUCTION),
+    # 세기를 연속값으로 받는 인자가 추론 API 어디에도 없다.
+    "continuous_emotion_weights": ("unsupported", EV_NO_SUCH_PARAMETER),
+    # F0 곡선을 넣을 자리가 없다. 있는 것은 텍스트·참조·샘플링 인자뿐이다.
+    "f0_contour_input": ("unsupported", EV_NO_SUCH_PARAMETER),
+    # 길이·쉼도 마찬가지다. 우리 쪽 속도 조절은 모델이 아니라 후처리(atempo)다.
+    "duration_pause_control": ("unsupported", EV_NO_SUCH_PARAMETER),
+    # 참조 조건화는 실제로 있다. 다만 "감정까지 옮겨지는가"는 아직 재지 않았다.
+    "emotion_reference_acoustic": ("unknown", EV_MECHANISM_UNVERIFIED),
+    # 복제는 Base, 지시는 CustomVoice/VoiceDesign — 한 모델에 같이 있지 않다.
+    "speaker_clone_with_emotion_control": ("unsupported", EV_CARD_NO_INSTRUCTION),
+}
+
+#: 감정 지시를 선언한 변종. 설치돼 있지 않고, 목소리 복제를 하지 않는다.
+_INSTRUCT_VARIANT_CLAIMS = {
+    "emotion_instruction_text": ("unknown", EV_VARIANT_NOT_INSTALLED),
+    "continuous_emotion_weights": ("unsupported", EV_NO_SUCH_PARAMETER),
+    "f0_contour_input": ("unsupported", EV_NO_SUCH_PARAMETER),
+    "duration_pause_control": ("unsupported", EV_NO_SUCH_PARAMETER),
+    # 이 변종들은 ref_audio 를 받지 않는다 — 참조 기반 표현 전달이라는 축 자체가 없다.
+    "emotion_reference_acoustic": ("unsupported", EV_ENTRY_POINT_REFUSES),
+    # 목소리 복제 자체를 못 한다(generate_voice_clone 이 base 타입만 받는다).
+    "speaker_clone_with_emotion_control": ("unsupported", EV_ENTRY_POINT_REFUSES),
+}
+
+_AUDIT_ROWS = {
+    "qwen3_tts_0b6_base": {
+        "model_size": "0b6", "model_type": "base", "installed": True,
+        # adapter 가 이 스냅샷을 가리키고 있다 — 오늘 실제로 쓰는 모델이다.
+        "adapter_connectable": True, "adapter_note": None,
+        "claims": dict(_BASE_CLAIMS, **{
+            # vendor 코드가 이 크기에 대해 명시적으로 "instruct 미지원"이라고 적어 두었다.
+            "emotion_instruction_text": ("unsupported", EV_CODE_DECLARED_UNSUPPORTED),
+        }),
+    },
+    "qwen3_tts_1b7_base": {
+        "model_size": "1b7", "model_type": "base", "installed": True,
+        # 파일은 다 있는데 adapter 가 0b6 스냅샷 경로에 고정돼 있다 — 자산 문제가 아니라 배선 문제다.
+        "adapter_connectable": False, "adapter_note": EV_ADAPTER_PATH_PINNED,
+        "claims": dict(_BASE_CLAIMS, **{
+            # 0b6 전용 차단문에 걸리지 않으므로 인자는 모델까지 닿는다. 그러나 모델 카드가
+            # Base 의 지시 제어를 선언하지 않았다 — 닿는 것과 듣는 것은 다른 일이다.
+            "emotion_instruction_text": ("unknown", EV_PARAM_REACHABLE_UNTESTED),
+        }),
+    },
+    "qwen3_tts_1b7_custom_voice": {
+        "model_size": "1b7", "model_type": "custom_voice", "installed": False,
+        "adapter_connectable": False, "adapter_note": EV_VARIANT_NOT_INSTALLED,
+        "claims": dict(_INSTRUCT_VARIANT_CLAIMS),
+    },
+    "qwen3_tts_1b7_voice_design": {
+        "model_size": "1b7", "model_type": "voice_design", "installed": False,
+        "adapter_connectable": False, "adapter_note": EV_VARIANT_NOT_INSTALLED,
+        "claims": dict(_INSTRUCT_VARIANT_CLAIMS),
+    },
+}
+
+
+def local_model_audit():
+    """설치·연결·기능 감사 표. 순수 함수이고 파일을 읽지 않는다(근거는 이미 굳혀 두었다).
+
+    각 칸은 `(state, evidence)` 이며 state 는 `CAPABILITY_STATES` 값이다. **supported 는
+    한 칸도 없다** — 프로브 없이 supported 를 적을 수 있는 경로가 이 모듈에는 없다.
+    """
+    rows = []
+    for name in AUDIT_MODELS:
+        spec = _AUDIT_ROWS[name]
+        features = {}
+        for feature in AUDIT_FEATURES:
+            state, evidence = spec["claims"][feature]
+            if state not in CAPABILITY_STATES:
+                raise CapabilityContractError("bad state")
+            if evidence not in AUDIT_EVIDENCE:
+                raise CapabilityContractError("bad evidence")
+            features[feature] = {"state": state, "evidence": evidence}
+        rows.append({
+            "model": name,
+            "model_size": spec["model_size"],
+            "model_type": spec["model_type"],
+            "installed": spec["installed"],
+            "adapter_connectable": spec["adapter_connectable"],
+            "adapter_note": spec["adapter_note"],
+            "needs_download": not spec["installed"],
+            # 아직 판정이 열려 있는 축이 있으면 GPU 프로브가 남았다는 뜻이다.
+            "needs_gpu_probe": any(v["state"] == UNVERIFIED_STATE
+                                   for v in features.values()),
+            "features": features,
+        })
+    return rows
+
+
+def native_emotion_path_available():
+    """지금 이 컴퓨터에서 **모델이 직접** 감정을 받는 통로가 있는가.
+
+    설치돼 있고, adapter 로 연결되며, 감정 지시가 supported 인 모델이 하나라도 있어야
+    참이다. 오늘은 거짓이다 — 설치된 둘은 Base 이고 Base 는 지시 제어를 선언하지 않았다.
+    """
+    for row in local_model_audit():
+        if not (row["installed"] and row["adapter_connectable"]):
+            continue
+        if row["features"]["emotion_instruction_text"]["state"] == "supported":
+            return True
+    return False
+
+
+def audit_summary():
+    """run bundle 에 실을 요약. 짧은 토큰만 담는다."""
+    rows = local_model_audit()
+    return {
+        "audit_version": LOCAL_MODEL_AUDIT_VERSION,
+        "models": len(rows),
+        "installed": sum(1 for r in rows if r["installed"]),
+        "connectable": sum(1 for r in rows if r["adapter_connectable"]),
+        "native_emotion_path": native_emotion_path_available(),
+        "open_probes": sorted({f for r in rows for f, v in r["features"].items()
+                               if v["state"] == UNVERIFIED_STATE}),
     }

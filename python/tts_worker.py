@@ -2071,6 +2071,11 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
             try:
                 _CONCAT_RECORDER.set_speaker_map(reference_rows, labels=speaker_labels)
+                # 이 작업이 돌 때 모델이 감정을 **직접** 받을 수 있었는가. 참조 선택 근거만
+                # 남기면 나중에 "그때는 모델이 감정을 받았나?"를 다시 알 수 없다.
+                import expressive_capability as _cap_audit
+                _CONCAT_RECORDER.set_run_header(
+                    emotion_capability=_cap_audit.audit_summary())
             except Exception:
                 pass               # 기록 실패가 합성을 막지 않는다
 
