@@ -1,5 +1,11 @@
 # TTS prosody 통합 공용 계약 (pitch backend × emotion reference UX × research)
 
+> **상태 (2026-09-03)** — 2026-08-22 계약 기록이며 그대로 보존한다. §1.2 감정 참조 3필드와
+> §5 만료 4불변식, §6.1 pitch 최종 후처리 계약은 **구현됐고 현재도 유효하다**.
+> 브랜치 소유권(§9)·병합 순서(§10)·근거 SHA 와 §13 취소 "가설"은 **STALE** 이다.
+> 분류 전체는 [감정 음향 전략](tts-emotion-acoustic-strategy.md) §3.2 에 있다.
+
+
 브랜치: `design/tts-prosody-integration-contract` (origin/develop `0788885`에서 분기).
 성격: **계약 문서 전용.** production 코드·스키마 파일 수정 없음. 이 문서가 A/B/통합 브랜치가 지켜야 할 단일 계약이다.
 근거: A `feature/tts-pitch-backend@cf524be`(pitch 설계+ffmpeg 실측), B `feature/tts-emotion-reference-ux@fed9686`(감정 참조 UX 설계), C `research/tts-prosody-control@45226c7`(Base 한계·제어축 연구).

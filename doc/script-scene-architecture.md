@@ -191,6 +191,12 @@ CRLF/LF/CR 동일 plan SHA · 미리보기 planned calls == production planner �
 
 화자 정의·발화 귀속·인물별 참조 목소리·감정 세기와 전환.
 
+> **현재 위치 (2026-09-03)** — 화자 축과 인물별 참조는 구현·청취 PASS(화자 구분 기준).
+> 감정 축은 **`reference_matched` 단계**다: 같은 화자의 후보 중에서 참조를 고르는 것까지이며
+> 감정 적용 성공도 감정 인식 성공도 아니다. 모델에 감정 제어값을 넘기는 통로는 없다.
+> 기술 세부·모델 capability·적용 통로 네 갈래는
+> [감정 음향 전략](work-in-progress/tts-emotion-acoustic-strategy.md)이 소유한다.
+
 완료 조건: 화자 귀속이 원문 좌표로 되짚어짐 · 화자별 참조 fingerprint가 캐시 키에 들어감 ·
 감정 세기가 후처리 gain으로 구현되지 않음(층 metadata로 증명) · 다화자 장문 청취 판정 ·
 단일 화자 대본 회귀 없음.

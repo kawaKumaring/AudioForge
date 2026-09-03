@@ -1,15 +1,21 @@
 # AudioForge 제품 로드맵
 
-> 기준일: 2026-08-30  
-> 기준선: `master@fa0e907`  
-> 개발선: `develop@4b64947` 이후  
+> - 기준일: 2026-09-03 (직전 2026-08-30)
+> - 기준선: `master@46949b7` — 정식 **v1.3.0**
+> - 개발선: `develop@8d9a205` — **v1.4.0-dev** (master 병합 보류)
+> - 이전 기준선 `master@fa0e907` · `develop@4b64947` 는 역사 기록이다.
+>
 > 이 문서는 방향, 순서, 완료 조건을 기록한다. 실제 완료 여부는 커밋, 회귀 테스트, 실작업 검증과 사용자 청취 결과로만 확정한다.
 
 ## 현재 기준선
 
-기준선은 정식 **v1.2.0**이다(사용자 일반 사용 테스트 인수 통과).
+기준선은 정식 **v1.3.0**이다(공용 Script/Scene Plan과 읽기 전용 미리보기, 사용자 UI 인수 통과).
 v1.2.0에서 완료된 것과 남은 한계는 [script-scene-architecture.md §1](script-scene-architecture.md)에
 정리한다 — 여기서 되풀이하지 않는다.
+
+감정·음률의 기술 결론(모델 capability, v3 프로필, 참조 선택, 적용 통로)은
+[감정 음향 전략](work-in-progress/tts-emotion-acoustic-strategy.md)이 단일 권위로 소유한다.
+이 문서는 순서와 완료 조건만 둔다.
 
 ### 음성 합성
 
@@ -310,6 +316,12 @@ TTS에서 검증한 작업 수명과 텍스트 계획을 음악 분리, 대화 �
 
 ### 9. 상위 음성 모델 성능 비교
 
+후보와 그 제약은 [감정 TTS 모델 조사](references/emotion-tts-models.md)와
+[감정 음향 전략 §7·§9](work-in-progress/tts-emotion-acoustic-strategy.md)가 소유한다.
+요약만 두면, 복제와 감정 instruction 을 함께 선언한 후보는 **CosyVoice 3**(한국어 지원)이고,
+IndexTTS 계열은 감정 제어 구조가 강하지만 **한국어 미지원**이라 제품 경로가 아니다.
+설치된 Qwen 1.7B 는 **Base** 라서 크기와 무관하게 instruction 감정 제어가 없다.
+
 현재 vendor native ICL을 고정 대조군으로 사용한다.
 
 - 더 큰 모델이나 새 revision은 동일 대본, 동일 참조, 동일 하드웨어로 비교한다.
@@ -395,15 +407,17 @@ worktree junction 금지)은 [script-scene-architecture.md §15](script-scene-ar
 | goback 장문 | 대기 | run bundle·동적 예산 후 GPU 및 청취 |
 | sample_4 스트레스 | 대기 | EOS·반복·부분 결과·시간 기록 |
 | 입력/문단 시간 estimator | 완료 | `master@005dd3b` (v1.2.0) |
-| 감정 장문·fixture v3 | 계획 | 화자·감정·gain 안정성과 청취 |
+| 감정 fixture v3 | 분석 계층 구현 완료 | 시간축 프로필 v3 — 생성 적용 없음. [권위 문서 §5](work-in-progress/tts-emotion-acoustic-strategy.md) |
+| 감정 장문 안정성 | 계획 | 화자·감정·gain 안정성과 청취 |
 | 음악·대화 텍스트 분할 | 계획 | 화자·타임라인·번역 parity |
 | 음성 대사 언어 변환 | 연구/설계 | 로컬 종단 prototype |
 | 상위 모델 비교 | 연구 | 동일 조건 benchmark |
 | 가창 SVC | 상세 계획 존재 | 별도 MVP 승인 |
 | MIDI/MusicXML 가창 | 후속 연구 | SVC 이후 |
 | 상황 기반 환경음 | 상세 계획 존재 | 1.6 단계로 편입 — 아래 §13 |
-| 1.3 공용 구조·미리보기 | PHASE 0~3 구현 완료, 사용자 인수 대기 | develop `1c1e630` · 계획·경고·읽기 전용 화면 |
-| 1.4 다화자·감정 | 설계 확정 | 1.3 인수 뒤 착수 — plan 의 `speakers` 축부터 |
+| 1.3 공용 구조·미리보기 | **완료·릴리스** | 정식 v1.3.0 (`master@46949b7`) |
+| 1.4 다화자 | 구현 완료, 화자 구분 청취 PASS | 4발화 대화 `safe_xvector` 기준. `high_quality_icl` 다화자 미검증 |
+| 1.4 감정 | **`reference_matched` 단계** | 같은 화자 후보 중 참조 선택까지. 감정 적용·감정 인식 성공이 아니다. 기준값은 `provisional`. [권위 문서](work-in-progress/tts-emotion-acoustic-strategy.md) |
 | 1.5 음성 언어 변환 | 설계 확정 | 1.4 계약 위에서 착수 |
 | 1.6 환경음·공간 연출 | 설계 확정 | 1.5 계약 위에서 착수 |
 | 2.0 가창·음악 목소리 변환 | 별도 MVP 승인 대기 | 1.3~1.6 계약 안정 |
