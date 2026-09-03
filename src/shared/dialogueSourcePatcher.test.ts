@@ -9,9 +9,11 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
-  STRUCTURE_BLOCKERS, canMove, changeBaseEmotion, changeSpeaker,
-  createInitialDialogue, deleteUtterance, insertUtteranceAfter, moveUtterance,
-  nextInheritingIndex, sliceOf, speakerDirective, structurable,
+  COORDINATE_DEPENDENT_ACTIONS, SPEAKER_LABEL_PROBLEMS, SPEAKER_LABEL_RE,
+  STRUCTURE_BLOCKERS, STRUCTURE_MODES, actionAllowed, canMove, changeBaseEmotion,
+  changeSpeaker, commitDecision, createInitialDialogue, deleteUtterance,
+  insertUtteranceAfter, moveUtterance, nextInheritingIndex, sliceOf, speakerDirective,
+  structurable, textInputAllowed, validateSpeakerLabel,
 } from './dialogueSourcePatcher.ts'
 import type { StructureInput, UtteranceView } from './dialogueSourcePatcher.ts'
 
@@ -110,9 +112,169 @@ test('구간이 겹치거나 순서가 어긋나면 허용하지 않는다', () 
   assert.ok(got.blockers.includes('SPANS_OVERLAP'))
 })
 
-test('발화가 없으면 구조화할 것이 없다', () => {
-  assert.deepEqual(structurable(input({ text: '', utterances: [], offsetsExact: [] })).blockers,
-    ['NO_UTTERANCES'])
+test('글자는 있는데 발화가 없으면 구조화할 것이 없다', () => {
+  // 빈 원문은 아래 `initial` 경로로 빠지므로, 여기서는 글자가 있는 경우만 본다.
+  const got = structurable(input({ text: '## 메모만 있다', utterances: [], offsetsExact: [] }))
+  assert.ok(got.blockers.includes('NO_UTTERANCES'))
+  assert.equal(got.mode, 'sourceOnly')
+})
+
+// ── 빈 대본의 최초 생성 경로 ────────────────────────────────────────────────
+
+test('빈 원문은 계획 없이도 첫 대화를 만들 수 있다', () => {
+  const got = structurable(input({
+    text: '', textSha256: 'sha-empty', planSourceSha256: null,
+    utterances: [], offsetsExact: [],
+  }))
+  assert.equal(got.mode, 'initial')
+  assert.equal(got.initialCreationAllowed, true)
+  // 계획이 없다는 것이 사유로 튀어나오지 않는다 — 빈 대본에는 지울 내용이 없다.
+  assert.deepEqual(got.blockers, [])
+  assert.equal(got.structurable, false, '편집할 발화는 아직 없다')
+})
+
+test('공백뿐인 원문도 같은 예외를 받는다', () => {
+  for (const text of [' ', '\n', '  \n\t\n ']) {
+    const got = structurable(input({
+      text, textSha256: 'sha-ws', planSourceSha256: null,
+      utterances: [], offsetsExact: [],
+    }))
+    assert.equal(got.mode, 'initial', JSON.stringify(text))
+    assert.equal(got.initialCreationAllowed, true, JSON.stringify(text))
+  }
+})
+
+test('공백 외 문자가 하나라도 있으면 예외를 적용하지 않는다', () => {
+  const got = structurable(input({
+    text: 'a', textSha256: 'sha-a', planSourceSha256: null,
+    utterances: [], offsetsExact: [],
+  }))
+  assert.equal(got.mode, 'sourceOnly')
+  assert.equal(got.initialCreationAllowed, false)
+  assert.ok(got.blockers.includes('PLAN_MISSING'))
+})
+
+test('빈 원문·공백 원문·기존 문자 원문의 최초 생성 결과', () => {
+  const rows = [{ speakerLabel: '민수', line: '정말 잘됐어!' }]
+  // 빈 원문 → 기존 문법으로 만든다.
+  assert.equal(createInitialDialogue('', rows).text, '[화자 민수]\n정말 잘됐어!')
+  // 공백뿐인 원문 → 같다.
+  assert.equal(createInitialDialogue('  \n ', rows).text, '[화자 민수]\n정말 잘됐어!')
+  // 기존 문자가 있으면 손대지 않는다.
+  const kept = createInitialDialogue('기존', rows)
+  assert.equal(kept.changed, false)
+  assert.equal(kept.refusedCode, 'TEXT_NOT_EMPTY')
+  assert.equal(kept.text, '기존')
+})
+
+test('모든 모드가 알려진 토큰이다', () => {
+  for (const text of ['', '[화자 민수]\n안녕', '## 메모']) {
+    const got = structurable(input({ text, utterances: [], offsetsExact: [] }))
+    assert.ok(STRUCTURE_MODES.includes(got.mode), got.mode)
+  }
+})
+
+// ── 타이핑 중 잠금 범위 ─────────────────────────────────────────────────────
+
+test('계획이 낡아도 글자 입력은 계속 받는다', () => {
+  const stale = structurable(input({ planSourceSha256: 'sha-old' }))
+  assert.equal(stale.structurable, false)
+  assert.equal(textInputAllowed(stale), true, '한 글자 칠 때마다 화면을 닫으면 안 된다')
+  const missing = structurable(input({ planSourceSha256: null }))
+  assert.equal(textInputAllowed(missing), true)
+  // 표현할 수 없는 대본(쉼 등)에서는 구조화 입력을 열지 않는다.
+  const text = '[화자 민수]\n안녕\n[쉼 0.5]\n[화자 지은]\n응'
+  const unsupported = structurable(input({
+    text,
+    utterances: [
+      viewOf(text, 0, '[화자 민수]\n안녕', '민수', true),
+      viewOf(text, 1, '[화자 지은]\n응', '지은', true),
+    ],
+    offsetsExact: [true, true],
+  }))
+  assert.equal(textInputAllowed(unsupported), false)
+})
+
+test('좌표에 의존하는 명령만 잠근다', () => {
+  const stale = structurable(input({ planSourceSha256: 'sha-old' }))
+  for (const action of COORDINATE_DEPENDENT_ACTIONS) {
+    assert.equal(actionAllowed(stale, action), false, action)
+  }
+  const fresh = structurable(input())
+  for (const action of COORDINATE_DEPENDENT_ACTIONS) {
+    assert.equal(actionAllowed(fresh, action), true, action)
+  }
+  // 순서 이동·화자 변경·삭제·삽입이 모두 목록에 있다.
+  assert.ok(COORDINATE_DEPENDENT_ACTIONS.includes('moveUtterance'))
+  assert.ok(COORDINATE_DEPENDENT_ACTIONS.includes('changeSpeaker'))
+  assert.ok(COORDINATE_DEPENDENT_ACTIONS.includes('deleteUtterance'))
+})
+
+test('draft 반영은 붙잡아 둔 SHA 가 지금과 같을 때만 한다', () => {
+  // 바뀐 것이 없으면 아무것도 하지 않는다.
+  assert.equal(commitDecision('sha-a', 'sha-a', '같음', '같음'), 'noop')
+  // 그 사이 원문이 그대로면 반영한다.
+  assert.equal(commitDecision('sha-a', 'sha-a', '새 대사', '옛 대사'), 'commit')
+  // 밖에서 원문이 바뀌었으면 덮어쓰지 않고 다시 맞춘다.
+  assert.equal(commitDecision('sha-a', 'sha-b', '새 대사', '옛 대사'), 'resync')
+  // 붙잡은 SHA 가 없으면(입력 시작을 못 봤으면) 반영하지 않는다.
+  assert.equal(commitDecision(null, 'sha-a', '새 대사', '옛 대사'), 'resync')
+})
+
+// ── 화자 이름 검증 ──────────────────────────────────────────────────────────
+
+test('화자 이름 허용 범위가 문법과 같다', () => {
+  // `ttsGrammar.SPEAKER_ID_RE` 와 같은 문자 집합이어야 한다(값 import 금지로 사본).
+  assert.equal(SPEAKER_LABEL_RE.source,
+    '^[0-9A-Za-z_\\-\\u3131-\\u318E\\uAC00-\\uD7A3]+$')
+  for (const ok of ['민수', 'minsu', 'Minsu', 'a1', 'a_b', 'a-b', 'ㄱ']) {
+    assert.equal(validateSpeakerLabel(ok).ok, true, ok)
+  }
+})
+
+test('공백·금지 문자·예약어를 원문 만들기 전에 알려 준다', () => {
+  assert.deepEqual(validateSpeakerLabel(''), { ok: false, problem: 'EMPTY' })
+  assert.deepEqual(validateSpeakerLabel('   '), { ok: false, problem: 'EMPTY' })
+  assert.deepEqual(validateSpeakerLabel('민 수'), { ok: false, problem: 'HAS_WHITESPACE' })
+  assert.deepEqual(validateSpeakerLabel('민수!'), { ok: false, problem: 'FORBIDDEN_CHAR' })
+  assert.deepEqual(validateSpeakerLabel('민수]'), { ok: false, problem: 'FORBIDDEN_CHAR' })
+  // 예약어는 인물 이름으로 쓰지 못한다 — 그 인물의 말이 전부 기본 목소리가 된다.
+  assert.deepEqual(validateSpeakerLabel('기본'), { ok: false, problem: 'RESERVED_DEFAULT' })
+  assert.deepEqual(validateSpeakerLabel('default'), { ok: false, problem: 'RESERVED_DEFAULT' })
+  assert.deepEqual(validateSpeakerLabel('Default'), { ok: false, problem: 'RESERVED_DEFAULT' })
+  for (const p of SPEAKER_LABEL_PROBLEMS) assert.equal(typeof p, 'string')
+})
+
+test('검증에 걸리는 이름으로는 원문을 만들지 않는다', () => {
+  const text = '[화자 민수]\n안녕'
+  const u = view(0, 0, text.length, '민수', true)
+  for (const bad of ['민 수', '민수!', '기본', '']) {
+    const changed = changeSpeaker(text, [u], 0, bad)
+    assert.equal(changed.changed, false, bad)
+    assert.match(changed.refusedCode ?? '', /^SPEAKER_LABEL_/, bad)
+    assert.equal(changed.text, text)
+
+    const inserted = insertUtteranceAfter(text, [u], 0, bad, '응')
+    assert.equal(inserted.changed, false, bad)
+    assert.match(inserted.refusedCode ?? '', /^SPEAKER_LABEL_/, bad)
+
+    const created = createInitialDialogue('', [{ speakerLabel: bad, line: '응' }])
+    assert.equal(created.changed, false, bad)
+  }
+})
+
+test('빈 대사로는 발화를 만들지 않는다', () => {
+  const text = '[화자 민수]\n안녕'
+  const out = insertUtteranceAfter(text, [view(0, 0, text.length, '민수', true)], 0,
+    '지은', '   ')
+  assert.equal(out.changed, false)
+  assert.equal(out.refusedCode, 'LINE_EMPTY')
+})
+
+test('차단 사유 목록과 문서가 어긋나지 않는다', () => {
+  // 개수를 손으로 적지 않는다 — 보고서에서 6 이라 적었다가 실제와 어긋난 전력이 있다.
+  assert.equal(STRUCTURE_BLOCKERS.length, 8)
+  assert.equal(new Set(STRUCTURE_BLOCKERS).size, STRUCTURE_BLOCKERS.length)
 })
 
 test('모든 차단 사유가 알려진 토큰이다', () => {

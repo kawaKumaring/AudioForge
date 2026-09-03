@@ -21,6 +21,39 @@
 export const SPEAKER_DIRECTIVE_NAME = '화자'
 export const SPEAKER_DEFAULT_ARG = '기본'
 
+/**
+ * 화자 이름 허용 문자 — `ttsGrammar` 의 `SPEAKER_ID_RE` 와 같은 범위다.
+ *
+ * 값 import 금지 규약 때문에 사본을 두고, 두 벌이 어긋나지 않도록 테스트가 대조한다.
+ * 한국어 음절·자모·영문·숫자·밑줄·붙임표만 받는다 — **공백은 받지 않는다.**
+ */
+export const SPEAKER_LABEL_RE = /^[0-9A-Za-z_\-\u3131-\u318E\uAC00-\uD7A3]+$/
+
+export const SPEAKER_LABEL_PROBLEMS = [
+  'EMPTY', 'HAS_WHITESPACE', 'FORBIDDEN_CHAR', 'RESERVED_DEFAULT',
+] as const
+export type SpeakerLabelProblem = typeof SPEAKER_LABEL_PROBLEMS[number]
+
+/**
+ * 이름을 원문에 쓰기 **전에** 화면이 알려 줄 수 있도록 판정한다.
+ *
+ * `기본`·`default` 는 "기본 목소리로 돌아가기" 를 뜻하는 예약어라 인물 이름으로 쓰지
+ * 못한다 — 인물 이름으로 허용하면 그 인물의 말이 전부 기본 목소리가 된다.
+ */
+export function validateSpeakerLabel(
+  label: string
+): { ok: boolean; problem: SpeakerLabelProblem | null } {
+  const raw = label ?? ''
+  if (raw.trim() === '') return { ok: false, problem: 'EMPTY' }
+  if (/\s/.test(raw.trim())) return { ok: false, problem: 'HAS_WHITESPACE' }
+  const t = raw.trim()
+  if (t === SPEAKER_DEFAULT_ARG || t.toLowerCase() === 'default') {
+    return { ok: false, problem: 'RESERVED_DEFAULT' }
+  }
+  if (!SPEAKER_LABEL_RE.test(t)) return { ok: false, problem: 'FORBIDDEN_CHAR' }
+  return { ok: true, problem: null }
+}
+
 export function speakerDirective(label: string | null): string {
   const arg = (label ?? '').trim()
   return `[${SPEAKER_DIRECTIVE_NAME} ${arg || SPEAKER_DEFAULT_ARG}]`
@@ -52,9 +85,28 @@ export const STRUCTURE_BLOCKERS = [
 ] as const
 export type StructureBlocker = typeof STRUCTURE_BLOCKERS[number]
 
+/**
+ * 여러 명 화면이 지금 무엇을 할 수 있는가.
+ *
+ *   structured — 발화를 구조화 편집할 수 있다(모든 게이트 통과)
+ *   initial    — 원문이 **비어 있다.** 계획이 없어도 첫 대화를 만들 수 있다
+ *   sourceOnly — 표현할 수 없는 대본이다. 원문 편집기를 그대로 보여 주고 이유만 말한다
+ */
+export const STRUCTURE_MODES = ['structured', 'initial', 'sourceOnly'] as const
+export type StructureMode = typeof STRUCTURE_MODES[number]
+
 export interface StructureVerdict {
+  mode: StructureMode
   /** 구조화 편집을 허용해도 되는가. 거짓이면 원문 편집기를 그대로 보여 준다. */
   structurable: boolean
+  /**
+   * 빈 원문에서 첫 대화를 만들 수 있는가.
+   *
+   * 빈 대본에는 계획이 없어 `PLAN_MISSING` 이 뜬다. 그것 때문에 여러 명 탭에서 첫 대화를
+   * 만들 수 없으면 기능 자체가 시작되지 않는다. 공백 외 문자가 **하나라도** 있으면 이
+   * 예외를 적용하지 않는다 — 그때는 기존 내용을 건드릴 위험이 생긴다.
+   */
+  initialCreationAllowed: boolean
   /** 막힌 사유(비민감 토큰). 원문·대사를 담지 않는다. */
   blockers: StructureBlocker[]
   utteranceCount: number
@@ -82,6 +134,13 @@ export interface StructureInput {
  * 넓히려고 원문 전체를 재작성하지 않는다.
  */
 export function structurable(input: StructureInput): StructureVerdict {
+  // 빈 원문(공백뿐 포함)은 계획을 기다리지 않는다. 지울 내용이 없으므로 안전하다.
+  if (input.text.trim() === '') {
+    return {
+      mode: 'initial', structurable: false, initialCreationAllowed: true,
+      blockers: [], utteranceCount: 0,
+    }
+  }
   const blockers: StructureBlocker[] = []
   if (input.planSourceSha256 === null) blockers.push('PLAN_MISSING')
   else if (input.planSourceSha256 !== input.textSha256) blockers.push('PLAN_STALE')
@@ -111,11 +170,58 @@ export function structurable(input: StructureInput): StructureVerdict {
     if (!clean) blockers.push('NON_WHITESPACE_OUTSIDE')
   }
 
+  const ok = blockers.length === 0
   return {
-    structurable: blockers.length === 0,
+    mode: ok ? 'structured' : 'sourceOnly',
+    structurable: ok,
+    // 원문에 글자가 있으면 초기 생성 예외는 없다.
+    initialCreationAllowed: false,
     blockers,
     utteranceCount: input.utterances.length,
   }
+}
+
+/**
+ * 좌표에 의존하는 명령 — 계획이 낡았으면 이것만 잠근다.
+ *
+ * 일반 문자 입력까지 막으면 사용자가 이어서 타이핑할 수 없다. 그래서 화면은 입력을
+ * 계속 받고(임시 draft), 순서 이동·화자 변경·삭제처럼 **좌표를 읽어야 하는** 명령만
+ * 잠근다.
+ */
+export const COORDINATE_DEPENDENT_ACTIONS = [
+  'moveUtterance', 'changeSpeaker', 'deleteUtterance', 'insertUtteranceAfter',
+] as const
+export type CoordinateDependentAction = typeof COORDINATE_DEPENDENT_ACTIONS[number]
+
+/** 이 명령을 지금 눌러도 되는가. 계획이 현재 원문과 맞을 때만 참이다. */
+export function actionAllowed(
+  verdict: StructureVerdict, action: CoordinateDependentAction
+): boolean {
+  void action
+  return verdict.structurable
+}
+
+/** 글자 입력은 계획 상태와 무관하게 언제나 받는다 — 화면을 닫지 않는다. */
+export function textInputAllowed(verdict: StructureVerdict): boolean {
+  return verdict.mode !== 'sourceOnly' || verdict.blockers.every(
+    (b) => b === 'PLAN_MISSING' || b === 'PLAN_STALE')
+}
+
+/**
+ * draft 를 원문에 반영해도 되는가 — **덮어쓰기 사고를 막는 마지막 관문.**
+ *
+ * 입력을 시작할 때 원문 SHA 를 붙잡아 두고(captured), 반영 직전에 지금 SHA 와 견준다.
+ * 다르면 그 사이 원문이 밖에서 바뀐 것이므로 **덮어쓰지 않고** 최신 원문으로 다시
+ * 맞춘다. 늦게 도착한 계획 응답이 사용자의 최신 글자를 되돌릴 통로가 없어야 한다.
+ */
+export type CommitDecision = 'commit' | 'resync' | 'noop'
+
+export function commitDecision(
+  capturedSha: string | null, currentSha: string, draft: string, committed: string
+): CommitDecision {
+  if (draft === committed) return 'noop'
+  if (capturedSha === null) return 'resync'
+  return capturedSha === currentSha ? 'commit' : 'resync'
 }
 
 /** 패치 결과. `changed=false` 면 원문을 건드리지 않았다는 뜻이다. */
@@ -164,7 +270,8 @@ export function changeSpeaker(
   const u = utterances[index]
   if (!u) return unchanged(text, 'UTTERANCE_NOT_FOUND')
   const label = (newLabel ?? '').trim()
-  if (!label) return unchanged(text, 'SPEAKER_LABEL_EMPTY')
+  const check = validateSpeakerLabel(label)
+  if (!check.ok) return unchanged(text, `SPEAKER_LABEL_${check.problem}`)
   if (u.speakerLabel === label) return unchanged(text, 'NO_CHANGE')
 
   const slice = sliceOf(text, u)
@@ -241,7 +348,10 @@ export function insertUtteranceAfter(
 ): PatchResult {
   const u = utterances[index]
   if (!u) return unchanged(text, 'UTTERANCE_NOT_FOUND')
+  const check = validateSpeakerLabel(speakerLabel ?? '')
+  if (!check.ok) return unchanged(text, `SPEAKER_LABEL_${check.problem}`)
   const body = line.replace(/\r?\n/g, ' ').trim()
+  if (!body) return unchanged(text, 'LINE_EMPTY')
   const tag = emotionTag ? `${emotionTag} ` : ''
   const block = `\n${speakerDirective(speakerLabel)}\n${tag}${body}`
   let out = text.slice(0, u.sourceEnd) + block + text.slice(u.sourceEnd)
@@ -261,9 +371,14 @@ export function insertUtteranceAfter(
 export function createInitialDialogue(
   text: string, rows: readonly { speakerLabel: string; line: string }[]
 ): PatchResult {
+  // 공백 외 문자가 하나라도 있으면 초기 생성 예외를 적용하지 않는다.
   if (text.trim() !== '') return unchanged(text, 'TEXT_NOT_EMPTY')
   const usable = rows.filter((r) => r.speakerLabel.trim() && r.line.trim())
   if (usable.length === 0) return unchanged(text, 'NOTHING_TO_WRITE')
+  for (const r of usable) {
+    const check = validateSpeakerLabel(r.speakerLabel)
+    if (!check.ok) return unchanged(text, `SPEAKER_LABEL_${check.problem}`)
+  }
   const body = usable
     .map((r) => `${speakerDirective(r.speakerLabel)}\n${r.line.replace(/\r?\n/g, ' ').trim()}`)
     .join('\n')
