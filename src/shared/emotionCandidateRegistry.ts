@@ -79,10 +79,12 @@ export function regionFromSeconds(
  *   needs_region — 원본이 10초를 넘어 구간을 확정해야 한다
  *   expired      — 원본이나 파생 클립이 사라졌다. **조용히 다른 후보로 바꾸지 않는다.**
  *   changed      — 경로는 그대로인데 **내용(SHA)이 달라졌다.** 같은 자산으로 쓰지 않는다.
+ *   unverified   — SHA 를 모른다(과거·불완전 자료). 검사를 건너뛰고 ready 로 만들지 않는다.
+ *   quarantined  — 저장된 기록 한 건이 어긋났다. 그 후보만 격리하고 나머지는 살린다.
  *   error        — 참조로 쓸 수 없는 파일이다(품질 부적합·디코딩 실패)
  */
 export const CANDIDATE_LIFECYCLE = [
-  'ready', 'needs_region', 'expired', 'changed', 'error',
+  'ready', 'needs_region', 'expired', 'changed', 'unverified', 'quarantined', 'error',
 ] as const
 export type CandidateLifecycle = typeof CANDIDATE_LIFECYCLE[number]
 
@@ -208,11 +210,18 @@ export function makeCandidateId(
   return `cand_${digest.slice(0, 16)}`
 }
 
-/** 음악에서 분리한 목소리와 품질 부적합은 자동 추천 대상이 아니다. */
+/**
+ * 자동 추천 대상인가. 음악 분리 음원·품질 부적합·**무결성 미확인**은 제외다.
+ *
+ * `lifecycle` 을 함께 받는 이유: SHA 를 모르는 자산(`unverified`)은 사용자가 다시 확인하기
+ * 전까지 추천도 생성도 하지 않는다.
+ */
 export function autoRecommendable(
-  sourceKind: CandidateSourceKind, qualityState: CandidateQualityState
+  sourceKind: CandidateSourceKind, qualityState: CandidateQualityState,
+  lifecycle: CandidateLifecycle = 'ready'
 ): boolean {
   if (sourceKind === 'separated_stem') return false
+  if (lifecycle === 'unverified' || lifecycle === 'quarantined') return false
   return qualityState !== 'invalid'
 }
 
@@ -238,6 +247,11 @@ export function evaluateLifecycle(
 ): { lifecycle: CandidateLifecycle; lifecycleCode: string | null } {
   if (!present.sourcePresent) {
     return { lifecycle: 'expired', lifecycleCode: 'SOURCE_FILE_MISSING' }
+  }
+  // 새 등록에는 SHA 가 필수다. 과거·불완전 자료에 없으면 **검사를 건너뛰고 ready 로
+  // 만들지 않는다** — 무결성을 확인할 수 없는 자산을 자동으로 쓰면 조용히 다른 소리가 난다.
+  if (!record.sourceSha256) {
+    return { lifecycle: 'unverified', lifecycleCode: 'SOURCE_SHA_ABSENT' }
   }
   // 경로가 살아 있어도 내용이 바뀌었으면 같은 자산이 아니다. 다시 쓰지 않는다 —
   // 사용자가 등록했던 목소리가 조용히 다른 소리로 바뀌는 것이 가장 나쁜 실패다.
@@ -324,24 +338,32 @@ export function registerCandidate(
 export function removeCandidate(
   registry: CandidateRegistry, speakerId: string, emotionId: string, candidateId: string,
   selections: Readonly<Record<string, string>> = {}
-): { registry: CandidateRegistry; releasableClipIds: string[] } {
+): {
+  registry: CandidateRegistry
+  /** 삭제와 **같은 전이**에서 정리된 선택. dangling 선택이 남지 않는다. */
+  selections: Record<string, string>
+  releasableClipIds: string[]
+} {
   const eid = emotionId || 'default'
   const target = registry.records.find(
     (r) => r.speakerId === speakerId && r.emotionId === eid && r.candidateId === candidateId)
-  if (!target) return { registry, releasableClipIds: [] }
+  if (!target) {
+    return { registry, selections: { ...selections }, releasableClipIds: [] }
+  }
   const next: CandidateRegistry = {
     ...registry,
     records: registry.records.filter((r) => r !== target),
   }
+  // 삭제와 선택 해제는 하나의 상태 전이다. 지운 후보를 가리키는 선택을 **명시적으로**
+  // 없앤다 — 다른 후보로 자동 교체하지 않고, 가리킬 대상이 없는 선택도 남기지 않는다.
+  const nextSelections = pruneSelections(next, selections)
   const clip = target.effectiveClipId
-  if (!clip) return { registry: next, releasableClipIds: [] }
+  if (!clip) return { registry: next, selections: nextSelections, releasableClipIds: [] }
   // 자산을 참조하는 후보가 남아 있으면 놓아 주지 않는다.
   if (assetRefCount(next, target.assetId) > 0) {
-    return { registry: next, releasableClipIds: [] }
+    return { registry: next, selections: nextSelections, releasableClipIds: [] }
   }
-  // 남은 선택이 이 후보를 가리키고 있으면(정리 전) 아직 참조가 있는 것으로 본다.
-  const stillSelected = Object.values(selections).includes(candidateId)
-  return { registry: next, releasableClipIds: stillSelected ? [] : [clip] }
+  return { registry: next, selections: nextSelections, releasableClipIds: [clip] }
 }
 
 /**
@@ -500,77 +522,175 @@ export function selectionRecordFor(
   }
 }
 
-// ── 영속 계약 ───────────────────────────────────────────────────────────────
+// ── 전역 자산 저장과 scope 바인딩 (R1 교정) ────────────────────────────────
 //
-//   등록은 **합성과 무관하게** 살아 있어야 한다. 후보를 등록하고 합성하지 않은 채 앱을
-//   닫아도 복원돼야 한다. 그래서 저장 시점은 합성이 아니라 **변경 시점**이다 —
-//   후보 추가 / 제거 / 구간 확정 / 수동 선택 / 선택 해제.
+//   두 책임을 갈라 둔다.
 //
-//   저장 위치는 기존 `settings:set` 채널이 쓰는 `userData/settings.json` 의 한 키다.
-//   Python 이 읽는 생성 config(`options`)와 **다른 파일**이므로, 후보 목록이 생성기로
-//   갈 통로가 구조적으로 없다.
+//   · **전역 `referenceAssets`** — 물리 자산과 파생 클립의 수명만 소유한다. 앱 전체
+//     공용(`settings.json`)이어도 무해하다: 자산은 "이 파일의 이 구간"이라는 사실이고
+//     어느 대본의 누구인지와 무관하기 때문이다.
+//   · **scope 별 `speakerEmotionBindings`** — "이 대본의 민수의 기쁨은 이 후보다"라는
+//     연결이다. 대본 이름에서 나온 `speakerId` 를 전역 키로 쓰면, 서로 다른 프로젝트의
+//     같은 이름이 같은 목소리를 공유한다. **그래서 전역에 저장하지 않는다.**
+//
+//   지금 이 저장소에는 재사용할 durable project/session id 가 없다(감사 결과). 그래서
+//   바인딩은 `scopeId` 를 **필수 인자**로 받는 메모리 구조로만 두고, 영속 통로를 만들지
+//   않는다. scope 계약이 정해진 뒤에 이어 붙인다.
+//
+//   이름이 같다는 이유로 다른 scope 의 목소리를 자동 재사용하지 않는다. 프로젝트를 넘는
+//   재사용은 앞으로 **명시적인 voice profile 연결**로만 한다.
 
-/** `settings.json` 안의 키 하나. 다른 설정과 같은 파일이지만 값은 이 키 아래에만 있다. */
-export const CANDIDATE_STORAGE_KEY = 'emotionCandidateRegistry'
+/** `settings.json` 안의 전역 자산 키. 바인딩은 여기 들어가지 않는다. */
+export const GLOBAL_ASSET_STORAGE_KEY = 'referenceAssets'
 
 /** 저장 파일에 함께 적는 스키마 버전. 모르는 버전은 조용히 해석하지 않는다. */
-export const CANDIDATE_STORAGE_SCHEMA_VERSION = CANDIDATE_REGISTRY_SCHEMA_VERSION
+export const ASSET_STORAGE_SCHEMA_VERSION = 1
 
-export interface StoredCandidateState {
-  schemaVersion: number
-  records: readonly EmotionCandidateRecord[]
-  /** `slotKey` → 후보 id 또는 기본/사용 안 함 토큰. */
-  selections: Readonly<Record<string, string>>
+/** 전역에 저장되는 자산 한 건 — 화자·감정이 **없다.** */
+export type ReferenceAsset = Pick<EmotionCandidateRecord,
+  'assetId' | 'sourcePath' | 'sourceSha256' | 'sourceDurationSec' | 'sourceFormat'
+  | 'region' | 'effectiveClipId' | 'profileId' | 'qualityState' | 'qualityCodes'
+  | 'sourceKind' | 'lifecycle' | 'lifecycleCode'>
+
+/** scope 안의 연결 한 건 — 파일에 대한 사실이 **없다.** */
+export interface SpeakerEmotionBinding {
+  scopeId: string
+  speakerId: string
+  emotionId: string
+  candidateId: string
+  assetId: string
 }
 
-/** 저장할 형태. 표시 이름은 애초에 이 구조에 없다(원본 경로는 local 전용으로 남는다). */
-export function serializeCandidateState(
-  registry: CandidateRegistry, selections: Readonly<Record<string, string>>
-): StoredCandidateState {
+/** 후보 한 줄에서 전역 자산 부분만. */
+export function assetOf(record: EmotionCandidateRecord): ReferenceAsset {
+  const {
+    assetId, sourcePath, sourceSha256, sourceDurationSec, sourceFormat, region,
+    effectiveClipId, profileId, qualityState, qualityCodes, sourceKind, lifecycle,
+    lifecycleCode,
+  } = record
   return {
-    schemaVersion: CANDIDATE_STORAGE_SCHEMA_VERSION,
-    records: registry.records,
-    selections: { ...selections },
+    assetId, sourcePath, sourceSha256, sourceDurationSec, sourceFormat, region,
+    effectiveClipId, profileId, qualityState, qualityCodes, sourceKind, lifecycle,
+    lifecycleCode,
   }
 }
+
+/** 후보 한 줄에서 scope 연결 부분만. `scopeId` 는 호출부가 준다(기본값 없음). */
+export function bindingOf(
+  record: EmotionCandidateRecord, scopeId: string
+): SpeakerEmotionBinding {
+  if (!scopeId) throw new Error('bindingOf: scopeId 가 필요하다(전역 저장 금지)')
+  return {
+    scopeId,
+    speakerId: record.speakerId,
+    emotionId: record.emotionId,
+    candidateId: record.candidateId,
+    assetId: record.assetId,
+  }
+}
+
+/** scope 안의 (화자, 감정) 키. `slotKey` 와 달리 scope 를 포함한다. */
+export function scopedSlotKey(scopeId: string, speakerId: string, emotionId: string): string {
+  if (!scopeId) throw new Error('scopedSlotKey: scopeId 가 필요하다')
+  const US = String.fromCharCode(31)
+  return `${scopeId}${US}${speakerId}${US}${emotionId || 'default'}`
+}
+
+export interface StoredAssetStore {
+  schemaVersion: number
+  assets: readonly ReferenceAsset[]
+}
+
+/** 전역에 저장할 형태. 화자·감정·선택이 들어갈 자리가 없다. */
+export function serializeAssetStore(assets: readonly ReferenceAsset[]): StoredAssetStore {
+  return { schemaVersion: ASSET_STORAGE_SCHEMA_VERSION, assets }
+}
+
+/** 전역 저장 payload 에 scope 정보가 섞이지 않았는지. 구조적으로 항상 참이어야 한다. */
+export function payloadHasNoScopeData(payload: unknown): boolean {
+  const blob = JSON.stringify(payload ?? null)
+  for (const forbidden of ['speakerId', 'emotionId', 'candidateId', 'scopeId',
+    'selections', 'recommended']) {
+    if (blob.includes(forbidden)) return false
+  }
+  return true
+}
+
+/** 복원 결과 집계. **경로와 표시 이름은 담지 않는다.** */
+export interface RestoreReport {
+  restored: number
+  quarantined: number
+  expired: number
+  changed: number
+  unverified: number
+  /** 등록부 전체를 쓸 수 없게 만든 사유. 있으면 저장된 원본을 덮어쓰지 않는다. */
+  rootError: string | null
+}
+
+const REQUIRED_ASSET_FIELDS = ['assetId', 'sourcePath'] as const
 
 /**
- * 저장된 형태 → 등록부. **복원 실패를 다른 후보로 메우지 않는다.**
+ * 전역 자산 복원. **한 건이 어긋나도 전체를 버리지 않는다.**
  *
- * 없거나 손상됐거나 모르는 버전이면 빈 등록부와 사유를 돌려준다. 절반만 읽어 "복원됨"
- * 으로 보이게 하지 않는다 — 그러면 사용자가 고른 목소리가 조용히 달라진다.
+ *   · root 스키마/버전을 모르면 그 등록부만 사용 중지하고 `rootError` 를 돌려준다.
+ *     호출부는 이때 **자동으로 빈 등록부를 저장하지 않는다**(원본이 사라진다).
+ *   · 자산 한 건이 어긋나면 그 건만 `quarantined` 로 남기고 나머지는 복원한다.
+ *   · 없거나 SHA 가 달라진 자산은 그 자산만 `expired` / `changed` 다.
  */
-export function deserializeCandidateState(raw: unknown): {
-  registry: CandidateRegistry
-  selections: Record<string, string>
-  error: string | null
-} {
-  const empty = { registry: EMPTY_REGISTRY, selections: {} as Record<string, string> }
-  if (raw == null) return { ...empty, error: 'ABSENT' }
-  if (typeof raw !== 'object') return { ...empty, error: 'MALFORMED' }
-  const o = raw as Partial<StoredCandidateState>
-  if (o.schemaVersion !== CANDIDATE_STORAGE_SCHEMA_VERSION) {
-    return { ...empty, error: 'SCHEMA_VERSION_UNSUPPORTED' }
+export function deserializeAssetStore(
+  raw: unknown,
+  probe: (asset: ReferenceAsset) => {
+    sourcePresent: boolean; clipPresent: boolean; currentSourceSha256?: string | null
+  } = () => ({ sourcePresent: true, clipPresent: true })
+): { assets: ReferenceAsset[]; report: RestoreReport } {
+  const empty: RestoreReport = {
+    restored: 0, quarantined: 0, expired: 0, changed: 0, unverified: 0, rootError: null,
   }
-  if (!Array.isArray(o.records)) return { ...empty, error: 'MALFORMED' }
-  // 한 줄이라도 모양이 어긋나면 전체를 버린다. 부분 복원은 조용한 변경과 구분되지 않는다.
-  for (const r of o.records) {
-    if (!r || typeof r !== 'object') return { ...empty, error: 'MALFORMED' }
-    const need = ['candidateId', 'assetId', 'speakerId', 'emotionId',
-      'sourcePath', 'sourceSha256'] as const
-    for (const k of need) {
-      if (typeof (r as Record<string, unknown>)[k] !== 'string') {
-        return { ...empty, error: 'MALFORMED' }
-      }
+  if (raw == null) return { assets: [], report: { ...empty, rootError: 'ABSENT' } }
+  if (typeof raw !== 'object') {
+    return { assets: [], report: { ...empty, rootError: 'MALFORMED_ROOT' } }
+  }
+  const o = raw as Partial<StoredAssetStore>
+  if (o.schemaVersion !== ASSET_STORAGE_SCHEMA_VERSION) {
+    return { assets: [], report: { ...empty, rootError: 'SCHEMA_VERSION_UNSUPPORTED' } }
+  }
+  if (!Array.isArray(o.assets)) {
+    return { assets: [], report: { ...empty, rootError: 'MALFORMED_ROOT' } }
+  }
+
+  const out: ReferenceAsset[] = []
+  const report = { ...empty }
+  for (const item of o.assets) {
+    const bad = !item || typeof item !== 'object'
+      || REQUIRED_ASSET_FIELDS.some(
+        (k) => typeof (item as Record<string, unknown>)[k] !== 'string'
+          || !(item as Record<string, string>)[k])
+    if (bad) {
+      report.quarantined++
+      // 격리한 건도 목록에서 지우지 않는다 — 무엇이 어긋났는지 사용자가 볼 수 있어야 한다.
+      const id = (item as { assetId?: unknown })?.assetId
+      out.push({
+        assetId: typeof id === 'string' && id ? id : `asset_quarantined_${report.quarantined}`,
+        sourcePath: '', sourceSha256: '', sourceDurationSec: 0, sourceFormat: '',
+        region: null, effectiveClipId: null, profileId: null,
+        qualityState: 'unknown', qualityCodes: [], sourceKind: 'unknown',
+        lifecycle: 'quarantined', lifecycleCode: 'STORED_RECORD_MALFORMED',
+      })
+      continue
     }
+    const asset = item as ReferenceAsset
+    const got = evaluateLifecycle(asset, probe(asset))
+    const next: ReferenceAsset = { ...asset, ...got }
+    if (got.lifecycle === 'expired') report.expired++
+    else if (got.lifecycle === 'changed') report.changed++
+    else if (got.lifecycle === 'unverified') report.unverified++
+    else report.restored++
+    out.push(next)
   }
-  const selections: Record<string, string> = {}
-  for (const [k, v] of Object.entries(o.selections ?? {})) {
-    if (typeof v === 'string' && v) selections[k] = v
-  }
-  return {
-    registry: { schemaVersion: CANDIDATE_STORAGE_SCHEMA_VERSION, records: o.records },
-    selections,
-    error: null,
-  }
+  return { assets: out, report }
 }
+
+// ⚠️ 이전 판에는 `CANDIDATE_STORAGE_KEY`(= 화자·감정 선택까지 담는 전역 등록부) 절이
+//    있었다. 대본 이름에서 나온 speakerId 를 전역 키로 저장하면 서로 다른 프로젝트의
+//    같은 이름이 같은 목소리를 공유한다 — 그래서 **그 통로를 제거했다.**
+//    바인딩은 durable scope 계약이 정해진 뒤에 붙인다(위 절 참조).

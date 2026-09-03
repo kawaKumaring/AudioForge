@@ -10,13 +10,13 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
-  CANDIDATE_MAX_SEC, CANDIDATE_MIN_SEC, CANDIDATE_STORAGE_KEY,
-  CANDIDATE_STORAGE_SCHEMA_VERSION, EMPTY_REGISTRY, NEUTRAL_EMOTION_ID,
-  assetRefCount, autoRecommendable, candidatesFor, deserializeCandidateState,
-  effectivePathOf, evaluateLifecycle, holdsOnlyEmotionCandidates, makeAssetId,
-  makeCandidateId, pruneSelections, regionFromSeconds, registerCandidate,
-  removeCandidate, resolveSlot, selectionRecordFor, serializeCandidateState, slotKey,
-  toSpeakerEmotionRefs,
+  ASSET_STORAGE_SCHEMA_VERSION, CANDIDATE_MAX_SEC, CANDIDATE_MIN_SEC, EMPTY_REGISTRY,
+  GLOBAL_ASSET_STORAGE_KEY, NEUTRAL_EMOTION_ID,
+  assetOf, assetRefCount, autoRecommendable, bindingOf, candidatesFor,
+  deserializeAssetStore, effectivePathOf, evaluateLifecycle, holdsOnlyEmotionCandidates,
+  makeAssetId, makeCandidateId, payloadHasNoScopeData, pruneSelections, regionFromSeconds,
+  registerCandidate, removeCandidate, resolveSlot, scopedSlotKey, selectionRecordFor,
+  serializeAssetStore, slotKey, toSpeakerEmotionRefs,
 } from './emotionCandidateRegistry.ts'
 // 해시는 주입받는다(공용 모듈끼리 값 import 금지 규약) — 테스트는 실제 sha256 을 넣는다.
 import { samplerSha256Hex } from './emotionSampler.ts'
@@ -166,11 +166,13 @@ test('한 후보를 지워도 다른 인물·감정의 후보와 선택은 그�
     [slotKey('jieun', 'joy')]: other.candidateId,
     [slotKey('minsu', 'sad')]: another.candidateId,
   }
-  const { registry: next } = removeCandidate(reg, 'minsu', 'joy', mine.candidateId)
+  const { registry: next, selections: prunedByRemoval } =
+    removeCandidate(reg, 'minsu', 'joy', mine.candidateId, selections)
   assert.equal(candidatesFor(next, 'minsu', 'joy').length, 0)
   assert.equal(candidatesFor(next, 'jieun', 'joy').length, 1)
   assert.equal(candidatesFor(next, 'minsu', 'sad').length, 1)
   const pruned = pruneSelections(next, selections)
+  assert.deepEqual(pruned, prunedByRemoval, '삭제 전이가 같은 정리를 이미 해 두었다')
   // 지운 슬롯의 선택만 사라지고 나머지는 남는다.
   assert.equal(pruned[slotKey('minsu', 'joy')], undefined)
   assert.equal(pruned[slotKey('jieun', 'joy')], other.candidateId)
@@ -193,16 +195,20 @@ test('공유 자산의 파생 클립은 한 후보를 지워도 지우지 않는
   assert.deepEqual(second.releasableClipIds, ['clip_1'], '마지막 참조가 사라지면 놓아 준다')
 })
 
-test('남은 선택이 그 후보를 가리키면 아직 놓아 주지 않는다', () => {
+test('선택된 후보를 지우면 같은 전이에서 선택이 풀리고 클립이 놓인다', () => {
+  // 이전 판은 "선택이 아직 가리키면 클립을 붙잡는다" 였다. 그 상태가 곧 dangling
+  // 선택이므로 지금은 만들지 않는다 — 삭제와 해제가 한 전이다.
   const region = regionFromSeconds(0, 4, 48000)
   const only = rec({ region, effectiveClipId: 'clip_1' })
   const reg = withRecords(only)
   const key = slotKey('minsu', 'joy')
-  const held = removeCandidate(reg, 'minsu', 'joy', only.candidateId,
+  const out = removeCandidate(reg, 'minsu', 'joy', only.candidateId,
     { [key]: only.candidateId })
-  assert.deepEqual(held.releasableClipIds, [])
-  const freed = removeCandidate(reg, 'minsu', 'joy', only.candidateId, {})
-  assert.deepEqual(freed.releasableClipIds, ['clip_1'])
+  assert.equal(out.selections[key], undefined, 'dangling 선택이 남았다')
+  assert.deepEqual(out.releasableClipIds, ['clip_1'])
+  // 선택이 없던 경우도 같다.
+  const bare = removeCandidate(reg, 'minsu', 'joy', only.candidateId, {})
+  assert.deepEqual(bare.releasableClipIds, ['clip_1'])
 })
 
 test('구간 없는 후보는 놓아 줄 파생 클립이 없다 — 사용자 원본은 대상이 아니다', () => {
@@ -496,56 +502,167 @@ test('기본 목소리로 돌아가기는 중립 후보를 쓰는 것과 다르�
   assert.equal(chosen.candidateId, neutral.candidateId)
 })
 
-// ── 저장 계약 ───────────────────────────────────────────────────────────────
+// ── 전역 자산 저장과 scope 바인딩 ──────────────────────────────────────────
 
-test('등록 후 합성 없이 종료해도 복원된다 — 저장은 변경 시점이다', () => {
+test('전역 저장 payload 에 화자·감정·선택이 섞이지 않는다', () => {
   const a = rec({ sourceSha256: SHA_A })
   const b = rec({ emotionId: 'sad', sourceSha256: SHA_B })
-  const reg = withRecords(a, b)
-  const selections = { [slotKey('minsu', 'joy')]: a.candidateId }
-  // 합성 config 를 거치지 않고 이 구조만으로 왕복한다.
-  const stored = serializeCandidateState(reg, selections)
-  assert.equal(stored.schemaVersion, CANDIDATE_STORAGE_SCHEMA_VERSION)
-  const round = deserializeCandidateState(JSON.parse(JSON.stringify(stored)))
-  assert.equal(round.error, null)
-  assert.equal(round.registry.records.length, 2)
-  assert.deepEqual(round.selections, selections)
-  assert.equal(candidatesFor(round.registry, 'minsu', 'joy')[0].candidateId, a.candidateId)
-  // 저장 키는 Python 이 읽는 생성 config 가 아니라 설정 파일의 한 칸이다.
-  assert.equal(CANDIDATE_STORAGE_KEY, 'emotionCandidateRegistry')
-  assert.equal(CANDIDATE_STORAGE_KEY.startsWith('tts'), false)
+  const payload = serializeAssetStore([assetOf(a), assetOf(b)])
+  assert.equal(payload.schemaVersion, ASSET_STORAGE_SCHEMA_VERSION)
+  assert.ok(payloadHasNoScopeData(payload), JSON.stringify(payload).slice(0, 200))
+  assert.equal(GLOBAL_ASSET_STORAGE_KEY, 'referenceAssets')
 })
 
-test('복원 실패는 빈 등록부와 사유로 끝난다 — 다른 후보로 메우지 않는다', () => {
+test('프로젝트 X 의 민수와 프로젝트 Y 의 민수는 자동 공유되지 않는다', () => {
+  const shared = rec({ speakerId: 'minsu', emotionId: 'joy', sourceSha256: SHA_A })
+  const x = bindingOf(shared, 'scope-X')
+  const y = bindingOf(shared, 'scope-Y')
+  // 같은 자산을 가리켜도 연결은 서로 다른 것이다.
+  assert.equal(x.assetId, y.assetId)
+  assert.notEqual(scopedSlotKey('scope-X', 'minsu', 'joy'),
+    scopedSlotKey('scope-Y', 'minsu', 'joy'))
+  // 전역 자산 저장만으로는 어느 scope 의 민수인지 알 수 없다 — 그래서 공유가 일어나지 않는다.
+  const payload = serializeAssetStore([assetOf(shared)])
+  assert.equal(JSON.stringify(payload).includes('minsu'), false)
+})
+
+test('명시적 scope 없이는 연결을 만들 수 없다', () => {
+  assert.throws(() => bindingOf(rec(), ''), /scopeId/)
+  assert.throws(() => scopedSlotKey('', 'minsu', 'joy'), /scopeId/)
+})
+
+test('후보 한 건이 손상돼도 정상 후보는 복원된다', () => {
+  const good = assetOf(rec({ sourceSha256: SHA_A }))
+  const alsoGood = assetOf(rec({ sourceSha256: SHA_B }))
+  const raw = {
+    schemaVersion: ASSET_STORAGE_SCHEMA_VERSION,
+    assets: [good, { assetId: 'asset_broken' }, alsoGood],
+  }
+  const { assets, report } = deserializeAssetStore(raw)
+  assert.equal(report.restored, 2, '정상 후보가 함께 버려졌다')
+  assert.equal(report.quarantined, 1)
+  assert.equal(report.rootError, null)
+  const quarantined = assets.find((a) => a.lifecycle === 'quarantined')
+  assert.equal(quarantined?.lifecycleCode, 'STORED_RECORD_MALFORMED')
+  assert.equal(assets.filter((a) => a.lifecycle === 'ready').length, 2)
+})
+
+test('root 스키마 오류는 기존 파일을 빈 값으로 덮어쓰게 만들지 않는다', () => {
   for (const [raw, code] of [
     [null, 'ABSENT'],
-    ['nope', 'MALFORMED'],
-    [{ schemaVersion: 999, records: [] }, 'SCHEMA_VERSION_UNSUPPORTED'],
-    [{ schemaVersion: CANDIDATE_STORAGE_SCHEMA_VERSION, records: 'x' }, 'MALFORMED'],
-    [{ schemaVersion: CANDIDATE_STORAGE_SCHEMA_VERSION, records: [{ candidateId: 'c' }] },
-      'MALFORMED'],
+    ['nope', 'MALFORMED_ROOT'],
+    [{ schemaVersion: 999, assets: [] }, 'SCHEMA_VERSION_UNSUPPORTED'],
+    [{ schemaVersion: ASSET_STORAGE_SCHEMA_VERSION, assets: 'x' }, 'MALFORMED_ROOT'],
   ] as [unknown, string][]) {
-    const out = deserializeCandidateState(raw)
-    assert.equal(out.error, code, JSON.stringify(raw))
-    assert.equal(out.registry.records.length, 0)
-    assert.deepEqual(out.selections, {})
+    const out = deserializeAssetStore(raw)
+    assert.equal(out.report.rootError, code, JSON.stringify(raw))
+    assert.equal(out.assets.length, 0)
+    // rootError 가 있으면 호출부는 저장하지 않는다 — 이 값이 그 신호다.
+    assert.equal(out.report.restored, 0)
+    assert.equal(out.report.quarantined, 0)
   }
 })
 
-test('한 줄이 어긋나면 전체를 버린다 — 부분 복원은 조용한 변경과 구분되지 않는다', () => {
-  const good = rec({ sourceSha256: SHA_A })
-  const stored = serializeCandidateState(withRecords(good), {})
-  const damaged = { ...stored, records: [good, { candidateId: 'broken' }] }
-  const out = deserializeCandidateState(damaged)
-  assert.equal(out.error, 'MALFORMED')
-  assert.equal(out.registry.records.length, 0)
+test('없어진 자산과 내용이 바뀐 자산만 각각 expired·changed 다', () => {
+  const gone = assetOf(rec({ sourceSha256: SHA_A }))
+  const moved = assetOf(rec({ sourceSha256: SHA_B }))
+  const fine = assetOf(rec({ sourceSha256: SHA_C }))
+  const raw = { schemaVersion: ASSET_STORAGE_SCHEMA_VERSION, assets: [gone, moved, fine] }
+  const { assets, report } = deserializeAssetStore(raw, (asset) => {
+    if (asset.sourceSha256 === SHA_A) {
+      return { sourcePresent: false, clipPresent: false }
+    }
+    if (asset.sourceSha256 === SHA_B) {
+      return { sourcePresent: true, clipPresent: true, currentSourceSha256: SHA_C }
+    }
+    return { sourcePresent: true, clipPresent: true, currentSourceSha256: SHA_C }
+  })
+  assert.equal(report.expired, 1)
+  assert.equal(report.changed, 1)
+  assert.equal(report.restored, 1, '나머지는 정상 유지된다')
+  assert.equal(assets.length, 3)
 })
 
-test('저장 구조에 표시 이름이 없다', () => {
-  const stored = serializeCandidateState(withRecords(rec()), {})
-  const blob = JSON.stringify(stored)
-  // 원본 경로는 local 전용으로 남지만(복원에 필요하다), 표시 이름은 애초에 필드가 없다.
-  assert.equal(blob.includes('label'), false)
-  assert.equal(blob.includes('displayName'), false)
-  assert.ok(blob.includes('sourcePath'), '경로는 local 저장에는 있어야 복원된다')
+test('복원 집계에 경로도 표시 이름도 없다', () => {
+  const raw = {
+    schemaVersion: ASSET_STORAGE_SCHEMA_VERSION,
+    assets: [assetOf(rec({ sourceSha256: SHA_A }))],
+  }
+  const blob = JSON.stringify(deserializeAssetStore(raw).report)
+  for (const leak of ['민수', '.wav', 'C:/', 'sourcePath']) {
+    assert.equal(blob.includes(leak), false, leak)
+  }
+})
+
+// ── SHA 무결성과 dangling 선택 ─────────────────────────────────────────────
+
+test('SHA 가 없는 후보는 unverified 이며 추천도 생성도 되지 않는다', () => {
+  const got = evaluateLifecycle(
+    { sourceDurationSec: 5, region: null, effectiveClipId: null,
+      qualityState: 'ok', sourceSha256: '' },
+    { sourcePresent: true, clipPresent: true })
+  assert.deepEqual(got, { lifecycle: 'unverified', lifecycleCode: 'SOURCE_SHA_ABSENT' })
+  // 추천 대상에서 빠진다.
+  assert.equal(autoRecommendable('clean_speech', 'ok', 'unverified'), false)
+  assert.equal(autoRecommendable('clean_speech', 'ok', 'ready'), true)
+  // 고른 상태여도 생성이 막힌다.
+  const bad = rec({ sourceSha256: '', lifecycle: 'unverified',
+    lifecycleCode: 'SOURCE_SHA_ABSENT', autoRecommendable: false })
+  const fine = rec({ sourceSha256: SHA_B })
+  const reg = withRecords(bad, fine)
+  const key = slotKey('minsu', 'joy')
+  const res = resolveSlot(reg, 'minsu', 'joy', { [key]: bad.candidateId }, {})
+  assert.equal(res.candidateId, null)
+  assert.equal(res.blockedCode, 'SOURCE_SHA_ABSENT')
+  // 자동 제안으로도 올라오지 않는다.
+  assert.equal(resolveSlot(reg, 'minsu', 'joy', {}, { [key]: bad.candidateId }).candidateId,
+    null)
+})
+
+test('격리된 후보도 추천 대상이 아니다', () => {
+  assert.equal(autoRecommendable('clean_speech', 'ok', 'quarantined'), false)
+})
+
+test('후보 삭제 후 dangling 선택이 남지 않는다', () => {
+  const a = rec({ sourceSha256: SHA_A })
+  const b = rec({ sourceSha256: SHA_B })
+  const reg = withRecords(a, b)
+  const key = slotKey('minsu', 'joy')
+  const out = removeCandidate(reg, 'minsu', 'joy', a.candidateId, { [key]: a.candidateId })
+  // 같은 전이에서 선택이 해제됐다.
+  assert.equal(out.selections[key], undefined)
+  // 다른 후보로 자동 교체되지 않았다.
+  assert.notEqual(out.selections[key], b.candidateId)
+  // 남은 선택이 존재하는 후보만 가리킨다.
+  for (const [, v] of Object.entries(out.selections)) {
+    assert.ok(out.registry.records.some((r) => r.candidateId === v), v)
+  }
+})
+
+test('선택되지 않은 후보를 지우면 다른 선택은 그대로다', () => {
+  const a = rec({ sourceSha256: SHA_A })
+  const b = rec({ sourceSha256: SHA_B })
+  const key = slotKey('minsu', 'joy')
+  const out = removeCandidate(withRecords(a, b), 'minsu', 'joy', a.candidateId,
+    { [key]: b.candidateId })
+  assert.equal(out.selections[key], b.candidateId)
+})
+
+// ── 네 축의 독립 ───────────────────────────────────────────────────────────
+
+test('기본 목소리·중립 후보·scope 연결·전역 자산은 서로를 지우지 않는다', () => {
+  const neutral = rec({ emotionId: NEUTRAL_EMOTION_ID, sourceSha256: SHA_A })
+  const joy = rec({ emotionId: 'joy', sourceSha256: SHA_B })
+  const reg = withRecords(neutral, joy)
+  const asset = assetOf(neutral)
+  const binding = bindingOf(neutral, 'scope-X')
+
+  // 중립 후보를 지운다 → scope 연결은 사라지지만 전역 자산 기록은 남는다.
+  const out = removeCandidate(reg, 'minsu', NEUTRAL_EMOTION_ID, neutral.candidateId)
+  assert.equal(candidatesFor(out.registry, 'minsu', NEUTRAL_EMOTION_ID).length, 0)
+  assert.equal(candidatesFor(out.registry, 'minsu', 'joy').length, 1)
+  assert.equal(asset.assetId, binding.assetId, '자산 기록은 삭제와 무관하게 유효하다')
+  assert.deepEqual(out.releasableClipIds, [], '기본 목소리 파일에 손대지 않는다')
+  // 등록부에는 여전히 감정 후보만 있다(기본 목소리는 다른 상태가 소유한다).
+  assert.ok(holdsOnlyEmotionCandidates(out.registry))
 })
