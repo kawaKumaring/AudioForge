@@ -565,3 +565,79 @@ export const CANDIDATE_ACTION_LABEL = {
   speakerDefault: '기본 목소리로 돌아가기',
   noEmotionRef: '감정 참조 사용 안 함',
 } as const
+
+/**
+ * 배역 세트와 후보 등록의 사용자 문구.
+ *
+ * 여기서 하지 않는 말
+ *   · 후보가 하나뿐일 때의 "추천 / 최적 / 정확도"
+ *   · 등록 해제를 "파일 삭제"라고 부르는 것 — 원본은 그대로 남는다
+ *   · 저장 실패를 저장됨으로 보이게 하는 것
+ */
+export const VOICE_CAST_LABEL = {
+  section: '배역 세트',
+  create: '새 배역 세트',
+  rename: '이름 변경',
+  apply: '현재 작업에 적용',
+  unapply: '적용 해제',
+  remove: '배역 세트 삭제',
+  pick: '배역 세트 선택',
+  none: '배역 세트를 먼저 만들고 선택하세요',
+  notApplied: '이 작업에 적용된 배역 세트가 없습니다',
+  applied: '현재 작업에 적용됨',
+  /** 배역이 하나뿐이어도 자동 적용하지 않는다는 사실을 말한다. */
+  noAutoApply: '배역 세트는 직접 선택해야 적용됩니다',
+} as const
+
+/** 후보 등록·해제 동작. `해제` 는 파일을 지우는 일이 아니다. */
+export const CANDIDATE_REGISTER_LABEL = {
+  add: '감정 목소리 추가',
+  unregister: '후보에서 빼기',
+  clearSelection: '선택 해제',
+  speakerDefault: '기본 목소리로 돌아가기',
+  /** 오해를 막는 보조 문구. 목록에서만 빠지고 원본은 그대로다. */
+  unregisterNote: '목록에서만 빠집니다. 원본 파일은 그대로 남습니다',
+  analyzing: '길이·품질 분석 중',
+  /** 분석은 CPU 만 쓴다 — 모델을 올리지 않는다는 사실을 알린다. */
+  analyzingNote: '음성 모델을 올리지 않습니다',
+} as const
+
+/** 후보 하나가 지금 어떤 처지인가 — 서로 다른 문구로 구분한다. */
+export const CANDIDATE_LIFECYCLE_LABEL: Record<string, string> = {
+  ready: '사용 가능',
+  needs_region: '참조 구간을 확정해야 합니다',
+  expired: '파일을 찾을 수 없습니다',
+  changed: '파일 내용이 바뀌었습니다 — 같은 목소리로 쓰지 않습니다',
+  unverified: '아직 확인되지 않았습니다 — 다시 등록하거나 확인이 필요합니다',
+  quarantined: '등록 기록이 손상됐습니다',
+  error: '참조로 쓸 수 없습니다',
+}
+
+/** 음악에서 분리한 목소리 경고 — 목록에 그대로 붙는다. */
+export const STEM_SOURCE_WARNING = '음악 분리 음원 — 잔향이 포함될 수 있음'
+
+/** 저장 상태 세 가지를 구분한다. 화면의 임시 선택과 durable 상태를 섞지 않는다. */
+export const SAVE_STATE_LABEL = {
+  idle: '',
+  saving: '저장 중',
+  saved: '저장됨',
+  failed: '저장 실패',
+} as const
+export type SaveState = keyof typeof SAVE_STATE_LABEL
+
+/**
+ * 저장 실패 안내. **기존 저장본을 덮어쓰지 않았다는 사실**과 다시 시도할 수 있음을 말한다.
+ */
+export function saveFailureText(code: string | null): string {
+  const base = '저장하지 못했습니다. 이전에 저장된 내용은 그대로 남아 있습니다. 다시 시도할 수 있습니다'
+  if (!code) return base
+  if (code.startsWith('SETTINGS_CORRUPT')) {
+    return `${base} (설정 파일을 읽을 수 없어 덮어쓰지 않았습니다)`
+  }
+  return base
+}
+
+/** 후보 재생 상태를 텍스트로. 소리만으로 알리지 않는다. */
+export function candidatePlaybackText(playing: boolean, fileLabel: string): string {
+  return playing ? `재생 중: ${fileLabel}` : ''
+}

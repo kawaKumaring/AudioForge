@@ -20,7 +20,8 @@ import type {
 
 const api = {
   audio: {
-    selectFile: () => ipcRenderer.invoke('audio:select-file'),
+    // multi=true 면 string[] 을 돌려준다. 인자 없는 기존 호출은 string|null 그대로다.
+    selectFile: (multi?: boolean) => ipcRenderer.invoke('audio:select-file', multi),
     getFileInfo: (filePath: string) => ipcRenderer.invoke('audio:get-file-info', filePath),
     process: (filePath: string, mode: string, options?: Record<string, unknown>) =>
       ipcRenderer.invoke('audio:process', filePath, mode, options),

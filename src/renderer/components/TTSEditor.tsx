@@ -31,6 +31,11 @@ import TtsEmotionQuickPreview from './TtsEmotionQuickPreview'
 import { setTtsAdvancedOpener } from '@/lib/ttsAdvancedOpen'
 import InputAnalysisPanel from './InputAnalysisPanel'
 import SpeakerReferenceManager from './SpeakerReferenceManager'
+import VoiceCastManager from './VoiceCastManager'
+import { useVoiceCastRegistry } from '../hooks/useVoiceCastRegistry'
+import {
+  castRegistry, findVoiceCast, toSpeakerEmotionRefs,
+} from '../../shared/emotionCandidateRegistry'
 import type { SpeakerRow } from './SpeakerReferenceManager'
 import {
   resolveReferenceDecision, sharedReferenceGroups, speakerEmotionKey,
@@ -209,7 +214,8 @@ export default function TTSEditor() {
     registerSpeakerRef, removeSpeakerRef, setSpeakerRefState,
     registerEmotionRef, removeEmotionRef, setEmotionRefState, setTtsRefState, ttsRefReady, ttsRefMessage, ttsReferenceClip, ttsPitchCapability, setTtsPitchCapability,
     ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, setTtsExpression,
-    ttsReferenceConditioningMode, setTtsReferenceConditioningMode } = useAppStore()
+    ttsReferenceConditioningMode, setTtsReferenceConditioningMode,
+    setSpeakerEmotionRefs } = useAppStore()
   // 로컬 상태는 store 값으로 초기화 — 빈 값으로 시작하면 아래 동기화 useEffect가 다른 모드에 다녀온 뒤 store를 덮어써 유실시킴
   const [ttsText, setTtsText] = useState(() => useAppStore.getState().ttsText)
   const [ttsSpeed, setTtsSpeed] = useState(() => useAppStore.getState().ttsSpeed)
@@ -674,6 +680,37 @@ export default function TTSEditor() {
   }
 
   // 셸이 파일 선택 다이얼로그를 주입(EmotionReferenceManager는 파일 I/O를 하지 않음).
+  // ── 배역 세트(R2-b) ──────────────────────────────────────────────────
+  // 상태·저장·전이는 훅이 소유한다. 셸은 파일 선택 다이얼로그와 미리듣기만 잇는다.
+  const voiceCast = useVoiceCastRegistry()
+  const castEmotions = useMemo(
+    () => ALL_EMOTIONS.map((e) => ({ id: e.id, label: e.label })), [])
+
+  // 활성 배역에서 **고른 하나씩만** 생성 설정으로 흘린다. 후보·자산 목록은 가지 않는다.
+  useEffect(() => {
+    const active = findVoiceCast(voiceCast.casts, voiceCast.activeVoiceCastId)
+    if (!active) {
+      setSpeakerEmotionRefs({})   // 활성 배역이 없으면 기존 계약 그대로다
+      return
+    }
+    const reg = castRegistry(active, voiceCast.assets)
+    setSpeakerEmotionRefs(
+      toSpeakerEmotionRefs(reg, active.selections, {}, () => undefined))
+  }, [voiceCast.casts, voiceCast.assets, voiceCast.activeVoiceCastId, setSpeakerEmotionRefs])
+
+  const addCastFiles = async (castId: string, speakerId: string, emotionId: string) => {
+    const picked = await window.api.audio.selectFile(true) as string[] | string | null
+    const paths = Array.isArray(picked) ? picked : (picked ? [picked] : [])
+    if (paths.length) await voiceCast.addCandidateFiles(castId, speakerId, emotionId, paths)
+  }
+
+  const previewCastCandidate = (candidateId: string) => {
+    const active = findVoiceCast(voiceCast.casts, voiceCast.activeVoiceCastId)
+    const cand = active?.candidates.find((c) => c.candidateId === candidateId)
+    const path = cand ? voiceCast.assets[cand.assetId]?.sourcePath : ''
+    if (path) previewLocalFile(path)
+  }
+
   const requestEmotionSource = async (): Promise<string | null> => {
     const p = await window.api.audio.selectFile()
     return p || null
@@ -1049,6 +1086,32 @@ export default function TTSEditor() {
         onToggleSettingHelp={setShowSettingHelp}
         voice={
           <>
+            {/* 배역 세트 — 인물별·감정별 후보 등록과 선택. 적용은 사용자가 누른다. */}
+            <VoiceCastManager
+              casts={voiceCast.casts}
+              assets={voiceCast.assets}
+              activeVoiceCastId={voiceCast.activeVoiceCastId}
+              saveState={voiceCast.saveState}
+              saveErrorCode={voiceCast.saveErrorCode}
+              speakers={speakerUiRows.map((s) => ({
+                speakerId: s.speakerId, label: s.label,
+              }))}
+              emotions={castEmotions}
+              disabled={disabled || voiceCast.analyzing}
+              onCreate={(name) => { void voiceCast.createCast(name) }}
+              onRename={(id, name) => { void voiceCast.renameCast(id, name) }}
+              onRemove={(id) => { void voiceCast.removeCast(id) }}
+              onApply={voiceCast.applyCast}
+              onUnapply={voiceCast.unapplyCast}
+              onAddFiles={(castId, sid, eid) => { void addCastFiles(castId, sid, eid) }}
+              onPreview={previewCastCandidate}
+              onSelect={(castId, sid, eid, choice) => {
+                void voiceCast.selectCandidate(castId, sid, eid, choice)
+              }}
+              onUnregister={(castId, sid, eid, cid) => {
+                void voiceCast.unregisterCandidate(castId, sid, eid, cid)
+              }}
+            />
             {/* 인물별 목소리 — 대본에 화자 표기가 있을 때만 나타난다. */}
             <SpeakerReferenceManager
               rows={speakerUiRows}

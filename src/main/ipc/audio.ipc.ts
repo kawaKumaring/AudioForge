@@ -313,11 +313,13 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   const pitchPreflightSF = createSingleFlight<unknown>()  // pitch capability probe(qwen/analyze/trim guard와 무관)
   const analyzeSF = createKeyedSingleFlight<unknown>()  // 절대경로 key
 
-  ipcMain.handle('audio:select-file', async () => {
+  // multi 를 주면 여러 개를 고를 수 있다(같은 감정에 파일 여럿 등록). 인자를 주지 않는
+  // 기존 호출부의 동작과 반환 형태는 그대로다 — 새 채널을 만들지 않는다.
+  ipcMain.handle('audio:select-file', async (_event, multi?: boolean) => {
     // 마지막으로 불러온 폴더에서 열기 — settings.json에 기억(다른 앱 영향 없음)
     const lastDir = loadSettings().lastDir
     const result = await dialog.showOpenDialog(mainWindow, {
-      properties: ['openFile'],
+      properties: multi ? ['openFile', 'multiSelections'] : ['openFile'],
       defaultPath: (typeof lastDir === 'string' && existsSync(lastDir)) ? lastDir : undefined,
       filters: [
         // 대표 포맷은 편의를 위해 앞에 두고, 실제 허용은 전체(ffmpeg 디코딩 가능 포맷 전부: mo3 등 포함)
@@ -325,8 +327,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
         { name: 'All Files', extensions: ['*'] }
       ]
     })
-    if (result.canceled || result.filePaths.length === 0) return null
-    return result.filePaths[0]
+    if (result.canceled || result.filePaths.length === 0) return multi ? [] : null
+    return multi ? result.filePaths : result.filePaths[0]
   })
 
   ipcMain.handle('audio:get-file-info', async (_event, filePath: string) => {
