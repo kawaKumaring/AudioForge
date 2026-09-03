@@ -121,11 +121,13 @@ export function sharedReferenceGroups(
 export const EMOTION_MATCH_STATES = [
   'reference_matched', 'insufficient_candidates', 'no_reliable_candidate',
   'no_target_profile', 'unsupported',
+  // 사용자가 직접 고른 경우. 잠정 추천보다 강한 근거다 — 사람이 듣고 골랐기 때문이다.
+  'user_selected', 'user_speaker_default',
 ] as const
 export type EmotionMatchState = typeof EMOTION_MATCH_STATES[number]
 
 export const EMOTION_SELECTION_METHODS = [
-  'explicit', 'profile_match', 'speaker_default',
+  'explicit', 'profile_match', 'speaker_default', 'user',
 ] as const
 export type EmotionSelectionMethod = typeof EMOTION_SELECTION_METHODS[number]
 
@@ -145,4 +147,106 @@ export interface EmotionMatchView {
 export function emotionReferenceChosen(e: EmotionMatchView | null | undefined): boolean {
   if (!e) return false
   return e.state === 'reference_matched'
+}
+
+/**
+ * 감정 참조 후보 목록 — 사용자가 **보고 바꿀 수 있게** 하기 위한 형태.
+ *
+ * 왜 필요한가: 자동 추천의 기준값이 잠정치다. 사용자가 결과를 확인하거나 바꿀 수 없으면
+ * 잠정치가 정답처럼 행세한다. 그래서 추천은 제안일 뿐이고 최종 권위는 사람이다.
+ *
+ * 이 값은 Python `speaker_refs.candidate_view` 가 만든다. 화면은 점수를 다시 계산하지
+ * 않는다 — 계산이 두 벌 있으면 화면과 생성이 서로 다른 답을 낼 수 있다.
+ *
+ * ⚠️ `fileLabel` 은 **화면 전용**이다. 기록으로 나가는 것은 `selection` 쪽 불투명 id 뿐이다.
+ */
+
+/** 후보가 자동 추천에서 빠진 이유. Python `CANDIDATE_EXCLUSIONS` 와 같은 값이다. */
+export const CANDIDATE_EXCLUSIONS = [
+  'SEPARATED_STEM_NOT_RECOMMENDED', 'PROFILE_UNAVAILABLE', 'REFERENCE_QUALITY_INVALID',
+] as const
+export type CandidateExclusion = typeof CANDIDATE_EXCLUSIONS[number]
+
+/** 참조 품질 상태. 기존 `reference_audio` 판정을 옮긴 값이며 새 판정이 아니다. */
+export const CANDIDATE_QUALITY_STATES = ['ok', 'warning', 'invalid', 'unknown'] as const
+export type CandidateQualityState = typeof CANDIDATE_QUALITY_STATES[number]
+
+/** 클립의 출처. 호출부가 선언하고 앱이 추측하지 않는다. */
+export const CANDIDATE_SOURCE_KINDS = ['clean_speech', 'separated_stem', 'unknown'] as const
+export type CandidateSourceKind = typeof CANDIDATE_SOURCE_KINDS[number]
+
+/** 후보 대신 고를 수 있는 두 가지. Python `USER_CHOICES` 와 같은 토큰이다. */
+export const USER_CHOICE_SPEAKER_DEFAULT = 'speaker_default'
+export const USER_CHOICE_NO_EMOTION_REF = 'no_emotion_ref'
+export const USER_CHOICES = [USER_CHOICE_SPEAKER_DEFAULT, USER_CHOICE_NO_EMOTION_REF] as const
+export type UserChoiceToken = typeof USER_CHOICES[number]
+
+/** 왜 이 참조가 되었는가. Python `SELECTION_REASONS` 와 같은 값이다. */
+export const SELECTION_REASONS = [
+  'USER_KEPT_RECOMMENDATION', 'USER_CHANGED_CANDIDATE', 'USER_CHOSE_SPEAKER_DEFAULT',
+  'USER_DECLINED_EMOTION_REFERENCE', 'USER_SELECTION_NOT_A_CANDIDATE',
+  'AUTO_PROVISIONAL_RECOMMENDATION', 'EXPLICIT_EMOTION_ASSIGNMENT',
+] as const
+export type SelectionReason = typeof SELECTION_REASONS[number]
+
+export interface EmotionCandidate {
+  referenceId: string
+  /** 사용자가 자기가 고른 파일을 알아볼 수 있게 — 파일 이름만, 폴더는 없다. */
+  fileLabel: string
+  /** 길이(초). 아직 분석하지 않았으면 null — 값을 지어내지 않는다. */
+  durationSec: number | null
+  sourceKind: CandidateSourceKind
+  qualityState: CandidateQualityState
+  qualityCodes: readonly string[]
+  /** 프로필을 재서 비교할 수 있었는가. */
+  analyzable: boolean
+  /** 지금 자동으로 추천되는 후보인가. 후보가 하나뿐이면 어디에도 붙지 않는다. */
+  recommended: boolean
+  /** 지금 실제로 쓰이는 후보인가. */
+  selected: boolean
+  excludedReason: CandidateExclusion | null
+  /** 내부 숫자. **상세 정보에만** 그린다. */
+  detail: {
+    score: number | null
+    axisScores: Readonly<Record<string, number>>
+  } | null
+}
+
+export interface EmotionCandidateView {
+  speakerRef: string
+  emotionId: string
+  candidateCount: number
+  /** 후보가 둘 미만 — 화면이 "가장 적합"이라 말하면 안 된다. */
+  insufficientCandidates: boolean
+  provisionalThreshold: number
+  /** 이 문턱은 실측 교정 전이다. 화면이 정답 기준처럼 보이게 하면 안 된다. */
+  thresholdProvisional: boolean
+  candidates: readonly EmotionCandidate[]
+  selection: EmotionSelectionStates | null
+  /** 생성이 막히는 사유(있으면 후보를 고를 단계가 아니다). */
+  blocked: SpeakerReferenceFailure | null
+}
+
+/** 구분해 기록하는 여섯 상태. 추천·사용자 선택·실제 결과를 한 칸에 뭉개지 않는다. */
+export interface EmotionSelectionStates {
+  recommendedReference: string | null
+  userSelectedReference: string | UserChoiceToken | null
+  resolvedReference: string | null
+  selectionReason: SelectionReason | null
+  provisionalThreshold: number
+  insufficientCandidates: boolean
+  state: EmotionMatchState
+}
+
+/** 사용자가 이 후보를 고를 수 있는가. 추천에서 빠진 후보도 고를 수는 있다. */
+export function candidateSelectable(c: EmotionCandidate): boolean {
+  // 품질이 부적합한 것만 막는다 — 나머지는 사용자가 듣고 판단할 몫이다.
+  return c.qualityState !== 'invalid'
+}
+
+/** 이 후보에 "추천" 배지를 붙여도 되는가. 후보가 하나뿐이면 붙이지 않는다. */
+export function showRecommendedBadge(
+  c: EmotionCandidate, view: Pick<EmotionCandidateView, 'insufficientCandidates'>
+): boolean {
+  return c.recommended && !view.insufficientCandidates
 }

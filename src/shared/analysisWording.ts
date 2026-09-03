@@ -12,8 +12,9 @@ import type {
   AnalysisResult, PlanWarning, PlanWarningCode, Range, ReservedAxis, SplitReason,
 } from './inputAnalysis'
 import type {
-  EmotionMatchState, EmotionMatchView, ReferenceDecision, ReferenceSource,
-  SpeakerReferenceFailure,
+  CandidateExclusion, CandidateQualityState, CandidateSourceKind, EmotionCandidate,
+  EmotionCandidateView, EmotionMatchState, EmotionMatchView, ReferenceDecision,
+  ReferenceSource, SelectionReason, SpeakerReferenceFailure,
 } from './speakerReference'
 
 /** 사람이 읽는 길이. 1분 미만은 초로만 말한다. */
@@ -408,6 +409,9 @@ export const EMOTION_MATCH_LABEL: Record<EmotionMatchState, string> = {
   no_reliable_candidate: '감정 참조 자료 부족',
   no_target_profile: '감정 참조 자료 부족',
   unsupported: '',
+  // 사람이 고른 결과. 자동 제안과 구분해 말한다.
+  user_selected: '직접 고른 참조 사용',
+  user_speaker_default: '기본 목소리 사용',
 }
 
 /** 왜 자료가 부족한가 — 상세 정보에만 쓴다. */
@@ -417,6 +421,8 @@ export const EMOTION_MATCH_DETAIL: Record<EmotionMatchState, string> = {
   no_reliable_candidate: '이 인물의 참조 중 요청한 감정에 가까운 것이 없습니다.',
   no_target_profile: '요청한 감정의 기준이 될 참조가 없습니다.',
   unsupported: '이 발화에는 감정 참조 선택이 쓰이지 않습니다.',
+  user_selected: '들어 보고 직접 고른 참조를 씁니다.',
+  user_speaker_default: '감정 참조 대신 이 인물의 기본 목소리를 씁니다.',
 }
 
 /** 지금 모델의 한계. 상세 정보에만 쓴다(기본 화면을 경고로 채우지 않는다). */
@@ -456,3 +462,106 @@ export const EMOTION_AXIS_LABEL: Record<string, string> = {
   pause_tail: '쉼과 말끝',
   trajectory: '전체 흐름',
 }
+
+/**
+ * 감정 참조 후보 목록을 사용자 말로.
+ *
+ * 여기서 절대 하지 않는 말: "가장 적합", "정확도 n%". 자동 추천은 **제안**이고 기준값은
+ * 아직 실측 교정 전이다. 후보가 하나뿐이면 추천이라는 말 자체를 쓰지 않는다.
+ */
+export const CANDIDATE_SOURCE_LABEL: Record<CandidateSourceKind, string> = {
+  clean_speech: '깨끗한 음성',
+  separated_stem: '음악에서 분리한 목소리',
+  unknown: '출처 미상',
+}
+
+/** 음악에서 뜯어낸 목소리는 반주 잔향이 연기로 잡힌다 — 그래서 추천하지 않는다. */
+export const CANDIDATE_SOURCE_WARNING: Partial<Record<CandidateSourceKind, string>> = {
+  separated_stem: '반주 잔향이 섞일 수 있어 자동 추천에서 제외됩니다',
+  unknown: '출처를 확인하면 감정 기준 자료로 쓸 수 있습니다',
+}
+
+export const CANDIDATE_QUALITY_LABEL: Record<CandidateQualityState, string> = {
+  ok: '참조 품질 적합',
+  warning: '참조 품질 확인 필요',
+  invalid: '참조로 쓸 수 없음',
+  unknown: '아직 분석하지 않음',
+}
+
+export const CANDIDATE_EXCLUSION_LABEL: Record<CandidateExclusion, string> = {
+  SEPARATED_STEM_NOT_RECOMMENDED: '자동 추천 제외 — 음악에서 분리한 목소리',
+  PROFILE_UNAVAILABLE: '자동 추천 제외 — 분석할 수 없음',
+  REFERENCE_QUALITY_INVALID: '자동 추천 제외 — 참조 품질 부적합',
+}
+
+export const SELECTION_REASON_LABEL: Record<SelectionReason, string> = {
+  USER_KEPT_RECOMMENDATION: '제안을 그대로 선택했습니다',
+  USER_CHANGED_CANDIDATE: '직접 고른 참조를 씁니다',
+  USER_CHOSE_SPEAKER_DEFAULT: '이 인물의 기본 목소리를 씁니다',
+  USER_DECLINED_EMOTION_REFERENCE: '감정 참조를 쓰지 않습니다',
+  USER_SELECTION_NOT_A_CANDIDATE: '골랐던 참조가 없어 자동 제안으로 돌아갔습니다',
+  AUTO_PROVISIONAL_RECOMMENDATION: '자동 제안을 씁니다',
+  EXPLICIT_EMOTION_ASSIGNMENT: '이 감정에 지정한 참조를 씁니다',
+}
+
+/** 후보 한 줄에 붙는 배지 문구. 빈 배열이면 배지를 그리지 않는다. */
+export function candidateBadges(c: EmotionCandidate, view: EmotionCandidateView): string[] {
+  const out: string[] = []
+  // 후보가 하나뿐이면 "제안"이라는 말도 쓰지 않는다 — 고를 여지가 없다.
+  if (c.recommended && !view.insufficientCandidates) out.push('자동 제안')
+  if (c.selected) out.push('지금 사용')
+  if (!c.analyzable) out.push('분석 불가')
+  return out
+}
+
+/** 후보 한 줄의 사실. 없는 값은 넣지 않는다(빈 칸을 만들지 않는다). */
+export function candidateFacts(c: EmotionCandidate): string[] {
+  const out: string[] = []
+  if (c.durationSec != null && Number.isFinite(c.durationSec)) {
+    out.push(`${c.durationSec.toFixed(1)}초`)
+  }
+  out.push(CANDIDATE_SOURCE_LABEL[c.sourceKind])
+  out.push(CANDIDATE_QUALITY_LABEL[c.qualityState])
+  return out
+}
+
+/** 후보 목록 머리말. 자료가 부족하면 그 사실을 먼저 말한다. */
+export function candidateHeadline(view: EmotionCandidateView): string {
+  if (view.blocked) return SPEAKER_BLOCK_LABEL[view.blocked]
+  if (view.candidateCount === 0) return '이 인물에게 등록된 목소리가 없습니다'
+  if (view.insufficientCandidates) {
+    return '이 인물의 참조가 하나뿐입니다 — 비교할 후보가 없습니다'
+  }
+  return `후보 ${view.candidateCount}개`
+}
+
+/** 상세 정보에만 나갈 줄들. 점수와 기준값이 여기 있고 기본 화면에는 없다. */
+export function candidateDetailLines(c: EmotionCandidate, view: EmotionCandidateView): string[] {
+  const out: string[] = []
+  if (c.detail?.score != null) {
+    out.push(`일치도 ${c.detail.score.toFixed(2)} (잠정 기준 ${view.provisionalThreshold.toFixed(2)})`)
+    for (const [axis, value] of Object.entries(c.detail.axisScores)) {
+      out.push(`${EMOTION_AXIS_LABEL[axis] ?? axis} ${value.toFixed(2)}`)
+    }
+  }
+  if (c.excludedReason) out.push(CANDIDATE_EXCLUSION_LABEL[c.excludedReason])
+  const warning = CANDIDATE_SOURCE_WARNING[c.sourceKind]
+  if (warning) out.push(warning)
+  for (const code of c.qualityCodes) out.push(`참조 품질: ${code}`)
+  out.push(PROVISIONAL_THRESHOLD_NOTE)
+  out.push(MODEL_EMOTION_CONTROL_NOTE)
+  return out
+}
+
+/** 기준값이 잠정치라는 사실을 화면에서 읽히게 한다. */
+export const PROVISIONAL_THRESHOLD_NOTE =
+  '자동 제안 기준은 아직 실측으로 맞추지 않은 잠정값입니다 — 직접 들어 보고 고르세요'
+
+/** 후보 목록에서 사용자가 할 수 있는 일. 라벨 단일 출처. */
+export const CANDIDATE_ACTION_LABEL = {
+  preview: '들어 보기',
+  keep: '이 제안 사용',
+  choose: '이 후보 사용',
+  speakerDefault: '기본 목소리로 돌아가기',
+  noEmotionRef: '감정 참조 사용 안 함',
+} as const

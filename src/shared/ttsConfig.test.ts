@@ -148,11 +148,12 @@ test('지정한 값은 그대로 통과한다', () => {
   assert.equal(c.ttsEngine, 'gptsovits')
 })
 
-test('직렬화 형태에 23개 TTS 키가 모두 존재한다 (필드 누락 방지; v1.4 화자 4개 추가)', () => {
+test('직렬화 형태에 24개 TTS 키가 모두 존재한다 (필드 누락 방지; v1.4 화자 4개 + 후보 선택 1개)', () => {
   const c = buildTtsConfig({})
   assert.deepEqual(
     Object.keys(c).sort(),
-    ['ttsEmotionBoundaryMode', 'ttsEmotionBoundaryPauseMs', 'ttsEmotionRefRegions', 'ttsEmotionRefSources',
+    ['ttsEmotionBoundaryMode', 'ttsEmotionBoundaryPauseMs', 'ttsEmotionCandidateSelections',
+      'ttsEmotionRefRegions', 'ttsEmotionRefSources',
       'ttsEmotionRefs', 'ttsEngine', 'ttsExpressiveMode', 'ttsParsedPlanSha256', 'ttsParserVersion', 'ttsPitch',
       'ttsReferenceConditioningMode', 'ttsReferenceOverride', 'ttsReferencePrompts', 'ttsSilenceGap',
       'ttsSpeakerEmotionRefs', 'ttsSpeakerLabels', 'ttsSpeakerRefSources', 'ttsSpeakerRefs', 'ttsSpeed',
@@ -166,6 +167,8 @@ test('화자별 참조는 부재 시 빈 dict — 기존 대본 동작이 달라
   assert.deepEqual(c.ttsSpeakerRefSources, {})
   assert.deepEqual(c.ttsSpeakerEmotionRefs, {})
   assert.deepEqual(c.ttsSpeakerLabels, {})
+  // 후보 선택도 부재 시 빈 dict — 아무것도 고르지 않은 상태가 곧 자동 제안이다.
+  assert.deepEqual(c.ttsEmotionCandidateSelections, {})
   // 값이 오면 그대로 나른다(여기서 고치지 않는다 — 판정 권위는 Python 이다).
   const d = buildTtsConfig({
     ttsSpeakerRefs: { minsu: 'C:/a.wav' },

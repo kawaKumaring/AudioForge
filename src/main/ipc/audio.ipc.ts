@@ -385,18 +385,24 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
 
   // 참조 구간 분석(길이/추천/파형 peak) — 읽기 전용. 배타 가드 미사용(analyze/preflight를 서로 차단하지
   // 않음). 같은 절대 filePath의 동시 요청은 single-flight로 합쳐 subprocess 1회, 모두 같은 결과.
-  ipcMain.handle('audio:analyze-reference', async (_event, filePath: string, clipKey: string = 'default') => {
+  ipcMain.handle('audio:analyze-reference', async (_event, filePath: string, clipKey: string = 'default',
+                                                   extra?: Record<string, unknown>) => {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 분석을 실행할 수 없습니다.')
     if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
     // single-flight key는 clipKey+절대경로 — 감정별로 분리하되 같은 (key,파일)의 동시 요청만 합침.
+    // extra 가 다르면 다른 질문이다 — single-flight 키에 넣지 않으면 후보 목록 요청이
+    // 같은 파일의 이전 분석 응답에 합쳐져 후보가 오지 않는다.
     const key = clipKey + '\u0000' + resolve(filePath)
+      + (extra ? '\u0000' + JSON.stringify(extra) : '')
     if (!analyzeSF.has(key)) releaseRefClip(clipKey)  // 새 분석 시작일 때만 그 key의 이전 파생 클립 폐기(중복 요청엔 안 함)
     return analyzeSF.run(key, async () => {  // 동시/StrictMode 중복은 진행 중 Promise 공유(subprocess 1회)
       const cfgPath = join(tmpdir(), `audioforge_refanalyze_${randomUUID()}.json`)
       try {
         const scriptPath = PythonRunner.getScriptPath('separate.py')
-        writeFileSync(cfgPath, JSON.stringify({ mode: 'ref-analyze', input: filePath, output: dirname(filePath) }), 'utf-8')
+        writeFileSync(cfgPath, JSON.stringify({
+          mode: 'ref-analyze', input: filePath, output: dirname(filePath), ...(extra ?? {}),
+        }), 'utf-8')
         return await runPreview({
           runner: new PythonRunner(pythonPath, runnerDeps),
           scriptPath, args: ['--config', cfgPath],

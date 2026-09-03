@@ -212,6 +212,14 @@ export interface TtsInputOptions {
   ttsSpeakerRefSources?: Record<string, string>
   // `(화자, 감정)` 전용 참조. 키는 `speakerEmotionKey(화자, 감정)`.
   ttsSpeakerEmotionRefs?: Record<string, string>
+  /**
+   * 후보 비교 화면에서 사용자가 고른 것. `speakerEmotionKey(화자, 감정)` → 참조 id 또는
+   * `speaker_default` / `no_emotion_ref` 토큰.
+   *
+   * **파일 경로가 아니라 참조 id 만 담는다** — 선택을 저장하는 일이 원본을 복사하거나
+   * 옮기는 일이 되면 안 된다. 자동 제안보다 위이며 판정 권위는 Python 이다.
+   */
+  ttsEmotionCandidateSelections?: Record<string, string>
   // 화자 표시 이름. **기록 전용**이며 private JSON 에만 남는다(합성 조건이 아니다).
   ttsSpeakerLabels?: Record<string, string>
   ttsEngine?: string
@@ -263,6 +271,7 @@ export interface TtsConfig {
   ttsSpeakerRefs: Record<string, string>
   ttsSpeakerRefSources: Record<string, string>
   ttsSpeakerEmotionRefs: Record<string, string>
+  ttsEmotionCandidateSelections: Record<string, string>
   ttsSpeakerLabels: Record<string, string>
   ttsEngine: string
   ttsReferencePrompts: Record<string, TtsReferencePromptConfig>
@@ -359,6 +368,7 @@ export function buildTtsConfig(o?: TtsInputOptions, sourceFingerprints?: Record<
     ttsSpeakerRefs: o?.ttsSpeakerRefs ?? {},
     ttsSpeakerRefSources: o?.ttsSpeakerRefSources ?? {},
     ttsSpeakerEmotionRefs: o?.ttsSpeakerEmotionRefs ?? {},
+    ttsEmotionCandidateSelections: o?.ttsEmotionCandidateSelections ?? {},
     ttsSpeakerLabels: o?.ttsSpeakerLabels ?? {},
     ttsEngine: o?.ttsEngine ?? 'auto',
     ttsReferencePrompts: buildReferencePrompts(prompts),

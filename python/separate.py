@@ -103,6 +103,99 @@ def _outputs_verified():
     return True
 
 
+def _emotion_candidate_view(spec):
+    """감정 참조 후보 목록. **기존 분석기와 기존 선택 권위를 그대로 쓴다.**
+
+    새 분석기·새 판정을 만들지 않는다 — 길이·품질은 `reference_audio` 가, 프로필은
+    `emotion_acoustic` 이, 순위와 사유는 `speaker_refs` 가 정한다. 이 함수가 하는 일은
+    그 셋을 한 번 엮어 화면이 읽을 형태로 돌려주는 것뿐이다.
+
+    파일을 만들지도 지우지도 않는다. 읽기만 한다.
+    """
+    import emotion_acoustic as _ea
+    import speaker_refs as _sr
+    from reference_audio import assess_reference_file, GPTSOVITS_POLICY
+
+    speaker_id = str(spec.get("speakerId") or "")
+    emotion_id = str(spec.get("emotionId") or "default")
+    if not speaker_id:
+        raise ValueError("speakerId required")
+    speaker_ref = spec.get("speakerRef") or None
+    pair_refs = {str(k): str(v) for k, v in (spec.get("speakerEmotionRefs") or {}).items()
+                 if isinstance(v, str) and v.strip()}
+    kinds = {str(k): str(v) for k, v in (spec.get("sourceKinds") or {}).items()}
+
+    _profile_cache = {}
+
+    def _profile_of(path):
+        if path in _profile_cache:
+            return _profile_cache[path]
+        got = None
+        try:
+            import soundfile as _sf
+            data, rate = _sf.read(path, dtype="float64", always_2d=True)
+            kind = kinds.get(path, "unknown")
+            if kind not in _ea.SOURCE_KINDS:
+                kind = "unknown"
+            got = _ea.analyze_profile_v3(data[:, 0], rate, source_kind=kind)
+        except Exception:
+            got = None      # 못 재면 모른다고 둔다 — 값을 지어내지 않는다
+        _profile_cache[path] = got
+        return got
+
+    paths = set(pair_refs.values())
+    if speaker_ref:
+        paths.add(speaker_ref)
+    meta = {}
+    for path in paths:
+        row = {"source_kind": kinds.get(path, "unknown"),
+               "quality_state": _sr.QUALITY_UNKNOWN, "quality_codes": [],
+               "duration_sec": None}
+        try:
+            assessed = assess_reference_file(path, GPTSOVITS_POLICY)
+            row["duration_sec"] = round(float(assessed.analysis.duration_sec), 2)
+            if not assessed.valid:
+                row["quality_state"] = _sr.QUALITY_INVALID
+            elif assessed.warnings:
+                row["quality_state"] = _sr.QUALITY_WARNING
+            else:
+                row["quality_state"] = _sr.QUALITY_OK
+            row["quality_codes"] = [i.code for i in (list(assessed.errors)
+                                                     + list(assessed.warnings))]
+        except Exception:
+            pass            # 분석 실패는 unknown 으로 남는다(후보를 목록에서 지우지 않는다)
+        meta[path] = row
+
+    targets = {}
+    target_path = spec.get("target")
+    if target_path and emotion_id != "default":
+        got = _profile_of(target_path)
+        if got is not None:
+            targets[emotion_id] = got
+
+    table = _sr.ReferenceTable(
+        default_ref=spec.get("defaultRef") or "",
+        speaker_refs=({speaker_id: speaker_ref} if speaker_ref else {}),
+        speaker_emotion_refs=pair_refs,
+        registered_speakers={speaker_id},
+        target_profiles=targets, profile_of=_profile_of, candidate_meta=meta,
+        user_selections=spec.get("userSelections") or {})
+    view = table.candidate_view(speaker_id, emotion_id)
+    # 화면이 후보를 다시 들어 보려면 파일이 필요하다. 응답에 경로를 담지 않고, 요청에
+    # 담아 보낸 후보 목록의 **몇 번째인지**만 알려 준다 — 화면은 자기가 보낸 목록에서 찾는다.
+    order = ([speaker_ref] if speaker_ref else []) + [pair_refs[k] for k in sorted(pair_refs)]
+    seen, index_of = set(), {}
+    for i, path in enumerate(order):
+        if path in seen:
+            continue
+        seen.add(path)
+        index_of[table.reference_id(path)] = i
+    for cand in view["candidates"]:
+        cand["source_index"] = index_of.get(cand["reference_id"])
+    view["request_order_size"] = len(order)
+    return view
+
+
 def _emit_final(exit_code=0):
     """실행당 정확히 한 줄. 재진입/중복 방지."""
     if _RUN["final_emitted"]:
@@ -187,6 +280,9 @@ def main():
         args.tts_speaker_refs = config.get("ttsSpeakerRefs", {})
         args.tts_speaker_ref_sources = config.get("ttsSpeakerRefSources", {})
         args.tts_speaker_emotion_refs = config.get("ttsSpeakerEmotionRefs", {})
+        # 후보 비교 화면에서 사용자가 고른 것. 자동 제안보다 위다.
+        args.tts_emotion_candidate_selections = config.get(
+            "ttsEmotionCandidateSelections", {})
         args.tts_speaker_labels = config.get("ttsSpeakerLabels", {})
         args.tts_emotion_ref_sources = config.get("ttsEmotionRefSources", {})  # 등록 원본(만료 판정 기준, §5)
         args.tts_engine = config.get("ttsEngine", "auto")
@@ -217,6 +313,10 @@ def main():
         # ref-analyze / ref-trim 파라미터(참조 구간 선택 UI용)
         args.region_start = config.get("regionStart", 0.0)
         args.region_dur = config.get("regionDur", 0.0)
+        # 감정 참조 후보 목록(비교·선택 화면용). 없으면 ref-analyze 응답이 예전과 같다.
+        args.emotion_candidates = config.get("emotionCandidates")
+        # 사용자가 후보 비교 화면에서 고른 것. `emotion_key(화자, 감정)` → 참조 id 또는 토큰.
+        args.emotion_candidate_selections = config.get("ttsEmotionCandidateSelections") or {}
 
     # Qwen preflight — 입력/출력 불필요(실행 전 상태 표시용). 예상값이며 실행 결과는 metadata가 최종.
     if args.mode == "qwen-preflight":
@@ -364,6 +464,8 @@ def main():
                     speaker_ref_sources=_dict_arg(args, "tts_speaker_ref_sources"),
                     speaker_emotion_refs=_dict_arg(args, "tts_speaker_emotion_refs"),
                     speaker_labels=_dict_arg(args, "tts_speaker_labels"),
+                    emotion_candidate_selections=_dict_arg(
+                        args, "tts_emotion_candidate_selections"),
                     preferred_engine=preferred_engine,
                     reference_prompts=ref_prompts,
                     pitch=getattr(args, "tts_pitch", 0.0),
@@ -413,6 +515,12 @@ def main():
             if payload["needs_region"]:
                 payload["recommend"] = rr.recommend_region(args.input)
                 payload["peaks"] = rr.coarse_peaks(args.input, buckets=500)
+            if getattr(args, "emotion_candidates", None):
+                # 같은 응답에 얹는다 — 새 채널을 만들지 않는다. 실패해도 기존 분석은 나간다.
+                try:
+                    payload["candidate_view"] = _emotion_candidate_view(args.emotion_candidates)
+                except Exception as exc:
+                    payload["candidate_view_error"] = type(exc).__name__
             emit("result", **payload)
             return
 

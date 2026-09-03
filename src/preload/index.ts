@@ -34,7 +34,10 @@ const api = {
     findSession: (sourcePath: string) => ipcRenderer.invoke('audio:find-session', sourcePath),
     transcribeReference: (filePath: string) => ipcRenderer.invoke('audio:transcribe-reference', filePath),
     // clipKey('default'|emotionId): 감정별 파생 클립을 식별해 분석/트림/정리(생략 시 'default').
-    analyzeReference: (filePath: string, clipKey?: string) => ipcRenderer.invoke('audio:analyze-reference', filePath, clipKey),
+    // extra 는 같은 채널에 얹는 추가 설정이다(예: 감정 참조 후보 목록 요청).
+    // 새 채널을 만들지 않는다 — 응답에 필드가 더 붙을 뿐이다.
+    analyzeReference: (filePath: string, clipKey?: string, extra?: Record<string, unknown>) =>
+      ipcRenderer.invoke('audio:analyze-reference', filePath, clipKey, extra),
     trimReference: (filePath: string, startSec: number, durSec: number, clipKey?: string) =>
       ipcRenderer.invoke('audio:trim-reference', filePath, startSec, durSec, clipKey),
     // clipKey 지정 시 그 하나만, 생략 시 전체 파생 클립 정리.

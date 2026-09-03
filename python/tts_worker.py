@@ -2871,6 +2871,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                tail_cfg=None, emotion_boundary_mode="pause", emotion_boundary_pause_ms=200,
                expressive_mode="legacy_v2", reference_conditioning_mode=None,
                speaker_refs=None, speaker_ref_sources=None, speaker_emotion_refs=None,
+               emotion_candidate_selections=None,
                speaker_labels=None):
     """Synthesize speech. Auto-selects engine by language.
     reference_prompts: 식별자(default/emotionId) → {manual_text, prompt_lang, mode} 사용자 override.
@@ -3041,6 +3042,28 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             emit("stage", stage="emotion_profile_analyzed",
                  emotions=len(_target_profiles))
 
+        # ── 사용자 선택 id 옮기기 ─────────────────────────────────────
+        # 화면이 준 참조 id 는 **원본 파일** 내용에서 나온 값이다. 준비 단계(`_prepare_ref`)가
+        # 파일을 변환하면 내용이 달라져 id 도 달라진다. 옮겨 주지 않으면 사용자의 선택이
+        # "후보에 없는 값"으로 보여 조용히 자동 제안으로 떨어진다 — 가장 나쁜 실패다.
+        _id_probe = _sr.ReferenceTable(default_ref=ref_wav)
+        _orig_to_prepared = {}
+        for _sid, _src in (speaker_refs or {}).items():
+            _prep = _prepared_speaker.get(_sid)
+            if _src and _prep:
+                _orig_to_prepared[_id_probe.reference_id(_src)] = _id_probe.reference_id(_prep)
+        for _key, _src in (speaker_emotion_refs or {}).items():
+            _prep = _prepared_pair.get(_key)
+            if _src and _prep:
+                _orig_to_prepared[_id_probe.reference_id(_src)] = _id_probe.reference_id(_prep)
+        _prepared_selections = {}
+        for _key, _choice in (emotion_candidate_selections or {}).items():
+            if not isinstance(_choice, str) or not _choice.strip():
+                continue
+            _prepared_selections[_key] = (
+                _choice if _choice in _sr.USER_CHOICES
+                else _orig_to_prepared.get(_choice, _choice))
+
         # 참조 선택의 단일 권위. 폴백 규칙을 생성 루프에서 다시 쓰지 않는다.
         ref_table = _sr.ReferenceTable(
             default_ref=ref_wav,
@@ -3049,7 +3072,9 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             speaker_emotion_refs=_prepared_pair,
             registered_speakers=set(_prepared_speaker.keys()),
             target_profiles=_target_profiles,
-            profile_of=_profile_of_ref)
+            profile_of=_profile_of_ref,
+            # 사용자가 후보 비교 화면에서 고른 것. 잠정 제안이 사람의 선택을 덮지 않는다.
+            user_selections=_prepared_selections)
         # 전수 점검을 먼저 한다 — 모델을 올린 뒤 절반 만들고 막히면 헛수고가 된다.
         ref_table.preflight([(sp, e) for e, _t, sp in parsed])
         _speaker_duplicates = ref_table.duplicate_paths()

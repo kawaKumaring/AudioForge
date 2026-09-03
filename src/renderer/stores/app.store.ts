@@ -179,6 +179,14 @@ interface AppState {
   ttsSpeakerRefState: Record<string, EmotionRefState>
   /** 화자 표시 이름(id → 사용자가 쓴 이름). 기록·화면 전용이며 합성 조건이 아니다. */
   ttsSpeakerLabels: Record<string, string>
+  /**
+   * 후보 비교 화면에서 사용자가 고른 것. `speakerEmotionKey(화자, 감정)` → 참조 id
+   * 또는 `speaker_default` / `no_emotion_ref` 토큰.
+   *
+   * 담기는 것은 **선택 정보뿐**이다 — 경로도, 파생 파일도 만들지 않는다.
+   */
+  ttsEmotionCandidateSelections: Record<string, string>
+  setEmotionCandidateSelection: (key: string, choice: string | null) => void
   ttsReferencePrompts: Record<string, TtsReferenceEntry>
   ttsEngine: string
   // 참조 conditioning 모드(PHASE 2). fresh 세션 기본 = auto(자동, 추천) — ICL 을 먼저 시도하고
@@ -291,6 +299,15 @@ export const useAppStore = create<AppState>((set, get) => ({
   ttsEmotionRefState: {} as Record<string, EmotionRefState>,
   ttsSpeakerRefState: {} as Record<string, EmotionRefState>,
   ttsSpeakerLabels: {} as Record<string, string>,
+  ttsEmotionCandidateSelections: {} as Record<string, string>,
+  setEmotionCandidateSelection: (key: string, choice: string | null) =>
+    set((s) => {
+      const next = { ...s.ttsEmotionCandidateSelections }
+      // null 은 '선택 해제' 다 — 지우면 자동 제안으로 돌아간다.
+      if (choice) next[key] = choice
+      else delete next[key]
+      return { ttsEmotionCandidateSelections: next }
+    }),
   ttsReferencePrompts: {} as Record<string, TtsReferenceEntry>,
   ttsEngine: 'auto',
   // 참조 conditioning 모드 — fresh 세션 기본은 자동(auto, 추천). ICL 을 먼저 시도하고 경계 정렬에
@@ -320,7 +337,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 전체 파생 클립(기본+감정) 정리
     // 분할 마커는 파일에 종속이다. 비우지 않으면 이전 파일의 경계가 새 파일에 그대로 적용돼
     // (더 긴 파일에서는 오류조차 없이) 완전히 틀린 지점에서 잘린다 — 감사 R2.
-    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerLabels: {}, ttsReferencePrompts: {} })
+    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsReferencePrompts: {} })
   },
   setMode: (mode) => set({ mode }),
   setTrimSilence: (v) => set({ trimSilence: v }),
@@ -547,7 +564,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       tracks: [], outputDir: null, playingTrack: null, restorable: null, splitMarkers: [], splitLabels: [],
       ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null,
       ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsSpeakerRefState: {},
-      ttsSpeakerLabels: {}, ttsPitch: 0.0, ttsPitchCapability: null, resultMetadata: null,
+      ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {},
+      ttsPitch: 0.0, ttsPitchCapability: null, resultMetadata: null,
       // 세션 리셋은 표현형 모드도 기본으로 되돌린다(이전 세션의 모드가 새 작업에 눌러앉지 않게).
       ttsExpressiveMode: EXPRESSIVE_DEFAULT_MODE,
       // 참조 conditioning 모드도 fresh 세션과 같은 추천값으로 — 이전 세션의 선택이 새 작업에
