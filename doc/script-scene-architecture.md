@@ -304,3 +304,45 @@ npx tsc --noEmit -p tsconfig.web.json     # src/renderer · src/shared (프로�
 통과는 검사 대상이 0개였으므로 **유효 근거에서 제외한다.** v1.4 의 E1·E2·E3·문서 커밋
 당시의 "타입 검사 통과" 보고가 여기에 해당한다. 실제 설정으로 다시 검사했을 때
 E4 에서 만든 누락(런타임 `TypeError` 로 이어지는 Record 키 2개 부재)이 곧바로 잡혔다.
+
+## 16. 여러 명 대화 화면 — 원문 하나가 유일한 권위 (2026-09-04)
+
+`[2] 대사` 머리의 `한 명 | 여러 명` 탭은 **보기 전환**이다. 탭 자체는 원문을 쓰지 않는다.
+`한 명` 은 기존 화면 그대로이고, `여러 명` 은 분석 계획(plan)의 발화 좌표를 원문 위에
+투영한 화면이다. 구조화된 편집은 전부 `src/shared/dialogueSourcePatcher.ts` 의 명령을
+거쳐 원문을 고친다. 범용 "계획 → 원문" 직렬화기는 없다.
+
+파일: `src/renderer/hooks/useDialogueProjection.ts`(투영·초안·명령), `DialogueTabs.tsx`,
+`MultiSpeakerDialogue.tsx`, 셸은 `TTSEditor.tsx` 의 훅 호출·탭·mount·콜백만.
+
+### 실측으로 확정한 계획 좌표의 성질 (python/script_plan.build_structure)
+
+고정 데이터 `src/shared/fixtures/dialogue-planner-spans.json`, 검사 `dialogueSourcePatcher.planner.test.ts`.
+
+- 발화 구간(`source_start~source_end`)은 **`[화자 …]` 줄을 포함하지 않는다**. 그 줄은
+  앞 발화 끝과 다음 발화 시작 사이의 빈틈에 놓인다. 감정 태그(`[기쁨]`)는 구간에 포함된다.
+- 한 줄 안의 감정 전환·`[쉼 N]` 은 발화를 **여러 개로 나눈다**(같은 `line_index`).
+- `source_sha256` 은 원문 UTF-8 sha256 과 같다(renderer 의 `samplerSha256Hex` 와 일치 —
+  PLAN_STALE 판정의 전제). `parser_authority` 는 정상 대본에서 true, `source_offsets_exact` 도 true.
+- 알 수 없는 지시가 있으면 파서가 물러나 `UNKNOWN_DIRECTIVE` 경고를 낸다 → 화면은 직접 입력.
+
+이 성질 때문에 화면의 "대화 한 줄" 은 `groupUtteranceRows()` 가 만든다: 같은 줄의 조각을
+한 행으로 잇고, 바로 앞 빈틈이 *공백 + 화자 표기 하나* 뿐이면 그 표기를 구간에 흡수한다.
+빈틈에 그 밖의 것이 있으면 흡수하지 않아 `NON_WHITESPACE_OUTSIDE` 가 정직하게 걸린다.
+첫 개발 화면 확인에서 모든 대본이 이 사유로 막혔던 것이 이 함수를 만든 계기다.
+
+### 타이핑 계약
+
+- 행 본문 textarea 는 어떤 계획 상태에서도 입력을 받는다(초안 = 화면 임시값).
+- blur / Ctrl+Enter 에 한 번 반영한다. 반영은 초안을 시작할 때 붙잡은 원문 SHA 와 지금 SHA 를
+  비교한다. 다르면 덮어쓰지 않고 초안을 버린다(resync). 같은데 계획만 아직이면
+  (`PLAN_MISSING`/`PLAN_STALE`) 초안을 **보류**하고 계획이 오면 반영한다(deferred).
+- 행 투영은 계획 `sourceSha256` 과 맞는 원문 스냅샷 위에서만 계산한다. 낡은 좌표를 새
+  원문에 대지 않는다. 좌표 의존 버튼(화자·감정·추가·삭제·이동)은 그동안 잠긴다.
+- 빈 카드 2개는 `ensurePendingSpeakers(2)` 로만 만든다 — React StrictMode 가 effect 와
+  updater 를 두 번 부르므로 ref 로 번호를 매기면 카드 4개가 같은 ID 가 된다(실측).
+
+### 개발 화면 확인
+
+`npm run test:e2e:tts-multi-dialogue-dev` — `npm run dev` 를 띄우고 CDP 로 붙어 DOM 텍스트와
+속성만 본다(스크린샷 없음, 합성 WAV, 격리 userData). 끝나면 자기 트리만 내린다.
