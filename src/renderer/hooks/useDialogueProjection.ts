@@ -25,13 +25,12 @@ import {
   canMove, changeBaseEmotion, changeSpeaker, commitDecision, createInitialDialogue,
   deleteUtterance, insertUtteranceAfter, moveUtterance, replaceUtteranceBody, sliceOf,
   structurable, structuredEditingAllowed, structuredPatchAllowed, utteranceParts,
-  validateSpeakerLabel,
+  validateSpeakerLabel, groupUtteranceRows,
 } from '../../shared/dialogueSourcePatcher'
 import type {
   PatchResult, StructureVerdict, UtteranceView,
 } from '../../shared/dialogueSourcePatcher'
 
-const SPEAKER_DIRECTIVE_AT_START = /^\s*\[\s*(?:화자|speaker)\s+[^\]]*\]/
 
 /** 화면이 그릴 인물. 계획에서 온 것과 아직 원문에 없는 것(pending)을 함께 담는다. */
 export interface DialogueSpeaker {
@@ -96,19 +95,8 @@ export interface DialogueProjection {
 function toViews(text: string, result: AnalysisResult | null): UtteranceView[] {
   const plan = result?.plan
   if (!plan) return []
-  return plan.utterances.map((u) => {
-    const slice = text.slice(u.sourceStart, u.sourceEnd)
-    return {
-      index: u.index,
-      sourceStart: u.sourceStart,
-      sourceEnd: u.sourceEnd,
-      speakerId: u.speakerId,
-      speakerLabel: u.speakerLabel,
-      emotionId: u.emotionId,
-      hasOwnSpeakerDirective: SPEAKER_DIRECTIVE_AT_START.test(slice),
-      lineIndex: u.lineIndex,
-    }
-  })
+  // 계획 좌표 그대로 — 같은 줄 조각을 한 행으로 묶고 앞 화자 표기를 흡수하는 규칙은 패처가 소유한다.
+  return groupUtteranceRows(text, plan.utterances)
 }
 
 type PendingSpeaker = { speakerId: string; label: string }

@@ -1,0 +1,393 @@
+{
+  "single_line": {
+    "source": "[화자 민수]\n첫 대사",
+    "parser_authority": true,
+    "source_sha256": "42b391b609252cf4845951a99235c400791dff0b41ef4c6c41d6cf33b33a027a",
+    "warnings": [],
+    "speakers": [
+      {
+        "speaker_id": "민수",
+        "label": "민수",
+        "utterance_count": 1
+      }
+    ],
+    "utterances": [
+      {
+        "index": 0,
+        "speaker_id": "민수",
+        "speaker_label": "민수",
+        "emotion_id": null,
+        "source_start": 8,
+        "source_end": 12,
+        "text_start": 8,
+        "text_end": 12,
+        "line_index": 1,
+        "source_offsets_exact": true
+      }
+    ],
+    "pauses": []
+  },
+  "three_speakers": {
+    "source": "[화자 민수]\n안녕\n[화자 영희]\n[기쁨] 반가워\n[화자 민수]\n[슬픔] 잘 가",
+    "parser_authority": true,
+    "source_sha256": "269a763a8f60e629d4351402434daf02ebe0c07f03e6980e72f5d96cd4f6a2ee",
+    "warnings": [],
+    "speakers": [
+      {
+        "speaker_id": "민수",
+        "label": "민수",
+        "utterance_count": 2
+      },
+      {
+        "speaker_id": "영희",
+        "label": "영희",
+        "utterance_count": 1
+      }
+    ],
+    "utterances": [
+      {
+        "index": 0,
+        "speaker_id": "민수",
+        "speaker_label": "민수",
+        "emotion_id": null,
+        "source_start": 8,
+        "source_end": 10,
+        "text_start": 8,
+        "text_end": 10,
+        "line_index": 1,
+        "source_offsets_exact": true
+      },
+      {
+        "index": 1,
+        "speaker_id": "영희",
+        "speaker_label": "영희",
+        "emotion_id": "happy",
+        "source_start": 19,
+        "source_end": 27,
+        "text_start": 19,
+        "text_end": 27,
+        "line_index": 3,
+        "source_offsets_exact": true
+      },
+      {
+        "index": 2,
+        "speaker_id": "민수",
+        "speaker_label": "민수",
+        "emotion_id": "sad",
+        "source_start": 36,
+        "source_end": 44,
+        "text_start": 36,
+        "text_end": 44,
+        "line_index": 5,
+        "source_offsets_exact": true
+      }
+    ],
+    "pauses": []
+  },
+  "mid_emotion": {
+    "source": "[화자 민수]\n[기쁨] 앞부분 [슬픔] 뒷부분\n[화자 영희]\n네",
+    "parser_authority": true,
+    "source_sha256": "b66352bce53685af1633c16db772b6f73b4c43371b3cafbcc851ee4bcfc4ba27",
+    "warnings": [],
+    "speakers": [
+      {
+        "speaker_id": "민수",
+        "label": "민수",
+        "utterance_count": 2
+      },
+      {
+        "speaker_id": "영희",
+        "label": "영희",
+        "utterance_count": 1
+      }
+    ],
+    "utterances": [
+      {
+        "index": 0,
+        "speaker_id": "민수",
+        "speaker_label": "민수",
+        "emotion_id": "happy",
+        "source_start": 8,
+        "source_end": 17,
+        "text_start": 8,
+        "text_end": 17,
+        "line_index": 1,
+        "source_offsets_exact": true
+      },
+      {
+        "index": 1,
+        "speaker_id": "민수",
+        "speaker_label": "민수",
+        "emotion_id": "sad",
+        "source_start": 17,
+        "source_end": 25,
+        "text_start": 17,
+        "text_end": 25,
+        "line_index": 1,
+        "source_offsets_exact": true
+      },
+      {
+        "index": 2,
+        "speaker_id": "영희",
+        "speaker_label": "영희",
+        "emotion_id": null,
+        "source_start": 34,
+        "source_end": 35,
+        "text_start": 34,
+        "text_end": 35,
+        "line_index": 3,
+        "source_offsets_exact": true
+      }
+    ],
+    "pauses": []
+  },
+  "inherited_line": {
+    "source": "[화자 민수]\n첫 줄\n둘째 줄\n[화자 영희]\n셋째 줄",
+    "parser_authority": true,
+    "source_sha256": "e4c191119e5fcce35a320f40481a68fe0c7e5b6288e2eb4bc5bb869130c97d75",
+    "warnings": [],
+    "speakers": [
+      {
+        "speaker_id": "민수",
+        "label": "민수",
+        "utterance_count": 2
+      },
+      {
+        "speaker_id": "영희",
+        "label": "영희",
+        "utterance_count": 1
+      }
+    ],
+    "utterances": [
+      {
+        "index": 0,
+        "speaker_id": "민수",
+        "speaker_label": "민수",
+        "emotion_id": null,
+        "source_start": 8,
+        "source_end": 11,
+        "text_start": 8,
+        "text_end": 11,
+        "line_index": 1,
+        "source_offsets_exact": true
+      },
+      {
+        "index": 1,
+        "speaker_id": "민수",
+        "speaker_label": "민수",
+        "emotion_id": null,
+        "source_start": 12,
+        "source_end": 16,
+        "text_start": 12,
+        "text_end": 16,
+        "line_index": 2,
+        "source_offsets_exact": true
+      },
+      {
+        "index": 2,
+        "speaker_id": "영희",
+        "speaker_label": "영희",
+        "emotion_id": null,
+        "source_start": 25,
+        "source_end": 29,
+        "text_start": 25,
+        "text_end": 29,
+        "line_index": 4,
+        "source_offsets_exact": true
+      }
+    ],
+    "pauses": []
+  },
+  "inline_speaker": {
+    "source": "[화자 민수] 안녕\n[화자 영희] 반가워",
+    "parser_authority": true,
+    "source_sha256": "52f8b5d87b0ee93f7582c5645397c7b62cb95fc7575bfcf3bd1cba5e71d644dd",
+    "warnings": [],
+    "speakers": [
+      {
+        "speaker_id": "민수",
+        "label": "민수",
+        "utterance_count": 1
+      },
+      {
+        "speaker_id": "영희",
+        "label": "영희",
+        "utterance_count": 1
+      }
+    ],
+    "utterances": [
+      {
+        "index": 0,
+        "speaker_id": "민수",
+        "speaker_label": "민수",
+        "emotion_id": null,
+        "source_start": 7,
+        "source_end": 10,
+        "text_start": 7,
+        "text_end": 10,
+        "line_index": 0,
+        "source_offsets_exact": true
+      },
+      {
+        "index": 1,
+        "speaker_id": "영희",
+        "speaker_label": "영희",
+        "emotion_id": null,
+        "source_start": 18,
+        "source_end": 22,
+        "text_start": 18,
+        "text_end": 22,
+        "line_index": 1,
+        "source_offsets_exact": true
+      }
+    ],
+    "pauses": []
+  },
+  "pause_inside": {
+    "source": "[화자 민수]\n안녕 [쉼 1] 잘 지냈어?\n[화자 영희]\n응",
+    "parser_authority": true,
+    "source_sha256": "a60914055acfba9d900564c88f8b5f7dfeed168ead9b9598b2d9d5e3b7a11609",
+    "warnings": [],
+    "speakers": [
+      {
+        "speaker_id": "민수",
+        "label": "민수",
+        "utterance_count": 2
+      },
+      {
+        "speaker_id": "영희",
+        "label": "영희",
+        "utterance_count": 1
+      }
+    ],
+    "utterances": [
+      {
+        "index": 0,
+        "speaker_id": "민수",
+        "speaker_label": "민수",
+        "emotion_id": null,
+        "source_start": 8,
+        "source_end": 11,
+        "text_start": 8,
+        "text_end": 11,
+        "line_index": 1,
+        "source_offsets_exact": true
+      },
+      {
+        "index": 1,
+        "speaker_id": "민수",
+        "speaker_label": "민수",
+        "emotion_id": null,
+        "source_start": 16,
+        "source_end": 23,
+        "text_start": 16,
+        "text_end": 23,
+        "line_index": 1,
+        "source_offsets_exact": true
+      },
+      {
+        "index": 2,
+        "speaker_id": "영희",
+        "speaker_label": "영희",
+        "emotion_id": null,
+        "source_start": 32,
+        "source_end": 33,
+        "text_start": 32,
+        "text_end": 33,
+        "line_index": 3,
+        "source_offsets_exact": true
+      }
+    ],
+    "pauses": [
+      {
+        "utterance_index": 1,
+        "source_start": 16,
+        "source_end": 16
+      }
+    ]
+  },
+  "unknown_directive": {
+    "source": "[화자 민수]\n안녕\n[모르는지시] 이상한 줄",
+    "parser_authority": false,
+    "source_sha256": "7ba94f059217e667be2a49732526682a60b32035dd3b19f1335b812c92fc8755",
+    "warnings": [
+      {
+        "code": "UNKNOWN_DIRECTIVE"
+      }
+    ],
+    "speakers": [],
+    "utterances": [
+      {
+        "index": 0,
+        "speaker_id": null,
+        "speaker_label": null,
+        "emotion_id": null,
+        "source_start": 0,
+        "source_end": 7,
+        "text_start": 0,
+        "text_end": 7,
+        "line_index": 0,
+        "source_offsets_exact": false
+      },
+      {
+        "index": 1,
+        "speaker_id": null,
+        "speaker_label": null,
+        "emotion_id": null,
+        "source_start": 8,
+        "source_end": 10,
+        "text_start": 8,
+        "text_end": 10,
+        "line_index": 1,
+        "source_offsets_exact": false
+      },
+      {
+        "index": 2,
+        "speaker_id": null,
+        "speaker_label": null,
+        "emotion_id": null,
+        "source_start": 11,
+        "source_end": 24,
+        "text_start": 11,
+        "text_end": 24,
+        "line_index": 2,
+        "source_offsets_exact": false
+      }
+    ],
+    "pauses": []
+  },
+  "no_speaker": {
+    "source": "그냥 한 줄\n[기쁨] 둘째 줄",
+    "parser_authority": true,
+    "source_sha256": "f5cf376c6a6e729a9a841160d335abd70a534466cb78bba1eea566048fa56354",
+    "warnings": [],
+    "speakers": [],
+    "utterances": [
+      {
+        "index": 0,
+        "speaker_id": null,
+        "speaker_label": null,
+        "emotion_id": null,
+        "source_start": 0,
+        "source_end": 6,
+        "text_start": 0,
+        "text_end": 6,
+        "line_index": 0,
+        "source_offsets_exact": true
+      },
+      {
+        "index": 1,
+        "speaker_id": null,
+        "speaker_label": null,
+        "emotion_id": "happy",
+        "source_start": 7,
+        "source_end": 16,
+        "text_start": 7,
+        "text_end": 16,
+        "line_index": 1,
+        "source_offsets_exact": true
+      }
+    ],
+    "pauses": []
+  }
+}

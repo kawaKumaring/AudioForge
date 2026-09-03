@@ -59,9 +59,11 @@ test('renderer 는 대본을 다시 parse 하지 않는다 — 계획이 준 것
       assert.equal(src.includes(forbidden), false, forbidden)
     }
   }
-  assert.ok(HOOK.includes('plan.utterances.map('), '발화는 계획에서 온다')
+  assert.ok(HOOK.includes('groupUtteranceRows(text, plan.utterances)'), '발화는 계획에서 온다(행 묶기는 패처 소유)')
   assert.ok(HOOK.includes('plan?.speakers'), '화자는 계획에서 온다')
-  assert.ok(HOOK.includes('u.sourceStart') && HOOK.includes('u.sourceEnd'), '좌표는 계획에서 온다')
+  // 좌표는 계획 발화 그대로 패처의 행 묶기로 넘어간다 — 훅 안에 화자 표기 정규식이 없어야 한다.
+  assert.equal(HOOK.includes('SPEAKER_DIRECTIVE_AT_START'), false, '훅은 좌표를 스스로 계산하지 않는다')
+  assert.equal(/\[\\s\*\(\?:화자\|speaker\)/.test(HOOK), false, '훅 안에 화자 표기 정규식 없음')
 })
 
 test('원문 쓰기는 전부 source patcher 명령을 거친다', () => {

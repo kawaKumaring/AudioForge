@@ -538,3 +538,62 @@ export function replaceUtteranceBody(
     changed: true, refusedCode: null,
   }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 계획 좌표 → 행 뷰
+//
+// 실측(python/script_plan.build_structure, fixtures/dialogue-planner-spans.json):
+//   · 발화 구간은 `[화자 …]` 줄을 **포함하지 않는다**. 그 줄은 앞 발화 끝과 다음 발화 시작
+//     사이의 빈틈에 놓인다.
+//   · 한 줄 안의 감정 전환·쉼은 발화를 **여러 개로 나눈다**(같은 line_index).
+// 화면의 "대화 한 줄" 은 같은 줄의 발화들을 하나로 묶고, 바로 앞 빈틈이 공백 + 화자 표기
+// 하나뿐이면 그 표기를 구간에 흡수한다. 그래서 위의 UtteranceView 계약("구간은 자기 지시를
+// 포함한다") 이 성립한다. 빈틈에 그 밖의 것이 있으면 흡수하지 않고 그대로 두어
+// NON_WHITESPACE_OUTSIDE 가 정직하게 걸린다.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface PlanUtteranceLike {
+  index: number
+  speakerId: string | null
+  speakerLabel: string | null
+  emotionId: string | null
+  sourceStart: number
+  sourceEnd: number
+  lineIndex: number | null
+}
+
+/** 공백 + (화자 표기 하나) + 공백. 그 이상은 흡수하지 않는다. */
+const GAP_WITH_ONE_SPEAKER_RE = /^\s*(\[\s*(?:화자|speaker)\s+[^\]]*\])?\s*$/
+
+export function groupUtteranceRows(text: string, utterances: PlanUtteranceLike[]): UtteranceView[] {
+  const sorted = [...utterances].sort((a, b) => a.sourceStart - b.sourceStart)
+  const rows: UtteranceView[] = []
+  for (const u of sorted) {
+    const cur = rows[rows.length - 1]
+    if (cur && cur.lineIndex !== null && u.lineIndex === cur.lineIndex && u.sourceStart >= cur.sourceEnd) {
+      // 같은 줄의 다음 조각(감정 전환·쉼으로 나뉜 것) — 한 행으로 잇는다.
+      cur.sourceEnd = u.sourceEnd
+      continue
+    }
+    const prevEnd = cur ? cur.sourceEnd : 0
+    const gap = text.slice(prevEnd, u.sourceStart)
+    const m = GAP_WITH_ONE_SPEAKER_RE.exec(gap)
+    let start = u.sourceStart
+    let own = false
+    if (m && m[1]) {
+      start = prevEnd + gap.indexOf('[')
+      own = true
+    }
+    rows.push({
+      index: rows.length,
+      sourceStart: start,
+      sourceEnd: u.sourceEnd,
+      speakerId: u.speakerId,
+      speakerLabel: u.speakerLabel,
+      emotionId: u.emotionId,
+      hasOwnSpeakerDirective: own,
+      lineIndex: u.lineIndex,
+    })
+  }
+  return rows
+}
