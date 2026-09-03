@@ -25,6 +25,8 @@
 순수성: 1~5절은 stdlib 만 쓴다. numpy/오디오가 필요한 측정(6절)은 함수 안에서 lazy import
 하므로, 계약만 검증할 때는 numpy 없이도 이 모듈을 import 할 수 있다.
 """
+import math
+
 import expressive_capability as cap
 
 EMOTION_ACOUSTIC_CONTRACT_VERSION = 1
@@ -566,15 +568,18 @@ def measure_pause(signal, sr, start=0, stop=None):
     rms = ocm.frame_rms_track(signal, sr, start, stop)
     hop_ms = ocm.F0_TRACK_HOP_MS
     if rms.size == 0:
-        return {"speech_ms": 0, "pause_count": 0, "pause_total_ms": 0, "pause_longest_ms": 0}
+        return {"speech_ms": 0, "pause_count": 0, "pause_total_ms": 0,
+                "pause_longest_ms": 0, "pause_spans_ms": []}
 
     ref = float(np.max(rms))
     if ref <= 0.0:
-        return {"speech_ms": 0, "pause_count": 0, "pause_total_ms": 0, "pause_longest_ms": 0}
+        return {"speech_ms": 0, "pause_count": 0, "pause_total_ms": 0,
+                "pause_longest_ms": 0, "pause_spans_ms": []}
     active = rms > (ref * ocm.SILENCE_REL_THRESHOLD)
     idx = np.nonzero(active)[0]
     if idx.size == 0:
-        return {"speech_ms": 0, "pause_count": 0, "pause_total_ms": 0, "pause_longest_ms": 0}
+        return {"speech_ms": 0, "pause_count": 0, "pause_total_ms": 0,
+                "pause_longest_ms": 0, "pause_spans_ms": []}
 
     first, last = int(idx[0]), int(idx[-1])
     speech_ms = int(round((last - first + 1) * hop_ms))
@@ -583,6 +588,7 @@ def measure_pause(signal, sr, start=0, stop=None):
     total = 0
     longest = 0
     run = 0
+    spans = []          # 쉼이 **어디에** 있었는지. v3 시간축 프로필이 이 좌표를 쓴다.
     for k in range(first, last + 1):
         if not active[k]:
             run += 1
@@ -591,6 +597,8 @@ def measure_pause(signal, sr, start=0, stop=None):
                 count += 1
                 total += run
                 longest = max(longest, run)
+                spans.append([round((k - run - first) * hop_ms, 1),
+                              round((k - first) * hop_ms, 1)])
             run = 0
     # 마지막 활성 프레임에서 끝나므로 안쪽 run 은 항상 닫힌다(꼬리 처리 불필요).
 
@@ -599,6 +607,8 @@ def measure_pause(signal, sr, start=0, stop=None):
         "pause_count": int(count),
         "pause_total_ms": int(round(total * hop_ms)),
         "pause_longest_ms": int(round(longest * hop_ms)),
+        # 좌표는 발화 시작(first) 기준 ms. 개수·합계와 같은 자에서 나온다(두 번 재지 않는다).
+        "pause_spans_ms": spans,
     }
 
 
@@ -732,3 +742,393 @@ def profile_from_prosody_profile(prosody, pause=None, spectral_tilt_db=0.0, tran
     }
     assert tuple(rec.keys()) == EMOTION_ACOUSTIC_PROFILE_FIELDS
     return rec
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. 시간축 감정 프로필 v3 — "이 감정이 시간에 따라 어떻게 움직이는가"
+#
+# v2 와 무엇이 다른가
+# -------------------
+#   v2 = 클립 하나의 **요약 통계**(중앙·범위·IQR). 두 클립을 같은 자로 재기 위한 값이다.
+#   v3 = 같은 클립의 **시간축 곡선**. 대상 대사에 옮기려면 "언제 올라가고 언제 쉬는지"가
+#        있어야 하고, 요약 통계에는 그 정보가 없다.
+#
+# 무엇을 하지 않는가
+# ------------------
+#   · 절대값을 옮기지 않는다. F0 는 **화자 중앙값 기준 semitone delta**, 에너지는 **중앙값을
+#     뺀 상대 dB** 다. 원본의 음역과 파일 gain 은 프로필에 들어오지 않는다.
+#   · 원본 프레임을 통째로 저장하지 않는다. 시간 정규화(0~1) 축약 좌표만 남긴다.
+#   · gain 자동화 명령을 만들지 않는다. 상대 에너지는 **강세 후보를 찾는 분석값**이다.
+#   · time-warp 를 실행하지 않는다. 계획(anchor)만 만든다.
+#   · 판정하지 않는다. 못 잰 축은 숫자를 지어내지 않고 insufficient/unsupported 로 답한다.
+#   · 원문 대사·절대경로를 담지 않는다.
+#
+# 재사용
+# ------
+#   프레임 격자·F0·RMS 는 `onset_continuity_metrics` 하나뿐이다(f0_track / frame_rms_track 는
+#   같은 격자라 인덱스가 1:1 이다). 쉼은 이 모듈의 measure_pause 를 그대로 쓴다.
+#   새 분석기를 만들지 않는다.
+# ─────────────────────────────────────────────────────────────────────────────
+
+EMOTION_PROFILE_V3_VERSION = 3
+EMOTION_PROFILE_V3_SCHEMA = "af-emotion-profile/3"
+
+#: 요청 하나가 파이프라인의 **어디까지 갔는가**. 앞 단계를 뒤 단계로 승격해 적지 않는다.
+#: 특히 참조 구간만 고른 것은 `reference_matched` 이며 `model_applied` 가 아니다.
+EMOTION_APPLICATION_STATES = (
+    "requested",           # 사용자가 요구한 감정
+    "analyzed",            # 참조에서 프로필을 측정했다
+    "reference_matched",   # 그 프로필로 참조 구간을 골랐다
+    "model_applied",       # 모델에 실제 제어값을 전달했다
+    "post_applied",        # 후처리로 실제 적용했다
+    "unsupported",         # 적용 통로가 없다
+)
+
+#: 축 하나를 **얼마나 잴 수 있었는가**. 적용 상태와 다른 축이다.
+AXIS_MEASUREMENT_STATES = (
+    "analyzed",       # 잴 수 있었다
+    "approximate",    # 재긴 했으나 해상도가 낮다(예: 음절이 아니라 단어 단위)
+    "insufficient",   # 자료가 모자라 숫자를 내지 않는다
+    "unsupported",    # 검출기가 없다
+)
+
+PROFILE_V3_AXES = ("relative_f0", "relative_energy", "rhythm", "pause_tail", "trajectory")
+
+#: 축약 좌표 개수. 원본 프레임 대신 이 개수만큼 시간 정규화 지점을 남긴다.
+PROFILE_V3_ANCHORS = 16
+#: 유성 프레임이 이보다 적으면 F0 축을 insufficient 로 둔다(숫자를 지어내지 않는다).
+PROFILE_V3_MIN_VOICED_FRAMES = 8
+#: 유성 비율이 이보다 낮으면 경고를 단다(값은 내되 신뢰도를 낮춘다).
+PROFILE_V3_LOW_VOICED_RATIO = 0.35
+#: 상대 에너지에서 강세 후보로 볼 문턱(중앙값 대비 dB).
+PROFILE_V3_STRESS_DB = 3.0
+
+WARN_LOW_VOICED_RATIO = "LOW_VOICED_RATIO"
+WARN_ASR_ABSENT = "ASR_TIMING_ABSENT"
+WARN_BACKGROUND_OR_REVERB = "BACKGROUND_OR_REVERB_POSSIBLE"
+WARN_SHORT_CLIP = "SHORT_CLIP"
+
+PROFILE_V3_WARNINGS = (WARN_LOW_VOICED_RATIO, WARN_ASR_ABSENT,
+                       WARN_BACKGROUND_OR_REVERB, WARN_SHORT_CLIP)
+
+
+def _resample_anchors(values, positions, count=PROFILE_V3_ANCHORS):
+    """시간 정규화 곡선을 고정 개수 좌표로 줄인다.
+
+    원본 프레임을 저장하지 않기 위한 것이고, 같은 곡선이면 길이가 달라도 같은 좌표가 나온다
+    (시간축을 늘려도 정규화 위치가 보존된다는 뜻이다).
+    """
+    import numpy as np
+    if len(values) == 0:
+        return []
+    t = np.linspace(0.0, 1.0, count)
+    x = np.asarray(positions, dtype=np.float64)
+    y = np.asarray(values, dtype=np.float64)
+    if x.size == 1:
+        return [[round(float(tt), 4), round(float(y[0]), 3)] for tt in t]
+    return [[round(float(tt), 4), round(float(np.interp(tt, x, y)), 3)] for tt in t]
+
+
+def _turning_points(anchors, min_delta=1.0):
+    """방향이 바뀌는 지점. 곡선의 모양을 몇 개의 사실로 요약한다."""
+    out = []
+    for i in range(1, len(anchors) - 1):
+        prev, cur, nxt = anchors[i - 1][1], anchors[i][1], anchors[i + 1][1]
+        if (cur - prev) * (nxt - cur) < 0 and max(abs(cur - prev), abs(nxt - cur)) >= min_delta:
+            out.append([anchors[i][0], round(cur, 3)])
+    return out
+
+
+def _active_mask(rms):
+    """말이 실제로 있는 프레임. **에너지 기준**이며 gain 에 흔들리지 않는다.
+
+    왜 필요한가: 자기상관은 거의 무음인 구간에서도 이따금 유성 판정을 낸다. 그 프레임이
+    곡선에 섞이면 없는 억양이 생긴다(실측: 같은 음률을 음역만 올렸을 때 무음 구간에서
+    유령 유성 프레임이 잡혀 곡선이 5 반음 넘게 튀었다).
+
+    문턱은 새로 만들지 않고 `onset_continuity_metrics.SILENCE_REL_THRESHOLD` 를 쓴다 —
+    구간 최대 RMS 대비 상대값이라 파일 gain 이 바뀌어도 같은 프레임이 남는다.
+    """
+    import numpy as np
+    import onset_continuity_metrics as ocm
+    if rms.size == 0:
+        return np.zeros(0, dtype=bool)
+    ref = float(np.max(rms))
+    if ref <= 0.0:
+        return np.zeros(rms.size, dtype=bool)
+    return rms > (ref * ocm.SILENCE_REL_THRESHOLD)
+
+
+def _relative_f0_axis(f0, rms, reference_median_hz=None):
+    """화자 기준 semitone delta 곡선. 절대 Hz 를 남기지 않는다.
+
+    기준(중앙값)을 빼기 때문에 음역이 통째로 옮겨져도 곡선이 같다 — 다른 화자의 연기를
+    옮기려면 이 성질이 필요하다.
+    """
+    import numpy as np
+    # 유성이면서 **에너지가 있는** 프레임만 쓴다. 둘 중 하나만으로는 유령 프레임이 남는다.
+    voiced = (f0 > 0.0) & _active_mask(rms)
+    n_voiced = int(np.count_nonzero(voiced))
+    if n_voiced < PROFILE_V3_MIN_VOICED_FRAMES:
+        return {"state": "insufficient", "reason": "VOICED_FRAMES_TOO_FEW",
+                "voiced_frames": n_voiced, "voiced_ratio": round(
+                    float(n_voiced) / max(1, f0.size), 4)}, []
+    hz = f0[voiced]
+    median_hz = float(np.median(hz)) if reference_median_hz is None else float(reference_median_hz)
+    if median_hz <= 0.0:
+        return {"state": "insufficient", "reason": "REFERENCE_MEDIAN_INVALID"}, []
+    semis = 12.0 * np.log2(hz / median_hz)
+    pos = np.nonzero(voiced)[0].astype(np.float64)
+    pos = (pos - pos.min()) / max(1e-9, (pos.max() - pos.min()))
+    anchors = _resample_anchors(semis, pos)
+    ratio = float(n_voiced) / max(1, f0.size)
+    return {
+        "state": "analyzed",
+        # 기준 Hz 는 **재현용 한 값**이다. 곡선 자체는 이 값과 무관하게 상대값이다.
+        "reference_median_hz": round(median_hz, 2),
+        "voiced_frames": n_voiced,
+        "voiced_ratio": round(ratio, 4),
+        "confidence": round(min(1.0, ratio / max(1e-9, PROFILE_V3_LOW_VOICED_RATIO)), 3),
+        "semitone_anchors": anchors,
+        "range_semitones": round(float(np.percentile(semis, 95) - np.percentile(semis, 5)), 3),
+        "iqr_semitones": round(float(np.percentile(semis, 75) - np.percentile(semis, 25)), 3),
+        "turning_points": _turning_points(anchors),
+    }, anchors
+
+
+def _relative_energy_axis(rms):
+    """중앙값을 뺀 상대 dB 곡선. 파일 gain 이 통째로 바뀌어도 값이 같다.
+
+    DC 는 프레임 RMS 이전에 제거하고(호출부), peak 정규화는 하지 않는다 — 그래서 이 곡선은
+    **gain 자동화가 아니라 강세 후보**다. gain 명령으로 바꾸지 않는다.
+    """
+    import numpy as np
+    keep = _active_mask(rms)
+    active = rms[keep]
+    if active.size < PROFILE_V3_MIN_VOICED_FRAMES:
+        return {"state": "insufficient", "reason": "ACTIVE_FRAMES_TOO_FEW"}
+    db = 20.0 * np.log10(np.maximum(rms, 1e-12))
+    med = float(np.median(20.0 * np.log10(active)))
+    rel = db - med
+    pos = np.nonzero(keep)[0].astype(np.float64)
+    pos = (pos - pos.min()) / max(1e-9, (pos.max() - pos.min()))
+    anchors = _resample_anchors(rel[keep], pos)
+    stress = [[a[0], a[1]] for a in anchors if a[1] >= PROFILE_V3_STRESS_DB]
+    return {
+        "state": "analyzed",
+        "median_removed": True,
+        "dc_offset_removed": True,
+        "peak_normalized": False,
+        "relative_db_anchors": anchors,
+        "stress_candidates": stress,
+        "stress_threshold_db": PROFILE_V3_STRESS_DB,
+        # 이 축이 무엇이 아닌지 프로필 안에 적어 둔다 — 소비자가 gain 으로 오해하면 안 된다.
+        "not_a_gain_command": True,
+    }
+
+
+def _rhythm_axis(word_timings, speech_ms):
+    """리듬·길이. 기존 ASR word timing 을 그대로 쓴다(새 정렬기 없음).
+
+    한국어 음절 분해는 이 저장소에 없다. 그래서 **단어·발화 anchor 까지만** 지원하고
+    상태를 `approximate` 로 밝힌다 — 음절 단위인 척하지 않는다.
+    """
+    if not word_timings:
+        return {"state": "unsupported", "reason": "ASR_TIMING_ABSENT",
+                "granularity": None}
+    spans = [(float(w["start"]), float(w["end"])) for w in word_timings
+             if float(w["end"]) > float(w["start"])]
+    if len(spans) < 2:
+        return {"state": "insufficient", "reason": "TOO_FEW_WORDS",
+                "granularity": "word", "word_count": len(spans)}
+    total = spans[-1][1] - spans[0][0]
+    if total <= 0:
+        return {"state": "insufficient", "reason": "ZERO_SPAN", "granularity": "word"}
+    durations = [e - s for s, e in spans]
+    mean_dur = sum(durations) / len(durations)
+    ratios = [round(d / mean_dur, 3) for d in durations]
+    # 발화 속도 변화 — 앞·뒤 절반의 단어당 시간 비.
+    half = len(durations) // 2
+    first = sum(durations[:half]) / max(1, half)
+    second = sum(durations[half:]) / max(1, len(durations) - half)
+    return {
+        "state": "approximate",
+        "granularity": "word",
+        "why_approximate": "음절 분해기가 없어 단어 anchor 까지만 잰다",
+        "word_count": len(spans),
+        "duration_ratios": ratios,
+        "position_anchors": [round((s - spans[0][0]) / total, 4) for s, _e in spans],
+        "rate_change_ratio": round(second / first, 3) if first > 0 else None,
+    }
+
+
+def _pause_tail_axis(f0, rms, sr, hop_ms, pause_record, total_ms):
+    """쉼과 말끝. 호흡은 검출기가 없으므로 무음과 같다고 말하지 않는다."""
+    import numpy as np
+    pauses = []
+    for span in (pause_record.get("pause_spans_ms") or ()):
+        a, b = float(span[0]), float(span[1])
+        pauses.append({
+            "start_norm": round(a / max(1.0, total_ms), 4),
+            "end_norm": round(b / max(1.0, total_ms), 4),
+            "duration_ms": int(round(b - a)),
+        })
+    voiced = np.nonzero((f0 > 0.0) & _active_mask(rms))[0]
+    tail = {"state": "insufficient", "reason": "NO_VOICED_TAIL"}
+    if voiced.size >= PROFILE_V3_MIN_VOICED_FRAMES:
+        k = max(1, int(voiced.size * 0.2))
+        last, first = voiced[-k:], voiced[:k]
+        f_last, f_first = float(np.median(f0[last])), float(np.median(f0[first]))
+        r_last = float(np.median(rms[last])), float(np.median(rms[first]))
+        tail = {
+            "state": "analyzed",
+            "final_f0_delta_semitones": round(12.0 * math.log2(max(1e-9, f_last)
+                                                               / max(1e-9, f_first)), 3),
+            "final_energy_delta_db": round(20.0 * math.log10(max(1e-12, r_last[0])
+                                                             / max(1e-12, r_last[1])), 2),
+            "final_voiced_ms": int(round(k * hop_ms)),
+        }
+    return {
+        "state": "analyzed" if pauses or tail["state"] == "analyzed" else "insufficient",
+        "pauses": pauses,
+        "pause_count": len(pauses),
+        "final_voiced": tail,
+        # 호흡은 에너지만으로 무음과 구분되지 않는다. 검출기가 생기기 전에는 없다고 말한다.
+        "breath": {"state": "unsupported", "reason": "NO_BREATH_DETECTOR",
+                   "note": "무음과 호흡을 같은 것으로 판정하지 않는다"},
+    }
+
+
+def _trajectory_axis(f0_anchors, energy_axis):
+    """발화 전체를 0~1 로 놓고 본 움직임. **time-warp 를 실행하지 않는다** — 계획만 만든다."""
+    if not f0_anchors:
+        return {"state": "insufficient", "reason": "NO_F0_CURVE",
+                "time_warp_plan": {"executed": False, "reason": "NO_CURVE"}}
+    e_anchors = energy_axis.get("relative_db_anchors") or []
+
+    def at(anchors, t):
+        if not anchors:
+            return None
+        best = min(anchors, key=lambda a: abs(a[0] - t))
+        return best[1]
+
+    return {
+        "state": "analyzed",
+        "normalized_time": True,
+        "start_mid_end": {
+            "f0_semitones": [at(f0_anchors, 0.0), at(f0_anchors, 0.5), at(f0_anchors, 1.0)],
+            "relative_db": [at(e_anchors, 0.0), at(e_anchors, 0.5), at(e_anchors, 1.0)],
+        },
+        "turning_points": _turning_points(f0_anchors),
+        # 대상 대사에 이을 자리. 길이가 다른 대사에도 붙일 수 있게 정규화 좌표로만 둔다.
+        "target_anchors": [a[0] for a in f0_anchors],
+        "time_warp_plan": {
+            "executed": False,
+            "reason": "PHASE_E1_ANALYSIS_ONLY",
+            "note": "적용 통로 결정 전까지 계획만 만든다(청취 승인 없이 production 금지)",
+        },
+    }
+
+
+def analyze_profile_v3(signal, sr, source_id=None, source_sha256=None,
+                       word_timings=None, reference_median_hz=None, transcript_chars=0):
+    """클립 하나 → 시간축 감정 프로필 v3.
+
+    signal: mono float 배열. `sr`: 표본율.
+    source_id/source_sha256: 어느 자산에서 나왔는지(**경로가 아니라 id 와 SHA**).
+    word_timings: [{start, end}] 초 단위. 없으면 리듬 축이 unsupported 다(지어내지 않는다).
+    reference_median_hz: 화자 기준 F0. 주면 그 기준으로 상대화한다(다른 화자의 연기를 옮길 때).
+
+    판정하지 않는다. 못 잰 축은 숫자를 내지 않는다.
+    """
+    import numpy as np
+    import onset_continuity_metrics as ocm
+
+    x = np.asarray(signal, dtype=np.float64)
+    if x.ndim != 1:
+        raise EmotionAcousticError("mono(1-D) only: ndim=%d" % x.ndim)
+    # DC 를 먼저 뺀다 — 상대 에너지가 DC 오프셋에 흔들리면 안 된다.
+    x = x - float(np.mean(x)) if x.size else x
+
+    hop_ms = ocm.F0_TRACK_HOP_MS
+    f0 = ocm.f0_track(x, sr)
+    rms = ocm.frame_rms_track(x, sr)
+    n = min(f0.size, rms.size)
+    f0, rms = f0[:n], rms[:n]
+
+    warnings = []
+    total_ms = 1000.0 * x.size / max(1, sr)
+    if total_ms < 1000.0:
+        warnings.append(WARN_SHORT_CLIP)
+    if not word_timings:
+        warnings.append(WARN_ASR_ABSENT)
+
+    f0_axis, f0_anchors = _relative_f0_axis(f0, rms, reference_median_hz)
+    if f0_axis.get("state") == "analyzed" and f0_axis["voiced_ratio"] < PROFILE_V3_LOW_VOICED_RATIO:
+        warnings.append(WARN_LOW_VOICED_RATIO)
+    energy_axis = _relative_energy_axis(rms)
+    pause_rec = measure_pause(x, sr)
+    rhythm_axis = _rhythm_axis(word_timings, pause_rec.get("speech_ms", 0))
+    pause_axis = _pause_tail_axis(f0, rms, sr, hop_ms, pause_rec, total_ms)
+    traj_axis = _trajectory_axis(f0_anchors, energy_axis)
+
+    # 배경음·잔향 가능성 — 무음 구간의 에너지가 바닥에서 충분히 떨어지지 않으면 의심한다.
+    if rms.size:
+        floor = float(np.percentile(rms, 5))
+        peak = float(np.percentile(rms, 95))
+        if floor > 0 and peak > 0 and 20.0 * math.log10(peak / floor) < 25.0:
+            warnings.append(WARN_BACKGROUND_OR_REVERB)
+
+    axes = {
+        "relative_f0": f0_axis["state"],
+        "relative_energy": energy_axis["state"],
+        "rhythm": rhythm_axis["state"],
+        "pause_tail": pause_axis["state"],
+        "trajectory": traj_axis["state"],
+    }
+    profile = {
+        "schema": EMOTION_PROFILE_V3_SCHEMA,
+        "profile_version": EMOTION_PROFILE_V3_VERSION,
+        "axes": axes,
+        "relative_f0": f0_axis,
+        "relative_energy": energy_axis,
+        "rhythm": rhythm_axis,
+        "pause_tail": pause_axis,
+        "trajectory": traj_axis,
+        "provenance": {
+            # 경로가 아니라 id 와 SHA 만 남긴다. 원문 대사는 어디에도 없다.
+            "source_id": source_id,
+            "source_sha256": source_sha256,
+            "analyzer": "emotion_acoustic.analyze_profile_v3",
+            "analyzer_version": EMOTION_PROFILE_V3_VERSION,
+            "metrics_module": "onset_continuity_metrics",
+            "params": {
+                "frame_ms": ocm.F0_TRACK_FRAME_MS, "hop_ms": hop_ms,
+                "f0_min_hz": ocm.F0_MIN_HZ, "f0_max_hz": ocm.F0_MAX_HZ,
+                "anchors": PROFILE_V3_ANCHORS,
+                "min_voiced_frames": PROFILE_V3_MIN_VOICED_FRAMES,
+                "stress_db": PROFILE_V3_STRESS_DB,
+            },
+            "sample_rate": int(sr),
+            "analysis_ms": int(round(total_ms)),
+            "warnings": sorted(set(warnings)),
+        },
+    }
+    profile["profile_id"] = profile_v3_id(profile)
+    return profile
+
+
+def profile_v3_id(profile):
+    """프로필 내용에서 나오는 불투명 id. 같은 입력이면 같은 값이다."""
+    import hashlib
+    body = {k: v for k, v in profile.items() if k != "profile_id"}
+    prov = dict(body.get("provenance") or {})
+    body = dict(body, provenance=prov)
+    return "ep3_" + hashlib.sha256(
+        _canonical_json(body).encode("utf-8")).hexdigest()[:16]
+
+
+def _canonical_json(v):
+    """결정적 직렬화(키 정렬·공백 없음). float 은 반올림된 값만 들어온다."""
+    import json
+    return json.dumps(v, ensure_ascii=False, sort_keys=True, separators=(",", ":"))

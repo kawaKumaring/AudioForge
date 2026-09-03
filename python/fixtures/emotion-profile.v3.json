@@ -1,0 +1,406 @@
+{
+  "_meta": {
+    "schema": "af-emotion-profile/3",
+    "profile_version": 3,
+    "what_this_is": "감정 연기의 **시간축 음향 프로필**(acoustic performance profile).",
+    "what_v2_is": "python/fixtures/emotion-scripts.v2.json 은 시나리오 메타데이터다 — 감정별 시나리오 id·태그 순서·기대 chunk 정책이며 음향 값이 아니다. v2 를 v3 로 자동 승격하지 않는다(두 파일은 서로 다른 종류의 기록이다).",
+    "source_kind": "저장소가 추적하는 승인 fixture 하나. 사용자 자산을 담지 않는다.",
+    "regenerate": "python/test_emotion_profile_v3_fixture.py 가 이 값을 재현하는지 검사한다.",
+    "axes_vocabulary": [
+      "analyzed",
+      "approximate",
+      "insufficient",
+      "unsupported"
+    ],
+    "application_states": [
+      "requested",
+      "analyzed",
+      "reference_matched",
+      "model_applied",
+      "post_applied",
+      "unsupported"
+    ],
+    "not_applied": "이 프로필은 아직 어떤 생성에도 적용되지 않았다(analyzed 단계)."
+  },
+  "profile": {
+    "schema": "af-emotion-profile/3",
+    "profile_version": 3,
+    "axes": {
+      "relative_f0": "analyzed",
+      "relative_energy": "analyzed",
+      "rhythm": "unsupported",
+      "pause_tail": "analyzed",
+      "trajectory": "analyzed"
+    },
+    "relative_f0": {
+      "state": "analyzed",
+      "reference_median_hz": 269.66,
+      "voiced_frames": 427,
+      "voiced_ratio": 0.5724,
+      "confidence": 1.0,
+      "semitone_anchors": [
+        [
+          0.0,
+          2.284
+        ],
+        [
+          0.0667,
+          3.145
+        ],
+        [
+          0.1333,
+          2.329
+        ],
+        [
+          0.2,
+          2.02
+        ],
+        [
+          0.2667,
+          6.654
+        ],
+        [
+          0.3333,
+          -1.668
+        ],
+        [
+          0.4,
+          -5.401
+        ],
+        [
+          0.4667,
+          -3.221
+        ],
+        [
+          0.5333,
+          -4.736
+        ],
+        [
+          0.6,
+          -3.364
+        ],
+        [
+          0.6667,
+          0.196
+        ],
+        [
+          0.7333,
+          2.483
+        ],
+        [
+          0.8,
+          0.0
+        ],
+        [
+          0.8667,
+          -1.912
+        ],
+        [
+          0.9333,
+          2.99
+        ],
+        [
+          1.0,
+          -3.509
+        ]
+      ],
+      "range_semitones": 11.623,
+      "iqr_semitones": 5.825,
+      "turning_points": [
+        [
+          0.2,
+          2.02
+        ],
+        [
+          0.2667,
+          6.654
+        ],
+        [
+          0.4,
+          -5.401
+        ],
+        [
+          0.4667,
+          -3.221
+        ],
+        [
+          0.5333,
+          -4.736
+        ],
+        [
+          0.7333,
+          2.483
+        ],
+        [
+          0.8667,
+          -1.912
+        ],
+        [
+          0.9333,
+          2.99
+        ]
+      ]
+    },
+    "relative_energy": {
+      "state": "analyzed",
+      "median_removed": true,
+      "dc_offset_removed": true,
+      "peak_normalized": false,
+      "relative_db_anchors": [
+        [
+          0.0,
+          -9.176
+        ],
+        [
+          0.0667,
+          -12.892
+        ],
+        [
+          0.1333,
+          2.041
+        ],
+        [
+          0.2,
+          3.287
+        ],
+        [
+          0.2667,
+          4.103
+        ],
+        [
+          0.3333,
+          -1.745
+        ],
+        [
+          0.4,
+          -7.966
+        ],
+        [
+          0.4667,
+          -10.554
+        ],
+        [
+          0.5333,
+          -13.418
+        ],
+        [
+          0.6,
+          -12.207
+        ],
+        [
+          0.6667,
+          -4.982
+        ],
+        [
+          0.7333,
+          -11.575
+        ],
+        [
+          0.8,
+          1.063
+        ],
+        [
+          0.8667,
+          -11.558
+        ],
+        [
+          0.9333,
+          -11.968
+        ],
+        [
+          1.0,
+          -11.028
+        ]
+      ],
+      "stress_candidates": [
+        [
+          0.2,
+          3.287
+        ],
+        [
+          0.2667,
+          4.103
+        ]
+      ],
+      "stress_threshold_db": 3.0,
+      "not_a_gain_command": true
+    },
+    "rhythm": {
+      "state": "unsupported",
+      "reason": "ASR_TIMING_ABSENT",
+      "granularity": null
+    },
+    "pause_tail": {
+      "state": "analyzed",
+      "pauses": [
+        {
+          "start_norm": 0.0467,
+          "end_norm": 0.0547,
+          "duration_ms": 60
+        },
+        {
+          "start_norm": 0.18,
+          "end_norm": 0.188,
+          "duration_ms": 60
+        },
+        {
+          "start_norm": 0.1893,
+          "end_norm": 0.192,
+          "duration_ms": 20
+        },
+        {
+          "start_norm": 0.2613,
+          "end_norm": 0.2707,
+          "duration_ms": 70
+        },
+        {
+          "start_norm": 0.3,
+          "end_norm": 0.3067,
+          "duration_ms": 50
+        },
+        {
+          "start_norm": 0.356,
+          "end_norm": 0.3773,
+          "duration_ms": 160
+        },
+        {
+          "start_norm": 0.4347,
+          "end_norm": 0.52,
+          "duration_ms": 640
+        },
+        {
+          "start_norm": 0.576,
+          "end_norm": 0.5973,
+          "duration_ms": 160
+        },
+        {
+          "start_norm": 0.6773,
+          "end_norm": 0.684,
+          "duration_ms": 50
+        },
+        {
+          "start_norm": 0.6947,
+          "end_norm": 0.7093,
+          "duration_ms": 110
+        },
+        {
+          "start_norm": 0.7467,
+          "end_norm": 0.776,
+          "duration_ms": 220
+        },
+        {
+          "start_norm": 0.792,
+          "end_norm": 0.7987,
+          "duration_ms": 50
+        }
+      ],
+      "pause_count": 12,
+      "final_voiced": {
+        "state": "analyzed",
+        "final_f0_delta_semitones": -3.554,
+        "final_energy_delta_db": -5.14,
+        "final_voiced_ms": 850
+      },
+      "breath": {
+        "state": "unsupported",
+        "reason": "NO_BREATH_DETECTOR",
+        "note": "무음과 호흡을 같은 것으로 판정하지 않는다"
+      }
+    },
+    "trajectory": {
+      "state": "analyzed",
+      "normalized_time": true,
+      "start_mid_end": {
+        "f0_semitones": [
+          2.284,
+          -3.221,
+          -3.509
+        ],
+        "relative_db": [
+          -9.176,
+          -10.554,
+          -11.028
+        ]
+      },
+      "turning_points": [
+        [
+          0.2,
+          2.02
+        ],
+        [
+          0.2667,
+          6.654
+        ],
+        [
+          0.4,
+          -5.401
+        ],
+        [
+          0.4667,
+          -3.221
+        ],
+        [
+          0.5333,
+          -4.736
+        ],
+        [
+          0.7333,
+          2.483
+        ],
+        [
+          0.8667,
+          -1.912
+        ],
+        [
+          0.9333,
+          2.99
+        ]
+      ],
+      "target_anchors": [
+        0.0,
+        0.0667,
+        0.1333,
+        0.2,
+        0.2667,
+        0.3333,
+        0.4,
+        0.4667,
+        0.5333,
+        0.6,
+        0.6667,
+        0.7333,
+        0.8,
+        0.8667,
+        0.9333,
+        1.0
+      ],
+      "time_warp_plan": {
+        "executed": false,
+        "reason": "PHASE_E1_ANALYSIS_ONLY",
+        "note": "적용 통로 결정 전까지 계획만 만든다(청취 승인 없이 production 금지)"
+      }
+    },
+    "provenance": {
+      "source_id": "ko-speech-7s",
+      "source_sha256": "72897e10c27c4b846b2f204e595da2a1805a47cce4a1b35d4709937f10a0eb8b",
+      "analyzer": "emotion_acoustic.analyze_profile_v3",
+      "analyzer_version": 3,
+      "metrics_module": "onset_continuity_metrics",
+      "params": {
+        "frame_ms": 50.0,
+        "hop_ms": 10.0,
+        "f0_min_hz": 60.0,
+        "f0_max_hz": 400.0,
+        "anchors": 16,
+        "min_voiced_frames": 8,
+        "stress_db": 3.0
+      },
+      "sample_rate": 24000,
+      "analysis_ms": 7500,
+      "warnings": [
+        "ASR_TIMING_ABSENT"
+      ]
+    },
+    "profile_id": "ep3_820e66c0164f6caf"
+  }
+}
