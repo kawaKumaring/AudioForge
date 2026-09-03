@@ -123,7 +123,7 @@ test('표현 불가 대본은 이유를 말하고 원문 편집기를 남긴다'
 
 test('빈 대본은 빈 인물 카드 2개만 보여 주고 쓰지 않는다', () => {
   assert.ok(MULTI.includes("p.verdict.mode === 'initial' && p.speakers.length === 0"))
-  assert.ok(MULTI.includes('p.addPendingSpeaker(); p.addPendingSpeaker()'))
+  assert.ok(MULTI.includes('p.ensurePendingSpeakers(2)'))
   // pending 카드는 훅의 로컬 상태다 — settings/VoiceCast/store 에 가지 않는다.
   for (const forbidden of ['useVoiceCastRegistry', 'settings.set', 'VOICE_CAST_STORAGE_KEY',
     'createVoiceCast', 'registerCastCandidate', 'useAppStore']) {

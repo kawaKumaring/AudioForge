@@ -97,9 +97,7 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
 
   // 빈 대본이면 빈 인물 카드 2개를 **보여 주기만** 한다 — 어디에도 쓰지 않는다.
   useEffect(() => {
-    if (p.verdict.mode === 'initial' && p.speakers.length === 0) {
-      p.addPendingSpeaker(); p.addPendingSpeaker()
-    }
+    if (p.verdict.mode === 'initial' && p.speakers.length === 0) p.ensurePendingSpeakers(2)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [p.verdict.mode])
 
@@ -110,6 +108,7 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
   if (!p.editingAllowed) {
     return (
       <div data-testid="multi-dialogue-source-only" role="status"
+        data-mode={p.verdict.mode} data-blockers={p.verdict.blockers.join(' ')}
         style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
         {blockerText.map((t) => <div key={t}>{t}</div>)}
         <div style={{ color: 'var(--text-muted)' }}>아래 대본 직접 입력은 그대로 사용할 수 있습니다.</div>
@@ -131,7 +130,9 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
   }
 
   return (
-    <div data-testid="multi-dialogue" style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
+    <div data-testid="multi-dialogue" data-mode={p.verdict.mode}
+      data-blockers={p.verdict.blockers.join(' ')}
+      style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
       {/* 일시적 사유(분석 중)는 화면을 닫지 않고 알리기만 한다. */}
       {p.verdict.blockers.length > 0 && (
         <div data-testid="multi-dialogue-transient" role="status" aria-live="polite"

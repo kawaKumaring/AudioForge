@@ -16,7 +16,7 @@
  *   · 늦게 온 분석 결과는 `ttsText` 를 건드리지 않는다 — 결과는 읽기 전용 projection 에만
  *     들어온다.
  */
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useMemo, useState } from 'react'
 
 import type { AnalysisResult } from '../../shared/inputAnalysis'
 import { PLAN_WARNING_BLOCKS } from '../../shared/analysisWording'
@@ -66,6 +66,8 @@ export interface DialogueProjection {
 
   // ── 인물(pending 은 로컬 UI 상태) ──
   addPendingSpeaker: () => void
+  /** 빈 카드가 n 개 미만이면 채운다. 몇 번 불려도 결과가 같다(StrictMode 이중 effect 안전). */
+  ensurePendingSpeakers: (n: number) => void
   renamePendingSpeaker: (speakerId: string, label: string) => void
   removePendingSpeaker: (speakerId: string) => void
   /** 원문에 발화가 있는 인물은 지우지 않는다 — 사유를 돌려준다. */
@@ -109,6 +111,18 @@ function toViews(text: string, result: AnalysisResult | null): UtteranceView[] {
   })
 }
 
+type PendingSpeaker = { speakerId: string; label: string }
+
+/** 기존 카드 번호의 최댓값 + 1. 상태만 보고 정하므로 몇 번 계산해도 같다. */
+function nextPendingId(existing: PendingSpeaker[]): string {
+  let max = 0
+  for (const s of existing) {
+    const m = /^pending-(\d+)$/.exec(s.speakerId)
+    if (m) max = Math.max(max, Number(m[1]))
+  }
+  return `pending-${max + 1}`
+}
+
 export function useDialogueProjection(
   text: string,
   setText: (next: string) => void,
@@ -142,8 +156,7 @@ export function useDialogueProjection(
   }), [text, views])
 
   // 아직 원문에 없는 인물. 이름만 있는 카드이며 어디에도 저장되지 않는다.
-  const [pending, setPending] = useState<{ speakerId: string; label: string }[]>([])
-  const pendingSeq = useRef(0)
+  const [pending, setPending] = useState<PendingSpeaker[]>([])
   const [lastRefusal, setLastRefusal] = useState<string | null>(null)
 
   const speakers = useMemo<DialogueSpeaker[]>(() => {
@@ -177,9 +190,18 @@ export function useDialogueProjection(
   }, [patchAllowed, verdict.blockers])
 
   // ── 인물 ──
+  // ID 는 ref 가 아니라 **이전 상태**에서 만든다. ref 를 밖에서 올리면 StrictMode 가 updater 를
+  // 두 번 부를 때 같은 번호가 붙는다(실측: 카드 4개가 모두 pending-4).
   const addPendingSpeaker = useCallback(() => {
-    pendingSeq.current += 1
-    setPending((p) => [...p, { speakerId: `pending-${pendingSeq.current}`, label: '' }])
+    setPending((p) => [...p, { speakerId: nextPendingId(p), label: '' }])
+  }, [])
+  const ensurePendingSpeakers = useCallback((n: number) => {
+    setPending((p) => {
+      if (p.length >= n) return p
+      const out = [...p]
+      while (out.length < n) out.push({ speakerId: nextPendingId(out), label: '' })
+      return out
+    })
   }, [])
   const renamePendingSpeaker = useCallback((speakerId: string, label: string) => {
     setPending((p) => p.map((s) => (s.speakerId === speakerId ? { ...s, label } : s)))
@@ -278,7 +300,8 @@ export function useDialogueProjection(
 
   return {
     verdict, editingAllowed, patchAllowed, speakers, rows, textSha, lastRefusal,
-    addPendingSpeaker, renamePendingSpeaker, removePendingSpeaker, canRemoveSpeaker,
+    addPendingSpeaker, ensurePendingSpeakers, renamePendingSpeaker, removePendingSpeaker,
+    canRemoveSpeaker,
     setSpeaker, setBaseEmotion, insertAfter, remove, move, moveAllowed, createInitial,
     draftOf, beginDraft, updateDraft, commitDraft, discardDraft,
   }
