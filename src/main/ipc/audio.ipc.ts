@@ -21,7 +21,9 @@ import { createJobWatchdog, startJobWatch, createStagingGate } from '../services
 import { createTerminalGate } from '../services/run-settlement'
 import type { CancelResponse } from '../../shared/cancelContract'
 import { validateSidecarEvent, SIDECAR_IPC_CHANNEL } from '../../shared/sidecarEvents'
-import { GLOBAL_ASSET_STORAGE_KEY } from '../../shared/emotionCandidateRegistry'
+import {
+  GLOBAL_ASSET_STORAGE_KEY, VOICE_CAST_STORAGE_KEY,
+} from '../../shared/emotionCandidateRegistry'
 import { readSettingsFile, setSettingsKey } from '../services/settings-store'
 import type { SidecarEnvelope } from '../../shared/sidecarEvents'
 // 타입만 가져온다 — 참조 라이브러리 모듈을 런타임에 끌어오지 않으므로 순환 의존이 생기지 않는다.
@@ -1099,9 +1101,14 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   ipcMain.handle('settings:get', () => {
     // 후보 등록부는 합성과 무관하게 살아 있어야 한다 — 합성하지 않고 앱을 닫아도
     // 복원돼야 하므로 여기서 함께 돌려준다. Python 이 읽는 생성 config 와 다른 파일이다.
-    // 전역 자산 등록부만 함께 돌려준다. 화자·감정 바인딩은 대본 scope 의 것이므로
-    // 앱 전체 공용 설정에 담지 않는다(같은 이름이 다른 프로젝트에서 공유되면 안 된다).
-    return { pythonPath, [GLOBAL_ASSET_STORAGE_KEY]: loadSettings()[GLOBAL_ASSET_STORAGE_KEY] ?? null }
+    // 두 키를 따로 돌려준다 — 자산(물리 음원)과 배역(연결)은 다른 책임이고, 한쪽이
+    // 손상돼도 다른 쪽이 함께 죽지 않아야 한다.
+    const stored = loadSettings()
+    return {
+      pythonPath,
+      [GLOBAL_ASSET_STORAGE_KEY]: stored[GLOBAL_ASSET_STORAGE_KEY] ?? null,
+      [VOICE_CAST_STORAGE_KEY]: stored[VOICE_CAST_STORAGE_KEY] ?? null,
+    }
   })
 
   ipcMain.handle('settings:set', (_event, key: string, value: unknown) => {
@@ -1113,8 +1120,10 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     // 전역 참조 자산 등록부. 해석 권위는 shared `deserializeAssetStore` 이고 main 은
     // 옮기기만 한다. 저장 성공 여부를 그대로 돌려준다 — 실패를 persisted 로 표시하면
     // 사용자는 저장된 줄 알고 앱을 닫는다.
-    if (key === GLOBAL_ASSET_STORAGE_KEY) {
-      return saveSetting(GLOBAL_ASSET_STORAGE_KEY, value ?? undefined)
+    if (key === GLOBAL_ASSET_STORAGE_KEY || key === VOICE_CAST_STORAGE_KEY) {
+      // 배역 세트도 같은 원자 경로를 쓴다. 두 키는 서로를 덮지 않는다 —
+      // settings-store 가 현재 파일을 읽어 그 키 하나만 갱신한다.
+      return saveSetting(key, value ?? undefined)
     }
     return { ok: false, code: 'SETTINGS_KEY_NOT_ALLOWED' }
   })

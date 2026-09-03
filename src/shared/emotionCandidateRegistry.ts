@@ -694,3 +694,414 @@ export function deserializeAssetStore(
 //    있었다. 대본 이름에서 나온 speakerId 를 전역 키로 저장하면 서로 다른 프로젝트의
 //    같은 이름이 같은 목소리를 공유한다 — 그래서 **그 통로를 제거했다.**
 //    바인딩은 durable scope 계약이 정해진 뒤에 붙인다(위 절 참조).
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 배역 세트(Voice Cast) — 확정된 durable scope
+//
+//   `scopeId` 의 정체는 `voiceCastId` 다. `crypto.randomUUID()` 로 만들고, 경로·파일명·
+//   source SHA·화자 이름에서 파생하지 않는다. 사용자가 "새 배역 세트"를 만들 때 생성된다.
+//
+//   왜 이 형태인가
+//     · 원본 파일 경로를 identity 로 쓰지 않는다.
+//     · 결과 폴더를 합성 전에 만들 필요가 없다.
+//     · 같은 `[화자 민수]` 가 다른 작업에서 자동으로 같은 목소리를 쓰는 사고를 막는다.
+//     · 사용자가 원할 때만 같은 배역을 여러 작업에서 재사용한다.
+//
+//   책임 경계
+//     · 전역 `referenceAssets` — 물리 음원·구간·profile·수명을 소유한다.
+//     · `voiceCasts` — speaker/emotion/candidate **연결만** 소유한다. 경로도 SHA 도 없다.
+//   같은 자산을 여러 배역이 **명시적으로** 공유할 수 있고, 배역을 지워도 자산과 사용자
+//   원본은 즉시 지워지지 않는다.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const VOICE_CAST_SCHEMA_VERSION = 1
+
+/** `settings.json` 안의 배역 세트 키. `referenceAssets` 와 **다른 키**다. */
+export const VOICE_CAST_STORAGE_KEY = 'voiceCasts'
+
+/** 배역 안의 후보 등록 한 건. 파일에 대한 사실이 없다(자산이 소유한다). */
+export interface VoiceCastCandidate {
+  candidateId: string
+  assetId: string
+  speakerId: string
+  emotionId: string
+}
+
+export type VoiceCastLifecycle = 'ok' | 'quarantined'
+
+export interface VoiceCast {
+  voiceCastId: string
+  /** 사용자 표시용. **identity 가 아니다** — 이름이 같아도 다른 배역이다. */
+  castName: string
+  schemaVersion: number
+  createdAt: string
+  updatedAt: string
+  /**
+   * 화자 기본 목소리. speakerId 를 assetId 로 잇는다.
+   * 감정 후보와 **다른 축**이다 — 중립 후보를 지워도 여기 값은 사라지지 않는다.
+   */
+  speakerDefaults: Readonly<Record<string, string>>
+  candidates: readonly VoiceCastCandidate[]
+  /** 수동 선택. slotKey(화자, 감정) 를 후보 id 또는 기본/사용 안 함 토큰으로 잇는다. */
+  selections: Readonly<Record<string, string>>
+  lifecycle: VoiceCastLifecycle
+  lifecycleCode: string | null
+}
+
+export interface VoiceCastStore {
+  schemaVersion: number
+  casts: readonly VoiceCast[]
+}
+
+export const EMPTY_VOICE_CAST_STORE: VoiceCastStore = {
+  schemaVersion: VOICE_CAST_SCHEMA_VERSION,
+  casts: [],
+}
+
+/**
+ * 새 배역 세트. id 와 시각은 **주입받는다** — 이 모듈은 난수도 시계도 만지지 않는다
+ * (테스트가 결정적이어야 하고, 공용 모듈에서 값 import 를 하지 않기 위해서다).
+ */
+export function createVoiceCast(
+  castName: string, voiceCastId: string, now: string
+): VoiceCast {
+  if (!voiceCastId) throw new Error('createVoiceCast: voiceCastId 가 필요하다')
+  return {
+    voiceCastId,
+    castName: castName.trim() || '이름 없는 배역',
+    schemaVersion: VOICE_CAST_SCHEMA_VERSION,
+    createdAt: now,
+    updatedAt: now,
+    speakerDefaults: {},
+    candidates: [],
+    selections: {},
+    lifecycle: 'ok',
+    lifecycleCode: null,
+  }
+}
+
+function replaceCast(
+  store: VoiceCastStore, voiceCastId: string,
+  update: (cast: VoiceCast) => VoiceCast
+): VoiceCastStore {
+  let touched = false
+  const casts = store.casts.map((c) => {
+    if (c.voiceCastId !== voiceCastId) return c
+    touched = true
+    return update(c)
+  })
+  return touched ? { ...store, casts } : store
+}
+
+export function findVoiceCast(
+  store: VoiceCastStore, voiceCastId: string | null
+): VoiceCast | null {
+  if (!voiceCastId) return null
+  return store.casts.find((c) => c.voiceCastId === voiceCastId) ?? null
+}
+
+export function addVoiceCast(store: VoiceCastStore, cast: VoiceCast): VoiceCastStore {
+  return { ...store, casts: [...store.casts, cast] }
+}
+
+export function renameVoiceCast(
+  store: VoiceCastStore, voiceCastId: string, castName: string, now: string
+): VoiceCastStore {
+  return replaceCast(store, voiceCastId, (c) => ({
+    ...c, castName: castName.trim() || c.castName, updatedAt: now,
+  }))
+}
+
+/** 이 자산을 참조하는 후보 수 — **모든 배역을 합쳐** 센다. */
+export function assetRefCountAcrossCasts(store: VoiceCastStore, assetId: string): number {
+  let n = 0
+  for (const cast of store.casts) {
+    for (const cand of cast.candidates) if (cand.assetId === assetId) n++
+    for (const asset of Object.values(cast.speakerDefaults)) if (asset === assetId) n++
+  }
+  return n
+}
+
+/**
+ * 배역 삭제. **자산도 사용자 원본도 즉시 지우지 않는다.**
+ *
+ * `releasableAssetIds` 는 이제 어느 배역에서도 참조가 없는 자산이다. 실제로 파일을
+ * 지울지는 자산 쪽 수명 계약이 정한다 — 앱이 만든 임시 파생 클립만 대상이다.
+ */
+export function deleteVoiceCast(
+  store: VoiceCastStore, voiceCastId: string
+): { store: VoiceCastStore; releasableAssetIds: string[] } {
+  const target = findVoiceCast(store, voiceCastId)
+  if (!target) return { store, releasableAssetIds: [] }
+  const next: VoiceCastStore = {
+    ...store, casts: store.casts.filter((c) => c.voiceCastId !== voiceCastId),
+  }
+  const used = new Set<string>()
+  for (const cand of target.candidates) used.add(cand.assetId)
+  for (const asset of Object.values(target.speakerDefaults)) used.add(asset)
+  const releasable = [...used].filter((id) => assetRefCountAcrossCasts(next, id) === 0).sort()
+  return { store: next, releasableAssetIds: releasable }
+}
+
+/** 화자 기본 목소리 지정·해제. 감정 후보를 건드리지 않는다. */
+export function setSpeakerDefault(
+  store: VoiceCastStore, voiceCastId: string, speakerId: string,
+  assetId: string | null, now: string
+): VoiceCastStore {
+  return replaceCast(store, voiceCastId, (c) => {
+    const defaults = { ...c.speakerDefaults }
+    if (assetId) defaults[speakerId] = assetId
+    else delete defaults[speakerId]
+    return { ...c, speakerDefaults: defaults, updatedAt: now }
+  })
+}
+
+/**
+ * 후보 등록. 같은 배역·같은 슬롯에 같은 후보 id 는 중복 생성되지 않는다.
+ * 사용자가 화자와 감정을 직접 지정해 부른다 — 앱이 감정을 분류하지 않는다.
+ */
+export function registerCastCandidate(
+  store: VoiceCastStore, voiceCastId: string, candidate: VoiceCastCandidate, now: string
+): VoiceCastStore {
+  return replaceCast(store, voiceCastId, (c) => {
+    const same = (x: VoiceCastCandidate) =>
+      x.speakerId === candidate.speakerId && x.emotionId === candidate.emotionId
+      && x.candidateId === candidate.candidateId
+    const kept = c.candidates.filter((x) => !same(x))
+    return { ...c, candidates: [...kept, candidate], updatedAt: now }
+  })
+}
+
+/** 이 배역 이 슬롯의 후보만. 다른 배역·다른 화자의 후보는 여기 없다. */
+export function castCandidatesFor(
+  cast: VoiceCast | null, speakerId: string, emotionId: string
+): VoiceCastCandidate[] {
+  if (!cast) return []
+  const eid = emotionId || 'default'
+  return cast.candidates.filter((c) => c.speakerId === speakerId && c.emotionId === eid)
+}
+
+/**
+ * 후보 해제. 선택 해제와 **한 전이**다 — dangling 선택이 남지 않고 다른 후보로 자동
+ * 교체되지도 않는다.
+ */
+export function removeCastCandidate(
+  store: VoiceCastStore, voiceCastId: string, speakerId: string, emotionId: string,
+  candidateId: string, now: string
+): VoiceCastStore {
+  const eid = emotionId || 'default'
+  return replaceCast(store, voiceCastId, (c) => {
+    const candidates = c.candidates.filter(
+      (x) => !(x.speakerId === speakerId && x.emotionId === eid
+        && x.candidateId === candidateId))
+    const selections: Record<string, string> = {}
+    for (const [k, v] of Object.entries(c.selections)) {
+      if (v === USER_CHOICE_SPEAKER_DEFAULT || v === USER_CHOICE_NO_EMOTION_REF) {
+        selections[k] = v
+        continue
+      }
+      const alive = candidates.some(
+        (x) => slotKey(x.speakerId, x.emotionId) === k && x.candidateId === v)
+      if (alive) selections[k] = v
+    }
+    return { ...c, candidates, selections, updatedAt: now }
+  })
+}
+
+/** 수동 선택 지정·해제. null 은 해제이며 자동 제안으로 돌아간다. */
+export function setCastSelection(
+  store: VoiceCastStore, voiceCastId: string, speakerId: string, emotionId: string,
+  choice: string | null, now: string
+): VoiceCastStore {
+  const key = slotKey(speakerId, emotionId)
+  return replaceCast(store, voiceCastId, (c) => {
+    const selections = { ...c.selections }
+    if (choice) selections[key] = choice
+    else delete selections[key]
+    return { ...c, selections, updatedAt: now }
+  })
+}
+
+/**
+ * 배역의 후보 + 전역 자산 → 해석에 쓸 후보 줄들.
+ *
+ * 자산을 못 찾은 후보는 `quarantined` 로 남긴다 — 목록에서 지우면 사용자가 왜 사라졌는지
+ * 알 수 없고, 조용히 다른 후보가 쓰이게 된다.
+ */
+export function joinCastRecords(
+  cast: VoiceCast | null, assetsById: Readonly<Record<string, ReferenceAsset>>,
+  speakerId: string, emotionId: string
+): EmotionCandidateRecord[] {
+  return castCandidatesFor(cast, speakerId, emotionId).map((cand) => {
+    const asset = assetsById[cand.assetId]
+    if (!asset) {
+      return {
+        candidateId: cand.candidateId,
+        assetId: cand.assetId,
+        speakerId: cand.speakerId,
+        emotionId: cand.emotionId,
+        sourcePath: '',
+        sourceSha256: '',
+        sourceDurationSec: 0,
+        sourceFormat: '',
+        region: null,
+        effectiveClipId: null,
+        profileId: null,
+        qualityState: 'unknown',
+        qualityCodes: [],
+        sourceKind: 'unknown',
+        autoRecommendable: false,
+        lifecycle: 'quarantined',
+        lifecycleCode: 'ASSET_NOT_FOUND',
+      }
+    }
+    return {
+      ...asset,
+      candidateId: cand.candidateId,
+      assetId: cand.assetId,
+      speakerId: cand.speakerId,
+      emotionId: cand.emotionId,
+      autoRecommendable: autoRecommendable(
+        asset.sourceKind, asset.qualityState, asset.lifecycle),
+    }
+  })
+}
+
+/** 배역 안의 등록부 뷰 — 기존 해석 함수를 그대로 쓰기 위한 어댑터. */
+export function castRegistry(
+  cast: VoiceCast | null, assetsById: Readonly<Record<string, ReferenceAsset>>
+): CandidateRegistry {
+  const seen = new Set<string>()
+  const records: EmotionCandidateRecord[] = []
+  for (const cand of cast?.candidates ?? []) {
+    const key = slotKey(cand.speakerId, cand.emotionId)
+    if (seen.has(key)) continue
+    seen.add(key)
+    records.push(...joinCastRecords(cast, assetsById, cand.speakerId, cand.emotionId))
+  }
+  return { schemaVersion: CANDIDATE_REGISTRY_SCHEMA_VERSION, records }
+}
+
+/**
+ * run bundle·session 에 남길 배역 정보. **castName 과 화자 표시 이름은 담지 않는다.**
+ * 전체 후보 목록도 담지 않는다 — 재현에 필요한 것은 어느 배역을 썼는지다.
+ */
+export function castRecordForRun(cast: VoiceCast | null): {
+  voiceCastId: string | null
+  schemaVersion: number | null
+  candidateCount: number
+} {
+  if (!cast) return { voiceCastId: null, schemaVersion: null, candidateCount: 0 }
+  return {
+    voiceCastId: cast.voiceCastId,
+    schemaVersion: cast.schemaVersion,
+    candidateCount: cast.candidates.length,
+  }
+}
+
+/** 배역 저장 payload 에 파일 사실이 섞이지 않았는지. 구조적으로 항상 참이어야 한다. */
+export function castPayloadHasNoAssetFacts(payload: unknown): boolean {
+  const blob = JSON.stringify(payload ?? null)
+  for (const forbidden of ['sourcePath', 'sourceSha256', 'effectiveClipId', 'region']) {
+    if (blob.includes(forbidden)) return false
+  }
+  return true
+}
+
+export function serializeVoiceCasts(store: VoiceCastStore): VoiceCastStore {
+  return { schemaVersion: VOICE_CAST_SCHEMA_VERSION, casts: store.casts }
+}
+
+export interface CastRestoreReport {
+  restoredCasts: number
+  quarantinedCasts: number
+  quarantinedCandidates: number
+  /** root 를 쓸 수 없게 만든 사유. 있으면 호출부는 저장하지 않는다(원본이 사라진다). */
+  rootError: string | null
+}
+
+/**
+ * 배역 복원. **한 건이 어긋나도 전체를 버리지 않는다.**
+ *
+ * root 스키마·버전 미지원은 이 키만 사용 중지한다 — `referenceAssets` 등 다른 settings
+ * 키에 영향이 없고, 손상 상태를 빈 값으로 자동 저장해 원본을 덮어쓰지 않는다.
+ */
+export function deserializeVoiceCasts(raw: unknown): {
+  store: VoiceCastStore
+  report: CastRestoreReport
+} {
+  const empty: CastRestoreReport = {
+    restoredCasts: 0, quarantinedCasts: 0, quarantinedCandidates: 0, rootError: null,
+  }
+  if (raw == null) {
+    return { store: EMPTY_VOICE_CAST_STORE, report: { ...empty, rootError: 'ABSENT' } }
+  }
+  if (typeof raw !== 'object') {
+    return {
+      store: EMPTY_VOICE_CAST_STORE,
+      report: { ...empty, rootError: 'MALFORMED_ROOT' },
+    }
+  }
+  const o = raw as Partial<VoiceCastStore>
+  if (o.schemaVersion !== VOICE_CAST_SCHEMA_VERSION) {
+    return {
+      store: EMPTY_VOICE_CAST_STORE,
+      report: { ...empty, rootError: 'SCHEMA_VERSION_UNSUPPORTED' },
+    }
+  }
+  if (!Array.isArray(o.casts)) {
+    return {
+      store: EMPTY_VOICE_CAST_STORE,
+      report: { ...empty, rootError: 'MALFORMED_ROOT' },
+    }
+  }
+
+  const report = { ...empty }
+  const casts: VoiceCast[] = []
+  for (const item of o.casts) {
+    const bad = !item || typeof item !== 'object'
+      || typeof (item as VoiceCast).voiceCastId !== 'string'
+      || !(item as VoiceCast).voiceCastId
+    if (bad) {
+      report.quarantinedCasts++
+      casts.push({
+        voiceCastId: `cast_quarantined_${report.quarantinedCasts}`,
+        castName: '',
+        schemaVersion: VOICE_CAST_SCHEMA_VERSION,
+        createdAt: '',
+        updatedAt: '',
+        speakerDefaults: {},
+        candidates: [],
+        selections: {},
+        lifecycle: 'quarantined',
+        lifecycleCode: 'STORED_CAST_MALFORMED',
+      })
+      continue
+    }
+    const cast = item as VoiceCast
+    const good: VoiceCastCandidate[] = []
+    for (const cand of Array.isArray(cast.candidates) ? cast.candidates : []) {
+      const ok = !!cand && typeof cand === 'object'
+        && typeof cand.candidateId === 'string' && !!cand.candidateId
+        && typeof cand.assetId === 'string' && !!cand.assetId
+        && typeof cand.speakerId === 'string' && !!cand.speakerId
+        && typeof cand.emotionId === 'string' && !!cand.emotionId
+      if (ok) good.push(cand)
+      else report.quarantinedCandidates++
+    }
+    report.restoredCasts++
+    casts.push({
+      ...cast,
+      castName: typeof cast.castName === 'string' ? cast.castName : '',
+      schemaVersion: VOICE_CAST_SCHEMA_VERSION,
+      speakerDefaults: (cast.speakerDefaults && typeof cast.speakerDefaults === 'object')
+        ? cast.speakerDefaults : {},
+      candidates: good,
+      selections: (cast.selections && typeof cast.selections === 'object')
+        ? cast.selections : {},
+      lifecycle: 'ok',
+      lifecycleCode: null,
+    })
+  }
+  return { store: { schemaVersion: VOICE_CAST_SCHEMA_VERSION, casts }, report }
+}
