@@ -281,3 +281,26 @@ adapter가 지원하지 못하는 축(예: 층·공간)은 그 사실을 밝히�
   링크를 임시 트리에 만들지 않고, 링크를 품은 트리에 재귀 삭제를 쓰지 않는다.
   (사고 기록: `_local/artifacts/recovery/externals-incident-20260831/`)
 - clean 환경 검증이 필요하면 링크 없이 별도 clone을 쓰거나, 의존성 없이 되는 검사만 한다.
+
+### 타입 검사는 실제 프로젝트로만 한다 (2026-09-03 확정)
+
+`tsconfig.json` 은 `files: []` 에 project references 만 둔 **solution 설정**이다.
+`tsc --noEmit -p tsconfig.json` 은 검사 대상이 **0개**이므로 언제나 통과하고, 그 통과는
+아무 의미가 없다. 실측: `--listFiles` 로 센 프로젝트 파일이 0개다.
+
+올바른 명령은 두 개다.
+
+```
+npx tsc --noEmit -p tsconfig.node.json    # src/main · src/preload · src/shared (프로젝트 파일 49)
+npx tsc --noEmit -p tsconfig.web.json     # src/renderer · src/shared (프로젝트 파일 62)
+```
+
+- 두 설정을 **각각** 돌린다. 하나만 돌리면 renderer 또는 main 이 검사되지 않는다.
+- 검사 파일 수가 0인 명령은 성공으로 인정하지 않는다. 의심되면 `--listFiles` 로 센다.
+- 파이프(`| head`)를 붙이면 종료 코드가 파이프 마지막 명령의 것이 된다 — 통과 판정은
+  출력이 비었는지와 tsc 자신의 종료 코드로 한다.
+
+**기록**: 2026-09-03 이전에 이 저장소에서 `-p tsconfig.json` 으로 보고한 타입 검사
+통과는 검사 대상이 0개였으므로 **유효 근거에서 제외한다.** v1.4 의 E1·E2·E3·문서 커밋
+당시의 "타입 검사 통과" 보고가 여기에 해당한다. 실제 설정으로 다시 검사했을 때
+E4 에서 만든 누락(런타임 `TypeError` 로 이어지는 Record 키 2개 부재)이 곧바로 잡혔다.
