@@ -13,7 +13,8 @@ import {
   STRUCTURE_BLOCKERS, STRUCTURE_MODES, actionAllowed, canMove, changeBaseEmotion,
   changeSpeaker, commitDecision, createInitialDialogue, deleteUtterance,
   insertUtteranceAfter, moveUtterance, nextInheritingIndex, sliceOf, speakerDirective,
-  structurable, textInputAllowed, validateSpeakerLabel,
+  directTextEditingAllowed, structurable, structuredEditingAllowed,
+  structuredPatchAllowed, validateSpeakerLabel,
 } from './dialogueSourcePatcher.ts'
 import type { StructureInput, UtteranceView } from './dialogueSourcePatcher.ts'
 
@@ -176,23 +177,65 @@ test('모든 모드가 알려진 토큰이다', () => {
 
 // ── 타이핑 중 잠금 범위 ─────────────────────────────────────────────────────
 
-test('계획이 낡아도 글자 입력은 계속 받는다', () => {
+test('원문 직접 입력은 어떤 상태에서도 막히지 않는다', () => {
+  // 계약이 상수 true 다 — 이 값을 읽어 textarea 를 잠그는 일이 없어야 한다.
+  const text = '[화자 민수]\n안녕\n[쉼 0.5]\n[화자 지은]\n응'
+  const verdicts = [
+    structurable(input()),
+    structurable(input({ planSourceSha256: null })),
+    structurable(input({ planSourceSha256: 'sha-old' })),
+    structurable(input({ parserAuthority: false })),
+    structurable(input({ offsetsExact: [false] })),
+    structurable(input({ hasBlockingWarning: true })),
+    structurable(input({ text: '', utterances: [], offsetsExact: [] })),
+    structurable(input({
+      text,
+      utterances: [viewOf(text, 0, '[화자 민수]\n안녕', '민수', true), viewOf(text, 1, '[화자 지은]\n응', '지은', true)],
+      offsetsExact: [true, true],
+    })),
+  ]
+  for (const v of verdicts) {
+    assert.equal(directTextEditingAllowed(), true, JSON.stringify(v.blockers))
+  }
+})
+
+test('계획이 낡아도 구조화 화면은 닫지 않는다', () => {
   const stale = structurable(input({ planSourceSha256: 'sha-old' }))
   assert.equal(stale.structurable, false)
-  assert.equal(textInputAllowed(stale), true, '한 글자 칠 때마다 화면을 닫으면 안 된다')
-  const missing = structurable(input({ planSourceSha256: null }))
-  assert.equal(textInputAllowed(missing), true)
-  // 표현할 수 없는 대본(쉼 등)에서는 구조화 입력을 열지 않는다.
+  assert.equal(structuredEditingAllowed(stale), true,
+    '한 글자 칠 때마다 화면을 닫으면 안 된다')
+  assert.equal(structuredEditingAllowed(
+    structurable(input({ planSourceSha256: null }))), true)
+  assert.equal(structuredEditingAllowed(
+    structurable(input({ text: '', utterances: [], offsetsExact: [] }))), true)
+})
+
+test('표현할 수 없는 대본에서는 구조화 화면 대신 직접 입력을 보여 준다', () => {
   const text = '[화자 민수]\n안녕\n[쉼 0.5]\n[화자 지은]\n응'
   const unsupported = structurable(input({
     text,
-    utterances: [
-      viewOf(text, 0, '[화자 민수]\n안녕', '민수', true),
-      viewOf(text, 1, '[화자 지은]\n응', '지은', true),
-    ],
+    utterances: [viewOf(text, 0, '[화자 민수]\n안녕', '민수', true), viewOf(text, 1, '[화자 지은]\n응', '지은', true)],
     offsetsExact: [true, true],
   }))
-  assert.equal(textInputAllowed(unsupported), false)
+  assert.equal(unsupported.mode, 'sourceOnly')
+  assert.equal(structuredEditingAllowed(unsupported), false)
+  assert.equal(structuredPatchAllowed(unsupported), false)
+  // 그래도 원문 편집은 열려 있다.
+  assert.equal(directTextEditingAllowed(), true)
+})
+
+test('원문 반영은 계획이 현재 원문과 맞을 때만 허용한다', () => {
+  assert.equal(structuredPatchAllowed(structurable(input())), true)
+  for (const over of [
+    { planSourceSha256: null }, { planSourceSha256: 'sha-old' },
+    { parserAuthority: false }, { hasBlockingWarning: true },
+  ]) {
+    assert.equal(structuredPatchAllowed(structurable(input(over))), false,
+      JSON.stringify(over))
+  }
+  // 빈 원문은 반영할 발화가 없다 — 초기 생성 경로로만 만든다.
+  assert.equal(structuredPatchAllowed(
+    structurable(input({ text: '', utterances: [], offsetsExact: [] }))), false)
 })
 
 test('좌표에 의존하는 명령만 잠근다', () => {
@@ -204,10 +247,14 @@ test('좌표에 의존하는 명령만 잠근다', () => {
   for (const action of COORDINATE_DEPENDENT_ACTIONS) {
     assert.equal(actionAllowed(fresh, action), true, action)
   }
-  // 순서 이동·화자 변경·삭제·삽입이 모두 목록에 있다.
-  assert.ok(COORDINATE_DEPENDENT_ACTIONS.includes('moveUtterance'))
-  assert.ok(COORDINATE_DEPENDENT_ACTIONS.includes('changeSpeaker'))
-  assert.ok(COORDINATE_DEPENDENT_ACTIONS.includes('deleteUtterance'))
+  // 순서 이동·화자 변경·삭제·삽입·draft 반영이 모두 목록에 있다.
+  for (const a of ['moveUtterance', 'changeSpeaker', 'deleteUtterance',
+    'insertUtteranceAfter', 'commitDraft'] as const) {
+    assert.ok(COORDINATE_DEPENDENT_ACTIONS.includes(a), a)
+  }
+  // 두 판정이 갈라지면 안 된다 — 같은 게이트다.
+  const stale2 = structurable(input({ planSourceSha256: 'sha-old' }))
+  assert.equal(actionAllowed(stale2, 'commitDraft'), structuredPatchAllowed(stale2))
 })
 
 test('draft 반영은 붙잡아 둔 SHA 가 지금과 같을 때만 한다', () => {

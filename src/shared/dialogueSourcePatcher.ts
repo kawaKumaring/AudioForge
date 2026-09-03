@@ -86,6 +86,15 @@ export const STRUCTURE_BLOCKERS = [
 export type StructureBlocker = typeof STRUCTURE_BLOCKERS[number]
 
 /**
+ * **일시적** 사유 — 잠시 뒤 계획이 오면 사라진다.
+ *
+ * 이것만 남아 있으면 구조화 화면을 닫지 않는다. 한 글자 칠 때마다 화면이 바뀌면 사용자가
+ * 이어서 타이핑할 수 없기 때문이다. 나머지(파서 물러남·좌표 근사·구간 겹침·구간 밖
+ * 내용·차단 경고·발화 없음)는 **구조적** 사유이며, 그때는 직접 입력 화면을 보여 준다.
+ */
+export const TRANSIENT_BLOCKERS = ['PLAN_MISSING', 'PLAN_STALE'] as const
+
+/**
  * 여러 명 화면이 지금 무엇을 할 수 있는가.
  *
  *   structured — 발화를 구조화 편집할 수 있다(모든 게이트 통과)
@@ -190,6 +199,8 @@ export function structurable(input: StructureInput): StructureVerdict {
  */
 export const COORDINATE_DEPENDENT_ACTIONS = [
   'moveUtterance', 'changeSpeaker', 'deleteUtterance', 'insertUtteranceAfter',
+  // 구조화 draft 를 원문에 반영하는 것도 좌표를 읽는다 — 같은 게이트를 받는다.
+  'commitDraft',
 ] as const
 export type CoordinateDependentAction = typeof COORDINATE_DEPENDENT_ACTIONS[number]
 
@@ -201,10 +212,42 @@ export function actionAllowed(
   return verdict.structurable
 }
 
-/** 글자 입력은 계획 상태와 무관하게 언제나 받는다 — 화면을 닫지 않는다. */
-export function textInputAllowed(verdict: StructureVerdict): boolean {
-  return verdict.mode !== 'sourceOnly' || verdict.blockers.every(
-    (b) => b === 'PLAN_MISSING' || b === 'PLAN_STALE')
+/**
+ * **기존 `대본 직접 입력` textarea 는 어떤 상태에서도 막지 않는다.**
+ *
+ * 이 함수가 상수 `true` 인 것은 실수가 아니라 계약이다. 원문 편집은 이 앱의 마지막
+ * 안전판이다 — 계획이 없거나 낡았거나, 파서가 물러났거나, 쉼·복합 지시로 구조화가
+ * 불가능한 대본이어도 사용자는 원문을 고칠 수 있어야 한다. 호출부가 이 값을 읽어
+ * `disabled` 를 걸 일이 없도록 이름과 반환을 분명히 둔다.
+ *
+ * 이전 판에는 `textInputAllowed` 가 있었고 `NON_WHITESPACE_OUTSIDE` 에서 false 였다.
+ * 이름만 보면 원문 입력을 막는 값으로 읽혀, 배선하는 사람이 textarea 를 잠글 구조였다.
+ */
+export function directTextEditingAllowed(): true {
+  return true
+}
+
+/**
+ * **구조화 편집기(여러 명 화면)** 를 열어 입력을 받아도 되는가.
+ *
+ * 계획이 없거나 낡은 것만으로는 닫지 않는다 — 한 글자 칠 때마다 화면이 바뀌면 이어서
+ * 타이핑할 수 없다. 닫는 것은 표현 자체가 불가능한 대본(`sourceOnly`)일 때뿐이고,
+ * 그때는 기존 직접 입력 화면을 활성 상태로 보여 준다.
+ */
+export function structuredEditingAllowed(verdict: StructureVerdict): boolean {
+  // 구조적 사유가 하나라도 있으면 이 대본은 구조화로 표현할 수 없다.
+  return !verdict.blockers.some((b) => !TRANSIENT_BLOCKERS.includes(
+    b as typeof TRANSIENT_BLOCKERS[number]))
+}
+
+/**
+ * 구조화 화면의 변경을 **원문에 반영**해도 되는가 — 좌표 의존 명령의 단일 게이트.
+ *
+ * 화자 변경·발화 삽입·삭제·순서 이동·draft commit 이 모두 이 판정을 받는다.
+ * 계획이 현재 원문과 맞을 때만 참이다.
+ */
+export function structuredPatchAllowed(verdict: StructureVerdict): boolean {
+  return verdict.structurable
 }
 
 /**
