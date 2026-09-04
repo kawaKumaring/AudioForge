@@ -5,10 +5,9 @@
 // 무엇을 보나: DOM 텍스트·속성·store 값만 본다. 스크린샷 없음. 사용자 파일 없음(합성 WAV,
 // 격리 userData). 끝나면 자기가 띄운 프로세스 트리만 내린다.
 //
-// 왜 개발 경로인가: React 개발 빌드의 StrictMode 이중 호출이 이 화면의 첫 결함(빈 인물 카드
-// 4개가 같은 ID)을 만들었다. production 번들로는 재현되지 않는다.
-//
-// 항목 번호는 관리자 화면 확인 목록(1~12)을 따른다.
+// 화면 구조(재설계): 한 명 = 기존 편집기 그대로(제한 없음). 여러 명 = 인물의 한 발화 카드가 기본 단위
+// (인물·목소리 상태·`+ 감정`·대사 한 칸·위/아래/삭제), 요약 한 줄, 선택 인물 한 명의 목소리 패널,
+// 원문 직접 편집은 `고급 · 대본 표기 직접 편집` 로 접힘(카드와 상호 배타).
 import { chromium } from 'playwright'
 import { spawn, execFileSync } from 'child_process'
 import fs from 'fs'
@@ -42,7 +41,6 @@ child.stdout.setEncoding('utf-8'); child.stdout.on('data', pushLog)
 child.stderr.setEncoding('utf-8'); child.stderr.on('data', pushLog)
 let childExited = false
 child.on('exit', () => { childExited = true })
-/** 우리가 띄운 이 트리만 정리한다. */
 const killOwnTree = () => {
   if (childExited || !child.pid) return
   try { execFileSync('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' }) } catch { /* 이미 내려갔다 */ }
@@ -82,27 +80,34 @@ try {
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
     s.getState().setMode('tts')
   }, WAV)
-  const RAW = 'section[aria-label="대사"] textarea:not([data-testid="dialogue-body"])'
+  const RAW = 'section[aria-label="대사"] div[data-af-tts-editor] textarea'
   await page.waitForSelector(RAW, { timeout: 60000 })
 
   // ── 도우미 ────────────────────────────────────────────────────────────────
   const store = () => page.evaluate(() => window.__afStore.getState().ttsText)
+  const mode = () => page.evaluate(() => window.__afStore.getState().ttsSpeakerMode)
   const count = (sel) => page.evaluate((s) => document.querySelectorAll(s).length, sel)
-  const tab = async (t) => { await page.click(`[data-testid="dialogue-tabs"] [data-tab="${t}"]`); await sleep(50) }
+  const text = (sel) => page.evaluate((s) => document.querySelector(s)?.textContent ?? null, sel)
+  const tab = async (t) => { await page.click(`[data-testid="dialogue-tabs"] [data-tab="${t}"]`); await sleep(80) }
   const rowSpeakers = () => page.evaluate(() => [...document.querySelectorAll('[data-testid="dialogue-row"]')].map((r) => r.getAttribute('data-speaker')))
   const rowBodies = () => page.evaluate(() => [...document.querySelectorAll('[data-testid="dialogue-body"]')].map((t) => t.value))
-  const sourceOnlyText = () => page.evaluate(() => document.querySelector('[data-testid="multi-dialogue-source-only"]')?.textContent ?? null)
   const diag = () => page.evaluate(() => {
     const root = document.querySelector('[data-testid="multi-dialogue"],[data-testid="multi-dialogue-source-only"]')
     return `mode=${root?.getAttribute('data-mode') ?? '-'} blockers=[${root?.getAttribute('data-blockers') ?? '-'}] rows=${document.querySelectorAll('[data-testid="dialogue-row"]').length}`
   })
-  const setSource = async (text) => {
-    await page.evaluate(([sel, t]) => {
+  /** 원문을 넣는다. 여러 명 모드에서는 `고급 · 대본 표기 직접 편집` 을 잠깐 열어 넣고 다시 닫는다. */
+  const setSource = async (t) => {
+    let opened = false
+    if ((await count(RAW)) === 0 && (await count('[data-testid="direct-edit"]')) > 0) {
+      await page.click('[data-testid="direct-edit"] summary'); await sleep(120); opened = true
+    }
+    await page.evaluate(([sel, v]) => {
       const ta = document.querySelector(sel)
-      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(ta, t)
+      Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set.call(ta, v)
       ta.dispatchEvent(new Event('input', { bubbles: true }))
-    }, [RAW, text])
+    }, [RAW, t])
     await sleep(600)
+    if (opened) { await page.click('[data-testid="direct-edit"] summary'); await sleep(120) }
   }
   const waitRows = async (n, ms = 30000) => {
     const t0 = Date.now()
@@ -114,283 +119,237 @@ try {
     while (Date.now() - t0 < ms) { if (await fn()) return true; await sleep(100) }
     return false
   }
+  const snapshot = () => page.evaluate(() => {
+    const s = window.__afStore.getState()
+    return JSON.stringify({ text: s.ttsText, refs: s.ttsSpeakerRefState, emo: s.ttsSpeakerEmotionRefs, labels: s.ttsSpeakerLabels })
+  })
 
-  // ── 11. 한 명 탭 — 기존 화면 그대로 ──────────────────────────────────────
+  // ── 1. 한 명 = 기본. 여러 명 UI 요소 0, 기존 편집기 1 ────────────────────
   await setSource('')
-  const tabsN = await count('[data-testid="dialogue-tabs"] [role="tab"]')
-  const singleSel = await page.evaluate(() => document.querySelector('[data-testid="dialogue-tabs"] [data-tab="single"]')?.getAttribute('aria-selected'))
-  const multiDom = await count('[data-testid="multi-dialogue"],[data-testid="multi-dialogue-source-only"],[data-testid="speaker-card"],[data-testid="dialogue-row"]')
-  ok('11', tabsN === 2 && singleSel === 'true' && multiDom === 0 && (await count(RAW)) === 1,
-    '한 명 탭 기본 선택, 여러 명 UI 요소 0, 원문 편집기 1', `tabs=${tabsN} multiDom=${multiDom}`)
-  ok('11b', (await count('details[data-testid="voice-config-save-load"][open]')) === 0,
-    '목소리 구성 저장/불러오기 절은 열려 있지 않다')
+  ok('1', (await mode()) === 'single'
+    && (await count('[data-testid="dialogue-tabs"] [role="tab"]')) === 2
+    && (await count('[data-testid="multi-dialogue"],[data-testid="dialogue-row"],[data-testid="starter-card"],[data-testid="voice-panel"]')) === 0
+    && (await count(RAW)) === 1,
+    '한 명 기본: 탭 2개, 여러 명 요소 0, 기존 편집기 1')
 
-  // ── 1. 빈 대본 → 첫 대화 생성 ─────────────────────────────────────────────
-  await tab('multi')
-  await sleep(300)
-  const cards = await page.evaluate(() => [...document.querySelectorAll('[data-testid="speaker-card"]')].map((c) => ({ id: c.getAttribute('data-speaker'), pending: c.getAttribute('data-pending') })))
-  ok('1a', cards.length === 2 && cards.every((c) => c.pending === 'true') && new Set(cards.map((c) => c.id)).size === 2 && (await store()) === '',
-    '빈 대본에서 서로 다른 ID 의 빈 인물 카드 2개, 원문은 빈 문자열', JSON.stringify(cards))
-  await page.fill(`#spk-name-${cards[0].id}`, '민수')
-  await page.fill(`#spk-name-${cards[1].id}`, '영희')
+  // ── 2. 여러 명 처음 열기: 시작 카드 2개, 원문 쓰기 0, 카드 안에서 이름·첫 대사 ──
+  await tab('multi'); await sleep(300)
+  const starters = await page.evaluate(() => [...document.querySelectorAll('[data-testid="starter-card"]')].map((c) => c.getAttribute('data-speaker')))
+  ok('2a', starters.length === 2 && new Set(starters).size === 2 && (await store()) === '' && (await count(RAW)) === 0,
+    '시작 카드 2개(서로 다른 id), 원문 빈 문자열, 원문 편집기는 접혀 있음', JSON.stringify(starters))
+  await page.fill(`#spk-name-${starters[0]}`, '민수')
+  await page.fill(`#spk-name-${starters[1]}`, '영희')
   await sleep(100)
-  ok('1b', (await store()) === '', '이름만 입력해도 원문에 쓰지 않는다')
-  await page.selectOption('#dlg-new-speaker', '민수')
-  await page.fill('#dlg-new-line', '첫 대사')
-  await page.click('[data-testid="dialogue-add"] button')
+  ok('2b', (await store()) === '' && (await text('[data-testid="multi-summary"]') ?? '').includes('인물'), '이름만 입력해도 원문에 쓰지 않는다')
+  await page.fill(`[data-testid="starter-card"][data-speaker="${starters[0]}"] [data-testid="starter-line"]`, '첫 대사')
+  await page.click(`[data-testid="starter-card"][data-speaker="${starters[0]}"] [data-testid="starter-add"]`)
   await sleep(100)
   const created = await store()
-  const rows1 = await waitRows(1)
-  ok('1c', created === '[화자 민수]\n첫 대사' && rows1, '첫 대화 생성 → 원문 [화자 민수]⏎첫 대사, 행 1개', `len=${created.length} ${await diag()}`)
+  ok('2c', created === '[화자 민수]\n첫 대사' && await waitRows(1) && (await count('[data-testid="starter-card"]')) === 1,
+    '첫 대화 → 원문 [화자 민수]⏎첫 대사, 카드 1개, 남은 시작 카드 1개(영희)', `len=${created.length} ${await diag()}`)
 
-  // ── 12. 목소리 지정 버튼 ──────────────────────────────────────────────────
-  const voiceBtns = await page.evaluate(() => [...document.querySelectorAll('[data-testid="speaker-card"] button')].filter((b) => /목소리 (지정|바꾸기)/.test(b.textContent)).length)
-  ok('12', voiceBtns >= 1, '인물 카드에 목소리 지정 버튼', `n=${voiceBtns}`)
+  // ── 3. 발화 카드 하나에 인물·목소리·감정·대사 ──────────────────────────────
+  const cardParts = await page.evaluate(() => {
+    const c = document.querySelector('[data-testid="dialogue-row"]')
+    return {
+      speaker: !!c?.querySelector('select'), voice: c?.querySelector('[data-testid="card-voice"]')?.textContent ?? null,
+      emotion: !!c?.querySelector('[data-testid="emotion-add"]'), body: c?.querySelectorAll('textarea').length,
+      up: !!c?.querySelector('[aria-label="위로"]'), del: [...(c?.querySelectorAll('button') ?? [])].some((b) => b.textContent.trim() === '삭제'),
+    }
+  })
+  ok('3', cardParts.speaker && (cardParts.voice ?? '').includes('목소리 없음') && cardParts.emotion && cardParts.body === 1 && cardParts.up && cardParts.del,
+    '카드: 인물 select · 목소리 상태 · + 감정 · 대사 한 칸 · 위/아래/삭제', JSON.stringify(cardParts))
 
-  // ── 5·6. 여러 화자 시간순 + 같은 화자 반복 ────────────────────────────────
+  // ── 4. 세 화자 시간순 + 같은 인물 반복 + 목소리 상태 공유 ────────────────
   const SCRIPT = '[화자 민수]\n안녕\n[화자 영희]\n[기쁨] 반가워\n[화자 민수]\n[슬픔] 잘 가'
   await setSource(SCRIPT)
   const rows3 = await waitRows(3)
   const spk = await rowSpeakers()
   const bodies = await rowBodies()
-  ok('5', rows3 && spk.join(',') === '민수,영희,민수', '시간순 3행, 인물 순서 민수→영희→민수', `${spk.join(',')} ${await diag()}`)
-  ok('6', spk[0] === spk[2] && bodies.join('|') === '안녕|반가워|잘 가', '같은 인물 반복 + 본문에 지시 없음', bodies.join('|'))
-  ok('5b', (await count('[data-testid="speaker-card"]')) === 2 && (await count('[data-testid="speaker-card"][data-pending="true"]')) === 0,
-    '인물 카드 2개, pending 0')
-
-  // ── 4. 탭 전환은 원문을 쓰지 않는다 ───────────────────────────────────────
-  const before4 = await store()
-  await tab('single'); await tab('multi'); await tab('single'); await tab('multi')
-  await sleep(200)
-  ok('4', (await store()) === before4 && await waitRows(3), '탭 4회 전환 후 원문 동일, 행 3개 유지')
-
-  // ── 9. 인물 삭제는 대사를 지우지 않는다 ───────────────────────────────────
-  const delState = await page.evaluate(() => [...document.querySelectorAll('[data-testid="speaker-card"] button')].filter((b) => b.textContent.trim() === '인물 삭제').map((b) => b.disabled))
-  ok('9', delState.length === 2 && delState.every(Boolean) && (await store()) === before4, '대사 있는 인물의 삭제 버튼 비활성, 원문 불변', JSON.stringify(delState))
-
-  // ── 2. 빠른 타이핑 글자 손실 없음 ─────────────────────────────────────────
-  const FAST = '빠르게 입력하는 문장입니다 하나 둘 셋 넷 다섯'
-  const body0 = page.locator('[data-testid="dialogue-body"]').first()
-  await body0.click()
-  await page.keyboard.press('Control+A')
-  await page.keyboard.type(FAST, { delay: 0 })
-  const draftVal = await body0.inputValue()
-  await page.keyboard.press('Tab')
-  const committed2 = await waitUntil(async () => (await store()).includes(FAST))
-  ok('2', draftVal === FAST && committed2, '행 본문 빠른 타이핑 → 손실 없이 원문 반영', `draftLen=${draftVal.length}/${FAST.length}`)
-  await page.click(RAW)
-  await page.keyboard.press('Control+End')
-  await page.keyboard.type(' 추가', { delay: 0 })
-  await sleep(100)
-  ok('2b', (await store()).endsWith('잘 가 추가'), '원문 편집기 빠른 타이핑 반영')
-
-  // ── 3. 타이핑 중 직접 입력으로 튕기지 않는다(계획이 낡아도) ───────────────
-  const body1 = page.locator('[data-testid="dialogue-body"]').nth(1)
-  await body1.click()
-  await page.keyboard.press('Control+A')
-  let snapped = 0, lostFocus = 0, bodyCountBad = 0
-  const SLOW = '천천히 치는 동안에도 편집기가 남아 있어야 합니다'
-  const typing = page.keyboard.type(SLOW, { delay: 45 })
-  const t0 = Date.now()
-  while (Date.now() - t0 < SLOW.length * 45 + 200) {
-    const s = await page.evaluate(() => ({
-      so: document.querySelectorAll('[data-testid="multi-dialogue-source-only"]').length,
-      bodies: document.querySelectorAll('[data-testid="dialogue-body"]').length,
-      focus: document.activeElement?.getAttribute('data-testid'),
-    }))
-    if (s.so > 0) snapped += 1
-    if (s.focus !== 'dialogue-body') lostFocus += 1
-    if (s.bodies !== 3) bodyCountBad += 1
-    await sleep(80)
-  }
-  await typing
-  const draft3 = await body1.inputValue()
-  await page.keyboard.press('Tab')
-  // 계획이 늦으면 초안은 보류되고 계획이 온 뒤 반영된다. 이 행은 [기쁨] 태그 뒤에 온다.
-  const committed3 = await waitUntil(async () => (await store()).includes('[기쁨] ' + SLOW + '\n'))
-  ok('3', snapped === 0 && lostFocus === 0 && bodyCountBad === 0 && draft3 === SLOW && committed3,
-    '타이핑 동안 소스전용 0회·포커스 유지·행 3개 유지, 반영', `snapped=${snapped} lostFocus=${lostFocus} bad=${bodyCountBad} draftLen=${draft3.length}/${SLOW.length} committed=${committed3}`)
-  const bodiesOk = await waitUntil(async () => { const b = await rowBodies(); return b[0] === FAST && b[1] === SLOW && b[2] === '잘 가 추가' })
-  ok('3b', bodiesOk, '반영 뒤 행 본문 3개가 원문 내용과 일치(낡은 좌표 조각 없음)', JSON.stringify(await rowBodies()).slice(0, 120))
-
-  // ── 7. 한 대사 안의 여러 감정 태그 보존 ───────────────────────────────────
-  await setSource('[화자 민수]\n[기쁨] 앞부분 [슬픔] 뒷부분\n[화자 영희]\n네')
-  ok('7a', await waitRows(2), '중간 태그 대본 2행')
-  const midNotice = await page.evaluate(() => /중간 감정·쉼 표기/.test(document.querySelector('[data-testid="dialogue-row"]')?.textContent || ''))
-  const chosen = await page.evaluate(() => {
-    const sel = document.querySelectorAll('[data-testid="dialogue-row"] select')[1]
-    const opt = [...sel.options].find((o) => o.value !== 'default' && o.value !== 'happy' && o.value !== 'sad')
-    return { id: sel.id, value: opt.value, label: opt.textContent }
-  })
-  await page.selectOption('#' + chosen.id, chosen.value)
-  const ok7 = await waitUntil(async () => (await store()).startsWith(`[화자 민수]\n[${chosen.label}] 앞부분 [슬픔] 뒷부분\n`))
-  ok('7', ok7 && midNotice, '기본 감정 변경 후 중간 [슬픔] 태그 보존 + 안내 문구', `base=${chosen.label}`)
-
-  // ── 8. 표현 불가 대본은 직접 입력 유지 + 원문 보존 ────────────────────────
-  const COMPLEX = '[화자 민수]\n안녕 [쉼 1] 잘 지냈어?\n[모르는지시] 이상한 줄'
-  await setSource(COMPLEX)
-  const so8ok = await waitUntil(async () => (await sourceOnlyText()) !== null)
-  const so8 = await sourceOnlyText()
-  const raw8 = await page.evaluate((s) => document.querySelector(s).value, RAW)
-  await tab('single'); await tab('multi'); await sleep(300)
-  ok('8', so8ok && so8.includes('직접 입력') && raw8 === COMPLEX && (await store()) === COMPLEX,
-    '알 수 없는 지시 대본 → 이유 표시 + 원문 그대로', `notice=${(so8 || '').replace(/\s+/g, ' ').slice(0, 80)}`)
-  const PAUSE_ONLY = '[화자 민수]\n안녕 [쉼 1] 잘 지냈어?\n[화자 영희]\n응'
-  await setSource(PAUSE_ONLY)
-  const rows8b = await waitRows(2, 10000)
-  ok('8b', rows8b && (await store()) === PAUSE_ONLY && (await rowBodies())[0].includes('[쉼 1]'),
-    '줄 안의 쉼 표기: 구조화 2행, 쉼은 본문에 남고 원문 보존')
-
-  // ── 13. 화자 표기가 없는 대사 = 기본 인물(빈 칸 아님), 명시 인물로 바꾸면 표기가 생긴다 ──
-  const NO_SPK = '그냥 한 줄\n[기쁨] 둘째 줄'
-  await setSource(NO_SPK)
-  ok('13a', await waitRows(2), '표기 없는 대본 2행')
-  const firstSel = await page.evaluate(() => {
-    const sel = document.querySelectorAll('[data-testid="dialogue-row"] select')[0]
-    return { value: sel.value, text: sel.options[sel.selectedIndex]?.textContent }
-  })
-  const noteN = await count('[data-testid="default-speaker-note"]')
-  ok('13b', firstSel.value === '' && firstSel.text === '기본 인물' && noteN === 1,
-    '인물 칸이 기본 인물로 보이고 안내 한 줄이 있다', JSON.stringify(firstSel))
-  const before13 = await store()
-  await tab('single'); await tab('multi'); await sleep(200)
-  ok('13c', (await store()) === before13, '탭을 열기만 해서는 원문이 바뀌지 않는다')
-  await page.click('[data-testid="multi-speakers"] button:has-text("+ 인물 추가")')
-  await sleep(100)
-  const pendingId = await page.evaluate(() => document.querySelector('[data-testid="speaker-card"][data-pending="true"]')?.getAttribute('data-speaker'))
-  ok('13d', !!pendingId && (await store()) === before13, '인물 카드를 추가해도 원문은 그대로', `id=${pendingId}`)
-  await page.fill(`#spk-name-${pendingId}`, '민수')
-  await sleep(100)
-  const row0Sel = await page.evaluate(() => document.querySelectorAll('[data-testid="dialogue-row"] select')[0].id)
-  await page.selectOption('#' + row0Sel, '민수')
-  const switched = await waitUntil(async () => (await store()) === '[화자 민수]\n그냥 한 줄\n[화자 기본]\n[기쁨] 둘째 줄')
-  ok('13e', switched, '기본 인물 → 민수: 대사 앞에 [화자 민수], 다음 대사는 [화자 기본] 으로 복원', (await store()).length + '자')
-
-  // ── 14. 목소리 지정 버튼은 기존 파일 선택 경로(window.api.audio.selectFile)를 부른다 ──
-  // 실제 창을 띄우지 않고 그 자리에서 '취소' 를 돌려준다. 사용자 파일은 읽지 않는다.
-  await waitRows(2)
-  const wrapped = await page.evaluate(() => {
-    try {
-      const orig = window.api.audio.selectFile
-      window.__afSelectFileCalls = 0
-      window.api.audio.selectFile = async () => { window.__afSelectFileCalls += 1; return '' }
-      return typeof orig === 'function' && window.api.audio.selectFile !== orig
-    } catch { return false }
-  })
-  if (wrapped) {
-    const before14 = await store()
-    await page.click('[data-testid="speaker-card"]:not([data-pending="true"]) button:has-text("목소리 지정")')
-    await sleep(300)
-    const calls = await page.evaluate(() => window.__afSelectFileCalls)
-    const decisionAfter = await page.evaluate(() => [...document.querySelectorAll('[data-testid="speaker-voice-decision"]')].map((e) => e.textContent.trim()))
-    ok('14', calls === 1 && (await store()) === before14,
-      '목소리 지정 클릭 → 파일 선택 1회 호출, 취소하면 아무것도 바뀌지 않음', `calls=${calls} decisions=${JSON.stringify(decisionAfter).slice(0, 80)}`)
-  } else {
-    ok('14', (await page.locator('[data-testid="speaker-card"]:not([data-pending="true"]) button:has-text("목소리 지정")').count()) >= 1,
-      '목소리 지정 버튼 존재(파일 선택 경로 호출은 브릿지 객체가 고정되어 자동 확인 불가 — 사용자 직접 확인)')
-  }
-
-  // ── 15. 생성 방식 탭 + 한 명 편집 무제한 ──────────────────────────────────
-  // 목소리 지정은 store 에 합성 파일로 직접 넣는다(파일 선택창·참조 분석 없음). 사용자 파일 없음.
-  const GUARD_SCRIPT = '[화자 민수]\n[기쁨] 안녕 [쉼 1] 잘\n[화자 영희]\n응\n[화자 민수]\n또'
-  await setSource(GUARD_SCRIPT)
+  ok('4a', rows3 && spk.join(',') === '민수,영희,민수', '시간순 3카드, 인물 순서 민수→영희→민수', `${spk.join(',')} ${await diag()}`)
+  ok('4b', bodies.join('|') === '안녕|[기쁨] 반가워|[슬픔] 잘 가', '대사 한 칸에 감정 태그가 글자 그대로', bodies.join('|'))
+  ok('4c', (await text('[data-testid="multi-summary"]') ?? '').includes('인물 2명') && (await count('[data-testid="starter-card"]')) === 0,
+    '요약: 인물 2명, 시작 카드 없음', await text('[data-testid="multi-summary"]'))
+  // 같은 인물 카드는 같은 목소리 상태를 공유한다 — store 에 지정하면 두 카드 모두 '준비됨'.
   await page.evaluate((wav) => {
     window.__afStore.setState({ ttsSpeakerRefState: {
       '민수': { source: wav, clip: '', ready: true, message: '' },
-      '영희': { source: wav, clip: '', ready: true, message: '' },
     } })
   }, WAV)
-  const snapshot = () => page.evaluate(() => {
-    const s = window.__afStore.getState()
-    return JSON.stringify({ text: s.ttsText, refs: s.ttsSpeakerRefState, emo: s.ttsSpeakerEmotionRefs, labels: s.ttsSpeakerLabels })
-  })
-  const mode = () => page.evaluate(() => window.__afStore.getState().ttsSpeakerMode)
+  await sleep(150)
+  const voiceTexts = await page.evaluate(() => [...document.querySelectorAll('[data-testid="dialogue-row"] [data-testid="card-voice"]')].map((b) => b.textContent.trim()))
+  ok('4d', voiceTexts.length === 3 && voiceTexts[0].includes('준비됨') && voiceTexts[2].includes('준비됨') && voiceTexts[1].includes('없음'),
+    '같은 인물(민수)의 두 카드가 같은 목소리 상태, 영희는 없음', JSON.stringify(voiceTexts))
+
+  // ── 5. 탭 전환은 원문·인물·자산을 쓰지 않는다 ─────────────────────────────
   const snap0 = await snapshot()
   for (let i = 0; i < 5; i += 1) { await tab('single'); await tab('multi') }
   await sleep(200)
-  ok('15a', (await snapshot()) === snap0 && (await mode()) === 'multi', '탭 10회 전환 후 원문·목소리 지정·감정별 참조·이름 전부 동일, 마지막 탭 = 생성 방식')
-  await tab('single'); await sleep(200)
-  ok('15b', (await mode()) === 'single' && (await count('[data-testid="single-mode-note"]')) === 1
-    && (await count('[data-testid="single-guard"],[data-testid="single-convert-open"],[data-testid="single-guard-blocked"]')) === 0,
-    '한 명 = single 생성 방식. 중립 안내 1줄, 차단·전환 UI 없음')
-  // 본문 수정은 그대로 반영된다.
-  const EDITED = GUARD_SCRIPT.replace('안녕 [쉼 1] 잘', '안녕하세요 [쉼 1] 잘 지냈어요')
-  await setSource(EDITED)
-  ok('15c', (await store()) === EDITED && (await count('[data-testid="speaker-structure-notice"]')) === 0,
-    '한 명 화면의 본문 수정 반영, 표기 변화 없으면 알림 없음')
-  // 표기를 지우는 편집도 그대로 반영된다 — 알림 + 되돌리기만. 목소리 지정·구성은 그대로.
+  ok('5', (await snapshot()) === snap0 && (await mode()) === 'multi' && await waitRows(3), '탭 10회 전환 후 원문·목소리 지정·이름 동일, 카드 3개')
+
+  // ── 6. 목소리 패널은 선택한 인물 한 명만 ─────────────────────────────────
+  await page.click('[data-testid="dialogue-row"][data-index="0"] [data-testid="card-voice"]')
+  await sleep(150)
+  const panel = await page.evaluate(() => {
+    const p = document.querySelector('[data-testid="voice-panel"]')
+    return { n: document.querySelectorAll('[data-testid="voice-panel"]').length, speaker: p?.getAttribute('data-speaker'),
+      change: !!([...(p?.querySelectorAll('button') ?? [])].find((b) => b.textContent.includes('목소리 바꾸기'))),
+      remove: !!([...(p?.querySelectorAll('button') ?? [])].find((b) => b.textContent.includes('목소리 해제'))) }
+  })
+  ok('6a', panel.n === 1 && panel.speaker === '민수' && panel.change && panel.remove, '민수 목소리 패널 1개: 바꾸기·해제', JSON.stringify(panel))
+  await page.click('[data-testid="voice-panel-close"]'); await sleep(100)
+  ok('6b', (await count('[data-testid="voice-panel"]')) === 0, '닫기 → 카드로 돌아옴')
+
+  // ── 7. 카드 본문 편집: 빠른 타이핑·계획 낡음 중 유지·태그 삭제는 일반 편집 ──
+  const FAST = '빠르게 입력하는 문장입니다 하나 둘 셋 넷 다섯'
+  const body0 = page.locator('[data-testid="dialogue-body"]').first()
+  await body0.click(); await page.keyboard.press('Control+A'); await page.keyboard.type(FAST, { delay: 0 })
+  const draftVal = await body0.inputValue()
+  await page.keyboard.press('Tab')
+  ok('7a', draftVal === FAST && await waitUntil(async () => (await store()).includes(FAST)), '빠른 타이핑 → 손실 없이 반영', `${draftVal.length}/${FAST.length}`)
+  const body1 = page.locator('[data-testid="dialogue-body"]').nth(1)
+  await body1.click(); await page.keyboard.press('Control+A')
+  let snapped = 0, lostFocus = 0
+  const SLOW = '천천히 치는 동안에도 카드가 남아 있어야 합니다'
+  const typing = page.keyboard.type(SLOW, { delay: 45 })
+  const t0 = Date.now()
+  while (Date.now() - t0 < SLOW.length * 45 + 200) {
+    const s = await page.evaluate(() => ({ so: document.querySelectorAll('[data-testid="multi-dialogue-source-only"]').length, focus: document.activeElement?.getAttribute('data-testid') }))
+    if (s.so > 0) snapped += 1
+    if (s.focus !== 'dialogue-body') lostFocus += 1
+    await sleep(80)
+  }
+  await typing
+  await page.keyboard.press('Tab')
+  const committedSlow = await waitUntil(async () => (await store()).includes('\n' + SLOW + '\n'))
+  ok('7b', snapped === 0 && lostFocus === 0 && committedSlow, '타이핑 중 소스전용 0·포커스 유지, 태그([기쁨])를 지운 편집도 그대로 반영', `snapped=${snapped} lostFocus=${lostFocus}`)
+  await waitRows(3)
+  const shown = await waitUntil(async () => { const b = await rowBodies(); return b[0] === FAST && b[1] === SLOW && b[2] === '[슬픔] 잘 가' })
+  ok('7c', shown, '반영 뒤 카드 본문 3개가 원문과 일치', JSON.stringify(await rowBodies()).slice(0, 100))
+
+  // ── 8. + 감정: caret 위치 삽입 → 시작/중간, caret 유지, 네이티브 undo ──────
+  await setSource('[화자 민수]\n안녕하세요 오랜만\n[화자 영희]\n네')
+  ok('8a', await waitRows(2), '감정 삽입용 대본 2카드')
+  const b0 = page.locator('[data-testid="dialogue-row"][data-index="0"] [data-testid="dialogue-body"]')
+  await b0.click()
+  await page.evaluate(() => { const ta = document.querySelector('[data-testid="dialogue-row"][data-index="0"] [data-testid="dialogue-body"]'); ta.setSelectionRange(6, 6); ta.dispatchEvent(new Event('select', { bubbles: true })) })
+  await page.click('[data-testid="dialogue-row"][data-index="0"] [data-testid="emotion-add"]')
+  await sleep(80)
+  const pickerN = await count('[data-testid="emotion-picker"] [role="menuitem"]')
+  await page.click('[data-testid="dialogue-row"][data-index="0"] [data-testid="emotion-picker"] [data-emotion="happy"]')
+  await sleep(120)
+  const afterInsert = await b0.inputValue()
+  const caretAfter = await page.evaluate(() => { const ta = document.activeElement; return ta && ta.getAttribute('data-testid') === 'dialogue-body' ? ta.selectionStart : -1 })
+  ok('8b', pickerN >= 5 && afterInsert === '안녕하세요 [기쁨]오랜만' && caretAfter === 10,
+    '+ 감정 → caret(6) 위치에 [기쁨] 삽입, caret 은 태그 뒤(10)', `picker=${pickerN} value=${JSON.stringify(afterInsert)} caret=${caretAfter}`)
+  await page.keyboard.press('Control+Z')
+  await sleep(80)
+  const afterUndo = await b0.inputValue()
+  ok('8c', afterUndo === '안녕하세요 오랜만', '네이티브 undo 로 삽입 되돌리기', JSON.stringify(afterUndo))
+  // 맨 앞 삽입 → 시작 감정. blur 로 원문 반영.
+  await page.evaluate(() => { const ta = document.querySelector('[data-testid="dialogue-row"][data-index="0"] [data-testid="dialogue-body"]'); ta.focus(); ta.setSelectionRange(0, 0); ta.dispatchEvent(new Event('select', { bubbles: true })) })
+  await page.click('[data-testid="dialogue-row"][data-index="0"] [data-testid="emotion-add"]'); await sleep(80)
+  await page.click('[data-testid="dialogue-row"][data-index="0"] [data-testid="emotion-picker"] [data-emotion="sad"]'); await sleep(120)
+  await page.keyboard.press('Tab')
+  const committedTag = await waitUntil(async () => (await store()).startsWith('[화자 민수]\n[슬픔]안녕하세요 오랜만\n'))
+  ok('8d', committedTag, '맨 앞 삽입 → 시작 감정, blur 로 원문 반영', (await store()).slice(0, 40))
+
+  // ── 9. 카드 삭제는 원문에서 그 발화만 지운다 — 목소리 자산 무변경 ────────
+  await setSource(SCRIPT); await waitRows(3)
   const refsBefore = JSON.parse(await snapshot()).refs
-  const DELETED = EDITED.replace('[화자 영희]\n', '')
+  await page.click('[data-testid="dialogue-row"][data-index="1"] button:has-text("삭제")')
+  const deleted = await waitUntil(async () => (await store()) === '[화자 민수]\n안녕\n[화자 민수]\n[슬픔] 잘 가')
+  ok('9', deleted && JSON.stringify(JSON.parse(await snapshot()).refs) === JSON.stringify(refsBefore), '2번 카드 삭제 → 그 발화만 제거, 목소리 지정 그대로', (await store()).length + '자')
+
+  // ── 10. 표현 불가 대본 → 이유 + 원문 편집기 그대로 / 줄 안의 쉼은 카드 유지 ──
+  const COMPLEX = '[화자 민수]\n안녕 [쉼 1] 잘 지냈어?\n[모르는지시] 이상한 줄'
+  await setSource(COMPLEX)
+  const so = await waitUntil(async () => (await count('[data-testid="multi-dialogue-source-only"]')) === 1)
+  ok('10a', so && (await count(RAW)) === 1 && (await store()) === COMPLEX && (await count('[data-testid="direct-edit"]')) === 0,
+    '알 수 없는 지시 → 이유 표시 + 원문 편집기 자동 표시, 원문 그대로')
+  const PAUSE_ONLY = '[화자 민수]\n안녕 [쉼 1] 잘 지냈어?\n[화자 영희]\n응'
+  await setSource(PAUSE_ONLY)
+  ok('10b', await waitRows(2, 15000) && (await rowBodies())[0].includes('[쉼 1]') && (await store()) === PAUSE_ONLY, '줄 안의 쉼: 카드 2개, 쉼은 대사 안에')
+
+  // ── 11. 화자 없는 대본 = 기본 인물 카드, 새 인물 만들기 → 명시 인물로 ────
+  const NO_SPK = '그냥 한 줄\n[기쁨] 둘째 줄'
+  await setSource(NO_SPK)
+  ok('11a', await waitRows(2), '표기 없는 대본 2카드')
+  const firstSel = await page.evaluate(() => { const sel = document.querySelector('[data-testid="dialogue-row"] select'); return { value: sel.value, text: sel.options[sel.selectedIndex]?.textContent } })
+  ok('11b', firstSel.value === '' && firstSel.text === '기본 인물' && (await text('[data-testid="multi-summary"]') ?? '').includes('기본 인물'), '인물 칸이 기본 인물, 요약에도 기본 인물', JSON.stringify(firstSel))
+  const before11 = await store()
+  await page.selectOption('#dlg-new-speaker', '__new__'); await page.click('[data-testid="dialogue-add"] button'); await sleep(120)
+  const newStarter = await page.evaluate(() => document.querySelector('[data-testid="starter-card"]')?.getAttribute('data-speaker'))
+  ok('11c', !!newStarter && (await store()) === before11, '새 인물 만들기 → 시작 카드, 원문 그대로', `id=${newStarter}`)
+  await page.fill(`#spk-name-${newStarter}`, '민수'); await sleep(120)
+  const row0Sel = await page.evaluate(() => document.querySelectorAll('[data-testid="dialogue-row"] select')[0].id)
+  await page.selectOption('#' + row0Sel, '민수')
+  ok('11d', await waitUntil(async () => (await store()) === '[화자 민수]\n그냥 한 줄\n[화자 기본]\n[기쁨] 둘째 줄'), '기본 인물 → 민수: 표기 생성, 다음 대사는 [화자 기본]')
+  await page.click(`[data-testid="starter-card"][data-speaker="${newStarter}"] button:has-text("삭제")`).catch(() => {})
+
+  // ── 12. 한 명: 제한 없는 편집 + 비차단 알림·되돌리기 / 자산·구성 보존 ───────
+  await setSource(SCRIPT); await waitRows(3)
+  await page.evaluate((wav) => { window.__afStore.setState({ ttsSpeakerRefState: {
+    '민수': { source: wav, clip: '', ready: true, message: '' }, '영희': { source: wav, clip: '', ready: true, message: '' } } }) }, WAV)
+  await tab('single'); await sleep(200)
+  ok('12a', (await mode()) === 'single' && (await count('[data-testid="single-mode-note"]')) === 1 && (await count('[data-testid="dialogue-row"]')) === 0
+    && (await count('[data-testid="single-guard"],[data-testid="single-convert-open"]')) === 0,
+    '한 명: 중립 안내 1줄, 카드 없음, 차단·전환 UI 없음')
+  const refs12 = JSON.parse(await snapshot()).refs
+  const DELETED = SCRIPT.replace('[화자 영희]\n', '')
   await setSource(DELETED)
-  const noticeN = await count('[data-testid="speaker-structure-notice"]')
-  const refsAfterDel = JSON.parse(await snapshot()).refs
-  ok('15d', (await store()) === DELETED && noticeN === 1 && JSON.stringify(refsAfterDel) === JSON.stringify(refsBefore),
-    '화자 표기 삭제 편집 반영 + 비차단 알림 1개, 목소리 지정 무변경', `notice=${noticeN}`)
-  await page.click('[data-testid="speaker-structure-undo"]')
-  await sleep(150)
-  ok('15e', (await store()) === EDITED && (await count('[data-testid="speaker-structure-notice"]')) === 0, '되돌리기 → 직전 원문, 알림 사라짐')
-  // 이름 변경도 반영 + 알림. 다음 편집이 오면 알림은 사라진다(뒤 입력을 삼키지 않는다).
-  await setSource(EDITED.replace('[화자 영희]', '[화자 지은]'))
-  const renamedNotice = await count('[data-testid="speaker-structure-notice"]')
-  await setSource(EDITED.replace('[화자 영희]', '[화자 지은]') + ' 더')
-  ok('15f', renamedNotice === 1 && (await count('[data-testid="speaker-structure-notice"]')) === 0 && (await store()).endsWith('또 더'),
-    '이름 변경 반영 + 알림, 이어서 입력하면 알림만 사라지고 입력은 유지')
-  await setSource(EDITED)
-  await sleep(200)
-  // 여러 명으로 돌아가면 남아 있는 표기 그대로 — 인물 2명, 목소리 지정 유지.
-  await tab('multi'); await waitRows(3, 10000)
-  const cardsBack = await page.evaluate(() => [...document.querySelectorAll('[data-testid="speaker-card"]')].map((c) => c.getAttribute('data-speaker')))
-  const changeBtns = await page.locator('[data-testid="speaker-card"] button:has-text("목소리 바꾸기")').count()
-  ok('15h', cardsBack.join(',') === '민수,영희' && changeBtns === 2 && (await rowSpeakers()).join(',') === '민수,영희,민수' && (await mode()) === 'multi',
-    '여러 명 복귀: 인물 순서·이름·목소리 지정 그대로, 생성 방식 multi', `cards=${cardsBack.join(',')} change=${changeBtns}`)
-  // 두 인물이 같은 파일을 쓰면 카드가 그 사실을 말한다(같은 목소리로 만들어진다) — 실제 run 에서 확인된 사례.
-  const sharedNotes = await page.evaluate(() => [...document.querySelectorAll('[data-testid="speaker-voice-shared"]')].map((e) => e.textContent))
-  ok('16', sharedNotes.length === 2 && sharedNotes.every((t) => t.includes('같은 목소리로 만들어집니다')),
-    '같은 파일을 쓰는 두 인물 카드에 공유 경고', `n=${sharedNotes.length}`)
-  const overrideN = await count('[data-testid="speaker-voice-emotion-override"]')
-  ok('16b', overrideN === 0, '목소리 구성이 적용되지 않았으면 감정별 덮어쓰기 표시 없음')
+  ok('12b', (await store()) === DELETED && (await count('[data-testid="speaker-structure-notice"]')) === 1 && JSON.stringify(JSON.parse(await snapshot()).refs) === JSON.stringify(refs12),
+    '표기 삭제 편집 반영 + 비차단 알림, 목소리 지정 무변경')
+  await page.click('[data-testid="speaker-structure-undo"]'); await sleep(150)
+  ok('12c', (await store()) === SCRIPT && (await count('[data-testid="speaker-structure-notice"]')) === 0, '되돌리기 → 직전 원문')
+  await tab('multi'); await waitRows(3)
+  const sharedPanel = async () => { await page.click('[data-testid="dialogue-row"][data-index="0"] [data-testid="card-voice"]'); await sleep(120); const n = await count('[data-testid="speaker-voice-shared"]'); await page.click('[data-testid="voice-panel-close"]'); return n }
+  ok('12d', (await rowSpeakers()).join(',') === '민수,영희,민수' && (await sharedPanel()) === 1, '여러 명 복귀: 카드 복원, 같은 파일 공유 경고는 패널 안에')
 
-  // ── 17. 기본 모드의 참조 권위 — 감정별 참조는 인물별로 켠 경우에만 ────────────
-  await page.evaluate((wav) => {
-    const US = String.fromCharCode(31)
-    window.__afStore.setState({ ttsSpeakerEmotionRefs: { ['민수' + US + 'happy']: wav } })
-  }, WAV)
-  await sleep(200)
-  const offN = await count('[data-testid="speaker-voice-emotion-off"]')
-  const toggleN = await count('[data-testid="speaker-emotion-voice-toggle"]')
-  const onN0 = await count('[data-testid="speaker-voice-emotion-override"]')
-  const enabled0 = await page.evaluate(() => JSON.stringify(window.__afStore.getState().ttsSpeakerEmotionEnabled))
-  ok('17a', offN === 1 && toggleN === 1 && onN0 === 0 && enabled0 === '{}',
-    '감정별 음원이 있어도 기본은 꺼짐 — "있음(꺼짐): 기본 목소리만" 표시, 켬 상태 비어 있음', `off=${offN} toggle=${toggleN} on=${onN0}`)
-  await page.click('[data-testid="speaker-emotion-voice-toggle"] input')
-  await sleep(150)
-  const onText = await page.evaluate(() => document.querySelector('[data-testid="speaker-voice-emotion-override"]')?.textContent ?? '')
-  const enabled1 = await page.evaluate(() => JSON.stringify(window.__afStore.getState().ttsSpeakerEmotionEnabled))
-  ok('17b', enabled1 === '{"민수":true}' && onText.includes('감정별 목소리 사용 중') && onText.includes('기쁨') && (await count('[data-testid="speaker-voice-emotion-off"]')) === 0,
-    '켜면 그 인물만 켬 상태 + "사용 중: 기쁨" 항상 표시', `enabled=${enabled1}`)
-  await page.click('[data-testid="speaker-emotion-voice-toggle"] input')
-  await sleep(150)
+  // ── 13. 감정별 목소리는 인물별 opt-in(패널 안) ────────────────────────────
+  await page.evaluate((wav) => { const US = String.fromCharCode(31); window.__afStore.setState({ ttsSpeakerEmotionRefs: { ['민수' + US + 'happy']: wav } }) }, WAV)
+  await page.click('[data-testid="dialogue-row"][data-index="0"] [data-testid="card-voice"]'); await sleep(150)
+  const off = await count('[data-testid="speaker-voice-emotion-off"]'); const toggle = await count('[data-testid="speaker-emotion-voice-toggle"]')
+  await page.click('[data-testid="speaker-emotion-voice-toggle"] input'); await sleep(120)
+  const enabled = await page.evaluate(() => JSON.stringify(window.__afStore.getState().ttsSpeakerEmotionEnabled))
+  const onN = await count('[data-testid="speaker-voice-emotion-override"]')
+  await page.click('[data-testid="speaker-emotion-voice-toggle"] input'); await sleep(120)
   const enabled2 = await page.evaluate(() => JSON.stringify(window.__afStore.getState().ttsSpeakerEmotionEnabled))
-  const refsKept = await page.evaluate(() => Object.keys(window.__afStore.getState().ttsSpeakerEmotionRefs).length)
-  ok('17c', enabled2 === '{}' && refsKept === 1 && (await count('[data-testid="speaker-voice-emotion-off"]')) === 1,
-    '끄면 켬 상태만 사라지고 구성의 참조는 삭제되지 않는다', `refsKept=${refsKept}`)
+  await page.click('[data-testid="voice-panel-close"]')
+  ok('13', off === 1 && toggle === 1 && enabled === '{"민수":true}' && onN === 1 && enabled2 === '{}' && (await page.evaluate(() => Object.keys(window.__afStore.getState().ttsSpeakerEmotionRefs).length)) === 1,
+    '기본 꺼짐 → 켜면 그 인물만 · 사용 중 표시 → 끄면 구성은 그대로', `off=${off} toggle=${toggle} enabled=${enabled}`)
   await page.evaluate(() => window.__afStore.setState({ ttsSpeakerEmotionRefs: {} }))
-  // 한 명으로 돌아가 표기를 직접 지워도 목소리 지정·설정의 목소리 구성은 그대로다.
-  await tab('single'); await sleep(150)
-  await setSource(GUARD_SCRIPT.replace(/\[화자 [^\]]+\]\n/g, ''))
-  const refsAfterStrip = await page.evaluate(() => Object.keys(window.__afStore.getState().ttsSpeakerRefState).sort().join(','))
-  ok('18', refsAfterStrip === '민수,영희' && (await count('[data-testid="speaker-structure-notice"]')) === 1,
-    '표기를 전부 지워도 목소리 지정은 남고 알림만 뜬다')
-  await page.evaluate(() => window.__afStore.setState({ ttsSpeakerRefState: {} }))
-  await tab('multi'); await sleep(100)
 
-  // ── 10. 배역 세트(VoiceCast) 자동 생성 없음 ───────────────────────────────
+  // ── 14. 원문 직접 편집은 카드와 상호 배타 ─────────────────────────────────
+  await page.click('[data-testid="direct-edit"] summary'); await sleep(150)
+  const exclusive = (await count(RAW)) === 1 && (await count('[data-testid="dialogue-row"]')) === 0
+  await page.click('[data-testid="direct-edit"] summary'); await sleep(150)
+  ok('14', exclusive && await waitRows(3) && (await count(RAW)) === 0, '직접 편집 열면 카드 숨김·원문 편집기 표시, 닫으면 카드 복귀')
+
+  // ── 15. 배역 세트(목소리 구성) 자동 생성 없음 ─────────────────────────────
   const settings = await page.evaluate(() => window.api.settings.get())
   const vc = settings?.voiceCasts
-  const settingsFile = path.join(USER_DATA, 'settings.json')
-  const fileHasVc = fs.existsSync(settingsFile) && /"voiceCasts"\s*:\s*(\[\s*[^\]]|\{\s*")/.test(fs.readFileSync(settingsFile, 'utf-8'))
-  ok('10', (vc == null || (Array.isArray(vc) ? vc.length === 0 : Object.keys(vc).length === 0)) && !fileHasVc,
-    '설정에 voiceCasts 항목 없음(메모리·파일 모두)')
+  ok('15', vc == null || (Array.isArray(vc) ? vc.length === 0 : Object.keys(vc).length === 0), '설정에 voiceCasts 항목 없음')
+
+  // ── 16. 폭 1280×800 / 좁은 폭 720: 가로 넘침·겹침·세로로 쪼개진 버튼 없음 ──
+  const cdp = await page.context().newCDPSession(page)
+  const layoutCheck = async () => page.evaluate(() => {
+    const sec = document.querySelector('section[aria-label="대사"]')
+    const overflow = sec ? sec.scrollWidth - sec.clientWidth : -1
+    const btns = [...document.querySelectorAll('[data-testid="multi-dialogue"] button')]
+    const tall = btns.filter((b) => b.getBoundingClientRect().height > 40).length
+    const rows = [...document.querySelectorAll('[data-testid="dialogue-row"]')].map((r) => r.getBoundingClientRect())
+    let overlaps = 0
+    for (let i = 1; i < rows.length; i += 1) if (rows[i].top < rows[i - 1].bottom - 1) overlaps += 1
+    return { overflow, tall, overlaps, docOverflow: document.documentElement.scrollWidth - document.documentElement.clientWidth }
+  })
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 800, deviceScaleFactor: 1, mobile: false }); await sleep(250)
+  const wide = await layoutCheck()
+  await cdp.send('Emulation.setDeviceMetricsOverride', { width: 720, height: 800, deviceScaleFactor: 1, mobile: false }); await sleep(250)
+  const narrow = await layoutCheck()
+  await cdp.send('Emulation.clearDeviceMetricsOverride'); await sleep(150)
+  ok('16', wide.overflow <= 0 && wide.tall === 0 && wide.overlaps === 0 && narrow.overflow <= 0 && narrow.tall === 0 && narrow.overlaps === 0,
+    '1280×800·720 폭에서 가로 넘침 0, 세로로 쪼개진 버튼 0, 카드 겹침 0', `wide=${JSON.stringify(wide)} narrow=${JSON.stringify(narrow)}`)
 
   ok('err', pageErrors.length === 0, 'renderer 페이지 오류 0', pageErrors.slice(0, 3).join(' | '))
 } catch (e) {
