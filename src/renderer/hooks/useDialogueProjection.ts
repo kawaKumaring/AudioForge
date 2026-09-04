@@ -73,7 +73,8 @@ export interface DialogueProjection {
   canRemoveSpeaker: (speakerId: string) => { ok: boolean; reason: string | null }
 
   // ── 좌표 의존 명령(patchAllowed 일 때만) ──
-  setSpeaker: (index: number, label: string) => string | null
+  /** label null = 기본 인물(화자 표기 없음)로 되돌린다. */
+  setSpeaker: (index: number, label: string | null) => string | null
   setBaseEmotion: (index: number, emotionTag: string | null) => string | null
   insertAfter: (index: number, label: string, line: string, emotionTag?: string | null) =>
     string | null
@@ -221,10 +222,12 @@ export function useDialogueProjection(
   }, [speakers])
 
   // ── 좌표 의존 명령 ──
-  const setSpeaker = useCallback((index: number, label: string) => {
+  const setSpeaker = useCallback((index: number, label: string | null) => {
     const g = guard(); if (g) return g
-    const check = validateSpeakerLabel(label)
-    if (!check.ok) { setLastRefusal(`SPEAKER_LABEL_${check.problem}`); return `SPEAKER_LABEL_${check.problem}` }
+    if (label !== null) {
+      const check = validateSpeakerLabel(label)
+      if (!check.ok) { setLastRefusal(`SPEAKER_LABEL_${check.problem}`); return `SPEAKER_LABEL_${check.problem}` }
+    }
     return apply(changeSpeaker(text, views, index, label))
   }, [guard, apply, text, views])
 

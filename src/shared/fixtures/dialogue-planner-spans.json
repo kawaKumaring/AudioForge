@@ -389,5 +389,112 @@
       }
     ],
     "pauses": []
+  },
+  "pause_line": {
+    "source": "[화자 민수]\n안녕\n[쉼 1]\n[화자 영희]\n응",
+    "parser_authority": true,
+    "source_sha256": "a8f555702aea2ade940693c6d294e91caa7da01a30d1b96949800356ff9731e8",
+    "warnings": [
+      {
+        "code": "DIRECTIVE_ONLY_PARAGRAPH"
+      }
+    ],
+    "speakers": [
+      {
+        "speaker_id": "민수",
+        "label": "민수",
+        "utterance_count": 1
+      },
+      {
+        "speaker_id": "영희",
+        "label": "영희",
+        "utterance_count": 1
+      }
+    ],
+    "utterances": [
+      {
+        "index": 0,
+        "speaker_id": "민수",
+        "speaker_label": "민수",
+        "emotion_id": null,
+        "source_start": 8,
+        "source_end": 10,
+        "text_start": 8,
+        "text_end": 10,
+        "line_index": 1,
+        "source_offsets_exact": true
+      },
+      {
+        "index": 1,
+        "speaker_id": "영희",
+        "speaker_label": "영희",
+        "emotion_id": null,
+        "source_start": 25,
+        "source_end": 26,
+        "text_start": 25,
+        "text_end": 26,
+        "line_index": 4,
+        "source_offsets_exact": true
+      }
+    ],
+    "pauses": [
+      {
+        "utterance_index": 1,
+        "source_start": 25,
+        "source_end": 25
+      }
+    ]
+  },
+  "default_reset": {
+    "source": "[화자 민수]\n안녕\n[화자 기본]\n둘째\n셋째",
+    "parser_authority": true,
+    "source_sha256": "7e1ef6089725b1f8dc1bb8bfc59bfbe0ace2cd4ce6fd332e62b451a65c5352a0",
+    "warnings": [],
+    "speakers": [
+      {
+        "speaker_id": "민수",
+        "label": "민수",
+        "utterance_count": 1
+      }
+    ],
+    "utterances": [
+      {
+        "index": 0,
+        "speaker_id": "민수",
+        "speaker_label": "민수",
+        "emotion_id": null,
+        "source_start": 8,
+        "source_end": 10,
+        "text_start": 8,
+        "text_end": 10,
+        "line_index": 1,
+        "source_offsets_exact": true
+      },
+      {
+        "index": 1,
+        "speaker_id": null,
+        "speaker_label": null,
+        "emotion_id": null,
+        "source_start": 19,
+        "source_end": 21,
+        "text_start": 19,
+        "text_end": 21,
+        "line_index": 3,
+        "source_offsets_exact": true
+      },
+      {
+        "index": 2,
+        "speaker_id": null,
+        "speaker_label": null,
+        "emotion_id": null,
+        "source_start": 22,
+        "source_end": 24,
+        "text_start": 22,
+        "text_end": 24,
+        "line_index": 4,
+        "source_offsets_exact": true
+      }
+    ],
+    "pauses": []
   }
 }

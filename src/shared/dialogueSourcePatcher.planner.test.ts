@@ -13,7 +13,7 @@ import { dirname, join } from 'node:path'
 
 import {
   groupUtteranceRows, structurable, utteranceParts, changeBaseEmotion, deleteUtterance,
-  changeSpeaker, insertUtteranceAfter, moveUtterance,
+  changeSpeaker, insertUtteranceAfter, moveUtterance, replaceUtteranceBody,
 } from './dialogueSourcePatcher.ts'
 import type { UtteranceView } from './dialogueSourcePatcher.ts'
 
@@ -153,4 +153,65 @@ test('실측 좌표 위에서 추가·이동도 성립한다', () => {
   const mv = moveUtterance(f.source, rows, 1, 2)
   assert.equal(mv.changed, true, mv.refusedCode ?? '')
   assert.equal(mv.text, '[화자 민수]\n안녕\n[화자 민수]\n[슬픔] 잘 가\n[화자 영희]\n[기쁨] 반가워')
+})
+
+// ── 기본 인물(화자 표기 없음) ────────────────────────────────────────────────
+
+test('기본 인물 → 명시 인물: 표기 없는 대사 앞에 [화자 이름] 을 세우고, 뒤 대사는 [화자 기본] 으로 되돌린다', () => {
+  const f = FIX.no_speaker
+  const rows = rowsOf(f)
+  const res = changeSpeaker(f.source, rows, 0, '민수')
+  assert.equal(res.changed, true, res.refusedCode ?? '')
+  assert.equal(res.text, '[화자 민수]\n그냥 한 줄\n[화자 기본]\n[기쁨] 둘째 줄')
+})
+
+test('[화자 기본] 은 파서가 화자를 비운다(실측) — 행은 기본 인물이고, 명시 인물로 바꾸면 표기만 바뀐다', () => {
+  const f = FIX.default_reset
+  const rows = rowsOf(f)
+  assert.deepEqual(rows.map((r) => r.speakerLabel), ['민수', null, null])
+  assert.deepEqual(rows.map((r) => r.hasOwnSpeakerDirective), [true, true, false])
+  assert.equal(verdictOf(f, rows).mode, 'structured')
+  // 자기 표기([화자 기본])가 있는 기본 인물 행 → 표기만 바꾸고, 이어받던 셋째 줄은 기본으로 복원.
+  const res = changeSpeaker(f.source, rows, 1, '영희')
+  assert.equal(res.changed, true, res.refusedCode ?? '')
+  assert.equal(res.text, '[화자 민수]\n안녕\n[화자 영희]\n둘째\n[화자 기본]\n셋째')
+  // 이미 기본 인물인 행을 기본 인물로 → 변화 없음.
+  assert.equal(changeSpeaker(f.source, rows, 1, null).refusedCode, 'NO_CHANGE')
+  // 빈 문자열은 기본 인물이 아니라 잘못된 이름이다.
+  assert.equal(changeSpeaker(f.source, rows, 1, '').refusedCode, 'SPEAKER_LABEL_EMPTY')
+})
+
+test('명시 인물 → 기본 인물: 표기를 [화자 기본] 으로 바꾼다(다음 행이 자기 표기를 가지면 복원 없음)', () => {
+  const f = FIX.three_speakers
+  const rows = rowsOf(f)
+  const res = changeSpeaker(f.source, rows, 1, null)
+  assert.equal(res.changed, true, res.refusedCode ?? '')
+  assert.equal(res.text, '[화자 민수]\n안녕\n[화자 기본]\n[기쁨] 반가워\n[화자 민수]\n[슬픔] 잘 가')
+})
+
+// ── 쉼 ──────────────────────────────────────────────────────────────────────
+
+test('줄 안의 쉼: 화자 변경·본문 수정 뒤에도 [쉼 N] 이 그대로 남는다', () => {
+  const f = FIX.pause_inside
+  const rows = rowsOf(f)
+  const sp = changeSpeaker(f.source, rows, 0, '영희')
+  assert.equal(sp.changed, true, sp.refusedCode ?? '')
+  assert.match(sp.text, /^\[화자 영희\]\n안녕 \[쉼 1\] 잘 지냈어\?\n/)
+  // 본문에서 쉼을 지우는 수정은 일반 경로에서 거부된다(태그 손실 방지).
+  const drop = replaceUtteranceBody(f.source, rows, 0, '안녕 잘 지냈어?')
+  assert.equal(drop.changed, false)
+  assert.equal(drop.refusedCode, 'MID_EMOTION_WOULD_BE_LOST')
+  // 쉼을 지키는 수정은 반영된다.
+  const keep = replaceUtteranceBody(f.source, rows, 0, '반가워 [쉼 1] 잘 지냈어?')
+  assert.equal(keep.changed, true, keep.refusedCode ?? '')
+  assert.match(keep.text, /^\[화자 민수\]\n반가워 \[쉼 1\] 잘 지냈어\?\n/)
+})
+
+test('독립 쉼 줄(발화 사이의 지시 전용 줄)은 직접 입력으로 물러난다 — NON_WHITESPACE_OUTSIDE', () => {
+  const f = FIX.pause_line
+  const rows = rowsOf(f)
+  assert.equal(rows.length, 2)
+  const v = verdictOf(f, rows)
+  assert.equal(v.mode, 'sourceOnly')
+  assert.ok(v.blockers.includes('NON_WHITESPACE_OUTSIDE'), v.blockers.join(','))
 })

@@ -150,6 +150,20 @@ test('대사가 남은 인물은 확인 없이 지우지 않는다', () => {
   assert.ok(MULTI.includes('if (s.pending) p.removePendingSpeaker(s.speakerId)'))
 })
 
+test('화자 표기가 없는 대사는 빈 칸이 아니라 기본 인물로 보이고, 등록되지 않는다', () => {
+  assert.ok(MULTI.includes('<option value="">기본 인물</option>'), '행 인물 칸의 기본 인물')
+  assert.ok(MULTI.includes('data-testid="default-speaker-note"'), '기본 인물 안내 한 줄')
+  assert.ok(MULTI.includes('한 명 탭과 같은 기본 목소리'), '기본 목소리 안내')
+  // 기본 인물 선택은 null 로 전달되고, 훅은 null 을 검증 없이 패처로 넘긴다(패처가 [화자 기본] 을 쓴다).
+  assert.ok(MULTI.includes("p.setSpeaker(i, e.target.value === '' ? null : e.target.value)"))
+  assert.ok(HOOK.includes('setSpeaker: (index: number, label: string | null)'))
+  // 기본 인물은 인물 카드·목소리 store·저장소 어디에도 등록하지 않는다.
+  for (const forbidden of ["speakerId: 'default'", "label: '기본 인물'", 'registerSpeakerRef(\'\'', 'registerSpeakerRef("")']) {
+    assert.equal(MULTI.includes(forbidden), false, forbidden)
+    assert.equal(HOOK.includes(forbidden), false, forbidden)
+  }
+})
+
 test('인물 이름은 원문에 쓰기 전에 검증되고 문구가 있다', () => {
   assert.ok(MULTI.includes('validateSpeakerLabel(label)'))
   assert.ok(MULTI.includes('data-testid="speaker-name-problem"'))

@@ -312,10 +312,15 @@ export function changeSpeaker(
 ): PatchResult {
   const u = utterances[index]
   if (!u) return unchanged(text, 'UTTERANCE_NOT_FOUND')
-  const label = (newLabel ?? '').trim()
-  const check = validateSpeakerLabel(label)
-  if (!check.ok) return unchanged(text, `SPEAKER_LABEL_${check.problem}`)
-  if (u.speakerLabel === label) return unchanged(text, 'NO_CHANGE')
+  // null = **기본 인물**(화자 표기 없음). `[화자 기본]` 으로 되돌린다 — 파서가 speaker 를 비운다(실측).
+  // 빈 문자열은 기본 인물이 아니라 잘못된 이름이다.
+  const toDefault = newLabel === null
+  const label = toDefault ? '' : newLabel.trim()
+  if (!toDefault) {
+    const check = validateSpeakerLabel(label)
+    if (!check.ok) return unchanged(text, `SPEAKER_LABEL_${check.problem}`)
+  }
+  if ((u.speakerLabel ?? null) === (toDefault ? null : label)) return unchanged(text, 'NO_CHANGE')
 
   const slice = sliceOf(text, u)
   let replaced: string

@@ -160,6 +160,13 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
           <button type="button" disabled={disabled} onClick={p.addPendingSpeaker}
             style={btn('var(--cyan)', disabled)}>+ 인물 추가</button>
         </div>
+        {/* 화자 표기가 없는 대사가 있으면 그것이 무엇인지 한 줄로 말한다. 카드도 등록도 아니다. */}
+        {p.rows.some((r) => r.view.speakerLabel === null) && (
+          <span data-testid="default-speaker-note" style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+            인물 표기가 없는 대사는 <b>기본 인물</b>로 표시됩니다. 한 명 탭과 같은 기본 목소리를 씁니다.
+            대사의 인물 칸에서 다른 인물로 바꿀 수 있습니다.
+          </span>
+        )}
       </div>
 
       {/* ── 대화 ── */}
@@ -182,7 +189,9 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
                 <label htmlFor={speakerSelectId} style={{ fontSize: 10, color: 'var(--text-muted)' }}>인물</label>
                 <select id={speakerSelectId} value={r.view.speakerLabel ?? ''}
                   disabled={disabled || !p.patchAllowed} style={select}
-                  onChange={(e) => p.setSpeaker(i, e.target.value)}>
+                  onChange={(e) => p.setSpeaker(i, e.target.value === '' ? null : e.target.value)}>
+                  {/* 화자 표기가 없는 대사 = 기본 인물. 빈 칸으로 두지 않는다. 고르면 [화자 기본] 으로 되돌린다. */}
+                  <option value="">기본 인물</option>
                   {r.view.speakerLabel && !speakerLabels.includes(r.view.speakerLabel) && (
                     <option value={r.view.speakerLabel}>{r.view.speakerLabel}</option>
                   )}
