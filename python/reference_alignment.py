@@ -29,8 +29,10 @@ from math import gcd  # noqa: F401  (의도적 미사용 — 해상도 판정은
 
 # ────────────────────────── 정책 상수 ──────────────────────────
 
-MIN_CLIP_SEC = 3.0               # reference_audio.GPTSOVITS_POLICY 와 같은 하한
-MAX_CLIP_SEC = 10.0              # 같은 상한
+# 기본값 = GPT-SoVITS 정책(3~10초). 호출부(reference_region.plan_aligned_region)는 엔진 정책의
+# region_bounds 를 넘긴다 — 여기 숫자는 정책을 넘기지 않은 구 호출·테스트만 쓴다.
+MIN_CLIP_SEC = 3.0
+MAX_CLIP_SEC = 10.0
 MIN_BOUNDARY_SILENCE_SEC = 0.20  # 경계로 쓸 수 있는 무음의 최소 길이. 이보다 짧은 틈은
                                  # 말 사이 숨이지 '문장이 끝난 자리'가 아니다.
 EDGE_TOLERANCE_SEC = 0.02        # 부동소수·리샘플 오차 흡수용. 이보다 큰 침범은 침범으로 본다.
@@ -54,8 +56,8 @@ _FAIL_MSG = {
                             "파형/VAD 경계나 단어 단위 정렬이 필요합니다.",
     FAIL_NO_SILENCE_BOUNDARY: "말이 끊기지 않는 구간이라 참조로 쓸 수 있는 무음 경계가 없습니다.",
     FAIL_NO_COMPLETE_SEGMENT: "구간 안에 온전히 들어가는 발화가 하나도 없습니다.",
-    FAIL_TOO_SHORT: "완전한 발화만 남기면 참조가 너무 짧아집니다(3초 미만).",
-    FAIL_TOO_LONG: "완전한 발화를 담으려면 참조가 너무 길어집니다(10초 초과).",
+    FAIL_TOO_SHORT: "완전한 발화만 남기면 참조가 이 엔진의 허용 하한보다 짧아집니다.",
+    FAIL_TOO_LONG: "완전한 발화를 담으려면 참조가 이 엔진의 허용 상한보다 길어집니다.",
 }
 
 

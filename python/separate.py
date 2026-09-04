@@ -103,7 +103,21 @@ def _outputs_verified():
     return True
 
 
-def _emotion_candidate_view(spec):
+def _reference_policy(args):
+    """이 요청이 쓸 엔진의 참조 정책. 화면이 보낸 ttsEngine(없으면 auto) 을 합성과 같은 규칙으로 해석한다.
+    auto 는 Qwen 런타임 존재 여부로 갈린다(Qwen 있으면 qwen3, 없으면 gptsovits) — tts_worker 의 자동 선택과 같다."""
+    import reference_audio as _ra
+    preferred = getattr(args, "tts_engine", None) or "auto"
+    qwen_ok = False
+    try:
+        from tts_worker import _get_qwen_engine
+        qwen_ok = bool(_get_qwen_engine().available())
+    except Exception:
+        qwen_ok = False          # 확인 실패 = 없음으로 본다(보수적: GPT-SoVITS 필수 조건이 적용된다)
+    return _ra.policy_for_engine(_ra.resolve_policy_engine(preferred, qwen_ok))
+
+
+def _emotion_candidate_view(spec, policy=None):
     """감정 참조 후보 목록. **기존 분석기와 기존 선택 권위를 그대로 쓴다.**
 
     새 분석기·새 판정을 만들지 않는다 — 길이·품질은 `reference_audio` 가, 프로필은
@@ -115,6 +129,7 @@ def _emotion_candidate_view(spec):
     import emotion_acoustic as _ea
     import speaker_refs as _sr
     from reference_audio import assess_reference_file, GPTSOVITS_POLICY
+    _policy = policy if policy is not None else GPTSOVITS_POLICY
 
     speaker_id = str(spec.get("speakerId") or "")
     emotion_id = str(spec.get("emotionId") or "default")
@@ -152,7 +167,7 @@ def _emotion_candidate_view(spec):
                "quality_state": _sr.QUALITY_UNKNOWN, "quality_codes": [],
                "duration_sec": None}
         try:
-            assessed = assess_reference_file(path, GPTSOVITS_POLICY)
+            assessed = assess_reference_file(path, _policy)
             row["duration_sec"] = round(float(assessed.analysis.duration_sec), 2)
             if not assessed.valid:
                 row["quality_state"] = _sr.QUALITY_INVALID
@@ -502,27 +517,16 @@ def main():
             return
 
         # ── Reference region: 분석(추천/파형) · 트림(파생 클립) (참조 구간 선택 UI용) ──
+        # 길이 조건은 엔진별 정책 하나(reference_audio)에서 파생한다. 화면이 보낸 ttsEngine 으로 정책을 고르고,
+        # 합성(tts_worker)도 같은 resolve 규칙을 쓴다 — 화면이 허용한 구간을 생성 직전에 다른 상수가 거부하지 않는다.
         if args.mode == "ref-analyze":
             import reference_region as rr
-            from reference_audio import assess_reference_file, GPTSOVITS_POLICY
-            assessed = assess_reference_file(args.input, GPTSOVITS_POLICY)
-            dur = assessed.analysis.duration_sec
-            payload = {
-                "duration_sec": dur, "sample_rate": assessed.analysis.sample_rate,
-                "channels": assessed.analysis.channels,
-                "needs_region": bool(dur > GPTSOVITS_POLICY.max_duration_sec),
-                "too_short": bool(assessed.analysis.readable and 0 < dur < GPTSOVITS_POLICY.min_duration_sec),
-                "valid_whole": bool(assessed.valid),
-                "errors": [e.to_dict() for e in assessed.errors],
-                "warnings": [w.to_dict() for w in assessed.warnings],
-            }
-            if payload["needs_region"]:
-                payload["recommend"] = rr.recommend_region(args.input)
-                payload["peaks"] = rr.coarse_peaks(args.input, buckets=500)
+            _policy = _reference_policy(args)
+            payload = rr.analysis_payload(args.input, _policy)
             if getattr(args, "emotion_candidates", None):
                 # 같은 응답에 얹는다 — 새 채널을 만들지 않는다. 실패해도 기존 분석은 나간다.
                 try:
-                    payload["candidate_view"] = _emotion_candidate_view(args.emotion_candidates)
+                    payload["candidate_view"] = _emotion_candidate_view(args.emotion_candidates, policy=_policy)
                 except Exception as exc:
                     payload["candidate_view_error"] = type(exc).__name__
             emit("result", **payload)
@@ -530,13 +534,14 @@ def main():
 
         if args.mode == "ref-trim":
             import reference_region as rr
+            _policy = _reference_policy(args)
             os.makedirs(args.output, exist_ok=True)
             out_path = os.path.join(args.output, "reference_clip_24k.wav")
             # 자동 경계 보정 경로(2단계). 요청 구간을 그대로 자르지 않고 파형 VAD 로
             # 안전한 무음 경계에 스냅한 뒤, 최종 클립 자체를 전사해 검증한다.
             # 안전 경계를 못 찾으면 trim_region 으로 물러서지 않고 차단한다.
             built = rr.build_reference_clip(
-                args.input, float(args.region_start), float(args.region_dur), out_path)
+                args.input, float(args.region_start), float(args.region_dur), out_path, policy=_policy)
             if not built["ready"]:
                 emit("error", code="REFERENCE_REGION_BLOCKED",
                      blocking=built["blocking"],
@@ -545,7 +550,8 @@ def main():
                      validation=built.get("validation"), snap=built.get("snap"))
                 return
             eff = built["effective_region"]
-            metrics = rr.analyze_region(out_path, 0.0, eff["dur_sec"])
+            metrics = rr.analyze_region(out_path, 0.0, eff["dur_sec"], policy=_policy)
+            metrics["policy"] = _policy.describe()
             # 승인 계약은 1단계 그대로 — blocking/warning_codes/ready 는 한 소스에서 나온다.
             metrics["warning_codes"] = sorted(set(metrics.get("warning_codes", []))
                                               | set(built["warning_codes"]))
