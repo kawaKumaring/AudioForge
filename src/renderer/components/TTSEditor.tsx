@@ -741,6 +741,31 @@ export default function TTSEditor() {
     }
   }
 
+  // ── 여러 명 1번 인물의 초기 목소리 — 처음 불러온 음성에 **명시적 binding** ──
+  // 화면 상속이 아니라 store 슬롯을 실제로 만든다(그래야 config·preflight·스냅샷에 존재한다).
+  //   · 같은 canonical asset(fileInfo.path). 파일·클립 복사 없음. 기본 목소리의 임시 클립 경로는 공유하지 않는다.
+  //   · 3~10초 원본(구간 없이 통째로 유효)이면 바로 준비됨. 10초 초과(기본 목소리가 구간 클립을 쓰는 경우)면
+  //     인물 카드에서 구간 선택 필요 — 다른 인물·전역 기본으로 대체하지 않는다.
+  //   · 어느 인물이든 이미 목소리가 있으면 개입하지 않는다. 한 파일·한 인물 id 당 한 번.
+  //   · 이후 한 명 기본 목소리와 이 인물의 binding 은 독립이다(슬롯이 다르다). 2번 이후 인물은 자동 연결 없음.
+  const initialSpeakerBind = useRef<string>('')
+  useEffect(() => {
+    if (ttsSpeakerMode !== 'multi' || !fileInfo?.path) return
+    const first = speakerUiRows[0]
+    if (!first) return
+    if (Object.keys(ttsSpeakerRefState).length > 0) return
+    const key = `${fileInfo.path}|${first.speakerId}`
+    if (initialSpeakerBind.current === key) return
+    initialSpeakerBind.current = key
+    registerSpeakerRef(first.speakerId, fileInfo.path, first.label)
+    const wholeValid = !!ttsRefReady && !ttsReferenceClip
+    setSpeakerRefState(first.speakerId, {
+      clip: '', region: ttsReferenceRegion ?? null, ready: wholeValid,
+      message: wholeValid ? '' : (ttsReferenceClip ? '구간 선택 필요' : (ttsRefMessage || '목소리 확인 중')),
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ttsSpeakerMode, fileInfo?.path, speakerUiRows.length > 0 ? speakerUiRows[0].speakerId : '', Object.keys(ttsSpeakerRefState).length])
+
   const requestSpeakerSource = async (): Promise<string | null> => {
     const p = await window.api.audio.selectFile()
     return p || null

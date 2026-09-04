@@ -150,9 +150,9 @@ test('표현 불가 대본은 이유를 말하고 원문 편집기를 남긴다'
   for (const b of STRUCTURE_BLOCKERS) assert.ok(block.includes(b), b)
 })
 
-test('인물 생성과 재사용 — 빈 대본 시작 카드 2개, 새 인물 만들기, 삭제는 자산을 지우지 않는다', () => {
+test('인물 생성과 재사용 — 빈 대본 시작 카드 1개, 새 인물 만들기, 삭제는 자산을 지우지 않는다', () => {
   assert.ok(MULTI.includes("p.verdict.mode === 'initial' && p.speakers.length === 0"))
-  assert.ok(MULTI.includes('p.ensurePendingSpeakers(2)'))
+  assert.ok(MULTI.includes('p.ensurePendingSpeakers(1)'), '시작 카드는 1번 인물 하나')
   assert.ok(MULTI.includes('function StarterCard(') && MULTI.includes('data-testid="starter-card"'))
   assert.ok(MULTI.includes('<option value="__new__">새 인물 만들기…</option>'))
   assert.ok(MULTI.includes('p.addPendingSpeaker()'))

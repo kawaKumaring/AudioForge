@@ -123,9 +123,9 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
   // 목소리 패널은 한 번에 한 인물만 연다(파형도 한 명만).
   const [voiceSpeaker, setVoiceSpeaker] = useState<string | null>(null)
 
-  // 빈 대본이면 빈 인물 카드 2개를 **보여 주기만** 한다 — 어디에도 쓰지 않는다.
+  // 빈 대본이면 1번 인물의 시작 카드 하나만 **보여 준다** — 어디에도 쓰지 않는다. 2번 이후는 사용자가 만든다.
   useEffect(() => {
-    if (p.verdict.mode === 'initial' && p.speakers.length === 0) p.ensurePendingSpeakers(2)
+    if (p.verdict.mode === 'initial' && p.speakers.length === 0) p.ensurePendingSpeakers(1)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [p.verdict.mode])
 

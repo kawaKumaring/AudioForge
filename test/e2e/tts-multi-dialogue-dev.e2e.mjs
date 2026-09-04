@@ -134,21 +134,28 @@ try {
     && (await count(RAW)) === 1,
     '한 명 기본: 탭 2개, 여러 명 요소 0, 기존 편집기 1')
 
-  // ── 2. 여러 명 처음 열기: 시작 카드 2개, 원문 쓰기 0, 카드 안에서 이름·첫 대사 ──
+  // ── 2. 여러 명 처음 열기: 시작 카드 1개(인물1), 원문 쓰기 0, 카드 안에서 이름·첫 대사 ──
   await tab('multi'); await sleep(300)
   const starters = await page.evaluate(() => [...document.querySelectorAll('[data-testid="starter-card"]')].map((c) => c.getAttribute('data-speaker')))
-  ok('2a', starters.length === 2 && new Set(starters).size === 2 && (await store()) === '' && (await count(RAW)) === 0,
-    '시작 카드 2개(서로 다른 id), 원문 빈 문자열, 원문 편집기는 접혀 있음', JSON.stringify(starters))
+  const starterName = await page.evaluate(() => document.querySelector('[data-testid="starter-card"] input')?.value ?? null)
+  ok('2a', starters.length === 1 && starterName === '인물1' && (await store()) === '' && (await count(RAW)) === 0,
+    '시작 카드 1개(인물1), 원문 빈 문자열, 원문 편집기는 접혀 있음', JSON.stringify({ starters, starterName }))
   await page.fill(`#spk-name-${starters[0]}`, '민수')
-  await page.fill(`#spk-name-${starters[1]}`, '영희')
   await sleep(100)
   ok('2b', (await store()) === '' && (await text('[data-testid="multi-summary"]') ?? '').includes('인물'), '이름만 입력해도 원문에 쓰지 않는다')
   await page.fill(`[data-testid="starter-card"][data-speaker="${starters[0]}"] [data-testid="starter-line"]`, '첫 대사')
   await page.click(`[data-testid="starter-card"][data-speaker="${starters[0]}"] [data-testid="starter-add"]`)
   await sleep(100)
   const created = await store()
-  ok('2c', created === '[화자 민수]\n첫 대사' && await waitRows(1) && (await count('[data-testid="starter-card"]')) === 1,
-    '첫 대화 → 원문 [화자 민수]⏎첫 대사, 카드 1개, 남은 시작 카드 1개(영희)', `len=${created.length} ${await diag()}`)
+  ok('2c', created === '[화자 민수]\n첫 대사' && await waitRows(1) && (await count('[data-testid="starter-card"]')) === 0,
+    '첫 대화 → 원문 [화자 민수]⏎첫 대사, 카드 1개, 시작 카드 없음', `len=${created.length} ${await diag()}`)
+  // 1번 인물은 처음 불러온 음성(8초, 통째로 유효)에 명시적으로 연결된다 — store 슬롯이 실제로 생긴다.
+  const bound = await waitUntil(async () => page.evaluate(() => {
+    const s = window.__afStore.getState().ttsSpeakerRefState['민수']; return !!s && s.ready === true && s.clip === ''
+  }), 8000)
+  const boundSrcIsFile = await page.evaluate(() => { const s = window.__afStore.getState(); return s.ttsSpeakerRefState['민수']?.source === s.fileInfo?.path })
+  ok('2d', bound && boundSrcIsFile && (await text('[data-testid="dialogue-row"] [data-testid="card-voice"]') ?? '').includes('준비됨'),
+    '1번 인물 초기 binding: 같은 원본 파일, 준비됨, 카드 상태도 준비됨', `bound=${bound} sameFile=${boundSrcIsFile}`)
 
   // ── 3. 발화 카드 하나에 인물·목소리·감정·대사 ──────────────────────────────
   const cardParts = await page.evaluate(() => {
@@ -159,7 +166,7 @@ try {
       up: !!c?.querySelector('[aria-label="위로"]'), del: [...(c?.querySelectorAll('button') ?? [])].some((b) => b.textContent.trim() === '삭제'),
     }
   })
-  ok('3', cardParts.speaker && (cardParts.voice ?? '').includes('목소리 없음') && cardParts.emotion && cardParts.body === 1 && cardParts.up && cardParts.del,
+  ok('3', cardParts.speaker && (cardParts.voice ?? '').includes('준비됨') && cardParts.emotion && cardParts.body === 1 && cardParts.up && cardParts.del,
     '카드: 인물 select · 목소리 상태 · + 감정 · 대사 한 칸 · 위/아래/삭제', JSON.stringify(cardParts))
 
   // ── 4. 세 화자 시간순 + 같은 인물 반복 + 목소리 상태 공유 ────────────────
@@ -173,15 +180,10 @@ try {
   ok('4c', (await text('[data-testid="multi-summary"]') ?? '').includes('인물 2명') && (await count('[data-testid="starter-card"]')) === 0,
     '요약: 인물 2명, 시작 카드 없음', await text('[data-testid="multi-summary"]'))
   // 같은 인물 카드는 같은 목소리 상태를 공유한다 — store 에 지정하면 두 카드 모두 '준비됨'.
-  await page.evaluate((wav) => {
-    window.__afStore.setState({ ttsSpeakerRefState: {
-      '민수': { source: wav, clip: '', ready: true, message: '' },
-    } })
-  }, WAV)
   await sleep(150)
   const voiceTexts = await page.evaluate(() => [...document.querySelectorAll('[data-testid="dialogue-row"] [data-testid="card-voice"]')].map((b) => b.textContent.trim()))
   ok('4d', voiceTexts.length === 3 && voiceTexts[0].includes('준비됨') && voiceTexts[2].includes('준비됨') && voiceTexts[1].includes('없음'),
-    '같은 인물(민수)의 두 카드가 같은 목소리 상태, 영희는 없음', JSON.stringify(voiceTexts))
+    '같은 인물(민수)의 두 카드가 같은 목소리 상태(초기 binding), 2번 인물 영희는 자동 연결 없음', JSON.stringify(voiceTexts))
 
   // ── 5. 탭 전환은 원문·인물·자산을 쓰지 않는다 ─────────────────────────────
   const snap0 = await snapshot()

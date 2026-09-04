@@ -204,7 +204,8 @@ export function useDialogueProjection(
     setPending((p) => {
       if (p.length >= n) return p
       const out = [...p]
-      while (out.length < n) out.push({ speakerId: nextPendingId(out), label: '' })
+      // 초기 표시 이름은 이해 가능한 값(인물1, 인물2…). 내부 id 는 이름에서 파생하지 않는다(pending-N).
+      while (out.length < n) out.push({ speakerId: nextPendingId(out), label: `인물${out.length + 1}` })
       return out
     })
   }, [])
