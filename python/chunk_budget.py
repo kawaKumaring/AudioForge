@@ -105,6 +105,19 @@ def budget_for(production_tokens, reference_prefix_tokens=0, reference_replay_fr
     }
 
 
+# 안전 목표 = 품질 운영 상한의 절반. 근거: 정상 종료한 chunk 들은 512 tier 에서 218~235 반복(≈ 150 production
+# token, 상한 379 의 40%)에 EOS 에 닿았고, 상한 실패 4건은 모두 상한 직전까지 채운 chunk 에서 났다(2026-09-04
+# run 기록). 절반이면 문장·절 경계에서 먼저 끊어 폭주 노출 길이를 줄인다. hard 상한은 그대로다.
+SAFE_FRACTION_OF_QUALITY_CEILING = 0.5
+SAFE_PRODUCTION_TOKENS_FLOOR = 32
+
+
+def safe_production_tokens():
+    # 문장·절 경계에서 미리 끊는 안전 목표(soft). hard 상한(max_production_tokens) 보다 작다.
+    return max(SAFE_PRODUCTION_TOKENS_FLOOR,
+               int(round(quality_operating_ceiling() * SAFE_FRACTION_OF_QUALITY_CEILING)))
+
+
 def max_production_tokens(reference_prefix_tokens=0, reference_replay_frames=0):
     """분할 상한 = min(예산 fits, 종료 상한, 품질 운영 상한).
 
