@@ -34,8 +34,7 @@ import SpeakerReferenceManager from './SpeakerReferenceManager'
 import VoiceCastManager from './VoiceCastManager'
 import DialogueTabs, { type DialogueTab } from './DialogueTabs'
 import MultiSpeakerDialogue from './MultiSpeakerDialogue'
-import SingleScriptGuard from './SingleScriptGuard'
-import { speakerDirectiveSequence, speakerStructurePreserved, stripSpeakerDirectives } from '../../shared/dialogueSourcePatcher'
+import { speakerDirectiveSequence } from '../../shared/dialogueSourcePatcher'
 import { useDialogueProjection } from '../hooks/useDialogueProjection'
 import { normalizeSpeakerId } from '../../shared/ttsGrammar'
 import { gateSpeakerEmotionRefs, emotionIdsForSpeaker } from '../../shared/speakerEmotionGate'
@@ -218,7 +217,7 @@ async function runPreview(gen: number, path: string) {
 // 모든 effect/analyze/preflight는 이 단일 컴포넌트에 유지 → 신규 하위 패널 재렌더로 중복 실행되지 않는다.
 export default function TTSEditor() {
   const { mode, status, fileInfo, ttsEmotionRefState, ttsSpeakerRefState, ttsSpeakerLabels, ttsSpeakerEmotionRefs,
-    ttsSpeakerEmotionEnabled, setSpeakerEmotionEnabled,
+    ttsSpeakerEmotionEnabled, setSpeakerEmotionEnabled, ttsSpeakerMode, setTtsSpeakerMode,
     registerSpeakerRef, removeSpeakerRef, setSpeakerRefState,
     registerEmotionRef, removeEmotionRef, setEmotionRefState, setTtsRefState, ttsRefReady, ttsRefMessage, ttsReferenceClip, ttsPitchCapability, setTtsPitchCapability,
     ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, setTtsExpression,
@@ -672,27 +671,27 @@ export default function TTSEditor() {
       decision: resolveReferenceDecision(k.speakerId, null, speakerReadiness),
     }
   })
-  // ── 한 명 | 여러 명 (보기 전환일 뿐 — 탭 자체는 원문을 쓰지 않는다) ──
-  const [dialogueTab, setDialogueTab] = useState<DialogueTab>('single')
-  // 한 명 화면의 화자 구조 보호 — 명시 화자가 있는 대본에서 한 명 편집기는 화자 표기 순서가
-  // 그대로인 변경만 받는다. 거부된 편집은 한 줄로 알린다(다음에 받아들인 편집에서 사라진다).
+  // ── 한 명 | 여러 명 = 이 작업의 **생성 방식**(speakerMode). 대본 내용이 아니라 라우팅 방식이다. ──
+  // 탭 클릭은 store 의 ttsSpeakerMode 만 바꾼다. 원문·인물 설정·목소리 자산은 그대로다(확인창 없음).
+  const dialogueTab: DialogueTab = ttsSpeakerMode
+  const setDialogueTab = (t: DialogueTab) => { if (!disabled) setTtsSpeakerMode(t) }
   const speakerDirectives = useMemo(() => speakerDirectiveSequence(ttsText), [ttsText])
-  const [singleEditBlocked, setSingleEditBlocked] = useState(false)
+  // 한 명 편집기는 제한이 없다. 화자 표기를 지우거나 바꿔도 막지 않는다 — 오류가 아닌 알림 한 줄과
+  // 되돌리기만 둔다. 되돌리기는 그 한 번의 편집 직전 원문으로 돌리고, 다음 편집이 오면 알림은 사라진다
+  // (뒤에 이어 친 글자까지 삼키지 않기 위해). 목소리 자산·목소리 구성은 어느 경우에도 건드리지 않는다.
+  const [structureNotice, setStructureNotice] = useState<{ prevText: string } | null>(null)
   const onSingleEditorChange = (next: string) => {
     if (disabled) return
-    if (dialogueTab === 'single' && speakerDirectives.length > 0 && !speakerStructurePreserved(ttsText, next)) {
-      setSingleEditBlocked(true)
-      return
-    }
-    if (singleEditBlocked) setSingleEditBlocked(false)
+    const nextSeq = speakerDirectiveSequence(next)
+    const changed = speakerDirectives.length !== nextSeq.length
+      || speakerDirectives.some((d, i) => d !== nextSeq[i])
+    setStructureNotice(changed ? { prevText: ttsText } : null)
     setTtsText(next)
   }
-  // 한 명 대본으로 전환 — 사용자가 확인 패널에서 누른 뒤에만. 원문의 화자 표기만 지운다.
-  // 목소리 지정(ttsSpeakerRefState)·저장된 목소리 구성·후보 음원은 건드리지 않는다.
-  const convertToSingleScript = () => {
-    if (disabled) return
-    const r = stripSpeakerDirectives(ttsText)
-    if (r.changed) { setTtsText(r.text); setSingleEditBlocked(false) }
+  const undoStructureChange = () => {
+    if (disabled || !structureNotice) return
+    setTtsText(structureNotice.prevText)
+    setStructureNotice(null)
   }
   // 권위는 ttsText 하나. 이 훅은 계획을 projection 으로 보여 주고 명령을 patcher 로 되쓴다.
   const dialogue = useDialogueProjection(ttsText, (next) => { if (!disabled) setTtsText(next) },
@@ -1098,15 +1097,22 @@ export default function TTSEditor() {
               disabled={disabled}
             />
           )}
-          {/* 한 명 화면 + 명시 화자 있음: 표기는 여러 명에서 바꾸고, 구조를 없애는 것은 명시 전환으로만. */}
+          {/* 한 명 = 모든 대사를 한 목소리로. 화자 표기가 있어도 막지 않고 중립 안내 한 줄만 둔다. */}
           {dialogueTab === 'single' && speakerDirectives.length > 0 && (
-            <SingleScriptGuard
-              directiveCount={speakerDirectives.length}
-              speakerCount={new Set(speakerDirectives).size}
-              blocked={singleEditBlocked}
-              onConvert={convertToSingleScript}
-              disabled={disabled}
-            />
+            <div data-testid="single-mode-note" role="note"
+              style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+              모든 대사를 한 목소리로 생성합니다. 인물 표기 {speakerDirectives.length}개는 여러 명에서만 쓰입니다.
+            </div>
+          )}
+          {/* 화자 표기가 바뀐 편집 뒤의 비차단 알림 — 오류가 아니다. 되돌리기는 직전 원문으로. */}
+          {structureNotice && (
+            <div data-testid="speaker-structure-notice" role="status" aria-live="polite"
+              style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 11, color: 'var(--text-secondary)' }}>
+              <span>인물 구분이 변경되었습니다</span>
+              <button type="button" data-testid="speaker-structure-undo" onClick={undoStructureChange} disabled={disabled}
+                style={{ padding: '2px 8px', borderRadius: 5, border: 'none', fontSize: 11, fontFamily: 'inherit',
+                  cursor: 'pointer', background: 'var(--bg-elevated)', color: 'var(--cyan)' }}>되돌리기</button>
+            </div>
           )}
           {/* A 소유 편집기(caret/IME/overlay/오류 = A). 셸은 value/onChange + 삽입 handle만 배선.
               팔레트가 위로 올라가도 이 편집기가 [2] 대사 섹션의 첫 textarea라는 계약은 유지된다. */}
