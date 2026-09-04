@@ -9,7 +9,7 @@ const released: (string | undefined)[] = []
   api: { audio: { releaseReferenceClip: (clipKey?: string) => { released.push(clipKey) } } },
 }
 
-const { useAppStore, emotionEffectivePath, reconstructEmotionRefState, reconstructReferencePrompts } = await import('./app.store.ts')
+const { useAppStore, emotionEffectivePath, reconstructEmotionRefState, reconstructReferencePrompts, reconstructSpeakerRefState } = await import('./app.store.ts')
 
 beforeEach(() => {
   released.length = 0
@@ -406,4 +406,60 @@ test('참조 conditioning: 계약 밖 문자열은 무변형 복원(조용한 �
   })
   // 그대로 실어 보내면 합성 시 Python 이 INVALID_REFERENCE_CONDITIONING_MODE 로 크게 실패한다.
   assert.equal(useAppStore.getState().ttsReferenceConditioningMode, 'weird_mode' as never)
+})
+
+// ── 세션 복원: 화자 배정은 그 세션에 저장된 것만 ─────────────────────────────
+
+const SESSION_BASE = { version: 1, session_schema_version: 2, source: 'C:/in/x.wav', sourceName: 'x.wav',
+  mode: 'tts', tracks: [], metadata: null, createdAt: '2026-09-04T00:00:00Z' }
+
+test('reconstructSpeakerRefState: 저장된 source 가 있는 화자만, ready:false·clip 없음, 이름은 그 화자만', () => {
+  const r = reconstructSpeakerRefState({ a: 'C:/refs/a.wav', b: '' }, { a: '민수', c: '유령' })
+  assert.deepEqual(Object.keys(r.state), ['a'])
+  assert.equal(r.state.a.source, 'C:/refs/a.wav')
+  assert.equal(r.state.a.ready, false)
+  assert.equal(r.state.a.clip, '')
+  assert.deepEqual(r.labels, { a: '민수' })
+  assert.deepEqual(reconstructSpeakerRefState(undefined, { a: '민수' }), { state: {}, labels: {} })
+})
+
+test('restoreSession: 세션에 화자 배정이 없으면 이전 작업의 배정·이름·감정별 참조·후보 선택이 전부 비워진다', () => {
+  useAppStore.setState({
+    ttsSpeakerRefState: { old: { source: 'C:/refs/old.wav', clip: '', region: null, ready: true, message: '' } },
+    ttsSpeakerLabels: { old: '옛인물' },
+    ttsSpeakerEmotionRefs: { ['old' + String.fromCharCode(31) + 'happy']: 'C:/refs/old_happy.wav' },
+    ttsEmotionCandidateSelections: { ['old' + String.fromCharCode(31) + 'happy']: 'ref_x' },
+  })
+  useAppStore.getState().restoreSession('C:/out', { ...SESSION_BASE, options: { ttsText: '[화자 old]\n안녕' } } as never)
+  const s = useAppStore.getState()
+  assert.deepEqual(s.ttsSpeakerRefState, {})
+  assert.deepEqual(s.ttsSpeakerLabels, {})
+  assert.deepEqual(s.ttsSpeakerEmotionRefs, {})
+  assert.deepEqual(s.ttsEmotionCandidateSelections, {})
+  assert.equal(s.ttsText, '[화자 old]\n안녕', '원문은 세션 것이고 옛 배정은 같은 id 라도 붙지 않는다')
+})
+
+test('restoreSession: 세션에 저장된 명시적 배정만 복원되고 준비는 다시 확인한다', () => {
+  useAppStore.setState({
+    ttsSpeakerRefState: { old: { source: 'C:/refs/old.wav', clip: '', region: null, ready: true, message: '' } },
+    ttsSpeakerLabels: { old: '옛인물' },
+  })
+  useAppStore.getState().restoreSession('C:/out', { ...SESSION_BASE, options: {
+    ttsText: '[화자 a]\n안녕', ttsSpeakerRefSources: { a: 'C:/refs/a.wav' }, ttsSpeakerRefs: { a: 'C:/refs/a.wav' },
+    ttsSpeakerLabels: { a: '민수', old: '옛인물' },
+  } } as never)
+  const s = useAppStore.getState()
+  assert.deepEqual(Object.keys(s.ttsSpeakerRefState), ['a'])
+  assert.equal(s.ttsSpeakerRefState.a.ready, false)
+  assert.deepEqual(s.ttsSpeakerLabels, { a: '민수' })
+})
+
+test('setFile(새 파일): 이전 작업의 화자 배정·감정별 참조가 남지 않는다', () => {
+  useAppStore.setState({
+    ttsSpeakerRefState: { old: { source: 'C:/refs/old.wav', clip: '', region: null, ready: true, message: '' } },
+    ttsSpeakerEmotionRefs: { k: 'C:/refs/old_happy.wav' },
+  })
+  useAppStore.getState().setFile({ path: 'n.wav', name: 'n.wav', duration: 5, channels: 1, sampleRate: 24000, format: 'wav' }, 'local-file://n.wav')
+  assert.deepEqual(useAppStore.getState().ttsSpeakerRefState, {})
+  assert.deepEqual(useAppStore.getState().ttsSpeakerEmotionRefs, {})
 })

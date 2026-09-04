@@ -129,6 +129,26 @@ export function reconstructEmotionRefState(
   return out
 }
 
+// 화자 배정 복원 — **그 세션에 저장된 명시적 배정만**. 세션에 없으면 빈 상태다.
+//   이전 작업의 ttsSpeakerRefState 는 같은 speakerId·같은 표시 이름이라는 이유로 붙지 않는다.
+//   파생 클립은 temp 라 항상 비우고, 준비 여부는 구간 편집기가 다시 확인한다(ready:false).
+//   음원 자산은 지우지 않는다 — 현재 작업과의 연결만 세션 기록으로 다시 세운다.
+export function reconstructSpeakerRefState(
+  sources: Record<string, string> | undefined,
+  labels: Record<string, string> | undefined
+): { state: Record<string, EmotionRefState>; labels: Record<string, string> } {
+  const state: Record<string, EmotionRefState> = {}
+  const outLabels: Record<string, string> = {}
+  if (!sources) return { state, labels: outLabels }
+  for (const [id, source] of Object.entries(sources)) {
+    if (!id || !source) continue
+    state[id] = { source, clip: '', region: null, ready: false, message: '목소리 다시 확인 필요' }
+    const label = labels?.[id]
+    if (label) outLabels[id] = label
+  }
+  return { state, labels: outLabels }
+}
+
 interface AppState {
   fileInfo: FileInfo | null
   fileUrl: string | null
@@ -498,6 +518,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     // TTS 스냅샷 복원 — source가 사라진 감정만 재지정 필요로 표시, 나머지는 source+region 보존.
     const emotionState = reconstructEmotionRefState(o.ttsEmotionRefSources, o.ttsEmotionRefRegions, o.ttsEmotionRefs, liveness)
     const prompts = reconstructReferencePrompts(o.ttsReferencePrompts, liveness)
+    // 화자 배정은 이 세션 기록에서만 온다. 이전 작업의 배정·감정별 참조·후보 선택은 여기서 끊는다.
+    // 세션 options 타입에는 화자 필드가 없다(합성 config 그대로 저장되지만 복원 계약은 감정까지였다).
+    const oRaw = o as Record<string, unknown>
+    const speakerRestore = reconstructSpeakerRefState(
+      oRaw.ttsSpeakerRefSources as Record<string, string> | undefined,
+      oRaw.ttsSpeakerLabels as Record<string, string> | undefined)
     // 표현형 모드 복원 — 해석 권위는 계약 함수 하나뿐(store 가 규칙을 다시 쓰지 않는다).
     //   필드 부재(legacy 세션) → legacy_v2, 조용히 복원해도 무방하다(오늘과 같은 동작).
     //   값이 있는데 계약 밖(손상·수기편집 session.json) → 조용한 강등 금지. mode 는 안전한 legacy_v2 로
@@ -544,6 +570,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       ttsEmotionBoundaryPauseMs: o.ttsEmotionBoundaryPauseMs ?? 200,
       ttsExpressiveMode: expressive.mode,
       ttsEmotionRefState: emotionState,
+      ttsSpeakerRefState: speakerRestore.state,
+      ttsSpeakerLabels: speakerRestore.labels,
+      ttsSpeakerEmotionRefs: {},
+      ttsEmotionCandidateSelections: {},
       ttsReferencePrompts: prompts,
       ttsReferenceClip: '',            // 파생 클립은 temp — 복원 시 항상 비움(§4: stale 클립 결합 금지)
       ttsRefReady: defaultReady,
