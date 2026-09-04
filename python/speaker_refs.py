@@ -31,6 +31,8 @@ manifest 로 나가는 것은 불투명 id 뿐이다(`spk_…` / `ref_…`). 사
 파일 경로는 private JSON 의 몫이다.
 """
 import hashlib
+import types
+from collections import Counter
 import os
 
 SCHEMA_VERSION = 1
@@ -226,6 +228,8 @@ class ReferenceTable:
         self._exists = exists if exists is not None else os.path.exists
         self._sha256_of = sha256_of
         self._sha_cache = {}
+        # 합성 시작 순간 확정한 발화별 라우팅(freeze_routing). 작업이 끝날 때까지 바꾸지 않는다.
+        self.routing = None
 
     # ── 조회 ──────────────────────────────────────────────────────────────
     def resolve(self, speaker_id, emotion_id):
@@ -280,6 +284,19 @@ class ReferenceTable:
 
     def _usable(self, path):
         return bool(path) and bool(self._exists(path))
+
+    # ── 라우팅 스냅샷 ────────────────────────────────────────────────────────
+    def freeze_routing(self, parsed):
+        """발화마다 참조를 **지금** 정하고 얼린다. 하나라도 정할 수 없으면 여기서 멈춘다
+        (모델 로딩 전). 다른 인물·전역 기본·이전 클립으로 대체하지 않는다 — resolve 가 그렇다."""
+        self.routing = build_routing_snapshot(self, parsed)
+        return self.routing
+
+    def routed(self, index):
+        """얼린 표의 발화 행(읽기 전용). 얼리지 않았으면 None."""
+        if self.routing is None:
+            return None
+        return self.routing[index]
 
     def _row(self, path, source, speaker_id):
         return {
@@ -672,3 +689,81 @@ class ReferenceTable:
             rec["axis_scores"] = {a: v.get("similarity")
                                   for a, v in (comparison.get("axes") or {}).items()}
         return rec
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 라우팅 스냅샷
+#
+# 합성 시작 순간에 발화(segment)마다 speaker / emotion / reference_id / 규칙을 확정한 뒤,
+# 그 작업이 끝날 때까지 바꾸지 않는다. 생성 루프는 표를 다시 묻지 않고 이 스냅샷의 행을 읽는다.
+# 규칙 이름은 화면·run bundle 이 같은 값을 쓴다(비민감 enum).
+# ─────────────────────────────────────────────────────────────────────────────
+ROUTE_DEFAULT_SPEAKER = "default_speaker"                  # 인물 기본 목소리
+ROUTE_EXPLICIT_EMOTION_OVERRIDE = "explicit_emotion_override"  # (인물, 감정) 전용 참조 — 사용자가 켠 것
+ROUTE_EMOTION_CANDIDATE = "emotion_candidate_selected"     # 인물의 후보 중 감정 프로필/사용자 선택으로 고름
+ROUTE_EMOTION_REFERENCE = "emotion_reference"              # 화자 표기 없는 대사 — 감정 참조
+ROUTE_GLOBAL_DEFAULT = "global_default"                    # 화자 표기 없는 대사 — 전역 기본
+ROUTING_RULES = (ROUTE_DEFAULT_SPEAKER, ROUTE_EXPLICIT_EMOTION_OVERRIDE, ROUTE_EMOTION_CANDIDATE,
+                 ROUTE_EMOTION_REFERENCE, ROUTE_GLOBAL_DEFAULT)
+
+
+def routing_rule(row):
+    """resolve_with_emotion 이 돌려준 행 → 라우팅 규칙 이름."""
+    source = row.get("source")
+    match = row.get("emotion_match") or {}
+    method = match.get("selection_method")
+    if source == SOURCE_SPEAKER_EMOTION:
+        return ROUTE_EXPLICIT_EMOTION_OVERRIDE
+    if source == SOURCE_SPEAKER:
+        if method in (SELECTION_PROFILE_MATCH, SELECTION_USER) and match.get("state") in (
+                MATCH_MATCHED, MATCH_USER_SELECTED):
+            return ROUTE_EMOTION_CANDIDATE
+        return ROUTE_DEFAULT_SPEAKER
+    if source == SOURCE_EMOTION:
+        return ROUTE_EMOTION_REFERENCE
+    return ROUTE_GLOBAL_DEFAULT
+
+
+class RoutingSnapshot:
+    """발화별 라우팅 행의 불변 튜플. 행은 읽기 전용 매핑이다(대입하면 TypeError)."""
+
+    def __init__(self, rows):
+        self._rows = tuple(types.MappingProxyType(dict(r)) for r in rows)
+
+    def __len__(self):
+        return len(self._rows)
+
+    def __iter__(self):
+        return iter(self._rows)
+
+    def __getitem__(self, index):
+        return self._rows[index]
+
+    def rows(self):
+        """기록용 사본(recorder 는 dict 를 받는다). 스냅샷 자체는 바뀌지 않는다."""
+        return [dict(r) for r in self._rows]
+
+    def rule_counts(self):
+        return dict(Counter(r.get("routing_rule") for r in self._rows))
+
+    def speaker_sequence(self):
+        return [r.get("speaker_ref") for r in self._rows]
+
+    def reference_sequence(self):
+        return [r.get("reference_id") for r in self._rows]
+
+
+def build_routing_snapshot(table, parsed):
+    """parsed = [(emotion_id, text, speaker_id), ...] (tts_worker 의 순서 그대로).
+
+    발화마다 `resolve_with_emotion` 을 **한 번** 부르고 결과를 얼린다. 정할 수 없는 발화가 있으면
+    `SpeakerReferenceError` 가 그대로 올라간다 — 스냅샷은 만들어지지 않고 모델도 올라가지 않는다.
+    대사 원문은 스냅샷에 넣지 않는다.
+    """
+    rows = []
+    for i, item in enumerate(parsed):
+        emotion_id, speaker_id = item[0], item[2]
+        row = table.resolve_with_emotion(speaker_id, emotion_id)
+        rows.append(dict(row, segment_index=i, emotion_id=emotion_id or "default",
+                         routing_rule=routing_rule(row)))
+    return RoutingSnapshot(rows)

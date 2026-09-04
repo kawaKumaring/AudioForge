@@ -2000,7 +2000,11 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             # 참조는 표 하나가 정한다(speaker_refs.ReferenceTable). 여기서 폴백 규칙을
             # 다시 쓰지 않는다 — 조용한 대체가 생기는 자리가 정확히 여기였다.
             # 감정 프로필 선택까지 포함한 조회. 프로필이 없으면 resolve() 와 같은 답이다.
-            _rr_row = ref_table.resolve_with_emotion(speaker_id, emotion_id)
+            # 얼린 스냅샷이 이 parsed 와 맞으면 그것을 읽는다(재조회 없음). 진단 병합 등으로 발화 수가
+            # 달라졌을 때만 표에 다시 묻는다 — 그 경우도 규칙은 같은 표가 정한다.
+            _frozen = getattr(ref_table, "routing", None)
+            _rr_row = (dict(_frozen[i]) if _frozen is not None and len(_frozen) == len(parsed)
+                       else ref_table.resolve_with_emotion(speaker_id, emotion_id))
             ref = _rr_row["path"]
             reference_rows.append(dict(_rr_row, segment_index=i))
             prefix_text = None
@@ -3077,6 +3081,10 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             user_selections=_prepared_selections)
         # 전수 점검을 먼저 한다 — 모델을 올린 뒤 절반 만들고 막히면 헛수고가 된다.
         ref_table.preflight([(sp, e) for e, _t, sp in parsed])
+        # 라우팅 스냅샷 — 발화별 참조를 여기서(모델 로딩 전) 확정하고 작업이 끝날 때까지 바꾸지 않는다.
+        _routing = ref_table.freeze_routing(parsed)
+        emit("stage", stage="routing_snapshot", utterances=len(_routing),
+             rules=_routing.rule_counts())
         _speaker_duplicates = ref_table.duplicate_paths()
         if _speaker_duplicates:
             # 막지 않는다(같은 목소리를 여럿에 쓰는 것은 사용자의 선택). 사실만 알린다.
@@ -3172,7 +3180,9 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         for i, (emotion_id, line_text, speaker_id) in enumerate(parsed):
             pct = 25 + int((i / len(parsed)) * 60)
             # 화면·Qwen 경로와 같은 표를 같은 방식으로 본다(두 경로가 다른 참조를 쓰면 안 된다).
-            ref = ref_table.resolve_with_emotion(speaker_id, emotion_id)["path"]
+            _frozen = getattr(ref_table, "routing", None)
+            ref = (_frozen[i]["path"] if _frozen is not None and len(_frozen) == len(parsed)
+                   else ref_table.resolve_with_emotion(speaker_id, emotion_id)["path"])
             emotion_label = next((k for k, v in EMOTION_TAGS.items() if v == emotion_id), emotion_id)
 
             # Select engine based on text language

@@ -452,6 +452,8 @@ class ChunkRecorder:
                 "reference_id": r.get("reference_id"),
                 "reference_sha256": r.get("reference_sha256"),
                 "reference_source": r.get("source") or r.get("reference_source"),
+                # 합성 시작 순간 얼린 라우팅 규칙(default_speaker / explicit_emotion_override / …).
+                "routing_rule": r.get("routing_rule"),
                 # 감정 참조를 **어떻게 골랐는가**. 점수·축 이름·불투명 id 뿐이고
                 # 표시 이름·경로·대사가 들어갈 자리가 없다(speaker_refs 가 만든 그대로).
                 "emotion_match": r.get("emotion_match"),

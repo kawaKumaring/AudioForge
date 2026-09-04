@@ -165,5 +165,79 @@ class OpaqueIdTest(unittest.TestCase):
         self.assertEqual(t.resolve("영희", "default")["path"], A)
 
 
+class RoutingSnapshotTest(unittest.TestCase):
+    """합성 시작 순간의 불변 라우팅 — A→B→A→B 가 A→B→A→B 로 남고, 못 정하면 그 전에 멈춘다."""
+
+    def parsed(self):
+        return [("happy", "l0", "a"), ("default", "l1", "b"), ("sad", "l2", "a"), ("default", "l3", "b")]
+
+    def test_a_b_a_b_routes_to_a_b_a_b_with_default_speaker_rule(self):
+        tb = table(speaker_refs={"a": A, "b": B})
+        snap = tb.freeze_routing(self.parsed())
+        self.assertEqual(len(snap), 4)
+        spk = snap.speaker_sequence()
+        self.assertEqual(spk[0], spk[2])
+        self.assertEqual(spk[1], spk[3])
+        self.assertNotEqual(spk[0], spk[1])
+        refs = snap.reference_sequence()
+        self.assertEqual(refs[0], refs[2])
+        self.assertEqual(refs[1], refs[3])
+        self.assertNotEqual(refs[0], refs[1])
+        self.assertEqual(snap.rule_counts(), {sr.ROUTE_DEFAULT_SPEAKER: 4})
+        self.assertEqual([r["segment_index"] for r in snap], [0, 1, 2, 3])
+        self.assertEqual([r["emotion_id"] for r in snap], ["happy", "default", "sad", "default"])
+        # 표는 얼린 것을 그대로 돌려준다.
+        self.assertIs(tb.routed(2), snap[2])
+
+    def test_explicit_pair_reference_is_named_explicit_emotion_override(self):
+        tb = table(speaker_refs={"a": A, "b": B},
+                   speaker_emotion_refs={sr.emotion_key("a", "happy"): C})
+        snap = tb.freeze_routing(self.parsed())
+        self.assertEqual(snap[0]["routing_rule"], sr.ROUTE_EXPLICIT_EMOTION_OVERRIDE)
+        self.assertEqual(snap[0]["path"], C)
+        self.assertEqual(snap[2]["routing_rule"], sr.ROUTE_DEFAULT_SPEAKER)   # sad 는 전용 참조 없음 → 기본
+        self.assertEqual(snap[2]["path"], A)
+        self.assertEqual(snap[1]["routing_rule"], sr.ROUTE_DEFAULT_SPEAKER)
+
+    def test_missing_named_speaker_reference_blocks_before_any_row_is_frozen(self):
+        tb = table(speaker_refs={"a": A, "b": MISSING}, registered_speakers={"a", "b"})
+        with self.assertRaises(sr.SpeakerReferenceError) as cm:
+            tb.freeze_routing(self.parsed())
+        self.assertEqual(cm.exception.code, sr.SPEAKER_REFERENCE_NOT_READY)
+        self.assertIsNone(tb.routing)          # 반쪽 스냅샷은 없다
+        self.assertIsNone(tb.routed(0))
+
+    def test_unregistered_speaker_blocks_and_never_falls_back(self):
+        tb = table(speaker_refs={"a": A})
+        with self.assertRaises(sr.SpeakerReferenceError) as cm:
+            tb.freeze_routing([("default", "l0", "a"), ("default", "l1", "zed")])
+        self.assertEqual(cm.exception.code, sr.SPEAKER_NOT_REGISTERED)
+
+    def test_snapshot_rows_are_read_only_and_copies_do_not_leak_back(self):
+        tb = table(speaker_refs={"a": A, "b": B})
+        snap = tb.freeze_routing(self.parsed())
+        with self.assertRaises(TypeError):
+            snap[0]["path"] = MISSING
+        copies = snap.rows()
+        copies[0]["path"] = MISSING
+        self.assertEqual(snap[0]["path"], A)
+        self.assertNotIn("text", snap[0])      # 대사 원문은 스냅샷에 없다
+
+    def test_legacy_script_rules_are_named_emotion_reference_and_global_default(self):
+        tb = table(emotion_refs={"happy": E})
+        snap = tb.freeze_routing([("happy", "l0", None), ("default", "l1", None)])
+        self.assertEqual(snap[0]["routing_rule"], sr.ROUTE_EMOTION_REFERENCE)
+        self.assertEqual(snap[1]["routing_rule"], sr.ROUTE_GLOBAL_DEFAULT)
+
+    def test_recorder_row_shape_carries_routing_rule(self):
+        tb = table(speaker_refs={"a": A})
+        snap = tb.freeze_routing([("default", "l0", "a")])
+        row = snap.rows()[0]
+        for k in ("segment_index", "speaker_ref", "reference_id", "reference_sha256", "source", "routing_rule"):
+            self.assertIn(k, row)
+        self.assertTrue(row["speaker_ref"].startswith("spk_"))
+        self.assertTrue(row["reference_id"].startswith("ref"))
+
+
 if __name__ == "__main__":
     unittest.main()
