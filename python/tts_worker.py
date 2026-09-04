@@ -1900,7 +1900,7 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
       들어오면 아래에서 즉시 실패한다(모르는 모드를 조용히 ICL 처럼 도는 통로를 막는다).
     반환: (final_path, info) — info는 재현 메타데이터의 런타임 사실(device/source/prompt_source/전사요약 등)."""
     import time
-    from reference_audio import assess_reference_file, GPTSOVITS_POLICY
+    from reference_audio import assess_reference_file, QWEN3_POLICY, OUTSIDE_RECOMMENDED_LENGTH
     from gpu_policy import select_device, is_cuda_oom
     qwen = _get_qwen_engine()
     t_start = time.monotonic()
@@ -1913,23 +1913,33 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
     else:
         emit("progress", percent=6, message=f"Qwen 장치: {device} ({reason})")
 
-    # 참조 품질 게이트(기본 + 감정별) — 모델 로딩 전 실패. 고유 경로 1회 검사하되 어떤 참조인지 명시.
-    # 10초 초과(TOO_LONG)는 감정 ID·파일명과 함께 '구간 선택 필요'를 안내. 원본을 모델 참조로 직접
-    # 넘기지 않으므로(override가 정석) 긴 원본/긴 감정참조는 여기서 차단되고 run_job(모델 로딩)에 도달하지 않는다.
+    # 참조 게이트(기본 + 감정별 + 인물별) — 모델 로딩 전 실패. 정책 = Qwen3(reference_audio.QWEN3_POLICY).
+    # 처리 불가 조건(손상·빈 음성·거의 무음·심한 클리핑)만 차단한다. 길이는 Qwen 에 필수 한계가 없고,
+    # 권장(이 앱이 검증한) 범위 밖은 참조당 1회 경고만 낸다 — GPT-SoVITS 의 3~10초를 여기 적용하지 않는다.
+    # 화면(ref-analyze/ref-trim)이 같은 정책으로 허용한 구간은 여기서 거부되지 않는다.
+    _gate_targets = [(("기본 참조" if emo_id == "default" else f"감정 '{emo_id}' 참조"), ref)
+                     for emo_id, ref in ref_cache.items()]
+    if ref_table is not None:
+        for _sid, _ref in (getattr(ref_table, "speaker_refs", None) or {}).items():
+            _gate_targets.append((f"인물 참조 {_sr.opaque_speaker_ref(_sid)}", _ref))
+        for _key, _ref in (getattr(ref_table, "speaker_emotion_refs", None) or {}).items():
+            _gate_targets.append((f"인물 감정 참조 {_sr.opaque_speaker_ref(str(_key).split(chr(31))[0])}", _ref))
     seen_refs = set()
-    for emo_id, ref in ref_cache.items():
-        if ref in seen_refs:
+    for who, ref in _gate_targets:
+        if not ref or ref in seen_refs:
             continue
         seen_refs.add(ref)
-        a = assess_reference_file(ref, GPTSOVITS_POLICY)
-        if a.valid:
-            continue
-        base = os.path.basename(ref)
-        who = "기본 참조" if emo_id == "default" else f"감정 '{emo_id}' 참조"
-        if any(e.code == "TOO_LONG" for e in a.errors):
-            raise RuntimeError(f"{who}({base})가 10초를 초과합니다 — 3~10초 구간을 선택·확정한 뒤 합성하세요.")
-        codes = "; ".join(f"[{e.code}] {e.message}" for e in a.errors)
-        raise RuntimeError(f"참조 음성 부적합(Qwen): {who} {base} — {codes}")
+        a = assess_reference_file(ref, QWEN3_POLICY)
+        if not a.valid:
+            base = os.path.basename(ref)
+            codes = "; ".join(f"[{e.code}] {e.message}" for e in a.errors)
+            raise RuntimeError(f"참조 음성 부적합(Qwen): {who} {base} — {codes}")
+        for w in a.warnings:
+            if w.code == OUTSIDE_RECOMMENDED_LENGTH:
+                lo, hi = QWEN3_POLICY.recommended_min_sec, QWEN3_POLICY.recommended_max_sec
+                emit("progress", percent=7,
+                     message=f"{who} 길이 {a.analysis.duration_sec:.1f}초 — 이 엔진에서 검증된 범위({lo:.0f}~{hi:.0f}초) 밖입니다. "
+                             "쓸 수는 있지만 결과 품질은 확인되지 않았습니다.")
 
     import tempfile
     import shutil
@@ -2082,7 +2092,9 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                 import expressive_capability as _cap_audit
                 _CONCAT_RECORDER.set_run_header(
                     emotion_capability=_cap_audit.audit_summary(),
-                    speaker_mode=getattr(ref_table, "speaker_mode", "single"))
+                    speaker_mode=getattr(ref_table, "speaker_mode", "single"),
+                    # 이 작업의 참조를 어느 정책(필수/권장 길이)으로 통과시켰는가 — 나중에 "그때 상한이 얼마였나" 를 다시 알 수 있다.
+                    reference_policy=QWEN3_POLICY.describe())
             except Exception:
                 pass               # 기록 실패가 합성을 막지 않는다
 
