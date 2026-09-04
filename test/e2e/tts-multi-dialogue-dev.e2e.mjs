@@ -342,6 +342,12 @@ try {
   const changeBtns = await page.locator('[data-testid="speaker-card"] button:has-text("목소리 바꾸기")').count()
   ok('15h', cardsBack.join(',') === '민수,영희' && changeBtns === 2 && (await rowSpeakers()).join(',') === '민수,영희,민수',
     '여러 명 복귀: 인물 순서·이름·목소리 지정 그대로', `cards=${cardsBack.join(',')} change=${changeBtns} rows=${(await rowSpeakers()).join(',')}`)
+  // 두 인물이 같은 파일을 쓰면 카드가 그 사실을 말한다(같은 목소리로 만들어진다) — 실제 run 에서 확인된 사례.
+  const sharedNotes = await page.evaluate(() => [...document.querySelectorAll('[data-testid="speaker-voice-shared"]')].map((e) => e.textContent))
+  ok('16', sharedNotes.length === 2 && sharedNotes.every((t) => t.includes('같은 목소리로 만들어집니다')),
+    '같은 파일을 쓰는 두 인물 카드에 공유 경고', `n=${sharedNotes.length}`)
+  const overrideN = await count('[data-testid="speaker-voice-emotion-override"]')
+  ok('16b', overrideN === 0, '목소리 구성이 적용되지 않았으면 감정별 덮어쓰기 표시 없음')
   // 전환 승인 = 화자 표기만 제거, 목소리 지정·목소리 구성 보존.
   await tab('single'); await sleep(200)
   await page.click('[data-testid="single-convert-open"]'); await sleep(100)
