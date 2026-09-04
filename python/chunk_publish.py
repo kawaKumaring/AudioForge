@@ -617,3 +617,60 @@ class ChunkRecorder:
                                 if a["privacy_class"] == PRIVACY_PRIVATE]
         _atomic_json(doc, os.path.join(self.root, "manifest.json"))
         return self.root
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 실패 종료 사유 분류 — "긴 문장이 끊긴다" 를 시간 초과 / 모델 상한 / 분할 실패 / worker 감시 /
+# 참조 준비 / 사용자 취소로 나눈다. 같은 실패를 다른 이유로 오해하면 엉뚱한 제한을 늘린다.
+# 대사·이름·경로는 담지 않는다. 수치와 코드만.
+# ─────────────────────────────────────────────────────────────────────────────
+FAILURE_CLASS_MODEL_CAP = "model_generation_cap"
+FAILURE_CLASS_TIME_LIMIT = "time_limit"
+FAILURE_CLASS_SPLIT = "split_failure"
+FAILURE_CLASS_WORKER_WATCHDOG = "worker_watchdog"
+FAILURE_CLASS_REFERENCE_PREP = "reference_prep"
+FAILURE_CLASS_USER_CANCEL = "user_cancel"
+FAILURE_CLASS_OTHER = "other"
+
+_FAILURE_CLASS_BY_CODE = {
+    "GENERATION_LIMIT_EXCEEDED": FAILURE_CLASS_MODEL_CAP,
+    "JOB_WALL_TIME_EXCEEDED": FAILURE_CLASS_TIME_LIMIT,
+    "JOB_STALLED": FAILURE_CLASS_TIME_LIMIT,
+    "JOB_BUDGET_EXHAUSTED": FAILURE_CLASS_TIME_LIMIT,
+    "JOB_INACTIVE": FAILURE_CLASS_TIME_LIMIT,
+    "TEXT_SEGMENT_TOO_LONG": FAILURE_CLASS_SPLIT,
+    "QWEN_NO_RESPONSE": FAILURE_CLASS_WORKER_WATCHDOG,
+    "QWEN_LOAD_TIMEOUT": FAILURE_CLASS_WORKER_WATCHDOG,
+    "CANCELLED": FAILURE_CLASS_USER_CANCEL,
+    "TTS_CANCELLED": FAILURE_CLASS_USER_CANCEL,
+}
+_REFERENCE_PREP_PREFIXES = ("SPEAKER_", "REFERENCE_", "DEFAULT_REFERENCE_", "ICL_REFERENCE_")
+
+# manifest 로 옮겨도 되는 payload 필드(수치·불투명 id 만). 대사·이름·경로 필드는 이 목록에 없으므로 나가지 않는다.
+FAILURE_EXTRA_FIELDS = ("segment_index", "chunk_index", "emotion_id", "generated_iterations",
+                        "generation_limit", "termination_reason", "resplit_attempts",
+                        "inactivity_sec", "elapsed_sec", "deadline_sec", "last_stage")
+
+
+def failure_class_for(code):
+    """오류 코드 → 종료 사유 분류. 모르는 코드는 other(추측하지 않는다)."""
+    if not code:
+        return FAILURE_CLASS_OTHER
+    c = str(code)
+    if c in _FAILURE_CLASS_BY_CODE:
+        return _FAILURE_CLASS_BY_CODE[c]
+    if c.startswith(_REFERENCE_PREP_PREFIXES):
+        return FAILURE_CLASS_REFERENCE_PREP
+    return FAILURE_CLASS_OTHER
+
+
+def failure_extra_from_payload(code, payload):
+    """실패 종료 시 manifest 에 남길 값. 코드·분류·허용 필드만."""
+    out = {"error_code": str(code) if code else None, "failure_class": failure_class_for(code)}
+    if isinstance(payload, dict):
+        for k in FAILURE_EXTRA_FIELDS:
+            if k in payload and payload[k] is not None:
+                v = payload[k]
+                if isinstance(v, (int, float, str, bool)):
+                    out[k] = v
+    return out

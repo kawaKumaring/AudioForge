@@ -3339,8 +3339,13 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                           else _run_record_status_for(_exc))
             if _rr["status"] == "ok" and _exc is None:
                 _st, _code = "ok", None
-            _run_record_finish(_st, _code,
-                               extra={"elapsed_seconds": round(_time.monotonic() - _t0, 3)})
+            _extra = {"elapsed_seconds": round(_time.monotonic() - _t0, 3)}
+            if _exc is not None:
+                # 어느 조각이 어떤 상한/사유로 끝났는지 — 없으면 다음 실패도 진단 불가다(실측: 상한 실패 4건 전부 기록 0).
+                import chunk_publish as _cpub
+                _extra.update(_cpub.failure_extra_from_payload(
+                    _code, getattr(_exc, "error_payload", None)))
+            _run_record_finish(_st, _code, extra=_extra)
         except Exception:
             pass                     # 기록 마감 실패가 사용자 WAV 나 원래 오류를 덮지 않는다
         for d in tmp_dirs:

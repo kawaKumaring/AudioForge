@@ -732,7 +732,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
           settle.markSettled()
           stagingGate.abandon()   // 시간 초과로 마감된 실행의 늦은 결과는 공개하지 않는다
           runner.cancel()  // async(무시) — 트리 kill 시도
-          sendError('처리 시간이 초과되었습니다 (5분간 응답 없음). Python 환경을 확인해주세요.')
+          sendError({ code: 'JOB_INACTIVE', message: '처리 시간이 초과되었습니다 (5분간 응답 없음)' })
         }
       }, WATCHDOG_MS)
     }
@@ -759,12 +759,16 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
         // staging 이 끝나기 전에 터미널이 확정됐다 → 뒤늦게 도착하는 결과는 절대 공개하지 않는다.
         stagingGate.abandon()
         runner?.cancel()  // async(무시) — 트리 kill 시도
+        // 판정마다 기계 코드를 붙인다 — renderer 가 GENERATION_LIMIT_EXCEEDED 처럼 분기할 수 있고, 기록에서
+        // 시간 초과와 모델 상한이 섞이지 않는다.
         sendError(verdict === 'no-forward-progress'
-          ? `합성이 ${Math.round(r.sinceForwardMs / 1000)}초 동안 한 조각도 진행하지 못했습니다 `
-            + `(완료 ${r.completedChunks}조각). 프로세스는 살아 있었지만 결과를 만들지 못했습니다.`
-          : `합성이 이 작업에 허용된 총 시간을 초과했습니다 `
-            + `(경과 ${Math.round(r.elapsedMs / 1000)}초, 완료 ${r.completedChunks}`
-            + `/${r.estimatedTotalChunks ?? '?'}조각).`)
+          ? { code: 'JOB_STALLED',
+              message: `합성이 ${Math.round(r.sinceForwardMs / 1000)}초 동안 한 조각도 진행하지 못했습니다 `
+                + `(완료 ${r.completedChunks}조각). 프로세스는 살아 있었지만 결과를 만들지 못했습니다.` }
+          : { code: 'JOB_BUDGET_EXHAUSTED',
+              message: `합성이 이 작업에 허용된 총 시간을 초과했습니다 `
+                + `(경과 ${Math.round(r.elapsedMs / 1000)}초, 완료 ${r.completedChunks}`
+                + `/${r.estimatedTotalChunks ?? '?'}조각).` })
       }
     })
 
