@@ -76,6 +76,8 @@ export interface RestorableSession {
     // 참조 conditioning 모드 스냅샷(PHASE 2). 부재(legacy 세션) → safe_xvector(안전 기본).
     // 계약 밖 문자열은 그대로 복원(조용한 강등 금지 — 합성 시 Python 이 구조화 오류로 거부).
     ttsReferenceConditioningMode: ReferenceConditioningMode
+    // 생성 방식 스냅샷. 부재(legacy 세션) → single(앱 기본). 복원은 저장된 값만 따른다.
+    ttsSpeakerMode: 'single' | 'multi'
   }>
   tracks?: Track[]
 }
@@ -220,6 +222,13 @@ interface AppState {
    */
   ttsSpeakerEmotionEnabled: Record<string, boolean>
   setSpeakerEmotionEnabled: (speakerId: string, on: boolean) => void
+  /**
+   * 생성 방식(한 명 | 여러 명). 대본 내용이 아니라 라우팅 방식이다 — 탭이 이 값이다.
+   * 앱·새 작업 기본 'single'. 탭 클릭은 이 값만 바꾼다(원문·인물 설정·목소리 자산 무변경).
+   * 합성 중에는 탭이 잠기고, 진행 중 작업의 라우팅 스냅샷은 config 로 이미 확정되어 바뀌지 않는다.
+   */
+  ttsSpeakerMode: 'single' | 'multi'
+  setTtsSpeakerMode: (mode: 'single' | 'multi') => void
   ttsReferencePrompts: Record<string, TtsReferenceEntry>
   ttsEngine: string
   // 참조 conditioning 모드(PHASE 2). fresh 세션 기본 = auto(자동, 추천) — ICL 을 먼저 시도하고
@@ -337,6 +346,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setSpeakerEmotionRefs: (refs: Record<string, string>) =>
     set({ ttsSpeakerEmotionRefs: refs }),
   ttsSpeakerEmotionEnabled: {} as Record<string, boolean>,
+  ttsSpeakerMode: 'single' as 'single' | 'multi',
+  setTtsSpeakerMode: (mode: 'single' | 'multi') => set({ ttsSpeakerMode: mode }),
   setSpeakerEmotionEnabled: (speakerId: string, on: boolean) =>
     set((st) => {
       const next = { ...st.ttsSpeakerEmotionEnabled }
@@ -381,7 +392,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 전체 파생 클립(기본+감정) 정리
     // 분할 마커는 파일에 종속이다. 비우지 않으면 이전 파일의 경계가 새 파일에 그대로 적용돼
     // (더 긴 파일에서는 오류조차 없이) 완전히 틀린 지점에서 잘린다 — 감사 R2.
-    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsReferencePrompts: {} })
+    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
   },
   setMode: (mode) => set({ mode }),
   setTrimSilence: (v) => set({ trimSilence: v }),
@@ -590,6 +601,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       ttsSpeakerEmotionRefs: {},
       ttsSpeakerEmotionEnabled: {},
       ttsEmotionCandidateSelections: {},
+      // 저장된 생성 방식만 복원. 부재(legacy 세션)는 앱 기본 single.
+      ttsSpeakerMode: o.ttsSpeakerMode === 'multi' ? 'multi' : 'single',
       ttsReferencePrompts: prompts,
       ttsReferenceClip: '',            // 파생 클립은 temp — 복원 시 항상 비움(§4: stale 클립 결합 금지)
       ttsRefReady: defaultReady,
@@ -620,7 +633,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null,
       ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsSpeakerRefState: {},
       ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {},
-      ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {},
+      ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single',
       ttsPitch: 0.0, ttsPitchCapability: null, resultMetadata: null,
       // 세션 리셋은 표현형 모드도 기본으로 되돌린다(이전 세션의 모드가 새 작업에 눌러앉지 않게).
       ttsExpressiveMode: EXPRESSIVE_DEFAULT_MODE,

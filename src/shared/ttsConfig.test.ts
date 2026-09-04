@@ -148,7 +148,7 @@ test('지정한 값은 그대로 통과한다', () => {
   assert.equal(c.ttsEngine, 'gptsovits')
 })
 
-test('직렬화 형태에 24개 TTS 키가 모두 존재한다 (필드 누락 방지; v1.4 화자 4개 + 후보 선택 1개)', () => {
+test('직렬화 형태에 25개 TTS 키가 모두 존재한다 (필드 누락 방지; v1.4 화자 4개 + 후보 선택 1개 + 생성 방식 1개)', () => {
   const c = buildTtsConfig({})
   assert.deepEqual(
     Object.keys(c).sort(),
@@ -156,7 +156,7 @@ test('직렬화 형태에 24개 TTS 키가 모두 존재한다 (필드 누락 �
       'ttsEmotionRefRegions', 'ttsEmotionRefSources',
       'ttsEmotionRefs', 'ttsEngine', 'ttsExpressiveMode', 'ttsParsedPlanSha256', 'ttsParserVersion', 'ttsPitch',
       'ttsReferenceConditioningMode', 'ttsReferenceOverride', 'ttsReferencePrompts', 'ttsSilenceGap',
-      'ttsSpeakerEmotionRefs', 'ttsSpeakerLabels', 'ttsSpeakerRefSources', 'ttsSpeakerRefs', 'ttsSpeed',
+      'ttsSpeakerEmotionRefs', 'ttsSpeakerLabels', 'ttsSpeakerMode', 'ttsSpeakerRefSources', 'ttsSpeakerRefs', 'ttsSpeed',
       'ttsTailFadeMs', 'ttsTailMode', 'ttsTailPaddingMs', 'ttsText']
   )
 })
@@ -500,4 +500,11 @@ test('참조 conditioning: 유효값 판별기', () => {
   assert.equal(isReferenceConditioningMode('high_quality_icl'), true)
   assert.equal(isReferenceConditioningMode('weird_mode'), false)
   assert.equal(isReferenceConditioningMode(undefined), false)
+})
+
+test('ttsSpeakerMode: 부재·계약 밖 값은 single, multi 는 명시했을 때만', () => {
+  assert.equal(buildTtsConfig({}).ttsSpeakerMode, 'single')
+  assert.equal(buildTtsConfig({ ttsSpeakerMode: 'multi' }).ttsSpeakerMode, 'multi')
+  assert.equal(buildTtsConfig({ ttsSpeakerMode: 'single' }).ttsSpeakerMode, 'single')
+  assert.equal(buildTtsConfig({ ttsSpeakerMode: 'both' as unknown as 'single' }).ttsSpeakerMode, 'single')
 })

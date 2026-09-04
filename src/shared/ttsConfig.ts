@@ -213,6 +213,12 @@ export interface TtsInputOptions {
   // `(화자, 감정)` 전용 참조. 키는 `speakerEmotionKey(화자, 감정)`.
   ttsSpeakerEmotionRefs?: Record<string, string>
   /**
+   * 생성 방식 — 대본 내용이 아니라 **라우팅 방식**이다. 'single' 이면 화자 표기가 있어도 모든 발화를
+   * 한 명의 기본/감정 참조로 만들고 화자 참조·전용 참조·후보 선택은 개입하지 않는다.
+   * 앱과 새 작업의 기본값은 항상 'single'.
+   */
+  ttsSpeakerMode?: 'single' | 'multi'
+  /**
    * 후보 비교 화면에서 사용자가 고른 것. `speakerEmotionKey(화자, 감정)` → 참조 id 또는
    * `speaker_default` / `no_emotion_ref` 토큰.
    *
@@ -271,6 +277,7 @@ export interface TtsConfig {
   ttsSpeakerRefs: Record<string, string>
   ttsSpeakerRefSources: Record<string, string>
   ttsSpeakerEmotionRefs: Record<string, string>
+  ttsSpeakerMode: 'single' | 'multi'
   ttsEmotionCandidateSelections: Record<string, string>
   ttsSpeakerLabels: Record<string, string>
   ttsEngine: string
@@ -368,6 +375,8 @@ export function buildTtsConfig(o?: TtsInputOptions, sourceFingerprints?: Record<
     ttsSpeakerRefs: o?.ttsSpeakerRefs ?? {},
     ttsSpeakerRefSources: o?.ttsSpeakerRefSources ?? {},
     ttsSpeakerEmotionRefs: o?.ttsSpeakerEmotionRefs ?? {},
+    // 부재·계약 밖 값 → single(기본). multi 는 명시했을 때만이다.
+    ttsSpeakerMode: o?.ttsSpeakerMode === 'multi' ? 'multi' : 'single',
     ttsEmotionCandidateSelections: o?.ttsEmotionCandidateSelections ?? {},
     ttsSpeakerLabels: o?.ttsSpeakerLabels ?? {},
     ttsEngine: o?.ttsEngine ?? 'auto',

@@ -463,3 +463,28 @@ test('setFile(새 파일): 이전 작업의 화자 배정·감정별 참조가 �
   assert.deepEqual(useAppStore.getState().ttsSpeakerRefState, {})
   assert.deepEqual(useAppStore.getState().ttsSpeakerEmotionRefs, {})
 })
+
+// ── 생성 방식(speakerMode) ──────────────────────────────────────────────────
+
+test('speakerMode: 기본 single, 탭 setter 는 이 값만 바꾼다(원문·배정 무변경)', () => {
+  useAppStore.setState({ ttsSpeakerMode: 'single', ttsText: '[화자 a]\n안녕',
+    ttsSpeakerRefState: { a: { source: 'C:/refs/a.wav', clip: '', region: null, ready: true, message: '' } } })
+  useAppStore.getState().setTtsSpeakerMode('multi')
+  const s1 = useAppStore.getState()
+  assert.equal(s1.ttsSpeakerMode, 'multi')
+  assert.equal(s1.ttsText, '[화자 a]\n안녕')
+  assert.deepEqual(Object.keys(s1.ttsSpeakerRefState), ['a'])
+  useAppStore.getState().setTtsSpeakerMode('single')
+  assert.equal(useAppStore.getState().ttsText, '[화자 a]\n안녕')
+})
+
+test('speakerMode: 새 파일·복원(부재)은 single, 복원(저장 multi)은 multi', () => {
+  useAppStore.setState({ ttsSpeakerMode: 'multi' })
+  useAppStore.getState().setFile({ path: 'm.wav', name: 'm.wav', duration: 5, channels: 1, sampleRate: 24000, format: 'wav' }, 'local-file://m.wav')
+  assert.equal(useAppStore.getState().ttsSpeakerMode, 'single')
+  useAppStore.setState({ ttsSpeakerMode: 'multi' })
+  useAppStore.getState().restoreSession('C:/out', { ...SESSION_BASE, options: { ttsText: 'x' } } as never)
+  assert.equal(useAppStore.getState().ttsSpeakerMode, 'single')
+  useAppStore.getState().restoreSession('C:/out', { ...SESSION_BASE, options: { ttsText: 'x', ttsSpeakerMode: 'multi' } } as never)
+  assert.equal(useAppStore.getState().ttsSpeakerMode, 'multi')
+})
