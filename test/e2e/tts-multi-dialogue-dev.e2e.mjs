@@ -290,6 +290,68 @@ try {
       '목소리 지정 버튼 존재(파일 선택 경로 호출은 브릿지 객체가 고정되어 자동 확인 불가 — 사용자 직접 확인)')
   }
 
+  // ── 15. 한 명 화면의 화자 구조 보호 + 명시 전환 ──────────────────────────
+  // 목소리 지정은 store 에 합성 파일로 직접 넣는다(파일 선택창·참조 분석 없음). 사용자 파일 없음.
+  const GUARD_SCRIPT = '[화자 민수]\n[기쁨] 안녕 [쉼 1] 잘\n[화자 영희]\n응\n[화자 민수]\n또'
+  await setSource(GUARD_SCRIPT)
+  await page.evaluate((wav) => {
+    window.__afStore.setState({ ttsSpeakerRefState: {
+      '민수': { source: wav, clip: '', ready: true, message: '' },
+      '영희': { source: wav, clip: '', ready: true, message: '' },
+    } })
+  }, WAV)
+  const snapshot = () => page.evaluate(() => {
+    const s = window.__afStore.getState()
+    return JSON.stringify({ text: s.ttsText, refs: s.ttsSpeakerRefState, emo: s.ttsSpeakerEmotionRefs, labels: s.ttsSpeakerLabels })
+  })
+  const snap0 = await snapshot()
+  for (let i = 0; i < 5; i += 1) { await tab('single'); await tab('multi') }
+  await sleep(200)
+  ok('15a', (await snapshot()) === snap0, '탭 10회 전환 후 원문·목소리 지정·감정별 참조·이름 전부 동일')
+  await tab('single'); await sleep(200)
+  const guardN = await count('[data-testid="single-guard"]')
+  const guardText = await page.evaluate(() => document.querySelector('[data-testid="single-guard"]')?.textContent ?? '')
+  ok('15b', guardN === 1 && guardText.includes('인물 2명') && (await count('[data-testid="single-convert-panel"]')) === 0,
+    '한 명 화면에 인물 2명 안내 + 전환 버튼(패널은 닫힘)', guardText.slice(0, 60))
+  // 본문만 고치는 편집은 반영된다(A→B→A 순서·감정·쉼·알 수 없는 지시 유지).
+  const EDITED = GUARD_SCRIPT.replace('안녕 [쉼 1] 잘', '안녕하세요 [쉼 1] 잘 지냈어요')
+  await setSource(EDITED)
+  const acc = await store()
+  ok('15c', acc === EDITED && (await count('[data-testid="single-guard-blocked"]')) === 0,
+    '한 명 화면의 본문 수정은 반영되고 화자 표기·순서는 그대로')
+  // 표기를 지우는 편집은 반영되지 않고 알린다.
+  await setSource(EDITED.replace('[화자 영희]\n', ''))
+  const blockedN = await count('[data-testid="single-guard-blocked"]')
+  ok('15d', (await store()) === EDITED && blockedN === 1, '화자 표기 삭제 편집은 거부 + 안내', `blocked=${blockedN}`)
+  // 표기 이름을 바꾸는 편집도 거부.
+  await setSource(EDITED.replace('[화자 영희]', '[화자 지은]'))
+  ok('15e', (await store()) === EDITED, '화자 이름 변경 편집도 거부')
+  // 전환 취소 = 완전 무변경.
+  const snap1 = await snapshot()
+  await page.click('[data-testid="single-convert-open"]')
+  await sleep(100)
+  const panelText = await page.evaluate(() => document.querySelector('[data-testid="single-convert-panel"]')?.textContent ?? '')
+  ok('15f', panelText.includes('인물 구분이 제거되며 모든 대사가 기본 목소리를 사용합니다') && panelText.includes('삭제되지 않습니다'),
+    '전환 패널이 결과를 먼저 설명한다')
+  await page.click('[data-testid="single-convert-cancel"]')
+  await sleep(100)
+  ok('15g', (await snapshot()) === snap1 && (await count('[data-testid="single-convert-panel"]')) === 0, '취소: 원문·설정 한 글자도 안 바뀜')
+  // 여러 명으로 돌아가면 비변환 상태가 그대로 — 인물 2명, 목소리 지정 유지(목소리 바꾸기 버튼).
+  await tab('multi'); await waitRows(3, 10000)
+  const cardsBack = await page.evaluate(() => [...document.querySelectorAll('[data-testid="speaker-card"]')].map((c) => c.getAttribute('data-speaker')))
+  const changeBtns = await page.locator('[data-testid="speaker-card"] button:has-text("목소리 바꾸기")').count()
+  ok('15h', cardsBack.join(',') === '민수,영희' && changeBtns === 2 && (await rowSpeakers()).join(',') === '민수,영희,민수',
+    '여러 명 복귀: 인물 순서·이름·목소리 지정 그대로', `cards=${cardsBack.join(',')} change=${changeBtns} rows=${(await rowSpeakers()).join(',')}`)
+  // 전환 승인 = 화자 표기만 제거, 목소리 지정·목소리 구성 보존.
+  await tab('single'); await sleep(200)
+  await page.click('[data-testid="single-convert-open"]'); await sleep(100)
+  await page.click('[data-testid="single-convert-confirm"]'); await sleep(200)
+  const converted = await store()
+  const refsAfter = await page.evaluate(() => JSON.stringify(window.__afStore.getState().ttsSpeakerRefState))
+  ok('15i', converted === '[기쁨] 안녕하세요 [쉼 1] 잘 지냈어요\n응\n또' && refsAfter === JSON.stringify(JSON.parse(snap1).refs) && (await count('[data-testid="single-guard"]')) === 0,
+    '전환 승인: 화자 표기만 제거(감정·쉼 유지), 목소리 지정 보존, 안내 사라짐', `len=${converted.length} refsKept=${refsAfter === JSON.stringify(JSON.parse(snap1).refs)}`)
+  await page.evaluate(() => window.__afStore.setState({ ttsSpeakerRefState: {} }))
+
   // ── 10. 배역 세트(VoiceCast) 자동 생성 없음 ───────────────────────────────
   const settings = await page.evaluate(() => window.api.settings.get())
   const vc = settings?.voiceCasts
