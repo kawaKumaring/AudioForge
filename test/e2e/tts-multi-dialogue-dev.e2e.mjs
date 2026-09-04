@@ -241,6 +241,55 @@ try {
   ok('8b', rows8b && (await store()) === PAUSE_ONLY && (await rowBodies())[0].includes('[쉼 1]'),
     '줄 안의 쉼 표기: 구조화 2행, 쉼은 본문에 남고 원문 보존')
 
+  // ── 13. 화자 표기가 없는 대사 = 기본 인물(빈 칸 아님), 명시 인물로 바꾸면 표기가 생긴다 ──
+  const NO_SPK = '그냥 한 줄\n[기쁨] 둘째 줄'
+  await setSource(NO_SPK)
+  ok('13a', await waitRows(2), '표기 없는 대본 2행')
+  const firstSel = await page.evaluate(() => {
+    const sel = document.querySelectorAll('[data-testid="dialogue-row"] select')[0]
+    return { value: sel.value, text: sel.options[sel.selectedIndex]?.textContent }
+  })
+  const noteN = await count('[data-testid="default-speaker-note"]')
+  ok('13b', firstSel.value === '' && firstSel.text === '기본 인물' && noteN === 1,
+    '인물 칸이 기본 인물로 보이고 안내 한 줄이 있다', JSON.stringify(firstSel))
+  const before13 = await store()
+  await tab('single'); await tab('multi'); await sleep(200)
+  ok('13c', (await store()) === before13, '탭을 열기만 해서는 원문이 바뀌지 않는다')
+  await page.click('[data-testid="multi-speakers"] button:has-text("+ 인물 추가")')
+  await sleep(100)
+  const pendingId = await page.evaluate(() => document.querySelector('[data-testid="speaker-card"][data-pending="true"]')?.getAttribute('data-speaker'))
+  ok('13d', !!pendingId && (await store()) === before13, '인물 카드를 추가해도 원문은 그대로', `id=${pendingId}`)
+  await page.fill(`#spk-name-${pendingId}`, '민수')
+  await sleep(100)
+  const row0Sel = await page.evaluate(() => document.querySelectorAll('[data-testid="dialogue-row"] select')[0].id)
+  await page.selectOption('#' + row0Sel, '민수')
+  const switched = await waitUntil(async () => (await store()) === '[화자 민수]\n그냥 한 줄\n[화자 기본]\n[기쁨] 둘째 줄')
+  ok('13e', switched, '기본 인물 → 민수: 대사 앞에 [화자 민수], 다음 대사는 [화자 기본] 으로 복원', (await store()).length + '자')
+
+  // ── 14. 목소리 지정 버튼은 기존 파일 선택 경로(window.api.audio.selectFile)를 부른다 ──
+  // 실제 창을 띄우지 않고 그 자리에서 '취소' 를 돌려준다. 사용자 파일은 읽지 않는다.
+  await waitRows(2)
+  const wrapped = await page.evaluate(() => {
+    try {
+      const orig = window.api.audio.selectFile
+      window.__afSelectFileCalls = 0
+      window.api.audio.selectFile = async () => { window.__afSelectFileCalls += 1; return '' }
+      return typeof orig === 'function' && window.api.audio.selectFile !== orig
+    } catch { return false }
+  })
+  if (wrapped) {
+    const before14 = await store()
+    await page.click('[data-testid="speaker-card"]:not([data-pending="true"]) button:has-text("목소리 지정")')
+    await sleep(300)
+    const calls = await page.evaluate(() => window.__afSelectFileCalls)
+    const decisionAfter = await page.evaluate(() => [...document.querySelectorAll('[data-testid="speaker-voice-decision"]')].map((e) => e.textContent.trim()))
+    ok('14', calls === 1 && (await store()) === before14,
+      '목소리 지정 클릭 → 파일 선택 1회 호출, 취소하면 아무것도 바뀌지 않음', `calls=${calls} decisions=${JSON.stringify(decisionAfter).slice(0, 80)}`)
+  } else {
+    ok('14', (await page.locator('[data-testid="speaker-card"]:not([data-pending="true"]) button:has-text("목소리 지정")').count()) >= 1,
+      '목소리 지정 버튼 존재(파일 선택 경로 호출은 브릿지 객체가 고정되어 자동 확인 불가 — 사용자 직접 확인)')
+  }
+
   // ── 10. 배역 세트(VoiceCast) 자동 생성 없음 ───────────────────────────────
   const settings = await page.evaluate(() => window.api.settings.get())
   const vc = settings?.voiceCasts
