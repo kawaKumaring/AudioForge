@@ -1,22 +1,29 @@
 /**
- * 여러 명 화면 — 인물 설정(위) + 하나의 시간순 대화 목록(아래).
+ * 여러 명 화면 — **인물의 한 발화 카드**가 기본 단위다.
+ *
+ * 카드 하나 = 누가(인물) · 어떤 목소리(준비 상태) · 어디서 어떤 감정(`+ 감정` 으로 대사 안에 태그) · 무엇을(대사).
+ *   · 대화칸은 하나다. 첫 감정 태그·중간 태그·쉼 표기가 글자 그대로 들어 있고 일반 편집으로 넣고 지운다.
+ *   · 같은 인물이 다시 말하면 새 카드. 같은 인물의 카드는 같은 인물 id 와 목소리 설정을 공유한다.
+ *   · 카드 순서 = 생성 순서. 위/아래는 patcher 가 안전하다고 판정할 때만.
+ *   · 목소리 설정은 카드 머리의 인물·상태를 눌러 **그 인물 한 명**의 패널만 연다(파형도 한 명만).
+ *   · 인물 목록 요약 한 줄만 둔다(`인물 3명 · 모두 준비됨`). 위쪽에 인물 카드 영역을 따로 두지 않는다.
  *
  * 이 컴포넌트가 하지 않는 것
  *   · 대본을 다시 parse 하지 않는다. 화자·발화·좌표는 훅(계획)이 준 것만 쓴다.
  *   · 원문을 직접 쓰지 않는다. 모든 변경은 훅 → source patcher 를 거친다.
- *   · 사람별 독립 대본을 만들지 않는다. 목록은 하나이고 한 인물이 여러 번 나온다.
+ *   · 대사 원문을 복제한 두 번째 textarea 를 만들지 않는다.
  *   · 목소리 저장소를 새로 만들지 않는다. 목소리 지정은 셸이 넘긴 기존 store 콜백을 부른다.
- *   · VoiceCast 를 만들지 않는다. 인물 카드는 로컬 UI 상태이고 저장은 사용자의 별도 행위다.
+ *   · 발화 삭제·인물 변경이 목소리 자산이나 저장된 목소리 구성을 지우지 않는다.
  *
- * 표현할 수 없는 대본(`sourceOnly`)이면 이유만 말하고 원문 편집기는 셸이 그대로 보여 준다.
+ * 표현할 수 없는 대본(`sourceOnly`)이면 이유만 말하고 원문 편집기는 셸이 보여 준다.
  * 계획이 잠시 낡은 동안(`PLAN_STALE`)에도 화면을 닫지 않고 좌표 의존 버튼만 잠근다.
  */
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import type { CSSProperties, ReactNode } from 'react'
 
-import type { DialogueProjection, DialogueSpeaker } from '../hooks/useDialogueProjection'
+import type { DialogueProjection, DialogueRow, DialogueSpeaker } from '../hooks/useDialogueProjection'
 import type { StructureBlocker } from '../../shared/dialogueSourcePatcher'
-import { validateSpeakerLabel } from '../../shared/dialogueSourcePatcher'
+import { validateSpeakerLabel, insertTagAtCaret } from '../../shared/dialogueSourcePatcher'
 import { referenceDecisionText } from '../../shared/analysisWording'
 import type { ReferenceDecision } from '../../shared/speakerReference'
 
@@ -30,7 +37,7 @@ export interface SpeakerVoiceState {
   sharedWith?: string[]
   /** 실제 생성으로 나가는 감정별 음원의 감정 이름들(켠 인물만). 생성은 그것을 먼저 쓴다. */
   emotionOverrides?: string[]
-  /** 목소리 구성이 이 인물에 대해 가진 감정 이름들(켜짐 무관). 있으면 카드에 켬/끔이 보인다. */
+  /** 목소리 구성이 이 인물에 대해 가진 감정 이름들(켜짐 무관). 있으면 패널에 켬/끔이 보인다. */
   emotionVoiceAvailable?: string[]
   /** 이 작업에서 사용자가 `감정별 목소리 사용` 을 켰는가. 기본 false. */
   emotionVoiceEnabled?: boolean
@@ -49,13 +56,12 @@ export const STRUCTURE_BLOCKER_LABEL: Record<StructureBlocker, string> = {
 
 export const REFUSAL_LABEL: Record<string, string> = {
   STALE_SOURCE: '그 사이 대본이 바뀌어 반영하지 않았습니다. 최신 대본을 다시 불러왔습니다',
-  MID_EMOTION_WOULD_BE_LOST: '대사 중간의 감정·쉼 표기가 사라져서 반영하지 않았습니다. `대사 중간에 감정 바꾸기`에서 고쳐 주세요',
   LINE_EMPTY: '대사가 비어 있습니다',
   SPEAKER_HAS_UTTERANCES: '이 인물의 대사가 남아 있습니다. 다른 인물로 바꾸거나 대사를 먼저 지워 주세요',
   NOT_ADJACENT: '이웃한 대화만 자리를 바꿀 수 있습니다',
-  SPEAKER_INHERITED: '앞 인물을 이어받는 대화라 순서를 바꿀 수 없습니다. 직접 입력에서 바꿔 주세요',
-  CONTENT_BETWEEN: '대화 사이에 쉼이나 다른 표기가 있어 순서를 바꿀 수 없습니다. 직접 입력에서 바꿔 주세요',
-  FOLLOWER_INHERITS: '뒤 대화가 이 인물을 이어받고 있어 순서를 바꿀 수 없습니다. 직접 입력에서 바꿔 주세요',
+  SPEAKER_INHERITED: '앞 인물을 이어받는 대화라 순서를 바꿀 수 없습니다. 대본 표기 직접 편집에서 바꿔 주세요',
+  CONTENT_BETWEEN: '대화 사이에 쉼이나 다른 표기가 있어 순서를 바꿀 수 없습니다. 대본 표기 직접 편집에서 바꿔 주세요',
+  FOLLOWER_INHERITS: '뒤 대화가 이 인물을 이어받고 있어 순서를 바꿀 수 없습니다. 대본 표기 직접 편집에서 바꿔 주세요',
   SPEAKER_LABEL_EMPTY: '인물 이름을 입력해 주세요',
   SPEAKER_LABEL_HAS_WHITESPACE: '인물 이름에 공백을 쓸 수 없습니다',
   SPEAKER_LABEL_FORBIDDEN_CHAR: '인물 이름에는 한글·영문·숫자·_·- 만 쓸 수 있습니다',
@@ -65,20 +71,31 @@ export const REFUSAL_LABEL: Record<string, string> = {
 
 function btn(color: string, off: boolean): CSSProperties {
   return {
-    fontSize: 10, fontWeight: 600, padding: '3px 9px', borderRadius: 5, border: 'none',
+    fontSize: 11, fontWeight: 600, padding: '3px 9px', borderRadius: 5, border: 'none',
     cursor: off ? 'not-allowed' : 'pointer', background: 'var(--bg-elevated)', color,
     fontFamily: 'inherit', opacity: off ? 0.45 : 1, whiteSpace: 'nowrap',
   }
 }
 const select: CSSProperties = {
-  fontSize: 11, padding: '3px 8px', borderRadius: 6, fontFamily: 'inherit',
+  fontSize: 12, fontWeight: 600, padding: '3px 8px', borderRadius: 6, fontFamily: 'inherit',
   border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
-  color: 'var(--text-secondary)', minWidth: 0, maxWidth: '100%',
+  color: 'var(--cyan)', minWidth: 0, maxWidth: '100%',
 }
 const inputBox: CSSProperties = {
-  fontSize: 11, padding: '3px 8px', borderRadius: 6, fontFamily: 'inherit', minWidth: 0,
+  fontSize: 12, padding: '5px 8px', borderRadius: 6, fontFamily: 'inherit', minWidth: 0,
   border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
-  color: 'var(--text-secondary)',
+  color: 'var(--text-primary, var(--text-secondary))', lineHeight: 1.5,
+}
+const card: CSSProperties = {
+  display: 'flex', flexDirection: 'column', gap: 6, padding: '8px 10px', borderRadius: 8,
+  border: '1px solid var(--border-subtle)', minWidth: 0, width: '100%', boxSizing: 'border-box',
+}
+const rowFlex: CSSProperties = { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', minWidth: 0 }
+
+/** 카드 머리의 짧은 목소리 상태. 자세한 판정 문구는 패널에서. */
+export function voiceStatusShort(voice: SpeakerVoiceState | null): string {
+  if (!voice || !voice.registered) return '목소리 없음'
+  return voice.ready ? '목소리 준비됨' : '목소리 확인 중'
 }
 
 export interface MultiSpeakerDialogueProps {
@@ -99,10 +116,10 @@ export interface MultiSpeakerDialogueProps {
 
 export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
   const { projection: p, emotions, emotionTagOf, speakerIdOf, voiceOf, disabled = false } = props
-  const [advancedOpen, setAdvancedOpen] = useState<Record<number, boolean>>({})
   const [newSpeaker, setNewSpeaker] = useState('')
   const [newLine, setNewLine] = useState('')
-  const [newEmotion, setNewEmotion] = useState('default')
+  // 목소리 패널은 한 번에 한 인물만 연다(파형도 한 명만).
+  const [voiceSpeaker, setVoiceSpeaker] = useState<string | null>(null)
 
   // 빈 대본이면 빈 인물 카드 2개를 **보여 주기만** 한다 — 어디에도 쓰지 않는다.
   useEffect(() => {
@@ -111,32 +128,44 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
   }, [p.verdict.mode])
 
   const blockerText = p.verdict.blockers.map((b) => STRUCTURE_BLOCKER_LABEL[b])
-  const speakerLabels = p.speakers.map((s) => s.label).filter((l) => l.trim())
+  const namedSpeakers = p.speakers.filter((s) => s.label.trim() && validateSpeakerLabel(s.label.trim()).ok)
+  const speakerLabels = namedSpeakers.map((s) => s.label.trim())
+  const voiceIdOf = (s: DialogueSpeaker) => (s.pending ? speakerIdOf(s.label.trim()) : s.speakerId)
 
-  // ── 표현 불가: 이유만 말한다. 원문 편집기는 셸이 그대로 보여 준다. ──
+  // ── 표현 불가: 이유만 말한다. 원문 편집기는 셸이 보여 준다. ──
   if (!p.editingAllowed) {
     return (
       <div data-testid="multi-dialogue-source-only" role="status"
         data-mode={p.verdict.mode} data-blockers={p.verdict.blockers.join(' ')}
         style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
         {blockerText.map((t) => <div key={t}>{t}</div>)}
-        <div style={{ color: 'var(--text-muted)' }}>아래 대본 직접 입력은 그대로 사용할 수 있습니다.</div>
+        <div style={{ color: 'var(--text-muted)' }}>아래 대본 표기 직접 편집은 그대로 사용할 수 있습니다.</div>
       </div>
     )
   }
 
+  // ── 요약 한 줄: 인물 N명 · 준비 상태 ──
+  const notReady = namedSpeakers.filter((s) => !voiceOf(voiceIdOf(s))?.ready).map((s) => s.label.trim())
+  const defaultRows = p.rows.filter((r) => r.view.speakerLabel === null).length
+  const summary = namedSpeakers.length === 0
+    ? (p.rows.length > 0 ? `인물 없음 · 대사 ${p.rows.length}개는 기본 인물` : '인물을 만들고 첫 대사를 넣어 주세요')
+    : `인물 ${namedSpeakers.length}명 · ${notReady.length === 0 ? '모두 준비됨' : `목소리 준비 안 됨 ${notReady.length}명: ${notReady.join(', ')}`}`
+      + (defaultRows > 0 ? ` · 기본 인물 대사 ${defaultRows}개` : '')
+
   const addRow = () => {
+    if (newSpeaker === '__new__') { p.addPendingSpeaker(); setNewSpeaker(''); return }
     const label = newSpeaker.trim()
-    const check = validateSpeakerLabel(label)
-    if (!check.ok) return
-    if (p.rows.length === 0) {
-      p.createInitial([{ speakerLabel: label, line: newLine }])
-    } else {
-      p.insertAfter(p.rows.length - 1, label, newLine,
-        newEmotion === 'default' ? null : emotionTagOf(newEmotion))
-    }
+    if (!validateSpeakerLabel(label).ok || !newLine.trim()) return
+    if (p.rows.length === 0) p.createInitial([{ speakerLabel: label, line: newLine }])
+    else p.insertAfter(p.rows.length - 1, label, newLine, null)
     setNewLine('')
   }
+  const addDisabled = disabled || (newSpeaker !== '__new__' && (!newSpeaker || !newLine.trim()))
+    || (p.rows.length > 0 && newSpeaker !== '__new__' && !p.patchAllowed)
+
+  const panelSpeaker = voiceSpeaker
+    ? p.speakers.find((s) => voiceIdOf(s) === voiceSpeaker || s.speakerId === voiceSpeaker) ?? null
+    : null
 
   return (
     <div data-testid="multi-dialogue" data-mode={p.verdict.mode}
@@ -156,213 +185,300 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
         </div>
       )}
 
-      {/* ── 인물 ── */}
-      <div data-testid="multi-speakers" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>인물</span>
-        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', minWidth: 0 }}>
-          {p.speakers.map((s) => (
-            <SpeakerCard key={s.speakerId} speaker={s} projection={p} disabled={disabled}
-              speakerIdOf={speakerIdOf} voiceOf={voiceOf}
-              onAssignVoice={props.onAssignVoice} onRemoveVoice={props.onRemoveVoice}
-              onPreviewVoice={props.onPreviewVoice} renderRegionEditor={props.renderRegionEditor}
-              onToggleEmotionVoice={props.onToggleEmotionVoice} />
-          ))}
-          <button type="button" disabled={disabled} onClick={p.addPendingSpeaker}
-            style={btn('var(--cyan)', disabled)}>+ 인물 추가</button>
-        </div>
-        {/* 화자 표기가 없는 대사가 있으면 그것이 무엇인지 한 줄로 말한다. 카드도 등록도 아니다. */}
-        {p.rows.some((r) => r.view.speakerLabel === null) && (
-          <span data-testid="default-speaker-note" style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-            인물 표기가 없는 대사는 <b>기본 인물</b>로 표시됩니다. 한 명 탭과 같은 기본 목소리를 씁니다.
-            대사의 인물 칸에서 다른 인물로 바꿀 수 있습니다.
-          </span>
-        )}
+      <div data-testid="multi-summary" style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{summary}</div>
+
+      {/* 선택한 인물 한 명의 목소리 패널 — 전체 폭. 닫으면 카드로 돌아온다. */}
+      {panelSpeaker && (
+        <SpeakerVoicePanel speaker={panelSpeaker} voiceId={voiceIdOf(panelSpeaker)} disabled={disabled}
+          voice={voiceOf(voiceIdOf(panelSpeaker))}
+          onAssignVoice={props.onAssignVoice} onRemoveVoice={props.onRemoveVoice}
+          onPreviewVoice={props.onPreviewVoice} renderRegionEditor={props.renderRegionEditor}
+          onToggleEmotionVoice={props.onToggleEmotionVoice} onClose={() => setVoiceSpeaker(null)} />
+      )}
+
+      {/* ── 발화 카드 — 1열 전체 폭 ── */}
+      <div data-testid="multi-rows" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {p.rows.map((r, i) => (
+          <UtteranceCard key={`${r.view.sourceStart}-${r.view.sourceEnd}`} row={r} index={i}
+            projection={p} disabled={disabled} emotions={emotions} emotionTagOf={emotionTagOf}
+            speakerLabels={speakerLabels}
+            voice={r.view.speakerId ? voiceOf(r.view.speakerId) : null}
+            onOpenVoice={() => setVoiceSpeaker(r.view.speakerId)} />
+        ))}
+        {/* 아직 원문에 없는 인물 — 이름·목소리·첫 대사를 카드 안에서. 넣기 전엔 어디에도 쓰지 않는다. */}
+        {p.speakers.filter((s) => s.pending).map((s) => (
+          <StarterCard key={s.speakerId} speaker={s} projection={p} disabled={disabled}
+            voiceId={validateSpeakerLabel(s.label.trim()).ok ? speakerIdOf(s.label.trim()) : ''}
+            voiceOf={voiceOf} onOpenVoice={(id) => setVoiceSpeaker(id)} />
+        ))}
       </div>
 
-      {/* ── 대화 ── */}
-      <div data-testid="multi-rows" style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>대화</span>
-        {p.rows.map((r, i) => {
-          const draft = p.draftOf(i)
-          const up = p.moveAllowed(i, -1)
-          const down = p.moveAllowed(i, 1)
-          const adv = !!advancedOpen[i]
-          const emotionSelectId = `dlg-emotion-${i}`
-          const speakerSelectId = `dlg-speaker-${i}`
-          return (
-            <div key={`${r.view.sourceStart}-${r.view.sourceEnd}`} data-testid="dialogue-row"
-              data-index={i} data-speaker={r.view.speakerId ?? ''}
-              style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '6px 8px',
-                borderRadius: 6, border: '1px solid var(--border-subtle)', minWidth: 0 }}>
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', minWidth: 0 }}>
-                <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', minWidth: 18 }}>{i + 1}.</span>
-                <label htmlFor={speakerSelectId} style={{ fontSize: 10, color: 'var(--text-muted)' }}>인물</label>
-                <select id={speakerSelectId} value={r.view.speakerLabel ?? ''}
-                  disabled={disabled || !p.patchAllowed} style={select}
-                  onChange={(e) => p.setSpeaker(i, e.target.value === '' ? null : e.target.value)}>
-                  {/* 화자 표기가 없는 대사 = 기본 인물. 빈 칸으로 두지 않는다. 고르면 [화자 기본] 으로 되돌린다. */}
-                  <option value="">기본 인물</option>
-                  {r.view.speakerLabel && !speakerLabels.includes(r.view.speakerLabel) && (
-                    <option value={r.view.speakerLabel}>{r.view.speakerLabel}</option>
-                  )}
-                  {speakerLabels.map((l) => <option key={l} value={l}>{l}</option>)}
-                </select>
-                <label htmlFor={emotionSelectId} style={{ fontSize: 10, color: 'var(--text-muted)' }}>감정</label>
-                <select id={emotionSelectId} value={r.view.emotionId ?? 'default'}
-                  disabled={disabled || !p.patchAllowed} style={select}
-                  onChange={(e) => p.setBaseEmotion(i,
-                    e.target.value === 'default' ? null : emotionTagOf(e.target.value))}>
-                  {emotions.map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
-                </select>
-                <span style={{ flex: 1 }} />
-                <button type="button" disabled={disabled || !up.allowed} onClick={() => p.move(i, -1)}
-                  title={up.allowed ? '' : (REFUSAL_LABEL[up.code ?? ''] ?? '')}
-                  aria-label="위로" style={btn('var(--text-secondary)', disabled || !up.allowed)}>↑</button>
-                <button type="button" disabled={disabled || !down.allowed} onClick={() => p.move(i, 1)}
-                  title={down.allowed ? '' : (REFUSAL_LABEL[down.code ?? ''] ?? '')}
-                  aria-label="아래로" style={btn('var(--text-secondary)', disabled || !down.allowed)}>↓</button>
-                <button type="button" disabled={disabled || !p.patchAllowed} onClick={() => p.remove(i)}
-                  style={btn('var(--rose)', disabled || !p.patchAllowed)}>대화 삭제</button>
-              </div>
-
-              {/* 본문 — draft. 입력은 계획 상태와 무관하게 받고, blur/완료 때 한 번 반영한다. */}
-              <textarea data-testid="dialogue-body" rows={2} disabled={disabled}
-                value={draft ?? r.body}
-                onFocus={() => p.beginDraft(i)}
-                onChange={(e) => p.updateDraft(i, e.target.value)}
-                onBlur={() => p.commitDraft(i)}
-                onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) p.commitDraft(i) }}
-                aria-label={`${i + 1}번 대사`}
-                style={{ ...inputBox, width: '100%', resize: 'vertical', boxSizing: 'border-box' }} />
-              {r.hasMidEmotionTags && !adv && (
-                <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                  이 대사에는 중간 감정·쉼 표기가 있습니다. 표기를 지키면서만 반영됩니다.
-                </span>
-              )}
-              <button type="button" onClick={() => setAdvancedOpen((a) => ({ ...a, [i]: !adv }))}
-                style={btn('var(--text-muted)', false)} aria-expanded={adv}>
-                {adv ? '대사 중간에 감정 바꾸기 닫기' : '대사 중간에 감정 바꾸기'}
-              </button>
-              {adv && (
-                <AdvancedSliceEditor index={i} slice={r.slice} projection={p} disabled={disabled} />
-              )}
-            </div>
-          )
-        })}
-
-        {/* + 대화 추가 */}
-        <div data-testid="dialogue-add" style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', minWidth: 0 }}>
-          <label htmlFor="dlg-new-speaker" style={{ fontSize: 10, color: 'var(--text-muted)' }}>인물</label>
-          <select id="dlg-new-speaker" value={newSpeaker} disabled={disabled} style={select}
-            onChange={(e) => setNewSpeaker(e.target.value)}>
-            <option value="">선택…</option>
-            {speakerLabels.map((l) => <option key={l} value={l}>{l}</option>)}
-          </select>
-          <label htmlFor="dlg-new-emotion" style={{ fontSize: 10, color: 'var(--text-muted)' }}>감정</label>
-          <select id="dlg-new-emotion" value={newEmotion} disabled={disabled} style={select}
-            onChange={(e) => setNewEmotion(e.target.value)}>
-            {emotions.map((e) => <option key={e.id} value={e.id}>{e.label}</option>)}
-          </select>
+      {/* + 대화 추가 — 기존 인물을 고르거나 새 인물을 만든다. */}
+      <div data-testid="dialogue-add" style={rowFlex}>
+        <label htmlFor="dlg-new-speaker" style={{ fontSize: 10, color: 'var(--text-muted)' }}>인물</label>
+        <select id="dlg-new-speaker" value={newSpeaker} disabled={disabled} style={select}
+          onChange={(e) => setNewSpeaker(e.target.value)}>
+          <option value="">선택…</option>
+          {speakerLabels.map((l) => <option key={l} value={l}>{l}</option>)}
+          <option value="__new__">새 인물 만들기…</option>
+        </select>
+        {newSpeaker !== '__new__' && (
           <input id="dlg-new-line" aria-label="새 대사" value={newLine} disabled={disabled}
             placeholder="대사" onChange={(e) => setNewLine(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') addRow() }}
             style={{ ...inputBox, flex: '1 1 160px' }} />
-          <button type="button"
-            disabled={disabled || !newSpeaker || !newLine.trim()
-              || (p.rows.length > 0 && !p.patchAllowed)}
-            onClick={addRow}
-            style={btn('var(--cyan)', disabled || !newSpeaker || !newLine.trim()
-              || (p.rows.length > 0 && !p.patchAllowed))}>
-            + 대화 추가
+        )}
+        <button type="button" disabled={addDisabled} onClick={addRow} style={btn('var(--cyan)', addDisabled)}>
+          {newSpeaker === '__new__' ? '+ 인물 만들기' : '+ 대화 추가'}
+        </button>
+      </div>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 발화 카드
+// ─────────────────────────────────────────────────────────────────────────────
+
+function UtteranceCard(props: {
+  row: DialogueRow
+  index: number
+  projection: DialogueProjection
+  disabled: boolean
+  emotions: readonly { id: string; label: string }[]
+  emotionTagOf: (emotionId: string) => string
+  speakerLabels: string[]
+  voice: SpeakerVoiceState | null
+  onOpenVoice: () => void
+}) {
+  const { row: r, index: i, projection: p, disabled, voice } = props
+  const draft = p.draftOf(i)
+  const value = draft ?? r.content
+  const up = p.moveAllowed(i, -1)
+  const down = p.moveAllowed(i, 1)
+  const speakerSelectId = `dlg-speaker-${i}`
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const taRef = useRef<HTMLTextAreaElement | null>(null)
+  // 마지막으로 유효했던 caret — textarea 가 포커스를 잃어도 기억한다.
+  const lastCaret = useRef<number | null>(null)
+  // 한글 IME 조합 중에는 삽입하지 않고 조합이 끝난 뒤 넣는다.
+  const composing = useRef(false)
+  const queuedTag = useRef<string | null>(null)
+
+  const rememberCaret = () => {
+    const ta = taRef.current
+    if (ta) lastCaret.current = ta.selectionStart
+  }
+
+  /** caret 위치에 태그를 넣는다. 네이티브 undo 가 살도록 execCommand 로 넣고, 안 되면 draft 로 넣는다. */
+  const insertTag = (tag: string) => {
+    if (disabled) return
+    if (composing.current) { queuedTag.current = tag; return }
+    const ta = taRef.current
+    const caret = lastCaret.current ?? (ta ? ta.selectionStart : null)
+    const res = insertTagAtCaret(value, caret, tag)
+    p.beginDraft(i)
+    if (ta) {
+      ta.focus()
+      ta.setSelectionRange(res.insertAt, res.insertAt)
+      let ok = false
+      try { ok = typeof document.execCommand === 'function' && document.execCommand('insertText', false, res.inserted) } catch { ok = false }
+      if (!ok) p.updateDraft(i, res.text)
+      requestAnimationFrame(() => { try { ta.setSelectionRange(res.caret, res.caret) } catch { /* noop */ } })
+    } else {
+      p.updateDraft(i, res.text)
+    }
+    lastCaret.current = res.caret
+    setPickerOpen(false)
+  }
+
+  return (
+    <div data-testid="dialogue-row" data-index={i} data-speaker={r.view.speakerId ?? ''} style={card}>
+      {/* 머리: 번호 · 인물 · 목소리 상태(누르면 그 인물의 목소리 설정) · 이동/삭제 */}
+      <div style={rowFlex}>
+        <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', minWidth: 18 }}>{i + 1}.</span>
+        <label htmlFor={speakerSelectId} style={{ position: 'absolute', width: 1, height: 1, overflow: 'hidden', clip: 'rect(0 0 0 0)' }}>인물</label>
+        <select id={speakerSelectId} value={r.view.speakerLabel ?? ''} disabled={disabled || !p.patchAllowed}
+          style={select} aria-label="인물"
+          onChange={(e) => p.setSpeaker(i, e.target.value === '' ? null : e.target.value)}>
+          <option value="">기본 인물</option>
+          {r.view.speakerLabel && !props.speakerLabels.includes(r.view.speakerLabel) && (
+            <option value={r.view.speakerLabel}>{r.view.speakerLabel}</option>
+          )}
+          {props.speakerLabels.map((l) => <option key={l} value={l}>{l}</option>)}
+        </select>
+        {r.view.speakerId ? (
+          <button type="button" data-testid="card-voice" onClick={props.onOpenVoice} disabled={disabled}
+            title="이 인물의 목소리 설정"
+            style={btn(voice?.ready ? 'var(--text-secondary)' : 'var(--amber, #d4a017)', disabled)}>
+            · {voiceStatusShort(voice)}
           </button>
+        ) : (
+          <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>· 한 명 탭과 같은 기본 목소리</span>
+        )}
+        <span style={{ flex: 1 }} />
+        <button type="button" disabled={disabled || !up.allowed} onClick={() => p.move(i, -1)}
+          title={up.allowed ? '' : (REFUSAL_LABEL[up.code ?? ''] ?? '')}
+          aria-label="위로" style={btn('var(--text-secondary)', disabled || !up.allowed)}>위</button>
+        <button type="button" disabled={disabled || !down.allowed} onClick={() => p.move(i, 1)}
+          title={down.allowed ? '' : (REFUSAL_LABEL[down.code ?? ''] ?? '')}
+          aria-label="아래로" style={btn('var(--text-secondary)', disabled || !down.allowed)}>아래</button>
+        <button type="button" disabled={disabled || !p.patchAllowed} onClick={() => p.remove(i)}
+          style={btn('var(--rose)', disabled || !p.patchAllowed)}>삭제</button>
+      </div>
+
+      {/* 대사 — 대화칸 하나. 감정 태그는 이 안에 글자 그대로. 입력은 계획 상태와 무관하게 받고 blur/Ctrl+Enter 에 반영. */}
+      <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', minWidth: 0 }}>
+        <textarea ref={taRef} data-testid="dialogue-body" rows={2} disabled={disabled}
+          value={value}
+          onFocus={() => p.beginDraft(i)}
+          onChange={(e) => { p.updateDraft(i, e.target.value); rememberCaret() }}
+          onSelect={rememberCaret} onKeyUp={rememberCaret} onClick={rememberCaret}
+          onCompositionStart={() => { composing.current = true }}
+          onCompositionEnd={() => {
+            composing.current = false
+            const q = queuedTag.current
+            if (q) { queuedTag.current = null; requestAnimationFrame(() => insertTag(q)) }
+          }}
+          onBlur={() => { rememberCaret(); p.commitDraft(i) }}
+          onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) p.commitDraft(i) }}
+          aria-label={`${i + 1}번 대사`}
+          style={{ ...inputBox, flex: '1 1 auto', width: '100%', resize: 'vertical', boxSizing: 'border-box' }} />
+        <div style={{ position: 'relative', flex: '0 0 auto' }}>
+          <button type="button" data-testid="emotion-add" disabled={disabled}
+            onClick={() => setPickerOpen((o) => !o)} aria-expanded={pickerOpen}
+            title="커서 위치에 감정 넣기" style={btn('var(--cyan)', disabled)}>+ 감정</button>
+          {pickerOpen && (
+            <div data-testid="emotion-picker" role="menu"
+              style={{ position: 'absolute', right: 0, top: '110%', zIndex: 5, display: 'flex', flexWrap: 'wrap', gap: 4,
+                width: 220, maxWidth: '70vw', padding: 6, borderRadius: 8, background: 'var(--bg-elevated)',
+                border: '1px solid var(--border-subtle)', boxShadow: '0 4px 14px rgba(0,0,0,.25)' }}>
+              {props.emotions.filter((e) => e.id !== 'default').map((e) => (
+                <button key={e.id} type="button" role="menuitem" data-emotion={e.id}
+                  onMouseDown={(ev) => ev.preventDefault() /* textarea 포커스·caret 유지 */}
+                  onClick={() => insertTag(props.emotionTagOf(e.id))}
+                  style={btn('var(--text-secondary)', false)}>{e.label}</button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </div>
   )
 }
 
-function SpeakerCard(props: {
+// ─────────────────────────────────────────────────────────────────────────────
+// 아직 원문에 없는 인물의 시작 카드
+// ─────────────────────────────────────────────────────────────────────────────
+
+function StarterCard(props: {
   speaker: DialogueSpeaker
   projection: DialogueProjection
   disabled: boolean
-  speakerIdOf: (label: string) => string
+  voiceId: string
   voiceOf: (speakerId: string) => SpeakerVoiceState | null
+  onOpenVoice: (speakerId: string) => void
+}) {
+  const { speaker: s, projection: p, disabled, voiceId } = props
+  const [line, setLine] = useState('')
+  const label = s.label.trim()
+  const check = validateSpeakerLabel(label)
+  const voice = voiceId ? props.voiceOf(voiceId) : null
+  const canAdd = !disabled && check.ok && !!line.trim() && (p.rows.length === 0 || p.patchAllowed)
+  const add = () => {
+    if (!canAdd) return
+    if (p.rows.length === 0) p.createInitial([{ speakerLabel: label, line }])
+    else { p.insertAfter(p.rows.length - 1, label, line, null); p.removePendingSpeaker(s.speakerId) }
+    setLine('')
+  }
+  return (
+    <div data-testid="starter-card" data-speaker={s.speakerId} data-pending="true" style={card}>
+      <div style={rowFlex}>
+        <label htmlFor={`spk-name-${s.speakerId}`} style={{ fontSize: 10, color: 'var(--text-muted)' }}>이름</label>
+        <input id={`spk-name-${s.speakerId}`} value={s.label} disabled={disabled} placeholder="인물 이름"
+          onChange={(e) => p.renamePendingSpeaker(s.speakerId, e.target.value)}
+          style={{ ...inputBox, flex: '1 1 120px' }} />
+        <button type="button" data-testid="card-voice" disabled={disabled || !voiceId}
+          onClick={() => props.onOpenVoice(voiceId)} title="이 인물의 목소리 설정"
+          style={btn(voice?.ready ? 'var(--text-secondary)' : 'var(--amber, #d4a017)', disabled || !voiceId)}>
+          · {voiceStatusShort(voice)}
+        </button>
+        <span style={{ flex: 1 }} />
+        <button type="button" disabled={disabled} onClick={() => p.removePendingSpeaker(s.speakerId)}
+          style={btn('var(--rose)', disabled)}>삭제</button>
+      </div>
+      {label && !check.ok && (
+        <span data-testid="speaker-name-problem" style={{ fontSize: 10, color: 'var(--rose)' }}>
+          {REFUSAL_LABEL[`SPEAKER_LABEL_${check.problem}`]}
+        </span>
+      )}
+      <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', minWidth: 0 }}>
+        <textarea data-testid="starter-line" rows={2} disabled={disabled} value={line}
+          placeholder="첫 대사" onChange={(e) => setLine(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) add() }}
+          aria-label={`${label || '새 인물'} 첫 대사`}
+          style={{ ...inputBox, flex: '1 1 auto', width: '100%', resize: 'vertical', boxSizing: 'border-box' }} />
+        <button type="button" data-testid="starter-add" disabled={!canAdd} onClick={add}
+          style={btn('var(--cyan)', !canAdd)}>대화 추가</button>
+      </div>
+    </div>
+  )
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 선택한 인물 한 명의 목소리 패널
+// ─────────────────────────────────────────────────────────────────────────────
+
+function SpeakerVoicePanel(props: {
+  speaker: DialogueSpeaker
+  voiceId: string
+  voice: SpeakerVoiceState | null
+  disabled: boolean
   onAssignVoice: (speakerId: string, label: string) => void
   onRemoveVoice: (speakerId: string) => void
   onPreviewVoice: (speakerId: string) => void
   renderRegionEditor?: (speakerId: string) => ReactNode
   onToggleEmotionVoice?: (speakerId: string, on: boolean) => void
+  onClose: () => void
 }) {
-  const { speaker: s, projection: p, disabled } = props
-  const [open, setOpen] = useState(false)
+  const { speaker: s, voiceId, voice, disabled } = props
   const label = s.label.trim()
-  const check = validateSpeakerLabel(label)
-  // pending 카드도 이름이 유효하면 같은 store 키(정규화 id)로 목소리를 지정할 수 있다.
-  const voiceId = s.pending ? (check.ok ? props.speakerIdOf(label) : '') : s.speakerId
-  const voice = voiceId ? props.voiceOf(voiceId) : null
-  const removable = p.canRemoveSpeaker(s.speakerId)
   return (
-    <div data-testid="speaker-card" data-speaker={s.speakerId} data-pending={s.pending ? 'true' : 'false'}
-      style={{ display: 'flex', flexDirection: 'column', gap: 4, padding: '6px 8px', borderRadius: 6,
-        border: '1px solid var(--border-subtle)', minWidth: 0, flex: '1 1 200px', maxWidth: '100%' }}>
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', minWidth: 0 }}>
-        {s.pending ? (
-          <>
-            <label htmlFor={`spk-name-${s.speakerId}`} style={{ fontSize: 10, color: 'var(--text-muted)' }}>이름</label>
-            <input id={`spk-name-${s.speakerId}`} value={s.label} disabled={disabled}
-              placeholder="인물 이름" onChange={(e) => p.renamePendingSpeaker(s.speakerId, e.target.value)}
-              style={{ ...inputBox, flex: '1 1 80px' }} />
-          </>
-        ) : (
-          <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--cyan)' }}>{s.label}</span>
-        )}
-        <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>대사 {s.utteranceCount}개</span>
-        <button type="button" disabled={disabled || !removable.ok}
-          title={removable.ok ? '' : (REFUSAL_LABEL[removable.reason ?? ''] ?? '')}
-          onClick={() => { if (s.pending) p.removePendingSpeaker(s.speakerId) }}
-          style={btn('var(--rose)', disabled || !removable.ok)}>인물 삭제</button>
-      </div>
-      {s.pending && label && !check.ok && (
-        <span data-testid="speaker-name-problem" style={{ fontSize: 10, color: 'var(--rose)' }}>
-          {REFUSAL_LABEL[`SPEAKER_LABEL_${check.problem}`]}
-        </span>
-      )}
-      {/* 목소리 — 같은 store, 같은 판정 문구. 인물 카드에서 바로 지정한다. */}
-      <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', minWidth: 0 }}>
-        <span data-testid="speaker-voice-decision" style={{
-          fontSize: 10, color: voice?.decision.ok ? 'var(--text-secondary)' : 'var(--text-muted)',
-        }}>
+    <div data-testid="voice-panel" data-speaker={voiceId} role="region" aria-label={`${label} 목소리`}
+      style={{ ...card, border: '1px solid var(--cyan)', gap: 8 }}>
+      <div style={rowFlex}>
+        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--cyan)' }}>{label} 목소리</span>
+        <span data-testid="speaker-voice-decision" style={{ fontSize: 10, color: voice?.decision.ok ? 'var(--text-secondary)' : 'var(--text-muted)' }}>
           {voice ? referenceDecisionText(voice.decision) : '목소리 없음'}
         </span>
         {voice?.fileName && (
-          <span style={{ fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden',
-            textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 140 }}>{voice.fileName}</span>
+          <span style={{ fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis',
+            whiteSpace: 'nowrap', maxWidth: 160 }}>{voice.fileName}</span>
         )}
-        <button type="button" disabled={disabled || !voiceId}
-          onClick={() => props.onAssignVoice(voiceId, label)}
+        <span style={{ flex: 1 }} />
+        <button type="button" data-testid="voice-panel-close" onClick={props.onClose}
+          style={btn('var(--text-secondary)', false)}>닫기</button>
+      </div>
+      <div style={rowFlex}>
+        <button type="button" disabled={disabled || !voiceId} onClick={() => props.onAssignVoice(voiceId, label)}
           style={btn('var(--cyan)', disabled || !voiceId)}>
           {voice?.registered ? '목소리 바꾸기' : '목소리 지정'}
         </button>
         {voice?.registered && (
           <>
-            <button type="button" disabled={disabled || !voice.ready}
-              onClick={() => props.onPreviewVoice(voiceId)}
+            <button type="button" disabled={disabled || !voice.ready} onClick={() => props.onPreviewVoice(voiceId)}
               style={btn('var(--text-secondary)', disabled || !voice.ready)}>▶ 재생</button>
             <button type="button" disabled={disabled} onClick={() => props.onRemoveVoice(voiceId)}
               style={btn('var(--rose)', disabled)}>목소리 해제</button>
-            <button type="button" onClick={() => setOpen((o) => !o)} aria-expanded={open}
-              style={btn('var(--text-muted)', false)}>{open ? '구간 닫기' : '참조 구간'}</button>
           </>
         )}
       </div>
-      {/* 실제 생성이 이 카드의 표시와 다를 수 있는 두 경우를 그 자리에서 말한다. */}
       {voice?.registered && (voice.sharedWith?.length ?? 0) > 0 && (
         <span data-testid="speaker-voice-shared" style={{ fontSize: 10, color: 'var(--amber, #d4a017)' }}>
           {voice.sharedWith!.join(', ')} 와 같은 파일을 씁니다. 같은 목소리로 만들어집니다.
         </span>
       )}
-      {/* 감정별 목소리 — 구성이 이 인물의 감정별 음원을 갖고 있을 때만 보인다. 기본은 꺼짐:
-          기본 목소리만 생성에 쓰인다. 켜면 그 감정의 대사만 구성의 음원으로 만들어진다(항상 표시). */}
+      {/* 감정별 목소리 — 고급 설정. 구성이 이 인물의 감정별 음원을 가질 때만 보이고 기본은 꺼짐. */}
       {(voice?.emotionVoiceAvailable?.length ?? 0) > 0 && (
         <label data-testid="speaker-emotion-voice-toggle"
           style={{ fontSize: 10, display: 'flex', gap: 4, alignItems: 'center', color: 'var(--text-secondary)' }}>
@@ -373,8 +489,8 @@ function SpeakerCard(props: {
       )}
       {(voice?.emotionVoiceAvailable?.length ?? 0) > 0 && voice!.emotionVoiceEnabled && (
         <span data-testid="speaker-voice-emotion-override" style={{ fontSize: 10, color: 'var(--amber, #d4a017)' }}>
-          감정별 목소리 사용 중: {voice!.emotionOverrides!.join(', ')} — 이 감정의 대사는 목소리 구성의 음원으로
-          만들어지고, 나머지 대사는 기본 목소리로 만들어집니다.
+          감정별 목소리 사용 중: {voice!.emotionOverrides!.join(', ')} — 이 감정의 대사는 그 음원으로 만들어지고,
+          나머지 대사는 기본 목소리로 만들어집니다.
         </span>
       )}
       {(voice?.emotionVoiceAvailable?.length ?? 0) > 0 && !voice!.emotionVoiceEnabled && (
@@ -382,30 +498,8 @@ function SpeakerCard(props: {
           감정별 음원 있음(꺼짐): {voice!.emotionVoiceAvailable!.join(', ')} — 지금은 기본 목소리만 사용합니다.
         </span>
       )}
-      {open && voice?.registered && props.renderRegionEditor?.(voiceId)}
-    </div>
-  )
-}
-
-/** 원문 조각을 그대로 편집한다 — 기존 감정 태그 여러 개가 글자 그대로 보인다. */
-function AdvancedSliceEditor(props: {
-  index: number; slice: string; projection: DialogueProjection; disabled: boolean
-}) {
-  const { index: i, projection: p, disabled } = props
-  const draft = p.draftOf(i)
-  return (
-    <div data-testid="dialogue-advanced" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-      <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-        아래는 이 대사의 원문 조각입니다. 감정 태그를 여러 개 두거나 바꿀 수 있습니다.
-        (앞의 화자 표기와 첫 감정 태그는 위에서 바꾸세요.)
-      </span>
-      <textarea rows={3} disabled={disabled} aria-label={`${i + 1}번 대사 원문 조각`}
-        value={draft ?? props.slice.replace(/^\s*\[\s*(?:화자|speaker)\s+[^\]]*\]\s*(\[[^\]\s]+\]\s*)?/, '')}
-        onFocus={() => p.beginDraft(i)}
-        onChange={(e) => p.updateDraft(i, e.target.value)}
-        onBlur={() => p.commitDraft(i, { advanced: true })}
-        style={{ ...inputBox, width: '100%', resize: 'vertical', boxSizing: 'border-box',
-          fontFamily: 'ui-monospace, monospace' }} />
+      {/* 참조 구간 — 이 인물 한 명의 파형만. */}
+      {voice?.registered && props.renderRegionEditor?.(voiceId)}
     </div>
   )
 }
