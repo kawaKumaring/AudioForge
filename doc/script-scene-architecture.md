@@ -365,16 +365,28 @@ fixture `default_reset`). 명시 인물 → 기본 인물도 같은 경로(`chan
 내부 용어(VoiceCast·배역 세트·source patcher·parser·SHA·projection)는 화면에 내지 않는다.
 `VOICE_CAST_LABEL` 의 문구도 "목소리 구성" 으로 통일했다(코드 이름은 그대로).
 
-### 한 명 화면의 화자 구조 보호 (2026-09-04, 실사용 결함)
+### 탭 = 생성 방식 `speakerMode` (2026-09-04 재설계 — 보호·전환 폐기)
 
-한 명 화면의 편집기는 원문 전체를 덮어쓰므로 `[화자 …]` 줄을 지우면 여러 명 화면의 인물이
-사라졌다(인물 카드는 계획의 speakers 로만 만들어진다. 목소리 지정·저장된 목소리 구성·후보
-음원은 지워지지 않고, 표기가 돌아오면 그대로 복원된다). 계약:
-- 명시 화자가 하나라도 있으면 한 명 편집기는 **화자 표기의 개수·순서·이름이 그대로인 변경**만
-  받는다(`speakerStructurePreserved`). 거부는 한 줄로 알린다. 탭 전환은 여전히 상태 setter 하나.
-- 구조 제거는 `한 명 대본으로 전환`(SingleScriptGuard) 으로만: 결과를 먼저 말하고 확인 버튼만
-  `stripSpeakerDirectives` 를 부른다. 취소는 아무것도 바꾸지 않는다. 목소리 지정·목소리 구성·후보
-  음원은 건드리지 않는다(화자 표기만 지운다).
+한 명이 기본 기능이다. 명시 화자가 있다는 이유로 한 명 편집을 막고 여러 명 화면으로 보내는
+설계(SingleScriptGuard·`speakerStructurePreserved` 게이트·`한 명 대본으로 전환`)는 **폐기**했다.
+
+- `ttsSpeakerMode: 'single' | 'multi'` 는 **현재 작업의 생성 방식**이다. 대본 내용이 아니라 라우팅
+  방식이다. 앱·새 파일·리셋 기본 single. 세션 복원은 저장된 값만(legacy 세션 부재 → single).
+  탭은 이 값을 그대로 보여 주고, 클릭은 이 값만 바꾼다(원문·인물 설정·목소리 자산 무변경, 확인창 없음).
+- 한 명 모드: 편집기는 제한이 없다. `[화자 …]` 표기가 남아 있어도 single 생성은 화자 라우팅을 무시하고
+  모든 발화를 한 명의 기본/감정 참조로 만든다(routing snapshot 의 speaker_id 전부 None, 화자 참조·전용
+  참조·후보 선택 무개입). 화면에는 중립 안내 한 줄("모든 대사를 한 목소리로 생성합니다. 인물 표기 N개는
+  여러 명에서만 쓰입니다"). 표기를 지우거나 바꾼 편집 뒤에는 오류가 아닌 알림
+  `인물 구분이 변경되었습니다 · 되돌리기`(직전 원문으로. 다음 편집이 오면 알림 소멸). 자산·구성 무접촉.
+- 여러 명 모드: 현재 원문의 화자 정보를 쓴다. 명시 화자는 자기 기본 목소리, 감정별 목소리는 그 인물의
+  토글이 켜졌을 때만. 참조가 없으면 모델 로딩 전에 차단(대체 없음).
+- 라우팅 계약: single → 모든 발화 speaker_id=None, run bundle header `speaker_mode='single'`, 규칙
+  emotion_reference/global_default. multi → 계획 speaker_id 유지, `default_speaker` 또는 켠 인물의
+  `explicit_emotion_override`, chunk 행에 speaker/reference/rule/speaker_mode 기록.
+- 합성 중 탭은 잠긴다. 진행 중 작업의 스냅샷은 이미 쓴 config 로 확정되어 바뀌지 않는다.
+- Python 은 config 키 부재(legacy)를 multi 로 본다(오늘까지의 worker 동작). 앱은 항상 값을 보낸다.
+- `stripSpeakerDirectives`·`speakerStructurePreserved` 는 패처의 순수 함수로 남아 있다(화면에서는 쓰지
+  않음. 표기 제거 보조 동작이 필요해지면 결과 설명·되돌리기와 함께 별도로 붙인다).
 
 ## 17. 다화자 목소리 선택 감사 (2026-09-04, v1.4 병합 차단 결함)
 
