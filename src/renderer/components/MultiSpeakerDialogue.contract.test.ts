@@ -187,6 +187,24 @@ test('인물 카드에서 목소리 지정이 보이고 같은 store 를 쓴다'
   }
 })
 
+test('카드의 목소리 표시는 실제 생성과 같다 — 감정별 덮어쓰기와 같은 파일 공유를 숨기지 않는다', () => {
+  // 판정 표의 (화자, 감정) 칸이 더 이상 빈 표가 아니다 — store 의 ttsSpeakerEmotionRefs 에서 온다.
+  assert.equal(SHELL.includes('speakerEmotionReady: {} as Record<string, boolean>'), false, '빈 표')
+  const i = SHELL.indexOf('speakerEmotionReady:')
+  assert.ok(SHELL.slice(i, i + 200).includes('ttsSpeakerEmotionRefs'), '전용 참조가 판정에 들어간다')
+  // 카드 상태에 공유·덮어쓰기 정보가 실린다.
+  assert.ok(SHELL.includes('emotionOverrides: emotionOverridesOf(speakerId)'))
+  assert.ok(SHELL.includes('sharedWith: row.sharedWith'))
+  assert.ok(MULTI.includes('data-testid="speaker-voice-shared"'))
+  assert.ok(MULTI.includes('data-testid="speaker-voice-emotion-override"'))
+  assert.ok(MULTI.includes('같은 목소리로 만들어집니다'))
+  assert.ok(MULTI.includes('이 감정에서는 다른 목소리 사용'))
+  // 표시 교정일 뿐이다 — 생성 경로(ProcessButton 이 보내는 config)는 건드리지 않는다.
+  const PB = codeOf(read('./ProcessButton.tsx'))
+  assert.ok(PB.includes('const effective = slot?.ready ? (slot.clip || slot.source) : \'\''), '기본 목소리 전송 규칙 불변')
+  assert.ok(PB.includes('ttsSpeakerEmotionRefs'), '전용 참조 전송 불변')
+})
+
 test('감정은 두 단계다 — 기본 선택과 원문 조각 편집', () => {
   assert.ok(MULTI.includes('p.setBaseEmotion(i,'))
   assert.ok(MULTI.includes('대사 중간에 감정 바꾸기'))

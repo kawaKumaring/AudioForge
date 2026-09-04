@@ -26,6 +26,10 @@ export interface SpeakerVoiceState {
   ready: boolean
   fileName: string
   decision: ReferenceDecision
+  /** 같은 음원 파일을 쓰는 다른 인물 이름 — 같은 목소리로 만들어진다는 사실을 숨기지 않는다. */
+  sharedWith?: string[]
+  /** 목소리 구성이 이 인물의 특정 감정에 다른 음원을 지정했으면 그 감정 이름들. 생성은 그것을 먼저 쓴다. */
+  emotionOverrides?: string[]
 }
 
 export const STRUCTURE_BLOCKER_LABEL: Record<StructureBlocker, string> = {
@@ -344,6 +348,18 @@ function SpeakerCard(props: {
           </>
         )}
       </div>
+      {/* 실제 생성이 이 카드의 표시와 다를 수 있는 두 경우를 그 자리에서 말한다. */}
+      {voice?.registered && (voice.sharedWith?.length ?? 0) > 0 && (
+        <span data-testid="speaker-voice-shared" style={{ fontSize: 10, color: 'var(--amber, #d4a017)' }}>
+          {voice.sharedWith!.join(', ')} 와 같은 파일을 씁니다. 같은 목소리로 만들어집니다.
+        </span>
+      )}
+      {(voice?.emotionOverrides?.length ?? 0) > 0 && (
+        <span data-testid="speaker-voice-emotion-override" style={{ fontSize: 10, color: 'var(--amber, #d4a017)' }}>
+          이 감정에서는 다른 목소리 사용: {voice!.emotionOverrides!.join(', ')} — 적용된 목소리 구성의 음원이
+          이 인물의 기본 목소리보다 먼저 쓰입니다.
+        </span>
+      )}
       {open && voice?.registered && props.renderRegionEditor?.(voiceId)}
     </div>
   )
