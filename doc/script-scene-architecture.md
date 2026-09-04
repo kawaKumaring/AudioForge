@@ -406,9 +406,34 @@ fixture `default_reset`). 명시 인물 → 기본 인물도 같은 경로(`chan
 - 세션 복원은 `ttsSpeakerRefState`·`ttsSpeakerEmotionRefs` 를 초기화하지 않는다(이전 대본의 같은
   이름 인물에 옛 목소리가 붙을 수 있음) — 열린 항목.
 
+### 2차 수정 (2026-09-04, 생성 의미 충돌·세션 누수)
+
+1. **세션 복원 상태 누수** — `restoreSession` 이 원문은 세션 것으로 바꾸면서 화자 배정
+   (`ttsSpeakerRefState`·`ttsSpeakerLabels`)과 감정별 참조·후보 선택은 그대로 두었다. 이제
+   `reconstructSpeakerRefState` 가 **그 세션에 저장된 명시적 배정만**(`ttsSpeakerRefSources`)
+   복원한다(ready:false — 준비는 구간 편집기가 다시 확인). 세션에 없으면 빈 상태. 감정별 참조·
+   후보 선택·켬 상태는 복원 시 항상 비운다. 파일명·표시 이름은 identity 가 아니다.
+2. **기본 여러 명 모드의 참조 권위** — 기본 상태에서는 인물 카드의 기본 목소리(`ttsSpeakerRefs`)만
+   생성에 쓴다. 적용된 목소리 구성의 `(인물, 감정)` 참조와 감정 후보 선택은 사용자가 이 작업에서
+   그 인물의 **`감정별 목소리 사용`** 을 켠 경우에만 config 로 나간다(`speakerEmotionGate`,
+   ProcessButton·화면 판정 표가 같은 게이트). 켠 상태는 세션 상태(`ttsSpeakerEmotionEnabled`)이고
+   카드에 항상 표시된다("사용 중: …" / "있음(꺼짐): 기본 목소리만"). 저장된 구성·후보는 지우지 않는다.
+3. **불변 라우팅 스냅샷** — `ReferenceTable.freeze_routing(parsed)` 가 preflight 직후(모델 로딩 전)
+   발화마다 speaker_ref·emotion_id·reference_id·규칙을 확정해 읽기 전용 튜플로 얼린다. Qwen·legacy
+   생성 루프는 그 행을 읽고 다시 묻지 않는다. 하나라도 정할 수 없으면 `SpeakerReferenceError` 로
+   그 자리에서 멈춘다(반쪽 스냅샷 없음, 대체 없음). 규칙 이름: `default_speaker` /
+   `explicit_emotion_override` / `emotion_candidate_selected` / `emotion_reference` / `global_default`.
+   chunk 행에 `routing_rule` 이 기록된다. stage `routing_snapshot` 이 발화 수·규칙 분포를 알린다.
+
+검증 메모: Python recorder 테스트(`test_chunk_publish`·`test_run_bundle*`)는 numpy·soundfile 이 있는
+`externals/runtime/gptsovits_venv_app/Scripts/python.exe` 로 돌려야 한다. 시스템 python 과 관리
+인터프리터(`app-python/…`)에는 그 모듈이 없어 import 단계에서 오류가 난다(제품 결함이 아니다).
+
 ### 미결
 - 사용자가 겪은 run 이 어느 것인지, 그때 각 인물에 지정한 파일이 무엇인지 확인이 필요하다.
   bundle 의 reference_id 와 기대 파일의 SHA 가 같으면 모델 변동, 다르면 배선 오류로 나눈다.
+  01:39 run 은 "같은 reference_id 가 들어간 사실" 까지만 확정이다. 09:50·09:56 도 기대 SHA 대조 전에는
+  정상 배선으로 최종 판정하지 않는다.
 - GPU 재검증(두 인물, A→B→A→B 네 발화, 짧은 대사 한 작업, 1회)은 사용자 승인 뒤에만.
 
 ### 개발 화면 확인 (보조 스크립트)

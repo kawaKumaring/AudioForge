@@ -348,6 +348,34 @@ try {
     '같은 파일을 쓰는 두 인물 카드에 공유 경고', `n=${sharedNotes.length}`)
   const overrideN = await count('[data-testid="speaker-voice-emotion-override"]')
   ok('16b', overrideN === 0, '목소리 구성이 적용되지 않았으면 감정별 덮어쓰기 표시 없음')
+
+  // ── 17. 기본 모드의 참조 권위 — 감정별 참조는 인물별로 켠 경우에만 ────────────
+  // 목소리 구성이 내려 준 (인물, 감정) 참조가 store 에 있어도(합성 파일로 흉내), 기본은 꺼짐이다.
+  await page.evaluate((wav) => {
+    const US = String.fromCharCode(31)
+    window.__afStore.setState({ ttsSpeakerEmotionRefs: { ['민수' + US + 'happy']: wav } })
+  }, WAV)
+  await sleep(200)
+  const offN = await count('[data-testid="speaker-voice-emotion-off"]')
+  const toggleN = await count('[data-testid="speaker-emotion-voice-toggle"]')
+  const onN0 = await count('[data-testid="speaker-voice-emotion-override"]')
+  const enabled0 = await page.evaluate(() => JSON.stringify(window.__afStore.getState().ttsSpeakerEmotionEnabled))
+  ok('17a', offN === 1 && toggleN === 1 && onN0 === 0 && enabled0 === '{}',
+    '감정별 음원이 있어도 기본은 꺼짐 — "있음(꺼짐): 기본 목소리만" 표시, 켬 상태 비어 있음', `off=${offN} toggle=${toggleN} on=${onN0}`)
+  await page.click('[data-testid="speaker-emotion-voice-toggle"] input')
+  await sleep(150)
+  const onText = await page.evaluate(() => document.querySelector('[data-testid="speaker-voice-emotion-override"]')?.textContent ?? '')
+  const enabled1 = await page.evaluate(() => JSON.stringify(window.__afStore.getState().ttsSpeakerEmotionEnabled))
+  const decisionOn = await page.evaluate(() => [...document.querySelectorAll('[data-testid="speaker-card"]')].map((c) => c.querySelector('[data-testid="speaker-voice-decision"]')?.textContent ?? ''))
+  ok('17b', enabled1 === '{"민수":true}' && onText.includes('감정별 목소리 사용 중') && onText.includes('기쁨') && (await count('[data-testid="speaker-voice-emotion-off"]')) === 0,
+    '켜면 그 인물만 켬 상태 + "사용 중: 기쁨" 항상 표시', `enabled=${enabled1} decisions=${JSON.stringify(decisionOn).slice(0, 80)}`)
+  await page.click('[data-testid="speaker-emotion-voice-toggle"] input')
+  await sleep(150)
+  const enabled2 = await page.evaluate(() => JSON.stringify(window.__afStore.getState().ttsSpeakerEmotionEnabled))
+  const refsKept = await page.evaluate(() => Object.keys(window.__afStore.getState().ttsSpeakerEmotionRefs).length)
+  ok('17c', enabled2 === '{}' && refsKept === 1 && (await count('[data-testid="speaker-voice-emotion-off"]')) === 1,
+    '끄면 켬 상태만 사라지고 구성의 참조는 삭제되지 않는다', `refsKept=${refsKept}`)
+  await page.evaluate(() => window.__afStore.setState({ ttsSpeakerEmotionRefs: {} }))
   // 전환 승인 = 화자 표기만 제거, 목소리 지정·목소리 구성 보존.
   await tab('single'); await sleep(200)
   await page.click('[data-testid="single-convert-open"]'); await sleep(100)
