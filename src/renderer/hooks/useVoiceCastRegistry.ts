@@ -22,6 +22,8 @@ import {
   setSpeakerDefault,
 } from '../../shared/emotionCandidateRegistry'
 import { samplerSha256Hex } from '../../shared/emotionSampler'
+import { lifecycleBoundsFromPolicy } from '../../shared/referencePolicy'
+import { useAppStore } from '../stores/app.store'
 import type {
   CastRestoreReport, ReferenceAsset, RestoreReport, VoiceCastCandidate, VoiceCastStore,
 } from '../../shared/emotionCandidateRegistry'
@@ -283,7 +285,8 @@ export function useVoiceCastRegistry(): VoiceCastRegistryApi {
             lifecycleCode: null,
           }
           const life = evaluateLifecycle(base,
-            { sourcePresent: true, clipPresent: false, currentSourceSha256: sha })
+            { sourcePresent: true, clipPresent: false, currentSourceSha256: sha },
+            lifecycleBoundsFromPolicy(useAppStore.getState().ttsReferencePolicy))   // 현재 엔진의 길이 정책
           const asset: ReferenceAsset = { ...base, ...life }
           nextAssets[assetId] = asset
           nextCasts = registerCastCandidate(nextCasts, voiceCastId, {

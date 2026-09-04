@@ -25,6 +25,7 @@ import type { DialogueProjection, DialogueRow, DialogueSpeaker } from '../hooks/
 import type { StructureBlocker } from '../../shared/dialogueSourcePatcher'
 import { validateSpeakerLabel, insertTagAtCaret } from '../../shared/dialogueSourcePatcher'
 import { referenceDecisionText } from '../../shared/analysisWording'
+import { regionText } from '../../shared/referencePolicy'
 import type { ReferenceDecision } from '../../shared/speakerReference'
 
 /** 셸이 넘기는 인물별 목소리 상태 — 기존 SpeakerReferenceManager 와 같은 store 에서 온다. */
@@ -33,6 +34,8 @@ export interface SpeakerVoiceState {
   ready: boolean
   fileName: string
   decision: ReferenceDecision
+  /** 실제로 모델에 가는 구간. null/없음 = 원본 전체. */
+  region?: { start: number; duration: number } | null
   /** 같은 음원 파일을 쓰는 다른 인물 이름 — 같은 목소리로 만들어진다는 사실을 숨기지 않는다. */
   sharedWith?: string[]
   /** 실제 생성으로 나가는 감정별 음원의 감정 이름들(켠 인물만). 생성은 그것을 먼저 쓴다. */
@@ -95,7 +98,9 @@ const rowFlex: CSSProperties = { display: 'flex', gap: 6, alignItems: 'center', 
 /** 카드 머리의 짧은 목소리 상태. 자세한 판정 문구는 패널에서. */
 export function voiceStatusShort(voice: SpeakerVoiceState | null): string {
   if (!voice || !voice.registered) return '목소리 없음'
-  return voice.ready ? '목소리 준비됨' : '목소리 확인 중'
+  if (!voice.ready) return '목소리 확인 중'
+  // 긴 원본을 등록해도 모델에 가는 것은 확정 구간이다 — 그 사실을 카드가 그대로 말한다.
+  return `목소리 준비됨 · ${regionText(voice.region)}`
 }
 
 export interface MultiSpeakerDialogueProps {

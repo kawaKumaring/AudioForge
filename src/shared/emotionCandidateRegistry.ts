@@ -225,9 +225,13 @@ export function autoRecommendable(
   return qualityState !== 'invalid'
 }
 
-/** 참조로 쓸 수 있는 길이(초). 기존 참조 정책과 같은 경계이며 여기서 새로 정하지 않는다. */
+/**
+ * 자산 수명 판정의 **기본** 길이 경계 = 예전 표시(GPT-SoVITS 필수 3~10초). 호출부는 현재 엔진 정책에서 만든 경계
+ * (shared/referencePolicy.lifecycleBoundsFromPolicy)를 넘긴다 — 정책을 모를 때만 이 값이다.
+ */
 export const CANDIDATE_MIN_SEC = 3.0
 export const CANDIDATE_MAX_SEC = 10.0
+export interface LifecycleBounds { minSec: number; maxSec: number }
 
 /**
  * 지금 이 후보의 처지. 파일 존재 여부는 **주입받는다** — 이 모듈은 디스크를 보지 않는다.
@@ -243,7 +247,8 @@ export function evaluateLifecycle(
     clipPresent: boolean
     /** 지금 디스크에 있는 원본의 SHA. 모르면 생략한다(모름을 같음으로 보지 않는다). */
     currentSourceSha256?: string | null
-  }
+  },
+  bounds: LifecycleBounds = { minSec: CANDIDATE_MIN_SEC, maxSec: CANDIDATE_MAX_SEC }
 ): { lifecycle: CandidateLifecycle; lifecycleCode: string | null } {
   if (!present.sourcePresent) {
     return { lifecycle: 'expired', lifecycleCode: 'SOURCE_FILE_MISSING' }
@@ -267,16 +272,16 @@ export function evaluateLifecycle(
       ? { lifecycle: 'ready', lifecycleCode: null }
       : { lifecycle: 'needs_region', lifecycleCode: 'DERIVED_CLIP_MISSING' }
   }
-  if (record.sourceDurationSec > CANDIDATE_MAX_SEC) {
+  if (record.sourceDurationSec > bounds.maxSec) {
     return { lifecycle: 'needs_region', lifecycleCode: 'SOURCE_TOO_LONG' }
   }
-  if (record.sourceDurationSec > 0 && record.sourceDurationSec < CANDIDATE_MIN_SEC) {
+  if (record.sourceDurationSec > 0 && record.sourceDurationSec < bounds.minSec) {
     return { lifecycle: 'error', lifecycleCode: 'SOURCE_TOO_SHORT' }
   }
   if (record.sourceDurationSec <= 0) {
     return { lifecycle: 'needs_region', lifecycleCode: 'SOURCE_NOT_ANALYZED' }
   }
-  // 3~10초 원본은 그 자체를 effective 로 쓸 수 있다(파생 클립을 강제로 만들지 않는다).
+  // 경계 안 원본은 그 자체를 effective 로 쓸 수 있다(파생 클립을 강제로 만들지 않는다).
   return { lifecycle: 'ready', lifecycleCode: null }
 }
 

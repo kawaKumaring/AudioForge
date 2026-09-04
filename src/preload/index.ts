@@ -39,8 +39,9 @@ const api = {
     // 새 채널을 만들지 않는다 — 응답에 필드가 더 붙을 뿐이다.
     analyzeReference: (filePath: string, clipKey?: string, extra?: Record<string, unknown>) =>
       ipcRenderer.invoke('audio:analyze-reference', filePath, clipKey, extra),
-    trimReference: (filePath: string, startSec: number, durSec: number, clipKey?: string) =>
-      ipcRenderer.invoke('audio:trim-reference', filePath, startSec, durSec, clipKey),
+    // extra: 분석과 같은 추가 설정(예: ttsEngine → 워커가 그 엔진의 길이 정책으로 판정). 새 채널 없음.
+    trimReference: (filePath: string, startSec: number, durSec: number, clipKey?: string, extra?: Record<string, unknown>) =>
+      ipcRenderer.invoke('audio:trim-reference', filePath, startSec, durSec, clipKey, extra),
     // clipKey 지정 시 그 하나만, 생략 시 전체 파생 클립 정리.
     releaseReferenceClip: (clipKey?: string) => ipcRenderer.invoke('audio:release-reference-clip', clipKey),
     // 참조 source 지문(path|size|mtimeMs). 전사 확정 시 stamp해 두면 합성 경계에서 stale 폐기(§4).

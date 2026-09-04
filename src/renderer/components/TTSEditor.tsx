@@ -55,6 +55,8 @@ interface SpeakerRow {
   fileName: string
   sharedWith: string[]
   decision: ReferenceDecision
+  /** 실제로 모델에 가는 구간(확정 구간). null = 원본 전체. 카드가 그대로 보여 준다. */
+  region?: { start: number; duration: number } | null
   emotion?: EmotionMatchView | null
 }
 import {
@@ -677,6 +679,7 @@ export default function TTSEditor() {
       registered: !!slot,
       ready: !!slot?.ready,
       message: slot?.message || '',
+      region: slot?.region ?? null,
       // 폴더는 화면에 내보내지 않는다 — 파일 이름만.
       fileName: (slot?.source || '').split(/[\\/]/).pop() || '',
       sharedWith: shared,
@@ -728,6 +731,7 @@ export default function TTSEditor() {
     const row = speakerUiRows.find((r) => r.speakerId === speakerId)
     if (row) {
       return { registered: row.registered, ready: row.ready, fileName: row.fileName, decision: row.decision,
+        region: row.region ?? null,
         sharedWith: row.sharedWith, emotionOverrides: emotionOverridesOf(speakerId),
         emotionVoiceAvailable: emotionVoiceAvailableOf(speakerId),
         emotionVoiceEnabled: ttsSpeakerEmotionEnabled[speakerId] === true }
@@ -738,6 +742,7 @@ export default function TTSEditor() {
     const fp = speakerFingerprints[speakerId]
     return {
       registered: true, ready: !!slot.ready,
+      region: slot.region ?? null,
       fileName: (slot.source || '').split(/[\\/]/).pop() || '',
       decision: resolveReferenceDecision(speakerId, null, speakerReadiness),
       sharedWith: (fp && sharedGroups[fp] ? sharedGroups[fp] : []).filter((id) => id !== speakerId).map(speakerLabelOf),
@@ -1024,7 +1029,7 @@ export default function TTSEditor() {
         )}
 
         {/* 기본 참조 음성 패널(셸 주입) — 단 1회 마운트.
-            접혀 있어도 분석과 '안전한 3~10초 구간 자동 확정'은 계속 돈다. 펼치면 예전 파형·슬라이더가 그대로 나온다. */}
+            접혀 있어도 분석과 '추천 구간 자동 확정'은 계속 돈다(길이 조건은 엔진 정책이 정한다). 펼치면 예전 파형·슬라이더가 그대로 나온다. */}
         {fileInfo?.path && (
           <ReferenceRegionPanel
             clipKey="default"

@@ -422,7 +422,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   })
 
   // 선택 구간 → mono/24k 파생 참조 WAV(작업 임시폴더). 원본 불변. 반환 clip_path를 합성에 전달한다.
-  ipcMain.handle('audio:trim-reference', async (_event, filePath: string, startSec: number, durSec: number, clipKey: string = 'default') => {
+  ipcMain.handle('audio:trim-reference', async (_event, filePath: string, startSec: number, durSec: number, clipKey: string = 'default',
+                                                extra?: Record<string, unknown>) => {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 트림을 실행할 수 없습니다.')
     if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
@@ -437,7 +438,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       const scriptPath = PythonRunner.getScriptPath('separate.py')
       writeFileSync(cfgPath, JSON.stringify({
         mode: 'ref-trim', input: filePath, output: outDir,
-        regionStart: startSec, regionDur: durSec
+        regionStart: startSec, regionDur: durSec, ...(extra ?? {}),
       }), 'utf-8')
       const res = await runPreview({
         runner: new PythonRunner(pythonPath, runnerDeps),

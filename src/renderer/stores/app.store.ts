@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { SeparationMode, Track, FileInfo } from '../../shared/types'
 import type { TtsReferenceEntry, PitchCapability, ReferenceConditioningMode } from '../../shared/ttsConfig'
+import type { ReferencePolicySummary } from '../../shared/referencePolicy'
 // 참조 conditioning 모드(PHASE 2) — 기본/복원 해석은 계약 모듈 단일 소유(store 가 규칙을 다시 쓰지 않는다).
 // @ts-ignore TS5097: node --test가 요구하는 명시적 .ts 확장자(위 cancelContract import 주석과 같은 이유).
 import { REFERENCE_CONDITIONING_RECOMMENDED, restoreReferenceConditioningMode } from '../../shared/ttsConfig.ts'
@@ -231,6 +232,8 @@ interface AppState {
   setTtsSpeakerMode: (mode: 'single' | 'multi') => void
   ttsReferencePrompts: Record<string, TtsReferenceEntry>
   ttsEngine: string
+  /** 마지막 참조 분석이 알려 준 이 엔진의 길이 정책(필수/권장). 화면 문구·카드·자산 판정이 이것만 읽는다. 세션에 저장하지 않는다. */
+  ttsReferencePolicy: ReferencePolicySummary | null
   // 참조 conditioning 모드(PHASE 2). fresh 세션 기본 = auto(자동, 추천) — ICL 을 먼저 시도하고
   // 경계 정렬에 실패하면 안정 방식(safe_xvector)으로 정확히 1회 전환한다(잘리지 않은 ICL 결과는
   // 어느 경우에도 발행되지 않는다). UI 선택지는 auto / safe_xvector 두 가지뿐이다.
@@ -268,6 +271,7 @@ interface AppState {
   setNSpeakers: (v: number) => void
   setTtsReferencePrompts: (v: Record<string, TtsReferenceEntry>) => void
   setTtsReferenceConditioningMode: (v: ReferenceConditioningMode) => void
+  setTtsReferencePolicy: (p: ReferencePolicySummary | null) => void
   setTtsRefState: (v: { clip?: string; ready?: boolean; message?: string; region?: { start: number; duration: number } | null }) => void
   // 감정 참조: 원본 등록/변경(파생 클립 초기화 + 그 clipKey 정리), 삭제(그 clipKey 정리), 상태 패치(패널 onChange).
   registerEmotionRef: (emotionId: string, source: string) => void
@@ -365,6 +369,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
   ttsReferencePrompts: {} as Record<string, TtsReferenceEntry>,
   ttsEngine: 'auto',
+  ttsReferencePolicy: null,
   // 참조 conditioning 모드 — fresh 세션 기본은 자동(auto, 추천). ICL 을 먼저 시도하고 경계 정렬에
   // 실패하면 같은 작업 안에서 안정 방식으로 1회 전환한다(실패로 끝나지 않는다).
   // 값이 '부재'인 legacy 세션 복원은 여기가 아니라 restoreReferenceConditioningMode 가 맡고,
@@ -409,6 +414,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setNSpeakers: (v) => set({ nSpeakers: v }),
   setTtsReferencePrompts: (v) => set({ ttsReferencePrompts: v }),
   setTtsReferenceConditioningMode: (v) => set({ ttsReferenceConditioningMode: v }),
+  setTtsReferencePolicy: (p) => set({ ttsReferencePolicy: p }),
   setTtsPitchCapability: (c) => set({ ttsPitchCapability: c }),
   // ⚠️ patch 를 그대로 흘리지 않고 허용 키만 통과시킨다. 타입은 컴파일 때만 막아 주는데,
   //    이 setter 로 ttsExpressiveMode 를 밀어 넣을 수 있으면 'UI 스위치 없음' 보장이 런타임에서 뚫린다
