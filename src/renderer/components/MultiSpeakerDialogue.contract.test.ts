@@ -39,8 +39,10 @@ test('한 명 탭에서는 여러 명 화면을 아예 그리지 않는다 — �
 })
 
 test('원문 textarea 는 구조화 판정으로 잠기지 않는다', () => {
-  const editorBlock = SHELL.slice(SHELL.indexOf('<EmotionScriptEditor'),
-    SHELL.indexOf('/>', SHELL.indexOf('<EmotionScriptEditor')))
+  // 타입 참조(<EmotionScriptEditorHandle>)가 아니라 JSX mount 를 잡는다.
+  const mountAt = SHELL.indexOf('<EmotionScriptEditor\n')
+  assert.ok(mountAt > 0)
+  const editorBlock = SHELL.slice(mountAt, SHELL.indexOf('/>', mountAt))
   assert.ok(editorBlock.includes('disabled={disabled}'))
   for (const forbidden of ['dialogue.', 'editingAllowed', 'patchAllowed', 'verdict']) {
     assert.equal(editorBlock.includes(forbidden), false, `원문 편집기가 구조화 판정에 묶였다: ${forbidden}`)
@@ -180,4 +182,12 @@ test('생성 계약의 거울 — 카드 표시(목소리 상태)와 전송 규�
   const i = SHELL.indexOf('speakerEmotionReady:')
   assert.ok(SHELL.slice(i, i + 260).includes('gateSpeakerEmotionRefs(ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled)'), '화면 판정 = 전송 게이트')
   assert.ok(SHELL.includes('sharedWith: row.sharedWith'), '같은 파일 공유 사실을 숨기지 않는다')
+})
+
+test('여러 명 화면은 카드만 기본으로 보이고, 원문 직접 편집은 접혀 있으며 둘을 동시에 고치지 않는다', () => {
+  assert.ok(SHELL.includes("const showRawEditor = dialogueTab === 'single' || directEditOpen || !dialogue.editingAllowed"))
+  assert.ok(SHELL.includes("{dialogueTab === 'multi' && !directEditOpen && ("), '직접 편집이 열리면 카드 숨김')
+  assert.ok(SHELL.includes('{showRawEditor && (<>'), '원문 편집기는 조건부')
+  assert.ok(SHELL.includes('data-testid="direct-edit"') && SHELL.includes('고급 · 대본 표기 직접 편집'))
+  assert.equal(SHELL.includes('confirm('), false, '자동 변환·확인창 없음')
 })

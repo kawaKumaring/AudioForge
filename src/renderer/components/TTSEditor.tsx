@@ -680,6 +680,9 @@ export default function TTSEditor() {
   // 되돌리기만 둔다. 되돌리기는 그 한 번의 편집 직전 원문으로 돌리고, 다음 편집이 오면 알림은 사라진다
   // (뒤에 이어 친 글자까지 삼키지 않기 위해). 목소리 자산·목소리 구성은 어느 경우에도 건드리지 않는다.
   const [structureNotice, setStructureNotice] = useState<{ prevText: string } | null>(null)
+  // 여러 명 화면의 원문 직접 편집(고급). 열려 있는 동안 발화 카드는 숨긴다 — 두 편집기를 동시에 고치지 않는다.
+  // 닫으면 현재 ttsText 의 분석 결과가 그대로 카드로 보인다(별도 변환 없음).
+  const [directEditOpen, setDirectEditOpen] = useState(false)
   const onSingleEditorChange = (next: string) => {
     if (disabled) return
     const nextSeq = speakerDirectiveSequence(next)
@@ -697,6 +700,8 @@ export default function TTSEditor() {
   const dialogue = useDialogueProjection(ttsText, (next) => { if (!disabled) setTtsText(next) },
     analysis.result)
   const emotionTagOf = (id: string) => '[' + (EMOTION_ID_TO_LABEL[id] ?? id) + ']'
+  // 원문 편집기가 보이는 때: 한 명 | 여러 명의 직접 편집 열림 | 구조화할 수 없는 대본(이유와 함께).
+  const showRawEditor = dialogueTab === 'single' || directEditOpen || !dialogue.editingAllowed
   // 이 인물의 어떤 감정에 목소리 구성이 다른 음원을 지정했는가(감정 라벨). 'default' 는 표기 없는
   // 대사까지 전부 덮는다는 뜻이라 따로 말한다.
   const emotionLabelOf = (eid: string) => (eid === 'default' ? '기본(표기 없는 대사 전부)' : (EMOTION_ID_TO_LABEL[eid] ?? eid))
@@ -1078,7 +1083,7 @@ export default function TTSEditor() {
           </div>
           {/* 여러 명 — 원문 위의 projection. 표현 불가면 이유만 말하고 아래 원문 편집기가 그대로 남는다.
               한 명 탭에서는 아예 그리지 않는다(기존 화면 불변). */}
-          {dialogueTab === 'multi' && (
+          {dialogueTab === 'multi' && !directEditOpen && (
             <MultiSpeakerDialogue
               projection={dialogue}
               emotions={ALL_EMOTIONS.map((e) => ({ id: e.id, label: e.label }))}
@@ -1118,6 +1123,17 @@ export default function TTSEditor() {
               팔레트가 위로 올라가도 이 편집기가 [2] 대사 섹션의 첫 textarea라는 계약은 유지된다. */}
           {/* IME 조합 판정 범위. 이 안쪽 composition 만 분석을 억제한다
               (편집기 컴포넌트 자체는 건드리지 않는다). */}
+          {/* 여러 명에서는 원문 직접 편집을 접어 둔다(고급). 구조화할 수 없는 대본이면 그대로 보여 준다. */}
+          {dialogueTab === 'multi' && dialogue.editingAllowed && (
+            <details data-testid="direct-edit" open={directEditOpen}
+              onToggle={(e) => setDirectEditOpen((e.currentTarget as HTMLDetailsElement).open)}
+              style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              <summary style={{ cursor: 'pointer' }}>
+                고급 · 대본 표기 직접 편집{directEditOpen ? ' — 열려 있는 동안 발화 카드는 숨겨집니다. 닫으면 카드로 돌아옵니다.' : ''}
+              </summary>
+            </details>
+          )}
+          {showRawEditor && (<>
           <div data-af-tts-editor="">
           <EmotionScriptEditor
             ref={editorRef}
@@ -1131,6 +1147,7 @@ export default function TTSEditor() {
             refStates={Object.fromEntries(nonDefaultEmotions.map(e => [e.id, { registered: !!ttsEmotionRefState[e.id]?.source, ready: !!ttsEmotionRefState[e.id]?.ready }]))}
           />
           </div>
+          </>)}
           {/* 대사 작성 보조 — 읽기 전용. textarea 내부를 건드리지 않고 별도 목록으로만 보여 준다. */}
           <InputAnalysisPanel status={analysis.status} result={analysis.result} sourceText={ttsText} />
           {/* 대사에 쓴 감정 중 전용 목소리가 없는 것 — 짧은 사실 한 줄(등록은 고급 설정 > 음성). */}
