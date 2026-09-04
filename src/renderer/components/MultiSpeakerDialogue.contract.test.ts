@@ -198,11 +198,30 @@ test('카드의 목소리 표시는 실제 생성과 같다 — 감정별 덮어
   assert.ok(MULTI.includes('data-testid="speaker-voice-shared"'))
   assert.ok(MULTI.includes('data-testid="speaker-voice-emotion-override"'))
   assert.ok(MULTI.includes('같은 목소리로 만들어집니다'))
-  assert.ok(MULTI.includes('이 감정에서는 다른 목소리 사용'))
+  assert.ok(MULTI.includes('감정별 목소리 사용 중'))
   // 표시 교정일 뿐이다 — 생성 경로(ProcessButton 이 보내는 config)는 건드리지 않는다.
   const PB = codeOf(read('./ProcessButton.tsx'))
   assert.ok(PB.includes('const effective = slot?.ready ? (slot.clip || slot.source) : \'\''), '기본 목소리 전송 규칙 불변')
   assert.ok(PB.includes('ttsSpeakerEmotionRefs'), '전용 참조 전송 불변')
+})
+
+test('기본 모드의 참조 권위: 감정별 참조·후보 선택은 인물별로 켠 경우에만 생성으로 나간다', () => {
+  const PB = codeOf(read('./ProcessButton.tsx'))
+  assert.ok(PB.includes('ttsSpeakerEmotionRefs: gateSpeakerEmotionRefs(ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled)'), '전용 참조 게이트')
+  assert.ok(PB.includes('ttsEmotionCandidateSelections: gateSpeakerEmotionRefs(ttsEmotionCandidateSelections, ttsSpeakerEmotionEnabled)'), '후보 선택 게이트')
+  // 화면 판정도 같은 게이트 — 화면이 말하는 목소리 = 생성이 쓰는 목소리.
+  const i = SHELL.indexOf('speakerEmotionReady:')
+  assert.ok(SHELL.slice(i, i + 260).includes('gateSpeakerEmotionRefs(ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled)'), '판정 게이트')
+  // 카드: 켬/끔 토글과 항상 보이는 상태 문구. 저장된 구성은 지우지 않는다(삭제 호출 없음).
+  assert.ok(MULTI.includes('data-testid="speaker-emotion-voice-toggle"'))
+  assert.ok(MULTI.includes('data-testid="speaker-voice-emotion-off"'))
+  assert.ok(MULTI.includes("'감정별 목소리 사용'") || MULTI.includes('감정별 목소리 사용\n'))
+  for (const forbidden of ['deleteVoiceCast', 'unregisterCandidate', 'setSpeakerEmotionRefs({})']) {
+    assert.equal(MULTI.includes(forbidden), false, forbidden)
+  }
+  // 켬 상태는 세션 상태다 — 새 파일·리셋·복원에서 비워진다.
+  const STORE = codeOf(read('../stores/app.store.ts'))
+  assert.equal((STORE.match(/ttsSpeakerEmotionEnabled: \{\}/g) ?? []).length >= 3, true, 'setFile·reset·restore 에서 비움')
 })
 
 test('감정은 두 단계다 — 기본 선택과 원문 조각 편집', () => {

@@ -28,8 +28,12 @@ export interface SpeakerVoiceState {
   decision: ReferenceDecision
   /** 같은 음원 파일을 쓰는 다른 인물 이름 — 같은 목소리로 만들어진다는 사실을 숨기지 않는다. */
   sharedWith?: string[]
-  /** 목소리 구성이 이 인물의 특정 감정에 다른 음원을 지정했으면 그 감정 이름들. 생성은 그것을 먼저 쓴다. */
+  /** 실제 생성으로 나가는 감정별 음원의 감정 이름들(켠 인물만). 생성은 그것을 먼저 쓴다. */
   emotionOverrides?: string[]
+  /** 목소리 구성이 이 인물에 대해 가진 감정 이름들(켜짐 무관). 있으면 카드에 켬/끔이 보인다. */
+  emotionVoiceAvailable?: string[]
+  /** 이 작업에서 사용자가 `감정별 목소리 사용` 을 켰는가. 기본 false. */
+  emotionVoiceEnabled?: boolean
 }
 
 export const STRUCTURE_BLOCKER_LABEL: Record<StructureBlocker, string> = {
@@ -89,6 +93,7 @@ export interface MultiSpeakerDialogueProps {
   onRemoveVoice: (speakerId: string) => void
   onPreviewVoice: (speakerId: string) => void
   renderRegionEditor?: (speakerId: string) => ReactNode
+  onToggleEmotionVoice?: (speakerId: string, on: boolean) => void
   disabled?: boolean
 }
 
@@ -159,7 +164,8 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
             <SpeakerCard key={s.speakerId} speaker={s} projection={p} disabled={disabled}
               speakerIdOf={speakerIdOf} voiceOf={voiceOf}
               onAssignVoice={props.onAssignVoice} onRemoveVoice={props.onRemoveVoice}
-              onPreviewVoice={props.onPreviewVoice} renderRegionEditor={props.renderRegionEditor} />
+              onPreviewVoice={props.onPreviewVoice} renderRegionEditor={props.renderRegionEditor}
+              onToggleEmotionVoice={props.onToggleEmotionVoice} />
           ))}
           <button type="button" disabled={disabled} onClick={p.addPendingSpeaker}
             style={btn('var(--cyan)', disabled)}>+ 인물 추가</button>
@@ -285,6 +291,7 @@ function SpeakerCard(props: {
   onRemoveVoice: (speakerId: string) => void
   onPreviewVoice: (speakerId: string) => void
   renderRegionEditor?: (speakerId: string) => ReactNode
+  onToggleEmotionVoice?: (speakerId: string, on: boolean) => void
 }) {
   const { speaker: s, projection: p, disabled } = props
   const [open, setOpen] = useState(false)
@@ -354,10 +361,25 @@ function SpeakerCard(props: {
           {voice.sharedWith!.join(', ')} 와 같은 파일을 씁니다. 같은 목소리로 만들어집니다.
         </span>
       )}
-      {(voice?.emotionOverrides?.length ?? 0) > 0 && (
+      {/* 감정별 목소리 — 구성이 이 인물의 감정별 음원을 갖고 있을 때만 보인다. 기본은 꺼짐:
+          기본 목소리만 생성에 쓰인다. 켜면 그 감정의 대사만 구성의 음원으로 만들어진다(항상 표시). */}
+      {(voice?.emotionVoiceAvailable?.length ?? 0) > 0 && (
+        <label data-testid="speaker-emotion-voice-toggle"
+          style={{ fontSize: 10, display: 'flex', gap: 4, alignItems: 'center', color: 'var(--text-secondary)' }}>
+          <input type="checkbox" checked={!!voice!.emotionVoiceEnabled} disabled={disabled}
+            onChange={(e) => props.onToggleEmotionVoice?.(voiceId, e.target.checked)} />
+          감정별 목소리 사용
+        </label>
+      )}
+      {(voice?.emotionVoiceAvailable?.length ?? 0) > 0 && voice!.emotionVoiceEnabled && (
         <span data-testid="speaker-voice-emotion-override" style={{ fontSize: 10, color: 'var(--amber, #d4a017)' }}>
-          이 감정에서는 다른 목소리 사용: {voice!.emotionOverrides!.join(', ')} — 적용된 목소리 구성의 음원이
-          이 인물의 기본 목소리보다 먼저 쓰입니다.
+          감정별 목소리 사용 중: {voice!.emotionOverrides!.join(', ')} — 이 감정의 대사는 목소리 구성의 음원으로
+          만들어지고, 나머지 대사는 기본 목소리로 만들어집니다.
+        </span>
+      )}
+      {(voice?.emotionVoiceAvailable?.length ?? 0) > 0 && !voice!.emotionVoiceEnabled && (
+        <span data-testid="speaker-voice-emotion-off" style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+          감정별 음원 있음(꺼짐): {voice!.emotionVoiceAvailable!.join(', ')} — 지금은 기본 목소리만 사용합니다.
         </span>
       )}
       {open && voice?.registered && props.renderRegionEditor?.(voiceId)}

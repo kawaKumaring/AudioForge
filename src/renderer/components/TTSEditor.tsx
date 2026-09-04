@@ -38,6 +38,7 @@ import SingleScriptGuard from './SingleScriptGuard'
 import { speakerDirectiveSequence, speakerStructurePreserved, stripSpeakerDirectives } from '../../shared/dialogueSourcePatcher'
 import { useDialogueProjection } from '../hooks/useDialogueProjection'
 import { normalizeSpeakerId } from '../../shared/ttsGrammar'
+import { gateSpeakerEmotionRefs, emotionIdsForSpeaker } from '../../shared/speakerEmotionGate'
 import { useVoiceCastRegistry } from '../hooks/useVoiceCastRegistry'
 import {
   castRegistry, findVoiceCast, toSpeakerEmotionRefs,
@@ -217,6 +218,7 @@ async function runPreview(gen: number, path: string) {
 // 모든 effect/analyze/preflight는 이 단일 컴포넌트에 유지 → 신규 하위 패널 재렌더로 중복 실행되지 않는다.
 export default function TTSEditor() {
   const { mode, status, fileInfo, ttsEmotionRefState, ttsSpeakerRefState, ttsSpeakerLabels, ttsSpeakerEmotionRefs,
+    ttsSpeakerEmotionEnabled, setSpeakerEmotionEnabled,
     registerSpeakerRef, removeSpeakerRef, setSpeakerRefState,
     registerEmotionRef, removeEmotionRef, setEmotionRefState, setTtsRefState, ttsRefReady, ttsRefMessage, ttsReferenceClip, ttsPitchCapability, setTtsPitchCapability,
     ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, setTtsExpression,
@@ -641,8 +643,10 @@ export default function TTSEditor() {
     // `(화자, 감정)` 전용 참조 = 적용된 목소리 구성이 store 에 내려 준 것. Python 은 이것을
     // 인물의 기본 목소리보다 **먼저** 고른다(speaker_refs.resolve 순서). 화면 판정도 같아야 한다 —
     // 이전에는 여기가 늘 빈 표여서 화면은 "기본 목소리" 라 말하고 생성은 다른 음원을 썼다.
+    // 생성으로 실제 나가는 것(ProcessButton 과 같은 게이트)만 판정에 넣는다 — 화면 = 생성.
     speakerEmotionReady: Object.fromEntries(
-      Object.entries(ttsSpeakerEmotionRefs).filter(([, p]) => !!p).map(([k]) => [k, true])),
+      Object.entries(gateSpeakerEmotionRefs(ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled))
+        .filter(([, p]) => !!p).map(([k]) => [k, true])),
     emotionReady: Object.fromEntries(
       Object.entries(ttsEmotionRefState).map(([id, s]) => [id, !!s.ready])),
   }
@@ -696,18 +700,19 @@ export default function TTSEditor() {
   const emotionTagOf = (id: string) => '[' + (EMOTION_ID_TO_LABEL[id] ?? id) + ']'
   // 이 인물의 어떤 감정에 목소리 구성이 다른 음원을 지정했는가(감정 라벨). 'default' 는 표기 없는
   // 대사까지 전부 덮는다는 뜻이라 따로 말한다.
-  const emotionOverridesOf = (speakerId: string): string[] => {
-    const sep = String.fromCharCode(31)
-    return Object.entries(ttsSpeakerEmotionRefs)
-      .filter(([k, p]) => !!p && k.startsWith(speakerId + sep))
-      .map(([k]) => k.slice(speakerId.length + 1))
-      .map((eid) => (eid === 'default' ? '기본(표기 없는 대사 전부)' : (EMOTION_ID_TO_LABEL[eid] ?? eid)))
-  }
+  const emotionLabelOf = (eid: string) => (eid === 'default' ? '기본(표기 없는 대사 전부)' : (EMOTION_ID_TO_LABEL[eid] ?? eid))
+  // 구성이 이 인물에 대해 가진 감정(켜짐 무관) / 실제 생성으로 나가는 감정(켠 인물만).
+  const emotionVoiceAvailableOf = (speakerId: string): string[] =>
+    emotionIdsForSpeaker(ttsSpeakerEmotionRefs, speakerId).map(emotionLabelOf)
+  const emotionOverridesOf = (speakerId: string): string[] =>
+    emotionIdsForSpeaker(gateSpeakerEmotionRefs(ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled), speakerId).map(emotionLabelOf)
   const speakerVoiceOf = (speakerId: string) => {
     const row = speakerUiRows.find((r) => r.speakerId === speakerId)
     if (row) {
       return { registered: row.registered, ready: row.ready, fileName: row.fileName, decision: row.decision,
-        sharedWith: row.sharedWith, emotionOverrides: emotionOverridesOf(speakerId) }
+        sharedWith: row.sharedWith, emotionOverrides: emotionOverridesOf(speakerId),
+        emotionVoiceAvailable: emotionVoiceAvailableOf(speakerId),
+        emotionVoiceEnabled: ttsSpeakerEmotionEnabled[speakerId] === true }
     }
     // 원문에 아직 없는 인물(pending)도 같은 store 슬롯을 본다.
     const slot = ttsSpeakerRefState[speakerId]
@@ -719,6 +724,8 @@ export default function TTSEditor() {
       decision: resolveReferenceDecision(speakerId, null, speakerReadiness),
       sharedWith: (fp && sharedGroups[fp] ? sharedGroups[fp] : []).filter((id) => id !== speakerId).map(speakerLabelOf),
       emotionOverrides: emotionOverridesOf(speakerId),
+      emotionVoiceAvailable: emotionVoiceAvailableOf(speakerId),
+      emotionVoiceEnabled: ttsSpeakerEmotionEnabled[speakerId] === true,
     }
   }
 
@@ -1084,6 +1091,7 @@ export default function TTSEditor() {
                 if (src) registerSpeakerRef(id, src, label)
               })() }}
               onRemoveVoice={(id) => removeSpeakerRef(id)}
+              onToggleEmotionVoice={(id, on) => setSpeakerEmotionEnabled(id, on)}
               onPreviewVoice={(id) => previewLocalFile(
                 ttsSpeakerRefState[id]?.clip || ttsSpeakerRefState[id]?.source || '')}
               renderRegionEditor={renderSpeakerRegion}
