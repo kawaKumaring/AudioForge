@@ -10,6 +10,7 @@ import assert from 'node:assert/strict'
 
 import {
   speakerDirectiveSequence, speakerStructurePreserved, stripSpeakerDirectives,
+  utteranceContentParts, replaceUtteranceContent, insertTagAtCaret,
   COORDINATE_DEPENDENT_ACTIONS, SPEAKER_LABEL_PROBLEMS, SPEAKER_LABEL_RE,
   STRUCTURE_BLOCKERS, STRUCTURE_MODES, actionAllowed, canMove, changeBaseEmotion,
   changeSpeaker, commitDecision, createInitialDialogue, deleteUtterance,
@@ -663,4 +664,47 @@ test('한 명 대본으로 전환: 표기 줄은 줄째, 같은 줄 표기는 �
   assert.equal(none.removed, 0)
   // CRLF 원문은 CRLF 를 지킨다.
   assert.equal(stripSpeakerDirectives('[화자 민수]\r\n안녕\r\n둘째').text, '안녕\r\n둘째')
+})
+
+// ── 카드 본문(content) — 대화칸 하나 ─────────────────────────────────────────
+
+test('utteranceContentParts: 화자 표기만 떼고 감정·쉼 표기는 본문에 남는다', () => {
+  assert.deepEqual(utteranceContentParts('[화자 민수]\n[기쁨] 앞 [슬픔] 뒤'), { speakerPart: '[화자 민수]\n', content: '[기쁨] 앞 [슬픔] 뒤' })
+  assert.deepEqual(utteranceContentParts('안녕 [쉼 1] 잘'), { speakerPart: '', content: '안녕 [쉼 1] 잘' })
+})
+
+test('replaceUtteranceContent: 표기는 지키고 나머지는 사용자가 쓴 그대로(태그 추가·삭제 허용)', () => {
+  const text = '[화자 민수]\n[기쁨] 안녕\n[화자 영희]\n응'
+  const rows = [
+    viewOf(text, 0, '[화자 민수]\n[기쁨] 안녕', '민수', true),
+    viewOf(text, 1, '[화자 영희]\n응', '영희', true),
+  ]
+  const r1 = replaceUtteranceContent(text, rows, 0, '안녕하세요 [슬픔] 그런데')
+  assert.equal(r1.changed, true)
+  assert.equal(r1.text, '[화자 민수]\n안녕하세요 [슬픔] 그런데\n[화자 영희]\n응')
+  // 태그를 지우는 것도 일반 편집이다.
+  const r2 = replaceUtteranceContent(text, rows, 0, '안녕')
+  assert.equal(r2.text, '[화자 민수]\n안녕\n[화자 영희]\n응')
+  assert.equal(replaceUtteranceContent(text, rows, 0, '   ').refusedCode, 'LINE_EMPTY')
+  assert.equal(replaceUtteranceContent(text, rows, 0, '[기쁨] 안녕').refusedCode, 'NO_CHANGE')
+  assert.equal(replaceUtteranceContent(text, rows, 0, '다른', { capturedSha: 'a', currentSha: 'b' }).refusedCode, 'STALE_SOURCE')
+  assert.equal(replaceUtteranceContent(text, rows, 9, '다른').refusedCode, 'UTTERANCE_NOT_FOUND')
+})
+
+test('insertTagAtCaret: 맨 앞·중간·표기 안·공백 규칙·caret 위치', () => {
+  assert.deepEqual(insertTagAtCaret('안녕하세요. 오랜만', 0, '[기쁨]'), { text: '[기쁨]안녕하세요. 오랜만', caret: 4, insertAt: 0, inserted: '[기쁨]' })
+  const mid = insertTagAtCaret('안녕하세요. 오랜만', 7, '[기쁨]')   // '. ' 뒤 = 공백 뒤 → 공백 추가 없음
+  assert.equal(mid.text, '안녕하세요. [기쁨]오랜만')
+  assert.equal(mid.caret, 7 + 4)
+  const noSpace = insertTagAtCaret('안녕하세요', 3, '[걱정]')          // 글자 뒤 → 공백 하나
+  assert.equal(noSpace.text, '안녕하 [걱정]세요')
+  assert.equal(noSpace.inserted, ' [걱정]')
+  // 기존 표기 안에 caret → 표기 뒤로 밀어 넣는다(표기를 깨지 않는다).
+  const inside = insertTagAtCaret('[기쁨] 안녕', 2, '[슬픔]')
+  assert.equal(inside.text, '[기쁨] [슬픔] 안녕')   // 표기 뒤 + 공백 하나
+  assert.equal(inside.insertAt, 4)
+  assert.equal(inside.inserted, ' [슬픔]')
+  // caret 없음 → 맨 앞. 범위 밖 → 끝.
+  assert.equal(insertTagAtCaret('안녕', null, '[기쁨]').text, '[기쁨]안녕')
+  assert.equal(insertTagAtCaret('안녕', 99, '[기쁨]').text, '안녕 [기쁨]')
 })

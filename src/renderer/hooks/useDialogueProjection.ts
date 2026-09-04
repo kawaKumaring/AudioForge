@@ -25,7 +25,7 @@ import {
   canMove, changeBaseEmotion, changeSpeaker, commitDecision, createInitialDialogue,
   deleteUtterance, insertUtteranceAfter, moveUtterance, replaceUtteranceBody, sliceOf,
   structurable, structuredEditingAllowed, structuredPatchAllowed, utteranceParts,
-  validateSpeakerLabel, groupUtteranceRows, TRANSIENT_BLOCKERS,
+  validateSpeakerLabel, groupUtteranceRows, TRANSIENT_BLOCKERS, replaceUtteranceContent, utteranceContentParts,
 } from '../../shared/dialogueSourcePatcher'
 import type {
   PatchResult, StructureVerdict, UtteranceView,
@@ -45,10 +45,12 @@ export interface DialogueRow {
   view: UtteranceView
   /** 원문 조각(자기 지시 포함). 고급 편집기가 그대로 보여 준다. */
   slice: string
-  /** 화자 표기·기본 감정을 뺀 본문. 기본 편집기가 보여 준다. */
+  /** 화자 표기·기본 감정을 뺀 본문(구 기본 편집기용). */
   body: string
-  /** 본문에 대사 중간 감정 태그가 있는가 — 있으면 기본 편집기는 태그를 지킬 의무가 있다. */
+  /** 본문에 대사 중간 감정 태그가 있는가. */
   hasMidEmotionTags: boolean
+  /** 화자 표기만 뺀 조각 — 감정·쉼 표기가 글자 그대로. 발화 카드의 대화칸이 보여 주는 값. */
+  content: string
 }
 
 export interface DialogueProjection {
@@ -154,6 +156,7 @@ export function useDialogueProjection(
     return {
       view: v, slice, body: parts.body.trim(),
       hasMidEmotionTags: /\[[^\]]*\]/.test(parts.body),
+      content: utteranceContentParts(slice).content.replace(/\s+$/, ''),
     }
   }), [projectionText, views])
 
@@ -272,7 +275,7 @@ export function useDialogueProjection(
   const draftOf = useCallback((index: number) => drafts[index]?.body ?? null, [drafts])
   const beginDraft = useCallback((index: number) => {
     setDrafts((d) => d[index] ? d : {
-      ...d, [index]: { body: rows[index]?.body ?? '', capturedSha: textSha },
+      ...d, [index]: { body: rows[index]?.content ?? '', capturedSha: textSha },
     })
   }, [rows, textSha])
   const updateDraft = useCallback((index: number, body: string) => {
@@ -287,7 +290,7 @@ export function useDialogueProjection(
   const commitDraft = useCallback((index: number, opts: { advanced?: boolean } = {}) => {
     const d = drafts[index]
     if (!d) return 'noop' as const
-    const committed = rows[index]?.body ?? ''
+    const committed = rows[index]?.content ?? ''
     const decision = commitDecision(d.capturedSha, textSha, d.body, committed)
     if (decision === 'noop') { discardDraft(index); return 'noop' as const }
     if (decision === 'commit' && !patchAllowed
@@ -304,8 +307,10 @@ export function useDialogueProjection(
       setLastRefusal(decision === 'resync' ? 'STALE_SOURCE' : (verdict.blockers[0] ?? 'PATCH_NOT_ALLOWED'))
       return 'resync' as const
     }
-    const res = replaceUtteranceBody(text, views, index, d.body, {
-      allowEmotionTagChange: !!opts.advanced, capturedSha: d.capturedSha, currentSha: textSha,
+    // 대화칸 하나: 화자 표기만 지키고 나머지(감정·쉼 표기 포함)를 사용자가 쓴 그대로 반영한다.
+    void opts
+    const res = replaceUtteranceContent(text, views, index, d.body, {
+      capturedSha: d.capturedSha, currentSha: textSha,
     })
     discardDraft(index)
     return apply(res) === null ? 'commit' as const : 'refused' as const

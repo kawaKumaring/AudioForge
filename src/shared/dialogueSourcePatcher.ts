@@ -649,3 +649,65 @@ export function stripSpeakerDirectives(text: string): PatchResult & { removed: n
   if (removed === 0) return { ...unchanged(text, 'NO_CHANGE'), removed: 0 }
   return { text: kept.join(eol), changed: true, refusedCode: null, removed }
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 카드 본문(content) — 여러 명 화면의 발화 카드는 대화칸 하나만 쓴다.
+//
+// content = 원문 조각에서 화자 표기(`[화자 …]`)만 뺀 나머지. 첫 감정 태그·중간 감정 태그·쉼 표기가
+// 글자 그대로 들어 있다. 사용자는 이 칸에서 태그를 넣고 지우고 고친다(일반 편집). 반영은 화자 표기만
+// 지키고 나머지를 통째로 바꾼다 — 두 번째 textarea 도, 태그 보호 규칙도 없다.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 조각 → (화자 표기, 나머지). 나머지의 앞 공백은 표기 쪽에 둔다(줄바꿈 보존). */
+export function utteranceContentParts(slice: string): { speakerPart: string; content: string } {
+  const m = slice.match(/^(\s*\[\s*(?:화자|speaker)\s+[^\]]*\]\s*)?/)
+  const speakerPart = m?.[1] ?? ''
+  return { speakerPart, content: slice.slice(speakerPart.length) }
+}
+
+/**
+ * 카드 본문 반영. 화자 표기는 그대로, 그 뒤를 newContent 로 바꾼다.
+ * 거부: UTTERANCE_NOT_FOUND / STALE_SOURCE(붙잡은 SHA ≠ 현재) / LINE_EMPTY / NO_CHANGE.
+ */
+export function replaceUtteranceContent(
+  text: string, utterances: readonly UtteranceView[], index: number, newContent: string,
+  opts: { capturedSha?: string | null; currentSha?: string | null } = {}
+): PatchResult {
+  const u = utterances[index]
+  if (!u) return unchanged(text, 'UTTERANCE_NOT_FOUND')
+  if (opts.capturedSha != null && opts.currentSha != null && opts.capturedSha !== opts.currentSha) {
+    return unchanged(text, 'STALE_SOURCE')
+  }
+  if (newContent.trim() === '') return unchanged(text, 'LINE_EMPTY')
+  const slice = sliceOf(text, u)
+  const parts = utteranceContentParts(slice)
+  // 조각 끝의 줄바꿈은 구간 밖 구분자와 같은 역할이라 그대로 둔다.
+  const tail = parts.content.match(/\s*$/)?.[0] ?? ''
+  const nextSlice = parts.speakerPart + newContent.replace(/\s+$/, '') + tail
+  if (nextSlice === slice) return unchanged(text, 'NO_CHANGE')
+  return { text: text.slice(0, u.sourceStart) + nextSlice + text.slice(u.sourceEnd), changed: true, refusedCode: null }
+}
+
+/**
+ * caret 위치에 태그(`[기쁨]`)를 넣는다 — 여러 명 카드의 `+ 감정`.
+ *   · caret 이 기존 `[…]` 표기 안(또는 경계)이면 표기를 깨지 않고 **그 표기 뒤**에 넣는다
+ *   · 바로 앞 글자가 공백이 아니면 공백 하나를 앞에 둔다(`안녕하세요. [기쁨]오랜만이에요.`)
+ *   · 맨 앞이면 시작 감정, 중간이면 그 위치부터 감정 변경 — 문법은 기존 그대로
+ * 반환: 새 본문, 새 caret(태그 뒤), 실제 삽입 위치와 삽입 문자열(네이티브 undo 를 위해 execCommand 로
+ * 넣을 때 그대로 쓴다).
+ */
+export function insertTagAtCaret(
+  content: string, caret: number | null, tag: string
+): { text: string; caret: number; insertAt: number; inserted: string } {
+  let at = caret == null ? 0 : Math.max(0, Math.min(content.length, caret))
+  // 기존 표기 안인가: 뒤로 가장 가까운 '[' 가 있고 그 뒤 ']' 가 at 이후에 있으며 둘 사이에 ']' 가 없다.
+  const open = content.lastIndexOf('[', at - 1)
+  if (open >= 0) {
+    const close = content.indexOf(']', open)
+    if (close >= 0 && close >= at && !content.slice(open + 1, at).includes(']')) at = close + 1
+  }
+  const prev = at > 0 ? content[at - 1] : ''
+  const inserted = (prev && !/\s/.test(prev) ? ' ' : '') + tag
+  const text = content.slice(0, at) + inserted + content.slice(at)
+  return { text, caret: at + inserted.length, insertAt: at, inserted }
+}
