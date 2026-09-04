@@ -150,7 +150,7 @@ function waitUntilPreviewLoaded(el: HTMLAudioElement, timeoutMs = 4000): Promise
   })
 }
 
-function previewLocalFile(path: string) {
+function previewLocalFile(path: string, region?: { start: number; duration: number } | null) {
   if (!path) { emitPreviewError(previewErrorText('source')); return }
   // (1) 새 세대를 먼저 올린다 — 아직 URL/로드를 기다리는 이전 요청은 자기 차례에 stale임을 알고 물러난다.
   _previewSession = beginRequest(_previewSession)
@@ -159,10 +159,10 @@ function previewLocalFile(path: string) {
   emitPreviewError(null)
   // (2) 앞선 요청의 로드가 끝난 뒤에만 다음 로드를 시작한다. 로드를 중간에 끊어 버리면 그 local-file://
   //     요청이 남아 쌓이고, 수십 번 반복하면 이후 모든 미리듣기가 로드되지 않는다(영구 무음).
-  _previewChain = _previewChain.then(() => runPreview(gen, path)).catch(() => { /* 다음 요청을 막지 않는다 */ })
+  _previewChain = _previewChain.then(() => runPreview(gen, path, region ?? undefined)).catch(() => { /* 다음 요청을 막지 않는다 */ })
 }
 
-async function runPreview(gen: number, path: string) {
+async function runPreview(gen: number, path: string, region?: { start: number; duration: number }) {
   // 내 차례가 오기 전에 더 새로운 요청이 들어왔다면 아무 것도 하지 않는다(로드조차 시작하지 않음).
   const stale = () => decideAsyncResult(_previewSession, gen) === 'discard'
   if (stale()) return
@@ -202,7 +202,7 @@ async function runPreview(gen: number, path: string) {
     if (stale()) return
     // 로드가 실패했어도 play()는 반드시 시도한다 — 실패 신호를 한 곳(play 거부)에서 받아 오류로 노출하기 위해.
     if (!advance({ kind: 'ready' })) return
-    try { el.currentTime = 0 } catch { /* noop */ }
+    try { el.currentTime = region ? Math.max(0, region.start) : 0 } catch { /* noop */ }
 
     // (5) play() 프로미스는 정착하지 않을 수도 있다(로드가 멈춘 요소). 반드시 타임아웃과 경주시켜
     //     직렬화 큐를 풀어 준다 — 그러지 않으면 한 번의 실패가 이후 모든 미리듣기를 영구 무음으로 만든다.
@@ -217,6 +217,12 @@ async function runPreview(gen: number, path: string) {
       discardPreviewElement()
       fail(el.error || result.includes('NotSupportedError') ? 'load' : 'play')
       return
+    }
+    if (region && region.duration > 0) {
+      // 구간 재생 — 원본을 구간 시작에서 틀고 구간 길이 뒤에 멈춘다. 임시 클립의 존재·수명에 기대지 않는다.
+      const stopGen = gen
+      setTimeout(() => { if (decideAsyncResult(_previewSession, stopGen) !== 'discard') pausePreview() },
+        Math.round(region.duration * 1000))
     }
     advance({ kind: 'play' })
   } catch {
@@ -780,6 +786,8 @@ export default function TTSEditor() {
         clipKey={'spk:' + speakerId}
         path={src}
         disabled={disabled}
+        committed={ttsSpeakerRefState[speakerId]?.ready
+          ? { clip: ttsSpeakerRefState[speakerId].clip, region: ttsSpeakerRefState[speakerId].region } : null}
         onState={(s) => setSpeakerRefState(speakerId, s)}
         label={`${speakerLabelOf(speakerId)} 목소리`}
       />
@@ -832,6 +840,8 @@ export default function TTSEditor() {
         clipKey={emotionId}
         path={src}
         disabled={disabled}
+        committed={ttsEmotionRefState[emotionId]?.ready
+          ? { clip: ttsEmotionRefState[emotionId].clip, region: ttsEmotionRefState[emotionId].region } : null}
         onState={(s) => {
           setEmotionRefState(emotionId, s)              // store가 단일 소스(clip/ready/message/region)
           if (s.region) onChangeRegion(s.region)         // 관리자 표시 콜백 계약 충족
@@ -992,7 +1002,7 @@ export default function TTSEditor() {
             지금 쓰는 목소리 — <strong style={{ color: 'var(--text-primary)' }}>올린 파일의 목소리</strong>
           </span>
           <span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', marginLeft: 'auto' }}>
-            <button type="button" onClick={() => previewLocalFile(ttsReferenceClip || fileInfo?.path || '')}
+            <button type="button" onClick={() => previewLocalFile(fileInfo?.path || '', ttsReferenceRegion)}
               disabled={disabled || !fileInfo?.path} aria-label="지금 쓰는 목소리 재생"
               style={plainBtn('var(--bg-card)', 'var(--text-secondary)', disabled || !fileInfo?.path)}>▶ 재생</button>
             <button type="button" onClick={() => { void pickAnotherVoice() }} disabled={disabled}
@@ -1020,6 +1030,7 @@ export default function TTSEditor() {
             clipKey="default"
             path={fileInfo.path}
             disabled={disabled}
+            committed={ttsRefReady ? { clip: ttsReferenceClip, region: ttsReferenceRegion } : null}
             onState={setTtsRefState}
             label="참조 음성"
             open={regionOpen}
@@ -1150,8 +1161,11 @@ export default function TTSEditor() {
                   />
                 )
               }}
-              onPreviewVoice={(id) => previewLocalFile(
-                ttsSpeakerRefState[id]?.clip || ttsSpeakerRefState[id]?.source || '')}
+              onPreviewVoice={(id) => {
+                // 원본 음성의 사용 중인 구간을 튼다 — 임시 클립이 아니라 원본이 재생 대상이다.
+                const s = ttsSpeakerRefState[id]
+                previewLocalFile(s?.source || '', s?.region ?? null)
+              }}
               renderRegionEditor={renderSpeakerRegion}
               disabled={disabled}
             />
@@ -1312,7 +1326,7 @@ export default function TTSEditor() {
               refs={managerRefs}
               onRegister={(id, src) => registerEmotionRef(id, src)}
               onRemove={(id) => removeEmotionRef(id)}
-              onPreview={(id) => previewLocalFile(emotionEffectivePath(ttsEmotionRefState[id]) || ttsEmotionRefState[id]?.source || '')}
+              onPreview={(id) => previewLocalFile(ttsEmotionRefState[id]?.source || '', ttsEmotionRefState[id]?.region ?? null)}
               onChangeRegion={(id, region) => setEmotionRefState(id, { region })}
               requestSource={requestEmotionSource}
               renderRegionEditor={renderEmotionRegion}

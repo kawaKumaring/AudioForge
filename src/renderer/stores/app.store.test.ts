@@ -488,3 +488,33 @@ test('speakerMode: 새 파일·복원(부재)은 single, 복원(저장 multi)은
   useAppStore.getState().restoreSession('C:/out', { ...SESSION_BASE, options: { ttsText: 'x', ttsSpeakerMode: 'multi' } } as never)
   assert.equal(useAppStore.getState().ttsSpeakerMode, 'multi')
 })
+
+// ── 복원이 살아 있는 기본 참조를 내리지 않는다 ─────────────────────────────
+
+test('restoreSession: 같은 파일이 열려 있고 기본 참조가 준비됨이면 복원이 clip·ready·구간을 유지한다', () => {
+  useAppStore.setState({
+    fileInfo: { path: 'C:/in/x.wav', name: 'x.wav', duration: 20, channels: 1, sampleRate: 24000, format: 'wav' },
+    ttsRefReady: true, ttsReferenceClip: 'C:/tmp/audioforge_refclip_1/reference_clip_24k.wav',
+    ttsReferenceRegion: { start: 2, duration: 8 }, ttsRefMessage: '',
+  })
+  useAppStore.getState().restoreSession('C:/out', { ...SESSION_BASE, source: 'C:/in/x.wav',
+    refLiveness: { default: true }, options: { ttsText: 'x', ttsReferenceOverride: 'C:/tmp/old_clip.wav' } } as never)
+  const s = useAppStore.getState()
+  assert.equal(s.ttsRefReady, true)
+  assert.equal(s.ttsReferenceClip, 'C:/tmp/audioforge_refclip_1/reference_clip_24k.wav')
+  assert.deepEqual(s.ttsReferenceRegion, { start: 2, duration: 8 })
+  assert.equal(s.ttsRefMessage, '')
+})
+
+test('restoreSession: 다른 파일이거나 준비 전이면 기존 규칙(파생 클립 소실 → 구간 재확정 필요)', () => {
+  useAppStore.setState({
+    fileInfo: { path: 'C:/in/other.wav', name: 'other.wav', duration: 20, channels: 1, sampleRate: 24000, format: 'wav' },
+    ttsRefReady: true, ttsReferenceClip: 'C:/tmp/live.wav', ttsReferenceRegion: { start: 1, duration: 5 },
+  })
+  useAppStore.getState().restoreSession('C:/out', { ...SESSION_BASE, source: 'C:/in/x.wav',
+    refLiveness: { default: true }, options: { ttsText: 'x', ttsReferenceOverride: 'C:/tmp/old_clip.wav' } } as never)
+  const s = useAppStore.getState()
+  assert.equal(s.ttsRefReady, false)
+  assert.equal(s.ttsReferenceClip, '')
+  assert.equal(s.ttsRefMessage, '구간 재확정 필요')
+})

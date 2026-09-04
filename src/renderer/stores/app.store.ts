@@ -537,7 +537,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   }),
   setPlayingTrack: (name) => set({ playingTrack: name }),
   setRestorable: (v) => set({ restorable: v }),
-  restoreSession: (dir, session) => set(() => {
+  restoreSession: (dir, session) => set((cur) => {
     const o = session.options || {}
     const liveness = session.refLiveness || {}
     const md = session.metadata || null
@@ -562,8 +562,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     const defaultRegion = (md && typeof md === 'object' && (md as Record<string, unknown>).reference_region)
       ? (md as { reference_region?: { start: number; duration: number } }).reference_region ?? null
       : null
-    const defaultReady = defaultAlive && !defaultUsedDerived
-    const defaultMessage = !defaultAlive ? '원본 다시 지정 필요' : (defaultUsedDerived ? '구간 재확정 필요' : '')
+    // 같은 파일이 이미 열려 있고 기본 참조가 살아 있으면(불러오기 직후 자동 확정이 끝난 상태) 복원이 그것을
+    // 내리지 않는다 — 방금까지 되던 목소리를 "구간 재확정 필요" 로 되돌리는 것은 복원이 아니라 퇴행이다.
+    const keepLiveDefault = !!cur.fileInfo?.path && cur.fileInfo.path === session.source && cur.ttsRefReady === true
+    const defaultReady = keepLiveDefault || (defaultAlive && !defaultUsedDerived)
+    const defaultMessage = keepLiveDefault ? '' : (!defaultAlive ? '원본 다시 지정 필요' : (defaultUsedDerived ? '구간 재확정 필요' : ''))
     return {
       mode: session.mode || 'music',
       demucsModel: o.model || 'htdemucs',
@@ -604,10 +607,11 @@ export const useAppStore = create<AppState>((set, get) => ({
       // 저장된 생성 방식만 복원. 부재(legacy 세션)는 앱 기본 single.
       ttsSpeakerMode: o.ttsSpeakerMode === 'multi' ? 'multi' : 'single',
       ttsReferencePrompts: prompts,
-      ttsReferenceClip: '',            // 파생 클립은 temp — 복원 시 항상 비움(§4: stale 클립 결합 금지)
+      // 파생 클립은 temp — 복원 시 비운다(§4). 단 같은 파일의 살아 있는 기본 참조는 그대로 둔다.
+      ttsReferenceClip: keepLiveDefault ? cur.ttsReferenceClip : '',
       ttsRefReady: defaultReady,
       ttsRefMessage: defaultMessage,
-      ttsReferenceRegion: defaultRegion,
+      ttsReferenceRegion: keepLiveDefault ? cur.ttsReferenceRegion : defaultRegion,
       resultMetadata: md,
       tracks: session.tracks || [],
       outputDir: dir,

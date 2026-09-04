@@ -201,6 +201,10 @@ try {
       remove: !!([...(p?.querySelectorAll('button') ?? [])].find((b) => b.textContent.includes('목소리 해제'))) }
   })
   ok('6a', panel.n === 1 && panel.speaker === '민수' && panel.change && panel.remove, '민수 목소리 패널 1개: 바꾸기·해제', JSON.stringify(panel))
+  // 패널을 열었다(구간 편집기 마운트 → 원본 재분석)고 해서 사용 중인 준비 상태가 내려가지 않는다.
+  await sleep(1500)
+  const stillReady = await page.evaluate(() => window.__afStore.getState().ttsSpeakerRefState['민수']?.ready === true)
+  ok('6a2', stillReady, '패널을 열어도(재분석) 민수의 준비 상태 유지', `ready=${stillReady}`)
   await page.click('[data-testid="voice-panel-close"]'); await sleep(100)
   ok('6b', (await count('[data-testid="voice-panel"]')) === 0, '닫기 → 카드로 돌아옴')
 

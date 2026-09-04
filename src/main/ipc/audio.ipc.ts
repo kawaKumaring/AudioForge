@@ -400,7 +400,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     // 같은 파일의 이전 분석 응답에 합쳐져 후보가 오지 않는다.
     const key = clipKey + '\u0000' + resolve(filePath)
       + (extra ? '\u0000' + JSON.stringify(extra) : '')
-    if (!analyzeSF.has(key)) releaseRefClip(clipKey)  // 새 분석 시작일 때만 그 key의 이전 파생 클립 폐기(중복 요청엔 안 함)
+    // 분석은 읽기다 — 확정 클립을 지우지 않는다. 편집기를 다시 열거나 같은 원본을 다시 살펴봐도 준비 상태가
+    // 내려가지 않는다. 클립이 바뀌는 때는 재확정 성공(trim)·원본 교체(register)·해제·새 파일·리셋뿐이다.
     return analyzeSF.run(key, async () => {  // 동시/StrictMode 중복은 진행 중 Promise 공유(subprocess 1회)
       const cfgPath = join(tmpdir(), `audioforge_refanalyze_${randomUUID()}.json`)
       try {
@@ -425,12 +426,12 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 트림을 실행할 수 없습니다.')
     if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
-    releaseRefClip(clipKey)  // 재확정 → 그 key의 이전 파생 클립만 폐기(타 감정 클립 불변; 합성 중 아님: 위에서 차단)
     referenceTrimGuard.begin()  // 트림 중복 실행 방지(전사 가드와 분리 — 서로 차단하지 않음)
     const uid = randomUUID()
     const cfgPath = join(tmpdir(), `audioforge_reftrim_${uid}.json`)
     const outDir = join(tmpdir(), `audioforge_refclip_${uid}`)  // 작업 임시폴더(프로젝트 밖), 충돌 불가 UID
-    refClipDirs.set(clipKey, outDir)  // 새 파생 클립 폴더를 그 key로 추적(합성 종료/새 파일/재확정 시 정리)
+    // 원자 교체: 새 클립을 먼저 만들고, **성공했을 때만** 이전 클립을 놓는다. 실패하면 새 폴더를 지우고
+    // 이전 클립(사용자가 쓰던 확정 구간)은 그대로 남는다 — 재확정 실패가 멀쩡한 상태를 되돌리지 않는다.
     try {
       mkdirSync(outDir, { recursive: true })
       const scriptPath = PythonRunner.getScriptPath('separate.py')
@@ -438,12 +439,25 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
         mode: 'ref-trim', input: filePath, output: outDir,
         regionStart: startSec, regionDur: durSec
       }), 'utf-8')
-      return await runPreview({
+      const res = await runPreview({
         runner: new PythonRunner(pythonPath, runnerDeps),
         scriptPath, args: ['--config', cfgPath],
         timeoutMs: 60000,
         cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
       })
+      const r = (res ?? {}) as Record<string, unknown>
+      const succeeded = typeof r.clip_path === 'string' && r.status !== 'failed' && typeof r.code !== 'string'
+        && existsSync(r.clip_path as string)
+      if (succeeded) {
+        releaseRefClip(clipKey)          // 이제서야 이전 클립을 놓는다
+        refClipDirs.set(clipKey, outDir)
+      } else {
+        removeRefClipDir(tmpdir(), outDir)  // 반쪽 결과는 남기지 않는다. 이전 클립은 건드리지 않았다
+      }
+      return res
+    } catch (e) {
+      removeRefClipDir(tmpdir(), outDir)
+      throw e
     } finally {
       try { unlinkSync(cfgPath) } catch {}
       referenceTrimGuard.end()

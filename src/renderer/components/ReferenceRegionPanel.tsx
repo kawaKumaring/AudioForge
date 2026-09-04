@@ -44,6 +44,12 @@ interface ReferenceRegionPanelProps {
    * 실제 안전 오류(너무 짧음/길음·말 도중 절단·전사 실패·대사 불일치) 문구는 그대로 간다.
    */
   plainStatus?: boolean
+  /**
+   * 지금 **사용 중인** 확정 상태(store 슬롯). 있으면 마운트·재분석이 준비 상태를 내리지 않고, 슬라이더는
+   * 확정 구간에서 시작하며, 재확정이 실패해도 이 상태를 그대로 둔다(패널은 사유만 말한다).
+   * 구간 편집의 권위는 늘 전체 원본(path)이다 — clip 은 편집 대상이 아니다.
+   */
+  committed?: { clip: string; region: { start: number; duration: number } | null } | null
 }
 
 interface Analysis {
@@ -161,8 +167,11 @@ function waitUntilLoaded(el: HTMLAudioElement, timeoutMs = 4000): Promise<boolea
 
 export default function ReferenceRegionPanel({
   path, clipKey, disabled, onState, label = '참조 음성',
-  open = true, autoConfirm = false, plainStatus = false,
+  open = true, autoConfirm = false, plainStatus = false, committed = null,
 }: ReferenceRegionPanelProps) {
+  // 확정 클립이 살아 있는가 — 재분석·재확정 실패가 이것을 내리지 않는다(사용 중인 목소리 보존).
+  const hasCommitted = !!(committed && (committed.clip || committed.region))
+  const [confirmError, setConfirmError] = useState<string | null>(null)
   // 기본 화면(plainStatus)에서는 같은 사실을 쉬운 말로 낸다. 안전 오류 문구는 어느 쪽에서도 바꾸지 않는다.
   // ref 로 읽는 이유: runAnalyze(useCallback)에 잡힌 옛 closure 도 지금 값을 봐야 한다(재분석 유발 금지).
   const plainRef = useRef(plainStatus)
@@ -207,9 +216,13 @@ export default function ReferenceRegionPanel({
   // 분석 실행(재사용 — 파일 변경 시 + '다시 분석' 재시도). single-flight는 main IPC에서 보장.
   const runAnalyze = useCallback(async (signal?: { cancelled: boolean }) => {
     if (!path) return
-    setAnalysis(null); setMetrics(null); setConfirmedClip(''); setAnalyzeError(null)
+    setAnalysis(null); setMetrics(null); setAnalyzeError(null); setConfirmError(null)
+    if (!hasCommitted) setConfirmedClip('')
     setLoading(true)
-    onStateRef.current({ ready: false, clip: '', message: say('참조 음성을 분석 중입니다...', '목소리를 살펴보는 중입니다…'), region: null })
+    // 확정된 구간이 있으면 재분석(편집기 다시 열기)이 준비 상태를 내리지 않는다 — 원본을 다시 살펴볼 뿐이다.
+    if (!hasCommitted) {
+      onStateRef.current({ ready: false, clip: '', message: say('참조 음성을 분석 중입니다...', '목소리를 살펴보는 중입니다…'), region: null })
+    }
     try {
       const a = await window.api.audio.analyzeReference(path, clipKey) as Analysis & { error_message?: string; reason?: string }
       if (signal?.cancelled) return
@@ -222,12 +235,19 @@ export default function ReferenceRegionPanel({
         onStateRef.current({ ready: false, clip: '', message: `참조가 ${fmt(a.duration_sec)}로 3초 미만입니다 — 3~10초 음성을 올려주세요`, region: null })
       } else if (a.needs_region) {
         const r = a.recommend
-        if (r && r.ok) { setStart(r.start_sec); setDur(Math.min(MAX_SEC, Math.max(MIN_SEC, r.dur_sec))) }
-        onStateRef.current({
-          ready: false, clip: '',
-          message: say('참조 구간(3~10초)을 확정하세요', '목소리에서 쓸 부분을 고르는 중입니다…'),
-          region: null,
-        })
+        if (hasCommitted && committed?.region) {
+          // 슬라이더는 사용 중인 구간에서 시작한다. 전체 원본 범위 안에서 자유롭게 넓힐 수 있다.
+          setStart(committed.region.start); setDur(Math.min(MAX_SEC, Math.max(MIN_SEC, committed.region.duration)))
+          setEffective({ start_sec: committed.region.start, dur_sec: committed.region.duration } as RegionSpan)
+          if (committed.clip) setConfirmedClip(committed.clip)
+        } else if (r && r.ok) { setStart(r.start_sec); setDur(Math.min(MAX_SEC, Math.max(MIN_SEC, r.dur_sec))) }
+        if (!hasCommitted) {
+          onStateRef.current({
+            ready: false, clip: '',
+            message: say('참조 구간(3~10초)을 확정하세요', '목소리에서 쓸 부분을 고르는 중입니다…'),
+            region: null,
+          })
+        }
       } else if (a.valid_whole) {
         // 3~10초 + 품질 통과 → 원본을 그대로 참조로 사용(파생 클립 불필요, effective==원본)
         onStateRef.current({ ready: true, clip: '', message: '', region: null })
@@ -389,9 +409,6 @@ export default function ReferenceRegionPanel({
       // 실제 사유 대신 '형식 불일치'만 떴다 — 사용자는 무엇을 고쳐야 하는지 알 수 없었다.
       const failed = raw?.status === 'failed' || typeof raw?.code === 'string'
       if (failed) {
-        setConfirmedClip('')
-        setEffective(null)
-        setMetrics(null)
         const codes = Array.isArray(raw.blocking)
           ? (raw.blocking as unknown[]).filter((c): c is string => typeof c === 'string')
           : []
@@ -400,6 +417,14 @@ export default function ReferenceRegionPanel({
           : (typeof raw.error_message === 'string' && raw.error_message
               ? raw.error_message
               : '구간을 확정하지 못했습니다.')
+        if (hasCommitted || confirmedClip) {
+          // 이전에 확정한 구간은 그대로 사용 중이다(main 도 이전 클립을 지우지 않았다). 사유만 말한다.
+          setConfirmError(msg + ' — 이전에 확정한 구간을 그대로 사용합니다.')
+          return
+        }
+        setConfirmedClip('')
+        setEffective(null)
+        setMetrics(null)
         onStateRef.current({ ready: false, clip: '', message: msg, region: null })
         return
       }
@@ -423,6 +448,7 @@ export default function ReferenceRegionPanel({
         // 요청값을 저장하면 재현이 어긋난다.
         const span = eff as RegionSpan
         setEffective(span)
+        setConfirmError(null)
         onStateRef.current({
           ready: true, clip: res.clip_path, message: '',
           region: { start: span.start_sec, duration: span.dur_sec }
@@ -436,11 +462,15 @@ export default function ReferenceRegionPanel({
         onStateRef.current({ ready: false, clip: '', message: msg || '구간 품질이 부적합합니다', region: null })
       }
     } catch (e) {
-      onStateRef.current({
-        ready: false, clip: '',
-        message: say(`파생 참조 생성 실패: ${(e as Error)?.message || ''}`, '목소리 구간을 준비하지 못했습니다. 다시 시도해 주세요.'),
-        region: null,
-      })
+      if (hasCommitted || confirmedClip) {
+        setConfirmError('목소리 구간을 준비하지 못했습니다. 이전에 확정한 구간을 그대로 사용합니다.')
+      } else {
+        onStateRef.current({
+          ready: false, clip: '',
+          message: say(`파생 참조 생성 실패: ${(e as Error)?.message || ''}`, '목소리 구간을 준비하지 못했습니다. 다시 시도해 주세요.'),
+          region: null,
+        })
+      }
     } finally {
       setConfirming(false)
     }
@@ -593,6 +623,13 @@ export default function ReferenceRegionPanel({
               {previewPhase === 'playing' ? '재생 중' : previewPhase === 'loading' ? '준비 중' : ''}
             </span>
             <span style={{ ...sub, marginLeft: 'auto', fontVariantNumeric: 'tabular-nums' }}>선택 {fmt(dur)}</span>
+          </div>
+          {confirmError && (
+            <div role="status" aria-live="polite" data-testid="region-confirm-kept" style={{ ...sub, color: 'var(--amber, #d4a017)' }}>
+              {confirmError}
+            </div>
+          )}
+          <div style={{ display: 'none' }}>
           </div>
 
           {/* 미리듣기 실패는 삼키지 않고 보여준다(사용자 언어·경로 미노출·자동 재시도 없음) */}
