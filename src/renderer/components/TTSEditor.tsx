@@ -1127,13 +1127,16 @@ export default function TTSEditor() {
               (편집기 컴포넌트 자체는 건드리지 않는다). */}
           {/* 여러 명에서는 원문 직접 편집을 접어 둔다(고급). 구조화할 수 없는 대본이면 그대로 보여 준다. */}
           {dialogueTab === 'multi' && dialogue.editingAllowed && (
-            <details data-testid="direct-edit" open={directEditOpen}
-              onToggle={(e) => setDirectEditOpen((e.currentTarget as HTMLDetailsElement).open)}
-              style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-              <summary style={{ cursor: 'pointer' }}>
-                고급 · 대본 표기 직접 편집{directEditOpen ? ' — 열려 있는 동안 발화 카드는 숨겨집니다. 닫으면 카드로 돌아옵니다.' : ''}
-              </summary>
-            </details>
+            <div data-testid="direct-edit" data-open={directEditOpen ? 'true' : 'false'}
+              style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 11, color: 'var(--text-muted)' }}>
+              <button type="button" data-testid="direct-edit-toggle" aria-expanded={directEditOpen}
+                onClick={() => setDirectEditOpen((o) => !o)}
+                style={{ padding: '3px 10px', borderRadius: 5, border: 'none', fontSize: 11, fontFamily: 'inherit',
+                  cursor: 'pointer', background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
+                {directEditOpen ? '대본 표기 직접 편집 닫기' : '고급 · 대본 표기 직접 편집'}
+              </button>
+              {directEditOpen && <span>열려 있는 동안 발화 카드는 숨겨집니다. 닫으면 카드로 돌아옵니다.</span>}
+            </div>
           )}
           {showRawEditor && (<>
           <div data-af-tts-editor="">

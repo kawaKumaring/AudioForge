@@ -98,8 +98,8 @@ try {
   /** 원문을 넣는다. 여러 명 모드에서는 `고급 · 대본 표기 직접 편집` 을 잠깐 열어 넣고 다시 닫는다. */
   const setSource = async (t) => {
     let opened = false
-    if ((await count(RAW)) === 0 && (await count('[data-testid="direct-edit"]')) > 0) {
-      await page.click('[data-testid="direct-edit"] summary'); await sleep(120); opened = true
+    if ((await count(RAW)) === 0 && (await count('[data-testid="direct-edit-toggle"]')) > 0) {
+      await page.click('[data-testid="direct-edit-toggle"]'); await sleep(150); opened = true
     }
     await page.evaluate(([sel, v]) => {
       const ta = document.querySelector(sel)
@@ -107,8 +107,8 @@ try {
       ta.dispatchEvent(new Event('input', { bubbles: true }))
     }, [RAW, t])
     await sleep(600)
-    // 넣은 대본이 구조화 불가면 details 자체가 사라진다(셸이 열림 상태를 접는다) — 그때는 닫을 것이 없다.
-    if (opened && (await count('[data-testid="direct-edit"]')) > 0) { await page.click('[data-testid="direct-edit"] summary'); await sleep(120) }
+    // 넣은 대본이 구조화 불가면 토글 자체가 사라진다(셸이 열림 상태를 접는다) — 그때는 닫을 것이 없다.
+    if (opened && (await count('[data-testid="direct-edit"][data-open="true"]')) > 0) { await page.click('[data-testid="direct-edit-toggle"]'); await sleep(150) }
   }
   const waitRows = async (n, ms = 30000) => {
     const t0 = Date.now()
@@ -324,9 +324,10 @@ try {
   await page.evaluate(() => window.__afStore.setState({ ttsSpeakerEmotionRefs: {} }))
 
   // ── 14. 원문 직접 편집은 카드와 상호 배타 ─────────────────────────────────
-  await page.click('[data-testid="direct-edit"] summary'); await sleep(150)
+  await page.click('[data-testid="direct-edit-toggle"]'); await sleep(150)
   const exclusive = (await count(RAW)) === 1 && (await count('[data-testid="dialogue-row"]')) === 0
-  await page.click('[data-testid="direct-edit"] summary'); await sleep(150)
+    && (await count('[data-testid="direct-edit"][data-open="true"]')) === 1
+  await page.click('[data-testid="direct-edit-toggle"]'); await sleep(150)
   ok('14', exclusive && await waitRows(3) && (await count(RAW)) === 0, '직접 편집 열면 카드 숨김·원문 편집기 표시, 닫으면 카드 복귀')
 
   // ── 15. 배역 세트(목소리 구성) 자동 생성 없음 ─────────────────────────────
