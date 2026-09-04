@@ -1,5 +1,29 @@
 # AudioForge Changelog
 
+## 2026-09-05 — 참조 길이 정책을 엔진별로 분리 (Qwen 에 GPT-SoVITS 10초 상한을 적용하지 않는다)
+
+배경: 참조 3~10초 제한은 GPT-SoVITS 벤더 추론 코드의 실제 입력 조건이었는데, 판정 정책·구간 추천/확정·정렬 상수·화면
+문구 네 곳에 복제돼 Qwen3-TTS 경로에도 그대로 적용되고 있었다. Qwen 벤더 코드에는 참조 길이 제한이 없다(무제한 지원의
+근거로 삼지는 않는다). 상세: doc/script-scene-architecture.md §18.
+
+- **정책 모델**(`reference_audio.ReferencePolicy`): 필수(차단)와 권장(경고)을 분리. GPT-SoVITS 필수 3~10초 유지.
+  `QWEN3_POLICY` 신설 — 길이 필수 한계 없음, 권장 3~10초(이 앱이 검증한 범위), 처리 불가 조건은 계속 차단.
+  `resolve_policy_engine`: auto → Qwen 런타임 있으면 qwen3, 없으면 gptsovits. f5tts/kokoro 는 기존 표시 유지.
+- **단일 파생**: reference_region(추천·판정·확정)·reference_alignment·separate.py(ref-analyze/ref-trim, 화면이 보낸 ttsEngine 으로
+  정책 선택)·tts_worker Qwen 게이트·화면(`shared/referencePolicy`)이 같은 정책에서 길이 조건을 읽는다. 모듈 안 3.0/10.0 하드코딩 제거.
+- **화면**: 헤더에 필수/권장 구분, 구간 안내를 "그대로 쓸 수 없음(필수)" 과 "추천 구간·더 긴 구간 가능·미검증(권장)" 으로 구분,
+  슬라이더 상한 = 필수 상한 없으면 원본 전체, 권장 밖 길이는 경고만. 카드에 실제 사용 구간(`26.5초부터 6.6초`/`원본 전체`) 표시.
+  엔진 전환 시 사용 중 구간은 지우지 않고 새 엔진의 필수 조건 밖일 때만 준비를 내려 사유·수정 동작 안내.
+- **참조 예산**: qwen_bridge 의 고정 83(≈6.9초 참조 재발화 가정)을 유효 참조의 실측 codec 프레임으로 대체. native ICL 은
+  prompt(참조 프레임+전사 토큰)·replay 0, controlled-prefix 만 replay=실측 프레임. 출력 상한·재시도 횟수 불변.
+- 검증: Python 표적 320여 건(reference_policy 13·region_policy 17·policy_wiring 5·reference_budget 10 신설 + 기존 audio/region/
+  autosnap/alignment/block_integration/conditioning/degradation/speaker_refs/budget/bridge/generation_limit) 통과, node --test
+  194건(referencePolicy 7·UI 계약 6 신설) 통과, tsc web/node 0 오류. GPU 추가 검증은 하지 않았다(별도 승인).
+- 기타: test_generation_limit SynthJobSafetyTest 7건이 parsed 2-튜플 fixture 로 HEAD 에서부터 깨져 있던 것을 복구(제품 코드 무관).
+- **GPU 재검증(정책 변경 전 코드)**: 사용자 제공 인물 3명(쵸단·마젠타·히나)으로 다화자 1회·장문 1회 CUDA 실행, 라우팅·참조 id·종료
+  사유 전부 정상. 장문은 분할·재분할이 일어나지 않아 재분할 경로는 실제 실행 미검증. 산출물 `_local/artifacts/diagnostics/
+  gpu-reverify-20260905/`. 최종 판정은 사용자 청취.
+
 ## 2026-09-02 — v1.3 PHASE 0~3: 대본을 한 번만 읽는 공용 계획과 읽기 전용 미리보기
 
 정식 `v1.2.0` 을 기준선으로 두고 `1.3.0-dev` 로 넘어갔다. 이번 범위는 **공용 Script/Scene

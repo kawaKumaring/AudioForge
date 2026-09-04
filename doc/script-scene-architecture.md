@@ -555,3 +555,69 @@ durable 자산(reference-library 는 잘린 24k 클립만 소유) 은 별도 설
 `MultiSpeakerDialogue.contract.test.ts` 가 든다. 실행 결과 표시는 제품 동작과 일치한다
 (2026-09-04 대조식 교정). 한계: `목소리 지정` 버튼의 파일 선택 호출은 contextBridge 객체가
 고정되어 자동으로 가로챌 수 없다 — 버튼 존재만 확인하고, 실제 파일 선택·합성은 사용자가 본다.
+
+## 18. 참조 길이 정책 — 엔진별 분리 (2026-09-05)
+
+### 조사 결론
+- 3~10초 제한의 정의는 `python/reference_audio.py` 의 `GPTSOVITS_POLICY` 한 곳이었다(2026-08-21 도입, 근거 "GPT-SoVITS 공식
+  조건"). GPT-SoVITS 는 벤더 추론 코드(`GPT_SoVITS/inference_webui.py`)가 3~10초 밖 참조를 예외로 거부한다 → **필수** 조건.
+- Qwen3-TTS 경로는 같은 정책을 그대로 재사용하고 있었다(`tts_worker` Qwen 게이트가 10초 초과를 "3~10초 구간을 선택·확정" 오류로
+  차단). qwen_tts 는 참조 전체를 speaker encoder(x-vector) 와 speech tokenizer(ICL ref_code) 에 넣고 길이 검사·절단을 하지
+  않으며, 로컬 스냅샷에 모델 카드가 없어 벤더 권장값은 확인하지 못했다 → Qwen 에 대한 10초 상한은 **근거 없는 공통 제한**이었다.
+- 상한 값이 네 군데에 복제돼 있었다: 판정 정책(reference_audio) / 구간 추천·확정(reference_region 3.0·10.0) /
+  정렬 상수(reference_alignment MIN/MAX_CLIP_SEC) / 화면 문구(ReferenceRegionPanel MIN/MAX_SEC·"허용 3~10초"·차단 문구 표).
+
+### 정책 모델 (단일 권위 = `reference_audio.ReferencePolicy`)
+- 두 층을 섞지 않는다. **필수**(min/max_duration_sec, None 허용) = 엔진이 실제로 요구하는 조건, 어기면 error(차단).
+  **권장**(recommended_*) = 이 앱이 결과를 검증한 범위, 밖이면 `OUTSIDE_RECOMMENDED_LENGTH` warning(차단 아님). 수치마다 출처(basis).
+- `GPTSOVITS_POLICY`: 필수 3~10초(벤더). `QWEN3_POLICY`: 길이 필수 한계 없음(벤더 코드에 제한 없음 — 무제한 지원 선언이 아니다),
+  권장 3~10초 = 2026-09-05 GPU 실측(6.5~7.5초 클립)·정렬/혼입 방지 도구가 검증된 범위. 처리 불가(손상·빈 음성·거의 무음·
+  심한 클리핑)는 두 엔진 모두 계속 차단.
+- 엔진 해석 `resolve_policy_engine(preferred, qwen_available)`: auto → Qwen 런타임 있으면 qwen3, 없으면 gptsovits(화면 안내
+  "한국어는 Qwen3 우선, 미설치 시 GPT-SoVITS" 와 동일 축). f5tts·kokoro 는 이번 범위 밖 → 기존 표시(gptsovits 정책) 유지.
+- 파생: `region_bounds(source_dur)`(구간 도구 필수 경계, 없으면 0~원본 전체) / `recommended_bounds()`(추천이 노리는 범위) /
+  `region_threshold_sec()`(구간 추천 기준 = 필수 상한 → 없으면 권장 상한) / `describe()`(IPC 요약).
+
+### 배선 (화면 = 확정 = 생성이 같은 정책)
+- `separate.py _reference_policy(args)` 가 화면이 보낸 `ttsEngine` 을 위 규칙으로 해석해 ref-analyze(`reference_region.
+  analysis_payload`)·ref-trim(`build_reference_clip`, `analyze_region`)·감정 후보 판정에 같은 정책을 넘긴다. 응답에 `policy` 요약,
+  `needs_region`(구간 추천), `region_required`(필수 상한 초과), `too_short`(필수 하한), `outside_recommended`, `valid_whole`.
+- `tts_worker` Qwen 게이트는 `QWEN3_POLICY`(길이 차단 없음, 권장 밖 참조당 1회 progress 경고, 인물 참조·인물 감정 참조도 처리 가능
+  검사). GPT-SoVITS 게이트(`_assess_ref`)는 벤더 필수 조건 그대로. run 기록 헤더에 `reference_policy` 기록.
+- 화면(`shared/referencePolicy`): 길이 숫자 없음. 헤더 "필수 3~10초" / "권장 3~10초(검증 범위) · 길이 필수 조건 없음", 구간 안내를
+  필수("그대로 쓸 수 없습니다")·권장("추천 구간, 더 긴 구간도 가능하나 미검증")으로 구분, 슬라이더 상한 = 필수 상한 없으면 원본
+  전체, 권장 밖 길이 경고(막지 않음). 분석·확정 IPC 에 `ttsEngine` 을 얹고 엔진이 바뀌면 재분석.
+- 엔진 전환: 사용 중 구간은 정책 변경으로 삭제·재절단·교체하지 않는다. 새 엔진의 **필수** 조건 밖일 때만 준비를 내리고
+  사유(`committedMismatchText`)와 수정 동작(슬라이더는 사용 중 구간에서 시작)을 제공한다. 권장 밖은 경고만(준비 유지).
+  원본 전체가 유효한 상태에서 사용 중 구간을 조용히 원본 전체로 되돌리지 않는다.
+- 카드: `목소리 준비됨 · 26.5초부터 6.6초` / `원본 전체` — 긴 원본을 등록해도 모델에 가는 것은 확정 구간이며 그 사실을 카드가 말한다.
+  긴 원본의 기본 동작은 그대로다(자동 구간 추천, 기본 참조는 자동 확정 1회). 미리듣기·구간 편집은 전체 원본 기준.
+- 감정 후보 자산 수명(`evaluateLifecycle`) 길이 경계는 인자(기본 = 예전 3~10) — 목소리 구성 등록은 현재 엔진 정책 경계 사용.
+
+### 참조 예산 (상수 83 의 정체와 교정)
+- `qwen_bridge` 의 83 은 controlled-prefix(legacy opt-in) 가 참조를 **재발화**할 때 필요한 프레임을 "약 6.9초 참조"(12Hz × 6.9s)
+  로 가정한 값이었다 — 여유 예산이 아니라 참조 길이 가정. vendor native ICL(기본 경로)은 재발화가 없어 replay 0 이 맞지만,
+  참조 codec 프레임과 참조 전사 토큰이 talker prompt(입력 위치)를 차지하는데 이것은 0 으로 넣고 있었다(과소 계산).
+- 교정: `chunk_budget.reference_budget(x_vector_only, ref_code_frames, ref_text_tokens, controlled_prefix)` — x-vector 0/0,
+  native ICL prompt = 실제 참조 프레임 + 전사 토큰·replay 0, controlled-prefix replay = 실제 참조 프레임. 프레임 수는 bridge 가
+  vendor speech tokenizer 로 **유효 참조(실제 모델에 넘기는 클립)** 를 실측(파일당 1회 캐시). 측정 실패는 예외(추정값 금지).
+  분할 상한도 segment 별 참조 예산으로. 출력 상한(품질 379·tier·안전 목표 190)·재시도 횟수는 바꾸지 않았다.
+- 긴 참조의 영향: native ICL 은 prompt 위치만(58초 참조 ≈ 700 frame, architecture 32768 대비 미미) → tier 불변. legacy
+  controlled-prefix 만 생성 예산이 실제로 늘어난다(83 으로는 부족했을 값). run 기록 chunk 에 reference_code_frames /
+  reference_prefix_tokens / reference_replay_frames 기록.
+
+### 실측 (2026-09-05, 정책 변경 **전** 코드 f4e6e98, 사용자 제공 인물 폴더 5개 중 3명)
+- 참조: 가=쵸단(26.48s+6.57s) / 나=마젠타(15.735s+7.06s) / 다=히나(7.17s+7.455s). 앱의 카드 패널 구간 추천 → "이 구간으로
+  확정"(build_reference_clip) 으로 파생. 히나 원본은 문제 당시 세 번째 인물 원본과 내용 해시가 같다.
+- 다화자 1회(A→B→C→A→B→C, 6발화): CUDA 97초, ICL, 6 chunk 전부 completed_before_limit, routing_rule 전부 default_speaker,
+  인물별 reference_id 3개 서로 다름, fallback/retry 없음, 21.9초. 전체+인물별 6+전환 경계 5 미리듣기(후처리 0).
+- 장문 1회(405자·3발화·3인물): CUDA 149초, ICL, chunk 3개(토큰 102/109/89, 반복 172/178/172, 상한 512) 전부 completed_before_limit,
+  분할·재분할 없음 → **재분할 경로는 실제 실행 미검증**. 42.64초. 산출물 `_local/artifacts/diagnostics/gpu-reverify-20260905/`.
+- 정책 변경 후 GPU 검증은 하지 않았다(별도 승인). 위 실측을 변경 후 정책의 검증으로 재사용하지 않는다.
+
+### 미결·한계
+- Qwen 권장 3~10초는 이 앱의 검증 범위다. 벤더 권장값(모델 카드)은 오프라인이라 미확인. 10초 초과·3초 미만 참조의 Qwen 결과는
+  GPU 미검증(경고 문구가 그렇게 말한다).
+- 인물 카드 패널(기본 참조 아님)의 자동 확정은 기존대로 없음 — 사용자가 추천 구간을 확정한다.
+- `reference_library.py` MAX_REGION_MS(10초, 24k 클립 자동 후보 선별) 는 이번에 건드리지 않았다(엔진 무관 자산 목록 규칙).
+- f5tts·kokoro 참조 정책은 미검토(기존 표시 유지).
