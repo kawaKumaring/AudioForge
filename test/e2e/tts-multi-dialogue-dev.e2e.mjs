@@ -216,7 +216,7 @@ try {
   // ── 7. 한 대사 안의 여러 감정 태그 보존 ───────────────────────────────────
   await setSource('[화자 민수]\n[기쁨] 앞부분 [슬픔] 뒷부분\n[화자 영희]\n네')
   ok('7a', await waitRows(2), '중간 태그 대본 2행')
-  const midNotice = await page.evaluate(() => /중간 감정 태그/.test(document.querySelector('[data-testid="dialogue-row"]')?.textContent || ''))
+  const midNotice = await page.evaluate(() => /중간 감정·쉼 표기/.test(document.querySelector('[data-testid="dialogue-row"]')?.textContent || ''))
   const chosen = await page.evaluate(() => {
     const sel = document.querySelectorAll('[data-testid="dialogue-row"] select')[1]
     const opt = [...sel.options].find((o) => o.value !== 'default' && o.value !== 'happy' && o.value !== 'sad')
