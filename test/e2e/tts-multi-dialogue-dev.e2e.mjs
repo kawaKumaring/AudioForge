@@ -28,7 +28,8 @@ if (process.platform !== 'win32') { console.error('개발 경로 E2E 는 Windows
 if (!fs.existsSync(path.join(APP, 'node_modules'))) { console.error('npm install 필요'); process.exit(2) }
 
 const USER_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'af-multi-'))
-const WAV = makeSyntheticWav(path.join(os.tmpdir(), 'af_multi_' + randomUUID() + '.wav'), 12)
+// 8초: 3~10초 안이라 통째로 유효한 참조 — 패널이 다시 확인해도 구간 자르기 없이 준비됨이 된다.
+const WAV = makeSyntheticWav(path.join(os.tmpdir(), 'af_multi_' + randomUUID() + '.wav'), 8)
 const PORT = 9400 + (process.pid % 200)
 
 const childLog = []
@@ -309,7 +310,9 @@ try {
   const spk12 = (await rowSpeakers()).join(',')
   await page.click('[data-testid="dialogue-row"][data-index="0"] [data-testid="card-voice"]')
   const panelOpened = await waitUntil(async () => (await count('[data-testid="voice-panel"]')) === 1, 3000)
-  await sleep(120)
+  // 패널이 열리면 그 인물의 참조를 실제로 다시 확인한다(구간 편집기 마운트 → 분석). 합성 WAV(8초)는
+  // 통째로 유효하므로 분석이 끝나면 준비됨이 되고, 같은 파일을 쓰는 두 인물의 공유 경고가 뜬다.
+  await waitUntil(async () => (await count('[data-testid="speaker-voice-shared"]')) === 1, 25000)
   const sharedN = await count('[data-testid="speaker-voice-shared"]')
   const panelText = (await text('[data-testid="voice-panel"]')) ?? ''
   await page.click('[data-testid="voice-panel-close"]').catch(() => {})
