@@ -575,18 +575,18 @@ export const CANDIDATE_ACTION_LABEL = {
  *   · 저장 실패를 저장됨으로 보이게 하는 것
  */
 export const VOICE_CAST_LABEL = {
-  section: '배역 세트',
-  create: '새 배역 세트',
+  section: '목소리 구성',
+  create: '새 목소리 구성',
   rename: '이름 변경',
   apply: '현재 작업에 적용',
   unapply: '적용 해제',
-  remove: '배역 세트 삭제',
-  pick: '배역 세트 선택',
-  none: '배역 세트를 먼저 만들고 선택하세요',
-  notApplied: '이 작업에 적용된 배역 세트가 없습니다',
+  remove: '목소리 구성 삭제',
+  pick: '목소리 구성 선택',
+  none: '목소리 구성을 먼저 만들고 선택하세요',
+  notApplied: '이 작업에 적용된 목소리 구성이 없습니다',
   applied: '현재 작업에 적용됨',
   /** 배역이 하나뿐이어도 자동 적용하지 않는다는 사실을 말한다. */
-  noAutoApply: '배역 세트는 직접 선택해야 적용됩니다',
+  noAutoApply: '목소리 구성은 직접 선택해야 적용됩니다',
 } as const
 
 /** 후보 등록·해제 동작. `해제` 는 파일을 지우는 일이 아니다. */

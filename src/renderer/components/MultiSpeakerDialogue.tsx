@@ -34,14 +34,14 @@ export const STRUCTURE_BLOCKER_LABEL: Record<StructureBlocker, string> = {
   PARSER_FALLBACK: '대본 구조를 정확히 읽지 못해 직접 입력으로 편집합니다',
   OFFSETS_APPROXIMATE: '발화 위치가 정확하지 않아 직접 입력으로 편집합니다',
   SPANS_OVERLAP: '발화 구간이 겹쳐 직접 입력으로 편집합니다',
-  NON_WHITESPACE_OUTSIDE: '쉼이나 지시 전용 줄이 있어 이 대본은 직접 입력으로 편집합니다',
+  NON_WHITESPACE_OUTSIDE: '대사 사이에 쉼·지시만 있는 줄이 있어 이 대본은 직접 입력으로 편집합니다 (대사 안의 쉼은 그대로 쓸 수 있습니다)',
   BLOCKING_WARNING: '대본에 오류가 있어 직접 입력으로 편집합니다',
   NO_UTTERANCES: '대사가 없어 직접 입력으로 편집합니다',
 }
 
 export const REFUSAL_LABEL: Record<string, string> = {
   STALE_SOURCE: '그 사이 대본이 바뀌어 반영하지 않았습니다. 최신 대본을 다시 불러왔습니다',
-  MID_EMOTION_WOULD_BE_LOST: '대사 중간의 감정 태그가 사라져서 반영하지 않았습니다. `대사 중간에 감정 바꾸기`에서 고쳐 주세요',
+  MID_EMOTION_WOULD_BE_LOST: '대사 중간의 감정·쉼 표기가 사라져서 반영하지 않았습니다. `대사 중간에 감정 바꾸기`에서 고쳐 주세요',
   LINE_EMPTY: '대사가 비어 있습니다',
   SPEAKER_HAS_UTTERANCES: '이 인물의 대사가 남아 있습니다. 다른 인물로 바꾸거나 대사를 먼저 지워 주세요',
   NOT_ADJACENT: '이웃한 대화만 자리를 바꿀 수 있습니다',
@@ -226,7 +226,7 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
                 style={{ ...inputBox, width: '100%', resize: 'vertical', boxSizing: 'border-box' }} />
               {r.hasMidEmotionTags && !adv && (
                 <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                  이 대사에는 중간 감정 태그가 있습니다. 태그를 지키면서만 반영됩니다.
+                  이 대사에는 중간 감정·쉼 표기가 있습니다. 표기를 지키면서만 반영됩니다.
                 </span>
               )}
               <button type="button" onClick={() => setAdvancedOpen((a) => ({ ...a, [i]: !adv }))}

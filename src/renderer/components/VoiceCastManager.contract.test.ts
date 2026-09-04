@@ -32,14 +32,14 @@ test('배역이 하나뿐이어도 자동 적용하지 않는다', () => {
     assert.equal(HOOK.includes(forbidden), false, `자동 적용 코드: ${forbidden}`)
   }
   assert.ok(CAST.includes('VOICE_CAST_LABEL.noAutoApply'), '자동 적용 안 함을 화면이 말한다')
-  assert.equal(VOICE_CAST_LABEL.noAutoApply, '배역 세트는 직접 선택해야 적용됩니다')
+  assert.equal(VOICE_CAST_LABEL.noAutoApply, '목소리 구성은 직접 선택해야 적용됩니다')
 })
 
 test('활성 배역이 없으면 화자 설정이 그려지지 않는다', () => {
   assert.ok(CAST.includes('{active && ('), '적용 전에는 후보 영역이 없다')
   assert.ok(CAST.includes('data-testid="voice-cast-inactive"'))
-  assert.equal(VOICE_CAST_LABEL.none, '배역 세트를 먼저 만들고 선택하세요')
-  assert.equal(VOICE_CAST_LABEL.notApplied, '이 작업에 적용된 배역 세트가 없습니다')
+  assert.equal(VOICE_CAST_LABEL.none, '목소리 구성을 먼저 만들고 선택하세요')
+  assert.equal(VOICE_CAST_LABEL.notApplied, '이 작업에 적용된 목소리 구성이 없습니다')
 })
 
 test('활성 배역은 저장되지 않는다 — 작업 세션에만 산다', () => {

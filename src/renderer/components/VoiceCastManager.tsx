@@ -96,7 +96,7 @@ export default function VoiceCastManager(props: VoiceCastManagerProps) {
       {/* 만들기 */}
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', minWidth: 0 }}>
         <label htmlFor={nameId} style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-          배역 세트 이름
+          목소리 구성 이름
         </label>
         <input id={nameId} value={draftName} disabled={disabled}
           onChange={(e) => setDraftName(e.target.value)}
