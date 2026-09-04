@@ -9,6 +9,7 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import {
+  readinessFromSlots, multiSpeakerPreflight, speakerPreflightMessage, SPEAKER_PREFLIGHT_MESSAGE,
   REFERENCE_SOURCES, SPEAKER_REFERENCE_FAILURES, blockedDecisions,
   resolveReferenceDecision, sharedReferenceGroups, speakerEmotionKey,
 } from './speakerReference.ts'
@@ -125,4 +126,45 @@ test('경로를 다루지 않는다', () => {
   for (const forbidden of ['filePath', 'readFile', 'dirname', 'basename', '.wav', 'clipPath']) {
     assert.equal(code.includes(forbidden), false, `경로/파일 개념이 들어왔다: ${forbidden}`)
   }
+})
+
+// ── 준비 판정 단일 파생 + 여러 명 preflight ──────────────────────────────────
+
+test('readinessFromSlots: 카드·config·preflight 가 같은 표를 본다', () => {
+  const r = readinessFromSlots({
+    defaultReady: true,
+    speakerSlots: { a: { ready: true }, b: { ready: false } },
+    emotionSlots: { happy: { ready: true } },
+    speakerEmotionRefs: { ['a' + String.fromCharCode(31) + 'happy']: 'C:/x.wav', ['b' + String.fromCharCode(31) + 'sad']: '' },
+  })
+  assert.deepEqual(r.registeredSpeakers, ['a', 'b'])
+  assert.deepEqual(r.speakerReady, { a: true, b: false })
+  assert.deepEqual(Object.keys(r.speakerEmotionReady), ['a' + String.fromCharCode(31) + 'happy'])
+  assert.deepEqual(r.emotionReady, { happy: true })
+})
+
+test('multiSpeakerPreflight: 미등록·미준비 인물은 첫 발화 번호와 함께 막히고, 준비된 인물·기본 인물은 통과', () => {
+  const r = readinessFromSlots({ defaultReady: true, speakerSlots: { a: { ready: true }, b: { ready: false } }, emotionSlots: {}, speakerEmotionRefs: {} })
+  const segs = [
+    { speakerId: 'a', emotionId: null }, { speakerId: null, emotionId: 'happy' },
+    { speakerId: 'b', emotionId: null }, { speakerId: 'zed', emotionId: 'sad' }, { speakerId: 'b', emotionId: 'sad' },
+  ]
+  const blocks = multiSpeakerPreflight(segs, r)
+  assert.deepEqual(blocks, [
+    { speakerId: 'b', code: 'SPEAKER_REFERENCE_NOT_READY', firstSegmentIndex: 2 },
+    { speakerId: 'zed', code: 'SPEAKER_NOT_REGISTERED', firstSegmentIndex: 3 },
+  ])
+  // 전부 준비되면 비어 있다 — 다른 인물·전역 기본으로 대체하는 경로가 없다.
+  const ok = readinessFromSlots({ defaultReady: true, speakerSlots: { a: { ready: true }, b: { ready: true }, zed: { ready: true } }, emotionSlots: {}, speakerEmotionRefs: {} })
+  assert.deepEqual(multiSpeakerPreflight(segs, ok), [])
+  // 기본 참조가 없어도 명시 화자 판정은 그것에 기대지 않는다(기본 인물 발화만 막힌다: 별도 코드).
+  const noDefault = readinessFromSlots({ defaultReady: false, speakerSlots: { a: { ready: true } }, emotionSlots: {}, speakerEmotionRefs: {} })
+  assert.deepEqual(multiSpeakerPreflight([{ speakerId: 'a', emotionId: null }], noDefault), [])
+})
+
+test('speakerPreflightMessage: 내부 코드 없이 인물 카드 위치를 말한다', () => {
+  const m = speakerPreflightMessage([{ speakerId: 'b', code: 'SPEAKER_NOT_REGISTERED', firstSegmentIndex: 2 }], (id) => (id === 'b' ? '영희' : id))
+  assert.equal(m, SPEAKER_PREFLIGHT_MESSAGE.SPEAKER_NOT_REGISTERED + ' (3번 대사: 영희)')
+  assert.equal(/SPEAKER_|reference|clip|SHA/.test(m), false)
+  assert.equal(speakerPreflightMessage([], () => ''), '')
 })

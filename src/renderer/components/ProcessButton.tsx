@@ -2,6 +2,7 @@ import React from 'react'
 import { motion } from 'framer-motion'
 import { useAppStore } from '@/stores/app.store'
 import { gateSpeakerEmotionRefs } from '../../shared/speakerEmotionGate'
+import { readinessFromSlots, multiSpeakerPreflight, speakerPreflightMessage } from '../../shared/speakerReference'
 import { validateMarkers, formatSplitMarkerError } from '../../shared/splitMarkers'
 import { ALL_EMOTIONS, planEmotionRefs } from '@/lib/emotions'
 import { parseTtsScript, TTS_PARSER_VERSION } from '../../shared/ttsGrammar'
@@ -80,6 +81,21 @@ export default function ProcessButton() {
         return
       }
       ttsParsedPlanSha256 = parsed.plan.fullSha256
+      // 여러 명 모드: 대본의 명시 화자마다 목소리가 준비됐는지 **여기서** 검사한다(모델 로딩 전).
+      // 판정 표는 카드가 쓰는 것과 같은 함수·같은 슬롯에서 나온다 — 카드가 준비됨이면 config 에도 있다.
+      // 막히면 어느 인물 카드인지 말하고 시작하지 않는다. 다른 인물·전역 기본 목소리로 대체하지 않는다.
+      if (ttsSpeakerMode === 'multi') {
+        const readiness = readinessFromSlots({
+          defaultReady: !!ttsRefReady, speakerSlots: ttsSpeakerRefState, emotionSlots: ttsEmotionRefState,
+          speakerEmotionRefs: gateSpeakerEmotionRefs(ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled),
+        })
+        const blocks = multiSpeakerPreflight(
+          parsed.plan.segments.map((sg) => ({ speakerId: sg.speakerId, emotionId: sg.emotionId })), readiness)
+        if (blocks.length > 0) {
+          setError(speakerPreflightMessage(blocks, (id) => ttsSpeakerLabels[id] || id), { code: blocks[0].code })
+          return
+        }
+      }
     }
     // split은 시작 전에 마커를 검증한다(Python이 최종 권위지만, 여기서 막으면 임시 복사·ffmpeg 실행 자체가
     // 일어나지 않는다). 조용한 clamp·정렬·중복제거 없이 거부만 한다. 오류엔 순번·사유·수치만 담는다.

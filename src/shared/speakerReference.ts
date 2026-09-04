@@ -250,3 +250,73 @@ export function showRecommendedBadge(
 ): boolean {
   return c.recommended && !view.insufficientCandidates
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 준비 판정의 단일 파생
+//
+// 화면(인물 카드·요약)·합성 전 preflight·config 전송은 **같은 store 슬롯**에서 같은 함수로
+// 준비 표를 만든다. 두 곳이 각자 표를 만들면 "카드는 준비됨인데 config 에는 없다" 가 생긴다 —
+// 여러 명 모드의 SPEAKER_NOT_REGISTERED 가 바로 그 어긋남이 Python 에서 터진 모습이었다.
+// ─────────────────────────────────────────────────────────────────────────────
+
+export interface ReadySlot { ready: boolean }
+
+export function readinessFromSlots(input: {
+  defaultReady: boolean
+  speakerSlots: Readonly<Record<string, ReadySlot>>
+  emotionSlots: Readonly<Record<string, ReadySlot>>
+  /** 생성으로 실제 나가는 (화자, 감정) 참조만(게이트 통과분). */
+  speakerEmotionRefs: Readonly<Record<string, string>>
+}): ReferenceReadiness {
+  return {
+    defaultReady: !!input.defaultReady,
+    registeredSpeakers: Object.keys(input.speakerSlots),
+    speakerReady: Object.fromEntries(Object.entries(input.speakerSlots).map(([id, s]) => [id, !!s.ready])),
+    speakerEmotionReady: Object.fromEntries(
+      Object.entries(input.speakerEmotionRefs).filter(([, p]) => !!p).map(([k]) => [k, true])),
+    emotionReady: Object.fromEntries(Object.entries(input.emotionSlots).map(([id, s]) => [id, !!s.ready])),
+  }
+}
+
+export interface SpeakerPreflightBlock {
+  speakerId: string
+  code: SpeakerReferenceFailure
+  /** 그 인물이 처음 말하는 발화의 번호(0부터). 화면이 "N번 대사" 로 위치를 말한다. */
+  firstSegmentIndex: number
+}
+
+/**
+ * 여러 명 합성 전 검사 — 대본의 **명시 화자**마다 참조가 준비됐는가.
+ * 하나라도 막히면 합성을 시작하지 않는다(모델 로딩 전). 다른 인물·전역 기본으로 대체하지 않는다.
+ * 한 명 모드에서는 부르지 않는다(single 은 화자 표기를 무시한다).
+ */
+export function multiSpeakerPreflight(
+  segments: readonly { speakerId: string | null; emotionId: string | null }[],
+  r: ReferenceReadiness
+): SpeakerPreflightBlock[] {
+  const out: SpeakerPreflightBlock[] = []
+  const seen = new Set<string>()
+  segments.forEach((seg, i) => {
+    if (seg.speakerId == null || seen.has(seg.speakerId)) return
+    const d = resolveReferenceDecision(seg.speakerId, seg.emotionId, r)
+    if (d.ok) return
+    seen.add(seg.speakerId)
+    out.push({ speakerId: seg.speakerId, code: d.code, firstSegmentIndex: i })
+  })
+  return out
+}
+
+/** 사용자 문구. 내부 코드를 내지 않고 인물 카드 위치를 말한다. */
+export const SPEAKER_PREFLIGHT_MESSAGE = {
+  SPEAKER_NOT_REGISTERED: '이 인물의 목소리가 준비되지 않았습니다. 인물 카드에서 목소리를 지정해 주세요.',
+  SPEAKER_REFERENCE_NOT_READY: '이 인물의 목소리 준비가 끝나지 않았습니다. 인물 카드에서 목소리 구간을 확인해 주세요.',
+  DEFAULT_REFERENCE_MISSING: '기본 목소리가 준비되지 않았습니다. 먼저 목소리로 쓸 소리 파일을 준비해 주세요.',
+} as const
+
+export function speakerPreflightMessage(
+  blocks: readonly SpeakerPreflightBlock[], labelOf: (speakerId: string) => string
+): string {
+  if (blocks.length === 0) return ''
+  const where = blocks.map((b) => `${b.firstSegmentIndex + 1}번 대사: ${labelOf(b.speakerId)}`).join(', ')
+  return `${SPEAKER_PREFLIGHT_MESSAGE[blocks[0].code]} (${where})`
+}

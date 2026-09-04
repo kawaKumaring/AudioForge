@@ -44,7 +44,7 @@ import {
 } from '../../shared/emotionCandidateRegistry'
 import type { SpeakerRow } from './SpeakerReferenceManager'
 import {
-  resolveReferenceDecision, sharedReferenceGroups, speakerEmotionKey,
+  resolveReferenceDecision, sharedReferenceGroups, speakerEmotionKey, readinessFromSlots,
 } from '../../shared/speakerReference'
 import { speakerRows as planSpeakerRows, defaultSpeakerUtteranceCount } from '../../shared/analysisWording'
 import { useInputAnalysis } from '../hooks/useInputAnalysis'
@@ -634,21 +634,13 @@ export default function TTSEditor() {
   // ── 화자별 목소리 ────────────────────────────────────────────────────────
   // 인물 목록·발화 수는 **계획이 센 값**이다(화면이 다시 세지 않는다). 준비 여부는 store,
   // 실제로 어느 목소리가 쓰일지는 공용 판정(Python 권위의 거울)이 정한다.
-  const speakerReadiness = {
+  // 준비 판정 표 — ProcessButton 의 preflight·전송과 **같은 함수, 같은 슬롯**. 화면이 준비됨이면 config 에도 있다.
+  const speakerReadiness = readinessFromSlots({
     defaultReady: !!ttsRefReady,
-    registeredSpeakers: Object.keys(ttsSpeakerRefState),
-    speakerReady: Object.fromEntries(
-      Object.entries(ttsSpeakerRefState).map(([id, s]) => [id, !!s.ready])),
-    // `(화자, 감정)` 전용 참조 = 적용된 목소리 구성이 store 에 내려 준 것. Python 은 이것을
-    // 인물의 기본 목소리보다 **먼저** 고른다(speaker_refs.resolve 순서). 화면 판정도 같아야 한다 —
-    // 이전에는 여기가 늘 빈 표여서 화면은 "기본 목소리" 라 말하고 생성은 다른 음원을 썼다.
-    // 생성으로 실제 나가는 것(ProcessButton 과 같은 게이트)만 판정에 넣는다 — 화면 = 생성.
-    speakerEmotionReady: Object.fromEntries(
-      Object.entries(gateSpeakerEmotionRefs(ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled))
-        .filter(([, p]) => !!p).map(([k]) => [k, true])),
-    emotionReady: Object.fromEntries(
-      Object.entries(ttsEmotionRefState).map(([id, s]) => [id, !!s.ready])),
-  }
+    speakerSlots: ttsSpeakerRefState,
+    emotionSlots: ttsEmotionRefState,
+    speakerEmotionRefs: gateSpeakerEmotionRefs(ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled),
+  })
   const speakerFingerprints = Object.fromEntries(
     Object.entries(ttsSpeakerRefState).map(([id, s]) => [id, s.ready ? (s.clip || s.source) : '']))
   const sharedGroups = sharedReferenceGroups(speakerFingerprints)

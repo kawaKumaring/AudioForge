@@ -179,8 +179,10 @@ test('생성 계약의 거울 — 카드 표시(목소리 상태)와 전송 규�
   assert.ok(PB.includes('const effective = slot?.ready ? (slot.clip || slot.source) : \'\''), '기본 목소리 전송 규칙 불변')
   assert.ok(PB.includes('ttsSpeakerEmotionRefs: gateSpeakerEmotionRefs(ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled)'), '감정별 참조는 켠 인물만')
   assert.ok(PB.includes('ttsSpeakerMode'), '생성 방식 전송')
-  const i = SHELL.indexOf('speakerEmotionReady:')
-  assert.ok(SHELL.slice(i, i + 260).includes('gateSpeakerEmotionRefs(ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled)'), '화면 판정 = 전송 게이트')
+  // 화면 판정 표는 공용 함수(readinessFromSlots)로, 전송과 같은 게이트를 지난 참조만 넣는다.
+  const i = SHELL.indexOf('const speakerReadiness = readinessFromSlots({')
+  assert.ok(i > 0, '판정 표는 공용 함수')
+  assert.ok(SHELL.slice(i, i + 400).includes('speakerEmotionRefs: gateSpeakerEmotionRefs(ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled)'), '화면 판정 = 전송 게이트')
   assert.ok(SHELL.includes('sharedWith: row.sharedWith'), '같은 파일 공유 사실을 숨기지 않는다')
 })
 
