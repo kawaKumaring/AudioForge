@@ -107,7 +107,8 @@ try {
       ta.dispatchEvent(new Event('input', { bubbles: true }))
     }, [RAW, t])
     await sleep(600)
-    if (opened) { await page.click('[data-testid="direct-edit"] summary'); await sleep(120) }
+    // 넣은 대본이 구조화 불가면 details 자체가 사라진다(셸이 열림 상태를 접는다) — 그때는 닫을 것이 없다.
+    if (opened && (await count('[data-testid="direct-edit"]')) > 0) { await page.click('[data-testid="direct-edit"] summary'); await sleep(120) }
   }
   const waitRows = async (n, ms = 30000) => {
     const t0 = Date.now()
@@ -258,8 +259,10 @@ try {
   await setSource(SCRIPT); await waitRows(3)
   const refsBefore = JSON.parse(await snapshot()).refs
   await page.click('[data-testid="dialogue-row"][data-index="1"] button:has-text("삭제")')
-  const deleted = await waitUntil(async () => (await store()) === '[화자 민수]\n안녕\n[화자 민수]\n[슬픔] 잘 가')
-  ok('9', deleted && JSON.stringify(JSON.parse(await snapshot()).refs) === JSON.stringify(refsBefore), '2번 카드 삭제 → 그 발화만 제거, 목소리 지정 그대로', (await store()).length + '자')
+  const deleted = await waitUntil(async () => { const t = await store(); return !t.includes('반가워') && t.includes('안녕') && t.includes('[슬픔] 잘 가') })
+  const rows2 = await waitRows(2, 15000)
+  ok('9', deleted && rows2 && (await rowSpeakers()).join(',') === '민수,민수' && JSON.stringify(JSON.parse(await snapshot()).refs) === JSON.stringify(refsBefore),
+    '2번 카드 삭제 → 그 발화만 제거(카드 2개 민수,민수), 목소리 지정 그대로', JSON.stringify(await store()).slice(0, 60))
 
   // ── 10. 표현 불가 대본 → 이유 + 원문 편집기 그대로 / 줄 안의 쉼은 카드 유지 ──
   const COMPLEX = '[화자 민수]\n안녕 [쉼 1] 잘 지냈어?\n[모르는지시] 이상한 줄'

@@ -702,6 +702,8 @@ export default function TTSEditor() {
   const emotionTagOf = (id: string) => '[' + (EMOTION_ID_TO_LABEL[id] ?? id) + ']'
   // 원문 편집기가 보이는 때: 한 명 | 여러 명의 직접 편집 열림 | 구조화할 수 없는 대본(이유와 함께).
   const showRawEditor = dialogueTab === 'single' || directEditOpen || !dialogue.editingAllowed
+  // 구조화할 수 없는 대본이 되면(직접 편집 details 가 사라지면) 열림 상태도 접는다 — 다시 구조화되면 카드가 바로 보인다.
+  useEffect(() => { if (!dialogue.editingAllowed) setDirectEditOpen(false) }, [dialogue.editingAllowed])
   // 이 인물의 어떤 감정에 목소리 구성이 다른 음원을 지정했는가(감정 라벨). 'default' 는 표기 없는
   // 대사까지 전부 덮는다는 뜻이라 따로 말한다.
   const emotionLabelOf = (eid: string) => (eid === 'default' ? '기본(표기 없는 대사 전부)' : (EMOTION_ID_TO_LABEL[eid] ?? eid))

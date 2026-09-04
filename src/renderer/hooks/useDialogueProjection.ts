@@ -265,7 +265,11 @@ export function useDialogueProjection(
     // 빈 원문 예외 — 계획 없이도 첫 대화를 만든다. 공백 외 문자가 있으면 patcher 가 거부한다.
     if (!verdict.initialCreationAllowed) { setLastRefusal('TEXT_NOT_EMPTY'); return 'TEXT_NOT_EMPTY' }
     const res = apply(createInitialDialogue(text, rowsIn))
-    if (res === null) setPending([])   // 원문에 들어갔으니 pending 카드는 역할이 끝났다
+    if (res === null) {
+      // 원문에 들어간 인물의 시작 카드만 역할이 끝난다. 아직 첫 대사를 넣지 않은 다른 인물 카드는 남는다.
+      const used = new Set(rowsIn.map((r) => r.speakerLabel.trim().normalize('NFC').toLowerCase()))
+      setPending((p) => p.filter((s) => !used.has(s.label.trim().normalize('NFC').toLowerCase())))
+    }
     return res
   }, [verdict.initialCreationAllowed, apply, text])
 
