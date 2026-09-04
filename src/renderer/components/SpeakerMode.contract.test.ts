@@ -66,5 +66,5 @@ test('Python 라우팅 계약의 거울 — single 은 speaker_id 전부 None, �
   assert.ok(py.includes('speaker_id = None if speaker_mode == SPEAKER_MODE_SINGLE else item[2]'))
   const worker = readFileSync(here('../../../python/tts_worker.py'), 'utf-8')
   assert.ok(worker.includes('_used_speaker_ids = ([] if speaker_mode == _sr.SPEAKER_MODE_SINGLE'))
-  assert.ok(worker.includes('speaker_mode=getattr(ref_table, "speaker_mode", "multi"))'), 'run header 기록')
+  assert.ok(worker.includes('speaker_mode=getattr(ref_table, "speaker_mode", "single"))'), 'run header 기록')
 })

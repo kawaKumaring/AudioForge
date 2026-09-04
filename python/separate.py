@@ -284,9 +284,9 @@ def main():
         args.tts_emotion_candidate_selections = config.get(
             "ttsEmotionCandidateSelections", {})
         args.tts_speaker_labels = config.get("ttsSpeakerLabels", {})
-        # 생성 방식(single|multi). 키 부재(legacy config)는 multi — 오늘까지의 worker 동작 그대로.
+        # 생성 방식(single|multi). 키 부재(legacy config)는 single — v1.3 은 한 명이 기본. multi 는 명시했을 때만.
         # 값 검증·fail-closed 는 tts_worker/speaker_refs 가 소유한다(여기서 고치지 않는다).
-        args.tts_speaker_mode = config.get("ttsSpeakerMode", "multi")
+        args.tts_speaker_mode = config.get("ttsSpeakerMode", "single")
         args.tts_emotion_ref_sources = config.get("ttsEmotionRefSources", {})  # 등록 원본(만료 판정 기준, §5)
         args.tts_engine = config.get("ttsEngine", "auto")
         # 참조 conditioning 모드(참조혼입 대응 PHASE 2, 단일 권위 계약). 키 부재(legacy 세션)는
@@ -467,7 +467,7 @@ def main():
                     speaker_ref_sources=_dict_arg(args, "tts_speaker_ref_sources"),
                     speaker_emotion_refs=_dict_arg(args, "tts_speaker_emotion_refs"),
                     speaker_labels=_dict_arg(args, "tts_speaker_labels"),
-                    speaker_mode=getattr(args, "tts_speaker_mode", "multi"),
+                    speaker_mode=getattr(args, "tts_speaker_mode", "single"),
                     emotion_candidate_selections=_dict_arg(
                         args, "tts_emotion_candidate_selections"),
                     preferred_engine=preferred_engine,

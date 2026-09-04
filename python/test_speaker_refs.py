@@ -173,7 +173,7 @@ class RoutingSnapshotTest(unittest.TestCase):
 
     def test_a_b_a_b_routes_to_a_b_a_b_with_default_speaker_rule(self):
         tb = table(speaker_refs={"a": A, "b": B})
-        snap = tb.freeze_routing(self.parsed())
+        snap = tb.freeze_routing(self.parsed(), speaker_mode=sr.SPEAKER_MODE_MULTI)
         self.assertEqual(len(snap), 4)
         spk = snap.speaker_sequence()
         self.assertEqual(spk[0], spk[2])
@@ -192,7 +192,7 @@ class RoutingSnapshotTest(unittest.TestCase):
     def test_explicit_pair_reference_is_named_explicit_emotion_override(self):
         tb = table(speaker_refs={"a": A, "b": B},
                    speaker_emotion_refs={sr.emotion_key("a", "happy"): C})
-        snap = tb.freeze_routing(self.parsed())
+        snap = tb.freeze_routing(self.parsed(), speaker_mode=sr.SPEAKER_MODE_MULTI)
         self.assertEqual(snap[0]["routing_rule"], sr.ROUTE_EXPLICIT_EMOTION_OVERRIDE)
         self.assertEqual(snap[0]["path"], C)
         self.assertEqual(snap[2]["routing_rule"], sr.ROUTE_DEFAULT_SPEAKER)   # sad 는 전용 참조 없음 → 기본
@@ -202,7 +202,7 @@ class RoutingSnapshotTest(unittest.TestCase):
     def test_missing_named_speaker_reference_blocks_before_any_row_is_frozen(self):
         tb = table(speaker_refs={"a": A, "b": MISSING}, registered_speakers={"a", "b"})
         with self.assertRaises(sr.SpeakerReferenceError) as cm:
-            tb.freeze_routing(self.parsed())
+            tb.freeze_routing(self.parsed(), speaker_mode=sr.SPEAKER_MODE_MULTI)
         self.assertEqual(cm.exception.code, sr.SPEAKER_REFERENCE_NOT_READY)
         self.assertIsNone(tb.routing)          # 반쪽 스냅샷은 없다
         self.assertIsNone(tb.routed(0))
@@ -210,12 +210,12 @@ class RoutingSnapshotTest(unittest.TestCase):
     def test_unregistered_speaker_blocks_and_never_falls_back(self):
         tb = table(speaker_refs={"a": A})
         with self.assertRaises(sr.SpeakerReferenceError) as cm:
-            tb.freeze_routing([("default", "l0", "a"), ("default", "l1", "zed")])
+            tb.freeze_routing([("default", "l0", "a"), ("default", "l1", "zed")], speaker_mode=sr.SPEAKER_MODE_MULTI)
         self.assertEqual(cm.exception.code, sr.SPEAKER_NOT_REGISTERED)
 
     def test_snapshot_rows_are_read_only_and_copies_do_not_leak_back(self):
         tb = table(speaker_refs={"a": A, "b": B})
-        snap = tb.freeze_routing(self.parsed())
+        snap = tb.freeze_routing(self.parsed(), speaker_mode=sr.SPEAKER_MODE_MULTI)
         with self.assertRaises(TypeError):
             snap[0]["path"] = MISSING
         copies = snap.rows()
@@ -225,13 +225,13 @@ class RoutingSnapshotTest(unittest.TestCase):
 
     def test_legacy_script_rules_are_named_emotion_reference_and_global_default(self):
         tb = table(emotion_refs={"happy": E})
-        snap = tb.freeze_routing([("happy", "l0", None), ("default", "l1", None)])
+        snap = tb.freeze_routing([("happy", "l0", None), ("default", "l1", None)], speaker_mode=sr.SPEAKER_MODE_MULTI)
         self.assertEqual(snap[0]["routing_rule"], sr.ROUTE_EMOTION_REFERENCE)
         self.assertEqual(snap[1]["routing_rule"], sr.ROUTE_GLOBAL_DEFAULT)
 
     def test_recorder_row_shape_carries_routing_rule(self):
         tb = table(speaker_refs={"a": A})
-        snap = tb.freeze_routing([("default", "l0", "a")])
+        snap = tb.freeze_routing([("default", "l0", "a")], speaker_mode=sr.SPEAKER_MODE_MULTI)
         row = snap.rows()[0]
         for k in ("segment_index", "speaker_ref", "reference_id", "reference_sha256", "source", "routing_rule"):
             self.assertIn(k, row)
@@ -274,6 +274,15 @@ class SpeakerModeRoutingTest(unittest.TestCase):
         self.assertEqual([r["speaker_id_present"] for r in snap], [True, True])
         self.assertEqual([r["path"] for r in snap], [A, B])
         self.assertEqual([r["speaker_mode"] for r in snap], [sr.SPEAKER_MODE_MULTI] * 2)
+
+    def test_mode_absent_defaults_to_single_never_multi(self):
+        # 키 부재 = single. v1.3 은 한 명이 기본이었으므로 없는 키를 여러 명으로 추측하지 않는다.
+        tb = table(speaker_refs={"a": A})
+        self.assertEqual(tb.speaker_mode, sr.SPEAKER_MODE_SINGLE)
+        snap = tb.freeze_routing([("default", "l0", "a"), ("default", "l1", "zed")])
+        self.assertEqual(snap.speaker_sequence(), [None, None])
+        self.assertEqual([r["path"] for r in snap], [D, D])
+        self.assertEqual(sr.build_routing_snapshot(tb, [("default", "l0", "a")])[0]["speaker_mode"], sr.SPEAKER_MODE_SINGLE)
 
     def test_invalid_mode_is_refused_not_guessed(self):
         tb = table(speaker_refs={"a": A})

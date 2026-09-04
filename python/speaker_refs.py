@@ -237,7 +237,7 @@ class ReferenceTable:
         # 합성 시작 순간 확정한 발화별 라우팅(freeze_routing). 작업이 끝날 때까지 바꾸지 않는다.
         self.routing = None
         # 이 작업의 생성 방식. single 이면 화자 표기가 있어도 모든 발화가 speaker_id=None 으로 라우팅된다.
-        self.speaker_mode = SPEAKER_MODE_MULTI
+        self.speaker_mode = SPEAKER_MODE_SINGLE   # 키 부재 = single(v1.3 의 한 명 기본). multi 는 명시했을 때만.
 
     # ── 조회 ──────────────────────────────────────────────────────────────
     def resolve(self, speaker_id, emotion_id):
@@ -768,7 +768,7 @@ class RoutingSnapshot:
         return [r.get("reference_id") for r in self._rows]
 
 
-def build_routing_snapshot(table, parsed, speaker_mode=SPEAKER_MODE_MULTI):
+def build_routing_snapshot(table, parsed, speaker_mode=SPEAKER_MODE_SINGLE):
     """parsed = [(emotion_id, text, speaker_id), ...] (tts_worker 의 순서 그대로).
 
     발화마다 `resolve_with_emotion` 을 **한 번** 부르고 결과를 얼린다. 정할 수 없는 발화가 있으면

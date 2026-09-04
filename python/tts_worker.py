@@ -2005,7 +2005,7 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             _frozen = getattr(ref_table, "routing", None)
             _rr_row = (dict(_frozen[i]) if _frozen is not None and len(_frozen) == len(parsed)
                        else ref_table.resolve_with_emotion(
-                           None if getattr(ref_table, "speaker_mode", "multi") == "single" else speaker_id,
+                           None if getattr(ref_table, "speaker_mode", "single") == "single" else speaker_id,
                            emotion_id))
             ref = _rr_row["path"]
             reference_rows.append(dict(_rr_row, segment_index=i))
@@ -2082,7 +2082,7 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                 import expressive_capability as _cap_audit
                 _CONCAT_RECORDER.set_run_header(
                     emotion_capability=_cap_audit.audit_summary(),
-                    speaker_mode=getattr(ref_table, "speaker_mode", "multi"))
+                    speaker_mode=getattr(ref_table, "speaker_mode", "single"))
             except Exception:
                 pass               # 기록 실패가 합성을 막지 않는다
 
@@ -2879,11 +2879,11 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                expressive_mode="legacy_v2", reference_conditioning_mode=None,
                speaker_refs=None, speaker_ref_sources=None, speaker_emotion_refs=None,
                emotion_candidate_selections=None,
-               speaker_labels=None, speaker_mode="multi"):
+               speaker_labels=None, speaker_mode="single"):
     """Synthesize speech. Auto-selects engine by language.
     speaker_mode: 'single' | 'multi' — 생성 방식(대본 내용이 아니다). single 이면 화자 표기가 있어도
       모든 발화를 한 명의 기본/감정 참조로 만들고 화자 참조·전용 참조·후보 선택은 개입하지 않는다.
-      키 부재(legacy config)는 multi 로 본다 — 오늘까지의 worker 동작 그대로.
+      키 부재(legacy config)는 single 로 본다 — v1.3 은 한 명이 기본이었다. multi 는 명시했을 때만.
     reference_prompts: 식별자(default/emotionId) → {manual_text, prompt_lang, mode} 사용자 override.
     emotion_refs: emotionId → 합성에 쓸 effective 참조 경로(3~10초 클립/유효 원본).
     emotion_ref_sources: emotionId → 사용자 등록 원본 경로(등록 사실). 만료 판정 기준(계약 §5).
@@ -3195,7 +3195,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             _frozen = getattr(ref_table, "routing", None)
             ref = (_frozen[i]["path"] if _frozen is not None and len(_frozen) == len(parsed)
                    else ref_table.resolve_with_emotion(
-                           None if getattr(ref_table, "speaker_mode", "multi") == "single" else speaker_id,
+                           None if getattr(ref_table, "speaker_mode", "single") == "single" else speaker_id,
                            emotion_id)["path"])
             emotion_label = next((k for k, v in EMOTION_TAGS.items() if v == emotion_id), emotion_id)
 
