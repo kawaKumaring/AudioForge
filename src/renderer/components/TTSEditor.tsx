@@ -34,6 +34,8 @@ import SpeakerReferenceManager from './SpeakerReferenceManager'
 import VoiceCastManager from './VoiceCastManager'
 import DialogueTabs, { type DialogueTab } from './DialogueTabs'
 import MultiSpeakerDialogue from './MultiSpeakerDialogue'
+import SingleScriptGuard from './SingleScriptGuard'
+import { speakerDirectiveSequence, speakerStructurePreserved, stripSpeakerDirectives } from '../../shared/dialogueSourcePatcher'
 import { useDialogueProjection } from '../hooks/useDialogueProjection'
 import { normalizeSpeakerId } from '../../shared/ttsGrammar'
 import { useVoiceCastRegistry } from '../hooks/useVoiceCastRegistry'
@@ -665,6 +667,26 @@ export default function TTSEditor() {
   })
   // ── 한 명 | 여러 명 (보기 전환일 뿐 — 탭 자체는 원문을 쓰지 않는다) ──
   const [dialogueTab, setDialogueTab] = useState<DialogueTab>('single')
+  // 한 명 화면의 화자 구조 보호 — 명시 화자가 있는 대본에서 한 명 편집기는 화자 표기 순서가
+  // 그대로인 변경만 받는다. 거부된 편집은 한 줄로 알린다(다음에 받아들인 편집에서 사라진다).
+  const speakerDirectives = useMemo(() => speakerDirectiveSequence(ttsText), [ttsText])
+  const [singleEditBlocked, setSingleEditBlocked] = useState(false)
+  const onSingleEditorChange = (next: string) => {
+    if (disabled) return
+    if (dialogueTab === 'single' && speakerDirectives.length > 0 && !speakerStructurePreserved(ttsText, next)) {
+      setSingleEditBlocked(true)
+      return
+    }
+    if (singleEditBlocked) setSingleEditBlocked(false)
+    setTtsText(next)
+  }
+  // 한 명 대본으로 전환 — 사용자가 확인 패널에서 누른 뒤에만. 원문의 화자 표기만 지운다.
+  // 목소리 지정(ttsSpeakerRefState)·저장된 목소리 구성·후보 음원은 건드리지 않는다.
+  const convertToSingleScript = () => {
+    if (disabled) return
+    const r = stripSpeakerDirectives(ttsText)
+    if (r.changed) { setTtsText(r.text); setSingleEditBlocked(false) }
+  }
   // 권위는 ttsText 하나. 이 훅은 계획을 projection 으로 보여 주고 명령을 patcher 로 되쓴다.
   const dialogue = useDialogueProjection(ttsText, (next) => { if (!disabled) setTtsText(next) },
     analysis.result)
@@ -1050,6 +1072,16 @@ export default function TTSEditor() {
               disabled={disabled}
             />
           )}
+          {/* 한 명 화면 + 명시 화자 있음: 표기는 여러 명에서 바꾸고, 구조를 없애는 것은 명시 전환으로만. */}
+          {dialogueTab === 'single' && speakerDirectives.length > 0 && (
+            <SingleScriptGuard
+              directiveCount={speakerDirectives.length}
+              speakerCount={new Set(speakerDirectives).size}
+              blocked={singleEditBlocked}
+              onConvert={convertToSingleScript}
+              disabled={disabled}
+            />
+          )}
           {/* A 소유 편집기(caret/IME/overlay/오류 = A). 셸은 value/onChange + 삽입 handle만 배선.
               팔레트가 위로 올라가도 이 편집기가 [2] 대사 섹션의 첫 textarea라는 계약은 유지된다. */}
           {/* IME 조합 판정 범위. 이 안쪽 composition 만 분석을 억제한다
@@ -1060,7 +1092,7 @@ export default function TTSEditor() {
             value={ttsText}
             parsedPreview={null}
             parseErrors={[]}
-            onChange={(next) => { if (!disabled) setTtsText(next) }}
+            onChange={onSingleEditorChange}
             onInsertEmotion={() => { /* A가 caret 삽입까지 수행 — 셸은 추가 배선 불필요(게이팅은 store가 담당) */ }}
             onInsertPause={() => { /* 동일 */ }}
             disabled={disabled}

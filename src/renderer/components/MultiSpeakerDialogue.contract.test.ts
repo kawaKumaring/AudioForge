@@ -38,7 +38,8 @@ test('한 명 탭에서는 여러 명 화면을 아예 그리지 않는다 — �
   assert.ok(SHELL.includes("{dialogueTab === 'multi' && ("), '여러 명일 때만 마운트')
   // 기존 편집기 마운트는 조건 없이 그대로 남는다.
   assert.ok(SHELL.includes('<EmotionScriptEditor'))
-  assert.ok(SHELL.includes('onChange={(next) => { if (!disabled) setTtsText(next) }}'))
+  // 한 명 편집기는 화자 구조를 지키는 변경만 받는다(SingleScriptGuard.contract.test 가 자세히 본다).
+  assert.ok(SHELL.includes('onChange={onSingleEditorChange}'))
 })
 
 test('원문 textarea 는 구조화 판정으로 잠기지 않는다', () => {
