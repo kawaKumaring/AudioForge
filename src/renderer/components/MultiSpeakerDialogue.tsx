@@ -111,6 +111,8 @@ export interface MultiSpeakerDialogueProps {
   onPreviewVoice: (speakerId: string) => void
   renderRegionEditor?: (speakerId: string) => ReactNode
   onToggleEmotionVoice?: (speakerId: string, on: boolean) => void
+  /** 감정별 목소리 후보 편집기(고급) — 셸이 주입한다. 이 카드가 유일한 편집 위치다. */
+  renderEmotionVoiceEditor?: (speakerId: string, label: string) => ReactNode
   disabled?: boolean
 }
 
@@ -193,7 +195,8 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
           voice={voiceOf(voiceIdOf(panelSpeaker))}
           onAssignVoice={props.onAssignVoice} onRemoveVoice={props.onRemoveVoice}
           onPreviewVoice={props.onPreviewVoice} renderRegionEditor={props.renderRegionEditor}
-          onToggleEmotionVoice={props.onToggleEmotionVoice} onClose={() => setVoiceSpeaker(null)} />
+          onToggleEmotionVoice={props.onToggleEmotionVoice} renderEmotionVoiceEditor={props.renderEmotionVoiceEditor}
+          onClose={() => setVoiceSpeaker(null)} />
       )}
 
       {/* ── 발화 카드 — 1열 전체 폭 ── */}
@@ -439,10 +442,13 @@ function SpeakerVoicePanel(props: {
   onPreviewVoice: (speakerId: string) => void
   renderRegionEditor?: (speakerId: string) => ReactNode
   onToggleEmotionVoice?: (speakerId: string, on: boolean) => void
+  /** 감정별 목소리 후보 편집기(고급) — 셸이 주입한다. 이 카드가 유일한 편집 위치다. */
+  renderEmotionVoiceEditor?: (speakerId: string, label: string) => ReactNode
   onClose: () => void
 }) {
   const { speaker: s, voiceId, voice, disabled } = props
   const label = s.label.trim()
+  const [emotionOpen, setEmotionOpen] = useState(false)
   return (
     <div data-testid="voice-panel" data-speaker={voiceId} role="region" aria-label={`${label} 목소리`}
       style={{ ...card, border: '1px solid var(--cyan)', gap: 8 }}>
@@ -500,6 +506,16 @@ function SpeakerVoicePanel(props: {
       )}
       {/* 참조 구간 — 이 인물 한 명의 파형만. */}
       {voice?.registered && props.renderRegionEditor?.(voiceId)}
+      {/* 감정별 목소리 후보(고급) — 접혀 있고, 이 카드가 유일한 편집 위치다. */}
+      {props.renderEmotionVoiceEditor && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <button type="button" data-testid="emotion-voice-toggle" aria-expanded={emotionOpen}
+            onClick={() => setEmotionOpen((o) => !o)} style={btn('var(--text-muted)', false)}>
+            {emotionOpen ? '감정별 목소리 후보 닫기' : '감정별 목소리 후보 (고급)'}
+          </button>
+          {emotionOpen && <div data-testid="emotion-voice-editor">{props.renderEmotionVoiceEditor(voiceId, label)}</div>}
+        </div>
+      )}
     </div>
   )
 }

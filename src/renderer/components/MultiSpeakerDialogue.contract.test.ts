@@ -116,6 +116,7 @@ test('목소리 설정은 선택한 인물 한 명의 패널만 연다 — 파�
   assert.ok(MULTI.includes('const [voiceSpeaker, setVoiceSpeaker] = useState<string | null>(null)'))
   assert.ok(MULTI.includes('function SpeakerVoicePanel('))
   assert.equal((MULTI.match(/renderRegionEditor\?\.\(/g) ?? []).length, 1, '구간 편집기는 패널 한 곳에서만')
+  assert.equal(SHELL.includes('<SpeakerReferenceManager'), false, '고급 설정의 중복 편집기 없음 — 같은 clipKey 를 두 편집기가 갖지 않는다')
   assert.ok(MULTI.includes('data-testid="voice-panel"') && MULTI.includes('data-testid="voice-panel-close"'))
   for (const id of ['speaker-voice-decision', 'speaker-voice-shared', 'speaker-emotion-voice-toggle',
     'speaker-voice-emotion-override', 'speaker-voice-emotion-off']) {

@@ -30,8 +30,8 @@ import TtsAdvancedSettings, { type TtsAdvancedTab } from './TtsAdvancedSettings'
 import TtsEmotionQuickPreview from './TtsEmotionQuickPreview'
 import { setTtsAdvancedOpener } from '@/lib/ttsAdvancedOpen'
 import InputAnalysisPanel from './InputAnalysisPanel'
-import SpeakerReferenceManager from './SpeakerReferenceManager'
 import VoiceCastManager from './VoiceCastManager'
+import SpeakerEmotionCandidates from './SpeakerEmotionCandidates'
 import DialogueTabs, { type DialogueTab } from './DialogueTabs'
 import MultiSpeakerDialogue from './MultiSpeakerDialogue'
 import { speakerDirectiveSequence } from '../../shared/dialogueSourcePatcher'
@@ -42,7 +42,21 @@ import { useVoiceCastRegistry } from '../hooks/useVoiceCastRegistry'
 import {
   castRegistry, findVoiceCast, toSpeakerEmotionRefs,
 } from '../../shared/emotionCandidateRegistry'
-import type { SpeakerRow } from './SpeakerReferenceManager'
+import type { ReferenceDecision, EmotionMatchView } from '../../shared/speakerReference'
+
+/** 계획의 화자 한 명을 화면 상태와 합친 행. 인물 카드·요약·목소리 패널이 같은 행을 본다. */
+interface SpeakerRow {
+  speakerId: string
+  label: string
+  utteranceCount: number
+  registered: boolean
+  ready: boolean
+  message: string
+  fileName: string
+  sharedWith: string[]
+  decision: ReferenceDecision
+  emotion?: EmotionMatchView | null
+}
 import {
   resolveReferenceDecision, sharedReferenceGroups, speakerEmotionKey, readinessFromSlots,
 } from '../../shared/speakerReference'
@@ -1090,6 +1104,27 @@ export default function TTSEditor() {
               })() }}
               onRemoveVoice={(id) => removeSpeakerRef(id)}
               onToggleEmotionVoice={(id, on) => setSpeakerEmotionEnabled(id, on)}
+              renderEmotionVoiceEditor={(id, label) => {
+                // 감정별 후보는 적용된 목소리 구성 안에 산다. 편집 위치는 이 카드 하나 — 고급 설정에는 없다.
+                const active = findVoiceCast(voiceCast.casts, voiceCast.activeVoiceCastId)
+                if (!active) {
+                  return (
+                    <span data-testid="emotion-voice-needs-config" style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                      감정별 목소리를 쓰려면 먼저 목소리 구성을 만들어 적용하세요 (고급 설정 › 목소리 구성 저장/불러오기).
+                    </span>
+                  )
+                }
+                return (
+                  <SpeakerEmotionCandidates
+                    speakerId={id} speakerLabel={label} cast={active} assets={voiceCast.assets}
+                    emotions={castEmotions} disabled={disabled || voiceCast.analyzing}
+                    onAddFiles={(sid, eid) => { void addCastFiles(active.voiceCastId, sid, eid) }}
+                    onPreview={previewCastCandidate}
+                    onSelect={(sid, eid, choice) => { void voiceCast.selectCandidate(active.voiceCastId, sid, eid, choice) }}
+                    onUnregister={(sid, eid, cid) => { void voiceCast.unregisterCandidate(active.voiceCastId, sid, eid, cid) }}
+                  />
+                )
+              }}
               onPreviewVoice={(id) => previewLocalFile(
                 ttsSpeakerRefState[id]?.clip || ttsSpeakerRefState[id]?.source || '')}
               renderRegionEditor={renderSpeakerRegion}
@@ -1224,6 +1259,7 @@ export default function TTSEditor() {
                 speakerId: s.speakerId, label: s.label,
               }))}
               emotions={castEmotions}
+              hideSpeakerCandidates
               disabled={disabled || voiceCast.analyzing}
               onCreate={(name) => { void voiceCast.createCast(name) }}
               onRename={(id, name) => { void voiceCast.renameCast(id, name) }}
@@ -1240,18 +1276,12 @@ export default function TTSEditor() {
               }}
             />
             </details>
-            {/* 인물별 목소리 — 대본에 화자 표기가 있을 때만 나타난다. */}
-            <SpeakerReferenceManager
-              rows={speakerUiRows}
-              defaultSpeakerUtterances={defaultSpeakerUtteranceCount(analysis.result)}
-              disabled={disabled}
-              onRegister={(id, src, label) => registerSpeakerRef(id, src, label)}
-              onRemove={(id) => removeSpeakerRef(id)}
-              onPreview={(id) => previewLocalFile(
-                ttsSpeakerRefState[id]?.clip || ttsSpeakerRefState[id]?.source || '')}
-              requestSource={requestSpeakerSource}
-              renderRegionEditor={renderSpeakerRegion}
-            />
+            {/* 인물별 목소리의 편집 위치는 여러 명 화면의 인물 카드 하나뿐이다. 여기서는 읽기 전용 안내만. */}
+            {speakerUiRows.length > 0 && (
+              <div data-testid="speaker-voice-elsewhere" style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                인물별 목소리는 여러 명 화면의 각 인물 카드에서 설정합니다.
+              </div>
+            )}
             {/* 감정별 전용 목소리 등록·구간·삭제 (기존 EmotionReferenceManager 그대로) */}
             <EmotionReferenceManager
               refs={managerRefs}

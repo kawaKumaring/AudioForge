@@ -30,6 +30,8 @@ export interface VoiceCastManagerProps {
   saveErrorCode: string | null
   /** 계획이 준 화자 목록. UI 가 만들어 내지 않는다. */
   speakers: readonly { speakerId: string; label: string }[]
+  /** 인물별 감정 후보 편집을 여기서 그리지 않는다(여러 명 화면의 인물 카드가 유일한 편집 위치). */
+  hideSpeakerCandidates?: boolean
   emotions: readonly { id: string; label: string }[]
   recommendations?: Readonly<Record<string, string>>
   disabled?: boolean
@@ -171,7 +173,12 @@ export default function VoiceCastManager(props: VoiceCastManagerProps) {
               {VOICE_CAST_LABEL.unapply}
             </button>
           </div>
-          {speakers.length === 0 ? (
+          {props.hideSpeakerCandidates ? (
+            <span data-testid="voice-cast-speakers-elsewhere"
+              style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+              인물별 감정 목소리는 여러 명 화면의 각 인물 카드에서 설정합니다.
+            </span>
+          ) : speakers.length === 0 ? (
             <span data-testid="voice-cast-no-speakers"
               style={{ fontSize: 11, color: 'var(--text-muted)' }}>
               대본에 화자 표기가 없습니다
