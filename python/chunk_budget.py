@@ -38,6 +38,45 @@ BUDGET_TIERS = (256, 512, 768, 1024, 1536, 2048, 3072, 4096)
 # talker architecture 상한(max_position_embeddings). prompt + generation 이 이 안에 있어야 한다.
 ARCHITECTURE_LIMIT = 32768
 
+# ── 참조 예산(출력 예산과 다른 축) ──────────────────────────────────────────
+# Qwen3-TTS-12Hz: speech tokenizer 가 1초를 codec 12 frame 으로 만든다(모델 이름·tokenizer 규격).
+CODEC_FRAMES_PER_SEC = 12.0
+# 예전 고정값. controlled-prefix(legacy) 가 참조를 재발화할 때 필요한 프레임을 83 으로 못 박았는데,
+# 이는 12Hz 에서 약 6.9초 참조를 **가정**한 값이었다(여유 예산이 아니라 참조 길이 가정). 실제 참조가
+# 더 길면 예산이 모자라고, 짧으면 낭비다. 이제 예산은 실제 참조 codec 프레임 수로만 계산한다 — 기록용 상수.
+LEGACY_REPLAY_FRAMES_ASSUMED = 83
+LEGACY_REPLAY_ASSUMED_REF_SEC = round(LEGACY_REPLAY_FRAMES_ASSUMED / CODEC_FRAMES_PER_SEC, 2)
+
+
+def estimate_ref_code_frames(duration_sec):
+    """참조 길이(초) → codec 프레임 **추정**(모델 로딩 전 안내용). 예산 계산에는 쓰지 않는다 —
+    예산은 모델의 speech tokenizer 가 실제로 낸 프레임 수(bridge._ref_code_frames)를 받는다."""
+    if not isinstance(duration_sec, (int, float)) or duration_sec <= 0:
+        return 0
+    return int(math.ceil(float(duration_sec) * CODEC_FRAMES_PER_SEC))
+
+
+def reference_budget(x_vector_only, ref_code_frames=None, ref_text_tokens=0, controlled_prefix=False):
+    """참조가 이 chunk 의 예산에 미치는 몫. **유효 참조(실제 모델에 넘기는 클립)** 기준이다.
+
+    - x-vector(safe_xvector): 참조 codec/전사가 talker 입력에 들어가지 않는다 → prompt 0, replay 0.
+    - vendor native ICL: 참조 codec 프레임 + 참조 전사 토큰이 **prompt(입력 위치)** 를 차지한다. 재발화는 없다
+      (vendor 가 ref_code 를 prefix 로 주고 생성분만 돌려준다) → replay 0.
+    - controlled-prefix(legacy opt-in): 모델이 참조 대사를 먼저 **재발화**하므로 생성 프레임이 참조 프레임만큼
+      더 필요하다 → replay = 실제 참조 codec 프레임(고정 83 아님). prompt 도 같은 몫을 차지한다.
+    ICL 인데 참조 프레임 수를 모르면 ValueError — 추정값으로 예산을 열지 않는다(fail-closed).
+    """
+    if x_vector_only:
+        return {"mode": "x_vector", "prefix_tokens": 0, "replay_frames": 0,
+                "ref_code_frames": 0, "ref_text_tokens": 0}
+    if not isinstance(ref_code_frames, int) or isinstance(ref_code_frames, bool) or ref_code_frames <= 0:
+        raise ValueError("ICL 참조 예산에는 실제 참조 codec 프레임 수(양의 정수)가 필요하다, got %r" % (ref_code_frames,))
+    text_tok = max(0, int(ref_text_tokens or 0))
+    return {"mode": "icl_controlled_prefix" if controlled_prefix else "icl",
+            "prefix_tokens": ref_code_frames + text_tok,
+            "replay_frames": ref_code_frames if controlled_prefix else 0,
+            "ref_code_frames": ref_code_frames, "ref_text_tokens": text_tok}
+
 
 #: 자연 종료 실측의 frame/token 비 **구간**. 예산에는 상한(FRAMES_PER_PRODUCTION_TOKEN)을
 #: 쓰지만, "결과 음성이 몇 초인가" 는 한 값으로 답할 수 없어 구간으로 낸다.

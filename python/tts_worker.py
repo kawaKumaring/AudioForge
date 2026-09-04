@@ -1934,8 +1934,8 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             base = os.path.basename(ref)
             codes = "; ".join(f"[{e.code}] {e.message}" for e in a.errors)
             raise RuntimeError(f"참조 음성 부적합(Qwen): {who} {base} — {codes}")
-        for w in a.warnings:
-            if w.code == OUTSIDE_RECOMMENDED_LENGTH:
+        for w in (getattr(a, "warnings", None) or []):
+            if getattr(w, "code", None) == OUTSIDE_RECOMMENDED_LENGTH:
                 lo, hi = QWEN3_POLICY.recommended_min_sec, QWEN3_POLICY.recommended_max_sec
                 emit("progress", percent=7,
                      message=f"{who} 길이 {a.analysis.duration_sec:.1f}초 — 이 엔진에서 검증된 범위({lo:.0f}~{hi:.0f}초) 밖입니다. "
@@ -2213,6 +2213,10 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         # 분할 재현 배열(내용·경로·전사 없음)
         gen_chunks = [{"original_segment_index": e["original_segment_index"], "chunk_index": e["chunk_index"],
                        "chunk_count": e["chunk_count"], "production_tokens": e.get("production_tokens"),
+                       # 참조 예산 실측(유효 참조 codec 프레임 / prompt 토큰 / 재발화 프레임). 없으면 None.
+                       "reference_code_frames": (e.get("reference_budget") or {}).get("ref_code_frames"),
+                       "reference_prefix_tokens": (e.get("reference_budget") or {}).get("prefix_tokens"),
+                       "reference_replay_frames": (e.get("reference_budget") or {}).get("replay_frames"),
                        "generation_limit": e.get("generation_limit"),
                        "generated_iterations": e.get("generated_iterations"),
                        "termination_reason": e.get("termination_reason"), "emotion_id": e.get("emotion_id"),

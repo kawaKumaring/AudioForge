@@ -247,6 +247,47 @@ def _instruct_probe_kwargs(model, seg, probe_context):
                                         "reason": "instruct_ids_submitted"}
 
 
+_REF_FRAMES_CACHE = {}
+# 참조 codec 프레임 측정기. production 은 vendor speech tokenizer 실측(_ref_code_frames). 테스트는 가짜 모델로
+# 돌기 때문에 이 자리를 바꿔 끼운다 — 측정 실패를 추정값으로 메우는 통로는 없다.
+REF_FRAMES_MEASURER = None
+
+
+def _ref_text_tokens(model, proc, seg):
+    """ICL 참조 전사가 talker prompt 에서 차지하는 토큰 수. vendor 의 ref 템플릿(_build_ref_text) 이 있으면 그대로
+    감싸고, 없으면 전사 원문만 센다(템플릿 토큰 몇 개 차이 — 없는 값을 지어내지 않는다). 토큰화는 production
+    과 같은 processor 로 한다(_prod_tokens 와 동일 경로)."""
+    rt = (seg.get("ref_text") or "")
+    if not rt.strip():
+        return 0
+    build = getattr(model, "_build_ref_text", None)
+    text = build(rt) if callable(build) else rt
+    return _prod_tokens(lambda t: t, proc, text)
+
+
+def _measure_ref_code_frames(model, seg):
+    fn = REF_FRAMES_MEASURER or _ref_code_frames
+    return fn(model, seg)
+
+
+def _reference_budget_for(model, proc, seg):
+    """이 segment 의 참조가 예산에 미치는 몫(chunk_budget.reference_budget). 유효 참조(seg["ref_audio"]) 기준.
+    같은 참조 파일은 한 번만 인코딩한다(캐시). ICL 인데 프레임 수를 못 얻으면 예외(fail-closed) — 추정값 없음."""
+    xvo = bool(seg.get("x_vector_only", False))
+    if xvo:
+        return chunk_budget.reference_budget(True)
+    key = os.path.abspath(str(seg.get("ref_audio") or ""))
+    frames = _REF_FRAMES_CACHE.get(key)
+    if frames is None:
+        frames = _measure_ref_code_frames(model, seg)
+        if not frames:
+            raise RuntimeError("TTS_COMPAT: 참조 codec 프레임 수를 얻지 못했다 — ICL 예산을 추정값으로 열지 않는다.")
+        _REF_FRAMES_CACHE[key] = int(frames)
+    return chunk_budget.reference_budget(
+        False, ref_code_frames=int(frames), ref_text_tokens=_ref_text_tokens(model, proc, seg),
+        controlled_prefix=bool((seg.get("prefix_text") or "").strip()))
+
+
 def _generate_segment(model, seg, builder, proc, probe_context="production"):
     """세그먼트 1개 합성 + 안전장치. production token → 동적 상한 → 상한 건 생성 → 반복 계측 → 종료 판정.
     반환: dict(wavs, sr, prod_tokens, generation_limit, generated_iterations, termination_reason).
@@ -264,8 +305,10 @@ def _generate_segment(model, seg, builder, proc, probe_context="production"):
     gen_text, controlled_prefix = _generation_text(seg)
     prod_tokens = _prod_tokens(builder, proc, gen_text)
     # 분할과 같은 예산 함수를 쓴다. fits 가 아니면 애초에 이 chunk 가 만들어지지 않는다.
+    # 참조 몫은 실제 참조 codec 프레임(고정 83 아님). 출력 예산(tier)과 참조 예산(prompt/replay)은 별도 항목.
+    _rb = _reference_budget_for(model, proc, seg)
     _b = chunk_budget.budget_for(
-        prod_tokens, reference_replay_frames=(83 if controlled_prefix else 0))
+        prod_tokens, reference_prefix_tokens=_rb["prefix_tokens"], reference_replay_frames=_rb["replay_frames"])
     seg_limit = _b["generation_limit"] or generation_limit.compute_max_new_tokens(prod_tokens)
     _dmax = _diag_max_new_tokens()
     if _dmax is not None:
@@ -308,6 +351,8 @@ def _generate_segment(model, seg, builder, proc, probe_context="production"):
             "generation_limit": seg_limit, "generated_iterations": iters,
             "termination_reason": reason, "generation_elapsed_sec": gen_elapsed,
             "controlled_prefix": controlled_prefix,
+            # 참조 예산(유효 참조의 codec 프레임·전사 토큰·재발화 프레임). 출력 예산과 섞지 않는다.
+            "reference_budget": _rb,
             # 실험 probe 결과(기본 경로에서는 항상 None). honored 키는 존재하지 않는다.
             "instruct_probe": probe}
 
@@ -399,19 +444,23 @@ def _diag_cap(default_cap):
 
 def _build_chunk_plan(segments, builder, proc, max_seg_tok):
     """전 원본 segment를 먼저 분할(생성 없음). 하나라도 분할 실패면 BridgeSegmentTooLong →
-    생성 루프에 진입하지 않아 generate 호출 0. 반환: [{seg, chunk_index, chunk_count, text}]."""
+    생성 루프에 진입하지 않아 generate 호출 0. 반환: [{seg, chunk_index, chunk_count, text}].
+    max_seg_tok: int(전 segment 공통) 또는 callable(seg) → int(segment 의 참조 예산에 따라 다른 상한)."""
     plan = []
+    cap_of = max_seg_tok if callable(max_seg_tok) else (lambda _seg: max_seg_tok)
     if _diag_flag(DIAG_SINGLE_ENV):
         # 분할하지 않는다. 250자 전체가 vendor 호출 한 번의 target 이 된다.
         emit("stage", stage="diagnostic_single_chunk", segments=len(segments))
         for seg in segments:
             plan.append({"seg": seg, "chunk_index": 0, "chunk_count": 1, "text": seg["text"]})
         return plan
-    max_seg_tok, diag = _diag_cap(max_seg_tok)
     sentence_first = bool(os.environ.get(DIAG_SENTENCE_ENV))
-    if diag or sentence_first:
-        emit("stage", stage="diagnostic_split", cap=max_seg_tok, sentence_first=sentence_first)
+    diag_announced = False
     for seg in segments:
+        max_seg_tok, diag = _diag_cap(cap_of(seg))
+        if (diag or sentence_first) and not diag_announced:
+            diag_announced = True
+            emit("stage", stage="diagnostic_split", cap=max_seg_tok, sentence_first=sentence_first)
         try:
             count = lambda t: _prod_tokens(builder, proc, t)
             if sentence_first:
@@ -712,6 +761,8 @@ def _generate_plan(model, plan, builder, proc, n_segments, progress=None, seed=N
                      "generated_iterations": int(g["generated_iterations"]),
                      # blocking 생성 구간만 잰 값(가산). 없으면 None — 0 으로 위조하지 않는다.
                      "generation_elapsed_sec": g.get("generation_elapsed_sec"),
+                     # 유효 참조가 차지한 몫(codec 프레임·전사 토큰·재발화 프레임) — 출력 예산과 별도.
+                     "reference_budget": g.get("reference_budget"),
                      "applied_seed": applied_seed,   # 진단 전용. seed 미지정이면 None.
                      # controlled-prefix 이면 raw 그대로 기록됐고 정렬·절단이 남아 있다.
                      # 절단 기록(reference_alignment/reference_cut_sample)은 부모가 정렬을 끝낸 뒤
@@ -798,10 +849,13 @@ def main():
         # 1단계: 전 segment 선분할(생성 없음). 실패 시 여기서 종료 → generate 호출 0(뒤 실패로 앞 낭비 방지).
         # 분할 상한을 고정 상수로 두지 않는다 — 생성 예산 함수가 낳는다.
         # 이렇게 해야 "분할 상한만 올리고 생성 예산은 그대로" 인 상태가 생길 수 없다.
-        _replay = 83 if any(sg.get("prefix_text") for sg in segments) else 0
-        max_seg_tok = chunk_budget.max_production_tokens(reference_replay_frames=_replay)
+        # 참조 몫은 segment 마다 실제 유효 참조의 codec 프레임(모델 tokenizer 실측)으로 넣는다 — 고정 83 없음.
+        def _seg_cap(seg):
+            rb = _reference_budget_for(model, proc, seg)
+            return chunk_budget.max_production_tokens(
+                reference_prefix_tokens=rb["prefix_tokens"], reference_replay_frames=rb["replay_frames"])
         try:
-            plan = _build_chunk_plan(segments, builder, proc, max_seg_tok)
+            plan = _build_chunk_plan(segments, builder, proc, _seg_cap)
         except BridgeSegmentTooLong as e:
             emit("error", code="TEXT_SEGMENT_TOO_LONG", segment_index=e.segment_index,
                  emotion_id=e.emotion_id, production_tokens=e.production_tokens, allowed=e.allowed)

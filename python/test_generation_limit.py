@@ -23,6 +23,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import chunk_budget as cb
 import generation_limit as gl
 import qwen_bridge
+
+# 가짜 모델에는 vendor speech tokenizer 가 없다 — 참조 codec 프레임 측정기를 고정값(85 frame ≈ 7초)으로 대체.
+# production 측정 실패는 예외(fail-closed)라 여기서만 바꿔 끼운다.
+qwen_bridge.REF_FRAMES_MEASURER = lambda _model, _seg: 85
 import tts_worker
 
 
