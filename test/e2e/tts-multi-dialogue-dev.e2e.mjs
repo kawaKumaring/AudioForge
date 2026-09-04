@@ -306,8 +306,15 @@ try {
   await page.click('[data-testid="speaker-structure-undo"]'); await sleep(150)
   ok('12c', (await store()) === SCRIPT && (await count('[data-testid="speaker-structure-notice"]')) === 0, '되돌리기 → 직전 원문')
   await tab('multi'); await waitRows(3)
-  const sharedPanel = async () => { await page.click('[data-testid="dialogue-row"][data-index="0"] [data-testid="card-voice"]'); await sleep(120); const n = await count('[data-testid="speaker-voice-shared"]'); await page.click('[data-testid="voice-panel-close"]'); return n }
-  ok('12d', (await rowSpeakers()).join(',') === '민수,영희,민수' && (await sharedPanel()) === 1, '여러 명 복귀: 카드 복원, 같은 파일 공유 경고는 패널 안에')
+  const spk12 = (await rowSpeakers()).join(',')
+  await page.click('[data-testid="dialogue-row"][data-index="0"] [data-testid="card-voice"]')
+  const panelOpened = await waitUntil(async () => (await count('[data-testid="voice-panel"]')) === 1, 3000)
+  await sleep(120)
+  const sharedN = await count('[data-testid="speaker-voice-shared"]')
+  const panelText = (await text('[data-testid="voice-panel"]')) ?? ''
+  await page.click('[data-testid="voice-panel-close"]').catch(() => {})
+  ok('12d', spk12 === '민수,영희,민수' && panelOpened && sharedN === 1, '여러 명 복귀: 카드 복원, 같은 파일 공유 경고는 패널 안에',
+    `rows=${spk12} panel=${panelOpened} shared=${sharedN} text=${panelText.replace(/\s+/g, ' ').slice(0, 80)}`)
 
   // ── 13. 감정별 목소리는 인물별 opt-in(패널 안) ────────────────────────────
   await page.evaluate((wav) => { const US = String.fromCharCode(31); window.__afStore.setState({ ttsSpeakerEmotionRefs: { ['민수' + US + 'happy']: wav } }) }, WAV)
