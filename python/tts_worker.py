@@ -2004,7 +2004,9 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             # 달라졌을 때만 표에 다시 묻는다 — 그 경우도 규칙은 같은 표가 정한다.
             _frozen = getattr(ref_table, "routing", None)
             _rr_row = (dict(_frozen[i]) if _frozen is not None and len(_frozen) == len(parsed)
-                       else ref_table.resolve_with_emotion(speaker_id, emotion_id))
+                       else ref_table.resolve_with_emotion(
+                           None if getattr(ref_table, "speaker_mode", "multi") == "single" else speaker_id,
+                           emotion_id))
             ref = _rr_row["path"]
             reference_rows.append(dict(_rr_row, segment_index=i))
             prefix_text = None
@@ -2079,7 +2081,8 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                 # 남기면 나중에 "그때는 모델이 감정을 받았나?"를 다시 알 수 없다.
                 import expressive_capability as _cap_audit
                 _CONCAT_RECORDER.set_run_header(
-                    emotion_capability=_cap_audit.audit_summary())
+                    emotion_capability=_cap_audit.audit_summary(),
+                    speaker_mode=getattr(ref_table, "speaker_mode", "multi"))
             except Exception:
                 pass               # 기록 실패가 합성을 막지 않는다
 
@@ -2876,8 +2879,11 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                expressive_mode="legacy_v2", reference_conditioning_mode=None,
                speaker_refs=None, speaker_ref_sources=None, speaker_emotion_refs=None,
                emotion_candidate_selections=None,
-               speaker_labels=None):
+               speaker_labels=None, speaker_mode="multi"):
     """Synthesize speech. Auto-selects engine by language.
+    speaker_mode: 'single' | 'multi' — 생성 방식(대본 내용이 아니다). single 이면 화자 표기가 있어도
+      모든 발화를 한 명의 기본/감정 참조로 만들고 화자 참조·전용 참조·후보 선택은 개입하지 않는다.
+      키 부재(legacy config)는 multi 로 본다 — 오늘까지의 worker 동작 그대로.
     reference_prompts: 식별자(default/emotionId) → {manual_text, prompt_lang, mode} 사용자 override.
     emotion_refs: emotionId → 합성에 쓸 effective 참조 경로(3~10초 클립/유효 원본).
     emotion_ref_sources: emotionId → 사용자 등록 원본 경로(등록 사실). 만료 판정 기준(계약 §5).
@@ -2988,7 +2994,13 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         # ── 화자별 참조 준비 ─────────────────────────────────────────────
         # 감정 참조와 같은 방식으로 준비한다(같은 `_prepare_ref`). 대본에 실제로 나온
         # 화자만 준비하고, 등록되지 않았거나 파일이 없으면 **모델을 올리기 전에** 막는다.
-        _used_speaker_ids = [sp for _e, _t, sp in parsed if sp]
+        if speaker_mode not in _sr.SPEAKER_MODES:
+            raise _sr.SpeakerReferenceError(_sr.INVALID_SPEAKER_MODE,
+                                            message="INVALID_SPEAKER_MODE: %r" % (speaker_mode,))
+        # single 생성: 화자 표기는 무시된다(라우팅 스냅샷이 speaker_id 를 None 으로 정규화). 화자 참조를
+        # 준비·검증하지 않으므로 미등록 화자 표기가 있어도 막히지 않는다 — 한 명의 기존 계약이다.
+        _used_speaker_ids = ([] if speaker_mode == _sr.SPEAKER_MODE_SINGLE
+                             else [sp for _e, _t, sp in parsed if sp])
         _registered_speakers = set((speaker_ref_sources or {}).keys()) | set(
             (speaker_refs or {}).keys())
         _prepared_speaker = {}
@@ -3082,9 +3094,9 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         # 전수 점검을 먼저 한다 — 모델을 올린 뒤 절반 만들고 막히면 헛수고가 된다.
         ref_table.preflight([(sp, e) for e, _t, sp in parsed])
         # 라우팅 스냅샷 — 발화별 참조를 여기서(모델 로딩 전) 확정하고 작업이 끝날 때까지 바꾸지 않는다.
-        _routing = ref_table.freeze_routing(parsed)
+        _routing = ref_table.freeze_routing(parsed, speaker_mode=speaker_mode)
         emit("stage", stage="routing_snapshot", utterances=len(_routing),
-             rules=_routing.rule_counts())
+             speaker_mode=speaker_mode, rules=_routing.rule_counts())
         _speaker_duplicates = ref_table.duplicate_paths()
         if _speaker_duplicates:
             # 막지 않는다(같은 목소리를 여럿에 쓰는 것은 사용자의 선택). 사실만 알린다.
@@ -3182,7 +3194,9 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             # 화면·Qwen 경로와 같은 표를 같은 방식으로 본다(두 경로가 다른 참조를 쓰면 안 된다).
             _frozen = getattr(ref_table, "routing", None)
             ref = (_frozen[i]["path"] if _frozen is not None and len(_frozen) == len(parsed)
-                   else ref_table.resolve_with_emotion(speaker_id, emotion_id)["path"])
+                   else ref_table.resolve_with_emotion(
+                           None if getattr(ref_table, "speaker_mode", "multi") == "single" else speaker_id,
+                           emotion_id)["path"])
             emotion_label = next((k for k, v in EMOTION_TAGS.items() if v == emotion_id), emotion_id)
 
             # Select engine based on text language

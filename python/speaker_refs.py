@@ -49,6 +49,12 @@ REFERENCE_SOURCES = (SOURCE_SPEAKER_EMOTION, SOURCE_SPEAKER, SOURCE_EMOTION, SOU
 SPEAKER_NOT_REGISTERED = "SPEAKER_NOT_REGISTERED"
 SPEAKER_REFERENCE_NOT_READY = "SPEAKER_REFERENCE_NOT_READY"
 DEFAULT_REFERENCE_MISSING = "DEFAULT_REFERENCE_MISSING"
+INVALID_SPEAKER_MODE = "INVALID_SPEAKER_MODE"
+
+# 생성 방식 — 대본 내용이 아니라 라우팅 방식이다. renderer 의 ttsSpeakerMode 와 같은 값.
+SPEAKER_MODE_SINGLE = "single"
+SPEAKER_MODE_MULTI = "multi"
+SPEAKER_MODES = (SPEAKER_MODE_SINGLE, SPEAKER_MODE_MULTI)
 
 
 class SpeakerReferenceError(RuntimeError):
@@ -230,6 +236,8 @@ class ReferenceTable:
         self._sha_cache = {}
         # 합성 시작 순간 확정한 발화별 라우팅(freeze_routing). 작업이 끝날 때까지 바꾸지 않는다.
         self.routing = None
+        # 이 작업의 생성 방식. single 이면 화자 표기가 있어도 모든 발화가 speaker_id=None 으로 라우팅된다.
+        self.speaker_mode = SPEAKER_MODE_MULTI
 
     # ── 조회 ──────────────────────────────────────────────────────────────
     def resolve(self, speaker_id, emotion_id):
@@ -286,10 +294,17 @@ class ReferenceTable:
         return bool(path) and bool(self._exists(path))
 
     # ── 라우팅 스냅샷 ────────────────────────────────────────────────────────
-    def freeze_routing(self, parsed):
+    def freeze_routing(self, parsed, speaker_mode=None):
         """발화마다 참조를 **지금** 정하고 얼린다. 하나라도 정할 수 없으면 여기서 멈춘다
-        (모델 로딩 전). 다른 인물·전역 기본·이전 클립으로 대체하지 않는다 — resolve 가 그렇다."""
-        self.routing = build_routing_snapshot(self, parsed)
+        (모델 로딩 전). 다른 인물·전역 기본·이전 클립으로 대체하지 않는다 — resolve 가 그렇다.
+
+        speaker_mode='single' 이면 화자 표기를 무시한다: 모든 발화가 speaker_id=None 으로
+        라우팅되어 감정 참조/전역 기본(한 명의 기존 계약)만 쓴다. 화자 참조는 개입하지 않는다."""
+        mode = self.speaker_mode if speaker_mode is None else speaker_mode
+        if mode not in SPEAKER_MODES:
+            raise SpeakerReferenceError(INVALID_SPEAKER_MODE, message="INVALID_SPEAKER_MODE: %r" % (mode,))
+        self.speaker_mode = mode
+        self.routing = build_routing_snapshot(self, parsed, speaker_mode=mode)
         return self.routing
 
     def routed(self, index):
@@ -753,17 +768,24 @@ class RoutingSnapshot:
         return [r.get("reference_id") for r in self._rows]
 
 
-def build_routing_snapshot(table, parsed):
+def build_routing_snapshot(table, parsed, speaker_mode=SPEAKER_MODE_MULTI):
     """parsed = [(emotion_id, text, speaker_id), ...] (tts_worker 의 순서 그대로).
 
     발화마다 `resolve_with_emotion` 을 **한 번** 부르고 결과를 얼린다. 정할 수 없는 발화가 있으면
     `SpeakerReferenceError` 가 그대로 올라간다 — 스냅샷은 만들어지지 않고 모델도 올라가지 않는다.
     대사 원문은 스냅샷에 넣지 않는다.
+
+    speaker_mode='single': 파서가 읽은 speaker_id 를 **모두 None 으로 정규화**한다. 표기는 이미
+    본문에서 제거된 상태이고, 라우팅만 한 명의 계약(감정 참조 → 전역 기본)을 따른다.
     """
+    if speaker_mode not in SPEAKER_MODES:
+        raise SpeakerReferenceError(INVALID_SPEAKER_MODE, message="INVALID_SPEAKER_MODE: %r" % (speaker_mode,))
     rows = []
     for i, item in enumerate(parsed):
-        emotion_id, speaker_id = item[0], item[2]
+        emotion_id = item[0]
+        speaker_id = None if speaker_mode == SPEAKER_MODE_SINGLE else item[2]
         row = table.resolve_with_emotion(speaker_id, emotion_id)
         rows.append(dict(row, segment_index=i, emotion_id=emotion_id or "default",
-                         routing_rule=routing_rule(row)))
+                         speaker_id_present=speaker_id is not None,
+                         speaker_mode=speaker_mode, routing_rule=routing_rule(row)))
     return RoutingSnapshot(rows)

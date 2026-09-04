@@ -239,5 +239,49 @@ class RoutingSnapshotTest(unittest.TestCase):
         self.assertTrue(row["reference_id"].startswith("ref"))
 
 
+class SpeakerModeRoutingTest(unittest.TestCase):
+    """single 생성은 화자 표기를 무시한다 — 모든 발화 speaker_id=None, 화자 참조 개입 0."""
+
+    def parsed(self):
+        return [("happy", "l0", "a"), ("default", "l1", "b"), ("sad", "l2", "a"), ("default", "l3", "zed")]
+
+    def test_single_mode_routes_every_utterance_to_the_single_reference(self):
+        # 화자 참조를 하나도 등록하지 않았고 'zed' 는 미등록 — single 에서는 막히지 않는다.
+        tb = table(emotion_refs={"happy": E})
+        snap = tb.freeze_routing(self.parsed(), speaker_mode=sr.SPEAKER_MODE_SINGLE)
+        self.assertEqual(tb.speaker_mode, sr.SPEAKER_MODE_SINGLE)
+        self.assertEqual(snap.speaker_sequence(), [None, None, None, None])
+        self.assertEqual([r["speaker_id_present"] for r in snap], [False] * 4)
+        self.assertEqual([r["speaker_mode"] for r in snap], [sr.SPEAKER_MODE_SINGLE] * 4)
+        self.assertEqual([r["routing_rule"] for r in snap],
+                         [sr.ROUTE_EMOTION_REFERENCE, sr.ROUTE_GLOBAL_DEFAULT,
+                          sr.ROUTE_GLOBAL_DEFAULT, sr.ROUTE_GLOBAL_DEFAULT])
+        self.assertEqual([r["path"] for r in snap], [E, D, D, D])
+
+    def test_single_mode_ignores_speaker_and_pair_references_even_if_present(self):
+        tb = table(speaker_refs={"a": A, "b": B},
+                   speaker_emotion_refs={sr.emotion_key("a", "happy"): C})
+        snap = tb.freeze_routing([("happy", "l0", "a"), ("default", "l1", "b")],
+                                 speaker_mode=sr.SPEAKER_MODE_SINGLE)
+        self.assertEqual([r["path"] for r in snap], [D, D])
+        self.assertNotIn(A, [r["path"] for r in snap])
+        self.assertNotIn(C, [r["path"] for r in snap])
+
+    def test_multi_mode_keeps_plan_speakers(self):
+        tb = table(speaker_refs={"a": A, "b": B})
+        snap = tb.freeze_routing([("happy", "l0", "a"), ("default", "l1", "b")],
+                                 speaker_mode=sr.SPEAKER_MODE_MULTI)
+        self.assertEqual([r["speaker_id_present"] for r in snap], [True, True])
+        self.assertEqual([r["path"] for r in snap], [A, B])
+        self.assertEqual([r["speaker_mode"] for r in snap], [sr.SPEAKER_MODE_MULTI] * 2)
+
+    def test_invalid_mode_is_refused_not_guessed(self):
+        tb = table(speaker_refs={"a": A})
+        with self.assertRaises(sr.SpeakerReferenceError) as cm:
+            tb.freeze_routing([("default", "l0", "a")], speaker_mode="both")
+        self.assertEqual(cm.exception.code, sr.INVALID_SPEAKER_MODE)
+        self.assertIsNone(tb.routing)
+
+
 if __name__ == "__main__":
     unittest.main()
