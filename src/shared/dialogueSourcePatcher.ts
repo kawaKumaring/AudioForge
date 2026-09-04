@@ -602,3 +602,50 @@ export function groupUtteranceRows(text: string, utterances: PlanUtteranceLike[]
   }
   return rows
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 한 명 화면의 화자 구조 보호
+//
+// 한 명과 여러 명은 같은 원문을 본다. 한 명 화면의 일반 편집이 `[화자 …]` 표기를 지우면
+// 여러 명 화면의 인물·배정이 조용히 사라진다. 그래서 명시 화자가 하나라도 있는 대본에서는
+// 한 명 화면의 편집을 **화자 표기 순서가 그대로인 변경**만 받아들인다. 구조를 실제로 없애는
+// 것은 별도 동작(`stripSpeakerDirectives`)이고, 사용자 확인 뒤에만 부른다.
+// ─────────────────────────────────────────────────────────────────────────────
+
+const SPEAKER_DIRECTIVE_GLOBAL_RE = /\[\s*(?:화자|speaker)\s+[^\]]*\]/g
+const SPEAKER_DIRECTIVE_LINE_RE = /^\s*\[\s*(?:화자|speaker)\s+[^\]]*\]\s*$/
+
+/** 원문에 나오는 화자 표기를 순서대로(안쪽 공백 정리). 표기가 없으면 빈 배열. */
+export function speakerDirectiveSequence(text: string): string[] {
+  const out: string[] = []
+  for (const m of text.matchAll(SPEAKER_DIRECTIVE_GLOBAL_RE)) {
+    out.push(m[0].replace(/\s+/g, ' ').replace(/\[ /, '[').replace(/ \]/, ']'))
+  }
+  return out
+}
+
+/** 편집 전후로 화자 표기의 개수·순서·이름이 같은가. 같으면 한 명 화면의 편집으로 받아들인다. */
+export function speakerStructurePreserved(prev: string, next: string): boolean {
+  const a = speakerDirectiveSequence(prev)
+  const b = speakerDirectiveSequence(next)
+  return a.length === b.length && a.every((d, i) => d === b[i])
+}
+
+/**
+ * 화자 표기를 모두 지운다 — **한 명 대본으로 전환**. 표기만 있는 줄은 줄째 지우고, 대사와 같은
+ * 줄의 표기는 표기(와 뒤따르는 공백 하나)만 지운다. 감정·쉼·그 밖의 표기와 대사는 글자 그대로.
+ * 표기가 없으면 변화 없음(NO_CHANGE).
+ */
+export function stripSpeakerDirectives(text: string): PatchResult & { removed: number } {
+  const eol = text.includes('\r\n') ? '\r\n' : '\n'
+  const lines = text.split(/\r?\n/)
+  let removed = 0
+  const kept: string[] = []
+  for (const line of lines) {
+    if (SPEAKER_DIRECTIVE_LINE_RE.test(line)) { removed += 1; continue }
+    const replaced = line.replace(/\[\s*(?:화자|speaker)\s+[^\]]*\] ?/g, () => { removed += 1; return '' })
+    kept.push(replaced)
+  }
+  if (removed === 0) return { ...unchanged(text, 'NO_CHANGE'), removed: 0 }
+  return { text: kept.join(eol), changed: true, refusedCode: null, removed }
+}

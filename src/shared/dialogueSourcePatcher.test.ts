@@ -9,6 +9,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  speakerDirectiveSequence, speakerStructurePreserved, stripSpeakerDirectives,
   COORDINATE_DEPENDENT_ACTIONS, SPEAKER_LABEL_PROBLEMS, SPEAKER_LABEL_RE,
   STRUCTURE_BLOCKERS, STRUCTURE_MODES, actionAllowed, canMove, changeBaseEmotion,
   changeSpeaker, commitDecision, createInitialDialogue, deleteUtterance,
@@ -623,4 +624,43 @@ test('본문 교체는 빈 대사와 낡은 SHA 를 거부한다', async () => {
   const second = viewOf(t2, 1, '둘', '민수', false)
   assert.equal(replaceUtteranceBody(t2, [viewOf(t2, 0, '[화자 민수]\n첫', '민수', true), second],
     1, '셋').text, '[화자 민수]\n첫\n셋')
+})
+
+// ── 한 명 화면의 화자 구조 보호 ────────────────────────────────────────────────
+
+const MULTI_TEXT = '[화자 민수]\n안녕\n[화자 영희]\n[기쁨] 반가워\n[화자 민수]\n[슬픔] 잘 가'
+
+test('화자 표기 순서를 뽑는다 — 안쪽 공백은 정리하고 감정·쉼 표기는 세지 않는다', () => {
+  assert.deepEqual(speakerDirectiveSequence(MULTI_TEXT), ['[화자 민수]', '[화자 영희]', '[화자 민수]'])
+  assert.deepEqual(speakerDirectiveSequence('[ 화자   민수 ] 안녕 [쉼 1] [기쁨]'), ['[화자 민수]'])
+  assert.deepEqual(speakerDirectiveSequence('그냥 한 줄\n[기쁨] 둘째'), [])
+})
+
+test('본문만 고친 편집은 구조 보존, 표기를 지우거나 바꾼 편집은 보존 아님', () => {
+  assert.equal(speakerStructurePreserved(MULTI_TEXT, MULTI_TEXT.replace('안녕', '안녕하세요 [쉼 1] 오늘')), true)
+  assert.equal(speakerStructurePreserved(MULTI_TEXT, MULTI_TEXT.replace('[화자 영희]\n', '')), false)
+  assert.equal(speakerStructurePreserved(MULTI_TEXT, MULTI_TEXT.replace('[화자 영희]', '[화자 지은]')), false)
+  assert.equal(speakerStructurePreserved(MULTI_TEXT, MULTI_TEXT + '\n[화자 민수]\n또'), false)
+  // 표기가 없는 대본은 어떤 편집도 보존이다(보호가 걸릴 이유가 없다).
+  assert.equal(speakerStructurePreserved('한 줄', '완전히 다른 글'), true)
+})
+
+test('한 명 대본으로 전환: 표기 줄은 줄째, 같은 줄 표기는 표기만 지우고 나머지는 글자 그대로', () => {
+  const r = stripSpeakerDirectives(MULTI_TEXT)
+  assert.equal(r.changed, true)
+  assert.equal(r.removed, 3)
+  assert.equal(r.text, '안녕\n[기쁨] 반가워\n[슬픔] 잘 가')
+  const inline = stripSpeakerDirectives('[화자 민수] 안녕 [쉼 1] 잘 지냈어?\n[화자 영희] [기쁨] 응')
+  assert.equal(inline.text, '안녕 [쉼 1] 잘 지냈어?\n[기쁨] 응')
+  assert.equal(inline.removed, 2)
+  // 알 수 없는 지시·감정·쉼은 손대지 않는다.
+  const odd = stripSpeakerDirectives('[화자 민수]\n[모르는지시] 이상한 줄\n[쉼 1]\n[기쁨] 둘째')
+  assert.equal(odd.text, '[모르는지시] 이상한 줄\n[쉼 1]\n[기쁨] 둘째')
+  // 표기가 없으면 변화 없음.
+  const none = stripSpeakerDirectives('그냥 한 줄')
+  assert.equal(none.changed, false)
+  assert.equal(none.refusedCode, 'NO_CHANGE')
+  assert.equal(none.removed, 0)
+  // CRLF 원문은 CRLF 를 지킨다.
+  assert.equal(stripSpeakerDirectives('[화자 민수]\r\n안녕\r\n둘째').text, '안녕\r\n둘째')
 })
