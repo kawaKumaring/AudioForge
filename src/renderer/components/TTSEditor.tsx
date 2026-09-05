@@ -36,6 +36,7 @@ import DialogueTabs, { type DialogueTab } from './DialogueTabs'
 import MultiSpeakerDialogue, { voiceStatusShort } from './MultiSpeakerDialogue'
 import { speakerDirectiveSequence } from '../../shared/dialogueSourcePatcher'
 import { useDialogueProjection } from '../hooks/useDialogueProjection'
+import { useWorkDraft } from '../hooks/useWorkDraft'
 import { normalizeSpeakerId } from '../../shared/ttsGrammar'
 import { validateSpeakerLabel } from '../../shared/dialogueSourcePatcher'
 import { gateSpeakerEmotionRefs, emotionIdsForSpeaker } from '../../shared/speakerEmotionGate'
@@ -715,6 +716,9 @@ export default function TTSEditor() {
   // 권위는 ttsText 하나. 이 훅은 계획을 projection 으로 보여 주고 명령을 patcher 로 되쓴다.
   const dialogue = useDialogueProjection(ttsText, (next) => { if (!disabled) setTtsText(next) },
     analysis.result)
+  // 현재 작업 자동 저장·복원 — 합성하지 않고 닫아도 인물·목소리·확정 구간이 남고, 다시 열면
+  // 사용자에게 재확정을 요구하지 않고 앱이 스스로 되살린다. 저장된 목소리 구성은 건드리지 않는다.
+  const workDraft = useWorkDraft(ttsEngine)
   const emotionTagOf = (id: string) => '[' + (EMOTION_ID_TO_LABEL[id] ?? id) + ']'
   // 원문 편집기가 보이는 때: 한 명 | 여러 명의 직접 편집 열림 | 구조화할 수 없는 대본(이유와 함께).
   const showRawEditor = dialogueTab === 'single' || directEditOpen || !dialogue.editingAllowed
@@ -1272,6 +1276,13 @@ export default function TTSEditor() {
             </div>
           )}
           {/* 화자 표기가 바뀐 편집 뒤의 비차단 알림 — 오류가 아니다. 되돌리기는 직전 원문으로. */}
+          {/* 자동 저장이 이번 실행에서 막혔다면 숨기지 않는다 — 저장되지 않았는데 저장된 것처럼 두지 않는다. */}
+          {workDraft.rootError && (
+            <div data-testid="work-draft-notice" role="status" aria-live="polite"
+              style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+              이번 실행에서는 작업 내용이 자동으로 저장되지 않습니다. 합성하면 결과와 함께 설정이 남습니다.
+            </div>
+          )}
           {structureNotice && (
             <div data-testid="speaker-structure-notice" role="status" aria-live="polite"
               style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 11, color: 'var(--text-secondary)' }}>

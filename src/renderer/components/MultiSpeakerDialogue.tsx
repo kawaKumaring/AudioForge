@@ -101,11 +101,20 @@ const card: CSSProperties = {
 const rowFlex: CSSProperties = { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', minWidth: 0 }
 const sub: CSSProperties = { fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }
 
+/**
+ * 자동 복원이 다는 사유는 그대로 보여 준다. 이것들을 '구간 선택 필요' 로 뭉개면 사용자는
+ * 앱이 되살리는 중인지, 원본을 다시 이어 줘야 하는지 구분할 수 없다.
+ */
+const RESTORE_STATUS = ['목소리 준비 중', '원본 다시 연결 필요'] as const
+
 /** 카드 머리의 짧은 목소리 상태 — 기본 화면에 보이는 것은 이 한 줄뿐이다. 자세한 것은 카드 안 상세에서. */
 export function voiceStatusShort(voice: SpeakerVoiceState | null): string {
   if (!voice || !voice.registered) return '목소리 선택 필요'
   if (voice.ready) return `준비됨 · ${regionText(voice.region)}`
-  if ((voice.message ?? '').includes('구간')) return '구간 선택 필요'
+  const message = voice.message ?? ''
+  const restore = RESTORE_STATUS.find((m) => message === m)
+  if (restore) return restore
+  if (message.includes('구간')) return '구간 선택 필요'
   return '목소리 확인 중'
 }
 

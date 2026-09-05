@@ -332,6 +332,19 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     return multi ? result.filePaths : result.filePaths[0]
   })
 
+  // 원본이 아직 그 자리에 있는가 — 현재 작업 복원이 인물마다 확인한다.
+  // ffprobe 를 돌리지 않는다(인물 수만큼 돌면 앱 시작이 느려진다). 참·거짓만 돌려주고
+  // 경로는 렌더러가 이미 아는 값이라 새로 흘러나가는 정보가 없다.
+  ipcMain.handle('audio:sources-present', (_event, paths: unknown) => {
+    const out: Record<string, boolean> = {}
+    if (!Array.isArray(paths)) return out
+    for (const p of paths) {
+      if (typeof p !== 'string' || !p) continue
+      try { out[p] = existsSync(p) } catch { out[p] = false }
+    }
+    return out
+  })
+
   ipcMain.handle('audio:get-file-info', async (_event, filePath: string) => {
     if (!existsSync(filePath)) {
       throw new Error(`파일을 찾을 수 없습니다: ${basename(filePath)}`)

@@ -289,6 +289,19 @@ interface AppState {
   registerSpeakerRef: (speakerId: string, source: string, label?: string) => void
   /** 화자의 참조 지정을 해제한다. */
   removeSpeakerRef: (speakerId: string) => void
+  /**
+   * 현재 작업 자동 저장 기록을 화면에 되돌린다(합성하지 않고 닫았을 때).
+   * 준비 여부는 여기서 정하지 않는다 — 슬롯은 호출부가 만든 값 그대로 들어가고,
+   * 실제 준비가 끝난 뒤 setSpeakerRefState 로 올라간다.
+   */
+  restoreWorkDraft: (payload: {
+    ttsText: string
+    speakerMode: 'single' | 'multi'
+    slots: Record<string, EmotionRefState>
+    labels: Record<string, string>
+    emotionEnabled: Record<string, boolean>
+    renames: Record<string, string>
+  }) => void
   setSpeakerRefState: (speakerId: string, patch: { clip?: string; ready?: boolean; message?: string; region?: { start: number; duration: number } | null }) => void
   setSpeakerInherit: (v: { speakerId: string; filePath: string } | null) => void
   /** 시작 카드의 이름이 바뀌어 내부 id 가 달라질 때 슬롯·이름·이어받기 플래그·클립 key 를 새 id 로 옮긴다. */
@@ -452,6 +465,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   // 감정 원본 등록/변경: source만 설정하고 파생 상태 초기화(재분석 필요) + 그 clipKey의 이전 파생 클립 정리.
   // source가 바뀌면 그 감정의 이전 전사(ttsReferencePrompts[id])는 옛 음성 것이므로 함께 제거 —
   // 새 source에 stale 전사가 결합되는 것을 막는다(불변식 3·4). 타 감정 전사는 불변.
+  restoreWorkDraft: (payload) => set(() => ({
+    ttsText: payload.ttsText,
+    ttsSpeakerMode: payload.speakerMode,
+    ttsSpeakerRefState: payload.slots,
+    ttsSpeakerLabels: payload.labels,
+    ttsSpeakerEmotionEnabled: payload.emotionEnabled,
+    ttsSpeakerRenames: payload.renames,
+    // 이어받기는 이번 실행의 진행 상태다 — 기록에서 되살리지 않는다(복원이 곧 지정이다).
+    ttsSpeakerInherit: null,
+  })),
   registerSpeakerRef: (speakerId, source, label) => {
     // 이전 파생 클립을 먼저 놓는다(같은 key 로 다시 분석할 것이므로).
     try { window.api?.audio?.releaseReferenceClip?.('spk:' + speakerId) } catch { /* noop */ }

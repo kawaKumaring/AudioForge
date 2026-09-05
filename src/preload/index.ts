@@ -23,6 +23,9 @@ const api = {
     // multi=true 면 string[] 을 돌려준다. 인자 없는 기존 호출은 string|null 그대로다.
     selectFile: (multi?: boolean) => ipcRenderer.invoke('audio:select-file', multi),
     getFileInfo: (filePath: string) => ipcRenderer.invoke('audio:get-file-info', filePath),
+    /** 원본들이 아직 그 자리에 있는가(경로 → 참/거짓). 현재 작업 복원이 쓴다. */
+    sourcesPresent: (paths: string[]): Promise<Record<string, boolean>> =>
+      ipcRenderer.invoke('audio:sources-present', paths),
     process: (filePath: string, mode: string, options?: Record<string, unknown>) =>
       ipcRenderer.invoke('audio:process', filePath, mode, options),
     // 취소 '요청'(계약 C2-P0.1). 수락 여부의 권위는 main이고, 반환값은 신 계약 CancelResponse이거나
