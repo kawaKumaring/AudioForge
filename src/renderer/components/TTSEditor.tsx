@@ -37,6 +37,8 @@ import DialogueTabs, { type DialogueTab } from './DialogueTabs'
 import MultiSpeakerDialogue, { voiceStatusShort } from './MultiSpeakerDialogue'
 import { speakerDirectiveSequence } from '../../shared/dialogueSourcePatcher'
 import { useDialogueProjection } from '../hooks/useDialogueProjection'
+import ProcessButton from './ProcessButton'
+import ProgressBar from './ProgressBar'
 import { useWorkDraft } from '../hooks/useWorkDraft'
 import { normalizeSpeakerId } from '../../shared/ttsGrammar'
 import { validateSpeakerLabel } from '../../shared/dialogueSourcePatcher'
@@ -724,6 +726,12 @@ export default function TTSEditor() {
   // 현재 작업 자동 저장·복원 — 합성하지 않고 닫아도 인물·목소리·확정 구간이 남고, 다시 열면
   // 사용자에게 재확정을 요구하지 않고 앱이 스스로 되살린다. 저장된 목소리 구성은 건드리지 않는다.
   const workDraft = useWorkDraft(ttsEngine)
+  // 실행 카드의 한 줄 안내. 실행 중에는 '누르면 시작합니다'가 남지 않는다 — 그때 눌러야 할 것은 취소다.
+  const runHint = status === 'processing' ? '만드는 중입니다. 창을 닫지 마세요'
+    : status === 'cancelling' ? '취소하고 정리하는 중입니다'
+    : status === 'done' ? '다 만들었습니다'
+    : status === 'error' ? '만들지 못했습니다'
+    : '시작 버튼을 누르면 시작합니다'
   const emotionTagOf = (id: string) => '[' + (EMOTION_ID_TO_LABEL[id] ?? id) + ']'
   // 원문 편집기가 보이는 때: 한 명 | 여러 명의 직접 편집 열림 | 구조화할 수 없는 대본(이유와 함께).
   const showRawEditor = dialogueTab === 'single' || directEditOpen || !dialogue.editingAllowed
@@ -1168,7 +1176,6 @@ export default function TTSEditor() {
           />
         )}
 
-        {refModeControl}
       </TtsVoiceSection>
       )}
       {/* 여러 명: 단일용 목소리 영역은 그리지 않는다. 기본 목소리(처음 불러온 음성)의 분석·추천 구간 자동 확정은 보이지 않게
@@ -1392,15 +1399,6 @@ export default function TTSEditor() {
       </section>
 
       {/* 여러 명: 모든 인물에 함께 적용되는 생성 옵션 — 한 번만. 목소리별 설정은 인물 카드에 있다. */}
-      {dialogueTab === 'multi' && (
-        <section className="tts-flow-card" aria-label="공통 생성 옵션" style={flowCard} data-testid="common-options">
-          <div style={{ padding: '10px 16px', display: 'flex', flexDirection: 'column', gap: 6 }}>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>모든 인물에 함께 적용되는 생성 옵션</span>
-            {refModeControl}
-          </div>
-        </section>
-      )}
-
       {/* ───────── [3] 말하는 느낌(한 명) / [2](여러 명) ─────────
           프리셋 + 음높이·속도만. 문장 간격·말끝·감정 전환은 고급 설정으로 옮겼다. */}
       <ExpressionControls
@@ -1450,10 +1448,17 @@ export default function TTSEditor() {
         tab={advancedTab}
         onTab={setAdvancedTab}
         summary={`참조 방식 ${refModeLabel} · 엔진 ${engineLabel}`}
+        flowNumber={dialogueTab === 'multi' ? 3 : 4}
         showSettingHelp={showSettingHelp}
         onToggleSettingHelp={setShowSettingHelp}
         voice={
           <>
+            {/* 참조 방식 — 편집 위치는 여기 하나뿐이다. 기본 화면의 별도 영역(한 명의 목소리 섹션 안,
+                여러 명의 '공통 생성 옵션')을 없앴다. 기본값(자동)은 그대로이고 모든 인물에 함께 적용된다. */}
+            <div data-testid="ref-mode-advanced" style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>모든 인물에 함께 적용되는 생성 옵션</span>
+              {refModeControl}
+            </div>
             {/* 목소리 구성 저장/불러오기 — 선택 기능. 기본 절차에서는 접혀 있고, 배역 세트는
                 사용자가 이 안에서 저장을 누를 때만 만들어진다. */}
             <details data-testid="voice-config-save-load" style={{ minWidth: 0 }}>
@@ -1642,15 +1647,23 @@ export default function TTSEditor() {
         }
       />
 
-      {/* ───────── [4] 음성 만들기 ─────────
-          실제 버튼은 바로 아래 ProcessButton(App 이 항상 같은 자리에 그린다). 여기서는 단계 표시만 한다 —
-          버튼을 두 곳에 두면 '어느 것을 눌러야 하는가'가 생긴다. */}
-      <section aria-label="음성 만들기" style={flowCard}>
+      {/* ───────── 음성 만들기 ─────────
+          제목·시작/취소 버튼·진행 상태를 이 카드 하나에 둔다. 실행 중에는 '아래 버튼을 누르면 시작합니다'가
+          남지 않는다 — 그때 눌러야 할 것은 취소이고, 진행 상태가 그 자리를 대신한다. */}
+      <section aria-label="음성 만들기" style={flowCard} data-testid="run-section">
         <header className="tts-flow-head" style={{ ...flowHead, borderBottom: 'none' }}>
-          <span aria-hidden="true" style={flowNum}>4</span>
+          <span aria-hidden="true" style={flowNum}>{dialogueTab === 'multi' ? 4 : 5}</span>
           <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>음성 만들기</span>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1, minWidth: 140 }}>아래 버튼을 누르면 시작합니다</span>
+          <span data-testid="run-hint" style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1, minWidth: 140 }}>
+            {runHint}
+          </span>
         </header>
+        <div style={{ padding: '0 16px 14px', display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
+          <ProcessButton />
+          <ProgressBar note={preflight?.device_expected === 'cpu'
+            ? 'VRAM이 부족해 이 실행은 CPU로 동작합니다. 시간이 더 걸립니다 — 창을 닫지 말고 기다려 주세요.'
+            : undefined} />
+        </div>
       </section>
     </div>
   )

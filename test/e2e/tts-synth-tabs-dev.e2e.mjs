@@ -96,7 +96,7 @@ try {
   ok('1', tabsN === 1 && !geo.inHeader && geo.tabsW && Math.abs(geo.tabsW - geo.parentW) < 2 && geo.tabsTop < geo.voiceTop,
     '전체 폭 한 명|여러 명 탭 1개가 목소리 영역 위에 있고, 대사 옆 중복 탭 없음', JSON.stringify(geo))
   const single = await st(() => ({ voice: document.querySelectorAll('section[aria-label="목소리"]').length, textareas: document.querySelectorAll('section[aria-label="대사"] textarea').length,
-    multi: document.querySelectorAll('[data-testid="multi-dialogue"],[data-testid="dialogue-row"],[data-testid="starter-card"],[data-testid="common-options"],[data-testid="default-voice-driver"]').length,
+    multi: document.querySelectorAll('[data-testid="multi-dialogue"],[data-testid="dialogue-row"],[data-testid="starter-card"],[data-testid="default-voice-driver"]').length,
     n2: document.querySelector('section[aria-label="대사"] header span[aria-hidden]')?.textContent, n3: document.querySelector('section[aria-label="말하는 느낌"] header span[aria-hidden]')?.textContent }))
   ok('2', (await store()).mode === 'single' && single.voice === 1 && single.textareas === 1 && single.multi === 0 && single.n2 === '2' && single.n3 === '3',
     '한 명: 목소리 설정 1 + 대사 한 칸, 여러 명 요소 0, 번호 1·2·3', JSON.stringify(single))
@@ -108,13 +108,17 @@ try {
 
   await tab('multi')
   const multiDom = await st(() => ({ voice: document.querySelectorAll('section[aria-label="목소리"]').length, starter: document.querySelectorAll('[data-testid="starter-card"]').length,
-    common: document.querySelectorAll('[data-testid="common-options"]').length, driver: document.querySelectorAll('[data-testid="default-voice-driver"]').length,
+    driver: document.querySelectorAll('[data-testid="default-voice-driver"]').length,
     palette: document.querySelectorAll('[aria-label="감정 태그 팔레트"]').length, raw: document.querySelectorAll('section[aria-label="인물과 대사"] div[data-af-tts-editor] textarea').length,
     n1: document.querySelector('section[aria-label="인물과 대사"] header span[aria-hidden]')?.textContent, n2: document.querySelector('section[aria-label="말하는 느낌"] header span[aria-hidden]')?.textContent,
+    n3: document.querySelector('section[aria-label="고급 설정"] span[aria-hidden]')?.textContent,
+    n4: document.querySelector('section[aria-label="음성 만들기"] header span[aria-hidden]')?.textContent,
+    runBtns: document.querySelectorAll('section[aria-label="음성 만들기"] button').length,
     addBtns: [...document.querySelectorAll('[data-testid="multi-dialogue"] button')].filter((b) => b.textContent.includes('대화 추가')).length,
     oldAdd: document.querySelectorAll('#dlg-new-speaker, #dlg-new-line, [data-testid="starter-add"]').length }))
-  ok('4', (await store()).mode === 'multi' && multiDom.voice === 0 && multiDom.starter === 1 && multiDom.common === 1 && multiDom.driver === 1 && multiDom.palette === 0 && multiDom.raw === 0
-    && multiDom.n1 === '1' && multiDom.n2 === '2' && multiDom.addBtns === 1 && multiDom.oldAdd === 0,
+  ok('4', (await store()).mode === 'multi' && multiDom.voice === 0 && multiDom.starter === 1 && multiDom.driver === 1 && multiDom.palette === 0 && multiDom.raw === 0
+    && multiDom.n1 === '1' && multiDom.n2 === '2' && multiDom.n3 === '3' && multiDom.n4 === '4'
+    && multiDom.runBtns >= 1 && multiDom.addBtns === 1 && multiDom.oldAdd === 0,
     '여러 명: 단일 목소리 영역 0, 인물1 시작 카드 1, 공통 옵션 1, 상단 감정 버튼 0, 원문 편집기 접힘, 번호 1·2, 대화 추가 버튼 1', JSON.stringify(multiDom))
   // 첫 인물이 기본 목소리의 확정 구간을 이어받는다(재선택·재확정 없음).
   const inherited = await waitUntil(async () => { const s = await store(); const r = s.refs['인물1']; return !!r && r.ready === true && !!r.clip && r.clip !== s.refClip }, 20000)
@@ -239,7 +243,7 @@ try {
   // 좁은 창: 가로 넘침·겹침·세로로 쪼개진 버튼 0 (1100 / 720 / 560)
   const layoutCheck = async () => page.evaluate(() => {
     const root = document.querySelector('section[aria-label="인물과 대사"]')
-    const btns = [...document.querySelectorAll('[data-testid="dialogue-tabs"] button, [data-testid="multi-dialogue"] button, [data-testid="common-options"] button')]
+    const btns = [...document.querySelectorAll('[data-testid="dialogue-tabs"] button, [data-testid="multi-dialogue"] button')]
     const tall = btns.filter((b) => b.getBoundingClientRect().height > 44).length
     const clipped = btns.filter((b) => b.scrollWidth > b.clientWidth + 1).length
     const rows = [...document.querySelectorAll('[data-testid="dialogue-row"]')].map((r) => r.getBoundingClientRect())

@@ -43,8 +43,10 @@ test('한 명: 목소리 섹션 + 대사 한 칸. 여러 명: 단일용 목소�
   assert.ok(driver.includes('open={false}') && driver.includes('autoConfirm'), '도구는 그리지 않고 준비만')
   assert.ok(SHELL.includes("aria-label={dialogueTab === 'multi' ? '인물과 대사' : '대사'}"), '여러 명은 단일 번호 체계를 끌고 오지 않는다')
   assert.ok(SHELL.includes("{dialogueTab === 'multi' ? 1 : 2}") && SHELL.includes("flowNumber={dialogueTab === 'multi' ? 2 : 3}"))
-  assert.ok(SHELL.includes('data-testid="common-options"'), '공통 생성 옵션(여러 명)')
-  assert.equal((SHELL.match(/\{refModeControl\}/g) ?? []).length, 2, '참조 방식은 한 화면에 한 번(한 명: 목소리 섹션 / 여러 명: 공통 옵션)')
+  // 참조 방식은 고급 설정 안 한 곳에만 있다 — 기본 화면의 별도 영역(공통 생성 옵션·목소리 섹션 안)은 없앴다.
+  assert.equal(SHELL.includes('data-testid="common-options"'), false, '기본 화면에 별도 참조 방식 영역이 없다')
+  assert.ok(SHELL.includes('data-testid="ref-mode-advanced"'), '고급 설정 안으로 통합')
+  assert.equal((SHELL.match(/\{refModeControl\}/g) ?? []).length, 1, '편집 위치는 하나뿐이다')
   assert.ok(SHELL.includes("{dialogueTab === 'multi' && !directEditOpen && ("), '여러 명일 때만 카드 마운트')
   assert.ok(SHELL.includes('<EmotionScriptEditor'))
   assert.ok(SHELL.includes('onChange={onSingleEditorChange}'))
@@ -140,11 +142,11 @@ test('+ 감정: caret 위치에 기존 문법 태그를 넣는다 — IME·caret
 })
 
 test('셸은 기존 store 콜백을 그대로 잇는다 — 새 저장소 없음, 이름 변경은 슬롯 이동', () => {
-  assert.ok(SHELL.includes('if (src) registerSpeakerRef(id, src, label)'))
+  assert.ok(SHELL.includes('registerSpeakerRef(id, src, label)') && SHELL.includes('if (!src) return'))
   assert.ok(SHELL.includes('onRemoveVoice={(id) => removeSpeakerRef(id)}'))
   assert.ok(SHELL.includes('onSpeakerIdChanged={(from, to) => moveSpeakerRef(from, to)}'))
-  assert.ok(SHELL.includes('renderRegionEditor={renderSpeakerRegion}') && SHELL.includes('const renderSpeakerRegion = (speakerId: string, open = true) => {'))
-  assert.ok(SHELL.includes('open={open}\n        plainStatus={!open}'), '카드 안 구간 편집기는 접힘/펼침')
+  assert.ok(SHELL.includes('renderRegionEditor={renderSpeakerRegion}') && SHELL.includes('const renderSpeakerRegion = (speakerId: string, open = true, autoConfirm = false)'))
+  assert.ok(SHELL.includes('open={open}') && SHELL.includes('plainStatus={!open}'), '카드 안 구간 편집기는 접힘/펼침')
   assert.equal(SHELL.includes('<SpeakerReferenceManager'), false, '고급 설정의 중복 편집기 없음')
 })
 
