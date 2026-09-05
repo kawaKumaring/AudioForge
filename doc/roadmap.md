@@ -15,6 +15,8 @@ v1.2.0에서 완료된 것과 남은 한계는 [script-scene-architecture.md §1
 
 감정·음률의 기술 결론(모델 capability, v3 프로필, 참조 선택, 적용 통로)은
 [감정 음향 전략](work-in-progress/tts-emotion-acoustic-strategy.md)이 단일 권위로 소유한다.
+감정 기능의 **목표와 규칙 설계**(음률 규칙을 조사·정리해 새 대사에 배치하는 방향)는
+[감정 음률 규칙 설계](work-in-progress/tts-emotion-rule-design.md)가 소유한다 — 2026-09-05 방향 정정.
 이 문서는 순서와 완료 조건만 둔다.
 
 ### 음성 합성
