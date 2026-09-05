@@ -185,6 +185,9 @@ export default function ReferenceRegionPanel({
   const [loading, setLoading] = useState(false)
   const [analyzeError, setAnalyzeError] = useState<string | null>(null)
   const [start, setStart] = useState(0)      // 구간 시작(초)
+  // 프로그램이 심은 슬라이더 값(추천 구간·사용 중 구간). 사용자가 움직인 것이 아니므로 '구간 변경' 으로 보지 않는다.
+  // 예전에는 분석이 끝나 사용 중 구간을 슬라이더에 심는 순간 '구간을 변경했습니다 — 다시 확정' 로 준비를 내렸다(재확정 요구 결함).
+  const seededRegion = useRef<{ start: number; dur: number } | null>(null)
   const [dur, setDur] = useState(7)          // 구간 길이(초)
   const [confirming, setConfirming] = useState(false)
   const [metrics, setMetrics] = useState<RegionMetrics | null>(null)
@@ -242,7 +245,9 @@ export default function ReferenceRegionPanel({
         const r = a.recommend
         if (hasCommitted && committed?.region) {
           // 슬라이더는 사용 중인 구간에서 시작한다. 전체 원본 범위 안에서 자유롭게 넓힐 수 있다.
-          setStart(committed.region.start); setDur(clampDuration(pol, a.duration_sec, committed.region.duration))
+          const cd = clampDuration(pol, a.duration_sec, committed.region.duration)
+          seededRegion.current = { start: committed.region.start, dur: cd }
+          setStart(committed.region.start); setDur(cd)
           setEffective({ start_sec: committed.region.start, dur_sec: committed.region.duration } as RegionSpan)
           if (committed.clip) setConfirmedClip(committed.clip)
           // 엔진 전환 재판정: 사용 중 구간이 새 엔진의 **필수** 조건 밖이면 준비를 내리고 사유·수정만 안내한다.
@@ -252,7 +257,11 @@ export default function ReferenceRegionPanel({
             onStateRef.current({ ready: false, clip: committed.clip, region: committed.region,
               message: committedMismatchText(pol, committed.region.duration) })
           }
-        } else if (r && r.ok) { setStart(r.start_sec); setDur(clampDuration(pol, a.duration_sec, r.dur_sec)) }
+        } else if (r && r.ok) {
+          const rd = clampDuration(pol, a.duration_sec, r.dur_sec)
+          seededRegion.current = { start: r.start_sec, dur: rd }
+          setStart(r.start_sec); setDur(rd)
+        }
         if (!hasCommitted) {
           onStateRef.current({
             ready: false, clip: '',
@@ -300,7 +309,10 @@ export default function ReferenceRegionPanel({
 
   // 구간(start/dur)이 바뀌면 이전 확정은 무효 → 재확정 필요
   useEffect(() => {
-    if (analysis?.needs_region) {
+    if (!analysis?.needs_region) return
+    const seeded = seededRegion.current
+    if (seeded && Math.abs(seeded.start - start) < 1e-6 && Math.abs(seeded.dur - dur) < 1e-6) return   // 심은 값 — 사용자의 변경이 아니다
+    {
       setConfirmedClip(''); setMetrics(null)
       onStateRef.current({
         ready: false, clip: '',
