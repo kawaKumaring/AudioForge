@@ -607,8 +607,8 @@ durable 자산(reference-library 는 잘린 24k 클립만 소유) 은 별도 설
   reference_prefix_tokens / reference_replay_frames 기록.
 
 ### 실측 (2026-09-05, 정책 변경 **전** 코드 f4e6e98, 사용자 제공 인물 폴더 5개 중 3명)
-- 참조: 가=쵸단(26.48s+6.57s) / 나=마젠타(15.735s+7.06s) / 다=히나(7.17s+7.455s). 앱의 카드 패널 구간 추천 → "이 구간으로
-  확정"(build_reference_clip) 으로 파생. 히나 원본은 문제 당시 세 번째 인물 원본과 내용 해시가 같다.
+- 참조: 가=A(26.48s+6.57s) / 나=B(15.735s+7.06s) / 다=C(7.17s+7.455s). 앱의 카드 패널 구간 추천 → "이 구간으로
+  확정"(build_reference_clip) 으로 파생. C 원본은 문제 당시 세 번째 인물 원본과 내용 해시가 같다.
 - 다화자 1회(A→B→C→A→B→C, 6발화): CUDA 97초, ICL, 6 chunk 전부 completed_before_limit, routing_rule 전부 default_speaker,
   인물별 reference_id 3개 서로 다름, fallback/retry 없음, 21.9초. 전체+인물별 6+전환 경계 5 미리듣기(후처리 0).
 - 장문 1회(405자·3발화·3인물): CUDA 149초, ICL, chunk 3개(토큰 102/109/89, 반복 172/178/172, 상한 512) 전부 completed_before_limit,

@@ -20,7 +20,7 @@
   autosnap/alignment/block_integration/conditioning/degradation/speaker_refs/budget/bridge/generation_limit) 통과, node --test
   194건(referencePolicy 7·UI 계약 6 신설) 통과, tsc web/node 0 오류. GPU 추가 검증은 하지 않았다(별도 승인).
 - 기타: test_generation_limit SynthJobSafetyTest 7건이 parsed 2-튜플 fixture 로 HEAD 에서부터 깨져 있던 것을 복구(제품 코드 무관).
-- **GPU 재검증(정책 변경 전 코드)**: 사용자 제공 인물 3명(쵸단·마젠타·히나)으로 다화자 1회·장문 1회 CUDA 실행, 라우팅·참조 id·종료
+- **GPU 재검증(정책 변경 전 코드)**: 사용자 제공 인물 3명(A·B·C)으로 다화자 1회·장문 1회 CUDA 실행, 라우팅·참조 id·종료
   사유 전부 정상. 장문은 분할·재분할이 일어나지 않아 재분할 경로는 실제 실행 미검증. 산출물 `_local/artifacts/diagnostics/
   gpu-reverify-20260905/`. 최종 판정은 사용자 청취.
 
