@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import type { CSSProperties } from 'react'
 import { useAppStore, emotionEffectivePath, castSpeakerIdOf, applySpeakerRenames } from '@/stores/app.store'
+import type { EmotionRefState } from '@/stores/app.store'
 import type { TtsReferenceEntry, PitchCapability, TtsEmotionRegion } from '../../shared/ttsConfig'
 import { deriveRefMode } from '../../shared/ttsConfig'
 import ReferenceRegionPanel from './ReferenceRegionPanel'
@@ -697,6 +698,10 @@ export default function TTSEditor() {
   // 되돌리기만 둔다. 되돌리기는 그 한 번의 편집 직전 원문으로 돌리고, 다음 편집이 오면 알림은 사라진다
   // (뒤에 이어 친 글자까지 삼키지 않기 위해). 목소리 자산·목소리 구성은 어느 경우에도 건드리지 않는다.
   const [structureNotice, setStructureNotice] = useState<{ prevText: string } | null>(null)
+  // 목소리를 새로 고르기 직전의 '정상 목소리'. 새 파일 준비가 실패하면 이것을 그대로 돌려놓는다
+  // (사용자가 파일 하나 잘못 골랐다고 멀쩡히 쓰던 목소리를 잃지 않게).
+  const prevGoodVoice = useRef<Record<string, EmotionRefState>>({})
+  const [voiceReplaceNotice, setVoiceReplaceNotice] = useState<string | null>(null)
   // 여러 명 화면의 원문 직접 편집(고급). 열려 있는 동안 발화 카드는 숨긴다 — 두 편집기를 동시에 고치지 않는다.
   // 닫으면 현재 ttsText 의 분석 결과가 그대로 카드로 보인다(별도 변환 없음).
   const [directEditOpen, setDirectEditOpen] = useState(false)
@@ -821,7 +826,7 @@ export default function TTSEditor() {
     return p || null
   }
   // 구간 편집기는 감정과 **같은 것**을 쓴다(clipKey 만 화자용으로 분리).
-  const renderSpeakerRegion = (speakerId: string, open = true) => {
+  const renderSpeakerRegion = (speakerId: string, open = true, autoConfirm = false) => {
     const src = ttsSpeakerRefState[speakerId]?.source || ''
     if (!src) return null
     return (
@@ -833,13 +838,48 @@ export default function TTSEditor() {
         committed={ttsSpeakerRefState[speakerId]?.ready
           ? { clip: ttsSpeakerRefState[speakerId].clip, region: ttsSpeakerRefState[speakerId].region,
               whole: !ttsSpeakerRefState[speakerId].clip && !ttsSpeakerRefState[speakerId].region } : null}
-        onState={(s) => setSpeakerRefState(speakerId, s)}
+        onState={(st) => {
+          // 늦게 도착한 이전 파일의 결과가 새 선택을 덮지 않게 한다. 파일을 연달아 고르면
+          // 앞 파일의 분석이 뒤늦게 끝나 새 파일의 상태를 지우는 일이 실제로 일어난다.
+          if (useAppStore.getState().ttsSpeakerRefState[speakerId]?.source !== src) return
+          setSpeakerRefState(speakerId, st)
+        }}
         label={`${speakerLabelOf(speakerId)} 목소리`}
         open={open}
+        autoConfirm={autoConfirm}
         plainStatus={!open}
       />
     )
   }
+
+  // ── 새 인물 목소리 자동 준비 ────────────────────────────────────────────
+  // 파일을 고르면 그것으로 끝이어야 한다. 기존 분석·추천·구간 확정 경로를 그대로 이어서 돌리되,
+  // 카드를 열지 않아도 되도록 보이지 않는 자리에서 한 명씩(같은 파이썬 통로를 동시에 두드리지 않게) 준비한다.
+  // 추천이 안 되거나 입력 조건이 안 맞으면 그때만 카드가 '구간 선택 필요'를 말한다(기존 문구 그대로).
+  const autoPrep = useMemo(() => {
+    const hit = Object.entries(ttsSpeakerRefState)
+      .filter(([id, st]) => !!st?.source && !st.ready && (st.message ?? '') === ''
+        && id !== ttsSpeakerInherit?.speakerId)   // 첫 인물 이어받기는 그쪽이 끝낸다
+      .sort((a, b) => a[0].localeCompare(b[0]))[0]
+    return hit ? { id: hit[0], source: hit[1].source } : null
+  }, [ttsSpeakerRefState, ttsSpeakerInherit])
+
+  // 교체 실패 복구 — 새 파일을 못 쓰게 됐고 구간을 고르라는 것도 아니면, 보관해 둔 정상 목소리를 되돌린다.
+  useEffect(() => {
+    for (const [id, keep] of Object.entries(prevGoodVoice.current)) {
+      const now = ttsSpeakerRefState[id]
+      if (!now || now.source === keep.source) { delete prevGoodVoice.current[id]; continue }
+      if (now.ready) { delete prevGoodVoice.current[id]; continue }        // 새 목소리가 준비됐다
+      const msg = now.message ?? ''
+      if (msg === '') continue                                            // 아직 준비 중
+      if (msg.includes('구간')) { delete prevGoodVoice.current[id]; continue }  // 수동 구간 선택 요청은 실패가 아니다
+      delete prevGoodVoice.current[id]
+      setSpeakerRefState(id, { clip: keep.clip, ready: keep.ready, message: keep.message, region: keep.region })
+      useAppStore.setState((cur) => ({ ttsSpeakerRefState: {
+        ...cur.ttsSpeakerRefState, [id]: { ...cur.ttsSpeakerRefState[id], source: keep.source } } }))
+      setVoiceReplaceNotice(`${speakerLabelOf(id)}: 새로 고른 목소리를 준비하지 못해 이전 목소리를 그대로 씁니다. 다른 파일을 골라 주세요.`)
+    }
+  }, [ttsSpeakerRefState])
 
   // 셸이 파일 선택 다이얼로그를 주입(EmotionReferenceManager는 파일 I/O를 하지 않음).
   // ── 배역 세트(R2-b) ──────────────────────────────────────────────────
@@ -1148,6 +1188,12 @@ export default function TTSEditor() {
           />
         </div>
       )}
+      {/* 새 인물 목소리 자동 준비 — 카드를 열지 않아도 분석·추천·구간 확정이 돈다(한 번에 한 명). */}
+      {dialogueTab === 'multi' && autoPrep && (
+        <div hidden data-testid="speaker-voice-driver" data-speaker={autoPrep.id}>
+          {renderSpeakerRegion(autoPrep.id, false, true)}
+        </div>
+      )}
 
       {/* ───────── [2] 대사(한 명) / [1] 인물과 대사(여러 명) ─────────
           여러 명에서는 인물·목소리·대사가 카드 하나에 있으므로 단일 화면의 번호 체계를 끌고 오지 않는다. */}
@@ -1221,7 +1267,11 @@ export default function TTSEditor() {
               voiceOf={speakerVoiceOf}
               onAssignVoice={(id, label) => { void (async () => {
                 const src = await requestSpeakerSource()
-                if (src) registerSpeakerRef(id, src, label)
+                if (!src) return
+                const before = ttsSpeakerRefState[id]
+                if (before?.ready) prevGoodVoice.current[id] = before   // 교체 실패 시 돌려놓을 것
+                setVoiceReplaceNotice(null)
+                registerSpeakerRef(id, src, label)
               })() }}
               onRemoveVoice={(id) => removeSpeakerRef(id)}
               onSpeakerIdChanged={(from, to) => moveSpeakerRef(from, to)}
@@ -1276,6 +1326,11 @@ export default function TTSEditor() {
             </div>
           )}
           {/* 화자 표기가 바뀐 편집 뒤의 비차단 알림 — 오류가 아니다. 되돌리기는 직전 원문으로. */}
+          {/* 목소리 교체 실패 — 이전 목소리를 그대로 쓰고 있다는 사실을 숨기지 않는다. */}
+          {voiceReplaceNotice && (
+            <div data-testid="voice-replace-notice" role="status" aria-live="polite"
+              style={{ fontSize: 11, color: 'var(--amber, #d08700)' }}>{voiceReplaceNotice}</div>
+          )}
           {/* 자동 저장이 이번 실행에서 막혔다면 숨기지 않는다 — 저장되지 않았는데 저장된 것처럼 두지 않는다. */}
           {workDraft.rootError && (
             <div data-testid="work-draft-notice" role="status" aria-live="polite"
