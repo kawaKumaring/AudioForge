@@ -3,7 +3,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   AXIS_NOTE, DEFAULT_SPEAKER_LABEL, INSUFFICIENT_TEXT, PLAN_KIND_LABEL, PLAN_WARNING_BLOCKS,
-  PLAN_WARNING_HINT, PLAN_WARNING_LABEL, RESERVED_AXIS_LABELS, SPEAKER_REFERENCE_NOTE,
+  PLAN_WARNING_HINT, PLAN_WARNING_LABEL, RESERVED_AXIS_LABELS, speakerReferenceNote,
   SPLIT_REASON_LABEL, axisRelationLine, canShowWallTime, confidenceLabel,
   defaultSpeakerUtteranceCount, emotionSpanRows, formatDuration, formatRange, isForcedSplit,
   paragraphSummary, planIsApproximate, planWarningNote, planWarningRows, preparationNote,
@@ -425,10 +425,9 @@ test('화자를 지정하지 않은 말이 몇 개인지 센다', () => {
   assert.ok(DEFAULT_SPEAKER_LABEL.includes('기본'))
 })
 
-test('화자별 참조가 아직 없다는 사실을 문구로 말한다', () => {
-  // 없는 상태를 지어내지 않는다 — PHASE 2 에는 화자별 참조 지정이 없다.
-  assert.ok(SPEAKER_REFERENCE_NOTE.includes('기본 참조'))
-  assert.ok(SPEAKER_REFERENCE_NOTE.includes('다음 단계'))
+test('인물 목록 아래 문구는 생성 방식에서 파생한다 — 낡은 "다음 단계" 문구 없음', () => {
+  assert.ok(speakerReferenceNote('single').includes('기본 목소리') && speakerReferenceNote('multi').includes('카드'))
+  assert.equal(speakerReferenceNote('multi').includes('다음 단계'), false, '낡은 문구 없음')
 })
 
 test('화자 진단의 차단 여부가 파서 계약과 맞는다', () => {

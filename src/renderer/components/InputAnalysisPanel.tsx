@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import {
   AXIS_NOTE, DEFAULT_SPEAKER_LABEL, INSUFFICIENT_TEXT, PARAGRAPH_WALL_NOTE,
-  PLAN_APPROXIMATE_NOTE, RESERVED_AXIS_LABELS, RESERVED_AXIS_NOTE, SPEAKER_REFERENCE_NOTE,
+  PLAN_APPROXIMATE_NOTE, RESERVED_AXIS_LABELS, RESERVED_AXIS_NOTE, speakerReferenceNote,
   axisRelationLine, canShowWallTime, confidenceLabel, defaultSpeakerUtteranceCount,
   emotionSpanRows, formatRange, paragraphSummary, planIsApproximate, planWarningNote,
   planWarningRows, preparationNote, speakerRows, splitRows, summaryLine, utteranceRows,
@@ -28,8 +28,12 @@ export default function InputAnalysisPanel(props: {
   status: AnalysisStatus
   result: AnalysisResult | null
   sourceText: string
+  /** 생성 방식 — 인물 목록 아래 문구를 파생한다. 미지정 = 한 명. */
+  speakerMode?: 'single' | 'multi'
+  /** 인물별 실제 목소리 상태(카드와 같은 판정). 미지정이면 상태를 표시하지 않는다 — 지어내지 않는다. */
+  speakerStatusOf?: (speakerId: string) => string | null
 }) {
-  const { status, result, sourceText } = props
+  const { status, result, sourceText, speakerMode = 'single', speakerStatusOf } = props
   const [open, setOpen] = useState(true)
   const [showDetail, setShowDetail] = useState(false)
 
@@ -100,7 +104,7 @@ export default function InputAnalysisPanel(props: {
         <>
           <StructureLine result={result} stale={stale} />
           <PlanWarningList result={result} sourceText={sourceText} />
-          <SpeakerList result={result} stale={stale} />
+          <SpeakerList result={result} stale={stale} mode={speakerMode} statusOf={speakerStatusOf} />
           <ParagraphList result={result} sourceText={sourceText} stale={stale} />
           <EmotionSpanList result={result} sourceText={sourceText} stale={stale} />
           <SplitList result={result} stale={stale} />
@@ -187,7 +191,7 @@ function UtteranceRows(props: {
               fontSize: 11, color: 'var(--text-muted)', minWidth: 0,
             }}>
             <span style={{ flexShrink: 0, opacity: 0.9 }}>발화 {u.index + 1}</span>
-            {/* 누가 말하는가. 지정하지 않은 말은 기본 참조를 쓴다고 말한다. */}
+            {/* 누가 말하는가. 지정하지 않은 말은 기본 목소리를 쓴다고 말한다. */}
             <span data-testid="analysis-utterance-speaker"
               style={{ flexShrink: 0, color: u.speakerLabel ? 'var(--cyan)' : 'var(--text-muted)' }}>
               {u.speakerLabel ?? DEFAULT_SPEAKER_LABEL}
@@ -320,10 +324,10 @@ function PlanWarningList(props: { result: AnalysisResult; sourceText: string }) 
  * 개수는 계획이 이미 센 값이다(화면이 다시 세지 않는다). 표시 이름은 사용자가 처음 쓴
  * 표기이고, 계획·생성이 쓰는 것은 정규화된 내부 id 다.
  *
- * 참조 준비 상태를 여기서 지어내지 않는다. 지금은 화자별 참조 지정이 없어 모두 기본 참조를
- * 쓰며, 그 사실만 한 줄로 말한다. 없는 상태를 "준비됨" 처럼 보이게 하면 안 된다.
+ * 참조 준비 상태를 여기서 지어내지 않는다 — 셸이 카드와 같은 판정으로 넘긴 문구만 보인다(여러 명).
+ * 한 명 방식에서는 인물 표기가 있어도 모든 대사가 기본 목소리로 만들어진다는 사실을 말한다.
  */
-function SpeakerList(props: { result: AnalysisResult; stale: boolean }) {
+function SpeakerList(props: { result: AnalysisResult; stale: boolean; mode: 'single' | 'multi'; statusOf?: (speakerId: string) => string | null }) {
   const rows = speakerRows(props.result)
   const defaultCount = defaultSpeakerUtteranceCount(props.result)
   if (!rows.length) return null
@@ -340,7 +344,9 @@ function SpeakerList(props: { result: AnalysisResult; stale: boolean }) {
             fontSize: 11, color: 'var(--text-muted)', minWidth: 0 }}>
           <span style={{ color: 'var(--cyan)', flexShrink: 0 }}>{k.label}</span>
           <span style={{ flexShrink: 0 }}>발화 {k.utteranceCount}개</span>
-          <span style={{ flexShrink: 0, opacity: 0.8 }}>기본 참조</span>
+          {props.mode === 'multi' && props.statusOf && (
+            <span data-testid="analysis-speaker-status" style={{ flexShrink: 0, opacity: 0.9 }}>{props.statusOf(k.speakerId) ?? ''}</span>
+          )}
         </div>
       ))}
       {defaultCount > 0 && (
@@ -351,8 +357,8 @@ function SpeakerList(props: { result: AnalysisResult; stale: boolean }) {
           <span style={{ flexShrink: 0 }}>발화 {defaultCount}개</span>
         </div>
       )}
-      <span style={{ fontSize: 11, color: 'var(--text-muted)', opacity: 0.7 }}>
-        {SPEAKER_REFERENCE_NOTE}
+      <span data-testid="analysis-speaker-note" style={{ fontSize: 11, color: 'var(--text-muted)', opacity: 0.7 }}>
+        {speakerReferenceNote(props.mode)}
       </span>
     </div>
   )

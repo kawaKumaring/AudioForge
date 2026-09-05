@@ -39,7 +39,7 @@ try {
   const count = (sel) => page.evaluate((s) => document.querySelectorAll(s).length, sel)
   const waitUntil = async (fn, ms) => { const t0 = Date.now(); while (Date.now() - t0 < ms) { if (await fn()) return true; await sleep(200) } return false }
   const store = () => st(() => { const s = window.__afStore.getState(); return { text: s.ttsText, refs: s.ttsSpeakerRefState, labels: s.ttsSpeakerLabels, refReady: s.ttsRefReady, enabled: s.ttsSpeakerEmotionEnabled } })
-  const cardVoices = () => st(() => [...document.querySelectorAll('[data-testid="dialogue-row"] [data-testid="card-voice"]')].map((b) => b.textContent.trim()))
+  const cardVoices = () => st(() => [...document.querySelectorAll('[data-testid="dialogue-row"] [data-testid="card-voice-status"]')].map((b) => b.textContent.trim()))
 
   await page.evaluate(async (fp) => { const s = window.__afStore; s.getState().setFile(await window.api.audio.getFileInfo(fp), await window.api.audio.getFileUrl(fp)); s.getState().setMode('tts') }, iso.input)
   await page.waitForSelector('[data-testid="dialogue-tabs"]', { timeout: 60000 })
@@ -62,10 +62,9 @@ try {
   // 감정별 설정 켬 표시(슬롯 이동에 같이 가는지 확인용)
   await st(() => window.__afStore.getState().setSpeakerEmotionEnabled('인물1', true))
 
-  // 1) 이름 바꾸기 → 모든 발화 표기 + 슬롯 이동
-  await page.click('[data-testid="dialogue-row"][data-index="0"] [data-testid="card-voice"]')
-  await waitUntil(async () => (await count('[data-testid="voice-panel"]')) === 1, 3000)
-  await page.click('[data-testid="speaker-rename-toggle"]')
+  // 1) 이름 바꾸기(카드 머리의 이름 옆) → 모든 발화 표기 + 슬롯 이동
+  await page.click('[data-testid="dialogue-row"][data-index="0"] [data-testid="card-rename"]')
+  await waitUntil(async () => (await count('[data-testid="speaker-rename"]')) === 1, 3000)
   await page.fill('[data-testid="speaker-rename-input"]', '철수')
   await page.click('[data-testid="speaker-rename-apply"]')
   const renamed = await waitUntil(async () => { const s = await store(); return s.text === '[화자 철수]\n하나\n[화자 철수]\n둘\n[화자 지은]\n셋' }, 10000)
@@ -75,19 +74,15 @@ try {
     '이름 변경 → 같은 인물의 모든 표기·카드가 철수, 목소리 슬롯(준비·유효 참조)·감정별 설정 이동', JSON.stringify({ text: s1.text, refs: Object.keys(s1.refs), ready: s1.refs['철수']?.ready, enabled: s1.enabled, cards: await cardVoices() }))
   ok('1b', (await count('[data-testid="speaker-rename"]')) === 0 && (await count('[data-testid="speaker-rename-problem"]')) === 0, '성공 시 입력창이 닫힌다')
 
-  // 2) 다른 기존 인물과 충돌 → 거부·무변경(병합 없음). 이름이 바뀌면 상세는 닫히므로(인물 id 변경) 다시 연다.
-  if ((await count('[data-testid="voice-panel"]')) === 0) {
-    await page.click('[data-testid="dialogue-row"][data-index="0"] [data-testid="card-voice"]')
-    await waitUntil(async () => (await count('[data-testid="voice-panel"]')) === 1, 3000)
-  }
-  await page.click('[data-testid="speaker-rename-toggle"]')
+  // 2) 다른 기존 인물과 충돌 → 거부·무변경(병합 없음)
+  await page.click('[data-testid="dialogue-row"][data-index="0"] [data-testid="card-rename"]')
+  await waitUntil(async () => (await count('[data-testid="speaker-rename"]')) === 1, 3000)
   await page.fill('[data-testid="speaker-rename-input"]', '지은')
   await page.click('[data-testid="speaker-rename-apply"]')
   await sleep(300)
   const s2 = await store()
   ok('2', (await count('[data-testid="speaker-rename-problem"]')) === 1 && s2.text === s1.text && JSON.stringify(s2.refs) === JSON.stringify(s1.refs),
     '충돌하는 이름은 거부 안내, 원문·슬롯 무변경', (await st(() => document.querySelector('[data-testid="speaker-rename-problem"]')?.textContent)) ?? '')
-  await page.click('[data-testid="voice-panel-close"]')
 
   // 3) 고급 원문 편집으로 표기를 직접 바꾸는 것은 다른 동작 — 알림만, 슬롯은 옮기지 않는다
   await page.click('[data-testid="direct-edit-toggle"]'); await sleep(150)

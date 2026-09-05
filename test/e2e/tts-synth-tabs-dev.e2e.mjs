@@ -76,7 +76,7 @@ try {
     s.getState().setMode('tts')
   }, p)
   const shot = (name) => page.screenshot({ path: path.join(SHOTS, name), fullPage: true })
-  const cardVoices = () => st(() => [...document.querySelectorAll('[data-testid="dialogue-row"] [data-testid="card-voice"], [data-testid="starter-card"] [data-testid="card-voice"]')].map((b) => b.textContent.trim()))
+  const cardVoices = () => st(() => [...document.querySelectorAll('[data-testid="dialogue-row"] [data-testid="card-voice-status"], [data-testid="starter-card"] [data-testid="card-voice-status"]')].map((b) => b.textContent.trim()))
   const typeInto = async (sel, value) => {
     await page.click(sel); await page.fill(sel, value)
   }
@@ -169,7 +169,7 @@ try {
   await page.fill('[data-testid="dialogue-add-name"]', '인물2')
   await page.click('[data-testid="dialogue-add-done"]')
   const starter2 = await waitUntil(async () => (await count('[data-testid="starter-card"]')) === 1, 3000)
-  const starter2Voice = await text('[data-testid="starter-card"] [data-testid="card-voice"]')
+  const starter2Voice = await text('[data-testid="starter-card"] [data-testid="card-voice-status"]')
   await typeInto('[data-testid="starter-card"] [data-testid="starter-line"]', '인물2의 대사')
   await page.keyboard.press('Tab')
   const rows3 = await waitUntil(async () => (await count('[data-testid="dialogue-row"]')) === 3, 15000)
@@ -186,12 +186,50 @@ try {
   await sleep(200)
   ok('11', JSON.stringify(await store()) === before && (await count('[data-testid="starter-card"]')) === 0 && (await count('[data-testid="dialogue-add-dialog"]')) === 0, '취소 시 원문·인물·목소리 무변경')
 
+  // 인물 이름 변경(카드 머리) → 모든 표기·카드·목소리 슬롯(확정 구간 클립) 이동 / 충돌 거부 / 감정·쉼 메뉴 / 분석 문구
+  const sB = await store()
+  await page.click('[data-testid="dialogue-row"][data-index="0"] [data-testid="card-rename"]')
+  await waitUntil(async () => (await count('[data-testid="speaker-rename"]')) === 1, 3000)
+  await shot('5-rename-row.png')
+  await page.fill('[data-testid="speaker-rename-input"]', '주인공')
+  await page.click('[data-testid="speaker-rename-apply"]')
+  const renamed = await waitUntil(async () => { const s = await store(); return s.text.startsWith('[화자 주인공]') && !s.text.includes('[화자 인물1]') && s.refs['주인공']?.ready === true }, 15000)
+  await waitUntil(async () => (await st(() => document.querySelector('[data-testid="dialogue-row"][data-index="0"]')?.getAttribute('data-speaker'))) === '주인공', 15000)
+  const sR = await store()
+  ok('R1', renamed && !sR.refs['인물1'] && sR.refs['주인공']?.clip === sB.refs['인물1']?.clip && sR.refs['주인공']?.region?.start === sB.refs['인물1']?.region?.start
+    && (await cardVoices()).slice(0, 2).every((t) => t.includes('준비됨')) && (await count('[data-testid="speaker-rename"]')) === 0,
+    '이름 변경: 모든 표기·카드가 바뀌고 목소리 슬롯(확정 구간 클립)이 따라간다', JSON.stringify({ text: sR.text.split('\n')[0], refs: Object.keys(sR.refs), cards: await cardVoices() }))
+  await page.click('[data-testid="dialogue-row"][data-index="0"] [data-testid="card-rename"]')
+  await waitUntil(async () => (await count('[data-testid="speaker-rename"]')) === 1, 3000)
+  await page.fill('[data-testid="speaker-rename-input"]', '인물2')
+  await page.click('[data-testid="speaker-rename-apply"]')
+  await sleep(300)
+  ok('R2', (await count('[data-testid="speaker-rename-problem"]')) === 1 && (await store()).text === sR.text && JSON.stringify((await store()).refs) === JSON.stringify(sR.refs),
+    '다른 기존 인물과 충돌하는 이름은 거부 안내, 원문·슬롯 무변경', (await text('[data-testid="speaker-rename-problem"]')) ?? '')
+  await page.keyboard.press('Escape'); await sleep(150)
+  // + 감정·쉼: 카드 메뉴에서 쉼을 같은 커서 삽입으로 넣는다(기존 문법 [쉼 0.3]).
+  await page.click('[data-testid="dialogue-row"][data-index="0"] [data-testid="dialogue-body"]'); await page.keyboard.press('End')
+  await page.click('[data-testid="dialogue-row"][data-index="0"] [data-testid="emotion-add"]')
+  const pauseN = await count('[data-testid="emotion-picker"] [data-pause]')
+  await shot('6-emotion-pause-menu.png')
+  await page.click('[data-testid="emotion-picker"] [data-pause="0.3"]')
+  await sleep(150)
+  await page.keyboard.press('Tab')
+  const pauseIn = await waitUntil(async () => (await store()).text.includes('[쉼 0.3]'), 15000)
+  ok('R3', pauseN === 3 && pauseIn, '카드의 감정·쉼 메뉴로 쉼 삽입 → 원문에 [쉼 0.3]', JSON.stringify({ pauseN, line0: (await store()).text.split('\n')[1] }))
+  // 분석 패널: 낡은 문구 없음, 인물별 상태는 카드와 같은 판정
+  const noteTxt = await text('[data-testid="analysis-speaker-note"]')
+  const statuses = await st(() => [...document.querySelectorAll('[data-testid="analysis-speaker-status"]')].map((e) => e.textContent ?? ''))
+  ok('R4', !!noteTxt && !noteTxt.includes('다음 단계') && !noteTxt.includes('기본 참조') && statuses.length >= 1 && statuses[0].includes('준비됨'),
+    '분석 패널 문구가 실제 판정에서 나온다(낡은 문구 없음)', JSON.stringify({ noteTxt, statuses }))
+
   // 탭 왕복 — 원문·인물·목소리 그대로, 카드 재생성 없음(첫 인물 슬롯 그대로)
   const snap0 = JSON.stringify(await store())
   for (let i = 0; i < 5; i += 1) { await tab('single'); await tab('multi') }
   await sleep(300)
   const snap1 = JSON.stringify(await store())
-  ok('12', snap1 === snap0 && (await count('[data-testid="dialogue-row"]')) === 3, '탭 10회 전환 후 원문·목소리 지정·이름 동일, 카드 3개', snap1 === snap0 ? '' : `before=${snap0.slice(0, 400)} after=${snap1.slice(0, 400)}`)
+  const rows12 = await st(() => [...document.querySelectorAll('[data-testid="dialogue-row"]')].map((r) => r.getAttribute('data-speaker')))
+  ok('12', snap1 === snap0 && rows12.length === 3, '탭 10회 전환 후 원문·목소리 지정·이름 동일, 카드 3개', JSON.stringify({ same: snap1 === snap0, rows: rows12, starters: await count('[data-testid="starter-card"]'), pendings: await count('[data-testid="pending-utterance"]') }) + (snap1 === snap0 ? '' : ` before=${snap0.slice(0, 400)} after=${snap1.slice(0, 400)}`))
   await tab('single')
   const singleAgain = await st(() => ({ voice: document.querySelectorAll('section[aria-label="목소리"]').length, raw: document.querySelectorAll('section[aria-label="대사"] div[data-af-tts-editor] textarea').length, cards: document.querySelectorAll('[data-testid="dialogue-row"]').length }))
   const s13 = await store()
@@ -223,10 +261,14 @@ try {
   await tab('multi')
   const midState = await store()
   const midReady = midState.refReady
-  const laterReady = await waitUntil(async () => { const s = await store(); const r = s.refs['인물1']; return s.refReady === true && !!r && r.ready === true && !!r.clip && r.clip !== s.refClip }, 150000)
+  // 새 파일 = 새 작업. 원문은 남아 있으므로 첫 인물은 원문의 첫 인물(이름을 바꾼 뒤라 '주인공')이다.
+  const readFirstId = () => st(() => document.querySelector('[data-testid="dialogue-row"][data-index="0"]')?.getAttribute('data-speaker') || document.querySelector('[data-testid="starter-card"]')?.getAttribute('data-speaker') || '')
+  await waitUntil(async () => !!(await readFirstId()), 15000)
+  const firstId = await readFirstId()
+  const laterReady = await waitUntil(async () => { const s = await store(); const r = s.refs[firstId]; return s.refReady === true && !!r && r.ready === true && !!r.clip && r.clip !== s.refClip }, 150000)
   const s4 = await store()
   ok('15', laterReady && s4.inherit === null && (await cardVoices())[0]?.includes('준비됨'),
-    `준비 도중 전환(전환 시 준비=${midReady}) → 완료 시 인물1이 같은 결과(확정 구간 클립 복사) 이어받음`, JSON.stringify({ card: (await cardVoices())[0], region: s4.refs['인물1']?.region }))
+    `준비 도중 전환(전환 시 준비=${midReady}) → 완료 시 첫 인물(${firstId})이 같은 결과(확정 구간 클립 복사) 이어받음`, JSON.stringify({ card: (await cardVoices())[0], region: s4.refs[firstId]?.region }))
   // 새 파일 = 새 작업: 이전 인물 슬롯이 비고 첫 인물만 다시 연결(2번 인물 자동 없음)
   ok('16', Object.keys(s4.refs).length === 1, '새 파일 불러오기 뒤 인물 슬롯은 첫 인물 하나', JSON.stringify(Object.keys(s4.refs)))
 

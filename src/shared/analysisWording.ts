@@ -346,8 +346,7 @@ export const PLAN_APPROXIMATE_NOTE =
  * 표시 이름은 사용자가 쓴 그대로이고, 개수는 계획의 발화 행에서 이미 세어져 온다 —
  * 화면이 다시 세지 않는다.
  *
- * 참조 준비 상태는 여기서 만들지 않는다. v1.4 PHASE 2 에는 화자별 참조 지정이 아직 없고,
- * 모든 화자가 기본 참조를 쓴다. 없는 상태를 지어내지 않기 위해 그 사실만 문구로 말한다.
+ * 참조 준비 상태는 여기서 만들지 않는다 — 화면(셸)이 카드와 같은 판정 함수로 넘겨 준다.
  */
 export function speakerRows(r: AnalysisResult | null): {
   index: number
@@ -372,10 +371,14 @@ export function defaultSpeakerUtteranceCount(r: AnalysisResult | null): number {
   return r.plan.utterances.filter((u) => u.speakerId === null).length
 }
 
-export const SPEAKER_REFERENCE_NOTE =
-  '모든 화자가 지금은 기본 참조를 씁니다. 화자별 참조 지정은 다음 단계에서 들어옵니다.'
+/** 인물 목록 아래 한 줄 — 생성 방식에서 파생한다. 없는 상태를 지어내지 않는다. */
+export function speakerReferenceNote(mode: 'single' | 'multi'): string {
+  return mode === 'single'
+    ? '한 명 방식: 인물 표기와 무관하게 모든 대사가 기본 목소리(올린 음성)로 만들어집니다.'
+    : '여러 명 방식: 인물마다 카드에서 정한 목소리로 만들어집니다. 상태는 카드와 같습니다.'
+}
 
-export const DEFAULT_SPEAKER_LABEL = '지정 없음(기본 참조)'
+export const DEFAULT_SPEAKER_LABEL = '인물 표기 없음(기본 목소리)'
 
 /** 어느 목소리가 쓰이는가 — 규칙 이름을 사용자 말로. */
 export const REFERENCE_SOURCE_LABEL: Record<ReferenceSource, string> = {

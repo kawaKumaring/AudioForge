@@ -18,7 +18,7 @@ import {
   addVoiceCast, autoRecommendable, createVoiceCast, deleteVoiceCast,
   deserializeAssetStore, deserializeVoiceCasts, evaluateLifecycle, findVoiceCast,
   makeAssetId, makeCandidateId, registerCastCandidate, removeCastCandidate,
-  renameVoiceCast, renameSpeakerInCasts, serializeAssetStore, serializeVoiceCasts, setCastSelection,
+  renameVoiceCast, serializeAssetStore, serializeVoiceCasts, setCastSelection,
   setSpeakerDefault,
 } from '../../shared/emotionCandidateRegistry'
 import { samplerSha256Hex } from '../../shared/emotionSampler'
@@ -48,8 +48,6 @@ export interface VoiceCastRegistryState {
 export interface VoiceCastRegistryApi extends VoiceCastRegistryState {
   createCast: (castName: string) => Promise<string | null>
   renameCast: (voiceCastId: string, castName: string) => Promise<void>
-  /** 인물 이름 변경 — 모든 배역의 그 인물 기본 목소리·감정 후보·선택을 새 id 로. 충돌 시 거부 코드. */
-  renameSpeaker: (fromId: string, toId: string) => Promise<string | null>
   removeCast: (voiceCastId: string) => Promise<void>
   applyCast: (voiceCastId: string) => void
   unapplyCast: () => void
@@ -194,12 +192,6 @@ export function useVoiceCastRegistry(): VoiceCastRegistryApi {
     return null
   }, [casts, assets, persist])
 
-  const renameSpeaker = useCallback(async (fromId: string, toId: string) => {
-    const res = renameSpeakerInCasts(casts, fromId, toId, nowIso(), samplerSha256Hex)
-    if (res.refused) return res.refused
-    if (res.changed) await commit(res.store)
-    return null
-  }, [casts, commit])
   const renameCast = useCallback(async (voiceCastId: string, castName: string) => {
     await commit(renameVoiceCast(casts, voiceCastId, castName, nowIso()))
   }, [casts, commit])
@@ -324,7 +316,7 @@ export function useVoiceCastRegistry(): VoiceCastRegistryApi {
   return {
     casts, assets, activeVoiceCastId, saveState, saveErrorCode, castReport, assetReport,
     loaded, analyzing,
-    createCast, renameCast, renameSpeaker, removeCast, applyCast, unapplyCast,
+    createCast, renameCast, removeCast, applyCast, unapplyCast,
     registerCandidate, unregisterCandidate, selectCandidate, assignSpeakerDefault,
     addCandidateFiles,
   }

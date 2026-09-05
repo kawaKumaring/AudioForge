@@ -603,8 +603,16 @@ export interface PlanUtteranceLike {
   lineIndex: number | null
 }
 
-/** 공백 + (화자 표기 하나) + 공백. 그 이상은 흡수하지 않는다. */
-const GAP_WITH_ONE_SPEAKER_RE = /^\s*(\[\s*(?:화자|speaker)\s+[^\]]*\])?\s*$/
+/**
+ * 공백 + (화자 표기 하나) + (같은 줄의 쉼 표기들) + 공백. 그 이상은 흡수하지 않는다.
+ *
+ * 쉼 표기(`[쉼 N]`)는 계획의 발화 구간에 **들어가지 않는다**(실측: 감정 태그는 구간 안, 쉼은 구간 밖의
+ * 경계). 그래서 대사 줄의 앞·끝에 놓인 쉼은 그대로 두면 NON_WHITESPACE_OUTSIDE 가 걸려 카드가 사라진다.
+ * 카드 본문은 "화자 표기를 뺀 나머지 글자 그대로" 이므로, 발화와 **같은 줄**에 있는 쉼은 그 행의 조각에
+ * 넣는다. 줄이 다른 쉼(쉼 전용 줄)은 흡수하지 않는다 — 그 대본은 원문 편집기 몫이다.
+ */
+const GAP_WITH_ONE_SPEAKER_RE = /^\s*(\[\s*(?:화자|speaker)\s+[^\]]*\])?((?:\s*\[\s*(?:쉼|pause)\s+[^\]]*\])*)\s*$/
+const TRAILING_PAUSES_RE = /^((?:[ \t]*\[\s*(?:쉼|pause)\s+[^\]\n]*\])+)[ \t]*(?:\r?\n|$)/
 
 export function groupUtteranceRows(text: string, utterances: PlanUtteranceLike[]): UtteranceView[] {
   const sorted = [...utterances].sort((a, b) => a.sourceStart - b.sourceStart)
@@ -616,6 +624,9 @@ export function groupUtteranceRows(text: string, utterances: PlanUtteranceLike[]
       cur.sourceEnd = u.sourceEnd
       continue
     }
+    // 앞 행 끝, 같은 줄의 쉼 표기(`하나 [쉼 0.3]⏎`)는 앞 행에 넣는다 — 카드의 `+ 감정·쉼` 이 만드는 흔한 모양.
+    // 다음 행의 빈틈을 계산하기 전에 해야 화자 표기 흡수가 그대로 동작한다.
+    if (cur) absorbTrailingPauses(text, cur, u.sourceStart)
     const prevEnd = cur ? cur.sourceEnd : 0
     const gap = text.slice(prevEnd, u.sourceStart)
     const m = GAP_WITH_ONE_SPEAKER_RE.exec(gap)
@@ -624,6 +635,12 @@ export function groupUtteranceRows(text: string, utterances: PlanUtteranceLike[]
     if (m && m[1]) {
       start = prevEnd + gap.indexOf('[')
       own = true
+    }
+    if (m && m[2]) {
+      // 발화 앞의 쉼 표기 — 발화와 같은 줄(사이에 줄바꿈 없음)일 때만 행에 넣는다.
+      const pauseAt = prevEnd + (m[1] ? gap.indexOf('[', gap.indexOf(']') + 1) : gap.indexOf('['))
+      if (!text.slice(pauseAt, u.sourceStart).includes('\n')) start = Math.min(start, pauseAt)
+      else { start = u.sourceStart; own = false }   // 쉼 전용 줄 — 흡수하지 않는다(구간 밖으로 남아 정직하게 걸린다)
     }
     rows.push({
       index: rows.length,
@@ -636,7 +653,15 @@ export function groupUtteranceRows(text: string, utterances: PlanUtteranceLike[]
       lineIndex: u.lineIndex,
     })
   }
+  const last = rows[rows.length - 1]
+  if (last) absorbTrailingPauses(text, last, text.length)
   return rows
+}
+
+/** 행 끝에서 `limit` 전까지, 같은 줄의 쉼 표기만 있으면(뒤는 공백·줄바꿈·끝) 그 행의 끝을 거기까지 늘린다. */
+function absorbTrailingPauses(text: string, row: UtteranceView, limit: number): void {
+  const m = TRAILING_PAUSES_RE.exec(text.slice(row.sourceEnd, limit))
+  if (m) row.sourceEnd += m[1].length
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -86,7 +86,7 @@ test('원문 쓰기는 전부 source patcher 명령을 거친다 — 카드 본�
   assert.equal((HOOK.match(/setText\(/g) ?? []).length, 1, 'setText 호출은 apply() 한 곳뿐')
   // 새 대사의 반영 경로는 하나(빈 대본이면 createInitial, 아니면 insertAfter). 빈 대사는 반영하지 않는다.
   const commit = between(MULTI, 'const commitNewLine = ', '  const openAdd')
-  assert.ok(commit.includes("if (!line.trim()) return null") && commit.includes('p.createInitial([{ speakerLabel: label, line }])') && commit.includes('p.insertAfter(p.rows.length - 1, label, line, null)'))
+  assert.ok(commit.includes("if (!line.trim()) return null") && commit.includes('p.createInitial([{ speakerLabel: label, line }])') && commit.includes('p.insertAfter(rowsBefore - 1, label, line, null)') && commit.includes('setGhost({ label, line, rowsBefore'))
   // 설정 창은 카드만 만든다 — 원문 명령 호출 없음.
   const sheet = between(MULTI, 'function AddDialogueSheet(', '\nfunction SpeakerVoicePanel(')
   for (const forbidden of ['createInitial', 'insertAfter', 'commitNewLine', 'setText']) assert.equal(sheet.includes(forbidden), false, forbidden)
@@ -98,7 +98,7 @@ test('발화 카드 하나에 인물·목소리·감정·대사가 함께 있고
   assert.ok(cardSrc.includes('<option value="">기본 인물</option>'), '누가 — 인물 select(기본 인물 포함)')
   assert.ok(cardSrc.includes('data-testid="card-voice"') && cardSrc.includes('voiceStatusShort(voice)'), '어떤 목소리 — 짧은 상태와 상세 진입')
   assert.ok(cardSrc.includes('{props.voiceDetailOpen && props.renderVoiceDetail()}'), '목소리 상세는 카드 안')
-  assert.ok(cardSrc.includes('<EmotionAdd') && MULTI.includes('data-testid="emotion-add"') && MULTI.includes('+ 감정'), '어느 위치에서 어떤 감정 — + 감정')
+  assert.ok(cardSrc.includes('<EmotionAdd') && MULTI.includes('data-testid="emotion-add"') && MULTI.includes('+ 감정·쉼') && MULTI.includes('`[쉼 ${sec}]`'), '어느 위치에서 어떤 감정·쉼 — 같은 커서 삽입')
   assert.ok(cardSrc.includes('data-testid="dialogue-body"'), '무엇을 — 대사')
   assert.ok(cardSrc.includes('aria-label="위로"') && cardSrc.includes('aria-label="아래로"') && cardSrc.includes('>삭제</button>'))
   assert.equal((cardSrc.match(/<textarea/g) ?? []).length, 1, '카드의 textarea 는 하나')
@@ -113,7 +113,7 @@ test('발화 카드 하나에 인물·목소리·감정·대사가 함께 있고
   assert.ok(MULTI.includes('data-testid="multi-summary"') && MULTI.includes('모두 준비됨'))
   // 상세 안: 구간 수정은 필요할 때만 펼친다. 같은 인물의 다른 대사에도 적용된다는 짧은 안내.
   const panel = between(MULTI, 'function SpeakerVoicePanel(', '\n}\n')
-  assert.ok(panel.includes('const [regionOpen, setRegionOpen] = useState(false)') && panel.includes('renderRegionEditor?.(voiceId, regionOpen)'))
+  assert.ok(panel.includes('const [regionOpen, setRegionOpen] = useState(!!props.initialRegionOpen)') && panel.includes('renderRegionEditor?.(voiceId, regionOpen)'))
   assert.ok(panel.includes('data-testid="voice-region-toggle"') && panel.includes('data-testid="speaker-voice-applies-all"'))
   assert.ok(panel.includes("'목소리 지정'") && panel.includes("'목소리 바꾸기'") && panel.includes('목소리 해제'))
   for (const id of ['voice-panel', 'voice-panel-close', 'speaker-voice-decision', 'speaker-voice-shared', 'speaker-emotion-voice-toggle',
@@ -155,7 +155,8 @@ test('좌표 의존 명령은 patchAllowed 게이트를 지나고, 대사 입력
     assert.ok(HOOK.slice(i, HOOK.indexOf('}, [', i)).includes('guard()'), c)
   }
   assert.ok(MULTI.includes('disabled={disabled || !p.patchAllowed}'))
-  const bodyBlock = MULTI.slice(MULTI.indexOf('data-testid="dialogue-body"'), MULTI.indexOf('/>', MULTI.indexOf('data-testid="dialogue-body"')))
+  const bodyAt = MULTI.indexOf('<textarea ref={caret.taRef} data-testid="dialogue-body"')
+  const bodyBlock = MULTI.slice(bodyAt, MULTI.indexOf('/>', bodyAt))
   assert.equal(bodyBlock.includes('patchAllowed'), false, '입력이 계획 상태에 잠긴다')
   assert.ok(bodyBlock.includes('onBlur={() => { caret.rememberCaret(); p.commitDraft(i) }}'))
   assert.ok(HOOK.includes("return 'deferred' as const") && HOOK.includes('toViews(projectionText, result)'))

@@ -208,6 +208,11 @@ interface AppState {
    */
   ttsSpeakerInherit: { speakerId: string; filePath: string } | null
   /**
+   * 현재 작업에서 바꾼 인물 이름의 별칭: 저장된 목소리 구성 안의 인물 id → 지금 인물 id.
+   * 저장된 구성은 사용자가 명시적으로 저장/덮어쓸 때만 바뀐다 — 여기서는 읽을 때 옮겨 주기만 한다(정체성·자산 연결 유지).
+   */
+  ttsSpeakerRenames: Record<string, string>
+  /**
    * 후보 비교 화면에서 사용자가 고른 것. `speakerEmotionKey(화자, 감정)` → 참조 id
    * 또는 `speaker_default` / `no_emotion_ref` 토큰.
    *
@@ -354,6 +359,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   ttsEmotionRefState: {} as Record<string, EmotionRefState>,
   ttsSpeakerRefState: {} as Record<string, EmotionRefState>,
   ttsSpeakerInherit: null as { speakerId: string; filePath: string } | null,
+  ttsSpeakerRenames: {} as Record<string, string>,
   ttsSpeakerLabels: {} as Record<string, string>,
   ttsEmotionCandidateSelections: {} as Record<string, string>,
   ttsSpeakerEmotionRefs: {} as Record<string, string>,
@@ -407,7 +413,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 전체 파생 클립(기본+감정) 정리
     // 분할 마커는 파일에 종속이다. 비우지 않으면 이전 파일의 경계가 새 파일에 그대로 적용돼
     // (더 긴 파일에서는 오류조차 없이) 완전히 틀린 지점에서 잘린다 — 감사 R2.
-    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
+    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
   },
   setMode: (mode) => set({ mode }),
   setTrimSilence: (v) => set({ trimSilence: v }),
@@ -486,8 +492,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       // 감정별 참조·후보 선택은 `인물␟감정` 키다 — 접두를 새 id 로 바꿔 함께 옮긴다.
       const US = String.fromCharCode(31)
       const rekey = (m: Record<string, string>) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k.startsWith(fromId + US) ? toId + k.slice(fromId.length) : k, v]))
+      // 별칭: 이 인물이 저장 구성에서 어떤 id 였는지 기억한다(fromId 가 이미 별칭 대상이면 그 원래 id 를 따라간다).
+      const renames = { ...s.ttsSpeakerRenames }
+      const origin = Object.keys(renames).find((k) => renames[k] === fromId) ?? fromId
+      if (origin === toId) delete renames[origin]; else renames[origin] = toId
       return {
-        ttsSpeakerRefState: refs, ttsSpeakerLabels: labels, ttsSpeakerEmotionEnabled: enabled,
+        ttsSpeakerRefState: refs, ttsSpeakerLabels: labels, ttsSpeakerEmotionEnabled: enabled, ttsSpeakerRenames: renames,
         ttsSpeakerEmotionRefs: rekey(s.ttsSpeakerEmotionRefs), ttsEmotionCandidateSelections: rekey(s.ttsEmotionCandidateSelections),
         ttsSpeakerInherit: s.ttsSpeakerInherit?.speakerId === fromId ? { ...s.ttsSpeakerInherit, speakerId: toId } : s.ttsSpeakerInherit,
       }
@@ -677,7 +687,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       fileInfo: null, fileUrl: null, status: 'idle', progress: 0, progressMessage: '', error: null, errorInfo: null,
       tracks: [], outputDir: null, playingTrack: null, restorable: null, splitMarkers: [], splitLabels: [],
       ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null,
-      ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null,
+      ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {},
       ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {},
       ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single',
       ttsPitch: 0.0, ttsPitchCapability: null, resultMetadata: null,
@@ -689,3 +699,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   }
 }))
+
+/** 지금 인물 id → 저장된 목소리 구성 안의 인물 id(이름을 바꿨으면 원래 id). 구성은 읽을 때만 옮겨 준다. */
+export function castSpeakerIdOf(renames: Readonly<Record<string, string>>, currentId: string): string {
+  return Object.keys(renames).find((k) => renames[k] === currentId) ?? currentId
+}
+
+/** 저장 구성에서 만든 (인물␟감정 → 참조) 표를 현재 작업의 인물 id 로 옮긴다. 구성 자체는 바꾸지 않는다. */
+export function applySpeakerRenames(refs: Readonly<Record<string, string>>, renames: Readonly<Record<string, string>>): Record<string, string> {
+  const US = String.fromCharCode(31)
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(refs)) {
+    const i = k.indexOf(US)
+    const sid = i >= 0 ? k.slice(0, i) : k
+    const to = renames[sid]
+    out[to ? to + k.slice(sid.length) : k] = v
+  }
+  return out
+}

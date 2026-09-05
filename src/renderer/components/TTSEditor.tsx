@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import type { CSSProperties } from 'react'
-import { useAppStore, emotionEffectivePath } from '@/stores/app.store'
+import { useAppStore, emotionEffectivePath, castSpeakerIdOf, applySpeakerRenames } from '@/stores/app.store'
 import type { TtsReferenceEntry, PitchCapability, TtsEmotionRegion } from '../../shared/ttsConfig'
 import { deriveRefMode } from '../../shared/ttsConfig'
 import ReferenceRegionPanel from './ReferenceRegionPanel'
@@ -33,7 +33,7 @@ import InputAnalysisPanel from './InputAnalysisPanel'
 import VoiceCastManager from './VoiceCastManager'
 import SpeakerEmotionCandidates from './SpeakerEmotionCandidates'
 import DialogueTabs, { type DialogueTab } from './DialogueTabs'
-import MultiSpeakerDialogue from './MultiSpeakerDialogue'
+import MultiSpeakerDialogue, { voiceStatusShort } from './MultiSpeakerDialogue'
 import { speakerDirectiveSequence } from '../../shared/dialogueSourcePatcher'
 import { useDialogueProjection } from '../hooks/useDialogueProjection'
 import { normalizeSpeakerId } from '../../shared/ttsGrammar'
@@ -241,7 +241,7 @@ async function runPreview(gen: number, path: string, region?: { start: number; d
 export default function TTSEditor() {
   const { mode, status, fileInfo, ttsEmotionRefState, ttsSpeakerRefState, ttsSpeakerLabels, ttsSpeakerEmotionRefs,
     ttsSpeakerEmotionEnabled, setSpeakerEmotionEnabled, ttsSpeakerMode, setTtsSpeakerMode,
-    registerSpeakerRef, removeSpeakerRef, setSpeakerRefState, setSpeakerInherit, moveSpeakerRef, setSpeakerLabel, ttsSpeakerInherit,
+    registerSpeakerRef, removeSpeakerRef, setSpeakerRefState, setSpeakerInherit, moveSpeakerRef, setSpeakerLabel, ttsSpeakerInherit, ttsSpeakerRenames,
     registerEmotionRef, removeEmotionRef, setEmotionRefState, setTtsRefState, ttsRefReady, ttsRefMessage, ttsReferenceClip, ttsPitchCapability, setTtsPitchCapability,
     ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, setTtsExpression,
     ttsReferenceConditioningMode, setTtsReferenceConditioningMode,
@@ -852,9 +852,10 @@ export default function TTSEditor() {
       return
     }
     const reg = castRegistry(active, voiceCast.assets)
+    // 저장된 구성은 그대로 두고, 현재 작업에서 이름을 바꾼 인물은 별칭으로 옮겨 읽는다(정체성·자산 연결 유지).
     setSpeakerEmotionRefs(
-      toSpeakerEmotionRefs(reg, active.selections, {}, () => undefined))
-  }, [voiceCast.casts, voiceCast.assets, voiceCast.activeVoiceCastId, setSpeakerEmotionRefs])
+      applySpeakerRenames(toSpeakerEmotionRefs(reg, active.selections, {}, () => undefined), ttsSpeakerRenames))
+  }, [voiceCast.casts, voiceCast.assets, voiceCast.activeVoiceCastId, setSpeakerEmotionRefs, ttsSpeakerRenames])
 
   const addCastFiles = async (castId: string, speakerId: string, emotionId: string) => {
     const picked = await window.api.audio.selectFile(true) as string[] | string | null
@@ -1227,7 +1228,8 @@ export default function TTSEditor() {
                 if (toId !== id && (ttsSpeakerRefState[toId] || dialogue.speakers.some((sp) => (sp.pending ? normalizeSpeakerId(sp.label.trim()) : sp.speakerId) === toId))) return 'SPEAKER_LABEL_DUPLICATE'
                 const refused = dialogue.renameSpeaker(id, newLabel)
                 if (refused) return refused
-                if (toId !== id) { moveSpeakerRef(id, toId); void voiceCast.renameSpeaker(id, toId) }
+                // 저장된 목소리 구성은 건드리지 않는다 — 현재 작업의 슬롯·설정만 옮기고 구성은 별칭으로 읽는다.
+                if (toId !== id) moveSpeakerRef(id, toId)
                 setSpeakerLabel(toId, newLabel.trim())
                 return null
               }}
@@ -1244,7 +1246,7 @@ export default function TTSEditor() {
                 }
                 return (
                   <SpeakerEmotionCandidates
-                    speakerId={id} speakerLabel={label} cast={active} assets={voiceCast.assets}
+                    speakerId={castSpeakerIdOf(ttsSpeakerRenames, id)} speakerLabel={label} cast={active} assets={voiceCast.assets}
                     emotions={castEmotions} disabled={disabled || voiceCast.analyzing}
                     onAddFiles={(sid, eid) => { void addCastFiles(active.voiceCastId, sid, eid) }}
                     onPreview={previewCastCandidate}
@@ -1312,7 +1314,8 @@ export default function TTSEditor() {
           </div>
           </>)}
           {/* 대사 작성 보조 — 읽기 전용. textarea 내부를 건드리지 않고 별도 목록으로만 보여 준다. */}
-          <InputAnalysisPanel status={analysis.status} result={analysis.result} sourceText={ttsText} />
+          <InputAnalysisPanel status={analysis.status} result={analysis.result} sourceText={ttsText}
+            speakerMode={dialogueTab} speakerStatusOf={(id) => voiceStatusShort(speakerVoiceOf(id))} />
           {/* 대사에 쓴 감정 중 전용 목소리가 없는 것 — 짧은 사실 한 줄(등록은 고급 설정 > 음성). */}
           {usedUnregistered.length > 0 && (
             <div style={{ fontSize: 11, lineHeight: 1.6, color: 'var(--text-secondary)' }}>
