@@ -4,7 +4,7 @@ import { promisify } from 'util'
 import { join, basename, dirname, extname, resolve } from 'path'
 import { randomUUID } from 'crypto'
 import {
-  existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync,
+  existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync, copyFileSync,
 } from 'fs'
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
@@ -984,6 +984,35 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
 
   // 파일 reset/변경·감정 삭제/재등록 시 렌더러가 호출 — 파생 참조 클립 폴더 정리(합성 중이면 건드리지 않음).
   // clipKey 지정 시 그 하나만(감정 삭제/재등록), 생략 시 전체(새 파일/reset).
+  // 확정 클립 이어받기 — fromKey(보통 'default') 의 클립 폴더를 새 UID 폴더로 **복사**해 toKey 소유로 등록한다.
+  // 같은 임시 경로를 두 key 가 공유하지 않으므로, 기본 목소리를 다시 확정/해제해도 인물의 클립은 남는다.
+  // fromKey 에 클립이 없으면(원본 전체 사용) '' — 호출부가 '원본 그대로' 로 처리한다.
+  ipcMain.handle('audio:adopt-reference-clip', (_event, fromKey: string, toKey: string) => {
+    const srcDir = refClipDirs.get(fromKey)
+    if (!srcDir || !existsSync(srcDir) || !toKey || toKey === fromKey) return ''
+    const outDir = join(tmpdir(), `audioforge_refclip_${randomUUID()}`)
+    try {
+      mkdirSync(outDir, { recursive: true })
+      for (const f of readdirSync(srcDir)) copyFileSync(join(srcDir, f), join(outDir, f))
+    } catch {
+      removeRefClipDir(tmpdir(), outDir)
+      return ''
+    }
+    const clip = join(outDir, 'reference_clip_24k.wav')
+    if (!existsSync(clip)) { removeRefClipDir(tmpdir(), outDir); return '' }
+    releaseRefClip(toKey)               // 이전 소유 클립은 새 클립이 준비된 뒤에만 놓는다
+    refClipDirs.set(toKey, outDir)
+    return clip
+  })
+  // 인물 id 가 바뀌어도(시작 카드 이름 변경) 같은 클립을 새 key 로 계속 소유한다. 파일 이동 없음.
+  ipcMain.handle('audio:rename-reference-clip', (_event, fromKey: string, toKey: string) => {
+    const dir = refClipDirs.get(fromKey)
+    if (!dir || !toKey || toKey === fromKey) return false
+    if (refClipDirs.get(toKey) && refClipDirs.get(toKey) !== dir) releaseRefClip(toKey)
+    refClipDirs.delete(fromKey)
+    refClipDirs.set(toKey, dir)
+    return true
+  })
   ipcMain.handle('audio:release-reference-clip', (_event, clipKey?: string) => {
     if (runner?.isRunning) return false  // 합성 worker가 참조 사용 중 → 삭제 금지
     releaseRefClip(clipKey)

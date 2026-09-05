@@ -203,6 +203,11 @@ interface AppState {
   /** 화자 표시 이름(id → 사용자가 쓴 이름). 기록·화면 전용이며 합성 조건이 아니다. */
   ttsSpeakerLabels: Record<string, string>
   /**
+   * 여러 명 첫 인물이 **기본 목소리를 이어받는 중**임을 표시. 기본 목소리가 준비되면 원본·확정 구간·유효 참조를
+   * 그 인물 슬롯에 옮기고 지운다. 사용자가 그 인물의 목소리를 바꾸거나 해제하면 즉시 지워져 초기화가 덮어쓰지 않는다.
+   */
+  ttsSpeakerInherit: { speakerId: string; filePath: string } | null
+  /**
    * 후보 비교 화면에서 사용자가 고른 것. `speakerEmotionKey(화자, 감정)` → 참조 id
    * 또는 `speaker_default` / `no_emotion_ref` 토큰.
    *
@@ -280,6 +285,9 @@ interface AppState {
   /** 화자의 참조 지정을 해제한다. */
   removeSpeakerRef: (speakerId: string) => void
   setSpeakerRefState: (speakerId: string, patch: { clip?: string; ready?: boolean; message?: string; region?: { start: number; duration: number } | null }) => void
+  setSpeakerInherit: (v: { speakerId: string; filePath: string } | null) => void
+  /** 시작 카드의 이름이 바뀌어 내부 id 가 달라질 때 슬롯·이름·이어받기 플래그·클립 key 를 새 id 로 옮긴다. */
+  moveSpeakerRef: (fromId: string, toId: string) => void
   removeEmotionRef: (emotionId: string) => void
   setEmotionRefState: (emotionId: string, patch: { clip?: string; ready?: boolean; message?: string; region?: { start: number; duration: number } | null }) => void
   setProcessing: () => void
@@ -344,6 +352,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   ttsPitchCapability: null,
   ttsEmotionRefState: {} as Record<string, EmotionRefState>,
   ttsSpeakerRefState: {} as Record<string, EmotionRefState>,
+  ttsSpeakerInherit: null as { speakerId: string; filePath: string } | null,
   ttsSpeakerLabels: {} as Record<string, string>,
   ttsEmotionCandidateSelections: {} as Record<string, string>,
   ttsSpeakerEmotionRefs: {} as Record<string, string>,
@@ -397,7 +406,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 전체 파생 클립(기본+감정) 정리
     // 분할 마커는 파일에 종속이다. 비우지 않으면 이전 파일의 경계가 새 파일에 그대로 적용돼
     // (더 긴 파일에서는 오류조차 없이) 완전히 틀린 지점에서 잘린다 — 감사 R2.
-    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
+    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
   },
   setMode: (mode) => set({ mode }),
   setTrimSilence: (v) => set({ trimSilence: v }),
@@ -444,6 +453,8 @@ export const useAppStore = create<AppState>((set, get) => ({
         ...s.ttsSpeakerRefState,
         [speakerId]: { source, clip: '', region: null, ready: false, message: '' },
       },
+      // 사용자가 이 인물의 목소리를 직접 정했다 — 이어받기(초기 연결) 는 여기서 끝난다.
+      ttsSpeakerInherit: s.ttsSpeakerInherit?.speakerId === speakerId ? null : s.ttsSpeakerInherit,
       ttsSpeakerLabels: label
         ? { ...s.ttsSpeakerLabels, [speakerId]: label }
         : s.ttsSpeakerLabels,
@@ -454,7 +465,26 @@ export const useAppStore = create<AppState>((set, get) => ({
     set((s) => {
       const next = { ...s.ttsSpeakerRefState }
       delete next[speakerId]
-      return { ttsSpeakerRefState: next }
+      return { ttsSpeakerRefState: next,
+        ttsSpeakerInherit: s.ttsSpeakerInherit?.speakerId === speakerId ? null : s.ttsSpeakerInherit }
+    })
+  },
+  setSpeakerInherit: (v) => set({ ttsSpeakerInherit: v }),
+  moveSpeakerRef: (fromId, toId) => {
+    if (!fromId || !toId || fromId === toId) return
+    try { void window.api?.audio?.renameReferenceClip?.('spk:' + fromId, 'spk:' + toId) } catch { /* noop */ }
+    set((s) => {
+      const slot = s.ttsSpeakerRefState[fromId]
+      if (!slot) return {}
+      const refs = { ...s.ttsSpeakerRefState }; delete refs[fromId]; refs[toId] = slot
+      const labels = { ...s.ttsSpeakerLabels }
+      if (labels[fromId] !== undefined) { const l = labels[fromId]; delete labels[fromId]; labels[toId] = l }
+      const enabled = { ...s.ttsSpeakerEmotionEnabled }
+      if (enabled[fromId] !== undefined) { const e = enabled[fromId]; delete enabled[fromId]; enabled[toId] = e }
+      return {
+        ttsSpeakerRefState: refs, ttsSpeakerLabels: labels, ttsSpeakerEmotionEnabled: enabled,
+        ttsSpeakerInherit: s.ttsSpeakerInherit?.speakerId === fromId ? { ...s.ttsSpeakerInherit, speakerId: toId } : s.ttsSpeakerInherit,
+      }
     })
   },
   setSpeakerRefState: (speakerId, patch) => set((s) => {
@@ -641,7 +671,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       fileInfo: null, fileUrl: null, status: 'idle', progress: 0, progressMessage: '', error: null, errorInfo: null,
       tracks: [], outputDir: null, playingTrack: null, restorable: null, splitMarkers: [], splitLabels: [],
       ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null,
-      ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsSpeakerRefState: {},
+      ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null,
       ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {},
       ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single',
       ttsPitch: 0.0, ttsPitchCapability: null, resultMetadata: null,

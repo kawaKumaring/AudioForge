@@ -37,6 +37,7 @@ import MultiSpeakerDialogue from './MultiSpeakerDialogue'
 import { speakerDirectiveSequence } from '../../shared/dialogueSourcePatcher'
 import { useDialogueProjection } from '../hooks/useDialogueProjection'
 import { normalizeSpeakerId } from '../../shared/ttsGrammar'
+import { validateSpeakerLabel } from '../../shared/dialogueSourcePatcher'
 import { gateSpeakerEmotionRefs, emotionIdsForSpeaker } from '../../shared/speakerEmotionGate'
 import { useVoiceCastRegistry } from '../hooks/useVoiceCastRegistry'
 import {
@@ -240,7 +241,7 @@ async function runPreview(gen: number, path: string, region?: { start: number; d
 export default function TTSEditor() {
   const { mode, status, fileInfo, ttsEmotionRefState, ttsSpeakerRefState, ttsSpeakerLabels, ttsSpeakerEmotionRefs,
     ttsSpeakerEmotionEnabled, setSpeakerEmotionEnabled, ttsSpeakerMode, setTtsSpeakerMode,
-    registerSpeakerRef, removeSpeakerRef, setSpeakerRefState,
+    registerSpeakerRef, removeSpeakerRef, setSpeakerRefState, setSpeakerInherit, moveSpeakerRef, ttsSpeakerInherit,
     registerEmotionRef, removeEmotionRef, setEmotionRefState, setTtsRefState, ttsRefReady, ttsRefMessage, ttsReferenceClip, ttsPitchCapability, setTtsPitchCapability,
     ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, setTtsExpression,
     ttsReferenceConditioningMode, setTtsReferenceConditioningMode,
@@ -752,30 +753,64 @@ export default function TTSEditor() {
     }
   }
 
-  // ── 여러 명 1번 인물의 초기 목소리 — 처음 불러온 음성에 **명시적 binding** ──
-  // 화면 상속이 아니라 store 슬롯을 실제로 만든다(그래야 config·preflight·스냅샷에 존재한다).
-  //   · 같은 canonical asset(fileInfo.path). 파일·클립 복사 없음. 기본 목소리의 임시 클립 경로는 공유하지 않는다.
-  //   · 3~10초 원본(구간 없이 통째로 유효)이면 바로 준비됨. 10초 초과(기본 목소리가 구간 클립을 쓰는 경우)면
-  //     인물 카드에서 구간 선택 필요 — 다른 인물·전역 기본으로 대체하지 않는다.
-  //   · 어느 인물이든 이미 목소리가 있으면 개입하지 않는다. 한 파일·한 인물 id 당 한 번.
-  //   · 이후 한 명 기본 목소리와 이 인물의 binding 은 독립이다(슬롯이 다르다). 2번 이후 인물은 자동 연결 없음.
+  // ── 여러 명 첫 인물의 초기 목소리 — 처음 불러온 음성(기본 목소리)을 **명시적으로 이어받는다** ──
+  // 사용자 순서: 파일 불러오기 → 합성 → 기본 목소리 준비(구간 자동 확정) → 여러 명 전환.
+  //   · 첫 인물(계획의 1번 인물, 빈 대본이면 시작 카드 '인물1')에 store 슬롯을 만들고 이어받기 플래그를 세운다.
+  //   · 아래 동기화 effect 가 기본 목소리의 **원본·확정 구간·유효 참조**를 그 슬롯으로 옮긴다. 확정 클립은 main 이
+  //     인물 key 로 복사(adopt)해 소유권을 분리한다 — 기본 목소리를 다시 확정/해제해도 인물의 참조는 남는다.
+  //   · 이미 준비된 참조를 다시 고르거나 다시 확정하게 하지 않는다. 준비 도중 전환했으면 완료 시 같은 결과로 갱신한다.
+  //   · 어느 인물이든 이미 목소리가 있으면 개입하지 않는다. 한 파일·한 인물 id 당 한 번. 2번 이후 인물은 자동 연결 없음.
+  //   · 사용자가 그 인물의 목소리를 바꾸거나 해제하면 플래그가 지워져(store) 이 effect 들이 덮어쓰지 않는다.
+  //     그 뒤 한 명 기본 목소리와 여러 명 인물 목소리는 독립이다(슬롯이 다르다).
+  const firstDialogueSpeaker = dialogue.speakers[0]
+  const firstSpeakerVoiceId = !firstDialogueSpeaker ? ''
+    : (firstDialogueSpeaker.pending
+      ? (validateSpeakerLabel(firstDialogueSpeaker.label.trim()).ok ? normalizeSpeakerId(firstDialogueSpeaker.label.trim()) : '')
+      : firstDialogueSpeaker.speakerId)
   const initialSpeakerBind = useRef<string>('')
   useEffect(() => {
-    if (ttsSpeakerMode !== 'multi' || !fileInfo?.path) return
-    const first = speakerUiRows[0]
-    if (!first) return
+    if (ttsSpeakerMode !== 'multi' || !fileInfo?.path || !firstSpeakerVoiceId) return
     if (Object.keys(ttsSpeakerRefState).length > 0) return
-    const key = `${fileInfo.path}|${first.speakerId}`
+    const key = `${fileInfo.path}|${firstSpeakerVoiceId}`
     if (initialSpeakerBind.current === key) return
     initialSpeakerBind.current = key
-    registerSpeakerRef(first.speakerId, fileInfo.path, first.label)
-    const wholeValid = !!ttsRefReady && !ttsReferenceClip
-    setSpeakerRefState(first.speakerId, {
-      clip: '', region: ttsReferenceRegion ?? null, ready: wholeValid,
-      message: wholeValid ? '' : (ttsReferenceClip ? '구간 선택 필요' : (ttsRefMessage || '목소리 확인 중')),
-    })
+    registerSpeakerRef(firstSpeakerVoiceId, fileInfo.path, firstDialogueSpeaker?.label)
+    setSpeakerInherit({ speakerId: firstSpeakerVoiceId, filePath: fileInfo.path })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ttsSpeakerMode, fileInfo?.path, speakerUiRows.length > 0 ? speakerUiRows[0].speakerId : '', Object.keys(ttsSpeakerRefState).length])
+  }, [ttsSpeakerMode, fileInfo?.path, firstSpeakerVoiceId, Object.keys(ttsSpeakerRefState).length])
+  // 동기화: 기본 목소리가 준비되는 순간(또는 이미 준비돼 있으면 즉시) 같은 준비 결과를 첫 인물 슬롯에 옮긴다.
+  const inheritSlotSource = ttsSpeakerInherit ? (ttsSpeakerRefState[ttsSpeakerInherit.speakerId]?.source ?? '') : ''
+  useEffect(() => {
+    const inh = ttsSpeakerInherit
+    if (!inh || !fileInfo?.path || inh.filePath !== fileInfo.path) return
+    if (!inheritSlotSource || inheritSlotSource !== inh.filePath) return   // 사용자가 다른 원본을 골랐다 → 개입하지 않음
+    const id = inh.speakerId
+    if (!ttsRefReady) {
+      // 기본 목소리 준비 중 — 같은 사유를 보여 주고, 완료되면 아래 분기가 갱신한다. 실제 실패 사유만 그대로.
+      setSpeakerRefState(id, { ready: false, message: ttsRefMessage || '목소리 확인 중' })
+      return
+    }
+    if (!ttsReferenceClip) {
+      // 원본 전체가 유효 — 같은 원본을 그대로 유효 참조로.
+      setSpeakerRefState(id, { clip: '', region: null, ready: true, message: '' })
+      setSpeakerInherit(null)
+      return
+    }
+    let cancelled = false
+    void (async () => {
+      let adopted = ''
+      try { adopted = String((await window.api.audio.adoptReferenceClip('default', 'spk:' + id)) || '') } catch { adopted = '' }
+      if (cancelled) return
+      if (adopted) {
+        setSpeakerRefState(id, { clip: adopted, region: ttsReferenceRegion ?? null, ready: true, message: '' })
+        setSpeakerInherit(null)
+      } else {
+        setSpeakerRefState(id, { ready: false, message: '기본 목소리의 구간을 이어받지 못했습니다 — 인물 카드에서 구간을 확정해 주세요' })
+      }
+    })()
+    return () => { cancelled = true }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ttsSpeakerInherit, fileInfo?.path, inheritSlotSource, ttsRefReady, ttsReferenceClip, ttsReferenceRegion, ttsRefMessage])
 
   const requestSpeakerSource = async (): Promise<string | null> => {
     const p = await window.api.audio.selectFile()

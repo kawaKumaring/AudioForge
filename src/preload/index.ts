@@ -44,6 +44,9 @@ const api = {
       ipcRenderer.invoke('audio:trim-reference', filePath, startSec, durSec, clipKey, extra),
     // clipKey 지정 시 그 하나만, 생략 시 전체 파생 클립 정리.
     releaseReferenceClip: (clipKey?: string) => ipcRenderer.invoke('audio:release-reference-clip', clipKey),
+    // 확정 클립 이어받기(복사) / 인물 id 변경 시 클립 key 이동 — 여러 명 첫 인물 초기 연결·시작 카드 이름 변경용.
+    adoptReferenceClip: (fromKey: string, toKey: string): Promise<string> => ipcRenderer.invoke('audio:adopt-reference-clip', fromKey, toKey),
+    renameReferenceClip: (fromKey: string, toKey: string): Promise<boolean> => ipcRenderer.invoke('audio:rename-reference-clip', fromKey, toKey),
     // 참조 source 지문(path|size|mtimeMs). 전사 확정 시 stamp해 두면 합성 경계에서 stale 폐기(§4).
     fingerprintReference: (filePath: string): Promise<string> => ipcRenderer.invoke('audio:fingerprint-reference', filePath),
     qwenPreflight: () => ipcRenderer.invoke('audio:qwen-preflight'),
