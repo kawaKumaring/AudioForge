@@ -113,12 +113,15 @@ try {
     n1: document.querySelector('section[aria-label="인물과 대사"] header span[aria-hidden]')?.textContent, n2: document.querySelector('section[aria-label="말하는 느낌"] header span[aria-hidden]')?.textContent,
     n3: document.querySelector('section[aria-label="고급 설정"] span[aria-hidden]')?.textContent,
     n4: document.querySelector('section[aria-label="음성 만들기"] header span[aria-hidden]')?.textContent,
-    runBtns: document.querySelectorAll('section[aria-label="음성 만들기"] button').length,
+    // 실행 조작은 상태에 따라 버튼(시작·취소)이거나 안내 요소(준비 필요)다. 둘 다 같은 카드 안에 있어야 한다.
+    runControls: document.querySelectorAll('section[aria-label="음성 만들기"] button, section[aria-label="음성 만들기"] [role="status"]').length,
+    runHint: document.querySelector('[data-testid="run-hint"]')?.textContent?.trim(),
     addBtns: [...document.querySelectorAll('[data-testid="multi-dialogue"] button')].filter((b) => b.textContent.includes('대화 추가')).length,
     oldAdd: document.querySelectorAll('#dlg-new-speaker, #dlg-new-line, [data-testid="starter-add"]').length }))
   ok('4', (await store()).mode === 'multi' && multiDom.voice === 0 && multiDom.starter === 1 && multiDom.driver === 1 && multiDom.palette === 0 && multiDom.raw === 0
     && multiDom.n1 === '1' && multiDom.n2 === '2' && multiDom.n3 === '3' && multiDom.n4 === '4'
-    && multiDom.runBtns >= 1 && multiDom.addBtns === 1 && multiDom.oldAdd === 0,
+    && multiDom.runControls >= 1 && multiDom.runHint === '시작 버튼을 누르면 시작합니다'
+    && multiDom.addBtns === 1 && multiDom.oldAdd === 0,
     '여러 명: 단일 목소리 영역 0, 인물1 시작 카드 1, 공통 옵션 1, 상단 감정 버튼 0, 원문 편집기 접힘, 번호 1·2, 대화 추가 버튼 1', JSON.stringify(multiDom))
   // 첫 인물이 기본 목소리의 확정 구간을 이어받는다(재선택·재확정 없음).
   const inherited = await waitUntil(async () => { const s = await store(); const r = s.refs['인물1']; return !!r && r.ready === true && !!r.clip && r.clip !== s.refClip }, 20000)
