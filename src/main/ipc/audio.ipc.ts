@@ -24,6 +24,7 @@ import { validateSidecarEvent, SIDECAR_IPC_CHANNEL } from '../../shared/sidecarE
 import {
   GLOBAL_ASSET_STORAGE_KEY, VOICE_CAST_STORAGE_KEY,
 } from '../../shared/emotionCandidateRegistry'
+import { WORK_DRAFT_STORAGE_KEY } from '../../shared/workDraft'
 import { readSettingsFile, setSettingsKey } from '../services/settings-store'
 import type { SidecarEnvelope } from '../../shared/sidecarEvents'
 // 타입만 가져온다 — 참조 라이브러리 모듈을 런타임에 끌어오지 않으므로 순환 의존이 생기지 않는다.
@@ -1158,6 +1159,9 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       pythonPath,
       [GLOBAL_ASSET_STORAGE_KEY]: stored[GLOBAL_ASSET_STORAGE_KEY] ?? null,
       [VOICE_CAST_STORAGE_KEY]: stored[VOICE_CAST_STORAGE_KEY] ?? null,
+      // 현재 작업 자동 저장 — 합성하지 않아도 남는 "지금 만들던 것". 위 두 키와 서로 독립이다
+      // (자동 저장이 사용자가 명시적으로 저장한 목소리 구성을 건드리지 않는다).
+      [WORK_DRAFT_STORAGE_KEY]: stored[WORK_DRAFT_STORAGE_KEY] ?? null,
     }
   })
 
@@ -1170,7 +1174,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     // 전역 참조 자산 등록부. 해석 권위는 shared `deserializeAssetStore` 이고 main 은
     // 옮기기만 한다. 저장 성공 여부를 그대로 돌려준다 — 실패를 persisted 로 표시하면
     // 사용자는 저장된 줄 알고 앱을 닫는다.
-    if (key === GLOBAL_ASSET_STORAGE_KEY || key === VOICE_CAST_STORAGE_KEY) {
+    if (key === GLOBAL_ASSET_STORAGE_KEY || key === VOICE_CAST_STORAGE_KEY
+        || key === WORK_DRAFT_STORAGE_KEY) {
       // 배역 세트도 같은 원자 경로를 쓴다. 두 키는 서로를 덮지 않는다 —
       // settings-store 가 현재 파일을 읽어 그 키 하나만 갱신한다.
       return saveSetting(key, value ?? undefined)
