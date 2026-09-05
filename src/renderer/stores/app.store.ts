@@ -288,6 +288,7 @@ interface AppState {
   setSpeakerInherit: (v: { speakerId: string; filePath: string } | null) => void
   /** 시작 카드의 이름이 바뀌어 내부 id 가 달라질 때 슬롯·이름·이어받기 플래그·클립 key 를 새 id 로 옮긴다. */
   moveSpeakerRef: (fromId: string, toId: string) => void
+  setSpeakerLabel: (speakerId: string, label: string) => void
   removeEmotionRef: (emotionId: string) => void
   setEmotionRefState: (emotionId: string, patch: { clip?: string; ready?: boolean; message?: string; region?: { start: number; duration: number } | null }) => void
   setProcessing: () => void
@@ -470,6 +471,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   },
   setSpeakerInherit: (v) => set({ ttsSpeakerInherit: v }),
+  setSpeakerLabel: (speakerId, label) => set((s) => ({ ttsSpeakerLabels: { ...s.ttsSpeakerLabels, [speakerId]: label } })),
   moveSpeakerRef: (fromId, toId) => {
     if (!fromId || !toId || fromId === toId) return
     try { void window.api?.audio?.renameReferenceClip?.('spk:' + fromId, 'spk:' + toId) } catch { /* noop */ }
@@ -481,8 +483,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       if (labels[fromId] !== undefined) { const l = labels[fromId]; delete labels[fromId]; labels[toId] = l }
       const enabled = { ...s.ttsSpeakerEmotionEnabled }
       if (enabled[fromId] !== undefined) { const e = enabled[fromId]; delete enabled[fromId]; enabled[toId] = e }
+      // 감정별 참조·후보 선택은 `인물␟감정` 키다 — 접두를 새 id 로 바꿔 함께 옮긴다.
+      const US = String.fromCharCode(31)
+      const rekey = (m: Record<string, string>) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k.startsWith(fromId + US) ? toId + k.slice(fromId.length) : k, v]))
       return {
         ttsSpeakerRefState: refs, ttsSpeakerLabels: labels, ttsSpeakerEmotionEnabled: enabled,
+        ttsSpeakerEmotionRefs: rekey(s.ttsSpeakerEmotionRefs), ttsEmotionCandidateSelections: rekey(s.ttsEmotionCandidateSelections),
         ttsSpeakerInherit: s.ttsSpeakerInherit?.speakerId === fromId ? { ...s.ttsSpeakerInherit, speakerId: toId } : s.ttsSpeakerInherit,
       }
     })

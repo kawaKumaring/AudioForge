@@ -52,7 +52,7 @@ interface ReferenceRegionPanelProps {
    * 확정 구간에서 시작하며, 재확정이 실패해도 이 상태를 그대로 둔다(패널은 사유만 말한다).
    * 구간 편집의 권위는 늘 전체 원본(path)이다 — clip 은 편집 대상이 아니다.
    */
-  committed?: { clip: string; region: { start: number; duration: number } | null } | null
+  committed?: { clip: string; region: { start: number; duration: number } | null; whole?: boolean } | null
 }
 
 interface Analysis {
@@ -166,7 +166,8 @@ export default function ReferenceRegionPanel({
   open = true, autoConfirm = false, plainStatus = false, committed = null,
 }: ReferenceRegionPanelProps) {
   // 확정 클립이 살아 있는가 — 재분석·재확정 실패가 이것을 내리지 않는다(사용 중인 목소리 보존).
-  const hasCommitted = !!(committed && (committed.clip || committed.region))
+  // whole = 원본 전체를 그대로 참조로 쓰는 준비 상태(클립·구간 없음). 이것도 '사용 중' 이므로 재분석이 준비를 내리지 않는다.
+  const hasCommitted = !!(committed && (committed.clip || committed.region || committed.whole))
   // 엔진 선택이 바뀌면 같은 원본을 그 엔진의 정책으로 다시 판정한다(사용 중 구간은 지우지 않는다).
   const ttsEngine = useAppStore((s) => s.ttsEngine)
   const setTtsReferencePolicy = useAppStore((s) => s.setTtsReferencePolicy)
@@ -261,6 +262,10 @@ export default function ReferenceRegionPanel({
           const rd = clampDuration(pol, a.duration_sec, r.dur_sec)
           seededRegion.current = { start: r.start_sec, dur: rd }
           setStart(r.start_sec); setDur(rd)
+        }
+        if (hasCommitted && committed?.whole && a.region_required) {
+          // 원본 전체를 쓰던 상태인데 새 엔진 정책이 구간을 필수로 요구한다 — 사유와 구간 수정만 안내(교체·삭제 없음).
+          onStateRef.current({ ready: false, clip: '', region: null, message: regionNeedText(pol, a.duration_sec, true) })
         }
         if (!hasCommitted) {
           onStateRef.current({

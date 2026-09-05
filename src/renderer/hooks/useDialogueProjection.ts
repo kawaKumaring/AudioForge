@@ -22,7 +22,7 @@ import type { AnalysisResult } from '../../shared/inputAnalysis'
 import { PLAN_WARNING_BLOCKS } from '../../shared/analysisWording'
 import { samplerSha256Hex } from '../../shared/emotionSampler'
 import {
-  canMove, changeBaseEmotion, changeSpeaker, commitDecision, createInitialDialogue,
+  canMove, changeBaseEmotion, changeSpeaker, commitDecision, createInitialDialogue, renameSpeaker as renameSpeakerInSource,
   deleteUtterance, insertUtteranceAfter, moveUtterance, replaceUtteranceBody, sliceOf,
   structurable, structuredEditingAllowed, structuredPatchAllowed, utteranceParts,
   validateSpeakerLabel, groupUtteranceRows, TRANSIENT_BLOCKERS, replaceUtteranceContent, utteranceContentParts,
@@ -79,6 +79,8 @@ export interface DialogueProjection {
   // ── 좌표 의존 명령(patchAllowed 일 때만) ──
   /** label null = 기본 인물(화자 표기 없음)로 되돌린다. */
   setSpeaker: (index: number, label: string | null) => string | null
+  /** 인물 이름 변경 — 그 인물의 모든 발화 표기를 함께 바꾼다(다른 인물과 충돌하면 거부, 병합 없음). */
+  renameSpeaker: (speakerId: string, newLabel: string) => string | null
   setBaseEmotion: (index: number, emotionTag: string | null) => string | null
   insertAfter: (index: number, label: string, line: string, emotionTag?: string | null) =>
     string | null
@@ -240,6 +242,11 @@ export function useDialogueProjection(
     return apply(changeSpeaker(text, views, index, label))
   }, [guard, apply, text, views])
 
+  const renameSpeaker = useCallback((speakerId: string, newLabel: string) => {
+    const g = guard(); if (g) return g
+    return apply(renameSpeakerInSource(text, views, speakerId, newLabel))
+  }, [guard, apply, text, views])
+
   const setBaseEmotion = useCallback((index: number, emotionTag: string | null) => {
     const g = guard(); if (g) return g
     return apply(changeBaseEmotion(text, views, index, emotionTag))
@@ -339,7 +346,7 @@ export function useDialogueProjection(
     verdict, editingAllowed, patchAllowed, speakers, rows, textSha, lastRefusal,
     addPendingSpeaker, addPendingSpeakerNamed, ensurePendingSpeakers, renamePendingSpeaker, removePendingSpeaker,
     canRemoveSpeaker,
-    setSpeaker, setBaseEmotion, insertAfter, remove, move, moveAllowed, createInitial,
+    setSpeaker, renameSpeaker, setBaseEmotion, insertAfter, remove, move, moveAllowed, createInitial,
     draftOf, beginDraft, updateDraft, commitDraft, discardDraft,
   }
 }

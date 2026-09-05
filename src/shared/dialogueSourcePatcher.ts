@@ -348,6 +348,42 @@ export function changeSpeaker(
   return { text: out, changed: true, refusedCode: null }
 }
 
+/** 이름 → 내부 id(계획·파서와 같은 정규화: NFC + 소문자). 이 모듈은 파서를 부르지 않는다. */
+export function speakerIdOfLabel(label: string): string {
+  return label.trim().normalize('NFC').toLowerCase()
+}
+
+/**
+ * 한 인물의 **이름**을 바꾼다 — 그 인물의 모든 자기 표기(`[화자 이름]`)를 새 이름으로 바꾼다.
+ *
+ * 카드의 '이름 바꾸기' 전용이다. 발화를 다른 인물로 옮기는 changeSpeaker 와 다르다: 화자 의미는 그대로고 이름만 바뀐다.
+ * 이어받는 발화(표기 없음)는 손대지 않는다 — 앞 발화의 새 이름을 그대로 이어받는다.
+ * 거부: SPEAKER_LABEL_*(잘못된 이름) / SPEAKER_NOT_FOUND(그 인물의 발화 없음) / NO_CHANGE /
+ *      SPEAKER_LABEL_DUPLICATE(다른 기존 인물과 같은 이름 — 자동 병합하지 않는다).
+ */
+export function renameSpeaker(
+  text: string, utterances: readonly UtteranceView[], speakerId: string, newLabel: string
+): PatchResult {
+  const label = newLabel.trim()
+  const check = validateSpeakerLabel(label)
+  if (!check.ok) return unchanged(text, `SPEAKER_LABEL_${check.problem}`)
+  const targets = utterances.filter((u) => u.speakerId === speakerId)
+  if (targets.length === 0) return unchanged(text, 'SPEAKER_NOT_FOUND')
+  const newId = speakerIdOfLabel(label)
+  if (newId !== speakerId && utterances.some((u) => u.speakerId === newId)) return unchanged(text, 'SPEAKER_LABEL_DUPLICATE')
+  if (targets.every((u) => (u.speakerLabel ?? '') === label)) return unchanged(text, 'NO_CHANGE')
+  const directive = /\[\s*(?:화자|speaker)\s+[^\]]*\]/
+  // 뒤에서 앞으로 바꿔 앞쪽 좌표가 흔들리지 않게 한다. 조각의 나머지(감정 태그·대사)는 글자 그대로.
+  let out = text
+  for (const u of [...targets].filter((u) => u.hasOwnSpeakerDirective).sort((a, b) => b.sourceStart - a.sourceStart)) {
+    const slice = out.slice(u.sourceStart, u.sourceEnd)
+    if (!directive.test(slice)) return unchanged(text, 'SPEAKER_DIRECTIVE_NOT_FOUND')
+    out = out.slice(0, u.sourceStart) + slice.replace(directive, speakerDirective(label)) + out.slice(u.sourceEnd)
+  }
+  if (out === text) return unchanged(text, 'NO_CHANGE')
+  return { text: out, changed: true, refusedCode: null }
+}
+
 /**
  * 발화의 **기본 감정**을 바꾼다. 조각 안의 중간 감정 태그는 지우지 않는다.
  *

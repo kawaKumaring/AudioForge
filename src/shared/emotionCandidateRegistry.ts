@@ -817,6 +817,41 @@ export function renameVoiceCast(
   }))
 }
 
+/**
+ * 인물 이름 변경 — **모든 배역**에서 그 인물의 기본 목소리·감정 후보·수동 선택을 새 id 로 옮긴다.
+ * 자산은 건드리지 않는다(같은 assetId). 후보 id 는 인물 id 에서 파생되므로 다시 만든다. 새 id 가 이미 다른 인물로 쓰이면 거부(병합 없음).
+ */
+export function renameSpeakerInCasts(
+  store: VoiceCastStore, fromId: string, toId: string, now: string, hashHex: HashHex
+): { store: VoiceCastStore; changed: boolean; refused: 'SPEAKER_LABEL_DUPLICATE' | null } {
+  if (!fromId || !toId || fromId === toId) return { store, changed: false, refused: null }
+  const US = String.fromCharCode(31)
+  const conflict = store.casts.some((c) => c.candidates.some((k) => k.speakerId === toId) || toId in c.speakerDefaults)
+  if (conflict) return { store, changed: false, refused: 'SPEAKER_LABEL_DUPLICATE' }
+  let changed = false
+  const casts = store.casts.map((c) => {
+    const touches = c.candidates.some((k) => k.speakerId === fromId) || fromId in c.speakerDefaults
+      || Object.keys(c.selections).some((k) => k.startsWith(fromId + US))
+    if (!touches) return c
+    changed = true
+    const idMap = new Map<string, string>()
+    const candidates = c.candidates.map((k) => {
+      if (k.speakerId !== fromId) return k
+      const next = { ...k, speakerId: toId, candidateId: makeCandidateId(k.assetId, toId, k.emotionId, hashHex) }
+      idMap.set(k.candidateId, next.candidateId)
+      return next
+    })
+    const speakerDefaults: Record<string, string> = {}
+    for (const [sid, aid] of Object.entries(c.speakerDefaults)) speakerDefaults[sid === fromId ? toId : sid] = aid
+    const selections: Record<string, string> = {}
+    for (const [key, val] of Object.entries(c.selections)) {
+      selections[key.startsWith(fromId + US) ? toId + key.slice(fromId.length) : key] = idMap.get(val) ?? val
+    }
+    return { ...c, candidates, speakerDefaults, selections, updatedAt: now }
+  })
+  return { store: changed ? { ...store, casts } : store, changed, refused: null }
+}
+
 /** 이 자산을 참조하는 후보 수 — **모든 배역을 합쳐** 센다. */
 export function assetRefCountAcrossCasts(store: VoiceCastStore, assetId: string): number {
   let n = 0

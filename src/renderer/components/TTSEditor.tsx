@@ -241,7 +241,7 @@ async function runPreview(gen: number, path: string, region?: { start: number; d
 export default function TTSEditor() {
   const { mode, status, fileInfo, ttsEmotionRefState, ttsSpeakerRefState, ttsSpeakerLabels, ttsSpeakerEmotionRefs,
     ttsSpeakerEmotionEnabled, setSpeakerEmotionEnabled, ttsSpeakerMode, setTtsSpeakerMode,
-    registerSpeakerRef, removeSpeakerRef, setSpeakerRefState, setSpeakerInherit, moveSpeakerRef, ttsSpeakerInherit,
+    registerSpeakerRef, removeSpeakerRef, setSpeakerRefState, setSpeakerInherit, moveSpeakerRef, setSpeakerLabel, ttsSpeakerInherit,
     registerEmotionRef, removeEmotionRef, setEmotionRefState, setTtsRefState, ttsRefReady, ttsRefMessage, ttsReferenceClip, ttsPitchCapability, setTtsPitchCapability,
     ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, setTtsExpression,
     ttsReferenceConditioningMode, setTtsReferenceConditioningMode,
@@ -827,7 +827,8 @@ export default function TTSEditor() {
         path={src}
         disabled={disabled}
         committed={ttsSpeakerRefState[speakerId]?.ready
-          ? { clip: ttsSpeakerRefState[speakerId].clip, region: ttsSpeakerRefState[speakerId].region } : null}
+          ? { clip: ttsSpeakerRefState[speakerId].clip, region: ttsSpeakerRefState[speakerId].region,
+              whole: !ttsSpeakerRefState[speakerId].clip && !ttsSpeakerRefState[speakerId].region } : null}
         onState={(s) => setSpeakerRefState(speakerId, s)}
         label={`${speakerLabelOf(speakerId)} 목소리`}
         open={open}
@@ -883,7 +884,8 @@ export default function TTSEditor() {
         path={src}
         disabled={disabled}
         committed={ttsEmotionRefState[emotionId]?.ready
-          ? { clip: ttsEmotionRefState[emotionId].clip, region: ttsEmotionRefState[emotionId].region } : null}
+          ? { clip: ttsEmotionRefState[emotionId].clip, region: ttsEmotionRefState[emotionId].region,
+              whole: !ttsEmotionRefState[emotionId].clip && !ttsEmotionRefState[emotionId].region } : null}
         onState={(s) => {
           setEmotionRefState(emotionId, s)              // store가 단일 소스(clip/ready/message/region)
           if (s.region) onChangeRegion(s.region)         // 관리자 표시 콜백 계약 충족
@@ -1112,7 +1114,7 @@ export default function TTSEditor() {
             clipKey="default"
             path={fileInfo.path}
             disabled={disabled}
-            committed={ttsRefReady ? { clip: ttsReferenceClip, region: ttsReferenceRegion } : null}
+            committed={ttsRefReady ? { clip: ttsReferenceClip, region: ttsReferenceRegion, whole: !ttsReferenceClip && !ttsReferenceRegion } : null}
             onState={setTtsRefState}
             label="참조 음성"
             open={regionOpen}
@@ -1132,7 +1134,7 @@ export default function TTSEditor() {
             clipKey="default"
             path={fileInfo.path}
             disabled={disabled}
-            committed={ttsRefReady ? { clip: ttsReferenceClip, region: ttsReferenceRegion } : null}
+            committed={ttsRefReady ? { clip: ttsReferenceClip, region: ttsReferenceRegion, whole: !ttsReferenceClip && !ttsReferenceRegion } : null}
             onState={setTtsRefState}
             label="참조 음성"
             open={false}
@@ -1218,6 +1220,17 @@ export default function TTSEditor() {
               })() }}
               onRemoveVoice={(id) => removeSpeakerRef(id)}
               onSpeakerIdChanged={(from, to) => moveSpeakerRef(from, to)}
+              onRenameSpeaker={(id, newLabel) => {
+                // 카드의 이름 변경 = 명시 명령. 원문의 모든 표기를 바꾸고(거부되면 여기서 끝) 목소리 슬롯·감정별 설정·목소리 구성을 새 id 로 옮긴다.
+                // 고급 원문 편집으로 표기를 직접 바꾸는 것(onSingleEditorChange)은 알림+되돌리기만 — 슬롯을 옮기지 않는다.
+                const toId = normalizeSpeakerId(newLabel.trim())
+                if (toId !== id && (ttsSpeakerRefState[toId] || dialogue.speakers.some((sp) => (sp.pending ? normalizeSpeakerId(sp.label.trim()) : sp.speakerId) === toId))) return 'SPEAKER_LABEL_DUPLICATE'
+                const refused = dialogue.renameSpeaker(id, newLabel)
+                if (refused) return refused
+                if (toId !== id) { moveSpeakerRef(id, toId); void voiceCast.renameSpeaker(id, toId) }
+                setSpeakerLabel(toId, newLabel.trim())
+                return null
+              }}
               onToggleEmotionVoice={(id, on) => setSpeakerEmotionEnabled(id, on)}
               renderEmotionVoiceEditor={(id, label) => {
                 // 감정별 후보는 적용된 목소리 구성 안에 산다. 편집 위치는 이 카드 하나 — 고급 설정에는 없다.

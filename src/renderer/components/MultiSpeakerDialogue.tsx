@@ -127,6 +127,11 @@ export interface MultiSpeakerDialogueProps {
   renderEmotionVoiceEditor?: (speakerId: string, label: string) => ReactNode
   /** 시작 카드의 이름이 바뀌어 내부 id 가 달라졌다 — 셸이 목소리 슬롯을 새 id 로 옮긴다. */
   onSpeakerIdChanged?: (fromId: string, toId: string) => void
+  /**
+   * 원문에 있는 인물의 이름 변경(카드 상세의 '이름 바꾸기'). 셸이 모든 발화 표기·목소리 슬롯·감정별 설정·목소리 구성을 함께 옮긴다.
+   * 거부 코드(다른 인물과 충돌 등)를 돌려주면 카드가 안내한다. 자동 병합은 없다.
+   */
+  onRenameSpeaker?: (speakerId: string, newLabel: string) => string | null
   disabled?: boolean
 }
 
@@ -228,7 +233,8 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
                 <SpeakerVoicePanel voiceId={sid} label={r.view.speakerLabel ?? ''} voice={voiceOf(sid)} disabled={disabled}
                   onAssignVoice={props.onAssignVoice} onRemoveVoice={props.onRemoveVoice} onPreviewVoice={props.onPreviewVoice}
                   renderRegionEditor={props.renderRegionEditor} onToggleEmotionVoice={props.onToggleEmotionVoice}
-                  renderEmotionVoiceEditor={props.renderEmotionVoiceEditor} onClose={() => setVoiceOpen(null)} />
+                  renderEmotionVoiceEditor={props.renderEmotionVoiceEditor} onClose={() => setVoiceOpen(null)}
+                  onRenameSpeaker={props.onRenameSpeaker ? ((label) => props.onRenameSpeaker!(sid, label)) : undefined} />
               ) : null} />
           )
         })}
@@ -637,10 +643,25 @@ function SpeakerVoicePanel(props: {
   onToggleEmotionVoice?: (speakerId: string, on: boolean) => void
   /** 감정별 목소리 후보 편집기(고급) — 셸이 주입한다. 이 카드가 유일한 편집 위치다. */
   renderEmotionVoiceEditor?: (speakerId: string, label: string) => ReactNode
+  /** 원문에 있는 인물만(시작 카드는 이름 입력이 따로 있다). 거부 코드를 돌려주면 그대로 안내한다. */
+  onRenameSpeaker?: (newLabel: string) => string | null
   onClose: () => void
 }) {
   const { voiceId, label, voice, disabled } = props
   const [emotionOpen, setEmotionOpen] = useState(false)
+  const [renameOpen, setRenameOpen] = useState(false)
+  const [renameValue, setRenameValue] = useState(label)
+  const [renameProblem, setRenameProblem] = useState<string | null>(null)
+  const applyRename = () => {
+    if (!props.onRenameSpeaker) return
+    const next = renameValue.trim()
+    if (next === label) { setRenameOpen(false); return }
+    const check = validateSpeakerLabel(next)
+    if (!check.ok) { setRenameProblem(REFUSAL_LABEL[`SPEAKER_LABEL_${check.problem}`] ?? check.problem); return }
+    const refused = props.onRenameSpeaker(next)
+    if (refused) { setRenameProblem(REFUSAL_LABEL[refused] ?? refused); return }
+    setRenameProblem(null); setRenameOpen(false)
+  }
   // 원본 파형·구간 수정은 필요할 때만 펼친다. 접혀 있어도 분석·준비는 계속 돈다.
   const [regionOpen, setRegionOpen] = useState(false)
   return (
@@ -655,8 +676,27 @@ function SpeakerVoicePanel(props: {
           <span style={{ fontSize: 10, color: 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 160 }}>{voice.fileName}</span>
         )}
         <span style={{ flex: 1 }} />
+        {props.onRenameSpeaker && (
+          <button type="button" data-testid="speaker-rename-toggle" disabled={disabled} aria-expanded={renameOpen}
+            onClick={() => { setRenameValue(label); setRenameProblem(null); setRenameOpen((o) => !o) }} style={btn('var(--text-secondary)', disabled)}>이름 바꾸기</button>
+        )}
         <button type="button" data-testid="voice-panel-close" onClick={props.onClose} style={btn('var(--text-secondary)', false)}>닫기</button>
       </div>
+      {renameOpen && props.onRenameSpeaker && (
+        <div data-testid="speaker-rename" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={rowFlex}>
+            <label htmlFor={`spk-rename-${voiceId}`} style={{ fontSize: 10, color: 'var(--text-muted)' }}>새 이름</label>
+            <input id={`spk-rename-${voiceId}`} data-testid="speaker-rename-input" value={renameValue} disabled={disabled}
+              onChange={(e) => { setRenameValue(e.target.value); setRenameProblem(null) }}
+              onKeyDown={(e) => { if (e.key === 'Enter') applyRename() }} style={{ ...inputBox, flex: '1 1 140px' }} />
+            <button type="button" data-testid="speaker-rename-apply" disabled={disabled || !renameValue.trim()} onClick={applyRename}
+              style={btn('var(--cyan)', disabled || !renameValue.trim())}>적용</button>
+            <button type="button" onClick={() => { setRenameOpen(false); setRenameProblem(null) }} style={btn('var(--text-secondary)', false)}>취소</button>
+          </div>
+          <span style={sub}>이 인물의 모든 대사와 목소리·구간·감정별 설정이 새 이름으로 함께 유지됩니다.</span>
+          {renameProblem && <span data-testid="speaker-rename-problem" style={{ fontSize: 10, color: 'var(--rose)' }}>{renameProblem}</span>}
+        </div>
+      )}
       {/* 실제 안전 사유(준비 실패)만 그대로 보인다. */}
       {voice?.registered && !voice.ready && voice.message && (
         <span data-testid="speaker-voice-reason" style={{ fontSize: 11, color: 'var(--amber, #d4a017)' }}>{voice.message}</span>
