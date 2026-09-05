@@ -19,8 +19,14 @@
 export const WORK_DRAFT_STORAGE_KEY = 'workDrafts'
 export const WORK_DRAFT_SCHEMA_VERSION = 1
 
-/** 보관할 작업 수 상한. 넘으면 가장 오래 손대지 않은 것부터 버린다(무한 증식 방지). */
-export const MAX_WORK_DRAFTS = 20
+/**
+ * 최근 목록을 보여 줄 때의 **표시 상한**. 저장 데이터를 지우는 기준이 아니다.
+ *
+ * 이전 판은 이 값을 넘으면 오래된 기록을 삭제했다. 그런데 합성한 적이 없는 작업은 대사와 인물
+ * 구성이 이 기록에만 있어서, 삭제는 곧 사용자의 작업 유실이었다. 작업 수가 많다는 것은 무엇을
+ * 지울 이유가 되지 않는다 — 목록을 짧게 보여 줄 이유일 뿐이다.
+ */
+export const WORK_DRAFT_RECENT_LIST_LIMIT = 20
 
 export interface WorkRegion {
   start: number
@@ -47,7 +53,7 @@ export interface WorkDraft {
   sourcePath: string
   /** 원본 내용 해시. 보관 과정에서 알게 됐을 때만 채운다. */
   sourceSha256?: string
-  /** 마지막으로 손댄 시각(ISO). 상한을 넘겼을 때 무엇을 버릴지 정하는 기준. */
+  /** 마지막으로 손댄 시각(ISO). 최근 목록을 정렬하는 기준이다(무엇을 지울지 정하는 기준이 아니다). */
   updatedAt: string
   ttsText: string
   speakerMode: 'single' | 'multi'
@@ -185,21 +191,29 @@ export function workDraftIsEmpty(draft: WorkDraft): boolean {
 }
 
 /**
- * 기록 하나를 넣는다. 상한을 넘으면 **가장 오래 손대지 않은 것부터** 버린다.
- * 지금 넣는 기록은 언제나 남는다(방금 작업하던 것을 버리지 않는다).
+ * 기록 하나를 넣는다(같은 열쇠면 갱신).
+ *
+ * **개수를 이유로 다른 기록을 지우지 않는다.** 합성하지 않은 작업은 대사와 인물 구성이 이 기록에만
+ * 있으므로, 지우는 것은 곧 사용자의 작업을 잃는 일이다. 오래된 작업을 다시 열면 그때 저장해 둔
+ * 대사·인물·구간이 그대로 복원돼야 한다.
  */
 export function putWorkDraft(
-  drafts: Record<string, WorkDraft>, key: string, draft: WorkDraft, max = MAX_WORK_DRAFTS
+  drafts: Record<string, WorkDraft>, key: string, draft: WorkDraft
 ): Record<string, WorkDraft> {
   if (!key) return drafts
-  const next: Record<string, WorkDraft> = { ...drafts, [key]: draft }
-  const keys = Object.keys(next)
-  if (keys.length <= max) return next
-  const ordered = keys
-    .filter((k) => k !== key)
-    .sort((a, b) => (next[a].updatedAt || '').localeCompare(next[b].updatedAt || ''))
-  for (const k of ordered.slice(0, keys.length - max)) delete next[k]
-  return next
+  return { ...drafts, [key]: draft }
+}
+
+/**
+ * 최근 손댄 순서의 열쇠 목록(최신 먼저). 목록 **표시**에만 쓴다 — 여기 없다고 지워진 것이 아니다.
+ * 저장 관리 화면은 이번 범위가 아니라 아직 부르는 곳이 없다.
+ */
+export function recentWorkDraftKeys(
+  drafts: Record<string, WorkDraft>, limit = WORK_DRAFT_RECENT_LIST_LIMIT
+): string[] {
+  return Object.keys(drafts)
+    .sort((a, b) => (drafts[b].updatedAt || '').localeCompare(drafts[a].updatedAt || ''))
+    .slice(0, Math.max(0, limit))
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

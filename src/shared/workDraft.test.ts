@@ -3,8 +3,9 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
-  MAX_WORK_DRAFTS, WORK_DRAFT_SCHEMA_VERSION, buildWorkDraft, deserializeWorkDrafts, findWorkDraft,
-  planWorkRestore, putWorkDraft, serializeWorkDrafts, slotForPlan, workDraftIsEmpty, workKeyOf,
+  WORK_DRAFT_RECENT_LIST_LIMIT, WORK_DRAFT_SCHEMA_VERSION, buildWorkDraft, deserializeWorkDrafts,
+  findWorkDraft, planWorkRestore, putWorkDraft, recentWorkDraftKeys, serializeWorkDrafts, slotForPlan,
+  workDraftIsEmpty, workKeyOf,
 } from './workDraft.ts'
 import type { WorkDraft } from './workDraft.ts'
 
@@ -76,17 +77,45 @@ test('모르는 스키마는 전체를 쓰지 않고 사유를 남긴다 — 저
   assert.equal(deserializeWorkDrafts(null).report.rootError, null)   // 처음 실행은 오류가 아니다
 })
 
-test('상한을 넘으면 오래된 것부터 버리되 방금 작업한 것은 남는다', () => {
+test('작업 수가 많아져도 기록을 지우지 않는다 — 21번째를 저장해도 첫 작업의 대사·인물 설정이 남는다', () => {
+  const N = WORK_DRAFT_RECENT_LIST_LIMIT           // 20
   let map: Record<string, WorkDraft> = {}
-  for (let i = 0; i < MAX_WORK_DRAFTS; i += 1) {
-    map = putWorkDraft(map, `k${i}`, buildWorkDraft({ ...INPUT, now: `2026-09-05T00:${String(i).padStart(2, '0')}:00.000Z` }))
+  // 첫 작업에는 알아볼 수 있는 대사·인물을 담는다.
+  map = putWorkDraft(map, 'work-1', buildWorkDraft({
+    ...INPUT, sourcePath: 'E:/voices/first.wav', ttsText: '[화자 주인공] 첫 작업의 대사',
+    now: '2026-09-05T00:00:00.000Z',
+  }))
+  // 그 뒤로 다른 작업을 20개 더 저장한다(= 21번째까지).
+  for (let i = 2; i <= N + 1; i += 1) {
+    map = putWorkDraft(map, `work-${i}`, buildWorkDraft({
+      ...INPUT, sourcePath: `E:/voices/w${i}.wav`,
+      now: `2026-09-05T01:${String(i).padStart(2, '0')}:00.000Z`,
+    }))
   }
-  assert.equal(Object.keys(map).length, MAX_WORK_DRAFTS)
-  map = putWorkDraft(map, 'newest', buildWorkDraft({ ...INPUT, now: '2026-09-05T23:00:00.000Z' }))
-  assert.equal(Object.keys(map).length, MAX_WORK_DRAFTS)
-  assert.ok(map.newest, '방금 넣은 것은 남는다')
-  assert.equal(map.k0, undefined, '가장 오래된 것이 빠진다')
-  assert.ok(map[`k${MAX_WORK_DRAFTS - 1}`])
+  assert.equal(Object.keys(map).length, N + 1, '개수를 이유로 지우지 않는다')
+  const first = map['work-1']
+  assert.ok(first, '첫 작업 기록이 남아 있다')
+  assert.equal(first.ttsText, '[화자 주인공] 첫 작업의 대사', '대사가 그대로다')
+  assert.deepEqual(Object.keys(first.speakers).sort(), ['조연', '주인공'], '인물 설정이 그대로다')
+  assert.deepEqual(first.speakers['주인공'].region, { start: 9.755, duration: 8.685 }, '확정 구간이 그대로다')
+  // 저장·복원 왕복 뒤에도 남는다(디스크에 오간 뒤에도 유실 없음).
+  const back = deserializeWorkDrafts(JSON.parse(JSON.stringify(serializeWorkDrafts(map))))
+  assert.equal(back.report.restored, N + 1)
+  assert.equal(back.drafts['work-1'].ttsText, '[화자 주인공] 첫 작업의 대사')
+  assert.deepEqual(back.drafts['work-1'].speakers['주인공'].region, { start: 9.755, duration: 8.685 })
+})
+
+test('최근 목록 상한은 표시용이다 — 목록에 없어도 기록은 남아 있다', () => {
+  let map: Record<string, WorkDraft> = {}
+  for (let i = 1; i <= WORK_DRAFT_RECENT_LIST_LIMIT + 5; i += 1) {
+    map = putWorkDraft(map, `w${i}`, buildWorkDraft({
+      ...INPUT, now: `2026-09-05T00:${String(i).padStart(2, '0')}:00.000Z` }))
+  }
+  const recent = recentWorkDraftKeys(map)
+  assert.equal(recent.length, WORK_DRAFT_RECENT_LIST_LIMIT, '보여 주는 것은 20개')
+  assert.equal(recent[0], `w${WORK_DRAFT_RECENT_LIST_LIMIT + 5}`, '최신이 먼저')
+  assert.equal(Object.keys(map).length, WORK_DRAFT_RECENT_LIST_LIMIT + 5, '저장된 것은 전부 그대로')
+  assert.ok(map.w1, '목록 밖의 기록도 남아 있다')
 })
 
 test('원본을 옮겨도 내용 해시가 같으면 찾는다. 해시가 없으면 조용히 못 찾는다', () => {
