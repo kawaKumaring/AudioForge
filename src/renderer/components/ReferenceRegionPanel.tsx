@@ -504,7 +504,7 @@ export default function ReferenceRegionPanel({
   // 사용자가 '사용 구간 바꾸기'로 직접 조정한 뒤에는 기존대로 본인이 확정한다(자동 개입 없음).
   const autoConfirmedKey = useRef<string>('')
   useEffect(() => {
-    if (!autoConfirm || !path || !analysis || !analysis.needs_region) return
+    if (!autoConfirm || !path || !analysis || !analysis.needs_region || hasCommitted) return   // 이미 확정한 구간이 있으면 다시 확정하지 않는다
     const r = analysis.recommend
     if (!r || !r.ok) return                       // 추천이 없으면 임의로 고르지 않는다
     const key = `${clipKey} ${path}`

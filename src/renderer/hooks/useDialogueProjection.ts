@@ -67,6 +67,8 @@ export interface DialogueProjection {
 
   // ── 인물(pending 은 로컬 UI 상태) ──
   addPendingSpeaker: () => void
+  /** 이름이 정해진 새 인물의 시작 카드(대화 추가 설정 창에서). 원문에는 아직 없다. */
+  addPendingSpeakerNamed: (label: string) => void
   /** 빈 카드가 n 개 미만이면 채운다. 몇 번 불려도 결과가 같다(StrictMode 이중 effect 안전). */
   ensurePendingSpeakers: (n: number) => void
   renamePendingSpeaker: (speakerId: string, label: string) => void
@@ -200,6 +202,9 @@ export function useDialogueProjection(
   const addPendingSpeaker = useCallback(() => {
     setPending((p) => [...p, { speakerId: nextPendingId(p), label: '' }])
   }, [])
+  const addPendingSpeakerNamed = useCallback((label: string) => {
+    setPending((p) => [...p, { speakerId: nextPendingId(p), label }])
+  }, [])
   const ensurePendingSpeakers = useCallback((n: number) => {
     setPending((p) => {
       if (p.length >= n) return p
@@ -332,7 +337,7 @@ export function useDialogueProjection(
 
   return {
     verdict, editingAllowed, patchAllowed, speakers, rows, textSha, lastRefusal,
-    addPendingSpeaker, ensurePendingSpeakers, renamePendingSpeaker, removePendingSpeaker,
+    addPendingSpeaker, addPendingSpeakerNamed, ensurePendingSpeakers, renamePendingSpeaker, removePendingSpeaker,
     canRemoveSpeaker,
     setSpeaker, setBaseEmotion, insertAfter, remove, move, moveAllowed, createInitial,
     draftOf, beginDraft, updateDraft, commitDraft, discardDraft,

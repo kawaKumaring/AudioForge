@@ -732,7 +732,7 @@ export default function TTSEditor() {
     const row = speakerUiRows.find((r) => r.speakerId === speakerId)
     if (row) {
       return { registered: row.registered, ready: row.ready, fileName: row.fileName, decision: row.decision,
-        region: row.region ?? null,
+        region: row.region ?? null, message: row.message,
         sharedWith: row.sharedWith, emotionOverrides: emotionOverridesOf(speakerId),
         emotionVoiceAvailable: emotionVoiceAvailableOf(speakerId),
         emotionVoiceEnabled: ttsSpeakerEmotionEnabled[speakerId] === true }
@@ -743,7 +743,7 @@ export default function TTSEditor() {
     const fp = speakerFingerprints[speakerId]
     return {
       registered: true, ready: !!slot.ready,
-      region: slot.region ?? null,
+      region: slot.region ?? null, message: slot.message,
       fileName: (slot.source || '').split(/[\\/]/).pop() || '',
       decision: resolveReferenceDecision(speakerId, null, speakerReadiness),
       sharedWith: (fp && sharedGroups[fp] ? sharedGroups[fp] : []).filter((id) => id !== speakerId).map(speakerLabelOf),
@@ -817,7 +817,7 @@ export default function TTSEditor() {
     return p || null
   }
   // 구간 편집기는 감정과 **같은 것**을 쓴다(clipKey 만 화자용으로 분리).
-  const renderSpeakerRegion = (speakerId: string) => {
+  const renderSpeakerRegion = (speakerId: string, open = true) => {
     const src = ttsSpeakerRefState[speakerId]?.source || ''
     if (!src) return null
     return (
@@ -830,6 +830,8 @@ export default function TTSEditor() {
           ? { clip: ttsSpeakerRefState[speakerId].clip, region: ttsSpeakerRefState[speakerId].region } : null}
         onState={(s) => setSpeakerRefState(speakerId, s)}
         label={`${speakerLabelOf(speakerId)} 목소리`}
+        open={open}
+        plainStatus={!open}
       />
     )
   }
@@ -1019,11 +1021,51 @@ export default function TTSEditor() {
     </div>
   )
 
+  // 참조 사용 방식(자동/안정) — 공통 생성 옵션. 한 명은 목소리 섹션 안에, 여러 명은 공통 옵션 카드에 **한 번만** 그린다.
+  const refModeControl = (
+    <>
+        {/* 참조 사용 방식 — 화면에 나오는 것은 두 가지 이름뿐이다.
+            ICL·x-vector·ASR 정렬 같은 기술 명칭은 ⓘ 한 줄과 '고급 설정 > 엔진·진단'에만 있다. */}
+        <div role="radiogroup" aria-label="참조 사용 방식" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0, borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>참조 방식</span>
+          {[
+            { id: 'auto' as const, label: '자동(추천)', tip: '목소리 느낌을 최대한 살려 보고, 잘 안 되면 안정 방식으로 자동 전환합니다. 합성 시간이 늘어납니다.' },
+            // ⚠️ 이 문구는 metadata 의 품질 제약(CONSTRAINT_EMOTION_MAY_FLATTEN)과 같은 사실을 말해야 한다 —
+            //    python/test_reference_conditioning_mode.py 가 '감정 표현은 다소 평탄할 수 있음' 을 대조한다.
+            { id: 'safe_xvector' as const, label: '안정 우선', tip: '참조 대사 섞임 없음 · 감정 표현은 다소 평탄할 수 있음 (가장 빠름)' },
+          ].map((opt) => {
+            const selected = ttsReferenceConditioningMode === opt.id
+            return (
+              <button key={opt.id} type="button" role="radio" aria-checked={selected} disabled={disabled}
+                title={opt.tip}
+                onClick={() => !disabled && setTtsReferenceConditioningMode(opt.id)}
+                style={plainBtn(selected ? 'var(--rose)' : 'var(--bg-elevated)', selected ? '#fff' : 'var(--text-secondary)', disabled)}>
+                {opt.label}
+              </button>
+            )
+          })}
+          <button type="button" onClick={() => setShowRefModeHelp(v => !v)} aria-expanded={showRefModeHelp}
+            aria-label="참조 방식 설명" aria-controls="tts-refmode-help"
+            style={{ width: 18, height: 18, borderRadius: '50%', border: '1px solid var(--text-muted)', background: 'transparent', color: 'var(--text-muted)', fontSize: 11, fontStyle: 'italic', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontFamily: 'inherit' }}>i</button>
+        </div>
+        {(showRefModeHelp || showSettingHelp) && (
+          <p id="tts-refmode-help" style={{ fontSize: 11, lineHeight: 1.6, color: 'var(--text-muted)', margin: 0 }}>
+            자동은 목소리 느낌을 더 살려 보고, 실패하면 같은 작업 안에서 안정 방식으로 한 번만 바꿔 만듭니다.
+            바뀌면 완료 화면에 그 사실을 알려 드립니다.
+          </p>
+        )}
+    </>
+  )
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {/* ───────── [1] 목소리 ─────────
+      {/* ───────── 한 명 | 여러 명 — 합성 화면 전체를 전환하는 탭(합성 메뉴 바로 아래, 전체 폭). 대사 편집기의 옵션이 아니다. */}
+      <DialogueTabs tab={dialogueTab} onTab={setDialogueTab} disabled={disabled} />
+
+      {/* ───────── [1] 목소리 ───────── (한 명 전용)
           기본 화면에 남는 것은 셋뿐이다: 선택한 목소리(+재생) / 다른 목소리 선택 / 사용 구간 바꾸기.
           보관함·감정별 목소리·참조 전사는 '고급 설정 > 음성'으로 옮겼다(숨긴 것이지 없앤 것이 아니다). */}
+      {dialogueTab === 'single' && (
       <TtsVoiceSection
         referenceReady={ttsRefReady}
         referenceMessage={ttsRefMessage}
@@ -1079,56 +1121,51 @@ export default function TTSEditor() {
           />
         )}
 
-        {/* 참조 사용 방식 — 화면에 나오는 것은 두 가지 이름뿐이다.
-            ICL·x-vector·ASR 정렬 같은 기술 명칭은 ⓘ 한 줄과 '고급 설정 > 엔진·진단'에만 있다. */}
-        <div role="radiogroup" aria-label="참조 사용 방식" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0, borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>참조 방식</span>
-          {[
-            { id: 'auto' as const, label: '자동(추천)', tip: '목소리 느낌을 최대한 살려 보고, 잘 안 되면 안정 방식으로 자동 전환합니다. 합성 시간이 늘어납니다.' },
-            // ⚠️ 이 문구는 metadata 의 품질 제약(CONSTRAINT_EMOTION_MAY_FLATTEN)과 같은 사실을 말해야 한다 —
-            //    python/test_reference_conditioning_mode.py 가 '감정 표현은 다소 평탄할 수 있음' 을 대조한다.
-            { id: 'safe_xvector' as const, label: '안정 우선', tip: '참조 대사 섞임 없음 · 감정 표현은 다소 평탄할 수 있음 (가장 빠름)' },
-          ].map((opt) => {
-            const selected = ttsReferenceConditioningMode === opt.id
-            return (
-              <button key={opt.id} type="button" role="radio" aria-checked={selected} disabled={disabled}
-                title={opt.tip}
-                onClick={() => !disabled && setTtsReferenceConditioningMode(opt.id)}
-                style={plainBtn(selected ? 'var(--rose)' : 'var(--bg-elevated)', selected ? '#fff' : 'var(--text-secondary)', disabled)}>
-                {opt.label}
-              </button>
-            )
-          })}
-          <button type="button" onClick={() => setShowRefModeHelp(v => !v)} aria-expanded={showRefModeHelp}
-            aria-label="참조 방식 설명" aria-controls="tts-refmode-help"
-            style={{ width: 18, height: 18, borderRadius: '50%', border: '1px solid var(--text-muted)', background: 'transparent', color: 'var(--text-muted)', fontSize: 11, fontStyle: 'italic', cursor: 'pointer', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0, fontFamily: 'inherit' }}>i</button>
-        </div>
-        {(showRefModeHelp || showSettingHelp) && (
-          <p id="tts-refmode-help" style={{ fontSize: 11, lineHeight: 1.6, color: 'var(--text-muted)', margin: 0 }}>
-            자동은 목소리 느낌을 더 살려 보고, 실패하면 같은 작업 안에서 안정 방식으로 한 번만 바꿔 만듭니다.
-            바뀌면 완료 화면에 그 사실을 알려 드립니다.
-          </p>
-        )}
+        {refModeControl}
       </TtsVoiceSection>
+      )}
+      {/* 여러 명: 단일용 목소리 영역은 그리지 않는다. 기본 목소리(처음 불러온 음성)의 분석·추천 구간 자동 확정은 보이지 않게
+          계속 돌아야 첫 인물이 그 결과를 이어받는다(open=false 는 도구를 그리지 않고 준비만 한다). */}
+      {dialogueTab === 'multi' && fileInfo?.path && (
+        <div hidden data-testid="default-voice-driver">
+          <ReferenceRegionPanel
+            clipKey="default"
+            path={fileInfo.path}
+            disabled={disabled}
+            committed={ttsRefReady ? { clip: ttsReferenceClip, region: ttsReferenceRegion } : null}
+            onState={setTtsRefState}
+            label="참조 음성"
+            open={false}
+            autoConfirm
+            plainStatus
+          />
+        </div>
+      )}
 
-      {/* ───────── [2] 대사 ───────── */}
-      <section className="tts-flow-card" aria-label="대사" style={flowCard}>
+      {/* ───────── [2] 대사(한 명) / [1] 인물과 대사(여러 명) ─────────
+          여러 명에서는 인물·목소리·대사가 카드 하나에 있으므로 단일 화면의 번호 체계를 끌고 오지 않는다. */}
+      <section className="tts-flow-card" aria-label={dialogueTab === 'multi' ? '인물과 대사' : '대사'} style={flowCard}>
         <header className="tts-flow-head" style={flowHead}>
-          <span aria-hidden="true" style={flowNum}>2</span>
-          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>대사</span>
-          <span style={{ fontSize: 11, color: ttsText.trim() ? 'var(--text-muted)' : 'var(--rose)', flex: 1, minWidth: 100 }}>
-            {ttsText.trim() ? `${ttsText.split('\n').filter(l => l.trim()).length}개 문장` : '합성할 대사를 입력하세요'}
-          </span>
-          {!ttsText.trim() && (
+          <span aria-hidden="true" style={flowNum}>{dialogueTab === 'multi' ? 1 : 2}</span>
+          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>{dialogueTab === 'multi' ? '인물과 대사' : '대사'}</span>
+          {dialogueTab === 'single' && (
+            <span style={{ fontSize: 11, color: ttsText.trim() ? 'var(--text-muted)' : 'var(--rose)', flex: 1, minWidth: 100 }}>
+              {ttsText.trim() ? `${ttsText.split('\n').filter(l => l.trim()).length}개 문장` : '합성할 대사를 입력하세요'}
+            </span>
+          )}
+          {dialogueTab === 'multi' && (
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1, minWidth: 100 }}>인물마다 목소리와 대사를 카드에서 설정합니다</span>
+          )}
+          {dialogueTab === 'single' && !ttsText.trim() && (
             <button onClick={() => !disabled && setTtsText(EXAMPLE_TEXT)} disabled={disabled} style={{ padding: '3px 10px', borderRadius: 5, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600, fontFamily: 'inherit', background: 'var(--bg-elevated)', color: 'var(--cyan)' }}>예문 불러오기</button>
           )}
-          <DialogueTabs tab={dialogueTab} onTab={setDialogueTab} disabled={disabled} />
         </header>
         <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
           {/* 감정 태그 삽입 팔레트(셸) — **편집기 바로 위**. A의 imperative handle 호출(실제 caret/선택
               삽입·IME·selection/scroll 복원은 전부 A의 기존 구현). 여기서 삽입 알고리즘을 다시 만들지 않는다.
               순서: 대사에 이미 쓰인 감정 우선(첫 등장 순) → 나머지 자주 쓰는 감정.
               색은 감정 '전환' 구간 표시이며 감정 혼합이 아니다. 접근성 권위는 편집기 textarea가 갖는다. */}
+          {dialogueTab === 'single' && (
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5, flexWrap: 'wrap' }}>
               <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>감정 태그 삽입 <span style={{ fontSize: 9 }}>(색은 감정 전환 구간 표시 · 혼합 아님)</span>:</span>
@@ -1165,6 +1202,7 @@ export default function TTSEditor() {
               ))
             )}
           </div>
+          )}
           {/* 여러 명 — 원문 위의 projection. 표현 불가면 이유만 말하고 아래 원문 편집기가 그대로 남는다.
               한 명 탭에서는 아예 그리지 않는다(기존 화면 불변). */}
           {dialogueTab === 'multi' && !directEditOpen && (
@@ -1179,6 +1217,7 @@ export default function TTSEditor() {
                 if (src) registerSpeakerRef(id, src, label)
               })() }}
               onRemoveVoice={(id) => removeSpeakerRef(id)}
+              onSpeakerIdChanged={(from, to) => moveSpeakerRef(from, to)}
               onToggleEmotionVoice={(id, on) => setSpeakerEmotionEnabled(id, on)}
               renderEmotionVoiceEditor={(id, label) => {
                 // 감정별 후보는 적용된 목소리 구성 안에 산다. 편집 위치는 이 카드 하나 — 고급 설정에는 없다.
@@ -1270,7 +1309,17 @@ export default function TTSEditor() {
         </div>
       </section>
 
-      {/* ───────── [3] 말하는 느낌 ─────────
+      {/* 여러 명: 모든 인물에 함께 적용되는 생성 옵션 — 한 번만. 목소리별 설정은 인물 카드에 있다. */}
+      {dialogueTab === 'multi' && (
+        <section className="tts-flow-card" aria-label="공통 생성 옵션" style={flowCard} data-testid="common-options">
+          <div style={{ padding: '10px 16px', display: 'flex', flexDirection: 'column', gap: 6 }}>
+            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>모든 인물에 함께 적용되는 생성 옵션</span>
+            {refModeControl}
+          </div>
+        </section>
+      )}
+
+      {/* ───────── [3] 말하는 느낌(한 명) / [2](여러 명) ─────────
           프리셋 + 음높이·속도만. 문장 간격·말끝·감정 전환은 고급 설정으로 옮겼다. */}
       <ExpressionControls
         capabilities={capabilities}
@@ -1283,6 +1332,7 @@ export default function TTSEditor() {
         showSettingHelp={showSettingHelp}
         disabled={disabled}
         section="basic"
+        flowNumber={dialogueTab === 'multi' ? 2 : 3}
       >
         <TtsEmotionQuickPreview
           rows={quickRows}

@@ -43,7 +43,8 @@ test('패널: 사용 중인 확정 상태가 있으면 재분석·재확정 실�
 })
 
 test('셸: 인물·감정·기본 패널에 committed 를 넘기고, 재생은 원본의 확정 구간을 튼다(임시 클립 아님)', () => {
-  assert.equal((SHELL.match(/committed=\{/g) ?? []).length, 3, '세 패널 모두')
+  // 인물·감정 패널 + 기본 패널 두 자리(한 명 화면 / 여러 명의 숨긴 준비 구동) — 같은 committed 계약.
+  assert.equal((SHELL.match(/committed=\{/g) ?? []).length, 4, '네 마운트 모두')
   assert.ok(SHELL.includes("previewLocalFile(fileInfo?.path || '', ttsReferenceRegion)"), '기본 재생 = 원본 + 구간')
   assert.ok(SHELL.includes("previewLocalFile(s?.source || '', s?.region ?? null)"), '인물 재생 = 원본 + 구간')
   assert.equal(SHELL.includes('previewLocalFile(ttsReferenceClip ||'), false)

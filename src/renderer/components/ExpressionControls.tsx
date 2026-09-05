@@ -53,6 +53,8 @@ export interface ExpressionControlsLocalProps extends ExpressionControlsProps {
    * 미지정 시 'basic'.
    */
   section?: 'basic' | 'advanced'
+  /** 기본 화면 카드 번호. 한 명 3, 여러 명 2(목소리 섹션이 없다). */
+  flowNumber?: number
   /** 기본 화면에서 [3] 카드 안에 셸이 끼워 넣는 것(감정 미리듣기). advanced 에서는 무시. */
   children?: ReactNode
 }
@@ -68,6 +70,7 @@ export default function ExpressionControls({
   showSettingHelp = false,
   disabled = false,
   section = 'basic',
+  flowNumber = 3,
   children,
 }: ExpressionControlsLocalProps) {
   const [openHelp, setOpenHelp] = useState<Record<string, boolean>>({})
@@ -131,7 +134,7 @@ export default function ExpressionControls({
   return (
     <section className="tts-flow-card" aria-label="말하는 느낌" style={{ borderRadius: 12, background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', overflow: 'hidden' }}>
       <header className="tts-flow-head" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
-        <span aria-hidden="true" style={flowNum}>3</span>
+        <span aria-hidden="true" style={flowNum}>{flowNumber}</span>
         <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>말하는 느낌</span>
         <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1, minWidth: 140 }}>{summary}</span>
       </header>
