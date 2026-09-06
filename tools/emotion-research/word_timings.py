@@ -16,6 +16,7 @@ from pathlib import Path
 SRC = Path(sys.argv[1])
 OUT = Path(sys.argv[2])
 MODEL = sys.argv[3] if len(sys.argv) > 3 else "base"
+LANG = sys.argv[4] if len(sys.argv) > 4 else "en"   # 언어를 반드시 지정한다 — 기본값에 맡기면 한국어를 영어로 옮겨 적는다
 ROOT = os.path.expanduser("~/.cache/whisper")
 
 
@@ -29,7 +30,7 @@ def main():
 
     out = {}
     for wav in sorted(SRC.glob("*.wav")):
-        r = model.transcribe(str(wav), language="en", word_timestamps=True,
+        r = model.transcribe(str(wav), language=LANG, word_timestamps=True,
                              fp16=False, temperature=0.0, condition_on_previous_text=False)
         words = []
         for seg in r.get("segments", []):
