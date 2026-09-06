@@ -18,20 +18,28 @@ import path from 'path'
 
 const APP = process.cwd()
 const EXP = path.join(APP, '_local', 'experiments', 'seedvc-20260906')
-const OUT = path.join(APP, '_local', 'experiments', 'tts-emotion-ref-20260906')
+const OUT = path.join(APP, '_local', 'experiments', 'tts-emotion-ref-20260906b')
 fs.mkdirSync(OUT, { recursive: true })
 
+// 2차 — 참조를 더 길고 깨끗한 3.40초로 바꿨다(1차 2.60초는 경계 정렬에 실패했다).
+// 두 참조는 길이가 같다. 공정한 비교를 위해 평소 쪽도 같은 3.40초로 잘랐다.
 const CONDITIONS = [
-  { name: 'N_평소', wav: path.join(EXP, 'clean_src', '럭끼_평소_2p6s.wav') },
-  { name: 'A_화남', wav: path.join(EXP, 'compare_clean', '럭끼.wav') },
+  { name: 'N_평소', wav: path.join(EXP, 'clean_src', '럭끼_평소_3p4s.wav') },
+  { name: 'A_화남', wav: path.join(EXP, 'clean_src', '럭끼_화남_3p4s.wav') },
 ]
-// 참조에 없는 새 대사. 말 자체에는 감정이 없다 — 감정이 들린다면 참조에서 온 것이다.
+// 참조에 없는 새 대사. **두 조건에 똑같이 넣는다** — 단어가 험한 것은 양쪽 공통이므로
+// 차이가 나는 만큼이 참조의 몫이다. 험한 단어는 그 차이를 귀로 잡기 쉽게 해 준다.
+// 주제: 바람핀 상대에게 퍼붓는 욕설. 위협조. 짧게 끊지 않는다.
 const GEN_TEXT = [
-  '내일 오전 아홉 시부터 정기 점검이 시작됩니다.',
-  '점검이 진행되는 동안에는 일부 기능을 사용할 수 없습니다.',
-  '작업 중인 내용은 미리 저장해 두시기 바랍니다.',
-  '예상 소요 시간은 두 시간이며, 상황에 따라 조금 더 걸릴 수 있습니다.',
-  '점검이 끝나면 별도로 안내해 드리겠습니다.',
+  '야. 너 지금 나한테 뭐라고 했냐?',
+  '시발, 내가 진짜 모를 줄 알았지.',
+  '좆같네. 몇 번을 믿어줬는데 너 나한테 이러냐.',
+  '그년이랑 언제부터야. 말해봐. 어? 왜 말을 못 해.',
+  '내가 병신같이 굴었지. 늦는다고 할 때마다 그런가보다 했으니까.',
+  '죽고싶냐 진짜. 지금 그 표정은 뭔데.',
+  '웃어? 지금 웃음이 나와?',
+  '꺼져. 다시는 내 앞에 얼씬거리지 마라.',
+  '너 같은 쓰레기한테 쓴 시간이 아까워서 미치겠어.',
 ].join('\n')
 
 const USER_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'af-emoref-'))
