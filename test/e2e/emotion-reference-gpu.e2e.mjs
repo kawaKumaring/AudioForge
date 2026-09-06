@@ -18,29 +18,48 @@ import path from 'path'
 
 const APP = process.cwd()
 const EXP = path.join(APP, '_local', 'experiments', 'seedvc-20260906')
-const OUT = path.join(APP, '_local', 'experiments', 'tts-emotion-ref-20260906b')
+const OUT = path.join(APP, '_local', 'experiments', 'tts-emotion-ref-20260907c')
 fs.mkdirSync(OUT, { recursive: true })
 
-// 2차 — 참조를 더 길고 깨끗한 3.40초로 바꿨다(1차 2.60초는 경계 정렬에 실패했다).
-// 두 참조는 길이가 같다. 공정한 비교를 위해 평소 쪽도 같은 3.40초로 잘랐다.
+// 3차 — **변수를 하나만 남긴다.** 대사는 1차에서 성공했던 151자 중립문으로 되돌리고,
+// 참조 길이도 성공했던 2.60초로 통일한다. 다른 것은 참조의 성격뿐이다.
+//   N 원본중립 : 1차에서 **성공**한 조건. 대조군.
+//   V 변환중립 : 같은 소리를 seed-vc 로 한 번 통과시킨 것(감정 없음, 22050Hz).
+//   A 변환화남 : 1차에서 **실패**한 조건.
+// V 가 성공하면 원인은 감정이고, V 가 실패하면 원인은 변환 산출물 자체다.
 const CONDITIONS = [
-  { name: 'N_평소', wav: path.join(EXP, 'clean_src', '럭끼_평소_3p4s.wav') },
-  { name: 'A_화남', wav: path.join(EXP, 'clean_src', '럭끼_화남_3p4s.wav') },
+  { name: 'N_원본중립', wav: path.join(EXP, 'clean_src', '럭끼_평소_2p6s.wav') },
+  { name: 'V_변환중립', wav: path.join(EXP, 'clean_src', '럭끼_중립_변환본_2p6s.wav') },
+  { name: 'A_변환화남', wav: path.join(EXP, 'compare_clean', '럭끼.wav') },
 ]
-// 참조에 없는 새 대사. **두 조건에 똑같이 넣는다** — 단어가 험한 것은 양쪽 공통이므로
-// 차이가 나는 만큼이 참조의 몫이다. 험한 단어는 그 차이를 귀로 잡기 쉽게 해 준다.
-// 주제: 바람핀 상대에게 퍼붓는 욕설. 위협조. 짧게 끊지 않는다.
-const GEN_TEXT = [
-  '야. 너 지금 나한테 뭐라고 했냐?',
-  '시발, 내가 진짜 모를 줄 알았지.',
-  '좆같네. 몇 번을 믿어줬는데 너 나한테 이러냐.',
-  '그년이랑 언제부터야. 말해봐. 어? 왜 말을 못 해.',
-  '내가 병신같이 굴었지. 늦는다고 할 때마다 그런가보다 했으니까.',
-  '죽고싶냐 진짜. 지금 그 표정은 뭔데.',
-  '웃어? 지금 웃음이 나와?',
-  '꺼져. 다시는 내 앞에 얼씬거리지 마라.',
-  '너 같은 쓰레기한테 쓴 시간이 아까워서 미치겠어.',
-].join('\n')
+// 대사 두 벌. AF_TEXT=angry 로 바꿀 수 있다. 기본은 **1차에서 성공했던 151자 중립문** —
+// 지금 가리려는 것은 감정 표현이 아니라 **어느 참조가 발행 가드를 통과하는가**이기 때문이다.
+const TEXTS = {
+  neutral: [
+    '내일 오전 아홉 시부터 정기 점검이 시작됩니다.',
+    '점검이 진행되는 동안에는 일부 기능을 사용할 수 없습니다.',
+    '작업 중인 내용은 미리 저장해 두시기 바랍니다.',
+    '예상 소요 시간은 두 시간이며, 상황에 따라 조금 더 걸릴 수 있습니다.',
+    '점검이 끝나면 별도로 안내해 드리겠습니다.',
+  ],
+  // 주제: 바람핀 상대에게 퍼붓는 욕설. 위협조. 감정 차이를 귀로 잡기 쉽게 하려는 용도.
+  angry: [
+    '야. 너 지금 나한테 뭐라고 했냐?',
+    '시발, 내가 진짜 모를 줄 알았지.',
+    '좆같네. 몇 번을 믿어줬는데 너 나한테 이러냐.',
+    '그년이랑 언제부터야. 말해봐. 어? 왜 말을 못 해.',
+    '내가 병신같이 굴었지. 늦는다고 할 때마다 그런가보다 했으니까.',
+    '죽고싶냐 진짜. 지금 그 표정은 뭔데.',
+    '웃어? 지금 웃음이 나와?',
+    '꺼져. 다시는 내 앞에 얼씬거리지 마라.',
+    '너 같은 쓰레기한테 쓴 시간이 아까워서 미치겠어.',
+  ],
+}
+const GEN_TEXT = (TEXTS[process.env.AF_TEXT || 'neutral'] || TEXTS.neutral).join('\n')
+
+// AF_ONLY 로 한 조건만 돌린다(진단용 — GPU 를 필요 이상으로 쓰지 않는다).
+const ONLY = process.env.AF_ONLY
+const RUN = ONLY ? CONDITIONS.filter((c) => c.name === ONLY) : CONDITIONS
 
 const USER_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'af-emoref-'))
 const PORT = 9760 + (process.pid % 30)
@@ -96,7 +115,7 @@ try {
     }
   }
 
-  for (const cond of CONDITIONS) {
+  for (const cond of RUN) {
     say(`\n=== ${cond.name} — 참조 ${path.basename(cond.wav)} ===`)
     await st(async (p) => {
       const s = window.__afStore
