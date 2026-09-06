@@ -1588,6 +1588,53 @@ Docker 는 Scenema 자신의 방식이지만 Windows 에서 Docker Desktop + WSL
 **성공해도** 새 대사를 감정적으로 생성하는 기능까지 검증한 것이 아니다.
 **실패해도** 다른 버전·설정이나 Scenema 전체가 불가능하다고 일반화하지 않는다.
 
+### 6.18h SeedVC 독립 변환 1회 — 실행 기록 (2026-09-06)
+
+**고정한 것**
+· seed-vc `51383efd921027683c89e5348211d93ff12ac2a8` (2025-04-20). 보관 상태가 아니라 SHA 로 고정.
+· 체크포인트는 `--f0-condition False` 분기의 기본값 =
+  `DiT_seed_v2_uvit_whisper_small_wavenet_bigvgan_pruned.pth` + `config_dit_mel_seed_uvit_whisper_small_wavenet.yml`
+  — **Scenema 가 타는 경로와 같다**(Scenema 는 `checkpoint=None` 으로 이 기본값을 쓴다).
+· 인자: `diffusion_steps=25` · `inference_cfg_rate=0.5` · `length_adjust=1.0` · f0 조건/자동보정/반음이동 없음 · fp16.
+
+**받은 것(이 실행에 필요한 것만, 합계 약 1.9GB)** — 조건이 불명확한 파일은 **없다**.
+· `DiT_..._whisper_small_wavenet_bigvgan_pruned.pth` 440.3MB — Plachta/Seed-VC — **GPL-3.0**
+· `model.safetensors` (openai/whisper-small) 967.0MB — **Apache-2.0**
+· `bigvgan_generator.pt` (nvidia/bigvgan_v2_22khz_80band_256x) 449.2MB — **MIT**
+· `campplus_cn_common.bin` (funasr/campplus) 28.0MB — **Apache-2.0**
+· 받지 않은 것: f0 모델 3종(각 821MB) · v2 세트 · BigVGAN 판별기(1.4GB) · rmvpe(f0 분기 전용)
+· **앞선 기록 정정**: Seed-VC 가중치도 GPL-3.0 이다("미확인" 을 확인 완료로 고친다).
+  코드가 GPL 이라고 부속 가중치까지 자유로운 것이 아니라, 넷을 각각 따로 확인한 결과다.
+
+**환경** — `_local/experiments/seedvc-20260906/` 안 독립 venv(Python 3.12.10),
+torch 2.7.1+cu128, `HF_HOME` 도 같은 폴더로 격리. 앱·ComfyUI 파이썬 미변경.
+설치 중 `descript-audio-codec` 하나를 추가했다(`modules/length_regulator.py` 가 import 한다).
+
+**메모리 근거** — 저장소에 **이 설정의 VRAM 명시값이 없다.** README 의 RTX 3060 Laptop 430ms 는
+**다른 모델(seed-uvit-xlsr-tiny)의 실시간 GUI** 기준이므로 근거가 되지 않는다(앞선 인용을 정정).
+댈 수 있는 것은 가중치 합계(약 1.9GB)뿐이며 나머지는 추정이다. 실행은 RTF 0.55 로 통과했다.
+
+**입출력**
+· 입력 = 사용자가 화남을 확인한 구간 `identity-transfer-20260906/seg_10p88-16p74/A_original.wav` (5.92초)
+· 목표 = `resources/히나/vocals.wav` — 5명 중 음역이 입력과 가장 먼 인물(215.0Hz vs 입력 260.5Hz, 3.3반음).
+  마젠타(262.7Hz)는 입력과 사실상 같아 배제했다. 코드가 참조를 **앞 25초로 자른다**(inference.py:280).
+· 결과 = `seedvc-20260906/out/vc_A_original_vocals_1.0_25_0.5.wav` (5.91초)
+
+**측정(청취 판정과 별개)**
+· 음높이 **−3.70반음 이동, 212Hz** 안착. 목표 인물 215Hz — **음역이 대상 화자로 갔다.**
+· 길이 5.92 → 5.91초. 보존.
+· 사분위 범위가 입력 147~316Hz → 결과 193~236Hz 로 **좁아졌다.**
+  **★ 이 비교에는 결함이 있다** — §6.18f 에서 이 음원은 음높이 추정 자체가 불안정했다(106~652Hz).
+  입력의 넓은 폭 중 얼마가 실제 억양이고 얼마가 측정 오차인지 **가르지 못한다.**
+  **f0 조건이 꺼져 있다는 사실과 이 수치만으로 감정 손실 원인을 확정하지 않는다.**
+
+**판정 넷**: 인물 변화 / 대사 보존 / 화남 유지 / 음질. — 사용자 청취 대기.
+
+**미리 못 박는다**: 성공하더라도 **새 대사를 감정적으로 생성하는 기능까지 검증한 것이 아니다.**
+실패하더라도 다른 버전·설정이나 Scenema 전체가 불가능하다고 일반화하지 않는다.
+
+**GPL 구분**: 의무는 배포 시 발생한다. 이번 로컬 시험에는 의무가 없다. **제품 탑재가 별개 문제다.**
+
 ---
 
 ## 7. 새 대사와의 연결 (배치 설계)
