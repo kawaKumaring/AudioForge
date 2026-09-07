@@ -234,7 +234,13 @@ test('생성 계약의 거울 — 카드 표시(목소리 상태)와 전송 규�
 })
 
 test('여러 명 화면은 카드만 기본으로 보이고, 원문 직접 편집은 접혀 있으며 둘을 동시에 고치지 않는다', () => {
-  assert.ok(SHELL.includes("const showRawEditor = dialogueTab === 'single' || directEditOpen || !dialogue.editingAllowed"))
+  // ★ 화면 구성은 사용자가 정한 탭과 명시적 토글로만 바뀐다 — 투영 판정으로 바뀌지 않는다.
+  //   예전 조건에 `|| !dialogue.editingAllowed` 가 있어서, 대사를 치는 동안 그 판정이 수시로
+  //   뒤집히며 원문 편집기가 나타났다 사라졌다 했다(사용자 지적: "한 명 대사칸이 깜빡이며
+  //   왔다갔다한다"). 구조화 불가는 화면을 바꾸는 대신 사유를 말하고 입구를 준다.
+  assert.ok(SHELL.includes("const showRawEditor = dialogueTab === 'single' || directEditOpen"))
+  assert.equal(/showRawEditor =[^\n]*editingAllowed/.test(SHELL), false, '투영 판정으로 편집기를 띄우지 않는다')
+  assert.ok(SHELL.includes('data-testid="multi-not-structured"'), '구조화 불가는 사유를 말한다')
   assert.ok(SHELL.includes("{dialogueTab === 'multi' && !directEditOpen && ("), '직접 편집이 열리면 카드 숨김')
   assert.ok(SHELL.includes('{showRawEditor && (<>'), '원문 편집기는 조건부')
   assert.ok(SHELL.includes('data-testid="direct-edit"') && SHELL.includes('고급 · 대본 표기 직접 편집'))

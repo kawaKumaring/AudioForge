@@ -740,7 +740,13 @@ export default function TTSEditor() {
     : '시작 버튼을 누르면 시작합니다'
   const emotionTagOf = (id: string) => '[' + (EMOTION_ID_TO_LABEL[id] ?? id) + ']'
   // 원문 편집기가 보이는 때: 한 명 | 여러 명의 직접 편집 열림 | 구조화할 수 없는 대본(이유와 함께).
-  const showRawEditor = dialogueTab === 'single' || directEditOpen || !dialogue.editingAllowed
+  // 원문 편집기를 언제 보여 주는가 — **자동으로 나타나거나 사라지지 않는다.**
+  //
+  // ★ 예전에는 `|| !dialogue.editingAllowed` 였다. 그 판정은 대사를 치는 동안 수시로 뒤집힌다
+  //   (한 글자 상태에서는 구조화가 안 되고, 줄이 완성되면 된다). 그래서 여러 명에서 대사를 넣을
+  //   때마다 원문 편집기가 나타났다 사라졌다 했다 — 사용자가 본 "한 명 대사칸이 깜빡이며
+  //   왔다갔다한다" 가 이것이다. 화면 구성은 사용자가 정한 탭과 명시적 토글로만 바뀐다.
+  const showRawEditor = dialogueTab === 'single' || directEditOpen
   // 구조화할 수 없는 대본이 되면(직접 편집 details 가 사라지면) 열림 상태도 접는다 — 다시 구조화되면 카드가 바로 보인다.
   useEffect(() => { if (!dialogue.editingAllowed) setDirectEditOpen(false) }, [dialogue.editingAllowed])
   // 이 인물의 어떤 감정에 목소리 구성이 다른 음원을 지정했는가(감정 라벨). 'default' 는 표기 없는
@@ -1364,7 +1370,15 @@ export default function TTSEditor() {
           {/* IME 조합 판정 범위. 이 안쪽 composition 만 분석을 억제한다
               (편집기 컴포넌트 자체는 건드리지 않는다). */}
           {/* 여러 명에서는 원문 직접 편집을 접어 둔다(고급). 구조화할 수 없는 대본이면 그대로 보여 준다. */}
-          {dialogueTab === 'multi' && dialogue.editingAllowed && (
+          {/* 구조화할 수 없는 대본이면 자동으로 화면을 바꾸지 않고 **사유를 말하고 입구를 준다.** */}
+          {dialogueTab === 'multi' && !dialogue.editingAllowed && !directEditOpen && (
+            <div data-testid="multi-not-structured" role="note"
+              style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
+                fontSize: 11, color: 'var(--amber, #d08700)', lineHeight: 1.6 }}>
+              <span>이 대본은 발화 카드로 보여 줄 수 없습니다. 아래 '대본 표기 직접 편집'으로 고칠 수 있습니다.</span>
+            </div>
+          )}
+          {dialogueTab === 'multi' && (
             <div data-testid="direct-edit" data-open={directEditOpen ? 'true' : 'false'}
               style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 11, color: 'var(--text-muted)' }}>
               <button type="button" data-testid="direct-edit-toggle" aria-expanded={directEditOpen}
