@@ -256,6 +256,7 @@ export default function TTSEditor() {
   const [ttsSilenceGap, setTtsSilenceGap] = useState(() => useAppStore.getState().ttsSilenceGap)
   const [ttsPitch, setTtsPitch] = useState(() => useAppStore.getState().ttsPitch)
   const [ttsEngine, setTtsEngine] = useState(() => useAppStore.getState().ttsEngine)
+  const [ttsQwenModel, setTtsQwenModel] = useState(() => useAppStore.getState().ttsQwenModel)
   const [refPrompts, setRefPrompts] = useState<Record<string, TtsReferenceEntry>>(() => useAppStore.getState().ttsReferencePrompts)
   const [showRefPrompts, setShowRefPrompts] = useState(false)
 
@@ -392,7 +393,12 @@ export default function TTSEditor() {
     await refreshRefAssets()
   }
   const [txLoading, setTxLoading] = useState<string | null>(null)
-  const [preflight, setPreflight] = useState<{ available?: boolean; snapshot_ok?: boolean; device_expected?: string; reason?: string } | null>(null)
+  // models: 설치된 음성 모델 판 목록. 없는 것은 만들어 내지 않으므로 목록이 비면 고를 것이 없다는 뜻이다.
+  const [preflight, setPreflight] = useState<{
+    available?: boolean; snapshot_ok?: boolean; device_expected?: string; reason?: string
+    models?: { id: string; label: string; model_size?: string; model_type?: string
+               voice_clone?: boolean; unusable_reason?: string | null; is_default?: boolean }[]
+  } | null>(null)
   // ── PHASE B 기본 화면 상태 ──
   // 고급 설정(4탭)의 열림·탭은 셸이 소유한다 — 결과 오류 카드가 특정 자리를 열어 달라고 요청할 수 있어야 한다.
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -417,8 +423,8 @@ export default function TTSEditor() {
 
   // Sync to store (감정 참조 상태는 store가 단일 소스라 여기서 동기화하지 않는다)
   useEffect(() => {
-    useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsReferencePrompts: refPrompts, ttsEngine })
-  }, [ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, refPrompts, ttsEngine])
+    useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsReferencePrompts: refPrompts, ttsEngine, ttsQwenModel })
+  }, [ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, refPrompts, ttsEngine, ttsQwenModel])
 
   // Qwen preflight — 마운트 시 1회(mode 의존). 예상값이며 실행 결과는 결과 화면 metadata가 최종.
   useEffect(() => {
@@ -1620,6 +1626,48 @@ export default function TTSEditor() {
                 <button key={e.id} onClick={() => !disabled && setTtsEngine(e.id)} disabled={disabled} title={e.hint} style={{ padding: '3px 9px', borderRadius: 4, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 600, fontFamily: 'inherit', background: ttsEngine === e.id ? 'var(--rose)' : 'transparent', color: ttsEngine === e.id ? '#fff' : 'var(--text-muted)' }}>{e.label}</button>
               ))}
             </div>
+
+            {/* 음성 모델 판 고르기 — **설치된 것만** 나온다. 여러 판을 받아 두고 골라 시험할 수 있어야 한다는
+                요구에 대한 자리다. 목소리 복제를 지원하지 않는 판은 목록에 두되 고를 수 없게 하고 사유를 적는다
+                (목록에서 지우면 '왜 안 보이나'를 알 수 없다). 없는 판을 만들어 보여 주지 않는다. */}
+            {(() => {
+              const models = preflight?.models || []
+              if (models.length === 0) return null
+              const usable = models.filter((m) => m.voice_clone !== false)
+              const picked = models.find((m) => m.id === ttsQwenModel)
+              return (
+                <div data-testid="qwen-model-picker" style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>음성 모델</span>
+                    <select value={ttsQwenModel} disabled={disabled} aria-label="Qwen3 음성 모델 판"
+                      onChange={(e) => setTtsQwenModel(e.target.value)}
+                      style={{
+                        fontSize: 11, padding: '4px 8px', borderRadius: 6, minWidth: 0, maxWidth: '100%',
+                        background: 'var(--bg-elevated)', color: 'var(--text-primary)',
+                        border: '1px solid var(--border-subtle)', fontFamily: 'inherit',
+                      }}>
+                      <option value="">기본{models.find((m) => m.is_default) ? ` · ${models.find((m) => m.is_default)!.label}` : ''}</option>
+                      {usable.filter((m) => !m.is_default).map((m) => (
+                        <option key={m.id} value={m.id}>{m.label}</option>
+                      ))}
+                    </select>
+                    {picked && !picked.is_default && (
+                      <span style={{ fontSize: 11, color: 'var(--cyan)' }}>· 이 판으로 만듭니다</span>
+                    )}
+                  </div>
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                    설치된 판만 나옵니다({models.length}개 발견). Qwen3 엔진에 적용되고, 결과 상세 정보에 어느 판으로
+                    만들었는지 남습니다.
+                    {models.some((m) => m.voice_clone === false) && ' 목소리 복제를 지원하지 않는 판은 고를 수 없습니다.'}
+                  </span>
+                  {models.filter((m) => m.voice_clone === false).map((m) => (
+                    <span key={m.id} style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                      · {m.label} — {m.unusable_reason || '이 통로에서는 쓸 수 없습니다'}
+                    </span>
+                  ))}
+                </div>
+              )
+            })()}
 
             {/* Qwen preflight 배지 — 예상값(실행 결과는 결과 화면 metadata가 최종) */}
             {preflight && (() => {
