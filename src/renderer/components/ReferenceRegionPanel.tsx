@@ -668,9 +668,11 @@ const sub: CSSProperties = { fontSize: 11, color: 'var(--text-muted)', lineHeigh
       {/* 구간 추천(필수 상한 초과 또는 권장 상한 초과) → 구간 선택 */}
       {analysis.needs_region && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={sub} data-testid="region-need" data-required={analysis.region_required ? 'true' : 'false'}>
-            {regionNeedText(policy, durTotal, !!analysis.region_required)}{' '}
-            재생해 확인하고 필요하면 조정하세요. 선택한 구간만 참조로 쓰입니다(원본은 변경되지 않음).
+          {/* 정책이 말하는 사실만 남긴다. '어떻게 조정하는가'는 도구에 붙은 설명(tooltip)으로 옮겼다 —
+              화면마다 방법을 적어 두면 읽히지 않고 자리만 차지한다. */}
+          <div style={sub} data-testid="region-need" data-required={analysis.region_required ? 'true' : 'false'}
+            title="선택한 구간만 참조로 쓰입니다. 원본 파일은 변경되지 않습니다.">
+            {regionNeedText(policy, durTotal, !!analysis.region_required)}
           </div>
 
           {/* 파형 + 구간 하이라이트 (클릭으로 시작 위치 이동) */}
@@ -706,9 +708,8 @@ const sub: CSSProperties = { fontSize: 11, color: 'var(--text-muted)', lineHeigh
                 style={numBox} />
             </div>
           </div>
-          <div style={sub}>
-            파형을 끌어 구간을 잡을 수 있습니다. 숫자 칸에 직접 넣어도 됩니다(0.01초 단위).
-            지금 구간 {start.toFixed(2)}~{(start + dur).toFixed(2)}초.
+          <div style={sub} title="파형을 끌어 구간을 잡거나, 숫자 칸에 0.01초 단위로 직접 넣을 수 있습니다.">
+            지금 구간 {start.toFixed(2)}~{(start + dur).toFixed(2)}초
           </div>
 
           {/* 권장(검증) 범위 밖 길이 — 막지 않고 알린다 */}

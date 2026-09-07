@@ -806,7 +806,9 @@ export default function TTSEditor() {
   useEffect(() => {
     const inh = ttsSpeakerInherit
     if (!inh || !fileInfo?.path || inh.filePath !== fileInfo.path) return
-    if (!inheritSlotSource || inheritSlotSource !== inh.filePath) return   // 사용자가 다른 원본을 골랐다 → 개입하지 않음
+    // 사용자가 다른 원본을 골랐다면 개입하지 않는다. 예약 해제는 **store 의 registerSpeakerRef 가**
+    // 이미 한다(그 인물의 목소리를 직접 정한 순간 이어받기는 끝난다) — 여기서 다시 놓지 않는다.
+    if (!inheritSlotSource || inheritSlotSource !== inh.filePath) return
     const id = inh.speakerId
     if (!ttsRefReady) {
       // 기본 목소리 준비 중 — 같은 사유를 보여 주고, 완료되면 아래 분기가 갱신한다. 실제 실패 사유만 그대로.
@@ -1314,6 +1316,16 @@ export default function TTSEditor() {
                 registerSpeakerRef(id, src, label)
               })() }}
               onRemoveVoice={(id) => removeSpeakerRef(id)}
+              onRetryVoice={(id) => {
+                // 준비가 어떤 이유로든 멈췄을 때의 되살리기. 같은 파일로 분석·구간 확정을 처음부터 다시 한다.
+                // 한 번 돌린 표시를 지우고 상태를 비워야 자동 준비가 이 인물을 다시 집는다.
+                const src = ttsSpeakerRefState[id]?.source
+                if (!src) return
+                autoPrepDone.current.delete(`${id}|${src}`)
+                setVoiceReplaceNotice(null)
+                setSpeakerRefState(id, { clip: '', region: null, ready: false, message: '' })
+                setAutoPrep(null)
+              }}
               onSpeakerIdChanged={(from, to) => moveSpeakerRef(from, to)}
               onRenameSpeaker={(id, newLabel) => {
                 // 카드의 이름 변경 = 명시 명령. 원문의 모든 표기를 바꾸고(거부되면 여기서 끝) 목소리 슬롯·감정별 설정·목소리 구성을 새 id 로 옮긴다.

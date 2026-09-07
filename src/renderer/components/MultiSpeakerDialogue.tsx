@@ -114,6 +114,10 @@ export function voiceStatusShort(voice: SpeakerVoiceState | null): string {
   const message = voice.message ?? ''
   const restore = RESTORE_STATUS.find((m) => message === m)
   if (restore) return restore
+  // 준비 중 단계를 사실대로 구분한다. 예전에는 셋 다 '목소리 확인 중' 한 마디로 뭉개져서,
+  // 살펴보는 중인지·구간을 고르는 중인지·사람이 골라 줘야 하는지 화면만 보고 알 수 없었다.
+  if (message.includes('살펴보는')) return '목소리 살펴보는 중'
+  if (message.includes('쓸 부분')) return '쓸 구간 고르는 중'
   if (message.includes('구간')) return '구간 선택 필요'
   return '목소리 확인 중'
 }
@@ -129,6 +133,12 @@ export interface MultiSpeakerDialogueProps {
   onAssignVoice: (speakerId: string, label: string) => void
   onRemoveVoice: (speakerId: string) => void
   onPreviewVoice: (speakerId: string) => void
+  /**
+   * 준비가 끝나지 않은 목소리를 처음부터 다시 준비한다(같은 파일로 분석·구간 확정 재실행).
+   * 준비가 어떤 이유로든 도중에 멈추면 사용자가 손으로 구간을 확정하는 것 말고는 길이 없었다.
+   * 한 번 누르면 되살아나는 입구를 남긴다.
+   */
+  onRetryVoice?: (speakerId: string) => void
   /** 그 인물 한 명의 원본 파형·구간 편집기. open=false 면 접힌 상태(분석·준비는 계속). */
   renderRegionEditor?: (speakerId: string, open: boolean) => ReactNode
   onToggleEmotionVoice?: (speakerId: string, on: boolean) => void
@@ -258,6 +268,7 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
               voice={sid ? voiceOf(sid) : null}
               voiceDetailOpen={!!sid && voiceOpen?.speakerId === sid && voiceOpen.cardKey === cardKey}
               onToggleVoice={() => { if (!sid) return; setVoiceOpen((v) => (v && v.cardKey === cardKey ? null : { speakerId: sid, cardKey })) }}
+              onRetryVoice={props.onRetryVoice && sid ? (() => props.onRetryVoice!(sid)) : undefined}
               renderVoiceDetail={() => sid ? (
                 <SpeakerVoicePanel voiceId={sid} label={r.view.speakerLabel ?? ''} voice={voiceOf(sid)} disabled={disabled}
                   onAssignVoice={props.onAssignVoice} onRemoveVoice={props.onRemoveVoice} onPreviewVoice={props.onPreviewVoice}
@@ -301,6 +312,7 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
             autoFocus={focusKey === `pending:${s.label}`}
             voiceDetailOpen={voiceOpen?.cardKey === `pending-${s.speakerId}`}
             onToggleVoice={(id) => setVoiceOpen((v) => (v && v.cardKey === `pending-${s.speakerId}` ? null : { speakerId: id, cardKey: `pending-${s.speakerId}` }))}
+            onRetryVoice={props.onRetryVoice}
             renderVoiceDetail={(id) => (
               <SpeakerVoicePanel voiceId={id} label={s.label.trim()} voice={voiceOf(id)} disabled={disabled}
                 onAssignVoice={props.onAssignVoice} onRemoveVoice={props.onRemoveVoice} onPreviewVoice={props.onPreviewVoice}
@@ -444,6 +456,7 @@ function UtteranceCard(props: {
   voice: SpeakerVoiceState | null
   voiceDetailOpen: boolean
   onToggleVoice: () => void
+  onRetryVoice?: () => void
   renderVoiceDetail: () => ReactNode
   onRenameSpeaker?: (newLabel: string) => string | null
 }) {
@@ -480,6 +493,12 @@ function UtteranceCard(props: {
                 style={btn('var(--text-muted)', disabled || !p.patchAllowed)}>이름 바꾸기</button>
             )}
             <span data-testid="card-voice-status" style={{ fontSize: 11, color: voice?.ready ? 'var(--text-secondary)' : 'var(--amber, #d4a017)' }}>· {voiceStatusShort(voice)}</span>
+            {voice?.registered && !voice.ready && props.onRetryVoice && (
+              <button type="button" data-testid="card-voice-retry" disabled={disabled}
+                title="이 목소리를 처음부터 다시 준비합니다(같은 파일)"
+                onClick={() => props.onRetryVoice!()}
+                style={btn('var(--text-secondary)', disabled)}>다시 준비</button>
+            )}
             <button type="button" data-testid="card-voice" onClick={props.onToggleVoice} disabled={disabled}
               aria-expanded={props.voiceDetailOpen} title="이 인물의 목소리 설정"
               style={btn('var(--cyan)', disabled)}>{props.voiceDetailOpen ? '설정 닫기' : '목소리 설정'}</button>
@@ -572,6 +591,7 @@ function StarterCard(props: {
   autoFocus: boolean
   voiceDetailOpen: boolean
   onToggleVoice: (voiceId: string) => void
+  onRetryVoice?: (speakerId: string) => void
   renderVoiceDetail: (voiceId: string) => ReactNode
   onSpeakerIdChanged?: (fromId: string, toId: string) => void
   onCommit: (label: string, line: string) => string | null
@@ -603,6 +623,12 @@ function StarterCard(props: {
           onChange={(e) => rename(e.target.value)}
           style={{ ...inputBox, flex: '1 1 120px' }} />
         <span data-testid="card-voice-status" style={{ fontSize: 11, color: voice?.ready ? 'var(--text-secondary)' : 'var(--amber, #d4a017)' }}>· {voiceStatusShort(voice)}</span>
+        {voice?.registered && !voice.ready && props.onRetryVoice && voiceId && (
+          <button type="button" data-testid="card-voice-retry" disabled={disabled}
+            title="이 목소리를 처음부터 다시 준비합니다(같은 파일)"
+            onClick={() => props.onRetryVoice!(voiceId)}
+            style={btn('var(--text-secondary)', disabled)}>다시 준비</button>
+        )}
         <button type="button" data-testid="card-voice" disabled={disabled || !voiceId}
           onClick={() => props.onToggleVoice(voiceId)} aria-expanded={props.voiceDetailOpen} title="이 인물의 목소리 설정"
           style={btn('var(--cyan)', disabled || !voiceId)}>{props.voiceDetailOpen ? '설정 닫기' : '목소리 설정'}</button>
@@ -670,8 +696,8 @@ function AddDialogueSheet(props: {
   return (
     <div data-testid="dialogue-add-dialog" role="dialog" aria-label="대화 추가" style={{ ...card, border: '1px solid var(--cyan)', gap: 8 }}>
       <div style={rowFlex}>
-        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--cyan)' }}>대화 추가</span>
-        <span style={sub}>누가 말하는 카드를 만들지 고르세요. 대사는 만들어진 카드에 씁니다.</span>
+        <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--cyan)' }}
+          title="누가 말하는 카드를 만들지 고릅니다. 대사는 만들어진 카드에 씁니다.">대화 추가</span>
       </div>
       <div role="radiogroup" aria-label="인물 선택 방식" style={rowFlex}>
         <label style={{ fontSize: 11, display: 'flex', gap: 4, alignItems: 'center', color: 'var(--text-secondary)' }}>
@@ -687,12 +713,13 @@ function AddDialogueSheet(props: {
         <div style={rowFlex}>
           <label htmlFor="dlg-add-existing" style={{ fontSize: 10, color: 'var(--text-muted)' }}>인물</label>
           <select id="dlg-add-existing" value={existing} disabled={props.disabled} style={select}
+            title="이미 만든 인물의 준비된 목소리를 그대로 씁니다"
             onChange={(e) => setExisting(e.target.value)}>
             {props.speakerLabels.map((l) => <option key={l} value={l}>{l}</option>)}
           </select>
           {existing && (
             <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-              · {voiceStatusShort(props.voiceOf(props.speakerIdOf(existing)))} — 준비된 목소리를 그대로 씁니다
+              · {voiceStatusShort(props.voiceOf(props.speakerIdOf(existing)))}
             </span>
           )}
         </div>
@@ -703,6 +730,7 @@ function AddDialogueSheet(props: {
             <input id="dlg-add-name" data-testid="dialogue-add-name"
               value={assignedLabel ?? name} disabled={props.disabled || assignedLabel !== null}
               placeholder={props.autoLabel}
+              title={`비워 두면 ${props.autoLabel} 로 만듭니다. 목소리는 나중에 카드에서 지정해도 됩니다.`}
               autoFocus onChange={(e) => setName(e.target.value)} style={{ ...inputBox, flex: '1 1 140px' }} />
             <button type="button" data-testid="dialogue-add-voice" disabled={props.disabled || !newId || duplicate}
               onClick={() => { assignedHere.current = newId; setAssignedLabel(effective); props.onAssignVoice(newId, effective) }}
@@ -726,12 +754,13 @@ function AddDialogueSheet(props: {
             <span data-testid="speaker-name-problem" style={{ fontSize: 10, color: 'var(--rose)' }}>{REFUSAL_LABEL.SPEAKER_LABEL_DUPLICATE}</span>
           )}
           {assignedLabel !== null ? (
-            <span data-testid="dialogue-add-name-locked" style={sub}>
-              {assignedLabel} 로 만듭니다. 이름은 카드의 '이름 바꾸기'에서 바꿀 수 있습니다(목소리·구간이 함께 따라갑니다).
+            <span data-testid="dialogue-add-name-locked" style={sub}
+              title="목소리를 지정한 뒤에는 이 창에서 이름을 바꾸지 않습니다. 카드의 '이름 바꾸기'는 목소리·구간·감정 설정까지 함께 옮깁니다.">
+              {assignedLabel} 로 만듭니다 · 이름은 카드에서 바꿉니다
             </span>
           ) : (
-            <span style={sub}>
-              이름을 비워 두면 {props.autoLabel} 로 만듭니다. 목소리는 나중에 카드에서 지정해도 됩니다.
+            <span style={sub} title="목소리는 나중에 카드에서 지정해도 됩니다.">
+              비워 두면 {props.autoLabel} 로 만듭니다
             </span>
           )}
         </div>
@@ -789,7 +818,7 @@ function SpeakerVoicePanel(props: {
         <span data-testid="speaker-voice-reason" style={{ fontSize: 11, color: 'var(--amber, #d4a017)' }}>{voice.message}</span>
       )}
       {!voice?.registered && (
-        <span style={sub}>아직 목소리를 지정하지 않았습니다. 아래 '목소리 지정'으로 음성 파일을 고르세요.</span>
+        <span style={sub} title="아래 '목소리 지정'을 누르면 음성 파일을 고를 수 있습니다.">목소리를 지정하세요</span>
       )}
       <div style={rowFlex}>
         <button type="button" disabled={disabled || !voiceId} onClick={() => props.onAssignVoice(voiceId, label)}
@@ -809,7 +838,8 @@ function SpeakerVoicePanel(props: {
           </>
         )}
       </div>
-      <span data-testid="speaker-voice-applies-all" style={sub}>이 인물의 다른 대사에도 같은 목소리·구간이 적용됩니다.</span>
+      <span data-testid="speaker-voice-applies-all" style={sub}
+        title="이 인물의 다른 대사에도 같은 목소리와 같은 구간이 적용됩니다.">이 인물 전체에 적용</span>
       {voice?.registered && (voice.sharedWith?.length ?? 0) > 0 && (
         <span data-testid="speaker-voice-shared" style={{ fontSize: 10, color: 'var(--amber, #d4a017)' }}>
           {voice.sharedWith!.join(', ')} 와 같은 파일을 씁니다. 같은 목소리로 만들어집니다.
