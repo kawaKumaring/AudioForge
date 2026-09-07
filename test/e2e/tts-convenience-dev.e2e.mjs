@@ -21,6 +21,8 @@ fs.mkdirSync(OUT, { recursive: true })
 const FIX = path.join(APP, 'test', 'fixtures', 'audio', 'ko-speech-region-18s.wav')
 if (!fs.existsSync(FIX)) { console.error('fixture 없음:', FIX); process.exit(2) }
 const iso = isolatedInput(FIX)
+// 첫 인물에게 **다른 파일**을 지정하는 실제 사례를 재현하려면 경로가 달라야 한다(내용은 같아도 된다).
+const iso2 = isolatedInput(FIX)
 const USER_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'af-conv-'))
 const PORT = 9600 + (process.pid % 150)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -33,7 +35,9 @@ const ok = (id, pass, what, detail = '') => {
 const childLog = []
 const child = spawn('cmd.exe', ['/c', 'npm', 'run', 'dev'], {
   cwd: APP, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
-  env: { ...process.env, AF_E2E: '1', AF_E2E_USER_DATA: USER_DATA, AF_E2E_CDP_PORT: String(PORT) },
+  env: { ...process.env, AF_E2E: '1', AF_E2E_USER_DATA: USER_DATA, AF_E2E_CDP_PORT: String(PORT),
+    // '목소리 지정' 버튼이 열던 OS 선택창만 이 파일로 대신한다(나머지는 실제 경로 그대로).
+    AF_E2E_SELECT_FILE: iso2.input },
 })
 const pushLog = (s) => { for (const l of String(s).split(/\r?\n/)) if (l.trim()) childLog.push(l) }
 child.stdout.setEncoding('utf-8'); child.stdout.on('data', pushLog)
@@ -89,6 +93,49 @@ try {
   }, iso.input)
   await page.waitForSelector('[data-testid="dialogue-tabs"]', { timeout: 60000 })
   await page.click('[data-testid="dialogue-tabs"] [data-tab="multi"]')
+  await sleep(300)
+
+  // ── D: 사용자가 실제로 겪은 경로를 그대로 — **추가 창에서 목소리 지정 버튼을 누른다** ──────
+  // 앞선 검사는 store 를 직접 불러 통과했지만 사용자 화면에서는 멈췄다. 그래서 여기서는 화면의 버튼을
+  // 누르고, OS 파일 선택창만 대신한다(그것만이 e2e 로 누를 수 없는 부분이다).
+  // 타이밍도 사용자와 같게 둔다 — 기본 목소리 준비가 끝나기 전에, 추가 창을 열어 둔 상태로 지정한다.
+  const seam = await st(async () => String((await window.api.audio.selectFile()) || ''))
+  ok('D0', seam !== '', '파일 선택창만 대신하고 나머지는 실제 화면 경로로 검사한다', seam ? '통로 연결' : '통로 없음')
+
+  await page.click('[data-testid="dialogue-add-open"]')
+  await page.waitForSelector('[data-testid="dialogue-add-dialog"]', { timeout: 10000 })
+  if (await count('[data-testid="dialogue-add-name"]') === 0) {
+    const radios0 = await page.$$('input[name="dlg-add-mode"]')
+    if (radios0[1]) await radios0[1].click()
+    await sleep(200)
+  }
+  const beforePick = await st(() => ({
+    refReady: window.__afStore.getState().ttsRefReady,
+    inherit: window.__afStore.getState().ttsSpeakerInherit?.speakerId || null,
+  }))
+  await page.click('[data-testid="dialogue-add-voice"]')      // 실제 '목소리 지정' 버튼
+  await sleep(500)
+  const picked = await st((src) => {
+    const s = window.__afStore.getState()
+    const hit = Object.entries(s.ttsSpeakerRefState).find(([, v]) => v?.source === src)
+    return hit ? { id: hit[0], slot: hit[1] } : null
+  }, iso2.input)
+  ok('D1', !!picked, '버튼으로 고른 목소리가 그 인물에 등록된다',
+    `id=${picked?.id} ready=${picked?.slot?.ready} before(refReady=${beforePick.refReady}, inherit=${beforePick.inherit})`)
+
+  // 추가 창을 **열어 둔 채로** 준비가 끝나는지 본다(사용자 화면 1번과 같은 상태).
+  const dlgReady = picked ? await waitUntil(async () => {
+    const s = await st((id) => window.__afStore.getState().ttsSpeakerRefState[id] || null, picked.id)
+    return !!(s && s.ready)
+  }, 180000) : false
+  const dlgSlot = picked ? await st((id) => window.__afStore.getState().ttsSpeakerRefState[id] || null, picked.id) : null
+  ok('D2', dlgReady, '추가 창을 열어 둔 상태에서도 준비됨까지 저절로 간다',
+    `ready=${dlgSlot?.ready} clip=${!!dlgSlot?.clip} region=${JSON.stringify(dlgSlot?.region)} msg=${dlgSlot?.message || ''}`)
+  const dlgText = await st(() => document.querySelector('[data-testid="dialogue-add-dialog"]')?.textContent || '')
+  ok('D3', dlgReady && !dlgText.includes('목소리 확인 중'),
+    "추가 창에 '목소리 확인 중'이 남지 않는다", dlgText.includes('목소리 확인 중') ? '문구 잔존' : '없음')
+  await shot('D-add-dialog-assigned.png')
+  await page.click('[data-testid="dialogue-add-cancel"]')
   await sleep(300)
 
   // ── A: 이름을 비워도 목소리를 지정할 수 있다 ──────────────────────────
@@ -208,6 +255,25 @@ try {
     '음성 탭: 보조 항목은 접혀 있고 참조 전사 자리는 그대로 있다', JSON.stringify(voiceTab))
   await shot('C-voice-tab.png')
 
+  // ── E: 준비가 멈춰도 한 번에 되살릴 입구가 있다 ──────────────────────
+  // 준비되지 않은 목소리에는 '다시 준비'가 뜨고, 준비된 뒤에는 사라진다.
+  const retryWhenReady = await count('[data-testid="card-voice-retry"]')
+  ok('E1', retryWhenReady === 0, '준비가 끝난 목소리에는 다시 준비 버튼이 없다', `버튼 ${retryWhenReady}개`)
+  const retryShown = await st((id) => {
+    const s = window.__afStore.getState()
+    s.setSpeakerRefState(id, { clip: '', region: null, ready: false, message: '목소리를 살펴보는 중입니다…' })
+    return true
+  }, regId)
+  void retryShown
+  await sleep(400)
+  const retryUi = await st(() => ({
+    buttons: document.querySelectorAll('[data-testid="card-voice-retry"]').length,
+    status: [...document.querySelectorAll('[data-testid="card-voice-status"]')].map((e) => e.textContent?.trim()),
+  }))
+  ok('E2', retryUi.buttons >= 1 && retryUi.status.some((s) => (s || '').includes('살펴보는 중')),
+    '준비 중이면 다시 준비 버튼이 뜨고 상태 문구가 무엇을 기다리는지 말한다', JSON.stringify(retryUi))
+  await shot('E-retry-entry.png')
+
   ok('err', pageErrors.length === 0, '렌더러 예외 0', pageErrors.slice(0, 3).join(' / '))
 } catch (e) {
   ok('fatal', false, '실행 중 예외', String(e?.message || e))
@@ -216,6 +282,7 @@ try {
   killOwnTree()
   for (let i = 0; i < 40 && !childExited; i += 1) await sleep(250)
   try { cleanupIsolated(iso) } catch { /* */ }
+  try { cleanupIsolated(iso2) } catch { /* */ }
   try { fs.rmSync(USER_DATA, { recursive: true, force: true }) } catch { /* */ }
   const pass = results.filter((r) => r.pass).length
   fs.writeFileSync(path.join(OUT, 'result.json'),

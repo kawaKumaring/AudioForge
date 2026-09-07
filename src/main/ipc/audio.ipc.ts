@@ -321,6 +321,14 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   // multi 를 주면 여러 개를 고를 수 있다(같은 감정에 파일 여럿 등록). 인자를 주지 않는
   // 기존 호출부의 동작과 반환 형태는 그대로다 — 새 채널을 만들지 않는다.
   ipcMain.handle('audio:select-file', async (_event, multi?: boolean) => {
+    // E2E 전용 통로 — **OS 파일 선택창만** 대신한다(그 뒤 경로는 실제와 완전히 같다).
+    // 이것이 없으면 '목소리 지정' 버튼을 누르는 실제 경로를 자동 검사로 지날 수 없어서, 검사는
+    // store 를 직접 불러 통과하는데 사용자 화면에서는 멈추는 눈뜬장님 상태가 된다(실측).
+    // AF_E2E=1 이 아니면 존재하지 않는 통로다. 여러 파일은 '|' 로 구분한다.
+    if (process.env.AF_E2E === '1' && process.env.AF_E2E_SELECT_FILE) {
+      const list = process.env.AF_E2E_SELECT_FILE.split('|').filter(Boolean)
+      return multi ? list : (list[0] ?? null)
+    }
     // 마지막으로 불러온 폴더에서 열기 — settings.json에 기억(다른 앱 영향 없음)
     const lastDir = loadSettings().lastDir
     const result = await dialog.showOpenDialog(mainWindow, {
