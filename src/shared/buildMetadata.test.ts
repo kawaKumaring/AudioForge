@@ -125,13 +125,13 @@ test('없는 파일과 깨진 파일은 모두 없음으로 다룬다', () => {
 test('package.json version 이 단일 권위다 — 화면 문자열을 따로 두지 않는다', () => {
   const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf-8'))
   assert.equal(pkg.version, '1.4.0', '정식 v1.4.0 — 2026-09-07 master 병합')
-  assert.equal(channelForVersion(pkg.version), CHANNEL_DEVELOPMENT,
+  assert.equal(channelForVersion(pkg.version), CHANNEL_STABLE,
     'channel 은 version 접미사에서만 나온다')
   assert.equal(versionLabel({ version: pkg.version, commit: null }), `v${pkg.version}`,
     '커밋을 모르면 지어내지 않는다')
   // develop 계열은 어느 커밋의 화면인지 알아야 한다 — 표시 시점에 short SHA 를 합친다.
   assert.equal(versionLabel({ version: pkg.version, commit: 'abc1234' }),
-    `v${pkg.version}+abc1234`, '개발 표시에는 +<short-sha> 가 붙는다')
+    `v${pkg.version}`, '정식 표시에는 커밋이 붙지 않는다(develop 계열만 +<short-sha>)')
   // renderer 소스에 버전 문자열이 하드코딩돼 있지 않은지 본다.
   const label = readFileSync(
     join(repoRoot, 'src', 'renderer', 'components', 'AppVersionLabel.tsx'), 'utf-8')
