@@ -18,6 +18,7 @@ import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
 import { removeSplitTempDirs, listSplitTempDirs } from '../services/split-temp-cleanup'
 import { createSingleFlight, createKeyedSingleFlight } from '../services/single-flight'
 import { createSerialLane } from '../services/serial-lane'
+import { cacheableResult, createResultCache, fileStamp, requestKey, KEY_SEP } from '../services/preview-cache'
 import { createJobWatchdog, startJobWatch, createStagingGate } from '../services/longform-job'
 import { createTerminalGate } from '../services/run-settlement'
 import type { CancelResponse } from '../../shared/cancelContract'
@@ -317,6 +318,14 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   const qwenPreflightSF = createSingleFlight<unknown>()
   const pitchPreflightSF = createSingleFlight<unknown>()  // pitch capability probe(qwen/analyze/trim guard와 무관)
   const analyzeSF = createKeyedSingleFlight<unknown>()  // 절대경로 key
+  // 결과 캐시 — 같은 파일·같은 질문이면 파이썬을 다시 부르지 않는다.
+  // single-flight 는 **동시** 호출만 합치고 끝나면 지운다. 그래서 패널이 다시 마운트되기만 해도
+  // 같은 파일을 처음부터 다시 분석했고(자동 준비가 끝난 뒤 카드를 열어 보는 것만으로도), 같은 구간을
+  // 다시 확정하면 whisper 전사까지 다시 돌았다(자르기 한 번이 2~3초). 결과는 그대로 두고 반복만 없앤다.
+  // 무효화는 파일의 크기·수정 시각으로 한다 — 경로가 같아도 내용이 바뀌면 다른 것으로 본다.
+  const analyzeCache = createResultCache<unknown>(24)
+  const trimCache = createResultCache<{ result: unknown; dir: string; clip: string }>(24)
+  const stampOf = (fp: string) => fileStamp(fp, (x) => statSync(x))
 
   // multi 를 주면 여러 개를 고를 수 있다(같은 감정에 파일 여럿 등록). 인자를 주지 않는
   // 기존 호출부의 동작과 반환 형태는 그대로다 — 새 채널을 만들지 않는다.
@@ -428,6 +437,10 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       + (extra ? '\u0000' + JSON.stringify(extra) : '')
     // 분석은 읽기다 — 확정 클립을 지우지 않는다. 편집기를 다시 열거나 같은 원본을 다시 살펴봐도 준비 상태가
     // 내려가지 않는다. 클립이 바뀌는 때는 재확정 성공(trim)·원본 교체(register)·해제·새 파일·리셋뿐이다.
+    const stamp = stampOf(filePath)
+    const cacheKey = requestKey([clipKey, resolve(filePath), stamp, extra ? JSON.stringify(extra) : ''])
+    const cached = stamp ? analyzeCache.get(cacheKey) : undefined
+    if (cached !== undefined) return cached      // 같은 파일·같은 질문 — 다시 묻지 않는다
     return analyzeSF.run(key, async () => {  // 동시/StrictMode 중복은 진행 중 Promise 공유(subprocess 1회)
       const cfgPath = join(tmpdir(), `audioforge_refanalyze_${randomUUID()}.json`)
       try {
@@ -435,12 +448,15 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
         writeFileSync(cfgPath, JSON.stringify({
           mode: 'ref-analyze', input: filePath, output: dirname(filePath), ...(extra ?? {}),
         }), 'utf-8')
-        return await runPreview({
+        const res = await runPreview({
           runner: new PythonRunner(pythonPath, runnerDeps),
           scriptPath, args: ['--config', cfgPath],
           timeoutMs: 60000,  // 파형 peak 스캔 여유. 멈춘 프로세스만 끊음.
           cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
         })
+        // 성공한 결과만 저장한다 — 실패를 저장하면 원인이 사라진 뒤에도 같은 실패를 되돌려 준다.
+        if (stamp && cacheableResult(res)) analyzeCache.set(cacheKey, res)
+        return res
       } finally {
         try { unlinkSync(cfgPath) } catch {}
       }
@@ -453,6 +469,13 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 트림을 실행할 수 없습니다.')
     if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
+    // 같은 파일·같은 구간을 그 인물이 이미 잘라 뒀고 그 클립이 살아 있으면 다시 자르지 않는다.
+    // 자르기 한 번에 whisper 전사(2~3초)가 들어 있어 이 반복이 가장 비싸다. 결과는 같은 것을 돌려준다.
+    const trimStamp = stampOf(filePath)
+    const trimKey = requestKey([clipKey, resolve(filePath), trimStamp,
+      startSec.toFixed(3), durSec.toFixed(3), extra ? JSON.stringify(extra) : ''])
+    const hit = trimStamp ? trimCache.get(trimKey) : undefined
+    if (hit && existsSync(hit.clip) && refClipDirs.get(clipKey) === hit.dir) return hit.result
     // 앞선 트림이 돌고 있으면 끝나기를 기다렸다가 이어서 실행한다(전사 가드와 분리 — 서로 차단하지 않음).
     return referenceTrimLane.run(async () => {
     const uid = randomUUID()
@@ -479,6 +502,9 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       if (succeeded) {
         releaseRefClip(clipKey)          // 이제서야 이전 클립을 놓는다
         refClipDirs.set(clipKey, outDir)
+        // 이 인물의 옛 항목은 버린다 — 클립 폴더가 방금 바뀌었으므로 옛 열쇠는 더 이상 유효하지 않다.
+        trimCache.dropPrefix(clipKey + KEY_SEP)
+        trimCache.set(trimKey, { result: res, dir: outDir, clip: r.clip_path as string })
       } else {
         removeRefClipDir(tmpdir(), outDir)  // 반쪽 결과는 남기지 않는다. 이전 클립은 건드리지 않았다
       }

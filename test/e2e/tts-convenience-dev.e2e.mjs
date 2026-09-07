@@ -274,6 +274,36 @@ try {
     '준비 중이면 다시 준비 버튼이 뜨고 상태 문구가 무엇을 기다리는지 말한다', JSON.stringify(retryUi))
   await shot('E-retry-entry.png')
 
+  // ── F: 파이썬 호출 수 — 같은 파일을 몇 번 다시 살펴보고 다시 잘랐는가 ──────────
+  // 분석·자르기에는 결과 저장이 없었다. 패널이 다시 마운트되기만 해도 같은 파일을 다시 분석했고,
+  // 같은 구간을 다시 확정하면 whisper 전사까지 다시 돌았다(자르기 한 번이 2~3초).
+  const spawnCount = (kind) => childLog.filter((l) => l.includes(`audioforge_${kind}_`)).length
+  const calls = { analyze: spawnCount('refanalyze'), trim: spawnCount('reftrim') }
+  console.log(`[conv] 파이썬 호출 — 살펴보기 ${calls.analyze}회 · 자르기 ${calls.trim}회`)
+  // 이 시나리오의 서로 다른 (인물|파일) 조합은 넷이다: 기본 목소리 · 인물a(다른 파일) · 인물A · 인물1.
+  // 즉 위 숫자에는 중복이 없다 — 캐시가 줄일 것이 없는 상태다. 그래서 아래에서 **같은 조합을
+  // 두 번 마운트**해 캐시가 실제로 듣는지 따로 본다(줄었다고 말하려면 반복을 만들어 재야 한다).
+  ok('F1', calls.trim <= 4, '같은 구간을 반복해서 자르지 않는다', JSON.stringify(calls))
+
+  // ── G: 같은 (인물|파일)을 다시 열면 파이썬을 다시 부르지 않는다 ────────────
+  // 패널을 닫았다 다시 열면 마운트가 새로 생기고 예전에는 그때마다 다시 분석했다.
+  const before = { analyze: spawnCount('refanalyze'), trim: spawnCount('reftrim') }
+  const toggled = await st(() => {
+    const btns = [...document.querySelectorAll('[data-testid="card-voice"]')]
+    if (btns.length === 0) return false
+    btns[0].click()                                  // 열려 있으면 닫고
+    return true
+  })
+  await sleep(400)
+  if (toggled) {
+    await st(() => { const b = document.querySelector('[data-testid="card-voice"]'); if (b) b.click() })
+    await sleep(3000)                                // 다시 열었다 — 예전이면 여기서 분석이 돈다
+  }
+  const after = { analyze: spawnCount('refanalyze'), trim: spawnCount('reftrim') }
+  ok('G1', toggled && after.analyze === before.analyze && after.trim === before.trim,
+    '같은 목소리를 다시 열어도 살펴보기·자르기를 다시 하지 않는다',
+    `전 ${JSON.stringify(before)} → 후 ${JSON.stringify(after)}`)
+
   ok('err', pageErrors.length === 0, '렌더러 예외 0', pageErrors.slice(0, 3).join(' / '))
 } catch (e) {
   ok('fatal', false, '실행 중 예외', String(e?.message || e))
