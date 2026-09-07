@@ -74,9 +74,23 @@ if (WITH_APP_UI) {
   skip('실제 앱 · UI 경로', '--app-ui 를 주면 함께 확인한다(GPU 안 씀)')
 }
 if (WITH_APP) {
-  run('실제 앱 · 합성 1회(GPU)', 'node', [path.join('test', 'e2e', 'synthesize.e2e.mjs')])
+  // ★ 이름을 사실대로 적는다. `synthesize.e2e.mjs` 는 합성을 **시작한 뒤 취소**한다 —
+  //   소리를 만들지 않는다. 예전에 이 단계를 '합성 1회' 로 적어 두었더니 4.9초에 통과했고,
+  //   나는 그것을 합성 검증으로 읽었다. 모양만 맞는 검사가 통과로 세어지는 바로 그 종류다.
+  run('실제 앱 · 합성 시작·취소 수명주기(GPU)', 'node', [path.join('test', 'e2e', 'synthesize.e2e.mjs')])
+  // 소리가 실제로 나오는지는 완주 검사가 답한다. 참조 자산과 검증용 파이썬을 명시해야 돌고,
+  // 주지 않으면 **통과처럼 종료**하므로(prerequisite skip) 여기서 저장소 fixture 와 앱 파이썬을 준다.
+  const fixture = path.join(ROOT, 'test', 'fixtures', 'audio', 'ko-speech-region-18s.wav')
+  if (py && existsSync(fixture)) {
+    run('실제 앱 · 합성 완주 + 결과물 검사(GPU)', 'node',
+      [path.join('test', 'e2e', 'synthesize-complete.e2e.mjs')],
+      { env: { ...process.env, AF_E2E_REFERENCE: fixture, AF_E2E_PYTHON: py } })
+  } else {
+    skip('실제 앱 · 합성 완주', py ? 'fixture 없음' : '검증용 파이썬을 찾지 못했다')
+  }
 } else {
-  skip('실제 앱 · 합성 1회', '--app 을 주면 함께 확인한다(GPU 를 쓴다 — 병합 직전에만)')
+  skip('실제 앱 · 합성 시작·취소', '--app 을 주면 함께 확인한다(GPU 를 쓴다 — 병합 직전에만)')
+  skip('실제 앱 · 합성 완주', '같은 이유')
 }
 
 // ── 요약 ─────────────────────────────────────────────────────────────────
