@@ -24,13 +24,25 @@ const OUT = path.join(APP, '_local', 'experiments', 'baseline-safexvector')
 fs.mkdirSync(OUT, { recursive: true })
 
 const PEOPLE = (process.env.AF_PEOPLE || '쵸단,이오몽').split(',')
-const GEN_TEXT = [
-  '내일 오전 아홉 시부터 정기 점검이 시작됩니다.',
-  '점검이 진행되는 동안에는 일부 기능을 사용할 수 없습니다.',
-  '작업 중인 내용은 미리 저장해 두시기 바랍니다.',
-  '예상 소요 시간은 두 시간이며, 상황에 따라 조금 더 걸릴 수 있습니다.',
-  '점검이 끝나면 별도로 안내해 드리겠습니다.',
-].join('\n')
+// 참조가 감정 음성일 때는 **참조와 다른 대사**를 써야 한다 — 참조 대사가 결과에 섞이는 것을
+// 피하려면 두 텍스트가 달라야 한다. AF_TEXT2=1 로 두 번째 대사를 고른다.
+const TEXTS = {
+  a: [
+    '내일 오전 아홉 시부터 정기 점검이 시작됩니다.',
+    '점검이 진행되는 동안에는 일부 기능을 사용할 수 없습니다.',
+    '작업 중인 내용은 미리 저장해 두시기 바랍니다.',
+    '예상 소요 시간은 두 시간이며, 상황에 따라 조금 더 걸릴 수 있습니다.',
+    '점검이 끝나면 별도로 안내해 드리겠습니다.',
+  ],
+  b: [
+    '창고 정리는 이번 주 금요일까지 마치기로 했습니다.',
+    '박스는 크기별로 나눠서 벽 쪽에 쌓아 두면 됩니다.',
+    '깨지는 물건은 따로 표시해 주세요.',
+    '옮길 물건이 많으면 미리 알려 주시면 사람을 더 부르겠습니다.',
+    '끝나고 나면 목록을 한 번 맞춰 보겠습니다.',
+  ],
+}
+const GEN_TEXT = (process.env.AF_TEXT2 ? TEXTS.b : TEXTS.a).join('\n')
 
 const USER_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'af-base-'))
 const PORT = 9700 + (process.pid % 40)
