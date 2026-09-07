@@ -213,11 +213,18 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
     if (!check.ok) return true                 // 쓸 수 없는 이름은 후보에서 뺀다
     return takenIds.has(speakerIdOf(cand))
   })
+  // 기본 인물(화자 표기 없는 대사)도 **한 사람으로 센다.** 목소리를 한 명 탭과 공유하는 것은
+  // 내부 사정이고, 이 화면의 요약·준비 판정에서 빠져 있으면 "모두 준비됨" 이 사실과 어긋난다
+  // (사용자 지적: "여러 명에서 기본 인물이 빠져서 기록되고 있다. 기능이 공유더라도 표현은 해야 한다").
   const defaultRows = p.rows.filter((r) => r.view.speakerLabel === null).length
-  const summary = namedSpeakers.length === 0
-    ? (p.rows.length > 0 ? `인물 없음 · 대사 ${p.rows.length}개는 기본 인물` : '첫 인물의 대사를 카드에 입력하세요')
-    : `인물 ${namedSpeakers.length}명 · ${notReady.length === 0 ? '모두 준비됨' : `목소리 준비 안 됨 ${notReady.length}명: ${notReady.join(', ')}`}`
-      + (defaultRows > 0 ? ` · 기본 인물 대사 ${defaultRows}개` : '')
+  const defaultVoice = defaultRows > 0 ? voiceOf(DEFAULT_VOICE_SLOT) : null
+  const defaultNotReady = defaultRows > 0 && !defaultVoice?.ready
+  const notReadyAll = [...notReady, ...(defaultNotReady ? ['기본 인물'] : [])]
+  const peopleCount = namedSpeakers.length + (defaultRows > 0 ? 1 : 0)
+  const summary = peopleCount === 0
+    ? (p.rows.length > 0 ? `대사 ${p.rows.length}개 · 인물 표기 없음` : '첫 인물의 대사를 카드에 입력하세요')
+    : `인물 ${peopleCount}명${defaultRows > 0 ? `(기본 인물 포함 · 대사 ${defaultRows}개)` : ''}`
+      + ` · ${notReadyAll.length === 0 ? '모두 준비됨' : `목소리 준비 안 됨 ${notReadyAll.length}명: ${notReadyAll.join(', ')}`}`
 
   /** 카드에 쓴 첫 대사를 원문에 반영한다(빈 대본이면 새로 시작, 아니면 마지막 뒤에 추가). 빈 대사는 반영하지 않는다. */
   const commitNewLine = (label: string, line: string): string | null => {
@@ -262,7 +269,11 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
       {/* ── 발화 카드 — 1열 전체 폭. 목소리 상세는 누른 카드 안에 펼친다. ── */}
       <div data-testid="multi-rows" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {p.rows.map((r, i) => {
-          const cardKey = `row-${r.view.sourceStart}-${r.view.sourceEnd}`
+          // ★ 카드 신원은 **글자 위치가 아니다.** 예전에는 `row-<시작>-<끝>` 이었는데, 대사를 한 글자
+          //   고치면 그 카드와 뒤 카드 전부의 좌표가 바뀌어 React 가 다른 카드로 보고 **모두 다시
+          //   그렸다.** 그래서 펼쳐 둔 목소리 설정이 접혔다(사용자 지적: "대사를 바꾸면 접혔다가
+          //   다시 펼쳐진다"). 발화 순번은 글자를 고쳐도 그대로이므로 이것을 신원으로 쓴다.
+          const cardKey = `row-${r.view.index}`
           // ★ 기본 인물(화자 표기 없음)도 같은 조작을 갖는다. 그 목소리 슬롯의 이름이 'default' 일 뿐이다.
           //   예전에는 이 카드에만 상태·설정·다시 준비가 전부 없어서, 클립이 사라지면 되살릴 길이
           //   한 명 탭뿐이었다(사용자 지적: "기본 인물만 예외로 아무것도 할 수 없다").
