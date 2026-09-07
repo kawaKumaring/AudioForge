@@ -33,10 +33,14 @@ class ReferenceRegionTest(unittest.TestCase):
 
     def test_recommend_in_speech_and_length(self):
         r = rr.recommend_region(self.src)
-        # 이 fixture에는 3~10초 간격의 무음 경계 쌍이 없다. 발화 한가운데를 임의로 잘라
-        # 추천한 뒤 확정기에서 거부하게 만들지 않는다.
-        self.assertFalse(r["ok"])
-        self.assertEqual(r["reason"], "no_safe_boundary_pair")
+        # 이 fixture 에는 3~10초 간격의 무음 경계 쌍이 없다. 2026-09-08 이전에는 여기서
+        # ok=False 로 멈췄는데, 그러면 화면이 '구간을 직접 고르세요' 에서 더 나아가지 못했다.
+        # 이제는 발화가 촘촘한 창을 제안하고 안전 판정은 확정 단계(낱말 경계)에 맡긴다.
+        # 지켜야 할 것은 **안전하다고 거짓말하지 않는 것**이다.
+        self.assertTrue(r["ok"], r)
+        self.assertFalse(r["safe_boundaries"], r)
+        self.assertEqual(r["boundary_source"], "word_gap_pending")
+        self.assertTrue(3.0 <= r["dur_sec"] <= 10.0, r)
 
     def test_recommendation_is_accepted_by_confirmation_contract(self):
         import numpy as np

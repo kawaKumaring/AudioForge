@@ -461,31 +461,52 @@ class QwenBatchPathTest(_QwenGlobalIsolation, unittest.TestCase):
         self.assertEqual(gaps_seen, [[0.0, 0.75]], "원 segment 경계에 사용자 silence_gap 유지")
         self.assertTrue(os.path.exists(os.path.join(self.out, "synthesized.wav")))
 
-    def test_long_emotion_ref_blocks_with_emotion_id(self):
-        # 감정 참조가 10초 초과 → 감정 ID·파일 포함 오류, run_job(모델 로딩) 미도달
+    # ── 참조 게이트 ─────────────────────────────────────────────────────────
+    # 이 두 시험은 원래 GPT-SoVITS 의 3~10초 필수 범위를 Qwen 에도 적용한다고 적혀 있었다.
+    # 2026-09-05 `0e0ab85` 에서 그 전제가 의도적으로 바뀌었다 — Qwen3 벤더 코드에 참조 길이
+    # 필수 조건이 없어, 길이는 **경고**이고 차단은 처리 불가 조건(손상·거의 무음 등)만 한다.
+    # 그런데 시험은 옛 계약 그대로 남아 사흘간 실패하고 있었고, 그 실패가 뒤쪽 TypeError 에
+    # 가려져 아무도 보지 못했다. 여기서 현재 계약으로 다시 쓴다.
+
+    def test_long_emotion_ref_warns_but_does_not_block(self):
+        # 감정 참조 12초 → Qwen 에서는 차단이 아니라 '검증된 범위 밖' 경고.
         long_ref = os.path.join(self.tmp, "happy_long.wav")
         _write(long_ref, 12.0)
         called = []
         self._patch(tts_worker.QwenTTSEngine, "run_job",
                     new=(lambda self, *a, **k: called.append(1) or []))
-        with self.assertRaises(RuntimeError) as cm:
-            tts_worker.synthesize(self.ref, "[기쁨] 문장입니다.", self.out, emotion_refs={"happy": long_ref},
+        msgs = []
+        self._patch(tts_worker, "emit",
+                    new=(lambda kind, **kw: msgs.append(str(kw.get("message", "")))))
+        with self.assertRaises(RuntimeError):
+            # run_job 이 조각을 하나도 내지 않으므로 결합 단계에서 실패한다 —
+            # 여기서 보려는 것은 '게이트를 통과해 모델까지 갔는가' 다.
+            tts_worker.synthesize(self.ref, "[기쁨] 문장입니다.", self.out,
+                                  emotion_refs={"happy": long_ref},
                                   preferred_engine="qwen3", reference_prompts={})
-        msg = str(cm.exception)
-        self.assertIn("happy", msg)   # 감정 ID 명시
-        self.assertIn("10초", msg)    # 구간 선택 안내
-        self.assertEqual(called, [], "긴 감정 참조는 run_job(모델) 도달 전 차단")
+        self.assertNotEqual(called, [], "길이만으로는 Qwen 참조를 막지 않는다")
+        warn = [m for m in msgs if "happy" in m and "검증된 범위" in m]
+        self.assertTrue(warn, "감정 ID 를 밝힌 길이 경고가 있어야 한다: {0}".format(msgs[-5:]))
 
-    def test_invalid_ref_blocks_before_run_job(self):
-        short = os.path.join(self.tmp, "short2s.wav")
-        _write(short, 2.0)  # TOO_SHORT
+    def test_unusable_ref_blocks_before_run_job(self):
+        # 거의 무음인 참조는 길이와 무관하게 처리 불가 — 모델 로딩 전에 막아야 한다.
+        dead = os.path.join(self.tmp, "near_silent.wav")
+        _write(dead, 6.0, amp=1e-5)
         called = []
         self._patch(tts_worker.QwenTTSEngine, "run_job",
                     new=(lambda self, *a, **k: called.append(1) or []))
-        with self.assertRaises(RuntimeError):
-            tts_worker.synthesize(short, "안녕하세요 문장.", self.out, emotion_refs={},
+        with self.assertRaises(RuntimeError) as cm:
+            tts_worker.synthesize(dead, "안녕하세요 문장.", self.out, emotion_refs={},
                                   preferred_engine="qwen3", reference_prompts={})
+        self.assertIn("참조 음성 부적합", str(cm.exception))
         self.assertEqual(called, [], "부적합 참조는 run_job(모델) 도달 전 차단")
+
+    def test_empty_chunks_fail_with_a_readable_reason(self):
+        # 엔진이 조각을 하나도 내지 않으면 원인을 말해 주는 실패여야 한다.
+        # 예전에는 soundfile 의 `samplerate must be specified` TypeError 로 터졌다.
+        with self.assertRaises(RuntimeError) as cm:
+            tts_worker._concat_with_boundaries([], [], os.path.join(self.tmp, "x.wav"))
+        self.assertIn("조각이 없습니다", str(cm.exception))
 
 
 class AvailablePreflightTest(_QwenGlobalIsolation, unittest.TestCase):

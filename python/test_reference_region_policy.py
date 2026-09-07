@@ -105,10 +105,15 @@ class RegionPolicyDerivation(unittest.TestCase):
             self.assertTrue(3.0 <= r["dur_sec"] <= 10.0, r)
 
     def test_recommend_no_safe_pair_is_honest_for_both(self):
+        # 2026-09-08 계약 변경: 무음 경계 쌍이 없어도 추천은 멈추지 않는다. 확정 단계가
+        # 낱말 경계로 경계를 만들 수 있게 됐기 때문이다. 대신 **안전 판정을 거짓으로 말하지 않는다** —
+        # safe_boundaries=False 로 '아직 검증되지 않은 제안' 임을 표시하는 것이 여기서의 정직함이다.
         for pol in (ra.GPTSOVITS_POLICY, ra.QWEN3_POLICY):
             r = rr.recommend_region(self.src30, policy=pol)
-            self.assertFalse(r["ok"])
-            self.assertEqual(r["reason"], "no_safe_boundary_pair")
+            self.assertTrue(r["ok"], r)
+            self.assertFalse(r["safe_boundaries"], r)
+            self.assertEqual(r["boundary_source"], "word_gap_pending")
+            self.assertTrue(3.0 <= r["dur_sec"] <= 10.0, r)
 
     # ── analysis_payload(ref-analyze 응답) ────────────────────────────────────
     def test_payload_long_file_gptsovits_requires_region(self):
@@ -167,7 +172,10 @@ class SeparateWiring(unittest.TestCase):
         trim = self.src[self.src.index('if args.mode == "ref-trim":'):]
         trim = trim[:trim.index('emit("result", clip_path=out_path, metrics=metrics)')]
         self.assertIn("out_path, policy=_policy)", trim)
-        self.assertIn('rr.analyze_region(out_path, 0.0, eff["dur_sec"], policy=_policy)', trim)
+        # 클립 **전체**를 재야 한다. eff["dur_sec"] 로 재면 낱말 경계 경로가 넣은 무음만큼
+        # 검사 창이 앞으로 밀려 멀쩡한 클립이 '말 도중' 으로 막힌다(2026-09-08 실측 결함).
+        self.assertIn("rr.analyze_region(out_path, 0.0, rr.source_duration(out_path), policy=_policy)", trim)
+        self.assertNotIn('rr.analyze_region(out_path, 0.0, eff["dur_sec"]', trim)
         self.assertNotIn("GPTSOVITS_POLICY", trim)
 
     def test_no_hardcoded_length_numbers_in_region_module(self):

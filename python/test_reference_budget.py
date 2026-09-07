@@ -6,8 +6,11 @@
 참조 codec 프레임과 전사 토큰이 prompt(입력 위치)를 차지한다 — 예전에는 이것을 0 으로 넣었다(과소 계산).
 참조 예산과 출력 예산(tier)은 다른 축이다. 이 교정은 출력 상한·재시도 횟수를 늘리지 않는다.
 """
-import io
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import io
 import re
 import unittest
 

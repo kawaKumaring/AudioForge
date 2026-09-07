@@ -2949,6 +2949,11 @@ def _concat_with_boundaries(paths, gaps_before, output_path):
     import numpy as np
     if len(paths) != len(gaps_before):
         raise RuntimeError("concat: paths와 gaps 길이 불일치")
+    if not paths:
+        # 엔진이 조각을 하나도 내지 않은 경우. 예전에는 그대로 흘러가 sf.write 가
+        # `TypeError: samplerate must be specified` 로 터졌다 — 원인을 알 수 없는 오류다.
+        # 무엇이 없었는지 말해 주는 실패로 바꾼다(2026-09-08, test_qwen_engine 2건의 실제 증상).
+        raise RuntimeError("concat: 합성 결과 조각이 없습니다(엔진이 오디오를 만들지 못했습니다).")
     out = []
     layout = []
     target_sr = None

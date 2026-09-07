@@ -60,9 +60,16 @@ if (py) {
     { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } })
   run('파이썬 모델 판 계약', py, ['-X', 'utf8', path.join('python', 'test_qwen_model_variants.py')],
     { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } })
+  // 파이썬 시험 전량(실측 ~172초). 예전에는 스모크와 계약 한둘만 돌려서, 시험 110개 중 27개가
+  // import 단계에서 죽어 있는 것도 그중 하나가 사흘째 계약 불일치로 실패하는 것도 보이지 않았다.
+  // 파이썬 경로는 argv 가 아니라 환경변수로 넘긴다 — 이 run() 은 Windows 에서 shell:true 라
+  // 공백이 든 경로(Program Files 아래의 node.exe 같은 것)가 두 토큰으로 쪼개진다(실측 즉시 exit 1).
+  run('파이썬 시험 전량', 'node', [path.join('scripts', 'python-tests.mjs')],
+    { env: { ...process.env, AUDIOFORGE_PYTHON: py } })
 } else {
   skip('파이썬 스모크(--quick)', 'AUDIOFORGE_PYTHON·externals/env.json 에서 파이썬을 찾지 못했다')
   skip('파이썬 모델 판 계약', '같은 이유')
+  skip('파이썬 시험 전량', '같은 이유')
 }
 
 // ── 실제 앱 핵심 경로(옵션) ──────────────────────────────────────────────

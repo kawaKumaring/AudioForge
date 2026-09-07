@@ -5,6 +5,12 @@
 먼저 걸리고, TS 거울이 갈라지면 `speakerReference.test.ts` 에서 걸린다. 둘 중 하나만 고치면
 어느 한쪽이 깨진다 — 그게 목적이다.
 """
+import sys
+
+import os
+# python_embeded 는 ._pth 때문에 스크립트 폴더를 sys.path 에 넣지 않는다.
+# 이 두 줄이 없으면 아래 import 가 실패해 이 파일이 **통과도 실패도 아닌 상태**로 죽는다.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import json
 import os
 import unittest

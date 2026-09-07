@@ -3,6 +3,10 @@
 
 GPU·모델·오디오를 부르지 않는다. 파일 존재 판정만 주입한다(디스크도 쓰지 않는다).
 """
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import json
 import unittest
 

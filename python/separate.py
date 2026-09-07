@@ -566,7 +566,10 @@ def main():
                      validation=built.get("validation"), snap=built.get("snap"))
                 return
             eff = built["effective_region"]
-            metrics = rr.analyze_region(out_path, 0.0, eff["dur_sec"], policy=_policy)
+            # 만들어진 클립 **전체**를 재는 것이 옳다. eff["dur_sec"] 로 재면 안 된다 —
+            # 낱말 경계 경로는 경계에 무음을 넣어 클립이 그만큼 길어지므로, 옛 길이로 자르면
+            # 검사 창이 클립 끝이 아니라 발화 한가운데에 놓여 멀쩡한 클립이 '말 도중' 으로 막힌다.
+            metrics = rr.analyze_region(out_path, 0.0, rr.source_duration(out_path), policy=_policy)
             metrics["policy"] = _policy.describe()
             # 승인 계약은 1단계 그대로 — blocking/warning_codes/ready 는 한 소스에서 나온다.
             metrics["warning_codes"] = sorted(set(metrics.get("warning_codes", []))
@@ -575,6 +578,8 @@ def main():
             metrics["effective_region"] = eff
             metrics["snap"] = built["snap"]
             metrics["validation"] = built["validation"]
+            if built.get("word_boundary"):
+                metrics["word_boundary"] = built["word_boundary"]
             if metrics.get("blocking"):
                 try:
                     os.remove(out_path)

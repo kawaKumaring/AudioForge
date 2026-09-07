@@ -108,6 +108,13 @@ interface RegionMetrics {
            auto_shift_limit_sec?: number; status?: string; silence_count?: number }
   /** 최종 클립 전사와 manual_text 대조 요약(전사 원문은 담기지 않는다). */
   validation?: { status?: string; reason_code?: string | null; mismatch_where?: string[] }
+  /**
+   * 낱말 경계 경로를 썼을 때만 담긴다(말이 쉼 없이 이어져 무음 경계가 없는 음원).
+   * used=false 면 시도했으나 쓰지 못한 것이고 reason 에 사유가 있다.
+   */
+  word_boundary?: { used?: boolean; reason?: string; word_count?: number
+                    head_pad_sec?: number; tail_pad_sec?: number
+                    pad_target_sec?: number; clip_duration_sec?: number }
 }
 
 interface RegionSpan {
@@ -761,6 +768,17 @@ const sub: CSSProperties = { fontSize: 11, color: 'var(--text-muted)', lineHeigh
                   {metrics.requested_region.end_sec.toFixed(2)}초 →{' '}
                   {effective.start_sec.toFixed(2)}~{effective.end_sec.toFixed(2)}초
                   {' '}(아래 확정 클립이 실제로 쓰일 소리입니다)
+                </div>
+              )}
+              {metrics.word_boundary?.used && (
+                <div style={{ marginTop: 2 }}
+                  title={'말이 쉼 없이 이어지는 음원은 0.2초 이상의 무음이 없어서 예전에는 구간을 만들 수 없었습니다. '
+                    + '이제는 낱말 사이(여백 '
+                    + `${((metrics.word_boundary.head_pad_sec ?? 0) * 1000).toFixed(0)}ms · `
+                    + `${((metrics.word_boundary.tail_pad_sec ?? 0) * 1000).toFixed(0)}ms)에서 자르고, `
+                    + `양 끝에 ${((metrics.word_boundary.pad_target_sec ?? 0) * 1000).toFixed(0)}ms 무음을 넣어 `
+                    + '경계를 부드럽게 만듭니다. 자른 자리가 말 도중이 아닌지는 무음을 넣기 전에 검사합니다.'}>
+                  낱말 사이에서 잘랐고 양 끝에 짧은 무음을 넣었습니다
                 </div>
               )}
               {confirmedClip && metrics.warnings.length === 0 && (
