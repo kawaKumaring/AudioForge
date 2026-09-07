@@ -37,3 +37,7 @@ scratch_e2e/
 
 # build 시 생성한다(커밋하지 않는다). 없으면 앱은 version 만 보여준다.
 /build-metadata.json
+
+# 사용자 인물 목소리·감정 자료 — 오디오와 데이터셋은 저장소에 절대 넣지 않는다.
+/resources/
+/사용자/
