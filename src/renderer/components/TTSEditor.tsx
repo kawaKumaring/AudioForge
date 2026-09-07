@@ -1040,6 +1040,12 @@ export default function TTSEditor() {
   const refModeLabel = ttsReferenceConditioningMode === 'safe_xvector' ? '안정 우선' : '자동(추천)'
 
   // 참조 전사 패널(고급 설정 > 음성) — 기존 구현 그대로. id 는 오류 카드의 스크롤 대상이라 유지한다.
+  // 고급 설정 안 접는 제목 — 제목은 짧게, 설명은 회색 한 조각으로 뒤에 붙인다.
+  const advSummary: CSSProperties = {
+    fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px 0',
+  }
+  const advHint: CSSProperties = { fontSize: 10, fontWeight: 400, color: 'var(--text-muted)', marginLeft: 6 }
+
   const referenceTranscriptPanel = (
     <div id="tts-reference-transcript" style={flowCard}>
       <button onClick={() => setShowRefPrompts(!showRefPrompts)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', padding: '10px 16px', border: 'none', cursor: 'pointer', background: 'transparent', fontFamily: 'inherit', outline: 'none' }} aria-expanded={showRefPrompts}>
@@ -1483,14 +1489,14 @@ export default function TTSEditor() {
             {/* 참조 방식 — 편집 위치는 여기 하나뿐이다. 기본 화면의 별도 영역(한 명의 목소리 섹션 안,
                 여러 명의 '공통 생성 옵션')을 없앴다. 기본값(자동)은 그대로이고 모든 인물에 함께 적용된다. */}
             <div data-testid="ref-mode-advanced" style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>모든 인물에 함께 적용되는 생성 옵션</span>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>모든 인물에 함께 적용됩니다</span>
               {refModeControl}
             </div>
             {/* 목소리 구성 저장/불러오기 — 선택 기능. 기본 절차에서는 접혀 있고, 배역 세트는
                 사용자가 이 안에서 저장을 누를 때만 만들어진다. */}
             <details data-testid="voice-config-save-load" style={{ minWidth: 0 }}>
-              <summary style={{ fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' }}>
-                목소리 구성 저장/불러오기
+              <summary style={advSummary}>
+                목소리 구성 저장·불러오기 <span style={advHint}>인물·목소리 묶음을 이름 붙여 두고 다시 씁니다</span>
               </summary>
             <VoiceCastManager
               casts={voiceCast.casts}
@@ -1525,7 +1531,13 @@ export default function TTSEditor() {
                 인물별 목소리는 여러 명 화면의 각 인물 카드에서 설정합니다.
               </div>
             )}
-            {/* 감정별 전용 목소리 등록·구간·삭제 (기존 EmotionReferenceManager 그대로) */}
+            {/* 감정별 전용 목소리 등록·구간·삭제 (기존 EmotionReferenceManager 그대로).
+                접어 두는 이유: 쓰는 사람이 적고 세로로 가장 긴 부분이라 기본 절차를 가렸다.
+                접혀 있어도 마운트는 유지되므로 동작·상태는 예전과 같다. */}
+            <details data-testid="emotion-voice-section" style={{ minWidth: 0 }}>
+              <summary style={advSummary}>
+                감정별 목소리 <span style={advHint}>감정마다 다른 음원을 쓰고 싶을 때만</span>
+              </summary>
             <EmotionReferenceManager
               refs={managerRefs}
               onRegister={(id, src) => registerEmotionRef(id, src)}
@@ -1537,7 +1549,12 @@ export default function TTSEditor() {
               usedEmotionIds={usedEmotionIdList}
               disabled={disabled}
             />
+            </details>
             {/* 참조 목소리 보관함 — 저장해 둔 참조 자산 관리. 감정 참조 등록·구간 편집과 별개 섹션이다. */}
+            <details data-testid="ref-library-section" style={{ minWidth: 0 }}>
+              <summary style={advSummary}>
+                목소리 보관함 <span style={advHint}>자주 쓰는 목소리를 저장해 두고 꺼내 씁니다</span>
+              </summary>
             <ReferenceAssetLibraryPanel
               status={refAssets.status}
               items={refAssets.items}
@@ -1551,12 +1568,16 @@ export default function TTSEditor() {
               onSelect={selectRefAsset}
               onRemove={removeRefAsset}
             />
+            </details>
+            {/* 참조 전사는 접지 않는다 — 결과 오류 카드가 '참조 전사 확인'으로 이 자리를 직접 열기 때문이다. */}
             {referenceTranscriptPanel}
+            {showSettingHelp && (
             <div style={{ borderRadius: 12, padding: '12px 16px', background: 'rgba(251,113,133,0.05)', border: '1px solid rgba(251,113,133,0.12)', fontSize: 12, lineHeight: 1.7, color: 'var(--text-secondary)' }}>
               <strong style={{ color: 'var(--rose)' }}>참조 음성</strong> = 위에 올린 파일의 목소리를 흉내 냅니다.
               감정별 음성을 추가 등록하면 대사마다 <code style={{ background: 'var(--bg-elevated)', padding: '1px 4px', borderRadius: 3 }}>[기쁨]</code> 태그로 감정을 지정할 수 있습니다.
               <br />한국어 · 영어 · 일본어 · 중국어 지원. 영어 목소리로 한국어 대사도 가능합니다.
             </div>
+            )}
           </>
         }
         expression={
