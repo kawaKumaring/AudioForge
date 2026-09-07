@@ -25,7 +25,7 @@ import type { CSSProperties, ReactNode } from 'react'
 
 import type { DialogueProjection, DialogueRow, DialogueSpeaker } from '../hooks/useDialogueProjection'
 import type { StructureBlocker } from '../../shared/dialogueSourcePatcher'
-import { validateSpeakerLabel, insertTagAtCaret } from '../../shared/dialogueSourcePatcher'
+import { validateSpeakerLabel, insertTagAtCaret, nextAutoSpeakerLabel } from '../../shared/dialogueSourcePatcher'
 import { regionText } from '../../shared/referencePolicy'
 import type { ReferenceDecision } from '../../shared/speakerReference'
 
@@ -193,6 +193,13 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
 
   // ── 요약 한 줄: 인물 N명 · 준비 상태 ──
   const notReady = namedSpeakers.filter((s) => !voiceOf(voiceIdOf(s))?.ready).map((s) => s.label.trim())
+  // 이름을 비워 둔 새 인물에게 줄 이름. 판정은 표시 이름이 아니라 내부 id 로 한다.
+  const takenIds = new Set([...p.speakers.map((s) => voiceIdOf(s)), ...speakerLabels.map((l) => speakerIdOf(l))])
+  const autoSpeakerLabel = nextAutoSpeakerLabel((cand) => {
+    const check = validateSpeakerLabel(cand)
+    if (!check.ok) return true                 // 쓸 수 없는 이름은 후보에서 뺀다
+    return takenIds.has(speakerIdOf(cand))
+  })
   const defaultRows = p.rows.filter((r) => r.view.speakerLabel === null).length
   const summary = namedSpeakers.length === 0
     ? (p.rows.length > 0 ? `인물 없음 · 대사 ${p.rows.length}개는 기본 인물` : '첫 인물의 대사를 카드에 입력하세요')
@@ -314,6 +321,7 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
       {addOpen && (
         <AddDialogueSheet speakerLabels={speakerLabels} speakerIdOf={speakerIdOf} voiceOf={voiceOf} disabled={disabled}
           existingIds={new Set(p.speakers.map((s) => voiceIdOf(s)))}
+          autoLabel={autoSpeakerLabel}
           onAssignVoice={props.onAssignVoice} onRemoveVoice={props.onRemoveVoice}
           onExisting={addExisting} onNew={addNew} onCancel={() => setAddOpen(false)} />
       )}
@@ -627,6 +635,8 @@ function AddDialogueSheet(props: {
   speakerIdOf: (label: string) => string
   voiceOf: (speakerId: string) => SpeakerVoiceState | null
   existingIds: Set<string>
+  /** 이름을 비워 두면 쓸 이름(`인물A`…). 부르는 쪽이 id 기준으로 골라 넘긴다. */
+  autoLabel: string
   disabled: boolean
   onAssignVoice: (speakerId: string, label: string) => void
   onRemoveVoice: (speakerId: string) => void
@@ -640,10 +650,17 @@ function AddDialogueSheet(props: {
   const [name, setName] = useState('')
   // 이 창에서 새 인물에 목소리를 지정했는가 — 취소하면 그 지정만 되돌린다(자산은 지우지 않는다).
   const assignedHere = useRef<string | null>(null)
-  const trimmed = name.trim()
-  const check = validateSpeakerLabel(trimmed)
-  const newId = check.ok ? props.speakerIdOf(trimmed) : ''
-  const duplicate = !!newId && (props.existingIds.has(newId) || props.speakerLabels.some((l) => props.speakerIdOf(l) === newId))
+  const [assignedLabel, setAssignedLabel] = useState<string | null>(null)
+  const typed = name.trim()
+  // 이름을 비워 두면 자동 이름으로 만든다. 목소리 지정·완료를 이름 입력에 묶지 않는다.
+  // 목소리를 이미 지정했다면 그때 쓴 이름을 그대로 유지한다 — 지정 뒤에 이름이 바뀌면 목소리가
+  // 다른 id 에 남아 인물과 어긋난다. 이름 변경은 카드의 '이름 바꾸기'가 목소리·구간까지 함께 옮긴다.
+  const usingAuto = assignedLabel === null && typed === ''
+  const effective = assignedLabel ?? (typed || props.autoLabel)
+  const check = validateSpeakerLabel(effective)
+  const newId = check.ok ? props.speakerIdOf(effective) : ''
+  const duplicate = !!newId && !usingAuto && !assignedLabel
+    && (props.existingIds.has(newId) || props.speakerLabels.some((l) => props.speakerIdOf(l) === newId))
   const newVoice = newId ? props.voiceOf(newId) : null
   const canDone = mode === 'existing' ? !!existing : (check.ok && !duplicate)
   const cancel = () => {
@@ -683,10 +700,12 @@ function AddDialogueSheet(props: {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <div style={rowFlex}>
             <label htmlFor="dlg-add-name" style={{ fontSize: 10, color: 'var(--text-muted)' }}>이름</label>
-            <input id="dlg-add-name" data-testid="dialogue-add-name" value={name} disabled={props.disabled} placeholder="인물 이름"
+            <input id="dlg-add-name" data-testid="dialogue-add-name"
+              value={assignedLabel ?? name} disabled={props.disabled || assignedLabel !== null}
+              placeholder={props.autoLabel}
               autoFocus onChange={(e) => setName(e.target.value)} style={{ ...inputBox, flex: '1 1 140px' }} />
             <button type="button" data-testid="dialogue-add-voice" disabled={props.disabled || !newId || duplicate}
-              onClick={() => { assignedHere.current = newId; props.onAssignVoice(newId, trimmed) }}
+              onClick={() => { assignedHere.current = newId; setAssignedLabel(effective); props.onAssignVoice(newId, effective) }}
               style={btn('var(--cyan)', props.disabled || !newId || duplicate)}>
               {newVoice?.registered ? '목소리 바꾸기' : '목소리 지정'}
             </button>
@@ -694,18 +713,32 @@ function AddDialogueSheet(props: {
               <span style={{ fontSize: 11, color: newVoice?.ready ? 'var(--text-secondary)' : 'var(--text-muted)' }}>· {voiceStatusShort(newVoice)}</span>
             )}
           </div>
-          {trimmed && !check.ok && (
+          {/* 파일 이름을 그대로 보여 준다 — 이것을 보고 인물 이름을 정하는 경우가 있다. */}
+          {newVoice?.fileName && (
+            <span data-testid="dialogue-add-voice-file" style={{ fontSize: 10, color: 'var(--text-muted)', overflowWrap: 'anywhere' }}>
+              고른 파일 {newVoice.fileName}
+            </span>
+          )}
+          {typed && !check.ok && (
             <span data-testid="speaker-name-problem" style={{ fontSize: 10, color: 'var(--rose)' }}>{REFUSAL_LABEL[`SPEAKER_LABEL_${check.problem}`]}</span>
           )}
           {duplicate && (
             <span data-testid="speaker-name-problem" style={{ fontSize: 10, color: 'var(--rose)' }}>{REFUSAL_LABEL.SPEAKER_LABEL_DUPLICATE}</span>
           )}
-          <span style={sub}>목소리는 나중에 카드에서 지정해도 됩니다.</span>
+          {assignedLabel !== null ? (
+            <span data-testid="dialogue-add-name-locked" style={sub}>
+              {assignedLabel} 로 만듭니다. 이름은 카드의 '이름 바꾸기'에서 바꿀 수 있습니다(목소리·구간이 함께 따라갑니다).
+            </span>
+          ) : (
+            <span style={sub}>
+              이름을 비워 두면 {props.autoLabel} 로 만듭니다. 목소리는 나중에 카드에서 지정해도 됩니다.
+            </span>
+          )}
         </div>
       )}
       <div style={rowFlex}>
         <button type="button" data-testid="dialogue-add-done" disabled={props.disabled || !canDone}
-          onClick={() => (mode === 'existing' ? props.onExisting(existing) : props.onNew(trimmed))}
+          onClick={() => (mode === 'existing' ? props.onExisting(existing) : props.onNew(effective))}
           style={btn('var(--cyan)', props.disabled || !canDone)}>완료</button>
         <button type="button" data-testid="dialogue-add-cancel" onClick={cancel} style={btn('var(--text-secondary)', false)}>취소</button>
       </div>

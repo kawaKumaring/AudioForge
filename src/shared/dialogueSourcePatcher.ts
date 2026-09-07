@@ -54,6 +54,29 @@ export function validateSpeakerLabel(
   return { ok: true, problem: null }
 }
 
+/**
+ * 이름을 비워 둔 새 인물에게 줄 자동 이름 — `인물A`, `인물B`, … `인물Z`, 그다음은 `인물27`…
+ *
+ * 이름을 먼저 정해야 목소리를 고를 수 있는 것은 순서가 뒤바뀐 요구다. 목소리 파일 이름을 보고
+ * 인물 이름을 정하는 경우가 있고, 시험 삼아 만들어 볼 때는 이름 자체가 필요 없다. 그래서 이름은
+ * 나중에 바꿀 수 있는 자리 표시자로 두고 목소리 지정·카드 생성을 이름 입력에 묶지 않는다.
+ *
+ * `isTaken` 은 부르는 쪽이 정한다 — 표시 이름이 아니라 **내부 id 기준**으로 판정해야 같은 인물을
+ * 두 번 만들지 않는다(이름이 달라도 id 가 같을 수 있다). 쓸 수 없는 이름도 taken 으로 본다.
+ */
+export function nextAutoSpeakerLabel(isTaken: (label: string) => boolean): string {
+  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'
+  for (const c of letters) {
+    const cand = `인물${c}`
+    if (!isTaken(cand)) return cand
+  }
+  for (let n = letters.length + 1; n <= 999; n += 1) {
+    const cand = `인물${n}`
+    if (!isTaken(cand)) return cand
+  }
+  return `인물${letters.length + 1000}`   // 1000명을 넘는 인물은 이 화면의 대상이 아니다
+}
+
 export function speakerDirective(label: string | null): string {
   const arg = (label ?? '').trim()
   return `[${SPEAKER_DIRECTIVE_NAME} ${arg || SPEAKER_DEFAULT_ARG}]`
