@@ -17,6 +17,7 @@ import { sweepQwenJobDirs, listQwenJobDirs } from '../services/qwen-cleanup'
 import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
 import { removeSplitTempDirs, listSplitTempDirs } from '../services/split-temp-cleanup'
 import { createSingleFlight, createKeyedSingleFlight } from '../services/single-flight'
+import { createSerialLane } from '../services/serial-lane'
 import { createJobWatchdog, startJobWatch, createStagingGate } from '../services/longform-job'
 import { createTerminalGate } from '../services/run-settlement'
 import type { CancelResponse } from '../../shared/cancelContract'
@@ -304,10 +305,13 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
 
   // 배타 가드는 '중복 실행을 막아야 하는' 쓰기성 작업에만. 읽기 전용 analyze/preflight는 쓰지 않는다.
   //  - transcriptPreviewGuard: 참조 전사 미리보기(Whisper)
-  //  - referenceTrimGuard: 참조 구간 트림(파생 클립 생성)
-  // 둘은 서로 다른 가드라 서로를 차단하지 않고, analyze/preflight도 차단하지 않는다.
+  //  - referenceTrimLane: 참조 구간 트림(파생 클립 생성) — 가드가 아니라 **차선**이다(거절 대신 줄 세우기).
+  // 둘은 서로를 차단하지 않고, analyze/preflight도 차단하지 않는다.
   const transcriptPreviewGuard = createPreviewGuard()
-  const referenceTrimGuard = createPreviewGuard()
+  // 참조 트림은 **거절하지 않고 줄을 세운다.** 예전에는 두 번째 호출이 곧바로 실패했고, 그래서
+  // 기본 목소리 준비와 인물 목소리 자동 준비가 겹치는 순간 뒤에 온 쪽이 "목소리 구간을 준비하지
+  // 못했습니다"로 끝났다(실측). 파이썬을 동시에 두드리지 않는다는 목적은 줄 세우기로 그대로 지킨다.
+  const referenceTrimLane = createSerialLane()
 
   // 읽기 전용 작업 single-flight — StrictMode 중복 effect/동시 요청에도 subprocess는 1회.
   const qwenPreflightSF = createSingleFlight<unknown>()
@@ -441,7 +445,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 트림을 실행할 수 없습니다.')
     if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
-    referenceTrimGuard.begin()  // 트림 중복 실행 방지(전사 가드와 분리 — 서로 차단하지 않음)
+    // 앞선 트림이 돌고 있으면 끝나기를 기다렸다가 이어서 실행한다(전사 가드와 분리 — 서로 차단하지 않음).
+    return referenceTrimLane.run(async () => {
     const uid = randomUUID()
     const cfgPath = join(tmpdir(), `audioforge_reftrim_${uid}.json`)
     const outDir = join(tmpdir(), `audioforge_refclip_${uid}`)  // 작업 임시폴더(프로젝트 밖), 충돌 불가 UID
@@ -475,8 +480,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       throw e
     } finally {
       try { unlinkSync(cfgPath) } catch {}
-      referenceTrimGuard.end()
     }
+    })
   })
 
   // Qwen 실행 전 상태(preflight) — 읽기 전용. 배타 가드 미사용. 동시(또는 StrictMode 중복) 호출은
@@ -558,7 +563,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     if (transcriptPreviewGuard.running) {
       throw new Error('참조 전사 미리보기 중에는 합성을 시작할 수 없습니다.')
     }
-    if (referenceTrimGuard.running) {
+    if (referenceTrimLane.running) {
       throw new Error('참조 구간 트림 중에는 합성을 시작할 수 없습니다.')
     }
 
