@@ -8,8 +8,12 @@ import io
 import os
 import re
 import shutil
+import sys
 import tempfile
 import unittest
+
+# python_embeded 는 ._pth 로 sys.path 가 제한돼 있어 자기 폴더도 보이지 않는다(개발 규칙 §3.1).
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
 import soundfile as sf

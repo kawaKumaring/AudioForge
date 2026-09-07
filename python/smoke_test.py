@@ -114,14 +114,23 @@ def _check_emotions():
     except Exception as e:  # noqa: BLE001
         return False, f"tts_worker import 실패: {type(e).__name__}: {e}"
     base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    tsx = os.path.join(base, "src", "renderer", "components", "TTSEditor.tsx")
-    if not os.path.exists(tsx):
-        return False, "TTSEditor.tsx 없음"
-    src = open(tsx, encoding="utf-8").read()
-    # EMOTION_GROUPS 블록으로 한정 — 엔진 셀렉터 등 다른 id:'...' 오탐 방지
-    start = src.find("const EMOTION_GROUPS")
-    end = src.find("const ALL_EMOTIONS", start)
-    block = src[start:end] if start != -1 and end != -1 else ""
+    # 감정 정의는 lib/emotions.ts 가 소유한다(예전에는 TTSEditor.tsx 안에 있었다).
+    # 옮겨간 뒤에도 이 검사가 TTSEditor 를 보고 있어서 id 를 하나도 못 찾고 늘 실패했다 —
+    # 드리프트 가드가 눈뜬장님이 된 상태였다. 두 곳을 다 훑어 정의가 어디 있어도 찾는다.
+    candidates = [os.path.join(base, "src", "renderer", "lib", "emotions.ts"),
+                  os.path.join(base, "src", "renderer", "components", "TTSEditor.tsx")]
+    found = [c for c in candidates if os.path.exists(c)]
+    if not found:
+        return False, "감정 정의 파일 없음(lib/emotions.ts · TTSEditor.tsx)"
+    block = ""
+    for c in found:
+        src = open(c, encoding="utf-8").read()
+        # EMOTION_GROUPS 블록으로 한정 — 엔진 셀렉터 등 다른 id:'...' 오탐 방지
+        start = src.find("const EMOTION_GROUPS")
+        end = src.find("const ALL_EMOTIONS", start)
+        if start != -1 and end != -1:
+            block = src[start:end]
+            break
     ts_ids = set(re.findall(r"id:\s*'([A-Za-z_]+)'", block))
     if not ts_ids:
         return False, "TS emotion id 추출 실패 (구조/정규식 변경?)"
