@@ -149,7 +149,10 @@ test('셸은 기존 store 콜백을 그대로 잇는다 — 새 저장소 없음
   assert.ok(PREP.includes('registerSpeakerRef(speakerId, String(picked), label)') && PREP.includes('if (!picked) return'))
   assert.ok(SHELL.includes('onRemoveVoice={(id) => removeSpeakerRef(id)}'))
   assert.ok(SHELL.includes('onSpeakerIdChanged={(from, to) => moveSpeakerRef(from, to)}'))
-  assert.ok(SHELL.includes('renderRegionEditor={renderSpeakerRegion}'), '셸이 카드에 편집기를 잇는다')
+  // 기본 인물(화자 표기 없는 대사)의 슬롯 이름은 'default' 이고 그때는 기본 참조 편집기를 준다 —
+  // 카드가 인물마다 같은 조작을 갖게 하기 위한 갈림이다(사용자 지적: 기본 인물만 예외였다).
+  assert.ok(SHELL.includes("renderRegionEditor={(id, open) => (id === 'default'"), '셸이 카드에 편집기를 잇는다')
+  assert.ok(SHELL.includes('renderDefaultRegion(open)') && SHELL.includes('renderSpeakerRegion(id, open)'))
   assert.ok(PREP.includes('const renderSpeakerRegion = useCallback((speakerId: string, open = true, autoConfirm = false)'),
     '편집기를 만드는 것은 훅이다')
   assert.ok(PREP.includes('open={open}') && PREP.includes('plainStatus={!open}'), '카드 안 구간 편집기는 접힘/펼침')

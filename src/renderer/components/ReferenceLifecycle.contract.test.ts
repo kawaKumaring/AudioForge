@@ -29,7 +29,10 @@ test('재확정은 원자 교체 — 새 클립이 성공했을 때만 이전 �
   assert.ok(rel > run, '이전 클립 해제가 트림 실행 뒤에 온다')
   assert.ok(block.includes('if (succeeded) {') && block.includes('refClipDirs.set(clipKey, outDir)'))
   assert.ok(block.includes("existsSync(r.clip_path as string)"), '성공 판정은 실제 파일 존재까지')
-  assert.ok(block.includes('removeRefClipDir(tmpdir(), outDir)'), '실패한 새 폴더는 지운다')
+  // 클립이 사는 곳은 2026-09-08 에 os 임시폴더에서 앱 전용 폴더(userData/refclips)로 옮겼다 —
+  // 임시폴더는 모든 인스턴스가 공유해서 다른 인스턴스의 시작 정리가 살아 있는 클립을 지웠다.
+  assert.ok(block.includes('removeRefClipDir(clipRoot(), outDir)'), '실패한 새 폴더는 지운다')
+  assert.equal(block.includes('tmpdir(), `audioforge_refclip_'), false, '임시폴더에 만들지 않는다')
   assert.equal((block.match(/refClipDirs\.set\(clipKey, outDir\)/g) ?? []).length, 1, '성공 분기에서만 교체')
 })
 
@@ -48,7 +51,9 @@ test('셸: 인물·감정·기본 패널에 committed 를 넘기고, 재생은 �
   // 인물·감정 패널 + 기본 패널 두 자리(한 명 화면 / 여러 명의 숨긴 준비 구동) — 같은 committed 계약.
   // 네 마운트: 한 명 화면 · 여러 명의 숨긴 기본 목소리 구동 · 감정 패널 · 인물 패널.
   // 인물 패널은 2026-09-08 에 useSpeakerVoicePrep 으로 옮겼으므로 셸 3 + 훅 1 이다.
-  assert.equal((SHELL.match(/committed=\{/g) ?? []).length, 3, '셸의 세 마운트')
+  // 셸의 네 마운트: 한 명 화면 · 여러 명의 숨긴 기본 목소리 구동 · 감정 패널 · **기본 인물 카드**
+  // (2026-09-08: 기본 인물도 다른 인물과 같은 조작을 갖도록 카드 안 편집기를 셸이 만든다).
+  assert.equal((SHELL.match(/committed=\{/g) ?? []).length, 4, '셸의 네 마운트')
   assert.equal((PREP.match(/committed=\{/g) ?? []).length, 1, '인물 마운트는 훅이 만든다')
   assert.ok(SHELL.includes("previewLocalFile(fileInfo?.path || '', ttsReferenceRegion)"), '기본 재생 = 원본 + 구간')
   assert.ok(SHELL.includes("previewLocalFile(s?.source || '', s?.region ?? null)"), '인물 재생 = 원본 + 구간')

@@ -174,7 +174,21 @@ async function boundedJobCleanup(outputDir: string, deadlineMs: number): Promise
     await delay(120)
   }
 }
-// 유효한 파생 참조 클립 폴더(tmpdir/audioforge_refclip_*)를 clipKey별로 추적.
+// 파생 참조 클립이 사는 곳 — **앱 전용 폴더(userData/refclips)**다. 예전에는 os 임시폴더였다.
+//
+// 왜 옮겼는가(실측 결함): 앱은 시작할 때 그 폴더의 `audioforge_refclip_*` 를 전부 지운다(stale 정리).
+// 임시폴더는 모든 인스턴스가 공유하므로, 개발용 앱이나 자동 검사가 한 번 뜨는 것만으로 **사용자가
+// 쓰고 있던 앱의 클립이 지워졌다.** 그러면 합성 때 "확정한 참조 클립이 만료되었습니다" 가 뜬다.
+// '만료' 는 시간 문제가 아니라 파일이 사라진 것이었다.
+//
+// userData 는 인스턴스별로 분리되고(E2E 는 AF_E2E_USER_DATA 로 따로 받는다) OS 임시파일 청소의
+// 대상도 아니다. 그래서 서로를 지우지 않고 앱을 다시 켜도 남는다.
+const clipRoot = (): string => {
+  const root = join(app.getPath('userData'), 'refclips')
+  try { mkdirSync(root, { recursive: true }) } catch { /* 만들지 못하면 아래 호출이 실패로 드러난다 */ }
+  return root
+}
+// 유효한 파생 참조 클립 폴더(clipRoot/audioforge_refclip_*)를 clipKey별로 추적.
 // clipKey = 'default'(기본 참조) | emotionId(감정 참조). 단일 슬롯을 감정별 식별 구조로 확장.
 // 새 클립/새 파일/재확정/합성 종료(합성 중 제외) 시 해당 key(또는 전체)만 정리.
 const refClipDirs = new Map<string, string>()
@@ -256,7 +270,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   } catch { /* ignore */ }
 
   // 앱 시작: 이전 세션이 남긴 stale 파생 참조 폴더 방어 정리(정확한 prefix + tmpdir 직속 폴더만).
-  try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ }
+  try { sweepRefClipDirs(clipRoot()) } catch { /* noop */ }
   // 과거 실행이 남긴 split 원본 사본은 **자동 삭제하지 않는다**(사용자 디스크의 큰 파일을 임의로
   // 지우지 않는다). 개수와 가장 오래된 항목의 시각만 로그로 남겨 상황을 알 수 있게 한다.
   try {
@@ -273,13 +287,13 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   app.on('before-quit', (e) => {
     if (quitCleanupDone) return  // 재진입 → 실제 종료 진행
     const busy = runner?.isRunning || trackSlot.current?.isRunning
-    if (!busy) { try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ } ; quitCleanupDone = true; return }
+    if (!busy) { try { sweepRefClipDirs(clipRoot()) } catch { /* noop */ } ; quitCleanupDone = true; return }
     e.preventDefault()  // 실행 트리 종료 확인 전까지 종료 보류
     const kills: Promise<unknown>[] = []
     if (runner) kills.push(runner.cancel(3000))
     { const tr = trackSlot.current; if (tr) kills.push(tr.cancel(3000)) }
     Promise.race([Promise.all(kills), delay(3500)])
-      .then(() => { try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ } })
+      .then(() => { try { sweepRefClipDirs(clipRoot()) } catch { /* noop */ } })
       .finally(() => { quitCleanupDone = true; app.quit() })
   })
 
@@ -289,7 +303,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     let removed = 0
     for (const k of keys) {
       const dir = refClipDirs.get(k)
-      if (dir) { removeRefClipDir(tmpdir(), dir); refClipDirs.delete(k); removed++ }
+      if (dir) { removeRefClipDir(clipRoot(), dir); refClipDirs.delete(k); removed++ }
     }
     return removed
   }
@@ -480,7 +494,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     return referenceTrimLane.run(async () => {
     const uid = randomUUID()
     const cfgPath = join(tmpdir(), `audioforge_reftrim_${uid}.json`)
-    const outDir = join(tmpdir(), `audioforge_refclip_${uid}`)  // 작업 임시폴더(프로젝트 밖), 충돌 불가 UID
+    const outDir = join(clipRoot(), `audioforge_refclip_${uid}`)  // 앱 전용 폴더, 충돌 불가 UID
     // 원자 교체: 새 클립을 먼저 만들고, **성공했을 때만** 이전 클립을 놓는다. 실패하면 새 폴더를 지우고
     // 이전 클립(사용자가 쓰던 확정 구간)은 그대로 남는다 — 재확정 실패가 멀쩡한 상태를 되돌리지 않는다.
     try {
@@ -506,11 +520,11 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
         trimCache.dropPrefix(clipKey + KEY_SEP)
         trimCache.set(trimKey, { result: res, dir: outDir, clip: r.clip_path as string })
       } else {
-        removeRefClipDir(tmpdir(), outDir)  // 반쪽 결과는 남기지 않는다. 이전 클립은 건드리지 않았다
+        removeRefClipDir(clipRoot(), outDir)  // 반쪽 결과는 남기지 않는다. 이전 클립은 건드리지 않았다
       }
       return res
     } catch (e) {
-      removeRefClipDir(tmpdir(), outDir)
+      removeRefClipDir(clipRoot(), outDir)
       throw e
     } finally {
       try { unlinkSync(cfgPath) } catch {}
@@ -1043,16 +1057,16 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   ipcMain.handle('audio:adopt-reference-clip', (_event, fromKey: string, toKey: string) => {
     const srcDir = refClipDirs.get(fromKey)
     if (!srcDir || !existsSync(srcDir) || !toKey || toKey === fromKey) return ''
-    const outDir = join(tmpdir(), `audioforge_refclip_${randomUUID()}`)
+    const outDir = join(clipRoot(), `audioforge_refclip_${randomUUID()}`)
     try {
       mkdirSync(outDir, { recursive: true })
       for (const f of readdirSync(srcDir)) copyFileSync(join(srcDir, f), join(outDir, f))
     } catch {
-      removeRefClipDir(tmpdir(), outDir)
+      removeRefClipDir(clipRoot(), outDir)
       return ''
     }
     const clip = join(outDir, 'reference_clip_24k.wav')
-    if (!existsSync(clip)) { removeRefClipDir(tmpdir(), outDir); return '' }
+    if (!existsSync(clip)) { removeRefClipDir(clipRoot(), outDir); return '' }
     releaseRefClip(toKey)               // 이전 소유 클립은 새 클립이 준비된 뒤에만 놓는다
     refClipDirs.set(toKey, outDir)
     return clip

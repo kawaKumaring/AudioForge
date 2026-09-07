@@ -752,6 +752,18 @@ export default function TTSEditor() {
   const emotionOverridesOf = (speakerId: string): string[] =>
     emotionIdsForSpeaker(gateSpeakerEmotionRefs(ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled), speakerId).map(emotionLabelOf)
   const speakerVoiceOf = (speakerId: string) => {
+    // 화자 표기가 없는 대사(기본 인물)의 슬롯은 'default' — 한 명 탭의 기본 목소리와 같은 것이다.
+    // 카드가 다른 인물과 **같은 규칙**으로 상태·설정·다시 준비를 쓸 수 있게 여기서 답해 준다.
+    if (speakerId === 'default') {
+      if (!fileInfo?.path) return null
+      return {
+        registered: true, ready: !!ttsRefReady,
+        region: ttsReferenceRegion ?? null, message: ttsRefMessage,
+        fileName: (fileInfo.path || '').split(/[\/]/).pop() || '',
+        decision: resolveReferenceDecision('default', null, speakerReadiness),
+        sharedWith: [], emotionOverrides: [], emotionVoiceAvailable: [], emotionVoiceEnabled: false,
+      }
+    }
     const row = speakerUiRows.find((r) => r.speakerId === speakerId)
     if (row) {
       return { registered: row.registered, ready: row.ready, fileName: row.fileName, decision: row.decision,
@@ -840,6 +852,35 @@ export default function TTSEditor() {
   // 인물 목소리 준비(대상 선택·구간 편집기·교체 실패 복구·지정/다시 준비)는 훅이 소유한다.
   // 이 셸에는 '어디에 그리는가'만 남는다.
   const voicePrep = useSpeakerVoicePrep({ disabled, speakerLabelOf })
+
+  // ── 기본 인물(화자 표기 없는 대사)의 목소리 = 한 명 탭의 기본 목소리 ──────────────
+  // 카드에서도 다른 인물과 같은 조작을 할 수 있어야 한다. 다만 '무엇을 바꾸는가' 는 다르다:
+  //  · 구간 수정 → 기본 참조의 구간(clipKey 'default')
+  //  · 다시 준비 → 그 구간을 처음부터 다시 확정
+  //  · 목소리 바꾸기 → 그것은 **불러온 파일 자체를 바꾸는 일**이라 여기서 하지 않고 어디서 하는지 알린다
+  const renderDefaultRegion = (open = true) => {
+    if (!fileInfo?.path) return null
+    return (
+      <ReferenceRegionPanel
+        clipKey="default"
+        path={fileInfo.path}
+        disabled={disabled}
+        committed={ttsRefReady
+          ? { clip: ttsReferenceClip, region: ttsReferenceRegion, whole: !ttsReferenceClip && !ttsReferenceRegion }
+          : null}
+        onState={setTtsRefState}
+        label="기본 목소리"
+        open={open}
+        plainStatus={!open}
+      />
+    )
+  }
+  const retryDefaultVoice = () => {
+    // 기본 목소리를 처음부터 다시 준비한다. 숨은 기본 패널(autoConfirm)이 비워진 상태를 보고 다시 확정한다.
+    voicePrep.clearVoiceReplaceNotice()
+    setTtsRefState({ clip: '', region: null, ready: false, message: '' })
+  }
+  const defaultVoiceChangeNotice = '기본 인물의 목소리는 처음 불러온 파일입니다. 다른 목소리로 바꾸려면 위쪽에서 파일을 다시 불러오거나, 이 대사에 인물을 지정해 주세요.'
   const { autoPrep, renderSpeakerRegion, voiceReplaceNotice } = voicePrep
 
 
@@ -1232,9 +1273,17 @@ export default function TTSEditor() {
               emotionTagOf={emotionTagOf}
               speakerIdOf={normalizeSpeakerId}
               voiceOf={speakerVoiceOf}
-              onAssignVoice={(id, label) => { void voicePrep.assignVoice(id, label) }}
+              onAssignVoice={(id, label) => {
+                // 기본 인물의 '목소리 바꾸기' 는 곧 **불러온 파일을 바꾸는 것**이다 — 그 자리는 상단
+                // 파일 열기이고, 여기서 조용히 다른 뜻으로 동작시키지 않는다.
+                if (id === 'default') { voicePrep.notify(defaultVoiceChangeNotice); return }
+                void voicePrep.assignVoice(id, label)
+              }}
               onRemoveVoice={(id) => removeSpeakerRef(id)}
-              onRetryVoice={(id) => voicePrep.retryVoice(id)}
+              onRetryVoice={(id) => {
+                if (id === 'default') { retryDefaultVoice(); return }
+                voicePrep.retryVoice(id)
+              }}
               onSpeakerIdChanged={(from, to) => moveSpeakerRef(from, to)}
               onRenameSpeaker={(id, newLabel) => {
                 // 카드의 이름 변경 = 명시 명령. 원문의 모든 표기를 바꾸고(거부되면 여기서 끝) 목소리 슬롯·감정별 설정·목소리 구성을 새 id 로 옮긴다.
@@ -1275,7 +1324,9 @@ export default function TTSEditor() {
                 const s = ttsSpeakerRefState[id]
                 previewLocalFile(s?.source || '', s?.region ?? null)
               }}
-              renderRegionEditor={renderSpeakerRegion}
+              renderRegionEditor={(id, open) => (id === 'default'
+                ? renderDefaultRegion(open)
+                : renderSpeakerRegion(id, open))}
               disabled={disabled}
             />
           )}

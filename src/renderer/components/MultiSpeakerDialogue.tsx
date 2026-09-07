@@ -107,6 +107,9 @@ const sub: CSSProperties = { fontSize: 11, color: 'var(--text-muted)', lineHeigh
  */
 const RESTORE_STATUS = ['목소리 준비 중', '원본 다시 연결 필요'] as const
 
+/** 화자 표기가 없는 대사(기본 인물)가 쓰는 목소리 슬롯 이름. 한 명 탭의 기본 목소리와 같은 것이다. */
+export const DEFAULT_VOICE_SLOT = 'default'
+
 /** 카드 머리의 짧은 목소리 상태 — 기본 화면에 보이는 것은 이 한 줄뿐이다. 자세한 것은 카드 안 상세에서. */
 export function voiceStatusShort(voice: SpeakerVoiceState | null): string {
   if (!voice || !voice.registered) return '목소리 선택 필요'
@@ -260,23 +263,27 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
       <div data-testid="multi-rows" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {p.rows.map((r, i) => {
           const cardKey = `row-${r.view.sourceStart}-${r.view.sourceEnd}`
-          const sid = r.view.speakerId
+          // ★ 기본 인물(화자 표기 없음)도 같은 조작을 갖는다. 그 목소리 슬롯의 이름이 'default' 일 뿐이다.
+          //   예전에는 이 카드에만 상태·설정·다시 준비가 전부 없어서, 클립이 사라지면 되살릴 길이
+          //   한 명 탭뿐이었다(사용자 지적: "기본 인물만 예외로 아무것도 할 수 없다").
+          const sid = r.view.speakerId || DEFAULT_VOICE_SLOT
+          const isDefaultSlot = !r.view.speakerId
           return (
             <UtteranceCard key={cardKey} row={r} index={i}
               projection={p} disabled={disabled} emotions={emotions} emotionTagOf={emotionTagOf}
               speakerLabels={speakerLabels}
-              voice={sid ? voiceOf(sid) : null}
-              voiceDetailOpen={!!sid && voiceOpen?.speakerId === sid && voiceOpen.cardKey === cardKey}
-              onToggleVoice={() => { if (!sid) return; setVoiceOpen((v) => (v && v.cardKey === cardKey ? null : { speakerId: sid, cardKey })) }}
-              onRetryVoice={props.onRetryVoice && sid ? (() => props.onRetryVoice!(sid)) : undefined}
-              renderVoiceDetail={() => sid ? (
-                <SpeakerVoicePanel voiceId={sid} label={r.view.speakerLabel ?? ''} voice={voiceOf(sid)} disabled={disabled}
+              voice={voiceOf(sid)}
+              voiceDetailOpen={voiceOpen?.speakerId === sid && voiceOpen.cardKey === cardKey}
+              onToggleVoice={() => setVoiceOpen((v) => (v && v.cardKey === cardKey ? null : { speakerId: sid, cardKey }))}
+              onRetryVoice={props.onRetryVoice ? (() => props.onRetryVoice!(sid)) : undefined}
+              renderVoiceDetail={() => (
+                <SpeakerVoicePanel voiceId={sid} label={r.view.speakerLabel ?? '기본 인물'} voice={voiceOf(sid)} disabled={disabled}
                   onAssignVoice={props.onAssignVoice} onRemoveVoice={props.onRemoveVoice} onPreviewVoice={props.onPreviewVoice}
                   renderRegionEditor={props.renderRegionEditor} onToggleEmotionVoice={props.onToggleEmotionVoice}
                   renderEmotionVoiceEditor={props.renderEmotionVoiceEditor} onClose={() => setVoiceOpen(null)}
                   initialRegionOpen={voiceStatusShort(voiceOf(sid)) === '구간 선택 필요'} />
-              ) : null}
-              onRenameSpeaker={props.onRenameSpeaker && sid ? ((label) => props.onRenameSpeaker!(sid, label)) : undefined} />
+              )}
+              onRenameSpeaker={props.onRenameSpeaker && !isDefaultSlot ? ((label) => props.onRenameSpeaker!(sid, label)) : undefined} />
           )
         })}
         {/* 반영 직후 유령 카드 — 계획이 새 행을 만들면 사라지고 그 행이 같은 자리에 온다(점프 없음). */}
@@ -485,7 +492,7 @@ function UtteranceCard(props: {
           )}
           {props.speakerLabels.map((l) => <option key={l} value={l}>{l}</option>)}
         </select>
-        {r.view.speakerId ? (
+        {(
           <>
             {props.onRenameSpeaker && (
               <button type="button" data-testid="card-rename" disabled={disabled || !p.patchAllowed} aria-expanded={renameOpen}
@@ -502,9 +509,11 @@ function UtteranceCard(props: {
             <button type="button" data-testid="card-voice" onClick={props.onToggleVoice} disabled={disabled}
               aria-expanded={props.voiceDetailOpen} title="이 인물의 목소리 설정"
               style={btn('var(--cyan)', disabled)}>{props.voiceDetailOpen ? '설정 닫기' : '목소리 설정'}</button>
+            {!r.view.speakerId && (
+              <span style={{ fontSize: 10, color: 'var(--text-muted)' }}
+                title="화자 표기가 없는 대사입니다. 한 명 탭의 기본 목소리와 같은 것을 씁니다.">· 기본 목소리</span>
+            )}
           </>
-        ) : (
-          <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>· 한 명 탭과 같은 기본 목소리</span>
         )}
         <span style={{ flex: 1 }} />
         <button type="button" disabled={disabled || !up.allowed} onClick={() => p.move(i, -1)}

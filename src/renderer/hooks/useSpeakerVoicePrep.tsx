@@ -33,9 +33,11 @@ export interface SpeakerVoicePrep {
   assignVoice: (speakerId: string, label?: string) => Promise<void>
   /** 준비가 멈춘 목소리를 같은 파일로 처음부터 다시 준비한다. */
   retryVoice: (speakerId: string) => void
-  /** 교체 실패를 알린 문구(없으면 null). */
+  /** 교체 실패 등 목소리와 관련해 알릴 문구(없으면 null). */
   voiceReplaceNotice: string | null
   clearVoiceReplaceNotice: () => void
+  /** 같은 자리에 알릴 문구를 셸이 넣는다(예: 기본 인물의 목소리는 여기서 바꾸지 않는다는 안내). */
+  notify: (message: string) => void
 }
 
 export function useSpeakerVoicePrep(opts: {
@@ -151,6 +153,7 @@ export function useSpeakerVoicePrep(opts: {
   }, [setSpeakerRefState])
 
   const clearVoiceReplaceNotice = useCallback(() => setVoiceReplaceNotice(null), [])
+  const notify = useCallback((message: string) => setVoiceReplaceNotice(message), [])
 
-  return { autoPrep, renderSpeakerRegion, assignVoice, retryVoice, voiceReplaceNotice, clearVoiceReplaceNotice }
+  return { autoPrep, renderSpeakerRegion, assignVoice, retryVoice, voiceReplaceNotice, clearVoiceReplaceNotice, notify }
 }
