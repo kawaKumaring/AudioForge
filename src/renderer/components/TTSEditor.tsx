@@ -829,6 +829,11 @@ export default function TTSEditor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ttsSpeakerInherit, fileInfo?.path, inheritSlotSource, ttsRefReady, ttsReferenceClip, ttsReferenceRegion, ttsRefMessage])
 
+  // 새 인물 목소리 자동 준비 대상 — 한 번에 한 명(같은 파이썬 통로를 동시에 두드리지 않는다).
+  // 선택 규칙은 아래 effect 가 소유하고, 끝나는 시점은 패널의 onAutoConfirmSettled 만이 정한다.
+  const [autoPrep, setAutoPrep] = useState<{ id: string; source: string } | null>(null)
+  const autoPrepDone = useRef<Set<string>>(new Set())
+
   const requestSpeakerSource = async (): Promise<string | null> => {
     const p = await window.api.audio.selectFile()
     return p || null
@@ -855,6 +860,11 @@ export default function TTSEditor() {
         label={`${speakerLabelOf(speakerId)} 목소리`}
         open={open}
         autoConfirm={autoConfirm}
+        onAutoConfirmSettled={autoConfirm ? () => {
+          // 이 인물·이 파일의 자동 준비가 끝났다. 다시 잡지 않도록 표시하고 다음 사람으로 넘어간다.
+          autoPrepDone.current.add(`${speakerId}|${src}`)
+          setAutoPrep(null)
+        } : undefined}
         plainStatus={!open}
       />
     )
@@ -864,13 +874,24 @@ export default function TTSEditor() {
   // 파일을 고르면 그것으로 끝이어야 한다. 기존 분석·추천·구간 확정 경로를 그대로 이어서 돌리되,
   // 카드를 열지 않아도 되도록 보이지 않는 자리에서 한 명씩(같은 파이썬 통로를 동시에 두드리지 않게) 준비한다.
   // 추천이 안 되거나 입력 조건이 안 맞으면 그때만 카드가 '구간 선택 필요'를 말한다(기존 문구 그대로).
-  const autoPrep = useMemo(() => {
+  // ★ 예전에는 '준비 상태 문구가 비었는가'로 대상을 골랐다. 그런데 패널이 분석을 시작하며 진행 문구를
+  //   올리는 순간 그 조건이 깨져 **드라이버가 스스로 사라졌고**, 언마운트된 패널은 자동 확정에 이르지
+  //   못했다(카드가 '목소리 확인 중'에서 멈추고 사용자가 손으로 구간을 확정해야 했던 실측 결함).
+  //   그래서 한 명을 잡으면 **끝났다는 신호나 파일 교체 전까지 놓지 않는다.**
+  useEffect(() => {
+    if (autoPrep) {
+      const st = ttsSpeakerRefState[autoPrep.id]
+      if (st?.source === autoPrep.source && !st.ready) return   // 아직 준비 중 — 계속 붙잡는다
+      setAutoPrep(null)                                          // 준비됐거나 파일이 바뀌었다
+      return
+    }
     const hit = Object.entries(ttsSpeakerRefState)
-      .filter(([id, st]) => !!st?.source && !st.ready && (st.message ?? '') === ''
-        && id !== ttsSpeakerInherit?.speakerId)   // 첫 인물 이어받기는 그쪽이 끝낸다
+      .filter(([id, st]) => !!st?.source && !st.ready
+        && !autoPrepDone.current.has(`${id}|${st.source}`)       // 이미 한 번 돌린 파일은 다시 돌리지 않는다
+        && id !== ttsSpeakerInherit?.speakerId)                  // 첫 인물 이어받기는 그쪽이 끝낸다
       .sort((a, b) => a[0].localeCompare(b[0]))[0]
-    return hit ? { id: hit[0], source: hit[1].source } : null
-  }, [ttsSpeakerRefState, ttsSpeakerInherit])
+    if (hit) setAutoPrep({ id: hit[0], source: hit[1].source })
+  }, [ttsSpeakerRefState, ttsSpeakerInherit, autoPrep])
 
   // 교체 실패 복구 — 새 파일을 못 쓰게 됐고 구간을 고르라는 것도 아니면, 보관해 둔 정상 목소리를 되돌린다.
   useEffect(() => {

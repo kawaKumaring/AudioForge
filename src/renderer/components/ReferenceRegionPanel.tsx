@@ -43,6 +43,16 @@ interface ReferenceRegionPanelProps {
    */
   autoConfirm?: boolean
   /**
+   * autoConfirm 자동 준비가 **끝났다**는 신호(성공·실패·해당 없음 모두). 한 파일당 한 번만 온다.
+   *
+   * ★ 이 신호가 필요한 이유: 보이지 않는 자리에서 한 명씩 준비를 돌리는 쪽은 '다음 사람으로 넘어갈
+   *   시점'을 알아야 한다. 예전에는 그것을 **준비 상태 문구가 비었는지**로 판단했는데, 패널이 분석을
+   *   시작하며 '목소리를 살펴보는 중입니다…'를 올리는 순간 조건이 깨져 드라이버가 스스로 사라졌다.
+   *   그러면 이 패널이 언마운트돼 자동 확정이 영영 실행되지 않는다(실측 결함 — 카드가 '목소리 확인 중'
+   *   에서 멈추고 사용자가 구간을 손으로 확정해야 했다).
+   */
+  onAutoConfirmSettled?: () => void
+  /**
    * 상태 문구를 기본 화면용 평이한 말로 낸다(요청/실제 구간·확정 같은 내부 용어 숨김).
    * 실제 안전 오류(너무 짧음/길음·말 도중 절단·전사 실패·대사 불일치) 문구는 그대로 간다.
    */
@@ -163,7 +173,7 @@ function waitUntilLoaded(el: HTMLAudioElement, timeoutMs = 4000): Promise<boolea
 
 export default function ReferenceRegionPanel({
   path, clipKey, disabled, onState, label = '참조 음성',
-  open = true, autoConfirm = false, plainStatus = false, committed = null,
+  open = true, autoConfirm = false, onAutoConfirmSettled, plainStatus = false, committed = null,
 }: ReferenceRegionPanelProps) {
   // 확정 클립이 살아 있는가 — 재분석·재확정 실패가 이것을 내리지 않는다(사용 중인 목소리 보존).
   // whole = 원본 전체를 그대로 참조로 쓰는 준비 상태(클립·구간 없음). 이것도 '사용 중' 이므로 재분석이 준비를 내리지 않는다.
@@ -519,17 +529,34 @@ export default function ReferenceRegionPanel({
   // **파일당 정확히 1회** 확정을 시도한다. 실패하면 사유(BLOCK_MESSAGE)가 그대로 상위로 올라가고
   // 여기서 다시 시도하지 않는다 — 확정 실패 → 재시도 → 실패의 순환을 만들지 않기 위해서다.
   // 사용자가 '사용 구간 바꾸기'로 직접 조정한 뒤에는 기존대로 본인이 확정한다(자동 개입 없음).
+  //
+  // 그리고 **끝났다는 사실을 반드시 한 번 알린다**(onAutoConfirmSettled). 성공·실패·해당 없음을
+  // 구분하지 않는다 — 부르는 쪽이 알아야 하는 것은 '이 인물은 더 기다릴 필요가 없다' 하나뿐이다.
+  // 알리지 않으면 드라이버가 이 인물을 붙잡은 채 다음 사람으로 넘어가지 못한다.
   const autoConfirmedKey = useRef<string>('')
+  const settledRef = useRef(onAutoConfirmSettled)
+  settledRef.current = onAutoConfirmSettled
+  const settledKey = useRef<string>('')
+  const settleAuto = useCallback((key: string) => {
+    if (settledKey.current === key) return        // 한 파일당 한 번만 알린다
+    settledKey.current = key
+    settledRef.current?.()
+  }, [])
   useEffect(() => {
-    if (!autoConfirm || !path || !analysis || !analysis.needs_region || hasCommitted) return   // 이미 확정한 구간이 있으면 다시 확정하지 않는다
-    const r = analysis.recommend
-    if (!r || !r.ok) return                       // 추천이 없으면 임의로 고르지 않는다
-    const key = `${clipKey} ${path}`
+    if (!autoConfirm || !path) return
+    const key = `${clipKey}\u0000${path}`
+    if (hasCommitted) { settleAuto(key); return }        // 이미 쓰고 있는 구간이 있다 → 준비는 끝난 것
+    if (analyzeError) { settleAuto(key); return }        // 분석 실패 — 사유는 이미 상위로 올렸다
+    if (!analysis) return                                 // 아직 분석 중이다. **종료가 아니다.**
     if (autoConfirmedKey.current === key) return
     autoConfirmedKey.current = key
+    if (!analysis.needs_region) { settleAuto(key); return }   // 원본을 그대로 쓸 수 있다/못 쓴다 — 분석이 이미 판정했다
+    const r = analysis.recommend
+    if (!r || !r.ok) { settleAuto(key); return }              // 추천이 없으면 임의로 고르지 않는다
     void confirmRegion(r.start_sec, clampDuration(policyRef.current, analysis.duration_sec, r.dur_sec))
+      .finally(() => settleAuto(key))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoConfirm, path, clipKey, analysis])
+  }, [autoConfirm, path, clipKey, analysis, analyzeError, hasCommitted, settleAuto])
 
   if (!path) return null
 
