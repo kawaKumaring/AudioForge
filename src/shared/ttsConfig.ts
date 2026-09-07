@@ -229,6 +229,8 @@ export interface TtsInputOptions {
   // 화자 표시 이름. **기록 전용**이며 private JSON 에만 남는다(합성 조건이 아니다).
   ttsSpeakerLabels?: Record<string, string>
   ttsEngine?: string
+  /** 사용자가 고른 음성 모델 판 id(빈 값 = 기본). 해석·거부는 Python 이 소유한다. */
+  ttsQwenModel?: string
   ttsReferencePrompts?: Record<string, TtsReferenceEntry>
   // 10초 초과 원본에서 사용자가 확정한 3~10초 파생 참조 클립(mono/24k). 설정 시 기본 참조로 이것을 쓴다.
   // 원본은 절대 참조로 직접 전달하지 않는다(전체 파일 참조 금지).
@@ -281,6 +283,7 @@ export interface TtsConfig {
   ttsEmotionCandidateSelections: Record<string, string>
   ttsSpeakerLabels: Record<string, string>
   ttsEngine: string
+  ttsQwenModel: string
   ttsReferencePrompts: Record<string, TtsReferencePromptConfig>
   ttsReferenceOverride: string
   // 공용 마감 I1: renderer 파싱(parser_version=2) full sha256 — Python이 재파싱해 parity 대조(불일치→PARSER_PARITY_MISMATCH).
@@ -380,6 +383,8 @@ export function buildTtsConfig(o?: TtsInputOptions, sourceFingerprints?: Record<
     ttsEmotionCandidateSelections: o?.ttsEmotionCandidateSelections ?? {},
     ttsSpeakerLabels: o?.ttsSpeakerLabels ?? {},
     ttsEngine: o?.ttsEngine ?? 'auto',
+    // 빈 값이 기본(pinned 판). 알 수 없는 값은 여기서 고치지 않고 Python 이 거부한다.
+    ttsQwenModel: o?.ttsQwenModel ?? '',
     ttsReferencePrompts: buildReferencePrompts(prompts),
     ttsReferenceOverride: o?.ttsReferenceOverride ?? '',
     ttsParsedPlanSha256: o?.ttsParsedPlanSha256 ?? '',

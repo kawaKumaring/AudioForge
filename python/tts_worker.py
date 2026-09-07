@@ -397,6 +397,141 @@ _QWEN_SNAPSHOT = os.path.join(_QWEN_HF_HOME, "hub",
                               "models--Qwen--Qwen3-TTS-12Hz-0.6B-Base", "snapshots", _QWEN_REVISION)
 _QWEN_REQUIRED = ["config.json", "model.safetensors", "vocab.json", "merges.txt",
                   "tokenizer_config.json", os.path.join("speech_tokenizer", "model.safetensors")]
+
+# ── 설치된 Qwen3-TTS 모델 판별 ────────────────────────────────────────────────
+# 사용자가 여러 판을 받아 두고 골라 써 보고 싶다는 요구가 있었다. 그래서 **있는 것만** 찾아
+# 목록으로 내고, 고른 것을 그 실행에 쓴다. 여기서 새로 내려받는 일은 없다(오프라인 유지).
+#
+# 찾는 곳은 저장소 안 두 곳뿐이다 — 전역 HF 캐시나 사용자 폴더를 뒤지지 않는다:
+#   · externals/qwen3_tts_hf/hub/models--*/snapshots/*   (HF 캐시 배치)
+#   · externals/qwen3_tts_*                              (평평한 스냅샷 폴더)
+_QWEN_VARIANT_EXCLUDE = ("qwen3_tts_hf", "qwen3_tts_venv")
+# 목소리 복제(참조 음성 흉내)를 지원하는 판. 벤더 config 의 tts_model_type 이 권위다.
+_QWEN_CLONE_TYPES = ("base",)
+
+
+def _qwen_variant_roots():
+    """모델이 있을 수 있는 폴더 목록(존재 여부만 보고, 유효성은 따로 판정한다)."""
+    roots = []
+    hub = os.path.join(_QWEN_HF_HOME, "hub")
+    if os.path.isdir(hub):
+        for name in sorted(os.listdir(hub)):
+            if not name.startswith("models--"):
+                continue
+            snaps = os.path.join(hub, name, "snapshots")
+            if not os.path.isdir(snaps):
+                continue
+            for rev in sorted(os.listdir(snaps)):
+                roots.append(("hub", name, rev, os.path.join(snaps, rev)))
+    ext = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "externals")
+    if os.path.isdir(ext):
+        for name in sorted(os.listdir(ext)):
+            if not name.startswith("qwen3_tts") or name in _QWEN_VARIANT_EXCLUDE:
+                continue
+            full = os.path.join(ext, name)
+            if os.path.isdir(full):
+                roots.append(("ext", name, "", full))
+    return roots
+
+
+def _qwen_variant_info(path):
+    """이 폴더가 실제로 쓸 수 있는 모델인가. 쓸 수 없으면 None(추정으로 채우지 않는다)."""
+    for f in _QWEN_REQUIRED:
+        fp = os.path.join(path, f)
+        try:
+            if not (os.path.exists(fp) and os.path.getsize(fp) > 0):
+                return None
+        except OSError:
+            return None
+    size = mtype = None
+    try:
+        import json as _json
+        with open(os.path.join(path, "config.json"), encoding="utf-8") as fh:
+            cfg = _json.load(fh)
+        size = str(cfg.get("tts_model_size") or "") or None
+        mtype = str(cfg.get("tts_model_type") or "") or None
+    except Exception:
+        pass          # 읽히지 않으면 '모른다'로 둔다 — 지어내지 않는다
+    return {"model_size": size, "model_type": mtype}
+
+
+def _qwen_variant_id(kind, name, rev):
+    return "hub:%s@%s" % (name, rev[:8]) if kind == "hub" else "ext:%s" % name
+
+
+def _qwen_size_label(size):
+    return {"0b6": "0.6B", "1b7": "1.7B"}.get(size or "", size or "크기 미확인")
+
+
+def _qwen_type_label(mtype):
+    return {"base": "목소리 복제", "custom_voice": "지정 목소리·지시",
+            "voice_design": "목소리 설계"}.get(mtype or "", mtype or "종류 미확인")
+
+
+def qwen_model_variants():
+    """설치된 Qwen3-TTS 모델 목록. 없는 것은 만들어 내지 않는다 — 있는 것만 낸다.
+
+    voice_clone=False 인 판은 이 앱의 합성 경로(참조 음성으로 목소리 흉내)에 쓸 수 없다.
+    목록에는 남기고 사유를 함께 준다 — 목록에서 지워 버리면 '왜 안 보이나'를 알 수 없다."""
+    out = []
+    seen = set()
+    default_real = os.path.normcase(os.path.abspath(_QWEN_SNAPSHOT))
+    for kind, name, rev, path in _qwen_variant_roots():
+        real = os.path.normcase(os.path.abspath(path))
+        if real in seen:
+            continue
+        info = _qwen_variant_info(path)
+        if not info:
+            continue
+        seen.add(real)
+        clone_ok = info["model_type"] in _QWEN_CLONE_TYPES
+        out.append({
+            "id": _qwen_variant_id(kind, name, rev),
+            "label": "%s %s" % (_qwen_size_label(info["model_size"]), _qwen_type_label(info["model_type"])),
+            "model_size": info["model_size"],
+            "model_type": info["model_type"],
+            "voice_clone": clone_ok,
+            "unusable_reason": None if clone_ok else "목소리 복제를 지원하지 않는 판입니다",
+            "is_default": real == default_real,
+        })
+    return out
+
+
+# 이 실행에 쓸 모델. None = 기본(pinned 0.6B-Base). 설정은 합성 시작 전 한 번만 한다.
+_QWEN_SELECTED_PATH = None
+_QWEN_SELECTED_ID = None
+
+
+def set_qwen_model(variant_id):
+    """화면이 고른 모델을 이 실행에 고정한다. 알 수 없는 id 는 **조용히 기본으로 내려가지 않고**
+    오류다 — 고른 것과 다른 모델로 만들어지면 결과만 보고는 알 수 없기 때문이다.
+    목소리 복제를 지원하지 않는 판도 거부한다(합성 경로가 참조 음성을 쓴다)."""
+    global _QWEN_SELECTED_PATH, _QWEN_SELECTED_ID
+    vid = (variant_id or "").strip()
+    if not vid:
+        _QWEN_SELECTED_PATH = _QWEN_SELECTED_ID = None
+        return None
+    for kind, name, rev, path in _qwen_variant_roots():
+        if _qwen_variant_id(kind, name, rev) != vid:
+            continue
+        info = _qwen_variant_info(path)
+        if not info:
+            raise RuntimeError("고른 음성 모델을 쓸 수 없습니다(파일 누락) — 다른 모델을 고르세요.")
+        if info["model_type"] not in _QWEN_CLONE_TYPES:
+            raise RuntimeError("고른 음성 모델은 목소리 복제를 지원하지 않습니다 — 목소리 복제 판을 고르세요.")
+        _QWEN_SELECTED_PATH = path
+        _QWEN_SELECTED_ID = vid
+        return path
+    raise RuntimeError("고른 음성 모델을 찾을 수 없습니다 — 목록을 새로 읽어 다시 고르세요.")
+
+
+def _qwen_active_snapshot():
+    return _QWEN_SELECTED_PATH or _QWEN_SNAPSHOT
+
+
+def _qwen_active_name():
+    """metadata 에 남길 모델 이름. 고른 판이 있으면 그 id 를 남긴다(재현 근거)."""
+    return _QWEN_SELECTED_ID or _QWEN_REPO
 # 무응답(진행 없음) 인용 timeout. Electron watchdog(무진행 5분)보다 짧게 잡아 Python이 먼저 정리·오류.
 # ※ 이 값은 '생성 구간' 계약이다(계약 A 산정 근거가 이 280에 묶여 있다) — 절대 키우지 않는다.
 # ── 작업 전체 벽시계 천장 ──────────────────────────────────────────────────────
@@ -609,10 +744,11 @@ class QwenTTSEngine(TTSEngine):
             return False
         if not os.path.isdir(self._qwen_pkg_dir):  # venv만 남고 패키지 제거된 상태 배제
             return False
-        if not os.path.isdir(_QWEN_SNAPSHOT):
+        snap = _qwen_active_snapshot()
+        if not os.path.isdir(snap):
             return False
         for f in _QWEN_REQUIRED:
-            p = os.path.join(_QWEN_SNAPSHOT, f)
+            p = os.path.join(snap, f)
             try:
                 if not (os.path.exists(p) and os.path.getsize(p) > 0):
                     return False
@@ -646,7 +782,7 @@ class QwenTTSEngine(TTSEngine):
         _now = monotonic or time.monotonic
         _t0 = _now()
         # 로컬 스냅샷 '경로'로 로드(repo id 아님) → 오프라인에서 HF API 호출 회피. 자동 다운로드 금지.
-        cfg = {"model_path": _QWEN_SNAPSHOT, "device": device, "segments": segments}
+        cfg = {"model_path": _qwen_active_snapshot(), "device": device, "segments": segments}
         env = {**os.environ, "HF_HOME": _QWEN_HF_HOME, "HF_HUB_OFFLINE": "1",
                "TRANSFORMERS_OFFLINE": "1", "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
         try:
@@ -1385,6 +1521,8 @@ def _positive_float_or_none(v):
 
 _METADATA_KEYS = [
     "requested_engine", "actual_engine", "model_name", "model_revision", "device",
+    # 사용자가 고른 음성 모델 판(없으면 'default'). 어느 판으로 만든 결과인지 사후에 가리기 위한 것.
+    "qwen_model_variant",
     "device_selection_source", "prompt_source", "x_vector_only_mode",
     "original_reference_path", "effective_reference_path", "reference_region",
     "reference_transcript_language", "reference_transcript_len", "reference_transcript_sha8",
@@ -2311,7 +2449,9 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         # target_language: 세그먼트 언어 중 최빈값
         tgt = max(set(lang_codes), key=lang_codes.count) if lang_codes else None
         info = {
-            "actual_engine": "qwen3", "model_name": _QWEN_REPO, "model_revision": _QWEN_REVISION,
+            "actual_engine": "qwen3", "model_name": _qwen_active_name(),
+            "model_revision": _QWEN_REVISION if _QWEN_SELECTED_ID is None else "",
+            "qwen_model_variant": _QWEN_SELECTED_ID or "default",
             "device": actual_device, "device_selection_source": device_source,
             "prompt_source": def_source, "x_vector_only_mode": def_xvo,
             "reference_transcript_language": def_tr_lang, "reference_transcript_len": def_tr_len,

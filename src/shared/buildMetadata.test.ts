@@ -124,7 +124,7 @@ test('없는 파일과 깨진 파일은 모두 없음으로 다룬다', () => {
 
 test('package.json version 이 단일 권위다 — 화면 문자열을 따로 두지 않는다', () => {
   const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf-8'))
-  assert.equal(pkg.version, '1.4.0', '정식 v1.4.0 — 2026-09-07 master 병합')
+  assert.equal(pkg.version, '1.5.0', '정식 v1.5.0 — 2026-09-08 master 병합')
   assert.equal(channelForVersion(pkg.version), CHANNEL_STABLE,
     'channel 은 version 접미사에서만 나온다')
   assert.equal(versionLabel({ version: pkg.version, commit: null }), `v${pkg.version}`,

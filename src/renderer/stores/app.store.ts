@@ -61,6 +61,7 @@ export interface RestorableSession {
     ttsSilenceGap: number
     ttsPitch: number
     ttsEngine: string
+    ttsQwenModel?: string
     ttsEmotionRefs: Record<string, string>          // effective(파생 클립/유효 원본) — 재시작 후 파생은 소실
     ttsEmotionRefSources: Record<string, string>    // 등록 원본(영속·복원 기준)
     ttsEmotionRefRegions: Record<string, { start: number; duration: number }>
@@ -242,6 +243,8 @@ interface AppState {
   setTtsSpeakerMode: (mode: 'single' | 'multi') => void
   ttsReferencePrompts: Record<string, TtsReferenceEntry>
   ttsEngine: string
+  /** 사용자가 고른 음성 모델 판 id. 빈 값 = 기본(pinned). 목록은 preflight 가 준다. */
+  ttsQwenModel: string
   /** 마지막 참조 분석이 알려 준 이 엔진의 길이 정책(필수/권장). 화면 문구·카드·자산 판정이 이것만 읽는다. 세션에 저장하지 않는다. */
   ttsReferencePolicy: ReferencePolicySummary | null
   // 참조 conditioning 모드(PHASE 2). fresh 세션 기본 = auto(자동, 추천) — ICL 을 먼저 시도하고
@@ -398,6 +401,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     }),
   ttsReferencePrompts: {} as Record<string, TtsReferenceEntry>,
   ttsEngine: 'auto',
+  ttsQwenModel: '',
   ttsReferencePolicy: null,
   // 참조 conditioning 모드 — fresh 세션 기본은 자동(auto, 추천). ICL 을 먼저 시도하고 경계 정렬에
   // 실패하면 같은 작업 안에서 안정 방식으로 1회 전환한다(실패로 끝나지 않는다).
@@ -661,6 +665,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       ttsSilenceGap: o.ttsSilenceGap ?? 0.5,
       ttsPitch: o.ttsPitch ?? 0.0,
       ttsEngine: o.ttsEngine ?? 'auto',
+      // 부재(legacy 세션) = 기본 판. 설치되지 않은 판이 저장돼 있으면 합성 시 Python 이 거부한다.
+      ttsQwenModel: o.ttsQwenModel ?? '',
       // 참조 conditioning 모드 — 부재(legacy 세션)=safe_xvector. 계약 밖 문자열은 무변형 통과
       // (조용한 강등 금지 — 합성 시 Python 이 INVALID_REFERENCE_CONDITIONING_MODE 로 거부).
       ttsReferenceConditioningMode: restoreReferenceConditioningMode(o.ttsReferenceConditioningMode),

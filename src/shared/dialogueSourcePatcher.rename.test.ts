@@ -2,7 +2,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-import { renameSpeaker, speakerIdOfLabel, sliceOf } from './dialogueSourcePatcher.ts'
+import {
+  nextAutoSpeakerLabel, renameSpeaker, speakerIdOfLabel, sliceOf } from './dialogueSourcePatcher.ts'
 import type { UtteranceView } from './dialogueSourcePatcher.ts'
 import { castSpeakerIdOf, applySpeakerRenames } from '../renderer/stores/app.store.ts'
 
@@ -59,4 +60,22 @@ test('별칭: 저장 구성의 인물 id 는 그대로 두고, 현재 작업에�
   assert.equal(fromCast[`민수${US}happy`], 'clip-a')
   // 별칭이 없으면 그대로.
   assert.deepEqual(applySpeakerRenames(fromCast, {}), fromCast)
+})
+
+// 이름을 비워 둔 새 인물의 자동 이름 — 이름 입력이 목소리 지정을 막지 않게 하는 근거.
+test('자동 이름은 인물A 부터 주고 이미 쓰는 것은 건너뛴다', () => {
+  assert.equal(nextAutoSpeakerLabel(() => false), '인물A')
+  const used = new Set(['인물A', '인물B'])
+  assert.equal(nextAutoSpeakerLabel((l) => used.has(l)), '인물C')
+})
+
+test('알파벳을 다 쓰면 숫자로 이어 간다 — 이름이 없어 멈추는 일은 없다', () => {
+  const letters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('').map((c) => `인물${c}`)
+  const used = new Set(letters)
+  assert.equal(nextAutoSpeakerLabel((l) => used.has(l)), '인물27')
+})
+
+test('쓸 수 없는 이름을 taken 으로 보면 그 자리를 건너뛴다 — 판정은 부르는 쪽 몫', () => {
+  // 화면은 내부 id 기준으로 판정한다(이름이 달라도 id 가 같을 수 있다).
+  assert.equal(nextAutoSpeakerLabel((l) => l === '인물A' || l === '인물B'), '인물C')
 })

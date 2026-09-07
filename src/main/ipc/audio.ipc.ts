@@ -17,6 +17,8 @@ import { sweepQwenJobDirs, listQwenJobDirs } from '../services/qwen-cleanup'
 import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
 import { removeSplitTempDirs, listSplitTempDirs } from '../services/split-temp-cleanup'
 import { createSingleFlight, createKeyedSingleFlight } from '../services/single-flight'
+import { createSerialLane } from '../services/serial-lane'
+import { cacheableResult, createResultCache, fileStamp, requestKey, KEY_SEP } from '../services/preview-cache'
 import { createJobWatchdog, startJobWatch, createStagingGate } from '../services/longform-job'
 import { createTerminalGate } from '../services/run-settlement'
 import type { CancelResponse } from '../../shared/cancelContract'
@@ -172,7 +174,21 @@ async function boundedJobCleanup(outputDir: string, deadlineMs: number): Promise
     await delay(120)
   }
 }
-// 유효한 파생 참조 클립 폴더(tmpdir/audioforge_refclip_*)를 clipKey별로 추적.
+// 파생 참조 클립이 사는 곳 — **앱 전용 폴더(userData/refclips)**다. 예전에는 os 임시폴더였다.
+//
+// 왜 옮겼는가(실측 결함): 앱은 시작할 때 그 폴더의 `audioforge_refclip_*` 를 전부 지운다(stale 정리).
+// 임시폴더는 모든 인스턴스가 공유하므로, 개발용 앱이나 자동 검사가 한 번 뜨는 것만으로 **사용자가
+// 쓰고 있던 앱의 클립이 지워졌다.** 그러면 합성 때 "확정한 참조 클립이 만료되었습니다" 가 뜬다.
+// '만료' 는 시간 문제가 아니라 파일이 사라진 것이었다.
+//
+// userData 는 인스턴스별로 분리되고(E2E 는 AF_E2E_USER_DATA 로 따로 받는다) OS 임시파일 청소의
+// 대상도 아니다. 그래서 서로를 지우지 않고 앱을 다시 켜도 남는다.
+const clipRoot = (): string => {
+  const root = join(app.getPath('userData'), 'refclips')
+  try { mkdirSync(root, { recursive: true }) } catch { /* 만들지 못하면 아래 호출이 실패로 드러난다 */ }
+  return root
+}
+// 유효한 파생 참조 클립 폴더(clipRoot/audioforge_refclip_*)를 clipKey별로 추적.
 // clipKey = 'default'(기본 참조) | emotionId(감정 참조). 단일 슬롯을 감정별 식별 구조로 확장.
 // 새 클립/새 파일/재확정/합성 종료(합성 중 제외) 시 해당 key(또는 전체)만 정리.
 const refClipDirs = new Map<string, string>()
@@ -254,7 +270,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   } catch { /* ignore */ }
 
   // 앱 시작: 이전 세션이 남긴 stale 파생 참조 폴더 방어 정리(정확한 prefix + tmpdir 직속 폴더만).
-  try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ }
+  try { sweepRefClipDirs(clipRoot()) } catch { /* noop */ }
   // 과거 실행이 남긴 split 원본 사본은 **자동 삭제하지 않는다**(사용자 디스크의 큰 파일을 임의로
   // 지우지 않는다). 개수와 가장 오래된 항목의 시각만 로그로 남겨 상황을 알 수 있게 한다.
   try {
@@ -271,13 +287,13 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   app.on('before-quit', (e) => {
     if (quitCleanupDone) return  // 재진입 → 실제 종료 진행
     const busy = runner?.isRunning || trackSlot.current?.isRunning
-    if (!busy) { try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ } ; quitCleanupDone = true; return }
+    if (!busy) { try { sweepRefClipDirs(clipRoot()) } catch { /* noop */ } ; quitCleanupDone = true; return }
     e.preventDefault()  // 실행 트리 종료 확인 전까지 종료 보류
     const kills: Promise<unknown>[] = []
     if (runner) kills.push(runner.cancel(3000))
     { const tr = trackSlot.current; if (tr) kills.push(tr.cancel(3000)) }
     Promise.race([Promise.all(kills), delay(3500)])
-      .then(() => { try { sweepRefClipDirs(tmpdir()) } catch { /* noop */ } })
+      .then(() => { try { sweepRefClipDirs(clipRoot()) } catch { /* noop */ } })
       .finally(() => { quitCleanupDone = true; app.quit() })
   })
 
@@ -287,7 +303,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     let removed = 0
     for (const k of keys) {
       const dir = refClipDirs.get(k)
-      if (dir) { removeRefClipDir(tmpdir(), dir); refClipDirs.delete(k); removed++ }
+      if (dir) { removeRefClipDir(clipRoot(), dir); refClipDirs.delete(k); removed++ }
     }
     return removed
   }
@@ -304,19 +320,38 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
 
   // 배타 가드는 '중복 실행을 막아야 하는' 쓰기성 작업에만. 읽기 전용 analyze/preflight는 쓰지 않는다.
   //  - transcriptPreviewGuard: 참조 전사 미리보기(Whisper)
-  //  - referenceTrimGuard: 참조 구간 트림(파생 클립 생성)
-  // 둘은 서로 다른 가드라 서로를 차단하지 않고, analyze/preflight도 차단하지 않는다.
+  //  - referenceTrimLane: 참조 구간 트림(파생 클립 생성) — 가드가 아니라 **차선**이다(거절 대신 줄 세우기).
+  // 둘은 서로를 차단하지 않고, analyze/preflight도 차단하지 않는다.
   const transcriptPreviewGuard = createPreviewGuard()
-  const referenceTrimGuard = createPreviewGuard()
+  // 참조 트림은 **거절하지 않고 줄을 세운다.** 예전에는 두 번째 호출이 곧바로 실패했고, 그래서
+  // 기본 목소리 준비와 인물 목소리 자동 준비가 겹치는 순간 뒤에 온 쪽이 "목소리 구간을 준비하지
+  // 못했습니다"로 끝났다(실측). 파이썬을 동시에 두드리지 않는다는 목적은 줄 세우기로 그대로 지킨다.
+  const referenceTrimLane = createSerialLane()
 
   // 읽기 전용 작업 single-flight — StrictMode 중복 effect/동시 요청에도 subprocess는 1회.
   const qwenPreflightSF = createSingleFlight<unknown>()
   const pitchPreflightSF = createSingleFlight<unknown>()  // pitch capability probe(qwen/analyze/trim guard와 무관)
   const analyzeSF = createKeyedSingleFlight<unknown>()  // 절대경로 key
+  // 결과 캐시 — 같은 파일·같은 질문이면 파이썬을 다시 부르지 않는다.
+  // single-flight 는 **동시** 호출만 합치고 끝나면 지운다. 그래서 패널이 다시 마운트되기만 해도
+  // 같은 파일을 처음부터 다시 분석했고(자동 준비가 끝난 뒤 카드를 열어 보는 것만으로도), 같은 구간을
+  // 다시 확정하면 whisper 전사까지 다시 돌았다(자르기 한 번이 2~3초). 결과는 그대로 두고 반복만 없앤다.
+  // 무효화는 파일의 크기·수정 시각으로 한다 — 경로가 같아도 내용이 바뀌면 다른 것으로 본다.
+  const analyzeCache = createResultCache<unknown>(24)
+  const trimCache = createResultCache<{ result: unknown; dir: string; clip: string }>(24)
+  const stampOf = (fp: string) => fileStamp(fp, (x) => statSync(x))
 
   // multi 를 주면 여러 개를 고를 수 있다(같은 감정에 파일 여럿 등록). 인자를 주지 않는
   // 기존 호출부의 동작과 반환 형태는 그대로다 — 새 채널을 만들지 않는다.
   ipcMain.handle('audio:select-file', async (_event, multi?: boolean) => {
+    // E2E 전용 통로 — **OS 파일 선택창만** 대신한다(그 뒤 경로는 실제와 완전히 같다).
+    // 이것이 없으면 '목소리 지정' 버튼을 누르는 실제 경로를 자동 검사로 지날 수 없어서, 검사는
+    // store 를 직접 불러 통과하는데 사용자 화면에서는 멈추는 눈뜬장님 상태가 된다(실측).
+    // AF_E2E=1 이 아니면 존재하지 않는 통로다. 여러 파일은 '|' 로 구분한다.
+    if (process.env.AF_E2E === '1' && process.env.AF_E2E_SELECT_FILE) {
+      const list = process.env.AF_E2E_SELECT_FILE.split('|').filter(Boolean)
+      return multi ? list : (list[0] ?? null)
+    }
     // 마지막으로 불러온 폴더에서 열기 — settings.json에 기억(다른 앱 영향 없음)
     const lastDir = loadSettings().lastDir
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -416,6 +451,10 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       + (extra ? '\u0000' + JSON.stringify(extra) : '')
     // 분석은 읽기다 — 확정 클립을 지우지 않는다. 편집기를 다시 열거나 같은 원본을 다시 살펴봐도 준비 상태가
     // 내려가지 않는다. 클립이 바뀌는 때는 재확정 성공(trim)·원본 교체(register)·해제·새 파일·리셋뿐이다.
+    const stamp = stampOf(filePath)
+    const cacheKey = requestKey([clipKey, resolve(filePath), stamp, extra ? JSON.stringify(extra) : ''])
+    const cached = stamp ? analyzeCache.get(cacheKey) : undefined
+    if (cached !== undefined) return cached      // 같은 파일·같은 질문 — 다시 묻지 않는다
     return analyzeSF.run(key, async () => {  // 동시/StrictMode 중복은 진행 중 Promise 공유(subprocess 1회)
       const cfgPath = join(tmpdir(), `audioforge_refanalyze_${randomUUID()}.json`)
       try {
@@ -423,12 +462,15 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
         writeFileSync(cfgPath, JSON.stringify({
           mode: 'ref-analyze', input: filePath, output: dirname(filePath), ...(extra ?? {}),
         }), 'utf-8')
-        return await runPreview({
+        const res = await runPreview({
           runner: new PythonRunner(pythonPath, runnerDeps),
           scriptPath, args: ['--config', cfgPath],
           timeoutMs: 60000,  // 파형 peak 스캔 여유. 멈춘 프로세스만 끊음.
           cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
         })
+        // 성공한 결과만 저장한다 — 실패를 저장하면 원인이 사라진 뒤에도 같은 실패를 되돌려 준다.
+        if (stamp && cacheableResult(res)) analyzeCache.set(cacheKey, res)
+        return res
       } finally {
         try { unlinkSync(cfgPath) } catch {}
       }
@@ -441,10 +483,18 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 트림을 실행할 수 없습니다.')
     if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
-    referenceTrimGuard.begin()  // 트림 중복 실행 방지(전사 가드와 분리 — 서로 차단하지 않음)
+    // 같은 파일·같은 구간을 그 인물이 이미 잘라 뒀고 그 클립이 살아 있으면 다시 자르지 않는다.
+    // 자르기 한 번에 whisper 전사(2~3초)가 들어 있어 이 반복이 가장 비싸다. 결과는 같은 것을 돌려준다.
+    const trimStamp = stampOf(filePath)
+    const trimKey = requestKey([clipKey, resolve(filePath), trimStamp,
+      startSec.toFixed(3), durSec.toFixed(3), extra ? JSON.stringify(extra) : ''])
+    const hit = trimStamp ? trimCache.get(trimKey) : undefined
+    if (hit && existsSync(hit.clip) && refClipDirs.get(clipKey) === hit.dir) return hit.result
+    // 앞선 트림이 돌고 있으면 끝나기를 기다렸다가 이어서 실행한다(전사 가드와 분리 — 서로 차단하지 않음).
+    return referenceTrimLane.run(async () => {
     const uid = randomUUID()
     const cfgPath = join(tmpdir(), `audioforge_reftrim_${uid}.json`)
-    const outDir = join(tmpdir(), `audioforge_refclip_${uid}`)  // 작업 임시폴더(프로젝트 밖), 충돌 불가 UID
+    const outDir = join(clipRoot(), `audioforge_refclip_${uid}`)  // 앱 전용 폴더, 충돌 불가 UID
     // 원자 교체: 새 클립을 먼저 만들고, **성공했을 때만** 이전 클립을 놓는다. 실패하면 새 폴더를 지우고
     // 이전 클립(사용자가 쓰던 확정 구간)은 그대로 남는다 — 재확정 실패가 멀쩡한 상태를 되돌리지 않는다.
     try {
@@ -466,17 +516,20 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       if (succeeded) {
         releaseRefClip(clipKey)          // 이제서야 이전 클립을 놓는다
         refClipDirs.set(clipKey, outDir)
+        // 이 인물의 옛 항목은 버린다 — 클립 폴더가 방금 바뀌었으므로 옛 열쇠는 더 이상 유효하지 않다.
+        trimCache.dropPrefix(clipKey + KEY_SEP)
+        trimCache.set(trimKey, { result: res, dir: outDir, clip: r.clip_path as string })
       } else {
-        removeRefClipDir(tmpdir(), outDir)  // 반쪽 결과는 남기지 않는다. 이전 클립은 건드리지 않았다
+        removeRefClipDir(clipRoot(), outDir)  // 반쪽 결과는 남기지 않는다. 이전 클립은 건드리지 않았다
       }
       return res
     } catch (e) {
-      removeRefClipDir(tmpdir(), outDir)
+      removeRefClipDir(clipRoot(), outDir)
       throw e
     } finally {
       try { unlinkSync(cfgPath) } catch {}
-      referenceTrimGuard.end()
     }
+    })
   })
 
   // Qwen 실행 전 상태(preflight) — 읽기 전용. 배타 가드 미사용. 동시(또는 StrictMode 중복) 호출은
@@ -558,7 +611,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     if (transcriptPreviewGuard.running) {
       throw new Error('참조 전사 미리보기 중에는 합성을 시작할 수 없습니다.')
     }
-    if (referenceTrimGuard.running) {
+    if (referenceTrimLane.running) {
       throw new Error('참조 구간 트림 중에는 합성을 시작할 수 없습니다.')
     }
 
@@ -1004,16 +1057,16 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   ipcMain.handle('audio:adopt-reference-clip', (_event, fromKey: string, toKey: string) => {
     const srcDir = refClipDirs.get(fromKey)
     if (!srcDir || !existsSync(srcDir) || !toKey || toKey === fromKey) return ''
-    const outDir = join(tmpdir(), `audioforge_refclip_${randomUUID()}`)
+    const outDir = join(clipRoot(), `audioforge_refclip_${randomUUID()}`)
     try {
       mkdirSync(outDir, { recursive: true })
       for (const f of readdirSync(srcDir)) copyFileSync(join(srcDir, f), join(outDir, f))
     } catch {
-      removeRefClipDir(tmpdir(), outDir)
+      removeRefClipDir(clipRoot(), outDir)
       return ''
     }
     const clip = join(outDir, 'reference_clip_24k.wav')
-    if (!existsSync(clip)) { removeRefClipDir(tmpdir(), outDir); return '' }
+    if (!existsSync(clip)) { removeRefClipDir(clipRoot(), outDir); return '' }
     releaseRefClip(toKey)               // 이전 소유 클립은 새 클립이 준비된 뒤에만 놓는다
     refClipDirs.set(toKey, outDir)
     return clip

@@ -1,7 +1,10 @@
 import { readdirSync, rmSync, statSync } from 'fs'
 import { join, dirname, basename } from 'path'
 
-// 파생 참조 클립은 trim-reference가 tmpdir 바로 아래에 `audioforge_refclip_<ts>/` 폴더로 만든다.
+// 파생 참조 클립은 trim-reference가 **앱 전용 폴더(userData/refclips) 바로 아래**에
+// `audioforge_refclip_<uid>/` 폴더로 만든다. 예전에는 os 임시폴더였는데, 그러면 모든 인스턴스가
+// 같은 곳을 공유해 다른 인스턴스의 시작 정리가 사용자의 살아 있는 클립을 지웠다(실측 결함).
+// 이 모듈은 위치를 모른다 — 부르는 쪽이 root 를 준다. 규칙은 그대로다: root 직속 + 정확한 prefix.
 // (그 안에 reference_clip_24k.wav.) 이 폴더의 수명 관리 — AudioForge가 만든 정확한 폴더만 삭제한다.
 //
 // 안전 규칙(엄격):

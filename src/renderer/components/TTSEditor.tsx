@@ -5,6 +5,7 @@ import type { EmotionRefState } from '@/stores/app.store'
 import type { TtsReferenceEntry, PitchCapability, TtsEmotionRegion } from '../../shared/ttsConfig'
 import { deriveRefMode } from '../../shared/ttsConfig'
 import ReferenceRegionPanel from './ReferenceRegionPanel'
+import { useSpeakerVoicePrep } from '@/hooks/useSpeakerVoicePrep'
 import ReferenceAssetLibraryPanel from './ReferenceAssetLibraryPanel'
 import EmotionSamplerPanel from './EmotionSamplerPanel'
 import { SAMPLER_FAILURE_TEXT } from '../../shared/samplerApi'
@@ -256,6 +257,7 @@ export default function TTSEditor() {
   const [ttsSilenceGap, setTtsSilenceGap] = useState(() => useAppStore.getState().ttsSilenceGap)
   const [ttsPitch, setTtsPitch] = useState(() => useAppStore.getState().ttsPitch)
   const [ttsEngine, setTtsEngine] = useState(() => useAppStore.getState().ttsEngine)
+  const [ttsQwenModel, setTtsQwenModel] = useState(() => useAppStore.getState().ttsQwenModel)
   const [refPrompts, setRefPrompts] = useState<Record<string, TtsReferenceEntry>>(() => useAppStore.getState().ttsReferencePrompts)
   const [showRefPrompts, setShowRefPrompts] = useState(false)
 
@@ -392,7 +394,12 @@ export default function TTSEditor() {
     await refreshRefAssets()
   }
   const [txLoading, setTxLoading] = useState<string | null>(null)
-  const [preflight, setPreflight] = useState<{ available?: boolean; snapshot_ok?: boolean; device_expected?: string; reason?: string } | null>(null)
+  // models: 설치된 음성 모델 판 목록. 없는 것은 만들어 내지 않으므로 목록이 비면 고를 것이 없다는 뜻이다.
+  const [preflight, setPreflight] = useState<{
+    available?: boolean; snapshot_ok?: boolean; device_expected?: string; reason?: string
+    models?: { id: string; label: string; model_size?: string; model_type?: string
+               voice_clone?: boolean; unusable_reason?: string | null; is_default?: boolean }[]
+  } | null>(null)
   // ── PHASE B 기본 화면 상태 ──
   // 고급 설정(4탭)의 열림·탭은 셸이 소유한다 — 결과 오류 카드가 특정 자리를 열어 달라고 요청할 수 있어야 한다.
   const [advancedOpen, setAdvancedOpen] = useState(false)
@@ -417,8 +424,8 @@ export default function TTSEditor() {
 
   // Sync to store (감정 참조 상태는 store가 단일 소스라 여기서 동기화하지 않는다)
   useEffect(() => {
-    useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsReferencePrompts: refPrompts, ttsEngine })
-  }, [ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, refPrompts, ttsEngine])
+    useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsReferencePrompts: refPrompts, ttsEngine, ttsQwenModel })
+  }, [ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, refPrompts, ttsEngine, ttsQwenModel])
 
   // Qwen preflight — 마운트 시 1회(mode 의존). 예상값이며 실행 결과는 결과 화면 metadata가 최종.
   useEffect(() => {
@@ -702,8 +709,7 @@ export default function TTSEditor() {
   const [structureNotice, setStructureNotice] = useState<{ prevText: string } | null>(null)
   // 목소리를 새로 고르기 직전의 '정상 목소리'. 새 파일 준비가 실패하면 이것을 그대로 돌려놓는다
   // (사용자가 파일 하나 잘못 골랐다고 멀쩡히 쓰던 목소리를 잃지 않게).
-  const prevGoodVoice = useRef<Record<string, EmotionRefState>>({})
-  const [voiceReplaceNotice, setVoiceReplaceNotice] = useState<string | null>(null)
+  // prevGoodVoice·voiceReplaceNotice 는 useSpeakerVoicePrep 이 소유한다.
   // 여러 명 화면의 원문 직접 편집(고급). 열려 있는 동안 발화 카드는 숨긴다 — 두 편집기를 동시에 고치지 않는다.
   // 닫으면 현재 ttsText 의 분석 결과가 그대로 카드로 보인다(별도 변환 없음).
   const [directEditOpen, setDirectEditOpen] = useState(false)
@@ -734,7 +740,13 @@ export default function TTSEditor() {
     : '시작 버튼을 누르면 시작합니다'
   const emotionTagOf = (id: string) => '[' + (EMOTION_ID_TO_LABEL[id] ?? id) + ']'
   // 원문 편집기가 보이는 때: 한 명 | 여러 명의 직접 편집 열림 | 구조화할 수 없는 대본(이유와 함께).
-  const showRawEditor = dialogueTab === 'single' || directEditOpen || !dialogue.editingAllowed
+  // 원문 편집기를 언제 보여 주는가 — **자동으로 나타나거나 사라지지 않는다.**
+  //
+  // ★ 예전에는 `|| !dialogue.editingAllowed` 였다. 그 판정은 대사를 치는 동안 수시로 뒤집힌다
+  //   (한 글자 상태에서는 구조화가 안 되고, 줄이 완성되면 된다). 그래서 여러 명에서 대사를 넣을
+  //   때마다 원문 편집기가 나타났다 사라졌다 했다 — 사용자가 본 "한 명 대사칸이 깜빡이며
+  //   왔다갔다한다" 가 이것이다. 화면 구성은 사용자가 정한 탭과 명시적 토글로만 바뀐다.
+  const showRawEditor = dialogueTab === 'single' || directEditOpen
   // 구조화할 수 없는 대본이 되면(직접 편집 details 가 사라지면) 열림 상태도 접는다 — 다시 구조화되면 카드가 바로 보인다.
   useEffect(() => { if (!dialogue.editingAllowed) setDirectEditOpen(false) }, [dialogue.editingAllowed])
   // 이 인물의 어떤 감정에 목소리 구성이 다른 음원을 지정했는가(감정 라벨). 'default' 는 표기 없는
@@ -746,6 +758,18 @@ export default function TTSEditor() {
   const emotionOverridesOf = (speakerId: string): string[] =>
     emotionIdsForSpeaker(gateSpeakerEmotionRefs(ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled), speakerId).map(emotionLabelOf)
   const speakerVoiceOf = (speakerId: string) => {
+    // 화자 표기가 없는 대사(기본 인물)의 슬롯은 'default' — 한 명 탭의 기본 목소리와 같은 것이다.
+    // 카드가 다른 인물과 **같은 규칙**으로 상태·설정·다시 준비를 쓸 수 있게 여기서 답해 준다.
+    if (speakerId === 'default') {
+      if (!fileInfo?.path) return null
+      return {
+        registered: true, ready: !!ttsRefReady,
+        region: ttsReferenceRegion ?? null, message: ttsRefMessage,
+        fileName: (fileInfo.path || '').split(/[\/]/).pop() || '',
+        decision: resolveReferenceDecision('default', null, speakerReadiness),
+        sharedWith: [], emotionOverrides: [], emotionVoiceAvailable: [], emotionVoiceEnabled: false,
+      }
+    }
     const row = speakerUiRows.find((r) => r.speakerId === speakerId)
     if (row) {
       return { registered: row.registered, ready: row.ready, fileName: row.fileName, decision: row.decision,
@@ -800,7 +824,9 @@ export default function TTSEditor() {
   useEffect(() => {
     const inh = ttsSpeakerInherit
     if (!inh || !fileInfo?.path || inh.filePath !== fileInfo.path) return
-    if (!inheritSlotSource || inheritSlotSource !== inh.filePath) return   // 사용자가 다른 원본을 골랐다 → 개입하지 않음
+    // 사용자가 다른 원본을 골랐다면 개입하지 않는다. 예약 해제는 **store 의 registerSpeakerRef 가**
+    // 이미 한다(그 인물의 목소리를 직접 정한 순간 이어받기는 끝난다) — 여기서 다시 놓지 않는다.
+    if (!inheritSlotSource || inheritSlotSource !== inh.filePath) return
     const id = inh.speakerId
     if (!ttsRefReady) {
       // 기본 목소리 준비 중 — 같은 사유를 보여 주고, 완료되면 아래 분기가 갱신한다. 실제 실패 사유만 그대로.
@@ -829,65 +855,40 @@ export default function TTSEditor() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ttsSpeakerInherit, fileInfo?.path, inheritSlotSource, ttsRefReady, ttsReferenceClip, ttsReferenceRegion, ttsRefMessage])
 
-  const requestSpeakerSource = async (): Promise<string | null> => {
-    const p = await window.api.audio.selectFile()
-    return p || null
-  }
-  // 구간 편집기는 감정과 **같은 것**을 쓴다(clipKey 만 화자용으로 분리).
-  const renderSpeakerRegion = (speakerId: string, open = true, autoConfirm = false) => {
-    const src = ttsSpeakerRefState[speakerId]?.source || ''
-    if (!src) return null
+  // 인물 목소리 준비(대상 선택·구간 편집기·교체 실패 복구·지정/다시 준비)는 훅이 소유한다.
+  // 이 셸에는 '어디에 그리는가'만 남는다.
+  const voicePrep = useSpeakerVoicePrep({ disabled, speakerLabelOf })
+
+  // ── 기본 인물(화자 표기 없는 대사)의 목소리 = 한 명 탭의 기본 목소리 ──────────────
+  // 카드에서도 다른 인물과 같은 조작을 할 수 있어야 한다. 다만 '무엇을 바꾸는가' 는 다르다:
+  //  · 구간 수정 → 기본 참조의 구간(clipKey 'default')
+  //  · 다시 준비 → 그 구간을 처음부터 다시 확정
+  //  · 목소리 바꾸기 → 그것은 **불러온 파일 자체를 바꾸는 일**이라 여기서 하지 않고 어디서 하는지 알린다
+  const renderDefaultRegion = (open = true) => {
+    if (!fileInfo?.path) return null
     return (
       <ReferenceRegionPanel
-        key={src}
-        clipKey={'spk:' + speakerId}
-        path={src}
+        clipKey="default"
+        path={fileInfo.path}
         disabled={disabled}
-        committed={ttsSpeakerRefState[speakerId]?.ready
-          ? { clip: ttsSpeakerRefState[speakerId].clip, region: ttsSpeakerRefState[speakerId].region,
-              whole: !ttsSpeakerRefState[speakerId].clip && !ttsSpeakerRefState[speakerId].region } : null}
-        onState={(st) => {
-          // 늦게 도착한 이전 파일의 결과가 새 선택을 덮지 않게 한다. 파일을 연달아 고르면
-          // 앞 파일의 분석이 뒤늦게 끝나 새 파일의 상태를 지우는 일이 실제로 일어난다.
-          if (useAppStore.getState().ttsSpeakerRefState[speakerId]?.source !== src) return
-          setSpeakerRefState(speakerId, st)
-        }}
-        label={`${speakerLabelOf(speakerId)} 목소리`}
+        committed={ttsRefReady
+          ? { clip: ttsReferenceClip, region: ttsReferenceRegion, whole: !ttsReferenceClip && !ttsReferenceRegion }
+          : null}
+        onState={setTtsRefState}
+        label="기본 목소리"
         open={open}
-        autoConfirm={autoConfirm}
         plainStatus={!open}
       />
     )
   }
+  const retryDefaultVoice = () => {
+    // 기본 목소리를 처음부터 다시 준비한다. 숨은 기본 패널(autoConfirm)이 비워진 상태를 보고 다시 확정한다.
+    voicePrep.clearVoiceReplaceNotice()
+    setTtsRefState({ clip: '', region: null, ready: false, message: '' })
+  }
+  const defaultVoiceChangeNotice = '기본 인물의 목소리는 처음 불러온 파일입니다. 다른 목소리로 바꾸려면 위쪽에서 파일을 다시 불러오거나, 이 대사에 인물을 지정해 주세요.'
+  const { autoPrep, renderSpeakerRegion, voiceReplaceNotice } = voicePrep
 
-  // ── 새 인물 목소리 자동 준비 ────────────────────────────────────────────
-  // 파일을 고르면 그것으로 끝이어야 한다. 기존 분석·추천·구간 확정 경로를 그대로 이어서 돌리되,
-  // 카드를 열지 않아도 되도록 보이지 않는 자리에서 한 명씩(같은 파이썬 통로를 동시에 두드리지 않게) 준비한다.
-  // 추천이 안 되거나 입력 조건이 안 맞으면 그때만 카드가 '구간 선택 필요'를 말한다(기존 문구 그대로).
-  const autoPrep = useMemo(() => {
-    const hit = Object.entries(ttsSpeakerRefState)
-      .filter(([id, st]) => !!st?.source && !st.ready && (st.message ?? '') === ''
-        && id !== ttsSpeakerInherit?.speakerId)   // 첫 인물 이어받기는 그쪽이 끝낸다
-      .sort((a, b) => a[0].localeCompare(b[0]))[0]
-    return hit ? { id: hit[0], source: hit[1].source } : null
-  }, [ttsSpeakerRefState, ttsSpeakerInherit])
-
-  // 교체 실패 복구 — 새 파일을 못 쓰게 됐고 구간을 고르라는 것도 아니면, 보관해 둔 정상 목소리를 되돌린다.
-  useEffect(() => {
-    for (const [id, keep] of Object.entries(prevGoodVoice.current)) {
-      const now = ttsSpeakerRefState[id]
-      if (!now || now.source === keep.source) { delete prevGoodVoice.current[id]; continue }
-      if (now.ready) { delete prevGoodVoice.current[id]; continue }        // 새 목소리가 준비됐다
-      const msg = now.message ?? ''
-      if (msg === '') continue                                            // 아직 준비 중
-      if (msg.includes('구간')) { delete prevGoodVoice.current[id]; continue }  // 수동 구간 선택 요청은 실패가 아니다
-      delete prevGoodVoice.current[id]
-      setSpeakerRefState(id, { clip: keep.clip, ready: keep.ready, message: keep.message, region: keep.region })
-      useAppStore.setState((cur) => ({ ttsSpeakerRefState: {
-        ...cur.ttsSpeakerRefState, [id]: { ...cur.ttsSpeakerRefState[id], source: keep.source } } }))
-      setVoiceReplaceNotice(`${speakerLabelOf(id)}: 새로 고른 목소리를 준비하지 못해 이전 목소리를 그대로 씁니다. 다른 파일을 골라 주세요.`)
-    }
-  }, [ttsSpeakerRefState])
 
   // 셸이 파일 선택 다이얼로그를 주입(EmotionReferenceManager는 파일 I/O를 하지 않음).
   // ── 배역 세트(R2-b) ──────────────────────────────────────────────────
@@ -1013,6 +1014,12 @@ export default function TTSEditor() {
   const refModeLabel = ttsReferenceConditioningMode === 'safe_xvector' ? '안정 우선' : '자동(추천)'
 
   // 참조 전사 패널(고급 설정 > 음성) — 기존 구현 그대로. id 는 오류 카드의 스크롤 대상이라 유지한다.
+  // 고급 설정 안 접는 제목 — 제목은 짧게, 설명은 회색 한 조각으로 뒤에 붙인다.
+  const advSummary: CSSProperties = {
+    fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)', cursor: 'pointer', padding: '4px 0',
+  }
+  const advHint: CSSProperties = { fontSize: 10, fontWeight: 400, color: 'var(--text-muted)', marginLeft: 6 }
+
   const referenceTranscriptPanel = (
     <div id="tts-reference-transcript" style={flowCard}>
       <button onClick={() => setShowRefPrompts(!showRefPrompts)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', width: '100%', padding: '10px 16px', border: 'none', cursor: 'pointer', background: 'transparent', fontFamily: 'inherit', outline: 'none' }} aria-expanded={showRefPrompts}>
@@ -1272,15 +1279,17 @@ export default function TTSEditor() {
               emotionTagOf={emotionTagOf}
               speakerIdOf={normalizeSpeakerId}
               voiceOf={speakerVoiceOf}
-              onAssignVoice={(id, label) => { void (async () => {
-                const src = await requestSpeakerSource()
-                if (!src) return
-                const before = ttsSpeakerRefState[id]
-                if (before?.ready) prevGoodVoice.current[id] = before   // 교체 실패 시 돌려놓을 것
-                setVoiceReplaceNotice(null)
-                registerSpeakerRef(id, src, label)
-              })() }}
+              onAssignVoice={(id, label) => {
+                // 기본 인물의 '목소리 바꾸기' 는 곧 **불러온 파일을 바꾸는 것**이다 — 그 자리는 상단
+                // 파일 열기이고, 여기서 조용히 다른 뜻으로 동작시키지 않는다.
+                if (id === 'default') { voicePrep.notify(defaultVoiceChangeNotice); return }
+                void voicePrep.assignVoice(id, label)
+              }}
               onRemoveVoice={(id) => removeSpeakerRef(id)}
+              onRetryVoice={(id) => {
+                if (id === 'default') { retryDefaultVoice(); return }
+                voicePrep.retryVoice(id)
+              }}
               onSpeakerIdChanged={(from, to) => moveSpeakerRef(from, to)}
               onRenameSpeaker={(id, newLabel) => {
                 // 카드의 이름 변경 = 명시 명령. 원문의 모든 표기를 바꾸고(거부되면 여기서 끝) 목소리 슬롯·감정별 설정·목소리 구성을 새 id 로 옮긴다.
@@ -1321,7 +1330,9 @@ export default function TTSEditor() {
                 const s = ttsSpeakerRefState[id]
                 previewLocalFile(s?.source || '', s?.region ?? null)
               }}
-              renderRegionEditor={renderSpeakerRegion}
+              renderRegionEditor={(id, open) => (id === 'default'
+                ? renderDefaultRegion(open)
+                : renderSpeakerRegion(id, open))}
               disabled={disabled}
             />
           )}
@@ -1359,7 +1370,15 @@ export default function TTSEditor() {
           {/* IME 조합 판정 범위. 이 안쪽 composition 만 분석을 억제한다
               (편집기 컴포넌트 자체는 건드리지 않는다). */}
           {/* 여러 명에서는 원문 직접 편집을 접어 둔다(고급). 구조화할 수 없는 대본이면 그대로 보여 준다. */}
-          {dialogueTab === 'multi' && dialogue.editingAllowed && (
+          {/* 구조화할 수 없는 대본이면 자동으로 화면을 바꾸지 않고 **사유를 말하고 입구를 준다.** */}
+          {dialogueTab === 'multi' && !dialogue.editingAllowed && !directEditOpen && (
+            <div data-testid="multi-not-structured" role="note"
+              style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
+                fontSize: 11, color: 'var(--amber, #d08700)', lineHeight: 1.6 }}>
+              <span>이 대본은 발화 카드로 보여 줄 수 없습니다. 아래 '대본 표기 직접 편집'으로 고칠 수 있습니다.</span>
+            </div>
+          )}
+          {dialogueTab === 'multi' && (
             <div data-testid="direct-edit" data-open={directEditOpen ? 'true' : 'false'}
               style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 11, color: 'var(--text-muted)' }}>
               <button type="button" data-testid="direct-edit-toggle" aria-expanded={directEditOpen}
@@ -1456,14 +1475,14 @@ export default function TTSEditor() {
             {/* 참조 방식 — 편집 위치는 여기 하나뿐이다. 기본 화면의 별도 영역(한 명의 목소리 섹션 안,
                 여러 명의 '공통 생성 옵션')을 없앴다. 기본값(자동)은 그대로이고 모든 인물에 함께 적용된다. */}
             <div data-testid="ref-mode-advanced" style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>모든 인물에 함께 적용되는 생성 옵션</span>
+              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>모든 인물에 함께 적용됩니다</span>
               {refModeControl}
             </div>
             {/* 목소리 구성 저장/불러오기 — 선택 기능. 기본 절차에서는 접혀 있고, 배역 세트는
                 사용자가 이 안에서 저장을 누를 때만 만들어진다. */}
             <details data-testid="voice-config-save-load" style={{ minWidth: 0 }}>
-              <summary style={{ fontSize: 11, color: 'var(--text-muted)', cursor: 'pointer' }}>
-                목소리 구성 저장/불러오기
+              <summary style={advSummary}>
+                목소리 구성 저장·불러오기 <span style={advHint}>인물·목소리 묶음을 이름 붙여 두고 다시 씁니다</span>
               </summary>
             <VoiceCastManager
               casts={voiceCast.casts}
@@ -1498,7 +1517,13 @@ export default function TTSEditor() {
                 인물별 목소리는 여러 명 화면의 각 인물 카드에서 설정합니다.
               </div>
             )}
-            {/* 감정별 전용 목소리 등록·구간·삭제 (기존 EmotionReferenceManager 그대로) */}
+            {/* 감정별 전용 목소리 등록·구간·삭제 (기존 EmotionReferenceManager 그대로).
+                접어 두는 이유: 쓰는 사람이 적고 세로로 가장 긴 부분이라 기본 절차를 가렸다.
+                접혀 있어도 마운트는 유지되므로 동작·상태는 예전과 같다. */}
+            <details data-testid="emotion-voice-section" style={{ minWidth: 0 }}>
+              <summary style={advSummary}>
+                감정별 목소리 <span style={advHint}>감정마다 다른 음원을 쓰고 싶을 때만</span>
+              </summary>
             <EmotionReferenceManager
               refs={managerRefs}
               onRegister={(id, src) => registerEmotionRef(id, src)}
@@ -1510,7 +1535,12 @@ export default function TTSEditor() {
               usedEmotionIds={usedEmotionIdList}
               disabled={disabled}
             />
+            </details>
             {/* 참조 목소리 보관함 — 저장해 둔 참조 자산 관리. 감정 참조 등록·구간 편집과 별개 섹션이다. */}
+            <details data-testid="ref-library-section" style={{ minWidth: 0 }}>
+              <summary style={advSummary}>
+                목소리 보관함 <span style={advHint}>자주 쓰는 목소리를 저장해 두고 꺼내 씁니다</span>
+              </summary>
             <ReferenceAssetLibraryPanel
               status={refAssets.status}
               items={refAssets.items}
@@ -1524,12 +1554,16 @@ export default function TTSEditor() {
               onSelect={selectRefAsset}
               onRemove={removeRefAsset}
             />
+            </details>
+            {/* 참조 전사는 접지 않는다 — 결과 오류 카드가 '참조 전사 확인'으로 이 자리를 직접 열기 때문이다. */}
             {referenceTranscriptPanel}
+            {showSettingHelp && (
             <div style={{ borderRadius: 12, padding: '12px 16px', background: 'rgba(251,113,133,0.05)', border: '1px solid rgba(251,113,133,0.12)', fontSize: 12, lineHeight: 1.7, color: 'var(--text-secondary)' }}>
               <strong style={{ color: 'var(--rose)' }}>참조 음성</strong> = 위에 올린 파일의 목소리를 흉내 냅니다.
               감정별 음성을 추가 등록하면 대사마다 <code style={{ background: 'var(--bg-elevated)', padding: '1px 4px', borderRadius: 3 }}>[기쁨]</code> 태그로 감정을 지정할 수 있습니다.
               <br />한국어 · 영어 · 일본어 · 중국어 지원. 영어 목소리로 한국어 대사도 가능합니다.
             </div>
+            )}
           </>
         }
         expression={
@@ -1599,6 +1633,48 @@ export default function TTSEditor() {
                 <button key={e.id} onClick={() => !disabled && setTtsEngine(e.id)} disabled={disabled} title={e.hint} style={{ padding: '3px 9px', borderRadius: 4, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 600, fontFamily: 'inherit', background: ttsEngine === e.id ? 'var(--rose)' : 'transparent', color: ttsEngine === e.id ? '#fff' : 'var(--text-muted)' }}>{e.label}</button>
               ))}
             </div>
+
+            {/* 음성 모델 판 고르기 — **설치된 것만** 나온다. 여러 판을 받아 두고 골라 시험할 수 있어야 한다는
+                요구에 대한 자리다. 목소리 복제를 지원하지 않는 판은 목록에 두되 고를 수 없게 하고 사유를 적는다
+                (목록에서 지우면 '왜 안 보이나'를 알 수 없다). 없는 판을 만들어 보여 주지 않는다. */}
+            {(() => {
+              const models = preflight?.models || []
+              if (models.length === 0) return null
+              const usable = models.filter((m) => m.voice_clone !== false)
+              const picked = models.find((m) => m.id === ttsQwenModel)
+              return (
+                <div data-testid="qwen-model-picker" style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
+                    <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>음성 모델</span>
+                    <select value={ttsQwenModel} disabled={disabled} aria-label="Qwen3 음성 모델 판"
+                      onChange={(e) => setTtsQwenModel(e.target.value)}
+                      style={{
+                        fontSize: 11, padding: '4px 8px', borderRadius: 6, minWidth: 0, maxWidth: '100%',
+                        background: 'var(--bg-elevated)', color: 'var(--text-primary)',
+                        border: '1px solid var(--border-subtle)', fontFamily: 'inherit',
+                      }}>
+                      <option value="">기본{models.find((m) => m.is_default) ? ` · ${models.find((m) => m.is_default)!.label}` : ''}</option>
+                      {usable.filter((m) => !m.is_default).map((m) => (
+                        <option key={m.id} value={m.id}>{m.label}</option>
+                      ))}
+                    </select>
+                    {picked && !picked.is_default && (
+                      <span style={{ fontSize: 11, color: 'var(--cyan)' }}>· 이 판으로 만듭니다</span>
+                    )}
+                  </div>
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                    설치된 판만 나옵니다({models.length}개 발견). Qwen3 엔진에 적용되고, 결과 상세 정보에 어느 판으로
+                    만들었는지 남습니다.
+                    {models.some((m) => m.voice_clone === false) && ' 목소리 복제를 지원하지 않는 판은 고를 수 없습니다.'}
+                  </span>
+                  {models.filter((m) => m.voice_clone === false).map((m) => (
+                    <span key={m.id} style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                      · {m.label} — {m.unusable_reason || '이 통로에서는 쓸 수 없습니다'}
+                    </span>
+                  ))}
+                </div>
+              )
+            })()}
 
             {/* Qwen preflight 배지 — 예상값(실행 결과는 결과 화면 metadata가 최종) */}
             {preflight && (() => {

@@ -148,13 +148,14 @@ test('지정한 값은 그대로 통과한다', () => {
   assert.equal(c.ttsEngine, 'gptsovits')
 })
 
-test('직렬화 형태에 25개 TTS 키가 모두 존재한다 (필드 누락 방지; v1.4 화자 4개 + 후보 선택 1개 + 생성 방식 1개)', () => {
+test('직렬화 형태에 26개 TTS 키가 모두 존재한다 (필드 누락 방지; v1.4 화자 4개 + 후보 선택 1개 + 생성 방식 1개 + 모델 판 1개)', () => {
   const c = buildTtsConfig({})
   assert.deepEqual(
     Object.keys(c).sort(),
     ['ttsEmotionBoundaryMode', 'ttsEmotionBoundaryPauseMs', 'ttsEmotionCandidateSelections',
       'ttsEmotionRefRegions', 'ttsEmotionRefSources',
       'ttsEmotionRefs', 'ttsEngine', 'ttsExpressiveMode', 'ttsParsedPlanSha256', 'ttsParserVersion', 'ttsPitch',
+      'ttsQwenModel',
       'ttsReferenceConditioningMode', 'ttsReferenceOverride', 'ttsReferencePrompts', 'ttsSilenceGap',
       'ttsSpeakerEmotionRefs', 'ttsSpeakerLabels', 'ttsSpeakerMode', 'ttsSpeakerRefSources', 'ttsSpeakerRefs', 'ttsSpeed',
       'ttsTailFadeMs', 'ttsTailMode', 'ttsTailPaddingMs', 'ttsText']
@@ -507,4 +508,12 @@ test('ttsSpeakerMode: 부재·계약 밖 값은 single, multi 는 명시했을 �
   assert.equal(buildTtsConfig({ ttsSpeakerMode: 'multi' }).ttsSpeakerMode, 'multi')
   assert.equal(buildTtsConfig({ ttsSpeakerMode: 'single' }).ttsSpeakerMode, 'single')
   assert.equal(buildTtsConfig({ ttsSpeakerMode: 'both' as unknown as 'single' }).ttsSpeakerMode, 'single')
+})
+
+// 음성 모델 판 — 빈 값이 기본이고, 알 수 없는 값은 여기서 고치지 않는다(거부 권위는 Python).
+test('모델 판은 부재 시 빈 값 = 기본 판', () => {
+  assert.equal(buildTtsConfig({}).ttsQwenModel, '')
+  assert.equal(buildTtsConfig({ ttsQwenModel: 'ext:qwen3_tts_1_7b_base' }).ttsQwenModel, 'ext:qwen3_tts_1_7b_base')
+  // 계약 밖 문자열도 무변형 통과 — 조용히 기본으로 내려가면 무엇으로 만든지 알 수 없다.
+  assert.equal(buildTtsConfig({ ttsQwenModel: 'nope' }).ttsQwenModel, 'nope')
 })

@@ -43,6 +43,16 @@ interface ReferenceRegionPanelProps {
    */
   autoConfirm?: boolean
   /**
+   * autoConfirm 자동 준비가 **끝났다**는 신호(성공·실패·해당 없음 모두). 한 파일당 한 번만 온다.
+   *
+   * ★ 이 신호가 필요한 이유: 보이지 않는 자리에서 한 명씩 준비를 돌리는 쪽은 '다음 사람으로 넘어갈
+   *   시점'을 알아야 한다. 예전에는 그것을 **준비 상태 문구가 비었는지**로 판단했는데, 패널이 분석을
+   *   시작하며 '목소리를 살펴보는 중입니다…'를 올리는 순간 조건이 깨져 드라이버가 스스로 사라졌다.
+   *   그러면 이 패널이 언마운트돼 자동 확정이 영영 실행되지 않는다(실측 결함 — 카드가 '목소리 확인 중'
+   *   에서 멈추고 사용자가 구간을 손으로 확정해야 했다).
+   */
+  onAutoConfirmSettled?: () => void
+  /**
    * 상태 문구를 기본 화면용 평이한 말로 낸다(요청/실제 구간·확정 같은 내부 용어 숨김).
    * 실제 안전 오류(너무 짧음/길음·말 도중 절단·전사 실패·대사 불일치) 문구는 그대로 간다.
    */
@@ -163,7 +173,7 @@ function waitUntilLoaded(el: HTMLAudioElement, timeoutMs = 4000): Promise<boolea
 
 export default function ReferenceRegionPanel({
   path, clipKey, disabled, onState, label = '참조 음성',
-  open = true, autoConfirm = false, plainStatus = false, committed = null,
+  open = true, autoConfirm = false, onAutoConfirmSettled, plainStatus = false, committed = null,
 }: ReferenceRegionPanelProps) {
   // 확정 클립이 살아 있는가 — 재분석·재확정 실패가 이것을 내리지 않는다(사용 중인 목소리 보존).
   // whole = 원본 전체를 그대로 참조로 쓰는 준비 상태(클립·구간 없음). 이것도 '사용 중' 이므로 재분석이 준비를 내리지 않는다.
@@ -435,6 +445,20 @@ export default function ReferenceRegionPanel({
 
   // startOverride/durOverride: 자동 확정이 '분석이 방금 추천한 값'을 그대로 쓰기 위한 통로.
   // (state 는 같은 커밋에서 아직 갱신 전일 수 있어 값을 인자로 받는다. 사용자 확정은 인자 없이 state 사용.)
+  // 시작·길이를 한 곳에서 정리한다. 규칙은 둘뿐이다:
+  //  · 길이는 정책 범위 안으로 맞춘다(엔진이 못 받는 길이를 손으로 만들 수 없게).
+  //  · 원본 끝을 넘으면 **시작을 되돌리지 않고 길이를 줄인다.** 예전에는 시작 슬라이더의 상한이
+  //    남은 길이였어서, 뒤쪽 구간을 보려면 먼저 길이를 줄여야 했다(사용자가 번거롭다고 지적한 지점).
+  const applyRegion = (nextStart: number, nextDur: number) => {
+    const total = durTotal
+    const b = regionSliderBounds(policyRef.current, total)
+    let d = Math.min(b.max, Math.max(b.min, Number.isFinite(nextDur) ? nextDur : b.min))
+    const s = Math.max(0, Math.min(Number.isFinite(nextStart) ? nextStart : 0, Math.max(0, total - b.min)))
+    if (s + d > total) d = Math.max(b.min, total - s)
+    setStart(Math.round(s * 100) / 100)
+    setDur(Math.round(d * 100) / 100)
+  }
+
   const confirmRegion = async (startOverride?: number, durOverride?: number) => {
     if (!path || confirming) return
     const startSec = startOverride ?? start
@@ -519,17 +543,34 @@ export default function ReferenceRegionPanel({
   // **파일당 정확히 1회** 확정을 시도한다. 실패하면 사유(BLOCK_MESSAGE)가 그대로 상위로 올라가고
   // 여기서 다시 시도하지 않는다 — 확정 실패 → 재시도 → 실패의 순환을 만들지 않기 위해서다.
   // 사용자가 '사용 구간 바꾸기'로 직접 조정한 뒤에는 기존대로 본인이 확정한다(자동 개입 없음).
+  //
+  // 그리고 **끝났다는 사실을 반드시 한 번 알린다**(onAutoConfirmSettled). 성공·실패·해당 없음을
+  // 구분하지 않는다 — 부르는 쪽이 알아야 하는 것은 '이 인물은 더 기다릴 필요가 없다' 하나뿐이다.
+  // 알리지 않으면 드라이버가 이 인물을 붙잡은 채 다음 사람으로 넘어가지 못한다.
   const autoConfirmedKey = useRef<string>('')
+  const settledRef = useRef(onAutoConfirmSettled)
+  settledRef.current = onAutoConfirmSettled
+  const settledKey = useRef<string>('')
+  const settleAuto = useCallback((key: string) => {
+    if (settledKey.current === key) return        // 한 파일당 한 번만 알린다
+    settledKey.current = key
+    settledRef.current?.()
+  }, [])
   useEffect(() => {
-    if (!autoConfirm || !path || !analysis || !analysis.needs_region || hasCommitted) return   // 이미 확정한 구간이 있으면 다시 확정하지 않는다
-    const r = analysis.recommend
-    if (!r || !r.ok) return                       // 추천이 없으면 임의로 고르지 않는다
-    const key = `${clipKey} ${path}`
+    if (!autoConfirm || !path) return
+    const key = `${clipKey}\u0000${path}`
+    if (hasCommitted) { settleAuto(key); return }        // 이미 쓰고 있는 구간이 있다 → 준비는 끝난 것
+    if (analyzeError) { settleAuto(key); return }        // 분석 실패 — 사유는 이미 상위로 올렸다
+    if (!analysis) return                                 // 아직 분석 중이다. **종료가 아니다.**
     if (autoConfirmedKey.current === key) return
     autoConfirmedKey.current = key
+    if (!analysis.needs_region) { settleAuto(key); return }   // 원본을 그대로 쓸 수 있다/못 쓴다 — 분석이 이미 판정했다
+    const r = analysis.recommend
+    if (!r || !r.ok) { settleAuto(key); return }              // 추천이 없으면 임의로 고르지 않는다
     void confirmRegion(r.start_sec, clampDuration(policyRef.current, analysis.duration_sec, r.dur_sec))
+      .finally(() => settleAuto(key))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [autoConfirm, path, clipKey, analysis])
+  }, [autoConfirm, path, clipKey, analysis, analyzeError, hasCommitted, settleAuto])
 
   if (!path) return null
 
@@ -556,7 +597,13 @@ export default function ReferenceRegionPanel({
     padding: '12px 16px', display: 'flex', flexDirection: 'column', gap: 8
   }
   const labelStyle: CSSProperties = { fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }
-  const sub: CSSProperties = { fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }
+  const numBox: CSSProperties = {
+  width: 74, fontSize: 11, padding: '3px 6px', borderRadius: 6, textAlign: 'right',
+  border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
+  color: 'var(--text-primary)', fontFamily: 'inherit', fontVariantNumeric: 'tabular-nums',
+}
+
+const sub: CSSProperties = { fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }
 
   if (loading) {
     return <div style={card}><span role="status" aria-live="polite" aria-busy="true" style={sub}>참조 음성 분석 중...</span></div>
@@ -621,35 +668,48 @@ export default function ReferenceRegionPanel({
       {/* 구간 추천(필수 상한 초과 또는 권장 상한 초과) → 구간 선택 */}
       {analysis.needs_region && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          <div style={sub} data-testid="region-need" data-required={analysis.region_required ? 'true' : 'false'}>
-            {regionNeedText(policy, durTotal, !!analysis.region_required)}{' '}
-            재생해 확인하고 필요하면 조정하세요. 선택한 구간만 참조로 쓰입니다(원본은 변경되지 않음).
+          {/* 정책이 말하는 사실만 남긴다. '어떻게 조정하는가'는 도구에 붙은 설명(tooltip)으로 옮겼다 —
+              화면마다 방법을 적어 두면 읽히지 않고 자리만 차지한다. */}
+          <div style={sub} data-testid="region-need" data-required={analysis.region_required ? 'true' : 'false'}
+            title="선택한 구간만 참조로 쓰입니다. 원본 파일은 변경되지 않습니다.">
+            {regionNeedText(policy, durTotal, !!analysis.region_required)}
           </div>
 
           {/* 파형 + 구간 하이라이트 (클릭으로 시작 위치 이동) */}
           <Waveform peaks={analysis.peaks?.peaks || []} durTotal={durTotal} start={start} dur={dur}
             disabled={disabled}
-            onSeek={(s) => setStart(Math.max(0, Math.min(s, durTotal - dur)))} />
+            onSeek={(s) => setStart(Math.max(0, Math.min(s, durTotal - dur)))}
+            onSelect={(s, d) => applyRegion(s, d)} />
 
-          {/* 시작/길이 컨트롤 */}
+          {/* 시작/길이 — 슬라이더로 훑고, 숫자로 정확히 넣는다.
+              시작을 뒤로 밀면 길이를 막지 않고 남은 만큼으로 줄인다(위치가 길이에 갇히지 않게). */}
           <div style={{ display: 'flex', gap: 12, alignItems: 'center', flexWrap: 'wrap' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 180 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 220 }}>
               <span style={sub} aria-hidden="true">시작</span>
-              <input type="range" min={0} max={Math.max(0, durTotal - dur)} step={0.1} value={start} disabled={disabled}
+              <input type="range" min={0} max={Math.max(0, durTotal - sliderBounds.min)} step={0.01} value={start} disabled={disabled}
                 aria-label="참조 구간 시작 위치(초)"
-                aria-valuetext={`${start.toFixed(1)}초`}
-                onChange={(e) => setStart(parseFloat(e.target.value))} style={{ flex: 1, accentColor: 'var(--rose)' }} />
-              <span style={{ ...sub, minWidth: 48, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{start.toFixed(1)}s</span>
+                aria-valuetext={`${start.toFixed(2)}초`}
+                onChange={(e) => applyRegion(parseFloat(e.target.value), dur)} style={{ flex: 1, accentColor: 'var(--rose)' }} />
+              <input type="number" data-testid="region-start-number" min={0} max={durTotal} step={0.01} value={Number(start.toFixed(2))}
+                disabled={disabled} aria-label="참조 구간 시작 위치 직접 입력(초)"
+                onChange={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) applyRegion(v, dur) }}
+                style={numBox} />
             </div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 180 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 6, flex: 1, minWidth: 220 }}>
               <span style={sub} aria-hidden="true">길이</span>
-              <input type="range" min={sliderBounds.min} max={sliderBounds.max} step={0.1} value={dur} disabled={disabled}
+              <input type="range" min={sliderBounds.min} max={sliderBounds.max} step={0.01} value={dur} disabled={disabled}
                 aria-label="참조 구간 길이(초)"
-                aria-valuetext={`${dur.toFixed(1)}초`}
-                onChange={(e) => { const d = parseFloat(e.target.value); setDur(d); setStart(s => Math.min(s, Math.max(0, durTotal - d))) }}
+                aria-valuetext={`${dur.toFixed(2)}초`}
+                onChange={(e) => applyRegion(start, parseFloat(e.target.value))}
                 style={{ flex: 1, accentColor: 'var(--rose)' }} />
-              <span style={{ ...sub, minWidth: 48, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{dur.toFixed(1)}s</span>
+              <input type="number" data-testid="region-dur-number" min={sliderBounds.min} max={sliderBounds.max} step={0.01} value={Number(dur.toFixed(2))}
+                disabled={disabled} aria-label="참조 구간 길이 직접 입력(초)"
+                onChange={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) applyRegion(start, v) }}
+                style={numBox} />
             </div>
+          </div>
+          <div style={sub} title="파형을 끌어 구간을 잡거나, 숫자 칸에 0.01초 단위로 직접 넣을 수 있습니다.">
+            지금 구간 {start.toFixed(2)}~{(start + dur).toFixed(2)}초
           </div>
 
           {/* 권장(검증) 범위 밖 길이 — 막지 않고 알린다 */}
@@ -725,24 +785,60 @@ function btn(bg: string, color: string): CSSProperties {
 }
 
 // 파형: coarse peaks를 막대로, 선택 구간을 하이라이트. 클릭으로 시작 위치 이동.
-function Waveform({ peaks, durTotal, start, dur, disabled, onSeek }: {
-  peaks: number[]; durTotal: number; start: number; dur: number; disabled: boolean; onSeek: (s: number) => void
+function Waveform({ peaks, durTotal, start, dur, disabled, onSeek, onSelect }: {
+  peaks: number[]; durTotal: number; start: number; dur: number; disabled: boolean
+  onSeek: (s: number) => void
+  /** 파형에서 끌어 고른 구간(초). 짧게 끌면(클릭에 가까움) 선택으로 보지 않는다. */
+  onSelect?: (startSec: number, durSec: number) => void
 }) {
   const W = 100, H = 100  // viewBox 단위(%). preserveAspectRatio none으로 늘림.
   const n = peaks.length || 1
   const regA = durTotal > 0 ? (start / durTotal) * W : 0
   const regB = durTotal > 0 ? ((start + dur) / durTotal) * W : 0
-  const handleClick = (e: MouseEvent<SVGSVGElement>) => {
-    if (disabled || durTotal <= 0) return
+  // 끌어서 구간 잡기 — 슬라이더 둘을 번갈아 만지지 않고 위치와 길이를 한 번에 정한다.
+  // 누른 지점과 뗀 지점이 구간의 양 끝이다. 끄는 동안에는 그 자리를 옅게 보여 준다.
+  const [drag, setDrag] = useState<{ a: number; b: number } | null>(null)
+  const secAt = (e: MouseEvent<SVGSVGElement>) => {
     const rect = e.currentTarget.getBoundingClientRect()
     const frac = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width))
-    onSeek(frac * durTotal - dur / 2)  // 클릭 지점을 구간 중앙으로
+    return frac * durTotal
   }
+  const DRAG_MIN_SEC = 0.15   // 이보다 짧으면 '끌었다'가 아니라 클릭이다
+  const handleDown = (e: MouseEvent<SVGSVGElement>) => {
+    if (disabled || durTotal <= 0 || !onSelect) return
+    const s = secAt(e)
+    setDrag({ a: s, b: s })
+  }
+  const handleMove = (e: MouseEvent<SVGSVGElement>) => {
+    if (!drag) return
+    setDrag({ a: drag.a, b: secAt(e) })
+  }
+  const handleUp = (e: MouseEvent<SVGSVGElement>) => {
+    if (!drag) return
+    const b = secAt(e)
+    const lo = Math.min(drag.a, b)
+    const hi = Math.max(drag.a, b)
+    setDrag(null)
+    if (hi - lo >= DRAG_MIN_SEC) onSelect?.(lo, hi - lo)
+    else onSeek(lo - dur / 2)          // 클릭은 예전처럼 그 지점을 구간 중앙으로
+  }
+  const handleClick = (e: MouseEvent<SVGSVGElement>) => {
+    if (disabled || durTotal <= 0) return
+    if (onSelect) return               // 끌기 경로가 클릭까지 처리한다(중복 처리 금지)
+    onSeek(secAt(e) - dur / 2)
+  }
+  const dragA = drag && durTotal > 0 ? (Math.min(drag.a, drag.b) / durTotal) * W : 0
+  const dragB = drag && durTotal > 0 ? (Math.max(drag.a, drag.b) / durTotal) * W : 0
   return (
     <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="none" onClick={handleClick}
+      onMouseDown={handleDown} onMouseMove={handleMove} onMouseUp={handleUp}
+      onMouseLeave={() => setDrag(null)}
       role="img"
-      aria-label={`참조 파형 미리보기 — 전체 ${durTotal.toFixed(1)}초 중 ${start.toFixed(1)}~${(start + dur).toFixed(1)}초 선택됨. 아래 슬라이더로 조정하세요.`}
-      style={{ width: '100%', height: 72, background: 'var(--bg-elevated)', borderRadius: 8, cursor: disabled ? 'default' : 'pointer', display: 'block' }}>
+      aria-label={`참조 파형 미리보기 — 전체 ${durTotal.toFixed(1)}초 중 ${start.toFixed(1)}~${(start + dur).toFixed(1)}초 선택됨. 파형을 끌어 구간을 잡거나 아래 슬라이더·숫자로 조정하세요.`}
+      style={{ width: '100%', height: 72, background: 'var(--bg-elevated)', borderRadius: 8, cursor: disabled ? 'default' : (onSelect ? 'ew-resize' : 'pointer'), display: 'block', userSelect: 'none' }}>
+      {drag && (
+        <rect x={dragA} y={0} width={Math.max(0, dragB - dragA)} height={H} fill="rgba(34,211,238,0.20)" />
+      )}
       {/* 선택 구간 하이라이트 */}
       <rect x={regA} y={0} width={Math.max(0, regB - regA)} height={H} fill="rgba(251,113,133,0.18)" />
       <line x1={regA} y1={0} x2={regA} y2={H} stroke="var(--rose)" strokeWidth={0.4} />

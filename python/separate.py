@@ -304,6 +304,8 @@ def main():
         args.tts_speaker_mode = config.get("ttsSpeakerMode", "single")
         args.tts_emotion_ref_sources = config.get("ttsEmotionRefSources", {})  # 등록 원본(만료 판정 기준, §5)
         args.tts_engine = config.get("ttsEngine", "auto")
+        # 사용자가 고른 음성 모델 판(빈 값 = 기본). 해석·검증·거부는 tts_worker.set_qwen_model 이 소유한다.
+        args.tts_qwen_model = config.get("ttsQwenModel", "") or ""
         # 참조 conditioning 모드(참조혼입 대응 PHASE 2, 단일 권위 계약). 키 부재(legacy 세션)는
         # None 그대로 두고, 해석(부재→safe_xvector)·값 검증·fail-closed 는 tts_worker 가 단일 소유한다.
         # 여기서 기본값을 만들거나 값을 고치지 않는다(원시값 전달 — ttsExpressiveMode 와 같은 원칙).
@@ -354,11 +356,17 @@ def main():
                     device_source = _parse_device_source(reason)
                 except Exception as e:
                     reason = f"장치 예상 실패: {e}"
+            try:
+                from tts_worker import qwen_model_variants
+                models = qwen_model_variants()
+            except Exception:
+                models = []          # 목록을 못 얻어도 preflight 자체는 그대로 나간다
             emit("result", available=avail, snapshot_ok=snapshot_ok,
-                 device_expected=device_expected, device_source=device_source, reason=reason)
+                 device_expected=device_expected, device_source=device_source, reason=reason,
+                 models=models)
         except Exception as e:
             emit("result", available=False, snapshot_ok=False, device_expected=None,
-                 device_source=None, reason=f"preflight 오류: {e}")
+                 device_source=None, reason=f"preflight 오류: {e}", models=[])
         return
 
     if args.mode == "pitch-preflight":
@@ -437,6 +445,14 @@ def main():
             emotion_ref_sources = getattr(args, 'tts_emotion_ref_sources', {})
             emotion_ref_sources = emotion_ref_sources if isinstance(emotion_ref_sources, dict) else {}
             preferred_engine = args.tts_engine if hasattr(args, 'tts_engine') and args.tts_engine != 'auto' else None
+            # 고른 음성 모델 판을 이 실행에 고정한다. 못 쓰는 판이면 여기서 멈춘다 —
+            # 다른 모델로 조용히 만들어지면 결과만 보고는 무엇으로 만든지 알 수 없다.
+            try:
+                from tts_worker import set_qwen_model
+                set_qwen_model(getattr(args, "tts_qwen_model", ""))
+            except RuntimeError as e:
+                emit("error", message=str(e))
+                return
             ref_prompts = getattr(args, "tts_reference_prompts", {})
             ref_prompts = ref_prompts if isinstance(ref_prompts, dict) else {}
             # 기본 참조: 파생 클립(ttsReferenceOverride)이 있으면 그것을, 없으면 입력 파일.

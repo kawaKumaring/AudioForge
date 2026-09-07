@@ -54,9 +54,20 @@ try {
     const url = await window.api.audio.getFileUrl(p)
     s.getState().setFile(info, url); s.getState().setMode('tts')
   }, REF)
-  await win.getByText('이 구간으로 확정').waitFor({ timeout: 30000 })   // 참조 패널 분석 완료 대기(파일별 duration 하드코딩 없음)
-  await win.getByText('이 구간으로 확정').click({ timeout: 20000 })
-  await win.waitForFunction(() => window.__afStore?.getState().ttsRefReady === true, undefined, { timeout: 40000 })
+  // 참조 준비를 기다린다. **손으로 확정하는 것은 더 이상 기본 흐름이 아니다** — 분석이 끝나면
+  // 추천 구간으로 자동 확정된다(2026-09-08 기준). 그래서 '이 구간으로 확정' 버튼이 보이기를
+  // 기다리면 영영 오지 않는다(자동 확정이 먼저 끝나 '✓ 확정됨' 이 되거나, 패널이 접혀 있다).
+  // 준비의 기준은 화면 문구가 아니라 **상태**다: ttsRefReady 가 참이 되는 것.
+  const refReady = await win.waitForFunction(
+    () => window.__afStore?.getState().ttsRefReady === true, undefined, { timeout: 120000 },
+  ).then(() => true).catch(() => false)
+  if (!refReady) {
+    // 자동 확정이 되지 않는 파일이면(추천 실패 등) 손으로 확정하는 길이 남아 있어야 한다.
+    await win.getByText('사용 구간 바꾸기').click({ timeout: 10000 }).catch(() => {})
+    await win.getByText('이 구간으로 확정').click({ timeout: 20000 })
+    await win.waitForFunction(() => window.__afStore?.getState().ttsRefReady === true, undefined, { timeout: 60000 })
+  }
+  ok(true, `참조 준비됨(${refReady ? '자동 확정' : '수동 확정'})`)
   await win.evaluate(() => window.__afStore.setState({ ttsText: '안녕하세요.' }))
   await win.getByText('음성 합성 시작', { exact: false }).click({ timeout: 8000 })
   await win.waitForFunction(() => window.__afStore?.getState().status === 'processing', undefined, { timeout: 8000 })

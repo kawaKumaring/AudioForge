@@ -20,6 +20,8 @@ const TABS = codeOf(read('./DialogueTabs.tsx'))
 const MULTI = codeOf(read('./MultiSpeakerDialogue.tsx'))
 const HOOK = codeOf(read('../hooks/useDialogueProjection.ts'))
 const SHELL = codeOf(read('./TTSEditor.tsx'))
+// 인물 목소리 준비의 소유자(2026-09-08 분리). 옮겨간 계약은 이 파일에서 확인한다.
+const PREP = codeOf(read('../hooks/useSpeakerVoicePrep.tsx'))
 const between = (src: string, a: string, b: string) => { const i = src.indexOf(a); assert.ok(i >= 0, a); return src.slice(i, src.indexOf(b, i)) }
 
 test('탭은 두 개, 합성 화면 전체를 전환한다(합성 메뉴 아래 전체 폭 한 곳) — 원문 쓰기 0', () => {
@@ -142,11 +144,18 @@ test('+ 감정: caret 위치에 기존 문법 태그를 넣는다 — IME·caret
 })
 
 test('셸은 기존 store 콜백을 그대로 잇는다 — 새 저장소 없음, 이름 변경은 슬롯 이동', () => {
-  assert.ok(SHELL.includes('registerSpeakerRef(id, src, label)') && SHELL.includes('if (!src) return'))
+  // 목소리 지정과 구간 편집기 만들기는 2026-09-08 에 useSpeakerVoicePrep 으로 옮겼다.
+  // 계약은 그대로다 — 소유자만 바뀌었으므로 그 파일에서 확인한다.
+  assert.ok(PREP.includes('registerSpeakerRef(speakerId, String(picked), label)') && PREP.includes('if (!picked) return'))
   assert.ok(SHELL.includes('onRemoveVoice={(id) => removeSpeakerRef(id)}'))
   assert.ok(SHELL.includes('onSpeakerIdChanged={(from, to) => moveSpeakerRef(from, to)}'))
-  assert.ok(SHELL.includes('renderRegionEditor={renderSpeakerRegion}') && SHELL.includes('const renderSpeakerRegion = (speakerId: string, open = true, autoConfirm = false)'))
-  assert.ok(SHELL.includes('open={open}') && SHELL.includes('plainStatus={!open}'), '카드 안 구간 편집기는 접힘/펼침')
+  // 기본 인물(화자 표기 없는 대사)의 슬롯 이름은 'default' 이고 그때는 기본 참조 편집기를 준다 —
+  // 카드가 인물마다 같은 조작을 갖게 하기 위한 갈림이다(사용자 지적: 기본 인물만 예외였다).
+  assert.ok(SHELL.includes("renderRegionEditor={(id, open) => (id === 'default'"), '셸이 카드에 편집기를 잇는다')
+  assert.ok(SHELL.includes('renderDefaultRegion(open)') && SHELL.includes('renderSpeakerRegion(id, open)'))
+  assert.ok(PREP.includes('const renderSpeakerRegion = useCallback((speakerId: string, open = true, autoConfirm = false)'),
+    '편집기를 만드는 것은 훅이다')
+  assert.ok(PREP.includes('open={open}') && PREP.includes('plainStatus={!open}'), '카드 안 구간 편집기는 접힘/펼침')
   assert.equal(SHELL.includes('<SpeakerReferenceManager'), false, '고급 설정의 중복 편집기 없음')
 })
 
@@ -225,7 +234,13 @@ test('생성 계약의 거울 — 카드 표시(목소리 상태)와 전송 규�
 })
 
 test('여러 명 화면은 카드만 기본으로 보이고, 원문 직접 편집은 접혀 있으며 둘을 동시에 고치지 않는다', () => {
-  assert.ok(SHELL.includes("const showRawEditor = dialogueTab === 'single' || directEditOpen || !dialogue.editingAllowed"))
+  // ★ 화면 구성은 사용자가 정한 탭과 명시적 토글로만 바뀐다 — 투영 판정으로 바뀌지 않는다.
+  //   예전 조건에 `|| !dialogue.editingAllowed` 가 있어서, 대사를 치는 동안 그 판정이 수시로
+  //   뒤집히며 원문 편집기가 나타났다 사라졌다 했다(사용자 지적: "한 명 대사칸이 깜빡이며
+  //   왔다갔다한다"). 구조화 불가는 화면을 바꾸는 대신 사유를 말하고 입구를 준다.
+  assert.ok(SHELL.includes("const showRawEditor = dialogueTab === 'single' || directEditOpen"))
+  assert.equal(/showRawEditor =[^\n]*editingAllowed/.test(SHELL), false, '투영 판정으로 편집기를 띄우지 않는다')
+  assert.ok(SHELL.includes('data-testid="multi-not-structured"'), '구조화 불가는 사유를 말한다')
   assert.ok(SHELL.includes("{dialogueTab === 'multi' && !directEditOpen && ("), '직접 편집이 열리면 카드 숨김')
   assert.ok(SHELL.includes('{showRawEditor && (<>'), '원문 편집기는 조건부')
   assert.ok(SHELL.includes('data-testid="direct-edit"') && SHELL.includes('고급 · 대본 표기 직접 편집'))

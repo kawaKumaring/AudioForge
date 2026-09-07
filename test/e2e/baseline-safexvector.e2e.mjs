@@ -19,11 +19,17 @@ import os from 'os'
 import path from 'path'
 
 const APP = process.cwd()
-const RES = 'E:/AI_Project/claudeCodeVsCode/apps/development/AudioForge/resources'
+// 인물 목소리 위치는 **부르는 쪽이 준다.** 이 PC 의 절대 경로도, 저장소 밖으로 올라가는 상대
+// 경로도 여기에 박지 않는다(그러면 이 기계에서만 돌아간다). 이름 대신 경로를 직접 줘도 된다.
+const RES = process.env.AF_RESOURCES || ''
 const OUT = path.join(APP, '_local', 'experiments', 'baseline-safexvector')
 fs.mkdirSync(OUT, { recursive: true })
 
-const PEOPLE = (process.env.AF_PEOPLE || '쵸단,이오몽').split(',')
+const PEOPLE = (process.env.AF_PEOPLE || '').split(',').filter(Boolean)
+if (PEOPLE.length === 0 || (!RES && PEOPLE.some((x) => !x.includes('/')))) {
+  console.error('AF_PEOPLE 에 참조 wav 절대 경로를 주거나, AF_RESOURCES 에 인물 폴더 위치를 주고 이름을 쓰세요.')
+  process.exit(2)
+}
 // 참조가 감정 음성일 때는 **참조와 다른 대사**를 써야 한다 — 참조 대사가 결과에 섞이는 것을
 // 피하려면 두 텍스트가 달라야 한다. AF_TEXT2=1 로 두 번째 대사를 고른다.
 const TEXTS = {
