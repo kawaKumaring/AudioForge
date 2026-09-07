@@ -284,6 +284,10 @@ class ChunkRecorder:
         self.script_sha = None      # 단계별 추적용 script SHA
         self.artifacts = []         # {path, sha256, privacy_class, export_allowed}
         self.chunk_private = {}     # global chunk index -> chunk-NNN.private.json 내용
+        # 발화 -> 화자·참조(불투명 토큰). manifest 로 나간다.
+        self.speaker_map = {}
+        # 화자 표시 이름. private JSON 에만 남는다.
+        self.speaker_private = None
         self.header = {}            # 항상 남는 비민감 헤더
         self.result = None          # 최종 WAV 연결(복사 아님 — basename/길이/SHA)
         self.stages = []            # 단계별 elapsed
@@ -427,6 +431,41 @@ class ChunkRecorder:
         }
         return self.script_sha
 
+    def set_speaker_map(self, rows, labels=None):
+        """발화(segment) → 화자·참조 표. chunk 행이 이 표를 보고 자기 화자를 채운다.
+
+        manifest 로 나가는 것은 **불투명 토큰과 SHA 뿐**이다 — `spk_…` / `ref_…` / 어느
+        우선순위 규칙이 쓰였는지. 사용자가 쓴 화자 표시 이름은 `labels` 로 받아 private
+        JSON 에만 둔다(개인 정보가 될 수 있다).
+
+        새 recorder 를 만들지 않는다. 기존 chunk 행에 필드를 얹는 것이 전부다.
+        """
+        if not self.active:
+            return
+        self.speaker_map = {}
+        for r in rows or ():
+            si = r.get("segment_index")
+            if si is None:
+                continue
+            self.speaker_map[int(si)] = {
+                "speaker_ref": r.get("speaker_ref"),
+                "reference_id": r.get("reference_id"),
+                "reference_sha256": r.get("reference_sha256"),
+                "reference_source": r.get("source") or r.get("reference_source"),
+                # 합성 시작 순간 얼린 라우팅 규칙(default_speaker / explicit_emotion_override / …).
+                "routing_rule": r.get("routing_rule"),
+                "speaker_mode": r.get("speaker_mode"),
+                # 감정 참조를 **어떻게 골랐는가**. 점수·축 이름·불투명 id 뿐이고
+                # 표시 이름·경로·대사가 들어갈 자리가 없다(speaker_refs 가 만든 그대로).
+                "emotion_match": r.get("emotion_match"),
+            }
+        if labels:
+            self.speaker_private = {
+                "schema": "af-run-speakers-private/1", "run_id": run_id(), "private": True,
+                # 표시 이름은 여기까지만 온다. manifest 에는 spk_ 토큰만 나간다.
+                "labels": {opaque: label for opaque, label in labels.items()},
+            }
+
     def record_chunk_text(self, gidx, chunk_text, source_char_range=None,
                           production_tokens=None, combined_prompt_tokens=None,
                           controlled_prefix_text=None, reference_transcript=None,
@@ -455,6 +494,13 @@ class ChunkRecorder:
             ("chunk_text_sha256", self.chunk_private[g]["chunk_text_sha256"]),
             ("script_sha256", self.script_sha),
         ) if v is not None})
+        # 이 묶음이 누구의 말이고 어느 참조를 썼는가. 발화 좌표로 찾는다 —
+        # chunk 가 갈려도 같은 발화의 chunk 는 같은 화자·참조를 갖는다.
+        spk = getattr(self, "speaker_map", None)
+        if spk and segment is not None:
+            row = spk.get(int(segment))
+            if row:
+                r.update({k: v for k, v in row.items() if v is not None})
 
     def record_generation(self, gidx, generation_limit=None, generated_iterations=None,
                           termination_reason=None, vendor_crop_record=None,
@@ -541,7 +587,11 @@ class ChunkRecorder:
             doc.update({k: v for k, v in extra.items()
                         if k not in ("text", "transcript", "ttsText")})
         # ① private JSON 을 먼저 쓴다(원문·전사는 여기에만 있다).
-        for rel, payload in ([("script" + PRIVATE_SUFFIX, self.script)] if self.script else []) +                 [("chunks/chunk-%03d%s" % (g, PRIVATE_SUFFIX), pv)
+        _private_docs = ([("script" + PRIVATE_SUFFIX, self.script)] if self.script else [])
+        # 화자 표시 이름은 사용자가 쓴 문자열이라 개인 정보가 될 수 있다 — private 로만.
+        if self.speaker_private:
+            _private_docs.append(("speakers" + PRIVATE_SUFFIX, self.speaker_private))
+        for rel, payload in _private_docs +                 [("chunks/chunk-%03d%s" % (g, PRIVATE_SUFFIX), pv)
                  for g, pv in sorted(self.chunk_private.items())]:
             dst = os.path.join(self.root, rel.replace("/", os.sep))
             os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -567,3 +617,60 @@ class ChunkRecorder:
                                 if a["privacy_class"] == PRIVACY_PRIVATE]
         _atomic_json(doc, os.path.join(self.root, "manifest.json"))
         return self.root
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 실패 종료 사유 분류 — "긴 문장이 끊긴다" 를 시간 초과 / 모델 상한 / 분할 실패 / worker 감시 /
+# 참조 준비 / 사용자 취소로 나눈다. 같은 실패를 다른 이유로 오해하면 엉뚱한 제한을 늘린다.
+# 대사·이름·경로는 담지 않는다. 수치와 코드만.
+# ─────────────────────────────────────────────────────────────────────────────
+FAILURE_CLASS_MODEL_CAP = "model_generation_cap"
+FAILURE_CLASS_TIME_LIMIT = "time_limit"
+FAILURE_CLASS_SPLIT = "split_failure"
+FAILURE_CLASS_WORKER_WATCHDOG = "worker_watchdog"
+FAILURE_CLASS_REFERENCE_PREP = "reference_prep"
+FAILURE_CLASS_USER_CANCEL = "user_cancel"
+FAILURE_CLASS_OTHER = "other"
+
+_FAILURE_CLASS_BY_CODE = {
+    "GENERATION_LIMIT_EXCEEDED": FAILURE_CLASS_MODEL_CAP,
+    "JOB_WALL_TIME_EXCEEDED": FAILURE_CLASS_TIME_LIMIT,
+    "JOB_STALLED": FAILURE_CLASS_TIME_LIMIT,
+    "JOB_BUDGET_EXHAUSTED": FAILURE_CLASS_TIME_LIMIT,
+    "JOB_INACTIVE": FAILURE_CLASS_TIME_LIMIT,
+    "TEXT_SEGMENT_TOO_LONG": FAILURE_CLASS_SPLIT,
+    "QWEN_NO_RESPONSE": FAILURE_CLASS_WORKER_WATCHDOG,
+    "QWEN_LOAD_TIMEOUT": FAILURE_CLASS_WORKER_WATCHDOG,
+    "CANCELLED": FAILURE_CLASS_USER_CANCEL,
+    "TTS_CANCELLED": FAILURE_CLASS_USER_CANCEL,
+}
+_REFERENCE_PREP_PREFIXES = ("SPEAKER_", "REFERENCE_", "DEFAULT_REFERENCE_", "ICL_REFERENCE_")
+
+# manifest 로 옮겨도 되는 payload 필드(수치·불투명 id 만). 대사·이름·경로 필드는 이 목록에 없으므로 나가지 않는다.
+FAILURE_EXTRA_FIELDS = ("segment_index", "chunk_index", "emotion_id", "generated_iterations",
+                        "generation_limit", "termination_reason", "resplit_attempts",
+                        "inactivity_sec", "elapsed_sec", "deadline_sec", "last_stage")
+
+
+def failure_class_for(code):
+    """오류 코드 → 종료 사유 분류. 모르는 코드는 other(추측하지 않는다)."""
+    if not code:
+        return FAILURE_CLASS_OTHER
+    c = str(code)
+    if c in _FAILURE_CLASS_BY_CODE:
+        return _FAILURE_CLASS_BY_CODE[c]
+    if c.startswith(_REFERENCE_PREP_PREFIXES):
+        return FAILURE_CLASS_REFERENCE_PREP
+    return FAILURE_CLASS_OTHER
+
+
+def failure_extra_from_payload(code, payload):
+    """실패 종료 시 manifest 에 남길 값. 코드·분류·허용 필드만."""
+    out = {"error_code": str(code) if code else None, "failure_class": failure_class_for(code)}
+    if isinstance(payload, dict):
+        for k in FAILURE_EXTRA_FIELDS:
+            if k in payload and payload[k] is not None:
+                v = payload[k]
+                if isinstance(v, (int, float, str, bool)):
+                    out[k] = v
+    return out

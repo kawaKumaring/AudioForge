@@ -387,8 +387,11 @@ class Rule8LegacyUnchangedTest(unittest.TestCase):
             self.assertEqual(plan_of(raw)["full_sha256"], before)
             self.assertEqual(plan["parser_version"], g.TTS_PARSER_VERSION)
 
-    def test_parser_version_still_two(self):
-        self.assertEqual(g.TTS_PARSER_VERSION, ex.EXPRESSIVE_LEGACY_PLAN_VERSION)
+    def test_semantic_hash_schema_still_two(self):
+        # planner 는 대본의 **뜻**을 바꾸지 않는다. 그 기준은 파서 계약 버전이 아니라
+        # 의미 hash 스키마다(v1.4 에서 파서는 3 으로 올라갔다).
+        self.assertEqual(g.SEMANTIC_PLAN_HASH_VERSION, ex.EXPRESSIVE_LEGACY_PLAN_VERSION)
+        self.assertEqual(g.TTS_PARSER_VERSION, 3)
 
     def test_paragraph_gap_opt_in_only(self):
         plan = plan_of("가.\n\n나.")

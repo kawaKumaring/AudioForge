@@ -106,12 +106,14 @@ test('ttsEmotionRefs가 config에 전달된다 (전달 경로 끊김 회귀)', (
 })
 
 test('I1: ttsParsedPlanSha256/ttsParserVersion 전달(parity 배선) + 기본값', () => {
+  // 값이 오면 그대로 나른다 — 여기서 고치지 않는다(구 세션의 2 도 그대로 통과한다).
   const c = buildTtsConfig({ ttsParsedPlanSha256: 'a'.repeat(64), ttsParserVersion: 2 })
   assert.equal(c.ttsParsedPlanSha256, 'a'.repeat(64))
   assert.equal(c.ttsParserVersion, 2)
-  const d = buildTtsConfig({})  // 미제공 → sha ''(parity 미강제), version 기본 2
+  // 미제공 → sha ''(parity 미강제), version 은 현재 파서 계약 버전.
+  const d = buildTtsConfig({})
   assert.equal(d.ttsParsedPlanSha256, '')
-  assert.equal(d.ttsParserVersion, 2)
+  assert.equal(d.ttsParserVersion, 3)
 })
 
 test('ttsSilenceGap=0 이 0.5로 변질되지 않는다 (|| → ?? 회귀)', () => {
@@ -146,15 +148,36 @@ test('지정한 값은 그대로 통과한다', () => {
   assert.equal(c.ttsEngine, 'gptsovits')
 })
 
-test('직렬화 형태에 19개 TTS 키가 모두 존재한다 (필드 누락 방지; I1 parity 2 + I3 tail/emotion 5 + 표현형 모드 1 + 참조 conditioning 1 추가)', () => {
+test('직렬화 형태에 25개 TTS 키가 모두 존재한다 (필드 누락 방지; v1.4 화자 4개 + 후보 선택 1개 + 생성 방식 1개)', () => {
   const c = buildTtsConfig({})
   assert.deepEqual(
     Object.keys(c).sort(),
-    ['ttsEmotionBoundaryMode', 'ttsEmotionBoundaryPauseMs', 'ttsEmotionRefRegions', 'ttsEmotionRefSources',
+    ['ttsEmotionBoundaryMode', 'ttsEmotionBoundaryPauseMs', 'ttsEmotionCandidateSelections',
+      'ttsEmotionRefRegions', 'ttsEmotionRefSources',
       'ttsEmotionRefs', 'ttsEngine', 'ttsExpressiveMode', 'ttsParsedPlanSha256', 'ttsParserVersion', 'ttsPitch',
-      'ttsReferenceConditioningMode', 'ttsReferenceOverride', 'ttsReferencePrompts', 'ttsSilenceGap', 'ttsSpeed',
+      'ttsReferenceConditioningMode', 'ttsReferenceOverride', 'ttsReferencePrompts', 'ttsSilenceGap',
+      'ttsSpeakerEmotionRefs', 'ttsSpeakerLabels', 'ttsSpeakerMode', 'ttsSpeakerRefSources', 'ttsSpeakerRefs', 'ttsSpeed',
       'ttsTailFadeMs', 'ttsTailMode', 'ttsTailPaddingMs', 'ttsText']
   )
+})
+
+test('화자별 참조는 부재 시 빈 dict — 기존 대본 동작이 달라지지 않는다', () => {
+  const c = buildTtsConfig({})
+  assert.deepEqual(c.ttsSpeakerRefs, {})
+  assert.deepEqual(c.ttsSpeakerRefSources, {})
+  assert.deepEqual(c.ttsSpeakerEmotionRefs, {})
+  assert.deepEqual(c.ttsSpeakerLabels, {})
+  // 후보 선택도 부재 시 빈 dict — 아무것도 고르지 않은 상태가 곧 자동 제안이다.
+  assert.deepEqual(c.ttsEmotionCandidateSelections, {})
+  // 값이 오면 그대로 나른다(여기서 고치지 않는다 — 판정 권위는 Python 이다).
+  const d = buildTtsConfig({
+    ttsSpeakerRefs: { minsu: 'C:/a.wav' },
+    ttsSpeakerRefSources: { minsu: 'C:/src.wav' },
+    ttsSpeakerEmotionRefs: { 'minsuhappy': 'C:/h.wav' },
+    ttsSpeakerLabels: { minsu: '민수' },
+  })
+  assert.deepEqual(d.ttsSpeakerRefs, { minsu: 'C:/a.wav' })
+  assert.deepEqual(d.ttsSpeakerLabels, { minsu: '민수' })
 })
 
 test('I3: tail/emotion 경계 기본값 = backward-compat(off/현행) + 계약 추가4 수치', () => {
@@ -477,4 +500,11 @@ test('참조 conditioning: 유효값 판별기', () => {
   assert.equal(isReferenceConditioningMode('high_quality_icl'), true)
   assert.equal(isReferenceConditioningMode('weird_mode'), false)
   assert.equal(isReferenceConditioningMode(undefined), false)
+})
+
+test('ttsSpeakerMode: 부재·계약 밖 값은 single, multi 는 명시했을 때만', () => {
+  assert.equal(buildTtsConfig({}).ttsSpeakerMode, 'single')
+  assert.equal(buildTtsConfig({ ttsSpeakerMode: 'multi' }).ttsSpeakerMode, 'multi')
+  assert.equal(buildTtsConfig({ ttsSpeakerMode: 'single' }).ttsSpeakerMode, 'single')
+  assert.equal(buildTtsConfig({ ttsSpeakerMode: 'both' as unknown as 'single' }).ttsSpeakerMode, 'single')
 })

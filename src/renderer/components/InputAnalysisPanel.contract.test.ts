@@ -63,6 +63,20 @@ test('PHASE 3 이 요구한 다섯 가지가 화면에 있다', () => {
   }
 })
 
+test('화자 표시도 계획이 센 값을 읽는다', () => {
+  assert.ok(CODE.includes('speakerRows'), '등장 인물 목록은 wording 이 만든다')
+  assert.ok(CODE.includes('defaultSpeakerUtteranceCount'), '기본 화자 발화 수도 마찬가지다')
+  assert.ok(CODE.includes('"analysis-speakers"'), '등장 인물 영역이 있어야 한다')
+  assert.ok(CODE.includes('"analysis-utterance-speaker"'), '발화마다 화자가 보여야 한다')
+  // 참조 준비 상태를 화면이 지어내지 않는다 — 셸이 카드와 같은 판정을 넘기고, 문구는 생성 방식에서 파생한다.
+  assert.ok(CODE.includes('speakerReferenceNote(props.mode)') && CODE.includes('props.statusOf(k.speakerId)'))
+  assert.equal(CODE.includes('기본 참조'), false, '낡은 문구 없음')
+  assert.equal(/registerSpeakerRef|ttsSpeakerRefs/.test(CODE), false,
+    '읽기 전용 단계에서 참조를 고르는 경로를 만들지 않는다')
+  // 화자 집계를 화면에서 다시 하면 그것이 곧 두 번째 계산이다.
+  assert.equal(/plan\s*\.\s*speakers\s*\.\s*(filter|reduce)/.test(CODE), false)
+})
+
 test('아직 없는 축은 상세 정보 안에만 있다', () => {
   // 기본 화면에 값 0 여섯 개를 항상 늘어놓으면 지금 쓰는 숫자가 그만큼 뒤로 밀린다.
   // 판정은 사용자 것이고, 여기서는 그 자리가 지켜지는지만 본다.

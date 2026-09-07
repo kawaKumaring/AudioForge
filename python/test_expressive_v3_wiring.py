@@ -129,9 +129,12 @@ class LegacyCompatTest(unittest.TestCase):
             self.assertEqual(errs[0]["code"], code)
 
     def test_c3_v3_layer_does_not_touch_v2_plan_version(self):
-        # 계약 불변식: v3 레이어는 v2 plan 버전을 건드리지 않는다.
+        # 계약 불변식: v3 레이어는 v2 plan 의 **뜻**을 건드리지 않는다.
+        # v1.4 에서 파서 계약 버전(3)과 의미 hash 스키마(2)가 갈라졌고, 이 레이어가
+        # 기준으로 삼는 것은 후자다. 표현형 모드↔버전 표는 또 다른 축이라 그대로다.
         self.assertEqual(ex.EXPRESSIVE_LEGACY_PLAN_VERSION, 2)
-        self.assertEqual(tg.TTS_PARSER_VERSION, 2)
+        self.assertEqual(tg.SEMANTIC_PLAN_HASH_VERSION, 2)
+        self.assertEqual(tg.TTS_PARSER_VERSION, 3)
         self.assertEqual(ex.EXPRESSIVE_MODE_TO_VERSION[L2], 2)
         self.assertEqual(ex.EXPRESSIVE_MODE_TO_VERSION[V3], 3)
 

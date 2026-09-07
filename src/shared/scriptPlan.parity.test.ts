@@ -24,20 +24,41 @@ import { fileURLToPath } from 'node:url'
 import {
   PLAN_SCHEMA_VERSION, PLAN_WARNING_CODES, RESERVED_AXES,
   WARN_CONFLICTING_DIRECTIVES, WARN_DIRECTIVE_ONLY_PARAGRAPH, WARN_EMPTY_UTTERANCE,
+  WARN_INVALID_SPEAKER, WARN_SPEAKER_LABEL_VARIANT,
   WARN_UNCLOSED_TAG, WARN_UNKNOWN_DIRECTIVE, toScriptPlanStructure,
 } from './inputAnalysis.ts'
 import { PLAN_WARNING_BLOCKS } from './analysisWording.ts'
 import type {
-  PlanParagraph, PlanSpan, PlanUtterance, PlanEmotionSpan, PlanPause, PlanWarning,
-  PlanWarningCode, ScriptPlanStructure,
+  PlanParagraph, PlanSpan, PlanSpeaker, PlanUtterance, PlanEmotionSpan, PlanPause,
+  PlanWarning, PlanWarningCode, ScriptPlanStructure,
 } from './inputAnalysis.ts'
 import {
-  TTS_GRAMMAR_ERROR_CODES, TTS_PARSER_VERSION, canonicalJson, normalizeLineEndings,
-  parseTtsScript, sha256HexOfString, unclosedTagOffsets,
+  SEMANTIC_PLAN_HASH_VERSION, TTS_GRAMMAR_ERROR_CODES, TTS_PARSER_VERSION, canonicalJson,
+  isSpeakerOnlyDirective, normalizeLineEndings, parseTtsScript, sha256HexOfString,
+  unclosedTagOffsets,
 } from './ttsGrammar.ts'
-import type { CanonValue, TtsGrammarError } from './ttsGrammar.ts'
+import type {
+  CanonValue, LineEndingNormalization, ParseResult, TtsGrammarError, UnclosedTagOffset,
+} from './ttsGrammar.ts'
 
 // ── TS 거울 ──────────────────────────────────────────────────────────────────
+
+/**
+ * 거울이 쓰는 파서 창구. 구현은 `ttsGrammar` 하나뿐이다(별도 파서를 만들지 않는다).
+ *
+ * ⚠️ 이 선언은 거울을 이 파일로 옮길 때 누락됐다가 되살아났다. 테스트 파일은 tsconfig 의
+ *    exclude 대상이라 tsc 가 검사하지 않고, node 는 타입을 벗겨 내기만 해서 그 사실이
+ *    드러나지 않았다. 타입이 없으면 port 에 무엇이 필요한지 아무도 못 읽는다.
+ */
+interface PlanParserPort {
+  parserVersion: number
+  parse: (raw: string) => ParseResult
+  normalize: (raw: string) => LineEndingNormalization
+  unclosedTags: (raw: string) => UnclosedTagOffset[]
+  isSpeakerOnlyDirective: (line: string) => boolean
+  sha256OfString: (s: string) => string
+  canonicalJson: (v: CanonValue) => string
+}
 
 function cpLength(s: string): number {
   return Array.from(s).length
@@ -116,6 +137,8 @@ interface Unit extends PlanSpan {
   index: number
   lineIndex: number | null
   text: string
+  speakerId: string | null
+  speakerLabel: string | null
   emotionId: string | null
   boundaryKind: string | null
   pauses: { pauseMs: number; boundaryType: string; span: PlanSpan }[]
@@ -140,7 +163,8 @@ function warning(
  */
 function warningFromParseError(e: TtsGrammarError): PlanWarning {
   let code: PlanWarningCode = WARN_UNKNOWN_DIRECTIVE
-  if (e.code === 'EMPTY_EMOTION_SEGMENT') code = WARN_EMPTY_UTTERANCE
+  if (e.code === 'INVALID_SPEAKER_TAG') code = WARN_INVALID_SPEAKER
+  else if (e.code === 'EMPTY_EMOTION_SEGMENT') code = WARN_EMPTY_UTTERANCE
   else if (e.code === 'INVALID_PAUSE_TAG' && e.reason === 'adjacent_duplicate') {
     code = WARN_CONFLICTING_DIRECTIVES
   }
@@ -170,6 +194,8 @@ function parseUnits(source: string, port: PlanParserPort): {
       index: i,
       lineIndex: s.originalLineIndex,
       text: s.spokenText ?? '',
+      speakerId: s.speakerId,
+      speakerLabel: s.speakerLabel,
       emotionId: s.emotionId,
       boundaryKind: s.boundaryType ?? null,
       sourceStart: s.offset.uiStartUtf16,
@@ -194,6 +220,9 @@ function parseUnits(source: string, port: PlanParserPort): {
     index: r.index,
     lineIndex: r.lineIndex,
     text: r.text,
+    // 파서를 못 썼으면 화자를 **모른다.** 지어내지 않고 비워 둔다.
+    speakerId: null,
+    speakerLabel: null,
     emotionId: null,
     boundaryKind: null,
     sourceStart: r.sourceStart,
@@ -232,6 +261,52 @@ function emotionSpans(utterances: PlanUtterance[]): PlanEmotionSpan[] {
   return spans
 }
 
+/**
+ * 대본에 등장한 인물. 발화마다 한 줄씩이 아니라 인물 단위다.
+ * `label` 은 **처음 쓴 표기**를 남긴다(화면에 보이는 이름).
+ */
+function speakerRows(utterances: PlanUtterance[]): PlanSpeaker[] {
+  const rows: PlanSpeaker[] = []
+  const indexOf = new Map<string, number>()
+  for (const u of utterances) {
+    const sid = u.speakerId
+    if (sid == null) continue
+    if (!indexOf.has(sid)) {
+      indexOf.set(sid, rows.length)
+      rows.push({
+        index: rows.length,
+        speakerId: sid,
+        label: u.speakerLabel ?? sid,
+        utteranceCount: 0,
+        firstUtteranceIndex: u.index,
+        sourceStart: u.sourceStart,
+      })
+    }
+    rows[indexOf.get(sid) as number].utteranceCount += 1
+  }
+  return rows
+}
+
+/** 같은 인물을 두 가지 표기로 적었다 — 알려만 준다(합성은 된다). */
+function speakerLabelVariants(
+  utterances: PlanUtterance[], speakers: PlanSpeaker[]
+): PlanWarning[] {
+  const first = new Map<string, string>(speakers.map((r) => [r.speakerId, r.label]))
+  const seen = new Set<string>()
+  const out: PlanWarning[] = []
+  for (const u of utterances) {
+    const sid = u.speakerId
+    const label = u.speakerLabel
+    if (sid == null || label == null) continue
+    const key = sid + '\u0000' + label
+    if (label === first.get(sid) || seen.has(key)) continue
+    seen.add(key)
+    out.push(warning(WARN_SPEAKER_LABEL_VARIANT, u.lineIndex,
+      u.sourceStart, u.sourceEnd, u.textStart, u.textEnd, 'label_differs'))
+  }
+  return out
+}
+
 function pauseRows(units: Unit[]): PlanPause[] {
   const rows: PlanPause[] = []
   for (const u of units) {
@@ -260,15 +335,19 @@ function pauseRows(units: Unit[]): PlanPause[] {
  * 경우에는 모든 줄이 발화가 되므로 이 경고가 헛되게 울리지 않는다.
  */
 function directiveOnlyParagraphs(
-  paragraphs: PlanParagraph[], utterances: PlanUtterance[]
+  paragraphs: PlanParagraph[], utterances: PlanUtterance[],
+  rows: LineRow[], port: PlanParserPort
 ): PlanWarning[] {
   const spoken = new Set<number>()
   for (const u of utterances) {
     if (u.sourceParagraphIndex != null && u.chars > 0) spoken.add(u.sourceParagraphIndex)
   }
+  const textOf = new Map<number, string>(rows.map((r) => [r.index, r.text]))
   const out: PlanWarning[] = []
   for (const p of paragraphs) {
     if (spoken.has(p.index)) continue
+    // 화자 표기만 있는 줄은 대화 대본의 형식이다. 판정은 문법이 소유한다.
+    if (port.isSpeakerOnlyDirective(textOf.get(p.index) ?? '')) continue
     out.push(warning(
       WARN_DIRECTIVE_ONLY_PARAGRAPH, p.lineIndex,
       p.sourceStart, p.sourceEnd, p.textStart, p.textEnd))
@@ -290,7 +369,8 @@ function buildScriptStructure(raw: string, port: PlanParserPort): ScriptPlanStru
       ? null
       : (lineToPara.has(u.lineIndex) ? (lineToPara.get(u.lineIndex) as number) : null),
     lineIndex: u.lineIndex,
-    speakerId: null,
+    speakerId: u.speakerId,
+    speakerLabel: u.speakerLabel,
     emotionId: u.emotionId,
     boundaryKind: u.boundaryKind,
     sourceStart: u.sourceStart,
@@ -302,7 +382,12 @@ function buildScriptStructure(raw: string, port: PlanParserPort): ScriptPlanStru
     sourceOffsetsExact: parserAuthority,
   }))
 
-  const all = [...warnings, ...directiveOnlyParagraphs(paragraphs, utterances)]
+  const speakers = speakerRows(utterances)
+  const all = [
+    ...warnings,
+    ...directiveOnlyParagraphs(paragraphs, utterances, lineRows(source, port), port),
+    ...speakerLabelVariants(utterances, speakers),
+  ]
   all.sort((a, b) => {
     const ka = a.sourceStart == null ? -1 : a.sourceStart
     const kb = b.sourceStart == null ? -1 : b.sourceStart
@@ -317,6 +402,7 @@ function buildScriptStructure(raw: string, port: PlanParserPort): ScriptPlanStru
     normalizedSha256: port.sha256OfString(port.normalize(source).text),
     parserAuthority,
     sourceParagraphs: paragraphs,
+    speakers,
     utterances,
     emotions: emotionSpans(utterances),
     pauses: pauseRows(units),
@@ -343,6 +429,14 @@ function scriptPlanStructureSha256(
     source_sha256: s.sourceSha256,
     normalized_sha256: s.normalizedSha256,
     parser_authority: s.parserAuthority,
+    speakers: s.speakers.map((k) => ({
+      index: k.index,
+      speaker_id: k.speakerId,
+      label: k.label,
+      utterance_count: k.utteranceCount,
+      first_utterance_index: k.firstUtteranceIndex,
+      source_start: k.sourceStart,
+    })),
     source_paragraphs: s.sourceParagraphs.map((p) => ({
       index: p.index,
       line_index: p.lineIndex,
@@ -411,6 +505,7 @@ const PORT: PlanParserPort = {
   parse: (raw) => parseTtsScript(raw),
   normalize: (raw) => normalizeLineEndings(raw),
   unclosedTags: (raw) => unclosedTagOffsets(raw),
+  isSpeakerOnlyDirective: (line) => isSpeakerOnlyDirective(line),
   sha256OfString: (s) => sha256HexOfString(s),
   canonicalJson: (v) => canonicalJson(v),
 }
@@ -437,12 +532,14 @@ test('Python 이 구운 plan hash 를 TS 가 그대로 낸다', () => {
 })
 
 test('plan schema version 과 예약 축이 Python 과 같은 이름이다', () => {
-  assert.equal(PLAN_SCHEMA_VERSION, 1)
+  // v1.4: 화자가 실제 축이 되어 예약 목록에서 빠졌다.
+  assert.equal(PLAN_SCHEMA_VERSION, 2)
   assert.deepEqual([...RESERVED_AXES],
-    ['speakers', 'prosody', 'actions', 'ambience', 'music', 'spatial'])
+    ['prosody', 'actions', 'ambience', 'music', 'spatial'])
   assert.deepEqual([...PLAN_WARNING_CODES], [
     'UNCLOSED_TAG', 'UNKNOWN_DIRECTIVE', 'EMPTY_UTTERANCE',
     'CONFLICTING_DIRECTIVES', 'DIRECTIVE_ONLY_PARAGRAPH',
+    'INVALID_SPEAKER', 'SPEAKER_LABEL_VARIANT',
   ])
 })
 
@@ -590,8 +687,9 @@ test('매퍼는 버전이 다른 payload 를 받지 않는다', () => {
   assert.equal(toScriptPlanStructure({ plan_schema_version: 99 }), null,
     '모르는 스키마를 추측해서 읽지 않는다')
   const ok = toScriptPlanStructure({
-    plan_schema_version: 1, parser_version: 2, source_sha256: 'a', normalized_sha256: 'b',
-    parser_authority: true, source_paragraphs: [], utterances: [], emotions: [], pauses: [],
+    plan_schema_version: 2, parser_version: 3, source_sha256: 'a', normalized_sha256: 'b',
+    parser_authority: true, source_paragraphs: [], speakers: [], utterances: [],
+    emotions: [], pauses: [],
     warnings: [{ code: 'UNCLOSED_TAG', source_start: 3 }, { code: '무슨코드', source_start: 1 }],
     structure_sha256: 'c',
   })
@@ -638,5 +736,98 @@ test('차단으로 표시되는 대본은 실제로 파서가 거부한다', () 
     // 파서가 거부하는가 — 합성 시작이 막히는 실제 조건이다.
     assert.equal(parseTtsScript(text).ok === false, blocks,
       `표시와 파서 판정이 어긋난다: len=${text.length}`)
+  }
+})
+
+// ── 화자 축(v1.4) ───────────────────────────────────────────────────────────
+
+test('화자는 다음 화자 표기까지 유지된다 — 줄바꿈·빈 줄·쉼이 초기화하지 않는다', () => {
+  const s = build('[화자 민수] 안녕.' + LF + '반갑습니다.' + LF + LF + '빈 줄 뒤.')
+  assert.deepEqual(s.utterances.map((u) => u.speakerId), ['민수', '민수', '민수'])
+  const withPause = build('[화자 민수] 안녕. [쉼 0.5] 쉼 뒤에도.')
+  assert.deepEqual(withPause.utterances.map((u) => u.speakerId), ['민수', '민수'])
+})
+
+test('감정은 줄마다 초기화되지만 화자는 유지된다 — 두 규칙을 섞지 않는다', () => {
+  const s = build('[화자 민수] [기쁨] 안녕.' + LF + '둘째 줄.')
+  assert.deepEqual(s.utterances.map((u) => u.emotionId), ['happy', null])
+  assert.deepEqual(s.utterances.map((u) => u.speakerId), ['민수', '민수'])
+})
+
+test('[화자 기본] 은 기본 화자로 되돌린다', () => {
+  const s = build('[화자 민수] 안녕. [화자 기본] 기본으로.')
+  assert.deepEqual(s.utterances.map((u) => u.speakerId), ['민수', null])
+  assert.deepEqual(s.speakers.map((k) => k.speakerId), ['민수'],
+    '기본 화자는 인물로 등록되지 않는다')
+})
+
+test('표시 이름과 내부 id 를 구분한다', () => {
+  const s = build('[speaker Minsu] hi. [speaker minsu] again.')
+  assert.deepEqual(s.utterances.map((u) => u.speakerId), ['minsu', 'minsu'],
+    '대소문자가 달라도 같은 사람이다')
+  assert.deepEqual(s.utterances.map((u) => u.speakerLabel), ['Minsu', 'minsu'])
+  assert.equal(s.speakers.length, 1)
+  assert.equal(s.speakers[0].label, 'Minsu', '처음 쓴 표기가 화면 이름이다')
+  assert.equal(s.speakers[0].utteranceCount, 2)
+  assert.deepEqual(s.warnings.map((w) => w.code), [WARN_SPEAKER_LABEL_VARIANT],
+    '같은 화자를 다르게 적었다고 알려 준다(합성은 된다)')
+})
+
+test('화자 이름이 없거나 쓸 수 없는 문자면 차단 오류다', () => {
+  for (const t of ['[화자] 안녕.', '[speaker] hi.', '[화자 민 수] 안녕.', '[화자 @@] 안녕.']) {
+    const s = build(t)
+    assert.deepEqual(s.warnings.map((w) => w.code), [WARN_INVALID_SPEAKER], t)
+    assert.equal(s.parserAuthority, false, '파서가 거부한다 — 예전과 같은 차단 계약')
+  }
+})
+
+test('화자 표기를 쓰지 않은 대본의 의미 지문은 v1.3.0 과 같다', () => {
+  // 파서 계약 버전은 3 이지만 의미 hash 스키마는 2 로 그대로다 —
+  // 화자는 실제로 쓰인 대본에서만 지문 입력에 들어간다.
+  assert.equal(TTS_PARSER_VERSION, 3)
+  assert.equal(SEMANTIC_PLAN_HASH_VERSION, 2)
+  const legacy = parseTtsScript('[기쁨] 안녕하세요.')
+  assert.ok(legacy.ok)
+  const pinnedGrammar: Record<string, string> = JSON.parse(readFileSync(
+    fileURLToPath(new URL('./ttsGrammar.parity-hashes.json', import.meta.url)), 'utf-8'))
+  assert.equal(legacy.plan.fullSha256, pinnedGrammar['[기쁨] 안녕하세요.'])
+  // 화자를 쓰면 지문이 달라진다(같은 대사라도 다른 계획이다).
+  const spoken = parseTtsScript('[화자 민수] 안녕하세요.')
+  assert.ok(spoken.ok)
+  assert.notEqual(spoken.plan.fullSha256, legacy.plan.fullSha256)
+})
+
+test('파서가 물러나면 화자를 지어내지 않는다', () => {
+  const s = build('[없는감정] 안녕' + LF + '둘째 줄.')
+  assert.equal(s.parserAuthority, false)
+  assert.deepEqual(s.utterances.map((u) => u.speakerId), [null, null])
+  assert.deepEqual(s.speakers, [])
+})
+
+test('화자 표기만 있는 줄은 빠뜨린 말이 아니다', () => {
+  // 대화 대본은 `[화자 민수]` 를 자기 줄에 두고 다음 줄에 대사를 쓴다 — 그것이 형식이다.
+  const d = ['[화자 민수]', '안녕하세요.', '', '[화자 지은]', '괜찮아요.'].join(LF)
+  const s = build(d)
+  assert.deepEqual(s.warnings, [], '형식 때문에 경고가 울리면 안 된다')
+  assert.deepEqual(s.utterances.map((u) => u.speakerId), ['민수', '지은'])
+  assert.equal(s.sourceParagraphs.length, 4, '화자 줄도 문단으로는 남는다')
+})
+
+test('정상 화자 줄만 면제된다 — 나머지는 기존 판정 유지', () => {
+  assert.deepEqual(build('[쉼 1.0]' + LF + '[기쁨] 안녕.').warnings.map((w) => w.code),
+    [WARN_DIRECTIVE_ONLY_PARAGRAPH], '쉼만 있는 문단은 여전히 경고한다')
+  assert.deepEqual(build('[화자]' + LF + '안녕.').warnings.map((w) => w.code),
+    [WARN_INVALID_SPEAKER], '잘못된 화자 표기는 차단 오류 그대로')
+  assert.deepEqual(build('[화자 기본]' + LF + '기본 목소리로.').warnings, [],
+    '기본으로 되돌리는 줄도 정상 화자 표기다')
+})
+
+test('화자 줄 판정은 문법이 소유한다', () => {
+  for (const [line, want] of [
+    ['[화자 민수]', true], ['[speaker minsu]', true], ['[화자 기본]', true],
+    ['[화자]', false], ['[화자 민 수]', false], ['[화자 @@]', false],
+    ['[쉼 1.0]', false], ['[기쁨]', false], ['[화자 민수] 안녕.', false], ['안녕하세요.', false],
+  ] as [string, boolean][]) {
+    assert.equal(isSpeakerOnlyDirective(line), want, line)
   }
 })

@@ -1,6 +1,7 @@
 import { create } from 'zustand'
 import type { SeparationMode, Track, FileInfo } from '../../shared/types'
 import type { TtsReferenceEntry, PitchCapability, ReferenceConditioningMode } from '../../shared/ttsConfig'
+import type { ReferencePolicySummary } from '../../shared/referencePolicy'
 // 참조 conditioning 모드(PHASE 2) — 기본/복원 해석은 계약 모듈 단일 소유(store 가 규칙을 다시 쓰지 않는다).
 // @ts-ignore TS5097: node --test가 요구하는 명시적 .ts 확장자(위 cancelContract import 주석과 같은 이유).
 import { REFERENCE_CONDITIONING_RECOMMENDED, restoreReferenceConditioningMode } from '../../shared/ttsConfig.ts'
@@ -76,6 +77,8 @@ export interface RestorableSession {
     // 참조 conditioning 모드 스냅샷(PHASE 2). 부재(legacy 세션) → safe_xvector(안전 기본).
     // 계약 밖 문자열은 그대로 복원(조용한 강등 금지 — 합성 시 Python 이 구조화 오류로 거부).
     ttsReferenceConditioningMode: ReferenceConditioningMode
+    // 생성 방식 스냅샷. 부재(legacy 세션) → single(앱 기본). 복원은 저장된 값만 따른다.
+    ttsSpeakerMode: 'single' | 'multi'
   }>
   tracks?: Track[]
 }
@@ -129,6 +132,26 @@ export function reconstructEmotionRefState(
   return out
 }
 
+// 화자 배정 복원 — **그 세션에 저장된 명시적 배정만**. 세션에 없으면 빈 상태다.
+//   이전 작업의 ttsSpeakerRefState 는 같은 speakerId·같은 표시 이름이라는 이유로 붙지 않는다.
+//   파생 클립은 temp 라 항상 비우고, 준비 여부는 구간 편집기가 다시 확인한다(ready:false).
+//   음원 자산은 지우지 않는다 — 현재 작업과의 연결만 세션 기록으로 다시 세운다.
+export function reconstructSpeakerRefState(
+  sources: Record<string, string> | undefined,
+  labels: Record<string, string> | undefined
+): { state: Record<string, EmotionRefState>; labels: Record<string, string> } {
+  const state: Record<string, EmotionRefState> = {}
+  const outLabels: Record<string, string> = {}
+  if (!sources) return { state, labels: outLabels }
+  for (const [id, source] of Object.entries(sources)) {
+    if (!id || !source) continue
+    state[id] = { source, clip: '', region: null, ready: false, message: '목소리 다시 확인 필요' }
+    const label = labels?.[id]
+    if (label) outLabels[id] = label
+  }
+  return { state, labels: outLabels }
+}
+
 interface AppState {
   fileInfo: FileInfo | null
   fileUrl: string | null
@@ -170,8 +193,57 @@ interface AppState {
   ttsPitchCapability: PitchCapability | null
   // 감정별 참조 상태(source/clip/region/ready). 통합 브랜치가 config 3필드로 직렬화.
   ttsEmotionRefState: Record<string, EmotionRefState>
+  /**
+   * 화자별 참조 slot. 키는 파서가 만든 **내부 stable id** 다(표시 이름이 아니다).
+   *
+   * 감정 slot 과 같은 모양을 쓴다 — 등록(`source`)과 준비(`ready`)를 나눠, "등록했는데
+   * 파일이 사라졌다" 를 "등록하지 않았다" 와 다르게 말할 수 있어야 한다.
+   */
+  ttsSpeakerRefState: Record<string, EmotionRefState>
+  /** 화자 표시 이름(id → 사용자가 쓴 이름). 기록·화면 전용이며 합성 조건이 아니다. */
+  ttsSpeakerLabels: Record<string, string>
+  /**
+   * 여러 명 첫 인물이 **기본 목소리를 이어받는 중**임을 표시. 기본 목소리가 준비되면 원본·확정 구간·유효 참조를
+   * 그 인물 슬롯에 옮기고 지운다. 사용자가 그 인물의 목소리를 바꾸거나 해제하면 즉시 지워져 초기화가 덮어쓰지 않는다.
+   */
+  ttsSpeakerInherit: { speakerId: string; filePath: string } | null
+  /**
+   * 현재 작업에서 바꾼 인물 이름의 별칭: 저장된 목소리 구성 안의 인물 id → 지금 인물 id.
+   * 저장된 구성은 사용자가 명시적으로 저장/덮어쓸 때만 바뀐다 — 여기서는 읽을 때 옮겨 주기만 한다(정체성·자산 연결 유지).
+   */
+  ttsSpeakerRenames: Record<string, string>
+  /**
+   * 후보 비교 화면에서 사용자가 고른 것. `speakerEmotionKey(화자, 감정)` → 참조 id
+   * 또는 `speaker_default` / `no_emotion_ref` 토큰.
+   *
+   * 담기는 것은 **선택 정보뿐**이다 — 경로도, 파생 파일도 만들지 않는다.
+   */
+  ttsEmotionCandidateSelections: Record<string, string>
+  setEmotionCandidateSelection: (key: string, choice: string | null) => void
+  /**
+   * 생성으로 나갈 `(화자, 감정) → 경로`. 활성 배역에서 **고른 하나씩만** 담긴다.
+   * 후보 목록·자산 목록은 여기 들어오지 않는다(Python 은 정확한 참조 하나만 받는다).
+   */
+  ttsSpeakerEmotionRefs: Record<string, string>
+  setSpeakerEmotionRefs: (refs: Record<string, string>) => void
+  /**
+   * 인물별 `감정별 목소리 사용`. 이 작업에서 사용자가 직접 켠 인물만 true. 기본 false —
+   * 기본 모드에서는 인물 기본 목소리만 생성에 쓰이고, 감정별 참조·후보 선택은 켠 인물에만 나간다.
+   * 세션 상태다(저장하지 않음). 새 파일·리셋·복원에서 비워진다.
+   */
+  ttsSpeakerEmotionEnabled: Record<string, boolean>
+  setSpeakerEmotionEnabled: (speakerId: string, on: boolean) => void
+  /**
+   * 생성 방식(한 명 | 여러 명). 대본 내용이 아니라 라우팅 방식이다 — 탭이 이 값이다.
+   * 앱·새 작업 기본 'single'. 탭 클릭은 이 값만 바꾼다(원문·인물 설정·목소리 자산 무변경).
+   * 합성 중에는 탭이 잠기고, 진행 중 작업의 라우팅 스냅샷은 config 로 이미 확정되어 바뀌지 않는다.
+   */
+  ttsSpeakerMode: 'single' | 'multi'
+  setTtsSpeakerMode: (mode: 'single' | 'multi') => void
   ttsReferencePrompts: Record<string, TtsReferenceEntry>
   ttsEngine: string
+  /** 마지막 참조 분석이 알려 준 이 엔진의 길이 정책(필수/권장). 화면 문구·카드·자산 판정이 이것만 읽는다. 세션에 저장하지 않는다. */
+  ttsReferencePolicy: ReferencePolicySummary | null
   // 참조 conditioning 모드(PHASE 2). fresh 세션 기본 = auto(자동, 추천) — ICL 을 먼저 시도하고
   // 경계 정렬에 실패하면 안정 방식(safe_xvector)으로 정확히 1회 전환한다(잘리지 않은 ICL 결과는
   // 어느 경우에도 발행되지 않는다). UI 선택지는 auto / safe_xvector 두 가지뿐이다.
@@ -209,9 +281,32 @@ interface AppState {
   setNSpeakers: (v: number) => void
   setTtsReferencePrompts: (v: Record<string, TtsReferenceEntry>) => void
   setTtsReferenceConditioningMode: (v: ReferenceConditioningMode) => void
+  setTtsReferencePolicy: (p: ReferencePolicySummary | null) => void
   setTtsRefState: (v: { clip?: string; ready?: boolean; message?: string; region?: { start: number; duration: number } | null }) => void
   // 감정 참조: 원본 등록/변경(파생 클립 초기화 + 그 clipKey 정리), 삭제(그 clipKey 정리), 상태 패치(패널 onChange).
   registerEmotionRef: (emotionId: string, source: string) => void
+  /** 화자에게 참조 원본을 지정·교체한다(같은 화자에 다시 부르면 교체). */
+  registerSpeakerRef: (speakerId: string, source: string, label?: string) => void
+  /** 화자의 참조 지정을 해제한다. */
+  removeSpeakerRef: (speakerId: string) => void
+  /**
+   * 현재 작업 자동 저장 기록을 화면에 되돌린다(합성하지 않고 닫았을 때).
+   * 준비 여부는 여기서 정하지 않는다 — 슬롯은 호출부가 만든 값 그대로 들어가고,
+   * 실제 준비가 끝난 뒤 setSpeakerRefState 로 올라간다.
+   */
+  restoreWorkDraft: (payload: {
+    ttsText: string
+    speakerMode: 'single' | 'multi'
+    slots: Record<string, EmotionRefState>
+    labels: Record<string, string>
+    emotionEnabled: Record<string, boolean>
+    renames: Record<string, string>
+  }) => void
+  setSpeakerRefState: (speakerId: string, patch: { clip?: string; ready?: boolean; message?: string; region?: { start: number; duration: number } | null }) => void
+  setSpeakerInherit: (v: { speakerId: string; filePath: string } | null) => void
+  /** 시작 카드의 이름이 바뀌어 내부 id 가 달라질 때 슬롯·이름·이어받기 플래그·클립 key 를 새 id 로 옮긴다. */
+  moveSpeakerRef: (fromId: string, toId: string) => void
+  setSpeakerLabel: (speakerId: string, label: string) => void
   removeEmotionRef: (emotionId: string) => void
   setEmotionRefState: (emotionId: string, patch: { clip?: string; ready?: boolean; message?: string; region?: { start: number; duration: number } | null }) => void
   setProcessing: () => void
@@ -275,8 +370,35 @@ export const useAppStore = create<AppState>((set, get) => ({
   ttsPitch: 0.0,
   ttsPitchCapability: null,
   ttsEmotionRefState: {} as Record<string, EmotionRefState>,
+  ttsSpeakerRefState: {} as Record<string, EmotionRefState>,
+  ttsSpeakerInherit: null as { speakerId: string; filePath: string } | null,
+  ttsSpeakerRenames: {} as Record<string, string>,
+  ttsSpeakerLabels: {} as Record<string, string>,
+  ttsEmotionCandidateSelections: {} as Record<string, string>,
+  ttsSpeakerEmotionRefs: {} as Record<string, string>,
+  setSpeakerEmotionRefs: (refs: Record<string, string>) =>
+    set({ ttsSpeakerEmotionRefs: refs }),
+  ttsSpeakerEmotionEnabled: {} as Record<string, boolean>,
+  ttsSpeakerMode: 'single' as 'single' | 'multi',
+  setTtsSpeakerMode: (mode: 'single' | 'multi') => set({ ttsSpeakerMode: mode }),
+  setSpeakerEmotionEnabled: (speakerId: string, on: boolean) =>
+    set((st) => {
+      const next = { ...st.ttsSpeakerEmotionEnabled }
+      if (on) next[speakerId] = true
+      else delete next[speakerId]
+      return { ttsSpeakerEmotionEnabled: next }
+    }),
+  setEmotionCandidateSelection: (key: string, choice: string | null) =>
+    set((s) => {
+      const next = { ...s.ttsEmotionCandidateSelections }
+      // null 은 '선택 해제' 다 — 지우면 자동 제안으로 돌아간다.
+      if (choice) next[key] = choice
+      else delete next[key]
+      return { ttsEmotionCandidateSelections: next }
+    }),
   ttsReferencePrompts: {} as Record<string, TtsReferenceEntry>,
   ttsEngine: 'auto',
+  ttsReferencePolicy: null,
   // 참조 conditioning 모드 — fresh 세션 기본은 자동(auto, 추천). ICL 을 먼저 시도하고 경계 정렬에
   // 실패하면 같은 작업 안에서 안정 방식으로 1회 전환한다(실패로 끝나지 않는다).
   // 값이 '부재'인 legacy 세션 복원은 여기가 아니라 restoreReferenceConditioningMode 가 맡고,
@@ -304,7 +426,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 전체 파생 클립(기본+감정) 정리
     // 분할 마커는 파일에 종속이다. 비우지 않으면 이전 파일의 경계가 새 파일에 그대로 적용돼
     // (더 긴 파일에서는 오류조차 없이) 완전히 틀린 지점에서 잘린다 — 감사 R2.
-    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsReferencePrompts: {} })
+    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
   },
   setMode: (mode) => set({ mode }),
   setTrimSilence: (v) => set({ trimSilence: v }),
@@ -321,6 +443,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setNSpeakers: (v) => set({ nSpeakers: v }),
   setTtsReferencePrompts: (v) => set({ ttsReferencePrompts: v }),
   setTtsReferenceConditioningMode: (v) => set({ ttsReferenceConditioningMode: v }),
+  setTtsReferencePolicy: (p) => set({ ttsReferencePolicy: p }),
   setTtsPitchCapability: (c) => set({ ttsPitchCapability: c }),
   // ⚠️ patch 를 그대로 흘리지 않고 허용 키만 통과시킨다. 타입은 컴파일 때만 막아 주는데,
   //    이 setter 로 ttsExpressiveMode 를 밀어 넣을 수 있으면 'UI 스위치 없음' 보장이 런타임에서 뚫린다
@@ -342,6 +465,83 @@ export const useAppStore = create<AppState>((set, get) => ({
   // 감정 원본 등록/변경: source만 설정하고 파생 상태 초기화(재분석 필요) + 그 clipKey의 이전 파생 클립 정리.
   // source가 바뀌면 그 감정의 이전 전사(ttsReferencePrompts[id])는 옛 음성 것이므로 함께 제거 —
   // 새 source에 stale 전사가 결합되는 것을 막는다(불변식 3·4). 타 감정 전사는 불변.
+  restoreWorkDraft: (payload) => set(() => ({
+    ttsText: payload.ttsText,
+    ttsSpeakerMode: payload.speakerMode,
+    ttsSpeakerRefState: payload.slots,
+    ttsSpeakerLabels: payload.labels,
+    ttsSpeakerEmotionEnabled: payload.emotionEnabled,
+    ttsSpeakerRenames: payload.renames,
+    // 이어받기는 이번 실행의 진행 상태다 — 기록에서 되살리지 않는다(복원이 곧 지정이다).
+    ttsSpeakerInherit: null,
+  })),
+  registerSpeakerRef: (speakerId, source, label) => {
+    // 이전 파생 클립을 먼저 놓는다(같은 key 로 다시 분석할 것이므로).
+    try { window.api?.audio?.releaseReferenceClip?.('spk:' + speakerId) } catch { /* noop */ }
+    set((s) => ({
+      ttsSpeakerRefState: {
+        ...s.ttsSpeakerRefState,
+        [speakerId]: { source, clip: '', region: null, ready: false, message: '' },
+      },
+      // 사용자가 이 인물의 목소리를 직접 정했다 — 이어받기(초기 연결) 는 여기서 끝난다.
+      ttsSpeakerInherit: s.ttsSpeakerInherit?.speakerId === speakerId ? null : s.ttsSpeakerInherit,
+      ttsSpeakerLabels: label
+        ? { ...s.ttsSpeakerLabels, [speakerId]: label }
+        : s.ttsSpeakerLabels,
+    }))
+  },
+  removeSpeakerRef: (speakerId) => {
+    try { window.api?.audio?.releaseReferenceClip?.('spk:' + speakerId) } catch { /* noop */ }
+    set((s) => {
+      const next = { ...s.ttsSpeakerRefState }
+      delete next[speakerId]
+      return { ttsSpeakerRefState: next,
+        ttsSpeakerInherit: s.ttsSpeakerInherit?.speakerId === speakerId ? null : s.ttsSpeakerInherit }
+    })
+  },
+  setSpeakerInherit: (v) => set({ ttsSpeakerInherit: v }),
+  setSpeakerLabel: (speakerId, label) => set((s) => ({ ttsSpeakerLabels: { ...s.ttsSpeakerLabels, [speakerId]: label } })),
+  moveSpeakerRef: (fromId, toId) => {
+    if (!fromId || !toId || fromId === toId) return
+    try { void window.api?.audio?.renameReferenceClip?.('spk:' + fromId, 'spk:' + toId) } catch { /* noop */ }
+    set((s) => {
+      const slot = s.ttsSpeakerRefState[fromId]
+      if (!slot) return {}
+      const refs = { ...s.ttsSpeakerRefState }; delete refs[fromId]; refs[toId] = slot
+      const labels = { ...s.ttsSpeakerLabels }
+      if (labels[fromId] !== undefined) { const l = labels[fromId]; delete labels[fromId]; labels[toId] = l }
+      const enabled = { ...s.ttsSpeakerEmotionEnabled }
+      if (enabled[fromId] !== undefined) { const e = enabled[fromId]; delete enabled[fromId]; enabled[toId] = e }
+      // 감정별 참조·후보 선택은 `인물␟감정` 키다 — 접두를 새 id 로 바꿔 함께 옮긴다.
+      const US = String.fromCharCode(31)
+      const rekey = (m: Record<string, string>) => Object.fromEntries(Object.entries(m).map(([k, v]) => [k.startsWith(fromId + US) ? toId + k.slice(fromId.length) : k, v]))
+      // 별칭: 이 인물이 저장 구성에서 어떤 id 였는지 기억한다(fromId 가 이미 별칭 대상이면 그 원래 id 를 따라간다).
+      const renames = { ...s.ttsSpeakerRenames }
+      const origin = Object.keys(renames).find((k) => renames[k] === fromId) ?? fromId
+      if (origin === toId) delete renames[origin]; else renames[origin] = toId
+      return {
+        ttsSpeakerRefState: refs, ttsSpeakerLabels: labels, ttsSpeakerEmotionEnabled: enabled, ttsSpeakerRenames: renames,
+        ttsSpeakerEmotionRefs: rekey(s.ttsSpeakerEmotionRefs), ttsEmotionCandidateSelections: rekey(s.ttsEmotionCandidateSelections),
+        ttsSpeakerInherit: s.ttsSpeakerInherit?.speakerId === fromId ? { ...s.ttsSpeakerInherit, speakerId: toId } : s.ttsSpeakerInherit,
+      }
+    })
+  },
+  setSpeakerRefState: (speakerId, patch) => set((s) => {
+    const prev = s.ttsSpeakerRefState[speakerId]
+    if (!prev) return {}     // 등록되지 않은 화자에는 패치하지 않는다(방어)
+    return {
+      ttsSpeakerRefState: {
+        ...s.ttsSpeakerRefState,
+        [speakerId]: {
+          ...prev,
+          ...(patch.clip !== undefined ? { clip: patch.clip } : {}),
+          ...(patch.ready !== undefined ? { ready: patch.ready } : {}),
+          ...(patch.message !== undefined ? { message: patch.message } : {}),
+          ...(patch.region !== undefined ? { region: patch.region } : {}),
+        },
+      },
+    }
+  }),
   registerEmotionRef: (emotionId, source) => {
     try { window.api?.audio?.releaseReferenceClip?.(emotionId) } catch { /* noop */ }
     set((s) => {
@@ -412,13 +612,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   }),
   setPlayingTrack: (name) => set({ playingTrack: name }),
   setRestorable: (v) => set({ restorable: v }),
-  restoreSession: (dir, session) => set(() => {
+  restoreSession: (dir, session) => set((cur) => {
     const o = session.options || {}
     const liveness = session.refLiveness || {}
     const md = session.metadata || null
     // TTS 스냅샷 복원 — source가 사라진 감정만 재지정 필요로 표시, 나머지는 source+region 보존.
     const emotionState = reconstructEmotionRefState(o.ttsEmotionRefSources, o.ttsEmotionRefRegions, o.ttsEmotionRefs, liveness)
     const prompts = reconstructReferencePrompts(o.ttsReferencePrompts, liveness)
+    // 화자 배정은 이 세션 기록에서만 온다. 이전 작업의 배정·감정별 참조·후보 선택은 여기서 끊는다.
+    // 세션 options 타입에는 화자 필드가 없다(합성 config 그대로 저장되지만 복원 계약은 감정까지였다).
+    const oRaw = o as Record<string, unknown>
+    const speakerRestore = reconstructSpeakerRefState(
+      oRaw.ttsSpeakerRefSources as Record<string, string> | undefined,
+      oRaw.ttsSpeakerLabels as Record<string, string> | undefined)
     // 표현형 모드 복원 — 해석 권위는 계약 함수 하나뿐(store 가 규칙을 다시 쓰지 않는다).
     //   필드 부재(legacy 세션) → legacy_v2, 조용히 복원해도 무방하다(오늘과 같은 동작).
     //   값이 있는데 계약 밖(손상·수기편집 session.json) → 조용한 강등 금지. mode 는 안전한 legacy_v2 로
@@ -431,8 +637,11 @@ export const useAppStore = create<AppState>((set, get) => ({
     const defaultRegion = (md && typeof md === 'object' && (md as Record<string, unknown>).reference_region)
       ? (md as { reference_region?: { start: number; duration: number } }).reference_region ?? null
       : null
-    const defaultReady = defaultAlive && !defaultUsedDerived
-    const defaultMessage = !defaultAlive ? '원본 다시 지정 필요' : (defaultUsedDerived ? '구간 재확정 필요' : '')
+    // 같은 파일이 이미 열려 있고 기본 참조가 살아 있으면(불러오기 직후 자동 확정이 끝난 상태) 복원이 그것을
+    // 내리지 않는다 — 방금까지 되던 목소리를 "구간 재확정 필요" 로 되돌리는 것은 복원이 아니라 퇴행이다.
+    const keepLiveDefault = !!cur.fileInfo?.path && cur.fileInfo.path === session.source && cur.ttsRefReady === true
+    const defaultReady = keepLiveDefault || (defaultAlive && !defaultUsedDerived)
+    const defaultMessage = keepLiveDefault ? '' : (!defaultAlive ? '원본 다시 지정 필요' : (defaultUsedDerived ? '구간 재확정 필요' : ''))
     return {
       mode: session.mode || 'music',
       demucsModel: o.model || 'htdemucs',
@@ -465,11 +674,19 @@ export const useAppStore = create<AppState>((set, get) => ({
       ttsEmotionBoundaryPauseMs: o.ttsEmotionBoundaryPauseMs ?? 200,
       ttsExpressiveMode: expressive.mode,
       ttsEmotionRefState: emotionState,
+      ttsSpeakerRefState: speakerRestore.state,
+      ttsSpeakerLabels: speakerRestore.labels,
+      ttsSpeakerEmotionRefs: {},
+      ttsSpeakerEmotionEnabled: {},
+      ttsEmotionCandidateSelections: {},
+      // 저장된 생성 방식만 복원. 부재(legacy 세션)는 앱 기본 single.
+      ttsSpeakerMode: o.ttsSpeakerMode === 'multi' ? 'multi' : 'single',
       ttsReferencePrompts: prompts,
-      ttsReferenceClip: '',            // 파생 클립은 temp — 복원 시 항상 비움(§4: stale 클립 결합 금지)
+      // 파생 클립은 temp — 복원 시 비운다(§4). 단 같은 파일의 살아 있는 기본 참조는 그대로 둔다.
+      ttsReferenceClip: keepLiveDefault ? cur.ttsReferenceClip : '',
       ttsRefReady: defaultReady,
       ttsRefMessage: defaultMessage,
-      ttsReferenceRegion: defaultRegion,
+      ttsReferenceRegion: keepLiveDefault ? cur.ttsReferenceRegion : defaultRegion,
       resultMetadata: md,
       tracks: session.tracks || [],
       outputDir: dir,
@@ -493,7 +710,10 @@ export const useAppStore = create<AppState>((set, get) => ({
       fileInfo: null, fileUrl: null, status: 'idle', progress: 0, progressMessage: '', error: null, errorInfo: null,
       tracks: [], outputDir: null, playingTrack: null, restorable: null, splitMarkers: [], splitLabels: [],
       ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null,
-      ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsPitch: 0.0, ttsPitchCapability: null, resultMetadata: null,
+      ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {},
+      ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {},
+      ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single',
+      ttsPitch: 0.0, ttsPitchCapability: null, resultMetadata: null,
       // 세션 리셋은 표현형 모드도 기본으로 되돌린다(이전 세션의 모드가 새 작업에 눌러앉지 않게).
       ttsExpressiveMode: EXPRESSIVE_DEFAULT_MODE,
       // 참조 conditioning 모드도 fresh 세션과 같은 추천값으로 — 이전 세션의 선택이 새 작업에
@@ -502,3 +722,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
   }
 }))
+
+/** 지금 인물 id → 저장된 목소리 구성 안의 인물 id(이름을 바꿨으면 원래 id). 구성은 읽을 때만 옮겨 준다. */
+export function castSpeakerIdOf(renames: Readonly<Record<string, string>>, currentId: string): string {
+  return Object.keys(renames).find((k) => renames[k] === currentId) ?? currentId
+}
+
+/** 저장 구성에서 만든 (인물␟감정 → 참조) 표를 현재 작업의 인물 id 로 옮긴다. 구성 자체는 바꾸지 않는다. */
+export function applySpeakerRenames(refs: Readonly<Record<string, string>>, renames: Readonly<Record<string, string>>): Record<string, string> {
+  const US = String.fromCharCode(31)
+  const out: Record<string, string> = {}
+  for (const [k, v] of Object.entries(refs)) {
+    const i = k.indexOf(US)
+    const sid = i >= 0 ? k.slice(0, i) : k
+    const to = renames[sid]
+    out[to ? to + k.slice(sid.length) : k] = v
+  }
+  return out
+}

@@ -176,6 +176,34 @@ class WarningTest(unittest.TestCase):
                      "그냥 대사입니다."):
             self.assertEqual(sp.build_structure(text)["warnings"], [], text)
 
+    def test_speaker_only_line_is_not_a_missing_utterance(self):
+        """대화 대본은 `[화자 민수]` 를 자기 줄에 둔다 — 그 줄은 빠뜨린 말이 아니라 형식이다."""
+        d = LF.join(["[화자 민수]", "안녕하세요.", "", "[화자 지은]", "괜찮아요."])
+        st = sp.build_structure(d)
+        self.assertEqual([w["code"] for w in st["warnings"]], [], "형식 때문에 경고가 울리면 안 된다")
+        self.assertEqual([u["speaker_id"] for u in st["utterances"]], ["민수", "지은"])
+        # 화자 표기 줄은 문단으로는 남는다(좌표가 사라지지 않는다).
+        self.assertEqual(len(st["source_paragraphs"]), 4)
+
+    def test_only_valid_speaker_lines_are_excused(self):
+        """잘못된 화자 표기·다른 지시·무의미한 문단은 기존 판정 그대로."""
+        # 쉼만 있는 문단 — 여전히 경고한다.
+        self.assertIn(sp.WARN_DIRECTIVE_ONLY_PARAGRAPH,
+                      self._codes("[쉼 1.0]" + LF + "[기쁨] 안녕."))
+        # 잘못된 화자 표기 — 파서가 거부하므로 화자 줄 면제가 적용되지 않는다.
+        self.assertEqual(self._codes("[화자]" + LF + "안녕."), [sp.WARN_INVALID_SPEAKER])
+        # 기본 화자로 되돌리는 줄도 정상 화자 표기다.
+        self.assertEqual(self._codes("[화자 기본]" + LF + "기본 목소리로."), [])
+
+    def test_grammar_owns_the_speaker_only_judgement(self):
+        """계획 층이 브래킷 규칙을 다시 쓰지 않는다 — 문법에게 묻는다."""
+        for line, want in (("[화자 민수]", True), ("[speaker minsu]", True),
+                           ("[화자 기본]", True), ("[화자]", False),
+                           ("[화자 민 수]", False), ("[화자 @@]", False),
+                           ("[쉼 1.0]", False), ("[기쁨]", False),
+                           ("[화자 민수] 안녕.", False), ("안녕하세요.", False)):
+            self.assertEqual(tg.is_speaker_only_directive(line), want, line)
+
     def test_warnings_are_ordered_by_position(self):
         st = sp.build_structure("[기쁨 안녕" + LF + "[쉼 1.0]")
         starts = [w["source_start"] for w in st["warnings"]]
@@ -226,7 +254,7 @@ class AnalysisPlanTest(unittest.TestCase):
         self.plan = self.res["plan"]
 
     def test_schema_version_moved_together(self):
-        self.assertEqual(self.res["schema_version"], 5)
+        self.assertEqual(self.res["schema_version"], 6)
         self.assertEqual(self.plan["plan_schema_version"], sp.PLAN_SCHEMA_VERSION)
         self.assertEqual(self.plan["parser_version"], tg.TTS_PARSER_VERSION)
 
@@ -276,6 +304,34 @@ class AnalysisPlanTest(unittest.TestCase):
             tok = _count(u["text"])
             total += 1 if tok <= cap else len(ts.split_for_generation(u["text"], _count, cap))
         self.assertEqual(self.res["planned_calls"], total)
+
+    def test_speakers_axis_travels_with_the_plan(self):
+        """화자 축이 계획·발화 행·chunk 행에 같은 값으로 실려 온다.
+
+        chunk 가 갈려도 누구의 말인지 잃지 않아야 한다 — 생성 단계가 대본을 다시 해석하지
+        않고 이 값을 그대로 쓸 수 있어야 하기 때문이다(배선은 PHASE 3).
+        """
+        text = ("[화자 민수] 안녕하세요." + LF + "[화자 영희] 반갑습니다." + LF
+                + "저도 반가워요.")
+        res = ia.analyze(text, _count)
+        plan = res["plan"]
+        self.assertEqual([(k["speaker_id"], k["label"], k["utterance_count"])
+                          for k in plan["speakers"]],
+                         [("민수", "민수", 1), ("영희", "영희", 2)])
+        self.assertEqual([u["speaker_id"] for u in plan["utterances"]],
+                         ["민수", "영희", "영희"])
+        self.assertEqual([s["speaker_id"] for s in res["segments"]],
+                         ["민수", "영희", "영희"])
+        for c in plan["chunks"]:
+            u = plan["utterances"][c["segment_index"]]
+            self.assertEqual(c["speaker_id"], u["speaker_id"],
+                             "chunk 의 화자가 자기 발화의 화자와 달라졌다")
+
+    def test_legacy_script_has_no_speakers(self):
+        res = ia.analyze("[기쁨] 안녕하세요." + LF + "둘째 줄.", _count)
+        self.assertEqual(res["plan"]["speakers"], [])
+        self.assertTrue(all(u["speaker_id"] is None for u in res["plan"]["utterances"]))
+        self.assertTrue(all(c["speaker_id"] is None for c in res["plan"]["chunks"]))
 
     def test_response_carries_no_script_text(self):
         blob = json.dumps(self.res, ensure_ascii=False)

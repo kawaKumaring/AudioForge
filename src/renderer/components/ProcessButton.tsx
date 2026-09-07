@@ -1,6 +1,8 @@
 import React from 'react'
 import { motion } from 'framer-motion'
 import { useAppStore } from '@/stores/app.store'
+import { gateSpeakerEmotionRefs } from '../../shared/speakerEmotionGate'
+import { readinessFromSlots, multiSpeakerPreflight, speakerPreflightMessage } from '../../shared/speakerReference'
 import { validateMarkers, formatSplitMarkerError } from '../../shared/splitMarkers'
 import { ALL_EMOTIONS, planEmotionRefs } from '@/lib/emotions'
 import { parseTtsScript, TTS_PARSER_VERSION } from '../../shared/ttsGrammar'
@@ -23,7 +25,7 @@ function _estimateTime(mode: string, duration: number, transcribe: boolean, tran
 }
 
 export default function ProcessButton() {
-  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsPitchCapability, ttsEmotionRefState, ttsReferencePrompts, ttsEngine, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, ttsExpressiveMode, ttsReferenceConditioningMode, status, retryNonce, errorInfo, setProcessing, setProgress, setResult, setError } = useAppStore()
+  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsPitchCapability, ttsEmotionRefState, ttsSpeakerRefState, ttsSpeakerLabels, ttsEmotionCandidateSelections, ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled, ttsSpeakerMode, ttsReferencePrompts, ttsEngine, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, ttsExpressiveMode, ttsReferenceConditioningMode, status, retryNonce, errorInfo, setProcessing, setProgress, setResult, setError } = useAppStore()
   const cleanupRef = React.useRef<(() => void) | null>(null)
   // 취소 요청 in-flight 가드(로컬). 새 상태 축이 아니라 '같은 요청 중복 전송'만 막는다 — finally에서 반드시 해제.
   const cancelInFlightRef = React.useRef(false)
@@ -47,6 +49,24 @@ export default function ProcessButton() {
     return { emotionSources, emotionRegions }
   }, [ttsEmotionRefState])
 
+  // 화자 참조 전송 — 감정과 같은 규칙이다. effective(합성에 쓸 경로)와 source(등록 사실)를
+  // 나눠 보내고, 표시 이름은 기록 전용으로 따로 보낸다(합성 조건이 아니다).
+  // 판정은 Python 이 최종 권위다 — 여기서 준비되지 않은 화자를 걸러 내지 않는다. 걸러 내면
+  // 등록했지만 준비되지 않은 화자가 '미등록' 으로 보여 잘못된 오류가 나간다.
+  const { speakerRefsToSend, speakerSources, speakerLabels } = React.useMemo(() => {
+    const speakerRefsToSend: Record<string, string> = {}
+    const speakerSources: Record<string, string> = {}
+    const speakerLabels: Record<string, string> = {}
+    for (const [id, slot] of Object.entries(ttsSpeakerRefState)) {
+      if (slot?.source) speakerSources[id] = slot.source
+      const effective = slot?.ready ? (slot.clip || slot.source) : ''
+      if (effective) speakerRefsToSend[id] = effective
+      const label = ttsSpeakerLabels[id]
+      if (label) speakerLabels[id] = label
+    }
+    return { speakerRefsToSend, speakerSources, speakerLabels }
+  }, [ttsSpeakerRefState, ttsSpeakerLabels])
+
   const handleProcess = async () => {
     console.log('[renderer][synthesize] 클릭 핸들러 진입', { mode, hasFile: !!fileInfo })
     if (!fileInfo) return
@@ -61,6 +81,21 @@ export default function ProcessButton() {
         return
       }
       ttsParsedPlanSha256 = parsed.plan.fullSha256
+      // 여러 명 모드: 대본의 명시 화자마다 목소리가 준비됐는지 **여기서** 검사한다(모델 로딩 전).
+      // 판정 표는 카드가 쓰는 것과 같은 함수·같은 슬롯에서 나온다 — 카드가 준비됨이면 config 에도 있다.
+      // 막히면 어느 인물 카드인지 말하고 시작하지 않는다. 다른 인물·전역 기본 목소리로 대체하지 않는다.
+      if (ttsSpeakerMode === 'multi') {
+        const readiness = readinessFromSlots({
+          defaultReady: !!ttsRefReady, speakerSlots: ttsSpeakerRefState, emotionSlots: ttsEmotionRefState,
+          speakerEmotionRefs: gateSpeakerEmotionRefs(ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled),
+        })
+        const blocks = multiSpeakerPreflight(
+          parsed.plan.segments.map((sg) => ({ speakerId: sg.speakerId, emotionId: sg.emotionId })), readiness)
+        if (blocks.length > 0) {
+          setError(speakerPreflightMessage(blocks, (id) => ttsSpeakerLabels[id] || id), { code: blocks[0].code })
+          return
+        }
+      }
     }
     // split은 시작 전에 마커를 검증한다(Python이 최종 권위지만, 여기서 막으면 임시 복사·ffmpeg 실행 자체가
     // 일어나지 않는다). 조용한 clamp·정렬·중복제거 없이 거부만 한다. 오류엔 순번·사유·수치만 담는다.
@@ -108,7 +143,8 @@ export default function ProcessButton() {
       // ttsEmotionRefs = 사용∩등록∩준비된 감정의 effective 경로만(계약 §5 전송 필터).
       // ttsEmotionRefSources/Regions = 등록 전부의 원본/구간(재현·Python 등록판정용, §1.2/§5.1).
       // ttsPitch = 최종 WAV 음높이 후처리(0=무후처리, §6).
-      const r = await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsEmotionRefs: emotionRefsToSend, ttsEmotionRefSources: emotionSources, ttsEmotionRefRegions: emotionRegions, ttsReferencePrompts, ttsEngine, ttsReferenceOverride: ttsReferenceClip, ttsReferenceRegion, ttsParsedPlanSha256, ttsParserVersion: TTS_PARSER_VERSION, ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, ttsExpressiveMode, ttsReferenceConditioningMode })
+      const r = await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsEmotionRefs: emotionRefsToSend, ttsEmotionRefSources: emotionSources, ttsEmotionRefRegions: emotionRegions,
+        ttsSpeakerRefs: speakerRefsToSend, ttsSpeakerRefSources: speakerSources, ttsSpeakerLabels: speakerLabels, ttsEmotionCandidateSelections: gateSpeakerEmotionRefs(ttsEmotionCandidateSelections, ttsSpeakerEmotionEnabled), ttsSpeakerEmotionRefs: gateSpeakerEmotionRefs(ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled), ttsReferencePrompts, ttsEngine, ttsReferenceOverride: ttsReferenceClip, ttsReferenceRegion, ttsParsedPlanSha256, ttsParserVersion: TTS_PARSER_VERSION, ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, ttsExpressiveMode, ttsReferenceConditioningMode, ttsSpeakerMode })
       console.log('[renderer][synthesize] audio:process 호출 직후', r)
     } catch (err: any) {
       console.error('[renderer][synthesize] audio:process 오류', err?.stack || err)

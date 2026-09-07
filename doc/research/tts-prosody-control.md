@@ -1,5 +1,16 @@
 # TTS 감정·운율(prosody) 제어 범위 연구
 
+> **상태 (2026-09-03)** — 이 문서는 2026-08-22 조사 기록이며 그대로 보존한다.
+> 감정·음률의 현재 기술 권위는 [감정 음향 전략](../work-in-progress/tts-emotion-acoustic-strategy.md)이고, 이 문서의 각 결론이
+> CURRENT / IMPLEMENTED / STALE / OPEN 중 무엇인지는 그 문서 §3.1 에 정리돼 있다.
+>
+> 특히 주의할 두 가지. (1) "pitch·energy 는 아직 어디에도 없다"는 **STALE** 이다 —
+> pitch 는 rubberband 후처리로, energy 는 macro gain 으로 구현됐다.
+> (2) "CustomVoice 등은 설치 금지 대상"은 **STALE** 이다 — 금지가 아니라 미설치이고,
+> 그 뒤 설치된 1.7B 는 **Base** 라서 instruction 감정 제어가 없다.
+> §4 의 감정별 pitch/speed/pause 범위표는 **가설이며 프리셋으로 구현하지 않았다.**
+
+
 > 담당: 에이전트 C (prosody/emotion research)
 > 브랜치: `research/tts-prosody-control` (origin/develop 0788885 분기)
 > 성격: **연구 문서 전용**. production 코드·스키마 파일 변경 없음. 모델/패키지 추가 설치 없음.

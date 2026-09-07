@@ -23,6 +23,9 @@ import tts_grammar
 # ─────────────────────────────────────────────────────────────────────────────
 
 EXPRESSIVE_CONTRACT_VERSION = 3
+# 기존 wire plan 의 **의미** 버전. 파서 계약 버전이 아니라 tts_grammar.
+# SEMANTIC_PLAN_HASH_VERSION 을 거울로 삼는다 — v1.4 에서 파서 계약은 3 으로 올라갔지만
+# 이 레이어가 지키는 약속("wire plan 의 뜻을 건드리지 않는다")의 기준은 의미 hash 스키마다.
 EXPRESSIVE_LEGACY_PLAN_VERSION = 2
 
 EXPRESSIVE_MODES = ("legacy_v2", "expressive_v3")

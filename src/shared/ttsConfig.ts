@@ -8,7 +8,7 @@ import type { ExpressiveMode } from './expressiveTimeline'
 // ⚠️ 왜 import 가 아니라 미러인가: 이 파일은 main/preload/renderer 세 번들에 모두 들어가고,
 //    node --test 가 직접 로드한다(확장자 필수) ↔ tsc 는 moduleResolution:bundler 라 '.ts' 확장자를
 //    금지한다(TS5097). 두 조건을 동시에 만족하는 런타임 import 형태가 없다.
-//    ttsParserVersion(=2) 과 같은 처리이며, 드리프트는 ttsConfig.test.ts 가 계약 모듈을 직접 읽어
+//    ttsParserVersion(=3) 과 같은 처리이며, 드리프트는 ttsConfig.test.ts 가 계약 모듈을 직접 읽어
 //    '값 일치'로 고정한다(테스트 파일은 tsconfig exclude 대상이라 .ts import 가 허용된다).
 const EXPRESSIVE_MODE_DEFAULT: ExpressiveMode = 'legacy_v2'
 
@@ -205,6 +205,29 @@ export interface TtsInputOptions {
   ttsEmotionRefSources?: Record<string, string>
   // source에서 effective를 만든 구간(초). 재현/기록용(합성 입력 무영향).
   ttsEmotionRefRegions?: Record<string, TtsEmotionRegion>
+  // ── 화자별 참조(v1.4) ──
+  // 합성에 실제 쓸 화자별 effective 경로. 키는 파서가 만든 **내부 stable id** 다.
+  ttsSpeakerRefs?: Record<string, string>
+  // 사용자가 등록한 원본 경로(등록 사실). Python 의 등록 판정 기준이며 effective 와 역할이 다르다.
+  ttsSpeakerRefSources?: Record<string, string>
+  // `(화자, 감정)` 전용 참조. 키는 `speakerEmotionKey(화자, 감정)`.
+  ttsSpeakerEmotionRefs?: Record<string, string>
+  /**
+   * 생성 방식 — 대본 내용이 아니라 **라우팅 방식**이다. 'single' 이면 화자 표기가 있어도 모든 발화를
+   * 한 명의 기본/감정 참조로 만들고 화자 참조·전용 참조·후보 선택은 개입하지 않는다.
+   * 앱과 새 작업의 기본값은 항상 'single'.
+   */
+  ttsSpeakerMode?: 'single' | 'multi'
+  /**
+   * 후보 비교 화면에서 사용자가 고른 것. `speakerEmotionKey(화자, 감정)` → 참조 id 또는
+   * `speaker_default` / `no_emotion_ref` 토큰.
+   *
+   * **파일 경로가 아니라 참조 id 만 담는다** — 선택을 저장하는 일이 원본을 복사하거나
+   * 옮기는 일이 되면 안 된다. 자동 제안보다 위이며 판정 권위는 Python 이다.
+   */
+  ttsEmotionCandidateSelections?: Record<string, string>
+  // 화자 표시 이름. **기록 전용**이며 private JSON 에만 남는다(합성 조건이 아니다).
+  ttsSpeakerLabels?: Record<string, string>
   ttsEngine?: string
   ttsReferencePrompts?: Record<string, TtsReferenceEntry>
   // 10초 초과 원본에서 사용자가 확정한 3~10초 파생 참조 클립(mono/24k). 설정 시 기본 참조로 이것을 쓴다.
@@ -222,7 +245,7 @@ export interface TtsInputOptions {
   // ── 표현 사이클 S1 scaffold(타입 계약만) ──
   // ⚠️ 아래 필드는 '타입 선언'일 뿐이며 이번 S1에서 buildTtsConfig 반환값에 자동 추가되지 않는다.
   //    Python 전달·session 직렬화·metadata·기본값 적용 없음 → runtime 동작 변화 0. 실제 배선은 후속 승인 단계.
-  ttsParserVersion?: 2                                        // 신규 문법 버전(legacy=암묵적 v1)
+  ttsParserVersion?: 3                                        // 문법 계약 버전(v1.4: 화자 표기 추가)
   ttsParsedPlanSha256?: string                               // renderer 파싱 결과 full sha256(Python parity 비교용; metadata엔 sha8만)
   ttsTailMode?: 'off' | 'auto'                               // 말끝 다듬기(legacy=off, new=auto). 미배선
   ttsTailPaddingMs?: number                                  // 끝 여백(new 기본 120, 허용 0~300). 미배선
@@ -251,6 +274,12 @@ export interface TtsConfig {
   ttsEmotionRefs: Record<string, string>
   ttsEmotionRefSources: Record<string, string>
   ttsEmotionRefRegions: Record<string, TtsEmotionRegion>
+  ttsSpeakerRefs: Record<string, string>
+  ttsSpeakerRefSources: Record<string, string>
+  ttsSpeakerEmotionRefs: Record<string, string>
+  ttsSpeakerMode: 'single' | 'multi'
+  ttsEmotionCandidateSelections: Record<string, string>
+  ttsSpeakerLabels: Record<string, string>
   ttsEngine: string
   ttsReferencePrompts: Record<string, TtsReferencePromptConfig>
   ttsReferenceOverride: string
@@ -342,13 +371,24 @@ export function buildTtsConfig(o?: TtsInputOptions, sourceFingerprints?: Record<
     ttsEmotionRefs: o?.ttsEmotionRefs ?? {},
     ttsEmotionRefSources: o?.ttsEmotionRefSources ?? {},
     ttsEmotionRefRegions: o?.ttsEmotionRefRegions ?? {},
+    // 화자별 참조. 부재 = 빈 dict = 화자 문법을 쓰지 않은 기존 동작.
+    ttsSpeakerRefs: o?.ttsSpeakerRefs ?? {},
+    ttsSpeakerRefSources: o?.ttsSpeakerRefSources ?? {},
+    ttsSpeakerEmotionRefs: o?.ttsSpeakerEmotionRefs ?? {},
+    // 부재·계약 밖 값 → single(기본). multi 는 명시했을 때만이다.
+    ttsSpeakerMode: o?.ttsSpeakerMode === 'multi' ? 'multi' : 'single',
+    ttsEmotionCandidateSelections: o?.ttsEmotionCandidateSelections ?? {},
+    ttsSpeakerLabels: o?.ttsSpeakerLabels ?? {},
     ttsEngine: o?.ttsEngine ?? 'auto',
     ttsReferencePrompts: buildReferencePrompts(prompts),
     ttsReferenceOverride: o?.ttsReferenceOverride ?? '',
     ttsParsedPlanSha256: o?.ttsParsedPlanSha256 ?? '',
     // 기본값 2 = ttsGrammar.TTS_PARSER_VERSION(권위). 여기선 런타임 cross-module import를 피하려 상수 미러(=2).
     // 드리프트 방지는 ttsGrammar/tts_grammar parity fixture + parser_version 계약이 담당.
-    ttsParserVersion: o?.ttsParserVersion ?? 2,
+    // 폴백 값은 파서 계약 버전과 같아야 한다(단일 권위). 값을 손으로 적어 둔 이유는
+    // 이 모듈이 세 번들에 모두 들어가 런타임 import 를 쓸 수 없기 때문이고,
+    // 드리프트는 ttsConfig.test.ts 가 ttsGrammar 를 직접 읽어 잡는다.
+    ttsParserVersion: o?.ttsParserVersion ?? 3,
     // ⚠️ 부재(null/undefined)일 때만 기본값을 채운다. '값이 있는데 계약 밖'이면 여기서 고치지 않고
     //    그대로 통과시킨다 — 조용한 legacy_v2 강등은 금지이고, 최종 판정 권위는 Python
     //    (tts_parity.verify_parity → EXPRESSIVE_MODE_INVALID, 모델 로딩 전 차단)이기 때문이다.

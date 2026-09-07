@@ -23,7 +23,16 @@ function inferStage(message: string, percent: number): number {
   return 0
 }
 
-export default function ProgressBar() {
+export interface ProgressBarProps {
+  /**
+   * 진행 중에 함께 보여 줄 장치·환경 안내. **실제로 그런 경우에만** 넘긴다.
+   * 이전 판은 경과 40초를 넘으면 'CPU일 수 있다'고 추정해 보여 줬는데, 오래 걸린다는 것은 장치의
+   * 증거가 아니다. 지금은 그 사실을 아는 화면(합성 화면의 사전 점검)만 문구를 넘긴다.
+   */
+  note?: string
+}
+
+export default function ProgressBar({ note }: ProgressBarProps = {}) {
   const { status, progress, progressMessage, mode } = useAppStore()
   const [elapsed, setElapsed] = useState(0)
   const startRef = useRef(0)
@@ -49,8 +58,8 @@ export default function ProgressBar() {
   // 취소 신호(진행 메시지에 '취소') — 실제 트리거는 통합 담당이 결정, 여기선 표시만 조건부.
   const cancelling = /취소/.test(progressMessage || '')
   const stageIdx = mode === 'tts' ? inferStage(progressMessage, progress) : -1
-  // CPU 장시간 안내: 경과가 길면 CPU 처리 가능성 안내(장치 정보는 결과 metadata에만 있어 경과로 추정).
-  const showCpuHint = elapsed >= 40
+  // 경과 시간으로 CPU 실행을 추정하지 않는다 — 오래 걸린다는 것은 장치의 증거가 아니다(오판 실사례).
+  // 장치 안내가 필요하면 그 사실을 아는 화면이 `note` 로 넘긴다.
 
   return (
     <motion.div
@@ -122,10 +131,10 @@ export default function ProgressBar() {
         />
       </div>
 
-      {/* CPU 장시간 처리 안내 */}
-      {showCpuHint && !cancelling && (
+      {/* 장치 안내 — 실제로 그렇게 도는 경우에만 넘어온다. */}
+      {!!note && !cancelling && (
         <span style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }}>
-          처리가 오래 걸리고 있습니다. GPU를 쓸 수 없는 환경에서는 CPU로 동작해 시간이 더 걸릴 수 있습니다 — 창을 닫지 말고 기다려 주세요.
+          {note}
         </span>
       )}
     </motion.div>

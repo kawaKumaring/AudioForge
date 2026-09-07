@@ -20,8 +20,12 @@ import type {
 
 const api = {
   audio: {
-    selectFile: () => ipcRenderer.invoke('audio:select-file'),
+    // multi=true 면 string[] 을 돌려준다. 인자 없는 기존 호출은 string|null 그대로다.
+    selectFile: (multi?: boolean) => ipcRenderer.invoke('audio:select-file', multi),
     getFileInfo: (filePath: string) => ipcRenderer.invoke('audio:get-file-info', filePath),
+    /** 원본들이 아직 그 자리에 있는가(경로 → 참/거짓). 현재 작업 복원이 쓴다. */
+    sourcesPresent: (paths: string[]): Promise<Record<string, boolean>> =>
+      ipcRenderer.invoke('audio:sources-present', paths),
     process: (filePath: string, mode: string, options?: Record<string, unknown>) =>
       ipcRenderer.invoke('audio:process', filePath, mode, options),
     // 취소 '요청'(계약 C2-P0.1). 수락 여부의 권위는 main이고, 반환값은 신 계약 CancelResponse이거나
@@ -34,11 +38,18 @@ const api = {
     findSession: (sourcePath: string) => ipcRenderer.invoke('audio:find-session', sourcePath),
     transcribeReference: (filePath: string) => ipcRenderer.invoke('audio:transcribe-reference', filePath),
     // clipKey('default'|emotionId): 감정별 파생 클립을 식별해 분석/트림/정리(생략 시 'default').
-    analyzeReference: (filePath: string, clipKey?: string) => ipcRenderer.invoke('audio:analyze-reference', filePath, clipKey),
-    trimReference: (filePath: string, startSec: number, durSec: number, clipKey?: string) =>
-      ipcRenderer.invoke('audio:trim-reference', filePath, startSec, durSec, clipKey),
+    // extra 는 같은 채널에 얹는 추가 설정이다(예: 감정 참조 후보 목록 요청).
+    // 새 채널을 만들지 않는다 — 응답에 필드가 더 붙을 뿐이다.
+    analyzeReference: (filePath: string, clipKey?: string, extra?: Record<string, unknown>) =>
+      ipcRenderer.invoke('audio:analyze-reference', filePath, clipKey, extra),
+    // extra: 분석과 같은 추가 설정(예: ttsEngine → 워커가 그 엔진의 길이 정책으로 판정). 새 채널 없음.
+    trimReference: (filePath: string, startSec: number, durSec: number, clipKey?: string, extra?: Record<string, unknown>) =>
+      ipcRenderer.invoke('audio:trim-reference', filePath, startSec, durSec, clipKey, extra),
     // clipKey 지정 시 그 하나만, 생략 시 전체 파생 클립 정리.
     releaseReferenceClip: (clipKey?: string) => ipcRenderer.invoke('audio:release-reference-clip', clipKey),
+    // 확정 클립 이어받기(복사) / 인물 id 변경 시 클립 key 이동 — 여러 명 첫 인물 초기 연결·시작 카드 이름 변경용.
+    adoptReferenceClip: (fromKey: string, toKey: string): Promise<string> => ipcRenderer.invoke('audio:adopt-reference-clip', fromKey, toKey),
+    renameReferenceClip: (fromKey: string, toKey: string): Promise<boolean> => ipcRenderer.invoke('audio:rename-reference-clip', fromKey, toKey),
     // 참조 source 지문(path|size|mtimeMs). 전사 확정 시 stamp해 두면 합성 경계에서 stale 폐기(§4).
     fingerprintReference: (filePath: string): Promise<string> => ipcRenderer.invoke('audio:fingerprint-reference', filePath),
     qwenPreflight: () => ipcRenderer.invoke('audio:qwen-preflight'),

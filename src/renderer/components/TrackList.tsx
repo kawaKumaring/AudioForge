@@ -1,4 +1,5 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
+import { SPEAKER_PREFLIGHT_MESSAGE } from '../../shared/speakerReference'
 import { motion, AnimatePresence } from 'framer-motion'
 import WaveSurfer from 'wavesurfer.js'
 import { useAppStore } from '@/stores/app.store'
@@ -369,6 +370,16 @@ export default function TrackList() {
     // 생성 상한 도달(GENERATION_LIMIT_EXCEEDED)은 유효 입력에서도 비결정적으로 발생 가능 → 전용 안내 + 명시 재시도.
     // 그 외 오류는 기존 일반 카드(메시지 + '다시 시도'=닫기). code는 main이 정제해 넘긴 구조화 값(전사·경로 없음).
     const isGenLimit = errorInfo?.code === 'GENERATION_LIMIT_EXCEEDED'
+    // 화자 참조 차단(Python fail-closed 가 남긴 코드)은 내부 코드가 아니라 인물 카드로 안내한다.
+    const speakerBlock = errorInfo?.code === 'SPEAKER_NOT_REGISTERED' || errorInfo?.code === 'SPEAKER_REFERENCE_NOT_READY'
+      ? SPEAKER_PREFLIGHT_MESSAGE[errorInfo.code] : null
+    // 시간 제한 판정(main watchdog) — 모델 상한(GENERATION_LIMIT_EXCEEDED)과 다른 사유다. 완료된 부분은 아직
+    // 보존되지 않으므로 "보존했습니다" 라고 말하지 않는다.
+    const timeLimitMessage = errorInfo?.code === 'JOB_STALLED' || errorInfo?.code === 'JOB_INACTIVE'
+      ? '생성이 진행되지 않아 중단했습니다. 다시 시도해 주세요.'
+      : errorInfo?.code === 'JOB_BUDGET_EXHAUSTED'
+        ? '이 작업에 허용된 총 시간을 넘겨 중단했습니다. 대본을 나누어 다시 시도해 주세요.'
+        : null
     const isCancelFailed = errorInfo?.code === 'CANCEL_FAILED'
     const scrollToTranscript = () => {
       clearError()
@@ -403,7 +414,10 @@ export default function TrackList() {
             </>
           ) : isCancelFailed ? (
             <>
-              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--rose)' }}>{error}</span>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--rose)' }}>
+                {speakerBlock && (!error || /^SPEAKER_/.test(error) || error.includes('SPEAKER_')) ? speakerBlock
+                  : (timeLimitMessage ?? error)}
+              </span>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {/* '다시 취소'는 실제 child가 살아 있을 때만(계약 5). 없으면 닫기만. */}
                 {errorInfo?.childAlive && (

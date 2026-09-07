@@ -9,7 +9,8 @@
   - coarse_peaks(): 파형 렌더링용 다운샘플 peak 배열(전체 파일).
   - trim_region(): 선택 구간만 mono/24kHz PCM WAV로 만든다. 원본은 절대 변경하지 않는다.
 
-경계 정책(3.0/10.0초)과 품질 게이트는 reference_audio.GPTSOVITS_POLICY를 그대로 재사용한다.
+경계 정책은 호출부가 넘긴 reference_audio.ReferencePolicy(엔진별 필수/권장) 에서 파생한다 — 이 모듈은
+길이 숫자를 갖지 않는다. 정책을 넘기지 않으면 GPT-SoVITS 정책(기존 동작). 품질 게이트는 정책 공통.
 speaker-overlap(화자 중첩) 회피는 진단 수준의 확실한 판별이 어려워(전체 diarization 필요) 이번엔
 구현하지 않는다 — 요구의 "가능하면"에 해당하며, 추천은 무음·클리핑·연속발화 기준으로만 한다.
 
@@ -29,6 +30,8 @@ BLOCK_SEVERE_CLIPPING = "REGION_SEVERE_CLIPPING"
 BLOCK_NEAR_SILENT = "REGION_NEAR_SILENT"
 WARN_HIGH_SILENCE = "REGION_HIGH_SILENCE"
 WARN_CLIPPING = "REGION_CLIPPING"
+# 필수 범위 안이지만 이 엔진에서 검증된(권장) 길이 밖 — 알리되 막지 않는다.
+WARN_OUTSIDE_RECOMMENDED = "REGION_OUTSIDE_RECOMMENDED"
 
 TARGET_SR = 24000            # 파생 참조 클립 샘플레이트(모델 입력)
 DEFAULT_TARGET_SEC = 7.0     # 자동 추천 목표 길이(6~8초 권장의 중앙)
@@ -37,6 +40,20 @@ REC_MAX_SEC = 8.0
 HOP_SEC = 0.1                # 추천/구간 분석 시 프레임 홉
 SILENCE_DBFS = -45.0         # 무음 창 판정(reference_audio와 동일 기준)
 CLIP_THRESHOLD = 0.99
+
+
+def _policy_or_default(policy):
+    """정책을 넘기지 않은 호출(구 경로·테스트)은 GPT-SoVITS 정책 = 예전과 같은 3~10초다."""
+    if policy is None:
+        from reference_audio import GPTSOVITS_POLICY
+        return GPTSOVITS_POLICY
+    return policy
+
+
+def _source_duration(path):
+    import soundfile as sf
+    info = sf.info(path)
+    return float(info.frames) / float(info.samplerate) if info.samplerate else 0.0
 
 
 def _load_mono(path):
@@ -66,7 +83,7 @@ def _hop_frames(mono, sr):
 
 
 def recommend_region(path, target_sec=DEFAULT_TARGET_SEC,
-                     min_sec=REC_MIN_SEC, max_sec=REC_MAX_SEC):
+                     min_sec=None, max_sec=None, policy=None):
     """10초 초과 파일에서 **확정 가능한** 좋은 발화 구간을 추천한다.
 
     추천값은 곧바로 :func:`build_reference_clip` 에 전달된다. 따라서 단순히 발화가 빽빽한
@@ -77,8 +94,19 @@ def recommend_region(path, target_sec=DEFAULT_TARGET_SEC,
     6~8초 후보를 우선하고 없으면 모델 허용 범위인 3~10초로 넓힌다. 어느 쪽에도 안전한
     경계 쌍이 없으면 임의 절단을 추천하지 않고 ``ok=False`` 를 반환한다."""
     import numpy as np
+    pol = _policy_or_default(policy)
     mono, sr = _load_mono(path)
     dur = len(mono) / sr if sr > 0 else 0.0
+    # 추천이 노리는 범위 = 정책의 권장 범위(없으면 필수 범위). 1차 창(6~8초)은 그 안으로 좁힌다.
+    rec_lo, rec_hi = pol.recommended_bounds()
+    if rec_hi == float("inf"):
+        rec_hi = dur
+    if min_sec is None:
+        min_sec = max(REC_MIN_SEC, rec_lo)
+    if max_sec is None:
+        max_sec = min(REC_MAX_SEC, rec_hi) if rec_hi > 0 else REC_MAX_SEC
+    if max_sec < min_sec:
+        min_sec, max_sec = rec_lo, rec_hi
     if dur <= 0:
         return {"ok": False, "reason": "empty", "duration_sec": 0.0}
 
@@ -130,7 +158,7 @@ def recommend_region(path, target_sec=DEFAULT_TARGET_SEC,
 
     best = best_between(float(min_sec), float(max_sec))
     if best is None:
-        best = best_between(3.0, 10.0)
+        best = best_between(float(rec_lo), float(rec_hi))
     if best is None:
         return {"ok": False, "reason": "no_safe_boundary_pair",
                 "duration_sec": round(dur, 3), "whole_file": False,
@@ -142,10 +170,12 @@ def recommend_region(path, target_sec=DEFAULT_TARGET_SEC,
             "speech_ratio": round(float(sp), 4), "safe_boundaries": True}
 
 
-def analyze_region(path, start_sec, dur_sec):
-    """선택 구간의 길이·무음비율·클리핑비율·RMS(dBFS)·peak + 품질 경고. 원본 슬라이스만 읽는다."""
+def analyze_region(path, start_sec, dur_sec, policy=None):
+    """선택 구간의 길이·무음비율·클리핑비율·RMS(dBFS)·peak + 품질 경고. 원본 슬라이스만 읽는다.
+    길이 차단(TOO_SHORT/TOO_LONG)은 정책의 **필수** 범위만 본다. 권장 범위 밖은 경고 코드로만 알린다."""
     import soundfile as sf
     import numpy as np
+    pol = _policy_or_default(policy)
     info = sf.info(path)
     sr = int(info.samplerate)
     total = int(info.frames)
@@ -181,12 +211,16 @@ def analyze_region(path, start_sec, dur_sec):
     warnings = []
     blocking = []        # 있으면 승인 불가(ready=false)
     warning_codes = []   # 알리되 막지는 않음
-    if actual_dur < 3.0:
-        warnings.append(f"길이 부족({actual_dur:.2f}s < 3.0s) — 구간을 늘리세요.")
+    req_lo, req_hi = pol.region_bounds(total / sr if sr else None)
+    if pol.min_duration_sec is not None and actual_dur < req_lo:
+        warnings.append(f"길이 부족({actual_dur:.2f}s < {req_lo:.1f}s) — 구간을 늘리세요.")
         blocking.append(BLOCK_TOO_SHORT)
-    elif actual_dur > 10.0:
-        warnings.append(f"길이 초과({actual_dur:.2f}s > 10.0s) — 구간을 줄이세요.")
+    elif pol.max_duration_sec is not None and actual_dur > req_hi:
+        warnings.append(f"길이 초과({actual_dur:.2f}s > {req_hi:.1f}s) — 구간을 줄이세요.")
         blocking.append(BLOCK_TOO_LONG)
+    elif not pol.within_recommended(actual_dur):
+        warnings.append(f"길이 {actual_dur:.2f}s 는 이 엔진에서 검증된 범위 밖입니다 — 쓸 수는 있지만 결과는 확인되지 않았습니다.")
+        warning_codes.append(WARN_OUTSIDE_RECOMMENDED)
     if trunc["tail_truncated"]:
         blocking.append(BLOCK_TAIL_TRUNCATED)
     if trunc["head_truncated"]:
@@ -214,7 +248,11 @@ def analyze_region(path, start_sec, dur_sec):
             "rms_dbfs": round(rms_dbfs, 2), "peak": round(peak, 4),
             "head_truncated": trunc["head_truncated"], "tail_truncated": trunc["tail_truncated"],
             "boundary_head_dbfs": trunc["head_dbfs"], "boundary_tail_dbfs": trunc["tail_dbfs"],
-            "in_range": bool(3.0 <= actual_dur <= 10.0), "warnings": warnings,
+            "in_range": bool(pol.within_required(actual_dur)),
+            "in_recommended": bool(pol.within_recommended(actual_dur)),
+            "policy_engine": pol.engine,
+            "required_range": [pol.min_duration_sec, pol.max_duration_sec],
+            "warnings": warnings,
             "blocking": blocking, "warning_codes": warning_codes,
             "ready": len(blocking) == 0}
 
@@ -306,22 +344,24 @@ def detect_silences(path, min_len_sec=None, dbfs=SILENCE_DBFS,
 
 
 def plan_aligned_region(path, requested_start_sec, requested_dur_sec, segments,
-                        min_sec=None, max_sec=None):
-    """요청 구간 + 전사 세그먼트 → 정렬이 보장된 계획. 자르지는 않는다(계획만)."""
+                        min_sec=None, max_sec=None, policy=None):
+    """요청 구간 + 전사 세그먼트 → 정렬이 보장된 계획. 자르지는 않는다(계획만).
+    길이 경계는 엔진 정책(region_bounds) 에서 온다 — reference_alignment 의 상수를 직접 쓰지 않는다."""
     import reference_alignment as ra
     import soundfile as sf
     info = sf.info(path)
     total_sec = float(info.frames) / float(info.samplerate)
     sil = detect_silences(path)
+    pol_lo, pol_hi = _policy_or_default(policy).region_bounds(total_sec)
     return ra.plan_reference_region(
         requested_start_sec, requested_start_sec + requested_dur_sec, segments, sil,
-        min_sec=ra.MIN_CLIP_SEC if min_sec is None else min_sec,
-        max_sec=ra.MAX_CLIP_SEC if max_sec is None else max_sec,
+        min_sec=pol_lo if min_sec is None else min_sec,
+        max_sec=pol_hi if max_sec is None else max_sec,
         source_duration=total_sec)
 
 
 def build_aligned_reference(path, requested_start_sec, requested_dur_sec, segments, out_path,
-                            min_sec=None, max_sec=None):
+                            min_sec=None, max_sec=None, policy=None):
     """정렬 보장 참조 클립 + ref_text 를 만든다. **fail-closed** — 계획이 실패하면 예외.
 
     반환 (out_path, plan). plan['ref_text'] 는 클립에 완전히 들어간 세그먼트만으로 만들어졌고,
@@ -329,7 +369,7 @@ def build_aligned_reference(path, requested_start_sec, requested_dur_sec, segmen
     import numpy as np
     import reference_alignment as ra
     plan = plan_aligned_region(path, requested_start_sec, requested_dur_sec, segments,
-                              min_sec=min_sec, max_sec=max_sec)
+                              min_sec=min_sec, max_sec=max_sec, policy=policy)
     ra.assert_alignment(plan)                      # 실패면 여기서 AlignmentError
     trim_region(path, plan["clip_start"], plan["clip_end"] - plan["clip_start"], out_path)
     # 만들어진 클립이 실제로 말 도중에 끊기지 않았는지 파형으로 다시 확인(계획과 산출물의 대조).
@@ -379,7 +419,7 @@ WARN_TEXT_UNKNOWN = "REGION_TEXT_UNKNOWN"
 
 
 def snap_region_to_silence(silences, requested_start, requested_end,
-                           min_sec=3.0, max_sec=10.0,
+                           min_sec, max_sec,
                            auto_shift_sec=SNAP_AUTO_SHIFT_SEC,
                            max_search_shift_sec=SNAP_MAX_SEARCH_SHIFT_SEC):
     """요청 구간 **주변**의 무음 한가운데만 후보로 두고 (시작, 끝)을 고른다.
@@ -388,6 +428,8 @@ def snap_region_to_silence(silences, requested_start, requested_end,
     요청 주변에 후보가 없으면 **전혀 다른 발화**를 골랐다. 실측 재현 —
     silences=[(0,1),(6,7)], 요청 100~107초 → (0.5, 6.5) 반환. 사용자가 100초를 골랐는데
     0.5초 대사가 참조가 된다. 조용한 점프는 승인 없이 일어나선 안 된다.
+
+    min_sec/max_sec 는 호출부가 엔진 정책(region_bounds) 에서 넘긴다 — 여기엔 기본 길이가 없다.
 
     반환 dict(status): 'auto' 는 정책 한도 안의 작은 보정, 'reconfirm' 은 한도를 넘어
     사용자 재확인이 필요한 제안이다. 후보 자체가 없으면 None(→ 차단).
@@ -425,8 +467,8 @@ def snap_region_to_silence(silences, requested_start, requested_end,
 
 
 def build_reference_clip(src_path, requested_start_sec, requested_dur_sec, out_path,
-                         manual_text=None, min_sec=3.0, max_sec=10.0,
-                         transcribe_fn=None, whisper_model="small"):
+                         manual_text=None, min_sec=None, max_sec=None,
+                         transcribe_fn=None, whisper_model="small", policy=None):
     """자동 보정된 참조 클립을 만든다. 1단계 계약(blocking/warning_codes/ready)을 그대로 쓴다.
 
     반환 dict — 실패해도 같은 모양이며 blocking 이 비어 있지 않고 clip_path 가 None 이다.
@@ -435,9 +477,17 @@ def build_reference_clip(src_path, requested_start_sec, requested_dur_sec, out_p
     import reference_alignment as ra
     import reference_leakage as rl
 
+    pol = _policy_or_default(policy)
+    pol_lo, pol_hi = pol.region_bounds(_source_duration(src_path))
+    if min_sec is None:
+        min_sec = pol_lo
+    if max_sec is None:
+        max_sec = pol_hi
     req_start = float(requested_start_sec)
     req_end = req_start + float(requested_dur_sec)
     res = {
+        "policy_engine": pol.engine,
+        "required_range": [pol.min_duration_sec, pol.max_duration_sec],
         "clip_path": None,
         "requested_region": {"start_sec": round(req_start, 4), "end_sec": round(req_end, 4),
                              "dur_sec": round(req_end - req_start, 4)},
@@ -515,6 +565,41 @@ def build_reference_clip(src_path, requested_start_sec, requested_dur_sec, out_p
     else:
         res["validation"] = {"status": "no_manual_text"}
 
+    if not pol.within_recommended(e - s):
+        # 필수 범위 안이지만 검증된 범위 밖 — 클립은 만들고 알린다(차단 아님).
+        res["warning_codes"].append(WARN_OUTSIDE_RECOMMENDED)
     res["clip_path"] = out_path
     res["ready"] = len(res["blocking"]) == 0
     return res
+
+
+def analysis_payload(path, policy, include_peaks=True):
+    """ref-analyze 응답. 화면이 읽는 모든 길이 조건이 **이 정책** 하나에서 나온다.
+
+    needs_region     — 구간을 추천한다(필수 상한이 있으면 그것, 없으면 권장 상한을 넘었을 때).
+    region_required  — 필수 상한 초과: 자르지 않으면 이 엔진이 쓸 수 없다(GPT-SoVITS 10초 초과).
+    too_short        — 필수 하한 미달(다른 파일 필요). 권장 하한 미달은 outside_recommended 로만 알린다.
+    valid_whole      — 원본을 그대로 참조로 쓸 수 있다(필수 조건 통과).
+    """
+    from reference_audio import assess_reference_file
+    assessed = assess_reference_file(path, policy)
+    a = assessed.analysis
+    dur = float(a.duration_sec)
+    threshold = policy.region_threshold_sec()
+    hard_lo, hard_hi = policy.min_duration_sec, policy.max_duration_sec
+    payload = {
+        "duration_sec": dur, "sample_rate": a.sample_rate, "channels": a.channels,
+        "policy": policy.describe(),
+        "needs_region": bool(threshold is not None and dur > threshold),
+        "region_required": bool(hard_hi is not None and dur > hard_hi),
+        "too_short": bool(a.readable and hard_lo is not None and 0 < dur < hard_lo),
+        "outside_recommended": bool(a.readable and dur > 0 and not policy.within_recommended(dur)),
+        "valid_whole": bool(assessed.valid),
+        "errors": [e.to_dict() for e in assessed.errors],
+        "warnings": [w.to_dict() for w in assessed.warnings],
+    }
+    if payload["needs_region"]:
+        payload["recommend"] = recommend_region(path, policy=policy)
+        if include_peaks:
+            payload["peaks"] = coarse_peaks(path, buckets=500)
+    return payload

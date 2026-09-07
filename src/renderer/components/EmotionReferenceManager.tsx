@@ -14,6 +14,15 @@ import {
   resolveEmotionAcoustic,
   EMOTION_ACOUSTIC_DEFAULT_VOICE_NOTICE,
 } from '../../shared/emotionAcoustic'
+import {
+  candidateBadges, candidateDetailLines, candidateFacts, candidateHeadline,
+  CANDIDATE_ACTION_LABEL, PROVISIONAL_THRESHOLD_NOTE, SELECTION_REASON_LABEL,
+} from '../../shared/analysisWording'
+import {
+  candidateSelectable, speakerEmotionKey,
+  USER_CHOICE_NO_EMOTION_REF, USER_CHOICE_SPEAKER_DEFAULT,
+} from '../../shared/speakerReference'
+import type { EmotionCandidate, EmotionCandidateView } from '../../shared/speakerReference'
 
 const ID_TO_COLOR: Record<string, string> = (() => {
   const m: Record<string, string> = {}
@@ -30,6 +39,20 @@ export interface EmotionReferenceManagerLocalProps extends EmotionReferenceManag
   /** 대사에 실제 쓰인 감정 id(첫 등장 순). 목록 상단 우선 표시에만 쓴다. */
   usedEmotionIds?: string[]
   disabled?: boolean
+
+  // ── 후보 비교·선택 (PHASE E4) ────────────────────────────────────────
+  // 자동 제안 기준값이 잠정치이므로 사용자가 **보고 바꿀 수** 있어야 한다.
+  // 셸이 후보 목록을 주입하지 않으면 이 절은 아예 그려지지 않는다(빈 칸을 만들지 않는다).
+  /** 대본에 나온 인물. 후보는 이 중 한 명의 것만 보여 준다. */
+  speakerChoices?: { speakerId: string; label: string }[]
+  /** `speakerEmotionKey(화자, 감정)` → 후보 목록. Python candidate_view 결과다. */
+  candidateViews?: Record<string, EmotionCandidateView>
+  /** 후보 목록을 불러온다(셸이 기존 분석 worker를 호출). */
+  onLoadCandidates?: (speakerId: string, emotionId: string) => void
+  /** 후보 하나를 들어 본다. */
+  onPreviewCandidate?: (speakerId: string, emotionId: string, referenceId: string) => void
+  /** 선택을 바꾼다. 참조 id 또는 기본/사용 안 함 토큰. 원본 파일은 건드리지 않는다. */
+  onSelectCandidate?: (speakerId: string, emotionId: string, choice: string) => void
 }
 
 // 한 감정이 가질 수 있는 상태는 셋뿐이다(토글 아님 — 등록 여부와 구간 확정 여부에서 파생).
@@ -83,6 +106,11 @@ export default function EmotionReferenceManager({
   renderRegionEditor,
   usedEmotionIds,
   disabled = false,
+  speakerChoices,
+  candidateViews,
+  onLoadCandidates,
+  onPreviewCandidate,
+  onSelectCandidate,
 }: EmotionReferenceManagerLocalProps) {
   const [open, setOpen] = useState(false)
   const [expandedRow, setExpandedRow] = useState<string | null>(null)
@@ -219,6 +247,18 @@ export default function EmotionReferenceManager({
                 }}>
                   {acoustic.notice}
                 </p>
+                {/* 후보 비교·선택 — 셸이 후보를 주입한 경우에만 그린다. */}
+                {rowOpen && speakerChoices && speakerChoices.length > 0 && candidateViews && (
+                  <EmotionCandidateSection
+                    emotionId={r.emotionId}
+                    speakerChoices={speakerChoices}
+                    candidateViews={candidateViews}
+                    disabled={disabled}
+                    onLoadCandidates={onLoadCandidates}
+                    onPreviewCandidate={onPreviewCandidate}
+                    onSelectCandidate={onSelectCandidate}
+                  />
+                )}
                 {/* 셸 주입 구간 편집기(onChangeRegion 소비). */}
                 {rowOpen && renderRegionEditor && (
                   <div style={{ marginTop: 6 }}>
@@ -253,6 +293,156 @@ export default function EmotionReferenceManager({
             </div>
           )}
         </div>
+      )}
+    </div>
+  )
+}
+
+/**
+ * 후보 비교·선택 절. 기본 화면에는 사실과 배지만, 점수는 상세 정보에만 그린다.
+ *
+ * 여기서 하지 않는 것: 점수 재계산. 순위는 Python 이 정하고 이 절은 그것을 보여 준다.
+ * 두 벌 계산하면 화면과 생성이 다른 답을 낼 수 있다.
+ */
+function EmotionCandidateSection(props: {
+  emotionId: string
+  speakerChoices: { speakerId: string; label: string }[]
+  candidateViews: Record<string, EmotionCandidateView>
+  disabled: boolean
+  onLoadCandidates?: (speakerId: string, emotionId: string) => void
+  onPreviewCandidate?: (speakerId: string, emotionId: string, referenceId: string) => void
+  onSelectCandidate?: (speakerId: string, emotionId: string, choice: string) => void
+}) {
+  const { emotionId, speakerChoices, candidateViews, disabled } = props
+  const [speakerId, setSpeakerId] = useState<string>(speakerChoices[0]?.speakerId ?? '')
+  const [detailOf, setDetailOf] = useState<string | null>(null)
+  const view = speakerId ? candidateViews[speakerEmotionKey(speakerId, emotionId)] : undefined
+
+  const act = (choice: string) => {
+    if (!disabled && speakerId) props.onSelectCandidate?.(speakerId, emotionId, choice)
+  }
+
+  return (
+    <div data-testid="emotion-candidates" data-emotion={emotionId}
+      style={{
+        marginTop: 8, paddingTop: 8, borderTop: '1px solid var(--border-subtle)',
+        display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0,
+      }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+        <label htmlFor={`cand-speaker-${emotionId}`}
+          style={{ fontSize: 11, color: 'var(--text-muted)' }}>인물</label>
+        <select id={`cand-speaker-${emotionId}`} value={speakerId} disabled={disabled}
+          onChange={(e) => {
+            setSpeakerId(e.target.value)
+            if (e.target.value) props.onLoadCandidates?.(e.target.value, emotionId)
+          }}
+          style={{
+            fontSize: 11, padding: '3px 8px', borderRadius: 6, fontFamily: 'inherit',
+            border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)',
+            color: 'var(--text-secondary)',
+          }}>
+          {speakerChoices.map((s) => (
+            <option key={s.speakerId} value={s.speakerId}>{s.label}</option>
+          ))}
+        </select>
+        {!view && speakerId && (
+          <button type="button" disabled={disabled}
+            onClick={() => props.onLoadCandidates?.(speakerId, emotionId)}
+            style={btn('var(--bg-elevated)', 'var(--text-secondary)', disabled)}>
+            후보 불러오기
+          </button>
+        )}
+        {view && (
+          <span data-testid="emotion-candidate-headline"
+            style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+            {candidateHeadline(view)}
+          </span>
+        )}
+      </div>
+
+      {view && view.selection?.selectionReason && (
+        <span data-testid="emotion-candidate-reason"
+          style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          {SELECTION_REASON_LABEL[view.selection.selectionReason]}
+        </span>
+      )}
+
+      {view?.candidates.map((c: EmotionCandidate) => {
+        const badges = candidateBadges(c, view)
+        const openDetail = detailOf === c.referenceId
+        return (
+          <div key={c.referenceId} data-testid="emotion-candidate-row"
+            data-reference={c.referenceId}
+            data-recommended={c.recommended ? 'true' : 'false'}
+            data-selected={c.selected ? 'true' : 'false'}
+            style={{
+              display: 'flex', flexDirection: 'column', gap: 3, padding: '6px 8px',
+              borderRadius: 6, minWidth: 0,
+              border: `1px solid ${c.selected ? 'var(--cyan)' : 'var(--border-subtle)'}`,
+            }}>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', minWidth: 0 }}>
+              {/* 폴더는 보여 주지 않는다 — 고른 파일을 알아볼 수 있을 만큼만. */}
+              <span data-testid="emotion-candidate-file" style={{
+                fontSize: 11, fontWeight: 600, color: 'var(--text-secondary)',
+                flex: '1 1 120px', minWidth: 0, overflow: 'hidden',
+                textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+              }}>{c.fileLabel}</span>
+              {badges.map((b) => <span key={b} style={badge('var(--cyan)')}>{b}</span>)}
+            </div>
+            <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', fontSize: 10, color: 'var(--text-muted)' }}>
+              {candidateFacts(c).map((f) => <span key={f}>{f}</span>)}
+            </div>
+            <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+              <button type="button" disabled={disabled}
+                onClick={() => props.onPreviewCandidate?.(speakerId, emotionId, c.referenceId)}
+                style={btn('var(--bg-elevated)', 'var(--text-secondary)', disabled)}>
+                {CANDIDATE_ACTION_LABEL.preview}
+              </button>
+              <button type="button"
+                disabled={disabled || c.selected || !candidateSelectable(c)}
+                onClick={() => act(c.referenceId)}
+                style={btn('var(--bg-elevated)', 'var(--cyan)',
+                  disabled || c.selected || !candidateSelectable(c))}>
+                {c.recommended && !view.insufficientCandidates
+                  ? CANDIDATE_ACTION_LABEL.keep : CANDIDATE_ACTION_LABEL.choose}
+              </button>
+              <button type="button"
+                onClick={() => setDetailOf(openDetail ? null : c.referenceId)}
+                style={btn('transparent', 'var(--text-muted)')}>
+                {openDetail ? '상세 닫기' : '상세 정보'}
+              </button>
+            </div>
+            {openDetail && (
+              <div data-testid="emotion-candidate-detail"
+                style={{ display: 'flex', flexDirection: 'column', gap: 2, paddingTop: 2 }}>
+                {candidateDetailLines(c, view).map((line) => (
+                  <span key={line} style={{ fontSize: 10, color: 'var(--text-muted)' }}>{line}</span>
+                ))}
+              </div>
+            )}
+          </div>
+        )
+      })}
+
+      {view && (
+        <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+          <button type="button" disabled={disabled}
+            onClick={() => act(USER_CHOICE_SPEAKER_DEFAULT)}
+            style={btn('var(--bg-elevated)', 'var(--text-secondary)', disabled)}>
+            {CANDIDATE_ACTION_LABEL.speakerDefault}
+          </button>
+          <button type="button" disabled={disabled}
+            onClick={() => act(USER_CHOICE_NO_EMOTION_REF)}
+            style={btn('var(--bg-elevated)', 'var(--text-secondary)', disabled)}>
+            {CANDIDATE_ACTION_LABEL.noEmotionRef}
+          </button>
+        </div>
+      )}
+
+      {view && (
+        <span style={{ fontSize: 10, color: 'var(--amber, #f59e0b)', lineHeight: 1.5 }}>
+          {PROVISIONAL_THRESHOLD_NOTE}
+        </span>
       )}
     </div>
   )

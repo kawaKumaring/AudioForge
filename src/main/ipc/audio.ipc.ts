@@ -3,7 +3,9 @@ import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { join, basename, dirname, extname, resolve } from 'path'
 import { randomUUID } from 'crypto'
-import { existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync } from 'fs'
+import {
+  existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync, copyFileSync,
+} from 'fs'
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
 import { createSettlementGuard, createRunSettlement, createRunnerSlot } from '../services/run-settlement'
@@ -19,6 +21,11 @@ import { createJobWatchdog, startJobWatch, createStagingGate } from '../services
 import { createTerminalGate } from '../services/run-settlement'
 import type { CancelResponse } from '../../shared/cancelContract'
 import { validateSidecarEvent, SIDECAR_IPC_CHANNEL } from '../../shared/sidecarEvents'
+import {
+  GLOBAL_ASSET_STORAGE_KEY, VOICE_CAST_STORAGE_KEY,
+} from '../../shared/emotionCandidateRegistry'
+import { WORK_DRAFT_STORAGE_KEY } from '../../shared/workDraft'
+import { readSettingsFile, setSettingsKey } from '../services/settings-store'
 import type { SidecarEnvelope } from '../../shared/sidecarEvents'
 // 타입만 가져온다 — 참조 라이브러리 모듈을 런타임에 끌어오지 않으므로 순환 의존이 생기지 않는다.
 import type { ReferencePreviewAdapter } from './reference-library.ipc'
@@ -69,20 +76,17 @@ function settingsFilePath(): string {
   return join(app.getPath('userData'), 'settings.json')
 }
 function loadSettings(): Record<string, unknown> {
-  try {
-    const f = settingsFilePath()
-    if (existsSync(f)) return JSON.parse(readFileSync(f, 'utf-8'))
-  } catch { /* ignore */ }
-  return {}
+  const got = readSettingsFile(settingsFilePath())
+  // 손상은 빈 설정과 다르다 — 여기서는 읽기 용도라 빈 것으로 보되, 쓰기 경로가
+  // 손상본을 덮어쓰지 않는다(settings-store 가 막는다).
+  return got.kind === 'ok' ? got.settings : {}
 }
-function saveSetting(key: string, value: unknown): void {
-  try {
-    const s = loadSettings()
-    s[key] = value
-    writeFileSync(settingsFilePath(), JSON.stringify(s, null, 2), 'utf-8')
-  } catch (err) {
-    console.log(`[AudioForge] 설정 저장 실패: ${(err as Error).message}`)
-  }
+// 원자 저장은 `services/settings-store` 가 소유한다(실패 시 기존 바이트 보존, 표적 테스트
+// 로 검증). 여기서는 결과를 그대로 돌려주고 실패를 성공으로 바꾸지 않는다.
+function saveSetting(key: string, value: unknown): { ok: boolean; code?: string } {
+  const res = setSettingsKey(settingsFilePath(), key, value)
+  if (!res.ok) console.log(`[AudioForge] 설정 저장 실패: ${res.code}`)
+  return res.ok ? { ok: true } : { ok: false, code: res.code }
 }
 function savePythonPath(p: string): void { saveSetting('pythonPath', p) }
 
@@ -310,11 +314,13 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   const pitchPreflightSF = createSingleFlight<unknown>()  // pitch capability probe(qwen/analyze/trim guard와 무관)
   const analyzeSF = createKeyedSingleFlight<unknown>()  // 절대경로 key
 
-  ipcMain.handle('audio:select-file', async () => {
+  // multi 를 주면 여러 개를 고를 수 있다(같은 감정에 파일 여럿 등록). 인자를 주지 않는
+  // 기존 호출부의 동작과 반환 형태는 그대로다 — 새 채널을 만들지 않는다.
+  ipcMain.handle('audio:select-file', async (_event, multi?: boolean) => {
     // 마지막으로 불러온 폴더에서 열기 — settings.json에 기억(다른 앱 영향 없음)
     const lastDir = loadSettings().lastDir
     const result = await dialog.showOpenDialog(mainWindow, {
-      properties: ['openFile'],
+      properties: multi ? ['openFile', 'multiSelections'] : ['openFile'],
       defaultPath: (typeof lastDir === 'string' && existsSync(lastDir)) ? lastDir : undefined,
       filters: [
         // 대표 포맷은 편의를 위해 앞에 두고, 실제 허용은 전체(ffmpeg 디코딩 가능 포맷 전부: mo3 등 포함)
@@ -322,8 +328,21 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
         { name: 'All Files', extensions: ['*'] }
       ]
     })
-    if (result.canceled || result.filePaths.length === 0) return null
-    return result.filePaths[0]
+    if (result.canceled || result.filePaths.length === 0) return multi ? [] : null
+    return multi ? result.filePaths : result.filePaths[0]
+  })
+
+  // 원본이 아직 그 자리에 있는가 — 현재 작업 복원이 인물마다 확인한다.
+  // ffprobe 를 돌리지 않는다(인물 수만큼 돌면 앱 시작이 느려진다). 참·거짓만 돌려주고
+  // 경로는 렌더러가 이미 아는 값이라 새로 흘러나가는 정보가 없다.
+  ipcMain.handle('audio:sources-present', (_event, paths: unknown) => {
+    const out: Record<string, boolean> = {}
+    if (!Array.isArray(paths)) return out
+    for (const p of paths) {
+      if (typeof p !== 'string' || !p) continue
+      try { out[p] = existsSync(p) } catch { out[p] = false }
+    }
+    return out
   })
 
   ipcMain.handle('audio:get-file-info', async (_event, filePath: string) => {
@@ -385,18 +404,25 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
 
   // 참조 구간 분석(길이/추천/파형 peak) — 읽기 전용. 배타 가드 미사용(analyze/preflight를 서로 차단하지
   // 않음). 같은 절대 filePath의 동시 요청은 single-flight로 합쳐 subprocess 1회, 모두 같은 결과.
-  ipcMain.handle('audio:analyze-reference', async (_event, filePath: string, clipKey: string = 'default') => {
+  ipcMain.handle('audio:analyze-reference', async (_event, filePath: string, clipKey: string = 'default',
+                                                   extra?: Record<string, unknown>) => {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 분석을 실행할 수 없습니다.')
     if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
     // single-flight key는 clipKey+절대경로 — 감정별로 분리하되 같은 (key,파일)의 동시 요청만 합침.
+    // extra 가 다르면 다른 질문이다 — single-flight 키에 넣지 않으면 후보 목록 요청이
+    // 같은 파일의 이전 분석 응답에 합쳐져 후보가 오지 않는다.
     const key = clipKey + '\u0000' + resolve(filePath)
-    if (!analyzeSF.has(key)) releaseRefClip(clipKey)  // 새 분석 시작일 때만 그 key의 이전 파생 클립 폐기(중복 요청엔 안 함)
+      + (extra ? '\u0000' + JSON.stringify(extra) : '')
+    // 분석은 읽기다 — 확정 클립을 지우지 않는다. 편집기를 다시 열거나 같은 원본을 다시 살펴봐도 준비 상태가
+    // 내려가지 않는다. 클립이 바뀌는 때는 재확정 성공(trim)·원본 교체(register)·해제·새 파일·리셋뿐이다.
     return analyzeSF.run(key, async () => {  // 동시/StrictMode 중복은 진행 중 Promise 공유(subprocess 1회)
       const cfgPath = join(tmpdir(), `audioforge_refanalyze_${randomUUID()}.json`)
       try {
         const scriptPath = PythonRunner.getScriptPath('separate.py')
-        writeFileSync(cfgPath, JSON.stringify({ mode: 'ref-analyze', input: filePath, output: dirname(filePath) }), 'utf-8')
+        writeFileSync(cfgPath, JSON.stringify({
+          mode: 'ref-analyze', input: filePath, output: dirname(filePath), ...(extra ?? {}),
+        }), 'utf-8')
         return await runPreview({
           runner: new PythonRunner(pythonPath, runnerDeps),
           scriptPath, args: ['--config', cfgPath],
@@ -410,29 +436,43 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   })
 
   // 선택 구간 → mono/24k 파생 참조 WAV(작업 임시폴더). 원본 불변. 반환 clip_path를 합성에 전달한다.
-  ipcMain.handle('audio:trim-reference', async (_event, filePath: string, startSec: number, durSec: number, clipKey: string = 'default') => {
+  ipcMain.handle('audio:trim-reference', async (_event, filePath: string, startSec: number, durSec: number, clipKey: string = 'default',
+                                                extra?: Record<string, unknown>) => {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 트림을 실행할 수 없습니다.')
     if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
-    releaseRefClip(clipKey)  // 재확정 → 그 key의 이전 파생 클립만 폐기(타 감정 클립 불변; 합성 중 아님: 위에서 차단)
     referenceTrimGuard.begin()  // 트림 중복 실행 방지(전사 가드와 분리 — 서로 차단하지 않음)
     const uid = randomUUID()
     const cfgPath = join(tmpdir(), `audioforge_reftrim_${uid}.json`)
     const outDir = join(tmpdir(), `audioforge_refclip_${uid}`)  // 작업 임시폴더(프로젝트 밖), 충돌 불가 UID
-    refClipDirs.set(clipKey, outDir)  // 새 파생 클립 폴더를 그 key로 추적(합성 종료/새 파일/재확정 시 정리)
+    // 원자 교체: 새 클립을 먼저 만들고, **성공했을 때만** 이전 클립을 놓는다. 실패하면 새 폴더를 지우고
+    // 이전 클립(사용자가 쓰던 확정 구간)은 그대로 남는다 — 재확정 실패가 멀쩡한 상태를 되돌리지 않는다.
     try {
       mkdirSync(outDir, { recursive: true })
       const scriptPath = PythonRunner.getScriptPath('separate.py')
       writeFileSync(cfgPath, JSON.stringify({
         mode: 'ref-trim', input: filePath, output: outDir,
-        regionStart: startSec, regionDur: durSec
+        regionStart: startSec, regionDur: durSec, ...(extra ?? {}),
       }), 'utf-8')
-      return await runPreview({
+      const res = await runPreview({
         runner: new PythonRunner(pythonPath, runnerDeps),
         scriptPath, args: ['--config', cfgPath],
         timeoutMs: 60000,
         cleanup: () => { try { unlinkSync(cfgPath) } catch {} }
       })
+      const r = (res ?? {}) as Record<string, unknown>
+      const succeeded = typeof r.clip_path === 'string' && r.status !== 'failed' && typeof r.code !== 'string'
+        && existsSync(r.clip_path as string)
+      if (succeeded) {
+        releaseRefClip(clipKey)          // 이제서야 이전 클립을 놓는다
+        refClipDirs.set(clipKey, outDir)
+      } else {
+        removeRefClipDir(tmpdir(), outDir)  // 반쪽 결과는 남기지 않는다. 이전 클립은 건드리지 않았다
+      }
+      return res
+    } catch (e) {
+      removeRefClipDir(tmpdir(), outDir)
+      throw e
     } finally {
       try { unlinkSync(cfgPath) } catch {}
       referenceTrimGuard.end()
@@ -707,7 +747,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
           settle.markSettled()
           stagingGate.abandon()   // 시간 초과로 마감된 실행의 늦은 결과는 공개하지 않는다
           runner.cancel()  // async(무시) — 트리 kill 시도
-          sendError('처리 시간이 초과되었습니다 (5분간 응답 없음). Python 환경을 확인해주세요.')
+          sendError({ code: 'JOB_INACTIVE', message: '처리 시간이 초과되었습니다 (5분간 응답 없음)' })
         }
       }, WATCHDOG_MS)
     }
@@ -734,12 +774,16 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
         // staging 이 끝나기 전에 터미널이 확정됐다 → 뒤늦게 도착하는 결과는 절대 공개하지 않는다.
         stagingGate.abandon()
         runner?.cancel()  // async(무시) — 트리 kill 시도
+        // 판정마다 기계 코드를 붙인다 — renderer 가 GENERATION_LIMIT_EXCEEDED 처럼 분기할 수 있고, 기록에서
+        // 시간 초과와 모델 상한이 섞이지 않는다.
         sendError(verdict === 'no-forward-progress'
-          ? `합성이 ${Math.round(r.sinceForwardMs / 1000)}초 동안 한 조각도 진행하지 못했습니다 `
-            + `(완료 ${r.completedChunks}조각). 프로세스는 살아 있었지만 결과를 만들지 못했습니다.`
-          : `합성이 이 작업에 허용된 총 시간을 초과했습니다 `
-            + `(경과 ${Math.round(r.elapsedMs / 1000)}초, 완료 ${r.completedChunks}`
-            + `/${r.estimatedTotalChunks ?? '?'}조각).`)
+          ? { code: 'JOB_STALLED',
+              message: `합성이 ${Math.round(r.sinceForwardMs / 1000)}초 동안 한 조각도 진행하지 못했습니다 `
+                + `(완료 ${r.completedChunks}조각). 프로세스는 살아 있었지만 결과를 만들지 못했습니다.` }
+          : { code: 'JOB_BUDGET_EXHAUSTED',
+              message: `합성이 이 작업에 허용된 총 시간을 초과했습니다 `
+                + `(경과 ${Math.round(r.elapsedMs / 1000)}초, 완료 ${r.completedChunks}`
+                + `/${r.estimatedTotalChunks ?? '?'}조각).` })
       }
     })
 
@@ -954,6 +998,35 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
 
   // 파일 reset/변경·감정 삭제/재등록 시 렌더러가 호출 — 파생 참조 클립 폴더 정리(합성 중이면 건드리지 않음).
   // clipKey 지정 시 그 하나만(감정 삭제/재등록), 생략 시 전체(새 파일/reset).
+  // 확정 클립 이어받기 — fromKey(보통 'default') 의 클립 폴더를 새 UID 폴더로 **복사**해 toKey 소유로 등록한다.
+  // 같은 임시 경로를 두 key 가 공유하지 않으므로, 기본 목소리를 다시 확정/해제해도 인물의 클립은 남는다.
+  // fromKey 에 클립이 없으면(원본 전체 사용) '' — 호출부가 '원본 그대로' 로 처리한다.
+  ipcMain.handle('audio:adopt-reference-clip', (_event, fromKey: string, toKey: string) => {
+    const srcDir = refClipDirs.get(fromKey)
+    if (!srcDir || !existsSync(srcDir) || !toKey || toKey === fromKey) return ''
+    const outDir = join(tmpdir(), `audioforge_refclip_${randomUUID()}`)
+    try {
+      mkdirSync(outDir, { recursive: true })
+      for (const f of readdirSync(srcDir)) copyFileSync(join(srcDir, f), join(outDir, f))
+    } catch {
+      removeRefClipDir(tmpdir(), outDir)
+      return ''
+    }
+    const clip = join(outDir, 'reference_clip_24k.wav')
+    if (!existsSync(clip)) { removeRefClipDir(tmpdir(), outDir); return '' }
+    releaseRefClip(toKey)               // 이전 소유 클립은 새 클립이 준비된 뒤에만 놓는다
+    refClipDirs.set(toKey, outDir)
+    return clip
+  })
+  // 인물 id 가 바뀌어도(시작 카드 이름 변경) 같은 클립을 새 key 로 계속 소유한다. 파일 이동 없음.
+  ipcMain.handle('audio:rename-reference-clip', (_event, fromKey: string, toKey: string) => {
+    const dir = refClipDirs.get(fromKey)
+    if (!dir || !toKey || toKey === fromKey) return false
+    if (refClipDirs.get(toKey) && refClipDirs.get(toKey) !== dir) releaseRefClip(toKey)
+    refClipDirs.delete(fromKey)
+    refClipDirs.set(toKey, dir)
+    return true
+  })
   ipcMain.handle('audio:release-reference-clip', (_event, clipKey?: string) => {
     if (runner?.isRunning) return false  // 합성 worker가 참조 사용 중 → 삭제 금지
     releaseRefClip(clipKey)
@@ -1090,14 +1163,37 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   })
 
   ipcMain.handle('settings:get', () => {
-    return { pythonPath }
+    // 후보 등록부는 합성과 무관하게 살아 있어야 한다 — 합성하지 않고 앱을 닫아도
+    // 복원돼야 하므로 여기서 함께 돌려준다. Python 이 읽는 생성 config 와 다른 파일이다.
+    // 두 키를 따로 돌려준다 — 자산(물리 음원)과 배역(연결)은 다른 책임이고, 한쪽이
+    // 손상돼도 다른 쪽이 함께 죽지 않아야 한다.
+    const stored = loadSettings()
+    return {
+      pythonPath,
+      [GLOBAL_ASSET_STORAGE_KEY]: stored[GLOBAL_ASSET_STORAGE_KEY] ?? null,
+      [VOICE_CAST_STORAGE_KEY]: stored[VOICE_CAST_STORAGE_KEY] ?? null,
+      // 현재 작업 자동 저장 — 합성하지 않아도 남는 "지금 만들던 것". 위 두 키와 서로 독립이다
+      // (자동 저장이 사용자가 명시적으로 저장한 목소리 구성을 건드리지 않는다).
+      [WORK_DRAFT_STORAGE_KEY]: stored[WORK_DRAFT_STORAGE_KEY] ?? null,
+    }
   })
 
   ipcMain.handle('settings:set', (_event, key: string, value: unknown) => {
     if (key === 'pythonPath' && typeof value === 'string') {
       pythonPath = value
       savePythonPath(value)  // L-6: 영속화
+      return
     }
+    // 전역 참조 자산 등록부. 해석 권위는 shared `deserializeAssetStore` 이고 main 은
+    // 옮기기만 한다. 저장 성공 여부를 그대로 돌려준다 — 실패를 persisted 로 표시하면
+    // 사용자는 저장된 줄 알고 앱을 닫는다.
+    if (key === GLOBAL_ASSET_STORAGE_KEY || key === VOICE_CAST_STORAGE_KEY
+        || key === WORK_DRAFT_STORAGE_KEY) {
+      // 배역 세트도 같은 원자 경로를 쓴다. 두 키는 서로를 덮지 않는다 —
+      // settings-store 가 현재 파일을 읽어 그 키 하나만 갱신한다.
+      return saveSetting(key, value ?? undefined)
+    }
+    return { ok: false, code: 'SETTINGS_KEY_NOT_ALLOWED' }
   })
 
   ipcMain.handle('settings:select-python-path', async () => {

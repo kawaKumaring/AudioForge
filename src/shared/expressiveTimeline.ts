@@ -38,7 +38,15 @@
 
 /** 이 모듈이 정의하는 표현형 계약의 버전. v2 wire plan 과 '별개'의 축이다. */
 export const EXPRESSIVE_CONTRACT_VERSION = 3 as const
-/** 기존 wire plan(ttsParserVersion / ttsParsedPlanSha256)의 버전. 이 레이어가 바꾸지 않는다. */
+/**
+ * 기존 wire plan 의 **의미** 버전. 이 레이어가 바꾸지 않는다는 약속의 기준값이다.
+ *
+ * v1.4 에서 파서 계약 버전은 3 으로 올라갔다(화자 표기가 새로 생겼다). 그런데 이 레이어가
+ * 지키는 약속은 "wire plan 의 뜻을 건드리지 않는다" 이고, 그 뜻의 지문 스키마는
+ * `ttsGrammar.SEMANTIC_PLAN_HASH_VERSION` = 2 로 그대로다. 그래서 이 상수는 파서 계약
+ * 버전이 아니라 **의미 hash 스키마**를 거울로 삼는다. 둘이 갈라진 뒤 파서 버전을 따라가면
+ * "의미를 안 바꿨다" 는 주장과 값이 어긋난다.
+ */
 export const EXPRESSIVE_LEGACY_PLAN_VERSION = 2 as const
 
 /**
@@ -56,7 +64,8 @@ export const EXPRESSIVE_MODE_TO_VERSION: Readonly<Record<ExpressiveMode, 2 | 3>>
 })
 
 // 드리프트 가드는 테스트가 담당한다(런타임 cross-module import 없음):
-//   EXPRESSIVE_LEGACY_PLAN_VERSION === ttsGrammar.TTS_PARSER_VERSION 을 TS/Python 양쪽 테스트가 단언한다.
+//   EXPRESSIVE_LEGACY_PLAN_VERSION === ttsGrammar.SEMANTIC_PLAN_HASH_VERSION 을 TS/Python
+//   양쪽 테스트가 단언한다(파서 계약 버전이 아니다 — 위 상수 주석 참고).
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 0b. ttsGrammar.ts 거울(자립 모듈이라 값 복사 — 드리프트는 테스트가 감시)

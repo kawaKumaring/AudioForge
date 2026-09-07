@@ -27,6 +27,8 @@ export interface TtsAdvancedSettingsProps {
   onTab: (tab: TtsAdvancedTab) => void
   /** 접혀 있을 때 함께 보이는 한 줄 요약(예: 현재 엔진). 없으면 표시하지 않는다. */
   summary?: string
+  /** 이 화면에서의 단계 번호. 다른 섹션과 연속돼야 한다(여러 명 3, 한 명 4). */
+  flowNumber?: number
   /** 전역 '설정 설명 표시' 스위치 — 기본 화면에서 이리로 옮겨 왔다. */
   showSettingHelp: boolean
   onToggleSettingHelp: (v: boolean) => void
@@ -39,7 +41,7 @@ export interface TtsAdvancedSettingsProps {
 const BODY_ID = 'tts-advanced-body'
 
 export default function TtsAdvancedSettings({
-  open, onToggle, tab, onTab, summary, showSettingHelp, onToggleSettingHelp,
+  open, onToggle, tab, onTab, summary, flowNumber, showSettingHelp, onToggleSettingHelp,
   voice, expression, output, engine,
 }: TtsAdvancedSettingsProps) {
   const panel: Record<TtsAdvancedTab, ReactNode> = { voice, expression, output, engine }
@@ -50,6 +52,13 @@ export default function TtsAdvancedSettings({
         display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
         padding: '12px 16px', minWidth: 0,
       }}>
+        {flowNumber != null && (
+          <span aria-hidden="true" style={{
+            width: 22, height: 22, borderRadius: 6, background: 'var(--bg-elevated)', display: 'inline-flex',
+            alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700,
+            color: 'var(--accent)', flexShrink: 0,
+          }}>{flowNumber}</span>
+        )}
         <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>고급 설정</span>
         <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1, minWidth: 120 }}>
           {summary || '평소에는 건드리지 않아도 됩니다'}

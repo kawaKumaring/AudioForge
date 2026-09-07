@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
 import {
-  AXIS_NOTE, INSUFFICIENT_TEXT, PARAGRAPH_WALL_NOTE, PLAN_APPROXIMATE_NOTE,
-  RESERVED_AXIS_LABELS, RESERVED_AXIS_NOTE, axisRelationLine, canShowWallTime, confidenceLabel,
+  AXIS_NOTE, DEFAULT_SPEAKER_LABEL, INSUFFICIENT_TEXT, PARAGRAPH_WALL_NOTE,
+  PLAN_APPROXIMATE_NOTE, RESERVED_AXIS_LABELS, RESERVED_AXIS_NOTE, speakerReferenceNote,
+  axisRelationLine, canShowWallTime, confidenceLabel, defaultSpeakerUtteranceCount,
   emotionSpanRows, formatRange, paragraphSummary, planIsApproximate, planWarningNote,
-  planWarningRows, preparationNote, splitRows, summaryLine, utteranceRows,
+  planWarningRows, preparationNote, speakerRows, splitRows, summaryLine, utteranceRows,
 } from '../../shared/analysisWording'
 import { versionLabel } from '../../shared/buildMetadata'
 import type { AnalysisResult } from '../../shared/inputAnalysis'
@@ -27,8 +28,12 @@ export default function InputAnalysisPanel(props: {
   status: AnalysisStatus
   result: AnalysisResult | null
   sourceText: string
+  /** 생성 방식 — 인물 목록 아래 문구를 파생한다. 미지정 = 한 명. */
+  speakerMode?: 'single' | 'multi'
+  /** 인물별 실제 목소리 상태(카드와 같은 판정). 미지정이면 상태를 표시하지 않는다 — 지어내지 않는다. */
+  speakerStatusOf?: (speakerId: string) => string | null
 }) {
-  const { status, result, sourceText } = props
+  const { status, result, sourceText, speakerMode = 'single', speakerStatusOf } = props
   const [open, setOpen] = useState(true)
   const [showDetail, setShowDetail] = useState(false)
 
@@ -99,6 +104,7 @@ export default function InputAnalysisPanel(props: {
         <>
           <StructureLine result={result} stale={stale} />
           <PlanWarningList result={result} sourceText={sourceText} />
+          <SpeakerList result={result} stale={stale} mode={speakerMode} statusOf={speakerStatusOf} />
           <ParagraphList result={result} sourceText={sourceText} stale={stale} />
           <EmotionSpanList result={result} sourceText={sourceText} stale={stale} />
           <SplitList result={result} stale={stale} />
@@ -166,7 +172,9 @@ function UtteranceRows(props: {
   result: AnalysisResult; paragraphIndex: number; sourceText: string
 }) {
   const rows = utteranceRows(props.result, props.paragraphIndex)
-  const trivial = rows.length <= 1 && rows.every((u) => u.emotionId === null && !u.autoSplit)
+  // 발화가 하나뿐이고 지시(감정·화자)도 없고 분할도 없으면 줄을 늘리지 않는다.
+  const trivial = rows.length <= 1
+    && rows.every((u) => u.emotionId === null && u.speakerId === null && !u.autoSplit)
   if (!rows.length || trivial) return null
   return (
     <div data-testid="analysis-utterances" data-paragraph={props.paragraphIndex}
@@ -183,6 +191,11 @@ function UtteranceRows(props: {
               fontSize: 11, color: 'var(--text-muted)', minWidth: 0,
             }}>
             <span style={{ flexShrink: 0, opacity: 0.9 }}>발화 {u.index + 1}</span>
+            {/* 누가 말하는가. 지정하지 않은 말은 기본 목소리를 쓴다고 말한다. */}
+            <span data-testid="analysis-utterance-speaker"
+              style={{ flexShrink: 0, color: u.speakerLabel ? 'var(--cyan)' : 'var(--text-muted)' }}>
+              {u.speakerLabel ?? DEFAULT_SPEAKER_LABEL}
+            </span>
             {emotion && (
               <span data-testid="analysis-utterance-emotion"
                 style={{ flexShrink: 0, color: 'var(--text-secondary)' }}>{emotion}</span>
@@ -301,6 +314,52 @@ function PlanWarningList(props: { result: AnalysisResult; sourceText: string }) 
           {note}
         </span>
       )}
+    </div>
+  )
+}
+
+/**
+ * 등장 인물 — 읽기 전용.
+ *
+ * 개수는 계획이 이미 센 값이다(화면이 다시 세지 않는다). 표시 이름은 사용자가 처음 쓴
+ * 표기이고, 계획·생성이 쓰는 것은 정규화된 내부 id 다.
+ *
+ * 참조 준비 상태를 여기서 지어내지 않는다 — 셸이 카드와 같은 판정으로 넘긴 문구만 보인다(여러 명).
+ * 한 명 방식에서는 인물 표기가 있어도 모든 대사가 기본 목소리로 만들어진다는 사실을 말한다.
+ */
+function SpeakerList(props: { result: AnalysisResult; stale: boolean; mode: 'single' | 'multi'; statusOf?: (speakerId: string) => string | null }) {
+  const rows = speakerRows(props.result)
+  const defaultCount = defaultSpeakerUtteranceCount(props.result)
+  if (!rows.length) return null
+  return (
+    <div data-testid="analysis-speakers" aria-live="off"
+      aria-label={props.stale ? '이전 입력의 등장 인물' : '등장 인물'}
+      style={{ display: 'flex', flexDirection: 'column', gap: 2, opacity: props.stale ? 0.55 : 1 }}>
+      <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+        등장 인물 {rows.length}
+      </span>
+      {rows.map((k) => (
+        <div key={k.speakerId} data-testid="analysis-speaker" data-speaker={k.speakerId}
+          style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap',
+            fontSize: 11, color: 'var(--text-muted)', minWidth: 0 }}>
+          <span style={{ color: 'var(--cyan)', flexShrink: 0 }}>{k.label}</span>
+          <span style={{ flexShrink: 0 }}>발화 {k.utteranceCount}개</span>
+          {props.mode === 'multi' && props.statusOf && (
+            <span data-testid="analysis-speaker-status" style={{ flexShrink: 0, opacity: 0.9 }}>{props.statusOf(k.speakerId) ?? ''}</span>
+          )}
+        </div>
+      ))}
+      {defaultCount > 0 && (
+        <div data-testid="analysis-speaker-default"
+          style={{ display: 'flex', gap: 8, alignItems: 'baseline', flexWrap: 'wrap',
+            fontSize: 11, color: 'var(--text-muted)', minWidth: 0 }}>
+          <span style={{ flexShrink: 0 }}>{DEFAULT_SPEAKER_LABEL}</span>
+          <span style={{ flexShrink: 0 }}>발화 {defaultCount}개</span>
+        </div>
+      )}
+      <span data-testid="analysis-speaker-note" style={{ fontSize: 11, color: 'var(--text-muted)', opacity: 0.7 }}>
+        {speakerReferenceNote(props.mode)}
+      </span>
     </div>
   )
 }

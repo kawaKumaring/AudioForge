@@ -28,6 +28,8 @@ HIGH_SILENCE_RATIO = "HIGH_SILENCE_RATIO"
 CLIPPING_DETECTED = "CLIPPING_DETECTED"
 SEVERE_CLIPPING = "SEVERE_CLIPPING"
 MULTI_CHANNEL = "MULTI_CHANNEL"
+# 필수 조건은 지켰지만 이 엔진에서 검증된(권장) 길이 범위 밖이다 — 경고. 차단이 아니다.
+OUTSIDE_RECOMMENDED_LENGTH = "OUTSIDE_RECOMMENDED_LENGTH"
 
 SEVERITY_ERROR = "error"
 SEVERITY_WARNING = "warning"
@@ -77,10 +79,20 @@ class ReferenceAudioAnalysis:
 @dataclass
 class ReferencePolicy:
     """엔진별 적합성 기준. 분석 사실에 적용된다.
+
+    길이 조건은 두 층이다 — 섞지 않는다.
+      · 필수(min/max_duration_sec): 어기면 error(차단). **엔진이 실제로 요구하는 조건**만 여기 둔다.
+        None 이면 그 방향의 필수 한계가 없다는 뜻이다(무제한 지원 선언이 아니다 — 권장 범위 밖은 미검증).
+      · 권장(recommended_*_sec): 이 앱에서 결과를 검증한 범위. 밖이면 warning(OUTSIDE_RECOMMENDED_LENGTH).
+    basis / recommended_basis 는 그 수치의 출처다. 출처 없는 수치를 여기 넣지 않는다.
     수치는 휴리스틱 — 일반적 휴지/작은 peak로 정상 음성을 차단하지 않도록 보수적으로 잡는다."""
     engine: str
-    min_duration_sec: float
-    max_duration_sec: float
+    min_duration_sec: Optional[float]
+    max_duration_sec: Optional[float]
+    recommended_min_sec: Optional[float] = None
+    recommended_max_sec: Optional[float] = None
+    basis: str = ""
+    recommended_basis: str = ""
     # 품질 임계값(정책 — 엔진마다 달라질 수 있음)
     near_silent_rms_dbfs: float = -55.0     # 전체 RMS가 이 이하면 거의 무음(error)
     near_silent_ratio: float = 0.95         # 무음 창 비율이 이 이상이면 거의 무음(error)
@@ -90,6 +102,58 @@ class ReferencePolicy:
 
     def to_dict(self) -> dict:
         return asdict(self)
+
+    # ── 파생 값(구간 추천·확정·정렬·화면이 모두 여기서 읽는다. 상수를 복제하지 않는다) ──
+    def region_bounds(self, source_duration_sec: Optional[float] = None):
+        """구간 도구가 쓰는 (min_sec, max_sec). 필수 한계가 없는 방향은 0 / 원본 전체 길이다."""
+        lo = 0.0 if self.min_duration_sec is None else float(self.min_duration_sec)
+        if self.max_duration_sec is not None:
+            hi = float(self.max_duration_sec)
+        elif source_duration_sec is not None and source_duration_sec > 0:
+            hi = float(source_duration_sec)
+        else:
+            hi = float("inf")
+        return lo, hi
+
+    def recommended_bounds(self):
+        """추천이 노리는 (min_sec, max_sec). 권장이 없으면 필수 범위를 그대로 쓴다."""
+        lo = self.recommended_min_sec
+        hi = self.recommended_max_sec
+        if lo is None and hi is None:
+            return self.region_bounds()
+        return (0.0 if lo is None else float(lo), float("inf") if hi is None else float(hi))
+
+    def region_threshold_sec(self) -> Optional[float]:
+        """이 길이를 넘는 원본에는 구간을 추천한다(필수 상한이 있으면 그것, 없으면 권장 상한)."""
+        if self.max_duration_sec is not None:
+            return float(self.max_duration_sec)
+        if self.recommended_max_sec is not None:
+            return float(self.recommended_max_sec)
+        return None
+
+    def within_required(self, duration_sec: float) -> bool:
+        if self.min_duration_sec is not None and duration_sec < self.min_duration_sec:
+            return False
+        if self.max_duration_sec is not None and duration_sec > self.max_duration_sec:
+            return False
+        return True
+
+    def within_recommended(self, duration_sec: float) -> bool:
+        if self.recommended_min_sec is not None and duration_sec < self.recommended_min_sec:
+            return False
+        if self.recommended_max_sec is not None and duration_sec > self.recommended_max_sec:
+            return False
+        return True
+
+    def describe(self) -> dict:
+        """IPC/화면용 요약. 화면은 이 값에서 문구를 만든다 — 숫자를 화면 코드에 다시 적지 않는다."""
+        return {
+            "engine": self.engine,
+            "required": {"min_sec": self.min_duration_sec, "max_sec": self.max_duration_sec},
+            "recommended": {"min_sec": self.recommended_min_sec, "max_sec": self.recommended_max_sec},
+            "basis": self.basis,
+            "recommended_basis": self.recommended_basis,
+        }
 
 
 @dataclass
@@ -256,13 +320,21 @@ def assess_reference(analysis: ReferenceAudioAnalysis, policy: ReferencePolicy) 
         err(EMPTY_AUDIO, "빈 오디오입니다(길이 0).", {"frames": analysis.frames})
         return ReferenceAssessment(policy.engine, False, analysis, errors, warnings)
 
-    # 2) 길이 정책 (경계 포함: min/max 정확히 허용)
-    if analysis.duration_sec < policy.min_duration_sec:
-        err(TOO_SHORT, f"참조가 너무 짧습니다({analysis.duration_sec:.2f}s < {policy.min_duration_sec:.1f}s).",
-            {"duration_sec": analysis.duration_sec, "min": policy.min_duration_sec})
-    elif analysis.duration_sec > policy.max_duration_sec:
-        err(TOO_LONG, f"참조가 너무 깁니다({analysis.duration_sec:.2f}s > {policy.max_duration_sec:.1f}s).",
-            {"duration_sec": analysis.duration_sec, "max": policy.max_duration_sec})
+    # 2) 길이 정책 — 필수(경계 포함: min/max 정확히 허용). None 이면 그 방향은 검사하지 않는다.
+    dur = analysis.duration_sec
+    if policy.min_duration_sec is not None and dur < policy.min_duration_sec:
+        err(TOO_SHORT, f"참조가 너무 짧습니다({dur:.2f}s < {policy.min_duration_sec:.1f}s).",
+            {"duration_sec": dur, "min": policy.min_duration_sec})
+    elif policy.max_duration_sec is not None and dur > policy.max_duration_sec:
+        err(TOO_LONG, f"참조가 너무 깁니다({dur:.2f}s > {policy.max_duration_sec:.1f}s).",
+            {"duration_sec": dur, "max": policy.max_duration_sec})
+    elif not policy.within_recommended(dur):
+        # 권장(검증) 범위 밖 — 막지 않고 알린다. 길다고 더 좋은 결과가 나온다는 뜻이 아니다.
+        lo, hi = policy.recommended_min_sec, policy.recommended_max_sec
+        rng = ("%s~%s초" % ("" if lo is None else f"{lo:.0f}", "" if hi is None else f"{hi:.0f}"))
+        warn(OUTSIDE_RECOMMENDED_LENGTH,
+             f"참조 길이 {dur:.2f}s 는 이 엔진에서 검증된 범위({rng}) 밖입니다 — 결과 품질은 확인되지 않았습니다.",
+             {"duration_sec": dur, "recommended_min": lo, "recommended_max": hi})
 
     # 3) 품질 정책 (스캔된 경우만)
     if analysis.quality_scanned:
@@ -296,8 +368,10 @@ def assess_reference_file(path: str, policy: ReferencePolicy) -> ReferenceAssess
     생략(quality_scanned=False)해 수십 분 낭비를 막는다."""
     # 먼저 메타데이터만(싸다) 읽어 길이 확인
     meta = analyze_reference_cached(path, quality_scan=False)
-    if meta.readable and meta.duration_sec > policy.max_duration_sec:
-        # 이미 TOO_LONG → 품질 스캔 불필요
+    threshold = policy.region_threshold_sec()
+    if meta.readable and threshold is not None and meta.duration_sec > threshold:
+        # 필수 상한 초과(TOO_LONG) 또는 권장 상한 초과(구간 추천 대상) → 원본 전체 품질 스캔 불필요.
+        # 실제 모델에 갈 구간은 확정 단계(analyze_region)가 따로 잰다.
         return assess_reference(meta, policy)
     # 그 외에는 품질 스캔 포함 분석
     full = analyze_reference_cached(path, quality_scan=True)
@@ -305,9 +379,59 @@ def assess_reference_file(path: str, policy: ReferencePolicy) -> ReferenceAssess
 
 
 # ── 엔진별 정책 인스턴스 ────────────────────────────────────────────────────
-# GPT-SoVITS 공식 입력 조건: 참조 음성 3~10초. (경계 포함 허용)
+# GPT-SoVITS: 벤더 추론 코드(GPT_SoVITS/inference_webui.py) 가 3~10초 밖 참조를 예외로 거부한다.
+# → **필수** 조건. (경계 포함 허용)
 GPTSOVITS_POLICY = ReferencePolicy(
     engine="gptsovits",
     min_duration_sec=3.0,
     max_duration_sec=10.0,
+    basis="GPT-SoVITS 벤더 추론 코드가 3~10초 밖 참조를 거부한다(inference_webui.py).",
 )
+
+# Qwen3-TTS(로컬 0.6B Base, qwen_tts 패키지): 참조 길이의 벤더 필수 조건이 확인되지 않았다 —
+# qwen_tts 는 참조 전체를 speaker encoder(x-vector) 와 speech tokenizer(ICL ref_code) 에 그대로 넣고
+# 길이 검사·절단을 하지 않는다. 로컬 스냅샷에 모델 카드가 없어 벤더 권장값은 확인하지 못했다.
+# → 필수는 처리 가능 조건(손상·빈 음성·거의 무음·심한 클리핑)만. 길이 필수 한계 없음(None).
+# → 권장 3~10초 = **이 앱이 검증한 범위**(GPU 실측 6.5~7.5초 클립으로 청취 통과, 정렬·혼입 방지
+#   도구가 이 범위에서 설계·검증). 밖은 미검증 → 경고. "길수록 좋다" 는 근거가 없다.
+# 자원 보호: ICL 참조 프레임은 chunk_budget 이 실제 값으로 예산에 넣는다(고정 상수 아님).
+QWEN3_POLICY = ReferencePolicy(
+    engine="qwen3",
+    min_duration_sec=None,
+    max_duration_sec=None,
+    recommended_min_sec=3.0,
+    recommended_max_sec=10.0,
+    basis="Qwen3-TTS 벤더 코드에 참조 길이 필수 조건 없음(qwen_tts: 길이 검사·절단 없이 전체 사용). "
+          "처리 불가 조건(손상·빈 음성·거의 무음·심한 클리핑)만 필수.",
+    recommended_basis="이 앱에서 청취·정렬 검증을 마친 범위(2026-09-05 GPU 실측 6.5~7.5초 클립). "
+                      "벤더 권장값은 오프라인에서 미확인. 범위 밖은 미검증 — 경고, 차단 아님.",
+)
+
+POLICIES = {
+    GPTSOVITS_POLICY.engine: GPTSOVITS_POLICY,
+    QWEN3_POLICY.engine: QWEN3_POLICY,
+}
+
+# 정책 엔진 해석의 단일 규칙. 화면(ref-analyze/ref-trim)과 합성(tts_worker)이 같은 함수를 쓴다.
+#   auto/빈값 → Qwen 런타임이 있으면 qwen3, 없으면 gptsovits(화면 안내 "한국어는 Qwen3 우선, 미설치 시 GPT-SoVITS" 와 동일).
+#   qwen3 / gptsovits → 그대로.
+#   그 외(f5tts·kokoro 등) → gptsovits 정책 **유지**(이번 분리 범위 밖 — 근거 검토 전까지 기존 표시를 바꾸지 않는다).
+POLICY_FALLBACK_ENGINE = GPTSOVITS_POLICY.engine
+
+
+def resolve_policy_engine(preferred_engine, qwen_available: bool) -> str:
+    e = (preferred_engine or "auto")
+    e = str(e).strip().lower() or "auto"
+    if e == "auto":
+        return QWEN3_POLICY.engine if qwen_available else GPTSOVITS_POLICY.engine
+    if e in POLICIES:
+        return e
+    return POLICY_FALLBACK_ENGINE
+
+
+def policy_for_engine(engine: str) -> ReferencePolicy:
+    """알려진 엔진의 정책. 모르는 이름은 조용히 기본으로 바꾸지 않는다 — 호출부가 resolve 로 먼저 정한다."""
+    try:
+        return POLICIES[str(engine)]
+    except KeyError:
+        raise ValueError("UNKNOWN_REFERENCE_POLICY_ENGINE: %r" % (engine,))

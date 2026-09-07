@@ -23,6 +23,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import chunk_budget as cb
 import generation_limit as gl
 import qwen_bridge
+
+# 가짜 모델에는 vendor speech tokenizer 가 없다 — 참조 codec 프레임 측정기를 고정값(85 frame ≈ 7초)으로 대체.
+# production 측정 실패는 예외(fail-closed)라 여기서만 바꿔 끼운다.
+qwen_bridge.REF_FRAMES_MEASURER = lambda _model, _seg: 85
 import tts_worker
 
 
@@ -397,7 +401,7 @@ class SynthJobSafetyTest(unittest.TestCase):
         with mock.patch.object(tts_worker.QwenTTSEngine, "run_job", new=boom):
             with self.assertRaises(RuntimeError) as cm:
                 tts_worker._synthesize_qwen_job(
-                    [("default", "안녕하세요 비밀문장입니다")], {"default": self.ref},
+                    [("default", "안녕하세요 비밀문장입니다", None)], {"default": self.ref},
                     {}, self.out, 1.0, 0.5, 0.0)
         msg = str(cm.exception)
         self.assertIn("GENERATION_LIMIT_EXCEEDED", msg)
@@ -423,7 +427,7 @@ class SynthJobSafetyTest(unittest.TestCase):
                              "production_tokens": 20, "generation_limit": lim, "generated_iterations": it,
                              "termination_reason": "completed_before_limit", "status": "ok"})
             return outs
-        parsed = [("default", f"문장 {i} 입니다") for i in range(len(per_seg))]
+        parsed = [("default", f"문장 {i} 입니다", None) for i in range(len(per_seg))]
         with mock.patch.object(tts_worker.QwenTTSEngine, "run_job", new=fake_run_job):
             final_path, info = tts_worker._synthesize_qwen_job(
                 parsed, {"default": self.ref}, {}, self.out, 1.0, 0.5, 0.0)
@@ -477,7 +481,7 @@ class SynthJobSafetyTest(unittest.TestCase):
             return real(paths, gaps_before, out_path)
         with mock.patch.object(tts_worker.QwenTTSEngine, "run_job", new=self._fake_multichunk({0: 3, 1: 1})), \
                 mock.patch.object(tts_worker, "_concat_with_boundaries", new=spy):
-            parsed = [("default", "첫째 줄입니다"), ("default", "둘째 줄입니다")]
+            parsed = [("default", "첫째 줄입니다", None), ("default", "둘째 줄입니다", None)]
             final_path, info = tts_worker._synthesize_qwen_job(
                 parsed, {"default": self.ref}, {}, self.out, 1.0, 0.5, 0.0)
         self.assertEqual(gaps_seen, [[0.0, 0.0, 0.0, 0.5]])   # 내부 0×3, 경계 0.5
@@ -501,7 +505,7 @@ class SynthJobSafetyTest(unittest.TestCase):
         with mock.patch.object(tts_worker.QwenTTSEngine, "run_job", new=boom):
             with self.assertRaises(RuntimeError) as cm:
                 tts_worker._synthesize_qwen_job(
-                    [("default", "비밀 문장입니다")], {"default": self.ref}, {}, self.out, 1.0, 0.5, 0.0)
+                    [("default", "비밀 문장입니다", None)], {"default": self.ref}, {}, self.out, 1.0, 0.5, 0.0)
         msg = str(cm.exception)
         self.assertIn("GENERATION_LIMIT_EXCEEDED", msg)
         self.assertIn("조각 1", msg)         # chunk index 노출
@@ -536,7 +540,7 @@ class SynthJobSafetyTest(unittest.TestCase):
         with mock.patch.object(tts_worker.QwenTTSEngine, "run_job", new=fake):
             with self.assertRaises(RuntimeError):
                 tts_worker._synthesize_qwen_job(
-                    [("default", "문장")], {"default": self.ref}, {}, self.out, 1.0, 0.5, 0.0)
+                    [("default", "문장", None)], {"default": self.ref}, {}, self.out, 1.0, 0.5, 0.0)
         with open(final, "rb") as f:
             self.assertEqual(f.read(), sentinel)
         self.assertEqual(self._job_dirs(), [])
@@ -553,7 +557,7 @@ class SynthJobSafetyTest(unittest.TestCase):
         with mock.patch.object(tts_worker.QwenTTSEngine, "run_job", new=toolong):
             with self.assertRaises(RuntimeError) as cm:
                 tts_worker._synthesize_qwen_job(
-                    [("happy", "아주 긴 비밀 문장 원문")], {"default": self.ref, "happy": self.ref},
+                    [("happy", "아주 긴 비밀 문장 원문", None)], {"default": self.ref, "happy": self.ref},
                     {}, self.out, 1.0, 0.5, 0.0)
         msg = str(cm.exception)
         self.assertIn("TEXT_SEGMENT_TOO_LONG", msg)
