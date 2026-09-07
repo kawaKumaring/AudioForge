@@ -12,6 +12,8 @@ const codeOf = (src: string) => src.split(/\r?\n/).filter((l) => !/^\s*(\/\/|\*|
 const IPC = codeOf(read('../../main/ipc/audio.ipc.ts'))
 const PANEL = codeOf(read('./ReferenceRegionPanel.tsx'))
 const SHELL = codeOf(read('./TTSEditor.tsx'))
+// 인물 목소리 준비의 소유자(2026-09-08 분리). 옮겨간 계약은 이 파일에서 확인한다.
+const PREP = codeOf(read('../hooks/useSpeakerVoicePrep.tsx'))
 
 test('분석(편집기 열기)은 확정 클립을 지우지 않는다', () => {
   const i = IPC.indexOf("ipcMain.handle('audio:analyze-reference'")
@@ -44,7 +46,10 @@ test('패널: 사용 중인 확정 상태가 있으면 재분석·재확정 실�
 
 test('셸: 인물·감정·기본 패널에 committed 를 넘기고, 재생은 원본의 확정 구간을 튼다(임시 클립 아님)', () => {
   // 인물·감정 패널 + 기본 패널 두 자리(한 명 화면 / 여러 명의 숨긴 준비 구동) — 같은 committed 계약.
-  assert.equal((SHELL.match(/committed=\{/g) ?? []).length, 4, '네 마운트 모두')
+  // 네 마운트: 한 명 화면 · 여러 명의 숨긴 기본 목소리 구동 · 감정 패널 · 인물 패널.
+  // 인물 패널은 2026-09-08 에 useSpeakerVoicePrep 으로 옮겼으므로 셸 3 + 훅 1 이다.
+  assert.equal((SHELL.match(/committed=\{/g) ?? []).length, 3, '셸의 세 마운트')
+  assert.equal((PREP.match(/committed=\{/g) ?? []).length, 1, '인물 마운트는 훅이 만든다')
   assert.ok(SHELL.includes("previewLocalFile(fileInfo?.path || '', ttsReferenceRegion)"), '기본 재생 = 원본 + 구간')
   assert.ok(SHELL.includes("previewLocalFile(s?.source || '', s?.region ?? null)"), '인물 재생 = 원본 + 구간')
   assert.equal(SHELL.includes('previewLocalFile(ttsReferenceClip ||'), false)

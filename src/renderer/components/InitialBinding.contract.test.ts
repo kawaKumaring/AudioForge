@@ -17,7 +17,12 @@ const MAIN = codeOf(read('../../main/ipc/audio.ipc.ts'))
 const PRELOAD = codeOf(read('../../preload/index.ts'))
 
 const i = SHELL.indexOf('const firstDialogueSpeaker = dialogue.speakers[0]')
-const block = SHELL.slice(i, SHELL.indexOf('const requestSpeakerSource', i))
+// 블록의 끝은 '준비 훅을 부르는 줄' 이다. 예전 경계였던 requestSpeakerSource 는 2026-09-08 에
+// useSpeakerVoicePrep 으로 옮겨졌다 — 경계가 사라지면 slice 가 파일 전체를 집어 금지 문자열 검사가
+// 엉뚱하게 실패한다(그때 실제로 그랬다). 경계는 셸에 남아 있는 것으로 잡는다.
+const end = SHELL.indexOf('const voicePrep = useSpeakerVoicePrep', i)
+assert.ok(end > i, '이어받기 블록의 끝 경계(준비 훅 호출)를 찾지 못했다')
+const block = SHELL.slice(i, end)
 
 test('첫 인물(계획 1번 또는 빈 대본의 시작 카드)에 슬롯을 만들고 이어받기 플래그를 세운다 — 여러 명·어느 인물도 목소리 없음·한 번', () => {
   assert.ok(i > 0)

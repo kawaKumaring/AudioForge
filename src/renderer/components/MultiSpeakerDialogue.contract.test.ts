@@ -20,6 +20,8 @@ const TABS = codeOf(read('./DialogueTabs.tsx'))
 const MULTI = codeOf(read('./MultiSpeakerDialogue.tsx'))
 const HOOK = codeOf(read('../hooks/useDialogueProjection.ts'))
 const SHELL = codeOf(read('./TTSEditor.tsx'))
+// 인물 목소리 준비의 소유자(2026-09-08 분리). 옮겨간 계약은 이 파일에서 확인한다.
+const PREP = codeOf(read('../hooks/useSpeakerVoicePrep.tsx'))
 const between = (src: string, a: string, b: string) => { const i = src.indexOf(a); assert.ok(i >= 0, a); return src.slice(i, src.indexOf(b, i)) }
 
 test('탭은 두 개, 합성 화면 전체를 전환한다(합성 메뉴 아래 전체 폭 한 곳) — 원문 쓰기 0', () => {
@@ -142,11 +144,15 @@ test('+ 감정: caret 위치에 기존 문법 태그를 넣는다 — IME·caret
 })
 
 test('셸은 기존 store 콜백을 그대로 잇는다 — 새 저장소 없음, 이름 변경은 슬롯 이동', () => {
-  assert.ok(SHELL.includes('registerSpeakerRef(id, src, label)') && SHELL.includes('if (!src) return'))
+  // 목소리 지정과 구간 편집기 만들기는 2026-09-08 에 useSpeakerVoicePrep 으로 옮겼다.
+  // 계약은 그대로다 — 소유자만 바뀌었으므로 그 파일에서 확인한다.
+  assert.ok(PREP.includes('registerSpeakerRef(speakerId, String(picked), label)') && PREP.includes('if (!picked) return'))
   assert.ok(SHELL.includes('onRemoveVoice={(id) => removeSpeakerRef(id)}'))
   assert.ok(SHELL.includes('onSpeakerIdChanged={(from, to) => moveSpeakerRef(from, to)}'))
-  assert.ok(SHELL.includes('renderRegionEditor={renderSpeakerRegion}') && SHELL.includes('const renderSpeakerRegion = (speakerId: string, open = true, autoConfirm = false)'))
-  assert.ok(SHELL.includes('open={open}') && SHELL.includes('plainStatus={!open}'), '카드 안 구간 편집기는 접힘/펼침')
+  assert.ok(SHELL.includes('renderRegionEditor={renderSpeakerRegion}'), '셸이 카드에 편집기를 잇는다')
+  assert.ok(PREP.includes('const renderSpeakerRegion = useCallback((speakerId: string, open = true, autoConfirm = false)'),
+    '편집기를 만드는 것은 훅이다')
+  assert.ok(PREP.includes('open={open}') && PREP.includes('plainStatus={!open}'), '카드 안 구간 편집기는 접힘/펼침')
   assert.equal(SHELL.includes('<SpeakerReferenceManager'), false, '고급 설정의 중복 편집기 없음')
 })
 
