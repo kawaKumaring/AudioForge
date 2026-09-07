@@ -51,6 +51,7 @@ function appPython() {
 run('타입 검사(renderer)', 'npx', ['tsc', '--noEmit', '-p', 'tsconfig.web.json'])
 run('타입 검사(main/shared)', 'npx', ['tsc', '--noEmit', '-p', 'tsconfig.node.json'])
 run('단위·계약 테스트', 'node', ['--test', 'src/**/*.test.ts'])
+run('모델 이용 조건', 'node', [path.join('scripts', 'check-model-licenses.mjs')])
 run('빌드', 'npx', ['electron-vite', 'build'])
 
 const py = appPython()

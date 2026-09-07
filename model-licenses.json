@@ -1,0 +1,136 @@
+{
+  "note": [
+    "이 앱이 실을 수 있는 모델의 이용 조건 단일 소스. **저장소 안에 있어야 한다** —",
+    "예전 인벤토리(externals/model-manifest.json)는 externals/ 가 .gitignore 라 버전관리 밖이었고,",
+    "그래서 낡은 채로 남아 핵심 엔진(Qwen3-TTS)조차 빠져 있었다.",
+    "scripts/check-model-licenses.mjs 가 코드에서 참조하는 모델과 이 목록을 대조해",
+    "목록에 없는 모델·조건 미확인 모델을 빌드 전에 실패시킨다."
+  ],
+  "distribution": {
+    "commercial": false,
+    "reason": "현재 사내 개인 도구로만 쓴다. 상업 배포 계획이 생기면 아래 non_commercial 모델을 먼저 교체해야 한다.",
+    "decided": "2026-09-08"
+  },
+  "models": [
+    {
+      "id": "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
+      "role": "음성 합성(한국어 기본 엔진)",
+      "license": "Apache-2.0",
+      "non_commercial": false,
+      "default_path": true
+    },
+    {
+      "id": "openai/whisper-small",
+      "role": "참조 음성 전사 · Qwen 내용 인코더",
+      "license": "MIT",
+      "non_commercial": false,
+      "default_path": true
+    },
+    {
+      "id": "whisper/large-v3",
+      "role": "텍스트 추출 기본",
+      "license": "MIT",
+      "non_commercial": false,
+      "default_path": true
+    },
+    {
+      "id": "whisper/large-v3-turbo",
+      "role": "텍스트 추출 선택",
+      "license": "MIT",
+      "non_commercial": false,
+      "default_path": false
+    },
+    {
+      "id": "whisper/medium",
+      "role": "텍스트 추출 선택",
+      "license": "MIT",
+      "non_commercial": false,
+      "default_path": false
+    },
+    {
+      "id": "facebook/nllb-200-distilled-600M",
+      "role": "번역 기본",
+      "license": "CC-BY-NC-4.0",
+      "non_commercial": true,
+      "default_path": true,
+      "note": "★ 기본 경로에 비상업 조건 모델이 있다. 상업 배포로 가면 이것을 먼저 바꿔야 한다."
+    },
+    {
+      "id": "facebook/nllb-200-distilled-1.3B",
+      "role": "번역 선택(고품질)",
+      "license": "CC-BY-NC-4.0",
+      "non_commercial": true,
+      "default_path": false
+    },
+    {
+      "id": "Qwen/Qwen2.5-3B-Instruct",
+      "role": "번역 선택(로컬 LLM)",
+      "license": "Apache-2.0",
+      "non_commercial": false,
+      "default_path": false,
+      "note": "Qwen2.5 3B 는 Apache-2.0. 같은 계열의 다른 크기는 조건이 다를 수 있어 크기를 바꾸면 다시 확인한다."
+    },
+    {
+      "id": "speechbrain/spkrec-ecapa-voxceleb",
+      "role": "대화 분리(화자 임베딩)",
+      "license": "Apache-2.0",
+      "non_commercial": false,
+      "default_path": true
+    },
+    {
+      "id": "htdemucs",
+      "role": "음악 분리 기본",
+      "license": "MIT",
+      "non_commercial": false,
+      "default_path": true,
+      "note": "Demucs(facebookresearch/demucs) MIT. 가중치도 같은 저장소 조건."
+    },
+    {
+      "id": "model_bs_roformer_ep_317_sdr_12.9755.ckpt",
+      "role": "보컬 분리 기본(BS-RoFormer)",
+      "license": "MIT",
+      "non_commercial": false,
+      "default_path": false,
+      "note": "audio-separator 번들. 조건 표기는 배포처 기준이며 재확인 필요 시 UVR/audio-separator 문서를 본다."
+    },
+    {
+      "id": "mel_band_roformer_kim_ft2_bleedless_unwa.ckpt",
+      "role": "보컬 분리 선택(Mel-Band)",
+      "license": "UNVERIFIED",
+      "non_commercial": null,
+      "default_path": false,
+      "note": "★ 커뮤니티 학습 가중치로 조건을 확인하지 못했다. 상업 배포 전 반드시 확인하거나 제거한다."
+    },
+    {
+      "id": "nvidia/bigvgan_v2_22khz_80band_256x",
+      "role": "실험(seed-vc 변환) — 제품 미탑재",
+      "license": "MIT",
+      "non_commercial": false,
+      "default_path": false
+    },
+    {
+      "id": "Plachta/Seed-VC",
+      "role": "실험(목소리 변환) — **제품 후보에서 제외**",
+      "license": "GPL-3.0",
+      "non_commercial": false,
+      "default_path": false,
+      "note": "★ 코드·가중치 모두 GPL-3.0. 제품에 실으면 배포 의무가 생긴다. 음질 저하로도 제외됐다."
+    },
+    {
+      "id": "htdemucs_ft",
+      "role": "음악 분리 선택(고품질 4트랙)",
+      "license": "MIT",
+      "non_commercial": false,
+      "default_path": false,
+      "note": "htdemucs 와 같은 저장소(facebookresearch/demucs) 조건."
+    },
+    {
+      "id": "lj1995/GPT-SoVITS",
+      "role": "음성 합성 선택(GPT-SoVITS v2 사전학습)",
+      "license": "UNVERIFIED",
+      "non_commercial": null,
+      "default_path": false,
+      "note": "★ 조건을 확인하지 못했다. 한국어 기본 엔진은 Qwen3-TTS 이고 이 엔진은 선택 경로다. 배포 전 확인하거나 제거한다."
+    }
+  ]
+}
