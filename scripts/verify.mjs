@@ -92,12 +92,19 @@ if (WITH_APP) {
     run('실제 앱 · 합성 완주 + 결과물 검사(GPU)', 'node',
       [path.join('test', 'e2e', 'synthesize-complete.e2e.mjs')],
       { env: { ...process.env, AF_E2E_REFERENCE: fixture, AF_E2E_PYTHON: py } })
+    // 합성이 도는 동안 설정을 만지면 참조 분석이 거절돼 오류가 튀어나왔다(2026-09-08 실사용 보고).
+    // 화면과 워커가 겹치는 자리라 단위 검사로는 잡히지 않는다 — 실제로 합성을 돌리며 만져 본다.
+    run('실제 앱 · 합성 중 설정 변경(GPU)', 'node',
+      [path.join('test', 'e2e', 'analyze-during-synthesis.e2e.mjs')],
+      { env: { ...process.env, AF_E2E_REFERENCE: fixture } })
   } else {
     skip('실제 앱 · 합성 완주', py ? 'fixture 없음' : '검증용 파이썬을 찾지 못했다')
+    skip('실제 앱 · 합성 중 설정 변경', '같은 이유')
   }
 } else {
   skip('실제 앱 · 합성 시작·취소', '--app 을 주면 함께 확인한다(GPU 를 쓴다 — 병합 직전에만)')
   skip('실제 앱 · 합성 완주', '같은 이유')
+  skip('실제 앱 · 합성 중 설정 변경', '같은 이유')
 }
 
 // ── 요약 ─────────────────────────────────────────────────────────────────

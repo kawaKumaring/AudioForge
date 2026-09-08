@@ -324,13 +324,28 @@ export default function ReferenceRegionPanel({
     }
   }, [path, clipKey, say, ttsEngine, ttsRefTargetSec, setTtsReferencePolicy])
 
-  // 파일이 바뀌면(그리고 엔진 선택이 바뀌면) 분석(StrictMode 중복 setup에도 main single-flight로 subprocess 1회).
+  // 파일이 바뀌면(그리고 엔진·목표 길이가 바뀌면) 분석
+  // (StrictMode 중복 setup에도 main single-flight로 subprocess 1회).
+  //
+  // ★ 합성 중에는 분석을 부르지 않는다. 워커는 한 번에 하나만 돌기 때문에 main 이
+  //   '처리 중에는 참조 분석을 실행할 수 없습니다' 로 거절하고, 그 거절이 화면에서
+  //   처리되지 않은 오류로 튀어나온다(2026-09-08 실사용 보고).
+  //   합성이 끝나 조작이 풀리면 그때 미뤄 둔 분석을 한다.
+  //   무엇이 바뀌었을 때 다시 볼지는 아래 키가 정한다. 함수 신원(runAnalyze)에 맡기면
+  //   문구 모드(plainStatus) 같은 무관한 변화에도 다시 돌고, 합성이 끝날 때마다 헛돈다.
+  //   ★ '이미 한 번 시작했다'를 ref 로 기억하면 안 된다. StrictMode 는 효과를 실행 → 정리 →
+  //     재실행하는데, 그러면 첫 실행이 정리에서 취소된 뒤 재실행이 ref 에 막혀 **분석이 영영
+  //     끝나지 않는다**(실측: 이 방식으로 바꾸자마자 앱 검사 19건 중 7건이 무너졌다).
+  //     중복 호출은 main 의 single-flight 가 이미 하나로 합친다 — 여기서 막을 일이 아니다.
+  const analyzeKey = [path, clipKey, ttsEngine, String(ttsRefTargetSec)].join('|#|')
   useEffect(() => {
-    if (!path) return
+    if (!path || disabled) return          // 합성 중에는 미룬다 — 조작이 풀리면 이 효과가 다시 온다
     const signal = { cancelled: false }
     runAnalyze(signal)
     return () => { signal.cancelled = true }
-  }, [path, runAnalyze])
+    // runAnalyze 는 의존성에 넣지 않는다 — 위 키가 '다시 볼 이유' 의 권위다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analyzeKey, disabled, path])
 
   // 구간(start/dur)이 바뀌면 이전 확정은 무효 → 재확정 필요
   useEffect(() => {
@@ -638,6 +653,13 @@ const sub: CSSProperties = { fontSize: 11, color: 'var(--text-muted)', lineHeigh
   const durTotal = analysis.duration_sec
   const sliderBounds = regionSliderBounds(policy, durTotal)
   const lengthJudgement = judgeLength(policy, dur)
+  // 자동으로 찾아 준 구간 — 되돌리기의 목적지. 정책 길이로 다듬어 두어야 슬라이더와 같은 값이 된다.
+  const recommended = analysis.recommend?.ok
+    ? { start: analysis.recommend.start_sec,
+        dur: clampDuration(policy, durTotal, analysis.recommend.dur_sec) }
+    : null
+  const atRecommended = !!recommended
+    && Math.abs(start - recommended.start) < 0.005 && Math.abs(dur - recommended.dur) < 0.005
 
   return (
     <div style={card}>
@@ -718,8 +740,31 @@ const sub: CSSProperties = { fontSize: 11, color: 'var(--text-muted)', lineHeigh
                 style={numBox} />
             </div>
           </div>
-          <div style={sub} title="파형을 끌어 구간을 잡거나, 숫자 칸에 0.01초 단위로 직접 넣을 수 있습니다.">
-            지금 구간 {start.toFixed(2)}~{(start + dur).toFixed(2)}초
+          {/* 지금 구간 + 되돌리기.
+              왜 필요한가: 추천 구간에 한 번 손을 대면 그 추천으로 돌아갈 길이 없었다. 돌아가려면
+              목소리를 다시 등록해 분석을 처음부터 시키는 수밖에 없었다(사용자 지적, 2026-09-08).
+              추천값은 분석 결과에 그대로 남아 있으므로 다시 부르기만 하면 된다.
+              버튼은 숨기지 않고 **비활성**으로 둔다 — 슬라이더를 만질 때마다 버튼이 나타났다
+              사라지면 화면이 움직여 조작을 방해한다(카드 깜빡임 때 겪은 것과 같은 문제). */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={sub} title="파형을 끌어 구간을 잡거나, 숫자 칸에 0.01초 단위로 직접 넣을 수 있습니다.">
+              지금 구간 {start.toFixed(2)}~{(start + dur).toFixed(2)}초
+            </span>
+            {recommended && (
+              <button data-testid="region-reset-recommend"
+                onClick={() => applyRegion(recommended.start, recommended.dur)}
+                disabled={disabled || atRecommended}
+                title={atRecommended
+                  ? '지금이 자동으로 찾아 준 구간입니다.'
+                  : `자동으로 찾아 준 구간(${recommended.start.toFixed(2)}~${(recommended.start + recommended.dur).toFixed(2)}초)으로 되돌립니다. 되돌린 뒤 '이 구간으로 확정'을 눌러야 실제로 바뀝니다.`}
+                style={{
+                  ...btn('transparent', atRecommended ? 'var(--text-muted)' : 'var(--cyan)'),
+                  border: `1px solid ${atRecommended ? 'var(--border-subtle)' : 'var(--cyan)'}`,
+                  padding: '2px 8px', fontSize: 11,
+                }}>
+                {atRecommended ? '자동으로 찾은 구간' : '자동으로 찾은 구간으로'}
+              </button>
+            )}
           </div>
 
           {/* 권장(검증) 범위 밖 길이 — 막지 않고 알린다 */}

@@ -259,6 +259,14 @@ export default function TTSEditor() {
   const [ttsEngine, setTtsEngine] = useState(() => useAppStore.getState().ttsEngine)
   const [ttsQwenModel, setTtsQwenModel] = useState(() => useAppStore.getState().ttsQwenModel)
   const [ttsRefTargetSec, setTtsRefTargetSec] = useState(() => useAppStore.getState().ttsRefTargetSec)
+  // 슬라이더가 끌리는 동안의 화면 값. 확정된 값(ttsRefTargetSec)과 분리해 두어야
+  // 눈금 하나마다 목소리를 다시 살펴보는 일이 걸리지 않는다.
+  const [refTargetDraft, setRefTargetDraft] = useState(ttsRefTargetSec)
+  useEffect(() => {
+    if (refTargetDraft === ttsRefTargetSec) return
+    const t = setTimeout(() => setTtsRefTargetSec(refTargetDraft), 500)
+    return () => clearTimeout(t)
+  }, [refTargetDraft, ttsRefTargetSec])
   const [refPrompts, setRefPrompts] = useState<Record<string, TtsReferenceEntry>>(() => useAppStore.getState().ttsReferencePrompts)
   const [showRefPrompts, setShowRefPrompts] = useState(false)
 
@@ -1685,13 +1693,16 @@ export default function TTSEditor() {
             <div data-testid="ref-target-length" style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
                 <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>참조 목표 길이</span>
-                <input type="range" min={0} max={30} step={1} value={ttsRefTargetSec} disabled={disabled}
+                {/* 끄는 동안에는 화면 값만 움직이고, 손을 뗀 뒤(또는 잠깐 멈춘 뒤)에 설정에 반영한다.
+                    매 눈금마다 반영하면 그때마다 목소리를 다시 살펴보는 일이 걸린다 — 0에서 20까지
+                    끌면 스무 번이다. 합성 중이라면 그 요청이 거절돼 오류로 튀어나온다(실사용 보고). */}
+                <input type="range" min={0} max={30} step={1} value={refTargetDraft} disabled={disabled}
                   aria-label="참조 구간 목표 길이(초). 0 은 엔진 권장 상한"
-                  aria-valuetext={ttsRefTargetSec === 0 ? '엔진 권장 상한' : `${ttsRefTargetSec}초`}
-                  onChange={(e) => setTtsRefTargetSec(Math.round(parseFloat(e.target.value) || 0))}
+                  aria-valuetext={refTargetDraft === 0 ? '엔진 권장 상한' : `${refTargetDraft}초`}
+                  onChange={(e) => setRefTargetDraft(Math.round(parseFloat(e.target.value) || 0))}
                   style={{ flex: 1, minWidth: 140, accentColor: 'var(--rose)' }} />
-                <span style={{ fontSize: 11, color: ttsRefTargetSec === 0 ? 'var(--text-muted)' : 'var(--cyan)', minWidth: 84 }}>
-                  {ttsRefTargetSec === 0 ? '권장 상한' : `최대 ${ttsRefTargetSec}초`}
+                <span style={{ fontSize: 11, color: refTargetDraft === 0 ? 'var(--text-muted)' : 'var(--cyan)', minWidth: 84 }}>
+                  {refTargetDraft === 0 ? '권장 상한' : `최대 ${refTargetDraft}초`}
                 </span>
               </div>
               <span style={{ fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.6 }}>
