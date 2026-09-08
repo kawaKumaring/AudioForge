@@ -333,6 +333,8 @@ def main():
         # ref-analyze / ref-trim 파라미터(참조 구간 선택 UI용)
         args.region_start = config.get("regionStart", 0.0)
         args.region_dur = config.get("regionDur", 0.0)
+        # 자동 추천이 노리는 목표 길이(초). 0/부재 = 엔진 권장 상한(예전과 같은 동작).
+        args.region_target_sec = config.get("regionTargetSec") or 0.0
         # 감정 참조 후보 목록(비교·선택 화면용). 없으면 ref-analyze 응답이 예전과 같다.
         args.emotion_candidates = config.get("emotionCandidates")
         # 사용자가 후보 비교 화면에서 고른 것. `emotion_key(화자, 감정)` → 참조 id 또는 토큰.
@@ -538,7 +540,8 @@ def main():
         if args.mode == "ref-analyze":
             import reference_region as rr
             _policy = _reference_policy(args)
-            payload = rr.analysis_payload(args.input, _policy)
+            payload = rr.analysis_payload(args.input, _policy,
+                                          target_sec=getattr(args, "region_target_sec", 0.0))
             if getattr(args, "emotion_candidates", None):
                 # 같은 응답에 얹는다 — 새 채널을 만들지 않는다. 실패해도 기존 분석은 나간다.
                 try:

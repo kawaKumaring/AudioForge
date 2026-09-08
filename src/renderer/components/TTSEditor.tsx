@@ -258,6 +258,7 @@ export default function TTSEditor() {
   const [ttsPitch, setTtsPitch] = useState(() => useAppStore.getState().ttsPitch)
   const [ttsEngine, setTtsEngine] = useState(() => useAppStore.getState().ttsEngine)
   const [ttsQwenModel, setTtsQwenModel] = useState(() => useAppStore.getState().ttsQwenModel)
+  const [ttsRefTargetSec, setTtsRefTargetSec] = useState(() => useAppStore.getState().ttsRefTargetSec)
   const [refPrompts, setRefPrompts] = useState<Record<string, TtsReferenceEntry>>(() => useAppStore.getState().ttsReferencePrompts)
   const [showRefPrompts, setShowRefPrompts] = useState(false)
 
@@ -424,8 +425,8 @@ export default function TTSEditor() {
 
   // Sync to store (감정 참조 상태는 store가 단일 소스라 여기서 동기화하지 않는다)
   useEffect(() => {
-    useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsReferencePrompts: refPrompts, ttsEngine, ttsQwenModel })
-  }, [ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, refPrompts, ttsEngine, ttsQwenModel])
+    useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsReferencePrompts: refPrompts, ttsEngine, ttsQwenModel, ttsRefTargetSec })
+  }, [ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, refPrompts, ttsEngine, ttsQwenModel, ttsRefTargetSec])
 
   // Qwen preflight — 마운트 시 1회(mode 의존). 예상값이며 실행 결과는 결과 화면 metadata가 최종.
   useEffect(() => {
@@ -1675,6 +1676,30 @@ export default function TTSEditor() {
                 </div>
               )
             })()}
+
+            {/* 참조 목표 길이 — 자동 추천이 노리는 길이. 0 = 엔진 권장 상한(기본).
+                왜 조절을 여는가: Qwen3 는 벤더 코드에 참조 길이 필수 조건이 없다. 앱이 실제로 듣고
+                확인한 범위는 6.5~7.5초뿐이라 그 위는 미검증이지만, 막을 근거도 없다. 기본은 권장 안에
+                두고 더 쓰고 싶으면 여기서 올린다. **필수 상한이 있는 엔진(GPT-SoVITS 10초)에서는
+                이 값이 무시된다** — 벤더가 거부하기 때문이다. */}
+            <div data-testid="ref-target-length" style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>참조 목표 길이</span>
+                <input type="range" min={0} max={30} step={1} value={ttsRefTargetSec} disabled={disabled}
+                  aria-label="참조 구간 목표 길이(초). 0 은 엔진 권장 상한"
+                  aria-valuetext={ttsRefTargetSec === 0 ? '엔진 권장 상한' : `${ttsRefTargetSec}초`}
+                  onChange={(e) => setTtsRefTargetSec(Math.round(parseFloat(e.target.value) || 0))}
+                  style={{ flex: 1, minWidth: 140, accentColor: 'var(--rose)' }} />
+                <span style={{ fontSize: 11, color: ttsRefTargetSec === 0 ? 'var(--text-muted)' : 'var(--cyan)', minWidth: 84 }}>
+                  {ttsRefTargetSec === 0 ? '권장 상한' : `최대 ${ttsRefTargetSec}초`}
+                </span>
+              </div>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                목소리를 배울 때 쓸 구간을 얼마나 길게 잡을지입니다. 길수록 목소리 재료가 늘지만
+                준비가 느려지고, 이 앱이 소리를 직접 확인한 범위(6.5~7.5초)를 벗어납니다.
+                길이 필수 조건이 있는 엔진에서는 그 한계까지만 적용됩니다.
+              </span>
+            </div>
 
             {/* Qwen preflight 배지 — 예상값(실행 결과는 결과 화면 metadata가 최종) */}
             {preflight && (() => {

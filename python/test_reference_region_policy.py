@@ -167,7 +167,9 @@ class SeparateWiring(unittest.TestCase):
         self.assertIn("def _reference_policy(args):", self.src)
         self.assertIn("_ra.resolve_policy_engine(preferred, qwen_ok)", self.src)
         block = self.src[self.src.index('if args.mode == "ref-analyze":'):self.src.index('if args.mode == "ref-trim":')]
-        self.assertIn("rr.analysis_payload(args.input, _policy)", block)
+        # 목표 길이 인자가 붙어 줄이 나뉘었다 — 정책이 한 곳에서 오는지가 이 시험의 요지다.
+        self.assertIn("rr.analysis_payload(args.input, _policy,", block)
+        self.assertIn('target_sec=getattr(args, "region_target_sec", 0.0)', block)
         self.assertNotIn("GPTSOVITS_POLICY", block)
         trim = self.src[self.src.index('if args.mode == "ref-trim":'):]
         trim = trim[:trim.index('emit("result", clip_path=out_path, metrics=metrics)')]
@@ -186,6 +188,70 @@ class SeparateWiring(unittest.TestCase):
         self.assertIsNone(re.search(r"actual_dur\s*[<>]=?\s*(3\.0|10\.0)", code))
         self.assertIsNone(re.search(r"best_between\(3\.0,\s*10\.0\)", code))
         self.assertIsNone(re.search(r"min_sec=3\.0,\s*max_sec=10\.0", code))
+
+
+class RecommendLengthObjective(unittest.TestCase):
+    """추천 길이는 '발화 밀도' 가 아니라 '담긴 발화 초' 로 정한다 (2026-09-08).
+
+    왜 바꿨는가: 밀도(비율)는 길이에 반비례하기 쉬워서 짧고 촘촘한 조각이 언제나 이겼다.
+    허용 범위를 3~20초로 넓혀도 추천이 **오히려 짧아졌다**(실제 파일에서 7.06초 → 3.43초).
+    사용자가 "구간이 적게 잡힌다"고 본 것이 이 기준이었고, 6~8초 창이 그나마 길이를 붙잡고 있었다.
+    """
+
+    def setUp(self):
+        import numpy as np
+        import soundfile as sf
+        self.tmp = tempfile.mkdtemp(prefix="af_reclen_")
+        self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
+        # 말토막 1.2초 + 무음 0.4초 × 25 = 40초. 어디를 잘라도 밀도가 비슷해
+        # '밀도' 기준으로는 길이가 결정되지 않는다 — 기준 차이가 그대로 드러난다.
+        sr = 24000
+        parts = []
+        rng = np.random.default_rng(3)
+        for _ in range(25):
+            t = np.arange(int(sr * 1.2)) / sr
+            s = 0.3 * np.sin(2 * np.pi * 190 * t)
+            s *= np.minimum(1, np.minimum(t / 0.03, (1.2 - t) / 0.03))
+            parts.append(s.astype("float32"))
+            parts.append(rng.normal(0, 1e-5, int(sr * 0.4)).astype("float32"))
+        self.src = os.path.join(self.tmp, "long40.wav")
+        sf.write(self.src, np.concatenate(parts), sr)
+
+    def test_default_fills_engine_recommended_max(self):
+        # Qwen3 권장 상한 10초 → 예전에는 6~8초 창에 갇혀 7초 언저리만 나왔다.
+        r = rr.recommend_region(self.src, policy=ra.QWEN3_POLICY)
+        self.assertTrue(r["ok"], r)
+        self.assertGreater(r["dur_sec"], 8.0, "권장 상한 10초를 거의 채워야 한다: {0}".format(r))
+        self.assertLessEqual(r["dur_sec"], 10.0 + 1e-6, r)
+
+    def test_user_target_extends_length(self):
+        r = rr.recommend_region(self.src, target_sec=20.0, policy=ra.QWEN3_POLICY)
+        self.assertGreater(r["dur_sec"], 16.0, "목표 20초면 그만큼 길어져야 한다: {0}".format(r))
+        self.assertLessEqual(r["dur_sec"], 20.0 + 1e-6, r)
+
+    def test_user_target_cannot_break_required_max(self):
+        # GPT-SoVITS 는 벤더가 10초 초과 참조를 거부한다 — 사용자 설정으로 넘을 수 없다.
+        r = rr.recommend_region(self.src, target_sec=30.0, policy=ra.GPTSOVITS_POLICY)
+        self.assertLessEqual(r["dur_sec"], 10.0 + 1e-6, "필수 상한을 넘었다: {0}".format(r))
+
+    def test_user_target_is_capped(self):
+        r = rr.recommend_region(self.src, target_sec=999.0, policy=ra.QWEN3_POLICY)
+        self.assertLessEqual(r["dur_sec"], rr.MAX_USER_TARGET_SEC + 1e-6, r)
+
+    def test_target_below_minimum_does_not_go_under_it(self):
+        # 목표를 1초로 낮춰도 권장 하한(3초) 아래로 내려가지 않는다.
+        r = rr.recommend_region(self.src, target_sec=1.0, policy=ra.QWEN3_POLICY)
+        self.assertGreaterEqual(r["dur_sec"], 3.0 - 1e-6, r)
+
+    def test_recommendation_is_still_confirmable(self):
+        # 길어진 추천이 확정 단계에서 거부되면 아무 의미가 없다.
+        r = rr.recommend_region(self.src, policy=ra.QWEN3_POLICY)
+        out = os.path.join(self.tmp, "clip.wav")
+        built = rr.build_reference_clip(self.src, r["start_sec"], r["dur_sec"], out,
+                                        transcribe_fn=lambda _p: "가나다라마",
+                                        policy=ra.QWEN3_POLICY)
+        self.assertEqual(built["blocking"], [], built)
+        self.assertTrue(built["ready"])
 
 
 if __name__ == "__main__":

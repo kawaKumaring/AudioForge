@@ -187,6 +187,9 @@ export default function ReferenceRegionPanel({
   const hasCommitted = !!(committed && (committed.clip || committed.region || committed.whole))
   // 엔진 선택이 바뀌면 같은 원본을 그 엔진의 정책으로 다시 판정한다(사용 중 구간은 지우지 않는다).
   const ttsEngine = useAppStore((s) => s.ttsEngine)
+  // 고급 설정의 '참조 목표 길이'. 0 = 엔진 권장 상한. 값이 바뀌면 추천도 다시 받아야 하므로
+  // runAnalyze 의 의존성에 들어간다(설정만 바꾸고 예전 추천을 보고 있으면 안 된다).
+  const ttsRefTargetSec = useAppStore((s) => s.ttsRefTargetSec)
   const setTtsReferencePolicy = useAppStore((s) => s.setTtsReferencePolicy)
   const [confirmError, setConfirmError] = useState<string | null>(null)
   // 기본 화면(plainStatus)에서는 같은 사실을 쉬운 말로 낸다. 안전 오류 문구는 어느 쪽에서도 바꾸지 않는다.
@@ -248,7 +251,7 @@ export default function ReferenceRegionPanel({
       onStateRef.current({ ready: false, clip: '', message: say('참조 음성을 분석 중입니다...', '목소리를 살펴보는 중입니다…'), region: null })
     }
     try {
-      const a = await window.api.audio.analyzeReference(path, clipKey, { ttsEngine }) as Analysis & { error_message?: string; reason?: string }
+      const a = await window.api.audio.analyzeReference(path, clipKey, { ttsEngine, regionTargetSec: ttsRefTargetSec }) as Analysis & { error_message?: string; reason?: string }
       if (signal?.cancelled) return
       // 방어: 분석 payload가 올바르지 않으면(예: IPC 유실/실패) 검은 화면 대신 오류 처리 → "다시 분석"
       if (!a || typeof a.duration_sec !== 'number') {
@@ -319,7 +322,7 @@ export default function ReferenceRegionPanel({
     } finally {
       if (!signal?.cancelled) setLoading(false)
     }
-  }, [path, clipKey, say, ttsEngine, setTtsReferencePolicy])
+  }, [path, clipKey, say, ttsEngine, ttsRefTargetSec, setTtsReferencePolicy])
 
   // 파일이 바뀌면(그리고 엔진 선택이 바뀌면) 분석(StrictMode 중복 setup에도 main single-flight로 subprocess 1회).
   useEffect(() => {

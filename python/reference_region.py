@@ -2,8 +2,9 @@
 """긴 참조 음성에서 3~10초 구간을 다루는 백엔드 — 오류 거부가 아니라 "참조 원본"으로 수용.
 
 역할(엔진 무관 사실 측정 + 파생 클립 생성):
-  - recommend_region(): 10초 초과 파일에서 6~8초의 '좋은 발화 구간'을 자동 추천(무음 적음·클리핑
-    없음·연속 발화). 확정이 아니라 UI 기본 제안값이다(사용자가 재생·확정).
+  - recommend_region(): 긴 파일에서 '좋은 발화 구간'을 자동 추천한다. 목표 길이는 엔진 정책의
+    권장 상한(또는 사용자가 고급 설정에서 올린 값)이고, 그 안에서 **담긴 발화 초**가 가장 많은
+    구간을 고른다. 확정이 아니라 UI 기본 제안값이다(사용자가 재생·확정).
   - analyze_region(): 선택 구간의 길이·무음비율·클리핑·RMS + 경계 절단(말 도중에 끊겼는가)을
     측정하고 품질 경고를 만든다. 경계 절단은 참조 대사 혼입의 직접 원인이라 별도 필드로 낸다.
   - coarse_peaks(): 파형 렌더링용 다운샘플 peak 배열(전체 파일).
@@ -34,10 +35,15 @@ WARN_CLIPPING = "REGION_CLIPPING"
 WARN_OUTSIDE_RECOMMENDED = "REGION_OUTSIDE_RECOMMENDED"
 
 TARGET_SR = 24000            # 파생 참조 클립 샘플레이트(모델 입력)
-DEFAULT_TARGET_SEC = 7.0     # 자동 추천 목표 길이(6~8초 권장의 중앙)
-REC_MIN_SEC = 6.0
-REC_MAX_SEC = 8.0
 HOP_SEC = 0.1                # 추천/구간 분석 시 프레임 홉
+
+# 추천 후보로 삼을 최소 발화 비율. 이보다 성긴 구간은 '길지만 대부분 조용한' 구간이라
+# 길이를 최대화하는 기준이 잘못 고르기 쉽다. 이 문턱을 넘는 후보가 하나도 없으면 문턱을 푼다
+# (성긴 녹음에서 추천 자체가 사라지지 않게).
+MIN_SPEECH_RATIO = 0.60
+# 사용자가 고급 설정에서 올릴 수 있는 목표 길이의 천장. Qwen3 는 길이 필수 조건이 없지만
+# 무한정 열어 두지 않는다 — 참조가 길수록 대조할 대사가 길어지고 준비가 느려진다.
+MAX_USER_TARGET_SEC = 30.0
 SILENCE_DBFS = -45.0         # 무음 창 판정(reference_audio와 동일 기준)
 CLIP_THRESHOLD = 0.99
 
@@ -87,7 +93,7 @@ def _hop_frames(mono, sr):
     return rms, clip, hop
 
 
-def recommend_region(path, target_sec=DEFAULT_TARGET_SEC,
+def recommend_region(path, target_sec=None,
                      min_sec=None, max_sec=None, policy=None):
     """10초 초과 파일에서 **확정 가능한** 좋은 발화 구간을 추천한다.
 
@@ -96,26 +102,39 @@ def recommend_region(path, target_sec=DEFAULT_TARGET_SEC,
     무음 경계를 요구해, 앱이 스스로 추천한 구간을 스스로 거부했다. 여기서는 확정기와 같은
     ``detect_silences`` 경계의 중심끼리만 후보로 삼는다.
 
-    6~8초 후보를 우선하고 없으면 모델 허용 범위인 3~10초로 넓힌다. 어느 쪽에도 안전한
-    경계 쌍이 없으면 임의 절단을 추천하지 않고 ``ok=False`` 를 반환한다."""
+    고르는 기준은 **담긴 발화 초**(발화 비율 × 길이)다. 예전 기준인 발화 '비율'은 짧은 조각에
+    유리해서, 허용 범위를 넓혀도 추천이 오히려 짧아졌다(실측: 6개 파일 전부 6.5~7.5초에 고정).
+
+    ``target_sec`` 은 사용자가 고급 설정에서 정한 목표 길이(초). 0/None 이면 엔진 권장 상한.
+    엔진의 **필수** 상한은 이 값으로 넘지 못한다. 안전한 경계 쌍이 없으면 낱말 경계 경로에
+    맡기고 ``safe_boundaries=False`` 로 제안만 한다."""
     import numpy as np
     pol = _policy_or_default(policy)
     mono, sr = _load_mono(path)
     dur = len(mono) / sr if sr > 0 else 0.0
-    # 추천이 노리는 범위 = 정책의 권장 범위(없으면 필수 범위). 1차 창(6~8초)은 그 안으로 좁힌다.
-    rec_lo, rec_hi = pol.recommended_bounds()
-    if rec_hi == float("inf"):
-        rec_hi = dur
-    if min_sec is None:
-        min_sec = max(REC_MIN_SEC, rec_lo)
-    if max_sec is None:
-        max_sec = min(REC_MAX_SEC, rec_hi) if rec_hi > 0 else REC_MAX_SEC
-    if max_sec < min_sec:
-        min_sec, max_sec = rec_lo, rec_hi
     if dur <= 0:
         return {"ok": False, "reason": "empty", "duration_sec": 0.0}
 
-    win_sec = float(max(min_sec, min(max_sec, target_sec)))
+    # 추천이 노리는 범위는 **정책**에서 나온다. 예전에는 이 모듈이 6~8초를 따로 들고 있어서
+    # 엔진이 3~10초를 권장해도 언제나 6~8초만 제안했다(실측: 실제 파일 6개 전부 6.5~7.5초).
+    # 모듈 설명이 "이 모듈은 길이 숫자를 갖지 않는다"고 적어 둔 것과도 어긋났다.
+    rec_lo, rec_hi = pol.recommended_bounds()
+    req_lo, req_hi = pol.region_bounds(dur)
+    if rec_hi == float("inf"):
+        rec_hi = dur
+    if min_sec is None:
+        min_sec = max(rec_lo, req_lo if req_lo is not None else 0.0)
+    if max_sec is None:
+        # 사용자가 고급 설정에서 목표 길이를 올렸으면 그것을 상한으로 쓴다.
+        # 단 엔진의 **필수** 상한은 넘지 않는다(GPT-SoVITS 10초는 벤더가 거부한다).
+        want = float(target_sec) if target_sec else rec_hi
+        want = min(max(want, min_sec), MAX_USER_TARGET_SEC)
+        max_sec = min(want, req_hi) if req_hi is not None else want
+    max_sec = min(max_sec, dur)
+    if max_sec < min_sec:
+        min_sec, max_sec = rec_lo, max(rec_lo, max_sec)
+
+    win_sec = float(max_sec)
     if dur <= win_sec:
         # 추천 창보다 짧으면 전체가 후보(경계 판정은 호출부/policy가 담당)
         return {"ok": True, "start_sec": 0.0, "dur_sec": round(dur, 3),
@@ -141,7 +160,19 @@ def recommend_region(path, target_sec=DEFAULT_TARGET_SEC,
     sp_cs = np.concatenate([[0.0], np.cumsum(speech)])
     cl_cs = np.concatenate([[0.0], np.cumsum(clip)])
 
-    def best_between(lo, hi):
+    # ── 무엇을 '좋은 구간' 으로 볼 것인가 ────────────────────────────────────
+    # 예전 기준은 **발화 밀도**(비율)였다. 비율은 길이에 반비례하기 쉬워서 짧고 촘촘한 조각이
+    # 언제나 이겼다 — 허용 범위를 3~20초로 넓혀도 추천이 오히려 짧아지는 것으로 실측됐다
+    # (마젬 7.06초 → 3.43초). 사용자가 "구간이 적게 잡힌다" 고 본 것이 이 기준이다.
+    #
+    # 지금 기준은 **실제로 담긴 발화 초**(밀도 × 길이)다. 목소리를 배우는 데 쓰이는 것은
+    # 비율이 아니라 들어 있는 말의 양이므로 이쪽이 목적에 맞고, 길이가 저절로 따라온다.
+    # 클리핑은 같은 단위(초)로 벌점을 준다.
+    #
+    # 문턱(MIN_SPEECH_RATIO)이 필요한 이유: 길이를 최대화하는 기준은 '길지만 절반이 조용한'
+    # 구간에 끌릴 수 있다. 실제 파일 6개에서는 문턱이 있으나 없으나 결과가 같았지만
+    # (전부 밀도 0.71 이상), 성긴 녹음을 위한 안전선으로 남긴다. 아무 후보도 못 넘으면 푼다.
+    def best_between(lo, hi, min_ratio):
         import bisect
         best = None
         for st in cuts:
@@ -155,15 +186,19 @@ def recommend_region(path, target_sec=DEFAULT_TARGET_SEC,
                 b = max(a + 1, min(len(speech), int(round(en / HOP_SEC))))
                 sp = (sp_cs[b] - sp_cs[a]) / (b - a)
                 cl = (cl_cs[b] - cl_cs[a]) / (b - a)
-                # 음성 밀도·클리핑이 주 권위. 동률이면 목표 7초에 가까운 쪽, 그 다음 앞쪽.
-                rank = (float(sp - 3.0 * cl), -abs(d - win_sec), -st)
+                if sp < min_ratio:
+                    continue
+                # 담긴 발화 초 − 클리핑 초 × 3. 동률이면 앞쪽 구간.
+                rank = (float((sp - 3.0 * cl) * d), -st)
                 if best is None or rank > best[0]:
                     best = (rank, st, en, sp)
         return best
 
-    best = best_between(float(min_sec), float(max_sec))
+    best = best_between(float(min_sec), float(max_sec), MIN_SPEECH_RATIO)
     if best is None:
-        best = best_between(float(rec_lo), float(rec_hi))
+        best = best_between(float(min_sec), float(max_sec), 0.0)
+    if best is None:
+        best = best_between(float(rec_lo), float(rec_hi), 0.0)
     if best is None:
         # 무음 경계 쌍이 없다 = 말이 쉼 없이 이어지는 음원. 예전에는 여기서 ok=False 였고,
         # 그러면 화면이 '구간을 직접 고르세요' 에서 멈춰 자동 준비가 끝나지 않았다.
@@ -689,7 +724,7 @@ def build_reference_clip(src_path, requested_start_sec, requested_dur_sec, out_p
     return res
 
 
-def analysis_payload(path, policy, include_peaks=True):
+def analysis_payload(path, policy, include_peaks=True, target_sec=None):
     """ref-analyze 응답. 화면이 읽는 모든 길이 조건이 **이 정책** 하나에서 나온다.
 
     needs_region     — 구간을 추천한다(필수 상한이 있으면 그것, 없으면 권장 상한을 넘었을 때).
@@ -715,7 +750,7 @@ def analysis_payload(path, policy, include_peaks=True):
         "warnings": [w.to_dict() for w in assessed.warnings],
     }
     if payload["needs_region"]:
-        payload["recommend"] = recommend_region(path, policy=policy)
+        payload["recommend"] = recommend_region(path, target_sec=target_sec, policy=policy)
         if include_peaks:
             payload["peaks"] = coarse_peaks(path, buckets=500)
     return payload
