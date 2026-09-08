@@ -117,7 +117,8 @@ class SynthesizeNeverCallsModelTest(unittest.TestCase):
         self.calls = []
 
         class FakeEngine:
-            def run_job(inner, segments, device):     # noqa: N805
+            # **_kw: production 이 키워드를 더 붙여도(예: seed) 이 대역이 깨지지 않게.
+            def run_job(inner, segments, device, **_kw):     # noqa: N805
                 self.calls.append((len(segments), device))
                 return []
         self._real_engine = tw._qwen_engine

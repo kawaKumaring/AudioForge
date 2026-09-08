@@ -60,7 +60,8 @@ class JobWallClockTest(unittest.TestCase):
         src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "tts_worker.py"), encoding="utf-8").read()
         i = src.index("_job_clock = JobWallClock()")
         j = src.index("_job_clock.check(", i)
-        k = src.index("seg_out = qwen.run_job(segments, device)", i)
+        # 씨앗을 넘기게 되면서 호출이 길어졌다 — 호출 자체를 찾는다(인자 목록에 묶이지 않게).
+        k = src.index("seg_out = qwen.run_job(segments, device", i)
         self.assertLess(i, k, "시계는 생성 전에 시작한다")
         self.assertLess(k, j, "확인은 생성 직후에 한다")
 

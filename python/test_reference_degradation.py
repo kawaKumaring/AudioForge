@@ -315,7 +315,7 @@ class MetadataEndToEndTest(_Base):
 
         self.reached_run_job = []
 
-        def fake_run_job(inner_self, segments, device):
+        def fake_run_job(inner_self, segments, device, **_kw):
             self.reached_run_job.append(len(segments))
             for s in segments:
                 _write_wav(s["out_path"], 0.3)

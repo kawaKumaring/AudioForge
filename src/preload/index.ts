@@ -42,6 +42,9 @@ const api = {
     // 새 채널을 만들지 않는다 — 응답에 필드가 더 붙을 뿐이다.
     analyzeReference: (filePath: string, clipKey?: string, extra?: Record<string, unknown>) =>
       ipcRenderer.invoke('audio:analyze-reference', filePath, clipKey, extra),
+    /** 이 결과가 어땠는지를 그 실행의 기록에 남긴다. verdict: good | fair | bad. */
+    recordListening: (runId: string, verdict: string, note?: string) =>
+      ipcRenderer.invoke('audio:record-listening', runId, verdict, note),
     // extra: 분석과 같은 추가 설정(예: ttsEngine → 워커가 그 엔진의 길이 정책으로 판정). 새 채널 없음.
     trimReference: (filePath: string, startSec: number, durSec: number, clipKey?: string, extra?: Record<string, unknown>) =>
       ipcRenderer.invoke('audio:trim-reference', filePath, startSec, durSec, clipKey, extra),

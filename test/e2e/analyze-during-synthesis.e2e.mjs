@@ -14,7 +14,7 @@
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
-import { isolatedInput, cleanupIsolated, isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, isolatedUserData, cleanupUserData, nvidiaSmiGpu0 } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const SRC = (process.env.AF_E2E_REFERENCE || '').trim()
@@ -25,7 +25,15 @@ if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드
 const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots')
 fs.mkdirSync(SHOT, { recursive: true })
 let failed = 0
-const log = (...a) => console.log('[synth-settings]', ...a)
+// 로그는 실행마다 다른 이름으로 남긴다. 예전에는 한 이름을 덮어써서, 게이트 안에서 한 번
+// 실패하고 다시 돌려 통과하면 **실패했던 실행의 근거가 사라졌다**(2026-09-09 실측).
+const STAMP = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15)
+const logLines = []
+const log = (...a) => {
+  const s = a.map((x) => (typeof x === 'string' ? x : JSON.stringify(x))).join(' ')
+  logLines.push(s)
+  console.log('[synth-settings]', s)
+}
 const ok = (c, m, extra = '') => { log(c ? 'PASS' : 'FAIL', m, extra); if (!c) failed++ }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -76,6 +84,15 @@ try {
   await win.waitForFunction(() => ['done', 'error'].includes(window.__afStore?.getState().status),
     undefined, { timeout: 400000 })
   const final = await win.evaluate(() => window.__afStore.getState().status)
+  if (final !== 'done') {
+    // 왜 안 됐는지를 그 자리에서 남긴다 — 나중에 물어볼 곳이 없다.
+    const snap = await win.evaluate(() => {
+      const s = window.__afStore.getState()
+      return { status: s.status, error: s.error, progress: s.progress, progressMessage: s.progressMessage }
+    })
+    log('미완료 원인 감사 — store:', snap)
+    log('  nvidia-smi GPU0(used/free MiB):', nvidiaSmiGpu0() || '측정 실패')
+  }
   ok(final === 'done', `합성이 끝까지 간다(status=${final})`)
   await win.waitForFunction(() => window.__afStore?.getState().ttsRefReady === true,
     undefined, { timeout: 180000 }).catch(() => {})
@@ -95,7 +112,10 @@ try {
   try { await app.close() } catch { /* ignore */ }
   cleanupIsolated(ISO)
   cleanupUserData(UD)
-  fs.writeFileSync(path.join(SHOT, 'synth-settings-main.txt'), mainOut.join(''), 'utf-8')
+  const tag = failed === 0 ? 'ok' : 'FAIL'
+  const NL = String.fromCharCode(10)
+  fs.writeFileSync(path.join(SHOT, `synth-settings-${STAMP}-${tag}.txt`),
+    `${logLines.join(NL)}${NL}${NL}--- main ---${NL}${mainOut.join('')}`, 'utf-8')
 }
 log(failed === 0 ? '전부 통과' : `실패 ${failed}`)
 process.exit(failed === 0 ? 0 : 1)

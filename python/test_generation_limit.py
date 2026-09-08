@@ -395,7 +395,7 @@ class SynthJobSafetyTest(unittest.TestCase):
         with open(final, "wb") as f:
             f.write(sentinel)
 
-        def boom(inner_self, segments, device):
+        def boom(inner_self, segments, device, **_kw):
             raise tts_worker.QwenGenerationLimitError(0, 1024, 1024)
 
         with mock.patch.object(tts_worker.QwenTTSEngine, "run_job", new=boom):
@@ -416,7 +416,7 @@ class SynthJobSafetyTest(unittest.TestCase):
 
     def _run_with_segmeta(self, per_seg):
         """per_seg: {index: (iters, limit)}. fake run_job으로 chunk 형식 seg_out(1 chunk/seg) 반환 → info 산출."""
-        def fake_run_job(inner_self, segments, device):
+        def fake_run_job(inner_self, segments, device, **_kw):
             outs = []
             for s in segments:
                 _write_wav(s["out_path"], 0.3)
@@ -454,7 +454,7 @@ class SynthJobSafetyTest(unittest.TestCase):
     # ── 계약 B: 다중 chunk 통합 ──
     def _fake_multichunk(self, plan):
         """plan: {original_segment_index: chunk_count}. job_dir 내부에 chunk WAV 쓰고 chunk 형식 반환."""
-        def fake_run_job(inner_self, segments, device):
+        def fake_run_job(inner_self, segments, device, **_kw):
             outs = []
             jobdir = os.path.dirname(segments[0]["out_path"])
             for s in segments:
@@ -499,7 +499,7 @@ class SynthJobSafetyTest(unittest.TestCase):
         with open(final, "wb") as f:
             f.write(sentinel)
 
-        def boom(inner_self, segments, device):
+        def boom(inner_self, segments, device, **_kw):
             raise tts_worker.QwenGenerationLimitError(0, 256, 256, "default", 1)  # chunk_index=1
 
         with mock.patch.object(tts_worker.QwenTTSEngine, "run_job", new=boom):
@@ -522,7 +522,7 @@ class SynthJobSafetyTest(unittest.TestCase):
         with open(final, "wb") as f:
             f.write(sentinel)
 
-        def fake(inner_self, segments, device):
+        def fake(inner_self, segments, device, **_kw):
             import soundfile as sf
             import numpy as np
             jobdir = os.path.dirname(segments[0]["out_path"])
@@ -551,7 +551,7 @@ class SynthJobSafetyTest(unittest.TestCase):
         with open(final, "wb") as f:
             f.write(sentinel)
 
-        def toolong(inner_self, segments, device):
+        def toolong(inner_self, segments, device, **_kw):
             raise tts_worker.QwenTextSegmentTooLongError(0, 500, 33, "happy")
 
         with mock.patch.object(tts_worker.QwenTTSEngine, "run_job", new=toolong):

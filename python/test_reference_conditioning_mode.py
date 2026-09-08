@@ -175,7 +175,7 @@ class _QwenJobBase(unittest.TestCase):
         self.entry_extra = {}
         self.run_job_error = None
 
-        def fake_run_job(inner_self, segments, device):
+        def fake_run_job(inner_self, segments, device, **_kw):
             self.captured_segments.append([dict(s) for s in segments])
             if self.run_job_error is not None:
                 raise self.run_job_error

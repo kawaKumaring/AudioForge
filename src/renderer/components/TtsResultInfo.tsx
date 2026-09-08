@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react'
+import { useEffect, useState, type CSSProperties } from 'react'
 import { useAppStore } from '@/stores/app.store'
 import { ALL_EMOTIONS } from '@/lib/emotions'
 import { parseGenerationSummary } from '../../shared/ttsConfig'
@@ -20,6 +20,78 @@ function engineName(v: unknown): string {
   const s = String(v ?? '')
   if (!s) return '알 수 없음'
   return s.split(',').map(e => ENGINE_LABEL[e] || e).join(' + ')
+}
+
+const VERDICTS = [
+  { id: 'good', label: '좋음' },
+  { id: 'fair', label: '보통' },
+  { id: 'bad', label: '나쁨' },
+] as const
+
+/** 이 결과가 어땠는지를 그 실행의 기록에 남긴다. 한 실행에 한 번, 다시 눌러 바꿀 수 있다. */
+function ListeningVerdict({ runId }: { runId: string }) {
+  const [saved, setSaved] = useState<string | null>(null)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [note, setNote] = useState('')
+  const [noteOpen, setNoteOpen] = useState(false)
+  // 결과가 바뀌면(새 실행) 판정은 처음 상태로 돌아간다.
+  useEffect(() => { setSaved(null); setError(null); setNote(''); setNoteOpen(false) }, [runId])
+  if (!runId) return null
+
+  const send = async (verdict: string, text: string) => {
+    setBusy(true); setError(null)
+    try {
+      await window.api.audio.recordListening(runId, verdict, text)
+      setSaved(verdict)
+    } catch (e) {
+      setError((e as Error)?.message || '판정을 남기지 못했습니다')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div data-testid="listening-verdict" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>이 소리 어땠나요?</span>
+        {VERDICTS.map((v) => (
+          <button key={v.id} type="button" data-testid={`listening-${v.id}`}
+            disabled={busy}
+            aria-pressed={saved === v.id}
+            onClick={() => { void send(v.id, note) }}
+            title="눌러 두면 이 실행의 설정과 함께 기록에 남습니다. 나중에 어떤 설정이 좋았는지 찾을 때 쓰입니다."
+            style={{
+              fontSize: 11, padding: '2px 10px', borderRadius: 6, cursor: busy ? 'default' : 'pointer',
+              fontFamily: 'inherit',
+              border: `1px solid ${saved === v.id ? 'var(--cyan)' : 'var(--border-subtle)'}`,
+              background: saved === v.id ? 'var(--cyan)' : 'transparent',
+              color: saved === v.id ? '#04212a' : 'var(--text-secondary)',
+            }}>{v.label}</button>
+        ))}
+        <button type="button" data-testid="listening-note-toggle" onClick={() => setNoteOpen((o) => !o)}
+          style={{
+            fontSize: 11, padding: '2px 8px', borderRadius: 6, border: 'none', cursor: 'pointer',
+            background: 'transparent', color: 'var(--text-muted)', fontFamily: 'inherit',
+          }}>{noteOpen ? '메모 닫기' : '메모'}</button>
+        {saved && !busy && !error && (
+          <span style={{ fontSize: 11, color: 'var(--cyan)' }}>· 기록에 남았습니다</span>
+        )}
+      </div>
+      {noteOpen && (
+        <input type="text" data-testid="listening-note" value={note} maxLength={500}
+          placeholder="무엇이 좋았는지·나빴는지 한 줄 (선택)"
+          onChange={(e) => setNote(e.target.value)}
+          onBlur={() => { if (saved) void send(saved, note) }}
+          style={{
+            fontSize: 11, padding: '4px 8px', borderRadius: 6, fontFamily: 'inherit',
+            background: 'var(--bg-elevated)', color: 'var(--text-primary)',
+            border: '1px solid var(--border-subtle)',
+          }} />
+      )}
+      {error && <span role="alert" style={{ fontSize: 11, color: 'var(--rose)' }}>{error}</span>}
+    </div>
+  )
 }
 
 export default function TtsResultInfo() {
@@ -99,6 +171,12 @@ export default function TtsResultInfo() {
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{headline}</span>
         )}
       </div>
+      {/* 이 소리가 어땠는지 — 눌러 두면 이 실행의 기록에 남는다.
+          왜 있는가(2026-09-08 조사): 설정은 기록에 다 남는데 **그 소리가 어땠는지**가 없어서
+          "어떤 설정이 좋은 소리를 만드나" 를 기록만으로 답할 수 없었다. 한 번의 클릭이 그 빈칸을 메운다.
+          run_id 가 없으면(기록이 꺼진 실행) 아예 보이지 않는다 — 누를 수 없는 단추를 두지 않는다. */}
+      <ListeningVerdict runId={m.run_id ? String(m.run_id) : ''} />
+
       {/* 자동 모드가 안정 방식으로 바꿔 만들었을 때의 **유일한** 사용자 문구(권위는 Python metadata).
           여기에 내부 code 를 덧붙이지 않는다 — code 는 아래 '상세 정보' 안에만 있다. */}
       {rcNotice && (

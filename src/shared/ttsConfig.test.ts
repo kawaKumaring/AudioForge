@@ -148,7 +148,7 @@ test('지정한 값은 그대로 통과한다', () => {
   assert.equal(c.ttsEngine, 'gptsovits')
 })
 
-test('직렬화 형태에 26개 TTS 키가 모두 존재한다 (필드 누락 방지; v1.4 화자 4개 + 후보 선택 1개 + 생성 방식 1개 + 모델 판 1개)', () => {
+test('직렬화 형태에 27개 TTS 키가 모두 존재한다 (필드 누락 방지; v1.4 화자 4개 + 후보 선택 1개 + 생성 방식 1개 + 모델 판 1개 + 참조 구간 1개)', () => {
   const c = buildTtsConfig({})
   assert.deepEqual(
     Object.keys(c).sort(),
@@ -156,7 +156,9 @@ test('직렬화 형태에 26개 TTS 키가 모두 존재한다 (필드 누락 �
       'ttsEmotionRefRegions', 'ttsEmotionRefSources',
       'ttsEmotionRefs', 'ttsEngine', 'ttsExpressiveMode', 'ttsParsedPlanSha256', 'ttsParserVersion', 'ttsPitch',
       'ttsQwenModel',
-      'ttsReferenceConditioningMode', 'ttsReferenceOverride', 'ttsReferencePrompts', 'ttsSilenceGap',
+      'ttsReferenceConditioningMode', 'ttsReferenceOverride', 'ttsReferencePrompts',
+      // 2026-09-08 추가 — 기록 전용. 파이썬은 잘린 클립만 받아서 '원본의 어디였나' 를 몰랐다.
+      'ttsReferenceRegion', 'ttsSilenceGap',
       'ttsSpeakerEmotionRefs', 'ttsSpeakerLabels', 'ttsSpeakerMode', 'ttsSpeakerRefSources', 'ttsSpeakerRefs', 'ttsSpeed',
       'ttsTailFadeMs', 'ttsTailMode', 'ttsTailPaddingMs', 'ttsText']
   )
