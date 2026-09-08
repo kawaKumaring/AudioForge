@@ -1526,6 +1526,8 @@ def _positive_float_or_none(v):
 
 
 _METADATA_KEYS = [
+    # 이 결과가 남긴 실행 기록의 id. 화면이 나중에 "이 소리는 어땠다" 를 그 기록에 붙일 때 쓴다.
+    "run_id",
     "requested_engine", "actual_engine", "model_name", "model_revision", "device",
     # 사용자가 고른 음성 모델 판(없으면 'default'). 어느 판으로 만든 결과인지 사후에 가리기 위한 것.
     "qwen_model_variant",
@@ -2495,6 +2497,7 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         info = {
             "actual_engine": "qwen3", "model_name": _qwen_active_name(),
             "model_revision": _QWEN_REVISION if _QWEN_SELECTED_ID is None else "",
+            "run_id": _run_id_or_none(),
             "qwen_model_variant": _QWEN_SELECTED_ID or "default",
             "device": actual_device, "device_selection_source": device_source,
             "prompt_source": def_source, "x_vector_only_mode": def_xvo,
@@ -2808,6 +2811,15 @@ _RUN_HEADER_FROM_METADATA = (
 #: 부분 결과를 보존한 채 끝난 실패 코드. 이 경우 상태는 failed 가 아니라 partial 이다.
 _PARTIAL_ERROR_CODES = ("GENERATION_LIMIT_EXCEEDED", "JOB_WALL_TIME_EXCEEDED")
 _CANCEL_ERROR_CODES = ("CANCELLED", "TTS_CANCELLED")
+
+
+def _run_id_or_none():
+    """이 작업의 실행 기록 id. 기록이 꺼져 있으면 None — 화면은 그때 판정 단추를 내리지 않는다."""
+    try:
+        import chunk_publish
+        return chunk_publish.run_id()
+    except Exception:
+        return None
 
 
 def _environment_facts(device=None):

@@ -306,6 +306,10 @@ def main():
         args.tts_engine = config.get("ttsEngine", "auto")
         # 기본 참조의 확정 구간(초). 없으면 원본 전체를 쓴 것이다.
         args.tts_reference_region = config.get("ttsReferenceRegion") or None
+        # 청취 판정(run-note 모드 전용)
+        args.note_run_id = config.get("noteRunId", "")
+        args.note_verdict = config.get("noteVerdict", "")
+        args.note_text = config.get("noteText", "")
         # 사용자가 고른 음성 모델 판(빈 값 = 기본). 해석·검증·거부는 tts_worker.set_qwen_model 이 소유한다.
         args.tts_qwen_model = config.get("ttsQwenModel", "") or ""
         # 참조 conditioning 모드(참조혼입 대응 PHASE 2, 단일 권위 계약). 키 부재(legacy 세션)는
@@ -383,6 +387,33 @@ def main():
         except Exception as e:
             # 전체 경로/민감정보 미포함 — 예외 종류만.
             emit("result", available=False, reason=f"pitch-probe-failed: {type(e).__name__}")
+        return
+
+    # ── 청취 판정 기록 ──────────────────────────────────────────────
+    # 어제 조사에서 가장 아쉬웠던 것: 설정은 기록에 다 남는데 "그 실행이 좋았나 나빴나" 가
+    # 없어서 "어떤 설정이 좋은 소리를 만드나" 를 기록만으로 답할 수 없었다.
+    # 사람이 눌러 주는 한 줄이 그 빈칸을 메운다. 기록 폴더의 주인이 파이썬이므로 여기서 쓴다.
+    if args.mode == "run-note":
+        import local_assets
+        rid = str(getattr(args, "note_run_id", "") or "").strip()
+        verdict = str(getattr(args, "note_verdict", "") or "").strip()
+        if verdict not in ("good", "fair", "bad"):
+            emit("error", code="INVALID_LISTENING_VERDICT", verdict=verdict)
+            return
+        try:
+            d = local_assets.run_record_dir(rid)      # run_id 검증(경로 문자 금지)도 여기서 한다
+        except Exception as exc:
+            emit("error", code="INVALID_RUN_ID", detail=type(exc).__name__)
+            return
+        import datetime
+        import io as _io
+        path = os.path.join(d, "listening.json")
+        note = str(getattr(args, "note_text", "") or "")[:500]
+        payload = {"schema": "af-run-listening/1", "run_id": rid, "verdict": verdict,
+                   "note": note, "recorded_at": datetime.datetime.now().isoformat(timespec="seconds")}
+        with _io.open(path, "w", encoding="utf-8") as fh:
+            json.dump(payload, fh, ensure_ascii=False, indent=2)
+        emit("result", listening_path=path, verdict=verdict)
         return
 
     if not args.input or not args.output:

@@ -534,6 +534,33 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
 
   // Qwen 실행 전 상태(preflight) — 읽기 전용. 배타 가드 미사용. 동시(또는 StrictMode 중복) 호출은
   // 하나의 in-flight Promise를 공유해 subprocess 1회. 예상값이며 실행 결과는 metadata가 최종.
+  // 청취 판정 기록 — "이 결과가 좋았나" 를 그 실행의 기록 폴더에 남긴다.
+  //
+  // 왜 필요한가(2026-09-08 조사): 설정은 기록에 다 남는데 **그 소리가 어땠는지**가 없어서
+  // "어떤 설정이 좋은 소리를 만드나" 를 기록만으로 답할 수 없었다. 사람이 눌러 주는 한 줄이
+  // 그 빈칸을 메운다. 기록 폴더의 위치 규칙은 파이썬이 갖고 있으므로 쓰는 일도 파이썬에 맡긴다
+  // (여기서 경로를 다시 계산하면 두 곳이 어긋난다).
+  ipcMain.handle('audio:record-listening', async (_event, runId: string, verdict: string, note?: string) => {
+    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
+    if (!['good', 'fair', 'bad'].includes(verdict)) throw new Error(`알 수 없는 판정: ${verdict}`)
+    if (!runId || /[\/:*?"<>|]/.test(runId)) throw new Error('실행 기록 id 가 올바르지 않습니다.')
+    const cfgPath = join(tmpdir(), `audioforge_runnote_${randomUUID()}.json`)
+    try {
+      const scriptPath = PythonRunner.getScriptPath('separate.py')
+      writeFileSync(cfgPath, JSON.stringify({
+        mode: 'run-note', noteRunId: runId, noteVerdict: verdict, noteText: (note || '').slice(0, 500),
+      }), 'utf-8')
+      return await runPreview({
+        runner: new PythonRunner(pythonPath, runnerDeps),
+        scriptPath, args: ['--config', cfgPath],
+        timeoutMs: 15000,
+        cleanup: () => { try { unlinkSync(cfgPath) } catch {} },
+      })
+    } finally {
+      try { unlinkSync(cfgPath) } catch {}
+    }
+  })
+
   ipcMain.handle('audio:qwen-preflight', async () => {
     if (runner?.isRunning) return { available: false, reason: '처리 중' }
     if (!existsSync(pythonPath)) return { available: false, reason: 'Python 없음' }

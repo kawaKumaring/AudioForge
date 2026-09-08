@@ -117,6 +117,36 @@ try {
     }
     // 결과 GUI + metadata 표시
     ok(st.meta && st.meta.actual_engine, `resultMetadata 표시(actual_engine=${st.meta?.actual_engine}, device=${st.meta?.device}, source=${st.meta?.device_selection_source})`)
+    // 청취 판정 — 눌러 보고 기록 파일이 실제로 생기는지 본다.
+    // 설정은 기록에 다 남는데 '그 소리가 어땠나' 가 없어서 조사가 막혔던 자리다(2026-09-08).
+    const runId = String(st.meta?.run_id || '')
+    ok(!!runId, `결과가 자기 실행 기록 id 를 알고 있다(${runId || '없음'})`)
+    if (runId) {
+      // DOM 으로 직접 누른다 — 결과 패널이 화면 밖에 있으면 좌표 클릭이 실패한다(실측).
+      const found = await win.evaluate(() => {
+        const b = document.querySelector('[data-testid="listening-good"]')
+        if (!b) return false
+        b.click()
+        return true
+      })
+      ok(found, '결과 화면에 청취 판정 단추가 있다')
+      await win.waitForFunction(
+        () => document.querySelector('[data-testid="listening-good"]')?.getAttribute('aria-pressed') === 'true',
+        undefined, { timeout: 15000 },
+      ).catch(() => {})
+      const pressed = await win.evaluate(() =>
+        document.querySelector('[data-testid="listening-good"]')?.getAttribute('aria-pressed'))
+      ok(pressed === 'true', `판정 단추가 눌린 상태로 남는다(aria-pressed=${pressed})`)
+      // 파일은 앱이 관리하는 기록 폴더에 생긴다 — 경로 규칙은 파이썬이 갖고 있으므로 파이썬에 묻는다.
+      const probe = execFileSync(PY, ['-X', 'utf8', '-c',
+        'import sys,os,json;sys.path.insert(0,sys.argv[1]);import local_assets;' +
+        'p=os.path.join(local_assets.run_record_dir(sys.argv[2]),"listening.json");' +
+        'print(json.load(open(p,encoding="utf-8"))["verdict"] if os.path.exists(p) else "MISSING")',
+        path.join(APP, 'python'), runId], { encoding: 'utf-8' }).trim()
+        .split(String.fromCharCode(10)).pop()
+      ok(probe === 'good', `판정이 실행 기록에 파일로 남는다(${probe})`)
+    }
+
     const gui = await win.evaluate(() => document.getElementById('root')?.innerText || '')
     ok(/합성 정보/.test(gui) && /(실제 엔진|Qwen3|GPT-SoVITS)/.test(gui), '결과 GUI(합성 정보) 표시')
     await win.screenshot({ path: path.join(SHOT, 'e2e_complete_result.png') })
