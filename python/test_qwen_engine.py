@@ -398,7 +398,7 @@ class QwenBatchPathTest(_QwenGlobalIsolation, unittest.TestCase):
         self._patch(tts_worker.QwenTTSEngine, "available", new=(lambda self: True))
 
     def _fake_run_job_writer(self, sink):
-        def fake_run_job(inner_self, segments, device):
+        def fake_run_job(inner_self, segments, device, **_kw):
             sink.append({"n": len(segments), "device": device,
                          "langs": [s["language_name"] for s in segments],
                          "xvo": [s["x_vector_only"] for s in segments],
@@ -581,7 +581,7 @@ class AtomicFinalReplaceTest(_QwenGlobalIsolation, unittest.TestCase):
                     side_effect=(lambda m, p, l: {"text": "자동전사", "language": "ko"}))
         self._patch(tts_worker.QwenTTSEngine, "available", new=(lambda self: True))
 
-        def fake_run_job(inner_self, segments, device):
+        def fake_run_job(inner_self, segments, device, **_kw):
             for s in segments:
                 _write(s["out_path"], 0.3)
             out = []
@@ -735,7 +735,7 @@ class MetadataEmitQwenTest(_QwenGlobalIsolation, unittest.TestCase):
                       "valley_sample": 4200, "onset_sample": 5040, "cut_sample": 4200,
                       "valley_dbfs": -90.38, "lead_samples": 840}
 
-        def fake_run_job(inner_self, segments, device):
+        def fake_run_job(inner_self, segments, device, **_kw):
             for s in segments:
                 _write(s["out_path"], 0.3)
             out = []
@@ -783,7 +783,13 @@ class MetadataEmitQwenTest(_QwenGlobalIsolation, unittest.TestCase):
         self.assertEqual(len(meta["reference_transcript_sha8"]), 8)
         self.assertEqual(meta["output_sample_rate"], 24000)
         self.assertFalse(meta["speed_postprocessed"])
-        self.assertFalse(meta["seed_supported"])
+        # 2026-09-08: 난수 씨앗을 실제로 심고 기록한다. 예전에는 여기에 늘 None/False 가
+        # 박혀 있었는데 브리지는 진작부터 씨앗을 받을 수 있었다 — 기록이 사실과 달랐다.
+        # 기본 동작은 그대로다(실행마다 다른 씨앗 → 매번 다른 소리). 달라진 것은 재현 가능성뿐이다.
+        self.assertTrue(meta["seed_supported"])
+        self.assertIsInstance(meta["seed"], int)
+        self.assertTrue(1 <= meta["seed"] < 2 ** 31 - 1)
+        self.assertIn(meta["seed_source"], ("env", "random_per_run"))
         self.assertIsInstance(meta["elapsed_seconds"], (int, float))
         # controlled-prefix 절단 실측이 그대로 기록된다(샘플 인덱스·dB).
         # production 기본 = vendor native ICL. 외부 ASR 절단이 없으므로 alignment 좌표는 없고

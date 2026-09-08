@@ -205,6 +205,7 @@ export interface TtsInputOptions {
   ttsEmotionRefSources?: Record<string, string>
   // source에서 effective를 만든 구간(초). 재현/기록용(합성 입력 무영향).
   ttsEmotionRefRegions?: Record<string, TtsEmotionRegion>
+  ttsReferenceRegion?: TtsEmotionRegion | null
   // ── 화자별 참조(v1.4) ──
   // 합성에 실제 쓸 화자별 effective 경로. 키는 파서가 만든 **내부 stable id** 다.
   ttsSpeakerRefs?: Record<string, string>
@@ -276,6 +277,8 @@ export interface TtsConfig {
   ttsEmotionRefs: Record<string, string>
   ttsEmotionRefSources: Record<string, string>
   ttsEmotionRefRegions: Record<string, TtsEmotionRegion>
+  /** 기본 참조의 확정 구간(초). null = 원본 전체. 기록 전용이며 합성 동작을 바꾸지 않는다. */
+  ttsReferenceRegion: TtsEmotionRegion | null
   ttsSpeakerRefs: Record<string, string>
   ttsSpeakerRefSources: Record<string, string>
   ttsSpeakerEmotionRefs: Record<string, string>
@@ -374,6 +377,9 @@ export function buildTtsConfig(o?: TtsInputOptions, sourceFingerprints?: Record<
     ttsEmotionRefs: o?.ttsEmotionRefs ?? {},
     ttsEmotionRefSources: o?.ttsEmotionRefSources ?? {},
     ttsEmotionRefRegions: o?.ttsEmotionRefRegions ?? {},
+    // 기본 참조의 확정 구간. 파이썬은 이미 잘린 클립만 받아서 '원본의 어디였나' 를 모른다.
+    // 이 값을 보내지 않으면 실행 기록의 reference_region 칸이 영영 비어 있는다(2026-09-08 확인).
+    ttsReferenceRegion: o?.ttsReferenceRegion ?? null,
     // 화자별 참조. 부재 = 빈 dict = 화자 문법을 쓰지 않은 기존 동작.
     ttsSpeakerRefs: o?.ttsSpeakerRefs ?? {},
     ttsSpeakerRefSources: o?.ttsSpeakerRefSources ?? {},

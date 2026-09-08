@@ -11,6 +11,7 @@ Engine selection:
 """
 
 import os
+import random
 import re
 import sys
 import time
@@ -759,8 +760,8 @@ class QwenTTSEngine(TTSEngine):
     def synthesize_segment(self, text, ref_audio, emotion_id, speed, output_path):
         raise RuntimeError("QwenTTSEngine은 배치(run_job) 전용입니다. synthesize() 배치 경로를 사용하세요.")
 
-    def run_job(self, segments, device, *, inactivity_sec=None, startup_deadline_sec=None,
-                monotonic=None):
+    def run_job(self, segments, device, *, seed=None, inactivity_sec=None,
+                startup_deadline_sec=None, monotonic=None):
         """모델 1회 로딩 후 전 세그먼트 합성. Popen으로 stdout JSON을 실시간 읽어 즉시 progress emit.
         무응답 시 프로세스 종료·정리 후 명확한 오류. 오프라인(HF_HOME 고정 + bridge local_files_only).
 
@@ -783,6 +784,11 @@ class QwenTTSEngine(TTSEngine):
         _t0 = _now()
         # 로컬 스냅샷 '경로'로 로드(repo id 아님) → 오프라인에서 HF API 호출 회피. 자동 다운로드 금지.
         cfg = {"model_path": _qwen_active_snapshot(), "device": device, "segments": segments}
+        # 난수 씨앗. 브리지는 chunk 마다 seed+순번으로 다시 심고 실제 적용값을 돌려준다.
+        # 예전에는 이 값을 아예 넘기지 않아 같은 설정으로 두 번 돌려도 소리가 달랐고,
+        # **어떤 난수였는지 기록도 없어 사후 재현이 불가능했다**(2026-09-08 조사에서 확인).
+        if seed is not None:
+            cfg["seed"] = int(seed)
         env = {**os.environ, "HF_HOME": _QWEN_HF_HOME, "HF_HUB_OFFLINE": "1",
                "TRANSFORMERS_OFFLINE": "1", "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
         try:
@@ -1530,7 +1536,9 @@ _METADATA_KEYS = [
     # x-vector-only 능력은 그대로 유지되고, '왜 그렇게 됐는지'만 기록에 남는다.
     "reference_prompt_degraded", "reference_degrade_reason", "reference_transcript_status",
     "reference_transcript_model", "reference_degraded_emotions",
-    "target_language", "seed", "seed_supported", "speed", "speed_postprocessed", "silence_gap",
+    # seed_source: env(고정 지정) | random_per_run(기본). 무엇이었는지 알 수 있어야 재현이 된다.
+    "target_language", "seed", "seed_supported", "seed_source",
+    "speed", "speed_postprocessed", "silence_gap",
     "fallback", "fallback_reason", "elapsed_seconds", "output_sample_rate",
     # pitch 후처리(계약 §2.1) — pitch_method는 production에서 "rubberband" | None 둘뿐.
     "pitch_semitones", "pitch_method", "pitch_postprocessed",
@@ -2063,11 +2071,30 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         for _key, _ref in (getattr(ref_table, "speaker_emotion_refs", None) or {}).items():
             _gate_targets.append((f"인물 감정 참조 {_sr.opaque_speaker_ref(str(_key).split(chr(31))[0])}", _ref))
     seen_refs = set()
+    # 참조가 '어떤 소리였는지' 를 기록에 남긴다. 게이트가 이미 재는 값이라 추가 비용이 없다.
+    # 예전에는 metadata 에 reference_region 칸만 있고 늘 None 이었다 — 사후에 "그때 어떤 참조를
+    # 썼나" 를 물었을 때 답할 근거가 없었다(2026-09-08 조사). 경로·전사 전문은 담지 않는다.
+    ref_facts = []
     for who, ref in _gate_targets:
         if not ref or ref in seen_refs:
             continue
         seen_refs.add(ref)
         a = assess_reference_file(ref, QWEN3_POLICY)
+        try:
+            import hashlib as _hl
+            _an = a.analysis
+            ref_facts.append({
+                "slot": who,
+                "sha8": _hl.sha256(open(ref, "rb").read()).hexdigest()[:8],
+                "duration_sec": round(float(_an.duration_sec), 3),
+                "sample_rate": _an.sample_rate, "channels": _an.channels,
+                "rms_dbfs": None if _an.rms_dbfs is None else round(float(_an.rms_dbfs), 2),
+                "peak": None if _an.peak is None else round(float(_an.peak), 4),
+                "silence_ratio": None if _an.silence_ratio is None else round(float(_an.silence_ratio), 4),
+                "valid": bool(a.valid),
+            })
+        except Exception:
+            pass                      # 기록 실패가 합성을 막지 않는다
         if not a.valid:
             base = os.path.basename(ref)
             codes = "; ".join(f"[{e.code}] {e.message}" for e in a.errors)
@@ -2232,14 +2259,31 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                     emotion_capability=_cap_audit.audit_summary(),
                     speaker_mode=getattr(ref_table, "speaker_mode", "single"),
                     # 이 작업의 참조를 어느 정책(필수/권장 길이)으로 통과시켰는가 — 나중에 "그때 상한이 얼마였나" 를 다시 알 수 있다.
-                    reference_policy=QWEN3_POLICY.describe())
+                    reference_policy=QWEN3_POLICY.describe(),
+                    reference_facts=ref_facts or None,
+                    # 환경 — 같은 설정인데 결과가 달랐을 때 기계 상태부터 확인할 수 있어야 한다.
+                    # ComfyUI 사례에서 겪은 대로 VRAM 여유는 결과와 시간에 영향을 준다.
+                    **_environment_facts(device))
             except Exception:
                 pass               # 기록 실패가 합성을 막지 않는다
+
+        # ── 난수 씨앗 ────────────────────────────────────────────────────────
+        # 실행마다 새 씨앗을 뽑아 **심고 기록한다.** 기본 동작은 예전과 같다(매번 다른 소리 —
+        # 씨앗이 매번 다르니까). 달라진 것은 그 소리를 다시 만들 수 있다는 점이다.
+        # 예전에는 씨앗을 심지도, 기록하지도 않아서 옵션을 켜고 끄며 비교한 결과가
+        # 옵션 차이인지 난수 차이인지 구분할 수 없었다(2026-09-08 조사에서 확인).
+        # AUDIOFORGE_TTS_SEED 로 고정하면 같은 소리를 다시 만들 수 있다.
+        _seed_env = (os.environ.get("AUDIOFORGE_TTS_SEED") or "").strip()
+        try:
+            run_seed = int(_seed_env) if _seed_env else random.randrange(1, 2 ** 31 - 1)
+        except ValueError:
+            run_seed = random.randrange(1, 2 ** 31 - 1)
+        seed_source = "env" if _seed_env else "random_per_run"
 
         try:
             try:
                 _job_clock = JobWallClock()
-                seg_out = qwen.run_job(segments, device)
+                seg_out = qwen.run_job(segments, device, seed=run_seed)
                 # 생성이 끝난 직후에 본다 — 정렬·조립 전에 초과를 확정해
                 # 헛수고를 늘리지 않는다. partial 은 진단에만 남는다.
                 _job_clock.check(completed_chunks=len(seg_out or []))
@@ -2251,7 +2295,7 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                     fallback = True
                     fallback_reason = "CUDA OOM → CPU 재시도"
                     actual_device = "cpu"
-                    seg_out = qwen.run_job(segments, "cpu")
+                    seg_out = qwen.run_job(segments, "cpu", seed=run_seed)
                 else:
                     raise
             # bridge 의 controlled-prefix raw 는 중간 산출물이다 — 여기(부모)에서 ASR 정렬로 목표
@@ -2457,7 +2501,9 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             "reference_transcript_language": def_tr_lang, "reference_transcript_len": def_tr_len,
             "reference_transcript_sha8": def_tr_sha, "target_language": tgt,
             **_summarize_ref_degradation(degrade_records, def_emotion_id),
-            "seed": None, "seed_supported": False,
+            # 실제로 심은 씨앗. 예전에는 여기에 늘 None/False 가 박혀 있었는데,
+            # 브리지는 진작부터 씨앗을 받을 수 있었다 — 기록이 사실과 달랐다.
+            "seed": run_seed, "seed_supported": True, "seed_source": seed_source,
             "speed_postprocessed": bool(abs(float(speed) - 1.0) > 1e-6),
             "fallback": fallback, "fallback_reason": fallback_reason,
             "elapsed_seconds": round(_time.monotonic() - t_start, 2), "output_sample_rate": int(sr),
@@ -2718,22 +2764,83 @@ _MACRO_GAIN_META_KEYS = (
     "macro_gain_protected_span_count", "macro_gain_trend_window_sec",
     "macro_gain_level_window_sec")
 
+#: 합성 metadata 중 **실행 기록(manifest.header)에도 남기는** 항목.
+#
+# 왜 넓혔는가(2026-09-08): "그때는 왜 소리가 이상했나" 를 실행 기록으로 답하려 했더니
+# 정작 필요한 값이 전부 빠져 있었다 — 어느 모델 판이었는지, 참조의 어느 구간을 썼는지,
+# 참조를 어떤 방식으로 먹였는지, 씨앗이 무엇이었는지. 화면에 뜨는 metadata 에는 있는데
+# 기록으로는 안 나갔다. 기록은 나중에 질문이 생겼을 때 답할 수 있어야 쓸모가 있다.
+#
+# 여기 넣지 않는 것: **절대경로·대사 전문·전사 전문.** 경로는 폴더 이름만, 대사는 해시·길이만.
+# 그 경계는 chunk_publish.set_run_header 의 계약이며 이 목록도 그것을 지킨다.
 _RUN_HEADER_FROM_METADATA = (
-    "actual_engine", "model_name", "model_revision", "device", "device_selection_source",
+    "requested_engine", "actual_engine", "model_name", "model_revision", "device",
+    "device_selection_source",
+    # 어느 음성 모델 판으로 만든 결과인가. 09-08 에 판 표기가 바뀐 것을 기록으로 못 봐서 넣는다.
+    "qwen_model_variant",
     "target_language", "output_sample_rate", "generation_limit", "generated_iterations",
     "termination_reason", "parser_version", "parsed_plan_sha8", "segment_count", "chunk_count",
+    "explicit_pause_count", "total_pause_ms",
+    # 난수 씨앗 — 이것이 없으면 어떤 비교도 재현할 수 없다.
+    "seed", "seed_supported", "seed_source",
+    # 참조를 어떻게 먹였는가(구간·방식·전사 상태). 전사 전문은 담기지 않는다(길이·해시8·언어만).
+    "reference_region", "prompt_source", "x_vector_only_mode",
+    "reference_transcript_language", "reference_transcript_len", "reference_transcript_sha8",
+    "reference_transcript_status", "reference_transcript_model",
+    "reference_prompt_degraded", "reference_degrade_reason", "reference_degraded_emotions",
     "reference_conditioning_mode_requested", "reference_conditioning_mode_effective",
     "reference_conditioning_auto_fallback", "reference_conditioning_attempts",
     "reference_conditioning_icl_published", "fallback", "fallback_reason",
-    "speed_postprocessed", "pitch_postprocessed", "silence_gap",
+    "speed", "speed_postprocessed", "pitch_semitones", "pitch_method", "pitch_postprocessed",
+    "silence_gap",
+    # 말끝·경계 마감 재현값.
+    "tail_mode", "tail_pad_ms", "tail_fade_ms", "tail_fade_applied", "emotion_boundary_mode",
     "boundary_onset_samples", "boundary_offset_samples",
     "segment_envelope_onset_count", "segment_envelope_offset_count",
+    "segment_envelope_kind_counts",
+    # 출력 전체에 건 음량 보정 — 6~8dB 가 걸린 실행이 있었는데 게이트 값이 기록에 없어
+    # "왜 걸렸나" 를 사후에 확인할 수 없었다. 게이트·상한도 함께 남긴다.
     "macro_gain_applied", "macro_gain_reason", "macro_gain_max_boost_db",
-    "macro_gain_statistic_db", "macro_gain_curve_sha8", "elapsed_seconds")
+    "macro_gain_statistic_db", "macro_gain_curve_sha8", "macro_gain_gate_db",
+    "macro_gain_headroom_cap_db",
+    "elapsed_seconds")
 
 #: 부분 결과를 보존한 채 끝난 실패 코드. 이 경우 상태는 failed 가 아니라 partial 이다.
 _PARTIAL_ERROR_CODES = ("GENERATION_LIMIT_EXCEEDED", "JOB_WALL_TIME_EXCEEDED")
 _CANCEL_ERROR_CODES = ("CANCELLED", "TTS_CANCELLED")
+
+
+def _environment_facts(device=None):
+    """실행 환경의 사실만 모은다(경로·개인정보 없음). 실패하면 빈 dict — 기록이 합성을 막지 않는다.
+
+    왜 남기는가: "같은 설정인데 결과가 달랐다" 를 조사할 때 첫 질문이 기계 상태다.
+    ComfyUI 가 GPU 를 92% 쓰고 있을 때 로딩이 멈추던 사례처럼, VRAM 여유는 결과와 시간에
+    영향을 준다. 실행 시점에 남겨 두지 않으면 나중에 알 방법이 없다."""
+    out = {}
+    try:
+        import platform
+        out["env_python"] = platform.python_version()
+        out["env_os"] = f"{platform.system()} {platform.release()}"
+    except Exception:
+        pass
+    try:
+        import torch
+        out["env_torch"] = str(torch.__version__)
+        out["env_cuda"] = str(getattr(torch.version, "cuda", None) or "")
+        if torch.cuda.is_available():
+            idx = 0
+            if isinstance(device, str) and device.startswith("cuda:"):
+                try:
+                    idx = int(device.split(":", 1)[1])
+                except ValueError:
+                    idx = 0
+            out["gpu_name"] = torch.cuda.get_device_name(idx)
+            free_b, total_b = torch.cuda.mem_get_info(idx)
+            out["gpu_vram_free_mb"] = int(free_b / (1024 * 1024))
+            out["gpu_vram_total_mb"] = int(total_b / (1024 * 1024))
+    except Exception:
+        pass
+    return out
 
 
 def _run_record_begin(text, output_dir, rc_mode, speed, silence_gap, pitch, expressive_mode):
@@ -3040,7 +3147,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                expressive_mode="legacy_v2", reference_conditioning_mode=None,
                speaker_refs=None, speaker_ref_sources=None, speaker_emotion_refs=None,
                emotion_candidate_selections=None,
-               speaker_labels=None, speaker_mode="single"):
+               speaker_labels=None, speaker_mode="single", reference_region=None):
     """Synthesize speech. Auto-selects engine by language.
     speaker_mode: 'single' | 'multi' — 생성 방식(대본 내용이 아니다). single 이면 화자 표기가 있어도
       모든 발화를 한 명의 기본/감정 참조로 만들고 화자 참조·전용 참조·후보 선택은 개입하지 않는다.
@@ -3335,7 +3442,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             meta = _build_tts_metadata(
                 requested_engine=requested_engine,
                 original_reference_path=reference_audio, effective_reference_path=reference_audio,
-                reference_region=None, speed=float(speed), silence_gap=float(silence_gap),
+                reference_region=reference_region, speed=float(speed), silence_gap=float(silence_gap),
                 **_rc_meta, **_plan_meta, **info)
             tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
             _rr["status"] = "ok"
@@ -3457,7 +3564,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             device_selection_source=_gsv_dev.get("device_selection_source"),
             prompt_source=p_src,
             x_vector_only_mode=None, original_reference_path=reference_audio,
-            effective_reference_path=reference_audio, reference_region=None,
+            effective_reference_path=reference_audio, reference_region=reference_region,
             target_language=tgt2, seed=None, seed_supported=False,
             speed=float(speed), speed_postprocessed=False, silence_gap=float(silence_gap),
             fallback=fb, fallback_reason=("Qwen3 사용 불가 → 기존 엔진 폴백" if fb else None),
