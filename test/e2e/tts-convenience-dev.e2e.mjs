@@ -242,6 +242,33 @@ try {
     '엔진·진단에 설치된 음성 모델 판 선택이 뜬다', JSON.stringify(picker))
   if (picker.present) await shot('C-model-picker.png')
 
+  // C2b. 참조 목표 길이 조절 — 자동 추천이 노리는 길이를 사용자가 올릴 수 있어야 한다.
+  // 모양 검사로는 '화면에 실제로 붙었는지' 를 알 수 없다(이번 회차에 세 번 겪었다). 여기서 만진다.
+  const target = await st(() => {
+    const box = document.querySelector('[data-testid="ref-target-length"]')
+    const r = box?.querySelector('input[type="range"]')
+    if (!r) return { present: false }
+    const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+    set.call(r, '20')
+    r.dispatchEvent(new Event('input', { bubbles: true }))
+    r.dispatchEvent(new Event('change', { bubbles: true }))
+    return { present: true, max: r.max, text: box.innerText.slice(0, 60) }
+  })
+  await sleep(500)
+  const stored = await st(() => window.__afStore?.getState().ttsRefTargetSec)
+  ok('C2b', target.present && target.max === '30' && stored === 20,
+    '참조 목표 길이를 30초까지 올릴 수 있고 값이 설정에 남는다',
+    JSON.stringify({ ...target, stored }))
+  // 원래대로 되돌린다 — 이 검사가 뒤 검사의 전제를 바꾸지 않게.
+  await st(() => {
+    const r = document.querySelector('[data-testid="ref-target-length"] input[type="range"]')
+    if (!r) return
+    const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+    set.call(r, '0')
+    r.dispatchEvent(new Event('input', { bubbles: true }))
+    r.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+
   // 음성 탭 정리 — 접힌 자리들이 있고 참조 전사는 접히지 않았다.
   await st(() => { const t = document.querySelector('#tts-advanced-tab-voice'); if (t) t.click() })
   await sleep(400)
