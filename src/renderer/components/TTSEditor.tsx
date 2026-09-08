@@ -757,7 +757,11 @@ export default function TTSEditor() {
   //   왔다갔다한다" 가 이것이다. 화면 구성은 사용자가 정한 탭과 명시적 토글로만 바뀐다.
   const showRawEditor = dialogueTab === 'single' || directEditOpen
   // 구조화할 수 없는 대본이 되면(직접 편집 details 가 사라지면) 열림 상태도 접는다 — 다시 구조화되면 카드가 바로 보인다.
-  useEffect(() => { if (!dialogue.editingAllowed) setDirectEditOpen(false) }, [dialogue.editingAllowed])
+  // 구조가 **잠시** 깨진 것(frozen)으로 직접 편집기를 닫지 않는다 — 대사를 치는 동안 수시로
+  // 뒤집히는 판정이라, 닫았다 열었다 하는 것이 그대로 화면 흔들림이 된다.
+  useEffect(() => {
+    if (!dialogue.editingAllowed && !dialogue.frozen) setDirectEditOpen(false)
+  }, [dialogue.editingAllowed, dialogue.frozen])
   // 이 인물의 어떤 감정에 목소리 구성이 다른 음원을 지정했는가(감정 라벨). 'default' 는 표기 없는
   // 대사까지 전부 덮는다는 뜻이라 따로 말한다.
   const emotionLabelOf = (eid: string) => (eid === 'default' ? '기본(표기 없는 대사 전부)' : (EMOTION_ID_TO_LABEL[eid] ?? eid))
@@ -1380,7 +1384,7 @@ export default function TTSEditor() {
               (편집기 컴포넌트 자체는 건드리지 않는다). */}
           {/* 여러 명에서는 원문 직접 편집을 접어 둔다(고급). 구조화할 수 없는 대본이면 그대로 보여 준다. */}
           {/* 구조화할 수 없는 대본이면 자동으로 화면을 바꾸지 않고 **사유를 말하고 입구를 준다.** */}
-          {dialogueTab === 'multi' && !dialogue.editingAllowed && !directEditOpen && (
+          {dialogueTab === 'multi' && !dialogue.editingAllowed && !dialogue.frozen && !directEditOpen && (
             <div data-testid="multi-not-structured" role="note"
               style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
                 fontSize: 11, color: 'var(--amber, #d08700)', lineHeight: 1.6 }}>

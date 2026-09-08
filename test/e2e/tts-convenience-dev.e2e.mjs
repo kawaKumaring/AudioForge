@@ -199,6 +199,7 @@ try {
     "카드에 '목소리 확인 중'이 남지 않는다", cardText.includes('목소리 확인 중') ? '문구 잔존' : '없음')
   await shot('B-auto-prepared.png')
 
+
   // ── C: 구간 숫자 입력 + 모델 판 선택 ──────────────────────────────────
   const openedRegion = await st(() => {
     const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '목소리 설정')
@@ -397,6 +398,61 @@ try {
   ok('G1', toggled && after.analyze === before.analyze && after.trim === before.trim,
     '같은 목소리를 다시 열어도 살펴보기·자르기를 다시 하지 않는다',
     `전 ${JSON.stringify(before)} → 후 ${JSON.stringify(after)}`)
+
+  // ── B3 는 대본을 바꾸므로 맨 뒤에 둔다 ─────────────────────────────────
+  // 앞에 두었더니 카드 구성이 달라져 구간 편집기 검사(C)가 무너졌다 — 검사가 검사의
+  // 전제를 바꾸면 통과·실패가 순서에 좌우된다.
+  // B3. 대사를 고치는 동안 화면이 통째로 바뀌지 않는가.
+  // 예전에는 대본 구조가 잠깐 깨지는 것만으로 카드 목록이 사유 텍스트로 교체됐다(사용자 지적).
+  // 카드가 있어야 볼 수 있으므로 대본을 먼저 넣고, 그 다음 '쉼만 있는 줄' 을 만들어 본다.
+  // 대본은 **화면을 통해** 넣는다. store 에 직접 써도 편집기가 자기 값으로 되돌린다(실측).
+  // 여러 명 화면에는 원문 칸이 없으므로 한 명 화면에서 넣고 돌아온다.
+  await page.click('[data-testid="dialogue-tabs"] [data-tab="single"]')
+  await sleep(400)
+  const seeded = await st(() => {
+    const ta = document.querySelector('section[aria-label="대사"] textarea')
+      || document.querySelector('textarea')
+    if (!ta) return false
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+    const nl = String.fromCharCode(10)
+    ta.focus()
+    setter.call(ta, '[화자 인물A]' + nl + '안녕하세요.' + nl + '[화자 인물B]' + nl + '반갑습니다.')
+    ta.dispatchEvent(new Event('input', { bubbles: true }))
+    return true
+  })
+  await sleep(2500)
+  await page.click('[data-testid="dialogue-tabs"] [data-tab="multi"]')
+  const gotRows = await waitUntil(async () => await count('[data-testid="dialogue-row"]') >= 2, 60000)
+  void seeded
+  const layoutBefore = await st(() => ({
+    rows: document.querySelectorAll('[data-testid="dialogue-row"]').length,
+    sourceOnly: !!document.querySelector('[data-testid="multi-dialogue-source-only"]'),
+    top: document.querySelector('[data-testid="multi-rows"]')?.getBoundingClientRect().top ?? null,
+  }))
+  const typed = await st(() => {
+    const ta = document.querySelector('[data-testid="dialogue-row"] [data-testid="dialogue-body"]')
+    if (!ta) return false
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+    const nl = String.fromCharCode(10)
+    ta.focus()
+    // 대사 뒤에 쉼만 있는 줄을 만든다 — 예전에 화면을 통째로 바꾸던 바로 그 모양.
+    setter.call(ta, ta.value + nl + '[쉼 0.4]' + nl)
+    ta.dispatchEvent(new Event('input', { bubbles: true }))
+    return true
+  })
+  await sleep(3000)
+  const layoutAfter = await st(() => ({
+    rows: document.querySelectorAll('[data-testid="dialogue-row"]').length,
+    sourceOnly: !!document.querySelector('[data-testid="multi-dialogue-source-only"]'),
+    notStructured: !!document.querySelector('[data-testid="multi-not-structured"]'),
+    top: document.querySelector('[data-testid="multi-rows"]')?.getBoundingClientRect().top ?? null,
+  }))
+  ok('B3', gotRows && typed && layoutBefore.rows >= 2
+      && layoutAfter.rows === layoutBefore.rows
+      && layoutAfter.sourceOnly === false && layoutAfter.notStructured === false
+      && layoutAfter.top === layoutBefore.top,
+    '대사를 고쳐도 카드 화면이 사유 텍스트로 바뀌지 않고 자리도 그대로다',
+    JSON.stringify({ gotRows, layoutBefore, layoutAfter }))
 
   ok('err', pageErrors.length === 0, '렌더러 예외 0', pageErrors.slice(0, 3).join(' / '))
 } catch (e) {

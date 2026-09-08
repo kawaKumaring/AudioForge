@@ -188,12 +188,17 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
   }, [p.verdict.mode])
 
   const blockerText = p.verdict.blockers.map((b) => STRUCTURE_BLOCKER_LABEL[b])
+  // 낡은 상태를 붙일 카드 = 지금 고치고 있는 카드(초안이 열린 카드). 없으면 -1.
+  const staleIndex = p.frozen ? p.rows.findIndex((_r, i) => p.draftOf(i) !== null) : -1
   const namedSpeakers = p.speakers.filter((s) => s.label.trim() && validateSpeakerLabel(s.label.trim()).ok)
   const speakerLabels = namedSpeakers.map((s) => s.label.trim())
   const voiceIdOf = (s: DialogueSpeaker) => (s.pending ? speakerIdOf(s.label.trim()) : s.speakerId)
 
-  // ── 표현 불가: 이유만 말한다. 원문 편집기는 셸이 보여 준다. ──
-  if (!p.editingAllowed) {
+  // ── 보여 줄 카드가 아예 없을 때만 이유 텍스트로 떨어진다 ──
+  // 예전에는 구조가 잠깐 깨지는 것만으로도 여기로 들어와 카드 화면이 통째로 사라졌다.
+  // 대사를 치는 동안 그 일이 수시로 일어나 화면이 바뀌어 버렸다(사용자 지적, 2026-09-08).
+  // 이제 한 번이라도 카드를 보여 준 뒤에는 그 카드를 자리에 두고 표시로만 알린다(p.frozen).
+  if (!p.editingAllowed && !p.frozen) {
     return (
       <div data-testid="multi-dialogue-source-only" role="status"
         data-mode={p.verdict.mode} data-blockers={p.verdict.blockers.join(' ')}
@@ -266,6 +271,16 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
 
       <div data-testid="multi-summary" style={{ fontSize: 11, color: 'var(--text-secondary)' }}>{summary}</div>
 
+      {/* 대본 구조가 잠시 깨진 상태 — 화면은 그대로 두고 **고치고 있는 카드에만** 표시한다.
+          어느 카드도 편집 중이 아니면(붙일 자리가 없으면) 목록 위에 한 줄로 알린다.
+          자리를 차지하지 않도록 카드 쪽 표시는 절대 위치 + 입력을 가리지 않게 pointerEvents 를 끈다. */}
+      {p.frozen && staleIndex < 0 && (
+        <div data-testid="multi-stale" role="status" aria-live="polite"
+          style={{ fontSize: 11, color: 'var(--amber, #d08700)' }}>
+          {STRUCTURE_BLOCKER_LABEL.PLAN_STALE}
+        </div>
+      )}
+
       {/* ── 발화 카드 — 1열 전체 폭. 목소리 상세는 누른 카드 안에 펼친다. ── */}
       <div data-testid="multi-rows" style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
         {p.rows.map((r, i) => {
@@ -280,7 +295,7 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
           const sid = r.view.speakerId || DEFAULT_VOICE_SLOT
           const isDefaultSlot = !r.view.speakerId
           return (
-            <UtteranceCard key={cardKey} row={r} index={i}
+            <UtteranceCard key={cardKey} row={r} index={i} stale={p.frozen && staleIndex === i}
               projection={p} disabled={disabled} emotions={emotions} emotionTagOf={emotionTagOf}
               speakerLabels={speakerLabels}
               voice={voiceOf(sid)}
@@ -466,6 +481,8 @@ function EmotionAdd(props: { emotions: readonly { id: string; label: string }[];
 function UtteranceCard(props: {
   row: DialogueRow
   index: number
+  /** 이 카드의 대사가 방금 바뀌어 대본을 다시 읽는 중이다. 입력은 그대로 계속할 수 있다. */
+  stale?: boolean
   projection: DialogueProjection
   disabled: boolean
   emotions: readonly { id: string; label: string }[]
@@ -478,7 +495,7 @@ function UtteranceCard(props: {
   renderVoiceDetail: () => ReactNode
   onRenameSpeaker?: (newLabel: string) => string | null
 }) {
-  const { row: r, index: i, projection: p, disabled, voice } = props
+  const { row: r, index: i, projection: p, disabled, voice, stale = false } = props
   const [renameOpen, setRenameOpen] = useState(false)
   const draft = p.draftOf(i)
   const value = draft ?? r.content
@@ -488,7 +505,19 @@ function UtteranceCard(props: {
   const caret = useCaretInsert(value, disabled, (t) => p.updateDraft(i, t), () => p.beginDraft(i))
 
   return (
-    <div data-testid="dialogue-row" data-index={i} data-speaker={r.view.speakerId ?? ''} style={card}>
+    // 낡음 표시는 **자리를 차지하지 않는다**(절대 위치) — 표시가 생겼다 사라질 때 카드가
+    // 위아래로 움직이면 그것 자체가 사용자가 싫어한 '화면이 바뀐다' 다.
+    <div data-testid="dialogue-row" data-index={i} data-speaker={r.view.speakerId ?? ''}
+      data-stale={stale ? 'true' : 'false'}
+      style={{ ...card, position: 'relative',
+        ...(stale ? { background: 'var(--bg-elevated)', opacity: 0.75 } : null) }}>
+      {stale && (
+        <span data-testid="dialogue-row-stale" role="status" aria-live="polite"
+          style={{ position: 'absolute', top: 4, right: 8, pointerEvents: 'none',
+            fontSize: 10, color: 'var(--amber, #d08700)' }}>
+          대본을 다시 읽는 중 · 입력은 계속하세요
+        </span>
+      )}
       {/* 머리: 번호 · 인물 · 목소리 상태(누르면 이 카드 안에 상세) · 이동/삭제 */}
       <div style={rowFlex}>
         <span style={{ fontSize: 11, fontWeight: 700, color: 'var(--text-muted)', minWidth: 18 }}>{i + 1}.</span>

@@ -173,9 +173,18 @@ test('좌표 의존 명령은 patchAllowed 게이트를 지나고, 대사 입력
   assert.ok(HOOK.includes("return 'deferred' as const") && HOOK.includes('toViews(projectionText, result)'))
 })
 
-test('표현 불가 대본은 이유를 말하고 원문 편집기를 남긴다', () => {
-  assert.ok(MULTI.includes('if (!p.editingAllowed)'))
+test('표현 불가 대본은 이유를 말하고 원문 편집기를 남긴다 — 단 보여 줄 카드가 없을 때만', () => {
+  // 2026-09-08: 구조가 **잠시** 깨진 것만으로 카드 화면을 사유 텍스트로 통째로 바꾸지 않는다.
+  // 대사를 치는 동안 그 판정이 수시로 뒤집혀 화면이 바뀌어 버렸다(사용자 지적).
+  // 한 번이라도 카드를 보여 준 뒤에는 그 카드를 자리에 두고(p.frozen) 표시로만 알린다.
+  assert.ok(MULTI.includes('if (!p.editingAllowed && !p.frozen)'))
+  assert.equal(MULTI.includes('if (!p.editingAllowed) {'), false, '조건 없는 전체 교체가 남아 있지 않다')
   assert.ok(MULTI.includes('data-testid="multi-dialogue-source-only"'))
+  // 낡음 표시는 자리를 차지하지 않아야 한다 — 생겼다 사라질 때 카드가 움직이면 그것이 곧 흔들림이다.
+  assert.ok(MULTI.includes('data-testid="dialogue-row-stale"'))
+  assert.ok(MULTI.includes("position: 'absolute', top: 4, right: 8, pointerEvents: 'none'"))
+  assert.ok(MULTI.includes("const staleIndex = p.frozen ? p.rows.findIndex((_r, i) => p.draftOf(i) !== null) : -1"),
+    '표시는 지금 고치고 있는 카드에 붙는다')
   const start = MULTI.indexOf('STRUCTURE_BLOCKER_LABEL')
   const block = MULTI.slice(start, MULTI.indexOf('}', start))
   for (const b of STRUCTURE_BLOCKERS) assert.ok(block.includes(b), b)
