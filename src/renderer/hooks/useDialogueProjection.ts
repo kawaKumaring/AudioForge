@@ -57,6 +57,16 @@ export interface DialogueProjection {
   verdict: StructureVerdict
   /** 구조화 화면을 열어도 되는가(일시적 사유만이면 참). */
   editingAllowed: boolean
+  /**
+   * 지금 보여 주는 카드가 **잠시 낡은 것**인가.
+   *
+   * 대사를 치는 동안 대본 구조가 순간적으로 깨지는 일이 흔하다(예: 대사 사이에 쉼만 남은 줄).
+   * 예전에는 그때 카드 화면을 사유 텍스트로 **통째로 교체**해서, 글자 하나 고칠 때마다 화면이
+   * 바뀌어 버렸다(사용자 지적, 2026-09-08). 이제는 마지막으로 보여 줄 수 있었던 카드를 그대로
+   * 두고 이 값만 참이 된다 — 화면은 자리를 지키고, 그 사실만 표시로 알린다.
+   * 좌표 의존 명령은 `patchAllowed` 가 이미 잠근다.
+   */
+  frozen: boolean
   /** 좌표 의존 명령을 눌러도 되는가(계획이 현재 원문과 맞을 때만). */
   patchAllowed: boolean
   speakers: DialogueSpeaker[]
@@ -152,6 +162,7 @@ export function useDialogueProjection(
   }), [text, textSha, plan, views])
 
   const editingAllowed = structuredEditingAllowed(verdict)
+  const lastShowable = useRef<{ speakers: DialogueSpeaker[]; rows: DialogueRow[] } | null>(null)
   const patchAllowed = structuredPatchAllowed(verdict)
 
   const rows = useMemo<DialogueRow[]>(() => views.map((v) => {
@@ -342,8 +353,18 @@ export function useDialogueProjection(
     }
   }, [patchAllowed, drafts, commitDraft])
 
+  // ── 마지막으로 보여 줄 수 있었던 카드를 붙잡는다 ─────────────────────────
+  // 값 캐시 목적의 ref 쓰기다(렌더 중 쓰기 허용 패턴). rows·speakers 는 memo 결과라
+  // 같은 입력에 같은 값이고, StrictMode 이중 렌더에서도 결과가 달라지지 않는다.
+  if (editingAllowed) lastShowable.current = { speakers, rows }
+  const kept = lastShowable.current
+  const frozen = !editingAllowed && kept !== null
+  const shownSpeakers = frozen && kept ? kept.speakers : speakers
+  const shownRows = frozen && kept ? kept.rows : rows
+
   return {
-    verdict, editingAllowed, patchAllowed, speakers, rows, textSha, lastRefusal,
+    verdict, editingAllowed, frozen, patchAllowed,
+    speakers: shownSpeakers, rows: shownRows, textSha, lastRefusal,
     addPendingSpeaker, addPendingSpeakerNamed, ensurePendingSpeakers, renamePendingSpeaker, removePendingSpeaker,
     canRemoveSpeaker,
     setSpeaker, renameSpeaker, setBaseEmotion, insertAfter, remove, move, moveAllowed, createInitial,

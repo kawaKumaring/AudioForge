@@ -4,6 +4,12 @@
 progress watchdog(무응답)·generation limit(생성량)과 **별개 축**이다.
 둘 다 정상인데도 작업이 끝없이 길어질 수 있다 — chunk 가 많고 각각은 정상 종료하는 장문.
 """
+import os
+import sys
+
+# python_embeded 는 ._pth 때문에 스크립트 폴더를 sys.path 에 넣지 않는다.
+# 이 두 줄이 없으면 아래 import 가 실패해 이 파일이 **통과도 실패도 아닌 상태**로 죽는다.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import unittest
 from unittest import mock
 
@@ -51,7 +57,7 @@ class JobWallClockTest(unittest.TestCase):
         self.assertEqual(tw._QWEN_INACTIVITY_SEC, 280, "무응답 예산은 그대로다")
 
     def test_wired_after_generation_before_publish(self):
-        src = open("tts_worker.py", encoding="utf-8").read()
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "tts_worker.py"), encoding="utf-8").read()
         i = src.index("_job_clock = JobWallClock()")
         j = src.index("_job_clock.check(", i)
         k = src.index("seg_out = qwen.run_job(segments, device)", i)

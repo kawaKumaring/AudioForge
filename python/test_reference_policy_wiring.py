@@ -5,8 +5,11 @@
 - Qwen 경로(_synthesize_qwen_job 게이트): QWEN3_POLICY — 길이 차단 없음, 권장 밖은 경고, 인물 참조도 처리 가능 검사.
 - 화면(separate.py ref-analyze/ref-trim)과 합성이 같은 resolve 규칙(auto → Qwen 런타임 유무)을 쓴다.
 """
-import io
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import io
 import unittest
 
 HERE = os.path.dirname(os.path.abspath(__file__))

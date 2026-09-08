@@ -258,6 +258,15 @@ export default function TTSEditor() {
   const [ttsPitch, setTtsPitch] = useState(() => useAppStore.getState().ttsPitch)
   const [ttsEngine, setTtsEngine] = useState(() => useAppStore.getState().ttsEngine)
   const [ttsQwenModel, setTtsQwenModel] = useState(() => useAppStore.getState().ttsQwenModel)
+  const [ttsRefTargetSec, setTtsRefTargetSec] = useState(() => useAppStore.getState().ttsRefTargetSec)
+  // 슬라이더가 끌리는 동안의 화면 값. 확정된 값(ttsRefTargetSec)과 분리해 두어야
+  // 눈금 하나마다 목소리를 다시 살펴보는 일이 걸리지 않는다.
+  const [refTargetDraft, setRefTargetDraft] = useState(ttsRefTargetSec)
+  useEffect(() => {
+    if (refTargetDraft === ttsRefTargetSec) return
+    const t = setTimeout(() => setTtsRefTargetSec(refTargetDraft), 500)
+    return () => clearTimeout(t)
+  }, [refTargetDraft, ttsRefTargetSec])
   const [refPrompts, setRefPrompts] = useState<Record<string, TtsReferenceEntry>>(() => useAppStore.getState().ttsReferencePrompts)
   const [showRefPrompts, setShowRefPrompts] = useState(false)
 
@@ -424,8 +433,8 @@ export default function TTSEditor() {
 
   // Sync to store (감정 참조 상태는 store가 단일 소스라 여기서 동기화하지 않는다)
   useEffect(() => {
-    useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsReferencePrompts: refPrompts, ttsEngine, ttsQwenModel })
-  }, [ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, refPrompts, ttsEngine, ttsQwenModel])
+    useAppStore.setState({ ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsReferencePrompts: refPrompts, ttsEngine, ttsQwenModel, ttsRefTargetSec })
+  }, [ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, refPrompts, ttsEngine, ttsQwenModel, ttsRefTargetSec])
 
   // Qwen preflight — 마운트 시 1회(mode 의존). 예상값이며 실행 결과는 결과 화면 metadata가 최종.
   useEffect(() => {
@@ -748,7 +757,11 @@ export default function TTSEditor() {
   //   왔다갔다한다" 가 이것이다. 화면 구성은 사용자가 정한 탭과 명시적 토글로만 바뀐다.
   const showRawEditor = dialogueTab === 'single' || directEditOpen
   // 구조화할 수 없는 대본이 되면(직접 편집 details 가 사라지면) 열림 상태도 접는다 — 다시 구조화되면 카드가 바로 보인다.
-  useEffect(() => { if (!dialogue.editingAllowed) setDirectEditOpen(false) }, [dialogue.editingAllowed])
+  // 구조가 **잠시** 깨진 것(frozen)으로 직접 편집기를 닫지 않는다 — 대사를 치는 동안 수시로
+  // 뒤집히는 판정이라, 닫았다 열었다 하는 것이 그대로 화면 흔들림이 된다.
+  useEffect(() => {
+    if (!dialogue.editingAllowed && !dialogue.frozen) setDirectEditOpen(false)
+  }, [dialogue.editingAllowed, dialogue.frozen])
   // 이 인물의 어떤 감정에 목소리 구성이 다른 음원을 지정했는가(감정 라벨). 'default' 는 표기 없는
   // 대사까지 전부 덮는다는 뜻이라 따로 말한다.
   const emotionLabelOf = (eid: string) => (eid === 'default' ? '기본(표기 없는 대사 전부)' : (EMOTION_ID_TO_LABEL[eid] ?? eid))
@@ -1371,7 +1384,7 @@ export default function TTSEditor() {
               (편집기 컴포넌트 자체는 건드리지 않는다). */}
           {/* 여러 명에서는 원문 직접 편집을 접어 둔다(고급). 구조화할 수 없는 대본이면 그대로 보여 준다. */}
           {/* 구조화할 수 없는 대본이면 자동으로 화면을 바꾸지 않고 **사유를 말하고 입구를 준다.** */}
-          {dialogueTab === 'multi' && !dialogue.editingAllowed && !directEditOpen && (
+          {dialogueTab === 'multi' && !dialogue.editingAllowed && !dialogue.frozen && !directEditOpen && (
             <div data-testid="multi-not-structured" role="note"
               style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
                 fontSize: 11, color: 'var(--amber, #d08700)', lineHeight: 1.6 }}>
@@ -1675,6 +1688,33 @@ export default function TTSEditor() {
                 </div>
               )
             })()}
+
+            {/* 참조 목표 길이 — 자동 추천이 노리는 길이. 0 = 엔진 권장 상한(기본).
+                왜 조절을 여는가: Qwen3 는 벤더 코드에 참조 길이 필수 조건이 없다. 앱이 실제로 듣고
+                확인한 범위는 6.5~7.5초뿐이라 그 위는 미검증이지만, 막을 근거도 없다. 기본은 권장 안에
+                두고 더 쓰고 싶으면 여기서 올린다. **필수 상한이 있는 엔진(GPT-SoVITS 10초)에서는
+                이 값이 무시된다** — 벤더가 거부하기 때문이다. */}
+            <div data-testid="ref-target-length" style={{ display: 'flex', flexDirection: 'column', gap: 6, minWidth: 0 }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
+                <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>참조 목표 길이</span>
+                {/* 끄는 동안에는 화면 값만 움직이고, 손을 뗀 뒤(또는 잠깐 멈춘 뒤)에 설정에 반영한다.
+                    매 눈금마다 반영하면 그때마다 목소리를 다시 살펴보는 일이 걸린다 — 0에서 20까지
+                    끌면 스무 번이다. 합성 중이라면 그 요청이 거절돼 오류로 튀어나온다(실사용 보고). */}
+                <input type="range" min={0} max={30} step={1} value={refTargetDraft} disabled={disabled}
+                  aria-label="참조 구간 목표 길이(초). 0 은 엔진 권장 상한"
+                  aria-valuetext={refTargetDraft === 0 ? '엔진 권장 상한' : `${refTargetDraft}초`}
+                  onChange={(e) => setRefTargetDraft(Math.round(parseFloat(e.target.value) || 0))}
+                  style={{ flex: 1, minWidth: 140, accentColor: 'var(--rose)' }} />
+                <span style={{ fontSize: 11, color: refTargetDraft === 0 ? 'var(--text-muted)' : 'var(--cyan)', minWidth: 84 }}>
+                  {refTargetDraft === 0 ? '권장 상한' : `최대 ${refTargetDraft}초`}
+                </span>
+              </div>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+                목소리를 배울 때 쓸 구간을 얼마나 길게 잡을지입니다. 길수록 목소리 재료가 늘지만
+                준비가 느려지고, 이 앱이 소리를 직접 확인한 범위(6.5~7.5초)를 벗어납니다.
+                길이 필수 조건이 있는 엔진에서는 그 한계까지만 적용됩니다.
+              </span>
+            </div>
 
             {/* Qwen preflight 배지 — 예상값(실행 결과는 결과 화면 metadata가 최종) */}
             {preflight && (() => {

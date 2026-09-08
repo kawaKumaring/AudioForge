@@ -2,8 +2,9 @@
 """긴 참조 음성에서 3~10초 구간을 다루는 백엔드 — 오류 거부가 아니라 "참조 원본"으로 수용.
 
 역할(엔진 무관 사실 측정 + 파생 클립 생성):
-  - recommend_region(): 10초 초과 파일에서 6~8초의 '좋은 발화 구간'을 자동 추천(무음 적음·클리핑
-    없음·연속 발화). 확정이 아니라 UI 기본 제안값이다(사용자가 재생·확정).
+  - recommend_region(): 긴 파일에서 '좋은 발화 구간'을 자동 추천한다. 목표 길이는 엔진 정책의
+    권장 상한(또는 사용자가 고급 설정에서 올린 값)이고, 그 안에서 **담긴 발화 초**가 가장 많은
+    구간을 고른다. 확정이 아니라 UI 기본 제안값이다(사용자가 재생·확정).
   - analyze_region(): 선택 구간의 길이·무음비율·클리핑·RMS + 경계 절단(말 도중에 끊겼는가)을
     측정하고 품질 경고를 만든다. 경계 절단은 참조 대사 혼입의 직접 원인이라 별도 필드로 낸다.
   - coarse_peaks(): 파형 렌더링용 다운샘플 peak 배열(전체 파일).
@@ -34,10 +35,15 @@ WARN_CLIPPING = "REGION_CLIPPING"
 WARN_OUTSIDE_RECOMMENDED = "REGION_OUTSIDE_RECOMMENDED"
 
 TARGET_SR = 24000            # 파생 참조 클립 샘플레이트(모델 입력)
-DEFAULT_TARGET_SEC = 7.0     # 자동 추천 목표 길이(6~8초 권장의 중앙)
-REC_MIN_SEC = 6.0
-REC_MAX_SEC = 8.0
 HOP_SEC = 0.1                # 추천/구간 분석 시 프레임 홉
+
+# 추천 후보로 삼을 최소 발화 비율. 이보다 성긴 구간은 '길지만 대부분 조용한' 구간이라
+# 길이를 최대화하는 기준이 잘못 고르기 쉽다. 이 문턱을 넘는 후보가 하나도 없으면 문턱을 푼다
+# (성긴 녹음에서 추천 자체가 사라지지 않게).
+MIN_SPEECH_RATIO = 0.60
+# 사용자가 고급 설정에서 올릴 수 있는 목표 길이의 천장. Qwen3 는 길이 필수 조건이 없지만
+# 무한정 열어 두지 않는다 — 참조가 길수록 대조할 대사가 길어지고 준비가 느려진다.
+MAX_USER_TARGET_SEC = 30.0
 SILENCE_DBFS = -45.0         # 무음 창 판정(reference_audio와 동일 기준)
 CLIP_THRESHOLD = 0.99
 
@@ -54,6 +60,11 @@ def _source_duration(path):
     import soundfile as sf
     info = sf.info(path)
     return float(info.frames) / float(info.samplerate) if info.samplerate else 0.0
+
+
+def source_duration(path):
+    """오디오 파일 전체 길이(초). 산출물을 '파일 전부' 로 검사할 때 쓴다."""
+    return _source_duration(path)
 
 
 def _load_mono(path):
@@ -82,7 +93,7 @@ def _hop_frames(mono, sr):
     return rms, clip, hop
 
 
-def recommend_region(path, target_sec=DEFAULT_TARGET_SEC,
+def recommend_region(path, target_sec=None,
                      min_sec=None, max_sec=None, policy=None):
     """10초 초과 파일에서 **확정 가능한** 좋은 발화 구간을 추천한다.
 
@@ -91,26 +102,39 @@ def recommend_region(path, target_sec=DEFAULT_TARGET_SEC,
     무음 경계를 요구해, 앱이 스스로 추천한 구간을 스스로 거부했다. 여기서는 확정기와 같은
     ``detect_silences`` 경계의 중심끼리만 후보로 삼는다.
 
-    6~8초 후보를 우선하고 없으면 모델 허용 범위인 3~10초로 넓힌다. 어느 쪽에도 안전한
-    경계 쌍이 없으면 임의 절단을 추천하지 않고 ``ok=False`` 를 반환한다."""
+    고르는 기준은 **담긴 발화 초**(발화 비율 × 길이)다. 예전 기준인 발화 '비율'은 짧은 조각에
+    유리해서, 허용 범위를 넓혀도 추천이 오히려 짧아졌다(실측: 6개 파일 전부 6.5~7.5초에 고정).
+
+    ``target_sec`` 은 사용자가 고급 설정에서 정한 목표 길이(초). 0/None 이면 엔진 권장 상한.
+    엔진의 **필수** 상한은 이 값으로 넘지 못한다. 안전한 경계 쌍이 없으면 낱말 경계 경로에
+    맡기고 ``safe_boundaries=False`` 로 제안만 한다."""
     import numpy as np
     pol = _policy_or_default(policy)
     mono, sr = _load_mono(path)
     dur = len(mono) / sr if sr > 0 else 0.0
-    # 추천이 노리는 범위 = 정책의 권장 범위(없으면 필수 범위). 1차 창(6~8초)은 그 안으로 좁힌다.
-    rec_lo, rec_hi = pol.recommended_bounds()
-    if rec_hi == float("inf"):
-        rec_hi = dur
-    if min_sec is None:
-        min_sec = max(REC_MIN_SEC, rec_lo)
-    if max_sec is None:
-        max_sec = min(REC_MAX_SEC, rec_hi) if rec_hi > 0 else REC_MAX_SEC
-    if max_sec < min_sec:
-        min_sec, max_sec = rec_lo, rec_hi
     if dur <= 0:
         return {"ok": False, "reason": "empty", "duration_sec": 0.0}
 
-    win_sec = float(max(min_sec, min(max_sec, target_sec)))
+    # 추천이 노리는 범위는 **정책**에서 나온다. 예전에는 이 모듈이 6~8초를 따로 들고 있어서
+    # 엔진이 3~10초를 권장해도 언제나 6~8초만 제안했다(실측: 실제 파일 6개 전부 6.5~7.5초).
+    # 모듈 설명이 "이 모듈은 길이 숫자를 갖지 않는다"고 적어 둔 것과도 어긋났다.
+    rec_lo, rec_hi = pol.recommended_bounds()
+    req_lo, req_hi = pol.region_bounds(dur)
+    if rec_hi == float("inf"):
+        rec_hi = dur
+    if min_sec is None:
+        min_sec = max(rec_lo, req_lo if req_lo is not None else 0.0)
+    if max_sec is None:
+        # 사용자가 고급 설정에서 목표 길이를 올렸으면 그것을 상한으로 쓴다.
+        # 단 엔진의 **필수** 상한은 넘지 않는다(GPT-SoVITS 10초는 벤더가 거부한다).
+        want = float(target_sec) if target_sec else rec_hi
+        want = min(max(want, min_sec), MAX_USER_TARGET_SEC)
+        max_sec = min(want, req_hi) if req_hi is not None else want
+    max_sec = min(max_sec, dur)
+    if max_sec < min_sec:
+        min_sec, max_sec = rec_lo, max(rec_lo, max_sec)
+
+    win_sec = float(max_sec)
     if dur <= win_sec:
         # 추천 창보다 짧으면 전체가 후보(경계 판정은 호출부/policy가 담당)
         return {"ok": True, "start_sec": 0.0, "dur_sec": round(dur, 3),
@@ -136,7 +160,19 @@ def recommend_region(path, target_sec=DEFAULT_TARGET_SEC,
     sp_cs = np.concatenate([[0.0], np.cumsum(speech)])
     cl_cs = np.concatenate([[0.0], np.cumsum(clip)])
 
-    def best_between(lo, hi):
+    # ── 무엇을 '좋은 구간' 으로 볼 것인가 ────────────────────────────────────
+    # 예전 기준은 **발화 밀도**(비율)였다. 비율은 길이에 반비례하기 쉬워서 짧고 촘촘한 조각이
+    # 언제나 이겼다 — 허용 범위를 3~20초로 넓혀도 추천이 오히려 짧아지는 것으로 실측됐다
+    # (마젬 7.06초 → 3.43초). 사용자가 "구간이 적게 잡힌다" 고 본 것이 이 기준이다.
+    #
+    # 지금 기준은 **실제로 담긴 발화 초**(밀도 × 길이)다. 목소리를 배우는 데 쓰이는 것은
+    # 비율이 아니라 들어 있는 말의 양이므로 이쪽이 목적에 맞고, 길이가 저절로 따라온다.
+    # 클리핑은 같은 단위(초)로 벌점을 준다.
+    #
+    # 문턱(MIN_SPEECH_RATIO)이 필요한 이유: 길이를 최대화하는 기준은 '길지만 절반이 조용한'
+    # 구간에 끌릴 수 있다. 실제 파일 6개에서는 문턱이 있으나 없으나 결과가 같았지만
+    # (전부 밀도 0.71 이상), 성긴 녹음을 위한 안전선으로 남긴다. 아무 후보도 못 넘으면 푼다.
+    def best_between(lo, hi, min_ratio):
         import bisect
         best = None
         for st in cuts:
@@ -150,16 +186,35 @@ def recommend_region(path, target_sec=DEFAULT_TARGET_SEC,
                 b = max(a + 1, min(len(speech), int(round(en / HOP_SEC))))
                 sp = (sp_cs[b] - sp_cs[a]) / (b - a)
                 cl = (cl_cs[b] - cl_cs[a]) / (b - a)
-                # 음성 밀도·클리핑이 주 권위. 동률이면 목표 7초에 가까운 쪽, 그 다음 앞쪽.
-                rank = (float(sp - 3.0 * cl), -abs(d - win_sec), -st)
+                if sp < min_ratio:
+                    continue
+                # 담긴 발화 초 − 클리핑 초 × 3. 동률이면 앞쪽 구간.
+                rank = (float((sp - 3.0 * cl) * d), -st)
                 if best is None or rank > best[0]:
                     best = (rank, st, en, sp)
         return best
 
-    best = best_between(float(min_sec), float(max_sec))
+    best = best_between(float(min_sec), float(max_sec), MIN_SPEECH_RATIO)
     if best is None:
-        best = best_between(float(rec_lo), float(rec_hi))
+        best = best_between(float(min_sec), float(max_sec), 0.0)
     if best is None:
+        best = best_between(float(rec_lo), float(rec_hi), 0.0)
+    if best is None:
+        # 무음 경계 쌍이 없다 = 말이 쉼 없이 이어지는 음원. 예전에는 여기서 ok=False 였고,
+        # 그러면 화면이 '구간을 직접 고르세요' 에서 멈춰 자동 준비가 끝나지 않았다.
+        # 확정 단계(build_reference_clip)가 낱말 경계로 경계를 만들 수 있게 됐으므로,
+        # 여기서는 **발화가 가장 촘촘한 창**을 제안만 하고 안전 판정은 확정 단계에 맡긴다.
+        # safe_boundaries=False 가 그 사실의 표시다 — 이 값이 참이라고 속이지 않는다.
+        win = max(1, int(round(win_sec / HOP_SEC)))
+        if speech.size >= win:
+            score = (sp_cs[win:] - sp_cs[:-win]) - 3.0 * (cl_cs[win:] - cl_cs[:-win])
+            i = int(np.argmax(score))
+            st = round(i * HOP_SEC, 3)
+            return {"ok": True, "start_sec": st, "dur_sec": round(win_sec, 3),
+                    "duration_sec": round(dur, 3), "whole_file": False,
+                    "speech_ratio": round(float(score[i] / win), 4),
+                    "safe_boundaries": False, "boundary_source": "word_gap_pending",
+                    "silence_count": len(silences)}
         return {"ok": False, "reason": "no_safe_boundary_pair",
                 "duration_sec": round(dur, 3), "whole_file": False,
                 "silence_count": len(silences)}
@@ -298,6 +353,33 @@ def trim_region(path, start_sec, dur_sec, out_path):
     if not (os.path.exists(out_path) and os.path.getsize(out_path) > 0):
         raise RuntimeError("파생 참조 WAV 생성 실패(빈/0바이트).")
     return out_path
+
+
+PAD_TARGET_SEC = 0.15        # 경계에 넣을 무음 길이. 표준 경계 검사 창(0.12초)보다 넉넉하게 잡는다.
+PAD_FADE_MS = 15.0           # 삽입한 무음으로 이어지는 자리를 부드럽게 만드는 페이드 길이.
+
+
+def pad_clip_boundaries(clip_path, pad_sec=PAD_TARGET_SEC, fade_ms=PAD_FADE_MS):
+    """만든 클립 양 끝에 페이드를 걸고 무음을 붙인다. 같은 파일에 다시 쓴다(최종 길이 반환).
+
+    삽입하는 이유: 낱말 사이 틈은 0.06~0.15초로 좁아서, 그대로 쓰면 모델이 받는 오디오의
+    경계가 발화에 밀착한다. 다만 여기서 붙이는 무음은 **경계 검사를 통과시키기 위한 장식이
+    아니다** — 검사는 붙이기 전의 생 오디오에 대해 이미 끝냈다(확보한 여백 크기로 창을 맞춘 검사).
+    이 순서가 뒤바뀌면 검사가 눈뜬장님이 된다. 무음을 붙인 뒤에는 말 한가운데를 자른 경계도
+    조용해 보이기 때문이다."""
+    import numpy as np
+    import soundfile as sf
+    data, sr = sf.read(clip_path, dtype="float32", always_2d=True)
+    mono = (data.mean(axis=1) if data.shape[1] > 1 else data[:, 0]).astype("float64")
+    n = mono.size
+    f = min(max(1, int(round(sr * fade_ms / 1000.0))), max(1, n // 2))
+    ramp = 0.5 - 0.5 * np.cos(np.linspace(0.0, math.pi, f))   # 코사인 램프(0→1)
+    mono[:f] *= ramp
+    mono[n - f:] *= ramp[::-1]
+    pad = np.zeros(max(0, int(round(sr * float(pad_sec)))), dtype="float64")
+    out = np.concatenate([pad, mono, pad])
+    sf.write(clip_path, np.clip(out, -1.0, 1.0).astype("float32"), sr, subtype="PCM_16")
+    return round(out.size / float(sr), 4)
 
 
 # ────────── 정렬 보장 구간 선택(참조 대사 혼입의 원인 수정, 2026-08-28) ──────────
@@ -468,7 +550,8 @@ def snap_region_to_silence(silences, requested_start, requested_end,
 
 def build_reference_clip(src_path, requested_start_sec, requested_dur_sec, out_path,
                          manual_text=None, min_sec=None, max_sec=None,
-                         transcribe_fn=None, whisper_model="small", policy=None):
+                         transcribe_fn=None, whisper_model="small", policy=None,
+                         transcribe_words_fn=None):
     """자동 보정된 참조 클립을 만든다. 1단계 계약(blocking/warning_codes/ready)을 그대로 쓴다.
 
     반환 dict — 실패해도 같은 모양이며 blocking 이 비어 있지 않고 clip_path 가 None 이다.
@@ -507,10 +590,59 @@ def build_reference_clip(src_path, requested_start_sec, requested_dur_sec, out_p
         return res
 
     silences = detect_silences(src_path)
-    if not silences:
-        return fail(BLOCK_NO_SAFE_BOUNDARY, snap={"silence_count": 0})
-    snapped = snap_region_to_silence(silences, req_start, req_end, min_sec, max_sec)
+    snapped = (snap_region_to_silence(silences, req_start, req_end, min_sec, max_sec)
+               if silences else None)
+    # 경계에서 확보한 여백(초). 두 경로 모두 이 값으로 경계 검사 창을 맞춘다 —
+    # 자른 자리가 조용하다고 주장하는 폭이 곧 그 주장을 검사할 수 있는 폭이다.
+    pads = None
+    word_used = False
     if snapped is None:
+        # ── 낱말 경계로 물러선다 ────────────────────────────────────────────
+        # 무음이 0.2초 이상 이어지는 자리가 없으면(말이 쉼 없이 이어지는 음원) 예전에는 여기서
+        # 끝이었다. 그런데 무음이 필요한 진짜 이유는 소리가 아니라 **대사 정합성**이다
+        # (아래에서 클립을 다시 전사해 원문과 대조한다). 필요한 것은 무음이 아니라
+        # '낱말이 잘리지 않은 경계' 이므로, 전사기가 이미 주고 있던 낱말 시각을 후보로 쓴다.
+        # 자세한 근거·실측표는 reference_word_boundary 모듈 설명에 있다.
+        import reference_word_boundary as wb
+        res["word_boundary"] = {"used": False}
+        pad_target = PAD_TARGET_SEC
+        # 무음 대신 넣을 여백까지 정책 길이 안에 들어가야 한다 — 상한에서 미리 빼 둔다.
+        wmax = max_sec - 2.0 * pad_target
+        if wmax < min_sec:
+            res["word_boundary"]["reason"] = "PAD_EXCEEDS_RANGE"
+        else:
+            radius = SNAP_MAX_SEARCH_SHIFT_SEC
+            total = _source_duration(src_path)
+            w_start = max(0.0, req_start - radius)
+            w_dur = min(total - w_start, (req_end + radius) - w_start)
+            tw = transcribe_words_fn(src_path, w_start, w_dur) if transcribe_words_fn else None
+            if tw is None:
+                from reference_transcript import transcribe_word_times
+                tw = transcribe_word_times(src_path, whisper_model, w_start, w_dur)
+            words = tw.get("words") or []
+            res["word_boundary"]["word_count"] = len(words)
+            if tw.get("status") != "ok":
+                res["word_boundary"]["reason"] = tw.get("error_code") or "TRANSCRIBE_FAILED"
+            elif wb.coarse_word_timestamps(words):
+                # 표시용으로 반올림된 시각을 경계 근거로 쓰지 않는다.
+                res["word_boundary"]["reason"] = wb.BLOCK_COARSE_WORD_TIMES
+            else:
+                # 무음도 '아주 넓은 낱말 틈' 이므로 후보를 합친다 — 넓은 쪽이 비용에서 이긴다.
+                cands = sorted(set(silences) | set(wb.word_gaps(words)))
+                snapped = snap_region_to_silence(cands, req_start, req_end, min_sec, wmax)
+                if snapped is None:
+                    res["word_boundary"]["reason"] = wb.BLOCK_NO_WORD_BOUNDARY
+                    res["word_boundary"]["gap_count"] = len(cands)
+                else:
+                    pads = (wb.pad_at(cands, snapped["start"]), wb.pad_at(cands, snapped["end"]))
+                    word_used = True
+                    res["word_boundary"].update(
+                        used=True, gap_count=len(cands), pad_target_sec=pad_target,
+                        head_pad_sec=pads[0], tail_pad_sec=pads[1])
+                    res["warning_codes"].append(wb.WARN_WORD_BOUNDARY_USED)
+    if snapped is None:
+        if not silences:
+            return fail(BLOCK_NO_SAFE_BOUNDARY, snap={"silence_count": 0})
         return fail(BLOCK_SNAP_UNSATISFIABLE,
                     snap={"silence_count": len(silences), "min_sec": min_sec, "max_sec": max_sec})
     s, e = snapped["start"], snapped["end"]
@@ -529,12 +661,31 @@ def build_reference_clip(src_path, requested_start_sec, requested_dur_sec, out_p
     # 아래에서 그대로 차단한다 — 완화한 것은 '자동 이동이 크다'는 사실 하나뿐이다.
     trim_region(src_path, s, e - s, out_path)
     mono, sr = _load_mono(out_path)
-    bt = rl.boundary_truncation(np.asarray(mono, dtype=np.float64), sr)
+    arr = np.asarray(mono, dtype=np.float64)
+    # 경계 검사 창을 **확보한 여백 안쪽**으로 맞춘다(하한 0.03초, 상한 표준 0.12초).
+    # 여백보다 큰 창을 쓰면 멀쩡한 경계를 차단한다 — 0.24초 무음에서 꼬리가 -40.92dBFS 로
+    # 임계에서 0.9dB 남았던 것이 그 증상이다. 작은 창도 '말 도중' 은 그대로 잡아낸다(25dB 차이).
+    # 두 표 모두 reference_word_boundary 모듈 설명에 실측값으로 있다.
+    import reference_word_boundary as wb
+    if pads is None:
+        pads = (wb.pad_at(silences, s), wb.pad_at(silences, e))
+    std_sec = rl.BOUNDARY_WINDOW_MS / 1000.0
+    hw = wb.edge_window_sec(pads[0], max_window_sec=std_sec) * 1000.0
+    tw_ms = wb.edge_window_sec(pads[1], max_window_sec=std_sec) * 1000.0
+    h = rl.boundary_truncation(arr, sr, window_ms=hw)
+    t2 = rl.boundary_truncation(arr, sr, window_ms=tw_ms)
+    bt = {"window_ms": [round(hw, 2), round(tw_ms, 2)], "speech_dbfs": h["speech_dbfs"],
+          "head_pad_sec": pads[0], "tail_pad_sec": pads[1],
+          "head_dbfs": h["head_dbfs"], "tail_dbfs": t2["tail_dbfs"],
+          "head_truncated": h["head_truncated"], "tail_truncated": t2["tail_truncated"]}
     res["boundary"] = bt
     if bt["head_truncated"]:
         return fail(BLOCK_HEAD_TRUNCATED)
     if bt["tail_truncated"]:
         return fail(BLOCK_TAIL_TRUNCATED)
+    if word_used:
+        # 검사를 마친 뒤에만 무음을 넣는다(순서가 뒤바뀌면 검사가 무의미해진다).
+        res["word_boundary"]["clip_duration_sec"] = pad_clip_boundaries(out_path)
 
     # 최종 클립 자체를 전사한다 — 원본이 아니라 '실제로 모델에 갈 오디오' 가 기준이다.
     if transcribe_fn is None:
@@ -573,7 +724,7 @@ def build_reference_clip(src_path, requested_start_sec, requested_dur_sec, out_p
     return res
 
 
-def analysis_payload(path, policy, include_peaks=True):
+def analysis_payload(path, policy, include_peaks=True, target_sec=None):
     """ref-analyze 응답. 화면이 읽는 모든 길이 조건이 **이 정책** 하나에서 나온다.
 
     needs_region     — 구간을 추천한다(필수 상한이 있으면 그것, 없으면 권장 상한을 넘었을 때).
@@ -599,7 +750,7 @@ def analysis_payload(path, policy, include_peaks=True):
         "warnings": [w.to_dict() for w in assessed.warnings],
     }
     if payload["needs_region"]:
-        payload["recommend"] = recommend_region(path, policy=policy)
+        payload["recommend"] = recommend_region(path, target_sec=target_sec, policy=policy)
         if include_peaks:
             payload["peaks"] = coarse_peaks(path, buckets=500)
     return payload

@@ -6,6 +6,9 @@ Qwen3 에는 GPT-SoVITS 의 10초 상한을 적용하지 않는다(길이 필수
 검증한 권장 범위이며 밖은 경고다 — 차단이 아니고, '길수록 좋다' 도 아니다.
 """
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import shutil
 import tempfile
 import unittest

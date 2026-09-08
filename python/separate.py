@@ -333,6 +333,8 @@ def main():
         # ref-analyze / ref-trim 파라미터(참조 구간 선택 UI용)
         args.region_start = config.get("regionStart", 0.0)
         args.region_dur = config.get("regionDur", 0.0)
+        # 자동 추천이 노리는 목표 길이(초). 0/부재 = 엔진 권장 상한(예전과 같은 동작).
+        args.region_target_sec = config.get("regionTargetSec") or 0.0
         # 감정 참조 후보 목록(비교·선택 화면용). 없으면 ref-analyze 응답이 예전과 같다.
         args.emotion_candidates = config.get("emotionCandidates")
         # 사용자가 후보 비교 화면에서 고른 것. `emotion_key(화자, 감정)` → 참조 id 또는 토큰.
@@ -538,7 +540,8 @@ def main():
         if args.mode == "ref-analyze":
             import reference_region as rr
             _policy = _reference_policy(args)
-            payload = rr.analysis_payload(args.input, _policy)
+            payload = rr.analysis_payload(args.input, _policy,
+                                          target_sec=getattr(args, "region_target_sec", 0.0))
             if getattr(args, "emotion_candidates", None):
                 # 같은 응답에 얹는다 — 새 채널을 만들지 않는다. 실패해도 기존 분석은 나간다.
                 try:
@@ -566,7 +569,10 @@ def main():
                      validation=built.get("validation"), snap=built.get("snap"))
                 return
             eff = built["effective_region"]
-            metrics = rr.analyze_region(out_path, 0.0, eff["dur_sec"], policy=_policy)
+            # 만들어진 클립 **전체**를 재는 것이 옳다. eff["dur_sec"] 로 재면 안 된다 —
+            # 낱말 경계 경로는 경계에 무음을 넣어 클립이 그만큼 길어지므로, 옛 길이로 자르면
+            # 검사 창이 클립 끝이 아니라 발화 한가운데에 놓여 멀쩡한 클립이 '말 도중' 으로 막힌다.
+            metrics = rr.analyze_region(out_path, 0.0, rr.source_duration(out_path), policy=_policy)
             metrics["policy"] = _policy.describe()
             # 승인 계약은 1단계 그대로 — blocking/warning_codes/ready 는 한 소스에서 나온다.
             metrics["warning_codes"] = sorted(set(metrics.get("warning_codes", []))
@@ -575,6 +581,8 @@ def main():
             metrics["effective_region"] = eff
             metrics["snap"] = built["snap"]
             metrics["validation"] = built["validation"]
+            if built.get("word_boundary"):
+                metrics["word_boundary"] = built["word_boundary"]
             if metrics.get("blocking"):
                 try:
                     os.remove(out_path)

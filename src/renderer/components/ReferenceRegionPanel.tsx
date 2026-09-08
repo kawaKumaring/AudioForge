@@ -108,6 +108,13 @@ interface RegionMetrics {
            auto_shift_limit_sec?: number; status?: string; silence_count?: number }
   /** 최종 클립 전사와 manual_text 대조 요약(전사 원문은 담기지 않는다). */
   validation?: { status?: string; reason_code?: string | null; mismatch_where?: string[] }
+  /**
+   * 낱말 경계 경로를 썼을 때만 담긴다(말이 쉼 없이 이어져 무음 경계가 없는 음원).
+   * used=false 면 시도했으나 쓰지 못한 것이고 reason 에 사유가 있다.
+   */
+  word_boundary?: { used?: boolean; reason?: string; word_count?: number
+                    head_pad_sec?: number; tail_pad_sec?: number
+                    pad_target_sec?: number; clip_duration_sec?: number }
 }
 
 interface RegionSpan {
@@ -180,6 +187,9 @@ export default function ReferenceRegionPanel({
   const hasCommitted = !!(committed && (committed.clip || committed.region || committed.whole))
   // 엔진 선택이 바뀌면 같은 원본을 그 엔진의 정책으로 다시 판정한다(사용 중 구간은 지우지 않는다).
   const ttsEngine = useAppStore((s) => s.ttsEngine)
+  // 고급 설정의 '참조 목표 길이'. 0 = 엔진 권장 상한. 값이 바뀌면 추천도 다시 받아야 하므로
+  // runAnalyze 의 의존성에 들어간다(설정만 바꾸고 예전 추천을 보고 있으면 안 된다).
+  const ttsRefTargetSec = useAppStore((s) => s.ttsRefTargetSec)
   const setTtsReferencePolicy = useAppStore((s) => s.setTtsReferencePolicy)
   const [confirmError, setConfirmError] = useState<string | null>(null)
   // 기본 화면(plainStatus)에서는 같은 사실을 쉬운 말로 낸다. 안전 오류 문구는 어느 쪽에서도 바꾸지 않는다.
@@ -241,7 +251,7 @@ export default function ReferenceRegionPanel({
       onStateRef.current({ ready: false, clip: '', message: say('참조 음성을 분석 중입니다...', '목소리를 살펴보는 중입니다…'), region: null })
     }
     try {
-      const a = await window.api.audio.analyzeReference(path, clipKey, { ttsEngine }) as Analysis & { error_message?: string; reason?: string }
+      const a = await window.api.audio.analyzeReference(path, clipKey, { ttsEngine, regionTargetSec: ttsRefTargetSec }) as Analysis & { error_message?: string; reason?: string }
       if (signal?.cancelled) return
       // 방어: 분석 payload가 올바르지 않으면(예: IPC 유실/실패) 검은 화면 대신 오류 처리 → "다시 분석"
       if (!a || typeof a.duration_sec !== 'number') {
@@ -312,15 +322,30 @@ export default function ReferenceRegionPanel({
     } finally {
       if (!signal?.cancelled) setLoading(false)
     }
-  }, [path, clipKey, say, ttsEngine, setTtsReferencePolicy])
+  }, [path, clipKey, say, ttsEngine, ttsRefTargetSec, setTtsReferencePolicy])
 
-  // 파일이 바뀌면(그리고 엔진 선택이 바뀌면) 분석(StrictMode 중복 setup에도 main single-flight로 subprocess 1회).
+  // 파일이 바뀌면(그리고 엔진·목표 길이가 바뀌면) 분석
+  // (StrictMode 중복 setup에도 main single-flight로 subprocess 1회).
+  //
+  // ★ 합성 중에는 분석을 부르지 않는다. 워커는 한 번에 하나만 돌기 때문에 main 이
+  //   '처리 중에는 참조 분석을 실행할 수 없습니다' 로 거절하고, 그 거절이 화면에서
+  //   처리되지 않은 오류로 튀어나온다(2026-09-08 실사용 보고).
+  //   합성이 끝나 조작이 풀리면 그때 미뤄 둔 분석을 한다.
+  //   무엇이 바뀌었을 때 다시 볼지는 아래 키가 정한다. 함수 신원(runAnalyze)에 맡기면
+  //   문구 모드(plainStatus) 같은 무관한 변화에도 다시 돌고, 합성이 끝날 때마다 헛돈다.
+  //   ★ '이미 한 번 시작했다'를 ref 로 기억하면 안 된다. StrictMode 는 효과를 실행 → 정리 →
+  //     재실행하는데, 그러면 첫 실행이 정리에서 취소된 뒤 재실행이 ref 에 막혀 **분석이 영영
+  //     끝나지 않는다**(실측: 이 방식으로 바꾸자마자 앱 검사 19건 중 7건이 무너졌다).
+  //     중복 호출은 main 의 single-flight 가 이미 하나로 합친다 — 여기서 막을 일이 아니다.
+  const analyzeKey = [path, clipKey, ttsEngine, String(ttsRefTargetSec)].join('|#|')
   useEffect(() => {
-    if (!path) return
+    if (!path || disabled) return          // 합성 중에는 미룬다 — 조작이 풀리면 이 효과가 다시 온다
     const signal = { cancelled: false }
     runAnalyze(signal)
     return () => { signal.cancelled = true }
-  }, [path, runAnalyze])
+    // runAnalyze 는 의존성에 넣지 않는다 — 위 키가 '다시 볼 이유' 의 권위다.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [analyzeKey, disabled, path])
 
   // 구간(start/dur)이 바뀌면 이전 확정은 무효 → 재확정 필요
   useEffect(() => {
@@ -628,6 +653,13 @@ const sub: CSSProperties = { fontSize: 11, color: 'var(--text-muted)', lineHeigh
   const durTotal = analysis.duration_sec
   const sliderBounds = regionSliderBounds(policy, durTotal)
   const lengthJudgement = judgeLength(policy, dur)
+  // 자동으로 찾아 준 구간 — 되돌리기의 목적지. 정책 길이로 다듬어 두어야 슬라이더와 같은 값이 된다.
+  const recommended = analysis.recommend?.ok
+    ? { start: analysis.recommend.start_sec,
+        dur: clampDuration(policy, durTotal, analysis.recommend.dur_sec) }
+    : null
+  const atRecommended = !!recommended
+    && Math.abs(start - recommended.start) < 0.005 && Math.abs(dur - recommended.dur) < 0.005
 
   return (
     <div style={card}>
@@ -708,8 +740,31 @@ const sub: CSSProperties = { fontSize: 11, color: 'var(--text-muted)', lineHeigh
                 style={numBox} />
             </div>
           </div>
-          <div style={sub} title="파형을 끌어 구간을 잡거나, 숫자 칸에 0.01초 단위로 직접 넣을 수 있습니다.">
-            지금 구간 {start.toFixed(2)}~{(start + dur).toFixed(2)}초
+          {/* 지금 구간 + 되돌리기.
+              왜 필요한가: 추천 구간에 한 번 손을 대면 그 추천으로 돌아갈 길이 없었다. 돌아가려면
+              목소리를 다시 등록해 분석을 처음부터 시키는 수밖에 없었다(사용자 지적, 2026-09-08).
+              추천값은 분석 결과에 그대로 남아 있으므로 다시 부르기만 하면 된다.
+              버튼은 숨기지 않고 **비활성**으로 둔다 — 슬라이더를 만질 때마다 버튼이 나타났다
+              사라지면 화면이 움직여 조작을 방해한다(카드 깜빡임 때 겪은 것과 같은 문제). */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={sub} title="파형을 끌어 구간을 잡거나, 숫자 칸에 0.01초 단위로 직접 넣을 수 있습니다.">
+              지금 구간 {start.toFixed(2)}~{(start + dur).toFixed(2)}초
+            </span>
+            {recommended && (
+              <button data-testid="region-reset-recommend"
+                onClick={() => applyRegion(recommended.start, recommended.dur)}
+                disabled={disabled || atRecommended}
+                title={atRecommended
+                  ? '지금이 자동으로 찾아 준 구간입니다.'
+                  : `자동으로 찾아 준 구간(${recommended.start.toFixed(2)}~${(recommended.start + recommended.dur).toFixed(2)}초)으로 되돌립니다. 되돌린 뒤 '이 구간으로 확정'을 눌러야 실제로 바뀝니다.`}
+                style={{
+                  ...btn('transparent', atRecommended ? 'var(--text-muted)' : 'var(--cyan)'),
+                  border: `1px solid ${atRecommended ? 'var(--border-subtle)' : 'var(--cyan)'}`,
+                  padding: '2px 8px', fontSize: 11,
+                }}>
+                {atRecommended ? '자동으로 찾은 구간' : '자동으로 찾은 구간으로'}
+              </button>
+            )}
           </div>
 
           {/* 권장(검증) 범위 밖 길이 — 막지 않고 알린다 */}
@@ -761,6 +816,17 @@ const sub: CSSProperties = { fontSize: 11, color: 'var(--text-muted)', lineHeigh
                   {metrics.requested_region.end_sec.toFixed(2)}초 →{' '}
                   {effective.start_sec.toFixed(2)}~{effective.end_sec.toFixed(2)}초
                   {' '}(아래 확정 클립이 실제로 쓰일 소리입니다)
+                </div>
+              )}
+              {metrics.word_boundary?.used && (
+                <div style={{ marginTop: 2 }}
+                  title={'말이 쉼 없이 이어지는 음원은 0.2초 이상의 무음이 없어서 예전에는 구간을 만들 수 없었습니다. '
+                    + '이제는 낱말 사이(여백 '
+                    + `${((metrics.word_boundary.head_pad_sec ?? 0) * 1000).toFixed(0)}ms · `
+                    + `${((metrics.word_boundary.tail_pad_sec ?? 0) * 1000).toFixed(0)}ms)에서 자르고, `
+                    + `양 끝에 ${((metrics.word_boundary.pad_target_sec ?? 0) * 1000).toFixed(0)}ms 무음을 넣어 `
+                    + '경계를 부드럽게 만듭니다. 자른 자리가 말 도중이 아닌지는 무음을 넣기 전에 검사합니다.'}>
+                  낱말 사이에서 잘랐고 양 끝에 짧은 무음을 넣었습니다
                 </div>
               )}
               {confirmedClip && metrics.warnings.length === 0 && (

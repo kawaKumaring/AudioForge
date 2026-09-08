@@ -193,3 +193,65 @@ def build_user_ref_free_prompt(target_language, prompt_language=None) -> Referen
         TranscriptIssue(REF_FREE_FALLBACK, "참조 전사 없이(ref-free) 합성합니다.", {"prompt_language": lang}),
     ]
     return ReferencePrompt(MODE_REF_FREE, "", lang, None, warnings)
+
+
+def transcribe_word_times(path: str, model_name: str = "small",
+                          start_sec: float = 0.0, dur_sec: Optional[float] = None) -> dict:
+    """낱말 단위 **시각만** 뽑는다(글자는 담지 않는다). 반환 시각은 원본 기준 절대 초.
+
+    왜 시각만인가: 이 값을 쓰는 곳은 경계 후보 계산뿐이다. 낱말 글자를 함께 돌리면 전사 원문이
+    필요 없는 자리까지 퍼진다 — 담지 않으면 퍼질 수 없다.
+
+    왜 창을 잘라 전사하는가: 참조 원본은 수 분일 수 있고, 필요한 것은 요청 구간 주변뿐이다.
+    dur_sec 을 주면 그 창만 임시 WAV 로 떠서 전사하고, 결과 시각에 start_sec 을 되더한다.
+
+    반환 dict — status: ok | empty | failed, words: [(start, end), ...],
+    error_code/error_message 는 실패일 때만 채운다. 예외를 밖으로 내지 않는다."""
+    import tempfile
+    fail = lambda code, msg: {"status": STATUS_FAILED, "words": [],  # noqa: E731
+                              "error_code": code, "error_message": str(msg)[:300]}
+    tmp = None
+    try:
+        import soundfile as sf
+        target = path
+        offset = 0.0
+        if dur_sec is not None and float(dur_sec) > 0:
+            info = sf.info(path)
+            sr = int(info.samplerate)
+            a = max(0, int(round(float(start_sec) * sr)))
+            n = min(int(info.frames) - a, int(round(float(dur_sec) * sr)))
+            if n <= 0:
+                return fail(EMPTY_TRANSCRIPT, "요청 창이 원본 밖입니다.")
+            data, _ = sf.read(path, start=a, frames=n, dtype="float32", always_2d=True)
+            mono = data.mean(axis=1) if data.shape[1] > 1 else data[:, 0]
+            fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="af_words_")
+            os.close(fd)
+            sf.write(tmp, mono, sr, subtype="PCM_16")
+            target, offset = tmp, a / float(sr)
+
+        from transcribe_worker import _get_whisper_model, run_transcribe
+        result = run_transcribe(_get_whisper_model(model_name), target, None)
+        if not isinstance(result, Mapping):
+            raise TypeError(f"전사 결과 타입 이상: {type(result).__name__}")
+        words = []
+        for seg in (result.get("segments") or []):
+            if not isinstance(seg, Mapping):
+                continue
+            for w in (seg.get("words") or []):
+                if not isinstance(w, Mapping):
+                    continue
+                a, b = w.get("start"), w.get("end")
+                if isinstance(a, (int, float)) and isinstance(b, (int, float)) and b > a:
+                    words.append((round(float(a) + offset, 4), round(float(b) + offset, 4)))
+        words.sort()
+        if not words:
+            return {"status": STATUS_EMPTY, "words": [], "error_code": EMPTY_TRANSCRIPT}
+        return {"status": STATUS_OK, "words": words}
+    except Exception as e:
+        return fail(TRANSCRIPTION_FAILED, e)
+    finally:
+        if tmp:
+            try:
+                os.remove(tmp)
+            except OSError:
+                pass

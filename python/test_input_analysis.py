@@ -4,6 +4,12 @@
 핵심은 하나다 — estimator 의 planned_calls 가 실제 planner 의 chunk 수와 **같아야** 한다.
 두 경로가 갈라지는 순간 UI 는 안내가 아니라 오정보가 된다.
 """
+import os
+import sys
+
+# python_embeded 는 ._pth 때문에 스크립트 폴더를 sys.path 에 넣지 않는다.
+# 이 두 줄이 없으면 아래 import 가 실패해 이 파일이 **통과도 실패도 아닌 상태**로 죽는다.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import unittest
 
 import chunk_budget as cb
@@ -128,7 +134,7 @@ class EstimateTest(unittest.TestCase):
 
 class NoDuplicateImplementationTest(unittest.TestCase):
     def test_uses_production_splitter_and_budget(self):
-        src = open("input_analysis.py", encoding="utf-8").read()
+        src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "input_analysis.py"), encoding="utf-8").read()
         self.assertIn("text_segmenter", src)
         self.assertIn("chunk_budget", src)
         self.assertNotIn("SENTENCE_ENDERS = ", src, "문장 분리기를 재구현하면 안 된다")

@@ -8,6 +8,9 @@
 고정 벡터는 src/shared/referenceLibrary.test.ts 와 같은 리터럴이다 → TS == Python transitively.
 """
 import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import re
 import unittest
 

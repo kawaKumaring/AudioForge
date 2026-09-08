@@ -16,6 +16,12 @@ v1.4 는 화자와 감정을 실제 생성 경로까지 잇는다. 그 과정에
 
 새 의존성 0(stdlib unittest). 모델·GPU·오디오를 부르지 않는다.
 """
+import sys
+
+import os
+# python_embeded 는 ._pth 때문에 스크립트 폴더를 sys.path 에 넣지 않는다.
+# 이 두 줄이 없으면 아래 import 가 실패해 이 파일이 **통과도 실패도 아닌 상태**로 죽는다.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import json
 import os
 import unittest

@@ -60,9 +60,16 @@ if (py) {
     { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } })
   run('파이썬 모델 판 계약', py, ['-X', 'utf8', path.join('python', 'test_qwen_model_variants.py')],
     { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } })
+  // 파이썬 시험 전량(실측 ~172초). 예전에는 스모크와 계약 한둘만 돌려서, 시험 110개 중 27개가
+  // import 단계에서 죽어 있는 것도 그중 하나가 사흘째 계약 불일치로 실패하는 것도 보이지 않았다.
+  // 파이썬 경로는 argv 가 아니라 환경변수로 넘긴다 — 이 run() 은 Windows 에서 shell:true 라
+  // 공백이 든 경로(Program Files 아래의 node.exe 같은 것)가 두 토큰으로 쪼개진다(실측 즉시 exit 1).
+  run('파이썬 시험 전량', 'node', [path.join('scripts', 'python-tests.mjs')],
+    { env: { ...process.env, AUDIOFORGE_PYTHON: py } })
 } else {
   skip('파이썬 스모크(--quick)', 'AUDIOFORGE_PYTHON·externals/env.json 에서 파이썬을 찾지 못했다')
   skip('파이썬 모델 판 계약', '같은 이유')
+  skip('파이썬 시험 전량', '같은 이유')
 }
 
 // ── 실제 앱 핵심 경로(옵션) ──────────────────────────────────────────────
@@ -85,12 +92,19 @@ if (WITH_APP) {
     run('실제 앱 · 합성 완주 + 결과물 검사(GPU)', 'node',
       [path.join('test', 'e2e', 'synthesize-complete.e2e.mjs')],
       { env: { ...process.env, AF_E2E_REFERENCE: fixture, AF_E2E_PYTHON: py } })
+    // 합성이 도는 동안 설정을 만지면 참조 분석이 거절돼 오류가 튀어나왔다(2026-09-08 실사용 보고).
+    // 화면과 워커가 겹치는 자리라 단위 검사로는 잡히지 않는다 — 실제로 합성을 돌리며 만져 본다.
+    run('실제 앱 · 합성 중 설정 변경(GPU)', 'node',
+      [path.join('test', 'e2e', 'analyze-during-synthesis.e2e.mjs')],
+      { env: { ...process.env, AF_E2E_REFERENCE: fixture } })
   } else {
     skip('실제 앱 · 합성 완주', py ? 'fixture 없음' : '검증용 파이썬을 찾지 못했다')
+    skip('실제 앱 · 합성 중 설정 변경', '같은 이유')
   }
 } else {
   skip('실제 앱 · 합성 시작·취소', '--app 을 주면 함께 확인한다(GPU 를 쓴다 — 병합 직전에만)')
   skip('실제 앱 · 합성 완주', '같은 이유')
+  skip('실제 앱 · 합성 중 설정 변경', '같은 이유')
 }
 
 // ── 요약 ─────────────────────────────────────────────────────────────────

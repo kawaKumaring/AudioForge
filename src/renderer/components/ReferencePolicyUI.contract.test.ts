@@ -30,9 +30,11 @@ test('패널: 길이 숫자 상수·문구가 없다 — 모두 정책 요약에
 })
 
 test('패널: 분석·확정이 선택 엔진을 워커에 넘기고, 엔진이 바뀌면 다시 판정한다', () => {
-  assert.ok(PANEL.includes("analyzeReference(path, clipKey, { ttsEngine })"))
+  // 목표 길이(고급 설정)도 같은 요청에 실린다 — 값이 바뀌면 추천이 달라지므로 다시 물어야 한다.
+  assert.ok(PANEL.includes("analyzeReference(path, clipKey, { ttsEngine, regionTargetSec: ttsRefTargetSec })"))
   assert.ok(PANEL.includes("trimReference(path, startSec, durSec, clipKey, { ttsEngine })"))
-  assert.ok(PANEL.includes('}, [path, clipKey, say, ttsEngine, setTtsReferencePolicy])'), '재분석 의존성에 엔진')
+  assert.ok(PANEL.includes('}, [path, clipKey, say, ttsEngine, ttsRefTargetSec, setTtsReferencePolicy])'),
+    '재분석 의존성에 엔진과 목표 길이')
   assert.ok(PANEL.includes('setTtsReferencePolicy(pol)'), '정책 요약을 store 에 발행')
 })
 

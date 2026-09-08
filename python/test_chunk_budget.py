@@ -8,6 +8,12 @@
   · architecture headroom 을 함께 본다
   · 실측 성공 표본(production 191 tok / 396 frame)이 예산 안에 들어온다
 """
+import os
+import sys
+
+# python_embeded 는 ._pth 때문에 스크립트 폴더를 sys.path 에 넣지 않는다.
+# 이 두 줄이 없으면 아래 import 가 실패해 이 파일이 **통과도 실패도 아닌 상태**로 죽는다.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import unittest
 
 import chunk_budget as cb

@@ -199,6 +199,7 @@ try {
     "카드에 '목소리 확인 중'이 남지 않는다", cardText.includes('목소리 확인 중') ? '문구 잔존' : '없음')
   await shot('B-auto-prepared.png')
 
+
   // ── C: 구간 숫자 입력 + 모델 판 선택 ──────────────────────────────────
   const openedRegion = await st(() => {
     const btn = [...document.querySelectorAll('button')].find((b) => b.textContent.trim() === '목소리 설정')
@@ -217,6 +218,70 @@ try {
   }))
   ok('C1', nums.start >= 1 && nums.dur >= 1, '구간 편집기에 시작·길이 숫자 입력이 있다', JSON.stringify(nums))
   if (nums.start >= 1) await shot('C-region-numbers.png')
+
+  // C1b. 손을 댄 뒤 자동으로 찾은 구간으로 되돌아갈 수 있는가.
+  // 예전에는 이 길이 없어서 목소리를 다시 등록해야 했다(사용자 지적).
+  const setNum = (sel, v) => {
+    const el = document.querySelector(sel)
+    if (!el) return false
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+    setter.call(el, String(v))
+    el.dispatchEvent(new Event('input', { bubbles: true }))
+    el.dispatchEvent(new Event('change', { bubbles: true }))
+    return true
+  }
+  const reset = await st((fnSrc) => {
+    const setNum = eval('(' + fnSrc + ')')
+    const btn = document.querySelector('[data-testid="region-reset-recommend"]')
+    if (!btn) return { present: false }
+    const before = {
+      start: document.querySelector('[data-testid="region-start-number"]')?.value,
+      dur: document.querySelector('[data-testid="region-dur-number"]')?.value,
+      disabled: btn.disabled,          // 처음에는 추천 그대로라 눌러도 할 일이 없다
+    }
+    setNum('[data-testid="region-start-number"]', Number(before.start) + 3.5)
+    setNum('[data-testid="region-dur-number"]', 4.5)
+    return { present: true, before }
+  }, setNum.toString())
+  await sleep(400)
+  const afterEdit = await st(() => ({
+    start: document.querySelector('[data-testid="region-start-number"]')?.value,
+    dur: document.querySelector('[data-testid="region-dur-number"]')?.value,
+    enabled: !document.querySelector('[data-testid="region-reset-recommend"]')?.disabled,
+  }))
+  await st(() => document.querySelector('[data-testid="region-reset-recommend"]')?.click())
+  await sleep(400)
+  const afterReset = await st(() => ({
+    start: document.querySelector('[data-testid="region-start-number"]')?.value,
+    dur: document.querySelector('[data-testid="region-dur-number"]')?.value,
+    disabled: document.querySelector('[data-testid="region-reset-recommend"]')?.disabled,
+  }))
+  // 처음 값이 곧 추천값인 것은 아니다 — 전에 확정해 둔 구간이 있으면 거기서 시작한다.
+  // 그래서 '되돌리기 전 상태'가 아니라 **되돌린 뒤가 추천값인가**를 본다.
+  const recommended = await st(() => {
+    const el = document.querySelector('[data-testid="region-reset-recommend"]')
+    // 버튼 설명에 목적지가 적혀 있다: "…구간(0.00~9.76초)으로 되돌립니다"
+    const m = /\((\d+\.\d+)~(\d+\.\d+)초\)/.exec(el?.title || '')
+    return m ? { start: m[1], end: m[2] } : null
+  })
+  ok('C1b',
+    reset.present
+      && afterEdit.enabled === true                          // 손대면 활성이 되고
+      && afterEdit.start !== afterReset.start                // 되돌리기가 실제로 값을 바꾸며
+      && afterReset.disabled === true                        // 되돌린 뒤에는 다시 비활성이고
+      && (!recommended || Math.abs(Number(afterReset.start) - Number(recommended.start)) < 0.01),
+    '구간을 바꾼 뒤 자동으로 찾은 구간으로 되돌릴 수 있다',
+    JSON.stringify({ before: reset.before, afterEdit, afterReset, recommended }))
+  // 되돌린 구간을 다시 확정해 원래 상태로 돌려놓는다. 이 검사가 목소리를 '미확정' 으로
+  // 남기면 뒤 검사(E1: 준비된 목소리에는 다시 준비 버튼이 없다)의 전제가 깨진다.
+  await st(() => {
+    const b = [...document.querySelectorAll('button')].find((x) => /이 구간으로 확정/.test(x.textContent))
+    if (b) b.click()
+  })
+  await page.waitForFunction(
+    () => [...document.querySelectorAll('button')].some((b) => /✓ 확정됨/.test(b.textContent)),
+    { timeout: 60000 },
+  ).catch(() => {})
 
   // 고급 설정 > 엔진·진단
   await st(() => {
@@ -241,6 +306,34 @@ try {
   ok('C2', picker.present && picker.options.length >= 1,
     '엔진·진단에 설치된 음성 모델 판 선택이 뜬다', JSON.stringify(picker))
   if (picker.present) await shot('C-model-picker.png')
+
+  // C2b. 참조 목표 길이 조절 — 자동 추천이 노리는 길이를 사용자가 올릴 수 있어야 한다.
+  // 모양 검사로는 '화면에 실제로 붙었는지' 를 알 수 없다(이번 회차에 세 번 겪었다). 여기서 만진다.
+  const target = await st(() => {
+    const box = document.querySelector('[data-testid="ref-target-length"]')
+    const r = box?.querySelector('input[type="range"]')
+    if (!r) return { present: false }
+    const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+    set.call(r, '20')
+    r.dispatchEvent(new Event('input', { bubbles: true }))
+    r.dispatchEvent(new Event('change', { bubbles: true }))
+    return { present: true, max: r.max, text: box.innerText.slice(0, 60) }
+  })
+  // 설정 반영은 손을 뗀 뒤 0.5초 늦게 온다(끄는 동안 재분석이 걸리지 않게 한 장치).
+  await sleep(1200)
+  const stored = await st(() => window.__afStore?.getState().ttsRefTargetSec)
+  ok('C2b', target.present && target.max === '30' && stored === 20,
+    '참조 목표 길이를 30초까지 올릴 수 있고 값이 설정에 남는다',
+    JSON.stringify({ ...target, stored }))
+  // 원래대로 되돌린다 — 이 검사가 뒤 검사의 전제를 바꾸지 않게.
+  await st(() => {
+    const r = document.querySelector('[data-testid="ref-target-length"] input[type="range"]')
+    if (!r) return
+    const set = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
+    set.call(r, '0')
+    r.dispatchEvent(new Event('input', { bubbles: true }))
+    r.dispatchEvent(new Event('change', { bubbles: true }))
+  })
 
   // 음성 탭 정리 — 접힌 자리들이 있고 참조 전사는 접히지 않았다.
   await st(() => { const t = document.querySelector('#tts-advanced-tab-voice'); if (t) t.click() })
@@ -283,7 +376,9 @@ try {
   // 이 시나리오의 서로 다른 (인물|파일) 조합은 넷이다: 기본 목소리 · 인물a(다른 파일) · 인물A · 인물1.
   // 즉 위 숫자에는 중복이 없다 — 캐시가 줄일 것이 없는 상태다. 그래서 아래에서 **같은 조합을
   // 두 번 마운트**해 캐시가 실제로 듣는지 따로 본다(줄었다고 말하려면 반복을 만들어 재야 한다).
-  ok('F1', calls.trim <= 4, '같은 구간을 반복해서 자르지 않는다', JSON.stringify(calls))
+  // 상한이 5인 이유: 위 넷 + C1b 가 '되돌린 구간을 다시 확정' 하는 한 번(2026-09-08 추가).
+  // 이 숫자는 '중복 없이 필요한 만큼만 잘랐는가' 를 재는 것이지 성능 목표가 아니다.
+  ok('F1', calls.trim <= 5, '같은 구간을 반복해서 자르지 않는다', JSON.stringify(calls))
 
   // ── G: 같은 (인물|파일)을 다시 열면 파이썬을 다시 부르지 않는다 ────────────
   // 패널을 닫았다 다시 열면 마운트가 새로 생기고 예전에는 그때마다 다시 분석했다.
@@ -303,6 +398,61 @@ try {
   ok('G1', toggled && after.analyze === before.analyze && after.trim === before.trim,
     '같은 목소리를 다시 열어도 살펴보기·자르기를 다시 하지 않는다',
     `전 ${JSON.stringify(before)} → 후 ${JSON.stringify(after)}`)
+
+  // ── B3 는 대본을 바꾸므로 맨 뒤에 둔다 ─────────────────────────────────
+  // 앞에 두었더니 카드 구성이 달라져 구간 편집기 검사(C)가 무너졌다 — 검사가 검사의
+  // 전제를 바꾸면 통과·실패가 순서에 좌우된다.
+  // B3. 대사를 고치는 동안 화면이 통째로 바뀌지 않는가.
+  // 예전에는 대본 구조가 잠깐 깨지는 것만으로 카드 목록이 사유 텍스트로 교체됐다(사용자 지적).
+  // 카드가 있어야 볼 수 있으므로 대본을 먼저 넣고, 그 다음 '쉼만 있는 줄' 을 만들어 본다.
+  // 대본은 **화면을 통해** 넣는다. store 에 직접 써도 편집기가 자기 값으로 되돌린다(실측).
+  // 여러 명 화면에는 원문 칸이 없으므로 한 명 화면에서 넣고 돌아온다.
+  await page.click('[data-testid="dialogue-tabs"] [data-tab="single"]')
+  await sleep(400)
+  const seeded = await st(() => {
+    const ta = document.querySelector('section[aria-label="대사"] textarea')
+      || document.querySelector('textarea')
+    if (!ta) return false
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+    const nl = String.fromCharCode(10)
+    ta.focus()
+    setter.call(ta, '[화자 인물A]' + nl + '안녕하세요.' + nl + '[화자 인물B]' + nl + '반갑습니다.')
+    ta.dispatchEvent(new Event('input', { bubbles: true }))
+    return true
+  })
+  await sleep(2500)
+  await page.click('[data-testid="dialogue-tabs"] [data-tab="multi"]')
+  const gotRows = await waitUntil(async () => await count('[data-testid="dialogue-row"]') >= 2, 60000)
+  void seeded
+  const layoutBefore = await st(() => ({
+    rows: document.querySelectorAll('[data-testid="dialogue-row"]').length,
+    sourceOnly: !!document.querySelector('[data-testid="multi-dialogue-source-only"]'),
+    top: document.querySelector('[data-testid="multi-rows"]')?.getBoundingClientRect().top ?? null,
+  }))
+  const typed = await st(() => {
+    const ta = document.querySelector('[data-testid="dialogue-row"] [data-testid="dialogue-body"]')
+    if (!ta) return false
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+    const nl = String.fromCharCode(10)
+    ta.focus()
+    // 대사 뒤에 쉼만 있는 줄을 만든다 — 예전에 화면을 통째로 바꾸던 바로 그 모양.
+    setter.call(ta, ta.value + nl + '[쉼 0.4]' + nl)
+    ta.dispatchEvent(new Event('input', { bubbles: true }))
+    return true
+  })
+  await sleep(3000)
+  const layoutAfter = await st(() => ({
+    rows: document.querySelectorAll('[data-testid="dialogue-row"]').length,
+    sourceOnly: !!document.querySelector('[data-testid="multi-dialogue-source-only"]'),
+    notStructured: !!document.querySelector('[data-testid="multi-not-structured"]'),
+    top: document.querySelector('[data-testid="multi-rows"]')?.getBoundingClientRect().top ?? null,
+  }))
+  ok('B3', gotRows && typed && layoutBefore.rows >= 2
+      && layoutAfter.rows === layoutBefore.rows
+      && layoutAfter.sourceOnly === false && layoutAfter.notStructured === false
+      && layoutAfter.top === layoutBefore.top,
+    '대사를 고쳐도 카드 화면이 사유 텍스트로 바뀌지 않고 자리도 그대로다',
+    JSON.stringify({ gotRows, layoutBefore, layoutAfter }))
 
   ok('err', pageErrors.length === 0, '렌더러 예외 0', pageErrors.slice(0, 3).join(' / '))
 } catch (e) {

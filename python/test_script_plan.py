@@ -7,6 +7,12 @@ Python 은 자기가 그 값을 재현하는지(= fixture 가 굳었는지), TS 
 
 새 의존성 0(stdlib unittest). 모델·GPU 를 부르지 않는다.
 """
+import sys
+
+import os
+# python_embeded 는 ._pth 때문에 스크립트 폴더를 sys.path 에 넣지 않는다.
+# 이 두 줄이 없으면 아래 import 가 실패해 이 파일이 **통과도 실패도 아닌 상태**로 죽는다.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import json
 import os
 import unittest
