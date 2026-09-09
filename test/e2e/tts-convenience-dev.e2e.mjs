@@ -619,6 +619,89 @@ try {
     '대사를 고쳐도 카드 화면이 사유 텍스트로 바뀌지 않고 자리도 그대로다',
     JSON.stringify({ gotRows, layoutBefore, layoutAfter }))
 
+  // ── J: 기본 목소리 슬롯의 보고자는 하나다 (2026-09-09 관리자 지시) ─────────
+  // 여러 명 화면에는 숨은 기본 목소리 구동이 붙어 있고, 기본 인물 카드에도 편집기가 있었다.
+  // 둘이 같은 슬롯을 갱신하면 서로의 결론을 덮는다. 규칙: 접혀 있으면 구동이, 펼치면 카드가 맡는다.
+  //
+  // 기본 인물 카드가 생기려면 **인물 표기가 없는 대사**가 있어야 한다.
+  await page.click('[data-testid="dialogue-tabs"] [data-tab="single"]')
+  await sleep(300)
+  await st(() => {
+    const ta = document.querySelector('section[aria-label="대사"] textarea')
+      || document.querySelector('textarea')
+    if (!ta) return false
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+    const nl = String.fromCharCode(10)
+    ta.focus()
+    setter.call(ta, '이건 기본 인물의 대사입니다.' + nl + '[화자 인물A]' + nl + '이건 인물A 대사입니다.')
+    ta.dispatchEvent(new Event('input', { bubbles: true }))
+    return true
+  })
+  await sleep(2500)
+  await page.click('[data-testid="dialogue-tabs"] [data-tab="multi"]')
+  const hasDefaultCard = await waitUntil(async () => await st(() =>
+    [...document.querySelectorAll('[data-testid="dialogue-row"]')]
+      .some((r) => (r.getAttribute('data-speaker') || '') === '')), 60000)
+  const readyBefore = await st(() => window.__afStore.getState().ttsRefReady)
+  const driverClosed = await count('[data-testid="default-voice-driver"]')
+  ok('J1', hasDefaultCard && driverClosed === 1,
+    '기본 인물 카드가 접혀 있으면 숨은 구동 하나만 맡는다',
+    `기본카드=${hasDefaultCard} 구동=${driverClosed}개`)
+
+  // 기본 인물의 목소리 설정 → 구간 수정을 펼친다. 그러면 구동이 물러나야 한다.
+  const opened = await st(() => {
+    const rows = [...document.querySelectorAll('[data-testid="dialogue-row"]')]
+    const row = rows.find((r) => (r.getAttribute('data-speaker') || '') === '')
+    const b = row?.querySelector('[data-testid="card-voice"]')
+    if (!b) return false
+    b.click()
+    return true
+  })
+  await sleep(700)
+  const regionToggled = await st(() => {
+    const b = document.querySelector('[data-testid="voice-region-toggle"]')
+    if (!b) return false
+    b.click()
+    return true
+  })
+  await sleep(900)
+  const driverOpen = await count('[data-testid="default-voice-driver"]')
+  const editorThere = await count('[data-testid="region-start-number"]')
+  ok('J2', opened && regionToggled && driverOpen === 0 && editorThere >= 1,
+    '구간 수정을 펼치면 숨은 구동이 물러나고 카드가 맡는다',
+    `펼침=${opened && regionToggled} 구동=${driverOpen}개 편집기=${editorThere}개`)
+  const readyAfterOpen = await st(() => window.__afStore.getState().ttsRefReady)
+  ok('J3', readyBefore === false || readyAfterOpen === true,
+    '편집기를 펼쳐도 준비 상태가 내려가지 않는다',
+    `열기전=${readyBefore} 열고나서=${readyAfterOpen}`)
+
+  // 다시 접으면 구동이 돌아오고, 준비 상태는 그대로다.
+  await st(() => {
+    const b = document.querySelector('[data-testid="voice-region-toggle"]')
+    if (b) b.click()
+  })
+  await sleep(900)
+  const driverBack = await count('[data-testid="default-voice-driver"]')
+  const readyAfterClose = await st(() => window.__afStore.getState().ttsRefReady)
+  ok('J4', driverBack === 1 && readyAfterClose === readyAfterOpen,
+    '다시 접으면 구동이 돌아오고 준비 상태는 그대로다',
+    `구동=${driverBack}개 준비=${readyAfterClose}`)
+
+  // 기본 목소리가 준비된 상태에서는 '다시 준비' 입구가 없다(인물 슬롯의 E1 과 같은 규칙).
+  // ★'다시 준비가 새 요청이고 클립·구간을 보존한다' 는 것은 여기서 확인하지 않는다 —
+  //   준비된 상태에서는 그 버튼이 없기 때문이다. 그 동작은 store 상태 전이 시험이 재고 있다
+  //   (speakerRefRequest.test.ts, '기본 목소리: ready 는 단계의 거울이고…').
+  const readyNow = await st(() => window.__afStore.getState().ttsRefReady)
+  // **기본 인물 카드 안에서만** 센다 — 전역으로 세면 다른 인물 카드의 버튼이 섞인다(실측).
+  const retryEntries = await st(() => {
+    const rows = [...document.querySelectorAll('[data-testid="dialogue-row"]')]
+    const row = rows.find((r) => (r.getAttribute('data-speaker') || '') === '')
+    return row ? row.querySelectorAll('[data-testid="card-voice-retry"]').length : -1
+  })
+  ok('J5', readyNow ? retryEntries === 0 : retryEntries >= 1,
+    "준비된 기본 목소리에는 '다시 준비' 입구가 없다(미준비면 있다)",
+    `준비=${readyNow} 기본카드안 입구=${retryEntries}개`)
+
   ok('err', pageErrors.length === 0, '렌더러 예외 0', pageErrors.slice(0, 3).join(' / '))
 } catch (e) {
   ok('fatal', false, '실행 중 예외', String(e?.message || e))

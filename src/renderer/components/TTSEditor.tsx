@@ -250,7 +250,7 @@ export default function TTSEditor() {
   const { mode, status, fileInfo, ttsEmotionRefState, ttsSpeakerRefState, ttsSpeakerLabels, ttsSpeakerEmotionRefs,
     ttsSpeakerEmotionEnabled, setSpeakerEmotionEnabled, ttsSpeakerMode, setTtsSpeakerMode,
     registerSpeakerRef, removeSpeakerRef, setSpeakerRefState, setSpeakerInherit, moveSpeakerRef, setSpeakerLabel, ttsSpeakerInherit, ttsSpeakerRenames,
-    registerEmotionRef, removeEmotionRef, setEmotionRefState, setTtsRefState, ttsRefReady, ttsRefMessage, ttsReferenceClip, ttsPitchCapability, setTtsPitchCapability,
+    registerEmotionRef, removeEmotionRef, setEmotionRefState, setTtsRefState, beginTtsRefRequest, ttsRefReqId, ttsRefReady, ttsRefMessage, ttsReferenceClip, ttsPitchCapability, setTtsPitchCapability,
     ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, setTtsExpression,
     ttsReferenceConditioningMode, setTtsReferenceConditioningMode,
     setSpeakerEmotionRefs } = useAppStore()
@@ -891,8 +891,16 @@ export default function TTSEditor() {
   //  · 목소리 바꾸기 → 그것은 **불러온 파일 자체를 바꾸는 일**이라 여기서 하지 않고 어디서 하는지 알린다
   const renderDefaultRegion = (open = true) => {
     if (!fileInfo?.path) return null
+    // ★한 슬롯의 보고자는 하나다(2026-09-09 관리자 검수 — 인물 슬롯과 같은 규칙).
+    //   접힌 카드에는 만들지 않는다: 여러 명 화면에는 숨은 기본 목소리 구동이 이미 붙어 있어서
+    //   둘이 각자의 분석 결론을 올리면 서로를 덮는다. 펼치면 그 카드가 맡고(숨은 구동은 물러난다),
+    //   아직 준비되지 않았으면 그 카드가 자동 확정까지 한다.
+    if (!open) return null
     return (
       <ReferenceRegionPanel
+        // 요청마다 새 인스턴스 — 그 인스턴스가 자기 요청 식별자를 굳혀 들고 간다.
+        key={fileInfo.path + '|' + ttsRefReqId}
+        reqId={ttsRefReqId}
         clipKey="default"
         path={fileInfo.path}
         disabled={disabled}
@@ -901,15 +909,17 @@ export default function TTSEditor() {
           : null}
         onState={setTtsRefState}
         label="기본 목소리"
-        open={open}
-        plainStatus={!open}
+        open
+        autoConfirm={!ttsRefReady}
       />
     )
   }
   const retryDefaultVoice = () => {
-    // 기본 목소리를 처음부터 다시 준비한다. 숨은 기본 패널(autoConfirm)이 비워진 상태를 보고 다시 확정한다.
+    // 기본 목소리를 처음부터 다시 준비한다. **새 요청**을 선언하면 패널이 새 인스턴스로 다시 떠서
+    // 분석·자동 확정을 처음부터 하고, 이전 요청의 늦은 결과는 버려진다.
+    // 클립·구간은 지우지 않는다 — 다시 준비가 실패하면 지금 쓰던 목소리가 남아야 한다.
     voicePrep.clearVoiceReplaceNotice()
-    setTtsRefState({ clip: '', region: null, ready: false, message: '' })
+    beginTtsRefRequest()
   }
   const defaultVoiceChangeNotice = '기본 인물의 목소리는 처음 불러온 파일입니다. 다른 목소리로 바꾸려면 위쪽에서 파일을 다시 불러오거나, 이 대사에 인물을 지정해 주세요.'
   const { autoPrep, renderSpeakerRegion, voiceReplaceNotice } = voicePrep
@@ -954,11 +964,16 @@ export default function TTSEditor() {
   }
   // 감정별 구간 편집기 = 기존 ReferenceRegionPanel 재사용(중복 마운트 없음: 감정당 1개, 행 펼침 시).
   const renderEmotionRegion = (emotionId: string, onChangeRegion: (r: TtsEmotionRegion) => void) => {
-    const src = ttsEmotionRefState[emotionId]?.source || ''
+    const slot = ttsEmotionRefState[emotionId]
+    const src = slot?.source || ''
     if (!src) return null
+    const req = slot?.reqId || ''
     return (
       <ReferenceRegionPanel
-        key={src}
+        // 요청마다 새 인스턴스 — 같은 파일을 다시 골라도 낡은 결과가 새 요청을 덮지 않는다
+        // (인물·기본 슬롯과 같은 규칙. 2026-09-09).
+        key={src + '|' + req}
+        reqId={req}
         clipKey={emotionId}
         path={src}
         disabled={disabled}
@@ -1196,6 +1211,8 @@ export default function TTSEditor() {
             접혀 있어도 분석과 '추천 구간 자동 확정'은 계속 돈다(길이 조건은 엔진 정책이 정한다). 펼치면 예전 파형·슬라이더가 그대로 나온다. */}
         {fileInfo?.path && (
           <ReferenceRegionPanel
+            key={fileInfo.path + '|' + ttsRefReqId}
+            reqId={ttsRefReqId}
             clipKey="default"
             path={fileInfo.path}
             disabled={disabled}
@@ -1212,9 +1229,12 @@ export default function TTSEditor() {
       )}
       {/* 여러 명: 단일용 목소리 영역은 그리지 않는다. 기본 목소리(처음 불러온 음성)의 분석·추천 구간 자동 확정은 보이지 않게
           계속 돌아야 첫 인물이 그 결과를 이어받는다(open=false 는 도구를 그리지 않고 준비만 한다). */}
-      {dialogueTab === 'multi' && fileInfo?.path && (
+      {dialogueTab === 'multi' && fileInfo?.path && openVoiceSpeakerId !== 'default' && (
         <div hidden data-testid="default-voice-driver">
           <ReferenceRegionPanel
+            // 기본 인물의 구간 편집기를 펼치면 이 구동은 언마운트된다 — 보고자를 하나로 두기 위해서다.
+            key={fileInfo.path + '|' + ttsRefReqId}
+            reqId={ttsRefReqId}
             clipKey="default"
             path={fileInfo.path}
             disabled={disabled}

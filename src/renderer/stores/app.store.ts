@@ -21,6 +21,12 @@ import { EXPRESSIVE_DEFAULT_MODE, resolveExpressiveMode, type ExpressiveMode } f
 //   region  → ttsEmotionRefRegions[id]  (source→effective를 만든 구간, 초)
 // 유효한 ≤10초 원본은 파생 클립 없이 source 자체가 effective(clip='' + ready=true).
 // 완전 재현은 source+region 조합이 담당(effective 임시 경로에 의존 금지).
+/**
+ * 감정 목소리를 교체하기 직전의 클립. 새 준비가 '클립 없이 준비됨' 으로 끝났을 때에만 놓는다.
+ * 인물 슬롯의 prevGoodVoice 와 같은 역할이고, 감정은 전용 훅이 없어 store 가 들고 있는다.
+ */
+const emotionPrevClip = new Map<string, string>()
+
 /** 목소리 요청 식별자. 시간 + 난수 — 같은 파일을 연달아 골라도 다른 값이 나온다. */
 let _refReqSeq = 0
 export function newRefReqId(): string {
@@ -285,6 +291,10 @@ interface AppState {
   // 참조 준비 상태(합성 버튼 게이팅 + 사유 표시). ttsReferenceClip이 있으면 그 파생 클립을 참조로 전달.
   ttsReferenceClip: string
   ttsRefReady: boolean
+  /** 기본 목소리 준비 단계(권위). ttsRefReady 는 이것의 거울이다 — 인물 슬롯과 같은 규칙. */
+  ttsRefPhase: RefPhase
+  /** 기본 목소리 슬롯을 지금 소유한 요청. 낡은 보고를 버리는 기준. */
+  ttsRefReqId: string
   ttsRefMessage: string
   ttsReferenceRegion: { start: number; duration: number } | null
   // I3: 말끝 finishing + 감정 전환 경계. fresh=auto(새 세션), 복원 시 필드 부재=off(legacy 보존, 자동 마이그레이션 없음).
@@ -317,6 +327,11 @@ interface AppState {
   setTtsReferenceConditioningMode: (v: ReferenceConditioningMode) => void
   setTtsReferencePolicy: (p: ReferencePolicySummary | null) => void
   setTtsRefState: (v: { clip?: string; ready?: boolean; message?: string; region?: { start: number; duration: number } | null; phase?: RefPhase; reqId?: string }) => void
+  /**
+   * 기본 목소리 준비를 **새 요청으로 다시 시작한다**. 인물 슬롯의 beginSpeakerRefRequest 와 같은 뜻이다.
+   * 클립·구간은 건드리지 않는다 — 실패하면 지금 쓰던 것이 남아야 한다.
+   */
+  beginTtsRefRequest: () => void
   // 감정 참조: 원본 등록/변경(파생 클립 초기화 + 그 clipKey 정리), 삭제(그 clipKey 정리), 상태 패치(패널 onChange).
   registerEmotionRef: (emotionId: string, source: string) => void
   /** 화자에게 참조 원본을 지정·교체한다(같은 화자에 다시 부르면 교체). */
@@ -457,6 +472,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   ttsExpressiveMode: EXPRESSIVE_DEFAULT_MODE,
   ttsReferenceClip: '',
   ttsRefReady: false,
+  ttsRefPhase: 'idle' as RefPhase,
+  ttsRefReqId: '',
   ttsRefMessage: '',
   ttsReferenceRegion: null,
   resultMetadata: null,
@@ -469,7 +486,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 전체 파생 클립(기본+감정) 정리
     // 분할 마커는 파일에 종속이다. 비우지 않으면 이전 파일의 경계가 새 파일에 그대로 적용돼
     // (더 긴 파일에서는 오류조차 없이) 완전히 틀린 지점에서 잘린다 — 감사 R2.
-    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
+    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], ttsReferenceClip: '', ttsRefReady: false, ttsRefPhase: 'preparing' as RefPhase, ttsRefReqId: newRefReqId(), ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
   },
   setMode: (mode) => set({ mode }),
   setTrimSilence: (v) => set({ trimSilence: v }),
@@ -502,13 +519,22 @@ export const useAppStore = create<AppState>((set, get) => ({
   // ★패널은 세 종류의 슬롯(기본·감정·인물)에 **같은 보고**를 올린다. 그래서 준비 단계를 도입할 때
   //   세 리듀서가 모두 그것을 알아야 한다. 하나만 고쳤더니 기본 목소리가 영영 준비되지 않았고,
   //   그것을 이어받는 첫 인물까지 함께 멈췄다(2026-09-09 실측 — 검사가 잡아냈다).
-  setTtsRefState: (v) => set((s) => ({
-    ttsReferenceClip: v.clip !== undefined ? v.clip : s.ttsReferenceClip,
-    ttsRefReady: v.phase !== undefined ? v.phase === 'ready'
-      : (v.ready !== undefined ? v.ready : s.ttsRefReady),
-    ttsRefMessage: v.message !== undefined ? v.message : s.ttsRefMessage,
-    ttsReferenceRegion: v.region !== undefined ? v.region : s.ttsReferenceRegion,
-  })),
+  beginTtsRefRequest: () => set(() => ({ ttsRefPhase: 'preparing', ttsRefReady: false,
+                                         ttsRefMessage: '', ttsRefReqId: newRefReqId() })),
+  setTtsRefState: (v) => set((s) => {
+    // 낡은 요청의 결과는 버린다 — 인물 슬롯과 같은 규칙이다(원본 경로만으로는 같은 파일 재선택을 못 가린다).
+    if (v.reqId !== undefined && s.ttsRefReqId && v.reqId !== s.ttsRefReqId) return {}
+    const phase = v.phase !== undefined ? v.phase : s.ttsRefPhase
+    return {
+      ttsReferenceClip: v.clip !== undefined ? v.clip : s.ttsReferenceClip,
+      ttsRefReady: v.phase !== undefined ? v.phase === 'ready'
+        : (v.ready !== undefined ? v.ready : s.ttsRefReady),
+      ttsRefPhase: v.phase !== undefined ? v.phase
+        : (v.ready !== undefined ? (v.ready ? 'ready' : (phase === 'ready' ? 'preparing' : phase)) : phase),
+      ttsRefMessage: v.message !== undefined ? v.message : s.ttsRefMessage,
+      ttsReferenceRegion: v.region !== undefined ? v.region : s.ttsReferenceRegion,
+    }
+  }),
   // 감정 원본 등록/변경: source만 설정하고 파생 상태 초기화(재분석 필요) + 그 clipKey의 이전 파생 클립 정리.
   // source가 바뀌면 그 감정의 이전 전사(ttsReferencePrompts[id])는 옛 음성 것이므로 함께 제거 —
   // 새 source에 stale 전사가 결합되는 것을 막는다(불변식 3·4). 타 감정 전사는 불변.
@@ -615,14 +641,21 @@ export const useAppStore = create<AppState>((set, get) => ({
     }
   }),
   registerEmotionRef: (emotionId, source) => {
-    try { window.api?.audio?.releaseReferenceClip?.(emotionId) } catch { /* noop */ }
+    // ★이전 파생 클립을 여기서 지우지 않는다(2026-09-09 — 인물 슬롯과 같은 결함이었다).
+    //   새 목소리를 준비하기도 전에 놓으면, 새 파일이 실패했을 때 되돌릴 클립이 이미 없다.
+    //   같은 clipKey 의 교체는 트림이 원자적으로 한다(성공했을 때만 이전 것을 놓는다).
+    //   새 준비가 '클립 없이 준비됨'(원본 전체)으로 끝나는 경우만 그때 놓는다(아래 setEmotionRefState).
+    const prevClip = get().ttsEmotionRefState[emotionId]?.clip || ''
+    if (prevClip) emotionPrevClip.set(emotionId, prevClip)
+    else emotionPrevClip.delete(emotionId)
     set((s) => {
       const nextPrompts = { ...s.ttsReferencePrompts }
       delete nextPrompts[emotionId]
       return {
         ttsEmotionRefState: {
           ...s.ttsEmotionRefState,
-          [emotionId]: { source, clip: '', region: null, ready: false, message: '' },
+          [emotionId]: { source, clip: '', region: null, ready: false, message: '',
+                         phase: 'preparing', reqId: newRefReqId() },
         },
         ttsReferencePrompts: nextPrompts,
       }
@@ -643,6 +676,16 @@ export const useAppStore = create<AppState>((set, get) => ({
   setEmotionRefState: (emotionId, patch) => set((s) => {
     const prev = s.ttsEmotionRefState[emotionId]
     if (!prev) return {}  // 등록되지 않은 감정에는 패치하지 않음(방어)
+    if (patch.reqId !== undefined && prev.reqId && patch.reqId !== prev.reqId) return {}
+    // 새 준비가 클립 없이 준비됐다면(원본 전체 사용) 이제서야 이전 클립을 놓는다.
+    if (patch.phase === 'ready' && !(patch.clip || prev.clip)) {
+      const stale = emotionPrevClip.get(emotionId)
+      if (stale) {
+        emotionPrevClip.delete(emotionId)
+        try { window.api?.audio?.releaseReferenceClip?.(emotionId) } catch { /* noop */ }
+      }
+    }
+    if (patch.phase === 'ready' && (patch.clip || prev.clip)) emotionPrevClip.delete(emotionId)
     return {
       ttsEmotionRefState: {
         ...s.ttsEmotionRefState,

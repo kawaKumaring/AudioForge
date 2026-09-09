@@ -26,11 +26,44 @@ test('emotionEffectivePath: 파생 클립 우선, 없으면 유효 원본', () =
   assert.equal(emotionEffectivePath({ source: 's.wav', clip: '', region: null, ready: true, message: '' }), 's.wav')
 })
 
-test('registerEmotionRef: source 설정 + 파생 상태 초기화 + 그 clipKey 정리 호출', () => {
+test('registerEmotionRef: source 설정 + 파생 상태 초기화. ★이전 클립은 여기서 지우지 않는다', () => {
   useAppStore.getState().registerEmotionRef('happy', 'C:/ref/happy_long.wav')
   const slot = useAppStore.getState().ttsEmotionRefState.happy
-  assert.deepEqual(slot, { source: 'C:/ref/happy_long.wav', clip: '', region: null, ready: false, message: '' })
-  assert.deepEqual(released, ['happy'])  // 그 감정 clipKey만 정리
+  assert.equal(slot.source, 'C:/ref/happy_long.wav')
+  assert.equal(slot.clip, '')
+  assert.equal(slot.region, null)
+  assert.equal(slot.ready, false)
+  assert.equal(slot.phase, 'preparing')
+  assert.ok(slot.reqId, '요청 식별자를 발급한다 — 낡은 보고를 버리는 기준')
+  // ★2026-09-09: 새 준비가 성공하기 **전에** 이전 클립을 놓지 않는다(인물 슬롯과 같은 규칙).
+  //   예전에는 등록 순간 지워서, 새 파일이 실패하면 되돌릴 클립이 이미 없었다.
+  //   같은 clipKey 의 교체는 트림이 원자적으로 하고, '클립 없이 준비됨' 인 경우만 그때 놓는다.
+  assert.deepEqual(released, [], '등록만으로는 이전 클립을 놓지 않는다')
+})
+
+test('감정 교체: 새 준비가 클립 없이 준비되면 그때 이전 클립을 놓는다', () => {
+  useAppStore.getState().registerEmotionRef('happy', 'C:/ref/A.wav')
+  const r1 = useAppStore.getState().ttsEmotionRefState.happy.reqId
+  useAppStore.getState().setEmotionRefState('happy', { clip: 'C:/clip/a.wav', phase: 'ready', reqId: r1 })
+  released.length = 0
+  useAppStore.getState().registerEmotionRef('happy', 'C:/ref/B.wav')
+  assert.deepEqual(released, [], '교체 시점에도 놓지 않는다')
+  const r2 = useAppStore.getState().ttsEmotionRefState.happy.reqId
+  assert.notEqual(r1, r2)
+  // B 가 '원본 전체 사용'(클립 없음)으로 준비되면 이제서야 이전 클립을 놓는다.
+  useAppStore.getState().setEmotionRefState('happy', { clip: '', phase: 'ready', reqId: r2 })
+  assert.deepEqual(released, ['happy'])
+})
+
+test('감정 슬롯도 낡은 요청의 결과를 버린다', () => {
+  useAppStore.getState().registerEmotionRef('sad', 'C:/ref/A.wav')
+  const rA = useAppStore.getState().ttsEmotionRefState.sad.reqId
+  useAppStore.getState().registerEmotionRef('sad', 'C:/ref/B.wav')
+  useAppStore.getState().setEmotionRefState('sad', { clip: 'C:/clip/a.wav', phase: 'ready', reqId: rA })
+  const slot = useAppStore.getState().ttsEmotionRefState.sad
+  assert.equal(slot.clip, '', '낡은 요청의 클립이 들어오지 않았다')
+  assert.equal(slot.ready, false)
+  assert.equal(slot.source, 'C:/ref/B.wav')
 })
 
 test('setEmotionRefState: 확정 시 clip/region/ready 패치 (source 불변)', () => {
