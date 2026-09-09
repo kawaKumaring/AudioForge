@@ -527,43 +527,50 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
 
         fade_samples = int(0.015 * sr_full)  # 15ms crossfade
 
+        # 화자별 배정 구간(연속된 같은 화자 프레임)을 그대로 모아 둔다.
+        # 페이드는 **이 구간의 시작·끝에만** 건다 — 아래 주석 참조.
+        spans = [[] for _ in range(n_speakers)]
+        cur_spk, cur_s, cur_e = -1, 0, 0
         for f in range(n_prob_frames):
             spk = smoothed[f]
-            if spk < 0:
-                continue
-
             # Map prob frame to full-resolution samples
             s = int(f / PROB_SR * sr_full)
-            e = int((f + 1) / PROB_SR * sr_full)
-            e = min(e, n_samples)
+            e = min(int((f + 1) / PROB_SR * sr_full), n_samples)
             if s >= n_samples:
                 break
+            if spk >= 0:
+                speaker_wavs[spk][:, s:e] = wav_full[:, s:e]
+            if spk != cur_spk:
+                if cur_spk >= 0 and cur_e > cur_s:
+                    spans[cur_spk].append((cur_s, cur_e))
+                cur_spk, cur_s, cur_e = spk, s, e
+            else:
+                cur_e = e
+        if cur_spk >= 0 and cur_e > cur_s:
+            spans[cur_spk].append((cur_s, cur_e))
 
-            speaker_wavs[spk][:, s:e] = wav_full[:, s:e]
-
-        # Apply crossfade at speaker transitions
+        # ── 화자 전환 경계 페이드 ────────────────────────────────────────────
+        # ★경계를 **표본 진폭으로 찾지 않는다**(2026-09-09 관리자 검수).
+        #   예전에는 `np.abs(wav) > 1e-8` 로 활성 구간을 판정하고 그 변화점마다 페이드를 걸었다.
+        #   발화 안에는 0에 가까운 표본이 얼마든지 있다(파형의 0 교차, 디지털 무음 구간).
+        #   그 자리마다 경계로 오인해 감쇠를 곱했고, 램프가 겹치면 감쇠가 누적됐다.
+        #   합성 신호 실측: 한 화자가 0.6초 내내 말하는 경우 경계를 **180개** 찾아내고
+        #   발화 내부가 **-73.6 dB** 손실됐다(있어야 할 경계는 시작·끝 각각 하나).
+        #   배정 구간은 위에서 이미 계산했으므로 그 시작·끝만 쓰면 된다.
+        #
+        #   페이드 길이는 구간 길이의 절반으로 제한한다 — 짧은 구간에서 시작·끝 램프가
+        #   겹쳐 두 번 곱해지는 것이 곧 '반복 감쇠' 이기 때문이다.
         for spk in range(n_speakers):
             wav_np = speaker_wavs[spk].squeeze().numpy()
-            # Find transition points (silence → speech and speech → silence)
-            is_active = np.abs(wav_np) > 1e-8
-            transitions = np.diff(is_active.astype(int))
-
-            # Fade in at onset
-            onsets = np.where(transitions == 1)[0]
-            for onset in onsets:
-                start = max(0, onset)
-                end = min(len(wav_np), onset + fade_samples)
-                fade = np.linspace(0, 1, end - start)
-                wav_np[start:end] *= fade
-
-            # Fade out at offset
-            offsets = np.where(transitions == -1)[0]
-            for offset in offsets:
-                start = max(0, offset - fade_samples)
-                end = min(len(wav_np), offset)
-                fade = np.linspace(1, 0, end - start)
-                wav_np[start:end] *= fade
-
+            for (s, e) in spans[spk]:
+                n = e - s
+                if n <= 1:
+                    continue
+                f_len = min(fade_samples, n // 2)
+                if f_len <= 0:
+                    continue
+                wav_np[s:s + f_len] *= np.linspace(0.0, 1.0, f_len, dtype=wav_np.dtype)
+                wav_np[e - f_len:e] *= np.linspace(1.0, 0.0, f_len, dtype=wav_np.dtype)
             speaker_wavs[spk] = torch.from_numpy(wav_np).unsqueeze(0)
 
         # ── Step 8: Order by first appearance ──
