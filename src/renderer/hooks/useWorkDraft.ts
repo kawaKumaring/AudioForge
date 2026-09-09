@@ -199,11 +199,18 @@ export function useWorkDraft(ttsEngine: string): WorkDraftStatus {
       // 되살리기는 하나씩 한다 — 같은 파이썬 통로를 여럿이 동시에 두드리지 않는다.
       for (const p of preparing) {
         if (cancelled) return
-        // 이 슬롯을 복원이 맡았다고 선언한다(요청 식별자 발급). 그 뒤 사용자가 수동으로 목소리를
-        // 고르면 새 식별자가 발급되므로 복원의 늦은 결과는 store 와 stillMine() 이 함께 버린다.
+        // ★순서가 중요하다: **소유를 확인한 뒤에** 선점한다.
+        //   반대로 하면(선점 먼저) 그 사이 사용자가 고른 목소리의 요청 식별자를 복원이 덮어써서,
+        //   그 목소리의 준비 보고가 낡은 것으로 취급돼 영영 준비되지 않는다.
+        const st0 = useAppStore.getState()
+        if ((st0.fileInfo?.path || '') !== path) return          // 다른 작업으로 옮겼다
+        const cur = st0.ttsSpeakerRefState[p.speakerId]
+        if (!cur || cur.source !== p.source) continue            // 사용자가 이미 다른 목소리를 골랐다
+        // 이제 이 슬롯을 복원이 맡았다고 선언한다(요청 식별자 발급). 이후 사용자가 직접 고르면
+        // 새 식별자가 발급되므로 복원의 늦은 결과는 store 와 stillMine() 이 함께 버린다.
         useAppStore.getState().beginSpeakerRefRequest(p.speakerId)
-        const slot = useAppStore.getState().ttsSpeakerRefState[p.speakerId]
-        await prepareOne({ ...p, reqId: slot?.reqId }, path)
+        const claimed = useAppStore.getState().ttsSpeakerRefState[p.speakerId]
+        await prepareOne({ ...p, reqId: claimed?.reqId }, path)
       }
       if (cancelled) return
       setRestoring(false)
