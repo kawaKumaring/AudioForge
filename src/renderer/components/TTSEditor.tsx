@@ -50,6 +50,7 @@ import {
   castRegistry, findVoiceCast, toSpeakerEmotionRefs,
 } from '../../shared/emotionCandidateRegistry'
 import type { ReferenceDecision, EmotionMatchView } from '../../shared/speakerReference'
+import { createManagedAudio } from '@/lib/playbackVolume'
 
 /** 계획의 화자 한 명을 화면 상태와 합친 행. 인물 카드·요약·목소리 패널이 같은 행을 본다. */
 interface SpeakerRow {
@@ -114,7 +115,7 @@ function emitPreviewError(message: string | null) {
 // 고갈돼 그 뒤로는 어떤 미리듣기도 로드되지 않았다(= 사용자가 겪은 '무음').
 function previewElement(): HTMLAudioElement {
   if (!_previewAudio) {
-    _previewAudio = new Audio()
+    _previewAudio = createManagedAudio()
     _previewAudio.preload = 'auto'
   }
   return _previewAudio

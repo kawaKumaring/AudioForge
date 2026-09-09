@@ -3,6 +3,7 @@ import WaveSurfer from 'wavesurfer.js'
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js'
 import { useAppStore } from '@/stores/app.store'
 import { detectSilence, estimateProcessedDuration, type SilenceAnalysis } from '@/lib/silenceDetect'
+import { usePlaybackVolume } from '@/hooks/usePlaybackVolume'
 
 const MODE_WAVE_COLORS: Record<string, { wave: string; progress: string; cursor: string; btn: string; btnGlow: string }> = {
   music:        { wave: 'rgba(139,92,246,0.25)', progress: 'rgba(139,92,246,0.7)', cursor: '#a78bfa', btn: 'linear-gradient(135deg,#8b5cf6,#7c3aed)', btnGlow: 'rgba(139,92,246,0.2)' },
@@ -31,7 +32,9 @@ export default function Waveform() {
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState('0:00')
   const [duration, setDuration] = useState('0:00')
-  const [volume, setVolume] = useState(1) // 재생 볼륨(듣기 전용) — 파일에 영향 없음
+  // 재생 볼륨(듣기 전용 — 파일에 영향 없음). 값은 앱 공용이고 보관된다 —
+  // 예전에는 여기 지역 상태여서 화면을 다시 그리거나 앱을 다시 켜면 100% 로 되돌아갔다.
+  const { volume, change: changeVolume, commit: commitVolume, saveFailed: volumeSaveFailed } = usePlaybackVolume()
   const [decoded, setDecoded] = useState(false)
   const [analysis, setAnalysis] = useState<SilenceAnalysis | null>(null)
   const [computing, setComputing] = useState(false)
@@ -201,7 +204,10 @@ export default function Waveform() {
         </button>
         {/* 오른쪽: 볼륨(듣기 전용) + 길이 */}
         <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <div title="재생 볼륨 (듣기 전용 · 원본 파일에는 영향 없음)" style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
+          <div title={volumeSaveFailed
+            ? '재생 볼륨 — 이 값을 기억하지 못했습니다(이번 실행에만 적용됩니다).'
+            : '재생 볼륨 (듣기 전용 · 원본 파일에는 영향 없음) — 정한 값이 다음에도 그대로 쓰입니다.'}
+            style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
             <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
               <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
               {volume < 0.01
@@ -209,7 +215,9 @@ export default function Waveform() {
                 : <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />}
             </svg>
             <input type="range" min="0" max="1" step="0.05" value={volume}
-              onChange={(e) => setVolume(parseFloat(e.target.value))}
+              data-testid="waveform-volume" aria-label="재생 볼륨 (듣기 전용, 원본에 영향 없음)"
+              onChange={(e) => changeVolume(parseFloat(e.target.value))}
+              onPointerUp={commitVolume} onKeyUp={commitVolume} onBlur={commitVolume}
               style={{ width: 60, accentColor: colors.cursor, cursor: 'pointer', height: 4 }} />
           </div>
           <span style={{ fontSize: 10, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>{duration}</span>

@@ -20,6 +20,8 @@
 //    **주입**받는다 — 값의 출처는 shared/emotionSamplePreview 하나로 유지된다.
 import type { EmotionPreviewStage } from '../../shared/emotionSamplePreview'
 import type { PreviewFailureKind } from '../../shared/previewSession'
+// @ts-ignore TS5097: node --test 가 요구하는 명시적 .ts 확장자(app.store 의 같은 관례).
+import { createManagedAudio } from './playbackVolume.ts'
 
 /** 플레이어가 요구하는 미디어 요소의 최소 표면. HTMLAudioElement 가 그대로 만족한다. */
 export interface PreviewAudioElement {
@@ -196,7 +198,8 @@ export function browserPreviewDeps(
 ): EmotionSamplePreviewDeps {
   return {
     silenceMs,
-    createAudio: () => new Audio(),
+    // 음량은 단일 소유자가 건다 — 여기서 새 요소를 그냥 만들면 최대로 나간다(2026-09-10).
+    createAudio: () => createManagedAudio(),
     setTimer: (fn, ms) => window.setTimeout(fn, ms),
     clearTimer: (h) => window.clearTimeout(h as number),
     ...hooks,
