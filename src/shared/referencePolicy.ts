@@ -96,6 +96,39 @@ export function regionThresholdSec(p: ReferencePolicySummary): number | null {
   return p.required.max_sec ?? p.recommended.max_sec
 }
 
+/**
+ * 목소리 준비 단계 — **문구가 아니라 이 값으로 판정한다.**
+ *
+ * 왜 필요한가(2026-09-09 관리자 검수): 교체 실패 복구가 안내 문구를 보고 판정하고 있었다.
+ * 비어 있으면 '준비 중', '구간' 이라는 글자가 있으면 '수동 선택 필요' 로 읽었다.
+ * 문구는 사람에게 보여 주기 위한 것이라 말이 조금 바뀌면 판정이 뒤집힌다 — 실제로 새 경고 문구가
+ * 그 낱말을 갖지 않아 조용히 통과한 전력이 있다. 상태는 상태로 다룬다.
+ *
+ *   preparing     — 살펴보는 중·자르는 중. 아직 결론이 아니다.
+ *   ready         — 이 목소리로 만들 수 있다.
+ *   needs_region  — 파일은 쓸 수 있는데 **사용자가 구간을 골라야** 한다(실패가 아니다).
+ *   failed        — 이 파일로는 못 만든다. 이전 목소리로 되돌릴 대상이다.
+ *   idle          — 아무것도 지정되지 않았다.
+ */
+export type RefPhase = 'idle' | 'preparing' | 'ready' | 'needs_region' | 'failed'
+
+/**
+ * 구간 확정이 차단됐을 때, 그것이 '구간을 다시 고르면 되는 일'인가 '이 파일로는 안 되는 일'인가.
+ *
+ * 이 구분이 곧 이전 목소리로 되돌릴지 여부다. 코드 목록으로 정한다 — 문구를 읽지 않는다.
+ * 목록에 없는 코드는 **되돌리는 쪽**으로 둔다(모르는 것을 성공처럼 다루지 않는다).
+ */
+const FIXABLE_BY_REGION: readonly string[] = [
+  'REGION_TOO_SHORT', 'REGION_TOO_LONG', 'REGION_SNAP_RANGE_UNSATISFIABLE',
+  'REGION_HEAD_TRUNCATED', 'REGION_TAIL_TRUNCATED',
+  'REGION_NO_SAFE_BOUNDARY', 'REGION_SNAP_RECONFIRM_REQUIRED',
+]
+
+export function phaseForBlocking(codes: readonly string[]): RefPhase {
+  if (codes.length === 0) return 'ready'
+  return codes.every((c) => FIXABLE_BY_REGION.includes(c)) ? 'needs_region' : 'failed'
+}
+
 export type LengthJudgement = 'blocked_short' | 'blocked_long' | 'outside_recommended' | 'ok'
 
 export function judgeLength(p: ReferencePolicySummary, sec: number): LengthJudgement {

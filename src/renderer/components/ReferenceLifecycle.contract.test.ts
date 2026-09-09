@@ -39,7 +39,8 @@ test('재확정은 원자 교체 — 새 클립이 성공했을 때만 이전 �
 test('패널: 사용 중인 확정 상태가 있으면 재분석·재확정 실패가 준비 상태를 내리지 않는다', () => {
   assert.ok(PANEL.includes('committed?: { clip: string; region: { start: number; duration: number } | null; whole?: boolean } | null'))
   assert.ok(PANEL.includes('const hasCommitted = !!(committed && (committed.clip || committed.region || committed.whole))'), '원본 전체 사용 중도 사용 중이다')
-  assert.ok(PANEL.includes("if (!hasCommitted) {\n      onStateRef.current({ ready: false, clip: ''"), '마운트 리셋은 확정이 없을 때만')
+  // 2026-09-09: 보고가 ready(bool) 대신 **단계**를 싣는다 — 문구·bool 대신 상태로 판정하기 위해.
+  assert.ok(PANEL.includes("if (!hasCommitted) {\n      onStateRef.current({ phase: 'preparing', clip: ''"), '마운트 리셋은 확정이 없을 때만')
   assert.ok(PANEL.includes('setStart(committed.region.start)'), '슬라이더는 사용 중 구간에서 시작(전체 원본 범위)')
   assert.ok(PANEL.includes('이전에 확정한 구간을 그대로 사용합니다'))
   assert.ok(PANEL.includes('data-testid="region-confirm-kept"'))

@@ -42,6 +42,8 @@ const api = {
     // 새 채널을 만들지 않는다 — 응답에 필드가 더 붙을 뿐이다.
     analyzeReference: (filePath: string, clipKey?: string, extra?: Record<string, unknown>) =>
       ipcRenderer.invoke('audio:analyze-reference', filePath, clipKey, extra),
+    /** 검사 전용 — 다음 '파일 고르기' 가 돌려줄 경로를 지정한다(AF_E2E=1 에서만 동작). */
+    e2eSetSelectFile: (filePath: string) => ipcRenderer.invoke('audio:e2e-set-select-file', filePath),
     /** 이 결과가 어땠는지를 그 실행의 기록에 남긴다. verdict: good | fair | bad. */
     recordListening: (runId: string, verdict: string, note?: string) =>
       ipcRenderer.invoke('audio:record-listening', runId, verdict, note),

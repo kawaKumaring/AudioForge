@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import type { CSSProperties } from 'react'
-import { useAppStore, emotionEffectivePath, castSpeakerIdOf, applySpeakerRenames } from '@/stores/app.store'
+import { useAppStore, emotionEffectivePath, castSpeakerIdOf, applySpeakerRenames, refPhaseOf } from '@/stores/app.store'
 import type { EmotionRefState } from '@/stores/app.store'
+import type { RefPhase } from '../../shared/referencePolicy'
 import type { TtsReferenceEntry, PitchCapability, TtsEmotionRegion } from '../../shared/ttsConfig'
 import { deriveRefMode } from '../../shared/ttsConfig'
 import ReferenceRegionPanel from './ReferenceRegionPanel'
@@ -57,6 +58,8 @@ interface SpeakerRow {
   utteranceCount: number
   registered: boolean
   ready: boolean
+  /** 준비 단계(권위). 카드는 이 값으로 '실패' 와 '사용자 차례' 를 가른다. */
+  phase?: RefPhase
   message: string
   fileName: string
   sharedWith: string[]
@@ -699,6 +702,7 @@ export default function TTSEditor() {
       utteranceCount: k.utteranceCount,
       registered: !!slot,
       ready: !!slot?.ready,
+      phase: slot ? refPhaseOf(slot) : undefined,
       message: slot?.message || '',
       region: slot?.region ?? null,
       // 폴더는 화면에 내보내지 않는다 — 파일 이름만.
@@ -785,7 +789,8 @@ export default function TTSEditor() {
     }
     const row = speakerUiRows.find((r) => r.speakerId === speakerId)
     if (row) {
-      return { registered: row.registered, ready: row.ready, fileName: row.fileName, decision: row.decision,
+      return { registered: row.registered, ready: row.ready, phase: row.phase,
+        fileName: row.fileName, decision: row.decision,
         region: row.region ?? null, message: row.message,
         sharedWith: row.sharedWith, emotionOverrides: emotionOverridesOf(speakerId),
         emotionVoiceAvailable: emotionVoiceAvailableOf(speakerId),
@@ -796,7 +801,7 @@ export default function TTSEditor() {
     if (!slot) return null
     const fp = speakerFingerprints[speakerId]
     return {
-      registered: true, ready: !!slot.ready,
+      registered: true, ready: !!slot.ready, phase: refPhaseOf(slot),
       region: slot.region ?? null, message: slot.message,
       fileName: (slot.source || '').split(/[\\/]/).pop() || '',
       decision: resolveReferenceDecision(speakerId, null, speakerReadiness),
@@ -870,7 +875,10 @@ export default function TTSEditor() {
 
   // 인물 목소리 준비(대상 선택·구간 편집기·교체 실패 복구·지정/다시 준비)는 훅이 소유한다.
   // 이 셸에는 '어디에 그리는가'만 남는다.
-  const voicePrep = useSpeakerVoicePrep({ disabled, speakerLabelOf })
+  // 사용자가 펼쳐 둔 목소리 설정의 주인 — 자동 준비가 그 인물을 잡지 않게 하는 데 쓴다.
+  // 한 슬롯의 보고자를 하나로 유지하는 규칙(2026-09-09 관리자 검수).
+  const [openVoiceSpeakerId, setOpenVoiceSpeakerId] = useState<string | null>(null)
+  const voicePrep = useSpeakerVoicePrep({ disabled, speakerLabelOf, openSpeakerId: openVoiceSpeakerId })
 
   // ── 기본 인물(화자 표기 없는 대사)의 목소리 = 한 명 탭의 기본 목소리 ──────────────
   // 카드에서도 다른 인물과 같은 조작을 할 수 있어야 한다. 다만 '무엇을 바꾸는가' 는 다르다:
@@ -1291,6 +1299,7 @@ export default function TTSEditor() {
               emotions={ALL_EMOTIONS.map((e) => ({ id: e.id, label: e.label }))}
               emotionTagOf={emotionTagOf}
               speakerIdOf={normalizeSpeakerId}
+              onVoiceDetailOpenChange={setOpenVoiceSpeakerId}
               voiceOf={speakerVoiceOf}
               onAssignVoice={(id, label) => {
                 // 기본 인물의 '목소리 바꾸기' 는 곧 **불러온 파일을 바꾸는 것**이다 — 그 자리는 상단
