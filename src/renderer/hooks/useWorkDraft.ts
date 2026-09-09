@@ -26,6 +26,14 @@ export interface WorkDraftStatus {
   rootError: string | null
   /** 이번 복원에서 원본을 찾지 못해 재연결이 필요한 인물 id. */
   reconnectSpeakerIds: string[]
+  /**
+   * 마지막 저장이 **실패**했는가(사유 코드). 있으면 화면이 미저장 상태와 다시 시도 방법을 알린다.
+   * 예전에는 `void window.api.settings.set(...)` 로 응답을 버려서, 저장이 실패해도
+   * 사용자는 저장된 줄 알았다(2026-09-09 관리자 검수).
+   */
+  saveError: string | null
+  /** 저장을 다시 시도한다(사용자가 누르는 자리). */
+  retrySave: () => void
 }
 
 export function useWorkDraft(ttsEngine: string): WorkDraftStatus {
@@ -41,6 +49,14 @@ export function useWorkDraft(ttsEngine: string): WorkDraftStatus {
   const setSpeakerRefState = useAppStore((s) => s.setSpeakerRefState)
 
   const drafts = useRef<Record<string, WorkDraft>>({})
+  const [saveError, setSaveError] = useState<string | null>(null)
+  /**
+   * 아직 디스크에 못 간 변경. 화면 전환·파일 교체·종료 직전에 이것을 먼저 쓴다.
+   *
+   * 예전에는 저장을 700ms 미루고 그 대기를 **효과 정리에서 그냥 취소**했다. 그래서 대기 중에
+   * 모드를 바꾸거나 파일을 교체하거나 창을 닫으면 마지막 변경이 사라졌다(관리자 검수).
+   */
+  const pending = useRef<{ key: string; draft: WorkDraft } | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [rootError, setRootError] = useState<string | null>(null)
   const [restoring, setRestoring] = useState(false)
@@ -163,6 +179,29 @@ export function useWorkDraft(ttsEngine: string): WorkDraftStatus {
     return () => { cancelled = true; suppressSave.current = false }
   }, [loaded, mode, fileInfo?.path, restoreWorkDraft, prepareOne])
 
+  /**
+   * 미저장 변경을 지금 쓴다. **응답을 확인한다** — 실패하면 미저장로 남기고 사유를 올린다.
+   * 여러 번 불려도 안전하다(쓸 것이 없으면 아무것도 하지 않는다).
+   */
+  const flush = useCallback(async () => {
+    const p = pending.current
+    if (!p || rootError) return
+    drafts.current = putWorkDraft(drafts.current, p.key, p.draft)
+    try {
+      const payload = serializeWorkDrafts(drafts.current)
+      const r = (await window.api.settings.set(WORK_DRAFT_STORAGE_KEY, payload)) as
+        { ok?: boolean; code?: string } | undefined
+      if (r && r.ok === false) {
+        setSaveError(r.code || 'SAVE_FAILED')      // 저장된 것처럼 두지 않는다
+        return
+      }
+      pending.current = null
+      setSaveError(null)
+    } catch (e) {
+      setSaveError((e as Error)?.name || 'SAVE_FAILED')
+    }
+  }, [rootError])
+
   // ── 자동 저장 ──
   useEffect(() => {
     const path = fileInfo?.path || ''
@@ -181,13 +220,30 @@ export function useWorkDraft(ttsEngine: string): WorkDraftStatus {
       sourceSha256: drafts.current[key]?.sourceSha256 ?? null,
     })
     if (workDraftIsEmpty(draft)) return       // 빈 기록으로 쓸모 있는 기록을 덮지 않는다
-    const timer = setTimeout(() => {
-      drafts.current = putWorkDraft(drafts.current, key, draft)
-      void window.api.settings.set(WORK_DRAFT_STORAGE_KEY, serializeWorkDrafts(drafts.current))
-    }, SAVE_DEBOUNCE_MS)
-    return () => clearTimeout(timer)
+    pending.current = { key, draft }
+    const timer = setTimeout(() => { void flush() }, SAVE_DEBOUNCE_MS)
+    // ★대기 중 전환·언마운트에서는 **먼저 쓰고** 대기를 끝낸다(예전에는 그냥 취소했다).
+    return () => { clearTimeout(timer); void flush() }
   }, [loaded, rootError, mode, fileInfo?.path, ttsText, ttsSpeakerMode, ttsSpeakerRefState,
-    ttsSpeakerLabels, ttsSpeakerEmotionEnabled, ttsSpeakerRenames])
+    ttsSpeakerLabels, ttsSpeakerEmotionEnabled, ttsSpeakerRenames, flush])
 
-  return { restoring, rootError, reconnectSpeakerIds }
+  // ── 종료 직전 ──
+  // 비동기 요청만 던지고 창이 닫히면 마지막 변경이 사라진다. 동기 통로로 **쓰고 나서** 닫힌다.
+  useEffect(() => {
+    const onBeforeUnload = () => {
+      const p = pending.current
+      if (!p || rootError) return
+      try {
+        drafts.current = putWorkDraft(drafts.current, p.key, p.draft)
+        const payload = serializeWorkDrafts(drafts.current)
+        const r = window.api.settings.setSync(WORK_DRAFT_STORAGE_KEY, payload) as
+          { ok?: boolean } | undefined
+        if (r?.ok) pending.current = null
+      } catch { /* 종료 경로에서는 더 할 수 있는 것이 없다 */ }
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [rootError])
+
+  return { restoring, rootError, reconnectSpeakerIds, saveError, retrySave: () => { void flush() } }
 }

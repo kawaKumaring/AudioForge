@@ -1378,6 +1378,19 @@ export default function TTSEditor() {
               이번 실행에서는 작업 내용이 자동으로 저장되지 않습니다. 합성하면 결과와 함께 설정이 남습니다.
             </div>
           )}
+          {/* 저장이 실패했으면 숨기지 않는다 — 저장된 줄 알고 앱을 닫으면 그대로 잃는다.
+              다시 시도할 자리를 같은 줄에 둔다(2026-09-09 관리자 검수). */}
+          {!workDraft.rootError && workDraft.saveError && (
+            <div data-testid="work-draft-save-error" role="alert"
+              style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
+                fontSize: 11, color: 'var(--rose)' }}>
+              <span>지금까지의 작업이 저장되지 않았습니다. 앱을 닫으면 이 내용은 사라집니다.</span>
+              <button type="button" data-testid="work-draft-save-retry" onClick={workDraft.retrySave}
+                style={{ fontSize: 11, padding: '2px 10px', borderRadius: 6, cursor: 'pointer',
+                  fontFamily: 'inherit', border: '1px solid var(--rose)',
+                  background: 'transparent', color: 'var(--rose)' }}>다시 저장</button>
+            </div>
+          )}
           {structureNotice && (
             <div data-testid="speaker-structure-notice" role="status" aria-live="polite"
               style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 11, color: 'var(--text-secondary)' }}>

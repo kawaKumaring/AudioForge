@@ -1276,6 +1276,17 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     }
   })
 
+  // 종료 직전 저장용 **동기** 통로. 비동기 요청만 던지고 창이 닫히면 마지막 변경이 사라진다 —
+  // sendSync 는 main 이 파일을 쓰고 답할 때까지 렌더러를 붙잡으므로 그 사이 닫히지 않는다.
+  // 자동 저장 키만 허용한다(다른 키를 동기로 열어 줄 이유가 없다).
+  ipcMain.on('settings:set-sync', (event, key: string, value: unknown) => {
+    if (key !== WORK_DRAFT_STORAGE_KEY) {
+      event.returnValue = { ok: false, code: 'KEY_NOT_ALLOWED' }
+      return
+    }
+    event.returnValue = saveSetting(key, value ?? undefined)
+  })
+
   ipcMain.handle('settings:set', (_event, key: string, value: unknown) => {
     if (key === 'pythonPath' && typeof value === 'string') {
       pythonPath = value

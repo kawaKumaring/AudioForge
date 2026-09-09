@@ -16,6 +16,10 @@ const between = (src: string, a: string, b: string) => { const i = src.indexOf(a
 test('저장은 자기 키 하나에만 쓴다 — 목소리 구성·전역 자산 등록부를 건드리지 않는다', () => {
   assert.ok(HOOK.includes('window.api.settings.set(WORK_DRAFT_STORAGE_KEY'))
   assert.equal(/settings\.set\((?!WORK_DRAFT_STORAGE_KEY)/.test(HOOK), false, '다른 키로 저장하지 않는다')
+  // 종료 직전 **동기** 저장도 같은 키 하나에만 쓴다(2026-09-09 — 비동기만 던지면 마지막 변경이 사라진다).
+  assert.ok(HOOK.includes('window.api.settings.setSync(WORK_DRAFT_STORAGE_KEY'))
+  assert.equal(/settings\.setSync\((?!WORK_DRAFT_STORAGE_KEY)/.test(HOOK), false, '동기 저장도 자기 키만')
+  assert.ok(IPC.includes("if (key !== WORK_DRAFT_STORAGE_KEY) {"), 'main 도 동기 통로를 그 키에만 연다')
   for (const forbidden of ['VOICE_CAST_STORAGE_KEY', 'GLOBAL_ASSET_STORAGE_KEY', 'voiceCasts', 'referenceAssets']) {
     assert.equal(HOOK.includes(forbidden), false, forbidden)
   }

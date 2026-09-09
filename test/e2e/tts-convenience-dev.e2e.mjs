@@ -490,6 +490,80 @@ try {
     await shot('H-replace-failure.png')
   }
 
+  // ── I: 자동 저장 (2026-09-09 관리자 검수 ② 표적) ─────────────────────────
+  // 700ms 저장 대기 중 화면을 전환하면 마지막 변경이 사라졌다(대기를 그냥 취소했다).
+  // 이제 전환 직전에 먼저 쓴다. 저장 파일을 직접 읽어 확인한다 — 화면 문구가 아니라 파일이 근거다.
+  const settingsPath = path.join(USER_DATA, 'settings.json')
+  const readDrafts = () => {
+    try {
+      const j = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
+      return j.workDrafts ?? null
+    } catch { return null }
+  }
+  // 대사를 바꾸고 **700ms 이 지나기 전에** 한 명 ↔ 여러 명을 전환한다.
+  const marker = `저장확인-${Date.now()}`
+  await st((m) => {
+    const ta = document.querySelector('section[aria-label="대사"] textarea')
+      || document.querySelector('textarea')
+    if (!ta) return false
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+    ta.focus()
+    setter.call(ta, ta.value + m)
+    ta.dispatchEvent(new Event('input', { bubbles: true }))
+    return true
+  }, marker)
+  await sleep(120)                                  // 700ms 보다 훨씬 짧게 — 대기 중이다
+  await page.click('[data-testid="dialogue-tabs"] [data-tab="single"]')
+  await sleep(1500)
+  const savedAfterSwitch = JSON.stringify(readDrafts() || {})
+  ok('I1', savedAfterSwitch.includes(marker),
+    '저장 대기 중 화면을 전환해도 마지막 변경이 저장된다',
+    savedAfterSwitch.includes(marker) ? '기록에 있다' : '기록에 없다(유실)')
+
+  // I2. 저장 실패를 알린다 — **실제로 실패하게** 만든다(대역을 심지 않는다).
+  //     설정 파일을 읽기 전용으로 두면 원자 교체가 실패한다. 화면은 '저장됐다' 로 두면 안 된다.
+  let madeReadOnly = false
+  try { fs.chmodSync(settingsPath, 0o444); madeReadOnly = true } catch { madeReadOnly = false }
+  const marker2 = `실패확인-${Date.now()}`
+  await st((m) => {
+    const ta = document.querySelector('section[aria-label="대사"] textarea')
+      || document.querySelector('textarea')
+    if (!ta) return false
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+    ta.focus()
+    setter.call(ta, ta.value + m)
+    ta.dispatchEvent(new Event('input', { bubbles: true }))
+    return true
+  }, marker2)
+  const shown = await waitUntil(async () => await st(() =>
+    !!document.querySelector('[data-testid="work-draft-save-error"]')), 20000)
+  const retryThere = await count('[data-testid="work-draft-save-retry"]')
+  ok('I2', madeReadOnly && shown && retryThere === 1,
+    '저장이 실패하면 미저장 상태와 다시 시도 자리를 보여 준다',
+    `읽기전용=${madeReadOnly} 알림=${shown} 다시저장=${retryThere}개`)
+
+  // I3. 원인을 없애고 '다시 저장' 을 누르면 알림이 사라지고 실제로 기록에 들어간다.
+  try { fs.chmodSync(settingsPath, 0o666) } catch { /* */ }
+  await st(() => {
+    const b = document.querySelector('[data-testid="work-draft-save-retry"]')
+    if (b) b.click()
+  })
+  const gone = await waitUntil(async () => await st(() =>
+    !document.querySelector('[data-testid="work-draft-save-error"]')), 20000)
+  const savedAfterRetry = JSON.stringify(readDrafts() || {})
+  ok('I3', gone && savedAfterRetry.includes(marker2),
+    '다시 저장이 성공하면 알림이 사라지고 그 변경이 기록에 들어간다',
+    `알림사라짐=${gone} 기록=${savedAfterRetry.includes(marker2)}`)
+
+  // I4. 종료 직전 — 동기 통로가 열려 있고 그 키에만 쓴다.
+  const syncOk = await st(() => {
+    const r = window.api.settings.setSync('pythonPath', 'X')     // 허용되지 않은 키
+    return r && r.ok === false && r.code === 'KEY_NOT_ALLOWED'
+  })
+  ok('I4', syncOk, '종료 직전 동기 저장은 자동 저장 키에만 열려 있다')
+  await page.click('[data-testid="dialogue-tabs"] [data-tab="multi"]')
+  await sleep(400)
+
   // ── B3 는 대본을 바꾸므로 맨 뒤에 둔다 ─────────────────────────────────
   // 앞에 두었더니 카드 구성이 달라져 구간 편집기 검사(C)가 무너졌다 — 검사가 검사의
   // 전제를 바꾸면 통과·실패가 순서에 좌우된다.
