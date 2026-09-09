@@ -52,8 +52,16 @@ export function useSpeakerVoicePrep(opts: {
    * (그동안 카드 쪽 패널은 아예 만들지 않는다). 예전에는 둘이 각자의 결론을 올려 서로를 덮었다.
    */
   openSpeakerId?: string | null
+  /**
+   * 작업 복원이 진행 중인가. 참이면 자동 준비는 **아무도 잡지 않는다**.
+   *
+   * 우선순위(2026-09-09 관리자 검수): 수동 지정 > 작업 복원 > 자동 준비.
+   * 복원은 자기 슬롯에 요청 식별자를 심고 하나씩 되살린다 — 그동안 드라이버가 끼어들면
+   * 같은 슬롯에 보고자가 둘이 된다. 사용자가 직접 고르면 새 식별자가 발급되어 복원 결과가 버려진다.
+   */
+  restoring?: boolean
 }): SpeakerVoicePrep {
-  const { disabled, speakerLabelOf, openSpeakerId = null } = opts
+  const { disabled, speakerLabelOf, openSpeakerId = null, restoring = false } = opts
   const ttsSpeakerRefState = useAppStore((s) => s.ttsSpeakerRefState)
   const ttsSpeakerInherit = useAppStore((s) => s.ttsSpeakerInherit)
   const setSpeakerRefState = useAppStore((s) => s.setSpeakerRefState)
@@ -145,6 +153,7 @@ export function useSpeakerVoicePrep(opts: {
       setAutoPrep(null)                                          // 준비됐거나 파일이 바뀌었다
       return
     }
+    if (restoring) return                                     // 복원이 자기 슬롯을 맡는 동안 비켜 있는다
     const hit = Object.entries(ttsSpeakerRefState)
       .filter(([id, st]) => !!st?.source && refPhaseOf(st) !== 'ready'
         && !autoPrepDone.current.has(`${id}|${st.source}`)       // 이미 한 번 돌린 파일은 다시 돌리지 않는다
@@ -152,7 +161,7 @@ export function useSpeakerVoicePrep(opts: {
         && id !== openSpeakerId)                                // 펼쳐 둔 카드는 그 카드가 맡는다
       .sort((a, b) => a[0].localeCompare(b[0]))[0]
     if (hit) setAutoPrep({ id: hit[0], source: hit[1].source })
-  }, [ttsSpeakerRefState, ttsSpeakerInherit, autoPrep, openSpeakerId])
+  }, [ttsSpeakerRefState, ttsSpeakerInherit, autoPrep, openSpeakerId, restoring])
 
   // ── 교체 실패 복구 ──────────────────────────────────────────────────────
   // ★판정은 **단계(phase)** 로 한다(2026-09-09 관리자 검수). 예전에는 안내 문구를 읽었다 —

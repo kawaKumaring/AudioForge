@@ -26,6 +26,12 @@ test('목소리 파일을 고르면 카드를 열지 않아도 준비가 돈다 
     '잡은 사람은 계속 붙잡는다 — 준비가 끝나기 전에 놓지 않는다')
   assert.ok(pick.includes('autoPrepDone.current.has'), '이미 한 번 돌린 파일은 다시 돌리지 않는다')
   assert.ok(pick.includes("id !== ttsSpeakerInherit?.speakerId"), '첫 인물 이어받기와 겹치지 않는다')
+  // ★한 슬롯의 보고자는 하나다 — 우선순위: 수동 지정 > 작업 복원 > 자동 준비(2026-09-09).
+  assert.ok(pick.includes('if (restoring) return'), '복원 중에는 아무도 잡지 않는다')
+  assert.ok(pick.includes('id !== openSpeakerId'), '구간 편집기를 펼친 인물은 그 카드가 맡는다')
+  const render = between(PREP, 'const renderSpeakerRegion = useCallback((speakerId: string', '}, [disabled')
+  assert.ok(render.includes("if (!autoConfirm && autoPrepRef.current?.id === speakerId) return null"),
+    '드라이버가 맡은 인물에는 카드 쪽 패널을 만들지 않는다')
   // ★ 회귀 가드: 준비 상태 문구로 대상을 고르면, 패널이 올리는 진행 문구('살펴보는 중')가 곧
   //   조건을 깨서 드라이버가 스스로 언마운트되고 자동 확정이 영영 실행되지 않는다(실측 결함).
   assert.equal(/st\.message|message \?\? ''/.test(pick), false, '준비 상태 문구로 대상을 고르지 않는다')

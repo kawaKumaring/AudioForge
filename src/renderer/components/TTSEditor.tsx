@@ -878,7 +878,11 @@ export default function TTSEditor() {
   // 사용자가 펼쳐 둔 목소리 설정의 주인 — 자동 준비가 그 인물을 잡지 않게 하는 데 쓴다.
   // 한 슬롯의 보고자를 하나로 유지하는 규칙(2026-09-09 관리자 검수).
   const [openVoiceSpeakerId, setOpenVoiceSpeakerId] = useState<string | null>(null)
-  const voicePrep = useSpeakerVoicePrep({ disabled, speakerLabelOf, openSpeakerId: openVoiceSpeakerId })
+  const voicePrep = useSpeakerVoicePrep({
+    disabled, speakerLabelOf, openSpeakerId: openVoiceSpeakerId,
+    // 우선순위: 수동 지정 > 작업 복원 > 자동 준비. 복원 중에는 드라이버가 비켜 있는다.
+    restoring: workDraft.restoring,
+  })
 
   // ── 기본 인물(화자 표기 없는 대사)의 목소리 = 한 명 탭의 기본 목소리 ──────────────
   // 카드에서도 다른 인물과 같은 조작을 할 수 있어야 한다. 다만 '무엇을 바꾸는가' 는 다르다:
