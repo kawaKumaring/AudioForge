@@ -343,13 +343,31 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
 
   // multi 를 주면 여러 개를 고를 수 있다(같은 감정에 파일 여럿 등록). 인자를 주지 않는
   // 기존 호출부의 동작과 반환 형태는 그대로다 — 새 채널을 만들지 않는다.
+  // 검사가 지정한 '다음 한 번의 선택'(AF_E2E 전용). 한 번 쓰면 비워진다.
+  let e2eNextSelect = ''
+
+  // 검사 전용 — 다음 '파일 고르기' 가 무엇을 돌려줄지 지정한다. AF_E2E=1 이 아니면 아무것도 하지 않는다.
+  // 이것이 없으면 '목소리를 다른 파일로 바꾸기 → 실패' 같은 연속 선택 흐름을 자동 검사로 지날 수 없다.
+  ipcMain.handle('audio:e2e-set-select-file', (_e, filePath: string) => {
+    if (process.env.AF_E2E !== '1') return false
+    e2eNextSelect = String(filePath || '')
+    return true
+  })
+
   ipcMain.handle('audio:select-file', async (_event, multi?: boolean) => {
     // E2E 전용 통로 — **OS 파일 선택창만** 대신한다(그 뒤 경로는 실제와 완전히 같다).
     // 이것이 없으면 '목소리 지정' 버튼을 누르는 실제 경로를 자동 검사로 지날 수 없어서, 검사는
     // store 를 직접 불러 통과하는데 사용자 화면에서는 멈추는 눈뜬장님 상태가 된다(실측).
     // AF_E2E=1 이 아니면 존재하지 않는 통로다. 여러 파일은 '|' 로 구분한다.
-    if (process.env.AF_E2E === '1' && process.env.AF_E2E_SELECT_FILE) {
-      const list = process.env.AF_E2E_SELECT_FILE.split('|').filter(Boolean)
+    if (process.env.AF_E2E === '1' && (e2eNextSelect || process.env.AF_E2E_SELECT_FILE)) {
+      // 검사가 다음 선택을 명시했으면 그것을 한 번 내주고 비운다(연달아 다른 파일을 고르는 흐름).
+      // 명시가 없으면 env 목록의 첫 항목 — 예전 동작 그대로다(검사 순서에 의존하지 않게).
+      if (!multi && e2eNextSelect) {
+        const one = e2eNextSelect
+        e2eNextSelect = ''
+        return one
+      }
+      const list = (process.env.AF_E2E_SELECT_FILE || '').split('|').filter(Boolean)
       return multi ? list : (list[0] ?? null)
     }
     // 마지막으로 불러온 폴더에서 열기 — settings.json에 기억(다른 앱 영향 없음)
@@ -1256,6 +1274,17 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       // (자동 저장이 사용자가 명시적으로 저장한 목소리 구성을 건드리지 않는다).
       [WORK_DRAFT_STORAGE_KEY]: stored[WORK_DRAFT_STORAGE_KEY] ?? null,
     }
+  })
+
+  // 종료 직전 저장용 **동기** 통로. 비동기 요청만 던지고 창이 닫히면 마지막 변경이 사라진다 —
+  // sendSync 는 main 이 파일을 쓰고 답할 때까지 렌더러를 붙잡으므로 그 사이 닫히지 않는다.
+  // 자동 저장 키만 허용한다(다른 키를 동기로 열어 줄 이유가 없다).
+  ipcMain.on('settings:set-sync', (event, key: string, value: unknown) => {
+    if (key !== WORK_DRAFT_STORAGE_KEY) {
+      event.returnValue = { ok: false, code: 'KEY_NOT_ALLOWED' }
+      return
+    }
+    event.returnValue = saveSetting(key, value ?? undefined)
   })
 
   ipcMain.handle('settings:set', (_event, key: string, value: unknown) => {

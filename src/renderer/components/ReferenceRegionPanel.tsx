@@ -5,7 +5,8 @@ import {
 } from '../../shared/previewSession'
 import {
   policyFromAnalysis, regionSliderBounds, clampDuration, judgeLength, lengthConditionText, regionNeedText,
-  tooShortText, outsideRecommendedText, committedMismatchText, blockMessage, type ReferencePolicySummary,
+  tooShortText, outsideRecommendedText, committedMismatchText, blockMessage, phaseForBlocking,
+  type ReferencePolicySummary, type RefPhase,
 } from '../../shared/referencePolicy'
 import { useAppStore } from '../stores/app.store'
 
@@ -23,6 +24,13 @@ export interface RefStatePatch {
   ready?: boolean
   message?: string
   region?: { start: number; duration: number } | null
+  /** 이 보고를 만든 요청. 상위가 낡은 보고를 버리는 기준이다(패널이 자동으로 붙인다). */
+  reqId?: string
+  /**
+   * 준비 단계 — **문구가 아니라 이 값이 판정 근거다**(2026-09-09 관리자 검수).
+   * 이 패널이 유일한 판정자다. 상위는 읽기만 한다.
+   */
+  phase?: RefPhase
 }
 
 interface ReferenceRegionPanelProps {
@@ -63,6 +71,14 @@ interface ReferenceRegionPanelProps {
    * 구간 편집의 권위는 늘 전체 원본(path)이다 — clip 은 편집 대상이 아니다.
    */
   committed?: { clip: string; region: { start: number; duration: number } | null; whole?: boolean } | null
+  /**
+   * 이 패널이 처리하는 **요청의 식별자**. 올려 보내는 모든 보고에 그대로 붙는다.
+   *
+   * 왜 필요한가(2026-09-09 관리자 검수): 예전에는 원본 경로만 비교해서 낡은 결과를 걸렀다.
+   * 같은 파일을 다시 고르면(다시 준비) 경로가 같아 낡은 결과가 새 요청의 상태를 덮을 수 있었다.
+   * 값은 **마운트 시점에 고정**되므로, 요청이 바뀌면 호출부가 key 로 새 인스턴스를 만들어야 한다.
+   */
+  reqId?: string
 }
 
 interface Analysis {
@@ -181,10 +197,21 @@ function waitUntilLoaded(el: HTMLAudioElement, timeoutMs = 4000): Promise<boolea
 export default function ReferenceRegionPanel({
   path, clipKey, disabled, onState, label = '참조 음성',
   open = true, autoConfirm = false, onAutoConfirmSettled, plainStatus = false, committed = null,
+  reqId,
 }: ReferenceRegionPanelProps) {
   // 확정 클립이 살아 있는가 — 재분석·재확정 실패가 이것을 내리지 않는다(사용 중인 목소리 보존).
   // whole = 원본 전체를 그대로 참조로 쓰는 준비 상태(클립·구간 없음). 이것도 '사용 중' 이므로 재분석이 준비를 내리지 않는다.
   const hasCommitted = !!(committed && (committed.clip || committed.region || committed.whole))
+  // ★분석은 비동기다. **결과가 도착한 시점의** 사용 중 상태를 봐야 한다(2026-09-09 관리자 검수).
+  //   예전에는 요청을 시작한 시점의 값을 붙잡고 있었다. 그 사이 이 목소리가 준비되면(자동 준비
+  //   드라이버·이어받기·작업 복원 중 무엇이든) 낡은 값이 '아직 미준비' 라 판단해 준비된 상태를
+  //   되돌렸다 — 실측: 이어받은 인물이 '구간 선택 필요' 로 내려앉아 준비가 끝나지 않았다.
+  const committedRef = useRef(committed)
+  committedRef.current = committed
+  const hasCommittedNow = () => {
+    const c = committedRef.current
+    return !!(c && (c.clip || c.region || c.whole))
+  }
   // 엔진 선택이 바뀌면 같은 원본을 그 엔진의 정책으로 다시 판정한다(사용 중 구간은 지우지 않는다).
   const ttsEngine = useAppStore((s) => s.ttsEngine)
   // 고급 설정의 '참조 목표 길이'. 0 = 엔진 권장 상한. 값이 바뀌면 추천도 다시 받아야 하므로
@@ -227,8 +254,14 @@ export default function ReferenceRegionPanel({
 
   // onState는 상위에서 인라인 화살표로 올 수 있어 매 렌더 새 참조 → runAnalyze useCallback/effect가
   // 매 렌더 재실행되면 무한 재분석이 된다. ref로 최신 함수만 참조해 identity 의존을 끊는다.
-  const onStateRef = useRef(onState)
-  useEffect(() => { onStateRef.current = onState })
+  // 이 인스턴스가 맡은 요청 — **마운트 때 한 번 굳는다.** 늦게 도착한 보고도 이 값을 달고 나가므로
+  // store 가 "그 사이 다른 목소리를 골랐다" 를 알아보고 버릴 수 있다.
+  const ownReq = useRef(reqId)
+  const rawOnState = useRef(onState)
+  useEffect(() => { rawOnState.current = onState })
+  // 모든 보고에 요청 식별자를 붙이는 한 겹. 보고하는 자리(14곳)를 각각 고치지 않기 위해서다.
+  const onStateRef = useRef<(p: RefStatePatch) => void>(() => {})
+  onStateRef.current = (patch: RefStatePatch) => rawOnState.current({ ...patch, reqId: ownReq.current })
 
   // 원본 재생용 URL — path에서 자체 취득(기본/감정 공용, 상위가 넘겨줄 필요 없음).
   useEffect(() => {
@@ -248,7 +281,7 @@ export default function ReferenceRegionPanel({
     setLoading(true)
     // 확정된 구간이 있으면 재분석(편집기 다시 열기)이 준비 상태를 내리지 않는다 — 원본을 다시 살펴볼 뿐이다.
     if (!hasCommitted) {
-      onStateRef.current({ ready: false, clip: '', message: say('참조 음성을 분석 중입니다...', '목소리를 살펴보는 중입니다…'), region: null })
+      onStateRef.current({ phase: 'preparing', clip: '', message: say('참조 음성을 분석 중입니다...', '목소리를 살펴보는 중입니다…'), region: null })
     }
     try {
       const a = await window.api.audio.analyzeReference(path, clipKey, { ttsEngine, regionTargetSec: ttsRefTargetSec }) as Analysis & { error_message?: string; reason?: string }
@@ -258,14 +291,17 @@ export default function ReferenceRegionPanel({
         throw new Error(a?.error_message || a?.reason || '참조 분석 결과가 올바르지 않습니다')
       }
       setAnalysis(a)
+      const committedThen = hasCommittedNow()   // 결과가 도착한 지금의 사용 중 상태
+      const cNow = committedRef.current
       const pol = policyFromAnalysis(a)
       setTtsReferencePolicy(pol)            // 카드·자산 판정이 같은 정책을 본다
       if (a.too_short) {
-        onStateRef.current({ ready: false, clip: '', message: tooShortText(pol, a.duration_sec), region: null })
+        onStateRef.current({ phase: 'failed', clip: '', message: tooShortText(pol, a.duration_sec), region: null })
       } else if (a.needs_region) {
         const r = a.recommend
-        if (hasCommitted && committed?.region) {
+        if (committedThen && cNow?.region) {
           // 슬라이더는 사용 중인 구간에서 시작한다. 전체 원본 범위 안에서 자유롭게 넓힐 수 있다.
+          const committed = { ...cNow, region: cNow.region }
           const cd = clampDuration(pol, a.duration_sec, committed.region.duration)
           seededRegion.current = { start: committed.region.start, dur: cd }
           setStart(committed.region.start); setDur(cd)
@@ -275,7 +311,7 @@ export default function ReferenceRegionPanel({
           // 클립·구간은 그대로 둔다(다른 목소리로 바꾸거나 다시 자르지 않는다). 권장 밖은 경고만(준비 유지).
           const j = judgeLength(pol, committed.region.duration)
           if (j === 'blocked_short' || j === 'blocked_long') {
-            onStateRef.current({ ready: false, clip: committed.clip, region: committed.region,
+            onStateRef.current({ phase: 'needs_region', clip: committed.clip, region: committed.region,
               message: committedMismatchText(pol, committed.region.duration) })
           }
         } else if (r && r.ok) {
@@ -283,13 +319,14 @@ export default function ReferenceRegionPanel({
           seededRegion.current = { start: r.start_sec, dur: rd }
           setStart(r.start_sec); setDur(rd)
         }
-        if (hasCommitted && committed?.whole && a.region_required) {
+        if (committedThen && cNow?.whole && a.region_required) {
           // 원본 전체를 쓰던 상태인데 새 엔진 정책이 구간을 필수로 요구한다 — 사유와 구간 수정만 안내(교체·삭제 없음).
-          onStateRef.current({ ready: false, clip: '', region: null, message: regionNeedText(pol, a.duration_sec, true) })
+          onStateRef.current({ phase: 'needs_region', clip: '', region: null, message: regionNeedText(pol, a.duration_sec, true) })
         }
-        if (!hasCommitted) {
+        if (!committedThen) {
           onStateRef.current({
-            ready: false, clip: '',
+            // 자동 확정이 뒤따르면 이것은 '진행 중' 이다. 자동 확정이 없으면 사용자가 골라야 한다.
+            phase: autoConfirm ? 'preparing' : 'needs_region', clip: '',
             message: say(regionNeedText(pol, a.duration_sec, !!a.region_required), '목소리에서 쓸 부분을 고르는 중입니다…'),
             region: null,
           })
@@ -297,25 +334,26 @@ export default function ReferenceRegionPanel({
       } else if (a.valid_whole) {
         // 필수 조건 통과 + 구간 추천 불필요 → 원본을 그대로 참조로 사용(파생 클립 불필요, effective==원본).
         // 사용 중 구간이 있으면(이전 엔진에서 잘랐던 것) 그대로 둔다 — 필수 조건 밖이면 사유만 알린다.
-        if (hasCommitted && committed?.region) {
+        if (committedThen && cNow?.region) {
+          const committed = { ...cNow, region: cNow.region }
           const j = judgeLength(pol, committed.region.duration)
           if (j === 'blocked_short' || j === 'blocked_long') {
-            onStateRef.current({ ready: false, clip: committed.clip, region: committed.region,
+            onStateRef.current({ phase: 'needs_region', clip: committed.clip, region: committed.region,
               message: committedMismatchText(pol, committed.region.duration) })
           }
         } else {
-          onStateRef.current({ ready: true, clip: '', message: '', region: null })
+          onStateRef.current({ phase: 'ready', clip: '', message: '', region: null })
         }
       } else {
         const why = (a.errors || []).map(e => e.message).join(' / ') || '참조 음성 품질 오류'
-        onStateRef.current({ ready: false, clip: '', message: why, region: null })
+        onStateRef.current({ phase: 'failed', clip: '', message: why, region: null })
       }
     } catch (e) {
       if (signal?.cancelled) return
       const msg = (e as Error)?.message || '참조 분석 실패'
       setAnalyzeError(msg)
       onStateRef.current({
-        ready: false, clip: '',
+        phase: 'failed', clip: '',
         message: say(`참조 분석 실패: ${msg}`, '이 파일에서 목소리를 확인하지 못했습니다.'),
         region: null,
       })
@@ -355,7 +393,7 @@ export default function ReferenceRegionPanel({
     {
       setConfirmedClip(''); setMetrics(null)
       onStateRef.current({
-        ready: false, clip: '',
+        phase: 'needs_region', clip: '',
         message: say('구간을 변경했습니다 — 다시 확정하세요', '목소리에서 쓸 부분을 고르는 중입니다…'),
         region: null,
       })
@@ -512,7 +550,7 @@ export default function ReferenceRegionPanel({
         setConfirmedClip('')
         setEffective(null)
         setMetrics(null)
-        onStateRef.current({ ready: false, clip: '', message: msg, region: null })
+        onStateRef.current({ phase: 'failed', clip: '', message: msg, region: null })
         return
       }
       const res = raw as unknown as { clip_path: string; metrics: RegionMetrics }
@@ -537,7 +575,7 @@ export default function ReferenceRegionPanel({
         setEffective(span)
         setConfirmError(null)
         onStateRef.current({
-          ready: true, clip: res.clip_path, message: '',
+          phase: 'ready', clip: res.clip_path, message: '',
           region: { start: span.start_sec, duration: span.dur_sec }
         })
       } else {
@@ -546,14 +584,16 @@ export default function ReferenceRegionPanel({
         const msg = !contractOk
           ? say('구간 검사 결과를 읽지 못했습니다(형식 불일치). 다시 시도하세요.', '목소리 구간을 확인하지 못했습니다. 다시 시도해 주세요.')
           : (blocking as string[]).map(c => blockMessage(c, policyRef.current)).join(' · ')
-        onStateRef.current({ ready: false, clip: '', message: msg || '구간 품질이 부적합합니다', region: null })
+        // 차단이 '구간을 다시 고르면 되는 일' 인지 '이 파일로는 안 되는 일' 인지는 코드로 정한다.
+        onStateRef.current({ phase: contractOk ? phaseForBlocking(blocking as string[]) : 'failed',
+          clip: '', message: msg || '구간 품질이 부적합합니다', region: null })
       }
     } catch (e) {
       if (hasCommitted || confirmedClip) {
         setConfirmError('목소리 구간을 준비하지 못했습니다. 이전에 확정한 구간을 그대로 사용합니다.')
       } else {
         onStateRef.current({
-          ready: false, clip: '',
+          phase: 'failed', clip: '',
           message: say(`파생 참조 생성 실패: ${(e as Error)?.message || ''}`, '목소리 구간을 준비하지 못했습니다. 다시 시도해 주세요.'),
           region: null,
         })

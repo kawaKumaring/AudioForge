@@ -42,6 +42,8 @@ const api = {
     // 새 채널을 만들지 않는다 — 응답에 필드가 더 붙을 뿐이다.
     analyzeReference: (filePath: string, clipKey?: string, extra?: Record<string, unknown>) =>
       ipcRenderer.invoke('audio:analyze-reference', filePath, clipKey, extra),
+    /** 검사 전용 — 다음 '파일 고르기' 가 돌려줄 경로를 지정한다(AF_E2E=1 에서만 동작). */
+    e2eSetSelectFile: (filePath: string) => ipcRenderer.invoke('audio:e2e-set-select-file', filePath),
     /** 이 결과가 어땠는지를 그 실행의 기록에 남긴다. verdict: good | fair | bad. */
     recordListening: (runId: string, verdict: string, note?: string) =>
       ipcRenderer.invoke('audio:record-listening', runId, verdict, note),
@@ -114,6 +116,12 @@ const api = {
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     set: (key: string, value: unknown) => ipcRenderer.invoke('settings:set', key, value),
+    /**
+     * 종료 직전 저장용 **동기** 저장. main 이 파일을 쓰고 답할 때까지 돌아오지 않는다.
+     * 비동기 요청만 던지고 창이 닫히면 마지막 변경이 사라지기 때문에 이 통로가 필요하다.
+     * 자동 저장 키에만 열려 있다.
+     */
+    setSync: (key: string, value: unknown) => ipcRenderer.sendSync('settings:set-sync', key, value),
     selectPythonPath: () => ipcRenderer.invoke('settings:select-python-path')
   },
   app: {

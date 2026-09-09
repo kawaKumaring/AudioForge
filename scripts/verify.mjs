@@ -77,8 +77,12 @@ if (py) {
 // 모양 검사는 동작을 보증하지 않으므로, 병합 판단에는 이 단계를 함께 본다.
 if (WITH_APP_UI) {
   run('실제 앱 · UI 경로(GPU 없음)', 'node', [path.join('test', 'e2e', 'tts-convenience-dev.e2e.mjs')])
+  // 복원 중 목소리 선택 변경 — 늦은 결과가 새 선택을 덮지 않는가(클립 파일·합성에 갈 참조까지).
+  // 화면·main 두 층이 겹치는 자리라 단위 검사로는 잡히지 않는다. GPU·음성 생성 없음.
+  run('실제 앱 · 복원 중 선택 변경(GPU 없음)', 'node', [path.join('test', 'e2e', 'restore-race-dev.e2e.mjs')])
 } else {
   skip('실제 앱 · UI 경로', '--app-ui 를 주면 함께 확인한다(GPU 안 씀)')
+  skip('실제 앱 · 복원 중 선택 변경', '같은 이유')
 }
 if (WITH_APP) {
   // ★ 이름을 사실대로 적는다. `synthesize.e2e.mjs` 는 합성을 **시작한 뒤 취소**한다 —

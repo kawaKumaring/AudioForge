@@ -23,6 +23,18 @@ if (!fs.existsSync(FIX)) { console.error('fixture 없음:', FIX); process.exit(2
 const iso = isolatedInput(FIX)
 // 첫 인물에게 **다른 파일**을 지정하는 실제 사례를 재현하려면 경로가 달라야 한다(내용은 같아도 된다).
 const iso2 = isolatedInput(FIX)
+// 세 번째 선택용 — **쓸 수 없는 파일**(0.5초 거의 무음). 교체 실패 경로를 실제로 지나게 한다.
+// 파이썬·GPU 없이 만든다: 44바이트 헤더 + 무음 PCM.
+const BAD = path.join(path.dirname(iso2.input), 'unusable-0p5s.wav')
+;(() => {
+  const sr = 24000, n = Math.round(sr * 0.5), bytes = n * 2
+  const b = Buffer.alloc(44 + bytes)
+  b.write('RIFF', 0); b.writeUInt32LE(36 + bytes, 4); b.write('WAVE', 8)
+  b.write('fmt ', 12); b.writeUInt32LE(16, 16); b.writeUInt16LE(1, 20); b.writeUInt16LE(1, 22)
+  b.writeUInt32LE(sr, 24); b.writeUInt32LE(sr * 2, 28); b.writeUInt16LE(2, 32); b.writeUInt16LE(16, 34)
+  b.write('data', 36); b.writeUInt32LE(bytes, 40)
+  fs.writeFileSync(BAD, b)     // 표본은 전부 0 — '거의 무음' 으로 막혀야 한다
+})()
 const USER_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'af-conv-'))
 const PORT = 9600 + (process.pid % 150)
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -350,8 +362,16 @@ try {
 
   // ── E: 준비가 멈춰도 한 번에 되살릴 입구가 있다 ──────────────────────
   // 준비되지 않은 목소리에는 '다시 준비'가 뜨고, 준비된 뒤에는 사라진다.
+  // 첫 인물은 기본 목소리 준비를 **이어받는다** — 그쪽이 끝나야 준비된다. 정착을 기다린 뒤 센다
+  // (즉시 읽으면 아직 준비 중인 인물을 '실패' 로 오해한다 — 2026-09-09 실측).
+  const allReady = await waitUntil(async () => await st(() => {
+    const s = window.__afStore.getState().ttsSpeakerRefState
+    const ids = Object.keys(s)
+    return ids.length > 0 && ids.every((k) => s[k]?.ready === true)
+  }), 180000)
   const retryWhenReady = await count('[data-testid="card-voice-retry"]')
-  ok('E1', retryWhenReady === 0, '준비가 끝난 목소리에는 다시 준비 버튼이 없다', `버튼 ${retryWhenReady}개`)
+  ok('E1', allReady && retryWhenReady === 0, '준비가 끝난 목소리에는 다시 준비 버튼이 없다',
+    `정착=${allReady} 버튼 ${retryWhenReady}개`)
   const retryShown = await st((id) => {
     const s = window.__afStore.getState()
     s.setSpeakerRefState(id, { clip: '', region: null, ready: false, message: '목소리를 살펴보는 중입니다…' })
@@ -398,6 +418,151 @@ try {
   ok('G1', toggled && after.analyze === before.analyze && after.trim === before.trim,
     '같은 목소리를 다시 열어도 살펴보기·자르기를 다시 하지 않는다',
     `전 ${JSON.stringify(before)} → 후 ${JSON.stringify(after)}`)
+
+  // ── H: 목소리 교체 · 교체 실패 · 연속 선택 (2026-09-09 관리자 검수 표적) ───────
+  // 판정이 안내 문구에 걸려 있었고, 새 목소리를 준비하기 전에 이전 클립을 지웠고, 늦게 도착한
+  // 결과를 원본 경로로만 걸렀다. 상태 기계는 store 시험이 재고, 여기서는 **실제 화면**을 지난다.
+  const hSpk = await st(() => {
+    const s = window.__afStore.getState().ttsSpeakerRefState
+    // 교체 검사는 **드라이버가 준비한 인물**로 한다(이어받기 인물은 기본 목소리와 얽혀 있다).
+    const hit = Object.entries(s).find(([id, v]) => v?.ready
+      && id !== window.__afStore.getState().ttsSpeakerInherit?.speakerId)
+    return hit ? hit[0] : ''
+  })
+  if (!hSpk) {
+    const dump = await st(() => JSON.stringify((window.__afSlotLog || [])
+      .filter((e) => e.id === '인물1').slice(-8)))
+    ok('H0', false, '교체 검사를 시작할 준비된 인물이 있다', dump.slice(0, 2400))
+  } else {
+    const before = await st((id) => {
+      const v = window.__afStore.getState().ttsSpeakerRefState[id]
+      return { source: v.source, clip: v.clip, region: v.region, reqId: v.reqId, phase: v.phase }
+    }, hSpk)
+
+    // H1. 정상 교체 — **화면의 '목소리 바꾸기' 버튼**으로 바꾼다.
+    //   store 를 직접 부르면 훅의 '직전 정상 목소리 보관' 을 지나지 않아 되돌리기가 성립하지 않는다.
+    const openCard = async (id) => await st((sid) => {
+      const rows = [...document.querySelectorAll('[data-testid="dialogue-row"]')]
+      const row = rows.find((r) => r.getAttribute('data-speaker') === sid)
+      const b = row?.querySelector('[data-testid="card-voice"]')
+      if (!b) return false
+      b.click()
+      return true
+    }, id)
+    const clickAssign = async () => await st(() => {
+      const b = document.querySelector('[data-testid="card-voice-assign"]')
+      if (!b) return false
+      b.click()
+      return true
+    })
+    await openCard(hSpk)
+    await sleep(600)
+    await st((f) => window.api.audio.e2eSetSelectFile(f), iso.input)
+    const swapped = await clickAssign()
+    const okReady = swapped ? await waitUntil(async () => {
+      const v = await st((id) => window.__afStore.getState().ttsSpeakerRefState[id], hSpk)
+      return v?.phase === 'ready'
+    }, 180000) : false
+    const afterSwap = await st((id) => window.__afStore.getState().ttsSpeakerRefState[id], hSpk)
+    ok('H1', okReady && afterSwap.source === iso.input && afterSwap.reqId !== before.reqId,
+      '정상 교체 — 새 파일로 준비됨까지 가고 요청 식별자가 새것이다',
+      JSON.stringify({ phase: afterSwap.phase, newReq: afterSwap.reqId !== before.reqId }))
+
+    // H2. 교체 실패 — 쓸 수 없는 파일(0.5초 무음)로 바꾼다. 이전 목소리가 남아야 한다.
+    const keep = { source: afterSwap.source, clip: afterSwap.clip, region: afterSwap.region }
+    await st((f) => window.api.audio.e2eSetSelectFile(f), BAD)
+    await clickAssign()
+    const settled = await waitUntil(async () => {
+      const v = await st((id) => window.__afStore.getState().ttsSpeakerRefState[id], hSpk)
+      return v?.source === keep.source && v?.phase === 'ready'
+    }, 180000)
+    const afterBad = await st((id) => window.__afStore.getState().ttsSpeakerRefState[id], hSpk)
+    ok('H2', settled && afterBad.source === keep.source && afterBad.clip === keep.clip
+        && JSON.stringify(afterBad.region) === JSON.stringify(keep.region),
+      '교체 실패 — 이전 원본·클립·구간·준비 상태가 그대로 남는다',
+      JSON.stringify({ source: afterBad.source === keep.source, clip: afterBad.clip === keep.clip,
+        phase: afterBad.phase }))
+    const notice = await st(() => document.querySelector('[data-testid="voice-replace-notice"]')?.textContent || '')
+    ok('H3', notice.length > 0, '교체 실패를 화면이 알린다', notice.slice(0, 40))
+    // 되돌린 클립 파일이 실제로 살아 있어야 되돌리기가 의미가 있다.
+    const alive = keep.clip ? fs.existsSync(keep.clip) : true
+    ok('H4', alive, '되돌린 클립 파일이 디스크에 살아 있다', keep.clip ? String(alive) : '클립 없는 준비(원본 전체)')
+    await shot('H-replace-failure.png')
+  }
+
+  // ── I: 자동 저장 (2026-09-09 관리자 검수 ② 표적) ─────────────────────────
+  // 700ms 저장 대기 중 화면을 전환하면 마지막 변경이 사라졌다(대기를 그냥 취소했다).
+  // 이제 전환 직전에 먼저 쓴다. 저장 파일을 직접 읽어 확인한다 — 화면 문구가 아니라 파일이 근거다.
+  const settingsPath = path.join(USER_DATA, 'settings.json')
+  const readDrafts = () => {
+    try {
+      const j = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
+      return j.workDrafts ?? null
+    } catch { return null }
+  }
+  // 대사를 바꾸고 **700ms 이 지나기 전에** 한 명 ↔ 여러 명을 전환한다.
+  const marker = `저장확인-${Date.now()}`
+  await st((m) => {
+    const ta = document.querySelector('section[aria-label="대사"] textarea')
+      || document.querySelector('textarea')
+    if (!ta) return false
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+    ta.focus()
+    setter.call(ta, ta.value + m)
+    ta.dispatchEvent(new Event('input', { bubbles: true }))
+    return true
+  }, marker)
+  await sleep(120)                                  // 700ms 보다 훨씬 짧게 — 대기 중이다
+  await page.click('[data-testid="dialogue-tabs"] [data-tab="single"]')
+  await sleep(1500)
+  const savedAfterSwitch = JSON.stringify(readDrafts() || {})
+  ok('I1', savedAfterSwitch.includes(marker),
+    '저장 대기 중 화면을 전환해도 마지막 변경이 저장된다',
+    savedAfterSwitch.includes(marker) ? '기록에 있다' : '기록에 없다(유실)')
+
+  // I2. 저장 실패를 알린다 — **실제로 실패하게** 만든다(대역을 심지 않는다).
+  //     설정 파일을 읽기 전용으로 두면 원자 교체가 실패한다. 화면은 '저장됐다' 로 두면 안 된다.
+  let madeReadOnly = false
+  try { fs.chmodSync(settingsPath, 0o444); madeReadOnly = true } catch { madeReadOnly = false }
+  const marker2 = `실패확인-${Date.now()}`
+  await st((m) => {
+    const ta = document.querySelector('section[aria-label="대사"] textarea')
+      || document.querySelector('textarea')
+    if (!ta) return false
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+    ta.focus()
+    setter.call(ta, ta.value + m)
+    ta.dispatchEvent(new Event('input', { bubbles: true }))
+    return true
+  }, marker2)
+  const shown = await waitUntil(async () => await st(() =>
+    !!document.querySelector('[data-testid="work-draft-save-error"]')), 20000)
+  const retryThere = await count('[data-testid="work-draft-save-retry"]')
+  ok('I2', madeReadOnly && shown && retryThere === 1,
+    '저장이 실패하면 미저장 상태와 다시 시도 자리를 보여 준다',
+    `읽기전용=${madeReadOnly} 알림=${shown} 다시저장=${retryThere}개`)
+
+  // I3. 원인을 없애고 '다시 저장' 을 누르면 알림이 사라지고 실제로 기록에 들어간다.
+  try { fs.chmodSync(settingsPath, 0o666) } catch { /* */ }
+  await st(() => {
+    const b = document.querySelector('[data-testid="work-draft-save-retry"]')
+    if (b) b.click()
+  })
+  const gone = await waitUntil(async () => await st(() =>
+    !document.querySelector('[data-testid="work-draft-save-error"]')), 20000)
+  const savedAfterRetry = JSON.stringify(readDrafts() || {})
+  ok('I3', gone && savedAfterRetry.includes(marker2),
+    '다시 저장이 성공하면 알림이 사라지고 그 변경이 기록에 들어간다',
+    `알림사라짐=${gone} 기록=${savedAfterRetry.includes(marker2)}`)
+
+  // I4. 종료 직전 — 동기 통로가 열려 있고 그 키에만 쓴다.
+  const syncOk = await st(() => {
+    const r = window.api.settings.setSync('pythonPath', 'X')     // 허용되지 않은 키
+    return r && r.ok === false && r.code === 'KEY_NOT_ALLOWED'
+  })
+  ok('I4', syncOk, '종료 직전 동기 저장은 자동 저장 키에만 열려 있다')
+  await page.click('[data-testid="dialogue-tabs"] [data-tab="multi"]')
+  await sleep(400)
 
   // ── B3 는 대본을 바꾸므로 맨 뒤에 둔다 ─────────────────────────────────
   // 앞에 두었더니 카드 구성이 달라져 구간 편집기 검사(C)가 무너졌다 — 검사가 검사의
@@ -453,6 +618,89 @@ try {
       && layoutAfter.top === layoutBefore.top,
     '대사를 고쳐도 카드 화면이 사유 텍스트로 바뀌지 않고 자리도 그대로다',
     JSON.stringify({ gotRows, layoutBefore, layoutAfter }))
+
+  // ── J: 기본 목소리 슬롯의 보고자는 하나다 (2026-09-09 관리자 지시) ─────────
+  // 여러 명 화면에는 숨은 기본 목소리 구동이 붙어 있고, 기본 인물 카드에도 편집기가 있었다.
+  // 둘이 같은 슬롯을 갱신하면 서로의 결론을 덮는다. 규칙: 접혀 있으면 구동이, 펼치면 카드가 맡는다.
+  //
+  // 기본 인물 카드가 생기려면 **인물 표기가 없는 대사**가 있어야 한다.
+  await page.click('[data-testid="dialogue-tabs"] [data-tab="single"]')
+  await sleep(300)
+  await st(() => {
+    const ta = document.querySelector('section[aria-label="대사"] textarea')
+      || document.querySelector('textarea')
+    if (!ta) return false
+    const setter = Object.getOwnPropertyDescriptor(window.HTMLTextAreaElement.prototype, 'value').set
+    const nl = String.fromCharCode(10)
+    ta.focus()
+    setter.call(ta, '이건 기본 인물의 대사입니다.' + nl + '[화자 인물A]' + nl + '이건 인물A 대사입니다.')
+    ta.dispatchEvent(new Event('input', { bubbles: true }))
+    return true
+  })
+  await sleep(2500)
+  await page.click('[data-testid="dialogue-tabs"] [data-tab="multi"]')
+  const hasDefaultCard = await waitUntil(async () => await st(() =>
+    [...document.querySelectorAll('[data-testid="dialogue-row"]')]
+      .some((r) => (r.getAttribute('data-speaker') || '') === '')), 60000)
+  const readyBefore = await st(() => window.__afStore.getState().ttsRefReady)
+  const driverClosed = await count('[data-testid="default-voice-driver"]')
+  ok('J1', hasDefaultCard && driverClosed === 1,
+    '기본 인물 카드가 접혀 있으면 숨은 구동 하나만 맡는다',
+    `기본카드=${hasDefaultCard} 구동=${driverClosed}개`)
+
+  // 기본 인물의 목소리 설정 → 구간 수정을 펼친다. 그러면 구동이 물러나야 한다.
+  const opened = await st(() => {
+    const rows = [...document.querySelectorAll('[data-testid="dialogue-row"]')]
+    const row = rows.find((r) => (r.getAttribute('data-speaker') || '') === '')
+    const b = row?.querySelector('[data-testid="card-voice"]')
+    if (!b) return false
+    b.click()
+    return true
+  })
+  await sleep(700)
+  const regionToggled = await st(() => {
+    const b = document.querySelector('[data-testid="voice-region-toggle"]')
+    if (!b) return false
+    b.click()
+    return true
+  })
+  await sleep(900)
+  const driverOpen = await count('[data-testid="default-voice-driver"]')
+  const editorThere = await count('[data-testid="region-start-number"]')
+  ok('J2', opened && regionToggled && driverOpen === 0 && editorThere >= 1,
+    '구간 수정을 펼치면 숨은 구동이 물러나고 카드가 맡는다',
+    `펼침=${opened && regionToggled} 구동=${driverOpen}개 편집기=${editorThere}개`)
+  const readyAfterOpen = await st(() => window.__afStore.getState().ttsRefReady)
+  ok('J3', readyBefore === false || readyAfterOpen === true,
+    '편집기를 펼쳐도 준비 상태가 내려가지 않는다',
+    `열기전=${readyBefore} 열고나서=${readyAfterOpen}`)
+
+  // 다시 접으면 구동이 돌아오고, 준비 상태는 그대로다.
+  await st(() => {
+    const b = document.querySelector('[data-testid="voice-region-toggle"]')
+    if (b) b.click()
+  })
+  await sleep(900)
+  const driverBack = await count('[data-testid="default-voice-driver"]')
+  const readyAfterClose = await st(() => window.__afStore.getState().ttsRefReady)
+  ok('J4', driverBack === 1 && readyAfterClose === readyAfterOpen,
+    '다시 접으면 구동이 돌아오고 준비 상태는 그대로다',
+    `구동=${driverBack}개 준비=${readyAfterClose}`)
+
+  // 기본 목소리가 준비된 상태에서는 '다시 준비' 입구가 없다(인물 슬롯의 E1 과 같은 규칙).
+  // ★'다시 준비가 새 요청이고 클립·구간을 보존한다' 는 것은 여기서 확인하지 않는다 —
+  //   준비된 상태에서는 그 버튼이 없기 때문이다. 그 동작은 store 상태 전이 시험이 재고 있다
+  //   (speakerRefRequest.test.ts, '기본 목소리: ready 는 단계의 거울이고…').
+  const readyNow = await st(() => window.__afStore.getState().ttsRefReady)
+  // **기본 인물 카드 안에서만** 센다 — 전역으로 세면 다른 인물 카드의 버튼이 섞인다(실측).
+  const retryEntries = await st(() => {
+    const rows = [...document.querySelectorAll('[data-testid="dialogue-row"]')]
+    const row = rows.find((r) => (r.getAttribute('data-speaker') || '') === '')
+    return row ? row.querySelectorAll('[data-testid="card-voice-retry"]').length : -1
+  })
+  ok('J5', readyNow ? retryEntries === 0 : retryEntries >= 1,
+    "준비된 기본 목소리에는 '다시 준비' 입구가 없다(미준비면 있다)",
+    `준비=${readyNow} 기본카드안 입구=${retryEntries}개`)
 
   ok('err', pageErrors.length === 0, '렌더러 예외 0', pageErrors.slice(0, 3).join(' / '))
 } catch (e) {

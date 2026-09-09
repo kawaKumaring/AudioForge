@@ -26,7 +26,7 @@ import type { CSSProperties, ReactNode } from 'react'
 import type { DialogueProjection, DialogueRow, DialogueSpeaker } from '../hooks/useDialogueProjection'
 import type { StructureBlocker } from '../../shared/dialogueSourcePatcher'
 import { validateSpeakerLabel, insertTagAtCaret, nextAutoSpeakerLabel } from '../../shared/dialogueSourcePatcher'
-import { regionText } from '../../shared/referencePolicy'
+import { regionText, type RefPhase } from '../../shared/referencePolicy'
 import type { ReferenceDecision } from '../../shared/speakerReference'
 
 /** 셸이 넘기는 인물별 목소리 상태 — 기존 store 슬롯에서 온다. */
@@ -35,8 +35,13 @@ export interface SpeakerVoiceState {
   ready: boolean
   fileName: string
   decision: ReferenceDecision
-  /** 준비되지 않은 이유(슬롯 message). 구간 확정이 필요한지 판단하는 데 쓴다. */
+  /** 준비되지 않은 이유(슬롯 message). **표시용이다** — 판정은 phase 로 한다. */
   message?: string
+  /**
+   * 준비 단계. 실패인지 사용자 차례인지를 이 값으로 가른다(2026-09-09 관리자 검수).
+   * 부재 = 아직 단계를 싣지 않는 슬롯(기본 인물 등) → 아래 문구 규칙으로 물러선다.
+   */
+  phase?: RefPhase
   /** 실제로 모델에 가는 구간. null/없음 = 원본 전체. */
   region?: { start: number; duration: number } | null
   /** 같은 음원 파일을 쓰는 다른 인물 이름 — 같은 목소리로 만들어진다는 사실을 숨기지 않는다. */
@@ -117,15 +122,21 @@ export function voiceStatusShort(voice: SpeakerVoiceState | null): string {
   const message = voice.message ?? ''
   const restore = RESTORE_STATUS.find((m) => message === m)
   if (restore) return restore
-  // 준비 중 단계를 사실대로 구분한다. 예전에는 셋 다 '목소리 확인 중' 한 마디로 뭉개져서,
-  // 살펴보는 중인지·구간을 고르는 중인지·사람이 골라 줘야 하는지 화면만 보고 알 수 없었다.
+  // ★'사용자 차례인가 / 실패인가' 는 **단계**로 가른다. 문구로 가르면 말이 조금 바뀌어도 판정이 뒤집힌다.
+  if (voice.phase === 'needs_region') return '구간 선택 필요'
+  if (voice.phase === 'failed') return '목소리 준비 실패'
+  // 준비 중의 **세부 단계**만 문구로 구분한다(판정이 아니라 진행 표시다). 예전에는 셋 다
+  // '목소리 확인 중' 한 마디로 뭉개져서 무엇을 기다리는지 화면만 보고 알 수 없었다.
   if (message.includes('살펴보는')) return '목소리 살펴보는 중'
   if (message.includes('쓸 부분')) return '쓸 구간 고르는 중'
-  if (message.includes('구간')) return '구간 선택 필요'
+  if (voice.phase === 'preparing') return '목소리 준비 중'
+  if (message.includes('구간')) return '구간 선택 필요'    // 단계를 싣지 않는 옛 슬롯용
   return '목소리 확인 중'
 }
 
 export interface MultiSpeakerDialogueProps {
+  /** 목소리 설정을 펼쳐 둔 인물이 바뀔 때 알린다(없으면 null). 자동 준비 우선순위 판정에 쓰인다. */
+  onVoiceDetailOpenChange?: (speakerId: string | null) => void
   projection: DialogueProjection
   emotions: readonly { id: string; label: string }[]
   /** 감정 id → 원문 태그(`[기쁨]`). 셸이 기존 라벨 표에서 만든다. */
@@ -164,6 +175,13 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
   const { projection: p, emotions, emotionTagOf, speakerIdOf, voiceOf, disabled = false } = props
   // 목소리 상세는 한 번에 한 카드 안에서만 펼친다(파형도 한 명만).
   const [voiceOpen, setVoiceOpen] = useState<{ speakerId: string; cardKey: string } | null>(null)
+  // 목소리 상세 안에서 **구간 편집기를 펼친 인물**을 셸에 알린다. 자동 준비 드라이버가 손대면
+  // 안 되는 것은 '상세를 열었다' 가 아니라 '구간을 만지고 있다' 다(2026-09-09 관리자 검수).
+  // 상세가 접히면 그 인물도 해제된다.
+  const [regionOpenSpeaker, setRegionOpenSpeaker] = useState<string | null>(null)
+  const notifyOpen = props.onVoiceDetailOpenChange
+  useEffect(() => { notifyOpen?.(regionOpenSpeaker) }, [regionOpenSpeaker, notifyOpen])
+  useEffect(() => { if (!voiceOpen) setRegionOpenSpeaker(null) }, [voiceOpen])
   const [pendingUtts, setPendingUtts] = useState<PendingUtterance[]>([])
   const pendingSeq = useRef(0)
   // 새로 만든 카드의 대사 칸에 포커스를 준다.
@@ -307,6 +325,7 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
                   onAssignVoice={props.onAssignVoice} onRemoveVoice={props.onRemoveVoice} onPreviewVoice={props.onPreviewVoice}
                   renderRegionEditor={props.renderRegionEditor} onToggleEmotionVoice={props.onToggleEmotionVoice}
                   renderEmotionVoiceEditor={props.renderEmotionVoiceEditor} onClose={() => setVoiceOpen(null)}
+                  onRegionOpenChange={(sid, o) => setRegionOpenSpeaker(o ? sid : null)}
                   initialRegionOpen={voiceStatusShort(voiceOf(sid)) === '구간 선택 필요'} />
               )}
               onRenameSpeaker={props.onRenameSpeaker && !isDefaultSlot ? ((label) => props.onRenameSpeaker!(sid, label)) : undefined} />
@@ -351,7 +370,8 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
                 onAssignVoice={props.onAssignVoice} onRemoveVoice={props.onRemoveVoice} onPreviewVoice={props.onPreviewVoice}
                 renderRegionEditor={props.renderRegionEditor} onToggleEmotionVoice={props.onToggleEmotionVoice}
                 renderEmotionVoiceEditor={props.renderEmotionVoiceEditor} onClose={() => setVoiceOpen(null)}
-                initialRegionOpen={voiceStatusShort(voiceOf(id)) === '구간 선택 필요'} />
+                onRegionOpenChange={(sid, o) => setRegionOpenSpeaker(o ? sid : null)}
+                  initialRegionOpen={voiceStatusShort(voiceOf(id)) === '구간 선택 필요'} />
             )}
             onSpeakerIdChanged={props.onSpeakerIdChanged}
             onCommit={(label, line) => commitNewLine(label, line)} />
@@ -842,12 +862,17 @@ function SpeakerVoicePanel(props: {
   renderEmotionVoiceEditor?: (speakerId: string, label: string) => ReactNode
   /** '구간 선택 필요' 상태에서 설정을 열었으면 구간 편집기를 바로 펼친다. */
   initialRegionOpen?: boolean
+  /** 구간 편집기 펼침이 바뀔 때 알린다. 자동 준비 우선순위 판정에 쓰인다. */
+  onRegionOpenChange?: (speakerId: string, open: boolean) => void
   onClose: () => void
 }) {
   const { voiceId, label, voice, disabled } = props
   const [emotionOpen, setEmotionOpen] = useState(false)
   // 원본 파형·구간 수정은 필요할 때만 펼친다. 접혀 있어도 분석·준비는 계속 돈다.
   const [regionOpen, setRegionOpen] = useState(!!props.initialRegionOpen)
+  // 펼침 상태를 위로 알린다 — 펼친 동안에는 자동 준비가 이 인물을 잡지 않는다.
+  const onRegionOpen = props.onRegionOpenChange
+  useEffect(() => { onRegionOpen?.(voiceId, regionOpen) }, [voiceId, regionOpen, onRegionOpen])
   return (
     <div data-testid="voice-panel" data-speaker={voiceId} role="region" aria-label={`${label} 목소리`}
       style={{ ...card, border: '1px solid var(--cyan)', gap: 8, background: 'var(--bg-card)' }}>
@@ -870,7 +895,8 @@ function SpeakerVoicePanel(props: {
         <span style={sub} title="아래 '목소리 지정'을 누르면 음성 파일을 고를 수 있습니다.">목소리를 지정하세요</span>
       )}
       <div style={rowFlex}>
-        <button type="button" disabled={disabled || !voiceId} onClick={() => props.onAssignVoice(voiceId, label)}
+        <button type="button" data-testid="card-voice-assign"
+          disabled={disabled || !voiceId} onClick={() => props.onAssignVoice(voiceId, label)}
           style={btn('var(--cyan)', disabled || !voiceId)}>
           {voice?.registered ? '목소리 바꾸기' : '목소리 지정'}
         </button>

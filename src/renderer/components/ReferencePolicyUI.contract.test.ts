@@ -41,16 +41,20 @@ test('패널: 분석·확정이 선택 엔진을 워커에 넘기고, 엔진이 
 test('패널: 엔진 전환 시 사용 중 구간은 지우지 않고(clip·region 유지) 필수 조건 밖일 때만 준비를 내리며 사유·수정을 안내', () => {
   const hits = PANEL.match(/committedMismatchText\(pol, committed\.region\.duration\)/g) ?? []
   assert.equal(hits.length, 2, '구간 추천 분기·원본 전체 분기 모두')
-  assert.ok(PANEL.includes("ready: false, clip: committed.clip, region: committed.region,"), '클립·구간 보존')
+  // 2026-09-09: 보고가 ready 대신 단계를 싣는다. 엔진 전환의 길이 불일치는 '사용자 차례'다.
+  assert.ok(PANEL.includes("phase: 'needs_region', clip: committed.clip, region: committed.region,"), '클립·구간 보존')
   assert.ok(PANEL.includes("j === 'blocked_short' || j === 'blocked_long'"), '필수 밖만 차단(권장 밖은 경고)')
   assert.ok(PANEL.includes('data-testid="region-outside-recommended"'), '권장 밖 길이 안내(막지 않음)')
   assert.ok(PANEL.includes('data-testid="region-need" data-required='), '필수/권장 구간 안내 구분')
   // 원본 전체가 유효한 상태에서 사용 중 구간이 있으면 원본 전체로 조용히 되돌리지 않는다.
-  assert.ok(PANEL.includes("if (hasCommitted && committed?.region) {\n          const j = judgeLength(pol, committed.region.duration)"))
+  // 2026-09-09: 분석 결과가 도착한 **그때의** 사용 중 상태를 본다(요청을 시작한 시점 값이 아니라).
+  // 그 사이 준비가 끝났으면 낡은 값으로 되돌리지 않는다.
+  assert.ok(PANEL.includes("const committedThen = hasCommittedNow()"), '결과 도착 시점에 다시 읽는다')
+  assert.ok(PANEL.includes("if (committedThen && cNow?.region) {"), '되돌리기 판정도 그 값으로')
 })
 
 test('카드: 실제로 모델에 가는 구간을 표시한다(원본 전체 / N초부터 M초)', () => {
-  assert.ok(MULTI.includes("import { regionText } from '../../shared/referencePolicy'"))
+  assert.ok(MULTI.includes("import { regionText, type RefPhase } from '../../shared/referencePolicy'"))
   assert.ok(MULTI.includes('return `준비됨 · ${regionText(voice.region)}`'))
   assert.ok(MULTI.includes('region?: { start: number; duration: number } | null'))
   assert.ok(SHELL.includes('region: slot?.region ?? null,'), '인물 행에 구간')

@@ -16,6 +16,10 @@ const between = (src: string, a: string, b: string) => { const i = src.indexOf(a
 test('저장은 자기 키 하나에만 쓴다 — 목소리 구성·전역 자산 등록부를 건드리지 않는다', () => {
   assert.ok(HOOK.includes('window.api.settings.set(WORK_DRAFT_STORAGE_KEY'))
   assert.equal(/settings\.set\((?!WORK_DRAFT_STORAGE_KEY)/.test(HOOK), false, '다른 키로 저장하지 않는다')
+  // 종료 직전 **동기** 저장도 같은 키 하나에만 쓴다(2026-09-09 — 비동기만 던지면 마지막 변경이 사라진다).
+  assert.ok(HOOK.includes('window.api.settings.setSync(WORK_DRAFT_STORAGE_KEY'))
+  assert.equal(/settings\.setSync\((?!WORK_DRAFT_STORAGE_KEY)/.test(HOOK), false, '동기 저장도 자기 키만')
+  assert.ok(IPC.includes("if (key !== WORK_DRAFT_STORAGE_KEY) {"), 'main 도 동기 통로를 그 키에만 연다')
   for (const forbidden of ['VOICE_CAST_STORAGE_KEY', 'GLOBAL_ASSET_STORAGE_KEY', 'voiceCasts', 'referenceAssets']) {
     assert.equal(HOOK.includes(forbidden), false, forbidden)
   }
@@ -35,10 +39,20 @@ test('복원은 저장된 구간 그대로 되살리고 실패해도 다른 목�
   const prep = between(HOOK, 'const prepareOne = useCallback', '}, [setSpeakerRefState])')
   assert.ok(prep.includes('plan.region.start, plan.region.duration'), '저장된 구간을 그대로 넘긴다')
   assert.ok(prep.includes("'spk:' + plan.speakerId"), '그 인물 소유 키로만 만든다')
-  // 실패 경로는 ready 를 올리지 않고 지정을 지우지도 않는다.
-  const fails = prep.split('ready: false').length - 1
+  // 실패 경로는 준비됨을 올리지 않고 지정을 지우지도 않는다.
+  // 2026-09-09: 보고가 ready(bool) 대신 단계를 싣는다 — 실패는 '사용자가 구간을 확인할 차례'다.
+  const fails = prep.split("phase: 'needs_region'").length - 1
   assert.ok(fails >= 2, '실패·예외 두 경로 모두 준비됨이 아니다')
   assert.equal(/source:\s*['"]/.test(prep), false, '실패 시 다른 원본을 넣지 않는다')
+  // ★결과를 적용하기 전에 요청 당시와 같은 상태인지 확인한다(복원 중 사용자가 바꿨을 수 있다).
+  assert.ok(prep.includes('const stillMine = () =>'), '적용 전 동일성 검사가 있다')
+  assert.ok(prep.includes("(st.fileInfo?.path || '') !== workPath"), '같은 작업인지')
+  assert.ok(prep.includes('slot.source !== plan.source'), '그 인물의 원본이 계획과 같은지')
+  assert.ok(prep.includes('slot.reqId !== plan.reqId'), '그 슬롯을 다른 요청이 맡지 않았는지')
+  assert.ok(prep.includes('if (!stillMine()) return'), '아니면 적용하지 않는다')
+  // await 뒤에 반드시 다시 본다 — 그 사이 사용자가 바꿀 수 있다.
+  const afterAwait = prep.slice(prep.indexOf('await window.api.audio.trimReference'))
+  assert.ok(afterAwait.includes('if (!stillMine()) return'), '트림 결과를 적용하기 전에도 확인한다')
 })
 
 test('복원 중에는 준비됨이 아니고, 이 작업에 이미 인물이 있으면 기록으로 덮지 않는다', () => {
