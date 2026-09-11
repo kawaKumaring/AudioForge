@@ -4,7 +4,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 import WaveSurfer from 'wavesurfer.js'
 import { useAppStore } from '@/stores/app.store'
 import { openTtsAdvanced } from '@/lib/ttsAdvancedOpen'
-import { createManagedAudio } from '@/lib/playbackVolume'
+import { createManagedAudio, getPlaybackVolume } from '@/lib/playbackVolume'
 import { usePlaybackVolume } from '@/hooks/usePlaybackVolume'
 
 function hexToRgba(hex: string, alpha: number): string {
@@ -39,6 +39,12 @@ function TrackPlayer({ path, color, paused, onClose }: { path: string; color: st
         cursorColor: color, cursorWidth: 2, barWidth: 2, barGap: 2, barRadius: 4,
         height: 40, normalize: true, backend: 'WebAudio', dragToSeek: true
       })
+      // ★ 만들자마자 지금 음량을 건다 — **자동 재생 전에** 해야 한다.
+      //   이 플레이어는 파일 주소를 기다린 뒤에 만들어지는데, 음량 effect 는 그 전에 이미 끝난다.
+      //   그래서 여기서 걸지 않으면 결과 트랙의 **첫 재생만 최대 음량**으로 나갔다.
+      //   지역 상태(volume)가 아니라 소유자의 **지금 값**을 읽는다 — 기다리는 동안 사용자가
+      //   슬라이더를 움직였을 수 있고, 그때는 최신 값이 맞다.
+      ws.setVolume(getPlaybackVolume())
       ws.on('timeupdate', (t) => setCur(fmtTime(t)))
       ws.on('decode', (d) => setDur(fmtTime(d)))
       ws.on('ready', () => { readyRef.current = true; if (ws && !pausedRef.current) ws.play() })
@@ -56,6 +62,7 @@ function TrackPlayer({ path, color, paused, onClose }: { path: string; color: st
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path])
 
+  // 이후 슬라이더 변경은 이 effect 가 실시간으로 반영한다(생성 시점 적용과 별개).
   useEffect(() => { wsRef.current?.setVolume(volume) }, [volume])
 
   // 재생/일시정지 제어는 트랙 행의 버튼(원래 위치)이 담당 — paused prop을 준비된 뒤에만 반영

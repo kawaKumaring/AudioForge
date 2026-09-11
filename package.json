@@ -28,6 +28,7 @@
     "test:e2e:tts-synth-tabs": "node test/e2e/tts-synth-tabs-dev.e2e.mjs",
     "test:e2e:tts-work-restore": "node test/e2e/tts-work-restore-dev.e2e.mjs",
     "test:e2e:playback-volume": "node test/e2e/playback-volume.e2e.mjs",
+    "test:e2e:track-volume": "node test/e2e/track-volume-initial.e2e.mjs",
     "test:e2e:tts-speaker-rename": "node test/e2e/tts-speaker-rename-dev.e2e.mjs",
     "test:e2e:analysis-phase45": "node test/e2e/analysis-phase45.e2e.mjs",
     "test:e2e:analysis-plan": "node test/e2e/analysis-plan-panel.e2e.mjs",
