@@ -91,6 +91,18 @@ python smoke_test.py --tts path/to/reference.wav
 - 등록한 리스너는 **반드시** cleanup 함수로 해제
 - 취소 시에도 cleanup 호출 필수 (ref로 관리)
 
+### 4.4 재생 음량 — 소리 요소를 만들면 소유자에 등록한다
+- 재생 경로가 일곱 곳이라 자리마다 음량을 챙기면 반드시 어딘가가 최대로 남는다.
+  실제로 다섯 곳이 그랬다(2026-09-10 사용자 보고 "소리가 항상 최대").
+- 규칙: `new Audio()` 를 직접 쓰지 않고 `renderer/lib/playbackVolume` 의
+  `createManagedAudio()` 를 쓴다. 화면이 소유하는 `<audio>` 요소는 ref 가 붙을 때
+  `attachPlaybackVolume(el)` 을 부른다. WaveSurfer 는 `usePlaybackVolume()` 의 값을
+  `setVolume` 에 흘린다(파일·모드 재초기화 후에도 다시 걸어야 한다).
+- 음량은 **화면 지역 상태로 두지 않는다**. 지역 상태면 화면을 다시 그릴 때마다 최대로
+  되돌아가고, 두 슬라이더가 서로 다른 값을 갖는다. 값은 하나이고 보관된다(`playbackVolume`).
+- 보관 실패를 삼키지 않는다. 값을 못 읽었을 때는 **최대에서 시작**한다 — 알 수 없는 값 때문에
+  0(무음)이 되면 사용자는 앱이 고장 난 줄 안다.
+
 ## 5. Python 규칙
 
 ### 5.1 heavy import는 함수 내부에서

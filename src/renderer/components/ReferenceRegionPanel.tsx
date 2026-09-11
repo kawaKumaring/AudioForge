@@ -9,6 +9,7 @@ import {
   type ReferencePolicySummary, type RefPhase,
 } from '../../shared/referencePolicy'
 import { useAppStore } from '../stores/app.store'
+import { attachPlaybackVolume } from '../lib/playbackVolume'
 
 // 참조 음성 준비 패널 — 긴 원본을 거부하지 않고 "참조 원본"으로 수용하고,
 // 파형에서 구간을 골라 mono/24k 파생 클립을 만든 뒤 그것만 합성/전사에 전달한다.
@@ -429,6 +430,7 @@ export default function ReferenceRegionPanel({
       setPreviewPhase('idle'); setPreviewError(null)
     }
     audioRef.current = el
+    attachPlaybackVolume(el)      // 새 요소에도 사용자가 정한 음량이 걸린다
     const url = fileUrlRef.current
     if (el && url) attachSource(el, url)
   }, [])

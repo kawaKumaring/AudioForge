@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import WaveSurfer from 'wavesurfer.js'
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js'
 import { useAppStore } from '@/stores/app.store'
+import { usePlaybackVolume } from '@/hooks/usePlaybackVolume'
 import {
   validateMarkers, formatSplitMarkerError, AUTO_SILENCE_SPLIT_NOTICE,
 } from '../../shared/splitMarkers'
@@ -17,6 +18,7 @@ export default function SplitEditor() {
   const containerRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WaveSurfer | null>(null)
   const regionsRef = useRef<ReturnType<typeof RegionsPlugin.create> | null>(null)
+  const { volume: playbackVolume } = usePlaybackVolume()
   const [markers, setMarkers] = useState<Marker[]>([])
   const [duration, setDuration] = useState(0)
   const [currentTime, setCurrentTime] = useState(0)
@@ -82,6 +84,10 @@ export default function SplitEditor() {
 
     return () => { ws.destroy(); wsRef.current = null }
   }, [fileUrl])
+
+  // 이 화면에는 볼륨 슬라이더가 없다 — 다른 화면에서 정한 값을 그대로 따른다.
+  // 예전에는 어떤 값을 정해도 이 파형만 최대로 나갔다(2026-09-10).
+  useEffect(() => { wsRef.current?.setVolume(playbackVolume) }, [playbackVolume, fileUrl])
 
   // Sync markers to regions
   useEffect(() => {

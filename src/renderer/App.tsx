@@ -1,3 +1,5 @@
+import { useEffect } from 'react'
+
 import { useAppStore, type RestorableSession } from '@/stores/app.store'
 import DropZone from '@/components/DropZone'
 import ModeSelector from '@/components/ModeSelector'
@@ -10,9 +12,12 @@ import SplitEditor from '@/components/SplitEditor'
 import TTSEditor from '@/components/TTSEditor'
 import TtsResultInfo from '@/components/TtsResultInfo'
 import AppVersionLabel from '@/components/AppVersionLabel'
+import { loadPlaybackVolume } from '@/lib/playbackVolume'
 
 export default function App() {
   const { fileInfo, mode, status, reset, restorable, restoreSession, setRestorable } = useAppStore()
+  // 보관된 재생 음량을 한 번 읽어 적용한다. 실패하면 기본값(최대)이 그대로 쓰인다 — 재생을 막지 않는다.
+  useEffect(() => { void loadPlaybackVolume() }, [])
   const setIdle = () => useAppStore.setState({ status: 'idle', tracks: [], error: null, progress: 0 })
 
   const handleRestore = async () => {

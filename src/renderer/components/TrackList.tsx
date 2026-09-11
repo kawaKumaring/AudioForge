@@ -4,6 +4,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import WaveSurfer from 'wavesurfer.js'
 import { useAppStore } from '@/stores/app.store'
 import { openTtsAdvanced } from '@/lib/ttsAdvancedOpen'
+import { createManagedAudio, getPlaybackVolume } from '@/lib/playbackVolume'
+import { usePlaybackVolume } from '@/hooks/usePlaybackVolume'
 
 function hexToRgba(hex: string, alpha: number): string {
   const h = hex.replace('#', '')
@@ -23,7 +25,8 @@ function TrackPlayer({ path, color, paused, onClose }: { path: string; color: st
   pausedRef.current = paused
   const [cur, setCur] = useState('0:00')
   const [dur, setDur] = useState('0:00')
-  const [volume, setVolume] = useState(1)
+  // 원본 파형 슬라이더와 **같은 값**이다(공용·보관됨) — 두 슬라이더가 서로 다른 값을 갖지 않는다.
+  const { volume, change: changeVolume, commit: commitVolume, saveFailed: volumeSaveFailed } = usePlaybackVolume()
 
   useEffect(() => {
     let cancelled = false
@@ -36,6 +39,12 @@ function TrackPlayer({ path, color, paused, onClose }: { path: string; color: st
         cursorColor: color, cursorWidth: 2, barWidth: 2, barGap: 2, barRadius: 4,
         height: 40, normalize: true, backend: 'WebAudio', dragToSeek: true
       })
+      // ★ 만들자마자 지금 음량을 건다 — **자동 재생 전에** 해야 한다.
+      //   이 플레이어는 파일 주소를 기다린 뒤에 만들어지는데, 음량 effect 는 그 전에 이미 끝난다.
+      //   그래서 여기서 걸지 않으면 결과 트랙의 **첫 재생만 최대 음량**으로 나갔다.
+      //   지역 상태(volume)가 아니라 소유자의 **지금 값**을 읽는다 — 기다리는 동안 사용자가
+      //   슬라이더를 움직였을 수 있고, 그때는 최신 값이 맞다.
+      ws.setVolume(getPlaybackVolume())
       ws.on('timeupdate', (t) => setCur(fmtTime(t)))
       ws.on('decode', (d) => setDur(fmtTime(d)))
       ws.on('ready', () => { readyRef.current = true; if (ws && !pausedRef.current) ws.play() })
@@ -53,6 +62,7 @@ function TrackPlayer({ path, color, paused, onClose }: { path: string; color: st
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path])
 
+  // 이후 슬라이더 변경은 이 effect 가 실시간으로 반영한다(생성 시점 적용과 별개).
   useEffect(() => { wsRef.current?.setVolume(volume) }, [volume])
 
   // 재생/일시정지 제어는 트랙 행의 버튼(원래 위치)이 담당 — paused prop을 준비된 뒤에만 반영
@@ -67,7 +77,10 @@ function TrackPlayer({ path, color, paused, onClose }: { path: string; color: st
       <div ref={ref} style={{ marginBottom: 6 }} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{ fontSize: 11, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>{cur} / {dur}</span>
-        <div title="재생 볼륨 (듣기 전용 · 원본 파일에는 영향 없음)" style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5 }}>
+        <div title={volumeSaveFailed
+          ? '재생 볼륨 — 이 값을 기억하지 못했습니다(이번 실행에만 적용됩니다).'
+          : '재생 볼륨 (듣기 전용 · 원본 파일에는 영향 없음) — 정한 값이 다음에도 그대로 쓰입니다.'}
+          style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5 }}>
           <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
             <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
             {volume < 0.01
@@ -75,8 +88,9 @@ function TrackPlayer({ path, color, paused, onClose }: { path: string; color: st
               : <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />}
           </svg>
           <input type="range" min="0" max="1" step="0.05" value={volume}
-            aria-label="재생 볼륨 (듣기 전용, 원본에 영향 없음)"
-            onChange={(e) => setVolume(parseFloat(e.target.value))}
+            data-testid="track-volume" aria-label="재생 볼륨 (듣기 전용, 원본에 영향 없음)"
+            onChange={(e) => changeVolume(parseFloat(e.target.value))}
+            onPointerUp={commitVolume} onKeyUp={commitVolume} onBlur={commitVolume}
             style={{ width: 56, accentColor: color, cursor: 'pointer', height: 4 }} />
         </div>
         <button onClick={onClose} title="재생 닫기" aria-label="재생 닫기" style={{
@@ -333,7 +347,7 @@ function KaraokeButton({ tracks }: { tracks: { name: string; path: string }[] })
     if (audiosRef.current.length === 0) {
       for (const t of instrumentals) {
         const url = await window.api.audio.getFileUrl(t.path)
-        const audio = new Audio(url)
+        const audio = createManagedAudio(url)   // 음량은 단일 소유자가 건다
         audiosRef.current.push(audio)
       }
       audiosRef.current[0].onended = () => {

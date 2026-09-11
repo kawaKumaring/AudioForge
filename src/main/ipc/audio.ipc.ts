@@ -27,6 +27,7 @@ import {
   GLOBAL_ASSET_STORAGE_KEY, VOICE_CAST_STORAGE_KEY,
 } from '../../shared/emotionCandidateRegistry'
 import { WORK_DRAFT_STORAGE_KEY } from '../../shared/workDraft'
+import { PLAYBACK_VOLUME_STORAGE_KEY } from '../../shared/playbackVolume'
 import { readSettingsFile, setSettingsKey } from '../services/settings-store'
 import type { SidecarEnvelope } from '../../shared/sidecarEvents'
 // 타입만 가져온다 — 참조 라이브러리 모듈을 런타임에 끌어오지 않으므로 순환 의존이 생기지 않는다.
@@ -1273,6 +1274,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       // 현재 작업 자동 저장 — 합성하지 않아도 남는 "지금 만들던 것". 위 두 키와 서로 독립이다
       // (자동 저장이 사용자가 명시적으로 저장한 목소리 구성을 건드리지 않는다).
       [WORK_DRAFT_STORAGE_KEY]: stored[WORK_DRAFT_STORAGE_KEY] ?? null,
+      // 재생 음량(미리듣기·결과 공용). 없으면 null → renderer 가 기본값(최대)을 쓴다.
+      [PLAYBACK_VOLUME_STORAGE_KEY]: stored[PLAYBACK_VOLUME_STORAGE_KEY] ?? null,
     }
   })
 
@@ -1297,7 +1300,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     // 옮기기만 한다. 저장 성공 여부를 그대로 돌려준다 — 실패를 persisted 로 표시하면
     // 사용자는 저장된 줄 알고 앱을 닫는다.
     if (key === GLOBAL_ASSET_STORAGE_KEY || key === VOICE_CAST_STORAGE_KEY
-        || key === WORK_DRAFT_STORAGE_KEY) {
+        || key === WORK_DRAFT_STORAGE_KEY || key === PLAYBACK_VOLUME_STORAGE_KEY) {
       // 배역 세트도 같은 원자 경로를 쓴다. 두 키는 서로를 덮지 않는다 —
       // settings-store 가 현재 파일을 읽어 그 키 하나만 갱신한다.
       return saveSetting(key, value ?? undefined)

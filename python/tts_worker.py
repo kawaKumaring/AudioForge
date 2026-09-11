@@ -1531,7 +1531,9 @@ _METADATA_KEYS = [
     "requested_engine", "actual_engine", "model_name", "model_revision", "device",
     # 사용자가 고른 음성 모델 판(없으면 'default'). 어느 판으로 만든 결과인지 사후에 가리기 위한 것.
     "qwen_model_variant",
-    "device_selection_source", "prompt_source", "x_vector_only_mode",
+    # 선택 사유 전문. 화면에 이미 띄우는 문자열 그대로이며 고정 문구 + 숫자 + 출처 라벨뿐이다
+    # (경로·명령 출력·사용자 데이터 없음 — gpu_policy 의 사유 문자열 7종 전수 확인).
+    "device_selection_source", "device_selection_reason", "prompt_source", "x_vector_only_mode",
     "original_reference_path", "effective_reference_path", "reference_region",
     "reference_transcript_language", "reference_transcript_len", "reference_transcript_sha8",
     # C2 — 참조 프롬프트 강등 가시화. 사유 코드/상태/모델명만(경로·전사 전문·예외 메시지 없음).
@@ -1614,14 +1616,21 @@ def _build_tts_metadata(**kw):
 
 
 def _parse_device_source(reason):
-    """select_device 사유 문자열에서 측정 출처(source=...)를 추출. 없으면 사유 자체를 요약."""
+    """select_device 사유 문자열에서 측정 출처(source=...)를 추출. 없으면 사유 자체를 요약.
+
+    ★측정 실패 판별이 먼저다(2026-09-11). 예전에는 `source=` 정규식이 앞에 있었는데,
+      측정 실패 사유 문자열에도 `source=nvidia-smi` 가 들어 있어 **정상 판단과 측정 실패가
+      똑같이 "nvidia-smi" 한 단어로 기록됐다.** 뒤에 있던 측정 실패 분기는 도달하지 못했다.
+      그래서 사후에 기록만 보고는 "여유가 충분한데 왜 CPU였는지" 를 가릴 수 없었다.
+      판단·정책은 그대로이고 **기록의 구분만 살린다.**
+    """
     if not reason:
         return None
+    if "측정 실패" in reason:
+        return "nvidia-smi(측정실패→CPU)"
     m = re.search(r"source=([\w.\-]+)", reason)
     if m:
         return m.group(1)
-    if "측정 실패" in reason:
-        return "nvidia-smi(측정실패→CPU)"
     return None
 
 
@@ -2056,6 +2065,7 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
     dev, reason = select_device("auto", min_free_mb=_QWEN_MIN_FREE_MB)
     device = "cuda:0" if dev == "cuda" else "cpu"
     device_source = _parse_device_source(reason)
+    device_reason = reason or None      # 기록에 남길 사유 전문(화면에 띄우는 그 값)
     if device == "cpu":
         emit("progress", percent=6, message=f"Qwen 장치: CPU ({reason}) — 문장당 ~30초로 느릴 수 있음")
     else:
@@ -2500,6 +2510,7 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             "run_id": _run_id_or_none(),
             "qwen_model_variant": _QWEN_SELECTED_ID or "default",
             "device": actual_device, "device_selection_source": device_source,
+            "device_selection_reason": device_reason,
             "prompt_source": def_source, "x_vector_only_mode": def_xvo,
             "reference_transcript_language": def_tr_lang, "reference_transcript_len": def_tr_len,
             "reference_transcript_sha8": def_tr_sha, "target_language": tgt,
@@ -2778,7 +2789,7 @@ _MACRO_GAIN_META_KEYS = (
 # 그 경계는 chunk_publish.set_run_header 의 계약이며 이 목록도 그것을 지킨다.
 _RUN_HEADER_FROM_METADATA = (
     "requested_engine", "actual_engine", "model_name", "model_revision", "device",
-    "device_selection_source",
+    "device_selection_source", "device_selection_reason",
     # 어느 음성 모델 판으로 만든 결과인가. 09-08 에 판 표기가 바뀐 것을 기록으로 못 봐서 넣는다.
     "qwen_model_variant",
     "target_language", "output_sample_rate", "generation_limit", "generated_iterations",
