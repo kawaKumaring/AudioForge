@@ -28,11 +28,55 @@ export interface LabLine {
   adoptedTakeId: string | null
 }
 
+/**
+ * 이 작업실이 쓰는 **생성 설정**. 합성 탭의 값을 실시간으로 물려받지 않는다.
+ *
+ * ★왜 따로 두는가: 기존 합성 **기능**은 그대로 재사용하지만, 합성 탭에서 속도나 엔진을 바꾼 것이
+ *   이 작업실에 조용히 반영되면 "같은 대본인데 결과가 달라졌다" 가 된다. 그래서 설정은 작업실이
+ *   소유하고 함께 저장한다. 초기값은 제품 기본값이다(합성 탭의 **현재** 값이 아니다).
+ */
+export interface LabSettings {
+  speed: number
+  silenceGap: number
+  pitch: number
+  engine: string
+  qwenModel: string
+  referenceConditioningMode: string
+  /** 참조 목표 길이(초). 0 = 엔진 권장 상한. */
+  refTargetSec: number
+}
+
+/** 제품 기본값 — app.store 의 초기값과 같은 값이다(합성 탭의 현재 값이 아니다). */
+export function defaultSettings(referenceConditioningRecommended: string): LabSettings {
+  return {
+    speed: 1.0, silenceGap: 0.5, pitch: 0.0,
+    engine: 'auto', qwenModel: '',
+    referenceConditioningMode: referenceConditioningRecommended,
+    refTargetSec: 0,
+  }
+}
+
+/** 작업실이 스스로 준비한 목소리 상태. 합성 탭의 참조 슬롯과 **다른 자리**다. */
+export interface LabRefState {
+  clip: string
+  region: { start: number; duration: number } | null
+  ready: boolean
+  phase: string
+  message: string
+  reqId: string
+}
+
+export function emptyRef(): LabRefState {
+  return { clip: '', region: null, ready: false, phase: 'idle', message: '', reqId: '' }
+}
+
 export interface LabDoc {
   /** 지금 쓰는 목소리. 파일 경로가 곧 식별값이다(첫 시제품은 한 목소리만 쓴다). */
   voicePath: string
   voiceLabel: string
   lines: LabLine[]
+  /** 작업실 소유 생성 설정. 저장본에 없으면 제품 기본값으로 채운다. */
+  settings: LabSettings
   updatedAt: number
 }
 
@@ -41,8 +85,11 @@ export function voiceKeyOf(voicePath: string): string {
   return (voicePath || '').trim()
 }
 
-export function emptyDoc(): LabDoc {
-  return { voicePath: '', voiceLabel: '', lines: [newLine('')], updatedAt: Date.now() }
+export function emptyDoc(referenceConditioningRecommended = 'auto'): LabDoc {
+  return {
+    voicePath: '', voiceLabel: '', lines: [newLine('')],
+    settings: defaultSettings(referenceConditioningRecommended), updatedAt: Date.now(),
+  }
 }
 
 let seq = 0
@@ -170,7 +217,24 @@ export function shouldAutoAdopt(line: LabLine, take: LabTake, voiceKey: string):
 export const LAB_STORAGE_KEY = 'labWorkspace'
 
 /** 저장본에서 문서를 되살린다. 모양이 어긋나면 지어내지 않고 null. */
-export function parseDoc(raw: unknown): LabDoc | null {
+export function parseSettings(raw: unknown, referenceConditioningRecommended = 'auto'): LabSettings {
+  const d = defaultSettings(referenceConditioningRecommended)
+  if (!raw || typeof raw !== 'object') return d
+  const o = raw as Record<string, unknown>
+  const num = (v: unknown, fb: number) => (typeof v === 'number' && Number.isFinite(v) ? v : fb)
+  const str = (v: unknown, fb: string) => (typeof v === 'string' ? v : fb)
+  return {
+    speed: num(o.speed, d.speed),
+    silenceGap: num(o.silenceGap, d.silenceGap),
+    pitch: num(o.pitch, d.pitch),
+    engine: str(o.engine, d.engine),
+    qwenModel: str(o.qwenModel, d.qwenModel),
+    referenceConditioningMode: str(o.referenceConditioningMode, d.referenceConditioningMode),
+    refTargetSec: num(o.refTargetSec, d.refTargetSec),
+  }
+}
+
+export function parseDoc(raw: unknown, referenceConditioningRecommended = 'auto'): LabDoc | null {
   if (!raw || typeof raw !== 'object') return null
   const o = raw as Record<string, unknown>
   if (!Array.isArray(o.lines)) return null
@@ -200,6 +264,7 @@ export function parseDoc(raw: unknown): LabDoc | null {
     voicePath: typeof o.voicePath === 'string' ? o.voicePath : '',
     voiceLabel: typeof o.voiceLabel === 'string' ? o.voiceLabel : '',
     lines: lines.length ? lines : [newLine('')],
+    settings: parseSettings(o.settings, referenceConditioningRecommended),
     updatedAt: typeof o.updatedAt === 'number' ? o.updatedAt : 0,
   }
 }

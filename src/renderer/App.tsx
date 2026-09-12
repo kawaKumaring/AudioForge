@@ -16,7 +16,7 @@ import AppVersionLabel from '@/components/AppVersionLabel'
 import { loadPlaybackVolume } from '@/lib/playbackVolume'
 
 export default function App() {
-  const { fileInfo, mode, status, reset, restorable, restoreSession, setRestorable } = useAppStore()
+  const { fileInfo, mode, setMode, status, reset, restorable, restoreSession, setRestorable } = useAppStore()
   // 보관된 재생 음량을 한 번 읽어 적용한다. 실패하면 기본값(최대)이 그대로 쓰인다 — 재생을 막지 않는다.
   useEffect(() => { void loadPlaybackVolume() }, [])
   const setIdle = () => useAppStore.setState({ status: 'idle', tracks: [], error: null, progress: 0 })
@@ -74,7 +74,16 @@ export default function App() {
       </div>
 
       {/* Content */}
-      {!fileInfo ? (
+      {/* ── 테스트개발 작업실은 원본 파일 없이도 연다 ──
+             이 작업실은 대본을 쓰고 목소리를 따로 고르는 곳이라, 분리할 원본이 필요 없다.
+             다른 모드는 예전 그대로 파일을 먼저 불러와야 한다. */}
+      {!fileInfo && mode === 'lab' ? (
+        <div style={{ position: 'relative', zIndex: 1, flex: 1, display: 'flex', flexDirection: 'column',
+                      gap: 14, padding: '20px 24px 28px', maxWidth: 1100, width: '100%', margin: '0 auto' }}>
+          <ModeSelector />
+          <LabWorkspace />
+        </div>
+      ) : !fileInfo ? (
         /* ── 초기 화면 ── */
         <div style={{ position: 'relative', zIndex: 1, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ width: '100%', maxWidth: 520, padding: '0 40px' }}>
@@ -96,6 +105,19 @@ export default function App() {
                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
               </svg>
               이전 결과 폴더 열기
+            </button>
+            {/* 파일을 불러오지 않고 바로 대본 작업을 시작하는 자리 */}
+            <button data-testid="open-lab" onClick={() => setMode('lab')} style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+              width: '100%', marginTop: 8, padding: '10px 0', borderRadius: 10,
+              border: '1px solid var(--border-subtle)', background: 'transparent',
+              cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500,
+              color: 'var(--text-muted)'
+            }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3" />
+              </svg>
+              테스트개발 — 파일 없이 대본부터 시작
             </button>
             {/* 버전 표시 — 중앙 축 그대로, 버튼 아래 16px. 상단 로고 옆에는 두지 않는다. */}
             <AppVersionLabel />

@@ -14,10 +14,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '@/stores/app.store'
 import { useLabStore, newId } from '@/stores/lab.store'
 import {
-  LAB_STORAGE_KEY, adoptedTake, exportReadiness, lineStatus, lineStatusText,
-  linesNeedingWork, parseDoc, takeBadge, voiceKeyOf,
-  type LabDoc, type LabLine,
+  LAB_STORAGE_KEY, adoptedTake, exportReadiness,
+  lineStatus, lineStatusText, linesNeedingWork, parseDoc, takeBadge, voiceKeyOf,
+  type LabDoc, type LabLine, type LabSettings,
 } from '../../shared/labWorkspace'
+import { REFERENCE_CONDITIONING_RECOMMENDED } from '../../shared/ttsConfig'
 import { createManagedAudio } from '@/lib/playbackVolume'
 import ReferenceRegionPanel from '@/components/ReferenceRegionPanel'
 
@@ -29,6 +30,24 @@ const btn = (bg: string, fg: string, disabled?: boolean): React.CSSProperties =>
   fontWeight: 600, background: bg, color: fg,
   cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled ? 0.45 : 1,
 })
+
+/**
+ * 생성 요청 인자 — **작업실 소유 설정**으로만 만든다.
+ *
+ * ★합성 탭의 현재 값을 읽지 않는다. 기존 합성 **기능**은 그대로 쓰되, 합성 탭에서 속도·엔진을
+ *   바꾼 것이 이 작업실에 조용히 반영되면 "같은 대본인데 결과가 달라졌다" 가 되기 때문이다.
+ */
+function processOptions(text: string, s: LabSettings,
+                        ref: { clip: string; region: { start: number; duration: number } | null }) {
+  return {
+    ttsText: text,
+    ttsSpeed: s.speed, ttsSilenceGap: s.silenceGap, ttsPitch: s.pitch,
+    ttsEngine: s.engine, ttsQwenModel: s.qwenModel,
+    ttsReferenceOverride: ref.clip, ttsReferenceRegion: ref.region,
+    ttsReferenceConditioningMode: s.referenceConditioningMode,
+    ttsSpeakerMode: 'single' as const,
+  }
+}
 
 const STATUS_COLOR: Record<string, string> = {
   ready: 'var(--emerald, #34d399)', none: 'var(--text-muted)',
@@ -48,11 +67,15 @@ export default function LabWorkspace() {
 
   // ── 저장·복원 — 기존 작업 저장과 **다른 열쇠**를 쓴다 ─────────────────────
   useEffect(() => {
+    // ★한 번만 불러온다. 탭을 옮겼다 돌아오면 이 화면은 다시 만들어지지만, 작업 내용은
+    //   화면이 아니라 작업실 상태에 있다. 여기서 저장본을 다시 읽어 덮으면 **방금 쓴 글이
+    //   옛 저장본으로 되돌아간다**(실측 결함 — 탭 전환만으로 대본이 사라졌다).
+    if (useLabStore.getState().loaded) return
     let alive = true
     ;(async () => {
       try {
         const got = await window.api.settings.get() as Record<string, unknown>
-        const parsed = parseDoc(got?.[LAB_STORAGE_KEY])
+        const parsed = parseDoc(got?.[LAB_STORAGE_KEY], REFERENCE_CONDITIONING_RECOMMENDED)
         if (alive && parsed) lab.setDoc(parsed)
       } catch { /* 없으면 빈 대본으로 시작한다 */ }
       if (alive) lab.markLoaded()
@@ -66,7 +89,12 @@ export default function LabWorkspace() {
     const t = setTimeout(() => {
       void window.api.settings.set(LAB_STORAGE_KEY, doc)
     }, 600)
-    return () => clearTimeout(t)
+    // ★화면이 사라질 때(탭 전환·앱 종료) **기다리던 저장을 그냥 버리지 않는다.**
+    //   600ms 안에 탭을 옮기면 방금 쓴 글이 저장되지 않은 채 사라졌다.
+    return () => {
+      clearTimeout(t)
+      void window.api.settings.set(LAB_STORAGE_KEY, useLabStore.getState().doc)
+    }
   }, [doc, lab.loaded])
 
   // ── 재생 ────────────────────────────────────────────────────────────────
@@ -117,7 +145,8 @@ export default function LabWorkspace() {
 
   // ── 생성 — 기존 합성 경로를 그대로 부른다 ─────────────────────────────────
   const busyElsewhere = app.status === 'processing' && !job
-  const canGenerate = !!doc.voicePath && !!app.ttsReferenceClip && app.ttsRefReady && !job && !busyElsewhere
+  // ★게이트는 **작업실 자신의** 목소리 준비 상태를 본다. 합성 탭의 참조 슬롯이 아니다.
+  const canGenerate = !!doc.voicePath && !!lab.ref.clip && lab.ref.ready && !job && !busyElsewhere
 
   const startJob = useCallback((lineIds: string[]) => {
     const ids = lineIds.filter((id) => {
@@ -132,17 +161,9 @@ export default function LabWorkspace() {
     // 공용 작업 제어: 기존 합성과 **동시에** 돌지 않도록 같은 상태를 쓴다.
     // ★기존 결과(tracks)는 지우지 않는다 — 다른 탭의 결과를 없애지 않기 위해서다.
     useAppStore.setState({ status: 'processing', progress: 0, progressMessage: '문장 만드는 중...', error: null })
-    void window.api.audio.process(doc.voicePath, 'tts', {
-      ttsText: first.text,
-      ttsSpeed: app.ttsSpeed, ttsSilenceGap: app.ttsSilenceGap, ttsPitch: app.ttsPitch,
-      ttsEngine: app.ttsEngine, ttsQwenModel: app.ttsQwenModel,
-      ttsReferenceOverride: app.ttsReferenceClip, ttsReferenceRegion: app.ttsReferenceRegion,
-      ttsReferenceConditioningMode: app.ttsReferenceConditioningMode,
-      ttsSpeakerMode: 'single',
-    })
+    void window.api.audio.process(doc.voicePath, 'tts', processOptions(first.text, doc.settings, lab.ref))
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [doc, voiceKey, app.ttsReferenceClip, app.ttsReferenceRegion, app.ttsSpeed, app.ttsSilenceGap,
-      app.ttsPitch, app.ttsEngine, app.ttsQwenModel, app.ttsReferenceConditioningMode])
+  }, [doc, voiceKey, lab.ref])
 
   // 결과·진행·오류를 받는다. 취소·실패로 **이미 만든 테이크와 채택 상태를 잃지 않는다.**
   useEffect(() => {
@@ -193,17 +214,10 @@ export default function LabWorkspace() {
       const st = useLabStore.getState()
       const line = st.doc.lines.find((l) => l.id === rest[0])
       if (!line || !line.text.trim()) { next({ queue: rest.slice(1) }); return }
-      const a = useAppStore.getState()
       st.setJob({ lineId: line.id, text: line.text, voiceKey: voiceKeyOf(st.doc.voicePath),
                   startedAt: Date.now(), queue: rest.slice(1) })
-      void window.api.audio.process(st.doc.voicePath, 'tts', {
-        ttsText: line.text,
-        ttsSpeed: a.ttsSpeed, ttsSilenceGap: a.ttsSilenceGap, ttsPitch: a.ttsPitch,
-        ttsEngine: a.ttsEngine, ttsQwenModel: a.ttsQwenModel,
-        ttsReferenceOverride: a.ttsReferenceClip, ttsReferenceRegion: a.ttsReferenceRegion,
-        ttsReferenceConditioningMode: a.ttsReferenceConditioningMode,
-        ttsSpeakerMode: 'single',
-      })
+      void window.api.audio.process(st.doc.voicePath, 'tts',
+        processOptions(line.text, st.doc.settings, st.ref))
     }
     return () => { offP(); offR(); offE(); offCancelled() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -215,8 +229,8 @@ export default function LabWorkspace() {
     const p: string | undefined = Array.isArray(picked) ? picked[0] : (picked as any)?.path || picked
     if (typeof p !== 'string' || !p) return
     const info = await window.api.audio.getFileInfo(p)
-    const url = await window.api.audio.getFileUrl(p)
-    useAppStore.getState().setFile(info as any, url)       // 기존 목소리 준비 경로를 그대로 탄다
+    // ★합성 탭의 원본·결과·참조는 건드리지 않는다(setFile 을 부르지 않는다).
+    //   목소리 준비는 아래 숨은 준비기가 작업실 자신의 자리에 담는다.
     lab.setVoice(p, (info as any)?.name || p.split(/[/\\]/).pop() || '목소리')
   }, [])
 
@@ -252,18 +266,18 @@ export default function LabWorkspace() {
       {doc.voicePath && app.fileInfo?.path === doc.voicePath && (
         <div style={{ display: 'none' }}>
           <ReferenceRegionPanel
-            key={doc.voicePath + '|' + app.ttsRefReqId}
+            key={doc.voicePath + '|' + lab.ref.reqId}
             path={doc.voicePath} clipKey="default"
             // ★생성 중이라고 **잠그지 않는다.** 이 패널의 disabled 는 분석 효과의 의존값이라,
             //   잠갔다 풀면 참조 분석이 처음부터 다시 돈다(실측 27초). 그 동안 준비 상태가
             //   내려가 다음 테이크를 만들 수 없었다. 참조는 생성 중에 바뀌지 않는다.
             disabled={false}
             open={false} autoConfirm plainStatus
-            reqId={app.ttsRefReqId}
-            committed={app.ttsReferenceClip
-              ? { clip: app.ttsReferenceClip, region: app.ttsReferenceRegion }
-              : null}
-            onState={(s) => useAppStore.getState().setTtsRefState(s)}
+            reqId={lab.ref.reqId}
+            // 작업실 소유 설정으로 준비한다 — 합성 탭에서 엔진을 바꿔도 여기 반영되지 않는다.
+            engine={doc.settings.engine} refTargetSec={doc.settings.refTargetSec}
+            committed={lab.ref.clip ? { clip: lab.ref.clip, region: lab.ref.region } : null}
+            onState={(s) => useLabStore.getState().setRef(s)}
           />
         </div>
       )}
@@ -321,7 +335,7 @@ export default function LabWorkspace() {
             : busyElsewhere
               ? '합성 탭에서 작업이 도는 중입니다 — 끝나면 여기서 만들 수 있습니다'
               : !doc.voicePath ? '목소리를 먼저 고르세요'
-                : !app.ttsRefReady ? '목소리 준비 중입니다'
+                : !lab.ref.ready ? '목소리 준비 중입니다'
                   : ready.ready ? `전부 준비됨 — ${ready.paths.length}문장`
                     : `준비 안 된 자리 ${ready.blocking.length}곳`}
         </div>

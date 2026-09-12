@@ -5,8 +5,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  adoptedTake, emptyDoc, exportReadiness, lineStatus, linesNeedingWork, newLine,
-  parseDoc, shouldAutoAdopt, takeBadge, voiceKeyOf,
+  adoptedTake, defaultSettings, emptyDoc, exportReadiness, lineStatus, linesNeedingWork, newLine,
+  parseDoc, parseSettings, shouldAutoAdopt, takeBadge, voiceKeyOf,
   type LabDoc, type LabLine, type LabTake,
 } from './labWorkspace.ts'
 
@@ -20,7 +20,7 @@ function line(over: Partial<LabLine> = {}): LabLine {
   return { id: 'l1', text: '안녕하세요', takes: [], adoptedTakeId: null, ...over }
 }
 function doc(lines: LabLine[], voicePath = VOICE): LabDoc {
-  return { voicePath, voiceLabel: 'A', lines, updatedAt: 0 }
+  return { voicePath, voiceLabel: 'A', lines, settings: defaultSettings('auto'), updatedAt: 0 }
 }
 
 test('첫 성공 결과는 기본 채택한다', () => {
@@ -121,8 +121,38 @@ test('저장본 복원 — 없는 테이크를 가리키던 채택은 조용히 
   assert.equal(back!.lines[0].adoptedTakeId, null, '없는 파일을 고른 상태로 두면 내보내기가 거짓말을 한다')
 })
 
+test('설정은 작업실 소유다 — 초기값은 제품 기본값', () => {
+  const d = emptyDoc('auto')
+  assert.deepEqual(d.settings, {
+    speed: 1.0, silenceGap: 0.5, pitch: 0.0,
+    engine: 'auto', qwenModel: '', referenceConditioningMode: 'auto', refTargetSec: 0,
+  }, '제품 기본값과 같아야 한다 — 합성 탭의 현재 값을 끌어오지 않는다')
+})
+
+test('설정 복원 — 저장된 값은 살리고, 없거나 망가진 값만 기본값으로 채운다', () => {
+  const got = parseSettings({ speed: 1.4, engine: 'qwen', pitch: 'x', nonsense: 1 }, 'auto')
+  assert.equal(got.speed, 1.4, '저장한 값을 지키다')
+  assert.equal(got.engine, 'qwen')
+  assert.equal(got.pitch, 0.0, '망가진 값은 기본값으로')
+  assert.equal(got.silenceGap, 0.5, '없는 값은 기본값으로')
+  assert.equal(parseSettings(null, 'auto').speed, 1.0)
+})
+
+test('저장본에 설정이 없어도 기본값으로 열린다 (옛 저장본 호환)', () => {
+  const back = parseDoc({ voicePath: VOICE, lines: [{ id: 'l1', text: 'x', takes: [], adoptedTakeId: null }] }, 'auto')
+  assert.ok(back)
+  assert.deepEqual(back!.settings, defaultSettings('auto'))
+})
+
+test('설정은 문서와 함께 저장·복원된다', () => {
+  const d = { ...doc([line()]), settings: { ...defaultSettings('auto'), speed: 1.25, engine: 'qwen' } }
+  const back = parseDoc(JSON.parse(JSON.stringify(d)), 'auto')
+  assert.equal(back!.settings.speed, 1.25)
+  assert.equal(back!.settings.engine, 'qwen')
+})
+
 test('빈 작업실은 줄 하나로 시작한다', () => {
-  const d = emptyDoc()
+  const d = emptyDoc('auto')
   assert.equal(d.lines.length, 1)
   assert.equal(lineStatus(d.lines[0], ''), 'empty')
   assert.equal(adoptedTake(newLine('x')), null)

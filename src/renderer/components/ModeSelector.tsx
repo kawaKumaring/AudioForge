@@ -25,7 +25,7 @@ const modes: { id: SeparationMode; label: string; short: string; icon: ReactNode
   },
   {
     // 새 작업실 — 기존 합성 화면은 그대로 두고 옆에 둔다.
-    id: 'lab', label: '테스트개발', short: '테스트',
+    id: 'lab', label: '테스트개발', short: '테스트개발',
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
         strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">

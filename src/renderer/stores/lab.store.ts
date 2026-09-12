@@ -8,8 +8,10 @@
 import { create } from 'zustand'
 
 // @ts-ignore TS5097: node --test 가 요구하는 명시적 .ts 확장자(app.store 의 같은 관례).
-import { LAB_STORAGE_KEY, emptyDoc, newId, newLine, parseDoc, shouldAutoAdopt, voiceKeyOf } from '../../shared/labWorkspace.ts'
-import type { LabDoc, LabLine, LabTake } from '../../shared/labWorkspace'
+import { LAB_STORAGE_KEY, defaultSettings, emptyDoc, emptyRef, newId, newLine, parseDoc, shouldAutoAdopt, voiceKeyOf } from '../../shared/labWorkspace.ts'
+import type { LabDoc, LabLine, LabRefState, LabSettings, LabTake } from '../../shared/labWorkspace'
+// @ts-ignore TS5097: 위와 같은 관례.
+import { REFERENCE_CONDITIONING_RECOMMENDED } from '../../shared/ttsConfig.ts'
 
 /** 지금 돌고 있는 생성 한 건. 요청 당시의 대사·목소리를 붙들어 둔다. */
 export interface LabJob {
@@ -24,6 +26,11 @@ export interface LabJob {
 
 interface LabState {
   doc: LabDoc
+  /**
+   * 작업실이 **스스로 준비한** 목소리 상태. 합성 탭의 참조 슬롯과 다른 자리다 —
+   * 그래서 작업실에서 목소리를 골라도 합성 탭의 원본·결과·참조가 바뀌지 않는다.
+   */
+  ref: LabRefState
   /** 편집 중인 줄. 조작은 이 줄 가까이에 붙는다. */
   selectedLineId: string | null
   job: LabJob | null
@@ -33,6 +40,9 @@ interface LabState {
   loaded: boolean
 
   setDoc: (d: LabDoc) => void
+  setSettings: (patch: Partial<LabSettings>) => void
+  setRef: (patch: Partial<LabRefState>) => void
+  beginRefRequest: () => void
   setVoice: (path: string, label: string) => void
   selectLine: (id: string | null) => void
   setLineText: (id: string, text: string) => void
@@ -47,8 +57,11 @@ interface LabState {
   markLoaded: () => void
 }
 
+let refSeq = 0
+
 export const useLabStore = create<LabState>((set) => ({
-  doc: emptyDoc(),
+  doc: emptyDoc(REFERENCE_CONDITIONING_RECOMMENDED),
+  ref: emptyRef(),
   selectedLineId: null,
   job: null,
   progress: null,
@@ -58,10 +71,32 @@ export const useLabStore = create<LabState>((set) => ({
 
   setDoc: (d) => set({ doc: d }),
 
-  // 목소리를 바꿔도 **기존 테이크를 지우지 않는다.** 꼬리표('이전 목소리')가 붙을 뿐이다.
-  setVoice: (path, label) => set((s) => ({
-    doc: { ...s.doc, voicePath: path, voiceLabel: label, updatedAt: Date.now() },
+  setSettings: (patch) => set((s) => ({
+    doc: { ...s.doc, settings: { ...s.doc.settings, ...patch }, updatedAt: Date.now() },
   })),
+
+  // 낡은 보고는 버린다 — 목소리를 연달아 바꾸면 먼저 낸 분석이 늦게 도착할 수 있다.
+  setRef: (patch) => set((s) => {
+    if (patch.reqId && s.ref.reqId && patch.reqId !== s.ref.reqId) return {}
+    const next = { ...s.ref, ...patch }
+    if (patch.phase !== undefined) next.ready = patch.phase === 'ready'
+    return { ref: next }
+  }),
+
+  beginRefRequest: () => set(() => {
+    refSeq += 1
+    return { ref: { ...emptyRef(), phase: 'preparing', reqId: `labref_${Date.now().toString(36)}_${refSeq}` } }
+  }),
+
+  // 목소리를 바꿔도 **기존 테이크를 지우지 않는다.** 꼬리표('이전 목소리')가 붙을 뿐이다.
+  // 새 목소리는 준비를 처음부터 다시 해야 하므로 준비 상태만 새 요청으로 돌린다.
+  setVoice: (path, label) => set((s) => {
+    refSeq += 1
+    return {
+      doc: { ...s.doc, voicePath: path, voiceLabel: label, updatedAt: Date.now() },
+      ref: { ...emptyRef(), phase: 'preparing', reqId: `labref_${Date.now().toString(36)}_${refSeq}` },
+    }
+  }),
 
   selectLine: (id) => set({ selectedLineId: id }),
 
@@ -125,5 +160,5 @@ export const useLabStore = create<LabState>((set) => ({
   markLoaded: () => set({ loaded: true }),
 }))
 
-export { LAB_STORAGE_KEY, newId, parseDoc }
-export type { LabDoc, LabLine, LabTake }
+export { LAB_STORAGE_KEY, defaultSettings, newId, parseDoc, REFERENCE_CONDITIONING_RECOMMENDED }
+export type { LabDoc, LabLine, LabRefState, LabSettings, LabTake }
