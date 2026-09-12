@@ -10,6 +10,7 @@ import TrackList from '@/components/TrackList'
 import Options from '@/components/Options'
 import SplitEditor from '@/components/SplitEditor'
 import TTSEditor from '@/components/TTSEditor'
+import LabWorkspace from '@/components/LabWorkspace'
 import TtsResultInfo from '@/components/TtsResultInfo'
 import AppVersionLabel from '@/components/AppVersionLabel'
 import { loadPlaybackVolume } from '@/lib/playbackVolume'
@@ -175,7 +176,8 @@ export default function App() {
             {/* 모드 + 옵션 + 버튼 + 결과 */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               <ModeSelector />
-              {mode === 'split' ? <SplitEditor /> : mode === 'tts' ? <TTSEditor /> : <Options />}
+              {mode === 'split' ? <SplitEditor /> : mode === 'tts' ? <TTSEditor />
+                : mode === 'lab' ? <LabWorkspace /> : <Options />}
               {/* 합성 화면에서는 시작·취소 버튼과 진행 상태를 [음성 만들기] 카드 안에서 그린다 —
                   제목만 있는 단계 카드와 그 아래 버튼으로 나뉘어 있으면 '어디가 실행 자리인가'가 생긴다.
                   다른 모드는 지금까지와 같은 자리다. */}

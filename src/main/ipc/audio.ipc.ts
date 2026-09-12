@@ -28,6 +28,8 @@ import {
 } from '../../shared/emotionCandidateRegistry'
 import { WORK_DRAFT_STORAGE_KEY } from '../../shared/workDraft'
 import { PLAYBACK_VOLUME_STORAGE_KEY } from '../../shared/playbackVolume'
+import { LAB_STORAGE_KEY } from '../../shared/labWorkspace'
+import { registerLabIpc } from './lab.ipc'
 import { readSettingsFile, setSettingsKey } from '../services/settings-store'
 import type { SidecarEnvelope } from '../../shared/sidecarEvents'
 // 타입만 가져온다 — 참조 라이브러리 모듈을 런타임에 끌어오지 않으므로 순환 의존이 생기지 않는다.
@@ -261,6 +263,8 @@ export interface AudioIpcAdapters {
 }
 
 export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
+  // 테스트개발 작업실이 쓰는 두 가지(테이크 보관·이어 붙여 내보내기). 합성 경로와 무관하다.
+  registerLabIpc(mainWindow)
   // 영속화된 사용자 지정 python 경로가 있으면 우선 적용(재시작 후에도 유지) — L-6.
   // 사용자의 명시적 선택이 자동 해석(env.json/기본값)보다 우선한다.
   try {
@@ -1276,6 +1280,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       [WORK_DRAFT_STORAGE_KEY]: stored[WORK_DRAFT_STORAGE_KEY] ?? null,
       // 재생 음량(미리듣기·결과 공용). 없으면 null → renderer 가 기본값(최대)을 쓴다.
       [PLAYBACK_VOLUME_STORAGE_KEY]: stored[PLAYBACK_VOLUME_STORAGE_KEY] ?? null,
+      // 테스트개발 작업실 — 기존 작업 저장과 **다른 열쇠**다(섞이지 않는다).
+      [LAB_STORAGE_KEY]: stored[LAB_STORAGE_KEY] ?? null,
     }
   })
 
@@ -1300,7 +1306,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     // 옮기기만 한다. 저장 성공 여부를 그대로 돌려준다 — 실패를 persisted 로 표시하면
     // 사용자는 저장된 줄 알고 앱을 닫는다.
     if (key === GLOBAL_ASSET_STORAGE_KEY || key === VOICE_CAST_STORAGE_KEY
-        || key === WORK_DRAFT_STORAGE_KEY || key === PLAYBACK_VOLUME_STORAGE_KEY) {
+        || key === WORK_DRAFT_STORAGE_KEY || key === PLAYBACK_VOLUME_STORAGE_KEY
+        || key === LAB_STORAGE_KEY) {
       // 배역 세트도 같은 원자 경로를 쓴다. 두 키는 서로를 덮지 않는다 —
       // settings-store 가 현재 파일을 읽어 그 키 하나만 갱신한다.
       return saveSetting(key, value ?? undefined)

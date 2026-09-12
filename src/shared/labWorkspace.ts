@@ -1,0 +1,205 @@
+// 테스트개발 작업실 — **판정 규칙의 단일 소유자**.
+//
+// 이 작업실이 다루는 것은 하나다: 대본을 쓰고, 문장별로 음성을 만들고, 마음에 드는 것을 골라
+// 전체를 완성한다. 그래서 어려운 판정도 딱 두 가지뿐이다.
+//   · 이 결과가 **지금 대사·지금 목소리**의 것인가
+//   · 전체를 듣거나 내보낼 때 **빠지거나 낡은 자리**가 어디인가
+//
+// 화면과 저장과 검사가 이 규칙을 각자 다시 쓰면 반드시 갈라진다. 그래서 여기 하나로 둔다.
+// **소리를 만드는 일은 이 파일이 하지 않는다** — 기존 합성 경로를 그대로 부른다.
+
+/** 한 번의 생성으로 나온 결과 하나. 재생성은 이것을 덮지 않고 새로 만든다. */
+export interface LabTake {
+  id: string
+  /** 안전한 자리로 옮겨 둔 소리 파일. 임시 정리에 휩쓸리지 않는 곳이다. */
+  path: string
+  /** **요청 당시의** 대사. 지금 대사와 다르면 '수정 전 대사' 다. */
+  text: string
+  /** **요청 당시의** 목소리 식별값. 지금과 다르면 '이전 목소리' 다. */
+  voiceKey: string
+  createdAt: number
+}
+
+export interface LabLine {
+  id: string
+  text: string
+  takes: LabTake[]
+  /** 사용자가 고른 테이크. 처음 성공한 것이 자동으로 여기 들어간다. */
+  adoptedTakeId: string | null
+}
+
+export interface LabDoc {
+  /** 지금 쓰는 목소리. 파일 경로가 곧 식별값이다(첫 시제품은 한 목소리만 쓴다). */
+  voicePath: string
+  voiceLabel: string
+  lines: LabLine[]
+  updatedAt: number
+}
+
+/** 목소리 식별값. 지금은 경로 하나지만, 판정이 이 함수 하나만 보게 해 둔다. */
+export function voiceKeyOf(voicePath: string): string {
+  return (voicePath || '').trim()
+}
+
+export function emptyDoc(): LabDoc {
+  return { voicePath: '', voiceLabel: '', lines: [newLine('')], updatedAt: Date.now() }
+}
+
+let seq = 0
+export function newId(prefix: string): string {
+  seq += 1
+  return `${prefix}_${Date.now().toString(36)}_${seq.toString(36)}`
+}
+
+export function newLine(text: string): LabLine {
+  return { id: newId('ln'), text, takes: [], adoptedTakeId: null }
+}
+
+export function adoptedTake(line: LabLine): LabTake | null {
+  if (!line.adoptedTakeId) return null
+  return line.takes.find((t) => t.id === line.adoptedTakeId) || null
+}
+
+/** 이 테이크가 지금 대사와 같은가. 다르면 '수정 전 대사'. */
+export function takeMatchesText(take: LabTake, line: LabLine): boolean {
+  return take.text === line.text
+}
+
+/** 이 테이크가 지금 목소리로 만든 것인가. 다르면 '이전 목소리'. */
+export function takeMatchesVoice(take: LabTake, voiceKey: string): boolean {
+  return take.voiceKey === voiceKey
+}
+
+export type LineStatus =
+  | 'empty'        // 대사가 비어 있다 — 만들 것이 없다
+  | 'none'         // 아직 만든 적이 없다
+  | 'stale_text'   // 채택한 결과가 수정 전 대사의 것이다
+  | 'stale_voice'  // 채택한 결과가 이전 목소리의 것이다
+  | 'ready'        // 지금 대사·지금 목소리의 결과가 채택돼 있다
+
+/**
+ * 이 줄의 상태. **전체 듣기·내보내기·변경분 생성이 모두 이 판정 하나를 쓴다.**
+ * 낡은 결과를 최신인 것처럼 다루지 않기 위해서다.
+ */
+export function lineStatus(line: LabLine, voiceKey: string): LineStatus {
+  if (!line.text.trim()) return 'empty'
+  const t = adoptedTake(line)
+  if (!t) return 'none'
+  if (!takeMatchesText(t, line)) return 'stale_text'
+  if (!takeMatchesVoice(t, voiceKey)) return 'stale_voice'
+  return 'ready'
+}
+
+export function lineStatusText(s: LineStatus): string {
+  switch (s) {
+    case 'empty': return '대사 없음'
+    case 'none': return '아직 안 만듦'
+    case 'stale_text': return '수정 전 대사의 결과'
+    case 'stale_voice': return '이전 목소리의 결과'
+    case 'ready': return '준비됨'
+  }
+}
+
+/** 테이크 하나에 붙일 꼬리표(없으면 빈 문자열). */
+export function takeBadge(take: LabTake, line: LabLine, voiceKey: string): string {
+  if (!takeMatchesText(take, line)) return '수정 전 대사'
+  if (!takeMatchesVoice(take, voiceKey)) return '이전 목소리'
+  return ''
+}
+
+/** 다시 만들어야 하는 줄들 — 대사가 있는데 준비되지 않은 것 전부. */
+export function linesNeedingWork(doc: LabDoc): LabLine[] {
+  const vk = voiceKeyOf(doc.voicePath)
+  return doc.lines.filter((l) => {
+    const s = lineStatus(l, vk)
+    return s === 'none' || s === 'stale_text' || s === 'stale_voice'
+  })
+}
+
+export interface ExportReadiness {
+  ready: boolean
+  /** 순서대로 이어 붙일 파일들. ready 가 아니면 비어 있다. */
+  paths: string[]
+  /** 막고 있는 자리들 — 몇 번째 줄이 왜 안 되는지. */
+  blocking: { index: number; status: LineStatus; text: string }[]
+  /** 대사가 비어 건너뛴 줄 수(막는 것이 아니다). */
+  skippedEmpty: number
+}
+
+/**
+ * 전체 듣기·내보내기가 쓸 목록.
+ *
+ * ★**빠진 문장을 조용히 빼지 않는다.** 준비되지 않은 자리가 하나라도 있으면 ready=false 이고
+ *   어디가 왜 막는지 그대로 돌려준다. 옛 결과를 최신인 것처럼 내보내지 않는다.
+ *   대사가 비어 있는 줄만 조용히 건너뛴다(만들 것이 없으므로) — 그 수도 함께 알린다.
+ */
+export function exportReadiness(doc: LabDoc): ExportReadiness {
+  const vk = voiceKeyOf(doc.voicePath)
+  const paths: string[] = []
+  const blocking: ExportReadiness['blocking'] = []
+  let skippedEmpty = 0
+  doc.lines.forEach((l, i) => {
+    const s = lineStatus(l, vk)
+    if (s === 'empty') { skippedEmpty += 1; return }
+    if (s === 'ready') {
+      const t = adoptedTake(l)
+      if (t) { paths.push(t.path); return }
+    }
+    blocking.push({ index: i, status: s, text: l.text })
+  })
+  return { ready: blocking.length === 0 && paths.length > 0, paths, blocking, skippedEmpty }
+}
+
+/**
+ * 늦게 도착한 결과를 받아들일지 판정한다.
+ *
+ * ★생성 도중에 대사를 고쳤을 수 있다. 그때 늦게 온 결과를 **현재 대사의 최신 결과로 표시하면
+ *   거짓말이 된다.** 그래서 요청 당시의 대사·목소리를 결과에 붙여 두고, 지금과 같을 때만
+ *   자동 채택한다. 다르면 **버리지 않고** 테이크로 남기되 꼬리표가 붙는다.
+ */
+export function shouldAutoAdopt(line: LabLine, take: LabTake, voiceKey: string): boolean {
+  if (!takeMatchesText(take, line)) return false
+  if (!takeMatchesVoice(take, voiceKey)) return false
+  // 이미 사용자가 고른 것이 있으면 새 테이크가 그것을 밀어내지 않는다.
+  const cur = adoptedTake(line)
+  if (cur) return false
+  return true
+}
+
+/** 저장 열쇠 — 기존 작업 저장과 섞이지 않게 **따로** 쓴다. */
+export const LAB_STORAGE_KEY = 'labWorkspace'
+
+/** 저장본에서 문서를 되살린다. 모양이 어긋나면 지어내지 않고 null. */
+export function parseDoc(raw: unknown): LabDoc | null {
+  if (!raw || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  if (!Array.isArray(o.lines)) return null
+  const lines: LabLine[] = []
+  for (const l of o.lines) {
+    if (!l || typeof l !== 'object') return null
+    const ln = l as Record<string, unknown>
+    if (typeof ln.id !== 'string' || typeof ln.text !== 'string') return null
+    const takes: LabTake[] = []
+    for (const t of Array.isArray(ln.takes) ? ln.takes : []) {
+      const tk = t as Record<string, unknown>
+      if (!tk || typeof tk.id !== 'string' || typeof tk.path !== 'string') continue
+      takes.push({
+        id: tk.id, path: tk.path,
+        text: typeof tk.text === 'string' ? tk.text : '',
+        voiceKey: typeof tk.voiceKey === 'string' ? tk.voiceKey : '',
+        createdAt: typeof tk.createdAt === 'number' ? tk.createdAt : 0,
+      })
+    }
+    const adopted = typeof ln.adoptedTakeId === 'string' ? ln.adoptedTakeId : null
+    lines.push({
+      id: ln.id, text: ln.text, takes,
+      adoptedTakeId: adopted && takes.some((t) => t.id === adopted) ? adopted : null,
+    })
+  }
+  return {
+    voicePath: typeof o.voicePath === 'string' ? o.voicePath : '',
+    voiceLabel: typeof o.voiceLabel === 'string' ? o.voiceLabel : '',
+    lines: lines.length ? lines : [newLine('')],
+    updatedAt: typeof o.updatedAt === 'number' ? o.updatedAt : 0,
+  }
+}

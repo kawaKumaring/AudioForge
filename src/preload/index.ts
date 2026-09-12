@@ -113,6 +113,16 @@ const api = {
       return () => ipcRenderer.removeListener('audio:cancel-failed', handler)
     }
   },
+  // 테스트개발 작업실 — 테이크 보관과 이어 붙여 내보내기만. 생성은 기존 audio.process 를 쓴다.
+  lab: {
+    keepTake: (srcPath: string, takeId: string): Promise<{ ok: boolean; path?: string; reason?: string }> =>
+      ipcRenderer.invoke('lab:keep-take', srcPath, takeId),
+    pruneTakes: (keepIds: string[]): Promise<{ ok: boolean; removed: number }> =>
+      ipcRenderer.invoke('lab:prune-takes', keepIds),
+    exportAll: (paths: string[], suggestedName?: string): Promise<{
+      ok: boolean; path?: string; parts?: number; bytes?: number; canceled?: boolean; reason?: string
+    }> => ipcRenderer.invoke('lab:export', paths, suggestedName),
+  },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     set: (key: string, value: unknown) => ipcRenderer.invoke('settings:set', key, value),

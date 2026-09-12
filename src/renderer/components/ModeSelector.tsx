@@ -22,11 +22,22 @@ const modes: { id: SeparationMode; label: string; short: string; icon: ReactNode
   {
     id: 'tts', label: '음성 합성', short: '합성',
     icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="23" /></svg>
-  }
+  },
+  {
+    // 새 작업실 — 기존 합성 화면은 그대로 두고 옆에 둔다.
+    id: 'lab', label: '테스트개발', short: '테스트',
+    icon: (
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+        strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+        <path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3" />
+      </svg>
+    ),
+  },
 ]
 
 const MODE_COLORS: Record<string, string> = {
   music: 'var(--accent)',
+  lab: 'var(--cyan)',
   conversation: 'var(--cyan)',
   transcribe: 'var(--emerald)',
   split: 'var(--amber)',
@@ -48,6 +59,7 @@ export default function ModeSelector() {
         return (
           <button
             key={m.id}
+            data-testid={`mode-${m.id}`}
             onClick={() => !disabled && setMode(m.id)}
             disabled={disabled}
             style={{
