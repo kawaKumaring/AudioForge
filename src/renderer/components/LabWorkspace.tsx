@@ -64,6 +64,8 @@ export default function LabWorkspace() {
   const [playingTakeId, setPlayingTakeId] = useState<string | null>(null)
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const chainRef = useRef<{ stop: boolean }>({ stop: false })
+  /** 전체 듣기가 '이 문장이 끝나기'를 기다리는 자리. 멈출 때 풀어 줘야 한다. */
+  const waiterRef = useRef<(() => void) | null>(null)
 
   // ── 저장·복원 — 기존 작업 저장과 **다른 열쇠**를 쓴다 ─────────────────────
   useEffect(() => {
@@ -98,9 +100,20 @@ export default function LabWorkspace() {
   }, [doc, lab.loaded])
 
   // ── 재생 ────────────────────────────────────────────────────────────────
+  /**
+   * 재생을 **실제로** 멈춘다. 합성 작업 취소와는 다른 일이다 — 만들던 것은 계속 만든다.
+   *
+   * ★pause() 는 'ended' 를 내지 않는다. 전체 듣기는 문장이 끝나기를 기다리고 있으므로,
+   *   기다리는 쪽을 직접 풀어 주지 않으면 그 자리에 멈춘 채 남는다.
+   */
   const stopPlay = useCallback(() => {
     chainRef.current.stop = true
-    try { audioRef.current?.pause() } catch { /* noop */ }
+    const el = audioRef.current
+    try { el?.pause() } catch { /* noop */ }
+    if (el) { el.onended = null; el.onerror = null }
+    const w = waiterRef.current
+    waiterRef.current = null
+    if (w) w()
     setPlayingTakeId(null)
   }, [])
 
@@ -113,8 +126,15 @@ export default function LabWorkspace() {
     el.src = url
     setPlayingTakeId(takeId)
     el.onended = () => setPlayingTakeId(null)
+    el.onerror = () => setPlayingTakeId(null)
     try { await el.play() } catch { setPlayingTakeId(null) }
   }, [stopPlay])
+
+  /** 같은 것을 누르면 멈추고, 다른 것을 누르면 그것을 재생한다. */
+  const togglePlay = useCallback((path: string, takeId: string) => {
+    if (playingTakeId === takeId) { stopPlay(); return }
+    void playPath(path, takeId)
+  }, [playingTakeId, playPath, stopPlay])
 
   /** 전체 듣기 — 채택한 테이크를 대본 순서대로. 준비되지 않은 자리가 있으면 시작하지 않는다. */
   const playAll = useCallback(async () => {
@@ -134,14 +154,23 @@ export default function LabWorkspace() {
       el.src = url
       setPlayingTakeId('all')
       await new Promise<void>((resolve) => {
-        el.onended = () => resolve()
-        el.onerror = () => resolve()
-        el.play().catch(() => resolve())
+        const done = () => { waiterRef.current = null; resolve() }
+        waiterRef.current = done          // 멈춤 단추가 이 자리를 풀어 준다
+        el.onended = done
+        el.onerror = done
+        el.play().catch(done)
       })
+      if (chain.stop) break               // 멈췄으면 **다음 문장으로 넘어가지 않는다**
     }
-    setPlayingTakeId(null)
+    if (!chain.stop) setPlayingTakeId(null)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc, stopPlay])
+
+  /** 전체 듣기 단추 — 도는 중이면 멈춘다. */
+  const togglePlayAll = useCallback(() => {
+    if (playingTakeId === 'all') { stopPlay(); return }
+    void playAll()
+  }, [playingTakeId, playAll, stopPlay])
 
   // ── 생성 — 기존 합성 경로를 그대로 부른다 ─────────────────────────────────
   const busyElsewhere = app.status === 'processing' && !job
@@ -296,7 +325,7 @@ export default function LabWorkspace() {
             onEnter={() => lab.addLineAfter(line.id)}
             onRemove={() => lab.removeLine(line.id)}
             onGenerate={() => startJob([line.id])}
-            onPlay={(p, id) => { void playPath(p, id) }}
+            onPlay={togglePlay}
             onAdopt={(tid) => lab.adopt(line.id, tid)}
           />
         ))}
@@ -311,7 +340,8 @@ export default function LabWorkspace() {
         position: 'sticky', bottom: 0, padding: '10px 14px', display: 'flex',
         alignItems: 'center', gap: 8, flexWrap: 'wrap', background: 'var(--bg-elevated)',
       })}>
-        <button data-testid="lab-play-all" onClick={() => { void playAll() }}
+        <button data-testid="lab-play-all" onClick={togglePlayAll}
+          title={"사용 중인 음성을 대본 순서대로 이어서 들려줍니다."}
           disabled={!!job} style={btn('var(--bg-card)', 'var(--text-primary)', !!job)}>
           {playingTakeId === 'all' ? '■ 멈춤' : '▶ 전체 듣기'}
         </button>
@@ -327,7 +357,8 @@ export default function LabWorkspace() {
         </button>
         {job && (
           <button data-testid="lab-cancel" onClick={() => { void window.api.audio.cancel() }}
-            style={btn('var(--bg-card)', 'var(--rose, #fb7185)')}>취소</button>
+            title={"만드는 중인 작업을 멈춥니다. 재생 중지가 아닙니다."}
+            style={btn('var(--bg-card)', 'var(--rose, #fb7185)')}>만들기 취소</button>
         )}
         <div data-testid="lab-status" style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto', textAlign: 'right' }}>
           {job
@@ -410,9 +441,12 @@ function LineRow(p: LineRowProps) {
       {p.selected && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', padding: '6px 0 2px 30px' }}>
           <button data-testid="lab-line-generate" onClick={p.onGenerate}
+            title={p.line.takes.length
+              ? "이전 음성은 보관하고 새 음성을 추가합니다."
+              : "이 문장의 음성을 만듭니다."}
             disabled={!p.canGenerate || !p.line.text.trim()}
             style={btn('var(--accent)', '#fff', !p.canGenerate || !p.line.text.trim())}>
-            {p.line.takes.length ? '다른 테이크 만들기' : '만들기'}
+            {p.line.takes.length ? '추가 생성' : '만들기'}
           </button>
           {adopted && (
             <button data-testid="lab-line-play" onClick={() => p.onPlay(adopted.path, adopted.id)}
@@ -424,6 +458,9 @@ function LineRow(p: LineRowProps) {
 
           {p.line.takes.length > 0 && (
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', width: '100%', paddingTop: 4 }}>
+              <span style={{ fontSize: 10, color: 'var(--text-muted)', width: '100%' }}>
+                들어보고 사용할 음성을 고르세요.
+              </span>
               {p.line.takes.map((t, i) => {
                 const badge = takeBadge(t, p.line, p.voiceKey)
                 const isAdopted = p.line.adoptedTakeId === t.id
@@ -435,16 +472,17 @@ function LineRow(p: LineRowProps) {
                       border: `1px solid ${isAdopted ? 'var(--border-accent)' : 'var(--border-subtle)'}`,
                       background: isAdopted ? 'var(--accent-glow)' : 'transparent',
                     }}>
-                    <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>테이크 {i + 1}</span>
+                    <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>생성본 {i + 1}</span>
                     {badge && <span style={{ fontSize: 10, color: 'var(--amber, #fbbf24)' }}>{badge}</span>}
                     <button onClick={() => p.onPlay(t.path, t.id)}
                       style={{ ...btn('transparent', 'var(--text-primary)'), padding: '0 4px' }}>
                       {p.playingTakeId === t.id ? '■' : '▶'}
                     </button>
                     <button data-testid="lab-take-adopt" onClick={() => p.onAdopt(t.id)}
+                      title={"전체 듣기와 내보내기에 이 음성을 사용합니다."}
                       disabled={isAdopted}
                       style={{ ...btn('transparent', isAdopted ? 'var(--text-muted)' : 'var(--cyan)', isAdopted), padding: '0 4px' }}>
-                      {isAdopted ? '사용 중' : '이걸로'}
+                      {isAdopted ? '사용 중' : '이 음성 사용'}
                     </button>
                   </div>
                 )

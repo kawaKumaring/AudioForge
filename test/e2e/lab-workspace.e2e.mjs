@@ -150,7 +150,7 @@ try {
   if (!g2.ok) throw new Error('생성 ② 실패')
   await win.waitForTimeout(1500)
   takes = await takesOf(win)
-  ok(takes.length === 2, '이전 파일을 덮지 않는다 — 테이크 2개')
+  ok(takes.length === 2, '이전 파일을 덮지 않는다 — 생성본 2개')
   ok(takes[0].adopted && !takes[1].adopted, '새 테이크가 고른 결과를 자동 교체하지 않는다')
 
   // 사용자가 두 번째를 고른다
