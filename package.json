@@ -47,6 +47,7 @@
     "test:e2e:lab": "node test/e2e/lab-workspace.e2e.mjs",
     "test:e2e:lab-indep": "node test/e2e/lab-independence.e2e.mjs",
     "test:e2e:lab-stop": "node test/e2e/lab-stop-playback.e2e.mjs",
+    "test:e2e:lab-edit": "node test/e2e/lab-edit-order.e2e.mjs",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {

@@ -66,6 +66,8 @@ export default function LabWorkspace() {
   const chainRef = useRef<{ stop: boolean }>({ stop: false })
   /** 전체 듣기가 '이 문장이 끝나기'를 기다리는 자리. 멈출 때 풀어 줘야 한다. */
   const waiterRef = useRef<(() => void) | null>(null)
+  /** 순서 바꾸기 — 끌고 있는 문장과 놓일 자리(그 문장 **앞**인지). */
+  const [drag, setDrag] = useState<{ id: string; overId: string; before: boolean } | null>(null)
 
   // ── 저장·복원 — 기존 작업 저장과 **다른 열쇠**를 쓴다 ─────────────────────
   useEffect(() => {
@@ -263,6 +265,28 @@ export default function LabWorkspace() {
     lab.setVoice(p, (info as any)?.name || p.split(/[/\\]/).pop() || '목소리')
   }, [])
 
+  /**
+   * 문장을 지우거나 옮기기 전에 **재생을 멈춘다.**
+   * 전체 듣기는 시작할 때의 순서를 따라 돌고 있으므로, 그대로 두면 이전 순서로 다음 문장이 나간다.
+   */
+  const removeLine = useCallback((id: string) => {
+    stopPlay()
+    lab.removeLine(id)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stopPlay])
+
+  const dropLine = useCallback(() => {
+    const d = drag
+    setDrag(null)
+    if (!d) return
+    const lines = useLabStore.getState().doc.lines
+    const at = lines.findIndex((l) => l.id === d.overId)
+    if (at < 0 || d.overId === d.id) return
+    stopPlay()
+    lab.moveLine(d.id, d.before ? at : at + 1)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drag, stopPlay])
+
   const need = useMemo(() => linesNeedingWork(doc), [doc])
   const ready = useMemo(() => exportReadiness(doc), [doc])
 
@@ -323,7 +347,15 @@ export default function LabWorkspace() {
             onSelect={() => lab.selectLine(line.id)}
             onChange={(v) => lab.setLineText(line.id, v)}
             onEnter={() => lab.addLineAfter(line.id)}
-            onRemove={() => lab.removeLine(line.id)}
+            onRemove={() => removeLine(line.id)}
+            dragging={drag?.id === line.id}
+            dropBefore={!!drag && drag.overId === line.id && drag.before && drag.id !== line.id}
+            dropAfterLast={!!drag && drag.overId === line.id && !drag.before && drag.id !== line.id}
+            onDragStartLine={() => setDrag({ id: line.id, overId: line.id, before: true })}
+            onDragOverLine={(before) => setDrag((d) => (d && (d.overId !== line.id || d.before !== before)
+              ? { ...d, overId: line.id, before } : d))}
+            onDropLine={dropLine}
+            onDragEndLine={() => setDrag(null)}
             onGenerate={() => startJob([line.id])}
             onPlay={togglePlay}
             onAdopt={(tid) => lab.adopt(line.id, tid)}
@@ -378,6 +410,13 @@ export default function LabWorkspace() {
           color: lab.error ? 'var(--rose, #fb7185)' : 'var(--text-secondary)',
         })}>
           {lab.error || lab.notice}
+          {lab.removed && (
+            <button data-testid="lab-undo-remove" onClick={() => lab.undoRemove()}
+              title={"방금 지운 문장을 되살립니다. 생성본도 함께 돌아옵니다."}
+              style={{ ...btn('var(--bg-card)', 'var(--cyan)'), padding: '2px 10px', marginLeft: 10 }}>
+              실행 취소
+            </button>
+          )}
           <button onClick={() => { lab.setError(null); lab.setNotice(null) }}
             style={{ ...btn('transparent', 'var(--text-muted)'), padding: '0 6px', marginLeft: 8 }}>닫기</button>
         </div>
@@ -398,23 +437,57 @@ function noticeFor(r: ReturnType<typeof exportReadiness>): string {
 interface LineRowProps {
   line: LabLine; index: number; voiceKey: string
   selected: boolean; busy: boolean; canGenerate: boolean; playingTakeId: string | null
+  /** 지금 끌고 있는 문장인가 / 이 자리에 놓이는가 — 갈 자리를 눈에 보이게 한다. */
+  dragging: boolean; dropBefore: boolean; dropAfterLast: boolean
   onSelect: () => void; onChange: (v: string) => void; onEnter: () => void; onRemove: () => void
   onGenerate: () => void; onPlay: (path: string, takeId: string) => void; onAdopt: (takeId: string) => void
+  onDragStartLine: () => void; onDragOverLine: (before: boolean) => void; onDropLine: () => void
+  onDragEndLine: () => void
 }
 
 function LineRow(p: LineRowProps) {
   const st = lineStatus(p.line, p.voiceKey)
   const adopted = adoptedTake(p.line)
+  // 갈 자리 표시 — 이 줄의 위/아래에 얇은 선을 긋는다.
+  const mark = '2px solid var(--accent)'
   return (
     <div data-testid="lab-line" data-line-status={st}
+      data-drop={p.dropBefore ? 'before' : p.dropAfterLast ? 'after' : ''}
       onFocus={p.onSelect} onClick={p.onSelect}
+      // 끌어 놓기는 **손잡이에서만** 시작한다(아래 draggable 토글). 글자 선택과 부딪히지 않는다.
+      onDragOver={(e) => {
+        e.preventDefault()
+        const r = e.currentTarget.getBoundingClientRect()
+        p.onDragOverLine(e.clientY < r.top + r.height / 2)
+      }}
+      onDrop={(e) => { e.preventDefault(); p.onDropLine() }}
+      onDragEnd={p.onDragEndLine}
       style={{
+        opacity: p.dragging ? 0.45 : 1,
+        borderTop: p.dropBefore ? mark : '2px solid transparent',
+        borderBottom: p.dropAfterLast ? mark : '2px solid transparent',
         borderRadius: 10, padding: '6px 8px',
         background: p.selected ? 'var(--bg-elevated)' : 'transparent',
       }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
+        {/* 순서 바꾸기 손잡이 — 여기서만 끌기가 시작된다. */}
+        <span data-testid="lab-line-handle"
+          draggable
+          onDragStart={(e) => { e.dataTransfer.effectAllowed = 'move'; p.onDragStartLine() }}
+          onDragEnd={p.onDragEndLine}
+          title={"끌어서 문장 순서를 바꿉니다."}
+          style={{
+            cursor: 'grab', color: 'var(--text-muted)', paddingTop: 6, flexShrink: 0,
+            lineHeight: 1, userSelect: 'none',
+          }}>
+          <svg width="10" height="16" viewBox="0 0 10 16" fill="currentColor" aria-hidden="true">
+            <circle cx="2.5" cy="3" r="1.2" /><circle cx="7.5" cy="3" r="1.2" />
+            <circle cx="2.5" cy="8" r="1.2" /><circle cx="7.5" cy="8" r="1.2" />
+            <circle cx="2.5" cy="13" r="1.2" /><circle cx="7.5" cy="13" r="1.2" />
+          </svg>
+        </span>
         <span style={{
-          fontSize: 11, color: 'var(--text-muted)', width: 22, textAlign: 'right',
+          fontSize: 11, color: 'var(--text-muted)', width: 20, textAlign: 'right',
           paddingTop: 7, flexShrink: 0, fontVariantNumeric: 'tabular-nums',
         }}>{p.index + 1}</span>
         {/* 한 줄 = 한 발화. 줄마다 입력칸이 따로라 자동 분리로 입력을 바꾸지 않는다. */}
@@ -435,6 +508,14 @@ function LineRow(p: LineRowProps) {
         <span data-testid="lab-line-status" style={{
           fontSize: 10, color: STATUS_COLOR[st], paddingTop: 8, flexShrink: 0, minWidth: 84, textAlign: 'right',
         }}>{p.busy ? '만드는 중…' : lineStatusText(st)}</span>
+        {/* 삭제는 **늘 보인다** — 줄을 고르지 않아도 찾을 수 있어야 한다. */}
+        <button data-testid="lab-line-remove" onClick={p.onRemove} disabled={p.busy}
+          title={p.busy ? "만드는 중에는 지울 수 없습니다." : "문장 삭제"}
+          aria-label="문장 삭제"
+          style={{
+            ...btn('transparent', p.busy ? 'var(--text-muted)' : 'var(--text-secondary)', p.busy),
+            padding: '2px 6px', marginTop: 4, flexShrink: 0, fontSize: 14, lineHeight: 1,
+          }}>×</button>
       </div>
 
       {/* 고른 줄 바로 아래에 조작을 둔다 — 상세 화면 안에 숨기지 않는다. */}
@@ -454,7 +535,6 @@ function LineRow(p: LineRowProps) {
               {p.playingTakeId === adopted.id ? '■ 멈춤' : '▶ 듣기'}
             </button>
           )}
-          <button onClick={p.onRemove} style={btn('transparent', 'var(--text-muted)')}>문장 지우기</button>
 
           {p.line.takes.length > 0 && (
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', width: '100%', paddingTop: 4 }}>

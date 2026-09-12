@@ -38,6 +38,13 @@ interface LabState {
   error: string | null
   notice: string | null
   loaded: boolean
+  /**
+   * 방금 지운 문장 — **실행 취소**로 되돌릴 자리.
+   *
+   * ★지운 문장의 생성본 파일은 **지우지 않는다.** 되돌릴 수 있어야 하고, 되돌린 뒤에도
+   *   들을 수 있어야 하기 때문이다. 보관소 정리는 사용자가 따로 시킬 때만 한다.
+   */
+  removed: { line: LabLine; index: number } | null
 
   setDoc: (d: LabDoc) => void
   setSettings: (patch: Partial<LabSettings>) => void
@@ -48,6 +55,8 @@ interface LabState {
   setLineText: (id: string, text: string) => void
   addLineAfter: (id: string | null) => string
   removeLine: (id: string) => void
+  undoRemove: () => void
+  moveLine: (id: string, toIndex: number) => void
   addTake: (lineId: string, take: LabTake) => void
   adopt: (lineId: string, takeId: string) => void
   setJob: (j: LabJob | null) => void
@@ -68,6 +77,7 @@ export const useLabStore = create<LabState>((set) => ({
   error: null,
   notice: null,
   loaded: false,
+  removed: null,
 
   setDoc: (d) => set({ doc: d }),
 
@@ -120,12 +130,48 @@ export const useLabStore = create<LabState>((set) => ({
     return line.id
   },
 
+  // 지운 문장은 **되돌릴 수 있게** 한 자리 붙들어 둔다. 생성본 파일은 건드리지 않는다.
   removeLine: (id) => set((s) => {
+    const index = s.doc.lines.findIndex((l) => l.id === id)
+    if (index < 0) return {}
+    const line = s.doc.lines[index]
     const lines = s.doc.lines.filter((l) => l.id !== id)
+    // 대사도 생성본도 없는 빈 문장은 되돌릴 것이 없다 — 붙들어 두지 않는다.
+    const worthUndo = !!line.text.trim() || line.takes.length > 0
     return {
       doc: { ...s.doc, lines: lines.length ? lines : [newLine('')], updatedAt: Date.now() },
       selectedLineId: null,
+      removed: worthUndo ? { line, index } : null,
+      notice: worthUndo ? '문장을 지웠습니다. 되돌릴 수 있습니다.' : null,
     }
+  }),
+
+  undoRemove: () => set((s) => {
+    if (!s.removed) return {}
+    const { line, index } = s.removed
+    const lines = [...s.doc.lines]
+    // 되돌리기 직전에 빈 문장 하나만 남은 상태였다면 그 자리를 차지한다(빈 줄이 덧나지 않게).
+    if (lines.length === 1 && !lines[0].text.trim() && lines[0].takes.length === 0) lines.length = 0
+    lines.splice(Math.min(index, lines.length), 0, line)
+    return {
+      doc: { ...s.doc, lines, updatedAt: Date.now() },
+      selectedLineId: line.id, removed: null, notice: null,
+    }
+  }),
+
+  /**
+   * 문장을 옮긴다. **문장을 통째로 옮기므로** id·생성본·사용 중인 음성이 그대로 따라간다.
+   * 전체 듣기·일괄 생성·내보내기는 모두 이 순서를 그대로 읽는다.
+   */
+  moveLine: (id, toIndex) => set((s) => {
+    const from = s.doc.lines.findIndex((l) => l.id === id)
+    if (from < 0) return {}
+    const lines = [...s.doc.lines]
+    const [moved] = lines.splice(from, 1)
+    const to = Math.max(0, Math.min(toIndex > from ? toIndex - 1 : toIndex, lines.length))
+    if (to === from) return {}
+    lines.splice(to, 0, moved)
+    return { doc: { ...s.doc, lines, updatedAt: Date.now() }, selectedLineId: moved.id }
   }),
 
   // 새 테이크는 **덧붙인다**. 이전 파일을 덮지 않는다.
