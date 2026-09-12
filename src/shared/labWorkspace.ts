@@ -154,6 +154,45 @@ export function takeBadge(take: LabTake, line: LabLine, voiceKey: string): strin
   return ''
 }
 
+/** 왜 다시 만들어야 하는지 — 짧은 말로. 단추를 누르기 **전에** 보여 준다. */
+export function redoReason(s: LineStatus): string {
+  switch (s) {
+    case 'none': return '아직 음성 없음'
+    case 'stale_text': return '대사 바뀜'
+    case 'stale_voice': return '목소리 바뀜'
+    default: return ''
+  }
+}
+
+/**
+ * 만들 대상 문장을 **번호와 이유**로 늘어놓는다 — "필요한 문장 생성" 이 무엇을 할지
+ * 누르기 전에 알 수 있어야 한다.
+ */
+export function redoTargets(doc: LabDoc): { number: number; reason: string }[] {
+  const vk = voiceKeyOf(doc.voicePath)
+  const out: { number: number; reason: string }[] = []
+  doc.lines.forEach((l, i) => {
+    const r = redoReason(lineStatus(l, vk))
+    if (r) out.push({ number: i + 1, reason: r })
+  })
+  return out
+}
+
+/**
+ * 새로 만들었지만 **아직 고르지 않은** 생성본이 있는가.
+ *
+ * ★이전 결과를 보존하는 원칙 때문에 새 생성본은 사용 중인 음성을 자동으로 밀어내지 않는다.
+ *   그러면 사용자 눈에는 "눌렀는데 아무 일도 없다" 로 보인다 — 그래서 이 사실을 표시한다.
+ */
+export function hasUnusedTake(line: LabLine, voiceKey: string): boolean {
+  const cur = adoptedTake(line)
+  if (!cur) return line.takes.length > 0
+  // ★'고르지 않은 다른 생성본' 이 아니라 **고른 것보다 나중에 만든 것**이 있는가다.
+  //   예전 생성본을 남겨 둔 것은 알릴 일이 아니다 — 사용자가 이미 그 중에서 골랐다.
+  return line.takes.some((t) => t.id !== cur.id && t.createdAt > cur.createdAt
+    && takeMatchesText(t, line) && takeMatchesVoice(t, voiceKey))
+}
+
 /** 다시 만들어야 하는 줄들 — 대사가 있는데 준비되지 않은 것 전부. */
 export function linesNeedingWork(doc: LabDoc): LabLine[] {
   const vk = voiceKeyOf(doc.voicePath)

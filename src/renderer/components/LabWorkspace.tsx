@@ -14,8 +14,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '@/stores/app.store'
 import { useLabStore, newId } from '@/stores/lab.store'
 import {
-  LAB_STORAGE_KEY, adoptedTake, exportReadiness,
-  lineStatus, lineStatusText, linesNeedingWork, parseDoc, takeBadge, voiceKeyOf,
+  LAB_STORAGE_KEY, adoptedTake, exportReadiness, hasUnusedTake,
+  lineStatus, lineStatusText, linesNeedingWork, parseDoc, redoTargets, takeBadge, voiceKeyOf,
   type LabDoc, type LabLine, type LabSettings,
 } from '../../shared/labWorkspace'
 import { REFERENCE_CONDITIONING_RECOMMENDED } from '../../shared/ttsConfig'
@@ -68,6 +68,12 @@ export default function LabWorkspace() {
   const waiterRef = useRef<(() => void) | null>(null)
   /** 순서 바꾸기 — 끌고 있는 문장과 놓일 자리(그 문장 **앞**인지). */
   const [drag, setDrag] = useState<{ id: string; overId: string; before: boolean } | null>(null)
+  /**
+   * 이번 실행이 무엇을 남겼는지 — 끝났을 때 **무슨 일이 있었는지 반드시 말하기 위해서**다.
+   * 이전 결과를 보존하는 원칙 때문에 새 생성본이 자동 선택되지 않는 경우가 있는데,
+   * 아무 말도 없으면 "눌렀는데 아무 일도 없다" 로 보인다.
+   */
+  const runRef = useRef<{ made: number; picked: number; waiting: number }>({ made: 0, picked: 0, waiting: 0 })
 
   // ── 저장·복원 — 기존 작업 저장과 **다른 열쇠**를 쓴다 ─────────────────────
   useEffect(() => {
@@ -187,6 +193,7 @@ export default function LabWorkspace() {
     if (!ids.length) { lab.setNotice('만들 대사가 없습니다.'); return }
     const first = doc.lines.find((l) => l.id === ids[0])!
     lab.setError(null); lab.setNotice(null)
+    runRef.current = { made: 0, picked: 0, waiting: 0 }
     // 요청 당시의 대사·목소리를 붙들어 둔다 — 도중에 고쳐도 결과에는 이 값이 붙는다.
     lab.setJob({ lineId: first.id, text: first.text, voiceKey, startedAt: Date.now(), queue: ids.slice(1) })
     // 공용 작업 제어: 기존 합성과 **동시에** 돌지 않도록 같은 상태를 쓴다.
@@ -216,6 +223,11 @@ export default function LabWorkspace() {
             useLabStore.getState().addTake(j.lineId, {
               id: takeId, path: kept.path, text: j.text, voiceKey: j.voiceKey, createdAt: Date.now(),
             })
+            // 자동으로 골라졌는가, 아니면 사용자가 골라야 하는가.
+            const after = useLabStore.getState().doc.lines.find((l) => l.id === j.lineId)
+            runRef.current.made += 1
+            if (after?.adoptedTakeId === takeId) runRef.current.picked += 1
+            else runRef.current.waiting += 1
           } else {
             lab.setError(kept?.reason || '결과를 보관하지 못했습니다')
           }
@@ -225,7 +237,10 @@ export default function LabWorkspace() {
     })
     const offE = window.api.audio.onError((d: any) => {
       if (!useLabStore.getState().job) return
-      lab.setError(String(d?.message || '만들지 못했습니다'))
+      // 실패를 감추지 않는다 — 어느 단계에서 멈췄는지와 다음 행동을 함께 알린다.
+      const why = String(d?.message || '알 수 없는 이유')
+      lab.setError(`문장 만들기에 실패했습니다 — ${why} · 목소리가 준비됐는지 확인하고 다시 시도하세요. `
+        + '계속 실패하면 다른 목소리 파일로 바꿔 보세요. 이미 만든 생성본과 선택은 그대로 있습니다.')
       finish()
     })
     const offCancelled = window.api.audio.onCancelled(() => {
@@ -238,6 +253,14 @@ export default function LabWorkspace() {
       useLabStore.getState().setJob(null)
       useLabStore.getState().setProgress(null)
       useAppStore.setState({ status: 'idle', progress: 0, progressMessage: '' })
+      // ★완료됐는데 화면이 그대로인 것처럼 두지 않는다.
+      const r = runRef.current
+      if (r.made > 0 && !useLabStore.getState().error) {
+        useLabStore.getState().setNotice(r.waiting > 0
+          ? `새 생성본이 있습니다. 사용할 음성을 선택하세요. (새로 만든 ${r.made}개 중 ${r.waiting}개는 이전 결과를 그대로 두었습니다)`
+          : `${r.made}개 문장의 음성을 만들었습니다.`)
+      }
+      runRef.current = { made: 0, picked: 0, waiting: 0 }
     }
     function next(j: { queue: string[] }) {
       const rest = j.queue
@@ -287,6 +310,12 @@ export default function LabWorkspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drag, stopPlay])
 
+  const targets = useMemo(() => redoTargets(doc), [doc])
+  // 누르기 전에 **무엇을 만들지** 알 수 있게 — 번호와 이유를 짧게.
+  const targetSummary = useMemo(() => {
+    const head = targets.slice(0, 4).map((t) => `${t.number}번(${t.reason})`).join(', ')
+    return targets.length > 4 ? `${head} 외 ${targets.length - 4}개` : head
+  }, [targets])
   const need = useMemo(() => linesNeedingWork(doc), [doc])
   const ready = useMemo(() => exportReadiness(doc), [doc])
 
@@ -379,9 +408,10 @@ export default function LabWorkspace() {
         </button>
         <button data-testid="lab-generate-changed"
           onClick={() => startJob(need.map((l) => l.id))}
+          title={"아직 음성이 없거나 대사·목소리를 바꾼 문장의 음성을 만듭니다."}
           disabled={!canGenerate || need.length === 0}
           style={btn('var(--accent)', '#fff', !canGenerate || need.length === 0)}>
-          변경된 문장 만들기 {need.length > 0 ? `(${need.length})` : ''}
+          필요한 문장 생성 {need.length > 0 ? `(${need.length}개)` : ''}
         </button>
         <button data-testid="lab-export" onClick={() => { void doExport() }}
           disabled={!!job || !ready.ready} style={btn('var(--bg-card)', 'var(--cyan)', !!job || !ready.ready)}>
@@ -398,9 +428,12 @@ export default function LabWorkspace() {
             : busyElsewhere
               ? '합성 탭에서 작업이 도는 중입니다 — 끝나면 여기서 만들 수 있습니다'
               : !doc.voicePath ? '목소리를 먼저 고르세요'
-                : !lab.ref.ready ? '목소리 준비 중입니다'
-                  : ready.ready ? `전부 준비됨 — ${ready.paths.length}문장`
-                    : `준비 안 된 자리 ${ready.blocking.length}곳`}
+                : !lab.ref.ready
+                  ? `목소리 준비 중 — 참조 음성의 말을 분석하고 있습니다${lab.ref.message ? ` (${lab.ref.message})` : ''}`
+                  : targets.length > 0
+                    ? `음성을 다시 만들어야 하는 문장 — ${targetSummary}`
+                    : ready.ready ? `전부 준비됨 — ${ready.paths.length}문장`
+                      : `내보낼 수 없는 자리 ${ready.blocking.length}곳`}
         </div>
       </div>
 
@@ -431,7 +464,7 @@ function noticeFor(r: ReturnType<typeof exportReadiness>): string {
   const head = r.blocking.slice(0, 3)
     .map((b) => `${b.index + 1}번째 줄(${lineStatusText(b.status)})`).join(', ')
   const more = r.blocking.length > 3 ? ` 외 ${r.blocking.length - 3}곳` : ''
-  return `준비되지 않은 자리가 있습니다 — ${head}${more}. 그 자리를 만든 뒤에 이어집니다.`
+  return `음성을 다시 만들어야 하는 문장이 있습니다 — ${head}${more}. 그 문장을 만든 뒤에 이어집니다.`
 }
 
 interface LineRowProps {
@@ -448,6 +481,7 @@ interface LineRowProps {
 function LineRow(p: LineRowProps) {
   const st = lineStatus(p.line, p.voiceKey)
   const adopted = adoptedTake(p.line)
+  const unused = !p.busy && hasUnusedTake(p.line, p.voiceKey)
   // 갈 자리 표시 — 이 줄의 위/아래에 얇은 선을 긋는다.
   const mark = '2px solid var(--accent)'
   return (
@@ -506,8 +540,13 @@ function LineRow(p: LineRowProps) {
             color: 'var(--text-primary)', fontFamily: 'inherit', fontSize: 13, lineHeight: 1.5,
           }} />
         <span data-testid="lab-line-status" style={{
-          fontSize: 10, color: STATUS_COLOR[st], paddingTop: 8, flexShrink: 0, minWidth: 84, textAlign: 'right',
-        }}>{p.busy ? '만드는 중…' : lineStatusText(st)}</span>
+          fontSize: 10, color: unused ? 'var(--cyan)' : STATUS_COLOR[st],
+          paddingTop: 8, flexShrink: 0, minWidth: 84, textAlign: 'right',
+        }}>
+          {/* ★새로 만들었는데 아직 고르지 않았으면 그 사실을 여기서 말한다 —
+                 이전 결과 보존 때문에 자동 선택되지 않았을 뿐, 아무 일도 없던 것이 아니다. */}
+          {p.busy ? '만드는 중…' : unused ? '새 생성본 있음' : lineStatusText(st)}
+        </span>
         {/* 삭제는 **늘 보인다** — 줄을 고르지 않아도 찾을 수 있어야 한다. */}
         <button data-testid="lab-line-remove" onClick={p.onRemove} disabled={p.busy}
           title={p.busy ? "만드는 중에는 지울 수 없습니다." : "문장 삭제"}
@@ -538,8 +577,10 @@ function LineRow(p: LineRowProps) {
 
           {p.line.takes.length > 0 && (
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', width: '100%', paddingTop: 4 }}>
-              <span style={{ fontSize: 10, color: 'var(--text-muted)', width: '100%' }}>
-                들어보고 사용할 음성을 고르세요.
+              <span style={{ fontSize: 10, color: unused ? 'var(--cyan)' : 'var(--text-muted)', width: '100%' }}>
+                {unused
+                  ? '새 생성본이 있습니다. 사용할 음성을 선택하세요.'
+                  : '들어보고 사용할 음성을 고르세요.'}
               </span>
               {p.line.takes.map((t, i) => {
                 const badge = takeBadge(t, p.line, p.voiceKey)

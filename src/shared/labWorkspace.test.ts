@@ -5,8 +5,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  adoptedTake, defaultSettings, emptyDoc, exportReadiness, lineStatus, linesNeedingWork, newLine,
-  parseDoc, parseSettings, shouldAutoAdopt, takeBadge, voiceKeyOf,
+  adoptedTake, defaultSettings, emptyDoc, exportReadiness, hasUnusedTake, lineStatus,
+  linesNeedingWork, newLine, parseDoc, parseSettings, redoTargets, shouldAutoAdopt,
+  takeBadge, voiceKeyOf,
   type LabDoc, type LabLine, type LabTake,
 } from './labWorkspace.ts'
 
@@ -149,6 +150,45 @@ test('설정은 문서와 함께 저장·복원된다', () => {
   const back = parseDoc(JSON.parse(JSON.stringify(d)), 'auto')
   assert.equal(back!.settings.speed, 1.25)
   assert.equal(back!.settings.engine, 'qwen')
+})
+
+test('일괄 생성 대상 — 번호와 이유를 누르기 전에 알 수 있다', () => {
+  const ready = line({ id: 'a', takes: [take({ id: 'ta' })], adoptedTakeId: 'ta' })
+  const fresh = line({ id: 'b', text: '새 말' })
+  const edited = line({ id: 'c', text: '고친 말', takes: [take({ id: 'tc' })], adoptedTakeId: 'tc' })
+  const blank = line({ id: 'd', text: '' })
+  assert.deepEqual(redoTargets(doc([ready, fresh, edited, blank])), [
+    { number: 2, reason: '아직 음성 없음' },
+    { number: 3, reason: '대사 바뀜' },
+  ], '준비된 줄과 빈 줄은 대상이 아니다')
+})
+
+test('일괄 생성 대상 — 목소리를 바꾸면 그 사유로 나온다', () => {
+  const l = line({ takes: [take()], adoptedTakeId: 't1' })
+  const d = doc([l], 'C:/voice/B.wav')
+  assert.deepEqual(redoTargets(d), [{ number: 1, reason: '목소리 바뀜' }])
+})
+
+test('새 생성본 알림 — 고른 것보다 나중에 만든 것이 있을 때만', () => {
+  const old = take({ id: 'ta', createdAt: 1 })
+  const neo = take({ id: 'tb', createdAt: 2 })
+  // 새로 만들었는데 이전 결과 보존 원칙 때문에 자동 선택되지 않았다 → 알린다
+  assert.equal(hasUnusedTake(line({ takes: [old, neo], adoptedTakeId: 'ta' }), vk), true)
+  // 그 새 것을 골랐다 → 더 알릴 일이 없다(예전 생성본이 남아 있어도)
+  assert.equal(hasUnusedTake(line({ takes: [old, neo], adoptedTakeId: 'tb' }), vk), false,
+    '이미 고른 뒤에도 계속 알리면 표시가 무의미해진다')
+  // 아직 아무것도 고르지 않았는데 결과가 있다 → 고르라고 알린다
+  assert.equal(hasUnusedTake(line({ takes: [old] }), vk), true)
+  assert.equal(hasUnusedTake(line(), vk), false)
+})
+
+test('새 생성본 알림 — 지금 대사·목소리의 것이 아니면 알리지 않는다', () => {
+  const cur = take({ id: 'ta', createdAt: 1 })
+  const stale = take({ id: 'tb', createdAt: 2, text: '옛 대사' })
+  assert.equal(hasUnusedTake(line({ takes: [cur, stale], adoptedTakeId: 'ta' }), vk), false,
+    '수정 전 대사의 결과를 "골라 보세요" 라고 권하면 안 된다')
+  const other = take({ id: 'tc', createdAt: 2, voiceKey: 'B' })
+  assert.equal(hasUnusedTake(line({ takes: [cur, other], adoptedTakeId: 'ta' }), vk), false)
 })
 
 test('빈 작업실은 줄 하나로 시작한다', () => {

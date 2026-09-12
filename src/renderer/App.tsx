@@ -203,10 +203,16 @@ export default function App() {
               {/* 합성 화면에서는 시작·취소 버튼과 진행 상태를 [음성 만들기] 카드 안에서 그린다 —
                   제목만 있는 단계 카드와 그 아래 버튼으로 나뉘어 있으면 '어디가 실행 자리인가'가 생긴다.
                   다른 모드는 지금까지와 같은 자리다. */}
-              {mode !== 'tts' && <ProcessButton />}
-              {mode !== 'tts' && <ProgressBar />}
-              <TtsResultInfo />
-              <TrackList />
+              {/* ★테스트개발 작업실은 **자기 실행·진행·취소·오류를 자기 안에서** 보여 준다.
+                     예전에는 여기 공용 실행 버튼이 함께 그려져, 알 수 없는 모드의 마지막
+                     fallback 이름인 '텍스트 추출 시작' 이 작업실에 떴다. 게다가 그 버튼은
+                     mode='lab' 로 요청을 보내는데 워커에 그런 갈래가 없어 빈 결과로 끝났다
+                     ("분리 결과가 없습니다." → 종료 코드 1). 다른 모드의 실행·결과가 작업실에
+                     섞여 나오지 않게 여기서 제외한다. */}
+              {mode !== 'tts' && mode !== 'lab' && <ProcessButton />}
+              {mode !== 'tts' && mode !== 'lab' && <ProgressBar />}
+              {mode !== 'lab' && <TtsResultInfo />}
+              {mode !== 'lab' && <TrackList />}
               {/* 재처리 버튼 (결과 나온 후) */}
               {status === 'done' && (
                 <button onClick={setIdle} style={{
