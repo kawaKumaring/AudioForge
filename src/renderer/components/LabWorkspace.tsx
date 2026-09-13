@@ -316,6 +316,16 @@ export default function LabWorkspace() {
     const head = targets.slice(0, 4).map((t) => `${t.number}번(${t.reason})`).join(', ')
     return targets.length > 4 ? `${head} 외 ${targets.length - 4}개` : head
   }, [targets])
+  /**
+   * 이 생성본이 실제로 쓰는 음원 파일을 **탐색기에서 고른 상태로** 보여 준다.
+   * 파일을 옮기거나 복사하거나 다시 만들지 않는다 — 위치만 보여 준다.
+   */
+  const revealTake = useCallback(async (path: string) => {
+    const r = await window.api.app.revealFile(path)
+    if (!r?.ok) lab.setError(r?.reason || '음원 파일을 찾을 수 없습니다')
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
   const need = useMemo(() => linesNeedingWork(doc), [doc])
   const ready = useMemo(() => exportReadiness(doc), [doc])
 
@@ -387,6 +397,7 @@ export default function LabWorkspace() {
             onDragEndLine={() => setDrag(null)}
             onGenerate={() => startJob([line.id])}
             onPlay={togglePlay}
+            onReveal={(path) => { void revealTake(path) }}
             onAdopt={(tid) => lab.adopt(line.id, tid)}
           />
         ))}
@@ -473,7 +484,8 @@ interface LineRowProps {
   /** 지금 끌고 있는 문장인가 / 이 자리에 놓이는가 — 갈 자리를 눈에 보이게 한다. */
   dragging: boolean; dropBefore: boolean; dropAfterLast: boolean
   onSelect: () => void; onChange: (v: string) => void; onEnter: () => void; onRemove: () => void
-  onGenerate: () => void; onPlay: (path: string, takeId: string) => void; onAdopt: (takeId: string) => void
+  onGenerate: () => void; onPlay: (path: string, takeId: string) => void
+  onReveal: (path: string) => void; onAdopt: (takeId: string) => void
   onDragStartLine: () => void; onDragOverLine: (before: boolean) => void; onDropLine: () => void
   onDragEndLine: () => void
 }
@@ -598,6 +610,15 @@ function LineRow(p: LineRowProps) {
                     <button onClick={() => p.onPlay(t.path, t.id)}
                       style={{ ...btn('transparent', 'var(--text-primary)'), padding: '0 4px' }}>
                       {p.playingTakeId === t.id ? '■' : '▶'}
+                    </button>
+                    {/* 이 생성본이 실제로 쓰는 음원 파일의 자리를 보여 준다. */}
+                    <button data-testid="lab-take-reveal" onClick={() => p.onReveal(t.path)}
+                      title={"폴더에서 보기"} aria-label="폴더에서 보기"
+                      style={{ ...btn('transparent', 'var(--text-muted)'), padding: '0 3px', display: 'flex' }}>
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                        strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                      </svg>
                     </button>
                     <button data-testid="lab-take-adopt" onClick={() => p.onAdopt(t.id)}
                       title={"전체 듣기와 내보내기에 이 음성을 사용합니다."}

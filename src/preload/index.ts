@@ -136,6 +136,8 @@ const api = {
   },
   app: {
     openFolder: (path: string) => ipcRenderer.invoke('app:open-folder', path),
+    // 탐색기에서 그 파일을 고른 상태로 보여 준다(여는 것이 아니다).
+    revealFile: (path: string) => ipcRenderer.invoke('app:reveal-file', path),
     readTextFile: (path: string) => ipcRenderer.invoke('app:read-text-file', path),
     // 앱 버전·빌드 정보 — 인자 없는 read-only 조회. 경로를 주고받지 않는다.
     getBuildInfo: (): Promise<AppBuildInfo> => ipcRenderer.invoke('app:get-build-info')

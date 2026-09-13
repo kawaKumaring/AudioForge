@@ -1330,6 +1330,16 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     shell.openPath(path)
   })
 
+  // 파일을 **탐색기에서 고른 상태로** 보여 준다. openPath 는 파일을 '여는' 것이라
+  // 음원이면 재생기가 뜬다 — 위치를 확인하려는 목적에는 맞지 않아 따로 둔다.
+  ipcMain.handle('app:reveal-file', (_event, path: string) => {
+    if (typeof path !== 'string' || !path || !existsSync(path)) {
+      return { ok: false, reason: '음원 파일을 찾을 수 없습니다' }
+    }
+    shell.showItemInFolder(path)
+    return { ok: true }
+  })
+
   ipcMain.handle('app:copy-to-clipboard', async (_event, text: string) => {
     const { clipboard } = await import('electron')
     clipboard.writeText(text)
