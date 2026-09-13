@@ -202,12 +202,52 @@ export function linesNeedingWork(doc: LabDoc): LabLine[] {
   })
 }
 
+/**
+ * 내보내기를 막는 **구체적인 이유**. 사용자가 다음에 무엇을 해야 하는지가 셋 다 다르다.
+ *   need_generate   — 이 문장으로 만든 것이 하나도 없다 → 만들어야 한다
+ *   need_pick       — 지금 대사·목소리에 맞는 생성본이 **있는데 고르지 않았다** → 고르면 된다
+ *   need_regenerate — 생성본은 있지만 지금 대사·목소리의 것이 하나도 없다 → 다시 만들어야 한다
+ */
+export type ExportBlock = 'need_generate' | 'need_pick' | 'need_regenerate'
+
+/** 이 문장이 내보내기를 막는가, 막는다면 왜인가. 막지 않으면 null. */
+export function exportBlockReason(line: LabLine, voiceKey: string): ExportBlock | null {
+  if (!line.text.trim()) return null                    // 빈 줄은 만들 것이 없다
+  const cur = adoptedTake(line)
+  if (cur && takeMatchesText(cur, line) && takeMatchesVoice(cur, voiceKey)) return null
+  // ★고르기만 하면 되는 경우를 '다시 만들어야 한다' 로 뭉뚱그리지 않는다.
+  if (line.takes.some((t) => takeMatchesText(t, line) && takeMatchesVoice(t, voiceKey))) return 'need_pick'
+  return line.takes.length > 0 ? 'need_regenerate' : 'need_generate'
+}
+
+/** 몇 번째 문장이 왜 막는지 — 사용자가 그대로 읽고 행동할 수 있는 한 문장. */
+export function exportBlockText(index: number, b: ExportBlock): string {
+  const n = index + 1
+  switch (b) {
+    case 'need_generate': return `${n}번 문장의 음성을 생성하세요.`
+    case 'need_pick': return `${n}번 문장에서 사용할 음성을 선택하세요.`
+    case 'need_regenerate': return `${n}번 문장이 변경됐습니다. 음성을 다시 생성하세요.`
+  }
+}
+
+/**
+ * 이 알림이 '내보낼 수 없다' 는 말인가 — **문제가 풀리면 지워야 하는 종류**인지 가린다.
+ *
+ * ★해소된 뒤에도 남아 있으면 아래 상태의 '전부 준비됨' 과 서로 다른 말을 하게 된다.
+ *   어느 경로로 떴든 지워져야 하므로, 누가 띄웠는지가 아니라 **무슨 말인지**로 가린다.
+ */
+export function isExportBlockNotice(text: string | null | undefined): boolean {
+  if (!text) return false
+  return /문장의 음성을 생성하세요|사용할 음성을 선택하세요|음성을 다시 생성하세요|만든 문장이 없습니다/
+    .test(text)
+}
+
 export interface ExportReadiness {
   ready: boolean
   /** 순서대로 이어 붙일 파일들. ready 가 아니면 비어 있다. */
   paths: string[]
   /** 막고 있는 자리들 — 몇 번째 줄이 왜 안 되는지. */
-  blocking: { index: number; status: LineStatus; text: string }[]
+  blocking: { index: number; status: LineStatus; block: ExportBlock; text: string }[]
   /** 대사가 비어 건너뛴 줄 수(막는 것이 아니다). */
   skippedEmpty: number
 }
@@ -225,15 +265,20 @@ export function exportReadiness(doc: LabDoc): ExportReadiness {
   const blocking: ExportReadiness['blocking'] = []
   let skippedEmpty = 0
   doc.lines.forEach((l, i) => {
-    const s = lineStatus(l, vk)
-    if (s === 'empty') { skippedEmpty += 1; return }
-    if (s === 'ready') {
+    if (!l.text.trim()) { skippedEmpty += 1; return }
+    const b = exportBlockReason(l, vk)
+    if (!b) {
+      // 막지 않는다 = 지금 대사·목소리의 생성본이 **사용자가 고른 그대로** 있다.
+      // 최신이라는 이유로 다른 것을 집지 않는다.
       const t = adoptedTake(l)
       if (t) { paths.push(t.path); return }
     }
-    blocking.push({ index: i, status: s, text: l.text })
+    blocking.push({ index: i, status: lineStatus(l, vk), block: b || 'need_generate', text: l.text })
   })
-  return { ready: blocking.length === 0 && paths.length > 0, paths, blocking, skippedEmpty }
+  // ★막는 자리가 하나라도 있으면 **부분 목록을 내주지 않는다.** 내주면 어느 호출자든
+  //   '있는 것만' 이어 붙일 수 있게 되고, 그것이 곧 빠진 문장을 조용히 빼는 길이다.
+  const ready = blocking.length === 0 && paths.length > 0
+  return { ready, paths: ready ? paths : [], blocking, skippedEmpty }
 }
 
 /**

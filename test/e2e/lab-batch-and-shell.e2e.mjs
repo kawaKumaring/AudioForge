@@ -1,9 +1,9 @@
-// 일괄 생성 안내와 **잘못 나타나던 공용 실행 화면** — 표적 확인.
+// 작업실에 **잘못 나타나던 공용 실행 화면** — 표적 확인.
 //
 // 소리를 **새로 만들지 않는다.** 저장소 fixture 음성을 이미 만든 생성본처럼 얹고 본다.
 //
 //   1) '텍스트 추출 시작' 이 작업실에 나오지 않는다. 다른 모드에서는 그대로 나온다.
-//   2) 일괄 생성 단추의 이름·설명과, 누르기 전에 보이는 **대상 문장 번호와 이유**
+//   2) 일괄 생성 단추가 없고, 못 내보내는 이유가 문장별로 나온다
 //   3) 새 생성본이 생겼는데 자동 선택되지 않은 경우를 **문장에도 결과 목록에도** 알린다
 //   4) 목소리 준비 중에는 무엇을 하는 중인지 밝힌다
 //
@@ -64,7 +64,7 @@ try {
   ok((preparing || '').includes('참조 음성의 말을 분석하고 있습니다'),
     '목소리 준비 중에 무엇을 하는 중인지 밝힌다', `"${(preparing || '').trim()}"`)
 
-  // ── 2) 일괄 생성 — 이름·설명·대상 ───────────────────────────────────────
+  // ── 2) 일괄 생성 단추 없음 · 문장별 차단 사유 ─────────────────────────
   // 준비가 끝난 것으로 두고(분석은 돌리지 않는다) 대본을 얹는다.
   await win.evaluate(([a, b]) => {
     const s = window.__labStore.getState()
@@ -84,24 +84,11 @@ try {
   }, [A, B])
   await win.waitForTimeout(600)
 
-  const batch = win.getByTestId('lab-generate-changed')
-  const label = (await batch.textContent() || '').trim()
-  ok(label === '필요한 문장 생성 (2개)', '단추 이름이 "필요한 문장 생성 (N개)" 다', `"${label}"`)
-  ok(await batch.getAttribute('title')
-     === '아직 음성이 없거나 대사·목소리를 바꾼 문장의 음성을 만듭니다.', '설명 툴팁이 붙는다')
+  // 일괄 생성 단추는 화면에서 없앴다 — 만들기는 문장별 단추에서 한다.
+  ok(await win.getByTestId('lab-generate-changed').count() === 0, '일괄 생성 단추가 없다')
 
   const status = (await win.getByTestId('lab-status').textContent() || '').trim()
-  ok(status.includes('음성을 다시 만들어야 하는 문장'), '"준비 안 된 자리" 대신 설명으로 알린다', `"${status}"`)
-  ok(status.includes('2번(아직 음성 없음)') && status.includes('3번(대사 바뀜)'),
-    '누르기 전에 대상 문장 번호와 이유를 보여 준다', `"${status}"`)
-
-  // 목소리를 바꾼 경우의 사유도 같은 자리에 나온다
-  await win.evaluate(() => window.__labStore.getState().setDoc({
-    ...window.__labStore.getState().doc, voicePath: 'C:/voice/다른목소리.wav', updatedAt: Date.now(),
-  }))
-  await win.waitForTimeout(500)
-  const s2 = (await win.getByTestId('lab-status').textContent() || '')
-  ok(s2.includes('목소리 바뀜'), '목소리를 바꾼 문장도 사유가 나온다', `"${s2.trim().slice(0, 80)}"`)
+  ok(status.includes('2번 문장의 음성을 생성하세요'), '못 내보내는 이유를 문장별로 알린다', `"${status}"`)
 
   // ── 3) 새 생성본이 자동 선택되지 않은 경우를 알린다 ─────────────────────
   await win.evaluate((a) => {
@@ -139,5 +126,5 @@ try {
   cleanupUserData(UD)
 }
 
-log(failed === 0 ? '전부 통과 — 일괄 생성 안내와 공용 화면 분리 확인(음성 생성 없음).' : `실패 ${failed}건`)
+log(failed === 0 ? '전부 통과 — 공용 화면 분리와 문장별 안내 확인(음성 생성 없음).' : `실패 ${failed}건`)
 process.exit(failed === 0 ? 0 : 1)

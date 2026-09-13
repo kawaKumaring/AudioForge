@@ -14,8 +14,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '@/stores/app.store'
 import { useLabStore, newId } from '@/stores/lab.store'
 import {
-  LAB_STORAGE_KEY, adoptedTake, exportReadiness, hasUnusedTake,
-  lineStatus, lineStatusText, linesNeedingWork, parseDoc, redoTargets, takeBadge, voiceKeyOf,
+  LAB_STORAGE_KEY, adoptedTake, exportBlockText, exportReadiness, hasUnusedTake, isExportBlockNotice,
+  lineStatus, lineStatusText, parseDoc, takeBadge, voiceKeyOf,
   type LabDoc, type LabLine, type LabSettings,
 } from '../../shared/labWorkspace'
 import { REFERENCE_CONDITIONING_RECOMMENDED } from '../../shared/ttsConfig'
@@ -310,12 +310,13 @@ export default function LabWorkspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drag, stopPlay])
 
-  const targets = useMemo(() => redoTargets(doc), [doc])
-  // 누르기 전에 **무엇을 만들지** 알 수 있게 — 번호와 이유를 짧게.
-  const targetSummary = useMemo(() => {
-    const head = targets.slice(0, 4).map((t) => `${t.number}번(${t.reason})`).join(', ')
-    return targets.length > 4 ? `${head} 외 ${targets.length - 4}개` : head
-  }, [targets])
+  // 내보낼 수 없으면 **그대로 읽고 행동할 수 있는 말**로 알린다.
+  const blockSummary = useMemo(() => {
+    const r = exportReadiness(doc)
+    if (r.blocking.length === 0) return '대사를 쓰고 문장마다 음성을 만드세요'
+    const head = r.blocking.slice(0, 2).map((b) => exportBlockText(b.index, b.block)).join(' ')
+    return r.blocking.length > 2 ? `${head} (그 밖 ${r.blocking.length - 2}곳)` : head
+  }, [doc])
   /**
    * 이 생성본이 실제로 쓰는 음원 파일을 **탐색기에서 고른 상태로** 보여 준다.
    * 파일을 옮기거나 복사하거나 다시 만들지 않는다 — 위치만 보여 준다.
@@ -326,8 +327,13 @@ export default function LabWorkspace() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  const need = useMemo(() => linesNeedingWork(doc), [doc])
   const ready = useMemo(() => exportReadiness(doc), [doc])
+
+  // ★문제가 해소됐는데 예전 경고가 남아 있으면 '전부 준비됨' 과 서로 다른 말을 하게 된다.
+  useEffect(() => {
+    if (!ready.ready) return
+    if (isExportBlockNotice(useLabStore.getState().notice)) useLabStore.getState().setNotice(null)
+  }, [ready.ready, doc])
 
   const doExport = useCallback(async () => {
     if (!ready.ready) { lab.setNotice(noticeFor(ready)); return }
@@ -412,22 +418,21 @@ export default function LabWorkspace() {
         position: 'sticky', bottom: 0, padding: '10px 14px', display: 'flex',
         alignItems: 'center', gap: 8, flexWrap: 'wrap', background: 'var(--bg-elevated)',
       })}>
-        <button data-testid="lab-play-all" onClick={togglePlayAll}
-          title={"사용 중인 음성을 대본 순서대로 이어서 들려줍니다."}
-          disabled={!!job} style={btn('var(--bg-card)', 'var(--text-primary)', !!job)}>
-          {playingTakeId === 'all' ? '■ 멈춤' : '▶ 전체 듣기'}
-        </button>
-        <button data-testid="lab-generate-changed"
-          onClick={() => startJob(need.map((l) => l.id))}
-          title={"아직 음성이 없거나 대사·목소리를 바꾼 문장의 음성을 만듭니다."}
-          disabled={!canGenerate || need.length === 0}
-          style={btn('var(--accent)', '#fff', !canGenerate || need.length === 0)}>
-          필요한 문장 생성 {need.length > 0 ? `(${need.length}개)` : ''}
-        </button>
-        <button data-testid="lab-export" onClick={() => { void doExport() }}
-          disabled={!!job || !ready.ready} style={btn('var(--bg-card)', 'var(--cyan)', !!job || !ready.ready)}>
-          내보내기
-        </button>
+        {/* 전체 듣기와 내보내기는 **같은 일의 두 얼굴**이다 — 지금 대본 순서대로, 문장마다
+            고른 음성을. 하나는 들려주고 하나는 파일로 저장한다. 그래서 한 묶음으로 둔다.
+            (만들기는 문장별 단추에서 한다 — 아래에 일괄 생성 단추를 따로 두지 않는다.) */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          <button data-testid="lab-play-all" onClick={togglePlayAll}
+            title={"문장마다 선택한 음성을 순서대로 이어서 들려줍니다."}
+            disabled={!!job} style={btn('var(--bg-card)', 'var(--text-primary)', !!job)}>
+            {playingTakeId === 'all' ? '■ 멈춤' : '▶ 전체 듣기'}
+          </button>
+          <button data-testid="lab-export" onClick={() => { void doExport() }}
+            title={"문장마다 선택한 음성을 순서대로 이어 하나의 파일로 저장합니다."}
+            disabled={!!job || !ready.ready} style={btn('var(--bg-card)', 'var(--cyan)', !!job || !ready.ready)}>
+            문장 조합 내보내기
+          </button>
+        </div>
         {job && (
           <button data-testid="lab-cancel" onClick={() => { void window.api.audio.cancel() }}
             title={"만드는 중인 작업을 멈춥니다. 재생 중지가 아닙니다."}
@@ -441,10 +446,8 @@ export default function LabWorkspace() {
               : !doc.voicePath ? '목소리를 먼저 고르세요'
                 : !lab.ref.ready
                   ? `목소리 준비 중 — 참조 음성의 말을 분석하고 있습니다${lab.ref.message ? ` (${lab.ref.message})` : ''}`
-                  : targets.length > 0
-                    ? `음성을 다시 만들어야 하는 문장 — ${targetSummary}`
-                    : ready.ready ? `전부 준비됨 — ${ready.paths.length}문장`
-                      : `내보낼 수 없는 자리 ${ready.blocking.length}곳`}
+                  : ready.ready ? `전부 준비됨 — ${ready.paths.length}문장`
+                    : blockSummary}
         </div>
       </div>
 
@@ -469,13 +472,15 @@ export default function LabWorkspace() {
   )
 }
 
-/** 준비되지 않은 자리를 **조용히 빼지 않고** 그대로 알린다. */
+/**
+ * 내보낼 수 없는 이유를 **조용히 빼지 않고** 그대로 알린다.
+ * 문장마다 다음에 할 일이 다르므로(만들기 / 고르기 / 다시 만들기) 그 말을 그대로 낸다.
+ */
 function noticeFor(r: ReturnType<typeof exportReadiness>): string {
   if (r.paths.length === 0 && r.blocking.length === 0) return '만든 문장이 없습니다.'
-  const head = r.blocking.slice(0, 3)
-    .map((b) => `${b.index + 1}번째 줄(${lineStatusText(b.status)})`).join(', ')
-  const more = r.blocking.length > 3 ? ` 외 ${r.blocking.length - 3}곳` : ''
-  return `음성을 다시 만들어야 하는 문장이 있습니다 — ${head}${more}. 그 문장을 만든 뒤에 이어집니다.`
+  const head = r.blocking.slice(0, 3).map((b) => exportBlockText(b.index, b.block)).join(' ')
+  const more = r.blocking.length > 3 ? ` (그 밖 ${r.blocking.length - 3}곳)` : ''
+  return `${head}${more}`
 }
 
 interface LineRowProps {

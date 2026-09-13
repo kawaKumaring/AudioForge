@@ -5,7 +5,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  adoptedTake, defaultSettings, emptyDoc, exportReadiness, hasUnusedTake, lineStatus,
+  adoptedTake, defaultSettings, emptyDoc, exportBlockReason, exportBlockText,
+  exportReadiness, hasUnusedTake, isExportBlockNotice, lineStatus,
   linesNeedingWork, newLine, parseDoc, parseSettings, redoTargets, shouldAutoAdopt,
   takeBadge, voiceKeyOf,
   type LabDoc, type LabLine, type LabTake,
@@ -150,6 +151,63 @@ test('설정은 문서와 함께 저장·복원된다', () => {
   const back = parseDoc(JSON.parse(JSON.stringify(d)), 'auto')
   assert.equal(back!.settings.speed, 1.25)
   assert.equal(back!.settings.engine, 'qwen')
+})
+
+test('내보내기 차단 사유 — 만들기 / 고르기 / 다시 만들기를 구분한다', () => {
+  // 하나도 만든 적이 없다
+  assert.equal(exportBlockReason(line(), vk), 'need_generate')
+  // 지금 대사·목소리의 생성본이 있는데 고르지 않았다 → 만들 필요 없이 고르면 된다
+  assert.equal(exportBlockReason(line({ takes: [take()] }), vk), 'need_pick')
+  // 고른 것이 낡았지만 맞는 생성본이 따로 있다 → 이것도 고르기다
+  const stale = take({ id: 'old', text: '옛 대사' })
+  const good = take({ id: 'new' })
+  assert.equal(exportBlockReason(line({ takes: [stale, good], adoptedTakeId: 'old' }), vk), 'need_pick')
+  // 생성본은 있는데 지금 대사의 것이 하나도 없다 → 다시 만들어야 한다
+  assert.equal(exportBlockReason(line({ takes: [stale], adoptedTakeId: 'old' }), vk), 'need_regenerate')
+  // 목소리를 바꾼 경우도 다시 만들기
+  assert.equal(exportBlockReason(line({ takes: [take()], adoptedTakeId: 't1' }), 'other'), 'need_regenerate')
+  // 막지 않는 경우
+  assert.equal(exportBlockReason(line({ takes: [take()], adoptedTakeId: 't1' }), vk), null)
+  assert.equal(exportBlockReason(line({ text: '  ' }), vk), null, '빈 줄은 막지 않는다')
+})
+
+test('내보내기 차단 문구 — 그대로 읽고 행동할 수 있다', () => {
+  assert.equal(exportBlockText(1, 'need_generate'), '2번 문장의 음성을 생성하세요.')
+  assert.equal(exportBlockText(1, 'need_pick'), '2번 문장에서 사용할 음성을 선택하세요.')
+  assert.equal(exportBlockText(1, 'need_regenerate'), '2번 문장이 변경됐습니다. 음성을 다시 생성하세요.')
+})
+
+test('내보내기 목록 — 막는 자리마다 사유가 붙는다', () => {
+  const okLine = line({ id: 'a', takes: [take({ id: 'ta' })], adoptedTakeId: 'ta' })
+  const pick = line({ id: 'b', text: '고를 것', takes: [take({ id: 'tb', text: '고를 것' })] })
+  const regen = line({ id: 'c', text: '바뀐 말', takes: [take({ id: 'tc' })], adoptedTakeId: 'tc' })
+  const r = exportReadiness(doc([okLine, pick, regen]))
+  assert.equal(r.ready, false)
+  assert.deepEqual(r.blocking.map((b) => [b.index, b.block]), [[1, 'need_pick'], [2, 'need_regenerate']])
+  assert.deepEqual(r.paths, [], '빠진 문장을 조용히 빼고 내보내지 않는다')
+})
+
+test('내보내기 — 최신 생성본이라는 이유로 고른 것을 바꾸지 않는다', () => {
+  const older = take({ id: 'ta', path: 'p_old', createdAt: 1 })
+  const newer = take({ id: 'tb', path: 'p_new', createdAt: 9 })
+  const l = line({ takes: [older, newer], adoptedTakeId: 'ta' })
+  const r = exportReadiness(doc([l]))
+  assert.equal(r.ready, true)
+  assert.deepEqual(r.paths, ['p_old'], '사용자가 고른 것을 그대로 쓴다')
+})
+
+test('차단 안내는 문제가 풀리면 지워야 하는 종류로 가려진다', () => {
+  // 누가 띄웠는지가 아니라 **무슨 말인지**로 가린다 — 어느 경로로 떴든 지워져야 한다.
+  assert.equal(isExportBlockNotice(exportBlockText(1, 'need_generate')), true)
+  assert.equal(isExportBlockNotice(exportBlockText(1, 'need_pick')), true)
+  assert.equal(isExportBlockNotice(exportBlockText(1, 'need_regenerate')), true)
+  assert.equal(isExportBlockNotice('만든 문장이 없습니다.'), true)
+  // 다른 알림은 건드리지 않는다
+  assert.equal(isExportBlockNotice('내보냈습니다 — 2개 문장, 128KB'), false)
+  assert.equal(isExportBlockNotice('문장을 지웠습니다. 되돌릴 수 있습니다.'), false)
+  assert.equal(isExportBlockNotice('새 생성본이 있습니다. 사용할 음성을 선택하세요. (…)'), true,
+    '이것도 고르면 풀리는 같은 종류다')
+  assert.equal(isExportBlockNotice(null), false)
 })
 
 test('일괄 생성 대상 — 번호와 이유를 누르기 전에 알 수 있다', () => {
