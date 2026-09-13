@@ -82,7 +82,7 @@ const armStore = async () => {
   await win.evaluate((p) => {
     window.__afStore.setState({
       fileInfo: { path: p, name: 'in.wav', duration: 5, channels: 1, sampleRate: 24000, format: 'wav' },
-      fileUrl: null, mode: 'tts', status: 'idle', error: null, errorInfo: null, tracks: [],
+      fileUrl: null, mode: 'tts', synthesisTab: 'advanced', status: 'idle', error: null, errorInfo: null, tracks: [],
       ttsText: '취소 테스트 문장입니다.', ttsPitch: 0, ttsPitchCapability: null,
       ttsEmotionRefState: {}, ttsReferencePrompts: {}, ttsReferenceClip: ''
     })
@@ -311,7 +311,7 @@ try {
   const win2 = await app2.firstWindow()
   await win2.waitForLoadState('domcontentloaded')
   await win2.waitForFunction(() => !!window.__afStore, undefined, { timeout: 30000 })
-  await win2.evaluate((p) => window.__afStore.setState({ fileInfo: { path: p, name: 'in.wav', duration: 5, channels: 1, sampleRate: 24000, format: 'wav' }, mode: 'tts', status: 'idle', ttsText: '종료 테스트', ttsPitch: 0, ttsEmotionRefState: {} }), path.join(iso2, 'in.wav'))
+  await win2.evaluate((p) => window.__afStore.setState({ fileInfo: { path: p, name: 'in.wav', duration: 5, channels: 1, sampleRate: 24000, format: 'wav' }, mode: 'tts', synthesisTab: 'advanced', status: 'idle', ttsText: '종료 테스트', ttsPitch: 0, ttsEmotionRefState: {} }), path.join(iso2, 'in.wav'))
   await win2.waitForTimeout(700)
   await win2.evaluate(() => window.__afStore.setState({ ttsRefReady: true, ttsRefMessage: '', status: 'idle' }))
   await win2.getByRole('button', { name: '음성 합성 시작' }).first().click({ timeout: 8000 })

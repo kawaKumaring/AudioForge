@@ -189,6 +189,13 @@ interface AppState {
   fileInfo: FileInfo | null
   fileUrl: string | null
   mode: SeparationMode
+  /**
+   * 합성 안에서 보고 있는 자리 — '일반'(대본 작업실) 또는 '고급'(기존 합성 화면).
+   *
+   * ★이것은 **보는 자리**일 뿐이다. 둘의 작업·저장·생성본은 각자 따로다 — 이 값을 바꾼다고
+   *   어느 쪽 내용도 옮겨지거나 지워지지 않는다.
+   */
+  synthesisTab: SynthesisTab
   trimSilence: boolean
   silenceGap: number
   silencePreview: boolean
@@ -311,6 +318,7 @@ interface AppState {
 
   setFile: (info: FileInfo, url: string) => void
   setMode: (mode: SeparationMode) => void
+  setSynthesisTab: (t: SynthesisTab) => void
   setTrimSilence: (v: boolean) => void
   setSilenceGap: (v: number) => void
   setSilencePreview: (v: boolean) => void
@@ -392,10 +400,14 @@ interface AppState {
   reset: () => void
 }
 
+/** 합성 안의 두 자리. 기능이 아니라 **보는 자리**다. */
+export type SynthesisTab = 'basic' | 'advanced'
+
 export const useAppStore = create<AppState>((set, get) => ({
   fileInfo: null,
   fileUrl: null,
   mode: 'music',
+  synthesisTab: 'basic' as SynthesisTab,   // 첫 진입은 일반
   trimSilence: false,
   silenceGap: 0.5,
   silencePreview: false,
@@ -489,6 +501,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], ttsReferenceClip: '', ttsRefReady: false, ttsRefPhase: 'preparing' as RefPhase, ttsRefReqId: newRefReqId(), ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
   },
   setMode: (mode) => set({ mode }),
+  setSynthesisTab: (t) => set({ synthesisTab: t }),
   setTrimSilence: (v) => set({ trimSilence: v }),
   setSilenceGap: (v) => set({ silenceGap: v }),
   setSilencePreview: (v) => set({ silencePreview: v }),

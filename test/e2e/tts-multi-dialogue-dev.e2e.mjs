@@ -79,7 +79,7 @@ try {
   await page.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
-    s.getState().setMode('tts')
+    s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
   }, WAV)
   const RAW = 'section[aria-label="대사"] div[data-af-tts-editor] textarea'
   await page.waitForSelector(RAW, { timeout: 60000 })
@@ -129,7 +129,7 @@ try {
   // ── 1. 한 명 = 기본. 여러 명 UI 요소 0, 기존 편집기 1 ────────────────────
   await setSource('')
   ok('1', (await mode()) === 'single'
-    && (await count('[data-testid="dialogue-tabs"] [role="tab"]')) === 2
+    && (await count('[data-testid="dialogue-tabs"] button')) === 2   // 좌우 화살표 두 개
     && (await count('[data-testid="multi-dialogue"],[data-testid="dialogue-row"],[data-testid="starter-card"],[data-testid="voice-panel"]')) === 0
     && (await count(RAW)) === 1,
     '한 명 기본: 탭 2개, 여러 명 요소 0, 기존 편집기 1')

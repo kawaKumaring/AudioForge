@@ -41,7 +41,7 @@ try {
   await win.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
-    s.getState().setMode('tts')
+    s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
   }, REF)
   step('111.08 분석 대기'); await win.waitForFunction(() => /111\.08/.test(document.getElementById('root')?.innerText || ''), undefined, { timeout: 30000 })
   step('구간 확정 클릭'); await win.getByText('이 구간으로 확정').click({ timeout: 20000 })

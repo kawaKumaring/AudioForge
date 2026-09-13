@@ -54,7 +54,7 @@ try {
   await win.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
-    s.getState().setMode('tts')
+    s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
   }, DEF)
   // 기본 참조: 패널 자동 분석 완료 = '이 구간으로 확정' 버튼 등장(지속시간 하드코딩 대신 의미 기반 대기 — synthetic 길이 무관)
   await win.getByText('이 구간으로 확정').waitFor({ timeout: 30000 })
@@ -131,7 +131,7 @@ try {
   await win.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
-    s.getState().setMode('tts')
+    s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
   }, DEF)
   // 저장돼 있던 source+region으로 effective 재구성(다시 트림) — 이전 세션 임시 경로에 의존하지 않음
   const rebuilt = await win.evaluate(async ({ source, region }) => {

@@ -78,7 +78,7 @@ async function loadFile(win) {
   await win.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
-    s.getState().setMode('tts')
+    s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
   }, REF)
 }
 

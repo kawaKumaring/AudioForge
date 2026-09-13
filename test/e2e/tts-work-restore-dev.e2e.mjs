@@ -88,7 +88,7 @@ try {
     await page.evaluate(async (fp) => {
       const s = window.__afStore
       s.getState().setFile(await window.api.audio.getFileInfo(fp), await window.api.audio.getFileUrl(fp))
-      s.getState().setMode('tts')
+      s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
     }, iso.input)
     await page.waitForSelector('[data-testid="dialogue-tabs"]', { timeout: 60000 })
     await page.click('[data-testid="dialogue-tabs"] [data-tab="multi"]')
@@ -136,7 +136,7 @@ try {
     await page.evaluate(async (fp) => {
       const s = window.__afStore
       s.getState().setFile(await window.api.audio.getFileInfo(fp), await window.api.audio.getFileUrl(fp))
-      s.getState().setMode('tts')
+      s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
     }, iso.input)
     await page.waitForSelector('[data-testid="dialogue-tabs"]', { timeout: 60000 })
 

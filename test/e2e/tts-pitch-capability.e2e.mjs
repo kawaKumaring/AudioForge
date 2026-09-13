@@ -38,7 +38,7 @@ async function setupReady(win, ref, presetPitch) {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
     if (pitch !== 0) s.setState({ ttsPitch: pitch })   // 마운트 전 주입 → TTSEditor 로컬이 이 값으로 init
-    s.getState().setMode('tts')
+    s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
   }, { p: ref, pitch: presetPitch })
   await win.waitForFunction(() => /\d/.test(document.getElementById('root')?.innerText || ''), undefined, { timeout: 30000 })
   await win.evaluate(async (p) => {

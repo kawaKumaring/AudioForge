@@ -51,6 +51,7 @@
     "test:e2e:lab-batch": "node test/e2e/lab-batch-and-shell.e2e.mjs",
     "test:e2e:lab-reveal": "node test/e2e/lab-reveal-take.e2e.mjs",
     "test:e2e:lab-compose": "node test/e2e/lab-compose-export.e2e.mjs",
+    "test:e2e:lab-entry": "node test/e2e/lab-synthesis-entry.e2e.mjs",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {

@@ -38,7 +38,7 @@ try {
   await win.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
-    s.getState().setMode('tts')
+    s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
   }, ISO.input)
   await win.waitForFunction(() => /\d/.test(document.getElementById('root')?.innerText || ''), undefined, { timeout: 30000 })
   // 4-flow: 구 '고급 설정' 아코디언 대신 표현/세부 표현 카드의 '펼치기'를 열어 더 많은 focusable(모드 토글·슬라이더) 노출.
