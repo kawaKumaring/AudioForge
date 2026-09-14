@@ -37,6 +37,8 @@ export interface ProcessOptions {
   splitSelected?: number[] | null
   /** 대화 구간 수정본 — 모델을 다시 돌리지 않고 이 구간으로만 트랙을 다시 만든다. */
   dialogueSegments?: { start: number; end: number; speaker: string }[]
+  /** 대화 분석 엔진. 'builtin'(기본, 기존 엔진) | 'community-1'(pyannote, 격리 환경). */
+  diarizeEngine?: string
   demucsModel?: string
   nSpeakers?: number
   splitMarkers?: number[]

@@ -283,6 +283,8 @@ def main():
         args.split_points = config.get("splitPoints", args.split_points)
         # 대화 구간 수정본 — 있으면 모델을 다시 돌리지 않고 이 구간으로만 다시 만든다.
         args.dialogue_segments = config.get("dialogueSegments", None)
+        # 대화 분석 엔진 — 기본은 기존 엔진. 고를 때만 Community-1 로 간다.
+        args.diarize_engine = config.get("diarizeEngine", "builtin")
         # 저장할 조각 번호(0부터). 없으면 전부 저장 — 기존 동작 그대로.
         sel = config.get("splitSelected", None)
         args.split_selected = [int(x) for x in sel] if isinstance(sel, list) else None
@@ -688,13 +690,26 @@ def main():
                 from music_worker import run_music_separation
                 tracks = run_music_separation(args.input, args.output, args.model) or []
         elif args.mode == "conversation":
-            emit("progress", percent=1, message="화자 분리 엔진 로딩 중... (torch + speechbrain)")
-            patch_torchaudio()
-            from conversation_worker import run_conversation_separation
-            emit("progress", percent=2, message="엔진 로딩 완료, 분리 시작")
-            tracks = run_conversation_separation(
-                args.input, args.output, args.n_speakers,
-                gpu_policy=getattr(args, "gpu_policy", "auto")) or []
+            engine = getattr(args, "diarize_engine", "builtin") or "builtin"
+            if engine == "community-1":
+                # 고를 때만 온다. 기존 엔진과 기본 선택은 그대로다.
+                emit("progress", percent=1, message="Community-1 화자 분석 준비 중...")
+                from conversation_worker import run_community1_diarization, Community1Unavailable
+                try:
+                    tracks = run_community1_diarization(
+                        args.input, args.output, args.n_speakers) or []
+                except Community1Unavailable as e:
+                    # ★무엇이 없어서 못 하는지 그대로 알린다. **기존 엔진으로 몰래 바꾸지 않는다.**
+                    emit("error", code="DIARIZE_NOT_READY", message=str(e))
+                    return None
+            else:
+                emit("progress", percent=1, message="화자 분리 엔진 로딩 중... (torch + speechbrain)")
+                patch_torchaudio()
+                from conversation_worker import run_conversation_separation
+                emit("progress", percent=2, message="엔진 로딩 완료, 분리 시작")
+                tracks = run_conversation_separation(
+                    args.input, args.output, args.n_speakers,
+                    gpu_policy=getattr(args, "gpu_policy", "auto")) or []
 
         if not tracks:
             # 워커(music_worker/conversation_worker)가 이미 구조화 오류(code·샘플레이트·
@@ -764,9 +779,12 @@ def _post_process(args, tracks):
     extra = {}
     if args.mode == "conversation":
         try:
-            from conversation_worker import LAST_SEGMENTS
+            from conversation_worker import LAST_SEGMENTS, LAST_OVERLAPS
             if LAST_SEGMENTS:
                 extra["dialogueSegments"] = list(LAST_SEGMENTS)
+            # 겹침 정보는 **따로** 보낸다 — 구간 목록에 섞지 않는다.
+            if LAST_OVERLAPS:
+                extra["dialogueOverlaps"] = list(LAST_OVERLAPS)
         except Exception:
             pass
     emit("result", tracks=tracks, outputDir=args.output, **extra)

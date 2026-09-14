@@ -9,6 +9,8 @@ from gpu_policy import select_device, run_with_oom_retry
 # 마지막 분석이 낸 화자 구간 — 화면의 '대화 구간 수정' 이 받아 간다.
 # 진단 sidecar 가 아니라 **제품 결과**로 나가는 값이다(본문 없음: 시간과 화자 이름뿐).
 LAST_SEGMENTS = []
+# 겹쳐 잡힌 구간 — **따로** 둔다. 겹침을 찾은 것과 겹친 목소리를 갈라낸 것은 다른 일이다.
+LAST_OVERLAPS = []
 
 
 def _canonical_labels(order, n_speakers):
@@ -204,6 +206,118 @@ def _build_dialogue_sidecar_payload(frame_labels, smoothed, order, n_speakers, f
         "sidecar": sidecar.to_dict(),
         "speakerMeta": speaker_meta,
     }
+
+
+# ── pyannote Community-1 경로 ────────────────────────────────────────────────
+#
+# 기존 엔진(VAD+ECAPA+군집)은 그대로 둔다. 이것은 **고를 수 있는 다른 경로**다.
+# 무거운 꾸러미를 앱 파이썬에 들이지 않으려고 격리 venv 에서 하위 프로세스로 돌린다.
+#
+# ★밖으로 아무것도 보내지 않는다(텔레메트리 off, 오프라인, 클라우드 SDK 미사용).
+# ★실패를 숨기지 않는다 — 환경·모델이 없으면 사유를 들고 실패하고, 몰래 기존 엔진이나
+#   CPU 로 바꾸지 않는다.
+
+DIARIZE_VENV = "diarization_venv"
+DIARIZE_MODEL_DIR = "diarization_models"
+
+
+class Community1Unavailable(RuntimeError):
+    """격리 환경이나 모델이 없다 — 조용히 다른 길로 가지 않는다."""
+
+
+def _community1_paths(model_name="community-1"):
+    import app_runtime
+    root = app_runtime.assets_root()
+    py = app_runtime.venv_python(os.path.join(root, DIARIZE_VENV))
+    model_dir = os.path.join(root, DIARIZE_MODEL_DIR, model_name)
+    if not os.path.isfile(py):
+        raise Community1Unavailable(
+            "DIARIZE_VENV_MISSING: 화자 분석 격리 환경(%s)이 없습니다." % DIARIZE_VENV)
+    if not os.path.isdir(model_dir) or not os.listdir(model_dir):
+        raise Community1Unavailable(
+            "DIARIZE_MODEL_MISSING: Community-1 모델이 없습니다. "
+            "모델 페이지에서 이용 조건을 수락하고 가중치를 준비해야 합니다. "
+            "자동 다운로드는 하지 않습니다.")
+    return py, model_dir
+
+
+def run_community1_diarization(input_path, output_dir, n_speakers=2, device="cuda"):
+    """Community-1 로 화자 구간을 얻고, **기존 재구성**으로 화자별 트랙을 만든다.
+
+    분석은 16kHz 모노로 하지만 **출력 트랙은 원본 시간축·음질 기준**으로 만든다 —
+    dialogue_rebuild 가 원본에서 그 구간을 그대로 떠 온다.
+    """
+    import json as _json
+    import subprocess
+    import tempfile
+
+    py, model_dir = _community1_paths()
+    here = os.path.dirname(os.path.abspath(__file__))
+    bridge = os.path.join(here, "diarize_pyannote_bridge.py")
+    fd, out_path = tempfile.mkstemp(suffix=".json", prefix="diarize_")
+    os.close(fd)
+
+    emit("progress", percent=5, message="Community-1 화자 분석 준비 중...")
+    cmd = [py, "-X", "utf8", bridge,
+           "--audio", os.path.abspath(input_path),
+           "--model-dir", os.path.abspath(model_dir),
+           "--out", out_path, "--device", device]
+    if n_speakers:
+        cmd += ["--num-speakers", str(int(n_speakers))]
+    env = dict(os.environ)
+    env.update({"PYANNOTE_METRICS_ENABLED": "false", "HF_HUB_OFFLINE": "1",
+                "HF_HUB_DISABLE_TELEMETRY": "1"})
+    try:
+        emit("progress", percent=15, message="화자 구간 분석 중... (Community-1)")
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace", env=env)
+        if proc.returncode != 0 or not os.path.isfile(out_path):
+            tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
+            raise RuntimeError("DIARIZE_FAILED(exit %s): %s"
+                               % (proc.returncode, " / ".join(tail) or "사유 없음"))
+        with open(out_path, "r", encoding="utf-8") as f:
+            result = _json.load(f)
+    finally:
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
+
+    run = result.get("_run") or {}
+    emit("diarizeRun", **{k: run.get(k) for k in (
+        "engine", "pyannoteVersion", "torchVersion", "device", "gpuName",
+        "numSpeakersRequested", "audioDurationSec", "analysisSampleRate",
+        "loadSec", "diarizeSec", "peakGpuMemoryMB",
+        "generalSegmentCount", "exclusiveSegmentCount", "overlapSpanCount",
+        "telemetry", "hubOffline")})
+
+    segments = result.get("segments") or []
+    if not segments:
+        emit("error", code="DIARIZE_EMPTY",
+             message="화자 구간을 찾지 못했습니다. 오디오를 확인해 주세요.")
+        return None
+
+    # ★출력은 **원본**에서 만든다. 분석용 16kHz 신호로 만들지 않는다.
+    emit("progress", percent=70, message="화자별 오디오 재구성 중...")
+    from audio_utils import load_audio
+    import dialogue_rebuild as dr
+    wav, sr = load_audio(input_path)
+    if wav.shape[0] > 1:
+        wav = wav.mean(dim=0, keepdim=True)
+    tracks, dropped = dr.rebuild_speaker_tracks(wav, sr, segments, output_dir, prefix="speaker")
+    if dropped:
+        emit("dialogueRebuildNotes", dropped=dropped)
+    if not tracks:
+        emit("error", code="DIARIZE_REBUILD_EMPTY",
+             message="쓸 수 있는 구간이 없어 트랙을 만들지 못했습니다.")
+        return None
+
+    # 화면이 쓸 값 — 구간과 **겹침 정보를 따로** 남긴다.
+    LAST_SEGMENTS.clear()
+    LAST_SEGMENTS.extend(segments)
+    LAST_OVERLAPS.clear()
+    LAST_OVERLAPS.extend(result.get("overlaps") or [])
+    return tracks
 
 
 def run_conversation_separation(input_path: str, output_dir: str, n_speakers: int = 2,

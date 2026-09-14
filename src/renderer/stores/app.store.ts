@@ -230,6 +230,10 @@ interface AppState {
   splitSelected: number[] | null
   /** 화자 분석이 낸 구간(최초 결과). 수정 화면이 이것을 받아 고친다. */
   dialogueSegments: { start: number; end: number; speaker: string }[]
+  /** 겹쳐 잡힌 구간 — 구간 목록과 **따로** 둔다. 겹침 발견 ≠ 겹친 목소리 분리. */
+  dialogueOverlaps: { start: number; end: number }[]
+  /** 대화 분석 엔진. 기본은 기존 엔진이다. */
+  diarizeEngine: 'builtin' | 'community-1'
   ttsText: string
   ttsSpeed: number
   ttsSilenceGap: number
@@ -334,6 +338,7 @@ interface AppState {
   setOutputFormat: (v: 'wav' | 'mp3' | 'flac') => void
   setWhisperModel: (v: 'small' | 'medium' | 'large-v3' | 'large-v3-turbo') => void
   setAsrEngine: (v: AppState['asrEngine']) => void
+  setDiarizeEngine: (v: AppState['diarizeEngine']) => void
   setWhisperLang: (v: string) => void
   setTranslateModel: (v: '600m' | '1.3b' | 'llm' | 'google') => void
   setDemucsModel: (v: 'htdemucs' | 'htdemucs_ft' | 'roformer' | 'roformer_melband' | 'roformer_ensemble') => void
@@ -442,6 +447,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   splitLabels: [],
   splitSelected: null,
   dialogueSegments: [],
+  dialogueOverlaps: [],
+  diarizeEngine: 'builtin' as const,
   ttsText: '',
   ttsSpeed: 1.0,
   ttsSilenceGap: 0.5,
@@ -521,6 +528,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setOutputFormat: (v) => set({ outputFormat: v }),
   setWhisperModel: (v) => set({ whisperModel: v }),
   setAsrEngine: (v) => set({ asrEngine: v }),
+  setDiarizeEngine: (v) => set({ diarizeEngine: v }),
   setWhisperLang: (v) => set({ whisperLang: v }),
   setTranslateModel: (v) => set({ translateModel: v }),
   setDemucsModel: (v) => set({ demucsModel: v }),

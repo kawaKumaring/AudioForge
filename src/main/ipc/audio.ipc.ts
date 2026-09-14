@@ -734,6 +734,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       // 수정한 대화 구간 — 이 모드에서만 본다.
       dialogueSegments: mode === 'dialogue-rebuild' && Array.isArray(options?.dialogueSegments)
         ? options.dialogueSegments : null,
+      // 대화 분석 엔진 — **기본은 기존 엔진**. 대화 모드에서만 파이썬이 본다.
+      diarizeEngine: mode === 'conversation' ? (options?.diarizeEngine || 'builtin') : 'builtin',
       nSpeakers: options?.nSpeakers || 2,
       // TTS 필드는 단일 소스(buildTtsConfig)로 직렬화 — ttsEmotionRefs 포함,
       // 숫자 기본값은 ??(0 보존). 필드 추가 시 컴파일 단계에서 누락 검출.

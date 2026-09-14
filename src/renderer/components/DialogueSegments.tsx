@@ -27,7 +27,7 @@ const btn = (bg: string, fg: string, off?: boolean): React.CSSProperties => ({
 })
 
 export default function DialogueSegments() {
-  const { dialogueSegments, fileInfo, fileUrl, outputDir, status } = useAppStore()
+  const { dialogueSegments, dialogueOverlaps, fileInfo, fileUrl, outputDir, status } = useAppStore()
   const [doc, setDoc] = useState<DialogueDoc | null>(null)
   const [playing, setPlaying] = useState<number | null>(null)
   const [message, setMessage] = useState<string | null>(null)
@@ -234,6 +234,21 @@ export default function DialogueSegments() {
           겹쳐 말한 부분을 한 사람의 목소리로 갈라내지는 않습니다.
         </span>
       </div>
+
+      {/* 겹쳐 잡힌 구간 — 구간 목록과 **따로** 알린다.
+          ★겹침을 찾았다는 것은 겹친 목소리를 갈라냈다는 뜻이 아니다. */}
+      {dialogueOverlaps.length > 0 && (
+        <div data-testid="dialogue-overlaps" style={{
+          fontSize: 10, lineHeight: 1.6, color: 'var(--amber, #d4a017)',
+          padding: '6px 8px', borderRadius: 7, background: 'var(--bg-elevated)',
+        }}>
+          두 사람 이상이 동시에 말한 구간 {dialogueOverlaps.length}곳을 찾았습니다 —
+          {dialogueOverlaps.slice(0, 3).map((o) => ` ${fmt(o.start)}~${fmt(o.end)}`)}
+          {dialogueOverlaps.length > 3 ? ` 외 ${dialogueOverlaps.length - 3}곳` : ''}.
+          <br />
+          찾았다는 뜻일 뿐, 그 부분의 목소리를 사람마다 갈라낸 것은 아닙니다.
+        </div>
+      )}
 
       {plan && plan.blocked.length > 0 && (
         <div data-testid="dialogue-blocked" role="alert" style={{ fontSize: 10, lineHeight: 1.6, color: 'var(--rose, #fb7185)' }}>
