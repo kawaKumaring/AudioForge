@@ -126,6 +126,10 @@ export default function ProcessButton() {
       // 취소가 '실제로' 정착(main의 audio:cancelling 수신)했을 때만 늦은 결과를 버린다(계약 4-A). main도 억제하지만 방어적 이중 가드.
       // 취소를 눌렀더라도 main이 no-op으로 끝냈으면 status는 여전히 processing이므로 이 결과는 정상 채택된다(계약 C2-P0.1 §5).
       if (!acceptsSettlement(useAppStore.getState().status)) return
+      // 대화 모드는 화자 구간도 함께 온다 — 재분석 없이 고치는 화면이 받는다.
+      if (Array.isArray(data.dialogueSegments)) {
+        useAppStore.setState({ dialogueSegments: data.dialogueSegments })
+      }
       setResult(data.tracks ?? [], data.outputDir ?? '', data.metadata ?? null)
       cleanup()
     })

@@ -1,4 +1,5 @@
 export type SeparationMode = 'music' | 'conversation' | 'transcribe' | 'split' | 'tts' | 'lab'
+  | 'dialogue-rebuild'
 
 export interface Track {
   name: string
@@ -34,6 +35,8 @@ export interface ProcessOptions {
   asrEngine?: string
   /** 분할에서 저장할 조각 번호(0부터). 없으면 전부 저장. */
   splitSelected?: number[] | null
+  /** 대화 구간 수정본 — 모델을 다시 돌리지 않고 이 구간으로만 트랙을 다시 만든다. */
+  dialogueSegments?: { start: number; end: number; speaker: string }[]
   demucsModel?: string
   nSpeakers?: number
   splitMarkers?: number[]

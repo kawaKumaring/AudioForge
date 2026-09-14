@@ -30,6 +30,7 @@ import { WORK_DRAFT_STORAGE_KEY } from '../../shared/workDraft'
 import { PLAYBACK_VOLUME_STORAGE_KEY } from '../../shared/playbackVolume'
 import { LAB_STORAGE_KEY } from '../../shared/labWorkspace'
 import { TRANSCRIPT_EDIT_STORAGE_KEY } from '../../shared/transcriptEdit'
+import { DIALOGUE_EDIT_STORAGE_KEY } from '../../shared/dialogueEdit'
 import { registerTranscriptIpc } from './transcript.ipc'
 import { registerLabIpc } from './lab.ipc'
 import { readSettingsFile, setSettingsKey } from '../services/settings-store'
@@ -730,6 +731,9 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       splitLabels: mode === 'split' && options?.splitLabels ? (options.splitLabels as string[]).join('|') : '',
       // 고른 조각만 저장 — 없으면 전부(예전 동작).
       splitSelected: mode === 'split' && Array.isArray(options?.splitSelected) ? options.splitSelected : null,
+      // 수정한 대화 구간 — 이 모드에서만 본다.
+      dialogueSegments: mode === 'dialogue-rebuild' && Array.isArray(options?.dialogueSegments)
+        ? options.dialogueSegments : null,
       nSpeakers: options?.nSpeakers || 2,
       // TTS 필드는 단일 소스(buildTtsConfig)로 직렬화 — ttsEmotionRefs 포함,
       // 숫자 기본값은 ??(0 보존). 필드 추가 시 컴파일 단계에서 누락 검출.
@@ -1290,6 +1294,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       // 테스트개발 작업실 — 기존 작업 저장과 **다른 열쇠**다(섞이지 않는다).
       [LAB_STORAGE_KEY]: stored[LAB_STORAGE_KEY] ?? null,
       [TRANSCRIPT_EDIT_STORAGE_KEY]: stored[TRANSCRIPT_EDIT_STORAGE_KEY] ?? null,
+      [DIALOGUE_EDIT_STORAGE_KEY]: stored[DIALOGUE_EDIT_STORAGE_KEY] ?? null,
     }
   })
 
@@ -1315,7 +1320,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     // 사용자는 저장된 줄 알고 앱을 닫는다.
     if (key === GLOBAL_ASSET_STORAGE_KEY || key === VOICE_CAST_STORAGE_KEY
         || key === WORK_DRAFT_STORAGE_KEY || key === PLAYBACK_VOLUME_STORAGE_KEY
-        || key === LAB_STORAGE_KEY || key === TRANSCRIPT_EDIT_STORAGE_KEY) {
+        || key === LAB_STORAGE_KEY || key === TRANSCRIPT_EDIT_STORAGE_KEY
+        || key === DIALOGUE_EDIT_STORAGE_KEY) {
       // 배역 세트도 같은 원자 경로를 쓴다. 두 키는 서로를 덮지 않는다 —
       // settings-store 가 현재 파일을 읽어 그 키 하나만 갱신한다.
       return saveSetting(key, value ?? undefined)

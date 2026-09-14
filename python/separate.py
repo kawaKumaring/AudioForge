@@ -281,6 +281,8 @@ def main():
         args.translate_model = config.get("translateModel", "600m")
         args.srt = config.get("srt", args.srt)
         args.split_points = config.get("splitPoints", args.split_points)
+        # 대화 구간 수정본 — 있으면 모델을 다시 돌리지 않고 이 구간으로만 다시 만든다.
+        args.dialogue_segments = config.get("dialogueSegments", None)
         # 저장할 조각 번호(0부터). 없으면 전부 저장 — 기존 동작 그대로.
         sel = config.get("splitSelected", None)
         args.split_selected = [int(x) for x in sel] if isinstance(sel, list) else None
@@ -653,6 +655,13 @@ def main():
             _run_track_process(args)
             return
 
+        # ── 대화 구간 수정본으로 다시 만들기 ──
+        # 화자 분석(VAD·임베딩·군집)은 다시 돌리지 않는다. 사용자가 고친 배정·경계로
+        # 원본에서 구간을 떠다 화자별 트랙에 올릴 뿐이다.
+        if args.mode == "dialogue-rebuild":
+            _run_dialogue_rebuild(args)
+            return
+
         # ── Transcribe-only mode ──
         if args.mode == "transcribe":
             _run_transcribe_only(args)
@@ -750,7 +759,17 @@ def _post_process(args, tracks):
                 t["path"] = dst
 
     emit("progress", percent=99, message="완료!")
-    emit("result", tracks=tracks, outputDir=args.output)
+    # 대화 모드에서는 화자 구간도 함께 보낸다 — 화면이 재분석 없이 고칠 수 있게.
+    # 시간과 화자 이름뿐이고 전사 본문은 들어가지 않는다.
+    extra = {}
+    if args.mode == "conversation":
+        try:
+            from conversation_worker import LAST_SEGMENTS
+            if LAST_SEGMENTS:
+                extra["dialogueSegments"] = list(LAST_SEGMENTS)
+        except Exception:
+            pass
+    emit("result", tracks=tracks, outputDir=args.output, **extra)
 
 
 def _run_ref_transcribe(args):
@@ -761,6 +780,51 @@ def _run_ref_transcribe(args):
     emit("progress", percent=10, message="참조 음성 전사 중... (Whisper)")
     t = transcribe_reference(args.input, "small")
     emit("result", transcript=t.to_dict())
+
+
+def _run_dialogue_rebuild(args):
+    """수정한 구간으로 화자별 트랙을 다시 만든다 — **모델 재실행 없음.**"""
+    emit("status", message="대화 구간 수정본 만들기", percent=0)
+    segs = getattr(args, "dialogue_segments", None)
+    if not isinstance(segs, list) or not segs:
+        emit("error", code="DIALOGUE_NO_SEGMENTS",
+             message="다시 만들 구간이 없습니다.")
+        return
+
+    emit("progress", percent=10, message="원본 읽는 중...")
+    try:
+        # 기존 경로와 **같은 로더**를 쓴다. torchaudio.load 는 이 환경에서 torchcodec 을
+        # 요구해 실패한다(실측) — audio_utils.load_audio 가 soundfile 로 읽는다.
+        from audio_utils import load_audio
+        import dialogue_rebuild as dr
+    except ImportError as e:
+        emit("error", message=f"필요한 패키지가 설치되지 않았습니다: {e}")
+        return
+
+    wav_path = convert_to_wav(args.input)
+    try:
+        wav, sr = load_audio(wav_path)
+        if wav.shape[0] > 1:
+            wav = wav.mean(dim=0, keepdim=True)
+        emit("progress", percent=40, message="구간대로 화자 트랙 만드는 중...")
+        tracks, dropped = dr.rebuild_speaker_tracks(wav, sr, segs, args.output)
+    finally:
+        try:
+            os.remove(wav_path)
+            os.rmdir(os.path.dirname(wav_path))
+        except OSError:
+            pass
+
+    if dropped:
+        # 버리거나 자른 구간을 조용히 넘기지 않는다. 번호와 까닭만 올린다.
+        emit("dialogueRebuildNotes", dropped=dropped)
+    if not tracks:
+        emit("error", code="DIALOGUE_REBUILD_EMPTY",
+             message="쓸 수 있는 구간이 없어 트랙을 만들지 못했습니다.")
+        return
+    # ★이것은 원본 구간을 화자별 트랙에 **배정**한 것이다. 겹친 목소리를 갈라낸 것이 아니다.
+    emit("progress", percent=95, message="완료!")
+    emit("result", tracks=tracks, outputDir=args.output)
 
 
 def _run_transcribe_only(args):

@@ -6,6 +6,11 @@ from audio_utils import emit, load_audio, save_audio, convert_to_wav
 from gpu_policy import select_device, run_with_oom_retry
 
 
+# 마지막 분석이 낸 화자 구간 — 화면의 '대화 구간 수정' 이 받아 간다.
+# 진단 sidecar 가 아니라 **제품 결과**로 나가는 값이다(본문 없음: 시간과 화자 이름뿐).
+LAST_SEGMENTS = []
+
+
 def _canonical_labels(order, n_speakers):
     """cluster index → 'order 첫 등장 순' canonical 라벨 (트랙 라벨 규칙과 동일:
     enumerate(order)). 반환 (label_of, speaker_names[0..n_speakers-1]).
@@ -617,6 +622,13 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
                 interp_names, PROB_SR,
             )
             emit("dialogueSidecar", **payload)
+            # ★진단 sidecar 는 구간 배열을 버린다(설계). 화면의 '대화 구간 수정' 은 실제 구간이
+            #   있어야 하므로, 같은 값을 **제품 결과 경로**로 따로 남긴다(파일은 쓰지 않는다).
+            LAST_SEGMENTS.clear()
+            for s in (payload.get("sidecar") or {}).get("segments") or []:
+                if s.get("speaker"):
+                    LAST_SEGMENTS.append({"start": float(s["start"]), "end": float(s["end"]),
+                                          "speaker": str(s["speaker"])})
         except Exception as e:
             # 구조화 오류 — 비치명적. 기존 WAV/track 결과 불변, 파일 산출 없음.
             emit("dialogueSidecarError",

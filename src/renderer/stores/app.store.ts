@@ -228,6 +228,8 @@ interface AppState {
   splitLabels: string[]
   /** 저장할 조각 번호(0부터). null 이면 전부 저장 — 예전 동작 그대로. */
   splitSelected: number[] | null
+  /** 화자 분석이 낸 구간(최초 결과). 수정 화면이 이것을 받아 고친다. */
+  dialogueSegments: { start: number; end: number; speaker: string }[]
   ttsText: string
   ttsSpeed: number
   ttsSilenceGap: number
@@ -439,6 +441,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   splitMarkers: [],
   splitLabels: [],
   splitSelected: null,
+  dialogueSegments: [],
   ttsText: '',
   ttsSpeed: 1.0,
   ttsSilenceGap: 0.5,
