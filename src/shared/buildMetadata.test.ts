@@ -124,14 +124,19 @@ test('없는 파일과 깨진 파일은 모두 없음으로 다룬다', () => {
 
 test('package.json version 이 단일 권위다 — 화면 문자열을 따로 두지 않는다', () => {
   const pkg = JSON.parse(readFileSync(join(repoRoot, 'package.json'), 'utf-8'))
-  assert.equal(pkg.version, '1.9.0-dev', '정식 v1.8.0 다음 개발선')
-  assert.equal(channelForVersion(pkg.version), CHANNEL_DEVELOPMENT,
-    'channel 은 version 접미사에서만 나온다')
+  // ★버전 숫자를 여기 **적어 두지 않는다.** 예전에는 '1.9.0-dev' 처럼 그때의 개발선을 박아 뒀는데,
+  //   정식 판을 낼 때마다 이 줄이 어긋나 master 에서도 이 검사가 빨간 채로 나갔다(실측).
+  //   이 검사가 지킬 것은 "버전이 무엇인가" 가 아니라 **"권위가 package.json 하나인가"** 다.
+  assert.match(pkg.version, /^\d+\.\d+\.\d+(-[\w.]+)?$/, 'version 은 유의적 버전 형식이다')
+  const channel = channelForVersion(pkg.version)
+  // channel 은 접미사에서만 나온다 — 개발선이면 Development, 접미사가 없으면 Stable.
+  assert.equal(channel, pkg.version.includes('-dev') ? CHANNEL_DEVELOPMENT : CHANNEL_STABLE)
   assert.equal(versionLabel({ version: pkg.version, commit: null }), `v${pkg.version}`,
     '커밋을 모르면 지어내지 않는다')
-  // develop 계열은 어느 커밋의 화면인지 알아야 한다 — 표시 시점에 short SHA 를 합친다.
+  // develop 계열만 어느 커밋의 화면인지 알아야 한다 — 표시 시점에 short SHA 를 합친다.
   assert.equal(versionLabel({ version: pkg.version, commit: 'abc1234' }),
-    `v${pkg.version}+abc1234`, '개발 표시에는 +<short-sha> 가 붙는다')
+    channel === CHANNEL_DEVELOPMENT ? `v${pkg.version}+abc1234` : `v${pkg.version}`,
+    '개발 표시에만 +<short-sha> 가 붙는다')
   // renderer 소스에 버전 문자열이 하드코딩돼 있지 않은지 본다.
   const label = readFileSync(
     join(repoRoot, 'src', 'renderer', 'components', 'AppVersionLabel.tsx'), 'utf-8')

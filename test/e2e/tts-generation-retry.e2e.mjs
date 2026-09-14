@@ -61,7 +61,7 @@ const armStore = async () => {
   await win.evaluate(() => {
     window.__afStore.setState({
       fileInfo: { path: 'X:/in.wav', name: 'in.wav', duration: 5, channels: 1, sampleRate: 24000, format: 'wav' },
-      fileUrl: null, mode: 'tts', status: 'idle', error: null, errorInfo: null, tracks: [],
+      fileUrl: null, mode: 'tts', synthesisTab: 'advanced', status: 'idle', error: null, errorInfo: null, tracks: [],
       ttsText: '안녕하세요, 재시도 테스트 문장입니다.', ttsPitch: 0, ttsPitchCapability: null,
       ttsEmotionRefState: {}, ttsReferencePrompts: {}, ttsReferenceClip: ''
     })

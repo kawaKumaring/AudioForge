@@ -148,7 +148,7 @@ try {
   await page.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
-    s.getState().setMode('tts')
+    s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
   }, SYNTH)
   await page.waitForSelector('section[aria-label="대사"] textarea', { timeout: 60000 })
 

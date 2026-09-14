@@ -127,7 +127,7 @@ try {
   await win.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
-    s.getState().setMode('tts')
+    s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
   }, REF)
   await win.waitForSelector('section[aria-label="대사"] textarea', { timeout: 30000 })
   // tokenizer 를 먼저 데운다 — 이후 측정에 첫 로드 시간이 섞이지 않게.
@@ -298,7 +298,7 @@ try {
   await sleep(600)
   const goneAway = await panel()
   ok(!goneAway.present, '모드를 바꾸면 분석 패널이 사라진다')
-  await win.evaluate(() => window.__afStore.getState().setMode('tts'))
+  await win.evaluate(() => window.__afStore.getState().setMode('tts'); window.__afStore.getState().setSynthesisTab('advanced'))
   await win.waitForSelector('section[aria-label="대사"] textarea', { timeout: 30000 })
   await setText(MULTI)
   const revisit = await waitReady()

@@ -113,7 +113,7 @@ try {
       const s = window.__afStore
       s.getState().reset()
       s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
-      s.getState().setMode('tts')
+      s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
     }, ref)
     await sleep(1500)
     const ready = await wait(async () => (await st(() => window.__afStore.getState().ttsRefReady)) === true, 180000)

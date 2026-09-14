@@ -73,7 +73,7 @@ try {
   const loadFile = (p) => page.evaluate(async (fp) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(fp), await window.api.audio.getFileUrl(fp))
-    s.getState().setMode('tts')
+    s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
   }, p)
   const shot = (name) => page.screenshot({ path: path.join(SHOTS, name), fullPage: true })
   const cardVoices = () => st(() => [...document.querySelectorAll('[data-testid="dialogue-row"] [data-testid="card-voice-status"], [data-testid="starter-card"] [data-testid="card-voice-status"]')].map((b) => b.textContent.trim()))

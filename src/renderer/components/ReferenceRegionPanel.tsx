@@ -73,6 +73,14 @@ interface ReferenceRegionPanelProps {
    */
   committed?: { clip: string; region: { start: number; duration: number } | null; whole?: boolean } | null
   /**
+   * 이 패널이 쓸 엔진·참조 목표 길이를 **부르는 쪽이 정한다**(미지정이면 합성 탭의 현재 값).
+   *
+   * ★왜 필요한가: 테스트개발 작업실은 자기 설정을 따로 가진다. 이 통로를 열어 두지 않으면
+   *   합성 탭에서 엔진을 바꾼 것이 작업실의 목소리 준비에 조용히 반영된다.
+   */
+  engine?: string
+  refTargetSec?: number
+  /**
    * 이 패널이 처리하는 **요청의 식별자**. 올려 보내는 모든 보고에 그대로 붙는다.
    *
    * 왜 필요한가(2026-09-09 관리자 검수): 예전에는 원본 경로만 비교해서 낡은 결과를 걸렀다.
@@ -198,7 +206,7 @@ function waitUntilLoaded(el: HTMLAudioElement, timeoutMs = 4000): Promise<boolea
 export default function ReferenceRegionPanel({
   path, clipKey, disabled, onState, label = '참조 음성',
   open = true, autoConfirm = false, onAutoConfirmSettled, plainStatus = false, committed = null,
-  reqId,
+  reqId, engine: engineOverride, refTargetSec: refTargetSecOverride,
 }: ReferenceRegionPanelProps) {
   // 확정 클립이 살아 있는가 — 재분석·재확정 실패가 이것을 내리지 않는다(사용 중인 목소리 보존).
   // whole = 원본 전체를 그대로 참조로 쓰는 준비 상태(클립·구간 없음). 이것도 '사용 중' 이므로 재분석이 준비를 내리지 않는다.
@@ -214,10 +222,12 @@ export default function ReferenceRegionPanel({
     return !!(c && (c.clip || c.region || c.whole))
   }
   // 엔진 선택이 바뀌면 같은 원본을 그 엔진의 정책으로 다시 판정한다(사용 중 구간은 지우지 않는다).
-  const ttsEngine = useAppStore((s) => s.ttsEngine)
+  const storeEngine = useAppStore((s) => s.ttsEngine)
+  const ttsEngine = engineOverride ?? storeEngine
   // 고급 설정의 '참조 목표 길이'. 0 = 엔진 권장 상한. 값이 바뀌면 추천도 다시 받아야 하므로
   // runAnalyze 의 의존성에 들어간다(설정만 바꾸고 예전 추천을 보고 있으면 안 된다).
-  const ttsRefTargetSec = useAppStore((s) => s.ttsRefTargetSec)
+  const storeRefTargetSec = useAppStore((s) => s.ttsRefTargetSec)
+  const ttsRefTargetSec = refTargetSecOverride ?? storeRefTargetSec
   const setTtsReferencePolicy = useAppStore((s) => s.setTtsReferencePolicy)
   const [confirmError, setConfirmError] = useState<string | null>(null)
   // 기본 화면(plainStatus)에서는 같은 사실을 쉬운 말로 낸다. 안전 오류 문구는 어느 쪽에서도 바꾸지 않는다.

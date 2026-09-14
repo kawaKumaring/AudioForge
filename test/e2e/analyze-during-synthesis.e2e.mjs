@@ -54,7 +54,7 @@ try {
   await win.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
-    s.getState().setMode('tts')
+    s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
   }, REF)
   await win.waitForFunction(() => window.__afStore?.getState().ttsRefReady === true,
     undefined, { timeout: 180000 })

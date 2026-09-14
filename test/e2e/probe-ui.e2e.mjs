@@ -71,7 +71,7 @@ try {
     const s = window.__afStore
     s.getState().reset()
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
-    s.getState().setMode('tts')
+    s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
   }, REF)
   await sleep(3000)
   await dump('참조 올리고 tts 모드')

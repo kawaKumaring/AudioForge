@@ -9,13 +9,14 @@ import ProgressBar from '@/components/ProgressBar'
 import TrackList from '@/components/TrackList'
 import Options from '@/components/Options'
 import SplitEditor from '@/components/SplitEditor'
-import TTSEditor from '@/components/TTSEditor'
+import SynthesisTabs from '@/components/SynthesisTabs'
+import LabPlaceholder from '@/components/LabPlaceholder'
 import TtsResultInfo from '@/components/TtsResultInfo'
 import AppVersionLabel from '@/components/AppVersionLabel'
 import { loadPlaybackVolume } from '@/lib/playbackVolume'
 
 export default function App() {
-  const { fileInfo, mode, status, reset, restorable, restoreSession, setRestorable } = useAppStore()
+  const { fileInfo, mode, setMode, synthesisTab, setSynthesisTab, status, reset, restorable, restoreSession, setRestorable } = useAppStore()
   // 보관된 재생 음량을 한 번 읽어 적용한다. 실패하면 기본값(최대)이 그대로 쓰인다 — 재생을 막지 않는다.
   useEffect(() => { void loadPlaybackVolume() }, [])
   const setIdle = () => useAppStore.setState({ status: 'idle', tracks: [], error: null, progress: 0 })
@@ -48,6 +49,14 @@ export default function App() {
     })
   }
 
+  // ★공용 실행 버튼·진행 막대·결과 목록은 **다른 모드의 것**이다.
+  //   합성(일반/고급 둘 다)과 테스트개발에는 나오면 안 된다 — 예전에 여기 섞여 나와
+  //   알 수 없는 모드의 마지막 이름인 '텍스트 추출 시작' 이 뜨고, 누르면 워커가 모르는
+  //   갈래로 요청이 나가 빈 결과로 끝났다(종료 코드 1). 한 곳에서 정해 재발을 막는다.
+  const showSharedRun = mode !== 'tts' && mode !== 'lab'
+  // 결과 목록은 고급 합성까지만 함께 쓴다. 일반은 자기 화면 안에서 결과를 보여 준다.
+  const showSharedResults = mode !== 'lab' && !(mode === 'tts' && synthesisTab === 'basic')
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg-base)', color: 'var(--text-primary)', fontFamily: "'Inter', -apple-system, sans-serif" }}>
       {/* Title bar */}
@@ -73,7 +82,17 @@ export default function App() {
       </div>
 
       {/* Content */}
-      {!fileInfo ? (
+      {/* ── 파일 없이도 여는 자리 ──
+             합성>일반(대본 작업실)은 대본을 쓰고 목소리를 따로 고르는 곳이라 분리할 원본이
+             필요 없다. 테스트개발은 안내만 있는 자리라 역시 필요 없다.
+             **고급을 비롯한 나머지는 예전 그대로** 파일을 먼저 불러와야 한다. */}
+      {!fileInfo && (mode === 'lab' || mode === 'tts') ? (
+        <div style={{ position: 'relative', zIndex: 1, flex: 1, display: 'flex', flexDirection: 'column',
+                      gap: 14, padding: '20px 24px 28px', maxWidth: 1100, width: '100%', margin: '0 auto' }}>
+          <ModeSelector />
+          {mode === 'lab' ? <LabPlaceholder /> : <SynthesisTabs />}
+        </div>
+      ) : !fileInfo ? (
         /* ── 초기 화면 ── */
         <div style={{ position: 'relative', zIndex: 1, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
           <div style={{ width: '100%', maxWidth: 520, padding: '0 40px' }}>
@@ -95,6 +114,20 @@ export default function App() {
                 <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
               </svg>
               이전 결과 폴더 열기
+            </button>
+            {/* 파일을 불러오지 않고 바로 대본 작업을 시작하는 자리 */}
+            <button data-testid="open-lab"
+              onClick={() => { setSynthesisTab('basic'); setMode('tts') }} style={{
+              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
+              width: '100%', marginTop: 8, padding: '10px 0', borderRadius: 10,
+              border: '1px solid var(--border-subtle)', background: 'transparent',
+              cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500,
+              color: 'var(--text-muted)'
+            }}>
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3" />
+              </svg>
+              합성(일반) — 파일 없이 대본부터 시작
             </button>
             {/* 버전 표시 — 중앙 축 그대로, 버튼 아래 16px. 상단 로고 옆에는 두지 않는다. */}
             <AppVersionLabel />
@@ -175,14 +208,21 @@ export default function App() {
             {/* 모드 + 옵션 + 버튼 + 결과 */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               <ModeSelector />
-              {mode === 'split' ? <SplitEditor /> : mode === 'tts' ? <TTSEditor /> : <Options />}
+              {mode === 'split' ? <SplitEditor /> : mode === 'tts' ? <SynthesisTabs />
+                : mode === 'lab' ? <LabPlaceholder /> : <Options />}
               {/* 합성 화면에서는 시작·취소 버튼과 진행 상태를 [음성 만들기] 카드 안에서 그린다 —
                   제목만 있는 단계 카드와 그 아래 버튼으로 나뉘어 있으면 '어디가 실행 자리인가'가 생긴다.
                   다른 모드는 지금까지와 같은 자리다. */}
-              {mode !== 'tts' && <ProcessButton />}
-              {mode !== 'tts' && <ProgressBar />}
-              <TtsResultInfo />
-              <TrackList />
+              {/* ★테스트개발 작업실은 **자기 실행·진행·취소·오류를 자기 안에서** 보여 준다.
+                     예전에는 여기 공용 실행 버튼이 함께 그려져, 알 수 없는 모드의 마지막
+                     fallback 이름인 '텍스트 추출 시작' 이 작업실에 떴다. 게다가 그 버튼은
+                     mode='lab' 로 요청을 보내는데 워커에 그런 갈래가 없어 빈 결과로 끝났다
+                     ("분리 결과가 없습니다." → 종료 코드 1). 다른 모드의 실행·결과가 작업실에
+                     섞여 나오지 않게 여기서 제외한다. */}
+              {showSharedRun && <ProcessButton />}
+              {showSharedRun && <ProgressBar />}
+              {showSharedResults && <TtsResultInfo />}
+              {showSharedResults && <TrackList />}
               {/* 재처리 버튼 (결과 나온 후) */}
               {status === 'done' && (
                 <button onClick={setIdle} style={{

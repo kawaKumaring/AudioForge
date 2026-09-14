@@ -52,7 +52,7 @@ try {
     const s = window.__afStore
     const info = await window.api.audio.getFileInfo(p)
     const url = await window.api.audio.getFileUrl(p)
-    s.getState().setFile(info, url); s.getState().setMode('tts')
+    s.getState().setFile(info, url); s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
   }, REF)
   // 참조 준비를 기다린다. **손으로 확정하는 것은 더 이상 기본 흐름이 아니다** — 분석이 끝나면
   // 추천 구간으로 자동 확정된다(2026-09-08 기준). 그래서 '이 구간으로 확정' 버튼이 보이기를

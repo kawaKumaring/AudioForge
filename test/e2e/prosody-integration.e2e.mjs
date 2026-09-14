@@ -74,7 +74,7 @@ try {
   await win.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
-    s.getState().setMode('tts')
+    s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
   }, REF)
   await win.getByText('이 구간으로 확정').waitFor({ timeout: 30000 })  // 참조 분석 완료(지속시간 하드코딩 대신 의미 기반 — AF_E2E_REFERENCE 길이 무관)
 
@@ -170,7 +170,7 @@ try {
   await win.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
-    s.getState().setMode('tts')
+    s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
   }, REF)
   await win.getByText('이 구간으로 확정').waitFor({ timeout: 30000 })  // 참조 분석 완료(지속시간 하드코딩 대신 의미 기반 — AF_E2E_REFERENCE 길이 무관)
 

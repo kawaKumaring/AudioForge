@@ -41,7 +41,7 @@ try {
   const store = () => st(() => { const s = window.__afStore.getState(); return { text: s.ttsText, refs: s.ttsSpeakerRefState, labels: s.ttsSpeakerLabels, refReady: s.ttsRefReady, enabled: s.ttsSpeakerEmotionEnabled } })
   const cardVoices = () => st(() => [...document.querySelectorAll('[data-testid="dialogue-row"] [data-testid="card-voice-status"]')].map((b) => b.textContent.trim()))
 
-  await page.evaluate(async (fp) => { const s = window.__afStore; s.getState().setFile(await window.api.audio.getFileInfo(fp), await window.api.audio.getFileUrl(fp)); s.getState().setMode('tts') }, iso.input)
+  await page.evaluate(async (fp) => { const s = window.__afStore; s.getState().setFile(await window.api.audio.getFileInfo(fp), await window.api.audio.getFileUrl(fp)); s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced') }, iso.input)
   await page.waitForSelector('[data-testid="dialogue-tabs"]', { timeout: 60000 })
   await waitUntil(async () => (await store()).refReady === true, 60000)
   await page.click('[data-testid="dialogue-tabs"] [data-tab="multi"]'); await sleep(200)

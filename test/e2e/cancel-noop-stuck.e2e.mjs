@@ -51,7 +51,7 @@ try {
 
   // processing 상태로 두고 취소 → noop이므로 상태가 망가지면 안 된다.
   await win.evaluate(() => window.__afStore.setState({
-    mode: 'tts',
+    mode: 'tts', synthesisTab: 'advanced',
     fileInfo: { path: 'X', name: 'probe.wav', duration: 5, channels: 1, sampleRate: 24000, format: 'wav' },
     status: 'processing', tracks: [], error: null, errorInfo: null, progress: 10,
   }))

@@ -93,7 +93,7 @@ try {
     const s = window.__afStore
     const info = await window.api.audio.getFileInfo(p)
     const url = await window.api.audio.getFileUrl(p)
-    s.getState().setFile(info, url); s.getState().setMode('tts')
+    s.getState().setFile(info, url); s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
   }, REF)
   // 이관(2026-08-31): 화면의 길이 표기가 `111.08초` 에서 `1:51`(분:초) 로 바뀌었다.
   // 표기 문자열 하나에만 매달리면 같은 자리에서 또 낡으므로 둘로 나눠 단언한다.
@@ -166,7 +166,7 @@ try {
   // 6) 다른 모드 이동 후 합성 모드 재진입
   await win.evaluate(() => window.__afStore.getState().setMode('music'))
   await win.waitForTimeout(300)
-  await win.evaluate(() => window.__afStore.getState().setMode('tts'))
+  await win.evaluate(() => window.__afStore.getState().setMode('tts'); window.__afStore.getState().setSynthesisTab('advanced'))
   await win.waitForTimeout(500)
   const reenter = await measure()
   await win.screenshot({ path: path.join(SHOT, 'e2e_04_reenter.png') })
