@@ -1,11 +1,12 @@
 // 대화 분석 엔진 선택과 겹침 표시 — 표적 확인.
 //
-// **화자 분석을 돌리지 않는다.** 화면 배선과 표현만 본다(모델은 아직 준비되지 않았다).
+// 화면에서 시작해 **실제로 한 번** 돌린다. 모델이 없으면 사유와 함께 실패하는지를 본다.
 //
 //   1) 대화 모드에만 '분석 방식' 선택이 있고 **기본은 기존 엔진**이다
 //   2) 고른 값이 실제 실행 인자로 나간다
 //   3) 겹침 정보를 구간 목록과 **따로** 보여 주고, 갈라냈다고 말하지 않는다
-//   4) 모델이 없으면 **실패를 그대로 알린다**(몰래 기존 엔진으로 바꾸지 않는다)
+//   4) 준비됐으면 구간 표시·화자별 출력까지 가고, 없으면 사유와 함께 실패한다
+//      (어느 쪽이든 몰래 기존 엔진으로 바꾸지 않는다)
 //
 // 실행: node test/e2e/diarize-engine.e2e.mjs   (사전: npm run build. GPU·모델 불필요)
 import { _electron as electron } from 'playwright'
@@ -19,6 +20,8 @@ if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드
 const FIXTURE = path.join(APP, 'test', 'fixtures', 'audio', 'ko-speech-region-18s.wav')
 if (!fs.existsSync(FIXTURE)) { console.error('fixture 없음'); process.exit(2) }
 const { dir: ISO, input: SRC } = isolatedInput(FIXTURE)
+// 결과는 원본 옆 AudioForge_output 에 생긴다(앱의 기존 규칙).
+const RESULT_ROOT = path.join(path.dirname(SRC), 'AudioForge_output')
 
 const UD = isolatedUserData()
 const OUT = fs.mkdtempSync(path.join(os.tmpdir(), 'af-dz-'))
@@ -75,34 +78,51 @@ try {
   ok(await win.evaluate(() => window.__afStore.getState().diarizeEngine) === 'community-1',
     '고르면 상태가 바뀐다')
 
-  // 실제로 실행해 본다 — 모델이 없으므로 **실패해야** 한다(그것이 확인 대상이다).
+  // 실제로 한 번 돌린다 — 화면에서 시작해 구간 표시·화자별 출력까지.
+  // 모델이 준비돼 있으면 성공해야 하고, 없으면 **사유와 함께 실패**해야 한다. 둘 다 확인한다.
   const t0 = Date.now()
   await win.evaluate(() => window.__afStore.setState({ nSpeakers: 2 }))
-  await win.getByRole('button', { name: /대화 분리 시작/ }).click().catch(async () => {
-    // 버튼 이름이 다르면 store 를 통해 직접 부른다.
-    await win.evaluate(async (p) => {
+  await win.getByRole('button', { name: /대화 분리 시작/ }).click()
+  let state = ''
+  while (Date.now() - t0 < 300000) {
+    state = await win.evaluate(() => {
       const s = window.__afStore.getState()
-      await window.api.audio.process(p, 'conversation', {
-        nSpeakers: 2, diarizeEngine: s.diarizeEngine,
-      })
-    }, SRC)
-  })
-  let err = ''
-  while (Date.now() - t0 < 90000) {
-    err = await win.evaluate(() => window.__afStore.getState().error || '')
-    if (err) break
-    await sleep(1000)
+      return s.error ? 'error:' + s.error : s.status
+    })
+    if (state === 'done' || state.startsWith('error:')) break
+    await sleep(2000)
   }
-  ok(!!err, '모델이 없으면 실패한다(조용히 넘어가지 않는다)', `"${String(err).slice(0, 70)}"`)
-  ok(/DIARIZE_(MODEL|VENV)_MISSING|이용 조건|모델이 없습니다/.test(String(err)),
-    '**무엇이 없어서 실패했는지** 사유가 나온다', `"${String(err).slice(0, 90)}"`)
-  const madeAny = fs.existsSync(path.join(path.dirname(SRC), 'AudioForge_output'))
-    && fs.readdirSync(path.join(path.dirname(SRC), 'AudioForge_output'))
-      .some((d) => {
-        const full = path.join(path.dirname(SRC), 'AudioForge_output', d)
-        return fs.statSync(full).isDirectory() && fs.readdirSync(full).some((f) => f.endsWith('.wav'))
-      })
-  ok(!madeAny, '실패했으므로 기존 엔진으로 몰래 돌려 결과를 만들지 않는다')
+  const elapsed = Math.round((Date.now() - t0) / 1000)
+
+  if (state.startsWith('error:')) {
+    // 준비 안 된 환경 — 사유가 나와야 하고, 몰래 기존 엔진으로 돌려 결과를 만들면 안 된다.
+    ok(/DIARIZE_(MODEL|VENV)_MISSING|DIARIZE_NOT_READY|이용 조건|모델이 없습니다/.test(state),
+      '준비 안 됐으면 **무엇이 없어서** 실패했는지 알린다', `"${state.slice(6, 96)}"`)
+    const madeAny = fs.existsSync(RESULT_ROOT) && fs.readdirSync(RESULT_ROOT).some((d) => {
+      const full = path.join(RESULT_ROOT, d)
+      return fs.statSync(full).isDirectory() && fs.readdirSync(full).some((f) => f.endsWith('.wav'))
+    })
+    ok(!madeAny, '실패했으므로 기존 엔진으로 몰래 돌려 결과를 만들지 않는다')
+  } else {
+    ok(state === 'done', 'Community-1 분석이 완주한다', `${elapsed}초`)
+    const segs = await win.evaluate(() => window.__afStore.getState().dialogueSegments || [])
+    ok(segs.length > 0, '화자 구간이 화면 상태로 들어온다', `${segs.length}개`)
+    ok(await win.getByTestId('dialogue-segments').count() === 1, '구간 수정 화면이 나온다')
+    ok(await win.getByTestId('dialogue-row').count() === segs.length,
+      '구간이 줄로 그대로 표시된다', `${await win.getByTestId('dialogue-row').count()}줄`)
+    // 화자별 출력이 실제로 만들어졌는가 — 원본 시간축·표본율을 따라야 한다.
+    const dirs = fs.existsSync(RESULT_ROOT) ? fs.readdirSync(RESULT_ROOT) : []
+    let wavs = []
+    for (const d of dirs) {
+      const full = path.join(RESULT_ROOT, d)
+      if (fs.statSync(full).isDirectory()) {
+        const w = fs.readdirSync(full).filter((f) => f.endsWith('.wav'))
+        if (w.length) { wavs = w.map((f) => path.join(full, f)); break }
+      }
+    }
+    ok(wavs.length > 0, '화자별 출력 파일이 만들어진다', `${wavs.length}개`)
+    ok(wavs.every((f) => fs.statSync(f).size > 10000), '출력에 실제 소리가 들어 있다')
+  }
 
   // ── 3) 겹침 표시 ────────────────────────────────────────────────────────
   await win.evaluate(() => window.__afStore.setState({
@@ -137,5 +157,5 @@ try {
   try { fs.rmSync(OUT, { recursive: true, force: true }) } catch { /* noop */ }
 }
 
-log(failed === 0 ? '전부 통과 — 엔진 선택·겹침 표시 확인(분석 실행 없음).' : `실패 ${failed}건`)
+log(failed === 0 ? '전부 통과 — 엔진 선택·실제 실행·겹침 표시 확인.' : `실패 ${failed}건`)
 process.exit(failed === 0 ? 0 : 1)
