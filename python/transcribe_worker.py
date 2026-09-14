@@ -746,7 +746,14 @@ def _save_transcription(result, audio_path, output_dir, do_srt=False, do_transla
     except Exception:
         emit("asrTranscriptSidecarError", status="unavailable")
 
-    return {"text": text, "language": language, "txt_path": txt_path, "translated_text": translated}
+    # ★문장별 시간 정보를 **그대로** 함께 돌려준다(파일 형식은 바꾸지 않는다).
+    #   화면의 교정 자리가 이 값으로 문장을 보여 주고 해당 구간을 재생한다. timestamps 파일은
+    #   초 단위로 반올림돼 있어(fmt_time) 되읽으면 정밀도를 잃는다 — 그래서 값으로 넘긴다.
+    segments = [{"start": float(s["start"]), "end": float(s["end"]),
+                 "text": (s.get("text") or "").strip()}
+                for s in (result.get("segments") or [])]
+    return {"text": text, "language": language, "txt_path": txt_path,
+            "translated_text": translated, "segments": segments, "base": base}
 
 
 def transcribe_file(audio_path, output_dir, whisper_model_name="large-v3",

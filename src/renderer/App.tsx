@@ -10,6 +10,7 @@ import TrackList from '@/components/TrackList'
 import Options from '@/components/Options'
 import SplitEditor from '@/components/SplitEditor'
 import SynthesisTabs from '@/components/SynthesisTabs'
+import TranscriptEditor from '@/components/TranscriptEditor'
 import LabPlaceholder from '@/components/LabPlaceholder'
 import TtsResultInfo from '@/components/TtsResultInfo'
 import AppVersionLabel from '@/components/AppVersionLabel'
@@ -223,6 +224,8 @@ export default function App() {
               {showSharedRun && <ProgressBar />}
               {showSharedResults && <TtsResultInfo />}
               {showSharedResults && <TrackList />}
+              {/* 텍스트 교정 — 전사 결과가 나온 뒤 그 자리 아래에 붙는다(새 화면을 만들지 않는다). */}
+              {mode === 'transcribe' && status === 'done' && <TranscriptEditor />}
               {/* 재처리 버튼 (결과 나온 후) */}
               {status === 'done' && (
                 <button onClick={setIdle} style={{

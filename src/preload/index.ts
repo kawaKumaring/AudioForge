@@ -139,6 +139,9 @@ const api = {
     // 탐색기에서 그 파일을 고른 상태로 보여 준다(여는 것이 아니다).
     revealFile: (path: string) => ipcRenderer.invoke('app:reveal-file', path),
     readTextFile: (path: string) => ipcRenderer.invoke('app:read-text-file', path),
+    // 교정본 저장 — 처음 인식한 파일은 그대로 두고 `_corrected` 로 새로 쓴다.
+    saveCorrectedTranscript: (dir: string, base: string, txt: string, srt: string | null) =>
+      ipcRenderer.invoke('transcript:save-corrected', dir, base, txt, srt),
     // 앱 버전·빌드 정보 — 인자 없는 read-only 조회. 경로를 주고받지 않는다.
     getBuildInfo: (): Promise<AppBuildInfo> => ipcRenderer.invoke('app:get-build-info')
   },

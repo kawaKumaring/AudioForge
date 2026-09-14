@@ -4,6 +4,12 @@ export interface Track {
   name: string
   label: string
   path: string
+  /** 전사 결과에만 붙는다 — 문장별 시작·끝·글자(교정 화면이 쓴다). */
+  segments?: { start: number; end: number; text: string }[]
+  /** 출력 파일 접두어(교정본 저장 이름). */
+  base?: string
+  text?: string
+  language?: string
 }
 
 export interface ProcessingProgress {

@@ -789,7 +789,10 @@ def _run_transcribe_only(args):
         "path": info["txt_path"],
         "text": info["text"],
         "language": info["language"],
-        "txt_path": info["txt_path"]
+        "txt_path": info["txt_path"],
+        # 문장별 시간 — 화면의 교정 자리가 쓴다(원본 파일은 그대로다).
+        "segments": info.get("segments") or [],
+        "base": info.get("base"),
     }]
     if info.get("translated_text"):
         base = os.path.splitext(os.path.basename(args.input))[0]
