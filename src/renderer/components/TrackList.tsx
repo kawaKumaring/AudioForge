@@ -17,7 +17,11 @@ function fmtTime(sec: number): string {
 }
 
 // 결과 트랙용 파형 플레이어 (파형 + 시간 + 볼륨 + 드래그 이동). 재생 시에만 지연 생성.
-function TrackPlayer({ path, color, paused, onClose }: { path: string; color: string; paused: boolean; onClose: () => void }) {
+function TrackPlayer({ path, color, paused, onClose, originalPath, originalLabel }: {
+  path: string; color: string; paused: boolean; onClose: () => void
+  /** 같은 자리에서 견줘 들을 원본. 없으면 비교 단추를 내지 않는다. */
+  originalPath?: string | null; originalLabel?: string
+}) {
   const ref = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WaveSurfer | null>(null)
   const readyRef = useRef(false)
@@ -25,6 +29,12 @@ function TrackPlayer({ path, color, paused, onClose }: { path: string; color: st
   pausedRef.current = paused
   const [cur, setCur] = useState('0:00')
   const [dur, setDur] = useState('0:00')
+  // 지금 무엇을 듣고 있는가 — 분리 결과인가 원본인가.
+  const [listening, setListening] = useState<'track' | 'original'>('track')
+  // 전환할 때 이어받을 것: **그 순간의 재생 위치와 재생/멈춤 상태**.
+  //   두 파일 길이가 다를 수 있어, 되돌릴 때 새 파일의 유효 범위로 자른다.
+  const handoffRef = useRef<{ time: number; playing: boolean } | null>(null)
+  const activePath = listening === 'original' && originalPath ? originalPath : path
   // 원본 파형 슬라이더와 **같은 값**이다(공용·보관됨) — 두 슬라이더가 서로 다른 값을 갖지 않는다.
   const { volume, change: changeVolume, commit: commitVolume, saveFailed: volumeSaveFailed } = usePlaybackVolume()
 
@@ -32,7 +42,7 @@ function TrackPlayer({ path, color, paused, onClose }: { path: string; color: st
     let cancelled = false
     let ws: WaveSurfer | null = null
     ;(async () => {
-      const url = await window.api.audio.getFileUrl(path)
+      const url = await window.api.audio.getFileUrl(activePath)
       if (cancelled || !ref.current) return
       ws = WaveSurfer.create({
         container: ref.current, waveColor: hexToRgba(color, 0.3), progressColor: color,
@@ -47,7 +57,25 @@ function TrackPlayer({ path, color, paused, onClose }: { path: string; color: st
       ws.setVolume(getPlaybackVolume())
       ws.on('timeupdate', (t) => setCur(fmtTime(t)))
       ws.on('decode', (d) => setDur(fmtTime(d)))
-      ws.on('ready', () => { readyRef.current = true; if (ws && !pausedRef.current) ws.play() })
+      ws.on('ready', () => {
+        readyRef.current = true
+        if (!ws) return
+        // ★전환이면 **위치와 상태를 이어받는다.** 길이가 다르면 유효 범위로 자른다.
+        const h = handoffRef.current
+        handoffRef.current = null
+        if (h) {
+          const total = ws.getDuration() || 0
+          const limit = Math.max(0, total - 0.05)
+          const at = total > 0 ? Math.min(Math.max(0, h.time), limit) : 0
+          // ★자른 경우에는 **이어서 틀지 않는다.** 짧은 쪽의 끝을 넘어간 자리였으니,
+          //   그대로 재생하면 0.05초 만에 끝나 재생기가 닫힌다(실측). 그 자리에 멈춰 둔다.
+          const clamped = h.time > limit + 0.001
+          try { ws.setTime(at) } catch { /* noop */ }
+          if (h.playing && !clamped) ws.play()
+          return
+        }
+        if (!pausedRef.current) ws.play()
+      })
       ws.on('finish', () => onClose())
       ws.load(url)
       wsRef.current = ws
@@ -60,7 +88,7 @@ function TrackPlayer({ path, color, paused, onClose }: { path: string; color: st
       readyRef.current = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path])
+  }, [activePath])
 
   // 이후 슬라이더 변경은 이 effect 가 실시간으로 반영한다(생성 시점 적용과 별개).
   useEffect(() => { wsRef.current?.setVolume(volume) }, [volume])
@@ -77,6 +105,28 @@ function TrackPlayer({ path, color, paused, onClose }: { path: string; color: st
       <div ref={ref} style={{ marginBottom: 6 }} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{ fontSize: 11, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>{cur} / {dur}</span>
+        {/* 원본 ↔ 분리 결과 — **같은 자리에서** 견준다. 재생기는 하나뿐이라 소리가 겹치지 않는다.
+            듣기만 한다: 저장된 파일을 키우거나 고르거나 다시 쓰지 않는다. */}
+        {originalPath && (
+          <button data-testid="track-compare" data-listening={listening}
+            onClick={() => {
+              const ws = wsRef.current
+              handoffRef.current = ws
+                ? { time: ws.getCurrentTime() || 0, playing: ws.isPlaying() }
+                : null
+              setListening((v) => (v === 'track' ? 'original' : 'track'))
+            }}
+            title={"같은 위치에서 원본과 분리 결과를 번갈아 들어 봅니다. 저장된 파일은 바뀌지 않습니다."}
+            aria-label={listening === 'track' ? '원본 듣기로 바꾸기' : '분리 결과 듣기로 바꾸기'}
+            style={{
+              padding: '2px 8px', borderRadius: 5, border: 'none', cursor: 'pointer',
+              fontFamily: 'inherit', fontSize: 10, fontWeight: 600,
+              background: listening === 'original' ? 'var(--cyan)' : 'var(--bg-elevated)',
+              color: listening === 'original' ? '#fff' : 'var(--text-secondary)',
+            }}>
+            {listening === 'original' ? `원본 듣는 중${originalLabel ? ` · ${originalLabel}` : ''}` : '원본과 비교'}
+          </button>
+        )}
         <div title={volumeSaveFailed
           ? '재생 볼륨 — 이 값을 기억하지 못했습니다(이번 실행에만 적용됩니다).'
           : '재생 볼륨 (듣기 전용 · 원본 파일에는 영향 없음) — 정한 값이 다음에도 그대로 쓰입니다.'}
@@ -136,7 +186,7 @@ const actionBtnStyle = (active: boolean, color: string): React.CSSProperties => 
 })
 
 function TrackItem({ track, index }: { track: { name: string; label: string; path: string }; index: number }) {
-  const { playingTrack, setPlayingTrack, outputDir, mode, translateModel } = useAppStore()
+  const { playingTrack, setPlayingTrack, outputDir, mode, translateModel, fileInfo } = useAppStore()
   const isPlaying = playingTrack === track.name
   const st = TRACK_STYLES[track.name] || DEFAULT_STYLE
   const [transcript, setTranscript] = useState<string | null>(null)
@@ -280,8 +330,12 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
       </div>
 
       {/* 재생 시 펼쳐지는 파형 플레이어 (파형 + 시간 + 볼륨 + 드래그 이동). 재생/일시정지는 행 버튼이 제어. */}
+      {/* 분리 결과일 때만 원본과 견줄 수 있다 — 텍스트 트랙에는 비교할 소리가 없다. */}
       {isPlaying && isAudioTrack && (
-        <TrackPlayer path={track.path} color={st.color} paused={paused} onClose={() => setPlayingTrack(null)} />
+        <TrackPlayer path={track.path} color={st.color} paused={paused} onClose={() => setPlayingTrack(null)}
+          originalPath={(mode === 'music' || mode === 'conversation') && track.name !== 'transcript'
+            && track.name !== 'translation' ? (fileInfo?.path || null) : null}
+          originalLabel={fileInfo?.name} />
       )}
 
       {/* Expandable text area */}

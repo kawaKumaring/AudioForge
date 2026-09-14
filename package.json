@@ -53,6 +53,7 @@
     "test:e2e:lab-compose": "node test/e2e/lab-compose-export.e2e.mjs",
     "test:e2e:lab-entry": "node test/e2e/lab-synthesis-entry.e2e.mjs",
     "test:e2e:transcript-edit": "node test/e2e/transcript-edit.e2e.mjs",
+    "test:e2e:music-compare": "node test/e2e/music-compare.e2e.mjs",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {
