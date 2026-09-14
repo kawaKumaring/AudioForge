@@ -246,6 +246,20 @@
 취소·오류는 작업실 막대 안에서만 보여 준다. 버튼 이름을 덮어쓰는 식으로 가리지 않았다.
 실패했을 때는 어느 단계에서 멈췄는지와 다음에 할 일을 함께 알린다.
 
+## 낡은 검사 하나 (기록 — 이번에 고치지 않음)
+
+`test/e2e/tts-multi-dialogue-dev.e2e.mjs` 는 여러 명 화면의 **`starter-add` 단추를 누른다.**
+그런데 제품에는 그 요소가 없고, 오히려 **없어야 한다**고 못 박은 계약 검사가 있다
+(`src/renderer/components/MultiSpeakerDialogue.contract.test.ts` 의 `forbidden` 목록에
+`data-testid="starter-add"` 가 들어 있다). 즉 이 e2e 는 **이미 사라진 UI 를 찾고 있다.**
+
+- 이 검사는 **병합 게이트(`scripts/verify.mjs`)에 포함돼 있지 않다.** 게이트의 실제 앱 UI 3종은
+  `tts-convenience-dev` · `restore-race-dev` · `playback-volume` 이고 셋 다 통과한다.
+- **검사를 통과시키려고 없앤 단추를 제품에 되살리지 않는다.** 그 단추는 의도적으로 뺀 것이고,
+  계약 검사가 그 결정을 지키고 있다.
+- 여러 명 대사 흐름을 **다음에 손볼 때 이 검사도 함께 정비한다.** 지금 고치면 손대지 않기로 한
+  화면까지 건드리게 된다.
+
 ## 파일
 
 - `src/shared/labWorkspace.ts` — 판정 규칙의 단일 소유자
