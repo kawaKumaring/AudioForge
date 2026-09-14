@@ -204,6 +204,8 @@ interface AppState {
   exportSrt: boolean
   outputFormat: 'wav' | 'mp3' | 'flac'
   whisperModel: 'small' | 'medium' | 'large-v3' | 'large-v3-turbo'
+  /** 텍스트 추출 실행 엔진. 기본은 기존 경로다. */
+  asrEngine: 'whisper' | 'faster-whisper'
   whisperLang: string
   translateModel: '600m' | '1.3b' | 'llm' | 'google'
   demucsModel: 'htdemucs' | 'htdemucs_ft' | 'roformer' | 'roformer_melband' | 'roformer_ensemble'
@@ -327,6 +329,7 @@ interface AppState {
   setExportSrt: (v: boolean) => void
   setOutputFormat: (v: 'wav' | 'mp3' | 'flac') => void
   setWhisperModel: (v: 'small' | 'medium' | 'large-v3' | 'large-v3-turbo') => void
+  setAsrEngine: (v: AppState['asrEngine']) => void
   setWhisperLang: (v: string) => void
   setTranslateModel: (v: '600m' | '1.3b' | 'llm' | 'google') => void
   setDemucsModel: (v: 'htdemucs' | 'htdemucs_ft' | 'roformer' | 'roformer_melband' | 'roformer_ensemble') => void
@@ -416,6 +419,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   exportSrt: false,
   outputFormat: 'wav' as const,
   whisperModel: 'large-v3' as const,
+  asrEngine: 'whisper' as const,
   whisperLang: 'auto',
   translateModel: '600m' as const,
   demucsModel: 'htdemucs' as const,
@@ -510,6 +514,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setExportSrt: (v) => set({ exportSrt: v }),
   setOutputFormat: (v) => set({ outputFormat: v }),
   setWhisperModel: (v) => set({ whisperModel: v }),
+  setAsrEngine: (v) => set({ asrEngine: v }),
   setWhisperLang: (v) => set({ whisperLang: v }),
   setTranslateModel: (v) => set({ translateModel: v }),
   setDemucsModel: (v) => set({ demucsModel: v }),

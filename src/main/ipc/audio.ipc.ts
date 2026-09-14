@@ -717,6 +717,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       transcribe: !!(options?.transcribe || mode === 'transcribe'),
       outputFormat: options?.outputFormat || 'wav',
       whisperModel: options?.whisperModel || 'large-v3',
+      // 텍스트 추출의 실행 엔진 — **기본은 기존 경로**. 텍스트 모드에서만 파이썬이 본다.
+      asrEngine: options?.asrEngine || 'whisper',
       whisperLang: options?.whisperLang || 'auto',
       translate: !!options?.translate,
       translateModel: options?.translateModel || '600m',

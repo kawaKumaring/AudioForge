@@ -24,6 +24,8 @@ export interface ProcessOptions {
   exportSrt?: boolean
   outputFormat?: string
   whisperModel?: string
+  /** 텍스트 추출의 실행 엔진. 'whisper'(기본, 기존 경로) | 'faster-whisper'(격리 venv). */
+  asrEngine?: string
   demucsModel?: string
   nSpeakers?: number
   splitMarkers?: number[]

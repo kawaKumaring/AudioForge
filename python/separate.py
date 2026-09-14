@@ -275,6 +275,7 @@ def main():
         args.transcribe = config.get("transcribe", args.transcribe)
         args.output_format = config.get("outputFormat", args.output_format)
         args.whisper_model = config.get("whisperModel", args.whisper_model)
+        args.asr_engine = config.get("asrEngine", "whisper")
         args.whisper_lang = config.get("whisperLang", args.whisper_lang)
         args.translate = config.get("translate", args.translate)
         args.translate_model = config.get("translateModel", "600m")
@@ -770,8 +771,11 @@ def _run_transcribe_only(args):
     # 출력 파일은 임시 wav(converted.wav)가 아니라 원본 이름으로 저장
     orig_base = os.path.splitext(os.path.basename(args.input))[0]
     try:
+        # asr_engine 은 **텍스트 모드에서만** 넘긴다. 분리 모드의 후처리 전사와 TTS 참조
+        # 전사 같은 공용 호출부는 기존 경로 그대로다(첫 적용 범위를 좁힌다).
         info = transcribe_file(wav_path, args.output, args.whisper_model, args.translate, args.srt,
-                               whisper_lang=getattr(args, "whisper_lang", ""), base_name=orig_base)
+                               whisper_lang=getattr(args, "whisper_lang", ""), base_name=orig_base,
+                               asr_engine=getattr(args, "asr_engine", "whisper") or "whisper")
     finally:
         try:
             os.remove(wav_path)

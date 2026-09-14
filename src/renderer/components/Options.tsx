@@ -17,7 +17,7 @@ const OUTPUT_HINTS: Record<string, string> = {
 }
 
 export default function Options() {
-  const { mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers,
+  const { mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, asrEngine, setAsrEngine, whisperLang, translateModel, demucsModel, nSpeakers,
     setTrimSilence, setSilenceGap, setTranscribe, setTranslate, setExportSrt, setOutputFormat, setWhisperModel, setWhisperLang, setTranslateModel, setDemucsModel, setNSpeakers, status } = useAppStore()
   const disabled = status === 'processing'
   const [open, setOpen] = useState(false)
@@ -155,6 +155,26 @@ export default function Options() {
                     background: whisperModel === m ? 'var(--cyan)' : 'transparent',
                     color: whisperModel === m ? '#fff' : 'var(--text-muted)'
                   }}>{m === 'large-v3' ? 'Large' : m === 'large-v3-turbo' ? 'Turbo' : m.charAt(0).toUpperCase() + m.slice(1)}</button>
+                ))}
+              </div>
+            )}
+            {/* 실행 엔진 — **텍스트 추출 모드에서만.** 기본은 기존 경로다.
+                분리 모드의 후처리 전사와 합성의 참조 전사는 이 선택을 따르지 않는다. */}
+            {isTranscribeMode && (
+              <div data-testid="asr-engine-row" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>실행 방식</span>
+                {([['whisper', '기본'], ['faster-whisper', '빠른 실행']] as const).map(([id, label]) => (
+                  <button key={id} data-testid={`asr-engine-${id}`}
+                    onClick={() => !disabled && setAsrEngine(id)} disabled={disabled}
+                    title={id === 'whisper'
+                      ? "지금까지 쓰던 실행 경로입니다."
+                      : "같은 Whisper 모델을 CTranslate2 로 돌립니다. 결과 형식은 같습니다. 준비돼 있지 않으면 실패를 그대로 알립니다."}
+                    style={{
+                      padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                      fontSize: 10, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',
+                      background: asrEngine === id ? 'var(--cyan)' : 'transparent',
+                      color: asrEngine === id ? '#fff' : 'var(--text-muted)',
+                    }}>{label}</button>
                 ))}
               </div>
             )}
