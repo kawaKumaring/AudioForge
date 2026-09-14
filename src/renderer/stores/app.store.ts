@@ -226,6 +226,8 @@ interface AppState {
   restorable: { dir: string; session: RestorableSession } | null
   splitMarkers: number[]
   splitLabels: string[]
+  /** 저장할 조각 번호(0부터). null 이면 전부 저장 — 예전 동작 그대로. */
+  splitSelected: number[] | null
   ttsText: string
   ttsSpeed: number
   ttsSilenceGap: number
@@ -436,6 +438,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   restorable: null,
   splitMarkers: [],
   splitLabels: [],
+  splitSelected: null,
   ttsText: '',
   ttsSpeed: 1.0,
   ttsSilenceGap: 0.5,

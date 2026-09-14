@@ -32,6 +32,8 @@ export interface ProcessOptions {
   whisperModel?: string
   /** 텍스트 추출의 실행 엔진. 'whisper'(기본, 기존 경로) | 'faster-whisper'(격리 venv). */
   asrEngine?: string
+  /** 분할에서 저장할 조각 번호(0부터). 없으면 전부 저장. */
+  splitSelected?: number[] | null
   demucsModel?: string
   nSpeakers?: number
   splitMarkers?: number[]

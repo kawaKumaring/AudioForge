@@ -281,6 +281,9 @@ def main():
         args.translate_model = config.get("translateModel", "600m")
         args.srt = config.get("srt", args.srt)
         args.split_points = config.get("splitPoints", args.split_points)
+        # 저장할 조각 번호(0부터). 없으면 전부 저장 — 기존 동작 그대로.
+        sel = config.get("splitSelected", None)
+        args.split_selected = [int(x) for x in sel] if isinstance(sel, list) else None
         args.split_labels = config.get("splitLabels", args.split_labels)
         args.n_speakers = config.get("nSpeakers", args.n_speakers)
         args.gpu_policy = config.get("gpuPolicy", "auto")  # 대화 분리 GPU 정책(auto/gpu/cpu)
@@ -935,15 +938,24 @@ def _run_split(args):
             # Build time boundaries
             boundaries = [0.0] + split_seconds + [total_dur]
 
-            # 트랙 이름/라벨: 커스텀 라벨 있으면 사용 + 파일명 안전화, 없으면 Track NN
-            track_specs = []
-            for idx in range(len(boundaries) - 1):
-                lbl = split_labels_list[idx].strip() if idx < len(split_labels_list) and split_labels_list[idx].strip() else f"Track {idx + 1:02d}"
-                safe_label = "".join(c for c in lbl if c not in r'\/:*?"<>|').strip()
-                nm = f"{idx + 1:02d}_{safe_label}" if safe_label else f"track_{idx + 1:02d}"
-                track_specs.append((nm, lbl))
-
-            tracks = _extract_tracks_ffmpeg(ffmpeg, tmp_input, boundaries, track_specs, args, 10, 75)
+            # 트랙 이름/라벨 — **화면이 보여 준 것과 같은 규칙**(split_markers.build_pieces).
+            # 경계를 여기서 다시 찾지 않는다: 위 boundaries 를 그대로 조각으로 만든다.
+            pieces = _sm.build_pieces(split_seconds, total_dur, split_labels_list)
+            # 사용자가 고른 조각만 저장한다(고르지 않았으면 전부). 번호는 그대로 둔다.
+            chosen = getattr(args, "split_selected", None)
+            keep = _sm.selected_pieces(pieces, chosen)
+            if not keep:
+                emit("error", code="SPLIT_NO_SELECTION",
+                     message="저장할 조각을 하나도 고르지 않았습니다.")
+                return None
+            if chosen is not None and len(keep) != len(pieces):
+                emit("progress", percent=8,
+                     message=f"고른 조각 {len(keep)}개만 저장합니다(전체 {len(pieces)}개)")
+            # ★인접하지 않은 조각을 골랐으면 경계가 이어지지 않는다 — 조각마다 따로 뽑는다.
+            track_specs = [(p["name"], p["label"]) for p in keep]
+            tracks = _extract_tracks_ffmpeg(
+                ffmpeg, tmp_input, [(p["start"], p["end"]) for p in keep],
+                track_specs, args, 10, 75)
             if tracks is None:
                 return
 
@@ -1062,13 +1074,20 @@ def _extract_tracks_ffmpeg(ffmpeg, tmp_input, boundaries, track_specs, args, pct
     진행률은 pct_start ~ pct_start+pct_span 범위로 표시."""
     from datetime import datetime
     tracks = []
-    total_tracks = len(boundaries) - 1
+    # boundaries 는 두 가지 모양을 받는다:
+    #   · 평평한 경계 목록 [0, m1, m2, total] — 인접한 두 값이 한 구간(자동 감지 경로).
+    #   · 구간 쌍 목록 [(start, end), ...] — **떨어진 조각**도 뽑을 수 있다(고른 조각만 저장).
+    if boundaries and isinstance(boundaries[0], (tuple, list)):
+        ranges = [(float(a), float(b)) for a, b in boundaries]
+    else:
+        ranges = [(float(boundaries[i]), float(boundaries[i + 1]))
+                  for i in range(len(boundaries) - 1)]
+    total_tracks = len(ranges)
     source_name = os.path.splitext(os.path.basename(args.input))[0]
 
     for idx in range(total_tracks):
         pct = pct_start + int((idx / max(total_tracks, 1)) * pct_span)
-        start_sec = boundaries[idx]
-        end_sec = boundaries[idx + 1] if idx + 1 < len(boundaries) else None
+        start_sec, end_sec = ranges[idx]
         name, label = track_specs[idx]
 
         emit("progress", percent=pct, message=f"{label} 추출 중...")

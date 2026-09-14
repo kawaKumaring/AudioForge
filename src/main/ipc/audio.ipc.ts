@@ -728,6 +728,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       srt: !!options?.exportSrt,
       splitPoints: mode === 'split' && options?.splitMarkers ? (options.splitMarkers as number[]).join(',') : '',
       splitLabels: mode === 'split' && options?.splitLabels ? (options.splitLabels as string[]).join('|') : '',
+      // 고른 조각만 저장 — 없으면 전부(예전 동작).
+      splitSelected: mode === 'split' && Array.isArray(options?.splitSelected) ? options.splitSelected : null,
       nSpeakers: options?.nSpeakers || 2,
       // TTS 필드는 단일 소스(buildTtsConfig)로 직렬화 — ttsEmotionRefs 포함,
       // 숫자 기본값은 ??(0 보존). 필드 추가 시 컴파일 단계에서 누락 검출.
