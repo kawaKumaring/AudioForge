@@ -44,6 +44,18 @@ export interface LabSettings {
   referenceConditioningMode: string
   /** 참조 목표 길이(초). 0 = 엔진 권장 상한. */
   refTargetSec: number
+  /**
+   * 말끝 다듬기. 'auto' 면 끝을 8ms 로 부드럽게 줄이고 뒤에 120ms 여유를 붙인다.
+   *
+   * ★왜 있어야 하는가: 이 값을 안 보내면 워커가 'off' 로 떨어지고, 그러면 말끝의 권위가
+   *   경계 envelope 으로 넘어가 **끝 20ms 를 0 까지 깎으면서 뒤 여유는 0ms** 가 된다
+   *   (`audio_finishing.py` BOUNDARY_OFFSET_MS=20, compute_boundary_plan 의 tail_owns_offset).
+   *   실측: 발화 도중 끝난 문장의 마지막 20ms 가 off 에서 60.9%, auto 에서 86.5% 남았다.
+   *   작업실이 값을 안 보내 'off' 로 돌던 것이 말끝이 잘려 들리던 원인이다.
+   */
+  tailMode: 'off' | 'auto'
+  tailPaddingMs: number
+  tailFadeMs: number
 }
 
 /** 제품 기본값 — app.store 의 초기값과 같은 값이다(합성 탭의 현재 값이 아니다). */
@@ -53,6 +65,30 @@ export function defaultSettings(referenceConditioningRecommended: string): LabSe
     engine: 'auto', qwenModel: '',
     referenceConditioningMode: referenceConditioningRecommended,
     refTargetSec: 0,
+    tailMode: 'auto', tailPaddingMs: 120, tailFadeMs: 8,
+  }
+}
+
+/**
+ * 설정 → 합성 워커에 보낼 옵션. **작업실이 보내는 값의 단 하나의 출처다.**
+ *
+ * ★여기에 둔 이유: 화면 파일 안에 있을 때 `ttsTailMode` 가 통째로 빠져 있었고, 빠졌다는 사실을
+ *   아무 검사도 잡지 못했다. 워커는 값이 없으면 조용히 'off' 로 떨어진다(`separate.py`
+ *   `config.get("ttsTailMode", "off")`) — 소리만 달라지고 오류는 안 난다. 그래서 옵션 구성도
+ *   판정 규칙과 같은 자리에 두고 검사로 막는다.
+ */
+export function synthesisOptions(
+  text: string, s: LabSettings,
+  ref: { clip: string; region: { start: number; duration: number } | null },
+) {
+  return {
+    ttsText: text,
+    ttsSpeed: s.speed, ttsSilenceGap: s.silenceGap, ttsPitch: s.pitch,
+    ttsEngine: s.engine, ttsQwenModel: s.qwenModel,
+    ttsReferenceOverride: ref.clip, ttsReferenceRegion: ref.region,
+    ttsReferenceConditioningMode: s.referenceConditioningMode,
+    ttsTailMode: s.tailMode, ttsTailPaddingMs: s.tailPaddingMs, ttsTailFadeMs: s.tailFadeMs,
+    ttsSpeakerMode: 'single' as const,
   }
 }
 
@@ -315,6 +351,12 @@ export function parseSettings(raw: unknown, referenceConditioningRecommended = '
     qwenModel: str(o.qwenModel, d.qwenModel),
     referenceConditioningMode: str(o.referenceConditioningMode, d.referenceConditioningMode),
     refTargetSec: num(o.refTargetSec, d.refTargetSec),
+    // 저장본에 값이 없으면 기본값('auto')으로 올린다. 합성 탭은 필드 부재를 '사용자가 예전에
+    // off 를 고른 세션'으로 보고 off 로 강등하지만, 작업실엔 이 설정이 **애초에 없었다** —
+    // 부재는 사용자의 선택이 아니라 우리가 안 보낸 결함이므로 강등하지 않는다.
+    tailMode: o.tailMode === 'off' || o.tailMode === 'auto' ? o.tailMode : d.tailMode,
+    tailPaddingMs: num(o.tailPaddingMs, d.tailPaddingMs),
+    tailFadeMs: num(o.tailFadeMs, d.tailFadeMs),
   }
 }
 

@@ -8,7 +8,7 @@ import {
   adoptedTake, defaultSettings, emptyDoc, exportBlockReason, exportBlockText,
   exportReadiness, hasUnusedTake, isExportBlockNotice, lineStatus,
   linesNeedingWork, newLine, parseDoc, parseSettings, redoTargets, shouldAutoAdopt,
-  takeBadge, voiceKeyOf,
+  synthesisOptions, takeBadge, voiceKeyOf,
   type LabDoc, type LabLine, type LabTake,
 } from './labWorkspace.ts'
 
@@ -128,6 +128,7 @@ test('설정은 작업실 소유다 — 초기값은 제품 기본값', () => {
   assert.deepEqual(d.settings, {
     speed: 1.0, silenceGap: 0.5, pitch: 0.0,
     engine: 'auto', qwenModel: '', referenceConditioningMode: 'auto', refTargetSec: 0,
+    tailMode: 'auto', tailPaddingMs: 120, tailFadeMs: 8,
   }, '제품 기본값과 같아야 한다 — 합성 탭의 현재 값을 끌어오지 않는다')
 })
 
@@ -254,4 +255,67 @@ test('빈 작업실은 줄 하나로 시작한다', () => {
   assert.equal(d.lines.length, 1)
   assert.equal(lineStatus(d.lines[0], ''), 'empty')
   assert.equal(adoptedTake(newLine('x')), null)
+})
+
+// ── 말끝 다듬기 ────────────────────────────────────────────────────────────
+// 작업실이 이 값을 안 보내면 워커가 'off' 로 떨어지고, 그때 말끝 20ms 가 0 까지 깎이며
+// 뒤 여유가 사라진다(실측: 마지막 20ms 잔존 60.9% vs auto 86.5%). 기본은 반드시 'auto'.
+
+test('말끝 다듬기 기본값은 켜짐이고 제품 기본값과 같다', () => {
+  const d = defaultSettings('auto')
+  assert.equal(d.tailMode, 'auto')
+  assert.equal(d.tailPaddingMs, 120)
+  assert.equal(d.tailFadeMs, 8)
+})
+
+test('말끝 설정이 없는 옛 저장본은 켜짐으로 올라온다(조용한 off 강등 금지)', () => {
+  const got = parseSettings({ speed: 1.0, engine: 'auto' }, 'auto')
+  assert.equal(got.tailMode, 'auto')
+  assert.equal(got.tailPaddingMs, 120)
+  assert.equal(got.tailFadeMs, 8)
+})
+
+test('말끝 설정을 저장해 뒀으면 그 값을 그대로 쓴다', () => {
+  const got = parseSettings({ tailMode: 'off', tailPaddingMs: 40, tailFadeMs: 3 }, 'auto')
+  assert.equal(got.tailMode, 'off')
+  assert.equal(got.tailPaddingMs, 40)
+  assert.equal(got.tailFadeMs, 3)
+})
+
+test('말끝 방식에 엉뚱한 값이 들어오면 기본값으로 되돌린다', () => {
+  assert.equal(parseSettings({ tailMode: 'loud' }, 'auto').tailMode, 'auto')
+  assert.equal(parseSettings({ tailPaddingMs: 'x' }, 'auto').tailPaddingMs, 120)
+})
+
+const REF = { clip: 'C:/ref/clip.wav', region: { start: 1, duration: 9 } }
+
+test('보내는 옵션에 말끝 설정이 실제로 담긴다', () => {
+  const o = synthesisOptions('안녕하세요', defaultSettings('auto'), REF)
+  // 이 세 값이 빠지면 워커가 'off' 로 떨어져 말끝이 깎인다 — 빠뜨림을 여기서 막는다.
+  assert.equal(o.ttsTailMode, 'auto')
+  assert.equal(o.ttsTailPaddingMs, 120)
+  assert.equal(o.ttsTailFadeMs, 8)
+})
+
+test('보내는 옵션이 작업실 설정을 그대로 따른다', () => {
+  const s = { ...defaultSettings('auto'), speed: 1.25, pitch: -1.5, engine: 'qwen', tailPaddingMs: 200 }
+  const o = synthesisOptions('문장', s, REF)
+  assert.equal(o.ttsText, '문장')
+  assert.equal(o.ttsSpeed, 1.25)
+  assert.equal(o.ttsPitch, -1.5)
+  assert.equal(o.ttsEngine, 'qwen')
+  assert.equal(o.ttsTailPaddingMs, 200)
+  assert.equal(o.ttsSpeakerMode, 'single')
+  assert.equal(o.ttsReferenceOverride, REF.clip)
+  assert.deepEqual(o.ttsReferenceRegion, REF.region)
+})
+
+// 화면이 만든 옵션이 **파이썬에 실제로 실릴 config** 까지 그대로 가는지 한 줄로 잇는다.
+// 중간의 buildTtsConfig 는 값이 없으면 조용히 'off' 로 채운다 — 그래서 여기서 끝까지 확인한다.
+test('작업실 옵션이 워커 config 까지 말끝 켜짐으로 도달한다', async () => {
+  const { buildTtsConfig } = await import('./ttsConfig.ts')
+  const cfg = buildTtsConfig(synthesisOptions('안녕하세요', defaultSettings('auto'), REF))
+  assert.equal(cfg.ttsTailMode, 'auto', "여기서 'off' 면 말끝 20ms 가 0 까지 깎인다")
+  assert.equal(cfg.ttsTailPaddingMs, 120)
+  assert.equal(cfg.ttsTailFadeMs, 8)
 })

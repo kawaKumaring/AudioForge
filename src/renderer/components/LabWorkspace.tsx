@@ -15,8 +15,8 @@ import { useAppStore } from '@/stores/app.store'
 import { useLabStore, newId } from '@/stores/lab.store'
 import {
   LAB_STORAGE_KEY, adoptedTake, exportBlockText, exportReadiness, hasUnusedTake, isExportBlockNotice,
-  lineStatus, lineStatusText, parseDoc, takeBadge, voiceKeyOf,
-  type LabDoc, type LabLine, type LabSettings,
+  lineStatus, lineStatusText, parseDoc, synthesisOptions, takeBadge, voiceKeyOf,
+  type LabDoc, type LabLine,
 } from '../../shared/labWorkspace'
 import { REFERENCE_CONDITIONING_RECOMMENDED } from '../../shared/ttsConfig'
 import { createManagedAudio } from '@/lib/playbackVolume'
@@ -37,18 +37,6 @@ const btn = (bg: string, fg: string, disabled?: boolean): React.CSSProperties =>
  * ★합성 탭의 현재 값을 읽지 않는다. 기존 합성 **기능**은 그대로 쓰되, 합성 탭에서 속도·엔진을
  *   바꾼 것이 이 작업실에 조용히 반영되면 "같은 대본인데 결과가 달라졌다" 가 되기 때문이다.
  */
-function processOptions(text: string, s: LabSettings,
-                        ref: { clip: string; region: { start: number; duration: number } | null }) {
-  return {
-    ttsText: text,
-    ttsSpeed: s.speed, ttsSilenceGap: s.silenceGap, ttsPitch: s.pitch,
-    ttsEngine: s.engine, ttsQwenModel: s.qwenModel,
-    ttsReferenceOverride: ref.clip, ttsReferenceRegion: ref.region,
-    ttsReferenceConditioningMode: s.referenceConditioningMode,
-    ttsSpeakerMode: 'single' as const,
-  }
-}
-
 const STATUS_COLOR: Record<string, string> = {
   ready: 'var(--emerald, #34d399)', none: 'var(--text-muted)',
   stale_text: 'var(--amber, #fbbf24)', stale_voice: 'var(--amber, #fbbf24)',
@@ -199,7 +187,7 @@ export default function LabWorkspace() {
     // 공용 작업 제어: 기존 합성과 **동시에** 돌지 않도록 같은 상태를 쓴다.
     // ★기존 결과(tracks)는 지우지 않는다 — 다른 탭의 결과를 없애지 않기 위해서다.
     useAppStore.setState({ status: 'processing', progress: 0, progressMessage: '문장 만드는 중...', error: null })
-    void window.api.audio.process(doc.voicePath, 'tts', processOptions(first.text, doc.settings, lab.ref))
+    void window.api.audio.process(doc.voicePath, 'tts', synthesisOptions(first.text, doc.settings, lab.ref))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc, voiceKey, lab.ref])
 
@@ -271,7 +259,7 @@ export default function LabWorkspace() {
       st.setJob({ lineId: line.id, text: line.text, voiceKey: voiceKeyOf(st.doc.voicePath),
                   startedAt: Date.now(), queue: rest.slice(1) })
       void window.api.audio.process(st.doc.voicePath, 'tts',
-        processOptions(line.text, st.doc.settings, st.ref))
+        synthesisOptions(line.text, st.doc.settings, st.ref))
     }
     return () => { offP(); offR(); offE(); offCancelled() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
