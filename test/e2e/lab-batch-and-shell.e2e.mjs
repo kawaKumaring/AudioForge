@@ -48,12 +48,24 @@ try {
   const inTranscribe = await win.evaluate(() => document.body.innerText.includes('텍스트 추출 시작'))
   ok(inTranscribe, '텍스트 추출 모드에서는 그 실행 버튼이 그대로 있다')
 
+  // 상위 '테스트개발' 탭은 v1.10.0 부터 **안내만** 보여 준다 — 작업실은 합성 > 일반으로 옮겼다.
+  // 여기서는 그 탭에 다른 모드의 실행 화면이 새지 않는지만 본다.
   await win.getByTestId('mode-lab').click()
   await win.waitForTimeout(800)
-  const inLab = await win.evaluate(() => document.body.innerText)
-  ok(!inLab.includes('텍스트 추출 시작'), '작업실에는 "텍스트 추출 시작" 이 나오지 않는다')
-  ok(!inLab.includes('음악 분리 시작') && !inLab.includes('트랙 분할 시작'),
+  const inPlaceholder = await win.evaluate(() => document.body.innerText)
+  ok(!inPlaceholder.includes('텍스트 추출 시작'),
+    '테스트개발 탭에는 "텍스트 추출 시작" 이 나오지 않는다')
+  ok(!inPlaceholder.includes('음악 분리 시작') && !inPlaceholder.includes('트랙 분할 시작'),
     '다른 모드의 실행 버튼도 섞여 나오지 않는다')
+
+  ok(await win.getByTestId('lab-placeholder').count() === 1,
+    '테스트개발 탭은 안내 자리로 남아 있다')
+
+  // 작업실 본체로 들어간다 — 안내에 있는 '일반 합성 열기' 로. 사용자가 쓰는 길 그대로다.
+  await win.getByTestId('lab-goto-basic').click()
+  await win.waitForTimeout(800)
+  const inLab = await win.evaluate(() => document.body.innerText)
+  ok(!inLab.includes('텍스트 추출 시작'), '작업실에도 "텍스트 추출 시작" 이 나오지 않는다')
   ok(await win.getByTestId('lab-bottom-bar').count() === 1,
     '작업실의 실행·진행·취소는 작업실 막대 안에 있다')
 
@@ -118,6 +130,24 @@ try {
   await win.waitForTimeout(400)
   lineStatus = (await win.getByTestId('lab-line-status').first().textContent() || '').trim()
   ok(lineStatus === '준비됨', '고르고 나면 "새 생성본 있음" 이 사라진다', `"${lineStatus}"`)
+
+  // ── 끝 잘림 의심 표시 (이 아래는 생성본을 더하므로 **맨 끝에 둔다**) ──────────
+  // 모델이 마지막 음절이 울리는 중에 스스로 끝내는 일이 있다(실측: 끊긴 회차 0.087,
+  // 정상 0.000~0.007). 되살릴 수 없으니 **알아보게** 한다 — 잘못 알리면 쓸모가 없다.
+  ok(await win.getByTestId('lab-take-tailcut').count() === 0,
+    '정상으로 끝난 생성본에는 잘림 표시를 붙이지 않는다')
+
+  await win.evaluate((b) => window.__labStore.getState().addTake('ln_1', {
+    id: 'tk_1c', path: b, text: '하나입니다.', voiceKey: window.__labStore.getState().doc.voicePath,
+    createdAt: 10, tailResidual: 0.087,
+  }), B)
+  await win.waitForTimeout(500)
+  ok(await win.getByTestId('lab-take-tailcut').count() === 1,
+    '끝났을 때 소리가 남아 있던 생성본만 표시한다', '1개')
+  const cutTip = await win.getByTestId('lab-take-tailcut').getAttribute('title')
+  ok((cutTip || '').includes('잘렸을 수 있습니다'),
+    '단정하지 않고 **의심**으로 알린다', `"${(cutTip || '').slice(0, 30)}…"`)
+  ok((cutTip || '').includes('다시 만들면'), '무엇을 하면 되는지 함께 알린다')
 } catch (e) {
   failed++
   log('FAIL 예외:', e && e.message)

@@ -18,6 +18,11 @@ export interface LabTake {
   /** **요청 당시의** 목소리 식별값. 지금과 다르면 '이전 목소리' 다. */
   voiceKey: string
   createdAt: number
+  /**
+   * 끝났을 때 아직 소리가 남아 있었는가(0~1). 마감 단계가 fade 를 걸기 전에 잰 값이다.
+   * 옛 생성본에는 없다(undefined = 재지 않았다 ≠ 정상).
+   */
+  tailResidual?: number
 }
 
 export interface LabLine {
@@ -181,6 +186,29 @@ export function lineStatusText(s: LineStatus): string {
     case 'stale_voice': return '이전 목소리의 결과'
     case 'ready': return '준비됨'
   }
+}
+
+/**
+ * **말끝이 잘렸다고 볼 기준.** 이 값 이상이면 끝났을 때 소리가 살아 있었다고 본다.
+ *
+ * ★근거(2026-09-16 실측 4회): 끊긴 1회는 0.087, 정상 3회는 0.000 / 0.002 / 0.007.
+ *   그 사이를 0.03 으로 잡았다. **표본 4회짜리 첫 기준이지 확정값이 아니다.**
+ *   바꿀 때는 새로 측정한 값과 함께 바꾼다 — 화면이 조용해지도록 올리지 않는다.
+ */
+export const TAIL_RESIDUAL_CUT = 0.03
+
+/**
+ * 이 생성본은 **끝이 잘렸을 수 있는가.**
+ *
+ * 되살릴 수는 없다 — 모델이 마지막 음절이 울리는 중에 스스로 끝낸 것이고, 생성 상한 도달도
+ * 우리 쪽 절단도 아니라 오류로 드러나지 않는다. 그래서 **알아보기만 한다**: 표시해 두면
+ * 일일이 들어 보지 않고 곧바로 '추가 생성' 을 누를 수 있다.
+ *
+ * 잰 적이 없으면(옛 생성본) false — 모르는 것을 잘렸다고 말하지 않는다.
+ */
+export function takeTailCut(take: LabTake): boolean {
+  const v = take.tailResidual
+  return typeof v === 'number' && Number.isFinite(v) && v >= TAIL_RESIDUAL_CUT
 }
 
 /** 테이크 하나에 붙일 꼬리표(없으면 빈 문자열). */
@@ -378,6 +406,9 @@ export function parseDoc(raw: unknown, referenceConditioningRecommended = 'auto'
         text: typeof tk.text === 'string' ? tk.text : '',
         voiceKey: typeof tk.voiceKey === 'string' ? tk.voiceKey : '',
         createdAt: typeof tk.createdAt === 'number' ? tk.createdAt : 0,
+        // 옛 생성본엔 없다. 없으면 없는 채로 둔다 — 0 으로 채우면 '정상' 이라고 거짓말하게 된다.
+        ...(typeof tk.tailResidual === 'number' && Number.isFinite(tk.tailResidual)
+          ? { tailResidual: tk.tailResidual } : {}),
       })
     }
     const adopted = typeof ln.adoptedTakeId === 'string' ? ln.adoptedTakeId : null

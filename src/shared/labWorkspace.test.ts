@@ -8,7 +8,7 @@ import {
   adoptedTake, defaultSettings, emptyDoc, exportBlockReason, exportBlockText,
   exportReadiness, hasUnusedTake, isExportBlockNotice, lineStatus,
   linesNeedingWork, newLine, parseDoc, parseSettings, redoTargets, shouldAutoAdopt,
-  synthesisOptions, takeBadge, voiceKeyOf,
+  synthesisOptions, takeBadge, takeTailCut, voiceKeyOf, TAIL_RESIDUAL_CUT,
   type LabDoc, type LabLine, type LabTake,
 } from './labWorkspace.ts'
 
@@ -318,4 +318,41 @@ test('작업실 옵션이 워커 config 까지 말끝 켜짐으로 도달한다'
   assert.equal(cfg.ttsTailMode, 'auto', "여기서 'off' 면 말끝 20ms 가 0 까지 깎인다")
   assert.equal(cfg.ttsTailPaddingMs, 120)
   assert.equal(cfg.ttsTailFadeMs, 8)
+})
+
+// ── 끝 잘림 의심 판정 ──────────────────────────────────────────────────────
+// 실측(2026-09-16, 4회): 끊긴 1회 0.087 / 정상 3회 0.000·0.002·0.007.
+// 되살릴 수 없는 현상이라 **알아보는 것**이 전부다 — 잘못 알리면 쓸모가 없어진다.
+
+test('끝났을 때 소리가 남아 있었으면 잘림 의심으로 본다', () => {
+  assert.equal(takeTailCut(take({ tailResidual: 0.087 })), true, '실측된 끊긴 회차')
+  assert.equal(takeTailCut(take({ tailResidual: TAIL_RESIDUAL_CUT })), true, '기준값은 포함한다')
+})
+
+test('잦아들며 끝난 것은 잘림이라 하지 않는다', () => {
+  for (const v of [0, 0.002, 0.007]) {
+    assert.equal(takeTailCut(take({ tailResidual: v })), false, `정상 회차 ${v}`)
+  }
+})
+
+test('재지 않은 옛 생성본은 잘렸다고 말하지 않는다', () => {
+  assert.equal(takeTailCut(take()), false, '모르는 것을 단정하지 않는다')
+  assert.equal(takeTailCut(take({ tailResidual: Number.NaN })), false)
+})
+
+test('실측한 값이 저장·복원을 건너도 남는다', () => {
+  const src = doc([{ ...line(), takes: [take({ tailResidual: 0.087 })], adoptedTakeId: 't1' }])
+  const back = parseDoc(JSON.parse(JSON.stringify(src)))
+  assert.ok(back)
+  assert.equal(back!.lines[0].takes[0].tailResidual, 0.087)
+})
+
+test('값이 없던 옛 저장본은 없는 채로 복원된다 — 0 으로 채우지 않는다', () => {
+  const back = parseDoc({
+    voicePath: VOICE,
+    lines: [{ id: 'l1', text: 'x', takes: [{ id: 't1', path: 'p.wav' }], adoptedTakeId: null }],
+  })
+  assert.ok(back)
+  assert.equal('tailResidual' in back!.lines[0].takes[0], false,
+    '0 으로 채우면 정상이라고 거짓말하게 된다')
 })

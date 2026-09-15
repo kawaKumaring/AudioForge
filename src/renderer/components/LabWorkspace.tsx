@@ -15,7 +15,7 @@ import { useAppStore } from '@/stores/app.store'
 import { useLabStore, newId } from '@/stores/lab.store'
 import {
   LAB_STORAGE_KEY, adoptedTake, exportBlockText, exportReadiness, hasUnusedTake, isExportBlockNotice,
-  lineStatus, lineStatusText, parseDoc, synthesisOptions, takeBadge, voiceKeyOf,
+  lineStatus, lineStatusText, parseDoc, synthesisOptions, takeBadge, takeTailCut, voiceKeyOf,
   type LabDoc, type LabLine,
 } from '../../shared/labWorkspace'
 import { REFERENCE_CONDITIONING_RECOMMENDED } from '../../shared/ttsConfig'
@@ -201,6 +201,10 @@ export default function LabWorkspace() {
       const j = useLabStore.getState().job
       if (!j) return
       const src = (d?.tracks || [])[0]?.path
+      // 마감 단계가 fade 를 걸기 전에 잰 '끝났을 때 남아 있던 소리'. 없으면 재지 않은 것이다.
+      const residualRaw = (d?.tracks || [])[0]?.metadata?.tail_residual_ratio
+      const residual = typeof residualRaw === 'number' && Number.isFinite(residualRaw)
+        ? residualRaw : undefined
       void (async () => {
         if (src) {
           const takeId = newId('tk')
@@ -210,6 +214,7 @@ export default function LabWorkspace() {
             //   '수정 전 대사' 꼬리표가 붙는다 — 늦은 결과를 최신인 것처럼 쓰지 않는다.
             useLabStore.getState().addTake(j.lineId, {
               id: takeId, path: kept.path, text: j.text, voiceKey: j.voiceKey, createdAt: Date.now(),
+              ...(residual === undefined ? {} : { tailResidual: residual }),
             })
             // 자동으로 골라졌는가, 아니면 사용자가 골라야 하는가.
             const after = useLabStore.getState().doc.lines.find((l) => l.id === j.lineId)
@@ -600,6 +605,14 @@ function LineRow(p: LineRowProps) {
                     }}>
                     <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>생성본 {i + 1}</span>
                     {badge && <span style={{ fontSize: 10, color: 'var(--amber, #fbbf24)' }}>{badge}</span>}
+                    {/* 끝났을 때 소리가 살아 있었다 = 마지막 음절의 여운이 잘렸을 수 있다.
+                        되살릴 수는 없으므로 알려만 준다 — 일일이 들어 보지 않고 곧바로
+                        '추가 생성' 을 누를 수 있게. */}
+                    {takeTailCut(t) && (
+                      <span data-testid="lab-take-tailcut"
+                        title={'끝났을 때 소리가 아직 남아 있었습니다 \u2014 마지막 음절이 잘렸을 수 있습니다. 다시 만들면 대개 멀쩡하게 나옵니다.'}
+                        style={{ fontSize: 10, color: 'var(--amber, #fbbf24)' }}>끝 잘림 의심</span>
+                    )}
                     <button onClick={() => p.onPlay(t.path, t.id)}
                       style={{ ...btn('transparent', 'var(--text-primary)'), padding: '0 4px' }}>
                       {p.playingTakeId === t.id ? '■' : '▶'}
