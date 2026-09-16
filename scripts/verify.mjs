@@ -83,6 +83,12 @@ if (WITH_APP_UI) {
   // 재생 음량이 사용자가 정한 값으로 유지되는가 — 조절·적용·보관·다시 켜기까지.
   // 값이 요소에 실제로 걸리는지는 앱에서만 보인다(단위 검사는 소유자까지만 말한다). GPU 없음.
   run('실제 앱 · 재생 음량 유지(GPU 없음)', 'node', [path.join('test', 'e2e', 'playback-volume.e2e.mjs')])
+  // 화면이 '준비 완료' 라고 말하면 실제로 시작할 수 있는가(둘이 갈라지면 사용자가 막힌다).
+  run('실제 앱 · 목소리 준비 표시 일치(GPU 없음)', 'node',
+    [path.join('test', 'e2e', 'reference-ready-consistency.e2e.mjs')])
+  // 인물 목소리 차단이 내부 코드가 아니라 사람 말로 나오는가.
+  run('실제 앱 · 인물 차단 안내(GPU 없음)', 'node',
+    [path.join('test', 'e2e', 'speaker-block-notice.e2e.mjs')])
 } else {
   skip('실제 앱 · UI 경로', '--app-ui 를 주면 함께 확인한다(GPU 안 씀)')
   skip('실제 앱 · 복원 중 선택 변경', '같은 이유')

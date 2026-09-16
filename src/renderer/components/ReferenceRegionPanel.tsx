@@ -203,6 +203,9 @@ function waitUntilLoaded(el: HTMLAudioElement, timeoutMs = 4000): Promise<boolea
   })
 }
 
+/** 아직 확정하지 않아 합성이 막혔을 때, 무엇을 눌러야 하는지. 사유의 맨 앞에 둔다. */
+const ACTION_CONFIRM = "아래에서 '이 구간으로 확정' 을 눌러야 합성을 시작할 수 있습니다."
+
 export default function ReferenceRegionPanel({
   path, clipKey, disabled, onState, label = '참조 음성',
   open = true, autoConfirm = false, onAutoConfirmSettled, plainStatus = false, committed = null,
@@ -335,10 +338,17 @@ export default function ReferenceRegionPanel({
           onStateRef.current({ phase: 'needs_region', clip: '', region: null, message: regionNeedText(pol, a.duration_sec, true) })
         }
         if (!committedThen) {
+          // ★이 문구는 시작 단추의 **막힌 사유**로 그대로 나간다. 길이 안내만 적어 두면
+          //   "왜 못 만드는지" 가 아니라 "참고 사항" 처럼 읽힌다(실측 보고). 자동 확정이 없어
+          //   사용자가 눌러야 하는 경우에는 **눌러야 한다는 사실**을 함께 말한다.
+          const mustConfirm = !autoConfirm
+          const need = regionNeedText(pol, a.duration_sec, !!a.region_required)
           onStateRef.current({
             // 자동 확정이 뒤따르면 이것은 '진행 중' 이다. 자동 확정이 없으면 사용자가 골라야 한다.
             phase: autoConfirm ? 'preparing' : 'needs_region', clip: '',
-            message: say(regionNeedText(pol, a.duration_sec, !!a.region_required), '목소리에서 쓸 부분을 고르는 중입니다…'),
+            message: say(
+              mustConfirm ? ACTION_CONFIRM + ' ' + need : need,
+              mustConfirm ? ACTION_CONFIRM : '목소리에서 쓸 부분을 고르는 중입니다…'),
             region: null,
           })
         }
@@ -832,7 +842,10 @@ const sub: CSSProperties = { fontSize: 11, color: 'var(--text-muted)', lineHeigh
             <button onClick={stopPlay} disabled={disabled} style={btn('var(--bg-elevated)', 'var(--text-muted)')}>■ 정지</button>
             <button onClick={() => { void confirmRegion() }} disabled={disabled || confirming}
               style={btn(confirmedClip ? 'var(--bg-elevated)' : 'var(--rose)', confirmedClip ? 'var(--cyan)' : '#fff')}>
-              {confirming ? '생성 중...' : confirmedClip ? '✓ 확정됨 (다시 확정)' : '이 구간으로 확정'}
+              {/* 확정본이 있어도 **지금 쓰이고 있지 않으면** '확정됨' 이라고 하지 않는다 —
+                  그렇게 말하면 눌러야 할 단추를 이미 누른 것으로 읽는다. */}
+              {confirming ? '생성 중...'
+                : confirmedClip && hasCommitted ? '✓ 확정됨 (다시 확정)' : '이 구간으로 확정'}
             </button>
             {/* 재생 상태를 눈에 보이게 — '눌렀는데 아무 반응 없음'을 없앤다 */}
             <span role="status" aria-live="polite" style={{ ...sub, minWidth: 44 }}>
@@ -881,8 +894,14 @@ const sub: CSSProperties = { fontSize: 11, color: 'var(--text-muted)', lineHeigh
                   낱말 사이에서 잘랐고 양 끝에 짧은 무음을 넣었습니다
                 </div>
               )}
-              {confirmedClip && metrics.warnings.length === 0 && (
-                <span style={{ color: 'var(--cyan)' }}> · 참조 준비 완료</span>
+              {/* ★'준비 완료' 는 **합성이 실제로 가능한 상태**일 때만 말한다(2026-09-16 사용자 보고).
+                  예전에는 이 패널이 만들어 둔 클립이 살아 있기만 하면 찍혔다. 그래서 위에서는
+                  '참조 준비 완료' 라고 하고 아래 시작 단추는 '준비 필요' 라고 하는 일이 생겼다 —
+                  사용자 말 그대로 "목소리가 준비되어 있어도 안 된다고 한다". committed 는 호출부가
+                  준비됨일 때만 넘기는 값이라, 이것을 함께 보면 두 말이 갈라지지 않는다. */}
+              {confirmedClip && hasCommitted && metrics.warnings.length === 0 && (
+                <span data-testid="reference-ready-badge"
+                  style={{ color: 'var(--cyan)' }}> · 참조 준비 완료</span>
               )}
             </div>
           )}
