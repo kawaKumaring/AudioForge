@@ -86,6 +86,9 @@ if (WITH_APP_UI) {
   // 화면이 '준비 완료' 라고 말하면 실제로 시작할 수 있는가(둘이 갈라지면 사용자가 막힌다).
   run('실제 앱 · 목소리 준비 표시 일치(GPU 없음)', 'node',
     [path.join('test', 'e2e', 'reference-ready-consistency.e2e.mjs')])
+  // 일반과 고급이 서로의 목소리(파생 클립)를 지우지 않는가.
+  run('실제 앱 · 일반·고급 목소리 격리(GPU 없음)', 'node',
+    [path.join('test', 'e2e', 'synthesis-voice-isolation.e2e.mjs')])
   // 인물 목소리 차단이 내부 코드가 아니라 사람 말로 나오는가.
   run('실제 앱 · 인물 차단 안내(GPU 없음)', 'node',
     [path.join('test', 'e2e', 'speaker-block-notice.e2e.mjs')])

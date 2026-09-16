@@ -195,7 +195,10 @@ const clipRoot = (): string => {
   return root
 }
 // 유효한 파생 참조 클립 폴더(clipRoot/audioforge_refclip_*)를 clipKey별로 추적.
-// clipKey = 'default'(기본 참조) | emotionId(감정 참조). 단일 슬롯을 감정별 식별 구조로 확장.
+// clipKey = 'default'(고급의 기본 참조) | 'lab'(합성 일반) | 'spk:<인물>' | emotionId(감정 참조).
+// ★이름 하나당 폴더 **하나**다. 새로 확정하면 같은 이름의 이전 폴더를 지운다(releaseRefClip).
+//   그래서 **서로 다른 화면은 반드시 다른 이름을 써야 한다** — 같은 이름을 쓰면 한쪽이
+//   다른 쪽의 목소리를 지운다(2026-09-16: 일반이 'default' 를 써서 고급이 못 쓰게 됐다).
 // 새 클립/새 파일/재확정/합성 종료(합성 중 제외) 시 해당 key(또는 전체)만 정리.
 const refClipDirs = new Map<string, string>()
 

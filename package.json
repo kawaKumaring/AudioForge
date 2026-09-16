@@ -58,6 +58,7 @@
     "test:e2e:diarize-engine": "node test/e2e/diarize-engine.e2e.mjs",
     "test:e2e:speaker-block": "node test/e2e/speaker-block-notice.e2e.mjs",
     "test:e2e:reference-ready": "node test/e2e/reference-ready-consistency.e2e.mjs",
+    "test:e2e:voice-isolation": "node test/e2e/synthesis-voice-isolation.e2e.mjs",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {

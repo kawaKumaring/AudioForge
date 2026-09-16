@@ -37,6 +37,13 @@ const btn = (bg: string, fg: string, disabled?: boolean): React.CSSProperties =>
  * ★합성 탭의 현재 값을 읽지 않는다. 기존 합성 **기능**은 그대로 쓰되, 합성 탭에서 속도·엔진을
  *   바꾼 것이 이 작업실에 조용히 반영되면 "같은 대본인데 결과가 달라졌다" 가 되기 때문이다.
  */
+/**
+ * 작업실(일반)이 쓰는 파생 클립 자리. 고급의 기본 목소리('default')와 **겹치지 않는다.**
+ * main 은 이 이름 하나당 폴더 하나만 들고 있고, 새로 확정하면 같은 이름의 이전 폴더를
+ * 지운다 — 이름을 나누지 않으면 한쪽이 다른 쪽의 목소리를 지운다.
+ */
+const LAB_CLIP_KEY = 'lab'
+
 const STATUS_COLOR: Record<string, string> = {
   ready: 'var(--emerald, #34d399)', none: 'var(--text-muted)',
   stale_text: 'var(--amber, #fbbf24)', stale_voice: 'var(--amber, #fbbf24)',
@@ -344,8 +351,12 @@ export default function LabWorkspace() {
           fontSize: 13, fontWeight: 600, minWidth: 0, overflow: 'hidden',
           textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1,
         }}>{doc.voiceLabel || '아직 고르지 않음'}</span>
-        <span style={{ fontSize: 11, color: app.ttsRefReady ? 'var(--emerald, #34d399)' : 'var(--text-muted)' }}>
-          {doc.voicePath ? (app.ttsRefReady ? '준비됨' : (app.ttsRefMessage || '준비 중…')) : ''}
+        {/* ★**자기 상태**를 말한다(2026-09-16). 예전에는 고급의 값(app.ttsRefReady)을 읽었다 —
+            막는 것은 lab.ref.ready 인데 표시는 다른 값이라, 고급이 준비되면 일반도 '준비됨' 이라고
+            말하면서 정작 만들기는 잠겨 있었다(그 반대도 났다). 화면과 잠금은 같은 값을 봐야 한다. */}
+        <span data-testid="lab-voice-status"
+          style={{ fontSize: 11, color: lab.ref.ready ? 'var(--emerald, #34d399)' : 'var(--text-muted)' }}>
+          {doc.voicePath ? (lab.ref.ready ? '준비됨' : (lab.ref.message || '준비 중…')) : ''}
         </span>
         <button data-testid="lab-pick-voice" onClick={() => { void pickVoice() }}
           disabled={!!job} style={btn('var(--bg-elevated)', 'var(--cyan)', !!job)}>
@@ -358,7 +369,15 @@ export default function LabWorkspace() {
         <div style={{ display: 'none' }}>
           <ReferenceRegionPanel
             key={doc.voicePath + '|' + lab.ref.reqId}
-            path={doc.voicePath} clipKey="default"
+            // ★clipKey 는 **일반 전용**이다(2026-09-16 실사용 결함).
+            //   main 은 파생 클립을 clipKey 하나당 **한 자리**로 관리한다(`refClipDirs`) —
+            //   새로 확정하면 `releaseRefClip(clipKey)` 로 **그 자리의 이전 폴더를 지운다.**
+            //   예전에는 일반도 'default' 를 써서, 일반이 목소리를 준비하는 순간 고급의 기본
+            //   목소리 클립 폴더가 통째로 지워졌다. 고급은 없어진 파일을 가리킨 채 '준비 안 됨'
+            //   으로 떨어지고, 사용자는 "목소리가 준비됐는데 안 된다" 를 보게 된다.
+            //   일반이 첫 화면이라 아무것도 하지 않아도 이 일이 일어났다.
+            //   "일반과 고급의 작업은 각각 저장됩니다" 라는 약속과도 어긋난다.
+            path={doc.voicePath} clipKey={LAB_CLIP_KEY}
             // ★생성 중이라고 **잠그지 않는다.** 이 패널의 disabled 는 분석 효과의 의존값이라,
             //   잠갔다 풀면 참조 분석이 처음부터 다시 돈다(실측 27초). 그 동안 준비 상태가
             //   내려가 다음 테이크를 만들 수 없었다. 참조는 생성 중에 바뀌지 않는다.
