@@ -12,9 +12,10 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAppStore } from '../stores/app.store'
 import {
   WORK_DRAFT_STORAGE_KEY, buildWorkDraft, deserializeWorkDrafts, findWorkDraft, planWorkRestore,
-  putWorkDraft, serializeWorkDrafts, slotForPlan, workDraftIsEmpty, workKeyOf,
+  putWorkDraft, removeWorkDraft, serializeWorkDrafts, slotForPlan, summarizeWorkDraft, workDraftIsEmpty, workKeyOf,
 } from '../../shared/workDraft'
 import type { WorkDraft, WorkSlotPlan } from '../../shared/workDraft'
+import { hasRestoredThisRun, markRestoredThisRun } from '../lib/workDraftSession'
 
 /** 자동 저장을 미루는 시간. 타자·슬라이더 조작마다 디스크를 건드리지 않기 위해서다. */
 const SAVE_DEBOUNCE_MS = 700
@@ -34,9 +35,25 @@ export interface WorkDraftStatus {
   saveError: string | null
   /** 저장을 다시 시도한다(사용자가 누르는 자리). */
   retrySave: () => void
+  /**
+   * 이 파일을 열 때 **이전 작업을 되살렸다**는 사실과 그 요약(인물 수·대사 줄 수·방식).
+   * 화면이 알린다 — 되살아난 인물·대본이 사용자가 지금 만든 것처럼 보이면 안 된다
+   * (2026-09-17 실사용: 옛 인물 셋이 조용히 돌아와 "셋팅했는데 셋팅하라고 한다" 가 됐다).
+   */
+  restoredSummary: { speakerCount: number; lineCount: number; speakerMode: 'single' | 'multi' } | null
+  /** 되살린 것을 그대로 쓴다 — 알림만 닫는다. */
+  dismissRestored: () => void
+  /** 되살린 것을 버리고 새로 시작한다 — 대본·인물·방식을 비우고 이 파일의 기록을 지운다. */
+  discardRestored: () => Promise<void>
 }
 
-export function useWorkDraft(ttsEngine: string): WorkDraftStatus {
+/**
+ * @param adoptText 되살리기·새로 시작이 바꾼 대본을 **편집기의 자기 입력 상태**에 넘길 길.
+ *   고급의 대사 편집기는 자기 입력을 store 로 흘리는 구조라(store→편집기 방향이 없다),
+ *   store 만 바꾸면 화면의 글과 분석은 옛 대본을 계속 본다. 그래서 되살린 대본·비운 대본은
+ *   이 길로 편집기에도 알린다.
+ */
+export function useWorkDraft(ttsEngine: string, adoptText?: (text: string) => void): WorkDraftStatus {
   const fileInfo = useAppStore((s) => s.fileInfo)
   const mode = useAppStore((s) => s.mode)
   const ttsText = useAppStore((s) => s.ttsText)
@@ -61,11 +78,14 @@ export function useWorkDraft(ttsEngine: string): WorkDraftStatus {
   const [rootError, setRootError] = useState<string | null>(null)
   const [restoring, setRestoring] = useState(false)
   const [reconnectSpeakerIds, setReconnect] = useState<string[]>([])
+  const [restored, setRestored] = useState<{ key: string; summary: ReturnType<typeof summarizeWorkDraft> } | null>(null)
   /** 복원이 만든 변화가 곧바로 저장으로 돌아오지 않게 막는다. */
   const suppressSave = useRef(false)
   const restoredFor = useRef<string>('')
   const engineRef = useRef(ttsEngine)
   engineRef.current = ttsEngine
+  const adoptTextRef = useRef(adoptText)
+  adoptTextRef.current = adoptText
 
   // ── 기록 읽기(앱 실행에 한 번) ──
   useEffect(() => {
@@ -162,6 +182,10 @@ export function useWorkDraft(ttsEngine: string): WorkDraftStatus {
     if (!loaded || mode !== 'tts' || !path) return
     const key = workKeyOf(path)
     if (!key || restoredFor.current === key) return
+    // 이번 실행에서 이미 되살린(또는 시도한) 작업이면 화면이 다시 떠도 건드리지 않는다.
+    // 화면 인스턴스가 아니라 실행 단위 기록을 본다 — 일반 탭을 다녀오면 이 화면은 다시 마운트된다.
+    if (hasRestoredThisRun(path)) { restoredFor.current = key; return }
+    markRestoredThisRun(path)
     // 이미 이 작업에 인물이 있으면(사용자가 방금 만든 것) 기록으로 덮지 않는다.
     if (Object.keys(useAppStore.getState().ttsSpeakerRefState).length > 0) { restoredFor.current = key; return }
     const found = findWorkDraft(drafts.current, path)
@@ -193,6 +217,9 @@ export function useWorkDraft(ttsEngine: string): WorkDraftStatus {
         ttsText: draft.ttsText, speakerMode: draft.speakerMode,
         slots, labels, emotionEnabled, renames: draft.renames,
       })
+      adoptTextRef.current?.(draft.ttsText)          // 편집기의 글도 되살린 대본으로
+      // 되살렸다는 사실을 화면에 남긴다 — 조용히 돌아온 옛 인물은 사용자를 헷갈리게 한다.
+      setRestored({ key: found.key, summary: summarizeWorkDraft(draft) })
       setReconnect(plans.filter((p) => p.phase === 'reconnect').map((p) => p.speakerId))
       const preparing = plans.filter((p) => p.phase === 'preparing')
       setRestoring(preparing.length > 0)
@@ -285,5 +312,29 @@ export function useWorkDraft(ttsEngine: string): WorkDraftStatus {
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
   }, [rootError])
 
-  return { restoring, rootError, reconnectSpeakerIds, saveError, retrySave: () => { void flush() } }
+  const dismissRestored = useCallback(() => setRestored(null), [])
+  const discardRestored = useCallback(async () => {
+    const r = restored
+    if (!r) return
+    // 되살린 인물들의 클립은 이제 아무도 쓰지 않는다 — 놓는다(고급 기본 목소리·일반은 건드리지 않는다:
+    // 그것들은 다른 이름의 자리에 있다).
+    const st = useAppStore.getState()
+    for (const id of Object.keys(st.ttsSpeakerRefState)) {
+      try { window.api?.audio?.releaseReferenceClip?.('spk:' + id) } catch { /* noop */ }
+    }
+    suppressSave.current = true
+    restoreWorkDraft({ ttsText: '', speakerMode: 'single', slots: {}, labels: {}, emotionEnabled: {}, renames: {} })
+    adoptTextRef.current?.('')                       // 편집기의 글도 비운다
+    // 기록도 지운다 — 다음에 이 파일을 열 때 또 되살아나지 않게. 자동 저장은 지우지 못하므로 여기서만.
+    drafts.current = removeWorkDraft(drafts.current, r.key)
+    pending.current = null
+    try { await window.api.settings.set(WORK_DRAFT_STORAGE_KEY, serializeWorkDrafts(drafts.current)) } catch { /* 다음 저장이 다시 쓴다 */ }
+    suppressSave.current = false
+    setRestored(null)
+  }, [restored, restoreWorkDraft])
+
+  return {
+    restoring, rootError, reconnectSpeakerIds, saveError, retrySave: () => { void flush() },
+    restoredSummary: restored?.summary ?? null, dismissRestored, discardRestored,
+  }
 }

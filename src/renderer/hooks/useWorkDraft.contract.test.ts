@@ -63,7 +63,9 @@ test('복원 중에는 준비됨이 아니고, 이 작업에 이미 인물이 �
 })
 
 test('셸이 훅을 걸고, 저장이 막힌 실행은 숨기지 않는다', () => {
-  assert.ok(SHELL.includes('const workDraft = useWorkDraft(ttsEngine)'))
+  // 되살린 대본·비운 대본은 편집기의 자기 입력 상태에도 들어와야 한다(2026-09-17) —
+  // 편집기는 자기 입력을 store 로만 흘리므로, 훅이 편집기의 setter 를 받아 되쓴다.
+  assert.ok(SHELL.includes('const workDraft = useWorkDraft(ttsEngine, setTtsText)'), '편집기 setter 를 훅에 넘긴다')
   assert.ok(SHELL.includes('data-testid="work-draft-notice"'))
   assert.ok(SHELL.includes('workDraft.rootError &&'))
 })

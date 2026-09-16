@@ -364,8 +364,12 @@ export default function LabWorkspace() {
         </button>
       </div>
 
-      {/* 목소리 준비는 기존 기능을 그대로 쓴다. 화면에는 내보내지 않는다(설정을 늘어놓지 않는다). */}
-      {doc.voicePath && app.fileInfo?.path === doc.voicePath && (
+      {/* 목소리 준비는 기존 기능을 그대로 쓴다. 화면에는 내보내지 않는다(설정을 늘어놓지 않는다).
+          ★조건은 **일반의 목소리가 있는가** 하나다(2026-09-17, 소유 경계 B안).
+            예전에는 "불러온 파일과 같은 파일일 때만" 준비했다 — 일반이 고급의 기본 참조를 그대로
+            빌려 쓰던 시제품 시절의 잔재다. 일반은 자기 클립 자리('lab')를 갖게 됐으므로 고급이
+            어떤 파일을 열었는지와 무관하게 자기 목소리를 스스로 준비한다. */}
+      {doc.voicePath && (
         <div style={{ display: 'none' }}>
           <ReferenceRegionPanel
             key={doc.voicePath + '|' + lab.ref.reqId}

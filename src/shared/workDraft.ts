@@ -208,6 +208,34 @@ export function putWorkDraft(
  * 최근 손댄 순서의 열쇠 목록(최신 먼저). 목록 **표시**에만 쓴다 — 여기 없다고 지워진 것이 아니다.
  * 저장 관리 화면은 이번 범위가 아니라 아직 부르는 곳이 없다.
  */
+/**
+ * 기록 하나를 **사용자의 뜻으로** 지운다("새로 시작").
+ *
+ * 자동 저장은 절대 기록을 지우지 않는다(빈 값으로 덮지 않는다 — putWorkDraft 의 규칙). 지우는 길은
+ * 이것 하나이고, 화면이 되살린 것을 보여 준 뒤 사용자가 고른 경우에만 부른다.
+ */
+export function removeWorkDraft(drafts: Record<string, WorkDraft>, key: string): Record<string, WorkDraft> {
+  if (!key || !(key in drafts)) return drafts
+  const next = { ...drafts }
+  delete next[key]
+  return next
+}
+
+/**
+ * 되살린 기록이 **무엇을 가져오는지** — 화면에 알릴 요약. 대사 본문은 담지 않는다(수치만).
+ * lineCount = 화자·감정 표기 줄을 뺀, 실제 말이 있는 줄 수.
+ */
+export function summarizeWorkDraft(draft: WorkDraft): { speakerCount: number; lineCount: number; speakerMode: 'single' | 'multi' } {
+  const lines = (draft.ttsText || '').split(/\r?\n/)
+    .map((l) => l.trim())
+    .filter((l) => l && !/^\[[^\]]*\]$/.test(l))
+  return {
+    speakerCount: Object.keys(draft.speakers || {}).length,
+    lineCount: lines.length,
+    speakerMode: draft.speakerMode === 'multi' ? 'multi' : 'single',
+  }
+}
+
 export function recentWorkDraftKeys(
   drafts: Record<string, WorkDraft>, limit = WORK_DRAFT_RECENT_LIST_LIMIT
 ): string[] {

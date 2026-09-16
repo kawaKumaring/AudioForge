@@ -1,4 +1,6 @@
 import { create } from 'zustand'
+// @ts-ignore TS5097: node --test 가 요구하는 명시적 .ts 확장자(이 파일의 다른 import 와 같은 관례).
+import { forgetRestoredThisRun } from '../lib/workDraftSession.ts'
 import type { SeparationMode, Track, FileInfo } from '../../shared/types'
 import type { TtsReferenceEntry, PitchCapability, ReferenceConditioningMode } from '../../shared/ttsConfig'
 import type { ReferencePolicySummary, RefPhase } from '../../shared/referencePolicy'
@@ -511,6 +513,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   // 새 기본 참조 = 새 파일이므로 이전 전사(default + 감정 전부)는 새 음성에 결합되면 안 된다 →
   // ttsReferencePrompts 전량 비움(불변식 3·4: stale 전사 ↔ 새 음성 결합 방지).
   setFile: (info, url) => {
+    // 파일을 새로 골랐다 — 이 작업은 다시 열릴 때 되살려야 한다(실행 단위 기록에서 지운다).
+    forgetRestoredThisRun(info?.path || '')
     if (isCancelCleanupBusy(get().status)) return  // 취소 정리 중 새 파일 처리 차단(worker 종료 확인 전 상태 교체 방지)
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 전체 파생 클립(기본+감정) 정리
     // 분할 마커는 파일에 종속이다. 비우지 않으면 이전 파일의 경계가 새 파일에 그대로 적용돼
