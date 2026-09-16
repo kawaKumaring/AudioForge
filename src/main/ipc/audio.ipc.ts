@@ -323,11 +323,18 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   // Helper to send error to renderer.
   // 문자열 또는 구조화 오류({message, code?})를 받아 renderer용으로 정제 — message + (있으면) code만 전달.
   // code는 GENERATION_LIMIT_EXCEEDED 등 오류 UX 분기 열쇠. 전사·문장·전체경로·수치 상세는 전달하지 않는다.
-  const sendError = (err: string | { message?: unknown; code?: unknown }) => {
+  const sendError = (err: string | { message?: unknown; code?: unknown; speaker_ref?: unknown }) => {
     const o = typeof err === 'string' ? { message: err } : (err || {})
     const message = typeof o.message === 'string' ? o.message : String((o.message ?? '알 수 없는 오류'))
     const code = typeof o.code === 'string' ? o.code : undefined
-    mainWindow.webContents.send('audio:error', code ? { message, code } : { message })
+    // 화자 참조 오류의 **불투명 지문**(spk_ + sha256(id)[:12]). 이름·경로가 아니라 지문만 실린다 —
+    // 화면이 자기 인물 목록과 대조해 어느 인물인지 알아낸다(2026-09-17: "이 인물" 이 누구인지
+    // 화면에 안 나와 사용자가 방금 지정한 사람인 줄 알았다).
+    const speakerRef = typeof o.speaker_ref === 'string' && /^spk_[0-9a-f]{12}$/.test(o.speaker_ref)
+      ? o.speaker_ref : undefined
+    mainWindow.webContents.send('audio:error', {
+      message, ...(code ? { code } : {}), ...(speakerRef ? { speakerRef } : {}),
+    })
   }
 
   // 배타 가드는 '중복 실행을 막아야 하는' 쓰기성 작업에만. 읽기 전용 analyze/preflight는 쓰지 않는다.

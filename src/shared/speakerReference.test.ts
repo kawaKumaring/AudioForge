@@ -5,6 +5,7 @@
 // 같은 fixture 를 `python/test_speaker_refs_parity.py` 가 반대 방향으로 검사한다.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
@@ -12,6 +13,7 @@ import {
   readinessFromSlots, multiSpeakerPreflight, speakerPreflightMessage, SPEAKER_PREFLIGHT_MESSAGE,
   REFERENCE_SOURCES, SPEAKER_REFERENCE_FAILURES, blockedDecisions,
   resolveReferenceDecision, sharedReferenceGroups, speakerEmotionKey, speakerTransmission,
+  speakerBlockNotice, speakerIdForOpaqueRef,
 } from './speakerReference.ts'
 import type { ReferenceReadiness } from './speakerReference.ts'
 
@@ -211,4 +213,55 @@ test('준비만 안 된 인물은 여전히 "등록됨" 이다 — 미등록과 
   })
   const blocks = multiSpeakerPreflight([{ speakerId: 'b', emotionId: null }], readiness)
   assert.equal(blocks[0].code, 'SPEAKER_REFERENCE_NOT_READY')
+})
+
+// ── 화자 차단 오류에 **누구인지** 붙이기 ─────────────────────────────────────
+// 실사용(2026-09-17): 인물 셋 중 하나만 목소리를 지정하고 만들기를 눌렀는데 화면은
+// "이 인물의 목소리가 준비되지 않았습니다" 라고만 했다. 사용자는 방금 지정한 사람 얘기인 줄 알았다.
+const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex')
+const opaque = (id: string) => 'spk_' + sha(id).slice(0, 12)
+
+test('화면 검사가 만든 문구(위치 포함)는 그대로 쓴다 — 이름을 덮어 지우지 않는다', () => {
+  const r = speakerBlockNotice({
+    code: 'SPEAKER_NOT_REGISTERED',
+    error: SPEAKER_PREFLIGHT_MESSAGE.SPEAKER_NOT_REGISTERED + ' (2번 대사: 인물b, 3번 대사: 인물c)',
+    knownIds: ['인물a'], labelOf: (id) => id, sha256Hex: sha,
+  })
+  assert.ok(r)
+  assert.ok(r!.headline.includes('2번 대사: 인물b'), '어느 대사·누구인지가 남아 있다')
+  assert.ok(r!.headline.includes('인물c'))
+})
+
+test('코드만 왔으면(파이썬이 막음) 지문으로 인물을 찾아 이름을 붙인다', () => {
+  const r = speakerBlockNotice({
+    code: 'SPEAKER_NOT_REGISTERED', error: 'SPEAKER_NOT_REGISTERED',
+    speakerRef: opaque('인물b'),
+    knownIds: ['인물a', '인물b'], labelOf: (id) => (id === '인물b' ? '영희' : id), sha256Hex: sha,
+  })
+  assert.ok(r)
+  assert.equal(r!.who, '영희')
+  assert.ok(r!.headline.startsWith(SPEAKER_PREFLIGHT_MESSAGE.SPEAKER_NOT_REGISTERED))
+  assert.ok(r!.headline.includes('(인물: 영희)'))
+  assert.equal(/SPEAKER_/.test(r!.headline), false, '내부 코드는 나오지 않는다')
+})
+
+test('지문이 아는 인물과 맞지 않으면 모르는 채로 둔다 — 아무나 지목하지 않는다', () => {
+  const r = speakerBlockNotice({
+    code: 'SPEAKER_REFERENCE_NOT_READY', error: 'SPEAKER_REFERENCE_NOT_READY',
+    speakerRef: opaque('없는사람'), knownIds: ['인물a'], labelOf: (id) => id, sha256Hex: sha,
+  })
+  assert.ok(r)
+  assert.equal(r!.who, null)
+  assert.equal(r!.headline, SPEAKER_PREFLIGHT_MESSAGE.SPEAKER_REFERENCE_NOT_READY)
+})
+
+test('지문 대조는 파이썬의 형식(spk_ + sha256(id)[:12])과 같다', () => {
+  // python/speaker_refs.py opaque_speaker_ref 와 같은 식. 형식이 어긋나면 이름 붙이기가 조용히 꺼진다.
+  assert.equal(speakerIdForOpaqueRef(opaque('민수'), ['영희', '민수'], sha), '민수')
+  assert.equal(speakerIdForOpaqueRef('spk_zz', ['민수'], sha), null, '형식이 아니면 null')
+  assert.equal(speakerIdForOpaqueRef(undefined, ['민수'], sha), null)
+})
+
+test('화자 차단 코드가 아니면 관여하지 않는다', () => {
+  assert.equal(speakerBlockNotice({ code: 'GENERATION_LIMIT_EXCEEDED', error: 'x', knownIds: [], labelOf: (i) => i, sha256Hex: sha }), null)
 })

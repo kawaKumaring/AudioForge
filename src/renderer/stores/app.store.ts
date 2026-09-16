@@ -217,7 +217,7 @@ interface AppState {
   // 구조화 오류 정보(오류 UX 분기용). code + (취소 실패 시) childAlive만 — GENERATION_LIMIT_EXCEEDED/CANCEL_FAILED 분기.
   // 전사·문장·전체경로·스택은 담지 않는다(§미디어 정책).
   // rawType: 계약 밖 값의 '타입 이름'만(원시값·대사·경로는 절대 담지 않는다 — 비민감 payload 규칙).
-  errorInfo: { code?: string; childAlive?: boolean; rawType?: string | null } | null
+  errorInfo: { code?: string; childAlive?: boolean; rawType?: string | null; speakerRef?: string } | null
   // 사용자 명시 재시도 트리거(단조 증가). ProcessButton이 이 값 변화에서만 재합성 1회 실행.
   retryNonce: number
   tracks: Track[]

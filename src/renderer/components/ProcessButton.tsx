@@ -139,7 +139,8 @@ export default function ProcessButton() {
       if (!acceptsSettlement(useAppStore.getState().status)) return  // 취소가 정착했을 때만 늦은 오류 무시(계약 4-A)
       // 구조화 code(GENERATION_LIMIT_EXCEEDED 등)를 store에 함께 저장 → 오류 카드가 분기.
       const code = typeof data?.code === 'string' ? data.code : undefined
-      setError(data.message ?? 'Unknown error', code ? { code } : null)
+      const speakerRef = typeof data?.speakerRef === 'string' ? data.speakerRef : undefined
+      setError(data.message ?? 'Unknown error', code ? { code, ...(speakerRef ? { speakerRef } : {}) } : null)
       cleanup()
     })
 

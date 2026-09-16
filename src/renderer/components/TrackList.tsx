@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
-import { SPEAKER_PREFLIGHT_MESSAGE } from '../../shared/speakerReference'
+import { speakerBlockNotice } from '../../shared/speakerReference'
+import { sha256HexOfString } from '../../shared/referenceLibrary'
 import { motion, AnimatePresence } from 'framer-motion'
 import WaveSurfer from 'wavesurfer.js'
 import { useAppStore } from '@/stores/app.store'
@@ -432,15 +433,24 @@ function KaraokeButton({ tracks }: { tracks: { name: string; path: string }[] })
 }
 
 export default function TrackList() {
-  const { tracks, status, outputDir, error, errorInfo, mode, bumpRetry, clearError } = useAppStore()
+  const { tracks, status, outputDir, error, errorInfo, mode, bumpRetry, clearError, ttsSpeakerRefState, ttsSpeakerLabels } = useAppStore()
 
   if (error) {
     // 생성 상한 도달(GENERATION_LIMIT_EXCEEDED)은 유효 입력에서도 비결정적으로 발생 가능 → 전용 안내 + 명시 재시도.
     // 그 외 오류는 기존 일반 카드(메시지 + '다시 시도'=닫기). code는 main이 정제해 넘긴 구조화 값(전사·경로 없음).
     const isGenLimit = errorInfo?.code === 'GENERATION_LIMIT_EXCEEDED'
     // 화자 참조 차단(Python fail-closed 가 남긴 코드)은 내부 코드가 아니라 인물 카드로 안내한다.
-    const speakerBlock = errorInfo?.code === 'SPEAKER_NOT_REGISTERED' || errorInfo?.code === 'SPEAKER_REFERENCE_NOT_READY'
-      ? SPEAKER_PREFLIGHT_MESSAGE[errorInfo.code] : null
+    // 화자 차단 안내 — **이미 사람 말이면 그대로**(화면 검사는 "(N번 대사: 이름)" 을 붙여 준다),
+    // 코드만 왔으면(파이썬이 막은 경우) 지문으로 인물을 찾아 이름을 붙인다.
+    // ★예전엔 여기서 고정 문장으로 덮어써서 화면 검사가 알려 준 **인물 이름이 사라졌다**(2026-09-17).
+    const speakerNotice = errorInfo?.code === 'SPEAKER_NOT_REGISTERED' || errorInfo?.code === 'SPEAKER_REFERENCE_NOT_READY'
+      ? speakerBlockNotice({
+          code: errorInfo.code, error, speakerRef: errorInfo.speakerRef,
+          knownIds: Object.keys(ttsSpeakerRefState), labelOf: (id) => ttsSpeakerLabels[id] || id,
+          sha256Hex: sha256HexOfString,
+        })
+      : null
+    const speakerBlock = speakerNotice?.headline ?? null
     // 시간 제한 판정(main watchdog) — 모델 상한(GENERATION_LIMIT_EXCEEDED)과 다른 사유다. 완료된 부분은 아직
     // 보존되지 않으므로 "보존했습니다" 라고 말하지 않는다.
     const timeLimitMessage = errorInfo?.code === 'JOB_STALLED' || errorInfo?.code === 'JOB_INACTIVE'
@@ -502,10 +512,11 @@ export default function TrackList() {
             //   (SpeakerReferenceError 는 message 없이 던져 **코드가 곧 문구**가 된다)
             //   화면에 'SPEAKER_NOT_REGISTERED' 가 그대로 찍혔다.
             <>
-              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--rose)' }}>{speakerBlock}</span>
+              <span data-testid="speaker-block-headline"
+                style={{ fontSize: 13, fontWeight: 600, color: 'var(--rose)' }}>{speakerBlock}</span>
               <span data-testid="speaker-block-detail"
                 style={{ fontSize: 12, fontWeight: 400, color: 'var(--text-secondary)' }}>
-                고급 화면의 인물 카드에서 그 인물의 목소리를 지정한 뒤 다시 만들어 주세요.
+                위에 적힌 인물의 카드에서 목소리를 지정한 뒤 다시 만들어 주세요. 이미 지정한 인물은 그대로 쓰입니다.
               </span>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
                 {/* 목소리를 지정하기 전에는 다시 눌러도 같은 자리에서 막힌다 — '다시 시도' 라고 하지 않는다. */}

@@ -342,6 +342,50 @@ export function multiSpeakerPreflight(
   return out
 }
 
+/**
+ * 파이썬이 준 불투명 지문(`spk_` + sha256(id)[:12])이 **어느 인물**인지 찾는다.
+ *
+ * 파이썬은 이름을 되돌릴 수 없는 지문만 보낸다(비민감 payload 규칙). 화면은 자기가 아는 인물 id 로
+ * 같은 지문을 만들어 대조한다 — 맞는 것이 있으면 그 인물이다. 없으면 null(모르는 채로 둔다).
+ */
+export function speakerIdForOpaqueRef(
+  opaque: string | undefined, knownIds: readonly string[], sha256Hex: (text: string) => string,
+): string | null {
+  if (!opaque || !/^spk_[0-9a-f]{12}$/.test(opaque)) return null
+  for (const id of knownIds) {
+    if (`spk_${sha256Hex(id).slice(0, 12)}` === opaque) return id
+  }
+  return null
+}
+
+/**
+ * 화자 차단 오류를 **사람 말**로 — 가능하면 **누구인지** 붙여서.
+ *
+ * ★2026-09-17 실사용: 대본에 인물이 셋인데 한 명만 목소리를 지정하고 만들기를 눌렀다. 화면은
+ *   "이 인물의 목소리가 준비되지 않았습니다" 라고만 해서 사용자는 방금 지정한 사람 얘기인 줄 알았다.
+ *   화면 검사가 만든 문구에는 "(2번 대사: 인물b, 3번 대사: 인물c)" 가 붙어 있었는데 오류 카드가
+ *   그것을 고정 문장으로 덮어 이름이 사라졐다. 규칙: **이미 사람 말이면 그대로 쓴다.** 코드만
+ *   왔으면(파이썬이 막은 경우) 지문으로 인물을 찾아 이름을 붙인다.
+ */
+export function speakerBlockNotice(input: {
+  code: string
+  error: string | null | undefined
+  speakerRef?: string
+  knownIds: readonly string[]
+  labelOf: (id: string) => string
+  sha256Hex: (text: string) => string
+}): { headline: string; who: string | null } | null {
+  const base = (SPEAKER_PREFLIGHT_MESSAGE as Record<string, string>)[input.code]
+  if (!base) return null
+  const raw = (input.error || '').trim()
+  const isBareCode = !raw || /^SPEAKER_[A-Z_]+$/.test(raw)
+  if (!isBareCode) return { headline: raw, who: null }          // 화면 검사가 만든 문구 — 위치가 붙어 있다
+  const id = speakerIdForOpaqueRef(input.speakerRef, input.knownIds, input.sha256Hex)
+  if (!id) return { headline: base, who: null }
+  const label = input.labelOf(id) || id
+  return { headline: `${base} (인물: ${label})`, who: label }
+}
+
 /** 사용자 문구. 내부 코드를 내지 않고 인물 카드 위치를 말한다. */
 export const SPEAKER_PREFLIGHT_MESSAGE = {
   SPEAKER_NOT_REGISTERED: '이 인물의 목소리가 준비되지 않았습니다. 인물 카드에서 목소리를 지정해 주세요.',
