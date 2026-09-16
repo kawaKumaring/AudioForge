@@ -107,6 +107,23 @@ try {
   ok(!s.readyBadge, '**그때 "참조 준비 완료" 라고 말하지 않는다**')
   ok(!s.confirmedLabel, '**"✓ 확정됨" 이라고도 말하지 않는다** — 눌러야 할 단추를 누른 것처럼 보이면 안 된다')
 
+  // ── 다시 분석돼도 스스로 준비를 끝낸다 ─────────────────────────────────
+  // 예전에는 자동 준비가 **파일당 한 번**뿐이라, 분석이 다시 돌면 아무도 끝내지 않고
+  // '준비 중' 에 영영 머물렀다. 그때 시작 단추는 계속 막히는데 화면에는 길이 안내만 있어
+  // 사용자는 목소리가 준비되는 줄 알고 기다리게 된다(실사용 보고).
+  await win.evaluate(() => window.__afStore.setState({ ttsRefTargetSec: 9 }))
+  let again = false
+  for (let i = 0; i < 20 && !again; i++) {
+    await sleep(3000)
+    again = await win.evaluate(() => window.__afStore.getState().ttsRefReady)
+  }
+  ok(again, '분석이 다시 돌아도 **스스로** 준비를 끝낸다 — 준비 중에 멈추지 않는다')
+  const after = await win.evaluate(() => {
+    const st = window.__afStore.getState()
+    return { phase: st.ttsRefPhase, msg: (st.ttsRefMessage || '').slice(0, 30) }
+  })
+  ok(after.phase !== 'preparing', '끝나지 않는 "준비 중" 으로 남지 않는다', JSON.stringify(after))
+
   // 막힌 사유는 참고 사항이 아니라 **할 일**이어야 한다.
   ok(s.reason.includes('확정'),
     '막힌 사유가 **할 일**을 말한다 — 길이 안내만 적어 두지 않는다', `"${s.reason.trim().slice(0, 40)}"`)

@@ -240,6 +240,8 @@ export default function ReferenceRegionPanel({
   const say = useCallback((expert: string, plain: string) => (plainRef.current ? plain : expert), [])
   const [fileUrl, setFileUrl] = useState<string | null>(null)
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
+  // 분석 결과가 새로 올 때마다 1 씩 는다. 자동 확정을 **이 분석 한 건당 한 번**으로 묶는 열쇠다.
+  const analysisSeq = useRef(0)
   // 이 패널의 길이 정책 = 마지막 분석 응답의 policy(없으면 예전 표시로 폴백). ref 는 옛 closure(runAnalyze/confirm)용.
   const policy = policyFromAnalysis(analysis)
   const policyRef = useRef<ReferencePolicySummary>(policy)
@@ -304,6 +306,7 @@ export default function ReferenceRegionPanel({
       if (!a || typeof a.duration_sec !== 'number') {
         throw new Error(a?.error_message || a?.reason || '참조 분석 결과가 올바르지 않습니다')
       }
+      analysisSeq.current += 1
       setAnalysis(a)
       const committedThen = hasCommittedNow()   // 결과가 도착한 지금의 사용 중 상태
       const cNow = committedRef.current
@@ -645,7 +648,14 @@ export default function ReferenceRegionPanel({
   }, [])
   useEffect(() => {
     if (!autoConfirm || !path) return
-    const key = `${clipKey}\u0000${path}`
+    // ★열쇠에 **분석 번호**를 넣는다(2026-09-16 사용자 보고: "불러왔으면 셋팅이 다 되어 있어야 하는데 꼬였다").
+    //   예전 열쇠는 (목소리, 파일) 뿐이라 **파일당 딱 한 번**만 자동 확정했다. 그래서 같은 패널에서
+    //   분석이 다시 돌면(엔진·참조 목표 길이 변경 등) 확정본이 없는데도 자동 확정을 건너뛰어,
+    //   상태가 '준비 중' 에 그대로 머물고 **아무도 끝내지 않았다** — 시작 단추는 계속 막히는데
+    //   화면에는 길이 안내만 있어 무엇을 해야 하는지 알 수 없었다.
+    //   분석 한 건당 한 번으로 묶으면 같은 분석을 두 번 확정하지 않으면서(무한 확정 없음)
+    //   새 분석에는 다시 기회가 간다.
+    const key = `${clipKey}\u0000${path}\u0000${analysisSeq.current}`
     if (hasCommitted) { settleAuto(key); return }        // 이미 쓰고 있는 구간이 있다 → 준비는 끝난 것
     if (analyzeError) { settleAuto(key); return }        // 분석 실패 — 사유는 이미 상위로 올렸다
     if (!analysis) return                                 // 아직 분석 중이다. **종료가 아니다.**
@@ -653,7 +663,15 @@ export default function ReferenceRegionPanel({
     autoConfirmedKey.current = key
     if (!analysis.needs_region) { settleAuto(key); return }   // 원본을 그대로 쓸 수 있다/못 쓴다 — 분석이 이미 판정했다
     const r = analysis.recommend
-    if (!r || !r.ok) { settleAuto(key); return }              // 추천이 없으면 임의로 고르지 않는다
+    if (!r || !r.ok) {
+      // 추천이 없으면 임의로 고르지 않는다. 다만 **'준비 중' 으로 남겨 두지 않는다** —
+      // 남겨 두면 끝나지 않는 상태가 되고, 사용자는 목소리가 준비되는 줄 알고 기다리게 된다.
+      if (!hasCommittedNow()) {
+        onStateRef.current({ phase: 'needs_region', clip: '', region: null, message: ACTION_CONFIRM })
+      }
+      settleAuto(key)
+      return
+    }
     void confirmRegion(r.start_sec, clampDuration(policyRef.current, analysis.duration_sec, r.dur_sec))
       .finally(() => settleAuto(key))
     // eslint-disable-next-line react-hooks/exhaustive-deps
