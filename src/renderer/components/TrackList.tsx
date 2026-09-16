@@ -496,6 +496,23 @@ export default function TrackList() {
                   className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 12px' }}>닫기</button>
               </div>
             </>
+          ) : speakerBlock ? (
+            // 화자 참조 차단은 **여기서도** 사람 말로 바꾼다.
+            // ★예전에는 이 안내를 '취소 실패' 갈래 안에서만 썼다. 그래서 파이썬이 막은 경우
+            //   (SpeakerReferenceError 는 message 없이 던져 **코드가 곧 문구**가 된다)
+            //   화면에 'SPEAKER_NOT_REGISTERED' 가 그대로 찍혔다.
+            <>
+              <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--rose)' }}>{speakerBlock}</span>
+              <span data-testid="speaker-block-detail"
+                style={{ fontSize: 12, fontWeight: 400, color: 'var(--text-secondary)' }}>
+                고급 화면의 인물 카드에서 그 인물의 목소리를 지정한 뒤 다시 만들어 주세요.
+              </span>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {/* 목소리를 지정하기 전에는 다시 눌러도 같은 자리에서 막힌다 — '다시 시도' 라고 하지 않는다. */}
+                <button onClick={() => clearError()}
+                  className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 12px' }}>닫기</button>
+              </div>
+            </>
           ) : (
             <>
               <span style={{ fontSize: 12, fontWeight: 500, color: 'var(--rose)' }}>{error}</span>
