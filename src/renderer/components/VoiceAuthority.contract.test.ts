@@ -38,6 +38,9 @@ test('내부 권위 하나 — 카드 표시·준비·전송·판정이 같은 �
   assert.ok(SHELL.includes('const speakerReadiness = readinessFromSlots({'))
   assert.ok(SHELL.includes('speakerSlots: ttsSpeakerRefState'))
   const PB = codeOf(read('./ProcessButton.tsx'))
-  assert.ok(PB.includes('for (const [id, slot] of Object.entries(ttsSpeakerRefState))'), '전송도 같은 슬롯')
+  assert.ok(PB.includes('speakerTransmission(ttsSpeakerRefState)'), '전송도 같은 슬롯·같은 규칙')
+  const SR = codeOf(read('../../shared/speakerReference.ts'))
+  assert.ok(SR.includes('speakerTransmission(input.speakerSlots).registered'),
+    '판정도 전송과 같은 함수에서 파생된다')
   assert.ok(PB.includes('readinessFromSlots({'), 'preflight 도 같은 함수')
 })

@@ -2,7 +2,7 @@ import React from 'react'
 import { motion } from 'framer-motion'
 import { useAppStore } from '@/stores/app.store'
 import { gateSpeakerEmotionRefs } from '../../shared/speakerEmotionGate'
-import { readinessFromSlots, multiSpeakerPreflight, speakerPreflightMessage } from '../../shared/speakerReference'
+import { readinessFromSlots, multiSpeakerPreflight, speakerPreflightMessage, speakerTransmission } from '../../shared/speakerReference'
 import { validateMarkers, formatSplitMarkerError } from '../../shared/splitMarkers'
 import { ALL_EMOTIONS, planEmotionRefs } from '@/lib/emotions'
 import { useClipRecovery } from '@/hooks/useClipRecovery'
@@ -60,13 +60,11 @@ export default function ProcessButton() {
   // 판정은 Python 이 최종 권위다 — 여기서 준비되지 않은 화자를 걸러 내지 않는다. 걸러 내면
   // 등록했지만 준비되지 않은 화자가 '미등록' 으로 보여 잘못된 오류가 나간다.
   const { speakerRefsToSend, speakerSources, speakerLabels } = React.useMemo(() => {
-    const speakerRefsToSend: Record<string, string> = {}
-    const speakerSources: Record<string, string> = {}
+    // ★보내는 값은 **화면 판정과 같은 함수**에서 나온다(speakerTransmission).
+    //   따로 쓰면 어긋나고, 어긋나면 화면은 통과시키고 파이썬이 내부 코드로 막는다.
+    const { sources: speakerSources, refs: speakerRefsToSend } = speakerTransmission(ttsSpeakerRefState)
     const speakerLabels: Record<string, string> = {}
-    for (const [id, slot] of Object.entries(ttsSpeakerRefState)) {
-      if (slot?.source) speakerSources[id] = slot.source
-      const effective = slot?.ready ? (slot.clip || slot.source) : ''
-      if (effective) speakerRefsToSend[id] = effective
+    for (const id of Object.keys(ttsSpeakerRefState)) {
       const label = ttsSpeakerLabels[id]
       if (label) speakerLabels[id] = label
     }

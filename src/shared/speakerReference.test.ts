@@ -11,7 +11,7 @@ import { fileURLToPath } from 'node:url'
 import {
   readinessFromSlots, multiSpeakerPreflight, speakerPreflightMessage, SPEAKER_PREFLIGHT_MESSAGE,
   REFERENCE_SOURCES, SPEAKER_REFERENCE_FAILURES, blockedDecisions,
-  resolveReferenceDecision, sharedReferenceGroups, speakerEmotionKey,
+  resolveReferenceDecision, sharedReferenceGroups, speakerEmotionKey, speakerTransmission,
 } from './speakerReference.ts'
 import type { ReferenceReadiness } from './speakerReference.ts'
 
@@ -133,7 +133,7 @@ test('경로를 다루지 않는다', () => {
 test('readinessFromSlots: 카드·config·preflight 가 같은 표를 본다', () => {
   const r = readinessFromSlots({
     defaultReady: true,
-    speakerSlots: { a: { ready: true }, b: { ready: false } },
+    speakerSlots: { a: { ready: true, source: 'C:/a.wav' }, b: { ready: false, source: 'C:/b.wav' } },
     emotionSlots: { happy: { ready: true } },
     speakerEmotionRefs: { ['a' + String.fromCharCode(31) + 'happy']: 'C:/x.wav', ['b' + String.fromCharCode(31) + 'sad']: '' },
   })
@@ -144,7 +144,9 @@ test('readinessFromSlots: 카드·config·preflight 가 같은 표를 본다', (
 })
 
 test('multiSpeakerPreflight: 미등록·미준비 인물은 첫 발화 번호와 함께 막히고, 준비된 인물·기본 인물은 통과', () => {
-  const r = readinessFromSlots({ defaultReady: true, speakerSlots: { a: { ready: true }, b: { ready: false } }, emotionSlots: {}, speakerEmotionRefs: {} })
+  const r = readinessFromSlots({ defaultReady: true,
+    speakerSlots: { a: { ready: true, source: 'C:/a.wav' }, b: { ready: false, source: 'C:/b.wav' } },
+    emotionSlots: {}, speakerEmotionRefs: {} })
   const segs = [
     { speakerId: 'a', emotionId: null }, { speakerId: null, emotionId: 'happy' },
     { speakerId: 'b', emotionId: null }, { speakerId: 'zed', emotionId: 'sad' }, { speakerId: 'b', emotionId: 'sad' },
@@ -155,10 +157,10 @@ test('multiSpeakerPreflight: 미등록·미준비 인물은 첫 발화 번호와
     { speakerId: 'zed', code: 'SPEAKER_NOT_REGISTERED', firstSegmentIndex: 3 },
   ])
   // 전부 준비되면 비어 있다 — 다른 인물·전역 기본으로 대체하는 경로가 없다.
-  const ok = readinessFromSlots({ defaultReady: true, speakerSlots: { a: { ready: true }, b: { ready: true }, zed: { ready: true } }, emotionSlots: {}, speakerEmotionRefs: {} })
+  const ok = readinessFromSlots({ defaultReady: true, speakerSlots: { a: { ready: true, source: 'C:/a.wav' }, b: { ready: true, source: 'C:/b.wav' }, zed: { ready: true, source: 'C:/z.wav' } }, emotionSlots: {}, speakerEmotionRefs: {} })
   assert.deepEqual(multiSpeakerPreflight(segs, ok), [])
   // 기본 참조가 없어도 명시 화자 판정은 그것에 기대지 않는다(기본 인물 발화만 막힌다: 별도 코드).
-  const noDefault = readinessFromSlots({ defaultReady: false, speakerSlots: { a: { ready: true } }, emotionSlots: {}, speakerEmotionRefs: {} })
+  const noDefault = readinessFromSlots({ defaultReady: false, speakerSlots: { a: { ready: true, source: 'C:/a.wav' } }, emotionSlots: {}, speakerEmotionRefs: {} })
   assert.deepEqual(multiSpeakerPreflight([{ speakerId: 'a', emotionId: null }], noDefault), [])
 })
 
@@ -167,4 +169,46 @@ test('speakerPreflightMessage: 내부 코드 없이 인물 카드 위치를 말�
   assert.equal(m, SPEAKER_PREFLIGHT_MESSAGE.SPEAKER_NOT_REGISTERED + ' (3번 대사: 영희)')
   assert.equal(/SPEAKER_|reference|clip|SHA/.test(m), false)
   assert.equal(speakerPreflightMessage([], () => ''), '')
+})
+
+// ── 전송과 판정의 단일 규칙 ────────────────────────────────────────────────
+// 실사용 보고(2026-09-16): 화면에 'SPEAKER_NOT_REGISTERED' 가 그대로 떴다.
+// 화면은 '슬롯이 있으면 등록' 으로, 전송은 'source 가 있어야 넣음' 으로 각자 판단하고 있었다.
+// 그 틈이 벌어지면 화면은 통과시키고 파이썬이 막는다 — 사용자는 내부 코드만 본다.
+
+test('보내는 값과 등록 판정이 같은 함수에서 나온다', () => {
+  const r = speakerTransmission({
+    a: { ready: true, source: 'C:/a.wav', clip: 'C:/a-clip.wav' },
+    b: { ready: false, source: 'C:/b.wav', clip: '' },
+  })
+  assert.deepEqual(r.sources, { a: 'C:/a.wav', b: 'C:/b.wav' }, '등록 사실은 준비와 무관하다')
+  assert.deepEqual(r.refs, { a: 'C:/a-clip.wav' }, '합성에 쓸 경로는 준비된 것만')
+  assert.deepEqual(r.registered.sort(), ['a', 'b'], '파이썬과 같은 식 — sources ∪ refs')
+})
+
+test('준비됐다고 표시돼도 보낼 것이 없으면 등록으로 치지 않는다', () => {
+  // ★이 한 줄이 이번 결함의 핵심이다. 예전에는 슬롯이 있다는 이유만으로 통과시켰고,
+  //   정작 보내는 config 에는 아무것도 없어 파이썬이 SPEAKER_NOT_REGISTERED 로 막았다.
+  const r = speakerTransmission({ ghost: { ready: true, source: '', clip: '' } })
+  assert.deepEqual(r.sources, {})
+  assert.deepEqual(r.refs, {})
+  assert.deepEqual(r.registered, [], '보낼 것이 없으면 등록이 아니다')
+
+  const readiness = readinessFromSlots({
+    defaultReady: false, speakerSlots: { ghost: { ready: true, source: '', clip: '' } },
+    emotionSlots: {}, speakerEmotionRefs: {},
+  })
+  assert.deepEqual(readiness.registeredSpeakers, [], '화면 판정도 같은 결론을 낸다')
+  const blocks = multiSpeakerPreflight([{ speakerId: 'ghost', emotionId: null }], readiness)
+  assert.deepEqual(blocks, [{ speakerId: 'ghost', code: 'SPEAKER_NOT_REGISTERED', firstSegmentIndex: 0 }],
+    '파이썬까지 가기 전에 화면이 사람 말로 막는다')
+})
+
+test('준비만 안 된 인물은 여전히 "등록됨" 이다 — 미등록과 구분한다', () => {
+  const readiness = readinessFromSlots({
+    defaultReady: false, speakerSlots: { b: { ready: false, source: 'C:/b.wav' } },
+    emotionSlots: {}, speakerEmotionRefs: {},
+  })
+  const blocks = multiSpeakerPreflight([{ speakerId: 'b', emotionId: null }], readiness)
+  assert.equal(blocks[0].code, 'SPEAKER_REFERENCE_NOT_READY')
 })

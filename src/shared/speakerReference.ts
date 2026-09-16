@@ -261,16 +261,52 @@ export function showRecommendedBadge(
 
 export interface ReadySlot { ready: boolean }
 
+/** 인물 슬롯 — 준비 상태뿐 아니라 **실제로 보낼 경로**까지 들고 있다. */
+export interface SpeakerSlot extends ReadySlot { source?: string; clip?: string }
+
+/**
+ * 이 슬롯들에서 **파이썬으로 실제 나가는 것**과 **등록된 것으로 볼 인물**을 함께 낸다.
+ *
+ * ★왜 한 함수인가(2026-09-16 실사용 보고): 예전에는 두 규칙이 따로 있었다.
+ *   · 화면 판정 — 슬롯이 **있기만 하면** 등록으로 봤다(`Object.keys`).
+ *   · 전송 — `source` 가 있어야 넣었고, 참조는 준비됨일 때만 넣었다.
+ *   그래서 `source` 가 빈 슬롯이 하나라도 생기면 **화면은 통과시키고 파이썬이 막는다.**
+ *   파이썬의 화자 오류는 문구 없이 던져 코드가 곧 문구가 되므로, 사용자에게는
+ *   'SPEAKER_NOT_REGISTERED' 라는 내부 코드만 보인다. 규칙을 하나로 두어 그 틈을 없앤다.
+ *
+ * 파이썬의 등록 판정과 같은 식이다: 보낸 `sources` 와 `refs` 의 합집합.
+ */
+export function speakerTransmission(slots: Readonly<Record<string, SpeakerSlot>> | undefined): {
+  sources: Record<string, string>
+  refs: Record<string, string>
+  registered: string[]
+} {
+  const sources: Record<string, string> = {}
+  const refs: Record<string, string> = {}
+  for (const [id, slot] of Object.entries(slots || {})) {
+    if (!id) continue
+    const source = String(slot?.source ?? '')
+    if (source) sources[id] = source
+    // 준비되지 않았으면 합성에 쓸 경로가 없다 — 등록 사실(source)만 남는다.
+    const effective = slot?.ready ? (String(slot?.clip ?? '') || source) : ''
+    if (effective) refs[id] = effective
+  }
+  const registered = [...new Set([...Object.keys(sources), ...Object.keys(refs)])]
+  return { sources, refs, registered }
+}
+
 export function readinessFromSlots(input: {
   defaultReady: boolean
-  speakerSlots: Readonly<Record<string, ReadySlot>>
+  speakerSlots: Readonly<Record<string, SpeakerSlot>>
   emotionSlots: Readonly<Record<string, ReadySlot>>
   /** 생성으로 실제 나가는 (화자, 감정) 참조만(게이트 통과분). */
   speakerEmotionRefs: Readonly<Record<string, string>>
 }): ReferenceReadiness {
   return {
     defaultReady: !!input.defaultReady,
-    registeredSpeakers: Object.keys(input.speakerSlots),
+    // ★'슬롯이 있으면 등록' 이 아니다. **실제로 나가는 것**만 등록으로 본다 —
+    //   그래야 화면이 막는 자리와 파이썬이 막는 자리가 같아진다.
+    registeredSpeakers: speakerTransmission(input.speakerSlots).registered,
     speakerReady: Object.fromEntries(Object.entries(input.speakerSlots).map(([id, s]) => [id, !!s.ready])),
     speakerEmotionReady: Object.fromEntries(
       Object.entries(input.speakerEmotionRefs).filter(([, p]) => !!p).map(([k]) => [k, true])),
