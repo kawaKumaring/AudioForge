@@ -298,7 +298,7 @@ try {
   await sleep(600)
   const goneAway = await panel()
   ok(!goneAway.present, '모드를 바꾸면 분석 패널이 사라진다')
-  await win.evaluate(() => window.__afStore.getState().setMode('tts'); window.__afStore.getState().setSynthesisTab('advanced'))
+  await win.evaluate(() => { window.__afStore.getState().setMode('tts'); window.__afStore.getState().setSynthesisTab('advanced') })
   await win.waitForSelector('section[aria-label="대사"] textarea', { timeout: 30000 })
   await setText(MULTI)
   const revisit = await waitReady()
