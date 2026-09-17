@@ -57,13 +57,20 @@ if (process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA) {
 const USER_DATA_CHANNEL = channelForVersion(currentBuildInfo().version)
 const USER_DATA_DIR_NAME = userDataDirNameFor(USER_DATA_CHANNEL)
 let userDataSeed: SeedResult | null = null
-if (!(process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA) && USER_DATA_DIR_NAME !== USER_DATA_DIR_STABLE) {
-  const base = (process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA_BASE)
-    ? process.env.AF_E2E_USER_DATA_BASE : dirname(app.getPath('userData'))
-  const stableDir = join(base, USER_DATA_DIR_STABLE)
-  const devDir = join(base, USER_DATA_DIR_NAME)
-  try { userDataSeed = seedDevUserData({ from: stableDir, to: devDir }) } catch { userDataSeed = null }
-  try { app.setPath('userData', devDir) } catch { /* 실패하면 기본 폴더 그대로 — 아래 boot 기록에 실제 이름이 남는다 */ }
+if (!(process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA)) {
+  // 검사가 부모 폴더를 준 경우에는 **정식 채널도** 그 아래를 쓴다. 그러지 않으면 정식 판을 확인하는 검사가
+  // 실제 사용자 폴더에 로그를 쓰게 된다 — 검사는 사용자 자산을 건드리지 않는다.
+  const e2eBase = (process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA_BASE)
+    ? process.env.AF_E2E_USER_DATA_BASE : null
+  const base = e2eBase ?? dirname(app.getPath('userData'))
+  const targetDir = join(base, USER_DATA_DIR_NAME)
+  if (USER_DATA_DIR_NAME !== USER_DATA_DIR_STABLE) {
+    try { userDataSeed = seedDevUserData({ from: join(base, USER_DATA_DIR_STABLE), to: targetDir }) } catch { userDataSeed = null }
+    try { app.setPath('userData', targetDir) } catch { /* 실패하면 기본 폴더 그대로 — boot 기록에 실제 이름이 남는다 */ }
+  } else if (e2eBase) {
+    // 정식 채널은 **옮기는 것이 없다**(복사도 없다). 검사 격리를 위해 자리만 바꾼다.
+    try { app.setPath('userData', targetDir) } catch { /* 같음 */ }
+  }
 }
 
 // ── 앱 로그 파일 — <userData>/logs/audioforge-<날짜>.log ─────────────────────────
