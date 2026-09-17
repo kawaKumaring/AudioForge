@@ -48,6 +48,9 @@ function appPython() {
 }
 
 // ── 앱을 띄우지 않는 확인 ────────────────────────────────────────────────
+// 검사 스크립트가 읽히는가 — 가장 먼저, 1~3초. v1.11.0 병합 직전에 e2e 하나가 문법 오류로 0.1초에
+// 실패했고, 그 오류는 두 판 동안(GPU 단계를 돌리지 않아) 숨어 있었다. 돌리지 않은 검사는 있는 것이 아니다.
+run('검사 스크립트 문법(node --check)', 'node', [path.join('scripts', 'check-syntax.mjs')])
 run('타입 검사(renderer)', 'npx', ['tsc', '--noEmit', '-p', 'tsconfig.web.json'])
 run('타입 검사(main/shared)', 'npx', ['tsc', '--noEmit', '-p', 'tsconfig.node.json'])
 run('단위·계약 테스트', 'node', ['--test', 'src/**/*.test.ts'])
@@ -102,9 +105,12 @@ if (WITH_APP_UI) {
   run('실제 앱 · 채널별 데이터 폴더(GPU 없음)', 'node',
     [path.join('test', 'e2e', 'user-data-channel.e2e.mjs')])
 } else {
+  // 건너뛴 것은 **전부** 적는다 — 셋만 적혀 있던 동안 여섯 단계가 요약에서 사라져 있었다(2026-09-17 실측).
   skip('실제 앱 · UI 경로', '--app-ui 를 주면 함께 확인한다(GPU 안 씀)')
-  skip('실제 앱 · 복원 중 선택 변경', '같은 이유')
-  skip('실제 앱 · 재생 음량 유지', '같은 이유')
+  for (const n of ['복원 중 선택 변경', '재생 음량 유지', '목소리 준비 표시 일치', '일반·고급 목소리 격리',
+    '이전 작업 되살리기 알림', '인물 차단 안내', '로그 파일·진단 묶음', '채널별 데이터 폴더']) {
+    skip(`실제 앱 · ${n}`, '같은 이유')
+  }
 }
 if (WITH_APP) {
   // ★ 이름을 사실대로 적는다. `synthesize.e2e.mjs` 는 합성을 **시작한 뒤 취소**한다 —
