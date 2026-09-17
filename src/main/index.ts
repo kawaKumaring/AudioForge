@@ -13,6 +13,7 @@ import { registerDiagnosticsIpc } from './ipc/diagnostics.ipc'
 import { createAppLog, mirrorConsole, setAppLog, watchUncaught, LOG_DIR_NAME } from './services/app-log'
 import { seedDevUserData, userDataDirNameFor, USER_DATA_DIR_STABLE, type SeedResult } from './services/user-data-channel'
 import { channelForVersion } from '../shared/buildMetadata'
+import { readSettingsFile, readSettingsMeta, SETTINGS_FORMAT_VERSION } from './services/settings-store'
 import { basename, dirname } from 'path'
 import { disposeAnalysisIpc, registerAnalysisIpc } from './ipc/analysis.ipc'
 import { currentPythonPath } from './ipc/audio.ipc'
@@ -303,6 +304,16 @@ if (!gotLock) {
     } catch { APP_LOG.info('boot', 'AudioForge 시작(판 정보 읽기 실패)') }
     // 어느 데이터 폴더를 쓰는지 — 이름만(절대 경로 없음). 처음 복사했으면 무엇을 옮겼는지도.
     APP_LOG.info('boot', `데이터 폴더 ${basename(app.getPath('userData'))} (채널 ${USER_DATA_CHANNEL ?? '모름'})`)
+    // 설정 파일의 판 — 어느 앱이 언제 썼는지. 아는 판보다 높으면 더 새 앱이 쓴 것이다(내리지 않는다).
+    try {
+      const got = readSettingsFile(join(app.getPath('userData'), 'settings.json'))
+      if (got.kind === 'ok') {
+        const m = readSettingsMeta(got.settings)
+        const line = `설정 판 ${m.formatVersion}(아는 판 ${SETTINGS_FORMAT_VERSION}) · 마지막 쓴 앱 ${m.lastWrittenBy ?? '(번호 이전)'} · ${m.lastWrittenAt ?? '(모름)'}`
+        if (m.formatVersion > SETTINGS_FORMAT_VERSION) APP_LOG.warn('boot', line + ' — 더 새 앱이 쓴 파일이다')
+        else APP_LOG.info('boot', line)
+      } else APP_LOG.info('boot', `설정 파일 ${got.kind === 'absent' ? '없음(첫 실행)' : '손상 — 덮어쓰지 않는다: ' + got.reason}`)
+    } catch { /* 기록 실패는 기동을 막지 않는다 */ }
     if (userDataSeed?.seeded) {
       APP_LOG.info('boot', `개발선 폴더 첫 초기화 — 정식 폴더에서 복사 ${userDataSeed.copied.join(', ') || '(없음)'}; 건너뜀 ${userDataSeed.skipped.join(', ') || '(없음)'}`)
     } else if (userDataSeed) {

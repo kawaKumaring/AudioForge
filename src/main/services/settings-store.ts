@@ -21,6 +21,75 @@ import {
 } from 'fs'
 import { dirname, join } from 'path'
 
+// ── 판 번호 ─────────────────────────────────────────────────────────────────
+// 설정 파일은 일곱 영역이 번호 없이 쌓여 있었다(2026-09-17 실측). 모양을 바꾸면 옛 파일이 조용히 깨지거나
+// 조용히 되살아난다. 그래서 파일에 `meta` 하나를 두고, 쓸 때마다 **어느 판이 언제 썼는지** 찍는다.
+//   · formatVersion — 이 파일 모양의 판. 모양을 바꾸는 사람은 번호를 올리고 MIGRATIONS 에 한 단계를 더한다.
+//   · lastWrittenBy / lastWrittenAt — 마지막으로 쓴 앱 판과 시각(진단용).
+// 규칙: 모르는 키는 **버리지 않는다.** 파일 판이 아는 판보다 높으면(더 새 앱이 썼다) 내리지 않고 그대로 둔다.
+export const SETTINGS_META_KEY = 'meta'
+export const SETTINGS_FORMAT_VERSION = 1
+
+export interface SettingsMeta {
+  formatVersion: number
+  lastWrittenBy: string | null
+  lastWrittenAt: string | null
+}
+
+/** 파일 안 meta 를 안전하게 읽는다. 없거나 깨졌으면 판 0(번호 이전 시대). */
+export function readSettingsMeta(settings: Record<string, unknown>): SettingsMeta {
+  const m = settings[SETTINGS_META_KEY]
+  const o = (m && typeof m === 'object' && !Array.isArray(m)) ? m as Record<string, unknown> : {}
+  const v = typeof o.formatVersion === 'number' && Number.isInteger(o.formatVersion) && o.formatVersion >= 0 ? o.formatVersion : 0
+  return {
+    formatVersion: v,
+    lastWrittenBy: typeof o.lastWrittenBy === 'string' ? o.lastWrittenBy : null,
+    lastWrittenAt: typeof o.lastWrittenAt === 'string' ? o.lastWrittenAt : null,
+  }
+}
+
+/**
+ * 판 n 의 설정을 판 n+1 로 올리는 단계들. 키는 **출발 판**. 각 단계는 새 객체를 돌려주고 모르는 키를 보존한다.
+ *   0 → 1: 번호 이전 시대의 파일. 데이터 모양은 그대로다 — 판 번호를 붙이는 것만이 변화다.
+ */
+const MIGRATIONS: Record<number, (s: Record<string, unknown>) => Record<string, unknown>> = {
+  0: (s) => ({ ...s }),
+}
+
+export interface MigrationResult {
+  settings: Record<string, unknown>
+  from: number
+  to: number
+  /** 파일이 아는 판보다 높다 — 더 새 앱이 썼다. 내리지 않았고 그대로 읽었다. */
+  newerThanKnown: boolean
+}
+
+/** 읽은 설정을 현재 판까지 올린다(메모리에서만). meta 는 건드리지 않는다 — 쓰는 쪽이 찍는다. */
+export function migrateSettings(settings: Record<string, unknown>): MigrationResult {
+  const from = readSettingsMeta(settings).formatVersion
+  if (from > SETTINGS_FORMAT_VERSION) return { settings: { ...settings }, from, to: from, newerThanKnown: true }
+  let cur = { ...settings }
+  for (let v = from; v < SETTINGS_FORMAT_VERSION; v++) {
+    const step = MIGRATIONS[v]
+    if (!step) throw new Error(`SETTINGS_MIGRATION_MISSING:${v}`)   // 번호만 올리고 단계를 안 쓴 것 — 개발 오류
+    cur = step(cur)
+  }
+  return { settings: cur, from, to: SETTINGS_FORMAT_VERSION, newerThanKnown: false }
+}
+
+/** 쓸 때 찍는 meta. 파일 판이 더 높으면 그 번호를 유지한다(내리지 않는다). */
+export function stampSettingsMeta(
+  settings: Record<string, unknown>, writtenBy: string | null, now: Date = new Date(),
+): Record<string, unknown> {
+  const prev = readSettingsMeta(settings)
+  const meta: SettingsMeta = {
+    formatVersion: Math.max(prev.formatVersion, SETTINGS_FORMAT_VERSION),
+    lastWrittenBy: writtenBy,
+    lastWrittenAt: now.toISOString(),
+  }
+  return { ...settings, [SETTINGS_META_KEY]: meta }
+}
+
 /** 설정 파일을 읽을 때 나올 수 있는 결과. 손상을 빈 설정과 구분한다. */
 export type SettingsReadResult =
   | { kind: 'ok'; settings: Record<string, unknown> }
@@ -63,17 +132,27 @@ export type SettingsWriteResult =
  *
  * `value === undefined` 는 그 키를 지우는 것이다(없는 키를 지우는 것도 성공이다).
  */
+export interface SetSettingsOptions {
+  /** meta.lastWrittenBy 에 찍을 앱 판. 모르면 null. */
+  writtenBy?: string | null
+  now?: () => Date
+}
+
 export function setSettingsKey(
-  path: string, key: string, value: unknown
+  path: string, key: string, value: unknown, opts: SetSettingsOptions = {},
 ): SettingsWriteResult {
+  if (key === SETTINGS_META_KEY) return { ok: false, code: 'SETTINGS_META_IS_OWNED_BY_STORE', preserved: true }
   const current = readSettingsFile(path)
   if (current.kind === 'corrupt') {
     return { ok: false, code: `SETTINGS_CORRUPT:${current.reason}`, preserved: true }
   }
-  const next: Record<string, unknown> =
-    current.kind === 'ok' ? { ...current.settings } : {}
+  // 읽은 파일을 현재 판까지 올린 뒤 키 하나를 바꾸고 meta 를 찍는다. 모르는 키는 그대로 실려 간다.
+  const base: Record<string, unknown> =
+    current.kind === 'ok' ? migrateSettings(current.settings).settings : {}
+  const next: Record<string, unknown> = { ...base }
   if (value === undefined) delete next[key]
   else next[key] = value
+  const stamped = stampSettingsMeta(next, opts.writtenBy ?? null, (opts.now ?? (() => new Date()))())
 
   const dir = dirname(path)
   // 임시본은 반드시 같은 폴더에 — 다른 볼륨이면 rename 이 원자적이지 않다.
@@ -82,7 +161,7 @@ export function setSettingsKey(
     mkdirSync(dir, { recursive: true })
     const fd = openSync(temp, 'w')
     try {
-      writeSync(fd, JSON.stringify(next, null, 2))
+      writeSync(fd, JSON.stringify(stamped, null, 2))
       fsyncSync(fd)          // 여기까지 왔으면 임시본 내용이 디스크에 있다
     } finally {
       closeSync(fd)

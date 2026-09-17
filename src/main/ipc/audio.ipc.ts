@@ -9,6 +9,7 @@ import {
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
 import { appLog, fileLabel } from '../services/app-log'
+import { currentBuildInfo } from './app-version.ipc'
 import { createSettlementGuard, createRunSettlement, createRunnerSlot } from '../services/run-settlement'
 import type { RunEnd, RunTerminal } from '../services/run-settlement'
 import { sendToWindow } from '../services/window-send'
@@ -34,7 +35,7 @@ import { TRANSCRIPT_EDIT_STORAGE_KEY } from '../../shared/transcriptEdit'
 import { DIALOGUE_EDIT_STORAGE_KEY } from '../../shared/dialogueEdit'
 import { registerTranscriptIpc } from './transcript.ipc'
 import { registerLabIpc } from './lab.ipc'
-import { readSettingsFile, setSettingsKey } from '../services/settings-store'
+import { readSettingsFile, setSettingsKey, migrateSettings } from '../services/settings-store'
 import type { SidecarEnvelope } from '../../shared/sidecarEvents'
 // 타입만 가져온다 — 참조 라이브러리 모듈을 런타임에 끌어오지 않으므로 순환 의존이 생기지 않는다.
 import type { ReferencePreviewAdapter } from './reference-library.ipc'
@@ -88,12 +89,13 @@ function loadSettings(): Record<string, unknown> {
   const got = readSettingsFile(settingsFilePath())
   // 손상은 빈 설정과 다르다 — 여기서는 읽기 용도라 빈 것으로 보되, 쓰기 경로가
   // 손상본을 덮어쓰지 않는다(settings-store 가 막는다).
-  return got.kind === 'ok' ? got.settings : {}
+  // 읽은 것은 현재 판까지 올려서 준다(메모리에서만). 파일은 다음 쓰기 때 판이 찍힌다.
+  return got.kind === 'ok' ? migrateSettings(got.settings).settings : {}
 }
 // 원자 저장은 `services/settings-store` 가 소유한다(실패 시 기존 바이트 보존, 표적 테스트
 // 로 검증). 여기서는 결과를 그대로 돌려주고 실패를 성공으로 바꾸지 않는다.
 function saveSetting(key: string, value: unknown): { ok: boolean; code?: string } {
-  const res = setSettingsKey(settingsFilePath(), key, value)
+  const res = setSettingsKey(settingsFilePath(), key, value, { writtenBy: currentBuildInfo().version })
   if (!res.ok) console.log(`[AudioForge] 설정 저장 실패: ${res.code}`)
   return res.ok ? { ok: true } : { ok: false, code: res.code }
 }

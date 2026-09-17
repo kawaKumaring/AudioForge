@@ -18,6 +18,8 @@ import { join } from 'path'
 // node --test 가 이 파일을 곧바로 읽으므로 확장자를 붙인다(app.store 와 같은 이유).
 // @ts-ignore TS5097
 import { listLogFiles, logFileDate } from './app-log.ts'
+// @ts-ignore TS5097
+import { readSettingsMeta } from './settings-store.ts'
 
 export const BUNDLE_LOG_DAYS_DEFAULT = 3
 export const BUNDLE_DIR_PREFIX = 'AudioForge_진단_'
@@ -94,7 +96,13 @@ function settingsShapeLines(settingsPath: string): string[] {
   try { raw = readFileSync(settingsPath, 'utf-8') } catch { return ['설정 파일: 읽을 수 없음'] }
   let parsed: unknown
   try { parsed = JSON.parse(raw) } catch { return [`설정 파일: JSON 손상 (${Buffer.byteLength(raw)} 바이트)`] }
-  return [`설정 파일: ${Buffer.byteLength(raw)} 바이트 — 아래는 모양만(값은 적지 않는다)`, ...summarizeShape(parsed)]
+  const obj = (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed as Record<string, unknown> : {}
+  const meta = readSettingsMeta(obj)
+  return [
+    `설정 파일: ${Buffer.byteLength(raw)} 바이트 — 아래는 모양만(값은 적지 않는다)`,
+    `설정 판: ${meta.formatVersion} · 마지막 쓴 앱: ${meta.lastWrittenBy ?? '(번호 이전)'} · ${meta.lastWrittenAt ?? '(모름)'}`,
+    ...summarizeShape(parsed),
+  ]
 }
 
 /** 최근 `days` 일의 로그 파일 이름(오늘 포함). */
