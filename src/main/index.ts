@@ -8,7 +8,9 @@ import { createHash, randomUUID } from 'crypto'
 import { statSync } from 'fs'
 import { pathToFileURL } from 'url'
 import { registerAudioIpc } from './ipc/audio.ipc'
-import { registerAppVersionIpc } from './ipc/app-version.ipc'
+import { registerAppVersionIpc, currentBuildInfo } from './ipc/app-version.ipc'
+import { registerDiagnosticsIpc } from './ipc/diagnostics.ipc'
+import { createAppLog, mirrorConsole, setAppLog, watchUncaught, LOG_DIR_NAME } from './services/app-log'
 import { disposeAnalysisIpc, registerAnalysisIpc } from './ipc/analysis.ipc'
 import { currentPythonPath } from './ipc/audio.ipc'
 import { registerReferenceLibraryIpc } from './ipc/reference-library.ipc'
@@ -41,6 +43,15 @@ let samplerCache: SamplerCache | null = null
 if (process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA) {
   try { app.setPath('userData', process.env.AF_E2E_USER_DATA) } catch { /* noop */ }
 }
+
+// ── 앱 로그 파일 — <userData>/logs/audioforge-<날짜>.log ─────────────────────────
+// userData 가 정해진 직후, 다른 어떤 것보다 먼저 만든다. 그래야 기동 중 오류도 파일에 남는다.
+// console.warn/error 는 그대로 나가면서 파일에도 적히고(터미널·E2E 수집 유지), 잡히지 않은 예외는
+// monitor 로만 본다(Electron 의 오류 대화상자를 없애지 않는다). 대사·전사 본문·음원 경로는 적지 않는다.
+const APP_LOG = createAppLog({ dir: join(app.getPath('userData'), LOG_DIR_NAME) })
+setAppLog(APP_LOG)
+mirrorConsole(APP_LOG)
+watchUncaught(APP_LOG)
 
 // 개발 경로(`npm run dev`) 자동 검증용 디버깅 포트.
 // 사용자가 실제로 쓰는 실행은 `run.bat -> af-launch.mjs -> npm run dev` 이고, 그 경로에만
@@ -124,6 +135,8 @@ function createWindow(): void {
   wc.on('will-navigate', (e) => e.preventDefault())
 
   registerAppVersionIpc()
+  // 진단 묶음 — 로그 복사본 + 설정의 모양(값 없음). 시작 화면의 단추가 부른다.
+  registerDiagnosticsIpc(() => mainWindow, () => currentPythonPath())
   const previewAdapter = registerAudioIpc(mainWindow)
   // 입력 분석 — GPU 를 쓰지 않는 상주 CPU worker. audio.ipc 와 같은 인터프리터를 쓴다.
   registerAnalysisIpc({ pythonPath: currentPythonPath })
@@ -263,6 +276,10 @@ if (!gotLock) {
   })
 
   app.whenReady().then(() => {
+    try {
+      const b = currentBuildInfo()
+      APP_LOG.info('boot', `AudioForge v${b.version}${b.commit ? '+' + b.commit : ''} · electron ${process.versions.electron} · node ${process.versions.node} · ${process.platform} ${process.arch}`)
+    } catch { APP_LOG.info('boot', 'AudioForge 시작(판 정보 읽기 실패)') }
     protocol.handle('local-file', async (request) => {
       const raw = request.url.replace('local-file://', '')
       // 캐시 전용 형식(local-file://sampler/<64hex>) — 실제 경로는 여기서만 해석한다.
@@ -323,6 +340,7 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
 app.on('before-quit', () => {
   // 분석은 편집 보조일 뿐이므로 종료를 붙들지 않는다 — 대기 요청을 취소하고 프로세스를 닫는다.
   disposeAnalysisIpc()
+  APP_LOG.info('boot', '종료')
 })
 
 app.on('window-all-closed', () => {

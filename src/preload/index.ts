@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import type { AppBuildInfo } from '../shared/buildMetadata'
+import type { ExportDiagnosticsResult } from '../shared/diagnostics'
 import {
   ANALYSIS_CANCEL_CHANNEL, ANALYSIS_CHANNEL, ANALYSIS_PREWARM_CHANNEL,
 } from '../shared/inputAnalysis'
@@ -143,7 +144,9 @@ const api = {
     saveCorrectedTranscript: (dir: string, base: string, txt: string, srt: string | null) =>
       ipcRenderer.invoke('transcript:save-corrected', dir, base, txt, srt),
     // 앱 버전·빌드 정보 — 인자 없는 read-only 조회. 경로를 주고받지 않는다.
-    getBuildInfo: (): Promise<AppBuildInfo> => ipcRenderer.invoke('app:get-build-info')
+    getBuildInfo: (): Promise<AppBuildInfo> => ipcRenderer.invoke('app:get-build-info'),
+    // 진단 묶음 내보내기 — main 이 폴더를 묻고 만든다. 돌아오는 것은 묶음 폴더 **이름**과 로그 개수뿐.
+    exportDiagnostics: (): Promise<ExportDiagnosticsResult> => ipcRenderer.invoke('app:export-diagnostics')
   },
   // 참조 라이브러리 — renderer 는 논리 ID 만 다룬다. import 요청의 filePath 하나만 경로이고,
   // 어떤 응답에도 절대 경로가 들어오지 않는다(main 이 논리 메타데이터만 돌려준다).

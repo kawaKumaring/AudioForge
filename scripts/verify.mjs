@@ -95,6 +95,9 @@ if (WITH_APP_UI) {
   // 인물 목소리 차단이 내부 코드가 아니라 사람 말로 나오는가.
   run('실제 앱 · 인물 차단 안내(GPU 없음)', 'node',
     [path.join('test', 'e2e', 'speaker-block-notice.e2e.mjs')])
+  // 로그 파일이 남고, 진단 묶음이 값(대사·폴더) 없이 만들어지는가.
+  run('실제 앱 · 로그 파일·진단 묶음(GPU 없음)', 'node',
+    [path.join('test', 'e2e', 'diagnostics-export.e2e.mjs')])
 } else {
   skip('실제 앱 · UI 경로', '--app-ui 를 주면 함께 확인한다(GPU 안 씀)')
   skip('실제 앱 · 복원 중 선택 변경', '같은 이유')
