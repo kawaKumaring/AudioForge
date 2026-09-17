@@ -98,6 +98,9 @@ if (WITH_APP_UI) {
   // 로그 파일이 남고, 진단 묶음이 값(대사·폴더) 없이 만들어지는가.
   run('실제 앱 · 로그 파일·진단 묶음(GPU 없음)', 'node',
     [path.join('test', 'e2e', 'diagnostics-export.e2e.mjs')])
+  // 개발선이 자기 데이터 폴더(audio-forge-dev)를 쓰고, 정식 폴더는 읽기만 하는가.
+  run('실제 앱 · 채널별 데이터 폴더(GPU 없음)', 'node',
+    [path.join('test', 'e2e', 'user-data-channel.e2e.mjs')])
 } else {
   skip('실제 앱 · UI 경로', '--app-ui 를 주면 함께 확인한다(GPU 안 씀)')
   skip('실제 앱 · 복원 중 선택 변경', '같은 이유')

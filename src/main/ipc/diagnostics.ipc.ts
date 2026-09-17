@@ -1,6 +1,6 @@
 import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron'
 import { existsSync } from 'fs'
-import { join } from 'path'
+import { basename, join } from 'path'
 import { appLog, LOG_DIR_NAME } from '../services/app-log'
 import { buildDiagnosticsBundle } from '../services/diagnostics-bundle'
 import { currentBuildInfo } from './app-version.ipc'
@@ -41,6 +41,7 @@ export function registerDiagnosticsIpc(getWindow: () => BrowserWindow | null, ge
           platform: process.platform, arch: process.arch,
           electron: process.versions.electron, node: process.versions.node,
           pythonPresent: existsSync(getPythonPath()),
+          dataDirName: basename(userData),
         },
       })
       appLog()?.info('diagnostics', `진단 묶음 완료 name=${r.name} logs=${r.copiedLogs.length}`)

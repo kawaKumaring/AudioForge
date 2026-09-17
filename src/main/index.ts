@@ -11,6 +11,9 @@ import { registerAudioIpc } from './ipc/audio.ipc'
 import { registerAppVersionIpc, currentBuildInfo } from './ipc/app-version.ipc'
 import { registerDiagnosticsIpc } from './ipc/diagnostics.ipc'
 import { createAppLog, mirrorConsole, setAppLog, watchUncaught, LOG_DIR_NAME } from './services/app-log'
+import { seedDevUserData, userDataDirNameFor, USER_DATA_DIR_STABLE, type SeedResult } from './services/user-data-channel'
+import { channelForVersion } from '../shared/buildMetadata'
+import { basename, dirname } from 'path'
 import { disposeAnalysisIpc, registerAnalysisIpc } from './ipc/analysis.ipc'
 import { currentPythonPath } from './ipc/audio.ipc'
 import { registerReferenceLibraryIpc } from './ipc/reference-library.ipc'
@@ -42,6 +45,24 @@ let samplerCache: SamplerCache | null = null
 // production 실행에서는 이 분기가 동작하지 않는다.
 if (process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA) {
   try { app.setPath('userData', process.env.AF_E2E_USER_DATA) } catch { /* noop */ }
+}
+
+// ── 채널별 사용자 데이터 폴더 ─────────────────────────────────────────────────
+// 개발선(-dev)은 옆의 audio-forge-dev 를 쓴다. 정식·RC 는 바뀌는 것이 없다. 개발선 폴더가 처음이면
+// 정식 폴더의 앱 데이터만 한 번 복사한다(원본은 읽기만, Electron 캐시는 옮기지 않는다).
+// E2E 는 AF_E2E_USER_DATA(폴더 직접 지정)가 우선이고, AF_E2E_USER_DATA_BASE 는 이 분기를 검사할 때 부모를 바꾼다.
+// app.getVersion() 은 package.json 을 못 찾는 실행(electron out/main/index.js)에서 Electron 판을 돌려준다 —
+// 그래서 판의 권위는 currentBuildInfo()(pickAppVersion) 하나로 둔다.
+const USER_DATA_CHANNEL = channelForVersion(currentBuildInfo().version)
+const USER_DATA_DIR_NAME = userDataDirNameFor(USER_DATA_CHANNEL)
+let userDataSeed: SeedResult | null = null
+if (!(process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA) && USER_DATA_DIR_NAME !== USER_DATA_DIR_STABLE) {
+  const base = (process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA_BASE)
+    ? process.env.AF_E2E_USER_DATA_BASE : dirname(app.getPath('userData'))
+  const stableDir = join(base, USER_DATA_DIR_STABLE)
+  const devDir = join(base, USER_DATA_DIR_NAME)
+  try { userDataSeed = seedDevUserData({ from: stableDir, to: devDir }) } catch { userDataSeed = null }
+  try { app.setPath('userData', devDir) } catch { /* 실패하면 기본 폴더 그대로 — 아래 boot 기록에 실제 이름이 남는다 */ }
 }
 
 // ── 앱 로그 파일 — <userData>/logs/audioforge-<날짜>.log ─────────────────────────
@@ -280,6 +301,13 @@ if (!gotLock) {
       const b = currentBuildInfo()
       APP_LOG.info('boot', `AudioForge v${b.version}${b.commit ? '+' + b.commit : ''} · electron ${process.versions.electron} · node ${process.versions.node} · ${process.platform} ${process.arch}`)
     } catch { APP_LOG.info('boot', 'AudioForge 시작(판 정보 읽기 실패)') }
+    // 어느 데이터 폴더를 쓰는지 — 이름만(절대 경로 없음). 처음 복사했으면 무엇을 옮겼는지도.
+    APP_LOG.info('boot', `데이터 폴더 ${basename(app.getPath('userData'))} (채널 ${USER_DATA_CHANNEL ?? '모름'})`)
+    if (userDataSeed?.seeded) {
+      APP_LOG.info('boot', `개발선 폴더 첫 초기화 — 정식 폴더에서 복사 ${userDataSeed.copied.join(', ') || '(없음)'}; 건너뜀 ${userDataSeed.skipped.join(', ') || '(없음)'}`)
+    } else if (userDataSeed) {
+      APP_LOG.info('boot', `개발선 폴더 초기화 생략 — ${userDataSeed.reason === 'already_initialized' ? '이미 초기화됨' : userDataSeed.reason}`)
+    }
     protocol.handle('local-file', async (request) => {
       const raw = request.url.replace('local-file://', '')
       // 캐시 전용 형식(local-file://sampler/<64hex>) — 실제 경로는 여기서만 해석한다.

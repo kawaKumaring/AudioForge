@@ -33,6 +33,8 @@ export interface DiagnosticsRuntime {
   node?: string
   /** 앱 파이썬이 있는가만. 경로는 적지 않는다. */
   pythonPresent?: boolean
+  /** 사용자 데이터 폴더 **이름**(audio-forge / audio-forge-dev). 경로는 적지 않는다. */
+  dataDirName?: string
 }
 
 export interface DiagnosticsBundleInput {
@@ -131,6 +133,7 @@ export function buildDiagnosticsBundle(input: DiagnosticsBundleInput): Diagnosti
     `electron: ${r.electron ?? '(모름)'}`,
     `node: ${r.node ?? '(모름)'}`,
     `python: ${r.pythonPresent === undefined ? '(모름)' : r.pythonPresent ? '있음' : '없음'}`,
+    `data: ${r.dataDirName ?? '(모름)'}`,
     '',
     '[설정 모양]',
     ...settingsShapeLines(input.settingsPath),
