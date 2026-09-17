@@ -8,7 +8,13 @@ import { createHash, randomUUID } from 'crypto'
 import { statSync } from 'fs'
 import { pathToFileURL } from 'url'
 import { registerAudioIpc } from './ipc/audio.ipc'
-import { registerAppVersionIpc } from './ipc/app-version.ipc'
+import { registerAppVersionIpc, currentBuildInfo } from './ipc/app-version.ipc'
+import { registerDiagnosticsIpc } from './ipc/diagnostics.ipc'
+import { createAppLog, mirrorConsole, setAppLog, watchUncaught, LOG_DIR_NAME } from './services/app-log'
+import { seedDevUserData, userDataDirNameFor, USER_DATA_DIR_STABLE, type SeedResult } from './services/user-data-channel'
+import { channelForVersion } from '../shared/buildMetadata'
+import { readSettingsFile, readSettingsMeta, SETTINGS_FORMAT_VERSION } from './services/settings-store'
+import { basename, dirname } from 'path'
 import { disposeAnalysisIpc, registerAnalysisIpc } from './ipc/analysis.ipc'
 import { currentPythonPath } from './ipc/audio.ipc'
 import { registerReferenceLibraryIpc } from './ipc/reference-library.ipc'
@@ -41,6 +47,40 @@ let samplerCache: SamplerCache | null = null
 if (process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA) {
   try { app.setPath('userData', process.env.AF_E2E_USER_DATA) } catch { /* noop */ }
 }
+
+// ── 채널별 사용자 데이터 폴더 ─────────────────────────────────────────────────
+// 개발선(-dev)은 옆의 audio-forge-dev 를 쓴다. 정식·RC 는 바뀌는 것이 없다. 개발선 폴더가 처음이면
+// 정식 폴더의 앱 데이터만 한 번 복사한다(원본은 읽기만, Electron 캐시는 옮기지 않는다).
+// E2E 는 AF_E2E_USER_DATA(폴더 직접 지정)가 우선이고, AF_E2E_USER_DATA_BASE 는 이 분기를 검사할 때 부모를 바꾼다.
+// app.getVersion() 은 package.json 을 못 찾는 실행(electron out/main/index.js)에서 Electron 판을 돌려준다 —
+// 그래서 판의 권위는 currentBuildInfo()(pickAppVersion) 하나로 둔다.
+const USER_DATA_CHANNEL = channelForVersion(currentBuildInfo().version)
+const USER_DATA_DIR_NAME = userDataDirNameFor(USER_DATA_CHANNEL)
+let userDataSeed: SeedResult | null = null
+if (!(process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA)) {
+  // 검사가 부모 폴더를 준 경우에는 **정식 채널도** 그 아래를 쓴다. 그러지 않으면 정식 판을 확인하는 검사가
+  // 실제 사용자 폴더에 로그를 쓰게 된다 — 검사는 사용자 자산을 건드리지 않는다.
+  const e2eBase = (process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA_BASE)
+    ? process.env.AF_E2E_USER_DATA_BASE : null
+  const base = e2eBase ?? dirname(app.getPath('userData'))
+  const targetDir = join(base, USER_DATA_DIR_NAME)
+  if (USER_DATA_DIR_NAME !== USER_DATA_DIR_STABLE) {
+    try { userDataSeed = seedDevUserData({ from: join(base, USER_DATA_DIR_STABLE), to: targetDir }) } catch { userDataSeed = null }
+    try { app.setPath('userData', targetDir) } catch { /* 실패하면 기본 폴더 그대로 — boot 기록에 실제 이름이 남는다 */ }
+  } else if (e2eBase) {
+    // 정식 채널은 **옮기는 것이 없다**(복사도 없다). 검사 격리를 위해 자리만 바꾼다.
+    try { app.setPath('userData', targetDir) } catch { /* 같음 */ }
+  }
+}
+
+// ── 앱 로그 파일 — <userData>/logs/audioforge-<날짜>.log ─────────────────────────
+// userData 가 정해진 직후, 다른 어떤 것보다 먼저 만든다. 그래야 기동 중 오류도 파일에 남는다.
+// console.warn/error 는 그대로 나가면서 파일에도 적히고(터미널·E2E 수집 유지), 잡히지 않은 예외는
+// monitor 로만 본다(Electron 의 오류 대화상자를 없애지 않는다). 대사·전사 본문·음원 경로는 적지 않는다.
+const APP_LOG = createAppLog({ dir: join(app.getPath('userData'), LOG_DIR_NAME) })
+setAppLog(APP_LOG)
+mirrorConsole(APP_LOG)
+watchUncaught(APP_LOG)
 
 // 개발 경로(`npm run dev`) 자동 검증용 디버깅 포트.
 // 사용자가 실제로 쓰는 실행은 `run.bat -> af-launch.mjs -> npm run dev` 이고, 그 경로에만
@@ -124,6 +164,8 @@ function createWindow(): void {
   wc.on('will-navigate', (e) => e.preventDefault())
 
   registerAppVersionIpc()
+  // 진단 묶음 — 로그 복사본 + 설정의 모양(값 없음). 시작 화면의 단추가 부른다.
+  registerDiagnosticsIpc(() => mainWindow, () => currentPythonPath())
   const previewAdapter = registerAudioIpc(mainWindow)
   // 입력 분석 — GPU 를 쓰지 않는 상주 CPU worker. audio.ipc 와 같은 인터프리터를 쓴다.
   registerAnalysisIpc({ pythonPath: currentPythonPath })
@@ -263,6 +305,27 @@ if (!gotLock) {
   })
 
   app.whenReady().then(() => {
+    try {
+      const b = currentBuildInfo()
+      APP_LOG.info('boot', `AudioForge v${b.version}${b.commit ? '+' + b.commit : ''} · electron ${process.versions.electron} · node ${process.versions.node} · ${process.platform} ${process.arch}`)
+    } catch { APP_LOG.info('boot', 'AudioForge 시작(판 정보 읽기 실패)') }
+    // 어느 데이터 폴더를 쓰는지 — 이름만(절대 경로 없음). 처음 복사했으면 무엇을 옮겼는지도.
+    APP_LOG.info('boot', `데이터 폴더 ${basename(app.getPath('userData'))} (채널 ${USER_DATA_CHANNEL ?? '모름'})`)
+    // 설정 파일의 판 — 어느 앱이 언제 썼는지. 아는 판보다 높으면 더 새 앱이 쓴 것이다(내리지 않는다).
+    try {
+      const got = readSettingsFile(join(app.getPath('userData'), 'settings.json'))
+      if (got.kind === 'ok') {
+        const m = readSettingsMeta(got.settings)
+        const line = `설정 판 ${m.formatVersion}(아는 판 ${SETTINGS_FORMAT_VERSION}) · 마지막 쓴 앱 ${m.lastWrittenBy ?? '(번호 이전)'} · ${m.lastWrittenAt ?? '(모름)'}`
+        if (m.formatVersion > SETTINGS_FORMAT_VERSION) APP_LOG.warn('boot', line + ' — 더 새 앱이 쓴 파일이다')
+        else APP_LOG.info('boot', line)
+      } else APP_LOG.info('boot', `설정 파일 ${got.kind === 'absent' ? '없음(첫 실행)' : '손상 — 덮어쓰지 않는다: ' + got.reason}`)
+    } catch { /* 기록 실패는 기동을 막지 않는다 */ }
+    if (userDataSeed?.seeded) {
+      APP_LOG.info('boot', `개발선 폴더 첫 초기화 — 정식 폴더에서 복사 ${userDataSeed.copied.join(', ') || '(없음)'}; 건너뜀 ${userDataSeed.skipped.join(', ') || '(없음)'}`)
+    } else if (userDataSeed) {
+      APP_LOG.info('boot', `개발선 폴더 초기화 생략 — ${userDataSeed.reason === 'already_initialized' ? '이미 초기화됨' : userDataSeed.reason}`)
+    }
     protocol.handle('local-file', async (request) => {
       const raw = request.url.replace('local-file://', '')
       // 캐시 전용 형식(local-file://sampler/<64hex>) — 실제 경로는 여기서만 해석한다.
@@ -323,6 +386,7 @@ for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
 app.on('before-quit', () => {
   // 분석은 편집 보조일 뿐이므로 종료를 붙들지 않는다 — 대기 요청을 취소하고 프로세스를 닫는다.
   disposeAnalysisIpc()
+  APP_LOG.info('boot', '종료')
 })
 
 app.on('window-all-closed', () => {

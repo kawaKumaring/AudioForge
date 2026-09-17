@@ -8,6 +8,8 @@ import {
 } from 'fs'
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
+import { appLog, fileLabel } from '../services/app-log'
+import { currentBuildInfo } from './app-version.ipc'
 import { createSettlementGuard, createRunSettlement, createRunnerSlot } from '../services/run-settlement'
 import type { RunEnd, RunTerminal } from '../services/run-settlement'
 import { sendToWindow } from '../services/window-send'
@@ -33,7 +35,7 @@ import { TRANSCRIPT_EDIT_STORAGE_KEY } from '../../shared/transcriptEdit'
 import { DIALOGUE_EDIT_STORAGE_KEY } from '../../shared/dialogueEdit'
 import { registerTranscriptIpc } from './transcript.ipc'
 import { registerLabIpc } from './lab.ipc'
-import { readSettingsFile, setSettingsKey } from '../services/settings-store'
+import { readSettingsFile, setSettingsKey, migrateSettings } from '../services/settings-store'
 import type { SidecarEnvelope } from '../../shared/sidecarEvents'
 // 타입만 가져온다 — 참조 라이브러리 모듈을 런타임에 끌어오지 않으므로 순환 의존이 생기지 않는다.
 import type { ReferencePreviewAdapter } from './reference-library.ipc'
@@ -87,12 +89,13 @@ function loadSettings(): Record<string, unknown> {
   const got = readSettingsFile(settingsFilePath())
   // 손상은 빈 설정과 다르다 — 여기서는 읽기 용도라 빈 것으로 보되, 쓰기 경로가
   // 손상본을 덮어쓰지 않는다(settings-store 가 막는다).
-  return got.kind === 'ok' ? got.settings : {}
+  // 읽은 것은 현재 판까지 올려서 준다(메모리에서만). 파일은 다음 쓰기 때 판이 찍힌다.
+  return got.kind === 'ok' ? migrateSettings(got.settings).settings : {}
 }
 // 원자 저장은 `services/settings-store` 가 소유한다(실패 시 기존 바이트 보존, 표적 테스트
 // 로 검증). 여기서는 결과를 그대로 돌려주고 실패를 성공으로 바꾸지 않는다.
 function saveSetting(key: string, value: unknown): { ok: boolean; code?: string } {
-  const res = setSettingsKey(settingsFilePath(), key, value)
+  const res = setSettingsKey(settingsFilePath(), key, value, { writtenBy: currentBuildInfo().version })
   if (!res.ok) console.log(`[AudioForge] 설정 저장 실패: ${res.code}`)
   return res.ok ? { ok: true } : { ok: false, code: res.code }
 }
@@ -332,6 +335,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     // 화면에 안 나와 사용자가 방금 지정한 사람인 줄 알았다).
     const speakerRef = typeof o.speaker_ref === 'string' && /^spk_[0-9a-f]{12}$/.test(o.speaker_ref)
       ? o.speaker_ref : undefined
+    // 로그 파일에도 남긴다 — 화면이 사라진 뒤에도 '무슨 오류였나' 를 답할 수 있게. 본문은 위와 같은 정제본.
+    appLog()?.error('job', `error${code ? ' code=' + code : ''}: ${message}`)
     mainWindow.webContents.send('audio:error', {
       message, ...(code ? { code } : {}), ...(speakerRef ? { speakerRef } : {}),
     })
@@ -718,6 +723,9 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     // ② split 워커가 만드는 '원본 전체 사본' 임시폴더 이름에 실려, 취소·강제종료 뒤에도 main이
     //    이 실행의 폴더만 정확히 지울 수 있게 한다(파이썬 finally는 taskkill에서 실행되지 않는다).
     const runToken = randomUUID().slice(0, 8)
+    const jobStartedAt = Date.now()
+    // 작업 시작 기록 — 파일은 이름만(폴더 없이), 대사는 적지 않는다.
+    appLog()?.info('job', `start mode=${mode} run=${runToken} file=${fileLabel(filePath)}`)
     // Write all options to JSON config file (avoids spawn encoding issues with Korean paths)
     const configPath = join(tmpdir(), `audioforge_config_${runToken}.json`)
     const config = {
@@ -780,7 +788,10 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     // '중간 산출물 정리(staging)까지 확인됐을 때만 공개'를 명시적 전제로 만들고, abandon된
     // 실행에서는 어떤 결과도 나가지 못하게 한다.
     const stagingGate = createStagingGate<unknown>(
-      (data) => { mainWindow.webContents.send('audio:result', data) },
+      (data) => {
+        appLog()?.info('job', `done mode=${mode} run=${runToken} elapsed=${((Date.now() - jobStartedAt) / 1000).toFixed(1)}s`)
+        mainWindow.webContents.send('audio:result', data)
+      },
       createTerminalGate
     )
     let pendingError: string | { message?: unknown; code?: unknown } | null = null
@@ -1118,6 +1129,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     cancelState = 'none'
     currentSettle = null; currentWatchdogClear = null; currentOutputDir = null
     afPhase('cancelled_sent')
+    appLog()?.info('job', 'cancelled')
     mainWindow.webContents.send('audio:cancelled')       // ← terminal 신호(권위). renderer가 idle로.
     return { accepted: true }
   })
