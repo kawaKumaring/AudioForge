@@ -116,6 +116,8 @@ def _get_whisper_model(model_name="large-v3"):
         root, source = resolve_whisper_root(model_name)
         device = get_device(timeout_sec=10)
         _whisper_cache["model"] = whisper.load_model(model_name, device=device, download_root=root)
+        _last_asr_run.update({"engine": "whisper", "model": model_name,
+                              "device": str(device), "computeType": None})
         _whisper_cache["name"] = model_name
         _whisper_cache["source"] = source
         _whisper_cache["root"] = root
@@ -229,6 +231,91 @@ def run_transcribe(model, audio_path, language=None):
     )
     # 에너지 게이트: 무음 구간의 잔존 환각(아웃로 '시청 감사' 등) 제거.
     # hallucination_silence_threshold가 못 잡는, 옅게 깔린 무음 위 환각까지 걸러낸다.
+    return _filter_silent_segments(result, audio_path)
+
+
+# ── faster-whisper(CTranslate2) 실행 경로 ─────────────────────────────────────
+#
+# 왜 하위 프로세스인가: 앱 파이썬에는 이미 torch 와 합성 환경이 있고, ctranslate2 는 cuDNN 9 를
+# 요구하며 제 DLL 을 직접 연다(CHANGELOG 4.5.0). 같은 자리에 섞으면 **기존 합성 환경을 흔든다.**
+# 그래서 `externals/asr_ct2_venv` 안에서 돌리고 결과 JSON 만 받는다 — 기존 다리들과 같은 방식.
+#
+# ★반환 모양은 기존 경로와 같다. 그래서 받은 뒤 **같은 무음 게이트**를 그대로 태운다 —
+#   엔진을 바꿨다고 환각 억제를 조용히 빼지 않는다.
+# ★실패를 숨기지 않는다. CPU 로 몰래 돌리지도, 기존 엔진으로 슬그머니 바꾸지도 않는다.
+
+# 마지막 전사가 **무엇으로 돌았는지** — 기록(sidecar provenance)이 읽는다.
+# 예전에는 모델 이름을 기존 경로의 캐시에서만 읽어서, 새 경로로 돌리면 'unknown' 이 남았다.
+_last_asr_run = {"engine": "whisper", "model": None}
+
+ASR_CT2_VENV = "asr_ct2_venv"
+ASR_CT2_MODEL_DIR = "asr_ct2_models"
+
+
+class FasterWhisperUnavailable(RuntimeError):
+    """격리 환경이나 모델이 없다 — **조용히 다른 길로 가지 않는다.**"""
+
+
+def _ct2_paths(model_name):
+    """(venv python, 모델 디렉터리). 둘 중 하나라도 없으면 사유를 들고 실패한다."""
+    import app_runtime
+    root = app_runtime.assets_root()
+    py = app_runtime.venv_python(os.path.join(root, ASR_CT2_VENV))
+    model_dir = os.path.join(root, ASR_CT2_MODEL_DIR, "faster-whisper-%s" % model_name)
+    if not os.path.isfile(py):
+        raise FasterWhisperUnavailable(
+            "ASR_CT2_VENV_MISSING: 격리 실행 환경(%s)이 없습니다." % ASR_CT2_VENV)
+    if not os.path.isfile(os.path.join(model_dir, "model.bin")):
+        raise FasterWhisperUnavailable(
+            "ASR_CT2_MODEL_MISSING: %s 용 CTranslate2 모델이 없습니다. "
+            "자동 다운로드는 하지 않습니다." % model_name)
+    return py, model_dir
+
+
+def run_transcribe_ct2(audio_path, language=None, model_name="large-v3", beam_size=1):
+    """faster-whisper 로 한 건. 기존 경로와 **같은 모양**을 돌려준다."""
+    import json as _json
+    import subprocess
+    import tempfile
+
+    py, model_dir = _ct2_paths(model_name)
+    here = os.path.dirname(os.path.abspath(__file__))
+    bridge = os.path.join(here, "asr_ct2_bridge.py")
+    fd, out_path = tempfile.mkstemp(suffix=".json", prefix="asr_ct2_")
+    os.close(fd)
+    cmd = [py, "-X", "utf8", bridge,
+           "--audio", os.path.abspath(audio_path),
+           "--model-dir", os.path.abspath(model_dir),
+           "--out", out_path,
+           "--device", "cuda", "--compute-type", "float16",
+           "--beam-size", str(beam_size)]
+    if _norm_lang(language):
+        cmd += ["--language", _norm_lang(language)]
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True,
+                              encoding="utf-8", errors="replace")
+        if proc.returncode != 0 or not os.path.isfile(out_path):
+            # 실패를 삼키지 않는다 — 마지막 줄들만 사유로 올린다(전사 본문은 나오지 않는다).
+            tail = (proc.stderr or proc.stdout or "").strip().splitlines()[-3:]
+            raise RuntimeError("ASR_CT2_FAILED(exit %s): %s"
+                               % (proc.returncode, " / ".join(tail) or "사유 없음"))
+        with open(out_path, "r", encoding="utf-8") as f:
+            result = _json.load(f)
+    finally:
+        try:
+            os.remove(out_path)
+        except OSError:
+            pass
+
+    run = result.pop("_run", {}) or {}
+    _last_asr_run.update({"engine": "faster-whisper", "model": model_name,
+                          "device": run.get("device"), "computeType": run.get("computeType")})
+    # 실행 기록 — 엔진·모델·실제 장치·정밀도·배치·소요 시간을 남긴다.
+    emit("asrRun", **{k: run.get(k) for k in (
+        "engine", "engineVersion", "ct2Version", "device", "computeType",
+        "beamSize", "batchSize", "loadSec", "transcribeSec", "audioDurationSec",
+        "languageProbability", "segmentCount")})
+    # 기존 무음 게이트를 그대로 태운다.
     return _filter_silent_segments(result, audio_path)
 
 
@@ -595,7 +682,9 @@ def _asr_sidecar_payload(result, language):
         segments=segs,
         language=language,
         provenance={
-            "model": str(_whisper_cache.get("name") or "unknown"),
+            "model": str(_last_asr_run.get("model") or _whisper_cache.get("name") or "unknown"),
+            # 어느 실행 경로로 돌았는지도 남긴다 — 같은 모델이라도 엔진이 다르면 재현 조건이 다르다.
+            "engine": str(_last_asr_run.get("engine") or "whisper"),
             "task": "transcribe",
             "hallucination_silence_threshold": str(ac.HALLUCINATION_SILENCE_SEC),
             "rms_threshold": str(ac.DEFAULT_RMS_THRESHOLD),
@@ -657,13 +746,31 @@ def _save_transcription(result, audio_path, output_dir, do_srt=False, do_transla
     except Exception:
         emit("asrTranscriptSidecarError", status="unavailable")
 
-    return {"text": text, "language": language, "txt_path": txt_path, "translated_text": translated}
+    # ★문장별 시간 정보를 **그대로** 함께 돌려준다(파일 형식은 바꾸지 않는다).
+    #   화면의 교정 자리가 이 값으로 문장을 보여 주고 해당 구간을 재생한다. timestamps 파일은
+    #   초 단위로 반올림돼 있어(fmt_time) 되읽으면 정밀도를 잃는다 — 그래서 값으로 넘긴다.
+    segments = [{"start": float(s["start"]), "end": float(s["end"]),
+                 "text": (s.get("text") or "").strip()}
+                for s in (result.get("segments") or [])]
+    return {"text": text, "language": language, "txt_path": txt_path,
+            "translated_text": translated, "segments": segments, "base": base}
 
 
 def transcribe_file(audio_path, output_dir, whisper_model_name="large-v3",
-                    do_translate=False, do_srt=False, whisper_lang=None, base_name=None):
+                    do_translate=False, do_srt=False, whisper_lang=None, base_name=None,
+                    asr_engine="whisper"):
     """Transcribe a single file (standalone mode).
-    base_name: 출력 파일명 접두어 (임시 wav를 넘길 때 원본명 지정용)."""
+    base_name: 출력 파일명 접두어 (임시 wav를 넘길 때 원본명 지정용).
+    asr_engine: 'whisper'(기본, 기존 경로) | 'faster-whisper'(격리 venv 의 CTranslate2).
+
+    ★기본값은 바꾸지 않는다. 새 경로는 **텍스트 모드에서 사용자가 고를 때만** 돈다."""
+    if (asr_engine or "whisper") == "faster-whisper":
+        emit("progress", percent=10, message="faster-whisper 준비 중...")
+        emit("progress", percent=30, message="텍스트 변환 중...")
+        result = run_transcribe_ct2(audio_path, whisper_lang, whisper_model_name)
+        emit("progress", percent=70, message="저장 중...")
+        return _save_transcription(result, audio_path, output_dir, do_srt, do_translate, base_name)
+
     emit("progress", percent=10, message="Whisper 모델 로딩 중...")
     model = _get_whisper_model(whisper_model_name)
 

@@ -1,4 +1,6 @@
 import { create } from 'zustand'
+// @ts-ignore TS5097: node --test 가 요구하는 명시적 .ts 확장자(이 파일의 다른 import 와 같은 관례).
+import { forgetRestoredThisRun } from '../lib/workDraftSession.ts'
 import type { SeparationMode, Track, FileInfo } from '../../shared/types'
 import type { TtsReferenceEntry, PitchCapability, ReferenceConditioningMode } from '../../shared/ttsConfig'
 import type { ReferencePolicySummary, RefPhase } from '../../shared/referencePolicy'
@@ -204,6 +206,8 @@ interface AppState {
   exportSrt: boolean
   outputFormat: 'wav' | 'mp3' | 'flac'
   whisperModel: 'small' | 'medium' | 'large-v3' | 'large-v3-turbo'
+  /** 텍스트 추출 실행 엔진. 기본은 기존 경로다. */
+  asrEngine: 'whisper' | 'faster-whisper'
   whisperLang: string
   translateModel: '600m' | '1.3b' | 'llm' | 'google'
   demucsModel: 'htdemucs' | 'htdemucs_ft' | 'roformer' | 'roformer_melband' | 'roformer_ensemble'
@@ -215,7 +219,7 @@ interface AppState {
   // 구조화 오류 정보(오류 UX 분기용). code + (취소 실패 시) childAlive만 — GENERATION_LIMIT_EXCEEDED/CANCEL_FAILED 분기.
   // 전사·문장·전체경로·스택은 담지 않는다(§미디어 정책).
   // rawType: 계약 밖 값의 '타입 이름'만(원시값·대사·경로는 절대 담지 않는다 — 비민감 payload 규칙).
-  errorInfo: { code?: string; childAlive?: boolean; rawType?: string | null } | null
+  errorInfo: { code?: string; childAlive?: boolean; rawType?: string | null; speakerRef?: string } | null
   // 사용자 명시 재시도 트리거(단조 증가). ProcessButton이 이 값 변화에서만 재합성 1회 실행.
   retryNonce: number
   tracks: Track[]
@@ -224,6 +228,14 @@ interface AppState {
   restorable: { dir: string; session: RestorableSession } | null
   splitMarkers: number[]
   splitLabels: string[]
+  /** 저장할 조각 번호(0부터). null 이면 전부 저장 — 예전 동작 그대로. */
+  splitSelected: number[] | null
+  /** 화자 분석이 낸 구간(최초 결과). 수정 화면이 이것을 받아 고친다. */
+  dialogueSegments: { start: number; end: number; speaker: string }[]
+  /** 겹쳐 잡힌 구간 — 구간 목록과 **따로** 둔다. 겹침 발견 ≠ 겹친 목소리 분리. */
+  dialogueOverlaps: { start: number; end: number }[]
+  /** 대화 분석 엔진. 기본은 기존 엔진이다. */
+  diarizeEngine: 'builtin' | 'community-1'
   ttsText: string
   ttsSpeed: number
   ttsSilenceGap: number
@@ -327,6 +339,8 @@ interface AppState {
   setExportSrt: (v: boolean) => void
   setOutputFormat: (v: 'wav' | 'mp3' | 'flac') => void
   setWhisperModel: (v: 'small' | 'medium' | 'large-v3' | 'large-v3-turbo') => void
+  setAsrEngine: (v: AppState['asrEngine']) => void
+  setDiarizeEngine: (v: AppState['diarizeEngine']) => void
   setWhisperLang: (v: string) => void
   setTranslateModel: (v: '600m' | '1.3b' | 'llm' | 'google') => void
   setDemucsModel: (v: 'htdemucs' | 'htdemucs_ft' | 'roformer' | 'roformer_melband' | 'roformer_ensemble') => void
@@ -416,6 +430,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   exportSrt: false,
   outputFormat: 'wav' as const,
   whisperModel: 'large-v3' as const,
+  asrEngine: 'whisper' as const,
   whisperLang: 'auto',
   translateModel: '600m' as const,
   demucsModel: 'htdemucs' as const,
@@ -432,6 +447,10 @@ export const useAppStore = create<AppState>((set, get) => ({
   restorable: null,
   splitMarkers: [],
   splitLabels: [],
+  splitSelected: null,
+  dialogueSegments: [],
+  dialogueOverlaps: [],
+  diarizeEngine: 'builtin' as const,
   ttsText: '',
   ttsSpeed: 1.0,
   ttsSilenceGap: 0.5,
@@ -494,6 +513,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   // 새 기본 참조 = 새 파일이므로 이전 전사(default + 감정 전부)는 새 음성에 결합되면 안 된다 →
   // ttsReferencePrompts 전량 비움(불변식 3·4: stale 전사 ↔ 새 음성 결합 방지).
   setFile: (info, url) => {
+    // 파일을 새로 골랐다 — 이 작업은 다시 열릴 때 되살려야 한다(실행 단위 기록에서 지운다).
+    forgetRestoredThisRun(info?.path || '')
     if (isCancelCleanupBusy(get().status)) return  // 취소 정리 중 새 파일 처리 차단(worker 종료 확인 전 상태 교체 방지)
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 전체 파생 클립(기본+감정) 정리
     // 분할 마커는 파일에 종속이다. 비우지 않으면 이전 파일의 경계가 새 파일에 그대로 적용돼
@@ -510,6 +531,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   setExportSrt: (v) => set({ exportSrt: v }),
   setOutputFormat: (v) => set({ outputFormat: v }),
   setWhisperModel: (v) => set({ whisperModel: v }),
+  setAsrEngine: (v) => set({ asrEngine: v }),
+  setDiarizeEngine: (v) => set({ diarizeEngine: v }),
   setWhisperLang: (v) => set({ whisperLang: v }),
   setTranslateModel: (v) => set({ translateModel: v }),
   setDemucsModel: (v) => set({ demucsModel: v }),

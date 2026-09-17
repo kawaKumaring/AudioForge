@@ -1,5 +1,6 @@
 import { useEffect, useRef, useCallback, useState } from 'react'
-import { SPEAKER_PREFLIGHT_MESSAGE } from '../../shared/speakerReference'
+import { speakerBlockNotice } from '../../shared/speakerReference'
+import { sha256HexOfString } from '../../shared/referenceLibrary'
 import { motion, AnimatePresence } from 'framer-motion'
 import WaveSurfer from 'wavesurfer.js'
 import { useAppStore } from '@/stores/app.store'
@@ -17,7 +18,11 @@ function fmtTime(sec: number): string {
 }
 
 // 결과 트랙용 파형 플레이어 (파형 + 시간 + 볼륨 + 드래그 이동). 재생 시에만 지연 생성.
-function TrackPlayer({ path, color, paused, onClose }: { path: string; color: string; paused: boolean; onClose: () => void }) {
+function TrackPlayer({ path, color, paused, onClose, originalPath, originalLabel }: {
+  path: string; color: string; paused: boolean; onClose: () => void
+  /** 같은 자리에서 견줘 들을 원본. 없으면 비교 단추를 내지 않는다. */
+  originalPath?: string | null; originalLabel?: string
+}) {
   const ref = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WaveSurfer | null>(null)
   const readyRef = useRef(false)
@@ -25,6 +30,12 @@ function TrackPlayer({ path, color, paused, onClose }: { path: string; color: st
   pausedRef.current = paused
   const [cur, setCur] = useState('0:00')
   const [dur, setDur] = useState('0:00')
+  // 지금 무엇을 듣고 있는가 — 분리 결과인가 원본인가.
+  const [listening, setListening] = useState<'track' | 'original'>('track')
+  // 전환할 때 이어받을 것: **그 순간의 재생 위치와 재생/멈춤 상태**.
+  //   두 파일 길이가 다를 수 있어, 되돌릴 때 새 파일의 유효 범위로 자른다.
+  const handoffRef = useRef<{ time: number; playing: boolean } | null>(null)
+  const activePath = listening === 'original' && originalPath ? originalPath : path
   // 원본 파형 슬라이더와 **같은 값**이다(공용·보관됨) — 두 슬라이더가 서로 다른 값을 갖지 않는다.
   const { volume, change: changeVolume, commit: commitVolume, saveFailed: volumeSaveFailed } = usePlaybackVolume()
 
@@ -32,7 +43,7 @@ function TrackPlayer({ path, color, paused, onClose }: { path: string; color: st
     let cancelled = false
     let ws: WaveSurfer | null = null
     ;(async () => {
-      const url = await window.api.audio.getFileUrl(path)
+      const url = await window.api.audio.getFileUrl(activePath)
       if (cancelled || !ref.current) return
       ws = WaveSurfer.create({
         container: ref.current, waveColor: hexToRgba(color, 0.3), progressColor: color,
@@ -47,7 +58,25 @@ function TrackPlayer({ path, color, paused, onClose }: { path: string; color: st
       ws.setVolume(getPlaybackVolume())
       ws.on('timeupdate', (t) => setCur(fmtTime(t)))
       ws.on('decode', (d) => setDur(fmtTime(d)))
-      ws.on('ready', () => { readyRef.current = true; if (ws && !pausedRef.current) ws.play() })
+      ws.on('ready', () => {
+        readyRef.current = true
+        if (!ws) return
+        // ★전환이면 **위치와 상태를 이어받는다.** 길이가 다르면 유효 범위로 자른다.
+        const h = handoffRef.current
+        handoffRef.current = null
+        if (h) {
+          const total = ws.getDuration() || 0
+          const limit = Math.max(0, total - 0.05)
+          const at = total > 0 ? Math.min(Math.max(0, h.time), limit) : 0
+          // ★자른 경우에는 **이어서 틀지 않는다.** 짧은 쪽의 끝을 넘어간 자리였으니,
+          //   그대로 재생하면 0.05초 만에 끝나 재생기가 닫힌다(실측). 그 자리에 멈춰 둔다.
+          const clamped = h.time > limit + 0.001
+          try { ws.setTime(at) } catch { /* noop */ }
+          if (h.playing && !clamped) ws.play()
+          return
+        }
+        if (!pausedRef.current) ws.play()
+      })
       ws.on('finish', () => onClose())
       ws.load(url)
       wsRef.current = ws
@@ -60,7 +89,7 @@ function TrackPlayer({ path, color, paused, onClose }: { path: string; color: st
       readyRef.current = false
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [path])
+  }, [activePath])
 
   // 이후 슬라이더 변경은 이 effect 가 실시간으로 반영한다(생성 시점 적용과 별개).
   useEffect(() => { wsRef.current?.setVolume(volume) }, [volume])
@@ -77,6 +106,28 @@ function TrackPlayer({ path, color, paused, onClose }: { path: string; color: st
       <div ref={ref} style={{ marginBottom: 6 }} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{ fontSize: 11, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>{cur} / {dur}</span>
+        {/* 원본 ↔ 분리 결과 — **같은 자리에서** 견준다. 재생기는 하나뿐이라 소리가 겹치지 않는다.
+            듣기만 한다: 저장된 파일을 키우거나 고르거나 다시 쓰지 않는다. */}
+        {originalPath && (
+          <button data-testid="track-compare" data-listening={listening}
+            onClick={() => {
+              const ws = wsRef.current
+              handoffRef.current = ws
+                ? { time: ws.getCurrentTime() || 0, playing: ws.isPlaying() }
+                : null
+              setListening((v) => (v === 'track' ? 'original' : 'track'))
+            }}
+            title={"같은 위치에서 원본과 분리 결과를 번갈아 들어 봅니다. 저장된 파일은 바뀌지 않습니다."}
+            aria-label={listening === 'track' ? '원본 듣기로 바꾸기' : '분리 결과 듣기로 바꾸기'}
+            style={{
+              padding: '2px 8px', borderRadius: 5, border: 'none', cursor: 'pointer',
+              fontFamily: 'inherit', fontSize: 10, fontWeight: 600,
+              background: listening === 'original' ? 'var(--cyan)' : 'var(--bg-elevated)',
+              color: listening === 'original' ? '#fff' : 'var(--text-secondary)',
+            }}>
+            {listening === 'original' ? `원본 듣는 중${originalLabel ? ` · ${originalLabel}` : ''}` : '원본과 비교'}
+          </button>
+        )}
         <div title={volumeSaveFailed
           ? '재생 볼륨 — 이 값을 기억하지 못했습니다(이번 실행에만 적용됩니다).'
           : '재생 볼륨 (듣기 전용 · 원본 파일에는 영향 없음) — 정한 값이 다음에도 그대로 쓰입니다.'}
@@ -136,7 +187,7 @@ const actionBtnStyle = (active: boolean, color: string): React.CSSProperties => 
 })
 
 function TrackItem({ track, index }: { track: { name: string; label: string; path: string }; index: number }) {
-  const { playingTrack, setPlayingTrack, outputDir, mode, translateModel } = useAppStore()
+  const { playingTrack, setPlayingTrack, outputDir, mode, translateModel, fileInfo } = useAppStore()
   const isPlaying = playingTrack === track.name
   const st = TRACK_STYLES[track.name] || DEFAULT_STYLE
   const [transcript, setTranscript] = useState<string | null>(null)
@@ -280,8 +331,12 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
       </div>
 
       {/* 재생 시 펼쳐지는 파형 플레이어 (파형 + 시간 + 볼륨 + 드래그 이동). 재생/일시정지는 행 버튼이 제어. */}
+      {/* 분리 결과일 때만 원본과 견줄 수 있다 — 텍스트 트랙에는 비교할 소리가 없다. */}
       {isPlaying && isAudioTrack && (
-        <TrackPlayer path={track.path} color={st.color} paused={paused} onClose={() => setPlayingTrack(null)} />
+        <TrackPlayer path={track.path} color={st.color} paused={paused} onClose={() => setPlayingTrack(null)}
+          originalPath={(mode === 'music' || mode === 'conversation') && track.name !== 'transcript'
+            && track.name !== 'translation' ? (fileInfo?.path || null) : null}
+          originalLabel={fileInfo?.name} />
       )}
 
       {/* Expandable text area */}
@@ -378,15 +433,24 @@ function KaraokeButton({ tracks }: { tracks: { name: string; path: string }[] })
 }
 
 export default function TrackList() {
-  const { tracks, status, outputDir, error, errorInfo, mode, bumpRetry, clearError } = useAppStore()
+  const { tracks, status, outputDir, error, errorInfo, mode, bumpRetry, clearError, ttsSpeakerRefState, ttsSpeakerLabels } = useAppStore()
 
   if (error) {
     // 생성 상한 도달(GENERATION_LIMIT_EXCEEDED)은 유효 입력에서도 비결정적으로 발생 가능 → 전용 안내 + 명시 재시도.
     // 그 외 오류는 기존 일반 카드(메시지 + '다시 시도'=닫기). code는 main이 정제해 넘긴 구조화 값(전사·경로 없음).
     const isGenLimit = errorInfo?.code === 'GENERATION_LIMIT_EXCEEDED'
     // 화자 참조 차단(Python fail-closed 가 남긴 코드)은 내부 코드가 아니라 인물 카드로 안내한다.
-    const speakerBlock = errorInfo?.code === 'SPEAKER_NOT_REGISTERED' || errorInfo?.code === 'SPEAKER_REFERENCE_NOT_READY'
-      ? SPEAKER_PREFLIGHT_MESSAGE[errorInfo.code] : null
+    // 화자 차단 안내 — **이미 사람 말이면 그대로**(화면 검사는 "(N번 대사: 이름)" 을 붙여 준다),
+    // 코드만 왔으면(파이썬이 막은 경우) 지문으로 인물을 찾아 이름을 붙인다.
+    // ★예전엔 여기서 고정 문장으로 덮어써서 화면 검사가 알려 준 **인물 이름이 사라졌다**(2026-09-17).
+    const speakerNotice = errorInfo?.code === 'SPEAKER_NOT_REGISTERED' || errorInfo?.code === 'SPEAKER_REFERENCE_NOT_READY'
+      ? speakerBlockNotice({
+          code: errorInfo.code, error, speakerRef: errorInfo.speakerRef,
+          knownIds: Object.keys(ttsSpeakerRefState), labelOf: (id) => ttsSpeakerLabels[id] || id,
+          sha256Hex: sha256HexOfString,
+        })
+      : null
+    const speakerBlock = speakerNotice?.headline ?? null
     // 시간 제한 판정(main watchdog) — 모델 상한(GENERATION_LIMIT_EXCEEDED)과 다른 사유다. 완료된 부분은 아직
     // 보존되지 않으므로 "보존했습니다" 라고 말하지 않는다.
     const timeLimitMessage = errorInfo?.code === 'JOB_STALLED' || errorInfo?.code === 'JOB_INACTIVE'
@@ -438,6 +502,24 @@ export default function TrackList() {
                   <button onClick={() => window.api.audio.cancel()}
                     className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 12px' }}>다시 취소</button>
                 )}
+                <button onClick={() => clearError()}
+                  className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 12px' }}>닫기</button>
+              </div>
+            </>
+          ) : speakerBlock ? (
+            // 화자 참조 차단은 **여기서도** 사람 말로 바꾼다.
+            // ★예전에는 이 안내를 '취소 실패' 갈래 안에서만 썼다. 그래서 파이썬이 막은 경우
+            //   (SpeakerReferenceError 는 message 없이 던져 **코드가 곧 문구**가 된다)
+            //   화면에 'SPEAKER_NOT_REGISTERED' 가 그대로 찍혔다.
+            <>
+              <span data-testid="speaker-block-headline"
+                style={{ fontSize: 13, fontWeight: 600, color: 'var(--rose)' }}>{speakerBlock}</span>
+              <span data-testid="speaker-block-detail"
+                style={{ fontSize: 12, fontWeight: 400, color: 'var(--text-secondary)' }}>
+                위에 적힌 인물의 카드에서 목소리를 지정한 뒤 다시 만들어 주세요. 이미 지정한 인물은 그대로 쓰입니다.
+              </span>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {/* 목소리를 지정하기 전에는 다시 눌러도 같은 자리에서 막힌다 — '다시 시도' 라고 하지 않는다. */}
                 <button onClick={() => clearError()}
                   className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 12px' }}>닫기</button>
               </div>

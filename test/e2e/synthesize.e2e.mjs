@@ -166,7 +166,7 @@ try {
   // 6) 다른 모드 이동 후 합성 모드 재진입
   await win.evaluate(() => window.__afStore.getState().setMode('music'))
   await win.waitForTimeout(300)
-  await win.evaluate(() => window.__afStore.getState().setMode('tts'); window.__afStore.getState().setSynthesisTab('advanced'))
+  await win.evaluate(() => { window.__afStore.getState().setMode('tts'); window.__afStore.getState().setSynthesisTab('advanced') })
   await win.waitForTimeout(500)
   const reenter = await measure()
   await win.screenshot({ path: path.join(SHOT, 'e2e_04_reenter.png') })

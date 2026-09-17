@@ -15,8 +15,8 @@ import { useAppStore } from '@/stores/app.store'
 import { useLabStore, newId } from '@/stores/lab.store'
 import {
   LAB_STORAGE_KEY, adoptedTake, exportBlockText, exportReadiness, hasUnusedTake, isExportBlockNotice,
-  lineStatus, lineStatusText, parseDoc, takeBadge, voiceKeyOf,
-  type LabDoc, type LabLine, type LabSettings,
+  lineStatus, lineStatusText, parseDoc, synthesisOptions, takeBadge, takeTailCut, voiceKeyOf,
+  type LabDoc, type LabLine,
 } from '../../shared/labWorkspace'
 import { REFERENCE_CONDITIONING_RECOMMENDED } from '../../shared/ttsConfig'
 import { createManagedAudio } from '@/lib/playbackVolume'
@@ -37,17 +37,12 @@ const btn = (bg: string, fg: string, disabled?: boolean): React.CSSProperties =>
  * ★합성 탭의 현재 값을 읽지 않는다. 기존 합성 **기능**은 그대로 쓰되, 합성 탭에서 속도·엔진을
  *   바꾼 것이 이 작업실에 조용히 반영되면 "같은 대본인데 결과가 달라졌다" 가 되기 때문이다.
  */
-function processOptions(text: string, s: LabSettings,
-                        ref: { clip: string; region: { start: number; duration: number } | null }) {
-  return {
-    ttsText: text,
-    ttsSpeed: s.speed, ttsSilenceGap: s.silenceGap, ttsPitch: s.pitch,
-    ttsEngine: s.engine, ttsQwenModel: s.qwenModel,
-    ttsReferenceOverride: ref.clip, ttsReferenceRegion: ref.region,
-    ttsReferenceConditioningMode: s.referenceConditioningMode,
-    ttsSpeakerMode: 'single' as const,
-  }
-}
+/**
+ * 작업실(일반)이 쓰는 파생 클립 자리. 고급의 기본 목소리('default')와 **겹치지 않는다.**
+ * main 은 이 이름 하나당 폴더 하나만 들고 있고, 새로 확정하면 같은 이름의 이전 폴더를
+ * 지운다 — 이름을 나누지 않으면 한쪽이 다른 쪽의 목소리를 지운다.
+ */
+const LAB_CLIP_KEY = 'lab'
 
 const STATUS_COLOR: Record<string, string> = {
   ready: 'var(--emerald, #34d399)', none: 'var(--text-muted)',
@@ -199,7 +194,7 @@ export default function LabWorkspace() {
     // 공용 작업 제어: 기존 합성과 **동시에** 돌지 않도록 같은 상태를 쓴다.
     // ★기존 결과(tracks)는 지우지 않는다 — 다른 탭의 결과를 없애지 않기 위해서다.
     useAppStore.setState({ status: 'processing', progress: 0, progressMessage: '문장 만드는 중...', error: null })
-    void window.api.audio.process(doc.voicePath, 'tts', processOptions(first.text, doc.settings, lab.ref))
+    void window.api.audio.process(doc.voicePath, 'tts', synthesisOptions(first.text, doc.settings, lab.ref))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc, voiceKey, lab.ref])
 
@@ -213,6 +208,10 @@ export default function LabWorkspace() {
       const j = useLabStore.getState().job
       if (!j) return
       const src = (d?.tracks || [])[0]?.path
+      // 마감 단계가 fade 를 걸기 전에 잰 '끝났을 때 남아 있던 소리'. 없으면 재지 않은 것이다.
+      const residualRaw = (d?.tracks || [])[0]?.metadata?.tail_residual_ratio
+      const residual = typeof residualRaw === 'number' && Number.isFinite(residualRaw)
+        ? residualRaw : undefined
       void (async () => {
         if (src) {
           const takeId = newId('tk')
@@ -222,6 +221,7 @@ export default function LabWorkspace() {
             //   '수정 전 대사' 꼬리표가 붙는다 — 늦은 결과를 최신인 것처럼 쓰지 않는다.
             useLabStore.getState().addTake(j.lineId, {
               id: takeId, path: kept.path, text: j.text, voiceKey: j.voiceKey, createdAt: Date.now(),
+              ...(residual === undefined ? {} : { tailResidual: residual }),
             })
             // 자동으로 골라졌는가, 아니면 사용자가 골라야 하는가.
             const after = useLabStore.getState().doc.lines.find((l) => l.id === j.lineId)
@@ -271,7 +271,7 @@ export default function LabWorkspace() {
       st.setJob({ lineId: line.id, text: line.text, voiceKey: voiceKeyOf(st.doc.voicePath),
                   startedAt: Date.now(), queue: rest.slice(1) })
       void window.api.audio.process(st.doc.voicePath, 'tts',
-        processOptions(line.text, st.doc.settings, st.ref))
+        synthesisOptions(line.text, st.doc.settings, st.ref))
     }
     return () => { offP(); offR(); offE(); offCancelled() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -351,8 +351,12 @@ export default function LabWorkspace() {
           fontSize: 13, fontWeight: 600, minWidth: 0, overflow: 'hidden',
           textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1,
         }}>{doc.voiceLabel || '아직 고르지 않음'}</span>
-        <span style={{ fontSize: 11, color: app.ttsRefReady ? 'var(--emerald, #34d399)' : 'var(--text-muted)' }}>
-          {doc.voicePath ? (app.ttsRefReady ? '준비됨' : (app.ttsRefMessage || '준비 중…')) : ''}
+        {/* ★**자기 상태**를 말한다(2026-09-16). 예전에는 고급의 값(app.ttsRefReady)을 읽었다 —
+            막는 것은 lab.ref.ready 인데 표시는 다른 값이라, 고급이 준비되면 일반도 '준비됨' 이라고
+            말하면서 정작 만들기는 잠겨 있었다(그 반대도 났다). 화면과 잠금은 같은 값을 봐야 한다. */}
+        <span data-testid="lab-voice-status"
+          style={{ fontSize: 11, color: lab.ref.ready ? 'var(--emerald, #34d399)' : 'var(--text-muted)' }}>
+          {doc.voicePath ? (lab.ref.ready ? '준비됨' : (lab.ref.message || '준비 중…')) : ''}
         </span>
         <button data-testid="lab-pick-voice" onClick={() => { void pickVoice() }}
           disabled={!!job} style={btn('var(--bg-elevated)', 'var(--cyan)', !!job)}>
@@ -360,12 +364,24 @@ export default function LabWorkspace() {
         </button>
       </div>
 
-      {/* 목소리 준비는 기존 기능을 그대로 쓴다. 화면에는 내보내지 않는다(설정을 늘어놓지 않는다). */}
-      {doc.voicePath && app.fileInfo?.path === doc.voicePath && (
+      {/* 목소리 준비는 기존 기능을 그대로 쓴다. 화면에는 내보내지 않는다(설정을 늘어놓지 않는다).
+          ★조건은 **일반의 목소리가 있는가** 하나다(2026-09-17, 소유 경계 B안).
+            예전에는 "불러온 파일과 같은 파일일 때만" 준비했다 — 일반이 고급의 기본 참조를 그대로
+            빌려 쓰던 시제품 시절의 잔재다. 일반은 자기 클립 자리('lab')를 갖게 됐으므로 고급이
+            어떤 파일을 열었는지와 무관하게 자기 목소리를 스스로 준비한다. */}
+      {doc.voicePath && (
         <div style={{ display: 'none' }}>
           <ReferenceRegionPanel
             key={doc.voicePath + '|' + lab.ref.reqId}
-            path={doc.voicePath} clipKey="default"
+            // ★clipKey 는 **일반 전용**이다(2026-09-16 실사용 결함).
+            //   main 은 파생 클립을 clipKey 하나당 **한 자리**로 관리한다(`refClipDirs`) —
+            //   새로 확정하면 `releaseRefClip(clipKey)` 로 **그 자리의 이전 폴더를 지운다.**
+            //   예전에는 일반도 'default' 를 써서, 일반이 목소리를 준비하는 순간 고급의 기본
+            //   목소리 클립 폴더가 통째로 지워졌다. 고급은 없어진 파일을 가리킨 채 '준비 안 됨'
+            //   으로 떨어지고, 사용자는 "목소리가 준비됐는데 안 된다" 를 보게 된다.
+            //   일반이 첫 화면이라 아무것도 하지 않아도 이 일이 일어났다.
+            //   "일반과 고급의 작업은 각각 저장됩니다" 라는 약속과도 어긋난다.
+            path={doc.voicePath} clipKey={LAB_CLIP_KEY}
             // ★생성 중이라고 **잠그지 않는다.** 이 패널의 disabled 는 분석 효과의 의존값이라,
             //   잠갔다 풀면 참조 분석이 처음부터 다시 돈다(실측 27초). 그 동안 준비 상태가
             //   내려가 다음 테이크를 만들 수 없었다. 참조는 생성 중에 바뀌지 않는다.
@@ -612,6 +628,14 @@ function LineRow(p: LineRowProps) {
                     }}>
                     <span style={{ fontSize: 11, color: 'var(--text-secondary)' }}>생성본 {i + 1}</span>
                     {badge && <span style={{ fontSize: 10, color: 'var(--amber, #fbbf24)' }}>{badge}</span>}
+                    {/* 끝났을 때 소리가 살아 있었다 = 마지막 음절의 여운이 잘렸을 수 있다.
+                        되살릴 수는 없으므로 알려만 준다 — 일일이 들어 보지 않고 곧바로
+                        '추가 생성' 을 누를 수 있게. */}
+                    {takeTailCut(t) && (
+                      <span data-testid="lab-take-tailcut"
+                        title={'끝났을 때 소리가 아직 남아 있었습니다 \u2014 마지막 음절이 잘렸을 수 있습니다. 다시 만들면 대개 멀쩡하게 나옵니다.'}
+                        style={{ fontSize: 10, color: 'var(--amber, #fbbf24)' }}>끝 잘림 의심</span>
+                    )}
                     <button onClick={() => p.onPlay(t.path, t.id)}
                       style={{ ...btn('transparent', 'var(--text-primary)'), padding: '0 4px' }}>
                       {p.playingTakeId === t.id ? '■' : '▶'}

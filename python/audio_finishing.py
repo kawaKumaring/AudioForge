@@ -242,6 +242,39 @@ def apply_final_tail(samples, sr, plan: TailPlan) -> np.ndarray:
     return body
 
 
+# ────────────────────────── 말끝 잔여량(끊김 판정용 계측) ──────────────────────────
+
+TAIL_RESIDUAL_WINDOW_MS = 20.0
+
+
+def tail_residual_ratio(samples, sr, window_ms=TAIL_RESIDUAL_WINDOW_MS) -> float:
+    """**끝났을 때 아직 소리가 남아 있었는가** — 마지막 창의 peak ÷ 전체 peak(0~1).
+
+    순수·결정적. 소리를 바꾸지 않는다. 계측만 한다.
+
+    ★왜 필요한가(2026-09-16 실측): 모델이 마지막 음절이 울리는 중에 스스로 끝내는 일이 있다.
+      상한 도달도 아니고(completed_before_limit) 우리가 자른 것도 아니라 오류로 드러나지 않는다.
+      실측 4회에서 끊긴 1회는 0.087, 정상 3회는 0.000/0.002/0.007 이었다.
+      **되살릴 수는 없으므로 알아보기만 한다** — 판정은 호출부(제품)가 한다.
+
+    잦아들며 끝난 소리는 0 에 가깝고, 살아 있는 채 끝난 소리는 크게 나온다.
+    무음(전체 peak 0)은 비교할 대상이 없으므로 0.0 — '끊겼다'고 말하지 않는다.
+    **fade 를 걸기 전 배열로 불러야 한다.** fade 뒤에 부르면 언제나 0 이다.
+    """
+    sr = int(sr)
+    if sr <= 0:
+        raise AudioFinishingError(f"sr는 양수여야 함: {sr}", code="AUDIO_INVALID")
+    w = _require_range(window_ms, 1.0, 1000.0, "window_ms")
+    arr = _as_mono_float32(samples)
+    if arr.size == 0:
+        return 0.0
+    peak = float(np.max(np.abs(arr)))
+    if peak <= 0.0:
+        return 0.0
+    n = max(1, min(int(round(w * sr / 1000.0)), arr.size))
+    return float(np.max(np.abs(arr[-n:])) / peak)
+
+
 # ────────────────────────── 경계 envelope(시작·끝) ──────────────────────────
 
 @dataclass

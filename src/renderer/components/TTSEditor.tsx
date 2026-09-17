@@ -745,7 +745,8 @@ export default function TTSEditor() {
     analysis.result)
   // 현재 작업 자동 저장·복원 — 합성하지 않고 닫아도 인물·목소리·확정 구간이 남고, 다시 열면
   // 사용자에게 재확정을 요구하지 않고 앱이 스스로 되살린다. 저장된 목소리 구성은 건드리지 않는다.
-  const workDraft = useWorkDraft(ttsEngine)
+  // 되살린 대본·비운 대본은 편집기의 자기 입력 상태(ttsText)에도 들어와야 화면과 분석이 따라온다.
+  const workDraft = useWorkDraft(ttsEngine, setTtsText)
   // 실행 카드의 한 줄 안내. 실행 중에는 '누르면 시작합니다'가 남지 않는다 — 그때 눌러야 할 것은 취소다.
   const runHint = status === 'processing' ? '만드는 중입니다. 창을 닫지 마세요'
     : status === 'cancelling' ? '취소하고 정리하는 중입니다'
@@ -1395,6 +1396,25 @@ export default function TTSEditor() {
           {voiceReplaceNotice && (
             <div data-testid="voice-replace-notice" role="status" aria-live="polite"
               style={{ fontSize: 11, color: 'var(--amber, #d08700)' }}>{voiceReplaceNotice}</div>
+          )}
+          {/* 이 파일을 열 때 이전 작업이 되살아났다 — **무엇이 돌아왔는지** 알리고 고르게 한다.
+              조용히 돌아온 옛 인물·대본은 지금 만든 것처럼 보여 사용자를 헷갈리게 한다(2026-09-17). */}
+          {workDraft.restoredSummary && (
+            <div data-testid="work-draft-restored" role="status" aria-live="polite"
+              style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
+                fontSize: 11, color: 'var(--text-secondary)' }}>
+              <span>
+                이 파일의 이전 작업을 되살렸습니다 — 인물 {workDraft.restoredSummary.speakerCount}명 ·
+                대사 {workDraft.restoredSummary.lineCount}줄 · {workDraft.restoredSummary.speakerMode === 'multi' ? '여러 명' : '한 명'}
+              </span>
+              <button type="button" data-testid="work-draft-keep" onClick={workDraft.dismissRestored}
+                style={{ fontSize: 11, padding: '2px 10px', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit',
+                  border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-primary)' }}>그대로 쓰기</button>
+              <button type="button" data-testid="work-draft-discard" onClick={() => { void workDraft.discardRestored() }}
+                title="되살린 대본·인물·방식을 비우고 이 파일의 이전 작업 기록을 지웁니다. 목소리 파일 자체는 지우지 않습니다."
+                style={{ fontSize: 11, padding: '2px 10px', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit',
+                  border: '1px solid var(--rose)', background: 'transparent', color: 'var(--rose)' }}>새로 시작</button>
+            </div>
           )}
           {/* 자동 저장이 이번 실행에서 막혔다면 숨기지 않는다 — 저장되지 않았는데 저장된 것처럼 두지 않는다. */}
           {workDraft.rootError && (

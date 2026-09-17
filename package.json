@@ -1,6 +1,6 @@
 {
   "name": "audio-forge",
-  "version": "1.10.0",
+  "version": "1.11.0",
   "description": "AI-powered audio source separation tool",
   "main": "./out/main/index.js",
   "scripts": {
@@ -52,6 +52,14 @@
     "test:e2e:lab-reveal": "node test/e2e/lab-reveal-take.e2e.mjs",
     "test:e2e:lab-compose": "node test/e2e/lab-compose-export.e2e.mjs",
     "test:e2e:lab-entry": "node test/e2e/lab-synthesis-entry.e2e.mjs",
+    "test:e2e:transcript-edit": "node test/e2e/transcript-edit.e2e.mjs",
+    "test:e2e:music-compare": "node test/e2e/music-compare.e2e.mjs",
+    "test:e2e:dialogue-edit": "node test/e2e/dialogue-edit.e2e.mjs",
+    "test:e2e:diarize-engine": "node test/e2e/diarize-engine.e2e.mjs",
+    "test:e2e:speaker-block": "node test/e2e/speaker-block-notice.e2e.mjs",
+    "test:e2e:reference-ready": "node test/e2e/reference-ready-consistency.e2e.mjs",
+    "test:e2e:voice-isolation": "node test/e2e/synthesis-voice-isolation.e2e.mjs",
+    "test:e2e:restore-notice": "node test/e2e/work-draft-restore-notice.e2e.mjs",
     "postinstall": "electron-builder install-app-deps"
   },
   "dependencies": {

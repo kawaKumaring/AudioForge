@@ -617,3 +617,52 @@ def _nested(cms):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+
+@unittest.skipUnless(HAS_NUMPY, "numpy 필요")
+class TailResidualRatio(unittest.TestCase):
+    """말끝 잔여량 — 끝났을 때 아직 소리가 남아 있었는가(계측일 뿐, 소리를 바꾸지 않는다).
+
+    실측 근거(2026-09-16, 제품 경로 4회): 끊긴 1회 0.087 / 정상 3회 0.000·0.002·0.007.
+    """
+
+    def test_jamdeulmyeon_0e_gakkapda(self):
+        """잦아들며 끝나면 0 에 가깝다."""
+        import audio_finishing as af
+        x = np.linspace(1.0, 0.0, SR, dtype=np.float32)
+        self.assertLess(af.tail_residual_ratio(x, SR), 0.03)
+
+    def test_saraittneun_chae_kkeutnamyeon_keuge(self):
+        """살아 있는 채 끝나면 크게 나온다."""
+        import audio_finishing as af
+        x = np.full(SR, 0.5, dtype=np.float32)
+        self.assertAlmostEqual(af.tail_residual_ratio(x, SR), 1.0, places=5)
+
+    def test_mueumeun_jallyeotdago_hajianneunda(self):
+        """무음은 비교 대상이 없다 — 잘렸다고 말하지 않는다."""
+        import audio_finishing as af
+        self.assertEqual(af.tail_residual_ratio(np.zeros(SR, dtype=np.float32), SR), 0.0)
+        self.assertEqual(af.tail_residual_ratio(np.zeros(0, dtype=np.float32), SR), 0.0)
+
+    def test_soriui_baeyeoreul_bakkuji_anneunda(self):
+        """입력 배열을 건드리지 않는다."""
+        import audio_finishing as af
+        x = np.random.RandomState(0).uniform(-0.5, 0.5, SR).astype(np.float32)
+        before = x.copy()
+        af.tail_residual_ratio(x, SR)
+        np.testing.assert_array_equal(x, before)
+
+    def test_changeun_majimak_gugantman_bonda(self):
+        """앞이 아무리 커도 끝이 조용하면 작다 — '전체가 크다' 와 구분한다."""
+        import audio_finishing as af
+        x = np.concatenate([np.full(SR, 0.9, dtype=np.float32),
+                            np.zeros(SR // 2, dtype=np.float32)])
+        self.assertEqual(af.tail_residual_ratio(x, SR), 0.0)
+
+    def test_jalmotdoen_ipryeogeun_joyonghi_neomgiji_anneunda(self):
+        """sr·창 길이가 이상하면 조용히 넘기지 않는다."""
+        import audio_finishing as af
+        with self.assertRaises(af.AudioFinishingError):
+            af.tail_residual_ratio(np.zeros(10, dtype=np.float32), 0)
+        with self.assertRaises(af.AudioFinishingError):
+            af.tail_residual_ratio(np.zeros(10, dtype=np.float32), SR, window_ms=0.0)

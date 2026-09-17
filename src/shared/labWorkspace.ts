@@ -18,6 +18,11 @@ export interface LabTake {
   /** **요청 당시의** 목소리 식별값. 지금과 다르면 '이전 목소리' 다. */
   voiceKey: string
   createdAt: number
+  /**
+   * 끝났을 때 아직 소리가 남아 있었는가(0~1). 마감 단계가 fade 를 걸기 전에 잰 값이다.
+   * 옛 생성본에는 없다(undefined = 재지 않았다 ≠ 정상).
+   */
+  tailResidual?: number
 }
 
 export interface LabLine {
@@ -44,6 +49,18 @@ export interface LabSettings {
   referenceConditioningMode: string
   /** 참조 목표 길이(초). 0 = 엔진 권장 상한. */
   refTargetSec: number
+  /**
+   * 말끝 다듬기. 'auto' 면 끝을 8ms 로 부드럽게 줄이고 뒤에 120ms 여유를 붙인다.
+   *
+   * ★왜 있어야 하는가: 이 값을 안 보내면 워커가 'off' 로 떨어지고, 그러면 말끝의 권위가
+   *   경계 envelope 으로 넘어가 **끝 20ms 를 0 까지 깎으면서 뒤 여유는 0ms** 가 된다
+   *   (`audio_finishing.py` BOUNDARY_OFFSET_MS=20, compute_boundary_plan 의 tail_owns_offset).
+   *   실측: 발화 도중 끝난 문장의 마지막 20ms 가 off 에서 60.9%, auto 에서 86.5% 남았다.
+   *   작업실이 값을 안 보내 'off' 로 돌던 것이 말끝이 잘려 들리던 원인이다.
+   */
+  tailMode: 'off' | 'auto'
+  tailPaddingMs: number
+  tailFadeMs: number
 }
 
 /** 제품 기본값 — app.store 의 초기값과 같은 값이다(합성 탭의 현재 값이 아니다). */
@@ -53,6 +70,30 @@ export function defaultSettings(referenceConditioningRecommended: string): LabSe
     engine: 'auto', qwenModel: '',
     referenceConditioningMode: referenceConditioningRecommended,
     refTargetSec: 0,
+    tailMode: 'auto', tailPaddingMs: 120, tailFadeMs: 8,
+  }
+}
+
+/**
+ * 설정 → 합성 워커에 보낼 옵션. **작업실이 보내는 값의 단 하나의 출처다.**
+ *
+ * ★여기에 둔 이유: 화면 파일 안에 있을 때 `ttsTailMode` 가 통째로 빠져 있었고, 빠졌다는 사실을
+ *   아무 검사도 잡지 못했다. 워커는 값이 없으면 조용히 'off' 로 떨어진다(`separate.py`
+ *   `config.get("ttsTailMode", "off")`) — 소리만 달라지고 오류는 안 난다. 그래서 옵션 구성도
+ *   판정 규칙과 같은 자리에 두고 검사로 막는다.
+ */
+export function synthesisOptions(
+  text: string, s: LabSettings,
+  ref: { clip: string; region: { start: number; duration: number } | null },
+) {
+  return {
+    ttsText: text,
+    ttsSpeed: s.speed, ttsSilenceGap: s.silenceGap, ttsPitch: s.pitch,
+    ttsEngine: s.engine, ttsQwenModel: s.qwenModel,
+    ttsReferenceOverride: ref.clip, ttsReferenceRegion: ref.region,
+    ttsReferenceConditioningMode: s.referenceConditioningMode,
+    ttsTailMode: s.tailMode, ttsTailPaddingMs: s.tailPaddingMs, ttsTailFadeMs: s.tailFadeMs,
+    ttsSpeakerMode: 'single' as const,
   }
 }
 
@@ -145,6 +186,29 @@ export function lineStatusText(s: LineStatus): string {
     case 'stale_voice': return '이전 목소리의 결과'
     case 'ready': return '준비됨'
   }
+}
+
+/**
+ * **말끝이 잘렸다고 볼 기준.** 이 값 이상이면 끝났을 때 소리가 살아 있었다고 본다.
+ *
+ * ★근거(2026-09-16 실측 4회): 끊긴 1회는 0.087, 정상 3회는 0.000 / 0.002 / 0.007.
+ *   그 사이를 0.03 으로 잡았다. **표본 4회짜리 첫 기준이지 확정값이 아니다.**
+ *   바꿀 때는 새로 측정한 값과 함께 바꾼다 — 화면이 조용해지도록 올리지 않는다.
+ */
+export const TAIL_RESIDUAL_CUT = 0.03
+
+/**
+ * 이 생성본은 **끝이 잘렸을 수 있는가.**
+ *
+ * 되살릴 수는 없다 — 모델이 마지막 음절이 울리는 중에 스스로 끝낸 것이고, 생성 상한 도달도
+ * 우리 쪽 절단도 아니라 오류로 드러나지 않는다. 그래서 **알아보기만 한다**: 표시해 두면
+ * 일일이 들어 보지 않고 곧바로 '추가 생성' 을 누를 수 있다.
+ *
+ * 잰 적이 없으면(옛 생성본) false — 모르는 것을 잘렸다고 말하지 않는다.
+ */
+export function takeTailCut(take: LabTake): boolean {
+  const v = take.tailResidual
+  return typeof v === 'number' && Number.isFinite(v) && v >= TAIL_RESIDUAL_CUT
 }
 
 /** 테이크 하나에 붙일 꼬리표(없으면 빈 문자열). */
@@ -315,6 +379,12 @@ export function parseSettings(raw: unknown, referenceConditioningRecommended = '
     qwenModel: str(o.qwenModel, d.qwenModel),
     referenceConditioningMode: str(o.referenceConditioningMode, d.referenceConditioningMode),
     refTargetSec: num(o.refTargetSec, d.refTargetSec),
+    // 저장본에 값이 없으면 기본값('auto')으로 올린다. 합성 탭은 필드 부재를 '사용자가 예전에
+    // off 를 고른 세션'으로 보고 off 로 강등하지만, 작업실엔 이 설정이 **애초에 없었다** —
+    // 부재는 사용자의 선택이 아니라 우리가 안 보낸 결함이므로 강등하지 않는다.
+    tailMode: o.tailMode === 'off' || o.tailMode === 'auto' ? o.tailMode : d.tailMode,
+    tailPaddingMs: num(o.tailPaddingMs, d.tailPaddingMs),
+    tailFadeMs: num(o.tailFadeMs, d.tailFadeMs),
   }
 }
 
@@ -336,6 +406,9 @@ export function parseDoc(raw: unknown, referenceConditioningRecommended = 'auto'
         text: typeof tk.text === 'string' ? tk.text : '',
         voiceKey: typeof tk.voiceKey === 'string' ? tk.voiceKey : '',
         createdAt: typeof tk.createdAt === 'number' ? tk.createdAt : 0,
+        // 옛 생성본엔 없다. 없으면 없는 채로 둔다 — 0 으로 채우면 '정상' 이라고 거짓말하게 된다.
+        ...(typeof tk.tailResidual === 'number' && Number.isFinite(tk.tailResidual)
+          ? { tailResidual: tk.tailResidual } : {}),
       })
     }
     const adopted = typeof ln.adoptedTakeId === 'string' ? ln.adoptedTakeId : null

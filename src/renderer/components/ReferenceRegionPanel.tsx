@@ -203,6 +203,9 @@ function waitUntilLoaded(el: HTMLAudioElement, timeoutMs = 4000): Promise<boolea
   })
 }
 
+/** 아직 확정하지 않아 합성이 막혔을 때, 무엇을 눌러야 하는지. 사유의 맨 앞에 둔다. */
+const ACTION_CONFIRM = "아래에서 '이 구간으로 확정' 을 눌러야 합성을 시작할 수 있습니다."
+
 export default function ReferenceRegionPanel({
   path, clipKey, disabled, onState, label = '참조 음성',
   open = true, autoConfirm = false, onAutoConfirmSettled, plainStatus = false, committed = null,
@@ -237,6 +240,8 @@ export default function ReferenceRegionPanel({
   const say = useCallback((expert: string, plain: string) => (plainRef.current ? plain : expert), [])
   const [fileUrl, setFileUrl] = useState<string | null>(null)
   const [analysis, setAnalysis] = useState<Analysis | null>(null)
+  // 분석 결과가 새로 올 때마다 1 씩 는다. 자동 확정을 **이 분석 한 건당 한 번**으로 묶는 열쇠다.
+  const analysisSeq = useRef(0)
   // 이 패널의 길이 정책 = 마지막 분석 응답의 policy(없으면 예전 표시로 폴백). ref 는 옛 closure(runAnalyze/confirm)용.
   const policy = policyFromAnalysis(analysis)
   const policyRef = useRef<ReferencePolicySummary>(policy)
@@ -301,6 +306,7 @@ export default function ReferenceRegionPanel({
       if (!a || typeof a.duration_sec !== 'number') {
         throw new Error(a?.error_message || a?.reason || '참조 분석 결과가 올바르지 않습니다')
       }
+      analysisSeq.current += 1
       setAnalysis(a)
       const committedThen = hasCommittedNow()   // 결과가 도착한 지금의 사용 중 상태
       const cNow = committedRef.current
@@ -335,10 +341,17 @@ export default function ReferenceRegionPanel({
           onStateRef.current({ phase: 'needs_region', clip: '', region: null, message: regionNeedText(pol, a.duration_sec, true) })
         }
         if (!committedThen) {
+          // ★이 문구는 시작 단추의 **막힌 사유**로 그대로 나간다. 길이 안내만 적어 두면
+          //   "왜 못 만드는지" 가 아니라 "참고 사항" 처럼 읽힌다(실측 보고). 자동 확정이 없어
+          //   사용자가 눌러야 하는 경우에는 **눌러야 한다는 사실**을 함께 말한다.
+          const mustConfirm = !autoConfirm
+          const need = regionNeedText(pol, a.duration_sec, !!a.region_required)
           onStateRef.current({
             // 자동 확정이 뒤따르면 이것은 '진행 중' 이다. 자동 확정이 없으면 사용자가 골라야 한다.
             phase: autoConfirm ? 'preparing' : 'needs_region', clip: '',
-            message: say(regionNeedText(pol, a.duration_sec, !!a.region_required), '목소리에서 쓸 부분을 고르는 중입니다…'),
+            message: say(
+              mustConfirm ? ACTION_CONFIRM + ' ' + need : need,
+              mustConfirm ? ACTION_CONFIRM : '목소리에서 쓸 부분을 고르는 중입니다…'),
             region: null,
           })
         }
@@ -635,7 +648,14 @@ export default function ReferenceRegionPanel({
   }, [])
   useEffect(() => {
     if (!autoConfirm || !path) return
-    const key = `${clipKey}\u0000${path}`
+    // ★열쇠에 **분석 번호**를 넣는다(2026-09-16 사용자 보고: "불러왔으면 셋팅이 다 되어 있어야 하는데 꼬였다").
+    //   예전 열쇠는 (목소리, 파일) 뿐이라 **파일당 딱 한 번**만 자동 확정했다. 그래서 같은 패널에서
+    //   분석이 다시 돌면(엔진·참조 목표 길이 변경 등) 확정본이 없는데도 자동 확정을 건너뛰어,
+    //   상태가 '준비 중' 에 그대로 머물고 **아무도 끝내지 않았다** — 시작 단추는 계속 막히는데
+    //   화면에는 길이 안내만 있어 무엇을 해야 하는지 알 수 없었다.
+    //   분석 한 건당 한 번으로 묶으면 같은 분석을 두 번 확정하지 않으면서(무한 확정 없음)
+    //   새 분석에는 다시 기회가 간다.
+    const key = `${clipKey}\u0000${path}\u0000${analysisSeq.current}`
     if (hasCommitted) { settleAuto(key); return }        // 이미 쓰고 있는 구간이 있다 → 준비는 끝난 것
     if (analyzeError) { settleAuto(key); return }        // 분석 실패 — 사유는 이미 상위로 올렸다
     if (!analysis) return                                 // 아직 분석 중이다. **종료가 아니다.**
@@ -643,7 +663,15 @@ export default function ReferenceRegionPanel({
     autoConfirmedKey.current = key
     if (!analysis.needs_region) { settleAuto(key); return }   // 원본을 그대로 쓸 수 있다/못 쓴다 — 분석이 이미 판정했다
     const r = analysis.recommend
-    if (!r || !r.ok) { settleAuto(key); return }              // 추천이 없으면 임의로 고르지 않는다
+    if (!r || !r.ok) {
+      // 추천이 없으면 임의로 고르지 않는다. 다만 **'준비 중' 으로 남겨 두지 않는다** —
+      // 남겨 두면 끝나지 않는 상태가 되고, 사용자는 목소리가 준비되는 줄 알고 기다리게 된다.
+      if (!hasCommittedNow()) {
+        onStateRef.current({ phase: 'needs_region', clip: '', region: null, message: ACTION_CONFIRM })
+      }
+      settleAuto(key)
+      return
+    }
     void confirmRegion(r.start_sec, clampDuration(policyRef.current, analysis.duration_sec, r.dur_sec))
       .finally(() => settleAuto(key))
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -832,7 +860,10 @@ const sub: CSSProperties = { fontSize: 11, color: 'var(--text-muted)', lineHeigh
             <button onClick={stopPlay} disabled={disabled} style={btn('var(--bg-elevated)', 'var(--text-muted)')}>■ 정지</button>
             <button onClick={() => { void confirmRegion() }} disabled={disabled || confirming}
               style={btn(confirmedClip ? 'var(--bg-elevated)' : 'var(--rose)', confirmedClip ? 'var(--cyan)' : '#fff')}>
-              {confirming ? '생성 중...' : confirmedClip ? '✓ 확정됨 (다시 확정)' : '이 구간으로 확정'}
+              {/* 확정본이 있어도 **지금 쓰이고 있지 않으면** '확정됨' 이라고 하지 않는다 —
+                  그렇게 말하면 눌러야 할 단추를 이미 누른 것으로 읽는다. */}
+              {confirming ? '생성 중...'
+                : confirmedClip && hasCommitted ? '✓ 확정됨 (다시 확정)' : '이 구간으로 확정'}
             </button>
             {/* 재생 상태를 눈에 보이게 — '눌렀는데 아무 반응 없음'을 없앤다 */}
             <span role="status" aria-live="polite" style={{ ...sub, minWidth: 44 }}>
@@ -881,8 +912,14 @@ const sub: CSSProperties = { fontSize: 11, color: 'var(--text-muted)', lineHeigh
                   낱말 사이에서 잘랐고 양 끝에 짧은 무음을 넣었습니다
                 </div>
               )}
-              {confirmedClip && metrics.warnings.length === 0 && (
-                <span style={{ color: 'var(--cyan)' }}> · 참조 준비 완료</span>
+              {/* ★'준비 완료' 는 **합성이 실제로 가능한 상태**일 때만 말한다(2026-09-16 사용자 보고).
+                  예전에는 이 패널이 만들어 둔 클립이 살아 있기만 하면 찍혔다. 그래서 위에서는
+                  '참조 준비 완료' 라고 하고 아래 시작 단추는 '준비 필요' 라고 하는 일이 생겼다 —
+                  사용자 말 그대로 "목소리가 준비되어 있어도 안 된다고 한다". committed 는 호출부가
+                  준비됨일 때만 넘기는 값이라, 이것을 함께 보면 두 말이 갈라지지 않는다. */}
+              {confirmedClip && hasCommitted && metrics.warnings.length === 0 && (
+                <span data-testid="reference-ready-badge"
+                  style={{ color: 'var(--cyan)' }}> · 참조 준비 완료</span>
               )}
             </div>
           )}

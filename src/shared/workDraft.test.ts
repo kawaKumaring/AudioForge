@@ -4,8 +4,8 @@ import assert from 'node:assert/strict'
 
 import {
   WORK_DRAFT_RECENT_LIST_LIMIT, WORK_DRAFT_SCHEMA_VERSION, buildWorkDraft, deserializeWorkDrafts,
-  findWorkDraft, planWorkRestore, putWorkDraft, recentWorkDraftKeys, serializeWorkDrafts, slotForPlan,
-  workDraftIsEmpty, workKeyOf,
+  findWorkDraft, planWorkRestore, putWorkDraft, recentWorkDraftKeys, removeWorkDraft, serializeWorkDrafts, slotForPlan,
+  summarizeWorkDraft, workDraftIsEmpty, workKeyOf,
 } from './workDraft.ts'
 import type { WorkDraft } from './workDraft.ts'
 
@@ -157,4 +157,29 @@ test('복원 중에는 어떤 인물도 준비됨이 아니고, 재연결 인물
   assert.equal(lost.message, '원본 다시 연결 필요')
   assert.equal(lost.source, 'E:/gone.wav', '원본 지정을 지우지 않는다')
   assert.equal(lost.ready, false)
+})
+
+// ── 되살리기의 투명성(2026-09-17, 소유 경계 B안) ──────────────────────────────
+// 옛 인물 셋이 조용히 돌아와 "셋팅했는데 셋팅하라고 한다" 가 됐다. 되살린 것은 **보여 주고**,
+// 버리는 길은 **사용자의 뜻으로만** 연다.
+
+test('되살린 기록의 요약은 수치만 담는다 — 인물 수·말이 있는 줄 수·방식', () => {
+  const d = buildWorkDraft({ ...INPUT, ttsText: '[화자 주인공]\n하나\n[기쁨]\n둘\n\n[화자 조연]\n셋' })
+  const s = summarizeWorkDraft(d)
+  assert.equal(s.speakerCount, 2)
+  assert.equal(s.lineCount, 3, '표기만 있는 줄과 빈 줄은 세지 않는다')
+  assert.equal(s.speakerMode, 'multi')
+  assert.equal('ttsText' in (s as object), false, '대사 본문은 요약에 없다')
+})
+
+test('새로 시작은 그 파일의 기록만 지운다 — 다른 작업의 기록은 그대로', () => {
+  const a = buildWorkDraft(INPUT)
+  const b = buildWorkDraft({ ...INPUT, sourcePath: 'E:\\voices\\B.wav' })
+  let drafts = putWorkDraft({}, workKeyOf(a.sourcePath), a)
+  drafts = putWorkDraft(drafts, workKeyOf(b.sourcePath), b)
+  const after = removeWorkDraft(drafts, workKeyOf(a.sourcePath))
+  assert.equal(workKeyOf(a.sourcePath) in after, false)
+  assert.ok(workKeyOf(b.sourcePath) in after)
+  assert.equal(Object.keys(drafts).length, 2, '입력은 바뀌지 않는다')
+  assert.equal(removeWorkDraft(after, 'no-such-key'), after, '없는 열쇠는 그대로 돌려준다')
 })

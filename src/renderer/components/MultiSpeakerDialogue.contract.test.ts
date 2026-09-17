@@ -233,7 +233,12 @@ test('화면 용어 — 내부 용어를 내지 않는다', () => {
 
 test('생성 계약의 거울 — 카드 표시(목소리 상태)와 전송 규칙', () => {
   const PB = codeOf(read('./ProcessButton.tsx'))
-  assert.ok(PB.includes('const effective = slot?.ready ? (slot.clip || slot.source) : \'\''), '기본 목소리 전송 규칙 불변')
+  // 전송 규칙은 이제 shared 의 단일 함수가 가진다 — 화면 판정과 같은 자리에서 나온다.
+  assert.ok(PB.includes('speakerTransmission(ttsSpeakerRefState)'), '전송은 공용 규칙을 쓴다')
+  const SR = codeOf(read('../../shared/speakerReference.ts'))
+  assert.ok(SR.includes("slot?.ready ? (String(slot?.clip ?? '') || source) : ''"), '기본 목소리 전송 규칙 불변')
+  assert.ok(SR.includes('speakerTransmission(input.speakerSlots).registered'),
+    '등록 판정도 같은 규칙에서 나온다 — 화면이 통과시키고 파이썬이 막는 틈을 막는다')
   assert.ok(PB.includes('ttsSpeakerEmotionRefs: gateSpeakerEmotionRefs(ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled)'), '감정별 참조는 켠 인물만')
   assert.ok(PB.includes('ttsSpeakerMode'), '생성 방식 전송')
   const i = SHELL.indexOf('const speakerReadiness = readinessFromSlots({')

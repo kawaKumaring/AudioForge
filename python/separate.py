@@ -275,11 +275,19 @@ def main():
         args.transcribe = config.get("transcribe", args.transcribe)
         args.output_format = config.get("outputFormat", args.output_format)
         args.whisper_model = config.get("whisperModel", args.whisper_model)
+        args.asr_engine = config.get("asrEngine", "whisper")
         args.whisper_lang = config.get("whisperLang", args.whisper_lang)
         args.translate = config.get("translate", args.translate)
         args.translate_model = config.get("translateModel", "600m")
         args.srt = config.get("srt", args.srt)
         args.split_points = config.get("splitPoints", args.split_points)
+        # 대화 구간 수정본 — 있으면 모델을 다시 돌리지 않고 이 구간으로만 다시 만든다.
+        args.dialogue_segments = config.get("dialogueSegments", None)
+        # 대화 분석 엔진 — 기본은 기존 엔진. 고를 때만 Community-1 로 간다.
+        args.diarize_engine = config.get("diarizeEngine", "builtin")
+        # 저장할 조각 번호(0부터). 없으면 전부 저장 — 기존 동작 그대로.
+        sel = config.get("splitSelected", None)
+        args.split_selected = [int(x) for x in sel] if isinstance(sel, list) else None
         args.split_labels = config.get("splitLabels", args.split_labels)
         args.n_speakers = config.get("nSpeakers", args.n_speakers)
         args.gpu_policy = config.get("gpuPolicy", "auto")  # 대화 분리 GPU 정책(auto/gpu/cpu)
@@ -649,6 +657,13 @@ def main():
             _run_track_process(args)
             return
 
+        # ── 대화 구간 수정본으로 다시 만들기 ──
+        # 화자 분석(VAD·임베딩·군집)은 다시 돌리지 않는다. 사용자가 고친 배정·경계로
+        # 원본에서 구간을 떠다 화자별 트랙에 올릴 뿐이다.
+        if args.mode == "dialogue-rebuild":
+            _run_dialogue_rebuild(args)
+            return
+
         # ── Transcribe-only mode ──
         if args.mode == "transcribe":
             _run_transcribe_only(args)
@@ -675,13 +690,26 @@ def main():
                 from music_worker import run_music_separation
                 tracks = run_music_separation(args.input, args.output, args.model) or []
         elif args.mode == "conversation":
-            emit("progress", percent=1, message="화자 분리 엔진 로딩 중... (torch + speechbrain)")
-            patch_torchaudio()
-            from conversation_worker import run_conversation_separation
-            emit("progress", percent=2, message="엔진 로딩 완료, 분리 시작")
-            tracks = run_conversation_separation(
-                args.input, args.output, args.n_speakers,
-                gpu_policy=getattr(args, "gpu_policy", "auto")) or []
+            engine = getattr(args, "diarize_engine", "builtin") or "builtin"
+            if engine == "community-1":
+                # 고를 때만 온다. 기존 엔진과 기본 선택은 그대로다.
+                emit("progress", percent=1, message="Community-1 화자 분석 준비 중...")
+                from conversation_worker import run_community1_diarization, Community1Unavailable
+                try:
+                    tracks = run_community1_diarization(
+                        args.input, args.output, args.n_speakers) or []
+                except Community1Unavailable as e:
+                    # ★무엇이 없어서 못 하는지 그대로 알린다. **기존 엔진으로 몰래 바꾸지 않는다.**
+                    emit("error", code="DIARIZE_NOT_READY", message=str(e))
+                    return None
+            else:
+                emit("progress", percent=1, message="화자 분리 엔진 로딩 중... (torch + speechbrain)")
+                patch_torchaudio()
+                from conversation_worker import run_conversation_separation
+                emit("progress", percent=2, message="엔진 로딩 완료, 분리 시작")
+                tracks = run_conversation_separation(
+                    args.input, args.output, args.n_speakers,
+                    gpu_policy=getattr(args, "gpu_policy", "auto")) or []
 
         if not tracks:
             # 워커(music_worker/conversation_worker)가 이미 구조화 오류(code·샘플레이트·
@@ -746,7 +774,20 @@ def _post_process(args, tracks):
                 t["path"] = dst
 
     emit("progress", percent=99, message="완료!")
-    emit("result", tracks=tracks, outputDir=args.output)
+    # 대화 모드에서는 화자 구간도 함께 보낸다 — 화면이 재분석 없이 고칠 수 있게.
+    # 시간과 화자 이름뿐이고 전사 본문은 들어가지 않는다.
+    extra = {}
+    if args.mode == "conversation":
+        try:
+            from conversation_worker import LAST_SEGMENTS, LAST_OVERLAPS
+            if LAST_SEGMENTS:
+                extra["dialogueSegments"] = list(LAST_SEGMENTS)
+            # 겹침 정보는 **따로** 보낸다 — 구간 목록에 섞지 않는다.
+            if LAST_OVERLAPS:
+                extra["dialogueOverlaps"] = list(LAST_OVERLAPS)
+        except Exception:
+            pass
+    emit("result", tracks=tracks, outputDir=args.output, **extra)
 
 
 def _run_ref_transcribe(args):
@@ -757,6 +798,51 @@ def _run_ref_transcribe(args):
     emit("progress", percent=10, message="참조 음성 전사 중... (Whisper)")
     t = transcribe_reference(args.input, "small")
     emit("result", transcript=t.to_dict())
+
+
+def _run_dialogue_rebuild(args):
+    """수정한 구간으로 화자별 트랙을 다시 만든다 — **모델 재실행 없음.**"""
+    emit("status", message="대화 구간 수정본 만들기", percent=0)
+    segs = getattr(args, "dialogue_segments", None)
+    if not isinstance(segs, list) or not segs:
+        emit("error", code="DIALOGUE_NO_SEGMENTS",
+             message="다시 만들 구간이 없습니다.")
+        return
+
+    emit("progress", percent=10, message="원본 읽는 중...")
+    try:
+        # 기존 경로와 **같은 로더**를 쓴다. torchaudio.load 는 이 환경에서 torchcodec 을
+        # 요구해 실패한다(실측) — audio_utils.load_audio 가 soundfile 로 읽는다.
+        from audio_utils import load_audio
+        import dialogue_rebuild as dr
+    except ImportError as e:
+        emit("error", message=f"필요한 패키지가 설치되지 않았습니다: {e}")
+        return
+
+    wav_path = convert_to_wav(args.input)
+    try:
+        wav, sr = load_audio(wav_path)
+        if wav.shape[0] > 1:
+            wav = wav.mean(dim=0, keepdim=True)
+        emit("progress", percent=40, message="구간대로 화자 트랙 만드는 중...")
+        tracks, dropped = dr.rebuild_speaker_tracks(wav, sr, segs, args.output)
+    finally:
+        try:
+            os.remove(wav_path)
+            os.rmdir(os.path.dirname(wav_path))
+        except OSError:
+            pass
+
+    if dropped:
+        # 버리거나 자른 구간을 조용히 넘기지 않는다. 번호와 까닭만 올린다.
+        emit("dialogueRebuildNotes", dropped=dropped)
+    if not tracks:
+        emit("error", code="DIALOGUE_REBUILD_EMPTY",
+             message="쓸 수 있는 구간이 없어 트랙을 만들지 못했습니다.")
+        return
+    # ★이것은 원본 구간을 화자별 트랙에 **배정**한 것이다. 겹친 목소리를 갈라낸 것이 아니다.
+    emit("progress", percent=95, message="완료!")
+    emit("result", tracks=tracks, outputDir=args.output)
 
 
 def _run_transcribe_only(args):
@@ -770,8 +856,11 @@ def _run_transcribe_only(args):
     # 출력 파일은 임시 wav(converted.wav)가 아니라 원본 이름으로 저장
     orig_base = os.path.splitext(os.path.basename(args.input))[0]
     try:
+        # asr_engine 은 **텍스트 모드에서만** 넘긴다. 분리 모드의 후처리 전사와 TTS 참조
+        # 전사 같은 공용 호출부는 기존 경로 그대로다(첫 적용 범위를 좁힌다).
         info = transcribe_file(wav_path, args.output, args.whisper_model, args.translate, args.srt,
-                               whisper_lang=getattr(args, "whisper_lang", ""), base_name=orig_base)
+                               whisper_lang=getattr(args, "whisper_lang", ""), base_name=orig_base,
+                               asr_engine=getattr(args, "asr_engine", "whisper") or "whisper")
     finally:
         try:
             os.remove(wav_path)
@@ -785,7 +874,10 @@ def _run_transcribe_only(args):
         "path": info["txt_path"],
         "text": info["text"],
         "language": info["language"],
-        "txt_path": info["txt_path"]
+        "txt_path": info["txt_path"],
+        # 문장별 시간 — 화면의 교정 자리가 쓴다(원본 파일은 그대로다).
+        "segments": info.get("segments") or [],
+        "base": info.get("base"),
     }]
     if info.get("translated_text"):
         base = os.path.splitext(os.path.basename(args.input))[0]
@@ -928,15 +1020,24 @@ def _run_split(args):
             # Build time boundaries
             boundaries = [0.0] + split_seconds + [total_dur]
 
-            # 트랙 이름/라벨: 커스텀 라벨 있으면 사용 + 파일명 안전화, 없으면 Track NN
-            track_specs = []
-            for idx in range(len(boundaries) - 1):
-                lbl = split_labels_list[idx].strip() if idx < len(split_labels_list) and split_labels_list[idx].strip() else f"Track {idx + 1:02d}"
-                safe_label = "".join(c for c in lbl if c not in r'\/:*?"<>|').strip()
-                nm = f"{idx + 1:02d}_{safe_label}" if safe_label else f"track_{idx + 1:02d}"
-                track_specs.append((nm, lbl))
-
-            tracks = _extract_tracks_ffmpeg(ffmpeg, tmp_input, boundaries, track_specs, args, 10, 75)
+            # 트랙 이름/라벨 — **화면이 보여 준 것과 같은 규칙**(split_markers.build_pieces).
+            # 경계를 여기서 다시 찾지 않는다: 위 boundaries 를 그대로 조각으로 만든다.
+            pieces = _sm.build_pieces(split_seconds, total_dur, split_labels_list)
+            # 사용자가 고른 조각만 저장한다(고르지 않았으면 전부). 번호는 그대로 둔다.
+            chosen = getattr(args, "split_selected", None)
+            keep = _sm.selected_pieces(pieces, chosen)
+            if not keep:
+                emit("error", code="SPLIT_NO_SELECTION",
+                     message="저장할 조각을 하나도 고르지 않았습니다.")
+                return None
+            if chosen is not None and len(keep) != len(pieces):
+                emit("progress", percent=8,
+                     message=f"고른 조각 {len(keep)}개만 저장합니다(전체 {len(pieces)}개)")
+            # ★인접하지 않은 조각을 골랐으면 경계가 이어지지 않는다 — 조각마다 따로 뽑는다.
+            track_specs = [(p["name"], p["label"]) for p in keep]
+            tracks = _extract_tracks_ffmpeg(
+                ffmpeg, tmp_input, [(p["start"], p["end"]) for p in keep],
+                track_specs, args, 10, 75)
             if tracks is None:
                 return
 
@@ -1055,13 +1156,20 @@ def _extract_tracks_ffmpeg(ffmpeg, tmp_input, boundaries, track_specs, args, pct
     진행률은 pct_start ~ pct_start+pct_span 범위로 표시."""
     from datetime import datetime
     tracks = []
-    total_tracks = len(boundaries) - 1
+    # boundaries 는 두 가지 모양을 받는다:
+    #   · 평평한 경계 목록 [0, m1, m2, total] — 인접한 두 값이 한 구간(자동 감지 경로).
+    #   · 구간 쌍 목록 [(start, end), ...] — **떨어진 조각**도 뽑을 수 있다(고른 조각만 저장).
+    if boundaries and isinstance(boundaries[0], (tuple, list)):
+        ranges = [(float(a), float(b)) for a, b in boundaries]
+    else:
+        ranges = [(float(boundaries[i]), float(boundaries[i + 1]))
+                  for i in range(len(boundaries) - 1)]
+    total_tracks = len(ranges)
     source_name = os.path.splitext(os.path.basename(args.input))[0]
 
     for idx in range(total_tracks):
         pct = pct_start + int((idx / max(total_tracks, 1)) * pct_span)
-        start_sec = boundaries[idx]
-        end_sec = boundaries[idx + 1] if idx + 1 < len(boundaries) else None
+        start_sec, end_sec = ranges[idx]
         name, label = track_specs[idx]
 
         emit("progress", percent=pct, message=f"{label} 추출 중...")

@@ -17,7 +17,7 @@ const OUTPUT_HINTS: Record<string, string> = {
 }
 
 export default function Options() {
-  const { mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, whisperLang, translateModel, demucsModel, nSpeakers,
+  const { mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, asrEngine, setAsrEngine, diarizeEngine, setDiarizeEngine, whisperLang, translateModel, demucsModel, nSpeakers,
     setTrimSilence, setSilenceGap, setTranscribe, setTranslate, setExportSrt, setOutputFormat, setWhisperModel, setWhisperLang, setTranslateModel, setDemucsModel, setNSpeakers, status } = useAppStore()
   const disabled = status === 'processing'
   const [open, setOpen] = useState(false)
@@ -155,6 +155,46 @@ export default function Options() {
                     background: whisperModel === m ? 'var(--cyan)' : 'transparent',
                     color: whisperModel === m ? '#fff' : 'var(--text-muted)'
                   }}>{m === 'large-v3' ? 'Large' : m === 'large-v3-turbo' ? 'Turbo' : m.charAt(0).toUpperCase() + m.slice(1)}</button>
+                ))}
+              </div>
+            )}
+            {/* 대화 분석 엔진 — **대화 모드에서만.** 기본은 기존 엔진이다.
+                Community-1 은 준비돼 있지 않으면 실패를 그대로 알린다(몰래 바꾸지 않는다). */}
+            {mode === 'conversation' && (
+              <div data-testid="diarize-engine-row" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>분석 방식</span>
+                {([['builtin', '기본'], ['community-1', 'Community-1']] as const).map(([id, label]) => (
+                  <button key={id} data-testid={`diarize-engine-${id}`}
+                    onClick={() => !disabled && setDiarizeEngine(id)} disabled={disabled}
+                    title={id === 'builtin'
+                      ? "지금까지 쓰던 화자 분석입니다."
+                      : "pyannote Community-1 로 분석합니다. 이용 조건 수락과 모델 준비가 필요하며, 준비돼 있지 않으면 실패를 그대로 알립니다. 음원은 이 컴퓨터 밖으로 나가지 않습니다."}
+                    style={{
+                      padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                      fontSize: 10, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',
+                      background: diarizeEngine === id ? 'var(--cyan)' : 'transparent',
+                      color: diarizeEngine === id ? '#fff' : 'var(--text-muted)',
+                    }}>{label}</button>
+                ))}
+              </div>
+            )}
+            {/* 실행 엔진 — **텍스트 추출 모드에서만.** 기본은 기존 경로다.
+                분리 모드의 후처리 전사와 합성의 참조 전사는 이 선택을 따르지 않는다. */}
+            {isTranscribeMode && (
+              <div data-testid="asr-engine-row" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>실행 방식</span>
+                {([['whisper', '기본'], ['faster-whisper', '빠른 실행']] as const).map(([id, label]) => (
+                  <button key={id} data-testid={`asr-engine-${id}`}
+                    onClick={() => !disabled && setAsrEngine(id)} disabled={disabled}
+                    title={id === 'whisper'
+                      ? "지금까지 쓰던 실행 경로입니다."
+                      : "같은 Whisper 모델을 CTranslate2 로 돌립니다. 결과 형식은 같습니다. 준비돼 있지 않으면 실패를 그대로 알립니다."}
+                    style={{
+                      padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                      fontSize: 10, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',
+                      background: asrEngine === id ? 'var(--cyan)' : 'transparent',
+                      color: asrEngine === id ? '#fff' : 'var(--text-muted)',
+                    }}>{label}</button>
                 ))}
               </div>
             )}

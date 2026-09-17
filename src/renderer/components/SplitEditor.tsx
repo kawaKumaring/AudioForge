@@ -6,6 +6,7 @@ import { usePlaybackVolume } from '@/hooks/usePlaybackVolume'
 import {
   validateMarkers, formatSplitMarkerError, AUTO_SILENCE_SPLIT_NOTICE,
 } from '../../shared/splitMarkers'
+import { buildPieces, fmtDuration, type SplitPiece } from '../../shared/splitPieces'
 
 interface Marker {
   id: string
@@ -255,6 +256,12 @@ export default function SplitEditor() {
   }
 
   // 분할 지점 검증 — 규칙은 shared/splitMarkers 하나만 본다(renderer/main/Python 동일 권위).
+  // 저장 전에 실제로 나올 조각 — 여기서 경계를 새로 찾지 않는다. 화면이 확정한 마커를
+  // 그대로 조각으로 만들고, 실행 단계도 같은 규칙(split_markers.build_pieces)을 쓴다.
+  const [unselected, setUnselected] = useState<Set<number>>(new Set())
+  const [playingPiece, setPlayingPiece] = useState<number | null>(null)
+  const pieceStopRef = useRef<number | null>(null)
+
   // 파형 디코드 전(duration 0)에는 fileInfo.duration으로 대체하고, 그것도 없으면 판정을 미룬다
   // (로딩 중 가짜 오류를 띄우지 않기 위해). 마커를 고쳐 담지 않는다 — 표시만 한다.
   const effectiveDuration = duration > 0 ? duration : (fileInfo?.duration ?? 0)
@@ -270,12 +277,58 @@ export default function SplitEditor() {
   const autoSilenceSplit = markers.length === 0
 
   // Build split points for export (used by ProcessButton)
+  const pieces: SplitPiece[] = useMemo(() => (
+    effectiveDuration > 0
+      ? buildPieces(markers.map((m) => m.time), effectiveDuration,
+                    [firstTrackLabel, ...markers.map((m) => m.label)])
+      : []
+  ), [markers, effectiveDuration, firstTrackLabel])
+
   useEffect(() => {
     // Store markers in global state for ProcessButton to access
     const points = markers.map(m => m.time)
     const labels = [firstTrackLabel, ...markers.map(m => m.label)]
-    useAppStore.setState({ splitMarkers: points, splitLabels: labels })
-  }, [markers, firstTrackLabel])
+    // 고른 조각만 저장한다 — 전부 고른 상태면 아무것도 보내지 않아 예전 동작 그대로다.
+    const selected = pieces.filter((p) => !unselected.has(p.index)).map((p) => p.index)
+    useAppStore.setState({
+      splitMarkers: points, splitLabels: labels,
+      splitSelected: selected.length === pieces.length ? null : selected,
+    })
+  }, [markers, firstTrackLabel, pieces, unselected])
+
+  // 조각 듣기 — 저장에 쓰는 것과 **같은 구간 정보**를 쓴다. 파일을 만들지 않는다.
+  const stopPiece = useCallback(() => {
+    try { wsRef.current?.pause() } catch { /* noop */ }
+    pieceStopRef.current = null
+    setPlayingPiece(null)
+  }, [])
+
+  const playPiece = useCallback((p: SplitPiece | null) => {
+    const ws = wsRef.current
+    if (!ws || effectiveDuration <= 0) return
+    const same = p ? playingPiece === p.index : playingPiece === -1
+    if (same) { stopPiece(); return }
+    stopPiece()
+    pieceStopRef.current = p ? p.end : effectiveDuration
+    setPlayingPiece(p ? p.index : -1)
+    try {
+      ws.setTime(p ? p.start : 0)
+      ws.play()
+    } catch { setPlayingPiece(null) }
+  }, [effectiveDuration, playingPiece, stopPiece])
+
+  // 끝 지점에 닿으면 멈춘다.
+  useEffect(() => {
+    const ws = wsRef.current
+    if (!ws) return
+    const un = ws.on('timeupdate', (sec: number) => {
+      const until = pieceStopRef.current
+      if (until != null && sec >= until) stopPiece()
+    })
+    return () => { try { un() } catch { /* noop */ } }
+  }, [stopPiece, fileUrl])
+
+  useEffect(() => stopPiece, [stopPiece])
 
   if (!isActive) return null
 
@@ -394,6 +447,67 @@ export default function SplitEditor() {
                 </button>
               </div>
             ))}
+          </div>
+        </div>
+      )}
+
+      {/* 저장 전에 실제로 나올 조각 — 화면이 확정한 경계 그대로다. */}
+      {pieces.length > 0 && (
+        <div data-testid="split-pieces" style={{
+          borderRadius: 10, padding: '10px 12px',
+          background: 'var(--bg-card)', border: '1px solid var(--border-subtle)',
+          display: 'flex', flexDirection: 'column', gap: 6,
+        }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span style={{ fontSize: 12, fontWeight: 700, color: 'var(--text-primary)' }}>
+              저장하면 나올 조각 {pieces.length}개
+            </span>
+            <button data-testid="split-play-all" onClick={() => playPiece(null)}
+              title={"처음부터 끝까지 들어 봅니다. 저장 파일을 만들지 않습니다."}
+              style={{
+                padding: '3px 9px', borderRadius: 6, border: 'none', cursor: 'pointer',
+                fontFamily: 'inherit', fontSize: 11, fontWeight: 600,
+                background: 'var(--bg-elevated)', color: 'var(--text-primary)',
+              }}>{playingPiece === -1 ? '■ 멈춤' : '▶ 전체 미리듣기'}</button>
+            <span data-testid="split-selected-count" style={{ marginLeft: 'auto', fontSize: 10, color: 'var(--text-muted)' }}>
+              저장할 조각 {pieces.length - unselected.size}개
+            </span>
+          </div>
+          {pieces.map((p) => {
+            const off = unselected.has(p.index)
+            return (
+              <div key={p.index} data-testid="split-piece" data-selected={off ? '0' : '1'}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, padding: '3px 4px', borderRadius: 6,
+                  background: playingPiece === p.index ? 'var(--bg-elevated)' : 'transparent',
+                  opacity: off ? 0.45 : 1,
+                }}>
+                <input type="checkbox" data-testid="split-piece-keep" checked={!off}
+                  onChange={() => setUnselected((s) => {
+                    const n = new Set(s)
+                    if (n.has(p.index)) n.delete(p.index); else n.add(p.index)
+                    return n
+                  })}
+                  aria-label={`${p.label} 저장하기`}
+                  style={{ accentColor: 'var(--accent)', cursor: 'pointer', flexShrink: 0 }} />
+                <button data-testid="split-piece-play" onClick={() => playPiece(p)}
+                  aria-label={`${p.label} 듣기`}
+                  style={{
+                    padding: '1px 5px', borderRadius: 5, border: 'none', cursor: 'pointer',
+                    fontFamily: 'inherit', fontSize: 11, background: 'transparent', color: 'var(--text-primary)',
+                  }}>{playingPiece === p.index ? '■' : '▶'}</button>
+                <span data-testid="split-piece-name" style={{ fontSize: 11, color: 'var(--text-primary)', minWidth: 0, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                  {p.name}
+                </span>
+                <span data-testid="split-piece-time" style={{ fontSize: 10, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
+                  {fmtDuration(p.start)} → {fmtDuration(p.end)} · {fmtDuration(p.duration)}
+                </span>
+              </div>
+            )
+          })}
+          <div style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+            경계를 지우면 앞뒤 조각이 하나로 합쳐집니다. 미리듣기는 원본을 그대로 들려주며
+            파일을 만들지 않습니다.
           </div>
         </div>
       )}

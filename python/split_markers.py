@@ -186,3 +186,41 @@ def parse_marker_csv(text):
         except ValueError:
             out.append(s)
     return out
+
+# ── 조각 만들기 — 화면이 보여 준 것과 **같은 값**을 낸다 ──────────────────────
+#
+# ★경계를 여기서 새로 찾지 않는다. 화면이 확정한 마커를 그대로 조각으로 만든다.
+#   같은 규칙이 shared/splitPieces.ts 에도 있고, 두 쪽이 같은 값을 내야 미리듣기가 사실이 된다.
+
+_FORBIDDEN_NAME_CHARS = set('\/:*?"<>|')
+
+
+def safe_label(label):
+    """파일 이름에 쓸 수 없는 글자를 뺀다."""
+    return "".join(c for c in (label or "") if c not in _FORBIDDEN_NAME_CHARS).strip()
+
+
+def build_pieces(markers, duration_seconds, labels=None):
+    """[{index,start,end,duration,name,label}] — boundaries 인접 구간이 한 조각."""
+    labels = labels or []
+    bounds = [0.0] + list(markers) + [float(duration_seconds)]
+    pieces = []
+    for i in range(len(bounds) - 1):
+        raw = labels[i].strip() if i < len(labels) and labels[i] else ""
+        label = raw or "Track %02d" % (i + 1)
+        safe = safe_label(label)
+        pieces.append({
+            "index": i, "start": bounds[i], "end": bounds[i + 1],
+            "duration": max(0.0, bounds[i + 1] - bounds[i]),
+            "name": ("%02d_%s" % (i + 1, safe)) if safe else ("track_%02d" % (i + 1)),
+            "label": label,
+        })
+    return pieces
+
+
+def selected_pieces(pieces, selected):
+    """저장할 조각만. None 이면 전부. **번호는 그대로 둔다** — 빼도 이름이 밀리지 않는다."""
+    if selected is None:
+        return list(pieces)
+    keep = set(int(x) for x in selected)
+    return [p for p in pieces if p["index"] in keep]

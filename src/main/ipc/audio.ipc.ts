@@ -29,6 +29,9 @@ import {
 import { WORK_DRAFT_STORAGE_KEY } from '../../shared/workDraft'
 import { PLAYBACK_VOLUME_STORAGE_KEY } from '../../shared/playbackVolume'
 import { LAB_STORAGE_KEY } from '../../shared/labWorkspace'
+import { TRANSCRIPT_EDIT_STORAGE_KEY } from '../../shared/transcriptEdit'
+import { DIALOGUE_EDIT_STORAGE_KEY } from '../../shared/dialogueEdit'
+import { registerTranscriptIpc } from './transcript.ipc'
 import { registerLabIpc } from './lab.ipc'
 import { readSettingsFile, setSettingsKey } from '../services/settings-store'
 import type { SidecarEnvelope } from '../../shared/sidecarEvents'
@@ -192,7 +195,10 @@ const clipRoot = (): string => {
   return root
 }
 // 유효한 파생 참조 클립 폴더(clipRoot/audioforge_refclip_*)를 clipKey별로 추적.
-// clipKey = 'default'(기본 참조) | emotionId(감정 참조). 단일 슬롯을 감정별 식별 구조로 확장.
+// clipKey = 'default'(고급의 기본 참조) | 'lab'(합성 일반) | 'spk:<인물>' | emotionId(감정 참조).
+// ★이름 하나당 폴더 **하나**다. 새로 확정하면 같은 이름의 이전 폴더를 지운다(releaseRefClip).
+//   그래서 **서로 다른 화면은 반드시 다른 이름을 써야 한다** — 같은 이름을 쓰면 한쪽이
+//   다른 쪽의 목소리를 지운다(2026-09-16: 일반이 'default' 를 써서 고급이 못 쓰게 됐다).
 // 새 클립/새 파일/재확정/합성 종료(합성 중 제외) 시 해당 key(또는 전체)만 정리.
 const refClipDirs = new Map<string, string>()
 
@@ -265,6 +271,7 @@ export interface AudioIpcAdapters {
 export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   // 테스트개발 작업실이 쓰는 두 가지(테이크 보관·이어 붙여 내보내기). 합성 경로와 무관하다.
   registerLabIpc(mainWindow)
+  registerTranscriptIpc()
   // 영속화된 사용자 지정 python 경로가 있으면 우선 적용(재시작 후에도 유지) — L-6.
   // 사용자의 명시적 선택이 자동 해석(env.json/기본값)보다 우선한다.
   try {
@@ -316,11 +323,18 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   // Helper to send error to renderer.
   // 문자열 또는 구조화 오류({message, code?})를 받아 renderer용으로 정제 — message + (있으면) code만 전달.
   // code는 GENERATION_LIMIT_EXCEEDED 등 오류 UX 분기 열쇠. 전사·문장·전체경로·수치 상세는 전달하지 않는다.
-  const sendError = (err: string | { message?: unknown; code?: unknown }) => {
+  const sendError = (err: string | { message?: unknown; code?: unknown; speaker_ref?: unknown }) => {
     const o = typeof err === 'string' ? { message: err } : (err || {})
     const message = typeof o.message === 'string' ? o.message : String((o.message ?? '알 수 없는 오류'))
     const code = typeof o.code === 'string' ? o.code : undefined
-    mainWindow.webContents.send('audio:error', code ? { message, code } : { message })
+    // 화자 참조 오류의 **불투명 지문**(spk_ + sha256(id)[:12]). 이름·경로가 아니라 지문만 실린다 —
+    // 화면이 자기 인물 목록과 대조해 어느 인물인지 알아낸다(2026-09-17: "이 인물" 이 누구인지
+    // 화면에 안 나와 사용자가 방금 지정한 사람인 줄 알았다).
+    const speakerRef = typeof o.speaker_ref === 'string' && /^spk_[0-9a-f]{12}$/.test(o.speaker_ref)
+      ? o.speaker_ref : undefined
+    mainWindow.webContents.send('audio:error', {
+      message, ...(code ? { code } : {}), ...(speakerRef ? { speakerRef } : {}),
+    })
   }
 
   // 배타 가드는 '중복 실행을 막아야 하는' 쓰기성 작업에만. 읽기 전용 analyze/preflight는 쓰지 않는다.
@@ -717,12 +731,21 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       transcribe: !!(options?.transcribe || mode === 'transcribe'),
       outputFormat: options?.outputFormat || 'wav',
       whisperModel: options?.whisperModel || 'large-v3',
+      // 텍스트 추출의 실행 엔진 — **기본은 기존 경로**. 텍스트 모드에서만 파이썬이 본다.
+      asrEngine: options?.asrEngine || 'whisper',
       whisperLang: options?.whisperLang || 'auto',
       translate: !!options?.translate,
       translateModel: options?.translateModel || '600m',
       srt: !!options?.exportSrt,
       splitPoints: mode === 'split' && options?.splitMarkers ? (options.splitMarkers as number[]).join(',') : '',
       splitLabels: mode === 'split' && options?.splitLabels ? (options.splitLabels as string[]).join('|') : '',
+      // 고른 조각만 저장 — 없으면 전부(예전 동작).
+      splitSelected: mode === 'split' && Array.isArray(options?.splitSelected) ? options.splitSelected : null,
+      // 수정한 대화 구간 — 이 모드에서만 본다.
+      dialogueSegments: mode === 'dialogue-rebuild' && Array.isArray(options?.dialogueSegments)
+        ? options.dialogueSegments : null,
+      // 대화 분석 엔진 — **기본은 기존 엔진**. 대화 모드에서만 파이썬이 본다.
+      diarizeEngine: mode === 'conversation' ? (options?.diarizeEngine || 'builtin') : 'builtin',
       nSpeakers: options?.nSpeakers || 2,
       // TTS 필드는 단일 소스(buildTtsConfig)로 직렬화 — ttsEmotionRefs 포함,
       // 숫자 기본값은 ??(0 보존). 필드 추가 시 컴파일 단계에서 누락 검출.
@@ -1282,6 +1305,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       [PLAYBACK_VOLUME_STORAGE_KEY]: stored[PLAYBACK_VOLUME_STORAGE_KEY] ?? null,
       // 테스트개발 작업실 — 기존 작업 저장과 **다른 열쇠**다(섞이지 않는다).
       [LAB_STORAGE_KEY]: stored[LAB_STORAGE_KEY] ?? null,
+      [TRANSCRIPT_EDIT_STORAGE_KEY]: stored[TRANSCRIPT_EDIT_STORAGE_KEY] ?? null,
+      [DIALOGUE_EDIT_STORAGE_KEY]: stored[DIALOGUE_EDIT_STORAGE_KEY] ?? null,
     }
   })
 
@@ -1307,7 +1332,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     // 사용자는 저장된 줄 알고 앱을 닫는다.
     if (key === GLOBAL_ASSET_STORAGE_KEY || key === VOICE_CAST_STORAGE_KEY
         || key === WORK_DRAFT_STORAGE_KEY || key === PLAYBACK_VOLUME_STORAGE_KEY
-        || key === LAB_STORAGE_KEY) {
+        || key === LAB_STORAGE_KEY || key === TRANSCRIPT_EDIT_STORAGE_KEY
+        || key === DIALOGUE_EDIT_STORAGE_KEY) {
       // 배역 세트도 같은 원자 경로를 쓴다. 두 키는 서로를 덮지 않는다 —
       // settings-store 가 현재 파일을 읽어 그 키 하나만 갱신한다.
       return saveSetting(key, value ?? undefined)

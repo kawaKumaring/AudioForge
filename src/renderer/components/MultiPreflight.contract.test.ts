@@ -34,10 +34,15 @@ test('카드 판정 표와 preflight 판정 표는 같은 함수·같은 슬롯�
   assert.equal(SHELL.includes('registeredSpeakers: Object.keys(ttsSpeakerRefState)'), false, '셸이 표를 따로 만들지 않는다')
 })
 
-test('Python 이 막은 경우에도 화면은 내부 코드 대신 인물 카드로 안내한다', () => {
+test('Python 이 막은 경우에도 화면은 내부 코드 대신 인물 카드로 안내한다 — 그리고 **누구인지** 남긴다', () => {
   assert.ok(TL.includes("errorInfo?.code === 'SPEAKER_NOT_REGISTERED'"))
   assert.ok(TL.includes("errorInfo?.code === 'SPEAKER_REFERENCE_NOT_READY'"))
-  assert.ok(TL.includes('SPEAKER_PREFLIGHT_MESSAGE[errorInfo.code]'))
+  // 문구 규칙은 shared 의 단일 함수가 가진다. 화면은 error(위치 포함)·speakerRef(지문)를 그대로 넘긴다 —
+  // 2026-09-17: 고정 문장으로 덮어써서 화면 검사가 알려 준 인물 이름이 사라진 회귀를 막는다.
+  assert.ok(TL.includes('speakerBlockNotice({'), '안내 문구는 공용 규칙에서 나온다')
+  assert.ok(/speakerBlockNotice\(\{[\s\S]{0,200}error,/.test(TL), '화면 검사의 문구(위치 포함)를 그대로 넘긴다')
+  assert.ok(TL.includes('speakerRef: errorInfo.speakerRef'), '파이썬의 지문도 넘긴다')
+  assert.equal(TL.includes('SPEAKER_PREFLIGHT_MESSAGE[errorInfo.code]'), false, '화면이 문구를 직접 고르지 않는다')
 })
 
 test('fallback 없음 — 준비 안 된 화자를 다른 인물·전역 기본으로 바꾸는 코드가 없다', () => {

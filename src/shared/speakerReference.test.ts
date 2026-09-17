@@ -5,13 +5,15 @@
 // 같은 fixture 를 `python/test_speaker_refs_parity.py` 가 반대 방향으로 검사한다.
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import {
   readinessFromSlots, multiSpeakerPreflight, speakerPreflightMessage, SPEAKER_PREFLIGHT_MESSAGE,
   REFERENCE_SOURCES, SPEAKER_REFERENCE_FAILURES, blockedDecisions,
-  resolveReferenceDecision, sharedReferenceGroups, speakerEmotionKey,
+  resolveReferenceDecision, sharedReferenceGroups, speakerEmotionKey, speakerTransmission,
+  speakerBlockNotice, speakerIdForOpaqueRef,
 } from './speakerReference.ts'
 import type { ReferenceReadiness } from './speakerReference.ts'
 
@@ -133,7 +135,7 @@ test('경로를 다루지 않는다', () => {
 test('readinessFromSlots: 카드·config·preflight 가 같은 표를 본다', () => {
   const r = readinessFromSlots({
     defaultReady: true,
-    speakerSlots: { a: { ready: true }, b: { ready: false } },
+    speakerSlots: { a: { ready: true, source: 'C:/a.wav' }, b: { ready: false, source: 'C:/b.wav' } },
     emotionSlots: { happy: { ready: true } },
     speakerEmotionRefs: { ['a' + String.fromCharCode(31) + 'happy']: 'C:/x.wav', ['b' + String.fromCharCode(31) + 'sad']: '' },
   })
@@ -144,7 +146,9 @@ test('readinessFromSlots: 카드·config·preflight 가 같은 표를 본다', (
 })
 
 test('multiSpeakerPreflight: 미등록·미준비 인물은 첫 발화 번호와 함께 막히고, 준비된 인물·기본 인물은 통과', () => {
-  const r = readinessFromSlots({ defaultReady: true, speakerSlots: { a: { ready: true }, b: { ready: false } }, emotionSlots: {}, speakerEmotionRefs: {} })
+  const r = readinessFromSlots({ defaultReady: true,
+    speakerSlots: { a: { ready: true, source: 'C:/a.wav' }, b: { ready: false, source: 'C:/b.wav' } },
+    emotionSlots: {}, speakerEmotionRefs: {} })
   const segs = [
     { speakerId: 'a', emotionId: null }, { speakerId: null, emotionId: 'happy' },
     { speakerId: 'b', emotionId: null }, { speakerId: 'zed', emotionId: 'sad' }, { speakerId: 'b', emotionId: 'sad' },
@@ -155,10 +159,10 @@ test('multiSpeakerPreflight: 미등록·미준비 인물은 첫 발화 번호와
     { speakerId: 'zed', code: 'SPEAKER_NOT_REGISTERED', firstSegmentIndex: 3 },
   ])
   // 전부 준비되면 비어 있다 — 다른 인물·전역 기본으로 대체하는 경로가 없다.
-  const ok = readinessFromSlots({ defaultReady: true, speakerSlots: { a: { ready: true }, b: { ready: true }, zed: { ready: true } }, emotionSlots: {}, speakerEmotionRefs: {} })
+  const ok = readinessFromSlots({ defaultReady: true, speakerSlots: { a: { ready: true, source: 'C:/a.wav' }, b: { ready: true, source: 'C:/b.wav' }, zed: { ready: true, source: 'C:/z.wav' } }, emotionSlots: {}, speakerEmotionRefs: {} })
   assert.deepEqual(multiSpeakerPreflight(segs, ok), [])
   // 기본 참조가 없어도 명시 화자 판정은 그것에 기대지 않는다(기본 인물 발화만 막힌다: 별도 코드).
-  const noDefault = readinessFromSlots({ defaultReady: false, speakerSlots: { a: { ready: true } }, emotionSlots: {}, speakerEmotionRefs: {} })
+  const noDefault = readinessFromSlots({ defaultReady: false, speakerSlots: { a: { ready: true, source: 'C:/a.wav' } }, emotionSlots: {}, speakerEmotionRefs: {} })
   assert.deepEqual(multiSpeakerPreflight([{ speakerId: 'a', emotionId: null }], noDefault), [])
 })
 
@@ -167,4 +171,97 @@ test('speakerPreflightMessage: 내부 코드 없이 인물 카드 위치를 말�
   assert.equal(m, SPEAKER_PREFLIGHT_MESSAGE.SPEAKER_NOT_REGISTERED + ' (3번 대사: 영희)')
   assert.equal(/SPEAKER_|reference|clip|SHA/.test(m), false)
   assert.equal(speakerPreflightMessage([], () => ''), '')
+})
+
+// ── 전송과 판정의 단일 규칙 ────────────────────────────────────────────────
+// 실사용 보고(2026-09-16): 화면에 'SPEAKER_NOT_REGISTERED' 가 그대로 떴다.
+// 화면은 '슬롯이 있으면 등록' 으로, 전송은 'source 가 있어야 넣음' 으로 각자 판단하고 있었다.
+// 그 틈이 벌어지면 화면은 통과시키고 파이썬이 막는다 — 사용자는 내부 코드만 본다.
+
+test('보내는 값과 등록 판정이 같은 함수에서 나온다', () => {
+  const r = speakerTransmission({
+    a: { ready: true, source: 'C:/a.wav', clip: 'C:/a-clip.wav' },
+    b: { ready: false, source: 'C:/b.wav', clip: '' },
+  })
+  assert.deepEqual(r.sources, { a: 'C:/a.wav', b: 'C:/b.wav' }, '등록 사실은 준비와 무관하다')
+  assert.deepEqual(r.refs, { a: 'C:/a-clip.wav' }, '합성에 쓸 경로는 준비된 것만')
+  assert.deepEqual(r.registered.sort(), ['a', 'b'], '파이썬과 같은 식 — sources ∪ refs')
+})
+
+test('준비됐다고 표시돼도 보낼 것이 없으면 등록으로 치지 않는다', () => {
+  // ★이 한 줄이 이번 결함의 핵심이다. 예전에는 슬롯이 있다는 이유만으로 통과시켰고,
+  //   정작 보내는 config 에는 아무것도 없어 파이썬이 SPEAKER_NOT_REGISTERED 로 막았다.
+  const r = speakerTransmission({ ghost: { ready: true, source: '', clip: '' } })
+  assert.deepEqual(r.sources, {})
+  assert.deepEqual(r.refs, {})
+  assert.deepEqual(r.registered, [], '보낼 것이 없으면 등록이 아니다')
+
+  const readiness = readinessFromSlots({
+    defaultReady: false, speakerSlots: { ghost: { ready: true, source: '', clip: '' } },
+    emotionSlots: {}, speakerEmotionRefs: {},
+  })
+  assert.deepEqual(readiness.registeredSpeakers, [], '화면 판정도 같은 결론을 낸다')
+  const blocks = multiSpeakerPreflight([{ speakerId: 'ghost', emotionId: null }], readiness)
+  assert.deepEqual(blocks, [{ speakerId: 'ghost', code: 'SPEAKER_NOT_REGISTERED', firstSegmentIndex: 0 }],
+    '파이썬까지 가기 전에 화면이 사람 말로 막는다')
+})
+
+test('준비만 안 된 인물은 여전히 "등록됨" 이다 — 미등록과 구분한다', () => {
+  const readiness = readinessFromSlots({
+    defaultReady: false, speakerSlots: { b: { ready: false, source: 'C:/b.wav' } },
+    emotionSlots: {}, speakerEmotionRefs: {},
+  })
+  const blocks = multiSpeakerPreflight([{ speakerId: 'b', emotionId: null }], readiness)
+  assert.equal(blocks[0].code, 'SPEAKER_REFERENCE_NOT_READY')
+})
+
+// ── 화자 차단 오류에 **누구인지** 붙이기 ─────────────────────────────────────
+// 실사용(2026-09-17): 인물 셋 중 하나만 목소리를 지정하고 만들기를 눌렀는데 화면은
+// "이 인물의 목소리가 준비되지 않았습니다" 라고만 했다. 사용자는 방금 지정한 사람 얘기인 줄 알았다.
+const sha = (s: string) => createHash('sha256').update(s, 'utf8').digest('hex')
+const opaque = (id: string) => 'spk_' + sha(id).slice(0, 12)
+
+test('화면 검사가 만든 문구(위치 포함)는 그대로 쓴다 — 이름을 덮어 지우지 않는다', () => {
+  const r = speakerBlockNotice({
+    code: 'SPEAKER_NOT_REGISTERED',
+    error: SPEAKER_PREFLIGHT_MESSAGE.SPEAKER_NOT_REGISTERED + ' (2번 대사: 인물b, 3번 대사: 인물c)',
+    knownIds: ['인물a'], labelOf: (id) => id, sha256Hex: sha,
+  })
+  assert.ok(r)
+  assert.ok(r!.headline.includes('2번 대사: 인물b'), '어느 대사·누구인지가 남아 있다')
+  assert.ok(r!.headline.includes('인물c'))
+})
+
+test('코드만 왔으면(파이썬이 막음) 지문으로 인물을 찾아 이름을 붙인다', () => {
+  const r = speakerBlockNotice({
+    code: 'SPEAKER_NOT_REGISTERED', error: 'SPEAKER_NOT_REGISTERED',
+    speakerRef: opaque('인물b'),
+    knownIds: ['인물a', '인물b'], labelOf: (id) => (id === '인물b' ? '영희' : id), sha256Hex: sha,
+  })
+  assert.ok(r)
+  assert.equal(r!.who, '영희')
+  assert.ok(r!.headline.startsWith(SPEAKER_PREFLIGHT_MESSAGE.SPEAKER_NOT_REGISTERED))
+  assert.ok(r!.headline.includes('(인물: 영희)'))
+  assert.equal(/SPEAKER_/.test(r!.headline), false, '내부 코드는 나오지 않는다')
+})
+
+test('지문이 아는 인물과 맞지 않으면 모르는 채로 둔다 — 아무나 지목하지 않는다', () => {
+  const r = speakerBlockNotice({
+    code: 'SPEAKER_REFERENCE_NOT_READY', error: 'SPEAKER_REFERENCE_NOT_READY',
+    speakerRef: opaque('없는사람'), knownIds: ['인물a'], labelOf: (id) => id, sha256Hex: sha,
+  })
+  assert.ok(r)
+  assert.equal(r!.who, null)
+  assert.equal(r!.headline, SPEAKER_PREFLIGHT_MESSAGE.SPEAKER_REFERENCE_NOT_READY)
+})
+
+test('지문 대조는 파이썬의 형식(spk_ + sha256(id)[:12])과 같다', () => {
+  // python/speaker_refs.py opaque_speaker_ref 와 같은 식. 형식이 어긋나면 이름 붙이기가 조용히 꺼진다.
+  assert.equal(speakerIdForOpaqueRef(opaque('민수'), ['영희', '민수'], sha), '민수')
+  assert.equal(speakerIdForOpaqueRef('spk_zz', ['민수'], sha), null, '형식이 아니면 null')
+  assert.equal(speakerIdForOpaqueRef(undefined, ['민수'], sha), null)
+})
+
+test('화자 차단 코드가 아니면 관여하지 않는다', () => {
+  assert.equal(speakerBlockNotice({ code: 'GENERATION_LIMIT_EXCEEDED', error: 'x', knownIds: [], labelOf: (i) => i, sha256Hex: sha }), null)
 })

@@ -261,16 +261,52 @@ export function showRecommendedBadge(
 
 export interface ReadySlot { ready: boolean }
 
+/** 인물 슬롯 — 준비 상태뿐 아니라 **실제로 보낼 경로**까지 들고 있다. */
+export interface SpeakerSlot extends ReadySlot { source?: string; clip?: string }
+
+/**
+ * 이 슬롯들에서 **파이썬으로 실제 나가는 것**과 **등록된 것으로 볼 인물**을 함께 낸다.
+ *
+ * ★왜 한 함수인가(2026-09-16 실사용 보고): 예전에는 두 규칙이 따로 있었다.
+ *   · 화면 판정 — 슬롯이 **있기만 하면** 등록으로 봤다(`Object.keys`).
+ *   · 전송 — `source` 가 있어야 넣었고, 참조는 준비됨일 때만 넣었다.
+ *   그래서 `source` 가 빈 슬롯이 하나라도 생기면 **화면은 통과시키고 파이썬이 막는다.**
+ *   파이썬의 화자 오류는 문구 없이 던져 코드가 곧 문구가 되므로, 사용자에게는
+ *   'SPEAKER_NOT_REGISTERED' 라는 내부 코드만 보인다. 규칙을 하나로 두어 그 틈을 없앤다.
+ *
+ * 파이썬의 등록 판정과 같은 식이다: 보낸 `sources` 와 `refs` 의 합집합.
+ */
+export function speakerTransmission(slots: Readonly<Record<string, SpeakerSlot>> | undefined): {
+  sources: Record<string, string>
+  refs: Record<string, string>
+  registered: string[]
+} {
+  const sources: Record<string, string> = {}
+  const refs: Record<string, string> = {}
+  for (const [id, slot] of Object.entries(slots || {})) {
+    if (!id) continue
+    const source = String(slot?.source ?? '')
+    if (source) sources[id] = source
+    // 준비되지 않았으면 합성에 쓸 경로가 없다 — 등록 사실(source)만 남는다.
+    const effective = slot?.ready ? (String(slot?.clip ?? '') || source) : ''
+    if (effective) refs[id] = effective
+  }
+  const registered = [...new Set([...Object.keys(sources), ...Object.keys(refs)])]
+  return { sources, refs, registered }
+}
+
 export function readinessFromSlots(input: {
   defaultReady: boolean
-  speakerSlots: Readonly<Record<string, ReadySlot>>
+  speakerSlots: Readonly<Record<string, SpeakerSlot>>
   emotionSlots: Readonly<Record<string, ReadySlot>>
   /** 생성으로 실제 나가는 (화자, 감정) 참조만(게이트 통과분). */
   speakerEmotionRefs: Readonly<Record<string, string>>
 }): ReferenceReadiness {
   return {
     defaultReady: !!input.defaultReady,
-    registeredSpeakers: Object.keys(input.speakerSlots),
+    // ★'슬롯이 있으면 등록' 이 아니다. **실제로 나가는 것**만 등록으로 본다 —
+    //   그래야 화면이 막는 자리와 파이썬이 막는 자리가 같아진다.
+    registeredSpeakers: speakerTransmission(input.speakerSlots).registered,
     speakerReady: Object.fromEntries(Object.entries(input.speakerSlots).map(([id, s]) => [id, !!s.ready])),
     speakerEmotionReady: Object.fromEntries(
       Object.entries(input.speakerEmotionRefs).filter(([, p]) => !!p).map(([k]) => [k, true])),
@@ -304,6 +340,50 @@ export function multiSpeakerPreflight(
     out.push({ speakerId: seg.speakerId, code: d.code, firstSegmentIndex: i })
   })
   return out
+}
+
+/**
+ * 파이썬이 준 불투명 지문(`spk_` + sha256(id)[:12])이 **어느 인물**인지 찾는다.
+ *
+ * 파이썬은 이름을 되돌릴 수 없는 지문만 보낸다(비민감 payload 규칙). 화면은 자기가 아는 인물 id 로
+ * 같은 지문을 만들어 대조한다 — 맞는 것이 있으면 그 인물이다. 없으면 null(모르는 채로 둔다).
+ */
+export function speakerIdForOpaqueRef(
+  opaque: string | undefined, knownIds: readonly string[], sha256Hex: (text: string) => string,
+): string | null {
+  if (!opaque || !/^spk_[0-9a-f]{12}$/.test(opaque)) return null
+  for (const id of knownIds) {
+    if (`spk_${sha256Hex(id).slice(0, 12)}` === opaque) return id
+  }
+  return null
+}
+
+/**
+ * 화자 차단 오류를 **사람 말**로 — 가능하면 **누구인지** 붙여서.
+ *
+ * ★2026-09-17 실사용: 대본에 인물이 셋인데 한 명만 목소리를 지정하고 만들기를 눌렀다. 화면은
+ *   "이 인물의 목소리가 준비되지 않았습니다" 라고만 해서 사용자는 방금 지정한 사람 얘기인 줄 알았다.
+ *   화면 검사가 만든 문구에는 "(2번 대사: 인물b, 3번 대사: 인물c)" 가 붙어 있었는데 오류 카드가
+ *   그것을 고정 문장으로 덮어 이름이 사라졐다. 규칙: **이미 사람 말이면 그대로 쓴다.** 코드만
+ *   왔으면(파이썬이 막은 경우) 지문으로 인물을 찾아 이름을 붙인다.
+ */
+export function speakerBlockNotice(input: {
+  code: string
+  error: string | null | undefined
+  speakerRef?: string
+  knownIds: readonly string[]
+  labelOf: (id: string) => string
+  sha256Hex: (text: string) => string
+}): { headline: string; who: string | null } | null {
+  const base = (SPEAKER_PREFLIGHT_MESSAGE as Record<string, string>)[input.code]
+  if (!base) return null
+  const raw = (input.error || '').trim()
+  const isBareCode = !raw || /^SPEAKER_[A-Z_]+$/.test(raw)
+  if (!isBareCode) return { headline: raw, who: null }          // 화면 검사가 만든 문구 — 위치가 붙어 있다
+  const id = speakerIdForOpaqueRef(input.speakerRef, input.knownIds, input.sha256Hex)
+  if (!id) return { headline: base, who: null }
+  const label = input.labelOf(id) || id
+  return { headline: `${base} (인물: ${label})`, who: label }
 }
 
 /** 사용자 문구. 내부 코드를 내지 않고 인물 카드 위치를 말한다. */

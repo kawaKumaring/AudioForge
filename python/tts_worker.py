@@ -1556,6 +1556,9 @@ _METADATA_KEYS = [
     "explicit_pause_count", "total_pause_ms",
     # 말끝 finishing 재현(계약 §2·추가4) + 감정 전환 경계 모드.
     "tail_mode", "tail_pad_ms", "tail_fade_ms", "tail_fade_applied", "emotion_boundary_mode",
+    # 끝났을 때 아직 소리가 남아 있었는가(0~1). 계측값일 뿐 판정이 아니다 —
+    # 모델이 마지막 음절이 울리는 중에 끝내는 일을 사후에 알아보기 위한 값이다.
+    "tail_residual_ratio",
     # 경계 envelope 재현 — 최종 조립물 **바깥쪽** 시작·끝에 실제로 적용한 샘플 수(길이는 불변).
     # offset 0 = tail auto 가 말끝 fade 를 가져갔거나 배열이 짧아 clamp 된 경우.
     "boundary_onset_samples", "boundary_offset_samples",
@@ -1726,6 +1729,10 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None,
         # tail 이 실제로 cosine fade 를 걸 때만 말끝을 양보한다(이중 fade 방지). 시작 쪽은 겹칠 게 없다.
         bplan = _af.compute_boundary_plan(len(corrected), sr, tail_owns_offset=bool(plan.fade_applied))
         enveloped = _af.apply_boundary_envelope(corrected, sr, bplan)
+        # 말끝 잔여량 — **fade 를 걸기 전** 배열로 잰다(걸고 나면 언제나 0 이다).
+        # 소리를 바꾸지 않는 계측이다. 모델이 마지막 음절이 울리는 중에 끝내는 일을 알아보기 위한 값이고,
+        # 여기서는 판정하지 않는다(임계값은 제품이 가진다).
+        tail_residual = _af.tail_residual_ratio(corrected, sr)
         finished = _af.apply_final_tail(enveloped, sr, plan)
         # 불변식 B — in-memory: mono·non-empty·finite + 예상 프레임 수 + padding 정확히 0.
         # (여기서 finite가 이미 보장되므로 PCM_16으로 써도 비유한을 숨길 수 없다 — write 전 in-memory 검증.)
@@ -1766,6 +1773,8 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None,
     # 가져갔거나(offset_yielded_to_tail) 배열이 너무 짧아 clamp 된 경우다.
     out.update(boundary_onset_samples=int(bplan.onset_samples),
                boundary_offset_samples=int(bplan.offset_samples))
+    # 끝났을 때 아직 소리가 남아 있었는가(0~1). 계측값일 뿐 판정이 아니다.
+    out["tail_residual_ratio"] = round(float(tail_residual), 4)
     # macro gain 재현 메타 — 적용 여부·통계·게이트·최대 boost·곡선 지문. 대사·경로 없음.
     out.update(_mg.plan_metadata(mgplan))
     return out
@@ -2530,6 +2539,7 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             # I4: 말끝 finishing 재현(off/auto·pad·fade·적용여부). _finish_and_place가 반환.
             "tail_mode": pinfo.get("tail_mode"), "tail_pad_ms": pinfo.get("tail_pad_ms"),
             "tail_fade_ms": pinfo.get("tail_fade_ms"), "tail_fade_applied": pinfo.get("tail_fade_applied"),
+            "tail_residual_ratio": pinfo.get("tail_residual_ratio"),
             # 경계 envelope 재현 — 실제 적용 샘플 수.
             "boundary_onset_samples": pinfo.get("boundary_onset_samples"),
             "boundary_offset_samples": pinfo.get("boundary_offset_samples"),
@@ -2809,6 +2819,9 @@ _RUN_HEADER_FROM_METADATA = (
     "silence_gap",
     # 말끝·경계 마감 재현값.
     "tail_mode", "tail_pad_ms", "tail_fade_ms", "tail_fade_applied", "emotion_boundary_mode",
+    # 끝났을 때 아직 소리가 남아 있었는가(0~1). 계측값일 뿐 판정이 아니다 —
+    # 모델이 마지막 음절이 울리는 중에 끝내는 일을 사후에 알아보기 위한 값이다.
+    "tail_residual_ratio",
     "boundary_onset_samples", "boundary_offset_samples",
     "segment_envelope_onset_count", "segment_envelope_offset_count",
     "segment_envelope_kind_counts",
@@ -3597,6 +3610,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             # I4: 파서 plan 재현 + 말끝 finishing(pinfo2가 반환) + 경계 envelope 적용 샘플 수.
             tail_mode=pinfo2.get("tail_mode"), tail_pad_ms=pinfo2.get("tail_pad_ms"),
             tail_fade_ms=pinfo2.get("tail_fade_ms"), tail_fade_applied=pinfo2.get("tail_fade_applied"),
+            tail_residual_ratio=pinfo2.get("tail_residual_ratio"),
             # B(경계 envelope)의 적용 사실과 leak(참조 conditioning 모드)의 재현 메타를 함께 남긴다 —
             # 두 기능은 역할이 다르므로 어느 쪽도 다른 쪽을 대체하지 않는다.
             boundary_onset_samples=pinfo2.get("boundary_onset_samples"),
