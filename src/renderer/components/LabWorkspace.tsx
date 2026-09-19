@@ -20,7 +20,7 @@ import {
 } from '../../shared/labWorkspace'
 import { REFERENCE_CONDITIONING_RECOMMENDED } from '../../shared/ttsConfig'
 import { createManagedAudio } from '@/lib/playbackVolume'
-import ReferenceRegionPanel from '@/components/ReferenceRegionPanel'
+import { runVoicePrep } from '@/lib/voicePrepRunner'
 
 const box = (extra?: React.CSSProperties): React.CSSProperties => ({
   background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 12, ...extra,
@@ -342,6 +342,33 @@ export default function LabWorkspace() {
     else if (!r?.canceled) lab.setError(r?.reason || '내보내지 못했습니다')
   }, [ready])
 
+  // ── 목소리 준비 ──────────────────────────────────────────────────────────
+  // ★예전에는 이 자리에 구간 편집기 부품을 **숨겨서** 띄웠다(display:none). 준비를 시작하는 길이
+  //   그것뿐이었기 때문이다. 그래서 탭을 옮겨 이 화면이 사라지면 준비도 함께 끊겼다.
+  //   이제 준비는 화면 밖에서 돈다 — 같은 (자리·파일·요청·엔진·목표 길이)은 한 번만 돌고,
+  //   화면이 다시 떠도 되풀이되지 않는다.
+  // ★자리는 **일반 전용**이다(2026-09-16 실사용 결함). main 은 파생 클립을 자리 하나당 폴더 하나로
+  //   관리하고 새로 확정하면 그 자리의 이전 폴더를 지운다 — 예전에 일반이 'default' 를 써서
+  //   고급의 기본 목소리 클립을 통째로 지웠다.
+  // ★조건은 **일반의 목소리가 있는가** 하나다(소유 경계 B안). 고급이 무슨 파일을 열었는지와 무관하다.
+  useEffect(() => {
+    if (!doc.voicePath) return
+    void runVoicePrep({
+      clipKey: LAB_CLIP_KEY,
+      path: doc.voicePath,
+      reqId: lab.ref.reqId,
+      // 작업실 소유 설정으로 준비한다 — 합성 탭에서 엔진을 바꿔도 여기 반영되지 않는다.
+      engine: doc.settings.engine,
+      refTargetSec: doc.settings.refTargetSec,
+      plain: true,
+      committedNow: () => {
+        const r = useLabStore.getState().ref
+        return r.clip || r.region ? { clip: r.clip, region: r.region } : null
+      },
+      report: (patch) => useLabStore.getState().setRef(patch),
+    })
+  }, [doc.voicePath, lab.ref.reqId, doc.settings.engine, doc.settings.refTargetSec])
+
   return (
     <div data-testid="lab-workspace" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
       {/* 목소리 — 한 줄로 끝낸다. 대본보다 큰 자리를 차지하지 않는다. */}
@@ -363,38 +390,6 @@ export default function LabWorkspace() {
           {doc.voicePath ? '목소리 바꾸기' : '목소리 고르기'}
         </button>
       </div>
-
-      {/* 목소리 준비는 기존 기능을 그대로 쓴다. 화면에는 내보내지 않는다(설정을 늘어놓지 않는다).
-          ★조건은 **일반의 목소리가 있는가** 하나다(2026-09-17, 소유 경계 B안).
-            예전에는 "불러온 파일과 같은 파일일 때만" 준비했다 — 일반이 고급의 기본 참조를 그대로
-            빌려 쓰던 시제품 시절의 잔재다. 일반은 자기 클립 자리('lab')를 갖게 됐으므로 고급이
-            어떤 파일을 열었는지와 무관하게 자기 목소리를 스스로 준비한다. */}
-      {doc.voicePath && (
-        <div style={{ display: 'none' }}>
-          <ReferenceRegionPanel
-            key={doc.voicePath + '|' + lab.ref.reqId}
-            // ★clipKey 는 **일반 전용**이다(2026-09-16 실사용 결함).
-            //   main 은 파생 클립을 clipKey 하나당 **한 자리**로 관리한다(`refClipDirs`) —
-            //   새로 확정하면 `releaseRefClip(clipKey)` 로 **그 자리의 이전 폴더를 지운다.**
-            //   예전에는 일반도 'default' 를 써서, 일반이 목소리를 준비하는 순간 고급의 기본
-            //   목소리 클립 폴더가 통째로 지워졌다. 고급은 없어진 파일을 가리킨 채 '준비 안 됨'
-            //   으로 떨어지고, 사용자는 "목소리가 준비됐는데 안 된다" 를 보게 된다.
-            //   일반이 첫 화면이라 아무것도 하지 않아도 이 일이 일어났다.
-            //   "일반과 고급의 작업은 각각 저장됩니다" 라는 약속과도 어긋난다.
-            path={doc.voicePath} clipKey={LAB_CLIP_KEY}
-            // ★생성 중이라고 **잠그지 않는다.** 이 패널의 disabled 는 분석 효과의 의존값이라,
-            //   잠갔다 풀면 참조 분석이 처음부터 다시 돈다(실측 27초). 그 동안 준비 상태가
-            //   내려가 다음 테이크를 만들 수 없었다. 참조는 생성 중에 바뀌지 않는다.
-            disabled={false}
-            open={false} autoConfirm plainStatus
-            reqId={lab.ref.reqId}
-            // 작업실 소유 설정으로 준비한다 — 합성 탭에서 엔진을 바꿔도 여기 반영되지 않는다.
-            engine={doc.settings.engine} refTargetSec={doc.settings.refTargetSec}
-            committed={lab.ref.clip ? { clip: lab.ref.clip, region: lab.ref.region } : null}
-            onState={(s) => useLabStore.getState().setRef(s)}
-          />
-        </div>
-      )}
 
       {/* 대본 — 화면 가운데, 가장 넓게 */}
       <div style={box({ padding: '8px 8px 10px' })}>

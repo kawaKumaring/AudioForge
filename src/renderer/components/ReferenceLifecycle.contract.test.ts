@@ -55,12 +55,11 @@ test('패널: 사용 중인 확정 상태가 있으면 재분석·재확정 실�
 })
 
 test('셸: 인물·감정·기본 패널에 committed 를 넘기고, 재생은 원본의 확정 구간을 튼다(임시 클립 아님)', () => {
-  // 인물·감정 패널 + 기본 패널 두 자리(한 명 화면 / 여러 명의 숨긴 준비 구동) — 같은 committed 계약.
-  // 네 마운트: 한 명 화면 · 여러 명의 숨긴 기본 목소리 구동 · 감정 패널 · 인물 패널.
-  // 인물 패널은 2026-09-08 에 useSpeakerVoicePrep 으로 옮겼으므로 셸 3 + 훅 1 이다.
-  // 셸의 네 마운트: 한 명 화면 · 여러 명의 숨긴 기본 목소리 구동 · 감정 패널 · **기본 인물 카드**
-  // (2026-09-08: 기본 인물도 다른 인물과 같은 조작을 갖도록 카드 안 편집기를 셸이 만든다).
-  assert.equal((SHELL.match(/committed=\{/g) ?? []).length, 4, '셸의 네 마운트')
+  // 2026-09-19: **숨긴 마운트가 사라졌다.** 남은 것은 사용자가 실제로 보는 자리뿐이다 —
+  // 셸 셋(한 명 화면 · 감정 패널 · 기본 인물 카드)과 훅 하나(인물 카드).
+  // 준비만 필요한 자리는 화면 밖 실행부가 맡는다(voicePrepRunner).
+  assert.equal((SHELL.match(/committed=\{/g) ?? []).length, 3, '셸의 세 마운트 — 전부 보이는 자리다')
+  assert.equal(SHELL.includes('hidden data-testid="default-voice-driver"'), false, '숨긴 준비 구동은 없다')
   assert.equal((PREP.match(/committed=\{/g) ?? []).length, 1, '인물 마운트는 훅이 만든다')
   assert.ok(SHELL.includes("previewLocalFile(fileInfo?.path || '', ttsReferenceRegion)"), '기본 재생 = 원본 + 구간')
   assert.ok(SHELL.includes("previewLocalFile(s?.source || '', s?.region ?? null)"), '인물 재생 = 원본 + 구간')

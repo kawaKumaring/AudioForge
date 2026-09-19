@@ -20,6 +20,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { useAppStore, refPhaseOf } from '@/stores/app.store'
 import type { EmotionRefState } from '@/stores/app.store'
 import ReferenceRegionPanel from '@/components/ReferenceRegionPanel'
+import { forgetVoicePrep, runVoicePrep } from '@/lib/voicePrepRunner'
 
 export interface SpeakerVoicePrep {
   /** 지금 보이지 않는 자리에서 준비를 돌리고 있는 인물(없으면 null). 셸이 숨은 드라이버를 그린다. */
@@ -60,8 +61,16 @@ export function useSpeakerVoicePrep(opts: {
    * 같은 슬롯에 보고자가 둘이 된다. 사용자가 직접 고르면 새 식별자가 발급되어 복원 결과가 버려진다.
    */
   restoring?: boolean
+  /**
+   * 지금 인물 목소리를 준비해야 하는 화면인가(여러 명 탭).
+   *
+   * 예전에는 이 조건이 **드라이버를 그리는 쪽**(셸의 `dialogueTab === 'multi' && autoPrep`)에 있었다.
+   * 드라이버가 사라진 지금은 이 훅이 직접 준비를 시작하므로, 조건도 여기로 와야 한다 —
+   * 그러지 않으면 한 명 화면에서도 인물 준비가 돌기 시작한다(예전에 없던 동작).
+   */
+  active?: boolean
 }): SpeakerVoicePrep {
-  const { disabled, speakerLabelOf, openSpeakerId = null, restoring = false } = opts
+  const { disabled, speakerLabelOf, openSpeakerId = null, restoring = false, active = true } = opts
   const ttsSpeakerRefState = useAppStore((s) => s.ttsSpeakerRefState)
   const ttsSpeakerInherit = useAppStore((s) => s.ttsSpeakerInherit)
   const setSpeakerRefState = useAppStore((s) => s.setSpeakerRefState)
@@ -153,6 +162,7 @@ export function useSpeakerVoicePrep(opts: {
       setAutoPrep(null)                                          // 준비됐거나 파일이 바뀌었다
       return
     }
+    if (!active) return                                       // 인물 목소리를 쓰지 않는 화면이다
     if (restoring) return                                     // 복원이 자기 슬롯을 맡는 동안 비켜 있는다
     const hit = Object.entries(ttsSpeakerRefState)
       .filter(([id, st]) => !!st?.source && refPhaseOf(st) !== 'ready'
@@ -161,7 +171,52 @@ export function useSpeakerVoicePrep(opts: {
         && id !== openSpeakerId)                                // 펼쳐 둔 카드는 그 카드가 맡는다
       .sort((a, b) => a[0].localeCompare(b[0]))[0]
     if (hit) setAutoPrep({ id: hit[0], source: hit[1].source })
-  }, [ttsSpeakerRefState, ttsSpeakerInherit, autoPrep, openSpeakerId, restoring])
+  }, [ttsSpeakerRefState, ttsSpeakerInherit, autoPrep, openSpeakerId, restoring, active])
+
+  // ── 잡은 인물의 준비를 실제로 돌린다 ───────────────────────────────────
+  // ★예전에는 이 자리에 구간 편집기 부품을 숨겨 띄우는 것이 곧 '준비 시작' 이었다. 그래서 준비의
+  //   수명이 그 부품의 수명이었고, 부품이 자기 진행 보고 때문에 언마운트되면 준비가 영영
+  //   끝나지 않았다(2026-09-08 실측). 이제 화면 밖에서 돈다.
+  // ★'한 명씩' 은 두 겹으로 지켜진다: 여기서 한 명만 잡고, 실행부가 파이썬 통로에 줄을 세운다.
+  useEffect(() => {
+    if (!active || !autoPrep) return
+    const slot = useAppStore.getState().ttsSpeakerRefState[autoPrep.id]
+    const src = slot?.source || ''
+    if (!src || src !== autoPrep.source) return
+    const app = useAppStore.getState()
+    const speakerId = autoPrep.id
+    const reqId = slot?.reqId || ''
+    void runVoicePrep({
+      clipKey: 'spk:' + speakerId,
+      path: src,
+      reqId,
+      engine: app.ttsEngine,
+      refTargetSec: app.ttsRefTargetSec,
+      plain: true,
+      committedNow: () => {
+        const s = useAppStore.getState().ttsSpeakerRefState[speakerId]
+        return s?.ready ? { clip: s.clip, region: s.region, whole: !s.clip && !s.region } : null
+      },
+      report: (patch) => {
+        // 늦게 도착한 이전 요청의 결과가 새 선택을 덮지 않게 한다. 파일을 연달아 고르면 앞 파일의
+        // 분석이 뒤늦게 끝나 새 파일의 상태를 지우는 일이 실제로 일어난다. 경로만으로는 **같은
+        // 파일을 다시 고른 경우**를 가릴 수 없어 요청 식별자도 본다(최종 판정은 store 가 한다).
+        const cur = useAppStore.getState().ttsSpeakerRefState[speakerId]
+        if (cur?.source !== src) return
+        if (reqId && cur?.reqId && cur.reqId !== reqId) return
+        setSpeakerRefState(speakerId, patch)
+      },
+      onPolicy: (p) => useAppStore.getState().setTtsReferencePolicy(p),
+    }).finally(() => {
+      // 이 인물·이 파일의 자동 준비가 끝났다(성공·실패·해당 없음 모두). 다시 잡지 않도록 표시하고
+      // 다음 사람으로 넘어간다 — 예전 부품의 onAutoConfirmSettled 신호가 하던 일이다.
+      autoPrepDone.current.add(`${speakerId}|${src}`)
+      setAutoPrep(null)
+    })
+    // autoPrep 하나만 본다 — 준비 상태가 바뀔 때마다 다시 시작하면 안 된다(실행부가 막아 주지만
+    // 여기서도 걸지 않는다).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [active, autoPrep])
 
   // ── 교체 실패 복구 ──────────────────────────────────────────────────────
   // ★판정은 **단계(phase)** 로 한다(2026-09-09 관리자 검수). 예전에는 안내 문구를 읽었다 —
@@ -211,6 +266,9 @@ export function useSpeakerVoicePrep(opts: {
     const src = useAppStore.getState().ttsSpeakerRefState[speakerId]?.source
     if (!src) return
     autoPrepDone.current.delete(`${speakerId}|${src}`)
+    // 실행부의 '이미 돌렸다' 기억도 지운다 — 새 요청 식별자만으로도 다시 돌지만, 같은 요청을
+    // 그대로 다시 돌려야 하는 경우까지 확실히 열어 둔다.
+    forgetVoicePrep('spk:' + speakerId)
     setVoiceReplaceNotice(null)
     // 같은 파일이어도 **새 요청**이다 — 새 식별자를 발급해야 이전 요청의 늦은 결과가 섞이지 않고,
     // 패널도 새 인스턴스로 다시 만들어져 분석을 처음부터 한다.

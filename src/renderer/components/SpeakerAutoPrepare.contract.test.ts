@@ -17,10 +17,16 @@ const STORE = codeOf(read('../stores/app.store.ts'))
 const between = (src: string, a: string, b: string) => { const i = src.indexOf(a); assert.ok(i >= 0, a); return src.slice(i, src.indexOf(b, i)) }
 
 test('목소리 파일을 고르면 카드를 열지 않아도 준비가 돈다 — 보이지 않는 자리에서 한 번에 한 명', () => {
-  assert.ok(SHELL.includes('data-testid="speaker-voice-driver"'))
-  const driver = between(SHELL, 'data-testid="speaker-voice-driver"', '</div>')
-  assert.ok(driver.includes('renderSpeakerRegion(autoPrep.id, false, true)'), '접힌 채(open=false) 자동 확정으로 돈다')
-  const pick = between(PREP, 'const [autoPrep, setAutoPrep] = useState', '}, [ttsSpeakerRefState, ttsSpeakerInherit, autoPrep])')
+  // 2026-09-19: 숨긴 부품(드라이버)이 사라졌다. 준비는 화면 밖 실행부가 돌린다 —
+  // 그래서 이 화면이 다시 떠도, 부품이 사라져도 준비가 끊기지 않는다.
+  assert.equal(SHELL.includes('data-testid="speaker-voice-driver"'), false, '숨긴 부품은 없앴다')
+  assert.ok(SHELL.includes("active: dialogueTab === 'multi'"), '여러 명 화면에서만 인물 준비가 돈다')
+  const drive = between(PREP, '  useEffect(() => {\n    if (!active || !autoPrep) return', '  }, [active, autoPrep])')
+  assert.ok(drive.includes("clipKey: 'spk:' + speakerId"), '인물 자리로 준비한다')
+  assert.ok(drive.includes('autoPrepDone.current.add'), '끝나면 다시 잡지 않도록 표시한다')
+  assert.ok(drive.includes('setAutoPrep(null)'), '끝나면 다음 사람으로 넘어간다')
+  assert.ok(drive.includes('.finally('), '성공·실패·해당 없음 모두에서 끝을 알린다')
+  const pick = between(PREP, 'const [autoPrep, setAutoPrep] = useState', '}, [ttsSpeakerRefState, ttsSpeakerInherit, autoPrep, openSpeakerId, restoring, active])')
   assert.ok(pick.includes('.sort((a, b) => a[0].localeCompare(b[0]))[0]'), '순서가 정해져 있고 한 명만 고른다')
   assert.ok(pick.includes("if (st?.source === autoPrep.source && refPhaseOf(st) !== 'ready') return"),
     '잡은 사람은 계속 붙잡는다 — 준비가 끝나기 전에 놓지 않는다')

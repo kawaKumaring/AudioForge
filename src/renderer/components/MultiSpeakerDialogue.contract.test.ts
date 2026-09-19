@@ -40,9 +40,13 @@ test('탭은 두 개, 합성 화면 전체를 전환한다(합성 메뉴 아래 
 
 test('한 명: 목소리 섹션 + 대사 한 칸. 여러 명: 단일용 목소리 영역 없음, 카드 목록, 공통 생성 옵션 한 번', () => {
   assert.ok(SHELL.includes("{dialogueTab === 'single' && (\n      <TtsVoiceSection"), '목소리 섹션은 한 명 전용')
-  assert.ok(SHELL.includes('data-testid="default-voice-driver"'), '여러 명은 기본 목소리 준비만 숨겨서 돈다(첫 인물이 이어받는 원천)')
-  const driver = between(SHELL, 'data-testid="default-voice-driver"', '</div>')
-  assert.ok(driver.includes('open={false}') && driver.includes('autoConfirm'), '도구는 그리지 않고 준비만')
+  // 2026-09-19: 숨긴 부품이 사라졌다. 여러 명에서도 **기본 목소리 준비는 계속 돈다** — 첫 인물이
+  // 그 결과를 이어받기 때문이다. 이제 화면 밖 실행부가 돌리므로, 요소가 아니라 그 호출을 본다.
+  assert.ok(SHELL.includes("clipKey: 'default',"), '여러 명에서도 기본 목소리 준비가 돈다(첫 인물이 이어받는 원천)')
+  assert.ok(SHELL.includes("dialogueTab !== 'multi' || !fileInfo?.path || openVoiceSpeakerId === 'default' || disabled"),
+    '펼쳐 둔 기본 카드가 있으면 그 카드가 보고자다 · 합성 중에는 시작하지 않는다')
+  assert.equal(SHELL.includes('data-testid="default-voice-driver"'), false, '숨긴 부품은 없앴다')
+  // '도구는 그리지 않고 준비만' 은 이제 구조로 보장된다 — 그리는 부품 자체가 없다.
   assert.ok(SHELL.includes("aria-label={dialogueTab === 'multi' ? '인물과 대사' : '대사'}"), '여러 명은 단일 번호 체계를 끌고 오지 않는다')
   assert.ok(SHELL.includes("{dialogueTab === 'multi' ? 1 : 2}") && SHELL.includes("flowNumber={dialogueTab === 'multi' ? 2 : 3}"))
   // 참조 방식은 고급 설정 안 한 곳에만 있다 — 기본 화면의 별도 영역(공통 생성 옵션·목소리 섹션 안)은 없앴다.

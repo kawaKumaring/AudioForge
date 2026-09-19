@@ -6,6 +6,7 @@ import type { RefPhase } from '../../shared/referencePolicy'
 import type { TtsReferenceEntry, PitchCapability, TtsEmotionRegion } from '../../shared/ttsConfig'
 import { deriveRefMode } from '../../shared/ttsConfig'
 import ReferenceRegionPanel from './ReferenceRegionPanel'
+import { runVoicePrep } from '../lib/voicePrepRunner'
 import { useSpeakerVoicePrep } from '@/hooks/useSpeakerVoicePrep'
 import ReferenceAssetLibraryPanel from './ReferenceAssetLibraryPanel'
 import EmotionSamplerPanel from './EmotionSamplerPanel'
@@ -880,11 +881,42 @@ export default function TTSEditor() {
   // 사용자가 펼쳐 둔 목소리 설정의 주인 — 자동 준비가 그 인물을 잡지 않게 하는 데 쓴다.
   // 한 슬롯의 보고자를 하나로 유지하는 규칙(2026-09-09 관리자 검수).
   const [openVoiceSpeakerId, setOpenVoiceSpeakerId] = useState<string | null>(null)
+
   const voicePrep = useSpeakerVoicePrep({
     disabled, speakerLabelOf, openSpeakerId: openVoiceSpeakerId,
+    // 인물 목소리 준비는 여러 명 화면에서만 돈다(예전에는 드라이버를 그 조건으로 그렸다).
+    active: dialogueTab === 'multi',
     // 우선순위: 수동 지정 > 작업 복원 > 자동 준비. 복원 중에는 드라이버가 비켜 있는다.
     restoring: workDraft.restoring,
   })
+
+  // ── 여러 명일 때 기본 목소리 준비 ────────────────────────────────────────
+  // 첫 인물은 기본 목소리(처음 불러온 음성)를 이어받는다. 그래서 여러 명 화면에서도 기본 목소리의
+  // 분석·구간 확정이 돌아야 한다. 예전에는 이 자리에 구간 편집기 부품을 **숨겨서** 띄웠고
+  // (`hidden` div), 사용자가 기본 인물의 편집기를 펼치면 그 부품이 언마운트돼 준비가 끊겼다.
+  // 이제 화면 밖에서 돈다 — 펼치든 접든 준비는 계속된다.
+  //   · 기본 인물의 편집기를 **펼쳐 둔 동안**에는 그 편집기가 보고자다(보고자는 하나여야 한다).
+  //   · 합성 중에는 시작하지 않는다 — 워커가 하나라 main 이 거절하고, 그 거절이 화면에 오류로 튄다.
+  useEffect(() => {
+    if (dialogueTab !== 'multi' || !fileInfo?.path || openVoiceSpeakerId === 'default' || disabled) return
+    void runVoicePrep({
+      clipKey: 'default',
+      path: fileInfo.path,
+      reqId: ttsRefReqId,
+      engine: ttsEngine,
+      refTargetSec: ttsRefTargetSec,
+      plain: true,
+      committedNow: () => {
+        const s = useAppStore.getState()
+        return s.ttsRefReady
+          ? { clip: s.ttsReferenceClip, region: s.ttsReferenceRegion,
+              whole: !s.ttsReferenceClip && !s.ttsReferenceRegion }
+          : null
+      },
+      report: (patch) => useAppStore.getState().setTtsRefState(patch),
+      onPolicy: (p) => useAppStore.getState().setTtsReferencePolicy(p),
+    })
+  }, [dialogueTab, fileInfo?.path, openVoiceSpeakerId, disabled, ttsRefReqId, ttsEngine, ttsRefTargetSec])
 
   // ── 기본 인물(화자 표기 없는 대사)의 목소리 = 한 명 탭의 기본 목소리 ──────────────
   // 카드에서도 다른 인물과 같은 조작을 할 수 있어야 한다. 다만 '무엇을 바꾸는가' 는 다르다:
@@ -1228,32 +1260,6 @@ export default function TTSEditor() {
         )}
 
       </TtsVoiceSection>
-      )}
-      {/* 여러 명: 단일용 목소리 영역은 그리지 않는다. 기본 목소리(처음 불러온 음성)의 분석·추천 구간 자동 확정은 보이지 않게
-          계속 돌아야 첫 인물이 그 결과를 이어받는다(open=false 는 도구를 그리지 않고 준비만 한다). */}
-      {dialogueTab === 'multi' && fileInfo?.path && openVoiceSpeakerId !== 'default' && (
-        <div hidden data-testid="default-voice-driver">
-          <ReferenceRegionPanel
-            // 기본 인물의 구간 편집기를 펼치면 이 구동은 언마운트된다 — 보고자를 하나로 두기 위해서다.
-            key={fileInfo.path + '|' + ttsRefReqId}
-            reqId={ttsRefReqId}
-            clipKey="default"
-            path={fileInfo.path}
-            disabled={disabled}
-            committed={ttsRefReady ? { clip: ttsReferenceClip, region: ttsReferenceRegion, whole: !ttsReferenceClip && !ttsReferenceRegion } : null}
-            onState={setTtsRefState}
-            label="참조 음성"
-            open={false}
-            autoConfirm
-            plainStatus
-          />
-        </div>
-      )}
-      {/* 새 인물 목소리 자동 준비 — 카드를 열지 않아도 분석·추천·구간 확정이 돈다(한 번에 한 명). */}
-      {dialogueTab === 'multi' && autoPrep && (
-        <div hidden data-testid="speaker-voice-driver" data-speaker={autoPrep.id}>
-          {renderSpeakerRegion(autoPrep.id, false, true)}
-        </div>
       )}
 
       {/* ───────── [2] 대사(한 명) / [1] 인물과 대사(여러 명) ─────────
