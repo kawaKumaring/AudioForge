@@ -8,7 +8,8 @@
 
 **접근:** 전부 이 장비의 ffmpeg 8.1-full 필터로 한다(`rubberband`·`volume`·`sidechaincompress`).
 새 모델·새 설치 없음. 파이썬 모듈 하나(`python/audio_fit.py`)에 부품을 모으고,
-`python -m unittest` 로 **실제 소리를 만들어** 숫자로 확인한다.
+`python -X utf8 python/test_*.py` 로 **실제 소리를 만들어** 숫자로 확인한다
+(★`-m unittest python/...` 는 이 파이썬에서 죽는다 — 게이트도 파일을 직접 돌린다).
 
 **쓰는 것:** Python 3.12(앱 파이썬) · ffmpeg 8.1-full · soundfile · pyloudnorm · numpy · librosa
 
@@ -44,7 +45,7 @@
 # -*- coding: utf-8 -*-
 """audio_fit.py 단위 검사 — 저장소 fixture 음성만 쓴다(사용자 미디어 미사용).
 
-실행: python -m unittest python/test_audio_fit.py
+실행: python -X utf8 python/test_audio_fit.py
 
 의존이 없으면(soundfile·numpy·ffmpeg) 해당 검사를 **건너뛰고 그 사실을 남긴다.**
 건너뛴 것을 통과로 주장하지 않는다.
@@ -92,7 +93,7 @@ if __name__ == '__main__':
 
 - [ ] **2단계: 실패를 확인한다**
 
-실행: `python -m unittest python/test_audio_fit.py -v`
+실행: `python -X utf8 python/test_audio_fit.py -v`
 예상: `ModuleNotFoundError: No module named 'audio_fit'`
 
 - [ ] **3단계: 최소 구현**
@@ -150,7 +151,7 @@ def probe_duration(path: str) -> float:
 
 - [ ] **4단계: 통과를 확인한다**
 
-실행: `python -m unittest python/test_audio_fit.py -v`
+실행: `python -X utf8 python/test_audio_fit.py -v`
 예상: 검사 2건 OK (soundfile 이 없으면 skip 사유가 찍힌다)
 
 - [ ] **5단계: 커밋**
@@ -234,7 +235,7 @@ class TestStretchTo(unittest.TestCase):
 
 - [ ] **2단계: 실패를 확인한다**
 
-실행: `python -m unittest python/test_audio_fit.py -v`
+실행: `python -X utf8 python/test_audio_fit.py -v`
 예상: `AttributeError: module 'audio_fit' has no attribute 'stretch_to'`
 
 - [ ] **3단계: 구현**
@@ -273,7 +274,7 @@ def stretch_to(src: str, dest: str, target_sec: float, *, ffmpeg=None) -> dict:
 
 - [ ] **4단계: 통과를 확인한다**
 
-실행: `python -m unittest python/test_audio_fit.py -v`
+실행: `python -X utf8 python/test_audio_fit.py -v`
 예상: 검사 7건 OK. 음높이 검사의 이동량이 50센트 미만.
 
 - [ ] **5단계: 커밋**
@@ -340,7 +341,7 @@ class TestLoudness(unittest.TestCase):
 
 - [ ] **2단계: 실패를 확인한다**
 
-실행: `python -m unittest python/test_audio_fit.py -v`
+실행: `python -X utf8 python/test_audio_fit.py -v`
 예상: `AttributeError: module 'audio_fit' has no attribute 'measure_loudness'`
 
 - [ ] **3단계: 구현**
@@ -397,7 +398,7 @@ def match_loudness(src: str, dest: str, target_lufs: float, *,
 
 - [ ] **4단계: 통과를 확인한다**
 
-실행: `python -m unittest python/test_audio_fit.py -v`
+실행: `python -X utf8 python/test_audio_fit.py -v`
 예상: 검사 12건 OK
 
 - [ ] **5단계: 커밋**
@@ -475,7 +476,7 @@ class TestDuck(unittest.TestCase):
 
 - [ ] **2단계: 실패를 확인한다**
 
-실행: `python -m unittest python/test_audio_fit.py -v`
+실행: `python -X utf8 python/test_audio_fit.py -v`
 예상: `AttributeError: module 'audio_fit' has no attribute 'duck'`
 
 - [ ] **3단계: 구현**
@@ -524,7 +525,7 @@ def duck(bg: str, voice: str, dest: str, *, threshold: float = DUCK_THRESHOLD,
 
 - [ ] **4단계: 통과를 확인한다**
 
-실행: `python -m unittest python/test_audio_fit.py -v`
+실행: `python -X utf8 python/test_audio_fit.py -v`
 예상: 검사 15건 OK
 
 문제가 나면: `sidechaincompress` 의 `threshold` 는 0~1 선형값이다. 배경이 충분히 안 낮아지면
