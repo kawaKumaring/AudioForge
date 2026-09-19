@@ -4,12 +4,21 @@ import {
   type PreviewSession, type PreviewPhase, type PreviewEvent,
 } from '../../shared/previewSession'
 import {
+  // 남은 것은 전부 **표시**용이다 — 머리글·슬라이더 범위·경고 문구. 판정은 voicePreparation 이 한다.
   policyFromAnalysis, regionSliderBounds, clampDuration, judgeLength, lengthConditionText, regionNeedText,
-  tooShortText, outsideRecommendedText, committedMismatchText, blockMessage, phaseForBlocking,
+  tooShortText, outsideRecommendedText, blockMessage,
   type ReferencePolicySummary, type RefPhase,
 } from '../../shared/referencePolicy'
 import { useAppStore } from '../stores/app.store'
 import { attachPlaybackVolume } from '../lib/playbackVolume'
+// 준비의 **판정 규칙**은 화면 밖에 있다(2026-09-19 소유자 단일화 1단계). 이 파일은 규칙을 부르고
+// 그 결과를 화면·store 에 반영하는 일만 한다 — 조건을 여기서 다시 쓰지 않는다.
+import {
+  autoConfirmKey, decideAfterAnalysis, decideAfterTrim, decideAutoConfirm,
+  type ReferenceAnalysis, type ReferenceSpan, type RefStatePatch,
+} from '../../shared/voicePreparation'
+
+export type { RefStatePatch }
 
 // 참조 음성 준비 패널 — 긴 원본을 거부하지 않고 "참조 원본"으로 수용하고,
 // 파형에서 구간을 골라 mono/24k 파생 클립을 만든 뒤 그것만 합성/전사에 전달한다.
@@ -18,21 +27,6 @@ import { attachPlaybackVolume } from '../lib/playbackVolume'
 //
 // clipKey('default'|emotionId)로 기본 참조와 감정별 참조에 공용 재사용된다. 여러 인스턴스가 서로 다른
 // clipKey/path를 쓰면 파생 클립 폴더가 key별로 분리돼 상호 간섭하지 않는다.
-
-// 상위(store)로 준비 상태를 올리는 패치 형태 — default(setTtsRefState)/emotion(setEmotionRefState) 공용.
-export interface RefStatePatch {
-  clip?: string
-  ready?: boolean
-  message?: string
-  region?: { start: number; duration: number } | null
-  /** 이 보고를 만든 요청. 상위가 낡은 보고를 버리는 기준이다(패널이 자동으로 붙인다). */
-  reqId?: string
-  /**
-   * 준비 단계 — **문구가 아니라 이 값이 판정 근거다**(2026-09-09 관리자 검수).
-   * 이 패널이 유일한 판정자다. 상위는 읽기만 한다.
-   */
-  phase?: RefPhase
-}
 
 interface ReferenceRegionPanelProps {
   path: string                          // 분석/트림 대상 원본 경로
@@ -90,24 +84,8 @@ interface ReferenceRegionPanelProps {
   reqId?: string
 }
 
-interface Analysis {
-  duration_sec: number
-  sample_rate: number
-  channels: number
-  /** 구간을 추천한다(필수 상한이 있으면 그것, 없으면 권장 상한을 넘었을 때). */
-  needs_region: boolean
-  /** 필수 상한 초과 — 자르지 않으면 이 엔진이 쓸 수 없다. 없으면 needs_region 은 '권장' 이다. */
-  region_required?: boolean
-  too_short: boolean
-  /** 필수 조건 안이지만 검증된(권장) 길이 밖. 경고만. */
-  outside_recommended?: boolean
-  valid_whole: boolean
-  policy?: ReferencePolicySummary
-  errors?: { code: string; message: string }[]
-  warnings?: { code: string; message: string }[]
-  recommend?: { ok: boolean; start_sec: number; dur_sec: number; whole_file?: boolean }
-  peaks?: { peaks: number[]; duration_sec: number }
-}
+// 분석 응답의 모양은 shared/voicePreparation 이 소유한다(판정이 그쪽에 있으므로).
+type Analysis = ReferenceAnalysis
 
 interface RegionMetrics {
   dur_sec: number
@@ -142,17 +120,7 @@ interface RegionMetrics {
                     pad_target_sec?: number; clip_duration_sec?: number }
 }
 
-interface RegionSpan {
-  start_sec: number
-  end_sec: number
-  dur_sec: number
-}
-
-/** effective_region 이 재현 권위이므로 형식이 어긋나면 승인하지 않는다. */
-function validSpan(r: RegionSpan | undefined): r is RegionSpan {
-  return !!r && [r.start_sec, r.end_sec, r.dur_sec].every(v => typeof v === 'number' && Number.isFinite(v))
-    && r.end_sec > r.start_sec && r.dur_sec > 0
-}
+type RegionSpan = ReferenceSpan
 
 // 차단 코드 → 사용자 문구는 shared/referencePolicy.blockMessage(정책 숫자 포함). 여기엔 표가 없다.
 
@@ -202,9 +170,6 @@ function waitUntilLoaded(el: HTMLAudioElement, timeoutMs = 4000): Promise<boolea
     el.addEventListener('error', onFail)
   })
 }
-
-/** 아직 확정하지 않아 합성이 막혔을 때, 무엇을 눌러야 하는지. 사유의 맨 앞에 둔다. */
-const ACTION_CONFIRM = "아래에서 '이 구간으로 확정' 을 눌러야 합성을 시작할 수 있습니다."
 
 export default function ReferenceRegionPanel({
   path, clipKey, disabled, onState, label = '참조 음성',
@@ -308,70 +273,23 @@ export default function ReferenceRegionPanel({
       }
       analysisSeq.current += 1
       setAnalysis(a)
-      const committedThen = hasCommittedNow()   // 결과가 도착한 지금의 사용 중 상태
-      const cNow = committedRef.current
-      const pol = policyFromAnalysis(a)
-      setTtsReferencePolicy(pol)            // 카드·자산 판정이 같은 정책을 본다
-      if (a.too_short) {
-        onStateRef.current({ phase: 'failed', clip: '', message: tooShortText(pol, a.duration_sec), region: null })
-      } else if (a.needs_region) {
-        const r = a.recommend
-        if (committedThen && cNow?.region) {
-          // 슬라이더는 사용 중인 구간에서 시작한다. 전체 원본 범위 안에서 자유롭게 넓힐 수 있다.
-          const committed = { ...cNow, region: cNow.region }
-          const cd = clampDuration(pol, a.duration_sec, committed.region.duration)
-          seededRegion.current = { start: committed.region.start, dur: cd }
-          setStart(committed.region.start); setDur(cd)
-          setEffective({ start_sec: committed.region.start, dur_sec: committed.region.duration } as RegionSpan)
-          if (committed.clip) setConfirmedClip(committed.clip)
-          // 엔진 전환 재판정: 사용 중 구간이 새 엔진의 **필수** 조건 밖이면 준비를 내리고 사유·수정만 안내한다.
-          // 클립·구간은 그대로 둔다(다른 목소리로 바꾸거나 다시 자르지 않는다). 권장 밖은 경고만(준비 유지).
-          const j = judgeLength(pol, committed.region.duration)
-          if (j === 'blocked_short' || j === 'blocked_long') {
-            onStateRef.current({ phase: 'needs_region', clip: committed.clip, region: committed.region,
-              message: committedMismatchText(pol, committed.region.duration) })
-          }
-        } else if (r && r.ok) {
-          const rd = clampDuration(pol, a.duration_sec, r.dur_sec)
-          seededRegion.current = { start: r.start_sec, dur: rd }
-          setStart(r.start_sec); setDur(rd)
-        }
-        if (committedThen && cNow?.whole && a.region_required) {
-          // 원본 전체를 쓰던 상태인데 새 엔진 정책이 구간을 필수로 요구한다 — 사유와 구간 수정만 안내(교체·삭제 없음).
-          onStateRef.current({ phase: 'needs_region', clip: '', region: null, message: regionNeedText(pol, a.duration_sec, true) })
-        }
-        if (!committedThen) {
-          // ★이 문구는 시작 단추의 **막힌 사유**로 그대로 나간다. 길이 안내만 적어 두면
-          //   "왜 못 만드는지" 가 아니라 "참고 사항" 처럼 읽힌다(실측 보고). 자동 확정이 없어
-          //   사용자가 눌러야 하는 경우에는 **눌러야 한다는 사실**을 함께 말한다.
-          const mustConfirm = !autoConfirm
-          const need = regionNeedText(pol, a.duration_sec, !!a.region_required)
-          onStateRef.current({
-            // 자동 확정이 뒤따르면 이것은 '진행 중' 이다. 자동 확정이 없으면 사용자가 골라야 한다.
-            phase: autoConfirm ? 'preparing' : 'needs_region', clip: '',
-            message: say(
-              mustConfirm ? ACTION_CONFIRM + ' ' + need : need,
-              mustConfirm ? ACTION_CONFIRM : '목소리에서 쓸 부분을 고르는 중입니다…'),
-            region: null,
-          })
-        }
-      } else if (a.valid_whole) {
-        // 필수 조건 통과 + 구간 추천 불필요 → 원본을 그대로 참조로 사용(파생 클립 불필요, effective==원본).
-        // 사용 중 구간이 있으면(이전 엔진에서 잘랐던 것) 그대로 둔다 — 필수 조건 밖이면 사유만 알린다.
-        if (committedThen && cNow?.region) {
-          const committed = { ...cNow, region: cNow.region }
-          const j = judgeLength(pol, committed.region.duration)
-          if (j === 'blocked_short' || j === 'blocked_long') {
-            onStateRef.current({ phase: 'needs_region', clip: committed.clip, region: committed.region,
-              message: committedMismatchText(pol, committed.region.duration) })
-          }
-        } else {
-          onStateRef.current({ phase: 'ready', clip: '', message: '', region: null })
-        }
-      } else {
-        const why = (a.errors || []).map(e => e.message).join(' / ') || '참조 음성 품질 오류'
-        onStateRef.current({ phase: 'failed', clip: '', message: why, region: null })
+      const d = decideAfterAnalysis({
+        analysis: a,
+        // ★결과가 도착한 **지금**의 사용 중 상태를 넘긴다. 요청을 시작한 시점의 값을 쓰면 그 사이
+        //   준비된 목소리를 '아직 미준비' 로 판단해 되돌린다(2026-09-09 실측).
+        committed: committedRef.current,
+        autoConfirm,
+        plain: plainRef.current,
+      })
+      setTtsReferencePolicy(d.policy)            // 카드·자산 판정이 같은 정책을 본다
+      if (d.seed) {
+        // 프로그램이 **심은** 값이다 — 사용자의 '구간 변경' 으로 보면 안 된다(아래 효과가 이 값을 본다).
+        seededRegion.current = { start: d.seed.start, dur: d.seed.dur }
+        setStart(d.seed.start); setDur(d.seed.dur)
       }
+      if (d.effective) setEffective(d.effective as RegionSpan)
+      if (d.confirmedClip) setConfirmedClip(d.confirmedClip)
+      for (const patch of d.patches) onStateRef.current(patch)
     } catch (e) {
       if (signal?.cancelled) return
       const msg = (e as Error)?.message || '참조 분석 실패'
@@ -554,65 +472,30 @@ export default function ReferenceRegionPanel({
     setConfirming(true)
     try {
       const raw = await window.api.audio.trimReference(path, startSec, durSec, clipKey, { ttsEngine }) as Record<string, unknown>
-      // 실패 응답을 먼저 판정한다. 예전에는 성공 형태로 단언하고 res.metrics 를 읽어서,
-      // Python 이 구조화 차단(REFERENCE_REGION_BLOCKED + blocking)을 보내도 metrics 가 없으니
-      // 실제 사유 대신 '형식 불일치'만 떴다 — 사용자는 무엇을 고쳐야 하는지 알 수 없었다.
-      const failed = raw?.status === 'failed' || typeof raw?.code === 'string'
-      if (failed) {
-        const codes = Array.isArray(raw.blocking)
-          ? (raw.blocking as unknown[]).filter((c): c is string => typeof c === 'string')
-          : []
-        const msg = raw.code === 'REFERENCE_REGION_BLOCKED' && codes.length > 0
-          ? codes.map(c => blockMessage(c, policyRef.current)).join(' · ')
-          : (typeof raw.error_message === 'string' && raw.error_message
-              ? raw.error_message
-              : '구간을 확정하지 못했습니다.')
-        if (hasCommitted || confirmedClip) {
-          // 이전에 확정한 구간은 그대로 사용 중이다(main 도 이전 클립을 지우지 않았다). 사유만 말한다.
-          setConfirmError(msg + ' — 이전에 확정한 구간을 그대로 사용합니다.')
-          return
-        }
-        setConfirmedClip('')
-        setEffective(null)
-        setMetrics(null)
-        onStateRef.current({ phase: 'failed', clip: '', message: msg, region: null })
+      const d = decideAfterTrim(raw, {
+        // 이전에 확정한 구간이 있으면 실패해도 그것을 그대로 쓴다(main 도 이전 클립을 지우지 않았다).
+        hasCommitted: hasCommitted || !!confirmedClip,
+        policy: policyRef.current,
+        plain: plainRef.current,
+      })
+      if (d.kind === 'kept') {
+        // 준비를 내리지 않는다 — 사유만 이 패널 안에 남긴다.
+        setConfirmError(d.message)
         return
       }
-      const res = raw as unknown as { clip_path: string; metrics: RegionMetrics }
-      setMetrics(res.metrics)
-      // 승인 여부는 구조화된 blocking 코드로만 정한다. 예전에는 경고 '문구'에 특정 낱말이
-      // 들어 있는지로 판단해서, 새로 생긴 '말 도중 절단' 경고가 그 낱말을 안 가져 조용히
-      // 승인됐다 — 그 클립이 그대로 ICL 프롬프트가 되어 참조 대사가 섞였다.
-      // 승인 권위는 Python(analyze_region) 하나다. renderer 는 그 계약을 '해석'하지 않는다.
-      // blocking 누락·타입 오류·ready 와의 모순은 전부 승인 거부로 떨어뜨린다(fail-closed).
-      const m = res.metrics
-      const blocking = Array.isArray(m?.blocking) ? m.blocking.filter(c => typeof c === 'string') : null
-      // effective_region 이 확정 region 의 권위다. 형식이 어긋나면 fail-closed.
-      const eff = m?.effective_region
-      const contractOk = blocking !== null && typeof m?.ready === 'boolean'
-        && m.ready === (blocking.length === 0) && validSpan(eff)
-      const ok = contractOk && m.ready === true
-      if (ok) {
-        setConfirmedClip(res.clip_path)
-        // 요청 구간이 아니라 **실제로 잘려 나간 구간**을 저장한다. 자동 스냅으로 옮겨졌을 때
-        // 요청값을 저장하면 재현이 어긋난다.
-        const span = eff as RegionSpan
-        setEffective(span)
+      // 표시용 상세(무음 비율·스냅·낱말 경계…)는 판정과 별개다. 모듈은 계약 필드만 보고,
+      // 화면은 응답이 준 나머지를 그대로 보여 준다.
+      setMetrics((d.metrics as unknown as RegionMetrics) ?? null)
+      if (d.kind === 'ready') {
+        setConfirmedClip(d.clip)
+        setEffective(d.effective)
         setConfirmError(null)
-        onStateRef.current({
-          phase: 'ready', clip: res.clip_path, message: '',
-          region: { start: span.start_sec, duration: span.dur_sec }
-        })
-      } else {
-        setConfirmedClip('')
-        setEffective(null)
-        const msg = !contractOk
-          ? say('구간 검사 결과를 읽지 못했습니다(형식 불일치). 다시 시도하세요.', '목소리 구간을 확인하지 못했습니다. 다시 시도해 주세요.')
-          : (blocking as string[]).map(c => blockMessage(c, policyRef.current)).join(' · ')
-        // 차단이 '구간을 다시 고르면 되는 일' 인지 '이 파일로는 안 되는 일' 인지는 코드로 정한다.
-        onStateRef.current({ phase: contractOk ? phaseForBlocking(blocking as string[]) : 'failed',
-          clip: '', message: msg || '구간 품질이 부적합합니다', region: null })
+        onStateRef.current({ phase: 'ready', clip: d.clip, message: '', region: d.region })
+        return
       }
+      setConfirmedClip('')
+      setEffective(null)
+      onStateRef.current(d.patch)
     } catch (e) {
       if (hasCommitted || confirmedClip) {
         setConfirmError('목소리 구간을 준비하지 못했습니다. 이전에 확정한 구간을 그대로 사용합니다.')
@@ -655,25 +538,24 @@ export default function ReferenceRegionPanel({
     //   화면에는 길이 안내만 있어 무엇을 해야 하는지 알 수 없었다.
     //   분석 한 건당 한 번으로 묶으면 같은 분석을 두 번 확정하지 않으면서(무한 확정 없음)
     //   새 분석에는 다시 기회가 간다.
-    const key = `${clipKey}\u0000${path}\u0000${analysisSeq.current}`
-    if (hasCommitted) { settleAuto(key); return }        // 이미 쓰고 있는 구간이 있다 → 준비는 끝난 것
-    if (analyzeError) { settleAuto(key); return }        // 분석 실패 — 사유는 이미 상위로 올렸다
-    if (!analysis) return                                 // 아직 분석 중이다. **종료가 아니다.**
+    const key = autoConfirmKey(clipKey, path, analysisSeq.current)
+    const d = decideAutoConfirm({
+      autoConfirm, hasCommitted, analyzeError: !!analyzeError, analysis, policy: policyRef.current,
+    })
+    if (d.kind === 'wait') return                       // 아직 분석 중이다. **종료가 아니다.**
+    // 사용 중이거나 분석이 실패한 경우는 **열쇠를 잠그기 전에** 알린다(예전 순서 그대로).
+    if (!analysis || analyzeError || hasCommitted) { settleAuto(key); return }
     if (autoConfirmedKey.current === key) return
     autoConfirmedKey.current = key
-    if (!analysis.needs_region) { settleAuto(key); return }   // 원본을 그대로 쓸 수 있다/못 쓴다 — 분석이 이미 판정했다
-    const r = analysis.recommend
-    if (!r || !r.ok) {
-      // 추천이 없으면 임의로 고르지 않는다. 다만 **'준비 중' 으로 남겨 두지 않는다** —
-      // 남겨 두면 끝나지 않는 상태가 되고, 사용자는 목소리가 준비되는 줄 알고 기다리게 된다.
-      if (!hasCommittedNow()) {
-        onStateRef.current({ phase: 'needs_region', clip: '', region: null, message: ACTION_CONFIRM })
-      }
+    if (d.kind === 'settle') { settleAuto(key); return }
+    if (d.kind === 'needs-region') {
+      // 추천이 없으면 임의로 고르지 않는다. 다만 '준비 중' 으로 남겨 두지 않는다 —
+      // 남겨 두면 끝나지 않는 상태가 되고 사용자는 준비되는 줄 알고 기다린다.
+      if (!hasCommittedNow()) onStateRef.current(d.patch)
       settleAuto(key)
       return
     }
-    void confirmRegion(r.start_sec, clampDuration(policyRef.current, analysis.duration_sec, r.dur_sec))
-      .finally(() => settleAuto(key))
+    void confirmRegion(d.start, d.dur).finally(() => settleAuto(key))
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [autoConfirm, path, clipKey, analysis, analyzeError, hasCommitted, settleAuto])
 

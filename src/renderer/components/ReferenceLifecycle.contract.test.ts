@@ -14,6 +14,8 @@ const PANEL = codeOf(read('./ReferenceRegionPanel.tsx'))
 const SHELL = codeOf(read('./TTSEditor.tsx'))
 // 인물 목소리 준비의 소유자(2026-09-08 분리). 옮겨간 계약은 이 파일에서 확인한다.
 const PREP = codeOf(read('../hooks/useSpeakerVoicePrep.tsx'))
+// 준비의 **판정 규칙** 소유자(2026-09-19 분리). 조건은 여기서 확인한다 — 화면은 부르기만 한다.
+const RULES = codeOf(read('../../shared/voicePreparation.ts'))
 
 test('분석(편집기 열기)은 확정 클립을 지우지 않는다', () => {
   const i = IPC.indexOf("ipcMain.handle('audio:analyze-reference'")
@@ -41,7 +43,11 @@ test('패널: 사용 중인 확정 상태가 있으면 재분석·재확정 실�
   assert.ok(PANEL.includes('const hasCommitted = !!(committed && (committed.clip || committed.region || committed.whole))'), '원본 전체 사용 중도 사용 중이다')
   // 2026-09-09: 보고가 ready(bool) 대신 **단계**를 싣는다 — 문구·bool 대신 상태로 판정하기 위해.
   assert.ok(PANEL.includes("if (!hasCommitted) {\n      onStateRef.current({ phase: 'preparing', clip: ''"), '마운트 리셋은 확정이 없을 때만')
-  assert.ok(PANEL.includes('setStart(committed.region.start)'), '슬라이더는 사용 중 구간에서 시작(전체 원본 범위)')
+  // 규칙은 shared 로 옮겼다. 화면은 규칙이 정한 값을 심기만 한다 — 조건을 여기서 다시 쓰지 않는다.
+  assert.ok(RULES.includes('out.seed = { start: committed.region.start, dur: cd }'),
+    '슬라이더는 사용 중 구간에서 시작(전체 원본 범위)')
+  assert.ok(PANEL.includes('setStart(d.seed.start); setDur(d.seed.dur)'), '화면은 규칙이 준 값을 심는다')
+  assert.equal(/committed\.region\.start/.test(PANEL), false, '조건이 두 곳에 있으면 안 된다 — 소유자는 하나다')
   assert.ok(PANEL.includes('이전에 확정한 구간을 그대로 사용합니다'))
   assert.ok(PANEL.includes('data-testid="region-confirm-kept"'))
   // 편집 대상은 늘 path(원본). clip 을 파형으로 여는 코드가 없다.

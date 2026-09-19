@@ -95,12 +95,18 @@ test('카드는 준비 중 → 준비됨을 그대로 보여 주고, 구간 수�
 // 패널 쪽 계약 — '끝났다'를 반드시 한 번 알린다. 이것이 없으면 드라이버가 한 사람을 붙잡은 채 멈춘다.
 test('자동 준비는 성공·실패·해당 없음 모두에서 끝났다고 알린다', () => {
   const PANEL = codeOf(read('./ReferenceRegionPanel.tsx'))
+  const RULES = codeOf(read('../../shared/voicePreparation.ts'))
   const eff = between(PANEL, 'const settleAuto = useCallback',
     '}, [autoConfirm, path, clipKey, analysis, analyzeError, hasCommitted, settleAuto])')
-  assert.ok(eff.includes('if (hasCommitted) { settleAuto(key); return }'), '이미 쓰는 구간이 있으면 끝')
-  assert.ok(eff.includes('if (analyzeError) { settleAuto(key); return }'), '분석 실패도 끝')
-  assert.ok(eff.includes('if (!analysis) return'), '분석 중은 끝이 아니다')
-  assert.ok(eff.includes('if (!analysis.needs_region) { settleAuto(key); return }'), '자를 필요가 없으면 끝')
+  // 2026-09-19: '무엇을 할지'는 규칙이 정하고, '언제 알릴지'(열쇠 순서)는 화면이 지킨다.
+  assert.ok(RULES.includes("if (hasCommitted) return { kind: 'settle' }"), '이미 쓰는 구간이 있으면 끝')
+  assert.ok(eff.includes('if (!analysis || analyzeError || hasCommitted) { settleAuto(key); return }'),
+    '그 경우들은 열쇠를 잠그기 전에 알린다 — 잠근 뒤면 다음 분석이 기회를 잃는다')
+  assert.ok(RULES.includes("if (analyzeError) return { kind: 'settle' }"), '분석 실패도 끝')
+  assert.ok(RULES.includes("if (!analysis) return { kind: 'wait' }"), '분석 중은 끝이 아니다')
+  assert.ok(RULES.includes("if (!analysis.needs_region) return { kind: 'settle' }"), '자를 필요가 없으면 끝')
+  assert.ok(eff.includes("if (d.kind === 'wait') return"), '화면은 규칙이 기다리라면 기다린다')
+  assert.ok(eff.includes("if (d.kind === 'settle') { settleAuto(key); return }"), '규칙이 끝이라면 알린다')
   assert.ok(eff.includes('.finally(() => settleAuto(key))'), '확정을 시도했으면 결과와 무관하게 끝을 알린다')
   assert.ok(eff.includes('if (settledKey.current === key) return'), '한 파일당 한 번만')
 })
