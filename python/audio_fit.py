@@ -47,3 +47,32 @@ def probe_duration(path: str) -> float:
         raise
     except Exception as e:
         raise AudioFitError('길이를 읽지 못했습니다: %s' % e)
+
+
+# rubberband 가 감당하는 범위. 이 밖은 소리가 무너진다.
+# ★이 값은 '자연스러움의 한계'가 아니다 — 그것은 사람이 듣고 정하며 자리 맞추기 단계가 쓴다.
+STRETCH_MIN_RATIO = 0.5
+STRETCH_MAX_RATIO = 2.0
+
+
+def stretch_to(src: str, dest: str, target_sec: float, *, ffmpeg=None) -> dict:
+    """음높이를 지키며 길이를 target_sec 에 맞춘다.
+
+    ratio > 1 이면 빠르게(짧게), < 1 이면 느리게(길게).
+    한계를 넘는 요구는 **한계까지만** 하고 `clamped=True` 로 알린다 — 조용히 포기하지 않는다.
+    """
+    if not target_sec or target_sec <= 0:
+        raise AudioFitError('목표 길이는 0보다 커야 합니다: %r' % (target_sec,))
+    src_sec = probe_duration(src)
+    want = src_sec / target_sec
+    ratio = max(STRETCH_MIN_RATIO, min(STRETCH_MAX_RATIO, want))
+    clamped = abs(ratio - want) > 1e-9
+    _run_ffmpeg(['-i', src, '-filter:a', 'rubberband=tempo=%.6f' % ratio, dest], ffmpeg=ffmpeg)
+    return {
+        'ratio': ratio,
+        'requested_ratio': want,
+        'clamped': clamped,
+        'src_sec': src_sec,
+        'target_sec': target_sec,
+        'out_sec': probe_duration(dest),
+    }

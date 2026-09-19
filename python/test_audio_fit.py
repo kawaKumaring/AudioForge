@@ -45,5 +45,65 @@ class TestProbeDuration(unittest.TestCase):
             audio_fit.probe_duration(os.path.join(REPO, 'no-such-file.wav'))
 
 
+
+@unittest.skipUnless(HAVE_SF, 'soundfile 없음 — 공용 venv 필요')
+class TestStretchTo(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.mkdtemp(prefix='af-fit-')
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_원하는_길이로_맞춘다(self):
+        src_sec = audio_fit.probe_duration(FIXTURE)
+        target = src_sec * 0.8                      # 20% 짧게
+        dest = os.path.join(self.dir, 'out.wav')
+        r = audio_fit.stretch_to(FIXTURE, dest, target)
+        self.assertTrue(os.path.isfile(dest))
+        # 오차 50ms 안. rubberband 는 프레임 단위로 끊으므로 정확히 같지는 않다.
+        self.assertLess(abs(r['out_sec'] - target), 0.05,
+                        '실제 %.3f초 vs 목표 %.3f초' % (r['out_sec'], target))
+        self.assertAlmostEqual(r['ratio'], src_sec / target, places=3)
+
+    def test_늘이는_쪽도_된다(self):
+        src_sec = audio_fit.probe_duration(FIXTURE)
+        target = src_sec * 1.25                     # 25% 길게
+        dest = os.path.join(self.dir, 'long.wav')
+        r = audio_fit.stretch_to(FIXTURE, dest, target)
+        self.assertLess(abs(r['out_sec'] - target), 0.05)
+        self.assertLess(r['ratio'], 1.0)
+
+    def test_배율_한계를_넘으면_한계까지만_하고_그_사실을_알린다(self):
+        src_sec = audio_fit.probe_duration(FIXTURE)
+        dest = os.path.join(self.dir, 'clamped.wav')
+        r = audio_fit.stretch_to(FIXTURE, dest, src_sec / 10.0)   # 10배는 불가능
+        self.assertEqual(r['ratio'], audio_fit.STRETCH_MAX_RATIO)
+        self.assertTrue(r['clamped'], '한계에 걸렸으면 그 사실을 돌려준다')
+
+    def test_목표가_0_이하면_사유와_함께_실패한다(self):
+        dest = os.path.join(self.dir, 'bad.wav')
+        with self.assertRaises(audio_fit.AudioFitError):
+            audio_fit.stretch_to(FIXTURE, dest, 0.0)
+
+    @unittest.skipUnless(HAVE_LIBROSA, 'librosa 없음 — 음높이 확인 건너뜀')
+    def test_음높이가_유지된다(self):
+        """★이것이 rubberband 를 쓰는 이유다. 단순 배속은 음높이가 올라가 다른 사람이 된다."""
+        dest = os.path.join(self.dir, 'p.wav')
+        src_sec = audio_fit.probe_duration(FIXTURE)
+        audio_fit.stretch_to(FIXTURE, dest, src_sec * 0.8)
+
+        def median_f0(path):
+            y, sr = librosa.load(path, sr=16000, mono=True)
+            f0 = librosa.yin(y, fmin=70, fmax=400, sr=sr)
+            return float(np.median(f0))
+
+        before, after = median_f0(FIXTURE), median_f0(dest)
+        cents = 1200.0 * np.log2(after / before)
+        self.assertLess(abs(cents), 50.0,
+                        '음높이가 %.1f센트 움직였다(50센트=반음의 절반)' % cents)
+
+
 if __name__ == '__main__':
     unittest.main()
