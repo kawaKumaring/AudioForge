@@ -54,12 +54,21 @@ def probe_duration(path: str) -> float:
 STRETCH_MIN_RATIO = 0.5
 STRETCH_MAX_RATIO = 2.0
 
+# rubberband 의 기본값은 **음악용**이다(transients=crisp · detector=compound · smoothing=off).
+# 말소리에 그대로 쓰면 자음마다 튀고 울렁거린다 — 2026-09-20 사용자 청취에서 1.1배부터 들렸다.
+# ★아래 값은 **아직 정하지 않았다.** 설정 견본을 듣고 정한 뒤 여기에 적는다.
+#   빈 사전이면 ffmpeg 기본값(=음악용)이다.
+RUBBERBAND_DEFAULT_OPTS = {}
 
-def stretch_to(src: str, dest: str, target_sec: float, *, ffmpeg=None) -> dict:
+
+def stretch_to(src: str, dest: str, target_sec: float, *, ffmpeg=None, rb_options=None) -> dict:
     """음높이를 지키며 길이를 target_sec 에 맞춘다.
 
     ratio > 1 이면 빠르게(짧게), < 1 이면 느리게(길게).
     한계를 넘는 요구는 **한계까지만** 하고 `clamped=True` 로 알린다 — 조용히 포기하지 않는다.
+
+    `rb_options` 로 rubberband 설정을 덮어쓴다(예: {'transients': 'smooth', 'detector': 'soft'}).
+    주지 않으면 RUBBERBAND_DEFAULT_OPTS 를 쓴다.
     """
     if not target_sec or target_sec <= 0:
         raise AudioFitError('목표 길이는 0보다 커야 합니다: %r' % (target_sec,))
@@ -67,8 +76,13 @@ def stretch_to(src: str, dest: str, target_sec: float, *, ffmpeg=None) -> dict:
     want = src_sec / target_sec
     ratio = max(STRETCH_MIN_RATIO, min(STRETCH_MAX_RATIO, want))
     clamped = abs(ratio - want) > 1e-9
-    _run_ffmpeg(['-i', src, '-filter:a', 'rubberband=tempo=%.6f' % ratio, dest], ffmpeg=ffmpeg)
+    opts = dict(RUBBERBAND_DEFAULT_OPTS)
+    if rb_options:
+        opts.update(rb_options)
+    parts = ['tempo=%.6f' % ratio] + ['%s=%s' % (k, v) for k, v in sorted(opts.items())]
+    _run_ffmpeg(['-i', src, '-filter:a', 'rubberband=' + ':'.join(parts), dest], ffmpeg=ffmpeg)
     return {
+        'rb_options': opts,
         'ratio': ratio,
         'requested_ratio': want,
         'clamped': clamped,
