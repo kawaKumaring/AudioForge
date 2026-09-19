@@ -222,7 +222,7 @@ export const TILDE_RUN_CHARS = '~～〜'
  *  여기서는 두 언어가 완전히 같게 움직이도록 문자 집합을 직접 못 박는다.)
  */
 export const EXPRESSIVE_WHITESPACE_CHARS =
-  ' \t\n\f\r                 　'
+  ' \t\n\v\f\r                 　'
 
 /** 웃음에 쓰이는 문자 집합. 이 문자들'만'으로 이뤄졌는데 style 매칭 실패 → AMBIGUOUS_LAUGH_TOKEN. */
 export const LAUGH_TOKEN_CHARS = 'ㅋㅎ헤헷호홋히'
