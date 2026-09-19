@@ -24,7 +24,10 @@ const modes: { id: SeparationMode; label: string; short: string; icon: ReactNode
     icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="23" /></svg>
   },
   {
-    // 새 작업실 — 기존 합성 화면은 그대로 두고 옆에 둔다.
+    // ★**이 줄의 label·short·icon 이 새 기능을 만들 때 빌려 주는 이름표다**
+    //   (규칙: doc/dev-rules.md 8장 · LabPlaceholder.tsx 머리말).
+    //   만드는 동안 이 자리에 새 기능이 들어앉고, 완성되면 **여기 이름표와 아이콘만** 진짜 것으로
+    //   바꾼다. id('lab')를 포함한 내부 이름은 새 기능의 최종 이름을 처음부터 쓴다 — 바꾸지 않는다.
     id: 'lab', label: '테스트개발', short: '테스트개발',
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
