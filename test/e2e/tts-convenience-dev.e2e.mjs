@@ -642,11 +642,13 @@ try {
   const hasDefaultCard = await waitUntil(async () => await st(() =>
     [...document.querySelectorAll('[data-testid="dialogue-row"]')]
       .some((r) => (r.getAttribute('data-speaker') || '') === '')), 60000)
-  const readyBefore = await st(() => window.__afStore.getState().ttsRefReady)
+  // 2026-09-19: 준비는 **화면 밖에서** 돈다. 그래서 '누가 맡는가' 를 숨은 요소 개수로 세지 않고
+  // **준비가 유지되는가** 로 본다. 숨은 구동 요소는 이제 존재하지 않아야 한다.
+  const readyBefore = await waitUntil(async () => await st(() => window.__afStore.getState().ttsRefReady), 60000)
   const driverClosed = await count('[data-testid="default-voice-driver"]')
-  ok('J1', hasDefaultCard && driverClosed === 1,
-    '기본 인물 카드가 접혀 있으면 숨은 구동 하나만 맡는다',
-    `기본카드=${hasDefaultCard} 구동=${driverClosed}개`)
+  ok('J1', hasDefaultCard && readyBefore === true && driverClosed === 0,
+    '기본 인물 카드가 생겨도 기본 목소리 준비는 그대로다(숨은 구동 없이)',
+    `기본카드=${hasDefaultCard} 준비=${readyBefore} 숨은구동=${driverClosed}개`)
 
   // 기본 인물의 목소리 설정 → 구간 수정을 펼친다. 그러면 구동이 물러나야 한다.
   const opened = await st(() => {
@@ -665,11 +667,10 @@ try {
     return true
   })
   await sleep(900)
-  const driverOpen = await count('[data-testid="default-voice-driver"]')
   const editorThere = await count('[data-testid="region-start-number"]')
-  ok('J2', opened && regionToggled && driverOpen === 0 && editorThere >= 1,
-    '구간 수정을 펼치면 숨은 구동이 물러나고 카드가 맡는다',
-    `펼침=${opened && regionToggled} 구동=${driverOpen}개 편집기=${editorThere}개`)
+  ok('J2', opened && regionToggled && editorThere >= 1,
+    '구간 수정을 펼치면 카드의 편집기가 나온다(그 카드가 보고자다)',
+    `펼침=${opened && regionToggled} 편집기=${editorThere}개`)
   const readyAfterOpen = await st(() => window.__afStore.getState().ttsRefReady)
   ok('J3', readyBefore === false || readyAfterOpen === true,
     '편집기를 펼쳐도 준비 상태가 내려가지 않는다',
@@ -683,9 +684,9 @@ try {
   await sleep(900)
   const driverBack = await count('[data-testid="default-voice-driver"]')
   const readyAfterClose = await st(() => window.__afStore.getState().ttsRefReady)
-  ok('J4', driverBack === 1 && readyAfterClose === readyAfterOpen,
-    '다시 접으면 구동이 돌아오고 준비 상태는 그대로다',
-    `구동=${driverBack}개 준비=${readyAfterClose}`)
+  ok('J4', driverBack === 0 && readyAfterClose === readyAfterOpen,
+    '다시 접어도 준비 상태는 그대로다(되돌아올 숨은 구동이 없다)',
+    `숨은구동=${driverBack}개 준비=${readyAfterClose}`)
 
   // 기본 목소리가 준비된 상태에서는 '다시 준비' 입구가 없다(인물 슬롯의 E1 과 같은 규칙).
   // ★'다시 준비가 새 요청이고 클립·구간을 보존한다' 는 것은 여기서 확인하지 않는다 —

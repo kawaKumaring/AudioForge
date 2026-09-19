@@ -7,6 +7,8 @@ import { join } from 'node:path'
 
 const R = (p: string) => readFileSync(join(process.cwd(), p), 'utf-8').replace(/\u0000/g, '')
 const PANEL = R('src/renderer/components/ReferenceRegionPanel.tsx')
+// 길이 판정의 소유자(2026-09-19 분리). 화면은 표시에만 정책을 쓴다.
+const RULES = R('src/shared/voicePreparation.ts')
 const SHELL = R('src/renderer/components/TTSEditor.tsx')
 const MULTI = R('src/renderer/components/MultiSpeakerDialogue.tsx')
 const STORE = R('src/renderer/stores/app.store.ts')
@@ -22,9 +24,17 @@ test('패널: 길이 숫자 상수·문구가 없다 — 모두 정책 요약에
   assert.equal(/3~10/.test(code), false)
   assert.equal(/10초를 초과|3초 미만|허용 3~10초/.test(code), false)
   assert.equal(/BLOCK_MESSAGE\[/.test(code), false, '차단 문구 표는 shared/blockMessage 로')
-  for (const fn of ['policyFromAnalysis(', 'regionSliderBounds(', 'clampDuration(', 'judgeLength(', 'lengthConditionText(',
-    'regionNeedText(', 'tooShortText(', 'outsideRecommendedText(', 'committedMismatchText(', 'blockMessage(']) {
+  // 화면이 **표시**에 쓰는 것들 — 숫자를 직접 적지 않고 전부 정책 요약에서 나온다.
+  for (const fn of ['policyFromAnalysis(', 'regionSliderBounds(', 'clampDuration(', 'judgeLength(',
+    'lengthConditionText(', 'regionNeedText(', 'tooShortText(', 'outsideRecommendedText(', 'blockMessage(']) {
     assert.ok(PANEL.includes(fn), fn)
+  }
+  // 판정에 쓰는 것들은 규칙 쪽에 있다 — 두 곳에 같은 판정을 두지 않는다.
+  const rulesCode = codeLines(RULES).join('\n')
+  assert.equal(/const MIN_SEC|const MAX_SEC|3~10/.test(rulesCode), false, '규칙에도 숫자 상수가 없다')
+  for (const fn of ['judgeLength(', 'clampDuration(', 'committedMismatchText(', 'regionNeedText(',
+    'tooShortText(', 'blockMessage(', 'phaseForBlocking(']) {
+    assert.ok(RULES.includes(fn), fn)
   }
   assert.ok(PANEL.includes('min={sliderBounds.min} max={sliderBounds.max}'), '슬라이더 범위 = 정책(필수 없으면 원본 전체)')
 })
@@ -35,22 +45,24 @@ test('패널: 분석·확정이 선택 엔진을 워커에 넘기고, 엔진이 
   assert.ok(PANEL.includes("trimReference(path, startSec, durSec, clipKey, { ttsEngine })"))
   assert.ok(PANEL.includes('}, [path, clipKey, say, ttsEngine, ttsRefTargetSec, setTtsReferencePolicy])'),
     '재분석 의존성에 엔진과 목표 길이')
-  assert.ok(PANEL.includes('setTtsReferencePolicy(pol)'), '정책 요약을 store 에 발행')
+  assert.ok(PANEL.includes('setTtsReferencePolicy(d.policy)'), '규칙이 정한 정책 요약을 store 에 발행')
 })
 
 test('패널: 엔진 전환 시 사용 중 구간은 지우지 않고(clip·region 유지) 필수 조건 밖일 때만 준비를 내리며 사유·수정을 안내', () => {
-  const hits = PANEL.match(/committedMismatchText\(pol, committed\.region\.duration\)/g) ?? []
+  // 이 판정들은 2026-09-19 에 shared/voicePreparation 으로 옮겼다(단위 검사로 고정된다).
+  const hits = RULES.match(/committedMismatchText\(pol, committed\.region\.duration\)/g) ?? []
   assert.equal(hits.length, 2, '구간 추천 분기·원본 전체 분기 모두')
   // 2026-09-09: 보고가 ready 대신 단계를 싣는다. 엔진 전환의 길이 불일치는 '사용자 차례'다.
-  assert.ok(PANEL.includes("phase: 'needs_region', clip: committed.clip, region: committed.region,"), '클립·구간 보존')
-  assert.ok(PANEL.includes("j === 'blocked_short' || j === 'blocked_long'"), '필수 밖만 차단(권장 밖은 경고)')
+  assert.ok(RULES.includes("phase: 'needs_region', clip: committed.clip, region: committed.region,"), '클립·구간 보존')
+  assert.ok(RULES.includes("j === 'blocked_short' || j === 'blocked_long'"), '필수 밖만 차단(권장 밖은 경고)')
   assert.ok(PANEL.includes('data-testid="region-outside-recommended"'), '권장 밖 길이 안내(막지 않음)')
   assert.ok(PANEL.includes('data-testid="region-need" data-required='), '필수/권장 구간 안내 구분')
   // 원본 전체가 유효한 상태에서 사용 중 구간이 있으면 원본 전체로 조용히 되돌리지 않는다.
   // 2026-09-09: 분석 결과가 도착한 **그때의** 사용 중 상태를 본다(요청을 시작한 시점 값이 아니라).
   // 그 사이 준비가 끝났으면 낡은 값으로 되돌리지 않는다.
-  assert.ok(PANEL.includes("const committedThen = hasCommittedNow()"), '결과 도착 시점에 다시 읽는다')
-  assert.ok(PANEL.includes("if (committedThen && cNow?.region) {"), '되돌리기 판정도 그 값으로')
+  assert.ok(PANEL.includes('committed: committedRef.current,'), '결과 도착 시점의 값을 규칙에 넘긴다')
+  assert.ok(RULES.includes('const committedThen = hasCommittedRef(committed)'), '규칙은 넘겨받은 그 값으로 판정한다')
+  assert.ok(RULES.includes('if (committedThen && committed?.region) {'), '되돌리기 판정도 그 값으로')
 })
 
 test('카드: 실제로 모델에 가는 구간을 표시한다(원본 전체 / N초부터 M초)', () => {

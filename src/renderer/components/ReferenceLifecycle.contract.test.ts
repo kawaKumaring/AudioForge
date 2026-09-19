@@ -14,6 +14,8 @@ const PANEL = codeOf(read('./ReferenceRegionPanel.tsx'))
 const SHELL = codeOf(read('./TTSEditor.tsx'))
 // 인물 목소리 준비의 소유자(2026-09-08 분리). 옮겨간 계약은 이 파일에서 확인한다.
 const PREP = codeOf(read('../hooks/useSpeakerVoicePrep.tsx'))
+// 준비의 **판정 규칙** 소유자(2026-09-19 분리). 조건은 여기서 확인한다 — 화면은 부르기만 한다.
+const RULES = codeOf(read('../../shared/voicePreparation.ts'))
 
 test('분석(편집기 열기)은 확정 클립을 지우지 않는다', () => {
   const i = IPC.indexOf("ipcMain.handle('audio:analyze-reference'")
@@ -41,7 +43,11 @@ test('패널: 사용 중인 확정 상태가 있으면 재분석·재확정 실�
   assert.ok(PANEL.includes('const hasCommitted = !!(committed && (committed.clip || committed.region || committed.whole))'), '원본 전체 사용 중도 사용 중이다')
   // 2026-09-09: 보고가 ready(bool) 대신 **단계**를 싣는다 — 문구·bool 대신 상태로 판정하기 위해.
   assert.ok(PANEL.includes("if (!hasCommitted) {\n      onStateRef.current({ phase: 'preparing', clip: ''"), '마운트 리셋은 확정이 없을 때만')
-  assert.ok(PANEL.includes('setStart(committed.region.start)'), '슬라이더는 사용 중 구간에서 시작(전체 원본 범위)')
+  // 규칙은 shared 로 옮겼다. 화면은 규칙이 정한 값을 심기만 한다 — 조건을 여기서 다시 쓰지 않는다.
+  assert.ok(RULES.includes('out.seed = { start: committed.region.start, dur: cd }'),
+    '슬라이더는 사용 중 구간에서 시작(전체 원본 범위)')
+  assert.ok(PANEL.includes('setStart(d.seed.start); setDur(d.seed.dur)'), '화면은 규칙이 준 값을 심는다')
+  assert.equal(/committed\.region\.start/.test(PANEL), false, '조건이 두 곳에 있으면 안 된다 — 소유자는 하나다')
   assert.ok(PANEL.includes('이전에 확정한 구간을 그대로 사용합니다'))
   assert.ok(PANEL.includes('data-testid="region-confirm-kept"'))
   // 편집 대상은 늘 path(원본). clip 을 파형으로 여는 코드가 없다.
@@ -49,12 +55,11 @@ test('패널: 사용 중인 확정 상태가 있으면 재분석·재확정 실�
 })
 
 test('셸: 인물·감정·기본 패널에 committed 를 넘기고, 재생은 원본의 확정 구간을 튼다(임시 클립 아님)', () => {
-  // 인물·감정 패널 + 기본 패널 두 자리(한 명 화면 / 여러 명의 숨긴 준비 구동) — 같은 committed 계약.
-  // 네 마운트: 한 명 화면 · 여러 명의 숨긴 기본 목소리 구동 · 감정 패널 · 인물 패널.
-  // 인물 패널은 2026-09-08 에 useSpeakerVoicePrep 으로 옮겼으므로 셸 3 + 훅 1 이다.
-  // 셸의 네 마운트: 한 명 화면 · 여러 명의 숨긴 기본 목소리 구동 · 감정 패널 · **기본 인물 카드**
-  // (2026-09-08: 기본 인물도 다른 인물과 같은 조작을 갖도록 카드 안 편집기를 셸이 만든다).
-  assert.equal((SHELL.match(/committed=\{/g) ?? []).length, 4, '셸의 네 마운트')
+  // 2026-09-19: **숨긴 마운트가 사라졌다.** 남은 것은 사용자가 실제로 보는 자리뿐이다 —
+  // 셸 셋(한 명 화면 · 감정 패널 · 기본 인물 카드)과 훅 하나(인물 카드).
+  // 준비만 필요한 자리는 화면 밖 실행부가 맡는다(voicePrepRunner).
+  assert.equal((SHELL.match(/committed=\{/g) ?? []).length, 3, '셸의 세 마운트 — 전부 보이는 자리다')
+  assert.equal(SHELL.includes('hidden data-testid="default-voice-driver"'), false, '숨긴 준비 구동은 없다')
   assert.equal((PREP.match(/committed=\{/g) ?? []).length, 1, '인물 마운트는 훅이 만든다')
   assert.ok(SHELL.includes("previewLocalFile(fileInfo?.path || '', ttsReferenceRegion)"), '기본 재생 = 원본 + 구간')
   assert.ok(SHELL.includes("previewLocalFile(s?.source || '', s?.region ?? null)"), '인물 재생 = 원본 + 구간')

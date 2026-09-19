@@ -11,7 +11,8 @@ import { _electron as electron } from 'playwright'
 import { execFileSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
-import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenJobDirs, qwenVenvPids, nvidiaSmiGpu0, requireE2EReference } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenJobDirs, qwenVenvPids, nvidiaSmiGpu0, requireE2EReference,
+  isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
 
 const WAIT_MS = 350000  // > watchdog 300 > 무응답 280 (위 근거 참조)
 const APP = process.cwd()
@@ -38,7 +39,13 @@ const OUT_BASE = path.join(path.dirname(REF), 'AudioForge_output')
 
 const pageErrors = [], crashes = [], mainOut = []
 log('시작 nvidia-smi GPU0(used/free MiB):', nvidiaSmiGpu0() || '측정 실패')
-const app = await electron.launch({ args: ['out/main/index.js'], cwd: APP, env: { ...process.env, AF_E2E: '1' } })
+// ★사용자 데이터를 격리한다(2026-09-19 실측). 예전에는 **실제** 사용자 폴더를 그대로 썼다 — 그래서
+//   사용자가 앱을 띄워 두면 단일 인스턴스 잠금에 막혀 이 검사가 기동 직후 스스로 종료했다
+//   (게이트에 0.8초 실패로 나타났고, 원인은 제품이 아니라 이 검사였다).
+//   같은 GPU 단계의 다른 둘은 이미 격리하고 있었고 그래서 통과했다. 검사는 사용자 자산을 건드리지 않는다.
+const USER_DATA = isolatedUserData()
+const app = await electron.launch({ args: ['out/main/index.js'], cwd: APP,
+  env: { ...process.env, AF_E2E: '1', AF_E2E_USER_DATA: USER_DATA } })
 app.process().stdout.on('data', d => mainOut.push(String(d)))
 app.process().stderr.on('data', d => mainOut.push(String(d)))
 const win = await app.firstWindow()
@@ -168,6 +175,7 @@ try {
   ok(clips.length === 0, `종료 후 파생 참조 임시폴더 정리(leftover=${clips.length})`)
   ok(snapshotTree(RES_DIR) === resBefore, 'resources/ 원본·기존 출력 불변(size/hash/목록)')
   cleanupIsolated(ISO)  // 격리 폴더만 삭제(예외에도 반드시)
+  cleanupUserData(USER_DATA)   // 이 검사가 만든 임시 사용자 폴더만 삭제(경로를 확인한 뒤 지운다)
   fs.writeFileSync(path.join(SHOT, 'e2e_complete_log.txt'), logLines.join('\n') + '\n\n--- main ---\n' + mainOut.join(''), 'utf-8')
 }
 log('SUMMARY', { failed, pageErrors: pageErrors.length, crashes: crashes.length })

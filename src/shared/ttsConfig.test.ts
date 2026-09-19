@@ -176,7 +176,7 @@ test('화자별 참조는 부재 시 빈 dict — 기존 대본 동작이 달라
   const d = buildTtsConfig({
     ttsSpeakerRefs: { minsu: 'C:/a.wav' },
     ttsSpeakerRefSources: { minsu: 'C:/src.wav' },
-    ttsSpeakerEmotionRefs: { 'minsuhappy': 'C:/h.wav' },
+    ttsSpeakerEmotionRefs: { 'minsu\u001fhappy': 'C:/h.wav' },
     ttsSpeakerLabels: { minsu: '민수' },
   })
   assert.deepEqual(d.ttsSpeakerRefs, { minsu: 'C:/a.wav' })
