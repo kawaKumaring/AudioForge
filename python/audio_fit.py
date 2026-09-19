@@ -124,3 +124,42 @@ def match_loudness(src: str, dest: str, target_lufs: float, *,
         'clamped': clamped,
     }
 
+
+# 덕킹 기본값. 방송에서 쓰는 보통 값에서 출발한다 — 들어 보고 조정할 수 있게 인자로 연다.
+DUCK_THRESHOLD = 0.03
+DUCK_RATIO = 8.0
+DUCK_ATTACK_MS = 20.0
+DUCK_RELEASE_MS = 300.0
+
+
+def duck(bg: str, voice: str, dest: str, *, threshold: float = DUCK_THRESHOLD,
+         ratio: float = DUCK_RATIO, attack_ms: float = DUCK_ATTACK_MS,
+         release_ms: float = DUCK_RELEASE_MS, ffmpeg=None) -> dict:
+    """말하는 동안 배경음을 눌러(덕킹) 목소리와 섞는다.
+
+    돌려주는 `ducked_bg_path` 는 **목소리를 섞기 전의 배경음**이다 — 검사와 진단이
+    '정말 낮아졌는가' 를 섞인 소리가 아니라 배경음만 보고 확인할 수 있게 함께 낸다.
+    """
+    ducked_bg = os.path.splitext(dest)[0] + '.bg.wav'
+    graph = (
+        '[1:a]asplit=2[sc][v];'
+        '[0:a][sc]sidechaincompress='
+        'threshold=%.5f:ratio=%.3f:attack=%.1f:release=%.1f[bgd];'
+        '[bgd]asplit=2[bgout][bgmix];'
+        '[bgmix][v]amix=inputs=2:normalize=0[mix]'
+        % (threshold, ratio, attack_ms, release_ms)
+    )
+    _run_ffmpeg([
+        '-i', bg, '-i', voice, '-filter_complex', graph,
+        '-map', '[mix]', dest,
+        '-map', '[bgout]', ducked_bg,
+    ], ffmpeg=ffmpeg)
+    return {
+        'ducked_bg_path': ducked_bg,
+        'threshold': threshold,
+        'ratio': ratio,
+        'attack_ms': attack_ms,
+        'release_ms': release_ms,
+        'out_sec': probe_duration(dest),
+    }
+

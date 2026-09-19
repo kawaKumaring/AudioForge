@@ -151,5 +151,62 @@ class TestLoudness(unittest.TestCase):
                                      os.path.join(self.dir, 'o.wav'), -23.0)
 
 
+
+@unittest.skipUnless(HAVE_SF, 'soundfile 없음 — 공용 venv 필요')
+class TestDuck(unittest.TestCase):
+    """합성 신호만 쓴다 — 사용자 음원도 fixture 도 필요 없다."""
+
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.mkdtemp(prefix='af-duck-')
+        self.sr = 24000
+        t = np.arange(self.sr * 6) / float(self.sr)
+        # 배경음: 6초 내내 같은 크기의 낮은 음.
+        self.bg = os.path.join(self.dir, 'bg.wav')
+        sf.write(self.bg, (0.3 * np.sin(2 * np.pi * 220.0 * t)).astype('float32'), self.sr)
+        # 목소리: 2~4초 구간에만 소리가 있다.
+        v = np.zeros_like(t, dtype='float32')
+        seg = slice(self.sr * 2, self.sr * 4)
+        v[seg] = (0.5 * np.sin(2 * np.pi * 440.0 * t[seg])).astype('float32')
+        self.voice = os.path.join(self.dir, 'voice.wav')
+        sf.write(self.voice, v, self.sr)
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _rms(self, path, a, b):
+        y, sr = sf.read(path)
+        if y.ndim > 1:
+            y = y.mean(axis=1)
+        seg = y[int(a * sr):int(b * sr)]
+        return float(np.sqrt(np.mean(seg ** 2)))
+
+    def test_말하는_동안_배경음이_낮아진다(self):
+        dest = os.path.join(self.dir, 'mixed.wav')
+        r = audio_fit.duck(self.bg, self.voice, dest)
+        self.assertTrue(os.path.isfile(dest))
+        # 섞인 결과에서는 목소리가 더해져 커지므로 **배경음만** 따로 눌러 확인한다.
+        self.assertTrue(os.path.isfile(r['ducked_bg_path']))
+        quiet = self._rms(r['ducked_bg_path'], 0.2, 1.5)
+        during = self._rms(r['ducked_bg_path'], 2.5, 3.5)
+        self.assertLess(during, quiet * 0.7,
+                        '말하는 동안 배경 %.4f, 조용할 때 %.4f — 충분히 낮아지지 않았다'
+                        % (during, quiet))
+
+    def test_말이_끝나면_배경음이_돌아온다(self):
+        dest = os.path.join(self.dir, 'back.wav')
+        r = audio_fit.duck(self.bg, self.voice, dest)
+        quiet_before = self._rms(r['ducked_bg_path'], 0.2, 1.5)
+        after = self._rms(r['ducked_bg_path'], 5.0, 5.8)
+        self.assertGreater(after, quiet_before * 0.8, '말이 끝난 뒤 배경이 돌아와야 한다')
+
+    def test_길이가_원본_배경음을_따른다(self):
+        dest = os.path.join(self.dir, 'len.wav')
+        audio_fit.duck(self.bg, self.voice, dest)
+        self.assertLess(abs(audio_fit.probe_duration(dest)
+                            - audio_fit.probe_duration(self.bg)), 0.05)
+
+
 if __name__ == '__main__':
     unittest.main()
