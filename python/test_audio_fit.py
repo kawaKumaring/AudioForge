@@ -105,5 +105,51 @@ class TestStretchTo(unittest.TestCase):
                         '음높이가 %.1f센트 움직였다(50센트=반음의 절반)' % cents)
 
 
+
+@unittest.skipUnless(HAVE_SF, 'soundfile 없음 — 공용 venv 필요')
+class TestLoudness(unittest.TestCase):
+    def setUp(self):
+        import tempfile
+        self.dir = tempfile.mkdtemp(prefix='af-loud-')
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def _short_copy(self, name, seconds=0.2):
+        path = os.path.join(self.dir, name)
+        y, sr = sf.read(FIXTURE)
+        sf.write(path, y[: int(sr * seconds)], sr)
+        return path
+
+    def test_음량을_숫자로_돌려준다(self):
+        lufs = audio_fit.measure_loudness(FIXTURE)
+        self.assertIsNotNone(lufs)
+        self.assertLess(lufs, 0.0, '정상 음원은 0 LUFS 보다 작다')
+        self.assertGreater(lufs, -60.0)
+
+    def test_너무_짧으면_잴_수_없다고_말한다(self):
+        """★없는 값을 지어내지 않는다. 0.4초 미만은 이 방식으로 잴 수 없다."""
+        self.assertIsNone(audio_fit.measure_loudness(self._short_copy('short.wav')))
+
+    def test_목표_음량에_맞춘다(self):
+        dest = os.path.join(self.dir, 'matched.wav')
+        target = -23.0
+        r = audio_fit.match_loudness(FIXTURE, dest, target)
+        self.assertLess(abs(r['after_lufs'] - target), 1.0,
+                        '맞춘 뒤 %.1f LUFS (목표 %.1f)' % (r['after_lufs'], target))
+
+    def test_지나친_증폭은_한계까지만_하고_알린다(self):
+        dest = os.path.join(self.dir, 'loudclamp.wav')
+        r = audio_fit.match_loudness(FIXTURE, dest, 0.0, max_gain_db=6.0)
+        self.assertEqual(r['gain_db'], 6.0)
+        self.assertTrue(r['clamped'])
+
+    def test_잴_수_없는_음원은_사유와_함께_실패한다(self):
+        with self.assertRaises(audio_fit.AudioFitError):
+            audio_fit.match_loudness(self._short_copy('s2.wav'),
+                                     os.path.join(self.dir, 'o.wav'), -23.0)
+
+
 if __name__ == '__main__':
     unittest.main()

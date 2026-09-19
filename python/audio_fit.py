@@ -76,3 +76,51 @@ def stretch_to(src: str, dest: str, target_sec: float, *, ffmpeg=None) -> dict:
         'target_sec': target_sec,
         'out_sec': probe_duration(dest),
     }
+
+
+# 방송에서 쓰는 통합 음량 기준. 0.4초보다 짧은 소리는 이 방식으로 잴 수 없다.
+LOUDNESS_MIN_SEC = 0.4
+LOUDNESS_MAX_GAIN_DB = 12.0
+
+
+def measure_loudness(path: str):
+    """통합 음량(LUFS). **잴 수 없으면 None** — 없는 값을 지어내지 않는다."""
+    if probe_duration(path) < LOUDNESS_MIN_SEC:
+        return None
+    try:
+        import numpy as np
+        import pyloudnorm as pyln
+        import soundfile as sf
+    except Exception as e:
+        raise AudioFitError('음량을 재는 데 필요한 것이 없습니다: %s' % e)
+    data, rate = sf.read(path)
+    meter = pyln.Meter(rate)
+    value = float(meter.integrated_loudness(data))
+    if not np.isfinite(value):
+        return None
+    return value
+
+
+def match_loudness(src: str, dest: str, target_lufs: float, *,
+                   max_gain_db: float = LOUDNESS_MAX_GAIN_DB, ffmpeg=None) -> dict:
+    """src 의 음량을 target_lufs 에 맞춰 dest 로 쓴다.
+
+    한계를 넘는 증폭·감쇠는 **한계까지만** 하고 `clamped=True` 로 알린다.
+    잴 수 없는 소리(너무 짧음)는 사유와 함께 실패한다 — 손대지 않고 넘기면 조용히 어긋난다.
+    """
+    before = measure_loudness(src)
+    if before is None:
+        raise AudioFitError('음량을 잴 수 없습니다(%.2f초 — %.1f초 이상 필요)'
+                            % (probe_duration(src), LOUDNESS_MIN_SEC))
+    want = target_lufs - before
+    gain = max(-max_gain_db, min(max_gain_db, want))
+    clamped = abs(gain - want) > 1e-9
+    _run_ffmpeg(['-i', src, '-filter:a', 'volume=%.3fdB' % gain, dest], ffmpeg=ffmpeg)
+    return {
+        'before_lufs': before,
+        'after_lufs': measure_loudness(dest),
+        'gain_db': gain,
+        'requested_gain_db': want,
+        'clamped': clamped,
+    }
+
