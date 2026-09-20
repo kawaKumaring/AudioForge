@@ -80,12 +80,15 @@ def main():
 
     labels = args.labels or [os.path.basename(a) for a in args.audio]
     settings = [
-        ('지금 설정', {}),
-        ('앞문맥 켬', {'condition_on_previous_text': True}),
-        ('노래라고 알려줌', {'initial_prompt': '日本語の歌詞です。'}),
-        ('앞문맥+알려줌', {'condition_on_previous_text': True,
-                           'initial_prompt': '日本語の歌詞です。'}),
-        ('모델 v2', {'model_name': 'large-v2'}),
+        ('large-v3 (지금)', {}),
+        ('large-v3-turbo', {'model_name': 'large-v3-turbo'}),
+        ('large-v2', {'model_name': 'large-v2'}),
+        ('medium', {'model_name': 'medium'}),
+        ('v3 + 앞문맥·알려줌', {'condition_on_previous_text': True,
+                                'initial_prompt': '日本語の歌詞です。'}),
+        ('turbo + 앞문맥·알려줌', {'model_name': 'large-v3-turbo',
+                                   'condition_on_previous_text': True,
+                                   'initial_prompt': '日本語の歌詞です。'}),
     ]
 
     rows = []
