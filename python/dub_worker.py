@@ -140,7 +140,21 @@ def _step_transcribe(ctx):
         raise dp.DubPipelineError(
             '말이 하나도 잡히지 않았습니다 - 음악이나 소리만 있는 영상일 수 있습니다')
 
-    payload = {'language': result.get('language') or 'unknown', 'segments': segments}
+    # 조각난 구간을 문장 단위로 묶는다.
+    # ★왜 여기인가(2026-09-20 실측): 알아듣기가 낸 36개 구간 중 문장부호로 끝나는 것이 **0개**,
+    #   글자 수 중앙 11자였다. 그 조각을 하나씩 번역에 넘기면 모델이 **없는 말을 지어내** 끝을 맺는다.
+    #   묶은 채로 한 줄로 둔다 - 더빙 줄이 알아듣기의 나눔을 따라야 할 이유가 없고,
+    #   묶으면 자리도 넓어져 늘이기가 덜 필요해진다.
+    import dub_lines
+    merged = dub_lines.merge_segments(segments)
+    info = dub_lines.summarize(segments, merged)
+    emit('progress', percent=68,
+         message='조각 %d줄을 문장 %d줄로 묶었습니다(글자 %d→%d자)'
+                 % (info['before'], info['after'],
+                    info['before_median_chars'], info['after_median_chars']))
+
+    payload = {'language': result.get('language') or 'unknown',
+               'segments': merged, 'raw_segments': segments, 'merge': info}
     with open(os.path.join(ctx['out_dir'], 'transcript.json'), 'w', encoding='utf-8') as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
 

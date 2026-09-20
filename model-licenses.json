@@ -131,6 +131,13 @@
       "non_commercial": null,
       "default_path": false,
       "note": "★ 조건을 확인하지 못했다. 한국어 기본 엔진은 Qwen3-TTS 이고 이 엔진은 선택 경로다. 배포 전 확인하거나 제거한다."
+    },
+    {
+      "id": "Qwen/Qwen3-ASR-1.7B",
+      "role": "알아듣기 비교용(시험 경로만 — 기본 경로 아님)",
+      "license": "Apache-2.0",
+      "non_commercial": false,
+      "default_path": false
     }
   ]
 }
