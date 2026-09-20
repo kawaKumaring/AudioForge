@@ -122,7 +122,8 @@ def _step_transcribe(ctx):
 
 def _step_translate(ctx):
     """4. 한국어로 옮긴다. 줄을 한꺼번에 넘겨 앞뒤 문맥을 살린다."""
-    from transcribe_worker import set_translate_model, translate_segments_to_korean
+    from transcribe_worker import (
+        set_translate_model, set_translate_style, translate_segments_to_korean)
     with open(os.path.join(ctx['out_dir'], 'transcript.json'), encoding='utf-8') as f:
         data = json.load(f)
     segments = data['segments']
@@ -130,6 +131,8 @@ def _step_translate(ctx):
 
     # ctx['backend'] 는 dub_pipeline 이 이미 걸러 준 값이다. 여기서 다시 고르지 않는다.
     set_translate_model(ctx['backend'])
+    # 더빙은 자막과 요구가 다르다 - 말투를 하나로 묶고, 원문보다 길어지지 않게 한다.
+    set_translate_style(mode='dub', register=ctx.get('register'))
     emit('progress', percent=72, message='%s→한국어 번역 중... (%d줄)' % (lang, len(segments)))
     korean = translate_segments_to_korean([s['text'] for s in segments], lang)
     if len(korean) != len(segments):
@@ -166,6 +169,8 @@ def main(argv=None):
     ap.add_argument('--translate', default=dp.DEFAULT_TRANSLATE_BACKEND)
     ap.add_argument('--whisper-model', default='large-v3')
     ap.add_argument('--language', default=None, help='없으면 자동 감지')
+    ap.add_argument('--register', default='', choices=['', 'casual', 'polite'],
+                    help='번역 말투 - 반말(casual) / 존댓말(polite) / 지정 안 함')
     ap.add_argument('--force', action='store_true', help='처음부터 다시 한다')
     args = ap.parse_args(argv)
 
@@ -182,7 +187,8 @@ def main(argv=None):
                               translate_backend=args.translate,
                               force=args.force, on_event=say,
                               extra={'whisper_model': args.whisper_model,
-                                     'language': args.language})
+                                     'language': args.language,
+                                     'register': args.register})
     except dp.DubPipelineError as e:
         emit('error', message=str(e))
         return 1

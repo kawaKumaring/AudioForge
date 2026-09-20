@@ -14,7 +14,7 @@
  */
 import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import {
-  DUB_STAGE_LABELS, dubNextAction, dubStatusColor, dubStatusLabel, dubTimeLabel,
+  DUB_STAGE_LABELS, dubFrontSummary, dubNextAction, dubStatusColor, dubStatusLabel, dubTimeLabel,
   type DubFrontResult, type DubLine, type DubLineResult, type DubLineState, type DubRenderResult,
 } from '../../shared/dubbing'
 import { synthesisOptions, defaultSettings } from '../../shared/labWorkspace'
@@ -41,6 +41,8 @@ export default function DubWorkspace() {
   const [voice, setVoice] = useState<{ path: string; ref: CommittedRef | null; message: string }>(
     { path: '', ref: null, message: '' },
   )
+  // 번역 말투. 더빙은 한 사람이 이어서 말하므로 줄마다 말투가 바뀌면 다른 사람처럼 들린다.
+  const [register, setRegister] = useState<'' | 'casual' | 'polite'>('casual')
   // 합성 결과를 기다리는 줄. 파이썬 통로가 하나라 한 줄씩 줄을 세운다.
   const pending = useRef<{ index: number; resolve: (p: string) => void; reject: (e: Error) => void } | null>(null)
   const committed = useRef<CommittedRef | null>(null)
@@ -110,16 +112,17 @@ export default function DubWorkspace() {
   const runFront = useCallback(async (force = false) => {
     setError(''); setBusy('front'); setNote('시작합니다...')
     const got = await call(
-      window.api.dub.runFront({ force }) as Promise<Reply<DubFrontResult>>, '앞단')
+      window.api.dub.runFront({ force, register }) as Promise<Reply<DubFrontResult>>, '앞단')
     setBusy('')
-    if (got) { setFront(got); setEdits({}); setReport(null); setNote('') }
-  }, [])
+    if (got) {
+      setFront(got); setEdits({}); setReport(null)
+      // ★할 일이 없었다는 것도 결과다. 아무 말도 안 하면 멈춘 것처럼 보인다(2026-09-20 신고).
+      setNote(dubFrontSummary(got.ran ?? [], got.skipped ?? []))
+    }
+  }, [register])
 
-  const pickVoice = useCallback(async () => {
-    setError('')
-    const picked = await window.api.audio.selectFile(false)
-    const path = Array.isArray(picked) ? picked[0] : picked
-    if (!path || typeof path !== 'string') return
+  /** 목소리 하나를 준비시킨다. 파일을 고르든 영상 속 목소리를 쓰든 여기로 모인다. */
+  const prepareVoice = useCallback(async (path: string) => {
     setBusy('voice')
     setVoice({ path, ref: null, message: '목소리를 살펴보는 중...' })
     const outcome = await runVoicePrep({
@@ -144,6 +147,25 @@ export default function DubWorkspace() {
       setError('이 목소리는 쓸 구간을 직접 골라야 합니다. 합성(고급) 작업실에서 구간을 정한 뒤 다시 오세요.')
     }
   }, [])
+
+  const pickVoice = useCallback(async () => {
+    setError('')
+    const picked = await window.api.audio.selectFile(false)
+    const path = Array.isArray(picked) ? picked[0] : picked
+    if (!path || typeof path !== 'string') return
+    await prepareVoice(path)
+  }, [prepareVoice])
+
+  /**
+   * 영상 속 목소리를 그대로 쓴다 - 인물은 그대로 두고 **언어만** 바꾸는 길이다.
+   * 갈라낸 보컬이 이미 있으므로 새로 고를 파일이 없다.
+   */
+  const useOriginalVoice = useCallback(async () => {
+    setError('')
+    const p = await call(window.api.dub.originalVoice() as Promise<Reply<string>>, '영상 속 목소리')
+    if (!p) return
+    await prepareVoice(p)
+  }, [prepareVoice])
 
   const saveKorean = useCallback(async () => {
     if (Object.keys(edits).length === 0) return
@@ -207,7 +229,8 @@ export default function DubWorkspace() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 14 }}>
       <Header videoPath={videoPath} voice={voice} disabled={disabled}
-        onPickVideo={pickVideo} onPickVoice={pickVoice} />
+        canUseOriginal={!!front}
+        onPickVideo={pickVideo} onPickVoice={pickVoice} onUseOriginal={useOriginalVoice} />
 
       {videoPath && (
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -217,6 +240,20 @@ export default function DubWorkspace() {
           {front && (
             <Btn onClick={() => void runFront(true)} disabled={disabled}>처음부터 다시</Btn>
           )}
+          <label style={{ fontSize: 11, color: 'var(--text-muted)', display: 'flex', gap: 5, alignItems: 'center' }}>
+            말투
+            <select value={register} disabled={disabled}
+              onChange={(e) => setRegister(e.target.value as '' | 'casual' | 'polite')}
+              style={{
+                fontFamily: 'inherit', fontSize: 11, padding: '4px 6px', borderRadius: 6,
+                background: 'var(--bg-input, #1b1d23)', color: 'var(--text)',
+                border: '1px solid var(--border-subtle)',
+              }}>
+              <option value="casual">반말로 통일</option>
+              <option value="polite">존댓말로 통일</option>
+              <option value="">통일만 (한쪽을 정하지 않음)</option>
+            </select>
+          </label>
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
             {DUB_STAGES_HINT}
           </span>
@@ -291,8 +328,10 @@ function Header(props: {
   videoPath: string
   voice: { path: string; ref: CommittedRef | null; message: string }
   disabled: boolean
+  canUseOriginal: boolean
   onPickVideo: () => void
   onPickVoice: () => void
+  onUseOriginal: () => void
 }): ReactElement {
   const name = props.videoPath.replace(/\\/g, '/').split('/').pop() || ''
   const voiceName = props.voice.path.replace(/\\/g, '/').split('/').pop() || ''
@@ -304,6 +343,9 @@ function Header(props: {
       </span>
       <span style={{ width: 1, height: 18, background: 'var(--border-subtle)' }} />
       <Btn onClick={props.onPickVoice} disabled={props.disabled}>목소리 고르기</Btn>
+      <Btn onClick={props.onUseOriginal} disabled={props.disabled || !props.canUseOriginal}>
+        영상 속 목소리 쓰기
+      </Btn>
       <span style={{
         fontSize: 12,
         color: props.voice.ref ? 'var(--emerald)' : 'var(--text-muted)',

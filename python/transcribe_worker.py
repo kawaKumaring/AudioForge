@@ -480,6 +480,78 @@ _LLM_SEG_SYSTEM = (
     "한자·일본어 가나·영어 원문을 남기지 마세요. 설명·따옴표·원문을 덧붙이지 마세요."
 )
 
+# ── 더빙용 지시 ────────────────────────────────────────────────────────────
+#
+# 왜 따로 두는가(2026-09-20 사용자 지적): 자막과 더빙은 요구가 다르다.
+#   · 자막은 눈으로 읽으므로 길어도 된다. 더빙은 **원래 말 길이 안에 들어가야** 한다.
+#   · 자막은 줄마다 떨어져 읽히지만, 더빙은 **한 사람이 이어서 말한다** — 말투가 줄마다
+#     바뀌면(있어 → 있습니다 → 가요) 다른 사람처럼 들린다. 실제로 그렇게 나왔다.
+# 그래서 기본 지시를 바꾸지 않고(자막 경로는 그대로) 더빙만 다른 지시를 쓴다.
+_REGISTER_RULES = {
+    'casual': "말투는 **반말**로 처음부터 끝까지 통일하세요(예: ~해, ~야, ~지). 존댓말을 섞지 마세요.",
+    'polite': "말투는 **존댓말**로 처음부터 끝까지 통일하세요(예: ~해요, ~입니다). 반말을 섞지 마세요.",
+    '': "말투(존댓말/반말)를 처음부터 끝까지 하나로 통일하세요. 줄마다 바꾸지 마세요.",
+}
+
+
+def _llm_dub_system(register):
+    return (
+        "당신은 전문 더빙 번역가입니다. 입력은 '번호. 원문' 형식의 여러 줄이며, "
+        "한 사람이 이어서 말하는 대사입니다. "
+        + _REGISTER_RULES.get(register or '', _REGISTER_RULES['']) + " "
+        "번역은 **원문과 비슷하거나 더 짧게** 하세요 — 성우가 원래 말 길이 안에 말해야 합니다. "
+        "설명을 덧붙여 늘리지 마세요. "
+        "반드시 '번호. 번역' 형식으로 입력과 같은 번호·같은 줄 수로만 출력하세요. "
+        "반드시 한국어(한글)로만 쓰고, 한자·일본어 가나·영어 낱말을 남기지 마세요. "
+        "설명·따옴표·원문을 덧붙이지 마세요."
+    )
+
+
+# 번역 말투와 쓰임새. 더빙 경로가 set_translate_style 로 바꾼다. 기본은 자막(예전 그대로).
+_translate_style = {"mode": "subtitle", "register": ""}
+
+
+def set_translate_style(mode=None, register=None):
+    """번역의 쓰임새와 말투를 정한다. 'dub' 이면 더빙용 지시를 쓴다.
+
+    ★기본값을 바꾸지 않는다 — 부르지 않으면 예전 자막 동작 그대로다."""
+    if mode is not None:
+        _translate_style["mode"] = "dub" if str(mode).lower() == "dub" else "subtitle"
+    if register is not None:
+        r = str(register).lower()
+        _translate_style["register"] = r if r in ("casual", "polite") else ""
+    return dict(_translate_style)
+
+
+def _seg_system_prompt():
+    if _translate_style["mode"] == "dub":
+        return _llm_dub_system(_translate_style["register"])
+    return _LLM_SEG_SYSTEM
+
+
+_RE_CJK = None
+_RE_LATIN = None
+
+
+def needs_retranslate(translated, source):
+    """번역에 **옮기다 만 잔재**가 남았는가. 남았으면 그 줄만 NLLB 로 다시 한다.
+
+    잔재는 둘이다.
+      · 한자·가나가 그대로 남은 경우.
+      · 라틴 낱말(2글자 이상)이 **원문에는 없었는데** 번역에 생긴 경우.
+        원문에 원래 영어가 있었다면 건드리지 않는다 - 고유명사일 수 있다.
+    """
+    global _RE_CJK, _RE_LATIN
+    if _RE_CJK is None:
+        import re as _re
+        _RE_CJK = _re.compile(r'[一-鿿぀-ヿ]')
+        _RE_LATIN = _re.compile(r'[A-Za-z]{2,}')
+    if not translated or not (source or '').strip():
+        return False
+    if _RE_CJK.search(translated):
+        return True
+    return bool(_RE_LATIN.search(translated)) and not _RE_LATIN.search(source)
+
 
 def _seg_chunks(segments):
     """세그먼트 인덱스를 _LLM_CHUNK_CHARS 문자 예산 이하 청크로 묶는다."""
@@ -508,7 +580,7 @@ def _translate_segments_llm(segments, src_lang):
     for chunk in _seg_chunks(segments):
         numbered = "\n".join(f"{n + 1}. {segments[gi]}" for n, gi in enumerate(chunk))
         messages = [
-            {"role": "system", "content": _LLM_SEG_SYSTEM},
+            {"role": "system", "content": _seg_system_prompt()},
             {"role": "user", "content": f"다음 {src_name} 자막을 한국어로 번역:\n\n{numbered}"},
         ]
         prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
@@ -535,12 +607,14 @@ def _translate_segments_llm(segments, src_lang):
 
     # 잔재 글자 수리: LLM이 문장은 옮겼어도 원문 한 글자(한자/가나)를 베끼는 경우가 있다.
     # 그런 줄만 NLLB로 재번역(NLLB는 JA→KO 혼입 없음). 깨끗한 줄은 LLM 그대로 둔다.
-    _cjk = re.compile(r'[一-鿿぀-ヿ]')
+    # 잔재가 남은 줄만 NLLB 로 다시 한다(판정은 needs_retranslate 가 소유한다).
+    # 2026-09-20 실측: 영어 낱말이 그대로 남는 경우가 있어 한자·가나만 보던 것을 넓혔다.
     for i, seg in enumerate(segments):
-        if out[i] and _cjk.search(out[i]) and seg.strip():
-            fixed = _translate_nllb(seg, src_lang)
-            if fixed and not _cjk.search(fixed):
-                out[i] = fixed
+        if not needs_retranslate(out[i], seg):
+            continue
+        fixed = _translate_nllb(seg, src_lang)
+        if fixed and not needs_retranslate(fixed, seg):
+            out[i] = fixed
     return out
 
 

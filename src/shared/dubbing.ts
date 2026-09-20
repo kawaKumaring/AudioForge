@@ -54,6 +54,28 @@ export interface DubFrontResult {
   lines: DubLine[]
   /** 번역이 비어 있는 줄. 조용히 넘기지 않는다. */
   emptyIndexes: number[]
+  /** 이번에 실제로 돈 단계. 비어 있으면 **할 일이 없었다**는 뜻이다. */
+  ran?: DubStage[]
+  /** 지난 결과를 그대로 쓴 단계. */
+  skipped?: DubStage[]
+}
+
+/**
+ * 앞단을 돌린 뒤 사람에게 할 말.
+ *
+ * ★왜 있는가(2026-09-20 사용자 신고): 네 단계가 이미 끝나 있으면 '이어서 하기' 는 아무것도
+ *   하지 않고 즉시 끝난다. 그게 맞는 동작인데 화면이 아무 말도 안 해서 **멈춘 것처럼 보였다.**
+ *   할 일이 없었다는 것도 결과다 - 말해 준다.
+ */
+export function dubFrontSummary(ran: DubStage[], skipped: DubStage[]): string {
+  if (ran.length === 0 && skipped.length > 0) {
+    return '네 단계가 이미 끝나 있어 다시 할 것이 없었습니다. 다음은 목소리를 고르고 줄 소리를 만드는 일입니다.'
+  }
+  if (ran.length === 0) return '아직 아무 단계도 끝나지 않았습니다.'
+  const did = ran.map((s) => DUB_STAGE_LABELS[s]).join(' · ')
+  if (skipped.length === 0) return `끝났습니다 — ${did}`
+  const kept = skipped.map((s) => DUB_STAGE_LABELS[s]).join(' · ')
+  return `끝났습니다 — ${did} (지난 결과를 쓴 단계: ${kept})`
 }
 
 export interface DubRenderSummary {

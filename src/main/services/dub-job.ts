@@ -4,13 +4,18 @@
 // Electron 없이 그대로 검사된다. 깨진 파일을 만났을 때 무엇을 하는지가 이 파일의 핵심이다.
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
 import { dirname, join } from 'path'
+// node --test 가 이 파일을 곧바로 읽으므로 **값** import 에는 확장자를 붙인다
+// (voicePrepRunner.ts 와 같은 관례). 붙이지 않으면 실행 시점에 모듈을 못 찾는다.
+// @ts-ignore TS5097
+import { DUB_STAGES } from '../../shared/dubbing.ts'
 import type {
-  DubFrontResult, DubLine, DubLineResult, DubRenderResult, DubRenderSummary,
+  DubFrontResult, DubLine, DubLineResult, DubRenderResult, DubRenderSummary, DubStage,
 } from '../../shared/dubbing'
 
 export const DUB_LINES_FILE = 'lines.json'
 export const DUB_REPORT_FILE = 'render-report.json'
 export const DUB_TAKES_FILE = 'takes.json'
+export const DUB_STATE_FILE = 'state.json'
 
 export class DubJobError extends Error {}
 
@@ -54,6 +59,23 @@ export function parseLinesFile(raw: string, outDir = ''): DubFrontResult {
     language: str(obj.language) || 'unknown',
     lines,
     emptyIndexes: lines.filter((l) => !l.korean).map((l) => l.index),
+  }
+}
+
+/**
+ * 파이썬이 남긴 진행 상태에서 **끝난 단계**를 읽는다.
+ *
+ * 못 읽으면 빈 목록이다 - 그것 때문에 멈추지 않는다. 이 값은 '무엇을 했는지 말해 주기'
+ * 에만 쓰이고, 무엇을 다시 할지는 파이썬이 파일을 보고 정한다(판단이 두 곳에 생기지 않게).
+ */
+export function readDoneStages(outDir: string): DubStage[] {
+  try {
+    const raw = readFileSync(join(outDir, DUB_STATE_FILE), 'utf-8')
+    const done = (JSON.parse(raw) ?? {}).done
+    if (!Array.isArray(done)) return []
+    return done.filter((d): d is DubStage => DUB_STAGES.includes(d as DubStage))
+  } catch {
+    return []
   }
 }
 

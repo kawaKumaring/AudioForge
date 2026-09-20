@@ -12,7 +12,7 @@ import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 import {
-  DubJobError, applyKoreanEdits, parseLinesFile, parseRenderReport, readLines,
+  DubJobError, applyKoreanEdits, parseLinesFile, parseRenderReport, readDoneStages, readLines,
   readRenderReport, saveKoreanEdits, workFolderName, writeTakesFile,
 } from './dub-job.ts'
 
@@ -155,4 +155,37 @@ test('폴더 이름에 위험한 글자를 남기지 않는다', () => {
   const name = workFolderName('E:/x/ヨルシカ - 千鳥（OFFICIAL VIDEO）.mp4')
   assert.ok(!/[\\/:*?"<>|（）]/.test(name), `위험한 글자가 남았다: ${name}`)
   assert.ok(name.length > 0 && name.length <= 40)
+})
+
+test('끝난 단계를 읽어 무엇을 건너뛸지 말해 줄 수 있다', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'af-dubjob-'))
+  try {
+    writeFileSync(join(dir, 'state.json'),
+      JSON.stringify({ version: 1, done: ['audio', 'separate'] }), 'utf-8')
+    assert.deepEqual(readDoneStages(dir), ['audio', 'separate'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('상태 파일이 없거나 깨져도 멈추지 않는다', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'af-dubjob-'))
+  try {
+    assert.deepEqual(readDoneStages(dir), [], '없으면 빈 목록')
+    writeFileSync(join(dir, 'state.json'), '{ 이건 json 이 아니다', 'utf-8')
+    assert.deepEqual(readDoneStages(dir), [], '깨져도 빈 목록 - 이것 때문에 멈추지 않는다')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('모르는 단계 이름은 버린다', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'af-dubjob-'))
+  try {
+    writeFileSync(join(dir, 'state.json'),
+      JSON.stringify({ done: ['audio', '엉뚱한단계', 'translate'] }), 'utf-8')
+    assert.deepEqual(readDoneStages(dir), ['audio', 'translate'])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

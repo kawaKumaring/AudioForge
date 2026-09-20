@@ -12,7 +12,8 @@ import { join } from 'path'
 
 import { PythonRunner } from '../services/python-runner'
 import {
-  DubJobError, readLines, readRenderReport, saveKoreanEdits, workFolderName, writeTakesFile,
+  DubJobError, readDoneStages, readLines, readRenderReport, saveKoreanEdits, workFolderName,
+  writeTakesFile,
 } from '../services/dub-job'
 import type { DubFrontResult, DubRenderResult } from '../../shared/dubbing'
 
@@ -82,15 +83,39 @@ export function registerDubIpc(getWindow: () => BrowserWindow | null, getPython:
   })
 
   ipcMain.handle('dub:run-front', async (
-    _e, opts?: { language?: string; force?: boolean },
+    _e, opts?: { language?: string; register?: string; force?: boolean },
   ): Promise<DubReply<DubFrontResult>> => {
     try {
       if (!videoPath || !workDir) throw new DubJobError('먼저 영상을 고르세요')
+      // 돌리기 전에 무엇이 끝나 있었는지 기억한다 - 끝나고 견주면 무엇을 실제로 했는지 알 수 있다.
+      // ★무엇을 다시 할지는 여기서 정하지 않는다(파이썬의 몫). 여기서는 말해 주기만 한다.
+      const before = opts?.force ? [] : readDoneStages(workDir)
       const args = ['--video', videoPath, '--out', workDir]
       if (opts?.language) args.push('--language', opts.language)
+      if (opts?.register) args.push('--register', opts.register)
       if (opts?.force) args.push('--force')
       await runPython(getPython(), 'dub_worker.py', args, getWindow(), '앞단')
-      return ok(readLines(workDir))
+      const after = readDoneStages(workDir)
+      return ok({
+        ...readLines(workDir),
+        skipped: before,
+        ran: after.filter((s) => !before.includes(s)),
+      })
+    } catch (e) {
+      return fail(e)
+    }
+  })
+
+  // 영상 속 목소리를 그대로 참조로 쓴다 - 인물은 그대로 두고 언어만 바꾸는 길이다.
+  // 갈라낸 보컬이 이미 있으므로 새로 만들 것이 없다.
+  ipcMain.handle('dub:original-voice', async (): Promise<DubReply<string>> => {
+    try {
+      if (!workDir) throw new DubJobError('먼저 영상을 고르세요')
+      const p = join(workDir, 'vocals.wav')
+      if (!existsSync(p)) {
+        throw new DubJobError('갈라낸 목소리가 없습니다 - 먼저 앞단을 끝내세요')
+      }
+      return ok(p)
     } catch (e) {
       return fail(e)
     }

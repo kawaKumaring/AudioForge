@@ -127,8 +127,9 @@ const api = {
   // 영상 더빙. 번역 백엔드는 여기서 고르지 않는다 - 파이썬이 실행 경로 안쪽에서 막고 고른다.
   dub: {
     pickVideo: () => ipcRenderer.invoke('dub:pick-video'),
-    runFront: (opts?: { language?: string; force?: boolean }) =>
+    runFront: (opts?: { language?: string; register?: string; force?: boolean }) =>
       ipcRenderer.invoke('dub:run-front', opts),
+    originalVoice: () => ipcRenderer.invoke('dub:original-voice'),
     load: () => ipcRenderer.invoke('dub:load'),
     saveKorean: (edits: Record<number, string>) => ipcRenderer.invoke('dub:save-korean', edits),
     render: (takes: Record<number, string>, destPath?: string) =>
