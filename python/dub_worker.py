@@ -46,16 +46,34 @@ def _step_audio(ctx):
             pass
 
 
+def _separate_tracks(src, stem_dir):
+    """보컬을 갈라낸다. **좋은 분리기를 먼저** 쓰고, 안 되면 물러선다.
+
+    ★2026-09-20 사용자 청취에서 확정: 갈라낸 보컬이 지저분하면 그 지저분함이
+      뒤의 모든 단계로 그대로 간다(합성에 기계음이 섞이고 음높이도 흔들린다).
+      RoFormer 는 보컬 SDR 이 Demucs 보다 뚜렷이 높고 **이미 설치돼 있다** —
+      쓰지 않을 이유가 없었는데 처음에 Demucs 를 골랐다. 그 선택을 되돌린다.
+    """
+    from music_worker import run_music_separation, run_roformer_separation
+    try:
+        tracks = run_roformer_separation(src, stem_dir)
+        if tracks:
+            return tracks, 'roformer'
+    except Exception as e:
+        emit('progress', message='좋은 분리기를 쓰지 못해 기본 분리기로 갑니다: %s' % e)
+    tracks = run_music_separation(src, stem_dir)
+    return tracks, 'demucs'
+
+
 def _step_separate(ctx):
-    """2. 보컬과 배경음을 갈라낸다. 배경음은 보컬 아닌 것들을 합쳐 만든다."""
+    """2. 보컬과 배경음을 갈라낸다."""
     import numpy as np
     import soundfile as sf
-    from music_worker import run_music_separation
 
     stem_dir = os.path.join(ctx['out_dir'], 'stems')
     os.makedirs(stem_dir, exist_ok=True)
     emit('progress', percent=10, message='보컬과 배경음 갈라내는 중...')
-    tracks = run_music_separation(os.path.join(ctx['out_dir'], 'source.wav'), stem_dir)
+    tracks, engine = _separate_tracks(os.path.join(ctx['out_dir'], 'source.wav'), stem_dir)
     if not tracks:
         raise dp.DubPipelineError('보컬을 갈라내지 못했습니다')
 
@@ -64,6 +82,13 @@ def _step_separate(ctx):
         raise dp.DubPipelineError('갈라낸 것 중에 보컬이 없습니다: %s'
                                   % ', '.join(sorted(by_name)))
     shutil.copyfile(by_name['vocals'], os.path.join(ctx['out_dir'], 'vocals.wav'))
+
+    # RoFormer 는 반주를 통째로 준다 — 합칠 것이 없다.
+    if 'instrumental' in by_name:
+        emit('progress', percent=38, message='배경음 저장 중... (%s)' % engine)
+        shutil.copyfile(by_name['instrumental'],
+                        os.path.join(ctx['out_dir'], 'background.wav'))
+        return
 
     emit('progress', percent=38, message='배경음 합치는 중...')
     mix, rate = None, None

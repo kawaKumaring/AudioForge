@@ -81,5 +81,53 @@ class Test배선(unittest.TestCase):
         self.assertIn('drums', dw.BACKGROUND_STEMS)
 
 
+class Test분리기_고르기(unittest.TestCase):
+    """★좋은 분리기를 먼저 쓴다.
+
+    2026-09-20 사용자 청취에서 확정: 갈라낸 보컬이 지저분하면 그 지저분함이
+    뒤의 모든 단계로 간다(합성에 기계음이 섞인다). 처음에 약한 분리기를 고른 것을 되돌린 자리다.
+    """
+
+    def setUp(self):
+        import music_worker
+        self.mw = music_worker
+        self.roformer = music_worker.run_roformer_separation
+        self.demucs = music_worker.run_music_separation
+
+    def tearDown(self):
+        self.mw.run_roformer_separation = self.roformer
+        self.mw.run_music_separation = self.demucs
+
+    def test_좋은_분리기를_먼저_쓴다(self):
+        called = []
+        self.mw.run_roformer_separation = lambda s, d: (
+            called.append('roformer') or [{'name': 'vocals', 'path': 'v'}])
+        self.mw.run_music_separation = lambda s, d: called.append('demucs') or []
+        tracks, engine = dw._separate_tracks('src.wav', 'out')
+        self.assertEqual(called, ['roformer'], '기본 분리기까지 가지 않는다')
+        self.assertEqual(engine, 'roformer')
+
+    def test_좋은_분리기가_막히면_물러선다(self):
+        """막혔다고 아무것도 못 하게 두지 않는다 - 대신 무엇을 썼는지 돌려준다."""
+        called = []
+
+        def boom(s, d):
+            called.append('roformer')
+            raise RuntimeError('분리기 없음')
+
+        self.mw.run_roformer_separation = boom
+        self.mw.run_music_separation = lambda s, d: (
+            called.append('demucs') or [{'name': 'vocals', 'path': 'v'}])
+        tracks, engine = dw._separate_tracks('src.wav', 'out')
+        self.assertEqual(called, ['roformer', 'demucs'])
+        self.assertEqual(engine, 'demucs')
+
+    def test_빈_결과여도_물러선다(self):
+        self.mw.run_roformer_separation = lambda s, d: []
+        self.mw.run_music_separation = lambda s, d: [{'name': 'vocals', 'path': 'v'}]
+        _, engine = dw._separate_tracks('src.wav', 'out')
+        self.assertEqual(engine, 'demucs')
+
+
 if __name__ == '__main__':
     unittest.main()
