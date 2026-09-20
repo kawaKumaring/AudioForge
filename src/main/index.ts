@@ -10,6 +10,7 @@ import { pathToFileURL } from 'url'
 import { registerAudioIpc } from './ipc/audio.ipc'
 import { registerAppVersionIpc, currentBuildInfo } from './ipc/app-version.ipc'
 import { registerDiagnosticsIpc } from './ipc/diagnostics.ipc'
+import { registerDubIpc } from './ipc/dub.ipc'
 import { createAppLog, mirrorConsole, setAppLog, watchUncaught, LOG_DIR_NAME } from './services/app-log'
 import { seedDevUserData, userDataDirNameFor, USER_DATA_DIR_STABLE, type SeedResult } from './services/user-data-channel'
 import { channelForVersion } from '../shared/buildMetadata'
@@ -166,6 +167,7 @@ function createWindow(): void {
   registerAppVersionIpc()
   // 진단 묶음 — 로그 복사본 + 설정의 모양(값 없음). 시작 화면의 단추가 부른다.
   registerDiagnosticsIpc(() => mainWindow, () => currentPythonPath())
+  registerDubIpc(() => mainWindow, () => currentPythonPath())
   const previewAdapter = registerAudioIpc(mainWindow)
   // 입력 분석 — GPU 를 쓰지 않는 상주 CPU worker. audio.ipc 와 같은 인터프리터를 쓴다.
   registerAnalysisIpc({ pythonPath: currentPythonPath })

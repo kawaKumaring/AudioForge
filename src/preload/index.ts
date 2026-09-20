@@ -124,6 +124,24 @@ const api = {
       ok: boolean; path?: string; parts?: number; bytes?: number; canceled?: boolean; reason?: string
     }> => ipcRenderer.invoke('lab:export', paths, suggestedName),
   },
+  // 영상 더빙. 번역 백엔드는 여기서 고르지 않는다 - 파이썬이 실행 경로 안쪽에서 막고 고른다.
+  dub: {
+    pickVideo: () => ipcRenderer.invoke('dub:pick-video'),
+    runFront: (opts?: { language?: string; force?: boolean }) =>
+      ipcRenderer.invoke('dub:run-front', opts),
+    load: () => ipcRenderer.invoke('dub:load'),
+    saveKorean: (edits: Record<number, string>) => ipcRenderer.invoke('dub:save-korean', edits),
+    render: (takes: Record<number, string>, destPath?: string) =>
+      ipcRenderer.invoke('dub:render', takes, destPath),
+    keepTake: (srcPath: string, index: number) =>
+      ipcRenderer.invoke('dub:keep-take', srcPath, index),
+    workDir: () => ipcRenderer.invoke('dub:work-dir'),
+    onProgress: (callback: (data: unknown) => void) => {
+      const handler = (_event: unknown, data: unknown) => callback(data)
+      ipcRenderer.on('dub:progress', handler)
+      return () => ipcRenderer.removeListener('dub:progress', handler)
+    },
+  },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     set: (key: string, value: unknown) => ipcRenderer.invoke('settings:set', key, value),

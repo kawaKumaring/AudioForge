@@ -28,7 +28,7 @@ const modes: { id: SeparationMode; label: string; short: string; icon: ReactNode
     //   (규칙: doc/dev-rules.md 8장 · LabPlaceholder.tsx 머리말).
     //   만드는 동안 이 자리에 새 기능이 들어앉고, 완성되면 **여기 이름표와 아이콘만** 진짜 것으로
     //   바꾼다. id('lab')를 포함한 내부 이름은 새 기능의 최종 이름을 처음부터 쓴다 — 바꾸지 않는다.
-    id: 'lab', label: '테스트개발', short: '테스트개발',
+    id: 'dub', label: '테스트개발', short: '테스트개발',
     icon: (
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
         strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
@@ -41,6 +41,7 @@ const modes: { id: SeparationMode; label: string; short: string; icon: ReactNode
 const MODE_COLORS: Record<string, string> = {
   music: 'var(--accent)',
   lab: 'var(--cyan)',
+  dub: 'var(--cyan)',        // 이름표를 빌리는 동안 'lab' 과 같은 색을 쓴다
   conversation: 'var(--cyan)',
   transcribe: 'var(--emerald)',
   split: 'var(--amber)',
