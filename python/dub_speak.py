@@ -64,9 +64,9 @@ def build_reference_from_vocals(work_dir, lines):
     return dest, start, dur
 
 
-def speak_line(voice_path, ref_clip, text, out_dir, python_exe=None):
-    """줄 하나를 만든다. 화면이 보내는 것과 같은 설정을 쓴다."""
-    cfg = {
+def _config_for(voice_path, ref_clip, text, out_dir):
+    """줄 하나를 만드는 설정. 화면이 보내는 것과 같은 값이다."""
+    return {
         'mode': 'tts',
         'input': voice_path,
         'output': out_dir,
@@ -81,10 +81,80 @@ def speak_line(voice_path, ref_clip, text, out_dir, python_exe=None):
         'ttsTailPaddingMs': 120,
         'ttsTailFadeMs': 8,
     }
+
+
+def _newest_new_wav(out_dir, before):
+    """이번에 새로 생긴 소리 파일. 없으면 조용히 넘기지 않고 사유와 함께 멈춘다."""
+    made = [f for f in os.listdir(out_dir)
+            if f.lower().endswith('.wav') and f not in before]
+    if not made:
+        raise DubSpeakError('합성은 끝났는데 소리 파일이 없습니다')
+    made.sort(key=lambda f: os.path.getmtime(os.path.join(out_dir, f)))
+    return os.path.join(out_dir, made[-1])
+
+
+def _write_config(cfg):
     fd, cfg_path = tempfile.mkstemp(suffix='.json', prefix='af-dubspeak-')
     os.close(fd)
     with open(cfg_path, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, ensure_ascii=False)
+    return cfg_path
+
+
+class InProcessSpeaker(object):
+    """한 프로세스 안에서 여러 줄을 만든다 — **합성 모델을 한 번만 읽는다.**
+
+    왜 이렇게 하는가(2026-09-20 실측): 줄마다 프로세스를 새로 띄우면 줄 하나에 43초가 걸리는데
+    그중 대부분이 모델 읽기다. 36줄이면 25분이 넘는다. 더빙은 줄이 수십~수백 개다.
+    tts_worker 의 엔진 캐시(`_engine_cache`)는 **프로세스 안에서** 모델을 기억하므로,
+    같은 프로세스에서 이어 부르면 두 번째 줄부터 읽기가 사라진다.
+
+    ★separate.py 는 한 줄도 고치지 않는다. 모든 합성이 지나는 길이라 건드리지 않는 것이 맞다.
+      다만 그쪽 모듈 전역(_RUN)이 '한 번 끝내면 잠기는' 구조라 매번 처음 상태로 되돌려 준다.
+      되돌릴 값을 여기에 적어 두지 않고 **아무것도 돌기 전의 값을 떠서** 쓴다 —
+      그래야 나중에 _RUN 에 항목이 늘어도 이 코드가 조용히 어긋나지 않는다.
+    """
+
+    def __init__(self):
+        import copy
+        import separate
+        self._sep = separate
+        self._copy = copy
+        self._pristine = copy.deepcopy(separate._RUN)
+
+    def speak(self, cfg, out_dir, log_path):
+        os.makedirs(out_dir, exist_ok=True)
+        before = set(os.listdir(out_dir))
+        cfg_path = _write_config(cfg)
+        argv = sys.argv
+        self._sep._RUN.clear()
+        self._sep._RUN.update(self._copy.deepcopy(self._pristine))
+        try:
+            sys.argv = ['separate.py', '--config', cfg_path]
+            with open(log_path, 'a', encoding='utf-8') as log:
+                old_out, sys.stdout = sys.stdout, log
+                try:
+                    self._sep.main()
+                except SystemExit as e:
+                    # 실패를 성공으로 바꾸지 않는다. 사유는 기록에 남아 있다.
+                    if e.code not in (0, None):
+                        raise DubSpeakError('합성이 코드 %s 로 끝났습니다(기록: %s)'
+                                            % (e.code, os.path.basename(log_path)))
+                finally:
+                    sys.stdout = old_out
+        finally:
+            sys.argv = argv
+            try:
+                os.remove(cfg_path)
+            except OSError:
+                pass
+        return _newest_new_wav(out_dir, before)
+
+
+def speak_line(voice_path, ref_clip, text, out_dir, python_exe=None):
+    """줄 하나를 **별도 프로세스**로 만든다. 느리지만 가장 안전한 길이다."""
+    cfg = _config_for(voice_path, ref_clip, text, out_dir)
+    cfg_path = _write_config(cfg)
     before = set(os.listdir(out_dir)) if os.path.isdir(out_dir) else set()
     try:
         r = subprocess.run([python_exe or sys.executable, '-X', 'utf8', SEPARATE,
@@ -111,7 +181,9 @@ def main(argv=None):
     ap.add_argument('--work', required=True)
     ap.add_argument('--voice', default='', help='없으면 영상 속 목소리를 쓴다')
     ap.add_argument('--limit', type=int, default=0, help='앞의 N줄만(시험용)')
-    ap.add_argument('--python', default='', help='합성을 돌릴 파이썬(기본은 지금 것)')
+    ap.add_argument('--python', default='', help='줄마다 프로세스를 띄울 때 쓸 파이썬')
+    ap.add_argument('--per-process', action='store_true',
+                    help='줄마다 프로세스를 새로 띄운다(느리다). 한 프로세스 방식이 막힐 때만.')
     args = ap.parse_args(argv)
 
     with open(os.path.join(args.work, 'lines.json'), encoding='utf-8') as f:
@@ -135,17 +207,31 @@ def main(argv=None):
     scratch = os.path.join(args.work, 'speak-tmp')
     os.makedirs(scratch, exist_ok=True)
 
+    speaker = None
+    log_path = os.path.join(args.work, 'speak-log.txt')
+    if not args.per_process:
+        speaker = InProcessSpeaker()
+        print('합성 모델을 한 번만 읽는다(자세한 기록: speak-log.txt)')
+    else:
+        print('줄마다 프로세스를 새로 띄운다 — 모델을 매번 읽으므로 느리다')
+
     takes = {}
     started = time.time()
     for i, ln in enumerate(todo):
         idx = int(ln['index'])
         text = ln['korean'].strip()
-        made = speak_line(voice_path, ref_clip, text, scratch, args.python or None)
+        at = time.time()
+        if speaker is not None:
+            made = speaker.speak(_config_for(voice_path, ref_clip, text, scratch),
+                                 scratch, log_path)
+        else:
+            made = speak_line(voice_path, ref_clip, text, scratch, args.python or None)
         dest = os.path.join(takes_dir, 'line-%04d.wav' % idx)
         shutil.move(made, dest)
         takes[str(idx)] = dest
-        print('  %d/%d  %d번째 줄 · %d자 · %.1f초'
-              % (i + 1, len(todo), idx + 1, len(text), audio_fit.probe_duration(dest)),
+        print('  %d/%d  %d번째 줄 · %d자 · 소리 %.1f초 · 만드는 데 %.0f초'
+              % (i + 1, len(todo), idx + 1, len(text),
+                 audio_fit.probe_duration(dest), time.time() - at),
               flush=True)
 
     takes_path = os.path.join(args.work, 'takes.json')
