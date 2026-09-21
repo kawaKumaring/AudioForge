@@ -276,6 +276,9 @@ def main():
         args.output_format = config.get("outputFormat", args.output_format)
         args.whisper_model = config.get("whisperModel", args.whisper_model)
         args.asr_engine = config.get("asrEngine", "whisper")
+        # 알아듣기 앞에 배경음을 걷어낼까. never(기본) | auto | always
+        # 기본을 바꾸지 않는다 — 고르지 않으면 예전 그대로 돈다.
+        args.asr_separate = config.get("asrSeparate", "never")
         args.whisper_lang = config.get("whisperLang", args.whisper_lang)
         args.translate = config.get("translate", args.translate)
         args.translate_model = config.get("translateModel", "600m")
@@ -827,6 +830,9 @@ def _run_dialogue_rebuild(args):
         emit("progress", percent=40, message="구간대로 화자 트랙 만드는 중...")
         tracks, dropped = dr.rebuild_speaker_tracks(wav, sr, segs, args.output)
     finally:
+        if sep_dir and os.path.isdir(sep_dir):
+            import shutil as _shutil
+            _shutil.rmtree(sep_dir, ignore_errors=True)   # 갈라낸 것은 임시다
         try:
             os.remove(wav_path)
             os.rmdir(os.path.dirname(wav_path))
@@ -845,6 +851,26 @@ def _run_dialogue_rebuild(args):
     emit("result", tracks=tracks, outputDir=args.output)
 
 
+def _asr_separate_fn(src, out_dir):
+    """알아듣기 앞 손질용 분리. **보컬/반주까지만** 가른다.
+
+    ★2026-09-21 실측: 주 보컬까지 더 가르면 74.3% → 73.1% 로 떨어진다.
+      화음에도 가사 정보가 들어 있다. 더 갈라내는 것이 늘 좋은 것은 아니다.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    from music_worker import run_roformer_separation
+    return run_roformer_separation(src, out_dir)
+
+
+def _asr_loudness_fn(path):
+    """통합 음량(LUFS). 못 재면 None — 지어내지 않는다."""
+    try:
+        import audio_fit
+        return audio_fit.measure_loudness(path)
+    except Exception:
+        return None
+
+
 def _run_transcribe_only(args):
     """Transcribe-only mode."""
     emit("status", message="텍스트 추출 모드", percent=0)
@@ -855,10 +881,32 @@ def _run_transcribe_only(args):
     wav_path = convert_to_wav(args.input)
     # 출력 파일은 임시 wav(converted.wav)가 아니라 원본 이름으로 저장
     orig_base = os.path.splitext(os.path.basename(args.input))[0]
+
+    # ── 배경음 걷어내기(선택) ────────────────────────────────────────────
+    # 2026-09-21 실측: 배경음을 걷어내고 넣으면 68.5% → 74.3% (+5.8%포인트).
+    # 같은 날 시험한 모델 교체·설정 조정을 전부 합친 것보다 크다.
+    # ★다만 배경음 없는 말소리에서는 분리기가 오히려 목소리를 상하게 하므로
+    #   기본은 '건드리지 않음' 이고, 'auto' 면 배경음 크기를 재서 정한다.
+    asr_src = wav_path
+    sep_dir = None
+    mode = getattr(args, "asr_separate", "never")
+    if mode and mode != "never":
+        import asr_preprocess
+        sep_dir = os.path.join(args.output, "_asr_sep")
+        emit("progress", percent=8, message="배경음 걷어내는 중...")
+        picked = asr_preprocess.prepare(wav_path, sep_dir, mode,
+                                        separate_fn=_asr_separate_fn,
+                                        loudness_fn=_asr_loudness_fn)
+        asr_src = picked["path"]
+        # 조용히 정하지 않는다 — 무엇을 넣었는지 말한다.
+        emit("progress", percent=12,
+             message=("배경음을 걷어내고 듣습니다 — " if picked["separated"]
+                      else "원본 그대로 듣습니다 — ") + picked["reason"])
+
     try:
         # asr_engine 은 **텍스트 모드에서만** 넘긴다. 분리 모드의 후처리 전사와 TTS 참조
         # 전사 같은 공용 호출부는 기존 경로 그대로다(첫 적용 범위를 좁힌다).
-        info = transcribe_file(wav_path, args.output, args.whisper_model, args.translate, args.srt,
+        info = transcribe_file(asr_src, args.output, args.whisper_model, args.translate, args.srt,
                                whisper_lang=getattr(args, "whisper_lang", ""), base_name=orig_base,
                                asr_engine=getattr(args, "asr_engine", "whisper") or "whisper")
     finally:
