@@ -188,16 +188,15 @@ def mux_video(video_path, audio_path, dest, *, ffmpeg=None):
 
 
 def write_srt(lines, dest):
-    """덤으로 나오는 한국어 자막. 만드는 과정에서 이미 나온 것이라 따로 비용이 없다."""
-    def stamp(sec):
-        sec = max(0.0, float(sec))
-        h = int(sec // 3600)
-        m = int((sec % 3600) // 60)
-        s = int(sec % 60)
-        ms = int(round((sec - int(sec)) * 1000))
-        if ms == 1000:
-            s, ms = s + 1, 0
-        return '%02d:%02d:%02d,%03d' % (h, m, s, ms)
+    """덤으로 나오는 한국어 자막. 만드는 과정에서 이미 나온 것이라 따로 비용이 없다.
+
+    ★시각 표기는 **audio_utils.fmt_srt_time 을 그대로 쓴다.**
+      2026-09-21: 여기에 똑같은 것을 새로 짰다가 저장소가 이미 고쳐 둔 버그를 되살렸다.
+      분·초를 따로 계산하면 자리올림이 없어 59.9996초가 '00:00:60,000' 으로 찍힌다 —
+      초가 60인 자막 시각은 존재하지 않는다. 그 함수의 설명에 그 사연이 적혀 있었는데
+      읽지 않고 다시 짠 것이 잘못이었다. 같은 계산을 두 곳에 두지 않는다.
+    """
+    from audio_utils import fmt_srt_time as stamp
 
     out = []
     n = 0

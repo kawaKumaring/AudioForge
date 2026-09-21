@@ -181,6 +181,25 @@ class Test자막(Base):
         self.assertIn('00:00:03,000 --> 00:00:04,250', text)
         self.assertIn('안녕하세요', text)
 
+    def test_시각_표기를_저장소_것과_똑같이_쓴다(self):
+        """★2026-09-21: 여기에 똑같은 것을 새로 짰다가 이미 고쳐진 버그를 되살렸다.
+
+        분·초를 따로 계산하면 자리올림이 없어 59.9996초가 '00:00:60,000' 이 된다 —
+        초가 60인 자막 시각은 존재하지 않는다. 경계값으로 못을 박는다.
+        """
+        import sys
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        from audio_utils import fmt_srt_time
+        dest = os.path.join(self.dir, 'edge.srt')
+        hard = [59.9996, 3599.9996, 2.9996, 0.0, 61.25]
+        da.write_srt([{'start_sec': t, 'end_sec': t + 0.5, 'korean': '줄'} for t in hard], dest)
+        with open(dest, encoding='utf-8') as f:
+            body = f.read()
+        for t in hard:
+            self.assertIn(fmt_srt_time(t), body,
+                          '%.4f초가 저장소 표기와 다르게 찍혔다' % t)
+        self.assertNotIn(':60,', body, '초가 60인 시각은 있을 수 없다')
+
     def test_번호가_1부터_이어진다(self):
         dest = os.path.join(self.dir, 'ko.srt')
         da.write_srt([{'start_sec': i, 'end_sec': i + 0.5, 'korean': '줄%d' % i}
