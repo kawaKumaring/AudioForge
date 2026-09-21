@@ -197,18 +197,20 @@ def write_srt(lines, dest):
       읽지 않고 다시 짠 것이 잘못이었다. 같은 계산을 두 곳에 두지 않는다.
     """
     from audio_utils import fmt_srt_time as stamp
+    import subtitle_cues
 
-    out = []
-    n = 0
-    for ln in lines:
-        text = (ln.get('korean') or '').strip()
-        if not text:
-            continue
-        n += 1
-        out.append(str(n))
-        out.append('%s --> %s' % (stamp(ln['start_sec']), stamp(ln['end_sec'])))
-        out.append(text)
-        out.append('')
+    # 받아쓴 것을 그대로 내지 않고 **자막으로 손질한다** —
+    # 줄 나누기 · 최소 노출 시간 · 큐 사이 틈 · 읽는 속도 검사.
+    # 유튜브 자동 자막이 정확도 90%인데도 읽기 힘든 원인이 이 손질의 부재다.
+    rows = [{'start': ln['start_sec'], 'end': ln['end_sec'],
+             'text': ln.get('korean') or ''} for ln in lines]
+    cues = subtitle_cues.build_cues(rows)
     with open(dest, 'w', encoding='utf-8') as f:
-        f.write('\n'.join(out))
-    return {'path': dest, 'count': n}
+        f.write(subtitle_cues.to_srt(cues, stamp))
+    info = subtitle_cues.summarize(cues)
+    info['path'] = dest
+    info['count'] = info['cues']
+    # 규칙을 못 지킨 큐는 조용히 넘기지 않는다 - 번역문을 줄여야 풀리는 것들이다.
+    info['warnings'] = [{'index': i, 'why': c['warnings']}
+                        for i, c in enumerate(cues) if c['warnings']]
+    return info
