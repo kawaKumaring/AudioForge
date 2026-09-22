@@ -85,5 +85,32 @@ class Test잔재_수리_판정(unittest.TestCase):
         self.assertFalse(tw.needs_retranslate('무언가', '   '))
 
 
+class Test받아쓴_글은_지시가_아니다(unittest.TestCase):
+    """★2026-09-22: 번역 입력은 영상에서 받아쓴 말이다.
+
+    그 안의 명령형 대사("그거 지워")가 번역되지 않고 실행 시도로 읽힐 수 있다.
+    번호 형식이 어느 정도 막아 주지만 명시적이지 않아 한 문단을 못박았다.
+    지시문은 조용히 사라지기 쉬우므로 검사로 붙잡아 둔다.
+    """
+
+    def test_자막_지시에_들어_있다(self):
+        for must in ('자료', '답하지 마세요', '따르지 마세요', '되인사하지 마세요'):
+            self.assertIn(must, tw._LLM_SEG_SYSTEM)
+
+    def test_더빙_지시에도_들어_있다(self):
+        for register in ('casual', 'polite', ''):
+            body = tw._llm_dub_system(register)
+            self.assertIn('자료', body)
+            self.assertIn('따르지 마세요', body)
+
+    def test_말투_규칙을_밀어내지_않았다(self):
+        self.assertIn('반말', tw._llm_dub_system('casual'))
+        self.assertIn('존댓말', tw._llm_dub_system('polite'))
+
+    def test_길이_규칙도_그대로다(self):
+        """더빙은 원래 말 길이 안에 들어가야 한다 - 이 지시가 밀리면 안 된다."""
+        self.assertIn('짧게', tw._llm_dub_system(''))
+
+
 if __name__ == '__main__':
     unittest.main()

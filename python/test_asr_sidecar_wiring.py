@@ -8,9 +8,9 @@
 ⚠ 이것은 오디오 ASR 후처리 배선 테스트다. 이미지 OCR 과 무관하다.
 
 검증(코디네이터 계약):
-  - 기존 TXT/timestamps/SRT 출력 형식 **불변**(_save_transcription 이 fmt_time/
-    fmt_srt_time 결과를 그대로 쓴다). ※ fmt_srt_time 의 ms 절삭 버그를 반올림으로
-    고친 뒤 경계 ms 타임코드는 1ms 달라진다 — 형식·블록 구조는 그대로.
+  - 기존 TXT/timestamps 출력 **바이트 불변**(_save_transcription 이 fmt_time 결과를
+    그대로 쓴다). ※ SRT 는 2026-09-22 부터 자막 손질(subtitle_cues)을 지난다 —
+    아래 SRT 검사는 '바이트 고정' 이 아니라 **손질 규약**을 붙잡는다.
   - canonical sidecar 이벤트: schemaVersion / segmentCount / timing·provenance·
     confidence·status 구조 / **결정적** 직렬화.
   - 전사 본문 0: 이벤트(sidecar/shadow/error)·summary 어디에도 segment/word text 없음.
@@ -91,9 +91,10 @@ class OutputByteInvarianceTest(unittest.TestCase):
     def setUp(self):
         tw._whisper_cache["name"] = "large-v3"
 
-    def test_txt_timestamps_srt_bytes_unchanged(self):
+    def test_txt_timestamps_bytes_unchanged(self):
+        """사이드카 배선이 TXT/timestamps 를 건드리지 않는다(바이트 불변)."""
         result = _synthetic_result()
-        exp_txt, exp_ts, exp_srt = _expected_files(result, "clip")
+        exp_txt, exp_ts, _ = _expected_files(result, "clip")
         with tempfile.TemporaryDirectory() as d:
             _capture_events(tw._save_transcription, dict(result, segments=list(result["segments"])),
                             "clip.wav", d, True, False, "clip")
@@ -101,15 +102,30 @@ class OutputByteInvarianceTest(unittest.TestCase):
                 self.assertEqual(f.read(), exp_txt)
             with open(os.path.join(d, "clip_timestamps.txt"), encoding="utf-8") as f:
                 self.assertEqual(f.read(), exp_ts)
+
+    def test_srt_goes_through_subtitle_shaping(self):
+        """★2026-09-22: 자막 만드는 자리가 둘이었는데 이쪽만 손질을 안 거쳤다.
+
+        예전엔 구간을 자막 줄로 그대로 옮겼다(바이트 고정 검사였다).
+        이제 subtitle_cues 를 지나므로 **바이트가 아니라 규약**을 붙잡는다.
+          · 시각 표기는 여전히 fmt_srt_time 규약(2.3 -> ,300, 절삭 아님)
+          · 큐 수는 그대로 — 손질이 글을 버리지 않는다
+          · 자막끼리 붙지 않게 앞 큐 끝을 당긴다(예전엔 2.300 에서 맞닿았다)
+        """
+        result = _synthetic_result()
+        with tempfile.TemporaryDirectory() as d:
+            _capture_events(tw._save_transcription, dict(result, segments=list(result["segments"])),
+                            "clip.wav", d, True, False, "clip")
             with open(os.path.join(d, "clip.srt"), encoding="utf-8") as f:
                 srt = f.read()
-                self.assertEqual(srt, exp_srt)
-        # 타임코드 규약 증거: 2.3 → ,300 (반올림). 예전 절삭 구현은 ,299 를 냈고
-        # 그것이 버그였다(이전 기대값: assertIn ",299" / assertNotIn ",300").
-        # 빈/0길이 cue 는 여전히 그대로 유지된다(sanitizer 미적용).
         self.assertIn("00:00:02,300", srt)
         self.assertNotIn("00:00:02,299", srt)
-        self.assertEqual(srt.count(" --> "), 3)   # sanitizer 미적용(cue 제거·재번호 없음)
+        self.assertEqual(srt.count(" --> "), 3, "손질이 큐를 버리면 안 된다")
+        for must in ("안녕하세요", "반갑습니다", "네", "Hello", "42"):
+            self.assertIn(must, srt, "글을 잃었다")
+        first_end = srt.split(" --> ")[1].splitlines()[0]
+        self.assertLess(first_end, "00:00:02,300",
+                        "뒤 자막과 맞닿아 있다: %r" % first_end)
 
     def test_no_sidecar_or_extra_file_created(self):
         result = _synthetic_result()

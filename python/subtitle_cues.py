@@ -25,6 +25,48 @@ MIN_DURATION_SEC = 1.0
 MAX_DURATION_SEC = 7.0
 MIN_GAP_SEC = 0.08
 
+# ── 라틴 문자 글의 상한 ────────────────────────────────────────────────────
+# ★2026-09-22: 텍스트 추출의 자막도 이 손질을 태우면서 드러난 것 —
+#   이 파일의 기본값은 **한글 기준**이다. 영어 자막에 20자/줄을 그대로 쓰면
+#   멀쩡한 문장이 두 동강 난다. 글의 문자 종류를 보고 상한을 고른다.
+LATIN_MAX_CPS = 21.0        # 방송 통상값
+LATIN_MAX_LINE_CHARS = 42   # 방송 통상값
+
+# 글자당 정보가 빽빽한 문자 — 한글·가나·한자. 이들이 섞여 있으면 좁은 상한을 쓴다.
+_DENSE_RANGES = (
+    (0xAC00, 0xD7A3),   # 한글 음절
+    (0x1100, 0x11FF),   # 한글 자모
+    (0x3040, 0x30FF),   # 히라가나·가타카나
+    (0x4E00, 0x9FFF),   # 한자
+    (0x3400, 0x4DBF),   # 한자 확장
+)
+# 이 비율 넘게 빽빽한 문자가 있으면 좁은 상한. 일본어는 라틴 낱말이 섞여도
+# 대개 이 위로 올라오고, 영어에 고유명사로 한자가 하나 끼는 정도는 아래로 남는다.
+DENSE_RATIO = 0.15
+
+
+def is_dense_script(text):
+    """글이 한글·가나·한자 위주인가. 빈 글은 아니라고 본다(라틴 상한이 더 너그럽다)."""
+    t = (text or '')
+    letters = [c for c in t if c.strip() and not c.isdigit()]
+    if not letters:
+        return False
+    dense = sum(1 for c in letters
+                if any(lo <= ord(c) <= hi for lo, hi in _DENSE_RANGES))
+    return dense >= len(letters) * DENSE_RATIO
+
+
+def pick_limits(text):
+    """글에 맞는 상한. 돌려주는 것: {'max_cps':.., 'max_chars':..}
+
+    ★한 곳에서만 고르게 해 둔다 — 자막 만드는 자리가 둘(더빙·텍스트 추출)이라
+      각자 다른 숫자를 쓰기 시작하면 결과가 갈린다.
+    """
+    if is_dense_script(text):
+        return {'max_cps': MAX_CPS, 'max_chars': MAX_LINE_CHARS}
+    return {'max_cps': LATIN_MAX_CPS, 'max_chars': LATIN_MAX_LINE_CHARS}
+
+
 # 여기 뒤에서 끊으면 자연스럽다(조사·어미·문장부호).
 BREAK_AFTER = ('。', '．', '.', '!', '?', '！', '？', ',', '，', '、',
                '은', '는', '이', '가', '을', '를', '에', '의', '도', '와', '과',
