@@ -33,6 +33,8 @@ export interface ProcessOptions {
   whisperModel?: string
   /** 텍스트 추출의 실행 엔진. 'whisper'(기본, 기존 경로) | 'faster-whisper'(격리 venv). */
   asrEngine?: string
+  /** 알아듣기 전에 배경음을 걷어낼지. 'never'(기본) | 'auto'(배경음이 클 때만) | 'always'. */
+  asrSeparate?: string
   /** 분할에서 저장할 조각 번호(0부터). 없으면 전부 저장. */
   splitSelected?: number[] | null
   /** 대화 구간 수정본 — 모델을 다시 돌리지 않고 이 구간으로만 트랙을 다시 만든다. */

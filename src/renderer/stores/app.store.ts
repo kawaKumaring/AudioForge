@@ -208,6 +208,8 @@ interface AppState {
   whisperModel: 'small' | 'medium' | 'large-v3' | 'large-v3-turbo'
   /** 텍스트 추출 실행 엔진. 기본은 기존 경로다. */
   asrEngine: 'whisper' | 'faster-whisper'
+  /** 알아듣기 전에 배경음을 걷어낼지. 기본은 안 함 — 기존 동작 그대로다. */
+  asrSeparate: 'never' | 'auto' | 'always'
   whisperLang: string
   translateModel: '600m' | '1.3b' | 'llm' | 'google'
   demucsModel: 'htdemucs' | 'htdemucs_ft' | 'roformer' | 'roformer_melband' | 'roformer_ensemble'
@@ -340,6 +342,7 @@ interface AppState {
   setOutputFormat: (v: 'wav' | 'mp3' | 'flac') => void
   setWhisperModel: (v: 'small' | 'medium' | 'large-v3' | 'large-v3-turbo') => void
   setAsrEngine: (v: AppState['asrEngine']) => void
+  setAsrSeparate: (v: AppState['asrSeparate']) => void
   setDiarizeEngine: (v: AppState['diarizeEngine']) => void
   setWhisperLang: (v: string) => void
   setTranslateModel: (v: '600m' | '1.3b' | 'llm' | 'google') => void
@@ -431,6 +434,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   outputFormat: 'wav' as const,
   whisperModel: 'large-v3' as const,
   asrEngine: 'whisper' as const,
+  asrSeparate: 'never' as const,
   whisperLang: 'auto',
   translateModel: '600m' as const,
   demucsModel: 'htdemucs' as const,
@@ -532,6 +536,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setOutputFormat: (v) => set({ outputFormat: v }),
   setWhisperModel: (v) => set({ whisperModel: v }),
   setAsrEngine: (v) => set({ asrEngine: v }),
+  setAsrSeparate: (v) => set({ asrSeparate: v }),
   setDiarizeEngine: (v) => set({ diarizeEngine: v }),
   setWhisperLang: (v) => set({ whisperLang: v }),
   setTranslateModel: (v) => set({ translateModel: v }),

@@ -17,7 +17,7 @@ const OUTPUT_HINTS: Record<string, string> = {
 }
 
 export default function Options() {
-  const { mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, asrEngine, setAsrEngine, diarizeEngine, setDiarizeEngine, whisperLang, translateModel, demucsModel, nSpeakers,
+  const { mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, asrEngine, setAsrEngine, asrSeparate, setAsrSeparate, diarizeEngine, setDiarizeEngine, whisperLang, translateModel, demucsModel, nSpeakers,
     setTrimSilence, setSilenceGap, setTranscribe, setTranslate, setExportSrt, setOutputFormat, setWhisperModel, setWhisperLang, setTranslateModel, setDemucsModel, setNSpeakers, status } = useAppStore()
   const disabled = status === 'processing'
   const [open, setOpen] = useState(false)
@@ -194,6 +194,30 @@ export default function Options() {
                       fontSize: 10, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',
                       background: asrEngine === id ? 'var(--cyan)' : 'transparent',
                       color: asrEngine === id ? '#fff' : 'var(--text-muted)',
+                    }}>{label}</button>
+                ))}
+              </div>
+            )}
+            {/* 배경음 걷어내기 — **텍스트 추출 모드에서만.** 기본은 안 함(기존 동작).
+                왜 내놓는가: 반주·소음이 깔린 소리에서 알아듣기가 눈에 띄게 좋아진다.
+                실측(2026-09-21, 일본어 노래 1곡): 68.5% → 74.3%.
+                공짜가 아니다 — 한 번 더 갈라내는 시간을 치른다. 그래서 기본은 꺼 둔다. */}
+            {isTranscribeMode && (
+              <div data-testid="asr-separate-row" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>배경음</span>
+                {([['never', '그대로'], ['auto', '자동'], ['always', '걷어냄']] as const).map(([id, label]) => (
+                  <button key={id} data-testid={`asr-separate-${id}`}
+                    onClick={() => !disabled && setAsrSeparate(id)} disabled={disabled}
+                    title={id === 'never'
+                      ? '소리를 그대로 넣습니다(기본). 지금까지와 같습니다.'
+                      : id === 'auto'
+                        ? '먼저 목소리와 배경음을 갈라내 크기를 재고, 배경음이 클 때만 걷어낸 소리를 넣습니다. 조용한 녹음이면 원본을 그대로 씁니다. 갈라내는 시간이 한 번 듭니다.'
+                        : '언제나 목소리만 뽑아 넣습니다. 반주나 소음이 늘 깔려 있는 소리에 쓰세요. 실측으로 알아듣기가 68.5%에서 74.3%로 올랐습니다. 갈라내는 시간이 한 번 듭니다.'}
+                    style={{
+                      padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                      fontSize: 10, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',
+                      background: asrSeparate === id ? 'var(--cyan)' : 'transparent',
+                      color: asrSeparate === id ? '#fff' : 'var(--text-muted)',
                     }}>{label}</button>
                 ))}
               </div>
