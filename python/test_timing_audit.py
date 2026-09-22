@@ -41,6 +41,21 @@ class Test소리_시작_찾기(unittest.TestCase):
         e = np.full(300, 0.001, dtype=float)
         self.assertIsNone(ta.find_onset(e, 0.02, 3.0))
 
+    def test_창이_처음부터_시끄러우면_없다고_말한다(self):
+        """★2026-09-22: 예전에는 창의 왼쪽 끝을 답으로 내놨다.
+
+        그러면 노래처럼 내내 소리가 나는 재료에서 **오차가 언제나 창 크기**가 된다.
+        실제로 중앙 790 · 최대 1500밀리초가 나왔고 창이 1500밀리초였다 —
+        측정이 아니라 자의 끝이었다. 못 찾으면 없다고 말해야 비교가 성립한다.
+        """
+        e = np.full(300, 0.5, dtype=float)      # 내내 크다
+        self.assertIsNone(ta.find_onset(e, 0.02, 3.0, search_sec=1.5))
+
+    def test_창_왼쪽_끝을_답으로_내놓지_않는다(self):
+        e, f = self.energy(1.6, total_sec=6.0)  # 1.6초부터 소리
+        got = ta.find_onset(e, f, 3.0, search_sec=1.5)   # 창 = 1.5~4.5
+        self.assertIsNone(got, '창 왼쪽 끝(1.5초)을 시작이라고 하면 안 된다')
+
     def test_창이_너무_좁으면_못_찾는다(self):
         e, f = self.energy(3.0)
         self.assertIsNone(ta.find_onset(e, f, 3.0, search_sec=0.01))

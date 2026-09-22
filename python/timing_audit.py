@@ -51,10 +51,17 @@ def find_onset(energy, frame_sec, at_sec, search_sec=SEARCH_SEC, ratio=ONSET_RAT
         floor = float(np.mean(win)) * 0.1
     if floor <= 1e-9:
         return None
-    above = np.flatnonzero(win > floor * ratio)
-    if not len(above):
+    above = win > floor * ratio
+    # ★"조용하다 **커지는**" 자리만 센다(2026-09-22).
+    #   예전에는 창의 첫 칸이 이미 크면 그 자리를 그대로 돌려줬다. 그러면
+    #   노래처럼 내내 소리가 나는 재료에서 **언제나 창의 왼쪽 끝**이 답이 되어
+    #   오차가 정확히 search_sec 에 못 박힌다. 실제로 그렇게 나왔다 —
+    #   중앙 790 · 최대 1500밀리초에 창이 1500밀리초. 그건 측정이 아니라 자의 끝이다.
+    #   앞 칸이 조용했어야 '시작' 이다. 못 찾으면 **없다고 말한다.**
+    rise = np.flatnonzero(above[1:] & ~above[:-1])
+    if not len(rise):
         return None
-    return (lo + int(above[0])) * frame_sec
+    return (lo + int(rise[0]) + 1) * frame_sec
 
 
 MIN_GAP_SEC = 0.5   # 앞 구간이 이만큼 먼저 끝나야 '빈 자리' 로 본다
