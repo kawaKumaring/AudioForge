@@ -73,3 +73,69 @@ def ensure(strict=False):
 
     _done = True
     return ' · '.join(notes)
+
+# ── 어떤 언어가 **실제로** 되는가 ─────────────────────────────────────────
+#
+# ★2026-09-24 실측: 우리 엔진이 "ko·ja·zh·en 을 지원한다" 고 적어 두었는데
+#   **넷 중 셋이 사실이 아니었다.**
+#     ko → 설치된 Kokoro 언어표에 **아예 없다**(a,b,e,f,h,i,p,j,z)
+#     ja → pyopenjtalk 이 없어 터진다
+#     zh → ordered_set 이 없어 터진다
+#     en → 된다
+#   한국어·일본어는 GPT-SoVITS 가 실패했을 때 **떨어질 자리**였고,
+#   중국어는 **Kokoro 가 유일한 길**이었다. 즉 구하러 온 사다리가 썩어 있었다.
+#   터지는 모양도 나빴다 — AssertionError / ModuleNotFoundError 라
+#   무엇이 없는지 사람이 읽을 수 없다.
+
+# 우리 언어 이름 → Kokoro 언어 글자
+LANG_MAP = {"ko": "k", "ja": "j", "zh": "z", "en": "a"}
+# 그 언어를 쓰려면 더 있어야 하는 부품
+LANG_EXTRAS = {"j": ("pyopenjtalk",), "z": ("ordered_set",), "a": (), "k": ()}
+
+
+def _installed_codes():
+    from kokoro.pipeline import LANG_CODES
+    return set(LANG_CODES)
+
+
+def _has_module(name):
+    import importlib.util
+    try:
+        return importlib.util.find_spec(name) is not None
+    except Exception:
+        return False
+
+
+def available_languages(codes=None, has_module=None):
+    """언어마다 (되는가, 사유). 조사하는 두 가지를 밖에서 넣을 수 있다(검사용).
+
+    돌려주는 것: {"ko": (False, "..."), "en": (True, ""), ...}
+    """
+    if codes is None:
+        try:
+            codes = _installed_codes()
+        except Exception as e:
+            return dict((k, (False, "Kokoro 를 불러오지 못했습니다: %s" % e))
+                        for k in LANG_MAP)
+    if has_module is None:
+        has_module = _has_module
+    out = {}
+    for lang, code in LANG_MAP.items():
+        if code not in codes:
+            out[lang] = (False, "설치된 Kokoro 가 이 언어를 담고 있지 않습니다")
+            continue
+        missing = [m for m in LANG_EXTRAS.get(code, ()) if not has_module(m)]
+        if missing:
+            out[lang] = (False, "이 언어에 필요한 %s 가 설치돼 있지 않습니다"
+                                % ", ".join(missing))
+            continue
+        out[lang] = (True, "")
+    return out
+
+
+def check_language(lang, codes=None, has_module=None):
+    """되면 "" 를, 안 되면 **사람이 읽을 수 있는 사유**를 돌려준다."""
+    if lang not in LANG_MAP:
+        return "Kokoro 가 다루지 않는 언어입니다: %s" % lang
+    ok, why = available_languages(codes, has_module)[lang]
+    return "" if ok else why

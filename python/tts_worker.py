@@ -152,6 +152,9 @@ class F5TTSEngine(TTSEngine):
 
 class KokoroEngine(TTSEngine):
     name = "kokoro"
+    # ★이 목록은 "다루려는 언어" 이지 **되는 언어가 아니다.**
+    #   실제로 되는지는 kokoro_compat.check_language 가 실행 시점에 본다.
+    #   2026-09-24 실측으로는 이 환경에서 **en 만** 된다.
     supported_languages = ["ko", "ja", "zh", "en"]
 
     def __init__(self):
@@ -171,6 +174,16 @@ class KokoroEngine(TTSEngine):
         #   계측대를 만들다 드러났다. import 전에 그 자리를 메운다.
         import kokoro_compat
         kokoro_compat.ensure()
+        # ★되지도 않는 언어로 들어가 알 수 없는 오류를 내지 않는다(2026-09-24 실측:
+        #   ko 는 설치된 Kokoro 에 아예 없고, ja·zh 는 딸린 부품이 없어 터진다).
+        #   구하러 온 사다리가 썩어 있으면 **썩었다고 말한다.**
+        why = kokoro_compat.check_language(lang_code)
+        if why:
+            e = RuntimeError("Kokoro 로 %s 를 합성할 수 없습니다 — %s" % (lang_code, why))
+            e.error_payload = {"code": ENGINE_LANG_UNAVAILABLE,
+                               "engine": "kokoro", "language": lang_code,
+                               "reason": why}
+            raise e
         from kokoro import KPipeline
         self._pipeline = KPipeline(lang_code=new_lang)
         self._lang = new_lang
@@ -1034,6 +1047,8 @@ ENGINES = {
 # 엔진 선택 계약(구조화 오류 코드). 명시 요청은 조용히 대체되지 않는다 — 자동(auto/None) 선택과 구분.
 ENGINE_UNAVAILABLE = "ENGINE_UNAVAILABLE"          # 지목한 엔진을 쓸 수 없음(대체 금지, 실패로 종료)
 ENGINE_NAME_INVALID = "ENGINE_NAME_INVALID"        # 알 수 없는 엔진 이름(기본 엔진으로 흘리지 않음)
+# 엔진은 있는데 **그 언어를 못 한다** — 조용히 다른 엔진으로 흘리지 않고 사유를 말한다.
+ENGINE_LANG_UNAVAILABLE = "ENGINE_LANG_UNAVAILABLE"
 # 배치형 Qwen('qwen3')은 ENGINES 레지스트리(문장별 엔진)에 없으므로 따로 합집합을 만든다.
 _VALID_ENGINE_NAMES = frozenset(ENGINES) | {"qwen3"}
 
