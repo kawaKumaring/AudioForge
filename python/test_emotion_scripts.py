@@ -119,7 +119,11 @@ class TestEmotionScripts(unittest.TestCase):
             from transformers import AutoProcessor
         except Exception:
             self.skipTest("transformers 없음 — qwen3_tts_venv 에서만 재측정")
-        mp = "E:/AI_Project/claudeCodeVsCode/apps/development/AudioForge/externals/qwen3_tts_1_7b_base"
+        # ★고정 경로를 쓰지 않는다(2026-09-24). 예전엔 절대경로가 박혀 있었는데,
+        #   저장소 자리를 옮기자 그 폴더가 사라져 이 검사가 **터지지도 않고 조용히
+        #   건너뛰었다.** 안 도는 검사는 없는 검사보다 나쁘다. 저장소 기준으로 찾는다.
+        repo = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        mp = os.path.join(repo, "externals", "qwen3_tts_1_7b_base")
         if not os.path.isdir(mp):
             self.skipTest("로컬 스냅샷 없음")
         proc = AutoProcessor.from_pretrained(mp, trust_remote_code=True)
