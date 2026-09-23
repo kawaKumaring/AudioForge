@@ -231,6 +231,40 @@ def _strip_repetition(result):
     return result
 
 
+def _snap_to_silence(result, audio_path):
+    """알아듣기가 말한 시각을 **소리의 무음 경계에 맞춰 민다.**
+
+    왜 켰는가(2026-09-24, 대사 계측대 실측)
+      참값을 아는 대사 음원(우리가 만든 것, 사용자 재료 미사용)으로 재니
+      시작 시각 중앙 오차가 **414 → 26밀리초(-94%)**, 0.3초 넘게 어긋난 구간이 8 → 3.
+      같은 것을 노래로 쟀을 때는 -6% 였다 — **노래는 보컬이 안 끊겨 무음이 드물기 때문**이고,
+      대사는 줄 사이가 진짜로 조용해서 이 방법이 제대로 듣는다.
+
+    ★배경음이 계속 깔려 있으면 **무음이 없어 아무 일도 하지 않는다**(실측 확인:
+      배경을 섞은 음원에서 무음 0곳·옮김 0건). 해롭지 않고, 그때는 배경음 걷어내기가
+      먼저 할 일이다 — 걷어내면 빈 자리가 조용해져 이 방법이 다시 듣는다.
+
+    ★이동 상한(0.40초)은 실측으로 정한 값이다. 상한을 풀면 대사에서는 더 좋아지지만
+      노래에서 꼬리가 나빠졌다. 상한을 두면 **두 재료 어디서도 나빠지는 것이 없다.**
+
+    실패해도 전사를 버리지 않는다 — 원본 시각을 그대로 둔다.
+    """
+    try:
+        import librosa
+        import silence_snap
+        y, sr = librosa.load(audio_path, sr=16000, mono=True)
+        sil_s, sil_e = silence_snap.silence_spans(y, sr)
+        info = silence_snap.snap_segments(result.get("segments") or [],
+                                          sil_s, sil_e, keep_end=True)
+        emit("asrSnap", silences=int(info["silences"]),
+             movedStart=int(info["moved_start"]),
+             medianShiftMs=int(round(info["median_shift"] * 1000)),
+             maxShiftMs=int(round(info["max_shift"] * 1000)))
+    except Exception:
+        emit("asrSnap", status="unavailable")
+    return result
+
+
 def run_transcribe(model, audio_path, language=None):
     """Whisper 전사 — 분리/무음이 많은 트랙의 환각을 억제한 공통 호출부.
 
@@ -258,7 +292,9 @@ def run_transcribe(model, audio_path, language=None):
     # 에너지 게이트: 무음 구간의 잔존 환각(아웃로 '시청 감사' 등) 제거.
     # hallucination_silence_threshold가 못 잡는, 옅게 깔린 무음 위 환각까지 걸러낸다.
     # 그다음 반복 환청 제거 — 무음 게이트가 못 닿는 '소리는 있는데 같은 말'을 맡는다.
-    return _strip_repetition(_filter_silent_segments(result, audio_path))
+    # 마지막으로 시각을 무음 경계에 맞춰 민다(대사에서 중앙 414 → 26밀리초).
+    return _snap_to_silence(
+        _strip_repetition(_filter_silent_segments(result, audio_path)), audio_path)
 
 
 # ── faster-whisper(CTranslate2) 실행 경로 ─────────────────────────────────────
@@ -342,9 +378,10 @@ def run_transcribe_ct2(audio_path, language=None, model_name="large-v3", beam_si
         "engine", "engineVersion", "ct2Version", "device", "computeType",
         "beamSize", "batchSize", "loadSec", "transcribeSec", "audioDurationSec",
         "languageProbability", "segmentCount")})
-    # 기존 무음 게이트를 그대로 태운다. 반복 환청 제거도 같이 — 엔진을 바꿨다고
-    # 환각 억제를 조용히 빼지 않는다.
-    return _strip_repetition(_filter_silent_segments(result, audio_path))
+    # 기존 무음 게이트를 그대로 태운다. 반복 환청 제거·시각 맞추기도 같이 —
+    # 엔진을 바꿨다고 손질을 조용히 빼지 않는다.
+    return _snap_to_silence(
+        _strip_repetition(_filter_silent_segments(result, audio_path)), audio_path)
 
 
 # NLLB max_length=512 대비: 한 문장이 이보다 길면 잘린 만큼 조용히 유실되므로

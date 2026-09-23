@@ -117,8 +117,15 @@ def collapse(text, min_run=REPEAT_RUN_MIN):
     src = text or ''
     if not src.strip():
         return src, 0
-    step1, _ = collapse_word_runs(src, min_run)
-    step2, _ = collapse_char_runs(step1, min_run)
+    step1, n_word = collapse_word_runs(src, min_run)
+    step2, n_char = collapse_char_runs(step1 if n_word else src, min_run)
+    # ★고친 것이 없으면 **원문을 그대로** 돌려준다(2026-09-24 계측대에서 드러남).
+    #   collapse_word_runs 는 늘 " ".join 으로 다시 엮어서, 되풀이가 하나도 없어도
+    #   앞뒤 공백이 사라진다. 그 탓에 알아듣기 결과의 **모든 구간**이 "고쳤다" 로 세어졌다
+    #   (계측대 실측: 11구간 중 7구간 "고침", 지운 글자는 구간당 1자 = 앞 공백 하나).
+    #   진단 숫자가 거짓이 되고, 부탁하지 않은 공백 손질이 덤으로 끼어든다.
+    if not n_word and not n_char:
+        return src, 0
     return step2, len(src) - len(step2)
 
 

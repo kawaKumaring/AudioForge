@@ -85,6 +85,26 @@ class Test두_훑기를_함께(unittest.TestCase):
         self.assertEqual(got, '가나')
         self.assertGreater(n, 0)
 
+    def test_되풀이가_없으면_공백도_건드리지_않는다(self):
+        """★2026-09-24 계측대에서 드러난 결함.
+
+        collapse_word_runs 가 늘 " ".join 으로 다시 엮는 탓에, 되풀이가 하나도 없어도
+        앞뒤 공백이 사라졌다. 알아듣기 구간은 앞에 공백이 붙어 오므로
+        **모든 구간이 "고쳤다" 로 세어졌다**(11구간 중 7구간, 구간당 1자).
+        진단 숫자가 거짓이 되고 부탁하지 않은 손질이 끼어든다.
+        """
+        src = ' Hello there. The weather is nice. '
+        self.assertEqual(ar.collapse(src), (src, 0))
+
+    def test_여러_공백도_되풀이가_없으면_그대로다(self):
+        src = '가   나    다'
+        self.assertEqual(ar.collapse(src), (src, 0))
+
+    def test_고칠_것이_있으면_그때는_다듬는다(self):
+        got, n = ar.collapse(' 보세요 URL URL URL URL URL URL 끝 ')
+        self.assertEqual(got, '보세요 URL 끝')
+        self.assertGreater(n, 0)
+
     def test_멀쩡한_글은_그대로다(self):
         src = '오늘 날씨가 참 좋네요. 같이 걸을까요?'
         self.assertEqual(ar.collapse(src), (src, 0))

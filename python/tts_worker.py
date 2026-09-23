@@ -167,6 +167,10 @@ class KokoroEngine(TTSEngine):
             return
 
         emit("progress", percent=10, message=f"Kokoro TTS 로딩 중... (언어: {lang_code})")
+        # ★Kokoro 는 앱 환경에서 그냥 터진다(phonemizer 판 차이 + espeak 데이터 경로).
+        #   계측대를 만들다 드러났다. import 전에 그 자리를 메운다.
+        import kokoro_compat
+        kokoro_compat.ensure()
         from kokoro import KPipeline
         self._pipeline = KPipeline(lang_code=new_lang)
         self._lang = new_lang
