@@ -112,5 +112,66 @@ class Test받아쓴_글은_지시가_아니다(unittest.TestCase):
         self.assertIn('짧게', tw._llm_dub_system(''))
 
 
+class Test본보기를_대화_차례로_준다(unittest.TestCase):
+    """★2026-09-24: 지시문 본문에 예시를 적으면 작은 모델이 그 답을 그대로 베낀다.
+
+    바깥 구현(voicebox)이 겪고 고친 것을 옮겼다. 주고받기로 넣으면
+    모델이 "앞서 있었던 대화" 로 보기 때문에 그 일이 사라진다.
+    """
+
+    def test_주고받기_형태다(self):
+        m = tw._seg_examples("casual")
+        self.assertGreaterEqual(len(m), 6)
+        self.assertEqual(len(m) % 2, 0)
+        for i, turn in enumerate(m):
+            self.assertEqual(turn["role"], "user" if i % 2 == 0 else "assistant")
+
+    def test_지시문_안에_본보기가_없다(self):
+        """★본문에 적으면 베낀다 — 그래서 여기에 있으면 안 된다."""
+        body = tw._llm_dub_system("casual") + tw._LLM_SEG_SYSTEM
+        for turn in tw._seg_examples("casual"):
+            self.assertNotIn(turn["content"], body)
+
+    def test_말투가_규칙과_같다(self):
+        """★본보기와 지시가 다투면 작은 모델은 본보기를 따른다."""
+        casual = tw._seg_examples("casual")[-1]["content"]
+        polite = tw._seg_examples("polite")[-1]["content"]
+        self.assertNotEqual(casual, polite)
+        self.assertTrue(polite.rstrip().endswith("요"), polite)
+
+    def test_마지막_두_자리가_가장_안_지켜지던_규칙이다(self):
+        """★모델은 실제 입력에 가까운 본보기를 더 무겁게 친다.
+
+        그래서 잔재 제거(2026-09-20 실측 실패)와 명령형 그대로 옮기기를 끝에 둔다.
+        차례가 바뀌면 이 검사가 잡는다.
+        """
+        m = tw._seg_examples("casual")
+        self.assertIn("perfect", m[-4]["content"], "끝에서 둘째는 잔재 본보기여야 한다")
+        self.assertIn("無視", m[-2]["content"], "마지막은 명령형 본보기여야 한다")
+
+    def test_본보기_답이_우리_규칙을_스스로_지킨다(self):
+        """★본보기가 수리 대상이면 틀린 것을 가르치는 것이다."""
+        for i in range(0, len(tw._seg_examples("casual")), 2):
+            pair = tw._seg_examples("casual")
+            src, got = pair[i]["content"], pair[i + 1]["content"]
+            self.assertFalse(tw.needs_retranslate(got, src),
+                             "본보기 답이 잔재 판정에 걸린다: %r" % got)
+
+    def test_줄_수가_물음과_답에서_같다(self):
+        m = tw._seg_examples("casual")
+        for i in range(0, len(m), 2):
+            asked = [l for l in m[i]["content"].splitlines() if l.strip()]
+            answered = [l for l in m[i + 1]["content"].splitlines() if l.strip()]
+            self.assertEqual(len(asked) - 1, len(answered),
+                             "물음 줄 수와 답 줄 수가 다르다: %r" % (m[i]["content"],))
+
+    def test_말투를_안_주면_지금_설정을_따른다(self):
+        tw.set_translate_style(mode="dub", register="polite")
+        try:
+            self.assertEqual(tw._seg_examples(), tw._seg_examples("polite"))
+        finally:
+            tw.set_translate_style(mode="subtitle", register="")
+
+
 if __name__ == '__main__':
     unittest.main()
