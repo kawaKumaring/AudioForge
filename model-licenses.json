@@ -5,7 +5,8 @@
     "그래서 낡은 채로 남아 핵심 엔진(Qwen3-TTS)조차 빠져 있었다.",
     "scripts/check-model-licenses.mjs 가 코드에서 참조하는 모델과 이 목록을 대조해",
     "목록에 없는 모델·조건 미확인 모델을 빌드 전에 실패시킨다.",
-    "★2026-09-24: 검사가 **코드에 적힌 이름만** 훑어서, 앱이 폴더째 들고 있는 모델 셋이 보이지 않았다(ECAPA·Silero VAD·pyannote community-1). 그래서 bundled_dir 을 두고 externals/diarization_models 아래 실제 폴더를 인벤토리와 대조한다."
+    "★2026-09-24: 검사가 **코드에 적힌 이름만** 훑어서, 앱이 폴더째 들고 있는 모델 셋이 보이지 않았다(ECAPA·Silero VAD·pyannote community-1). 그래서 bundled_dir 을 두고 externals/diarization_models 아래 실제 폴더를 인벤토리와 대조한다.",
+    "★2026-09-25: 조건이 '확인 안 됨' 으로 남아 있던 마지막 모델(community-1)을 확인해 적었다. CC-BY-4.0 — 상업 이용은 되지만 **출처 표시가 의무**다. 그런 의무는 잊기 쉬워서 attribution_required 로 따로 표시하고, 검사가 매번 짚는다."
   ],
   "distribution": {
     "commercial": false,
@@ -163,11 +164,14 @@
     {
       "id": "pyannote/speaker-diarization-community-1",
       "role": "대화 분리 — 선택 엔진(기본 아님)",
-      "license": "UNVERIFIED",
-      "license_source": "가중치 폴더에 LICENSE 파일이 없다. 이용 조건 수락이 필요한 모델이라 수락 시점의 조건이 이 저장소에 남지 않았다 — 배포 전 확인 대상.",
-      "non_commercial": null,
+      "license": "CC-BY-4.0",
+      "license_source": "배포처 모델 카드(2026-09-25 확인). 원문 README 는 이용 조건 수락이 필요해 직접 읽지 못했고, 공개 카드 페이지와 배포처 공지 두 곳이 같은 값을 말한다.",
+      "non_commercial": false,
       "default_path": false,
-      "bundled_dir": "community-1"
+      "bundled_dir": "community-1",
+      "attribution_required": true,
+      "gated": true,
+      "note": "★출처 표시 의무가 있다 — 상업 이용은 되지만 **밝히지 않고 쓰면 조건 위반**이다. 배포 시 이 모델 이름과 CC-BY-4.0 을 표기해야 한다. 가중치는 이용 조건 수락 뒤 사용자가 직접 받아 앱 폴더에 둔 것이다."
     }
   ]
 }

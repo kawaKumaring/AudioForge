@@ -135,6 +135,15 @@ export function auditLicenses(inventory, referenced, bundled = null) {
       }
     }
   }
+  // ★'써도 된다' 와 '그냥 써도 된다' 는 다르다(2026-09-25).
+  //   CC-BY 계열은 상업 이용을 허락하지만 **출처를 밝히지 않으면 조건 위반**이다.
+  //   그런 의무는 license 문자열만 보면 눈에 안 들어와 그대로 잊힌다. 매번 짚는다.
+  const owed = (inventory.models || []).filter((m) => m.attribution_required)
+  if (owed.length) {
+    notices.push(`출처 표시 의무 ${owed.length}건 — 배포물에 이름과 조건을 적어야 한다: `
+      + owed.map((m) => `${m.id}(${m.license})`).join(', '))
+  }
+
   for (const m of inventory.models || []) {
     // 앱 안 모델은 **경로로** 열므로 코드에 이름이 없는 것이 정상이다 — 정리 후보가 아니다.
     if (!referenced.has(m.id) && m.default_path && !m.bundled_dir) {

@@ -108,3 +108,31 @@ test('이 장비의 앱 안 모델 폴더는 전부 인벤토리에 있다', () 
     .map((m) => m.bundled_dir).filter(Boolean))
   for (const d of dirs) assert.ok(byDir.has(d), `${d}: 앱이 싣고 있는데 인벤토리에 없다`)
 })
+
+// ★'써도 된다' 와 '그냥 써도 된다' 는 다르다(2026-09-25).
+//   CC-BY 계열은 상업 이용을 허락하지만 **출처를 밝히지 않으면 조건 위반**이다.
+//   license 문자열만 보면 그 의무가 눈에 안 들어와 그대로 잊힌다.
+test('출처 표시 의무가 있으면 검사가 매번 짚는다', () => {
+  const models = [{ id: 'a/b', license: 'CC-BY-4.0', attribution_required: true, default_path: true }]
+  const r = auditLicenses({ distribution: { commercial: false }, models }, ref([['a/b', 'x.py']]))
+  assert.equal(r.notices.some((n: string) => /출처 표시 의무/.test(n)), true)
+})
+
+test('의무가 없으면 조용하다 — 없는 짐을 만들지 않는다', () => {
+  const models = [{ id: 'a/b', license: 'MIT', default_path: true }]
+  const r = auditLicenses({ distribution: { commercial: false }, models }, ref([['a/b', 'x.py']]))
+  assert.equal(r.notices.some((n: string) => /출처 표시 의무/.test(n)), false)
+})
+
+// ★기록이 '확인 안 됨' 으로 남아 있던 마지막 모델. 다시 그 상태로 돌아가지 않게 못을 박는다.
+test('앱이 싣고 있는 모델은 조건이 전부 확인돼 있다', () => {
+  const bundled = (INVENTORY.models as Array<{
+    id: string; license: string; bundled_dir?: string; license_source?: string
+  }>).filter((m) => m.bundled_dir)
+  assert.ok(bundled.length >= 3, '앱 안 모델 목록이 비었다')
+  for (const m of bundled) {
+    assert.notEqual(m.license, 'UNVERIFIED', `${m.id}: 싣고 있는데 조건이 미확인이다`)
+    assert.ok(m.license_source && m.license_source.trim(),
+      `${m.id}: 무엇을 보고 확인했는지 적혀 있지 않다`)
+  }
+})
