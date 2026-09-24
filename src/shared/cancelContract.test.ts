@@ -23,6 +23,10 @@ import {
   reduceCancelPhase,
   type CancelPhase,
   type CancelEvent,
+  cancelAlreadyOverText,
+  cancelFailureKind,
+  cancelFailureText,
+  cancelRetryable,
 } from './cancelContract.ts'
 
 // ── 1. 응답 해석 ────────────────────────────────────────────────────────────
@@ -256,4 +260,65 @@ test('store 정합(결함 재현): 낙관적 beginCancelling을 먼저 부르면
   assert.equal(interpretCancelResponse(resp), 'noop')
   assert.equal(acceptsSettlement(useAppStore.getState().status), false)  // → onResult가 결과를 폐기
   assert.equal(useAppStore.getState().status, 'cancelling')       // → 탈출구 없는 영구 'cancelling'
+})
+
+// ── 취소 실패의 갈래 ─────────────────────────────────────────────────────
+//
+// ★갈래를 'childAlive 하나' 로 읽고 있었다(2026-09-24 2차 감사). main 은 세 가지
+//   서로 다른 상황에서 같은 이벤트를 보내는데, **회복 방법이 서로 반대**다.
+//   자식이 이미 죽은 갈래에 '다시 취소' 를 권하면 눌러도 아무 일이 없는 단추를
+//   계속 누르게 된다.
+test('자식이 살아 있으면 다시 취소를 눌러 볼 수 있다', () => {
+  const k = cancelFailureKind({ childAlive: true })
+  assert.equal(k, 'child-alive')
+  assert.equal(cancelRetryable(k), true)
+  assert.match(cancelFailureText(k), /다시 취소/)
+})
+
+test('정리만 남은 갈래는 다시 취소를 권하지 않는다 — 눌러도 거절된다', () => {
+  const k = cancelFailureKind({ childAlive: false, cleanupPending: true })
+  assert.equal(k, 'cleanup-pending')
+  assert.equal(cancelRetryable(k), false)
+  assert.doesNotMatch(cancelFailureText(k), /다시 취소/)
+  assert.match(cancelFailureText(k), /임시 파일/)
+})
+
+test('종료를 확인 못 한 갈래도 다시 취소를 권하지 않는다', () => {
+  const k = cancelFailureKind({ childAlive: false })
+  assert.equal(k, 'exit-unconfirmed')
+  assert.equal(cancelRetryable(k), false)
+  assert.doesNotMatch(cancelFailureText(k), /다시 취소/)
+})
+
+test('모르는 모양은 가장 보수적인 갈래로 본다', () => {
+  for (const v of [null, undefined, {}, 'x', 42, []]) {
+    assert.equal(cancelFailureKind(v), 'exit-unconfirmed')
+    assert.equal(cancelRetryable(cancelFailureKind(v)), false)
+  }
+})
+
+test('갈래마다 다른 말을 한다 — 하나로 뭉뚱그리지 않는다', () => {
+  const said = new Set([
+    cancelFailureText('child-alive'),
+    cancelFailureText('cleanup-pending'),
+    cancelFailureText('exit-unconfirmed'),
+  ])
+  assert.equal(said.size, 3, '갈래가 셋인데 문구가 겹친다')
+})
+
+// ★이 자리가 없으면 갇힌다: 자식이 뒤늦게 죽으면 '다시 취소' 단추가 남아 있는데
+//   눌러도 NO_ACTIVE_JOB 만 돌아온다. 반환값을 읽기만 하면 빠져나올 수 있다.
+test('이미 끝났다는 응답은 화면이 빠져나올 신호다', () => {
+  assert.match(cancelAlreadyOverText('NO_ACTIVE_JOB')!, /이미 끝났습니다/)
+  assert.equal(cancelAlreadyOverText('ALREADY_CANCELLING'), null)
+  assert.equal(cancelAlreadyOverText('ALREADY_SETTLED'), null)
+  assert.equal(cancelAlreadyOverText('UNKNOWN_RESPONSE'), null)
+  assert.equal(cancelAlreadyOverText(null), null)
+})
+
+// ★취소 실패 뒤 상태가 'processing' 에 남으면 탭·모드 단추가 잠겨 갇힌다.
+test('취소 실패 뒤 상태가 만드는 중에 남지 않는다', () => {
+  const after = reduceCancelPhase({ status: 'processing', errorCode: null }, { type: 'cancelFailedEvent' })
+  assert.notEqual(after.status, 'processing')
+  assert.equal(after.status, 'error')
 })

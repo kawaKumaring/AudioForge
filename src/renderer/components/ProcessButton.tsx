@@ -8,7 +8,8 @@ import { ALL_EMOTIONS, planEmotionRefs } from '@/lib/emotions'
 import { useClipRecovery } from '@/hooks/useClipRecovery'
 import { parseTtsScript, TTS_PARSER_VERSION } from '../../shared/ttsGrammar'
 import { inRange, TTS_TAIL_PADDING_MS, TTS_TAIL_FADE_MS, TTS_EMOTION_PAUSE_MS } from '../../shared/ttsExpressionCapabilities'
-import { CANCEL_FAILED_CODE, acceptsSettlement, canRequestCancel, cancelJobId, cancelNoopReason, interpretCancelResponse, isCancelCleanupBusy } from '../../shared/cancelContract'
+import { CANCEL_FAILED_CODE, acceptsSettlement, isCancelCleanupBusy } from '../../shared/cancelContract'
+import { cancelAlreadyOverText, useCancelLifecycle } from '@/hooks/useCancelLifecycle'
 
 function _estimateTime(mode: string, duration: number, transcribe: boolean, translate: boolean): string {
   let secs = 0
@@ -34,7 +35,6 @@ export default function ProcessButton() {
   })
   const cleanupRef = React.useRef<(() => void) | null>(null)
   // 취소 요청 in-flight 가드(로컬). 새 상태 축이 아니라 '같은 요청 중복 전송'만 막는다 — finally에서 반드시 해제.
-  const cancelInFlightRef = React.useRef(false)
 
   // 감정 참조 게이팅/전송(계약 §5 불변식) — 순수 판정은 planEmotionRefs 단일 로직.
   //  대사에 실제 쓰인 감정만 대상. 미사용은 비차단·미전송. 등록+미준비 사용 감정은 blockedId로 차단.
@@ -186,13 +186,16 @@ export default function ProcessButton() {
 
   // 취소 lifecycle 상시 구독(공용 마감 K). 실행별 구독과 분리 — cancel-failed 후 '다시 취소'도 받아야 하므로
   // 여기서 유지하고, 터미널(cancelled/cancel-failed)에서만 실행별 구독(cleanupRef)을 해제한다.
-  React.useEffect(() => {
-    const s = () => useAppStore.getState()
-    const offCancelling = window.api.audio.onCancelling(() => s().beginCancelling())
-    const offCancelled = window.api.audio.onCancelled(() => { s().finishCancelled(); cleanupRef.current?.() })
-    const offFailed = window.api.audio.onCancelFailed((d: any) => { s().setCancelFailed(!!d?.childAlive); cleanupRef.current?.() })
-    return () => { offCancelling(); offCancelled(); offFailed() }
-  }, [])
+  // ★배선을 공용 훅으로 옮겼다(2026-09-24 2차 감사) — **하는 일은 그대로다.**
+  //   옮긴 이유: 이 배선이 이 파일 안에만 있어서, 두 번째 작업 소유자(일반 탭)가
+  //   같은 통로에 들어올 때 성공 경로만 배선한 채 지나갔다. 훅은 구독과 해석만 갖고
+  //   **무엇을 할지는 여기 콜백이 정한다** — 화면마다 할 일이 다르기 때문이다.
+  const { requestCancel } = useCancelLifecycle(() => useAppStore.getState().status, {
+    onCancelling: () => useAppStore.getState().beginCancelling(),
+    onCancelled: () => { useAppStore.getState().finishCancelled(); cleanupRef.current?.() },
+    // ★실어 온 것을 통째로 넘긴다. 예전에는 childAlive 만 읽어 '정리 미완' 구분이 사라졌다.
+    onFailed: (_kind, payload) => { useAppStore.getState().setCancelFailed(payload); cleanupRef.current?.() },
+  })
 
   // 취소 '요청'만 보낸다(계약 C2-P0.1 §1·§2·§4).
   // 여기서 beginCancelling()으로 낙관적 전환을 하면 안 된다 — main의 audio:cancel은 실행 중 아님/이미 result·error로
@@ -201,25 +204,13 @@ export default function ProcessButton() {
   // result/error까지 'cancelling이라서' 폐기됐다. 'cancelling' 전환의 권위는 오직 main의 audio:cancelling 이벤트다
   // (아래 상시 effect의 onCancelling). 구독은 여기서 해제하지 않는다 — 터미널 이벤트가 도착해 cleanup해야 하므로.
   const handleCancel = async () => {
-    if (!canRequestCancel(status)) return   // processing에서만 요청(cancelling/그 외는 무시)
-    if (cancelInFlightRef.current) return   // 응답 대기 중 연타는 요청 1회로 접는다(멱등, 계약 §6)
-    cancelInFlightRef.current = true
-    try {
-      const resp = await window.api.audio.cancel()
-      if (interpretCancelResponse(resp) === 'accepted') {
-        // 수락 — main이 audio:cancelling을 보냈고 정확히 하나의 터미널(cancelled | cancel-failed)로 끝낸다(계약 §7).
-        console.log('[renderer][cancel] 취소 수락', { jobId: cancelJobId(resp) })
-      } else {
-        // 미수락(no-op) 또는 계약 밖/구 shape → 상태를 전혀 건드리지 않는다(계약 §5·§8).
-        // 진행 중 작업은 그대로 이어지고, 직후 도착하는 result/error가 정상 채택된다.
-        console.log('[renderer][cancel] 취소 미수락(no-op) — 상태 유지', { reason: cancelNoopReason(resp) })
-      }
-    } catch (err: any) {
-      // invoke 실패도 no-op과 동일 취급 — 상태를 바꾸지 않으므로 갇히지 않는다.
-      console.error('[renderer][cancel] audio:cancel 호출 실패', err?.stack || err)
-    } finally {
-      cancelInFlightRef.current = false   // 반드시 해제 — 취소 버튼이 영구 무반응이 되지 않도록.
-    }
+    const reason = await requestCancel()
+    if (reason === null) return              // 수락 — 터미널 이벤트가 마무리한다(계약 §7)
+    // 미수락(no-op)이면 상태를 건드리지 않는다(계약 §5·§8) — 진행 중 작업이 그대로 이어진다.
+    // ★단, '이미 끝났다' 는 화면이 빠져나올 신호다. 조용히 삼키지 않는다.
+    const over = cancelAlreadyOverText(reason)
+    if (over) useAppStore.getState().setError(over, { code: CANCEL_FAILED_CODE })
+    else console.log('[renderer][cancel] 취소 미수락(no-op) — 상태 유지', { reason })
   }
 
   if (!fileInfo) return null

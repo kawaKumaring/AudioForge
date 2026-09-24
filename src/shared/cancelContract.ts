@@ -156,3 +156,65 @@ export function reduceCancelPhase(state: CancelPhase, event: CancelEvent): Cance
       return state
   }
 }
+
+// ── 취소 실패의 **갈래** — 회복 방법이 서로 반대다 ───────────────────────────
+//
+// ★갈래를 뭉뚱그려 'childAlive 하나' 로 읽고 있었다(2026-09-24 2차 감사).
+//   그런데 main 은 세 가지 서로 다른 상황에서 같은 이벤트를 보낸다:
+//
+//   1. 자식이 **아직 살아 있다** — main 은 재취소를 허용한다(cancelState=failed).
+//      → "다시 취소" 가 옳은 안내다.
+//   2. 자식은 죽었는데 **임시 파일 정리가 안 끝났다**(cleanupPending) —
+//      재취소는 NO_ACTIVE_JOB 으로 거절된다. 대신 **다음 합성 요청이 정리를 다시 시도**해
+//      성공하면 스스로 풀린다. → "다시 취소" 는 **틀린 안내**다.
+//   3. 자식은 죽은 것으로 보이는데 **종료를 확인하지 못했다**(taskkill nonzero/timeout).
+//      재취소는 역시 거절된다. → 여기도 "다시 취소" 는 틀렸다.
+//
+//   2·3 에서 "다시 취소를 눌러 주세요" 를 띄우면 사용자는 눌러도 아무 일이 없는
+//   단추를 계속 누르게 된다. 갈래를 나누는 것이 문구를 고치는 것보다 먼저다.
+
+/** 취소 실패 이벤트가 싣고 오는 것. 둘 다 없을 수 있다(3번 갈래). */
+export interface CancelFailedPayload {
+  childAlive?: boolean
+  cleanupPending?: boolean
+}
+
+export type CancelFailureKind = 'child-alive' | 'cleanup-pending' | 'exit-unconfirmed'
+
+/** 실어 온 것에서 갈래를 정한다. 모르는 모양은 가장 보수적인 3번으로 본다. */
+export function cancelFailureKind(payload: unknown): CancelFailureKind {
+  const p = (payload ?? {}) as CancelFailedPayload
+  if (p.childAlive === true) return 'child-alive'
+  if (p.cleanupPending === true) return 'cleanup-pending'
+  return 'exit-unconfirmed'
+}
+
+/** 이 갈래에서 **다시 취소를 눌러 볼 수 있는가.** 나머지 둘은 눌러도 거절된다. */
+export function cancelRetryable(kind: CancelFailureKind): boolean {
+  return kind === 'child-alive'
+}
+
+/** 사용자에게 보일 한 줄 — **무엇이 일어났고 무엇을 하면 되는지**를 말한다. */
+export function cancelFailureText(kind: CancelFailureKind): string {
+  switch (kind) {
+    case 'child-alive':
+      return '이전 작업이 아직 살아 있습니다 — 다시 취소를 눌러 주세요.'
+    case 'cleanup-pending':
+      return '작업은 멈췄지만 임시 파일 정리가 끝나지 않았습니다 — 잠시 뒤 다시 만들어 보세요.'
+    default:
+      return '작업은 멈춘 것으로 보이지만 종료를 확인하지 못했습니다 — 다시 만들어 보고, 계속 실패하면 앱을 다시 시작하세요.'
+  }
+}
+
+/**
+ * 취소를 요청했더니 **이미 끝나 있었다**(NO_ACTIVE_JOB).
+ *
+ * ★이 자리가 없으면 갇힌다: 자식이 뒤늦게 죽으면 main 은 신호 없이 정리한다.
+ *   화면에는 "다시 취소" 단추가 남아 있는데 눌러도 NO_ACTIVE_JOB 만 돌아온다.
+ *   main 을 고치지 않고 **반환값을 제대로 읽기만 하면** 빠져나올 수 있다.
+ */
+export function cancelAlreadyOverText(reason: CancelNoopReason | 'UNKNOWN_RESPONSE' | null): string | null {
+  return reason === 'NO_ACTIVE_JOB'
+    ? '이전 작업은 이미 끝났습니다 — 이제 새로 만들 수 있습니다.'
+    : null
+}

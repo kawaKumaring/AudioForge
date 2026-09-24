@@ -19,6 +19,9 @@ import {
 } from '../../shared/dubbing'
 // 말끝 잘림 판정은 **고급 화면과 같은 기준**을 쓴다 — 기준이 둘이면 화면끼리 말이 달라진다.
 import { synthesisOptions, defaultSettings, isTailCut, tailResidualOf } from '../../shared/labWorkspace'
+import { cancelFailureText } from '../../shared/cancelContract'
+import { useCancelLifecycle } from '@/hooks/useCancelLifecycle'
+import { useAppStore } from '@/stores/app.store'
 import { REFERENCE_CONDITIONING_RECOMMENDED } from '../../shared/ttsConfig'
 import type { CommittedRef } from '../../shared/voicePreparation'
 import { runVoicePrep } from '@/lib/voicePrepRunner'
@@ -89,6 +92,21 @@ export default function DubWorkspace() {
     })
     return () => { offR?.(); offE?.() }
   }, [])
+
+  // ★취소가 실패하면 여기도 갇힌다(2026-09-24 2차 감사).
+  //   더빙은 공용 실행 단추가 뜨지 않는 모드라, 취소 실패를 듣는 자리가 화면에 없다.
+  //   그러면 기다리던 줄이 영영 오지 않고 "줄 소리 만드는 중… 1/N" 에서 멈춘다.
+  //   ★더빙에는 아직 취소 단추 자체가 없다 — 그것은 따로 볼 일이고(열린 항목),
+  //     여기서는 **다른 화면의 취소가 실패했을 때 갇히지 않게** 하는 것까지 한다.
+  useCancelLifecycle(() => useAppStore.getState().status, {
+    onFailed: (kind) => {
+      const slot = pending.current
+      pending.current = null
+      setBusy('')
+      setError(cancelFailureText(kind))
+      slot?.reject(new Error(cancelFailureText(kind)))
+    },
+  })
 
   const lines: DubLine[] = front?.lines ?? []
   const koreanOf = (l: DubLine) => (edits[l.index] ?? l.korean)
