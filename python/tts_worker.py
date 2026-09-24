@@ -921,6 +921,10 @@ class QwenTTSEngine(TTSEngine):
                                 else startup_deadline_sec)
         _now = monotonic or time.monotonic
         _t0 = _now()
+        # 브리지가 보내 준 단계 경과(브리지 모듈 import 시점 기준). 부모 시계와 뜻이 달라
+        # 섞지 않는다 — 부모는 '프로세스를 띄운 뒤' 를, 브리지는 '제가 뜬 뒤' 를 잰다.
+        _bridge_marks = {}
+        _loaded_at = None
         # 로컬 스냅샷 '경로'로 로드(repo id 아님) → 오프라인에서 HF API 호출 회피. 자동 다운로드 금지.
         cfg = {"model_path": _qwen_active_snapshot(), "device": device, "segments": segments}
         # 난수 씨앗. 브리지는 chunk 마다 seed+순번으로 다시 심고 실제 적용값을 돌려준다.
@@ -1040,8 +1044,16 @@ class QwenTTSEngine(TTSEngine):
                 st = msg.get("stage")
                 if st in ("loading", "loaded", "generating"):
                     stage = st
+                # ★브리지는 단계마다 경과를 **재서 보내고 있었는데 여기서 버렸다**(2026-09-25).
+                #   그래서 '이 작업에서 모델 올리는 데 몇 초 걸렸나' 가 어디에도 안 남았고,
+                #   71초가 어디로 갔는지 물으면 총시간에서 빼는 간접 계산밖에 없었다.
+                #   숫자를 줍는다 — 재는 비용은 이미 치르고 있었다.
+                _el = msg.get("elapsed_sec")
+                if isinstance(_el, (int, float)) and st in ("loaded", "generating"):
+                    _bridge_marks[st] = float(_el)
                 if st == "loaded":
                     loaded = True   # 이 시점부터 기동 deadline 해제, 무응답 280s 계약 그대로
+                    _loaded_at = _now()
                 elif st == "loading" and int(msg.get("attempt") or 1) > 1:
                     # sdpa 실패 후 eager 재시도 = 두 번째 전체 로딩. 사용자에게 보이게 한다
                     # (한 번 느린 로딩과 재시도를 사후에 구분할 수 있어야 한다).
@@ -1083,6 +1095,14 @@ class QwenTTSEngine(TTSEngine):
             raise RuntimeError(f"Qwen 실패(코드 {proc.returncode}): {''.join(stderr_tail)[-400:]}")
         if not seg_out:
             raise RuntimeError(f"Qwen 합성 결과 없음: {''.join(stderr_tail)[-300:]}")
+        # ★부모 시계로 한 칸 남긴다: 프로세스를 띄워 모델이 올라오기까지.
+        #   여기에만 파이썬 기동·torch import·가중치 읽기가 **전부** 들어간다 —
+        #   브리지가 보내 주는 값은 제가 뜬 뒤부터라 그 앞 구간을 못 본다.
+        self.last_stage_elapsed = {
+            "model_load": round(_loaded_at - _t0, 3) if _loaded_at is not None else None,
+            "bridge_loaded": _bridge_marks.get("loaded"),
+            "bridge_generating": _bridge_marks.get("generating"),
+        }
         return self._validate_seg_out(seg_out, segments)
 
     @staticmethod
@@ -2448,7 +2468,22 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         try:
             try:
                 _job_clock = JobWallClock()
+                import time as _t_mod          # 이 함수는 뒤에서 time 을 지역으로 들인다
+                _t_job = _t_mod.monotonic()
                 seg_out = qwen.run_job(segments, device, seed=run_seed)
+                # ★비어 있던 칸을 채운다(2026-09-25). `stage_elapsed` 는 처음부터 있었는데
+                #   **부르는 곳이 한 곳도 없어 언제나 빈 배열**이었다. 그래서 한 작업의 시간이
+                #   어디로 갔는지 기록으로 답할 수 없었고, 개선을 해도 나아졌는지 증명할
+                #   수단이 없었다. 재는 것이 고치는 것보다 먼저다.
+                _stages = getattr(qwen, 'last_stage_elapsed', None) or {}
+                if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
+                    # 프로세스를 띄워 모델이 올라오기까지(파이썬 기동·import·가중치 읽기 포함).
+                    _CONCAT_RECORDER.stage_elapsed('model_load', _stages.get('model_load'))
+                    # 브리지가 제 시계로 잰 값 — 부모 시계와 뜻이 다르므로 이름을 나눈다.
+                    _CONCAT_RECORDER.stage_elapsed('bridge_loaded', _stages.get('bridge_loaded'))
+                    _CONCAT_RECORDER.stage_elapsed('bridge_generating', _stages.get('bridge_generating'))
+                    # run_job 전체 — 생성 합과 견주면 '생성 밖' 이 바로 나온다.
+                    _CONCAT_RECORDER.stage_elapsed('run_job', _t_mod.monotonic() - _t_job)
                 # 생성이 끝난 직후에 본다 — 정렬·조립 전에 초과를 확정해
                 # 헛수고를 늘리지 않는다. partial 은 진단에만 남는다.
                 _job_clock.check(completed_chunks=len(seg_out or []))
