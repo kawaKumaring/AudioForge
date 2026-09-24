@@ -184,10 +184,18 @@ def _step_translate(ctx):
                       'source': seg['text'], 'korean': (ko or '').strip(),
                       'words': seg['words']})
     empty = [ln['index'] for ln in lines if not ln['korean']]
-    with open(os.path.join(ctx['out_dir'], 'lines.json'), 'w', encoding='utf-8') as f:
+    # ★임시본 → 확정 → 이름 바꾸기. 쓰다 끊기면 잘린 파일이 남는데,
+    #   이 파일 하나에 원문·시각·번역·낱말 시각이 전부 들어 있어 통째로 잃는다.
+    #   게다가 잘린 파일도 '번역 끝남' 으로 세어져 되돌릴 길이 막혔다(2026-09-24 2차 감사).
+    _final = os.path.join(ctx['out_dir'], 'lines.json')
+    _tmp = _final + '.tmp'
+    with open(_tmp, 'w', encoding='utf-8') as f:
         json.dump({'language': lang, 'backend': ctx['backend'],
                    'lines': lines, 'empty_indexes': empty}, f,
                   ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(_tmp, _final)
     if empty:
         # 멈추지는 않는다 - 사용자가 그 줄만 손보면 된다. 다만 조용히 넘기지도 않는다.
         emit('progress', percent=88,

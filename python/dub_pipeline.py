@@ -13,6 +13,7 @@
 
 기획: doc/work-in-progress/video-dubbing.md
 """
+import io
 import json
 import os
 
@@ -100,11 +101,36 @@ def read_state(out_dir, *, opener=None):
 
 
 def write_state(out_dir, state):
-    with open(os.path.join(out_dir, STATE_FILE), 'w', encoding='utf-8') as f:
+    """★임시본에 쓰고 이름을 바꾼다 — 끊겨도 기존 상태 파일이 잘리지 않는다."""
+    final = os.path.join(out_dir, STATE_FILE)
+    tmp = final + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
         json.dump(state, f, ensure_ascii=False, indent=2)
+        f.flush()
+        os.fsync(f.fileno())
+    os.replace(tmp, final)
 
 
-def plan_stages(out_dir, signature, *, force=False, state=None, exists=os.path.isfile):
+def _readable_lines(path):
+    """줄 목록 파일이 **읽히는지**. 있기만 한 것과 읽히는 것은 다르다.
+
+    ★왜 내용까지 보나(2026-09-24 2차 감사)
+      예전 판정은 `os.path.isfile` 로 **존재만** 봤다. 그래서 쓰다 끊겨 잘린
+      `lines.json` 도 '번역 끝남' 으로 세어 그 단계를 건너뛰었다.
+      사용자는 앱을 다시 켜도 같은 자리에 갇히고, 빠져나올 길은 `--force` 뿐이었다 —
+      그런데 그것은 사람이 손본 번역문을 통째로 버리는 길이다.
+      **막다른 길을 만든 것은 잘린 파일이 아니라 내용을 안 보는 판정이었다.**
+    """
+    try:
+        with io.open(path, encoding='utf-8') as f:
+            data = json.load(f)
+    except Exception:
+        return False
+    return isinstance(data, dict) and isinstance(data.get('lines'), list)
+
+
+def plan_stages(out_dir, signature, *, force=False, state=None,
+                exists=os.path.isfile, readable=None):
     """무엇을 다시 하고 무엇을 건너뛸지 정한다. 파일만 보고 정한다 - 아무것도 실행하지 않는다.
 
     건너뛰는 조건은 둘 다 만족할 때뿐이다:
@@ -126,7 +152,13 @@ def plan_stages(out_dir, signature, *, force=False, state=None, exists=os.path.i
             broken = True          # 여기서부터는 앞이 바뀌었으니 전부 다시 한다
             run.append(name)
             continue
-        if all(exists(p) for p in stage_paths(out_dir, name)):
+        paths = stage_paths(out_dir, name)
+        # 번역 산출물은 **읽히는지**까지 본다 — 잘린 파일이 '끝남' 으로 세이지 않게.
+        # 확인 방법도 주입받는다 — 이 함수는 아무것도 실행하지 않는다는 약속을 지키려고.
+        ok_read = _readable_lines if readable is None else readable
+        intact = all(exists(p) for p in paths) and (
+            name != 'translate' or all(ok_read(p) for p in paths))
+        if intact:
             skip.append(name)
         else:
             broken = True

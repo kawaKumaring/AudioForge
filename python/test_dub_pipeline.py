@@ -3,6 +3,8 @@
 
 실행: python -X utf8 python/test_dub_pipeline.py
 """
+import io
+import json
 import os
 import shutil
 import sys
@@ -24,7 +26,16 @@ def fake_steps(log, *, fail_at=None, produce=True):
             if produce:
                 for p in dp.stage_paths(ctx['out_dir'], name):
                     with open(p, 'w', encoding='utf-8') as f:
-                        f.write(name)
+                        # ★줄 목록은 **읽히는 JSON** 이어야 한다(2026-09-24 2차 감사).
+                        #   예전 재료는 단계 이름만 적어 뒀는데, 판정이 존재만 봤기에
+                        #   그래도 통과했다. 이제 내용을 보므로 재료도 실물에 맞춘다.
+                        if os.path.basename(p) == 'lines.json':
+                            json.dump({'language': 'ja', 'lines': [
+                                {'index': 0, 'start': 0.0, 'end': 1.0,
+                                 'source': 'こんにちは', 'korean': '안녕하세요'}]},
+                                f, ensure_ascii=False)
+                        else:
+                            f.write(name)
         return step
     return dict((n, make(n)) for n in dp.STAGE_NAMES)
 
@@ -239,6 +250,83 @@ class Test표(Base):
         self.assertEqual(set(sig), {'name', 'size', 'mtime'})
         self.assertEqual(sig['name'], 'clip.mp4')
 
+
+class Test잘린_산출물(Base):
+    """★잘린 파일이 '끝남' 으로 세면 되돌릴 길이 막힌다(2026-09-24 2차 감사).
+
+    예전 판정은 존재만 봤다. 쓰다 끊겨 잘린 lines.json 도 번역 끝남으로 세어
+    그 단계를 건너뛰었고, 사용자는 앱을 다시 켜도 같은 자리에 갇혔다.
+    빠져나올 길은 --force 뿐이었는데 그것은 손본 번역문을 통째로 버리는 길이다.
+    """
+
+    def test_잘린_줄목록은_끝난_것으로_세지_않는다(self):
+        dp.run_front(self.video, self.out, steps=fake_steps([]))
+        lines = os.path.join(self.out, 'lines.json')
+        with open(lines, 'w', encoding='utf-8') as f:
+            f.write('{"language": "ja", "lin')      # 쓰다 끊긴 모양
+        log = []
+        r = dp.run_front(self.video, self.out, steps=fake_steps(log))
+        self.assertIn('translate', log, '잘린 파일을 끝난 것으로 세어 건너뛰었다')
+        self.assertNotIn('translate', r['skipped'])
+        self.assertIn('transcribe', r['skipped'], '앞 단계까지 다시 하지는 않는다')
+
+    def test_빈_줄목록도_끝난_것으로_세지_않는다(self):
+        dp.run_front(self.video, self.out, steps=fake_steps([]))
+        with open(os.path.join(self.out, 'lines.json'), 'w', encoding='utf-8') as f:
+            f.write('')
+        log = []
+        dp.run_front(self.video, self.out, steps=fake_steps(log))
+        self.assertIn('translate', log)
+
+    def test_모양이_다른_JSON도_끝난_것으로_세지_않는다(self):
+        dp.run_front(self.video, self.out, steps=fake_steps([]))
+        with open(os.path.join(self.out, 'lines.json'), 'w', encoding='utf-8') as f:
+            f.write('{"language": "ja"}')            # lines 가 없다
+        log = []
+        dp.run_front(self.video, self.out, steps=fake_steps(log))
+        self.assertIn('translate', log)
+
+    def test_판정은_아무것도_실행하지_않는다(self):
+        """확인 방법까지 주입된다 — 이 함수가 디스크를 직접 읽지 않아도 된다."""
+        seen = []
+
+        def fake_readable(path):
+            seen.append(path)
+            return False
+
+        plan = dp.plan_stages(self.out, 'sig', state={'done': list(dp.STAGE_NAMES), 'source': 'sig'},
+                              exists=lambda p: True, readable=fake_readable)
+        self.assertIn('translate', plan['run'])
+        self.assertTrue(seen, '주입한 확인 방법을 쓰지 않았다')
+
+
+class Test상태_저장(Base):
+    """상태 파일도 임시본을 거쳐 바뀐다 — 쓰다 끊겨도 기존 것이 잘리지 않는다."""
+
+    def test_임시본을_남기지_않는다(self):
+        os.makedirs(self.out, exist_ok=True)
+        dp.write_state(self.out, {"version": dp.STATE_VERSION, "done": ["audio"], "source": "sig"})
+        self.assertEqual(dp.read_state(self.out)["done"], ["audio"])
+        leftovers = [n for n in os.listdir(self.out) if n.endswith(".tmp")]
+        self.assertEqual(leftovers, [], "임시본이 남았다")
+
+    def test_쓰다_끊겨도_기존_상태가_남는다(self):
+        os.makedirs(self.out, exist_ok=True)
+        dp.write_state(self.out, {"version": dp.STATE_VERSION, "done": ["audio", "separate"], "source": "sig"})
+        before = io.open(os.path.join(self.out, dp.STATE_FILE), encoding="utf-8").read()
+        real = json.dump
+
+        def boom(*a, **k):
+            raise RuntimeError("쓰다 끊김")
+
+        json.dump = boom
+        try:
+            with self.assertRaises(RuntimeError):
+                dp.write_state(self.out, {"done": [], "source": "x"})
+        finally:
+            json.dump = real
+        after = io.open(os.path.join(self.out, dp.STATE_FILE), encoding="utf-8").read()
+        self.assertEqual(after, before, "실패했는데 기존 상태가 바뀌었다")
 
 if __name__ == '__main__':
     unittest.main()

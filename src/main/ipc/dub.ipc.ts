@@ -12,7 +12,8 @@ import { join } from 'path'
 
 import { PythonRunner } from '../services/python-runner'
 import {
-  DubJobError, readDoneStages, readLines, readRenderReport, saveKoreanEdits, workFolderName,
+  DubJobError, readDoneStages, readLines, readRenderReport, reapplyKoreanEdits,
+  saveKoreanEdits, saveKoreanEditsSidecar, workFolderName,
   writeTakesFile,
 } from '../services/dub-job'
 import type { DubFrontResult, DubRenderResult } from '../../shared/dubbing'
@@ -95,6 +96,9 @@ export function registerDubIpc(getWindow: () => BrowserWindow | null, getPython:
       if (opts?.register) args.push('--register', opts.register)
       if (opts?.force) args.push('--force')
       await runPython(getPython(), 'dub_worker.py', args, getWindow(), '앞단')
+      // ★파이썬이 줄 목록을 새로 썼을 수 있다 — 사람이 손본 번역문을 되씌운다.
+      //   이것이 없으면 화면에는 고친 것이 보이는데 **영상에는 고치기 전 문장이 실린다.**
+      reapplyKoreanEdits(workDir)
       const after = readDoneStages(workDir)
       return ok({
         ...readLines(workDir),
@@ -136,6 +140,21 @@ export function registerDubIpc(getWindow: () => BrowserWindow | null, getPython:
     try {
       if (!workDir) throw new DubJobError('먼저 영상을 고르세요')
       return ok(saveKoreanEdits(workDir, edits ?? {}))
+    } catch (e) {
+      return fail(e)
+    }
+  })
+
+  // 화면이 **고치는 즉시** 부른다 — 저장 단추를 기다리지 않는다.
+  // ★예전에는 저장 전까지 편집이 화면 안에만 있었다. 앱을 닫거나 영상을 바꾸면
+  //   수십 줄이 한 번에 사라졌고, 그 자리에 경고도 없었다(2026-09-24 2차 감사).
+  ipcMain.handle('dub:save-edits', async (
+    _e, edits: Record<number, string>,
+  ): Promise<DubReply<number>> => {
+    try {
+      if (!workDir) throw new DubJobError('먼저 영상을 고르세요')
+      saveKoreanEditsSidecar(workDir, edits ?? {})
+      return ok(Object.keys(edits ?? {}).length)
     } catch (e) {
       return fail(e)
     }

@@ -110,6 +110,7 @@ export default function DubWorkspace() {
     const path = await call(window.api.dub.pickVideo() as Promise<Reply<string | null>>, '영상 고르기')
     if (!path) return
     setVideoPath(path)
+    // 화면 상태만 비운다 — 고친 번역문은 작업 폴더에 쌓여 있어 잃지 않는다.
     setFront(null); setEdits({}); setTakes({}); setReport(null)
     // 지난번 작업이 남아 있으면 그대로 이어 간다.
     const prev = await (window.api.dub.load() as Promise<Reply<DubFrontResult>>)
@@ -125,6 +126,7 @@ export default function DubWorkspace() {
       window.api.dub.runFront({ force, register }) as Promise<Reply<DubFrontResult>>, '앞단')
     setBusy('')
     if (got) {
+      // 앞단이 줄 목록을 새로 썼어도 본체가 손본 번역문을 되씌운다 — got 에 이미 들어 있다.
       setFront(got); setEdits({}); setReport(null)
       // ★할 일이 없었다는 것도 결과다. 아무 말도 안 하면 멈춘 것처럼 보인다(2026-09-20 신고).
       setNote(dubFrontSummary(got.ran ?? [], got.skipped ?? []))
@@ -176,6 +178,28 @@ export default function DubWorkspace() {
     if (!p) return
     await prepareVoice(p)
   }, [prepareVoice])
+
+  // ★고치는 즉시 제 집에 쌓는다 — 저장 단추를 기다리지 않는다(2026-09-24 2차 감사).
+  //   예전에는 편집이 화면 안에만 있어서, 앱을 닫거나 영상을 바꾸면 수십 줄이
+  //   한 번에 사라졌다. 그리고 그 자리(영상 고르기·앞단 다시 돌리기)에는
+  //   **아무 경고도 없었다.** 이제 쌓아 두므로 화면 상태를 비워도 잃지 않는다.
+  //   실패를 버리지 않는다 — 쌓지 못했으면 그 사실을 말한다.
+  const editsRef = useRef(edits)
+  editsRef.current = edits
+  useEffect(() => {
+    if (!front || Object.keys(edits).length === 0) return
+    const t = setTimeout(() => {
+      void (async () => {
+        try {
+          const r = await (window.api.dub.saveEdits(editsRef.current) as Promise<Reply<number>>)
+          if (!r?.ok) setNote('고친 번역문을 임시로 보관하지 못했습니다 — 저장 단추를 눌러 주세요.')
+        } catch {
+          setNote('고친 번역문을 임시로 보관하지 못했습니다 — 저장 단추를 눌러 주세요.')
+        }
+      })()
+    }, 500)
+    return () => clearTimeout(t)
+  }, [edits, front])
 
   const saveKorean = useCallback(async () => {
     if (Object.keys(edits).length === 0) return

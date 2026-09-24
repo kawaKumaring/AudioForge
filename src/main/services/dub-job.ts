@@ -2,12 +2,14 @@
 //
 // 프로세스를 띄우는 일은 여기서 하지 않는다(dub.ipc 의 몫). 여기 있는 것은 **읽고 쓰는 규칙**뿐이라
 // Electron 없이 그대로 검사된다. 깨진 파일을 만났을 때 무엇을 하는지가 이 파일의 핵심이다.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync } from 'fs'
 import { dirname, join } from 'path'
 // node --test 가 이 파일을 곧바로 읽으므로 **값** import 에는 확장자를 붙인다
 // (voicePrepRunner.ts 와 같은 관례). 붙이지 않으면 실행 시점에 모듈을 못 찾는다.
 // @ts-ignore TS5097
 import { DUB_STAGES } from '../../shared/dubbing.ts'
+// @ts-ignore TS5097
+import { replaceFileAtomically } from './durable-write.ts'
 import type {
   DubFrontResult, DubLine, DubLineResult, DubRenderResult, DubRenderSummary, DubStage,
 } from '../../shared/dubbing'
@@ -16,6 +18,20 @@ export const DUB_LINES_FILE = 'lines.json'
 export const DUB_REPORT_FILE = 'render-report.json'
 export const DUB_TAKES_FILE = 'takes.json'
 export const DUB_STATE_FILE = 'state.json'
+/**
+ * 사람이 손본 번역문의 **제 집**.
+ *
+ * ★왜 따로 두나(2026-09-24 2차 감사)
+ *   손본 번역문이 `lines.json` 에만 있었다. 그런데 그 파일은 **기계가 다시 만드는 것**이다 —
+ *   앞단을 다시 돌리거나(`--force`), 영상 파일 이름·크기·시각이 달라져 재료가 바뀐 것으로
+ *   판정되면 파이썬이 통째로 새로 쓴다. 그때 사람이 손본 문장이 **말없이 사라진다.**
+ *   게다가 화면의 편집은 '번역문 저장' 을 누르기 전까지 **어디에도 없었다** —
+ *   앱을 닫거나 영상을 바꾸면 수십 줄이 한 번에 날아갔다.
+ *
+ *   그래서 사람의 손길은 기계가 덮어쓰지 않는 자리에 따로 쌓고, 읽을 때 겹쳐 준다.
+ *   기계가 만든 것과 사람이 고친 것을 **한 파일에 섞지 않는다.**
+ */
+export const DUB_EDITS_FILE = 'korean-edits.json'
 
 export class DubJobError extends Error {}
 
@@ -79,12 +95,74 @@ export function readDoneStages(outDir: string): DubStage[] {
   }
 }
 
+/** 사람이 손본 번역문을 읽는다. 없거나 깨졌으면 빈 것 — 그것 때문에 멈추지 않는다. */
+export function readKoreanEdits(outDir: string): Record<number, string> {
+  try {
+    const raw = readFileSync(join(outDir, DUB_EDITS_FILE), 'utf-8')
+    const obj = (JSON.parse(raw) ?? {}) as Record<string, unknown>
+    const src = (obj.edits ?? obj) as Record<string, unknown>
+    const out: Record<number, string> = {}
+    for (const [k, v] of Object.entries(src)) {
+      const i = Number(k)
+      if (Number.isInteger(i) && typeof v === 'string') out[i] = v
+    }
+    return out
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * 사람이 손본 번역문을 쌓는다 — **화면이 고치는 즉시** 부른다(저장 단추를 기다리지 않는다).
+ * 빈 문장은 '되돌림' 이므로 지운다 — 되돌린 것을 계속 덮어쓰지 않게.
+ */
+export function saveKoreanEditsSidecar(outDir: string, edits: Record<number, string>): void {
+  if (!existsSync(outDir)) mkdirSync(outDir, { recursive: true })
+  const body: Record<string, string> = {}
+  for (const [k, v] of Object.entries(edits)) {
+    const i = Number(k)
+    if (!Number.isInteger(i)) continue
+    const t = String(v ?? '')
+    if (t.trim()) body[String(i)] = t
+  }
+  replaceFileAtomically(join(outDir, DUB_EDITS_FILE),
+    JSON.stringify({ edits: body }, null, 2))
+}
+
+/**
+ * 앞단이 `lines.json` 을 새로 만든 뒤, 쌓아 둔 사람의 손길을 **되씌운다.**
+ *
+ * ★없으면 이렇게 잃는다: 앞단을 다시 돌리거나 재료가 바뀐 것으로 판정되면 파이썬이
+ *   `lines.json` 을 통째로 새로 쓴다. 화면은 사이드카를 겹쳐 읽어 손본 것이 보이지만,
+ *   **파이썬이 읽는 것은 파일이라** 영상에는 고치기 전 문장이 실린다.
+ *   보이는 것과 실리는 것이 달라지는 쪽이 조용히 사라지는 것보다 나쁘다.
+ *
+ * 되씌울 것이 없으면 파일을 건드리지 않는다.
+ */
+export function reapplyKoreanEdits(outDir: string): number {
+  const edits = readKoreanEdits(outDir)
+  const n = Object.keys(edits).length
+  if (n === 0) return 0
+  const path = join(outDir, DUB_LINES_FILE)
+  if (!existsSync(path)) return 0
+  replaceFileAtomically(path, applyKoreanEdits(readFileSync(path, 'utf-8'), edits))
+  return n
+}
+
 export function readLines(outDir: string): DubFrontResult {
   const path = join(outDir, DUB_LINES_FILE)
   if (!existsSync(path)) {
     throw new DubJobError('앞단 결과가 없습니다 — 먼저 영상을 넣고 시작하세요')
   }
-  return parseLinesFile(readFileSync(path, 'utf-8'), outDir)
+  const base = parseLinesFile(readFileSync(path, 'utf-8'), outDir)
+  // ★기계가 만든 것 위에 사람이 고친 것을 겹친다 — 앞단을 다시 돌려도 손길이 남는다.
+  const edits = readKoreanEdits(outDir)
+  if (Object.keys(edits).length === 0) return base
+  const lines = base.lines.map((l) => (
+    Object.prototype.hasOwnProperty.call(edits, l.index)
+      ? { ...l, korean: String(edits[l.index]).trim() }
+      : l))
+  return { ...base, lines, emptyIndexes: lines.filter((l) => !l.korean).map((l) => l.index) }
 }
 
 /**
@@ -117,7 +195,10 @@ export function saveKoreanEdits(outDir: string, edits: Record<number, string>): 
   const path = join(outDir, DUB_LINES_FILE)
   if (!existsSync(path)) throw new DubJobError('앞단 결과가 없습니다')
   const next = applyKoreanEdits(readFileSync(path, 'utf-8'), edits)
-  writeFileSync(path, next, 'utf-8')
+  // ★사람의 손길을 **먼저** 제 집에 쌓는다. 아래 교체가 실패해도 손본 것은 남는다.
+  saveKoreanEditsSidecar(outDir, { ...readKoreanEdits(outDir), ...edits })
+  // 임시본 → 확인 → 이름 바꾸기. 끊겨도 기존 바이트가 그대로 남는다.
+  replaceFileAtomically(path, next)
   return parseLinesFile(next, outDir)
 }
 
@@ -129,7 +210,7 @@ export function writeTakesFile(outDir: string, takes: Record<number, string>): s
   for (const [k, v] of Object.entries(takes)) {
     if (v) body[String(k)] = v
   }
-  writeFileSync(path, JSON.stringify(body, null, 2), 'utf-8')
+  replaceFileAtomically(path, JSON.stringify(body, null, 2))
   return path
 }
 

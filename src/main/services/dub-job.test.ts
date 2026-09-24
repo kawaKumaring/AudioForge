@@ -7,13 +7,15 @@
 //   · 같은 영상은 같은 작업 폴더로 돌아온다(그래야 이어 하기가 성립한다)
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
 import {
+  DUB_EDITS_FILE, DUB_LINES_FILE,
   DubJobError, applyKoreanEdits, parseLinesFile, parseRenderReport, readDoneStages, readLines,
-  readRenderReport, saveKoreanEdits, workFolderName, writeTakesFile,
+  readKoreanEdits, readRenderReport, reapplyKoreanEdits, saveKoreanEdits,
+  saveKoreanEditsSidecar, workFolderName, writeTakesFile,
 } from './dub-job.ts'
 
 function linesJson(): string {
@@ -188,4 +190,73 @@ test('모르는 단계 이름은 버린다', () => {
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
+})
+
+// ── 손본 번역문을 잃지 않는다 ────────────────────────────────────────────
+//
+// ★세 갈래로 잃고 있었다(2026-09-24 2차 감사).
+//   1. 저장 단추를 누르기 전에는 화면 안에만 있었다 — 앱을 닫으면 사라진다.
+//   2. 앞단을 다시 돌리면 파이썬이 줄 목록을 통째로 새로 쓴다 — 손길이 덮인다.
+//   3. 쓰다 끊기면 잘린 파일이 남는다 — 원문·시각·낱말 시각까지 함께 잃는다.
+//   그래서 사람의 손길에 **제 집**을 주고, 읽을 때 겹치고, 쓸 때는 이름을 바꿔 교체한다.
+
+test('손본 번역문은 줄 목록과 **따로** 쌓인다 — 저장 단추를 기다리지 않는다', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'af-dub-edit-'))
+  try {
+    writeFileSync(join(dir, DUB_LINES_FILE), linesJson(), 'utf-8')
+    saveKoreanEditsSidecar(dir, { 1: '잘 가요' })
+    assert.deepEqual(readKoreanEdits(dir), { 1: '잘 가요' })
+    // 줄 목록은 아직 그대로다 — 쌓는 것과 반영하는 것은 다른 일이다.
+    assert.equal(JSON.parse(readFileSync(join(dir, DUB_LINES_FILE), 'utf-8')).lines[1].korean, '')
+    // 그래도 **읽을 때는 겹쳐** 보인다.
+    assert.equal(readLines(dir).lines[1].korean, '잘 가요')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('앞단이 줄 목록을 새로 써도 손본 번역문이 살아남는다', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'af-dub-redo-'))
+  try {
+    writeFileSync(join(dir, DUB_LINES_FILE), linesJson(), 'utf-8')
+    saveKoreanEdits(dir, { 1: '잘 가요' })
+    // 파이썬이 처음부터 다시 만든 것처럼 — 손본 것이 없는 원본으로 되돌린다.
+    writeFileSync(join(dir, DUB_LINES_FILE), linesJson(), 'utf-8')
+    assert.equal(readLines(dir).lines[1].korean, '잘 가요', '화면에서 사라졌다')
+    // ★화면에만 보이면 안 된다 — 영상에 실리는 것은 **파일**이다.
+    assert.equal(reapplyKoreanEdits(dir), 1)
+    const onDisk = JSON.parse(readFileSync(join(dir, DUB_LINES_FILE), 'utf-8'))
+    assert.equal(onDisk.lines[1].korean, '잘 가요', '파일에는 고치기 전 문장이 남아 영상에 실린다')
+    assert.equal(onDisk.lines[0].source, 'こんにちは', '원문을 건드리지 않는다')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('되돌린 문장은 쌓아 두지 않는다 — 계속 덮어쓰지 않게', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'af-dub-revert-'))
+  try {
+    saveKoreanEditsSidecar(dir, { 0: '고침', 1: '   ' })
+    assert.deepEqual(readKoreanEdits(dir), { 0: '고침' })
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+test('쌓아 둔 것이 깨져도 멈추지 않는다 — 줄 목록은 그대로 읽힌다', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'af-dub-broken-sidecar-'))
+  try {
+    writeFileSync(join(dir, DUB_LINES_FILE), linesJson(), 'utf-8')
+    writeFileSync(join(dir, DUB_EDITS_FILE), '{ 깨진', 'utf-8')
+    assert.deepEqual(readKoreanEdits(dir), {})
+    assert.equal(readLines(dir).lines[0].korean, '안녕하세요')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
+})
+
+// ★settings 쪽에는 이 검사가 있었는데 더빙 쪽에는 없었다.
+test('교체가 실패하면 기존 바이트가 그대로 남는다', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'af-dub-atomic-'))
+  try {
+    const path = join(dir, DUB_LINES_FILE)
+    const before = linesJson()
+    writeFileSync(path, before, 'utf-8')
+    // 임시본을 만들 수 없게 막는다 — 같은 이름의 **폴더**를 세워 둔다.
+    mkdirSync(join(dir, `.${DUB_LINES_FILE}.${process.pid}.tmp`), { recursive: true })
+    assert.throws(() => saveKoreanEdits(dir, { 1: '잘 가요' }))
+    assert.equal(readFileSync(path, 'utf-8'), before, '실패했는데 기존 파일이 바뀌었다')
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
