@@ -6,6 +6,7 @@
 // ★화자 분석 모델을 다시 돌리지 않는다. 원본에서 그 구간을 떠다 화자별 트랙에 올릴 뿐이다.
 // ★겹친 발화를 한 사람의 깨끗한 목소리로 갈라낸 것이 아니다 — 이 화면이 하는 것은 **배정**이다.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { formatMinSec } from '../../shared/timeFormat'
 import { saveSetting, saveFailureText } from '../../shared/saveSetting'
 
 import { useAppStore } from '@/stores/app.store'
@@ -17,9 +18,8 @@ import {
 } from '../../shared/dialogueEdit'
 
 const fmt = (sec: number) => {
-  const m = Math.floor(Math.max(0, sec) / 60)
-  const s = Math.max(0, sec) % 60
-  return `${m}:${s.toFixed(1).padStart(4, '0')}`
+  // ★계산은 shared/timeFormat 한 곳이 소유한다(2026-09-24 2차 감사).
+  return formatMinSec(sec)
 }
 const btn = (bg: string, fg: string, off?: boolean): React.CSSProperties => ({
   padding: '5px 10px', borderRadius: 7, border: 'none', fontFamily: 'inherit', fontSize: 11,

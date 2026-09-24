@@ -8,6 +8,7 @@
 // ★글자를 고쳐도 **시간은 인식이 말한 그대로** 둔다. 고친 글자에 맞는 새 시간을 계산하려면
 //   정렬을 다시 해야 하는데 그것은 이번 범위가 아니다 — 그래서 "그 구간" 이라는 뜻만 유지한다.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { formatMinSec } from '../../shared/timeFormat'
 import { saveSetting, saveFailureText } from '../../shared/saveSetting'
 
 import { useAppStore } from '@/stores/app.store'
@@ -19,9 +20,8 @@ import {
 } from '../../shared/transcriptEdit'
 
 const fmt = (sec: number) => {
-  const m = Math.floor(sec / 60)
-  const s = sec % 60
-  return `${m}:${s.toFixed(1).padStart(4, '0')}`
+  // ★계산은 shared/timeFormat 한 곳이 소유한다(2026-09-24 2차 감사).
+  return formatMinSec(sec)
 }
 
 const btn = (bg: string, fg: string, off?: boolean): React.CSSProperties => ({

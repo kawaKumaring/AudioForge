@@ -59,8 +59,10 @@ export function selectedPieces(pieces: SplitPiece[], selected: number[] | null):
   return pieces.filter((p) => set.has(p.index))
 }
 
+// ★계산은 shared/timeFormat 한 곳이 소유한다(2026-09-24 2차 감사).
+//   여기 있던 공식은 분을 먼저 확정해 **자리올림이 분으로 전파되지 않았다** —
+//   59.96초가 0:60.0 으로 보였다. 같은 계산을 네 곳에 두지 않는다.
+import { formatMinSec } from './timeFormat.ts'
 export function fmtDuration(sec: number): string {
-  const m = Math.floor(sec / 60)
-  const s = sec % 60
-  return `${m}:${s.toFixed(1).padStart(4, '0')}`
+  return formatMinSec(sec)
 }

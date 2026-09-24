@@ -125,12 +125,13 @@ export function dubStatusColor(state: DubLineState): string {
   }
 }
 
+import { formatMinSec } from './timeFormat.ts'
 /** 시각을 화면에 쓰는 글자로. 0:03.2 처럼. */
+// ★계산은 shared/timeFormat 한 곳이 소유한다(2026-09-24 2차 감사).
+//   여기 있던 공식은 분을 먼저 확정해 **자리올림이 분으로 전파되지 않았다** —
+//   59.96초가 0:60.0 으로 보였다. 같은 계산을 네 곳에 두지 않는다.
 export function dubTimeLabel(sec: number): string {
-  const s = Math.max(0, sec)
-  const m = Math.floor(s / 60)
-  const rest = s - m * 60
-  return `${m}:${rest < 10 ? '0' : ''}${rest.toFixed(1)}`
+  return formatMinSec(sec)
 }
 
 /**
