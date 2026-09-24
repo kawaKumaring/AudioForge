@@ -8,6 +8,9 @@ demucs>=4.0.0
 audio-separator
 # audio-separator: RoFormer 보컬 2트랙 분리 (BS-RoFormer). onnxruntime(-gpu)을 함께 끌어옴
 speechbrain>=1.1.0
+onnxruntime-gpu
+# onnxruntime-gpu: audio-separator(RoFormer) 가 쓰는 실행기.
+#   ★여기 없고 env_check 에만 있었다 — 2026-09-24 파리티 검사가 찾았다.
 # speechbrain: 화자 분리 (ECAPA-TDNN)
 openai-whisper
 # whisper: 텍스트 추출 (small/medium/large-v3/large-v3-turbo)

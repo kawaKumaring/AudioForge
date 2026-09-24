@@ -15,7 +15,9 @@
 - **옵션**: 화자 수, 무음 제거 (간격 조절 0~2초), 텍스트 변환, 한국어 번역, SRT, 출력 포맷
 
 ### 3. 텍스트 추출 (`transcribe`) — 초록색
-- **엔진**: Whisper small/medium/large-v3/large-v3-turbo(빠름) (CUDA, CPU 폴백)
+- **엔진**: Whisper small/large-v3 (CUDA, CPU 폴백)
+  - ★2026-09-24: medium·large-v3-turbo 는 화면에서 뺐다. 모델 파일이 없어 누르면 실패했고,
+    turbo 는 실측 정확도 64.2% 로 large-v3(73~75%)보다 낮아 2026-09-21 에 일부러 격리했다.
 - **출력**: 텍스트 파일 (.txt + _timestamps.txt)
 - **옵션**: 한국어 번역 (NLLB-200 또는 로컬 LLM Qwen 선택), SRT 자막
 
@@ -64,8 +66,8 @@
 ## 공통 기능
 
 ### 텍스트
-- Whisper: small/medium/large-v3/large-v3-turbo, 99개 언어 자동 감지(또는 강제), GPU 가속, 모델 캐싱
-  - large-v3-turbo: large-v3 대비 약 8배 빠름, 정확도 v2급 (한/일 CJK는 large-v3가 근소 우위)
+- Whisper: small/large-v3, 99개 언어 자동 감지(또는 강제), GPU 가속, 모델 캐싱
+  - ★large-v3-turbo 는 쓰지 않는다: 실측 정확도 64.2% < large-v3 73~75%. 격리 폴더로 옮겼다.
 - NLLB-200 (600M/1.3B): 28개 언어 → 한국어, GPU 가속, 모델 캐싱
 - 로컬 LLM 번역 백엔드(Qwen2.5-3B) 선택 가능 — 구어체·문맥 번역, API 미사용 (config `translateModel='llm'`)
 - SRT 자막 내보내기, 클립보드 복사
@@ -100,7 +102,7 @@
 | Python | CUDA Python 3.12 (torch 2.11 + CUDA) — 현재 ComfyUI 임베디드 파이썬 참조 (앱 아닌 패키지 의존, doc/environment.md) |
 | 음악 분리 | Demucs 4.0 (htdemucs / htdemucs_ft) |
 | 화자 분리 | speechbrain 1.1 (ECAPA-TDNN) + Silero VAD 6.2 |
-| 텍스트 | Whisper 20250625 (small/medium/large-v3) |
+| 텍스트 | Whisper 20250625 (small/large-v3) |
 | 번역 | NLLB-200-distilled-600M |
 | 음성 합성 | F5-TTS 1.1 |
 | 오디오 I/O | soundfile + ffmpeg 8.1 |

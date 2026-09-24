@@ -2,11 +2,17 @@ import { useState } from 'react'
 import { useAppStore } from '@/stores/app.store'
 
 // Whisper 모델 크기별 의미 (툴팁) — 클수록 정확하지만 느리고 무겁다
+// ★이 앱이 **실제로 가진** 모델만 내놓는다(2026-09-24 감사).
+//   예전에는 넷을 같은 무게로 권했는데 medium·turbo 는 모델 파일이 없어
+//   **누르면 매번 실패**했고, 앱 안에 되살릴 수단도 없었다.
+//   turbo 는 그냥 없는 것이 아니라 **일부러 치운 것**이다 —
+//   실측 정확도 64.2% 로 Large(73~75%)보다 낮아 2026-09-21 에 격리했다.
+//   그런데 설명은 'Large 대비 8배 빠름' 이라며 권하고 있었다.
+const WHISPER_MODELS = ['small', 'large-v3'] as const
+
 const WHISPER_HINTS: Record<string, string> = {
   'small': '가장 빠르고 가벼움. 정확도는 낮아 짧고 또렷한 음성에 적합',
-  'medium': '속도와 정확도의 중간 균형 — 무난한 선택',
   'large-v3': '가장 정확하지만 느리고 무거움. 잡음·다국어에 강함 (기본)',
-  'large-v3-turbo': 'Large 대비 약 8배 빠름. 정확도는 조금 낮음 (한/일은 Large가 근소 우위)',
 }
 
 // 출력 파일 형식 (툴팁) — 품질/용량 트레이드오프
@@ -146,7 +152,7 @@ export default function Options() {
             {(transcribe || isTranscribeMode || isSplitMode) && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Whisper</span>
-                {(['small', 'medium', 'large-v3', 'large-v3-turbo'] as const).map((m) => (
+                {WHISPER_MODELS.map((m) => (
                   <button key={m} onClick={() => !disabled && setWhisperModel(m)} disabled={disabled}
                     title={WHISPER_HINTS[m] || ''}
                     style={{
@@ -154,7 +160,7 @@ export default function Options() {
                     fontSize: 10, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',
                     background: whisperModel === m ? 'var(--cyan)' : 'transparent',
                     color: whisperModel === m ? '#fff' : 'var(--text-muted)'
-                  }}>{m === 'large-v3' ? 'Large' : m === 'large-v3-turbo' ? 'Turbo' : m.charAt(0).toUpperCase() + m.slice(1)}</button>
+                  }}>{m === 'large-v3' ? 'Large' : m.charAt(0).toUpperCase() + m.slice(1)}</button>
                 ))}
               </div>
             )}

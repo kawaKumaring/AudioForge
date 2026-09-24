@@ -1714,7 +1714,7 @@ export default function TTSEditor() {
                 { id: 'qwen3', label: 'Qwen3', hint: '한국어 제로샷 발음·운율 우수 (로컬 Qwen3-TTS 0.6B, 별도 venv 필요 — 미설치 시 자동 폴백)' },
                 { id: 'gptsovits', label: 'GPT-SoVITS', hint: '한/영/중 지원, 참조 음성으로 목소리 클로닝 (베타)' },
                 { id: 'f5tts', label: 'F5', hint: '영어 중심의 고품질 보이스 클로닝' },
-                { id: 'kokoro', label: 'Kokoro', hint: '한/일/중/영 다국어 폴백 엔진, 가벼움' },
+                { id: 'kokoro', label: 'Kokoro', hint: '일/중/영 폴백 엔진, 가벼움. ★한국어는 이 엔진에 없습니다 — 한국어 폴백은 piper 입니다' },
               ].map(e => (
                 <button key={e.id} onClick={() => !disabled && setTtsEngine(e.id)} disabled={disabled} title={e.hint} style={{ padding: '3px 9px', borderRadius: 4, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 600, fontFamily: 'inherit', background: ttsEngine === e.id ? 'var(--rose)' : 'transparent', color: ttsEngine === e.id ? '#fff' : 'var(--text-muted)' }}>{e.label}</button>
               ))}
