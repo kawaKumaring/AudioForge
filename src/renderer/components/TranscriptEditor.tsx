@@ -203,7 +203,11 @@ export default function TranscriptEditor() {
       {/* 고쳤을 때만 나오는 안내 — 평소에는 화면을 채우지 않는다. */}
       {changed > 0 && (
         <div data-testid="transcript-notes" style={{ fontSize: 10, lineHeight: 1.6, color: 'var(--amber, #d4a017)' }}>
-          시간은 처음 인식한 구간 그대로입니다 — 고친 글자에 맞춰 다시 계산하지 않았습니다.
+          시간은 처음 인식한 구간을 따릅니다 — 고친 글자에 맞춰 다시 계산하지 않았습니다.
+          {/* ★한 치도 안 변한다고 말하면 거짓이 된다(2026-09-24 2차 감사).
+              교정본 자막도 다른 자막과 같은 손질(너무 짧은 것 늘리기·겹침 떼기)을
+              거치므로 끝 시각이 0.1초 안쪽에서 움직인다. 그 사실을 적는다. */}
+          {' '}자막 파일은 겹치지 않게 끝을 아주 조금만 다듬습니다.
           {notes && saveNoteText(notes).map((s) => ` ${s}`)}
         </div>
       )}

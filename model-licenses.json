@@ -4,7 +4,8 @@
     "예전 인벤토리(externals/model-manifest.json)는 externals/ 가 .gitignore 라 버전관리 밖이었고,",
     "그래서 낡은 채로 남아 핵심 엔진(Qwen3-TTS)조차 빠져 있었다.",
     "scripts/check-model-licenses.mjs 가 코드에서 참조하는 모델과 이 목록을 대조해",
-    "목록에 없는 모델·조건 미확인 모델을 빌드 전에 실패시킨다."
+    "목록에 없는 모델·조건 미확인 모델을 빌드 전에 실패시킨다.",
+    "★2026-09-24: 검사가 **코드에 적힌 이름만** 훑어서, 앱이 폴더째 들고 있는 모델 셋이 보이지 않았다(ECAPA·Silero VAD·pyannote community-1). 그래서 bundled_dir 을 두고 externals/diarization_models 아래 실제 폴더를 인벤토리와 대조한다."
   ],
   "distribution": {
     "commercial": false,
@@ -75,7 +76,9 @@
       "role": "대화 분리(화자 임베딩)",
       "license": "Apache-2.0",
       "non_commercial": false,
-      "default_path": true
+      "default_path": true,
+      "bundled_dir": "ecapa",
+      "license_source": "HuggingFace 모델 카드 Apache-2.0"
     },
     {
       "id": "htdemucs",
@@ -146,6 +149,25 @@
       "non_commercial": true,
       "default_path": false,
       "note": "KSS 낭독 말뭉치로 학습된 piper 목소리. 개인용 도구라 조건을 충족한다. 상업 배포 시 교체 대상."
+    },
+    {
+      "id": "snakers4/silero-vad",
+      "role": "대화 분리 — 말하는 구간 찾기",
+      "license": "MIT",
+      "license_source": "내려받은 배포본의 LICENSE 파일(MIT License, Copyright (c) 2020-present Silero Team)",
+      "non_commercial": false,
+      "default_path": true,
+      "bundled_dir": "silero-vad",
+      "note": "예전에는 실행 중 깃허브 master 에서 **코드를 받아 돌렸다.** 이제 앱 안에서만 읽는다."
+    },
+    {
+      "id": "pyannote/speaker-diarization-community-1",
+      "role": "대화 분리 — 선택 엔진(기본 아님)",
+      "license": "UNVERIFIED",
+      "license_source": "가중치 폴더에 LICENSE 파일이 없다. 이용 조건 수락이 필요한 모델이라 수락 시점의 조건이 이 저장소에 남지 않았다 — 배포 전 확인 대상.",
+      "non_commercial": null,
+      "default_path": false,
+      "bundled_dir": "community-1"
     }
   ]
 }

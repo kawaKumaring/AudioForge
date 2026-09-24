@@ -42,7 +42,9 @@ REQUIRED = [
     ("ordered_set",      "ordered_set",     "kokoro 중국어에 필요", "tts"),
     ("pyopenjtalk-plus", "pyopenjtalk",     "kokoro 일본어에 필요", "tts"),
     ("piper-tts",        "piper",           "TTS 한국어 폴백(참조 불필요)", "tts"),
-    ("silero-vad",       "silero_vad",      "음성 검출(torch.hub도 가능)", "hub"),
+    # ★2026-09-24: 예전 설명은 "torch.hub 도 가능" 이었는데, 그 길은 **인터넷에서
+    #   코드를 받아 돌리는 것**이라 없앴다. 이제 앱 안 사본만 쓴다.
+    ("silero-vad",       "silero_vad",      "음성 검출(앱 안 사본 사용)", "hub"),
 ]
 
 

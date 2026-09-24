@@ -110,6 +110,45 @@ class TestNoGlobalHfFallback(unittest.TestCase):
                             bad.append("%s :: %s" % (fn, arg))
         self.assertEqual(bad, [], "전역 캐시로 샐 수 있는 호출: %s" % bad)
 
+    def test_other_model_loaders_do_not_leak_to_the_internet(self):
+        """★오프라인 약속이 **함수 이름 하나로 뚫려 있었다**(2026-09-24 2차 감사).
+
+        위 검사는 `from_pretrained(` 만 훑는다. 그래서 두 자리가 그냥 지나갔다 —
+          · from_hparams(source="speechbrain/...") — 사용자 홈에 85MB 를 남겼다
+          · torch.hub.load(repo_or_dir="snakers4/...") — 실행 중 깃허브에서 **코드를**
+            받아 돌렸고, 판을 고정하지 않은 master 였다
+        검사가 못 보는 규칙은 규칙이 아니다. 모델을 여는 다른 문도 함께 막는다.
+
+        허용: 변수(경로로 해석된 것). 금지: **따옴표로 시작하는 저장소 이름**을 그대로 넘기는 것.
+        """
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        quotes = ('"', "'")
+        doors = (('from_hparams(', 'source='),
+                 ('torch.hub.load(', None))
+        bad = []
+        for base in (os.path.join(root, "python"), os.path.join(root, "src")):
+            for dp, dns, fns in os.walk(base):
+                dns[:] = [d for d in dns if d not in ("__pycache__", "node_modules")]
+                for fn in fns:
+                    if not fn.endswith((".py", ".ts")) or fn.startswith("test_") or ".test." in fn:
+                        continue
+                    txt = open(os.path.join(dp, fn), encoding="utf-8", errors="replace").read()
+                    for door, key in doors:
+                        at = txt.find(door)
+                        while at >= 0:
+                            seg = txt[at + len(door):at + len(door) + 120]
+                            if key:
+                                k = seg.find(key)
+                                arg = seg[k + len(key):].lstrip() if k >= 0 else ""
+                            else:
+                                arg = seg.lstrip()
+                                if arg.startswith("repo_or_dir"):
+                                    arg = arg.split("=", 1)[1].lstrip() if "=" in arg else ""
+                            if arg[:1] in quotes:
+                                bad.append("%s :: %s" % (fn, arg[:45].split(chr(10))[0]))
+                            at = txt.find(door, at + 1)
+        self.assertEqual(bad, [], "앱 밖에서 모델을 받는 호출: %s" % bad)
+
     def test_resolve_hf_cache_dir_removed(self):
         src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),
                                 "transcribe_worker.py"), encoding="utf-8").read()

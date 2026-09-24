@@ -13,6 +13,21 @@ LAST_SEGMENTS = []
 LAST_OVERLAPS = []
 
 
+def _diarization_models_dir():
+    """앱이 들고 있는 대화 분리 모델 자리. **사용자 홈이 아니라 앱 안이다.**
+
+    ★왜(2026-09-24 2차 감사): 이 두 모델이 오프라인 약속 밖에 있었다.
+      · ECAPA 는 **사용자 홈 캐시**(~/.cache/speechbrain)에 85MB 를 남겼다 —
+        앱을 지워도 남고, 새 PC·오프라인에서는 15% 지점에서 실패한다.
+      · Silero VAD 는 **실행 중 깃허브에서 코드를 받아 돌렸다.**
+        게다가 판을 고정하지 않은 master 라, 받는 코드가 언제 바뀌는지 알 수 없다.
+      문서에 "첫 실행 시 다운로드" 라고 적어 두긴 했으나, 그것은 **왜 그렇게 됐는지**를
+      설명할 뿐 **왜 안전한지**를 말하지 않는다. 앱 안으로 들인다.
+    """
+    base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(base, "externals", "diarization_models")
+
+
 def _canonical_labels(order, n_speakers):
     """cluster index → 'order 첫 등장 순' canonical 라벨 (트랙 라벨 규칙과 동일:
     enumerate(order)). 반환 (label_of, speaker_names[0..n_speakers-1]).
@@ -365,10 +380,19 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
         total_dur = len(wav_16k_np) / SR
 
         # ── Step 1: Silero VAD ──
-        emit("progress", percent=6, message="Silero VAD 모델 로딩 중... (첫 실행 시 다운로드)")
+        emit("progress", percent=6, message="음성 구간 검출기 여는 중...")
+        # ★앱 안에서만 읽는다 — **깃허브에 가지 않는다**(2026-09-24 2차 감사).
+        #   예전에는 없으면 받아서 돌렸는데, 그것은 판을 고정하지 않은 master 의
+        #   **코드를 받아 실행**하는 일이었다. 받는 코드가 언제 바뀌는지 알 수 없다.
+        #   모델을 앱 안에 들였으므로 못 찾으면 **어디에 있어야 하는지 말하고 멈춘다.**
+        _vad_local = os.path.join(_diarization_models_dir(), "silero-vad")
+        if not os.path.isfile(os.path.join(_vad_local, "hubconf.py")):
+            raise RuntimeError(
+                "음성 구간 검출기(Silero VAD)를 앱 안에서 찾지 못했습니다. "
+                "설치가 온전하지 않습니다 — 다음 자리에 있어야 합니다: %s" % _vad_local)
         vad_model, vad_utils = torch.hub.load(
-            repo_or_dir='snakers4/silero-vad', model='silero_vad',
-            trust_repo=True, onnx=False
+            repo_or_dir=_vad_local, model="silero_vad",
+            source="local", onnx=False
         )
         emit("progress", percent=8, message="Silero VAD 음성 검출 중...")
         get_speech_ts = vad_utils[0]  # get_speech_timestamps
@@ -435,7 +459,7 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
         # ECAPA 로딩 + 배치 추론을 하나의 재시도 단위로 — CUDA OOM 시 정리 후 CPU로 1회 재시도.
         def _extract_embeddings(dev):
             emit("progress", percent=14,
-                 message=f"ECAPA-TDNN 모델 로딩 중... ({dev.upper()}, 첫 실행 시 다운로드)")
+                 message=f"화자 구분 모델 여는 중... ({dev.upper()})")
             _orig_symlink = getattr(os, "symlink", None)
 
             def _copy_instead(src, dst, *a, **kw):
@@ -446,10 +470,18 @@ def run_conversation_separation(input_path: str, output_dir: str, n_speakers: in
             os.symlink = _copy_instead
             try:
                 from speechbrain.inference.speaker import EncoderClassifier
-                emit("progress", percent=15, message="SpeechBrain 모델 다운로드/로딩 중...")
+                emit("progress", percent=15, message="화자 구분 모델 여는 중...")
+                # ★앱 안에서만 읽는다 — **사용자 홈에 남기지 않는다.**
+                #   예전 기본값은 홈 캐시(~/.cache/speechbrain)에 85MB 를 남겼다.
+                #   앱을 지워도 남고, 새 PC·오프라인에서는 15% 지점에서 실패했다.
+                _ecapa_local = os.path.join(_diarization_models_dir(), "ecapa")
+                if not os.path.isfile(os.path.join(_ecapa_local, "hyperparams.yaml")):
+                    raise RuntimeError(
+                        "화자 구분 모델(ECAPA)을 앱 안에서 찾지 못했습니다. "
+                        "설치가 온전하지 않습니다 — 다음 자리에 있어야 합니다: %s"
+                        % _ecapa_local)
                 enc = EncoderClassifier.from_hparams(
-                    source="speechbrain/spkrec-ecapa-voxceleb",
-                    savedir=os.path.join(os.path.expanduser("~"), ".cache", "speechbrain", "ecapa"),
+                    source=_ecapa_local, savedir=_ecapa_local,
                     run_opts={"device": dev}
                 )
                 emit("progress", percent=17, message=f"ECAPA-TDNN 로딩 완료 ({dev.upper()})")
