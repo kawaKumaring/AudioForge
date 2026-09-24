@@ -24,6 +24,10 @@ kokoro
 ordered_set
 # ordered_set: kokoro 의 **중국어**에 필요. 없으면 중국어가 통째로 실패한다
 #   (중국어는 kokoro 가 유일한 경로였다). 순수 파이썬, 다른 꾸러미를 건드리지 않는다.
+piper-tts
+# piper-tts: **한국어 폴백 합성.** 한국어만 참조 목소리 없이 말할 길이 없었다 —
+#   Qwen3-TTS·GPT-SoVITS 는 참조를 요구하고 kokoro 에는 한국어가 없다.
+#   ONNX 로 돌아 torch 를 건드리지 않는다. 목소리는 externals/piper_voices/ 에 둔다.
 pyopenjtalk-plus
 # pyopenjtalk-plus: kokoro 의 **일본어**에 필요. 원본 pyopenjtalk 은 이 환경에
 #   완성된 휠이 없어 cmake 로 지으려다 실패한다. -plus 는 cp312 win_amd64 휠을 제공한다.

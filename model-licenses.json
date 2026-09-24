@@ -138,6 +138,14 @@
       "license": "Apache-2.0",
       "non_commercial": false,
       "default_path": false
+    },
+    {
+      "id": "rhasspy/piper-voices:ko_KR-kss-medium",
+      "role": "음성 합성(한국어 폴백 — 참조 목소리 없이 읽어 주는 유일한 길)",
+      "license": "CC-BY-NC-SA-4.0",
+      "non_commercial": true,
+      "default_path": false,
+      "note": "KSS 낭독 말뭉치로 학습된 piper 목소리. 개인용 도구라 조건을 충족한다. 상업 배포 시 교체 대상."
     }
   ]
 }

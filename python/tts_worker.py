@@ -215,6 +215,59 @@ class KokoroEngine(TTSEngine):
             sf.write(output_path, combined, 24000)
 
 
+# ── Piper Engine (한국어 — 참조 목소리가 필요 없는 폴백) ──
+
+class PiperEngine(TTSEngine):
+    """참조 소리 없이 그냥 읽어 주는 엔진. **한국어의 빈자리를 메운다.**
+
+    왜 들였나(2026-09-24): 한국어는 Qwen3-TTS·GPT-SoVITS 둘 다 참조 소리를 요구하고,
+    그 둘이 안 될 때 떨어질 자리인 Kokoro 는 **모델에 한국어가 아예 없다**
+    (언어를 등록해도 한국어 목소리가 없어 엉뚱한 소리만 난다 — 코드로 확인했다).
+    그래서 한국어만 **참조 없이 말할 수 있는 길이 하나도 없었다.**
+
+    ONNX 로 돌아 **torch 를 건드리지 않는다** — 합성 환경을 흔들 걱정이 없다.
+    내려받은 뒤에는 인터넷이 필요 없다.
+    """
+
+    name = "piper"
+    # ★"다루려는 언어" 가 아니라 **목소리를 실제로 가진 언어**만 적는다.
+    #   Kokoro 에서 넷 중 셋이 거짓이었던 일을 되풀이하지 않는다.
+    #   진짜 판정은 piper_voices.check_language 가 실행 시점에 한다.
+    supported_languages = ["ko"]
+
+    def __init__(self):
+        self._voice = None
+        self._meta = None
+
+    def load(self, lang_code="ko"):
+        import piper_voices
+        why = piper_voices.check_language(lang_code)
+        if why:
+            e = RuntimeError("piper 로 %s 를 합성할 수 없습니다 — %s" % (lang_code, why))
+            e.error_payload = {"code": ENGINE_LANG_UNAVAILABLE,
+                               "engine": "piper", "language": lang_code,
+                               "reason": why}
+            raise e
+        meta = piper_voices.find(lang_code)
+        if self._voice is not None and self._meta and self._meta["onnx"] == meta["onnx"]:
+            return
+        emit("progress", percent=10, message="piper 목소리 여는 중... (%s)" % meta["name"])
+        from piper import PiperVoice
+        self._voice = PiperVoice.load(meta["onnx"], config_path=meta["config"])
+        self._meta = meta
+        emit("progress", percent=20, message="piper 준비 완료")
+
+    def synthesize_segment(self, text, ref_audio, emotion_id, speed, output_path):
+        """★참조 소리(ref_audio)와 감정(emotion_id)은 쓰지 않는다 —
+        이 엔진에는 목소리가 파일 안에 하나로 들어 있다. 쓰는 척하지 않는다.
+        """
+        if self._voice is None:
+            self.load()
+        import wave
+        with wave.open(output_path, "wb") as w:
+            self._voice.synthesize_wav(text, w)
+
+
 # ── GPT-SoVITS Engine (Korean, Japanese, Chinese, English — via isolated venv) ──
 
 class GPTSoVITSEngine(TTSEngine):
@@ -1050,6 +1103,7 @@ def _get_qwen_engine():
 ENGINES = {
     "f5tts": F5TTSEngine,
     "kokoro": KokoroEngine,
+    "piper": PiperEngine,
     "gptsovits": GPTSoVITSEngine,
 }
 
@@ -1105,14 +1159,16 @@ def _select_engine(text, preferred_engine=None):
 
     lang = _detect_language(text)
 
-    # Korean/Japanese → GPT-SoVITS (best quality), fallback to Kokoro
+    # 한국어·일본어 → GPT-SoVITS(품질이 가장 좋다). 안 되면 떨어질 자리:
+    #   한국어는 **piper**(Kokoro 에 한국어가 없다 — 2026-09-24 코드로 확인),
+    #   일본어는 Kokoro.
     if lang in ("ko", "ja"):
         try:
             engine = _get_engine("gptsovits")
             engine.load()  # Check if venv exists
             return engine
         except Exception:
-            return _get_engine("kokoro")
+            return _get_engine("piper" if lang == "ko" else "kokoro")
 
     # Chinese → Kokoro
     if lang == "zh":
