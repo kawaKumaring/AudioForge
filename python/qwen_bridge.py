@@ -561,7 +561,26 @@ def _build_vendor_crop_record(model, seg, g, d, sr, wav_path):
 
 
 def _vendor_returned(dirpath, d, sr, g, seg, ci):
-    """vendor 반환 PCM 을 temp -> 재검증 -> SHA -> atomic rename 으로 보존(진단 전용)."""
+    """vendor 반환 PCM 을 temp -> 재검증 -> atomic rename -> SHA -> 기록(진단 전용).
+
+    ★이 함수는 2026-08-30 도입 이후 **한 번도 동작한 적이 없었다**(2026-09-24 2차 감사).
+      기록을 만들면서 이 모듈에 정의된 적 없는 이름(`CODEC_HOP_SAMPLES`)을 참조해
+      NameError 로 죽었고, 아래 except 가 그것을 `reason="NameError"` 한 줄로 바꿔
+      흘려서 **코드 결함이 일시적 환경 문제처럼 읽혔다.** 기대한 .wav/.json 은 생기지
+      않고 orphan `.part` 만 남았다.
+
+    ★상수를 새로 정의해서 살리지 않는다.
+      바로 위 `_build_vendor_crop_record` 가 못으로 박아 둔 규칙이 있다 —
+      "decoded_total/cut 좌표는 vendor 가 반환하지 않는다. **역산해서 관측값인 척하지
+      않는다**"(`crop_coordinates_observed: False`). 고정 hop 으로 sample 수를 단언하는
+      것은 바로 그 짓이다. 게다가 같은 기록 안에서 자기모순이었다 — 네 줄 위에서
+      `"UNKNOWN"` 이라 적어 놓고 아래에서 그 값을 곱해 단언했다.
+      그래서 **보존은 살리고, 지어낸 필드 셋은 지운다.** 모른다는 기록은 남긴다.
+
+    ★순서를 형제 함수와 맞춘다: 예전에는 기록을 다 만들 때까지 rename 을 붙들고
+      있어서, 중간에 죽으면 orphan `.part` 가 남았다. 이제 확인하자마자 이름을 바꾸고
+      SHA 는 최종 파일에서 뜬다(`_build_vendor_crop_record` 가 이미 그렇게 한다).
+    """
     try:
         import hashlib
         import numpy as _np, soundfile as _sf
@@ -573,20 +592,21 @@ def _vendor_returned(dirpath, d, sr, g, seg, ci):
         chk, _csr = _sf.read(tmp)
         if _csr != sr or chk.shape[0] != int(_np.asarray(d).shape[0]):
             raise RuntimeError("VENDOR_RETURNED_VERIFY_FAILED")
-        wav_sha = hashlib.sha256(open(tmp, "rb").read()).hexdigest()
+        wav_path = base + ".wav"
+        os.replace(tmp, wav_path)          # 확인 직후 승격 — orphan 이 남을 창을 없앤다
+        with open(wav_path, "rb") as _fh:      # 열어 둔 채 두지 않는다
+            wav_sha = hashlib.sha256(_fh.read()).hexdigest()
         gen = int(g.get("generated_iterations") or 0)
         rec = {"source_run_id": os.path.basename(dirpath),
                "prefix_text_enabled": False,
                "generated_code_frames": gen,
                "returned_samples": int(_np.asarray(d).shape[0]),
                "sample_rate": sr,
-               "codec_hop_samples": CODEC_HOP_SAMPLES,
-               "crop_formula": "cut = int(ref_len / total_len * decoded_total_samples)",
+               # 아래 넷은 vendor 가 돌려주지 않는다. **모른다고 적는 것도 기록이다.**
                "ref_code_frames": "UNKNOWN",
                "total_code_frames": "UNKNOWN",
                "decoded_total_samples": "UNKNOWN",
                "vendor_internal_cut_samples": "UNKNOWN",
-               "predicted_returned_samples_if_exact": gen * CODEC_HOP_SAMPLES,
                "output_wav_sha256": wav_sha,
                "external_alignment_calls": 0,
                "production_result": False,
@@ -594,12 +614,16 @@ def _vendor_returned(dirpath, d, sr, g, seg, ci):
         jt = base + ".json.part"
         with open(jt, "w", encoding="utf-8") as fh:
             json.dump(rec, fh, ensure_ascii=False, indent=1)
-        os.replace(tmp, base + ".wav")
         os.replace(jt, base + ".json")
         emit("stage", stage="vendor_returned_kept", samples=rec["returned_samples"],
              generated_code_frames=gen)
     except Exception as e:
-        emit("stage", stage="vendor_returned_failed", reason=type(e).__name__)
+        # ★예외를 좁히지 않는다 — 진단 보존 실패가 발행을 막으면 안 된다(이 파일의 규칙).
+        #   대신 **무엇이 잘못됐는지**를 싣는다. 예전에는 예외 이름만 남겨서
+        #   "name 'CODEC_HOP_SAMPLES' is not defined" 라는 결정적 문장이 사라졌고,
+        #   그 때문에 이 결함이 3주 넘게 숨었다.
+        emit("stage", stage="vendor_returned_failed",
+             reason=type(e).__name__, detail=str(e)[:200])
 
 
 def _save_generation_limit_partial(g, seg, ci):
@@ -634,7 +658,9 @@ def _save_generation_limit_partial(g, seg, ci):
         emit("stage", stage="generation_limit_partial_kept", samples=int(d.size))
     except Exception as e:
         # 보존 실패는 원래 오류를 가리지 않는다.
-        emit("stage", stage="generation_limit_partial_failed", reason=type(e).__name__)
+        # 사유만으로는 코드 결함과 환경 문제를 가를 수 없다 — 문장을 함께 싣는다.
+        emit("stage", stage="generation_limit_partial_failed",
+             reason=type(e).__name__, detail=str(e)[:200])
 
 
 def _diag_save_raw(g, tag):
@@ -660,7 +686,9 @@ def _diag_save_raw(g, tag):
         emit("stage", stage="diagnostic_raw_kept", tag=tag,
              frames=int(d.size), sr=int(g["sr"]))
     except Exception as e:
-        emit("stage", stage="diagnostic_raw_failed", tag=tag, reason=type(e).__name__)
+        # 같은 이유로 문장을 함께 싣는다(2026-09-24 2차 감사).
+        emit("stage", stage="diagnostic_raw_failed", tag=tag,
+             reason=type(e).__name__, detail=str(e)[:200])
 
 
 def _finalize_wav(wavs, sr, seg_index, chunk_index):
