@@ -6,6 +6,7 @@
 // ★화자 분석 모델을 다시 돌리지 않는다. 원본에서 그 구간을 떠다 화자별 트랙에 올릴 뿐이다.
 // ★겹친 발화를 한 사람의 깨끗한 목소리로 갈라낸 것이 아니다 — 이 화면이 하는 것은 **배정**이다.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { saveSetting, saveFailureText } from '../../shared/saveSetting'
 
 import { useAppStore } from '@/stores/app.store'
 import { createManagedAudio } from '@/lib/playbackVolume'
@@ -67,7 +68,12 @@ export default function DialogueSegments() {
   docRef.current = doc
   useEffect(() => {
     if (!doc) return
-    const save = () => { void window.api.settings.set(DIALOGUE_EDIT_STORAGE_KEY, docRef.current) }
+    // ★응답을 버리지 않는다 — 설정 파일이 깨지면 고친 내용이 통째로 사라지는데
+    //   예전에는 화면이 아무 말도 하지 않았다(2026-09-24 감사).
+    const save = () => {
+      void saveSetting(window.api.settings.set, DIALOGUE_EDIT_STORAGE_KEY, docRef.current)
+        .then((why) => { if (why) setError(saveFailureText(why)) })
+    }
     const t = setTimeout(save, 600)
     return () => { clearTimeout(t); save() }
   }, [doc])

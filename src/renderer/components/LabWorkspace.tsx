@@ -18,6 +18,7 @@ import {
   lineStatus, lineStatusText, parseDoc, synthesisOptions, tailResidualOf, takeBadge, takeTailCut, voiceKeyOf,
   type LabDoc, type LabLine,
 } from '../../shared/labWorkspace'
+import { saveSetting, saveFailureText } from '../../shared/saveSetting'
 import { REFERENCE_CONDITIONING_RECOMMENDED } from '../../shared/ttsConfig'
 import { createManagedAudio } from '@/lib/playbackVolume'
 import { runVoicePrep } from '@/lib/voicePrepRunner'
@@ -91,14 +92,18 @@ export default function LabWorkspace() {
 
   useEffect(() => {
     if (!lab.loaded) return                   // 불러오기 전 빈 문서로 덮어쓰지 않는다
-    const t = setTimeout(() => {
-      void window.api.settings.set(LAB_STORAGE_KEY, doc)
-    }, 600)
+    // ★응답을 버리지 않는다 — 설정 파일이 깨지면 회차·채택이 하나도 저장되지 않는데
+    //   예전에는 화면이 아무 말도 하지 않았다(2026-09-24 감사).
+    const store = (value: unknown) => {
+      void saveSetting(window.api.settings.set, LAB_STORAGE_KEY, value)
+        .then((why) => { if (why) lab.setError(saveFailureText(why)) })
+    }
+    const t = setTimeout(() => { store(doc) }, 600)
     // ★화면이 사라질 때(탭 전환·앱 종료) **기다리던 저장을 그냥 버리지 않는다.**
     //   600ms 안에 탭을 옮기면 방금 쓴 글이 저장되지 않은 채 사라졌다.
     return () => {
       clearTimeout(t)
-      void window.api.settings.set(LAB_STORAGE_KEY, useLabStore.getState().doc)
+      store(useLabStore.getState().doc)
     }
   }, [doc, lab.loaded])
 

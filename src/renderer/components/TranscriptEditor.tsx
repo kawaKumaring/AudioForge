@@ -8,6 +8,7 @@
 // ★글자를 고쳐도 **시간은 인식이 말한 그대로** 둔다. 고친 글자에 맞는 새 시간을 계산하려면
 //   정렬을 다시 해야 하는데 그것은 이번 범위가 아니다 — 그래서 "그 구간" 이라는 뜻만 유지한다.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { saveSetting, saveFailureText } from '../../shared/saveSetting'
 
 import { useAppStore } from '@/stores/app.store'
 import { createManagedAudio } from '@/lib/playbackVolume'
@@ -75,7 +76,12 @@ export default function TranscriptEditor() {
   docRef.current = doc
   useEffect(() => {
     if (!doc) return
-    const save = () => { void window.api.settings.set(TRANSCRIPT_EDIT_STORAGE_KEY, docRef.current) }
+    // ★응답을 버리지 않는다 — 설정 파일이 깨지면 교정이 통째로 사라지는데
+    //   예전에는 화면이 아무 말도 하지 않았다(2026-09-24 감사).
+    const save = () => {
+      void saveSetting(window.api.settings.set, TRANSCRIPT_EDIT_STORAGE_KEY, docRef.current)
+        .then((why) => { if (why) setError(saveFailureText(why)) })
+    }
     const t = setTimeout(save, 600)
     return () => { clearTimeout(t); save() }
   }, [doc])
