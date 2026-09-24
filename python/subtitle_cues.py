@@ -157,7 +157,14 @@ def build_cues(lines, *, max_cps=MAX_CPS, max_chars=MAX_LINE_CHARS, max_lines=MA
         dur = cue['end'] - cue['start']
 
         if dur < min_sec:
-            room = (nxt - min_gap - cue['start']) if nxt is not None else None
+            # ★'늘릴 수 있는 가장 늦은 끝' 은 **절대 시각**이다(2026-09-24 2차 감사).
+            #   예전에는 여기서 cue['start'] 를 빼 **길이**를 만들어 놓고
+            #   아래에서 절대 시각처럼 썼다. 한 함수 안에 같은 값의 두 공식이 있었다.
+            #   증상: 시작이 0이 아닌 짧은 자막이 **길이 0** 이 되어 화면에 안 뜬다.
+            #   (start=5.0 end=5.6 다음=7.0 → 끝이 5.0 으로 끌려와 길이 0)
+            #   시작이 0일 때는 두 공식의 값이 같아 **검사가 전부 통과했다** —
+            #   기존 재료가 전부 start=0 이었다. 검사에 start>0 을 넣는다.
+            room = (nxt - min_gap) if nxt is not None else None
             want = cue['start'] + min_sec
             cue['end'] = want if room is None else min(want, max(cue['start'], room))
             if cue['end'] - cue['start'] < min_sec - 1e-6:

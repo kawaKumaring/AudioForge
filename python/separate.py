@@ -832,9 +832,11 @@ def _run_dialogue_rebuild(args):
         emit("progress", percent=40, message="구간대로 화자 트랙 만드는 중...")
         tracks, dropped = dr.rebuild_speaker_tracks(wav, sr, segs, args.output)
     finally:
-        if sep_dir and os.path.isdir(sep_dir):
-            import shutil as _shutil
-            _shutil.rmtree(sep_dir, ignore_errors=True)   # 갈라낸 것은 임시다
+        # ★여기 있던 _asr_sep 정리는 **이 함수의 것이 아니었다**(2026-09-24 2차 감사).
+        #   sep_dir 은 _run_transcribe_only 에만 있는 이름이라 여기서는 NameError 가 났고,
+        #   2026-09-21 이후 '수정본으로 다시 만들기' 가 **매번 실패**했다 —
+        #   트랙 파일은 다 만들어졌는데 앱은 결과를 못 받았다.
+        #   모양이 같은 앞 함수에 잘못 붙인 것이다. 제자리로 옮겼다.
         try:
             os.remove(wav_path)
             os.rmdir(os.path.dirname(wav_path))
@@ -912,6 +914,13 @@ def _run_transcribe_only(args):
                                whisper_lang=getattr(args, "whisper_lang", ""), base_name=orig_base,
                                asr_engine=getattr(args, "asr_engine", "whisper") or "whisper")
     finally:
+        # ★갈라낸 것은 임시다 — 남기면 사용자가 만든 적 없는 목소리 사본이
+        #   결과 폴더에 원본 길이만큼 두 벌(보컬·반주) 쌓인다.
+        #   배경음 걷어내기 기본이 '자동' 이라 **텍스트만 뽑아도 매번** 생긴다.
+        #   원본을 쓰기로 판정한 경우에도 이미 파일로 남은 뒤다.
+        if sep_dir and os.path.isdir(sep_dir):
+            import shutil as _shutil
+            _shutil.rmtree(sep_dir, ignore_errors=True)
         try:
             os.remove(wav_path)
             os.rmdir(os.path.dirname(wav_path))

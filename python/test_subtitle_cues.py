@@ -71,6 +71,27 @@ class Test큐_만들기(unittest.TestCase):
         self.assertGreaterEqual(cues[0]['end'] - cues[0]['start'],
                                 sc.MIN_DURATION_SEC - 1e-6)
 
+    def test_시작이_0이_아니어도_제대로_늘린다(self):
+        """★2026-09-24 2차 감사가 찾은 것 — **검사 재료가 전부 start=0 이라 지나갔다.**
+
+        '늘릴 수 있는 가장 늦은 끝' 을 절대 시각이 아니라 **길이**로 계산하고 있었다.
+        start=0 일 때만 두 공식의 값이 우연히 같아서 모든 검사가 통과했다.
+        시작이 0이 아니면 짧은 자막이 **길이 0** 이 되어 화면에 아예 안 떴다.
+        받아쓰기·더빙·교정본 자막 셋 다 같은 증상이었다.
+        """
+        cues = sc.build_cues([{'start': 5.0, 'end': 5.6, 'text': '네'},
+                              {'start': 7.0, 'end': 9.0, 'text': '다음 문장입니다'}])
+        self.assertAlmostEqual(cues[0]['end'] - cues[0]['start'], sc.MIN_DURATION_SEC, places=6)
+        self.assertEqual(cues[0]['warnings'], [], '여유가 있으면 경고할 일이 없다')
+
+    def test_시작이_0이_아니고_바짝_붙으면_그만큼만_늘린다(self):
+        cues = sc.build_cues([{'start': 5.0, 'end': 5.6, 'text': '네'},
+                              {'start': 5.9, 'end': 7.0, 'text': '바짝'}])
+        got = cues[0]['end'] - cues[0]['start']
+        self.assertGreater(got, 0.0, '길이 0 자막은 화면에 안 뜬다')
+        self.assertAlmostEqual(cues[0]['end'], 5.9 - sc.MIN_GAP_SEC, places=6)
+        self.assertTrue(cues[0]['warnings'])
+
     def test_늘리다가_다음_자막을_침범하지_않는다(self):
         """★겹치면 두 자막이 한꺼번에 뜬다."""
         cues = sc.build_cues([{'start': 0.0, 'end': 0.2, 'text': '짧다'},

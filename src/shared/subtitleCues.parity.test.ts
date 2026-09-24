@@ -33,6 +33,15 @@ const CASES: Array<{ name: string; rows: Array<{ start: number; end: number; tex
     { start: 0, end: 0.2, text: '짧다' },
     { start: 0.5, end: 2.0, text: '바로 다음' },
   ] },
+  // ★2026-09-24 2차 감사: 재료가 전부 start=0 이라 길이/절대시각 혼동을 지나쳤다.
+  //   **파리티 검사는 '같음' 을 보증하지 '맞음' 을 보증하지 않는다** — 양쪽이
+  //   같이 틀리면 대조는 통과한다. 그래서 start>0 재료를 넣는다.
+  { name: '시작이 0이 아닌 짧은 큐', rows: [
+    { start: 5.0, end: 5.6, text: '네' }, { start: 7.0, end: 9.0, text: '다음 문장입니다' },
+  ] },
+  { name: '시작이 0이 아니고 바짝 붙음', rows: [
+    { start: 5.0, end: 5.6, text: '네' }, { start: 5.9, end: 7.0, text: '바짝' },
+  ] },
   { name: '너무 긴 큐', rows: [{ start: 0, end: 30, text: '길다' }] },
   { name: '겹치는 큐', rows: [
     { start: 0, end: 4, text: '앞' }, { start: 2, end: 5, text: '뒤' },

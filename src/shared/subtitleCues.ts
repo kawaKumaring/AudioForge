@@ -143,7 +143,12 @@ export function buildCues(
     const dur = cue.end - cue.start
 
     if (dur < minSec) {
-      const room = nxt === null ? null : nxt - minGap - cue.start
+      // ★'늘릴 수 있는 가장 늦은 끝' 은 **절대 시각**이다(2026-09-24 2차 감사).
+      //   여기서 start 를 빼면 **길이**가 되는데 아래에서 절대 시각처럼 쓴다.
+      //   시작이 0이 아닌 짧은 자막이 길이 0 이 되어 화면에 안 뜬다.
+      //   ★파이썬에서 그대로 옮겨 온 버그다 — **파리티 검사는 '같음' 을 보증하지
+      //     '맞음' 을 보증하지 않는다.** 양쪽이 같이 틀리면 대조는 통과한다.
+      const room = nxt === null ? null : nxt - minGap
       const want = cue.start + minSec
       cue.end = room === null ? want : Math.min(want, Math.max(cue.start, room))
       if (cue.end - cue.start < minSec - 1e-6) {
