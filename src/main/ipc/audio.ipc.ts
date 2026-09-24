@@ -439,12 +439,25 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     saveSetting('lastDir', dirname(filePath))
     const ffprobe = await findFfprobe()
     // 한글 경로 손상 방지: execFile 배열 인자 (cmd.exe 미경유)
-    const { stdout } = await execFileAsync(ffprobe, [
-      '-hide_banner',
-      '-show_entries', 'stream=codec_name,channels,channel_layout,sample_rate,duration',
-      '-of', 'json',
-      filePath
-    ])
+    // ★실패 문구를 그대로 내보내면 **사용자 음원의 절대 경로가 샌다**(2026-09-24 2차 감사).
+    //   `promisify(execFile)` 의 거부 문구는 `Command failed: <명령> <인자 전부>` 라
+    //   마지막 인자인 파일 절대 경로가 통째로 들어간다. 그 오류는 IPC 를 건너 화면으로 가고,
+    //   Electron 이 핸들러 거부를 **스스로 console.error 로 찍어** 로그 파일에도 남는다.
+    //   그 로그는 진단 묶음에 통째로 실려 밖으로 나간다. 여기서 끊는다 — 여덟 줄 위(:437)가
+    //   이미 `basename` 만 쓰고 있었다. 같은 파일 안에서 규칙이 갈려 있었다.
+    let stdout: string
+    try {
+      ({ stdout } = await execFileAsync(ffprobe, [
+        '-hide_banner',
+        '-show_entries', 'stream=codec_name,channels,channel_layout,sample_rate,duration',
+        '-of', 'json',
+        filePath
+      ]))
+    } catch (e) {
+      const code = (e as { code?: unknown })?.code
+      throw new Error(`이 파일의 정보를 읽을 수 없습니다: ${basename(filePath)}`
+        + (code === undefined ? '' : ` (${String(code)})`))
+    }
     const data = JSON.parse(stdout)
     const stream = data.streams?.[0]
     if (!stream) throw new Error('오디오 스트림을 찾을 수 없습니다')
@@ -467,8 +480,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   // 메인 처리용 runner와 별개의 단기 프로세스로 실행. 동시 실행 방지 + timeout + 정리.
   ipcMain.handle('audio:transcribe-reference', async (_event, filePath: string) => {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 전사를 실행할 수 없습니다.')
-    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
-    if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
+    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${basename(pythonPath)}`)
+    if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${basename(filePath)}`)
     transcriptPreviewGuard.begin()  // 참조 전사 중복 실행 방지(진행 중이면 throw)
     // config 생성·writeFileSync·실행 전체를 try/finally 안에 둔다 — 설정 단계 예외에서도
     // guard가 running에 영구히 남지 않고, 생성된 config도 정리된다.
@@ -493,8 +506,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   ipcMain.handle('audio:analyze-reference', async (_event, filePath: string, clipKey: string = 'default',
                                                    extra?: Record<string, unknown>) => {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 분석을 실행할 수 없습니다.')
-    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
-    if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
+    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${basename(pythonPath)}`)
+    if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${basename(filePath)}`)
     // single-flight key는 clipKey+절대경로 — 감정별로 분리하되 같은 (key,파일)의 동시 요청만 합침.
     // extra 가 다르면 다른 질문이다 — single-flight 키에 넣지 않으면 후보 목록 요청이
     // 같은 파일의 이전 분석 응답에 합쳐져 후보가 오지 않는다.
@@ -532,8 +545,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   ipcMain.handle('audio:trim-reference', async (_event, filePath: string, startSec: number, durSec: number, clipKey: string = 'default',
                                                 extra?: Record<string, unknown>) => {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 트림을 실행할 수 없습니다.')
-    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
-    if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
+    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${basename(pythonPath)}`)
+    if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${basename(filePath)}`)
     // 같은 파일·같은 구간을 그 인물이 이미 잘라 뒀고 그 클립이 살아 있으면 다시 자르지 않는다.
     // 자르기 한 번에 whisper 전사(2~3초)가 들어 있어 이 반복이 가장 비싸다. 결과는 같은 것을 돌려준다.
     const trimStamp = stampOf(filePath)
@@ -592,7 +605,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   // 그 빈칸을 메운다. 기록 폴더의 위치 규칙은 파이썬이 갖고 있으므로 쓰는 일도 파이썬에 맡긴다
   // (여기서 경로를 다시 계산하면 두 곳이 어긋난다).
   ipcMain.handle('audio:record-listening', async (_event, runId: string, verdict: string, note?: string) => {
-    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
+    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${basename(pythonPath)}`)
     if (!['good', 'fair', 'bad'].includes(verdict)) throw new Error(`알 수 없는 판정: ${verdict}`)
     if (!runId || /[\/:*?"<>|]/.test(runId)) throw new Error('실행 기록 id 가 올바르지 않습니다.')
     const cfgPath = join(tmpdir(), `audioforge_runnote_${randomUUID()}.json`)
@@ -695,7 +708,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
 
     // Verify python exists
     if (!existsSync(pythonPath)) {
-      throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
+      throw new Error(`Python을 찾을 수 없습니다: ${basename(pythonPath)}`)
     }
 
     // Resolve script path. AF_E2E=1에서만: 취소 lifecycle E2E가 실제 Qwen/미디어 대신 synthetic
@@ -705,7 +718,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       scriptPath = process.env.AF_E2E_TTS_SCRIPT
     }
     if (!existsSync(scriptPath)) {
-      throw new Error(`Python 스크립트를 찾을 수 없습니다: ${scriptPath}`)
+      throw new Error(`Python 스크립트를 찾을 수 없습니다: ${basename(scriptPath)}`)
     }
 
     // Build output directory
@@ -1018,11 +1031,11 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     const trackBusy = blockReason({ samplerPreview: samplerInFlight > 0 }, '트랙 작업')
     if (trackBusy) throw new Error(trackBusy)
     if (!existsSync(pythonPath)) {
-      throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
+      throw new Error(`Python을 찾을 수 없습니다: ${basename(pythonPath)}`)
     }
     const scriptPath = PythonRunner.getScriptPath('separate.py')
     if (!existsSync(scriptPath)) {
-      throw new Error(`Python 스크립트를 찾을 수 없습니다: ${scriptPath}`)
+      throw new Error(`Python 스크립트를 찾을 수 없습니다: ${basename(scriptPath)}`)
     }
 
     const thisRunner = trackSlot.set(new PythonRunner(pythonPath, runnerDeps))

@@ -127,3 +127,37 @@ test('같은 초에 두 번은 덮어쓰지 않고 실패한다', () => {
     assert.throws(() => buildDiagnosticsBundle(input), (e: { code?: string }) => e.code === 'BUNDLE_EXISTS')
   } finally { s.cleanup() }
 })
+
+// ★이 검사가 없어서 결함이 통과했다(2026-09-24 2차 감사).
+//   기존 검사가 심는 비밀은 전부 **설정 값**이고, 로그 본문에는 안전한 줄만 넣었다.
+//   그래서 "로그를 한 글자도 안 보고 그대로 복사한다" 는 사실이 한 번도 드러나지 않았다.
+//   실제 로그에는 Electron 이 스스로 찍은 `Command failed: … <사용자 음원 절대 경로>` 가 들어온다.
+test('로그 본문에 절대 경로가 있어도 묶음에는 남지 않는다 — 폴더만 지우고 이름은 남긴다', () => {
+  const s = scratch()
+  const BS = String.fromCharCode(92)
+  try {
+    const line = (...parts: string[]) => parts.join(BS)
+    const secretDrive = line('E:', '비밀작업', '2026', '면담_원본.wav')
+    const secretUnc = BS + line('', '사내서버', '공유녹음', '면담2.wav')
+    writeFileSync(join(s.logDir, "audioforge-2026-09-17.log"), [
+      "2026-09-17T09:00:00.000+09:00 INFO  [job] start mode=tts file=a.wav",
+      `2026-09-17T09:00:01.000+09:00 ERROR [console] Command failed: ${secretDrive}`,
+      `2026-09-17T09:00:02.000+09:00 ERROR [uncaught] Error: ENOENT ${secretUnc}`,
+      "2026-09-17T09:00:03.000+09:00 ERROR [console] did-fail-load url=file:///E:/비밀앱/index.html",
+      "",
+    ].join('\n'), 'utf-8')
+
+    const r = buildDiagnosticsBundle({
+      targetDir: s.target, logDir: s.logDir, settingsPath: s.settingsPath, now: () => T0,
+      runtime: { appVersion: '1.12.0-dev', platform: 'win32', arch: 'x64' },
+    })
+    const all = everyFileText(r.dir)
+    assert.ok(!all.includes('비밀작업'), '로그의 폴더 경로가 묶음에 남았다')
+    assert.ok(!all.includes('사내서버'), 'UNC 서버 이름이 묶음에 남았다')
+    assert.ok(!all.includes('공유녹음'), 'UNC 공유 이름이 묶음에 남았다')
+    assert.ok(!all.includes('비밀앱'), 'file:// 경로가 묶음에 남았다')
+    // 진단 가치를 죽이지 않았는지 — 무엇이 실패했는지는 남아야 한다.
+    assert.ok(all.includes('면담_원본.wav'), '파일 이름까지 지우면 진단이 안 된다')
+    assert.ok(all.includes('Command failed'), '오류 종류가 사라졌다')
+  } finally { s.cleanup() }
+})

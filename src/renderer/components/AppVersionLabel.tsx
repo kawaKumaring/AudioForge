@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { exportDiagnosticsText } from '../../shared/diagnostics'
 import {
   buildDetailLines, buildDetailText, versionLabel, type AppBuildInfo,
 } from '../../shared/buildMetadata'
@@ -24,7 +25,8 @@ export default function AppVersionLabel() {
       const r = await window.api.app.exportDiagnostics()
       if (r.ok) setDiag({ busy: false, text: `진단 묶음을 만들었습니다: ${r.name} (로그 ${r.logCount}개)` })
       else if (r.reason === 'cancelled') setDiag({ busy: false, text: null })
-      else setDiag({ busy: false, text: `진단 묶음을 만들지 못했습니다: ${r.message || '알 수 없는 이유'}` })
+      // ★원문 대신 코드→문구. 예전에는 fs 오류 원문(절대 경로 포함)을 그대로 찍었다.
+      else setDiag({ busy: false, text: exportDiagnosticsText(r.code) })
     } catch (e) {
       setDiag({ busy: false, text: `진단 묶음을 만들지 못했습니다: ${(e as Error)?.message || '알 수 없는 이유'}` })
     }

@@ -9,17 +9,27 @@
  *   · 설정의 **값**. 대사·전사 본문·마지막 폴더 같은 값은 한 글자도 옮기지 않는다. 문자열은 글자 수만,
  *     객체는 키 개수만, 배열은 항목 개수만 적는다.
  *   · 사용자 음원·생성본·참조 클립 파일.
- *   · 로그 자체는 그대로 복사한다. 로그에 무엇을 적는지는 app-log.ts 의 규칙(이름만, 본문 없음)이 지킨다.
+ *   · 로그의 **절대 경로**. ★예전에는 로그를 한 글자도 안 보고 그대로 복사했다 —
+ *     "로그에 무엇을 적는지는 app-log.ts 의 규칙이 지킨다" 고 믿었기 때문이다.
+ *     그런데 그 규칙이 **닿지 않는 통로**가 둘 있었다(console 미러·잡히지 않은 예외).
+ *     Electron 은 IPC 핸들러가 거부하면 스스로 console.error 를 찍고, Node 의 execFile
+ *     거부 문구에는 명령줄 전부 — 곧 사용자 음원의 절대 경로 — 가 들어 있다.
+ *     이 묶음은 **밖으로 나갈 목적**의 산출물이므로 여기가 진짜 경계다.
+ *     그래서 복사하지 않고 **읽어-씻어-쓴다.** 폴더만 지우고 파일 이름은 남긴다.
+ *     ★이것이 이미 사용자 PC 에 쌓여 있는 옛 로그를 막는 **유일한** 수단이다 —
+ *       쓰는 쪽을 고쳐도 그날 이후 줄만 깨끗해진다.
  *
  * electron 을 import 하지 않는다 — 실제 파일로 `node --test` 한다.
  */
-import { copyFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'fs'
 import { join } from 'path'
 // node --test 가 이 파일을 곧바로 읽으므로 확장자를 붙인다(app.store 와 같은 이유).
 // @ts-ignore TS5097
 import { listLogFiles, logFileDate } from './app-log.ts'
 // @ts-ignore TS5097
 import { readSettingsMeta } from './settings-store.ts'
+// @ts-ignore TS5097
+import { scrubPathsForLog } from './log-scrub.ts'
 
 export const BUNDLE_LOG_DAYS_DEFAULT = 3
 export const BUNDLE_DIR_PREFIX = 'AudioForge_진단_'
@@ -124,7 +134,12 @@ export function buildDiagnosticsBundle(input: DiagnosticsBundleInput): Diagnosti
 
   const copiedLogs: string[] = []
   for (const n of recentLogFiles(input.logDir, now, days)) {
-    try { copyFileSync(join(input.logDir, n), join(dir, 'logs', n)); copiedLogs.push(n) } catch { /* 없는 파일은 목록에 없다 */ }
+    // ★복사가 아니라 **읽어-씻어-쓰기**. 폴더를 지우고 파일 이름은 남긴다.
+    try {
+      const text = readFileSync(join(input.logDir, n), 'utf-8')
+      writeFileSync(join(dir, 'logs', n), scrubPathsForLog(text), 'utf-8')
+      copiedLogs.push(n)
+    } catch { /* 없는 파일은 목록에 없다 */ }
   }
 
   const r = input.runtime
@@ -155,6 +170,7 @@ export function buildDiagnosticsBundle(input: DiagnosticsBundleInput): Diagnosti
     '',
     '이 묶음에는 대사·전사 본문, 설정 값, 사용자 음원·생성본 파일이 들어 있지 않다.',
     '로그에는 작업의 시작·끝·오류와 파일 이름(폴더 없이)만 적힌다.',
+    '묶을 때 로그를 한 번 더 훑어 남아 있던 폴더 경로를 지웠다 — 파일 이름은 남겼다.',
     '',
   ]
   writeFileSync(join(dir, 'summary.txt'), lines.join('\n'), 'utf-8')

@@ -4,7 +4,7 @@ import { basename, join } from 'path'
 import { appLog, LOG_DIR_NAME } from '../services/app-log'
 import { buildDiagnosticsBundle } from '../services/diagnostics-bundle'
 import { currentBuildInfo } from './app-version.ipc'
-import { EXPORT_DIAGNOSTICS_CHANNEL, type ExportDiagnosticsResult } from '../../shared/diagnostics'
+import { EXPORT_DIAGNOSTICS_CHANNEL, type ExportDiagnosticsResult, diagnosticsFailureCode } from '../../shared/diagnostics'
 
 /**
  * 진단 묶음 내보내기 — 사용자가 폴더를 고르면 그 안에 `AudioForge_진단_<시각>/` 을 만들고 탐색기로 보여 준다.
@@ -48,9 +48,11 @@ export function registerDiagnosticsIpc(getWindow: () => BrowserWindow | null, ge
       if (!e2eDir) shell.showItemInFolder(r.dir)
       return { ok: true, name: r.name, logCount: r.copiedLogs.length }
     } catch (err) {
-      const message = (err as Error)?.message || String(err)
-      appLog()?.error('diagnostics', `진단 묶음 실패: ${message}`)
-      return { ok: false, reason: 'failed', message }
+      // ★원문을 적지도 돌려주지도 않는다 — fs 오류 문구에는 절대 경로가 들어 있고,
+      //   그 로그가 **다음 진단 묶음에 실려 밖으로 나간다**(2026-09-24 2차 감사).
+      const code = diagnosticsFailureCode(err)
+      appLog()?.error('diagnostics', `진단 묶음 실패: ${code}`)
+      return { ok: false, reason: 'failed', code }
     }
   })
 }

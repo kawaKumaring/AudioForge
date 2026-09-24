@@ -64,7 +64,13 @@ try {
   ok(/INFO {2}\[boot\] /.test(boot), '기동 기록이 있다(판·전자 판·노드 판)')
   ok(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}[+-]\d{2}:\d{2} /m.test(boot), '줄 머리가 현지 시각이다')
 
-  await win.evaluate(() => console.error('[e2e-probe] 화면 오류 흘려보내기 PROBE_7f2e'))
+  // ★재료를 '경로 모양' 으로 만든다(2026-09-24 2차 감사).
+  //   예전 재료는 경로가 아닌 글자라, '화면 오류가 로그에 닿는다'(아래)와
+  //   '묶음에 경로가 없다'(맨 아래)는 두 사실이 **한 번도 교차되지 않았다.**
+  //   그 사이에 로그를 통째로 복사하는 길이 있었고 아무도 보지 않았다.
+  await win.evaluate(() => console.error(
+    '[e2e-probe] 화면 오류 흘려보내기 PROBE_7f2e Command failed: '
+    + ['E:', '검사용_비밀폴더_91ab', '녹음_PROBE_7f2e.wav'].join(String.fromCharCode(92))))
   let mirrored = false
   for (let i = 0; i < 20 && !mirrored; i++) {
     await sleep(250)
@@ -96,6 +102,10 @@ try {
   const all = everyFileText(bdir)
   ok(!all.includes(SECRET_TEXT), '**대사 본문이 묶음 어디에도 없다**')
   ok(!all.includes('검사용_비밀폴더'), '**설정의 폴더 값이 묶음 어디에도 없다**')
+  // ★교차: 위에서 '로그에 닿는다' 를 증명한 바로 그 줄이 여기서 '경로 없이' 나와야 한다.
+  ok(fs.readFileSync(logPath, 'utf-8').includes('PROBE_7f2e'), '재료가 실제로 로그에 닿았다(교차 전제)')
+  ok(!all.includes('검사용_비밀폴더_91ab'), '**화면 오류로 흘러든 폴더 경로도 묶음에 없다**')
+  ok(all.includes('녹음_PROBE_7f2e.wav'), '파일 이름은 남는다 — 진단 가치를 죽이지 않는다')
   ok(fs.readFileSync(logPath, 'utf-8').includes('진단 묶음 완료 name=' + bundles[0]), '내보낸 사실도 로그에 남는다')
 } catch (e) {
   failed++

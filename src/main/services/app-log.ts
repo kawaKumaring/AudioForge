@@ -11,6 +11,9 @@
  *     줄 머리의 시각으로 기록 경계를 다시 찾을 수 있다.
  *   · **대사·전사 본문·사용자 음원의 절대 경로는 적지 않는다.** 경로가 필요하면 `fileLabel()` 로
  *     이름만 적는다. 이 규칙의 책임은 호출부에 있고, 이 파일 머리에 적어 두는 이유가 그것이다.
+ *     ★단, **호출부가 없는 통로 둘**(`mirrorConsole`·`watchUncaught`)은 남의 문구를 그대로
+ *     받아 적는다 — Electron 이 스스로 찍는 `console.error`, Node 의 `Command failed: …`,
+ *     예외 스택. 그 둘은 계약이 닿지 않으므로 **여기서 씻어서** 적는다(2026-09-24 2차 감사).
  *   · 로그는 앱을 절대 멈추지 못한다 — 쓰기 실패는 조용히 삼킨다(그 대신 아무것도 기록되지 않는다).
  *   · 하루 파일이 20MB 를 넘으면 그 사실을 한 줄 남기고 그 날은 더 쓰지 않는다(디스크 보호).
  *   · 만들 때 `keepDays` 보다 오래된 로그 파일을 지운다. 이 폴더의 `audioforge-*.log` 만 본다.
@@ -20,6 +23,8 @@
 import { appendFileSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'fs'
 import { basename, join } from 'path'
 import { format } from 'util'
+// @ts-ignore TS5097
+import { scrubPathsForLog } from './log-scrub.ts'
 
 export type LogLevel = 'INFO' | 'WARN' | 'ERROR'
 
@@ -161,8 +166,10 @@ export function listLogFiles(dir: string): string[] {
 export function mirrorConsole(log: AppLog, target: Pick<Console, 'warn' | 'error'> = console): () => void {
   const origWarn = target.warn.bind(target)
   const origError = target.error.bind(target)
-  target.warn = (...args: unknown[]) => { origWarn(...args); log.warn('console', format(...args)) }
-  target.error = (...args: unknown[]) => { origError(...args); log.error('console', format(...args)) }
+  // ★파일로 갈 때만 씻는다 — 터미널·E2E 로 나가는 원문은 건드리지 않는다.
+  //   여기로 오는 것은 우리가 쓴 문장이 아니라 **남의 문구**다(Electron·Node·라이브러리).
+  target.warn = (...args: unknown[]) => { origWarn(...args); log.warn('console', scrubPathsForLog(format(...args))) }
+  target.error = (...args: unknown[]) => { origError(...args); log.error('console', scrubPathsForLog(format(...args))) }
   return () => { target.warn = origWarn; target.error = origError }
 }
 
@@ -174,7 +181,8 @@ export function mirrorConsole(log: AppLog, target: Pick<Console, 'warn' | 'error
 export function watchUncaught(log: AppLog, proc: NodeJS.Process = process): () => void {
   const onUncaught = (err: unknown, origin: string) => {
     const e = err as { stack?: unknown; message?: unknown }
-    log.error('uncaught', `${origin}: ${String(e?.stack ?? e?.message ?? err)}`)
+    // 스택 전문에는 앱 설치 경로와 사용자 파일 경로가 함께 들어온다 — 씻어서 적는다.
+    log.error('uncaught', scrubPathsForLog(`${origin}: ${String(e?.stack ?? e?.message ?? err)}`))
   }
   proc.on('uncaughtExceptionMonitor', onUncaught)
   return () => { proc.off('uncaughtExceptionMonitor', onUncaught) }
