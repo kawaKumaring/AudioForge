@@ -301,7 +301,40 @@ class GPTSoVITSEngine(TTSEngine):
                 self._warned_transcripts.add(wkey)
                 emit("progress", percent=8, message=f"참조 전사 경고 [{w.code}] {w.message}")
 
-    def load(self):
+    # 언어별로 더 있어야 하는 부품. venv 안을 한 번 보고 기억한다(느린 조사를 되풀이하지 않게).
+    _LANG_EXTRAS = {"ja": "pyopenjtalk"}
+    _extra_cache = {}
+
+    def _check_language(self, lang_code):
+        """그 언어를 **정말** 할 수 있는가. 되면 "", 아니면 사람이 읽을 수 있는 사유.
+
+        ★왜(2026-09-24 감사): 예전에는 load 가 언어를 아예 받지 않고 venv 파일만 봤다.
+          그래서 venv 가 있으면 예외가 안 나고, 엔진 고르기의 폴백(일본어→Kokoro)이
+          **영영 걸리지 않았다.** 실제 실패는 한참 뒤 다리에서 났고, 그 자리에는
+          다른 엔진으로 바꿀 길이 없었다 — 낼 수 있는 엔진이 옆에 있는데도.
+          Kokoro·piper 는 같은 날 이 구멍을 메웠다. 여기만 남아 있었다.
+        """
+        need = self._LANG_EXTRAS.get((lang_code or "").lower())
+        if not need or not self._venv_python:
+            return ""
+        key = (self._venv_python, need)
+        if key not in self._extra_cache:
+            import subprocess
+            try:
+                r = subprocess.run(
+                    [self._venv_python, "-c",
+                     "import importlib.util,sys;"
+                     "sys.exit(0 if importlib.util.find_spec(%r) else 1)" % need],
+                    capture_output=True, timeout=60)
+                self._extra_cache[key] = (r.returncode == 0)
+            except Exception:
+                # 조사에 실패했으면 **막지 않는다** — 다리가 제 사유로 실패하게 둔다.
+                self._extra_cache[key] = True
+        if self._extra_cache[key]:
+            return ""
+        return ("이 실행 환경에 %s 가 설치돼 있지 않습니다" % need)
+
+    def load(self, lang_code=None):
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self._bridge_script = os.path.join(base_dir, "python", "gptsovits_bridge.py")
 
@@ -318,6 +351,17 @@ class GPTSoVITSEngine(TTSEngine):
                 "GPT-SoVITS 실행 환경이 준비되지 않았습니다 "
                 f"({probe['reason']}: {app_runtime.describe(probe['reason'])}). "
                 "run.bat을 실행하면 환경 검사 후 설치·연결을 진행합니다.")
+
+        # ★언어를 정말 할 수 있는지 **여기서** 본다. 못 하면 엔진 고르기가
+        #   다른 엔진으로 내려보낼 수 있다(예전에는 여기서 안 막혀 막다른 길로 갔다).
+        why = self._check_language(lang_code)
+        if why:
+            e = RuntimeError("GPT-SoVITS 로 %s 를 합성할 수 없습니다 — %s"
+                             % (lang_code, why))
+            e.error_payload = {"code": ENGINE_LANG_UNAVAILABLE,
+                               "engine": "gptsovits", "language": lang_code,
+                               "reason": why}
+            raise e
 
     def _transcript_key(self, ref_audio, model_name):
         """전사 캐시 키: 절대경로 + size + mtime_ns + Whisper 모델명.
@@ -1165,7 +1209,7 @@ def _select_engine(text, preferred_engine=None):
     if lang in ("ko", "ja"):
         try:
             engine = _get_engine("gptsovits")
-            engine.load()  # Check if venv exists
+            engine.load(lang)  # venv 존재 + **그 언어를 할 수 있는가**
             return engine
         except Exception:
             return _get_engine("piper" if lang == "ko" else "kokoro")

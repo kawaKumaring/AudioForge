@@ -252,6 +252,43 @@ def _legacy_gptsovits():
     }
 
 
+def relocate_recorded(recorded, externals_root, exists=None):
+    """적어 둔 자리가 없으면 **지금 저장소의 externals 아래**에서 같은 구조를 찾는다.
+
+    ★왜(2026-09-24): runtime.json 은 설치하던 때의 **절대경로**를 적어 둔다.
+      저장소 자리를 옮기자 그 경로가 죽었고, venv 는 새 자리에 멀쩡히 있는데도
+      **주력 합성 엔진(GPT-SoVITS)이 통째로 닿지 않게 됐다.**
+      게다가 조용히 닿지 않는다 — 엔진 고르기가 예외를 잡아 다른 엔진으로 내려보내므로
+      사용자는 주력 엔진이 죽은 줄 모른 채 다른 목소리를 듣는다.
+
+      같은 일이 이번 이동에서 세 번 났다(git 링크 · externals 링크 · 이 기록).
+      그래서 **읽을 때 찾아 준다.** 기록을 고쳐 쓰지는 않는다 — 그건 설치기의 몫이다.
+
+    recorded        적어 둔 절대경로
+    externals_root  지금 저장소의 externals 자리
+    exists          있는지 보는 함수(검사에서 넣어 준다)
+
+    돌려주는 것: 쓸 수 있는 경로. 찾지 못하면 **적어 둔 것을 그대로** 돌려준다
+    (없는 것을 지어내지 않는다 — 판정은 부르는 쪽이 한다).
+    """
+    if exists is None:
+        exists = os.path.exists
+    if not recorded or exists(recorded):
+        return recorded
+    parts = os.path.normpath(recorded).replace("/", os.sep).split(os.sep)
+    # 뒤에서부터 "externals" 를 찾아 그 아래 구조만 떼어 낸다.
+    for i in range(len(parts) - 1, -1, -1):
+        if parts[i].lower() == "externals":
+            tail = parts[i + 1:]
+            if not tail:
+                break
+            candidate = os.path.join(externals_root, *tail)
+            if exists(candidate):
+                return candidate
+            break
+    return recorded
+
+
 def resolve_gptsovits(cfg=None):
     """GPT-SoVITS 실행에 필요한 경로 묶음.
 
@@ -263,10 +300,12 @@ def resolve_gptsovits(cfg=None):
     comp = get_component("gptsovits", cfg)
     if comp and comp.get("status") == "linked" and comp.get("python") and comp.get("repo"):
         venv = comp.get("venv") or os.path.dirname(os.path.dirname(comp["python"]))
+        # ★적어 둔 자리가 죽었으면 지금 저장소 아래에서 찾아 준다(설명은 relocate_recorded).
+        ext = assets_root()
         return {
-            "python": comp["python"],
-            "venv": venv,
-            "repo": comp["repo"],
+            "python": relocate_recorded(comp["python"], ext),
+            "venv": relocate_recorded(venv, ext),
+            "repo": relocate_recorded(comp["repo"], ext),
             "source": "runtime.json",
             "owned": bool((comp.get("owned") or {}).get("venv")),
         }

@@ -125,5 +125,46 @@ class Test덧대기(unittest.TestCase):
             kc._done = False
 
 
+class Test옮긴_자리_찾기(unittest.TestCase):
+    """★적어 둔 절대경로가 죽었을 때 지금 저장소 아래에서 찾아 주는가.
+
+    2026-09-24: 저장소를 옮기자 runtime.json 의 절대경로가 죽어
+    **주력 합성 엔진이 통째로 닿지 않게 됐다.** 게다가 조용히 —
+    엔진 고르기가 예외를 잡아 다른 엔진으로 내려보내므로 사용자는 모른다.
+    같은 일이 이번 이동에서 네 번 났다(git 링크·externals 링크·이 기록·venv 설정).
+    """
+
+    def setUp(self):
+        import app_runtime
+        self.ar = app_runtime
+
+    def test_적어_둔_자리가_살아_있으면_그대로_쓴다(self):
+        got = self.ar.relocate_recorded(r'X:\a\externals\runtime\p.exe', r'Y:\new\externals',
+                                        exists=lambda p: True)
+        self.assertEqual(got, r'X:\a\externals\runtime\p.exe')
+
+    def test_죽었으면_지금_저장소_아래에서_찾는다(self):
+        old = r'X:\old\externals\runtime\venv\Scripts\python.exe'
+        new_root = r'Y:\new\externals'
+        want = os.path.join(new_root, 'runtime', 'venv', 'Scripts', 'python.exe')
+        got = self.ar.relocate_recorded(old, new_root, exists=lambda p: p == want)
+        self.assertEqual(got, want)
+
+    def test_새_자리에도_없으면_적어_둔_것을_그대로_돌려준다(self):
+        """★없는 것을 지어내지 않는다 — 판정은 부르는 쪽이 한다."""
+        old = r'X:\old\externals\runtime\p.exe'
+        got = self.ar.relocate_recorded(old, r'Y:\new\externals', exists=lambda p: False)
+        self.assertEqual(got, old)
+
+    def test_externals_가_없는_경로는_건드리지_않는다(self):
+        old = r'X:\어딘가\p.exe'
+        got = self.ar.relocate_recorded(old, r'Y:\new\externals', exists=lambda p: False)
+        self.assertEqual(got, old)
+
+    def test_빈_값도_터지지_않는다(self):
+        self.assertEqual(self.ar.relocate_recorded('', r'Y:\e', exists=lambda p: False), '')
+        self.assertIsNone(self.ar.relocate_recorded(None, r'Y:\e', exists=lambda p: False))
+
+
 if __name__ == '__main__':
     unittest.main()
