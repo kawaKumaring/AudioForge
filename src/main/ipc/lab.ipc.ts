@@ -9,6 +9,7 @@
 // 사용자 원본·기존 결과·목소리 구성은 건드리지 않는다(읽기와 복사만 한다).
 import { app, dialog, ipcMain, type BrowserWindow } from 'electron'
 import { basename, join } from 'path'
+import { rememberFile, saveTarget, type FolderHost } from '../services/dialogFolders'
 import {
   copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, writeFileSync,
 } from 'fs'
@@ -76,7 +77,11 @@ function writeWav(path: string, p: WavParts): void {
   writeFileSync(path, Buffer.concat([head, p.data]))
 }
 
-export function registerLabIpc(mainWindow: BrowserWindow): void {
+/**
+ * @param folders 대화상자 시작 폴더의 기억 창구. **audio.ipc 와 같은 것**을 받는다 —
+ *   통로를 둘로 만들면 한쪽이 기억한 것을 다른 쪽이 모른다. 없으면 폴더를 정하지 않는다.
+ */
+export function registerLabIpc(mainWindow: BrowserWindow, folders?: FolderHost): void {
   /**
    * 만들어진 소리를 보관소로 옮긴다. 원본은 그대로 둔다(복사).
    *
@@ -148,11 +153,15 @@ export function registerLabIpc(mainWindow: BrowserWindow): void {
     } else {
       const res = await dialog.showSaveDialog(mainWindow, {
         title: '전체 음성 내보내기',
-        defaultPath: (suggestedName || 'lab-script') + '.wav',
+        // ★파일 이름만 주면 폴더는 운영체제가 정한다 — 다른 툴의 폴더가 뜬다(2026-09-25).
+        defaultPath: folders
+          ? saveTarget(folders, 'export', (suggestedName || 'lab-script') + '.wav', join)
+          : (suggestedName || 'lab-script') + '.wav',
         filters: [{ name: 'WAV', extensions: ['wav'] }],
       })
       if (res.canceled || !res.filePath) return { ok: false, canceled: true }
       target = res.filePath
+      if (folders) rememberFile(folders, 'export', target)
     }
     writeWav(target, { ...(head as WavParts), data: Buffer.concat(bodies) })
     const size = statSync(target).size

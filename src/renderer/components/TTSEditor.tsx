@@ -980,7 +980,7 @@ export default function TTSEditor() {
   }, [voiceCast.casts, voiceCast.assets, voiceCast.activeVoiceCastId, setSpeakerEmotionRefs, ttsSpeakerRenames])
 
   const addCastFiles = async (castId: string, speakerId: string, emotionId: string) => {
-    const picked = await window.api.audio.selectFile(true) as string[] | string | null
+    const picked = await window.api.audio.selectFile(true, 'voice') as string[] | string | null
     const paths = Array.isArray(picked) ? picked : (picked ? [picked] : [])
     if (paths.length) await voiceCast.addCandidateFiles(castId, speakerId, emotionId, paths)
   }
@@ -993,7 +993,7 @@ export default function TTSEditor() {
   }
 
   const requestEmotionSource = async (): Promise<string | null> => {
-    const p = await window.api.audio.selectFile()
+    const p = await window.api.audio.selectFile(false, 'voice')
     return p || null
   }
   // 감정별 구간 편집기 = 기존 ReferenceRegionPanel 재사용(중복 마운트 없음: 감정당 1개, 행 펼침 시).

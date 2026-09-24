@@ -215,7 +215,7 @@ export default function DubWorkspace() {
 
   const pickVoice = useCallback(async () => {
     setError('')
-    const picked = await window.api.audio.selectFile(false)
+    const picked = await window.api.audio.selectFile(false, 'voice')
     const path = Array.isArray(picked) ? picked[0] : picked
     if (!path || typeof path !== 'string') return
     await prepareVoice(path)

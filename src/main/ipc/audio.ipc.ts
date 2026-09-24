@@ -20,6 +20,9 @@ import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
 import { removeSplitTempDirs, listSplitTempDirs } from '../services/split-temp-cleanup'
 import { createSingleFlight, createKeyedSingleFlight } from '../services/single-flight'
 import { createSerialLane } from '../services/serial-lane'
+import {
+  rememberDir, rememberFile, startDir, type FolderHost, type FolderSlot,
+} from '../services/dialogFolders'
 import { blockReason } from '../../shared/synthesisGate'
 import { cacheableResult, createResultCache, fileStamp, requestKey, KEY_SEP } from '../services/preview-cache'
 import { createJobWatchdog, startJobWatch, createStagingGate } from '../services/longform-job'
@@ -101,6 +104,31 @@ function saveSetting(key: string, value: unknown): { ok: boolean; code?: string 
   return res.ok ? { ok: true } : { ok: false, code: res.code }
 }
 function savePythonPath(p: string): void { saveSetting('pythonPath', p) }
+
+/**
+ * 대화상자 시작 폴더의 **기억 창구**. 규칙은 `services/dialogFolders` 가 갖는다.
+ *
+ * ★2026-08-16 에 같은 신고("다른 툴을 쓰면 엉뚱한 폴더에서 열린다")로 한 자리를
+ *   고쳤는데 **아홉 자리 중 하나만** 덮었고, 그 하나마저 기억해 둔 폴더가 저장소
+ *   이동으로 사라지면서 값이 비어 무력화돼 있었다(2026-09-25 실측).
+ *   비면 운영체제가 정하고, 개발 실행은 `electron.exe` 라 다른 툴과 기억을 나눠 쓴다.
+ */
+const folderHost: FolderHost = {
+  read: (key) => loadSettings()[key],
+  write: (key, value) => { saveSetting(key, value) },
+  fallback: (slot) => {
+    try {
+      if (slot === 'python') return undefined      // 실행 파일을 음원 폴더에서 찾게 하지 않는다
+      return app.getPath(slot === 'video' ? 'videos' : 'music')
+    } catch {
+      return undefined
+    }
+  },
+}
+const dialogStart = (slot: FolderSlot): string | undefined => startDir(folderHost, slot)
+
+/** 다른 IPC 모듈이 **같은 기억**을 쓰도록 내보낸다. 통로를 둘로 만들지 않는다. */
+export function dialogFolderHost(): FolderHost { return folderHost }
 
 // 진단 사이드카 검증기를 모든 러너에 주입한다. python-runner는 Electron 없이 node --test로도
 // 로드되므로 검증기를 직접 import하지 않고 주입받는다(주입을 빠뜨리면 fail-closed —
@@ -282,7 +310,7 @@ export function registerAudioIpc(
   isDubRunning: () => boolean = () => false,
 ): AudioIpcAdapters {
   // 테스트개발 작업실이 쓰는 두 가지(테이크 보관·이어 붙여 내보내기). 합성 경로와 무관하다.
-  registerLabIpc(mainWindow)
+  registerLabIpc(mainWindow, folderHost)
   registerTranscriptIpc()
   // 영속화된 사용자 지정 python 경로가 있으면 우선 적용(재시작 후에도 유지) — L-6.
   // 사용자의 명시적 선택이 자동 해석(env.json/기본값)보다 우선한다.
@@ -410,7 +438,11 @@ export function registerAudioIpc(
     return true
   })
 
-  ipcMain.handle('audio:select-file', async (_event, multi?: boolean) => {
+  // ★`kind` 는 **어느 폴더에서 열지**만 정한다. 예전 호출(`selectFile()` / `selectFile(true)`)은
+  //   그대로 동작한다 — 빼면 음원 폴더를 쓴다.
+  ipcMain.handle('audio:select-file', async (
+    _event, multi?: boolean, kind?: 'source' | 'voice',
+  ) => {
     // E2E 전용 통로 — **OS 파일 선택창만** 대신한다(그 뒤 경로는 실제와 완전히 같다).
     // 이것이 없으면 '목소리 지정' 버튼을 누르는 실제 경로를 자동 검사로 지날 수 없어서, 검사는
     // store 를 직접 불러 통과하는데 사용자 화면에서는 멈추는 눈뜬장님 상태가 된다(실측).
@@ -426,11 +458,12 @@ export function registerAudioIpc(
       const list = (process.env.AF_E2E_SELECT_FILE || '').split('|').filter(Boolean)
       return multi ? list : (list[0] ?? null)
     }
-    // 마지막으로 불러온 폴더에서 열기 — settings.json에 기억(다른 앱 영향 없음)
-    const lastDir = loadSettings().lastDir
+    // ★용도를 받아 **그 용도의 폴더**에서 연다(2026-09-25). 예전에는 통이 하나뿐이라
+    //   영상을 한 번 고르면 다음에 음원을 고를 때 영상 폴더가 떴다.
+    const slot: FolderSlot = kind === 'voice' ? 'voice' : 'source'
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: multi ? ['openFile', 'multiSelections'] : ['openFile'],
-      defaultPath: (typeof lastDir === 'string' && existsSync(lastDir)) ? lastDir : undefined,
+      defaultPath: dialogStart(slot),
       filters: [
         // 대표 포맷은 편의를 위해 앞에 두고, 실제 허용은 전체(ffmpeg 디코딩 가능 포맷 전부: mo3 등 포함)
         { name: 'Audio/Video', extensions: ['m4a', 'mp3', 'wav', 'flac', 'ogg', 'aac', 'wma', 'mp4', 'mkv', 'avi', 'mov', 'webm'] },
@@ -438,6 +471,10 @@ export function registerAudioIpc(
       ]
     })
     if (result.canceled || result.filePaths.length === 0) return multi ? [] : null
+    // ★여기서 기억한다. 예전에는 `audio:get-file-info` 안에서만 기억해서,
+    //   그것을 거치지 않는 네 통로(인물 목소리 지정·후보 넣기·감정 원본·더빙 목소리)는
+    //   파일을 골라도 폴더를 한 번도 남기지 않았다.
+    rememberFile(folderHost, slot, result.filePaths[0])
     return multi ? result.filePaths : result.filePaths[0]
   })
 
@@ -1275,6 +1312,7 @@ export function registerAudioIpc(
   ipcMain.handle('audio:restore-from-folder', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory'],
+      defaultPath: dialogStart('restore'),
       title: '이전 결과 폴더 선택'
     })
     if (result.canceled || result.filePaths.length === 0) return null
@@ -1346,6 +1384,7 @@ export function registerAudioIpc(
   ipcMain.handle('audio:export-tracks', async (_event, trackPaths: string[]) => {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory', 'createDirectory'],
+      defaultPath: dialogStart('export'),
       title: '내보내기 위치 선택'
     })
     if (result.canceled || result.filePaths.length === 0) return null
@@ -1368,6 +1407,7 @@ export function registerAudioIpc(
         failed.push({ name, why: (e as Error)?.message || String(e) })
       }
     }
+    rememberDir(folderHost, 'export', destDir)
     return { ok: failed.length === 0, dir: destDir, copied, failed }
   })
 
@@ -1427,9 +1467,11 @@ export function registerAudioIpc(
   ipcMain.handle('settings:select-python-path', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile'],
+      defaultPath: dialogStart('python'),
       filters: [{ name: 'Python', extensions: ['exe'] }]
     })
     if (result.canceled) return null
+    rememberFile(folderHost, 'python', result.filePaths[0])
     pythonPath = result.filePaths[0]
     savePythonPath(pythonPath)  // L-6: 영속화
     return pythonPath

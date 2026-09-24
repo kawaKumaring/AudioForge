@@ -220,5 +220,9 @@ test('후보 파일 I/O 는 셸이 한다 — 컴포넌트는 하지 않는다',
       assert.equal(src.includes(forbidden), false, forbidden)
     }
   }
-  assert.ok(SHELL.includes('window.api.audio.selectFile(true)'), '여러 파일 선택은 셸이 연다')
+  // ★호출 형태를 글자 그대로 고정하지 않는다 — 인자 하나가 늘었다고 울리면
+  //   검사가 뜻을 잃는다. 보는 것은 '셸이 연다' 와 '여럿을 고른다' 둘이다.
+  assert.match(SHELL, /window\.api\.audio\.selectFile\(\s*true/, '여러 파일 선택은 셸이 연다')
+  // 목소리 후보는 **목소리 폴더**에서 열려야 한다(2026-09-25).
+  assert.match(SHELL, /selectFile\(\s*true\s*,\s*'voice'/, '용도를 넘기지 않아 음원 폴더가 뜬다')
 })

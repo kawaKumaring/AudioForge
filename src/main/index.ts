@@ -7,7 +7,7 @@ import { tmpdir } from 'os'
 import { createHash, randomUUID } from 'crypto'
 import { statSync } from 'fs'
 import { pathToFileURL } from 'url'
-import { registerAudioIpc } from './ipc/audio.ipc'
+import { registerAudioIpc, dialogFolderHost } from './ipc/audio.ipc'
 import { registerAppVersionIpc, currentBuildInfo } from './ipc/app-version.ipc'
 import { registerDiagnosticsIpc } from './ipc/diagnostics.ipc'
 import { registerDubIpc } from './ipc/dub.ipc'
@@ -173,7 +173,9 @@ function createWindow(): void {
   //   더빙이 돌려준 것을 합성 쪽이 받는다.
   const dubAdapter = registerDubIpc(
     () => mainWindow, () => currentPythonPath(),
-    () => previewAdapter?.busyReason() ?? null)
+    () => previewAdapter?.busyReason() ?? null,
+    // 대화상자 시작 폴더는 audio.ipc 가 소유한 **같은 기억**을 쓴다.
+    dialogFolderHost())
   const previewAdapter = registerAudioIpc(mainWindow, () => dubAdapter.isRunning())
   // 입력 분석 — GPU 를 쓰지 않는 상주 CPU worker. audio.ipc 와 같은 인터프리터를 쓴다.
   registerAnalysisIpc({ pythonPath: currentPythonPath })

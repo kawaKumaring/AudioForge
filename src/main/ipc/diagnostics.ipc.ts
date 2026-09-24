@@ -24,7 +24,11 @@ export function registerDiagnosticsIpc(getWindow: () => BrowserWindow | null, ge
             properties: ['openDirectory', 'createDirectory'],
             defaultPath: app.getPath('downloads'),
           })
-        : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'] })
+        : await dialog.showOpenDialog({
+            // 창이 없는 갈래도 같은 자리에서 연다 — 한쪽만 정하면 규칙이 아니다.
+            defaultPath: app.getPath('downloads'),
+            properties: ['openDirectory', 'createDirectory'],
+          })
       if (picked.canceled || picked.filePaths.length === 0) return { ok: false, reason: 'cancelled' }
       targetDir = picked.filePaths[0]
     }

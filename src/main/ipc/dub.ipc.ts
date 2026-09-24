@@ -8,9 +8,10 @@
 //   화면이 무엇을 보내든 구글로는 나가지 않는다.
 import { app, dialog, ipcMain, type BrowserWindow } from 'electron'
 import { copyFileSync, existsSync, mkdirSync } from 'fs'
-import { join } from 'path'
+import { basename, extname, join } from 'path'
 
 import { PythonRunner } from '../services/python-runner'
+import { rememberFile, saveTarget, startDir, type FolderHost } from '../services/dialogFolders'
 import { createPreviewGuard } from '../services/preview-transcribe'
 import {
   DubJobError, readDoneStages, readLines, readRenderReport, reapplyKoreanEdits,
@@ -95,7 +96,14 @@ export function registerDubIpc(
   getWindow: () => BrowserWindow | null,
   getPython: () => string,
   busyReason: () => string | null = () => null,
+  /**
+   * 대화상자 시작 폴더의 기억 창구. **audio.ipc 와 같은 것**을 받는다 —
+   * 통로를 둘로 만들면 한쪽이 기억한 것을 다른 쪽이 모른다.
+   * 없으면(검사 등) 폴더를 정하지 않는다 — 없는 값을 지어내지 않는다.
+   */
+  folders?: FolderHost,
 ): DubIpcAdapter {
+  const fh = folders
   // 지금 작업 중인 폴더. 화면이 매번 경로를 들고 다니지 않게 여기서 기억한다.
   let workDir: string | null = null
   let videoPath: string | null = null
@@ -123,10 +131,12 @@ export function registerDubIpc(
     const win = getWindow()
     const r = await dialog.showOpenDialog(win!, {
       title: '더빙할 영상 고르기',
+      defaultPath: fh ? startDir(fh, 'video') : undefined,
       properties: ['openFile'],
       filters: [{ name: '영상', extensions: ['mp4', 'mkv', 'mov', 'avi', 'webm', 'm4v'] }],
     })
     if (r.canceled || r.filePaths.length === 0) return ok(null)
+    if (fh) rememberFile(fh, 'video', r.filePaths[0])
     videoPath = r.filePaths[0]
     workDir = join(dubRoot(), workFolderName(videoPath))
     return ok(videoPath)
@@ -245,11 +255,17 @@ export function registerDubIpc(
         const win = getWindow()
         const r = await dialog.showSaveDialog(win!, {
           title: '더빙한 영상 저장',
-          defaultPath: '더빙.mp4',
+          // ★파일 이름만 주면 **폴더는 여전히 운영체제가 정한다**(2026-09-25).
+          //   제안 이름도 원본에서 만든다 — 고정 '더빙.mp4' 는 두 번째 영상이
+          //   첫 번째를 덮어쓸 자리에 커서를 놓는다.
+          defaultPath: fh
+            ? saveTarget(fh, 'export', `${basename(videoPath, extname(videoPath))}_더빙.mp4`, join)
+            : `${basename(videoPath, extname(videoPath))}_더빙.mp4`,
           filters: [{ name: '영상', extensions: ['mp4'] }],
         })
         if (r.canceled || !r.filePath) throw new DubJobError('저장을 취소했습니다')
         dest = r.filePath
+        if (fh) rememberFile(fh, 'export', dest)
       }
       // 저장 자리를 고른 **뒤에** 가드를 세운다 — 대화상자에서 취소하면 세울 것이 없다.
       beginDubWork()

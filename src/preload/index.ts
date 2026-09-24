@@ -22,7 +22,10 @@ import type {
 const api = {
   audio: {
     // multi=true 면 string[] 을 돌려준다. 인자 없는 기존 호출은 string|null 그대로다.
-    selectFile: (multi?: boolean) => ipcRenderer.invoke('audio:select-file', multi),
+    /** `kind` 는 **어느 폴더에서 열지**만 정한다 — 빼면 음원 폴더.
+     *  용도를 나누지 않으면 영상·목소리를 고른 뒤 음원 폴더가 엉뚱하게 바뀐다. */
+    selectFile: (multi?: boolean, kind?: 'source' | 'voice') =>
+      ipcRenderer.invoke('audio:select-file', multi, kind),
     getFileInfo: (filePath: string) => ipcRenderer.invoke('audio:get-file-info', filePath),
     /** 원본들이 아직 그 자리에 있는가(경로 → 참/거짓). 현재 작업 복원이 쓴다. */
     sourcesPresent: (paths: string[]): Promise<Record<string, boolean>> =>
