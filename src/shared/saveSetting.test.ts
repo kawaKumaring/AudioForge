@@ -50,7 +50,10 @@ test('모르는 코드도 숨기지 않는다', () => {
 test('응답을 버리는 표기가 소스에 없다', () => {
   const here = path.dirname(fileURLToPath(import.meta.url))
   const root = path.resolve(here, '..')          // src/
-  const bannedRe = /void\s+window\.api\.settings\.set\s*\(/
+  // ★2026-09-24 2차 감사: 같은 부류가 **합성 시작**에도 있었다.
+  //   main 은 여덟 갈래로 거절할 수 있는데 그 경로에는 어떤 알림도 따라오지 않는다 —
+  //   약속을 버리면 화면이 이유 없이 '만드는 중' 에 멈춘다.
+  const bannedRe = /void\s+window\.api\.(settings\.set|audio\.process)\s*\(/
   const hits: string[] = []
 
   const walk = (dir: string) => {
@@ -61,13 +64,17 @@ test('응답을 버리는 표기가 소스에 없다', () => {
       const text = readFileSync(p, 'utf-8')
       // 이 검사 파일 자신과, 사연을 적어 둔 주석은 뺀다.
       if (p === fileURLToPath(import.meta.url)) continue
-      for (const line of text.split('\n')) {
-        if (line.trimStart().startsWith('*') || line.trimStart().startsWith('//')) continue
-        if (bannedRe.test(line)) hits.push(`${path.relative(root, p)}: ${line.trim()}`)
-      }
+      const lines = text.split('\n')
+      lines.forEach((line, i) => {
+        if (line.trimStart().startsWith('*') || line.trimStart().startsWith('//')) return
+        if (!bannedRe.test(line)) return
+        // ★이어지는 몇 줄 안에 .catch( 가 있으면 **버린 것이 아니다** — 통과시킨다.
+        if (lines.slice(i, i + 8).join('\n').includes('.catch(')) return
+        hits.push(`${path.relative(root, p)}: ${line.trim()}`)
+      })
     }
   }
   walk(root)
   assert.deepEqual(hits, [],
-    `저장 실패가 조용히 사라진다 — saveSetting 을 쓰세요:\n${hits.join('\n')}`)
+    `실패·거절이 조용히 사라진다 — 결과를 받아 화면에 알리세요:\n${hits.join('\n')}`)
 })

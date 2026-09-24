@@ -1309,11 +1309,23 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
 
     const destDir = result.filePaths[0]
     const { copyFileSync } = await import('fs')
+    // ★한 건이 실패해도 **멈추지 않고 끝까지 시도하고, 무엇이 안 됐는지 돌려준다**
+    //   (2026-09-24 2차 감사). 예전에는 try 없이 돌아서 한 건이 실패하면 즉시 멈췄고,
+    //   화면은 약속을 통째로 버려 거절이 콘솔 한 줄로 사라졌다.
+    //   **성공과 실패가 화면상 완전히 같았다** — 백업용으로 내보내고 원본을 지우면
+    //   반쯤 복사된 폴더만 남는다.
+    const copied: string[] = []
+    const failed: Array<{ name: string; why: string }> = []
     for (const src of trackPaths) {
-      const dest = join(destDir, basename(src))
-      copyFileSync(src, dest)
+      const name = basename(src)
+      try {
+        copyFileSync(src, join(destDir, name))
+        copied.push(name)
+      } catch (e) {
+        failed.push({ name, why: (e as Error)?.message || String(e) })
+      }
     }
-    return destDir
+    return { ok: failed.length === 0, dir: destDir, copied, failed }
   })
 
   ipcMain.handle('settings:get', () => {

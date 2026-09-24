@@ -199,7 +199,18 @@ export default function LabWorkspace() {
     // 공용 작업 제어: 기존 합성과 **동시에** 돌지 않도록 같은 상태를 쓴다.
     // ★기존 결과(tracks)는 지우지 않는다 — 다른 탭의 결과를 없애지 않기 위해서다.
     useAppStore.setState({ status: 'processing', progress: 0, progressMessage: '문장 만드는 중...', error: null })
-    void window.api.audio.process(doc.voicePath, 'tts', synthesisOptions(first.text, doc.settings, lab.ref))
+    // ★시작 요청의 **거절을 버리지 않는다**(2026-09-24 2차 감사).
+    //   main 은 여덟 갈래(이미 처리 중·취소 정리 중·참조 전사 중·파이썬 없음 등)로
+    //   거절할 수 있는데, 그 경로에는 progress·result·error 어느 알림도 따라오지 않는다.
+    //   약속을 버리면 화면이 **이유 없이 '만드는 중' 에 멈춘다.**
+    //   고급 화면(ProcessButton)은 이미 try/catch 로 받아 오류를 띄운다.
+    void window.api.audio.process(doc.voicePath, 'tts',
+      synthesisOptions(first.text, doc.settings, lab.ref))
+      .catch((e: unknown) => {
+        lab.setJob(null)
+        lab.setError(`문장 만들기를 시작하지 못했습니다: ${(e as Error)?.message || e}`)
+        useAppStore.setState({ status: 'idle', progress: 0, progressMessage: '' })
+      })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc, voiceKey, lab.ref])
 
@@ -275,8 +286,14 @@ export default function LabWorkspace() {
       if (!line || !line.text.trim()) { next({ queue: rest.slice(1) }); return }
       st.setJob({ lineId: line.id, text: line.text, voiceKey: voiceKeyOf(st.doc.voicePath),
                   startedAt: Date.now(), queue: rest.slice(1) })
+      // ★위와 같은 이유로 거절을 버리지 않는다 — 여기서 멈추면 남은 문장이 영영 안 돈다.
       void window.api.audio.process(st.doc.voicePath, 'tts',
         synthesisOptions(line.text, st.doc.settings, st.ref))
+        .catch((e: unknown) => {
+          st.setJob(null)
+          st.setError(`문장 만들기를 시작하지 못했습니다: ${(e as Error)?.message || e}`)
+          useAppStore.setState({ status: 'idle', progress: 0, progressMessage: '' })
+        })
     }
     return () => { offP(); offR(); offE(); offCancelled() }
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -193,7 +193,14 @@ export default function DubWorkspace() {
       pending.current = { index: line.index, resolve, reject }
       const opts = synthesisOptions(text, defaultSettings(REFERENCE_CONDITIONING_RECOMMENDED),
         { clip: ref.clip, region: ref.region })
+      // ★시작 요청의 **거절을 버리지 않는다**(2026-09-24 2차 감사).
+      //   main 은 여덟 갈래로 거절할 수 있고 그 경로에는 어떤 알림도 따라오지 않는다.
+      //   버리면 "줄 소리 만드는 중… 1/N" 에서 **이유 없이 멈춘다** — 더빙에는 취소 단추도 없다.
       void window.api.audio.process(voice.path, 'tts', opts as Record<string, unknown>)
+        .catch((e: unknown) => {
+          pending.current = null
+          reject(new Error(`줄 소리 만들기를 시작하지 못했습니다: ${(e as Error)?.message || e}`))
+        })
     })
     const kept = await (window.api.dub.keepTake(made.path, line.index) as Promise<Reply<string>>)
     if (!kept?.ok || !kept.data) throw new Error(kept?.error || '만든 소리를 보관하지 못했습니다')
