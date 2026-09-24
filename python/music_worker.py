@@ -154,6 +154,13 @@ def run_roformer_ensemble(input_path: str, output_dir: str):
                               os.path.join(tmp_root, "a"), 12, 48)
         b = _run_one_roformer(_MELBAND_ENSEMBLE_MODEL, wav_input, model_dir,
                               os.path.join(tmp_root, "b"), 50, 86)
+    except BaseException:
+        # ★예외 갈래에만 정리가 없었다(2026-09-24 2차 감사).
+        #   정상 갈래 네 곳에는 전부 있는데 여기만 빠져서, 두 번째 모델이 터지면
+        #   첫 모델이 뽑은 보컬·반주가 곡 길이만큼 임시 폴더에 그대로 남았다.
+        #   화면에는 "분리 실패" 만 뜨고, 이 접두사를 아는 청소 코드는 어디에도 없다.
+        _sh.rmtree(tmp_root, ignore_errors=True)
+        raise
     finally:
         try:
             os.remove(wav_input)

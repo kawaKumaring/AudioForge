@@ -77,14 +77,30 @@ function writeWav(path: string, p: WavParts): void {
 }
 
 export function registerLabIpc(mainWindow: BrowserWindow): void {
-  /** 만들어진 소리를 보관소로 옮긴다. 원본은 그대로 둔다(복사). */
+  /**
+   * 만들어진 소리를 보관소로 옮긴다. 원본은 그대로 둔다(복사).
+   *
+   * ★실패를 **예외가 아니라 값으로** 돌려준다(2026-09-24 2차 감사).
+   *   예전에는 폴더 만들기·복사가 try 없이 있어서 디스크 부족·권한·파일 잠금이
+   *   나면 **예외**로 나갔다. 화면의 오류 분기는 `kept?.reason` 을 보므로
+   *   거기 닿지 못했고, 같은 자리의 뒷정리(`finish()`)까지 건너뛰어
+   *   **진행 표시가 영영 풀리지 않았다** — 모드 줄·합성 탭까지 함께 잠겼다.
+   *   취소 단추도 러너가 이미 끝난 상태라 듣지 않는다.
+   *   같은 일을 하는 `dub:keep-take` 는 이미 try/catch 로 값을 돌려준다.
+   */
   ipcMain.handle('lab:keep-take', async (_e, srcPath: string, takeId: string) => {
-    if (typeof srcPath !== 'string' || !existsSync(srcPath)) {
-      return { ok: false, reason: '만들어진 소리 파일을 찾지 못했습니다' }
+    try {
+      if (typeof srcPath !== 'string' || !existsSync(srcPath)) {
+        return { ok: false, reason: '만들어진 소리 파일을 찾지 못했습니다' }
+      }
+      const dir = takesDir()
+      if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
+      const dest = join(dir, `${takeId}.wav`)
+      copyFileSync(srcPath, dest)
+      return { ok: true, path: dest }
+    } catch (e) {
+      return { ok: false, reason: `만든 소리를 보관하지 못했습니다: ${(e as Error)?.message || e}` }
     }
-    const dest = join(takesDir(), `${takeId}.wav`)
-    copyFileSync(srcPath, dest)
-    return { ok: true, path: dest }
   })
 
   /** 보관소에서 쓰지 않는 테이크를 지운다. **목록에 있는 것만 남기고** 나머지를 정리한다. */

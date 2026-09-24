@@ -134,16 +134,29 @@ def convert_to_wav(input_path: str) -> str:
     tmp_input = os.path.join(tmp_dir, f"source{ext}")
     wav_path = os.path.join(tmp_dir, "converted.wav")
 
-    shutil.copy2(input_path, tmp_input)
+    # ★실패해도 **사용자 원본 사본을 남기지 않는다**(2026-09-24 2차 감사).
+    #   예전에는 원본을 통째로 복사한 뒤 ffmpeg 가 실패하면 바로 raise 했고,
+    #   정리 코드는 raise 뒤에 있어 **한 번도 실행되지 않았다.**
+    #   호출부 여섯 곳도 이 함수가 값을 돌려준 **뒤에** try 를 열기 때문에
+    #   호출부 정리도 닿지 않았다.
+    #   결과: 코덱이 안 맞거나 파일이 깨질 때마다 원본과 바이트가 같은 사본이
+    #   공용 임시 폴더에 쌓였다. 더빙은 **영상 파일을 통째로** 이 함수에 넣는다.
+    #   사용자 소리·영상을 함부로 남기지 않는 것이 이 저장소의 최우선 원칙이다.
+    try:
+        shutil.copy2(input_path, tmp_input)
 
-    cmd = [ffmpeg, "-y", "-i", tmp_input, "-acodec", "pcm_f32le", wav_path]
-    result = subprocess.run(cmd, capture_output=True)
-    if result.returncode != 0:
-        stderr_text = result.stderr.decode("utf-8", errors="replace")
-        raise RuntimeError(f"ffmpeg 변환 실패: {stderr_text[-500:]}")
+        cmd = [ffmpeg, "-y", "-i", tmp_input, "-acodec", "pcm_f32le", wav_path]
+        result = subprocess.run(cmd, capture_output=True)
+        if result.returncode != 0:
+            stderr_text = result.stderr.decode("utf-8", errors="replace")
+            raise RuntimeError(f"ffmpeg 변환 실패: {stderr_text[-500:]}")
+    except BaseException:
+        # 만들다 만 것은 통째로 치운다 — 성공했을 때만 남긴다(결과가 그 안에 있다).
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
 
     try:
-        os.remove(tmp_input)
+        os.remove(tmp_input)      # 원본 사본은 변환이 끝나면 쓸모없다
     except OSError:
         pass
 
