@@ -61,7 +61,9 @@ const api = {
     qwenPreflight: () => ipcRenderer.invoke('audio:qwen-preflight'),
     // pitch 후처리 capability(rubberband 지원 여부) — PitchCapability 계약. UI가 슬라이더 가용성에 소비.
     pitchPreflight: () => ipcRenderer.invoke('audio:pitch-preflight'),
-    processTrack: (trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string }) =>
+    processTrack: (trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string;
+      /** ★고른 알아듣기 설정. 예전에는 빠져 파이썬 기본값으로 고정됐다(2026-09-24 감사). */
+      whisperModel?: string; whisperLang?: string; asrSeparate?: string }) =>
       ipcRenderer.invoke('audio:process-track', trackPath, outputDir, options),
     onTrackResult: (callback: (data: unknown) => void) => {
       const handler = (_event: unknown, data: unknown) => callback(data)

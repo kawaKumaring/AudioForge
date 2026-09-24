@@ -57,6 +57,31 @@ class TestWhisperResolution(unittest.TestCase):
         self.assertIn("download_root=root", src)
         self.assertNotIn("whisper.load_model(model_name, device=device)", src)
 
+    def test_no_direct_load_outside_the_resolver(self):
+        """★해석기 **밖에서** whisper 를 직접 부르는 곳이 없는지 본다.
+
+        2026-09-24 감사: 이 검사가 transcribe_worker.py **한 파일만** 보고 있어서,
+        separate.py 가 download_root 없이 두 번 부르는 것을 **게이트가 통과시켰다.**
+        하나는 화면·자산 어디에도 없는 다섯 번째 모델("base")이었다.
+        오프라인 약속은 한 파일의 약속이 아니다 — 저장소 전체를 본다.
+        """
+        here = os.path.dirname(os.path.abspath(__file__))
+        bad = []
+        for name in sorted(os.listdir(here)):
+            if not name.endswith(".py") or name.startswith("test_"):
+                continue
+            if name == "transcribe_worker.py":
+                continue          # 해석기가 사는 곳 — 여기서만 직접 부른다
+            with open(os.path.join(here, name), encoding="utf-8") as f:
+                for i, line in enumerate(f, 1):
+                    t = line.strip()
+                    if t.startswith("#"):
+                        continue
+                    if "whisper.load_model(" in t:
+                        bad.append("%s:%d %s" % (name, i, t[:80]))
+        self.assertEqual(bad, [],
+                         "해석기를 거치지 않는 whisper 적재: " + " / ".join(bad))
+
 
 class TestNoGlobalHfFallback(unittest.TestCase):
     """production 에서 HF repo id 를 from_pretrained 에 직접 넘기는 호출이 0건인지."""

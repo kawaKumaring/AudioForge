@@ -1000,7 +1000,9 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   })
 
   // Process individual track (transcribe/translate)
-  ipcMain.handle('audio:process-track', async (_event, trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string }) => {
+  ipcMain.handle('audio:process-track', async (_event, trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string;
+      /** ★고른 알아듣기 설정. 예전에는 빠져 파이썬 기본값으로 고정됐다(2026-09-24 감사). */
+      whisperModel?: string; whisperLang?: string; asrSeparate?: string }) => {
     if (trackSlot.current?.isRunning) {
       throw new Error('이미 처리 중인 트랙 작업이 있습니다')
     }
@@ -1024,7 +1026,14 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       transcribe: !!options.transcribe,
       translate: !!options.translate,
       srt: !!options.srt,
-      translateModel: options.translateModel || '600m'
+      translateModel: options.translateModel || '600m',
+      // ★고른 설정을 싣는다(2026-09-24 감사).
+      //   예전에는 이 셋이 빠져 파이썬 기본값(large-v3·자동감지)으로 고정됐고,
+      //   사용자는 자기가 고른 모델·언어로 돈 줄 알았다. translateModel 만 싣던
+      //   비대칭이라 의도가 아니라 누락이다.
+      whisperModel: options.whisperModel || 'large-v3',
+      whisperLang: options.whisperLang || 'auto',
+      asrSeparate: options.asrSeparate || 'auto'
     }
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
 

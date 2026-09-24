@@ -955,7 +955,11 @@ def _run_track_process(args):
 
     if args.transcribe:
         emit("progress", percent=10, message="Whisper 모델 로딩 중...")
-        w_model = whisper.load_model(args.whisper_model, device=device)
+        # ★해석기를 거친다(2026-09-24 감사). 예전에는 download_root 없이 불러서
+        #   whisper 가 ~/.cache 를 뒤지고 없으면 **내려받았다** — 앱이 선언한
+        #   오프라인 약속을 어기는 자리였다. 이 기계에 캐시가 있어 가려져 있었을 뿐이다.
+        from transcribe_worker import _get_whisper_model
+        w_model = _get_whisper_model(args.whisper_model)
         emit("progress", percent=30, message="텍스트 추출 중...")
 
         from transcribe_worker import run_transcribe
@@ -990,7 +994,11 @@ def _run_track_process(args):
     if args.translate and text:
         if not language:
             emit("progress", percent=65, message="언어 감지 중...")
-            w_model = whisper.load_model("base", device=device)
+            # ★예전에는 "base" 를 썼다 — 화면 목록에도 앱 자산에도 **없는 다섯 번째 모델**이라
+            #   오프라인에서는 받을 길이 없었다. 앱이 실제로 가진 small 로 바꾼다.
+            #   언어 감지에는 가장 가벼운 것으로 충분하고, 해석기가 자리를 보증한다.
+            from transcribe_worker import _get_whisper_model
+            w_model = _get_whisper_model("small")
             audio = whisper.load_audio(args.input)
             audio = whisper.pad_or_trim(audio)
             mel = whisper.log_mel_spectrogram(audio).to(device)

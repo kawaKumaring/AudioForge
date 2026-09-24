@@ -260,12 +260,28 @@ class PiperEngine(TTSEngine):
     def synthesize_segment(self, text, ref_audio, emotion_id, speed, output_path):
         """★참조 소리(ref_audio)와 감정(emotion_id)은 쓰지 않는다 —
         이 엔진에는 목소리가 파일 안에 하나로 들어 있다. 쓰는 척하지 않는다.
+
+        ★말하기 속도(speed)는 **쓴다**(2026-09-24 감사).
+          처음엔 받아 놓고 버렸는데, 화면의 속도 조절이 아무 일도 안 하면서
+          **재현 기록에는 요청값이 적용값처럼 남았다.** 다른 세 엔진은 모두 넘긴다.
+          piper 는 길이 배수(length_scale)로 받는다 — 값이 클수록 느려지므로 뒤집는다.
         """
         if self._voice is None:
             self.load()
         import wave
+        cfg = None
+        try:
+            sp = float(speed or 1.0)
+            if sp > 0 and abs(sp - 1.0) > 1e-6:
+                from piper import SynthesisConfig
+                cfg = SynthesisConfig(length_scale=1.0 / sp)
+        except Exception:
+            cfg = None      # 못 넘기면 기본 속도로 낸다 — 터뜨리지 않는다
         with wave.open(output_path, "wb") as w:
-            self._voice.synthesize_wav(text, w)
+            if cfg is None:
+                self._voice.synthesize_wav(text, w)
+            else:
+                self._voice.synthesize_wav(text, w, syn_config=cfg)
 
 
 # ── GPT-SoVITS Engine (Korean, Japanese, Chinese, English — via isolated venv) ──

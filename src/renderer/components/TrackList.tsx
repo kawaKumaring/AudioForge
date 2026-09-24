@@ -187,7 +187,9 @@ const actionBtnStyle = (active: boolean, color: string): React.CSSProperties => 
 })
 
 function TrackItem({ track, index }: { track: { name: string; label: string; path: string }; index: number }) {
-  const { playingTrack, setPlayingTrack, outputDir, mode, translateModel, fileInfo } = useAppStore()
+  const { playingTrack, setPlayingTrack, outputDir, mode, translateModel, fileInfo,
+    // ★고른 알아듣기 설정 — 트랙의 '가사' 도 같은 설정으로 돌아야 한다(2026-09-24 감사).
+    whisperModel, whisperLang, asrSeparate } = useAppStore()
   const isPlaying = playingTrack === track.name
   const st = TRACK_STYLES[track.name] || DEFAULT_STYLE
   const [transcript, setTranscript] = useState<string | null>(null)
@@ -240,7 +242,9 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
     })
 
     try {
-      await window.api.audio.processTrack(track.path, outputDir, { transcribe, translate, srt: false, translateModel })
+      // ★고른 설정을 함께 보낸다 — 예전에는 빠져서 고른 모델·언어가 무시됐다(2026-09-24 감사).
+      await window.api.audio.processTrack(track.path, outputDir,
+        { transcribe, translate, srt: false, translateModel, whisperModel, whisperLang, asrSeparate })
     } catch {
       setProcessing(false)
       cleanup()
