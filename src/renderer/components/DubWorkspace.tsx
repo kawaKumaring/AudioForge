@@ -17,7 +17,8 @@ import {
   DUB_STAGE_LABELS, dubFrontSummary, dubNextAction, dubStatusColor, dubStatusLabel, dubTimeLabel,
   type DubFrontResult, type DubLine, type DubLineResult, type DubLineState, type DubRenderResult,
 } from '../../shared/dubbing'
-import { synthesisOptions, defaultSettings } from '../../shared/labWorkspace'
+// 말끝 잘림 판정은 **고급 화면과 같은 기준**을 쓴다 — 기준이 둘이면 화면끼리 말이 달라진다.
+import { synthesisOptions, defaultSettings, isTailCut, tailResidualOf } from '../../shared/labWorkspace'
 import { REFERENCE_CONDITIONING_RECOMMENDED } from '../../shared/ttsConfig'
 import type { CommittedRef } from '../../shared/voicePreparation'
 import { runVoicePrep } from '@/lib/voicePrepRunner'
@@ -34,6 +35,10 @@ export default function DubWorkspace() {
   const [front, setFront] = useState<DubFrontResult | null>(null)
   const [edits, setEdits] = useState<Record<number, string>>({})
   const [takes, setTakes] = useState<Record<number, string>>({})
+  // ★말끝이 잘렸을 수 있는 줄(2026-09-24 감사).
+  //   값은 **이미 도착해 있었는데** 수신 타입이 metadata 를 버려서 쓰이지 못했다.
+  //   고급 화면은 꼬리표를 보여 주는데 더빙은 잘린 채로 영상에 실렸다.
+  const [tailCut, setTailCut] = useState<Record<number, boolean>>({})
   const [report, setReport] = useState<DubRenderResult | null>(null)
   const [busy, setBusy] = useState<Busy>('')
   const [note, setNote] = useState('')
@@ -44,7 +49,8 @@ export default function DubWorkspace() {
   // 번역 말투. 더빙은 한 사람이 이어서 말하므로 줄마다 말투가 바뀌면 다른 사람처럼 들린다.
   const [register, setRegister] = useState<'' | 'casual' | 'polite'>('casual')
   // 합성 결과를 기다리는 줄. 파이썬 통로가 하나라 한 줄씩 줄을 세운다.
-  const pending = useRef<{ index: number; resolve: (p: string) => void; reject: (e: Error) => void } | null>(null)
+  // 돌려받는 것에 **말끝 잔여량**을 함께 싣는다 — 값은 같은 알림에 이미 들어 있다.
+  const pending = useRef<{ index: number; resolve: (r: { path: string; residual?: number }) => void; reject: (e: Error) => void } | null>(null)
   const committed = useRef<CommittedRef | null>(null)
 
   useEffect(() => { committed.current = voice.ref }, [voice.ref])
@@ -67,8 +73,12 @@ export default function DubWorkspace() {
       if (!slot) return
       const d = raw as { tracks?: Array<{ path?: string }> }
       const src = d?.tracks?.[0]?.path
+      // ★metadata 를 버리지 않는다 — 꺼내는 자리는 shared 의 순수 함수가 소유한다.
+      const residual = tailResidualOf(raw)
       pending.current = null
-      if (src) slot.resolve(src)
+      if (src) {
+        slot.resolve({ path: src, residual })
+      }
       else slot.reject(new Error('만든 소리가 돌아오지 않았습니다'))
     })
     const offE = window.api.audio.onError((raw: unknown) => {
@@ -179,15 +189,17 @@ export default function DubWorkspace() {
   const synthOne = useCallback(async (line: DubLine, ref: CommittedRef): Promise<void> => {
     const text = koreanOf(line).trim()
     if (!text) return
-    const src = await new Promise<string>((resolve, reject) => {
+    const made = await new Promise<{ path: string; residual?: number }>((resolve, reject) => {
       pending.current = { index: line.index, resolve, reject }
       const opts = synthesisOptions(text, defaultSettings(REFERENCE_CONDITIONING_RECOMMENDED),
         { clip: ref.clip, region: ref.region })
       void window.api.audio.process(voice.path, 'tts', opts as Record<string, unknown>)
     })
-    const kept = await (window.api.dub.keepTake(src, line.index) as Promise<Reply<string>>)
+    const kept = await (window.api.dub.keepTake(made.path, line.index) as Promise<Reply<string>>)
     if (!kept?.ok || !kept.data) throw new Error(kept?.error || '만든 소리를 보관하지 못했습니다')
     setTakes((t) => ({ ...t, [line.index]: kept.data as string }))
+    // ★말끝이 잘렸는가 — 판정은 고급 화면과 **같은 기준**을 쓴다(labWorkspace.TAIL_RESIDUAL_CUT).
+    setTailCut((m) => ({ ...m, [line.index]: isTailCut(made.residual) }))
   }, [edits, front, voice.path])
 
   const synthAll = useCallback(async (onlyMissing: boolean) => {
@@ -297,7 +309,7 @@ export default function DubWorkspace() {
           </div>
 
           <LineTable lines={lines} koreanOf={koreanOf} stateOf={stateOf} resultOf={resultOf}
-            takes={takes} disabled={disabled}
+            takes={takes} tailCut={tailCut} disabled={disabled}
             onEdit={(i, v) => setEdits((e) => ({ ...e, [i]: v }))} />
         </>
       )}
@@ -362,6 +374,8 @@ function LineTable(props: {
   stateOf: (l: DubLine) => DubLineState
   resultOf: (i: number) => DubLineResult | undefined
   takes: Record<number, string>
+  /** 말끝이 잘렸을 수 있는 줄. 값이 없으면 재지 못한 것이다. */
+  tailCut: Record<number, boolean>
   disabled: boolean
   onEdit: (index: number, value: string) => void
 }): ReactElement {
@@ -400,6 +414,9 @@ function LineTable(props: {
             <span style={{ fontSize: 11, color, paddingTop: 5, lineHeight: 1.5 }}>
               {dubStatusLabel(state, { ratio: r?.ratio, overflowSec: r?.overflowSec })}
               {props.takes[l.index] ? '' : ' · 소리 없음'}
+              {props.tailCut[l.index]
+                ? <span style={{ color: 'var(--amber, #d98b2b)' }}> · ★말끝이 잘렸을 수 있습니다</span>
+                : null}
               {r?.loudnessNote ? <><br /><span style={{ color: 'var(--text-muted)' }}>{r.loudnessNote}</span></> : null}
             </span>
           </div>

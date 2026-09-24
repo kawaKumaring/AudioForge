@@ -230,8 +230,18 @@ export const TAIL_RESIDUAL_CUT = 0.03
  * 잰 적이 없으면(옛 생성본) false — 모르는 것을 잘렸다고 말하지 않는다.
  */
 export function takeTailCut(take: LabTake): boolean {
-  const v = take.tailResidual
-  return typeof v === 'number' && Number.isFinite(v) && v >= TAIL_RESIDUAL_CUT
+  return isTailCut(take.tailResidual)
+}
+
+/**
+ * 잰 값 하나로 판정한다 — 회차 꾸러미가 없는 자리(더빙 화면)도 **같은 기준**을 쓰게.
+ *
+ * ★더빙은 회차를 쌓지 않고 바로 쓴다. 그래서 LabTake 모양을 억지로 지어내 넘기는
+ *   대신 숫자를 받는 문을 연다 — 지어낸 모양은 타입을 눌러 감추게 된다.
+ * 재지 못했으면 false. **모르는 것을 잘렸다고 말하지 않는다.**
+ */
+export function isTailCut(residual: number | undefined): boolean {
+  return typeof residual === 'number' && Number.isFinite(residual) && residual >= TAIL_RESIDUAL_CUT
 }
 
 /** 테이크 하나에 붙일 꼬리표(없으면 빈 문자열). */

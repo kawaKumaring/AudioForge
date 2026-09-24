@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   adoptedTake, defaultSettings, emptyDoc, exportBlockReason, exportBlockText,
-  exportReadiness, hasUnusedTake, isExportBlockNotice, lineStatus,
+  exportReadiness, hasUnusedTake, isExportBlockNotice, isTailCut, lineStatus,
   linesNeedingWork, newLine, parseDoc, parseSettings, redoTargets, shouldAutoAdopt,
   synthesisOptions, takeBadge, tailResidualOf,
   takeTailCut, voiceKeyOf, TAIL_RESIDUAL_CUT,
@@ -376,3 +376,11 @@ test('값이 없던 옛 저장본은 없는 채로 복원된다 — 0 으로 채
   assert.equal(tailResidualOf(undefined), undefined)
   assert.equal(tailResidualOf({ metadata: { tail_residual_ratio: 0 } }), 0, '0은 아주 좋은 값이지 모름이 아니다')
 }
+
+// ★더빙 화면은 회차를 쌓지 않아 숫자로 바로 판정한다 — **같은 기준**이어야 한다.
+assert.equal(isTailCut(0.087), true, '실측된 끊긴 회차')
+assert.equal(isTailCut(TAIL_RESIDUAL_CUT), true, '기준값은 포함한다')
+for (const v of [0, 0.002, 0.007]) assert.equal(isTailCut(v), false, `정상 회차 ${v}`)
+assert.equal(isTailCut(undefined), false, '재지 못했으면 잘렸다고 말하지 않는다')
+assert.equal(isTailCut(Number.NaN), false)
+assert.equal(isTailCut(0.087), takeTailCut(take({ tailResidual: 0.087 })), '두 문이 같은 답을 내야 한다')
