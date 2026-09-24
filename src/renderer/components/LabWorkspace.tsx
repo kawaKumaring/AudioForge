@@ -15,7 +15,7 @@ import { useAppStore } from '@/stores/app.store'
 import { useLabStore, newId } from '@/stores/lab.store'
 import {
   LAB_STORAGE_KEY, adoptedTake, exportBlockText, exportReadiness, hasUnusedTake, isExportBlockNotice,
-  lineStatus, lineStatusText, parseDoc, synthesisOptions, takeBadge, takeTailCut, voiceKeyOf,
+  lineStatus, lineStatusText, parseDoc, synthesisOptions, tailResidualOf, takeBadge, takeTailCut, voiceKeyOf,
   type LabDoc, type LabLine,
 } from '../../shared/labWorkspace'
 import { REFERENCE_CONDITIONING_RECOMMENDED } from '../../shared/ttsConfig'
@@ -209,9 +209,9 @@ export default function LabWorkspace() {
       if (!j) return
       const src = (d?.tracks || [])[0]?.path
       // 마감 단계가 fade 를 걸기 전에 잰 '끝났을 때 남아 있던 소리'. 없으면 재지 않은 것이다.
-      const residualRaw = (d?.tracks || [])[0]?.metadata?.tail_residual_ratio
-      const residual = typeof residualRaw === 'number' && Number.isFinite(residualRaw)
-        ? residualRaw : undefined
+      // ★꺼내는 자리는 shared 의 순수 함수가 소유한다 — 예전에 여기서 **없는 자리**를
+      //   읽어 꼬리표가 한 번도 뜨지 않았다(2026-09-24). 설명은 tailResidualOf 참고.
+      const residual = tailResidualOf(d)
       void (async () => {
         if (src) {
           const takeId = newId('tk')

@@ -44,6 +44,14 @@ const files = readdirSync(path.join(ROOT, 'python'))
 let passed = 0
 let failedFiles = []
 let total = 0
+// ★건너뛴 검사를 따로 센다(2026-09-24).
+//   unittest 는 **전부 건너뛰어도** 'Ran N tests' + 'OK (skipped=N)' + exit 0 을 낸다.
+//   그래서 예전 집계는 **안 돈 검사를 통과로 합산**했고, 실제로 지금도
+//   고정 경로가 깨져 조용히 건너뛰는 검사가 있었다(test_macro_gain).
+//   자산이 사라지면 빨갛게 되는 대신 **조용히 사라진다** — 그것이 가장 나쁘다.
+//   이 저장소의 원칙은 이미 '건너뛴 사실을 요약에 남긴다' 이므로 규칙 변경이 아니라 이행이다.
+let skipped = 0
+const skippedFiles = []
 const t0 = Date.now()
 for (const f of files) {
   const r = spawnSync(py, ['-X', 'utf8', path.join('python', f)], {
@@ -53,6 +61,11 @@ for (const f of files) {
   const out = `${r.stdout || ''}${r.stderr || ''}`
   const ran = /Ran (\d+) tests?/.exec(out)
   total += ran ? Number(ran[1]) : 0
+  const skip = /OK \(.*?skipped=(\d+)/.exec(out)
+  if (skip) {
+    skipped += Number(skip[1])
+    skippedFiles.push({ f, n: Number(skip[1]) })
+  }
   // unittest 는 결과를 stderr 로 낸다. 'OK' 한 줄이 곧 전원 통과다.
   if (r.status === 0 && /^OK/m.test(out)) {
     passed++
@@ -64,5 +77,8 @@ for (const f of files) {
 }
 const secs = Math.round((Date.now() - t0) / 1000)
 for (const x of failedFiles) console.log(`  실패 ${x.f} (${x.ran}건) — ${x.why}`)
-console.log(`파이썬 시험 ${total}건 · 파일 ${passed}/${files.length} 통과 · ${secs}초`)
+// ★건너뛴 것을 통과에 섞지 않고 **따로 말한다.**
+for (const x of skippedFiles) console.log(`  건너뜀 ${x.f} (${x.n}건)`)
+const skipNote = skipped ? ` · **건너뜀 ${skipped}건**(위 목록)` : ' · 건너뜀 0'
+console.log(`파이썬 시험 ${total}건 · 파일 ${passed}/${files.length} 통과${skipNote} · ${secs}초`)
 process.exit(failedFiles.length === 0 ? 0 : 1)

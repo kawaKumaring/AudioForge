@@ -29,6 +29,17 @@ except ImportError:                                     # pragma: no cover
 
 _DEFER = "numpy 부재 — 공유 qwen venv 에서 실행"
 
+# ★소리 파일을 여는 부품이 있는가. **경로가 깨진 것과 환경이 없는 것은 다른 일이다.**
+#   2026-09-24: 고정 경로 때문에 조용히 건너뛰던 것을 고치자, 이번에는 게이트 파이썬에
+#   soundfile 이 없어 **오류**가 났다. 환경 없음은 정당한 건너뜀이므로 그렇게 말한다 —
+#   다만 그 사실이 게이트 요약에 **건너뜀으로 드러난다**(예전처럼 통과에 섞이지 않는다).
+try:
+    import soundfile as _sf_probe  # noqa: F401
+    HAS_SOUNDFILE = True
+except Exception:
+    HAS_SOUNDFILE = False
+_DEFER_SF = "soundfile 부재 — 앱 파이썬에서 실행"
+
 SR = 8000                # 계약은 표본율 무관이다. 테스트 속도를 위해 낮게 잡는다.
 WORD_SEC, GAP_SEC = 0.30, 0.14
 
@@ -330,14 +341,23 @@ class MetadataTest(unittest.TestCase):
 
 
 @unittest.skipUnless(HAS_NUMPY, _DEFER)
+@unittest.skipUnless(HAS_SOUNDFILE, _DEFER_SF)
 class ApprovedAssetTest(unittest.TestCase):
     """청취 승인 자산이 로컬에 있을 때만 도는 확인 — provenance 수치가 실제와 맞는지 본다."""
 
-    ROOT = os.path.join("E:", os.sep, "AI_Project", "claudeCodeVsCode", "apps", "development",
-                        "AudioForge", "_local", "artifacts")
+    # ★고정 경로를 쓰지 않는다(2026-09-24).
+    #   예전에는 절대경로가 박혀 있었는데 저장소 자리가 옮겨지면서 그 폴더가 사라져
+    #   **터지지도 않고 skipTest 로 조용히 건너뛰었다.** 자산은 새 자리에 그대로 있었다.
+    #   안 도는 검사는 없는 검사보다 나쁘다 — 게이트는 "전량 통과" 라고 말했다.
+    #   저장소가 이미 가진 해석기(local_assets)를 쓴다.
+
+    @staticmethod
+    def _root():
+        import local_assets
+        return os.path.join(local_assets.local_root(), "artifacts")
 
     def _read(self, *parts):
-        p = os.path.join(self.ROOT, *parts)
+        p = os.path.join(self._root(), *parts)
         if not os.path.isfile(p):
             self.skipTest("승인 자산 없음(다른 환경)")
         import soundfile as sf

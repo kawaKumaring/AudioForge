@@ -16,9 +16,19 @@ export interface SplitPiece {
   label: string
 }
 
+// 파일 이름에 쓸 수 없는 글자. ★파이썬 split_markers._FORBIDDEN_NAME_CHARS 와 **같아야 한다.**
+//
+// ★2026-09-24: 두 쪽에 똑같이 '\/:*?"<>|' 라고 적혀 있었는데 **읽히는 값이 달랐다.**
+//   JS 는 '\/' 를 '/' 한 글자로 읽어 **역슬래시가 빠지고**(8글자),
+//   파이썬은 모르는 표기라 역슬래시를 그대로 둔다(9글자).
+//   실측: 이름 'AC\\DC' → 화면 'AC\\DC' · 저장 'ACDC'.
+//   역슬래시는 윈도에서 쓸 수 없으므로 **파이썬이 맞고 화면이 틀렸다.**
+//   양쪽 다 눈에 보이게 적는다 — 같은 글자를 적었는데 다르게 읽히는 일이 없게.
+const FORBIDDEN_NAME_CHARS = '\\/:*?"<>|'
+
 /** 파일 이름에 쓸 수 없는 글자를 뺀다(파이썬과 같은 규칙). */
 export function safeLabel(label: string): string {
-  return [...(label || '')].filter((c) => !'\/:*?"<>|'.includes(c)).join('').trim()
+  return [...(label || '')].filter((c) => !FORBIDDEN_NAME_CHARS.includes(c)).join('').trim()
 }
 
 /**
