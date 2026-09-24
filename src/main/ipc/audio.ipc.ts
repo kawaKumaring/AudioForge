@@ -20,6 +20,7 @@ import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
 import { removeSplitTempDirs, listSplitTempDirs } from '../services/split-temp-cleanup'
 import { createSingleFlight, createKeyedSingleFlight } from '../services/single-flight'
 import { createSerialLane } from '../services/serial-lane'
+import { blockReason } from '../../shared/synthesisGate'
 import { cacheableResult, createResultCache, fileStamp, requestKey, KEY_SEP } from '../services/preview-cache'
 import { createJobWatchdog, startJobWatch, createStagingGate } from '../services/longform-job'
 import { createTerminalGate } from '../services/run-settlement'
@@ -351,6 +352,14 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   // 기본 목소리 준비와 인물 목소리 자동 준비가 겹치는 순간 뒤에 온 쪽이 "목소리 구간을 준비하지
   // 못했습니다"로 끝났다(실측). 파이썬을 동시에 두드리지 않는다는 목적은 줄 세우기로 그대로 지킨다.
   const referenceTrimLane = createSerialLane()
+  // ★미리듣기가 **가드 밖**에 있었다(2026-09-24 2차 감사).
+  //   미리듣기는 제 PythonRunner 를 새로 만들어 돌아서 runner.isRunning 에 안 걸린다.
+  //   미리듣기 쪽은 본 작업을 확인하고 BUSY 로 거절하는데 **반대 방향이 없었다** —
+  //   미리듣기 도는 중에 합성을 시작하면 파이썬 둘이 같은 GPU 를 동시에 문다.
+  //   한쪽만 보는 가드는 가드가 아니다. 양쪽이 같은 값을 본다.
+  //   트림처럼 줄을 세우지 않고 **거절**한다 — 미리듣기는 몇 초짜리고, 합성은
+  //   사용자가 직접 누르는 긴 작업이라 조용히 대기시키는 쪽이 더 나쁘다.
+  let samplerInFlight = 0
 
   // 읽기 전용 작업 single-flight — StrictMode 중복 effect/동시 요청에도 subprocess는 1회.
   const qwenPreflightSF = createSingleFlight<unknown>()
@@ -662,9 +671,15 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   })
 
   ipcMain.handle('audio:process', async (_event, filePath: string, mode: string, options?: Record<string, unknown>) => {
-    if (runner?.isRunning) {
-      throw new Error('이미 처리 중인 작업이 있습니다')
-    }
+    // ★'무엇이 돌면 막는가' 는 shared/synthesisGate 가 갖는다 — 여기 if 로 흩어 두었더니
+    //   파이썬을 새로 돌리는 길이 늘었을 때(감정 미리듣기) 아무도 갱신하지 않았다.
+    const busy = blockReason({
+      mainRunner: !!runner?.isRunning,
+      transcriptPreview: transcriptPreviewGuard.running,
+      referenceTrim: referenceTrimLane.running,
+      samplerPreview: samplerInFlight > 0,
+    }, '합성')
+    if (busy) throw new Error(busy)
     // 취소 진행 중(inflight)엔 새 실행 거부 — renderer 버튼 차단에만 의존하지 않는다(공용 마감 K2-D).
     if (cancelState === 'inflight') {
       throw new Error('작업을 취소하고 정리하는 중입니다. 잠시 후 다시 시도하세요.')
@@ -676,13 +691,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       if (!done) throw new Error('이전 취소 작업의 임시 파일 정리가 끝나지 않았습니다. 잠시 후 다시 시도하세요.')
       cleanupPending = false; currentOutputDir = null
     }
-    // 읽기 전용 preflight/analyze는 합성을 막지 않는다. 실제 참조 전사·트림 중일 때만 차단(작업명 표시).
-    if (transcriptPreviewGuard.running) {
-      throw new Error('참조 전사 미리보기 중에는 합성을 시작할 수 없습니다.')
-    }
-    if (referenceTrimLane.running) {
-      throw new Error('참조 구간 트림 중에는 합성을 시작할 수 없습니다.')
-    }
+    // 읽기 전용 preflight/analyze 는 합성을 막지 않는다 — 위 공용 판정에 넣지 않은 이유다.
 
     // Verify python exists
     if (!existsSync(pythonPath)) {
@@ -1006,6 +1015,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     if (trackSlot.current?.isRunning) {
       throw new Error('이미 처리 중인 트랙 작업이 있습니다')
     }
+    const trackBusy = blockReason({ samplerPreview: samplerInFlight > 0 }, '트랙 작업')
+    if (trackBusy) throw new Error(trackBusy)
     if (!existsSync(pythonPath)) {
       throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
     }
@@ -1474,6 +1485,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     if (runner?.isRunning) return { kind: 'error', code: 'BUSY' }
     if (!existsSync(pythonPath)) return { kind: 'error', code: 'NO_PYTHON' }
     const cfgPath = join(tmpdir(), `audioforge_sampler_${randomUUID()}.json`)
+    // ★세는 자리를 실행 **바로 앞**에 둔다 — 위 거절들은 아직 아무것도 돌리지 않았다.
+    samplerInFlight += 1
     try {
       const scriptPath = PythonRunner.getScriptPath('separate.py')
       writeFileSync(cfgPath, JSON.stringify({
@@ -1499,6 +1512,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     } catch {
       return { kind: 'error' }
     } finally {
+      samplerInFlight -= 1
       try { unlinkSync(cfgPath) } catch { /* noop */ }
     }
   }
