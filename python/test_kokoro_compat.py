@@ -79,6 +79,32 @@ class Test사유를_사람이_읽을_수_있는가(unittest.TestCase):
         self.assertTrue(all(not ok for ok, _ in got.values()))
 
 
+class Test기본_목소리(unittest.TestCase):
+    """★목소리를 안 넘기면 **언어와 무관하게 전부 터진다**(2026-09-24 실측).
+
+    엔진이 voice 를 넘기지 않아 en·zh 양쪽에서 "Specify a voice" 가 났다 —
+    즉 Kokoro 합성은 **어느 언어로도 되지 않는 상태**였다. 언어 문제가 아니었다.
+    """
+
+    def test_우리_언어_이름으로_고를_수_있다(self):
+        self.assertTrue(kc.default_voice('en'))
+        self.assertTrue(kc.default_voice('zh'))
+        self.assertTrue(kc.default_voice('ja'))
+
+    def test_Kokoro_글자로도_고를_수_있다(self):
+        self.assertEqual(kc.default_voice('a'), kc.default_voice('en'))
+        self.assertEqual(kc.default_voice('z'), kc.default_voice('zh'))
+
+    def test_언어마다_다른_목소리다(self):
+        got = [kc.default_voice(x) for x in ('en', 'zh', 'ja')]
+        self.assertEqual(len(set(got)), 3)
+
+    def test_모르면_아무거나_고르지_않는다(self):
+        """★엉뚱한 목소리로 합성되면 결과만 보고는 알 수 없다."""
+        self.assertIsNone(kc.default_voice('de'))
+        self.assertIsNone(kc.default_voice('ko'))
+
+
 class Test덧대기(unittest.TestCase):
     def test_두_번_불러도_한_번만_한다(self):
         kc._done = False

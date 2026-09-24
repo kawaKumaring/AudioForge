@@ -195,7 +195,16 @@ class KokoroEngine(TTSEngine):
             self.load()
         import soundfile as sf
 
-        generator = self._pipeline(text, speed=speed)
+        # ★목소리를 반드시 넘긴다 — 없으면 언어와 무관하게 터진다(2026-09-24 실측).
+        #   고르는 자리는 kokoro_compat 한 곳이다.
+        import kokoro_compat
+        voice = kokoro_compat.default_voice(self._lang)
+        if not voice:
+            e = RuntimeError("Kokoro 에 쓸 기본 목소리를 모릅니다: %s" % self._lang)
+            e.error_payload = {"code": ENGINE_LANG_UNAVAILABLE,
+                               "engine": "kokoro", "language": self._lang}
+            raise e
+        generator = self._pipeline(text, voice=voice, speed=speed)
         all_audio = []
         for _, _, audio in generator:
             all_audio.append(audio)

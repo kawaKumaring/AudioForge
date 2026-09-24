@@ -93,6 +93,25 @@ LANG_MAP = {"ko": "k", "ja": "j", "zh": "z", "en": "a"}
 LANG_EXTRAS = {"j": ("pyopenjtalk",), "z": ("ordered_set",), "a": (), "k": ()}
 
 
+# ★목소리를 지정하지 않으면 **언어와 무관하게 전부 터진다**(2026-09-24 실측).
+#   Kokoro 는 voice 인자를 요구하는데 우리 엔진이 넘기지 않고 있었다 —
+#   "Specify a voice: ..." 라는 오류가 en·zh 양쪽에서 똑같이 났다.
+#   즉 **Kokoro 합성은 어느 언어로도 되지 않는 상태였다.** 언어 문제가 아니었다.
+#   고르는 자리를 한 곳에 둔다 — 엔진과 계측대가 서로 다른 목소리를 쓰면 결과가 갈린다.
+DEFAULT_VOICE = {"a": "af_heart", "b": "bf_emma", "z": "zf_xiaobei",
+                 "j": "jf_alpha", "e": "ef_dora", "f": "ff_siwis",
+                 "h": "hf_alpha", "i": "if_sara", "p": "pf_dora"}
+
+
+def default_voice(lang):
+    """그 언어의 기본 목소리 이름. 모르면 None — **아무거나 골라 쓰지 않는다.**
+
+    lang 은 우리 이름("ko"/"en"...) 도 Kokoro 글자("a"/"z"...) 도 받는다.
+    """
+    code = LANG_MAP.get(lang, lang)
+    return DEFAULT_VOICE.get(code)
+
+
 def _installed_codes():
     from kokoro.pipeline import LANG_CODES
     return set(LANG_CODES)

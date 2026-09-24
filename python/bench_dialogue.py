@@ -31,7 +31,7 @@ import os
 DEFAULT_SR = 24000
 KOKORO_SR = 24000        # Kokoro 가 내놓는 표본율
 KOKORO_LANG = 'a'        # 설치된 판에 한국어가 없다(위 SCRIPT 설명 참고)
-KOKORO_VOICE = 'af_heart'
+# 목소리는 kokoro_compat 한 곳에서 고른다 — 엔진과 다른 것을 쓰면 결과가 갈린다.
 LEAD_SEC = 0.6              # 맨 앞 여백
 TRIM_DB = 40.0              # 합성 결과 앞뒤 정적을 이만큼 아래에서 잘라낸다
 TRIM_PAD_SEC = 0.02         # 잘라낸 뒤 조금만 되돌려 둔다(자음 앞부분 보호)
@@ -202,8 +202,9 @@ def kokoro_synth(text, sr=DEFAULT_SR, _cache={}):
         kokoro_compat.ensure(strict=True)
         from kokoro import KPipeline
         _cache["p"] = KPipeline(lang_code=KOKORO_LANG)
+        _cache["voice"] = kokoro_compat.default_voice(KOKORO_LANG)
     import numpy as np
-    parts = [a for _, _, a in _cache["p"](text, voice=KOKORO_VOICE, speed=1.0)]
+    parts = [a for _, _, a in _cache["p"](text, voice=_cache["voice"], speed=1.0)]
     if not parts:
         raise BenchError("합성이 아무것도 내놓지 않았습니다")
     y = np.concatenate([np.asarray(a, dtype=np.float64).reshape(-1) for a in parts])
