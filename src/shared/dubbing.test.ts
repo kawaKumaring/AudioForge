@@ -6,9 +6,18 @@
 //   · 상태 글자는 기획서의 셋(맞음 / 늘여서 맞춤 / 안 맞음)을 벗어나지 않는다
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 
 import {
-  DUB_STAGES, dubFrontSummary, dubNextAction, dubStatusColor, dubStatusLabel, dubTimeLabel,
+  DUB_STAGES,
+  dubFrontSummary,
+  dubNextAction,
+  dubStatusColor,
+  dubStatusLabel,
+  dubTimeLabel,
+  dubCancellable,
+  dubCancelRoute,
+  dubCancelText,
 } from './dubbing.ts'
 
 test('할 일이 없었으면 그렇다고 말하고 다음에 할 일을 알려 준다', () => {
@@ -64,4 +73,60 @@ test('시각을 분:초로 쓴다', () => {
   assert.equal(dubTimeLabel(19.53), '0:19.5')
   assert.equal(dubTimeLabel(125.4), '2:05.4')
   assert.equal(dubTimeLabel(-3), '0:00.0', '음수는 0 으로 본다')
+})
+
+// ── 멈추기 ───────────────────────────────────────────────────────────────
+//
+// ★더빙에는 멈출 수단이 아예 없었다(2026-09-25). 앞단은 영상 길이만큼 도는 가장
+//   긴 구간이고 GPU 를 문다 — 잘못 눌렀으면 끝날 때까지 기다리거나 앱을 죽여야 했다.
+
+test('멈출 수 있는 일과 없는 일을 가른다', () => {
+  assert.equal(dubCancellable('front'), true)
+  assert.equal(dubCancellable('render'), true)
+  assert.equal(dubCancellable('synth'), true)
+  // 목소리 준비는 짧고 중간에 끊으면 반쯤 준비된 상태가 남는다 — 일반 탭과 같은 선례.
+  assert.equal(dubCancellable('voice'), false)
+  assert.equal(dubCancellable(''), false)
+})
+
+// ★통로를 잘못 고르면 **단추는 눌리는데 아무것도 멈추지 않는다.**
+//   앞단·내보내기는 더빙이 제 실행기를 따로 돌리고, 줄 소리는 공용 실행기를 탄다.
+test('일마다 멈추는 통로가 다르다', () => {
+  assert.equal(dubCancelRoute('front'), 'dub')
+  assert.equal(dubCancelRoute('render'), 'dub')
+  assert.equal(dubCancelRoute('synth'), 'shared', '줄 소리는 공용 실행기를 탄다')
+  assert.equal(dubCancelRoute('voice'), null)
+  assert.equal(dubCancelRoute(''), null)
+})
+
+test('멈출 수 있다고 한 일에는 반드시 통로가 있다', () => {
+  for (const w of ['', 'front', 'voice', 'synth', 'render'] as const) {
+    assert.equal(dubCancellable(w), dubCancelRoute(w) !== null,
+      `${w}: 멈출 수 있다면서 통로가 없다(또는 그 반대)`)
+  }
+})
+
+// ★'멈췄습니다' 로 뭉개지 않는다 — 확인 못 한 것을 확인한 척하면, 사용자가 다음
+//   작업을 시작했다가 파이썬 둘이 같은 GPU 를 문다.
+test('종료를 확인하지 못했으면 그렇다고 말한다', () => {
+  const sure = dubCancelText({ accepted: true, treeKillConfirmed: true })
+  const unsure = dubCancelText({ accepted: true, treeKillConfirmed: false })
+  assert.notEqual(sure, unsure, '확인한 것과 못 한 것이 같은 말을 한다')
+  assert.match(unsure, /확인하지 못했/)
+  assert.match(sure, /그대로 있습니다/, '멈춰도 만든 것은 남는다고 말해야 한다')
+})
+
+test('멈출 것이 없으면 그렇게 말한다 — 실패로 적지 않는다', () => {
+  assert.match(dubCancelText({ accepted: false, reason: 'NO_ACTIVE_JOB' }), /이미 끝났습니다/)
+  assert.match(dubCancelText({ accepted: false, reason: 'ALREADY_CANCELLING' }), /이미 멈추는 중/)
+})
+
+// ★목록만 만들고 화면이 안 쓰면 아무것도 달라지지 않는다.
+test('화면이 이 판정을 실제로 쓴다', () => {
+  const src = readFileSync(new URL('../renderer/components/DubWorkspace.tsx', import.meta.url), 'utf-8')
+  assert.ok(src.includes('dubCancelRoute('), '화면이 통로 판정을 쓰지 않는다')
+  assert.ok(src.includes('dubCancellable('), '화면이 멈출 수 있는지 판정을 쓰지 않는다')
+  assert.ok(src.includes('data-testid="dub-cancel"'), '멈추기 단추가 없다')
+  // 한 줄만 멈추면 다음 줄로 넘어가 다시 GPU 를 문다.
+  assert.ok(src.includes('stopSynth'), '줄 소리 반복을 멈추는 자리가 없다')
 })

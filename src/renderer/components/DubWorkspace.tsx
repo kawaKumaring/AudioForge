@@ -20,7 +20,11 @@ import {
 // 말끝 잘림 판정은 **고급 화면과 같은 기준**을 쓴다 — 기준이 둘이면 화면끼리 말이 달라진다.
 import { synthesisOptions, defaultSettings, isTailCut, tailResidualOf } from '../../shared/labWorkspace'
 import { cancelFailureText } from '../../shared/cancelContract'
-import { useCancelLifecycle } from '@/hooks/useCancelLifecycle'
+import {
+  dubCancellable, dubCancelRoute, dubCancelText,
+  type DubCancelOutcome, type DubWork,
+} from '../../shared/dubbing'
+import { cancelAlreadyOverText, useCancelLifecycle } from '@/hooks/useCancelLifecycle'
 import { useAppStore } from '@/stores/app.store'
 import { REFERENCE_CONDITIONING_RECOMMENDED } from '../../shared/ttsConfig'
 import type { CommittedRef } from '../../shared/voicePreparation'
@@ -106,7 +110,7 @@ export default function DubWorkspace() {
   //   그러면 기다리던 줄이 영영 오지 않고 "줄 소리 만드는 중… 1/N" 에서 멈춘다.
   //   ★더빙에는 아직 취소 단추 자체가 없다 — 그것은 따로 볼 일이고(열린 항목),
   //     여기서는 **다른 화면의 취소가 실패했을 때 갇히지 않게** 하는 것까지 한다.
-  useCancelLifecycle(() => useAppStore.getState().status, {
+  const { requestCancel } = useCancelLifecycle(() => useAppStore.getState().status, {
     onFailed: (kind) => {
       const slot = pending.current
       pending.current = null
@@ -115,6 +119,29 @@ export default function DubWorkspace() {
       slot?.reject(new Error(cancelFailureText(kind)))
     },
   })
+
+  // ★멈추기(2026-09-25). 예전에는 멈출 수단이 아예 없어서, 잘못 눌렀으면
+  //   끝날 때까지 기다리거나 앱을 죽이는 수밖에 없었다.
+  //   통로가 둘이다 — 앞단·내보내기는 더빙이 제 실행기를 돌리므로 더빙 통로로,
+  //   줄 소리는 공용 실행기를 타므로 공용 취소로 간다. 잘못 고르면 안 멈춘다.
+  const stopSynth = useRef(false)
+  const cancelWork = useCallback(async () => {
+    const route = dubCancelRoute(busy as DubWork)
+    if (!route) return
+    setError('')
+    if (route === 'shared') {
+      stopSynth.current = true          // 남은 줄로 넘어가지 않게 — 한 줄만 멈추면 소용없다
+      setNote('멈추는 중…')
+      const reason = await requestCancel()
+      const over = cancelAlreadyOverText(reason)
+      if (over) setNote(over)
+      return
+    }
+    setNote('멈추는 중…')
+    const r = await (window.api.dub.cancel() as Promise<Reply<DubCancelOutcome>>)
+    if (!r?.ok || !r.data) { setError(r?.error || '멈추지 못했습니다.'); return }
+    setNote(dubCancelText(r.data))
+  }, [busy, requestCancel])
 
   const lines: DubLine[] = front?.lines ?? []
   const koreanOf = (l: DubLine) => (edits[l.index] ?? l.korean)
@@ -265,14 +292,21 @@ export default function DubWorkspace() {
     const todo = lines.filter((l) => koreanOf(l).trim() && (!onlyMissing || !takes[l.index]))
     if (todo.length === 0) { setNote('만들 줄이 없습니다.'); return }
     setError(''); setBusy('synth')
+    stopSynth.current = false
+    let made = 0
     try {
       for (let i = 0; i < todo.length; i++) {
+        // ★한 줄만 멈추면 소용없다 — 다음 줄로 넘어가면 다시 GPU 를 문다.
+        if (stopSynth.current) { setNote(`멈췄습니다. ${made}줄까지 만들었습니다.`); break }
         setNote(`줄 소리 만드는 중... ${i + 1}/${todo.length}`)
         await synthOne(todo[i], ref)
+        made += 1
       }
-      setNote(`${todo.length}줄을 만들었습니다.`)
+      if (!stopSynth.current) setNote(`${todo.length}줄을 만들었습니다.`)
     } catch (e) {
-      setError(`줄 소리를 만들다 멈췄습니다: ${(e as Error).message}`)
+      // 사용자가 멈춘 것을 실패로 적지 않는다.
+      if (stopSynth.current) setNote(`멈췄습니다. ${made}줄까지 만들었습니다.`)
+      else setError(`줄 소리를 만들다 멈췄습니다: ${(e as Error).message}`)
     } finally {
       pending.current = null
       setBusy('')
@@ -362,13 +396,31 @@ export default function DubWorkspace() {
         </div>
       )}
 
-      {(note || error) && (
-        <div style={{
-          fontSize: 12, padding: '8px 10px', borderRadius: 8,
-          background: error ? 'var(--rose-soft, #40202a)' : 'var(--bg-card)',
-          color: error ? 'var(--rose)' : 'var(--text-muted)',
-          border: '1px solid var(--border-subtle)', whiteSpace: 'pre-wrap',
-        }}>{error || note}</div>
+      {/* ★멈추기 — **멈출 수 있을 때만** 보인다(2026-09-25).
+          목소리 준비는 짧고 중간에 끊으면 반쯤 준비된 상태가 남아 내놓지 않는다.
+          일반 탭도 그 구간에는 취소를 내놓지 않는다 — 같은 선례를 따른다.
+          누를 수 없는 단추를 띄우는 것이 없는 것보다 나쁘다. */}
+      {(note || error || dubCancellable(busy as DubWork)) && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+          {(note || error) && (
+            <div style={{
+              flex: 1, minWidth: 0,
+              fontSize: 12, padding: '8px 10px', borderRadius: 8,
+              background: error ? 'var(--rose-soft, #40202a)' : 'var(--bg-card)',
+              color: error ? 'var(--rose)' : 'var(--text-muted)',
+              border: '1px solid var(--border-subtle)', whiteSpace: 'pre-wrap',
+            }}>{error || note}</div>
+          )}
+          {dubCancellable(busy as DubWork) && (
+            <button data-testid="dub-cancel" onClick={() => { void cancelWork() }}
+              title={'도는 작업을 멈춥니다. 여기까지 만든 것은 그대로 있습니다.'}
+              style={{
+                flexShrink: 0, fontSize: 12, padding: '8px 12px', borderRadius: 8,
+                background: 'var(--bg-card)', color: 'var(--rose, #fb7185)',
+                border: '1px solid var(--border-subtle)', cursor: 'pointer',
+              }}>작업 멈추기</button>
+          )}
+        </div>
       )}
 
       {front && (

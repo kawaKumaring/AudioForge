@@ -152,3 +152,57 @@ export function dubNextAction(opts: {
   if (opts.over > 0) return `자리에 안 맞는 줄이 ${opts.over}개입니다 — 번역문을 줄이고 그 줄만 다시 만드세요.`
   return '모두 자리에 들어갔습니다. 영상을 만들 수 있습니다.'
 }
+
+// ── 더빙 멈추기 ───────────────────────────────────────────────────────────
+//
+// ★더빙에는 **멈출 수단이 아예 없었다**(2026-09-25). 앞단은 영상 길이만큼 도는
+//   가장 긴 구간이고 GPU 를 문다. 시작해 놓고 되돌릴 방법이 없다는 것은,
+//   잘못 눌렀을 때 끝날 때까지 기다리거나 앱을 죽이는 수밖에 없다는 뜻이다.
+//
+// ★멈출 수 있는 것과 없는 것을 **정직하게 가른다.** 목소리 준비는 짧고 중간에
+//   끊으면 반쯤 준비된 상태가 남는다 — 일반 탭도 그 구간에는 취소를 내놓지 않는다.
+//   같은 선례를 따른다. 누를 수 없는 단추를 띄우는 것이 없는 것보다 나쁘다.
+
+/** 더빙이 지금 하고 있는 일. 화면의 busy 와 같은 값을 쓴다. */
+export type DubWork = '' | 'front' | 'voice' | 'synth' | 'render'
+
+/** 멈출 수 있는 일인가. */
+export function dubCancellable(work: DubWork): boolean {
+  return work === 'front' || work === 'render' || work === 'synth'
+}
+
+/**
+ * 이 일을 멈추려면 **어느 통로**로 가야 하는가.
+ *
+ * ★앞단·내보내기는 더빙이 **제 실행기를 따로** 만들어 돌린다 — 더빙 통로로 멈춘다.
+ *   줄 소리는 공용 실행기를 타므로 **공용 취소**로 멈춘다. 통로를 잘못 고르면
+ *   단추는 눌리는데 아무것도 멈추지 않는다.
+ */
+export function dubCancelRoute(work: DubWork): 'dub' | 'shared' | null {
+  if (work === 'front' || work === 'render') return 'dub'
+  if (work === 'synth') return 'shared'
+  return null
+}
+
+/** 멈춘 결과 — 본체가 돌려준다. */
+export type DubCancelOutcome =
+  | { accepted: true; treeKillConfirmed: boolean }
+  | { accepted: false; reason: 'NO_ACTIVE_JOB' | 'ALREADY_CANCELLING' }
+
+/**
+ * 멈춘 뒤 화면에 보일 한 줄.
+ *
+ * ★"멈췄습니다" 로 뭉개지 않는다 — 종료를 확인하지 못했으면 **그렇다고 말한다.**
+ *   합성 쪽에서 얻은 교훈이다: 확인 못 한 것을 확인한 척하면 사용자가 다음 작업을
+ *   시작했다가 파이썬 둘이 같은 GPU 를 물게 된다.
+ */
+export function dubCancelText(r: DubCancelOutcome): string {
+  if (!r.accepted) {
+    return r.reason === 'ALREADY_CANCELLING'
+      ? '이미 멈추는 중입니다.'
+      : '멈출 작업이 없습니다 — 이미 끝났습니다.'
+  }
+  return r.treeKillConfirmed
+    ? '작업을 멈췄습니다. 여기까지 만든 것은 그대로 있습니다.'
+    : '멈춤을 요청했지만 완전히 끝났는지 확인하지 못했습니다 — 잠시 뒤 다시 시작해 보세요.'
+}

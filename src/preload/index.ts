@@ -138,6 +138,8 @@ const api = {
     saveKorean: (edits: Record<number, string>) => ipcRenderer.invoke('dub:save-korean', edits),
     /** 고치는 즉시 쌓는다 — 저장 단추와 별개다. 줄 목록 파일은 건드리지 않는다. */
     saveEdits: (edits: Record<number, string>) => ipcRenderer.invoke('dub:save-edits', edits),
+    /** 도는 앞단·내보내기를 멈춘다. 줄 소리는 공용 취소가 멈춘다. */
+    cancel: () => ipcRenderer.invoke('dub:cancel'),
     render: (takes: Record<number, string>, destPath?: string) =>
       ipcRenderer.invoke('dub:render', takes, destPath),
     keepTake: (srcPath: string, index: number) =>
