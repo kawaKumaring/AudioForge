@@ -167,8 +167,14 @@ function createWindow(): void {
   registerAppVersionIpc()
   // 진단 묶음 — 로그 복사본 + 설정의 모양(값 없음). 시작 화면의 단추가 부른다.
   registerDiagnosticsIpc(() => mainWindow, () => currentPythonPath())
-  registerDubIpc(() => mainWindow, () => currentPythonPath())
-  const previewAdapter = registerAudioIpc(mainWindow)
+  // ★양쪽이 서로를 본다(2026-09-24 2차 감사). 더빙은 제 실행기를 따로 만들어서
+  //   공용 판정에 잡히지 않았고, 반대로 더빙도 다른 작업을 보지 않고 시작했다.
+  //   등록 순서상 더빙이 먼저이므로, 더빙에는 **늦게 부르는 함수**를 넘기고
+  //   더빙이 돌려준 것을 합성 쪽이 받는다.
+  const dubAdapter = registerDubIpc(
+    () => mainWindow, () => currentPythonPath(),
+    () => previewAdapter?.busyReason() ?? null)
+  const previewAdapter = registerAudioIpc(mainWindow, () => dubAdapter.isRunning())
   // 입력 분석 — GPU 를 쓰지 않는 상주 CPU worker. audio.ipc 와 같은 인터프리터를 쓴다.
   registerAnalysisIpc({ pythonPath: currentPythonPath })
 

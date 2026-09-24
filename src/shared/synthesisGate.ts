@@ -16,7 +16,12 @@
  * 이 파일은 **판정만** 한다 — 정리·대기 같은 곁일은 부르는 쪽이 한다.
  */
 
-/** 지금 무엇이 돌고 있는가. 값은 전부 '도는 중이면 true'. */
+/**
+ * 지금 무엇이 돌고 있는가. 값은 전부 '도는 중이면 true'.
+ *
+ * ★`mainRunner` 말고 여기 있는 것들은 **전부 제 실행기를 따로 만든다.**
+ *   그것이 이 목록이 필요한 이유다 — 공용 실행기 하나만 보면 안 보인다.
+ */
 export interface RunningState {
   /** 본 합성 실행기 */
   mainRunner: boolean
@@ -26,6 +31,13 @@ export interface RunningState {
   referenceTrim: boolean
   /** 감정 미리듣기 — **제 실행기를 따로 만든다.** 그래서 mainRunner 로는 안 보인다. */
   samplerPreview: boolean
+  /**
+   * 더빙의 **앞단·내보내기** — 이것도 제 실행기를 따로 만든다.
+   *
+   * ★줄 소리 합성은 여기 넣지 않는다. 그쪽은 공용 실행기를 타므로 `mainRunner` 가
+   *   이미 덮는다. 넣으면 더빙이 **제 합성 요청을 스스로 막는다.**
+   */
+  dubJob: boolean
 }
 
 /** 막는 것마다 사용자에게 보일 한 줄. 무엇 때문인지 **작업 이름을 말한다.** */
@@ -34,6 +46,7 @@ const REASONS: Array<[keyof RunningState, (what: string) => string]> = [
   ['transcriptPreview', (w) => `참조 전사 미리보기 중에는 ${w}을 시작할 수 없습니다.`],
   ['referenceTrim', (w) => `참조 구간 트림 중에는 ${w}을 시작할 수 없습니다.`],
   ['samplerPreview', (w) => `미리듣기를 만드는 중에는 ${w}을 시작할 수 없습니다.`],
+  ['dubJob', (w) => `더빙 작업 중에는 ${w}을 시작할 수 없습니다.`],
 ]
 
 /** 이 목록이 비면 가드가 통째로 사라진 것이다 — 검사가 그것도 붙잡는다. */

@@ -31,6 +31,14 @@ const DUB_CLIP_KEY = 'dub'
 
 type Busy = '' | 'front' | 'voice' | 'synth' | 'render'
 
+/** 화면 아래에 보일 말 — 무엇 때문에 바쁜지 말한다. */
+const BUSY_TEXT: Record<Exclude<Busy, ''>, string> = {
+  front: '더빙 앞단을 만드는 중…',
+  voice: '목소리를 준비하는 중…',
+  synth: '줄 소리를 만드는 중…',
+  render: '영상을 만드는 중…',
+}
+
 interface Reply<T> { ok: boolean; data?: T; error?: string }
 
 export default function DubWorkspace() {
@@ -285,7 +293,40 @@ export default function DubWorkspace() {
     }
   }, [takes])
 
-  const disabled = busy !== ''
+  // ★더빙이 공용 "바쁨" 을 **세지도 보지도 않았다**(2026-09-24 2차 감사).
+  //   그래서 앞단(영상 길이만큼 도는 가장 긴 구간)이 도는 내내 모드 단추가 그대로
+  //   눌렸고, 화면을 떠나면 결과를 듣던 자리가 사라져 **기다리던 약속이 영영 끝나지**
+  //   **않았다.** 형제 작업실(일반 탭)은 같은 방식으로 이미 공용 상태를 세우고 있었다.
+  //
+  //   ★이것은 화면 편의이고 **권위는 본체의 판정**이다 — 본체도 양방향으로 막는다.
+  //   ★한 자리에서만 비춘다: 시작·끝이 여덟 군데라 각자 세우면 하나를 또 빠뜨린다.
+  const ownsStatus = useRef(false)
+  useEffect(() => {
+    if (busy === "") {
+      if (ownsStatus.current) {
+        ownsStatus.current = false
+        useAppStore.setState({ status: "idle", progress: 0, progressMessage: "" })
+      }
+      return
+    }
+    ownsStatus.current = true
+    useAppStore.setState({
+      status: "processing", progress: 0, error: null,
+      progressMessage: BUSY_TEXT[busy] ?? "더빙 작업 중…",
+    })
+  }, [busy])
+  // 화면을 떠나도 앱이 "만드는 중" 에 남지 않게 한다.
+  useEffect(() => () => {
+    if (ownsStatus.current) {
+      ownsStatus.current = false
+      useAppStore.setState({ status: "idle", progress: 0, progressMessage: "" })
+    }
+  }, [])
+
+  // 다른 화면이 바쁘면 여기서 시작하지 않는다 — 본체가 거절하기 전에 단추부터 잠근다.
+  const sharedStatus = useAppStore((st) => st.status)
+  const busyElsewhere = busy === '' && sharedStatus === 'processing'
+  const disabled = busy !== '' || busyElsewhere
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 14 }}>

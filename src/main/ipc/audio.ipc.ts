@@ -272,7 +272,15 @@ export interface AudioIpcAdapters {
   busyReason: () => string | null
 }
 
-export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
+/**
+ * @param isDubRunning 더빙 **앞단·내보내기**가 도는지. 더빙은 제 실행기를 따로 만들어서
+ *   공용 `runner` 로는 보이지 않는다(감정 미리듣기와 같은 구조).
+ *   ★줄 소리 합성은 여기 포함하지 않는다 — 그쪽은 공용 실행기를 타므로 이미 보인다.
+ */
+export function registerAudioIpc(
+  mainWindow: BrowserWindow,
+  isDubRunning: () => boolean = () => false,
+): AudioIpcAdapters {
   // 테스트개발 작업실이 쓰는 두 가지(테이크 보관·이어 붙여 내보내기). 합성 경로와 무관하다.
   registerLabIpc(mainWindow)
   registerTranscriptIpc()
@@ -360,6 +368,21 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   //   트림처럼 줄을 세우지 않고 **거절**한다 — 미리듣기는 몇 초짜리고, 합성은
   //   사용자가 직접 누르는 긴 작업이라 조용히 대기시키는 쪽이 더 나쁘다.
   let samplerInFlight = 0
+
+  /**
+   * 지금 무엇이 도는가 — **한 번만 모은다.**
+   *
+   * ★따로따로 세면 새 실행기가 늘 때 한 곳만 고치고 다른 곳을 잊는다.
+   *   실제로 그렇게 미리듣기가 합성 가드 밖에 있었고, 더빙은 그것마저 밖에 있었다.
+   *   여기 한 줄을 늘리면 합성·트랙·참조 등록·미리듣기 경로가 **함께** 닫힌다.
+   */
+  const runningState = () => ({
+    mainRunner: !!runner?.isRunning,
+    transcriptPreview: transcriptPreviewGuard.running,
+    referenceTrim: referenceTrimLane.running,
+    samplerPreview: samplerInFlight > 0,
+    dubJob: isDubRunning(),
+  })
 
   // 읽기 전용 작업 single-flight — StrictMode 중복 effect/동시 요청에도 subprocess는 1회.
   const qwenPreflightSF = createSingleFlight<unknown>()
@@ -686,12 +709,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   ipcMain.handle('audio:process', async (_event, filePath: string, mode: string, options?: Record<string, unknown>) => {
     // ★'무엇이 돌면 막는가' 는 shared/synthesisGate 가 갖는다 — 여기 if 로 흩어 두었더니
     //   파이썬을 새로 돌리는 길이 늘었을 때(감정 미리듣기) 아무도 갱신하지 않았다.
-    const busy = blockReason({
-      mainRunner: !!runner?.isRunning,
-      transcriptPreview: transcriptPreviewGuard.running,
-      referenceTrim: referenceTrimLane.running,
-      samplerPreview: samplerInFlight > 0,
-    }, '합성')
+    const busy = blockReason(runningState(), '합성')
     if (busy) throw new Error(busy)
     // 취소 진행 중(inflight)엔 새 실행 거부 — renderer 버튼 차단에만 의존하지 않는다(공용 마감 K2-D).
     if (cancelState === 'inflight') {
@@ -1028,7 +1046,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     if (trackSlot.current?.isRunning) {
       throw new Error('이미 처리 중인 트랙 작업이 있습니다')
     }
-    const trackBusy = blockReason({ samplerPreview: samplerInFlight > 0 }, '트랙 작업')
+    const trackBusy = blockReason(
+      { samplerPreview: samplerInFlight > 0, dubJob: isDubRunning() }, '트랙 작업')
     if (trackBusy) throw new Error(trackBusy)
     if (!existsSync(pythonPath)) {
       throw new Error(`Python을 찾을 수 없습니다: ${basename(pythonPath)}`)
@@ -1450,7 +1469,10 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   // 이 함수 밖으로 runner·pythonPath 를 내보내지 않기 위해 adapter 형태로만 넘긴다.
   const referenceAdapter: ReferencePreviewAdapter = {
     busyReason: () => {
-      if (runner?.isRunning) return '처리 중에는 참조를 등록할 수 없습니다.'
+      // ★같은 판정을 쓴다 — 예전에는 공용 실행기 하나만 봐서, 미리듣기·더빙이 도는
+      //   중에도 참조 등록이 통과했다.
+      const why = blockReason(runningState(), '참조 등록')
+      if (why) return why
       if (!existsSync(pythonPath)) return 'Python 실행 파일을 찾을 수 없습니다.'
       return null
     },
@@ -1533,6 +1555,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   return {
     reference: referenceAdapter,
     runSamplerTts,
-    busyReason: () => (runner?.isRunning ? '다른 작업이 진행 중입니다.' : null),
+    // 같은 판정 하나를 본다 — 여기만 공용 실행기를 보고 있어서 더빙·트림을 못 봤다.
+    busyReason: () => blockReason(runningState(), '미리듣기'),
   }
 }
