@@ -198,10 +198,12 @@ export default function Options() {
                 ))}
               </div>
             )}
-            {/* 배경음 걷어내기 — **텍스트 추출 모드에서만.** 기본은 안 함(기존 동작).
-                왜 내놓는가: 반주·소음이 깔린 소리에서 알아듣기가 눈에 띄게 좋아진다.
-                실측(2026-09-21, 일본어 노래 1곡): 68.5% → 74.3%.
-                공짜가 아니다 — 한 번 더 갈라내는 시간을 치른다. 그래서 기본은 꺼 둔다. */}
+            {/* 배경음 걷어내기 — **텍스트 추출 모드에서만.** ★기본은 '자동'(2026-09-24).
+                배경음이 깔린 대사에서 걷어내지 않으면 앞단이 통째로 무너진다 —
+                실측(일본어 대사 계측대): 알아듣기 90.7% → 100%,
+                시작 시각 중앙 422 → 28밀리초, 구간 묶기도 틀린 것이 맞게 된다.
+                '자동'은 크기를 재어 조용한 녹음이면 스스로 사양한다(차이 30dB → 안 걷어냄).
+                값은 갈라내기 한 번(30초 소리에 5~10초). 그 값보다 잃는 것이 크다. */}
             {isTranscribeMode && (
               <div data-testid="asr-separate-row" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>배경음</span>
@@ -209,10 +211,10 @@ export default function Options() {
                   <button key={id} data-testid={`asr-separate-${id}`}
                     onClick={() => !disabled && setAsrSeparate(id)} disabled={disabled}
                     title={id === 'never'
-                      ? '소리를 그대로 넣습니다(기본). 지금까지와 같습니다.'
+                      ? '소리를 그대로 넣습니다. 배경음이 깔려 있으면 알아듣기와 시각이 크게 나빠집니다.'
                       : id === 'auto'
-                        ? '먼저 목소리와 배경음을 갈라내 크기를 재고, 배경음이 클 때만 걷어낸 소리를 넣습니다. 조용한 녹음이면 원본을 그대로 씁니다. 갈라내는 시간이 한 번 듭니다.'
-                        : '언제나 목소리만 뽑아 넣습니다. 반주나 소음이 늘 깔려 있는 소리에 쓰세요. 실측으로 알아듣기가 68.5%에서 74.3%로 올랐습니다. 갈라내는 시간이 한 번 듭니다.'}
+                        ? '기본. 먼저 목소리와 배경음을 갈라내 크기를 재고, 배경음이 클 때만 걷어낸 소리를 넣습니다. 조용한 녹음이면 원본을 그대로 씁니다. 실측으로 알아듣기가 90.7%에서 100%로, 시작 시각 어긋남이 422에서 28밀리초로 좋아졌습니다. 갈라내는 시간이 한 번 듭니다.'
+                        : '언제나 목소리만 뽑아 넣습니다. 크기를 재지 않으므로 조용한 녹음에서도 갈라냅니다. 반주가 늘 깔려 있는 것을 아실 때 쓰세요.'}
                     style={{
                       padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
                       fontSize: 10, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',

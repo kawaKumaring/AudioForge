@@ -208,7 +208,7 @@ interface AppState {
   whisperModel: 'small' | 'medium' | 'large-v3' | 'large-v3-turbo'
   /** 텍스트 추출 실행 엔진. 기본은 기존 경로다. */
   asrEngine: 'whisper' | 'faster-whisper'
-  /** 알아듣기 전에 배경음을 걷어낼지. 기본은 안 함 — 기존 동작 그대로다. */
+  /** 알아듣기 전에 배경음을 걷어낼지. 기본 auto — 재어 보고 필요할 때만 걷어낸다. */
   asrSeparate: 'never' | 'auto' | 'always'
   whisperLang: string
   translateModel: '600m' | '1.3b' | 'llm' | 'google'
@@ -434,7 +434,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   outputFormat: 'wav' as const,
   whisperModel: 'large-v3' as const,
   asrEngine: 'whisper' as const,
-  asrSeparate: 'never' as const,
+  asrSeparate: 'auto' as const,
   whisperLang: 'auto',
   translateModel: '600m' as const,
   demucsModel: 'htdemucs' as const,

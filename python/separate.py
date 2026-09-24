@@ -278,7 +278,9 @@ def main():
         args.asr_engine = config.get("asrEngine", "whisper")
         # 알아듣기 앞에 배경음을 걷어낼까. never(기본) | auto | always
         # 기본을 바꾸지 않는다 — 고르지 않으면 예전 그대로 돈다.
-        args.asr_separate = config.get("asrSeparate", "never")
+        # ★기본 auto — 재어 보고 필요할 때만 걷어낸다(2026-09-24 대사 계측대 실측:
+        #   배경음이 있으면 90.7%→100%, 시각 422→28밀리초. 조용하면 스스로 사양한다).
+        args.asr_separate = config.get("asrSeparate", "auto")
         args.whisper_lang = config.get("whisperLang", args.whisper_lang)
         args.translate = config.get("translate", args.translate)
         args.translate_model = config.get("translateModel", "600m")

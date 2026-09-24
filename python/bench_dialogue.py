@@ -30,7 +30,6 @@ import os
 # 무음 스냅이 듣는 것도 바로 이 자리다.
 DEFAULT_SR = 24000
 KOKORO_SR = 24000        # Kokoro 가 내놓는 표본율
-KOKORO_LANG = 'a'        # 설치된 판에 한국어가 없다(위 SCRIPT 설명 참고)
 # 목소리는 kokoro_compat 한 곳에서 고른다 — 엔진과 다른 것을 쓰면 결과가 갈린다.
 LEAD_SEC = 0.6              # 맨 앞 여백
 TRIM_DB = 40.0              # 합성 결과 앞뒤 정적을 이만큼 아래에서 잘라낸다
@@ -42,18 +41,42 @@ TRIM_PAD_SEC = 0.02         # 잘라낸 뒤 조금만 되돌려 둔다(자음 �
 #   일본어는 pyopenjtalk 이 없어 안 된다. 새 의존성을 들이지 않기로 하고 영어로 간다.
 #   시각을 재는 데는 말의 언어가 상관없다 — 참값은 우리가 놓은 자리다.
 #   다만 **알아듣기 정확도는 영어가 가장 후하게 나온다.** 그 수치는 절대값으로 쓰지 않는다.
-SCRIPT = (
-    ("Hello there. The weather is really nice today.", 0.0),
-    ("Yes, it certainly is.", 0.8),
-    ("It rained all day yesterday, but this morning the sky cleared up completely.", 0.5),
-    ("Then how about we go for a walk?", 1.2),
-    ("Sounds good.", 0.4),
-    ("Let us have lunch first and then take our time.", 0.9),
-    ("Have you decided where to go?", 0.6),
-    ("The riverside is quiet, so I think that would be pleasant.", 1.0),
-    ("All right. Let us meet at one o'clock.", 0.7),
-    ("Understood. See you later.", 0.5),
-)
+SCRIPTS = {
+    # 영어 — 2026-09-24 처음 잰 재료. 기록된 수치의 기준이므로 바꾸지 않는다.
+    "en": (
+        ("Hello there. The weather is really nice today.", 0.0),
+        ("Yes, it certainly is.", 0.8),
+        ("It rained all day yesterday, but this morning the sky cleared up completely.", 0.5),
+        ("Then how about we go for a walk?", 1.2),
+        ("Sounds good.", 0.4),
+        ("Let us have lunch first and then take our time.", 0.9),
+        ("Have you decided where to go?", 0.6),
+        ("The riverside is quiet, so I think that would be pleasant.", 1.0),
+        ("All right. Let us meet at one o'clock.", 0.7),
+        ("Understood. See you later.", 0.5),
+    ),
+    # 일본어 — ★사용자 실제 재료와 같은 언어다. 앞단(알아듣기·묶기·번역·자막)을
+    #   대사로 재려면 이쪽이 맞다. 부품을 들인 뒤에야 만들 수 있게 됐다.
+    "ja": (
+        ("こんにちは。今日はいい天気ですね。", 0.0),
+        ("ええ、本当にそうですね。", 0.8),
+        ("昨日は一日中雨が降っていましたが、今朝はすっかり晴れましたね。", 0.5),
+        ("それなら散歩にでも行きませんか。", 1.2),
+        ("いいですね。", 0.4),
+        ("お昼を食べてから、ゆっくり歩きましょう。", 0.9),
+        ("どこへ行くか決めましたか。", 0.6),
+        ("川のそばが静かで気持ちいいと思います。", 1.0),
+        ("そうしましょう。では一時に会いましょう。", 0.7),
+        ("わかりました。また後で。", 0.5),
+    ),
+}
+
+# 언어별 Kokoro 언어 글자. 한국어는 Kokoro 에 없어 여기 둘 수 없다
+# (한국어 합성은 piper 가 맡는다 — piper_voices 참고).
+LANG_CODE = {"en": "a", "ja": "j", "zh": "z"}
+
+SCRIPT = SCRIPTS["en"]          # 예전 부름새를 지킨다(검사가 이 이름을 쓴다)
+
 
 
 class BenchError(RuntimeError):
@@ -184,7 +207,7 @@ def write(out_dir, made, *, snr_db=None, seed=7):
     return {'audio_path': ap, 'truth_path': tp, 'snr_db': snr_db}
 
 
-def kokoro_synth(text, sr=DEFAULT_SR, _cache={}):
+def kokoro_synth(text, sr=DEFAULT_SR, lang="en", _cache={}):
     """실제 합성기 — Kokoro. **참조 목소리가 필요 없어 사용자 재료를 쓰지 않는다.**
 
     ★ComfyUI 쪽 경로 오염을 걷어낸다(맨 import 가 엉뚱한 곳으로 가는 함정).
@@ -201,8 +224,9 @@ def kokoro_synth(text, sr=DEFAULT_SR, _cache={}):
         import kokoro_compat
         kokoro_compat.ensure(strict=True)
         from kokoro import KPipeline
-        _cache["p"] = KPipeline(lang_code=KOKORO_LANG)
-        _cache["voice"] = kokoro_compat.default_voice(KOKORO_LANG)
+        code = LANG_CODE.get(lang, "a")
+        _cache["p"] = KPipeline(lang_code=code)
+        _cache["voice"] = kokoro_compat.default_voice(code)
     import numpy as np
     parts = [a for _, _, a in _cache["p"](text, voice=_cache["voice"], speed=1.0)]
     if not parts:
@@ -216,18 +240,21 @@ def kokoro_synth(text, sr=DEFAULT_SR, _cache={}):
 
 def main():
     import argparse
-    ap = argparse.ArgumentParser(description='대사 계측대를 만든다(사용자 재료 미사용)')
-    ap.add_argument('--out', required=True)
-    ap.add_argument('--snr', type=float, default=None,
-                    help='배경음을 섞을 크기 차이(dB). 주지 않으면 말만 낸다')
+    ap = argparse.ArgumentParser(description="대사 계측대를 만든다(사용자 재료 미사용)")
+    ap.add_argument("--out", required=True)
+    ap.add_argument("--lang", default="en", choices=sorted(SCRIPTS),
+                    help="대본 언어. ja 가 실제 재료와 같다")
+    ap.add_argument("--snr", type=float, default=None,
+                    help="배경음을 섞을 크기 차이(dB). 주지 않으면 말만 낸다")
     args = ap.parse_args()
-    made = build(args.out, kokoro_synth)
+    made = build(args.out, lambda t, sr: kokoro_synth(t, sr, args.lang),
+                 script=SCRIPTS[args.lang])
     info = write(args.out, made, snr_db=args.snr)
-    print('줄 %d개 · 길이 %.1f초' % (len(made['lines']),
-                                     len(made['audio']) / made['sr']))
-    print('소리   %s' % info['audio_path'])
-    print('참값   %s' % info['truth_path'])
+    print("언어 %s · 줄 %d개 · 길이 %.1f초"
+          % (args.lang, len(made["lines"]), len(made["audio"]) / made["sr"]))
+    print("소리   %s" % info["audio_path"])
+    print("참값   %s" % info["truth_path"])
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     main()

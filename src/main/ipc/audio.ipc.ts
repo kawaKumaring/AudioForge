@@ -741,9 +741,13 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       whisperModel: options?.whisperModel || 'large-v3',
       // 텍스트 추출의 실행 엔진 — **기본은 기존 경로**. 텍스트 모드에서만 파이썬이 본다.
       asrEngine: options?.asrEngine || 'whisper',
-      // 알아듣기 전에 배경음 걷어내기 — **기본은 안 함**(기존 동작 그대로).
-      // 켜면 한 번 더 갈라내는 값을 치르는 대신 알아듣기가 좋아진다(실측 +5.8%p).
-      asrSeparate: options?.asrSeparate || 'never',
+      // ★기본을 auto 로 둔다(2026-09-24, 일본어 대사 계측대 실측).
+      //   배경음이 깔린 대사에서 걷어내지 않으면 앞단이 통째로 무너진다 —
+      //   알아듣기 90.7% → **100%**, 시작 시각 중앙 422 → **28밀리초**,
+      //   구간 묶기도 12→9줄(틀림)에서 10→10줄(정확)로 바뀐다.
+      //   auto 는 크기를 재어 **조용한 녹음이면 스스로 사양한다**(실측: 차이 30dB → 안 걷어냄).
+      //   값은 갈라내기 한 번(30초 소리에 5~10초). 그 값보다 잃는 것이 훨씬 크다.
+      asrSeparate: options?.asrSeparate || 'auto',
       whisperLang: options?.whisperLang || 'auto',
       translate: !!options?.translate,
       translateModel: options?.translateModel || '600m',
