@@ -54,13 +54,33 @@ test('시간은 처음 인식한 구간 그대로다 — 고친 글자에 맞춰
   assert.equal(lines[1].start, 2.5)
 })
 
-test('교정본 TXT·SRT 는 고친 글자를 쓰고 시간은 그대로 쓴다', () => {
+test('교정본 TXT·SRT 는 고친 글자를 쓴다', () => {
   const d = doc({ edits: { 1: '두 번째 문장입니다.' } })
-  const txt = buildCorrectedTxt(d)
-  assert.equal(txt, '첫 문장입니다.\n두 번째 문장입니다.')
+  assert.equal(buildCorrectedTxt(d), '첫 문장입니다.\n두 번째 문장입니다.')
   const srt = buildCorrectedSrt(d)
-  assert.match(srt, /^1\n00:00:00,000 --> 00:00:02,500\n첫 문장입니다\./)
-  assert.match(srt, /2\n00:00:02,500 --> 00:00:05,000\n두 번째 문장입니다\./)
+  assert.ok(srt.includes('첫 문장입니다.'))
+  assert.ok(srt.includes('두 번째 문장입니다.'))
+})
+
+// ★2026-09-24 감사: 자막 만드는 자리가 **넷**인데 여기만 손질을 건너뛰고 있었다.
+//   그래서 같은 폴더에 손질된 <base>.srt 와 손질 안 된 <base>_corrected.srt 가
+//   나란히 생겼고, **고친 쪽이** 더 읽기 나빴다. 이 검사는 예전에 '손질 없음' 을
+//   고정하고 있었다 — 이제 **손질을 거친다**는 새 약속을 고정한다.
+test('교정본 SRT 도 자막 손질을 거친다', () => {
+  const d = doc({ edits: { 1: '두 번째 문장입니다.' } })
+  const srt = buildCorrectedSrt(d)
+  // 앞 자막이 뒤 자막과 맞닿지 않게 끝을 당긴다(예전에는 2.500 에서 맞닿았다).
+  assert.ok(srt.includes('00:00:00,000 --> 00:00:02,420'), srt)
+  assert.ok(srt.includes('00:00:02,500 --> 00:00:05,000'), srt)
+  // 시작 시각은 인식 결과 그대로다 — 손질은 정렬을 다시 하지 않는다.
+  assert.ok(srt.startsWith('1\n00:00:00,000'), srt)
+})
+
+test('교정본 SRT 는 긴 줄을 나눈다', () => {
+  const d = doc({ edits: { 0: '가'.repeat(35) } })
+  const body = buildCorrectedSrt(d)
+  const textLines = body.split('\n').filter((l) => l && !l.includes('-->') && !/^\d+$/.test(l))
+  assert.ok(textLines.some((l) => l.length <= 20), body)
 })
 
 test('내용을 비운 문장은 저장본에서 빠지되 **몇 개인지 알린다**', () => {

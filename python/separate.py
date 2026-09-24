@@ -978,10 +978,12 @@ def _run_track_process(args):
                 f.write(f"[{fmt_time(seg['start'])} → {fmt_time(seg['end'])}] {seg['text'].strip()}\n")
 
         if args.srt:
-            srt_path = os.path.join(args.output, f"{base}.srt")
-            with open(srt_path, "w", encoding="utf-8") as f:
-                for si, seg in enumerate(result["segments"], 1):
-                    f.write(f"{si}\n{fmt_srt_time(seg['start'])} --> {fmt_srt_time(seg['end'])}\n{seg['text'].strip()}\n\n")
+            # ★자막 손질을 거친다(2026-09-24 감사).
+            #   자막을 만드는 자리가 **넷**인데 여기만 구간을 줄로 그대로 옮기고 있었다.
+            #   같은 폴더에 손질된 것과 안 된 것이 나란히 생기면 사용자는
+            #   무엇이 맞는지 알 수 없다. 쓰는 함수를 하나로 모은다.
+            from transcribe_worker import _write_srt
+            _write_srt(result["segments"], os.path.join(args.output, f"{base}.srt"))
 
         emit("progress", percent=60, message=f"언어 감지: {language}")
     else:
