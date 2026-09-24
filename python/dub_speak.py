@@ -23,6 +23,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import audio_fit
+import tail_retry
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 SEPARATE = os.path.join(HERE, 'separate.py')
@@ -175,6 +176,21 @@ def speak_line(voice_path, ref_clip, text, out_dir, python_exe=None):
     return os.path.join(out_dir, made[-1])
 
 
+def _tail_ratio(path):
+    """말끝이 살아 있는 채 끝났는가 — 0에 가까우면 잦아들며 끝난 것이다.
+
+    ★못 재면 None 을 돌려준다. 지어내지 않는다 — 모르는 것을 "괜찮다" 로 치면
+      잘린 줄이 조용히 지나간다.
+    """
+    try:
+        import soundfile as sf
+        import audio_finishing
+        data, sr = sf.read(path, dtype="float32")
+        return audio_finishing.tail_residual_ratio(data, sr)
+    except Exception:
+        return None
+
+
 def main(argv=None):
     import argparse
     ap = argparse.ArgumentParser(description='더빙 줄 소리 만들기')
@@ -216,28 +232,55 @@ def main(argv=None):
         print('줄마다 프로세스를 새로 띄운다 — 모델을 매번 읽으므로 느리다')
 
     takes = {}
+    tail_rows = []
     started = time.time()
     for i, ln in enumerate(todo):
         idx = int(ln['index'])
         text = ln['korean'].strip()
         at = time.time()
-        if speaker is not None:
-            made = speaker.speak(_config_for(voice_path, ref_clip, text, scratch),
-                                 scratch, log_path)
-        else:
-            made = speak_line(voice_path, ref_clip, text, scratch, args.python or None)
+        # ★끝이 잘리면 **다시 만든다**(2026-09-24).
+        #   예전에는 이 경로가 잘렸는지 재지도 않았다 — 사용자가 겪은 자리가 여기다.
+        #   합성은 매번 조금씩 다르게 나오므로 다시 부르면 끝맺음을 제대로 하는
+        #   회차가 나온다. 값이 비싸므로(합성 한 번) 횟수를 묶어 둔다.
+        tries = []
+        while True:
+            if speaker is not None:
+                made = speaker.speak(_config_for(voice_path, ref_clip, text, scratch),
+                                     scratch, log_path)
+            else:
+                made = speak_line(voice_path, ref_clip, text, scratch, args.python or None)
+            keep = os.path.join(scratch, 'try-%04d-%d.wav' % (idx, len(tries)))
+            shutil.move(made, keep)
+            tries.append({'path': keep, 'ratio': _tail_ratio(keep)})
+            if not tail_retry.should_retry(tries[-1]['ratio'], len(tries)):
+                break
+            print('     끝이 잘린 듯하다(%.3f) — 다시 만든다' % tries[-1]['ratio'])
+        best = tail_retry.pick_best(tries)
+        chosen = tries[best]
         dest = os.path.join(takes_dir, 'line-%04d.wav' % idx)
-        shutil.move(made, dest)
+        shutil.move(chosen['path'], dest)
+        for t in tries:
+            if t is not chosen and os.path.isfile(t['path']):
+                os.remove(t['path'])
         takes[str(idx)] = dest
-        print('  %d/%d  %d번째 줄 · %d자 · 소리 %.1f초 · 만드는 데 %.0f초'
+        cut = tail_retry.is_cut(chosen['ratio'])
+        tail_rows.append({'index': idx, 'attempts': len(tries),
+                          'ratio': chosen['ratio'], 'cut': cut})
+        print('  %d/%d  %d번째 줄 · %d자 · 소리 %.1f초 · 만드는 데 %.0f초%s'
               % (i + 1, len(todo), idx + 1, len(text),
-                 audio_fit.probe_duration(dest), time.time() - at),
+                 audio_fit.probe_duration(dest), time.time() - at,
+                 ('' if len(tries) == 1 else ' · %d번 만듦' % len(tries))
+                 + (' · ★끝이 잘린 채로 남았다' if cut else '')),
               flush=True)
 
     takes_path = os.path.join(args.work, 'takes.json')
     with open(takes_path, 'w', encoding='utf-8') as f:
         json.dump(takes, f, ensure_ascii=False, indent=2)
     shutil.rmtree(scratch, ignore_errors=True)
+    tail = tail_retry.summarize(tail_rows)
+    if tail['retried']:
+        print('끝이 잘려 다시 만든 줄 %d개 — 그중 %d개는 살렸고 %d개는 그대로다'
+              % (tail['retried'], tail['rescued'], tail['still_cut']))
     print('%d줄 · %.0f초 걸렸다' % (len(takes), time.time() - started))
     print('짝 파일: %s' % takes_path)
     return 0
