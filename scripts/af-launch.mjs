@@ -240,14 +240,16 @@ function installer(python, args) {
     { stdio: 'inherit' }).status
 }
 
-function npmRun(args) {
+function npmRun(args, extraEnv) {
   const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
   return spawnSync(npm, args, {
-    cwd: REPO, stdio: 'inherit', shell: process.platform === 'win32'
+    cwd: REPO, stdio: 'inherit', shell: process.platform === 'win32',
+    // 앱이 화면에 알릴 수 있도록 상태를 넘긴다(비민감 — 사유 코드뿐).
+    env: extraEnv ? { ...process.env, ...extraEnv } : process.env
   }).status
 }
 
-function launchApp() {
+function launchApp(engineEnv) {
   // 앱 의존성은 **실제로 띄우기 직전에만** 확인한다. --check/--plan 같은 진단 명령이
   // 수백 MB짜리 npm install 을 끌고 오면 진단이 아니라 사건이 된다.
   if (!existsSync(join(REPO, 'node_modules'))) {
@@ -258,8 +260,8 @@ function launchApp() {
       return rc === null ? 1 : rc
     }
   }
-  log('\n환경 정상 — 앱을 시작합니다.\n')
-  const status = npmRun(['run', 'dev'])
+  log('\n앱을 시작합니다.\n')
+  const status = npmRun(['run', 'dev'], engineEnv)
   return status === null ? 1 : status
 }
 
@@ -353,10 +355,24 @@ async function main() {
     return p.ok ? 0 : 1
   }
 
+  // ★선택 엔진이 미비해도 **앱을 막지 않는다**(2026-09-25 실제 사고).
+  //   예전에는 여기서 설치를 물었고, 취소하면 앱이 아예 안 떴다.
+  //   그런데 GPT-SoVITS 는 목소리 엔진 다섯 중 하나이고, 앱의 다섯 모드 중 넷은
+  //   그 엔진과 무관하다 — **음악에서 보컬만 빼려는 사람도 4GiB 설치를 강요받았다.**
+  //   이제 앱이 뜨고, **무엇이 잠겼는지 화면이 말하고**, 거기서 설치할 수 있다.
   if (!p.ok) {
     bar()
-    log(`환경 점검: 미비 — ${p.reason}`)
+    log(`GPT-SoVITS 목소리 엔진: 미비 — ${p.reason}`)
+    log('앱은 그대로 시작합니다. 잠기는 것은 이 엔진으로 하는 음성 합성뿐이고,')
+    log('나머지(음악 분리·대화 분리·텍스트 추출·트랙 분할, 다른 목소리 엔진)는 그대로 씁니다.')
+    log('준비는 앱 안에서 할 수 있습니다. 터미널에서 하려면: node scripts/af-launch.mjs --install')
     bar()
+  } else {
+    log(`환경 점검: 정상 (재설치 없음) — ${p.python}`)
+  }
+
+  if (MODE === 'install') {
+    // ★설치는 **명시적으로 요청했을 때만** 대화식으로 돈다.
     const args = ['install']
     if (has('--yes')) args.push('--yes')
     const rc = installer(python, args)
@@ -372,8 +388,6 @@ async function main() {
       failure(`설치는 끝났지만 재점검을 통과하지 못했습니다: ${p.reason}`, null)
       return 1
     }
-  } else {
-    log(`환경 점검: 정상 (재설치 없음) — ${p.python}`)
   }
 
   // 앱 전용 Python 이 확보된 뒤, 앱 시작 전에 딱 한 번.
@@ -383,7 +397,8 @@ async function main() {
     log('설치·검증·연결 완료. (--install 이므로 앱은 시작하지 않습니다.)')
     return 0
   }
-  return launchApp()
+  // 앱이 화면에 알릴 수 있도록 넘긴다. 값은 비민감 — 사유 코드뿐이다.
+  return launchApp({ AF_ENGINE_GPTSOVITS: p.ok ? 'ok' : (p.reason || 'UNKNOWN') })
 }
 
 main().then((code) => process.exit(code)).catch((e) => {

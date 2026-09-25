@@ -982,7 +982,16 @@ export default function TTSEditor() {
   const addCastFiles = async (castId: string, speakerId: string, emotionId: string) => {
     const picked = await window.api.audio.selectFile(true, 'voice') as string[] | string | null
     const paths = Array.isArray(picked) ? picked : (picked ? [picked] : [])
-    if (paths.length) await voiceCast.addCandidateFiles(castId, speakerId, emotionId, paths)
+    if (!paths.length) return
+    // ★결과를 버리지 않는다(2026-09-25 실사용에서 드러남).
+    //   예전에는 반환을 통째로 버려서, 파일이 실패해도 **화면이 아무 말도 안 했다.**
+    //   사용자는 목록에 안 나타나는 것만 보고 "되는 건지 모르겠다" 고 했다.
+    setRefAssetNotice(null)
+    const r = await voiceCast.addCandidateFiles(castId, speakerId, emotionId, paths)
+    if (r.failed > 0) {
+      setRefAssetNotice(
+        `${r.added}개를 넣었고 ${r.failed}개가 실패했습니다 — ${r.reasons.join(' / ')}`)
+    }
   }
 
   const previewCastCandidate = (candidateId: string) => {

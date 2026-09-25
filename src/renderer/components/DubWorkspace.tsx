@@ -12,6 +12,7 @@
  *   · 목소리 준비                      → lib/voicePrepRunner (자리 `dub`)
  * 여기 있는 것은 **부르는 순서와 보여 주는 방법**뿐이다.
  */
+import { useOriginalBlockReason, DUB_RESUME_HINT } from '../../shared/dubGate'
 import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import {
   DUB_STAGE_LABELS, dubFrontSummary, dubNextAction, dubStatusColor, dubStatusLabel, dubTimeLabel,
@@ -378,8 +379,13 @@ export default function DubWorkspace() {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 14 }}>
       <Header videoPath={videoPath} voice={voice} disabled={disabled}
-        canUseOriginal={!!front}
+        useOriginalReason={useOriginalBlockReason({ videoPath, frontLoaded: !!front, busy: disabled })}
         onPickVideo={pickVideo} onPickVoice={pickVoice} onUseOriginal={useOriginalVoice} />
+
+      {/* 다 해 놓은 앞단을 처음부터 다시 돌리지 않게 — 되살리는 길을 적는다. */}
+      {!front && (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{DUB_RESUME_HINT}</div>
+      )}
 
       {videoPath && (
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
@@ -495,7 +501,8 @@ function Header(props: {
   videoPath: string
   voice: { path: string; ref: CommittedRef | null; message: string }
   disabled: boolean
-  canUseOriginal: boolean
+  /** 잠긴 이유. 비면 쓸 수 있다. */
+  useOriginalReason: string
   onPickVideo: () => void
   onPickVoice: () => void
   onUseOriginal: () => void
@@ -510,9 +517,16 @@ function Header(props: {
       </span>
       <span style={{ width: 1, height: 18, background: 'var(--border-subtle)' }} />
       <Btn onClick={props.onPickVoice} disabled={props.disabled}>목소리 고르기</Btn>
-      <Btn onClick={props.onUseOriginal} disabled={props.disabled || !props.canUseOriginal}>
+      <Btn onClick={props.onUseOriginal} disabled={!!props.useOriginalReason}
+        title={props.useOriginalReason}>
         영상 속 목소리 쓰기
       </Btn>
+      {/* 흐릿한 단추만 두면 "고장" 으로 읽힌다 — 다음에 할 일을 적는다. */}
+      {props.useOriginalReason && (
+        <span style={{ fontSize: 11, color: 'var(--amber)' }}>
+          {props.useOriginalReason}
+        </span>
+      )}
       <span style={{
         fontSize: 12,
         color: props.voice.ref ? 'var(--emerald)' : 'var(--text-muted)',
@@ -583,9 +597,11 @@ function LineTable(props: {
 
 function Btn(props: {
   onClick: () => void; disabled?: boolean; primary?: boolean; children: ReactNode
+  /** 잠긴 단추 위에 뜨는 설명. */
+  title?: string
 }): ReactElement {
   return (
-    <button onClick={props.onClick} disabled={props.disabled} style={{
+    <button onClick={props.onClick} disabled={props.disabled} title={props.title} style={{
       padding: '7px 13px', borderRadius: 8, fontFamily: 'inherit', fontSize: 12,
       fontWeight: props.primary ? 600 : 500, cursor: props.disabled ? 'not-allowed' : 'pointer',
       background: props.primary ? 'var(--cyan)' : 'var(--bg-card)',
