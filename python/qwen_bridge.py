@@ -153,6 +153,43 @@ def _install_talker_counter(model):
     talker._af_counter_installed = True
 
 
+#: 참조 준비에 든 시간(조각 누적). 계측 전용 — 동작에 쓰이지 않는다.
+_REF_PREP = {"sec": 0.0, "calls": 0}
+
+
+def _install_ref_prompt_timer(model):
+    """참조 프롬프트를 만드는 데 **몇 초 가는지만** 잰다(멱등, 동작 불변).
+
+    ★왜 재나(2026-09-25 실측)
+      조각이 1개일 때 생성 밖 고정비가 3.1초였는데 2개가 되자 8.8초가 됐다.
+      조각마다 반복되는 준비가 있다는 신호인데, **그 안에서 참조 준비가 몇 초인지**
+      알 수 없으면 고칠 값어치가 있는지 판단할 수 없다.
+
+      벤더는 조각마다 참조 wav 를 다시 읽고 코덱으로 다시 인코딩한다. 참조는 작업
+      내내 바뀌지 않는데도 그렇다. 다만 **이론적 낭비와 측정 가능한 비용은 다르다** —
+      바로 앞에서 은닉 상태 낭비가 이론상 명백했는데 재 보니 0.7%였다.
+      그래서 고치기 전에 잰다.
+
+    같은 객체를 그대로 돌려주는 순수 래퍼다 — 난수·분포·소리가 바뀔 통로가 없다.
+    이 저장소가 `_install_talker_counter` 로 이미 쓰는 방식 그대로이고 벤더 파일은 건드리지 않는다.
+    """
+    fn = getattr(model, "create_voice_clone_prompt", None)
+    if not callable(fn) or getattr(model, "_af_ref_timer", False):
+        return False
+
+    def _timed(*args, **kwargs):
+        t = time.monotonic()
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _REF_PREP["sec"] += time.monotonic() - t
+            _REF_PREP["calls"] += 1
+
+    model.create_voice_clone_prompt = _timed
+    model._af_ref_timer = True
+    return True
+
+
 def _preflight_tokenizer(model):
     """production token 계산에 필요한 도구 존재 확인. 부재/비호출 → 조용한 8192 폴백 금지, 명확한 호환성 오류."""
     builder = getattr(model, "_build_assistant_text", None)
@@ -324,6 +361,8 @@ def _generate_segment(model, seg, builder, proc, probe_context="production"):
     # tts_worker 의 elapsed_seconds 로 대신할 수 없다: 그 타이머는 장치 선택·참조 평가·모델
     # 로딩·결합·pitch·원자적 배치까지 포함한 '작업 전체' 시간이다. 또 generated_iterations 가
     # chunk 단위이므로 elapsed 도 chunk 단위여야 나눗셈이 의미를 갖는다.
+    _ref_prep_before = _REF_PREP["sec"]
+    _ref_calls_before = _REF_PREP["calls"]
     _t_gen = time.monotonic()
     # probe_kwargs 는 기본 경로에서 항상 빈 dict 다 → 호출 인자·동작 불변.
     wavs, sr = model.generate_voice_clone(
@@ -331,6 +370,9 @@ def _generate_segment(model, seg, builder, proc, probe_context="production"):
         ref_audio=seg["ref_audio"], ref_text=ref_text,
         x_vector_only_mode=xvo, max_new_tokens=seg_limit, **probe_kwargs)
     gen_elapsed = round(time.monotonic() - _t_gen, 3)
+    # 이 조각에서 참조 준비에 든 시간(누적값의 차이). 생성 시간 안에 숨어 있던 몫이다.
+    ref_prep = round(_REF_PREP["sec"] - _ref_prep_before, 3)
+    ref_prep_calls = _REF_PREP["calls"] - _ref_calls_before
     if probe is not None and probe.get("accepted") is None:
         # 예외 없이 여기까지 왔다 = 엔진이 instruct_ids 를 받아들였다(accepted).
         # ⚠️ honored 는 여기서 절대 정하지 않는다 — 소리가 실제로 달라졌는지는 이 자리에서 알 수 없다.
@@ -350,6 +392,8 @@ def _generate_segment(model, seg, builder, proc, probe_context="production"):
     return {"wavs": wavs, "sr": sr, "prod_tokens": prod_tokens,
             "generation_limit": seg_limit, "generated_iterations": iters,
             "termination_reason": reason, "generation_elapsed_sec": gen_elapsed,
+            # 생성 시간 **안에 숨어 있던** 참조 준비 몫(계측 전용).
+            "ref_prep_sec": ref_prep, "ref_prep_calls": ref_prep_calls,
             "controlled_prefix": controlled_prefix,
             # 참조 예산(유효 참조의 codec 프레임·전사 토큰·재발화 프레임). 출력 예산과 섞지 않는다.
             "reference_budget": _rb,
@@ -789,6 +833,9 @@ def _generate_plan(model, plan, builder, proc, n_segments, progress=None, seed=N
                      "generated_iterations": int(g["generated_iterations"]),
                      # blocking 생성 구간만 잰 값(가산). 없으면 None — 0 으로 위조하지 않는다.
                      "generation_elapsed_sec": g.get("generation_elapsed_sec"),
+                     # 그 안에서 참조를 다시 읽고 다시 인코딩하는 데 든 몫.
+                     "ref_prep_sec": g.get("ref_prep_sec"),
+                     "ref_prep_calls": g.get("ref_prep_calls"),
                      # 유효 참조가 차지한 몫(codec 프레임·전사 토큰·재발화 프레임) — 출력 예산과 별도.
                      "reference_budget": g.get("reference_budget"),
                      "applied_seed": applied_seed,   # 진단 전용. seed 미지정이면 None.
@@ -872,6 +919,7 @@ def main():
         model = _load_model(model_path, device)
         builder, proc = _preflight_tokenizer(model)  # 안전장치 전제 — 부재 시 여기서 명확히 실패
         _install_talker_counter(model)
+        _install_ref_prompt_timer(model)   # 계측 전용 — 동작 불변
         n = len(segments)
 
         # 1단계: 전 segment 선분할(생성 없음). 실패 시 여기서 종료 → generate 호출 0(뒤 실패로 앞 낭비 방지).

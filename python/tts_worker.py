@@ -3117,7 +3117,9 @@ def _run_record_entries(rec, ordered_entries):
                 termination_reason=e.get("termination_reason"),
                 vendor_crop_record=vcr,
                 external_alignment_calls=(0 if vcr is not None else None),
-                elapsed_sec=e.get("generation_elapsed_sec"))
+                elapsed_sec=e.get("generation_elapsed_sec"),
+                ref_prep_sec=e.get("ref_prep_sec"),
+                ref_prep_calls=e.get("ref_prep_calls"))
             # vendor native 는 반환 PCM 이 곧 chunk 파형이다 — 그 사실을 단계로 남긴다.
             _diag_stage(rec, "vendor_returned" if not e.get("controlled_prefix") else "raw",
                         e, gidx=g)

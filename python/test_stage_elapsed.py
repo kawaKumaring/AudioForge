@@ -94,5 +94,35 @@ class TestStageNamesAreStable(unittest.TestCase):
             self.assertRegex(n, r'^[a-z][a-z0-9_]*$', '단계 이름이 규칙에서 벗어났다: %s' % n)
 
 
+class TestRefPrepMeasured(unittest.TestCase):
+    """참조 준비 시간이 **생성 시간 안에 숨어 있던** 것을 밖으로 꺼내 둔다.
+
+    ★실측 결과(2026-09-25): 생성의 0.72%, 그중 절약 가능분은 0.05초였다.
+      즉 **고칠 값어치가 없다**는 것이 숫자로 확정됐다. 그래도 계측은 남긴다 —
+      참조가 길어지거나 조각이 많아지면 이 값이 커지고, 그때 바로 보인다.
+      은닉 상태 실험처럼 **같은 것을 다시 재지 않으려면** 자가 남아 있어야 한다.
+    """
+
+    def test_브리지가_참조_준비를_잰다(self):
+        src = io.open(os.path.join(HERE, 'qwen_bridge.py'), encoding='utf-8').read()
+        self.assertIn('_install_ref_prompt_timer', src, '참조 준비를 재는 자리가 없다')
+        self.assertIn('ref_prep_sec', src)
+
+    def test_계측이_동작을_바꾸지_않는다(self):
+        """같은 객체를 그대로 돌려주는 순수 래퍼여야 한다 — 소리가 바뀔 통로가 없게."""
+        src = io.open(os.path.join(HERE, 'qwen_bridge.py'), encoding='utf-8').read()
+        at = src.index('def _install_ref_prompt_timer')
+        body = src[at:src.index('def _preflight_tokenizer')]
+        self.assertIn('return fn(*args, **kwargs)', body, '원래 호출을 그대로 넘기지 않는다')
+        for forbidden in ('torch.', 'random', 'seed'):
+            self.assertNotIn(forbidden, body, '계측기가 %s 를 건드린다' % forbidden)
+
+    def test_값이_기록까지_흐른다(self):
+        w = io.open(os.path.join(HERE, 'tts_worker.py'), encoding='utf-8').read()
+        c = io.open(os.path.join(HERE, 'chunk_publish.py'), encoding='utf-8').read()
+        self.assertIn('ref_prep_sec=', w, '부모가 값을 넘기지 않는다')
+        self.assertIn('ref_prep_sec', c, '기록기가 값을 받지 않는다')
+
+
 if __name__ == '__main__':
     unittest.main(verbosity=2)
