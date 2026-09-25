@@ -13,6 +13,7 @@ import { registerDiagnosticsIpc } from './ipc/diagnostics.ipc'
 import { registerDubIpc } from './ipc/dub.ipc'
 import { createAppLog, mirrorConsole, setAppLog, watchUncaught, LOG_DIR_NAME } from './services/app-log'
 import { seedDevUserData, userDataDirNameFor, USER_DATA_DIR_STABLE, type SeedResult } from './services/user-data-channel'
+import { warmUpBridge } from './services/bridge-warmup'
 import { channelForVersion } from '../shared/buildMetadata'
 import { readSettingsFile, readSettingsMeta, SETTINGS_FORMAT_VERSION } from './services/settings-store'
 import { basename, dirname } from 'path'
@@ -378,6 +379,16 @@ if (!gotLock) {
     })
 
     createWindow()
+
+    // ★합성 엔진 라이브러리를 **배경에서 미리 읽어 둔다**(2026-09-25 실측).
+    //   합성 준비 8.4초 중 5.8초가 라이브러리 읽기인데, 그 값은 **데워진 뒤**이고
+    //   처음에는 25.9초다 — 앱을 켜고 첫 합성이 유독 느린 이유가 이것이다.
+    //   처음 한 번을 여기로 옮기면 사용자가 기다리는 시간이 아니게 된다.
+    //   ★모델은 올리지 않는다 — GPU 를 한 바이트도 쓰지 않음을 실측으로 확인했다.
+    warmUpBridge({
+      root: join(__dirname, '..', '..'),
+      log: (m) => { APP_LOG.info('warmup', m) },
+    })
 
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
