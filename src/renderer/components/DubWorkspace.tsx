@@ -202,7 +202,14 @@ export default function DubWorkspace() {
       report: (patch) => {
         setVoice((v) => ({
           path,
-          ref: patch.ready ? { clip: patch.clip ?? '', region: patch.region ?? null } : v.ref,
+          // ★`patch.ready` 를 보다가 목소리가 영영 준비되지 않았다(2026-09-26 실행에서 잡음).
+          //   준비 담당은 성공을 **`phase: 'ready'`** 로 알린다 — `ready` 칸은 채우는 곳이
+          //   아무 데도 없는 유령이었다. 그래서 `voice.ref` 가 계속 비었고,
+          //   합성 단추 둘이 `!voice.ref` 로 잠긴 채 **목소리 고르기도 영상 속 목소리 쓰기도**
+          //   **전부 막혔다.** 화면은 '아직 고르지 않았습니다' 로 되돌아가 아무 말도 안 했다.
+          ref: patch.phase === 'ready'
+            ? { clip: patch.clip ?? '', region: patch.region ?? null }
+            : v.ref,
           message: patch.message ?? v.message,
         }))
       },

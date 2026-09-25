@@ -64,8 +64,22 @@ test('어떤 경우에도 빈손으로 잠그지 않는다', () => {
 //   진짜 소스에는 통과를, 일부러 만든 나쁜 본보기에는 실패를 요구한다 —
 //   **파일을 건드리지 않고** 이빨을 확인한다.
 
-/** 화면 코드가 이유를 제대로 쓰고 그리는가. 어긋난 곳의 이름을 돌려준다. */
-export function screenFaults(text: string): string[] {
+/** 주석을 뺀 코드 — 사연을 적어 둔 주석이 검사에 걸리지 않게. */
+const codeOf = (text: string): string =>
+  text.split(/\r?\n/).filter((l) => {
+    const t = l.trimStart()
+    return !t.startsWith('//') && !t.startsWith('*') && !t.startsWith('/*')
+  }).join('\n')
+
+/**
+ * 화면 코드가 이유를 제대로 쓰고 그리는가. 어긋난 곳의 이름을 돌려준다.
+ *
+ * ★주석을 먼저 걷어낸다(2026-09-26). 이 저장소에서 **세 번째** 같은 실수다 —
+ *   나중에 붙인 주석에 단추 이름이 들어가자, 검사가 그 주석을 단추로 착각해
+ *   멀쩡한 코드를 실패로 몰았다. **잘못 잡는 가드는 결국 꺼진다.**
+ */
+export function screenFaults(raw: string): string[] {
+  const text = codeOf(raw)
   const bad: string[] = []
   if (!text.includes('useOriginalBlockReason(')) bad.push('판정을 부르지 않는다')
   if (text.includes('canUseOriginal')) bad.push('이유 없는 참·거짓 잠금이 되살아났다')
