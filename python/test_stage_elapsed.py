@@ -67,9 +67,20 @@ class TestParentWiring(unittest.TestCase):
                       '브리지가 재서 보낸 숫자를 다시 버리고 있다')
 
     def test_네_단계를_기록에_남긴다(self):
-        for name in ('model_load', 'bridge_loaded', 'bridge_generating', 'run_job'):
+        for name in ('model_load', 'bridge_import', 'bridge_loaded', 'bridge_generating', 'run_job'):
             self.assertIn("stage_elapsed('%s'" % name, self.src,
                           '%s 단계가 기록되지 않는다' % name)
+
+    def test_적재를_import_와_가중치로_가른다(self):
+        """★이 한 칸이 병목의 정체를 바꿨다(2026-09-25 실측).
+
+        적재 8.4초를 통째로 보면 '모델이 크구나' 로 읽힌다. 갈라 보니
+        **import 가 5.7~6.1초(70%)** 이고 가중치 읽기·GPU 올리기는 2.5초였다.
+        즉 병목은 가중치가 아니라 **매 프로세스가 torch 를 다시 읽는 것**이다.
+        갈라 재지 않았으면 엉뚱한 것을 고칠 뻔했다.
+        """
+        self.assertIn('bridge_import', self.src, 'import 시간을 따로 남기지 않는다')
+        self.assertIn('"loading"', self.src, '가중치를 읽기 직전 시각을 줍지 않는다')
 
     def test_부모_시계와_브리지_시계를_섞지_않는다(self):
         """뜻이 다른 두 시계를 한 이름으로 합치면 숫자를 읽을 수 없게 된다.

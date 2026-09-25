@@ -1051,6 +1051,12 @@ class QwenTTSEngine(TTSEngine):
                 _el = msg.get("elapsed_sec")
                 if isinstance(_el, (int, float)) and st in ("loaded", "generating"):
                     _bridge_marks[st] = float(_el)
+                # ★`loading` 은 가중치를 읽기 **직전** 시각이다 — 그 앞은 전부 import 다.
+                #   이 한 칸이 있어야 적재 8.4초가 'import' 와 '가중치 읽기' 로 갈린다.
+                #   첫 시도만 본다(두 번째는 sdpa 실패 후 재시도라 뜻이 다르다).
+                elif (isinstance(_el, (int, float)) and st == "loading"
+                      and int(msg.get("attempt") or 1) == 1):
+                    _bridge_marks["loading"] = float(_el)
                 if st == "loaded":
                     loaded = True   # 이 시점부터 기동 deadline 해제, 무응답 280s 계약 그대로
                     _loaded_at = _now()
@@ -1102,6 +1108,8 @@ class QwenTTSEngine(TTSEngine):
             "model_load": round(_loaded_at - _t0, 3) if _loaded_at is not None else None,
             "bridge_loaded": _bridge_marks.get("loaded"),
             "bridge_generating": _bridge_marks.get("generating"),
+            # 가중치를 읽기 직전까지 — 이 값이 곧 **import 에 든 시간**이다.
+            "bridge_import": _bridge_marks.get("loading"),
         }
         return self._validate_seg_out(seg_out, segments)
 
@@ -2480,6 +2488,7 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                     # 프로세스를 띄워 모델이 올라오기까지(파이썬 기동·import·가중치 읽기 포함).
                     _CONCAT_RECORDER.stage_elapsed('model_load', _stages.get('model_load'))
                     # 브리지가 제 시계로 잰 값 — 부모 시계와 뜻이 다르므로 이름을 나눈다.
+                    _CONCAT_RECORDER.stage_elapsed('bridge_import', _stages.get('bridge_import'))
                     _CONCAT_RECORDER.stage_elapsed('bridge_loaded', _stages.get('bridge_loaded'))
                     _CONCAT_RECORDER.stage_elapsed('bridge_generating', _stages.get('bridge_generating'))
                     # run_job 전체 — 생성 합과 견주면 '생성 밖' 이 바로 나온다.
