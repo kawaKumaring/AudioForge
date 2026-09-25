@@ -214,7 +214,68 @@ def venv_fingerprint(venv_dir):
     for name in dists:
         h.update(name.encode("utf-8"))
         h.update(b"\n")
-    return {"sha256": h.hexdigest(), "distributions": len(dists), "python_size": py_size}
+    # ★이름 목록도 남긴다(2026-09-25). 예전에는 **개수만** 남겨서, 어긋났을 때
+    #   "무엇이" 바뀌었는지 말할 수 없었다. 그래서 패키지가 **늘어난** 경우에도
+    #   "삭제·변경되었습니다" 라고 단정했고, 사용자는 망가진 줄 알고 수 GiB 를
+    #   다시 받으려 했다(실제 사고, 2026-09-25).
+    #   이름은 비민감하다 — 패키지 이름과 판 번호뿐이고 경로·사용자 정보가 없다.
+    return {"sha256": h.hexdigest(), "distributions": len(dists),
+            "python_size": py_size, "names": list(dists)}
+
+
+def fingerprint_diff(recorded, actual):
+    """기록과 현재가 **어떻게** 다른지. 늘었는지 줄었는지를 사실대로 말한다.
+
+    ★왜 생겼나(2026-09-25 실제 사고)
+      예전에는 개수만 비교하고 문구는 늘 "패키지가 삭제·변경되었습니다" 였다.
+      그런데 실제로 일어난 일은 **일본어 지원 패키지 3개가 정당하게 추가**된 것이었고,
+      기록만 갱신하면 되는 상황이었다. 사용자는 "손상" 으로 읽고 4GiB 재설치를
+      시작했다 — 30초면 될 일이었다.
+
+      **늘어난 것과 줄어든 것은 다른 일이다.** 같은 말로 덮으면 사람이 잘못 판단한다.
+
+    옛 기록에는 이름이 없다(개수만). 그때는 방향만 말하고 **모르는 것을 아는 척하지 않는다.**
+    """
+    rec_names = recorded.get("names")
+    act_names = actual.get("names")
+    rn = int(recorded.get("distributions") or 0)
+    an = int(actual.get("distributions") or 0)
+    if isinstance(rec_names, list) and isinstance(act_names, list):
+        added = sorted(set(act_names) - set(rec_names))
+        removed = sorted(set(rec_names) - set(act_names))
+        parts = []
+        if added:
+            parts.append("늘어난 것 %d개: %s" % (len(added), ", ".join(_short(x) for x in added[:5])
+                                             + (" 외" if len(added) > 5 else "")))
+        if removed:
+            parts.append("사라진 것 %d개: %s" % (len(removed), ", ".join(_short(x) for x in removed[:5])
+                                             + (" 외" if len(removed) > 5 else "")))
+        if not parts:
+            # 이름은 같은데 지문이 다르다 = 인터프리터가 바뀌었다.
+            return {"added": [], "removed": [],
+                    "text": "패키지 목록은 같은데 파이썬 실행 파일이 달라졌습니다."}
+        tail = ("" if removed
+                else " 사라진 것은 없습니다 — 손상이 아닐 수 있습니다.")
+        return {"added": added, "removed": removed,
+                "text": "기록 %d개 → 현재 %d개. %s.%s" % (rn, an, " / ".join(parts), tail)}
+    # 옛 기록: 이름이 없으니 방향만 말한다.
+    if an > rn:
+        way = "늘었습니다 — 사라진 것이 있는지는 이 기록으로 알 수 없습니다"
+    elif an < rn:
+        way = "줄었습니다"
+    else:
+        way = "수는 같지만 내용이 다릅니다"
+    return {"added": [], "removed": [],
+            "text": "기록 %d개 → 현재 %d개. 패키지가 %s." % (rn, an, way)}
+
+
+def _short(dist_dir_name):
+    """`foo-1.2.3.dist-info` → `foo 1.2.3`. 사람이 읽을 형태로만 줄인다."""
+    base = dist_dir_name[:-len(".dist-info")] if dist_dir_name.endswith(".dist-info") else dist_dir_name
+    if "-" in base:
+        name, _, ver = base.rpartition("-")
+        return "%s %s" % (name, ver)
+    return base
 
 
 def _hostname():
@@ -409,10 +470,12 @@ def probe_gptsovits(cfg=None, spec=None):
         return out
     if recorded.get("sha256") != actual.get("sha256"):
         out["reason"] = "FINGERPRINT_MISMATCH"
-        out["details"]["hint"] = (
-            f"기록 {recorded.get('distributions')}개 → 현재 {actual.get('distributions')}개. "
-            "패키지가 삭제·변경되었습니다."
-        )
+        diff = fingerprint_diff(recorded, actual)
+        out["details"]["hint"] = diff["text"]
+        out["details"]["changed"] = {"added": diff["added"], "removed": diff["removed"]}
+        # ★줄어든 것이 없으면 **손상이 아닐 수 있다.** 전체 재설치를 권하기 전에
+        #   싼 길을 먼저 알려 준다 — 실제로 30초면 끝나는 일에 수 GiB 를 받게 했다.
+        out["details"]["repairable_by_relink"] = not diff["removed"]
         return out
 
     verification = (comp or {}).get("verification") or {}
@@ -431,7 +494,7 @@ REASON_TEXT = {
     "REPO_MISSING": "GPT-SoVITS 코드 폴더가 없습니다.",
     "MODEL_INCOMPLETE": "사전학습 모델 파일이 없거나 손상되었습니다.",
     "NO_FINGERPRINT": "설치 지문 기록이 없습니다(옛 형식 기록).",
-    "FINGERPRINT_MISMATCH": "설치된 패키지가 기록과 다릅니다(삭제·변경 감지).",
+    "FINGERPRINT_MISMATCH": "설치된 패키지가 기록과 다릅니다.",
     "NOT_VERIFIED": "설치 기록은 있으나 검증을 통과한 적이 없습니다.",
     "RECORDED_ON_OTHER_HOST": "다른 PC 에서 만든 연결 기록입니다. 이 PC 에는 그 경로가 없습니다.",
 }

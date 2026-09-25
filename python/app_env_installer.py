@@ -632,6 +632,16 @@ def cmd_status(args):
         hint = (probe.get("details") or {}).get("hint")
         if hint:
             print(f"            {hint}")
+        # ★싼 길을 먼저 보여 준다(2026-09-25 실제 사고).
+        #   패키지가 늘기만 했을 때도 화면에 보이는 선택지가 "전체 재설치" 뿐이라,
+        #   사용자가 30초면 될 일에 4GiB 를 받기 시작했다.
+        #   해결책이 이미 있는데 **보이지 않으면 없는 것과 같다.**
+        if (probe.get("details") or {}).get("repairable_by_relink"):
+            print()
+            print("            사라진 패키지가 없습니다 — 다시 설치하지 않아도 될 수 있습니다.")
+            print("            먼저 이것을 해 보세요(수십 초, 내려받기 없음):")
+            print("                python app_env_installer.py verify --relink")
+            print("            실제로 열리는지 확인한 뒤 기록만 갱신합니다. 실패하면 그때 설치하세요.")
     print(f"python    : {probe['python']}")
     print(f"repo      : {probe['repo']}")
     return 0 if probe["ok"] else 1
