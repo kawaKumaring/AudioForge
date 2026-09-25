@@ -53,10 +53,6 @@ class Selection(unittest.TestCase):
         self.assertEqual(sm.selected_pieces(p, []), [])
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class Test역슬래시_미러(unittest.TestCase):
     """★2026-09-24: 화면 쪽(splitPieces.ts)과 **똑같이 적혀 있었는데 읽히는 값이 달랐다.**
 
@@ -72,3 +68,9 @@ class Test역슬래시_미러(unittest.TestCase):
     def test_역슬래시만_있으면_빈_이름이다(self):
         import split_markers
         self.assertEqual(split_markers.safe_label(chr(92)), '')
+
+
+# ★이 블록은 **파일 맨 끝**에 있어야 한다 — 중간에 두면 아래 검사가
+#   아직 만들어지지 않은 채 돌아 이 파일을 직접 실행할 때 조용히 빠진다.
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

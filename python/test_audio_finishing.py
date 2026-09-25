@@ -615,10 +615,6 @@ def _nested(cms):
     return stack
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 @unittest.skipUnless(HAS_NUMPY, "numpy 필요")
 class TailResidualRatio(unittest.TestCase):
     """말끝 잔여량 — 끝났을 때 아직 소리가 남아 있었는가(계측일 뿐, 소리를 바꾸지 않는다).
@@ -666,3 +662,9 @@ class TailResidualRatio(unittest.TestCase):
             af.tail_residual_ratio(np.zeros(10, dtype=np.float32), 0)
         with self.assertRaises(af.AudioFinishingError):
             af.tail_residual_ratio(np.zeros(10, dtype=np.float32), SR, window_ms=0.0)
+
+
+# ★이 블록은 **파일 맨 끝**에 있어야 한다 — 중간에 두면 아래 검사가
+#   아직 만들어지지 않은 채 돌아 이 파일을 직접 실행할 때 조용히 빠진다.
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

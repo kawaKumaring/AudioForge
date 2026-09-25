@@ -185,10 +185,6 @@ class TestBoundaryKinds(unittest.TestCase):
             self.assertIn(k, cp.BOUNDARY_KINDS)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class TestWiringInertWhenDisabled(unittest.TestCase):
     """진단이 꺼져 있어도 **기록은 남는다.** 대신 오디오 산출 바이트는 완전히 같아야 한다."""
 
@@ -302,3 +298,9 @@ class TestGlobalIndexContract(unittest.TestCase):
                 else:
                     os.environ[k] = v
             shutil.rmtree(tmp, ignore_errors=True)
+
+
+# ★이 블록은 **파일 맨 끝**에 있어야 한다 — 중간에 두면 아래 검사가
+#   아직 만들어지지 않은 채 돌아 이 파일을 직접 실행할 때 조용히 빠진다.
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

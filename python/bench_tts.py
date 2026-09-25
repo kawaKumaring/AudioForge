@@ -95,6 +95,37 @@ def make_reference(out_dir):
     return dest
 
 
+def _no_paths(text):
+    """경로의 **폴더 부분만** 지운다 — 파일 이름은 남긴다.
+
+    ★왜 여기 또 있나(2026-09-25 3차 감사)
+      이 벤치가 남기는 기록에 `stderr_tail` 로 **절대 경로가 그대로** 들어가고 있었다.
+      파이썬 오류에는 사용자 입력 파일 경로도 실릴 수 있다.
+      그리고 내가 넣은 "본문을 기록에 넣지 않는다" 검사는 **그 칸을 보지 않았다.**
+
+      같은 규칙이 `src/main/services/log-scrub.ts` 에 있지만 그것은 TypeScript 라
+      파이썬에서 부를 수 없다. 규칙이 짧아 여기 다시 적되, **같은 말을 한다**는 것을
+      검사로 묶어 둔다(둘이 갈라지면 한쪽만 고치는 사고가 난다).
+    """
+    import re
+    B = chr(92)                      # 역슬래시 한 글자
+    if not text:
+        return text
+    out = str(text)
+    seg = "[^" + B + B + "/:" + B + "s'" + chr(34) + "<>|*?]+"
+    for pat in (
+        r"[A-Za-z]:[" + B + B + "/](?:" + seg + "[" + B + B + "/])*(" + seg + ")",
+        r"[" + B + B + "]{2}(?:" + seg + "[" + B + B + "/])+(" + seg + ")",
+        r"/(?:" + seg + "/)+(" + seg + ")",
+    ):
+        for _ in range(4):
+            nxt = re.sub(pat, r"\1", out)
+            if nxt == out:
+                break
+            out = nxt
+    return out
+
+
 def sha(path):
     h = hashlib.sha256()
     with open(path, 'rb') as f:
@@ -191,11 +222,12 @@ def run_once(py, ref_wav, text, work, seed):
     return {
         'wall_sec': wall,
         'exit': proc.returncode,
-        'error': err,
+        'error': _no_paths(err),
         'stages': stages,
         'out_sha256': sha(out_wav) if out_wav else None,
         'out_name': os.path.basename(out_wav) if out_wav else None,
-        'stderr_tail': (proc.stderr or '').strip().splitlines()[-3:],
+        # ★폴더를 지우고 적는다. 여기 오는 것은 우리가 쓴 문장이 아니라 파이썬 오류다.
+        'stderr_tail': [_no_paths(l) for l in (proc.stderr or '').strip().splitlines()[-3:]],
     }
 
 
