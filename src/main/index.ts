@@ -13,7 +13,9 @@ import { registerDiagnosticsIpc } from './ipc/diagnostics.ipc'
 import { registerDubIpc } from './ipc/dub.ipc'
 import { createAppLog, mirrorConsole, setAppLog, watchUncaught, LOG_DIR_NAME } from './services/app-log'
 import { seedDevUserData, userDataDirNameFor, USER_DATA_DIR_STABLE, type SeedResult } from './services/user-data-channel'
-import { warmUpBridge } from './services/bridge-warmup'
+import { warmUpBridge, type WarmupHandle } from './services/bridge-warmup'
+/** 배경 데우기 손잡이 — 종료 때 멈추려면 붙들고 있어야 한다. */
+let warmupHandle: WarmupHandle | null = null
 import { channelForVersion } from '../shared/buildMetadata'
 import { readSettingsFile, readSettingsMeta, SETTINGS_FORMAT_VERSION } from './services/settings-store'
 import { basename, dirname } from 'path'
@@ -385,7 +387,11 @@ if (!gotLock) {
     //   처음에는 25.9초다 — 앱을 켜고 첫 합성이 유독 느린 이유가 이것이다.
     //   처음 한 번을 여기로 옮기면 사용자가 기다리는 시간이 아니게 된다.
     //   ★모델은 올리지 않는다 — GPU 를 한 바이트도 쓰지 않음을 실측으로 확인했다.
-    warmUpBridge({
+    // ★핸들을 **붙들어 둔다**(2026-09-25 3차 감사에서 내가 낸 결함).
+    //   버리면 종료 때 멈출 수 없다. `detached:false` 는 윈도에서 자동 종료를
+    //   보장하지 않는다 — 앱을 껐는데 파이썬이 남아 도는 모양이 된다.
+    //   이 저장소가 분석 worker 를 세 자리에서 정리하는 것과 같은 규율을 따른다.
+    warmupHandle = warmUpBridge({
       root: join(__dirname, '..', '..'),
       log: (m) => { APP_LOG.info('warmup', m) },
     })
@@ -397,16 +403,18 @@ if (!gotLock) {
 }
 
 // Electron 이 정상 경로를 못 타고 내려가도(dev 서버 종료·창 강제 종료) 자기가 띄운
-// 분석 worker 는 함께 내려가야 한다. app 훅만으로는 부족해 process 수준에서도 건다.
-app.on('will-quit', () => { disposeAnalysisIpc() })
-process.once('exit', () => { disposeAnalysisIpc() })
+// 자식들은 함께 내려가야 한다. app 훅만으로는 부족해 process 수준에서도 건다.
+const stopWarmup = (): void => { try { warmupHandle?.stop() } catch { /* 이미 죽었으면 그만 */ } }
+app.on('will-quit', () => { disposeAnalysisIpc(); stopWarmup() })
+process.once('exit', () => { disposeAnalysisIpc(); stopWarmup() })
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
-  process.once(sig, () => { disposeAnalysisIpc(); app.quit() })
+  process.once(sig, () => { disposeAnalysisIpc(); stopWarmup(); app.quit() })
 }
 
 app.on('before-quit', () => {
   // 분석은 편집 보조일 뿐이므로 종료를 붙들지 않는다 — 대기 요청을 취소하고 프로세스를 닫는다.
   disposeAnalysisIpc()
+  stopWarmup()
   APP_LOG.info('boot', '종료')
 })
 

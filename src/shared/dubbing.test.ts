@@ -130,3 +130,42 @@ test('화면이 이 판정을 실제로 쓴다', () => {
   // 한 줄만 멈추면 다음 줄로 넘어가 다시 GPU 를 문다.
   assert.ok(src.includes('stopSynth'), '줄 소리 반복을 멈추는 자리가 없다')
 })
+
+// ── 가드를 **세운 뒤에만** 푼다 ──────────────────────────────────────────
+//
+// ★3차 감사에서 내가 낸 결함을 찾았다(2026-09-25).
+//   `dub:run-front` 는 `beginDubWork()` 를 try **안**에 두고 finally 로 풀었다.
+//   그러면 **이미 더빙 중이라 거절당한 두 번째 요청이 먼저 돌고 있는 작업의**
+//   **가드를 풀어 버린다.** 그 순간 합성 쪽 판정이 더빙을 못 보게 되어
+//   파이썬 둘이 같은 GPU 를 문다 — 이번 회차에 고치려던 바로 그 사고다.
+//   `dub:render` 는 처음부터 옳은 모양이었다. 같은 파일 안에서 둘이 갈려 있었다.
+test('거절당한 요청이 남의 가드를 풀지 않는다', () => {
+  const src = readFileSync(new URL('../main/ipc/dub.ipc.ts', import.meta.url), 'utf-8')
+  const flat = src.split(/\r?\n/)
+  // `beginDubWork()` 가 있는 줄마다, 그 **앞쪽**에 try 가 열려 있고 뒤에 finally 로
+  // 푸는 모양이면 안 된다. 세운 직후 별도 블록으로 감싸야 한다.
+  const at = flat.findIndex((l) => l.trim() === 'beginDubWork()' )
+  assert.ok(at > 0, 'beginDubWork 호출을 못 찾았다 — 검사가 눈이 멀었다')
+  for (let i = at + 1; i < Math.min(at + 14, flat.length); i++) {
+    if (flat[i].includes('dubGuard.end()')) {
+      // 사이에 try 가 새로 열렸는지 본다.
+      const between = flat.slice(at, i).join(' ')
+      assert.ok(between.includes('try'),
+        '가드를 세운 자리와 푸는 자리 사이에 try 가 없다 — 거절이 남의 가드를 푼다')
+    }
+  }
+  assert.ok(src.includes('runFrontGuarded'), '세운 뒤에만 도는 본체가 분리되지 않았다')
+})
+
+test('가드를 세우는 자리와 푸는 자리 수가 맞는다', () => {
+  const src = readFileSync(new URL('../main/ipc/dub.ipc.ts', import.meta.url), 'utf-8')
+  // ★주석과 **정의**는 호출이 아니다 — 세면 잘못 잡는 가드가 되고, 그런 가드는 꺼진다.
+  const code = src.split(/\r?\n/)
+    .filter((l) => !l.trimStart().startsWith('//') && !l.trimStart().startsWith('*'))
+    .filter((l) => !l.includes('function beginDubWork'))
+    .join(' ')
+  const begins = (code.match(/(?:^|[^.\w])beginDubWork\(\)/g) || []).length
+  const ends = (code.match(/dubGuard\.end\(\)/g) || []).length
+  assert.equal(begins, ends, `세우기 ${begins}회 · 풀기 ${ends}회 — 짝이 안 맞는다`)
+  assert.ok(begins >= 2, `호출을 ${begins}개밖에 못 찾았다 — 검사가 눈이 멀었다`)
+})

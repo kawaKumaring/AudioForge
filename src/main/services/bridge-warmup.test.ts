@@ -144,3 +144,20 @@ test('본체가 기동 때 실제로 부른다', () => {
   assert.ok(index.indexOf('createWindow()') < index.indexOf('warmUpBridge('),
     '창보다 먼저 데우면 첫 화면이 늦어진다')
 })
+
+// ★3차 감사에서 내가 낸 결함(2026-09-25): 손잡이를 **버리고** 있었다.
+//   그러면 앱을 껐을 때 멈출 수 없다. `detached:false` 는 윈도에서 자동 종료를
+//   보장하지 않는다 — 앱은 닫혔는데 파이썬이 남아 도는 모양이 된다.
+//   이 저장소는 잔여 프로세스에 여러 번 데여 분석 worker 를 세 자리에서 정리한다.
+test('본체가 손잡이를 붙들고 종료 때 멈춘다', () => {
+  const index = readFileSync(path.resolve(HERE, '..', 'index.ts'), 'utf-8')
+  assert.match(index, /warmupHandle\s*=\s*warmUpBridge\(/,
+    '손잡이를 버린다 — 종료 때 멈출 수 없다')
+  // 분석 worker 와 **같은 자리들**에서 함께 내려가야 한다.
+  for (const hook of ['will-quit', 'before-quit']) {
+    const at = index.indexOf(hook)
+    assert.ok(at > 0, `${hook} 훅이 없다`)
+  }
+  const stops = (index.match(/stopWarmup\(\)/g) || []).length
+  assert.ok(stops >= 4, `멈추는 자리가 ${stops}곳뿐이다 — 정상 종료·강제 종료·신호를 다 덮어야 한다`)
+})

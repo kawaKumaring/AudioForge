@@ -254,6 +254,19 @@ export default function DubWorkspace() {
     return () => clearTimeout(t)
   }, [edits, front])
 
+  // ★떠나기 직전에 **대기 중인 것을 지금 보낸다**(2026-09-25 3차 감사).
+  //   위 효과는 언마운트 때 타이머만 지운다. 그래서 마지막 글자를 친 뒤 0.5초 안에
+  //   화면을 떠나면 그 편집이 쌓이지 않고 사라졌다 — 사이드카를 만든 이유가
+  //   "저장 단추 전에 잃지 않기" 인데 **그 창이 0.5초 남아 있었다.**
+  //   ★여기서는 결과를 받아 볼 화면이 이미 없다. 그래서 보내고 잊는 것이 불가피하다 —
+  //     버리는 것이 아니라 **보여 줄 자리가 없는 것**이고, 그 사실을 여기 적어 둔다.
+  useEffect(() => () => {
+    if (Object.keys(editsRef.current).length === 0) return
+    try {
+      void (window.api.dub.saveEdits(editsRef.current) as Promise<unknown>)
+    } catch { /* 떠나는 길에 막을 것이 없다 */ }
+  }, [])
+
   const saveKorean = useCallback(async () => {
     if (Object.keys(edits).length === 0) return
     setError('')

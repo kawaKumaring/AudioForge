@@ -147,21 +147,38 @@ export function registerDubIpc(
   ): Promise<DubReply<DubFrontResult>> => {
     try {
       if (!videoPath || !workDir) throw new DubJobError('먼저 영상을 고르세요')
+      // ★`beginDubWork()` 을 try **밖**에 둔다(2026-09-25 3차 감사에서 내가 낸 결함).
+      //   안에 두고 아래 finally 로 풀면, **이미 더빙 중이라 거절당한 두 번째 요청이**
+      //   **먼저 돌고 있는 작업의 가드를 풀어 버린다.** 그 순간 합성 쪽 판정이 더빙을
+      //   못 보게 되어 파이썬 둘이 같은 GPU 를 문다 — 이번 회차에 고치려던 바로 그 사고다.
+      //   `dub:render` 는 처음부터 이 모양이었다. 같은 파일 안에서 두 모양이 갈려 있었다.
       beginDubWork()
+      return await runFrontGuarded(videoPath, workDir, opts)
+    } catch (e) {
+      return fail(e)
+    }
+  })
+
+  /** 가드를 **세운 뒤에만** 도는 본체. 풀기는 여기서만 한다. */
+  async function runFrontGuarded(
+    video: string, work: string,
+    opts?: { language?: string; register?: string; force?: boolean },
+  ): Promise<DubReply<DubFrontResult>> {
+    try {
       // 돌리기 전에 무엇이 끝나 있었는지 기억한다 - 끝나고 견주면 무엇을 실제로 했는지 알 수 있다.
       // ★무엇을 다시 할지는 여기서 정하지 않는다(파이썬의 몫). 여기서는 말해 주기만 한다.
-      const before = opts?.force ? [] : readDoneStages(workDir)
-      const args = ['--video', videoPath, '--out', workDir]
+      const before = opts?.force ? [] : readDoneStages(work)
+      const args = ['--video', video, '--out', work]
       if (opts?.language) args.push('--language', opts.language)
       if (opts?.register) args.push('--register', opts.register)
       if (opts?.force) args.push('--force')
       await runPython(getPython(), 'dub_worker.py', args, getWindow(), '앞단')
       // ★파이썬이 줄 목록을 새로 썼을 수 있다 — 사람이 손본 번역문을 되씌운다.
       //   이것이 없으면 화면에는 고친 것이 보이는데 **영상에는 고치기 전 문장이 실린다.**
-      reapplyKoreanEdits(workDir)
-      const after = readDoneStages(workDir)
+      reapplyKoreanEdits(work)
+      const after = readDoneStages(work)
       return ok({
-        ...readLines(workDir),
+        ...readLines(work),
         skipped: before,
         ran: after.filter((s) => !before.includes(s)),
       })
@@ -170,7 +187,7 @@ export function registerDubIpc(
     } finally {
       dubGuard.end()
     }
-  })
+  }
 
   // 영상 속 목소리를 그대로 참조로 쓴다 - 인물은 그대로 두고 언어만 바꾸는 길이다.
   // 갈라낸 보컬이 이미 있으므로 새로 만들 것이 없다.
