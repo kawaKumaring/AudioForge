@@ -53,30 +53,62 @@ test('어떤 경우에도 빈손으로 잠그지 않는다', () => {
 })
 
 // ── 화면이 실제로 이것을 쓰는가 ──────────────────────────────────────────
-// ★판정을 만들어 놓고 안 부르면 아무것도 달라지지 않는다.
+//
+// ★판정을 만들어 놓고 안 부르면 아무것도 달라지지 않는다. 그래서 화면 코드를 읽어 본다.
+//
+// ★★검사에 이빨이 있는지 확인하는 방법을 바꿨다(2026-09-25, 내가 낸 사고).
+//   예전에는 **실제 소스 파일을 일부러 깨뜨렸다가 되돌려** 검사가 우는지 봤다.
+//   그런데 그 순간 개발 서버가 그 파일을 사용자 앱에 물고 있었다 —
+//   **사용자가 쓰던 창이 그때마다 망가졌다.** 실제로 두 번 망가뜨렸다.
+//   그래서 지금은 **읽은 글자만 검사하는 순수 함수**로 바꿨다.
+//   진짜 소스에는 통과를, 일부러 만든 나쁜 본보기에는 실패를 요구한다 —
+//   **파일을 건드리지 않고** 이빨을 확인한다.
+
+/** 화면 코드가 이유를 제대로 쓰고 그리는가. 어긋난 곳의 이름을 돌려준다. */
+export function screenFaults(text: string): string[] {
+  const bad: string[] = []
+  if (!text.includes('useOriginalBlockReason(')) bad.push('판정을 부르지 않는다')
+  if (text.includes('canUseOriginal')) bad.push('이유 없는 참·거짓 잠금이 되살아났다')
+  if (!text.includes('DUB_RESUME_HINT')) bad.push('되살리는 안내를 쓰지 않는다')
+  const at = text.indexOf('영상 속 목소리 쓰기')
+  if (at < 0) bad.push('단추를 못 찾았다')
+  else if (!text.slice(at, at + 400).includes('{props.useOriginalReason}')) {
+    bad.push('이유를 글자로 띄우지 않는다 — 흐릿한 단추만 남는다')
+  }
+  return bad
+}
+
 const SCREEN = readFileSync(
   path.resolve(path.dirname(fileURLToPath(import.meta.url)),
     '..', 'renderer', 'components', 'DubWorkspace.tsx'), 'utf-8')
 
-test('화면이 그 판정을 부른다', () => {
-  assert.ok(SCREEN.includes('useOriginalBlockReason('), '판정을 부르지 않는다')
+test('지금 화면 코드는 이유를 부르고, 그리고, 되살리는 길을 말한다', () => {
+  assert.deepEqual(screenFaults(SCREEN), [])
 })
 
-test('이유를 눈에 보이게 그린다 — 도움말 풍선만으로는 모른다', () => {
-  const at = SCREEN.indexOf('영상 속 목소리 쓰기')
-  assert.ok(at > 0, '단추를 못 찾았다 — 검사가 눈이 멀었다')
-  const near = SCREEN.slice(at, at + 400)
-  assert.ok(near.includes('{props.useOriginalReason}'),
-    '이유를 글자로 띄우지 않는다 — 흐릿한 단추만 남는다')
+// ★이빨 확인 — 파일을 건드리지 않는다.
+test('예전 모습이었다면 검사가 운다', () => {
+  const 옛모습 = [
+    '        canUseOriginal={!!front}',
+    '      <Btn onClick={props.onUseOriginal} disabled={props.disabled || !props.canUseOriginal}>',
+    '        영상 속 목소리 쓰기',
+    '      </Btn>',
+  ].join(String.fromCharCode(10))
+  const bad = screenFaults(옛모습)
+  assert.ok(bad.length >= 3, `예전 모습을 그냥 통과시킨다: ${JSON.stringify(bad)}`)
 })
 
-test('단추가 옛 방식으로 되돌아가지 않았다', () => {
-  assert.ok(!SCREEN.includes('canUseOriginal'),
-    '이유 없는 참·거짓 잠금이 되살아났다')
+test('이유를 만들어만 놓고 안 그리면 운다', () => {
+  // 앞쪽 title= 자리에도 같은 글자가 있어 첫 하나만 바꾸면 안 된다 — 전부 바꾼다.
+  const 반쪽 = SCREEN.split('{props.useOriginalReason}').join('{null}')
+  assert.ok(screenFaults(반쪽).some((b) => b.includes('글자로')),
+    '도움말 풍선만 남아도 통과시킨다')
 })
 
-// ★다 해 놓은 앞단을 처음부터 다시 돌리게 두면 시간을 통째로 버린다.
-test('되살리는 길을 화면이 알려 준다', () => {
+test('되살리는 안내를 빼면 운다', () => {
+  assert.ok(screenFaults(SCREEN.split('DUB_RESUME_HINT').join('X')).length > 0)
+})
+
+test('되살리는 문구에 방법이 들어 있다', () => {
   assert.ok(DUB_RESUME_HINT.includes('다시 고르면'), '되살리는 방법이 문구에 없다')
-  assert.ok(SCREEN.includes('DUB_RESUME_HINT'), '화면이 그 안내를 쓰지 않는다')
 })
