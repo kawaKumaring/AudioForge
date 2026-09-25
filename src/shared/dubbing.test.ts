@@ -169,3 +169,25 @@ test('가드를 세우는 자리와 푸는 자리 수가 맞는다', () => {
   assert.equal(begins, ends, `세우기 ${begins}회 · 풀기 ${ends}회 — 짝이 안 맞는다`)
   assert.ok(begins >= 2, `호출을 ${begins}개밖에 못 찾았다 — 검사가 눈이 멀었다`)
 })
+
+// ── 오류 문구가 **경로를 싣고 화면으로 가지 않는다** ─────────────────────
+//
+// ★3차 감사(2026-09-25): `fail()` 이 원시 오류 문구를 그대로 올리고 있었다.
+//   우리가 쓴 문장에는 경로가 없지만 여기로는 **남의 오류**도 온다 —
+//   파일 쓰기 실패와 실행 실패다. 이번 회차에 원자 교체를 넣으면서
+//   던질 수 있는 자리를 늘렸고, 그만큼 샐 통로도 늘었다.
+test('더빙 오류가 화면으로 갈 때 폴더를 지운다', () => {
+  const src = readFileSync(new URL('../main/ipc/dub.ipc.ts', import.meta.url), 'utf-8')
+  const at = src.indexOf('function fail(')
+  assert.ok(at > 0, 'fail 을 못 찾았다 — 검사가 눈이 멀었다')
+  const body = src.slice(at, at + 900)
+  assert.ok(body.includes('scrubPathsForLog('),
+    '원시 오류 문구를 그대로 올린다 — 경로가 화면으로 간다')
+})
+
+// ★같은 규칙이 두 곳에 있으면 한쪽만 고치는 사고가 난다. 하나를 **함께 쓴다.**
+test('세척기를 새로 만들지 않고 이미 있는 것을 쓴다', () => {
+  const src = readFileSync(new URL('../main/ipc/dub.ipc.ts', import.meta.url), 'utf-8')
+  assert.match(src, /from '\.\.\/services\/log-scrub'/,
+    '공용 세척기를 쓰지 않는다 — 규칙이 갈라진다')
+})

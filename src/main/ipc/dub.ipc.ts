@@ -13,6 +13,7 @@ import { basename, extname, join } from 'path'
 import { PythonRunner } from '../services/python-runner'
 import { rememberFile, saveTarget, startDir, type FolderHost } from '../services/dialogFolders'
 import { createPreviewGuard } from '../services/preview-transcribe'
+import { scrubPathsForLog } from '../services/log-scrub'
 import {
   DubJobError, readDoneStages, readLines, readRenderReport, reapplyKoreanEdits,
   saveKoreanEdits, saveKoreanEditsSidecar, workFolderName,
@@ -27,7 +28,12 @@ interface DubReply<T> { ok: boolean; data?: T; error?: string }
 function ok<T>(data: T): DubReply<T> { return { ok: true, data } }
 function fail(e: unknown): DubReply<never> {
   const msg = e instanceof DubJobError || e instanceof Error ? e.message : String(e)
-  return { ok: false, error: msg }
+  // ★원시 오류 문구를 그대로 올리지 않는다(2026-09-25 3차 감사).
+  //   우리가 쓴 문장(DubJobError)에는 경로가 없지만, 여기로는 **남의 오류**도 온다 —
+  //   파일 쓰기 실패(`EACCES … rename 'E:\…\lines.json'`)와 실행 실패(`spawn … ENOENT`)다.
+  //   이번 회차에 원자 교체를 넣으면서 던질 수 있는 자리를 늘렸다.
+  //   폴더만 지우고 파일 이름은 남긴다 — 무엇이 실패했는지는 알아야 한다.
+  return { ok: false, error: scrubPathsForLog(msg) }
 }
 
 /** 작업 폴더의 뿌리. 앱 데이터 안에 둔다 — 사용자 원본 옆에 파일을 흩지 않는다. */

@@ -207,3 +207,22 @@ test('폴더 기억은 한 창구를 함께 쓴다', () => {
   const index = readFileSync(path.join(MAIN, 'index.ts'), 'utf-8')
   assert.ok(index.includes('dialogFolderHost()'), '본체 배선이 같은 창구를 넘기지 않는다')
 })
+
+// ★칸을 늘리고 문서를 안 고치면, 다음 사람이 **설정 파일에 무엇이 있는지 모른다.**
+//   이번 회차에 다섯 칸을 늘렸는데 문서는 여전히 하나만 알고 있었다(3차 감사에서 찾음).
+test('칸마다 설정 문서에 적혀 있다', () => {
+  const doc = readFileSync(path.resolve(MAIN, '..', '..', 'doc', 'settings-format.md'), 'utf-8')
+  const missing = FOLDER_SLOTS.map((s) => SLOT_KEY[s]).filter((k) => !doc.includes(k))
+  assert.deepEqual(missing, [],
+    `설정 문서에 없는 칸: ${missing.join(', ')} — 표를 갱신하세요`)
+})
+
+test('문서가 말하는 칸이 실제로 있다 — 낡은 표기를 남기지 않는다', () => {
+  const doc = readFileSync(path.resolve(MAIN, '..', '..', 'doc', 'settings-format.md'), 'utf-8')
+  const known = new Set(FOLDER_SLOTS.map((s) => SLOT_KEY[s]))
+  // ★`meta` 의 lastWrittenBy·lastWrittenAt 는 폴더 칸이 아니다 — 세면 잘못 잡는다.
+  //   폴더 칸은 이름이 Dir 로 끝나거나 옛 이름 lastDir 이다.
+  const listed = [...doc.matchAll(/`(last[A-Za-z]*Dir)`/g)].map((m) => m[1])
+  const ghosts = [...new Set(listed)].filter((k) => !known.has(k))
+  assert.deepEqual(ghosts, [], `문서에만 있는 칸: ${ghosts.join(', ')}`)
+})
