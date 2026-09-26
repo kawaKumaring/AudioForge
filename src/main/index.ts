@@ -11,6 +11,7 @@ import { registerAudioIpc, dialogFolderHost } from './ipc/audio.ipc'
 import { registerAppVersionIpc, currentBuildInfo } from './ipc/app-version.ipc'
 import { registerDiagnosticsIpc } from './ipc/diagnostics.ipc'
 import { registerDubIpc } from './ipc/dub.ipc'
+import { registerPitchIpc } from './ipc/pitch.ipc'
 import { createAppLog, mirrorConsole, setAppLog, watchUncaught, LOG_DIR_NAME } from './services/app-log'
 import { seedDevUserData, userDataDirNameFor, USER_DATA_DIR_STABLE, type SeedResult } from './services/user-data-channel'
 import { warmUpBridge, type WarmupHandle } from './services/bridge-warmup'
@@ -182,6 +183,7 @@ function createWindow(): void {
   const previewAdapter = registerAudioIpc(mainWindow, () => dubAdapter.isRunning())
   // 입력 분석 — GPU 를 쓰지 않는 상주 CPU worker. audio.ipc 와 같은 인터프리터를 쓴다.
   registerAnalysisIpc({ pythonPath: currentPythonPath })
+  registerPitchIpc(() => currentPythonPath())
 
   // 참조 라이브러리 — 저장 루트·선택 상태는 앱 소유 userData 안에만 둔다.
   // 파이썬 실행은 audio.ipc 가 만든 adapter 를 그대로 쓴다(같은 pythonPath·타임아웃·정리).

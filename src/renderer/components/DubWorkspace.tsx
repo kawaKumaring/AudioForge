@@ -13,6 +13,7 @@
  * 여기 있는 것은 **부르는 순서와 보여 주는 방법**뿐이다.
  */
 import { useOriginalBlockReason, DUB_RESUME_HINT } from '../../shared/dubGate'
+import PitchStudio from './PitchStudio'
 import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import {
   DUB_STAGE_LABELS, dubFrontSummary, dubNextAction, dubStatusColor, dubStatusLabel, dubTimeLabel,
@@ -389,6 +390,15 @@ export default function DubWorkspace() {
         useOriginalReason={useOriginalBlockReason({ videoPath, frontLoaded: !!front, busy: disabled })}
         onPickVideo={pickVideo} onPickVoice={pickVoice} onUseOriginal={useOriginalVoice} />
 
+      {/* ★음높이 맞추기 — 보면서 손잡이로 맞춘다(2026-09-26).
+          품질 지표를 여섯 번 골랐고 여섯 번 다 빗나갔다. 마지막에는 자연스러운 원본과
+          찢어지는 결과물에 **완전히 같은 값**이 나왔다. 그림은 고를 필요가 없다. */}
+      <details style={{ border: '1px solid var(--border-subtle)', borderRadius: 8, padding: 10 }}>
+        <summary style={{ cursor: 'pointer', fontSize: 13, fontWeight: 600 }}>
+          음높이 맞추기 — 원본과 견주며 손잡이로 맞춘다
+        </summary>
+        <div style={{ marginTop: 12 }}><PitchStudio /></div>
+      </details>
       {/* 다 해 놓은 앞단을 처음부터 다시 돌리지 않게 — 되살리는 길을 적는다. */}
       {!front && (
         <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{DUB_RESUME_HINT}</div>

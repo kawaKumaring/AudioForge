@@ -131,6 +131,22 @@ const api = {
       ok: boolean; path?: string; parts?: number; bytes?: number; canceled?: boolean; reason?: string
     }> => ipcRenderer.invoke('lab:export', paths, suggestedName),
   },
+  // 음높이 곡선 — 보면서 손잡이로 맞춘다.
+  //   ★숫자로는 좋고 나쁨을 가려내지 못했다(2026-09-26, 여섯 번 시도해 여섯 번 실패).
+  //     그래서 화면이 그리고 사람이 본다.
+  pitch: {
+    /** 곡선 하나를 받아 온다(화면이 그릴 만큼 솎아서 온다). */
+    curve: (audio: string, seconds?: number) =>
+      ipcRenderer.invoke('pitch:curve', audio, seconds),
+    /** 손잡이를 먹여 새 소리를 만든다. 빚은 곡선도 함께 온다. */
+    reshape: (audio: string, dest: string,
+             knobs: { smooth?: number; spread?: number; shift?: number },
+             seconds?: number) =>
+      ipcRenderer.invoke('pitch:reshape', audio, dest, knobs, seconds),
+    /** 프로그램이 손잡이를 맞춰 준다 — 사람이 이어받아 돌릴 같은 손잡이다. */
+    fit: (target: string, audio: string, seconds?: number) =>
+      ipcRenderer.invoke('pitch:fit', target, audio, seconds),
+  },
   // 영상 더빙. 번역 백엔드는 여기서 고르지 않는다 - 파이썬이 실행 경로 안쪽에서 막고 고른다.
   dub: {
     pickVideo: () => ipcRenderer.invoke('dub:pick-video'),
