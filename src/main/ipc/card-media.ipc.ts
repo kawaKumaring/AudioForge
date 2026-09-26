@@ -20,7 +20,9 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
-import { join, basename } from 'node:path'
+import { join, basename, dirname } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { currentPythonPath } from './audio.ipc'
 
 const execFileAsync = promisify(execFile)
 
@@ -72,6 +74,15 @@ function stampOf(p: string): string {
   }
 }
 
+export interface BuiltinVoice {
+  engineId: string; modelId: string; label: string
+  language: string; sampleRate: number; path: string
+}
+
+/** 목소리 목록을 여러 번 묻지 않는다 — 설치가 바뀌는 일은 드물다. */
+let voiceCache: { at: number; data: { voices: BuiltinVoice[]; skipped: unknown[] } } | null = null
+const VOICE_CACHE_MS = 60_000
+
 export function registerCardMediaIpc(): void {
   /**
    * 영상에서 소리를 꺼낸다. **소리 파일이면 그대로 돌려준다**(쓸데없이 다시 쓰지 않는다).
@@ -98,6 +109,36 @@ export function registerCardMediaIpc(): void {
         throw new Error('이 영상에서 소리를 찾지 못했습니다')
       }
       return ok(out)
+    } catch (e) {
+      return fail(e)
+    }
+  })
+
+  /**
+   * 참조 소리 없이 바로 읽을 수 있는 **기본 목소리** 목록.
+   *
+   * ★'폴더가 있으니 된다' 고 말하지 않는다. 판정은 `python/builtin_voices.py` 가 하고
+   *   런타임·모델·설정을 모두 본다. 여기서는 부르고 건네기만 한다.
+   */
+  ipcMain.handle('card:builtin-voices', async (): Promise<CardMediaReply<{ voices: BuiltinVoice[]; skipped: unknown[] }>> => {
+    try {
+      if (voiceCache && Date.now() - voiceCache.at < VOICE_CACHE_MS) return ok(voiceCache.data)
+      const py = currentPythonPath()
+      if (!py || !existsSync(py)) throw new Error('파이썬을 찾지 못했습니다')
+      const here = dirname(fileURLToPath(import.meta.url))
+      const script = [
+        join(here, '..', '..', '..', 'python', 'builtin_voices.py'),
+        join(process.cwd(), 'python', 'builtin_voices.py'),
+      ].find((p) => existsSync(p))
+      if (!script) throw new Error('기본 목소리 조회 스크립트를 찾지 못했습니다')
+      const { stdout } = await execFileAsync(py, ['-X', 'utf8', script], {
+        timeout: 20000, maxBuffer: 1024 * 1024,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+      })
+      const parsed = JSON.parse(String(stdout).trim() || '{}') as { voices?: BuiltinVoice[]; skipped?: unknown[] }
+      const data = { voices: parsed.voices || [], skipped: parsed.skipped || [] }
+      voiceCache = { at: Date.now(), data }
+      return ok(data)
     } catch (e) {
       return fail(e)
     }

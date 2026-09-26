@@ -807,14 +807,24 @@ export function registerAudioIpc(
     }
 
     // Build output directory
-    const ext = extname(filePath)
-    const nameWithoutExt = basename(filePath, ext)
+    // ★기본 목소리(설치된 로컬 모델) 카드는 **원본 파일이 없다.** '원본 옆에 쌓는다' 는
+    //   규칙을 쓸 수 없으므로 앱이 관리하는 쓰기 가능한 자리에 쌓는다(2026-09-27).
+    //   매 실행마다 다른 폴더라 이전 결과를 덮지 않는다.
+    const builtinModel = typeof options?.ttsBuiltinModel === 'string' ? options.ttsBuiltinModel : ''
+    const builtinLabel = typeof options?.ttsBuiltinLabel === 'string' && options.ttsBuiltinLabel
+      ? options.ttsBuiltinLabel : '기본목소리'
+    const ext = builtinModel ? '' : extname(filePath)
+    const nameWithoutExt = builtinModel ? builtinLabel : basename(filePath, ext)
     const now = new Date()
     const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}-${String(now.getSeconds()).padStart(2, '0')}`
     // 폴더명은 초 단위라 같은 초에 두 번 시작하면 같은 폴더를 재사용하게 되고, 워커가 ffmpeg -y로
     // 덮어써 **이전 결과가 소리 없이 사라진다**(감사 R9). 이미 존재하면 짧은 접미사를 붙여 새 폴더를
     // 확보한다. 접미사는 첫 충돌부터만 붙으므로 기존 폴더 이름 규칙은 그대로다.
-    const baseOutputDir = join(dirname(filePath), 'AudioForge_output', `${timestamp}_${nameWithoutExt}`)
+    const outRoot = builtinModel
+      ? join(app.getPath('userData'), 'cardOutput')
+      : join(dirname(filePath), 'AudioForge_output')
+    if (builtinModel) mkdirSync(outRoot, { recursive: true })
+    const baseOutputDir = join(outRoot, `${timestamp}_${nameWithoutExt}`)
     let outputDir = baseOutputDir
     for (let n = 2; existsSync(outputDir) && n <= 100; n++) outputDir = `${baseOutputDir}_${n}`
     if (existsSync(outputDir)) {

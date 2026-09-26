@@ -238,9 +238,29 @@ class PiperEngine(TTSEngine):
     def __init__(self):
         self._voice = None
         self._meta = None
+        # 화면이 고른 모델. 비어 있으면 언어로 고른다(예전 동작).
+        self.model_path = None
 
     def load(self, lang_code="ko"):
         import piper_voices
+        # ★고른 모델이 있으면 그것을 연다. 언어로 '아무거나' 고르면 화면이 적어 둔 것과
+        #   실제로 낸 소리가 달라진다 — 생성본 기록이 거짓이 된다(2026-09-27).
+        if self.model_path:
+            import os as _os
+            cfg = self.model_path + ".json"
+            if not (_os.path.isfile(self.model_path) and _os.path.isfile(cfg)):
+                e = RuntimeError("고른 기본 목소리 파일을 찾지 못했습니다: %s" % _os.path.basename(self.model_path))
+                e.error_payload = {"code": ENGINE_LANG_UNAVAILABLE, "engine": "piper"}
+                raise e
+            if self._voice is not None and self._meta and self._meta.get("onnx") == self.model_path:
+                return
+            emit("progress", percent=10, message="기본 목소리 여는 중...")
+            from piper import PiperVoice
+            self._voice = PiperVoice.load(self.model_path, config_path=cfg)
+            self._meta = {"onnx": self.model_path, "config": cfg,
+                          "name": _os.path.basename(self.model_path)[:-5]}
+            emit("progress", percent=20, message="기본 목소리 준비 완료")
+            return
         why = piper_voices.check_language(lang_code)
         if why:
             e = RuntimeError("piper 로 %s 를 합성할 수 없습니다 — %s" % (lang_code, why))
@@ -3373,7 +3393,8 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                expressive_mode="legacy_v2", reference_conditioning_mode=None,
                speaker_refs=None, speaker_ref_sources=None, speaker_emotion_refs=None,
                emotion_candidate_selections=None,
-               speaker_labels=None, speaker_mode="single", reference_region=None):
+               speaker_labels=None, speaker_mode="single", reference_region=None,
+               builtin_model=None):
     """Synthesize speech. Auto-selects engine by language.
     speaker_mode: 'single' | 'multi' — 생성 방식(대본 내용이 아니다). single 이면 화자 표기가 있어도
       모든 발화를 한 명의 기본/감정 참조로 만들고 화자 참조·전용 참조·후보 선택은 개입하지 않는다.
@@ -3458,9 +3479,14 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
     # 감정 참조 준비가 실패해도, 이미 만든 임시 폴더가 새지 않게 한다.
     tmp_dirs = []
     try:
-        ref_wav, tmp_ref_dir = _prepare_ref(reference_audio)
-        if tmp_ref_dir:
-            tmp_dirs.append(tmp_ref_dir)
+        # ★기본 목소리(설치된 로컬 모델)는 참조 소리가 없다 — 준비할 것이 없다.
+        #   없는 파일을 만들어 넘기지 않는다. 참조를 쓰는 엔진이라면 아래 라우팅에서 드러난다.
+        if reference_audio:
+            ref_wav, tmp_ref_dir = _prepare_ref(reference_audio)
+            if tmp_ref_dir:
+                tmp_dirs.append(tmp_ref_dir)
+        else:
+            ref_wav = None
         ref_cache = {"default": ref_wav}
 
         # 감정 참조(계약 §5 4불변식) — 실제 대사에서 '사용된' 감정만 검증한다(미사용은 무시·bridge 미전달).
@@ -3585,12 +3611,18 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             profile_of=_profile_of_ref,
             # 사용자가 후보 비교 화면에서 고른 것. 잠정 제안이 사람의 선택을 덮지 않는다.
             user_selections=_prepared_selections)
-        # 전수 점검을 먼저 한다 — 모델을 올린 뒤 절반 만들고 막히면 헛수고가 된다.
-        ref_table.preflight([(sp, e) for e, _t, sp in parsed])
-        # 라우팅 스냅샷 — 발화별 참조를 여기서(모델 로딩 전) 확정하고 작업이 끝날 때까지 바꾸지 않는다.
-        _routing = ref_table.freeze_routing(parsed, speaker_mode=speaker_mode)
-        emit("stage", stage="routing_snapshot", utterances=len(_routing),
-             speaker_mode=speaker_mode, rules=_routing.rule_counts())
+        # ★기본 목소리(설치된 로컬 모델)는 참조를 쓰지 않는다 — 참조 표를 굳히지 않는다.
+        #   굳히면 '기본 참조가 없다' 로 막힌다. 참조가 없는 것이 이 길에서는 정상이다.
+        if builtin_model:
+            emit("stage", stage="builtin_voice", utterances=len(parsed),
+                 model=os.path.basename(builtin_model))
+        else:
+            # 전수 점검을 먼저 한다 — 모델을 올린 뒤 절반 만들고 막히면 헛수고가 된다.
+            ref_table.preflight([(sp, e) for e, _t, sp in parsed])
+            # 라우팅 스냅샷 — 발화별 참조를 여기서(모델 로딩 전) 확정하고 작업이 끝날 때까지 바꾸지 않는다.
+            _routing = ref_table.freeze_routing(parsed, speaker_mode=speaker_mode)
+            emit("stage", stage="routing_snapshot", utterances=len(_routing),
+                 speaker_mode=speaker_mode, rules=_routing.rule_counts())
         _speaker_duplicates = ref_table.duplicate_paths()
         if _speaker_duplicates:
             # 막지 않는다(같은 목소리를 여럿에 쓰는 것은 사용자의 선택). 사실만 알린다.
@@ -3667,7 +3699,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                 auto_fallback=_auto_fallback, failure_code=_failure_code, attempts=_attempts)
             meta = _build_tts_metadata(
                 requested_engine=requested_engine,
-                original_reference_path=reference_audio, effective_reference_path=reference_audio,
+                original_reference_path=reference_audio or "", effective_reference_path=reference_audio or "",
                 reference_region=reference_region, speed=float(speed), silence_gap=float(silence_gap),
                 **_rc_meta, **_plan_meta, **info)
             tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
@@ -3686,15 +3718,24 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         for i, (emotion_id, line_text, speaker_id) in enumerate(parsed):
             pct = 25 + int((i / len(parsed)) * 60)
             # 화면·Qwen 경로와 같은 표를 같은 방식으로 본다(두 경로가 다른 참조를 쓰면 안 된다).
-            _frozen = getattr(ref_table, "routing", None)
-            ref = (_frozen[i]["path"] if _frozen is not None and len(_frozen) == len(parsed)
-                   else ref_table.resolve_with_emotion(
-                           None if getattr(ref_table, "speaker_mode", "single") == "single" else speaker_id,
-                           emotion_id)["path"])
+            if builtin_model:
+                # ★기본 목소리는 참조를 쓰지 않는다 — 참조 표에 묻지 않는다.
+                #   물으면 '기본 참조가 없다' 로 막힌다(참조가 없는 것이 정상인데도).
+                ref = None
+            else:
+                _frozen = getattr(ref_table, "routing", None)
+                ref = (_frozen[i]["path"] if _frozen is not None and len(_frozen) == len(parsed)
+                       else ref_table.resolve_with_emotion(
+                               None if getattr(ref_table, "speaker_mode", "single") == "single" else speaker_id,
+                               emotion_id)["path"])
             emotion_label = next((k for k, v in EMOTION_TAGS.items() if v == emotion_id), emotion_id)
 
             # Select engine based on text language
             engine = _select_engine(line_text, preferred_engine)
+            # 화면이 고른 기본 목소리 모델을 그 엔진에 실어 준다.
+            # ★엔진을 자동으로 다른 목소리로 바꾸지 않는다 — 고른 모델이 안 열리면 그 카드가 운다.
+            if builtin_model and isinstance(engine, PiperEngine):
+                engine.model_path = builtin_model
             engine_name = engine.name
             seg_engines.append(engine_name)
 
@@ -3763,8 +3804,9 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             out_sr = int(_sf2.info(final_path).samplerate)
         except Exception:
             out_sr = None
+        # 기본 목소리에는 참조가 없다 — 없는 경로로 덮어쓰기 규칙을 뒤지지 않는다.
         default_ref = ref_cache["default"]
-        ov_def = (overrides_by_path or {}).get(os.path.abspath(default_ref)) or {}
+        ov_def = ((overrides_by_path or {}).get(os.path.abspath(default_ref)) or {}) if default_ref else {}
         if ov_def.get("mode") == "ref_free":
             p_src = "x-vector-only"
         elif (ov_def.get("manual_text") or "").strip():
@@ -3789,8 +3831,8 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             device=_gsv_dev.get("actual_device"),
             device_selection_source=_gsv_dev.get("device_selection_source"),
             prompt_source=p_src,
-            x_vector_only_mode=None, original_reference_path=reference_audio,
-            effective_reference_path=reference_audio, reference_region=reference_region,
+            x_vector_only_mode=None, original_reference_path=reference_audio or "",
+            effective_reference_path=reference_audio or "", reference_region=reference_region,
             target_language=tgt2, seed=None, seed_supported=False,
             speed=float(speed), speed_postprocessed=False, silence_gap=float(silence_gap),
             fallback=fb, fallback_reason=("Qwen3 사용 불가 → 기존 엔진 폴백" if fb else None),

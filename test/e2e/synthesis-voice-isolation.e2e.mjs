@@ -74,6 +74,9 @@ try {
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
     s.setState({ mode: 'tts', synthesisTab: 'advanced', ttsText: '안녕하세요.' })
   }, LONG)
+  // 기존 화면 검사: 통합 카드의 '이전 작업'을 통해 진입한다.
+  await win.getByTestId('open-legacy-synthesis').click()
+  await win.getByTestId('synthesis-tabs').waitFor()
 
   let ready = false
   for (let i = 0; i < 25 && !ready; i++) {

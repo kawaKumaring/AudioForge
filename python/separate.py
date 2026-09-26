@@ -429,7 +429,12 @@ def main():
         emit("result", listening_path=path, verdict=verdict)
         return
 
-    if not args.input or not args.output:
+    # ★기본 목소리(설치된 로컬 모델)로 읽는 길은 **참조 소리가 없다**(2026-09-27).
+    #   그래서 입력 파일을 요구하지 않는다. 가짜 파일로 관문만 넘기지 않기 위해
+    #   '무엇으로 읽는가' 를 설정에 명시하게 하고, 그 때만 입력을 비울 수 있다.
+    builtin_model = str(config.get("ttsBuiltinModel", "") or "")
+    builtin_ok = args.mode == "tts" and bool(builtin_model)
+    if (not args.input and not builtin_ok) or not args.output:
         emit("error", message="입력 파일과 출력 경로가 필요합니다.")
         sys.exit(1)
 
@@ -507,11 +512,15 @@ def main():
             # override가 지정됐는데 파일이 없으면(만료) 원본으로 조용히 폴백하지 않고 명확히 실패한다.
             from tts_worker import resolve_reference_input
             override = getattr(args, "tts_reference_override", "") or ""
-            try:
-                ref_input = resolve_reference_input(override, args.input)
-            except RuntimeError as e:
-                emit("error", message=str(e))
-                return
+            if builtin_ok:
+                # 기본 목소리는 참조를 쓰지 않는다 — 찾지도, 만료를 따지지도 않는다.
+                ref_input = None
+            else:
+                try:
+                    ref_input = resolve_reference_input(override, args.input)
+                except RuntimeError as e:
+                    emit("error", message=str(e))
+                    return
             # 감정 참조 만료(§5 불변식 3) 등 synthesize가 던지는 RuntimeError를 명확한 오류로 표면화
             # (silent fallback 금지 — resolve_reference_input과 동일 패턴).
             # 공용 마감 I3 — 감정 전환 경계 config 검증(조용한 clamp 금지, Python 권위). immediate|pause만·0~1000ms.
@@ -551,6 +560,7 @@ def main():
                         args, "tts_emotion_candidate_selections"),
                     preferred_engine=preferred_engine,
                     reference_prompts=ref_prompts,
+                    builtin_model=builtin_model or None,
                     pitch=getattr(args, "tts_pitch", 0.0),
                     tail_cfg=_tail_cfg,
                     emotion_boundary_mode=_eb_mode,

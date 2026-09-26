@@ -10,6 +10,9 @@ import {
   cardApplied, cardEventFault, cardGenerateFault, takeIsStale, CARD_PITCH_MIN, CARD_PITCH_MAX, CARD_PITCH_STEP,
 } from '../../shared/synthesisCardJob'
 import {
+  cardVoiceOf, voiceSupports, voiceGenerateFault, type BuiltinVoiceRef,
+} from '../../shared/synthesisCardVoice'
+import {
   savedChoices, savedWorkHasContent, type RestoreChoice,
 } from '../../shared/synthesisCardSave'
 import {
@@ -113,6 +116,61 @@ function Settings({ card, close, disabled }: { card: SynthesisCard; close: () =>
   </Modal>
 }
 
+/**
+ * 목소리 고르기 — **기본 목소리**와 **소리·영상 파일** 두 갈래.
+ *
+ * ★설명 문단을 두지 않는다. 항목 이름과 짧은 상태, 그리고 툴팁으로 말한다.
+ *   쓸 수 없는 목소리는 **목록에 넣지 않는다**(본체가 설치·구동을 확인한 것만 온다).
+ */
+function VoicePicker({ close, onFile, onBuiltin, disabled }: {
+  close: () => void
+  onFile: () => void
+  onBuiltin: (v: BuiltinVoiceRef) => void
+  disabled: boolean
+}) {
+  const [list, setList] = useState<BuiltinVoiceRef[] | null>(null)
+  const [why, setWhy] = useState('')
+  useEffect(() => {
+    let alive = true
+    void (async () => {
+      try {
+        const r = await window.api.cards.builtinVoices() as
+          { ok: boolean; data?: { voices: BuiltinVoiceRef[] }; error?: string }
+        if (!alive) return
+        if (!r?.ok) { setWhy(r?.error || '기본 목소리를 확인하지 못했습니다'); setList([]); return }
+        setList(r.data?.voices || [])
+      } catch (e) { if (alive) { setWhy((e as Error).message); setList([]) } }
+    })()
+    return () => { alive = false }
+  }, [])
+  return <Modal title="목소리 고르기" close={close}
+    footer={<button type="button" style={button} onClick={close}>취소</button>}>
+    <div style={{ display: 'grid', gap: 10 }}>
+      <button type="button" data-testid="pick-voice-file" disabled={disabled}
+        title="가지고 있는 소리·영상 파일의 목소리를 따라 만듭니다"
+        onClick={() => { close(); onFile() }}
+        style={{ ...button, justifyContent: 'flex-start', padding: '12px 14px' }}>
+        <Icon name="file"/>음성·영상 파일
+      </button>
+      <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 10 }}>
+        {list === null && <span style={muted}>기본 목소리 확인 중…</span>}
+        {list !== null && list.length === 0 && (
+          <span style={{ ...muted, color: 'var(--amber)' }} title={why}>
+            쓸 수 있는 기본 목소리가 없습니다
+          </span>
+        )}
+        {(list || []).map((v) => (
+          <button key={`${v.engineId}:${v.modelId}`} type="button" data-testid="pick-voice-builtin"
+            disabled={disabled} title={`참조 음원 없이 바로 읽습니다 · ${v.engineId}`}
+            onClick={() => { close(); onBuiltin(v) }}
+            style={{ ...button, width: '100%', justifyContent: 'flex-start', padding: '12px 14px', marginBottom: 6 }}>
+            <Icon name="play"/>{v.label}<span style={muted}>{v.language}</span>
+          </button>
+        ))}
+      </div>
+    </div>
+  </Modal>
+}
 function Takes({ card, close, disabled }: { card: SynthesisCard; close: () => void; disabled: boolean }) {
   const [inspected, inspect] = useState<string | null>(null), [playing, setPlaying] = useState<string | null>(null), [error, setError] = useState('')
   const audio = useRef<HTMLAudioElement | null>(null), epoch = useRef(0)
@@ -167,7 +225,7 @@ function Join({ cards, close, disabled }: { cards: SynthesisCard[]; close: () =>
 export default function SynthesisCardWorkspace() {
   const state = useSynthesisCards(), source = useAppStore(s => s.fileInfo), status = useAppStore(s => s.status), childAlive = useAppStore(s => s.errorInfo?.childAlive)
   const busy = status === 'processing' || isCancelCleanupBusy(status) || !!childAlive
-  const [modal, setModal] = useState<{ type: 'settings' | 'takes'; id: string } | { type: 'join' } | null>(null)
+  const [modal, setModal] = useState<{ type: 'settings' | 'takes' | 'voice'; id: string } | { type: 'join' } | null>(null)
   const [notice, setNotice] = useState(''), [loading, setLoading] = useState(false), [hover, setHover] = useState<string | null>(null)
   const [dragging, setDragging] = useState<string | null>(null), [over, setOver] = useState<{ id: string; after: boolean } | null>(null)
   const alive = useRef(true), pending = useRef(false)
@@ -338,10 +396,13 @@ export default function SynthesisCardWorkspace() {
       const paths = files.map(f => window.api.utils.getPathForFile(f)).filter(Boolean); if (paths.length) void load(paths, id)
     } catch { setNotice('파일을 다시 선택하세요') }
   }
+  // ★'이전 작업' 단추는 여기서 뺐다(2026-09-27). 같은 일을 하는 자리가 둘이면 어느 쪽이
+  //   진짜인지 알 수 없고, 같은 testid 가 둘이 되어 검사도 갈린다.
+  //   옛 버전으로 가는 길은 위쪽 버전 탭 하나뿐이다(SynthesisTabs).
   const active = modal && 'id' in modal ? state.cards.find(c => c.id === modal.id) : null
   return <div data-testid="synthesis-card-workspace" onDragOver={e => { if (e.dataTransfer.types.includes('Files')) e.preventDefault() }} onDrop={e => { if (e.dataTransfer.files.length) drop(e) }} style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
     <style>{`.af-card-progress{appearance:none;border:0;border-radius:3px;overflow:hidden;background:var(--border-subtle)}.af-card-progress::-webkit-progress-bar{background:var(--border-subtle)}.af-card-progress::-webkit-progress-value{background:var(--accent);border-radius:3px}.af-effect-slider{appearance:none;height:4px;border-radius:3px;background:linear-gradient(to right,var(--accent) var(--fill),var(--border-subtle) var(--fill));cursor:pointer}.af-effect-slider::-webkit-slider-thumb{appearance:none;width:15px;height:15px;border-radius:50%;background:var(--accent-light);box-shadow:0 0 0 4px rgba(139,92,246,.12)}.af-effect-slider:disabled{opacity:.4;cursor:not-allowed}.af-effect-group summary::-webkit-details-marker{display:none}.af-effect-group .af-effect-chevron{transition:transform 150ms ease;color:var(--text-muted)}.af-effect-group:not([open]) .af-effect-chevron{transform:rotate(180deg)}.af-card-modal::backdrop{background:rgba(5,7,12,.68);backdrop-filter:blur(4px)}.af-card-modal[open]{animation:af-card-open 150ms ease-out}.af-generation-card:focus-within{border-color:var(--accent)!important}.af-card-work-button:disabled{cursor:not-allowed;opacity:.4}@keyframes af-card-open{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}@media(prefers-reduced-motion:reduce){.af-card-modal[open]{animation:none}}`}</style>
-    <div style={{ ...row, paddingBottom: 2 }}><span style={{ fontSize: 13, fontWeight: 600 }}>생성 카드 <span style={{ ...muted, marginLeft: 5 }}>{state.cards.length}</span></span><span style={{ flex: 1 }}/><button type="button" data-testid="open-legacy-synthesis" disabled={locked} style={{ ...button, background: 'transparent' }} title="기존 문장별 제작·대본 배역 작업을 그대로 엽니다" onClick={() => state.setView('legacy')}>이전 작업</button></div>
+    <div style={{ ...row, paddingBottom: 2 }}><span style={{ fontSize: 13, fontWeight: 600 }}>생성 카드 <span style={{ ...muted, marginLeft: 5 }}>{state.cards.length}</span></span><span style={{ flex: 1 }}/></div>
     {notice && <div role="status" style={{ ...row, fontSize: 12, color: 'var(--amber)' }}><span style={{ flex: 1 }}>{notice}</span><Action icon="close" label="알림 닫기" onClick={() => setNotice('')}/></div>}
     {save.phase === 'failed' && <div role="alert" data-testid="card-save-failed" style={{ ...row, fontSize: 12, color: 'var(--rose)', padding: '9px 12px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderLeft: '3px solid var(--rose)', borderRadius: 8 }}>
       <span tabIndex={0} style={{ flex: 1 }} title={`저장 실패 코드: ${save.code || '알 수 없음'}`}>저장 실패</span>
@@ -353,12 +414,14 @@ export default function SynthesisCardWorkspace() {
         { text: chosen.text, sourcePath: chosen.source.path, settings: chosen.settings, applied: chosen.applied },
         { text: card.text, sourcePath: card.source?.path || '', settings: card.settings })
       const ref = state.refs[card.id]
+      const voice = cardVoiceOf(card)
       // ★엔진이 못 받는 설정을 **말한다.** 조용히 무시하거나 적용된 척하지 않는다.
       const notes = cardApplied(card.settings).notes
-      const fault = cardGenerateFault({
-        hasSource: !!card.source, text: card.text,
+      const fault = voiceGenerateFault({
+        voice, text: card.text,
         refReady: !!(ref && ref.phase === 'ready' && ref.clip),
         refMessage: ref?.message || '', busy: locked || !!state.job,
+        builtinUsable: true, builtinWhy: '',
       })
       const mine = state.job?.cardId === card.id
       const dropHere = over?.id === card.id
@@ -377,8 +440,18 @@ export default function SynthesisCardWorkspace() {
           <Action icon="trash" label={`${index + 1}번 카드 삭제`} disabled={locked} onClick={() => state.remove(card.id)}/>
         </div>
         <div style={{ padding: '6px 20px 0' }} onDragOver={e => { if (!dragging && !locked && e.dataTransfer.types.includes('Files')) { e.preventDefault(); e.stopPropagation(); setHover(card.id) } }} onDragLeave={() => setHover(null)} onDrop={e => { if (!dragging) drop(e, card.id) }}>
-          <div style={{ ...row, marginBottom: 1 }}><span title={card.source?.path} style={{ ...muted, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{card.source?.name || '목소리 미선택'}</span><button type="button" aria-label={`${index + 1}번 카드 음원 변경`} disabled={locked} onClick={() => void pick(card.id)} style={{ ...button, minHeight: 26, padding: '3px 7px', background: 'transparent', border: 0, fontSize: 11 }}>변경</button></div>
-          {card.source && !modal && <CompactVoiceWaveform path={ref?.audio || card.source.path} name={card.source.name} region={card.settings.reference === 'manual' ? { start: card.settings.start, duration: card.settings.end - card.settings.start } : null} disabled={locked}/>}
+          <div style={{ ...row, marginBottom: 1 }}>
+            <span title={voice.kind === 'builtin' ? `${voice.voice.engineId} · ${voice.voice.language}` : card.source?.path}
+              style={{ ...muted, flex: 1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+              {voice.kind === 'builtin' ? voice.voice.label : (card.source?.name || '목소리 미선택')}
+              {voice.kind === 'builtin' && <span style={{ marginLeft: 6 }}>{voice.voice.language}</span>}
+            </span>
+            <button type="button" aria-label={`${index + 1}번 카드 목소리 변경`} disabled={locked}
+              onClick={() => setModal({ type: 'voice', id: card.id })}
+              style={{ ...button, minHeight: 26, padding: '3px 7px', background: 'transparent', border: 0, fontSize: 11 }}>변경</button>
+          </div>
+          {/* ★기본 목소리에는 파형이 없다 — 없는 소리를 그리지 않는다. */}
+          {voice.kind === 'reference' && card.source && !modal && <CompactVoiceWaveform path={ref?.audio || card.source.path} name={card.source.name} region={card.settings.reference === 'manual' ? { start: card.settings.start, duration: card.settings.end - card.settings.start } : null} disabled={locked}/>}
           {card.source && modal && <div style={{ height: 40 }}/>}
           <textarea data-testid="card-script" aria-label={`${index + 1}번 카드 대사`} placeholder="대사를 입력하세요" rows={2} spellCheck={false} disabled={locked} value={card.text} onChange={e => state.update(card.id, { text: e.target.value })} style={{ ...field, width: '100%', resize: 'vertical', minHeight: 76, fontSize: 15, lineHeight: 1.75, border: '1px solid var(--border-subtle)', background: 'var(--bg-base)', padding: '11px 13px', margin: '9px 0 0' }}/>
         </div>
@@ -409,7 +482,7 @@ export default function SynthesisCardWorkspace() {
         </div>
       </article>
     })}
-    <button type="button" data-testid="add-generation-card" aria-label="음원으로 카드 추가" title="클릭하거나 음성·영상 파일을 끌어 놓아 카드를 추가합니다" disabled={locked} onClick={() => void pick()}
+    <button type="button" data-testid="add-generation-card" aria-label="음원으로 카드 추가" title="클릭하거나 음성·영상 파일을 끌어 놓아 카드를 추가합니다" disabled={locked} onClick={() => setModal({ type: 'voice', id: '' })}
       onDragOver={e => { if (!locked && !dragging && e.dataTransfer.types.includes('Files')) { e.preventDefault(); setHover('add') } }} onDragLeave={() => setHover(null)} onDrop={e => drop(e)}
       style={{ ...button, minHeight: state.cards.length ? 64 : 180, width: '100%', border: `1px dashed ${hover === 'add' ? 'var(--accent)' : 'var(--border-default, var(--border-subtle))'}`, background: hover === 'add' ? 'var(--bg-elevated)' : 'transparent', color: 'var(--text-muted)' }}><Icon name="plus"/>{loading ? '불러오는 중' : state.cards.length ? null : '음원 추가'}</button>
     {state.removed && <div role="status" style={{ ...row, ...muted }}><span>카드 삭제됨</span><button type="button" disabled={locked} style={button} onClick={state.undo}>되돌리기</button></div>}
@@ -420,6 +493,12 @@ export default function SynthesisCardWorkspace() {
     {modal?.type === 'settings' && active && <Settings key={active.id} card={active} disabled={busy} close={() => setModal(null)}/>}
     {modal?.type === 'takes' && active && <Takes key={active.id} card={active} disabled={busy} close={() => setModal(null)}/>}
     {modal?.type === 'join' && <Join cards={state.cards} disabled={busy} close={() => setModal(null)}/>}
+    {modal?.type === 'voice' && <VoicePicker disabled={busy} close={() => setModal(null)}
+      onFile={() => { void pick(modal.id || undefined) }}
+      onBuiltin={(v) => {
+        if (modal.id) useSynthesisCards.getState().setBuiltin(modal.id, v)
+        else useSynthesisCards.getState().addBuiltin(v)
+      }}/>}
     {restore && <Modal title="이전 작업을 불러올까요?" subtitle={`${restore.length}개`} close={laterRestore}
       footer={<button type="button" style={button} title="불러오기를 닫고 현재 카드로 계속합니다"
         onClick={laterRestore}>현재 작업 계속</button>}>

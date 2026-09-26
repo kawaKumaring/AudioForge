@@ -79,6 +79,9 @@ try {
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
     s.setState({ mode: 'tts', synthesisTab: 'advanced', ttsText: '안녕하세요. 오늘 회의는 세 시입니다.' })
   }, SRC)
+  // 기존 화면 검사: 통합 카드의 '이전 작업'을 통해 진입한다.
+  await win.getByTestId('open-legacy-synthesis').click()
+  await win.getByTestId('synthesis-tabs').waitFor()
 
   // 목소리가 준비될 때까지(추천 구간 자동 확정).
   let ready = false

@@ -30,6 +30,10 @@ import {
   type CardApplied,
 // @ts-ignore TS5097
 } from '../../shared/synthesisCardJob.ts'
+import {
+  cardVoiceOf, needsReferencePrep, voiceGenerateFault, builtinRequestFields, voiceSnapshot,
+// @ts-ignore TS5097
+} from '../../shared/synthesisCardVoice.ts'
 // @ts-ignore TS5097: node --test 가 이 파일을 곧바로 읽으므로 명시 확장자.
 import { runVoicePrep, cancelVoicePrep, forgetVoicePrep } from './voicePrepRunner.ts'
 import {
@@ -167,6 +171,9 @@ function report(cardId: string, reqId: string, patch: Partial<CardRef>): void {
  * 직접 지정은 **사용자가 고른 구간 그대로** 잘라 확정한다(추천으로 바꿔치기하지 않는다).
  */
 export async function prepareCardReference(card: SynthesisCard): Promise<void> {
+  // ★기본 목소리는 참조가 없다 — 분석도 구간 자르기도 하지 않는다.
+  //   준비 상태를 '됐다' 로 적어 두지도 않는다. 애초에 이 길을 타지 않는다.
+  if (!needsReferencePrep(cardVoiceOf(card))) return
   if (!card.source) return
   const cardId = card.id
   const clipKey = cardClipKey(cardId)
@@ -248,12 +255,15 @@ export async function startCardGeneration(card: SynthesisCard): Promise<string> 
   if (st.job) return '이미 만드는 중입니다'
   const app = useAppStore.getState()
   const ref = st.refs[card.id]
-  const fault = cardGenerateFault({
-    hasSource: !!card.source,
+  const voice = cardVoiceOf(card)
+  const fault = voiceGenerateFault({
+    voice,
     text: card.text,
     refReady: !!(ref && ref.phase === 'ready' && ref.clip),
     refMessage: ref?.message || '',
     busy: app.status === 'processing',
+    // 모델 파일이 사라졌는지는 본체가 곧바로 말해 준다 — 여기서 미리 단정하지 않는다.
+    builtinUsable: true, builtinWhy: '',
   })
   if (fault) return fault
 
@@ -261,12 +271,14 @@ export async function startCardGeneration(card: SynthesisCard): Promise<string> 
   //   남기지 않으면 나중에 '무엇이 달라져 소리가 달라졌나' 를 답할 수 없다(2026-09-27 지적).
   const applied: CardApplied = {
     ...cardApplied(card.settings),
-    reference: { clip: ref!.clip, region: ref!.region },
+    // 기본 목소리에는 참조가 없다 — 없는 것을 있는 것처럼 적지 않는다.
+    ...(voice.kind === 'reference' ? { reference: { clip: ref!.clip, region: ref!.region } } : {}),
   }
   const reqId = newReqId()
   // ★요청 시점의 대사·원본·설정을 **여기서 붙든다.** 도중에 고쳐도 결과에는 이 값이 붙는다.
   st.setJob({
-    cardId: card.id, reqId, text: card.text, source: { ...card.source! },
+    cardId: card.id, reqId, text: card.text,
+    source: card.source ? { ...card.source } : { path: '', name: cardVoiceLabelOf(card), duration: 0 },
     settings: { ...card.settings }, applied, startedAt: Date.now(),
     percent: 0, message: '만드는 중…', cancelling: false,
   })
@@ -275,17 +287,25 @@ export async function startCardGeneration(card: SynthesisCard): Promise<string> 
   // ★요청 식별자를 실어 보낸다. 본체가 진행·결과·오류·취소에 그대로 되돌려 주므로
   //   화면이 '내 요청의 응답인가' 를 스스로 가릴 수 있다(2026-09-27 검수 재현 대응).
   const options = {
-    ...synthesisOptions(card.text, s, { clip: ref!.clip, region: ref!.region }),
+    ...synthesisOptions(card.text, s, voice.kind === 'reference'
+      ? { clip: ref!.clip, region: ref!.region }
+      : { clip: '', region: null }),
+    // 기본 목소리면 엔진·모델을 명시해 싣는다. 참조 목소리면 아무것도 붙지 않는다.
+    ...builtinRequestFields(voice),
     clientRequestId: reqId,
   }
 
   useAppStore.getState().beginIndependentWork('목소리 만드는 중...')
   try {
-    let audio: string
-    try {
-      audio = await cardAudioPath(card.id, card.source!.path)
-    } catch (e) {
-      throw new Error((e as Error).message)
+    // 기본 목소리는 읽을 원본이 없다. **가짜 파일로 관문을 넘기지 않는다** —
+    // 본체가 이 경우를 알고 앱 소유 폴더에 결과를 쌓는다.
+    let audio = ''
+    if (voice.kind === 'reference') {
+      try {
+        audio = await cardAudioPath(card.id, card.source!.path)
+      } catch (e) {
+        throw new Error((e as Error).message)
+      }
     }
     // ★시작 요청의 거절을 버리지 않는다 — 본체는 여러 갈래로 거절할 수 있고
     //   그 경로에는 progress·result·error 어느 알림도 따라오지 않는다.
@@ -323,11 +343,20 @@ export function acceptCardResult(data: unknown): { takeId?: string; dropped?: st
   // 카드가 그 사이에 사라졌으면 붙일 자리가 없다.
   if (!st.cards.some((c) => c.id === job.cardId)) { endCardJob(); return { dropped: '카드가 사라졌습니다' } }
 
+  const card = st.cards.find((c) => c.id === job.cardId)!
   const take = {
     id: crypto.randomUUID(), path, createdAt: Date.now(),
     text: job.text, source: job.source, settings: job.settings, applied: job.applied,
+    // 그때의 목소리 — 나중에 '무엇으로 만든 소리인가' 를 답할 수 있어야 한다.
+    voice: job.voice || voiceSnapshot(cardVoiceOf(card)),
   }
   st.addTake(job.cardId, take)
   endCardJob()
   return { takeId: take.id }
+}
+
+/** 카드 이름표 — 기본 목소리면 모델 이름, 참조면 파일 이름. */
+function cardVoiceLabelOf(card: SynthesisCard): string {
+  const v = cardVoiceOf(card)
+  return v.kind === 'builtin' ? v.voice.label : (v.kind === 'reference' ? v.source.name : '')
 }

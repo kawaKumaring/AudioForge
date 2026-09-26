@@ -62,7 +62,9 @@ try{
  await win.getByRole('textbox',{name:'2번 카드 이름'}).fill('목소리 B')
  await win.getByTestId('card-script').nth(1).fill('좋아요. 이 목소리로 다음 대사를 이어갈게요.')
  await app.evaluate(({ipcMain},p)=>{ipcMain.removeHandler('audio:select-file');ipcMain.handle('audio:select-file',()=>p)},other)
- await win.getByRole('button',{name:'2번 카드 음원 변경'}).click()
+ // 목소리 바꾸기는 이제 갈래를 먼저 고른다(기본 목소리 / 파일). 검증 의도는 그대로다.
+ await win.getByRole('button',{name:'2번 카드 목소리 변경'}).click()
+ await win.getByTestId('pick-voice-file').click()
  await win.waitForFunction(p=>window.__synthesisCards.getState().cards[1].source.path===p,other)
  check(await win.evaluate(p=>window.__afStore.getState().fileInfo.path===p&&window.__synthesisCards.getState().cards[0].source.path===p,src),'개별 음원 변경은 공통 원본·다른 카드에 영향 없음')
  const ids=await win.evaluate(()=>window.__synthesisCards.getState().cards.map(c=>c.id))

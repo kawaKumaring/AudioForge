@@ -1,6 +1,8 @@
 import { create } from 'zustand'
 // @ts-ignore TS5097: node --test 가 이 파일을 곧바로 읽으므로 명시 확장자(app.store 의 관례).
 import type { CardApplied, CardEngineSettings } from '../../shared/synthesisCardJob.ts'
+// @ts-ignore TS5097
+import type { BuiltinVoiceRef, VoiceSnapshot } from '../../shared/synthesisCardVoice.ts'
 
 // 카드 하나가 참조 원본·목소리·선택 구간·대사·설정·생성본·채택을 소유한다.
 //
@@ -24,12 +26,20 @@ export type CardTake = {
   source: CardSource
   settings: CardSettings
   applied: CardApplied
+  /** 그때의 목소리(참조 파일인지 기본 목소리인지·어느 모델인지). */
+  voice?: VoiceSnapshot
   /** 저장본을 되살렸는데 파일이 사라졌다. 재생·채택을 막고 이유를 말한다. */
   missing?: boolean
 }
 
 export type SynthesisCard = {
   id: string; label: string; source: CardSource | null; text: string
+  /**
+   * 설치된 기본 목소리로 읽는 카드. `source` 와 **둘 중 하나**다.
+   * 판정은 `shared/synthesisCardVoice` 의 `cardVoiceOf` 하나가 한다 —
+   * '경로가 비었으니 기본 목소리겠지' 같은 추측을 화면에 흩지 않는다.
+   */
+  builtin?: BuiltinVoiceRef | null
   settings: CardSettings; takes: CardTake[]; adoptedId: string | null
 }
 export type JoinSettings = { gap: number; level: boolean; edges: boolean; gaps: Record<string, number> }
@@ -61,6 +71,8 @@ export type CardJob = {
   source: CardSource
   settings: CardSettings
   applied: CardApplied
+  /** 요청 시점의 목소리. 도중에 바꿔도 결과에는 이 값이 붙는다. */
+  voice?: VoiceSnapshot
   startedAt: number
   percent: number
   message: string
@@ -68,8 +80,12 @@ export type CardJob = {
   cancelling: boolean
 }
 
-export const newCard = (source: CardSource | null = null, settings?: CardSettings): SynthesisCard => ({
-  id: crypto.randomUUID(), label: source?.name.replace(/\.[^.]+$/, '') || '새 목소리', source, text: '',
+export const newCard = (
+  source: CardSource | null = null, settings?: CardSettings, builtin: BuiltinVoiceRef | null = null,
+): SynthesisCard => ({
+  id: crypto.randomUUID(),
+  label: builtin?.label || source?.name.replace(/\.[^.]+$/, '') || '새 목소리',
+  source, builtin, text: '',
   settings: settings ? { ...settings } : { speed: 1, pitch: 0, emotion: '자연스럽게', reference: 'auto', start: 0, end: source?.duration || 0 },
   takes: [], adoptedId: null,
 })
@@ -95,6 +111,10 @@ type State = {
   setView: (view: State['view']) => void;
   seed: (source: CardSource) => void;
   add: (sources: CardSource[]) => void;
+  /** 기본 목소리 카드 하나를 더한다. 참조 파일이 없다. */
+  addBuiltin: (voice: BuiltinVoiceRef) => void
+  /** 이 카드의 목소리를 기본 목소리로 바꾼다. 생성본·채택은 건드리지 않는다. */
+  setBuiltin: (id: string, voice: BuiltinVoiceRef) => void
   update: (id: string, patch: Partial<Omit<SynthesisCard, 'id'>>) => void;
   clone: (id: string) => void;
   move: (id: string, index: number) => void;
@@ -119,6 +139,16 @@ export const useSynthesisCards = create<State>((set) => ({
   seed: source => set(s => s.seeded || s.cards.length ? {} : { cards: [newCard(source)], seeded: true }),
   add: sources => set(s => ({ seeded: true, dirty: true, cards: [...s.cards, ...sources.map(source => newCard(source))] })),
   update: (id, patch) => set(s => ({ dirty: true, cards: s.cards.map(c => c.id === id ? { ...c, ...patch } : c) })),
+  addBuiltin: voice => set(s => ({
+    seeded: true, dirty: true, cards: [...s.cards, newCard(null, undefined, voice)],
+  })),
+  setBuiltin: (id, voice) => set(s => ({
+    dirty: true,
+    // ★목소리를 바꿔도 생성본과 채택은 그대로 둔다 — 그것은 사용자의 결과물이다.
+    cards: s.cards.map(c => c.id === id
+      ? { ...c, builtin: voice, source: null, settings: { ...c.settings, reference: 'auto', start: 0, end: 0 } }
+      : c),
+  })),
   clone: id => set(s => {
     const at = s.cards.findIndex(c => c.id === id); if (at < 0) return {}
     const source = s.cards[at], copy = { ...newCard(source.source ? { ...source.source } : null, source.settings), label: source.label }

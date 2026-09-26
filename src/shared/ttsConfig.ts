@@ -253,6 +253,13 @@ export interface TtsInputOptions {
   ttsTailMode?: 'off' | 'auto'                               // 말끝 다듬기(legacy=off, new=auto). 미배선
   ttsTailPaddingMs?: number                                  // 끝 여백(new 기본 120, 허용 0~300). 미배선
   ttsTailFadeMs?: number                                     // 말끝 fade(new 기본 8, 허용 0~20). 미배선
+  // ── 기본 목소리(설치된 로컬 모델) — 참조 음원 없이 읽는 길 (2026-09-27) ──
+  // ★여기에 적지 않으면 값이 파이썬까지 가지 않는다. 이 표가 실어 보낼 것의 단 하나의 출처다.
+  ttsBuiltinModel?: string          // 모델 파일 자리. 이 값이 있으면 참조 없이 읽는 길이다.
+  ttsBuiltinModelId?: string        // 사람이 고른 모델 이름(기록용).
+  ttsBuiltinLabel?: string          // 화면에 보이던 이름(결과 폴더 이름에도 쓴다).
+  ttsBuiltinLanguage?: string
+  ttsBuiltinSpeaker?: string
   ttsEmotionBoundaryMode?: 'immediate' | 'pause'             // 감정 전환 경계(기본 pause). 미배선
   ttsEmotionBoundaryPauseMs?: number                         // 감정 전환 간격(기본 200, 허용 0~1000). 미배선
   ttsExpressionFineTuneEnabled?: boolean                     // 세부 조절 사용 스위치(펼치기/접기와 별개). 미배선
@@ -305,6 +312,11 @@ export interface TtsConfig {
   ttsTailMode: 'off' | 'auto'
   ttsTailPaddingMs: number
   ttsTailFadeMs: number
+  ttsBuiltinModel: string
+  ttsBuiltinModelId: string
+  ttsBuiltinLabel: string
+  ttsBuiltinLanguage: string
+  ttsBuiltinSpeaker: string
   ttsEmotionBoundaryMode: 'immediate' | 'pause'
   ttsEmotionBoundaryPauseMs: number
 }
@@ -413,6 +425,11 @@ export function buildTtsConfig(o?: TtsInputOptions, sourceFingerprints?: Record<
     ttsTailMode: o?.ttsTailMode ?? 'off',
     ttsTailPaddingMs: o?.ttsTailPaddingMs ?? 120,
     ttsTailFadeMs: o?.ttsTailFadeMs ?? 8,
+    ttsBuiltinModel: o?.ttsBuiltinModel ?? '',
+    ttsBuiltinModelId: o?.ttsBuiltinModelId ?? '',
+    ttsBuiltinLabel: o?.ttsBuiltinLabel ?? '',
+    ttsBuiltinLanguage: o?.ttsBuiltinLanguage ?? '',
+    ttsBuiltinSpeaker: o?.ttsBuiltinSpeaker ?? '',
     ttsEmotionBoundaryMode: o?.ttsEmotionBoundaryMode ?? 'pause',
     ttsEmotionBoundaryPauseMs: o?.ttsEmotionBoundaryPauseMs ?? 200
   }

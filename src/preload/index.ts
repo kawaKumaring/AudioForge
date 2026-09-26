@@ -128,6 +128,8 @@ const api = {
     /** 영상이면 소리를 꺼내 그 경로를, 소리 파일이면 그대로 돌려준다. */
     extractAudio: (cardId: string, filePath: string) =>
       ipcRenderer.invoke('card:extract-audio', cardId, filePath),
+    /** 참조 없이 바로 읽을 수 있는 기본 목소리 목록(설치·구동 확인을 거친 것만). */
+    builtinVoices: () => ipcRenderer.invoke('card:builtin-voices'),
     /** 이 카드가 꺼내 둔 소리만 지운다. */
     releaseMedia: (cardId: string) => ipcRenderer.invoke('card:release-media', cardId),
   },
