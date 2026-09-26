@@ -100,6 +100,38 @@ def _p1_shadow_probe(wa, wb):
             pass
 
 
+COMBINE_AVG = "avg"
+COMBINE_MIN_SPEC = "min_spec"
+# 기존 동작을 기본으로 둔다. 음악 분리는 잘 쓰이고 있어 말없이 바꾸지 않는다.
+COMBINE_DEFAULT = COMBINE_AVG
+
+
+def combine_two(wa, wb, mode=COMBINE_DEFAULT):
+    """두 모델 결과를 합친다. **평균이냐, 주파수별로 고르느냐.**
+
+    ★왜 고르는 길이 필요한가 (2026-09-26, UVR 구현을 읽고)
+      평균은 한쪽에만 나타난 것(= 그 모델의 오류)을 **절반으로 줄일 뿐 없애지 못한다.**
+      UVR 은 주파수 칸마다 **작은 쪽**을 고른다 — 한쪽에만 크게 나타난 것은
+      그 모델의 오류일 가능성이 높으므로 **버려진다.**
+      사용자 신고가 '찢어진다'(= artifact) 이므로 기제가 정확히 맞는다.
+
+      대가: 둘 다 제대로 잡은 소리도 작은 쪽으로 눌린다 — 조금 얇아질 수 있다.
+      그래서 **고를 수 있게** 두고 기본은 건드리지 않는다. 판정은 청취로 한다.
+    """
+    if mode != COMBINE_MIN_SPEC:
+        return (wa + wb) / 2.0
+    from audio_separator.separator.uvr_lib_v5 import spec_utils as su
+    # ★축을 돌리지 않는다. 이 함수들은 **(채널, 샘플)을 그대로** 받는다.
+    #   UVR 안의 다른 자리(`ensemble_for_align`)가 `.T` 를 쓰는 것은
+    #   **그쪽 입력이 (샘플, 채널)이라서**다. 맥락을 안 보고 따라 했다가
+    #   채널이 0인 빈 결과를 얻었다(2026-09-26).
+    specs = [su.wave_to_spectrogram_no_mp(wa), su.wave_to_spectrogram_no_mp(wb)]
+    out = su.spectrogram_to_wave_no_mp(su.ensembling(su.MIN_SPEC, specs))
+    # 되돌릴 때 길이가 한두 샘플 어긋난다 — 짧은 쪽에 맞춘다(복원 오차이지 절단이 아니다).
+    n = min(out.shape[-1], wa.shape[-1])
+    return out[:wa.shape[0], :n]
+
+
 def _run_one_roformer(model_name, wav_input, model_dir, work_dir, pct_lo, pct_hi):
     """단일 RoFormer 모델로 분리 → {'vocals': path, 'instrumental': path} 반환.
     출력은 work_dir(전용 임시 폴더)에 남긴다(앙상블에서 두 모델 결과를 섞기 위함)."""
@@ -126,7 +158,8 @@ def _run_one_roformer(model_name, wav_input, model_dir, work_dir, pct_lo, pct_hi
     return res
 
 
-def run_roformer_ensemble(input_path: str, output_dir: str):
+def run_roformer_ensemble(input_path: str, output_dir: str,
+                          combine: str = COMBINE_DEFAULT):
     """BS-RoFormer + Mel-Band(Kim FT2 bleedless) 2모델 앙상블.
     두 모델의 보컬/반주를 파형 평균(avg_wave)해 잔음·bleed를 줄인다.
     SDR을 크게 올리는 게 아니라 아티팩트를 줄이는 게 목적 — 단일 모델보다 2배 느림."""
@@ -215,7 +248,7 @@ def run_roformer_ensemble(input_path: str, output_dir: str):
             # 스펙 정합 확인됨 → min slice 는 실질 no-op. 기존 0.5/0.5 평균과 동일.
             n = min(wa.shape[-1], wb.shape[-1])
             ch = min(wa.shape[0], wb.shape[0])
-            mixed = (wa[:ch, :n] + wb[:ch, :n]) / 2.0
+            mixed = combine_two(wa[:ch, :n], wb[:ch, :n], combine)
             # shadow: P1 후보를 비저장 계산해 진단 수치만 emit. mixed/plan 불변,
             # 예외는 _p1_shadow_probe 내부에서 격리(음악 출력 보호).
             if p1_mode == "shadow":
