@@ -137,9 +137,16 @@ class TestBoundaryStaysThin(unittest.TestCase):
     """★떼어낼 때 여기 한 곳만 보면 되는가."""
 
     def test_변환기를_아는_곳은_이_파일뿐이다(self):
+        """★제품 코드만 본다.
+
+        처음에는 검사 파일까지 뒤졌고, **같은 규칙을 강제하려고 그 이름들을 적어 둔**
+        `test_song_chain.py` 를 위반으로 잡았다. 이 저장소에서 여러 번 나온
+        '잘못 잡는 가드' 다 — 그런 가드는 결국 꺼진다.
+        경계가 지켜져야 하는 곳은 **실제로 도는 코드**이지 검사 문장이 아니다.
+        """
         leaks = []
         for name in sorted(os.listdir(HERE)):
-            if not name.endswith('.py') or name in ('song_voice.py', 'test_song_voice.py'):
+            if not name.endswith('.py') or name.startswith('test_') or name == 'song_voice.py':
                 continue
             body = io.open(os.path.join(HERE, name), encoding='utf-8',
                            errors='replace').read()
