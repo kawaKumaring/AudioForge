@@ -130,8 +130,9 @@ class TestChainDoesNotSkipSteps(unittest.TestCase):
         return type('R', (), {'returncode': 0, 'stderr': b''})()
 
     def test_두_분리를_모두_거치고_주보컬만_변환한다(self):
+        # ★기본이 꺼짐으로 바뀌었으므로 **명시적으로 켜서** 그 경로를 본다.
         out = sc.convert_song('v.mp4', self.ref, self.d, voice_name='A',
-                              ref_sec=8.0, song_sec=240.0,
+                              ref_sec=8.0, song_sec=240.0, split_lead=True,
                               separate_fn=self._sep, convert_fn=self._conv, pitch_fn=False,
                               run=self._run)
         self.assertEqual(self.calls[0], sc.VOCAL_MODEL_KEY, '반주 분리를 안 했다')
@@ -293,6 +294,33 @@ class TestReusesAlreadySeparated(unittest.TestCase):
             src = f.read()
         self.assertIn('return convert_from_vocals(', src,
                       '곡 전체 경로가 공용 뒷단을 쓰지 않는다')
+
+class TestSplitLeadDefault(unittest.TestCase):
+    """★기본을 끔으로 둔 이유를 못 박는다(2026-09-26 사용자 청취).
+
+      2026-09-20  겹친 화음을 그대로 넣으면 기계음이 난다 → 이 단계를 넣었다.
+      2026-09-26  그런데 이 단계가 **말을 통째로 앗아간다.**
+                  갈라내기 품질을 셋으로 바꿔 가며 확인했으나 셋 다 그랬다.
+
+      내 가설("첫 갈라내기를 깨끗하게 하면 두 번째도 풀린다")은 **반증됐다.**
+      말을 잃는 것이 화음이 조금 섞이는 것보다 나쁘다 — 그래서 기본은 끔이다.
+    """
+
+    def test_기본은_꺼짐이다(self):
+        self.assertIs(sc.SPLIT_LEAD_DEFAULT, False,
+                      '기본을 켜면 말이 사라지는 곡에서 그대로 당한다')
+
+    def test_두_진입점이_같은_기본값을_쓴다(self):
+        import inspect
+        for fn in (sc.convert_song, sc.convert_from_vocals):
+            got = inspect.signature(fn).parameters['split_lead'].default
+            self.assertIs(got, sc.SPLIT_LEAD_DEFAULT,
+                          '%s 만 다른 기본값을 쓴다' % fn.__name__)
+
+    def test_켜라고_하면_켠다(self):
+        """기본이 꺼졌다고 **길을 없애면** 겹쳐 부른 곡을 다룰 수 없다."""
+        import inspect
+        self.assertIn('split_lead', inspect.signature(sc.convert_song).parameters)
 
 class TestBoundaryToConverter(unittest.TestCase):
     """★변환기 사정이 이 파일로 새면, 모델을 갈아 끼울 때 여기도 뜯게 된다."""

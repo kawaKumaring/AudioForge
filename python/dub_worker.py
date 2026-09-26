@@ -46,6 +46,17 @@ def _step_audio(ctx):
             pass
 
 
+# ★첫 갈라내기 모델 — **사용자 청취로 정했다**(2026-09-26).
+#   같은 곡을 셋으로 갈라 들려 드렸다: 지금 모델 · bleedless · 앙상블.
+#   "2_bleedless 이것이 더 괜찮게 들린다" 는 판단을 받았다.
+#   이름의 bleedless 는 **다른 소리가 새어 드는 것을 줄인 판**이라는 뜻이고,
+#   신고 증상(갈라낸 보컬이 찢어진다)이 바로 그 새어 듦이었다.
+#
+#   ★한 곡으로 정한 값이다. 다른 곡에서 나쁘면 바꾼다 — 숫자로는 가릴 수 없고
+#     귀로만 갈린다(2026-09-26에 품질 지표를 여섯 가지 써 봤고 전부 빗나갔다).
+BLEEDLESS_MODEL = 'mel_band_roformer_kim_ft2_bleedless_unwa.ckpt'
+
+
 def _separate_tracks(src, stem_dir):
     """보컬을 갈라낸다. **좋은 분리기를 먼저** 쓰고, 안 되면 물러선다.
 
@@ -55,12 +66,15 @@ def _separate_tracks(src, stem_dir):
       쓰지 않을 이유가 없었는데 처음에 Demucs 를 골랐다. 그 선택을 되돌린다.
     """
     from music_worker import run_music_separation, run_roformer_separation
-    try:
-        tracks = run_roformer_separation(src, stem_dir)
-        if tracks:
-            return tracks, 'roformer'
-    except Exception as e:
-        emit('progress', message='좋은 분리기를 쓰지 못해 기본 분리기로 갑니다: %s' % e)
+    for model, tag in ((BLEEDLESS_MODEL, 'bleedless'), (None, 'roformer')):
+        try:
+            tracks = (run_roformer_separation(src, stem_dir, model) if model
+                      else run_roformer_separation(src, stem_dir))
+            if tracks:
+                return tracks, tag
+        except Exception as e:
+            emit('progress', message='%s 분리기를 쓰지 못했습니다: %s' % (tag, e))
+    emit('progress', message='좋은 분리기를 쓰지 못해 기본 분리기로 갑니다')
     tracks = run_music_separation(src, stem_dir)
     return tracks, 'demucs'
 

@@ -34,6 +34,23 @@ CONVERTER_WINDOW_SEC = 30.0
 REF_MAX_SEC = 12.0
 
 
+# ★주보컬/화음 가르기를 **기본으로 하지 않는다**(2026-09-26 사용자 청취).
+#
+#   두 사실이 모두 참이라 값을 고르기 어려웠다:
+#     2026-09-20  겹친 화음을 그대로 넣으면 변환기가 두 음높이 사이에서 헤매
+#                 기계음이 난다 — 그래서 이 단계를 넣었다.
+#     2026-09-26  그런데 이 단계가 **말을 통째로 앗아간다.** 갈라내기 품질을
+#                 셋(지금 모델·bleedless·앙상블)으로 바꿔 가며 확인했는데
+#                 **셋 다 제대로 들리지 않았다.**
+#
+#   ★내 가설은 반증됐다 — "첫 갈라내기를 깨끗하게 하면 두 번째도 풀린다" 고 봤으나,
+#     첫 단계 품질과 무관하게 이 단계가 말을 앗아갔다.
+#
+#   그래서 기본은 끔이다. **말을 잃는 것이 화음이 조금 섞이는 것보다 나쁘다.**
+#   겹쳐 부른 곡에서는 켜야 할 수 있으므로 고를 수 있게 남겨 둔다.
+SPLIT_LEAD_DEFAULT = False
+
+
 class SongChainError(RuntimeError):
     """사슬을 돌릴 수 없는 상태. 사유를 문구에 담는다."""
 
@@ -198,7 +215,7 @@ def mix(sources, dest, *, run=subprocess.run):
 def convert_song(video, reference, work_dir, *, voice_name='목소리',
                  ref_sec=None, song_sec=None, log=None,
                  separate_fn=None, convert_fn=None, run=subprocess.run,
-                 pitch_fn=None, split_lead=True):
+                 pitch_fn=None, split_lead=SPLIT_LEAD_DEFAULT):
     """곡 하나를 끝까지. 만들어진 것들의 경로를 돌려준다.
 
     ★단계마다 **결과가 없으면 거기서 멈춘다.** 빈손을 다음 칸에 넘기지 않는다 —
@@ -237,7 +254,7 @@ def convert_song(video, reference, work_dir, *, voice_name='목소리',
 def convert_from_vocals(vocals, instrumental, reference, work_dir, *,
                         voice_name='목소리', log=None,
                         separate_fn=None, convert_fn=None, run=subprocess.run,
-                        pitch_fn=None, split_lead=True):
+                        pitch_fn=None, split_lead=SPLIT_LEAD_DEFAULT):
     """**이미 갈라 둔 보컬**로 이어서 한다. 갈라내기를 두 번 하지 않기 위한 문이다.
 
     ★왜 이 문이 생겼나 (2026-09-26)
