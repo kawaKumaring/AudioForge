@@ -120,16 +120,31 @@ def combine_two(wa, wb, mode=COMBINE_DEFAULT):
     """
     if mode != COMBINE_MIN_SPEC:
         return (wa + wb) / 2.0
+    import numpy as _np
     from audio_separator.separator.uvr_lib_v5 import spec_utils as su
+
+    # ★앱의 `load_audio` 는 **torch 텐서**를 돌려준다. 스펙트럼 함수는 numpy 를 받는다.
+    #   내 첫 검사는 librosa 로 직접 읽어(numpy) **실제 경로를 타지 않아** 통과했다.
+    #   검사는 제품이 쓰는 길로 들어가야 한다(2026-09-26).
+    def _np_of(x):
+        return x.detach().cpu().numpy() if hasattr(x, 'detach') else _np.asarray(x)
+
+    was_tensor = hasattr(wa, 'detach')
+    wa_n, wb_n = _np_of(wa), _np_of(wb)
     # ★축을 돌리지 않는다. 이 함수들은 **(채널, 샘플)을 그대로** 받는다.
     #   UVR 안의 다른 자리(`ensemble_for_align`)가 `.T` 를 쓰는 것은
     #   **그쪽 입력이 (샘플, 채널)이라서**다. 맥락을 안 보고 따라 했다가
     #   채널이 0인 빈 결과를 얻었다(2026-09-26).
-    specs = [su.wave_to_spectrogram_no_mp(wa), su.wave_to_spectrogram_no_mp(wb)]
+    specs = [su.wave_to_spectrogram_no_mp(wa_n), su.wave_to_spectrogram_no_mp(wb_n)]
     out = su.spectrogram_to_wave_no_mp(su.ensembling(su.MIN_SPEC, specs))
     # 되돌릴 때 길이가 한두 샘플 어긋난다 — 짧은 쪽에 맞춘다(복원 오차이지 절단이 아니다).
-    n = min(out.shape[-1], wa.shape[-1])
-    return out[:wa.shape[0], :n]
+    n = min(out.shape[-1], wa_n.shape[-1])
+    out = _np.ascontiguousarray(out[:wa_n.shape[0], :n], dtype='float32')
+    if was_tensor:
+        # ★받은 그대로 돌려준다. 형식이 바뀌면 부르는 쪽이 조용히 깨진다.
+        import torch
+        return torch.from_numpy(out)
+    return out
 
 
 def _run_one_roformer(model_name, wav_input, model_dir, work_dir, pct_lo, pct_hi):
@@ -278,10 +293,105 @@ def run_roformer_ensemble(input_path: str, output_dir: str,
     return tracks
 
 
-def run_roformer_separation(input_path: str, output_dir: str, model_name: str = _ROFORMER_MODEL):
+# 조건을 바꿔 돌릴 때 쓰는 기본 묶음. 0 은 원래 조건이다.
+MULTIPASS_SHIFTS = (0, -3)
+
+
+def run_roformer_multipass(input_path: str, output_dir: str,
+                           model_name: str = _ROFORMER_MODEL,
+                           shifts=MULTIPASS_SHIFTS,
+                           combine: str = COMBINE_MIN_SPEC):
+    """같은 모델을 **조건만 바꿔 여러 번** 돌리고 합친다.
+
+    ★이것이 UVR 에서 배운 핵심 기법이다 (2026-09-26).
+      UVR 의 TTA · denoise · shifts 가 겉보기에 다르지만 **하나의 생각**이다:
+
+          조건을 바꿔 여러 번 돌리면, **조건에 따라 달라지는 것은 모델의 오류**이고
+          **조건과 무관하게 같은 것은 진짜 신호**다. 합치면 오류는 흩어지고 신호는 남는다.
+
+      모델을 바꾸는 이야기가 아니다. **모델 하나로 된다.**
+
+    ★왜 우리가 직접 만드나
+      그 기능들은 MDX·VR·Demucs 갈래에만 있고 **우리 모델이 타는 roformer 갈래에는 없다**
+      (받는 설정이 토막 크기·겹침·음높이·묶음 크기뿐이다). 그래서 기법만 가져와 여기서 한다.
+
+    ★왜 음높이로 조건을 바꾸나
+      라이브러리가 갈라내기 전에 음을 내리고 끝난 뒤 되돌려 준다(한 벌이라 결과 음높이는
+      그대로다). 그래서 **결과끼리 바로 견줄 수 있다** — 조건만 다르고 축이 같다.
+
+    ★왜 합치기는 작은 쪽인가
+      평균은 한 번만 나타난 오류를 절반으로 줄일 뿐이고, 작은 쪽 고르기는 **버린다.**
+      앞서 두 모델을 합칠 때는 효과가 없었는데, 그때는 두 모델이 0.9942 로 거의 같아
+      **같은 방식으로 틀렸기 때문**이다. 조건을 바꾸면 다르게 틀릴 여지가 생긴다.
+
+    ★대가: 돌린 횟수만큼 느려진다. 실측으로 한 번이 7.5~16초이므로 두 번이면 여유가 있다.
+    """
+    import shutil as _sh
+    import tempfile
+
+    passes = [int(x) for x in (shifts or (0,))]
+    if len(passes) < 2:
+        return run_roformer_separation(input_path, output_dir, model_name, passes[0] if passes else 0)
+
+    emit("status", message="조건을 바꿔 %d번 갈라내는 중" % len(passes), percent=0)
+    tmp_root = tempfile.mkdtemp(prefix="af_mp_")
+    got = []
+    try:
+        for i, sh in enumerate(passes):
+            emit("progress", percent=int(80 * i / len(passes)),
+                 message="%d/%d번째 (음높이 %+d반음)" % (i + 1, len(passes), sh))
+            d = os.path.join(tmp_root, str(i))
+            os.makedirs(d, exist_ok=True)
+            tracks = run_roformer_separation(input_path, d, model_name, sh)
+            if not tracks:
+                emit("error", message="%d번째 갈라내기가 비었습니다" % (i + 1))
+                return []
+            got.append(dict((t["name"], t["path"]) for t in tracks))
+
+        emit("progress", percent=85, message="결과를 합치는 중")
+        out = []
+        for name, label in (("vocals", "보컬"), ("instrumental", "반주")):
+            paths = [g.get(name) for g in got if g.get(name) and os.path.exists(g[name])]
+            if not paths:
+                continue
+            merged, sr = load_audio(paths[0])
+            for q in paths[1:]:
+                w, _sr = load_audio(q)
+                n = min(merged.shape[-1], w.shape[-1])
+                ch = min(merged.shape[0], w.shape[0])
+                merged = combine_two(merged[:ch, :n], w[:ch, :n], combine)
+            dest = os.path.join(output_dir, "%s.wav" % name)
+            os.makedirs(output_dir, exist_ok=True)
+            save_audio(dest, merged, sr)
+            out.append({"name": name, "label": label, "path": dest})
+        if not out:
+            emit("error", message="합칠 결과가 없습니다")
+            return []
+        emit("progress", percent=95, message="완료")
+        return out
+    finally:
+        _sh.rmtree(tmp_root, ignore_errors=True)
+
+
+def run_roformer_separation(input_path: str, output_dir: str, model_name: str = _ROFORMER_MODEL,
+                            pitch_shift: int = 0):
     """RoFormer로 보컬/반주 2트랙 분리 (Demucs보다 보컬 SDR 우수).
     model_name으로 BS(기본)/Mel-Band 등 선택. audio-separator(onnxruntime+torch)는
-    ComfyUI 환경에 이미 존재 — 별도 설치 불필요."""
+    ComfyUI 환경에 이미 존재 — 별도 설치 불필요.
+
+    pitch_shift — 갈라내기 **전에** 이만큼 음을 내리고, 끝난 뒤 **되돌린다**(반음).
+
+    ★왜 이 손잡이가 있나 (2026-09-26, UVR 구현에서 가져옴)
+      모델은 흔한 노래 음역에서 배웠다. 그 범위를 벗어난 소리는 잘 못 가른다.
+      그래서 UVR 은 **모델이 일하는 조건 자체를 바꾼다** — 음역 안으로 끌어와
+      갈라내고 다시 올린다. 되돌리는 것까지가 한 벌이라 결과의 음높이는 그대로다.
+
+      이 곡의 보컬은 약 519Hz 로 유난히 높다(실측). 시도할 근거가 있다.
+
+    ★합치는 방식(앙상블)으로는 이 곡이 나아지지 않았다.
+      두 모델 결과가 0.9942 로 거의 같아 — **같은 방식으로 틀려서** 고를 것이 없었다.
+      그래서 합치는 쪽이 아니라 **조건을 바꾸는 쪽**으로 왔다.
+    """
     import re
     emit("status", message="RoFormer 보컬 분리", percent=0)
 
@@ -297,7 +407,11 @@ def run_roformer_separation(input_path: str, output_dir: str, model_name: str = 
     os.makedirs(model_dir, exist_ok=True)
 
     emit("progress", percent=10, message="RoFormer 모델 로딩 중... (첫 실행 시 다운로드)")
-    sep = Separator(model_file_dir=model_dir, output_dir=output_dir, output_format="WAV")
+    kw = {}
+    if pitch_shift:
+        # 갈라내기 전에 내리고, 라이브러리가 끝에서 되돌린다(pitch_fix). 한 벌이다.
+        kw["mdxc_params"] = {"pitch_shift": int(pitch_shift)}
+    sep = Separator(model_file_dir=model_dir, output_dir=output_dir, output_format="WAV", **kw)
     sep.load_model(model_name)
 
     # 입력을 ffmpeg로 wav 정규화 — audio-separator 자체 로더(soundfile/librosa)가 못 읽는

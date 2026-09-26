@@ -78,6 +78,46 @@ class TestMinSpecDropsOneSidedNoise(unittest.TestCase):
                         % (pm, pa))
 
 
+class TestRealCallPath(unittest.TestCase):
+    """★검사는 **제품이 쓰는 길**로 들어가야 한다.
+
+      처음 검사는 numpy 배열을 직접 만들어 넣어 통과했다. 그런데 제품은 앱의
+      `load_audio` 를 쓰고, 그것은 **torch 텐서**를 돌려준다.
+      스펙트럼 함수는 numpy 만 받으므로 **실제로 돌리자마자 터졌다.**
+      검사가 다른 길로 들어가면 통과가 아무것도 보장하지 않는다.
+    """
+
+    def test_텐서를_넣어도_된다(self):
+        import torch
+        a, b = _two()
+        ta, tb = torch.from_numpy(a), torch.from_numpy(b)
+        for mode in (mw.COMBINE_AVG, mw.COMBINE_MIN_SPEC):
+            r = mw.combine_two(ta, tb, mode)
+            self.assertEqual(r.shape[0], a.shape[0], '%s: 채널이 바뀌었다' % mode)
+
+    def test_받은_형식_그대로_돌려준다(self):
+        """형식이 바뀌면 부르는 쪽이 조용히 깨진다."""
+        import numpy as np, torch
+        a, b = _two()
+        for mode in (mw.COMBINE_AVG, mw.COMBINE_MIN_SPEC):
+            self.assertIsInstance(mw.combine_two(a, b, mode), np.ndarray,
+                                  '%s: numpy 를 넣었는데 다른 것이 나온다' % mode)
+            got = mw.combine_two(torch.from_numpy(a), torch.from_numpy(b), mode)
+            self.assertTrue(hasattr(got, 'detach'),
+                            '%s: 텐서를 넣었는데 텐서가 아닌 것이 나온다' % mode)
+
+    def test_저장까지_간다(self):
+        """★마지막까지 가 봐야 안다 — 여기서 터졌다."""
+        import tempfile, torch
+        from audio_utils import save_audio
+        a, b = _two()
+        d = tempfile.mkdtemp(prefix='afmc-')
+        for mode in (mw.COMBINE_AVG, mw.COMBINE_MIN_SPEC):
+            r = mw.combine_two(torch.from_numpy(a), torch.from_numpy(b), mode)
+            out = os.path.join(d, '%s.wav' % mode)
+            save_audio(out, r, 44100)
+            self.assertTrue(os.path.isfile(out), '%s: 저장되지 않았다' % mode)
+
 class TestDefaultUnchanged(unittest.TestCase):
     """★잘 쓰이고 있는 음악 분리를 말없이 바꾸지 않는다."""
 
