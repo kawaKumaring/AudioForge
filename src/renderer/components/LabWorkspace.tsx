@@ -1,4 +1,4 @@
-// 테스트개발 작업실 — 대본을 쓰고, 문장별로 음성을 만들고, 고른 것으로 전체를 완성한다.
+// 문장별 제작 — 대본을 쓰고, 문장별로 음성을 만들고, 고른 것으로 전체를 완성한다.
 //
 // 기존 합성 화면의 카드·단계 구성을 따라 만들지 않았다. 이 작업실의 목적에서 새로 짰다.
 //   · 가운데는 **대본**이다. 설정이 대본보다 큰 자리를 차지하지 않는다.
@@ -12,13 +12,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useAppStore } from '@/stores/app.store'
+import SynthesisReuseBar from './SynthesisReuseBar'
 import { useLabStore, newId } from '@/stores/lab.store'
 import {
   LAB_STORAGE_KEY, adoptedTake, exportBlockText, exportReadiness, hasUnusedTake, isExportBlockNotice,
   lineStatus, lineStatusText, parseDoc, synthesisOptions, tailResidualOf, takeBadge, takeTailCut, voiceKeyOf,
   type LabDoc, type LabLine,
 } from '../../shared/labWorkspace'
-import { cancelFailureText } from '../../shared/cancelContract'
+import { cancelFailureText, isCancelCleanupBusy } from '../../shared/cancelContract'
 import { cancelAlreadyOverText, useCancelLifecycle } from '@/hooks/useCancelLifecycle'
 import { saveSetting, saveFailureText } from '../../shared/saveSetting'
 import { REFERENCE_CONDITIONING_RECOMMENDED } from '../../shared/ttsConfig'
@@ -183,9 +184,11 @@ export default function LabWorkspace() {
   }, [playingTakeId, playAll, stopPlay])
 
   // ── 생성 — 기존 합성 경로를 그대로 부른다 ─────────────────────────────────
-  const busyElsewhere = app.status === 'processing' && !job
+  const busyElsewhere = (app.status === 'processing' || isCancelCleanupBusy(app.status) || app.errorInfo?.childAlive === true) && !job
   // ★게이트는 **작업실 자신의** 목소리 준비 상태를 본다. 합성 탭의 참조 슬롯이 아니다.
   const canGenerate = !!doc.voicePath && !!lab.ref.clip && lab.ref.ready && !job && !busyElsewhere
+  const inputBusy = !!job || busyElsewhere
+  const sourceIsVoice = !!app.fileInfo?.path && app.fileInfo.path === doc.voicePath
 
   const startJob = useCallback((lineIds: string[]) => {
     const ids = lineIds.filter((id) => {
@@ -200,7 +203,7 @@ export default function LabWorkspace() {
     lab.setJob({ lineId: first.id, text: first.text, voiceKey, startedAt: Date.now(), queue: ids.slice(1) })
     // 공용 작업 제어: 기존 합성과 **동시에** 돌지 않도록 같은 상태를 쓴다.
     // ★기존 결과(tracks)는 지우지 않는다 — 다른 탭의 결과를 없애지 않기 위해서다.
-    useAppStore.setState({ status: 'processing', progress: 0, progressMessage: '문장 만드는 중...', error: null })
+    useAppStore.getState().beginIndependentWork('문장 만드는 중...')
     // ★시작 요청의 **거절을 버리지 않는다**(2026-09-24 2차 감사).
     //   main 은 여덟 갈래(이미 처리 중·취소 정리 중·참조 전사 중·파이썬 없음 등)로
     //   거절할 수 있는데, 그 경로에는 progress·result·error 어느 알림도 따라오지 않는다.
@@ -211,7 +214,7 @@ export default function LabWorkspace() {
       .catch((e: unknown) => {
         lab.setJob(null)
         lab.setError(`문장 만들기를 시작하지 못했습니다: ${(e as Error)?.message || e}`)
-        useAppStore.setState({ status: 'idle', progress: 0, progressMessage: '' })
+        useAppStore.getState().endIndependentWork()
       })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc, voiceKey, lab.ref])
@@ -265,7 +268,7 @@ export default function LabWorkspace() {
     function finish() {
       useLabStore.getState().setJob(null)
       useLabStore.getState().setProgress(null)
-      useAppStore.setState({ status: 'idle', progress: 0, progressMessage: '' })
+      useAppStore.getState().endIndependentWork()
       // ★완료됐는데 화면이 그대로인 것처럼 두지 않는다.
       const r = runRef.current
       if (r.made > 0 && !useLabStore.getState().error) {
@@ -289,7 +292,7 @@ export default function LabWorkspace() {
         .catch((e: unknown) => {
           st.setJob(null)
           st.setError(`문장 만들기를 시작하지 못했습니다: ${(e as Error)?.message || e}`)
-          useAppStore.setState({ status: 'idle', progress: 0, progressMessage: '' })
+          useAppStore.getState().endIndependentWork()
         })
     }
     return () => { offP(); offR(); offE() }
@@ -306,6 +309,18 @@ export default function LabWorkspace() {
     //   목소리 준비는 아래 숨은 준비기가 작업실 자신의 자리에 담는다.
     lab.setVoice(p, (info as any)?.name || p.split(/[/\\]/).pop() || '목소리')
   }, [])
+
+  const useSourceVoice = () => {
+    if (inputBusy || !app.fileInfo?.path || sourceIsVoice) return
+    lab.setVoice(app.fileInfo.path, app.fileInfo.name)
+    lab.setNotice('열어 둔 파일을 이 작업의 목소리로 선택했습니다. 기존 생성본은 보관됩니다.')
+  }
+
+  const appendAdvancedScript = () => {
+    if (inputBusy || !lab.loaded || app.ttsSpeakerMode === 'multi') return
+    stopPlay()
+    lab.appendScript(app.ttsText)
+  }
 
   /**
    * 문장을 지우거나 옮기기 전에 **재생을 멈춘다.**
@@ -364,7 +379,7 @@ export default function LabWorkspace() {
   const clearRun = useCallback(() => {
     useLabStore.getState().setJob(null)
     useLabStore.getState().setProgress(null)
-    useAppStore.setState({ status: 'idle', progress: 0, progressMessage: '' })
+    useAppStore.getState().endIndependentWork()
   }, [])
   const { requestCancel } = useCancelLifecycle(() => useAppStore.getState().status, {
     onCancelling: () => useAppStore.getState().beginCancelling(),
@@ -421,30 +436,48 @@ export default function LabWorkspace() {
     })
   }, [doc.voicePath, lab.ref.reqId, doc.settings.engine, doc.settings.refTargetSec])
 
+  const draftImport = (
+      <SynthesisReuseBar id="lab" source="대본·배역 편집" disabled={inputBusy || !lab.loaded}
+        available={!!app.ttsText.trim() && app.ttsSpeakerMode !== 'multi'} onAppend={appendAdvancedScript}
+        detail={app.ttsSpeakerMode === 'multi'
+          ? '여러 배역의 대본은 대본·배역 편집에서 만드세요. 이 작업은 한 목소리를 사용합니다.'
+          : app.ttsText.trim()
+            ? '대본 전체를 새 생성 항목으로 추가합니다. 감정·쉼 표기와 기존 생성본을 보존하며, 목소리는 위의 선택을 사용합니다.'
+            : '대본·배역 편집에서 작성한 대본이 있으면 이 작업에 추가할 수 있습니다.'} />
+  )
+
   return (
-    <div data-testid="lab-workspace" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <div data-testid="lab-workspace" style={{ display: 'flex', flexDirection: 'column', minWidth: 0 }}>
       {/* 목소리 — 한 줄로 끝낸다. 대본보다 큰 자리를 차지하지 않는다. */}
-      <div style={box({ display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px' })}>
-        <span style={{ fontSize: 12, color: 'var(--text-muted)', flexShrink: 0 }}>목소리</span>
-        <span data-testid="lab-voice-label" style={{
+      <div data-testid="lab-voice-toolbar" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '16px 18px', borderBottom: '1px solid var(--border-subtle)' }}>
+        <span title="대본을 읽을 목소리" style={{ width: 30, height: 30, borderRadius: 9, background: 'var(--accent-glow)', color: 'var(--accent-light)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><svg aria-hidden="true" width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3"/></svg></span>
+        <span data-testid="lab-voice-label" title={doc.voicePath || '목소리 파일 선택'} style={{
           fontSize: 13, fontWeight: 600, minWidth: 0, overflow: 'hidden',
           textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1,
         }}>{doc.voiceLabel || '아직 고르지 않음'}</span>
         {/* ★**자기 상태**를 말한다(2026-09-16). 예전에는 고급의 값(app.ttsRefReady)을 읽었다 —
             막는 것은 lab.ref.ready 인데 표시는 다른 값이라, 고급이 준비되면 일반도 '준비됨' 이라고
             말하면서 정작 만들기는 잠겨 있었다(그 반대도 났다). 화면과 잠금은 같은 값을 봐야 한다. */}
-        <span data-testid="lab-voice-status"
+        <span data-testid="lab-voice-status" tabIndex={0} title={lab.ref.message || (lab.ref.ready ? '참조 목소리 준비됨' : '참조 음성을 준비하고 있습니다')}
           style={{ fontSize: 11, color: lab.ref.ready ? 'var(--emerald, #34d399)' : 'var(--text-muted)' }}>
-          {doc.voicePath ? (lab.ref.ready ? '준비됨' : (lab.ref.message || '준비 중…')) : ''}
+          {doc.voicePath ? (lab.ref.ready ? '● 준비됨' : lab.ref.message ? '확인 필요' : '준비 중') : ''}
         </span>
-        <button data-testid="lab-pick-voice" onClick={() => { void pickVoice() }}
-          disabled={!!job} style={btn('var(--bg-elevated)', 'var(--cyan)', !!job)}>
-          {doc.voicePath ? '목소리 바꾸기' : '목소리 고르기'}
+        <button data-testid="lab-pick-voice" aria-label="목소리 바꾸기" title="이 작업의 목소리 파일 선택" onClick={() => { void pickVoice() }}
+          disabled={inputBusy} style={btn('var(--accent-glow)', 'var(--accent-light)', inputBusy)}>
+          {doc.voicePath ? '변경' : '파일 선택'}
         </button>
+        {app.fileInfo?.path && !sourceIsVoice && (
+          <button type="button" data-testid="lab-use-source-voice" onClick={useSourceVoice} disabled={inputBusy}
+            title={'열어 둔 원본을 목소리로 사용: ' + app.fileInfo.name}
+            style={btn('var(--bg-elevated)', 'var(--text-secondary)', inputBusy)}>
+            원본 사용
+          </button>
+        )}
       </div>
 
       {/* 대본 — 화면 가운데, 가장 넓게 */}
-      <div style={box({ padding: '8px 8px 10px' })}>
+      <div data-testid="lab-script-section" style={{ padding: '16px 18px 22px', minHeight: 320, background: 'var(--bg-base)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 18 }}><h2 style={{ fontSize: 13, fontWeight: 600, margin: 0 }}>대본</h2><span style={{ color: 'var(--text-muted)', fontSize: 11 }}>{doc.lines.length}문장</span>{draftImport}</div>
         {doc.lines.map((line, i) => (
           <LineRow
             key={line.id} line={line} index={i} voiceKey={voiceKey}
@@ -474,11 +507,12 @@ export default function LabWorkspace() {
           style={{ ...btn('transparent', 'var(--text-muted)'), width: '100%', textAlign: 'left', padding: '8px 10px' }}>
           + 문장 추가
         </button>
+
       </div>
 
       {/* 아래 고정 막대 — 전체 조작과 현재 상태 */}
       <div data-testid="lab-bottom-bar" style={box({
-        position: 'sticky', bottom: 0, padding: '10px 14px', display: 'flex',
+        position: 'sticky', bottom: 0, zIndex: 5, padding: '14px 18px', borderRadius: '0 0 12px 12px', border: 'none', borderTop: '1px solid var(--border-subtle)', display: 'flex',
         alignItems: 'center', gap: 8, flexWrap: 'wrap', background: 'var(--bg-elevated)',
       })}>
         {/* 전체 듣기와 내보내기는 **같은 일의 두 얼굴**이다 — 지금 대본 순서대로, 문장마다
@@ -493,7 +527,7 @@ export default function LabWorkspace() {
           <button data-testid="lab-export" onClick={() => { void doExport() }}
             title={"문장마다 선택한 음성을 순서대로 이어 하나의 파일로 저장합니다."}
             disabled={!!job || !ready.ready} style={btn('var(--bg-card)', 'var(--cyan)', !!job || !ready.ready)}>
-            문장 조합 내보내기
+            내보내기
           </button>
         </div>
         {job && (
@@ -501,16 +535,8 @@ export default function LabWorkspace() {
             title={"만드는 중인 작업을 멈춥니다. 재생 중지가 아닙니다."}
             style={btn('var(--bg-card)', 'var(--rose, #fb7185)')}>만들기 취소</button>
         )}
-        <div data-testid="lab-status" style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto', textAlign: 'right' }}>
-          {job
-            ? `만드는 중 — ${lab.progress?.message || ''} ${lab.progress?.percent ?? 0}%`
-            : busyElsewhere
-              ? '합성 탭에서 작업이 도는 중입니다 — 끝나면 여기서 만들 수 있습니다'
-              : !doc.voicePath ? '목소리를 먼저 고르세요'
-                : !lab.ref.ready
-                  ? `목소리 준비 중 — 참조 음성의 말을 분석하고 있습니다${lab.ref.message ? ` (${lab.ref.message})` : ''}`
-                  : ready.ready ? `전부 준비됨 — ${ready.paths.length}문장`
-                    : blockSummary}
+        <div data-testid="lab-status" tabIndex={0} title={job ? lab.progress?.message : !lab.ref.ready ? lab.ref.message || '목소리를 선택하고 준비해 주세요' : blockSummary} style={{ fontSize: 11, color: 'var(--text-muted)', marginLeft: 'auto', textAlign: 'right' }}>
+          {job ? '생성 중 ' + (lab.progress?.percent ?? 0) + '%' : busyElsewhere ? '대기 중' : !doc.voicePath ? '목소리 미선택' : !lab.ref.ready ? '참조 확인' : ready.ready ? ready.paths.length + '문장 준비됨' : '생성 대기'}
         </div>
       </div>
 
@@ -519,7 +545,7 @@ export default function LabWorkspace() {
           padding: '8px 12px', fontSize: 12,
           color: lab.error ? 'var(--rose, #fb7185)' : 'var(--text-secondary)',
         })}>
-          {lab.error || lab.notice}
+          <span tabIndex={0} title={lab.error || lab.notice || ''}>{lab.error ? '작업 오류' : '알림'}</span>
           {lab.removed && (
             <button data-testid="lab-undo-remove" onClick={() => lab.undoRemove()}
               title={"방금 지운 문장을 되살립니다. 생성본도 함께 돌아옵니다."}
@@ -580,8 +606,8 @@ function LineRow(p: LineRowProps) {
         opacity: p.dragging ? 0.45 : 1,
         borderTop: p.dropBefore ? mark : '2px solid transparent',
         borderBottom: p.dropAfterLast ? mark : '2px solid transparent',
-        borderRadius: 10, padding: '6px 8px',
-        background: p.selected ? 'var(--bg-elevated)' : 'transparent',
+        borderRadius: 6, padding: '12px 10px', borderLeft: p.selected ? '2px solid var(--accent)' : '2px solid transparent',
+        background: p.selected ? 'rgba(139,92,246,.06)' : 'transparent',
       }}>
       <div style={{ display: 'flex', alignItems: 'flex-start', gap: 8 }}>
         {/* 순서 바꾸기 손잡이 — 여기서만 끌기가 시작된다. */}
@@ -612,12 +638,12 @@ function LineRow(p: LineRowProps) {
           onKeyDown={(e) => {
             if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); p.onEnter() }
           }}
-          rows={Math.max(1, Math.ceil((p.line.text.length || 1) / 58))}
-          placeholder="말할 내용을 쓰세요. Enter 로 다음 문장."
+          rows={Math.min(14, p.line.text.split(/\r?\n/).reduce((n, line) => n + Math.max(1, Math.ceil(line.length / 58)), 0))}
+          placeholder="대사를 입력하세요…" title="Enter: 다음 문장 · Shift+Enter: 줄바꿈"
           style={{
             flex: 1, minWidth: 0, resize: 'none', padding: '6px 8px', borderRadius: 8,
-            border: '1px solid var(--border-subtle)', background: 'var(--bg-base)',
-            color: 'var(--text-primary)', fontFamily: 'inherit', fontSize: 13, lineHeight: 1.5,
+            border: '1px solid transparent', background: 'transparent',
+            color: 'var(--text-primary)', fontFamily: 'inherit', fontSize: 15, lineHeight: 1.8,
           }} />
         <span data-testid="lab-line-status" style={{
           fontSize: 10, color: unused ? 'var(--cyan)' : STATUS_COLOR[st],
@@ -657,11 +683,6 @@ function LineRow(p: LineRowProps) {
 
           {p.line.takes.length > 0 && (
             <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', width: '100%', paddingTop: 4 }}>
-              <span style={{ fontSize: 10, color: unused ? 'var(--cyan)' : 'var(--text-muted)', width: '100%' }}>
-                {unused
-                  ? '새 생성본이 있습니다. 사용할 음성을 선택하세요.'
-                  : '들어보고 사용할 음성을 고르세요.'}
-              </span>
               {p.line.takes.map((t, i) => {
                 const badge = takeBadge(t, p.line, p.voiceKey)
                 const isAdopted = p.line.adoptedTakeId === t.id

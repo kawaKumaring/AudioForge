@@ -1,15 +1,14 @@
-import { useEffect } from 'react'
-
+import { useEffect, useRef, useState } from 'react'
 import { useAppStore, type RestorableSession } from '@/stores/app.store'
-import DropZone from '@/components/DropZone'
-import ModeSelector from '@/components/ModeSelector'
-import Waveform from '@/components/Waveform'
+import ModeSelector, { WORKSPACES } from '@/components/ModeSelector'
+import SourceCard from '@/components/SourceCard'
 import ProcessButton from '@/components/ProcessButton'
 import ProgressBar from '@/components/ProgressBar'
 import TrackList from '@/components/TrackList'
 import Options from '@/components/Options'
 import SplitEditor from '@/components/SplitEditor'
 import SynthesisTabs from '@/components/SynthesisTabs'
+import { useSynthesisCards } from '@/stores/synthesisCards.store'
 import TranscriptEditor from '@/components/TranscriptEditor'
 import DialogueSegments from '@/components/DialogueSegments'
 import LabPlaceholder from '@/components/LabPlaceholder'
@@ -17,239 +16,137 @@ import DubWorkspace from '@/components/DubWorkspace'
 import TtsResultInfo from '@/components/TtsResultInfo'
 import AppVersionLabel from '@/components/AppVersionLabel'
 import { loadPlaybackVolume } from '@/lib/playbackVolume'
+import { isCancelCleanupBusy } from '../shared/cancelContract'
 
 export default function App() {
-  const { fileInfo, mode, setMode, synthesisTab, setSynthesisTab, status, reset, restorable, restoreSession, setRestorable } = useAppStore()
-  // 보관된 재생 음량을 한 번 읽어 적용한다. 실패하면 기본값(최대)이 그대로 쓰인다 — 재생을 막지 않는다.
+  const { fileInfo, mode, synthesisTab, status, resultMode, errorInfo, restorable, restoreSession, setRestorable } = useAppStore()
+  const [restoreError, setRestoreError] = useState('')
+  const [restoring, setRestoring] = useState(false)
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const pageRef = useRef<HTMLDivElement>(null)
   useEffect(() => { void loadPlaybackVolume() }, [])
-  const setIdle = () => useAppStore.setState({ status: 'idle', tracks: [], error: null, progress: 0 })
+  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0; setRestoreError('') }, [mode, synthesisTab])
+  useEffect(() => {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    const motion = pageRef.current?.animate([
+      { opacity: 0.45, transform: 'translateY(6px)' },
+      { opacity: 1, transform: 'translateY(0)' }
+    ], { duration: 180, easing: 'cubic-bezier(.2,.7,.3,1)' })
+    return () => motion?.cancel()
+  }, [mode, synthesisTab])
+
+  const synthesisView = useSynthesisCards(s => s.view)
+  const workspace = WORKSPACES[mode]
+  const showSharedRun = mode !== 'tts' && mode !== 'lab' && mode !== 'dub'
+  const busy = status === 'processing' || isCancelCleanupBusy(status) || !!errorInfo?.childAlive
+  const ownResult = resultMode === mode
+  const sharedResults = ownResult && (showSharedRun || (mode === 'tts' && synthesisView === 'legacy' && synthesisTab === 'advanced'))
+  const done = ownResult && status === 'done'
+  const resetRun = () => useAppStore.setState({ status: 'idle', tracks: [], resultMode: null, error: null, errorInfo: null, progress: 0 })
 
   const handleRestore = async () => {
-    const result = await window.api.audio.restoreFromFolder()
-    if (!result || result.tracks.length === 0) return
-    // session.json이 있으면 TTS mode·pitch·source+region·전사·metadata까지 복원(단일 재구성 경로).
-    if (result.session) {
-      const s = result.session as RestorableSession
-      useAppStore.setState({
-        fileInfo: {
-          path: s.source || '',
-          name: s.source ? (s.source.split(/[/\\]/).pop() || '이전 결과 복원') : '이전 결과 복원',
-          duration: 0, channels: 0, sampleRate: 0, format: ''
-        },
-        fileUrl: null
-      })
-      restoreSession(result.outputDir, s)
-      return
-    }
-    // 레거시(session.json 없음) — 트랙만 복원
-    useAppStore.setState({
-      fileInfo: { path: '', name: '이전 결과 복원', duration: 0, channels: 0, sampleRate: 0, format: '' },
-      fileUrl: null,
-      status: 'done',
-      tracks: result.tracks,
-      outputDir: result.outputDir,
-      mode: 'split'
-    })
+    if (busy || restoring) return
+    setRestoring(true)
+    setRestoreError('')
+    try {
+      const result = await window.api.audio.restoreFromFolder()
+      if (!result) return
+      const current = useAppStore.getState()
+      if (current.status === 'processing' || isCancelCleanupBusy(current.status) || current.errorInfo?.childAlive) {
+        setRestoreError('진행 중인 작업이 끝난 뒤 결과를 다시 불러와 주세요.')
+        return
+      }
+      if (!result.tracks.length) { setRestoreError('이 폴더에서 불러올 결과를 찾지 못했습니다. 결과 파일이 있는 폴더를 선택하세요.'); return }
+      if (result.session) {
+        const session = result.session as RestorableSession
+        restoreSession(result.outputDir, session)
+        if (useAppStore.getState().mode === 'tts') useSynthesisCards.getState().setView('legacy')
+      } else {
+        current.reset()
+        useAppStore.setState({
+          fileInfo: { path: '', name: '이전 결과 복원', duration: 0, channels: 0, sampleRate: 0, format: '' }, fileUrl: null,
+          status: 'done', tracks: result.tracks, outputDir: result.outputDir, mode: 'split', resultMode: 'split', error: null, errorInfo: null
+        })
+      }
+    } catch { setRestoreError('결과 폴더를 열지 못했습니다. 폴더가 있는지 확인하고 다시 시도하세요.') }
+    finally { setRestoring(false) }
   }
 
-  // ★공용 실행 버튼·진행 막대·결과 목록은 **다른 모드의 것**이다.
-  //   합성(일반/고급 둘 다)과 테스트개발에는 나오면 안 된다 — 예전에 여기 섞여 나와
-  //   알 수 없는 모드의 마지막 이름인 '텍스트 추출 시작' 이 뜨고, 누르면 워커가 모르는
-  //   갈래로 요청이 나가 빈 결과로 끝났다(종료 코드 1). 한 곳에서 정해 재발을 막는다.
-  const showSharedRun = mode !== 'tts' && mode !== 'lab' && mode !== 'dub'
-  // 결과 목록은 고급 합성까지만 함께 쓴다. 일반은 자기 화면 안에서 결과를 보여 준다.
-  const showSharedResults = mode !== 'lab' && mode !== 'dub' && !(mode === 'tts' && synthesisTab === 'basic')
-
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg-base)', color: 'var(--text-primary)', fontFamily: "'Inter', -apple-system, sans-serif" }}>
-      {/* Title bar */}
-      <div className="titlebar-drag" style={{
-        display: 'flex', alignItems: 'center', height: 36, flexShrink: 0, padding: '0 16px',
-        background: 'rgba(8,8,12,0.8)', borderBottom: '1px solid var(--border-subtle)'
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path d="M12 3v18M8 7l4-4 4 4" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-            <circle cx="12" cy="18" r="3" fill="var(--accent)" opacity="0.3" stroke="var(--accent)" strokeWidth="1.5" />
-          </svg>
-          <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-muted)' }}>
-            AudioForge
-          </span>
-        </div>
+  return <div data-testid="workspace-shell" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg-base)', color: 'var(--text-primary)' }}>
+    <div className="titlebar-drag" style={{ display: 'flex', alignItems: 'center', height: 36, flexShrink: 0, padding: '0 18px', background: 'var(--bg-primary)', borderBottom: '1px solid var(--border-subtle)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--accent-light)" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M3 10v4M7 6v12M12 3v18M17 7v10M21 10v4"/></svg>
+        <span style={{ fontSize: 12, fontWeight: 600, letterSpacing: '.02em' }}>AudioForge</span>
       </div>
-
-      {/* Background orbs */}
-      <div style={{ position: 'fixed', inset: 0, overflow: 'hidden', pointerEvents: 'none', zIndex: 0 }}>
-        <div style={{ position: 'absolute', left: -128, top: -128, width: 384, height: 384, borderRadius: '50%', opacity: 0.15, filter: 'blur(120px)', background: 'var(--accent)' }} />
-        <div style={{ position: 'absolute', right: -128, bottom: -192, width: 384, height: 384, borderRadius: '50%', opacity: 0.08, filter: 'blur(120px)', background: 'var(--cyan)' }} />
-      </div>
-
-      {/* Content */}
-      {/* ── 파일 없이도 여는 자리 ──
-             합성>일반(대본 작업실)은 대본을 쓰고 목소리를 따로 고르는 곳이라 분리할 원본이
-             필요 없다. 테스트개발은 안내만 있는 자리라 역시 필요 없다.
-             **고급을 비롯한 나머지는 예전 그대로** 파일을 먼저 불러와야 한다. */}
-      {!fileInfo && (mode === 'lab' || mode === 'dub' || mode === 'tts') ? (
-        <div style={{ position: 'relative', zIndex: 1, flex: 1, display: 'flex', flexDirection: 'column',
-                      gap: 14, padding: '20px 24px 28px', maxWidth: 1100, width: '100%', margin: '0 auto' }}>
-          <ModeSelector />
-          {mode === 'dub' ? <DubWorkspace /> : mode === 'lab' ? <LabPlaceholder /> : <SynthesisTabs />}
-        </div>
-      ) : !fileInfo ? (
-        /* ── 초기 화면 ── */
-        <div style={{ position: 'relative', zIndex: 1, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ width: '100%', maxWidth: 520, padding: '0 40px' }}>
-            <div style={{ textAlign: 'center', marginBottom: 32 }}>
-              <h1 style={{ fontSize: 28, fontWeight: 700, background: 'linear-gradient(135deg, var(--text-primary), var(--accent-light))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-                AudioForge
-              </h1>
-              <p style={{ marginTop: 8, fontSize: 13, color: 'var(--text-muted)' }}>AI 기반 오디오 분리 · 텍스트 변환 · 번역</p>
-            </div>
-            <DropZone />
-            <button onClick={handleRestore} style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-              width: '100%', marginTop: 16, padding: '10px 0', borderRadius: 10,
-              border: '1px solid var(--border-subtle)', background: 'transparent',
-              cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500,
-              color: 'var(--text-muted)'
-            }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-              </svg>
-              이전 결과 폴더 열기
-            </button>
-            {/* 파일을 불러오지 않고 바로 대본 작업을 시작하는 자리 */}
-            <button data-testid="open-lab"
-              onClick={() => { setSynthesisTab('basic'); setMode('tts') }} style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-              width: '100%', marginTop: 8, padding: '10px 0', borderRadius: 10,
-              border: '1px solid var(--border-subtle)', background: 'transparent',
-              cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500,
-              color: 'var(--text-muted)'
-            }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3" />
-              </svg>
-              합성(일반) — 파일 없이 대본부터 시작
-            </button>
-            {/* 버전 표시 — 중앙 축 그대로, 버튼 아래 16px. 상단 로고 옆에는 두지 않는다. */}
-            <AppVersionLabel />
-          </div>
-        </div>
-      ) : (
-        /* ── 작업 화면 ── */
-        <div style={{ position: 'relative', zIndex: 1, flex: 1, overflowY: 'auto', display: 'flex', justifyContent: 'center' }}>
-          <div style={{ width: '100%', maxWidth: 720, padding: '24px 40px 40px' }}>
-            {/* 파일 정보 + 파형 (합침) */}
-            <div style={{
-              borderRadius: 14, overflow: 'hidden', marginBottom: 16,
-              background: 'var(--bg-card)', border: '1px solid var(--border-subtle)'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0, flex: 1 }}>
-                  <div style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    width: 40, height: 40, borderRadius: 10, flexShrink: 0,
-                    background: 'var(--accent-glow)', border: '1px solid var(--border-accent)'
-                  }}>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-light)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
-                    </svg>
-                  </div>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {fileInfo.name}
-                    </div>
-                    <div style={{ marginTop: 3, display: 'flex', gap: 6 }}>
-                      {[
-                        `${Math.floor(fileInfo.duration / 60)}:${String(Math.floor(fileInfo.duration % 60)).padStart(2, '0')}`,
-                        fileInfo.channels === 1 ? 'Mono' : 'Stereo',
-                        `${(fileInfo.sampleRate / 1000).toFixed(1)}kHz`,
-                        fileInfo.format.toUpperCase()
-                      ].map((t, i) => (
-                        <span key={i} style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}>{t}</span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-                <button onClick={reset} style={{
-                  display: 'flex', alignItems: 'center', gap: 4, padding: '6px 10px',
-                  borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'inherit',
-                  fontSize: 11, fontWeight: 500, background: 'var(--bg-elevated)', color: 'var(--text-muted)'
-                }}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
-                </button>
-              </div>
-              <Waveform />
-            </div>
-
-            {/* 이전 결과 있음 — 재분리 없이 복원 (안내 후 선택) */}
-            {restorable && status === 'idle' && (
-              <div style={{
-                display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 10,
-                background: 'var(--cyan-glow, rgba(34,211,238,0.08))', border: '1px solid rgba(34,211,238,0.35)'
-              }}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--cyan)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                  <path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.36 2.64L3 8" /><path d="M3 3v5h5" />
-                </svg>
-                <span style={{ flex: 1, fontSize: 12, color: 'var(--text-secondary)' }}>
-                  이전 분리 결과가 있습니다. 다시 분리하지 않고 불러올까요?
-                </span>
-                <button onClick={() => restorable && restoreSession(restorable.dir, restorable.session)} style={{
-                  padding: '6px 12px', borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'inherit',
-                  fontSize: 12, fontWeight: 600, background: 'var(--cyan)', color: '#00181c'
-                }}>불러오기</button>
-                <button onClick={() => setRestorable(null)} style={{
-                  padding: '6px 12px', borderRadius: 8, border: '1px solid var(--border-subtle)', cursor: 'pointer',
-                  fontFamily: 'inherit', fontSize: 12, fontWeight: 500, background: 'transparent', color: 'var(--text-muted)'
-                }}>새로 분리</button>
-              </div>
-            )}
-
-            {/* 모드 + 옵션 + 버튼 + 결과 */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <ModeSelector />
-              {mode === 'split' ? <SplitEditor /> : mode === 'tts' ? <SynthesisTabs />
-                : mode === 'dub' ? <DubWorkspace />
-                : mode === 'lab' ? <LabPlaceholder /> : <Options />}
-              {/* 합성 화면에서는 시작·취소 버튼과 진행 상태를 [음성 만들기] 카드 안에서 그린다 —
-                  제목만 있는 단계 카드와 그 아래 버튼으로 나뉘어 있으면 '어디가 실행 자리인가'가 생긴다.
-                  다른 모드는 지금까지와 같은 자리다. */}
-              {/* ★테스트개발 작업실은 **자기 실행·진행·취소·오류를 자기 안에서** 보여 준다.
-                     예전에는 여기 공용 실행 버튼이 함께 그려져, 알 수 없는 모드의 마지막
-                     fallback 이름인 '텍스트 추출 시작' 이 작업실에 떴다. 게다가 그 버튼은
-                     mode='lab' 로 요청을 보내는데 워커에 그런 갈래가 없어 빈 결과로 끝났다
-                     ("분리 결과가 없습니다." → 종료 코드 1). 다른 모드의 실행·결과가 작업실에
-                     섞여 나오지 않게 여기서 제외한다. */}
-              {showSharedRun && <ProcessButton />}
-              {showSharedRun && <ProgressBar />}
-              {showSharedResults && <TtsResultInfo />}
-              {showSharedResults && <TrackList />}
-              {/* 텍스트 교정 — 전사 결과가 나온 뒤 그 자리 아래에 붙는다(새 화면을 만들지 않는다). */}
-              {mode === 'transcribe' && status === 'done' && <TranscriptEditor />}
-              {/* 대화 구간 수정 — 분석이 끝난 뒤 그 결과 아래에 붙는다. */}
-              {mode === 'conversation' && status === 'done' && <DialogueSegments />}
-              {/* 재처리 버튼 (결과 나온 후) */}
-              {status === 'done' && (
-                <button onClick={setIdle} style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                  width: '100%', padding: '10px 0', borderRadius: 10,
-                  border: '1px solid var(--border-subtle)', background: 'var(--bg-card)',
-                  cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500,
-                  color: 'var(--text-secondary)'
-                }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" />
-                  </svg>
-                  다른 모드로 재처리
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
-  )
+    <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+      <aside data-testid="workspace-sidebar" style={{ width: 196, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 24, padding: '28px 12px 18px', background: 'var(--bg-primary)', borderRight: '1px solid var(--border-subtle)', overflowY: 'auto' }}>
+        <ModeSelector />
+        <div style={{ marginTop: 'auto', padding: '18px 0 0', borderTop: '1px solid var(--border-subtle)' }}>
+          <button type="button" data-testid="restore-results" onClick={() => void handleRestore()} disabled={busy || restoring} className="btn btn-ghost" style={{ width: '100%', fontSize: 11, padding: '9px 6px', background: 'transparent' }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M3 7V4h6l3 3h9v13H3z"/></svg>
+            {restoring ? '불러오는 중…' : '이전 결과 폴더 열기'}
+          </button>
+          <AppVersionLabel />
+        </div>
+      </aside>
+      <main ref={scrollRef} data-testid="workspace-content" style={{ flex: 1, minWidth: 0, overflowY: 'auto', scrollbarGutter: 'stable' }}>
+        <div ref={pageRef} style={{ width: '100%', maxWidth: 1120, margin: '0 auto', padding: '30px clamp(18px, 3vw, 40px) 48px' }}>
+          <header style={{ marginBottom: mode === 'tts' ? 20 : 26 }}>
+            {mode !== 'tts' && <div style={{ marginBottom: 9, fontSize: 11, color: 'var(--text-muted)' }}>{workspace.group}</div>}
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <h1 title={workspace.description} style={{ fontSize: 25, lineHeight: 1.35, fontWeight: 600, letterSpacing: '-.035em' }}>{workspace.label}</h1>
+              {mode === 'dub' && <span style={{ padding: '3px 7px', border: '1px solid var(--border-subtle)', borderRadius: 5, color: 'var(--text-muted)', fontSize: 10 }}>개발 중</span>}
+              {busy && <span role="status" data-testid="workspace-activity" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 'auto', fontSize: 11, color: 'var(--accent-light)' }}>
+                <span className="workspace-activity" aria-hidden="true" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, height: 18 }}>
+                  {[0, 1, 2, 3].map(i => <span key={i} style={{ width: 3, height: 14, borderRadius: 2, background: 'currentColor', animationDelay: `${i * 110}ms` }} />)}
+                </span>
+                {status === 'cancelling' ? '작업 정리 중' : status === 'processing' ? '작업 중' : '작업 종료 확인 중'}
+              </span>}
+            </div>
+
+          </header>
+          {restoreError && <div role="alert" style={{ padding: 14, marginBottom: 18, borderRadius: 10, color: 'var(--rose)', border: '1px solid var(--rose-glow)', background: 'var(--rose-glow)', fontSize: 12 }}>{restoreError}</div>}
+
+          {showSharedRun && <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            <ol aria-label="작업 흐름" style={{ display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap', listStyle: 'none', paddingBottom: 18, borderBottom: '1px solid var(--border-subtle)' }}>
+              {['원본 선택', '설정과 실행', '결과 확인'].map((label, i) => {
+                const step = !fileInfo ? 0 : done ? 2 : 1
+                return <li key={label} aria-current={step === i ? 'step' : undefined} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: step === i ? 'var(--text-primary)' : 'var(--text-muted)' }}>
+                  <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 22, height: 22, borderRadius: '50%', fontSize: 10, background: step === i ? 'var(--accent-glow)' : 'var(--bg-elevated)', color: step === i ? 'var(--accent-light)' : 'inherit' }}>{i + 1}</span>{label}
+                </li>
+              })}
+            </ol>
+            <SourceCard />
+            {fileInfo && restorable && status === 'idle' && <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', borderRadius: 10, padding: 14, background: 'var(--accent-glow)', border: '1px solid var(--border-accent)' }}>
+              <span style={{ flex: '1 1 200px', fontSize: 12 }}>이 원본으로 만든 이전 결과가 있습니다.</span>
+              <button type="button" className="btn btn-ghost" onClick={() => restoreSession(restorable.dir, restorable.session)} style={{ fontSize: 12 }}>결과 불러오기</button>
+              <button type="button" className="btn btn-ghost" onClick={() => setRestorable(null)} style={{ fontSize: 12 }}>새로 작업</button>
+            </div>}
+            {fileInfo && <>
+              {mode === 'split' ? <SplitEditor /> : <Options />}
+              <ProcessButton />
+              <ProgressBar />
+            </>}
+          </div>}
+
+          {mode === 'tts' && <SynthesisTabs />}
+          {mode === 'dub' && <DubWorkspace />}
+          {mode === 'lab' && <LabPlaceholder />}
+
+          {sharedResults && (status === 'done' || status === 'error') && <section data-testid="shared-results" aria-label="현재 작업 결과" style={{ display: 'flex', flexDirection: 'column', gap: 18, marginTop: 24 }}>
+            {status === 'done' && <div style={{ display: 'flex', alignItems: 'center', gap: 8, borderTop: '1px solid var(--border-subtle)', paddingTop: 20 }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--emerald)' }}/>
+              <h2 style={{ fontSize: 14, fontWeight: 600 }}>{workspace.label} 결과</h2>
+            </div>}
+            <TtsResultInfo />
+            <TrackList />
+            {mode === 'transcribe' && done && <TranscriptEditor />}
+            {mode === 'conversation' && done && <DialogueSegments />}
+            {showSharedRun && done && <button type="button" className="btn btn-ghost" onClick={resetRun} style={{ alignSelf: 'flex-start', fontSize: 12 }}>설정을 바꿔 다시 작업</button>}
+          </section>}
+        </div>
+      </main>
+    </div>
+  </div>
 }

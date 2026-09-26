@@ -19,7 +19,13 @@ test('저장은 자기 키 하나에만 쓴다 — 목소리 구성·전역 자�
   // 종료 직전 **동기** 저장도 같은 키 하나에만 쓴다(2026-09-09 — 비동기만 던지면 마지막 변경이 사라진다).
   assert.ok(HOOK.includes('window.api.settings.setSync(WORK_DRAFT_STORAGE_KEY'))
   assert.equal(/settings\.setSync\((?!WORK_DRAFT_STORAGE_KEY)/.test(HOOK), false, '동기 저장도 자기 키만')
-  assert.ok(IPC.includes("if (key !== WORK_DRAFT_STORAGE_KEY) {"), 'main 도 동기 통로를 그 키에만 연다')
+  // ★2026-09-27: 생성 카드 작업도 종료 직전 저장이 필요해 이 통로를 함께 쓴다.
+  //   계약은 '오직 한 열쇠' 가 아니라 **아무 열쇠에나 열려 있지 않다** 는 것이다 —
+  //   자동 저장 열쇠가 여전히 허용되고, 모르는 열쇠는 여전히 거절돼야 한다.
+  const syncGuard = between(IPC, "ipcMain.on('settings:set-sync'", 'event.returnValue = saveSetting')
+  assert.ok(syncGuard.includes('WORK_DRAFT_STORAGE_KEY'), '자동 저장 열쇠가 동기 통로에서 빠졌다')
+  assert.ok(syncGuard.includes("code: 'KEY_NOT_ALLOWED'"),
+    '동기 통로가 아무 열쇠에나 열렸다 — 허용 목록이 사라졌다')
   for (const forbidden of ['VOICE_CAST_STORAGE_KEY', 'GLOBAL_ASSET_STORAGE_KEY', 'voiceCasts', 'referenceAssets']) {
     assert.equal(HOOK.includes(forbidden), false, forbidden)
   }

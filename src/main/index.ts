@@ -12,6 +12,7 @@ import { registerAppVersionIpc, currentBuildInfo } from './ipc/app-version.ipc'
 import { registerDiagnosticsIpc } from './ipc/diagnostics.ipc'
 import { registerDubIpc } from './ipc/dub.ipc'
 import { registerPitchIpc } from './ipc/pitch.ipc'
+import { registerCardMediaIpc } from './ipc/card-media.ipc'
 import { createAppLog, mirrorConsole, setAppLog, watchUncaught, LOG_DIR_NAME } from './services/app-log'
 import { seedDevUserData, userDataDirNameFor, USER_DATA_DIR_STABLE, type SeedResult } from './services/user-data-channel'
 import { warmUpBridge, type WarmupHandle } from './services/bridge-warmup'
@@ -169,6 +170,8 @@ function createWindow(): void {
   wc.on('will-navigate', (e) => e.preventDefault())
 
   registerAppVersionIpc()
+  // 생성 카드가 영상을 받았을 때 소리를 꺼내는 통로(카드별 폴더만 소유한다).
+  registerCardMediaIpc()
   // 진단 묶음 — 로그 복사본 + 설정의 모양(값 없음). 시작 화면의 단추가 부른다.
   registerDiagnosticsIpc(() => mainWindow, () => currentPythonPath())
   // ★양쪽이 서로를 본다(2026-09-24 2차 감사). 더빙은 제 실행기를 따로 만들어서
