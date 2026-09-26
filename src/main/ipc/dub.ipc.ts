@@ -7,7 +7,7 @@
 // ★여기서 번역 백엔드를 고르지 않는다. 파이썬이 실행 경로 안쪽에서 막고 고른다 —
 //   화면이 무엇을 보내든 구글로는 나가지 않는다.
 import { app, dialog, ipcMain, type BrowserWindow } from 'electron'
-import { copyFileSync, existsSync, mkdirSync } from 'fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync } from 'fs'
 import { basename, extname, join } from 'path'
 
 import { PythonRunner } from '../services/python-runner'
@@ -301,6 +301,31 @@ export function registerDubIpc(
       } finally {
         dubGuard.end()
       }
+    } catch (e) {
+      return fail(e)
+    }
+  })
+
+  /**
+   * 이미 만들어 둔 줄 소리를 되살린다.
+   *
+   * ★왜 생겼나 (2026-09-26 사용자 신고)
+   *   줄 소리는 `takes/` 에 그대로 쌓여 있는데, 영상을 다시 고르거나 앱을 껐다 켜면
+   *   화면이 목록을 비웠다. **되살리는 길이 아예 없었다.**
+   *   그래서 6분짜리 합성을 매번 다시 해야 했다 — 파일은 옆에 있는데.
+   */
+  ipcMain.handle('dub:takes', async (): Promise<DubReply<Record<number, string>>> => {
+    try {
+      if (!workDir) throw new DubJobError('먼저 영상을 고르세요')
+      const dir = join(workDir, 'takes')
+      if (!existsSync(dir)) return ok({})
+      const found: Record<number, string> = {}
+      for (const name of readdirSync(dir)) {
+        // `line-0007.wav` 처럼 저장한다(dub:keep-take 와 같은 규칙).
+        const m = /^line-(\d+)\.wav$/i.exec(name)
+        if (m) found[Number(m[1])] = join(dir, name)
+      }
+      return ok(found)
     } catch (e) {
       return fail(e)
     }

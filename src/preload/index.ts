@@ -164,6 +164,8 @@ const api = {
     keepTake: (srcPath: string, index: number) =>
       ipcRenderer.invoke('dub:keep-take', srcPath, index),
     workDir: () => ipcRenderer.invoke('dub:work-dir'),
+    /** 이미 만들어 둔 줄 소리를 되살린다 — 파일은 작업 폴더에 그대로 있다. */
+    takes: () => ipcRenderer.invoke('dub:takes'),
     onProgress: (callback: (data: unknown) => void) => {
       const handler = (_event: unknown, data: unknown) => callback(data)
       ipcRenderer.on('dub:progress', handler)

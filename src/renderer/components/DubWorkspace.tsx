@@ -30,6 +30,7 @@ import { useAppStore } from '@/stores/app.store'
 import { REFERENCE_CONDITIONING_RECOMMENDED } from '../../shared/ttsConfig'
 import type { CommittedRef } from '../../shared/voicePreparation'
 import { runVoicePrep } from '@/lib/voicePrepRunner'
+import { createManagedAudio } from '@/lib/playbackVolume'
 
 /** 더빙이 쓰는 파생 클립 자리. 일반·고급의 목소리를 건드리지 않는다. */
 const DUB_CLIP_KEY = 'dub'
@@ -48,6 +49,9 @@ interface Reply<T> { ok: boolean; data?: T; error?: string }
 
 export default function DubWorkspace() {
   const [videoPath, setVideoPath] = useState('')
+  // ★만든 것이 어디 있는지 화면이 말해 주지 않았다(2026-09-26 신고).
+  //   앱 데이터 폴더 깊숙한 곳이라 알려 주지 않으면 찾을 방법이 없다.
+  const [workDir, setWorkDir] = useState('')
   const [front, setFront] = useState<DubFrontResult | null>(null)
   const [edits, setEdits] = useState<Record<number, string>>({})
   const [takes, setTakes] = useState<Record<number, string>>({})
@@ -125,6 +129,39 @@ export default function DubWorkspace() {
   //   끝날 때까지 기다리거나 앱을 죽이는 수밖에 없었다.
   //   통로가 둘이다 — 앞단·내보내기는 더빙이 제 실행기를 돌리므로 더빙 통로로,
   //   줄 소리는 공용 실행기를 타므로 공용 취소로 간다. 잘못 고르면 안 멈춘다.
+  // 재생 콜백이 **옛 목록**을 보지 않게 최신을 들고 있는다.
+  const takesRef = useRef(takes)
+  takesRef.current = takes
+
+  /**
+   * 만든 줄 소리를 들어 본다.
+   *
+   * ★왜 생겼나 (2026-09-26 신고): "만들었다고 뜨면서 만들어진 음성을 확인할 방법이 없다."
+   *   이 화면에는 **재생 수단이 아예 없었다.** 다른 화면(고급·대화·텍스트·트랙·합성)은
+   *   전부 갖고 있는데 더빙만 빠져 있었다. 만들어 놓고 들을 수 없으니 잘 됐는지 알 길이 없다.
+   *
+   * ★음량은 **공용 부품**에 맡긴다(규칙 4.4). 화면마다 따로 두면 어딘가는 항상
+   *   최대로 남는다 — 실제로 다섯 곳이 그랬다(2026-09-10 "소리가 항상 최대").
+   */
+  const playing = useRef<HTMLAudioElement | null>(null)
+  const [playIndex, setPlayIndex] = useState<number | null>(null)
+  const playTake = useCallback((index: number) => {
+    const src = takesRef.current[index]
+    // 울리던 것을 먼저 멈춘다 — 겹쳐 울리면 무엇을 듣는지 알 수 없다.
+    playing.current?.pause()
+    playing.current = null
+    if (!src || playIndex === index) { setPlayIndex(null); return }
+    const el = createManagedAudio(`file://${src.split('\\').join('/')}`)
+    el.onended = () => setPlayIndex(null)
+    el.onerror = () => { setError('그 줄 소리를 재생하지 못했습니다.'); setPlayIndex(null) }
+    playing.current = el
+    setPlayIndex(index)
+    void el.play().catch(() => { setError('그 줄 소리를 재생하지 못했습니다.'); setPlayIndex(null) })
+  }, [playIndex])
+
+  // ★화면을 떠날 때 반드시 멈춘다 — 안 그러면 소리가 남아 계속 울린다(규칙 4.3).
+  useEffect(() => () => { playing.current?.pause(); playing.current = null }, [])
+
   const stopSynth = useRef(false)
   const cancelWork = useCallback(async () => {
     const route = dubCancelRoute(busy as DubWork)
@@ -172,6 +209,16 @@ export default function DubWorkspace() {
       setFront(prev.data)
       setNote('지난 작업을 이어서 엽니다.')
     }
+    // ★만들어 둔 줄 소리도 되살린다(2026-09-26 신고).
+    //   파일은 작업 폴더에 그대로 있는데 화면만 목록을 비워서, 6분짜리 합성을
+    //   **매번 다시** 해야 했다. 되살리는 길이 아예 없었다.
+    const kept = await (window.api.dub.takes() as Promise<Reply<Record<number, string>>>)
+    if (kept?.ok && kept.data && Object.keys(kept.data).length > 0) {
+      setTakes(kept.data)
+      setNote(`지난 작업을 이어서 엽니다 — 만들어 둔 줄 소리 ${Object.keys(kept.data).length}개도 되살렸습니다.`)
+    }
+    const dir = await (window.api.dub.workDir() as Promise<Reply<string | null>>)
+    if (dir?.ok && dir.data) setWorkDir(dir.data)
   }, [])
 
   const runFront = useCallback(async (force = false) => {
@@ -389,6 +436,19 @@ export default function DubWorkspace() {
         useOriginalReason={useOriginalBlockReason({ videoPath, frontLoaded: !!front, busy: disabled })}
         onPickVideo={pickVideo} onPickVoice={pickVoice} onUseOriginal={useOriginalVoice} />
 
+      {/* ★만든 것이 어디 있는지 알려 준다(2026-09-26 신고: "파일이 어디에 만들어지는지
+          사용자가 어찌 아는가"). 통로는 앱에 이미 있었고 이 화면만 부르지 않았다. */}
+      {workDir && (
+        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+          <Btn onClick={() => void window.api.app.openFolder(workDir)} disabled={disabled}>
+            만든 것 열기
+          </Btn>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+            갈라낸 소리와 줄 소리가 이 폴더에 쌓입니다
+          </span>
+        </div>
+      )}
+
       {/* 다 해 놓은 앞단을 처음부터 다시 돌리지 않게 — 되살리는 길을 적는다. */}
       {!front && (
         <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{DUB_RESUME_HINT}</div>
@@ -478,7 +538,8 @@ export default function DubWorkspace() {
 
           <LineTable lines={lines} koreanOf={koreanOf} stateOf={stateOf} resultOf={resultOf}
             takes={takes} tailCut={tailCut} disabled={disabled}
-            onEdit={(i, v) => setEdits((e) => ({ ...e, [i]: v }))} />
+            onEdit={(i, v) => setEdits((e) => ({ ...e, [i]: v }))}
+            onPlay={playTake} playing={playIndex} />
         </>
       )}
 
@@ -554,6 +615,10 @@ function LineTable(props: {
   tailCut: Record<number, boolean>
   disabled: boolean
   onEdit: (index: number, value: string) => void
+  /** 그 줄 소리를 들어 본다. 다시 누르면 멈춘다. */
+  onPlay: (index: number) => void
+  /** 지금 울리고 있는 줄. 없으면 null. */
+  playing: number | null
 }): ReactElement {
   return (
     <div style={{
@@ -590,6 +655,15 @@ function LineTable(props: {
             <span style={{ fontSize: 11, color, paddingTop: 5, lineHeight: 1.5 }}>
               {dubStatusLabel(state, { ratio: r?.ratio, overflowSec: r?.overflowSec })}
               {props.takes[l.index] ? '' : ' · 소리 없음'}
+              {props.takes[l.index] && (
+                <button onClick={() => props.onPlay(l.index)} style={{
+                  marginLeft: 6, padding: '1px 7px', borderRadius: 5, fontSize: 11,
+                  fontFamily: 'inherit', cursor: 'pointer',
+                  background: props.playing === l.index ? 'var(--cyan)' : 'transparent',
+                  color: props.playing === l.index ? '#0b0d10' : 'var(--text-muted)',
+                  border: '1px solid var(--border-subtle)',
+                }}>{props.playing === l.index ? '멈춤' : '들어 보기'}</button>
+              )}
               {props.tailCut[l.index]
                 ? <span style={{ color: 'var(--amber, #d98b2b)' }}> · ★말끝이 잘렸을 수 있습니다</span>
                 : null}

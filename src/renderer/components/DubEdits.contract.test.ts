@@ -28,13 +28,26 @@ test('고치는 즉시 쌓는 자리가 있다', () => {
   assert.ok(code.includes('saveEdits('), '고친 번역문을 쌓는 통로가 없다')
 })
 
+/**
+ * 편집을 흘려보내는 **그** 언마운트 효과를 찾는다.
+ *
+ * ★처음에는 "파일의 **첫** 언마운트 효과" 를 집었다. 그런데 화면에 다른 정리 효과가
+ *   하나 더 생기자(재생 멈추기) 그것을 집어, **멀쩡한 코드를 실패로 몰았다**(2026-09-26).
+ *   이 가드가 지키려는 계약은 "떠날 때 편집을 보낸다" 이지 "첫 번째 효과" 가 아니다.
+ *   앵커를 계약에 맞춘다 — 잘못 잡는 가드는 결국 꺼진다.
+ */
+function editsUnmountBlock(src: string): string {
+  const PAT = 'useEffect(() => () =>'
+  for (let at = src.indexOf(PAT); at >= 0; at = src.indexOf(PAT, at + 1)) {
+    const block = src.slice(at, at + 400)
+    if (block.includes('saveEdits(')) return block
+  }
+  return ''
+}
+
 test('떠날 때 **대기 중인 것을 보낸다** — 타이머만 지우고 끝내지 않는다', () => {
-  // 언마운트 전용 효과(빈 의존성)에서 한 번 더 보내야 한다.
-  const at = code.indexOf('useEffect(() => () =>')
-  assert.ok(at > 0, '언마운트 때 도는 자리가 없다 — 마지막 0.5초가 사라진다')
-  const block = code.slice(at, at + 400)
-  assert.ok(block.includes('saveEdits('),
-    '떠나면서 대기 중인 편집을 보내지 않는다')
+  const block = editsUnmountBlock(code)
+  assert.ok(block, '떠나면서 대기 중인 편집을 보내지 않는다 — 마지막 0.5초가 사라진다')
   assert.ok(block.includes('editsRef'),
     '떠나는 시점의 최신 값을 읽지 않는다 — 옛 값을 보내면 뜻이 없다')
 })
@@ -42,7 +55,9 @@ test('떠날 때 **대기 중인 것을 보낸다** — 타이머만 지우고 �
 // ★언마운트 시점에는 결과를 보여 줄 화면이 없다. 그래서 여기서만 버린다 —
 //   그 사실을 주석으로 적어 두는 것까지가 계약이다(다음 사람이 흉내 내지 않게).
 test('결과를 버리는 자리에 그 이유가 적혀 있다', () => {
-  const at = SRC.indexOf('useEffect(() => () =>')
+  // ★주석까지 포함해 찾는다 — 사연은 주석에 적혀 있다.
+  const at = SRC.indexOf(editsUnmountBlock(code).slice(0, 60))
+  assert.ok(at > 0, '편집을 흘려보내는 자리를 못 찾았다 — 검사가 눈이 멀었다')
   const before = SRC.slice(Math.max(0, at - 600), at)
   assert.ok(before.includes('보여 줄 자리가 없는 것'),
     '왜 결과를 버리는지 적혀 있지 않다 — 다음 사람이 아무 데서나 버린다')
