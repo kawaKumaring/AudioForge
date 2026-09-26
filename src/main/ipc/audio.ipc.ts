@@ -24,6 +24,7 @@ import {
   rememberDir, rememberFile, startDir, type FolderHost, type FolderSlot,
 } from '../services/dialogFolders'
 import { blockReason } from '../../shared/synthesisGate'
+import { fileWorkspaceClipKeys } from '../../shared/referenceClipOwnership'
 import { cacheableResult, createResultCache, fileStamp, requestKey, KEY_SEP } from '../services/preview-cache'
 import { createJobWatchdog, startJobWatch, createStagingGate } from '../services/longform-job'
 import { createTerminalGate } from '../services/run-settlement'
@@ -349,7 +350,7 @@ export function registerAudioIpc(
       .finally(() => { quitCleanupDone = true; app.quit() })
   })
 
-  // clipKey 지정 시 그 하나만, 생략 시 전체 정리(새 파일/reset용). 반환: 실제 삭제된 개수.
+  // 내부 정리 함수: 키 지정 시 하나, 생략 시 전체. 화면의 새 파일/reset은 아래 IPC에서 소유 범위를 좁힌다.
   const releaseRefClip = (clipKey?: string): number => {
     const keys = clipKey !== undefined ? [clipKey] : Array.from(refClipDirs.keys())
     let removed = 0
@@ -1263,7 +1264,9 @@ export function registerAudioIpc(
   })
   ipcMain.handle('audio:release-reference-clip', (_event, clipKey?: string) => {
     if (runner?.isRunning) return false  // 합성 worker가 참조 사용 중 → 삭제 금지
-    releaseRefClip(clipKey)
+    // 키 없는 요청은 공용 파일 작업의 새 파일/reset이다. 독립 대본과 더빙은 유지한다.
+    const keys = clipKey === undefined ? fileWorkspaceClipKeys(refClipDirs.keys()) : [clipKey]
+    for (const key of keys) releaseRefClip(key)
     return true
   })
 

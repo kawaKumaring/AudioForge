@@ -122,6 +122,14 @@ const api = {
     }
   },
   // 테스트개발 작업실 — 테이크 보관과 이어 붙여 내보내기만. 생성은 기존 audio.process 를 쓴다.
+  /** 생성 카드 — 카드별 미디어. 카드 하나가 다른 카드의 파일을 건드리지 않는다. */
+  cards: {
+    /** 영상이면 소리를 꺼내 그 경로를, 소리 파일이면 그대로 돌려준다. */
+    extractAudio: (cardId: string, filePath: string) =>
+      ipcRenderer.invoke('card:extract-audio', cardId, filePath),
+    /** 이 카드가 꺼내 둔 소리만 지운다. */
+    releaseMedia: (cardId: string) => ipcRenderer.invoke('card:release-media', cardId),
+  },
   lab: {
     keepTake: (srcPath: string, takeId: string): Promise<{ ok: boolean; path?: string; reason?: string }> =>
       ipcRenderer.invoke('lab:keep-take', srcPath, takeId),

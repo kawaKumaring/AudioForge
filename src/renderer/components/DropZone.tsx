@@ -1,236 +1,113 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
-import { motion, AnimatePresence } from 'framer-motion'
 import { useAppStore } from '@/stores/app.store'
+import { isCancelCleanupBusy } from '../../shared/cancelContract'
 
+/** The picker is mounted only where the shared source is the actual input. */
 export default function DropZone() {
-  const { fileInfo, status, setFile, setError, setRestorable } = useAppStore()
+  const { fileInfo, status, errorInfo, mode, setFile, reset, setRestorable } = useAppStore()
   const [isDragging, setIsDragging] = useState(false)
+  const [loading, setLoading] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const requestId = useRef(0)
   const dragCounter = useRef(0)
+  const disabled = loading || status === 'processing' || isCancelCleanupBusy(status) || !!errorInfo?.childAlive
 
+  // Reading metadata is asynchronous. A newer pick/unmount must invalidate the old response.
+  useEffect(() => () => { requestId.current++ }, [])
+  useEffect(() => { setLoadError('') }, [fileInfo])
   const loadFile = useCallback(async (filePath: string) => {
+    const current = useAppStore.getState()
+    if (current.status === 'processing' || isCancelCleanupBusy(current.status) || current.errorInfo?.childAlive) return
+    const id = ++requestId.current
+    setLoading(true)
+    setLoadError('')
     try {
-      const info = await window.api.audio.getFileInfo(filePath)
-      const url = await window.api.audio.getFileUrl(filePath)
+      const [info, url] = await Promise.all([window.api.audio.getFileInfo(filePath), window.api.audio.getFileUrl(filePath)])
+      const state = useAppStore.getState()
+      if (id !== requestId.current || state.fileInfo !== current.fileInfo || state.status === 'processing' || isCancelCleanupBusy(state.status) || state.errorInfo?.childAlive) return
       setFile(info, url)
-      // 이전 결과(session.json)가 있으면 복원 배너용으로 저장 — 자동 복원은 안 함(안내 후 선택)
       try {
-        const s = await window.api.audio.findSession(filePath)
-        if (s && s.dir && s.session) setRestorable({ dir: s.dir, session: s.session })
-      } catch { /* 탐색 실패는 무시 */ }
-    } catch (err) {
-      // 입력 포맷을 넓게 허용하므로, 디코딩 불가/손상 파일은 여기서 조용히 실패할 수 있음.
-      // 무반응 대신 사용자에게 안내 (F1)
-      console.error('Failed to load file:', err)
-      setError('이 파일을 열 수 없습니다. 지원되지 않는 형식이거나 손상된 파일일 수 있습니다.')
+        const saved = await window.api.audio.findSession(filePath)
+        if (id === requestId.current && useAppStore.getState().fileInfo?.path === filePath && saved?.dir && saved.session) setRestorable(saved)
+      } catch { /* A missing previous result does not prevent opening a source. */ }
+    } catch {
+      const state = useAppStore.getState()
+      if (id === requestId.current && state.fileInfo === current.fileInfo && state.status !== 'processing' && !isCancelCleanupBusy(state.status) && !state.errorInfo?.childAlive) {
+        setLoadError('이 파일을 열 수 없습니다. 파일 형식이나 손상 여부를 확인한 뒤 다시 선택하세요.')
+      }
+    } finally {
+      if (id === requestId.current) setLoading(false)
     }
-  }, [setFile, setError, setRestorable])
+  }, [setFile, setRestorable])
 
   useEffect(() => {
-    const handleDragEnter = (e: DragEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
+    const enter = (event: DragEvent) => {
+      event.preventDefault()
+      if (disabled) return
       dragCounter.current++
-      if (e.dataTransfer?.types.includes('Files')) {
-        setIsDragging(true)
-      }
+      if (event.dataTransfer?.types.includes('Files')) setIsDragging(true)
     }
-
-    const handleDragLeave = (e: DragEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-      dragCounter.current--
-      if (dragCounter.current <= 0) {
-        dragCounter.current = 0
-        setIsDragging(false)
-      }
+    const leave = (event: DragEvent) => {
+      event.preventDefault()
+      if (--dragCounter.current <= 0) { dragCounter.current = 0; setIsDragging(false) }
     }
-
-    const handleDragOver = (e: DragEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
-    }
-
-    const handleDrop = (e: DragEvent) => {
-      e.preventDefault()
-      e.stopPropagation()
+    const over = (event: DragEvent) => { event.preventDefault() }
+    const drop = (event: DragEvent) => {
+      event.preventDefault()
       dragCounter.current = 0
       setIsDragging(false)
-
-      const file = e.dataTransfer?.files?.[0]
-      if (file) {
-        // 확장자 화이트리스트 제거 — ffmpeg가 디코딩 가능한 포맷이면 모두 허용(mo3 등 포함).
-        // UI에는 대표 포맷만 표기하고 실제 허용 범위는 넓게 둔다. 디코딩 불가 파일은 파이프라인이 에러로 처리.
-        const filePath = window.api.utils.getPathForFile(file)
-        if (filePath) loadFile(filePath)
-      }
+      if (disabled) return
+      const file = event.dataTransfer?.files?.[0]
+      if (file) { const path = window.api.utils.getPathForFile(file); if (path) void loadFile(path) }
     }
-
-    document.addEventListener('dragenter', handleDragEnter)
-    document.addEventListener('dragleave', handleDragLeave)
-    document.addEventListener('dragover', handleDragOver)
-    document.addEventListener('drop', handleDrop)
-
+    document.addEventListener('dragenter', enter)
+    document.addEventListener('dragleave', leave)
+    document.addEventListener('dragover', over)
+    document.addEventListener('drop', drop)
     return () => {
-      document.removeEventListener('dragenter', handleDragEnter)
-      document.removeEventListener('dragleave', handleDragLeave)
-      document.removeEventListener('dragover', handleDragOver)
-      document.removeEventListener('drop', handleDrop)
+      document.removeEventListener('dragenter', enter)
+      document.removeEventListener('dragleave', leave)
+      document.removeEventListener('dragover', over)
+      document.removeEventListener('drop', drop)
     }
-  }, [loadFile])
+  }, [disabled, loadFile])
 
-  const handleClick = useCallback(async () => {
-    const filePath = await window.api.audio.selectFile()
-    if (filePath) loadFile(filePath)
-  }, [loadFile])
-
-  const formatDuration = (seconds: number) => {
-    const m = Math.floor(seconds / 60)
-    const s = Math.floor(seconds % 60)
-    return `${m}:${s.toString().padStart(2, '0')}`
+  const pickFile = async () => {
+    if (disabled) return
+    try { const path = await window.api.audio.selectFile(); if (path) await loadFile(path) }
+    catch { setLoadError('파일 선택 창을 열지 못했습니다. 다시 시도하세요.') }
   }
+  const duration = fileInfo?.duration ?? 0
+  const details = fileInfo ? [
+    duration > 0 ? `${Math.floor(duration / 60)}:${String(Math.floor(duration % 60)).padStart(2, '0')}` : null,
+    fileInfo.channels > 0 ? (fileInfo.channels === 1 ? '모노' : `${fileInfo.channels}채널`) : null,
+    fileInfo.sampleRate > 0 ? `${(fileInfo.sampleRate / 1000).toFixed(1)} kHz` : null,
+    fileInfo.format?.toUpperCase()
+  ].filter(Boolean).join('  ·  ') : ''
 
-  return (
-    <>
-      {/* Full-screen drag overlay */}
-      <AnimatePresence>
-        {isDragging && (
-          <motion.div
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.15 }}
-            style={{
-              position: 'fixed', inset: 0, zIndex: 50,
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              background: 'rgba(8, 8, 12, 0.85)', backdropFilter: 'blur(8px)'
-            }}
-          >
-            <motion.div
-              initial={{ scale: 0.9, opacity: 0 }}
-              animate={{ scale: 1, opacity: 1 }}
-              exit={{ scale: 0.9, opacity: 0 }}
-              style={{
-                display: 'flex', flexDirection: 'column', alignItems: 'center', gap: '16px',
-                borderRadius: '16px', padding: '48px',
-                border: '2px dashed var(--accent)',
-                background: 'var(--accent-glow)',
-                boxShadow: '0 0 80px var(--accent-glow)'
-              }}
-            >
-              <motion.div animate={{ y: [-4, 4, -4] }} transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}>
-                <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="var(--accent-light)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                  <polyline points="17 8 12 3 7 8" />
-                  <line x1="12" y1="3" x2="12" y2="15" />
-                </svg>
-              </motion.div>
-              <span style={{ fontSize: '16px', fontWeight: 600, color: 'var(--accent-light)' }}>
-                여기에 드롭하세요
-              </span>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-
-      {/* File info or upload prompt */}
-      <AnimatePresence mode="wait">
-        {fileInfo ? (
-          <motion.div
-            key="file-info"
-            initial={{ opacity: 0, y: 8 }}
-            animate={{ opacity: 1, y: 0 }}
-            exit={{ opacity: 0, y: -8 }}
-            className="glass-card"
-            style={{
-              display: 'flex', alignItems: 'center', gap: '16px',
-              borderRadius: '16px', padding: '20px'
-            }}
-          >
-            <div style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              width: '56px', height: '56px', flexShrink: 0, borderRadius: '12px',
-              background: 'var(--accent-glow)', border: '1px solid var(--border-accent)'
-            }}>
-              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="var(--accent-light)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
-              </svg>
-            </div>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                {fileInfo.name}
-              </div>
-              <div style={{ marginTop: '6px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-                {[
-                  formatDuration(fileInfo.duration),
-                  fileInfo.channels === 1 ? 'Mono' : 'Stereo',
-                  `${(fileInfo.sampleRate / 1000).toFixed(1)}kHz`,
-                  fileInfo.format.toUpperCase()
-                ].map((tag, i) => (
-                  <span key={i} style={{
-                    borderRadius: '6px', padding: '2px 8px', fontSize: '11px', fontWeight: 500,
-                    background: 'var(--bg-elevated)', color: 'var(--text-muted)'
-                  }}>
-                    {tag}
-                  </span>
-                ))}
-              </div>
-            </div>
-            {status === 'idle' && (
-              <button onClick={handleClick} className="btn btn-ghost" style={{ fontSize: '12px' }}>변경</button>
-            )}
-          </motion.div>
-        ) : (
-          <motion.div
-            key="dropzone"
-            initial={{ opacity: 0, scale: 0.98 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0, scale: 0.98 }}
-            onClick={handleClick}
-            className="hover-glow group"
-            style={{
-              display: 'flex', flexDirection: 'column', alignItems: 'center',
-              cursor: 'pointer', borderRadius: '16px', padding: '48px 32px',
-              background: 'var(--bg-card)'
-            }}
-          >
-            {/* Upload icon */}
-            <div style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center',
-              width: '72px', height: '72px', borderRadius: '16px', marginBottom: '20px',
-              background: 'linear-gradient(135deg, var(--accent-glow), var(--cyan-glow))',
-              border: '1px solid var(--border-accent)',
-              transition: 'transform 0.2s'
-            }}>
-              <svg width="30" height="30" viewBox="0 0 24 24" fill="none" stroke="var(--accent-light)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                <polyline points="17 8 12 3 7 8" />
-                <line x1="12" y1="3" x2="12" y2="15" />
-              </svg>
-            </div>
-
-            <div style={{ fontSize: '15px', fontWeight: 600, color: 'var(--text-primary)' }}>
-              오디오 파일을 드래그하거나 클릭
-            </div>
-            <div style={{ marginTop: '8px', fontSize: '12px', color: 'var(--text-muted)' }}>
-              M4A, MP3, WAV, FLAC, OGG, MP4, MKV 지원
-            </div>
-
-            {/* Format badges */}
-            <div style={{ marginTop: '20px', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
-              {['M4A', 'MP3', 'WAV', 'FLAC', 'MP4'].map((fmt) => (
-                <span key={fmt} style={{
-                  borderRadius: '6px', padding: '4px 10px',
-                  fontSize: '10px', fontWeight: 600, letterSpacing: '0.05em',
-                  background: 'var(--bg-elevated)', color: 'var(--text-muted)',
-                  border: '1px solid var(--border-subtle)'
-                }}>
-                  {fmt}
-                </span>
-              ))}
-            </div>
-          </motion.div>
-        )}
-      </AnimatePresence>
-    </>
-  )
+  return <>
+    {isDragging && <div role="status" style={{ position: 'fixed', inset: 36, zIndex: 50, display: 'flex', alignItems: 'center', justifyContent: 'center', pointerEvents: 'none', background: 'rgba(14,16,22,.94)', border: '2px dashed var(--accent)', borderRadius: 16, fontSize: 20 }}>파일을 놓아 {mode === 'tts' ? '참조 목소리로' : '원본으로'} 사용</div>}
+    {fileInfo ? <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 12, padding: '16px 20px' }}>
+      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 40, height: 40, borderRadius: 10, background: 'var(--accent-glow)', color: 'var(--accent-light)' }} aria-hidden="true">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7"><path d="M8 3h8l4 4v14H4V3zM8 12h8M8 16h5"/></svg>
+      </span>
+      <div style={{ flex: '1 1 180px', minWidth: 0 }}>
+        <div title={fileInfo.path} style={{ fontSize: 14, fontWeight: 600, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{fileInfo.name}</div>
+        <div style={{ marginTop: 5, fontSize: 11, color: 'var(--text-muted)' }}>{loading ? '파일을 여는 중…' : details || '이전 결과에서 복원한 파일'}</div>
+      </div>
+      <div style={{ display: 'flex', gap: 6 }}>
+        <button type="button" className="btn btn-ghost" data-testid="source-change" onClick={() => void pickFile()} disabled={disabled} style={{ padding: '7px 10px', fontSize: 12 }}>파일 변경</button>
+        <button type="button" className="btn btn-ghost" data-testid="source-close" onClick={reset} disabled={disabled} title="현재 원본을 닫습니다. 저장한 결과 파일은 그대로 남습니다." style={{ padding: '7px 10px', fontSize: 12 }}>닫기</button>
+      </div>
+    </div> : <button type="button" onClick={() => void pickFile()} disabled={disabled} data-testid="source-open" aria-label={mode === 'tts' ? '참조 목소리 파일 선택' : '오디오 또는 영상 파일 선택'} className="source-dropzone"
+      style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 14, width: '100%', minHeight: 245, padding: '36px 24px', border: '1px dashed var(--border-accent)', borderRadius: 13, background: 'var(--bg-card)', color: 'var(--text-primary)', fontFamily: 'inherit', cursor: disabled ? 'wait' : 'pointer' }}>
+      <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 52, height: 52, borderRadius: 14, background: 'var(--accent-glow)', color: 'var(--accent-light)' }} aria-hidden="true">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M3 15v6h18v-6M12 16V3m-5 5 5-5 5 5"/></svg>
+      </span>
+      <span style={{ fontSize: 16, fontWeight: 600 }}>{loading ? '파일을 여는 중…' : mode === 'tts' ? '참조할 목소리 파일을 선택하세요' : '오디오나 영상 파일을 가져오세요'}</span>
+      <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>이곳에 끌어 놓거나 클릭해서 선택</span>
+      <span style={{ marginTop: 5, fontSize: 11, color: 'var(--text-muted)' }}>WAV · MP3 · M4A · FLAC · MP4 · MKV 등</span>
+    </button>}
+    {loadError && <p role="alert" data-testid="source-error" style={{ padding: '12px 20px', fontSize: 12, lineHeight: 1.6, color: 'var(--rose)' }}>{loadError}</p>}
+  </>
 }
