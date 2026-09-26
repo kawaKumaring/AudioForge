@@ -6,9 +6,10 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   adoptedTake, defaultSettings, emptyDoc, exportBlockReason, exportBlockText,
-  exportReadiness, hasUnusedTake, isExportBlockNotice, lineStatus,
+  exportReadiness, hasUnusedTake, isExportBlockNotice, isTailCut, lineStatus,
   linesNeedingWork, newLine, parseDoc, parseSettings, redoTargets, shouldAutoAdopt,
-  synthesisOptions, takeBadge, takeTailCut, voiceKeyOf, TAIL_RESIDUAL_CUT,
+  synthesisOptions, takeBadge, tailResidualOf,
+  takeTailCut, voiceKeyOf, TAIL_RESIDUAL_CUT,
   type LabDoc, type LabLine, type LabTake,
 } from './labWorkspace.ts'
 
@@ -356,3 +357,30 @@ test('값이 없던 옛 저장본은 없는 채로 복원된다 — 0 으로 채
   assert.equal('tailResidual' in back!.lines[0].takes[0], false,
     '0 으로 채우면 정상이라고 거짓말하게 된다')
 })
+
+// ★2026-09-24: 여기가 **없는 자리**를 읽어 '끝 잘림 의심' 꼬리표가 한 번도 뜨지 않았다.
+//   파이썬은 metadata 를 tracks 의 **형제**로 보내는데 화면은 트랙 **안쪽**을 읽었다.
+//   받는 인자가 any 라 타입검사가 못 잡았다 — 그래서 모양을 검사로 못 박는다.
+{
+  const real = { tracks: [{ path: 'a.wav' }], outputDir: 'out', metadata: { tail_residual_ratio: 0.087 } }
+  assert.equal(tailResidualOf(real), 0.087, '파이썬이 실제로 보내는 모양에서 꺼내야 한다')
+  assert.equal(takeTailCut(take({ tailResidual: tailResidualOf(real) })), true, '꺼낸 값이 판정까지 이어져야 한다')
+
+  const oldWrongGuess = { tracks: [{ path: 'a.wav', metadata: { tail_residual_ratio: 0.087 } }] }
+  assert.equal(tailResidualOf(oldWrongGuess), undefined, '트랙 안쪽은 파이썬이 쓰지 않는 자리다')
+
+  assert.equal(tailResidualOf({ tracks: [], outputDir: 'o', metadata: {} }), undefined)
+  assert.equal(tailResidualOf({ metadata: { tail_residual_ratio: 'x' } }), undefined, '숫자가 아니면 모르는 것이다')
+  assert.equal(tailResidualOf({ metadata: { tail_residual_ratio: Number.NaN } }), undefined)
+  assert.equal(tailResidualOf(null), undefined)
+  assert.equal(tailResidualOf(undefined), undefined)
+  assert.equal(tailResidualOf({ metadata: { tail_residual_ratio: 0 } }), 0, '0은 아주 좋은 값이지 모름이 아니다')
+}
+
+// ★더빙 화면은 회차를 쌓지 않아 숫자로 바로 판정한다 — **같은 기준**이어야 한다.
+assert.equal(isTailCut(0.087), true, '실측된 끊긴 회차')
+assert.equal(isTailCut(TAIL_RESIDUAL_CUT), true, '기준값은 포함한다')
+for (const v of [0, 0.002, 0.007]) assert.equal(isTailCut(v), false, `정상 회차 ${v}`)
+assert.equal(isTailCut(undefined), false, '재지 못했으면 잘렸다고 말하지 않는다')
+assert.equal(isTailCut(Number.NaN), false)
+assert.equal(isTailCut(0.087), takeTailCut(take({ tailResidual: 0.087 })), '두 문이 같은 답을 내야 한다')

@@ -889,10 +889,6 @@ class PromptSourceRegressionTest(unittest.TestCase):
         self.assertEqual(tts_worker._prompt_source_for(ref, {}, False), "auto")
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
-
 class NativeAutoModeTest(_QwenJobBase):
     """auto(자동) — **production 기본 경로**인 vendor native ICL 계약.
 
@@ -976,3 +972,9 @@ class NativeAutoModeTest(_QwenJobBase):
         summary, cut = tts_worker._summarize_reference_alignment([entry])
         self.assertIsNone(summary, "vendor native 경로는 ASR alignment 요약을 만들지 않는다")
         self.assertIsNone(cut)
+
+
+# ★이 블록은 **파일 맨 끝**에 있어야 한다 — 중간에 두면 아래 검사가
+#   아직 만들어지지 않은 채 돌아 이 파일을 직접 실행할 때 조용히 빠진다.
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

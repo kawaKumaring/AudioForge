@@ -2,11 +2,17 @@ import { useState } from 'react'
 import { useAppStore } from '@/stores/app.store'
 
 // Whisper 모델 크기별 의미 (툴팁) — 클수록 정확하지만 느리고 무겁다
+// ★이 앱이 **실제로 가진** 모델만 내놓는다(2026-09-24 감사).
+//   예전에는 넷을 같은 무게로 권했는데 medium·turbo 는 모델 파일이 없어
+//   **누르면 매번 실패**했고, 앱 안에 되살릴 수단도 없었다.
+//   turbo 는 그냥 없는 것이 아니라 **일부러 치운 것**이다 —
+//   실측 정확도 64.2% 로 Large(73~75%)보다 낮아 2026-09-21 에 격리했다.
+//   그런데 설명은 'Large 대비 8배 빠름' 이라며 권하고 있었다.
+const WHISPER_MODELS = ['small', 'large-v3'] as const
+
 const WHISPER_HINTS: Record<string, string> = {
   'small': '가장 빠르고 가벼움. 정확도는 낮아 짧고 또렷한 음성에 적합',
-  'medium': '속도와 정확도의 중간 균형 — 무난한 선택',
   'large-v3': '가장 정확하지만 느리고 무거움. 잡음·다국어에 강함 (기본)',
-  'large-v3-turbo': 'Large 대비 약 8배 빠름. 정확도는 조금 낮음 (한/일은 Large가 근소 우위)',
 }
 
 // 출력 파일 형식 (툴팁) — 품질/용량 트레이드오프
@@ -17,7 +23,7 @@ const OUTPUT_HINTS: Record<string, string> = {
 }
 
 export default function Options() {
-  const { mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, asrEngine, setAsrEngine, diarizeEngine, setDiarizeEngine, whisperLang, translateModel, demucsModel, nSpeakers,
+  const { mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, asrEngine, setAsrEngine, asrSeparate, setAsrSeparate, diarizeEngine, setDiarizeEngine, whisperLang, translateModel, demucsModel, nSpeakers,
     setTrimSilence, setSilenceGap, setTranscribe, setTranslate, setExportSrt, setOutputFormat, setWhisperModel, setWhisperLang, setTranslateModel, setDemucsModel, setNSpeakers, status } = useAppStore()
   const disabled = status === 'processing'
   const [open, setOpen] = useState(false)
@@ -146,7 +152,7 @@ export default function Options() {
             {(transcribe || isTranscribeMode || isSplitMode) && (
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Whisper</span>
-                {(['small', 'medium', 'large-v3', 'large-v3-turbo'] as const).map((m) => (
+                {WHISPER_MODELS.map((m) => (
                   <button key={m} onClick={() => !disabled && setWhisperModel(m)} disabled={disabled}
                     title={WHISPER_HINTS[m] || ''}
                     style={{
@@ -154,7 +160,7 @@ export default function Options() {
                     fontSize: 10, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',
                     background: whisperModel === m ? 'var(--cyan)' : 'transparent',
                     color: whisperModel === m ? '#fff' : 'var(--text-muted)'
-                  }}>{m === 'large-v3' ? 'Large' : m === 'large-v3-turbo' ? 'Turbo' : m.charAt(0).toUpperCase() + m.slice(1)}</button>
+                  }}>{m === 'large-v3' ? 'Large' : m.charAt(0).toUpperCase() + m.slice(1)}</button>
                 ))}
               </div>
             )}
@@ -194,6 +200,32 @@ export default function Options() {
                       fontSize: 10, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',
                       background: asrEngine === id ? 'var(--cyan)' : 'transparent',
                       color: asrEngine === id ? '#fff' : 'var(--text-muted)',
+                    }}>{label}</button>
+                ))}
+              </div>
+            )}
+            {/* 배경음 걷어내기 — **텍스트 추출 모드에서만.** ★기본은 '자동'(2026-09-24).
+                배경음이 깔린 대사에서 걷어내지 않으면 앞단이 통째로 무너진다 —
+                실측(일본어 대사 계측대): 알아듣기 90.7% → 100%,
+                시작 시각 중앙 422 → 28밀리초, 구간 묶기도 틀린 것이 맞게 된다.
+                '자동'은 크기를 재어 조용한 녹음이면 스스로 사양한다(차이 30dB → 안 걷어냄).
+                값은 갈라내기 한 번(30초 소리에 5~10초). 그 값보다 잃는 것이 크다. */}
+            {isTranscribeMode && (
+              <div data-testid="asr-separate-row" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>배경음</span>
+                {([['never', '그대로'], ['auto', '자동'], ['always', '걷어냄']] as const).map(([id, label]) => (
+                  <button key={id} data-testid={`asr-separate-${id}`}
+                    onClick={() => !disabled && setAsrSeparate(id)} disabled={disabled}
+                    title={id === 'never'
+                      ? '소리를 그대로 넣습니다. 배경음이 깔려 있으면 알아듣기와 시각이 크게 나빠집니다.'
+                      : id === 'auto'
+                        ? '기본. 먼저 목소리와 배경음을 갈라내 크기를 재고, 배경음이 클 때만 걷어낸 소리를 넣습니다. 조용한 녹음이면 원본을 그대로 씁니다. 실측으로 알아듣기가 90.7%에서 100%로, 시작 시각 어긋남이 422에서 28밀리초로 좋아졌습니다. 갈라내는 시간이 한 번 듭니다.'
+                        : '언제나 목소리만 뽑아 넣습니다. 크기를 재지 않으므로 조용한 녹음에서도 갈라냅니다. 반주가 늘 깔려 있는 것을 아실 때 쓰세요.'}
+                    style={{
+                      padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
+                      fontSize: 10, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',
+                      background: asrSeparate === id ? 'var(--cyan)' : 'transparent',
+                      color: asrSeparate === id ? '#fff' : 'var(--text-muted)',
                     }}>{label}</button>
                 ))}
               </div>

@@ -44,4 +44,4 @@ GPU 여유(free ~9600) 확보 후:
 - 통합 worktree에는 gitignore된 `externals`(Qwen venv·모델)가 없어, 개발 중 실합성 검증을 위해 메인 저장소 externals로 **디렉토리 junction**을 연결했다(관리자 권한 불필요).
   `New-Item -ItemType Junction -Path <worktree>\externals -Target <메인>\externals`.
 - **이 junction은 개발 환경 편의일 뿐 커밋·배포 의존성이 아니다**(.gitignore가 externals 배제, git status에 안 뜸).
-- **최종 테스트는 실제 프로젝트 경로**(apps/development/AudioForge, externals 실재)에서도 재실행해 junction 의존이 없음을 확인한다.
+- **최종 테스트는 externals 가 실재하는 체크아웃**(본체 또는 externals 링크가 살아 있는 워크트리)에서도 재실행해 junction 의존이 없음을 확인한다. ※2026-09-24 본체가 `apps/master/AudioForge` 로 옮겨졌다 — 고정 경로를 적지 않는다.

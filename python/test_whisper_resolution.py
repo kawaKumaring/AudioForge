@@ -57,6 +57,31 @@ class TestWhisperResolution(unittest.TestCase):
         self.assertIn("download_root=root", src)
         self.assertNotIn("whisper.load_model(model_name, device=device)", src)
 
+    def test_no_direct_load_outside_the_resolver(self):
+        """★해석기 **밖에서** whisper 를 직접 부르는 곳이 없는지 본다.
+
+        2026-09-24 감사: 이 검사가 transcribe_worker.py **한 파일만** 보고 있어서,
+        separate.py 가 download_root 없이 두 번 부르는 것을 **게이트가 통과시켰다.**
+        하나는 화면·자산 어디에도 없는 다섯 번째 모델("base")이었다.
+        오프라인 약속은 한 파일의 약속이 아니다 — 저장소 전체를 본다.
+        """
+        here = os.path.dirname(os.path.abspath(__file__))
+        bad = []
+        for name in sorted(os.listdir(here)):
+            if not name.endswith(".py") or name.startswith("test_"):
+                continue
+            if name == "transcribe_worker.py":
+                continue          # 해석기가 사는 곳 — 여기서만 직접 부른다
+            with open(os.path.join(here, name), encoding="utf-8") as f:
+                for i, line in enumerate(f, 1):
+                    t = line.strip()
+                    if t.startswith("#"):
+                        continue
+                    if "whisper.load_model(" in t:
+                        bad.append("%s:%d %s" % (name, i, t[:80]))
+        self.assertEqual(bad, [],
+                         "해석기를 거치지 않는 whisper 적재: " + " / ".join(bad))
+
 
 class TestNoGlobalHfFallback(unittest.TestCase):
     """production 에서 HF repo id 를 from_pretrained 에 직접 넘기는 호출이 0건인지."""
@@ -84,6 +109,45 @@ class TestNoGlobalHfFallback(unittest.TestCase):
                         elif arg in ("model_name", "repo_id"):
                             bad.append("%s :: %s" % (fn, arg))
         self.assertEqual(bad, [], "전역 캐시로 샐 수 있는 호출: %s" % bad)
+
+    def test_other_model_loaders_do_not_leak_to_the_internet(self):
+        """★오프라인 약속이 **함수 이름 하나로 뚫려 있었다**(2026-09-24 2차 감사).
+
+        위 검사는 `from_pretrained(` 만 훑는다. 그래서 두 자리가 그냥 지나갔다 —
+          · from_hparams(source="speechbrain/...") — 사용자 홈에 85MB 를 남겼다
+          · torch.hub.load(repo_or_dir="snakers4/...") — 실행 중 깃허브에서 **코드를**
+            받아 돌렸고, 판을 고정하지 않은 master 였다
+        검사가 못 보는 규칙은 규칙이 아니다. 모델을 여는 다른 문도 함께 막는다.
+
+        허용: 변수(경로로 해석된 것). 금지: **따옴표로 시작하는 저장소 이름**을 그대로 넘기는 것.
+        """
+        root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        quotes = ('"', "'")
+        doors = (('from_hparams(', 'source='),
+                 ('torch.hub.load(', None))
+        bad = []
+        for base in (os.path.join(root, "python"), os.path.join(root, "src")):
+            for dp, dns, fns in os.walk(base):
+                dns[:] = [d for d in dns if d not in ("__pycache__", "node_modules")]
+                for fn in fns:
+                    if not fn.endswith((".py", ".ts")) or fn.startswith("test_") or ".test." in fn:
+                        continue
+                    txt = open(os.path.join(dp, fn), encoding="utf-8", errors="replace").read()
+                    for door, key in doors:
+                        at = txt.find(door)
+                        while at >= 0:
+                            seg = txt[at + len(door):at + len(door) + 120]
+                            if key:
+                                k = seg.find(key)
+                                arg = seg[k + len(key):].lstrip() if k >= 0 else ""
+                            else:
+                                arg = seg.lstrip()
+                                if arg.startswith("repo_or_dir"):
+                                    arg = arg.split("=", 1)[1].lstrip() if "=" in arg else ""
+                            if arg[:1] in quotes:
+                                bad.append("%s :: %s" % (fn, arg[:45].split(chr(10))[0]))
+                            at = txt.find(door, at + 1)
+        self.assertEqual(bad, [], "앱 밖에서 모델을 받는 호출: %s" % bad)
 
     def test_resolve_hf_cache_dir_removed(self):
         src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),

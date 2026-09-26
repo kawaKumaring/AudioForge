@@ -72,7 +72,8 @@ export interface VoiceCastRegistryApi extends VoiceCastRegistryState {
    */
   addCandidateFiles: (
     voiceCastId: string, speakerId: string, emotionId: string, paths: readonly string[]
-  ) => Promise<{ added: number; failed: number }>
+    // ★`reasons` 는 **왜 실패했는지**다. 개수만으로는 사용자가 아무것도 못 한다.
+  ) => Promise<{ added: number; failed: number; reasons: string[] }>
   analyzing: boolean
 }
 
@@ -89,6 +90,12 @@ function newCastId(): string {
   if (c && typeof c.getRandomValues === 'function') c.getRandomValues(bytes)
   else for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256)
   return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('')
+}
+
+/** 화면에는 **이름만** 올린다 — 폴더 경로는 개인정보다. */
+function baseName(p: string): string {
+  const i = Math.max(p.lastIndexOf('/'), p.lastIndexOf('\\'))
+  return i >= 0 ? p.slice(i + 1) : p
 }
 
 export function useVoiceCastRegistry(): VoiceCastRegistryApi {
@@ -244,12 +251,13 @@ export function useVoiceCastRegistry(): VoiceCastRegistryApi {
   const addCandidateFiles = useCallback(async (
     voiceCastId: string, speakerId: string, emotionId: string, paths: readonly string[]
   ) => {
-    if (!paths.length) return { added: 0, failed: 0 }
+    if (!paths.length) return { added: 0, failed: 0, reasons: [] }
     setAnalyzing(true)
     let nextCasts = casts
     const nextAssets = { ...assets }
     let added = 0
     let failed = 0
+    const reasons: string[] = []
     try {
       for (const path of paths) {
         try {
@@ -294,8 +302,15 @@ export function useVoiceCastRegistry(): VoiceCastRegistryApi {
             assetId, speakerId, emotionId,
           }, nowIso())
           added++
-        } catch {
-          failed++   // 한 파일이 실패해도 나머지는 계속 등록한다
+        } catch (e) {
+          // ★사유를 버리지 않는다(2026-09-25 실사용에서 드러남).
+          //   예전에는 세기만 해서, "참조 파일을 찾을 수 없습니다: speaker_b.wav" 같은
+          //   **결정적인 한 줄**이 사라졌다. 사용자는 파일이 그냥 목록에 안 나타나는 것만
+          //   보고 "되는 건지 아닌지 모르겠다" 고 했다.
+          //   한 파일이 실패해도 나머지는 계속 등록하되, **왜 실패했는지는 들고 나온다.**
+          failed++
+          const why = (e as Error)?.message || '알 수 없는 이유'
+          reasons.push(`${baseName(path)}: ${why}`)
         }
       }
     } finally {
@@ -306,7 +321,7 @@ export function useVoiceCastRegistry(): VoiceCastRegistryApi {
       setAssets(nextAssets)
       await persist(nextCasts, nextAssets)
     }
-    return { added, failed }
+    return { added, failed, reasons }
   }, [casts, assets, persist])
 
   // `autoRecommendable` 은 후보 줄을 만들 때 shared 가 계산한다. 여기서 다시 쓰지 않도록

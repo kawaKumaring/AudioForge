@@ -2,7 +2,7 @@
 
 ## 왜
 
-`settings.json` 에는 일곱 영역(lastDir·voiceCasts·referenceAssets·workDrafts·playbackVolume·labWorkspace·
+`settings.json` 에는 여러 영역(lastDir·voiceCasts·referenceAssets·workDrafts·playbackVolume·labWorkspace·
 transcriptEdits…)이 번호 없이 쌓여 있었다(2026-09-17 실측). 어느 영역의 모양을 바꾸면 옛 파일이 **조용히**
 깨지거나 조용히 되살아난다 — 그리고 어느 앱이 그 파일을 마지막에 썼는지 아무 데도 남지 않았다.
 
@@ -19,6 +19,28 @@ transcriptEdits…)이 번호 없이 쌓여 있었다(2026-09-17 실측). 어느
   기동 기록에 WARN 으로 남는다.
 - `meta` 는 저장소만 쓴다. IPC 로 `meta` 키를 직접 쓰려 하면 거절한다(`SETTINGS_META_IS_OWNED_BY_STORE`).
 - `settings:get` 은 키를 골라 돌려주므로 `meta` 는 화면에 가지 않는다.
+
+## 대화상자 시작 폴더 — 여섯 칸 (2026-09-25)
+
+파일을 고르거나 저장할 때 **어느 폴더에서 열지**를 용도별로 기억한다.
+값은 폴더 경로이고, **main 만 읽고 쓴다** — `settings:get`/`settings:set` 어느 쪽에도 없다.
+
+| 키 | 무엇 |
+|---|---|
+| `lastDir` | 작업할 음원 (옛 이름 그대로 — 쓰던 값을 버리지 않는다) |
+| `lastVoiceDir` | 참조 목소리·인물 목소리 |
+| `lastVideoDir` | 더빙할 영상 |
+| `lastExportDir` | 내보내기·저장 |
+| `lastRestoreDir` | 이전 결과 폴더 열기 |
+| `lastPythonDir` | 파이썬 실행 파일 |
+
+규칙은 `src/main/services/dialogFolders.ts` 가 갖는다. 기억한 폴더가 사라졌으면
+**살아 있는 가장 가까운 윗폴더**로 내려앉고, 그래도 없으면 용도별 기본값으로 간다 —
+비워서 돌아가면 운영체제가 정하고, 그러면 다른 앱이 마지막에 연 폴더가 뜬다.
+
+★진단 묶음에는 **값이 나가지 않는다**(모양만). 실제로 여섯 칸에 표식을 넣어 확인했다.
+
+★**칸을 늘리면 이 표도 늘려야 한다** — `dialogFolders.test.ts` 가 대조한다.
 
 ## 모양을 바꾸는 사람이 할 일
 

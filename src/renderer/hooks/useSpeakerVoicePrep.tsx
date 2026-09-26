@@ -252,7 +252,7 @@ export function useSpeakerVoicePrep(opts: {
   }, [ttsSpeakerRefState])
 
   const assignVoice = useCallback(async (speakerId: string, label?: string) => {
-    const picked = await window.api.audio.selectFile()
+    const picked = await window.api.audio.selectFile(false, 'voice')
     if (!picked) return                                    // 취소 — 아무것도 바꾸지 않는다
     const before = useAppStore.getState().ttsSpeakerRefState[speakerId]
     if (before?.ready) prevGoodVoice.current[speakerId] = before   // 교체 실패 시 돌려놓을 것

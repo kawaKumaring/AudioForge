@@ -24,6 +24,8 @@ import sys
 REQUIRED = [
     ("torch",            "torch",           "AI 엔진 (CUDA)",        "core"),
     ("numpy",            "numpy",           "수치 연산",             "core"),
+    # ★문서(requirements.txt)에만 있고 여기 없었다 — 2026-09-24 파리티 검사가 찾았다.
+    ("torchaudio",       "torchaudio",      "오디오 텐서 처리",      "core"),
     ("soundfile",        "soundfile",       "오디오 I/O",            "core"),
     ("openai-whisper",   "whisper",         "텍스트 추출",           "core"),
     ("demucs",           "demucs",          "음악 4트랙 분리",       "core"),
@@ -32,8 +34,17 @@ REQUIRED = [
     ("speechbrain",      "speechbrain",     "화자 분리(ECAPA)",      "core"),
     ("transformers",     "transformers",    "NLLB/LLM 번역",         "core"),
     ("f5-tts",           "f5_tts",          "TTS(영어/클로닝)",      "tts"),
-    ("kokoro",           "kokoro",          "TTS(다국어 폴백)",      "tts"),
-    ("silero-vad",       "silero_vad",      "음성 검출(torch.hub도 가능)", "hub"),
+    ("kokoro",           "kokoro",          "TTS 폴백(일/중/영 — 한국어 없음)", "tts"),
+    # ★아래 셋은 2026-09-24 에 들였다. 이 목록이 설치기가 읽는 **실권**이다 —
+    #   requirements.txt 는 읽는 코드가 하나도 없는 문서일 뿐이라, 그쪽만 고치면
+    #   새 PC 는 이것들이 빠진 채 "준비 끝" 을 보고한다. 두 목록이 갈라지지 않게
+    #   test_env_requirements_parity.py 가 붙잡는다.
+    ("ordered_set",      "ordered_set",     "kokoro 중국어에 필요", "tts"),
+    ("pyopenjtalk-plus", "pyopenjtalk",     "kokoro 일본어에 필요", "tts"),
+    ("piper-tts",        "piper",           "TTS 한국어 폴백(참조 불필요)", "tts"),
+    # ★2026-09-24: 예전 설명은 "torch.hub 도 가능" 이었는데, 그 길은 **인터넷에서
+    #   코드를 받아 돌리는 것**이라 없앴다. 이제 앱 안 사본만 쓴다.
+    ("silero-vad",       "silero_vad",      "음성 검출(앱 안 사본 사용)", "hub"),
 ]
 
 

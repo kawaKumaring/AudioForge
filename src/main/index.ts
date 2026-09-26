@@ -7,11 +7,16 @@ import { tmpdir } from 'os'
 import { createHash, randomUUID } from 'crypto'
 import { statSync } from 'fs'
 import { pathToFileURL } from 'url'
-import { registerAudioIpc } from './ipc/audio.ipc'
+import { registerAudioIpc, dialogFolderHost } from './ipc/audio.ipc'
 import { registerAppVersionIpc, currentBuildInfo } from './ipc/app-version.ipc'
 import { registerDiagnosticsIpc } from './ipc/diagnostics.ipc'
+import { registerDubIpc } from './ipc/dub.ipc'
+import { registerPitchIpc } from './ipc/pitch.ipc'
 import { createAppLog, mirrorConsole, setAppLog, watchUncaught, LOG_DIR_NAME } from './services/app-log'
 import { seedDevUserData, userDataDirNameFor, USER_DATA_DIR_STABLE, type SeedResult } from './services/user-data-channel'
+import { warmUpBridge, type WarmupHandle } from './services/bridge-warmup'
+/** 배경 데우기 손잡이 — 종료 때 멈추려면 붙들고 있어야 한다. */
+let warmupHandle: WarmupHandle | null = null
 import { channelForVersion } from '../shared/buildMetadata'
 import { readSettingsFile, readSettingsMeta, SETTINGS_FORMAT_VERSION } from './services/settings-store'
 import { basename, dirname } from 'path'
@@ -166,9 +171,19 @@ function createWindow(): void {
   registerAppVersionIpc()
   // 진단 묶음 — 로그 복사본 + 설정의 모양(값 없음). 시작 화면의 단추가 부른다.
   registerDiagnosticsIpc(() => mainWindow, () => currentPythonPath())
-  const previewAdapter = registerAudioIpc(mainWindow)
+  // ★양쪽이 서로를 본다(2026-09-24 2차 감사). 더빙은 제 실행기를 따로 만들어서
+  //   공용 판정에 잡히지 않았고, 반대로 더빙도 다른 작업을 보지 않고 시작했다.
+  //   등록 순서상 더빙이 먼저이므로, 더빙에는 **늦게 부르는 함수**를 넘기고
+  //   더빙이 돌려준 것을 합성 쪽이 받는다.
+  const dubAdapter = registerDubIpc(
+    () => mainWindow, () => currentPythonPath(),
+    () => previewAdapter?.busyReason() ?? null,
+    // 대화상자 시작 폴더는 audio.ipc 가 소유한 **같은 기억**을 쓴다.
+    dialogFolderHost())
+  const previewAdapter = registerAudioIpc(mainWindow, () => dubAdapter.isRunning())
   // 입력 분석 — GPU 를 쓰지 않는 상주 CPU worker. audio.ipc 와 같은 인터프리터를 쓴다.
   registerAnalysisIpc({ pythonPath: currentPythonPath })
+  registerPitchIpc(() => currentPythonPath())
 
   // 참조 라이브러리 — 저장 루트·선택 상태는 앱 소유 userData 안에만 둔다.
   // 파이썬 실행은 audio.ipc 가 만든 adapter 를 그대로 쓴다(같은 pythonPath·타임아웃·정리).
@@ -369,6 +384,20 @@ if (!gotLock) {
 
     createWindow()
 
+    // ★합성 엔진 라이브러리를 **배경에서 미리 읽어 둔다**(2026-09-25 실측).
+    //   합성 준비 8.4초 중 5.8초가 라이브러리 읽기인데, 그 값은 **데워진 뒤**이고
+    //   처음에는 25.9초다 — 앱을 켜고 첫 합성이 유독 느린 이유가 이것이다.
+    //   처음 한 번을 여기로 옮기면 사용자가 기다리는 시간이 아니게 된다.
+    //   ★모델은 올리지 않는다 — GPU 를 한 바이트도 쓰지 않음을 실측으로 확인했다.
+    // ★핸들을 **붙들어 둔다**(2026-09-25 3차 감사에서 내가 낸 결함).
+    //   버리면 종료 때 멈출 수 없다. `detached:false` 는 윈도에서 자동 종료를
+    //   보장하지 않는다 — 앱을 껐는데 파이썬이 남아 도는 모양이 된다.
+    //   이 저장소가 분석 worker 를 세 자리에서 정리하는 것과 같은 규율을 따른다.
+    warmupHandle = warmUpBridge({
+      root: join(__dirname, '..', '..'),
+      log: (m) => { APP_LOG.info('warmup', m) },
+    })
+
     app.on('activate', () => {
       if (BrowserWindow.getAllWindows().length === 0) createWindow()
     })
@@ -376,16 +405,18 @@ if (!gotLock) {
 }
 
 // Electron 이 정상 경로를 못 타고 내려가도(dev 서버 종료·창 강제 종료) 자기가 띄운
-// 분석 worker 는 함께 내려가야 한다. app 훅만으로는 부족해 process 수준에서도 건다.
-app.on('will-quit', () => { disposeAnalysisIpc() })
-process.once('exit', () => { disposeAnalysisIpc() })
+// 자식들은 함께 내려가야 한다. app 훅만으로는 부족해 process 수준에서도 건다.
+const stopWarmup = (): void => { try { warmupHandle?.stop() } catch { /* 이미 죽었으면 그만 */ } }
+app.on('will-quit', () => { disposeAnalysisIpc(); stopWarmup() })
+process.once('exit', () => { disposeAnalysisIpc(); stopWarmup() })
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
-  process.once(sig, () => { disposeAnalysisIpc(); app.quit() })
+  process.once(sig, () => { disposeAnalysisIpc(); stopWarmup(); app.quit() })
 }
 
 app.on('before-quit', () => {
   // 분석은 편집 보조일 뿐이므로 종료를 붙들지 않는다 — 대기 요청을 취소하고 프로세스를 닫는다.
   disposeAnalysisIpc()
+  stopWarmup()
   APP_LOG.info('boot', '종료')
 })
 

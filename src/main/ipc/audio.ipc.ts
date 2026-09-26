@@ -20,6 +20,10 @@ import { removeRefClipDir, sweepRefClipDirs } from '../services/refclip-cleanup'
 import { removeSplitTempDirs, listSplitTempDirs } from '../services/split-temp-cleanup'
 import { createSingleFlight, createKeyedSingleFlight } from '../services/single-flight'
 import { createSerialLane } from '../services/serial-lane'
+import {
+  rememberDir, rememberFile, startDir, type FolderHost, type FolderSlot,
+} from '../services/dialogFolders'
+import { blockReason } from '../../shared/synthesisGate'
 import { cacheableResult, createResultCache, fileStamp, requestKey, KEY_SEP } from '../services/preview-cache'
 import { createJobWatchdog, startJobWatch, createStagingGate } from '../services/longform-job'
 import { createTerminalGate } from '../services/run-settlement'
@@ -100,6 +104,31 @@ function saveSetting(key: string, value: unknown): { ok: boolean; code?: string 
   return res.ok ? { ok: true } : { ok: false, code: res.code }
 }
 function savePythonPath(p: string): void { saveSetting('pythonPath', p) }
+
+/**
+ * 대화상자 시작 폴더의 **기억 창구**. 규칙은 `services/dialogFolders` 가 갖는다.
+ *
+ * ★2026-08-16 에 같은 신고("다른 툴을 쓰면 엉뚱한 폴더에서 열린다")로 한 자리를
+ *   고쳤는데 **아홉 자리 중 하나만** 덮었고, 그 하나마저 기억해 둔 폴더가 저장소
+ *   이동으로 사라지면서 값이 비어 무력화돼 있었다(2026-09-25 실측).
+ *   비면 운영체제가 정하고, 개발 실행은 `electron.exe` 라 다른 툴과 기억을 나눠 쓴다.
+ */
+const folderHost: FolderHost = {
+  read: (key) => loadSettings()[key],
+  write: (key, value) => { saveSetting(key, value) },
+  fallback: (slot) => {
+    try {
+      if (slot === 'python') return undefined      // 실행 파일을 음원 폴더에서 찾게 하지 않는다
+      return app.getPath(slot === 'video' ? 'videos' : 'music')
+    } catch {
+      return undefined
+    }
+  },
+}
+const dialogStart = (slot: FolderSlot): string | undefined => startDir(folderHost, slot)
+
+/** 다른 IPC 모듈이 **같은 기억**을 쓰도록 내보낸다. 통로를 둘로 만들지 않는다. */
+export function dialogFolderHost(): FolderHost { return folderHost }
 
 // 진단 사이드카 검증기를 모든 러너에 주입한다. python-runner는 Electron 없이 node --test로도
 // 로드되므로 검증기를 직접 import하지 않고 주입받는다(주입을 빠뜨리면 fail-closed —
@@ -271,9 +300,17 @@ export interface AudioIpcAdapters {
   busyReason: () => string | null
 }
 
-export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
+/**
+ * @param isDubRunning 더빙 **앞단·내보내기**가 도는지. 더빙은 제 실행기를 따로 만들어서
+ *   공용 `runner` 로는 보이지 않는다(감정 미리듣기와 같은 구조).
+ *   ★줄 소리 합성은 여기 포함하지 않는다 — 그쪽은 공용 실행기를 타므로 이미 보인다.
+ */
+export function registerAudioIpc(
+  mainWindow: BrowserWindow,
+  isDubRunning: () => boolean = () => false,
+): AudioIpcAdapters {
   // 테스트개발 작업실이 쓰는 두 가지(테이크 보관·이어 붙여 내보내기). 합성 경로와 무관하다.
-  registerLabIpc(mainWindow)
+  registerLabIpc(mainWindow, folderHost)
   registerTranscriptIpc()
   // 영속화된 사용자 지정 python 경로가 있으면 우선 적용(재시작 후에도 유지) — L-6.
   // 사용자의 명시적 선택이 자동 해석(env.json/기본값)보다 우선한다.
@@ -351,6 +388,29 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   // 기본 목소리 준비와 인물 목소리 자동 준비가 겹치는 순간 뒤에 온 쪽이 "목소리 구간을 준비하지
   // 못했습니다"로 끝났다(실측). 파이썬을 동시에 두드리지 않는다는 목적은 줄 세우기로 그대로 지킨다.
   const referenceTrimLane = createSerialLane()
+  // ★미리듣기가 **가드 밖**에 있었다(2026-09-24 2차 감사).
+  //   미리듣기는 제 PythonRunner 를 새로 만들어 돌아서 runner.isRunning 에 안 걸린다.
+  //   미리듣기 쪽은 본 작업을 확인하고 BUSY 로 거절하는데 **반대 방향이 없었다** —
+  //   미리듣기 도는 중에 합성을 시작하면 파이썬 둘이 같은 GPU 를 동시에 문다.
+  //   한쪽만 보는 가드는 가드가 아니다. 양쪽이 같은 값을 본다.
+  //   트림처럼 줄을 세우지 않고 **거절**한다 — 미리듣기는 몇 초짜리고, 합성은
+  //   사용자가 직접 누르는 긴 작업이라 조용히 대기시키는 쪽이 더 나쁘다.
+  let samplerInFlight = 0
+
+  /**
+   * 지금 무엇이 도는가 — **한 번만 모은다.**
+   *
+   * ★따로따로 세면 새 실행기가 늘 때 한 곳만 고치고 다른 곳을 잊는다.
+   *   실제로 그렇게 미리듣기가 합성 가드 밖에 있었고, 더빙은 그것마저 밖에 있었다.
+   *   여기 한 줄을 늘리면 합성·트랙·참조 등록·미리듣기 경로가 **함께** 닫힌다.
+   */
+  const runningState = () => ({
+    mainRunner: !!runner?.isRunning,
+    transcriptPreview: transcriptPreviewGuard.running,
+    referenceTrim: referenceTrimLane.running,
+    samplerPreview: samplerInFlight > 0,
+    dubJob: isDubRunning(),
+  })
 
   // 읽기 전용 작업 single-flight — StrictMode 중복 effect/동시 요청에도 subprocess는 1회.
   const qwenPreflightSF = createSingleFlight<unknown>()
@@ -378,7 +438,11 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     return true
   })
 
-  ipcMain.handle('audio:select-file', async (_event, multi?: boolean) => {
+  // ★`kind` 는 **어느 폴더에서 열지**만 정한다. 예전 호출(`selectFile()` / `selectFile(true)`)은
+  //   그대로 동작한다 — 빼면 음원 폴더를 쓴다.
+  ipcMain.handle('audio:select-file', async (
+    _event, multi?: boolean, kind?: 'source' | 'voice',
+  ) => {
     // E2E 전용 통로 — **OS 파일 선택창만** 대신한다(그 뒤 경로는 실제와 완전히 같다).
     // 이것이 없으면 '목소리 지정' 버튼을 누르는 실제 경로를 자동 검사로 지날 수 없어서, 검사는
     // store 를 직접 불러 통과하는데 사용자 화면에서는 멈추는 눈뜬장님 상태가 된다(실측).
@@ -394,11 +458,12 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       const list = (process.env.AF_E2E_SELECT_FILE || '').split('|').filter(Boolean)
       return multi ? list : (list[0] ?? null)
     }
-    // 마지막으로 불러온 폴더에서 열기 — settings.json에 기억(다른 앱 영향 없음)
-    const lastDir = loadSettings().lastDir
+    // ★용도를 받아 **그 용도의 폴더**에서 연다(2026-09-25). 예전에는 통이 하나뿐이라
+    //   영상을 한 번 고르면 다음에 음원을 고를 때 영상 폴더가 떴다.
+    const slot: FolderSlot = kind === 'voice' ? 'voice' : 'source'
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: multi ? ['openFile', 'multiSelections'] : ['openFile'],
-      defaultPath: (typeof lastDir === 'string' && existsSync(lastDir)) ? lastDir : undefined,
+      defaultPath: dialogStart(slot),
       filters: [
         // 대표 포맷은 편의를 위해 앞에 두고, 실제 허용은 전체(ffmpeg 디코딩 가능 포맷 전부: mo3 등 포함)
         { name: 'Audio/Video', extensions: ['m4a', 'mp3', 'wav', 'flac', 'ogg', 'aac', 'wma', 'mp4', 'mkv', 'avi', 'mov', 'webm'] },
@@ -406,6 +471,10 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       ]
     })
     if (result.canceled || result.filePaths.length === 0) return multi ? [] : null
+    // ★여기서 기억한다. 예전에는 `audio:get-file-info` 안에서만 기억해서,
+    //   그것을 거치지 않는 네 통로(인물 목소리 지정·후보 넣기·감정 원본·더빙 목소리)는
+    //   파일을 골라도 폴더를 한 번도 남기지 않았다.
+    rememberFile(folderHost, slot, result.filePaths[0])
     return multi ? result.filePaths : result.filePaths[0]
   })
 
@@ -430,12 +499,25 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     saveSetting('lastDir', dirname(filePath))
     const ffprobe = await findFfprobe()
     // 한글 경로 손상 방지: execFile 배열 인자 (cmd.exe 미경유)
-    const { stdout } = await execFileAsync(ffprobe, [
-      '-hide_banner',
-      '-show_entries', 'stream=codec_name,channels,channel_layout,sample_rate,duration',
-      '-of', 'json',
-      filePath
-    ])
+    // ★실패 문구를 그대로 내보내면 **사용자 음원의 절대 경로가 샌다**(2026-09-24 2차 감사).
+    //   `promisify(execFile)` 의 거부 문구는 `Command failed: <명령> <인자 전부>` 라
+    //   마지막 인자인 파일 절대 경로가 통째로 들어간다. 그 오류는 IPC 를 건너 화면으로 가고,
+    //   Electron 이 핸들러 거부를 **스스로 console.error 로 찍어** 로그 파일에도 남는다.
+    //   그 로그는 진단 묶음에 통째로 실려 밖으로 나간다. 여기서 끊는다 — 여덟 줄 위(:437)가
+    //   이미 `basename` 만 쓰고 있었다. 같은 파일 안에서 규칙이 갈려 있었다.
+    let stdout: string
+    try {
+      ({ stdout } = await execFileAsync(ffprobe, [
+        '-hide_banner',
+        '-show_entries', 'stream=codec_name,channels,channel_layout,sample_rate,duration',
+        '-of', 'json',
+        filePath
+      ]))
+    } catch (e) {
+      const code = (e as { code?: unknown })?.code
+      throw new Error(`이 파일의 정보를 읽을 수 없습니다: ${basename(filePath)}`
+        + (code === undefined ? '' : ` (${String(code)})`))
+    }
     const data = JSON.parse(stdout)
     const stream = data.streams?.[0]
     if (!stream) throw new Error('오디오 스트림을 찾을 수 없습니다')
@@ -458,8 +540,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   // 메인 처리용 runner와 별개의 단기 프로세스로 실행. 동시 실행 방지 + timeout + 정리.
   ipcMain.handle('audio:transcribe-reference', async (_event, filePath: string) => {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 전사를 실행할 수 없습니다.')
-    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
-    if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
+    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${basename(pythonPath)}`)
+    if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${basename(filePath)}`)
     transcriptPreviewGuard.begin()  // 참조 전사 중복 실행 방지(진행 중이면 throw)
     // config 생성·writeFileSync·실행 전체를 try/finally 안에 둔다 — 설정 단계 예외에서도
     // guard가 running에 영구히 남지 않고, 생성된 config도 정리된다.
@@ -484,8 +566,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   ipcMain.handle('audio:analyze-reference', async (_event, filePath: string, clipKey: string = 'default',
                                                    extra?: Record<string, unknown>) => {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 분석을 실행할 수 없습니다.')
-    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
-    if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
+    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${basename(pythonPath)}`)
+    if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${basename(filePath)}`)
     // single-flight key는 clipKey+절대경로 — 감정별로 분리하되 같은 (key,파일)의 동시 요청만 합침.
     // extra 가 다르면 다른 질문이다 — single-flight 키에 넣지 않으면 후보 목록 요청이
     // 같은 파일의 이전 분석 응답에 합쳐져 후보가 오지 않는다.
@@ -523,8 +605,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   ipcMain.handle('audio:trim-reference', async (_event, filePath: string, startSec: number, durSec: number, clipKey: string = 'default',
                                                 extra?: Record<string, unknown>) => {
     if (runner?.isRunning) throw new Error('처리 중에는 참조 트림을 실행할 수 없습니다.')
-    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
-    if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${filePath}`)
+    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${basename(pythonPath)}`)
+    if (!existsSync(filePath)) throw new Error(`참조 파일을 찾을 수 없습니다: ${basename(filePath)}`)
     // 같은 파일·같은 구간을 그 인물이 이미 잘라 뒀고 그 클립이 살아 있으면 다시 자르지 않는다.
     // 자르기 한 번에 whisper 전사(2~3초)가 들어 있어 이 반복이 가장 비싸다. 결과는 같은 것을 돌려준다.
     const trimStamp = stampOf(filePath)
@@ -583,7 +665,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   // 그 빈칸을 메운다. 기록 폴더의 위치 규칙은 파이썬이 갖고 있으므로 쓰는 일도 파이썬에 맡긴다
   // (여기서 경로를 다시 계산하면 두 곳이 어긋난다).
   ipcMain.handle('audio:record-listening', async (_event, runId: string, verdict: string, note?: string) => {
-    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
+    if (!existsSync(pythonPath)) throw new Error(`Python을 찾을 수 없습니다: ${basename(pythonPath)}`)
     if (!['good', 'fair', 'bad'].includes(verdict)) throw new Error(`알 수 없는 판정: ${verdict}`)
     if (!runId || /[\/:*?"<>|]/.test(runId)) throw new Error('실행 기록 id 가 올바르지 않습니다.')
     const cfgPath = join(tmpdir(), `audioforge_runnote_${randomUUID()}.json`)
@@ -662,9 +744,10 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   })
 
   ipcMain.handle('audio:process', async (_event, filePath: string, mode: string, options?: Record<string, unknown>) => {
-    if (runner?.isRunning) {
-      throw new Error('이미 처리 중인 작업이 있습니다')
-    }
+    // ★'무엇이 돌면 막는가' 는 shared/synthesisGate 가 갖는다 — 여기 if 로 흩어 두었더니
+    //   파이썬을 새로 돌리는 길이 늘었을 때(감정 미리듣기) 아무도 갱신하지 않았다.
+    const busy = blockReason(runningState(), '합성')
+    if (busy) throw new Error(busy)
     // 취소 진행 중(inflight)엔 새 실행 거부 — renderer 버튼 차단에만 의존하지 않는다(공용 마감 K2-D).
     if (cancelState === 'inflight') {
       throw new Error('작업을 취소하고 정리하는 중입니다. 잠시 후 다시 시도하세요.')
@@ -676,17 +759,11 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       if (!done) throw new Error('이전 취소 작업의 임시 파일 정리가 끝나지 않았습니다. 잠시 후 다시 시도하세요.')
       cleanupPending = false; currentOutputDir = null
     }
-    // 읽기 전용 preflight/analyze는 합성을 막지 않는다. 실제 참조 전사·트림 중일 때만 차단(작업명 표시).
-    if (transcriptPreviewGuard.running) {
-      throw new Error('참조 전사 미리보기 중에는 합성을 시작할 수 없습니다.')
-    }
-    if (referenceTrimLane.running) {
-      throw new Error('참조 구간 트림 중에는 합성을 시작할 수 없습니다.')
-    }
+    // 읽기 전용 preflight/analyze 는 합성을 막지 않는다 — 위 공용 판정에 넣지 않은 이유다.
 
     // Verify python exists
     if (!existsSync(pythonPath)) {
-      throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
+      throw new Error(`Python을 찾을 수 없습니다: ${basename(pythonPath)}`)
     }
 
     // Resolve script path. AF_E2E=1에서만: 취소 lifecycle E2E가 실제 Qwen/미디어 대신 synthetic
@@ -696,7 +773,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       scriptPath = process.env.AF_E2E_TTS_SCRIPT
     }
     if (!existsSync(scriptPath)) {
-      throw new Error(`Python 스크립트를 찾을 수 없습니다: ${scriptPath}`)
+      throw new Error(`Python 스크립트를 찾을 수 없습니다: ${basename(scriptPath)}`)
     }
 
     // Build output directory
@@ -741,6 +818,13 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       whisperModel: options?.whisperModel || 'large-v3',
       // 텍스트 추출의 실행 엔진 — **기본은 기존 경로**. 텍스트 모드에서만 파이썬이 본다.
       asrEngine: options?.asrEngine || 'whisper',
+      // ★기본을 auto 로 둔다(2026-09-24, 일본어 대사 계측대 실측).
+      //   배경음이 깔린 대사에서 걷어내지 않으면 앞단이 통째로 무너진다 —
+      //   알아듣기 90.7% → **100%**, 시작 시각 중앙 422 → **28밀리초**,
+      //   구간 묶기도 12→9줄(틀림)에서 10→10줄(정확)로 바뀐다.
+      //   auto 는 크기를 재어 **조용한 녹음이면 스스로 사양한다**(실측: 차이 30dB → 안 걷어냄).
+      //   값은 갈라내기 한 번(30초 소리에 5~10초). 그 값보다 잃는 것이 훨씬 크다.
+      asrSeparate: options?.asrSeparate || 'auto',
       whisperLang: options?.whisperLang || 'auto',
       translate: !!options?.translate,
       translateModel: options?.translateModel || '600m',
@@ -993,16 +1077,21 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   })
 
   // Process individual track (transcribe/translate)
-  ipcMain.handle('audio:process-track', async (_event, trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string }) => {
+  ipcMain.handle('audio:process-track', async (_event, trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string;
+      /** ★고른 알아듣기 설정. 예전에는 빠져 파이썬 기본값으로 고정됐다(2026-09-24 감사). */
+      whisperModel?: string; whisperLang?: string; asrSeparate?: string }) => {
     if (trackSlot.current?.isRunning) {
       throw new Error('이미 처리 중인 트랙 작업이 있습니다')
     }
+    const trackBusy = blockReason(
+      { samplerPreview: samplerInFlight > 0, dubJob: isDubRunning() }, '트랙 작업')
+    if (trackBusy) throw new Error(trackBusy)
     if (!existsSync(pythonPath)) {
-      throw new Error(`Python을 찾을 수 없습니다: ${pythonPath}`)
+      throw new Error(`Python을 찾을 수 없습니다: ${basename(pythonPath)}`)
     }
     const scriptPath = PythonRunner.getScriptPath('separate.py')
     if (!existsSync(scriptPath)) {
-      throw new Error(`Python 스크립트를 찾을 수 없습니다: ${scriptPath}`)
+      throw new Error(`Python 스크립트를 찾을 수 없습니다: ${basename(scriptPath)}`)
     }
 
     const thisRunner = trackSlot.set(new PythonRunner(pythonPath, runnerDeps))
@@ -1017,7 +1106,14 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
       transcribe: !!options.transcribe,
       translate: !!options.translate,
       srt: !!options.srt,
-      translateModel: options.translateModel || '600m'
+      translateModel: options.translateModel || '600m',
+      // ★고른 설정을 싣는다(2026-09-24 감사).
+      //   예전에는 이 셋이 빠져 파이썬 기본값(large-v3·자동감지)으로 고정됐고,
+      //   사용자는 자기가 고른 모델·언어로 돈 줄 알았다. translateModel 만 싣던
+      //   비대칭이라 의도가 아니라 누락이다.
+      whisperModel: options.whisperModel || 'large-v3',
+      whisperLang: options.whisperLang || 'auto',
+      asrSeparate: options.asrSeparate || 'auto'
     }
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
 
@@ -1216,6 +1312,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   ipcMain.handle('audio:restore-from-folder', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory'],
+      defaultPath: dialogStart('restore'),
       title: '이전 결과 폴더 선택'
     })
     if (result.canceled || result.filePaths.length === 0) return null
@@ -1287,17 +1384,31 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   ipcMain.handle('audio:export-tracks', async (_event, trackPaths: string[]) => {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openDirectory', 'createDirectory'],
+      defaultPath: dialogStart('export'),
       title: '내보내기 위치 선택'
     })
     if (result.canceled || result.filePaths.length === 0) return null
 
     const destDir = result.filePaths[0]
     const { copyFileSync } = await import('fs')
+    // ★한 건이 실패해도 **멈추지 않고 끝까지 시도하고, 무엇이 안 됐는지 돌려준다**
+    //   (2026-09-24 2차 감사). 예전에는 try 없이 돌아서 한 건이 실패하면 즉시 멈췄고,
+    //   화면은 약속을 통째로 버려 거절이 콘솔 한 줄로 사라졌다.
+    //   **성공과 실패가 화면상 완전히 같았다** — 백업용으로 내보내고 원본을 지우면
+    //   반쯤 복사된 폴더만 남는다.
+    const copied: string[] = []
+    const failed: Array<{ name: string; why: string }> = []
     for (const src of trackPaths) {
-      const dest = join(destDir, basename(src))
-      copyFileSync(src, dest)
+      const name = basename(src)
+      try {
+        copyFileSync(src, join(destDir, name))
+        copied.push(name)
+      } catch (e) {
+        failed.push({ name, why: (e as Error)?.message || String(e) })
+      }
     }
-    return destDir
+    rememberDir(folderHost, 'export', destDir)
+    return { ok: failed.length === 0, dir: destDir, copied, failed }
   })
 
   ipcMain.handle('settings:get', () => {
@@ -1356,9 +1467,11 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   ipcMain.handle('settings:select-python-path', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile'],
+      defaultPath: dialogStart('python'),
       filters: [{ name: 'Python', extensions: ['exe'] }]
     })
     if (result.canceled) return null
+    rememberFile(folderHost, 'python', result.filePaths[0])
     pythonPath = result.filePaths[0]
     savePythonPath(pythonPath)  // L-6: 영속화
     return pythonPath
@@ -1398,7 +1511,10 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   // 이 함수 밖으로 runner·pythonPath 를 내보내지 않기 위해 adapter 형태로만 넘긴다.
   const referenceAdapter: ReferencePreviewAdapter = {
     busyReason: () => {
-      if (runner?.isRunning) return '처리 중에는 참조를 등록할 수 없습니다.'
+      // ★같은 판정을 쓴다 — 예전에는 공용 실행기 하나만 봐서, 미리듣기·더빙이 도는
+      //   중에도 참조 등록이 통과했다.
+      const why = blockReason(runningState(), '참조 등록')
+      if (why) return why
       if (!existsSync(pythonPath)) return 'Python 실행 파일을 찾을 수 없습니다.'
       return null
     },
@@ -1446,6 +1562,8 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     if (runner?.isRunning) return { kind: 'error', code: 'BUSY' }
     if (!existsSync(pythonPath)) return { kind: 'error', code: 'NO_PYTHON' }
     const cfgPath = join(tmpdir(), `audioforge_sampler_${randomUUID()}.json`)
+    // ★세는 자리를 실행 **바로 앞**에 둔다 — 위 거절들은 아직 아무것도 돌리지 않았다.
+    samplerInFlight += 1
     try {
       const scriptPath = PythonRunner.getScriptPath('separate.py')
       writeFileSync(cfgPath, JSON.stringify({
@@ -1471,6 +1589,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
     } catch {
       return { kind: 'error' }
     } finally {
+      samplerInFlight -= 1
       try { unlinkSync(cfgPath) } catch { /* noop */ }
     }
   }
@@ -1478,6 +1597,7 @@ export function registerAudioIpc(mainWindow: BrowserWindow): AudioIpcAdapters {
   return {
     reference: referenceAdapter,
     runSamplerTts,
-    busyReason: () => (runner?.isRunning ? '다른 작업이 진행 중입니다.' : null),
+    // 같은 판정 하나를 본다 — 여기만 공용 실행기를 보고 있어서 더빙·트림을 못 봤다.
+    busyReason: () => blockReason(runningState(), '미리듣기'),
   }
 }

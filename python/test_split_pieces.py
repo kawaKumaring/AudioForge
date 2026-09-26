@@ -53,5 +53,24 @@ class Selection(unittest.TestCase):
         self.assertEqual(sm.selected_pieces(p, []), [])
 
 
+class Test역슬래시_미러(unittest.TestCase):
+    """★2026-09-24: 화면 쪽(splitPieces.ts)과 **똑같이 적혀 있었는데 읽히는 값이 달랐다.**
+
+    JS 는 '\/' 를 '/' 한 글자로 읽어 역슬래시가 빠졌고 파이썬은 그대로 뒀다.
+    역슬래시는 윈도 파일 이름에 못 쓰므로 이쪽이 맞다.
+    미러 검사에 역슬래시 예제가 **양쪽 다 없어서** 이 글자가 비어 있었다.
+    """
+
+    def test_역슬래시를_뺀다(self):
+        import split_markers
+        self.assertEqual(split_markers.safe_label('AC' + chr(92) + 'DC'), 'ACDC')
+
+    def test_역슬래시만_있으면_빈_이름이다(self):
+        import split_markers
+        self.assertEqual(split_markers.safe_label(chr(92)), '')
+
+
+# ★이 블록은 **파일 맨 끝**에 있어야 한다 — 중간에 두면 아래 검사가
+#   아직 만들어지지 않은 채 돌아 이 파일을 직접 실행할 때 조용히 빠진다.
 if __name__ == "__main__":
     unittest.main(verbosity=2)

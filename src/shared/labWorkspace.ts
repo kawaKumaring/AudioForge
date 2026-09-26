@@ -195,6 +195,29 @@ export function lineStatusText(s: LineStatus): string {
  *   그 사이를 0.03 으로 잡았다. **표본 4회짜리 첫 기준이지 확정값이 아니다.**
  *   바꿀 때는 새로 측정한 값과 함께 바꾼다 — 화면이 조용해지도록 올리지 않는다.
  */
+/**
+ * 합성 결과 알림에서 **끝났을 때 남아 있던 소리**를 꺼낸다.
+ *
+ * ★2026-09-24: 여기가 **없는 자리를 읽고 있었다.**
+ *   파이썬은 `emit("result", tracks=..., outputDir=..., metadata=meta)` 로
+ *   metadata 를 **tracks 의 형제**로 보내는데, 화면은 `tracks[0].metadata` 라는
+ *   **트랙 안쪽**을 읽었다. 트랙에는 그런 열쇠가 아예 없다.
+ *   그래서 값이 늘 undefined → `takeTailCut()` 늘 false →
+ *   **'끝 잘림 의심' 꼬리표가 한 번도 뜬 적이 없다.**
+ *   받는 인자가 any 라 타입검사도 잡지 못했다. 그래서 순수 함수로 빼서 검사로 못 박는다.
+ *
+ * 작업실은 한 문장씩 합성하므로 실행 단위 metadata 가 곧 그 트랙의 값이다.
+ * 숫자가 아니면 undefined — **모르는 것을 0으로 읽지 않는다**(0은 '아주 좋음'이다).
+ */
+export function tailResidualOf(payload: unknown): number | undefined {
+  const meta = (payload as { metadata?: Record<string, unknown> } | null)?.metadata
+  const raw = meta?.tail_residual_ratio
+  return typeof raw === 'number' && Number.isFinite(raw) ? raw : undefined
+}
+
+// ★이 값은 파이썬 쪽 tail_retry.CUT_RATIO 와 **같아야 한다**(2026-09-24).
+//   말이 다르면 화면은 "잘렸다" 는데 합성 쪽은 다시 만들지 않는 일이 생긴다.
+//   언어가 달라 한 곳에 둘 수 없어 양쪽에 서로를 가리키는 말을 적고 검사로 붙잡는다.
 export const TAIL_RESIDUAL_CUT = 0.03
 
 /**
@@ -207,8 +230,18 @@ export const TAIL_RESIDUAL_CUT = 0.03
  * 잰 적이 없으면(옛 생성본) false — 모르는 것을 잘렸다고 말하지 않는다.
  */
 export function takeTailCut(take: LabTake): boolean {
-  const v = take.tailResidual
-  return typeof v === 'number' && Number.isFinite(v) && v >= TAIL_RESIDUAL_CUT
+  return isTailCut(take.tailResidual)
+}
+
+/**
+ * 잰 값 하나로 판정한다 — 회차 꾸러미가 없는 자리(더빙 화면)도 **같은 기준**을 쓰게.
+ *
+ * ★더빙은 회차를 쌓지 않고 바로 쓴다. 그래서 LabTake 모양을 억지로 지어내 넘기는
+ *   대신 숫자를 받는 문을 연다 — 지어낸 모양은 타입을 눌러 감추게 된다.
+ * 재지 못했으면 false. **모르는 것을 잘렸다고 말하지 않는다.**
+ */
+export function isTailCut(residual: number | undefined): boolean {
+  return typeof residual === 'number' && Number.isFinite(residual) && residual >= TAIL_RESIDUAL_CUT
 }
 
 /** 테이크 하나에 붙일 꼬리표(없으면 빈 문자열). */

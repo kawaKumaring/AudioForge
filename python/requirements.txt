@@ -8,6 +8,9 @@ demucs>=4.0.0
 audio-separator
 # audio-separator: RoFormer 보컬 2트랙 분리 (BS-RoFormer). onnxruntime(-gpu)을 함께 끌어옴
 speechbrain>=1.1.0
+onnxruntime-gpu
+# onnxruntime-gpu: audio-separator(RoFormer) 가 쓰는 실행기.
+#   ★여기 없고 env_check 에만 있었다 — 2026-09-24 파리티 검사가 찾았다.
 # speechbrain: 화자 분리 (ECAPA-TDNN)
 openai-whisper
 # whisper: 텍스트 추출 (small/medium/large-v3/large-v3-turbo)
@@ -19,7 +22,19 @@ numpy>=1.24.0
 f5-tts>=1.1.0
 # f5-tts: TTS 영어/보이스 클로닝
 kokoro
-# kokoro: TTS ko/ja/zh/en 폴백 엔진
+# kokoro: TTS 폴백 엔진. ★2026-09-24 실측 — **한국어는 담고 있지 않다**
+#   (설치된 언어표: a,b,e,f,h,i,p,j,z). ja/zh/en 만 쓸 수 있다.
+ordered_set
+# ordered_set: kokoro 의 **중국어**에 필요. 없으면 중국어가 통째로 실패한다
+#   (중국어는 kokoro 가 유일한 경로였다). 순수 파이썬, 다른 꾸러미를 건드리지 않는다.
+piper-tts
+# piper-tts: **한국어 폴백 합성.** 한국어만 참조 목소리 없이 말할 길이 없었다 —
+#   Qwen3-TTS·GPT-SoVITS 는 참조를 요구하고 kokoro 에는 한국어가 없다.
+#   ONNX 로 돌아 torch 를 건드리지 않는다. 목소리는 externals/piper_voices/ 에 둔다.
+pyopenjtalk-plus
+# pyopenjtalk-plus: kokoro 의 **일본어**에 필요. 원본 pyopenjtalk 은 이 환경에
+#   완성된 휠이 없어 cmake 로 지으려다 실패한다. -plus 는 cp312 win_amd64 휠을 제공한다.
+#   import 이름은 그대로 pyopenjtalk.
 
 # 설치 불필요/금지 항목:
 # - silero-vad: torch.hub로 로딩 (pip 패키지 불필요)

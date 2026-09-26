@@ -22,7 +22,10 @@ import type {
 const api = {
   audio: {
     // multi=true 면 string[] 을 돌려준다. 인자 없는 기존 호출은 string|null 그대로다.
-    selectFile: (multi?: boolean) => ipcRenderer.invoke('audio:select-file', multi),
+    /** `kind` 는 **어느 폴더에서 열지**만 정한다 — 빼면 음원 폴더.
+     *  용도를 나누지 않으면 영상·목소리를 고른 뒤 음원 폴더가 엉뚱하게 바뀐다. */
+    selectFile: (multi?: boolean, kind?: 'source' | 'voice') =>
+      ipcRenderer.invoke('audio:select-file', multi, kind),
     getFileInfo: (filePath: string) => ipcRenderer.invoke('audio:get-file-info', filePath),
     /** 원본들이 아직 그 자리에 있는가(경로 → 참/거짓). 현재 작업 복원이 쓴다. */
     sourcesPresent: (paths: string[]): Promise<Record<string, boolean>> =>
@@ -34,7 +37,9 @@ const api = {
     // 'cancelling' 전환은 이 반환값이 아니라 audio:cancelling 이벤트가 결정한다(낙관적 전환 금지).
     cancel: (): Promise<CancelResponseLike> => ipcRenderer.invoke('audio:cancel'),
     getFileUrl: (filePath: string) => ipcRenderer.invoke('audio:get-file-url', filePath),
-    exportTracks: (trackPaths: string[]) => ipcRenderer.invoke('audio:export-tracks', trackPaths),
+    /** 돌려주는 것: 취소면 null, 아니면 { ok, dir, copied[], failed[] }. ★결과를 버리지 않는다. */
+    exportTracks: (trackPaths: string[]) => ipcRenderer.invoke('audio:export-tracks', trackPaths) as
+      Promise<null | { ok: boolean; dir: string; copied: string[]; failed: Array<{ name: string; why: string }> }>,
     restoreFromFolder: () => ipcRenderer.invoke('audio:restore-from-folder'),
     findSession: (sourcePath: string) => ipcRenderer.invoke('audio:find-session', sourcePath),
     transcribeReference: (filePath: string) => ipcRenderer.invoke('audio:transcribe-reference', filePath),
@@ -61,7 +66,9 @@ const api = {
     qwenPreflight: () => ipcRenderer.invoke('audio:qwen-preflight'),
     // pitch 후처리 capability(rubberband 지원 여부) — PitchCapability 계약. UI가 슬라이더 가용성에 소비.
     pitchPreflight: () => ipcRenderer.invoke('audio:pitch-preflight'),
-    processTrack: (trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string }) =>
+    processTrack: (trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string;
+      /** ★고른 알아듣기 설정. 예전에는 빠져 파이썬 기본값으로 고정됐다(2026-09-24 감사). */
+      whisperModel?: string; whisperLang?: string; asrSeparate?: string }) =>
       ipcRenderer.invoke('audio:process-track', trackPath, outputDir, options),
     onTrackResult: (callback: (data: unknown) => void) => {
       const handler = (_event: unknown, data: unknown) => callback(data)
@@ -123,6 +130,51 @@ const api = {
     exportAll: (paths: string[], suggestedName?: string): Promise<{
       ok: boolean; path?: string; parts?: number; bytes?: number; canceled?: boolean; reason?: string
     }> => ipcRenderer.invoke('lab:export', paths, suggestedName),
+  },
+  // 음높이 곡선 — 보면서 손잡이로 맞춘다.
+  //   ★숫자로는 좋고 나쁨을 가려내지 못했다(2026-09-26, 여섯 번 시도해 여섯 번 실패).
+  //     그래서 화면이 그리고 사람이 본다.
+  pitch: {
+    /** 곡선 하나를 받아 온다(화면이 그릴 만큼 솎아서 온다). */
+    curve: (audio: string, seconds?: number) =>
+      ipcRenderer.invoke('pitch:curve', audio, seconds),
+    /** 손잡이를 먹여 새 소리를 만든다. 빚은 곡선도 함께 온다. */
+    reshape: (audio: string, dest: string,
+             knobs: { smooth?: number; spread?: number; shift?: number },
+             seconds?: number) =>
+      ipcRenderer.invoke('pitch:reshape', audio, dest, knobs, seconds),
+    /** 프로그램이 손잡이를 맞춰 준다 — 사람이 이어받아 돌릴 같은 손잡이다. */
+    fit: (target: string, audio: string, seconds?: number) =>
+      ipcRenderer.invoke('pitch:fit', target, audio, seconds),
+  },
+  // 영상 더빙. 번역 백엔드는 여기서 고르지 않는다 - 파이썬이 실행 경로 안쪽에서 막고 고른다.
+  dub: {
+    pickVideo: () => ipcRenderer.invoke('dub:pick-video'),
+    runFront: (opts?: { language?: string; register?: string; force?: boolean }) =>
+      ipcRenderer.invoke('dub:run-front', opts),
+    originalVoice: () => ipcRenderer.invoke('dub:original-voice'),
+    load: () => ipcRenderer.invoke('dub:load'),
+    saveKorean: (edits: Record<number, string>) => ipcRenderer.invoke('dub:save-korean', edits),
+    /** 고치는 즉시 쌓는다 — 저장 단추와 별개다. 줄 목록 파일은 건드리지 않는다. */
+    saveEdits: (edits: Record<number, string>) => ipcRenderer.invoke('dub:save-edits', edits),
+    /** 도는 앞단·내보내기를 멈춘다. 줄 소리는 공용 취소가 멈춘다. */
+    cancel: () => ipcRenderer.invoke('dub:cancel'),
+    render: (takes: Record<number, string>, destPath?: string) =>
+      ipcRenderer.invoke('dub:render', takes, destPath),
+    keepTake: (srcPath: string, index: number) =>
+      ipcRenderer.invoke('dub:keep-take', srcPath, index),
+    workDir: () => ipcRenderer.invoke('dub:work-dir'),
+    /** 새 작업이 쌓이는 자리. */
+    workRoot: () => ipcRenderer.invoke('dub:work-root'),
+    /** 그 자리를 고른다. **이미 쌓인 것은 옮기지 않는다** — 옛 작업은 있던 자리에서 열린다. */
+    setWorkRoot: () => ipcRenderer.invoke('dub:set-work-root'),
+    /** 이미 만들어 둔 줄 소리를 되살린다 — 파일은 작업 폴더에 그대로 있다. */
+    takes: () => ipcRenderer.invoke('dub:takes'),
+    onProgress: (callback: (data: unknown) => void) => {
+      const handler = (_event: unknown, data: unknown) => callback(data)
+      ipcRenderer.on('dub:progress', handler)
+      return () => ipcRenderer.removeListener('dub:progress', handler)
+    },
   },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),

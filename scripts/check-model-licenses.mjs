@@ -77,7 +77,28 @@ export function referencedModels(files, read = (f) => readFileSync(f, 'utf-8')) 
   return found
 }
 
-export function auditLicenses(inventory, referenced) {
+/**
+ * 앱이 **폴더째 들고 있는** 모델. 코드에 이름이 안 적혀도 싣고 있으면 조건을 확인해야 한다.
+ *
+ * ★왜 생겼나(2026-09-24 2차 감사)
+ *   이 검사는 소스에서 `조직/모델` 문자열을 찾는다. 그런데 모델을 앱 안으로 들이면서
+ *   그 문자열이 **사라졌다** — 이제 로컬 경로로 연다. 즉 내재화를 잘 할수록
+ *   검사의 눈이 멀었다. 실제로 pyannote community-1 은 앱이 들고 있는데도
+ *   인벤토리에 **아예 없었다.**
+ *
+ *   externals/ 는 .gitignore 라 장비마다 있을 수도 없을 수도 있다. 없으면 건너뛰되
+ *   **건너뛴 사실을 말한다** — 조용히 통과하면 없는 보증을 있다고 믿게 된다.
+ */
+export function bundledDirs(root = ROOT, ls = readdirSync, stat = statSync) {
+  const base = path.join(root, "externals", "diarization_models")
+  try {
+    return ls(base).filter((n) => !n.startsWith(".") && stat(path.join(base, n)).isDirectory())
+  } catch {
+    return null   // 이 장비에는 externals 가 없다
+  }
+}
+
+export function auditLicenses(inventory, referenced, bundled = null) {
   const byId = new Map((inventory.models || []).map((m) => [m.id, m]))
   const commercial = !!inventory.distribution?.commercial
   const errors = []
@@ -95,20 +116,50 @@ export function auditLicenses(inventory, referenced) {
       else notices.push(`비상업 조건${m.default_path ? '(기본 경로)' : ''}: ${id} — ${lic}`)
     }
   }
+  // 앱이 폴더째 들고 있는 모델 — 코드에 이름이 없어도 조건을 확인한다.
+  const byDir = new Map((inventory.models || [])
+    .filter((m) => m.bundled_dir).map((m) => [m.bundled_dir, m]))
+  if (bundled === null) {
+    notices.push("앱 안 모델 폴더(externals/diarization_models)가 없어 대조하지 못했다 — 이 실행에는 그 보증이 없다")
+  } else {
+    for (const dir of bundled) {
+      const m = byDir.get(dir)
+      if (!m) { errors.push(`앱이 싣고 있는데 인벤토리에 없는 모델: externals/diarization_models/${dir}`); continue }
+      const lic = String(m.license || "").trim()
+      if (!lic || lic === "UNVERIFIED") {
+        if (m.default_path) errors.push(`조건 미확인 모델을 기본 경로로 싣고 있다: ${m.id}`)
+        else notices.push(`조건 미확인(선택 경로, 앱이 싣고 있음): ${m.id} — 배포 전 확인하거나 뺀다`)
+      }
+      if (m.non_commercial === true && commercial) {
+        errors.push(`상업 배포 선언 상태인데 비상업 조건 모델을 싣고 있다: ${m.id} (${lic})`)
+      }
+    }
+  }
+  // ★'써도 된다' 와 '그냥 써도 된다' 는 다르다(2026-09-25).
+  //   CC-BY 계열은 상업 이용을 허락하지만 **출처를 밝히지 않으면 조건 위반**이다.
+  //   그런 의무는 license 문자열만 보면 눈에 안 들어와 그대로 잊힌다. 매번 짚는다.
+  const owed = (inventory.models || []).filter((m) => m.attribution_required)
+  if (owed.length) {
+    notices.push(`출처 표시 의무 ${owed.length}건 — 배포물에 이름과 조건을 적어야 한다: `
+      + owed.map((m) => `${m.id}(${m.license})`).join(', '))
+  }
+
   for (const m of inventory.models || []) {
-    if (!referenced.has(m.id) && m.default_path) {
+    // 앱 안 모델은 **경로로** 열므로 코드에 이름이 없는 것이 정상이다 — 정리 후보가 아니다.
+    if (!referenced.has(m.id) && m.default_path && !m.bundled_dir) {
       notices.push(`인벤토리에 있으나 코드가 참조하지 않는다(기본 경로 표기): ${m.id} — 표기 정리 후보`)
     }
   }
-  return { errors, notices, commercial, checked: referenced.size, declared: byId.size }
+  return { errors, notices, commercial, checked: referenced.size, declared: byId.size,
+           bundled: bundled === null ? null : bundled.length }
 }
 
 if (import.meta.url === `file:///${process.argv[1].split(path.sep).join('/')}`
     || process.argv[1]?.endsWith('check-model-licenses.mjs')) {
   const inventory = JSON.parse(readFileSync(path.join(ROOT, 'model-licenses.json'), 'utf-8'))
   const referenced = referencedModels(sourceFiles())
-  const r = auditLicenses(inventory, referenced)
-  console.log(`모델 조건 검사 — 코드 참조 ${r.checked}개 · 인벤토리 ${r.declared}개 · 배포 선언 ${r.commercial ? '상업' : '비상업'}`)
+  const r = auditLicenses(inventory, referenced, bundledDirs())
+  console.log(`모델 조건 검사 — 코드 참조 ${r.checked}개 · 앱 안 폴더 ${r.bundled === null ? '확인 못 함' : r.bundled + '개'} · 인벤토리 ${r.declared}개 · 배포 선언 ${r.commercial ? '상업' : '비상업'}`)
   for (const n of r.notices) console.log(`  · ${n}`)
   for (const e of r.errors) console.log(`  ❌ ${e}`)
   if (r.errors.length) {

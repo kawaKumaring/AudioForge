@@ -289,10 +289,6 @@ class NonSensitivePayloadTest(unittest.TestCase):
         self.assertNotIn("expressive_V3", repr(errs[0]), "플래그 원시값을 그대로 싣지 않는다")
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class MetadataCarrierTest(unittest.TestCase):
     """I. result metadata 캐리어 — 계약 §10 단일 정본 키.
 
@@ -401,3 +397,9 @@ class ThreeCarrierAgreementTest(unittest.TestCase):
             r = ex.assert_expressive_mode_carriers(*self._carriers(*carriers))
             self.assertFalse(r["ok"])
             self.assertEqual(r["error_code"], "EXPRESSIVE_MODE_INVALID")
+
+
+# ★이 블록은 **파일 맨 끝**에 있어야 한다 — 중간에 두면 아래 검사가
+#   아직 만들어지지 않은 채 돌아 이 파일을 직접 실행할 때 조용히 빠진다.
+if __name__ == "__main__":
+    unittest.main()

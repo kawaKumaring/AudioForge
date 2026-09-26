@@ -207,10 +207,6 @@ class PlanFunctionContract(unittest.TestCase):
         self.assertEqual([p[2] for p in plan], ['화자 A', '화자 B', '화자 C'])
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-
 class SidecarTrackIndexAlignment(unittest.TestCase):
     """무음 화자를 트랙에서 뺀 뒤에도 sidecar 의 trackIndex 가 실제 tracks 위치와 맞는지.
 
@@ -239,3 +235,9 @@ class SidecarTrackIndexAlignment(unittest.TestCase):
                 track_pos += 1
         self.assertEqual(indices, [0, None, 1])
         self.assertEqual(len(saved), sum(1 for i in indices if i is not None))
+
+
+# ★이 블록은 **파일 맨 끝**에 있어야 한다 — 중간에 두면 아래 검사가
+#   아직 만들어지지 않은 채 돌아 이 파일을 직접 실행할 때 조용히 빠진다.
+if __name__ == "__main__":
+    unittest.main()

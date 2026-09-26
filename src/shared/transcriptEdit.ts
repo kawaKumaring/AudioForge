@@ -8,6 +8,8 @@
 // ★글자를 고쳤다고 단어별 시간이 새 글자에 맞는다고 말하지 않는다.
 
 /** 인식이 낸 문장 하나 — 이 값은 **바뀌지 않는다**. */
+import { buildCues, pickLimits, toSrt } from './subtitleCues.ts'
+
 export interface TranscriptSegment {
   start: number
   end: number
@@ -74,11 +76,24 @@ function srtTime(sec: number): string {
     + String(ms % 1000).padStart(3, '0')
 }
 
-/** 교정본 SRT — 번호·시간은 최초 인식 결과 그대로, 글자만 교정본. */
+/**
+ * 교정본 SRT — 글자는 교정본, **자막 손질을 거친다.**
+ *
+ * ★2026-09-24 감사: 자막을 만드는 자리가 **넷**인데 여기만 손질을 건너뛰고 있었다.
+ *   그래서 같은 폴더에 손질된 `<base>.srt` 와 손질 안 된 `<base>_corrected.srt` 가
+ *   나란히 생겼다 — **고친 쪽이** 한 줄이 길고, 스쳐 지나가고, 자막끼리 붙어 깜빡였다.
+ *   사용자는 고친 것이 더 나쁘다는 것을 알 수 없다.
+ *
+ * ★시간은 여전히 최초 인식 결과를 바탕으로 한다 — 정렬을 다시 하지 않는다.
+ *   손질이 하는 일은 **너무 짧게 스쳐 가지 않게 늘이고, 겹치지 않게 띄우고,
+ *   긴 줄을 나누는 것**이지 시각을 새로 계산하는 것이 아니다.
+ */
 export function buildCorrectedSrt(doc: TranscriptDoc): string {
-  const lines = exportLines(doc).filter((l) => l.text.length > 0)
-  return lines.map((l, i) =>
-    `${i + 1}\n${srtTime(l.start)} --> ${srtTime(l.end)}\n${l.text}\n`).join('\n')
+  const rows = exportLines(doc).filter((l) => l.text.length > 0)
+  if (rows.length === 0) return ''
+  const limits = pickLimits(rows.map((r) => r.text).join(' '))
+  const cues = buildCues(rows, { maxCps: limits.maxCps, maxChars: limits.maxChars })
+  return toSrt(cues, srtTime)
 }
 
 /**

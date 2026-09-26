@@ -15,9 +15,12 @@ import { useAppStore } from '@/stores/app.store'
 import { useLabStore, newId } from '@/stores/lab.store'
 import {
   LAB_STORAGE_KEY, adoptedTake, exportBlockText, exportReadiness, hasUnusedTake, isExportBlockNotice,
-  lineStatus, lineStatusText, parseDoc, synthesisOptions, takeBadge, takeTailCut, voiceKeyOf,
+  lineStatus, lineStatusText, parseDoc, synthesisOptions, tailResidualOf, takeBadge, takeTailCut, voiceKeyOf,
   type LabDoc, type LabLine,
 } from '../../shared/labWorkspace'
+import { cancelFailureText } from '../../shared/cancelContract'
+import { cancelAlreadyOverText, useCancelLifecycle } from '@/hooks/useCancelLifecycle'
+import { saveSetting, saveFailureText } from '../../shared/saveSetting'
 import { REFERENCE_CONDITIONING_RECOMMENDED } from '../../shared/ttsConfig'
 import { createManagedAudio } from '@/lib/playbackVolume'
 import { runVoicePrep } from '@/lib/voicePrepRunner'
@@ -91,14 +94,18 @@ export default function LabWorkspace() {
 
   useEffect(() => {
     if (!lab.loaded) return                   // 불러오기 전 빈 문서로 덮어쓰지 않는다
-    const t = setTimeout(() => {
-      void window.api.settings.set(LAB_STORAGE_KEY, doc)
-    }, 600)
+    // ★응답을 버리지 않는다 — 설정 파일이 깨지면 회차·채택이 하나도 저장되지 않는데
+    //   예전에는 화면이 아무 말도 하지 않았다(2026-09-24 감사).
+    const store = (value: unknown) => {
+      void saveSetting(window.api.settings.set, LAB_STORAGE_KEY, value)
+        .then((why) => { if (why) lab.setError(saveFailureText(why)) })
+    }
+    const t = setTimeout(() => { store(doc) }, 600)
     // ★화면이 사라질 때(탭 전환·앱 종료) **기다리던 저장을 그냥 버리지 않는다.**
     //   600ms 안에 탭을 옮기면 방금 쓴 글이 저장되지 않은 채 사라졌다.
     return () => {
       clearTimeout(t)
-      void window.api.settings.set(LAB_STORAGE_KEY, useLabStore.getState().doc)
+      store(useLabStore.getState().doc)
     }
   }, [doc, lab.loaded])
 
@@ -194,7 +201,18 @@ export default function LabWorkspace() {
     // 공용 작업 제어: 기존 합성과 **동시에** 돌지 않도록 같은 상태를 쓴다.
     // ★기존 결과(tracks)는 지우지 않는다 — 다른 탭의 결과를 없애지 않기 위해서다.
     useAppStore.setState({ status: 'processing', progress: 0, progressMessage: '문장 만드는 중...', error: null })
-    void window.api.audio.process(doc.voicePath, 'tts', synthesisOptions(first.text, doc.settings, lab.ref))
+    // ★시작 요청의 **거절을 버리지 않는다**(2026-09-24 2차 감사).
+    //   main 은 여덟 갈래(이미 처리 중·취소 정리 중·참조 전사 중·파이썬 없음 등)로
+    //   거절할 수 있는데, 그 경로에는 progress·result·error 어느 알림도 따라오지 않는다.
+    //   약속을 버리면 화면이 **이유 없이 '만드는 중' 에 멈춘다.**
+    //   고급 화면(ProcessButton)은 이미 try/catch 로 받아 오류를 띄운다.
+    void window.api.audio.process(doc.voicePath, 'tts',
+      synthesisOptions(first.text, doc.settings, lab.ref))
+      .catch((e: unknown) => {
+        lab.setJob(null)
+        lab.setError(`문장 만들기를 시작하지 못했습니다: ${(e as Error)?.message || e}`)
+        useAppStore.setState({ status: 'idle', progress: 0, progressMessage: '' })
+      })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [doc, voiceKey, lab.ref])
 
@@ -209,9 +227,9 @@ export default function LabWorkspace() {
       if (!j) return
       const src = (d?.tracks || [])[0]?.path
       // 마감 단계가 fade 를 걸기 전에 잰 '끝났을 때 남아 있던 소리'. 없으면 재지 않은 것이다.
-      const residualRaw = (d?.tracks || [])[0]?.metadata?.tail_residual_ratio
-      const residual = typeof residualRaw === 'number' && Number.isFinite(residualRaw)
-        ? residualRaw : undefined
+      // ★꺼내는 자리는 shared 의 순수 함수가 소유한다 — 예전에 여기서 **없는 자리**를
+      //   읽어 꼬리표가 한 번도 뜨지 않았다(2026-09-24). 설명은 tailResidualOf 참고.
+      const residual = tailResidualOf(d)
       void (async () => {
         if (src) {
           const takeId = newId('tk')
@@ -243,11 +261,6 @@ export default function LabWorkspace() {
         + '계속 실패하면 다른 목소리 파일로 바꿔 보세요. 이미 만든 생성본과 선택은 그대로 있습니다.')
       finish()
     })
-    const offCancelled = window.api.audio.onCancelled(() => {
-      if (!useLabStore.getState().job) return
-      lab.setNotice('취소했습니다. 이미 만든 결과와 고른 것은 그대로 있습니다.')
-      finish()
-    })
 
     function finish() {
       useLabStore.getState().setJob(null)
@@ -270,10 +283,16 @@ export default function LabWorkspace() {
       if (!line || !line.text.trim()) { next({ queue: rest.slice(1) }); return }
       st.setJob({ lineId: line.id, text: line.text, voiceKey: voiceKeyOf(st.doc.voicePath),
                   startedAt: Date.now(), queue: rest.slice(1) })
+      // ★위와 같은 이유로 거절을 버리지 않는다 — 여기서 멈추면 남은 문장이 영영 안 돈다.
       void window.api.audio.process(st.doc.voicePath, 'tts',
         synthesisOptions(line.text, st.doc.settings, st.ref))
+        .catch((e: unknown) => {
+          st.setJob(null)
+          st.setError(`문장 만들기를 시작하지 못했습니다: ${(e as Error)?.message || e}`)
+          useAppStore.setState({ status: 'idle', progress: 0, progressMessage: '' })
+        })
     }
-    return () => { offP(); offR(); offE(); offCancelled() }
+    return () => { offP(); offR(); offE() }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -335,6 +354,39 @@ export default function LabWorkspace() {
     if (isExportBlockNotice(useLabStore.getState().notice)) useLabStore.getState().setNotice(null)
   }, [ready.ready, doc])
 
+  // ★취소 lifecycle — **세 이벤트를 모두** 듣는다(2026-09-24 2차 감사).
+  //   예전에는 성공(cancelled)만 들었다. 그래서 취소가 실패하면 화면이 한 글자도
+  //   말하지 않고 '만드는 중' 에 멈췄고, status 가 processing 에 얼어붙어
+  //   **탭 단추도 모드 단추도 비활성**돼 앱을 다시 켜는 것 말고 길이 없었다.
+  //
+  //   ★여기에 "작업이 있나" 가드를 걸지 않는다. 실패 처리에서 작업을 비우므로,
+  //     가드를 걸면 뒤따르는 재취소의 이벤트가 조용히 버려진다.
+  const clearRun = useCallback(() => {
+    useLabStore.getState().setJob(null)
+    useLabStore.getState().setProgress(null)
+    useAppStore.setState({ status: 'idle', progress: 0, progressMessage: '' })
+  }, [])
+  const { requestCancel } = useCancelLifecycle(() => useAppStore.getState().status, {
+    onCancelling: () => useAppStore.getState().beginCancelling(),
+    onCancelled: () => {
+      if (!useLabStore.getState().job) return
+      // 취소해도 **이미 만든 것과 고른 것은 그대로 둔다** — 의도된 기능이다.
+      useLabStore.getState().setNotice('취소했습니다. 이미 만든 결과와 고른 것은 그대로 있습니다.')
+      clearRun()
+    },
+    onFailed: (kind) => {
+      // 갈래가 무엇이든 **상태는 반드시 푼다** — 이것이 갇힘을 끝내는 자리다.
+      clearRun()
+      useLabStore.getState().setError(cancelFailureText(kind))
+    },
+  })
+  const doCancel = useCallback(async () => {
+    const reason = await requestCancel()
+    if (reason === null) return              // 수락 — 터미널 이벤트가 마무리한다
+    // ★미수락을 버리지 않는다. 특히 "이미 끝났다" 는 화면이 빠져나올 신호다.
+    const over = cancelAlreadyOverText(reason)
+    if (over) { clearRun(); useLabStore.getState().setNotice(over) }
+  }, [requestCancel, clearRun])
   const doExport = useCallback(async () => {
     if (!ready.ready) { lab.setNotice(noticeFor(ready)); return }
     const r = await window.api.lab.exportAll(ready.paths, 'lab-script')
@@ -445,7 +497,7 @@ export default function LabWorkspace() {
           </button>
         </div>
         {job && (
-          <button data-testid="lab-cancel" onClick={() => { void window.api.audio.cancel() }}
+          <button data-testid="lab-cancel" onClick={() => { void doCancel() }}
             title={"만드는 중인 작업을 멈춥니다. 재생 중지가 아닙니다."}
             style={btn('var(--bg-card)', 'var(--rose, #fb7185)')}>만들기 취소</button>
         )}

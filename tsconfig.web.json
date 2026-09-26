@@ -3,6 +3,11 @@
     "composite": true,
     "module": "ESNext",
     "moduleResolution": "bundler",
+    // ★shared 끼리 **값**을 가져올 때 확장자를 허용한다(2026-09-24).
+    //   게이트의 단위 검사는 tsx 가 아니라 순수 node 로 돌아서 확장자가 없으면
+    //   모듈을 찾지 못한다(검사 파일들은 이미 .ts 를 적고 있다).
+    //   지금까지 shared 끼리는 `import type` 만 있어 드러나지 않았다 — 그건 실행 시 사라진다.
+    "allowImportingTsExtensions": true,
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
     "target": "ESNext",

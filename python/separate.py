@@ -276,6 +276,11 @@ def main():
         args.output_format = config.get("outputFormat", args.output_format)
         args.whisper_model = config.get("whisperModel", args.whisper_model)
         args.asr_engine = config.get("asrEngine", "whisper")
+        # 알아듣기 앞에 배경음을 걷어낼까. never(기본) | auto | always
+        # 기본을 바꾸지 않는다 — 고르지 않으면 예전 그대로 돈다.
+        # ★기본 auto — 재어 보고 필요할 때만 걷어낸다(2026-09-24 대사 계측대 실측:
+        #   배경음이 있으면 90.7%→100%, 시각 422→28밀리초. 조용하면 스스로 사양한다).
+        args.asr_separate = config.get("asrSeparate", "auto")
         args.whisper_lang = config.get("whisperLang", args.whisper_lang)
         args.translate = config.get("translate", args.translate)
         args.translate_model = config.get("translateModel", "600m")
@@ -827,6 +832,11 @@ def _run_dialogue_rebuild(args):
         emit("progress", percent=40, message="구간대로 화자 트랙 만드는 중...")
         tracks, dropped = dr.rebuild_speaker_tracks(wav, sr, segs, args.output)
     finally:
+        # ★여기 있던 _asr_sep 정리는 **이 함수의 것이 아니었다**(2026-09-24 2차 감사).
+        #   sep_dir 은 _run_transcribe_only 에만 있는 이름이라 여기서는 NameError 가 났고,
+        #   2026-09-21 이후 '수정본으로 다시 만들기' 가 **매번 실패**했다 —
+        #   트랙 파일은 다 만들어졌는데 앱은 결과를 못 받았다.
+        #   모양이 같은 앞 함수에 잘못 붙인 것이다. 제자리로 옮겼다.
         try:
             os.remove(wav_path)
             os.rmdir(os.path.dirname(wav_path))
@@ -845,6 +855,26 @@ def _run_dialogue_rebuild(args):
     emit("result", tracks=tracks, outputDir=args.output)
 
 
+def _asr_separate_fn(src, out_dir):
+    """알아듣기 앞 손질용 분리. **보컬/반주까지만** 가른다.
+
+    ★2026-09-21 실측: 주 보컬까지 더 가르면 74.3% → 73.1% 로 떨어진다.
+      화음에도 가사 정보가 들어 있다. 더 갈라내는 것이 늘 좋은 것은 아니다.
+    """
+    os.makedirs(out_dir, exist_ok=True)
+    from music_worker import run_roformer_separation
+    return run_roformer_separation(src, out_dir)
+
+
+def _asr_loudness_fn(path):
+    """통합 음량(LUFS). 못 재면 None — 지어내지 않는다."""
+    try:
+        import audio_fit
+        return audio_fit.measure_loudness(path)
+    except Exception:
+        return None
+
+
 def _run_transcribe_only(args):
     """Transcribe-only mode."""
     emit("status", message="텍스트 추출 모드", percent=0)
@@ -855,13 +885,42 @@ def _run_transcribe_only(args):
     wav_path = convert_to_wav(args.input)
     # 출력 파일은 임시 wav(converted.wav)가 아니라 원본 이름으로 저장
     orig_base = os.path.splitext(os.path.basename(args.input))[0]
+
+    # ── 배경음 걷어내기(선택) ────────────────────────────────────────────
+    # 2026-09-21 실측: 배경음을 걷어내고 넣으면 68.5% → 74.3% (+5.8%포인트).
+    # 같은 날 시험한 모델 교체·설정 조정을 전부 합친 것보다 크다.
+    # ★다만 배경음 없는 말소리에서는 분리기가 오히려 목소리를 상하게 하므로
+    #   기본은 '건드리지 않음' 이고, 'auto' 면 배경음 크기를 재서 정한다.
+    asr_src = wav_path
+    sep_dir = None
+    mode = getattr(args, "asr_separate", "never")
+    if mode and mode != "never":
+        import asr_preprocess
+        sep_dir = os.path.join(args.output, "_asr_sep")
+        emit("progress", percent=8, message="배경음 걷어내는 중...")
+        picked = asr_preprocess.prepare(wav_path, sep_dir, mode,
+                                        separate_fn=_asr_separate_fn,
+                                        loudness_fn=_asr_loudness_fn)
+        asr_src = picked["path"]
+        # 조용히 정하지 않는다 — 무엇을 넣었는지 말한다.
+        emit("progress", percent=12,
+             message=("배경음을 걷어내고 듣습니다 — " if picked["separated"]
+                      else "원본 그대로 듣습니다 — ") + picked["reason"])
+
     try:
         # asr_engine 은 **텍스트 모드에서만** 넘긴다. 분리 모드의 후처리 전사와 TTS 참조
         # 전사 같은 공용 호출부는 기존 경로 그대로다(첫 적용 범위를 좁힌다).
-        info = transcribe_file(wav_path, args.output, args.whisper_model, args.translate, args.srt,
+        info = transcribe_file(asr_src, args.output, args.whisper_model, args.translate, args.srt,
                                whisper_lang=getattr(args, "whisper_lang", ""), base_name=orig_base,
                                asr_engine=getattr(args, "asr_engine", "whisper") or "whisper")
     finally:
+        # ★갈라낸 것은 임시다 — 남기면 사용자가 만든 적 없는 목소리 사본이
+        #   결과 폴더에 원본 길이만큼 두 벌(보컬·반주) 쌓인다.
+        #   배경음 걷어내기 기본이 '자동' 이라 **텍스트만 뽑아도 매번** 생긴다.
+        #   원본을 쓰기로 판정한 경우에도 이미 파일로 남은 뒤다.
+        if sep_dir and os.path.isdir(sep_dir):
+            import shutil as _shutil
+            _shutil.rmtree(sep_dir, ignore_errors=True)
         try:
             os.remove(wav_path)
             os.rmdir(os.path.dirname(wav_path))
@@ -905,7 +964,11 @@ def _run_track_process(args):
 
     if args.transcribe:
         emit("progress", percent=10, message="Whisper 모델 로딩 중...")
-        w_model = whisper.load_model(args.whisper_model, device=device)
+        # ★해석기를 거친다(2026-09-24 감사). 예전에는 download_root 없이 불러서
+        #   whisper 가 ~/.cache 를 뒤지고 없으면 **내려받았다** — 앱이 선언한
+        #   오프라인 약속을 어기는 자리였다. 이 기계에 캐시가 있어 가려져 있었을 뿐이다.
+        from transcribe_worker import _get_whisper_model
+        w_model = _get_whisper_model(args.whisper_model)
         emit("progress", percent=30, message="텍스트 추출 중...")
 
         from transcribe_worker import run_transcribe
@@ -924,10 +987,12 @@ def _run_track_process(args):
                 f.write(f"[{fmt_time(seg['start'])} → {fmt_time(seg['end'])}] {seg['text'].strip()}\n")
 
         if args.srt:
-            srt_path = os.path.join(args.output, f"{base}.srt")
-            with open(srt_path, "w", encoding="utf-8") as f:
-                for si, seg in enumerate(result["segments"], 1):
-                    f.write(f"{si}\n{fmt_srt_time(seg['start'])} --> {fmt_srt_time(seg['end'])}\n{seg['text'].strip()}\n\n")
+            # ★자막 손질을 거친다(2026-09-24 감사).
+            #   자막을 만드는 자리가 **넷**인데 여기만 구간을 줄로 그대로 옮기고 있었다.
+            #   같은 폴더에 손질된 것과 안 된 것이 나란히 생기면 사용자는
+            #   무엇이 맞는지 알 수 없다. 쓰는 함수를 하나로 모은다.
+            from transcribe_worker import _write_srt
+            _write_srt(result["segments"], os.path.join(args.output, f"{base}.srt"))
 
         emit("progress", percent=60, message=f"언어 감지: {language}")
     else:
@@ -940,7 +1005,11 @@ def _run_track_process(args):
     if args.translate and text:
         if not language:
             emit("progress", percent=65, message="언어 감지 중...")
-            w_model = whisper.load_model("base", device=device)
+            # ★예전에는 "base" 를 썼다 — 화면 목록에도 앱 자산에도 **없는 다섯 번째 모델**이라
+            #   오프라인에서는 받을 길이 없었다. 앱이 실제로 가진 small 로 바꾼다.
+            #   언어 감지에는 가장 가벼운 것으로 충분하고, 해석기가 자리를 보증한다.
+            from transcribe_worker import _get_whisper_model
+            w_model = _get_whisper_model("small")
             audio = whisper.load_audio(args.input)
             audio = whisper.pad_or_trim(audio)
             mel = whisper.log_mel_spectrogram(audio).to(device)

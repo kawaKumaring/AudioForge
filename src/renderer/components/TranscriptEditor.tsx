@@ -8,6 +8,8 @@
 // ★글자를 고쳐도 **시간은 인식이 말한 그대로** 둔다. 고친 글자에 맞는 새 시간을 계산하려면
 //   정렬을 다시 해야 하는데 그것은 이번 범위가 아니다 — 그래서 "그 구간" 이라는 뜻만 유지한다.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { formatMinSec } from '../../shared/timeFormat'
+import { saveSetting, saveFailureText } from '../../shared/saveSetting'
 
 import { useAppStore } from '@/stores/app.store'
 import { createManagedAudio } from '@/lib/playbackVolume'
@@ -18,9 +20,8 @@ import {
 } from '../../shared/transcriptEdit'
 
 const fmt = (sec: number) => {
-  const m = Math.floor(sec / 60)
-  const s = sec % 60
-  return `${m}:${s.toFixed(1).padStart(4, '0')}`
+  // ★계산은 shared/timeFormat 한 곳이 소유한다(2026-09-24 2차 감사).
+  return formatMinSec(sec)
 }
 
 const btn = (bg: string, fg: string, off?: boolean): React.CSSProperties => ({
@@ -75,7 +76,12 @@ export default function TranscriptEditor() {
   docRef.current = doc
   useEffect(() => {
     if (!doc) return
-    const save = () => { void window.api.settings.set(TRANSCRIPT_EDIT_STORAGE_KEY, docRef.current) }
+    // ★응답을 버리지 않는다 — 설정 파일이 깨지면 교정이 통째로 사라지는데
+    //   예전에는 화면이 아무 말도 하지 않았다(2026-09-24 감사).
+    const save = () => {
+      void saveSetting(window.api.settings.set, TRANSCRIPT_EDIT_STORAGE_KEY, docRef.current)
+        .then((why) => { if (why) setError(saveFailureText(why)) })
+    }
     const t = setTimeout(save, 600)
     return () => { clearTimeout(t); save() }
   }, [doc])
@@ -197,7 +203,11 @@ export default function TranscriptEditor() {
       {/* 고쳤을 때만 나오는 안내 — 평소에는 화면을 채우지 않는다. */}
       {changed > 0 && (
         <div data-testid="transcript-notes" style={{ fontSize: 10, lineHeight: 1.6, color: 'var(--amber, #d4a017)' }}>
-          시간은 처음 인식한 구간 그대로입니다 — 고친 글자에 맞춰 다시 계산하지 않았습니다.
+          시간은 처음 인식한 구간을 따릅니다 — 고친 글자에 맞춰 다시 계산하지 않았습니다.
+          {/* ★한 치도 안 변한다고 말하면 거짓이 된다(2026-09-24 2차 감사).
+              교정본 자막도 다른 자막과 같은 손질(너무 짧은 것 늘리기·겹침 떼기)을
+              거치므로 끝 시각이 0.1초 안쪽에서 움직인다. 그 사실을 적는다. */}
+          {' '}자막 파일은 겹치지 않게 끝을 아주 조금만 다듬습니다.
           {notes && saveNoteText(notes).map((s) => ` ${s}`)}
         </div>
       )}

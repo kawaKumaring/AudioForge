@@ -43,3 +43,10 @@ test('고른 조각만 저장하되 **번호는 밀리지 않는다**', () => {
   assert.deepEqual(keep.map((x) => [x.start, x.end]), [[0, 10], [20, 30]])
   assert.equal(selectedPieces(p, null).length, 3, '고르지 않으면 전부')
 })
+
+// ★2026-09-24: 두 쪽에 **똑같이 적혀 있었는데 읽히는 값이 달랐다.**
+//   JS 는 '\\/' 를 '/' 한 글자로 읽어 역슬래시가 빠졌고 파이썬은 그대로 뒀다.
+//   역슬래시는 윈도 파일 이름에 못 쓰므로 파이썬이 맞았다.
+//   미러 검사에 역슬래시 예제가 **양쪽 다 없어서** 파리티 검사가 이 글자를 비워 뒀다.
+assert.equal(safeLabel('AC' + String.fromCharCode(92) + 'DC'), 'ACDC', '역슬래시를 빼야 한다')
+assert.equal(safeLabel(String.fromCharCode(92)), '', '역슬래시만 있으면 빈 이름이다')

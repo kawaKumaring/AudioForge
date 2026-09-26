@@ -980,9 +980,18 @@ export default function TTSEditor() {
   }, [voiceCast.casts, voiceCast.assets, voiceCast.activeVoiceCastId, setSpeakerEmotionRefs, ttsSpeakerRenames])
 
   const addCastFiles = async (castId: string, speakerId: string, emotionId: string) => {
-    const picked = await window.api.audio.selectFile(true) as string[] | string | null
+    const picked = await window.api.audio.selectFile(true, 'voice') as string[] | string | null
     const paths = Array.isArray(picked) ? picked : (picked ? [picked] : [])
-    if (paths.length) await voiceCast.addCandidateFiles(castId, speakerId, emotionId, paths)
+    if (!paths.length) return
+    // ★결과를 버리지 않는다(2026-09-25 실사용에서 드러남).
+    //   예전에는 반환을 통째로 버려서, 파일이 실패해도 **화면이 아무 말도 안 했다.**
+    //   사용자는 목록에 안 나타나는 것만 보고 "되는 건지 모르겠다" 고 했다.
+    setRefAssetNotice(null)
+    const r = await voiceCast.addCandidateFiles(castId, speakerId, emotionId, paths)
+    if (r.failed > 0) {
+      setRefAssetNotice(
+        `${r.added}개를 넣었고 ${r.failed}개가 실패했습니다 — ${r.reasons.join(' / ')}`)
+    }
   }
 
   const previewCastCandidate = (candidateId: string) => {
@@ -993,7 +1002,7 @@ export default function TTSEditor() {
   }
 
   const requestEmotionSource = async (): Promise<string | null> => {
-    const p = await window.api.audio.selectFile()
+    const p = await window.api.audio.selectFile(false, 'voice')
     return p || null
   }
   // 감정별 구간 편집기 = 기존 ReferenceRegionPanel 재사용(중복 마운트 없음: 감정당 1개, 행 펼침 시).
@@ -1714,7 +1723,7 @@ export default function TTSEditor() {
                 { id: 'qwen3', label: 'Qwen3', hint: '한국어 제로샷 발음·운율 우수 (로컬 Qwen3-TTS 0.6B, 별도 venv 필요 — 미설치 시 자동 폴백)' },
                 { id: 'gptsovits', label: 'GPT-SoVITS', hint: '한/영/중 지원, 참조 음성으로 목소리 클로닝 (베타)' },
                 { id: 'f5tts', label: 'F5', hint: '영어 중심의 고품질 보이스 클로닝' },
-                { id: 'kokoro', label: 'Kokoro', hint: '한/일/중/영 다국어 폴백 엔진, 가벼움' },
+                { id: 'kokoro', label: 'Kokoro', hint: '일/중/영 폴백 엔진, 가벼움. ★한국어는 이 엔진에 없습니다 — 한국어 폴백은 piper 입니다' },
               ].map(e => (
                 <button key={e.id} onClick={() => !disabled && setTtsEngine(e.id)} disabled={disabled} title={e.hint} style={{ padding: '3px 9px', borderRadius: 4, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 600, fontFamily: 'inherit', background: ttsEngine === e.id ? 'var(--rose)' : 'transparent', color: ttsEngine === e.id ? '#fff' : 'var(--text-muted)' }}>{e.label}</button>
               ))}

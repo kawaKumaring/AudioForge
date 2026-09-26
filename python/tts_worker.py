@@ -152,6 +152,9 @@ class F5TTSEngine(TTSEngine):
 
 class KokoroEngine(TTSEngine):
     name = "kokoro"
+    # ★이 목록은 "다루려는 언어" 이지 **되는 언어가 아니다.**
+    #   실제로 되는지는 kokoro_compat.check_language 가 실행 시점에 본다.
+    #   2026-09-24 실측으로는 이 환경에서 **en 만** 된다.
     supported_languages = ["ko", "ja", "zh", "en"]
 
     def __init__(self):
@@ -167,6 +170,20 @@ class KokoroEngine(TTSEngine):
             return
 
         emit("progress", percent=10, message=f"Kokoro TTS 로딩 중... (언어: {lang_code})")
+        # ★Kokoro 는 앱 환경에서 그냥 터진다(phonemizer 판 차이 + espeak 데이터 경로).
+        #   계측대를 만들다 드러났다. import 전에 그 자리를 메운다.
+        import kokoro_compat
+        kokoro_compat.ensure()
+        # ★되지도 않는 언어로 들어가 알 수 없는 오류를 내지 않는다(2026-09-24 실측:
+        #   ko 는 설치된 Kokoro 에 아예 없고, ja·zh 는 딸린 부품이 없어 터진다).
+        #   구하러 온 사다리가 썩어 있으면 **썩었다고 말한다.**
+        why = kokoro_compat.check_language(lang_code)
+        if why:
+            e = RuntimeError("Kokoro 로 %s 를 합성할 수 없습니다 — %s" % (lang_code, why))
+            e.error_payload = {"code": ENGINE_LANG_UNAVAILABLE,
+                               "engine": "kokoro", "language": lang_code,
+                               "reason": why}
+            raise e
         from kokoro import KPipeline
         self._pipeline = KPipeline(lang_code=new_lang)
         self._lang = new_lang
@@ -178,7 +195,16 @@ class KokoroEngine(TTSEngine):
             self.load()
         import soundfile as sf
 
-        generator = self._pipeline(text, speed=speed)
+        # ★목소리를 반드시 넘긴다 — 없으면 언어와 무관하게 터진다(2026-09-24 실측).
+        #   고르는 자리는 kokoro_compat 한 곳이다.
+        import kokoro_compat
+        voice = kokoro_compat.default_voice(self._lang)
+        if not voice:
+            e = RuntimeError("Kokoro 에 쓸 기본 목소리를 모릅니다: %s" % self._lang)
+            e.error_payload = {"code": ENGINE_LANG_UNAVAILABLE,
+                               "engine": "kokoro", "language": self._lang}
+            raise e
+        generator = self._pipeline(text, voice=voice, speed=speed)
         all_audio = []
         for _, _, audio in generator:
             all_audio.append(audio)
@@ -187,6 +213,75 @@ class KokoroEngine(TTSEngine):
             import numpy as np
             combined = np.concatenate(all_audio)
             sf.write(output_path, combined, 24000)
+
+
+# ── Piper Engine (한국어 — 참조 목소리가 필요 없는 폴백) ──
+
+class PiperEngine(TTSEngine):
+    """참조 소리 없이 그냥 읽어 주는 엔진. **한국어의 빈자리를 메운다.**
+
+    왜 들였나(2026-09-24): 한국어는 Qwen3-TTS·GPT-SoVITS 둘 다 참조 소리를 요구하고,
+    그 둘이 안 될 때 떨어질 자리인 Kokoro 는 **모델에 한국어가 아예 없다**
+    (언어를 등록해도 한국어 목소리가 없어 엉뚱한 소리만 난다 — 코드로 확인했다).
+    그래서 한국어만 **참조 없이 말할 수 있는 길이 하나도 없었다.**
+
+    ONNX 로 돌아 **torch 를 건드리지 않는다** — 합성 환경을 흔들 걱정이 없다.
+    내려받은 뒤에는 인터넷이 필요 없다.
+    """
+
+    name = "piper"
+    # ★"다루려는 언어" 가 아니라 **목소리를 실제로 가진 언어**만 적는다.
+    #   Kokoro 에서 넷 중 셋이 거짓이었던 일을 되풀이하지 않는다.
+    #   진짜 판정은 piper_voices.check_language 가 실행 시점에 한다.
+    supported_languages = ["ko"]
+
+    def __init__(self):
+        self._voice = None
+        self._meta = None
+
+    def load(self, lang_code="ko"):
+        import piper_voices
+        why = piper_voices.check_language(lang_code)
+        if why:
+            e = RuntimeError("piper 로 %s 를 합성할 수 없습니다 — %s" % (lang_code, why))
+            e.error_payload = {"code": ENGINE_LANG_UNAVAILABLE,
+                               "engine": "piper", "language": lang_code,
+                               "reason": why}
+            raise e
+        meta = piper_voices.find(lang_code)
+        if self._voice is not None and self._meta and self._meta["onnx"] == meta["onnx"]:
+            return
+        emit("progress", percent=10, message="piper 목소리 여는 중... (%s)" % meta["name"])
+        from piper import PiperVoice
+        self._voice = PiperVoice.load(meta["onnx"], config_path=meta["config"])
+        self._meta = meta
+        emit("progress", percent=20, message="piper 준비 완료")
+
+    def synthesize_segment(self, text, ref_audio, emotion_id, speed, output_path):
+        """★참조 소리(ref_audio)와 감정(emotion_id)은 쓰지 않는다 —
+        이 엔진에는 목소리가 파일 안에 하나로 들어 있다. 쓰는 척하지 않는다.
+
+        ★말하기 속도(speed)는 **쓴다**(2026-09-24 감사).
+          처음엔 받아 놓고 버렸는데, 화면의 속도 조절이 아무 일도 안 하면서
+          **재현 기록에는 요청값이 적용값처럼 남았다.** 다른 세 엔진은 모두 넘긴다.
+          piper 는 길이 배수(length_scale)로 받는다 — 값이 클수록 느려지므로 뒤집는다.
+        """
+        if self._voice is None:
+            self.load()
+        import wave
+        cfg = None
+        try:
+            sp = float(speed or 1.0)
+            if sp > 0 and abs(sp - 1.0) > 1e-6:
+                from piper import SynthesisConfig
+                cfg = SynthesisConfig(length_scale=1.0 / sp)
+        except Exception:
+            cfg = None      # 못 넘기면 기본 속도로 낸다 — 터뜨리지 않는다
+        with wave.open(output_path, "wb") as w:
+            if cfg is None:
+                self._voice.synthesize_wav(text, w)
+            else:
+                self._voice.synthesize_wav(text, w, syn_config=cfg)
 
 
 # ── GPT-SoVITS Engine (Korean, Japanese, Chinese, English — via isolated venv) ──
@@ -222,7 +317,40 @@ class GPTSoVITSEngine(TTSEngine):
                 self._warned_transcripts.add(wkey)
                 emit("progress", percent=8, message=f"참조 전사 경고 [{w.code}] {w.message}")
 
-    def load(self):
+    # 언어별로 더 있어야 하는 부품. venv 안을 한 번 보고 기억한다(느린 조사를 되풀이하지 않게).
+    _LANG_EXTRAS = {"ja": "pyopenjtalk"}
+    _extra_cache = {}
+
+    def _check_language(self, lang_code):
+        """그 언어를 **정말** 할 수 있는가. 되면 "", 아니면 사람이 읽을 수 있는 사유.
+
+        ★왜(2026-09-24 감사): 예전에는 load 가 언어를 아예 받지 않고 venv 파일만 봤다.
+          그래서 venv 가 있으면 예외가 안 나고, 엔진 고르기의 폴백(일본어→Kokoro)이
+          **영영 걸리지 않았다.** 실제 실패는 한참 뒤 다리에서 났고, 그 자리에는
+          다른 엔진으로 바꿀 길이 없었다 — 낼 수 있는 엔진이 옆에 있는데도.
+          Kokoro·piper 는 같은 날 이 구멍을 메웠다. 여기만 남아 있었다.
+        """
+        need = self._LANG_EXTRAS.get((lang_code or "").lower())
+        if not need or not self._venv_python:
+            return ""
+        key = (self._venv_python, need)
+        if key not in self._extra_cache:
+            import subprocess
+            try:
+                r = subprocess.run(
+                    [self._venv_python, "-c",
+                     "import importlib.util,sys;"
+                     "sys.exit(0 if importlib.util.find_spec(%r) else 1)" % need],
+                    capture_output=True, timeout=60)
+                self._extra_cache[key] = (r.returncode == 0)
+            except Exception:
+                # 조사에 실패했으면 **막지 않는다** — 다리가 제 사유로 실패하게 둔다.
+                self._extra_cache[key] = True
+        if self._extra_cache[key]:
+            return ""
+        return ("이 실행 환경에 %s 가 설치돼 있지 않습니다" % need)
+
+    def load(self, lang_code=None):
         base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         self._bridge_script = os.path.join(base_dir, "python", "gptsovits_bridge.py")
 
@@ -239,6 +367,17 @@ class GPTSoVITSEngine(TTSEngine):
                 "GPT-SoVITS 실행 환경이 준비되지 않았습니다 "
                 f"({probe['reason']}: {app_runtime.describe(probe['reason'])}). "
                 "run.bat을 실행하면 환경 검사 후 설치·연결을 진행합니다.")
+
+        # ★언어를 정말 할 수 있는지 **여기서** 본다. 못 하면 엔진 고르기가
+        #   다른 엔진으로 내려보낼 수 있다(예전에는 여기서 안 막혀 막다른 길로 갔다).
+        why = self._check_language(lang_code)
+        if why:
+            e = RuntimeError("GPT-SoVITS 로 %s 를 합성할 수 없습니다 — %s"
+                             % (lang_code, why))
+            e.error_payload = {"code": ENGINE_LANG_UNAVAILABLE,
+                               "engine": "gptsovits", "language": lang_code,
+                               "reason": why}
+            raise e
 
     def _transcript_key(self, ref_audio, model_name):
         """전사 캐시 키: 절대경로 + size + mtime_ns + Whisper 모델명.
@@ -782,6 +921,10 @@ class QwenTTSEngine(TTSEngine):
                                 else startup_deadline_sec)
         _now = monotonic or time.monotonic
         _t0 = _now()
+        # 브리지가 보내 준 단계 경과(브리지 모듈 import 시점 기준). 부모 시계와 뜻이 달라
+        # 섞지 않는다 — 부모는 '프로세스를 띄운 뒤' 를, 브리지는 '제가 뜬 뒤' 를 잰다.
+        _bridge_marks = {}
+        _loaded_at = None
         # 로컬 스냅샷 '경로'로 로드(repo id 아님) → 오프라인에서 HF API 호출 회피. 자동 다운로드 금지.
         cfg = {"model_path": _qwen_active_snapshot(), "device": device, "segments": segments}
         # 난수 씨앗. 브리지는 chunk 마다 seed+순번으로 다시 심고 실제 적용값을 돌려준다.
@@ -901,8 +1044,22 @@ class QwenTTSEngine(TTSEngine):
                 st = msg.get("stage")
                 if st in ("loading", "loaded", "generating"):
                     stage = st
+                # ★브리지는 단계마다 경과를 **재서 보내고 있었는데 여기서 버렸다**(2026-09-25).
+                #   그래서 '이 작업에서 모델 올리는 데 몇 초 걸렸나' 가 어디에도 안 남았고,
+                #   71초가 어디로 갔는지 물으면 총시간에서 빼는 간접 계산밖에 없었다.
+                #   숫자를 줍는다 — 재는 비용은 이미 치르고 있었다.
+                _el = msg.get("elapsed_sec")
+                if isinstance(_el, (int, float)) and st in ("loaded", "generating"):
+                    _bridge_marks[st] = float(_el)
+                # ★`loading` 은 가중치를 읽기 **직전** 시각이다 — 그 앞은 전부 import 다.
+                #   이 한 칸이 있어야 적재 8.4초가 'import' 와 '가중치 읽기' 로 갈린다.
+                #   첫 시도만 본다(두 번째는 sdpa 실패 후 재시도라 뜻이 다르다).
+                elif (isinstance(_el, (int, float)) and st == "loading"
+                      and int(msg.get("attempt") or 1) == 1):
+                    _bridge_marks["loading"] = float(_el)
                 if st == "loaded":
                     loaded = True   # 이 시점부터 기동 deadline 해제, 무응답 280s 계약 그대로
+                    _loaded_at = _now()
                 elif st == "loading" and int(msg.get("attempt") or 1) > 1:
                     # sdpa 실패 후 eager 재시도 = 두 번째 전체 로딩. 사용자에게 보이게 한다
                     # (한 번 느린 로딩과 재시도를 사후에 구분할 수 있어야 한다).
@@ -944,6 +1101,16 @@ class QwenTTSEngine(TTSEngine):
             raise RuntimeError(f"Qwen 실패(코드 {proc.returncode}): {''.join(stderr_tail)[-400:]}")
         if not seg_out:
             raise RuntimeError(f"Qwen 합성 결과 없음: {''.join(stderr_tail)[-300:]}")
+        # ★부모 시계로 한 칸 남긴다: 프로세스를 띄워 모델이 올라오기까지.
+        #   여기에만 파이썬 기동·torch import·가중치 읽기가 **전부** 들어간다 —
+        #   브리지가 보내 주는 값은 제가 뜬 뒤부터라 그 앞 구간을 못 본다.
+        self.last_stage_elapsed = {
+            "model_load": round(_loaded_at - _t0, 3) if _loaded_at is not None else None,
+            "bridge_loaded": _bridge_marks.get("loaded"),
+            "bridge_generating": _bridge_marks.get("generating"),
+            # 가중치를 읽기 직전까지 — 이 값이 곧 **import 에 든 시간**이다.
+            "bridge_import": _bridge_marks.get("loading"),
+        }
         return self._validate_seg_out(seg_out, segments)
 
     @staticmethod
@@ -1024,12 +1191,15 @@ def _get_qwen_engine():
 ENGINES = {
     "f5tts": F5TTSEngine,
     "kokoro": KokoroEngine,
+    "piper": PiperEngine,
     "gptsovits": GPTSoVITSEngine,
 }
 
 # 엔진 선택 계약(구조화 오류 코드). 명시 요청은 조용히 대체되지 않는다 — 자동(auto/None) 선택과 구분.
 ENGINE_UNAVAILABLE = "ENGINE_UNAVAILABLE"          # 지목한 엔진을 쓸 수 없음(대체 금지, 실패로 종료)
 ENGINE_NAME_INVALID = "ENGINE_NAME_INVALID"        # 알 수 없는 엔진 이름(기본 엔진으로 흘리지 않음)
+# 엔진은 있는데 **그 언어를 못 한다** — 조용히 다른 엔진으로 흘리지 않고 사유를 말한다.
+ENGINE_LANG_UNAVAILABLE = "ENGINE_LANG_UNAVAILABLE"
 # 배치형 Qwen('qwen3')은 ENGINES 레지스트리(문장별 엔진)에 없으므로 따로 합집합을 만든다.
 _VALID_ENGINE_NAMES = frozenset(ENGINES) | {"qwen3"}
 
@@ -1077,14 +1247,16 @@ def _select_engine(text, preferred_engine=None):
 
     lang = _detect_language(text)
 
-    # Korean/Japanese → GPT-SoVITS (best quality), fallback to Kokoro
+    # 한국어·일본어 → GPT-SoVITS(품질이 가장 좋다). 안 되면 떨어질 자리:
+    #   한국어는 **piper**(Kokoro 에 한국어가 없다 — 2026-09-24 코드로 확인),
+    #   일본어는 Kokoro.
     if lang in ("ko", "ja"):
         try:
             engine = _get_engine("gptsovits")
-            engine.load()  # Check if venv exists
+            engine.load(lang)  # venv 존재 + **그 언어를 할 수 있는가**
             return engine
         except Exception:
-            return _get_engine("kokoro")
+            return _get_engine("piper" if lang == "ko" else "kokoro")
 
     # Chinese → Kokoro
     if lang == "zh":
@@ -2304,7 +2476,23 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         try:
             try:
                 _job_clock = JobWallClock()
+                import time as _t_mod          # 이 함수는 뒤에서 time 을 지역으로 들인다
+                _t_job = _t_mod.monotonic()
                 seg_out = qwen.run_job(segments, device, seed=run_seed)
+                # ★비어 있던 칸을 채운다(2026-09-25). `stage_elapsed` 는 처음부터 있었는데
+                #   **부르는 곳이 한 곳도 없어 언제나 빈 배열**이었다. 그래서 한 작업의 시간이
+                #   어디로 갔는지 기록으로 답할 수 없었고, 개선을 해도 나아졌는지 증명할
+                #   수단이 없었다. 재는 것이 고치는 것보다 먼저다.
+                _stages = getattr(qwen, 'last_stage_elapsed', None) or {}
+                if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
+                    # 프로세스를 띄워 모델이 올라오기까지(파이썬 기동·import·가중치 읽기 포함).
+                    _CONCAT_RECORDER.stage_elapsed('model_load', _stages.get('model_load'))
+                    # 브리지가 제 시계로 잰 값 — 부모 시계와 뜻이 다르므로 이름을 나눈다.
+                    _CONCAT_RECORDER.stage_elapsed('bridge_import', _stages.get('bridge_import'))
+                    _CONCAT_RECORDER.stage_elapsed('bridge_loaded', _stages.get('bridge_loaded'))
+                    _CONCAT_RECORDER.stage_elapsed('bridge_generating', _stages.get('bridge_generating'))
+                    # run_job 전체 — 생성 합과 견주면 '생성 밖' 이 바로 나온다.
+                    _CONCAT_RECORDER.stage_elapsed('run_job', _t_mod.monotonic() - _t_job)
                 # 생성이 끝난 직후에 본다 — 정렬·조립 전에 초과를 확정해
                 # 헛수고를 늘리지 않는다. partial 은 진단에만 남는다.
                 _job_clock.check(completed_chunks=len(seg_out or []))
@@ -2938,7 +3126,9 @@ def _run_record_entries(rec, ordered_entries):
                 termination_reason=e.get("termination_reason"),
                 vendor_crop_record=vcr,
                 external_alignment_calls=(0 if vcr is not None else None),
-                elapsed_sec=e.get("generation_elapsed_sec"))
+                elapsed_sec=e.get("generation_elapsed_sec"),
+                ref_prep_sec=e.get("ref_prep_sec"),
+                ref_prep_calls=e.get("ref_prep_calls"))
             # vendor native 는 반환 PCM 이 곧 chunk 파형이다 — 그 사실을 단계로 남긴다.
             _diag_stage(rec, "vendor_returned" if not e.get("controlled_prefix") else "raw",
                         e, gidx=g)

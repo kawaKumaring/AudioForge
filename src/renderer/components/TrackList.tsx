@@ -187,7 +187,9 @@ const actionBtnStyle = (active: boolean, color: string): React.CSSProperties => 
 })
 
 function TrackItem({ track, index }: { track: { name: string; label: string; path: string }; index: number }) {
-  const { playingTrack, setPlayingTrack, outputDir, mode, translateModel, fileInfo } = useAppStore()
+  const { playingTrack, setPlayingTrack, outputDir, mode, translateModel, fileInfo,
+    // ★고른 알아듣기 설정 — 트랙의 '가사' 도 같은 설정으로 돌아야 한다(2026-09-24 감사).
+    whisperModel, whisperLang, asrSeparate } = useAppStore()
   const isPlaying = playingTrack === track.name
   const st = TRACK_STYLES[track.name] || DEFAULT_STYLE
   const [transcript, setTranscript] = useState<string | null>(null)
@@ -240,7 +242,9 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
     })
 
     try {
-      await window.api.audio.processTrack(track.path, outputDir, { transcribe, translate, srt: false, translateModel })
+      // ★고른 설정을 함께 보낸다 — 예전에는 빠져서 고른 모델·언어가 무시됐다(2026-09-24 감사).
+      await window.api.audio.processTrack(track.path, outputDir,
+        { transcribe, translate, srt: false, translateModel, whisperModel, whisperLang, asrSeparate })
     } catch {
       setProcessing(false)
       cleanup()
@@ -434,6 +438,28 @@ function KaraokeButton({ tracks }: { tracks: { name: string; path: string }[] })
 
 export default function TrackList() {
   const { tracks, status, outputDir, error, errorInfo, mode, bumpRetry, clearError, ttsSpeakerRefState, ttsSpeakerLabels } = useAppStore()
+  // ★내보내기 결과를 버리지 않는다(2026-09-24 2차 감사).
+  //   예전에는 약속을 통째로 버려 거절이 콘솔 한 줄로 사라졌고,
+  //   **성공과 실패가 화면상 완전히 같았다.**
+  const [exportNote, setExportNote] = useState<{ text: string; bad: boolean } | null>(null)
+  const doExport = useCallback(async () => {
+    setExportNote(null)
+    try {
+      const r = await window.api.audio.exportTracks(tracks.map((t) => t.path))
+      if (!r) return                       // 사용자가 폴더 고르기를 취소했다
+      if (r.ok) {
+        setExportNote({ text: `${r.copied.length}개를 내보냈습니다.`, bad: false })
+        return
+      }
+      const names = r.failed.map((f) => f.name).join(', ')
+      setExportNote({
+        text: `${r.copied.length}개를 내보냈고 ${r.failed.length}개가 실패했습니다 — ${names}`,
+        bad: true,
+      })
+    } catch (e) {
+      setExportNote({ text: `내보내지 못했습니다: ${(e as Error)?.message || e}`, bad: true })
+    }
+  }, [tracks])
 
   if (error) {
     // 생성 상한 도달(GENERATION_LIMIT_EXCEEDED)은 유효 입력에서도 비결정적으로 발생 가능 → 전용 안내 + 명시 재시도.
@@ -555,9 +581,16 @@ export default function TrackList() {
         <div style={{ display: 'flex', gap: 6 }}>
           {mode === 'music' && <KaraokeButton tracks={tracks} />}
           <button onClick={() => outputDir && window.api.app.openFolder(outputDir)} className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 12px' }}>폴더</button>
-          <button onClick={() => window.api.audio.exportTracks(tracks.map(t => t.path))} className="btn btn-primary" style={{ fontSize: 11, padding: '6px 12px' }}>내보내기</button>
+          <button onClick={() => { void doExport() }} className="btn btn-primary" style={{ fontSize: 11, padding: '6px 12px' }}>내보내기</button>
         </div>
       </div>
+      {/* ★성공도 실패도 말한다 — 예전에는 둘이 화면상 완전히 같았다(2026-09-24 감사). */}
+      {exportNote && (
+        <div style={{ fontSize: 11, padding: '4px 2px',
+          color: exportNote.bad ? 'var(--amber, #d98b2b)' : 'var(--text-muted)' }}>
+          {exportNote.text}
+        </div>
+      )}
 
       {/* Tracks */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>

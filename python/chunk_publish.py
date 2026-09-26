@@ -505,7 +505,8 @@ class ChunkRecorder:
     def record_generation(self, gidx, generation_limit=None, generated_iterations=None,
                           termination_reason=None, vendor_crop_record=None,
                           external_alignment_calls=None, fallback=None, retries=None,
-                          elapsed_sec=None, partial=None):
+                          elapsed_sec=None, partial=None,
+                          ref_prep_sec=None, ref_prep_calls=None):
         """생성·종료·발행 근거. vendor crop record 는 SHA 만 승격하고 원본은 chunk private 에."""
         if not self.active:
             return
@@ -517,6 +518,8 @@ class ChunkRecorder:
             ("external_alignment_calls", external_alignment_calls),
             ("fallback", fallback), ("retries", retries),
             ("elapsed_sec", elapsed_sec), ("partial", partial),
+            # 생성 시간 **안에 숨어 있던** 참조 준비 몫(계측 전용, 수치뿐).
+            ("ref_prep_sec", ref_prep_sec), ("ref_prep_calls", ref_prep_calls),
         ) if v is not None})
         if vendor_crop_record is not None:
             r["vendor_crop_record"] = vendor_crop_record

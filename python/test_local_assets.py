@@ -142,9 +142,6 @@ class TestNoAbsolutePathsInSource(unittest.TestCase):
         self.assertEqual(bad, [], "production source 절대경로: %s" % bad)
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
-
 
 class TestDevOutputContract(unittest.TestCase):
     """개발 하네스 출력이 _local 밖으로 새지 않는다."""
@@ -206,3 +203,12 @@ class TestDevOutputContract(unittest.TestCase):
                     if pat.search(txt):
                         bad.append(os.path.relpath(fp, root))
         self.assertEqual(bad, [], "하네스가 외부 경로를 기본 출력으로 쓴다: %s" % bad)
+
+
+# ★이 블록은 **파일 맨 끝**에 있어야 한다.
+#   예전에 중간에 있어서, 파일을 직접 실행하면 아래에 정의된 검사 6건이
+#   아직 만들어지지 않은 채 unittest.main() 이 돌아 **조용히 빠졌다**.
+#   게이트는 발견 방식이라 15건을 다 돌았기에 아무도 눈치채지 못했다 —
+#   손으로 이 파일 하나만 돌려 보는 사람에게만 보이지 않았다.
+if __name__ == "__main__":
+    unittest.main(verbosity=2)

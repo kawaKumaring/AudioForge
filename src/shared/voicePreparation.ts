@@ -60,7 +60,6 @@ export interface ReferenceRegionMetrics {
 /** 상위(store 슬롯)로 올리는 준비 상태 패치. 기본·감정·인물·일반이 같은 모양을 쓴다. */
 export interface RefStatePatch {
   clip?: string
-  ready?: boolean
   message?: string
   region?: { start: number; duration: number } | null
   /** 이 보고를 만든 요청. 상위가 낡은 보고를 버리는 기준(패널이 자동으로 붙인다). */

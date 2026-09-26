@@ -12,7 +12,10 @@ import { REFERENCE_CONDITIONING_RECOMMENDED, restoreReferenceConditioningMode } 
 // 확장자 없는 상대 경로는 런타임에 ERR_MODULE_NOT_FOUND가 된다. tsconfig의 allowImportingTsExtensions는
 // 이 작업 범위 밖(공유 설정)이므로 TS5097만 국소 억제한다 — 모듈 해석·타입 검사는 그대로 살아 있다.
 // @ts-ignore TS5097: node --test가 요구하는 명시적 .ts 확장자(위 주석 참고).
-import { CANCEL_FAILED_CODE, canBeginCancelling, isCancelCleanupBusy } from '../../shared/cancelContract.ts'
+import {
+  CANCEL_FAILED_CODE, canBeginCancelling, cancelFailureKind, cancelFailureText,
+  cancelRetryable, isCancelCleanupBusy,
+} from '../../shared/cancelContract.ts'
 // 표현형 모드 해석 권위(계약 §10) — 기본값·유효성 규칙을 store 가 따로 쓰지 않는다.
 // @ts-ignore TS5097: node --test가 요구하는 명시적 .ts 확장자(위 cancelContract import 주석과 같은 이유).
 import { EXPRESSIVE_DEFAULT_MODE, resolveExpressiveMode, type ExpressiveMode } from '../../shared/expressiveTimeline.ts'
@@ -208,6 +211,8 @@ interface AppState {
   whisperModel: 'small' | 'medium' | 'large-v3' | 'large-v3-turbo'
   /** 텍스트 추출 실행 엔진. 기본은 기존 경로다. */
   asrEngine: 'whisper' | 'faster-whisper'
+  /** 알아듣기 전에 배경음을 걷어낼지. 기본 auto — 재어 보고 필요할 때만 걷어낸다. */
+  asrSeparate: 'never' | 'auto' | 'always'
   whisperLang: string
   translateModel: '600m' | '1.3b' | 'llm' | 'google'
   demucsModel: 'htdemucs' | 'htdemucs_ft' | 'roformer' | 'roformer_melband' | 'roformer_ensemble'
@@ -219,7 +224,7 @@ interface AppState {
   // 구조화 오류 정보(오류 UX 분기용). code + (취소 실패 시) childAlive만 — GENERATION_LIMIT_EXCEEDED/CANCEL_FAILED 분기.
   // 전사·문장·전체경로·스택은 담지 않는다(§미디어 정책).
   // rawType: 계약 밖 값의 '타입 이름'만(원시값·대사·경로는 절대 담지 않는다 — 비민감 payload 규칙).
-  errorInfo: { code?: string; childAlive?: boolean; rawType?: string | null; speakerRef?: string } | null
+  errorInfo: { code?: string; childAlive?: boolean; cancelKind?: string; rawType?: string | null; speakerRef?: string } | null
   // 사용자 명시 재시도 트리거(단조 증가). ProcessButton이 이 값 변화에서만 재합성 1회 실행.
   retryNonce: number
   tracks: Track[]
@@ -340,6 +345,7 @@ interface AppState {
   setOutputFormat: (v: 'wav' | 'mp3' | 'flac') => void
   setWhisperModel: (v: 'small' | 'medium' | 'large-v3' | 'large-v3-turbo') => void
   setAsrEngine: (v: AppState['asrEngine']) => void
+  setAsrSeparate: (v: AppState['asrSeparate']) => void
   setDiarizeEngine: (v: AppState['diarizeEngine']) => void
   setWhisperLang: (v: string) => void
   setTranslateModel: (v: '600m' | '1.3b' | 'llm' | 'google') => void
@@ -390,7 +396,7 @@ interface AppState {
   setProcessing: () => void
   setProgress: (percent: number, message: string) => void
   setResult: (tracks: Track[], outputDir: string, metadata?: Record<string, unknown> | null) => void
-  setError: (error: string, info?: { code?: string; childAlive?: boolean } | null) => void
+  setError: (error: string, info?: { code?: string; childAlive?: boolean; cancelKind?: string } | null) => void
   // 오류 카드 '닫기' — 오류만 해제하고 idle로. 디스크의 synthesized.wav·재시도 nonce는 건드리지 않는다.
   clearError: () => void
   // 오류 카드 '다시 시도' — 오류 해제 + retryNonce 증가(= 재합성 1회 트리거). 자동/타이머 재시도 아님.
@@ -398,7 +404,7 @@ interface AppState {
   // 취소 lifecycle(공용 마감 K): 취소 요청 표시 / 취소 완료(idle) / 취소 실패(error+childAlive).
   beginCancelling: () => void
   finishCancelled: () => void
-  setCancelFailed: (childAlive: boolean) => void
+  setCancelFailed: (payload: unknown) => void
   setPlayingTrack: (name: string | null) => void
   setRestorable: (v: { dir: string; session: RestorableSession } | null) => void
   restoreSession: (dir: string, session: RestorableSession) => void
@@ -431,6 +437,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   outputFormat: 'wav' as const,
   whisperModel: 'large-v3' as const,
   asrEngine: 'whisper' as const,
+  asrSeparate: 'auto' as const,
   whisperLang: 'auto',
   translateModel: '600m' as const,
   demucsModel: 'htdemucs' as const,
@@ -532,6 +539,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   setOutputFormat: (v) => set({ outputFormat: v }),
   setWhisperModel: (v) => set({ whisperModel: v }),
   setAsrEngine: (v) => set({ asrEngine: v }),
+  setAsrSeparate: (v) => set({ asrSeparate: v }),
   setDiarizeEngine: (v) => set({ diarizeEngine: v }),
   setWhisperLang: (v) => set({ whisperLang: v }),
   setTranslateModel: (v) => set({ translateModel: v }),
@@ -758,12 +766,19 @@ export const useAppStore = create<AppState>((set, get) => ({
   // 취소 완료(main audio:cancelled) → idle. 부분 결과 미채택.
   finishCancelled: () => set({ status: 'idle', progress: 0, progressMessage: '', error: null, errorInfo: null, tracks: [], resultMetadata: null }),
   // 취소 실패(main audio:cancel-failed) → 조용한 idle 금지. error + childAlive(재취소 게이팅용).
-  setCancelFailed: (childAlive) => set({
-    status: 'error',
-    error: '작업을 취소하지 못했습니다. 프로세스 상태를 확인하거나 앱을 종료하세요.',
-    errorInfo: { code: CANCEL_FAILED_CODE, childAlive: !!childAlive },
-    progressMessage: ''
-  }),
+  // ★갈래마다 **회복 방법이 반대**다(2026-09-24 2차 감사). 예전에는 childAlive 하나만
+  //   읽어서, 자식이 이미 죽은 갈래에도 "프로세스 상태를 확인하거나 앱을 종료하세요" 라는
+  //   **원인과 어긋난 문구**가 떴다. 실제로는 정리만 남았고 다음 합성이 알아서 푼다.
+  //   childAlive 는 이제 '다시 취소를 눌러 볼 수 있는가' 를 뜻한다(재취소 단추 게이팅).
+  setCancelFailed: (payload) => {
+    const kind = cancelFailureKind(payload)
+    set({
+      status: 'error',
+      error: cancelFailureText(kind),
+      errorInfo: { code: CANCEL_FAILED_CODE, childAlive: cancelRetryable(kind), cancelKind: kind },
+      progressMessage: ''
+    })
+  },
   setPlayingTrack: (name) => set({ playingTrack: name }),
   setRestorable: (v) => set({ restorable: v }),
   restoreSession: (dir, session) => set((cur) => {

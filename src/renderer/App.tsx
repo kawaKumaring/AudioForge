@@ -13,6 +13,7 @@ import SynthesisTabs from '@/components/SynthesisTabs'
 import TranscriptEditor from '@/components/TranscriptEditor'
 import DialogueSegments from '@/components/DialogueSegments'
 import LabPlaceholder from '@/components/LabPlaceholder'
+import DubWorkspace from '@/components/DubWorkspace'
 import TtsResultInfo from '@/components/TtsResultInfo'
 import AppVersionLabel from '@/components/AppVersionLabel'
 import { loadPlaybackVolume } from '@/lib/playbackVolume'
@@ -55,9 +56,9 @@ export default function App() {
   //   합성(일반/고급 둘 다)과 테스트개발에는 나오면 안 된다 — 예전에 여기 섞여 나와
   //   알 수 없는 모드의 마지막 이름인 '텍스트 추출 시작' 이 뜨고, 누르면 워커가 모르는
   //   갈래로 요청이 나가 빈 결과로 끝났다(종료 코드 1). 한 곳에서 정해 재발을 막는다.
-  const showSharedRun = mode !== 'tts' && mode !== 'lab'
+  const showSharedRun = mode !== 'tts' && mode !== 'lab' && mode !== 'dub'
   // 결과 목록은 고급 합성까지만 함께 쓴다. 일반은 자기 화면 안에서 결과를 보여 준다.
-  const showSharedResults = mode !== 'lab' && !(mode === 'tts' && synthesisTab === 'basic')
+  const showSharedResults = mode !== 'lab' && mode !== 'dub' && !(mode === 'tts' && synthesisTab === 'basic')
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg-base)', color: 'var(--text-primary)', fontFamily: "'Inter', -apple-system, sans-serif" }}>
@@ -88,11 +89,11 @@ export default function App() {
              합성>일반(대본 작업실)은 대본을 쓰고 목소리를 따로 고르는 곳이라 분리할 원본이
              필요 없다. 테스트개발은 안내만 있는 자리라 역시 필요 없다.
              **고급을 비롯한 나머지는 예전 그대로** 파일을 먼저 불러와야 한다. */}
-      {!fileInfo && (mode === 'lab' || mode === 'tts') ? (
+      {!fileInfo && (mode === 'lab' || mode === 'dub' || mode === 'tts') ? (
         <div style={{ position: 'relative', zIndex: 1, flex: 1, display: 'flex', flexDirection: 'column',
                       gap: 14, padding: '20px 24px 28px', maxWidth: 1100, width: '100%', margin: '0 auto' }}>
           <ModeSelector />
-          {mode === 'lab' ? <LabPlaceholder /> : <SynthesisTabs />}
+          {mode === 'dub' ? <DubWorkspace /> : mode === 'lab' ? <LabPlaceholder /> : <SynthesisTabs />}
         </div>
       ) : !fileInfo ? (
         /* ── 초기 화면 ── */
@@ -211,6 +212,7 @@ export default function App() {
             <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
               <ModeSelector />
               {mode === 'split' ? <SplitEditor /> : mode === 'tts' ? <SynthesisTabs />
+                : mode === 'dub' ? <DubWorkspace />
                 : mode === 'lab' ? <LabPlaceholder /> : <Options />}
               {/* 합성 화면에서는 시작·취소 버튼과 진행 상태를 [음성 만들기] 카드 안에서 그린다 —
                   제목만 있는 단계 카드와 그 아래 버튼으로 나뉘어 있으면 '어디가 실행 자리인가'가 생긴다.
