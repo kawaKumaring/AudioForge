@@ -84,9 +84,15 @@ export function screenFaults(raw: string): string[] {
   if (!text.includes('useOriginalBlockReason(')) bad.push('판정을 부르지 않는다')
   if (text.includes('canUseOriginal')) bad.push('이유 없는 참·거짓 잠금이 되살아났다')
   if (!text.includes('DUB_RESUME_HINT')) bad.push('되살리는 안내를 쓰지 않는다')
-  const at = text.indexOf('영상 속 목소리 쓰기')
-  if (at < 0) bad.push('단추를 못 찾았다')
-  else if (!text.slice(at, at + 400).includes('{props.useOriginalReason}')) {
+  // ★이름표가 아니라 **계약**에 맨다(2026-09-26, 네 번째 같은 실수를 막는다).
+  //   단추 글자는 언제든 바뀐다 — 실제로 화면을 단계로 다시 짜면서 바뀌었다.
+  //   지켜야 할 것은 '영상 속 목소리를 쓰는 길 옆에 이유가 글자로 있다' 이다.
+  // ★'첫 번째 자리' 를 집지 않는다. 부르는 곳과 그리는 곳이 둘 다 같은 이름을 쓴다 —
+  //   첫 하나만 보면 부르는 곳을 집어 멀쩡한 화면을 실패로 몬다(이 저장소의 오랜 함정).
+  const spots: number[] = []
+  for (let i = text.indexOf('onUseOriginal'); i >= 0; i = text.indexOf('onUseOriginal', i + 1)) spots.push(i)
+  if (spots.length === 0) bad.push('영상 속 목소리를 쓰는 길이 없다')
+  else if (!spots.some((i) => text.slice(i, i + 400).includes('{props.useOriginalReason}'))) {
     bad.push('이유를 글자로 띄우지 않는다 — 흐릿한 단추만 남는다')
   }
   return bad

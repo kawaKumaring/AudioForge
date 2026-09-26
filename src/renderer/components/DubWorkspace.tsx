@@ -13,6 +13,9 @@
  * 여기 있는 것은 **부르는 순서와 보여 주는 방법**뿐이다.
  */
 import { useOriginalBlockReason, DUB_RESUME_HINT } from '../../shared/dubGate'
+import {
+  dubSteps, DUB_ORIGINAL_VOICE_WHY, DUB_PICKED_VOICE_WHY, type DubStep,
+} from '../../shared/dubSteps'
 import { useCallback, useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react'
 import {
   DUB_STAGE_LABELS, dubFrontSummary, dubNextAction, dubStatusColor, dubStatusLabel, dubTimeLabel,
@@ -451,34 +454,37 @@ export default function DubWorkspace() {
   const busyElsewhere = busy === '' && sharedStatus === 'processing'
   const disabled = busy !== '' || busyElsewhere
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12, padding: 14 }}>
-      <Header videoPath={videoPath} voice={voice} disabled={disabled}
-        useOriginalReason={useOriginalBlockReason({ videoPath, frontLoaded: !!front, busy: disabled })}
-        onPickVideo={pickVideo} onPickVoice={pickVoice} onUseOriginal={useOriginalVoice} />
+  // ★지금 무엇을 할 차례인가 — **화면이 판단하지 않는다**(shared/dubSteps 가 정한다).
+  const steps = dubSteps({
+    video: !!videoPath, voice: !!voice.ref, front: !!front,
+    made: lines.length - missingCount, lines: lines.length,
+  })
+  const stepOf = (k: DubStep['key']): DubStep => steps.find((s) => s.key === k)!
 
-      {/* ★만든 것이 어디 있는지 알려 준다(2026-09-26 신고: "파일이 어디에 만들어지는지
-          사용자가 어찌 아는가"). 통로는 앱에 이미 있었고 이 화면만 부르지 않았다. */}
-      {workDir && (
-        <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <Btn onClick={() => void window.api.app.openFolder(workDir)} disabled={disabled}>
-            만든 것 열기
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: 14 }}>
+      <StepBar steps={steps} />
+
+      {/* ─ 1. 영상 ───────────────────────────────────────────────────────── */}
+      <StepCard step={stepOf('video')}>
+        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap' }}>
+          <Btn onClick={pickVideo} disabled={disabled} primary={!videoPath}>
+            {videoPath ? '다른 영상으로' : '영상 고르기'}
           </Btn>
-          <Btn onClick={() => void pickWorkRoot()} disabled={disabled}>자리 바꾸기</Btn>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-            {workRoot ? `만든 것이 쌓이는 자리: ${workRoot}` : '갈라낸 소리와 줄 소리가 이 폴더에 쌓입니다'}
+          <span style={{ fontSize: 12, color: videoPath ? 'var(--text)' : 'var(--text-muted)' }}>
+            {baseName(videoPath) || '아직 고르지 않았습니다'}
           </span>
         </div>
-      )}
+      </StepCard>
 
-      {/* 다 해 놓은 앞단을 처음부터 다시 돌리지 않게 — 되살리는 길을 적는다. */}
-      {!front && (
-        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{DUB_RESUME_HINT}</div>
-      )}
-
-      {videoPath && (
+      {/* ─ 2. 말 꺼내고 옮기기 ───────────────────────────────────────────── */}
+      <StepCard step={stepOf('front')} note={front ? `원어 ${front.language} · ${lines.length}줄` : ''}>
+        {!front && (
+          <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{DUB_RESUME_HINT}</div>
+        )}
         <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
-          <Btn onClick={() => void runFront(false)} disabled={disabled} primary>
+          <Btn onClick={() => void runFront(false)} disabled={disabled || !videoPath}
+            primary={!front && !!videoPath}>
             {front ? '이어서 하기' : '시작'}
           </Btn>
           {front && (
@@ -498,16 +504,21 @@ export default function DubWorkspace() {
               <option value="">통일만 (한쪽을 정하지 않음)</option>
             </select>
           </label>
-          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-            {DUB_STAGES_HINT}
-          </span>
         </div>
-      )}
+        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>{DUB_STAGES_HINT}</div>
+      </StepCard>
 
-      {/* ★멈추기 — **멈출 수 있을 때만** 보인다(2026-09-25).
-          목소리 준비는 짧고 중간에 끊으면 반쯤 준비된 상태가 남아 내놓지 않는다.
-          일반 탭도 그 구간에는 취소를 내놓지 않는다 — 같은 선례를 따른다.
-          누를 수 없는 단추를 띄우는 것이 없는 것보다 나쁘다. */}
+      {/* ─ 3. 목소리 — **두 길이 무엇이 다른지 화면이 말한다** ───────────── */}
+      <StepCard step={stepOf('voice')}
+        note={voice.ref ? `${baseName(voice.path)} · 준비됨` : ''}>
+        <VoiceLanes disabled={disabled} picked={!!voice.ref} message={voice.message}
+          useOriginalReason={useOriginalBlockReason({
+            videoPath, frontLoaded: !!front, busy: disabled,
+          })}
+          onPickVoice={pickVoice} onUseOriginal={useOriginalVoice} />
+      </StepCard>
+
+      {/* ─ 알림·멈추기 — 단계가 아니라 **지금 벌어지는 일**이다 ──────────── */}
       {(note || error || dubCancellable(busy as DubWork)) && (
         <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
           {(note || error) && (
@@ -531,30 +542,22 @@ export default function DubWorkspace() {
         </div>
       )}
 
+      {/* ─ 4. 줄마다 소리 만들기 ─────────────────────────────────────────── */}
       {front && (
-        <>
-          <div style={{
-            display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
-            fontSize: 12, color: 'var(--text-muted)',
-          }}>
-            <strong style={{ color: 'var(--text)' }}>
-              {dubNextAction({ lines: lines.length, empty: emptyCount, missing: missingCount, over: overCount })}
-            </strong>
-            <span>· 원어 {front.language} · {lines.length}줄</span>
-          </div>
-
+        <StepCard step={stepOf('synth')}
+          note={dubNextAction({
+            lines: lines.length, empty: emptyCount, missing: missingCount, over: overCount,
+          })}>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
             <Btn onClick={() => void saveKorean()} disabled={disabled || Object.keys(edits).length === 0}>
               번역문 저장 ({Object.keys(edits).length})
             </Btn>
-            <Btn onClick={() => void synthAll(true)} disabled={disabled || !voice.ref}>
+            <Btn onClick={() => void synthAll(true)} disabled={disabled || !voice.ref}
+              primary={!!voice.ref && missingCount > 0}>
               안 만든 줄 만들기 ({missingCount})
             </Btn>
             <Btn onClick={() => void synthAll(false)} disabled={disabled || !voice.ref}>
               전부 다시 만들기
-            </Btn>
-            <Btn onClick={() => void exportVideo()} disabled={disabled || missingCount === lines.length} primary>
-              영상 만들기
             </Btn>
           </div>
 
@@ -562,67 +565,175 @@ export default function DubWorkspace() {
             takes={takes} tailCut={tailCut} disabled={disabled}
             onEdit={(i, v) => setEdits((e) => ({ ...e, [i]: v }))}
             onPlay={playTake} playing={playIndex} />
-        </>
+        </StepCard>
       )}
 
-      {report && (
-        <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.7 }}>
-          <div>영상: {report.video}</div>
-          <div>한국어 자막: {report.srt}</div>
-          {report.summary.missingIndexes.length > 0 && (
-            <div style={{ color: 'var(--amber)' }}>
-              소리가 없어 빠진 줄 {report.summary.missingIndexes.length}개 — 그 줄은 원본 그대로 비어 있습니다.
+      {/* ─ 5. 영상 만들기 ────────────────────────────────────────────────── */}
+      {front && (
+        <StepCard step={stepOf('render')}>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+            <Btn onClick={() => void exportVideo()} disabled={disabled || missingCount === lines.length}
+              primary={missingCount < lines.length}>
+              영상 만들기
+            </Btn>
+            {missingCount > 0 && missingCount < lines.length && (
+              <span style={{ fontSize: 11, color: 'var(--amber)' }}>
+                소리가 없는 {missingCount}줄은 원본 그대로 비워 둡니다
+              </span>
+            )}
+          </div>
+          {report && (
+            <div style={{ fontSize: 12, color: 'var(--text-muted)', lineHeight: 1.7 }}>
+              <div>영상: {report.video}</div>
+              <div>한국어 자막: {report.srt}</div>
+              {report.summary.missingIndexes.length > 0 && (
+                <div style={{ color: 'var(--amber)' }}>
+                  소리가 없어 빠진 줄 {report.summary.missingIndexes.length}개 — 그 줄은 원본 그대로 비어 있습니다.
+                </div>
+              )}
+              {report.summary.trimmed > 0 && (
+                <div style={{ color: 'var(--amber)' }}>
+                  영상 끝을 넘어 잘린 줄 {report.summary.trimmed}개.
+                </div>
+              )}
             </div>
           )}
-          {report.summary.trimmed > 0 && (
-            <div style={{ color: 'var(--amber)' }}>
-              영상 끝을 넘어 잘린 줄 {report.summary.trimmed}개.
-            </div>
-          )}
-        </div>
+        </StepCard>
       )}
+
+      {/* ─ 만든 것이 어디 있는가 — 단계가 아니라 **살림살이**다 ──────────
+          (2026-09-26 신고: "파일이 어디에 만들어지는지 사용자가 어찌 아는가") */}
+      <div style={{
+        display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
+        paddingTop: 8, borderTop: '1px solid var(--border-subtle)',
+      }}>
+        {workDir && (
+          <Btn onClick={() => void window.api.app.openFolder(workDir)} disabled={disabled}>
+            만든 것 열기
+          </Btn>
+        )}
+        <Btn onClick={() => void pickWorkRoot()} disabled={disabled}>자리 바꾸기</Btn>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
+          {workRoot ? `만든 것이 쌓이는 자리: ${workRoot}` : '만든 것이 쌓이는 자리를 고를 수 있습니다'}
+        </span>
+      </div>
     </div>
   )
 }
 
 const DUB_STAGES_HINT = Object.values(DUB_STAGE_LABELS).join(' → ')
 
-function Header(props: {
-  videoPath: string
-  voice: { path: string; ref: CommittedRef | null; message: string }
+/** 경로에서 **이름만** 꺼낸다 — 화면에 폴더를 늘어놓지 않는다. */
+function baseName(p: string): string {
+  return p.split(SEP_BACK).join('/').split('/').pop() || ''
+}
+const SEP_BACK = String.fromCharCode(92)
+
+/** 다섯 단계를 한 줄로 — **어디쯤 왔는지** 한눈에. */
+function StepBar(props: { steps: DubStep[] }): ReactElement {
+  return (
+    <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap', alignItems: 'center' }}>
+      {props.steps.map((s, i) => (
+        <span key={s.key} style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+          {i > 0 && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>›</span>}
+          <span style={{
+            fontSize: 11, padding: '3px 9px', borderRadius: 999,
+            background: s.done ? 'var(--emerald, #34d399)' : s.active ? 'var(--cyan)' : 'transparent',
+            color: s.done || s.active ? '#0b0d10' : 'var(--text-muted)',
+            border: '1px solid var(--border-subtle)',
+            fontWeight: s.active ? 700 : 500,
+          }}>{s.done ? '✓ ' : `${s.no}. `}{s.title}</span>
+        </span>
+      ))}
+    </div>
+  )
+}
+
+/**
+ * 한 단계를 담는 자리.
+ *
+ * ★단추만 평평하게 깔지 않는다 — 번호와 제목이 붙어야 "무엇을 하는 화면인지" 읽힌다.
+ *   막혀 있으면 **그 이유를 같은 줄에 적는다**(흐릿한 단추만 두면 고장으로 읽힌다).
+ */
+function StepCard(props: { step: DubStep; note?: string; children: ReactNode }): ReactElement {
+  const s = props.step
+  return (
+    <section style={{
+      display: 'flex', flexDirection: 'column', gap: 8,
+      padding: '10px 12px', borderRadius: 10, background: 'var(--bg-card)',
+      border: `1px solid ${s.active ? 'var(--cyan)' : 'var(--border-subtle)'}`,
+      opacity: s.blocked ? 0.65 : 1,
+    }}>
+      <div style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap' }}>
+        <span style={{
+          width: 20, height: 20, borderRadius: 999, fontSize: 11, fontWeight: 700,
+          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+          background: s.done ? 'var(--emerald, #34d399)' : s.active ? 'var(--cyan)' : 'transparent',
+          color: s.done || s.active ? '#0b0d10' : 'var(--text-muted)',
+          border: '1px solid var(--border-subtle)',
+        }}>{s.done ? '✓' : s.no}</span>
+        <strong style={{ fontSize: 13, color: 'var(--text)' }}>{s.title}</strong>
+        {s.blocked && <span style={{ fontSize: 11, color: 'var(--amber)' }}>{s.blocked}</span>}
+        {props.note && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{props.note}</span>}
+      </div>
+      {props.children}
+    </section>
+  )
+}
+
+/**
+ * 목소리를 어디서 가져올지 — **두 길을 눈으로 구분한다.**
+ *
+ * ★2026-09-26 신고: "영상 속 목소리 쓰기는 버튼이 똑같아서 식별도 안 된다."
+ *   같은 모양 단추 둘을 나란히 두면 사용자는 둘이 같은 일을 한다고 읽는다.
+ *   길마다 테두리 색과 한 줄 설명을 따로 준다 — 글자만 다른 것으로는 부족하다.
+ */
+function VoiceLanes(props: {
   disabled: boolean
+  picked: boolean
+  message: string
   /** 잠긴 이유. 비면 쓸 수 있다. */
   useOriginalReason: string
-  onPickVideo: () => void
   onPickVoice: () => void
   onUseOriginal: () => void
 }): ReactElement {
-  const name = props.videoPath.replace(/\\/g, '/').split('/').pop() || ''
-  const voiceName = props.voice.path.replace(/\\/g, '/').split('/').pop() || ''
+  const lane = (accent: string, on: boolean): React.CSSProperties => ({
+    display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 12px',
+    borderRadius: 9, background: 'var(--bg-input, #1b1d23)',
+    border: '1px solid var(--border-subtle)',
+    borderLeftWidth: 3, borderLeftStyle: 'solid', borderLeftColor: accent,
+    opacity: on ? 1 : 0.7,
+  })
   return (
-    <div style={{ display: 'flex', gap: 10, flexWrap: 'wrap', alignItems: 'center' }}>
-      <Btn onClick={props.onPickVideo} disabled={props.disabled}>영상 고르기</Btn>
-      <span style={{ fontSize: 12, color: name ? 'var(--text)' : 'var(--text-muted)' }}>
-        {name || '아직 고르지 않았습니다'}
-      </span>
-      <span style={{ width: 1, height: 18, background: 'var(--border-subtle)' }} />
-      <Btn onClick={props.onPickVoice} disabled={props.disabled}>목소리 고르기</Btn>
-      <Btn onClick={props.onUseOriginal} disabled={!!props.useOriginalReason}
-        title={props.useOriginalReason}>
-        영상 속 목소리 쓰기
-      </Btn>
-      {/* 흐릿한 단추만 두면 "고장" 으로 읽힌다 — 다음에 할 일을 적는다. */}
-      {props.useOriginalReason && (
-        <span style={{ fontSize: 11, color: 'var(--amber)' }}>
-          {props.useOriginalReason}
+    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(230px, 1fr))', gap: 8 }}>
+      <div style={lane('var(--cyan)', !props.useOriginalReason)}>
+        <strong style={{ fontSize: 12, color: 'var(--text)' }}>이 영상 속 목소리 그대로</strong>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+          {DUB_ORIGINAL_VOICE_WHY}
         </span>
-      )}
-      <span style={{
-        fontSize: 12,
-        color: props.voice.ref ? 'var(--emerald)' : 'var(--text-muted)',
+        <Btn onClick={props.onUseOriginal} disabled={!!props.useOriginalReason}
+          title={props.useOriginalReason}>영상에서 가져오기</Btn>
+        {props.useOriginalReason && (
+          <span style={{ fontSize: 11, color: 'var(--amber)' }}>
+            {props.useOriginalReason}
+          </span>
+        )}
+      </div>
+
+      <div style={lane('var(--violet, #a78bfa)', true)}>
+        <strong style={{ fontSize: 12, color: 'var(--text)' }}>다른 목소리로 바꾸기</strong>
+        <span style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+          {DUB_PICKED_VOICE_WHY}
+        </span>
+        <Btn onClick={props.onPickVoice} disabled={props.disabled}>소리 파일 고르기</Btn>
+      </div>
+
+      <div style={{
+        gridColumn: '1 / -1', fontSize: 12,
+        color: props.picked ? 'var(--emerald)' : 'var(--text-muted)',
       }}>
-        {props.voice.ref ? `${voiceName} · 준비됨` : (props.voice.message || '아직 고르지 않았습니다')}
-      </span>
+        {props.picked ? '목소리 준비됨' : (props.message || '아직 정하지 않았습니다')}
+      </div>
     </div>
   )
 }
