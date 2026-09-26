@@ -228,6 +228,36 @@ def convert_song(video, reference, work_dir, *, voice_name='목소리',
     if not vocals or not inst:
         raise SongChainError('반주 분리 결과를 찾지 못했습니다(%d개).' % len(files1))
 
+    return convert_from_vocals(
+        vocals, inst, reference, work_dir, voice_name=voice_name, log=log,
+        separate_fn=sep_fn, convert_fn=conv_fn, run=run,
+        pitch_fn=pitch_fn, split_lead=split_lead)
+
+
+def convert_from_vocals(vocals, instrumental, reference, work_dir, *,
+                        voice_name='목소리', log=None,
+                        separate_fn=None, convert_fn=None, run=subprocess.run,
+                        pitch_fn=None, split_lead=True):
+    """**이미 갈라 둔 보컬**로 이어서 한다. 갈라내기를 두 번 하지 않기 위한 문이다.
+
+    ★왜 이 문이 생겼나 (2026-09-26)
+      더빙과 따라부르기는 **앞뒤가 같고 가운데만 다른 한 기능**이다.
+      그런데 나는 둘을 따로 만들어, 더빙이 이미 갈라 둔 보컬이 있는데도
+      따라부르기가 **같은 갈라내기를 다시** 하게 해 놓았다.
+      사용자 지적으로 드러났다 — "음원을 대체 몇 번을 불러내야 하는가".
+
+      이제 더빙 앞단이 만든 `vocals.wav` · `background.wav` 를 그대로 받는다.
+    """
+    say = log or (lambda _m: None)
+    sep_fn = separate_fn or separate
+    conv_fn = convert_fn or song_voice.convert_vocal
+    os.makedirs(work_dir, exist_ok=True)
+    for what, p in (('보컬', vocals), ('반주', instrumental), ('참조 목소리', reference)):
+        if not p or not os.path.isfile(p):
+            raise SongChainError('%s 파일이 없습니다: %s'
+                                 % (what, os.path.basename(p or '')))
+    inst = instrumental
+
     # ★두 번째 가르기는 **곡에 따라 독이 된다.**
     #
     #   2026-09-20: 겹쳐 부른 화음이 섞인 채로 변환기에 넣으면 두 음높이 사이에서

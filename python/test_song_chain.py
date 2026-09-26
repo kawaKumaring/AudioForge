@@ -96,6 +96,11 @@ class TestChainDoesNotSkipSteps(unittest.TestCase):
         self.d = tempfile.mkdtemp(prefix='afsc-')
         self.calls = []
         self.shift = None
+        # ★가짜 경로 대신 진짜 파일을 쓴다. 사슬이 GPU 를 쓰기 전에 파일 존재를
+        #   확인하기 때문이다 — 그 확인은 옳으므로 검사를 맞춘다.
+        self.ref = os.path.join(self.d, 'ref.wav')
+        with io.open(self.ref, 'w', encoding='utf-8') as f:
+            f.write('x')
 
     def _sep(self, src, out_dir, key):
         self.calls.append(key)
@@ -125,7 +130,7 @@ class TestChainDoesNotSkipSteps(unittest.TestCase):
         return type('R', (), {'returncode': 0, 'stderr': b''})()
 
     def test_두_분리를_모두_거치고_주보컬만_변환한다(self):
-        out = sc.convert_song('v.mp4', 'ref.wav', self.d, voice_name='A',
+        out = sc.convert_song('v.mp4', self.ref, self.d, voice_name='A',
                               ref_sec=8.0, song_sec=240.0,
                               separate_fn=self._sep, convert_fn=self._conv, pitch_fn=False,
                               run=self._run)
@@ -139,7 +144,7 @@ class TestChainDoesNotSkipSteps(unittest.TestCase):
             self.assertTrue(os.path.isfile(p), '만들었다는 파일이 없다: %s' % p)
 
     def test_기록을_남긴다(self):
-        sc.convert_song('v.mp4', 'ref.wav', self.d, voice_name='A', ref_sec=8.0,
+        sc.convert_song('v.mp4', self.ref, self.d, voice_name='A', ref_sec=8.0,
                         separate_fn=self._sep, convert_fn=self._conv, pitch_fn=False, run=self._run)
         note = os.path.join(self.d, '쓴목소리.json')
         self.assertTrue(os.path.isfile(note), '무엇으로 만들었는지 남기지 않았다')
@@ -149,14 +154,14 @@ class TestChainDoesNotSkipSteps(unittest.TestCase):
             os.makedirs(out_dir, exist_ok=True)
             return []
         with self.assertRaises(sc.SongChainError):
-            sc.convert_song('v.mp4', 'ref.wav', self.d, ref_sec=8.0,
+            sc.convert_song('v.mp4', self.ref, self.d, ref_sec=8.0,
                             separate_fn=empty, convert_fn=self._conv, run=self._run, pitch_fn=False)
 
 
     # ★어떤 곡에서는 두 번째 가르기가 말을 통째로 앗아간다(2026-09-26 청취 확인).
     #   그래서 건너뛸 수 있어야 하고, 건너뛰었다는 사실이 기록에 남아야 한다.
     def test_가르기를_건너뛰면_보컬_전체를_변환한다(self):
-        out = sc.convert_song('v.mp4', 'ref.wav', self.d, voice_name='A',
+        out = sc.convert_song('v.mp4', self.ref, self.d, voice_name='A',
                               ref_sec=8.0, split_lead=False,
                               separate_fn=self._sep, convert_fn=self._conv,
                               pitch_fn=False, run=self._run)
@@ -169,7 +174,7 @@ class TestChainDoesNotSkipSteps(unittest.TestCase):
 
     def test_건너뛴_사실이_기록에_남는다(self):
         import json
-        sc.convert_song('v.mp4', 'ref.wav', self.d, voice_name='A', ref_sec=8.0,
+        sc.convert_song('v.mp4', self.ref, self.d, voice_name='A', ref_sec=8.0,
                         split_lead=False, separate_fn=self._sep,
                         convert_fn=self._conv, pitch_fn=False, run=self._run)
         with io.open(os.path.join(self.d, '쓴목소리.json'), encoding='utf-8') as f:
@@ -212,6 +217,82 @@ class TestOctaveShift(unittest.TestCase):
     def test_잴_수_없으면_옮기지_않는다(self):
         self.assertEqual(sc.octave_shift(0.0, 355.0), 0)
         self.assertEqual(sc.octave_shift(519.0, 0.0), 0)
+
+class TestReusesAlreadySeparated(unittest.TestCase):
+    """★더빙이 이미 갈라 둔 보컬을 그대로 쓴다 — 같은 일을 두 번 하지 않는다.
+
+      2026-09-26 사용자 지적: "음원을 대체 몇 번을 불러내야 하는가".
+      더빙과 따라부르기는 앞뒤가 같고 가운데만 다른 한 기능인데, 내가 둘을 따로
+      만들어 갈라내기를 두 번 하게 해 놓았다. 이 문이 그것을 없앤다.
+    """
+
+    def setUp(self):
+        import tempfile
+        self.d = tempfile.mkdtemp(prefix='afsc2-')
+        self.calls = []
+        def mk(name):
+            p = os.path.join(self.d, name)
+            with io.open(p, 'w', encoding='utf-8') as f:
+                f.write('x')
+            return p
+        # 더빙 앞단이 만드는 이름 그대로
+        self.vocals = mk('vocals.wav')
+        self.bg = mk('background.wav')
+        self.ref = mk('ref.wav')
+
+    def _sep(self, src, out_dir, key):
+        self.calls.append(key)
+        os.makedirs(out_dir, exist_ok=True)
+        made = []
+        for n in ('a_(Vocals)_x.wav', 'a_(Instrumental)_x.wav'):
+            p = os.path.join(out_dir, n)
+            with io.open(p, 'w', encoding='utf-8') as f:
+                f.write('x')
+            made.append(p)
+        return made
+
+    def _conv(self, lead, ref, out_dir, log=None, semitones=0):
+        os.makedirs(out_dir, exist_ok=True)
+        p = os.path.join(out_dir, 'made.wav')
+        with io.open(p, 'w', encoding='utf-8') as f:
+            f.write('x')
+        return p
+
+    def _run(self, args, **kw):
+        with io.open(args[-1], 'w', encoding='utf-8') as f:
+            f.write('x')
+        return type('R', (), {'returncode': 0, 'stderr': b''})()
+
+    def test_반주_갈라내기를_다시_하지_않는다(self):
+        sc.convert_from_vocals(self.vocals, self.bg, self.ref,
+                               os.path.join(self.d, 'w'), voice_name='A',
+                               separate_fn=self._sep, convert_fn=self._conv,
+                               pitch_fn=False, run=self._run, split_lead=False)
+        self.assertNotIn(sc.VOCAL_MODEL_KEY, self.calls,
+                         '이미 갈라 둔 것을 받고도 반주 갈라내기를 또 했다')
+
+    def test_주보컬_가르기는_고른_대로_한다(self):
+        sc.convert_from_vocals(self.vocals, self.bg, self.ref,
+                               os.path.join(self.d, 'w2'), voice_name='A',
+                               separate_fn=self._sep, convert_fn=self._conv,
+                               pitch_fn=False, run=self._run, split_lead=True)
+        self.assertEqual(self.calls, [sc.KARAOKE_MODEL_KEY],
+                         '두 번째 가르기만 해야 하는데 다른 것도 했다: %s' % self.calls)
+
+    def test_없는_파일은_GPU_쓰기_전에_막는다(self):
+        with self.assertRaises(sc.SongChainError) as e:
+            sc.convert_from_vocals(os.path.join(self.d, '없음.wav'), self.bg, self.ref,
+                                   os.path.join(self.d, 'w3'),
+                                   separate_fn=self._sep, convert_fn=self._conv,
+                                   pitch_fn=False, run=self._run)
+        self.assertIn('보컬', str(e.exception), '무엇이 없는지 말하지 않는다')
+
+    def test_두_진입점이_같은_뒷단을_쓴다(self):
+        """갈라진 구현이 둘이면 한쪽만 고쳐지는 일이 생긴다."""
+        with io.open(os.path.join(HERE, 'song_chain.py'), encoding='utf-8') as f:
+            src = f.read()
+        self.assertIn('return convert_from_vocals(', src,
+                      '곡 전체 경로가 공용 뒷단을 쓰지 않는다')
 
 class TestBoundaryToConverter(unittest.TestCase):
     """★변환기 사정이 이 파일로 새면, 모델을 갈아 끼울 때 여기도 뜯게 된다."""
