@@ -153,6 +153,30 @@ class TestChainDoesNotSkipSteps(unittest.TestCase):
                             separate_fn=empty, convert_fn=self._conv, run=self._run, pitch_fn=False)
 
 
+    # ★어떤 곡에서는 두 번째 가르기가 말을 통째로 앗아간다(2026-09-26 청취 확인).
+    #   그래서 건너뛸 수 있어야 하고, 건너뛰었다는 사실이 기록에 남아야 한다.
+    def test_가르기를_건너뛰면_보컬_전체를_변환한다(self):
+        out = sc.convert_song('v.mp4', 'ref.wav', self.d, voice_name='A',
+                              ref_sec=8.0, split_lead=False,
+                              separate_fn=self._sep, convert_fn=self._conv,
+                              pitch_fn=False, run=self._run)
+        self.assertEqual(self.calls[0], sc.VOCAL_MODEL_KEY, '반주 분리는 해야 한다')
+        self.assertNotIn(sc.KARAOKE_MODEL_KEY, self.calls,
+                         '건너뛰라고 했는데 두 번째 가르기를 했다')
+        self.assertIn('화음없이', out)
+        self.assertNotIn('원래화음같이', out,
+                         '화음을 갈라내지 않았는데 화음 섞은 것을 내놓는다')
+
+    def test_건너뛴_사실이_기록에_남는다(self):
+        import json
+        sc.convert_song('v.mp4', 'ref.wav', self.d, voice_name='A', ref_sec=8.0,
+                        split_lead=False, separate_fn=self._sep,
+                        convert_fn=self._conv, pitch_fn=False, run=self._run)
+        with io.open(os.path.join(self.d, '쓴목소리.json'), encoding='utf-8') as f:
+            note = json.load(f)
+        self.assertEqual(note.get('주보컬 가르기'), '건너뜀',
+                         '무엇을 건너뛰었는지 기록에 없으면 나중에 알 수 없다')
+
 class TestOctaveShift(unittest.TestCase):
     """★2026-09-26 사용자 신고 — "목소리가 안 바뀌고 끅끅대며 숨소리만 난다."
 

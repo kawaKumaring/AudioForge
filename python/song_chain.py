@@ -198,7 +198,7 @@ def mix(sources, dest, *, run=subprocess.run):
 def convert_song(video, reference, work_dir, *, voice_name='목소리',
                  ref_sec=None, song_sec=None, log=None,
                  separate_fn=None, convert_fn=None, run=subprocess.run,
-                 pitch_fn=None):
+                 pitch_fn=None, split_lead=True):
     """곡 하나를 끝까지. 만들어진 것들의 경로를 돌려준다.
 
     ★단계마다 **결과가 없으면 거기서 멈춘다.** 빈손을 다음 칸에 넘기지 않는다 —
@@ -228,14 +228,28 @@ def convert_song(video, reference, work_dir, *, voice_name='목소리',
     if not vocals or not inst:
         raise SongChainError('반주 분리 결과를 찾지 못했습니다(%d개).' % len(files1))
 
-    # ★이 단계를 건너뛰면 겹친 목소리가 변환기에 들어가 기계음이 난다. 반드시 거친다.
-    say('주 보컬과 화음 가르는 중')
-    d2 = os.path.join(work_dir, '2_주보컬분리')
-    files2 = _cached_or(d2, lambda: sep_fn(vocals, d2, KARAOKE_MODEL_KEY))
-    lead = pick_by_last_tag(files2, 'Vocals')
-    harm = pick_by_last_tag(files2, 'Instrumental')
-    if not lead or not harm:
-        raise SongChainError('주 보컬 분리 결과를 찾지 못했습니다(%d개).' % len(files2))
+    # ★두 번째 가르기는 **곡에 따라 독이 된다.**
+    #
+    #   2026-09-20: 겹쳐 부른 화음이 섞인 채로 변환기에 넣으면 두 음높이 사이에서
+    #     헤매 기계음이 난다 — 그래서 이 단계를 넣었다.
+    #   2026-09-26: 그런데 어떤 곡에서는 이 단계가 **말을 통째로 앗아간다.**
+    #     사용자 청취로 확인됐다 — 반주만 걷어낸 보컬에는 말이 있는데, 한 번 더
+    #     가른 '주보컬' 에는 없었다. 결과는 숨소리만 헐떡이는 소리였다.
+    #
+    #   둘 다 참이다. 그래서 **고를 수 있게** 두고, 무엇을 골랐는지 기록에 남긴다.
+    #   신호 지표로는 어느 쪽인지 가려내지 못했다(다섯 가지로 재 봤고 전부 실패).
+    #   지금 이것을 가릴 수 있는 것은 **귀뿐**이다.
+    lead, harm = vocals, None
+    if split_lead:
+        say('주 보컬과 화음 가르는 중')
+        d2 = os.path.join(work_dir, '2_주보컬분리')
+        files2 = _cached_or(d2, lambda: sep_fn(vocals, d2, KARAOKE_MODEL_KEY))
+        lead = pick_by_last_tag(files2, 'Vocals')
+        harm = pick_by_last_tag(files2, 'Instrumental')
+        if not lead or not harm:
+            raise SongChainError('주 보컬 분리 결과를 찾지 못했습니다(%d개).' % len(files2))
+    else:
+        say('주 보컬 가르기를 건너뛴다 — 보컬 전체를 그대로 바꾼다')
 
     # ★음역을 맞춘다 — 안 맞추면 음색이 아예 안 입혀진다(위 octave_shift 참고).
     shift, song_hz, voice_hz = 0, 0.0, 0.0
@@ -256,15 +270,18 @@ def convert_song(video, reference, work_dir, *, voice_name='목소리',
     say('합치는 중')
     plain = mix([inst, converted],
                 os.path.join(work_dir, '완성_화음없이_%s.wav' % voice_name), run=run)
-    withharm = mix([inst, harm, converted],
-                   os.path.join(work_dir, '완성_원래화음같이_%s.wav' % voice_name), run=run)
-
-    out = {'주보컬만': converted, '화음없이': plain, '원래화음같이': withharm}
+    out = {'주보컬만': converted, '화음없이': plain}
+    # 화음을 따로 갈라낸 때만 '원래 화음까지' 를 만들 수 있다.
+    if harm:
+        out['원래화음같이'] = mix(
+            [inst, harm, converted],
+            os.path.join(work_dir, '완성_원래화음같이_%s.wav' % voice_name), run=run)
     note = {'쓴 목소리': voice_name,
             '곡 주보컬 음높이Hz': round(song_hz), '목소리 음높이Hz': round(voice_hz),
             '옮긴 옥타브': (shift // 12) if shift else 0,
             '음높이': ('옥타브만 옮김 — 음은 그대로라 반주와 어긋나지 않는다'
                      if shift else '원곡 그대로'),
+            '주보컬 가르기': '했음' if split_lead else '건너뜀',
             '되풀이 단계': song_voice.DIFFUSION_STEPS, '만든 것': out}
     with open(os.path.join(work_dir, '쓴목소리.json'), 'w', encoding='utf-8') as f:
         json.dump(note, f, ensure_ascii=False, indent=2)
