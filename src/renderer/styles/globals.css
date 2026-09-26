@@ -5,22 +5,24 @@
 @import '@fontsource/inter/700.css';
 
 :root {
-  --bg-base: #08080c;
-  --bg-primary: #0c0c14;
-  --bg-card: #111119;
-  --bg-elevated: #16161f;
-  --bg-hover: #1c1c2a;
-  --bg-input: #0e0e16;
-  --border-subtle: rgba(255, 255, 255, 0.06);
-  --border-default: rgba(255, 255, 255, 0.08);
+  --bg-base: #111319;
+  --bg-primary: #14161d;
+  --bg-card: #191c24;
+  --bg-elevated: #222632;
+  --bg-hover: #292d3b;
+  --bg-input: #13161e;
+  --border-subtle: rgba(210, 219, 246, 0.085);
+  --border-default: rgba(210, 219, 246, 0.14);
   --border-accent: rgba(139, 92, 246, 0.3);
-  --text-primary: #f0f0f8;
-  --text-secondary: #9898b0;
+  --text-primary: #eff0f6;
+  --text: var(--text-primary);
+  --text-faint: #9297aa;
+  --text-secondary: #b1b6c8;
   /* 대비 개선: 기존 #555568은 어두운 배경에서 본문 대비가 낮아 상향 (WCAG 가독성) */
-  --text-muted: #8a8aa4;
+  --text-muted: #9297aa;
   --accent: #8b5cf6;
   --accent-light: #a78bfa;
-  --accent-glow: rgba(139, 92, 246, 0.2);
+  --accent-glow: rgba(139, 112, 240, 0.12);
   --accent-glow-strong: rgba(139, 92, 246, 0.35);
   --cyan: #22d3ee;
   --cyan-glow: rgba(34, 211, 238, 0.15);
@@ -41,7 +43,9 @@
 
 html, body, #root {
   height: 100%;
-  font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+  font-family: 'Inter', 'Segoe UI', 'Malgun Gothic', -apple-system, sans-serif;
+  font-size: 14px;
+  -webkit-font-smoothing: antialiased;
   background: var(--bg-base);
   color: var(--text-primary);
   overflow: hidden;
@@ -267,4 +271,21 @@ input[type="range"]:focus-visible {
   .tts-flow-head > span:nth-child(4) {
     flex-basis: 100%;
   }
+}
+
+/* Shared workspace controls. Layout remains inline for Electron/Tailwind consistency. */
+button, input, select, textarea { font-family: inherit; }
+button { transition: background-color 140ms ease, border-color 140ms ease, color 140ms ease; }
+button:disabled { cursor: not-allowed; opacity: .48; }
+.workspace-nav-item:hover:not(:disabled), .source-dropzone:hover:not(:disabled) { filter: brightness(1.14); }
+.source-dropzone:hover:not(:disabled) { border-color: var(--accent-light) !important; }
+.workspace-nav-item:focus-visible { outline-offset: -2px; }
+::selection { background: rgba(139, 112, 240, .34); }
+@keyframes workspace-level {
+  0%, 100% { transform: scaleY(.35); }
+  50% { transform: scaleY(1); }
+}
+.workspace-activity > span { animation: workspace-level 900ms ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .workspace-activity > span { animation: none; }
 }

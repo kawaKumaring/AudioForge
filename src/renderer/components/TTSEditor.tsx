@@ -1,6 +1,10 @@
 import { useState, useEffect, useRef, useMemo } from 'react'
 import type { CSSProperties } from 'react'
 import { useAppStore, emotionEffectivePath, castSpeakerIdOf, applySpeakerRenames, refPhaseOf } from '@/stores/app.store'
+import { useLabStore } from '@/stores/lab.store'
+import { appendDraftText, sentenceDraftText } from '../../shared/synthesisDraftReuse'
+import SynthesisReuseBar from './SynthesisReuseBar'
+import { isCancelCleanupBusy } from '../../shared/cancelContract'
 import type { EmotionRefState } from '@/stores/app.store'
 import type { RefPhase } from '../../shared/referencePolicy'
 import type { TtsReferenceEntry, PitchCapability, TtsEmotionRegion } from '../../shared/ttsConfig'
@@ -249,7 +253,7 @@ async function runPreview(gen: number, path: string, region?: { start: number; d
 // ExpressionControls를 실제 props 계약으로 배선한다. 편집 알고리즘은 A 컴포넌트가 소유(I5-b는 그 동작 검증).
 // 모든 effect/analyze/preflight는 이 단일 컴포넌트에 유지 → 신규 하위 패널 재렌더로 중복 실행되지 않는다.
 export default function TTSEditor() {
-  const { mode, status, fileInfo, ttsEmotionRefState, ttsSpeakerRefState, ttsSpeakerLabels, ttsSpeakerEmotionRefs,
+  const { mode, status, resultMode, errorInfo, fileInfo, ttsEmotionRefState, ttsSpeakerRefState, ttsSpeakerLabels, ttsSpeakerEmotionRefs,
     ttsSpeakerEmotionEnabled, setSpeakerEmotionEnabled, ttsSpeakerMode, setTtsSpeakerMode,
     registerSpeakerRef, removeSpeakerRef, setSpeakerRefState, setSpeakerInherit, moveSpeakerRef, setSpeakerLabel, ttsSpeakerInherit, ttsSpeakerRenames,
     registerEmotionRef, removeEmotionRef, setEmotionRefState, setTtsRefState, beginTtsRefRequest, ttsRefReqId, ttsRefReady, ttsRefMessage, ttsReferenceClip, ttsPitchCapability, setTtsPitchCapability,
@@ -258,6 +262,10 @@ export default function TTSEditor() {
     setSpeakerEmotionRefs } = useAppStore()
   // 로컬 상태는 store 값으로 초기화 — 빈 값으로 시작하면 아래 동기화 useEffect가 다른 모드에 다녀온 뒤 store를 덮어써 유실시킴
   const [ttsText, setTtsText] = useState(() => useAppStore.getState().ttsText)
+  const sentenceLines = useLabStore((s) => s.doc.lines)
+  const sentenceDraftLoaded = useLabStore((s) => s.loaded)
+  const sentenceScript = sentenceDraftText(sentenceLines)
+  const [draftReuseNotice, setDraftReuseNotice] = useState('')
   const [ttsSpeed, setTtsSpeed] = useState(() => useAppStore.getState().ttsSpeed)
   const [ttsSilenceGap, setTtsSilenceGap] = useState(() => useAppStore.getState().ttsSilenceGap)
   const [ttsPitch, setTtsPitch] = useState(() => useAppStore.getState().ttsPitch)
@@ -417,6 +425,7 @@ export default function TTSEditor() {
   // ── PHASE B 기본 화면 상태 ──
   // 고급 설정(4탭)의 열림·탭은 셸이 소유한다 — 결과 오류 카드가 특정 자리를 열어 달라고 요청할 수 있어야 한다.
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const [advancedTab, setAdvancedTab] = useState<TtsAdvancedTab>('voice')
   // '사용 구간 바꾸기' — 평소에는 접혀 있고, 앱이 자동으로 고른 구간을 그대로 쓴다.
   const [regionOpen, setRegionOpen] = useState(false)
@@ -434,7 +443,7 @@ export default function TTSEditor() {
   const [previewError, setPreviewError] = useState<string | null>(null)   // 감정 참조 미리듣기 실패(사용자 언어)
   const editorRef = useRef<EmotionScriptEditorHandle>(null)
   const pitchCap = ttsPitchCapability
-  const disabled = status === 'processing'
+  const disabled = status === 'processing' || isCancelCleanupBusy(status) || errorInfo?.childAlive === true
 
   // Sync to store (감정 참조 상태는 store가 단일 소스라 여기서 동기화하지 않는다)
   useEffect(() => {
@@ -486,20 +495,34 @@ export default function TTSEditor() {
   // ── 목소리 교체(기본 화면 '다른 목소리 선택') ────────────────────────────
   // TTS 에서 참조 목소리는 곧 지금 올린 파일이다. 새 IPC 를 만들지 않고 기존 파일 적재 경로를 그대로 쓴다.
   // setFile 이 이전 파생 클립·준비 상태·전사를 정리하므로 다른 원본의 흔적이 새 목소리에 섞이지 않는다.
+  const voicePickId = useRef(0)
+  const [pickingVoice, setPickingVoice] = useState(false)
+  useEffect(() => () => { voicePickId.current++ }, [])
   const pickAnotherVoice = async (): Promise<void> => {
-    if (disabled) return
-    const p = await window.api.audio.selectFile()
-    if (!p) return
+    if (disabled || pickingVoice) return
+    const request = ++voicePickId.current
+    const before = useAppStore.getState().fileInfo
+    setPickingVoice(true)
+    const stillCurrent = () => {
+      const st = useAppStore.getState()
+      return request === voicePickId.current && st.fileInfo === before && st.status !== 'processing'
+        && !isCancelCleanupBusy(st.status) && !st.errorInfo?.childAlive
+    }
     try {
-      const info = await window.api.audio.getFileInfo(p)
-      const url = await window.api.audio.getFileUrl(p)
+      const p = await window.api.audio.selectFile()
+      if (!p || !stillCurrent()) return
+      const [info, url] = await Promise.all([window.api.audio.getFileInfo(p), window.api.audio.getFileUrl(p)])
+      if (!stillCurrent()) return
       ensuredReferenceKey.current = ''
       setSamplerKeys({})
+      setPreviewError(null)
       setQuickNotice(null)
       setRegionOpen(false)
       useAppStore.getState().setFile(info, url)
     } catch {
-      setQuickNotice('이 파일을 열 수 없습니다. 다른 파일을 골라 주세요.')
+      if (stillCurrent()) setPreviewError('파일을 열지 못했습니다. 위치와 접근 권한을 확인한 뒤 다시 선택하세요.')
+    } finally {
+      if (request === voicePickId.current) setPickingVoice(false)
     }
   }
 
@@ -751,8 +774,8 @@ export default function TTSEditor() {
   // 실행 카드의 한 줄 안내. 실행 중에는 '누르면 시작합니다'가 남지 않는다 — 그때 눌러야 할 것은 취소다.
   const runHint = status === 'processing' ? '만드는 중입니다. 창을 닫지 마세요'
     : status === 'cancelling' ? '취소하고 정리하는 중입니다'
-    : status === 'done' ? '다 만들었습니다'
-    : status === 'error' ? '만들지 못했습니다'
+    : resultMode === mode && status === 'done' ? '다 만들었습니다'
+    : resultMode === mode && status === 'error' ? '만들지 못했습니다'
     : '시작 버튼을 누르면 시작합니다'
   const emotionTagOf = (id: string) => '[' + (EMOTION_ID_TO_LABEL[id] ?? id) + ']'
   // 원문 편집기가 보이는 때: 한 명 | 여러 명의 직접 편집 열림 | 구조화할 수 없는 대본(이유와 함께).
@@ -783,7 +806,7 @@ export default function TTSEditor() {
     if (speakerId === 'default') {
       if (!fileInfo?.path) return null
       return {
-        registered: true, ready: !!ttsRefReady,
+        registered: true, ready: !!ttsRefReady, sourcePath: fileInfo.path,
         region: ttsReferenceRegion ?? null, message: ttsRefMessage,
         fileName: (fileInfo.path || '').split(/[\/]/).pop() || '',
         decision: resolveReferenceDecision('default', null, speakerReadiness),
@@ -793,7 +816,7 @@ export default function TTSEditor() {
     const row = speakerUiRows.find((r) => r.speakerId === speakerId)
     if (row) {
       return { registered: row.registered, ready: row.ready, phase: row.phase,
-        fileName: row.fileName, decision: row.decision,
+        fileName: row.fileName, sourcePath: ttsSpeakerRefState[speakerId]?.source, decision: row.decision,
         region: row.region ?? null, message: row.message,
         sharedWith: row.sharedWith, emotionOverrides: emotionOverridesOf(speakerId),
         emotionVoiceAvailable: emotionVoiceAvailableOf(speakerId),
@@ -804,7 +827,7 @@ export default function TTSEditor() {
     if (!slot) return null
     const fp = speakerFingerprints[speakerId]
     return {
-      registered: true, ready: !!slot.ready, phase: refPhaseOf(slot),
+      registered: true, ready: !!slot.ready, phase: refPhaseOf(slot), sourcePath: slot.source,
       region: slot.region ?? null, message: slot.message,
       fileName: (slot.source || '').split(/[\\/]/).pop() || '',
       decision: resolveReferenceDecision(speakerId, null, speakerReadiness),
@@ -955,7 +978,7 @@ export default function TTSEditor() {
     voicePrep.clearVoiceReplaceNotice()
     beginTtsRefRequest()
   }
-  const defaultVoiceChangeNotice = '기본 인물의 목소리는 처음 불러온 파일입니다. 다른 목소리로 바꾸려면 위쪽에서 파일을 다시 불러오거나, 이 대사에 인물을 지정해 주세요.'
+  const defaultVoiceChangeNotice = '기본 인물은 현재 참조 파일의 목소리를 씁니다. 위의 참조 파일을 바꾸거나, 이 대사에 배역을 지정해 목소리를 고르세요.'
   const { autoPrep, renderSpeakerRegion, voiceReplaceNotice } = voicePrep
 
 
@@ -968,6 +991,7 @@ export default function TTSEditor() {
 
   // 활성 배역에서 **고른 하나씩만** 생성 설정으로 흘린다. 후보·자산 목록은 가지 않는다.
   useEffect(() => {
+    if (!voiceCast.loaded) return
     const active = findVoiceCast(voiceCast.casts, voiceCast.activeVoiceCastId)
     if (!active) {
       setSpeakerEmotionRefs({})   // 활성 배역이 없으면 기존 계약 그대로다
@@ -977,7 +1001,7 @@ export default function TTSEditor() {
     // 저장된 구성은 그대로 두고, 현재 작업에서 이름을 바꾼 인물은 별칭으로 옮겨 읽는다(정체성·자산 연결 유지).
     setSpeakerEmotionRefs(
       applySpeakerRenames(toSpeakerEmotionRefs(reg, active.selections, {}, () => undefined), ttsSpeakerRenames))
-  }, [voiceCast.casts, voiceCast.assets, voiceCast.activeVoiceCastId, setSpeakerEmotionRefs, ttsSpeakerRenames])
+  }, [voiceCast.loaded, voiceCast.casts, voiceCast.assets, voiceCast.activeVoiceCastId, setSpeakerEmotionRefs, ttsSpeakerRenames])
 
   const addCastFiles = async (castId: string, speakerId: string, emotionId: string) => {
     const picked = await window.api.audio.selectFile(true, 'voice') as string[] | string | null
@@ -1061,8 +1085,8 @@ export default function TTSEditor() {
     if (v) { setTtsPitch(v.pitchSemitones); setTtsSpeed(v.speed); setTtsSilenceGap(v.sentenceGapMs / 1000) }
   }
 
-  const flowCard: CSSProperties = { borderRadius: 12, background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', overflow: 'hidden' }
-  const flowHead: CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)' }
+  const flowCard: CSSProperties = { background: 'var(--bg-base)', minWidth: 0 }
+  const flowHead: CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '16px 18px 8px' }
   const flowNum: CSSProperties = { width: 22, height: 22, borderRadius: 6, background: 'var(--bg-elevated)', display: 'inline-flex', alignItems: 'center', justifyContent: 'center', fontSize: 11, fontWeight: 700, color: 'var(--accent)', flexShrink: 0 }
   const plainBtn = (bg: string, color: string, off = false): CSSProperties => ({
     fontSize: 11, fontWeight: 600, padding: '6px 12px', borderRadius: 6, border: 'none',
@@ -1077,7 +1101,7 @@ export default function TTSEditor() {
   // 아직 아무 문구도 오지 않은 순간(분석 시작 직전)도 '준비 중'이다 — 빈 상태를 문제처럼 보이게 하지 않는다.
   const voicePreparing = !ttsRefReady && (!ttsRefMessage || /중입니다|중\.\.\.|고르는 중/.test(ttsRefMessage))
   const voiceProblem = !ttsRefReady && !voicePreparing
-  const voiceStatusText = ttsRefReady ? '준비됨' : (voicePreparing ? '준비하는 중…' : ttsRefMessage)
+  const voiceStatusText = !fileInfo ? '목소리 파일을 선택하세요' : ttsRefReady ? '준비됨' : (voicePreparing ? '준비하는 중…' : ttsRefMessage)
   const voiceStatusColor = ttsRefReady ? 'var(--cyan)' : (voiceProblem ? 'var(--rose)' : 'var(--text-muted)')
 
   // ── 감정 미리듣기(기본 3종) ──────────────────────────────────────────────
@@ -1202,319 +1226,21 @@ export default function TTSEditor() {
     </>
   )
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-      {/* ───────── 한 명 | 여러 명 — 합성 화면 전체를 전환하는 탭(합성 메뉴 바로 아래, 전체 폭). 대사 편집기의 옵션이 아니다. */}
-      <DialogueTabs tab={dialogueTab} onTab={setDialogueTab} disabled={disabled} />
-
-      {/* ───────── [1] 목소리 ───────── (한 명 전용)
-          기본 화면에 남는 것은 셋뿐이다: 선택한 목소리(+재생) / 다른 목소리 선택 / 사용 구간 바꾸기.
-          보관함·감정별 목소리·참조 전사는 '고급 설정 > 음성'으로 옮겼다(숨긴 것이지 없앤 것이 아니다). */}
-      {dialogueTab === 'single' && (
-      <TtsVoiceSection
-        referenceReady={ttsRefReady}
-        referenceMessage={ttsRefMessage}
-        showSettingHelp={showSettingHelp}
-        onToggleSettingHelp={setShowSettingHelp}
-        showHelpToggle={false}
-        statusSlot={
-          <span role="status" aria-live="polite" style={{ fontSize: 11, color: voiceStatusColor, flex: 1, minWidth: 140 }}>
-            {voiceStatusText}
-          </span>
-        }
-      >
-        {/* 선택한 목소리 + 세 가지 조작 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0, padding: '8px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
-          <span style={{ fontSize: 12, color: 'var(--text-secondary)', minWidth: 0 }}>
-            지금 쓰는 목소리 — <strong style={{ color: 'var(--text-primary)' }}>올린 파일의 목소리</strong>
-          </span>
-          <span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap', marginLeft: 'auto' }}>
-            <button type="button" onClick={() => previewLocalFile(fileInfo?.path || '', ttsReferenceRegion)}
-              disabled={disabled || !fileInfo?.path} aria-label="지금 쓰는 목소리 재생"
-              style={plainBtn('var(--bg-card)', 'var(--text-secondary)', disabled || !fileInfo?.path)}>▶ 재생</button>
-            <button type="button" onClick={() => { void pickAnotherVoice() }} disabled={disabled}
-              aria-label="다른 목소리 선택"
-              style={plainBtn('var(--bg-card)', 'var(--cyan)', disabled)}>다른 목소리 선택</button>
-            <button type="button" onClick={() => setRegionOpen(v => !v)} disabled={disabled || !fileInfo?.path}
-              aria-expanded={regionOpen} aria-label="사용 구간 바꾸기"
-              style={plainBtn('var(--bg-card)', 'var(--text-secondary)', disabled || !fileInfo?.path)}>
-              {regionOpen ? '구간 편집 닫기' : '사용 구간 바꾸기'}
-            </button>
-          </span>
-        </div>
-
-        {/* 미리듣기 실패는 삼키지 않고 보여준다(사용자 언어·경로 미노출·자동 재시도 없음) */}
-        {previewError && (
-          <div role="alert" style={{ fontSize: 11, lineHeight: 1.6, color: 'var(--rose)', padding: '6px 10px', borderRadius: 6, background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
-            {previewError}
-          </div>
-        )}
-
-        {/* 기본 참조 음성 패널(셸 주입) — 단 1회 마운트.
-            접혀 있어도 분석과 '추천 구간 자동 확정'은 계속 돈다(길이 조건은 엔진 정책이 정한다). 펼치면 예전 파형·슬라이더가 그대로 나온다. */}
-        {fileInfo?.path && (
-          <ReferenceRegionPanel
-            key={fileInfo.path + '|' + ttsRefReqId}
-            reqId={ttsRefReqId}
-            clipKey="default"
-            path={fileInfo.path}
-            disabled={disabled}
-            committed={ttsRefReady ? { clip: ttsReferenceClip, region: ttsReferenceRegion, whole: !ttsReferenceClip && !ttsReferenceRegion } : null}
-            onState={setTtsRefState}
-            label="참조 음성"
-            open={regionOpen}
-            autoConfirm
-            plainStatus={!regionOpen}
-          />
-        )}
-
-      </TtsVoiceSection>
-      )}
-
-      {/* ───────── [2] 대사(한 명) / [1] 인물과 대사(여러 명) ─────────
-          여러 명에서는 인물·목소리·대사가 카드 하나에 있으므로 단일 화면의 번호 체계를 끌고 오지 않는다. */}
-      <section className="tts-flow-card" aria-label={dialogueTab === 'multi' ? '인물과 대사' : '대사'} style={flowCard}>
-        <header className="tts-flow-head" style={flowHead}>
-          <span aria-hidden="true" style={flowNum}>{dialogueTab === 'multi' ? 1 : 2}</span>
-          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>{dialogueTab === 'multi' ? '인물과 대사' : '대사'}</span>
-          {dialogueTab === 'single' && (
-            <span style={{ fontSize: 11, color: ttsText.trim() ? 'var(--text-muted)' : 'var(--rose)', flex: 1, minWidth: 100 }}>
-              {ttsText.trim() ? `${ttsText.split('\n').filter(l => l.trim()).length}개 문장` : '합성할 대사를 입력하세요'}
-            </span>
-          )}
-          {dialogueTab === 'multi' && (
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1, minWidth: 100 }}>인물마다 목소리와 대사를 카드에서 설정합니다</span>
-          )}
-          {dialogueTab === 'single' && !ttsText.trim() && (
-            <button onClick={() => !disabled && setTtsText(EXAMPLE_TEXT)} disabled={disabled} style={{ padding: '3px 10px', borderRadius: 5, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600, fontFamily: 'inherit', background: 'var(--bg-elevated)', color: 'var(--cyan)' }}>예문 불러오기</button>
-          )}
-        </header>
-        <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
-          {/* 감정 태그 삽입 팔레트(셸) — **편집기 바로 위**. A의 imperative handle 호출(실제 caret/선택
-              삽입·IME·selection/scroll 복원은 전부 A의 기존 구현). 여기서 삽입 알고리즘을 다시 만들지 않는다.
-              순서: 대사에 이미 쓰인 감정 우선(첫 등장 순) → 나머지 자주 쓰는 감정.
-              색은 감정 '전환' 구간 표시이며 감정 혼합이 아니다. 접근성 권위는 편집기 textarea가 갖는다. */}
-          {dialogueTab === 'single' && (
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5, flexWrap: 'wrap' }}>
-              <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>감정 태그 삽입 <span style={{ fontSize: 9 }}>(색은 감정 전환 구간 표시 · 혼합 아님)</span>:</span>
-              <button onClick={() => setShowAllTags(v => !v)} style={{ padding: '1px 8px', borderRadius: 4, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 600, fontFamily: 'inherit', background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }} aria-expanded={showAllTags}>{showAllTags ? '접기' : '더보기(전체)'}</button>
-            </div>
-            {!showAllTags ? (
-              <div role="group" aria-label="감정 태그 팔레트" style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                {paletteTags.map((e) => {
-                  const used = usedIds.has(e.id)
-                  return (
-                    <button key={e.id} onClick={() => editorRef.current?.insertEmotion(e.id)} disabled={disabled}
-                      aria-label={used ? `${e.label} 태그 삽입 (대사에 사용 중)` : `${e.label} 태그 삽입`}
-                      title={used ? '대사에 사용 중' : undefined}
-                      style={{ padding: '3px 9px', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600, fontFamily: 'inherit', background: `${e.color}15`, color: e.color, border: used ? `1px solid ${e.color}` : '1px solid transparent' }}>
-                      {e.label}
-                    </button>
-                  )
-                })}
-                {/* 쉼 삽입 — 편집기의 기존 insertPause handle을 그대로 호출한다(범위·인접중복 판정은 순수 helper). */}
-                <button onClick={() => editorRef.current?.insertPause(PALETTE_PAUSE_MS)} disabled={disabled}
-                  aria-label={`쉼 ${PALETTE_PAUSE_MS / 1000}초 삽입`}
-                  style={{ padding: '3px 9px', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600, fontFamily: 'inherit', background: 'var(--bg-elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}>
-                  쉼 {PALETTE_PAUSE_MS / 1000}초
-                </button>
-              </div>
-            ) : (
-              EMOTION_GROUPS.filter(g => g.name !== '기본').map((group) => (
-                <div key={group.name} style={{ display: 'flex', gap: 3, flexWrap: 'wrap', marginBottom: 4, alignItems: 'center' }}>
-                  <span style={{ fontSize: 10, color: 'var(--text-muted)', minWidth: 44 }}>{group.name}</span>
-                  {group.emotions.filter(e => e.id !== 'default').map((e) => (
-                    <button key={e.id} onClick={() => editorRef.current?.insertEmotion(e.id)} disabled={disabled} style={{ padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 600, fontFamily: 'inherit', background: `${e.color}15`, color: e.color }}>{e.label}</button>
-                  ))}
-                </div>
-              ))
-            )}
-          </div>
-          )}
-          {/* 여러 명 — 원문 위의 projection. 표현 불가면 이유만 말하고 아래 원문 편집기가 그대로 남는다.
-              한 명 탭에서는 아예 그리지 않는다(기존 화면 불변). */}
-          {dialogueTab === 'multi' && !directEditOpen && (
-            <MultiSpeakerDialogue
-              projection={dialogue}
-              emotions={ALL_EMOTIONS.map((e) => ({ id: e.id, label: e.label }))}
-              emotionTagOf={emotionTagOf}
-              speakerIdOf={normalizeSpeakerId}
-              onVoiceDetailOpenChange={setOpenVoiceSpeakerId}
-              voiceOf={speakerVoiceOf}
-              onAssignVoice={(id, label) => {
-                // 기본 인물의 '목소리 바꾸기' 는 곧 **불러온 파일을 바꾸는 것**이다 — 그 자리는 상단
-                // 파일 열기이고, 여기서 조용히 다른 뜻으로 동작시키지 않는다.
-                if (id === 'default') { voicePrep.notify(defaultVoiceChangeNotice); return }
-                void voicePrep.assignVoice(id, label)
-              }}
-              onRemoveVoice={(id) => removeSpeakerRef(id)}
-              onRetryVoice={(id) => {
-                if (id === 'default') { retryDefaultVoice(); return }
-                voicePrep.retryVoice(id)
-              }}
-              onSpeakerIdChanged={(from, to) => moveSpeakerRef(from, to)}
-              onRenameSpeaker={(id, newLabel) => {
-                // 카드의 이름 변경 = 명시 명령. 원문의 모든 표기를 바꾸고(거부되면 여기서 끝) 목소리 슬롯·감정별 설정·목소리 구성을 새 id 로 옮긴다.
-                // 고급 원문 편집으로 표기를 직접 바꾸는 것(onSingleEditorChange)은 알림+되돌리기만 — 슬롯을 옮기지 않는다.
-                const toId = normalizeSpeakerId(newLabel.trim())
-                if (toId !== id && (ttsSpeakerRefState[toId] || dialogue.speakers.some((sp) => (sp.pending ? normalizeSpeakerId(sp.label.trim()) : sp.speakerId) === toId))) return 'SPEAKER_LABEL_DUPLICATE'
-                const refused = dialogue.renameSpeaker(id, newLabel)
-                if (refused) return refused
-                // 저장된 목소리 구성은 건드리지 않는다 — 현재 작업의 슬롯·설정만 옮기고 구성은 별칭으로 읽는다.
-                if (toId !== id) moveSpeakerRef(id, toId)
-                setSpeakerLabel(toId, newLabel.trim())
-                return null
-              }}
-              onToggleEmotionVoice={(id, on) => setSpeakerEmotionEnabled(id, on)}
-              renderEmotionVoiceEditor={(id, label) => {
-                // 감정별 후보는 적용된 목소리 구성 안에 산다. 편집 위치는 이 카드 하나 — 고급 설정에는 없다.
-                const active = findVoiceCast(voiceCast.casts, voiceCast.activeVoiceCastId)
-                if (!active) {
-                  return (
-                    <span data-testid="emotion-voice-needs-config" style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-                      감정별 목소리를 쓰려면 먼저 목소리 구성을 만들어 적용하세요 (고급 설정 › 목소리 구성 저장/불러오기).
-                    </span>
-                  )
-                }
-                return (
-                  <SpeakerEmotionCandidates
-                    speakerId={castSpeakerIdOf(ttsSpeakerRenames, id)} speakerLabel={label} cast={active} assets={voiceCast.assets}
-                    emotions={castEmotions} disabled={disabled || voiceCast.analyzing}
-                    onAddFiles={(sid, eid) => { void addCastFiles(active.voiceCastId, sid, eid) }}
-                    onPreview={previewCastCandidate}
-                    onSelect={(sid, eid, choice) => { void voiceCast.selectCandidate(active.voiceCastId, sid, eid, choice) }}
-                    onUnregister={(sid, eid, cid) => { void voiceCast.unregisterCandidate(active.voiceCastId, sid, eid, cid) }}
-                  />
-                )
-              }}
-              onPreviewVoice={(id) => {
-                // 원본 음성의 사용 중인 구간을 튼다 — 임시 클립이 아니라 원본이 재생 대상이다.
-                const s = ttsSpeakerRefState[id]
-                previewLocalFile(s?.source || '', s?.region ?? null)
-              }}
-              renderRegionEditor={(id, open) => (id === 'default'
-                ? renderDefaultRegion(open)
-                : renderSpeakerRegion(id, open))}
-              disabled={disabled}
-            />
-          )}
-          {/* 한 명 = 모든 대사를 한 목소리로. 화자 표기가 있어도 막지 않고 중립 안내 한 줄만 둔다. */}
-          {dialogueTab === 'single' && speakerDirectives.length > 0 && (
-            <div data-testid="single-mode-note" role="note"
-              style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }}>
-              모든 대사를 한 목소리로 생성합니다. 인물 표기 {speakerDirectives.length}개는 여러 명에서만 쓰입니다.
-            </div>
-          )}
-          {/* 화자 표기가 바뀐 편집 뒤의 비차단 알림 — 오류가 아니다. 되돌리기는 직전 원문으로. */}
-          {/* 목소리 교체 실패 — 이전 목소리를 그대로 쓰고 있다는 사실을 숨기지 않는다. */}
-          {voiceReplaceNotice && (
-            <div data-testid="voice-replace-notice" role="status" aria-live="polite"
-              style={{ fontSize: 11, color: 'var(--amber, #d08700)' }}>{voiceReplaceNotice}</div>
-          )}
-          {/* 이 파일을 열 때 이전 작업이 되살아났다 — **무엇이 돌아왔는지** 알리고 고르게 한다.
-              조용히 돌아온 옛 인물·대본은 지금 만든 것처럼 보여 사용자를 헷갈리게 한다(2026-09-17). */}
-          {workDraft.restoredSummary && (
-            <div data-testid="work-draft-restored" role="status" aria-live="polite"
-              style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
-                fontSize: 11, color: 'var(--text-secondary)' }}>
-              <span>
-                이 파일의 이전 작업을 되살렸습니다 — 인물 {workDraft.restoredSummary.speakerCount}명 ·
-                대사 {workDraft.restoredSummary.lineCount}줄 · {workDraft.restoredSummary.speakerMode === 'multi' ? '여러 명' : '한 명'}
-              </span>
-              <button type="button" data-testid="work-draft-keep" onClick={workDraft.dismissRestored}
-                style={{ fontSize: 11, padding: '2px 10px', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit',
-                  border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-primary)' }}>그대로 쓰기</button>
-              <button type="button" data-testid="work-draft-discard" onClick={() => { void workDraft.discardRestored() }}
-                title="되살린 대본·인물·방식을 비우고 이 파일의 이전 작업 기록을 지웁니다. 목소리 파일 자체는 지우지 않습니다."
-                style={{ fontSize: 11, padding: '2px 10px', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit',
-                  border: '1px solid var(--rose)', background: 'transparent', color: 'var(--rose)' }}>새로 시작</button>
-            </div>
-          )}
-          {/* 자동 저장이 이번 실행에서 막혔다면 숨기지 않는다 — 저장되지 않았는데 저장된 것처럼 두지 않는다. */}
-          {workDraft.rootError && (
-            <div data-testid="work-draft-notice" role="status" aria-live="polite"
-              style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
-              이번 실행에서는 작업 내용이 자동으로 저장되지 않습니다. 합성하면 결과와 함께 설정이 남습니다.
-            </div>
-          )}
-          {/* 저장이 실패했으면 숨기지 않는다 — 저장된 줄 알고 앱을 닫으면 그대로 잃는다.
-              다시 시도할 자리를 같은 줄에 둔다(2026-09-09 관리자 검수). */}
-          {!workDraft.rootError && workDraft.saveError && (
-            <div data-testid="work-draft-save-error" role="alert"
-              style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
-                fontSize: 11, color: 'var(--rose)' }}>
-              <span>지금까지의 작업이 저장되지 않았습니다. 앱을 닫으면 이 내용은 사라집니다.</span>
-              <button type="button" data-testid="work-draft-save-retry" onClick={workDraft.retrySave}
-                style={{ fontSize: 11, padding: '2px 10px', borderRadius: 6, cursor: 'pointer',
-                  fontFamily: 'inherit', border: '1px solid var(--rose)',
-                  background: 'transparent', color: 'var(--rose)' }}>다시 저장</button>
-            </div>
-          )}
-          {structureNotice && (
-            <div data-testid="speaker-structure-notice" role="status" aria-live="polite"
-              style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 11, color: 'var(--text-secondary)' }}>
-              <span>인물 구분이 변경되었습니다</span>
-              <button type="button" data-testid="speaker-structure-undo" onClick={undoStructureChange} disabled={disabled}
-                style={{ padding: '2px 8px', borderRadius: 5, border: 'none', fontSize: 11, fontFamily: 'inherit',
-                  cursor: 'pointer', background: 'var(--bg-elevated)', color: 'var(--cyan)' }}>되돌리기</button>
-            </div>
-          )}
-          {/* A 소유 편집기(caret/IME/overlay/오류 = A). 셸은 value/onChange + 삽입 handle만 배선.
-              팔레트가 위로 올라가도 이 편집기가 [2] 대사 섹션의 첫 textarea라는 계약은 유지된다. */}
-          {/* IME 조합 판정 범위. 이 안쪽 composition 만 분석을 억제한다
-              (편집기 컴포넌트 자체는 건드리지 않는다). */}
-          {/* 여러 명에서는 원문 직접 편집을 접어 둔다(고급). 구조화할 수 없는 대본이면 그대로 보여 준다. */}
-          {/* 구조화할 수 없는 대본이면 자동으로 화면을 바꾸지 않고 **사유를 말하고 입구를 준다.** */}
-          {dialogueTab === 'multi' && !dialogue.editingAllowed && !dialogue.frozen && !directEditOpen && (
-            <div data-testid="multi-not-structured" role="note"
-              style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
-                fontSize: 11, color: 'var(--amber, #d08700)', lineHeight: 1.6 }}>
-              <span>이 대본은 발화 카드로 보여 줄 수 없습니다. 아래 '대본 표기 직접 편집'으로 고칠 수 있습니다.</span>
-            </div>
-          )}
-          {dialogueTab === 'multi' && (
-            <div data-testid="direct-edit" data-open={directEditOpen ? 'true' : 'false'}
-              style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 11, color: 'var(--text-muted)' }}>
-              <button type="button" data-testid="direct-edit-toggle" aria-expanded={directEditOpen}
-                onClick={() => setDirectEditOpen((o) => !o)}
-                style={{ padding: '3px 10px', borderRadius: 5, border: 'none', fontSize: 11, fontFamily: 'inherit',
-                  cursor: 'pointer', background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
-                {directEditOpen ? '대본 표기 직접 편집 닫기' : '고급 · 대본 표기 직접 편집'}
-              </button>
-              {directEditOpen && <span>열려 있는 동안 발화 카드는 숨겨집니다. 닫으면 카드로 돌아옵니다.</span>}
-            </div>
-          )}
-          {showRawEditor && (<>
-          <div data-af-tts-editor="">
-          <EmotionScriptEditor
-            ref={editorRef}
-            value={ttsText}
-            parsedPreview={null}
-            parseErrors={[]}
-            onChange={onSingleEditorChange}
-            onInsertEmotion={() => { /* A가 caret 삽입까지 수행 — 셸은 추가 배선 불필요(게이팅은 store가 담당) */ }}
-            onInsertPause={() => { /* 동일 */ }}
-            disabled={disabled}
-            refStates={Object.fromEntries(nonDefaultEmotions.map(e => [e.id, { registered: !!ttsEmotionRefState[e.id]?.source, ready: !!ttsEmotionRefState[e.id]?.ready }]))}
-          />
-          </div>
-          </>)}
+  const tuningControls = (<>
           {/* 대사 작성 보조 — 읽기 전용. textarea 내부를 건드리지 않고 별도 목록으로만 보여 준다. */}
           <InputAnalysisPanel status={analysis.status} result={analysis.result} sourceText={ttsText}
             speakerMode={dialogueTab} speakerStatusOf={(id) => voiceStatusShort(speakerVoiceOf(id))} />
           {/* 대사에 쓴 감정 중 전용 목소리가 없는 것 — 짧은 사실 한 줄(등록은 고급 설정 > 음성). */}
           {usedUnregistered.length > 0 && (
             <div style={{ fontSize: 11, lineHeight: 1.6, color: 'var(--text-secondary)' }}>
-              대사에 쓴 <span style={{ color: 'var(--text-muted)' }}>{usedUnregistered.map(e => e.label).join(', ')}</span> 은(는) <strong style={{ color: 'var(--text-primary)' }}>기본 목소리</strong>로 만들어집니다.
+              <span title="별도 감정 목소리가 없으면 기본 참조를 사용합니다" style={{ color: 'var(--text-muted)' }}>{usedUnregistered.map(e => e.label).join(', ')}</span> · 기본 목소리
             </div>
           )}
-        </div>
-      </section>
-
       {/* 여러 명: 모든 인물에 함께 적용되는 생성 옵션 — 한 번만. 목소리별 설정은 인물 카드에 있다. */}
-      {/* ───────── [3] 말하는 느낌(한 명) / [2](여러 명) ─────────
+      {/* ───────── 선택 사항: 말하는 느낌 ─────────
           프리셋 + 음높이·속도만. 문장 간격·말끝·감정 전환은 고급 설정으로 옮겼다. */}
+      <details data-testid="tts-delivery-settings" style={{ borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-card)' }}>
+        <summary style={{ padding: '12px 16px', cursor: 'pointer', fontSize: 12, color: 'var(--text-secondary)' }}>말투 조정 <span style={{ marginLeft: 10, color: 'var(--text-muted)', fontSize: 11 }}>속도 {ttsSpeed.toFixed(2)}× · 음높이 {ttsPitch > 0 ? '+' : ''}{ttsPitch.toFixed(1)}</span></summary>
       <ExpressionControls
         capabilities={capabilities}
         presetId={presetId}
@@ -1526,7 +1252,7 @@ export default function TTSEditor() {
         showSettingHelp={showSettingHelp}
         disabled={disabled}
         section="basic"
-        flowNumber={dialogueTab === 'multi' ? 2 : 3}
+        flowNumber={0}
       >
         <TtsEmotionQuickPreview
           rows={quickRows}
@@ -1539,6 +1265,7 @@ export default function TTSEditor() {
           onPlay={(rowId) => { void auditionSample(rowId) }}
         />
       </ExpressionControls>
+      </details>
 
       {/* 음높이를 못 쓰는 환경 + 저장된 값이 0이 아님 = 합성이 막힌 상태. 빠져나올 버튼만 남긴다.
           (지원 여부의 자세한 사유는 고급 설정 > 엔진·진단에 있다.) */}
@@ -1562,7 +1289,6 @@ export default function TTSEditor() {
         tab={advancedTab}
         onTab={setAdvancedTab}
         summary={`참조 방식 ${refModeLabel} · 엔진 ${engineLabel}`}
-        flowNumber={dialogueTab === 'multi' ? 3 : 4}
         showSettingHelp={showSettingHelp}
         onToggleSettingHelp={setShowSettingHelp}
         voice={
@@ -1845,19 +1571,332 @@ export default function TTSEditor() {
         }
       />
 
+  </>)
+
+  const draftImport = (
+      <SynthesisReuseBar id="tts" source="문장별 제작" disabled={disabled || workDraft.restoring}
+        available={sentenceDraftLoaded && !!sentenceScript.trim()}
+        detail={sentenceDraftLoaded && sentenceScript.trim()
+          ? '문장별 제작의 대사를 현재 대본 끝에 추가합니다. 기존 대본과 생성본은 보관되며, 목소리·배역은 이 작업의 설정을 사용합니다.'
+          : '문장별 제작에서 대사를 작성한 뒤 이곳의 대본에 추가할 수 있습니다.'}
+        onAppend={() => {
+          if (disabled || workDraft.restoring || !sentenceDraftLoaded || !sentenceScript.trim()) return
+          setTtsText((current) => appendDraftText(current, sentenceScript, dialogueTab === 'multi'))
+          setDraftReuseNotice('문장별 제작의 대사를 대본 끝에 추가했습니다. 목소리와 배역을 확인하세요.')
+        }}>
+        {draftReuseNotice && <p data-testid="tts-draft-reuse-notice" role="status"
+          title={draftReuseNotice} style={{ margin: '9px 0 0', color: 'var(--accent-light)', fontSize: 11 }}>추가됨</p>}
+      </SynthesisReuseBar>
+  )
+
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 0, minWidth: 0 }}>
+      {/* 필수 단계는 목소리·대본·생성. 선택 조정은 번호를 붙이지 않는다. */}
+
+
+      {/* ───────── [1] 목소리·배역 구성 ─────────
+          기본 화면에 남는 것은 셋뿐이다: 선택한 목소리(+재생) / 다른 목소리 선택 / 사용 구간 바꾸기.
+          보관함·감정별 목소리·참조 전사는 '고급 설정 > 음성'으로 옮겼다(숨긴 것이지 없앤 것이 아니다). */}
+      <TtsVoiceSection compact
+        referenceReady={ttsRefReady}
+        referenceMessage={ttsRefMessage}
+        showSettingHelp={showSettingHelp}
+        onToggleSettingHelp={setShowSettingHelp}
+        showHelpToggle={false}
+      >
+        {/* 선택한 목소리 + 세 가지 조작 */}
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
+          <span style={{ fontSize: 12, color: 'var(--text-secondary)', minWidth: 0 }}>
+            <span style={{ color: 'var(--text-muted)', marginRight: 8 }}>목소리</span><strong title={fileInfo?.path} style={{ color: 'var(--text-primary)' }}>{fileInfo?.name || '파일 선택 필요'}</strong>
+          </span>
+          <span tabIndex={0} title={voiceStatusText} role="status" style={{ fontSize: 11, color: voiceStatusColor }}>{!fileInfo ? '미선택' : ttsRefReady ? '● 준비됨' : voicePreparing ? '준비 중' : '확인 필요'}</span>
+          <span style={{ marginLeft: 'auto' }}><DialogueTabs tab={dialogueTab} onTab={setDialogueTab} disabled={disabled} /></span>
+          <span style={{ display: 'inline-flex', gap: 6, flexWrap: 'wrap' }}>
+            <button type="button" onClick={() => previewLocalFile(fileInfo?.path || '', ttsReferenceRegion)}
+              disabled={disabled || !fileInfo?.path} aria-label="지금 쓰는 목소리 재생"
+              style={plainBtn('var(--bg-card)', 'var(--text-secondary)', disabled || !fileInfo?.path)}>▶</button>
+            <button type="button" onClick={() => { void pickAnotherVoice() }} disabled={disabled || pickingVoice}
+              aria-label="참조 목소리 파일 바꾸기" title="참조 목소리 변경. 현재는 파일 작업의 원본도 함께 변경됩니다."
+              style={plainBtn('var(--bg-card)', 'var(--cyan)', disabled)}>{fileInfo ? '변경' : '파일 선택'}</button>
+            {dialogueTab === 'single' && <button type="button" onClick={() => setRegionOpen(v => !v)} disabled={disabled || !fileInfo?.path}
+              aria-expanded={regionOpen} aria-label="사용 구간 바꾸기"
+              style={plainBtn('var(--bg-card)', 'var(--text-secondary)', disabled || !fileInfo?.path)}>
+              {regionOpen ? '구간 닫기' : '구간'}
+            </button>}
+          </span>
+        </div>
+
+        {/* 미리듣기 실패는 삼키지 않고 보여준다(사용자 언어·경로 미노출·자동 재시도 없음) */}
+        {previewError && (
+          <div role="alert" style={{ fontSize: 11, lineHeight: 1.6, color: 'var(--rose)', padding: '6px 10px', borderRadius: 6, background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)' }}>
+            {previewError}
+          </div>
+        )}
+
+        {/* 기본 참조 음성 패널(셸 주입) — 단 1회 마운트.
+            접혀 있어도 분석과 '추천 구간 자동 확정'은 계속 돈다(길이 조건은 엔진 정책이 정한다). 펼치면 예전 파형·슬라이더가 그대로 나온다. */}
+        {dialogueTab === 'single' && fileInfo?.path && (
+          <ReferenceRegionPanel
+            key={fileInfo.path + '|' + ttsRefReqId}
+            reqId={ttsRefReqId}
+            clipKey="default"
+            path={fileInfo.path}
+            disabled={disabled}
+            committed={ttsRefReady ? { clip: ttsReferenceClip, region: ttsReferenceRegion, whole: !ttsReferenceClip && !ttsReferenceRegion } : null}
+            onState={setTtsRefState}
+            label="참조 음성"
+            open={regionOpen}
+            autoConfirm
+            plainStatus={!regionOpen}
+          />
+        )}
+
+      </TtsVoiceSection>
+
+      {/* [2] 대본. 여러 명은 각 발화 카드에서 배역·목소리·대사를 설정한다. */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', minWidth: 0, alignItems: 'flex-start' }}>
+      <section className="tts-flow-card" aria-label={dialogueTab === 'multi' ? '인물과 대사' : '대사'} style={{ ...flowCard, flex: '3 1 420px', minWidth: 0 }}>
+        <header className="tts-flow-head" style={flowHead}>
+          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>{dialogueTab === 'multi' ? '배역별 대본' : '대본'}</span>
+          {draftImport}
+          <button type="button" data-testid="tts-settings-toggle" aria-expanded={settingsOpen || advancedOpen} aria-controls="tts-tuning-panel" title="말투·참조·출력·엔진 설정" onClick={() => { if (settingsOpen || advancedOpen) { setSettingsOpen(false); setAdvancedOpen(false) } else setSettingsOpen(true) }} style={plainBtn('transparent', 'var(--text-secondary)', false)}>⚙ 설정</button>
+          {dialogueTab === 'single' && (
+            <span style={{ fontSize: 11, color: ttsText.trim() ? 'var(--text-muted)' : 'var(--rose)', flex: 1, minWidth: 100 }}>
+              {ttsText.trim() ? `${ttsText.split('\n').filter(l => l.trim()).length}문장` : ''}
+            </span>
+          )}
+          {dialogueTab === 'multi' && (
+            <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1, minWidth: 100 }}></span>
+          )}
+          {dialogueTab === 'single' && !ttsText.trim() && (
+            <button onClick={() => !disabled && setTtsText(EXAMPLE_TEXT)} disabled={disabled} style={{ padding: '3px 10px', borderRadius: 5, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600, fontFamily: 'inherit', background: 'var(--bg-elevated)', color: 'var(--cyan)' }}>예문</button>
+          )}
+        </header>
+        <div style={{ padding: '14px 16px', display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {/* 감정 태그 삽입 팔레트(셸) — **편집기 바로 위**. A의 imperative handle 호출(실제 caret/선택
+              삽입·IME·selection/scroll 복원은 전부 A의 기존 구현). 여기서 삽입 알고리즘을 다시 만들지 않는다.
+              순서: 대사에 이미 쓰인 감정 우선(첫 등장 순) → 나머지 자주 쓰는 감정.
+              색은 감정 '전환' 구간 표시이며 감정 혼합이 아니다. 접근성 권위는 편집기 textarea가 갖는다. */}
+          {dialogueTab === 'single' && (
+          <details data-testid="tts-emotion-tools" style={{ fontSize: 11 }}>
+            <summary title="감정 태그와 쉼 삽입" style={{ cursor: 'pointer', color: 'var(--text-muted)', padding: '4px 0 8px' }}>감정·쉼</summary>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 5, flexWrap: 'wrap' }}>
+              <span title="선택한 대사에 감정 태그를 삽입합니다. 색은 감정 전환 구간을 표시합니다." style={{ fontSize: 11, color: 'var(--text-muted)' }}>감정</span>
+              <button onClick={() => setShowAllTags(v => !v)} style={{ padding: '1px 8px', borderRadius: 4, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 600, fontFamily: 'inherit', background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }} aria-expanded={showAllTags}>{showAllTags ? '접기' : '더보기'}</button>
+            </div>
+            {!showAllTags ? (
+              <div role="group" aria-label="감정 태그 팔레트" style={{ display: 'flex', gap: 4, flexWrap: 'wrap' }}>
+                {paletteTags.map((e) => {
+                  const used = usedIds.has(e.id)
+                  return (
+                    <button key={e.id} onClick={() => editorRef.current?.insertEmotion(e.id)} disabled={disabled}
+                      aria-label={used ? `${e.label} 태그 삽입 (대사에 사용 중)` : `${e.label} 태그 삽입`}
+                      title={used ? '대사에 사용 중' : undefined}
+                      style={{ padding: '3px 9px', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600, fontFamily: 'inherit', background: `${e.color}15`, color: e.color, border: used ? `1px solid ${e.color}` : '1px solid transparent' }}>
+                      {e.label}
+                    </button>
+                  )
+                })}
+                {/* 쉼 삽입 — 편집기의 기존 insertPause handle을 그대로 호출한다(범위·인접중복 판정은 순수 helper). */}
+                <button onClick={() => editorRef.current?.insertPause(PALETTE_PAUSE_MS)} disabled={disabled}
+                  aria-label={`쉼 ${PALETTE_PAUSE_MS / 1000}초 삽입`}
+                  style={{ padding: '3px 9px', borderRadius: 4, cursor: 'pointer', fontSize: 11, fontWeight: 600, fontFamily: 'inherit', background: 'var(--bg-elevated)', color: 'var(--text-secondary)', border: '1px solid var(--border-subtle)' }}>
+                  쉼 {PALETTE_PAUSE_MS / 1000}초
+                </button>
+              </div>
+            ) : (
+              EMOTION_GROUPS.filter(g => g.name !== '기본').map((group) => (
+                <div key={group.name} style={{ display: 'flex', gap: 3, flexWrap: 'wrap', marginBottom: 4, alignItems: 'center' }}>
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)', minWidth: 44 }}>{group.name}</span>
+                  {group.emotions.filter(e => e.id !== 'default').map((e) => (
+                    <button key={e.id} onClick={() => editorRef.current?.insertEmotion(e.id)} disabled={disabled} style={{ padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer', fontSize: 10, fontWeight: 600, fontFamily: 'inherit', background: `${e.color}15`, color: e.color }}>{e.label}</button>
+                  ))}
+                </div>
+              ))
+            )}
+          </details>
+          )}
+          {/* 여러 명 — 원문 위의 projection. 표현 불가면 이유만 말하고 아래 원문 편집기가 그대로 남는다.
+              한 명 탭에서는 아예 그리지 않는다(기존 화면 불변). */}
+          {dialogueTab === 'multi' && !directEditOpen && (
+            <MultiSpeakerDialogue
+              projection={dialogue}
+              emotions={ALL_EMOTIONS.map((e) => ({ id: e.id, label: e.label }))}
+              emotionTagOf={emotionTagOf}
+              speakerIdOf={normalizeSpeakerId}
+              onVoiceDetailOpenChange={setOpenVoiceSpeakerId}
+              voiceOf={speakerVoiceOf}
+              onAssignVoice={(id, label) => {
+                // 기본 인물의 '목소리 바꾸기' 는 곧 **불러온 파일을 바꾸는 것**이다 — 그 자리는 상단
+                // 파일 열기이고, 여기서 조용히 다른 뜻으로 동작시키지 않는다.
+                if (id === 'default') { voicePrep.notify(defaultVoiceChangeNotice); return }
+                void voicePrep.assignVoice(id, label)
+              }}
+              onRemoveVoice={(id) => removeSpeakerRef(id)}
+              onRetryVoice={(id) => {
+                if (id === 'default') { retryDefaultVoice(); return }
+                voicePrep.retryVoice(id)
+              }}
+              onSpeakerIdChanged={(from, to) => moveSpeakerRef(from, to)}
+              onRenameSpeaker={(id, newLabel) => {
+                // 카드의 이름 변경 = 명시 명령. 원문의 모든 표기를 바꾸고(거부되면 여기서 끝) 목소리 슬롯·감정별 설정·목소리 구성을 새 id 로 옮긴다.
+                // 고급 원문 편집으로 표기를 직접 바꾸는 것(onSingleEditorChange)은 알림+되돌리기만 — 슬롯을 옮기지 않는다.
+                const toId = normalizeSpeakerId(newLabel.trim())
+                if (toId !== id && (ttsSpeakerRefState[toId] || dialogue.speakers.some((sp) => (sp.pending ? normalizeSpeakerId(sp.label.trim()) : sp.speakerId) === toId))) return 'SPEAKER_LABEL_DUPLICATE'
+                const refused = dialogue.renameSpeaker(id, newLabel)
+                if (refused) return refused
+                // 저장된 목소리 구성은 건드리지 않는다 — 현재 작업의 슬롯·설정만 옮기고 구성은 별칭으로 읽는다.
+                if (toId !== id) moveSpeakerRef(id, toId)
+                setSpeakerLabel(toId, newLabel.trim())
+                return null
+              }}
+              onToggleEmotionVoice={(id, on) => setSpeakerEmotionEnabled(id, on)}
+              renderEmotionVoiceEditor={(id, label) => {
+                // 감정별 후보는 적용된 목소리 구성 안에 산다. 편집 위치는 이 카드 하나 — 고급 설정에는 없다.
+                const active = findVoiceCast(voiceCast.casts, voiceCast.activeVoiceCastId)
+                if (!active) {
+                  return (
+                    <span data-testid="emotion-voice-needs-config" style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+                      감정별 목소리를 쓰려면 먼저 목소리 구성을 만들어 적용하세요 (고급 설정 › 목소리 구성 저장/불러오기).
+                    </span>
+                  )
+                }
+                return (
+                  <SpeakerEmotionCandidates
+                    speakerId={castSpeakerIdOf(ttsSpeakerRenames, id)} speakerLabel={label} cast={active} assets={voiceCast.assets}
+                    emotions={castEmotions} disabled={disabled || voiceCast.analyzing}
+                    onAddFiles={(sid, eid) => { void addCastFiles(active.voiceCastId, sid, eid) }}
+                    onPreview={previewCastCandidate}
+                    onSelect={(sid, eid, choice) => { void voiceCast.selectCandidate(active.voiceCastId, sid, eid, choice) }}
+                    onUnregister={(sid, eid, cid) => { void voiceCast.unregisterCandidate(active.voiceCastId, sid, eid, cid) }}
+                  />
+                )
+              }}
+              onPreviewVoice={(id) => {
+                // 원본 음성의 사용 중인 구간을 튼다 — 임시 클립이 아니라 원본이 재생 대상이다.
+                const s = ttsSpeakerRefState[id]
+                previewLocalFile(s?.source || '', s?.region ?? null)
+              }}
+              renderRegionEditor={(id, open) => (id === 'default'
+                ? renderDefaultRegion(open)
+                : renderSpeakerRegion(id, open))}
+              disabled={disabled}
+            />
+          )}
+          {/* 한 명 = 모든 대사를 한 목소리로. 화자 표기가 있어도 막지 않고 중립 안내 한 줄만 둔다. */}
+          {dialogueTab === 'single' && speakerDirectives.length > 0 && (
+            <div data-testid="single-mode-note" role="note"
+              style={{ fontSize: 11, color: 'var(--text-muted)', lineHeight: 1.6 }}>
+              모든 대사를 한 목소리로 생성합니다. 인물 표기 {speakerDirectives.length}개는 여러 명에서만 쓰입니다.
+            </div>
+          )}
+          {/* 화자 표기가 바뀐 편집 뒤의 비차단 알림 — 오류가 아니다. 되돌리기는 직전 원문으로. */}
+          {/* 목소리 교체 실패 — 이전 목소리를 그대로 쓰고 있다는 사실을 숨기지 않는다. */}
+          {voiceReplaceNotice && (
+            <div data-testid="voice-replace-notice" role="status" aria-live="polite"
+              style={{ fontSize: 11, color: 'var(--amber, #d08700)' }}>{voiceReplaceNotice}</div>
+          )}
+          {/* 이 파일을 열 때 이전 작업이 되살아났다 — **무엇이 돌아왔는지** 알리고 고르게 한다.
+              조용히 돌아온 옛 인물·대본은 지금 만든 것처럼 보여 사용자를 헷갈리게 한다(2026-09-17). */}
+          {workDraft.restoredSummary && (
+            <div data-testid="work-draft-restored" role="status" aria-live="polite"
+              style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
+                fontSize: 11, color: 'var(--text-secondary)' }}>
+              <span>
+                이 파일의 이전 작업을 되살렸습니다 — 인물 {workDraft.restoredSummary.speakerCount}명 ·
+                대사 {workDraft.restoredSummary.lineCount}줄 · {workDraft.restoredSummary.speakerMode === 'multi' ? '여러 명' : '한 명'}
+              </span>
+              <button type="button" data-testid="work-draft-keep" onClick={workDraft.dismissRestored}
+                style={{ fontSize: 11, padding: '2px 10px', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit',
+                  border: '1px solid var(--border-subtle)', background: 'transparent', color: 'var(--text-primary)' }}>그대로 쓰기</button>
+              <button type="button" data-testid="work-draft-discard" onClick={() => { void workDraft.discardRestored() }}
+                title="되살린 대본·인물·방식을 비우고 이 파일의 이전 작업 기록을 지웁니다. 목소리 파일 자체는 지우지 않습니다."
+                style={{ fontSize: 11, padding: '2px 10px', borderRadius: 6, cursor: 'pointer', fontFamily: 'inherit',
+                  border: '1px solid var(--rose)', background: 'transparent', color: 'var(--rose)' }}>새로 시작</button>
+            </div>
+          )}
+          {/* 자동 저장이 이번 실행에서 막혔다면 숨기지 않는다 — 저장되지 않았는데 저장된 것처럼 두지 않는다. */}
+          {workDraft.rootError && (
+            <div data-testid="work-draft-notice" role="status" aria-live="polite"
+              style={{ fontSize: 11, color: 'var(--text-secondary)' }}>
+              이번 실행에서는 작업 내용이 자동으로 저장되지 않습니다. 합성하면 결과와 함께 설정이 남습니다.
+            </div>
+          )}
+          {/* 저장이 실패했으면 숨기지 않는다 — 저장된 줄 알고 앱을 닫으면 그대로 잃는다.
+              다시 시도할 자리를 같은 줄에 둔다(2026-09-09 관리자 검수). */}
+          {!workDraft.rootError && workDraft.saveError && (
+            <div data-testid="work-draft-save-error" role="alert"
+              style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
+                fontSize: 11, color: 'var(--rose)' }}>
+              <span>지금까지의 작업이 저장되지 않았습니다. 앱을 닫으면 이 내용은 사라집니다.</span>
+              <button type="button" data-testid="work-draft-save-retry" onClick={workDraft.retrySave}
+                style={{ fontSize: 11, padding: '2px 10px', borderRadius: 6, cursor: 'pointer',
+                  fontFamily: 'inherit', border: '1px solid var(--rose)',
+                  background: 'transparent', color: 'var(--rose)' }}>다시 저장</button>
+            </div>
+          )}
+          {structureNotice && (
+            <div data-testid="speaker-structure-notice" role="status" aria-live="polite"
+              style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 11, color: 'var(--text-secondary)' }}>
+              <span>인물 구분이 변경되었습니다</span>
+              <button type="button" data-testid="speaker-structure-undo" onClick={undoStructureChange} disabled={disabled}
+                style={{ padding: '2px 8px', borderRadius: 5, border: 'none', fontSize: 11, fontFamily: 'inherit',
+                  cursor: 'pointer', background: 'var(--bg-elevated)', color: 'var(--cyan)' }}>되돌리기</button>
+            </div>
+          )}
+          {/* A 소유 편집기(caret/IME/overlay/오류 = A). 셸은 value/onChange + 삽입 handle만 배선.
+              팔레트가 위로 올라가도 이 편집기가 [2] 대사 섹션의 첫 textarea라는 계약은 유지된다. */}
+          {/* IME 조합 판정 범위. 이 안쪽 composition 만 분석을 억제한다
+              (편집기 컴포넌트 자체는 건드리지 않는다). */}
+          {/* 여러 명에서는 원문 직접 편집을 접어 둔다(고급). 구조화할 수 없는 대본이면 그대로 보여 준다. */}
+          {/* 구조화할 수 없는 대본이면 자동으로 화면을 바꾸지 않고 **사유를 말하고 입구를 준다.** */}
+          {dialogueTab === 'multi' && !dialogue.editingAllowed && !dialogue.frozen && !directEditOpen && (
+            <div data-testid="multi-not-structured" role="note"
+              style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap',
+                fontSize: 11, color: 'var(--amber, #d08700)', lineHeight: 1.6 }}>
+              <span title="카드를 구성할 수 없습니다. 원문 편집에서 대본을 수정할 수 있습니다.">원문 편집 가능</span>
+            </div>
+          )}
+          {dialogueTab === 'multi' && (
+            <div data-testid="direct-edit" data-open={directEditOpen ? 'true' : 'false'}
+              style={{ display: 'flex', gap: 8, alignItems: 'center', flexWrap: 'wrap', fontSize: 11, color: 'var(--text-muted)' }}>
+              <button type="button" data-testid="direct-edit-toggle" aria-expanded={directEditOpen}
+                onClick={() => setDirectEditOpen((o) => !o)}
+                style={{ padding: '3px 10px', borderRadius: 5, border: 'none', fontSize: 11, fontFamily: 'inherit',
+                  cursor: 'pointer', background: 'var(--bg-elevated)', color: 'var(--text-secondary)' }}>
+                {directEditOpen ? '대본 표기 직접 편집 닫기' : '고급 · 대본 표기 직접 편집'}
+              </button>
+
+            </div>
+          )}
+          {showRawEditor && (<>
+          <div data-af-tts-editor="">
+          <EmotionScriptEditor
+            ref={editorRef}
+            value={ttsText}
+            parsedPreview={null}
+            parseErrors={[]}
+            onChange={onSingleEditorChange}
+            onInsertEmotion={() => { /* A가 caret 삽입까지 수행 — 셸은 추가 배선 불필요(게이팅은 store가 담당) */ }}
+            onInsertPause={() => { /* 동일 */ }}
+            disabled={disabled}
+            refStates={Object.fromEntries(nonDefaultEmotions.map(e => [e.id, { registered: !!ttsEmotionRefState[e.id]?.source, ready: !!ttsEmotionRefState[e.id]?.ready }]))}
+          />
+          </div>
+          </>)}
+
+        </div>
+      </section>
+
+      {(settingsOpen || advancedOpen) && <aside id="tts-tuning-panel" aria-label="음성 설정" style={{ flex: '1 1 270px', minWidth: 0, maxWidth: '100%', background: 'var(--bg-card)', borderLeft: '1px solid var(--border-subtle)' }}>{tuningControls}</aside>}
+      </div>
       {/* ───────── 음성 만들기 ─────────
           제목·시작/취소 버튼·진행 상태를 이 카드 하나에 둔다. 실행 중에는 '아래 버튼을 누르면 시작합니다'가
           남지 않는다 — 그때 눌러야 할 것은 취소이고, 진행 상태가 그 자리를 대신한다. */}
-      <section aria-label="음성 만들기" style={flowCard} data-testid="run-section">
-        <header className="tts-flow-head" style={{ ...flowHead, borderBottom: 'none' }}>
-          <span aria-hidden="true" style={flowNum}>{dialogueTab === 'multi' ? 4 : 5}</span>
-          <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>음성 만들기</span>
-          <span data-testid="run-hint" style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1, minWidth: 140 }}>
-            {runHint}
-          </span>
-        </header>
-        <div style={{ padding: '0 16px 14px', display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
-          <ProcessButton />
+      <section aria-label="음성 만들기" data-testid="run-section" style={{ display: 'flex', alignItems: 'center', gap: 14, flexWrap: 'wrap', padding: '14px 18px', borderTop: '1px solid var(--border-subtle)', background: 'var(--bg-elevated)', borderRadius: '0 0 12px 12px', position: 'sticky', bottom: 0, zIndex: 5 }}>
+        <span data-testid="run-hint" tabIndex={0} title={fileInfo ? runHint : '목소리를 선택하고 대본을 작성하세요'} style={{ fontSize: 11, color: 'var(--text-muted)', marginRight: 'auto' }}>{status === 'processing' ? '생성 중' : !fileInfo ? '목소리 미선택' : !ttsText.trim() ? '대본 없음' : '대본 ' + ttsText.length + '자'}</span>
+        <div style={{ flex: '0 1 280px', minWidth: 180, display: 'flex', flexDirection: 'column', gap: 8 }}>
+          {fileInfo ? <ProcessButton /> : <button type="button" disabled className="btn btn-ghost" style={{ width: '100%', padding: 12, opacity: 0.5 }}>음성 생성</button>}
           <ProgressBar note={preflight?.device_expected === 'cpu'
             ? 'VRAM이 부족해 이 실행은 CPU로 동작합니다. 시간이 더 걸립니다 — 창을 닫지 말고 기다려 주세요.'
             : undefined} />

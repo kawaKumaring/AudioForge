@@ -8,8 +8,8 @@
  * 저장 상태를 화면의 임시 선택과 섞지 않는다. `settings:set` 이 성공을 돌려준 뒤에만
  * `저장됨` 이 되고, 실패하면 기존 저장본이 그대로 남았다는 사실을 유지한다.
  *
- * 활성 배역(`activeVoiceCastId`)은 **이 renderer 작업 세션에만** 산다. 저장하지 않으므로
- * 앱을 다시 열거나 새 파일을 열면 자동으로 적용되지 않는다 — 사용자가 다시 고른다.
+ * 활성 배역(`activeVoiceCastId`)은 공용 작업 store가 소유한다. 탭 전환에는 유지하고,
+ * 새 파일·작업을 열거나 앱을 다시 시작하면 해제한다. 화면의 마운트 수명과 분리한다.
  */
 import { useCallback, useEffect, useRef, useState } from 'react'
 
@@ -101,7 +101,8 @@ function baseName(p: string): string {
 export function useVoiceCastRegistry(): VoiceCastRegistryApi {
   const [casts, setCasts] = useState<VoiceCastStore>(EMPTY_VOICE_CAST_STORE)
   const [assets, setAssets] = useState<Record<string, ReferenceAsset>>({})
-  const [activeVoiceCastId, setActive] = useState<string | null>(null)
+  const activeVoiceCastId = useAppStore((s) => s.activeVoiceCastId)
+  const setActive = useAppStore((s) => s.setActiveVoiceCast)
   const [saveState, setSaveState] = useState<SaveState>('idle')
   const [saveErrorCode, setSaveErrorCode] = useState<string | null>(null)
   const [castReport, setCastReport] = useState<CastRestoreReport | null>(null)
