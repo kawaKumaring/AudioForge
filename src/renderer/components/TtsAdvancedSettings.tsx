@@ -47,7 +47,7 @@ export default function TtsAdvancedSettings({
   const panel: Record<TtsAdvancedTab, ReactNode> = { voice, expression, output, engine }
 
   return (
-    <section id="tts-advanced-settings" aria-label="고급 설정" style={card}>
+    <section id="tts-advanced-settings" aria-label="고급 설정" style={{ borderTop: '1px solid var(--border-subtle)' }}>
       <div style={{
         display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap',
         padding: '12px 16px', minWidth: 0,
@@ -59,10 +59,7 @@ export default function TtsAdvancedSettings({
             color: 'var(--accent)', flexShrink: 0,
           }}>{flowNumber}</span>
         )}
-        <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>고급 설정</span>
-        <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1, minWidth: 120 }}>
-          {summary || '평소에는 건드리지 않아도 됩니다'}
-        </span>
+        <span title={summary} style={{ fontSize: 12, color: 'var(--text-secondary)', marginRight: 'auto' }}>세부 설정</span>
         <button
           type="button"
           onClick={() => onToggle(!open)}

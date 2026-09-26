@@ -112,3 +112,10 @@ test('반환을 통째로 버리던 예전 모습이었다면 운다', () => {
   const bad = screenFaults(옛)
   assert.ok(bad.length >= 3, `반환을 버리는데 통과시킨다: ${JSON.stringify(bad)}`)
 })
+
+
+test('활성 배역은 화면 로컬 상태가 아니라 작업 store를 읽는다', () => {
+  assert.ok(HOOK.includes('useAppStore((s) => s.activeVoiceCastId)'))
+  assert.ok(HOOK.includes('useAppStore((s) => s.setActiveVoiceCast)'))
+  assert.equal(HOOK.includes('const [activeVoiceCastId, setActive] = useState'), false)
+})

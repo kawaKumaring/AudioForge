@@ -5,7 +5,7 @@ import {
 } from '../../shared/buildMetadata'
 
 /**
- * 시작 화면 중앙 축의 맨 아래 한 줄. `이전 결과 폴더 열기` 버튼 **아래**에 있고
+ * 작업 메뉴 하단의 버전 표시. `이전 결과 폴더 열기` 버튼 아래에 있고
  * 상단 로고 옆에는 두지 않는다.
  *
  * 강조하지 않는다 — 배경·테두리·pill·badge 없이 보조 설명보다 한 단계 어두운 회색이다.
@@ -108,11 +108,11 @@ export default function AppVersionLabel() {
           style={{
             position: 'absolute', left: '50%', transform: 'translateX(-50%)',
             bottom: 'calc(100% + 6px)', zIndex: 5, pointerEvents: 'none',
-            padding: '6px 10px', borderRadius: 8, whiteSpace: 'pre',
+            padding: '6px 10px', borderRadius: 8, whiteSpace: 'pre-wrap', overflowWrap: 'anywhere',
             fontSize: 11, lineHeight: 1.5, textAlign: 'left',
             color: 'var(--text-muted)', background: 'var(--bg-card)',
             border: '1px solid var(--border-subtle)',
-            maxWidth: 'min(280px, 90vw)'
+            width: 160, maxWidth: '90vw'
           }}
         >
           {lines.join('\n')}

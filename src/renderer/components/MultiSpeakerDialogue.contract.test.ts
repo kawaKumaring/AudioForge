@@ -24,7 +24,7 @@ const SHELL = codeOf(read('./TTSEditor.tsx'))
 const PREP = codeOf(read('../hooks/useSpeakerVoicePrep.tsx'))
 const between = (src: string, a: string, b: string) => { const i = src.indexOf(a); assert.ok(i >= 0, a); return src.slice(i, src.indexOf(b, i)) }
 
-test('탭은 두 개, 합성 화면 전체를 전환한다(합성 메뉴 아래 전체 폭 한 곳) — 원문 쓰기 0', () => {
+test('배역 선택은 목소리 단계 한 곳에만 있다 — 원문 쓰기 0', () => {
   assert.deepEqual([...DIALOGUE_TABS], ['single', 'multi'])
   assert.equal(DIALOGUE_TAB_LABEL.single, '한 명')
   assert.equal(DIALOGUE_TAB_LABEL.multi, '여러 명')
@@ -32,14 +32,14 @@ test('탭은 두 개, 합성 화면 전체를 전환한다(합성 메뉴 아래 
     'useAppStore', 'window.api', 'confirm(']) {
     assert.equal(TABS.includes(forbidden), false, `탭이 원문에 손댄다: ${forbidden}`)
   }
-  assert.ok(TABS.includes('aria-label="생성 방식"') && TABS.includes("width: '100%'"), '전체 폭 탭')
+  assert.ok(TABS.includes('aria-pressed={tab === t}') && TABS.includes('aria-label="읽을 목소리 구성"'), '두 선택지와 현재 선택을 함께 표시')
   assert.equal((SHELL.match(/<DialogueTabs tab=\{dialogueTab\} onTab=\{setDialogueTab\}/g) ?? []).length, 1, '탭은 한 곳에만(대사 옆 중복 없음)')
-  const top = between(SHELL, "<div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>", '<TtsVoiceSection')
-  assert.ok(top.includes('<DialogueTabs'), '탭이 목소리 영역 위(합성 메뉴 바로 아래)에 있다')
+  const top = between(SHELL, '<TtsVoiceSection', '</TtsVoiceSection>')
+  assert.ok(top.includes('<DialogueTabs'), '배역 구성이 목소리 단계 안 한 곳에 있다')
 })
 
-test('한 명: 목소리 섹션 + 대사 한 칸. 여러 명: 단일용 목소리 영역 없음, 카드 목록, 공통 생성 옵션 한 번', () => {
-  assert.ok(SHELL.includes("{dialogueTab === 'single' && (\n      <TtsVoiceSection"), '목소리 섹션은 한 명 전용')
+test('목소리 구성은 공통 1단계, 여러 명의 발화 카드는 대본 안에만 표시', () => {
+  assert.equal((SHELL.match(/<TtsVoiceSection/g) ?? []).length, 1, '한 명·여러 명이 동일한 목소리 단계를 사용')
   // 2026-09-19: 숨긴 부품이 사라졌다. 여러 명에서도 **기본 목소리 준비는 계속 돈다** — 첫 인물이
   // 그 결과를 이어받기 때문이다. 이제 화면 밖 실행부가 돌리므로, 요소가 아니라 그 호출을 본다.
   assert.ok(SHELL.includes("clipKey: 'default',"), '여러 명에서도 기본 목소리 준비가 돈다(첫 인물이 이어받는 원천)')
@@ -47,8 +47,8 @@ test('한 명: 목소리 섹션 + 대사 한 칸. 여러 명: 단일용 목소�
     '펼쳐 둔 기본 카드가 있으면 그 카드가 보고자다 · 합성 중에는 시작하지 않는다')
   assert.equal(SHELL.includes('data-testid="default-voice-driver"'), false, '숨긴 부품은 없앴다')
   // '도구는 그리지 않고 준비만' 은 이제 구조로 보장된다 — 그리는 부품 자체가 없다.
-  assert.ok(SHELL.includes("aria-label={dialogueTab === 'multi' ? '인물과 대사' : '대사'}"), '여러 명은 단일 번호 체계를 끌고 오지 않는다')
-  assert.ok(SHELL.includes("{dialogueTab === 'multi' ? 1 : 2}") && SHELL.includes("flowNumber={dialogueTab === 'multi' ? 2 : 3}"))
+  assert.ok(SHELL.includes("aria-label={dialogueTab === 'multi' ? '인물과 대사' : '대사'}"), '여러 명은 발화 카드 편집을 표시한다')
+  assert.ok(SHELL.includes('data-testid="tts-settings-toggle"') && SHELL.includes('data-testid="run-section"'), '편집 도구와 실행 조작을 별도로 제공')
   // 참조 방식은 고급 설정 안 한 곳에만 있다 — 기본 화면의 별도 영역(공통 생성 옵션·목소리 섹션 안)은 없앴다.
   assert.equal(SHELL.includes('data-testid="common-options"'), false, '기본 화면에 별도 참조 방식 영역이 없다')
   assert.ok(SHELL.includes('data-testid="ref-mode-advanced"'), '고급 설정 안으로 통합')
@@ -57,9 +57,7 @@ test('한 명: 목소리 섹션 + 대사 한 칸. 여러 명: 단일용 목소�
   assert.ok(SHELL.includes('<EmotionScriptEditor'))
   assert.ok(SHELL.includes('onChange={onSingleEditorChange}'))
   // 상단 공용 감정 팔레트는 한 명 전용 — 여러 명은 카드의 + 감정만.
-  const palette = between(SHELL, '감정 태그 삽입', '{/* 여러 명 — 원문 위의 projection')
-  assert.ok(SHELL.slice(SHELL.indexOf('감정 태그 삽입') - 400, SHELL.indexOf('감정 태그 삽입')).includes("{dialogueTab === 'single' && ("), '팔레트는 한 명 전용')
-  assert.ok(palette.length > 0)
+  assert.match(SHELL, /dialogueTab === 'single' && \(\s*<details data-testid="tts-emotion-tools"/, '팔레트는 한 명 전용 접이식 도구')
 })
 
 test('원문 textarea 는 구조화 판정으로 잠기지 않는다', () => {

@@ -8,6 +8,7 @@ import type { TtsVoiceSectionProps } from '../types/ttsExpression'
 // 계약(ttsExpression.ts)을 수정하지 않고 셸 주입 슬롯을 로컬로 확장(A의 EmotionScriptEditorLocalProps 선례와 동일 패턴).
 export interface TtsVoiceSectionLocalProps extends TtsVoiceSectionProps {
   /** 셸이 주입하는 기본 참조 패널(ReferenceRegionPanel 등). */
+  compact?: boolean
   children?: ReactNode
   /** 셸이 주입하는 감정 참조 관리자(EmotionReferenceManager). */
   emotionManager?: ReactNode
@@ -25,6 +26,7 @@ const card: CSSProperties = {
 }
 
 export default function TtsVoiceSection({
+  compact = false,
   referenceReady,
   referenceMessage,
   showSettingHelp,
@@ -37,6 +39,8 @@ export default function TtsVoiceSection({
   const statusText = referenceReady
     ? '참조 음성 준비됨'
     : (referenceMessage || '참조 음성을 준비하세요')
+
+  if (compact) return <section aria-label="목소리" style={{ padding: '14px 18px', borderBottom: '1px solid var(--border-subtle)' }}>{children}{emotionManager}</section>
 
   return (
     <section className="tts-flow-card" aria-label="목소리" style={card}>

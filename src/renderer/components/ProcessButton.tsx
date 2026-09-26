@@ -27,7 +27,7 @@ function _estimateTime(mode: string, duration: number, transcribe: boolean, tran
 }
 
 export default function ProcessButton() {
-  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, asrEngine, asrSeparate, diarizeEngine, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, splitSelected, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsPitchCapability, ttsEmotionRefState, ttsSpeakerRefState, ttsSpeakerLabels, ttsEmotionCandidateSelections, ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled, ttsSpeakerMode, ttsReferencePrompts, ttsEngine, ttsQwenModel, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, ttsExpressiveMode, ttsReferenceConditioningMode, status, retryNonce, errorInfo, setProcessing, setProgress, setResult, setError } = useAppStore()
+  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, asrEngine, asrSeparate, diarizeEngine, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, splitSelected, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsPitchCapability, ttsEmotionRefState, ttsSpeakerRefState, ttsSpeakerLabels, ttsEmotionCandidateSelections, ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled, ttsSpeakerMode, ttsReferencePrompts, ttsEngine, ttsQwenModel, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, ttsExpressiveMode, ttsReferenceConditioningMode, status, resultMode, retryNonce, errorInfo, setProcessing, setProgress, setResult, setError } = useAppStore()
   // 사라진 참조 클립을 합성 직전에 스스로 다시 만든다 — '만료' 로 멈추지 않고 이어서 진행한다.
   const recoverClips = useClipRecovery({
     speakerLabelOf: (id: string) => ttsSpeakerLabels[id] || id,
@@ -226,7 +226,7 @@ export default function ProcessButton() {
   // '다른 모드로 재처리'로 초기 상태를 거쳐야만 했다. TTS에서는 결과 화면의 기본 동작이므로
   // 여기서 바로 제공한다. 새 IPC 경로를 만들지 않고 기존 handleProcess를 그대로 호출한다
   // (설정은 store에 그대로 남아 있어 '같은 설정'이 성립한다).
-  if (status === 'done') {
+  if (status === 'done' && resultMode === mode) {
     if (mode !== 'tts') return null
     return (
       <button

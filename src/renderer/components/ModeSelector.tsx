@@ -1,87 +1,50 @@
 import type { ReactNode } from 'react'
 import { useAppStore } from '@/stores/app.store'
+import { isCancelCleanupBusy } from '../../shared/cancelContract'
 import type { SeparationMode } from '../../shared/types'
 
-const modes: { id: SeparationMode; label: string; short: string; icon: ReactNode }[] = [
-  {
-    id: 'music', label: '음악 분리', short: '음악',
-    icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" /></svg>
-  },
-  {
-    id: 'conversation', label: '대화 분리', short: '대화',
-    icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 0 0-3-3.87" /><path d="M16 3.13a4 4 0 0 1 0 7.75" /></svg>
-  },
-  {
-    id: 'transcribe', label: '텍스트 추출', short: '텍스트',
-    icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
-  },
-  {
-    id: 'split', label: '트랙 분할', short: '분할',
-    icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="8" y1="6" x2="21" y2="6" /><line x1="8" y1="12" x2="21" y2="12" /><line x1="8" y1="18" x2="21" y2="18" /><line x1="3" y1="6" x2="3.01" y2="6" /><line x1="3" y1="12" x2="3.01" y2="12" /><line x1="3" y1="18" x2="3.01" y2="18" /></svg>
-  },
-  {
-    id: 'tts', label: '음성 합성', short: '합성',
-    icon: <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z" /><path d="M19 10v2a7 7 0 0 1-14 0v-2" /><line x1="12" y1="19" x2="12" y2="23" /></svg>
-  },
-  {
-    // ★**이 줄의 label·short·icon 이 새 기능을 만들 때 빌려 주는 이름표다**
-    //   (규칙: doc/dev-rules.md 8장 · LabPlaceholder.tsx 머리말).
-    //   만드는 동안 이 자리에 새 기능이 들어앉고, 완성되면 **여기 이름표와 아이콘만** 진짜 것으로
-    //   바꾼다. id('lab')를 포함한 내부 이름은 새 기능의 최종 이름을 처음부터 쓴다 — 바꾸지 않는다.
-    id: 'dub', label: '테스트개발', short: '테스트개발',
-    icon: (
-      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor"
-        strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
-        <path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3" />
-      </svg>
-    ),
-  },
-]
+type WorkspaceInfo = { label: string; description: string; group: string; icon: ReactNode }
+const icon = (paths: ReactNode) => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths}</svg>
 
-const MODE_COLORS: Record<string, string> = {
-  music: 'var(--accent)',
-  lab: 'var(--cyan)',
-  dub: 'var(--cyan)',        // 이름표를 빌리는 동안 'lab' 과 같은 색을 쓴다
-  conversation: 'var(--cyan)',
-  transcribe: 'var(--emerald)',
-  split: 'var(--amber)',
-  tts: 'var(--rose)'
+export const WORKSPACES: Record<SeparationMode, WorkspaceInfo> = {
+  'dialogue-rebuild': { label: '대화 구간 편집', group: '파일에서 시작', description: '수정한 대화 구간을 저장합니다.', icon: icon(<path d="M4 6h16M4 12h16M4 18h10"/>) },
+  music: { label: '음악 분리', group: '파일에서 시작', description: '보컬과 악기를 나누고, 필요한 소리를 골라 저장하세요.', icon: icon(<><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></>) },
+  conversation: { label: '대화 분리', group: '파일에서 시작', description: '대화 속 목소리를 나누고, 화자별 구간을 확인하세요.', icon: icon(<><circle cx="9" cy="7" r="3"/><path d="M3 21v-3a5 5 0 0 1 10 0v3M17 4a3 3 0 0 1 0 6M17 14a5 5 0 0 1 4 4v3"/></>) },
+  transcribe: { label: '텍스트 추출', group: '파일에서 시작', description: '음성을 글로 옮긴 뒤, 내용을 다듬고 번역하세요.', icon: icon(<><path d="M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h6"/></>) },
+  split: { label: '트랙 분할', group: '파일에서 시작', description: '파형을 들으며 구간을 나누고, 각각의 파일로 저장하세요.', icon: icon(<><path d="M12 3v18M3 8h5M3 12h5M3 16h5M16 8h5M16 12h5M16 16h5"/></>) },
+  tts: { label: '음성 합성', group: '새 콘텐츠 만들기', description: '목소리를 고르고 대본을 작성해, 원하는 음성으로 완성하세요.', icon: icon(<><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></>) },
+  dub: { label: '노래 변환', group: '새 콘텐츠 만들기', description: '원곡의 목소리 변환 · 번역 가창은 후속 개발. 현재 화면의 더빙 경로와 노래 변환 코드 연결을 정리하는 중입니다.', icon: icon(<><path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4"/></>) },
+  lab: { label: '실험실', group: '새 콘텐츠 만들기', description: '개발 중인 기능을 확인하세요.', icon: icon(<><path d="M9 3h6M10 3v6L5 19h14L14 9V3"/></>) }
 }
 
-export default function ModeSelector() {
-  const { mode, setMode, status } = useAppStore()
-  const disabled = status === 'processing'
+const groups: { label: string; modes: SeparationMode[] }[] = [
+  { label: '파일에서 시작', modes: ['music', 'conversation', 'transcribe', 'split'] },
+  { label: '새 콘텐츠 만들기', modes: ['tts', 'dub'] }
+]
 
-  return (
-    <div style={{
-      display: 'flex', borderRadius: 12, overflow: 'hidden',
-      background: 'var(--bg-card)', border: '1px solid var(--border-subtle)'
-    }}>
-      {modes.map((m) => {
-        const active = mode === m.id
-        const color = MODE_COLORS[m.id]
-        return (
-          <button
-            key={m.id}
-            data-testid={`mode-${m.id}`}
-            onClick={() => !disabled && setMode(m.id)}
-            disabled={disabled}
-            style={{
-              flex: 1, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 3,
-              padding: '8px 0', border: 'none', outline: 'none', cursor: disabled ? 'not-allowed' : 'pointer',
-              fontFamily: 'inherit', fontSize: 10, fontWeight: active ? 600 : 500,
-              background: active ? `${color}18` : 'transparent',
-              color: active ? color : 'var(--text-muted)',
-              borderBottom: active ? `2px solid ${color}` : '2px solid transparent',
-              opacity: disabled ? 0.5 : 1,
-              transition: 'all 0.15s ease'
-            }}
-          >
-            {m.icon}
-            {m.short}
+export default function ModeSelector() {
+  const { mode, setMode, status, errorInfo } = useAppStore()
+  const disabled = status === 'processing' || isCancelCleanupBusy(status) || !!errorInfo?.childAlive
+  return <nav aria-label="작업 선택" style={{ display: 'flex', flexDirection: 'column', gap: 28 }}>
+    {groups.map(group => <div key={group.label}>
+      <div style={{ padding: '0 12px', marginBottom: 9, fontSize: 11, fontWeight: 500, color: 'var(--text-muted)' }}>{group.label}</div>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+        {group.modes.map(id => {
+          const item = WORKSPACES[id]
+          const active = mode === id
+          return <button key={id} type="button" data-testid={`mode-${id}`} aria-current={active ? 'page' : undefined}
+            onClick={() => setMode(id)} disabled={disabled}
+            className="workspace-nav-item" title={disabled ? '진행 중인 작업이 끝나면 이동할 수 있습니다.' : item.description}
+            style={{ display: 'flex', alignItems: 'center', gap: 11, width: '100%', padding: '12px', borderRadius: 9,
+              border: `1px solid ${active ? 'var(--border-accent)' : 'transparent'}`,
+              background: active ? 'var(--accent-glow)' : 'transparent', color: active ? 'var(--text-primary)' : 'var(--text-secondary)',
+              fontFamily: 'inherit', fontSize: 13, fontWeight: active ? 600 : 400, textAlign: 'left', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled && !active ? 0.45 : 1 }}>
+            <span style={{ display: 'flex', color: active ? 'var(--accent-light)' : 'inherit' }}>{item.icon}</span>
+            <span style={{ flex: 1, whiteSpace: 'nowrap' }}>{item.label}</span>
+            {id === 'dub' && <span style={{ fontSize: 9, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>개발 중</span>}
           </button>
-        )
-      })}
-    </div>
-  )
+        })}
+      </div>
+    </div>)}
+  </nav>
 }

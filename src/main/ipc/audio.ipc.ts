@@ -24,6 +24,7 @@ import {
   rememberDir, rememberFile, startDir, type FolderHost, type FolderSlot,
 } from '../services/dialogFolders'
 import { blockReason } from '../../shared/synthesisGate'
+import { fileWorkspaceClipKeys } from '../../shared/referenceClipOwnership'
 import { cacheableResult, createResultCache, fileStamp, requestKey, KEY_SEP } from '../services/preview-cache'
 import { createJobWatchdog, startJobWatch, createStagingGate } from '../services/longform-job'
 import { createTerminalGate } from '../services/run-settlement'
@@ -37,6 +38,7 @@ import { PLAYBACK_VOLUME_STORAGE_KEY } from '../../shared/playbackVolume'
 import { LAB_STORAGE_KEY } from '../../shared/labWorkspace'
 import { TRANSCRIPT_EDIT_STORAGE_KEY } from '../../shared/transcriptEdit'
 import { DIALOGUE_EDIT_STORAGE_KEY } from '../../shared/dialogueEdit'
+import { CARD_STORAGE_KEY } from '../../shared/synthesisCardSave'
 import { registerTranscriptIpc } from './transcript.ipc'
 import { registerLabIpc } from './lab.ipc'
 import { readSettingsFile, setSettingsKey, migrateSettings } from '../services/settings-store'
@@ -349,7 +351,7 @@ export function registerAudioIpc(
       .finally(() => { quitCleanupDone = true; app.quit() })
   })
 
-  // clipKey 지정 시 그 하나만, 생략 시 전체 정리(새 파일/reset용). 반환: 실제 삭제된 개수.
+  // 내부 정리 함수: 키 지정 시 하나, 생략 시 전체. 화면의 새 파일/reset은 아래 IPC에서 소유 범위를 좁힌다.
   const releaseRefClip = (clipKey?: string): number => {
     const keys = clipKey !== undefined ? [clipKey] : Array.from(refClipDirs.keys())
     let removed = 0
@@ -360,10 +362,38 @@ export function registerAudioIpc(
     return removed
   }
 
+  /**
+   * 이 실행을 요청한 **화면의 요청 식별자.**
+   *
+   * ★왜 생겼나 (2026-09-27 검수)
+   *   화면으로 나가는 이벤트에 '누구의 요청인가' 가 없었다. 그래서 늦게 온 결과가
+   *   이미 바뀐 요청의 대사와 묶여 생성본에 붙을 수 있었다(격리 재현으로 확인).
+   *   본체가 실행을 한 줄로 세우기는 해도, **이벤트 자체가 자기 출신을 말하지 않으면**
+   *   화면은 가려낼 방법이 없다. 그래서 요청→진행→결과→오류→취소 전 구간에 되돌려 준다.
+   *
+   * 값을 보내지 않는 화면(기존 합성 등)은 undefined 가 되고, 그 화면들은 이 칸을 보지 않는다.
+   */
+  /**
+   * 지금(또는 방금) 돌던 실행의 요청 식별자.
+   *
+   * ★**실행이 끝나도 지우지 않는다.** 마감 이벤트(result·보류된 error)는 `done` 보다
+   *   **뒤에** 나간다 — `done` 에서 비웠더니 그 둘에 식별자가 빠졌다(2026-09-27 2차 검수,
+   *   실제 본체 경로 재현). 다음 실행이 시작할 때 덮어쓰는 것으로 충분하다.
+   * ★그리고 실행 안에서는 이 전역을 읽지 않는다 — 각 실행이 **자기 지역 상수**를 쓴다.
+   *   뒤늦게 전역을 조회하는 구조 자체가 이 결함의 원인이었다.
+   */
+  let runClientReq: string | null = null
+  /** 이벤트에 요청 식별자를 붙인다. 식별자가 없으면 그대로 둔다(기존 화면 동작 불변). */
+  const tagWith = <T,>(payload: T, reqId: string | null): T => (reqId
+    ? { ...(payload as object), clientRequestId: reqId } as T
+    : payload)
+
   // Helper to send error to renderer.
   // 문자열 또는 구조화 오류({message, code?})를 받아 renderer용으로 정제 — message + (있으면) code만 전달.
   // code는 GENERATION_LIMIT_EXCEEDED 등 오류 UX 분기 열쇠. 전사·문장·전체경로·수치 상세는 전달하지 않는다.
-  const sendError = (err: string | { message?: unknown; code?: unknown; speaker_ref?: unknown }) => {
+  /** @param reqId 이 오류가 어느 요청의 것인가. 실행 밖의 오류는 주지 않는다(누구의 것도 아니다). */
+  const sendError = (err: string | { message?: unknown; code?: unknown; speaker_ref?: unknown },
+                     reqId: string | null = null) => {
     const o = typeof err === 'string' ? { message: err } : (err || {})
     const message = typeof o.message === 'string' ? o.message : String((o.message ?? '알 수 없는 오류'))
     const code = typeof o.code === 'string' ? o.code : undefined
@@ -374,9 +404,9 @@ export function registerAudioIpc(
       ? o.speaker_ref : undefined
     // 로그 파일에도 남긴다 — 화면이 사라진 뒤에도 '무슨 오류였나' 를 답할 수 있게. 본문은 위와 같은 정제본.
     appLog()?.error('job', `error${code ? ' code=' + code : ''}: ${message}`)
-    mainWindow.webContents.send('audio:error', {
+    mainWindow.webContents.send('audio:error', tagWith({
       message, ...(code ? { code } : {}), ...(speakerRef ? { speakerRef } : {}),
-    })
+    }, reqId))
   }
 
   // 배타 가드는 '중복 실행을 막아야 하는' 쓰기성 작업에만. 읽기 전용 analyze/preflight는 쓰지 않는다.
@@ -800,6 +830,10 @@ export function registerAudioIpc(
     // ② split 워커가 만드는 '원본 전체 사본' 임시폴더 이름에 실려, 취소·강제종료 뒤에도 main이
     //    이 실행의 폴더만 정확히 지울 수 있게 한다(파이썬 finally는 taskkill에서 실행되지 않는다).
     const runToken = randomUUID().slice(0, 8)
+    // 이 실행의 요청 식별자. **지역 상수다** — 이 실행이 보내는 모든 이벤트가 이 값을 쓴다.
+    const clientReq: string | null = typeof options?.clientRequestId === 'string' && options.clientRequestId
+      ? options.clientRequestId : null
+    runClientReq = clientReq        // 취소 통로(다른 핸들러)가 볼 수 있게 남긴다
     const jobStartedAt = Date.now()
     // 작업 시작 기록 — 파일은 이름만(폴더 없이), 대사는 적지 않는다.
     appLog()?.info('job', `start mode=${mode} run=${runToken} file=${fileLabel(filePath)}`)
@@ -874,7 +908,7 @@ export function registerAudioIpc(
     const stagingGate = createStagingGate<unknown>(
       (data) => {
         appLog()?.info('job', `done mode=${mode} run=${runToken} elapsed=${((Date.now() - jobStartedAt) / 1000).toFixed(1)}s`)
-        mainWindow.webContents.send('audio:result', data)
+        mainWindow.webContents.send('audio:result', tagWith(data as object, clientReq))
       },
       createTerminalGate
     )
@@ -883,7 +917,7 @@ export function registerAudioIpc(
     forwardSidecar(runner, mainWindow)
 
     runner.on('progress', (data) => {
-      mainWindow.webContents.send('audio:progress', data)
+      mainWindow.webContents.send('audio:progress', tagWith(data as object, clientReq))
     })
 
     runner.on('result', (data) => {
@@ -968,7 +1002,7 @@ export function registerAudioIpc(
           settle.markSettled()
           stagingGate.abandon()   // 시간 초과로 마감된 실행의 늦은 결과는 공개하지 않는다
           runner.cancel()  // async(무시) — 트리 kill 시도
-          sendError({ code: 'JOB_INACTIVE', message: '처리 시간이 초과되었습니다 (5분간 응답 없음)' })
+          sendError({ code: 'JOB_INACTIVE', message: '처리 시간이 초과되었습니다 (5분간 응답 없음)' }, clientReq)
         }
       }, WATCHDOG_MS)
     }
@@ -1004,7 +1038,7 @@ export function registerAudioIpc(
           : { code: 'JOB_BUDGET_EXHAUSTED',
               message: `합성이 이 작업에 허용된 총 시간을 초과했습니다 `
                 + `(경과 ${Math.round(r.elapsedMs / 1000)}초, 완료 ${r.completedChunks}`
-                + `/${r.estimatedTotalChunks ?? '?'}조각).` })
+                + `/${r.estimatedTotalChunks ?? '?'}조각).` }, clientReq)
       }
     })
 
@@ -1018,6 +1052,8 @@ export function registerAudioIpc(
     resetWatchdog()
 
     runner.on('done', (code) => {
+      // ★여기서 식별자를 내리지 않는다. result 와 보류된 error 는 **이 아래에서** 나간다 —
+      //   내렸더니 그 둘에 식별자가 빠져, 화면이 자기 결과를 못 알아봤다(2차 검수 재현).
       if (watchdog) { clearTimeout(watchdog); watchdog = null }
       jobTick.stop()
       try { unlinkSync(configPath) } catch {}
@@ -1055,7 +1091,7 @@ export function registerAudioIpc(
       // 종료되었습니다'가 시간 초과 사유를 덮어쓰며 terminal을 2개로 만든다.
       const terminalAlreadySent = stagingGate.outcome === 'abandoned'
       if (!stagingGate.markStagingComplete() && pendingError !== null && !terminalAlreadySent) {
-        sendError(pendingError)
+        sendError(pendingError, clientReq)
       }
       settle.finish(code)
     })
@@ -1069,7 +1105,7 @@ export function registerAudioIpc(
     const modeNames: Record<string, string> = {
       music: '음악 분리', conversation: '대화 분리', transcribe: '텍스트 추출', split: '트랙 분할', tts: '음성 합성'
     }
-    mainWindow.webContents.send('audio:progress', { percent: 0, message: `${modeNames[mode] || mode} 시작 중...` })
+    mainWindow.webContents.send('audio:progress', tagWith({ percent: 0, message: `${modeNames[mode] || mode} 시작 중...` }, clientReq))
 
     runner.run(scriptPath, ['--config', configPath])
 
@@ -1197,7 +1233,7 @@ export function registerAudioIpc(
     const isTts = currentIsTts
     if (currentWatchdogClear) currentWatchdogClear()   // watchdog 무의미 → 즉시 해제
     afPhase('cancelling_sent')
-    mainWindow.webContents.send('audio:cancelling')     // renderer → 'cancelling' 표시
+    mainWindow.webContents.send('audio:cancelling', tagWith({}, runClientReq))     // renderer → 'cancelling' 표시
     afPhase('kill_requested')
     const res = await r.cancel(cancelExitMs())          // 트리 kill + tree 종료 확인(parent close + taskkill exit 0)
     if (res.treeKillConfirmed) afPhase('tree_kill_confirmed')
@@ -1205,7 +1241,7 @@ export function registerAudioIpc(
       // 트리 종료 미확인(spawn 실패/nonzero/parent close timeout/taskkill timeout) — 조용한 idle 금지.
       cancelState = 'failed'
       const childAlive = r.isRunning
-      mainWindow.webContents.send('audio:cancel-failed', { childAlive })
+      mainWindow.webContents.send('audio:cancel-failed', tagWith({ childAlive }, runClientReq))
       return { accepted: true }   // 취소는 접수됨(결과는 audio:cancel-failed로 이미 통지)
     }
     // runner done 합류(bounded) — done 핸들러가 runner를 free로 만들었는지 sleep 없이 확인.
@@ -1219,14 +1255,14 @@ export function registerAudioIpc(
       cleanupPending = true
       cancelState = 'none'
       currentSettle = null; currentWatchdogClear = null  // currentOutputDir는 재시도 정리용으로 남긴다
-      mainWindow.webContents.send('audio:cancel-failed', { childAlive: false, cleanupPending: true })
+      mainWindow.webContents.send('audio:cancel-failed', tagWith({ childAlive: false, cleanupPending: true }, runClientReq))
       return { accepted: true }   // 접수됨(정리 미완은 audio:cancel-failed payload가 통지)
     }
     cancelState = 'none'
     currentSettle = null; currentWatchdogClear = null; currentOutputDir = null
     afPhase('cancelled_sent')
     appLog()?.info('job', 'cancelled')
-    mainWindow.webContents.send('audio:cancelled')       // ← terminal 신호(권위). renderer가 idle로.
+    mainWindow.webContents.send('audio:cancelled', tagWith({}, runClientReq))       // ← terminal 신호(권위). renderer가 idle로.
     return { accepted: true }
   })
 
@@ -1263,7 +1299,9 @@ export function registerAudioIpc(
   })
   ipcMain.handle('audio:release-reference-clip', (_event, clipKey?: string) => {
     if (runner?.isRunning) return false  // 합성 worker가 참조 사용 중 → 삭제 금지
-    releaseRefClip(clipKey)
+    // 키 없는 요청은 공용 파일 작업의 새 파일/reset이다. 독립 대본과 더빙은 유지한다.
+    const keys = clipKey === undefined ? fileWorkspaceClipKeys(refClipDirs.keys()) : [clipKey]
+    for (const key of keys) releaseRefClip(key)
     return true
   })
 
@@ -1430,6 +1468,8 @@ export function registerAudioIpc(
       [LAB_STORAGE_KEY]: stored[LAB_STORAGE_KEY] ?? null,
       [TRANSCRIPT_EDIT_STORAGE_KEY]: stored[TRANSCRIPT_EDIT_STORAGE_KEY] ?? null,
       [DIALOGUE_EDIT_STORAGE_KEY]: stored[DIALOGUE_EDIT_STORAGE_KEY] ?? null,
+      // 생성 카드 작업 — 위 열쇠들과 서로 독립이다(문장별 작업을 덮지 않는다).
+      [CARD_STORAGE_KEY]: stored[CARD_STORAGE_KEY] ?? null,
     }
   })
 
@@ -1437,7 +1477,9 @@ export function registerAudioIpc(
   // sendSync 는 main 이 파일을 쓰고 답할 때까지 렌더러를 붙잡으므로 그 사이 닫히지 않는다.
   // 자동 저장 키만 허용한다(다른 키를 동기로 열어 줄 이유가 없다).
   ipcMain.on('settings:set-sync', (event, key: string, value: unknown) => {
-    if (key !== WORK_DRAFT_STORAGE_KEY) {
+    // 생성 카드 작업도 이 통로를 쓴다(2026-09-27). 창이 닫히는 순간의 비동기 요청은
+    // **기다려 주지 않는다** — 마지막 편집 직후 종료하면 그대로 사라진다.
+    if (key !== WORK_DRAFT_STORAGE_KEY && key !== CARD_STORAGE_KEY) {
       event.returnValue = { ok: false, code: 'KEY_NOT_ALLOWED' }
       return
     }
@@ -1456,7 +1498,11 @@ export function registerAudioIpc(
     if (key === GLOBAL_ASSET_STORAGE_KEY || key === VOICE_CAST_STORAGE_KEY
         || key === WORK_DRAFT_STORAGE_KEY || key === PLAYBACK_VOLUME_STORAGE_KEY
         || key === LAB_STORAGE_KEY || key === TRANSCRIPT_EDIT_STORAGE_KEY
-        || key === DIALOGUE_EDIT_STORAGE_KEY) {
+        || key === DIALOGUE_EDIT_STORAGE_KEY
+        // 생성 카드 작업(2026-09-27). ★이 목록에 없으면 저장이 SETTINGS_KEY_NOT_ALLOWED 로
+        //   **조용히 거절된다.** 화면은 저장한 줄 알고 넘어간다 — 열쇠를 새로 만들 때는
+        //   반드시 여기에도 더해야 한다.
+        || key === CARD_STORAGE_KEY) {
       // 배역 세트도 같은 원자 경로를 쓴다. 두 키는 서로를 덮지 않는다 —
       // settings-store 가 현재 파일을 읽어 그 키 하나만 갱신한다.
       return saveSetting(key, value ?? undefined)

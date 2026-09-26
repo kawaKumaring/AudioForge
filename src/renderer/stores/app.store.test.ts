@@ -103,16 +103,16 @@ test('removeEmotionRef: slot 제거 + 그 clipKey만 정리', () => {
   assert.deepEqual(released, ['happy'])
 })
 
-test('reset: 감정 상태 전량 초기화 + 전체 클립 정리(clipKey 없이)', () => {
+test('reset: 감정 상태 초기화 + 공용 파일 작업의 클립 정리 요청', () => {
   const s = useAppStore.getState()
   s.registerEmotionRef('happy', 'h.wav')
   released.length = 0
   s.reset()
   assert.deepEqual(useAppStore.getState().ttsEmotionRefState, {})
-  assert.deepEqual(released, [undefined])  // 전체 정리
+  assert.deepEqual(released, [undefined])  // IPC가 공용 작업 소유 슬롯만 해제
 })
 
-test('setFile: 감정 상태 전량 초기화 + 전체 클립 정리', () => {
+test('setFile: 감정 상태 초기화 + 공용 파일 작업의 클립 정리 요청', () => {
   const s = useAppStore.getState()
   s.registerEmotionRef('happy', 'h.wav')
   released.length = 0
@@ -550,4 +550,110 @@ test('restoreSession: 다른 파일이거나 준비 전이면 기존 규칙(파�
   assert.equal(s.ttsRefReady, false)
   assert.equal(s.ttsReferenceClip, '')
   assert.equal(s.ttsRefMessage, '구간 재확정 필요')
+})
+
+
+test('적용한 목소리 구성은 탭·모드 왕복에 유지되고 새 작업에 해제된다', () => {
+  const s = useAppStore.getState()
+  useAppStore.setState({ status: 'idle' })
+  s.setActiveVoiceCast('cast-a')
+  s.setSynthesisTab('basic')
+  s.setMode('music')
+  s.setMode('tts')
+  s.setSynthesisTab('advanced')
+  assert.equal(useAppStore.getState().activeVoiceCastId, 'cast-a')
+  s.setFile({ path: 'new.wav', name: 'new.wav', duration: 5, channels: 1, sampleRate: 24000, format: 'wav' }, 'local-file://new.wav')
+  assert.equal(useAppStore.getState().activeVoiceCastId, null)
+  s.setActiveVoiceCast('cast-b')
+  s.reset()
+  assert.equal(useAppStore.getState().activeVoiceCastId, null)
+})
+
+test('결과의 출처는 화면 모드 전환으로 바뀌지 않는다', () => {
+  const s = useAppStore.getState()
+  useAppStore.setState({ status: 'idle' })
+  s.setMode('music')
+  s.setProcessing()
+  s.setResult([{ name: 'vocals', label: '목소리', path: 'vocals.wav' }], 'C:/out')
+  s.setMode('tts')
+  assert.equal(useAppStore.getState().resultMode, 'music')
+  assert.equal(useAppStore.getState().tracks.length, 1, '숨겨도 결과 자체를 지우지 않는다')
+  s.restoreSession('C:/old', { mode: 'transcribe', tracks: [], options: {} } as never)
+  assert.equal(useAppStore.getState().resultMode, 'transcribe')
+  assert.equal(useAppStore.getState().activeVoiceCastId, null)
+  s.reset()
+  assert.equal(useAppStore.getState().resultMode, null)
+})
+
+test('오류 출처는 사전 검증에서는 현재 모드, 실행 중에는 시작 모드다', () => {
+  const s = useAppStore.getState()
+  useAppStore.setState({ status: 'done', mode: 'tts', resultMode: 'music' })
+  s.setError('대사 검증 실패')
+  assert.equal(useAppStore.getState().resultMode, 'tts')
+  s.setMode('music')
+  s.setProcessing()
+  s.setMode('split')
+  s.setError('실행 오류')
+  assert.equal(useAppStore.getState().resultMode, 'music')
+})
+
+test('독립 합성·더빙 완료는 기존 공용 결과 표시를 복원하고 중복 정착은 무해하다', () => {
+  const s = useAppStore.getState()
+  s.reset(); s.setMode('music'); s.setProcessing()
+  s.setResult([{ name: 'voice', label: '목소리', path: 'voice.wav' }], 'out')
+  const previous = useAppStore.getState().tracks
+  s.setMode('tts')
+  s.beginIndependentWork('문장 만드는 중')
+  s.beginIndependentWork('다음 단계')
+  assert.equal(useAppStore.getState().status, 'processing')
+  s.endIndependentWork()
+  s.endIndependentWork()
+  s.setMode('music')
+  assert.equal(useAppStore.getState().status, 'done')
+  assert.equal(useAppStore.getState().resultMode, 'music')
+  assert.equal(useAppStore.getState().tracks, previous)
+})
+
+test('완료 결과가 없거나 결과가 교체되면 독립 작업 정착은 완료를 만들지 않는다', () => {
+  const s = useAppStore.getState()
+  for (const status of ['idle', 'error', 'done'] as const) {
+    useAppStore.setState({ status, error: null, independentWork: null, resultMode: 'music', tracks: [] })
+    s.beginIndependentWork('독립 작업')
+    s.endIndependentWork()
+    assert.equal(useAppStore.getState().status, 'idle')
+  }
+  s.setMode('music'); s.setProcessing()
+  s.setResult([{ name: 'old', label: 'old', path: 'old.wav' }], 'out')
+  s.beginIndependentWork('독립 작업')
+  useAppStore.setState({ tracks: [{ name: 'new', label: 'new', path: 'new.wav' }] })
+  s.endIndependentWork()
+  assert.equal(useAppStore.getState().status, 'idle')
+})
+
+test('독립 작업 종료는 아직 살아 있는 취소 실패 상태를 덮지 않는다', () => {
+  const s = useAppStore.getState()
+  s.reset(); s.beginIndependentWork('독립 작업')
+  useAppStore.setState({ status: 'error', error: '취소 실패', errorInfo: { childAlive: true } })
+  s.endIndependentWork()
+  assert.equal(useAppStore.getState().status, 'error')
+  assert.equal(useAppStore.getState().errorInfo?.childAlive, true)
+  useAppStore.setState({ errorInfo: null })
+  s.endIndependentWork()
+  assert.equal(useAppStore.getState().status, 'idle')
+})
+
+test('결과 복원은 이전 원본을 비교한 뒤 새 원본과 결과를 함께 교체한다', () => {
+  const s = useAppStore.getState()
+  useAppStore.setState({ status: 'idle', fileInfo: { path: 'old.wav', name: 'old.wav',
+    duration: 5, channels: 1, sampleRate: 24000, format: 'wav' }, fileUrl: 'old-url',
+    ttsRefReady: true, ttsReferenceClip: 'old-clip.wav', synthesisTab: 'basic' })
+  s.restoreSession('out', { ...SESSION_BASE, mode: 'tts', source: 'new.wav',
+    refLiveness: { default: true }, options: { ttsReferenceOverride: 'missing-new-clip.wav' } } as never)
+  const restored = useAppStore.getState()
+  assert.equal(restored.fileInfo?.path, 'new.wav')
+  assert.equal(restored.fileUrl, null)
+  assert.equal(restored.ttsReferenceClip, '')
+  assert.equal(restored.ttsRefReady, false)
+  assert.equal(restored.synthesisTab, 'advanced')
+  assert.equal(restored.resultMode, 'tts')
 })

@@ -201,6 +201,8 @@ interface AppState {
    *   어느 쪽 내용도 옮겨지거나 지워지지 않는다.
    */
   synthesisTab: SynthesisTab
+  /** 고급 작업에 적용한 구성. 화면 전환에는 유지하고 새 파일·작업에는 해제한다. */
+  activeVoiceCastId: string | null
   trimSilence: boolean
   silenceGap: number
   silencePreview: boolean
@@ -332,10 +334,15 @@ interface AppState {
   // 값이 바뀌는 경로는 '세션 복원' 하나뿐이며, 그때도 계약 밖 값은 조용히 고치지 않고 크게 실패시킨다.
   ttsExpressiveMode: ExpressiveMode
   resultMetadata: Record<string, unknown> | null
+  /** 공용 결과를 만든 모드. 현재 보이는 모드와 구분한다. */
+  resultMode: SeparationMode | null
+  /** 독립 작업이 잠시 빌린 실행 상태. 결과 객체가 그대로일 때만 완료 표시를 돌려준다. */
+  independentWork: { resume: { mode: SeparationMode; tracks: Track[] } | null } | null
 
   setFile: (info: FileInfo, url: string) => void
   setMode: (mode: SeparationMode) => void
   setSynthesisTab: (t: SynthesisTab) => void
+  setActiveVoiceCast: (id: string | null) => void
   setTrimSilence: (v: boolean) => void
   setSilenceGap: (v: number) => void
   setSilencePreview: (v: boolean) => void
@@ -393,6 +400,8 @@ interface AppState {
   setSpeakerLabel: (speakerId: string, label: string) => void
   removeEmotionRef: (emotionId: string) => void
   setEmotionRefState: (emotionId: string, patch: { clip?: string; ready?: boolean; message?: string; region?: { start: number; duration: number } | null; phase?: RefPhase; reqId?: string }) => void
+  beginIndependentWork: (message: string) => void
+  endIndependentWork: () => void
   setProcessing: () => void
   setProgress: (percent: number, message: string) => void
   setResult: (tracks: Track[], outputDir: string, metadata?: Record<string, unknown> | null) => void
@@ -428,6 +437,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   fileUrl: null,
   mode: 'music',
   synthesisTab: 'basic' as SynthesisTab,   // 첫 진입은 일반
+  activeVoiceCastId: null,
   trimSilence: false,
   silenceGap: 0.5,
   silencePreview: false,
@@ -515,6 +525,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   ttsRefMessage: '',
   ttsReferenceRegion: null,
   resultMetadata: null,
+  resultMode: null,
+  independentWork: null,
 
   // 새 파일 → 이전 파생 참조/준비 상태 무효화(다른 원본의 클립을 재사용하지 않도록) + 임시 클립 폴더 정리.
   // 새 기본 참조 = 새 파일이므로 이전 전사(default + 감정 전부)는 새 음성에 결합되면 안 된다 →
@@ -523,13 +535,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 파일을 새로 골랐다 — 이 작업은 다시 열릴 때 되살려야 한다(실행 단위 기록에서 지운다).
     forgetRestoredThisRun(info?.path || '')
     if (isCancelCleanupBusy(get().status)) return  // 취소 정리 중 새 파일 처리 차단(worker 종료 확인 전 상태 교체 방지)
-    try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 전체 파생 클립(기본+감정) 정리
+    try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 공용 파일 작업의 참조만 정리(일반·더빙 보존)
     // 분할 마커는 파일에 종속이다. 비우지 않으면 이전 파일의 경계가 새 파일에 그대로 적용돼
     // (더 긴 파일에서는 오류조차 없이) 완전히 틀린 지점에서 잘린다 — 감사 R2.
-    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], ttsReferenceClip: '', ttsRefReady: false, ttsRefPhase: 'preparing' as RefPhase, ttsRefReqId: newRefReqId(), ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
+    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], resultMode: null, independentWork: null, resultMetadata: null, activeVoiceCastId: null, error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], ttsReferenceClip: '', ttsRefReady: false, ttsRefPhase: 'preparing' as RefPhase, ttsRefReqId: newRefReqId(), ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
   },
   setMode: (mode) => set({ mode }),
   setSynthesisTab: (t) => set({ synthesisTab: t }),
+  setActiveVoiceCast: (id) => set({ activeVoiceCastId: id }),
   setTrimSilence: (v) => set({ trimSilence: v }),
   setSilenceGap: (v) => set({ silenceGap: v }),
   setSilencePreview: (v) => set({ silencePreview: v }),
@@ -746,10 +759,26 @@ export const useAppStore = create<AppState>((set, get) => ({
       },
     }
   }),
-  setProcessing: () => set({ status: 'processing', progress: 0, progressMessage: '파일 준비 중...', error: null, errorInfo: null, tracks: [], resultMetadata: null }),
+  beginIndependentWork: (message) => set((s) => ({
+    independentWork: s.independentWork ?? {
+      resume: s.status === 'done' && !s.error && s.resultMode && s.tracks.length > 0
+        ? { mode: s.resultMode, tracks: s.tracks } : null,
+    },
+    status: 'processing', progress: 0, progressMessage: message, error: null, errorInfo: null,
+  })),
+  endIndependentWork: () => set((s) => {
+    if (!s.independentWork || s.errorInfo?.childAlive) return {}
+    const previous = s.independentWork.resume
+    const restoreDone = !!previous && previous.mode === s.resultMode && previous.tracks === s.tracks && s.tracks.length > 0
+    return { independentWork: null, status: restoreDone ? 'done' : 'idle',
+      progress: restoreDone ? 100 : 0, progressMessage: restoreDone ? '완료' : '', error: null, errorInfo: null }
+  }),
+  setProcessing: () => set((s) => ({ independentWork: null, status: 'processing', progress: 0, progressMessage: '파일 준비 중...', error: null, errorInfo: null, tracks: [], resultMetadata: null, resultMode: s.mode })),
   setProgress: (percent, message) => set({ progress: percent, progressMessage: message }),
-  setResult: (tracks, outputDir, metadata) => set({ status: 'done', progress: 100, progressMessage: '완료', tracks, outputDir, resultMetadata: metadata ?? null }),
-  setError: (error, info) => set({ status: 'error', error, errorInfo: info ?? null, progressMessage: '' }),
+  setResult: (tracks, outputDir, metadata) => set((s) => ({ status: 'done', progress: 100, progressMessage: '완료', tracks, outputDir, resultMetadata: metadata ?? null, resultMode: s.resultMode ?? s.mode })),
+  // 실행 전 검증 오류는 현재 모드, 실행 중 도착한 오류는 시작 때 기록한 모드에 속한다.
+  setError: (error, info) => set((s) => ({ status: 'error', error, errorInfo: info ?? null, progressMessage: '',
+    resultMode: s.status === 'processing' || s.status === 'cancelling' ? (s.resultMode ?? s.mode) : s.mode })),
   clearError: () => set({ status: 'idle', error: null, errorInfo: null, progressMessage: '' }),
   // 오류 해제 + 재시도 트리거. idle로 되돌려 ProcessButton effect가 재합성 1회 실행하도록.
   // processing/cancelling 중이면 무시(재진입 방지 — 중복 클릭에도 1회만, 진행/취소 중 상태를 뒤엎지 않음).
@@ -764,7 +793,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     ? { status: 'cancelling', progressMessage: '작업을 취소하고 정리하는 중…', error: null, errorInfo: null }
     : {}),
   // 취소 완료(main audio:cancelled) → idle. 부분 결과 미채택.
-  finishCancelled: () => set({ status: 'idle', progress: 0, progressMessage: '', error: null, errorInfo: null, tracks: [], resultMetadata: null }),
+  finishCancelled: () => set({ status: 'idle', progress: 0, progressMessage: '', error: null, errorInfo: null, tracks: [], resultMetadata: null, resultMode: null }),
   // 취소 실패(main audio:cancel-failed) → 조용한 idle 금지. error + childAlive(재취소 게이팅용).
   // ★갈래마다 **회복 방법이 반대**다(2026-09-24 2차 감사). 예전에는 childAlive 하나만
   //   읽어서, 자식이 이미 죽은 갈래에도 "프로세스 상태를 확인하거나 앱을 종료하세요" 라는
@@ -808,11 +837,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       : null
     // 같은 파일이 이미 열려 있고 기본 참조가 살아 있으면(불러오기 직후 자동 확정이 끝난 상태) 복원이 그것을
     // 내리지 않는다 — 방금까지 되던 목소리를 "구간 재확정 필요" 로 되돌리는 것은 복원이 아니라 퇴행이다.
-    const keepLiveDefault = !!cur.fileInfo?.path && cur.fileInfo.path === session.source && cur.ttsRefReady === true
+    const sameSource = !!cur.fileInfo?.path && cur.fileInfo.path === session.source
+    const keepLiveDefault = sameSource && cur.ttsRefReady === true
     const defaultReady = keepLiveDefault || (defaultAlive && !defaultUsedDerived)
     const defaultMessage = keepLiveDefault ? '' : (!defaultAlive ? '원본 다시 지정 필요' : (defaultUsedDerived ? '구간 재확정 필요' : ''))
     return {
+      // 이전 원본을 비교한 뒤 원본과 결과를 원자적으로 교체한다.
+      fileInfo: sameSource ? cur.fileInfo : {
+        path: session.source || '', name: session.source?.split(/[/\\]/).pop() || '이전 결과 복원',
+        duration: 0, channels: 0, sampleRate: 0, format: '',
+      },
+      fileUrl: sameSource ? cur.fileUrl : null,
       mode: session.mode || 'music',
+      synthesisTab: session.mode === 'tts' ? 'advanced' : cur.synthesisTab,
+      independentWork: null,
+      resultMode: session.mode || 'music',
+      activeVoiceCastId: null,
       demucsModel: o.model || 'htdemucs',
       trimSilence: !!o.trimSilence,
       silenceGap: o.silenceGap ?? 0.5,
@@ -878,7 +918,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   }),
   reset: () => {
     if (isCancelCleanupBusy(get().status)) return  // 취소 정리 중 reset 차단(worker 종료 확인 전 상태 초기화 방지)
-    // 세션 리셋 → 파생 참조 클립 폴더 삭제 + 참조/전사/결과 상태 초기화(다른 원본의 상태 잔존 방지).
+    // 공용 파일 작업 리셋. 일반·더빙의 참조와 대본은 각 작업이 소유한다.
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }
     set({
       fileInfo: null, fileUrl: null, status: 'idle', progress: 0, progressMessage: '', error: null, errorInfo: null,
@@ -887,7 +927,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {},
       ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {},
       ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single',
-      ttsPitch: 0.0, ttsPitchCapability: null, resultMetadata: null,
+      ttsPitch: 0.0, ttsPitchCapability: null, resultMetadata: null, resultMode: null, independentWork: null, activeVoiceCastId: null,
       // 세션 리셋은 표현형 모드도 기본으로 되돌린다(이전 세션의 모드가 새 작업에 눌러앉지 않게).
       ttsExpressiveMode: EXPRESSIVE_DEFAULT_MODE,
       // 참조 conditioning 모드도 fresh 세션과 같은 추천값으로 — 이전 세션의 선택이 새 작업에

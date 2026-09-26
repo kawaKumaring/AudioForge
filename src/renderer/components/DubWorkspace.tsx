@@ -34,6 +34,7 @@ import { REFERENCE_CONDITIONING_RECOMMENDED } from '../../shared/ttsConfig'
 import type { CommittedRef } from '../../shared/voicePreparation'
 import { runVoicePrep } from '@/lib/voicePrepRunner'
 import { createManagedAudio } from '@/lib/playbackVolume'
+import { dubSession } from '@/lib/dubSession'
 
 /** 더빙이 쓰는 파생 클립 자리. 일반·고급의 목소리를 건드리지 않는다. */
 const DUB_CLIP_KEY = 'dub'
@@ -51,32 +52,39 @@ const BUSY_TEXT: Record<Exclude<Busy, ''>, string> = {
 interface Reply<T> { ok: boolean; data?: T; error?: string }
 
 export default function DubWorkspace() {
-  const [videoPath, setVideoPath] = useState('')
+  const restored = useRef(dubSession.read()).current
+  const [videoPath, setVideoPath] = useState(restored.videoPath)
   // ★만든 것이 어디 있는지 화면이 말해 주지 않았다(2026-09-26 신고).
   //   앱 데이터 폴더 깊숙한 곳이라 알려 주지 않으면 찾을 방법이 없다.
-  const [workDir, setWorkDir] = useState('')
+  const [workDir, setWorkDir] = useState(restored.workDir)
   // ★새 작업이 쌓이는 자리. 시스템 드라이브에만 쌓이던 것을 고를 수 있게 했다(2026-09-26 신고).
-  const [workRoot, setWorkRoot] = useState('')
-  const [front, setFront] = useState<DubFrontResult | null>(null)
-  const [edits, setEdits] = useState<Record<number, string>>({})
-  const [takes, setTakes] = useState<Record<number, string>>({})
+  const [workRoot, setWorkRoot] = useState(restored.workRoot)
+  const [front, setFront] = useState<DubFrontResult | null>(restored.front)
+  const [edits, setEdits] = useState<Record<number, string>>(restored.edits)
+  const [takes, setTakes] = useState<Record<number, string>>(restored.takes)
   // ★말끝이 잘렸을 수 있는 줄(2026-09-24 감사).
   //   값은 **이미 도착해 있었는데** 수신 타입이 metadata 를 버려서 쓰이지 못했다.
   //   고급 화면은 꼬리표를 보여 주는데 더빙은 잘린 채로 영상에 실렸다.
-  const [tailCut, setTailCut] = useState<Record<number, boolean>>({})
-  const [report, setReport] = useState<DubRenderResult | null>(null)
+  const [tailCut, setTailCut] = useState<Record<number, boolean>>(restored.tailCut)
+  const [report, setReport] = useState<DubRenderResult | null>(restored.report)
   const [busy, setBusy] = useState<Busy>('')
   const [note, setNote] = useState('')
   const [error, setError] = useState('')
   const [voice, setVoice] = useState<{ path: string; ref: CommittedRef | null; message: string }>(
-    { path: '', ref: null, message: '' },
+    restored.voice,
   )
   // 번역 말투. 더빙은 한 사람이 이어서 말하므로 줄마다 말투가 바뀌면 다른 사람처럼 들린다.
-  const [register, setRegister] = useState<'' | 'casual' | 'polite'>('casual')
+  const [register, setRegister] = useState<'' | 'casual' | 'polite'>(restored.register)
   // 합성 결과를 기다리는 줄. 파이썬 통로가 하나라 한 줄씩 줄을 세운다.
   // 돌려받는 것에 **말끝 잔여량**을 함께 싣는다 — 값은 같은 알림에 이미 들어 있다.
   const pending = useRef<{ index: number; resolve: (r: { path: string; residual?: number }) => void; reject: (e: Error) => void } | null>(null)
-  const committed = useRef<CommittedRef | null>(null)
+  const committed = useRef<CommittedRef | null>(restored.voice.ref)
+
+  // 메뉴 왕복은 현재 작업을 닫는 동작이 아니다. 선택·편집·결과만 실행 중 세션에 남긴다.
+  // 바쁨·대기 Promise·오디오 재생은 이 화면 수명에만 속하고 복원하지 않는다.
+  useEffect(() => {
+    dubSession.write({ videoPath, workDir, workRoot, front, edits, takes, tailCut, report, voice, register })
+  }, [videoPath, workDir, workRoot, front, edits, takes, tailCut, report, voice, register])
 
   useEffect(() => { committed.current = voice.ref }, [voice.ref])
 
@@ -226,7 +234,7 @@ export default function DubWorkspace() {
     if (!path) return
     setVideoPath(path)
     // 화면 상태만 비운다 — 고친 번역문은 작업 폴더에 쌓여 있어 잃지 않는다.
-    setFront(null); setEdits({}); setTakes({}); setReport(null)
+    setFront(null); setEdits({}); setTakes({}); setTailCut({}); setReport(null); setWorkDir('')
     // 지난번 작업이 남아 있으면 그대로 이어 간다.
     const prev = await (window.api.dub.load() as Promise<Reply<DubFrontResult>>)
     if (prev?.ok && prev.data && prev.data.lines.length > 0) {
@@ -431,21 +439,18 @@ export default function DubWorkspace() {
     if (busy === "") {
       if (ownsStatus.current) {
         ownsStatus.current = false
-        useAppStore.setState({ status: "idle", progress: 0, progressMessage: "" })
+        useAppStore.getState().endIndependentWork()
       }
       return
     }
     ownsStatus.current = true
-    useAppStore.setState({
-      status: "processing", progress: 0, error: null,
-      progressMessage: BUSY_TEXT[busy] ?? "더빙 작업 중…",
-    })
+    useAppStore.getState().beginIndependentWork(BUSY_TEXT[busy] ?? '더빙 작업 중…')
   }, [busy])
   // 화면을 떠나도 앱이 "만드는 중" 에 남지 않게 한다.
   useEffect(() => () => {
     if (ownsStatus.current) {
       ownsStatus.current = false
-      useAppStore.setState({ status: "idle", progress: 0, progressMessage: "" })
+      useAppStore.getState().endIndependentWork()
     }
   }, [])
 
@@ -462,7 +467,14 @@ export default function DubWorkspace() {
   const stepOf = (k: DubStep['key']): DubStep => steps.find((s) => s.key === k)!
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: 14 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+        <span tabIndex={0} title="song_chain.py·song_voice.py의 노래 음색 변환 코드가 이 화면에 연결되지 않았습니다. 현재 연결된 아래 도구는 영상 대사의 번역·TTS입니다." style={{ padding: '7px 10px', borderRadius: 7, fontSize: 12, background: 'var(--bg-card)', color: 'var(--amber)' }}>목소리 변환 · 연결 검토</span>
+        <span tabIndex={0} title="번역 가사를 원곡의 멜로디·리듬에 맞춰 부르는 기능. 아직 구현되지 않았습니다." style={{ padding: '7px 10px', borderRadius: 7, fontSize: 12, background: 'var(--bg-card)', color: 'var(--text-muted)' }}>언어 변환 · 예정</span>
+      </div>
+      <details open={videoPath || front ? true : undefined} style={{ border: '1px solid var(--border-subtle)', borderRadius: 10 }}>
+      <summary title="기존 영상 대사 번역·말하기 도구입니다. 노래의 음정과 리듬을 유지하는 변환 경로와 다릅니다." style={{ cursor: 'pointer', padding: 14, color: 'var(--text-muted)', fontSize: 12 }}>기존 더빙 실험</summary>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: 14 }}>
       <StepBar steps={steps} />
 
       {/* ─ 1. 영상 ───────────────────────────────────────────────────────── */}
@@ -617,6 +629,8 @@ export default function DubWorkspace() {
           {workRoot ? `만든 것이 쌓이는 자리: ${workRoot}` : '만든 것이 쌓이는 자리를 고를 수 있습니다'}
         </span>
       </div>
+      </div>
+      </details>
     </div>
   )
 }
