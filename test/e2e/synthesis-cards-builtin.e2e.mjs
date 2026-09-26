@@ -46,6 +46,28 @@ try {
   await win.getByTestId('add-generation-card').click()
   await win.getByRole('dialog', { name: '목소리 고르기' }).waitFor()
   check(await win.getByTestId('pick-voice-builtin').count() >= 1, '기본 목소리를 고를 수 있다')
+  // ── 고르기 전에 들어 본다 (실제 로컬 엔진) ──────────────────────────
+  check(await win.getByTestId('voice-preview').count() >= 1, '고르기 창에서 들어 볼 수 있다')
+  await win.getByTestId('voice-preview').first().click()
+  await win.waitForFunction(() => {
+    const b = document.querySelector('[data-testid="voice-preview"]')
+    return b && (b.textContent.includes('멈춤') || b.textContent.includes('다시'))
+  }, null, { timeout: 120000 }).catch(() => {})
+  const pv = await win.evaluate(() => {
+    const b = document.querySelector('[data-testid="voice-preview"]')
+    const a = [...document.querySelectorAll('audio')]
+    return { label: b?.textContent?.trim(), title: b?.title || '', audios: a.length, vol: a[0]?.volume ?? null }
+  })
+  check(pv.label === '멈춤', '미리듣기가 실제로 울린다', pv)
+  // 앱의 재생 음량을 따른다 — 이 화면만 다른 음량으로 울리지 않는다.
+  const appVol = await win.evaluate(() => window.__afStore.getState().playbackVolume ?? 1)
+  check(pv.vol === null || Math.abs(pv.vol - appVol) < 0.02, '앱 음량을 따른다', { got: pv.vol, appVol })
+  const before = await win.evaluate(() => ({
+    cards: window.__synthesisCards.getState().cards.length,
+    takes: window.__synthesisCards.getState().cards[0]?.takes.length ?? 0,
+  }))
+  check(before.cards === 0 && before.takes === 0, '미리듣기가 카드·생성본을 만들지 않는다', before)
+
   await win.getByTestId('pick-voice-builtin').first().click()
   await win.getByTestId('generation-card').first().waitFor()
 
@@ -58,6 +80,14 @@ try {
   check(await win.getByTestId('compact-voice-wave').count() === 0, '없는 파형을 그리지 않는다')
 
   // ── 실제로 만든다 ────────────────────────────────────────────────────
+  check(await win.getByTestId('voice-preview').count() === 1, '카드에서도 들어 볼 수 있다')
+  const takesBefore = await win.evaluate(() => window.__synthesisCards.getState().cards[0].takes.length)
+  await win.getByTestId('voice-preview').first().click()
+  await win.waitForTimeout(1500)
+  const takesAfter = await win.evaluate(() => window.__synthesisCards.getState().cards[0].takes.length)
+  check(takesAfter === takesBefore, '카드 미리듣기가 생성본을 늘리지 않는다', { takesBefore, takesAfter })
+  await win.getByTestId('voice-preview').first().click()   // 멈춘다
+
   await win.getByTestId('card-script').first().fill('안녕하세요. 기본 목소리로 읽습니다.')
   await win.waitForTimeout(300)
   check(await win.getByTestId('card-generate').first().isEnabled(),

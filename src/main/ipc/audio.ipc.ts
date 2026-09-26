@@ -151,6 +151,10 @@ let pythonPath = resolvePythonPath()
 /** 분석 worker 도 **같은 인터프리터**를 쓴다(설치 상태가 갈라지지 않게).
  *  audio.ipc 가 런타임에 경로를 바꾸면 그 값을 그대로 따라간다. */
 export function currentPythonPath(): string { return pythonPath }
+
+/** 지금 합성이 돌아 새 파이썬을 띄우면 안 되는가. 비면 띄워도 된다. */
+let synthesisBusyReason: (label: string) => string = () => ''
+export function synthesisBusy(label: string): string { return synthesisBusyReason(label) }
 // 취소 lifecycle(공용 마감 K/K2) 조정 상태 — audio:process가 세팅하고 audio:cancel/done이 소비.
 let currentSettle: import('../services/run-settlement').SettlementGuard | null = null
 // 취소 진행 상태: none=취소 안 함 / inflight=취소 요청 후 종료·정리 대기 / failed=kill 확인 실패(재취소 허용).
@@ -434,6 +438,9 @@ export function registerAudioIpc(
    *   실제로 그렇게 미리듣기가 합성 가드 밖에 있었고, 더빙은 그것마저 밖에 있었다.
    *   여기 한 줄을 늘리면 합성·트랙·참조 등록·미리듣기 경로가 **함께** 닫힌다.
    */
+  // 미리듣기 통로(다른 파일)가 '지금 합성이 도는가' 를 물을 수 있게 열어 둔다.
+  // ★판정은 여기서 하지 않는다 — shared/synthesisGate 가 소유한 그 판정을 그대로 쓴다.
+  synthesisBusyReason = (label: string) => blockReason(runningState(), label) || ''
   const runningState = () => ({
     mainRunner: !!runner?.isRunning,
     transcriptPreview: transcriptPreviewGuard.running,

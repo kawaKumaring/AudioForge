@@ -4,6 +4,9 @@ import { useSynthesisCards, type SynthesisCard, type CardSource, type CardSettin
 import { isCancelCleanupBusy } from '../../shared/cancelContract'
 import CompactVoiceWaveform from './CompactVoiceWaveform'
 import { createManagedAudio } from '../lib/playbackVolume'
+import {
+  playPreview, stopPreview, disposePreview, onPreviewState, previewState, type PreviewState,
+} from '../lib/voicePreview'
 import { cancelFailureText, type CancelUiStatus } from '../../shared/cancelContract'
 import { cancelAlreadyOverText, useCancelLifecycle } from '../hooks/useCancelLifecycle'
 import {
@@ -122,6 +125,35 @@ function Settings({ card, close, disabled }: { card: SynthesisCard; close: () =>
  * ★설명 문단을 두지 않는다. 항목 이름과 짧은 상태, 그리고 툴팁으로 말한다.
  *   쓸 수 없는 목소리는 **목록에 넣지 않는다**(본체가 설치·구동을 확인한 것만 온다).
  */
+/**
+ * 기본 목소리 **들어 보기** 단추. 고르기 팝업과 카드가 같은 것을 쓴다.
+ * 짧은 상태만 보이고 사유는 툴팁에 둔다(화면에 설명 문단을 늘리지 않는다).
+ */
+function PreviewButton({ voice, disabled }: {
+  voice: { path: string; engineId: string; label: string }
+  disabled?: boolean
+}) {
+  const [pv, setPv] = useState<PreviewState>(() => previewState())
+  useEffect(() => onPreviewState(setPv), [])
+  const mine = pv.modelPath === voice.path
+  const phase = mine ? pv.phase : 'idle'
+  const label = phase === 'preparing' ? '준비 중'
+    : phase === 'playing' ? '멈춤'
+    : phase === 'failed' ? '다시'
+    : '들어 보기'
+  const title = phase === 'failed'
+    ? (pv.message || '미리듣기에 실패했습니다. 다시 눌러 보세요.')
+    : `${voice.label} 로 짧은 문장을 읽어 들려줍니다 · 카드와 생성본은 바뀌지 않습니다`
+  return (
+    <button type="button" data-testid="voice-preview" aria-label={`${voice.label} 들어 보기`}
+      disabled={disabled} title={title}
+      onClick={(e) => { e.stopPropagation(); void playPreview(voice.path, voice.engineId) }}
+      style={{ ...button, minHeight: 26, padding: '3px 9px', fontSize: 11,
+        color: phase === 'failed' ? 'var(--rose)' : phase === 'playing' ? 'var(--accent-light)' : 'var(--text-secondary)' }}>
+      {label}
+    </button>
+  )
+}
 function VoicePicker({ close, onFile, onBuiltin, disabled }: {
   close: () => void
   onFile: () => void
@@ -143,6 +175,7 @@ function VoicePicker({ close, onFile, onBuiltin, disabled }: {
     })()
     return () => { alive = false }
   }, [])
+  useEffect(() => () => stopPreview(), [])
   return <Modal title="목소리 고르기" close={close}
     footer={<button type="button" style={button} onClick={close}>취소</button>}>
     <div style={{ display: 'grid', gap: 10 }}>
@@ -160,12 +193,15 @@ function VoicePicker({ close, onFile, onBuiltin, disabled }: {
           </span>
         )}
         {(list || []).map((v) => (
-          <button key={`${v.engineId}:${v.modelId}`} type="button" data-testid="pick-voice-builtin"
-            disabled={disabled} title={`참조 음원 없이 바로 읽습니다 · ${v.engineId}`}
-            onClick={() => { close(); onBuiltin(v) }}
-            style={{ ...button, width: '100%', justifyContent: 'flex-start', padding: '12px 14px', marginBottom: 6 }}>
-            <Icon name="play"/>{v.label}<span style={muted}>{v.language}</span>
-          </button>
+          <div key={`${v.engineId}:${v.modelId}`} style={{ ...row, marginBottom: 6 }}>
+            <button type="button" data-testid="pick-voice-builtin"
+              disabled={disabled} title={`참조 음원 없이 바로 읽습니다 · ${v.engineId}`}
+              onClick={() => { stopPreview(); close(); onBuiltin(v) }}
+              style={{ ...button, flex: 1, justifyContent: 'flex-start', padding: '12px 14px' }}>
+              {v.label}<span style={muted}>{v.language}</span>
+            </button>
+            <PreviewButton voice={{ path: v.path, engineId: v.engineId, label: v.label }} disabled={disabled}/>
+          </div>
         ))}
       </div>
     </div>
@@ -229,7 +265,7 @@ export default function SynthesisCardWorkspace() {
   const [notice, setNotice] = useState(''), [loading, setLoading] = useState(false), [hover, setHover] = useState<string | null>(null)
   const [dragging, setDragging] = useState<string | null>(null), [over, setOver] = useState<{ id: string; after: boolean } | null>(null)
   const alive = useRef(true), pending = useRef(false)
-  useEffect(() => { alive.current = true; return () => { alive.current = false } }, [])
+  useEffect(() => { alive.current = true; return () => { alive.current = false; disposePreview() } }, [])
   useEffect(() => { if (source?.path) state.seed(source) }, [source?.path])
 
   // ── 실제 연결 (Claude) ───────────────────────────────────────────────
@@ -446,6 +482,8 @@ export default function SynthesisCardWorkspace() {
               {voice.kind === 'builtin' ? voice.voice.label : (card.source?.name || '목소리 미선택')}
               {voice.kind === 'builtin' && <span style={{ marginLeft: 6 }}>{voice.voice.language}</span>}
             </span>
+            {voice.kind === 'builtin' && <PreviewButton disabled={locked}
+              voice={{ path: voice.voice.path, engineId: voice.voice.engineId, label: voice.voice.label }}/>}
             <button type="button" aria-label={`${index + 1}번 카드 목소리 변경`} disabled={locked}
               onClick={() => setModal({ type: 'voice', id: card.id })}
               style={{ ...button, minHeight: 26, padding: '3px 7px', background: 'transparent', border: 0, fontSize: 11 }}>변경</button>

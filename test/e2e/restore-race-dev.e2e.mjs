@@ -123,6 +123,9 @@ try {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(fp), await window.api.audio.getFileUrl(fp))
     s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
+    // ★합성의 기본 진입이 생성 카드로 바뀌었다(2026-09-27 버전 탭).
+    //   이 검사가 보는 목소리 슬롯·파생 클립은 **옛 버전** 화면의 것이다.
+    window.__synthesisCards.getState().setView('legacy')
   }, work.input)
 
   // 1) A 의 복원이 **진행 중**인 창을 잡는다: 슬롯이 A 를 들고 아직 준비되지 않은 상태.

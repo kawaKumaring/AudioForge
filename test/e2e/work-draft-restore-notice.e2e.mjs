@@ -29,12 +29,17 @@ async function launch() {
   })
   const win = await app.firstWindow()
   await win.waitForLoadState('domcontentloaded')
-  await win.waitForFunction(() => !!window.__afStore, undefined, { timeout: 30000 })
+  await win.waitForFunction(() => !!window.__afStore && !!window.__synthesisCards, undefined, { timeout: 30000 })
   await win.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
     s.setState({ mode: 'tts', synthesisTab: 'advanced' })
   }, SRC)
+  // ★작업 되살리기는 **옛 버전**(대본·배역 편집) 화면의 기능이다. 합성의 기본 진입이
+  //   생성 카드로 바뀌었으므로(2026-09-27 버전 탭) 그 탭으로 들어간다.
+  //   검증 의도는 그대로다 — 되살아나는가, 그리고 되살렸다고 화면이 말하는가.
+  await win.getByTestId('open-legacy-synthesis').click()
+  await win.getByTestId('synthesis-tabs').waitFor({ timeout: 15000 })
   await sleep(1500)
   return { app, win }
 }

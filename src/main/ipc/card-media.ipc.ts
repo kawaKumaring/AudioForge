@@ -19,10 +19,10 @@ import { ipcMain, app } from 'electron'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, rmSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync, unlinkSync } from 'node:fs'
 import { join, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { currentPythonPath } from './audio.ipc'
+import { currentPythonPath, synthesisBusy } from './audio.ipc'
 
 const execFileAsync = promisify(execFile)
 
@@ -83,6 +83,13 @@ export interface BuiltinVoice {
 let voiceCache: { at: number; data: { voices: BuiltinVoice[]; skipped: unknown[] } } | null = null
 const VOICE_CACHE_MS = 60_000
 
+/** 미리듣기로 읽는 짧은 문장. 화면·대사와 무관한 고정 문장이다. */
+export const PREVIEW_TEXT = '안녕하세요. 이 목소리로 읽습니다.'
+/** 이미 만들어 둔 미리듣기 — 같은 모델은 다시 만들지 않는다. */
+const previewMade = new Map<string, string>()
+/** 같은 모델을 동시에 두 번 만들지 않는다. */
+const previewInFlight = new Map<string, Promise<string>>()
+
 export function registerCardMediaIpc(): void {
   /**
    * 영상에서 소리를 꺼낸다. **소리 파일이면 그대로 돌려준다**(쓸데없이 다시 쓰지 않는다).
@@ -139,6 +146,68 @@ export function registerCardMediaIpc(): void {
       const data = { voices: parsed.voices || [], skipped: parsed.skipped || [] }
       voiceCache = { at: Date.now(), data }
       return ok(data)
+    } catch (e) {
+      return fail(e)
+    }
+  })
+
+  /**
+   * 기본 목소리 **미리듣기** — 그 모델로 짧은 문장을 실제로 읽어 소리 파일을 돌려준다.
+   *
+   * ★카드·대사·생성본·채택을 건드리지 않는다. 이 통로는 그것들을 알지도 못한다.
+   * ★합성이 도는 동안에는 만들지 않는다 — 파이썬 통로가 하나라 실제 생성과 부딪힌다.
+   *   대신 이미 만들어 둔 것이 있으면 그것을 돌려준다(부딪히지 않는다).
+   * ★같은 모델은 한 번만 만든다. 같은 소리를 다시 만들 이유가 없다.
+   */
+  ipcMain.handle('card:preview-builtin', async (_e, modelPath: string, engineId?: string): Promise<CardMediaReply<string>> => {
+    try {
+      if (!modelPath) throw new Error('목소리를 고르세요')
+      const done = previewMade.get(modelPath)
+      if (done && existsSync(done)) return ok(done)
+      const flying = previewInFlight.get(modelPath)
+      if (flying) return ok(await flying)
+
+      const busy = synthesisBusy('미리듣기')
+      if (busy) throw new Error(busy)
+      if (!existsSync(modelPath)) throw new Error('고른 목소리 파일을 찾지 못했습니다')
+      const py = currentPythonPath()
+      if (!py || !existsSync(py)) throw new Error('파이썬을 찾지 못했습니다')
+      const here = dirname(fileURLToPath(import.meta.url))
+      const script = [
+        join(here, '..', '..', '..', 'python', 'separate.py'),
+        join(process.cwd(), 'python', 'separate.py'),
+      ].find((p) => existsSync(p))
+      if (!script) throw new Error('합성 스크립트를 찾지 못했습니다')
+
+      const outDir = join(app.getPath('userData'), 'voicePreview',
+        createHash('sha256').update(modelPath).digest('hex').slice(0, 16))
+      mkdirSync(outDir, { recursive: true })
+      const cfgPath = join(outDir, 'preview.json')
+      writeFileSync(cfgPath, JSON.stringify({
+        mode: 'tts', input: '', output: outDir, ttsText: PREVIEW_TEXT,
+        ttsEngine: engineId || 'piper', ttsBuiltinModel: modelPath,
+        ttsSpeed: 1.0, ttsSilenceGap: 0.5, ttsPitch: 0.0,
+        ttsTailMode: 'auto', ttsTailPaddingMs: 120, ttsTailFadeMs: 8,
+        ttsSpeakerMode: 'single', ttsReferenceOverride: '',
+      }), 'utf-8')
+
+      const run = execFileAsync(py, ['-X', 'utf8', script, '--config', cfgPath], {
+        timeout: 120000, maxBuffer: 4 * 1024 * 1024,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+      }).then(({ stdout }) => {
+        const made = String(stdout).split(/\r?\n/).map((l) => {
+          try { return JSON.parse(l) as { type?: string; tracks?: { path?: string }[] } } catch { return null }
+        }).filter(Boolean).reverse().find((o) => o!.tracks?.length)
+        const wav = made?.tracks?.[0]?.path
+        if (!wav || !existsSync(wav)) throw new Error('미리듣기 소리를 만들지 못했습니다')
+        previewMade.set(modelPath, wav)
+        return wav
+      }).finally(() => {
+        previewInFlight.delete(modelPath)
+        try { unlinkSync(cfgPath) } catch { /* 남아도 해롭지 않다 */ }
+      })
+      previewInFlight.set(modelPath, run)
+      return ok(await run)
     } catch (e) {
       return fail(e)
     }

@@ -74,12 +74,28 @@ async function launch() {
   return { app, win }
 }
 
+/**
+ * 파일을 열고 **음량 손잡이가 있는 화면**으로 간다.
+ *
+ * ★공용 원본 파형(과 그 볼륨 손잡이)은 **파일 작업 화면**에 있다. 합성 화면에는 없다.
+ *   예전에는 합성에서 찾다가 시간 초과로 끝났다(2026-09-27 검수).
+ *   검증 의도는 그대로다 — 여기서 정한 값이 **합성 미리듣기·다시 열기·재시작에서 유지되는가**.
+ */
 async function loadFile(win) {
   await win.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
-    s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
+    s.getState().setMode('music')          // 공용 원본 파형이 보이는 화면
   }, REF)
+}
+
+/** 합성(옛 버전 · 대본·배역)으로 간다 — 미리듣기 소리 요소가 생기는 자리. */
+async function goSynthesis(win) {
+  await win.evaluate(() => {
+    window.__afStore.getState().setMode('tts')
+    window.__afStore.getState().setSynthesisTab('advanced')
+    window.__synthesisCards.getState().setView('legacy')
+  })
 }
 
 /** 기본 목소리의 구간 편집기를 펼친다 — DOM 소리 요소가 생기는 유일한 자리. */
@@ -104,11 +120,6 @@ try {
   const initial = await sliderValue(win)
   ok(initial === 1, '처음에는 최대다(예전 동작 유지)', String(initial))
 
-  // 걸 대상이 실제로 있어야 의미가 있다 — 구간 편집기를 펼쳐 미리듣기 요소를 만든다.
-  await openRegionEditor(win)
-  const vol0 = await domVolumes(win)
-  ok(vol0.length > 0, `화면에 소리 요소가 있다(${vol0.length}개)`, JSON.stringify(vol0))
-
   // 키보드로 실제 조작한다 — Home 으로 0, 거기서 오른쪽 7번(0.05 칸) = 0.35.
   await range.focus()
   await range.press('Home')
@@ -116,9 +127,13 @@ try {
   const moved = await sliderValue(win)
   ok(near(moved), `키보드로 ${TARGET} 까지 움직인다`, String(moved))
 
+  // 걸 대상이 실제로 있어야 의미가 있다 — 합성으로 가서 미리듣기 요소를 만든다.
+  await goSynthesis(win)
+  await openRegionEditor(win)
   const vol1 = await domVolumes(win)
-  ok(vol1.length > 0 && vol1.every(near),
-    '슬라이더가 닿지 않던 재생 지점(참조 미리듣기)도 함께 내려간다', JSON.stringify(vol1))
+  ok(vol1.length > 0, `합성 화면에 소리 요소가 있다(${vol1.length}개)`, JSON.stringify(vol1))
+  ok(vol1.every(near),
+    '슬라이더가 닿지 않던 재생 지점(참조 미리듣기)도 정한 값이다', JSON.stringify(vol1))
 
   // 실제 재생 순간의 음량 — 화면에 붙지 않는 목소리 미리듣기 요소까지 여기서 잡힌다.
   await installPlayProbe(win)
@@ -140,6 +155,7 @@ try {
   await win.getByTestId('waveform-volume').waitFor({ timeout: 20000 })
   const again = await sliderValue(win)
   ok(near(again), '다시 불러도 슬라이더가 최대로 되돌아가지 않는다', String(again))
+  await goSynthesis(win)
   await openRegionEditor(win)
   const vol2 = await domVolumes(win)
   ok(vol2.length > 0 && vol2.every(near),
@@ -156,6 +172,7 @@ try {
   const restored = await sliderValue(win2)
   ok(near(restored), '앱을 다시 켜면 정해 둔 값으로 시작한다', String(restored))
 
+  await goSynthesis(win2)
   await openRegionEditor(win2)
   const vol3 = await domVolumes(win2)
   ok(vol3.length > 0 && vol3.every(near),

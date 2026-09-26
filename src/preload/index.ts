@@ -130,6 +130,9 @@ const api = {
       ipcRenderer.invoke('card:extract-audio', cardId, filePath),
     /** 참조 없이 바로 읽을 수 있는 기본 목소리 목록(설치·구동 확인을 거친 것만). */
     builtinVoices: () => ipcRenderer.invoke('card:builtin-voices'),
+    /** 그 기본 목소리로 짧은 문장을 실제로 읽어 소리 파일 경로를 돌려준다(카드를 바꾸지 않는다). */
+    previewBuiltin: (modelPath: string, engineId?: string) =>
+      ipcRenderer.invoke('card:preview-builtin', modelPath, engineId),
     /** 이 카드가 꺼내 둔 소리만 지운다. */
     releaseMedia: (cardId: string) => ipcRenderer.invoke('card:release-media', cardId),
   },
