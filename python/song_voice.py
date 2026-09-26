@@ -113,10 +113,16 @@ def convert_vocal(source, reference, out_dir, *, run=subprocess.run, conv=None,
     os.makedirs(out_dir, exist_ok=True)
     before = set(os.listdir(out_dir))
 
-    args = convert_args(source, reference, out_dir, conv=conv)
+    c = conv or converter()
+    args = convert_args(source, reference, out_dir, conv=c)
     if log:
         log('노래 목소리 변환 시작 — %s' % os.path.basename(source))
-    r = run(args, capture_output=True)
+    # ★변환기를 **제 집에서** 돌린다(2026-09-26 사고).
+    #   변환기는 모델 캐시를 `./checkpoints` 같은 **상대 경로**에 만든다.
+    #   그래서 우리 작업 폴더에서 부르면 **앱 저장소 안에 수 GB 가 쏟아진다.**
+    #   실제로 2.4GB 가 저장소에 들어갔고 하마터면 그대로 커밋될 뻔했다.
+    #   집을 정해 주면 제 옆에 받는다 — 이미 받아 둔 것도 그대로 쓴다.
+    r = run(args, capture_output=True, cwd=os.path.dirname(os.path.abspath(c['script'])))
     if getattr(r, 'returncode', 1) != 0:
         tail = (getattr(r, 'stderr', b'') or b'')
         if isinstance(tail, bytes):

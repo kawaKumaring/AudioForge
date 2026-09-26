@@ -133,6 +133,38 @@ class TestFailureIsNotSwallowed(unittest.TestCase):
                         '옛 결과를 이번 것으로 착각한다: %s' % os.path.basename(got))
 
 
+class TestRunsInItsOwnHome(unittest.TestCase):
+    """★변환기를 우리 폴더에서 돌리면 저장소에 수 GB 가 쏟아진다(2026-09-26 사고).
+
+      변환기는 모델 캐시를 `./checkpoints` 같은 **상대 경로**에 만든다.
+      우리 작업 폴더에서 불렀더니 **앱 저장소 안에 2.4GB** 가 내려왔고,
+      `git add -A` 가 그것을 통째로 담아 하마터면 커밋될 뻔했다.
+      (푸시 전에 잡아 되돌렸다.)
+
+      집을 정해 주면 제 옆에 받고, 이미 받아 둔 것도 그대로 쓴다.
+    """
+
+    def test_변환기의_집에서_돌린다(self):
+        import tempfile
+        d = tempfile.mkdtemp(prefix='afsv-home-')
+        src, ref = _tmp(d, 'a.wav'), _tmp(d, 'b.wav')
+        seen = {}
+
+        def run(args, **kw):
+            seen.update(kw)
+            out = args[args.index('--output') + 1]
+            _tmp(out, 'made.wav')
+            return type('R', (), {'returncode': 0, 'stderr': b''})()
+
+        script = os.path.join(d, '변환기', 'inference.py')
+        os.makedirs(os.path.dirname(script), exist_ok=True)
+        _tmp(os.path.dirname(script), 'inference.py')
+        sv.convert_vocal(src, ref, os.path.join(d, 'out'), run=run,
+                         conv={'python': 'py', 'script': script})
+        self.assertEqual(seen.get('cwd'), os.path.dirname(script),
+                         '변환기를 남의 집에서 돌린다 — 모델 캐시가 거기 쏟아진다')
+
+
 class TestBoundaryStaysThin(unittest.TestCase):
     """★떼어낼 때 여기 한 곳만 보면 되는가."""
 
