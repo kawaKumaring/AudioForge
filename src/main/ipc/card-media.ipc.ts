@@ -15,16 +15,17 @@
  *   합성은 파이썬 한 줄로 돌고, 그 줄이 바쁘면 참조 분석조차 거절된다.
  *   소리 꺼내기까지 그 줄에 세우면 카드 하나가 다른 카드를 막는다. ffmpeg 을 직접 부른다.
  */
-import { ipcMain, app } from 'electron'
+import { ipcMain, app, dialog } from 'electron'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, rmSync, statSync, writeFileSync, unlinkSync } from 'node:fs'
 import { join, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { currentPythonPath, synthesisBusy } from './audio.ipc'
 
 const execFileAsync = promisify(execFile)
+const NEWLINE = String.fromCharCode(10)
 
 export interface CardMediaReply<T> { ok: boolean; data?: T; error?: string }
 const ok = <T>(data: T): CardMediaReply<T> => ({ ok: true, data })
@@ -208,6 +209,70 @@ export function registerCardMediaIpc(): void {
       })
       previewInFlight.set(modelPath, run)
       return ok(await run)
+    } catch (e) {
+      return fail(e)
+    }
+  })
+
+  /**
+   * 최종 음성 — 계획대로 이어 붙인다.
+   *
+   * ★미리듣기와 저장이 **같은 계획, 같은 처리**를 쓴다. 다른 것은 **어디에 쓰느냐**뿐이다.
+   *   처리를 두 군데서 하면 언젠가 갈라지고, 들은 것과 저장된 것이 달라진다.
+   * ★원본 생성본은 읽기만 한다(`python/card_join.py` 가 그 계약을 지킨다).
+   * ★같은 계획의 미리듣기는 다시 만들지 않는다. 계획이 달라지면 다른 이름이 되어
+   *   이전 것을 **재사용하지 않는다.**
+   */
+  ipcMain.handle('card:join', async (_e, plan: {
+    steps: { cardId: string; label: string; path: string; gapBefore: number }[]
+    level: boolean; edges: boolean
+  }, mode: 'preview' | 'save', planKey: string): Promise<CardMediaReply<{ path: string; seconds: number; peak: number; sampleRate: number; canceled?: boolean }>> => {
+    try {
+      if (!plan?.steps?.length) throw new Error('이어 붙일 것이 없습니다')
+      const busy = synthesisBusy('최종 음성 만들기')
+      if (busy) throw new Error(busy)
+
+      let out = ''
+      if (mode === 'save') {
+        const r = await dialog.showSaveDialog({
+          title: '최종 음성 저장', defaultPath: '최종음성.wav',
+          filters: [{ name: 'WAV', extensions: ['wav'] }],
+        })
+        if (r.canceled || !r.filePath) return ok({ path: '', seconds: 0, peak: 0, sampleRate: 0, canceled: true })
+        out = r.filePath
+      } else {
+        const dir = join(app.getPath('userData'), 'joinPreview')
+        mkdirSync(dir, { recursive: true })
+        out = join(dir, `${createHash('sha256').update(String(planKey || '')).digest('hex').slice(0, 20)}.wav`)
+        // 같은 계획이면 이미 만들어 둔 것을 그대로 쓴다. 계획이 바뀌면 이름이 달라진다.
+        if (existsSync(out) && statSync(out).size > 44) {
+          return ok({ path: out, seconds: 0, peak: 0, sampleRate: 0 })
+        }
+      }
+
+      const py = currentPythonPath()
+      if (!py || !existsSync(py)) throw new Error('파이썬을 찾지 못했습니다')
+      const here = dirname(fileURLToPath(import.meta.url))
+      const script = [
+        join(here, '..', '..', '..', 'python', 'card_join.py'),
+        join(process.cwd(), 'python', 'card_join.py'),
+      ].find((p) => existsSync(p))
+      if (!script) throw new Error('이어 붙이기 스크립트를 찾지 못했습니다')
+
+      const planPath = join(app.getPath('userData'), `cardjoin_${randomUUID()}.json`)
+      writeFileSync(planPath, JSON.stringify({ ...plan, output: out }), 'utf-8')
+      try {
+        const { stdout } = await execFileAsync(py, ['-X', 'utf8', script, '--plan', planPath], {
+          timeout: 300000, maxBuffer: 4 * 1024 * 1024,
+          env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+        })
+        const line = String(stdout).trim().split(NEWLINE).filter(Boolean).pop() || '{}'
+        const r = JSON.parse(line) as { ok?: boolean; error?: string; path?: string; seconds?: number; peak?: number; sampleRate?: number }
+        if (!r.ok || !r.path) throw new Error(r.error || '이어 붙이지 못했습니다')
+        return ok({ path: r.path, seconds: r.seconds || 0, peak: r.peak || 0, sampleRate: r.sampleRate || 0 })
+      } finally {
+        try { unlinkSync(planPath) } catch { /* 남아도 해롭지 않다 */ }
+      }
     } catch (e) {
       return fail(e)
     }

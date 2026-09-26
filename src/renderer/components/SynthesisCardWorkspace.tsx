@@ -16,6 +16,9 @@ import {
   cardVoiceOf, voiceSupports, voiceGenerateFault, type BuiltinVoiceRef,
 } from '../../shared/synthesisCardVoice'
 import {
+  buildJoinPlan, joinPlanKey, joinBlockText,
+} from '../../shared/cardJoinPlan'
+import {
   savedChoices, savedWorkHasContent, type RestoreChoice,
 } from '../../shared/synthesisCardSave'
 import {
@@ -66,9 +69,9 @@ function appliedOf(take: CardTake) {
     reference: a?.reference || null,
   }
 }
-const DISCONNECTED = '최종 음성의 이어 듣기·연결부 재생·한 파일로 저장은 아직 연결되지 않았습니다.'
-function Action({ icon, label, onClick, disabled = false, children, title }: { icon: IconName; label: string; onClick?: () => void; disabled?: boolean; children?: ReactNode; title?: string }) {
-  return <button type="button" aria-label={label} title={title || label} disabled={disabled} onClick={onClick} style={{ ...button, padding: children ? '7px 11px' : 8, opacity: disabled ? .4 : 1, cursor: disabled ? 'not-allowed' : 'pointer' }}><Icon name={icon}/>{children}</button>
+const DISCONNECTED = '연결부만 따로 듣는 것은 아직 연결되지 않았습니다. 전체 이어 듣기로 확인하세요.'
+function Action({ icon, label, onClick, disabled = false, children, title, testId }: { icon: IconName; label: string; onClick?: () => void; disabled?: boolean; children?: ReactNode; title?: string; testId?: string }) {
+  return <button type="button" data-testid={testId} aria-label={label} title={title || label} disabled={disabled} onClick={onClick} style={{ ...button, padding: children ? '7px 11px' : 8, opacity: disabled ? .4 : 1, cursor: disabled ? 'not-allowed' : 'pointer' }}><Icon name={icon}/>{children}</button>
 }
 function Modal({ title, subtitle, close, children, footer }: { title: string; subtitle?: string; close: () => void; children: ReactNode; footer?: ReactNode }) {
   const ref = useRef<HTMLDialogElement>(null)
@@ -349,6 +352,58 @@ export default function SynthesisCardWorkspace() {
     if (why) { const t = cancelAlreadyOverText(why); if (t && alive.current) setNotice(t) }
   }
 
+  // ── 최종 음성 ────────────────────────────────────────────────────────
+  // ★이어 듣기와 저장이 **같은 계획**을 쓴다. 계획을 두 군데서 만들면 언젠가 갈라진다.
+  const [joining, setJoining] = useState<'' | 'preview' | 'save'>('')
+  const joinAudio = useRef<HTMLAudioElement | null>(null)
+  const [joinPlaying, setJoinPlaying] = useState(false)
+  useEffect(() => () => { joinAudio.current?.pause() }, [])
+
+  const currentPlan = () => buildJoinPlan(state.cards.map((c) => {
+    const t = c.takes.find((x) => x.id === c.adoptedId)
+    return {
+      id: c.id, label: c.label,
+      adopted: t ? { id: t.id, path: t.path, missing: t.missing } : null,
+    }
+  }), state.joins)
+
+  const joinBlocked = (() => {
+    const r = currentPlan()
+    return r.plan ? '' : joinBlockText(r.blocks)
+  })()
+
+  const runJoin = async (mode: 'preview' | 'save') => {
+    setNotice('')
+    const r = currentPlan()
+    if (!r.plan) { setNotice(joinBlockText(r.blocks)); return }
+    // 듣고 있던 것을 먼저 멈춘다 — 계획이 바뀌었을 수 있다.
+    joinAudio.current?.pause(); setJoinPlaying(false)
+    setJoining(mode)
+    try {
+      const res = await window.api.cards.join(r.plan, mode, joinPlanKey(r.plan)) as
+        { ok: boolean; data?: { path: string; seconds: number; canceled?: boolean }; error?: string }
+      if (!res?.ok) throw new Error(res?.error || '최종 음성을 만들지 못했습니다')
+      if (res.data?.canceled) return
+      if (mode === 'save') {
+        if (alive.current) setNotice(`최종 음성을 저장했습니다: ${res.data!.path}`)
+        return
+      }
+      const url = await window.api.audio.getFileUrl(res.data!.path)
+      if (!alive.current) return
+      const el = joinAudio.current || createManagedAudio()
+      joinAudio.current = el
+      el.src = url
+      el.onended = () => setJoinPlaying(false)
+      el.onerror = () => { setJoinPlaying(false); if (alive.current) setNotice('최종 음성을 재생하지 못했습니다') }
+      await el.play()
+      if (alive.current) setJoinPlaying(true)
+    } catch (e) {
+      if (alive.current) setNotice((e as Error)?.message || '최종 음성을 만들지 못했습니다')
+    } finally {
+      if (alive.current) setJoining('')
+    }
+  }
+
   const generate = async (card: SynthesisCard) => {
     setNotice('')
     const why = await startCardGeneration(card)
@@ -525,8 +580,21 @@ export default function SynthesisCardWorkspace() {
       style={{ ...button, minHeight: state.cards.length ? 64 : 180, width: '100%', border: `1px dashed ${hover === 'add' ? 'var(--accent)' : 'var(--border-default, var(--border-subtle))'}`, background: hover === 'add' ? 'var(--bg-elevated)' : 'transparent', color: 'var(--text-muted)' }}><Icon name="plus"/>{loading ? '불러오는 중' : state.cards.length ? null : '음원 추가'}</button>
     {state.removed && <div role="status" style={{ ...row, ...muted }}><span>카드 삭제됨</span><button type="button" disabled={locked} style={button} onClick={state.undo}>되돌리기</button></div>}
     <footer style={{ ...row, position: 'sticky', bottom: 0, zIndex: 2, marginTop: 4, padding: '15px 18px', background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', borderRadius: 12, boxShadow: '0 -8px 30px rgba(0,0,0,.12)' }}>
-      <div style={{ flex: '1 1 130px' }}><div style={{ ...row, fontSize: 13, fontWeight: 600 }}>최종 음성 <span title={DISCONNECTED} style={{ ...muted, fontWeight: 400 }}>연결 준비 중</span></div><div style={{ ...muted, marginTop: 4 }}>{state.cards.filter(c => c.takes.some(t => t.id === c.adoptedId)).length} / {state.cards.length} 채택</div></div>
-      <Action icon="play" label="전체 이어 듣기" disabled title={DISCONNECTED}/><Action icon="link" label="연결 조정" disabled={locked || !state.cards.length} onClick={() => setModal({ type: 'join' })}>연결 조정</Action><button type="button" className="af-card-work-button" disabled title={DISCONNECTED} style={primary}><Icon name="save"/>파일로 저장</button>
+      <div style={{ flex: '1 1 130px' }}>
+        <div style={{ ...row, fontSize: 13, fontWeight: 600 }}>최종 음성
+          {joinBlocked && <span title={joinBlocked} style={{ ...muted, fontWeight: 400, color: 'var(--amber)' }}>준비 필요</span>}</div>
+        <div style={{ ...muted, marginTop: 4 }}>{state.cards.filter(c => c.takes.some(t => t.id === c.adoptedId)).length} / {state.cards.length} 채택</div>
+      </div>
+      <Action icon="play" label={joinPlaying ? '이어 듣기 멈춤' : '전체 이어 듣기'} testId="join-play"
+        disabled={locked || !!joinBlocked || joining !== ''}
+        title={joinBlocked || '카드 순서대로 채택한 생성본을 이어서 들려줍니다'}
+        onClick={() => { if (joinPlaying) { joinAudio.current?.pause(); setJoinPlaying(false) } else void runJoin('preview') }}/>
+      <Action icon="link" label="연결 조정" disabled={locked || !state.cards.length} onClick={() => setModal({ type: 'join' })}>연결 조정</Action>
+      <button type="button" className="af-card-work-button" data-testid="join-save"
+        disabled={locked || !!joinBlocked || joining !== ''}
+        title={joinBlocked || '들은 것과 같은 방식으로 한 파일에 저장합니다'}
+        onClick={() => void runJoin('save')} style={primary}>
+        <Icon name="save"/>{joining === 'save' ? '저장 중' : joining === 'preview' ? '만드는 중' : '파일로 저장'}</button>
     </footer>
     {modal?.type === 'settings' && active && <Settings key={active.id} card={active} disabled={busy} close={() => setModal(null)}/>}
     {modal?.type === 'takes' && active && <Takes key={active.id} card={active} disabled={busy} close={() => setModal(null)}/>}

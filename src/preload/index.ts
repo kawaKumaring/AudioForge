@@ -133,6 +133,9 @@ const api = {
     /** 그 기본 목소리로 짧은 문장을 실제로 읽어 소리 파일 경로를 돌려준다(카드를 바꾸지 않는다). */
     previewBuiltin: (modelPath: string, engineId?: string) =>
       ipcRenderer.invoke('card:preview-builtin', modelPath, engineId),
+    /** 최종 음성 — 미리듣기와 저장이 **같은 계획·같은 처리**를 쓴다. */
+    join: (plan: unknown, mode: 'preview' | 'save', planKey: string) =>
+      ipcRenderer.invoke('card:join', plan, mode, planKey),
     /** 이 카드가 꺼내 둔 소리만 지운다. */
     releaseMedia: (cardId: string) => ipcRenderer.invoke('card:release-media', cardId),
   },
