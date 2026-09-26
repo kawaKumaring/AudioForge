@@ -55,6 +55,9 @@ try {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
     s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
+    // 이관(2026-09-27): 합성의 기본 진입이 **생성 카드** 로 바뀌었다. 이 검사가 쓰는 화면
+    // (참조 준비, '음성 합성 시작', 합성 중 설정 변경)은 옛 버전 탭에 있다. 단언은 그대로다.
+    window.__synthesisCards.getState().setView('legacy')
   }, REF)
   await win.waitForFunction(() => window.__afStore?.getState().ttsRefReady === true,
     undefined, { timeout: 180000 })

@@ -60,6 +60,9 @@ try {
     const info = await window.api.audio.getFileInfo(p)
     const url = await window.api.audio.getFileUrl(p)
     s.getState().setFile(info, url); s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
+    // 이관(2026-09-27): 합성의 기본 진입이 **생성 카드** 로 바뀌었다. 이 검사가 쓰는 화면
+    // (참조 준비, 대사 입력, '음성 합성 시작')은 옛 버전 탭에 있다. 단언은 그대로다.
+    window.__synthesisCards.getState().setView('legacy')
   }, REF)
   // 참조 준비를 기다린다. **손으로 확정하는 것은 더 이상 기본 흐름이 아니다** — 분석이 끝나면
   // 추천 구간으로 자동 확정된다(2026-09-08 기준). 그래서 '이 구간으로 확정' 버튼이 보이기를
