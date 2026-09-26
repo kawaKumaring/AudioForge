@@ -96,6 +96,29 @@ try {
   check(Buffer.compare(fs.readFileSync(A), beforeA) === 0 && Buffer.compare(fs.readFileSync(B), beforeB) === 0,
     '원본 생성본을 덮어쓰지 않는다')
 
+  // ── 입력 생성본 위에는 저장할 수 없다 ───────────────────────────────
+  // ★2026-09-27 검수 1항 [P1] 재현: 저장 자리를 입력 A 로 고르니 ok=true 로 A 가 늘어났다.
+  //   같은 파일을 **다른 이름으로** 부르는 경우(대소문자)까지 막아야 한다.
+  const aliasOfA = path.join(path.dirname(A), path.basename(A).toUpperCase())
+  for (const [target, label] of [[A, '같은 이름'], [aliasOfA, '대소문자만 다른 이름']]) {
+    await win.evaluate(() => { const n = document.querySelector('[role="status"]'); if (n) n.textContent = '' })
+    await app.evaluate(({ dialog }, dest) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: dest }) }, target)
+    await win.getByTestId('join-save').click()
+    await win.waitForFunction(() =>
+      (document.querySelector('[role="status"]')?.textContent || '').includes('저장할 수 없습니다'),
+    null, { timeout: 60000 }).catch(() => {})
+    const why2 = await win.evaluate(() => (document.querySelector('[role="status"]')?.textContent || '').trim())
+    check(why2.includes('저장할 수 없습니다'), `입력 생성본 위에 저장하려 하면 거절한다(${label})`, why2)
+    check(Buffer.compare(fs.readFileSync(A), beforeA) === 0, `거절한 뒤에도 입력 바이트가 그대로다(${label})`)
+    check(!fs.existsSync(A + '.part'), `쓰다 만 임시 파일을 남기지 않는다(${label})`)
+  }
+  // 취소해도 입력은 그대로다.
+  await app.evaluate(({ dialog }) => { dialog.showSaveDialog = async () => ({ canceled: true, filePath: '' }) })
+  await win.getByTestId('join-save').click()
+  await win.waitForTimeout(800)
+  check(Buffer.compare(fs.readFileSync(A), beforeA) === 0 && Buffer.compare(fs.readFileSync(B), beforeB) === 0,
+    '저장을 취소해도 입력 바이트가 그대로다')
+
   // ── 채택이 빠지면 조용히 건너뛰지 않는다 ────────────────────────────
   await win.evaluate(() => {
     const s = window.__synthesisCards.getState()
@@ -106,6 +129,54 @@ try {
   check(await win.getByTestId('join-save').isDisabled(), '채택이 빠지면 저장도 막는다')
   const why = await win.getByTestId('join-save').getAttribute('title')
   check((why || '').includes('채택'), '무엇이 필요한지 말한다', why)
+
+  // ── 준비 중에 계획이 바뀌면 이전 결과를 재생하지 않는다 ────────────────────
+  // ★2026-09-27 검수 2항 [P2] 재현: A 채택으로 시작 → 계획을 바꿈 → A 응답이 오자
+  //   `old-plan-a-preview.wav` 가 그대로 울렸다. 여기서는 **응답을 늦춰** 그 창을 만든다.
+  const OLD = makeSyntheticWav(path.join(ud, 'old-plan-preview.wav'), 1, 22050, 440)
+  await win.evaluate(() => {
+    const s = window.__synthesisCards.getState()
+    s.update(s.cards[1].id, { adoptedId: 't-b' })      // 앞 단계에서 뺀 채택을 되돌린다
+  })
+  await win.evaluate(() => {
+    window.__playedSrc = []
+    const orig = HTMLMediaElement.prototype.play
+    HTMLMediaElement.prototype.play = function patched(...a) {
+      window.__playedSrc.push(this.src)
+      return orig.apply(this, a)
+    }
+  })
+  await app.evaluate(({ ipcMain }, oldPath) => {
+    ipcMain.removeHandler('card:join')
+    ipcMain.handle('card:join', async () => {
+      await new Promise((r) => setTimeout(r, 2500))          // 사용자가 화면을 바꿀 만큼의 시간
+      return { ok: true, data: { path: oldPath, seconds: 1, peak: 0.5, sampleRate: 22050 } }
+    })
+  }, OLD)
+
+  await win.waitForTimeout(300)
+  await win.getByTestId('join-play').click()
+  await win.waitForTimeout(400)
+  // 준비 중에 간격을 바꾼다 — 계획 지문이 달라진다.
+  await win.evaluate(() => window.__synthesisCards.getState().setJoins({ gap: 1.4, level: false, edges: false, gaps: {} }))
+  await win.waitForTimeout(3000)
+  const late = await win.evaluate(() => ({
+    played: window.__playedSrc.length,
+    notice: (document.querySelector('[role="status"]')?.textContent || '').trim(),
+    label: document.querySelector('[data-testid="join-play"]')?.getAttribute('aria-label'),
+  }))
+  check(late.played === 0, '계획이 바뀌면 늦게 온 이전 결과를 재생하지 않는다', late)
+  check(late.notice.includes('다시 들어'), '왜 울리지 않았는지 말한다', late.notice)
+  check(late.label === '전체 이어 듣기', '준비 중 표시에 갇히지 않는다', late.label)
+
+  // 화면을 떠난 사이에 온 응답도 재생하지 않는다.
+  await win.evaluate(() => { window.__playedSrc = [] })
+  await win.getByTestId('join-play').click()
+  await win.waitForTimeout(400)
+  await win.evaluate(() => window.__synthesisCards.getState().setView('legacy'))
+  await win.waitForTimeout(3000)
+  const gone = await win.evaluate(() => window.__playedSrc.length)
+  check(gone === 0, '화면을 떠난 뒤 온 결과도 재생하지 않는다', gone)
 
   console.log('RESULT', passed, 'checks ·', fails.length, 'fail')
   console.log('  [증거] 저장 파일:', saveTo)

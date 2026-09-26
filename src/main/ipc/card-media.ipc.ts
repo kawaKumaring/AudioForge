@@ -19,10 +19,12 @@ import { ipcMain, app, dialog } from 'electron'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { createHash, randomUUID } from 'node:crypto'
-import { existsSync, mkdirSync, rmSync, statSync, writeFileSync, unlinkSync } from 'node:fs'
-import { join, basename, dirname } from 'node:path'
+import { existsSync, mkdirSync, rmSync, statSync, writeFileSync, unlinkSync, realpathSync } from 'node:fs'
+import { join, basename, dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { currentPythonPath, synthesisBusy } from './audio.ipc'
+// @ts-ignore TS5097: node --test 가 요구하는 명시적 .ts 확장자(다른 모듈과 같은 관례).
+import { joinOutputFault, type PathProbe } from '../../shared/joinOutputGuard.ts'
 
 const execFileAsync = promisify(execFile)
 const NEWLINE = String.fromCharCode(10)
@@ -54,6 +56,26 @@ async function findFfmpeg(): Promise<string> {
     } catch { /* 다음 자리 */ }
   }
   throw new Error('ffmpeg 을 찾을 수 없습니다. ffmpeg 을 설치해 주세요.')
+}
+
+/**
+ * 실제 파일을 보고 같은 파일인지 판정하는 수단(`shared/joinOutputGuard` 가 쓴다).
+ *
+ * ★번호를 먼저 본다 — 하드링크·접합·8.3 단축 이름은 **이름이 달라도 같은 파일**이다.
+ *   `bigint: true` 로 읽는 이유: 색인이 크면 보통 숫자로는 값이 뭉개진다.
+ *   번호를 얻지 못하면(아직 없는 파일) 이름을 풀어서 비교한다.
+ */
+const fsPathProbe: PathProbe = {
+  real: (p) => {
+    try { return realpathSync.native(resolve(p)) } catch { /* 아직 없는 파일 */ }
+    try { return resolve(p) } catch { return p }
+  },
+  fileId: (p) => {
+    try {
+      const st = statSync(p, { bigint: true })
+      return st.ino ? `${st.dev}:${st.ino}` : null
+    } catch { return null }
+  },
 }
 
 /** 이 카드의 소리가 사는 폴더. **카드 하나당 폴더 하나.** */
@@ -233,6 +255,7 @@ export function registerCardMediaIpc(): void {
       if (busy) throw new Error(busy)
 
       let out = ''
+      let cached = false
       if (mode === 'save') {
         const r = await dialog.showSaveDialog({
           title: '최종 음성 저장', defaultPath: '최종음성.wav',
@@ -241,14 +264,21 @@ export function registerCardMediaIpc(): void {
         if (r.canceled || !r.filePath) return ok({ path: '', seconds: 0, peak: 0, sampleRate: 0, canceled: true })
         out = r.filePath
       } else {
+        // (미리듣기 자리는 아래에서 앱 폴더로 정한다 — 그래도 같은 검사를 통과해야 한다.)
         const dir = join(app.getPath('userData'), 'joinPreview')
         mkdirSync(dir, { recursive: true })
         out = join(dir, `${createHash('sha256').update(String(planKey || '')).digest('hex').slice(0, 20)}.wav`)
         // 같은 계획이면 이미 만들어 둔 것을 그대로 쓴다. 계획이 바뀌면 이름이 달라진다.
-        if (existsSync(out) && statSync(out).size > 44) {
-          return ok({ path: out, seconds: 0, peak: 0, sampleRate: 0 })
-        }
+        cached = existsSync(out) && statSync(out).size > 44
       }
+
+      // ★입력 생성본 위에는 저장하지 않는다(2026-09-27 검수 1항 [P1]).
+      //   **소리를 읽기 전에** 막는다 — 그래야 거절당한 뒤에도 입력 바이트가 그대로다.
+      //   미리듣기 자리는 앱이 정하지만 같은 검사를 지난다(자리 규칙이 바뀌어도 계약은 남는다).
+      const clash = joinOutputFault(out, plan.steps.map((s) => ({ label: s.label, path: s.path })), fsPathProbe)
+      if (clash) throw new Error(clash)
+
+      if (cached) return ok({ path: out, seconds: 0, peak: 0, sampleRate: 0 })
 
       const py = currentPythonPath()
       if (!py || !existsSync(py)) throw new Error('파이썬을 찾지 못했습니다')

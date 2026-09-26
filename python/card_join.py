@@ -2,8 +2,12 @@
 
 ★이 파일이 지키는 것 (2026-09-27 지시)
   · 원본 생성본은 **읽기만** 한다. 어떤 경로에서도 덮어쓰지 않는다.
-  · 말끝·호흡을 자르지 않는다. 발음을 겹치는 크로스페이드를 넣지 않는다.
-    '경계 다듬기' 는 이음매에서 **딸깍 소리만 없애는 아주 짧은 기울기**다.
+    출력 자리가 입력 생성본과 같은 파일이면 **읽기 전에 거절한다**(2026-09-27 검수 1항).
+  · 소리를 잘라내지 않는다 — 길이를 줄이거나 샘플을 버리는 처리가 없다.
+    발음을 겹치는 크로스페이드도 넣지 않는다.
+    ★다만 '경계 다듬기' 를 켜면 이음매의 **5ms 진폭이 0 을 향해 내려간다.**
+      길이가 같다는 것이 말끝·호흡이 들리는 대로 남았다는 뜻은 아니다(2026-09-27 검수 4항).
+      끄면 한 샘플도 바뀌지 않는다. 어느 쪽이 나은지는 **사람이 들어야** 정한다.
   · 무음을 자동으로 제거하지 않는다. 길이를 맞추려고 소리를 깎지 않는다.
   · 레이트·채널이 달라도 **재생 속도와 음높이가 바뀌지 않게** 맞춘다.
   · 피크를 넘기지 않는다. 음량 맞추기는 과하게 끌어올리지 않는다.
@@ -30,6 +34,33 @@ PEAK_CEIL = 0.97
 def _die(message, code="JOIN_FAILED"):
     sys.stdout.write(json.dumps({"ok": False, "error": message, "code": code}, ensure_ascii=False) + "\n")
     raise SystemExit(1)
+
+
+def _name_key(p):
+    """이름만 남긴 열쇠. 상대 경로·별칭·대소문자 차이를 없앤다."""
+    return os.path.normcase(os.path.abspath(os.path.realpath(p)))
+
+
+def _id_key(p):
+    """파일 고유 번호(장치+색인). 아직 없는 파일이면 None — '모른다'는 뜻이다."""
+    try:
+        st = os.stat(p)
+    except OSError:
+        return None
+    ino = getattr(st, "st_ino", 0)
+    return (st.st_dev, ino) if ino else None
+
+
+def _same_file(a, b):
+    """두 경로가 **같은 파일**인가. 번호가 양쪽에 다 있으면 그것이 결론이다.
+
+    ★이름만 보면 놓친다 — 하드링크, 접합, 8.3 단축 이름은 이름이 다르다.
+      번호를 모르는 쪽이 있으면 이름을 풀어 비교한다(없는 파일을 만들려는 경우).
+    """
+    ia, ib = _id_key(a), _id_key(b)
+    if ia is not None and ib is not None:
+        return ia == ib
+    return _name_key(a) == _name_key(b)
 
 
 def _rms(x):
@@ -73,7 +104,12 @@ def _resample(data, src_rate, dst_rate):
 
 
 def _edge_shape(data, rate):
-    """이음매의 아주 짧은 기울기. **말끝을 자르지 않는다** — 값만 0 에서 출발해 0 으로 닿는다."""
+    """이음매의 아주 짧은 기울기. 값이 0 에서 출발해 0 으로 닿는다.
+
+    ★프레임을 버리지 않는다(길이 불변). 그러나 **끝 5ms 의 진폭은 실제로 낮아진다** —
+      말소리가 경계까지 차 있으면 그 구간이 함께 내려간다(검수 재현값: RMS 0.5 → 약 0.29).
+      '길이가 같으니 보존된다' 고 읽지 않는다. 청감 판정은 사람의 몫이다.
+    """
     import numpy as np
     n = int(round(rate * EDGE_MS / 1000.0))
     if n <= 1 or data.shape[0] < n * 2:
@@ -99,6 +135,17 @@ def join(plan):
     out_path = plan.get("output") or ""
     if not out_path:
         _die("저장할 자리를 알 수 없습니다.", "JOIN_NO_OUTPUT")
+
+    # ★입력 생성본 위에 쓰지 않는다(2026-09-27 검수 1항 [P1]).
+    #   **소리를 읽기 전에** 막는다 — 거절당한 뒤에도 입력 바이트가 그대로여야 한다.
+    #   임시 자리(.part)까지 본다. 마지막에 os.replace 로 자리를 바꾸기 때문이다.
+    for s in steps:
+        p = s.get("path") or ""
+        if not p:
+            continue
+        if _same_file(out_path, p) or _same_file(out_path + ".part", p):
+            _die("최종 음성을 입력 생성본 위에 저장할 수 없습니다: %s" % os.path.basename(p),
+                 "JOIN_OUTPUT_IS_INPUT")
 
     pieces = []
     rates, chans = [], []

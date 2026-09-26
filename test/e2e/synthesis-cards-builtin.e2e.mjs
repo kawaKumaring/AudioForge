@@ -19,6 +19,27 @@ const check = (v, label, extra) => {
 }
 
 const ud = isolatedUserData()
+// ★기본값 1.0 과 구별되는 음량으로 시작한다(2026-09-27 검수 3항).
+//   1 만 확인하면 앱 음량을 아예 반영하지 않는 구현도 통과한다.
+const APP_VOLUME = 0.35
+fs.writeFileSync(path.join(ud, 'settings.json'),
+  JSON.stringify({ playbackVolume: APP_VOLUME }), 'utf-8')
+
+/**
+ * 재생이 시작되는 순간의 요소를 엿본다 — 미리듣기 요소는 `new Audio()` 라 **화면에 붙지 않는다.**
+ * DOM 질의로는 보이지 않으므로 이 관측이 유일한 증거다(제품 코드는 건드리지 않는다).
+ */
+const installPlayProbe = (win) => win.evaluate(() => {
+  window.__volProbe = []
+  window.__playedEls = []
+  const orig = HTMLMediaElement.prototype.play
+  HTMLMediaElement.prototype.play = function patched(...a) {
+    window.__volProbe.push(this.volume)
+    window.__playedEls.push(this)      // 강참조 — 재생이 끝나도 음량을 다시 볼 수 있다
+    return orig.apply(this, a)
+  }
+})
+
 let app
 try {
   app = await electron.launch({
@@ -48,6 +69,7 @@ try {
   check(await win.getByTestId('pick-voice-builtin').count() >= 1, '기본 목소리를 고를 수 있다')
   // ── 고르기 전에 들어 본다 (실제 로컬 엔진) ──────────────────────────
   check(await win.getByTestId('voice-preview').count() >= 1, '고르기 창에서 들어 볼 수 있다')
+  await installPlayProbe(win)
   await win.getByTestId('voice-preview').first().click()
   await win.waitForFunction(() => {
     const b = document.querySelector('[data-testid="voice-preview"]')
@@ -55,13 +77,33 @@ try {
   }, null, { timeout: 120000 }).catch(() => {})
   const pv = await win.evaluate(() => {
     const b = document.querySelector('[data-testid="voice-preview"]')
-    const a = [...document.querySelectorAll('audio')]
-    return { label: b?.textContent?.trim(), title: b?.title || '', audios: a.length, vol: a[0]?.volume ?? null }
+    return { label: b?.textContent?.trim(), title: b?.title || '' }
   })
   check(pv.label === '멈춤', '미리듣기가 실제로 울린다', pv)
-  // 앱의 재생 음량을 따른다 — 이 화면만 다른 음량으로 울리지 않는다.
-  const appVol = await win.evaluate(() => window.__afStore.getState().playbackVolume ?? 1)
-  check(pv.vol === null || Math.abs(pv.vol - appVol) < 0.02, '앱 음량을 따른다', { got: pv.vol, appVol })
+
+  // ── 앱 음량을 따르는가 — **실제 play() 에 들어간 요소로** 확인한다 ───────────
+  // ★예전 검사는 DOM 에서 audio 를 찾고 없으면 통과했다(2026-09-27 검수 3항).
+  //   미리듣기 요소는 화면에 붙지 않으므로 그 검사는 늘 빈 통과였다. 이제 관측이 없으면 실패한다.
+  const played = await win.evaluate(() => ({
+    vols: window.__volProbe || [],
+    nowVols: (window.__playedEls || []).map((el) => el.volume),
+  }))
+  check(played.vols.length > 0, '미리듣기가 실제 재생 요소를 거친다(관측 실패는 통과가 아니다)', played)
+  check(played.vols.length > 0 && played.vols.every((v) => Math.abs(v - APP_VOLUME) < 0.005),
+    `재생 순간의 음량이 앱 음량(${APP_VOLUME})이다 — 기본값 1 이 아니다`, played.vols)
+
+  // 재생 중 음량을 바꾸면 **울리고 있는 요소**에 즉시 반영된다.
+  const LIVE = 0.62
+  const live = await win.evaluate(async (v) => {
+    const el = (window.__playedEls || [])[0]
+    if (!el) return { changed: null }
+    const before = el.volume
+    await window.__afSetPlaybackVolume(v)
+    return { before, after: el.volume }
+  }, LIVE)
+  check(live.changed !== null && Math.abs(live.after - LIVE) < 0.005,
+    '재생 중 음량 변경이 울리고 있는 요소에 반영된다', live)
+  await win.evaluate((v) => window.__afSetPlaybackVolume(v), APP_VOLUME)
   const before = await win.evaluate(() => ({
     cards: window.__synthesisCards.getState().cards.length,
     takes: window.__synthesisCards.getState().cards[0]?.takes.length ?? 0,

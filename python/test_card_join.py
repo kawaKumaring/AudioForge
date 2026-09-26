@@ -85,13 +85,64 @@ class JoinTest(unittest.TestCase):
             with open(p, "rb") as fh:
                 self.assertEqual(fh.read(), raw, "원본 내용이 바뀌었다 — 읽기만 해야 한다")
 
-    def test_끝부분을_자르지_않는다(self):
-        """★경계 다듬기를 켜도 **길이는 그대로**다. 말끝을 깎아 맞추지 않는다."""
+    def test_길이를_줄이거나_샘플을_버리지_않는다(self):
+        """★경계 다듬기를 켜도 **길이는 그대로**다. 길이를 맞추려고 뒤를 잘라내지 않는다.
+
+        ★이 검사가 말하지 **않는** 것(2026-09-27 검수 4항):
+          길이가 같다는 것은 말끝·호흡이 들리는 대로 보존된다는 뜻이 **아니다.**
+          5ms 기울기는 경계의 진폭을 낮춘다 — 그 크기는 아래 검사에서 수치로 고정한다.
+        """
         a = tone(os.path.join(self.dir, "a.wav"), 0.5, 24000)
         plain = card_join.join(self.plan([{"path": a, "gapBefore": 0}]))
         shaped = card_join.join(self.plan([{"path": a, "gapBefore": 0}], edges=True,
                                           output=os.path.join(self.dir, "out2.wav")))
         self.assertAlmostEqual(plain["seconds"], shaped["seconds"], places=3)
+
+    # ── 경계 다듬기가 실제로 무엇을 하는가 (2026-09-27 검수 4항) ──────────────
+    def test_경계_다듬기를_끄면_소리가_그대로다(self):
+        """★끄면 **한 샘플도 바뀌지 않는다.** 보존을 원하면 이것이 확실한 길이다."""
+        a = tone(os.path.join(self.dir, "a.wav"), 0.4, 24000)
+        out = card_join.join(self.plan([{"path": a, "gapBefore": 0}]))["path"]
+        src, _ = sf.read(a, dtype="float32", always_2d=True)
+        got, _ = sf.read(out, dtype="float32", always_2d=True)
+        self.assertEqual(src.shape, got.shape)
+        self.assertTrue(np.array_equal(src, got), "끄면 바뀌는 곳이 없어야 한다")
+
+    def test_경계_다듬기는_끝_5ms_의_진폭을_낮춘다(self):
+        """★'길이가 같으니 말끝이 보존된다' 는 말은 **사실이 아니다.**
+
+        말소리가 경계까지 차 있으면 그 5ms 는 0 을 향해 내려간다. 그 크기를 수치로 남긴다
+        (검수 재현값: 끝 5ms 의 RMS 0.5 → 약 0.2893, 선형 기울기의 이론값 1/sqrt(3)≈0.577배).
+        이 검사는 **감쇠가 있다는 사실**을 고정한다. 들리는지 여부는 사람이 판단한다.
+        """
+        rate = 24000
+        a = tone(os.path.join(self.dir, "a.wav"), 0.4, rate, amp=0.5)
+        out = card_join.join(self.plan([{"path": a, "gapBefore": 0}], edges=True))["path"]
+        src, _ = sf.read(a, dtype="float32", always_2d=True)
+        got, _ = sf.read(out, dtype="float32", always_2d=True)
+        n = int(round(rate * card_join.EDGE_MS / 1000.0))
+        rms = lambda x: float(np.sqrt(np.mean(np.square(x, dtype="float64"))))
+        self.assertLess(rms(got[-n:]), rms(src[-n:]) * 0.75, "끝 5ms 가 낮아지지 않았다")
+        self.assertGreater(rms(got[-n:]), rms(src[-n:]) * 0.4, "감쇠가 이론값보다 훨씬 크다")
+        # ★5ms 밖은 손대지 않는다 — 말끝을 통째로 줄이는 처리가 아니다.
+        self.assertTrue(np.allclose(got[n:-n], src[n:-n], atol=1e-6),
+                        "경계 밖의 소리가 바뀌었다")
+
+    def test_무음으로_끝나는_조각은_다듬어도_들리는_부분이_그대로다(self):
+        """끝이 이미 조용하면 기울기를 걸어도 바뀌는 값이 없다 — 경계 종류를 나눠 본다."""
+        rate = 24000
+        a = tone(os.path.join(self.dir, "a.wav"), 0.4, rate, amp=0.5)
+        data, _ = sf.read(a, dtype="float32", always_2d=True)
+        n = int(round(rate * card_join.EDGE_MS / 1000.0))
+        data[-n * 2:] = 0.0                       # 끝 10ms 를 무음으로
+        quiet = os.path.join(self.dir, "quiet-tail.wav")
+        sf.write(quiet, data, rate, subtype="PCM_16")
+        out = card_join.join(self.plan([{"path": quiet, "gapBefore": 0}], edges=True))["path"]
+        src, _ = sf.read(quiet, dtype="float32", always_2d=True)
+        got, _ = sf.read(out, dtype="float32", always_2d=True)
+        # 끝 경계만 본다 — 앞 경계에도 같은 기울기가 걸리므로 조각 전체를 비교하면 뜻이 흐려진다.
+        self.assertTrue(np.allclose(got[-n * 2:], src[-n * 2:], atol=1e-6),
+                        "무음 경계에서는 바뀌는 값이 없어야 한다")
 
     def test_소리를_겹치지_않는다(self):
         """간격 0 이어도 앞 조각의 끝과 뒤 조각의 시작이 **겹치지 않는다**(길이가 합과 같다)."""
@@ -142,6 +193,76 @@ class JoinTest(unittest.TestCase):
                                        output=os.path.join(self.dir, "two.wav")))["path"]
         with open(one, "rb") as f1, open(two, "rb") as f2:
             self.assertEqual(f1.read(), f2.read(), "미리 들은 것과 저장한 것이 다르다")
+
+    # ── 입력 위에 저장하지 않는다 (2026-09-27 검수 1항 [P1]) ──────────────────
+    def test_출력을_입력_생성본으로_지정하면_거부한다(self):
+        """★재현된 결함: A+B 를 이으면서 저장 자리를 A 로 고르니 A 가 0.25초→0.5초가 됐다."""
+        a = tone(os.path.join(self.dir, "a.wav"), 0.25, 24000)
+        b = tone(os.path.join(self.dir, "b.wav"), 0.25, 24000)
+        raw = open(a, "rb").read()
+        with self.assertRaises(SystemExit):
+            card_join.join(self.plan([{"path": a, "gapBefore": 0},
+                                      {"path": b, "gapBefore": 0}], output=a))
+        with open(a, "rb") as fh:
+            self.assertEqual(fh.read(), raw, "거절했는데도 입력이 바뀌었다")
+
+    def test_대소문자만_다른_이름도_거부한다(self):
+        a = tone(os.path.join(self.dir, "a.wav"), 0.25, 24000)
+        b = tone(os.path.join(self.dir, "b.wav"), 0.25, 24000)
+        raw = open(a, "rb").read()
+        alias = os.path.join(self.dir, "A.WAV")
+        with self.assertRaises(SystemExit):
+            card_join.join(self.plan([{"path": a, "gapBefore": 0},
+                                      {"path": b, "gapBefore": 0}], output=alias))
+        with open(a, "rb") as fh:
+            self.assertEqual(fh.read(), raw)
+
+    def test_상대_경로로_돌아와도_거부한다(self):
+        a = tone(os.path.join(self.dir, "a.wav"), 0.25, 24000)
+        b = tone(os.path.join(self.dir, "b.wav"), 0.25, 24000)
+        raw = open(a, "rb").read()
+        alias = os.path.join(self.dir, "sub", "..", "a.wav")
+        os.makedirs(os.path.join(self.dir, "sub"), exist_ok=True)
+        with self.assertRaises(SystemExit):
+            card_join.join(self.plan([{"path": a, "gapBefore": 0},
+                                      {"path": b, "gapBefore": 0}], output=alias))
+        with open(a, "rb") as fh:
+            self.assertEqual(fh.read(), raw)
+
+    def test_임시_자리가_입력과_겹쳐도_거부한다(self):
+        """`<출력>.part` 에 쓴 뒤 자리를 바꾸므로 임시 자리도 입력을 덮을 수 있다."""
+        made = tone(os.path.join(self.dir, "tmp.wav"), 0.25, 24000)
+        a = os.path.join(self.dir, "out.wav.part")   # 확장자가 없으므로 만든 뒤 이름만 바꾼다
+        os.rename(made, a)
+        b = tone(os.path.join(self.dir, "b.wav"), 0.25, 24000)
+        raw = open(a, "rb").read()
+        with self.assertRaises(SystemExit):
+            card_join.join(self.plan([{"path": a, "gapBefore": 0},
+                                      {"path": b, "gapBefore": 0}],
+                                     output=os.path.join(self.dir, "out.wav")))
+        with open(a, "rb") as fh:
+            self.assertEqual(fh.read(), raw)
+
+    def test_오류로_끝나도_입력_바이트가_그대로다(self):
+        """없는 파일 때문에 죽는 경로에서도 입력은 손대지 않는다."""
+        a = tone(os.path.join(self.dir, "a.wav"), 0.3, 24000)
+        raw = open(a, "rb").read()
+        with self.assertRaises(SystemExit):
+            card_join.join(self.plan([{"path": a, "gapBefore": 0},
+                                      {"path": os.path.join(self.dir, "없다.wav"), "gapBefore": 0}]))
+        with open(a, "rb") as fh:
+            self.assertEqual(fh.read(), raw)
+        self.assertFalse(os.path.exists(os.path.join(self.dir, "out.wav.part")),
+                         "쓰다 만 임시 파일이 남았다")
+
+    def test_같은_폴더의_다른_이름에는_저장할_수_있다(self):
+        """입력 옆이라는 이유로 막지는 않는다 — 막는 것은 **같은 파일**이다."""
+        a = tone(os.path.join(self.dir, "a.wav"), 0.25, 24000)
+        b = tone(os.path.join(self.dir, "b.wav"), 0.25, 24000)
+        r = card_join.join(self.plan([{"path": a, "gapBefore": 0},
+                                      {"path": b, "gapBefore": 0}],
+                                     output=os.path.join(self.dir, "최종.wav")))
+        self.assertTrue(r["ok"])
 
     def test_다시_저장해도_이전_결과를_덮어쓰지_않는다(self):
         """저장 자리를 다르게 주면 앞의 것은 그대로 있다."""

@@ -19,6 +19,9 @@ import {
   buildJoinPlan, joinPlanKey, joinBlockText,
 } from '../../shared/cardJoinPlan'
 import {
+  previewStale, previewStaleText, playbackStale,
+} from '../../shared/joinPreviewGate'
+import {
   savedChoices, savedWorkHasContent, type RestoreChoice,
 } from '../../shared/synthesisCardSave'
 import {
@@ -261,6 +264,20 @@ function Join({ cards, close, disabled }: { cards: SynthesisCard[]; close: () =>
     </fieldset>
   </Modal>
 }
+/**
+ * 카드 목록 → 연결 계획. **화면과 보관본 어느 쪽에서도 같은 계획이 나오게** 한 곳에 둔다.
+ * (요청을 보낸 뒤 응답을 대조할 때는 보관본에서 다시 만들어야 한다 — 화면 변수는 그때 값에 묶인다.)
+ */
+function planOfCards(cards: SynthesisCard[], joins: JoinSettings) {
+  return buildJoinPlan(cards.map((c) => {
+    const t = c.takes.find((x) => x.id === c.adoptedId)
+    return {
+      id: c.id, label: c.label,
+      adopted: t ? { id: t.id, path: t.path, missing: t.missing } : null,
+    }
+  }), joins)
+}
+
 export default function SynthesisCardWorkspace() {
   const state = useSynthesisCards(), source = useAppStore(s => s.fileInfo), status = useAppStore(s => s.status), childAlive = useAppStore(s => s.errorInfo?.childAlive)
   const busy = status === 'processing' || isCancelCleanupBusy(status) || !!childAlive
@@ -357,31 +374,54 @@ export default function SynthesisCardWorkspace() {
   const [joining, setJoining] = useState<'' | 'preview' | 'save'>('')
   const joinAudio = useRef<HTMLAudioElement | null>(null)
   const [joinPlaying, setJoinPlaying] = useState(false)
+  // ★이어 듣기 요청의 세대와, 지금 울리고 있는 소리의 계획 지문(2026-09-27 검수 2항).
+  //   준비 중에 채택·순서·간격이 바뀌면 **먼저 보낸 요청의 소리를 재생하지 않는다.**
+  const joinGen = useRef(0)
+  const [playingKey, setPlayingKey] = useState('')
   useEffect(() => () => { joinAudio.current?.pause() }, [])
 
-  const currentPlan = () => buildJoinPlan(state.cards.map((c) => {
-    const t = c.takes.find((x) => x.id === c.adoptedId)
-    return {
-      id: c.id, label: c.label,
-      adopted: t ? { id: t.id, path: t.path, missing: t.missing } : null,
-    }
-  }), state.joins)
+  /** 지금 화면의 카드로 계획을 만든다(렌더용). */
+  const currentPlan = () => planOfCards(state.cards, state.joins)
 
-  const joinBlocked = (() => {
-    const r = currentPlan()
-    return r.plan ? '' : joinBlockText(r.blocks)
-  })()
+  /**
+   * **보관된 최신 상태**로 계획을 만든다 — 기다리는 동안 화면이 바뀌었을 수 있다.
+   * 화면 변수(state)는 요청을 보낸 순간에 묶여 있으므로 응답 대조에는 쓸 수 없다.
+   */
+  const livePlanKey = () => {
+    const s = useSynthesisCards.getState()
+    const r = planOfCards(s.cards, s.joins)
+    return r.plan ? joinPlanKey(r.plan) : ''
+  }
+
+  const planNow = currentPlan()
+  const joinBlocked = planNow.plan ? '' : joinBlockText(planNow.blocks)
+  const planKeyNow = planNow.plan ? joinPlanKey(planNow.plan) : ''
+
+  // 울리는 중에 계획이 바뀌면 멈춘다 — 들리는 소리와 화면이 어긋나지 않게.
+  useEffect(() => {
+    if (!playbackStale(playingKey, planKeyNow)) return
+    joinAudio.current?.pause()
+    setJoinPlaying(false)
+    setPlayingKey('')
+  }, [playingKey, planKeyNow])
 
   const runJoin = async (mode: 'preview' | 'save') => {
     setNotice('')
     const r = currentPlan()
     if (!r.plan) { setNotice(joinBlockText(r.blocks)); return }
     // 듣고 있던 것을 먼저 멈춘다 — 계획이 바뀌었을 수 있다.
-    joinAudio.current?.pause(); setJoinPlaying(false)
+    joinAudio.current?.pause(); setJoinPlaying(false); setPlayingKey('')
+    const key = joinPlanKey(r.plan)
+    const gen = ++joinGen.current
+    // 이 응답을 아직 써도 되는가. **저장은 묻지 않는다** — 누른 순간의 계획을 저장한다.
+    const stale = () => (mode === 'save' ? ''
+      : previewStale({ gen, key }, { gen: joinGen.current, key: livePlanKey(), alive: alive.current }))
     setJoining(mode)
     try {
-      const res = await window.api.cards.join(r.plan, mode, joinPlanKey(r.plan)) as
+      const res = await window.api.cards.join(r.plan, mode, key) as
         { ok: boolean; data?: { path: string; seconds: number; canceled?: boolean }; error?: string }
+      const afterCall = stale()
+      if (afterCall) { const t = previewStaleText(afterCall); if (t && alive.current) setNotice(t); return }
       if (!res?.ok) throw new Error(res?.error || '최종 음성을 만들지 못했습니다')
       if (res.data?.canceled) return
       if (mode === 'save') {
@@ -389,18 +429,21 @@ export default function SynthesisCardWorkspace() {
         return
       }
       const url = await window.api.audio.getFileUrl(res.data!.path)
-      if (!alive.current) return
+      // ★재생 직전에 한 번 더 본다 — 주소를 받는 사이에도 계획은 바뀔 수 있다.
+      const beforePlay = stale()
+      if (beforePlay) { const t = previewStaleText(beforePlay); if (t && alive.current) setNotice(t); return }
       const el = joinAudio.current || createManagedAudio()
       joinAudio.current = el
       el.src = url
-      el.onended = () => setJoinPlaying(false)
-      el.onerror = () => { setJoinPlaying(false); if (alive.current) setNotice('최종 음성을 재생하지 못했습니다') }
+      el.onended = () => { setJoinPlaying(false); setPlayingKey('') }
+      el.onerror = () => { setJoinPlaying(false); setPlayingKey(''); if (alive.current) setNotice('최종 음성을 재생하지 못했습니다') }
       await el.play()
-      if (alive.current) setJoinPlaying(true)
+      if (alive.current) { setJoinPlaying(true); setPlayingKey(key) }
+      else el.pause()
     } catch (e) {
       if (alive.current) setNotice((e as Error)?.message || '최종 음성을 만들지 못했습니다')
     } finally {
-      if (alive.current) setJoining('')
+      if (alive.current && joinGen.current === gen) setJoining('')
     }
   }
 
@@ -588,7 +631,7 @@ export default function SynthesisCardWorkspace() {
       <Action icon="play" label={joinPlaying ? '이어 듣기 멈춤' : '전체 이어 듣기'} testId="join-play"
         disabled={locked || !!joinBlocked || joining !== ''}
         title={joinBlocked || '카드 순서대로 채택한 생성본을 이어서 들려줍니다'}
-        onClick={() => { if (joinPlaying) { joinAudio.current?.pause(); setJoinPlaying(false) } else void runJoin('preview') }}/>
+        onClick={() => { if (joinPlaying) { joinAudio.current?.pause(); setJoinPlaying(false); setPlayingKey('') } else void runJoin('preview') }}/>
       <Action icon="link" label="연결 조정" disabled={locked || !state.cards.length} onClick={() => setModal({ type: 'join' })}>연결 조정</Action>
       <button type="button" className="af-card-work-button" data-testid="join-save"
         disabled={locked || !!joinBlocked || joining !== ''}
