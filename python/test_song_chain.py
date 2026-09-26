@@ -95,6 +95,7 @@ class TestChainDoesNotSkipSteps(unittest.TestCase):
         import tempfile
         self.d = tempfile.mkdtemp(prefix='afsc-')
         self.calls = []
+        self.shift = None
 
     def _sep(self, src, out_dir, key):
         self.calls.append(key)
@@ -108,7 +109,8 @@ class TestChainDoesNotSkipSteps(unittest.TestCase):
             made.append(p)
         return made
 
-    def _conv(self, lead, ref, out_dir, log=None):
+    def _conv(self, lead, ref, out_dir, log=None, semitones=0):
+        self.shift = semitones
         self.calls.append('변환:' + os.path.basename(lead))
         os.makedirs(out_dir, exist_ok=True)
         p = os.path.join(out_dir, 'made.wav')
@@ -125,7 +127,7 @@ class TestChainDoesNotSkipSteps(unittest.TestCase):
     def test_두_분리를_모두_거치고_주보컬만_변환한다(self):
         out = sc.convert_song('v.mp4', 'ref.wav', self.d, voice_name='A',
                               ref_sec=8.0, song_sec=240.0,
-                              separate_fn=self._sep, convert_fn=self._conv,
+                              separate_fn=self._sep, convert_fn=self._conv, pitch_fn=False,
                               run=self._run)
         self.assertEqual(self.calls[0], sc.VOCAL_MODEL_KEY, '반주 분리를 안 했다')
         self.assertEqual(self.calls[1], sc.KARAOKE_MODEL_KEY,
@@ -138,7 +140,7 @@ class TestChainDoesNotSkipSteps(unittest.TestCase):
 
     def test_기록을_남긴다(self):
         sc.convert_song('v.mp4', 'ref.wav', self.d, voice_name='A', ref_sec=8.0,
-                        separate_fn=self._sep, convert_fn=self._conv, run=self._run)
+                        separate_fn=self._sep, convert_fn=self._conv, pitch_fn=False, run=self._run)
         note = os.path.join(self.d, '쓴목소리.json')
         self.assertTrue(os.path.isfile(note), '무엇으로 만들었는지 남기지 않았다')
 
@@ -148,8 +150,44 @@ class TestChainDoesNotSkipSteps(unittest.TestCase):
             return []
         with self.assertRaises(sc.SongChainError):
             sc.convert_song('v.mp4', 'ref.wav', self.d, ref_sec=8.0,
-                            separate_fn=empty, convert_fn=self._conv, run=self._run)
+                            separate_fn=empty, convert_fn=self._conv, run=self._run, pitch_fn=False)
 
+
+class TestOctaveShift(unittest.TestCase):
+    """★2026-09-26 사용자 신고 — "목소리가 안 바뀌고 끅끅대며 숨소리만 난다."
+
+      곡의 주보컬이 쓸 목소리보다 반 옥타브 넘게 높으면, 변환기가 음색을 입히지
+      못하고 힘만 쓴다. 숫자로 확인됐다(음색 거리, 작을수록 그 목소리에 가깝다):
+          그대로   참조와 63.9 · 원본과 71.7   ← 거의 안 바뀜
+          한 옥타브 참조와 44.5 · 원본과 95.6   ← 확실히 바뀜
+    """
+
+    def test_신고된_그_경우에_한_옥타브_내린다(self):
+        self.assertEqual(sc.octave_shift(519.0, 355.0), -12)
+
+    def test_음역이_비슷하면_건드리지_않는다(self):
+        self.assertEqual(sc.octave_shift(360.0, 355.0), 0)
+        self.assertEqual(sc.octave_shift(300.0, 355.0), 0, '반음 몇 개로 옮기면 안 된다')
+
+    def test_곡이_낮으면_올린다(self):
+        self.assertEqual(sc.octave_shift(130.0, 260.0), 12)
+
+    # ★옥타브 단위만 — 어중간한 간격은 반주와 조가 어긋나 노래가 깨진다.
+    def test_언제나_옥타브_배수다(self):
+        for song in range(80, 900, 7):
+            for voice in (200.0, 355.0, 500.0):
+                s = sc.octave_shift(float(song), voice)
+                self.assertEqual(s % 12, 0, '옥타브가 아닌 간격으로 옮긴다: %d' % s)
+
+    def test_옮긴_뒤에는_음역이_가까워진다(self):
+        song, voice = 519.0, 355.0
+        before = abs(sc.semitones(voice, song))
+        after = abs(sc.semitones(voice, song * (2 ** (sc.octave_shift(song, voice) / 12.0))))
+        self.assertLess(after, before, '옮겼는데 더 멀어졌다')
+
+    def test_잴_수_없으면_옮기지_않는다(self):
+        self.assertEqual(sc.octave_shift(0.0, 355.0), 0)
+        self.assertEqual(sc.octave_shift(519.0, 0.0), 0)
 
 class TestBoundaryToConverter(unittest.TestCase):
     """★변환기 사정이 이 파일로 새면, 모델을 갈아 끼울 때 여기도 뜯게 된다."""

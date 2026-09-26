@@ -78,10 +78,46 @@ def pick_by_last_tag(files, want):
 
 
 def semitones(from_hz, to_hz):
-    """두 음높이 사이의 반음 차. 기록에만 쓴다 — 조를 옮기지는 않는다."""
+    """두 음높이 사이의 반음 차."""
     if not from_hz or not to_hz:
         return 0.0
     return 12.0 * math.log2(float(to_hz) / float(from_hz))
+
+
+# 음역이 이만큼 벌어지면 옥타브를 옮긴다. 반음 몇 개 차이로는 건드리지 않는다.
+OCTAVE_GAP_SEMITONES = 5.0
+
+
+def octave_shift(song_hz, voice_hz, *, threshold=OCTAVE_GAP_SEMITONES):
+    """부를 높이를 **옥타브 단위로만** 옮긴다. 옮길 필요가 없으면 0.
+
+    ★왜 필요한가 (2026-09-26, 사용자 신고 "목소리가 안 바뀌고 끅끅대며 숨소리만 난다")
+      이 곡의 주보컬은 약 519Hz 인데 쓴 목소리의 평소 높이는 약 355Hz —
+      **반 옥타브 넘게 위**다. 그 높이를 그대로 부르게 하면 변환기가 음색을 입히지
+      못하고 힘만 쓴다. 숫자로 확인됐다(음색 거리, 작을수록 그 목소리에 가깝다):
+
+          그대로 부르기   참조와 63.9 · 원본과 71.7   ← 거의 안 바뀜
+          한 옥타브 내림  참조와 44.5 · 원본과 95.6   ← 확실히 바뀜
+
+    ★왜 **옥타브 단위만** 인가
+      옥타브는 같은 음이고 높이만 다르다. 그래서 반주와 부딪히지 않는다.
+      5반음·7반음처럼 어중간하게 옮기면 **반주와 조가 어긋나 노래가 깨진다.**
+      변환기에 '알아서 맞춤' 기능이 있지만 그것도 조를 바꿔 버린다 — 쓰지 않는다.
+    """
+    gap = semitones(voice_hz, song_hz)          # 목소리 기준으로 곡이 얼마나 높은가
+    if abs(gap) < float(threshold):
+        return 0
+    return int(round(gap / 12.0)) * -12          # 곡을 목소리 쪽으로 끌어내린다
+
+
+def median_pitch(path, seconds=90.0):
+    """중앙 음높이(Hz). 음역을 맞추는 데만 쓴다."""
+    import numpy as np
+    import librosa
+    y, sr = librosa.load(path, sr=16000, mono=True, duration=seconds)
+    f, v, _ = librosa.pyin(y, fmin=70, fmax=1000, sr=sr, frame_length=1024)
+    f = f[v & np.isfinite(f)]
+    return float(np.median(f)) if len(f) else 0.0
 
 
 # ── 바깥 일을 하는 칸들 — 전부 갈아 끼울 수 있게 인자로 연다 ────────────────
@@ -161,7 +197,8 @@ def mix(sources, dest, *, run=subprocess.run):
 
 def convert_song(video, reference, work_dir, *, voice_name='목소리',
                  ref_sec=None, song_sec=None, log=None,
-                 separate_fn=None, convert_fn=None, run=subprocess.run):
+                 separate_fn=None, convert_fn=None, run=subprocess.run,
+                 pitch_fn=None):
     """곡 하나를 끝까지. 만들어진 것들의 경로를 돌려준다.
 
     ★단계마다 **결과가 없으면 거기서 멈춘다.** 빈손을 다음 칸에 넘기지 않는다 —
@@ -200,8 +237,19 @@ def convert_song(video, reference, work_dir, *, voice_name='목소리',
     if not lead or not harm:
         raise SongChainError('주 보컬 분리 결과를 찾지 못했습니다(%d개).' % len(files2))
 
+    # ★음역을 맞춘다 — 안 맞추면 음색이 아예 안 입혀진다(위 octave_shift 참고).
+    shift, song_hz, voice_hz = 0, 0.0, 0.0
+    if pitch_fn is not False:
+        pf = pitch_fn or median_pitch
+        song_hz, voice_hz = pf(lead), pf(reference)
+        shift = octave_shift(song_hz, voice_hz)
+        if shift:
+            say('음역이 %.1f반음 벌어져 %d옥타브 내려 부른다'
+                % (semitones(voice_hz, song_hz), abs(shift) // 12))
+
     say('목소리 바꾸는 중')
-    made = conv_fn(lead, reference, os.path.join(work_dir, '3_변환'), log=log)
+    made = conv_fn(lead, reference, os.path.join(work_dir, '3_변환'), log=log,
+                   semitones=shift)
     converted = os.path.join(work_dir, '바뀐주보컬_%s.wav' % voice_name)
     os.replace(made, converted)
 
@@ -212,7 +260,11 @@ def convert_song(video, reference, work_dir, *, voice_name='목소리',
                    os.path.join(work_dir, '완성_원래화음같이_%s.wav' % voice_name), run=run)
 
     out = {'주보컬만': converted, '화음없이': plain, '원래화음같이': withharm}
-    note = {'쓴 목소리': voice_name, '음높이': '원곡 그대로(조를 옮기지 않음)',
+    note = {'쓴 목소리': voice_name,
+            '곡 주보컬 음높이Hz': round(song_hz), '목소리 음높이Hz': round(voice_hz),
+            '옮긴 옥타브': (shift // 12) if shift else 0,
+            '음높이': ('옥타브만 옮김 — 음은 그대로라 반주와 어긋나지 않는다'
+                     if shift else '원곡 그대로'),
             '되풀이 단계': song_voice.DIFFUSION_STEPS, '만든 것': out}
     with open(os.path.join(work_dir, '쓴목소리.json'), 'w', encoding='utf-8') as f:
         json.dump(note, f, ensure_ascii=False, indent=2)

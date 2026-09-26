@@ -85,18 +85,24 @@ def converter():
     return {'python': py, 'script': sc}
 
 
-def convert_args(source, reference, out_dir, *, conv=None):
-    """실제로 던질 명령줄. **검사가 눈으로 볼 수 있게** 따로 뺀다."""
+def convert_args(source, reference, out_dir, *, conv=None, semitones=0):
+    """실제로 던질 명령줄. **검사가 눈으로 볼 수 있게** 따로 뺀다.
+
+    semitones - 부를 높이를 옮긴다. **부르는 쪽이 옥타브 단위로만 준다**(아래 참고).
+    """
     c = conv or converter()
-    return [c['python'], '-X', 'utf8', c['script'],
+    args = [c['python'], '-X', 'utf8', c['script'],
             '--source', source, '--target', reference, '--output', out_dir,
             '--diffusion-steps', str(DIFFUSION_STEPS),
             '--f0-condition', str(F0_CONDITION),
             '--auto-f0-adjust', str(AUTO_F0_ADJUST)]
+    if int(semitones):
+        args += ['--semi-tone-shift', str(int(semitones))]
+    return args
 
 
 def convert_vocal(source, reference, out_dir, *, run=subprocess.run, conv=None,
-                  log=None):
+                  log=None, semitones=0):
     """주보컬 하나를 참조 목소리로 바꾼다. 만들어진 파일 경로를 돌려준다.
 
     source    - 바꿀 주보컬(화음이 섞이지 않은 것). **이 조건은 부르는 쪽이 지킨다.**
@@ -114,7 +120,7 @@ def convert_vocal(source, reference, out_dir, *, run=subprocess.run, conv=None,
     before = set(os.listdir(out_dir))
 
     c = conv or converter()
-    args = convert_args(source, reference, out_dir, conv=c)
+    args = convert_args(source, reference, out_dir, conv=c, semitones=semitones)
     if log:
         log('노래 목소리 변환 시작 — %s' % os.path.basename(source))
     # ★변환기를 **제 집에서** 돌린다(2026-09-26 사고).
