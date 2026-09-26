@@ -14,6 +14,8 @@ import { PythonRunner } from '../services/python-runner'
 import { rememberFile, saveTarget, startDir, type FolderHost } from '../services/dialogFolders'
 import { createPreviewGuard } from '../services/preview-transcribe'
 import { scrubPathsForLog } from '../services/log-scrub'
+import { readSettingsFile, migrateSettings, setSettingsKey } from '../services/settings-store'
+import { resolveWorkDir, workRootBlockReason, workRootOf } from '../../shared/workRoot'
 import {
   DubJobError, readDoneStages, readLines, readRenderReport, reapplyKoreanEdits,
   saveKoreanEdits, saveKoreanEditsSidecar, workFolderName,
@@ -36,11 +38,46 @@ function fail(e: unknown): DubReply<never> {
   return { ok: false, error: scrubPathsForLog(msg) }
 }
 
-/** 작업 폴더의 뿌리. 앱 데이터 안에 둔다 — 사용자 원본 옆에 파일을 흩지 않는다. */
-function dubRoot(): string {
-  const d = join(app.getPath('userData'), 'dub')
-  if (!existsSync(d)) mkdirSync(d, { recursive: true })
-  return d
+/** 작업 자리를 적어 두는 설정 칸. */
+export const DUB_WORK_ROOT_KEY = 'dubWorkRoot'
+
+/** 지금까지 쓰던 자리 — 아무것도 고르지 않았을 때의 기본. */
+function defaultRoot(): string {
+  return app.getPath('userData')
+}
+
+/** 사용자가 고른 자리(없으면 빈 문자열). 읽기 전용이라 손상은 빈 것으로 본다. */
+function chosenRoot(): string {
+  try {
+    const got = readSettingsFile(join(app.getPath('userData'), 'settings.json'))
+    if (got.kind !== 'ok') return ''
+    const v = migrateSettings(got.settings).settings[DUB_WORK_ROOT_KEY]
+    return typeof v === 'string' ? v : ''
+  } catch {
+    return ''
+  }
+}
+
+/**
+ * 이 영상의 작업 폴더. **옛 자리에 있으면 옛 자리에서 연다.**
+ *
+ * ★왜 (2026-09-26 신고: "왜 자꾸 C 드라이브에다 생산시키는건가")
+ *   작업 폴더가 앱 데이터 폴더로 코드에 박혀 있었고 옮길 설정도 없었다.
+ *   곡 하나에 약 100MB — 실측으로 이미 535MB 가 시스템 드라이브에 쌓여 있었다.
+ *
+ * ★이미 쌓인 것을 옮기지 않는다. 옮기다 실패하면 작업을 잃는다.
+ *   새 작업은 고른 자리에, 옛 작업은 있던 자리에서 그대로 열린다.
+ *   고르는 규칙은 `shared/workRoot` 가 소유한다(여기서 판단하지 않는다).
+ */
+function dubWorkDir(videoPath: string): string {
+  const r = resolveWorkDir({
+    chosenRoot: chosenRoot(),
+    defaultRoot: defaultRoot(),
+    folder: workFolderName(videoPath),
+    exists: existsSync,
+  })
+  mkdirSync(r.dir, { recursive: true })
+  return r.dir
 }
 
 function send(win: BrowserWindow | null, payload: unknown): void {
@@ -144,7 +181,7 @@ export function registerDubIpc(
     if (r.canceled || r.filePaths.length === 0) return ok(null)
     if (fh) rememberFile(fh, 'video', r.filePaths[0])
     videoPath = r.filePaths[0]
-    workDir = join(dubRoot(), workFolderName(videoPath))
+    workDir = dubWorkDir(videoPath)
     return ok(videoPath)
   })
 
@@ -205,6 +242,40 @@ export function registerDubIpc(
         throw new DubJobError('갈라낸 목소리가 없습니다 - 먼저 앞단을 끝내세요')
       }
       return ok(p)
+    } catch (e) {
+      return fail(e)
+    }
+  })
+
+  /** 지금 새 작업이 쌓이는 자리. 화면이 사람에게 보여 준다. */
+  ipcMain.handle('dub:work-root', async (): Promise<DubReply<string>> =>
+    ok(workRootOf(chosenRoot(), defaultRoot())))
+
+  /**
+   * 작업 자리를 고른다.
+   *
+   * ★이미 쌓인 것을 **옮기지 않는다.** 535MB 를 옮기다 중간에 실패하면 작업을 잃는다.
+   *   새 작업만 새 자리에 쌓이고, 옛 작업은 있던 자리에서 그대로 열린다.
+   */
+  ipcMain.handle('dub:set-work-root', async (): Promise<DubReply<string>> => {
+    try {
+      const win = getWindow()
+      const r = await dialog.showOpenDialog(win!, {
+        title: '만든 것을 둘 자리 고르기',
+        defaultPath: workRootOf(chosenRoot(), defaultRoot()),
+        properties: ['openDirectory', 'createDirectory'],
+      })
+      if (r.canceled || r.filePaths.length === 0) return ok(workRootOf(chosenRoot(), defaultRoot()))
+      const picked = r.filePaths[0]
+      // 판단은 shared 가 한다 — 여기서 규칙을 새로 만들지 않는다.
+      const why = workRootBlockReason(picked, { exists: existsSync, appDir: app.getAppPath() })
+      if (why) throw new DubJobError(why)
+      const res = setSettingsKey(join(app.getPath('userData'), 'settings.json'),
+                                 DUB_WORK_ROOT_KEY, picked, {})
+      if (!res.ok) throw new DubJobError('자리를 기억하지 못했습니다 — 다시 시도해 주세요.')
+      // 고른 뒤에는 지금 영상의 작업 폴더도 새 규칙으로 다시 정한다.
+      if (videoPath) workDir = dubWorkDir(videoPath)
+      return ok(picked)
     } catch (e) {
       return fail(e)
     }

@@ -52,6 +52,8 @@ export default function DubWorkspace() {
   // ★만든 것이 어디 있는지 화면이 말해 주지 않았다(2026-09-26 신고).
   //   앱 데이터 폴더 깊숙한 곳이라 알려 주지 않으면 찾을 방법이 없다.
   const [workDir, setWorkDir] = useState('')
+  // ★새 작업이 쌓이는 자리. 시스템 드라이브에만 쌓이던 것을 고를 수 있게 했다(2026-09-26 신고).
+  const [workRoot, setWorkRoot] = useState('')
   const [front, setFront] = useState<DubFrontResult | null>(null)
   const [edits, setEdits] = useState<Record<number, string>>({})
   const [takes, setTakes] = useState<Record<number, string>>({})
@@ -195,6 +197,25 @@ export default function DubWorkspace() {
     if (!r?.ok) { setError(r?.error || `${what}에 실패했습니다`); return null }
     return (r.data ?? null) as T | null
   }
+
+  // 지금 어디에 쌓이는지 먼저 읽어 둔다 — 영상을 고르기 전에도 알아야 한다.
+  useEffect(() => {
+    void (async () => {
+      const r = await (window.api.dub.workRoot() as Promise<Reply<string>>)
+      if (r?.ok && r.data) setWorkRoot(r.data)
+    })()
+  }, [])
+
+  /** 자리를 고른다. **이미 쌓인 것은 옮기지 않는다** — 옛 작업은 있던 자리에서 열린다. */
+  const pickWorkRoot = useCallback(async () => {
+    setError('')
+    const r = await (window.api.dub.setWorkRoot() as Promise<Reply<string>>)
+    if (!r?.ok) { setError(r?.error || '자리를 바꾸지 못했습니다'); return }
+    if (r.data) {
+      setWorkRoot(r.data)
+      setNote('새 작업부터 이 자리에 쌓입니다 — 이미 만든 것은 있던 자리에 그대로 있습니다.')
+    }
+  }, [])
 
   const pickVideo = useCallback(async () => {
     setError('')
@@ -443,8 +464,9 @@ export default function DubWorkspace() {
           <Btn onClick={() => void window.api.app.openFolder(workDir)} disabled={disabled}>
             만든 것 열기
           </Btn>
+          <Btn onClick={() => void pickWorkRoot()} disabled={disabled}>자리 바꾸기</Btn>
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>
-            갈라낸 소리와 줄 소리가 이 폴더에 쌓입니다
+            {workRoot ? `만든 것이 쌓이는 자리: ${workRoot}` : '갈라낸 소리와 줄 소리가 이 폴더에 쌓입니다'}
           </span>
         </div>
       )}

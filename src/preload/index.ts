@@ -164,6 +164,10 @@ const api = {
     keepTake: (srcPath: string, index: number) =>
       ipcRenderer.invoke('dub:keep-take', srcPath, index),
     workDir: () => ipcRenderer.invoke('dub:work-dir'),
+    /** 새 작업이 쌓이는 자리. */
+    workRoot: () => ipcRenderer.invoke('dub:work-root'),
+    /** 그 자리를 고른다. **이미 쌓인 것은 옮기지 않는다** — 옛 작업은 있던 자리에서 열린다. */
+    setWorkRoot: () => ipcRenderer.invoke('dub:set-work-root'),
     /** 이미 만들어 둔 줄 소리를 되살린다 — 파일은 작업 폴더에 그대로 있다. */
     takes: () => ipcRenderer.invoke('dub:takes'),
     onProgress: (callback: (data: unknown) => void) => {
