@@ -237,6 +237,21 @@ interface AppState {
   splitLabels: string[]
   /** 저장할 조각 번호(0부터). null 이면 전부 저장 — 예전 동작 그대로. */
   splitSelected: number[] | null
+  /**
+   * 메뉴를 옮겨도 **분할 편집을 잃지 않기 위한 자리**(2026-09-27).
+   *
+   * ★왜 필요한가: 편집기는 마커·트랙명·고른 조각을 제 안에만 들고 있었다. 다른 메뉴로 갔다
+   *   오면 컴포넌트가 다시 만들어지면서 전부 사라졌다(그리고 store 값까지 비웠다).
+   * ★`sourceKey` 를 함께 둔다 — **그 원본의 편집일 때만** 되살린다. 파일을 닫거나 새로
+   *   불러오면 `setFile`·`reset` 이 이 자리를 비우므로, 같은 경로를 다시 열어도 남지 않는다.
+   * ★디스크에 쓰지 않는다. 재시작 복원은 이번 범위가 아니다.
+   */
+  splitDraft: {
+    sourceKey: string
+    markers: { id: string; time: number; label: string }[]
+    firstLabel: string
+    unselected: number[]
+  } | null
   /** 화자 분석이 낸 구간(최초 결과). 수정 화면이 이것을 받아 고친다. */
   dialogueSegments: { start: number; end: number; speaker: string }[]
   /** 겹쳐 잡힌 구간 — 구간 목록과 **따로** 둔다. 겹침 발견 ≠ 겹친 목소리 분리. */
@@ -465,6 +480,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   splitMarkers: [],
   splitLabels: [],
   splitSelected: null,
+  splitDraft: null,
   dialogueSegments: [],
   dialogueOverlaps: [],
   diarizeEngine: 'builtin' as const,
@@ -538,7 +554,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 공용 파일 작업의 참조만 정리(일반·더빙 보존)
     // 분할 마커는 파일에 종속이다. 비우지 않으면 이전 파일의 경계가 새 파일에 그대로 적용돼
     // (더 긴 파일에서는 오류조차 없이) 완전히 틀린 지점에서 잘린다 — 감사 R2.
-    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], resultMode: null, independentWork: null, resultMetadata: null, activeVoiceCastId: null, error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], ttsReferenceClip: '', ttsRefReady: false, ttsRefPhase: 'preparing' as RefPhase, ttsRefReqId: newRefReqId(), ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
+    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], resultMode: null, independentWork: null, resultMetadata: null, activeVoiceCastId: null, error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], splitDraft: null, ttsReferenceClip: '', ttsRefReady: false, ttsRefPhase: 'preparing' as RefPhase, ttsRefReqId: newRefReqId(), ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
   },
   setMode: (mode) => set({ mode }),
   setSynthesisTab: (t) => set({ synthesisTab: t }),
@@ -922,7 +938,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }
     set({
       fileInfo: null, fileUrl: null, status: 'idle', progress: 0, progressMessage: '', error: null, errorInfo: null,
-      tracks: [], outputDir: null, playingTrack: null, restorable: null, splitMarkers: [], splitLabels: [],
+      tracks: [], outputDir: null, playingTrack: null, restorable: null, splitMarkers: [], splitLabels: [], splitDraft: null,
       ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null,
       ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {},
       ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {},
