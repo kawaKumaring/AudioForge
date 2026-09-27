@@ -14,6 +14,12 @@ import {
 } from '../../shared/splitHistory'
 import { buildPieces, fmtDuration, type SplitPiece } from '../../shared/splitPieces'
 
+const miniBtn: React.CSSProperties = {
+  padding: '3px 7px', borderRadius: 6, border: '1px solid var(--border-subtle)',
+  background: 'transparent', color: 'var(--text-primary)', cursor: 'pointer',
+  fontFamily: 'inherit', fontSize: 11, whiteSpace: 'nowrap',
+}
+
 interface Marker {
   id: string
   time: number
@@ -27,6 +33,8 @@ interface Marker {
  *   화면에서 0.02px — 사실상 보이지도 잡히지도 않았다.
  */
 const MARK_COLOR = 'rgba(251, 191, 36, 0.8)'
+/** 지금 고른 경계 — 겹쳐 있어도 어느 것인지 색으로 갈린다. */
+const PICKED_COLOR = 'rgba(34, 211, 238, 0.95)'
 
 /**
  * **보이는 선은 얇게 두고 잡는 폭만 넓힌다**(2026-09-27 지시).
@@ -35,6 +43,17 @@ const MARK_COLOR = 'rgba(251, 191, 36, 0.8)'
  * 저장되는 경계까지 흐려진다. 시간은 건드리지 않고 **투명한 손잡이**만 덧댄다.
  */
 const MARK_GRAB_PX = 20
+
+/**
+ * 확대 단계(초당 픽셀). **전체 보기는 0** — 그때는 파형이 창에 맞춘다.
+ *
+ * ★손잡이를 키우려고 음원 구간을 넓히지 않는다. 대신 **확대**로 벌려서 잡는다.
+ *   10분 곡에서 전체 보기는 초당 1.3px 남짓이라 15초 안의 두 지점이 겹치지만,
+ *   40px 로 확대하면 같은 두 지점이 600px 떨어진다.
+ */
+const ZOOM_STEPS = [0, 8, 20, 40, 80, 160] as const
+/** 선택한 경계를 이만큼은 가장자리에서 띄워 보여 준다(초). */
+const FOCUS_PAD_SEC = 0.6
 
 /**
  * 분할선 위에 투명한 손잡이를 덧댄다.
@@ -89,6 +108,15 @@ export default function SplitEditor() {
   /** 이어 묶기를 끊는다 — 드래그를 놓거나 다른 곳을 만질 때. */
   const seal = useCallback(() => { setHistory((h) => sealHistory(h)) }, [])
   // 시간 목록의 오류(줄 번호와 함께). 입력창 아래 한 줄로 보인다.
+  /** 지금 **고른 경계**. 편집이 아니므로 되돌리기 이력에 쌓지 않는다. */
+  const [picked, setPicked] = useState<string | null>(null)
+  /** 확대 단계 번호(0 = 전체 보기). 이것도 이력이 아니다. */
+  const [zoomStep, setZoomStep] = useState(0)
+  /** 지금 화면에 보이는 시간 범위 — 확대했을 때 어디를 보는지 알 수 있게. */
+  const [visible, setVisible] = useState<{ from: number; to: number } | null>(null)
+  /** 고른 경계의 시각을 숫자로 고치는 칸(적용 전까지는 초안). */
+  const [timeDraft, setTimeDraft] = useState('')
+  const [timeIssue, setTimeIssue] = useState('')
   const [listIssues, setListIssues] = useState<TimeListIssue[]>([])
   const timestampRef = useRef<HTMLTextAreaElement | null>(null)
 
@@ -144,13 +172,23 @@ export default function SplitEditor() {
      */
     const onRegionUpdated = (region: { id: string; start: number }) => {
       if (!markersRef.current.some((m) => m.id === region.id)) return
+      setPicked(region.id)            // 방금 끈 경계를 고른 상태로 둔다(편집 아님)
+      setTimeDraft(region.start.toFixed(2))
+      setTimeIssue('')
       remember(`drag:${region.id}`)   // 끌기 **전** 장면을 쌓고
       seal()                          // 곧바로 끊는다 — 다음 드래그는 새 걸음이다
       setMarkers((prev) => prev
         .map((m) => (m.id === region.id ? { ...m, time: region.start } : m))
         .sort((a, b) => a.time - b.time))
     }
+    // 선을 누르면 고른다 — **편집이 아니므로 이력에 쌓지 않는다.**
+    const onRegionClicked = (region: { id: string; start: number }) => {
+      setPicked(region.id)
+      setTimeDraft(region.start.toFixed(2))
+      setTimeIssue('')
+    }
     regions.on('region-updated', onRegionUpdated)
+    regions.on('region-clicked', onRegionClicked)
 
     const ws = WaveSurfer.create({
       container: containerRef.current,
@@ -160,10 +198,19 @@ export default function SplitEditor() {
       cursorWidth: 1,
       barWidth: 2, barGap: 1, barRadius: 2,
       height: 100, normalize: true, backend: 'WebAudio',
+      // 확대해도 재생 커서를 따라가지 않는다 — 경계를 보고 있는데 화면이 끌려가면 안 된다.
+      autoScroll: false, autoCenter: false,
       plugins: [regions]
     })
 
     ws.on('decode', (d) => setDuration(d))
+    // 어디를 보고 있는지 — 확대했을 때만 뜻이 있다.
+    ws.on('scroll', (from, to) => setVisible({ from, to }))
+    ws.on('zoom', () => {
+      const w = wsRef.current
+      if (!w) return
+      try { setVisible({ from: w.getScroll() / (w.options.minPxPerSec || 1), to: 0 }) } catch { /* noop */ }
+    })
     ws.on('ready', () => setWaveReady(true))
     ws.on('error', () => { setWaveReady(false); setWaveError('파형을 읽지 못했습니다') })
     ws.on('timeupdate', (t) => setCurrentTime(t))
@@ -181,6 +228,7 @@ export default function SplitEditor() {
 
     return () => {
       regions.un('region-updated', onRegionUpdated)
+      regions.un('region-clicked', onRegionClicked)
       ws.destroy(); wsRef.current = null
     }
   }, [fileUrl])
@@ -212,18 +260,67 @@ export default function SplitEditor() {
 
     for (const m of markers) {
       const r = live.get(m.id)
+      const want = m.id === picked ? PICKED_COLOR : MARK_COLOR
       if (!r) {
         addGrabArea(regions.addRegion({
           start: m.time,                 // 시작=끝 → 플러그인이 얇은 세로선으로 그린다
-          color: MARK_COLOR, drag: !locked, resize: false, id: m.id,
+          color: want, drag: !locked, resize: false, id: m.id,
         }), m.id)
         continue
       }
       // 방금 놓은 선은 이미 제자리다 — 같은 값을 다시 밀어 넣지 않는다.
       if (Math.abs(r.start - m.time) > 1e-3) r.setOptions({ start: m.time, end: m.time })
       if (r.drag !== !locked) r.setOptions({ drag: !locked })
+      // ★고른 선만 색이 다르다. 겹쳐 있어도 어느 것을 잡고 있는지 보인다.
+      if (r.color !== want) r.setOptions({ color: want })
     }
-  }, [markers, locked, duration])
+  }, [markers, locked, duration, picked])
+
+  /** 이 시각이 화면 가운데 오도록 민다(확대 상태에서만 뜻이 있다). */
+  const scrollTo = useCallback((sec: number) => {
+    const ws = wsRef.current
+    if (!ws || !zoomStep) return
+    try {
+      const px = ZOOM_STEPS[zoomStep]
+      const half = (ws.getWidth() || 0) / 2
+      ws.setScroll(Math.max(0, sec * px - half))
+    } catch { /* noop */ }
+  }, [zoomStep])
+
+  /**
+   * 확대 단계를 바꾼다. 기준은 **고른 경계**, 없으면 지금 재생 위치.
+   *
+   * ★확대·스크롤은 **편집이 아니다** — 되돌리기 이력에 쌓지 않는다.
+   */
+  const applyZoom = useCallback((step: number) => {
+    const ws = wsRef.current
+    const next = Math.min(ZOOM_STEPS.length - 1, Math.max(0, step))
+    setZoomStep(next)
+    if (!ws) return
+    const anchor = (picked ? markersRef.current.find((m) => m.id === picked)?.time : undefined)
+      ?? (ws.getCurrentTime() || 0)
+    try {
+      if (!ZOOM_STEPS[next]) {
+        // 전체 보기 — 창에 맞춘다(분할점·이름·저장 선택은 그대로다).
+        ws.zoom(0)
+        setVisible(null)
+        return
+      }
+      ws.zoom(ZOOM_STEPS[next])
+      const px = ZOOM_STEPS[next]
+      const half = (ws.getWidth() || 0) / 2
+      ws.setScroll(Math.max(0, anchor * px - half))
+    } catch { /* noop */ }
+  }, [picked])
+
+  /** 경계를 고른다 — 파형에서도 그 자리가 보이게 한다. */
+  const pick = useCallback((id: string | null) => {
+    setPicked(id)
+    setTimeIssue('')
+    const m = id ? markersRef.current.find((x) => x.id === id) : null
+    setTimeDraft(m ? m.time.toFixed(2) : '')
+    if (m) scrollTo(m.time)
+  }, [scrollTo])
 
   const addMarker = useCallback((time: number, label?: string) => {
     if (lockedRef.current || !Number.isFinite(time) || time <= 0 || time >= (wsRef.current?.getDuration() || 0) || markersRef.current.some(m => Math.abs(m.time - time) < .05)) return
@@ -232,6 +329,43 @@ export default function SplitEditor() {
     remember('add')
     setMarkers(prev => [...prev, { id, time, label: newLabel }].sort((a, b) => a.time - b.time))
   }, [remember])
+
+  /**
+   * 고른 경계를 **숫자로** 옮긴다.
+   *
+   * ★범위 밖이거나 다른 경계와 겹치면 **적용하지 않고** 사유만 띄운다 — 기존 값을 지킨다.
+   *   확대·스크롤·선택은 이력이 아니지만 이 이동은 **편집**이므로 한 걸음으로 쌓는다.
+   */
+  const applyPickedTime = useCallback(() => {
+    const id = picked
+    if (!id) return
+    const cur = markersRef.current.find((m) => m.id === id)
+    if (!cur) return
+    const next = Number(timeDraft)
+    const total = effectiveDurationRef.current
+    if (!Number.isFinite(next)) { setTimeIssue('숫자를 읽을 수 없습니다'); return }
+    if (next <= 0 || (total > 0 && next >= total)) { setTimeIssue('원본 길이를 벗어났습니다'); return }
+    if (markersRef.current.some((m) => m.id !== id && Math.abs(m.time - next) < 0.05)) {
+      setTimeIssue('다른 분할선과 너무 가깝습니다'); return
+    }
+    setTimeIssue('')
+    if (Math.abs(cur.time - next) < 1e-4) return
+    remember(`time:${id}:${Date.now()}`)
+    seal()
+    setMarkers((prev) => prev.map((m) => (m.id === id ? { ...m, time: next } : m))
+      .sort((a, b) => a.time - b.time))
+    scrollTo(next)
+  }, [picked, timeDraft, remember, seal, scrollTo])
+
+  /** 이전·다음 경계로 — 손잡이가 겹쳐도 목록·화살표로 고를 수 있다. */
+  const step = useCallback((dir: 1 | -1) => {
+    const list = [...markersRef.current].sort((a, b) => a.time - b.time)
+    if (!list.length) return
+    const at = picked ? list.findIndex((m) => m.id === picked) : -1
+    const next = at < 0 ? (dir > 0 ? 0 : list.length - 1)
+      : Math.min(list.length - 1, Math.max(0, at + dir))
+    pick(list[next].id)
+  }, [picked, pick])
 
   const removeMarker = useCallback((id: string) => {
     remember('remove')
@@ -501,6 +635,71 @@ export default function SplitEditor() {
             <button type="button" aria-label={isPlaying ? '분할 파형 일시정지' : '분할 파형 재생'} disabled={!waveReady} onClick={() => { pieceStopRef.current = null; setPlayingPiece(null); beginPlayback(); void wsRef.current?.playPause().catch(() => setWaveError('재생하지 못했습니다')) }} style={{ width: 32, height: 32, padding: 0, border: 0, borderRadius: '50%', background: 'var(--accent-glow)', color: 'var(--accent-light)' }}>{isPlaying ? 'Ⅱ' : '▶'}</button>
             <span style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'right' }}>{fmtTime(duration)}</span>
           </div>
+
+          {/* ★자주 쓰는 조작은 파형 바로 아래에. 좁으면 **묶음째** 줄바꿈한다. */}
+          <div data-testid="split-zoom-bar" style={{
+            display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', marginTop: 8,
+            paddingTop: 8, borderTop: '1px solid var(--border-subtle)',
+          }}>
+            <span style={{ display: 'flex', alignItems: 'center', gap: 2, flex: '0 0 auto' }}>
+              {([['out', '축소', () => applyZoom(zoomStep - 1), zoomStep <= 0],
+                 ['in', '확대', () => applyZoom(zoomStep + 1), zoomStep >= ZOOM_STEPS.length - 1],
+                 ['fit', '전체 보기', () => applyZoom(0), zoomStep === 0]] as const).map(([k, label, act, off]) => (
+                <button type="button" key={k} data-testid={`split-zoom-${k}`} onClick={act} disabled={!waveReady || off}
+                  aria-label={label} title={k === 'fit'
+                    ? '전체를 한눈에 봅니다. 분할점·이름·저장 선택은 그대로입니다.'
+                    : `${label} — 고른 경계(없으면 재생 위치)를 가운데 둡니다`}
+                  style={{
+                    padding: '4px 8px', borderRadius: 6, border: '1px solid var(--border-subtle)',
+                    background: 'transparent', color: (!waveReady || off) ? 'var(--text-muted)' : 'var(--text-primary)',
+                    cursor: (!waveReady || off) ? 'default' : 'pointer', opacity: (!waveReady || off) ? 0.45 : 1,
+                    fontFamily: 'inherit', fontSize: 11, whiteSpace: 'nowrap',
+                  }}>
+                  {k === 'out' ? '\u2212' : k === 'in' ? '+' : '전체'}
+                </button>
+              ))}
+              <span data-testid="split-zoom-state" style={{ fontSize: 10, color: 'var(--text-muted)', marginLeft: 4 }}
+                title="확대하면 가까운 분할선도 떨어져 보여 따로 잡을 수 있습니다.">
+                {zoomStep === 0 ? '전체 보기'
+                  : visible ? `${fmtTime(visible.from)}~${fmtTime(visible.to)}` : `${ZOOM_STEPS[zoomStep]}x`}
+              </span>
+            </span>
+
+            {markers.length > 0 && (
+              <span style={{ display: 'flex', alignItems: 'center', gap: 4, flex: '0 0 auto' }}>
+                <button type="button" data-testid="split-prev" onClick={() => step(-1)}
+                  aria-label="이전 경계" title="이전 분할선을 고릅니다 — 손잡이가 겹쳐도 여기서 고를 수 있습니다"
+                  style={miniBtn}>◀</button>
+                <button type="button" data-testid="split-next" onClick={() => step(1)}
+                  aria-label="다음 경계" title="다음 분할선을 고릅니다"
+                  style={miniBtn}>▶</button>
+                {picked ? (
+                  <>
+                    <input data-testid="split-picked-time" value={timeDraft}
+                      onChange={(e) => { setTimeDraft(e.target.value); setTimeIssue('') }}
+                      onBlur={applyPickedTime}
+                      onKeyDown={(e) => { if (e.key === 'Enter') applyPickedTime() }}
+                      aria-label="고른 경계의 시각(초)"
+                      title="고른 분할선의 시각입니다. 숫자로 정확히 맞출 수 있습니다."
+                      style={{
+                        width: 78, padding: '3px 6px', borderRadius: 6, fontSize: 11,
+                        border: `1px solid ${timeIssue ? 'var(--rose)' : 'var(--cyan)'}`,
+                        background: 'var(--bg-elevated)', color: 'var(--text-primary)',
+                        fontFamily: 'inherit', fontVariantNumeric: 'tabular-nums', outline: 'none',
+                      }} />
+                    <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>초</span>
+                  </>
+                ) : (
+                  <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>경계를 고르면 시각을 고칠 수 있습니다</span>
+                )}
+              </span>
+            )}
+            {timeIssue && (
+              <span data-testid="split-time-issue" role="alert" style={{ fontSize: 10, color: 'var(--rose)' }}>
+                {timeIssue} — 그대로 두었습니다
+              </span>
+            )}
+          </div>
         </div>
         {waveError && <div role="alert" style={{ marginTop: 8, fontSize: 12, color: 'var(--rose)' }}>{waveError}</div>}
       </section>
@@ -625,14 +824,19 @@ export default function SplitEditor() {
           </div>
           <div style={{ maxHeight: 200, overflowY: 'auto' }}>
             {markers.map((m, idx) => (
-              <div key={m.id} style={{
-                display: 'flex', alignItems: 'center', gap: 8, padding: '6px 14px',
-                borderBottom: '1px solid var(--border-subtle)'
-              }}>
+              <div key={m.id} data-testid="split-marker-row" data-picked={picked === m.id ? '1' : '0'}
+                onClick={() => pick(m.id)}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: 8, padding: '6px 14px', cursor: 'pointer',
+                  background: picked === m.id ? 'var(--bg-elevated)' : 'transparent',
+                  borderLeft: `3px solid ${picked === m.id ? 'var(--cyan)' : 'transparent'}`,
+                  borderBottom: '1px solid var(--border-subtle)'
+                }}>
                 <span style={{ fontSize: 10, fontWeight: 700, color: 'var(--text-muted)', minWidth: 20, textAlign: 'center' }}>
                   {String(idx + 2).padStart(2, '0')}
                 </span>
-                <span style={{ fontSize: 11, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: 'var(--amber)', minWidth: 40 }}>
+                <span data-testid="split-marker-time" title={`${m.time.toFixed(2)}초`}
+                  style={{ fontSize: 11, fontWeight: 600, fontVariantNumeric: 'tabular-nums', color: picked === m.id ? 'var(--cyan)' : 'var(--amber)', minWidth: 46 }}>
                   {fmtTime(m.time)}
                 </span>
                 <input
