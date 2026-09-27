@@ -14,7 +14,10 @@ import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const HERE = path.dirname(fileURLToPath(import.meta.url))
-const SRC = readFileSync(path.join(HERE, 'DubWorkspace.tsx'), 'utf-8')
+// ★줄끝을 맞춰 읽는다. 저장소는 LF 로 담고 윈도에서는 CRLF 로 나온다(core.autocrlf).
+//   아래 검사들은 줄 단위로 자른 뒤 그 조각을 다시 SRC 안에서 찾는다. 맞춰 두지 않으면
+//   **새로 받은 작업본에서만** 검사가 운다 — 코드가 멀쩡한데도.
+const SRC = readFileSync(path.join(HERE, 'DubWorkspace.tsx'), 'utf-8').split(String.fromCharCode(13) + String.fromCharCode(10)).join(String.fromCharCode(10))
 
 /** 주석을 뺀 코드 — 사연을 적어 둔 주석이 검사에 걸리지 않게. */
 const code = SRC.split(/\r?\n/)
