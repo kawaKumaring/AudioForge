@@ -24,7 +24,7 @@ import {
   previewStale, previewStaleText, playbackStale,
 } from '../../shared/joinPreviewGate'
 import {
-  savedChoices, savedWorkHasContent, type RestoreChoice,
+  savedChoices, savedWorkHasContent, removeWorkWarning, type RestoreChoice,
 } from '../../shared/synthesisCardSave'
 import {
   prepareCardReference, forgetCardReference, releaseCardOwnership,
@@ -32,7 +32,7 @@ import {
 } from '../lib/cardSynthesis'
 import {
   loadSavedFile, queueSave, flushSave, retrySave, keepCurrentAside, adoptKept,
-  onSaveState, saveState, importLegacyWork, type SaveState,
+  onSaveState, saveState, importLegacyWork, deleteSavedWork, type SaveState,
 } from '../lib/cardWorkSaver'
 import {
   legacyWorks, alreadyImported, importSummary, revealTarget, removeLegacy, removeWarning,
@@ -506,6 +506,36 @@ export default function SynthesisCardWorkspace() {
   useEffect(() => { if (audioClaim && audioClaim.owner !== 'card') pauseManagedAudio() }, [audioClaim])
 
   const [restore, setRestore] = useState<RestoreChoice[] | null>(null)
+  /** 지우기 전에 한 번 묻는다 — 되돌릴 수 없다. */
+  const [restoreDrop, setRestoreDrop] = useState<RestoreChoice | null>(null)
+  const [restoreWhy, setRestoreWhy] = useState('')
+
+  /**
+   * 이 작업 **기록이 적히는 파일**을 탐색기로 연다.
+   * ★음원이 아니라 데이터 파일이다(2026-09-28 지시).
+   */
+  const openDataFile = async () => {
+    setRestoreWhy('')
+    try {
+      const where = await window.api.app.dataFile()
+      if (!where) { setRestoreWhy('데이터 파일 자리를 알 수 없습니다.'); return }
+      await window.api.app.revealFile(where)
+    } catch { if (alive.current) setRestoreWhy('데이터 파일을 열지 못했습니다.') }
+  }
+
+  /** 저장된 작업 하나를 지운다. 기록만 지운다 — 만든 소리 파일은 그대로다. */
+  const dropSavedWork = async (c: RestoreChoice) => {
+    setRestoreWhy('')
+    const why = await deleteSavedWork(c.slot, c.index)
+    if (!alive.current) return
+    if (why) { setRestoreWhy(`지우지 못했습니다(${why})`); return }
+    setRestoreDrop(null)
+    const file = await loadSavedFile(true)
+    const left = savedChoices(file)
+    if (!alive.current) return
+    setRestore(left.length ? left : null)
+    if (!left.length) useSynthesisCards.getState().markAsked()
+  }
 
   /**
    * 옛 작업 가져오기 — **진입점은 여기 한 곳이다.**
@@ -960,6 +990,13 @@ export default function SynthesisCardWorkspace() {
     {restore && <Modal title="이전 작업을 불러올까요?" subtitle={`${restore.length}개`} close={laterRestore}
       footer={<button type="button" style={button} title="불러오기를 닫고 현재 카드로 계속합니다"
         onClick={laterRestore}>현재 작업 계속</button>}>
+      {restoreWhy && <div role="alert" data-testid="restore-fault" style={{ fontSize: 12, color: 'var(--rose)', marginBottom: 10 }}>{restoreWhy}</div>}
+      {restoreDrop && <div data-testid="restore-drop-ask" role="alert" style={{ ...row, gap: 8, fontSize: 12, color: 'var(--rose)', padding: '10px 12px', background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', borderRadius: 8, marginBottom: 10 }}>
+        <span style={{ flex: 1 }}>{removeWorkWarning(restoreDrop.work)}</span>
+        <button type="button" data-testid="restore-drop-cancel" style={button} onClick={() => setRestoreDrop(null)}>그대로 두기</button>
+        <button type="button" data-testid="restore-drop-yes" style={{ ...button, color: 'var(--rose)' }}
+          onClick={() => void dropSavedWork(restoreDrop)}>지우기</button>
+      </div>}
       <div style={{ display: 'grid', gap: 8 }}>{restore.map((c) => (
         <div key={`${c.slot}:${c.index}`} style={{ ...row, gap: 12, padding: '14px', background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', borderRadius: 10 }}>
           <span style={{ color: 'var(--accent-light)', display: 'flex' }}><Icon name="history"/></span>
@@ -968,6 +1005,14 @@ export default function SynthesisCardWorkspace() {
               {c.slot === 'kept' && <span style={badge} title="이전에 보관한 작업입니다">보관됨</span>}
             </div><div style={muted}>{c.summary}</div>
           </div>
+          <Action icon="folder" testId="restore-reveal"
+            label="작업 기록 파일 위치 열기"
+            title="이 작업 기록이 적히는 데이터 파일을 탐색기에서 엽니다"
+            onClick={() => void openDataFile()}/>
+          <Action icon="trash" testId="restore-drop"
+            label="이 작업 기록 지우기"
+            title="이 작업 기록을 지웁니다. 만들어 둔 소리 파일은 그대로입니다."
+            onClick={() => setRestoreDrop(c)}/>
           <button type="button" style={button} onClick={() => takeRestore(c)}>불러오기</button>
         </div>
       ))}</div>

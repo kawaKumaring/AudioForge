@@ -1628,6 +1628,15 @@ export function registerAudioIpc(
     return { ok: false, code: 'SETTINGS_KEY_NOT_ALLOWED' }
   })
 
+  /**
+   * 작업 기록이 **실제로 적히는 파일**의 자리.
+   *
+   * ★불러오기 목록의 폴더 아이콘은 음원이 아니라 **데이터 파일**을 찾아간다
+   *   (2026-09-28 지시). 지금은 설정 파일 한 장이지만, 작업별 파일로 나눈 뒤에도
+   *   이 통로 하나만 바꾸면 화면은 그대로다.
+   */
+  ipcMain.handle('app:data-file', () => settingsFilePath())
+
   ipcMain.handle('settings:select-python-path', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
       properties: ['openFile'],

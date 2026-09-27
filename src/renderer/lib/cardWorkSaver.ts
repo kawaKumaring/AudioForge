@@ -19,7 +19,7 @@
  *   생성한 소리 파일이 남는 것과 작업 문서가 남는 것은 다른 일이다.
  */
 import {
-  CARD_STORAGE_KEY, adoptFromKept, emptySavedFile, keepAside, parseSavedFile,
+  CARD_STORAGE_KEY, adoptFromKept, emptySavedFile, keepAside, parseSavedFile, removeWork,
   type SavedFile, type SavedWork,
 // @ts-ignore TS5097
 } from '../../shared/synthesisCardSave.ts'
@@ -114,6 +114,31 @@ export async function importLegacyWork(doc: SavedWork): Promise<string> {
   }
   file = next
   dirtyWork = null                     // 지난 문서를 다시 쓰지 않게 한다
+  publish({ phase: 'saved', code: '', at: Date.now() })
+  return ''
+}
+
+/**
+ * 저장된 작업 하나를 지운다. 성공하면 빈 문자열, 아니면 사유.
+ *
+ * ★디스크에 **먼저** 쓰고 성공했을 때만 읽어 둔 문서를 바꾼다 —
+ *   실패하면 없던 일이 된다. 지운 줄 알고 넘어가게 두지 않는다.
+ * ★기다리던 저장이 지운 것을 되살리지 않게 먼저 흘려보낸다.
+ */
+export async function deleteSavedWork(slot: 'current' | 'kept', index: number): Promise<string> {
+  await loadSavedFile()
+  await flushSave()
+  const before = file
+  const next = removeWork(file, slot, index)
+  const code = await lane.then(() =>
+    saveSetting(window.api.settings.set, CARD_STORAGE_KEY, { current: next.current, kept: next.kept }))
+  if (code) {
+    file = before
+    publish({ phase: 'failed', code, at: Date.now() })
+    return code
+  }
+  file = next
+  if (slot === 'current') dirtyWork = null      // 지운 문서를 다시 쓰지 않는다
   publish({ phase: 'saved', code: '', at: Date.now() })
   return ''
 }

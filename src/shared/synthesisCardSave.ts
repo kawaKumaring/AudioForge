@@ -282,6 +282,25 @@ export function savedChoices(file: SavedFile): RestoreChoice[] {
  * ★지금 하던 작업을 **버리지 않는다** — 보관함 앞으로 옮긴 뒤에 꺼낸다.
  *   예전에는 그냥 덮어써서, 보관본을 열면 하던 작업이 통째로 사라졌다(2차 검수 재현).
  */
+/**
+ * 작업 하나를 **문서에서 뺀다.** 되돌릴 수 없다 — 화면이 먼저 묻고 부른다.
+ *
+ * ★빼는 것은 **기록뿐**이다. 만든 소리 파일은 건드리지 않는다.
+ *   'current' 를 빼면 그 자리는 빈다 — 보관함에서 끌어오지 않는다.
+ *   사용자가 고르지 않은 것을 대신 열어 주지 않는다.
+ */
+export function removeWork(file: SavedFile, slot: 'current' | 'kept', index: number): SavedFile {
+  if (slot === 'current') return { current: null, kept: file.kept }
+  if (index < 0 || index >= file.kept.length) return file
+  return { current: file.current, kept: file.kept.filter((_, i) => i !== index) }
+}
+
+/** 지우기 전에 보여 줄 한 줄. **무엇이 남는지**까지 말한다. */
+export function removeWorkWarning(w: SavedWork | null | undefined): string {
+  const takes = (w?.cards || []).reduce((n, c) => n + c.takes.length, 0)
+  return `이 작업 기록을 지웁니다. 만들어 둔 소리 파일 ${takes}개는 그대로 남습니다.`
+}
+
 export function adoptFromKept(file: SavedFile, index: number): SavedFile {
   const picked = file.kept[index]
   if (!picked) return file

@@ -254,6 +254,8 @@ const api = {
     openFolder: (path: string) => ipcRenderer.invoke('app:open-folder', path),
     // 탐색기에서 그 파일을 고른 상태로 보여 준다(여는 것이 아니다).
     revealFile: (path: string) => ipcRenderer.invoke('app:reveal-file', path),
+    /** 작업 기록이 적히는 데이터 파일의 자리. */
+    dataFile: (): Promise<string> => ipcRenderer.invoke('app:data-file'),
     readTextFile: (path: string) => ipcRenderer.invoke('app:read-text-file', path),
     // 교정본 저장 — 처음 인식한 파일은 그대로 두고 `_corrected` 로 새로 쓴다.
     saveCorrectedTranscript: (dir: string, base: string, txt: string, srt: string | null) =>
