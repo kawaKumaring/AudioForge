@@ -20,6 +20,44 @@ interface Marker {
   label: string
 }
 
+/**
+ * 분할선 색. **시작=끝**으로 만들면 플러그인이 이 색으로 얇은 세로선(2px)을 그린다.
+ *
+ * ★예전에는 `end = time + 0.01` 로 **구간**을 만들었다. 10분짜리 곡에서 0.01초는
+ *   화면에서 0.02px — 사실상 보이지도 잡히지도 않았다.
+ */
+const MARK_COLOR = 'rgba(251, 191, 36, 0.8)'
+
+/**
+ * **보이는 선은 얇게 두고 잡는 폭만 넓힌다**(2026-09-27 지시).
+ *
+ * 구간 자체를 넓혀서 해결하지 않는다 — 그러면 분할 위치가 뭉툭해지고
+ * 저장되는 경계까지 흐려진다. 시간은 건드리지 않고 **투명한 손잡이**만 덧댄다.
+ */
+const MARK_GRAB_PX = 20
+
+/**
+ * 분할선 위에 투명한 손잡이를 덧댄다.
+ *
+ * 포인터 이벤트는 자식에서 선 요소로 올라가므로(플러그인이 선 요소에 드래그를 걸어 둔다)
+ * 손잡이를 잡아도 드래그가 그대로 동작한다. `cursor` 는 물려받게 비워 둔다.
+ */
+function addGrabArea(region: unknown, id: string): void {
+  const el = (region as { element?: HTMLElement | null } | null)?.element ?? null
+  if (!el || el.querySelector('[data-af-grab]')) return
+  const grab = document.createElement('div')
+  grab.setAttribute('data-af-grab', id)
+  grab.setAttribute('data-testid', 'split-marker-grab')
+  grab.setAttribute('aria-hidden', 'true')
+  Object.assign(grab.style, {
+    position: 'absolute', top: '0', bottom: '0',
+    // 선은 요소 왼쪽 -2~0px 에 그려진다. 그 한가운데(-1px)에 손잡이 폭을 맞춘다.
+    left: `${-1 - MARK_GRAB_PX / 2}px`, width: `${MARK_GRAB_PX}px`,
+    background: 'transparent',
+  })
+  el.appendChild(grab)
+}
+
 export default function SplitEditor() {
   const { fileUrl, fileInfo, mode, status, errorInfo } = useAppStore()
   const locked = status === 'processing' || isCancelCleanupBusy(status) || !!errorInfo?.childAlive
@@ -93,6 +131,27 @@ export default function SplitEditor() {
     const regions = RegionsPlugin.create()
     regionsRef.current = regions
 
+    /**
+     * 드래그 결과는 **놓았을 때 한 번만** 상태에 반영한다(2026-09-27 검수).
+     *
+     * ★예전에는 끄는 중(`region-update`)에도 `setMarkers` 를 불렀다. 그러면 아래
+     *   동기화가 `clearRegions()` 로 **끌고 있던 그 선을 지우고 새로 만들었다.**
+     *   플러그인의 드래그는 원래 요소에 걸려 있으므로 거기서 끊겼다.
+     *   끄는 동안의 위치 표시는 플러그인이 맡는다 — 우리는 결과만 받는다.
+     *   덕분에 되돌리기도 **끝난 드래그 하나당 한 걸음**이 된다.
+     *
+     * 핸들러는 파형 한 벌에 **한 번만** 건다. 마커가 바뀔 때마다 다시 걸지 않는다.
+     */
+    const onRegionUpdated = (region: { id: string; start: number }) => {
+      if (!markersRef.current.some((m) => m.id === region.id)) return
+      remember(`drag:${region.id}`)   // 끌기 **전** 장면을 쌓고
+      seal()                          // 곧바로 끊는다 — 다음 드래그는 새 걸음이다
+      setMarkers((prev) => prev
+        .map((m) => (m.id === region.id ? { ...m, time: region.start } : m))
+        .sort((a, b) => a.time - b.time))
+    }
+    regions.on('region-updated', onRegionUpdated)
+
     const ws = WaveSurfer.create({
       container: containerRef.current,
       waveColor: 'rgba(251, 191, 36, 0.25)',
@@ -120,7 +179,10 @@ export default function SplitEditor() {
     void ws.load(fileUrl).catch(() => { setWaveReady(false); setWaveError('파형을 읽지 못했습니다') })
     wsRef.current = ws
 
-    return () => { ws.destroy(); wsRef.current = null }
+    return () => {
+      regions.un('region-updated', onRegionUpdated)
+      ws.destroy(); wsRef.current = null
+    }
   }, [fileUrl])
 
   useEffect(() => { if (locked) wsRef.current?.pause(); wsRef.current?.setOptions({ interact: !locked }) }, [locked, waveReady])
@@ -129,56 +191,39 @@ export default function SplitEditor() {
   // 예전에는 어떤 값을 정해도 이 파형만 최대로 나갔다(2026-09-10).
   useEffect(() => { wsRef.current?.setVolume(playbackVolume) }, [playbackVolume, fileUrl])
 
-  // Sync markers to regions
+  /**
+   * 마커 ↔ 분할선 맞추기 — **ID 별로 고친다.**
+   *
+   * ★예전에는 마커가 바뀔 때마다 `clearRegions()` 로 전부 지우고 다시 만들었다.
+   *   끄는 중에도 상태를 갱신했으므로 **끌고 있던 선이 지워지고 새로 생겼다**(검수 지적).
+   *   이제 없어진 것만 지우고, 새로 생긴 것만 만들고, 남아 있는 선은 **자리만** 고친다.
+   *   그래서 이 효과는 드래그 도중에 돌아도 손에 잡힌 선을 건드리지 않는다.
+   */
   useEffect(() => {
     const regions = regionsRef.current
-    if (!regions) return
+    // 길이를 모르는 동안 만들면 플러그인이 0~0 으로 깎는다(메뉴 왕복 복원 때 실제로 그랬다).
+    if (!regions || duration <= 0) return
 
-    // Clear existing
-    regions.clearRegions()
+    const live = new Map<string, any>()
+    for (const r of regions.getRegions() as any[]) live.set(r.id, r)
+    const want = new Set(markers.map((m) => m.id))
 
-    // Add marker lines
-    markers.forEach((m) => {
-      regions.addRegion({
-        start: m.time,
-        end: m.time + 0.01,
-        color: 'rgba(251, 191, 36, 0.8)',
-        drag: !locked,
-        resize: false,
-        id: m.id
-      })
-    })
+    for (const [id, r] of live) if (!want.has(id)) r.remove()
 
-    // Listen for drag updates — use a single persistent handler
-    // ★이 플러그인이 내는 이름은 둘뿐이다(2026-09-27 검수로 확인).
-    //     `region-update`  — 끄는 **중**(매 프레임)
-    //     `region-updated` — 끄기를 **놓았을 때**(내부 update-end 에서 난다)
-    //   내가 쓰던 `region-update-end` 는 **없는 이름**이라 묶기 종료가 한 번도 돌지 않았고,
-    //   그래서 같은 경계를 두 번 따로 끌면 한 걸음으로 뭉쳤다.
-    const applyTime = (region: any) => {
-      setMarkers(prev => prev.map(m =>
-        m.id === region.id ? { ...m, time: region.start } : m
-      ).sort((a, b) => a.time - b.time))
+    for (const m of markers) {
+      const r = live.get(m.id)
+      if (!r) {
+        addGrabArea(regions.addRegion({
+          start: m.time,                 // 시작=끝 → 플러그인이 얇은 세로선으로 그린다
+          color: MARK_COLOR, drag: !locked, resize: false, id: m.id,
+        }), m.id)
+        continue
+      }
+      // 방금 놓은 선은 이미 제자리다 — 같은 값을 다시 밀어 넣지 않는다.
+      if (Math.abs(r.start - m.time) > 1e-3) r.setOptions({ start: m.time, end: m.time })
+      if (r.drag !== !locked) r.setOptions({ drag: !locked })
     }
-    const handleUpdate = (region: any) => {
-      remember(`drag:${region.id}`)      // 같은 종류라 끄는 동안은 한 걸음으로 묶인다
-      applyTime(region)
-    }
-    const handleUpdated = (region: any) => {
-      remember(`drag:${region.id}`)      // 중간 이벤트 없이 끝난 경우에도 걸음을 남긴다
-      applyTime(region)
-      seal()                             // 놓았다 — 다시 끌면 새 걸음이다
-    }
-
-    regions.on('region-update', handleUpdate)
-    regions.on('region-updated', handleUpdated)
-
-    return () => {
-      // un(event)만 부르면 아무것도 해제되지 않음 — 핸들러를 명시해야 함
-      regions.un('region-update', handleUpdate)
-      regions.un('region-updated', handleUpdated)
-    }
-  }, [markers, locked, remember, seal])
+  }, [markers, locked, duration])
 
   const addMarker = useCallback((time: number, label?: string) => {
     if (lockedRef.current || !Number.isFinite(time) || time <= 0 || time >= (wsRef.current?.getDuration() || 0) || markersRef.current.some(m => Math.abs(m.time - time) < .05)) return

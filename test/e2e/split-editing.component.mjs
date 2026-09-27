@@ -1,6 +1,8 @@
 // 트랙 분할 — **고친 조작만** 본다(2026-09-27).
 //   · 메뉴 왕복 보존, 새로 불러오면 이어지지 않음
 //   · 되돌리기·다시 적용(드래그 한 번 = 한 걸음, 전체 삭제도 되돌림)
+//   · ★실제 포인터로 같은 경계를 두 번 옮기고, 되돌리기 두 번이 각각을 되돌림
+//     (옛 코드에 대고 돌려 보면 48px 중 8px 만 따라와 여기서 걸린다 — 검사에 이빨이 있다)
 //   · 시간 목록: 잘못된 줄이면 전체 적용 막고 기존 편집 유지, 줄 번호 표시·선택
 //   · 첫 시각이 0보다 크면 앞 구간을 잃지 않음
 //   · 마커 없는 자동 분할을 '조각 N개' 로 확정해 말하지 않음
@@ -100,11 +102,89 @@ try {
   await page.waitForFunction(() => window.store.getState().splitMarkers.length === 2)
   pass('★전체 삭제를 되돌린다')
 
-  // ★같은 경계를 두 번 따로 끄는 경우는 여기서 보지 않는다.
-  //   실제 region 은 그림자 DOM 안 **몇 픽셀짜리**라 마우스로 잡는 검사가 흔들린다.
-  //   대신 두 곳에서 본다 — 걸음의 크기는 `shared/splitHistory` 검사가,
-  //   이벤트 이름이 실재하는지는 `SplitEditor.events.test.ts` 가 본다
-  //   (없는 이름 `region-update-end` 를 쓰던 것이 이번 검수의 지적이었다).
+  // ── ★실제 포인터로 같은 경계를 두 번 옮긴다 — 이번 검수의 본안 ────────
+  //   예전에는 끄는 **중**에 setMarkers 를 불렀고, 그 바람에 동기화 effect 가
+  //   clearRegions() 로 **끌고 있던 선을 지우고 새로 만들어** 드래그가 손에서 빠졌다.
+  //   그리고 분할선이 0.01초(≈0.02px)라 사람도 잡기 어려웠다.
+  const grabs = page.getByTestId('split-marker-grab')
+  await grabs.first().waitFor()
+  assert.equal(await grabs.count(), 2, `손잡이가 마커 수와 다르다: ${await grabs.count()}`)
+
+  // 보이는 선은 얇고, 잡는 폭은 넓다 — 구간을 넓혀서 해결하지 않았다.
+  const lineBox = await page.locator('[part^="marker"]').first().boundingBox()
+  const anyGrab = await grabs.first().boundingBox()
+  assert.ok(lineBox.width <= 4, `보이는 선이 두꺼워졌다: ${lineBox.width}px`)
+  assert.ok(anyGrab.width >= 16, `포인터로 잡는 폭이 좁다: ${anyGrab.width}px`)
+  console.log(`  보이는 선 ${lineBox.width}px · 잡는 폭 ${anyGrab.width}px`)
+  await page.screenshot({ path: path.join(process.env.TEMP || '.', 'af-split-markers.png') })
+  pass('★보이는 선은 얇게(≤4px), 잡는 폭은 넓게(≥16px)')
+
+  // 왼쪽 경계를 고른다(시간이 바뀌어도 같은 것을 계속 잡도록 id 로 묶는다).
+  let leftIdx = 0, leftX = Infinity
+  for (let i = 0; i < 2; i++) {
+    const bb = await grabs.nth(i).boundingBox()
+    if (bb.x < leftX) { leftX = bb.x; leftIdx = i }
+  }
+  const markId = await grabs.nth(leftIdx).getAttribute('data-af-grab')
+  const handle = page.locator(`[data-af-grab="${markId}"]`)
+  // 끝까지 따라왔는지 **픽셀로** 잰다. 중간에 선이 다시 만들어지면 여기서 모자란다.
+  const dragHandle = async (dx) => {
+    const bb = await handle.boundingBox()
+    const cy = bb.y + bb.height / 2
+    await page.mouse.move(bb.x + bb.width / 2, cy)
+    await page.mouse.down()
+    await page.mouse.move(bb.x + bb.width / 2 + dx, cy, { steps: 6 })
+    await page.mouse.up()
+    await page.waitForTimeout(250)
+    const after = await handle.boundingBox()
+    return { wanted: dx, got: Math.round(after.x - bb.x) }
+  }
+  const marksNow = () => page.evaluate(() => window.store.getState().splitMarkers.slice())
+
+  const t0 = await marksNow()
+  const d1 = await dragHandle(48)
+  assert.ok(Math.abs(d1.got - d1.wanted) <= 4,
+    `첫 드래그가 포인터를 끝까지 따라오지 않았다(끌던 선이 다시 만들어졌을 수 있다): ${JSON.stringify(d1)}`)
+  const t1 = await marksNow()
+  assert.ok(t1[0] - t0[0] > 0.1, `옮겼는데 상태가 그대로다: ${JSON.stringify([t0[0], t1[0]])}`)
+  pass('★분할선을 실제 포인터로 끌어 옮긴다 — 끝까지 따라온다')
+
+  const d2 = await dragHandle(42)
+  assert.ok(Math.abs(d2.got - d2.wanted) <= 4,
+    `두 번째 드래그가 먹히지 않았다(첫 드래그 뒤 선이 다시 만들어졌을 수 있다): ${JSON.stringify(d2)}`)
+  const t2 = await marksNow()
+  assert.ok(t2[0] > t1[0] && t1[0] > t0[0],
+    `두 번 모두 오른쪽으로 가지 않았다: ${JSON.stringify([t0[0], t1[0], t2[0]])}`)
+  assert.equal(t2.length, 2, '끄는 동안 마커가 사라지거나 늘었다')
+  pass('★같은 경계를 두 번째로 끈다 — 선이 손에서 빠지지 않는다')
+
+  // ★되돌리기 한 번 = **이동 한 번**. 예전에는 둘이 뭉쳐 한 번에 처음으로 돌아갔다.
+  const seen = { t0: t0[0], t1: t1[0], t2: t2[0] }
+  await page.getByTestId('split-undo').click()
+  await page.waitForTimeout(150)
+  const u1 = (await marksNow())[0]
+  assert.ok(Math.abs(u1 - t1[0]) < 0.01,
+    `되돌리기 한 번에 두 이동이 뭉쳐 돌아갔다: ${JSON.stringify({ ...seen, undo1: u1 })}`)
+  pass('★되돌리기 한 번이 **두 번째 이동만** 되돌린다')
+
+  await page.getByTestId('split-undo').click()
+  await page.waitForTimeout(150)
+  const u2 = (await marksNow())[0]
+  assert.ok(Math.abs(u2 - t0[0]) < 0.01,
+    `두 번째 되돌리기가 첫 이동을 되돌리지 않았다: ${JSON.stringify({ ...seen, undo2: u2 })}`)
+  pass('★되돌리기 두 번이 각 이동을 하나씩 되돌린다')
+
+  // 되돌린 뒤 화면의 선도 따라 움직였는가(상태만 바뀌고 그림이 남아 있으면 안 된다).
+  const movedBack = await handle.boundingBox()
+  assert.ok(Math.abs(movedBack.x - leftX) < 2,
+    `되돌렸는데 선이 제자리로 가지 않았다: ${leftX} → ${movedBack.x}`)
+  pass('★되돌리면 화면의 분할선도 같이 돌아온다')
+
+  await page.getByTestId('split-redo').click()
+  await page.waitForFunction((v) => Math.abs(window.store.getState().splitMarkers[0] - v) < 0.01, t1[0])
+  pass('★다시 적용도 한 걸음씩 간다')
+  await page.getByTestId('split-undo').click()
+  await page.waitForFunction((v) => Math.abs(window.store.getState().splitMarkers[0] - v) < 0.01, t0[0])
 
   // ── 시간 목록: 잘못된 줄이면 전체 적용을 막고 기존 편집을 지킨다 ───────
   await page.getByRole('button', { name: '시간 목록 붙여넣기', exact: true }).click()
