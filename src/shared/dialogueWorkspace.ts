@@ -64,8 +64,50 @@ export interface DialogueDraft {
   merges: Record<SpeakerId, SpeakerId>
   edits: Record<number, SegmentEdit>
   updatedAt: number
-  /** 옛 한 칸 기록에서 옮겨 온 것인가 — 구간 수가 맞을 때만 이어 쓴다. */
+  /** 옛 한 칸 기록에서 옮겨 온 것인가 — 안내 문구에만 쓴다. */
   fromLegacy?: { segmentCount: number }
+  /**
+   * **이 교정이 어느 분석 위에서 만들어졌는가**(지문).
+   *
+   * ★수정은 발언 **번호**로 적힌다. 번호는 분석이 달라지면 다른 발언을 가리킨다.
+   *   그래서 다른 실행에 옮기기 전에 그때의 발언 시각·인물 구성이 같은지 본다.
+   *   지문이 없는 옛 문서는 **옮기지 않고 보관·확인 대상**으로 남긴다.
+   */
+  basis?: DraftBasis
+}
+
+/** 분석 한 벌의 지문. 번호로 옮겨도 되는지 판단하는 유일한 근거다. */
+export interface DraftBasis {
+  segmentCount: number
+  /** 발언 시각 지문. */
+  timesHash: string
+  /** 그때의 화자 식별자들(정렬). 이름·합치기를 옮겨도 되는지 본다. */
+  speakers: string[]
+}
+
+/** 짧고 안정적인 지문(FNV-1a). 값을 되돌릴 수 없고 경로를 담지 않는다. */
+function hashOf(text: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i)
+    h = Math.imul(h, 0x01000193) >>> 0
+  }
+  return h.toString(36)
+}
+
+export function basisOfSegments(segments: DialogueSegment[]): DraftBasis {
+  const times = segments.map((x) => `${x.start.toFixed(2)}-${x.end.toFixed(2)}`).join('|')
+  return {
+    segmentCount: segments.length,
+    timesHash: hashOf(times),
+    speakers: [...new Set(segments.map((x) => x.speaker))].sort(),
+  }
+}
+
+export const analysisBasis = (a: DialogueAnalysis): DraftBasis => basisOfSegments(a.segments)
+
+export function sameSpeakers(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((x, i) => x === b[i])
 }
 
 export function emptyDraft(sourceKey: string, runId: string): DialogueDraft {
@@ -91,16 +133,45 @@ export function analysisFault(
   return ''
 }
 
-/** 이 교정 문서가 이 분석에 속하는가. */
-export function draftMatches(draft: DialogueDraft | null | undefined,
-  analysis: DialogueAnalysis): boolean {
-  if (!draft || draft.sourceKey !== analysis.sourceKey) return false
-  if (draft.runId && analysis.runId && draft.runId !== analysis.runId) {
-    // 실행이 다르면 구간 배열도 다를 수 있다 — 번호로 매긴 수정은 옮기지 않는다.
-    return false
+/**
+ * 이 교정을 지금 분석에 **가져와도 되는가.** 되면 빈 문자열, 아니면 사유.
+ *
+ * ★실행 식별자를 현재 값으로 바꿔치기해서 이 판정을 건너뛰면 안 된다 —
+ *   그러면 발언 시각과 화자가 달라진 분석에도 번호만 보고 덮어쓴다(2026-09-27 재현).
+ */
+export function adoptFault(draft: DialogueDraft | null | undefined,
+  analysis: DialogueAnalysis): string {
+  if (!draft) return '가져올 교정이 없습니다.'
+  if (draft.sourceKey !== analysis.sourceKey) return '다른 원본의 교정입니다.'
+  // ★지문이 있으면 **그것이 먼저다.** 실행 식별자를 현재 값으로 바꿔 끼워도
+  //   여기서 걸린다 — 부르는 쪽의 실수로 판정이 헐거워지지 않게 한다.
+  if (draft.basis) {
+    const now = analysisBasis(analysis)
+    const b = draft.basis
+    if (b.segmentCount !== now.segmentCount) {
+      return `그때와 발언 수가 다릅니다(${b.segmentCount} → ${now.segmentCount}).`
+    }
+    if (b.timesHash !== now.timesHash) return '그때와 발언 시각이 다릅니다.'
+    // ★식별자가 같다고 같은 사람이라고 보지 않는다 — 인물 구성이 같을 때만 옮긴다.
+    if (!sameSpeakers(b.speakers, now.speakers)) return '그때와 인물 구성이 다릅니다.'
+    return ''
   }
-  if (draft.fromLegacy && draft.fromLegacy.segmentCount !== analysis.segments.length) return false
-  return true
+  // 지문이 없는 옛 문서 — 같은 실행이라는 근거가 있을 때만 이어 쓴다.
+  if (draft.runId && draft.runId === analysis.runId) return ''
+  // 그 밖에는 번호로 옮기지 않는다. 보관해 두고 사용자가 확인하게 한다.
+  return '그때의 분석 정보가 없어 발언 번호로 옮길 수 없습니다.'
+}
+
+/**
+ * **자동 복원**해도 되는가. 다른 실행의 교정은 저절로 적용하지 않는다.
+ * (사용자가 고르는 '가져오기' 는 `adoptFault` 만 본다.)
+ */
+export function autoRestoreFault(draft: DialogueDraft | null | undefined,
+  analysis: DialogueAnalysis): string {
+  if (!draft) return '가져올 교정이 없습니다.'
+  if (draft.sourceKey !== analysis.sourceKey) return '다른 원본의 교정입니다.'
+  if (draft.runId && draft.runId !== analysis.runId) return '다른 실행의 교정입니다.'
+  return adoptFault(draft, analysis)
 }
 
 // ── 합치기 ───────────────────────────────────────────────────────────────────

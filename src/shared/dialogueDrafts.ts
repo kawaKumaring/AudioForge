@@ -11,7 +11,9 @@
  *   옮긴 뒤에도 옛 칸은 지우지 않는다(되돌아갈 자리를 남긴다).
  */
 // @ts-ignore TS5097: node --test 가 요구하는 명시적 .ts 확장자(이 저장소의 관례).
-import { emptyDraft, type DialogueDraft, type SegmentEdit } from './dialogueWorkspace.ts'
+import {
+  basisOfSegments, emptyDraft, type DialogueDraft, type DraftBasis, type SegmentEdit,
+} from './dialogueWorkspace.ts'
 
 export const DIALOGUE_DRAFTS_STORAGE_KEY = 'dialogueDrafts'
 /** 옛 한 칸. 읽기만 한다. */
@@ -69,16 +71,41 @@ export function parseDraft(raw: unknown): DialogueDraft | null {
   if (isRec(raw.fromLegacy) && typeof raw.fromLegacy.segmentCount === 'number') {
     d.fromLegacy = { segmentCount: raw.fromLegacy.segmentCount }
   }
+  const b = raw.basis
+  if (isRec(b) && typeof b.segmentCount === 'number' && typeof b.timesHash === 'string') {
+    d.basis = {
+      segmentCount: b.segmentCount,
+      timesHash: b.timesHash,
+      speakers: Array.isArray(b.speakers) ? b.speakers.filter((x): x is string => typeof x === 'string') : [],
+    }
+  }
   return d
 }
 
+/**
+ * 보관함을 읽는다. **옛 열쇠 형식도 잃지 않는다.**
+ *
+ * ★예전에는 원본 경로 하나를 열쇠로 썼다. 열쇠 규칙을 원본+실행으로 바꾸면서
+ *   그 문서들이 '열쇠가 안 맞는다' 는 이유로 **통째로 사라졌다**(1건 → 0건, 재현 확인).
+ *   이제 옛 열쇠면 새 열쇠로 **옮겨 담고**, 옮길 자리가 이미 차 있으면
+ *   **원래 열쇠에 그대로 둔다** — 어느 경우에도 원본 기록을 덮거나 버리지 않는다.
+ */
 export function parseStore(raw: unknown): DraftStore {
   if (!isRec(raw) || !isRec(raw.drafts)) return emptyStore()
   const drafts: Record<string, DialogueDraft> = {}
+  const later: [string, DialogueDraft][] = []
   for (const [key, v] of Object.entries(raw.drafts)) {
     const d = parseDraft(v)
-    // 열쇠와 문서가 서로 다른 것을 가리키면 버린다 — 섞인 기록을 되살리지 않는다.
-    if (d && draftKey(d.sourceKey, d.runId) === key) drafts[key] = d
+    if (!d) continue                                  // 모양이 깨진 것은 되살릴 수 없다
+    const want = draftKey(d.sourceKey, d.runId)
+    if (key === want) { drafts[key] = d; continue }   // 지금 형식
+    if (key === d.sourceKey) { later.push([want, d]); continue }  // 옛 형식 — 뒤에 옮긴다
+    // 열쇠와 문서가 서로 다른 것을 가리킨다 — 섞인 기록은 되살리지 않는다.
+  }
+  for (const [want, d] of later) {
+    // 새 자리가 비어 있을 때만 옮긴다. 차 있으면 옛 자리에 그대로 둬 잃지 않는다.
+    if (!drafts[want]) drafts[want] = d
+    else if (!drafts[d.sourceKey]) drafts[d.sourceKey] = d
   }
   return { version: 1, drafts }
 }
@@ -145,5 +172,14 @@ export function migrateLegacy(store: DraftStore, legacyRaw: unknown): DraftStore
   d.edits = edits
   d.updatedAt = typeof legacyRaw.updatedAt === 'number' ? legacyRaw.updatedAt : 0
   d.fromLegacy = { segmentCount: segs }
+  // 옛 칸에도 그때의 구간이 남아 있다 — 지문을 만들어 두면 번호로 옮겨도 되는지 확인할 수 있다.
+  d.basis = basisOfSegments((legacyRaw.segments as unknown[]).map((x) => {
+    const o = (x || {}) as Record<string, unknown>
+    return {
+      start: typeof o.start === 'number' ? o.start : 0,
+      end: typeof o.end === 'number' ? o.end : 0,
+      speaker: typeof o.speaker === 'string' ? o.speaker : '',
+    }
+  }))
   return { version: 1, drafts: { ...store.drafts, [key]: d } }
 }

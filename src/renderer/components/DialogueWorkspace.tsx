@@ -16,7 +16,8 @@ import {
   parseStore, putDraft, emptyStore, type DraftStore,
 } from '../../shared/dialogueDrafts'
 import {
-  displayNameOf, draftMatches, editedSegmentCount, effectiveSegment, emptyDraft, exportPlan,
+  adoptFault, analysisBasis, autoRestoreFault, displayNameOf, editedSegmentCount,
+  effectiveSegment, emptyDraft, exportPlan,
   isSegmentEdited, mergeSpeakers, problemText, segmentProblem, speakerRows, unmergeSpeakers,
   type DialogueAnalysis, type DialogueDraft, type SpeakerId,
 } from '../../shared/dialogueWorkspace'
@@ -124,8 +125,8 @@ export default function DialogueWorkspace() {
     const saved = draftFor(next, a.sourceKey, a.runId)
     // ★기다리는 사이 **사용자가 이미 고쳤으면** 덮지 않는다. 새 편집이 우선이다.
     const untouched = !touchedRef.current
-    if (saved && untouched && draftMatches(saved, a)) {
-      setDraft({ ...saved, runId: a.runId })
+    if (saved && untouched && !autoRestoreFault(saved, a)) {
+      setDraft({ ...saved, runId: a.runId, basis: saved.basis || analysisBasis(a) })
       setMessage(saved.fromLegacy ? '이전에 고친 내용을 이어서 불러왔습니다.' : '고친 내용을 이어서 불러왔습니다.')
     } else if (saved && !untouched) {
       setMessage('저장본이 있지만 이미 고치는 중이라 덮어쓰지 않았습니다.')
@@ -139,7 +140,7 @@ export default function DialogueWorkspace() {
     if (loadedRef.current === key) return
     loadedRef.current = ''                       // 아직 못 읽었다 — 저장을 막는다
     touchedRef.current = false
-    setDraft(emptyDraft(analysis.sourceKey, analysis.runId))
+    setDraft({ ...emptyDraft(analysis.sourceKey, analysis.runId), basis: analysisBasis(analysis) })
     setHistory(emptyHistory<DialogueDraft>())
     setPicked(new Set()); setMergePick(new Set()); setOnly(null)
     setApply('idle'); setAppliedSig(null); setEditedTracks([]); setTarget('original')
@@ -217,18 +218,19 @@ export default function DialogueWorkspace() {
   }, [playToken, stopTrack])
 
   /** 결과 트랙 듣기 — 만들어진 파일을 그대로 튼다(공용 음량을 따른다). */
-  const playTrack = useCallback((token: string, path: string) => {
+  const playTrack = useCallback(async (token: string, path: string) => {
     useAppStore.getState().clearWaveRange()
     if (playToken === token) { stopTrack(); setPlayToken(null); return }
     stopTrack()
+    setPlayToken(token)
+    // ★주소를 직접 조합하지 않는다. 결과 트랙을 트는 **기존 공용 경로**를 그대로 쓴다 —
+    //   이름에 `#` 이나 한글이 들어가도 그쪽이 이미 제대로 감싼다.
+    const src = await window.api.audio.getFileUrl(path)
     const el = trackAudio.current || createManagedAudio()
     trackAudio.current = el
-    // 역슬래시를 글자 코드로 쓴다 — 소스에 제어·이스케이프 문자를 직접 적지 않는다.
-    const src = `file:///${path.split(String.fromCharCode(92)).join('/')}`
     if (el.src !== src) el.src = src
     el.currentTime = 0
     el.onended = () => setPlayToken(null)
-    setPlayToken(token)
     el.play().catch(() => { setError('결과 트랙을 재생하지 못했습니다.'); setPlayToken(null) })
   }, [playToken, stopTrack])
 
@@ -425,21 +427,28 @@ export default function DialogueWorkspace() {
         }}>
           {past.slice(0, 8).map((d) => {
             const n = Object.keys(d.edits).length + Object.keys(d.names).length + Object.keys(d.merges).length
-            const fits = draftMatches({ ...d, runId: analysis.runId }, analysis)
+            // ★runId 를 현재 값으로 바꿔치기해서 검증을 건너뛰지 않는다(2026-09-27 재현).
+            const why = adoptFault(d, analysis)
             return (
               <div key={d.runId || 'legacy'} style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>
                   고친 곳 {n}개 · {d.updatedAt ? new Date(d.updatedAt).toLocaleString() : '시각 없음'}
+                  {why ? ` · ${why}` : ''}
                 </span>
-                <button type="button" data-testid="dialogue-past-load" disabled={!fits}
-                  title={fits ? '이 교정을 지금 분석에 가져옵니다. 되돌리기로 되돌릴 수 있습니다.'
-                    : '그때와 발언 수가 달라 그대로 적용할 수 없습니다. 보관은 그대로 둡니다.'}
+                <button type="button" data-testid="dialogue-past-load" disabled={!!why}
+                  data-fault={why}
+                  title={why ? `${why} 보관은 그대로 둡니다.`
+                    : '이 교정을 지금 분석에 가져옵니다. 되돌리기로 되돌릴 수 있습니다.'}
                   onClick={() => {
-                    change('past:' + d.runId, () => ({ ...cloneDraft(d), sourceKey: analysis.sourceKey, runId: analysis.runId }))
+                    if (adoptFault(d, analysis)) return        // 누르는 순간에도 다시 본다
+                    change('past:' + d.runId, () => ({
+                      ...cloneDraft(d), sourceKey: analysis.sourceKey, runId: analysis.runId,
+                      basis: analysisBasis(analysis),
+                    }))
                     setMessage('이전 분석의 교정을 가져왔습니다. 되돌리기로 되돌릴 수 있습니다.')
                     setShowPast(false)
                   }}
-                  style={{ ...btn('var(--bg-elevated)', 'var(--text-primary)', !fits), padding: '2px 8px', fontSize: 10 }}>
+                  style={{ ...btn('var(--bg-elevated)', 'var(--text-primary)', !!why), padding: '2px 8px', fontSize: 10 }}>
                   가져오기
                 </button>
               </div>
@@ -720,7 +729,7 @@ export default function DialogueWorkspace() {
             const token = `trk:${effTarget}:${t.name}`
             return (
               <button type="button" key={t.name} data-testid="dialogue-track-play"
-                onClick={() => playTrack(token, t.path)}
+                onClick={() => { void playTrack(token, t.path) }}
                 aria-label={`${t.label} 듣기`}
                 title={`${effTarget === 'edited' ? '교정본' : '최초 결과'} — ${t.label}`}
                 style={{

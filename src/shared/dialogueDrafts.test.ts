@@ -64,14 +64,45 @@ test('모양이 어긋난 저장본은 지어내지 않는다', () => {
   assert.deepEqual(parseDraft({ sourceKey: 'a' })!.edits, {})
 })
 
-test('열쇠와 문서가 서로 다른 것을 가리키면 버린다', () => {
+test('열쇠와 문서가 서로 다른 원본을 가리키면 버린다', () => {
   const bad = parseStore({ version: 1, drafts: { 'C:/a.wav': { sourceKey: 'C:/b.wav' } } })
   assert.deepEqual(Object.keys(bad.drafts), [])
-  // 실행까지 맞아야 한다.
-  const mixed = parseStore({ version: 1, drafts: { 'C:/a.wav': { sourceKey: 'C:/a.wav', runId: 'R1' } } })
-  assert.deepEqual(Object.keys(mixed.drafts), [])
+})
+
+test('★옛 열쇠 형식(원본 경로만)으로 저장된 문서를 잃지 않는다', () => {
+  // 열쇠 규칙을 바꾸면서 이 문서들이 통째로 사라졌다(1건 → 0건, 재현 확인).
+  const s = parseStore({ version: 1, drafts: {
+    'C:/a.wav': { sourceKey: 'C:/a.wav', runId: 'R1', edits: { 0: { speaker: 'X' } } },
+  } })
+  assert.equal(Object.keys(s.drafts).length, 1, '옛 형식 문서가 사라졌다')
+  assert.deepEqual(Object.keys(s.drafts), [draftKey('C:/a.wav', 'R1')], '새 열쇠로 옮겨야 한다')
+  assert.ok(draftFor(s, 'C:/a.wav', 'R1'))
+})
+
+test('★옮길 자리가 이미 차 있으면 원래 자리에 둔다 — 덮어쓰지 않는다', () => {
+  const s = parseStore({ version: 1, drafts: {
+    [draftKey('C:/a.wav', 'R1')]: { sourceKey: 'C:/a.wav', runId: 'R1', edits: { 0: { speaker: '새것' } } },
+    'C:/a.wav': { sourceKey: 'C:/a.wav', runId: 'R1', edits: { 0: { speaker: '옛것' } } },
+  } })
+  assert.equal(Object.keys(s.drafts).length, 2, '하나가 사라졌다')
+  assert.equal(s.drafts[draftKey('C:/a.wav', 'R1')].edits[0].speaker, '새것', '새 형식을 덮었다')
+  assert.equal(s.drafts['C:/a.wav'].edits[0].speaker, '옛것', '옛 기록이 사라졌다')
+})
+
+test('지금 형식은 그대로 읽는다', () => {
   const good = parseStore({ version: 1, drafts: { [draftKey('C:/a.wav', 'R1')]: { sourceKey: 'C:/a.wav', runId: 'R1' } } })
   assert.deepEqual(Object.keys(good.drafts), [draftKey('C:/a.wav', 'R1')])
+})
+
+test('옛 한 칸에서 옮길 때 그때의 지문도 같이 만든다', () => {
+  const s = migrateLegacy(emptyStore(), {
+    sourcePath: 'C:/z.wav',
+    segments: [{ start: 0, end: 1, speaker: '화자 A' }, { start: 1, end: 2, speaker: '화자 B' }],
+    edits: { 1: { speaker: '화자 A' } }, updatedAt: 3,
+  })
+  const d = draftFor(s, 'C:/z.wav')!
+  assert.equal(d.basis?.segmentCount, 2)
+  assert.deepEqual(d.basis?.speakers, ['화자 A', '화자 B'])
 })
 
 test('구간 수정만 읽고, 없는 모양은 버린다', () => {

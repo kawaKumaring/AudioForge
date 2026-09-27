@@ -69,6 +69,7 @@ try {
         onResult: (cb) => { window.__resultCbs.push(cb); return () => { window.__resultCbs = window.__resultCbs.filter((x) => x !== cb) } },
         onError: (cb) => { window.__errorCbs.push(cb); return () => { window.__errorCbs = window.__errorCbs.filter((x) => x !== cb) } },
         onCancelling: (cb) => { window.__cancelCbs.push(cb); return () => { window.__cancelCbs = window.__cancelCbs.filter((x) => x !== cb) } },
+        getFileUrl: async (fp) => { window.__urlAsked = fp; return 'local-file://' + encodeURIComponent(fp) },
         exportTracks: async (paths) => { window.__exported = paths; return { ok: true, dir: 'D:/x', copied: paths.map((p) => p), failed: [] } },
       },
     }
@@ -406,10 +407,16 @@ try {
   await page.waitForTimeout(800)
   await page.evaluate(() => {
     window.api.settings.get = async () => JSON.parse(JSON.stringify(window.__settings))
+    // 지문 없는 옛 문서 하나 + 지문이 어긋나는 문서 하나 — 둘 다 막혀야 한다.
     window.__settings = { dialogueDrafts: { version: 1, drafts: {
+      'C:/work/G.wav\u001fNOBASIS': {
+        sourceKey: 'C:/work/G.wav', runId: 'NOBASIS', names: { '화자 A': '근거없음' },
+        merges: {}, edits: {}, updatedAt: 1,
+      },
       'C:/work/G.wav\u001fOLD': {
         sourceKey: 'C:/work/G.wav', runId: 'OLD', names: { '화자 A': '옛이름' },
         merges: {}, edits: { 1: { speaker: '화자 A' } }, updatedAt: 9,
+        basis: { segmentCount: 3, timesHash: 'nope', speakers: ['화자 A', '화자 B'] },
       },
     } } }
   })
@@ -419,15 +426,61 @@ try {
     document.querySelector('[data-testid="dialogue-card-name"]').value)
   assert.notEqual(auto, '옛이름', '다른 실행의 교정을 저절로 적용했다')
   pass('★다른 실행의 교정을 저절로 적용하지 않는다')
+
+  // ★대응이 확인되지 않은 것은 가져오기가 **막혀 있다**(보관은 그대로).
+  await page.getByTestId('dialogue-past-toggle').click()
+  await page.waitForSelector('[data-testid="dialogue-past-load"]')
+  const faults = await page.evaluate(() =>
+    [...document.querySelectorAll('[data-testid="dialogue-past-load"]')]
+      .map((b) => ({ off: b.disabled, why: b.dataset.fault })))
+  assert.equal(faults.length, 2, `보관본 수가 다르다: ${JSON.stringify(faults)}`)
+  assert.ok(faults.every((f) => f.off), `막히지 않은 가져오기가 있다: ${JSON.stringify(faults)}`)
+  assert.ok(faults.some((f) => /분석 정보가 없어/.test(f.why || '')),
+    `지문 없는 문서의 사유가 없다: ${JSON.stringify(faults)}`)
+  assert.ok(faults.some((f) => /발언 시각이 다릅니다/.test(f.why || '')),
+    `지문이 어긋난 문서의 사유가 없다: ${JSON.stringify(faults)}`)
+  pass('★대응이 확인되지 않으면 가져오기를 막고 사유를 적는다(보관은 유지)')
+
+  // 지문이 지금 분석과 맞으면 가져올 수 있다.
+  await page.evaluate(() => { window.store.getState().adoptDialogueAnalysis(null, '') })
+  await page.waitForTimeout(800)
+  await page.evaluate(() => {
+    const times = [[1, 3], [4, 12], [13, 15]].map(([a, b]) => a.toFixed(2) + '-' + b.toFixed(2)).join('|')
+    let h = 0x811c9dc5
+    for (let i = 0; i < times.length; i++) { h ^= times.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0 }
+    window.__settings = { dialogueDrafts: { version: 1, drafts: {
+      ['C:/work/H.wav' + String.fromCharCode(31) + 'OLD']: {
+        sourceKey: 'C:/work/H.wav', runId: 'OLD', names: { '화자 A': '옛이름' },
+        merges: {}, edits: {}, updatedAt: 9,
+        basis: { segmentCount: 3, timesHash: (h >>> 0).toString(36), speakers: ['화자 A', '화자 B'] },
+      },
+    } } }
+  })
+  await openWith('C:/work/H.wav', 'NEW2')
   await page.getByTestId('dialogue-past-toggle').click()
   await page.getByTestId('dialogue-past-load').first().click()
   await page.waitForFunction(() =>
     document.querySelector('[data-testid="dialogue-card-name"]').value === '옛이름')
-  pass('★사용자가 고르면 이전 분석의 교정을 가져온다')
+  pass('★대응이 확인되면 이전 분석의 교정을 가져온다')
   await page.getByTestId('dialogue-undo').click()
   await page.waitForFunction(() =>
     document.querySelector('[data-testid="dialogue-card-name"]').value !== '옛이름')
   pass('가져오기도 되돌리기 한 번으로 되돌린다')
+
+  // ══ 10. 결과 재생은 공용 파일 주소 경로를 쓴다 ═════════════════════════
+  await page.evaluate(() => { window.store.getState().adoptDialogueAnalysis(null, '') })
+  await page.waitForTimeout(800)
+  await page.evaluate(() => { window.__settings = {}; window.__urlAsked = null })
+  await openWith('C:/work/plain.wav', 'R70')
+  await page.waitForSelector('[data-testid="dialogue-track-play"]')
+  await page.getByTestId('dialogue-track-play').first().click()
+  await page.waitForFunction(() => window.__urlAsked !== null)
+  const asked = await page.evaluate(() => window.__urlAsked)
+  assert.ok(asked && asked.endsWith('.wav'), `공용 경로에 물어보지 않았다: ${asked}`)
+  const rawSrc = await page.evaluate(() =>
+    [...document.querySelectorAll('audio')].map((a) => a.src).join(' '))
+  assert.ok(!/^file:/.test(rawSrc), `file:// 주소를 직접 만들었다: ${rawSrc}`)
+  pass('★결과 재생이 주소를 직접 조합하지 않고 공용 경로를 쓴다')
 
   // ══ 좁은 창 ════════════════════════════════════════════════════════════
   await page.setViewportSize({ width: 420, height: 900 })

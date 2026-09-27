@@ -2,9 +2,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  analysisFault, displayNameOf, draftMatches, editedSegmentCount, effectiveSegment, emptyDraft,
-  exportPlan, mergeSpeakers, resolveMerge, speakerRows, trackFileNames, unmergeSpeakers,
-  TRACK_NAME_MAX, type DialogueAnalysis,
+  adoptFault, analysisBasis, analysisFault, autoRestoreFault, displayNameOf, editedSegmentCount,
+  effectiveSegment, emptyDraft, exportPlan, mergeSpeakers, resolveMerge, speakerRows,
+  trackFileNames, unmergeSpeakers, TRACK_NAME_MAX, type DialogueAnalysis,
 } from './dialogueWorkspace.ts'
 
 const analysis = (over: Partial<DialogueAnalysis> = {}): DialogueAnalysis => ({
@@ -32,18 +32,52 @@ test('실행 식별자가 없는 결과(옛 경로)는 원본만 맞으면 받�
   assert.equal(analysisFault({ sourceKey: 'C:/work/a.wav' }, 'C:/work/a.wav', 'NEW'), '')
 })
 
-test('교정 문서도 원본·실행이 맞아야 이어 쓴다', () => {
+test('교정 문서도 원본·실행이 맞아야 저절로 이어 쓴다', () => {
   const a = analysis()
-  assert.equal(draftMatches(emptyDraft('C:/work/a.wav', 'R1'), a), true)
-  assert.equal(draftMatches(emptyDraft('C:/work/b.wav', 'R1'), a), false)
-  assert.equal(draftMatches(emptyDraft('C:/work/a.wav', 'R2'), a), false)
+  assert.equal(autoRestoreFault(emptyDraft('C:/work/a.wav', 'R1'), a), '')
+  assert.match(autoRestoreFault(emptyDraft('C:/work/b.wav', 'R1'), a), /다른 원본/)
+  assert.match(autoRestoreFault(emptyDraft('C:/work/a.wav', 'R2'), a), /다른 실행/)
 })
 
-test('옛 기록은 **구간 수가 같을 때만** 이어 쓴다', () => {
+test('★다른 실행의 교정은 **대응이 확인될 때만** 가져온다', () => {
   const a = analysis()
-  const legacy = { ...emptyDraft('C:/work/a.wav', ''), fromLegacy: { segmentCount: 3 } }
-  assert.equal(draftMatches(legacy, a), true)
-  assert.equal(draftMatches({ ...legacy, fromLegacy: { segmentCount: 5 } }, a), false)
+  const old = { ...emptyDraft('C:/work/a.wav', 'OLD'), basis: analysisBasis(a) }
+  assert.equal(adoptFault(old, a), '', '같은 분석인데 막혔다')
+  // ★실행 식별자를 현재 값으로 바꿔치기해도 통과해서는 안 된다 — 지문이 판정한다.
+  const moved = analysis({ segments: [
+    { start: 0, end: 2, speaker: '화자 A' },
+    { start: 2, end: 8, speaker: '화자 B' },     // 시각이 달라졌다
+    { start: 9, end: 10, speaker: '화자 A' },
+  ] })
+  assert.match(adoptFault({ ...old, runId: moved.runId }, moved), /발언 시각이 다릅니다/)
+})
+
+test('★발언 수가 달라지면 막는다', () => {
+  const a = analysis()
+  const old = { ...emptyDraft('C:/work/a.wav', 'OLD'), basis: analysisBasis(a) }
+  const fewer = analysis({ segments: a.segments.slice(0, 2) })
+  assert.match(adoptFault(old, fewer), /발언 수가 다릅니다/)
+})
+
+test('★식별자가 같다고 같은 사람으로 보지 않는다 — 인물 구성이 다르면 막는다', () => {
+  const a = analysis()
+  const old = { ...emptyDraft('C:/work/a.wav', 'OLD'), basis: analysisBasis(a) }
+  const other = analysis({ segments: a.segments.map((sg, i) => (
+    i === 1 ? { ...sg, speaker: '화자 C' } : sg)) })
+  assert.match(adoptFault(old, other), /인물 구성이 다릅니다/)
+})
+
+test('★그때의 분석 정보가 없으면 번호로 옮기지 않는다 — 보관·확인 대상', () => {
+  const a = analysis()
+  const noBasis = emptyDraft('C:/work/a.wav', 'OLD')
+  assert.match(adoptFault(noBasis, a), /분석 정보가 없어/)
+})
+
+test('지문은 같은 입력에 같은 값이고, 시각이 바뀌면 달라진다', () => {
+  const a = analysis()
+  assert.equal(analysisBasis(a).timesHash, analysisBasis(analysis()).timesHash)
+  const b = analysis({ segments: a.segments.map((sg) => ({ ...sg, end: sg.end + 0.5 })) })
+  assert.notEqual(analysisBasis(a).timesHash, analysisBasis(b).timesHash)
 })
 
 // ── 합치기 ──────────────────────────────────────────────────────────────────
