@@ -60,18 +60,12 @@ const WIPE: Record<WipeKind, { label: string; what: string; keeps: string }> = {
 }
 
 /**
- * 결과 폴더에서 되살리기 — 사이드바에 있던 "이전 결과 폴더 열기" 를 여기로 옮겼다.
- *
- * ★이름이 하는 일과 달랐다 (2026-09-28 지적: "어떤 기능인지 파악이 안된다").
- *   폴더를 여는 것이 아니라 **결과를 앱으로 되불러온다.**
- * ★왜 남겼나: 기록을 비운 뒤에도 결과 파일은 남는다. 그때 되살릴 길이 이것뿐이다.
- *   그래서 "쌓인 것 비우기" 바로 옆에 둔다 — 맥락이 맞는 자리다.
+ * ★"결과 폴더에서 되살리기" 는 **뺐다** (2026-09-28 지시: "아무리 봐도 이해가 안간다
+ *   사용되지 않을듯하다"). 손으로 결과 폴더를 짚어 되불러오는 길이었다.
+ *   파일을 열면 앱이 스스로 이전 결과를 찾아 알려 주므로(원본 카드의 안내),
+ *   손으로 짚는 길은 쓰이지 않고 이름만 헷갈렸다.
  */
-export default function AppOptions({ close, onRestore, restoring }: {
-  close: () => void
-  onRestore: () => void
-  restoring: boolean
-}) {
+export default function AppOptions({ close }: { close: () => void }) {
   const [place, setPlace] = useState<OutputPlace>('app')
   const [chosen, setChosen] = useState('')
   const [appRoot, setAppRoot] = useState('')
@@ -171,18 +165,6 @@ export default function AppOptions({ close, onRestore, restoring }: {
         </label>
       </div>
 
-      {/* ── 결과 폴더에서 되살리기 ─────────────────────────────────────── */}
-      <div style={panel}>
-        <div style={row}>
-          <span style={{ flex: '1 1 200px', fontSize: 13, fontWeight: 600 }}
-            title="예전에 만든 결과 폴더를 골라 그때 상태로 되살립니다. 기록을 비운 뒤에도 결과 파일이 남아 있으면 이 길로 되살릴 수 있습니다.">
-            결과 폴더에서 되살리기</span>
-          <button type="button" data-testid="options-restore-folder" style={button}
-            disabled={restoring} onClick={onRestore}>{restoring ? '불러오는 중…' : '폴더 고르기'}</button>
-        </div>
-      </div>
-
-      {/* ── 쌓인 것 비우기 ──────────────────────────────────────────────── */}
       <div style={panel}>
         <span style={{ fontSize: 13, fontWeight: 600 }}>쌓인 것 비우기</span>
         {(Object.keys(WIPE) as WipeKind[]).map((kind) => (

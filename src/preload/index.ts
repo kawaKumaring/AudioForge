@@ -40,7 +40,7 @@ const api = {
     /** 돌려주는 것: 취소면 null, 아니면 { ok, dir, copied[], failed[] }. ★결과를 버리지 않는다. */
     exportTracks: (trackPaths: string[]) => ipcRenderer.invoke('audio:export-tracks', trackPaths) as
       Promise<null | { ok: boolean; dir: string; copied: string[]; failed: Array<{ name: string; why: string }> }>,
-    restoreFromFolder: () => ipcRenderer.invoke('audio:restore-from-folder'),
+
     findSession: (sourcePath: string) => ipcRenderer.invoke('audio:find-session', sourcePath),
     transcribeReference: (filePath: string) => ipcRenderer.invoke('audio:transcribe-reference', filePath),
     // clipKey('default'|emotionId): 감정별 파생 클립을 식별해 분석/트림/정리(생략 시 'default').

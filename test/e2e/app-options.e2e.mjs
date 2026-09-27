@@ -111,12 +111,13 @@ try {
   ok(!fs.existsSync(mediaFile), '★중간 산출물이 지워졌다')
   ok(fs.existsSync(keepFile), '★그 옆의 다른 파일은 그대로다')
 
-  // ── 6. 사이드바에 있던 '이전 결과 폴더 열기' 가 여기로 왔다 ───────────
-  //   ★이름이 하는 일과 달랐다 — 폴더를 여는 것이 아니라 결과를 되불러온다.
-  ok(await win.getByTestId('options-restore-folder').count() === 1,
-    '★결과 폴더에서 되살리기가 설정 안에 있다')
+  // ── 6. 손으로 결과 폴더를 짚어 되살리는 길은 **뺐다** ─────────────────
+  //   ★지시(2026-09-28): "아무리 봐도 이해가 안간다 사용되지 않을듯하다".
+  //     파일을 열면 앱이 스스로 이전 결과를 찾아 알려 주므로 손으로 짚을 일이 없다.
+  ok(await win.getByTestId('options-restore-folder').count() === 0,
+    '★설정에서 되살리기 칸이 없어졌다')
   ok(await win.getByTestId('restore-results').count() === 0,
-    '★사이드바의 헷갈리던 단추는 없어졌다')
+    '★사이드바에도 없다')
 
   await win.getByTestId('options-close').click()
   await win.waitForFunction(() => !document.querySelector('[data-testid="app-options"]'))

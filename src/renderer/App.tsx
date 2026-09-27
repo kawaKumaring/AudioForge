@@ -21,14 +21,14 @@ import { isCancelCleanupBusy } from '../shared/cancelContract'
 
 export default function App() {
   const { fileInfo, mode, synthesisTab, status, resultMode, errorInfo, restorable, restoreSession, setRestorable } = useAppStore()
-  const [restoreError, setRestoreError] = useState('')
+
   const [restoring, setRestoring] = useState(false)
   /** 설정 화면. 작업 화면을 덮지 않고 **그 자리에서** 연다. */
   const [showOptions, setShowOptions] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const pageRef = useRef<HTMLDivElement>(null)
   useEffect(() => { void loadPlaybackVolume() }, [])
-  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0; setRestoreError('') }, [mode, synthesisTab])
+  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0 }, [mode, synthesisTab])
   useEffect(() => {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
     const motion = pageRef.current?.animate([
@@ -47,33 +47,6 @@ export default function App() {
   const done = ownResult && status === 'done'
   const resetRun = () => useAppStore.setState({ status: 'idle', tracks: [], resultMode: null, error: null, errorInfo: null, progress: 0 })
 
-  const handleRestore = async () => {
-    if (busy || restoring) return
-    setRestoring(true)
-    setRestoreError('')
-    try {
-      const result = await window.api.audio.restoreFromFolder()
-      if (!result) return
-      const current = useAppStore.getState()
-      if (current.status === 'processing' || isCancelCleanupBusy(current.status) || current.errorInfo?.childAlive) {
-        setRestoreError('진행 중인 작업이 끝난 뒤 결과를 다시 불러와 주세요.')
-        return
-      }
-      if (!result.tracks.length) { setRestoreError('이 폴더에서 불러올 결과를 찾지 못했습니다. 결과 파일이 있는 폴더를 선택하세요.'); return }
-      if (result.session) {
-        const session = result.session as RestorableSession
-        restoreSession(result.outputDir, session)
-        if (useAppStore.getState().mode === 'tts') useSynthesisCards.getState().setView('legacy')
-      } else {
-        current.reset()
-        useAppStore.setState({
-          fileInfo: { path: '', name: '이전 결과 복원', duration: 0, channels: 0, sampleRate: 0, format: '' }, fileUrl: null,
-          status: 'done', tracks: result.tracks, outputDir: result.outputDir, mode: 'split', resultMode: 'split', error: null, errorInfo: null
-        })
-      }
-    } catch { setRestoreError('결과 폴더를 열지 못했습니다. 폴더가 있는지 확인하고 다시 시도하세요.') }
-    finally { setRestoring(false) }
-  }
 
   return <div data-testid="workspace-shell" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg-base)', color: 'var(--text-primary)' }}>
     <div className="titlebar-drag" style={{ display: 'flex', alignItems: 'center', height: 36, flexShrink: 0, padding: '0 18px', background: 'var(--bg-primary)', borderBottom: '1px solid var(--border-subtle)' }}>
@@ -100,8 +73,7 @@ export default function App() {
         </div>
       </aside>
       {/* 설정 — 팝업으로 띄운다(2026-09-28 지시). 레이아웃 흐름 밖에 둔다. */}
-      {showOptions && <AppOptions close={() => setShowOptions(false)}
-        onRestore={() => void handleRestore()} restoring={restoring}/>}
+      {showOptions && <AppOptions close={() => setShowOptions(false)}/>}
       <main ref={scrollRef} data-testid="workspace-content" style={{ flex: 1, minWidth: 0, overflowY: 'auto', scrollbarGutter: 'stable' }}>
         <div ref={pageRef} style={{ width: '100%', maxWidth: 1120, margin: '0 auto', padding: '30px clamp(18px, 3vw, 40px) 48px' }}>
           <header style={{ marginBottom: mode === 'tts' ? 20 : 26 }}>
@@ -118,7 +90,6 @@ export default function App() {
             </div>
 
           </header>
-          {restoreError && <div role="alert" style={{ padding: 14, marginBottom: 18, borderRadius: 10, color: 'var(--rose)', border: '1px solid var(--rose-glow)', background: 'var(--rose-glow)', fontSize: 12 }}>{restoreError}</div>}
 
           {showSharedRun && <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
             <ol aria-label="작업 흐름" style={{ display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap', listStyle: 'none', paddingBottom: 18, borderBottom: '1px solid var(--border-subtle)' }}>
