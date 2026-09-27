@@ -33,7 +33,8 @@ const PIECE = [
   '세 번째는 결과를 매주 금요일에 짧게 공유하자는 이야기가 있었습니다. ',
   '마지막으로 궁금한 점이 있으면 언제든 편하게 물어봐 주시면 좋겠습니다. ',
 ]
-const LENGTHS = [1, 2, 3, 5]      // 토막 수 → 약 60 · 120 · 180 · 300자
+// 토막 수. 사용자가 말한 300자를 **넘겨서**까지 본다 — 증상이 어디서 나타나는지 보려고.
+const LENGTHS = [1, 3, 5, 8, 12, 16]
 
 /** WAV(PCM16 모노/스테레오)를 읽어 표본으로. 우리가 만든 파일만 연다. */
 function readWav(file) {
@@ -102,7 +103,8 @@ try {
 
   await win.getByTestId('mode-tts').click()
   for (const pieces of LENGTHS) {
-    const text = PIECE.slice(0, pieces).join('').repeat(1)
+    // 토막을 돌려 쓴다 — 같은 말투로 길이만 늘린다.
+    const text = Array.from({ length: pieces }, (_, i) => PIECE[i % PIECE.length]).join('')
     await win.getByTestId('add-generation-card').click()
     await win.getByRole('dialog', { name: '목소리 고르기' }).waitFor()
     await win.getByTestId('pick-voice-builtin').first().click()
@@ -124,12 +126,18 @@ try {
     const voicedRms = windows.length
       ? Math.sqrt(windows.reduce((s, i) => s + rms(samples, i, i + w) ** 2, 0) / windows.length) : 0
     // 앞 1/4 과 뒤 1/4 — **소리 있는 구간만** 비교한다.
+    const avg = (ws) => (ws.length
+      ? Math.sqrt(ws.reduce((s, i) => s + rms(samples, i, i + w) ** 2, 0) / ws.length) : 0)
     const q = Math.max(1, Math.floor(windows.length / 4))
     const headWins = windows.slice(0, q)
     const tailWins = windows.slice(-q)
-    const avg = (ws) => (ws.length
-      ? Math.sqrt(ws.reduce((s, i) => s + rms(samples, i, i + w) ** 2, 0) / ws.length) : 0)
+    // 4분면별 — 뒤로 갈수록 내려가는지 **줄 세워** 본다(앞뒤 두 점만 보면 요동에 속는다).
+    const quarters = [0, 1, 2, 3].map((k) => {
+      const ws = windows.slice(Math.floor(windows.length * k / 4), Math.floor(windows.length * (k + 1) / 4))
+      return +dB(avg(ws)).toFixed(1)
+    })
     rows.push({
+      quarters,
       chars: text.length, seconds: +seconds.toFixed(2),
       peak: +dB(peak(samples)).toFixed(2),
       rmsAll: +dB(all).toFixed(2),
@@ -151,17 +159,15 @@ try {
 }
 
 console.log('')
-console.log('글자수  길이(초)  최대(dB)  전체RMS  발화RMS   앞1/4    뒤1/4   뒤-앞')
+console.log('글자수  길이(초)  최대(dB)  발화RMS   뒤-앞    4분면별 발화 크기(dB)')
 for (const r of rows) {
   console.log(
     String(r.chars).padStart(5),
     String(r.seconds).padStart(9),
     String(r.peak).padStart(9),
-    String(r.rmsAll).padStart(8),
     String(r.rmsVoiced).padStart(8),
-    String(r.head).padStart(8),
-    String(r.tail).padStart(8),
-    String(r.drop).padStart(7),
+    String(r.drop).padStart(8),
+    '   ' + r.quarters.map((x) => String(x).padStart(6)).join(' '),
   )
 }
 console.log('')
