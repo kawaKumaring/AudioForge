@@ -266,6 +266,13 @@ interface AppState {
   dialogueNotice: string
   /** 지금 기다리는 분석 실행 — 늦게 온 앞 실행의 결과를 가려낸다. */
   dialogueRunId: string
+  /**
+   * **공용 원본 파형에게 이 구간을 틀어 달라**는 요청.
+   *
+   * 작업실이 제 오디오 요소를 따로 들지 않게 한다 — 같은 원본을 두 군데서 틀면
+   * 소리가 겹치고 음량 설정도 갈라진다. 파형이 멈추면 스스로 비운다.
+   */
+  waveRange: { start: number; end: number; token: number } | null
   /** 대화 분석 엔진. 기본은 기존 엔진이다. */
   diarizeEngine: 'builtin' | 'community-1'
   ttsText: string
@@ -434,6 +441,10 @@ interface AppState {
   beginDialogueRun: (runId: string) => void
   /** 분석 결과를 들인다. 소속이 맞지 않으면 들이지 않고 **사유를 남긴다**. */
   adoptDialogueAnalysis: (got: DialogueAnalysis | null, notice?: string) => void
+  /** 공용 파형에게 이 구간을 틀어 달라고 한다. 같은 요청을 다시 부르면 멈춘다. */
+  requestWaveRange: (start: number, end: number) => void
+  /** 파형이 멈췄다 — 요청을 비운다(그 요청일 때만). */
+  clearWaveRange: (token?: number) => void
   setError: (error: string, info?: { code?: string; childAlive?: boolean; cancelKind?: string } | null) => void
   // 오류 카드 '닫기' — 오류만 해제하고 idle로. 디스크의 synthesized.wav·재시도 nonce는 건드리지 않는다.
   clearError: () => void
@@ -498,6 +509,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   dialogueAnalysis: null as DialogueAnalysis | null,
   dialogueNotice: '',
   dialogueRunId: '',
+  waveRange: null as { start: number; end: number; token: number } | null,
   diarizeEngine: 'builtin' as const,
   ttsText: '',
   ttsSpeed: 1.0,
@@ -569,7 +581,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 공용 파일 작업의 참조만 정리(일반·더빙 보존)
     // 분할 마커는 파일에 종속이다. 비우지 않으면 이전 파일의 경계가 새 파일에 그대로 적용돼
     // (더 긴 파일에서는 오류조차 없이) 완전히 틀린 지점에서 잘린다 — 감사 R2.
-    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], resultMode: null, independentWork: null, resultMetadata: null, activeVoiceCastId: null, error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], splitDraft: null, dialogueAnalysis: null, dialogueNotice: '', dialogueRunId: '', ttsReferenceClip: '', ttsRefReady: false, ttsRefPhase: 'preparing' as RefPhase, ttsRefReqId: newRefReqId(), ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
+    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], resultMode: null, independentWork: null, resultMetadata: null, activeVoiceCastId: null, error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], splitDraft: null, dialogueAnalysis: null, dialogueNotice: '', dialogueRunId: '', waveRange: null, ttsReferenceClip: '', ttsRefReady: false, ttsRefPhase: 'preparing' as RefPhase, ttsRefReqId: newRefReqId(), ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
   },
   setMode: (mode) => set({ mode }),
   setSynthesisTab: (t) => set({ synthesisTab: t }),
@@ -814,6 +826,12 @@ export const useAppStore = create<AppState>((set, get) => ({
     if (got && why) return { dialogueNotice: why }        // 지금 결과는 건드리지 않는다
     return { dialogueAnalysis: got, dialogueNotice: got ? '' : (notice || '') }
   }),
+  requestWaveRange: (start, end) => set((s) => ({
+    waveRange: { start, end, token: (s.waveRange?.token ?? 0) + 1 },
+  })),
+  clearWaveRange: (token) => set((s) => (
+    token == null || s.waveRange?.token === token ? { waveRange: null } : {}
+  )),
   setResult: (tracks, outputDir, metadata) => set((s) => ({ status: 'done', progress: 100, progressMessage: '완료', tracks, outputDir, resultMetadata: metadata ?? null, resultMode: s.resultMode ?? s.mode })),
   // 실행 전 검증 오류는 현재 모드, 실행 중 도착한 오류는 시작 때 기록한 모드에 속한다.
   setError: (error, info) => set((s) => ({ status: 'error', error, errorInfo: info ?? null, progressMessage: '',
@@ -962,7 +980,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       fileInfo: null, fileUrl: null, status: 'idle', progress: 0, progressMessage: '', error: null, errorInfo: null,
       tracks: [], outputDir: null, playingTrack: null, restorable: null, splitMarkers: [], splitLabels: [], splitDraft: null,
-      dialogueAnalysis: null, dialogueNotice: '', dialogueRunId: '',
+      dialogueAnalysis: null, dialogueNotice: '', dialogueRunId: '', waveRange: null,
       ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null,
       ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {},
       ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {},

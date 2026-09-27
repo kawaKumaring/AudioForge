@@ -25,7 +25,7 @@ function hexToRgba(hex: string, alpha: number): string {
 }
 
 export default function Waveform() {
-  const { fileInfo, fileUrl, mode, silenceGap, silencePreview, setSilencePreview } = useAppStore()
+  const { fileInfo, fileUrl, mode, silenceGap, silencePreview, setSilencePreview, waveRange, clearWaveRange } = useAppStore()
   const containerRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WaveSurfer | null>(null)
   const regionsRef = useRef<ReturnType<typeof RegionsPlugin.create> | null>(null)
@@ -89,7 +89,12 @@ export default function Waveform() {
       setIsPlaying(false)
     }
     ws.on('play', () => { if (!disposed) setIsPlaying(true) })
-    ws.on('pause', () => { if (!disposed) setIsPlaying(false) })
+    ws.on('pause', () => {
+      if (disposed) return
+      setIsPlaying(false)
+      // 구간 듣기가 끝났다 — 부탁한 쪽이 알 수 있게 요청을 비운다.
+      useAppStore.getState().clearWaveRange()
+    })
     ws.on('timeupdate', (t) => { if (!disposed) setCurrentTime(formatTime(t)) })
     ws.on('decode', (d) => {
       if (!disposed) { setDuration(formatTime(d)); setDecoded(true) }
@@ -105,6 +110,22 @@ export default function Waveform() {
       if (wsRef.current === ws) { wsRef.current = null; regionsRef.current = null }
     }
   }, [fileUrl, retry])
+
+  /**
+   * **다른 화면이 부탁한 구간**을 여기서 튼다(대화 작업실 등).
+   *
+   * ★부탁하는 쪽이 제 오디오 요소를 따로 들지 않게 한다 — 같은 원본을 두 군데서 틀면
+   *   소리가 겹치고 음량 설정도 갈라진다. 틀 자리는 파형 하나뿐이다.
+   */
+  useEffect(() => {
+    const ws = wsRef.current
+    if (!ws || !waveRange) return
+    const mine = waveRange.token
+    void ws.play(Math.max(0, waveRange.start), waveRange.end).catch(() => {
+      if (wsRef.current === ws) setPlayError('재생을 시작하지 못했습니다. 다시 눌러 주세요.')
+      clearWaveRange(mine)
+    })
+  }, [waveRange, clearWaveRange])
 
   // 같은 원본에서 메뉴만 바꾸면 색만 바꾼다. 디코드·재생 위치를 초기화하지 않는다.
   useEffect(() => {
