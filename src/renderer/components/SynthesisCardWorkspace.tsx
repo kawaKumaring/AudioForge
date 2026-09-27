@@ -1,6 +1,7 @@
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type DragEvent } from 'react'
 import { useAppStore } from '../stores/app.store'
 import { useSynthesisCards, type SynthesisCard, type CardSource, type CardSettings, type CardTake, type JoinSettings } from '../stores/synthesisCards.store'
+import { useLabStore } from '../stores/lab.store'
 import { isCancelCleanupBusy } from '../../shared/cancelContract'
 import CompactVoiceWaveform from './CompactVoiceWaveform'
 import MediaImportCard from './MediaImportCard'
@@ -544,6 +545,9 @@ export default function SynthesisCardWorkspace() {
       if (!patch) { setImportWhy('이미 지워진 기록입니다.'); return }
       const r = await window.api.settings.set(patch.key, patch.value) as { ok?: boolean } | undefined
       if (r && r.ok === false) throw Error('저장하지 못했습니다')
+      // ★지운 기록을 **들고 있는 쪽에게도 알린다.** 옛 화면은 문서를 메모리에 두고
+      //   바뀔 때마다·떠날 때마다 다시 쓴다 — 알리지 않으면 탭 한 번에 되살아난다.
+      if (plan.work.kind === 'lab') useLabStore.getState().forget()
       if (!alive.current) return
       setImportDrop(null)
       setImportList((list) => list.filter((x) => x.work.key !== plan.work.key))

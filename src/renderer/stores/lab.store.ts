@@ -65,6 +65,8 @@ interface LabState {
   setError: (m: string | null) => void
   setNotice: (m: string | null) => void
   markLoaded: () => void
+  /** 지워진 기록을 잊는다(자동 저장도 멈춘다). */
+  forget: () => void
 }
 
 let refSeq = 0
@@ -220,6 +222,15 @@ export const useLabStore = create<LabState>((set, get) => ({
   setError: (m) => set({ error: m }),
   setNotice: (m) => set({ notice: m }),
   markLoaded: () => set({ loaded: true }),
+  /**
+   * 이 기록이 **지워졌다.** 들고 있던 것을 버리고 저장도 멈춘다.
+   *
+   * ★`loaded` 를 내리는 것이 요점이다. 화면의 자동 저장은 `loaded` 일 때만 쓰므로,
+   *   이것을 내리지 않으면 탭을 옮기는 순간 **지운 문서가 그대로 되살아난다**
+   *   (2026-09-28: 지우기가 동작하지 않는 것처럼 보인 진짜 이유).
+   *   다음에 이 화면을 열면 없는 자리에서 새로 시작한다.
+   */
+  forget: () => set({ doc: emptyDoc(REFERENCE_CONDITIONING_RECOMMENDED), loaded: false, ref: emptyRef() }),
 }))
 
 export { LAB_STORAGE_KEY, defaultSettings, newId, parseDoc, REFERENCE_CONDITIONING_RECOMMENDED }

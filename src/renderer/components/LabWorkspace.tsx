@@ -17,7 +17,7 @@ import { useLabStore, newId } from '@/stores/lab.store'
 import {
   LAB_STORAGE_KEY, adoptedTake, exportBlockText, exportReadiness, hasUnusedTake, isExportBlockNotice,
   lineStatus, lineStatusText, parseDoc, synthesisOptions, tailResidualOf, takeBadge, takeTailCut, voiceKeyOf,
-  type LabDoc, type LabLine,
+  docHasContent, type LabDoc, type LabLine,
 } from '../../shared/labWorkspace'
 import { cancelFailureText, isCancelCleanupBusy } from '../../shared/cancelContract'
 import { cancelAlreadyOverText, useCancelLifecycle } from '@/hooks/useCancelLifecycle'
@@ -101,6 +101,9 @@ export default function LabWorkspace() {
       void saveSetting(window.api.settings.set, LAB_STORAGE_KEY, value)
         .then((why) => { if (why) lab.setError(saveFailureText(why)) })
     }
+    // ★빈 대본은 저장하지 않는다. 저장하면 지운 기록이 되살아나고,
+    //   처음 켠 사람에게도 아무것도 안 했는데 기록이 생긴다(2026-09-28).
+    if (!docHasContent(doc)) return
     const t = setTimeout(() => { store(doc) }, 600)
     // ★화면이 사라질 때(탭 전환·앱 종료) **기다리던 저장을 그냥 버리지 않는다.**
     //   600ms 안에 탭을 옮기면 방금 쓴 글이 저장되지 않은 채 사라졌다.
