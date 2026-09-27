@@ -34,7 +34,8 @@ import {
   onSaveState, saveState, importLegacyWork, type SaveState,
 } from '../lib/cardWorkSaver'
 import {
-  legacyWorks, alreadyImported, importSummary, type ImportPlan,
+  legacyWorks, alreadyImported, importSummary, revealTarget, removeLegacy, removeWarning,
+  type ImportPlan,
 } from '../../shared/legacyCardImport'
 
 type IconName = 'back' | 'list' | 'stop' | 'reset' | 'plus' | 'grip' | 'settings' | 'copy' | 'trash' | 'play' | 'folder' | 'text' | 'history' | 'close' | 'check' | 'link' | 'save' | 'file'
@@ -517,6 +518,38 @@ export default function SynthesisCardWorkspace() {
   const [importWhy, setImportWhy] = useState('')
   const [importing, setImporting] = useState(false)
   const [importDone, setImportDone] = useState('')
+  /** 지우기 전에 한 번 묻는다 — 되돌릴 수 없다. */
+  const [importDrop, setImportDrop] = useState<ImportPlan | null>(null)
+
+  /** 이 옛 작업이 온 파일을 탐색기로 연다. 기록에 없으면 그렇다고 말한다. */
+  const openLegacyFile = async (plan: ImportPlan) => {
+    setImportWhy('')
+    try {
+      const all = await window.api.settings.get() as Record<string, unknown>
+      const target = revealTarget(all, plan.work)
+      if (!target) { setImportWhy('찾아갈 파일이 기록에 없습니다.'); return }
+      await window.api.app.revealFile(target)
+    } catch { if (alive.current) setImportWhy('파일 위치를 열지 못했습니다.') }
+  }
+
+  /**
+   * 옛 기록 하나를 지운다. **기록만** 지운다 —
+   * 그 작업이 만든 소리 파일도, 이미 가져온 카드 작업도 건드리지 않는다.
+   */
+  const dropLegacy = async (plan: ImportPlan) => {
+    setImportWhy('')
+    try {
+      const all = await window.api.settings.get() as Record<string, unknown>
+      const patch = removeLegacy(all, plan.work)
+      if (!patch) { setImportWhy('이미 지워진 기록입니다.'); return }
+      const r = await window.api.settings.set(patch.key, patch.value) as { ok?: boolean } | undefined
+      if (r && r.ok === false) throw Error('저장하지 못했습니다')
+      if (!alive.current) return
+      setImportDrop(null)
+      setImportList((list) => list.filter((x) => x.work.key !== plan.work.key))
+      if (importPick?.work.key === plan.work.key) { setImportPick(null); setImportStep('list') }
+    } catch (e) { if (alive.current) setImportWhy((e as Error)?.message || '지우지 못했습니다.') }
+  }
 
   const openImport = async () => {
     setImportWhy(''); setImportPick(null); setImportDup(null); setImportStep('list')
@@ -854,6 +887,12 @@ export default function SynthesisCardWorkspace() {
     {importStep === 'list' && <Modal title="옛 작업 가져오기" subtitle={importList.length ? `${importList.length}개` : ''} close={() => setImportStep(null)}>
       {importWhy && <div role="alert" data-testid="import-fault" style={{ fontSize: 12, color: 'var(--rose)', marginBottom: 10 }}>{importWhy}</div>}
       {!importList.length && !importWhy && <div data-testid="import-empty" style={muted}>가져올 옛 작업이 없습니다.</div>}
+      {importDrop && <div data-testid="import-drop-ask" role="alert" style={{ ...row, gap: 8, fontSize: 12, color: 'var(--rose)', padding: '10px 12px', background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', borderRadius: 8, marginBottom: 10 }}>
+        <span style={{ flex: 1 }}>{removeWarning(importDrop.work)}</span>
+        <button type="button" data-testid="import-drop-cancel" style={button} onClick={() => setImportDrop(null)}>그대로 두기</button>
+        <button type="button" data-testid="import-drop-yes" style={{ ...button, color: 'var(--rose)' }}
+          onClick={() => void dropLegacy(importDrop)}>지우기</button>
+      </div>}
       <div style={{ display: 'grid', gap: 8 }}>{importList.map(plan => (
         <div key={plan.work.key} data-testid="import-work" data-key={plan.work.key}
           style={{ ...row, gap: 12, padding: 14, background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', borderRadius: 10 }}>
@@ -862,6 +901,14 @@ export default function SynthesisCardWorkspace() {
             <div title={plan.work.title} style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{plan.work.title}</div>
             <div style={muted}>{importSummary(plan.work)}</div>
           </div>
+          <Action icon="folder" testId="import-reveal"
+            label={`${plan.work.title} 파일 위치 열기`}
+            title="이 옛 작업이 온 파일을 탐색기에서 엽니다"
+            onClick={() => void openLegacyFile(plan)}/>
+          <Action icon="trash" testId="import-drop"
+            label={`${plan.work.title} 기록 지우기`}
+            title="이 옛 기록을 지웁니다. 만든 소리 파일과 가져온 카드 작업은 그대로입니다."
+            onClick={() => setImportDrop(plan)}/>
           <button type="button" data-testid="import-pick" style={button} onClick={() => void pickImport(plan)}>내용 보기</button>
         </div>
       ))}</div>

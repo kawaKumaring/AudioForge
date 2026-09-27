@@ -260,6 +260,46 @@ try {
     await win.locator('button', { hasText: '현재 작업 계속' }).click()
   }
 
+  // ── 8-1. 옛 기록 지우기 — 기록만 사라지고 나머지는 그대로 ──────────────
+  await win.getByTestId('import-legacy').click()
+  await win.waitForSelector('[data-testid="import-work"]')
+  const beforeDrop = await win.locator('[data-testid="import-work"]').count()
+  ok(beforeDrop >= 2, '지우기 전에 옛 작업이 둘 이상이다', beforeDrop)
+  // 묻기 전에는 지우지 않는다
+  await win.locator('[data-testid="import-work"][data-key="lab"]').getByTestId('import-drop').click()
+  await win.waitForSelector('[data-testid="import-drop-ask"]')
+  ok((await win.getByTestId('import-drop-ask').innerText()).includes('그대로'),
+    '★지우기 전에 무엇이 남는지 말한다', await win.getByTestId('import-drop-ask').innerText())
+  await win.getByTestId('import-drop-cancel').click()
+  await win.waitForFunction(() => !document.querySelector('[data-testid="import-drop-ask"]'))
+  const stillThere = await win.evaluate(async () => {
+    const all = await window.api.settings.get()
+    return (all.labWorkspace?.lines || []).length
+  })
+  ok(stillThere === 2, '★그대로 두기를 고르면 기록이 남는다', stillThere)
+
+  // 정말 지운다
+  await win.locator('[data-testid="import-work"][data-key="lab"]').getByTestId('import-drop').click()
+  await win.getByTestId('import-drop-yes').click()
+  await win.waitForFunction(() => !document.querySelector('[data-testid="import-work"][data-key="lab"]'))
+  ok(true, '★지우면 목록에서 사라진다')
+  const afterDrop = await win.evaluate(async () => {
+    const all = await window.api.settings.get()
+    const c = all.synthesisCards || {}
+    return {
+      lab: all.labWorkspace ?? null,
+      drafts: Object.keys(all.workDrafts?.drafts || {}),
+      cards: (c.current?.cards || []).length,
+      kept: (c.kept || []).length,
+    }
+  })
+  ok(afterDrop.lab === null, '★기록이 실제로 지워졌다', afterDrop.lab)
+  ok(afterDrop.drafts.length === 1, '★옆 기록(자동 저장)은 그대로다', afterDrop.drafts)
+  ok(afterDrop.cards > 0 || afterDrop.kept > 0,
+    '★이미 가져온 카드 작업은 건드리지 않는다', afterDrop)
+  await win.keyboard.press('Escape')
+  await win.waitForFunction(() => !document.querySelector('dialog[aria-label="옛 작업 가져오기"]'))
+
   // ── 9. 저장이 실패하면 한 장도 들어가지 않는다 ─────────────────────────
   //   ★맨 끝에서 한다. 본체의 설정 통로를 대신 구현해 두면 그 뒤 검사가 진짜 앱을
   //     보는 것이 아니게 된다. 여기서는 막기만 하고 되돌리지 않는다.
@@ -272,7 +312,8 @@ try {
     ipcMain.handle('settings:set', async () => { throw new Error('검사용 저장 실패') })
   })
   await win.getByTestId('import-legacy').click()
-  await win.locator('[data-testid="import-work"][data-key="lab"]').getByTestId('import-pick').click()
+  // 앞 검사에서 lab 기록을 지웠다 — 남아 있는 자동 저장으로 본다.
+  await win.locator('[data-testid="import-work"]').first().getByTestId('import-pick').click()
   await win.getByTestId('import-run').click()
   await win.waitForSelector('[data-testid="import-fault"]')
   ok(true, '★저장 실패를 그 자리에서 말한다')

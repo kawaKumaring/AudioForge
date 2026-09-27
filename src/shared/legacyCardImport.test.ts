@@ -7,6 +7,7 @@ import assert from 'node:assert/strict'
 // @ts-ignore TS5097: node --test 가 이 파일을 곧바로 읽는다(저장소 관례).
 import {
   planFromLab, planFromDraft, legacyWorks, alreadyImported, applyImport, baseName,
+  revealTarget, removeLegacy, removeWarning,
 // @ts-ignore TS5097
 } from './legacyCardImport.ts'
 // @ts-ignore TS5097
@@ -210,4 +211,51 @@ test('경로에서 이름만 떼어낸다', () => {
   assert.equal(baseName('E:' + String.fromCharCode(92) + '소리' + String.fromCharCode(92) + 'B.wav'), 'B.wav')
   assert.equal(baseName('C.wav'), 'C.wav')
   assert.equal(baseName(''), '')
+})
+
+// ── 옛 기록 열어 보기·지우기 ─────────────────────────────────────────────
+
+const allOf = () => ({
+  labWorkspace: labDoc(),
+  workDrafts: {
+    schemaVersion: 1,
+    drafts: {
+      k1: { sourcePath: 'E:/소리/B.mp4', ttsText: '가', speakerMode: 'single', updatedAt: '', speakers: {} },
+      k2: { sourcePath: 'E:/소리/C.wav', ttsText: '나', speakerMode: 'single', updatedAt: '', speakers: {} },
+    },
+  },
+})
+
+test('찾아갈 파일은 기록에 있는 것만 — 지어내지 않는다', () => {
+  const all = allOf()
+  assert.equal(revealTarget(all, planFromLab(all.labWorkspace, AT)!.work), 'E:/소리/A.wav')
+  assert.equal(revealTarget(all, planFromDraft(all.workDrafts.drafts.k1, 'k1', AT)!.work), 'E:/소리/B.mp4')
+  // 기록이 없으면 빈 문자열 — 화면이 "찾아갈 파일이 없습니다" 로 말한다
+  assert.equal(revealTarget({}, planFromLab(labDoc(), AT)!.work), '')
+})
+
+test('문장별 제작 기록을 지우면 그 열쇠만 사라진다', () => {
+  const all = allOf()
+  const patch = removeLegacy(all, planFromLab(all.labWorkspace, AT)!.work)
+  assert.deepEqual(patch, { key: 'labWorkspace', value: null })
+})
+
+test('★자동 저장은 그 한 줄만 지운다 — 옆 기록을 함께 지우지 않는다', () => {
+  const all = allOf()
+  const patch = removeLegacy(all, planFromDraft(all.workDrafts.drafts.k1, 'k1', AT)!.work)!
+  assert.equal(patch.key, 'workDrafts')
+  const next = patch.value as { drafts: Record<string, unknown>; schemaVersion: number }
+  assert.deepEqual(Object.keys(next.drafts), ['k2'])
+  assert.equal(next.schemaVersion, 1)          // 나머지 칸은 그대로 실려 간다
+})
+
+test('이미 없는 것을 지우라고 하면 null — 조용히 덮어쓰지 않는다', () => {
+  assert.equal(removeLegacy({}, planFromLab(labDoc(), AT)!.work), null)
+  assert.equal(removeLegacy({ workDrafts: { drafts: {} } }, planFromDraft({ sourcePath: 'x', ttsText: '가', speakers: {} }, 'k9', AT)!.work), null)
+})
+
+test('지우기 전에 무엇이 사라지는지 말한다', () => {
+  const w = planFromLab(labDoc(), AT)!.work
+  assert.match(removeWarning(w), /지웁니다/)
+  assert.match(removeWarning(w), /소리 파일.*그대로/)   // 파일은 안 지운다는 것을 말한다
 })

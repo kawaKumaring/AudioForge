@@ -337,6 +337,53 @@ export function applyImport(file: SavedFile, doc: SavedWork): SavedFile {
   return { current: doc, kept }
 }
 
+// ── 5. 옛 기록을 열어 보고, 지우기 ───────────────────────────────────────
+
+/**
+ * 이 옛 작업이 **어느 파일에서 온 것인가.** 탐색기로 찾아갈 대상이다.
+ *
+ * ★기록에 없으면 빈 문자열이다 — 지어내지 않는다. 화면은 '찾아갈 파일이 없습니다' 로 말한다.
+ */
+export function revealTarget(raw: unknown, work: LegacyWork): string {
+  const o = rec(raw)
+  if (!o) return ''
+  if (work.kind === 'lab') return str(rec(o[LEGACY_LAB_KEY])?.voicePath)
+  const drafts = rec(rec(o[LEGACY_DRAFT_KEY])?.drafts)
+  if (!drafts) return ''
+  const id = work.key.slice('draft:'.length)
+  return str(rec(drafts[id])?.sourcePath)
+}
+
+/**
+ * 옛 기록 하나를 지운다. **되돌릴 수 없다** — 화면이 먼저 묻고 부른다.
+ *
+ * ★지우는 것은 **기록뿐**이다. 그 작업이 만든 소리 파일은 건드리지 않는다.
+ *   가져온 카드 작업도 건드리지 않는다 — 복사이므로 서로 남이다.
+ * 돌려주는 것: 저장에 쓸 열쇠와 값. 값이 null 이면 그 열쇠를 지운다는 뜻이다.
+ */
+export function removeLegacy(raw: unknown, work: LegacyWork): { key: string; value: unknown } | null {
+  const o = rec(raw)
+  if (!o) return null
+  if (work.kind === 'lab') {
+    if (!o[LEGACY_LAB_KEY]) return null
+    return { key: LEGACY_LAB_KEY, value: null }
+  }
+  const store = rec(o[LEGACY_DRAFT_KEY])
+  const drafts = rec(store?.drafts)
+  if (!store || !drafts) return null
+  const id = work.key.slice('draft:'.length)
+  if (!(id in drafts)) return null
+  const next: Record<string, unknown> = {}
+  for (const k of Object.keys(drafts)) if (k !== id) next[k] = drafts[k]
+  return { key: LEGACY_DRAFT_KEY, value: { ...store, drafts: next } }
+}
+
+/** 지우기 전에 보여 줄 한 줄. **무엇이 사라지는지** 말한다. */
+export function removeWarning(work: LegacyWork): string {
+  const what = work.kind === 'lab' ? '문장별 제작 기록' : '이 자동 저장 기록'
+  return `${what}을 지웁니다. 이미 만든 소리 파일과 가져온 카드 작업은 그대로 남습니다.`
+}
+
 /** 확인 화면 한 줄. 긴 설명을 쓰지 않는다. */
 export function importSummary(w: LegacyWork): string {
   const when = w.updatedAt
