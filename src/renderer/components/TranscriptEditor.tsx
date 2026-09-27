@@ -13,8 +13,8 @@ import { saveSetting, saveFailureText } from '../../shared/saveSetting'
 
 import { useAppStore } from '@/stores/app.store'
 import {
-  buildCorrectedSrt, buildCorrectedTxt, editedCount,
-  effectiveText, isEdited, saveNoteText, saveNotes,
+  basisOfTranscript, buildCorrectedSrt, buildCorrectedTxt, editedCount,
+  effectiveText, isEdited, saveNoteText, saveNotes, transcriptAdoptFault,
   type TranscriptDoc,
 } from '../../shared/transcriptEdit'
 import {
@@ -46,6 +46,8 @@ export default function TranscriptEditor() {
   const [error, setError] = useState<string | null>(null)
   const [readFail, setReadFail] = useState('')
   const [copied, setCopied] = useState('')
+  /** 보관만 하고 적용하지 않은 이전 교정의 관계. */
+  const [pastNote, setPastNote] = useState('')
   /** 지금 보는 것 — 원문(교정 가능) 인가 번역(읽기 전용) 인가. */
   const [view, setView] = useState<'source' | 'translation'>('source')
   const [store, setStore] = useState<TranscriptDraftStore>(emptyTranscriptStore)
@@ -69,13 +71,17 @@ export default function TranscriptEditor() {
       return
     }
     if (loadedFor.current !== key) return          // 기다리는 사이 원본·결과가 바뀌었다
-    setReadFail('')
+    setReadFail(''); setPastNote('')
     setStore(next); storeRef.current = next
     const saved = transcriptDocFor(next, fresh.sourcePath, fresh.base, fresh.segments.length)
-    // ★기다리는 동안 이미 고쳤으면 덮지 않는다 — 새 편집이 우선이다.
-    if (saved && !touchedRef.current) {
+    // ★같은 파일을 **다시 추출**했으면 문장이 달라졌을 수 있다. 지문이 같을 때만 이어 쓴다.
+    //   아니면 보관해 두고 관계를 말한다 — 덮지도 버리지도 않는다.
+    const why = saved ? transcriptAdoptFault(saved, fresh.segments) : ''
+    if (saved && !touchedRef.current && !why) {
       setDoc({ ...fresh, edits: { ...saved.edits }, updatedAt: saved.updatedAt })
       setMessage('고친 내용을 이어서 불러왔습니다.')
+    } else if (saved && why) {
+      setPastNote(`이전 교정 ${Object.keys(saved.edits).length}건을 보관 중입니다 — ${why} 이번 결과에 적용하지 않았습니다.`)
     }
     loadedRef.current = key
   }, [])
@@ -85,18 +91,23 @@ export default function TranscriptEditor() {
     const src = fileInfo?.path || ''
     if (!transcript || !src) { setDoc(null); loadedFor.current = ''; loadedRef.current = ''; return }
     const base = (transcript as any).base || ''
-    const key = `${src}|${base}|${segs?.length || 0}`
+    const plain = (segs || []).map((x) => ({ start: x.start, end: x.end, text: x.text }))
+    // ★열쇠에 **글 지문**까지 넣는다. 같은 파일을 다시 추출하면 이름도 문장 수도 같을 수
+    //   있는데, 그때 이 화면이 다시 읽지 않으면 옛 교정이 새 결과 위에 그대로 남는다.
+    const fp = basisOfTranscript(plain)
+    const key = `${src}|${base}|${fp.segmentCount}|${fp.timesHash}|${fp.textHash}`
     if (loadedFor.current === key) return
     loadedFor.current = key
     loadedRef.current = ''
     touchedRef.current = false
-    setMessage(null); setError(null); setReadFail(''); setCopied(''); setView('source')
+    setMessage(null); setError(null); setReadFail(''); setCopied(''); setPastNote(''); setView('source')
     const fresh: TranscriptDoc = {
       sourcePath: src,
       base,
       language: (transcript as any).language || 'unknown',
-      segments: (segs || []).map((x) => ({ start: x.start, end: x.end, text: x.text })),
+      segments: plain,
       edits: {}, updatedAt: Date.now(),
+      basis: fp,
     }
     setDoc(fresh)
     if (fresh.segments.length) void loadDrafts(fresh, key)
@@ -217,6 +228,13 @@ export default function TranscriptEditor() {
           {showing === 'translation' ? '읽기 전용' : `고친 문장 ${changed}개`}
         </span>
       </div>
+
+      {pastNote && (
+        <div data-testid="transcript-past-note" role="status" style={{ fontSize: 10, color: 'var(--amber, #d4a017)' }}
+          title="같은 파일을 다시 추출하면 문장이 갈라지는 자리가 달라질 수 있습니다. 번호로 매긴 교정을 그대로 옮기면 엉뚱한 문장이 바뀝니다.">
+          {pastNote}
+        </div>
+      )}
 
       {readFail && (
         <div data-testid="transcript-read-fail" role="alert" style={{

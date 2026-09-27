@@ -14,6 +14,7 @@ import { useEffect, useRef, useState } from 'react'
 import WaveSurfer from 'wavesurfer.js'
 import { getPlaybackVolume } from '@/lib/playbackVolume'
 import { usePlaybackVolume } from '@/hooks/usePlaybackVolume'
+import { useAppStore } from '@/stores/app.store'
 
 export function hexToRgba(hex: string, alpha: number): string {
   const h = hex.replace('#', '')
@@ -37,6 +38,11 @@ export function ResultPlayer({ path, color, paused, onClose, originalPath, origi
   pausedRef.current = paused
   const [cur, setCur] = useState('0:00')
   const [dur, setDur] = useState('0:00')
+  // ★숫자도 들고 있는다 — 화면 바깥(검사·접근성)에서 지금 상태를 읽을 수 있게 한다.
+  //   WebAudio 로 트므로 화면에 <audio> 요소가 없다. 이 값이 유일한 관측 지점이다.
+  const [curSec, setCurSec] = useState(0)
+  const [durSec, setDurSec] = useState(0)
+  const [playing, setPlaying] = useState(false)
   // 지금 무엇을 듣고 있는가 — 분리 결과인가 원본인가.
   const [listening, setListening] = useState<'track' | 'original'>('track')
   // 전환할 때 이어받을 것: **그 순간의 재생 위치와 재생/멈춤 상태**.
@@ -46,12 +52,26 @@ export function ResultPlayer({ path, color, paused, onClose, originalPath, origi
   // 원본 파형 슬라이더와 **같은 값**이다(공용·보관됨) — 두 슬라이더가 서로 다른 값을 갖지 않는다.
   const { volume, change: changeVolume, commit: commitVolume, saveFailed: volumeSaveFailed } = usePlaybackVolume()
 
+  /** 이 재생기의 **몇 번째 로딩인가.** 늦게 온 앞 로딩이 소리를 내지 못하게 한다. */
+  const loadSeq = useRef(0)
+  const claim = useAppStore((st) => st.audioClaim)
+
+  // ★소리는 한 번에 한 곳만 — 다른 자리가 가져가면 여기서 멈춘다.
+  useEffect(() => {
+    if (claim && claim.owner !== 'result') {
+      try { wsRef.current?.pause() } catch { /* noop */ }
+    }
+  }, [claim])
+
   useEffect(() => {
     let cancelled = false
     let ws: WaveSurfer | null = null
+    const mine = ++loadSeq.current
+    useAppStore.getState().claimAudio('result')       // 트는 자리를 가져온다
     ;(async () => {
       const url = await window.api.audio.getFileUrl(activePath)
-      if (cancelled || !ref.current) return
+      // ★늦게 온 앞 로딩은 여기서 끝난다 — 바꾸기 전 소리가 뒤늦게 울리지 않는다.
+      if (cancelled || mine !== loadSeq.current || !ref.current) return
       ws = WaveSurfer.create({
         container: ref.current, waveColor: hexToRgba(color, 0.3), progressColor: color,
         cursorColor: color, cursorWidth: 2, barWidth: 2, barGap: 2, barRadius: 4,
@@ -63,14 +83,17 @@ export function ResultPlayer({ path, color, paused, onClose, originalPath, origi
       //   지역 상태(volume)가 아니라 소유자의 **지금 값**을 읽는다 — 기다리는 동안 사용자가
       //   슬라이더를 움직였을 수 있고, 그때는 최신 값이 맞다.
       ws.setVolume(getPlaybackVolume())
-      ws.on('timeupdate', (t) => setCur(fmtTime(t)))
-      ws.on('decode', (d) => setDur(fmtTime(d)))
+      ws.on('timeupdate', (t) => { setCur(fmtTime(t)); setCurSec(t) })
+      ws.on('decode', (d) => { setDur(fmtTime(d)); setDurSec(d) })
+      ws.on('play', () => setPlaying(true))
+      ws.on('pause', () => setPlaying(false))
       ws.on('ready', () => {
         readyRef.current = true
         if (!ws) return
         // ★전환이면 **위치와 상태를 이어받는다.** 길이가 다르면 유효 범위로 자른다.
         const h = handoffRef.current
         handoffRef.current = null
+        if (mine !== loadSeq.current) { try { ws.pause() } catch { /* noop */ } return }
         if (h) {
           const total = ws.getDuration() || 0
           const limit = Math.max(0, total - 0.05)
@@ -109,7 +132,9 @@ export function ResultPlayer({ path, color, paused, onClose, originalPath, origi
   }, [paused])
 
   return (
-    <div style={{ padding: '8px 14px', borderTop: '1px solid var(--border-subtle)' }}>
+    <div data-testid="result-player" data-playing={playing ? '1' : '0'}
+      data-time={curSec.toFixed(2)} data-dur={durSec.toFixed(2)}
+      style={{ padding: '8px 14px', borderTop: '1px solid var(--border-subtle)' }}>
       <div ref={ref} style={{ marginBottom: 6 }} />
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
         <span style={{ fontSize: 11, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>{cur} / {dur}</span>

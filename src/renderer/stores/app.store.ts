@@ -273,6 +273,13 @@ interface AppState {
    * 소리가 겹치고 음량 설정도 갈라진다. 파형이 멈추면 스스로 비운다.
    */
   waveRange: { start: number; end: number; token: number } | null
+  /**
+   * **지금 소리를 내는 자리.** 한 번에 하나다.
+   *
+   * 원본 파형과 결과 재생기가 동시에 울리면 무엇을 듣는지 알 수 없다.
+   * 새로 틀려는 쪽이 자리를 가져가고, 자리를 잃은 쪽은 스스로 멈춘다.
+   */
+  audioClaim: { owner: 'waveform' | 'result'; n: number } | null
   /** 대화 분석 엔진. 기본은 기존 엔진이다. */
   diarizeEngine: 'builtin' | 'community-1'
   ttsText: string
@@ -445,6 +452,8 @@ interface AppState {
   requestWaveRange: (start: number, end: number) => void
   /** 파형이 멈췄다 — 요청을 비운다(그 요청일 때만). */
   clearWaveRange: (token?: number) => void
+  /** 소리 낼 자리를 가져간다. 앞 자리는 스스로 멈춘다. */
+  claimAudio: (owner: 'waveform' | 'result') => void
   setError: (error: string, info?: { code?: string; childAlive?: boolean; cancelKind?: string } | null) => void
   // 오류 카드 '닫기' — 오류만 해제하고 idle로. 디스크의 synthesized.wav·재시도 nonce는 건드리지 않는다.
   clearError: () => void
@@ -510,6 +519,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   dialogueNotice: '',
   dialogueRunId: '',
   waveRange: null as { start: number; end: number; token: number } | null,
+  audioClaim: null as { owner: 'waveform' | 'result'; n: number } | null,
   diarizeEngine: 'builtin' as const,
   ttsText: '',
   ttsSpeed: 1.0,
@@ -581,7 +591,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 공용 파일 작업의 참조만 정리(일반·더빙 보존)
     // 분할 마커는 파일에 종속이다. 비우지 않으면 이전 파일의 경계가 새 파일에 그대로 적용돼
     // (더 긴 파일에서는 오류조차 없이) 완전히 틀린 지점에서 잘린다 — 감사 R2.
-    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], resultMode: null, independentWork: null, resultMetadata: null, activeVoiceCastId: null, error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], splitDraft: null, dialogueAnalysis: null, dialogueNotice: '', dialogueRunId: '', waveRange: null, ttsReferenceClip: '', ttsRefReady: false, ttsRefPhase: 'preparing' as RefPhase, ttsRefReqId: newRefReqId(), ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
+    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], resultMode: null, independentWork: null, resultMetadata: null, activeVoiceCastId: null, error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], splitDraft: null, dialogueAnalysis: null, dialogueNotice: '', dialogueRunId: '', waveRange: null, audioClaim: null, ttsReferenceClip: '', ttsRefReady: false, ttsRefPhase: 'preparing' as RefPhase, ttsRefReqId: newRefReqId(), ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
   },
   setMode: (mode) => set({ mode }),
   setSynthesisTab: (t) => set({ synthesisTab: t }),
@@ -828,7 +838,11 @@ export const useAppStore = create<AppState>((set, get) => ({
   }),
   requestWaveRange: (start, end) => set((s) => ({
     waveRange: { start, end, token: (s.waveRange?.token ?? 0) + 1 },
+    audioClaim: { owner: 'waveform', n: (s.audioClaim?.n ?? 0) + 1 },
   })),
+  claimAudio: (owner) => set((s) => (
+    s.audioClaim?.owner === owner ? {} : { audioClaim: { owner, n: (s.audioClaim?.n ?? 0) + 1 } }
+  )),
   clearWaveRange: (token) => set((s) => (
     token == null || s.waveRange?.token === token ? { waveRange: null } : {}
   )),
@@ -980,7 +994,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       fileInfo: null, fileUrl: null, status: 'idle', progress: 0, progressMessage: '', error: null, errorInfo: null,
       tracks: [], outputDir: null, playingTrack: null, restorable: null, splitMarkers: [], splitLabels: [], splitDraft: null,
-      dialogueAnalysis: null, dialogueNotice: '', dialogueRunId: '', waveRange: null,
+      dialogueAnalysis: null, dialogueNotice: '', dialogueRunId: '', waveRange: null, audioClaim: null,
       ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null,
       ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {},
       ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {},

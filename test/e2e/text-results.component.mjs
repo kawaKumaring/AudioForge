@@ -164,6 +164,29 @@ try {
   assert.ok(keys.length >= 1, `보관함이 비었다: ${JSON.stringify(keys)}`)
   pass('교정이 파일별 보관함에 담긴다')
 
+  // ══ 같은 파일을 다시 추출하면 — 옛 교정을 덮지 않는다 ═════════════════
+  await page.waitForTimeout(700)
+  const REDO = [{
+    name: 'transcript', label: '텍스트 (ko)', path: 'C:/out/b.txt', base: 'b', language: 'ko',
+    text: '다시 추출한 글', segments: [
+      { start: 1, end: 3, text: '안녕하세요' },
+      { start: 4, end: 7, text: '오늘 날씨 좋다' },      // 갈라진 자리가 달라졌다
+      { start: 8, end: 11, text: '그럼 시작해 볼까요' },
+    ],
+  }]
+  await show(REDO, 'C:/work/b.wav')
+  await page.waitForSelector('[data-testid="transcript-past-note"]')
+  const redoText = await page.getByTestId('transcript-input').nth(1).inputValue()
+  assert.equal(redoText, '오늘 날씨 좋다', `다시 추출한 결과에 옛 교정을 덮었다: ${redoText}`)
+  assert.match(await page.getByTestId('transcript-past-note').innerText(), /보관 중/)
+  pass('★다시 추출하면 옛 교정을 덮지 않고, 보관 중임을 알린다')
+
+  // 옛 교정은 그대로 남아 있다.
+  const stillKept = await page.evaluate(() =>
+    JSON.stringify(window.__settings.transcriptDrafts?.drafts || {}))
+  assert.ok(stillKept.includes('참 좋네요'), `옛 교정이 사라졌다: ${stillKept.slice(0, 200)}`)
+  pass('★옛 교정은 보관함에 그대로 남는다')
+
   // ══ 문장별 시간이 없는 결과 ════════════════════════════════════════════
   await page.waitForTimeout(700)
   await show([{

@@ -25,7 +25,7 @@ function hexToRgba(hex: string, alpha: number): string {
 }
 
 export default function Waveform() {
-  const { fileInfo, fileUrl, mode, silenceGap, silencePreview, setSilencePreview, waveRange, clearWaveRange } = useAppStore()
+  const { fileInfo, fileUrl, mode, silenceGap, silencePreview, setSilencePreview, waveRange, clearWaveRange, audioClaim } = useAppStore()
   const containerRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WaveSurfer | null>(null)
   const regionsRef = useRef<ReturnType<typeof RegionsPlugin.create> | null>(null)
@@ -126,6 +126,16 @@ export default function Waveform() {
       clearWaveRange(mine)
     })
   }, [waveRange, clearWaveRange])
+
+  /**
+    * **소리는 한 번에 한 곳만.** 결과 재생기가 자리를 가져가면 여기서 멈춘다.
+    * (예전에는 원본 파형과 결과 재생기가 함께 울릴 수 있었다.)
+    */
+  useEffect(() => {
+    if (audioClaim && audioClaim.owner !== 'waveform') {
+      try { wsRef.current?.pause() } catch { /* noop */ }
+    }
+  }, [audioClaim])
 
   // 같은 원본에서 메뉴만 바꾸면 색만 바꾼다. 디코드·재생 위치를 초기화하지 않는다.
   useEffect(() => {
@@ -237,6 +247,7 @@ export default function Waveform() {
         </div>
         {/* 가운데: 재생 */}
         <button type="button" data-testid="waveform-play" aria-label={isPlaying ? '원본 일시정지' : '원본 재생'} disabled={loadState !== 'ready'} onClick={() => {
+          useAppStore.getState().claimAudio('waveform')   // 소리 낼 자리를 가져온다
           const ws = wsRef.current
           if (!ws || loadState !== 'ready') return
           setPlayError('')
