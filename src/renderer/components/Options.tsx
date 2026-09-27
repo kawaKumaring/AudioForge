@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import ProcessingQuickControls from './ProcessingQuickControls'
+import { isCancelCleanupBusy } from '../../shared/cancelContract'
 import { useAppStore } from '@/stores/app.store'
 
 // Whisper 모델 크기별 의미 (툴팁) — 클수록 정확하지만 느리고 무겁다
@@ -23,9 +25,10 @@ const OUTPUT_HINTS: Record<string, string> = {
 }
 
 export default function Options() {
-  const { mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, asrEngine, setAsrEngine, asrSeparate, setAsrSeparate, diarizeEngine, setDiarizeEngine, whisperLang, translateModel, demucsModel, nSpeakers,
-    setTrimSilence, setSilenceGap, setTranscribe, setTranslate, setExportSrt, setOutputFormat, setWhisperModel, setWhisperLang, setTranslateModel, setDemucsModel, setNSpeakers, status } = useAppStore()
-  const disabled = status === 'processing'
+  const { mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, asrEngine, setAsrEngine, asrSeparate, setAsrSeparate, diarizeEngine, setDiarizeEngine, whisperLang, translateModel, demucsModel,
+    setTrimSilence, setSilenceGap, setTranscribe, setTranslate, setExportSrt, setOutputFormat, setWhisperModel, setWhisperLang, setTranslateModel, setDemucsModel, status } = useAppStore()
+  const childAlive = useAppStore(s => s.errorInfo?.childAlive)
+  const disabled = status === 'processing' || isCancelCleanupBusy(status) || !!childAlive
   const [open, setOpen] = useState(false)
 
   const isTranscribeMode = mode === 'transcribe'
@@ -33,7 +36,7 @@ export default function Options() {
 
   const chip = (checked: boolean, color: string, label: string, onChange: (v: boolean) => void, tooltip?: string) => (
     <label title={tooltip || ''} style={{
-      display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px',
+      display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', maxWidth: '100%', padding: '6px 12px',
       borderRadius: 8, cursor: disabled ? 'not-allowed' : 'pointer',
       background: checked ? `${color}18` : 'var(--bg-elevated)',
       border: `1px solid ${checked ? color : 'var(--border-subtle)'}`,
@@ -41,15 +44,16 @@ export default function Options() {
       color: checked ? color : 'var(--text-muted)', transition: 'all 0.15s'
     }}>
       <input type="checkbox" checked={checked} onChange={(e) => !disabled && onChange(e.target.checked)}
-        disabled={disabled} style={{ display: 'none' }} />
+        disabled={disabled} style={{ width: 13, height: 13, accentColor: color, margin: 0 }} />
       {label}
     </label>
   )
 
   return (
     <div style={{ borderRadius: 12, background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', overflow: 'hidden' }}>
+      {!isSplitMode && <ProcessingQuickControls />}
       {/* Toggle header */}
-      <button onClick={() => setOpen(!open)} style={{
+      <button aria-expanded={open} onClick={() => setOpen(!open)} style={{
         display: 'flex', alignItems: 'center', justifyContent: 'space-between',
         width: '100%', padding: '10px 16px', border: 'none', cursor: 'pointer',
         background: 'transparent', fontFamily: 'inherit', outline: 'none'
@@ -90,7 +94,7 @@ export default function Options() {
           <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-start', gap: 8 }}>
             {/* 출력 (앵커) */}
             {!isTranscribeMode && !isSplitMode && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', maxWidth: '100%', padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>출력</span>
                 {(['wav', 'mp3', 'flac'] as const).map((fmt) => (
                   <button key={fmt} onClick={() => !disabled && setOutputFormat(fmt)} disabled={disabled} title={OUTPUT_HINTS[fmt] || ''} style={{
@@ -102,23 +106,12 @@ export default function Options() {
                 ))}
               </div>
             )}
-            {/* 화자 수 (앵커, conversation mode) */}
-            {mode === 'conversation' && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
-                <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>화자 수</span>
-                {[2, 3, 4, 5].map((n) => (
-                  <button key={n} onClick={() => !disabled && setNSpeakers(n)} disabled={disabled} style={{
-                    padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
-                    fontSize: 10, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',
-                    background: nSpeakers === n ? 'var(--cyan)' : 'transparent',
-                    color: nSpeakers === n ? '#fff' : 'var(--text-muted)'
-                  }}>{n}명</button>
-                ))}
-              </div>
-            )}
+            {/* 화자 수는 **빠른 설정이 같은 것(2~5명)을 이미 보여 준다** — 여기서는 뺐다.
+                두 곳에 같은 단추를 두면 어느 쪽이 지금 값인지 눈이 흔들린다(2026-09-27 정리).
+                고를 수 있는 값은 그대로다. */}
             {/* 분리 (앵커, music mode) */}
             {mode === 'music' && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', maxWidth: '100%', padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>분리</span>
                 {([
                   ['htdemucs', '기본 4트랙', '보컬·드럼·베이스·기타 4개로 분리 (표준·빠름)'],
@@ -127,7 +120,8 @@ export default function Options() {
                   ['roformer_melband', '보컬 Mel-Band', 'Mel-Band(bleedless) 단일 — 악기 잔음이 특히 적고 roformer만큼 빠름'],
                   ['roformer_ensemble', '보컬 앙상블', 'BS + Mel-Band 2모델 평균 — 절충. 가장 느림(2배). 소스마다 유불리 다름'],
                 ] as const).map(([m, label, hint]) => (
-                  <button key={m} onClick={() => !disabled && setDemucsModel(m)} disabled={disabled} title={hint} style={{
+                  <button key={m} type="button" aria-pressed={demucsModel === m}
+                    onClick={() => !disabled && setDemucsModel(m)} disabled={disabled} title={hint} style={{
                     padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
                     fontSize: 10, fontWeight: 600, fontFamily: 'inherit', whiteSpace: 'nowrap',
                     background: demucsModel === m ? 'var(--accent)' : 'transparent',
@@ -150,7 +144,7 @@ export default function Options() {
             )}
             {/* Whisper model */}
             {(transcribe || isTranscribeMode || isSplitMode) && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', maxWidth: '100%', padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>Whisper</span>
                 {WHISPER_MODELS.map((m) => (
                   <button key={m} onClick={() => !disabled && setWhisperModel(m)} disabled={disabled}
@@ -167,7 +161,7 @@ export default function Options() {
             {/* 대화 분석 엔진 — **대화 모드에서만.** 기본은 기존 엔진이다.
                 Community-1 은 준비돼 있지 않으면 실패를 그대로 알린다(몰래 바꾸지 않는다). */}
             {mode === 'conversation' && (
-              <div data-testid="diarize-engine-row" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+              <div data-testid="diarize-engine-row" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', maxWidth: '100%', padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>분석 방식</span>
                 {([['builtin', '기본'], ['community-1', 'Community-1']] as const).map(([id, label]) => (
                   <button key={id} data-testid={`diarize-engine-${id}`}
@@ -187,7 +181,7 @@ export default function Options() {
             {/* 실행 엔진 — **텍스트 추출 모드에서만.** 기본은 기존 경로다.
                 분리 모드의 후처리 전사와 합성의 참조 전사는 이 선택을 따르지 않는다. */}
             {isTranscribeMode && (
-              <div data-testid="asr-engine-row" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+              <div data-testid="asr-engine-row" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', maxWidth: '100%', padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>실행 방식</span>
                 {([['whisper', '기본'], ['faster-whisper', '빠른 실행']] as const).map(([id, label]) => (
                   <button key={id} data-testid={`asr-engine-${id}`}
@@ -211,7 +205,7 @@ export default function Options() {
                 '자동'은 크기를 재어 조용한 녹음이면 스스로 사양한다(차이 30dB → 안 걷어냄).
                 값은 갈라내기 한 번(30초 소리에 5~10초). 그 값보다 잃는 것이 크다. */}
             {isTranscribeMode && (
-              <div data-testid="asr-separate-row" style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+              <div data-testid="asr-separate-row" style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', maxWidth: '100%', padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>배경음</span>
                 {([['never', '그대로'], ['auto', '자동'], ['always', '걷어냄']] as const).map(([id, label]) => (
                   <button key={id} data-testid={`asr-separate-${id}`}
@@ -231,11 +225,14 @@ export default function Options() {
               </div>
             )}
             {/* Whisper language (auto-detect vs forced) */}
-            {(transcribe || isTranscribeMode || isSplitMode) && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+            {/* ★받아쓰기 **모드**에서는 빠른 설정이 같은 목록을 보여 주므로 여기서 뺀다.
+                다른 모드(분할·받아쓰기 옵션을 켠 경우)에서는 **여기서만** 고를 수 있어 남긴다. */}
+            {(transcribe || isSplitMode) && !isTranscribeMode && (
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', maxWidth: '100%', padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>언어</span>
                 {([['auto', '자동'], ['ko', '한국어'], ['en', '영어'], ['ja', '일본어'], ['zh', '중국어']] as const).map(([code, label]) => (
-                  <button key={code} onClick={() => !disabled && setWhisperLang(code)} disabled={disabled}
+                  <button key={code} type="button" aria-pressed={whisperLang === code}
+                    onClick={() => !disabled && setWhisperLang(code)} disabled={disabled}
                     title={code === 'auto' ? '언어를 자동 감지 (기본). 언어를 잘못 잡거나 엉뚱한 자막이 나오면 특정 언어로 강제하세요' : `${label}로 강제 인식 — 자동 감지 오류 방지`}
                     style={{
                     padding: '2px 7px', borderRadius: 4, border: 'none', cursor: 'pointer',
@@ -248,7 +245,7 @@ export default function Options() {
             )}
             {/* Translation model (shown when translate on) */}
             {translate && (
-              <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap', maxWidth: '100%', padding: '6px 12px', borderRadius: 8, background: 'var(--bg-elevated)' }}>
                 <span style={{ fontSize: 10, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>번역</span>
                 {([
                   ['600m', '600M', 'NLLB-600M — 가볍고 빠름 (기본, 로컬)'],
