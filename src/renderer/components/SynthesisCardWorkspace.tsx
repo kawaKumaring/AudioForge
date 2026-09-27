@@ -795,7 +795,9 @@ export default function SynthesisCardWorkspace() {
       style={{ ...button, minHeight: 52, width: '100%', border: `1px dashed ${hover === 'add' ? 'var(--accent)' : 'var(--border-default, var(--border-subtle))'}`, background: hover === 'add' ? 'var(--bg-elevated)' : 'transparent', color: 'var(--text-muted)' }}><Icon name="plus"/>{loading ? '불러오는 중' : '목소리 추가'}</button>
     </>}
     {state.removed && <div role="status" style={{ ...row, ...muted }}><span>카드 삭제됨</span><button type="button" disabled={locked} style={button} onClick={state.undo}>되돌리기</button></div>}
-    <footer style={{ ...row, position: 'sticky', bottom: 0, zIndex: 2, marginTop: 4, padding: '15px 18px', background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', borderRadius: 12, boxShadow: '0 -8px 30px rgba(0,0,0,.12)' }}>
+    {/* ★카드가 없으면 최종 음성 줄을 내보이지 않는다 — 누를 수 없는 단추만 남기지 않는다.
+        실패 표시는 예외다: 마지막 시도가 실패했으면 카드가 비어도 그 사실은 보인다. */}
+    {(state.cards.length > 0 || joinFault) && <footer data-testid="join-bar" style={{ ...row, position: 'sticky', bottom: 0, zIndex: 2, marginTop: 4, padding: '15px 18px', background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', borderRadius: 12, boxShadow: '0 -8px 30px rgba(0,0,0,.12)' }}>
       <div style={{ flex: '1 1 130px' }}>
         <div style={{ ...row, fontSize: 13, fontWeight: 600 }}>최종 음성
           {joinBlocked && <span title={joinBlocked} style={{ ...muted, fontWeight: 400, color: 'var(--amber)' }}>{state.cards.length ? `${state.cards.length - readyCount}개 확인 필요` : '카드 없음'}</span>}</div>
@@ -817,7 +819,7 @@ export default function SynthesisCardWorkspace() {
         title={joinBlocked || '들은 것과 같은 방식으로 한 파일에 저장합니다'}
         onClick={() => void runJoin('save')} style={primary}>
         <Icon name="save"/>{joining === 'save' ? '저장 중' : '파일로 저장'}</button>
-    </footer>
+    </footer>}
     {modal?.type === 'sequence' && <Modal title="최종 음성 구성" close={() => setModal(null)} footer={<button type="button" style={button} onClick={() => setModal(null)}>닫기</button>}>
       <div style={{ display: 'grid', gap: 8 }}>{state.cards.map((card, i) => {
         const take = card.takes.find(t => t.id === card.adoptedId)
@@ -898,9 +900,9 @@ export default function SynthesisCardWorkspace() {
 
     {importStep === 'done' && <Modal title="가져왔습니다" subtitle={importDone} close={() => setImportStep(null)}
       footer={<button type="button" data-testid="import-close" style={primary} onClick={() => setImportStep(null)}>카드 작업 열기</button>}>
-      <div data-testid="import-done" style={{ fontSize: 13, display: 'grid', gap: 6 }}>
+      <div data-testid="import-done" style={{ ...row, gap: 8, fontSize: 13 }}>
         <span>가져온 작업이 지금 카드 작업으로 열렸습니다.</span>
-        <span style={muted}>하던 작업은 보관함에 있습니다. 옛 화면의 기록도 그대로입니다.</span>
+        <span tabIndex={0} title="하던 작업은 보관함에 있습니다. 이전 작업 목록에서 다시 열 수 있습니다. 옛 화면의 기록도 그대로입니다." style={badge}>보존됨</span>
       </div>
     </Modal>}
 

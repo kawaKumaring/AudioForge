@@ -32,10 +32,20 @@ const bundle = await build({
       ;(window as never as Record<string, unknown>).harness = {
         store,
         // 카드 화면이 하는 일과 **같은 배선**이다(같은 두 줄).
+        // 끊는 손잡이를 남긴다 — 실제 앱에서 카드 화면과 트랙 목록은 함께 떠 있지 않으므로,
+        // 노래방을 볼 때는 카드 화면 배선을 먼저 걷는다.
         wire() {
-          onManagedPlay(() => store.getState().claimAudio('card'))
-          store.subscribe((s, p) => {
+          const offPlay = onManagedPlay(() => store.getState().claimAudio('card'))
+          const offSub = store.subscribe((s, p) => {
             if (s.audioClaim !== p.audioClaim && s.audioClaim && s.audioClaim.owner !== 'card') pauseManagedAudio()
+          })
+          ;(window as never as Record<string, unknown>).unwireCard = () => { offPlay(); offSub() }
+        },
+        // 트랙 목록의 노래방 단추가 하는 일과 **같은 배선**이다.
+        wireKaraoke(group: HTMLMediaElement[]) {
+          return store.subscribe((s, p) => {
+            if (s.audioClaim === p.audioClaim || !s.audioClaim) return
+            if (s.audioClaim.owner !== 'karaoke') group.forEach((el) => { try { el.pause() } catch { /* noop */ } })
           })
         },
         make(src: string) {
@@ -113,10 +123,40 @@ try {
   assert.equal(both.first, false, '같은 자리끼리는 규칙이 끼어들지 않는다')
   pass('같은 화면 안의 재생은 서로 멈추지 않는다')
 
+  // ⑥ 노래방 묶음 — 반주 여러 개가 **한 자리**를 쓰고, 자리를 잃으면 함께 멈춘다
+  const band = await page.evaluate(async (s) => {
+    const store = window.harness.store
+    window.unwireCard()                          // 카드 화면을 떠난다(실제 앱에서도 같은 화면이 아니다)
+    const a = window.harness.make(s), b = window.harness.make(s)
+    window.band = [a, b]
+    a.loop = true; b.loop = true
+    window.harness.wireKaraoke(window.band)
+    store.getState().claimAudio('karaoke')      // 묶음이 자리를 먼저 가져온다
+    await Promise.all([a.play(), b.play()])
+    await new Promise((r) => setTimeout(r, 80))
+    const together = !a.paused && !b.paused
+    const owner = store.getState().audioClaim?.owner
+    return { together, owner }
+  }, src)
+  assert.equal(band.together, true, '반주 여러 개는 서로를 멈추지 않아야 한다')
+  assert.equal(band.owner, 'karaoke', '묶음이 한 자리를 쓴다')
+  pass('★반주 여러 개가 한 묶음으로 함께 울린다')
+
+  const bandStopped = await page.evaluate(async () => {
+    window.harness.store.getState().claimAudio('result')
+    await new Promise((r) => setTimeout(r, 80))
+    return window.band.every((el) => el.paused)
+  })
+  assert.equal(bandStopped, true, '다른 재생이 시작되면 묶음째 멈춰야 한다')
+  pass('★결과 재생이 시작되면 노래방 묶음이 통째로 멈춘다')
+
   assert.equal(errors.length, 0, `페이지 예외: ${errors.join(' | ')}`)
   pass('런타임 오류 없음')
 } finally {
-  await page.evaluate(() => { try { window.el?.pause() } catch { /* noop */ } }).catch(() => {})
+  await page.evaluate(() => {
+    try { window.el?.pause() } catch { /* noop */ }
+    try { (window.band || []).forEach((el) => el.pause()) } catch { /* noop */ }
+  }).catch(() => {})
   await browser.close()
 }
 console.log(JSON.stringify({ passed: checks, scope: '실제 크로미움의 소리 요소. 엔진·사용자 미디어 미사용' }))

@@ -39,9 +39,10 @@ window.store=useAppStore;
 function Host(){
   const [open,setOpen]=useState(true)
   const [p,setP]=useState('C:/out/long.wav')
-  window.__setPath=setP; window.__setOpen=setOpen
+  const [paused,setPaused]=useState(false)
+  window.__setPath=setP; window.__setOpen=setOpen; window.__setPaused=setPaused
   return <div>
-    {open && <ResultPlayer path={p} color="#a78bfa" paused={false} onClose={()=>setOpen(false)}
+    {open && <ResultPlayer path={p} color="#a78bfa" paused={paused} onClose={()=>setOpen(false)}
       originalPath="C:/work/original.wav" originalLabel="original.wav" />}
   </div>
 }
@@ -131,6 +132,33 @@ try {
   await page.waitForFunction(() =>
     [...document.querySelectorAll('[data-testid="result-player"]')].every((el) => el.dataset.playing !== '1'))
   pass('★다른 자리(원본 파형)가 소리를 가져가면 결과 재생기가 멈춘다')
+
+  // ── 읽는 동안 자리가 넘어갔으면 **늦게 틀지 않는다** ──────────────────
+  //   ★파일을 읽어 오는 사이 사용자가 원본 파형을 틀 수 있다. 그때 뒤늦게 자동으로
+  //     틀면 두 소리가 겹친다. 위치는 이어받되 소리는 내지 않아야 한다.
+  await page.evaluate(() => { window.__delay = 700 })
+  await page.evaluate(() => window.__setPath('C:/out/long.wav'))
+  await page.waitForTimeout(120)
+  await page.evaluate(() => window.store.getState().claimAudio('waveform'))  // 읽는 도중 자리를 넘긴다
+  await page.waitForTimeout(1500)                                           // 다 읽고도 남을 시간
+  const late = await page.evaluate(() => ({
+    playing: [...document.querySelectorAll('[data-testid="result-player"]')].some((el) => el.dataset.playing === '1'),
+    owner: window.store.getState().audioClaim?.owner,
+    ready: [...document.querySelectorAll('[data-testid="result-player"]')].some((el) => +el.dataset.dur > 0),
+  }))
+  assert.equal(late.ready, true, '늦은 로딩이 아예 끝나지 않았다 — 검사가 눈이 멀었다')
+  assert.equal(late.owner, 'waveform', '자리가 넘어간 상태가 아니다')
+  assert.equal(late.playing, false, '자리가 넘어갔는데 뒤늦게 소리를 냈다')
+  pass('★읽는 동안 자리가 넘어가면 늦게 자동으로 틀지 않는다')
+
+  // ── 사람이 다시 누르면 자리를 **가져온다** ────────────────────────────
+  await page.evaluate(() => { window.__delay = 0 })
+  await page.evaluate(() => window.__setPaused(true))
+  await page.waitForTimeout(100)
+  await page.evaluate(() => window.__setPaused(false))
+  await page.waitForFunction(() => window.store.getState().audioClaim?.owner === 'result',
+    null, { timeout: 5000 })
+  pass('★사람이 다시 누르면 재생 자리를 가져온다')
 
   // ── 화면을 떠나면 재생이 남지 않는다 ──────────────────────────────────
   await page.evaluate(() => window.__setOpen(false))

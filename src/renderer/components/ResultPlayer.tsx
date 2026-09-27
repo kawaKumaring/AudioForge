@@ -90,6 +90,13 @@ export function ResultPlayer({ path, color, paused, onClose, originalPath, origi
       ws.on('ready', () => {
         readyRef.current = true
         if (!ws) return
+        /**
+         * ★기다리는 동안 소리 낼 자리가 **다른 곳으로 넘어갔는지** 본다.
+         *   파일을 읽어 오는 사이 사용자가 원본 파형이나 다른 화면을 틀었을 수 있다.
+         *   그때 여기서 자동으로 틀면 **두 소리가 겹친다** — 늦게 온 쪽이 이긴다.
+         *   위치는 이어받되 **소리는 내지 않는다.** 사용자가 다시 누르면 그때 가져온다.
+         */
+        const mineNow = () => useAppStore.getState().audioClaim?.owner === 'result'
         // ★전환이면 **위치와 상태를 이어받는다.** 길이가 다르면 유효 범위로 자른다.
         const h = handoffRef.current
         handoffRef.current = null
@@ -102,10 +109,10 @@ export function ResultPlayer({ path, color, paused, onClose, originalPath, origi
           //   그대로 재생하면 0.05초 만에 끝나 재생기가 닫힌다(실측). 그 자리에 멈춰 둔다.
           const clamped = h.time > limit + 0.001
           try { ws.setTime(at) } catch { /* noop */ }
-          if (h.playing && !clamped) ws.play()
+          if (h.playing && !clamped && mineNow()) ws.play()
           return
         }
-        if (!pausedRef.current) ws.play()
+        if (!pausedRef.current && mineNow()) ws.play()
       })
       ws.on('finish', () => onClose())
       ws.load(url)
@@ -128,7 +135,9 @@ export function ResultPlayer({ path, color, paused, onClose, originalPath, origi
   useEffect(() => {
     const ws = wsRef.current
     if (!ws || !readyRef.current) return
-    if (paused) ws.pause(); else ws.play()
+    // ★사람이 누른 재생이다 — 여기서는 자리를 **가져온다**(늦은 자동 재생과 다르다).
+    if (paused) ws.pause()
+    else { useAppStore.getState().claimAudio('result'); void ws.play() }
   }, [paused])
 
   return (

@@ -255,6 +255,20 @@ function KaraokeButton({ tracks }: { tracks: { name: string; path: string }[] })
     }
   }, [])
 
+  /**
+   * ★노래방도 '소리는 한 번에 한 곳' 규칙 안에 있다.
+   *   다만 **반주 여러 개가 한 묶음**이다 — 서로를 멈추지 않고 함께 울려야 노래방이 된다.
+   *   그래서 자리를 `karaoke` 하나로 잡고, 그 자리를 잃을 때 묶음째 멈춘다.
+   *   (조기 return 위에 둔다 — 훅 규칙.)
+   */
+  const claim = useAppStore(s => s.audioClaim)
+  useEffect(() => {
+    if (!claim || claim.owner === 'karaoke') return
+    if (!audiosRef.current.length) return
+    audiosRef.current.forEach(a => { try { a.pause() } catch { /* noop */ } })
+    setPlaying(false)
+  }, [claim])
+
   const hasVocals = tracks.some(t => t.name === 'vocals')
   const instrumentals = tracks.filter(t => t.name !== 'vocals')
   if (!hasVocals || instrumentals.length === 0) return null
@@ -277,8 +291,10 @@ function KaraokeButton({ tracks }: { tracks: { name: string; path: string }[] })
         setPlaying(false)
       }
     }
+    // ★묶음 전체가 이 자리를 쓴다. 먼저 가져와야 원본 파형·결과 재생이 비켜 준다.
+    useAppStore.getState().claimAudio('karaoke')
     // Sync play all tracks
-    audiosRef.current.forEach(a => { a.currentTime = 0; a.play() })
+    audiosRef.current.forEach(a => { a.currentTime = 0; void a.play() })
     setPlaying(true)
   }
 

@@ -119,6 +119,10 @@ try {
   ok(skips.includes('쉼') && skips.includes('생성본별 설정'),
     '★옮기지 못하는 항목을 가져오기 전에 말한다', skips)
   ok(await win.getByTestId('import-duplicate').count() === 0, '처음 가져오는 것은 중복이 아니다')
+  // 대표 캡처 — **가져올 내용 확인 화면**(카드 수·생성본 수·못 옮기는 항목).
+  const shots = path.join(APP, '_local', 'artifacts', 'diagnostics')
+  fs.mkdirSync(shots, { recursive: true })
+  await win.screenshot({ path: path.join(shots, 'card-import-plan.png') })
 
   // ── 3. 진짜로 가져온다 ─────────────────────────────────────────────────
   await win.getByTestId('import-run').click()

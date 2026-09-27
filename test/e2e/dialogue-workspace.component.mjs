@@ -61,6 +61,8 @@ try {
     window.__readCalls = []
     window.__resultCbs = []
     window.__cancelCbs = []
+    window.__cancelledCbs = []
+    window.__cancelFailedCbs = []
     window.__errorCbs = []
     window.__exported = null
     window.api = {
@@ -80,6 +82,8 @@ try {
         onResult: (cb) => { window.__resultCbs.push(cb); return () => { window.__resultCbs = window.__resultCbs.filter((x) => x !== cb) } },
         onError: (cb) => { window.__errorCbs.push(cb); return () => { window.__errorCbs = window.__errorCbs.filter((x) => x !== cb) } },
         onCancelling: (cb) => { window.__cancelCbs.push(cb); return () => { window.__cancelCbs = window.__cancelCbs.filter((x) => x !== cb) } },
+        onCancelled: (cb) => { window.__cancelledCbs.push(cb); return () => { window.__cancelledCbs = window.__cancelledCbs.filter((x) => x !== cb) } },
+        onCancelFailed: (cb) => { window.__cancelFailedCbs.push(cb); return () => { window.__cancelFailedCbs = window.__cancelFailedCbs.filter((x) => x !== cb) } },
         // 본체의 공용 경로 대신 **실제로 디코딩되는 소리**를 돌려준다(주소를 물어봤다는 사실만 기록).
         getFileUrl: async (fp) => { window.__urlAsked = fp; return window.wavUrl },
         exportTracks: async (paths) => { window.__exported = paths; return { ok: true, dir: 'D:/x', copied: paths.map((p) => p), failed: [] } },
@@ -87,7 +91,9 @@ try {
     }
     window.__fire = (kind, data) => {
       const list = kind === 'result' ? window.__resultCbs
-        : kind === 'cancel' ? window.__cancelCbs : window.__errorCbs
+        : kind === 'cancel' ? window.__cancelCbs
+        : kind === 'cancelled' ? window.__cancelledCbs
+        : kind === 'cancel-failed' ? window.__cancelFailedCbs : window.__errorCbs
       for (const cb of [...list]) cb(data)
     }
   })
@@ -301,16 +307,59 @@ try {
   pass('★옛 한 칸에 남아 있던 교정을 버리지 않고 이어받는다')
 
   // ══ 5. 보완 항목 ══════════════════════════════════════════════════════
-  // ★취소하면 미적용을 유지한다.
+  // ★취소는 **세 걸음**이다 — 멈추는 중 / 멈췄다 / 멈추지 못했다.
   await openWith('C:/work/D.wav', 'R30')
   await page.getByTestId('dialogue-speaker').first().selectOption({ index: 1 })
   await page.getByTestId('dialogue-rebuild').click()
   await page.waitForFunction(() => document.querySelector('[data-testid="dialogue-apply-state"]').innerText.includes('만드는 중')
     || document.querySelector('[data-testid="dialogue-apply-state"]').innerText.includes('요청을 보냈'))
-  await page.evaluate(() => window.__fire('cancel', {}))
+  const cid = await page.evaluate(() => window.__lastReq?.clientRequestId)
+
+  // 남의 취소 통지는 내 작업을 건드리지 않는다
+  await page.evaluate(() => window.__fire('cancel', { clientRequestId: 'someone-else' }))
+  await page.waitForTimeout(150)
+  assert.doesNotMatch(await page.getByTestId('dialogue-apply-state').innerText(), /멈/,
+    '남의 취소 통지가 내 작업을 멈춘 것처럼 보였다')
+  pass('★남의 취소 통지는 내 작업을 건드리지 않는다')
+
+  // 내 취소가 시작됐다 — **멈추는 중**이지 멈춘 것이 아니다
+  await page.evaluate((id) => window.__fire('cancel', { clientRequestId: id }), cid)
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="dialogue-apply-state"]').innerText.includes('멈추는 중'))
+  pass('★취소 시작은 멈추는 중으로만 적는다')
+
+  // 멈추지 못했다 — 작업은 계속 돈다. 통로를 끊지 않았으므로 결과가 오면 붙는다.
+  await page.evaluate((id) => window.__fire('cancel-failed', { clientRequestId: id }), cid)
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="dialogue-apply-state"]').innerText.includes('만드는 중'))
+  pass('★멈추지 못하면 다시 만드는 중으로 돌아간다')
+  await page.evaluate((id) => window.__fire('result', {
+    clientRequestId: id, tracks: [{ name: 'edited_a', label: 'a', path: 'C:/out/cancelfail_a.wav' }],
+  }), cid)
+  await page.waitForFunction(() =>
+    document.querySelector('[data-testid="dialogue-apply-state"]').innerText.includes('음원을 만들었'))
+  pass('★취소 시작 때 결과 통로를 먼저 끊지 않는다')
+
+  // 정말 멈췄을 때만 '멈췄습니다'
+  // 앞에서 index 1 로 바꿔 두었으니 여기서는 **다른 값**을 골라야 고친 것이 된다.
+  await page.getByTestId('dialogue-speaker').first().selectOption({ index: 0 })
+  await page.getByTestId('dialogue-rebuild').click()
+  await page.waitForFunction(() => document.querySelector('[data-testid="dialogue-apply-state"]').innerText.includes('만드는 중')
+    || document.querySelector('[data-testid="dialogue-apply-state"]').innerText.includes('요청을 보냈'))
+  const cid2 = await page.evaluate(() => window.__lastReq?.clientRequestId)
+  await page.evaluate((id) => { window.__fire('cancel', { clientRequestId: id }); window.__fire('cancelled', { clientRequestId: id }) }, cid2)
   await page.waitForFunction(() =>
     document.querySelector('[data-testid="dialogue-apply-state"]').innerText.includes('멈췄습니다'))
-  pass('★취소하면 미적용을 유지한다')
+  pass('★정말 멈췄을 때만 멈췄다고 적는다')
+
+  // 멈춘 뒤에는 통로가 닫혀 있다 — 늦게 온 결과가 화면을 되돌리지 않는다
+  await page.evaluate((id) => window.__fire('result', {
+    clientRequestId: id, tracks: [{ name: 'edited_a', label: 'a', path: 'C:/out/late_a.wav' }],
+  }), cid2)
+  await page.waitForTimeout(200)
+  assert.match(await page.getByTestId('dialogue-apply-state').innerText(), /멈췄습니다/,
+    '멈춘 뒤 늦게 온 결과가 화면을 되돌렸다')
+  pass('★멈춘 뒤에는 늦게 온 결과가 화면을 되돌리지 않는다')
 
   // ★만드는 동안 더 고치면, 완성된 음원은 **요청 당시** 것이다.
   await page.getByTestId('dialogue-rebuild').click()
@@ -516,6 +565,28 @@ try {
   await page.screenshot({ path: path.join(process.env.TEMP || '.', 'af-dialogue-narrow.png') })
   await page.setViewportSize({ width: 980, height: 900 })
   await page.screenshot({ path: path.join(process.env.TEMP || '.', 'af-dialogue-wide.png') })
+
+
+  // ★분석이 바뀌면 지난 요청의 통로를 끊는다 — 남은 통로로 옛 결과가 들어오지 않는다.
+  //   이름 고치기는 **언제나** 고친 것이 된다(인물 선택은 원래 값과 같아질 수 있다).
+  await page.getByTestId('dialogue-card-name').first().fill('통로검사')
+  await page.waitForFunction(() => !document.querySelector('[data-testid="dialogue-rebuild"]').disabled)
+  await page.getByTestId('dialogue-rebuild').click()
+  await page.waitForFunction(() => document.querySelector('[data-testid="dialogue-apply-state"]').innerText.includes('만드는 중')
+    || document.querySelector('[data-testid="dialogue-apply-state"]').innerText.includes('요청을 보냈'))
+  const stale = await page.evaluate(() => window.__lastReq?.clientRequestId)
+  const before = await page.evaluate(() => window.__resultCbs.length)
+  await openWith('C:/work/E.wav', 'R31')          // 다른 분석으로 갈아탄다
+  const after = await page.evaluate(() => window.__resultCbs.length)
+  assert.ok(after < before, `분석이 바뀌었는데 통로가 남았다(${before} → ${after})`)
+  pass('★분석이 바뀌면 지난 요청의 구독을 끊는다')
+  await page.evaluate((id) => window.__fire('result', {
+    clientRequestId: id, tracks: [{ name: 'edited_a', label: 'a', path: 'C:/out/ghost_a.wav' }],
+  }), stale)
+  await page.waitForTimeout(200)
+  assert.doesNotMatch(await page.getByTestId('dialogue-apply-state').innerText(), /음원을 만들었/,
+    '끊은 줄 알았던 통로로 옛 결과가 들어왔다')
+  pass('★갈아탄 뒤 옛 결과가 새 화면을 건드리지 않는다')
 
   assert.equal(errors.length, 0, `런타임 오류: ${errors.join(' | ')}`)
   pass('런타임 오류 없음')

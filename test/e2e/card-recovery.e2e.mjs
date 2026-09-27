@@ -56,6 +56,17 @@ try {
   }, wavPath)
   await win.waitForSelector('[data-testid="generation-card"]')
   ok(await win.locator('[data-testid="generation-card"]').count() === 2, '카드 두 장을 세웠다')
+  ok(await win.getByTestId('join-bar').count() === 1, '카드가 있으면 최종 음성 줄이 보인다')
+
+  // 대표 캡처 — **카드·채택 생성본·최종 음성 줄이 채워진 정상 화면**(새로 만들지 않는다).
+  const shots = path.join(APP, '_local', 'artifacts', 'diagnostics')
+  fs.mkdirSync(shots, { recursive: true })
+  await win.screenshot({ path: path.join(shots, 'card-normal.png') })
+  await win.getByTestId('join-sequence').click()
+  await win.waitForSelector('[data-testid="join-sequence-row"]')
+  await win.screenshot({ path: path.join(shots, 'card-sequence.png') })
+  await win.keyboard.press('Escape')
+  await win.waitForFunction(() => !document.querySelector('[data-testid="join-sequence-row"]'))
 
   // ── 1. 최종 이어 듣기를 실패시킨다 ────────────────────────────────────
   await app.evaluate(({ ipcMain }) => {
@@ -81,6 +92,17 @@ try {
   })
   ok(JSON.stringify(before) === JSON.stringify(after),
     '★실패해도 카드·대사·채택이 그대로다', { before, after })
+
+  // ★카드가 없으면 최종 음성 줄을 감춘다 — 다만 **실패 표시는 남긴다.**
+  await win.evaluate(() => {
+    window.__keep = window.__synthesisCards.getState().cards
+    window.__synthesisCards.setState({ cards: [] })
+  })
+  await win.waitForFunction(() => !document.querySelector('[data-testid="generation-card"]'))
+  ok(await win.getByTestId('join-fault').count() === 1,
+    '★카드가 없어도 마지막 실패는 보인다')
+  await win.evaluate(() => window.__synthesisCards.setState({ cards: window.__keep }))
+  await win.waitForSelector('[data-testid="generation-card"]')
 
   // ── 2. 통로를 되돌리고 다시 시도하면 이어진다 ─────────────────────────
   await app.evaluate(({ ipcMain }) => {
@@ -182,6 +204,10 @@ try {
 
   await win.evaluate(() => window.__synthesisCards.setState({ cards: [], job: null, refs: {} }))
 
+
+  await win.waitForFunction(() => !document.querySelector('[data-testid="generation-card"]'))
+  ok(await win.getByTestId('join-bar').count() === 0,
+    '★카드도 실패도 없으면 최종 음성 줄을 감춘다')
 
   const shot = path.join(APP, '_local', 'artifacts', 'diagnostics', 'card-recovery.png')
   fs.mkdirSync(path.dirname(shot), { recursive: true })

@@ -50,10 +50,12 @@ const btn = (bg: string, fg: string, off?: boolean): React.CSSProperties => ({
 })
 
 /** 교정본 만들기의 **단계**. 요청을 넣은 것과 결과를 받은 것은 다른 일이다. */
-type ApplyState = 'idle' | 'sent' | 'running' | 'applied' | 'failed' | 'cancelled'
+type ApplyState = 'idle' | 'sent' | 'running' | 'cancelling' | 'applied' | 'failed' | 'cancelled'
 const APPLY_TEXT: Record<ApplyState, string> = {
   idle: '', sent: '요청을 보냈습니다', running: '교정본을 만드는 중입니다',
-  applied: '', failed: '만들지 못했습니다 — 고친 내용은 그대로 있습니다',
+  // ★'멈추는 중' 과 '멈췄다' 는 다른 일이다. 멈추기가 실패하면 작업은 계속 돈다.
+  cancelling: '멈추는 중입니다', applied: '',
+  failed: '만들지 못했습니다 — 고친 내용은 그대로 있습니다',
   cancelled: '멈췄습니다 — 고친 내용은 그대로 있습니다',
 }
 
@@ -260,12 +262,26 @@ export default function DialogueWorkspace() {
   const merged = draft ? Object.keys(draft.merges).length : 0
   const hasEdits = changed > 0 || renamed > 0 || merged > 0
   const dirty = draft ? signature(draft) !== appliedSig : false
-  const busy = apply === 'sent' || apply === 'running'
+  const busy = apply === 'sent' || apply === 'running' || apply === 'cancelling'
   const running = status === 'processing' || busy
   /** 같은 원본의 **다른 실행**에 남아 있는 교정 — 지우지 않고 다시 꺼낼 수 있게 둔다. */
   const past = useMemo(() => (analysis
     ? draftsOfSource(store, analysis.sourceKey).filter((d) => d.runId !== analysis.runId)
     : []), [store, analysis])
+
+  /**
+   * 진행 중인 교정본 요청의 **구독 해제 손잡이.**
+   *
+   * ★예전에는 콜백 안에서만 끊었다. 그래서 화면을 떠나거나 분석이 바뀌면 통로가 남아,
+   *   뒤늦게 온 남의 결과가 사라진 화면의 상태를 건드렸다.
+   *   이제 화면이 손잡이를 쥐고, 떠날 때와 분석이 바뀔 때 반드시 끊는다.
+   */
+  const applyOff = useRef<() => void>(() => { /* noop */ })
+  useEffect(() => () => { applyOff.current(); applyOff.current = () => { /* noop */ } }, [])
+  useEffect(() => {
+    // 분석이 바뀌면 지난 요청의 통로를 끊는다 — 그 결과는 이제 이 화면의 것이 아니다.
+    return () => { applyOff.current(); applyOff.current = () => { /* noop */ } }
+  }, [analysis?.runId])
 
   // ── 교정본 만들기 — **요청 접수와 완료를 나눈다** ────────────────────────
   const rebuild = useCallback(async () => {
@@ -282,8 +298,12 @@ export default function DialogueWorkspace() {
 
     let offResult = () => { /* noop */ }
     let offError = () => { /* noop */ }
-    let offCancel = () => { /* noop */ }
-    const finish = () => { offResult(); offError(); offCancel() }
+    let offCancelling = () => { /* noop */ }
+    let offCancelled = () => { /* noop */ }
+    let offCancelFailed = () => { /* noop */ }
+    const finish = () => { offResult(); offError(); offCancelling(); offCancelled(); offCancelFailed() }
+    applyOff.current()                 // 앞 요청이 남아 있으면 먼저 끊는다
+    applyOff.current = finish
     const mine = (d: unknown) => (d as { clientRequestId?: string } | null)?.clientRequestId === reqId
     offResult = window.api.audio.onResult((data: unknown) => {
       if (!mine(data)) return                        // 내 요청의 결과가 아니다
@@ -302,10 +322,27 @@ export default function DialogueWorkspace() {
       setApply('failed')
       setError((data as { message?: string })?.message || '교정본을 만들지 못했습니다.')
     })
-    offCancel = window.api.audio.onCancelling?.(() => {
-      // 취소 통지는 요청 식별자를 들고 오지 않을 수 있다 — 기다리던 중이면 미적용으로 둔다.
-      finish()
+    /**
+     * ★취소는 **세 걸음**이다: 멈추는 중 → 멈췄다 / 멈추지 못했다.
+     *   예전에는 첫 걸음에서 결과·오류 통로를 끊고 '멈췄다' 고 적었다. 그런데 멈추기가
+     *   실패하면 작업은 계속 돌고, 그 결과가 올 통로는 이미 없다 —
+     *   화면은 '멈췄다' 인데 음원이 만들어지는 상태가 된다.
+     *   그래서 여기서는 **표시만 바꾸고 통로는 그대로 둔다.**
+     */
+    offCancelling = window.api.audio.onCancelling?.((d?: unknown) => {
+      if (d && !mine(d)) return          // 식별자가 있으면 대조한다(없으면 기다리던 것이 내 것뿐이다)
+      setApply('cancelling')
+    }) || (() => { /* 이 통로가 없는 환경 */ })
+    offCancelled = window.api.audio.onCancelled?.((d?: unknown) => {
+      if (d && !mine(d)) return
+      finish()                           // 정말 멈췄다 — 이제 올 것이 없다
       setApply('cancelled')
+    }) || (() => { /* 이 통로가 없는 환경 */ })
+    offCancelFailed = window.api.audio.onCancelFailed?.((d: unknown) => {
+      if (d && !mine(d)) return
+      // ★멈추지 못했다 — 작업은 계속 돈다. 통로를 **끊지 않는다.**
+      setApply('running')
+      setError('멈추지 못했습니다. 작업이 계속 돌고 있습니다 — 고친 내용은 그대로 있습니다.')
     }) || (() => { /* 이 통로가 없는 환경 */ })
 
     try {
