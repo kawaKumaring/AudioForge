@@ -250,6 +250,14 @@ const api = {
     setSync: (key: string, value: unknown) => ipcRenderer.sendSync('settings:set-sync', key, value),
     selectPythonPath: () => ipcRenderer.invoke('settings:select-python-path')
   },
+  /** 앱 설정 — 만든 것을 둘 자리와 쌓인 것 비우기. */
+  options: {
+    get: (): Promise<{ chosenRoot: string; beside: boolean; appRoot: string; dataDir: string }> => ipcRenderer.invoke('options:get'),
+    set: (next: { chosenRoot?: string; beside?: boolean }): Promise<{ chosenRoot: string; beside: boolean; appRoot: string }> => ipcRenderer.invoke('options:set', next),
+    pickRoot: (): Promise<{ path?: string; error?: string } | null> => ipcRenderer.invoke('options:pick-root'),
+    wipe: (kind: string): Promise<{ removed: number; freedMb: number; error?: string }> => ipcRenderer.invoke('options:wipe', kind),
+    outputRoot: (): Promise<{ root: string; exists: boolean }> => ipcRenderer.invoke('options:output-root'),
+  },
   app: {
     openFolder: (path: string) => ipcRenderer.invoke('app:open-folder', path),
     // 탐색기에서 그 파일을 고른 상태로 보여 준다(여는 것이 아니다).

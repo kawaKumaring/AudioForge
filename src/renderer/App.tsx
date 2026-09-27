@@ -6,6 +6,7 @@ import ProcessButton from '@/components/ProcessButton'
 import ProgressBar from '@/components/ProgressBar'
 import TrackList from '@/components/TrackList'
 import Options from '@/components/Options'
+import AppOptions from '@/components/AppOptions'
 import SplitEditor from '@/components/SplitEditor'
 import SynthesisTabs from '@/components/SynthesisTabs'
 import { useSynthesisCards } from '@/stores/synthesisCards.store'
@@ -22,6 +23,8 @@ export default function App() {
   const { fileInfo, mode, synthesisTab, status, resultMode, errorInfo, restorable, restoreSession, setRestorable } = useAppStore()
   const [restoreError, setRestoreError] = useState('')
   const [restoring, setRestoring] = useState(false)
+  /** 설정 화면. 작업 화면을 덮지 않고 **그 자리에서** 연다. */
+  const [showOptions, setShowOptions] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const pageRef = useRef<HTMLDivElement>(null)
   useEffect(() => { void loadPlaybackVolume() }, [])
@@ -83,13 +86,22 @@ export default function App() {
       <aside data-testid="workspace-sidebar" style={{ width: 196, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 24, padding: '28px 12px 18px', background: 'var(--bg-primary)', borderRight: '1px solid var(--border-subtle)', overflowY: 'auto' }}>
         <ModeSelector />
         <div style={{ marginTop: 'auto', padding: '18px 0 0', borderTop: '1px solid var(--border-subtle)' }}>
-          <button type="button" data-testid="restore-results" onClick={() => void handleRestore()} disabled={busy || restoring} className="btn btn-ghost" style={{ width: '100%', fontSize: 11, padding: '9px 6px', background: 'transparent' }}>
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M3 7V4h6l3 3h9v13H3z"/></svg>
-            {restoring ? '불러오는 중…' : '이전 결과 폴더 열기'}
+          <button type="button" data-testid="open-app-options" onClick={() => setShowOptions(v => !v)}
+            aria-pressed={showOptions} className="btn btn-ghost"
+            title="만든 것을 둘 자리와 쌓인 것 비우기"
+            style={{ width: '100%', fontSize: 11, padding: '7px 8px', marginTop: 6, display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center' }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>
+            </svg>
+            설정
           </button>
           <AppVersionLabel />
         </div>
       </aside>
+      {/* 설정 — 팝업으로 띄운다(2026-09-28 지시). 레이아웃 흐름 밖에 둔다. */}
+      {showOptions && <AppOptions close={() => setShowOptions(false)}
+        onRestore={() => void handleRestore()} restoring={restoring}/>}
       <main ref={scrollRef} data-testid="workspace-content" style={{ flex: 1, minWidth: 0, overflowY: 'auto', scrollbarGutter: 'stable' }}>
         <div ref={pageRef} style={{ width: '100%', maxWidth: 1120, margin: '0 auto', padding: '30px clamp(18px, 3vw, 40px) 48px' }}>
           <header style={{ marginBottom: mode === 'tts' ? 20 : 26 }}>
