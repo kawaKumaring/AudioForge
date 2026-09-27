@@ -125,7 +125,11 @@ export function cardGenerateFault(a: {
 }
 
 /** 생성본에 붙일 그때의 모습. **현재 카드를 덮어 보여 주지 않기 위한 것**이다. */
+// @ts-ignore TS5097: Node executes repository TypeScript tests directly.
+import { sameVoice, type VoiceSnapshot } from './synthesisCardVoice.ts'
+
 export interface CardTakeSnapshot {
+  voice?: VoiceSnapshot
   text: string
   sourcePath: string
   settings: CardEngineSettings
@@ -138,8 +142,9 @@ export interface CardTakeSnapshot {
  * 대사·원본·설정 중 하나라도 달라지면 다르다. 화면은 이 값으로 '수정 전' 을 표시한다.
  */
 export function takeIsStale(snap: CardTakeSnapshot, now: {
-  text: string; sourcePath: string; settings: CardEngineSettings
+  text: string; sourcePath: string; settings: CardEngineSettings; voice?: VoiceSnapshot
 }): boolean {
+  if (snap.voice && now.voice && !sameVoice(snap.voice, now.voice)) return true
   if (snap.text !== now.text) return true
   if (snap.sourcePath !== now.sourcePath) return true
   const a = snap.settings, b = now.settings

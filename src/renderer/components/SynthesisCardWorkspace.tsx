@@ -1,8 +1,9 @@
-import { useEffect, useRef, useState, type CSSProperties, type ReactNode, type DragEvent } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type DragEvent } from 'react'
 import { useAppStore } from '../stores/app.store'
 import { useSynthesisCards, type SynthesisCard, type CardSource, type CardSettings, type CardTake, type JoinSettings } from '../stores/synthesisCards.store'
 import { isCancelCleanupBusy } from '../../shared/cancelContract'
 import CompactVoiceWaveform from './CompactVoiceWaveform'
+import MediaImportCard from './MediaImportCard'
 import { createManagedAudio } from '../lib/playbackVolume'
 import {
   playPreview, stopPreview, disposePreview, onPreviewState, previewState, type PreviewState,
@@ -13,7 +14,7 @@ import {
   cardApplied, cardEventFault, cardGenerateFault, takeIsStale, CARD_PITCH_MIN, CARD_PITCH_MAX, CARD_PITCH_STEP,
 } from '../../shared/synthesisCardJob'
 import {
-  cardVoiceOf, voiceSupports, voiceGenerateFault, type BuiltinVoiceRef,
+  cardVoiceOf, voiceSnapshot, voiceSupports, voiceGenerateFault, type BuiltinVoiceRef,
 } from '../../shared/synthesisCardVoice'
 import {
   buildJoinPlan, joinPlanKey, joinBlockText,
@@ -33,9 +34,11 @@ import {
   onSaveState, saveState, type SaveState,
 } from '../lib/cardWorkSaver'
 
-type IconName = 'stop' | 'reset' | 'plus' | 'grip' | 'settings' | 'copy' | 'trash' | 'play' | 'folder' | 'text' | 'history' | 'close' | 'check' | 'link' | 'save' | 'file'
+type IconName = 'back' | 'list' | 'stop' | 'reset' | 'plus' | 'grip' | 'settings' | 'copy' | 'trash' | 'play' | 'folder' | 'text' | 'history' | 'close' | 'check' | 'link' | 'save' | 'file'
 function Icon({ name }: { name: IconName }) {
   const paths: Record<IconName, ReactNode> = {
+    back: <path d="m14 6-6 6 6 6"/>,
+    list: <><path d="M9 6h12M9 12h12M9 18h12M3 6h.01M3 12h.01M3 18h.01"/></>,
     stop: <rect x="6" y="6" width="12" height="12" rx="2"/>,
     reset: <path d="M3 10a9 9 0 1 1 2 8M3 4v6h6"/>,
     plus: <path d="M12 5v14M5 12h14"/>, grip: <path d="M8 5h.01M16 5h.01M8 12h.01M16 12h.01M8 19h.01M16 19h.01"/>,
@@ -53,7 +56,7 @@ const row: CSSProperties = { display: 'flex', alignItems: 'center', gap: 8, flex
 const muted: CSSProperties = { fontSize: 11, color: 'var(--text-muted)' }
 const badge: CSSProperties = { ...muted, display: 'inline-flex', alignItems: 'center', padding: '3px 7px', borderRadius: 5, background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', lineHeight: 1.3 }
 const field: CSSProperties = { font: 'inherit', fontSize: 13, color: 'var(--text-primary)', background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', borderRadius: 8, padding: '9px 11px', minWidth: 0, boxSizing: 'border-box' }
-const button: CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 7, minHeight: 34, padding: '7px 11px', border: '1px solid var(--border-subtle)', borderRadius: 8, background: 'var(--bg-elevated)', color: 'var(--text-secondary)', font: 'inherit', fontSize: 12, cursor: 'pointer' }
+const button: CSSProperties = { display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 7, minHeight: 34, padding: '7px 11px', border: '1px solid var(--border-subtle)', borderRadius: 8, background: 'var(--bg-elevated)', color: 'var(--text-secondary)', font: 'inherit', fontSize: 12, cursor: 'pointer', flexShrink: 0 }
 const primary: CSSProperties = { ...button, background: 'var(--accent, #8b5cf6)', color: '#fff', borderColor: 'transparent' }
 /**
  * 생성본의 **적용값을 안전하게 읽는다.**
@@ -73,22 +76,25 @@ function appliedOf(take: CardTake) {
   }
 }
 const DISCONNECTED = '연결부만 따로 듣는 것은 아직 연결되지 않았습니다. 전체 이어 듣기로 확인하세요.'
-function Action({ icon, label, onClick, disabled = false, children, title, testId }: { icon: IconName; label: string; onClick?: () => void; disabled?: boolean; children?: ReactNode; title?: string; testId?: string }) {
-  return <button type="button" data-testid={testId} aria-label={label} title={title || label} disabled={disabled} onClick={onClick} style={{ ...button, padding: children ? '7px 11px' : 8, opacity: disabled ? .4 : 1, cursor: disabled ? 'not-allowed' : 'pointer' }}><Icon name={icon}/>{children}</button>
+function Action({ icon, label, onClick, disabled = false, children, title, testId, pressed, expanded, controls }: { icon: IconName; label: string; onClick?: () => void; disabled?: boolean; children?: ReactNode; title?: string; testId?: string; pressed?: boolean; expanded?: boolean; controls?: string }) {
+  return <button type="button" data-testid={testId} aria-label={label} aria-pressed={pressed} aria-expanded={expanded} aria-controls={controls} title={title || label} disabled={disabled} onClick={onClick} style={{ ...button, padding: children ? '7px 11px' : 8, opacity: disabled ? .4 : 1, cursor: disabled ? 'not-allowed' : 'pointer' }}><Icon name={icon}/>{children}</button>
 }
-function Modal({ title, subtitle, close, children, footer }: { title: string; subtitle?: string; close: () => void; children: ReactNode; footer?: ReactNode }) {
+function Modal({ title, subtitle, close, children, footer, back }: { title: string; subtitle?: string; close: () => void; children: ReactNode; footer?: ReactNode; back?: () => void }) {
   const ref = useRef<HTMLDialogElement>(null)
-  useEffect(() => { const el = ref.current; el?.showModal(); return () => el?.close() }, [])
+  useEffect(() => { const el = ref.current; el?.showModal(); return () => el?.close() }, [title])
   return <dialog ref={ref} className="af-card-modal" aria-label={title} onCancel={e => { e.preventDefault(); close() }}
-    style={{ margin: 'auto', width: 650, maxWidth: 'calc(100vw - 32px)', maxHeight: 'calc(100vh - 48px)', padding: 0, border: '1px solid var(--border-default, var(--border-subtle))', borderRadius: 16, background: 'var(--bg-card)', color: 'var(--text-primary)', boxShadow: '0 24px 100px rgba(0,0,0,.5)' }}>
-    <div style={{ ...row, padding: '19px 22px', borderBottom: '1px solid var(--border-subtle)' }}><div style={{ flex: 1, minWidth: 0 }}><h2 style={{ margin: 0, fontSize: 17 }}>{title}</h2>{subtitle && <div style={{ ...muted, marginTop: 5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{subtitle}</div>}</div><Action icon="close" label="팝업 닫기" onClick={close}/></div>
-    <div style={{ padding: 22, overflowY: 'auto', maxHeight: 'calc(100vh - 230px)' }}>{children}</div>
-    {footer && <div style={{ ...row, padding: '14px 22px', justifyContent: 'flex-end', borderTop: '1px solid var(--border-subtle)' }}>{footer}</div>}
+    style={{ margin: 'auto', width: 650, maxWidth: 'calc(100vw - 32px)', maxHeight: 'calc(100dvh - 32px)', padding: 0, border: '1px solid var(--border-default, var(--border-subtle))', borderRadius: 16, background: 'var(--bg-card)', color: 'var(--text-primary)', boxShadow: '0 24px 100px rgba(0,0,0,.5)' }}>
+    <div style={{ ...row, flexShrink: 0, padding: '16px clamp(14px, 3vw, 22px)', borderBottom: '1px solid var(--border-subtle)' }}>{back && <Action icon="back" label="최종 음성 구성으로 돌아가기" onClick={back}/>}<div style={{ flex: 1, minWidth: 0 }}><h2 style={{ margin: 0, fontSize: 17 }}>{title}</h2>{subtitle && <div style={{ ...muted, marginTop: 5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{subtitle}</div>}</div><Action icon="close" label="팝업 닫기" onClick={close}/></div>
+    <div className="af-card-modal-body" style={{ padding: '18px clamp(14px, 3vw, 22px)', overflowY: 'auto', minHeight: 0, overscrollBehavior: 'contain' }}>{children}</div>
+    {footer && <div style={{ ...row, flexShrink: 0, padding: '14px clamp(14px, 3vw, 22px)', justifyContent: 'flex-end', borderTop: '1px solid var(--border-subtle)' }}>{footer}</div>}
   </dialog>
 }
-function Settings({ card, close, disabled }: { card: SynthesisCard; close: () => void; disabled: boolean }) {
+function Settings({ card, close, disabled, focusReference = false }: { card: SynthesisCard; close: () => void; disabled: boolean; focusReference?: boolean }) {
   const [draft, setDraft] = useState<CardSettings>({ ...card.settings, pitch: cardApplied(card.settings).pitch })
   const set = (patch: Partial<CardSettings>) => setDraft(s => ({ ...s, ...patch }))
+  const supports = voiceSupports(cardVoiceOf(card))
+  const referenceChoice = useRef<HTMLSelectElement>(null)
+  useEffect(() => { if (focusReference) referenceChoice.current?.focus() }, [focusReference])
   const duration = card.source?.duration || 0
   // 영상이면 꺼낸 wav 로 그린다 — 원본 영상 경로를 그대로 주면 파형이 열지 못한다.
   const cardAudio = useSynthesisCards(st => st.refs[card.id]?.audio || '')
@@ -113,14 +119,14 @@ function Settings({ card, close, disabled }: { card: SynthesisCard; close: () =>
           {card.settings.pitch !== cardApplied(card.settings).pitch && <span style={{ ...muted, color: 'var(--amber)' }} title={`저장된 음높이 ${card.settings.pitch}는 지원 범위를 벗어납니다. 적용을 누르면 화면의 값으로 저장됩니다.`}>저장값 보정</span>}
         </div>
       </details>
-      <details className="af-effect-group" data-testid="card-reference-settings" open={card.settings.reference === 'manual' ? true : undefined} style={panel}>
+      {supports.region && <details className="af-effect-group" data-testid="card-reference-settings" open={focusReference || card.settings.reference === 'manual' ? true : undefined} style={panel}>
         <summary style={heading}><span style={{ flex: 1 }}>참조 구간</span><span style={muted}>{draft.reference === 'auto' ? '자동' : `${draft.start.toFixed(1)}–${draft.end.toFixed(1)}초`}</span><span className="af-effect-chevron" aria-hidden="true">⌃</span></summary>
-        <div style={{ display: 'grid', gap: 12, paddingBottom: 16 }}><div style={{ ...row, justifyContent: 'space-between' }}><select aria-label="참조 구간 방식" style={field} value={draft.reference} onChange={e => set({ reference: e.target.value as CardSettings['reference'] })}><option value="auto">자동</option><option value="manual">직접 지정</option></select>{resetButton('참조 구간 초기화', () => set({ reference: 'auto', start: 0, end: duration }))}</div>
+        <div style={{ display: 'grid', gap: 12, paddingBottom: 16 }}><div style={{ ...row, justifyContent: 'space-between' }}><select ref={referenceChoice} aria-label="참조 구간 방식" style={field} value={draft.reference} onChange={e => set({ reference: e.target.value as CardSettings['reference'] })}><option value="auto">자동</option><option value="manual">직접 지정</option></select>{resetButton('참조 구간 초기화', () => set({ reference: 'auto', start: 0, end: duration }))}</div>
           {card.source && <CompactVoiceWaveform path={cardAudio || card.source.path} name={card.source.name} disabled={disabled} region={draft.reference === 'manual' && valid ? { start: draft.start, duration: draft.end - draft.start } : null}/>}
           {draft.reference === 'manual' && <div style={row}><label style={{ ...row, flex: '1 1 130px' }}>시작<input aria-label="참조 시작 초" style={{ ...field, width: 95 }} type="number" min="0" max={duration} step=".1" value={draft.start} onChange={e => set({ start: +e.target.value })}/>초</label><label style={{ ...row, flex: '1 1 130px' }}>끝<input aria-label="참조 끝 초" style={{ ...field, width: 95 }} type="number" min="0" max={duration} step=".1" value={draft.end} onChange={e => set({ end: +e.target.value })}/>초</label>{!valid && <span role="alert" style={{ color: 'var(--rose)', fontSize: 12 }}>구간 확인 필요</span>}</div>}
         </div>
-      </details>
-      <div style={{ ...panel, ...row, padding: '14px 16px', color: 'var(--text-muted)', fontSize: 12 }} title="감정은 감정별 참조 음성이 필요합니다. 카드의 감정 참조 등록은 아직 연결되지 않았습니다."><span style={{ flex: 1 }}>감정 참조</span><span>{draft.emotion && draft.emotion !== '자연스럽게' ? `${draft.emotion} · 미적용` : '미연결'}</span>{draft.emotion && draft.emotion !== '자연스럽게' && <button type="button" aria-label="미지원 감정 선택 해제" style={button} onClick={() => set({ emotion: '자연스럽게' })}>해제</button>}</div>
+      </details>}
+      {draft.emotion && draft.emotion !== '자연스럽게' && <div style={{ ...panel, ...row, padding: '14px 16px', color: 'var(--text-muted)', fontSize: 12 }} title="저장된 감정 설정은 현재 생성에 적용되지 않습니다. 해제하면 기본값으로 돌아갑니다."><span style={{ flex: 1 }}>감정 참조</span><span>{draft.emotion && draft.emotion !== '자연스럽게' ? `${draft.emotion} · 미적용` : '미연결'}</span>{draft.emotion && draft.emotion !== '자연스럽게' && <button type="button" aria-label="미지원 감정 선택 해제" style={button} onClick={() => set({ emotion: '자연스럽게' })}>해제</button>}</div>}
     </fieldset>
   </Modal>
 }
@@ -213,7 +219,7 @@ function VoicePicker({ close, onFile, onBuiltin, disabled }: {
     </div>
   </Modal>
 }
-function Takes({ card, close, disabled }: { card: SynthesisCard; close: () => void; disabled: boolean }) {
+function Takes({ card, close, disabled, back }: { card: SynthesisCard; close: () => void; disabled: boolean; back?: () => void }) {
   const [inspected, inspect] = useState<string | null>(null), [playing, setPlaying] = useState<string | null>(null), [error, setError] = useState('')
   const audio = useRef<HTMLAudioElement | null>(null), epoch = useRef(0)
   const stop = () => { epoch.current++; audio.current?.pause(); setPlaying(null) }
@@ -229,19 +235,19 @@ function Takes({ card, close, disabled }: { card: SynthesisCard; close: () => vo
       await el.play(); if (token === epoch.current) setPlaying(take.id)
     } catch { if (token === epoch.current) setError('파일 재생 실패') }
   }
-  return <Modal title="생성본" subtitle={card.label} close={close} footer={<button type="button" style={button} onClick={close}>닫기</button>}>
+  return <Modal title="생성본" subtitle={card.label} close={close} back={back} footer={<button type="button" style={button} onClick={close}>닫기</button>}>
     {!card.takes.length && <div style={{ display: 'grid', justifyItems: 'center', gap: 13, padding: '45px 0', color: 'var(--text-muted)' }}><Icon name="history"/><span>생성본 없음</span></div>}
-    <div style={{ display: 'grid', gap: 2 }}>{card.takes.map((take, i) => <div key={take.id} style={{ padding: '12px 0', borderBottom: '1px solid var(--border-subtle)' }}>
+    <div style={{ display: 'grid', gap: 8 }}>{card.takes.map((take, i) => <div key={take.id} data-testid="take-row" data-playing={playing === take.id || undefined} style={{ padding: 12, border: `1px solid ${card.adoptedId === take.id ? 'var(--accent)' : 'var(--border-subtle)'}`, borderRadius: 10, background: card.adoptedId === take.id ? 'var(--accent-glow)' : 'var(--bg-base)', transition: 'border-color 140ms ease, background-color 140ms ease' }}>
       <div style={row}><button type="button" disabled={disabled || !!take.missing} aria-label={`생성본 ${i + 1} 채택`} aria-pressed={take.id === card.adoptedId} title={take.missing ? '파일이 사라져 채택할 수 없습니다' : '최종 연결에 사용할 생성본'} onClick={() => useSynthesisCards.getState().update(card.id, { adoptedId: take.id })} style={{ ...button, color: take.id === card.adoptedId ? 'var(--accent-light)' : 'var(--text-muted)' }}><Icon name="check"/></button>
-      <div style={{ flex: '1 1 130px' }}><div style={{ fontSize: 13 }}>생성본 {String(i + 1).padStart(2, '0')}{card.adoptedId === take.id && <span style={{ ...muted, marginLeft: 8 }}>채택</span>}
+      <div style={{ flex: '1 1 125px', minWidth: 0 }}><div style={{ fontSize: 13 }}>생성본 {String(i + 1).padStart(2, '0')}{card.adoptedId === take.id && <span style={{ ...muted, color: 'var(--accent-light)', marginLeft: 8 }}>채택</span>}{playing === take.id && <span role="status" style={{ ...muted, color: 'var(--accent-light)', marginLeft: 8 }}>재생 중</span>}
         {/* ★지금 카드와 다른 조건으로 만든 결과임을 구분한다(현재 대사를 덮어 보여 주지 않는다). */}
-        {takeIsStale({ text: take.text, sourcePath: take.source.path, settings: take.settings, applied: appliedOf(take) as never }, { text: card.text, sourcePath: card.source?.path || '', settings: card.settings }) && <span style={{ ...badge, marginLeft: 8, color: 'var(--amber)' }}>수정 전</span>}
+        {takeIsStale({ text: take.text, sourcePath: take.source.path, settings: take.settings, applied: appliedOf(take) as never, voice: take.voice }, { text: card.text, sourcePath: card.source?.path || '', settings: card.settings, voice: voiceSnapshot(cardVoiceOf(card)) }) && <span style={{ ...badge, marginLeft: 8, color: 'var(--amber)' }}>수정 전</span>}
         {take.missing && <span style={{ ...badge, marginLeft: 8, color: 'var(--rose)' }}>파일 없음</span>}</div><time style={muted}>{new Date(take.createdAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</time></div>
-      <Action icon="play" label={`생성본 ${i + 1} ${playing === take.id ? '정지' : '재생'}`} onClick={() => void play(take)} disabled={disabled || !!take.missing}/>
+      <Action icon={playing === take.id ? 'stop' : 'play'} pressed={playing === take.id} label={`생성본 ${i + 1} ${playing === take.id ? '정지' : '재생'}`} onClick={() => void play(take)} disabled={disabled || !!take.missing}/>
       <Action icon="folder" label={`생성본 ${i + 1} 파일 위치`} onClick={() => { void window.api.app.revealFile(take.path).catch(() => setError('파일 위치 열기 실패')) }}/>
-      <Action icon="text" label={`생성본 ${i + 1} 대사 보기`} onClick={() => inspect(inspected === take.id ? null : take.id)}/></div>
+      <Action icon="text" expanded={inspected === take.id} controls={`take-detail-${take.id}`} label={`생성본 ${i + 1} 대사 보기`} onClick={() => inspect(inspected === take.id ? null : take.id)}/></div>
       {inspected === take.id && (() => { const a = appliedOf(take); return (
-        <div style={{ padding: '13px 8px 3px', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 13 }}>
+        <div id={`take-detail-${take.id}`} className="af-take-detail" style={{ marginTop: 12, borderTop: '1px solid var(--border-subtle)', padding: '12px 0 0', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 13 }}>
           <div style={{ ...muted, marginBottom: 8 }} title="생성 당시 실제로 적용된 값입니다. 기록이 없는 항목은 '기록 없음' 으로 둡니다.">
             {take.source.name}{a.speed === null ? ' · 속도 기록 없음' : ` · ${a.speed.toFixed(2)}×`}
             {a.pitch === null ? ' · 음높이 기록 없음' : ` · 음높이 ${a.pitch > 0 ? '+' : ''}${a.pitch}`}
@@ -256,7 +262,7 @@ function Join({ cards, close, disabled }: { cards: SynthesisCard[]; close: () =>
   return <Modal title="연결 조정" subtitle={`${cards.length}개 카드`} close={close} footer={<><button type="button" style={button} onClick={close}>취소</button><button type="button" style={primary} disabled={disabled} onClick={() => { useSynthesisCards.getState().setJoins(draft); close() }}>적용</button></>}>
     <fieldset disabled={disabled} style={{ border: 0, margin: 0, padding: 0, display: 'grid', gap: 20 }}>
       <div style={{ ...row, justifyContent: 'space-between' }}><label htmlFor="join-gap">기본 간격</label><div style={row}><input id="join-gap" type="number" style={{ ...field, width: 95 }} min="0" max="5" step=".05" value={draft.gap} onChange={e => setDraft(s => ({ ...s, gap: Math.max(0, Math.min(5, +e.target.value)) }))}/>초</div></div>
-      <div style={{ ...row, gap: 20 }}><label style={row} title="인물 간 음량 차이를 완화합니다. 연결 처리 구현 후 적용됩니다."><input type="checkbox" checked={draft.level} onChange={e => setDraft(s => ({ ...s, level: e.target.checked }))}/>음량 맞추기</label><label style={row} title="말끝과 숨소리를 보존하며 접합부를 다듬습니다. 연결 처리 구현 후 적용됩니다."><input type="checkbox" checked={draft.edges} onChange={e => setDraft(s => ({ ...s, edges: e.target.checked }))}/>경계 다듬기</label></div>
+      <div style={{ ...row, gap: 20 }}><label style={row} title="채택한 생성본 사이의 평균 음량 차이를 줄입니다. 원본 생성본은 바뀌지 않습니다."><input type="checkbox" checked={draft.level} onChange={e => setDraft(s => ({ ...s, level: e.target.checked }))}/>음량 맞추기</label><label style={row} title="각 생성본의 시작과 끝 5ms 음량을 부드럽게 낮춥니다. 말끝·숨소리도 영향을 받을 수 있어 이어 듣기로 확인하세요."><input type="checkbox" checked={draft.edges} onChange={e => setDraft(s => ({ ...s, edges: e.target.checked }))}/>경계 다듬기</label></div>
       <div style={{ borderTop: '1px solid var(--border-subtle)', paddingTop: 5 }}>{cards.slice(0, -1).map((card, i) => {
         const next = cards[i + 1], key = `${card.id}:${next.id}`
         return <div key={key} style={{ ...row, padding: '14px 0', borderBottom: '1px solid var(--border-subtle)' }}><span style={{ flex: '1 1 200px', fontSize: 12, overflowWrap: 'anywhere' }}>{String(i + 1).padStart(2, '0')} {card.label} <span style={muted}>→</span> {String(i + 2).padStart(2, '0')} {next.label}</span><input type="number" aria-label={`${i + 1}번과 ${i + 2}번 카드 간격`} title="두 카드 사이의 개별 간격" style={{ ...field, width: 85 }} min="0" max="5" step=".05" value={draft.gaps[key] ?? draft.gap} onChange={e => setDraft(s => ({ ...s, gaps: { ...s.gaps, [key]: Math.max(0, Math.min(5, +e.target.value)) } }))}/><span style={muted}>초</span><Action icon="play" label={`${i + 1}번 연결부 듣기`} disabled title={DISCONNECTED}/></div>
@@ -281,7 +287,7 @@ function planOfCards(cards: SynthesisCard[], joins: JoinSettings) {
 export default function SynthesisCardWorkspace() {
   const state = useSynthesisCards(), source = useAppStore(s => s.fileInfo), status = useAppStore(s => s.status), childAlive = useAppStore(s => s.errorInfo?.childAlive)
   const busy = status === 'processing' || isCancelCleanupBusy(status) || !!childAlive
-  const [modal, setModal] = useState<{ type: 'settings' | 'takes' | 'voice'; id: string } | { type: 'join' } | null>(null)
+  const [modal, setModal] = useState<{ type: 'settings' | 'takes' | 'voice'; id: string; focusReference?: boolean; fromSequence?: boolean } | { type: 'join' | 'sequence' } | null>(null)
   const [notice, setNotice] = useState(''), [loading, setLoading] = useState(false), [hover, setHover] = useState<string | null>(null)
   const [dragging, setDragging] = useState<string | null>(null), [over, setOver] = useState<{ id: string; after: boolean } | null>(null)
   const alive = useRef(true), pending = useRef(false)
@@ -335,8 +341,12 @@ export default function SynthesisCardWorkspace() {
     const offE = window.api.audio.onError((d: unknown) => {
       if (!mine(d)) return
       const o = d as { message?: unknown }
+      // ★어느 카드가 실패했는지 **그 카드에서** 말한다. 전역 알림만 띄우면 찾아 헤맨다.
+      const id = useSynthesisCards.getState().job?.cardId || ''
       endCardJob()
-      if (alive.current) setNotice(String(o?.message || '만들기에 실패했습니다'))
+      if (!alive.current) return
+      const why = String(o?.message || '만들기에 실패했습니다')
+      if (id) setCardFault({ id, why }); else setNotice(why)
     })
     return () => { offP(); offR(); offE() }
   }, [])
@@ -371,6 +381,14 @@ export default function SynthesisCardWorkspace() {
 
   // ── 최종 음성 ────────────────────────────────────────────────────────
   // ★이어 듣기와 저장이 **같은 계획**을 쓴다. 계획을 두 군데서 만들면 언젠가 갈라진다.
+  /**
+   * **실패한 자리에서 바로 다시** — 전역 알림만 띄우면 어느 카드였는지 찾아 헤맨다.
+   *   · 카드 실패는 그 카드 줄에 사유와 '다시 생성' 을 둔다
+   *   · 최종 연결 실패는 최종 음성 줄에 사유와 '다시 시도' 를 둔다
+   * ★어느 경우에도 대사·생성본·채택은 그대로 둔다(실패가 작업을 지우지 않는다).
+   */
+  const [cardFault, setCardFault] = useState<{ id: string; why: string } | null>(null)
+  const [joinFault, setJoinFault] = useState<{ mode: 'preview' | 'save'; why: string } | null>(null)
   const [joining, setJoining] = useState<'' | 'preview' | 'save'>('')
   const joinAudio = useRef<HTMLAudioElement | null>(null)
   const [joinPlaying, setJoinPlaying] = useState(false)
@@ -417,6 +435,7 @@ export default function SynthesisCardWorkspace() {
     const stale = () => (mode === 'save' ? ''
       : previewStale({ gen, key }, { gen: joinGen.current, key: livePlanKey(), alive: alive.current }))
     setJoining(mode)
+    setJoinFault(null)
     try {
       const res = await window.api.cards.join(r.plan, mode, key) as
         { ok: boolean; data?: { path: string; seconds: number; canceled?: boolean }; error?: string }
@@ -441,7 +460,8 @@ export default function SynthesisCardWorkspace() {
       if (alive.current) { setJoinPlaying(true); setPlayingKey(key) }
       else el.pause()
     } catch (e) {
-      if (alive.current) setNotice((e as Error)?.message || '최종 음성을 만들지 못했습니다')
+      // ★카드와 채택은 그대로 둔다 — 다시 시도만 하면 된다.
+      if (alive.current) setJoinFault({ mode, why: (e as Error)?.message || '최종 음성을 만들지 못했습니다' })
     } finally {
       if (alive.current && joinGen.current === gen) setJoining('')
     }
@@ -449,8 +469,10 @@ export default function SynthesisCardWorkspace() {
 
   const generate = async (card: SynthesisCard) => {
     setNotice('')
+    setCardFault(null)
     const why = await startCardGeneration(card)
-    if (why && alive.current) setNotice(why)
+    // ★실패해도 대사·생성본·채택은 그대로다. 그 카드 줄에서 바로 다시 할 수 있게 한다.
+    if (why && alive.current) setCardFault({ id: card.id, why })
   }
 
   // 저장 — **타이머를 여기서 잡지 않는다.**
@@ -533,9 +555,46 @@ export default function SynthesisCardWorkspace() {
   // ★'이전 작업' 단추는 여기서 뺐다(2026-09-27). 같은 일을 하는 자리가 둘이면 어느 쪽이
   //   진짜인지 알 수 없고, 같은 testid 가 둘이 되어 검사도 갈린다.
   //   옛 버전으로 가는 길은 위쪽 버전 탭 하나뿐이다(SynthesisTabs).
+  const workspace = useRef<HTMLDivElement>(null)
+  const [focusCard, setFocusCard] = useState<string | null>(null)
+  useLayoutEffect(() => {
+    if (!focusCard || modal) return
+    const card = Array.from(workspace.current?.querySelectorAll<HTMLElement>('[data-card-id]') || [])
+      .find(el => el.dataset.cardId === focusCard)
+    card?.scrollIntoView({ block: 'center', behavior: 'instant' })
+    card?.querySelector<HTMLElement>('[data-testid="card-script"]')?.focus({ preventScroll: true })
+    setFocusCard(null)
+  }, [focusCard, modal])
+  // Measure at the user's move, so a resized textarea cannot leave stale positions.
+  const cardPositions = useRef(new Map<string, number>())
+  const moveCard = (id: string, index: number) => {
+    cardPositions.current.clear()
+    if (state.cards.findIndex(c => c.id === id) === index) return
+    for (const el of workspace.current?.querySelectorAll<HTMLElement>('[data-card-id]') || []) {
+      cardPositions.current.set(el.dataset.cardId!, el.offsetTop)
+    }
+    state.move(id, index)
+  }
+  const order = state.cards.map(c => c.id).join('|')
+  useLayoutEffect(() => {
+    const elements = Array.from(workspace.current?.querySelectorAll<HTMLElement>('[data-card-id]') || [])
+    const positions = new Map(elements.map(el => [el.dataset.cardId!, el.offsetTop]))
+    const canAnimate = elements.length <= 30 && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    const animations: Animation[] = []
+    for (const el of elements) {
+      const before = cardPositions.current.get(el.dataset.cardId!)
+      const after = positions.get(el.dataset.cardId!)!
+      if (canAnimate && before !== undefined && before !== after) {
+        animations.push(el.animate([{ transform: `translateY(${before - after}px)` }, { transform: 'none' }], { duration: 150, easing: 'ease-out' }))
+      }
+    }
+    cardPositions.current.clear()
+    return () => animations.forEach(a => a.cancel())
+  }, [order])
+  const readyCount = state.cards.length - planNow.blocks.filter(b => b.cardId).length
   const active = modal && 'id' in modal ? state.cards.find(c => c.id === modal.id) : null
-  return <div data-testid="synthesis-card-workspace" onDragOver={e => { if (e.dataTransfer.types.includes('Files')) e.preventDefault() }} onDrop={e => { if (e.dataTransfer.files.length) drop(e) }} style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
-    <style>{`.af-card-progress{appearance:none;border:0;border-radius:3px;overflow:hidden;background:var(--border-subtle)}.af-card-progress::-webkit-progress-bar{background:var(--border-subtle)}.af-card-progress::-webkit-progress-value{background:var(--accent);border-radius:3px}.af-effect-slider{appearance:none;height:4px;border-radius:3px;background:linear-gradient(to right,var(--accent) var(--fill),var(--border-subtle) var(--fill));cursor:pointer}.af-effect-slider::-webkit-slider-thumb{appearance:none;width:15px;height:15px;border-radius:50%;background:var(--accent-light);box-shadow:0 0 0 4px rgba(139,92,246,.12)}.af-effect-slider:disabled{opacity:.4;cursor:not-allowed}.af-effect-group summary::-webkit-details-marker{display:none}.af-effect-group .af-effect-chevron{transition:transform 150ms ease;color:var(--text-muted)}.af-effect-group:not([open]) .af-effect-chevron{transform:rotate(180deg)}.af-card-modal::backdrop{background:rgba(5,7,12,.68);backdrop-filter:blur(4px)}.af-card-modal[open]{animation:af-card-open 150ms ease-out}.af-generation-card:focus-within{border-color:var(--accent)!important}.af-card-work-button:disabled{cursor:not-allowed;opacity:.4}@keyframes af-card-open{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}@media(prefers-reduced-motion:reduce){.af-card-modal[open]{animation:none}}`}</style>
+  return <div ref={workspace} data-testid="synthesis-card-workspace" onDragOver={e => { if (e.dataTransfer.types.includes('Files')) e.preventDefault() }} onDrop={e => { if (e.dataTransfer.files.length) drop(e) }} style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
+    <style>{`.af-card-progress{appearance:none;border:0;border-radius:3px;overflow:hidden;background:var(--border-subtle)}.af-card-progress::-webkit-progress-bar{background:var(--border-subtle)}.af-card-progress::-webkit-progress-value{background:var(--accent);border-radius:3px}.af-effect-slider{appearance:none;height:4px;border-radius:3px;background:linear-gradient(to right,var(--accent) var(--fill),var(--border-subtle) var(--fill));cursor:pointer}.af-effect-slider::-webkit-slider-thumb{appearance:none;width:15px;height:15px;border-radius:50%;background:var(--accent-light);box-shadow:0 0 0 4px rgba(139,92,246,.12)}.af-effect-slider:disabled{opacity:.4;cursor:not-allowed}.af-effect-group summary::-webkit-details-marker{display:none}.af-effect-group .af-effect-chevron{transition:transform 150ms ease;color:var(--text-muted)}.af-effect-group:not([open]) .af-effect-chevron{transform:rotate(180deg)}.af-card-modal::backdrop{background:rgba(5,7,12,.68);backdrop-filter:blur(4px)}.af-card-modal[open]{display:flex;flex-direction:column;animation:af-card-open 150ms ease-out}.af-take-detail{animation:af-card-open 120ms ease-out}.af-generation-card{transition:border-color 140ms ease,opacity 140ms ease}.af-card-modal button[aria-pressed="true"]{color:var(--accent-light)}.af-generation-card:focus-within{border-color:var(--accent)!important}.af-card-work-button:disabled{cursor:not-allowed;opacity:.4}@keyframes af-card-open{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}@media(prefers-reduced-motion:reduce){.af-card-modal[open],.af-take-detail{animation:none}}`}</style>
     <div style={{ ...row, paddingBottom: 2 }}><span style={{ fontSize: 13, fontWeight: 600 }}>생성 카드 <span style={{ ...muted, marginLeft: 5 }}>{state.cards.length}</span></span><span style={{ flex: 1 }}/></div>
     {notice && <div role="status" style={{ ...row, fontSize: 12, color: 'var(--amber)' }}><span style={{ flex: 1 }}>{notice}</span><Action icon="close" label="알림 닫기" onClick={() => setNotice('')}/></div>}
     {save.phase === 'failed' && <div role="alert" data-testid="card-save-failed" style={{ ...row, fontSize: 12, color: 'var(--rose)', padding: '9px 12px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderLeft: '3px solid var(--rose)', borderRadius: 8 }}>
@@ -545,8 +604,8 @@ export default function SynthesisCardWorkspace() {
       const chosen = card.takes.find(t => t.id === card.adoptedId)
       // '수정 전' 판정은 shared/synthesisCardJob 이 소유한다 — 생성본 팝업과 같은 잣대를 쓴다.
       const changed = chosen && takeIsStale(
-        { text: chosen.text, sourcePath: chosen.source.path, settings: chosen.settings, applied: chosen.applied },
-        { text: card.text, sourcePath: card.source?.path || '', settings: card.settings })
+        { text: chosen.text, sourcePath: chosen.source.path, settings: chosen.settings, applied: chosen.applied, voice: chosen.voice },
+        { text: card.text, sourcePath: card.source?.path || '', settings: card.settings, voice: voiceSnapshot(cardVoiceOf(card)) })
       const ref = state.refs[card.id]
       const voice = cardVoiceOf(card)
       // ★엔진이 못 받는 설정을 **말한다.** 조용히 무시하거나 적용된 척하지 않는다.
@@ -562,11 +621,11 @@ export default function SynthesisCardWorkspace() {
       return <article key={card.id} data-testid="generation-card" data-card-id={card.id} className="af-generation-card" aria-label={`${index + 1}번 생성 카드`} onDragOver={e => {
         if (!dragging || locked) return; e.preventDefault(); const r = e.currentTarget.getBoundingClientRect(); setOver({ id: card.id, after: e.clientY > r.top + r.height / 2 })
       }} onDrop={e => {
-        if (!dragging || locked) return; e.preventDefault(); e.stopPropagation(); const from = state.cards.findIndex(c => c.id === dragging); let to = index + (over?.after ? 1 : 0); if (from < to) to--; state.move(dragging, to); setDragging(null); setOver(null)
+        if (!dragging || locked) return; e.preventDefault(); e.stopPropagation(); const from = state.cards.findIndex(c => c.id === dragging); let to = index + (over?.after ? 1 : 0); if (from < to) to--; moveCard(dragging, to); setDragging(null); setOver(null)
       }} style={{ position: 'relative', border: `1px solid ${hover === card.id ? 'var(--accent)' : 'var(--border-subtle)'}`, borderRadius: 14, background: 'var(--bg-card)', boxShadow: '0 7px 24px rgba(0,0,0,.10)', opacity: dragging === card.id ? .5 : 1, overflowWrap: 'anywhere' }}>
         {dropHere && <div style={{ position: 'absolute', left: 0, right: 0, [over.after ? 'bottom' : 'top']: -9, height: 2, background: 'var(--accent)', pointerEvents: 'none' }}/>}
         <div style={{ ...row, padding: '13px 16px 0' }}>
-          <button type="button" data-testid="card-drag-handle" title="카드 이동 · Alt+↑/↓" aria-label={`${index + 1}번 카드 이동`} disabled={locked} draggable={!locked} onDragStart={e => { e.dataTransfer.setData('application/x-audioforge-card', card.id); e.dataTransfer.effectAllowed = 'move'; setDragging(card.id) }} onDragEnd={() => { setDragging(null); setOver(null) }} onKeyDown={e => { if (!locked && e.altKey && ['ArrowUp', 'ArrowDown'].includes(e.key)) { e.preventDefault(); state.move(card.id, index + (e.key === 'ArrowUp' ? -1 : 1)) } }} style={{ ...button, padding: 5, border: 0, background: 'transparent', color: 'var(--text-muted)', cursor: 'grab' }}><Icon name="grip"/></button>
+          <button type="button" data-testid="card-drag-handle" title="카드 이동 · Alt+↑/↓" aria-label={`${index + 1}번 카드 이동`} disabled={locked} draggable={!locked} onDragStart={e => { e.dataTransfer.setData('application/x-audioforge-card', card.id); e.dataTransfer.effectAllowed = 'move'; setDragging(card.id) }} onDragEnd={() => { setDragging(null); setOver(null) }} onKeyDown={e => { if (!locked && e.altKey && ['ArrowUp', 'ArrowDown'].includes(e.key)) { e.preventDefault(); moveCard(card.id, index + (e.key === 'ArrowUp' ? -1 : 1)) } }} style={{ ...button, padding: 5, border: 0, background: 'transparent', color: 'var(--text-muted)', cursor: 'grab' }}><Icon name="grip"/></button>
           <span style={{ ...muted, fontVariantNumeric: 'tabular-nums' }}>{String(index + 1).padStart(2, '0')}</span>
           <input aria-label={`${index + 1}번 카드 이름`} value={card.label} disabled={locked} onChange={e => state.update(card.id, { label: e.target.value })} style={{ ...field, flex: '1 1 120px', padding: '6px 8px', background: 'transparent', borderColor: 'transparent', fontWeight: 600 }}/>
           <Action icon="copy" label={`${index + 1}번 카드 복제`} title="목소리·설정 복제 — 대사와 생성본은 새로 시작" disabled={locked} onClick={() => state.clone(card.id)}/>
@@ -591,11 +650,21 @@ export default function SynthesisCardWorkspace() {
           {card.source && modal && <div style={{ height: 40 }}/>}
           <textarea data-testid="card-script" aria-label={`${index + 1}번 카드 대사`} placeholder="대사를 입력하세요" rows={2} spellCheck={false} disabled={locked} value={card.text} onChange={e => state.update(card.id, { text: e.target.value })} style={{ ...field, width: '100%', resize: 'vertical', minHeight: 76, fontSize: 15, lineHeight: 1.75, border: '1px solid var(--border-subtle)', background: 'var(--bg-base)', padding: '11px 13px', margin: '9px 0 0' }}/>
         </div>
-        {(mine || (ref && ref.phase !== 'ready') || notes.length > 0) && (
+        {/* ★실패도 '이 카드가 지금 하는 말' 이다 — 줄이 없으면 사유가 그려질 자리가 없다. */}
+        {(mine || cardFault?.id === card.id || (ref && ref.phase !== 'ready') || notes.length > 0) && (
           <div data-testid="card-status" style={{ ...row, gap: 7, padding: '8px 20px 10px', minHeight: 22 }}>
             {ref && ref.phase !== 'ready' && ref.message && (
               <span tabIndex={0} title={ref.message} style={{ ...badge, color: ref.phase === 'failed' ? 'var(--rose)' : ref.phase === 'needs_region' ? 'var(--amber)' : 'var(--text-muted)' }}>{ref.phase === 'failed' ? '준비 실패' : ref.phase === 'needs_region' ? '구간 확인 필요' : '목소리 준비 중'}</span>
             )}
+            {voice.kind === 'reference' && ref?.phase === 'failed' && <button type="button" data-testid="card-reference-retry" aria-label={`${index + 1}번 카드 목소리 준비 다시 시도`} title={ref.message || '같은 목소리와 구간으로 다시 준비합니다'} disabled={locked || !!state.job} style={{ ...button, padding: '3px 8px', minHeight: 26, fontSize: 11 }} onClick={() => forgetCardReference(card.id)}><Icon name="reset"/>다시 시도</button>}
+            {cardFault?.id === card.id && <span data-testid="card-generate-fault" role="alert" style={{ ...row, gap: 6, fontSize: 11, color: 'var(--rose)' }}>
+              <span tabIndex={0} title={cardFault.why} style={{ maxWidth: 220, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cardFault.why}</span>
+              <button type="button" data-testid="card-generate-retry" aria-label={`${index + 1}번 카드 다시 생성`}
+                title="같은 대사·목소리·설정으로 다시 만듭니다. 지금까지의 생성본은 그대로 있습니다."
+                disabled={locked || !!state.job} style={{ ...button, padding: '3px 8px', minHeight: 26, fontSize: 11 }}
+                onClick={() => void generate(card)}><Icon name="reset"/>다시 생성</button>
+            </span>}
+            {voice.kind === 'reference' && ref?.phase === 'needs_region' && <button type="button" data-testid="card-reference-review" aria-label={`${index + 1}번 카드 참조 구간 확인`} title={ref.message || '이 카드의 참조 구간 설정을 엽니다'} disabled={locked || !!state.job} style={{ ...button, padding: '3px 8px', minHeight: 26, fontSize: 11 }} onClick={() => setModal({ type: 'settings', id: card.id, focusReference: true })}>구간 확인</button>}
             {/* ★엔진이 못 받는 설정을 그대로 말한다 — 조용히 버리지 않는다. */}
             {notes.map(n => <span key={n.field} tabIndex={0} title={n.reason} style={{ ...badge, color: 'var(--amber)' }}>{n.field === 'emotion' ? '감정 미적용' : n.field === 'pitch' ? '음높이 보정' : '속도 보정'}</span>)}
             {mine && (
@@ -605,7 +674,7 @@ export default function SynthesisCardWorkspace() {
         )}
         <div style={{ ...row, padding: '12px 20px', borderTop: '1px solid var(--border-subtle)' }}>
           <button type="button" data-testid="card-takes" onClick={() => setModal({ type: 'takes', id: card.id })} style={{ ...button, background: 'transparent' }}><Icon name="history"/>생성본 <span style={muted}>{card.takes.length}</span></button>
-          {chosen && <span style={{ ...muted, color: changed ? 'var(--amber)' : 'var(--text-muted)' }} title={changed ? '채택한 생성본은 수정 전 대사·목소리·설정으로 생성되었습니다' : '최종 연결에 사용할 생성본'}>#{card.takes.indexOf(chosen) + 1} 채택{changed ? ' · 수정 전' : ''}</span>}
+          {chosen && <button type="button" onClick={() => setModal({ type: 'takes', id: card.id })} style={{ ...button, background: 'transparent', border: 0, padding: '4px 0', minHeight: 28, fontSize: 11, color: chosen.missing ? 'var(--rose)' : changed ? 'var(--amber)' : 'var(--accent-light)' }} title={chosen.missing ? '채택한 파일이 없습니다. 다른 생성본을 선택하세요.' : changed ? '채택한 생성본은 수정 전 대사·목소리·설정으로 생성되었습니다' : '최종 연결에 사용할 생성본을 변경합니다'}>#{card.takes.indexOf(chosen) + 1} 채택{chosen.missing ? ' · 파일 없음' : changed ? ' · 수정 전' : ''}</button>}
           <span style={{ flex: 1 }}/><span style={muted}>{card.text.length}자</span>
           {mine ? (
             <button type="button" data-testid="card-stop" className="af-card-work-button" onClick={() => void stopWork()}
@@ -618,29 +687,65 @@ export default function SynthesisCardWorkspace() {
         </div>
       </article>
     })}
-    <button type="button" data-testid="add-generation-card" aria-label="음원으로 카드 추가" title="클릭하거나 음성·영상 파일을 끌어 놓아 카드를 추가합니다" disabled={locked} onClick={() => setModal({ type: 'voice', id: '' })}
+    {!state.cards.length ? <section aria-label="첫 목소리" style={{ border: '1px solid var(--border-subtle)', borderRadius: 14, background: 'var(--bg-card)', padding: 18, width: '100%', maxWidth: 580, alignSelf: 'center' }}>
+      <div onDropCapture={e => drop(e)}>
+        <MediaImportCard file={null} busy={loading} disabled={locked} testId="synthesis-empty-source" pickerLabel="합성할 목소리의 오디오 또는 영상 파일 선택"
+          onPick={() => void pick()} onDrop={path => void load([path])} onClear={() => {}}/>
+      </div>
+      <div style={{ ...row, justifyContent: 'center', paddingTop: 14 }}>
+        <button type="button" data-testid="add-generation-card" aria-label="기본 목소리 선택" title="참조 파일 없이 사용할 기본 목소리를 고릅니다" disabled={locked}
+          onClick={() => setModal({ type: 'voice', id: '' })} style={{ ...button, background: 'transparent' }}><Icon name="play"/>기본 목소리로 시작</button>
+      </div>
+    </section> : <>
+    <button type="button" data-testid="add-generation-card" aria-label="카드 추가" title="기본 목소리를 고르거나 음성·영상 파일을 끌어 놓아 카드를 추가합니다" disabled={locked} onClick={() => setModal({ type: 'voice', id: '' })}
       onDragOver={e => { if (!locked && !dragging && e.dataTransfer.types.includes('Files')) { e.preventDefault(); setHover('add') } }} onDragLeave={() => setHover(null)} onDrop={e => drop(e)}
-      style={{ ...button, minHeight: state.cards.length ? 64 : 180, width: '100%', border: `1px dashed ${hover === 'add' ? 'var(--accent)' : 'var(--border-default, var(--border-subtle))'}`, background: hover === 'add' ? 'var(--bg-elevated)' : 'transparent', color: 'var(--text-muted)' }}><Icon name="plus"/>{loading ? '불러오는 중' : state.cards.length ? null : '음원 추가'}</button>
+      style={{ ...button, minHeight: 52, width: '100%', border: `1px dashed ${hover === 'add' ? 'var(--accent)' : 'var(--border-default, var(--border-subtle))'}`, background: hover === 'add' ? 'var(--bg-elevated)' : 'transparent', color: 'var(--text-muted)' }}><Icon name="plus"/>{loading ? '불러오는 중' : '목소리 추가'}</button>
+    </>}
     {state.removed && <div role="status" style={{ ...row, ...muted }}><span>카드 삭제됨</span><button type="button" disabled={locked} style={button} onClick={state.undo}>되돌리기</button></div>}
     <footer style={{ ...row, position: 'sticky', bottom: 0, zIndex: 2, marginTop: 4, padding: '15px 18px', background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', borderRadius: 12, boxShadow: '0 -8px 30px rgba(0,0,0,.12)' }}>
       <div style={{ flex: '1 1 130px' }}>
         <div style={{ ...row, fontSize: 13, fontWeight: 600 }}>최종 음성
-          {joinBlocked && <span title={joinBlocked} style={{ ...muted, fontWeight: 400, color: 'var(--amber)' }}>준비 필요</span>}</div>
-        <div style={{ ...muted, marginTop: 4 }}>{state.cards.filter(c => c.takes.some(t => t.id === c.adoptedId)).length} / {state.cards.length} 채택</div>
+          {joinBlocked && <span title={joinBlocked} style={{ ...muted, fontWeight: 400, color: 'var(--amber)' }}>{state.cards.length ? `${state.cards.length - readyCount}개 확인 필요` : '카드 없음'}</span>}</div>
+        {joinFault && <span data-testid="join-fault" role="alert" style={{ ...row, gap: 6, fontSize: 11, color: 'var(--rose)' }}>
+          <span tabIndex={0} title={joinFault.why} style={{ maxWidth: 240, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{joinFault.why}</span>
+          <button type="button" data-testid="join-retry" title="같은 구성으로 다시 시도합니다. 카드와 채택은 그대로입니다."
+            disabled={locked || joining !== ''} style={{ ...button, padding: '3px 8px', minHeight: 26, fontSize: 11 }}
+            onClick={() => { const m = joinFault.mode; setJoinFault(null); void runJoin(m) }}><Icon name="reset"/>다시 시도</button>
+        </span>}
+        <button type="button" data-testid="join-sequence" aria-label="최종 음성 구성 보기" disabled={!state.cards.length} title="카드 순서와 채택한 생성본을 확인합니다" onClick={() => setModal({ type: 'sequence' })} style={{ ...button, background: 'transparent', border: 0, padding: '3px 0', minHeight: 26, fontSize: 11 }}><Icon name="list"/>{readyCount} / {state.cards.length} 준비</button>
       </div>
-      <Action icon="play" label={joinPlaying ? '이어 듣기 멈춤' : '전체 이어 듣기'} testId="join-play"
+      <Action icon={joinPlaying ? 'stop' : 'play'} pressed={joinPlaying} label={joinPlaying ? '이어 듣기 멈춤' : '전체 이어 듣기'} testId="join-play"
         disabled={locked || !!joinBlocked || joining !== ''}
-        title={joinBlocked || '카드 순서대로 채택한 생성본을 이어서 들려줍니다'}
-        onClick={() => { if (joinPlaying) { joinAudio.current?.pause(); setJoinPlaying(false); setPlayingKey('') } else void runJoin('preview') }}/>
+        title={joinPlaying ? '이어 듣기를 멈춥니다' : joinBlocked || (joining === 'preview' ? '이어 들을 음성을 준비하고 있습니다' : '카드 순서대로 채택한 생성본을 이어서 들려줍니다')}
+        onClick={() => { if (joinPlaying) { joinAudio.current?.pause(); setJoinPlaying(false); setPlayingKey('') } else void runJoin('preview') }}>{joining === 'preview' ? '준비 중' : joinPlaying ? '멈춤' : '이어 듣기'}</Action>
       <Action icon="link" label="연결 조정" disabled={locked || !state.cards.length} onClick={() => setModal({ type: 'join' })}>연결 조정</Action>
       <button type="button" className="af-card-work-button" data-testid="join-save"
         disabled={locked || !!joinBlocked || joining !== ''}
         title={joinBlocked || '들은 것과 같은 방식으로 한 파일에 저장합니다'}
         onClick={() => void runJoin('save')} style={primary}>
-        <Icon name="save"/>{joining === 'save' ? '저장 중' : joining === 'preview' ? '만드는 중' : '파일로 저장'}</button>
+        <Icon name="save"/>{joining === 'save' ? '저장 중' : '파일로 저장'}</button>
     </footer>
-    {modal?.type === 'settings' && active && <Settings key={active.id} card={active} disabled={busy} close={() => setModal(null)}/>}
-    {modal?.type === 'takes' && active && <Takes key={active.id} card={active} disabled={busy} close={() => setModal(null)}/>}
+    {modal?.type === 'sequence' && <Modal title="최종 음성 구성" close={() => setModal(null)} footer={<button type="button" style={button} onClick={() => setModal(null)}>닫기</button>}>
+      <div style={{ display: 'grid', gap: 8 }}>{state.cards.map((card, i) => {
+        const take = card.takes.find(t => t.id === card.adoptedId)
+        const block = planNow.blocks.find(b => b.cardId === card.id)
+        const stale = take && takeIsStale(
+          { text: take.text, sourcePath: take.source.path, settings: take.settings, applied: take.applied, voice: take.voice },
+          { text: card.text, sourcePath: card.source?.path || '', settings: card.settings, voice: voiceSnapshot(cardVoiceOf(card)) })
+        return <div key={card.id} data-testid="join-sequence-row" style={{ ...row, gap: 12, padding: 12, borderRadius: 10, border: '1px solid var(--border-subtle)', background: 'var(--bg-base)' }}>
+          <span style={{ ...muted, fontVariantNumeric: 'tabular-nums' }}>{String(i + 1).padStart(2, '0')}</span>
+          <div style={{ flex: '1 1 150px', minWidth: 0 }}><div style={{ fontSize: 13, overflowWrap: 'anywhere' }}>{card.label}</div>
+            <div title={block?.why || (stale ? '현재 편집과 다른 조건으로 만든 생성본입니다. 채택은 그대로 유지됩니다.' : undefined)} style={{ ...muted, marginTop: 4, color: block || stale ? 'var(--amber)' : 'var(--accent-light)' }}>{block ? (take ? '파일 확인 필요' : '채택 필요') : `생성본 ${String(card.takes.indexOf(take!) + 1).padStart(2, '0')} 채택${stale ? ' · 수정 전' : ''}`}</div>
+          </div>
+          <button type="button" style={button} disabled={locked} aria-label={`${i + 1}번 카드 ${card.takes.length ? '생성본 선택' : '카드로 이동'}`} onClick={() => {
+            if (card.takes.length) setModal({ type: 'takes', id: card.id, fromSequence: true })
+            else { setModal(null); setFocusCard(card.id) }
+          }}>{card.takes.length ? '생성본 선택' : '카드로 이동'}</button>
+        </div>
+      })}</div>
+    </Modal>}
+    {modal?.type === 'settings' && active && <Settings key={active.id} card={active} disabled={busy} focusReference={modal.focusReference} close={() => setModal(null)}/>}
+    {modal?.type === 'takes' && active && <Takes key={active.id} card={active} disabled={busy} close={() => setModal(null)} back={modal.fromSequence ? () => setModal({ type: 'sequence' }) : undefined}/>}
     {modal?.type === 'join' && <Join cards={state.cards} disabled={busy} close={() => setModal(null)}/>}
     {modal?.type === 'voice' && <VoicePicker disabled={busy} close={() => setModal(null)}
       onFile={() => { void pick(modal.id || undefined) }}

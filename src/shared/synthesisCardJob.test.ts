@@ -109,3 +109,15 @@ test('식별자 없는 이벤트는 내 것이 아니다', () => {
 test('기다리는 요청이 없으면 아무것도 받지 않는다', () => {
   assert.match(cardEventFault({ clientRequestId: 'R1' }, ''), /기다리는 요청이 없/)
 })
+test('기본 목소리 모델·화자 변경은 경로가 비어도 수정 전으로 구분한다', () => {
+  const settings = { speed: 1, pitch: 0, emotion: '자연스럽게', reference: 'auto' as const, start: 0, end: 0 }
+  const voice = { kind: 'builtin' as const, label: '기본 목소리', engineId: 'piper', modelId: 'A', speakerId: '0' }
+  const snap = { text: '같은 대사', sourcePath: '', settings, applied: cardApplied(settings), voice }
+  const now = { text: snap.text, sourcePath: '', settings, voice: { ...voice } }
+  assert.equal(takeIsStale(snap, now), false)
+  assert.equal(takeIsStale(snap, { ...now, voice: { ...voice, modelId: 'B' } }), true)
+  assert.equal(takeIsStale(snap, { ...now, voice: { ...voice, speakerId: '1' } }), true)
+  assert.equal(takeIsStale(snap, { ...now, voice: { ...voice, engineId: 'other' } }), true)
+  assert.equal(takeIsStale(snap, { ...now, voice: { ...voice, label: '이름만 변경' } }), false)
+  assert.equal(takeIsStale({ ...snap, voice: undefined }, now), false)
+})
