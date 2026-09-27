@@ -11,8 +11,10 @@
  */
 import { ipcMain, dialog, app, BrowserWindow } from 'electron'
 import { join, dirname } from 'path'
+import { tmpdir } from 'os'
 import { existsSync, lstatSync, readdirSync, rmSync, statSync } from 'fs'
 import { OUTPUT_ROOT_DIRNAME } from '../../shared/outputLayout'
+import { ourTempNames, LEGACY_TEMP_ENV_KEY } from '../../shared/tempRoot'
 import { readSettingsFile, setSettingsKey } from '../services/settings-store'
 import { rememberDir, startDir, type FolderHost } from '../services/dialogFolders'
 import { currentBuildInfo } from './app-version.ipc'
@@ -49,8 +51,10 @@ const folderHost: FolderHost = {
     return got.kind === 'ok' ? (got.settings as Record<string, unknown>)[key] : undefined
   },
   write: (key, value) => { setSettingsKey(settingsPath(), key, value, { writtenBy: currentBuildInfo().version }) },
-  // 기억해 둔 것이 없으면 음악 폴더에서 연다 — 결과물을 둘 자리를 고르는 일이므로.
-  fallback: () => { try { return app.getPath('music') } catch { return undefined } },
+  // ★기억해 둔 것이 없으면 **앱의 결과 자리**에서 연다 (2026-09-28).
+  //   예전에는 사용자 음악 폴더(시스템 드라이브)에서 열렸다 — 자리를 고르는 화면이
+  //   C 드라이브에서 시작하면 거기를 고르게 된다. 사용자는 그것을 원한 적이 없다.
+  fallback: () => { try { return join(appRootPath(), OUTPUT_ROOT_DIRNAME) } catch { return undefined } },
 }
 function appRootPath(): string { return join(__dirname, '..', '..') }
 
@@ -90,12 +94,33 @@ function wipeDir(p: string): { removed: number; freed: number } {
   return { removed: 1, freed }
 }
 
+/**
+ * 옛 임시 자리(시스템 드라이브)에 남은 **우리 것만** 고른다.
+ *
+ * ★자리를 옮기기 전에 쌓인 것은 스스로 사라지지 않는다. 실측 2026-09-28 에
+ *   시스템 임시 폴더에서 우리 이름 275개가 나왔다.
+ * ★이름 접두로만 고른다 — 남의 파일은 개수조차 세지 않는다.
+ */
+function strayTempEntries(): string[] {
+  const old = process.env[LEGACY_TEMP_ENV_KEY]
+  if (!old || old === tmpdir()) return []        // 안 옮겼으면 치울 옛 자리도 없다
+  return ourTempNames(readDirNames(old)).map((n) => join(old, n))
+}
+
+function readDirNames(p: string): string[] {
+  try { return readdirSync(p) } catch { return [] }
+}
+
 export function registerOptionsIpc(): void {
   ipcMain.handle('options:get', () => ({
     chosenRoot: typeof readOne(OUTPUT_ROOT_KEY) === 'string' ? readOne(OUTPUT_ROOT_KEY) as string : '',
     beside: readOne(OUTPUT_BESIDE_KEY) === true,
     appRoot: appRootPath(),
     dataDir: app.getPath('userData'),
+    // 임시 자리 — 앱 안이어야 한다. 화면이 이것을 보여 주므로 조용히 새면 눈에 띈다.
+    tempDir: tmpdir(),
+    // 옛 자리에 남아 있는 **우리 잔해 개수.** 0 이면 비우기 줄을 감춘다.
+    strayTemp: strayTempEntries().length,
   }))
 
   ipcMain.handle('options:set', (_e, next: { chosenRoot?: string; beside?: boolean }) => {
@@ -149,6 +174,14 @@ export function registerOptionsIpc(): void {
       for (const name of kind === 'cache' ? CACHE_DIRS : MEDIA_DIRS) {
         const r = wipeDir(join(base, name))
         removed += r.removed; freed += r.freed
+      }
+      // ★자리를 옮기기 전에 옛 임시 폴더에 쌓인 우리 것도 함께 치운다 (2026-09-28).
+      //   우리 이름으로 시작하는 것만이다 — 남의 파일은 손대지 않는다.
+      if (kind === 'media') {
+        for (const full of strayTempEntries()) {
+          const r = wipeDir(full)
+          removed += r.removed; freed += r.freed
+        }
       }
     } else if (kind === 'works') {
       // ★기록만 지운다. 결과 폴더(`AudioForge_output`)는 이름조차 여기 나오지 않는다.

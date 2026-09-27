@@ -22,6 +22,7 @@ import { warmUpBridge, type WarmupHandle } from './services/bridge-warmup'
 /** 배경 데우기 손잡이 — 종료 때 멈추려면 붙들고 있어야 한다. */
 let warmupHandle: WarmupHandle | null = null
 import { channelForVersion } from '../shared/buildMetadata'
+import { planTempRoot, redirectTemp, LEGACY_TEMP_ENV_KEY } from '../shared/tempRoot'
 import { readSettingsFile, readSettingsMeta, SETTINGS_FORMAT_VERSION } from './services/settings-store'
 import { basename, dirname } from 'path'
 import { disposeAnalysisIpc, registerAnalysisIpc } from './ipc/analysis.ipc'
@@ -120,6 +121,31 @@ if (!(process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA)) {
     app.setPath('userData', target)
   } catch { /* 못 옮기면 있던 자리 그대로 — 조용히 실패하지 않게 아래 기록에 남는다 */ }
 }
+// ── 임시 자리도 앱 안으로 (2026-09-28 지시) ─────────────────────────────────
+//
+// ★왜 (사용자 지시): "가장 중요한건 6번이다. C 드라이브로 가지 않아야한다."
+//   데이터는 위에서 옮겼지만 **임시 파일은 그대로 시스템 드라이브**에 쌓이고 있었다.
+//   본체가 만드는 설정 JSON 15자리, 파이썬이 만드는 중간 폴더(음원 분리는 기가 단위),
+//   검사 격리 폴더까지. 사용자가 고른 적 없는 자리다.
+//
+// ★한 줄로 막는 이유 (실측): `os.tmpdir()` 은 **부를 때마다** TEMP/TMP 를 다시 읽고,
+//   파이썬 자식은 `...process.env` 를 그대로 물려받는다. 그래서 여기 한 번이면
+//   본체·파이썬이 함께 따라온다. 75자리를 각각 고치면 반드시 하나를 빠뜨린다.
+//
+// ★userData 가 정해진 **뒤**여야 한다 — 임시 자리는 데이터 자리 아래다.
+//   그리고 tmpdir() 을 쓰는 어떤 코드보다 **앞**이어야 한다(아래 등록들보다 위).
+const LEGACY_TEMP = tmpdir()
+{
+  const target = planTempRoot(app.getPath('userData'))
+  try {
+    mkdirSync(target, { recursive: true })
+    // 옛 자리는 적어 둔다 — 거기 남은 우리 잔해를 설정에서 비울 때 쓴다.
+    process.env[LEGACY_TEMP_ENV_KEY] = LEGACY_TEMP
+    redirectTemp(target, process.env)
+    app.setPath('temp', target)          // Electron 자신이 쓰는 자리도 함께
+  } catch { /* 못 만들면 옛 자리 그대로 — 아래 boot 기록에 실제 자리가 남는다 */ }
+}
+
 // ── 앱 로그 파일 — <userData>/logs/audioforge-<날짜>.log ─────────────────────────
 // userData 가 정해진 직후, 다른 어떤 것보다 먼저 만든다. 그래야 기동 중 오류도 파일에 남는다.
 // console.warn/error 는 그대로 나가면서 파일에도 적히고(터미널·E2E 수집 유지), 잡히지 않은 예외는
@@ -389,6 +415,9 @@ if (!gotLock) {
     } catch { APP_LOG.info('boot', 'AudioForge 시작(판 정보 읽기 실패)') }
     // 어느 데이터 폴더를 쓰는지 — 이름만(절대 경로 없음). 처음 복사했으면 무엇을 옮겼는지도.
     APP_LOG.info('boot', `데이터 폴더 ${basename(app.getPath('userData'))} (채널 ${USER_DATA_CHANNEL ?? '모름'})`)
+    // ★임시 자리가 **실제로** 옮겨졌는지 기록에 남긴다. 조용히 실패하면 여기서 드러난다 —
+    //   '앱 안' 이 아니면 그 실행은 시스템 드라이브에 쌓고 있다는 뜻이다.
+    APP_LOG.info('boot', `임시 자리 ${tmpdir().startsWith(app.getPath('userData')) ? '앱 안' : '앱 밖(!)'} · ${basename(tmpdir())}`)
     // 설정 파일의 판 — 어느 앱이 언제 썼는지. 아는 판보다 높으면 더 새 앱이 쓴 것이다(내리지 않는다).
     try {
       const got = readSettingsFile(join(app.getPath('userData'), 'settings.json'))

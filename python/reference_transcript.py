@@ -224,7 +224,7 @@ def transcribe_word_times(path: str, model_name: str = "small",
                 return fail(EMPTY_TRANSCRIPT, "요청 창이 원본 밖입니다.")
             data, _ = sf.read(path, start=a, frames=n, dtype="float32", always_2d=True)
             mono = data.mean(axis=1) if data.shape[1] > 1 else data[:, 0]
-            fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="af_words_")
+            fd, tmp = tempfile.mkstemp(suffix=".wav", prefix="audioforge_words_")
             os.close(fd)
             sf.write(tmp, mono, sr, subtype="PCM_16")
             target, offset = tmp, a / float(sr)

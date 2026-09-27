@@ -11,6 +11,8 @@
 //
 // 파이썬은 앱과 같은 규칙으로 찾는다: AUDIOFORGE_PYTHON → externals/env.json → 없으면 그 단계만 건너뛰고
 // **건너뛴 사실을 요약에 남긴다**(조용히 통과시키지 않는다).
+// ★맨 앞 — 게이트가 띄우는 검사·Electron·파이썬이 전부 이 자리를 물려받는다.
+import '../test/_temp-root.mjs'
 import { spawnSync } from 'child_process'
 import { existsSync, readFileSync } from 'fs'
 import path from 'path'

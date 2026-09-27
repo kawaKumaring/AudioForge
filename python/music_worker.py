@@ -196,7 +196,7 @@ def run_roformer_ensemble(input_path: str, output_dir: str,
     emit("progress", percent=8, message="입력 오디오 변환 중...")
     wav_input = convert_to_wav(input_path)
 
-    tmp_root = tempfile.mkdtemp(prefix="af_ens_")
+    tmp_root = tempfile.mkdtemp(prefix="audioforge_ens_")
     try:
         a = _run_one_roformer(_ROFORMER_MODEL, wav_input, model_dir,
                               os.path.join(tmp_root, "a"), 12, 48)
@@ -334,7 +334,7 @@ def run_roformer_multipass(input_path: str, output_dir: str,
         return run_roformer_separation(input_path, output_dir, model_name, passes[0] if passes else 0)
 
     emit("status", message="조건을 바꿔 %d번 갈라내는 중" % len(passes), percent=0)
-    tmp_root = tempfile.mkdtemp(prefix="af_mp_")
+    tmp_root = tempfile.mkdtemp(prefix="audioforge_mp_")
     got = []
     try:
         for i, sh in enumerate(passes):

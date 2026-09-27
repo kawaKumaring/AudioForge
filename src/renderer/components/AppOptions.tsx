@@ -49,7 +49,7 @@ const WIPE: Record<WipeKind, { label: string; what: string; keeps: string }> = {
   },
   media: {
     label: '중간 산출물 비우기',
-    what: '영상에서 꺼낸 소리, 참조 클립, 미리듣기를 지웁니다.',
+    what: '영상에서 꺼낸 소리, 참조 클립, 미리듣기를 지웁니다. 옛 임시 자리에 남은 것도 함께 치웁니다.',
     keeps: '작업 기록과 최종 결과물은 그대로입니다. 필요할 때 다시 만들어집니다.',
   },
   works: {
@@ -73,6 +73,9 @@ export default function AppOptions({ close }: { close: () => void }) {
   const [fault, setFault] = useState('')
   const [ask, setAsk] = useState<WipeKind | null>(null)
   const [busy, setBusy] = useState(false)
+  // 임시 자리 — 앱 안이어야 한다. 화면에 내보이면 조용히 새는 것이 눈에 띈다.
+  const [tempDir, setTempDir] = useState('')
+  const [stray, setStray] = useState(0)
 
   useEffect(() => {
     void (async () => {
@@ -81,6 +84,8 @@ export default function AppOptions({ close }: { close: () => void }) {
         setChosen(got.chosenRoot || '')
         setAppRoot(got.appRoot || '')
         setPlace(got.beside ? 'beside' : (got.chosenRoot ? 'chosen' : 'app'))
+        setTempDir(got.tempDir || '')
+        setStray(got.strayTemp || 0)
       } catch { setFault('설정을 읽지 못했습니다.') }
     })()
   }, [])
@@ -113,6 +118,8 @@ export default function AppOptions({ close }: { close: () => void }) {
       setNotice(r.removed
         ? `${WIPE[kind].label} — ${r.removed}개, 약 ${r.freedMb}MB 를 비웠습니다.`
         : '비울 것이 없었습니다.')
+      // 비운 뒤 다시 읽는다 — 옛 자리가 0이 됐는데 안내가 남아 있으면 거짓말이 된다.
+      try { const again = await window.api.options.get(); setStray(again.strayTemp || 0) } catch { /* 안내만 못 고친다 */ }
     } catch { setFault('비우지 못했습니다.') } finally { setBusy(false) }
   }
 
@@ -165,8 +172,31 @@ export default function AppOptions({ close }: { close: () => void }) {
         </label>
       </div>
 
+      {/* ── 앱이 쓰는 임시 자리 ─────────────────────────────────────────────
+          ★고르는 자리가 아니라 **보여 주는 자리**다 (2026-09-28).
+            예전에는 시스템 드라이브에 쌓였고 사용자는 그것을 볼 길이 없었다.
+            여기 적어 두면 잘못된 자리로 새는 것이 한눈에 보인다. */}
+      <div style={panel}>
+        <div style={row}>
+          <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>앱이 쓰는 임시 자리</span>
+          <span data-testid="options-temp-inside" style={muted}>
+            {tempDir ? (tempDir.startsWith(appRoot) && appRoot ? '앱 안' : '앱 밖') : ''}
+          </span>
+        </div>
+        <span data-testid="options-temp" title={tempDir} style={pathBox}>{tempDir || '(아직 모름)'}</span>
+        <span style={{ ...muted, fontSize: 11 }}>
+          만드는 중에만 쓰는 자리입니다. 작업이 끝나면 스스로 지웁니다.
+        </span>
+      </div>
+
       <div style={panel}>
         <span style={{ fontSize: 13, fontWeight: 600 }}>쌓인 것 비우기</span>
+        {stray > 0 && (
+          <span data-testid="options-stray-temp" style={{ ...muted, fontSize: 11 }}>
+            자리를 옮기기 전에 시스템 폴더에 쌓인 것이 {stray}개 남아 있습니다 —
+            중간 산출물을 비울 때 함께 치웁니다.
+          </span>
+        )}
         {(Object.keys(WIPE) as WipeKind[]).map((kind) => (
           <div key={kind} style={{ ...row }}>
             <span style={{ flex: '1 1 200px', fontSize: 12 }} title={`${WIPE[kind].what} ${WIPE[kind].keeps}`}>

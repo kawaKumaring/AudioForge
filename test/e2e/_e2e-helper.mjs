@@ -1,6 +1,9 @@
 // E2E 격리 헬퍼 — 실제 사용자 자산(resources/)을 절대 건드리지 않는다.
 // 입력 파일을 os.tmpdir()/audioforge_e2e_<UUID>/ 로 복사해 주입하고, 합성 출력도 그 격리 폴더 안
 // (dirname(input)/AudioForge_output)에 생성되게 한다. finally에서 자신이 만든 UUID 폴더만 삭제.
+// ★맨 앞이어야 한다 — 이 아래 어떤 모듈이 os.tmpdir() 을 읽기 전에 자리를 돌린다.
+//   (2026-09-28 지시: C 드라이브로 가지 않는다)
+import '../_temp-root.mjs'
 import { randomUUID, createHash } from 'crypto'
 import { execSync, execFileSync } from 'child_process'
 import fs from 'fs'

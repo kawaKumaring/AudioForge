@@ -111,6 +111,15 @@ try {
   ok(!fs.existsSync(mediaFile), '★중간 산출물이 지워졌다')
   ok(fs.existsSync(keepFile), '★그 옆의 다른 파일은 그대로다')
 
+  // ── 5.5 임시 자리를 사용자가 **볼 수 있다** ───────────────────────────
+  //   ★지시(2026-09-28): C 드라이브로 가지 않아야 한다. 어디에 쌓이는지 안 보이면
+  //     새고 있어도 알 길이 없다 — 지난 몇 달이 정확히 그랬다.
+  const tempShown = (await win.getByTestId("options-temp").innerText()).trim()
+  ok(tempShown.length > 0 && tempShown !== "(아직 모름)",
+    "★설정이 임시 자리를 보여 준다", tempShown)
+  const tempHome = (await win.getByTestId("options-temp-inside").innerText()).trim()
+  ok(tempHome === "앱 안" || tempHome === "앱 밖",
+    "앱 안인지 밖인지 말한다", tempHome)
   // ── 6. 손으로 결과 폴더를 짚어 되살리는 길은 **뺐다** ─────────────────
   //   ★지시(2026-09-28): "아무리 봐도 이해가 안간다 사용되지 않을듯하다".
   //     파일을 열면 앱이 스스로 이전 결과를 찾아 알려 주므로 손으로 짚을 일이 없다.

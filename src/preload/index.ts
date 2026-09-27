@@ -252,7 +252,9 @@ const api = {
   },
   /** 앱 설정 — 만든 것을 둘 자리와 쌓인 것 비우기. */
   options: {
-    get: (): Promise<{ chosenRoot: string; beside: boolean; appRoot: string; dataDir: string }> => ipcRenderer.invoke('options:get'),
+    // tempDir/strayTemp — 임시 자리가 앱 안인지 화면이 보여 준다(2026-09-28).
+    get: (): Promise<{ chosenRoot: string; beside: boolean; appRoot: string; dataDir: string;
+      tempDir: string; strayTemp: number }> => ipcRenderer.invoke('options:get'),
     set: (next: { chosenRoot?: string; beside?: boolean }): Promise<{ chosenRoot: string; beside: boolean; appRoot: string }> => ipcRenderer.invoke('options:set', next),
     pickRoot: (): Promise<{ path?: string; error?: string } | null> => ipcRenderer.invoke('options:pick-root'),
     wipe: (kind: string): Promise<{ removed: number; freedMb: number; error?: string }> => ipcRenderer.invoke('options:wipe', kind),
