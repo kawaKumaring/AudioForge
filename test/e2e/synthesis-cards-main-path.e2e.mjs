@@ -84,11 +84,19 @@ const trace = (label, ev, req) => console.log('  [증거]', label,
 const jobReq = (win) => win.evaluate(() => window.__synthesisCards.getState().job?.reqId ?? null)
 const cardState = (win) => win.evaluate(() => {
   const s = window.__synthesisCards.getState()
-  // 알림은 role="status" 줄에 뜬다. **무슨 글자인지까지 적어 둔다** — 보고의 증거다.
-  const box = document.querySelector('[role="status"]')
+  // ★알리는 자리가 **둘**이다 (2026-09-28 에 한 곳만 보고 있던 것을 고침)
+  //   · role="status" — 화면 위쪽 공용 알림
+  //   · role="alert"  — 그 카드에서 바로 말하는 실패 사유(`card-generate-fault`)
+  //   실패를 "어디에" 적는지는 화면의 재량이지만 **어딘가에는 적어야 한다.**
+  //   한 자리만 보면, 다른 자리로 옮긴 순간 검사가 눈뜬장님이 된다.
+  const say = (sel) => [...document.querySelectorAll(sel)]
+    .map((e) => (e.textContent || '').trim()).filter(Boolean)
+  const status = say('[role="status"]')
+  const alert = say('[role="alert"]')
   return {
     job: !!s.job, takes: s.cards[0].takes.map((t) => t.text),
-    notice: (box?.textContent || '').trim(),
+    notice: [...status, ...alert].join(' | '),
+    status, alert,
   }
 })
 

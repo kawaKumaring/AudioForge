@@ -122,6 +122,39 @@ test('★이 검사에 이빨이 있다 — 열쇠가 빠지면 잡는다', () =
   }
 })
 
+/**
+ * `settings:get` 이 렌더러에게 **돌려주는** 열쇠 목록.
+ *
+ * ★저장 목록과 **따로** 있다. 여기서 빠지면 저장은 되는데 **다시 켜면 사라진다** —
+ *   저장 실패보다 알아채기 어렵다(화면은 "저장했습니다" 라고 말한 뒤 조용히 잃는다).
+ */
+function readBranch(allow: string): string {
+  const from = allow.indexOf("ipcMain.handle('settings:get'")
+  assert.ok(from > 0, '읽기 분기를 찾지 못했다 — 이 검사를 먼저 고쳐라')
+  const to = allow.indexOf('})', allow.indexOf('return {', from))
+  assert.ok(to > from, '읽기 분기의 끝을 찾지 못했다')
+  return allow.slice(from, to)
+}
+
+test('★화면이 저장하는 열쇠를 settings:get 도 전부 돌려준다', () => {
+  const allow = readFileSync(AUDIO_IPC, 'utf-8')
+  const branch = readBranch(allow)
+  const names = [...new Set(savedKeyNames().map((x) => x.name))]
+  const missing = names.filter((n) => !branch.includes(`[${n}]`))
+  assert.deepEqual(missing, [],
+    'settings:get 이 돌려주지 않는다 — 저장은 되는데 다시 켜면 사라진다')
+})
+
+test('★읽기 검사에도 이빨이 있다', () => {
+  const branch = readBranch(readFileSync(AUDIO_IPC, 'utf-8'))
+  const names = [...new Set(savedKeyNames().map((x) => x.name))]
+  for (const victim of names) {
+    const broken = branch.split(`[${victim}]`).join('[없는열쇠]')
+    assert.deepEqual(names.filter((n) => !broken.includes(`[${n}]`)), [victim],
+      `${victim} 를 빼도 잡지 못한다`)
+  }
+})
+
 test('★이름이 비슷한 두 열쇠를 섞어 쓰지 않는다 (Edits ≠ Drafts)', () => {
   const keys = keyConstants()
   const pairs = [

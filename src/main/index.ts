@@ -107,7 +107,18 @@ if (!(process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA)) {
 // 검사 격리(AF_E2E_USER_DATA)가 가장 세다 — 검사는 사용자 자산을 건드리지 않는다.
 const APP_ROOT = join(__dirname, '..', '..')
 const APP_DATA_ROOT = join(APP_ROOT, 'AudioForge_data')
-if (!(process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA)) {
+/**
+ * 검사가 자리를 **직접 짚었으면 그대로 둔다.**
+ *
+ * ★두 가지를 모두 봐야 한다 (2026-09-28 에 하나를 빠뜨려 검사가 울었다)
+ *   · `AF_E2E_USER_DATA`      — 폴더를 콕 집는다
+ *   · `AF_E2E_USER_DATA_BASE` — 부모만 주고 채널 분기를 확인한다
+ *   뒤엣것을 무시하면 채널 분기를 보는 검사가 **앱 폴더로 끌려와** 아무것도 확인하지
+ *   못한다. 검사 격리가 앱 정리보다 세다 — 검사는 사용자 자산을 건드리지 않는다.
+ */
+const e2ePinnedUserData = process.env.AF_E2E === '1'
+  && !!(process.env.AF_E2E_USER_DATA || process.env.AF_E2E_USER_DATA_BASE)
+if (!e2ePinnedUserData) {
   const target = join(APP_DATA_ROOT, USER_DATA_DIR_NAME)
   try {
     mkdirSync(target, { recursive: true })

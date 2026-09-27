@@ -100,14 +100,18 @@ try {
   // ★2026-09-27 검수 1항 [P1] 재현: 저장 자리를 입력 A 로 고르니 ok=true 로 A 가 늘어났다.
   //   같은 파일을 **다른 이름으로** 부르는 경우(대소문자)까지 막아야 한다.
   const aliasOfA = path.join(path.dirname(A), path.basename(A).toUpperCase())
+  // ★알리는 줄이 **여럿**이다 (2026-09-28 에 첫 줄만 보고 있던 것을 고침).
+  //   '재생 중' 같은 다른 status 가 앞에 오면 거절 안내를 놓친다 —
+  //   제품은 멀쩡히 막고 있는데 검사만 눈뜬장님이 됐다. 이제 다 훑는다.
+  const sayAll = () => win.evaluate(() => [...document.querySelectorAll('[role="status"],[role="alert"]')]
+    .map((e) => (e.textContent || '').trim()).filter(Boolean).join(' | '))
   for (const [target, label] of [[A, '같은 이름'], [aliasOfA, '대소문자만 다른 이름']]) {
-    await win.evaluate(() => { const n = document.querySelector('[role="status"]'); if (n) n.textContent = '' })
     await app.evaluate(({ dialog }, dest) => { dialog.showSaveDialog = async () => ({ canceled: false, filePath: dest }) }, target)
     await win.getByTestId('join-save').click()
-    await win.waitForFunction(() =>
-      (document.querySelector('[role="status"]')?.textContent || '').includes('저장할 수 없습니다'),
+    await win.waitForFunction(() => [...document.querySelectorAll('[role="status"],[role="alert"]')]
+      .some((e) => (e.textContent || '').includes('저장할 수 없습니다')),
     null, { timeout: 60000 }).catch(() => {})
-    const why2 = await win.evaluate(() => (document.querySelector('[role="status"]')?.textContent || '').trim())
+    const why2 = await sayAll()
     check(why2.includes('저장할 수 없습니다'), `입력 생성본 위에 저장하려 하면 거절한다(${label})`, why2)
     check(Buffer.compare(fs.readFileSync(A), beforeA) === 0, `거절한 뒤에도 입력 바이트가 그대로다(${label})`)
     check(!fs.existsSync(A + '.part'), `쓰다 만 임시 파일을 남기지 않는다(${label})`)

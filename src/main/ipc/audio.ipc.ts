@@ -1515,6 +1515,11 @@ export function registerAudioIpc(
       [LAB_STORAGE_KEY]: stored[LAB_STORAGE_KEY] ?? null,
       [TRANSCRIPT_EDIT_STORAGE_KEY]: stored[TRANSCRIPT_EDIT_STORAGE_KEY] ?? null,
       [DIALOGUE_EDIT_STORAGE_KEY]: stored[DIALOGUE_EDIT_STORAGE_KEY] ?? null,
+      // ★파일별 보존 (2026-09-28 에 빠져 있던 것을 찾음).
+      //   저장 목록과 **읽기 목록이 따로** 있어서 두 군데를 다 챙겨야 한다.
+      //   읽기에서 빠지면 저장은 되는데 **다시 켜면 사라진다** — 더 알아채기 어렵다.
+      [TRANSCRIPT_DRAFTS_STORAGE_KEY]: stored[TRANSCRIPT_DRAFTS_STORAGE_KEY] ?? null,
+      [DIALOGUE_DRAFTS_STORAGE_KEY]: stored[DIALOGUE_DRAFTS_STORAGE_KEY] ?? null,
       // 생성 카드 작업 — 위 열쇠들과 서로 독립이다(문장별 작업을 덮지 않는다).
       [CARD_STORAGE_KEY]: stored[CARD_STORAGE_KEY] ?? null,
     }

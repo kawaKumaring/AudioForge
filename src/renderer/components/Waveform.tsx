@@ -117,9 +117,22 @@ export default function Waveform() {
    * ★부탁하는 쪽이 제 오디오 요소를 따로 들지 않게 한다 — 같은 원본을 두 군데서 틀면
    *   소리가 겹치고 음량 설정도 갈라진다. 틀 자리는 파형 하나뿐이다.
    */
+  // 부탁으로 틀고 있는가. **부탁이 걷히면 멈춰야 하므로** 따로 기억한다.
+  const askedRef = useRef(false)
   useEffect(() => {
     const ws = wsRef.current
-    if (!ws || !waveRange) return
+    if (!ws) return
+    if (!waveRange) {
+      // ★부탁이 걷혔다 — 부탁한 화면이 떠났거나 사용자가 멈춤을 눌렀다.
+      //   여기서 멈추지 않으면 **화면을 떠난 뒤에도 소리가 계속 난다**(2026-09-28 실측).
+      //   사용자가 파형을 직접 틀어 둔 것은 건드리지 않는다 — 부탁으로 튼 것만 멈춘다.
+      if (askedRef.current) {
+        askedRef.current = false
+        try { ws.pause() } catch { /* 이미 멈춤 */ }
+      }
+      return
+    }
+    askedRef.current = true
     const mine = waveRange.token
     void ws.play(Math.max(0, waveRange.start), waveRange.end).catch(() => {
       if (wsRef.current === ws) setPlayError('재생을 시작하지 못했습니다. 다시 눌러 주세요.')

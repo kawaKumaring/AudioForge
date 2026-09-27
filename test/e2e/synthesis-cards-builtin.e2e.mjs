@@ -6,6 +6,7 @@
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
+import { OUTPUT_ROOT_DIRNAME, FEATURE_FOLDERS, dayFolder } from '../../src/shared/outputLayout.ts'
 import { isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
@@ -153,8 +154,18 @@ try {
     '생성본에 그때의 기본 목소리가 남는다', after.voice)
   check(after.text === '안녕하세요. 기본 목소리로 읽습니다.', '생성본에 그때 대사가 남는다', after.text)
   // ★원본 파일 옆이 아니라 앱이 관리하는 자리에 쌓인다(원본이 없으므로).
-  check((after.path || '').replace(/\\/g, '/').includes('/cardOutput/'),
+  //   자리 규칙은 `doc/folder-rules.md` 와 `src/shared/outputLayout.ts` 가 갖는다 —
+  //   2026-09-28 에 `cardOutput` 한 칸에서 `AudioForge_output/<기능>/<날짜>/<시각_이름>`
+  //   으로 바뀌었다. 검사도 **그 규칙을 그대로** 본다(글자 하나를 외우지 않는다).
+  const madePath = (after.path || '').replace(/\\/g, '/')
+  // ★앱과 **같은 함수**로 날짜 칸을 만든다. UTC 로 따로 계산하면 자정 무렵에 하루가 어긋난다.
+  const day = dayFolder(new Date())
+  check(madePath.includes(`/${OUTPUT_ROOT_DIRNAME}/${FEATURE_FOLDERS.tts}/`),
     '앱이 관리하는 결과 폴더에 쌓인다', after.path)
+  check(madePath.includes(`/${FEATURE_FOLDERS.tts}/${day}/`),
+    '날짜 칸 아래에 쌓인다', after.path)
+  check(madePath.startsWith(APP.replace(/\\/g, '/') + '/'),
+    '★앱이 도는 자리 안이다 — 시스템 드라이브가 아니다', after.path)
 
   console.log('RESULT', passed, 'checks ·', fails.length, 'fail')
   if (fails.length) { console.error('실패:', fails.join(' / ')); process.exit(1) }

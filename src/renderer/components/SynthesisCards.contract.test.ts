@@ -62,12 +62,21 @@ export function connectionFaults(screen: string, runner: string, store: string, 
   //    없으면 본체가 SETTINGS_KEY_NOT_ALLOWED 로 조용히 거절하고 화면은 저장한 줄 안다.
   //    실제로 그 상태였다 — 카드 작업이 디스크에 한 번도 저장되지 않았다(2026-09-27).
   if (mainSrc) {
-    const allow = mainSrc.indexOf("ipcMain.handle('settings:set'")
-    if (allow < 0 || !mainSrc.slice(allow, allow + 1600).includes('CARD_STORAGE_KEY')) {
+    // ★분기 **전체**를 잘라서 본다. 예전에는 글자 창(±900자)으로 봤는데,
+    //   목록에 줄이 늘자 열쇠가 창 밖으로 밀려 **멀쩡한 코드를 실패로** 신고했다
+    //   (2026-09-28). 창 크기를 늘리는 것은 같은 사고를 미루는 것뿐이다.
+    const branch = (head: string, tail: string): string => {
+      const a = mainSrc.indexOf(head)
+      if (a < 0) return ''
+      const b = mainSrc.indexOf(tail, a)
+      return b > a ? mainSrc.slice(a, b) : ''
+    }
+    const setBranch = branch("ipcMain.handle('settings:set'", "code: 'SETTINGS_KEY_NOT_ALLOWED'")
+    if (!setBranch.includes('CARD_STORAGE_KEY')) {
       bad.push('본체가 카드 저장 열쇠를 받지 않는다 — 저장이 조용히 거절된다')
     }
-    const readAt = mainSrc.indexOf('[DIALOGUE_EDIT_STORAGE_KEY]: stored[')
-    if (readAt < 0 || !mainSrc.slice(readAt - 900, readAt + 400).includes('[CARD_STORAGE_KEY]: stored[')) {
+    const getBranch = branch("ipcMain.handle('settings:get'", '  })')
+    if (!getBranch.includes('[CARD_STORAGE_KEY]: stored[')) {
       bad.push('본체가 카드 저장본을 돌려주지 않는다 — 되살릴 수 없다')
     }
   }
