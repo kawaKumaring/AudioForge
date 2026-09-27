@@ -138,6 +138,9 @@ export function songExportFault(
 export function guardedFilesOf(r: SongResult): { label: string; path: string }[] {
   const list = [
     { label: '원곡', path: r.input.source.path },
+    // ★영상에서 꺼낸 비교용 원곡 소리. 이것을 덮으면 **원곡/변환본 비교 재생이 깨진다**
+    //   (2026-09-27 지시 3). 사용자가 고른 원본과 다른 파일이므로 따로 적어야 한다.
+    { label: '비교용 원곡 소리', path: r.sourceAudioPath },
     { label: '목소리', path: r.input.voice.path },
     { label: '참조 클립', path: r.reference.clipPath },
     { label: RESULT_LABEL.mix, path: r.mixPath },

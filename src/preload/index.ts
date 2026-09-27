@@ -202,9 +202,12 @@ const api = {
     run: (req: unknown) => ipcRenderer.invoke('song:run', req),
     /** 멈추기 — 바깥 변환기까지 끝난 것을 확인하고 답한다. */
     cancel: () => ipcRenderer.invoke('song:cancel'),
-    /** 결과를 고른 자리에 복사한다. 원본·참조·결과 위에는 저장할 수 없다. */
-    exportResult: (which: 'mix' | 'vocal' | 'withHarmony') =>
-      ipcRenderer.invoke('song:export', which),
+    /**
+     * 결과를 고른 자리에 복사한다. 원본·참조·결과 위에는 저장할 수 없다.
+     * `requestId` 는 **화면이 보고 있는 결과**의 것이다 — 본체가 대조해 다르면 거절한다.
+     */
+    exportResult: (which: 'mix' | 'vocal' | 'withHarmony', requestId: string) =>
+      ipcRenderer.invoke('song:export', which, requestId),
     /** 새 작업이 쌓이는 자리(더빙과 **같은 설정**을 쓴다). */
     workRoot: () => ipcRenderer.invoke('song:work-root'),
     onProgress: (callback: (data: unknown) => void) => {

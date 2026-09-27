@@ -120,20 +120,37 @@ function SongCards({ disabled }: { disabled: boolean }) {
     }
   }
 
+  /**
+   * 멈추기. **실패를 삼키지 않는다**(2026-09-27 지시 2).
+   *
+   * ★트리 종료가 확인되지 않으면 본체는 GPU 잠금을 **풀지 않는다.** 화면도 같은 상태를
+   *   유지해야 한다 — 멈춤 표시를 먼저 띄우면 사용자는 끝난 줄 알고 다음 작업을 누른다.
+   *   그래서 여기서는 사유만 알리고 **'멈추기' 를 계속 눌러 다시 시도할 수 있게** 둔다.
+   */
   const stop = async () => {
-    const r = await window.api.song.cancel() as
-      { ok: boolean; data?: { treeKillConfirmed?: boolean; reason?: string } }
-    if (!alive.current) return
-    if (r?.ok && r.data && r.data.treeKillConfirmed === false) {
-      setNotice(`멈추는 중입니다 — ${r.data.reason || '바깥 변환기가 끝나기를 기다립니다'}`)
+    setError(''); setNotice('')
+    try {
+      const r = await window.api.song.cancel() as
+        { ok: boolean; data?: { stopped?: boolean; treeKillConfirmed?: boolean; reason?: string }; error?: string }
+      if (!alive.current) return
+      if (!r?.ok) { setError(r?.error || '멈추지 못했습니다. 다시 시도해 주세요.'); return }
+      if (r.data?.stopped === false) { setNotice(r.data.reason || '돌고 있는 변환이 없습니다.'); return }
+      if (r.data?.treeKillConfirmed === false) {
+        setError(`아직 끝난 것을 확인하지 못했습니다 — ${r.data.reason || '바깥 변환기가 남아 있을 수 있습니다'}. `
+          + '다시 누르면 한 번 더 시도합니다.')
+      }
+    } catch (e) {
+      if (alive.current) setError((e as Error)?.message || '멈추지 못했습니다. 다시 시도해 주세요.')
     }
   }
 
   // ★결과 카드의 계약: 실패는 **던진다**(카드가 제 자리에 표시한다).
   //   저장 창을 사용자가 닫은 것은 실패가 아니다 — 조용히 돌아온다.
-  const save = async (which: 'mix' | 'vocal' | 'withHarmony') => {
+  const save = async (which: 'mix' | 'vocal' | 'withHarmony', requestId: string) => {
     setError(''); setNotice('')
-    const r = await window.api.song.exportResult(which) as
+    // ★**결과 카드가 보여 주고 있는** 요청의 식별자를 그대로 넘긴다.
+    //   본체가 들고 있는 마지막 결과를 쓰면 화면의 옛 결과에서 눌렀을 때 다른 파일이 저장된다.
+    const r = await window.api.song.exportResult(which, requestId) as
       { ok: boolean; data?: { path: string; canceled?: boolean }; error?: string }
     if (!r?.ok) throw new Error(r?.error || '저장하지 못했습니다')
     if (r.data?.canceled) return
@@ -141,9 +158,9 @@ function SongCards({ disabled }: { disabled: boolean }) {
   }
 
   /** 결과가 놓인 자리를 연다. 여는 것은 **결과 파일**이지 작업 폴더 전체가 아니다. */
-  const openFolder = async () => {
-    if (!result) throw new Error('열 결과가 없습니다')
-    const okOpen = await window.api.app.revealFile(result.mixPath)
+  const openFolder = async (mixPath: string) => {
+    if (!mixPath) throw new Error('열 결과가 없습니다')
+    const okOpen = await window.api.app.revealFile(mixPath)
     if (okOpen === false) throw new Error('결과 폴더를 열지 못했습니다')
   }
 
@@ -157,7 +174,7 @@ function SongCards({ disabled }: { disabled: boolean }) {
       <MediaImportCard file={files.source} busy={loading === 'source'} disabled={disabled || !!loading} onPick={() => void load('source')} onDrop={path => void load('source', path)} onClear={() => update('source', null)}/>
     </section>
     <section aria-label="목소리" style={panel}>
-      <div style={{ ...row, marginBottom: 14 }}><span style={{ fontSize: 11, color: 'var(--accent-light)' }}>02</span><h2 style={{ margin: 0, fontSize: 14, fontWeight: 600, flex: 1 }}>목소리</h2><span title="노래 변환에 사용할 목소리 파일입니다. 목소리 분석은 엔진 연결 후 진행합니다." tabIndex={0} style={{ fontSize: 11, color: 'var(--text-muted)' }}>음원 · 영상</span></div>
+      <div style={{ ...row, marginBottom: 14 }}><span style={{ fontSize: 11, color: 'var(--accent-light)' }}>02</span><h2 style={{ margin: 0, fontSize: 14, fontWeight: 600, flex: 1 }}>목소리</h2><span title="이 목소리로 원곡을 부릅니다. 길어도 괜찮습니다 — 변환할 때 앱이 깨끗한 8초 토막을 골라 쓰고 원본은 그대로 둡니다." tabIndex={0} style={{ fontSize: 11, color: 'var(--text-muted)' }}>음원 · 영상</span></div>
       <MediaImportCard voice file={files.voice} busy={loading === 'voice'} disabled={disabled || !!loading} onPick={() => void load('voice')} onDrop={path => void load('voice', path)} onClear={() => update('voice', null)}/>
     </section>
     </div>
@@ -183,8 +200,8 @@ function SongCards({ disabled }: { disabled: boolean }) {
         mixPath: result.mixPath,
       }}
       disabled={disabled || busy}
-      onSave={() => save('mix')}
-      onOpenFolder={() => openFolder()}/>}
+      onSave={(snapshot) => save('mix', snapshot.id)}
+      onOpenFolder={(snapshot) => openFolder(snapshot.mixPath)}/>}
     <div style={{ ...row, justifyContent: 'space-between' }}>
       <span tabIndex={0} title={busy ? (progress.message || '노래를 변환하는 중입니다') : (blocked || '원곡의 가락과 박자를 두고 목소리만 바꿉니다')}
         style={{ fontSize: 11, color: busy ? 'var(--accent-light)' : blocked ? 'var(--amber)' : 'var(--text-muted)' }}>

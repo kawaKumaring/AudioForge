@@ -76,6 +76,7 @@ const result = (): SongResult => ({
     splitLead: false,
   },
   mixPath: 'D:/작업/song/x/완성_화음없이_사람.wav',
+  sourceAudioPath: 'D:/작업/song/x/source.wav',
   vocalPath: 'D:/작업/song/x/바뀐주보컬_사람.wav',
   reference: {
     clipPath: 'D:/작업/song/x/참조_abcd.wav', fromPath: 'D:/목소리/사람.wav',
@@ -137,8 +138,22 @@ test('저장 자리가 비면 만들지 않는다', () => {
 
 test('2차 가르기를 켠 결과도 목록에 들어간다', () => {
   const r = { ...result(), withHarmonyPath: 'D:/작업/song/x/완성_원래화음같이_사람.wav' }
-  assert.equal(guardedFilesOf(r).length, 6)
+  assert.equal(guardedFilesOf(r).length, 7)
   assert.match(songExportFault(r.withHarmonyPath!, guardedFilesOf(r), probeOf()), /원래 화음까지/)
+})
+
+// ★영상에서 꺼낸 비교용 원곡 소리 — 이것을 덮으면 원곡/변환본 비교가 깨진다.
+test('비교용 원곡 소리 위에 저장할 수 없다', () => {
+  const r = result()
+  const why = songExportFault(r.sourceAudioPath, guardedFilesOf(r), probeOf())
+  assert.match(why, /비교용 원곡 소리/)
+  assert.match(why, /저장할 수 없/)
+})
+
+test('비교용 원곡 소리도 별칭으로 막는다', () => {
+  const r = result()
+  const probe = probeOf({ 'D:/딴이름.wav': 'dev:7', 'D:/작업/song/x/source.wav': 'dev:7' })
+  assert.match(songExportFault('D:/딴이름.wav', guardedFilesOf(r), probe), /비교용 원곡 소리/)
 })
 
 // ── 5. 늦게 온 응답 ──────────────────────────────────────────────────────

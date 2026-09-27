@@ -19,7 +19,7 @@ import { readSettingsFile, migrateSettings } from '../services/settings-store'
 import { workRootOf, workRootBlockReason } from '../../shared/workRoot'
 import { DUB_WORK_ROOT_KEY } from './dub.ipc'
 import {
-  songWorkFolderName, songExportFault, songRequestFault,
+  songWorkFolderName, songExportFault, songRequestFault, guardedFilesOf,
   type SongRequest, type SongResult,
 } from '../../shared/songJob'
 import { joinOutputFault, type PathProbe } from '../../shared/joinOutputGuard'
@@ -251,11 +251,19 @@ export function registerSongIpc(
    *   이름이 달라도 같은 파일이면 막는다. 판정은 `joinOutputGuard` 의 것을 그대로 쓴다.
    */
   ipcMain.handle('song:export', async (
-    _e, which: 'mix' | 'vocal' | 'withHarmony',
+    _e, which: 'mix' | 'vocal' | 'withHarmony', requestId: string,
   ): Promise<SongReply<{ path: string; canceled?: boolean }>> => {
     try {
       const r = lastResult
       if (!r) throw new SongError('내보낼 결과가 없습니다')
+      // ★화면이 **보고 있는 결과**만 저장한다(2026-09-27 지시 1).
+      //   본체가 들고 있는 마지막 결과를 그냥 쓰면, 새 변환이 끝난 뒤 화면의 옛 결과에서
+      //   저장을 눌렀을 때 **다른 파일이 저장된다.** 요청 식별자로 맞춰 본다.
+      const want = String(requestId || '')
+      if (!want) throw new SongError('저장할 결과를 지정하지 않았습니다')
+      if (want !== r.clientRequestId) {
+        throw new SongError('화면에 보이는 결과와 저장할 결과가 다릅니다. 결과를 다시 확인해 주세요.')
+      }
       const from = which === 'vocal' ? r.vocalPath
         : which === 'withHarmony' ? (r.withHarmonyPath || '') : r.mixPath
       if (!from || !existsSync(from)) throw new SongError('결과 파일을 찾지 못했습니다')
@@ -269,14 +277,8 @@ export function registerSongIpc(
       })
       if (d.canceled || !d.filePath) return ok({ path: '', canceled: true })
 
-      const guarded = [
-        { label: '원곡', path: r.input.source.path },
-        { label: '목소리', path: r.input.voice.path },
-        { label: '참조 클립', path: r.reference.clipPath },
-        { label: '변환 음원', path: r.mixPath },
-        { label: '변환 보컬만', path: r.vocalPath },
-        ...(r.withHarmonyPath ? [{ label: '원래 화음까지', path: r.withHarmonyPath }] : []),
-      ]
+      // 보호 목록은 **결과 계약이 정한다** — 여기서 따로 적지 않는다(두 벌이 되면 갈라진다).
+      const guarded = guardedFilesOf(r)
       const clash = songExportFault(d.filePath, guarded, fsProbe)
       if (clash) throw new SongError(clash)
       // 임시 자리까지 겹치지 않는지도 본다(같은 규칙을 두 벌로 만들지 않는다).

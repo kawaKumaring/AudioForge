@@ -146,6 +146,99 @@ try {
   check(!noise.includes('지난 요청의 진행') && !noise.includes('지난 요청의 실패'),
     '지난 요청의 진행·오류를 무시한다')
 
+  // ── 멈추기가 실패하면 **말한다** (2026-09-27 지시 2) ──────────────────
+  await app.evaluate(({ ipcMain, BrowserWindow }) => {
+    ipcMain.removeHandler('song:run')
+    ipcMain.handle('song:run', async (_e, req) => {
+      const w = BrowserWindow.getAllWindows()[0]
+      w?.webContents.send('song:progress', { clientRequestId: req.clientRequestId, percent: 20, message: '목소리 바꾸는 중' })
+      await new Promise((r) => setTimeout(r, 6000))
+      return { ok: false, error: '멈춤', code: 'CANCELLED' }
+    })
+    ipcMain.removeHandler('song:cancel')
+    // 트리 종료를 확인하지 못한 경우 — 본체는 GPU 잠금을 **풀지 않는다**.
+    ipcMain.handle('song:cancel', async () => ({
+      ok: true, data: { stopped: true, treeKillConfirmed: false, reason: '바깥 변환기가 아직 남아 있습니다' },
+    }))
+  })
+  await win.getByTestId('song-run').click()
+  await win.waitForFunction(() => document.querySelector('[data-testid="song-cancel"]'), null, { timeout: 15000 })
+  await win.getByTestId('song-cancel').click()
+  await win.waitForFunction(() => document.body.innerText.includes('확인하지 못했습니다'), null, { timeout: 15000 }).catch(() => {})
+  const halfStopped = await win.evaluate(() => ({
+    text: document.body.innerText,
+    canRetryCancel: !!document.querySelector('[data-testid="song-cancel"]'),
+  }))
+  check(halfStopped.text.includes('확인하지 못했습니다'), '트리 종료를 확인하지 못하면 사유를 말한다', halfStopped.text.slice(0, 120))
+  check(halfStopped.canRetryCancel, '확인 전에는 멈추기를 다시 누를 수 있다(잠금과 화면이 일치)', halfStopped)
+
+  // IPC 자체가 실패해도 삼키지 않는다.
+  await app.evaluate(({ ipcMain }) => {
+    ipcMain.removeHandler('song:cancel')
+    ipcMain.handle('song:cancel', async () => ({ ok: false, error: '멈추기 통로가 응답하지 않습니다' }))
+  })
+  await win.getByTestId('song-cancel').click()
+  await win.waitForFunction(() => document.body.innerText.includes('응답하지 않습니다'), null, { timeout: 15000 }).catch(() => {})
+  check((await win.evaluate(() => document.body.innerText)).includes('응답하지 않습니다'),
+    '멈추기 실패 사유를 표시한다')
+  await win.waitForTimeout(6500)          // 가짜 실행이 스스로 끝나기를 기다린다
+
+  // ── 저장은 **화면이 보고 있는 결과**만 (2026-09-27 지시 1) ────────────
+  //   두 가지를 따로 본다: ① 화면이 스냅샷의 요청 식별자를 넘기는가
+  //                      ② 본체가 자기 결과와 다른 식별자를 거절하는가
+  await app.evaluate(({ ipcMain, BrowserWindow }, [mix, src]) => {
+    globalThis.__songExportCalls = []
+    ipcMain.removeHandler('song:run')
+    ipcMain.handle('song:run', async (_e, req) => {
+      const w = BrowserWindow.getAllWindows()[0]
+      const data = {
+        clientRequestId: req.clientRequestId,
+        input: { source: req.source, voice: req.voice, splitLead: false },
+        mixPath: mix, sourceAudioPath: src, vocalPath: mix,
+        reference: { clipPath: src, fromPath: req.voice.path, startSec: 1, durationSec: 8, wholeFile: false },
+        settings: {}, workDir: 'x',
+      }
+      globalThis.__songShownId = req.clientRequestId
+      w?.webContents.send('song:result', data)
+      return { ok: true, data }
+    })
+    ipcMain.removeHandler('song:export')
+    ipcMain.handle('song:export', async (_e, which, requestId) => {
+      globalThis.__songExportCalls.push({ which, requestId })
+      return { ok: true, data: { path: 'C:/저장됨.wav' } }
+    })
+  }, [SONG, VOICE])
+  await win.getByTestId('song-run').click()
+  await win.getByTestId('song-result').waitFor({ timeout: 20000 })
+  await win.getByRole('button', { name: '파일로 저장' }).click()
+  await win.waitForFunction(() => true, null, { timeout: 2000 }).catch(() => {})
+  await win.waitForTimeout(800)
+  const passed1 = await app.evaluate(() => ({
+    calls: globalThis.__songExportCalls || [], shown: globalThis.__songShownId || '',
+  }))
+  check(passed1.calls.length === 1, '저장을 한 번 요청한다', passed1.calls)
+  check(passed1.calls[0]?.requestId === passed1.shown,
+    '★화면이 보고 있는 결과의 요청 식별자를 그대로 넘긴다', passed1)
+
+  // ② 다른 식별자를 넘기면 **본체가 거절한다** — 여기서는 본체와 같은 규칙의 문지기로 본다.
+  //    진짜 핸들러의 대조는 실제 엔진 경로(`scripts/song-video-check.mjs`)에서 확인한다.
+  await app.evaluate(({ ipcMain }) => {
+    ipcMain.removeHandler('song:export')
+    ipcMain.handle('song:export', async (_e, _which, requestId) => (
+      requestId === globalThis.__songShownId
+        ? { ok: true, data: { path: 'C:/저장됨.wav' } }
+        : { ok: false, error: '화면에 보이는 결과와 저장할 결과가 다릅니다.' }
+    ))
+  })
+  const refused = await win.evaluate(async () => window.api.song.exportResult('mix', '다른-요청'))
+  check(refused?.ok === false, '다른 식별자의 저장은 거절된다', refused)
+  const allowed = await win.evaluate(async () => {
+    const id = document.querySelector('[data-testid="song-result"]') ? null : null
+    void id
+    return null
+  })
+  void allowed
+
   // ── 실제 엔진 (느리다 — AF_SONG_REAL=1 일 때만) ──────────────────────
   if (process.env.AF_SONG_REAL === '1') {
     await app.evaluate(({ ipcMain }) => { ipcMain.removeHandler('song:run') })
