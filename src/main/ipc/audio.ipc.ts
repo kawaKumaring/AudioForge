@@ -42,6 +42,8 @@ import { LAB_STORAGE_KEY } from '../../shared/labWorkspace'
 import { planOutputDir, type OutputPlace } from '../../shared/outputLayout'
 import { TRANSCRIPT_EDIT_STORAGE_KEY } from '../../shared/transcriptEdit'
 import { DIALOGUE_EDIT_STORAGE_KEY } from '../../shared/dialogueEdit'
+import { TRANSCRIPT_DRAFTS_STORAGE_KEY } from '../../shared/transcriptDrafts'
+import { DIALOGUE_DRAFTS_STORAGE_KEY } from '../../shared/dialogueDrafts'
 import { CARD_STORAGE_KEY } from '../../shared/synthesisCardSave'
 import { registerTranscriptIpc } from './transcript.ipc'
 import { registerLabIpc } from './lab.ipc'
@@ -1544,6 +1546,12 @@ export function registerAudioIpc(
         || key === WORK_DRAFT_STORAGE_KEY || key === PLAYBACK_VOLUME_STORAGE_KEY
         || key === LAB_STORAGE_KEY || key === TRANSCRIPT_EDIT_STORAGE_KEY
         || key === DIALOGUE_EDIT_STORAGE_KEY
+        // ★파일별 보존 열쇠 (2026-09-28 에 빠져 있던 것을 찾음).
+        //   `…Edits` 와 `…Drafts` 는 **서로 다른 열쇠**다. 화면은 Drafts 를 쓰는데
+        //   목록에는 Edits 만 있어서, 전사 교정본과 대화 구간 수정본이
+        //   만들어진 날부터 줄곧 저장되지 않았다(9-27 · 그 이전).
+        || key === TRANSCRIPT_DRAFTS_STORAGE_KEY
+        || key === DIALOGUE_DRAFTS_STORAGE_KEY
         // 생성 카드 작업(2026-09-27). ★이 목록에 없으면 저장이 SETTINGS_KEY_NOT_ALLOWED 로
         //   **조용히 거절된다.** 화면은 저장한 줄 알고 넘어간다 — 열쇠를 새로 만들 때는
         //   반드시 여기에도 더해야 한다.
