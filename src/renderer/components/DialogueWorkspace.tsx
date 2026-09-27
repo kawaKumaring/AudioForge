@@ -8,7 +8,9 @@
 // ★소리는 **공용 원본 파형**에게 부탁해 튼다. 여기서 오디오를 따로 들지 않는다.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '@/stores/app.store'
-import { createManagedAudio } from '@/lib/playbackVolume'
+// 결과 듣기·내보내기는 **음악 화면과 같은 부품**을 쓴다(길이를 알고 끌어 이동할 수 있다).
+import { ResultPlayer, styleOf } from '@/components/ResultPlayer'
+import { ResultToolbar, useResultExport } from '@/components/ResultActions'
 import { formatMinSec } from '../../shared/timeFormat'
 import { saveSetting, saveFailureText } from '../../shared/saveSetting'
 import {
@@ -81,20 +83,21 @@ export default function DialogueWorkspace() {
   const [apply, setApply] = useState<ApplyState>('idle')
   const [appliedSig, setAppliedSig] = useState<string | null>(null)
   const [editedTracks, setEditedTracks] = useState<{ name: string; label: string; path: string }[]>([])
-  const [exportNote, setExportNote] = useState('')
   const [lines, setLines] = useState<Lines>(NO_LINES)
   const [showOrphans, setShowOrphans] = useState(false)
   const [showPast, setShowPast] = useState(false)
   const [readFail, setReadFail] = useState('')
   /** 무엇을 내보낼 것인가 — 최초 결과인가 교정본인가. */
   const [target, setTarget] = useState<'original' | 'edited'>('original')
+  /** 지금 펼쳐 듣는 결과 트랙 이름. 재생기는 한 번에 하나다. */
+  const [openTrack, setOpenTrack] = useState<string | null>(null)
+  const { note: exportNote, setNote: setExportNote, run: runExport } = useResultExport()
 
   const draftRef = useRef<DialogueDraft | null>(null)
   draftRef.current = draft
   /** 저장본을 실제로 읽어 왔는가. ★읽기 전에는 **절대 쓰지 않는다**(아래 설명). */
   const loadedRef = useRef('')
   const storeRef = useRef(store); storeRef.current = store
-  const trackAudio = useRef<HTMLAudioElement | null>(null)
   /**
    * 사용자가 이 분석에서 **한 번이라도 고쳤는가.**
    *
@@ -144,7 +147,7 @@ export default function DialogueWorkspace() {
     setHistory(emptyHistory<DialogueDraft>())
     setPicked(new Set()); setMergePick(new Set()); setOnly(null)
     setApply('idle'); setAppliedSig(null); setEditedTracks([]); setTarget('original')
-    setMessage(''); setError(''); setReadFail(''); setExportNote('')
+    setMessage(''); setError(''); setReadFail(''); setExportNote(null)
     setShowOrphans(false); setShowPast(false)
     void loadDrafts(analysis)
   }, [analysis, loadDrafts])
@@ -204,10 +207,10 @@ export default function DialogueWorkspace() {
     return () => { alive = false }
   }, [analysis])
 
-  // ── 소리: 원본은 공용 파형, 결과 트랙은 여기서 ──────────────────────────
+  // ── 소리: 원본 구간은 공용 파형, 결과 트랙은 공용 재생기 ────────────────
   useEffect(() => { if (!waveRange && playToken?.startsWith('seg:')) setPlayToken(null) }, [waveRange, playToken])
-  const stopTrack = useCallback(() => { try { trackAudio.current?.pause() } catch { /* noop */ } }, [])
-  useEffect(() => stopTrack, [stopTrack])
+  /** 결과 재생기를 닫는다 — 원본 구간을 틀기 전에 부른다(두 소리가 겹치지 않게). */
+  const stopTrack = useCallback(() => { setOpenTrack(null) }, [])
 
   const playRange = useCallback((token: string, start: number, end: number) => {
     stopTrack()
@@ -217,22 +220,12 @@ export default function DialogueWorkspace() {
     st.requestWaveRange(start, end)
   }, [playToken, stopTrack])
 
-  /** 결과 트랙 듣기 — 만들어진 파일을 그대로 튼다(공용 음량을 따른다). */
-  const playTrack = useCallback(async (token: string, path: string) => {
+  /** 결과 트랙 듣기 — 파형·이동·음량·원곡 비교가 **음악 화면과 같다**. */
+  const playTrack = useCallback((name: string) => {
     useAppStore.getState().clearWaveRange()
-    if (playToken === token) { stopTrack(); setPlayToken(null); return }
-    stopTrack()
-    setPlayToken(token)
-    // ★주소를 직접 조합하지 않는다. 결과 트랙을 트는 **기존 공용 경로**를 그대로 쓴다 —
-    //   이름에 `#` 이나 한글이 들어가도 그쪽이 이미 제대로 감싼다.
-    const src = await window.api.audio.getFileUrl(path)
-    const el = trackAudio.current || createManagedAudio()
-    trackAudio.current = el
-    if (el.src !== src) el.src = src
-    el.currentTime = 0
-    el.onended = () => setPlayToken(null)
-    el.play().catch(() => { setError('결과 트랙을 재생하지 못했습니다.'); setPlayToken(null) })
-  }, [playToken, stopTrack])
+    setPlayToken(null)
+    setOpenTrack((cur) => (cur === name ? null : name))
+  }, [])
 
   // ── 고치기 ───────────────────────────────────────────────────────────────
   const change = useCallback((kind: string, fn: (d: DialogueDraft) => DialogueDraft, seal = true) => {
@@ -277,7 +270,7 @@ export default function DialogueWorkspace() {
   // ── 교정본 만들기 — **요청 접수와 완료를 나눈다** ────────────────────────
   const rebuild = useCallback(async () => {
     if (!analysis || !draft || !plan || !fileInfo?.path) return
-    setError(''); setMessage(''); setExportNote('')
+    setError(''); setMessage(''); setExportNote(null)
     if (!plan.segments.length) { setError('쓸 수 있는 구간이 없습니다.'); return }
     // ★요청마다 식별자를 붙인다. **그 요청의 결과가 실제로 올 때만** 적용 완료로 본다.
     //   만드는 동안 더 고쳐도, 완성된 음원은 **요청할 때의 교정본**이다.
@@ -334,21 +327,6 @@ export default function DialogueWorkspace() {
   // ── 내보내기 — **무엇을 내보내는지 분명히** ──────────────────────────────
   const effTarget = editedTracks.length ? target : 'original'
   const shown = effTarget === 'edited' ? editedTracks : tracks
-  const doExport = useCallback(async () => {
-    setExportNote('')
-    const paths = shown.map((t) => t.path)
-    try {
-      const r = await window.api.audio.exportTracks(paths)
-      if (!r) return                                  // 사용자가 폴더 고르기를 취소했다
-      const what = effTarget === 'edited' ? '교정본' : '최초 결과'
-      if (r.ok) { setExportNote(`${what} ${r.copied.length}개를 내보냈습니다.`); return }
-      setExportNote(`${what} ${r.copied.length}개를 내보냈고 ${r.failed.length}개가 실패했습니다 — `
-        + r.failed.map((f) => `${f.name}(${f.why})`).join(', '))
-    } catch (e) {
-      setExportNote(`내보내지 못했습니다: ${(e as Error)?.message || e}`)
-    }
-  }, [shown, effTarget])
-
   if (!analysis || !draft) {
     if (!dialogueNotice) return null
     return (
@@ -694,60 +672,62 @@ export default function DialogueWorkspace() {
             : (hasEdits && dirty) ? 'var(--amber, #d4a017)' : 'var(--text-muted)',
         }}>{applyText}</span>
 
-        <span style={{ display: 'flex', alignItems: 'center', gap: 6, marginLeft: 'auto', flexWrap: 'wrap' }}>
-          {/* ★무엇을 내보내는지 고르게 하고, 고른 것을 그대로 적는다. */}
-          <span data-testid="dialogue-export-target" style={{ display: 'flex', gap: 2 }}>
-            {([['original', '최초 결과'], ['edited', '교정본']] as const).map(([id, label]) => {
-              const off = id === 'edited' && !editedTracks.length
-              return (
-                <button type="button" key={id} data-testid={`dialogue-target-${id}`}
-                  onClick={() => { stopTrack(); setPlayToken(null); setTarget(id) }} disabled={off}
-                  aria-pressed={effTarget === id}
-                  title={off ? '교정본을 아직 만들지 않았습니다' : `${label}을(를) 듣고 내보냅니다`}
-                  style={{
-                    ...btn(effTarget === id ? 'var(--bg-elevated)' : 'transparent',
-                      effTarget === id ? 'var(--text-primary)' : 'var(--text-muted)', off),
-                    padding: '3px 8px', fontSize: 10,
-                    border: `1px solid ${effTarget === id ? 'var(--cyan)' : 'transparent'}`,
-                  }}>{label}</button>
-              )
-            })}
-          </span>
-          <button type="button" data-testid="dialogue-export" onClick={() => { void doExport() }}
-            disabled={!shown.length}
-            title="고른 폴더로 복사합니다. 원본이나 결과 파일 위에는 저장하지 않습니다."
-            style={btn('var(--bg-elevated)', 'var(--text-primary)', !shown.length)}>
-            {effTarget === 'edited' ? '교정본 내보내기' : '최초 결과 내보내기'} ({shown.length})
-          </button>
+        <span style={{ marginLeft: 'auto', display: 'flex', flexWrap: 'wrap' }}>
+          <ResultToolbar what={effTarget === 'edited' ? '교정본' : '최초 결과'}
+            paths={shown.map((t) => t.path)} outputDir={analysis.outputDir} note={exportNote}
+            onExport={(paths, what) => { void runExport(paths, what) }}>
+            {/* ★무엇을 듣고 무엇을 내보내는지 한 곳에서 고른다. */}
+            <span data-testid="dialogue-export-target" style={{ display: 'flex', gap: 2 }}>
+              {([['original', '최초 결과'], ['edited', '교정본']] as const).map(([id, label]) => {
+                const off = id === 'edited' && !editedTracks.length
+                return (
+                  <button type="button" key={id} data-testid={`dialogue-target-${id}`}
+                    onClick={() => { stopTrack(); setPlayToken(null); setTarget(id) }} disabled={off}
+                    aria-pressed={effTarget === id}
+                    title={off ? '교정본을 아직 만들지 않았습니다' : `${label}을(를) 듣고 내보냅니다`}
+                    style={{
+                      ...btn(effTarget === id ? 'var(--bg-elevated)' : 'transparent',
+                        effTarget === id ? 'var(--text-primary)' : 'var(--text-muted)', off),
+                      padding: '3px 8px', fontSize: 10,
+                      border: `1px solid ${effTarget === id ? 'var(--cyan)' : 'transparent'}`,
+                    }}>{label}</button>
+                )
+              })}
+            </span>
+          </ResultToolbar>
         </span>
       </div>
 
       {/* 결과 듣기 — 지금 고른 쪽만 보여 준다(같은 결과를 두 군데에 쌓지 않는다). */}
       {shown.length > 0 && (
-        <div data-testid="dialogue-result-tracks" style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
-          {shown.map((t) => {
-            const token = `trk:${effTarget}:${t.name}`
-            return (
-              <button type="button" key={t.name} data-testid="dialogue-track-play"
-                onClick={() => { void playTrack(token, t.path) }}
-                aria-label={`${t.label} 듣기`}
-                title={`${effTarget === 'edited' ? '교정본' : '최초 결과'} — ${t.label}`}
-                style={{
-                  ...btn(playToken === token ? 'var(--bg-elevated)' : 'transparent', 'var(--text-primary)'),
-                  padding: '3px 9px', fontSize: 10, border: '1px solid var(--border-subtle)',
-                }}>
-                {playToken === token ? '■' : '▶'} {t.label}
-              </button>
-            )
-          })}
+        <div data-testid="dialogue-result-tracks" style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+          <div style={{ display: 'flex', gap: 6, flexWrap: 'wrap' }}>
+            {shown.map((t) => {
+              const on = openTrack === t.name
+              return (
+                <button type="button" key={t.name} data-testid="dialogue-track-play"
+                  onClick={() => playTrack(t.name)} aria-pressed={on} aria-label={`${t.label} 듣기`}
+                  title={`${effTarget === 'edited' ? '교정본' : '최초 결과'} — ${t.label}`}
+                  style={{
+                    ...btn(on ? 'var(--bg-elevated)' : 'transparent', 'var(--text-primary)'),
+                    padding: '3px 9px', fontSize: 10,
+                    border: `1px solid ${on ? styleOf(t.name).color : 'var(--border-subtle)'}`,
+                  }}>
+                  {on ? '■' : '▶'} {t.label}
+                </button>
+              )
+            })}
+          </div>
+          {/* 펼친 것 하나만 재생기를 연다 — 소리가 겹치지 않는다. */}
+          {shown.filter((t) => t.name === openTrack).map((t) => (
+            <ResultPlayer key={`${effTarget}:${t.name}`} path={t.path} color={styleOf(t.name).color}
+              paused={false} onClose={() => setOpenTrack(null)}
+              originalPath={fileInfo?.path || null} originalLabel={fileInfo?.name} />
+          ))}
         </div>
       )}
 
-      {exportNote && (
-        <div data-testid="dialogue-export-note" role="status" style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-          {exportNote}
-        </div>
-      )}
+
       {plan && plan.blocked.length > 0 && (
         <div data-testid="dialogue-blocked" role="alert" style={{ fontSize: 10, lineHeight: 1.6, color: 'var(--rose, #fb7185)' }}>
           시간이 올바르지 않은 발언 {plan.blocked.length}개는 빠집니다 —

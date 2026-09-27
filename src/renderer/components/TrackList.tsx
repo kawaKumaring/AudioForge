@@ -2,199 +2,37 @@ import { useEffect, useRef, useCallback, useState } from 'react'
 import { speakerBlockNotice } from '../../shared/speakerReference'
 import { sha256HexOfString } from '../../shared/referenceLibrary'
 import { motion, AnimatePresence } from 'framer-motion'
-import WaveSurfer from 'wavesurfer.js'
 import { useAppStore } from '@/stores/app.store'
 import { openTtsAdvanced } from '@/lib/ttsAdvancedOpen'
-import { createManagedAudio, getPlaybackVolume } from '@/lib/playbackVolume'
-import { usePlaybackVolume } from '@/hooks/usePlaybackVolume'
+import { createManagedAudio } from '@/lib/playbackVolume'
+// 결과 재생기·색·단추 모양은 **공용 부품**이다(음악·대화가 같은 것을 쓴다).
+import { ResultPlayer, actionBtnStyle, styleOf } from '@/components/ResultPlayer'
+import { ResultToolbar, useResultExport } from '@/components/ResultActions'
 
-function hexToRgba(hex: string, alpha: number): string {
-  const h = hex.replace('#', '')
-  return `rgba(${parseInt(h.slice(0, 2), 16)},${parseInt(h.slice(2, 4), 16)},${parseInt(h.slice(4, 6), 16)},${alpha})`
-}
-function fmtTime(sec: number): string {
-  const m = Math.floor(sec / 60), s = Math.floor(sec % 60)
-  return `${m}:${s.toString().padStart(2, '0')}`
+const menuItem: React.CSSProperties = {
+  padding: '5px 8px', borderRadius: 6, border: 'none', background: 'transparent',
+  color: 'var(--text-primary)', cursor: 'pointer', fontFamily: 'inherit', fontSize: 11,
+  textAlign: 'left', whiteSpace: 'nowrap',
 }
 
-// 결과 트랙용 파형 플레이어 (파형 + 시간 + 볼륨 + 드래그 이동). 재생 시에만 지연 생성.
-function TrackPlayer({ path, color, paused, onClose, originalPath, originalLabel }: {
-  path: string; color: string; paused: boolean; onClose: () => void
-  /** 같은 자리에서 견줘 들을 원본. 없으면 비교 단추를 내지 않는다. */
-  originalPath?: string | null; originalLabel?: string
+function TrackItem({ track, index, keep, onKeep, onKeepOnly }: {
+  track: { name: string; label: string; path: string }
+  index: number
+  /** 저장 대상으로 골랐는가. 재생 중인 것과 **다른 표시**다. */
+  keep: boolean
+  onKeep: (name: string, next: boolean) => void
+  /** 이것 **하나만** 저장 대상으로 — 개별 결과 저장에 쓴다. */
+  onKeepOnly: (name: string) => void
 }) {
-  const ref = useRef<HTMLDivElement>(null)
-  const wsRef = useRef<WaveSurfer | null>(null)
-  const readyRef = useRef(false)
-  const pausedRef = useRef(paused)
-  pausedRef.current = paused
-  const [cur, setCur] = useState('0:00')
-  const [dur, setDur] = useState('0:00')
-  // 지금 무엇을 듣고 있는가 — 분리 결과인가 원본인가.
-  const [listening, setListening] = useState<'track' | 'original'>('track')
-  // 전환할 때 이어받을 것: **그 순간의 재생 위치와 재생/멈춤 상태**.
-  //   두 파일 길이가 다를 수 있어, 되돌릴 때 새 파일의 유효 범위로 자른다.
-  const handoffRef = useRef<{ time: number; playing: boolean } | null>(null)
-  const activePath = listening === 'original' && originalPath ? originalPath : path
-  // 원본 파형 슬라이더와 **같은 값**이다(공용·보관됨) — 두 슬라이더가 서로 다른 값을 갖지 않는다.
-  const { volume, change: changeVolume, commit: commitVolume, saveFailed: volumeSaveFailed } = usePlaybackVolume()
-
-  useEffect(() => {
-    let cancelled = false
-    let ws: WaveSurfer | null = null
-    ;(async () => {
-      const url = await window.api.audio.getFileUrl(activePath)
-      if (cancelled || !ref.current) return
-      ws = WaveSurfer.create({
-        container: ref.current, waveColor: hexToRgba(color, 0.3), progressColor: color,
-        cursorColor: color, cursorWidth: 2, barWidth: 2, barGap: 2, barRadius: 4,
-        height: 40, normalize: true, backend: 'WebAudio', dragToSeek: true
-      })
-      // ★ 만들자마자 지금 음량을 건다 — **자동 재생 전에** 해야 한다.
-      //   이 플레이어는 파일 주소를 기다린 뒤에 만들어지는데, 음량 effect 는 그 전에 이미 끝난다.
-      //   그래서 여기서 걸지 않으면 결과 트랙의 **첫 재생만 최대 음량**으로 나갔다.
-      //   지역 상태(volume)가 아니라 소유자의 **지금 값**을 읽는다 — 기다리는 동안 사용자가
-      //   슬라이더를 움직였을 수 있고, 그때는 최신 값이 맞다.
-      ws.setVolume(getPlaybackVolume())
-      ws.on('timeupdate', (t) => setCur(fmtTime(t)))
-      ws.on('decode', (d) => setDur(fmtTime(d)))
-      ws.on('ready', () => {
-        readyRef.current = true
-        if (!ws) return
-        // ★전환이면 **위치와 상태를 이어받는다.** 길이가 다르면 유효 범위로 자른다.
-        const h = handoffRef.current
-        handoffRef.current = null
-        if (h) {
-          const total = ws.getDuration() || 0
-          const limit = Math.max(0, total - 0.05)
-          const at = total > 0 ? Math.min(Math.max(0, h.time), limit) : 0
-          // ★자른 경우에는 **이어서 틀지 않는다.** 짧은 쪽의 끝을 넘어간 자리였으니,
-          //   그대로 재생하면 0.05초 만에 끝나 재생기가 닫힌다(실측). 그 자리에 멈춰 둔다.
-          const clamped = h.time > limit + 0.001
-          try { ws.setTime(at) } catch { /* noop */ }
-          if (h.playing && !clamped) ws.play()
-          return
-        }
-        if (!pausedRef.current) ws.play()
-      })
-      ws.on('finish', () => onClose())
-      ws.load(url)
-      wsRef.current = ws
-    })()
-    return () => {
-      cancelled = true
-      const w = ws || wsRef.current
-      if (w) { try { w.pause() } catch { /* noop */ } try { w.destroy() } catch { /* noop */ } }
-      wsRef.current = null
-      readyRef.current = false
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activePath])
-
-  // 이후 슬라이더 변경은 이 effect 가 실시간으로 반영한다(생성 시점 적용과 별개).
-  useEffect(() => { wsRef.current?.setVolume(volume) }, [volume])
-
-  // 재생/일시정지 제어는 트랙 행의 버튼(원래 위치)이 담당 — paused prop을 준비된 뒤에만 반영
-  useEffect(() => {
-    const ws = wsRef.current
-    if (!ws || !readyRef.current) return
-    if (paused) ws.pause(); else ws.play()
-  }, [paused])
-
-  return (
-    <div style={{ padding: '8px 14px', borderTop: '1px solid var(--border-subtle)' }}>
-      <div ref={ref} style={{ marginBottom: 6 }} />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <span style={{ fontSize: 11, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>{cur} / {dur}</span>
-        {/* 원본 ↔ 분리 결과 — **같은 자리에서** 견준다. 재생기는 하나뿐이라 소리가 겹치지 않는다.
-            듣기만 한다: 저장된 파일을 키우거나 고르거나 다시 쓰지 않는다. */}
-        {originalPath && (
-          <button data-testid="track-compare" data-listening={listening}
-            onClick={() => {
-              const ws = wsRef.current
-              handoffRef.current = ws
-                ? { time: ws.getCurrentTime() || 0, playing: ws.isPlaying() }
-                : null
-              setListening((v) => (v === 'track' ? 'original' : 'track'))
-            }}
-            title={"같은 위치에서 원본과 분리 결과를 번갈아 들어 봅니다. 저장된 파일은 바뀌지 않습니다."}
-            aria-label={listening === 'track' ? '원본 듣기로 바꾸기' : '분리 결과 듣기로 바꾸기'}
-            style={{
-              padding: '2px 8px', borderRadius: 5, border: 'none', cursor: 'pointer',
-              fontFamily: 'inherit', fontSize: 10, fontWeight: 600,
-              background: listening === 'original' ? 'var(--cyan)' : 'var(--bg-elevated)',
-              color: listening === 'original' ? '#fff' : 'var(--text-secondary)',
-            }}>
-            {listening === 'original' ? `원본 듣는 중${originalLabel ? ` · ${originalLabel}` : ''}` : '원본과 비교'}
-          </button>
-        )}
-        <div title={volumeSaveFailed
-          ? '재생 볼륨 — 이 값을 기억하지 못했습니다(이번 실행에만 적용됩니다).'
-          : '재생 볼륨 (듣기 전용 · 원본 파일에는 영향 없음) — 정한 값이 다음에도 그대로 쓰입니다.'}
-          style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5 }}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-            {volume < 0.01
-              ? <><line x1="23" y1="9" x2="17" y2="15" /><line x1="17" y1="9" x2="23" y2="15" /></>
-              : <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />}
-          </svg>
-          <input type="range" min="0" max="1" step="0.05" value={volume}
-            data-testid="track-volume" aria-label="재생 볼륨 (듣기 전용, 원본에 영향 없음)"
-            onChange={(e) => changeVolume(parseFloat(e.target.value))}
-            onPointerUp={commitVolume} onKeyUp={commitVolume} onBlur={commitVolume}
-            style={{ width: 56, accentColor: color, cursor: 'pointer', height: 4 }} />
-        </div>
-        <button onClick={onClose} title="재생 닫기" aria-label="재생 닫기" style={{
-          display: 'flex', alignItems: 'center', justifyContent: 'center',
-          width: 28, height: 28, borderRadius: 6, border: 'none', cursor: 'pointer',
-          background: 'var(--bg-elevated)', color: 'var(--text-secondary)', flexShrink: 0
-        }}>
-          <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" aria-hidden="true">
-            <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-          </svg>
-        </button>
-      </div>
-    </div>
-  )
-}
-
-const TRACK_STYLES: Record<string, { color: string; glow: string }> = {
-  vocals:      { color: '#a78bfa', glow: 'rgba(167,139,250,0.15)' },
-  instrumental:{ color: '#60a5fa', glow: 'rgba(96,165,250,0.12)' },
-  drums:     { color: '#fbbf24', glow: 'rgba(251,191,36,0.12)' },
-  bass:      { color: '#34d399', glow: 'rgba(52,211,153,0.12)' },
-  other:     { color: '#60a5fa', glow: 'rgba(96,165,250,0.12)' },
-  // 화자 트랙: 화자 수 선택은 2~5명(Options.tsx)이므로 a~e 를 모두 채운다.
-  // c/d/e 가 비어 있으면 DEFAULT_STYLE(= speaker_a 와 같은 보라)로 떨어져
-  // 3명 이상일 때 트랙을 색으로 구분할 수 없었다. 결정적 매핑(해시·난수 없음),
-  // 색상은 기존 팔레트 규약(400 계열 hex + 같은 색 rgba glow)을 따른다.
-  speaker_a: { color: '#a78bfa', glow: 'rgba(167,139,250,0.15)' },  // violet
-  speaker_b: { color: '#22d3ee', glow: 'rgba(34,211,238,0.15)' },   // cyan
-  speaker_c: { color: '#fbbf24', glow: 'rgba(251,191,36,0.15)' },   // amber
-  speaker_d: { color: '#4ade80', glow: 'rgba(74,222,128,0.15)' },   // green
-  speaker_e: { color: '#f472b6', glow: 'rgba(244,114,182,0.15)' },  // pink
-  transcript:{ color: '#34d399', glow: 'rgba(52,211,153,0.12)' },
-  translation:{ color: '#22d3ee', glow: 'rgba(34,211,238,0.15)' },
-}
-const DEFAULT_STYLE = { color: '#a78bfa', glow: 'rgba(167,139,250,0.15)' }
-
-const actionBtnStyle = (active: boolean, color: string): React.CSSProperties => ({
-  display: 'flex', alignItems: 'center', gap: 4, padding: '6px 10px',
-  borderRadius: 6, border: 'none', cursor: 'pointer', fontSize: 11, fontWeight: 600,
-  fontFamily: 'inherit', transition: 'all 0.15s',
-  background: active ? `${color}20` : 'var(--bg-elevated)',
-  color: active ? color : 'var(--text-secondary)'
-})
-
-function TrackItem({ track, index }: { track: { name: string; label: string; path: string }; index: number }) {
   const { playingTrack, setPlayingTrack, outputDir, mode, translateModel, fileInfo,
     // ★고른 알아듣기 설정 — 트랙의 '가사' 도 같은 설정으로 돌아야 한다(2026-09-24 감사).
     whisperModel, whisperLang, asrSeparate } = useAppStore()
   const isPlaying = playingTrack === track.name
-  const st = TRACK_STYLES[track.name] || DEFAULT_STYLE
+  const st = styleOf(track.name)
   const [transcript, setTranscript] = useState<string | null>(null)
   const [translation, setTranslation] = useState<string | null>(null)
   const [showText, setShowText] = useState(false)
+  const [menu, setMenu] = useState(false)
   const [processing, setProcessing] = useState(false)
   const [paused, setPaused] = useState(false)  // 재생 중 일시정지 여부(행 버튼이 제어)
 
@@ -272,39 +110,28 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
         </div>
 
         {/* Label */}
-        <span style={{ flex: 1, fontSize: 12, fontWeight: 600, color: isPlaying ? st.color : 'var(--text-primary)' }}>
+        <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: isPlaying ? st.color : 'var(--text-primary)' }}>
           {track.label}
+          {isPlaying && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 500, color: st.color }}>듣는 중</span>}
         </span>
 
-        {/* Action buttons for tracks (split/music mode) */}
-        {isAudioTrack && (mode === 'split' || mode === 'music') && (
-          <div style={{ display: 'flex', gap: 4 }}>
-            {!transcript && !processing && (
-              <button onClick={() => handleTrackProcess(true, false)} style={actionBtnStyle(false, 'var(--cyan)')}>
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /></svg>
-                가사
-              </button>
-            )}
-            {transcript && !translation && !processing && (
-              <button onClick={() => handleTrackProcess(false, true)} style={actionBtnStyle(false, 'var(--emerald)')}>
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M5 8l6 6M4 14l6-6 2 3" /><path d="M2 5h12M7 2v6" /><path d="M12 22l5-10 5 10M14.5 19h5" /></svg>
-                번역
-              </button>
-            )}
-            {translation && !processing && (
-              <button onClick={() => handleTrackProcess(false, true)} style={actionBtnStyle(false, 'var(--text-muted)')}
-                title="현재 번역 설정(600M/1.3B/LLM)으로 다시 번역합니다">
-                <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M23 4v6h-6" /><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10" /></svg>
-                다시 번역
-              </button>
-            )}
-            {processing && (
-              <span role="status" aria-live="polite" style={{ fontSize: 11, color: 'var(--accent-light)', fontWeight: 500, padding: '4px 8px' }}>처리 중...</span>
-            )}
-          </div>
+        {/* ★저장 선택 — **재생 중인 것과 다른 표시**다(색 테두리 ≠ 저장 대상). */}
+        {isAudioTrack && (
+          <label data-testid="track-keep-label" title="저장할 결과로 고릅니다"
+            style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0, cursor: 'pointer', fontSize: 10, color: 'var(--text-muted)' }}>
+            <input type="checkbox" data-testid="track-keep" checked={keep}
+              onChange={(e) => onKeep(track.name, e.target.checked)}
+              aria-label={`${track.label} 저장 선택`}
+              style={{ accentColor: 'var(--accent)', cursor: 'pointer' }} />
+            저장
+          </label>
         )}
 
-        {/* Text toggle */}
+        {processing && (
+          <span role="status" aria-live="polite" style={{ fontSize: 11, color: 'var(--accent-light)', fontWeight: 500, padding: '4px 8px' }}>처리 중...</span>
+        )}
+
+        {/* 글이 나온 결과는 바로 펼쳐 볼 수 있다(자주 쓰는 조작은 밖에). */}
         {(transcript || translation) && (
           <button onClick={() => setShowText(!showText)} style={actionBtnStyle(showText, 'var(--cyan)')}
             aria-expanded={showText} aria-controls={`track-text-${track.name}`}
@@ -314,6 +141,42 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
             </svg>
             텍스트
           </button>
+        )}
+
+        {/* ★세부 조작은 **이 결과의 메뉴**로 모은다 — 줄마다 길게 늘어놓지 않는다. */}
+        {isAudioTrack && (mode === 'split' || mode === 'music') && !processing && (
+          <div style={{ position: 'relative', flexShrink: 0 }}>
+            <button data-testid="track-menu" onClick={() => setMenu((v) => !v)}
+              aria-expanded={menu} aria-haspopup="menu" aria-label={`${track.label} 세부 작업`}
+              title="이 결과로 할 수 있는 일" style={actionBtnStyle(menu, 'var(--text-secondary)')}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+                <circle cx="5" cy="12" r="1.8" /><circle cx="12" cy="12" r="1.8" /><circle cx="19" cy="12" r="1.8" />
+              </svg>
+            </button>
+            {menu && (
+              <div role="menu" data-testid="track-menu-list" style={{
+                position: 'absolute', right: 0, top: '100%', marginTop: 4, zIndex: 20,
+                display: 'flex', flexDirection: 'column', gap: 2, padding: 4, borderRadius: 8,
+                background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',
+                boxShadow: '0 6px 18px rgba(0,0,0,0.35)', minWidth: 132,
+              }}>
+                {!transcript && (
+                  <button role="menuitem" data-testid="track-menu-transcribe"
+                    onClick={() => { setMenu(false); void handleTrackProcess(true, false) }}
+                    title="이 결과의 말을 글로 옮깁니다" style={menuItem}>가사 뽑기</button>
+                )}
+                {transcript && (
+                  <button role="menuitem" data-testid="track-menu-translate"
+                    onClick={() => { setMenu(false); void handleTrackProcess(false, true) }}
+                    title={translation ? '지금 번역 설정으로 다시 번역합니다' : '뽑은 글을 한국어로 옮깁니다'}
+                    style={menuItem}>{translation ? '다시 번역' : '번역'}</button>
+                )}
+                <button role="menuitem" data-testid="track-menu-only"
+                  onClick={() => { setMenu(false); onKeepOnly(track.name) }}
+                  title="이 결과만 저장 대상으로 고릅니다" style={menuItem}>이것만 저장 선택</button>
+              </div>
+            )}
+          </div>
         )}
 
         {/* 재생 버튼 — 항상 이 자리(원래 위치). 아이콘만 ▶↔❚❚로 바뀜. 정지/닫기는 플레이어의 ✕. */}
@@ -337,7 +200,7 @@ function TrackItem({ track, index }: { track: { name: string; label: string; pat
       {/* 재생 시 펼쳐지는 파형 플레이어 (파형 + 시간 + 볼륨 + 드래그 이동). 재생/일시정지는 행 버튼이 제어. */}
       {/* 분리 결과일 때만 원본과 견줄 수 있다 — 텍스트 트랙에는 비교할 소리가 없다. */}
       {isPlaying && isAudioTrack && (
-        <TrackPlayer path={track.path} color={st.color} paused={paused} onClose={() => setPlayingTrack(null)}
+        <ResultPlayer path={track.path} color={st.color} paused={paused} onClose={() => setPlayingTrack(null)}
           originalPath={(mode === 'music' || mode === 'conversation') && track.name !== 'transcript'
             && track.name !== 'translation' ? (fileInfo?.path || null) : null}
           originalLabel={fileInfo?.name} />
@@ -441,25 +304,34 @@ export default function TrackList() {
   // ★내보내기 결과를 버리지 않는다(2026-09-24 2차 감사).
   //   예전에는 약속을 통째로 버려 거절이 콘솔 한 줄로 사라졌고,
   //   **성공과 실패가 화면상 완전히 같았다.**
-  const [exportNote, setExportNote] = useState<{ text: string; bad: boolean } | null>(null)
-  const doExport = useCallback(async () => {
-    setExportNote(null)
-    try {
-      const r = await window.api.audio.exportTracks(tracks.map((t) => t.path))
-      if (!r) return                       // 사용자가 폴더 고르기를 취소했다
-      if (r.ok) {
-        setExportNote({ text: `${r.copied.length}개를 내보냈습니다.`, bad: false })
-        return
-      }
-      const names = r.failed.map((f) => f.name).join(', ')
-      setExportNote({
-        text: `${r.copied.length}개를 내보냈고 ${r.failed.length}개가 실패했습니다 — ${names}`,
-        bad: true,
-      })
-    } catch (e) {
-      setExportNote({ text: `내보내지 못했습니다: ${(e as Error)?.message || e}`, bad: true })
-    }
-  }, [tracks])
+  const { note: exportNote, setNote: setExportNote, run: runExport } = useResultExport()
+  /**
+   * 저장 대상 — **결과가 바뀌면 다시 전부 고른 상태**로 시작한다.
+   *
+   * 모델마다 나오는 결과가 다르므로(보컬·반주 둘일 수도, 넷일 수도 있다)
+   * 이름 목록을 열쇠로 삼아 새 결과인지 본다.
+   */
+  const trackKey = tracks.map((t) => t.name).join('|')
+  const [dropped, setDropped] = useState<Set<string>>(new Set())
+  const [keptFor, setKeptFor] = useState('')
+  useEffect(() => {
+    if (keptFor === trackKey) return
+    setKeptFor(trackKey); setDropped(new Set()); setExportNote(null)
+  }, [trackKey, keptFor, setExportNote])
+  /** 이것 하나만 남긴다 — 나머지는 저장 대상에서 뺀다(개별 저장). */
+  const onKeepOnly = useCallback((name: string) => {
+    setDropped(new Set(tracksRef.current.filter((t) => t.name !== name).map((t) => t.name)))
+  }, [])
+  const onKeep = useCallback((name: string, next: boolean) => {
+    setDropped((s) => {
+      const n = new Set(s)
+      if (next) n.delete(name); else n.add(name)
+      return n
+    })
+  }, [])
+  const audioTracks = tracks.filter((t) => t.name !== 'transcript' && t.name !== 'translation')
+  const tracksRef = useRef(audioTracks); tracksRef.current = audioTracks
+  const keptPaths = audioTracks.filter((t) => !dropped.has(t.name)).map((t) => t.path)
 
   if (error) {
     // 생성 상한 도달(GENERATION_LIMIT_EXCEEDED)은 유효 입력에서도 비결정적으로 발생 가능 → 전용 안내 + 명시 재시도.
@@ -577,27 +449,29 @@ export default function TrackList() {
           </svg>
           <span style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)' }}>완료</span>
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{tracks.length}트랙</span>
+          {audioTracks.length > 0 && (
+            <span data-testid="track-keep-count" style={{ fontSize: 10, color: 'var(--text-muted)' }}
+              title="내보내기로 저장할 결과의 수입니다. 재생 중인 것과는 다릅니다.">
+              · 저장 선택 {keptPaths.length}/{audioTracks.length}
+            </span>
+          )}
         </div>
-        <div style={{ display: 'flex', gap: 6 }}>
+        <ResultToolbar what={mode === 'conversation' ? '인물별 결과' : '분리 결과'}
+          paths={keptPaths} outputDir={outputDir} note={exportNote}
+          onExport={(paths, what) => { void runExport(paths, what) }}>
           {mode === 'music' && <KaraokeButton tracks={tracks} />}
-          <button onClick={() => outputDir && window.api.app.openFolder(outputDir)} className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 12px' }}>폴더</button>
-          <button onClick={() => { void doExport() }} className="btn btn-primary" style={{ fontSize: 11, padding: '6px 12px' }}>내보내기</button>
-        </div>
+        </ResultToolbar>
       </div>
-      {/* ★성공도 실패도 말한다 — 예전에는 둘이 화면상 완전히 같았다(2026-09-24 감사). */}
-      {exportNote && (
-        <div style={{ fontSize: 11, padding: '4px 2px',
-          color: exportNote.bad ? 'var(--amber, #d98b2b)' : 'var(--text-muted)' }}>
-          {exportNote.text}
-        </div>
-      )}
 
       {/* Tracks — ★대화 모드에서는 **작업실의 인물 카드**가 이 자리를 대신한다.
           같은 트랙을 두 군데에 쌓지 않는다(2026-09-27 개편). 폴더·내보내기는 위에 남는다. */}
       {mode !== 'conversation' && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <AnimatePresence>
-            {tracks.map((track, i) => <TrackItem key={track.name} track={track} index={i} />)}
+            {tracks.map((track, i) => (
+              <TrackItem key={track.name} track={track} index={i}
+                keep={!dropped.has(track.name)} onKeep={onKeep} onKeepOnly={onKeepOnly} />
+            ))}
           </AnimatePresence>
         </div>
       )}

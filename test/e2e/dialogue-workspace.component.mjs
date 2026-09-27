@@ -34,6 +34,16 @@ const errors = []
 page.on('pageerror', (e) => errors.push(e.message))
 const pass = (s) => { checks++; console.log('PASS', s) }
 
+/** 검사용 소리 — 공용 재생기가 실제로 디코딩한다(2초). */
+const SR = 8000
+const wavBuf = Buffer.alloc(44 + SR * 2 * 2)
+wavBuf.write('RIFF'); wavBuf.writeUInt32LE(wavBuf.length - 8, 4); wavBuf.write('WAVEfmt ', 8)
+wavBuf.writeUInt32LE(16, 16); wavBuf.writeUInt16LE(1, 20); wavBuf.writeUInt16LE(1, 22)
+wavBuf.writeUInt32LE(SR, 24); wavBuf.writeUInt32LE(SR * 2, 28); wavBuf.writeUInt16LE(2, 32)
+wavBuf.writeUInt16LE(16, 34); wavBuf.write('data', 36); wavBuf.writeUInt32LE(wavBuf.length - 44, 40)
+for (let i = 44; i < wavBuf.length; i += 2) wavBuf.writeInt16LE(Math.sin(i * 0.05) * 6000, i)
+const WAV_URL = 'data:audio/wav;base64,' + wavBuf.toString('base64')
+
 /** 분석 결과 한 벌 — A 가 둘, B 가 하나. */
 const SEGS = [
   { start: 1, end: 3, speaker: '화자 A' },
@@ -43,6 +53,7 @@ const SEGS = [
 
 try {
   await page.setContent('<style>*{box-sizing:border-box}body{margin:20px;background:#101116;color:#eee;font:14px Arial}:root{--bg-base:#101116;--bg-card:#1b1d26;--bg-elevated:#272a35;--border-subtle:#383b48;--border-accent:#6c538d;--accent:#a77cf0;--accent-light:#c8aff8;--accent-glow:#9976ed18;--cyan:#6cc;--text-primary:#eee;--text-secondary:#bac1d2;--text-muted:#939aae;--amber:#edc46d;--rose:#f89}</style><div id="root"></div>')
+  await page.evaluate((w) => { window.wavUrl = w }, WAV_URL)
   await page.evaluate(() => {
     window.__settings = {}
     window.__getDelay = 0
@@ -69,7 +80,8 @@ try {
         onResult: (cb) => { window.__resultCbs.push(cb); return () => { window.__resultCbs = window.__resultCbs.filter((x) => x !== cb) } },
         onError: (cb) => { window.__errorCbs.push(cb); return () => { window.__errorCbs = window.__errorCbs.filter((x) => x !== cb) } },
         onCancelling: (cb) => { window.__cancelCbs.push(cb); return () => { window.__cancelCbs = window.__cancelCbs.filter((x) => x !== cb) } },
-        getFileUrl: async (fp) => { window.__urlAsked = fp; return 'local-file://' + encodeURIComponent(fp) },
+        // 본체의 공용 경로 대신 **실제로 디코딩되는 소리**를 돌려준다(주소를 물어봤다는 사실만 기록).
+        getFileUrl: async (fp) => { window.__urlAsked = fp; return window.wavUrl },
         exportTracks: async (paths) => { window.__exported = paths; return { ok: true, dir: 'D:/x', copied: paths.map((p) => p), failed: [] } },
       },
     }
@@ -248,16 +260,16 @@ try {
   pass('★그 요청의 결과를 받은 뒤에만 적용 완료로 표시한다')
 
   // ── 내보내기 대상 표시 ───────────────────────────────────────────────
-  assert.match(await page.getByTestId('dialogue-export').innerText(), /교정본 내보내기/)
-  await page.getByTestId('dialogue-export').click()
+  assert.match(await page.getByTestId('result-export').innerText(), /교정본 내보내기/)
+  await page.getByTestId('result-export').click()
   await page.waitForFunction(() => window.__exported !== null)
   assert.deepEqual(await page.evaluate(() => window.__exported), ['C:/out/edited_a.wav'])
-  assert.match(await page.getByTestId('dialogue-export-note').innerText(), /교정본/)
+  assert.match(await page.getByTestId('result-export-note').innerText(), /교정본/)
   pass('★교정본을 내보내면 교정본 파일이 나간다 — 무엇을 내보내는지 적는다')
 
   await page.getByTestId('dialogue-target-original').click()
   await page.waitForFunction(() =>
-    document.querySelector('[data-testid="dialogue-export"]').innerText.includes('최초 결과'))
+    document.querySelector('[data-testid="result-export"]').innerText.includes('최초 결과'))
   pass('★최초 결과와 교정본을 골라 내보낼 수 있다')
 
   // ── 파일별 보존: A 를 교정하고 B 에 갔다가 돌아온다 ──────────────────
@@ -481,6 +493,14 @@ try {
     [...document.querySelectorAll('audio')].map((a) => a.src).join(' '))
   assert.ok(!/^file:/.test(rawSrc), `file:// 주소를 직접 만들었다: ${rawSrc}`)
   pass('★결과 재생이 주소를 직접 조합하지 않고 공용 경로를 쓴다')
+
+  // ★결과 듣기는 **음악 화면과 같은 재생기**다 — 원곡 비교 단추가 함께 온다.
+  await page.waitForSelector('[data-testid="track-compare"]')
+  pass('★결과 듣기에 원곡 비교가 함께 온다(공용 재생기)')
+  // 다시 누르면 닫힌다 — 두 소리가 겹치지 않는다.
+  await page.getByTestId('dialogue-track-play').first().click()
+  await page.waitForFunction(() => !document.querySelector('[data-testid="track-compare"]'))
+  pass('다시 누르면 재생기가 닫힌다')
 
   // ══ 좁은 창 ════════════════════════════════════════════════════════════
   await page.setViewportSize({ width: 420, height: 900 })
