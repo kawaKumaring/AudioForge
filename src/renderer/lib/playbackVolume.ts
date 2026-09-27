@@ -41,6 +41,31 @@ export function attachPlaybackVolume(el: HTMLMediaElement | null | undefined): v
   applyTo(el)
   for (const ref of attached) if (ref.deref() === el) return
   attached.add(new WeakRef(el))
+  // ★소리가 나기 시작하면 알린다 — '지금 소리를 내는 자리' 를 앱이 하나로 지키기 위해서다.
+  //   등록부가 이미 모든 요소를 알고 있으므로, 각 화면이 따로 챙기지 않아도 된다.
+  // 진짜 DOM 요소일 때만 건다 — 검사에서 쓰는 대역 객체는 이 자리가 없다.
+  if (typeof el.addEventListener === 'function') {
+    el.addEventListener('play', () => { for (const cb of playListeners) cb(el) })
+  }
+}
+
+/** 재생이 시작될 때 알린다. 화면이 '소리 낼 자리' 를 가져가는 근거로 쓴다. */
+const playListeners = new Set<(el: HTMLMediaElement) => void>()
+export function onManagedPlay(cb: (el: HTMLMediaElement) => void): () => void {
+  playListeners.add(cb)
+  return () => { playListeners.delete(cb) }
+}
+
+/**
+ * 등록된 소리 요소를 **모두 멈춘다.** 다른 자리가 소리를 가져갈 때 부른다.
+ * ★멈추기만 한다 — 위치도 음량도 건드리지 않는다(이어 듣기를 빼앗지 않는다).
+ */
+export function pauseManagedAudio(): void {
+  for (const ref of [...attached]) {
+    const el = ref.deref()
+    if (!el) { attached.delete(ref); continue }
+    try { if (!el.paused) el.pause() } catch { /* 이미 버려진 요소 */ }
+  }
 }
 
 /** 소리 요소를 만들면서 곧바로 음량 관리 아래 둔다(만드는 자리에서 잊지 않도록). */

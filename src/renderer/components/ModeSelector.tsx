@@ -13,7 +13,7 @@ export const WORKSPACES: Record<SeparationMode, WorkspaceInfo> = {
   transcribe: { label: '텍스트 추출', group: '파일에서 시작', description: '음성을 글로 옮긴 뒤, 내용을 다듬고 번역하세요.', icon: icon(<><path d="M14 3H5v18h14V8zM14 3v5h5M8 12h8M8 16h6"/></>) },
   split: { label: '트랙 분할', group: '파일에서 시작', description: '파형을 들으며 구간을 나누고, 각각의 파일로 저장하세요.', icon: icon(<><path d="M12 3v18M3 8h5M3 12h5M3 16h5M16 8h5M16 12h5M16 16h5"/></>) },
   tts: { label: '음성 합성', group: '새 콘텐츠 만들기', description: '목소리를 고르고 대본을 작성해, 원하는 음성으로 완성하세요.', icon: icon(<><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></>) },
-  dub: { label: '노래 변환', group: '새 콘텐츠 만들기', description: '원곡의 목소리 변환 · 번역 가창은 후속 개발. 현재 화면의 더빙 경로와 노래 변환 코드 연결을 정리하는 중입니다.', icon: icon(<><path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4"/></>) },
+  dub: { label: '노래 변환', group: '새 콘텐츠 만들기', description: '원곡의 목소리를 다른 목소리로 바꿉니다. 번역 가창은 후속 개발입니다.', icon: icon(<><path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4"/></>) },
   lab: { label: '실험실', group: '새 콘텐츠 만들기', description: '개발 중인 기능을 확인하세요.', icon: icon(<><path d="M9 3h6M10 3v6L5 19h14L14 9V3"/></>) }
 }
 

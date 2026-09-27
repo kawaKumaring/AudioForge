@@ -4,7 +4,7 @@ import { useSynthesisCards, type SynthesisCard, type CardSource, type CardSettin
 import { isCancelCleanupBusy } from '../../shared/cancelContract'
 import CompactVoiceWaveform from './CompactVoiceWaveform'
 import MediaImportCard from './MediaImportCard'
-import { createManagedAudio } from '../lib/playbackVolume'
+import { createManagedAudio, onManagedPlay, pauseManagedAudio } from '../lib/playbackVolume'
 import {
   playPreview, stopPreview, disposePreview, onPreviewState, previewState, type PreviewState,
 } from '../lib/voicePreview'
@@ -497,6 +497,12 @@ export default function SynthesisCardWorkspace() {
 
   // 이전 작업 — **묻기만 한다.** 스스로 되살리는 길은 없다.
   // 치워 둔 것까지 함께 보여 준다 — 거절했던 작업에 재시작 뒤에도 닿을 수 있어야 한다.
+  // ★소리는 한 번에 한 곳만 — 음악·대화 결과 재생기와 같은 규칙이다.
+  //   예전에는 이 화면만 규칙 밖에 있어, 원본 파형을 틀어 둔 채 생성본을 들으면 둘이 겹쳤다.
+  const audioClaim = useAppStore((st) => st.audioClaim)
+  useEffect(() => onManagedPlay(() => useAppStore.getState().claimAudio('card')), [])
+  useEffect(() => { if (audioClaim && audioClaim.owner !== 'card') pauseManagedAudio() }, [audioClaim])
+
   const [restore, setRestore] = useState<RestoreChoice[] | null>(null)
 
   /**

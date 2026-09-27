@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
+import { useAppStore } from '../stores/app.store'
 import WaveSurfer from 'wavesurfer.js'
 import { getPlaybackVolume, onPlaybackVolumeChange } from '../lib/playbackVolume'
 
@@ -82,6 +83,12 @@ function ResultPlayback({ result, disabled, onSave, onOpenFolder }: SongResultCa
     if (phase === 'ready' && ws) { position.current = ws.getCurrentTime(); resume.current = ws.isPlaying() }
     ws?.pause(); setSide(next)
   }
+  // ★다른 자리가 소리를 가져가면 여기서 멈춘다(결과 재생기·원본 파형과 같은 규칙).
+  const claim = useAppStore((st) => st.audioClaim)
+  useEffect(() => {
+    if (claim && claim.owner !== 'song') { try { player.current?.pause() } catch { /* noop */ } }
+  }, [claim])
+
   const toggle = async () => {
     const ws = player.current
     if (!ws || disabled || phase !== 'ready') return
@@ -89,6 +96,8 @@ function ResultPlayback({ result, disabled, onSave, onOpenFolder }: SongResultCa
     if (ws.isPlaying()) { ws.pause(); return }
     if (ws.getCurrentTime() >= ws.getDuration()) ws.setTime(0)
     window.dispatchEvent(new CustomEvent(PLAY_EVENT, { detail: ws }))
+    // ★소리 낼 자리를 가져온다 — 원본 파형이나 다른 화면의 재생과 겹치지 않게.
+    useAppStore.getState().claimAudio('song')
     try { await ws.play() } catch { if (alive.current && player.current === ws) setMessage('재생하지 못했습니다') }
   }
   const run = async (kind: 'save' | 'folder') => {

@@ -156,6 +156,9 @@ try {
 
   // ══ 다른 원본 → 이전 결과가 남지 않는다 ════════════════════════════════
   await show(TWO, 'C:/out2')
+  // 결과가 바뀌면 다시 그려질 때까지 기다린다 — 이전 목록이 남아 있는지는 그 뒤에 본다.
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="track-keep"]').length === 2, null, { timeout: 5000 })
+    .catch(() => {})
   assert.equal(await page.getByTestId('track-keep').count(), 2)
   await page.waitForFunction(() =>
     document.querySelector('[data-testid="track-keep-count"]').innerText.includes('2/2'))
