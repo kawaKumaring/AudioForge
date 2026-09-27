@@ -230,8 +230,15 @@ input[type="range"]:focus-visible {
   .cancelling-indicator {
     animation: none !important;
   }
+  /* ★`0.01ms` 가 아니라 `0s` 다 (2026-09-28).
+     0.01ms 는 전환을 **없애지 않고 아주 짧게 일으킨다.** 그래서 모션 감소인데도
+     `getAnimations()` 에 전환이 잠깐 잡혔고, 검사가 세 번에 한 번씩 흔들렸다.
+     흔들리는 검사는 게이트를 믿을 수 없게 만든다 — 검사를 손대는 대신 여기를 고친다.
+     `transitionend` 를 기다리는 코드는 우리 쪽에 없다(실측). */
   * {
-    transition-duration: 0.01ms !important;
+    transition-duration: 0s !important;
+    animation-duration: 0s !important;
+    animation-iteration-count: 1 !important;
   }
 }
 
