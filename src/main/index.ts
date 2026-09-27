@@ -5,7 +5,7 @@ import {
 } from 'fs'
 import { tmpdir } from 'os'
 import { createHash, randomUUID } from 'crypto'
-import { statSync } from 'fs'
+import { statSync, mkdirSync, copyFileSync } from 'fs'
 import { pathToFileURL } from 'url'
 import { registerAudioIpc, dialogFolderHost } from './ipc/audio.ipc'
 import { registerAppVersionIpc, currentBuildInfo } from './ipc/app-version.ipc'
@@ -62,6 +62,14 @@ if (process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA) {
 // E2E 는 AF_E2E_USER_DATA(폴더 직접 지정)가 우선이고, AF_E2E_USER_DATA_BASE 는 이 분기를 검사할 때 부모를 바꾼다.
 // app.getVersion() 은 package.json 을 못 찾는 실행(electron out/main/index.js)에서 Electron 판을 돌려준다 —
 // 그래서 판의 권위는 currentBuildInfo()(pickAppVersion) 하나로 둔다.
+/**
+ * 옛 자리 — **이름으로 짚는다.** 설정 한 장을 가져올 때만 쓴다.
+ *
+ * ★`app.getPath('userData')` 를 그대로 쓰면 안 된다. 개발 실행(`electron out/main/index.js`)은
+ *   앱 이름을 모르는 채 뜨므로 그 값이 `Roaming/Electron` 이다 — 사용자의 설정이 있는
+ *   `Roaming/audio-forge` 가 아니다. 실측으로 엉뚱한 파일을 가져오는 것을 확인했다(2026-09-28).
+ */
+const legacyUserDataBase = app.getPath('appData')
 const USER_DATA_CHANNEL = channelForVersion(currentBuildInfo().version)
 const USER_DATA_DIR_NAME = userDataDirNameFor(USER_DATA_CHANNEL)
 let userDataSeed: SeedResult | null = null
@@ -81,6 +89,36 @@ if (!(process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA)) {
   }
 }
 
+
+// ── 앱이 도는 자리 안에 데이터를 둔다 (2026-09-28 지시) ─────────────────────
+//
+// ★왜 (사용자 지시): "C드라이브에 있는 파일들은 전부 삭제할것이고 구성을 개발툴
+//   내부에 셋팅되도록 구성한다." 예전에는 윈도우가 정한 자리(시스템 드라이브)에
+//   설정·꺼낸 소리·참조 클립·미리듣기·로그가 모두 쌓였다. 사용자는 그것을 고른 적이 없다.
+//
+// ★한 줄로 옮기는 이유: 자리를 쓰는 곳이 여덟 군데다. 각자 고치면 반드시 하나를 빠뜨린다.
+//   Electron 의 userData 자체를 옮기면 그 여덟이 **자동으로 따라온다.**
+//
+// ★맞바꿈: 앱 폴더를 지우면 데이터도 함께 사라진다. 그래서 산출물과 달리 이 자리는
+//   앱이 관리하는 것만 둔다 — 사용자가 만든 결과는 `AudioForge_output` 이 따로 갖는다.
+//
+// 검사 격리(AF_E2E_USER_DATA)가 가장 세다 — 검사는 사용자 자산을 건드리지 않는다.
+const APP_ROOT = join(__dirname, '..', '..')
+const APP_DATA_ROOT = join(APP_ROOT, 'AudioForge_data')
+if (!(process.env.AF_E2E === '1' && process.env.AF_E2E_USER_DATA)) {
+  const target = join(APP_DATA_ROOT, USER_DATA_DIR_NAME)
+  try {
+    mkdirSync(target, { recursive: true })
+    // 옛 자리의 **설정 한 장만** 가져온다. 캐시·중간 산출물은 가져오지 않는다
+    // (지시: "필요한 파일만 옴기고 생성으로 만들어진 파일들은 전부 제거").
+    const oldSettings = join(legacyUserDataBase, USER_DATA_DIR_NAME, 'settings.json')
+    const newSettings = join(target, 'settings.json')
+    if (existsSync(oldSettings) && !existsSync(newSettings)) {
+      copyFileSync(oldSettings, newSettings)
+    }
+    app.setPath('userData', target)
+  } catch { /* 못 옮기면 있던 자리 그대로 — 조용히 실패하지 않게 아래 기록에 남는다 */ }
+}
 // ── 앱 로그 파일 — <userData>/logs/audioforge-<날짜>.log ─────────────────────────
 // userData 가 정해진 직후, 다른 어떤 것보다 먼저 만든다. 그래야 기동 중 오류도 파일에 남는다.
 // console.warn/error 는 그대로 나가면서 파일에도 적히고(터미널·E2E 수집 유지), 잡히지 않은 예외는
