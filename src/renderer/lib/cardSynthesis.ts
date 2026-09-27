@@ -32,6 +32,7 @@ import {
 } from '../../shared/synthesisCardJob.ts'
 import {
   cardVoiceOf, needsReferencePrep, voiceGenerateFault, builtinRequestFields, voiceSnapshot,
+  type BuiltinVoiceRef, type VoiceSnapshot,
 // @ts-ignore TS5097
 } from '../../shared/synthesisCardVoice.ts'
 // @ts-ignore TS5097: node --test 가 이 파일을 곧바로 읽으므로 명시 확장자.
@@ -93,10 +94,16 @@ export function serializeWork(cards: SynthesisCard[], joins: JoinSettings): Save
       sourceDuration: c.source?.duration || 0,
       text: c.text, settings: { ...c.settings },
       adoptedId: c.adoptedId,
+      // ★기본 목소리 지정을 통째로 남긴다 — 엔진·모델·언어·화자·모델 경로까지.
+      //   하나라도 빠지면 되살린 카드가 '목소리 없는 카드' 가 된다(2026-09-27 재현).
+      ...(c.builtin ? { builtin: { ...c.builtin } } : {}),
       takes: c.takes.map((t) => ({
         id: t.id, path: t.path, createdAt: t.createdAt, text: t.text,
         sourcePath: t.source.path, sourceName: t.source.name,
+        sourceDuration: t.source.duration || 0,
         settings: { ...t.settings }, applied: { ...t.applied },
+        // 그때의 목소리. **기록이 없으면 넣지 않는다** — 지금 값으로 채우지 않는다.
+        ...(t.voice ? { voice: { ...t.voice } } : {}),
       })),
     })),
   }
@@ -123,20 +130,24 @@ export async function hydrateWork(w: SavedWork): Promise<{ cards: SynthesisCard[
     return {
       id: c.id, label: c.label,
       source: c.sourcePath ? { path: c.sourcePath, name: c.sourceName, duration: c.sourceDuration } : null,
+      // ★기본 목소리를 되살린다. 모양이 아니면 **자동으로 다른 목소리를 넣지 않는다** —
+      //   `builtinFrom` 이 null 을 돌려주고, 화면은 '목소리를 고르세요' 로 남는다.
+      ...(builtinFrom(c.builtin) ? { builtin: builtinFrom(c.builtin) } : {}),
       text: c.text, settings, adoptedId: c.adoptedId,
       takes: c.takes.map((t) => ({
         id: t.id, path: t.path, createdAt: t.createdAt, text: t.text,
-        source: { path: t.sourcePath, name: t.sourceName, duration: 0 },
+        source: { path: t.sourcePath, name: t.sourceName, duration: num(t.sourceDuration, 0) },
         settings: {
           speed: num(t.settings.speed, settings.speed), pitch: num(t.settings.pitch, settings.pitch),
           emotion: text(t.settings.emotion) || settings.emotion,
           reference: t.settings.reference === 'manual' ? 'manual' as const : 'auto' as const,
           start: num(t.settings.start, 0), end: num(t.settings.end, 0),
         },
-        applied: {
-          speed: num(t.applied.speed, fallback.speed), pitch: num(t.applied.pitch, fallback.pitch),
-          notes: Array.isArray(t.applied.notes) ? t.applied.notes as CardApplied['notes'] : [],
-        },
+        // ★**기록이 없으면 비워 둔다.** 예전에는 제품 기본값을 채워 넣어, 재지 않은 값을
+        //   "이 속도로 만들었다" 고 말하게 했다(2026-09-27 지적). 화면은 이미 '기록 없음' 을 그린다.
+        applied: appliedFrom(t.applied),
+        // 그때의 목소리. 옛 생성본에는 없다 — 없는 채로 둔다.
+        ...(voiceFrom(t.voice) ? { voice: voiceFrom(t.voice)! } : {}),
         missing: present[t.path] === false,
       })),
     }
@@ -153,6 +164,70 @@ export async function hydrateWork(w: SavedWork): Promise<{ cards: SynthesisCard[
 
 const num = (v: unknown, d: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : d)
 const text = (v: unknown): string => (typeof v === 'string' ? v : '')
+
+/**
+ * 저장된 기본 목소리 지정을 되살린다. **모자라면 null** — 반쯤 채워 쓰지 않는다.
+ *
+ * ★자동 대체를 하지 않는 이유(2026-09-27 요구): 모델이 사라졌는데 다른 목소리를 슬쩍 넣으면
+ *   사용자는 **다른 사람 목소리로 만들어진 것을 모른 채** 쓰게 된다.
+ *   여기서는 지정만 되살리고, 그 모델이 실제로 있는지는 화면이 따로 확인한다.
+ */
+function builtinFrom(raw: unknown): BuiltinVoiceRef | null {
+  if (!raw || typeof raw !== 'object') return null
+  const b = raw as Record<string, unknown>
+  const engineId = text(b.engineId), modelId = text(b.modelId), path = text(b.path)
+  if (!engineId || !modelId || !path) return null       // 이 셋이 없으면 생성에 쓸 수 없다
+  const speakerId = text(b.speakerId)
+  return {
+    engineId, modelId, path,
+    label: text(b.label) || modelId,
+    language: text(b.language),
+    sampleRate: num(b.sampleRate, 0),
+    ...(speakerId ? { speakerId } : {}),
+  }
+}
+
+/** 저장된 생성본 목소리 기록. 종류를 알 수 없으면 null(없는 채로 둔다). */
+function voiceFrom(raw: unknown): VoiceSnapshot | null {
+  if (!raw || typeof raw !== 'object') return null
+  const v = raw as Record<string, unknown>
+  const kind = text(v.kind)
+  if (kind !== 'reference' && kind !== 'builtin' && kind !== 'none') return null
+  const keep = (k: string) => (text(v[k]) ? { [k]: text(v[k]) } : {})
+  return {
+    kind, label: text(v.label),
+    ...keep('sourcePath'), ...keep('engineId'), ...keep('modelId'),
+    ...keep('language'), ...keep('speakerId'),
+  } as VoiceSnapshot
+}
+
+/**
+ * 저장된 **적용값**. 기록이 있는 것만 담는다.
+ *
+ * ★없는 값을 기본값으로 채우지 않는다. 채우면 "재지 않았다" 와 "1.0 이었다" 를 구별할 수 없다.
+ *   화면의 `appliedOf()` 가 비어 있는 자리를 '기록 없음' 으로 그린다.
+ */
+function appliedFrom(raw: Record<string, unknown>): CardApplied {
+  const a = raw || {}
+  const ref = a.reference as { clip?: unknown; region?: unknown } | undefined
+  const out: Record<string, unknown> = {
+    notes: Array.isArray(a.notes) ? a.notes : [],
+  }
+  if (typeof a.speed === 'number' && Number.isFinite(a.speed)) out.speed = a.speed
+  if (typeof a.pitch === 'number' && Number.isFinite(a.pitch)) out.pitch = a.pitch
+  // ★실제로 쓰인 참조 구간 — 자동 확정 구간까지 그대로 되살린다(2026-09-27 재현 대상).
+  if (ref && typeof ref === 'object' && typeof ref.clip === 'string') {
+    const r = ref.region as { start?: unknown; duration?: unknown } | null | undefined
+    const region = r && typeof r === 'object'
+      && typeof r.start === 'number' && Number.isFinite(r.start)
+      && typeof r.duration === 'number' && Number.isFinite(r.duration)
+      ? { start: r.start, duration: r.duration } : null
+    out.reference = { clip: ref.clip, region }
+  }
+  // 타입은 speed·pitch 를 요구하지만, **기록 없음을 표현하려면 비워야 한다.**
+  // 읽는 쪽(화면 `appliedOf`, 판정 `takeIsStale`)은 이미 없는 값을 다룬다.
+  return out as unknown as CardApplied
+}
 
 const newReqId = () => crypto.randomUUID()
 
@@ -280,6 +355,10 @@ export async function startCardGeneration(card: SynthesisCard): Promise<string> 
     cardId: card.id, reqId, text: card.text,
     source: card.source ? { ...card.source } : { path: '', name: cardVoiceLabelOf(card), duration: 0 },
     settings: { ...card.settings }, applied, startedAt: Date.now(),
+    // ★요청 시점의 목소리를 **여기서 굳힌다.** 예전에는 이 값이 없어서 결과를 받을 때
+    //   '지금 카드의 목소리' 로 대신 채웠다 — 만드는 동안 목소리를 바꾸면 그 생성본에
+    //   **만들지도 않은 목소리**가 기록됐다(2026-09-27 지적 3).
+    voice: voiceSnapshot(voice),
     percent: 0, message: '만드는 중…', cancelling: false,
   })
 
@@ -343,12 +422,13 @@ export function acceptCardResult(data: unknown): { takeId?: string; dropped?: st
   // 카드가 그 사이에 사라졌으면 붙일 자리가 없다.
   if (!st.cards.some((c) => c.id === job.cardId)) { endCardJob(); return { dropped: '카드가 사라졌습니다' } }
 
-  const card = st.cards.find((c) => c.id === job.cardId)!
   const take = {
     id: crypto.randomUUID(), path, createdAt: Date.now(),
     text: job.text, source: job.source, settings: job.settings, applied: job.applied,
-    // 그때의 목소리 — 나중에 '무엇으로 만든 소리인가' 를 답할 수 있어야 한다.
-    voice: job.voice || voiceSnapshot(cardVoiceOf(card)),
+    // ★그때의 목소리 — **요청 시점에 굳힌 값만** 쓴다.
+    //   지금 카드의 목소리로 대신 채우지 않는다. 만드는 동안 바꿨다면 그것은 다른 목소리다.
+    //   굳힌 값이 없는 경우(옛 경로)는 **비워 둔다** — 모르는 것을 아는 척하지 않는다.
+    ...(job.voice ? { voice: job.voice } : {}),
   }
   st.addTake(job.cardId, take)
   endCardJob()

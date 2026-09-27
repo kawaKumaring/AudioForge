@@ -25,8 +25,19 @@ export interface SavedTake {
   text: string
   sourcePath: string
   sourceName: string
+  /** 그때 원본의 길이. 0 은 '길이를 모른다' 는 뜻이다(없는 값을 0 으로 단정하지 않는다). */
+  sourceDuration: number
   settings: Record<string, unknown>
   applied: Record<string, unknown>
+  /**
+   * **무엇으로 만든 소리인가**(참조 파일인지 기본 목소리인지, 어느 모델인지).
+   *
+   * ★2026-09-27 재현: 이 칸이 없어 저장 왕복에서 통째로 사라졌다
+   *   (`beforeTakeVoice: true → restoredTakeVoice: false`).
+   *   생성본이 무엇으로 만들어졌는지 모르면 '수정 전' 판정도 할 수 없다.
+   * 기록이 없던 옛 생성본은 **없는 채로 둔다** — 지금 카드의 목소리로 채우지 않는다.
+   */
+  voice?: Record<string, unknown>
 }
 
 export interface SavedCard {
@@ -39,6 +50,13 @@ export interface SavedCard {
   settings: Record<string, unknown>
   takes: SavedTake[]
   adoptedId: string | null
+  /**
+   * 설치된 기본 목소리로 읽는 카드의 목소리 지정. 참조 카드에는 없다.
+   *
+   * ★2026-09-27 재현: 이 칸이 없어 기본 목소리 카드가 왕복 뒤 **목소리 없는 카드**가 됐다
+   *   (`beforeVoice: builtin → restoredVoice: none`). 파일도 모델도 없는 카드는 생성이 막힌다.
+   */
+  builtin?: Record<string, unknown>
 }
 
 export interface SavedWork {
@@ -50,6 +68,10 @@ export interface SavedWork {
 const num = (v: unknown, fallback = 0): number =>
   typeof v === 'number' && Number.isFinite(v) ? v : fallback
 const str = (v: unknown): string => (typeof v === 'string' ? v : '')
+/** 객체이고 비어 있지 않을 때만 돌려준다. 빈 것은 '기록 없음' 과 같게 다룬다. */
+const obj = (v: unknown): Record<string, unknown> | null =>
+  v && typeof v === 'object' && !Array.isArray(v) && Object.keys(v).length
+    ? (v as Record<string, unknown>) : null
 
 /**
  * 저장본을 읽는다. **깨져 있으면 null 이다 — 반쯤 읽어 되살리지 않는다.**
@@ -75,8 +97,11 @@ export function parseSavedWork(raw: unknown): SavedWork | null {
       takes.push({
         id: str(tt.id), path: str(tt.path), createdAt: num(tt.createdAt),
         text: str(tt.text), sourcePath: str(tt.sourcePath), sourceName: str(tt.sourceName),
+        sourceDuration: num(tt.sourceDuration),
         settings: (tt.settings as Record<string, unknown>) || {},
         applied: (tt.applied as Record<string, unknown>) || {},
+        // ★기록이 없으면 **넣지 않는다.** 빈 객체를 넣으면 '기록 없음' 과 '없는 목소리' 가 섞인다.
+        ...(obj(tt.voice) ? { voice: obj(tt.voice)! } : {}),
       })
     }
     const adopted = str(c.adoptedId)
@@ -87,6 +112,7 @@ export function parseSavedWork(raw: unknown): SavedWork | null {
       takes,
       // 채택한 생성본이 사라졌으면 채택도 없던 것으로 — 없는 것을 가리키면 최종 연결이 헛돈다.
       adoptedId: takes.some((t) => t.id === adopted) ? adopted : null,
+      ...(obj(c.builtin) ? { builtin: obj(c.builtin)! } : {}),
     })
   }
   return {
