@@ -315,12 +315,19 @@ try {
     || document.querySelector('[data-testid="dialogue-apply-state"]').innerText.includes('요청을 보냈'))
   const cid = await page.evaluate(() => window.__lastReq?.clientRequestId)
 
-  // 남의 취소 통지는 내 작업을 건드리지 않는다
-  await page.evaluate(() => window.__fire('cancel', { clientRequestId: 'someone-else' }))
-  await page.waitForTimeout(150)
+  // 남의 취소 통지는 내 작업을 건드리지 않는다 — **짐이 없는 신호도 마찬가지다.**
+  //   본체는 이 실행의 마감 신호에 반드시 식별자를 싣는다. 싣지 않은 것은 남의 실행이다.
+  await page.evaluate(() => {
+    window.__fire('cancel', { clientRequestId: 'someone-else' })
+    window.__fire('cancel', {})            // 짐이 비어 있다
+    window.__fire('cancel', null)          // 짐 자체가 없다
+    window.__fire('cancelled', {})
+    window.__fire('cancel-failed', {})
+  })
+  await page.waitForTimeout(200)
   assert.doesNotMatch(await page.getByTestId('dialogue-apply-state').innerText(), /멈/,
-    '남의 취소 통지가 내 작업을 멈춘 것처럼 보였다')
-  pass('★남의 취소 통지는 내 작업을 건드리지 않는다')
+    '식별자 없는 취소 신호가 내 작업을 건드렸다')
+  pass('★남의 취소 통지도, 식별자 없는 취소 신호도 내 작업을 건드리지 않는다')
 
   // 내 취소가 시작됐다 — **멈추는 중**이지 멈춘 것이 아니다
   await page.evaluate((id) => window.__fire('cancel', { clientRequestId: id }), cid)
@@ -328,11 +335,14 @@ try {
     document.querySelector('[data-testid="dialogue-apply-state"]').innerText.includes('멈추는 중'))
   pass('★취소 시작은 멈추는 중으로만 적는다')
 
-  // 멈추지 못했다 — 작업은 계속 돈다. 통로를 끊지 않았으므로 결과가 오면 붙는다.
-  await page.evaluate((id) => window.__fire('cancel-failed', { clientRequestId: id }), cid)
+  // 멈추지 못했는데 **자식이 아직 살아 있다** — 본체는 그 자식이 끝나면 결과를 보낸다.
+  //   그러니 통로를 끊지 않고 '만드는 중' 으로 돌아간다.
+  await page.evaluate((id) => window.__fire('cancel-failed', { clientRequestId: id, childAlive: true }), cid)
   await page.waitForFunction(() =>
     document.querySelector('[data-testid="dialogue-apply-state"]').innerText.includes('만드는 중'))
-  pass('★멈추지 못하면 다시 만드는 중으로 돌아간다')
+  assert.match(await page.getByTestId('dialogue-message').innerText(), /다시 취소/,
+    '다시 취소를 권하지 않았다')
+  pass('★자식이 살아 있으면 만드는 중으로 돌아가고 다시 취소를 권한다')
   await page.evaluate((id) => window.__fire('result', {
     clientRequestId: id, tracks: [{ name: 'edited_a', label: 'a', path: 'C:/out/cancelfail_a.wav' }],
   }), cid)
@@ -360,6 +370,40 @@ try {
   assert.match(await page.getByTestId('dialogue-apply-state').innerText(), /멈췄습니다/,
     '멈춘 뒤 늦게 온 결과가 화면을 되돌렸다')
   pass('★멈춘 뒤에는 늦게 온 결과가 화면을 되돌리지 않는다')
+
+  // ★자식이 죽은 갈래에서는 **기다리지 않는다.** 본체가 이 실행의 결과 공개를 이미 닫았다.
+  for (const [label, payload, want] of [
+    ['임시 파일 정리 미완', { childAlive: false, cleanupPending: true }, /잠시 뒤 다시 만들어/],
+    ['종료 미확인', { childAlive: false }, /종료를 확인하지 못했/],
+  ]) {
+    await page.getByTestId('dialogue-card-name').first().fill('갈래' + label.slice(0, 2))
+    await page.waitForFunction(() => !document.querySelector('[data-testid="dialogue-rebuild"]').disabled)
+    await page.getByTestId('dialogue-rebuild').click()
+    await page.waitForFunction(() => document.querySelector('[data-testid="dialogue-apply-state"]').innerText.includes('만드는 중')
+      || document.querySelector('[data-testid="dialogue-apply-state"]').innerText.includes('요청을 보냈'))
+    const id = await page.evaluate(() => window.__lastReq?.clientRequestId)
+    const names = await page.evaluate(() => document.querySelectorAll('[data-testid="dialogue-card-name"]')[0].value)
+    await page.evaluate(({ id, payload }) => {
+      window.__fire('cancel', { clientRequestId: id })
+      window.__fire('cancel-failed', { ...payload, clientRequestId: id })
+    }, { id, payload })
+    await page.waitForFunction(() =>
+      document.querySelector('[data-testid="dialogue-apply-state"]').innerText.includes('만들지 못했'))
+    assert.match(await page.getByTestId('dialogue-message').innerText(), want,
+      label + ' 갈래의 사유가 다르다')
+    pass('★' + label + ' 갈래는 기다리지 않고 사유를 말한다')
+    // 늦게 온 결과가 화면을 되돌리지 않는다(통로를 끊었다)
+    await page.evaluate((id) => window.__fire('result', {
+      clientRequestId: id, tracks: [{ name: 'edited_a', label: 'a', path: 'C:/out/never.wav' }],
+    }), id)
+    await page.waitForTimeout(150)
+    assert.doesNotMatch(await page.getByTestId('dialogue-apply-state').innerText(), /음원을 만들었/,
+      label + ' 갈래에서 통로가 남아 있었다')
+    // ★고친 내용은 그대로다 — 실패가 작업을 지우지 않는다
+    assert.equal(await page.evaluate(() => document.querySelectorAll('[data-testid="dialogue-card-name"]')[0].value), names,
+      label + ' 갈래에서 고친 이름이 사라졌다')
+    pass('★' + label + ' 갈래에서도 고친 내용은 그대로다')
+  }
 
   // ★만드는 동안 더 고치면, 완성된 음원은 **요청 당시** 것이다.
   await page.getByTestId('dialogue-rebuild').click()

@@ -246,10 +246,38 @@ function TrackItem({ track, index, keep, onKeep, onKeepOnly }: {
 function KaraokeButton({ tracks }: { tracks: { name: string; path: string }[] }) {
   const audiosRef = useRef<HTMLAudioElement[]>([])
   const [playing, setPlaying] = useState(false)
+  /**
+   * 반주를 읽어 오는 **이번 요청의 번호**와 화면이 아직 살아 있는지.
+   *
+   * ★파일 주소를 물어보는 동안 화면이 사라지거나 다른 재생이 시작될 수 있다.
+   *   그때 뒤늦게 자리를 가져와 반주를 틀면, 사용자가 방금 고른 소리를 덮는다.
+   *   번호가 바뀌었거나 떠났으면 **만든 것을 버리고 아무 소리도 내지 않는다.**
+   */
+  const loadSeq = useRef(0)
+  const alive = useRef(true)
+  const loading = useRef(false)
+
+  /**
+   * 이 묶음이 어느 결과의 것인가. **결과가 바뀌면 지난 반주를 버린다.**
+   *
+   * ★읽어 둔 묶음을 그대로 두면, 다른 원본을 분리한 뒤 노래방을 눌렀을 때
+   *   **지난 곡의 반주**가 울린다(실측: 새 결과에서 파일을 한 번도 읽지 않았다).
+   *   조기 return 위에 둔다 — 훅 규칙.
+   */
+  const bandKey = tracks.filter(t => t.name !== 'vocals').map(t => t.path).join('|')
+  useEffect(() => {
+    loadSeq.current += 1                 // 읽는 중이던 요청도 무효로 만든다
+    audiosRef.current.forEach(a => { a.pause(); a.src = '' })
+    audiosRef.current = []
+    setPlaying(false)
+  }, [bandKey])
 
   // 언마운트 시 모든 오디오 정리 (L-11). 조기 return보다 위에 둬 훅 규칙 준수.
   useEffect(() => {
+    alive.current = true
     return () => {
+      alive.current = false
+      loadSeq.current += 1               // 읽는 중이던 요청을 무효로 만든다
       audiosRef.current.forEach(a => { a.pause(); a.src = '' })
       audiosRef.current = []
     }
@@ -279,18 +307,43 @@ function KaraokeButton({ tracks }: { tracks: { name: string; path: string }[] })
       setPlaying(false)
       return
     }
+    // ★읽는 중에 또 누르면 **두 번째 묶음이 생긴다** — 같은 반주가 겹쳐 울린다.
+    //   읽는 동안에는 새 요청을 받지 않는다.
+    if (loading.current) return
+    const mine = ++loadSeq.current
+    // 이번 누름이 **기다림을 거쳤는가.** 기다린 적이 없으면 방금의 뜻이 가장 최신이다.
+    let waited = false
     // Load all instrumental tracks for simultaneous playback
     if (audiosRef.current.length === 0) {
-      for (const t of instrumentals) {
-        const url = await window.api.audio.getFileUrl(t.path)
-        const audio = createManagedAudio(url)   // 음량은 단일 소유자가 건다
-        audiosRef.current.push(audio)
+      waited = true
+      loading.current = true
+      const made: HTMLAudioElement[] = []
+      try {
+        for (const t of instrumentals) {
+          const url = await window.api.audio.getFileUrl(t.path)
+          // 읽는 사이 떠났거나 다른 요청이 앞질렀으면 **만든 것을 버린다.**
+          if (!alive.current || mine !== loadSeq.current) {
+            made.forEach(a => { a.pause(); a.src = '' })
+            return
+          }
+          made.push(createManagedAudio(url))   // 음량은 단일 소유자가 건다
+        }
+      } finally { loading.current = false }
+      if (!alive.current || mine !== loadSeq.current) {
+        made.forEach(a => { a.pause(); a.src = '' })
+        return
       }
-      audiosRef.current[0].onended = () => {
+      audiosRef.current = made
+      made[0].onended = () => {
         audiosRef.current.forEach(a => a.pause())
         setPlaying(false)
       }
     }
+    // ★**기다리는 사이** 다른 재생이 시작됐으면 늦게 자리를 빼앗지 않는다.
+    //   사용자가 그 뒤에 고른 소리를 덮지 않는다 — 다시 누르면 그때 가져온다.
+    //   기다린 적이 없다면(이미 읽어 둔 묶음) 방금 누른 것이 가장 최신의 뜻이다.
+    const claimNow = useAppStore.getState().audioClaim
+    if (waited && claimNow && claimNow.owner !== 'karaoke') return
     // ★묶음 전체가 이 자리를 쓴다. 먼저 가져와야 원본 파형·결과 재생이 비켜 준다.
     useAppStore.getState().claimAudio('karaoke')
     // Sync play all tracks

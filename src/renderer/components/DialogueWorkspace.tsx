@@ -7,6 +7,7 @@
 // ★겹쳐 말한 자리를 한 사람의 깨끗한 목소리로 갈라내지 않는다.
 // ★소리는 **공용 원본 파형**에게 부탁해 튼다. 여기서 오디오를 따로 들지 않는다.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { cancelFailureKind, cancelFailureText } from '../../shared/cancelContract'
 import { useAppStore } from '@/stores/app.store'
 // 결과 듣기·내보내기는 **음악 화면과 같은 부품**을 쓴다(길이를 알고 끌어 이동할 수 있다).
 import { ResultPlayer, styleOf } from '@/components/ResultPlayer'
@@ -329,20 +330,41 @@ export default function DialogueWorkspace() {
      *   화면은 '멈췄다' 인데 음원이 만들어지는 상태가 된다.
      *   그래서 여기서는 **표시만 바꾸고 통로는 그대로 둔다.**
      */
+    //  ★**식별자가 없는 취소 신호는 내 것이 아니다.** 본체는 이 실행의 마감 신호에
+    //    반드시 식별자를 싣는다(`tagWith`). 싣지 않은 것은 식별자 없이 시작된 남의 실행이다.
+    //    예전에는 '없으면 내 것으로 본다' 고 봐줬고, 그 예외가 남의 취소로 내 작업을 끝냈다.
     offCancelling = window.api.audio.onCancelling?.((d?: unknown) => {
-      if (d && !mine(d)) return          // 식별자가 있으면 대조한다(없으면 기다리던 것이 내 것뿐이다)
+      if (!mine(d)) return
       setApply('cancelling')
     }) || (() => { /* 이 통로가 없는 환경 */ })
     offCancelled = window.api.audio.onCancelled?.((d?: unknown) => {
-      if (d && !mine(d)) return
+      if (!mine(d)) return
       finish()                           // 정말 멈췄다 — 이제 올 것이 없다
       setApply('cancelled')
     }) || (() => { /* 이 통로가 없는 환경 */ })
+    /**
+     * 멈추지 못했다 — **갈래에 따라 뒷일이 정반대다**(본체 계약을 그대로 따른다).
+     *
+     *  · `child-alive` — 자식이 아직 산다. 그 자식이 끝나면 본체는 **정상 종료 경로**로
+     *    결과나 오류를 보낸다. 그러니 통로를 열어 두고 '만드는 중' 으로 돌아간다.
+     *  · `cleanup-pending` — 나무는 죽었고 본체는 이미 결과 공개를 닫았다(취소 경로).
+     *    **더 올 것이 없다.** 여기서 기다리면 영영 기다린다.
+     *  · `exit-unconfirmed` — 종료를 확인하지 못했다. 올 수도 안 올 수도 있는데,
+     *    안 오는 쪽에 걸리면 화면이 갇힌다. 기다리지 않고 사유를 말한다.
+     *
+     * 어느 갈래든 **고친 내용은 그대로 둔다** — 다시 만들기로 이어 갈 수 있다.
+     */
     offCancelFailed = window.api.audio.onCancelFailed?.((d: unknown) => {
-      if (d && !mine(d)) return
-      // ★멈추지 못했다 — 작업은 계속 돈다. 통로를 **끊지 않는다.**
-      setApply('running')
-      setError('멈추지 못했습니다. 작업이 계속 돌고 있습니다 — 고친 내용은 그대로 있습니다.')
+      if (!mine(d)) return
+      const kind = cancelFailureKind(d)
+      if (kind === 'child-alive') {
+        setApply('running')
+        setError(cancelFailureText(kind))
+        return
+      }
+      finish()
+      setApply('failed')
+      setError(cancelFailureText(kind))
     }) || (() => { /* 이 통로가 없는 환경 */ })
 
     try {

@@ -67,7 +67,12 @@ try {
       settings: { get: async () => ({}), set: async () => ({ ok: true }) },
       app: { openFolder: (d) => { window.__opened = d }, readTextFile: async () => null },
       audio: {
-        getFileUrl: async (p) => { window.__urlAsked = p; return window.wavUrl },
+        getFileUrl: async (p) => {
+          window.__urlAsked = p
+          window.__urlCalls = (window.__urlCalls || 0) + 1
+          if (window.__urlDelay) await new Promise((r) => setTimeout(r, window.__urlDelay))
+          return window.wavUrl
+        },
         exportTracks: async (paths) => { window.__exported = paths; return { ok: true, dir: 'D:/x', copied: paths, failed: [] } },
         processTrack: async () => ({ ok: true }),
         onTrackResult: () => () => {},
@@ -164,6 +169,70 @@ try {
     document.querySelector('[data-testid="track-keep-count"]').innerText.includes('2/2'))
   assert.equal(await page.getByTestId('result-export-note').count(), 0, '이전 내보내기 알림이 남았다')
   pass('★결과가 바뀌면 저장 선택과 알림이 새로 시작한다')
+
+  // ══ 노래방 — 읽는 동안 생긴 일 ═════════════════════════════════════════
+  await show(FOUR, 'C:/out')
+  const karaoke = page.locator('button', { hasText: '노래방' })
+  assert.equal(await karaoke.count(), 1, '노래방 단추가 없다 — 검사가 눈이 멀었다')
+
+  // ① 읽는 중 반복해 눌러도 묶음이 한 벌만 만들어진다
+  await page.evaluate(() => { window.__urlDelay = 400; window.__urlCalls = 0 })
+  await karaoke.click(); await karaoke.click(); await karaoke.click()
+  await page.waitForTimeout(1600)
+  const calls = await page.evaluate(() => window.__urlCalls)
+  assert.equal(calls, 3, `반주 3개를 한 번씩만 읽어야 한다(읽은 횟수 ${calls})`)
+  pass('★읽는 중 반복해 눌러도 재생 묶음이 한 벌만 생긴다')
+
+  // ② 읽는 동안 다른 재생이 시작되면 늦게 자리를 빼앗지 않는다
+  await page.evaluate(() => {
+    window.store.getState().claimAudio('waveform')       // 되돌려 놓고
+    window.__urlCalls = 0
+  })
+  await karaoke.click()                                   // 이미 읽어 둔 묶음이 있다
+  await page.waitForTimeout(200)
+  const owner = await page.evaluate(() => window.store.getState().audioClaim?.owner)
+  assert.equal(owner, 'karaoke', '다시 누르면 자리를 가져와야 한다')
+  pass('★다시 누르면 노래방이 자리를 가져온다')
+
+  // ③ 읽는 도중 자리가 넘어가면 소리를 내지 않는다(새 결과로 묶음을 비운 뒤)
+  await show(TWO, 'C:/out2')
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="track-keep"]').length === 2)
+  await page.evaluate(() => { window.store.getState().claimAudio('result') })
+  const owner2 = await page.evaluate(() => window.store.getState().audioClaim?.owner)
+  assert.equal(owner2, 'result', '자리를 결과가 쥐고 있어야 한다')
+  await show(FOUR, 'C:/out')
+  await page.evaluate(() => { window.__urlDelay = 500 })
+  const k2 = page.locator('button', { hasText: '노래방' })
+  await k2.click()
+  await page.waitForTimeout(120)
+  await page.evaluate(() => { window.store.getState().claimAudio('waveform') })  // 읽는 도중 다른 재생
+  await page.waitForTimeout(1400)
+  const late = await page.evaluate(() => ({
+    owner: window.store.getState().audioClaim?.owner,
+    label: [...document.querySelectorAll('button')].some((b) => b.innerText.includes('정지')),
+  }))
+  assert.equal(late.owner, 'waveform', '읽는 도중 넘어간 자리를 늦게 빼앗았다')
+  assert.equal(late.label, false, '늦게 반주를 틀었다')
+  pass('★읽는 도중 다른 재생이 시작되면 늦게 반주를 틀지 않는다')
+  await page.evaluate(() => { window.__urlDelay = 0 })
+
+  // ④ 결과가 바뀌면 **지난 곡의 반주**를 다시 틀지 않는다
+  //   ★같은 결과로 되돌아오면 다시 읽지 않는 것이 맞다 — 그래서 **다른 결과**에서 시작한다.
+  await show(TWO, 'C:/out2')
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="track-keep"]').length === 2)
+  await page.evaluate(() => { window.__urlCalls = 0 })
+  await page.locator('button', { hasText: '노래방' }).click()
+  await page.waitForTimeout(300)
+  const beforeSwap = await page.evaluate(() => window.__urlCalls)
+  assert.equal(beforeSwap, 1, `이 결과의 반주 1개를 읽어야 한다(읽은 횟수 ${beforeSwap})`)
+  await show(FOUR, 'C:/out')
+  await page.waitForFunction(() => document.querySelectorAll('[data-testid="track-keep"]').length === 4)
+  await page.evaluate(() => { window.__urlCalls = 0 })
+  await page.locator('button', { hasText: '노래방' }).click()
+  await page.waitForTimeout(300)
+  const afterSwap = await page.evaluate(() => window.__urlCalls)
+  assert.equal(afterSwap, 3, `새 결과의 반주를 새로 읽어야 한다(읽은 횟수 ${afterSwap})`)
+  pass('★결과가 바뀌면 지난 곡의 반주를 다시 틀지 않는다')
 
   // ══ 좁은 창 ════════════════════════════════════════════════════════════
   await page.setViewportSize({ width: 430, height: 900 })
