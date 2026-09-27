@@ -214,7 +214,7 @@ export default function Waveform() {
   })
 
   return (
-    <div data-testid="source-waveform" data-state={loadState} style={{ padding: '0 16px 12px' }}>
+    <div data-testid="source-waveform" data-state={loadState} style={{ margin: '0 16px 12px', padding: 8, background: 'var(--bg-base)', borderRadius: 9 }}>
       {loadState === 'loading' && <div role="status" style={{ padding: '12px 0', color: 'var(--text-muted)', fontSize: 12 }}>원본 파형을 불러오는 중…</div>}
       {loadState === 'error' && <div role="alert" data-testid="waveform-error" style={{ padding: '12px 14px', marginBottom: 10, borderRadius: 8, background: 'var(--rose-glow)', color: 'var(--text-primary)', fontSize: 12, lineHeight: 1.7 }}>
         <strong>원본을 읽지 못했습니다.</strong>
@@ -224,9 +224,9 @@ export default function Waveform() {
       </div>}
       <div ref={containerRef} style={{ marginBottom: 8, display: loadState === 'error' ? 'none' : undefined }} />
       {playError && <div role="alert" style={{ marginBottom: 8, color: 'var(--rose)', fontSize: 12 }}>{playError}</div>}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+      <div data-testid="waveform-controls" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 32px minmax(0, 1fr)', alignItems: 'center', columnGap: 10 }}>
         {/* 왼쪽: 시간 + (Layer 1) 무음 미리보기 ghost 토글 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 10, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>{currentTime}</span>
           {canPreview && (
             <button disabled={loadState !== 'ready'} onClick={() => setSilencePreview(!silencePreview)}
@@ -272,7 +272,7 @@ export default function Waveform() {
           )}
         </button>
         {/* 오른쪽: 볼륨(듣기 전용) + 길이 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, minWidth: 0, flexWrap: 'wrap' }}>
           <div title={volumeSaveFailed
             ? '재생 볼륨 — 이 값을 기억하지 못했습니다(이번 실행에만 적용됩니다).'
             : '재생 볼륨 (듣기 전용 · 원본 파일에는 영향 없음) — 정한 값이 다음에도 그대로 쓰입니다.'}

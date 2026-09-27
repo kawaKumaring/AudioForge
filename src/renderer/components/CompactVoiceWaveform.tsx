@@ -69,7 +69,7 @@ export default function CompactVoiceWaveform({ path, name, region, disabled }: P
     catch { if (player.current === ws) setPlayError(true) }
   }
   const range = region ? `${region.start.toFixed(1)}–${(region.start + region.duration).toFixed(1)}초` : state.duration ? `${state.duration.toFixed(1)}초` : ''
-  return <div data-testid="compact-voice-wave" data-state={phase} data-path={path} style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, height: 40 }}>
+  return <div data-testid="compact-voice-wave" data-state={phase} data-path={path} style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, height: 40, background: 'var(--bg-base)', borderRadius: 9, padding: '0 8px', boxSizing: 'border-box' }}>
     <button type="button" data-testid="compact-voice-play" aria-label={`${name} ${playing ? '일시정지' : '목소리 재생'}`} title={playError ? '재생 실패 · 다시 시도' : name}
       disabled={disabled || phase !== 'ready'} onClick={toggle}
       style={{ width: 28, height: 28, flexShrink: 0, border: '1px solid var(--border-subtle)', borderRadius: '50%', background: 'var(--bg-elevated)', color: 'var(--accent-primary, #b49aff)', cursor: disabled || phase !== 'ready' ? 'default' : 'pointer', opacity: phase === 'ready' ? 1 : .45 }}>

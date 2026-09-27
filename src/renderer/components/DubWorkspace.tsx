@@ -468,13 +468,6 @@ export default function DubWorkspace() {
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
-        <span tabIndex={0} title="song_chain.py·song_voice.py의 노래 음색 변환 코드가 이 화면에 연결되지 않았습니다. 현재 연결된 아래 도구는 영상 대사의 번역·TTS입니다." style={{ padding: '7px 10px', borderRadius: 7, fontSize: 12, background: 'var(--bg-card)', color: 'var(--amber)' }}>목소리 변환 · 연결 검토</span>
-        <span tabIndex={0} title="번역 가사를 원곡의 멜로디·리듬에 맞춰 부르는 기능. 아직 구현되지 않았습니다." style={{ padding: '7px 10px', borderRadius: 7, fontSize: 12, background: 'var(--bg-card)', color: 'var(--text-muted)' }}>언어 변환 · 예정</span>
-      </div>
-      <details open={videoPath || front ? true : undefined} style={{ border: '1px solid var(--border-subtle)', borderRadius: 10 }}>
-      <summary title="기존 영상 대사 번역·말하기 도구입니다. 노래의 음정과 리듬을 유지하는 변환 경로와 다릅니다." style={{ cursor: 'pointer', padding: 14, color: 'var(--text-muted)', fontSize: 12 }}>기존 더빙 실험</summary>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, padding: 14 }}>
       <StepBar steps={steps} />
 
       {/* ─ 1. 영상 ───────────────────────────────────────────────────────── */}
@@ -629,8 +622,7 @@ export default function DubWorkspace() {
           {workRoot ? `만든 것이 쌓이는 자리: ${workRoot}` : '만든 것이 쌓이는 자리를 고를 수 있습니다'}
         </span>
       </div>
-      </div>
-      </details>
+
     </div>
   )
 }

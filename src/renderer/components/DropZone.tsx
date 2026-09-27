@@ -100,7 +100,7 @@ export default function DropZone() {
         <button type="button" className="btn btn-ghost" data-testid="source-close" onClick={reset} disabled={disabled} title="현재 원본을 닫습니다. 저장한 결과 파일은 그대로 남습니다." style={{ padding: '7px 10px', fontSize: 12 }}>닫기</button>
       </div>
     </div> : <button type="button" onClick={() => void pickFile()} disabled={disabled} data-testid="source-open" aria-label={mode === 'tts' ? '참조 목소리 파일 선택' : '오디오 또는 영상 파일 선택'} className="source-dropzone"
-      style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 14, width: '100%', minHeight: 245, padding: '36px 24px', border: '1px dashed var(--border-accent)', borderRadius: 13, background: 'var(--bg-card)', color: 'var(--text-primary)', fontFamily: 'inherit', cursor: disabled ? 'wait' : 'pointer' }}>
+      style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 14, width: '100%', minHeight: 245, padding: '36px 24px', border: '1px dashed var(--border-accent)', borderRadius: 13, background: 'var(--bg-base)', color: 'var(--text-primary)', fontFamily: 'inherit', cursor: disabled ? 'wait' : 'pointer' }}>
       <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', width: 52, height: 52, borderRadius: 14, background: 'var(--accent-glow)', color: 'var(--accent-light)' }} aria-hidden="true">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M3 15v6h18v-6M12 16V3m-5 5 5-5 5 5"/></svg>
       </span>
