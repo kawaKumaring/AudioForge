@@ -11,7 +11,7 @@ import {
 import { cancelFailureText, type CancelUiStatus } from '../../shared/cancelContract'
 import { cancelAlreadyOverText, useCancelLifecycle } from '../hooks/useCancelLifecycle'
 import {
-  cardApplied, cardEventFault, cardGenerateFault, takeIsStale, CARD_PITCH_MIN, CARD_PITCH_MAX, CARD_PITCH_STEP,
+  cardApplied, cardEventFault, cardGenerateFault, takeMark, CARD_PITCH_MIN, CARD_PITCH_MAX, CARD_PITCH_STEP,
 } from '../../shared/synthesisCardJob'
 import {
   cardVoiceOf, voiceSnapshot, voiceSupports, voiceGenerateFault, type BuiltinVoiceRef,
@@ -246,9 +246,10 @@ function Takes({ card, close, disabled, back }: { card: SynthesisCard; close: ()
         {/* ★지금 카드와 다른 조건으로 만든 결과임을 구분한다(현재 대사를 덮어 보여 주지 않는다). */}
         {/* ★기록이 없는 것과 값이 다른 것은 다른 일이다. 옛 작업에서 가져온 생성본은
             당시 설정이 아예 기록되지 않았으므로 '수정 전' 이라고 말할 수 없다. */}
-        {take.settingsUnknown
-          ? <span data-testid="take-unknown-settings" tabIndex={0} title="옛 작업에서 가져온 생성본입니다. 만들 때 쓴 설정이 기록되어 있지 않습니다." style={{ ...badge, marginLeft: 8, color: 'var(--text-muted)' }}>설정 기록 없음</span>
-          : takeIsStale({ text: take.text, sourcePath: take.source.path, settings: take.settings, applied: appliedOf(take) as never, voice: take.voice }, { text: card.text, sourcePath: card.source?.path || '', settings: card.settings, voice: voiceSnapshot(cardVoiceOf(card)) }) && <span style={{ ...badge, marginLeft: 8, color: 'var(--amber)' }}>수정 전</span>}
+        {(() => { const mark = takeMark({ text: take.text, sourcePath: take.source.path, settings: take.settings, applied: appliedOf(take) as never, voice: take.voice, settingsUnknown: take.settingsUnknown }, { text: card.text, sourcePath: card.source?.path || '', settings: card.settings, voice: voiceSnapshot(cardVoiceOf(card)) })
+          return mark === 'unknown'
+            ? <span data-testid="take-unknown-settings" tabIndex={0} title="옛 작업에서 가져온 생성본입니다. 만들 때 쓴 설정과 참조 구간이 기록되어 있지 않습니다." style={{ ...badge, marginLeft: 8, color: 'var(--text-muted)' }}>설정 기록 없음</span>
+            : mark === 'stale' ? <span style={{ ...badge, marginLeft: 8, color: 'var(--amber)' }}>수정 전</span> : null })()}
         {take.missing && <span style={{ ...badge, marginLeft: 8, color: 'var(--rose)' }}>파일 없음</span>}</div><time style={muted}>{new Date(take.createdAt).toLocaleString('ko-KR', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })}</time></div>
       <Action icon={playing === take.id ? 'stop' : 'play'} pressed={playing === take.id} label={`생성본 ${i + 1} ${playing === take.id ? '정지' : '재생'}`} onClick={() => void play(take)} disabled={disabled || !!take.missing}/>
       <Action icon="folder" label={`생성본 ${i + 1} 파일 위치`} onClick={() => { void window.api.app.revealFile(take.path).catch(() => setError('파일 위치 열기 실패')) }}/>
@@ -489,8 +490,8 @@ export default function SynthesisCardWorkspace() {
   useEffect(() => onSaveState(setSave), [])
   useEffect(() => {
     if (!state.dirty) return
-    queueSave(serializeWork(state.cards, state.joins))
-  }, [state.cards, state.joins, state.dirty])
+    queueSave(serializeWork(state.cards, state.joins, state.importedFrom))
+  }, [state.cards, state.joins, state.dirty, state.importedFrom])
   // 떠날 때는 **취소가 아니라 흘려보낸다.**
   useEffect(() => () => { void flushSave() }, [])
 
@@ -544,7 +545,7 @@ export default function SynthesisCardWorkspace() {
         if (!work) throw Error('가져온 작업을 찾지 못했습니다')
         const h = await hydrateWork(work)
         if (dup.slot === 'kept') adoptKept(dup.index)
-        useSynthesisCards.getState().replaceAll(h.cards, h.joins)
+        useSynthesisCards.getState().replaceAll(h.cards, h.joins, h.importedFrom)
       } catch (e) { if (alive.current) setNotice((e as Error)?.message || '가져온 작업을 열지 못했습니다') }
     })()
   }
@@ -562,7 +563,7 @@ export default function SynthesisCardWorkspace() {
       // ② 저장까지 성공해야 가져온 것이다.
       const why = await importLegacyWork(plan.doc)
       if (why) throw Error(`저장하지 못했습니다(${why})`)
-      useSynthesisCards.getState().replaceAll(h.cards, h.joins)
+      useSynthesisCards.getState().replaceAll(h.cards, h.joins, h.importedFrom)
       if (!alive.current) return
       setImportDone(`${plan.work.title} · 카드 ${h.cards.length}장`)
       setImportStep('done')
@@ -595,7 +596,7 @@ export default function SynthesisCardWorkspace() {
         //   문서부터 바꿔 놓고 실패하면 고른 것도 하던 것도 잃는다(2차 검수 지적).
         const h = await hydrateWork(c.work)
         if (c.slot === 'kept') adoptKept(c.index)
-        useSynthesisCards.getState().replaceAll(h.cards, h.joins)
+        useSynthesisCards.getState().replaceAll(h.cards, h.joins, h.importedFrom)
       } catch { if (alive.current) setNotice('이전 작업을 불러오지 못했습니다') }
     })()
   }
@@ -687,10 +688,11 @@ export default function SynthesisCardWorkspace() {
     {state.cards.map((card, index) => {
       const chosen = card.takes.find(t => t.id === card.adoptedId)
       // '수정 전' 판정은 shared/synthesisCardJob 이 소유한다 — 생성본 팝업과 같은 잣대를 쓴다.
-      // ★기록이 없는 생성본에는 '수정 전' 판정을 쓰지 않는다 — 비교할 값이 없다.
-      const changed = chosen && !chosen.settingsUnknown && takeIsStale(
-        { text: chosen.text, sourcePath: chosen.source.path, settings: chosen.settings, applied: chosen.applied, voice: chosen.voice },
+      // 판정은 shared/synthesisCardJob 의 takeMark 하나가 한다 — 세 자리가 같은 말을 쓴다.
+      const chosenMark = chosen && takeMark(
+        { text: chosen.text, sourcePath: chosen.source.path, settings: chosen.settings, applied: chosen.applied, voice: chosen.voice, settingsUnknown: chosen.settingsUnknown },
         { text: card.text, sourcePath: card.source?.path || '', settings: card.settings, voice: voiceSnapshot(cardVoiceOf(card)) })
+      const changed = chosenMark === 'stale'
       const ref = state.refs[card.id]
       const voice = cardVoiceOf(card)
       // ★엔진이 못 받는 설정을 **말한다.** 조용히 무시하거나 적용된 척하지 않는다.
@@ -759,7 +761,7 @@ export default function SynthesisCardWorkspace() {
         )}
         <div style={{ ...row, padding: '12px 20px', borderTop: '1px solid var(--border-subtle)' }}>
           <button type="button" data-testid="card-takes" onClick={() => setModal({ type: 'takes', id: card.id })} style={{ ...button, background: 'transparent' }}><Icon name="history"/>생성본 <span style={muted}>{card.takes.length}</span></button>
-          {chosen && <button type="button" onClick={() => setModal({ type: 'takes', id: card.id })} style={{ ...button, background: 'transparent', border: 0, padding: '4px 0', minHeight: 28, fontSize: 11, color: chosen.missing ? 'var(--rose)' : chosen.settingsUnknown ? 'var(--text-muted)' : changed ? 'var(--amber)' : 'var(--accent-light)' }} title={chosen.missing ? '채택한 파일이 없습니다. 다른 생성본을 선택하세요.' : chosen.settingsUnknown ? '옛 작업에서 가져온 생성본입니다. 만들 때 쓴 설정이 기록되어 있지 않습니다.' : changed ? '채택한 생성본은 수정 전 대사·목소리·설정으로 생성되었습니다' : '최종 연결에 사용할 생성본을 변경합니다'}>#{card.takes.indexOf(chosen) + 1} 채택{chosen.missing ? ' · 파일 없음' : chosen.settingsUnknown ? ' · 기록 없음' : changed ? ' · 수정 전' : ''}</button>}
+          {chosen && <button type="button" onClick={() => setModal({ type: 'takes', id: card.id })} style={{ ...button, background: 'transparent', border: 0, padding: '4px 0', minHeight: 28, fontSize: 11, color: chosen.missing ? 'var(--rose)' : chosenMark === 'unknown' ? 'var(--text-muted)' : changed ? 'var(--amber)' : 'var(--accent-light)' }} title={chosen.missing ? '채택한 파일이 없습니다. 다른 생성본을 선택하세요.' : chosenMark === 'unknown' ? '옛 작업에서 가져온 생성본입니다. 만들 때 쓴 설정과 참조 구간이 기록되어 있지 않습니다.' : changed ? '채택한 생성본은 수정 전 대사·목소리·설정으로 생성되었습니다' : '최종 연결에 사용할 생성본을 변경합니다'}>#{card.takes.indexOf(chosen) + 1} 채택{chosen.missing ? ' · 파일 없음' : chosenMark === 'unknown' ? ' · 기록 없음' : changed ? ' · 수정 전' : ''}</button>}
           <span style={{ flex: 1 }}/><span style={muted}>{card.text.length}자</span>
           {mine ? (
             <button type="button" data-testid="card-stop" className="af-card-work-button" onClick={() => void stopWork()}
@@ -814,13 +816,15 @@ export default function SynthesisCardWorkspace() {
       <div style={{ display: 'grid', gap: 8 }}>{state.cards.map((card, i) => {
         const take = card.takes.find(t => t.id === card.adoptedId)
         const block = planNow.blocks.find(b => b.cardId === card.id)
-        const stale = take && takeIsStale(
-          { text: take.text, sourcePath: take.source.path, settings: take.settings, applied: take.applied, voice: take.voice },
+        const mark = take && takeMark(
+          { text: take.text, sourcePath: take.source.path, settings: take.settings, applied: take.applied, voice: take.voice, settingsUnknown: take.settingsUnknown },
           { text: card.text, sourcePath: card.source?.path || '', settings: card.settings, voice: voiceSnapshot(cardVoiceOf(card)) })
+        const stale = mark === 'stale'
+        const noRecord = mark === 'unknown'
         return <div key={card.id} data-testid="join-sequence-row" style={{ ...row, gap: 12, padding: 12, borderRadius: 10, border: '1px solid var(--border-subtle)', background: 'var(--bg-base)' }}>
           <span style={{ ...muted, fontVariantNumeric: 'tabular-nums' }}>{String(i + 1).padStart(2, '0')}</span>
           <div style={{ flex: '1 1 150px', minWidth: 0 }}><div style={{ fontSize: 13, overflowWrap: 'anywhere' }}>{card.label}</div>
-            <div title={block?.why || (stale ? '현재 편집과 다른 조건으로 만든 생성본입니다. 채택은 그대로 유지됩니다.' : undefined)} style={{ ...muted, marginTop: 4, color: block || stale ? 'var(--amber)' : 'var(--accent-light)' }}>{block ? (take ? '파일 확인 필요' : '채택 필요') : `생성본 ${String(card.takes.indexOf(take!) + 1).padStart(2, '0')} 채택${stale ? ' · 수정 전' : ''}`}</div>
+            <div data-testid="join-sequence-mark" title={block?.why || (stale ? '현재 편집과 다른 조건으로 만든 생성본입니다. 채택은 그대로 유지됩니다.' : noRecord ? '옛 작업에서 가져온 생성본입니다. 만들 때 쓴 설정과 참조 구간이 기록되어 있지 않습니다.' : undefined)} style={{ ...muted, marginTop: 4, color: block || stale ? 'var(--amber)' : 'var(--accent-light)' }}>{block ? (take ? '파일 확인 필요' : '채택 필요') : `생성본 ${String(card.takes.indexOf(take!) + 1).padStart(2, '0')} 채택${stale ? ' · 수정 전' : noRecord ? ' · 기록 없음' : ''}`}</div>
           </div>
           <button type="button" style={button} disabled={locked} aria-label={`${i + 1}번 카드 ${card.takes.length ? '생성본 선택' : '카드로 이동'}`} onClick={() => {
             if (card.takes.length) setModal({ type: 'takes', id: card.id, fromSequence: true })

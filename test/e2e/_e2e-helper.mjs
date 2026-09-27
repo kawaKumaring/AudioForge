@@ -67,11 +67,21 @@ export function isolatedInput(srcAbs) {
   return { dir, input }
 }
 
-// 격리 폴더만 삭제(prefix 가드).
+/**
+ * 격리 폴더만 삭제(prefix 가드 + 연결 경로 가드).
+ *
+ * ★연결(정션·심볼릭 링크)은 지우지 않는다 (2026-09-27)
+ *   Node 의 `rmSync({recursive})` 는 연결을 **따라가지 않는다**(실측: 정션을 지워도
+ *   대상 폴더의 파일은 그대로 남는다). 그래도 한 번 더 막는 이유는, 연결 자체를 지우면
+ *   그것이 가리키던 공용 자산으로 가는 길이 사라지기 때문이다.
+ *   ※ PowerShell 의 `Remove-Item` 은 다르다 — 정션에 쓰면 **대상 안까지 지운다.**
+ *     임시 폴더 정리는 반드시 이 함수(Node)로 한다.
+ */
 export function cleanupIsolated(dir) {
-  if (dir && path.basename(dir).startsWith('audioforge_e2e_') && path.dirname(dir) === os.tmpdir()) {
-    try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ }
-  }
+  if (!dir || path.dirname(dir) !== os.tmpdir()) return
+  if (!path.basename(dir).startsWith('audioforge_e2e_')) return
+  try { if (fs.lstatSync(dir).isSymbolicLink()) return } catch { return }
+  try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ }
 }
 
 // 디렉터리 트리의 (상대경로, size, sha8) 정렬 스냅샷 — 원본 불변 단언용.

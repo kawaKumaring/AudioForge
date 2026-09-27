@@ -153,6 +153,26 @@ export function takeIsStale(snap: CardTakeSnapshot, now: {
 }
 
 /**
+ * 이 생성본을 화면이 **뭐라고 불러야 하는가.** 세 가지뿐이다.
+ *   · 'unknown' — 만들 때 쓴 설정이 **기록되지 않았다**(옛 작업에서 가져온 것).
+ *   · 'stale'   — 기록은 있는데 지금 카드와 다르다.
+ *   · 'same'    — 기록이 지금 카드와 같다.
+ *
+ * ★'기록 없음' 과 '자동' 은 다른 말이다 (2026-09-27 지시)
+ *   카드의 `reference: 'auto'` 는 **다음 생성**에 쓸 설정이다. 그것을 옛 생성본에
+ *   옮겨 적으면 "그때 자동 구간을 썼다" 는 **하지 않은 기록**이 생긴다.
+ *   그래서 기록이 없는 생성본은 비교 자체를 하지 않는다 — 비교할 값이 없다.
+ */
+export type TakeMark = 'same' | 'stale' | 'unknown'
+export function takeMark(
+  snap: CardTakeSnapshot & { settingsUnknown?: boolean },
+  now: { text: string; sourcePath: string; settings: CardEngineSettings; voice?: VoiceSnapshot },
+): TakeMark {
+  if (snap.settingsUnknown) return 'unknown'
+  return takeIsStale(snap, now) ? 'stale' : 'same'
+}
+
+/**
  * 이 이벤트가 **내 요청의 것인가.** 아니면 그 사유를 돌려준다(빈 문자열이면 내 것이다).
  *
  * ★왜 이 규칙이 생겼나 (2026-09-27 검수 재현)

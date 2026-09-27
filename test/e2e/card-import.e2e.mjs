@@ -160,6 +160,25 @@ try {
     '생성본 목록이 파일 없음을 말한다')
   await win.keyboard.press('Escape')
 
+  // ── 4-1. 저장 왕복이 '기록 없음' 을 지어내지 않는다 ────────────────────
+  //   ★카드의 참조 설정 '자동' 은 **다음 생성**에 쓸 값이다. 그것이 옛 생성본의
+  //     '그때 쓴 값' 으로 새어 들어가면, 하지 않은 기록이 생긴다.
+  await win.locator('[data-testid="generation-card"]').first().getByTestId('card-script').fill('첫째 줄 고침')
+  await win.waitForFunction(() => {
+    const el = document.querySelector('[data-testid="card-save-failed"]')
+    return !el
+  })
+  await win.waitForTimeout(1200)          // 저장은 편집이 멎은 뒤에 쓴다
+  const stored = await win.evaluate(async () => {
+    const all = await window.api.settings.get()
+    const t = all.synthesisCards?.current?.cards?.[0]?.takes?.[0] || {}
+    return { settings: t.settings, applied: t.applied, unknown: t.settingsUnknown, text: t.text }
+  })
+  ok(JSON.stringify(stored.settings) === '{}' && JSON.stringify(stored.applied) === '{}',
+    '★저장 왕복 뒤에도 생성본 설정은 비어 있다(자동 구간을 썼다고 적지 않는다)', stored)
+  ok(stored.unknown === true, '기록 없음 표시가 저장에도 남는다', stored)
+  ok(stored.text === '첫째 줄 옛 대사', '생성본의 당시 대사는 고친 대사로 덮이지 않는다', stored)
+
   // ── 5. 하던 작업과 옛 기록이 그대로 남았다 ─────────────────────────────
   const kept = await win.evaluate(async () => {
     const all = await window.api.settings.get()
@@ -225,7 +244,8 @@ try {
     }
   })
   ok(after.currentText === '누가 말했는지 모르는 대사', '★껐다 켜도 가져온 작업이 지금 것이다', after)
-  ok(after.labTexts.includes('첫째 줄입니다') && after.labTexts.includes('하던 대사'),
+  // 가져온 뒤 대사를 고쳤으므로 보관된 것은 **고친 대사**다(가져온 그 작업이 맞다).
+  ok(after.labTexts.includes('첫째 줄 고침') && after.labTexts.includes('하던 대사'),
     '★먼저 가져온 작업도 하던 작업도 보관함에 남아 있다', after.labTexts)
   ok(after.labLines === 2, '★옛 기록은 재시작 뒤에도 그대로다', after.labLines)
 

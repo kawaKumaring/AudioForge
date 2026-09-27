@@ -84,10 +84,15 @@ export function forgetCardReference(cardId: string): void {
  * 저장할 모양으로 옮긴다. **카드 순서·대사·설정·생성본·채택을 함께** 남긴다.
  * 준비 상태와 돌고 있는 작업은 담지 않는다 — 그것은 이번 실행에만 속한다.
  */
-export function serializeWork(cards: SynthesisCard[], joins: JoinSettings): SavedWork {
+export function serializeWork(
+  cards: SynthesisCard[], joins: JoinSettings,
+  importedFrom?: SavedWork['importedFrom'] | null,
+): SavedWork {
   return {
     savedAt: Date.now(),
     joins: { ...joins },
+    // ★출처는 문서에 속한다. 편집 한 번에 사라지면 '이미 가져온 작업' 을 알아볼 수 없다.
+    ...(importedFrom ? { importedFrom: { ...importedFrom } } : {}),
     cards: cards.map((c) => ({
       id: c.id, label: c.label,
       sourcePath: c.source?.path || '', sourceName: c.source?.name || '',
@@ -101,7 +106,11 @@ export function serializeWork(cards: SynthesisCard[], joins: JoinSettings): Save
         id: t.id, path: t.path, createdAt: t.createdAt, text: t.text,
         sourcePath: t.source.path, sourceName: t.source.name,
         sourceDuration: t.source.duration || 0,
-        settings: { ...t.settings }, applied: { ...t.applied },
+        // ★기록이 없는 생성본은 **비운 채로** 쓴다. 화면이 채워 둔 자리값(카드 설정)을
+        //   그대로 저장하면, 다음에 읽을 때는 그것이 '그때 쓴 값' 으로 보인다.
+        ...(t.settingsUnknown
+          ? { settings: {}, applied: {} }
+          : { settings: { ...t.settings }, applied: { ...t.applied } }),
         // 그때의 목소리. **기록이 없으면 넣지 않는다** — 지금 값으로 채우지 않는다.
         ...(t.voice ? { voice: { ...t.voice } } : {}),
         // 기록이 없다는 **사실 자체**를 남긴다 — 왕복하며 슬며시 '지금 것' 이 되지 않게.
@@ -117,7 +126,9 @@ export function serializeWork(cards: SynthesisCard[], joins: JoinSettings): Save
  * ★사라진 생성본 파일은 지우지 않고 `missing` 으로 **표시만** 한다 —
  *   조용히 없애면 사용자는 자기 생성본이 몇 개였는지 알 수 없게 된다.
  */
-export async function hydrateWork(w: SavedWork): Promise<{ cards: SynthesisCard[]; joins: JoinSettings }> {
+export async function hydrateWork(w: SavedWork): Promise<{
+  cards: SynthesisCard[]; joins: JoinSettings; importedFrom: SavedWork['importedFrom'] | null
+}> {
   const paths = w.cards.flatMap((c) => c.takes.map((t) => t.path))
   let present: Record<string, boolean> = {}
   try { present = await window.api.audio.sourcesPresent(paths) } catch { /* 못 물어보면 표시하지 않는다 */ }
@@ -139,12 +150,16 @@ export async function hydrateWork(w: SavedWork): Promise<{ cards: SynthesisCard[
       takes: c.takes.map((t) => ({
         id: t.id, path: t.path, createdAt: t.createdAt, text: t.text,
         source: { path: t.sourcePath, name: t.sourceName, duration: num(t.sourceDuration, 0) },
-        settings: {
-          speed: num(t.settings.speed, settings.speed), pitch: num(t.settings.pitch, settings.pitch),
-          emotion: text(t.settings.emotion) || settings.emotion,
-          reference: t.settings.reference === 'manual' ? 'manual' as const : 'auto' as const,
-          start: num(t.settings.start, 0), end: num(t.settings.end, 0),
-        },
+        // ★기록이 없으면 **카드 설정을 빌려 오지 않는다.** 빌려 온 값은 자리를 채울 뿐
+        //   화면에 나오지 않지만, 저장으로 되돌아가면 '그때 쓴 값' 이 되어 버린다.
+        settings: t.settingsUnknown
+          ? { speed: 0, pitch: 0, emotion: '', reference: 'auto' as const, start: 0, end: 0 }
+          : {
+            speed: num(t.settings.speed, settings.speed), pitch: num(t.settings.pitch, settings.pitch),
+            emotion: text(t.settings.emotion) || settings.emotion,
+            reference: t.settings.reference === 'manual' ? 'manual' as const : 'auto' as const,
+            start: num(t.settings.start, 0), end: num(t.settings.end, 0),
+          },
         // ★**기록이 없으면 비워 둔다.** 예전에는 제품 기본값을 채워 넣어, 재지 않은 값을
         //   "이 속도로 만들었다" 고 말하게 했다(2026-09-27 지적). 화면은 이미 '기록 없음' 을 그린다.
         applied: appliedFrom(t.applied),
@@ -162,6 +177,7 @@ export async function hydrateWork(w: SavedWork): Promise<{ cards: SynthesisCard[
       gap: num(j.gap, 0.35), level: j.level !== false, edges: j.edges !== false,
       gaps: (j.gaps as Record<string, number>) || {},
     },
+    importedFrom: w.importedFrom ? { ...w.importedFrom } : null,
   }
 }
 

@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   cardApplied, cardClipKey, isCardClipKey, cardRegionFault, cardGenerateFault, takeIsStale,
-  cardEventFault, CARD_PITCH_MIN, CARD_PITCH_MAX, type CardEngineSettings,
+  cardEventFault, takeMark, CARD_PITCH_MIN, CARD_PITCH_MAX, type CardEngineSettings,
 } from './synthesisCardJob.ts'
 
 const base: CardEngineSettings = {
@@ -120,4 +120,26 @@ test('기본 목소리 모델·화자 변경은 경로가 비어도 수정 전�
   assert.equal(takeIsStale(snap, { ...now, voice: { ...voice, engineId: 'other' } }), true)
   assert.equal(takeIsStale(snap, { ...now, voice: { ...voice, label: '이름만 변경' } }), false)
   assert.equal(takeIsStale({ ...snap, voice: undefined }, now), false)
+})
+
+// ── 기록 없음 vs 자동 (2026-09-27 지시) ─────────────────────────────────
+//
+// 카드의 `reference: 'auto'` 는 **다음 생성**에 쓸 설정이다.
+// 그것을 옛 생성본에 옮겨 적으면 '그때 자동 구간을 썼다' 는 하지 않은 기록이 된다.
+test('기록이 없는 생성본은 수정 전도 지금 것도 아니다', () => {
+  const settings = { speed: 1, pitch: 0, emotion: '자연스럽게', reference: 'auto' as const, start: 0, end: 0 }
+  const now = { text: '지금 대사', sourcePath: 'E:/a.wav', settings }
+  // 값이 모두 같아도 '지금 것' 이라고 말하지 않는다 — 비교할 기록이 없다.
+  assert.equal(takeMark({
+    text: '지금 대사', sourcePath: 'E:/a.wav', settings, applied: cardApplied(settings),
+    settingsUnknown: true,
+  }, now), 'unknown')
+  // 표시 없이 같은 값이면 '지금 것'
+  assert.equal(takeMark({
+    text: '지금 대사', sourcePath: 'E:/a.wav', settings, applied: cardApplied(settings),
+  }, now), 'same')
+  // 다르면 '수정 전'
+  assert.equal(takeMark({
+    text: '옛 대사', sourcePath: 'E:/a.wav', settings, applied: cardApplied(settings),
+  }, now), 'stale')
 })

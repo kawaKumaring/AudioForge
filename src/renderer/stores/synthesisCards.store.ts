@@ -110,6 +110,15 @@ type State = {
   /** 돌고 있는 생성. */
   job: CardJob | null
   /** 이번 실행에서 '이전 작업을 불러올까' 를 이미 물었는가. */
+  /**
+   * 이 작업이 **옛 작업에서 복사해 온 것**이면 그 출처.
+   *
+   * ★작업 문서에 속한다 — 화면이 아니라. 저장할 때 함께 나가고 불러올 때 함께 돌아온다.
+   *   예전에는 가져온 직후에만 파일에 있었고, 사용자가 대사 한 글자만 고치면
+   *   다음 자동 저장이 출처 없는 문서로 덮어썼다. 그러면 같은 작업을 또 가져오려 할 때
+   *   '이미 가져왔다' 고 말할 근거가 사라진다(2026-09-27 지적).
+   */
+  importedFrom: { kind: 'lab' | 'draft'; key: string; at: number } | null
   asked: boolean
   /** 사용자가 이 화면에서 무언가 손댔는가 — 손댄 뒤에는 복원을 묻지 않는다. */
   dirty: boolean
@@ -133,12 +142,12 @@ type State = {
   addTake: (id: string, take: CardTake) => void
   markAsked: () => void
   /** 저장본에서 통째로 되살린다. 사용자가 '불러오기' 를 고른 뒤에만 불린다. */
-  replaceAll: (cards: SynthesisCard[], joins: JoinSettings) => void
+  replaceAll: (cards: SynthesisCard[], joins: JoinSettings, importedFrom?: { kind: 'lab' | 'draft'; key: string; at: number } | null) => void
 }
 
 export const useSynthesisCards = create<State>((set) => ({
   view: 'cards', cards: [], seeded: false, removed: null,
-  refs: {}, job: null, asked: false, dirty: false,
+  refs: {}, job: null, importedFrom: null, asked: false, dirty: false,
   joins: { gap: .35, level: true, edges: true, gaps: {} },
   setView: view => set({ view }),
   seed: source => set(s => s.seeded || s.cards.length ? {} : { cards: [newCard(source)], seeded: true }),
@@ -192,7 +201,7 @@ export const useSynthesisCards = create<State>((set) => ({
     cards: s.cards.map(c => c.id === id ? { ...c, takes: [...c.takes, take] } : c),
   })),
   markAsked: () => set({ asked: true }),
-  replaceAll: (cards, joins) => set({ cards, joins, seeded: true, asked: true, dirty: false, refs: {}, removed: null }),
+  replaceAll: (cards, joins, importedFrom = null) => set({ cards, joins, importedFrom, seeded: true, asked: true, dirty: false, refs: {}, removed: null }),
 }))
 
 if (typeof window !== 'undefined' && window.api?._e2e) Object.assign(window, { __synthesisCards: useSynthesisCards })
