@@ -11,6 +11,7 @@ import { registerAudioIpc, dialogFolderHost } from './ipc/audio.ipc'
 import { registerAppVersionIpc, currentBuildInfo } from './ipc/app-version.ipc'
 import { registerDiagnosticsIpc } from './ipc/diagnostics.ipc'
 import { registerDubIpc } from './ipc/dub.ipc'
+import { registerSongIpc } from './ipc/song.ipc'
 import { registerPitchIpc } from './ipc/pitch.ipc'
 import { registerCardMediaIpc } from './ipc/card-media.ipc'
 import { createAppLog, mirrorConsole, setAppLog, watchUncaught, LOG_DIR_NAME } from './services/app-log'
@@ -143,11 +144,20 @@ function createWindow(): void {
       height: 36
     },
     backgroundColor: '#0a0a0f',
+    // ★검사로 띄운 창이 **사람이 하던 일을 빼앗지 않게** 한다(2026-09-27 사용자 요청).
+    //   검사는 자주·오래 돌고 그때마다 창이 앞으로 튀어나오면 다른 작업을 할 수 없다.
+    //   그래서 검사에서는 창을 만들 때 감춰 두었다가 **활성화하지 않고** 보여 준다.
+    //   보통 실행은 지금까지와 똑같다 — 만들자마자 보이고 앞으로 나온다.
+    ...(process.env.AF_E2E === '1' ? { show: false } : {}),
     webPreferences: {
       preload: preloadPath,
       sandbox: false
     }
   })
+  if (process.env.AF_E2E === '1') {
+    // showInactive: 창은 보이되 포커스를 가져오지 않는다(화면 캡처·클릭은 그대로 된다).
+    mainWindow.once('ready-to-show', () => { try { mainWindow?.showInactive() } catch { /* 이미 닫혔다 */ } })
+  }
 
   // ── Electron 진단 로그 — 검은 화면/크래시 원인 규명용(stdout으로 E2E·터미널이 수집) ──
   const wc = mainWindow.webContents
@@ -180,10 +190,18 @@ function createWindow(): void {
   //   더빙이 돌려준 것을 합성 쪽이 받는다.
   const dubAdapter = registerDubIpc(
     () => mainWindow, () => currentPythonPath(),
-    () => previewAdapter?.busyReason() ?? null,
+    () => previewAdapter?.busyReason() ?? (songAdapter?.isRunning() ? '노래를 변환하는 중입니다' : null),
     // 대화상자 시작 폴더는 audio.ipc 가 소유한 **같은 기억**을 쓴다.
     dialogFolderHost())
-  const previewAdapter = registerAudioIpc(mainWindow, () => dubAdapter.isRunning())
+  // ★노래 변환도 **같은 판정에 참여한다.** 바깥 변환기(seed-vc)가 GPU 를 물기 때문에
+  //   한쪽만 모르면 파이썬 둘이 같은 GPU 를 문다 — 더빙이 데인 것과 같은 구조다.
+  const songAdapter = registerSongIpc(
+    () => mainWindow, () => currentPythonPath(),
+    () => previewAdapter?.busyReason() ?? (dubAdapter.isRunning() ? '영상 더빙 중입니다' : null),
+    // 대화상자 시작 폴더는 audio.ipc·더빙이 쓰는 **같은 기억**을 쓴다.
+    dialogFolderHost())
+  const previewAdapter = registerAudioIpc(mainWindow,
+    () => dubAdapter.isRunning() || songAdapter.isRunning())
   // 입력 분석 — GPU 를 쓰지 않는 상주 CPU worker. audio.ipc 와 같은 인터프리터를 쓴다.
   registerAnalysisIpc({ pythonPath: currentPythonPath })
   registerPitchIpc(() => currentPythonPath())

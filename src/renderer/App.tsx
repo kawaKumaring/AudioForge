@@ -12,7 +12,7 @@ import { useSynthesisCards } from '@/stores/synthesisCards.store'
 import TranscriptEditor from '@/components/TranscriptEditor'
 import DialogueSegments from '@/components/DialogueSegments'
 import LabPlaceholder from '@/components/LabPlaceholder'
-import DubWorkspace from '@/components/DubWorkspace'
+import SongWorkspace from '@/components/SongWorkspace'
 import TtsResultInfo from '@/components/TtsResultInfo'
 import AppVersionLabel from '@/components/AppVersionLabel'
 import { loadPlaybackVolume } from '@/lib/playbackVolume'
@@ -131,7 +131,7 @@ export default function App() {
           </div>}
 
           {mode === 'tts' && <SynthesisTabs />}
-          {mode === 'dub' && <DubWorkspace />}
+          {mode === 'dub' && <SongWorkspace />}
           {mode === 'lab' && <LabPlaceholder />}
 
           {sharedResults && (status === 'done' || status === 'error') && <section data-testid="shared-results" aria-label="현재 작업 결과" style={{ display: 'flex', flexDirection: 'column', gap: 18, marginTop: 24 }}>

@@ -193,7 +193,9 @@ try {
   await win.keyboard.press('ArrowRight')
   ok(await win.getByTestId('synthesis-tab-advanced').getAttribute('aria-selected') === 'true'
     && await win.evaluate(() => document.activeElement?.id === 'synthesis-tab-advanced'), '방향키로 합성 탭 선택과 포커스 이동')
-  ok(await win.getByRole('tabpanel').getAttribute('aria-labelledby') === 'synthesis-tab-advanced', '선택한 합성 탭과 작업 패널 연결')
+  // 이관(2026-09-27): 합성 위에 **버전 탭**([개발 중]/[옛 버전])이 생겨 tabpanel 이 둘이 됐다.
+  // 단언은 그대로 두고 **어느 패널인지만** 집어 준다 — 역할 이름 하나로는 이제 가려지지 않는다.
+  ok(await win.locator('[role="tabpanel"][id^="synthesis-panel-"]').getAttribute('aria-labelledby') === 'synthesis-tab-advanced', '선택한 합성 탭과 작업 패널 연결')
   await win.keyboard.press('Home')
   ok(await win.getByTestId('synthesis-tab-basic').getAttribute('aria-selected') === 'true', 'Home 키로 문장별 제작 복귀')
   await win.waitForFunction(() => window.__labStore.getState().loaded)

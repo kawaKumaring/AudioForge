@@ -193,6 +193,41 @@ const api = {
       return () => ipcRenderer.removeListener('dub:progress', handler)
     },
   },
+  /**
+   * 노래 변환 — 원곡의 가락·박자를 두고 **목소리만** 바꾼다.
+   * 사슬은 `python/song_chain.py` 가 이미 가지고 있다. 여기는 통로일 뿐이다.
+   */
+  song: {
+    /** 요청 시점의 입력을 그대로 보낸다. 결과에 그 입력이 실려 돌아온다. */
+    run: (req: unknown) => ipcRenderer.invoke('song:run', req),
+    /** 멈추기 — 바깥 변환기까지 끝난 것을 확인하고 답한다. */
+    cancel: () => ipcRenderer.invoke('song:cancel'),
+    /** 결과를 고른 자리에 복사한다. 원본·참조·결과 위에는 저장할 수 없다. */
+    exportResult: (which: 'mix' | 'vocal' | 'withHarmony') =>
+      ipcRenderer.invoke('song:export', which),
+    /** 새 작업이 쌓이는 자리(더빙과 **같은 설정**을 쓴다). */
+    workRoot: () => ipcRenderer.invoke('song:work-root'),
+    onProgress: (callback: (data: unknown) => void) => {
+      const handler = (_event: unknown, data: unknown) => callback(data)
+      ipcRenderer.on('song:progress', handler)
+      return () => ipcRenderer.removeListener('song:progress', handler)
+    },
+    onResult: (callback: (data: unknown) => void) => {
+      const handler = (_event: unknown, data: unknown) => callback(data)
+      ipcRenderer.on('song:result', handler)
+      return () => ipcRenderer.removeListener('song:result', handler)
+    },
+    onError: (callback: (data: unknown) => void) => {
+      const handler = (_event: unknown, data: unknown) => callback(data)
+      ipcRenderer.on('song:error', handler)
+      return () => ipcRenderer.removeListener('song:error', handler)
+    },
+    onCancelled: (callback: (data: unknown) => void) => {
+      const handler = (_event: unknown, data: unknown) => callback(data)
+      ipcRenderer.on('song:cancelled', handler)
+      return () => ipcRenderer.removeListener('song:cancelled', handler)
+    },
+  },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     set: (key: string, value: unknown) => ipcRenderer.invoke('settings:set', key, value),
