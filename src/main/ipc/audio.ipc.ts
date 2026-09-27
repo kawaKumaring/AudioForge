@@ -30,6 +30,9 @@ import { createJobWatchdog, startJobWatch, createStagingGate } from '../services
 import { createTerminalGate } from '../services/run-settlement'
 import type { CancelResponse } from '../../shared/cancelContract'
 import { validateSidecarEvent, SIDECAR_IPC_CHANNEL } from '../../shared/sidecarEvents'
+// 결과를 다른 자리에 저장할 때의 보호 — 판정은 shared 한 곳이 소유한다.
+import { exportFault, refusalText } from '../../shared/trackExportGuard'
+import { type PathProbe } from '../../shared/joinOutputGuard'
 import {
   GLOBAL_ASSET_STORAGE_KEY, VOICE_CAST_STORAGE_KEY,
 } from '../../shared/emotionCandidateRegistry'
@@ -1445,7 +1448,17 @@ export function registerAudioIpc(
     if (result.canceled || result.filePaths.length === 0) return null
 
     const destDir = result.filePaths[0]
-    const { copyFileSync } = await import('fs')
+    const { copyFileSync, existsSync: exists, realpathSync: realp, statSync: statp } = await import('fs')
+    // 파일의 **정체**로 비교한다 — 같은 파일을 다른 경로로 가리킬 수 있다(카드 합치기와 같은 방식).
+    const probe: PathProbe = {
+      real: (q) => { try { return realp.native(resolve(q)) } catch { return resolve(q) } },
+      fileId: (q) => {
+        try { const st = statp(q, { bigint: true }); return st.ino ? `${st.dev}:${st.ino}` : null } catch { return null }
+      },
+    }
+    // ★지켜야 할 것 — 지금 결과 트랙 전부(자기 자신 위에 쓰는 것도 막는다).
+    //   사용자의 원본은 아래 '이미 있으면 덮지 않는다' 규칙이 함께 막는다.
+    const guarded = trackPaths.filter(Boolean)
     // ★한 건이 실패해도 **멈추지 않고 끝까지 시도하고, 무엇이 안 됐는지 돌려준다**
     //   (2026-09-24 2차 감사). 예전에는 try 없이 돌아서 한 건이 실패하면 즉시 멈췄고,
     //   화면은 약속을 통째로 버려 거절이 콘솔 한 줄로 사라졌다.
@@ -1455,8 +1468,12 @@ export function registerAudioIpc(
     const failed: Array<{ name: string; why: string }> = []
     for (const src of trackPaths) {
       const name = basename(src)
+      const dest = join(destDir, name)
+      // ★덮어쓰지 않는다. 결과 폴더나 원본이 있는 폴더를 골라도 **지우지 않는다**.
+      const why = exportFault(dest, guarded, exists(dest), probe)
+      if (why) { failed.push({ name, why: refusalText(why) }); continue }
       try {
-        copyFileSync(src, join(destDir, name))
+        copyFileSync(src, dest)
         copied.push(name)
       } catch (e) {
         failed.push({ name, why: (e as Error)?.message || String(e) })

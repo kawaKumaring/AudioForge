@@ -2,6 +2,9 @@ import { create } from 'zustand'
 // @ts-ignore TS5097: node --test 가 요구하는 명시적 .ts 확장자(이 파일의 다른 import 와 같은 관례).
 import { forgetRestoredThisRun } from '../lib/workDraftSession.ts'
 import type { SeparationMode, Track, FileInfo } from '../../shared/types'
+// 대화 작업실 — 원본·분석 실행·교정 문서의 소속 판정을 store 가 다시 쓰지 않는다.
+// @ts-ignore TS5097: node --test 가 요구하는 명시적 .ts 확장자(위 관례와 같다).
+import { analysisFault, type DialogueAnalysis } from '../../shared/dialogueWorkspace.ts'
 import type { TtsReferenceEntry, PitchCapability, ReferenceConditioningMode } from '../../shared/ttsConfig'
 import type { ReferencePolicySummary, RefPhase } from '../../shared/referencePolicy'
 // 참조 conditioning 모드(PHASE 2) — 기본/복원 해석은 계약 모듈 단일 소유(store 가 규칙을 다시 쓰지 않는다).
@@ -252,10 +255,17 @@ interface AppState {
     firstLabel: string
     unselected: number[]
   } | null
-  /** 화자 분석이 낸 구간(최초 결과). 수정 화면이 이것을 받아 고친다. */
-  dialogueSegments: { start: number; end: number; speaker: string }[]
-  /** 겹쳐 잡힌 구간 — 구간 목록과 **따로** 둔다. 겹침 발견 ≠ 겹친 목소리 분리. */
-  dialogueOverlaps: { start: number; end: number }[]
+  /**
+   * 화자 분석 **한 번**의 결과. 어느 원본의 어느 실행인지 함께 들고 있다.
+   *
+   * ★예전에는 구간 배열만 떠 있었고 파일을 바꿔도 지워지지 않았다 — 그래서 B 를 열어 둔
+   *   화면에 A 의 구간이 그대로 남았다(2026-09-27 재현). 이제 원본이 바뀌면 함께 비운다.
+   */
+  dialogueAnalysis: DialogueAnalysis | null
+  /** 결과를 들이지 못한 사유(다른 원본·지난 실행·구간 없음). 조용히 버리지 않는다. */
+  dialogueNotice: string
+  /** 지금 기다리는 분석 실행 — 늦게 온 앞 실행의 결과를 가려낸다. */
+  dialogueRunId: string
   /** 대화 분석 엔진. 기본은 기존 엔진이다. */
   diarizeEngine: 'builtin' | 'community-1'
   ttsText: string
@@ -420,6 +430,10 @@ interface AppState {
   setProcessing: () => void
   setProgress: (percent: number, message: string) => void
   setResult: (tracks: Track[], outputDir: string, metadata?: Record<string, unknown> | null) => void
+  /** 분석을 시작한다 — 이 실행의 식별자를 기억해 둔다(늦게 온 앞 결과를 가려내는 근거). */
+  beginDialogueRun: (runId: string) => void
+  /** 분석 결과를 들인다. 소속이 맞지 않으면 들이지 않고 **사유를 남긴다**. */
+  adoptDialogueAnalysis: (got: DialogueAnalysis | null, notice?: string) => void
   setError: (error: string, info?: { code?: string; childAlive?: boolean; cancelKind?: string } | null) => void
   // 오류 카드 '닫기' — 오류만 해제하고 idle로. 디스크의 synthesized.wav·재시도 nonce는 건드리지 않는다.
   clearError: () => void
@@ -481,8 +495,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   splitLabels: [],
   splitSelected: null,
   splitDraft: null,
-  dialogueSegments: [],
-  dialogueOverlaps: [],
+  dialogueAnalysis: null as DialogueAnalysis | null,
+  dialogueNotice: '',
+  dialogueRunId: '',
   diarizeEngine: 'builtin' as const,
   ttsText: '',
   ttsSpeed: 1.0,
@@ -554,7 +569,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 공용 파일 작업의 참조만 정리(일반·더빙 보존)
     // 분할 마커는 파일에 종속이다. 비우지 않으면 이전 파일의 경계가 새 파일에 그대로 적용돼
     // (더 긴 파일에서는 오류조차 없이) 완전히 틀린 지점에서 잘린다 — 감사 R2.
-    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], resultMode: null, independentWork: null, resultMetadata: null, activeVoiceCastId: null, error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], splitDraft: null, ttsReferenceClip: '', ttsRefReady: false, ttsRefPhase: 'preparing' as RefPhase, ttsRefReqId: newRefReqId(), ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
+    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], resultMode: null, independentWork: null, resultMetadata: null, activeVoiceCastId: null, error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], splitDraft: null, dialogueAnalysis: null, dialogueNotice: '', dialogueRunId: '', ttsReferenceClip: '', ttsRefReady: false, ttsRefPhase: 'preparing' as RefPhase, ttsRefReqId: newRefReqId(), ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
   },
   setMode: (mode) => set({ mode }),
   setSynthesisTab: (t) => set({ synthesisTab: t }),
@@ -791,6 +806,14 @@ export const useAppStore = create<AppState>((set, get) => ({
   }),
   setProcessing: () => set((s) => ({ independentWork: null, status: 'processing', progress: 0, progressMessage: '파일 준비 중...', error: null, errorInfo: null, tracks: [], resultMetadata: null, resultMode: s.mode })),
   setProgress: (percent, message) => set({ progress: percent, progressMessage: message }),
+  beginDialogueRun: (runId) => set({ dialogueRunId: runId, dialogueAnalysis: null, dialogueNotice: '' }),
+  adoptDialogueAnalysis: (got, notice) => set((s) => {
+    const key = s.fileInfo?.path || ''
+    // 판정은 shared 한 곳이 소유한다 — store 가 규칙을 따로 쓰면 둘이 갈라진다.
+    const why = got ? analysisFault(got, key, s.dialogueRunId) : ''
+    if (got && why) return { dialogueNotice: why }        // 지금 결과는 건드리지 않는다
+    return { dialogueAnalysis: got, dialogueNotice: got ? '' : (notice || '') }
+  }),
   setResult: (tracks, outputDir, metadata) => set((s) => ({ status: 'done', progress: 100, progressMessage: '완료', tracks, outputDir, resultMetadata: metadata ?? null, resultMode: s.resultMode ?? s.mode })),
   // 실행 전 검증 오류는 현재 모드, 실행 중 도착한 오류는 시작 때 기록한 모드에 속한다.
   setError: (error, info) => set((s) => ({ status: 'error', error, errorInfo: info ?? null, progressMessage: '',
@@ -939,6 +962,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({
       fileInfo: null, fileUrl: null, status: 'idle', progress: 0, progressMessage: '', error: null, errorInfo: null,
       tracks: [], outputDir: null, playingTrack: null, restorable: null, splitMarkers: [], splitLabels: [], splitDraft: null,
+      dialogueAnalysis: null, dialogueNotice: '', dialogueRunId: '',
       ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null,
       ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {},
       ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {},

@@ -12,6 +12,7 @@ import { registerAppVersionIpc, currentBuildInfo } from './ipc/app-version.ipc'
 import { registerDiagnosticsIpc } from './ipc/diagnostics.ipc'
 import { registerDubIpc } from './ipc/dub.ipc'
 import { registerSongIpc } from './ipc/song.ipc'
+import { registerDialogueIpc } from './ipc/dialogue.ipc'
 import { registerPitchIpc } from './ipc/pitch.ipc'
 import { registerCardMediaIpc } from './ipc/card-media.ipc'
 import { createAppLog, mirrorConsole, setAppLog, watchUncaught, LOG_DIR_NAME } from './services/app-log'
@@ -195,6 +196,7 @@ function createWindow(): void {
     dialogFolderHost())
   // ★노래 변환도 **같은 판정에 참여한다.** 바깥 변환기(seed-vc)가 GPU 를 물기 때문에
   //   한쪽만 모르면 파이썬 둘이 같은 GPU 를 문다 — 더빙이 데인 것과 같은 구조다.
+  registerDialogueIpc()
   const songAdapter = registerSongIpc(
     () => mainWindow, () => currentPythonPath(),
     () => previewAdapter?.busyReason() ?? (dubAdapter.isRunning() ? '영상 더빙 중입니다' : null),

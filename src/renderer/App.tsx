@@ -10,7 +10,7 @@ import SplitEditor from '@/components/SplitEditor'
 import SynthesisTabs from '@/components/SynthesisTabs'
 import { useSynthesisCards } from '@/stores/synthesisCards.store'
 import TranscriptEditor from '@/components/TranscriptEditor'
-import DialogueSegments from '@/components/DialogueSegments'
+import DialogueWorkspace from '@/components/DialogueWorkspace'
 import LabPlaceholder from '@/components/LabPlaceholder'
 import SongWorkspace from '@/components/SongWorkspace'
 import TtsResultInfo from '@/components/TtsResultInfo'
@@ -142,7 +142,7 @@ export default function App() {
             <TtsResultInfo />
             <TrackList />
             {mode === 'transcribe' && done && <TranscriptEditor />}
-            {mode === 'conversation' && done && <DialogueSegments />}
+            {mode === 'conversation' && done && <DialogueWorkspace />}
             {showSharedRun && done && <button type="button" className="btn btn-ghost" onClick={resetRun} style={{ alignSelf: 'flex-start', fontSize: 12 }}>설정을 바꿔 다시 작업</button>}
           </section>}
         </div>

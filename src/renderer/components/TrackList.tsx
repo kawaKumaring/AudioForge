@@ -592,12 +592,15 @@ export default function TrackList() {
         </div>
       )}
 
-      {/* Tracks */}
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-        <AnimatePresence>
-          {tracks.map((track, i) => <TrackItem key={track.name} track={track} index={i} />)}
-        </AnimatePresence>
-      </div>
+      {/* Tracks — ★대화 모드에서는 **작업실의 인물 카드**가 이 자리를 대신한다.
+          같은 트랙을 두 군데에 쌓지 않는다(2026-09-27 개편). 폴더·내보내기는 위에 남는다. */}
+      {mode !== 'conversation' && (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          <AnimatePresence>
+            {tracks.map((track, i) => <TrackItem key={track.name} track={track} index={i} />)}
+          </AnimatePresence>
+        </div>
+      )}
     </motion.div>
   )
 }

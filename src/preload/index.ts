@@ -197,6 +197,14 @@ const api = {
    * 노래 변환 — 원곡의 가락·박자를 두고 **목소리만** 바꾼다.
    * 사슬은 `python/song_chain.py` 가 이미 가지고 있다. 여기는 통로일 뿐이다.
    */
+  /**
+   * 대화 작업실 — 자기 결과 폴더 안의 받아쓴 구간 파일을 읽는다.
+   * 폴더 밖은 읽지 못한다(본체가 막는다). 없으면 빈 글자를 돌려준다.
+   */
+  dialogue: {
+    readTranscript: (dir: string, name: string): Promise<string> =>
+      ipcRenderer.invoke('dialogue:read-transcript', dir, name),
+  },
   song: {
     /** 요청 시점의 입력을 그대로 보낸다. 결과에 그 입력이 실려 돌아온다. */
     run: (req: unknown) => ipcRenderer.invoke('song:run', req),
