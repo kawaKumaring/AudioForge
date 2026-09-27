@@ -63,6 +63,13 @@ try {
   assert.equal(await page.getByTestId('split-auto-note').count(), 1)
   pass('마커가 없으면 조각 수를 확정하지 않고 자동 분할로 표시한다')
 
+  // ★가상 조각 행과 저장 선택을 보여 주지 않는다(2026-09-27 검수 3).
+  assert.equal(await page.getByTestId('split-piece').count(), 0,
+    '자동 분할인데 조각 행이 보인다 — 확정 결과처럼 읽힌다')
+  assert.equal(await page.getByTestId('split-selected-count').count(), 0)
+  assert.equal(await page.getByTestId('split-play-all').count(), 1, '전체 미리듣기는 남아야 한다')
+  pass('★자동 분할에서는 가상 조각 행·저장 선택을 숨기고 전체 미리듣기만 남긴다')
+
   // ── 되돌리기: 처음엔 비활성 ───────────────────────────────────────────
   assert.equal(await page.getByTestId('split-undo').isDisabled(), true)
   assert.equal(await page.getByTestId('split-redo').isDisabled(), true)
@@ -92,6 +99,12 @@ try {
   await page.getByTestId('split-undo').click()
   await page.waitForFunction(() => window.store.getState().splitMarkers.length === 2)
   pass('★전체 삭제를 되돌린다')
+
+  // ★같은 경계를 두 번 따로 끄는 경우는 여기서 보지 않는다.
+  //   실제 region 은 그림자 DOM 안 **몇 픽셀짜리**라 마우스로 잡는 검사가 흔들린다.
+  //   대신 두 곳에서 본다 — 걸음의 크기는 `shared/splitHistory` 검사가,
+  //   이벤트 이름이 실재하는지는 `SplitEditor.events.test.ts` 가 본다
+  //   (없는 이름 `region-update-end` 를 쓰던 것이 이번 검수의 지적이었다).
 
   // ── 시간 목록: 잘못된 줄이면 전체 적용을 막고 기존 편집을 지킨다 ───────
   await page.getByRole('button', { name: '시간 목록 붙여넣기', exact: true }).click()
@@ -151,6 +164,18 @@ try {
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false,
     '좁은 창에서 가로로 넘친다')
   pass('좁은 창에서 가로 넘침이 없다')
+
+  // ★단어 중간에서 꺾이지 않는다 — 글자를 줄이지 않고 묶음째 줄바꿈한다(검수 4).
+  const wrapInfo = await page.evaluate(() => {
+    const b = [...document.querySelectorAll('button')].find((x) => x.textContent.trim() === '시간 목록 붙여넣기')
+    if (!b) return null
+    const r = b.getBoundingClientRect()
+    const cs = getComputedStyle(b)
+    return { h: r.height, lh: parseFloat(cs.lineHeight) || parseFloat(cs.fontSize) * 1.4, ws: cs.whiteSpace }
+  })
+  assert.ok(wrapInfo, '시간 목록 단추를 찾지 못했다')
+  assert.equal(wrapInfo.ws, 'nowrap', `단추 글자가 꺾일 수 있다: ${JSON.stringify(wrapInfo)}`)
+  pass('★좁은 창에서 도구 줄 글자가 단어 중간에서 꺾이지 않는다')
   await page.screenshot({ path: path.join(process.env.TEMP || '.', 'af-split-narrow.png') })
   await page.setViewportSize({ width: 900, height: 900 })
   await page.screenshot({ path: path.join(process.env.TEMP || '.', 'af-split-wide.png') })

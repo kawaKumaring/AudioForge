@@ -150,23 +150,33 @@ export default function SplitEditor() {
     })
 
     // Listen for drag updates — use a single persistent handler
-    const handleUpdate = (region: any) => {
-      // ★끄는 동안 수십 번 불린다. 같은 종류로 쌓아 **한 걸음으로 묶는다**.
-      remember(`drag:${region.id}`)
+    // ★이 플러그인이 내는 이름은 둘뿐이다(2026-09-27 검수로 확인).
+    //     `region-update`  — 끄는 **중**(매 프레임)
+    //     `region-updated` — 끄기를 **놓았을 때**(내부 update-end 에서 난다)
+    //   내가 쓰던 `region-update-end` 는 **없는 이름**이라 묶기 종료가 한 번도 돌지 않았고,
+    //   그래서 같은 경계를 두 번 따로 끌면 한 걸음으로 뭉쳤다.
+    const applyTime = (region: any) => {
       setMarkers(prev => prev.map(m =>
         m.id === region.id ? { ...m, time: region.start } : m
       ).sort((a, b) => a.time - b.time))
     }
-    // 놓는 순간 묶기를 끊는다 — 다시 끌면 새 걸음이다.
-    const handleUpdateEnd = () => { seal() }
+    const handleUpdate = (region: any) => {
+      remember(`drag:${region.id}`)      // 같은 종류라 끄는 동안은 한 걸음으로 묶인다
+      applyTime(region)
+    }
+    const handleUpdated = (region: any) => {
+      remember(`drag:${region.id}`)      // 중간 이벤트 없이 끝난 경우에도 걸음을 남긴다
+      applyTime(region)
+      seal()                             // 놓았다 — 다시 끌면 새 걸음이다
+    }
 
-    regions.on('region-updated', handleUpdate)
-    regions.on('region-update-end', handleUpdateEnd)
+    regions.on('region-update', handleUpdate)
+    regions.on('region-updated', handleUpdated)
 
     return () => {
       // un(event)만 부르면 아무것도 해제되지 않음 — 핸들러를 명시해야 함
-      regions.un('region-updated', handleUpdate)
-      regions.un('region-update-end', handleUpdateEnd)
+      regions.un('region-update', handleUpdate)
+      regions.un('region-updated', handleUpdated)
     }
   }, [markers, locked, remember, seal])
 
@@ -221,23 +231,37 @@ export default function SplitEditor() {
   }, [])
 
   const previewTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  /**
+   * **재생 요청 번호.** 재생을 시작하는 모든 자리에서 하나 올린다.
+   *
+   * ★플레이어가 하나뿐이라 `wsRef.current === ws` 로는 구분이 안 된다(2026-09-27 검수).
+   *   같은 플레이어로 다른 조각이나 전체를 틀면 **앞 미리듣기의 타이머가 그것을 끊었다.**
+   *   이제 타이머는 **제 요청이 아직 최신일 때만** 멈춘다.
+   */
+  const playToken = useRef(0)
   const clearPreviewTimer = useCallback(() => {
     if (previewTimer.current) { clearTimeout(previewTimer.current); previewTimer.current = null }
   }, [])
+  /** 재생을 새로 시작한다고 알린다 — 앞 타이머를 치우고 새 번호를 받는다. */
+  const beginPlayback = useCallback(() => {
+    clearPreviewTimer()
+    playToken.current += 1
+    return playToken.current
+  }, [clearPreviewTimer])
   useEffect(() => clearPreviewTimer, [clearPreviewTimer])
   const previewMarker = useCallback((time: number) => {
     const ws = wsRef.current
     if (!ws) return
-    clearPreviewTimer()
+    const mine = beginPlayback()
     const start = Math.max(0, time - 2)
     ws.setTime(start)
     ws.play()
     previewTimer.current = setTimeout(() => {
       previewTimer.current = null
-      // 그 사이 다른 것을 틀었으면 건드리지 않는다 — 이 미리듣기의 재생일 때만 멈춘다.
-      if (wsRef.current === ws && ws.isPlaying()) ws.pause()
+      // ★내 재생이 아직 최신일 때만 멈춘다. 그 사이 다른 것을 틀었으면 건드리지 않는다.
+      if (playToken.current === mine && wsRef.current === ws && ws.isPlaying()) ws.pause()
     }, 5000)
-  }, [clearPreviewTimer])
+  }, [beginPlayback])
 
   // Parse timestamp text
   /**
@@ -380,10 +404,11 @@ export default function SplitEditor() {
 
   // 조각 듣기 — 저장에 쓰는 것과 **같은 구간 정보**를 쓴다. 파일을 만들지 않는다.
   const stopPiece = useCallback(() => {
+    clearPreviewTimer()                  // 멈췄으면 남은 타이머도 함께 치운다
     try { wsRef.current?.pause() } catch { /* noop */ }
     pieceStopRef.current = null
     setPlayingPiece(null)
-  }, [])
+  }, [clearPreviewTimer])
 
   const playPiece = useCallback((p: SplitPiece | null) => {
     const ws = wsRef.current
@@ -391,13 +416,15 @@ export default function SplitEditor() {
     const same = p ? playingPiece === p.index : playingPiece === -1
     if (same) { stopPiece(); return }
     stopPiece()
+    // ★새 재생이다 — 앞 미리듣기의 5초 타이머가 이것을 끊지 못하게 한다.
+    beginPlayback()
     pieceStopRef.current = p ? p.end : effectiveDuration
     setPlayingPiece(p ? p.index : -1)
     try {
       ws.setTime(p ? p.start : 0)
       ws.play()
     } catch { setPlayingPiece(null) }
-  }, [effectiveDuration, playingPiece, stopPiece])
+  }, [effectiveDuration, playingPiece, stopPiece, beginPlayback])
 
   // 끝 지점에 닿으면 멈춘다.
   useEffect(() => {
@@ -426,7 +453,7 @@ export default function SplitEditor() {
           <div ref={containerRef} data-testid="split-edit-wave" title="두 번 클릭: 분할점 추가 · 분할선 끌기: 위치 변경"/>
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 32px minmax(0,1fr)', gap: 8, alignItems: 'center', marginTop: 8 }}>
             <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{fmtTime(currentTime)}</span>
-            <button type="button" aria-label={isPlaying ? '분할 파형 일시정지' : '분할 파형 재생'} disabled={!waveReady} onClick={() => { pieceStopRef.current = null; setPlayingPiece(null); void wsRef.current?.playPause().catch(() => setWaveError('재생하지 못했습니다')) }} style={{ width: 32, height: 32, padding: 0, border: 0, borderRadius: '50%', background: 'var(--accent-glow)', color: 'var(--accent-light)' }}>{isPlaying ? 'Ⅱ' : '▶'}</button>
+            <button type="button" aria-label={isPlaying ? '분할 파형 일시정지' : '분할 파형 재생'} disabled={!waveReady} onClick={() => { pieceStopRef.current = null; setPlayingPiece(null); beginPlayback(); void wsRef.current?.playPause().catch(() => setWaveError('재생하지 못했습니다')) }} style={{ width: 32, height: 32, padding: 0, border: 0, borderRadius: '50%', background: 'var(--accent-glow)', color: 'var(--accent-light)' }}>{isPlaying ? 'Ⅱ' : '▶'}</button>
             <span style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'right' }}>{fmtTime(duration)}</span>
           </div>
         </div>
@@ -439,7 +466,10 @@ export default function SplitEditor() {
       }}>
         {(['wave', 'manual', 'auto'] as const).map((m) => (
           <button type="button" aria-pressed={inputMode === m} key={m} onClick={() => setInputMode(m)} style={{
-            flex: 1, padding: '8px 0', border: 'none', cursor: 'pointer',
+            // ★글자를 줄이지 않는다. 좁아지면 **묶음째 다음 줄로** 간다(2026-09-27 검수).
+            //   flex:1 만 두면 칸이 좁아져 '시간 목록 붙여넣기' 가 단어 중간에서 꺾였다.
+            flex: '1 1 auto', minWidth: 'max-content', whiteSpace: 'nowrap',
+            padding: '8px 12px', border: 'none', cursor: 'pointer',
             fontFamily: 'inherit', fontSize: 11, fontWeight: inputMode === m ? 600 : 500,
             background: inputMode === m ? 'rgba(251,191,36,0.12)' : 'transparent',
             color: inputMode === m ? 'var(--amber)' : 'var(--text-muted)',
@@ -449,7 +479,7 @@ export default function SplitEditor() {
           </button>
         ))}
         {/* ★되돌릴 것이 없으면 **비활성**이다 — 눌러도 아무 일이 없는 단추를 살려 두지 않는다. */}
-        <div style={{ display: 'flex', alignItems: 'stretch', borderLeft: '1px solid var(--border-subtle)' }}>
+        <div style={{ display: 'flex', alignItems: 'stretch', flex: '0 0 auto', marginLeft: 'auto', borderLeft: '1px solid var(--border-subtle)' }}>
           {([['undo', '되돌리기', !canUndo(history) || locked, doUndo],
              ['redo', '다시 적용', !canRedo(history) || locked, doRedo]] as const).map(([key, label, off, act]) => (
             <button type="button" key={key} data-testid={`split-${key}`} aria-label={label}
@@ -608,7 +638,7 @@ export default function SplitEditor() {
             </span>
             {autoSilenceSplit && (
               <span tabIndex={0} data-testid="split-auto-note"
-                title="분할 지점을 두지 않으면 저장할 때 무음을 기준으로 나눕니다. 실제 조각 수는 그때 정해집니다."
+                title="분할 지점을 두지 않으면 저장할 때 무음을 기준으로 나눕니다. 실제 조각 수와 각 조각의 길이는 그때 정해지므로 미리 보여 줄 수 없습니다."
                 style={{ fontSize: 10, color: 'var(--amber)' }}>조각 수는 저장할 때 정해집니다</span>
             )}
             <button data-testid="split-play-all" onClick={() => playPiece(null)}
@@ -625,7 +655,10 @@ export default function SplitEditor() {
               </span>
             )}
           </div>
-          {pieces.map((p) => {
+          {/* ★자동 분할이면 **가상 조각 행을 보여 주지 않는다**(2026-09-27 검수).
+              '01_Track 01 / 전체 구간' 에 체크박스까지 있으면 그것이 확정 결과처럼 보인다.
+              고를 것이 없으므로 저장 선택도 함께 감춘다 — 전체 미리듣기는 그대로 쓴다. */}
+          {!autoSilenceSplit && pieces.map((p) => {
             const off = unselected.has(p.index)
             return (
               <div key={p.index} data-testid="split-piece" data-selected={off ? '0' : '1'}

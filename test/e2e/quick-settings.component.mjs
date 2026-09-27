@@ -99,12 +99,25 @@ try {
   assert.equal(await page.evaluate(() => window.store.getState().whisperLang), 'ja')
   pass('언어를 바꾸는 기능은 그대로다')
 
+  // ★SRT 도 받아쓰기 모드에서는 한 곳에서만 보인다(2026-09-27 검수 5).
+  const srtCount = await page.evaluate(() =>
+    [...document.querySelectorAll('button,label')].filter((el) => /SRT/.test(el.textContent || '')).length)
+  assert.equal(srtCount, 1, `SRT 설정이 ${srtCount}곳에 있다`)
+  pass('★받아쓰기 모드에서 SRT 가 한 곳에서만 보인다')
+  await page.getByRole('button', { name: /SRT/ }).click()
+  assert.equal(await page.evaluate(() => window.store.getState().exportSrt), true)
+  pass('SRT 를 켜는 기능은 그대로다')
+
   // 다른 모드(분할)에서는 세부에만 있으므로 남아 있어야 한다.
   await page.evaluate(() => window.store.setState({ mode: 'split', transcribe: true }))
   await page.waitForTimeout(150)
   const koInSplit = await page.getByRole('button', { name: '한국어', exact: true }).count()
   assert.equal(koInSplit, 1, '분할 모드에서는 세부에만 있어야 하는데 사라졌다')
   pass('★다른 모드에서는 언어 선택이 그대로 남는다')
+  const srtInSplit = await page.evaluate(() =>
+    [...document.querySelectorAll('button,label')].filter((el) => /SRT/.test(el.textContent || '')).length)
+  assert.ok(srtInSplit >= 1, '분할 모드에서 SRT 가 사라졌다')
+  pass('★다른 모드에서는 SRT 가 그대로 남는다')
 
   // ── 좁은 창 ───────────────────────────────────────────────────────────
   await page.evaluate(() => window.store.setState({ mode: 'music' }))

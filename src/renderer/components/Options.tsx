@@ -86,7 +86,10 @@ export default function Options() {
             {!isTranscribeMode && !isSplitMode && chip(transcribe, 'var(--cyan)', '텍스트 변환', setTranscribe, '음성을 글자(대본/자막)로 받아쓰기합니다')}
             {isSplitMode && chip(transcribe, 'var(--cyan)', '트랙별 가사 추출', setTranscribe, '분할된 각 트랙의 음성을 글자로 받아쓰기합니다')}
             {chip(translate, 'var(--emerald)', '한국어 번역', setTranslate, '받아쓴 텍스트를 한국어로 번역합니다')}
-            {chip(exportSrt, 'var(--amber)', 'SRT 자막', setExportSrt, '영상 편집기에서 쓰는 시간 동기화 자막 파일(.srt)을 함께 생성합니다')}
+            {/* ★받아쓰기 **모드**에서는 빠른 설정에 같은 것이 있다 — 여기서는 뺀다(2026-09-27 검수).
+                묶음이 한 칸 줄어드는 것보다 같은 설정이 두 번 보이는 쪽이 나쁘다.
+                다른 모드에서는 여기서만 고를 수 있으므로 남긴다. */}
+            {!isTranscribeMode && chip(exportSrt, 'var(--amber)', 'SRT 자막', setExportSrt, '영상 편집기에서 쓰는 시간 동기화 자막 파일(.srt)을 함께 생성합니다')}
           </div>
 
           {/* Sub-options: 각 컨트롤을 한 줄씩 세로로 쌓아 서로 간섭·밀림 없게(사용자 요청).
