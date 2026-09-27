@@ -43,6 +43,15 @@ export default function SynthesisTabs() {
   // 생성 중에는 옮기지 않는다 — 기존 전환 제한을 그대로 둔다.
   const busy = status === 'processing' || isCancelCleanupBusy(status) || !!childAlive
 
+  const versionButtons = useRef<Partial<Record<'cards' | 'legacy', HTMLButtonElement | null>>>({})
+  const moveVersion = (e: KeyboardEvent<HTMLButtonElement>) => {
+    if (!['ArrowLeft', 'ArrowRight', 'Home', 'End'].includes(e.key)) return
+    e.preventDefault()
+    if (busy) return
+    const next = e.key === 'Home' ? 'cards' : e.key === 'End' ? 'legacy' : view === 'cards' ? 'legacy' : 'cards'
+    setView(next)
+    versionButtons.current[next]?.focus()
+  }
   const seg = (active: boolean): React.CSSProperties => ({
     padding: '9px 16px', border: 'none', borderRadius: 0, fontFamily: 'inherit',
     fontSize: 12.5, fontWeight: active ? 700 : 600,
@@ -57,15 +66,21 @@ export default function SynthesisTabs() {
       <div role="tablist" aria-label="합성 화면 버전" data-testid="synthesis-version-tabs"
         style={{ display: 'flex', borderBottom: '1px solid var(--border-subtle)' }}>
         <button type="button" role="tab" aria-selected={view === 'cards'}
+          id="synthesis-version-cards" aria-controls="synthesis-version-panel-cards" tabIndex={view === 'cards' ? 0 : -1}
+          ref={el => { versionButtons.current.cards = el }} onKeyDown={moveVersion}
           data-testid="back-to-generation-cards" disabled={busy && view !== 'cards'}
           title={VERSION_HINT.cards} onClick={() => { if (!busy) setView('cards') }}
           style={seg(view === 'cards')}>개발 중</button>
         <button type="button" role="tab" aria-selected={view === 'legacy'}
+          id="synthesis-version-legacy" aria-controls="synthesis-version-panel-legacy" tabIndex={view === 'legacy' ? 0 : -1}
+          ref={el => { versionButtons.current.legacy = el }} onKeyDown={moveVersion}
           data-testid="open-legacy-synthesis" disabled={busy && view !== 'legacy'}
           title={VERSION_HINT.legacy} onClick={() => { if (!busy) setView('legacy') }}
           style={seg(view === 'legacy')}>옛 버전</button>
       </div>
-      {view === 'cards' ? <SynthesisCardWorkspace /> : <LegacySynthesisTabs />}
+      <div role="tabpanel" id={`synthesis-version-panel-${view}`} aria-labelledby={`synthesis-version-${view}`} style={{ minWidth: 0 }}>
+        {view === 'cards' ? <SynthesisCardWorkspace /> : <LegacySynthesisTabs />}
+      </div>
     </div>
   )
 }
