@@ -30,6 +30,11 @@ export type CardTake = {
   voice?: VoiceSnapshot
   /** 저장본을 되살렸는데 파일이 사라졌다. 재생·채택을 막고 이유를 말한다. */
   missing?: boolean
+  /**
+   * 옛 작업에서 가져온 생성본 — **당시 설정 기록이 아예 없다.**
+   * 화면은 '수정 전/지금 것' 대신 '설정 기록 없음' 으로 말한다.
+   */
+  settingsUnknown?: boolean
 }
 
 export type SynthesisCard = {
@@ -151,7 +156,7 @@ export const useSynthesisCards = create<State>((set) => ({
   })),
   clone: id => set(s => {
     const at = s.cards.findIndex(c => c.id === id); if (at < 0) return {}
-    const source = s.cards[at], copy = { ...newCard(source.source ? { ...source.source } : null, source.settings), label: source.label }
+    const source = s.cards[at], copy = { ...newCard(source.source ? { ...source.source } : null, source.settings, source.builtin ? { ...source.builtin } : null), label: source.label }
     const cards = [...s.cards]; cards.splice(at + 1, 0, copy); return { cards, dirty: true }
   }),
   move: (id, index) => set(s => {

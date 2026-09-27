@@ -104,6 +104,8 @@ export function serializeWork(cards: SynthesisCard[], joins: JoinSettings): Save
         settings: { ...t.settings }, applied: { ...t.applied },
         // 그때의 목소리. **기록이 없으면 넣지 않는다** — 지금 값으로 채우지 않는다.
         ...(t.voice ? { voice: { ...t.voice } } : {}),
+        // 기록이 없다는 **사실 자체**를 남긴다 — 왕복하며 슬며시 '지금 것' 이 되지 않게.
+        ...(t.settingsUnknown ? { settingsUnknown: true as const } : {}),
       })),
     })),
   }
@@ -148,6 +150,7 @@ export async function hydrateWork(w: SavedWork): Promise<{ cards: SynthesisCard[
         applied: appliedFrom(t.applied),
         // 그때의 목소리. 옛 생성본에는 없다 — 없는 채로 둔다.
         ...(voiceFrom(t.voice) ? { voice: voiceFrom(t.voice)! } : {}),
+        ...(t.settingsUnknown ? { settingsUnknown: true } : {}),
         missing: present[t.path] === false,
       })),
     }

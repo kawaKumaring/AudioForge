@@ -24,6 +24,8 @@ import {
 // @ts-ignore TS5097
 } from '../../shared/synthesisCardSave.ts'
 // @ts-ignore TS5097
+import { applyImport } from '../../shared/legacyCardImport.ts'
+// @ts-ignore TS5097
 import { saveSetting } from '../../shared/saveSetting.ts'
 
 export type SavePhase = 'idle' | 'saving' | 'saved' | 'failed'
@@ -87,6 +89,33 @@ export async function keepCurrentAside(): Promise<void> {
  */
 export function adoptKept(index: number): void {
   file = adoptFromKept(file, index)
+}
+
+/**
+ * 옛 작업에서 가져온 문서를 **지금 것**으로 삼는다. 성공하면 빈 문자열, 아니면 사유.
+ *
+ * ★반만 들어가지 않는다 (2026-09-27 지시)
+ *   ① 하던 작업을 먼저 끝까지 **저장한다** — 보관함으로 옮기기 전에 최신이어야 한다.
+ *   ② 디스크에 **먼저** 쓴다. 성공했을 때만 화면이 카드를 바꾼다.
+ *   ③ 쓰기가 실패하면 **읽어 둔 문서를 통째로 되돌린다** — 카드 몇 장만 남는 일이 없다.
+ * ★지우지 않는다. 하던 작업은 보관함 앞으로 갈 뿐이다.
+ */
+export async function importLegacyWork(doc: SavedWork): Promise<string> {
+  await loadSavedFile()
+  await flushSave()                    // 하던 작업의 마지막 편집까지 남긴 뒤에 옮긴다
+  const before = file
+  const next = applyImport(file, doc)
+  const code = await lane.then(() =>
+    saveSetting(window.api.settings.set, CARD_STORAGE_KEY, { current: next.current, kept: next.kept }))
+  if (code) {
+    file = before                      // ★되돌린다 — 가져오기는 없던 일이 된다
+    publish({ phase: 'failed', code, at: Date.now() })
+    return code
+  }
+  file = next
+  dirtyWork = null                     // 지난 문서를 다시 쓰지 않게 한다
+  publish({ phase: 'saved', code: '', at: Date.now() })
+  return ''
 }
 
 let dirtyWork: SavedWork | null = null

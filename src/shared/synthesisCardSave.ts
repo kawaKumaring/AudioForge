@@ -38,6 +38,13 @@ export interface SavedTake {
    * 기록이 없던 옛 생성본은 **없는 채로 둔다** — 지금 카드의 목소리로 채우지 않는다.
    */
   voice?: Record<string, unknown>
+  /**
+   * **당시 설정·적용값 기록이 아예 없다**(옛 작업에서 가져온 생성본).
+   *
+   * ★없는 것과 기본값은 다르다. 이 표시가 없으면 화면이 지금 설정과 비교해
+   *   '지금 것' 이라고 말해 버린다 — 만들 때 무슨 값을 썼는지 아무도 모르는데도.
+   */
+  settingsUnknown?: boolean
 }
 
 export interface SavedCard {
@@ -63,6 +70,11 @@ export interface SavedWork {
   cards: SavedCard[]
   joins: Record<string, unknown>
   savedAt: number
+  /**
+   * 옛 작업에서 **복사해 온** 것이면 그 출처. 같은 작업을 또 가져오려 할 때
+   * '이미 가져왔다' 고 알리는 근거다(막지는 않는다 — 고르는 것은 사용자다).
+   */
+  importedFrom?: { kind: 'lab' | 'draft'; key: string; at: number }
 }
 
 const num = (v: unknown, fallback = 0): number =>
@@ -102,6 +114,7 @@ export function parseSavedWork(raw: unknown): SavedWork | null {
         applied: (tt.applied as Record<string, unknown>) || {},
         // ★기록이 없으면 **넣지 않는다.** 빈 객체를 넣으면 '기록 없음' 과 '없는 목소리' 가 섞인다.
         ...(obj(tt.voice) ? { voice: obj(tt.voice)! } : {}),
+        ...(tt.settingsUnknown === true ? { settingsUnknown: true } : {}),
       })
     }
     const adopted = str(c.adoptedId)
@@ -119,7 +132,18 @@ export function parseSavedWork(raw: unknown): SavedWork | null {
     cards,
     joins: (o.joins as Record<string, unknown>) || {},
     savedAt: num(o.savedAt),
+    ...(importedFrom(o.importedFrom) ? { importedFrom: importedFrom(o.importedFrom)! } : {}),
   }
+}
+
+/** 출처 표시. 모양이 아니면 **없는 것으로** 본다 — 반쯤 읽어 쓰지 않는다. */
+function importedFrom(raw: unknown): { kind: 'lab' | 'draft'; key: string; at: number } | null {
+  const o = obj(raw)
+  if (!o) return null
+  const kind = o.kind === 'lab' ? 'lab' : o.kind === 'draft' ? 'draft' : null
+  const key = str(o.key)
+  if (!kind || !key) return null
+  return { kind, key, at: num(o.at) }
 }
 
 /** 되살릴 만한 것이 들어 있는가. 빈 껍데기로 묻지 않는다. */
