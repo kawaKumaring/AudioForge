@@ -391,6 +391,11 @@ export async function startCardGeneration(card: SynthesisCard): Promise<string> 
     // 기본 목소리면 엔진·모델을 명시해 싣는다. 참조 목소리면 아무것도 붙지 않는다.
     ...builtinRequestFields(voice),
     clientRequestId: reqId,
+    // ★**사용자가 고른 원본**을 따로 싣는다. 영상이면 아래에서 꺼낸 wav 를 보내는데,
+    //   본체가 그 폴더를 결과 자리로 삼으면 C 드라이브 중간 폴더에 쌓인다(2026-09-28 신고).
+    //   읽는 파일과 '어디에 쌓을지' 를 정하는 파일은 다른 것이다.
+    ...(voice.kind === 'reference' && card.source?.path
+      ? { sourceOriginalPath: card.source.path } : {}),
   }
 
   useAppStore.getState().beginIndependentWork('목소리 만드는 중...')

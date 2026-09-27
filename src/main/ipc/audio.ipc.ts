@@ -39,6 +39,7 @@ import {
 import { WORK_DRAFT_STORAGE_KEY } from '../../shared/workDraft'
 import { PLAYBACK_VOLUME_STORAGE_KEY } from '../../shared/playbackVolume'
 import { LAB_STORAGE_KEY } from '../../shared/labWorkspace'
+import { planOutputDir, type OutputPlace } from '../../shared/outputLayout'
 import { TRANSCRIPT_EDIT_STORAGE_KEY } from '../../shared/transcriptEdit'
 import { DIALOGUE_EDIT_STORAGE_KEY } from '../../shared/dialogueEdit'
 import { CARD_STORAGE_KEY } from '../../shared/synthesisCardSave'
@@ -89,6 +90,57 @@ function resolvePythonPath(): string {
   return 'python'
 }
 
+/**
+ * 이 경로가 **앱이 관리하는 자리 안**인가.
+ *
+ * ★'원본 옆' 은 사용자 자료 옆이라는 뜻이다. 앱이 스스로 만든 중간 산출물
+ *   (영상에서 꺼낸 wav 같은 것) 옆이 아니다. 그것을 원본으로 보면 결과가
+ *   앱 데이터 폴더(윈도우에서는 C 드라이브)로 흘러내린다 — 2026-09-28 신고의 뿌리다.
+ *   화면이 원본을 안 실어 보내는 경우에도 **여기서 한 번 더 막는다.**
+ */
+function insideAppData(dir: string): boolean {
+  const norm = (x: string) => x.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
+  try { return norm(dir).startsWith(norm(app.getPath('userData'))) } catch { return false }
+}
+
+/** 폴더 목록. 없거나 못 읽으면 빈 목록 — 찾기가 여기서 멈추지 않게 한다. */
+function readDirSafe(dir: string): string[] {
+  try {
+    return readdirSync(dir).filter((e) => {
+      try { return statSync(join(dir, e)).isDirectory() } catch { return false }
+    })
+  } catch { return [] }
+}
+
+/** 앱이 도는 자리. `externals` 를 찾는 규칙과 같은 기준을 쓴다. */
+function appDirPath(): string {
+  return join(__dirname, '..', '..')
+}
+
+/** 만든 것을 둘 자리 설정. */
+export const OUTPUT_ROOT_KEY = 'outputRoot'
+export const OUTPUT_BESIDE_KEY = 'outputBesideSource'
+
+function readOutputSetting(): { chosen: string; beside: boolean } {
+  try {
+    const got = readSettingsFile(join(app.getPath('userData'), 'settings.json'))
+    if (got.kind !== 'ok') return { chosen: '', beside: false }
+    const v = got.settings as Record<string, unknown>
+    return {
+      chosen: typeof v[OUTPUT_ROOT_KEY] === 'string' ? (v[OUTPUT_ROOT_KEY] as string) : '',
+      beside: v[OUTPUT_BESIDE_KEY] === true,
+    }
+  } catch { return { chosen: '', beside: false } }
+}
+
+/**
+ * 어디에 쌓을 것인가. **체크가 가장 세다** — 사용자가 원본 옆이라고 하면 그대로 한다.
+ * 그다음이 고른 자리, 아무것도 없으면 앱 자리다.
+ */
+function outputPlace(chosen: string, beside: boolean): OutputPlace {
+  if (beside) return 'beside'
+  return chosen.trim() ? 'chosen' : 'app'
+}
 // L-6: 사용자가 고른 python 경로를 userData/settings.json에 영속화 → 재시작 후에도 유지.
 // (app.getPath는 ready 이후에만 안전하므로 여기서 함수로만 정의하고 호출은 registerAudioIpc 내부에서)
 function settingsFilePath(): string {
@@ -823,20 +875,28 @@ export function registerAudioIpc(
     const builtinModel = typeof options?.ttsBuiltinModel === 'string' ? options.ttsBuiltinModel : ''
     const builtinLabel = typeof options?.ttsBuiltinLabel === 'string' && options.ttsBuiltinLabel
       ? options.ttsBuiltinLabel : '기본목소리'
-    const ext = builtinModel ? '' : extname(filePath)
-    const nameWithoutExt = builtinModel ? builtinLabel : basename(filePath, ext)
-    const now = new Date()
-    const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}-${String(now.getSeconds()).padStart(2, '0')}`
-    // 폴더명은 초 단위라 같은 초에 두 번 시작하면 같은 폴더를 재사용하게 되고, 워커가 ffmpeg -y로
-    // 덮어써 **이전 결과가 소리 없이 사라진다**(감사 R9). 이미 존재하면 짧은 접미사를 붙여 새 폴더를
-    // 확보한다. 접미사는 첫 충돌부터만 붙으므로 기존 폴더 이름 규칙은 그대로다.
-    const outRoot = builtinModel
-      ? join(app.getPath('userData'), 'cardOutput')
-      : join(dirname(filePath), 'AudioForge_output')
-    if (builtinModel) mkdirSync(outRoot, { recursive: true })
-    const baseOutputDir = join(outRoot, `${timestamp}_${nameWithoutExt}`)
-    let outputDir = baseOutputDir
-    for (let n = 2; existsSync(outputDir) && n <= 100; n++) outputDir = `${baseOutputDir}_${n}`
+    /**
+     * ★**사용자가 고른 진짜 원본.** 영상을 목소리로 쓰면 화면이 꺼낸 wav 를 보내는데,
+     *   그 경로로 자리와 이름을 정하면 앱 데이터 폴더(C)에 `voice_xxxx` 라는 이름으로 쌓인다.
+     *   폴더만 보고는 무엇을 만든 것인지 알 수 없다 — 2026-09-28 신고의 두 얼굴이다.
+     */
+    const originalPath = typeof options?.sourceOriginalPath === 'string' && options.sourceOriginalPath
+      ? options.sourceOriginalPath : filePath
+    const ext = builtinModel ? '' : extname(originalPath)
+    const nameWithoutExt = builtinModel ? builtinLabel : basename(originalPath, ext)
+    // 자리 규칙은 `shared/outputLayout` 하나가 소유한다 — 여기서 판단하지 않는다.
+    const outSetting = readOutputSetting()
+    const plan = planOutputDir({
+      place: outputPlace(outSetting.chosen, outSetting.beside),
+      chosenRoot: outSetting.chosen,
+      appRoot: appDirPath(),
+      // 기본 목소리는 원본이 없다. 앱이 만든 중간 산출물도 원본이 아니다.
+      // 둘 중 하나면 빈 값을 주어 앱 자리로 물러난다 — 조용히 C 로 가지 않는다.
+      sourceDir: builtinModel || insideAppData(dirname(originalPath))
+        ? '' : dirname(originalPath),
+      mode, name: nameWithoutExt, at: new Date(), exists: existsSync,
+    })
+    const outputDir = plan.dir
     if (existsSync(outputDir)) {
       // 100개까지 전부 존재 = 비정상. 덮어쓰지 않고 명시 실패한다.
       throw Object.assign(new Error('출력 폴더를 만들 수 없습니다. 같은 이름의 폴더가 너무 많습니다.'), { code: 'OUTPUT_DIR_UNAVAILABLE' })
@@ -1335,10 +1395,31 @@ export function registerAudioIpc(
   // 불러온 원본에 대응하는 이전 결과(session.json) 탐색 — <원본폴더>/AudioForge_output/*/session.json
   ipcMain.handle('audio:find-session', (_event, sourcePath: string) => {
     try {
-      const root = join(dirname(sourcePath), 'AudioForge_output')
-      if (!existsSync(root)) return null
+      /**
+       * 이전 결과를 **여러 자리에서** 찾는다.
+       *
+       * ★자리가 바뀌었다(2026-09-28). 이제 기본은 앱 자리의 기능·날짜 폴더이고,
+       *   체크하면 원본 옆이다. 한 곳만 보면 **멀쩡한 옛 작업을 못 찾는다** —
+       *   `workRoot` 가 더빙에서 이미 배운 것과 같은 교훈이라, 옛 자리도 계속 본다.
+       * 없는 자리는 조용히 건너뛴다.
+       */
+      const setting = readOutputSetting()
+      const roots: string[] = []
+      const addRoot = (r: string) => { if (r && !roots.includes(r)) roots.push(r) }
+      addRoot(join(dirname(sourcePath), 'AudioForge_output'))          // 원본 옆(옛 자리이자 체크 시 자리)
+      for (const base of [setting.chosen, appDirPath()]) {
+        if (!base) continue
+        const root = join(base, 'AudioForge_output')
+        addRoot(root)
+        // 기능·날짜로 한 겹 더 들어간다 — 날짜 폴더 안에 실행 폴더가 있다.
+        for (const feature of readDirSafe(root)) {
+          for (const day of readDirSafe(join(root, feature))) addRoot(join(root, feature, day))
+        }
+      }
       const srcName = basename(sourcePath)
       const matches: { dir: string; session: Record<string, unknown>; createdAt: string }[] = []
+      for (const root of roots) {
+      if (!existsSync(root)) continue
       for (const entry of readdirSync(root)) {
         const dir = join(root, entry)
         let isDir = false
@@ -1356,6 +1437,7 @@ export function registerAudioIpc(
           if (tracks.length === 0) continue
           matches.push({ dir, session: { ...s, tracks }, createdAt: String(s.createdAt || entry) })
         } catch { /* skip invalid */ }
+      }
       }
       if (matches.length === 0) return null
       matches.sort((a, b) => b.createdAt.localeCompare(a.createdAt))  // 최신 우선
@@ -1536,7 +1618,9 @@ export function registerAudioIpc(
         // 생성 카드 작업(2026-09-27). ★이 목록에 없으면 저장이 SETTINGS_KEY_NOT_ALLOWED 로
         //   **조용히 거절된다.** 화면은 저장한 줄 알고 넘어간다 — 열쇠를 새로 만들 때는
         //   반드시 여기에도 더해야 한다.
-        || key === CARD_STORAGE_KEY) {
+        || key === CARD_STORAGE_KEY
+        // 만든 것을 둘 자리(2026-09-28). 여기 없으면 고른 자리가 조용히 사라진다.
+        || key === OUTPUT_ROOT_KEY || key === OUTPUT_BESIDE_KEY) {
       // 배역 세트도 같은 원자 경로를 쓴다. 두 키는 서로를 덮지 않는다 —
       // settings-store 가 현재 파일을 읽어 그 키 하나만 갱신한다.
       return saveSetting(key, value ?? undefined)
