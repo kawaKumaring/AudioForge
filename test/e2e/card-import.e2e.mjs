@@ -79,13 +79,12 @@ try {
   // 옛 기록을 심고, 하던 카드 작업도 하나 만들어 둔다(보관되는지 보려고).
   await win.evaluate(async (s) => {
     for (const [k, v] of Object.entries(s)) await window.api.settings.set(k, v)
-    await window.api.settings.set('synthesisCards', {
-      current: {
-        cards: [{ id: 'now', label: '하던 것', sourcePath: '', sourceName: '', sourceDuration: 0,
-          text: '하던 대사', settings: {}, takes: [], adoptedId: null }],
-        joins: {}, savedAt: 1,
-      },
-      kept: [],
+    // ★2026-09-29: 카드 작업은 **기록 파일 둘**이다(하던 것 / 보관함).
+    await window.api.works.write('cards', 'kept', [])
+    await window.api.works.write('cards', 'current', {
+      cards: [{ id: 'now', label: '하던 것', sourcePath: '', sourceName: '', sourceDuration: 0,
+        text: '하던 대사', settings: {}, takes: [], adoptedId: null }],
+      joins: {}, savedAt: 1,
     })
   }, seed(WAV, GONE))
 
@@ -174,8 +173,8 @@ try {
   })
   await win.waitForTimeout(1200)          // 저장은 편집이 멎은 뒤에 쓴다
   const stored = await win.evaluate(async () => {
-    const all = await window.api.settings.get()
-    const t = all.synthesisCards?.current?.cards?.[0]?.takes?.[0] || {}
+    const got = await window.api.works.read('cards', 'current')
+    const t = got.record?.data?.cards?.[0]?.takes?.[0] || {}
     return { settings: t.settings, applied: t.applied, unknown: t.settingsUnknown, text: t.text }
   })
   ok(JSON.stringify(stored.settings) === '{}' && JSON.stringify(stored.applied) === '{}',
@@ -186,7 +185,9 @@ try {
   // ── 5. 하던 작업과 옛 기록이 그대로 남았다 ─────────────────────────────
   const kept = await win.evaluate(async () => {
     const all = await window.api.settings.get()
-    const cards = all.synthesisCards || {}
+    const one = await window.api.works.read('cards', 'current')
+    const many = await window.api.works.read('cards', 'kept')
+    const cards = { current: one.record?.data ?? null, kept: many.record?.data ?? [] }
     const lab = all.labWorkspace || {}
     return {
       keptTexts: (cards.kept || []).map((w) => w.cards?.[0]?.text),
@@ -239,7 +240,10 @@ try {
   await win.waitForFunction(() => !!window.__afStore && !!window.__synthesisCards)
   const after = await win.evaluate(async () => {
     const all = await window.api.settings.get()
-    const c = all.synthesisCards || {}
+    // ★카드 작업은 기록 파일 둘이다(2026-09-29).
+    const one = await window.api.works.read('cards', 'current')
+    const many = await window.api.works.read('cards', 'kept')
+    const c = { current: one.record?.data ?? null, kept: many.record?.data ?? [] }
     return {
       currentText: c.current?.cards?.[0]?.text,
       keptCount: (c.kept || []).length,
@@ -285,7 +289,10 @@ try {
   ok(true, '★지우면 목록에서 사라진다')
   const afterDrop = await win.evaluate(async () => {
     const all = await window.api.settings.get()
-    const c = all.synthesisCards || {}
+    // ★카드 작업은 기록 파일 둘이다(2026-09-29).
+    const one = await window.api.works.read('cards', 'current')
+    const many = await window.api.works.read('cards', 'kept')
+    const c = { current: one.record?.data ?? null, kept: many.record?.data ?? [] }
     return {
       lab: all.labWorkspace ?? null,
       drafts: Object.keys(all.workDrafts?.drafts || {}),
@@ -307,9 +314,11 @@ try {
     const s = window.__synthesisCards.getState()
     return { n: s.cards.length, texts: s.cards.map((c) => c.text) }
   })
+  // ★2026-09-29: 카드 작업은 설정 통로가 아니라 **기록 파일 통로**로 저장된다.
+  //   막을 자리도 그쪽이다 — 옛 통로를 막으면 저장이 멀쩡히 성공해 이 검사가 헛돈다.
   await app.evaluate(({ ipcMain }) => {
-    ipcMain.removeHandler('settings:set')
-    ipcMain.handle('settings:set', async () => { throw new Error('검사용 저장 실패') })
+    ipcMain.removeHandler('works:write')
+    ipcMain.handle('works:write', async () => ({ ok: false, why: '검사용 저장 실패' }))
   })
   await win.getByTestId('import-legacy').click()
   // 앞 검사에서 lab 기록을 지웠다 — 남아 있는 자동 저장으로 본다.

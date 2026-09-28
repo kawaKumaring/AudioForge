@@ -63,12 +63,34 @@ export function onSaveState(cb: (s: SaveState) => void): () => void {
 /** 검사용 — 지금 메모리에 든 문서. */
 export function savedFileNow(): SavedFile { return file }
 
+/**
+ * 카드 작업을 **두 기록으로** 쓴다 — 하던 것과 보관함.
+ *
+ * ★둘을 함께 쓴다. 한쪽만 쓰면 '하던 것을 보관함으로 옮기기' 같은 동작이
+ *   반쯤 남는다(옮겼는데 원래 자리에도 그대로 있는 상태).
+ * ★실패 사유는 **첫 번째 것**을 돌려준다. 화면은 사유 하나를 보여 준다.
+ */
+async function writeCards(next: SavedFile): Promise<string> {
+  const rs = await Promise.all([
+    window.api.works.write('cards', 'current', next.current),
+    window.api.works.write('cards', 'kept', next.kept),
+  ])
+  const bad = rs.find((r) => !r.ok)
+  return bad ? (bad.why || 'WRITE_FAILED') : ''
+}
+
 /** 저장본을 한 번 읽는다. 두 번 부르면 읽어 둔 것을 돌려준다. */
 export async function loadSavedFile(force = false): Promise<SavedFile> {
   if (loaded && !force) return file
   try {
-    const got = await window.api.settings.get() as Record<string, unknown> | undefined
-    file = parseSavedFile(got?.[CARD_STORAGE_KEY])
+    // ★기록 하나가 파일 하나다 (2026-09-29). 카드 작업은 **하던 것**과 **보관함**
+    //   두 칸이라 파일도 둘이다. 설정 한 칸에 모아 두면 하나를 지울 때 전체를
+    //   다시 써야 하고, 그래서 지운 것이 되살아났다 — 실제로 겪은 일이다.
+    const got = await window.api.works.list('cards')
+    if (got.error) throw new Error(got.error)
+    const bag: Record<string, unknown> = {}
+    for (const r of got.records || []) bag[r.key] = r.data
+    file = parseSavedFile({ current: bag.current ?? null, kept: bag.kept ?? [] })
   } catch {
     file = emptySavedFile()          // 못 읽으면 없는 것으로 본다. **지우지는 않는다.**
   }
@@ -106,7 +128,7 @@ export async function importLegacyWork(doc: SavedWork): Promise<string> {
   const before = file
   const next = applyImport(file, doc)
   const code = await lane.then(() =>
-    saveSetting(window.api.settings.set, CARD_STORAGE_KEY, { current: next.current, kept: next.kept }))
+    writeCards(next))
   if (code) {
     file = before                      // ★되돌린다 — 가져오기는 없던 일이 된다
     publish({ phase: 'failed', code, at: Date.now() })
@@ -131,7 +153,7 @@ export async function deleteSavedWork(slot: 'current' | 'kept', index: number): 
   const before = file
   const next = removeWork(file, slot, index)
   const code = await lane.then(() =>
-    saveSetting(window.api.settings.set, CARD_STORAGE_KEY, { current: next.current, kept: next.kept }))
+    writeCards(next))
   if (code) {
     file = before
     publish({ phase: 'failed', code, at: Date.now() })
@@ -170,11 +192,11 @@ function writeNow(): Promise<void> {
   if (dirtyWork) { file = { ...file, current: dirtyWork } }
   if (!loaded && !dirtyWork) return Promise.resolve()
   const mine = ++issued
-  const payload = { current: file.current, kept: file.kept }
+  const payload: SavedFile = { current: file.current, kept: file.kept }
   publish({ phase: 'saving', code: '', at: Date.now() })
   // ★한 줄로 세운다 — 디스크에 닿는 순서가 부른 순서와 같아야 한다.
   const queued = lane.then(async () => {
-    const code = await saveSetting(window.api.settings.set, CARD_STORAGE_KEY, payload)
+    const code = await writeCards(payload)
     // 늦게 끝난 앞 쓰기가 뒤 쓰기의 결과를 되돌리지 않게 한다.
     if (mine < settled) return
     settled = mine
@@ -205,8 +227,10 @@ export function flushSaveSync(): void {
   if (timer) { clearTimeout(timer); timer = null }
   if (dirtyWork) file = { ...file, current: dirtyWork }
   if (!loaded && !dirtyWork) return
-  try { window.api.settings.setSync(CARD_STORAGE_KEY, { current: file.current, kept: file.kept }) }
-  catch { /* 닫히는 중이다. 여기서 더 할 수 있는 것이 없다 */ }
+  try {
+    window.api.works.writeSync('cards', 'current', file.current)
+    window.api.works.writeSync('cards', 'kept', file.kept)
+  } catch { /* 닫히는 중이다. 여기서 더 할 수 있는 것이 없다 */ }
 }
 
 if (typeof window !== 'undefined') {

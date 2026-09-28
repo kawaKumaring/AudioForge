@@ -89,6 +89,23 @@ export function registerWorksIpc(): void {
     return r.ok ? { ok: true, removed: r.removed } : { ok: false, why: r.why }
   })
 
+  /**
+   * 창이 닫히기 직전용 **동기** 통로.
+   *
+   * ★비동기 요청은 창이 닫히면 그대로 사라진다 — 마지막 편집 직후 종료하면 잃는다.
+   *   동기 통로는 본체가 파일을 쓰고 답할 때까지 렌더러를 붙잡으므로 그 사이 닫히지 않는다.
+   *   (설정 저장이 쓰던 길과 같다.)
+   */
+  ipcMain.on('works:write-sync', (event, kind: unknown, key: unknown, data: unknown) => {
+    if (!isWorkKind(kind) || typeof key !== 'string' || !key) {
+      event.returnValue = { ok: false, why: '알 수 없는 갈래입니다.' }
+      return
+    }
+    ensureMoved(kind)
+    const r = writeRecord(host(), kind, key, data)
+    event.returnValue = r.ok ? { ok: true } : { ok: false, why: r.why }
+  })
+
   /** 갈래 하나를 통째로 비운다 — '쌓인 것 비우기' 만 쓴다. */
   ipcMain.handle('works:clear', (_e, kind: unknown) => {
     if (!isWorkKind(kind)) return { ok: false, why: '알 수 없는 갈래입니다.' }

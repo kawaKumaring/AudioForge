@@ -13,14 +13,59 @@ let setImpl: (key: string, value: unknown) => Promise<unknown> = async (key, val
 }
 let getImpl: () => Promise<unknown> = async () => ({})
 const syncWrites: Store[] = []
+/** 카드는 기록 둘로 쓰인다 — 둘이 모이면 한 번의 저장으로 본다. */
+const pending: Record<string, unknown> = {}
+const syncPending: Record<string, unknown> = {}
+const CARD_KEY = 'synthesisCards'
 
 // 모듈이 읽는 창구를 먼저 세운다 — 불러오는 순간 beforeunload 를 건다.
 ;(globalThis as Record<string, unknown>).window = {
   addEventListener: () => {},
-  api: { settings: {
-    set: (k: string, v: unknown) => setImpl(k, v), get: () => getImpl(),
-    setSync: (k: string, v: unknown) => { syncWrites.push({ key: k, value: v }); return { ok: true } },
-  } },
+  api: {
+    settings: {
+      set: (k: string, v: unknown) => setImpl(k, v), get: () => getImpl(),
+      setSync: (k: string, v: unknown) => { syncWrites.push({ key: k, value: v }); return { ok: true } },
+    },
+    // ★2026-09-29: 카드 작업이 **설정 한 칸에서 기록 파일 둘**로 옮겨졌다
+    //   (하던 것 / 보관함). 이 검사가 붙드는 것은 그대로다 — 무엇이 언제 어떤
+    //   순서로 쓰이는가. 그래서 **같은 모양으로 모아** 기존 확인을 그대로 쓴다.
+    works: {
+      list: async () => {
+        const got = await getImpl() as Record<string, unknown> | undefined
+        const raw = (got || {})[CARD_KEY] as Record<string, unknown> | undefined
+        // ★옛 자리에는 **감싸개 없는 문서 하나**도 있었다. 본체의 옮기기가 그것을
+        //   'current' 기록으로 넘긴다 — 대역도 같게 해야 옛 기록을 잃지 않는다.
+        const wrapped = !!raw && ('current' in raw || 'kept' in raw)
+        return {
+          records: [
+            { key: 'current', updatedAt: 0, data: wrapped ? (raw!.current ?? null) : (raw ?? null) },
+            { key: 'kept', updatedAt: 0, data: wrapped ? (raw!.kept ?? []) : [] },
+          ],
+          broken: 0,
+        }
+      },
+      write: async (_kind: string, key: string, data: unknown) => {
+        pending[key] = data
+        // 둘 다 들어오면 **한 번의 저장**으로 모아 기록한다 — 옛 확인과 같은 모양이다.
+        if ('current' in pending && 'kept' in pending) {
+          const payload = { current: pending.current, kept: pending.kept }
+          delete pending.current; delete pending.kept
+          const r = await setImpl(CARD_KEY, payload) as { ok?: boolean; code?: string } | undefined
+          return r && r.ok === false ? { ok: false, why: r.code || 'WRITE_FAILED' } : { ok: true }
+        }
+        return { ok: true }
+      },
+      writeSync: (_kind: string, key: string, data: unknown) => {
+        syncPending[key] = data
+        if ('current' in syncPending && 'kept' in syncPending) {
+          const payload = { current: syncPending.current, kept: syncPending.kept }
+          delete syncPending.current; delete syncPending.kept
+          syncWrites.push({ key: CARD_KEY, value: payload })
+        }
+        return { ok: true }
+      },
+    },
+  },
 }
 
 const saver = await import('./cardWorkSaver.ts')

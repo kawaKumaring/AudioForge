@@ -152,3 +152,19 @@ test('원본 경로가 없는 덩어리는 지도로 본다', () => {
   const got = splitLegacyMap({ current: { cards: [] }, kept: [] }, 0)
   assert.deepEqual(got.map((r) => r.key).sort(), ['current', 'kept'])
 })
+
+test('★감싸개 없는 옛 카드 한 벌은 하던 것 하나다', () => {
+  // 아주 옛 판은 `{current, kept}` 없이 작업 한 벌을 그대로 저장했다.
+  // 지도로 착각하면 cards·joins·savedAt 이 각각 기록이 된다(2026-09-29 실측).
+  const bare = { cards: [{ id: 'c1', text: '가' }], joins: {}, savedAt: 111 }
+  const got = splitLegacyMap(bare, 0)
+  assert.equal(got.length, 1, `쪼개졌다: ${got.map((r) => r.key).join(', ')}`)
+  assert.equal(got[0].key, 'current')
+  assert.deepEqual(got[0].data, bare)
+  assert.equal(got[0].updatedAt, 0, 'savedAt 은 본문의 값이고 기록 시각과 다르다')
+})
+
+test('감싸개가 있으면 카드도 지도로 본다', () => {
+  const got = splitLegacyMap({ current: { cards: [] }, kept: [{ cards: [] }] }, 0)
+  assert.deepEqual(got.map((r) => r.key).sort(), ['current', 'kept'])
+})

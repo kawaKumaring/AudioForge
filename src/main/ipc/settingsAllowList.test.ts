@@ -101,9 +101,15 @@ test('★화면이 저장하는 열쇠가 하나도 빠짐없이 허용 목록�
 
   const saved = savedKeyNames()
   const names = [...new Set(saved.map((x) => x.name))]
-  // 실측 2026-09-28: 서로 다른 열쇠 6종. 이보다 적게 찾으면 긁는 규칙이 낡은 것이다.
-  assert.ok(names.length >= 6,
+  // 실측 2026-09-29: 서로 다른 열쇠 **5종**.
+  // ★2026-09-28 에는 8종이었다. 전사 교정·대화 교정·카드 작업이 설정을 떠나
+  //   **기록 파일**로 갔기 때문이다(지우면 그 파일만 지운다).
+  //   이 숫자가 더 줄면 또 옮긴 것이고, 늘면 새 열쇠가 설정에 들어온 것이다 —
+  //   어느 쪽이든 여기서 한 번 멈추고 확인한다.
+  assert.ok(names.length >= 5,
     `저장하는 열쇠를 너무 적게 찾았다(${names.length}: ${names.join(', ')}) — 긁는 규칙이 낡았다`)
+  assert.ok(!names.includes('CARD_STORAGE_KEY'),
+    '카드 작업이 설정으로 돌아왔다 — 기록 파일로 가야 지우기가 되살아나지 않는다')
 
   assert.deepEqual(missingFrom(branch, names), [],
     '허용 목록에 없다 — 저장이 SETTINGS_KEY_NOT_ALLOWED 로 조용히 거절된다')

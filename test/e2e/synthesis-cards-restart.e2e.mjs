@@ -82,11 +82,22 @@ try {
   await app.close(); app = null
 
   // ★디스크에 실제로 무엇이 적혔는지 **검사 프로세스에서** 본다(main 은 ESM 이라 동적 import 불가).
-  const settingsPath = path.join(ud, 'settings.json')
-  const onDisk = JSON.parse(fs.readFileSync(settingsPath, 'utf-8'))
-  const rawCards = typeof onDisk.synthesisCards === 'string'
-    ? JSON.parse(onDisk.synthesisCards) : onDisk.synthesisCards
-  const savedCard = (rawCards?.current ?? rawCards)?.cards?.[0]
+  //
+  // ★2026-09-29: 카드 작업이 **설정 한 칸에서 파일 하나씩**으로 옮겨졌다.
+  //   하던 것과 보관함이 각자 파일이다 — 하나를 지워도 다른 하나를 다시 쓰지 않는다.
+  const cardDir = path.join(ud, 'works', 'cards')
+  const cardFiles = fs.existsSync(cardDir) ? fs.readdirSync(cardDir).filter((f) => f.endsWith('.json')) : []
+  check(cardFiles.length >= 1, '★카드 작업이 기록 파일로 적힌다', cardFiles)
+  const readRecord = (key) => {
+    for (const f of cardFiles) {
+      try {
+        const got = JSON.parse(fs.readFileSync(path.join(cardDir, f), 'utf-8'))
+        if (got?.key === key) return got.data
+      } catch { /* 깨진 파일은 건너뛴다 */ }
+    }
+    return null
+  }
+  const savedCard = readRecord('current')?.cards?.[0]
   check(!!savedCard?.builtin?.modelId, '저장 파일에 기본 목소리 지정이 적힌다', savedCard?.builtin ?? null)
   check(!!savedCard?.takes?.[0]?.voice, '저장 파일에 생성본 목소리가 적힌다', savedCard?.takes?.[0]?.voice ?? null)
 
@@ -136,7 +147,7 @@ try {
     await win.evaluate(() => document.querySelector('[data-testid="card-generate"]')?.title))
 
   console.log('RESULT', passed, 'checks ·', fails.length, 'fail')
-  console.log('  [증거] 저장 파일:', settingsPath)
+  console.log('  [증거] 기록 파일:', cardDir, cardFiles.join(', '))
   if (fails.length) { console.error('실패:', fails.join(' / ')); process.exit(1) }
 } catch (e) {
   console.error('예외:', e?.stack || e?.message || e)

@@ -51,7 +51,10 @@ try {
 
   // 지금 것 하나 + 보관 하나
   await win.evaluate(async ({ a, b }) => {
-    await window.api.settings.set('synthesisCards', { current: a, kept: [b] })
+    // ★2026-09-29: 카드 작업은 **기록 파일 둘**이다 — 하던 것 / 보관함.
+    //   설정 한 칸이 아니라 그 자리에 심는다.
+    await window.api.works.write('cards', 'current', a)
+    await window.api.works.write('cards', 'kept', [b])
   }, { a: work('지금것', '지금 작업입니다', WAV), b: work('보관것', '보관된 작업입니다', WAV) })
 
   await win.getByTestId('mode-tts').click()
@@ -83,7 +86,10 @@ try {
   await win.getByTestId('restore-drop-cancel').click()
   await win.waitForFunction(() => !document.querySelector('[data-testid="restore-drop-ask"]'))
   const kept = await win.evaluate(async () => {
-    const c = (await window.api.settings.get()).synthesisCards || {}
+    const got = await window.api.works.list('cards')
+    const bag = {}
+    for (const r of got.records || []) bag[r.key] = r.data
+    const c = { current: bag.current ?? null, kept: bag.kept ?? [] }
     return { current: !!c.current, kept: (c.kept || []).length }
   })
   ok(kept.current && kept.kept === 1, '★그대로 두기를 고르면 남는다', kept)
@@ -96,7 +102,10 @@ try {
   ok(true, '★지우면 그 줄만 사라진다')
 
   const after = await win.evaluate(async () => {
-    const c = (await window.api.settings.get()).synthesisCards || {}
+    const got = await window.api.works.list('cards')
+    const bag = {}
+    for (const r of got.records || []) bag[r.key] = r.data
+    const c = { current: bag.current ?? null, kept: bag.kept ?? [] }
     return { current: !!c.current, kept: (c.kept || []).length }
   })
   ok(!after.current && after.kept === 1, '★지금 것만 지워지고 보관은 남는다', after)
@@ -112,7 +121,10 @@ try {
   win.setDefaultTimeout(20000)
   await win.waitForFunction(() => !!window.__afStore)
   const restarted = await win.evaluate(async () => {
-    const c = (await window.api.settings.get()).synthesisCards || {}
+    const got = await window.api.works.list('cards')
+    const bag = {}
+    for (const r of got.records || []) bag[r.key] = r.data
+    const c = { current: bag.current ?? null, kept: bag.kept ?? [] }
     return { current: !!c.current, kept: (c.kept || []).length }
   })
   ok(!restarted.current && restarted.kept === 1, '★껐다 켜도 지워진 채다', restarted)

@@ -268,6 +268,9 @@ const api = {
       ipcRenderer.invoke('works:delete', kind, key),
     clear: (kind: string): Promise<{ ok: boolean; removed?: number; why?: string }> =>
       ipcRenderer.invoke('works:clear', kind),
+    /** 창이 닫히기 직전에만 쓴다 — 비동기 요청은 그때 사라진다. */
+    writeSync: (kind: string, key: string, data: unknown): { ok: boolean; why?: string } =>
+      ipcRenderer.sendSync('works:write-sync', kind, key, data),
   },
 
   /** 앱 설정 — 만든 것을 둘 자리와 쌓인 것 비우기. */

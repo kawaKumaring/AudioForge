@@ -153,10 +153,15 @@ export function splitLegacyMap(raw: unknown, at: number): WorkRecord[] {
  *   이렇게 두면 옛 기록을 그대로 찾아 쓴다(`draftFor`·`transcriptDocFor`).
  */
 function oneRecordKey(box: Record<string, unknown>): string {
+  // 교정 문서 — 자기 원본 경로를 든다.
   for (const f of ['sourceKey', 'sourcePath']) {
     const v = box[f]
     if (typeof v === 'string' && v) return v
   }
+  // ★카드 작업 한 벌 — 아주 옛 판은 `{current, kept}` 감싸개 **없이** 저장했다.
+  //   그것을 지도로 착각하면 `cards`·`joins`·`savedAt` 이 각각 기록이 된다.
+  //   감싸개가 있으면(`current`/`kept`) 지도로 두고, 없으면 '하던 것' 한 벌이다.
+  if (Array.isArray(box.cards) && !('current' in box) && !('kept' in box)) return SINGLE_KEY
   return ''
 }
 
