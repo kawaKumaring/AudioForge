@@ -56,6 +56,8 @@ try {
   await page.evaluate((w) => { window.wavUrl = w }, WAV_URL)
   await page.evaluate(() => {
     window.__settings = {}
+    window.__works = {}
+    window.__worksMoved = {}
     window.__getDelay = 0
     window.__transcripts = {}
     window.__readCalls = []
@@ -74,6 +76,66 @@ try {
         },
         set: async (k, v) => { window.__settings[k] = JSON.parse(JSON.stringify(v)); return { ok: true } },
       },
+      // ★기록 하나가 파일 하나 (2026-09-29). 본체와 **같은 규칙**으로 흉내 낸다 —
+      //   처음 읽을 때 옛 열쇠에서 한 번 옮기고, 옮긴 뒤 옛 열쇠를 지운다.
+      //   그래서 아래 시나리오들이 옛 열쇠를 심어 두면 **옮기기까지 함께 확인된다.**
+      works: (() => {
+        // ★본체와 같은 표 — 아주 옛날 한 칸(`dialogueEdits`)은 여기 없다.
+        //   그 한 칸은 화면이 `migrateLegacy` 로 직접 접어 넣는다(모양이 다르므로).
+        const LEGACY = { dialogue: ['dialogueDrafts'] }
+        const move = (kind) => {
+          if (window.__worksMoved[kind]) return
+          window.__worksMoved[kind] = true
+          if (!window.__works[kind]) window.__works[kind] = {}
+          const bag = window.__works[kind]
+          if (Object.keys(bag).length) return
+          for (const lk of (LEGACY[kind] || [])) {
+            const raw = window.__settings[lk]
+            if (!raw || typeof raw !== 'object') continue
+            const wrapped = raw.drafts && typeof raw.drafts === 'object'
+            // ★옛 한 칸짜리는 **기록 하나**다(본체와 같은 규칙). 지도로 착각하면
+            //   sourcePath·segments·edits 가 각각 기록이 된다.
+            const own = !wrapped && typeof (raw.sourceKey || raw.sourcePath) === 'string'
+              ? (raw.sourceKey || raw.sourcePath) : ''
+            if (own) { bag[own] = JSON.parse(JSON.stringify(raw)); delete window.__settings[lk]; continue }
+            const inner = wrapped ? raw.drafts : raw
+            for (const [k, v] of Object.entries(inner)) {
+              if (k === 'version') continue
+              bag[k] = JSON.parse(JSON.stringify(v))
+            }
+            delete window.__settings[lk]
+          }
+        }
+        const bagOf = (kind) => { move(kind); if (!window.__works[kind]) window.__works[kind] = {}; return window.__works[kind] }
+        return {
+          list: async (kind) => {
+            const d = window.__getDelay
+            if (d) await new Promise((r) => setTimeout(r, d))
+            const bag = bagOf(kind)
+            return { records: Object.entries(bag).map(([key, data]) => ({ key, updatedAt: 0, data })), broken: 0 }
+          },
+          read: async (kind, key) => {
+            const bag = bagOf(kind)
+            return { record: key in bag ? { key, updatedAt: 0, data: bag[key] } : null }
+          },
+          write: async (kind, key, data) => {
+            bagOf(kind)[key] = JSON.parse(JSON.stringify(data))
+            return { ok: true }
+          },
+          remove: async (kind, key) => {
+            const bag = bagOf(kind)
+            const had = key in bag
+            delete bag[key]
+            return { ok: true, removed: had }
+          },
+          clear: async (kind) => {
+            const bag = bagOf(kind)
+            const n = Object.keys(bag).length
+            window.__works[kind] = {}
+            return { ok: true, removed: n }
+          },
+        }
+      })(),
       dialogue: {
         readTranscript: async (dir, name) => { window.__readCalls.push(name); return window.__transcripts[name] || '' },
       },
@@ -280,8 +342,8 @@ try {
 
   // ── 파일별 보존: A 를 교정하고 B 에 갔다가 돌아온다 ──────────────────
   await page.waitForTimeout(700)                       // 저장 반영 대기
-  const savedKeys = await page.evaluate(() => Object.keys(window.__settings))
-  assert.ok(savedKeys.includes('dialogueDrafts'), `교정이 저장되지 않았다: ${JSON.stringify(savedKeys)}`)
+  const savedKeys = await page.evaluate(() => Object.keys(window.__works.dialogue || {}))
+  assert.ok(savedKeys.length > 0, `교정이 저장되지 않았다: ${JSON.stringify(savedKeys)}`)
   await openWith('C:/work/B.wav', 'R11')
   await page.waitForTimeout(200)
   await openWith('C:/work/A.wav', 'R10')
@@ -291,6 +353,9 @@ try {
 
   // ── 옛 한 칸 기록 이어받기 ──────────────────────────────────────────
   await page.evaluate(() => {
+    // ★옛 열쇠를 새로 심는 것은 **처음 실행**을 흉내 내는 일이다.
+    //   대역도 처음으로 되돌린다 — 안 그러면 이미 옮겼다고 보고 건너뛴다(본체 규칙).
+    window.__works = {}; window.__worksMoved = {}
     window.__settings = {
       dialogueEdits: {
         sourcePath: 'C:/work/C.wav',
@@ -476,6 +541,9 @@ try {
   await page.evaluate(() => { window.store.getState().adoptDialogueAnalysis(null, '') })
   await page.waitForTimeout(800)
   await page.evaluate(() => {
+    // ★옛 열쇠를 새로 심는 것은 **처음 실행**을 흉내 내는 일이다.
+    //   대역도 처음으로 되돌린다 — 안 그러면 이미 옮겼다고 보고 건너뛴다(본체 규칙).
+    window.__works = {}; window.__worksMoved = {}
     window.__settings = { dialogueDrafts: { version: 1, drafts: {
       'C:/keep.wav\u001fRX': { sourceKey: 'C:/keep.wav', runId: 'RX', names: {}, merges: {}, edits: { 0: { speaker: 'X' } }, updatedAt: 5 },
     } } }
@@ -483,7 +551,7 @@ try {
   })
   await openWith('C:/work/E.wav', 'R50')
   await page.waitForTimeout(1400)
-  const kept = await page.evaluate(() => Object.keys(window.__settings.dialogueDrafts?.drafts || {}))
+  const kept = await page.evaluate(() => Object.keys(window.__works.dialogue || {}))
   assert.ok(kept.some((k) => k.startsWith('C:/keep.wav')),
     `읽기 전에 빈 초안이 저장본을 지웠다: ${JSON.stringify(kept)}`)
   pass('★읽기가 늦어도 빈 초안이 기존 저장본을 지우지 않는다')
@@ -493,6 +561,9 @@ try {
   await page.waitForTimeout(800)
   await page.evaluate(() => {
     window.__getDelay = 0
+    // ★옛 열쇠를 새로 심는 것은 **처음 실행**을 흉내 내는 일이다.
+    //   대역도 처음으로 되돌린다 — 안 그러면 이미 옮겼다고 보고 건너뛴다(본체 규칙).
+    window.__works = {}; window.__worksMoved = {}
     window.__settings = { dialogueDrafts: { version: 1, drafts: {
       'C:/keep.wav\u001fRX': { sourceKey: 'C:/keep.wav', runId: 'RX', names: {}, merges: {}, edits: { 0: { speaker: 'X' } }, updatedAt: 5 },
     } } }
@@ -502,7 +573,7 @@ try {
   await page.waitForSelector('[data-testid="dialogue-read-fail"]')
   await page.getByTestId('dialogue-speaker').first().selectOption({ index: 1 })
   await page.waitForTimeout(900)
-  const stillThere = await page.evaluate(() => Object.keys(window.__settings.dialogueDrafts?.drafts || {}))
+  const stillThere = await page.evaluate(() => Object.keys(window.__works.dialogue || {}))
   assert.ok(stillThere.some((k) => k.startsWith('C:/keep.wav')),
     `읽기 실패 뒤 남의 저장본을 덮었다: ${JSON.stringify(stillThere)}`)
   pass('★읽기 실패를 "저장 없음" 으로 단정하지 않고, 남의 저장본도 덮지 않는다')
@@ -513,6 +584,9 @@ try {
   await page.evaluate(() => {
     window.api.settings.get = async () => JSON.parse(JSON.stringify(window.__settings))
     // 지문 없는 옛 문서 하나 + 지문이 어긋나는 문서 하나 — 둘 다 막혀야 한다.
+    // ★옛 열쇠를 새로 심는 것은 **처음 실행**을 흉내 내는 일이다.
+    //   대역도 처음으로 되돌린다 — 안 그러면 이미 옮겼다고 보고 건너뛴다(본체 규칙).
+    window.__works = {}; window.__worksMoved = {}
     window.__settings = { dialogueDrafts: { version: 1, drafts: {
       'C:/work/G.wav\u001fNOBASIS': {
         sourceKey: 'C:/work/G.wav', runId: 'NOBASIS', names: { '화자 A': '근거없음' },
@@ -553,6 +627,9 @@ try {
     const times = [[1, 3], [4, 12], [13, 15]].map(([a, b]) => a.toFixed(2) + '-' + b.toFixed(2)).join('|')
     let h = 0x811c9dc5
     for (let i = 0; i < times.length; i++) { h ^= times.charCodeAt(i); h = Math.imul(h, 0x01000193) >>> 0 }
+    // ★옛 열쇠를 새로 심는 것은 **처음 실행**을 흉내 내는 일이다.
+    //   대역도 처음으로 되돌린다 — 안 그러면 이미 옮겼다고 보고 건너뛴다(본체 규칙).
+    window.__works = {}; window.__worksMoved = {}
     window.__settings = { dialogueDrafts: { version: 1, drafts: {
       ['C:/work/H.wav' + String.fromCharCode(31) + 'OLD']: {
         sourceKey: 'C:/work/H.wav', runId: 'OLD', names: { '화자 A': '옛이름' },

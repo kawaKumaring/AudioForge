@@ -33,13 +33,21 @@ export const WORK_KINDS = [
 ] as const
 export type WorkKind = (typeof WORK_KINDS)[number]
 
-/** 옛 `settings.json` 열쇠 → 새 갈래. 옮길 때 이 표만 본다. */
+/**
+ * 옛 `settings.json` 열쇠 → 새 갈래. 옮길 때 이 표만 본다.
+ *
+ * ★**아주 옛날 한 칸**(`dialogueEdits`·`transcriptEdits`)은 여기 넣지 않는다.
+ *   그것들은 모양이 다르고, 지금 모양으로 바꾸는 규칙은 화면 쪽 `migrateLegacy…` 가
+ *   이미 갖고 있다. 여기서 원본 그대로 옮기면 화면이 읽지 못한다
+ *   (2026-09-29 에 부품 검사가 잡았다). 변환 규칙을 두 곳에 두지 않는다.
+ *   그 한 칸은 읽기 전용 유물이라 늘어나지 않고, '작업 기록 비우기' 가 함께 지운다.
+ */
 export const LEGACY_KEY_OF: Record<WorkKind, string[]> = {
   cards: ['synthesisCards'],
   lab: ['labWorkspace'],
   drafts: ['workDrafts'],
-  dialogue: ['dialogueDrafts', 'dialogueEdits'],
-  transcript: ['transcriptDrafts', 'transcriptEdits'],
+  dialogue: ['dialogueDrafts'],
+  transcript: ['transcriptDrafts'],
 }
 
 export function isWorkKind(v: unknown): v is WorkKind {
@@ -117,9 +125,15 @@ export function parseRecord(raw: unknown): WorkRecord | null {
 export function splitLegacyMap(raw: unknown, at: number): WorkRecord[] {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return []
   const box = raw as Record<string, unknown>
-  const inner = (box.drafts && typeof box.drafts === 'object' && !Array.isArray(box.drafts))
-    ? box.drafts as Record<string, unknown>
-    : box
+  const wrapped = box.drafts && typeof box.drafts === 'object' && !Array.isArray(box.drafts)
+  // ★옛 자리에는 **한 칸짜리**도 있다 — `dialogueEdits` 는 지도가 아니라 기록 하나다.
+  //   그것을 지도로 착각하면 `sourcePath`·`segments`·`edits` 가 **각각 기록이 된다**
+  //   (2026-09-29 에 부품 검사가 잡았다). 자기 원본 경로를 들고 있으면 기록 하나다.
+  if (!wrapped) {
+    const own = oneRecordKey(box)
+    if (own) return [{ key: own, updatedAt: numberOr(box.updatedAt, at), data: box }]
+  }
+  const inner = wrapped ? box.drafts as Record<string, unknown> : box
   const out: WorkRecord[] = []
   for (const [key, data] of Object.entries(inner)) {
     if (!key || data === undefined) continue
@@ -130,6 +144,24 @@ export function splitLegacyMap(raw: unknown, at: number): WorkRecord[] {
     out.push({ key, updatedAt: savedAt, data })
   }
   return out
+}
+
+/**
+ * 이 덩어리가 **기록 하나**인가 — 그렇다면 그 열쇠.
+ *
+ * ★열쇠를 **원본 경로 그대로** 둔다. 화면의 찾기가 `열쇠 || 원본경로` 로 두 번 보므로
+ *   이렇게 두면 옛 기록을 그대로 찾아 쓴다(`draftFor`·`transcriptDocFor`).
+ */
+function oneRecordKey(box: Record<string, unknown>): string {
+  for (const f of ['sourceKey', 'sourcePath']) {
+    const v = box[f]
+    if (typeof v === 'string' && v) return v
+  }
+  return ''
+}
+
+function numberOr(v: unknown, fallback: number): number {
+  return typeof v === 'number' && Number.isFinite(v) ? v : fallback
 }
 
 /** 갈래 하나가 통째로 한 기록인 경우(카드 작업실 등)의 열쇠. */

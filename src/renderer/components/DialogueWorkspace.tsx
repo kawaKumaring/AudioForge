@@ -13,9 +13,9 @@ import { useAppStore } from '@/stores/app.store'
 import { ResultPlayer, styleOf } from '@/components/ResultPlayer'
 import { ResultToolbar, useResultExport } from '@/components/ResultActions'
 import { formatMinSec } from '../../shared/timeFormat'
-import { saveSetting, saveFailureText } from '../../shared/saveSetting'
+import { saveFailureText } from '../../shared/saveSetting'
 import {
-  DIALOGUE_DRAFTS_STORAGE_KEY, LEGACY_DIALOGUE_KEY, draftFor, draftsOfSource, migrateLegacy,
+  LEGACY_DIALOGUE_KEY, draftFor, draftsOfSource, draftKey, isBlankDraft, migrateLegacy,
   parseStore, putDraft, emptyStore, type DraftStore,
 } from '../../shared/dialogueDrafts'
 import {
@@ -114,9 +114,23 @@ export default function DialogueWorkspace() {
     const key = keyOf(a)
     let next: DraftStore
     try {
-      const got = await window.api.settings.get() as Record<string, unknown>
-      // ★옛 한 칸(`dialogueEdits`)의 기록을 버리지 않는다 — 같은 모양으로 옮겨 담는다.
-      next = migrateLegacy(parseStore(got?.[DIALOGUE_DRAFTS_STORAGE_KEY]), got?.[LEGACY_DIALOGUE_KEY])
+      // ★기록 하나가 파일 하나다 (2026-09-29). 설정 한 칸에 모아 두지 않는다 —
+      //   하나를 지우려 해도 전체를 다시 써야 했고, 그래서 지운 것이 되살아났다.
+      //   옛 열쇠(`dialogueDrafts`·`dialogueEdits`)에서 파일로 옮기는 일은
+      //   **본체가 처음 읽을 때 한 번** 한다.
+      const got = await window.api.works.list('dialogue')
+      if (got.error) throw new Error(got.error)
+      const drafts: Record<string, unknown> = {}
+      for (const r of got.records || []) drafts[r.key] = r.data
+      next = parseStore({ version: 1, drafts })
+      // ★아주 옛날 한 칸(`dialogueEdits`)은 **모양이 다르다.** 지금 모양으로 바꾸는 규칙은
+      //   `migrateLegacy` 가 갖는다 — 본체가 원본 그대로 옮기면 화면이 읽지 못한다.
+      //   그래서 그 한 칸만 여기서 계속 접어 넣는다. 늘어나지 않는 읽기 전용 유물이다.
+      const old = await window.api.settings.get() as Record<string, unknown>
+      next = migrateLegacy(next, old?.[LEGACY_DIALOGUE_KEY])
+      if (got.broken) {
+        setReadFail(`저장된 교정 ${got.broken}개를 읽지 못했습니다 — 나머지는 그대로 씁니다.`)
+      }
     } catch (e) {
       // ★읽기 실패를 '저장된 작업 없음' 으로 단정하지 않는다. **저장을 열지 않는다** —
       //   여기서 저장하면 읽지 못한 남의 교정까지 빈 보관함으로 덮어쓴다.
@@ -165,11 +179,18 @@ export default function DialogueWorkspace() {
       if (loadedRef.current !== key) return
       const cur = draftRef.current
       if (!cur) return
-      const next = putDraft(storeRef.current, { ...cur, updatedAt: Date.now() })
+      const now = { ...cur, updatedAt: Date.now() }
+      const next = putDraft(storeRef.current, now)
       storeRef.current = next
       setStore(next)
-      void saveSetting(window.api.settings.set, DIALOGUE_DRAFTS_STORAGE_KEY, next)
-        .then((why) => { if (why) setError(saveFailureText(why)) })
+      // ★이 교정 **하나만** 쓴다. 남의 기록을 함께 다시 쓰지 않는다.
+      //   고친 것이 없으면 그 파일을 지운다 — 빈 기록을 남겨 두지 않는다.
+      const recordKey = draftKey(now.sourceKey, now.runId)
+      const call = isBlankDraft(now)
+        ? window.api.works.remove('dialogue', recordKey)
+        : window.api.works.write('dialogue', recordKey, now)
+      void call.then((r) => { if (!r.ok) setError(saveFailureText(r.why || 'WRITE_FAILED')) })
+        .catch((e) => setError(saveFailureText((e as Error)?.message || 'WRITE_FAILED')))
     }
     const t = setTimeout(save, 600)
     return () => { clearTimeout(t); save() }

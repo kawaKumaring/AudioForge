@@ -119,3 +119,36 @@ test('가를 것이 없으면 빈 목록', () => {
   assert.deepEqual(splitLegacyMap([], 0), [])
   assert.deepEqual(splitLegacyMap({ version: 1, drafts: {} }, 0), [])
 })
+
+test('★옛 한 칸짜리는 기록 하나다 — 필드를 각각 기록으로 쪼개지 않는다', () => {
+  // `dialogueEdits` 는 지도가 아니라 교정 문서 하나다. 지도로 착각하면
+  // sourcePath·segments·edits·updatedAt 이 **각각 기록이 된다**(2026-09-29 실측).
+  const oneDoc = {
+    sourcePath: 'C:/work/C.wav',
+    segments: [{ start: 1, end: 3, speaker: '화자 A' }],
+    edits: { 1: { speaker: '화자 A' } },
+    updatedAt: 7,
+  }
+  const got = splitLegacyMap(oneDoc, 999)
+  assert.equal(got.length, 1, `쪼개졌다: ${got.map((r) => r.key).join(', ')}`)
+  assert.equal(got[0].key, 'C:/work/C.wav', '원본 경로를 열쇠로 둬야 화면이 찾는다')
+  assert.equal(got[0].updatedAt, 7, '그때 시각을 쓴다')
+  assert.deepEqual(got[0].data, oneDoc, '내용을 바꾸지 않는다')
+})
+
+test('sourceKey 를 쓰는 한 칸짜리도 같다', () => {
+  const got = splitLegacyMap({ sourceKey: 'B.wav', names: {}, merges: {}, edits: {} }, 5)
+  assert.equal(got.length, 1)
+  assert.equal(got[0].key, 'B.wav')
+})
+
+test('감싸개가 있으면 한 칸짜리로 보지 않는다', () => {
+  // {version, drafts:{...}} 안의 값이 sourcePath 를 가져도 그것은 **지도**다.
+  const got = splitLegacyMap({ version: 1, drafts: { K: { sourcePath: 'A.wav' } } }, 0)
+  assert.deepEqual(got.map((r) => r.key), ['K'])
+})
+
+test('원본 경로가 없는 덩어리는 지도로 본다', () => {
+  const got = splitLegacyMap({ current: { cards: [] }, kept: [] }, 0)
+  assert.deepEqual(got.map((r) => r.key).sort(), ['current', 'kept'])
+})

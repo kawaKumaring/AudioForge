@@ -18,8 +18,8 @@ import {
   type TranscriptDoc,
 } from '../../shared/transcriptEdit'
 import {
-  emptyTranscriptStore, isBlankTranscriptDoc, parseTranscriptStore, putTranscriptDoc,
-  transcriptDocFor, transcriptKey,
+  LEGACY_TRANSCRIPT_KEY, emptyTranscriptStore, isBlankTranscriptDoc, migrateLegacyTranscript,
+  parseTranscriptStore, putTranscriptDoc, transcriptDocFor, transcriptKey,
   type TranscriptDraftStore,
 } from '../../shared/transcriptDrafts'
 
@@ -69,6 +69,10 @@ export default function TranscriptEditor() {
       const drafts: Record<string, unknown> = {}
       for (const r of got.records || []) drafts[r.key] = r.data
       next = parseTranscriptStore({ version: 1, drafts })
+      // ★아주 옛날 한 칸(`transcriptEdits`)은 모양이 다르다 — 바꾸는 규칙은
+      //   `migrateLegacyTranscript` 가 갖는다. 그 한 칸만 여기서 계속 접어 넣는다.
+      const old = await window.api.settings.get() as Record<string, unknown>
+      next = migrateLegacyTranscript(next, old?.[LEGACY_TRANSCRIPT_KEY])
       if (got.broken) {
         setReadFail(`저장된 교정 ${got.broken}개를 읽지 못했습니다 — 나머지는 그대로 씁니다.`)
       }
