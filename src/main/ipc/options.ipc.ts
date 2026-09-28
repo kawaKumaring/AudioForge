@@ -18,6 +18,8 @@ import { ourTempNames, LEGACY_TEMP_ENV_KEY } from '../../shared/tempRoot'
 import { readSettingsFile, setSettingsKey } from '../services/settings-store'
 import { rememberDir, startDir, type FolderHost } from '../services/dialogFolders'
 import { outputBase, realAppRoot, isInside } from '../services/appPaths'
+import { clearKind, sizeOfKind } from '../services/work-store'
+import { WORK_KINDS } from '../../shared/workRecord'
 import { currentBuildInfo } from './app-version.ipc'
 
 export const OUTPUT_ROOT_KEY = 'outputRoot'
@@ -193,6 +195,15 @@ export function registerOptionsIpc(): void {
       }
     } else if (kind === 'works') {
       // ★기록만 지운다. 결과 폴더(`AudioForge_output`)는 이름조차 여기 나오지 않는다.
+      //
+      // ★기록은 이제 **파일 하나씩**이다 (2026-09-29). 파일을 지우는 것이 본 길이고,
+      //   설정에 남은 옛 열쇠도 함께 치운다 — 아직 옮기지 않은 갈래가 있을 수 있고,
+      //   남겨 두면 다음에 켤 때 그 열쇠에서 다시 옮겨져 **되살아난다.**
+      const w = { root: base, now: () => Date.now() }
+      for (const k of WORK_KINDS) {
+        freed += sizeOfKind(w, k)
+        removed += clearKind(w, k)
+      }
       for (const key of WORK_KEYS) {
         if (readOne(key) === undefined) continue
         if (writeOne(key, undefined)) removed += 1

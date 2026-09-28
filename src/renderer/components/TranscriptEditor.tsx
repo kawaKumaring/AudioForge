@@ -9,7 +9,7 @@
 //   정렬을 다시 해야 하는데 그것은 이번 범위가 아니다 — 그래서 "그 구간" 이라는 뜻만 유지한다.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { formatMinSec } from '../../shared/timeFormat'
-import { saveSetting, saveFailureText } from '../../shared/saveSetting'
+import { saveFailureText } from '../../shared/saveSetting'
 
 import { useAppStore } from '@/stores/app.store'
 import {
@@ -18,8 +18,8 @@ import {
   type TranscriptDoc,
 } from '../../shared/transcriptEdit'
 import {
-  LEGACY_TRANSCRIPT_KEY, TRANSCRIPT_DRAFTS_STORAGE_KEY, emptyTranscriptStore,
-  migrateLegacyTranscript, parseTranscriptStore, putTranscriptDoc, transcriptDocFor,
+  emptyTranscriptStore, isBlankTranscriptDoc, parseTranscriptStore, putTranscriptDoc,
+  transcriptDocFor, transcriptKey,
   type TranscriptDraftStore,
 } from '../../shared/transcriptDrafts'
 
@@ -61,10 +61,17 @@ export default function TranscriptEditor() {
   const loadDrafts = useCallback(async (fresh: TranscriptDoc, key: string) => {
     let next: TranscriptDraftStore
     try {
-      const got = await window.api.settings.get() as Record<string, unknown>
-      // ★옛 한 칸(`transcriptEdits`)을 버리지 않고 옮겨 담는다.
-      next = migrateLegacyTranscript(
-        parseTranscriptStore(got?.[TRANSCRIPT_DRAFTS_STORAGE_KEY]), got?.[LEGACY_TRANSCRIPT_KEY])
+      // ★기록 하나가 파일 하나다 (2026-09-29). 설정 한 칸에 모아 두지 않는다 —
+      //   하나를 지우려 해도 전체를 다시 써야 했고, 그래서 지운 것이 되살아났다.
+      //   옛 열쇠에서 파일로 옮기는 일은 **본체가 처음 읽을 때 한 번** 한다.
+      const got = await window.api.works.list('transcript')
+      if (got.error) throw new Error(got.error)
+      const drafts: Record<string, unknown> = {}
+      for (const r of got.records || []) drafts[r.key] = r.data
+      next = parseTranscriptStore({ version: 1, drafts })
+      if (got.broken) {
+        setReadFail(`저장된 교정 ${got.broken}개를 읽지 못했습니다 — 나머지는 그대로 씁니다.`)
+      }
     } catch (e) {
       // ★읽기 실패를 '저장된 교정 없음' 으로 단정하지 않는다. 저장을 열지 않는다.
       setReadFail(`저장된 교정을 읽지 못했습니다(${(e as Error)?.message || e}). 이번 편집은 저장되지 않습니다.`)
@@ -124,11 +131,18 @@ export default function TranscriptEditor() {
       if (loadedRef.current !== key) return
       const cur = docRef.current
       if (!cur) return
-      const next = putTranscriptDoc(storeRef.current, { ...cur, updatedAt: Date.now() })
+      const now = { ...cur, updatedAt: Date.now() }
+      const next = putTranscriptDoc(storeRef.current, now)
       storeRef.current = next
       setStore(next)
-      void saveSetting(window.api.settings.set, TRANSCRIPT_DRAFTS_STORAGE_KEY, next)
-        .then((why) => { if (why) setError(saveFailureText(why)) })
+      // ★이 문서 **하나만** 쓴다. 남의 기록을 함께 다시 쓰지 않는다.
+      //   고친 것이 없으면 그 파일을 지운다 — 빈 기록을 남겨 두지 않는다.
+      const docKey = transcriptKey(now.sourcePath, now.base)
+      const call = isBlankTranscriptDoc(now)
+        ? window.api.works.remove('transcript', docKey)
+        : window.api.works.write('transcript', docKey, now)
+      void call.then((r) => { if (!r.ok) setError(saveFailureText(r.why || 'WRITE_FAILED')) })
+        .catch((e) => setError(saveFailureText((e as Error)?.message || 'WRITE_FAILED')))
     }
     const t = setTimeout(save, 600)
     return () => { clearTimeout(t); save() }

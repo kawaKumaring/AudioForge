@@ -250,6 +250,26 @@ const api = {
     setSync: (key: string, value: unknown) => ipcRenderer.sendSync('settings:set-sync', key, value),
     selectPythonPath: () => ipcRenderer.invoke('settings:select-python-path')
   },
+  /**
+   * 작업 기록 — **기록 하나가 파일 하나.**
+   *
+   * 화면은 **갈래와 열쇠만** 말한다. 어느 파일인지는 본체가 정한다 —
+   * 화면이 경로를 만들어 보내면 언젠가 엉뚱한 자리를 지운다.
+   * ★지우기는 그 파일 하나만 지운다. 남의 기록이 함께 사라지지 않는다.
+   */
+  works: {
+    list: (kind: string): Promise<{ records?: { key: string; updatedAt: number; data: unknown }[]; broken?: number; error?: string }> =>
+      ipcRenderer.invoke('works:list', kind),
+    read: (kind: string, key: string): Promise<{ record?: { key: string; updatedAt: number; data: unknown } | null; error?: string }> =>
+      ipcRenderer.invoke('works:read', kind, key),
+    write: (kind: string, key: string, data: unknown): Promise<{ ok: boolean; why?: string }> =>
+      ipcRenderer.invoke('works:write', kind, key, data),
+    remove: (kind: string, key: string): Promise<{ ok: boolean; removed?: boolean; why?: string }> =>
+      ipcRenderer.invoke('works:delete', kind, key),
+    clear: (kind: string): Promise<{ ok: boolean; removed?: number; why?: string }> =>
+      ipcRenderer.invoke('works:clear', kind),
+  },
+
   /** 앱 설정 — 만든 것을 둘 자리와 쌓인 것 비우기. */
   options: {
     // tempDir/strayTemp — 임시 자리가 앱 안인지 화면이 보여 준다(2026-09-28).

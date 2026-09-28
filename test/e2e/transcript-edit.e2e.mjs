@@ -184,13 +184,25 @@ try {
   app1 = null
 
   // ★저장과 불러오기를 **갈라서** 본다. 한 줄로 묶으면 어느 쪽이 망가졌는지 모른다.
-  const saved = (() => {
+  //
+  // ★2026-09-29: 기록이 **설정 한 칸에서 파일 하나씩**으로 옮겨졌다.
+  //   그래서 여기서 보는 자리도 바뀐다 — `works/transcript/` 아래 파일이다.
+  const workDir = path.join(UD, 'works', 'transcript')
+  const files = fs.existsSync(workDir) ? fs.readdirSync(workDir).filter((f) => f.endsWith('.json')) : []
+  const bodies = files.map((f) => {
+    try { return fs.readFileSync(path.join(workDir, f), 'utf-8') } catch { return '' }
+  })
+  ok(files.length === 1, '★기록 하나가 파일 하나다', `${files.length}개: ${files.join(', ')}`)
+  ok(bodies.some((b) => b.includes('둘째 문장을 고쳤습니다.')),
+    '★고친 내용이 그 파일에 실제로 적힌다', (bodies[0] || '').slice(0, 220))
+  // ★설정 파일에는 더 이상 작업 기록이 없다 — 옮기고 옛 열쇠를 지웠는가.
+  const settings = (() => {
     try { return JSON.parse(fs.readFileSync(path.join(UD, 'settings.json'), 'utf-8')) }
-    catch (e) { return { __읽기실패: String(e && e.message || e) } }
+    catch { return {} }
   })()
-  const drafts = JSON.stringify(saved.transcriptDrafts || null)
-  ok(drafts.includes('둘째 문장을 고쳤습니다.'),
-    '★고친 내용이 설정 파일에 실제로 적힌다', drafts.slice(0, 300))
+  ok(settings.transcriptDrafts === undefined && settings.transcriptEdits === undefined,
+    '★설정 파일에 작업 기록이 남지 않는다 — 남으면 지운 것이 되살아난다',
+    JSON.stringify(Object.keys(settings)))
   // ── 앱을 다시 켜도 고친 내용이 남는다 ───────────────────────────────────
   const second = await launch()
   app2 = second.app
