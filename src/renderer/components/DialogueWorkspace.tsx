@@ -400,6 +400,27 @@ export default function DialogueWorkspace() {
     .map((_s, i) => i)
     .filter((i) => !only || effectiveSegment(analysis, draft, i).speaker === only)
 
+  /**
+   * 발언 줄의 **칸 너비.** 모든 줄이 같은 값을 쓴다 — 그래서 세로로 맞는다.
+   *
+   * ★받아쓰기를 하지 않은 실행에는 글 칸을 만들지 않는다. 전에는 빈 칸이
+   *   1fr 로 가운데를 벌려 놓아, 시간 칸과 단추가 화면 양 끝으로 흩어져 보였다
+   *   (2026-09-28 지적: "배치가 깔끔하지 못하고 들쑥날쑥하다").
+   * ★맨 끝 칸은 **늘 있다.** 되돌리기는 고친 줄에만 뜨지만, 자리를 비워 두지 않으면
+   *   단추가 생기는 순간 그 줄만 밀린다.
+   */
+  const hasText = analysis.transcribe
+  const rowColumns = [
+    '16px',                       // 고르기
+    '24px',                       // 듣기
+    '116px',                      // 인물 — 고정. 줄마다 달라지면 세로가 어긋난다
+    '78px',                       // 시간 글
+    hasText ? 'minmax(0, 1fr)' : null,   // 받아쓴 글이 남는 자리를 채운다
+    showTimes ? '136px' : null,   // 시간 고치기 칸
+    '150px',                      // 문제 + 되돌리기 — **늘 있다**(비어 있어도)
+    hasText ? null : 'minmax(0, 1fr)',   // ★남는 자리는 **끝에 몰아둔다**
+  ].filter(Boolean).join(' ')
+
   const unsureCount = Object.keys(lines.unsure).length + lines.orphans.length
   const applyText = !hasEdits ? '고친 곳이 없습니다'
     : APPLY_TEXT[apply] || (dirty
@@ -633,6 +654,12 @@ export default function DialogueWorkspace() {
         </div>
       )}
 
+      {/* ★발언 줄은 **격자**다 (2026-09-28 지적: "배치가 깔끔하지 못하고 들쑥날쑥하다").
+          전에는 칸마다 흐르는 배치라 줄이 바뀔 때마다 인물·시간·단추의 가로 자리가
+          어긋났고, 되돌리기가 생기면 그 줄만 밀렸다. 칸 너비를 못 박으면
+          **모든 줄에서 같은 것이 같은 자리에** 온다.
+          받아쓰기를 하지 않은 실행에는 글 칸을 아예 만들지 않는다 —
+          빈 칸이 가운데를 벌려 놓는 것이 눈에 거슬리던 자리다. */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 2, maxHeight: 360, overflowY: 'auto' }}>
         {visible.map((i) => {
           const cur = effectiveSegment(analysis, draft, i)
@@ -645,8 +672,10 @@ export default function DialogueWorkspace() {
             <div key={i} data-testid="dialogue-row" data-edited={edited ? '1' : '0'} data-problem={problem || ''}
               data-text={sure ? 'sure' : maybe ? 'unsure' : ''}
               style={{
-                display: 'flex', alignItems: 'center', gap: 6, padding: '3px 5px', borderRadius: 7,
-                flexWrap: 'wrap',
+                display: 'grid', gridTemplateColumns: rowColumns, alignItems: 'center',
+                gap: 8, padding: '3px 5px', borderRadius: 7,
+                // 줄 높이를 못 박는다 — 대사가 길다고 그 줄만 두 배가 되지 않는다.
+                minHeight: 28,
                 background: playToken === token ? 'var(--bg-elevated)' : 'transparent',
                 borderLeft: `3px solid ${edited ? 'var(--cyan)' : 'transparent'}`,
                 outline: problem ? '1px solid var(--rose, #fb7185)' : 'none',
@@ -666,26 +695,32 @@ export default function DialogueWorkspace() {
                 }))}
                 aria-label={`${i + 1}번째 발언의 인물`}
                 style={{
-                  fontFamily: 'inherit', fontSize: 11, padding: '3px 5px', borderRadius: 6, flexShrink: 0,
+                  fontFamily: 'inherit', fontSize: 11, padding: '3px 5px', borderRadius: 6,
+                  minWidth: 0, width: '100%',
                   border: `1px solid ${edited ? 'var(--cyan)' : 'var(--border-subtle)'}`,
                   background: 'var(--bg-base)', color: 'var(--text-primary)',
                 }}>
                 {rows.map((r) => <option key={r.id} value={r.id}>{r.name}</option>)}
                 {!rows.some((r) => r.id === cur.speaker) && <option value={cur.speaker}>{cur.speaker}</option>}
               </select>
-              <span data-testid="dialogue-time" style={{ fontSize: 10, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums', flexShrink: 0 }}>
+              <span data-testid="dialogue-time" style={{ fontSize: 10, color: 'var(--text-muted)', fontVariantNumeric: 'tabular-nums', whiteSpace: 'nowrap' }}>
                 {fmt(cur.start)}–{fmt(cur.end)}
               </span>
-              <span data-testid="dialogue-text"
-                title={maybe && !sure ? '받아쓴 시각이 이 발언과 잘 맞지 않습니다 — 확인해 주세요' : undefined}
-                style={{
-                  flex: '1 1 160px', minWidth: 0, fontSize: 11,
-                  color: sure ? 'var(--text-primary)' : maybe ? 'var(--amber, #d4a017)' : 'var(--text-muted)',
-                }}>
-                {sure || (maybe ? '? ' + maybe : (analysis.transcribe ? '—' : ''))}
-              </span>
+              {hasText && (
+                <span data-testid="dialogue-text"
+                  title={sure || maybe
+                    ? (maybe && !sure ? "받아쓴 시각이 이 발언과 잘 맞지 않습니다 — 확인해 주세요" + "\n\n" : "") + (sure || maybe)
+                    : undefined}
+                  style={{
+                    minWidth: 0, fontSize: 11,
+                    overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap",
+                    color: sure ? "var(--text-primary)" : maybe ? "var(--amber, #d4a017)" : "var(--text-muted)",
+                  }}>
+                  {sure || (maybe ? "? " + maybe : "—")}
+                </span>
+              )}
               {showTimes && (
-                <span style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0 }}>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 4, justifyContent: 'flex-end' }}>
                   {(['start', 'end'] as const).map((k) => (
                     <input key={k} data-testid={`dialogue-${k}`} type="number" step="0.1" min="0" value={cur[k]}
                       onChange={(e) => change(`time:${i}:${Date.now()}`, (d) => ({
@@ -693,21 +728,39 @@ export default function DialogueWorkspace() {
                       }))}
                       aria-label={`${i + 1}번째 발언 ${k === 'start' ? '시작' : '끝'}(초)`}
                       style={{
-                        width: 70, fontFamily: 'inherit', fontSize: 11, padding: '2px 4px', borderRadius: 5,
-                        border: '1px solid var(--border-subtle)', background: 'var(--bg-base)', color: 'var(--text-primary)',
+                        width: 62, fontFamily: 'inherit', fontSize: 11, padding: '2px 4px', borderRadius: 5,
+                        fontVariantNumeric: 'tabular-nums', textAlign: 'right',
+                        border: `1px solid ${edited ? 'var(--cyan)' : 'var(--border-subtle)'}`,
+                        background: 'var(--bg-base)', color: 'var(--text-primary)',
                       }} />
                   ))}
                 </span>
               )}
-              {problem && <span style={{ fontSize: 10, color: 'var(--rose, #fb7185)' }}>{problemText(problem)}</span>}
-              {edited && (
-                <button type="button" data-testid="dialogue-revert"
-                  onClick={() => change(`revert:${i}:${Date.now()}`, (d) => {
-                    const edits = { ...d.edits }; delete edits[i]; return { ...d, edits }
-                  })}
-                  title="이 발언을 처음 분석한 값으로 되돌립니다"
-                  style={{ ...btn('transparent', 'var(--text-muted)'), padding: '1px 5px', fontSize: 10 }}>되돌리기</button>
-              )}
+              {/* ★오른쪽 끝은 **자리를 미리 비워 둔다** (2026-09-28 사용자 지적:
+                  "발언 되돌리기때문에 UX가 들쑥날쑥해진다").
+                  되돌리기는 고친 줄에만 뜬다. 그런데 그때 줄 폭이 늘어나면서 다른 칸을
+                  밀어내고, 접힘(wrap) 때문에 그 줄만 두 단이 되어 목록 전체가 덜컹였다.
+                  칸을 늘 같은 크기로 두면 **단추가 생겨도 아무것도 움직이지 않는다.** */}
+              {/* ★왼쪽으로 붙인다. 오른쪽 정렬로 두면 단추가 칸 끝까지 밀려나
+                  앞 칸과 100px 넘게 벌어졌다 — 가운데가 텅 빈 그 모양이다. */}
+              <span style={{
+                display: 'flex', alignItems: 'center', justifyContent: 'flex-start', gap: 6, minWidth: 0,
+              }}>
+                {problem && (
+                  <span title={problemText(problem)} style={{
+                    fontSize: 10, color: 'var(--rose, #fb7185)', minWidth: 0,
+                    overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>{problemText(problem)}</span>
+                )}
+                {edited && (
+                  <button type="button" data-testid="dialogue-revert"
+                    onClick={() => change(`revert:${i}:${Date.now()}`, (d) => {
+                      const edits = { ...d.edits }; delete edits[i]; return { ...d, edits }
+                    })}
+                    title="이 발언을 처음 분석한 값으로 되돌립니다"
+                    style={{ ...btn('transparent', 'var(--text-muted)'), padding: '1px 5px', fontSize: 10, flexShrink: 0 }}>되돌리기</button>
+                )}
+              </span>
             </div>
           )
         })}
