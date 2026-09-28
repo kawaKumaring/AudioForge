@@ -7,6 +7,7 @@ type WorkspaceInfo = { label: string; description: string; group: string; icon: 
 const icon = (paths: ReactNode) => <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths}</svg>
 
 export const WORKSPACES: Record<SeparationMode, WorkspaceInfo> = {
+  reader: { label: '낭독', group: '새 콘텐츠 만들기', description: '책을 펼치고 원하는 위치부터 듣습니다.', icon: icon(<><path d="M12 5v16M12 5C9 3 5 3 2 4v15c3-1 7-1 10 2 3-3 7-3 10-2V4c-3-1-7-1-10 1Z"/></>) },
   'dialogue-rebuild': { label: '대화 구간 편집', group: '파일에서 시작', description: '수정한 대화 구간을 저장합니다.', icon: icon(<path d="M4 6h16M4 12h16M4 18h10"/>) },
   music: { label: '음악 분리', group: '파일에서 시작', description: '보컬과 악기를 나누고, 필요한 소리를 골라 저장하세요.', icon: icon(<><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></>) },
   conversation: { label: '대화 분리', group: '파일에서 시작', description: '대화 속 목소리를 나누고, 화자별 구간을 확인하세요.', icon: icon(<><circle cx="9" cy="7" r="3"/><path d="M3 21v-3a5 5 0 0 1 10 0v3M17 4a3 3 0 0 1 0 6M17 14a5 5 0 0 1 4 4v3"/></>) },
@@ -19,7 +20,7 @@ export const WORKSPACES: Record<SeparationMode, WorkspaceInfo> = {
 
 const groups: { label: string; modes: SeparationMode[] }[] = [
   { label: '파일에서 시작', modes: ['music', 'conversation', 'transcribe', 'split'] },
-  { label: '새 콘텐츠 만들기', modes: ['tts', 'dub'] }
+  { label: '새 콘텐츠 만들기', modes: ['tts', 'reader', 'dub'] }
 ]
 
 export default function ModeSelector() {

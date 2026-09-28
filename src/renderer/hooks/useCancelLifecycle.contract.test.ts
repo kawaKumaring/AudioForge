@@ -53,7 +53,25 @@ const OWN_CANCEL_SCREENS: Record<string, string[]> = {
   tts: ['components/LabWorkspace.tsx', 'components/SynthesisCardWorkspace.tsx'],
   lab: ['components/LabWorkspace.tsx'],
   dub: ['components/DubWorkspace.tsx'],
+  // ★낭독 화면은 **아직 아무것도 실행하지 않는다**(2026-09-29 GUI 초안).
+  //   실행이 없으니 취소도 없다 — 그래서 지금은 빈 목록이 사실이다.
+  //   엔진을 붙이는 순간 이 줄을 `['components/ReaderWorkspace.tsx']` 로 바꿔야 하고,
+  //   아래 검사가 그때 `useCancelLifecycle` 배선을 요구한다.
+  //   ★빈 목록으로 두는 것은 봐주기가 아니다 — 실행을 시작하면 반드시 걸린다.
+  reader: [],
 }
+
+test('★낭독 화면이 실행을 시작했다면 취소도 배선해야 한다', () => {
+  const code = codeOf(readFileSync(path.join(RENDERER, 'components/ReaderWorkspace.tsx'), 'utf-8'))
+  const runs = /window\.api\.(audio\.process|cards\.|dub\.)/.test(code)
+  if (!runs) {
+    assert.deepEqual(OWN_CANCEL_SCREENS.reader, [],
+      '아직 실행하지 않는데 목록에 올라 있다')
+    return
+  }
+  assert.deepEqual(OWN_CANCEL_SCREENS.reader, ['components/ReaderWorkspace.tsx'],
+    '낭독이 실행을 시작했다 — 취소 실패를 직접 듣지 않으면 「읽는 중」 에 갇힌다')
+})
 
 test('공용 실행 단추를 감추는 모드 목록이 바뀌면 여기서 멈춘다', () => {
   const app = readFileSync(path.join(RENDERER, 'App.tsx'), 'utf-8')
