@@ -17,7 +17,7 @@ import { OUTPUT_ROOT_DIRNAME } from '../../shared/outputLayout'
 import { ourTempNames, LEGACY_TEMP_ENV_KEY } from '../../shared/tempRoot'
 import { readSettingsFile, setSettingsKey } from '../services/settings-store'
 import { rememberDir, startDir, type FolderHost } from '../services/dialogFolders'
-import { outputBase, realAppRoot } from '../services/appPaths'
+import { outputBase, realAppRoot, isInside } from '../services/appPaths'
 import { currentBuildInfo } from './app-version.ipc'
 
 export const OUTPUT_ROOT_KEY = 'outputRoot'
@@ -158,8 +158,8 @@ export function registerOptionsIpc(): void {
       : await dialog.showOpenDialog({ properties: ['openDirectory', 'createDirectory'], defaultPath: startDir(folderHost, 'export') })
     if (r.canceled || !r.filePaths[0]) return null
     const picked = r.filePaths[0]
-    const norm = (x: string) => x.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
-    if (norm(picked).startsWith(norm(installedAppRoot()))) {
+    // ★앞부분만 견주면 `앱폴더-보관` 같은 **옆 폴더까지 막는다.** 판정은 한 곳이다.
+    if (isInside(picked, installedAppRoot())) {
       return { error: '앱이 있는 자리에는 둘 수 없습니다 — 앱을 지울 때 함께 사라집니다.' }
     }
     if (!existsSync(picked)) return { error: '그 폴더가 없습니다.' }

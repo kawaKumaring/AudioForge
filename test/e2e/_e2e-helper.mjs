@@ -15,6 +15,63 @@ import { fileURLToPath } from 'url'
 // speaker_b.wav 하드코딩·자동 검색·복사·fallback 없음. 오디오 decode·전사는 하지 않는다(실 Qwen 실행 전 금지).
 // 검사: 미설정 / 파일 없음 / .wav 아님 / 최소 바이트 미만(빈·손상 방어; 지속시간은 decode 없이 검사 불가라
 // 호출자가 요구하는 실제 길이는 사용자가 승인 자산으로 보장). 순수 함수(process.exit·decode 없음)라 단위테스트 가능.
+/**
+ * 검사가 앱 결과 폴더에 남긴 것을 **끝나고 치운다.**
+ *
+ * ★왜 이쪽에서 푸나 (2026-09-28)
+ *   검사만 다른 자리에 쌓게 해 봤더니, "기본 자리는 앱 폴더" 를 확인하는 검사가
+ *   검사 환경에서 그 규칙을 볼 수 없게 됐다. 자리 규칙은 이 프로젝트에서 가장
+ *   중요한 항목이라, 그것을 지키는 검사를 눈뜬장님으로 만들 수 없다.
+ *   **검사는 제품과 똑같이 쌓고, 자기가 만든 것만 치운다.**
+ *
+ * ★들어올 때의 목록을 적어 두고, 나갈 때 **새로 생긴 것만** 지운다.
+ *   원래 있던 것은 사용자의 결과일 수 있으므로 절대 건드리지 않는다.
+ * ★검사를 나란히 돌리면 서로의 것을 지울 수 있다 — 게이트는 하나씩 돌린다.
+ */
+const OUTPUT_ROOT = path.join(process.cwd(), 'AudioForge_output')
+const outputBefore = (() => {
+  const seen = new Set()
+  const walk = (d, depth) => {
+    let names = []
+    try { names = fs.readdirSync(d) } catch { return }
+    for (const n of names) {
+      const full = path.join(d, n)
+      let st
+      try { st = fs.statSync(full) } catch { continue }
+      if (!st.isDirectory()) continue
+      if (depth === 2) { seen.add(full); continue }   // <기능>/<날짜>/<작업>
+      walk(full, depth + 1)
+    }
+  }
+  walk(OUTPUT_ROOT, 0)
+  return seen
+})()
+
+/** 이 검사가 만든 결과 폴더만 지운다. 들어올 때 있던 것은 남긴다. */
+export function cleanupAppOutput() {
+  let removed = 0
+  const walk = (d, depth) => {
+    let names = []
+    try { names = fs.readdirSync(d) } catch { return }
+    for (const n of names) {
+      const full = path.join(d, n)
+      let st
+      try { st = fs.statSync(full) } catch { continue }
+      if (!st.isDirectory()) continue
+      if (depth === 2) {
+        if (outputBefore.has(full)) continue
+        try { fs.rmSync(full, { recursive: true, force: true }); removed++ } catch { /* 다음에 */ }
+        continue
+      }
+      walk(full, depth + 1)
+    }
+  }
+  walk(OUTPUT_ROOT, 0)
+  return removed
+}
+// ★검사가 어떻게 끝나든 치운다 — 실패한 실행이 잔해를 남기는 것이 지금까지의 문제였다.
+process.on('exit', () => { try { cleanupAppOutput() } catch { /* 종료 중이다 */ } })
+
 export function validateE2EReferencePath(raw, { minBytes = 64 * 1024 } = {}) {
   const p = (raw || '').trim()
   if (!p) return { ok: false, kind: 'unset', reason: 'AF_E2E_REFERENCE 미설정' }

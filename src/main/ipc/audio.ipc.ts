@@ -47,7 +47,7 @@ import { DIALOGUE_DRAFTS_STORAGE_KEY } from '../../shared/dialogueDrafts'
 import { CARD_STORAGE_KEY } from '../../shared/synthesisCardSave'
 import { registerTranscriptIpc } from './transcript.ipc'
 import { registerLabIpc } from './lab.ipc'
-import { outputBase } from '../services/appPaths'
+import { outputBase, isInside } from '../services/appPaths'
 import { readSettingsFile, setSettingsKey, migrateSettings } from '../services/settings-store'
 import type { SidecarEnvelope } from '../../shared/sidecarEvents'
 // 타입만 가져온다 — 참조 라이브러리 모듈을 런타임에 끌어오지 않으므로 순환 의존이 생기지 않는다.
@@ -102,8 +102,9 @@ function resolvePythonPath(): string {
  *   화면이 원본을 안 실어 보내는 경우에도 **여기서 한 번 더 막는다.**
  */
 function insideAppData(dir: string): boolean {
-  const norm = (x: string) => x.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
-  try { return norm(dir).startsWith(norm(app.getPath('userData'))) } catch { return false }
+  // ★앞부분만 견주면 `데이터-output` 같은 **옆 폴더를 안이라고 판정한다.**
+  //   판정은 `services/appPaths.isInside` 하나가 갖는다(구분자까지 붙여서 본다).
+  try { return isInside(dir, app.getPath('userData')) } catch { return false }
 }
 
 /** 폴더 목록. 없거나 못 읽으면 빈 목록 — 찾기가 여기서 멈추지 않게 한다. */

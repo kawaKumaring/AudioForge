@@ -20,12 +20,38 @@ export function realAppRoot(here: string): string {
 /**
  * 결과를 쌓을 뿌리.
  *
- * ★검사가 자리를 짚었으면 그 아래에 쌓는다. 전에는 검사도 앱 뿌리에 쌓아서
- *   저장소의 결과 폴더에 **검사 산출물과 진짜 결과가 섞여** 있었다(실측 20여 개).
- *   결과 폴더는 '사라지면 안 되는 것' 을 두는 자리다 — 지워도 되는 것이 섞이면
- *   청소할 때 구분이 없다.
+ * ★검사도 **똑같이** 앱 자리에 쌓는다.
+ *
+ *   2026-09-28 에 "검사 산출물이 결과 폴더를 어지럽힌다" 를 고치려고 검사만
+ *   다른 자리에 쌓게 해 봤다. **틀린 수였다** — 그러면 `output-location` 검사가
+ *   확인하려던 바로 그 규칙("기본 자리는 앱 폴더")을 검사 환경에서 확인할 수 없다.
+ *   자리 문제가 이 프로젝트에서 가장 중요한 항목인데, 그것을 지키는 검사를
+ *   눈뜬장님으로 만드는 셈이다.
+ *
+ *   어지럽히는 문제는 **치우는 쪽**에서 푼다 — `test/e2e/_e2e-helper.mjs` 가
+ *   검사 중에 생긴 결과 폴더를 끝나고 지운다.
  */
-export function outputBase(here: string, env: Record<string, string | undefined>): string {
-  if (env.AF_E2E === '1' && env.AF_E2E_USER_DATA) return env.AF_E2E_USER_DATA
+export function outputBase(here: string, _env?: Record<string, string | undefined>): string {
   return realAppRoot(here)
+}
+
+/** 경로 비교용 정규화 — 구분자·대소문자·끝 구분자를 없앤다. */
+function norm(p: string): string {
+  return (p || '').replace(/[\\/]+/g, '/').replace(/\/+$/, '').toLowerCase()
+}
+
+/**
+ * `child` 가 `parent` **안**에 있는가.
+ *
+ * ★앞부분만 견주면 안 된다 (2026-09-28 실측으로 찾음)
+ *   `.../데이터` 와 `.../데이터-output` 은 앞부분이 같다. 그냥 `startsWith` 로 보면
+ *   **옆 폴더를 안에 있다고 판정한다.** 그러면 원본 자리 판정이 무너지고 결과가
+ *   엉뚱한 데로 흘러내린다 — 그것이 이번에 신고된 결함의 뿌리와 같은 모양이다.
+ *   구분자까지 붙여서 견줘야 '안' 이다. 같은 폴더 자신도 '안' 으로 본다.
+ */
+export function isInside(child: string, parent: string): boolean {
+  const c = norm(child)
+  const p = norm(parent)
+  if (!c || !p) return false
+  return c === p || c.startsWith(p + '/')
 }
