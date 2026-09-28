@@ -784,6 +784,17 @@ export default function DialogueWorkspace() {
             : (hasEdits && dirty) ? 'var(--amber, #d4a017)' : 'var(--text-muted)',
         }}>{applyText}</span>
 
+        {/* ★이 화면이 **하지 않는 일**을 말한다 (2026-09-28 에 다시 붙였다).
+            9-27 개편에서 이 문장이 화면에서 사라지고 소스 주석에만 남아 있었다.
+            사람마다 '깨끗한 목소리' 를 얻는다고 기대하면 결과를 잘못 읽는다 —
+            여기서 하는 것은 **배정**이고, 겹쳐 말한 자리는 겹친 채로 간다. */}
+        <span data-testid="dialogue-limits" tabIndex={0}
+          title={'화자 분석을 다시 돌리지 않습니다 — 원본의 그 구간을 떠서 인물별로 모을 뿐입니다. '
+            + '겹쳐 말한 부분을 한 사람의 목소리로 갈라내지는 않습니다.'}
+          style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+          화자 분석을 다시 돌리지 않습니다 · 겹쳐 말한 부분을 한 사람의 목소리로 갈라내지는 않습니다
+        </span>
+
         <span style={{ marginLeft: 'auto', display: 'flex', flexWrap: 'wrap' }}>
           <ResultToolbar what={effTarget === 'edited' ? '교정본' : '최초 결과'}
             paths={shown.map((t) => t.path)} outputDir={analysis.outputDir} note={exportNote}
