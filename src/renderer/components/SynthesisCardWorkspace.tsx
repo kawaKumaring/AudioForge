@@ -675,6 +675,16 @@ export default function SynthesisCardWorkspace() {
   }
 
   const locked = busy || loading
+
+  /**
+   * **다른 카드**가 지금 목소리를 준비하고 있는가.
+   *
+   * ★본체는 파이썬을 한 번에 하나만 돌린다. 그래서 남의 참조 트림이 도는 동안
+   *   생성을 누르면 거절당한다(실측: 다섯 카드 중 넷이 그렇게 튕겼다).
+   *   누르기 전에 말해 주려면 화면이 **모든 카드의 준비 상태**를 봐야 한다.
+   */
+  const preparingElsewhere = (id: string) => Object.entries(state.refs)
+    .some(([cardId, r]) => cardId !== id && !!r && r.phase === 'preparing')
   const load = async (paths: string[], id?: string) => {
     if (busy || pending.current) return
     pending.current = true; setLoading(true); setNotice('')
@@ -758,6 +768,7 @@ export default function SynthesisCardWorkspace() {
     {save.phase === 'failed' && <div role="alert" data-testid="card-save-failed" style={{ ...row, fontSize: 12, color: 'var(--rose)', padding: '9px 12px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderLeft: '3px solid var(--rose)', borderRadius: 8 }}>
       <span tabIndex={0} style={{ flex: 1 }} title={`저장 실패 코드: ${save.code || '알 수 없음'}`}>저장 실패</span>
       <button type="button" style={button} onClick={() => { void retrySave() }}>다시 저장</button></div>}
+    {/* ★'남이 준비 중인가' 는 카드마다 같은 답을 쓴다 — 줄마다 다시 세지 않는다. */}
     {state.cards.map((card, index) => {
       const chosen = card.takes.find(t => t.id === card.adoptedId)
       // '수정 전' 판정은 shared/synthesisCardJob 이 소유한다 — 생성본 팝업과 같은 잣대를 쓴다.
@@ -774,6 +785,8 @@ export default function SynthesisCardWorkspace() {
         voice, text: card.text,
         refReady: !!(ref && ref.phase === 'ready' && ref.clip),
         refMessage: ref?.message || '', busy: locked || !!state.job,
+        // ★남의 준비가 도는 동안은 본체가 거절한다 — 누르기 전에 말한다.
+        othersPreparing: preparingElsewhere(card.id),
         builtinUsable: true, builtinWhy: '',
       })
       const mine = state.job?.cardId === card.id

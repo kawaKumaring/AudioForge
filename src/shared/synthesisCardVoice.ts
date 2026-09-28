@@ -83,6 +83,18 @@ export function voiceGenerateFault(a: {
   refReady: boolean
   refMessage: string
   busy: boolean
+  /**
+   * **다른 카드**가 지금 참조를 준비하고 있는가.
+   *
+   * ★왜 필요한가 (2026-09-28 실측)
+   *   참조 목소리 카드를 여럿 만들면 준비(구간 트림)가 동시에 돈다. 그런데 본체는
+   *   파이썬을 한 번에 하나만 돌리므로, 그 사이 생성을 누르면
+   *   "참조 구간 트림 중에는 합성을 시작할 수 없습니다" 로 **거절한다.**
+   *   화면이 이것을 모르면 단추가 열려 있고, 눌러야 비로소 거절을 본다 —
+   *   다섯 명으로 만들어 보니 **넷이 그렇게 튕겼다.**
+   *   막을 것을 미리 알면 **누르기 전에** 말해 줄 수 있다.
+   */
+  othersPreparing?: boolean
   /** 기본 목소리 모델이 지금도 쓸 수 있는가. */
   builtinUsable: boolean
   builtinWhy: string
@@ -90,6 +102,9 @@ export function voiceGenerateFault(a: {
   if (a.busy) return '다른 작업이 끝난 뒤에 만들 수 있습니다'
   if (a.voice.kind === 'none') return '먼저 목소리를 고르세요'
   if (!a.text.trim()) return '대사를 입력하세요'
+  // ★내 준비가 끝났어도 **남의 준비가 돌고 있으면** 본체가 거절한다.
+  //   목소리·대사 문제보다 뒤에 둔다 — 고칠 수 있는 것을 먼저 말해야 한다.
+  if (a.othersPreparing) return '다른 카드의 목소리를 준비하는 중입니다 — 끝나면 만들 수 있습니다'
   if (a.voice.kind === 'builtin') {
     return a.builtinUsable ? '' : (a.builtinWhy || '이 기본 목소리를 쓸 수 없습니다')
   }

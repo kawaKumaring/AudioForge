@@ -51,6 +51,38 @@ test('기본 목소리는 파일이 없다는 이유로 막히지 않는다', ()
   assert.match(voiceGenerateFault({ ...base, voice: cardVoiceOf({ source: src }) }), /준비 안 됨/)
 })
 
+// ★2026-09-28 실측 — 참조 목소리 다섯 장을 한 번에 만들었더니 **넷이 튕겼다.**
+//   본체는 파이썬을 하나만 돌리므로 남의 참조 트림이 도는 동안 생성을 거절한다.
+//   화면이 그것을 모르면 단추가 열려 있고, 누른 뒤에야 거절을 본다.
+test('★남이 목소리를 준비하는 중이면 누르기 전에 말한다', () => {
+  const ready = {
+    voice: cardVoiceOf({ source: src }), text: '안녕', refReady: true, refMessage: '',
+    busy: false, builtinUsable: true, builtinWhy: '',
+  }
+  assert.equal(voiceGenerateFault(ready), '', '내 준비가 끝났으면 막지 않는다')
+  assert.match(voiceGenerateFault({ ...ready, othersPreparing: true }), /다른 카드/,
+    '남이 준비 중인데 단추를 열어 둔다 — 누르면 본체가 거절한다')
+  assert.equal(voiceGenerateFault({ ...ready, othersPreparing: false }), '',
+    '남의 준비가 끝나면 다시 만들 수 있다')
+})
+
+test('★고칠 수 있는 것을 먼저 말한다 — 남의 준비보다 내 대사가 앞이다', () => {
+  const noText = {
+    voice: cardVoiceOf({ source: src }), text: '   ', refReady: true, refMessage: '',
+    busy: false, othersPreparing: true, builtinUsable: true, builtinWhy: '',
+  }
+  assert.match(voiceGenerateFault(noText), /대사/,
+    '기다리라고만 하면, 대사를 비워 둔 것을 사용자가 못 알아챈다')
+})
+
+test('기본 목소리도 남의 준비에는 기다린다 — 실행기는 하나다', () => {
+  const b = {
+    voice: cardVoiceOf({ builtin: ko }), text: '안녕', refReady: false, refMessage: '',
+    busy: false, othersPreparing: true, builtinUsable: true, builtinWhy: '',
+  }
+  assert.match(voiceGenerateFault(b), /다른 카드/)
+})
+
 test('모델을 쓸 수 없으면 그 사유를 말한다', () => {
   const r = voiceGenerateFault({
     voice: cardVoiceOf({ builtin: ko }), text: '안녕', refReady: true, refMessage: '',
