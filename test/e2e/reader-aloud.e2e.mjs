@@ -141,6 +141,34 @@ try {
   const cleared = await win.evaluate(() => window.api.reader.clearCache())
   ok(cleared.removed >= 1, '★쌓아 둔 낭독 조각을 비울 수 있다', cleared)
   ok(fs.readdirSync(madeDir).filter((f) => f.endsWith('.wav')).length === 0, '실제로 비워졌다')
+  // ── 9. ★껐다 켜도 책과 읽던 자리가 남는다 (인수인계 6항) ──────────────
+  await win.getByTestId('reader-paragraph').nth(2).click()
+  await win.waitForTimeout(900)              // 저장은 편집이 멎은 뒤에 쓴다
+  const bookFiles = fs.existsSync(path.join(UD, 'works', 'books'))
+    ? fs.readdirSync(path.join(UD, 'works', 'books')).filter((f) => f.endsWith('.json')) : []
+  ok(bookFiles.length === 1, '★책 하나가 파일 하나다', bookFiles)
+  await app.close(); app = null
+
+  app = await electron.launch({
+    args: ['out/main/index.js'], cwd: APP,
+    env: { ...process.env, AF_E2E: '1', AF_E2E_USER_DATA: UD, HF_HUB_OFFLINE: '1' },
+  })
+  const win2 = await app.firstWindow()
+  win2.setDefaultTimeout(30000)
+  await win2.waitForFunction(() => !!window.__afStore)
+  await win2.getByTestId('mode-reader').click()
+  await win2.waitForSelector('[data-testid="reader-paragraph"]')
+  const back = await win2.getByTestId('reader-paragraph').count()
+  ok(back === 3, '★껐다 켜도 책이 그대로 있다', back)
+  const where = await win2.getByTestId('reader-state').innerText()
+  ok(where.includes('3 / 3'), '★읽던 자리도 그대로다', where)
+
+  // 목록에서 빼면 **그 파일만** 사라진다
+  await win2.locator('[aria-label$="목록에서 빼기"]').first().click()
+  await win2.waitForTimeout(700)
+  const left = fs.existsSync(path.join(UD, 'works', 'books'))
+    ? fs.readdirSync(path.join(UD, 'works', 'books')).filter((f) => f.endsWith('.json')) : []
+  ok(left.length === 0, '★빼면 그 기록이 실제로 지워진다', left)
 } catch (e) {
   console.error('FAIL', e?.message || e)
   fails.push(String(e?.message || e))

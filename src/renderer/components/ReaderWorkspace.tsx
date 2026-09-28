@@ -44,7 +44,37 @@ export default function ReaderWorkspace() {
     })()
   }, [])
 
+  /**
+   * 책과 읽던 자리를 **파일로** 보관한다 (인수인계 6항).
+   *
+   * ★설정 한 칸에 넣지 않는다. 본문이 길어 한 칸이 감당하지 못하고, 하나를 지우려 해도
+   *   전체를 다시 써야 한다 — 그래서 지운 것이 되살아났다(이 프로젝트에서 겪은 일).
+   *   **책 하나가 파일 하나**다. 목록에서 빼면 그 파일만 지운다.
+   */
+  const loadedBooks = useRef(false)
+  useEffect(() => {
+    void (async () => {
+      try {
+        const got = await window.api.works.list('books')
+        if (got.error) return
+        const saved = (got.records || [])
+          .map((r) => r.data as Book | null)
+          .filter((b): b is Book => !!b && Array.isArray(b.paragraphs) && b.paragraphs.length > 0)
+        if (saved.length) useReader.setState((st) => st.books.length ? st : { books: saved, active: saved[0].id })
+      } catch { /* 못 읽으면 빈 서가로 시작한다 — 지우지는 않는다 */ }
+      finally { loadedBooks.current = true }
+    })()
+  }, [])
+
   const position = book?.position ?? 0
+  // ★읽기 전에는 쓰지 않는다 — 빈 서가가 저장본을 지운다(다른 화면에서 겪은 사고다).
+  useEffect(() => {
+    if (!loadedBooks.current || !book) return
+    const t = setTimeout(() => {
+      void window.api.works.write('books', book.id, book).catch(() => { /* 다음 편집에서 다시 쓴다 */ })
+    }, 600)
+    return () => clearTimeout(t)
+  }, [book?.id, book?.position, book?.paragraphs])
   useEffect(() => { bodyRef.current?.querySelector('[aria-current="location"]')?.scrollIntoView({ block: 'nearest' }) }, [active, position])
   // ★본문 **전체**를 넘긴다. 표시용 문단과 합성용 덩이는 다른 단위다 —
   //   나누기 규칙은 `readerChunks` 가 갖는다(인수인계 3항).
@@ -93,10 +123,14 @@ export default function ReaderWorkspace() {
       setError(rejected.join(' · '))
     } finally { setLoading(false) }
   }
-  const removeBook = (id: string) => useReader.setState(s => {
-    const next = s.books.filter(b => b.id !== id)
-    return { books: next, active: s.active === id ? next[0]?.id || '' : s.active }
-  })
+  const removeBook = (id: string) => {
+    // ★그 파일 하나만 지운다. 남의 책을 다시 쓰지 않는다.
+    void window.api.works.remove('books', id).catch(() => { /* 다음에 다시 지운다 */ })
+    useReader.setState(s => {
+      const next = s.books.filter(b => b.id !== id)
+      return { books: next, active: s.active === id ? next[0]?.id || '' : s.active }
+    })
+  }
   return <section data-testid="reader-workspace" aria-label="낭독 작업실" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
     <input ref={fileInput} type="file" accept=".txt,text/plain" multiple hidden onChange={e => { void importFiles(Array.from(e.target.files || [])); e.target.value = '' }} />
     <input ref={voiceInput} type="file" accept="audio/*,video/*" hidden onChange={e => {
@@ -111,9 +145,9 @@ export default function ReaderWorkspace() {
       <button style={button} aria-pressed={shelf} onClick={() => setShelf(v => !v)} title="책 목록 열기·닫기">☷ 책 목록 {books.length || ''}</button>
       <button style={button} onClick={() => fileInput.current?.click()} disabled={loading}>＋ 텍스트 추가</button>
       <span data-testid="reader-notice"
-        title="앱을 껐다 켜면 책 목록과 읽던 자리는 아직 돌아오지 않습니다. 목소리를 바꾸면 만들어 둔 소리는 버리고 다시 만듭니다."
+        title="책과 읽던 자리는 앱을 껐다 켜도 남습니다. 목록에서 빼면 그 기록만 지워지고 원본 파일은 그대로입니다. 목소리를 바꾸면 만들어 둔 소리는 버리고 다시 만듭니다."
         style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
-        {read.playing ? '읽는 중' : '재시작 복원은 아직'}
+        {read.playing ? '읽는 중' : books.length ? `책 ${books.length}권` : ''}
       </span>
     </div>
     {error && <div role="alert" style={{ color: 'var(--rose, #fb7185)', fontSize: 12 }}>{error}</div>}

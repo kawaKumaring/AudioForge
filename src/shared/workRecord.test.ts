@@ -7,10 +7,25 @@ import {
 // @ts-ignore TS5097
 } from './workRecord.ts'
 
+/**
+ * 옛 자리가 **없는** 갈래. 새로 만든 기능이라 옮겨 올 것이 없다.
+ *
+ * ★여기 적어야 빈 목록이 허용된다. 그냥 비워 두면 '깜빡한 것' 과 구별되지 않는다 —
+ *   깜빡하면 그 갈래의 옛 기록이 통째로 사라진다.
+ */
+const NO_LEGACY = new Set(['books'])
+
 test('갈래 목록과 옛 열쇠 표가 서로 맞는다', () => {
   for (const k of WORK_KINDS) {
-    assert.ok(Array.isArray(LEGACY_KEY_OF[k]) && LEGACY_KEY_OF[k].length >= 1,
-      `${k} 의 옛 열쇠가 없다 — 옮길 때 이 갈래가 통째로 빠진다`)
+    assert.ok(Array.isArray(LEGACY_KEY_OF[k]), `${k} 가 표에 없다`)
+    if (NO_LEGACY.has(k)) {
+      assert.equal(LEGACY_KEY_OF[k].length, 0,
+        `${k} 는 옛 자리가 없다고 적어 두었는데 열쇠가 있다`)
+      continue
+    }
+    assert.ok(LEGACY_KEY_OF[k].length >= 1,
+      `${k} 의 옛 열쇠가 없다 — 옮길 때 이 갈래가 통째로 빠진다. `
+      + '정말 옛 자리가 없으면 NO_LEGACY 에 적어라')
   }
   assert.equal(Object.keys(LEGACY_KEY_OF).length, WORK_KINDS.length,
     '표에만 있고 목록에 없는 갈래가 있다')

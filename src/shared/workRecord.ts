@@ -30,6 +30,7 @@ export const WORK_KINDS = [
   'drafts',      // 현재 작업 자동 저장
   'dialogue',    // 대화 구간 교정 (파일별)
   'transcript',  // 전사 교정 (파일별)
+  'books',       // 낭독 — 책마다 본문·읽던 자리 (파일별)
 ] as const
 export type WorkKind = (typeof WORK_KINDS)[number]
 
@@ -48,6 +49,9 @@ export const LEGACY_KEY_OF: Record<WorkKind, string[]> = {
   drafts: ['workDrafts'],
   dialogue: ['dialogueDrafts'],
   transcript: ['transcriptDrafts'],
+  // ★낭독은 새 기능이라 옛 자리가 없다. 빈 목록이 사실이다 —
+  //   그래도 표에 넣어 둔다. 빠뜨리면 '갈래 목록과 표가 맞는다' 검사가 운다.
+  books: [],
 }
 
 export function isWorkKind(v: unknown): v is WorkKind {
