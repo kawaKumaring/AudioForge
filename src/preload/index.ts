@@ -273,6 +273,20 @@ const api = {
       ipcRenderer.sendSync('works:write-sync', kind, key, data),
   },
 
+  /**
+   * 낭독 — **덩이 하나를 소리로.**
+   *
+   * ★같은 글·같은 목소리면 `cached: true` 로 곧바로 돌아온다(두 번째 듣기).
+   * ★한 번에 하나만 만든다 — 본체가 파이썬을 하나만 돌린다. 겹치면 사유를 돌려준다.
+   */
+  reader: {
+    speak: (text: string, voice: { kind: 'builtin' | 'reference'; path: string; engineId?: string },
+      voiceKey: string): Promise<{ data?: { path: string; cached: boolean }; error?: string }> =>
+      ipcRenderer.invoke('reader:speak', text, voice, voiceKey),
+    clearCache: (): Promise<{ removed: number; freedMb: number }> =>
+      ipcRenderer.invoke('reader:clear-cache'),
+  },
+
   /** 앱 설정 — 만든 것을 둘 자리와 쌓인 것 비우기. */
   options: {
     // tempDir/strayTemp — 임시 자리가 앱 안인지 화면이 보여 준다(2026-09-28).

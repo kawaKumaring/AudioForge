@@ -12,6 +12,7 @@
 //   이것은 **수신부 계약** 검사이지 음질 검사가 아니다.
 import { _electron as electron } from 'playwright'
 import path from 'path'
+import { fileNameOf } from '../../src/shared/workRecord.ts'
 import fs from 'fs'
 import { isolatedUserData, cleanupUserData, makeSyntheticWav } from './_e2e-helper.mjs'
 
@@ -52,9 +53,26 @@ async function launch() {
 }
 
 // 저장본은 **검사 프로세스에서 직접 읽는다** — main 은 ESM 이라 require 가 없다.
-const SETTINGS = path.join(ud, 'settings.json')
+//
+// ★2026-09-29: 카드 작업이 **설정 한 칸에서 기록 파일 둘**로 옮겨졌다
+//   (하던 것 / 보관함). 그래서 보는 자리도 `works/cards/` 아래다.
+const CARD_DIR = path.join(ud, 'works', 'cards')
+const readCardRecord = (key) => {
+  let names = []
+  try { names = fs.readdirSync(CARD_DIR).filter((f) => f.endsWith('.json')) } catch { return undefined }
+  for (const n of names) {
+    try {
+      const got = JSON.parse(fs.readFileSync(path.join(CARD_DIR, n), 'utf-8'))
+      if (got?.key === key) return got.data
+    } catch { /* 깨진 파일은 건너뛴다 */ }
+  }
+  return undefined
+}
 const savedDoc = () => {
-  try { return JSON.parse(fs.readFileSync(SETTINGS, 'utf-8')).synthesisCards ?? null } catch { return null }
+  const current = readCardRecord('current')
+  const kept = readCardRecord('kept')
+  if (current === undefined && kept === undefined) return null
+  return { current: current ?? null, kept: kept ?? [] }
 }
 
 try {
@@ -207,13 +225,16 @@ try {
   // ── 2. 저장 실패를 삼키지 않는가 ────────────────────────────────────
   // ★실제 파일 쓰기는 위 검사들이 이미 확인했다. 여기서 보는 것은 **실패를 알리는가**와
   //   **다시 시도가 같은 내용으로 통로까지 닿는가** 다.
+  // ★2026-09-29: 카드는 **기록 파일 통로**로 저장된다. 막을 자리도 그쪽이다 —
+  //   옛 설정 통로를 막으면 저장이 멀쩡히 성공해 이 검사가 헛돈다.
   await app.evaluate(({ ipcMain }) => {
     globalThis.__failSave = true
     globalThis.__lastSave = null
-    ipcMain.removeHandler('settings:set')
-    ipcMain.handle('settings:set', (_e, k, v) => {
-      if (globalThis.__failSave) return { ok: false, code: 'E2E_DISK_FULL' }
-      globalThis.__lastSave = { key: k, value: v }
+    ipcMain.removeHandler('works:write')
+    ipcMain.handle('works:write', (_e, kind, key, data) => {
+      if (globalThis.__failSave) return { ok: false, why: 'E2E_DISK_FULL' }
+      globalThis.__lastSave = { key: `${kind}:${key}`, value: data }
+      if (key === 'current') globalThis.__lastCurrent = data
       return { ok: true }
     })
   })
@@ -224,9 +245,11 @@ try {
   await win.getByRole('button', { name: '다시 저장', exact: true }).click()
   await win.waitForTimeout(700)
   const retried = await app.evaluate(() => globalThis.__lastSave)
-  check(retried?.key === 'synthesisCards', '다시 저장이 같은 자리로 간다')
-  check(retried?.value?.current?.cards?.[0]?.text === '저장이 실패할 대사',
-    '다시 저장이 마지막 내용을 그대로 보낸다')
+  check(String(retried?.key || '').startsWith('cards:'), '다시 저장이 같은 자리로 간다', retried?.key)
+  // ★기록을 **하나씩** 보낸다(하던 것 / 보관함). 마지막 내용은 'cards:current' 에 담긴다.
+  const lastCurrent = await app.evaluate(() => globalThis.__lastCurrent)
+  check(lastCurrent?.cards?.[0]?.text === '저장이 실패할 대사',
+    '다시 저장이 마지막 내용을 그대로 보낸다', lastCurrent?.cards?.[0]?.text)
   check(await win.getByTestId('card-save-failed').count() === 0, '성공하면 실패 표시가 사라진다')
   await app.close()
 
@@ -247,9 +270,14 @@ try {
       savedAt: Date.now(), joins: { gap: .35 },
       cards: [{ id: 'card-' + t, label: t, sourcePath: src, sourceName: 'card-conn.wav', sourceDuration: 8, text: t, settings: { speed: 1, pitch: 0, emotion: '자연스럽게', reference: 'auto', start: 0, end: 8 }, takes: [], adoptedId: null }],
     })
-    const before = JSON.parse(fs.readFileSync(SETTINGS, 'utf-8'))
-    before.synthesisCards = { current: mk('작업 A'), kept: [mk('작업 B')] }
-    fs.writeFileSync(SETTINGS, JSON.stringify(before), 'utf-8')
+    // ★기록 파일 둘에 심는다. **앱이 쓰는 이름 규칙**(`fileNameOf`)을 그대로 쓴다 —
+    //   아무 이름으로나 두면 앱이 못 읽는다(2026-09-29 에 한 번 그랬다).
+    fs.mkdirSync(CARD_DIR, { recursive: true })
+    const put = (key, data) => fs.writeFileSync(
+      path.join(CARD_DIR, fileNameOf(key)),
+      JSON.stringify({ key, updatedAt: Date.now(), data }, null, 2), 'utf-8')
+    put('current', mk('작업 A'))
+    put('kept', [mk('작업 B')])
   }
   ;({ app, win } = await launch())
   await win.getByRole('dialog').getByRole('button', { name: '불러오기', exact: true }).nth(1).click()

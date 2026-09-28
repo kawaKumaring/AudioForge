@@ -61,9 +61,19 @@ const OWN_CANCEL_SCREENS: Record<string, string[]> = {
   reader: [],
 }
 
-test('★낭독 화면이 실행을 시작했다면 취소도 배선해야 한다', () => {
+test('★낭독 화면이 공용 실행기를 쓰기 시작했다면 취소도 배선해야 한다', () => {
+  // ★무엇이 '실행 시작' 인가를 좁게 본다 (2026-09-29).
+  //   `useCancelLifecycle` 이 덮는 것은 **공용 실행기**(`audio:process`)의 취소다.
+  //   목소리 **목록 조회**(`cards.builtinVoices`)는 실행이 아니다 — 넓게 잡았더니
+  //   목록만 읽는 화면을 실행으로 오인했다.
+  //   낭독은 제 통로(`reader.speak`)로 돌고, 갇힘은 **다시 누르면 풀리는 길**로 막는다
+  //   (`readerQueue.retryFailed`). 공용 실행기를 쓰기 시작하면 그때 여기가 운다.
   const code = codeOf(readFileSync(path.join(RENDERER, 'components/ReaderWorkspace.tsx'), 'utf-8'))
-  const runs = /window\.api\.(audio\.process|cards\.|dub\.)/.test(code)
+  const hook = codeOf(readFileSync(path.join(RENDERER, 'hooks/useReadAloud.ts'), 'utf-8'))
+  // 낭독이 갇히지 않게 하는 길이 실제로 있는가 — 이것이 없으면 거절당한 자리에 멈춘다.
+  assert.ok(hook.includes('retryFailed'),
+    '거절당한 덩이를 푸는 길이 없다 — 다른 작업이 끝나도 그 자리에 갇힌다')
+  const runs = /window\.api\.(audio\.process|dub\.)/.test(code)
   if (!runs) {
     assert.deepEqual(OWN_CANCEL_SCREENS.reader, [],
       '아직 실행하지 않는데 목록에 올라 있다')
