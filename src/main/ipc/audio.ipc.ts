@@ -47,6 +47,7 @@ import { DIALOGUE_DRAFTS_STORAGE_KEY } from '../../shared/dialogueDrafts'
 import { CARD_STORAGE_KEY } from '../../shared/synthesisCardSave'
 import { registerTranscriptIpc } from './transcript.ipc'
 import { registerLabIpc } from './lab.ipc'
+import { outputBase } from '../services/appPaths'
 import { readSettingsFile, setSettingsKey, migrateSettings } from '../services/settings-store'
 import type { SidecarEnvelope } from '../../shared/sidecarEvents'
 // 타입만 가져온다 — 참조 라이브러리 모듈을 런타임에 끌어오지 않으므로 순환 의존이 생기지 않는다.
@@ -115,9 +116,8 @@ function readDirSafe(dir: string): string[] {
 }
 
 /** 앱이 도는 자리. `externals` 를 찾는 규칙과 같은 기준을 쓴다. */
-function appDirPath(): string {
-  return join(__dirname, '..', '..')
-}
+/** 결과를 쌓을 뿌리. 규칙은 `services/appPaths` 하나가 갖는다. */
+function appDirPath(): string { return outputBase(__dirname, process.env) }
 
 /** 만든 것을 둘 자리 설정. */
 export const OUTPUT_ROOT_KEY = 'outputRoot'

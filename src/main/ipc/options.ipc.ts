@@ -17,6 +17,7 @@ import { OUTPUT_ROOT_DIRNAME } from '../../shared/outputLayout'
 import { ourTempNames, LEGACY_TEMP_ENV_KEY } from '../../shared/tempRoot'
 import { readSettingsFile, setSettingsKey } from '../services/settings-store'
 import { rememberDir, startDir, type FolderHost } from '../services/dialogFolders'
+import { outputBase, realAppRoot } from '../services/appPaths'
 import { currentBuildInfo } from './app-version.ipc'
 
 export const OUTPUT_ROOT_KEY = 'outputRoot'
@@ -56,7 +57,14 @@ const folderHost: FolderHost = {
   //   C 드라이브에서 시작하면 거기를 고르게 된다. 사용자는 그것을 원한 적이 없다.
   fallback: () => { try { return join(appRootPath(), OUTPUT_ROOT_DIRNAME) } catch { return undefined } },
 }
-function appRootPath(): string { return join(__dirname, '..', '..') }
+/**
+ * ★두 자리는 **다른 질문**이다 (2026-09-28 에 하나로 뭉쳐 있던 것을 갈랐다).
+ *   · 결과를 쌓는 뿌리 — 검사는 자기 격리 자리로 간다
+ *   · 앱이 실제로 깔린 자리 — "여기에는 두지 마세요" 판정은 늘 이쪽이다
+ *   규칙은 `services/appPaths` 하나가 갖는다.
+ */
+function appRootPath(): string { return outputBase(__dirname, process.env) }
+function installedAppRoot(): string { return realAppRoot(__dirname) }
 
 function readOne(key: string): unknown {
   try {
@@ -151,7 +159,7 @@ export function registerOptionsIpc(): void {
     if (r.canceled || !r.filePaths[0]) return null
     const picked = r.filePaths[0]
     const norm = (x: string) => x.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase()
-    if (norm(picked).startsWith(norm(appRootPath()))) {
+    if (norm(picked).startsWith(norm(installedAppRoot()))) {
       return { error: '앱이 있는 자리에는 둘 수 없습니다 — 앱을 지울 때 함께 사라집니다.' }
     }
     if (!existsSync(picked)) return { error: '그 폴더가 없습니다.' }
