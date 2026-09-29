@@ -7,6 +7,7 @@ import { runVoicePrep } from '@/lib/voicePrepRunner'
 import { opLog, nameOnly } from '@/lib/opLog'
 import { chunkAt, TEXT_FILE_LIMIT } from '../../shared/readerChunks'
 import { decodeBookText, encodingLabel } from '../../shared/readerDecode'
+import PlaybackRateSelect from './PlaybackRateSelect'
 import { WINDOW_FROM, estimateHeight, offsetsOf, visibleRange, scrollTopFor } from '../../shared/readerWindow'
 import { DEFAULT_READER_PREFS, parseReaderPrefs, READER_PREFS_STORAGE_KEY, READER_FONT_MAX, READER_FONT_MIN, type ReaderPrefs } from '../../shared/readerText'
 
@@ -297,7 +298,7 @@ export default function ReaderWorkspace() {
       const r = await window.api.reader.speak(SAMPLE_TEXT, { kind: v.kind, path: v.path, engineId: v.engineId }, voiceKeyOf(v))
       if (r.error || !r.data?.path) throw new Error(r.error || '들어 볼 소리를 만들지 못했습니다')
       const url = await window.api.audio.getFileUrl(r.data.path)
-      const el = sampleEl.current || createManagedAudio()
+      const el = sampleEl.current || createManagedAudio(undefined, { made: true })
       sampleEl.current = el
       useAppStore.getState().claimAudio('reader')
       el.src = url
@@ -480,6 +481,8 @@ export default function ReaderWorkspace() {
         <button data-testid="reader-follow" aria-pressed={prefs.follow} title={prefs.follow ? '읽는 구절을 화면이 따라갑니다 — 누르면 멈춥니다' : '누르면 읽는 구절을 화면이 따라갑니다'}
           onClick={() => updatePrefs({ follow: !prefs.follow })}
           style={{ ...button, fontSize: 12, color: prefs.follow ? 'var(--cyan)' : 'var(--text-muted)', borderColor: prefs.follow ? 'var(--cyan)' : undefined }}>따라가기</button>
+        {/* ★듣는 빠르기 — 만든 소리를 다시 만들지 않고 빠르게/느리게 듣는다(2026-09-30 지시). 앱 전체가 같은 값. */}
+        <PlaybackRateSelect testId="reader-rate" />
       </div>
       <span data-testid="reader-state" style={{ flex: '1 1 140px', textAlign: 'right', fontSize: 12, color: read.fault ? 'var(--rose, #fb7185)' : 'var(--text-muted)' }}>
         {read.fault || prep || read.wait || (book ? `${position + 1} / ${book.paragraphs.length} 문단` : '책을 선택하세요')}

@@ -199,7 +199,7 @@ export function browserPreviewDeps(
   return {
     silenceMs,
     // 음량은 단일 소유자가 건다 — 여기서 새 요소를 그냥 만들면 최대로 나간다(2026-09-10).
-    createAudio: () => createManagedAudio(),
+    createAudio: () => createManagedAudio(undefined, { made: true }),
     setTimer: (fn, ms) => window.setTimeout(fn, ms),
     clearTimer: (h) => window.clearTimeout(h as number),
     ...hooks,

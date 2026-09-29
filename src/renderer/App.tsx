@@ -17,7 +17,7 @@ import SongWorkspace from '@/components/SongWorkspace'
 import ReaderWorkspace from '@/components/ReaderWorkspace'
 import TtsResultInfo from '@/components/TtsResultInfo'
 import AppVersionLabel from '@/components/AppVersionLabel'
-import { loadPlaybackVolume } from '@/lib/playbackVolume'
+import { loadPlaybackVolume, loadPlaybackRate } from '@/lib/playbackVolume'
 import { loadConsolePref } from '@/components/ConsolePanel'
 import { opLog } from '@/lib/opLog'
 import { isCancelCleanupBusy } from '../shared/cancelContract'
@@ -30,7 +30,7 @@ export default function App() {
   const [showOptions, setShowOptions] = useState(false)
   const scrollRef = useRef<HTMLDivElement>(null)
   const pageRef = useRef<HTMLDivElement>(null)
-  useEffect(() => { void loadPlaybackVolume() }, [])
+  useEffect(() => { void loadPlaybackVolume(); void loadPlaybackRate() }, [])
   // 콘솔 창 — 켜 두었으면 다시 띄운다. 화면을 옮긴 것도 동작 기록에 남긴다(2026-09-30).
   useEffect(() => {
     let off = () => {}

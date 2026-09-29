@@ -149,3 +149,44 @@ test('보관된 값이 이상하면 0 으로 떨어지지 않는다 — 빈 값 
   settingsGet = async () => ({ [PLAYBACK_VOLUME_STORAGE_KEY]: '' })
   assert.equal(await loadPlaybackVolume(), 1, '빈 값 때문에 소리가 조용히 꺼지면 고장으로 보인다')
 })
+
+// ── 재생 빠르기 — 만들어진 소리에만 (2026-09-30 지시) ─────────────────────────
+// ★확인하는 것: 만든 소리에만 걸린다 · 이미 있는 것도 따라온다 · 기본 빠르기까지 건다(src 를 바꾸면
+//   요소가 기본 빠르기로 되돌아가므로 — 낭독이 다음 조각에서 1배로 돌아가지 않게) · 음 높이 그대로 · 보관.
+const rateApi = await import('./playbackVolume.ts')
+const { PLAYBACK_RATE_STORAGE_KEY } = await import('../../shared/playbackRate.ts')
+type RateEl = HTMLMediaElement & { preservesPitch?: boolean }
+
+test('★만든 소리에만 빠르기가 걸린다 — 원본 소리(참조 구간 등)는 그대로', () => {
+  rateApi.setPlaybackRate(1)
+  const made = rateApi.createManagedAudio(undefined, { made: true }) as RateEl
+  const source = rateApi.createManagedAudio() as RateEl
+  rateApi.setPlaybackRate(1.5)
+  assert.equal(made.playbackRate, 1.5)
+  assert.equal(made.defaultPlaybackRate, 1.5, '기본 빠르기도 걸어야 다음 조각에서 되돌아가지 않는다')
+  assert.equal(made.preservesPitch, true, '음 높이는 그대로')
+  assert.notEqual(source.playbackRate, 1.5)
+  rateApi.setPlaybackRate(1)
+})
+
+test('바꾼 뒤 새로 만든 소리도 지금 빠르기로 나온다 · 이상한 값은 단계로', () => {
+  rateApi.setPlaybackRate('1.3')
+  const a = rateApi.createManagedAudio(undefined, { made: true })
+  assert.equal(a.playbackRate, 1.25)
+  assert.equal(rateApi.getPlaybackRate(), 1.25)
+  rateApi.setPlaybackRate(1)
+})
+
+test('보관하고 다시 읽는다 — 실패를 삼키지 않는다', async () => {
+  rateApi.setPlaybackRate(0.75)
+  assert.deepEqual(await rateApi.savePlaybackRate(), { ok: true })
+  assert.deepEqual(setCalls.at(-1), { key: PLAYBACK_RATE_STORAGE_KEY, value: 0.75 })
+  settingsSet = async () => ({ ok: false, code: 'DISK' })
+  assert.deepEqual(await rateApi.savePlaybackRate(), { ok: false, code: 'DISK' })
+  rateApi.setPlaybackRate(1)
+  settingsGet = async () => ({ [PLAYBACK_RATE_STORAGE_KEY]: 1.75 })
+  assert.equal(await rateApi.loadPlaybackRate(), 1.75)
+  settingsGet = async () => { throw new Error('읽기 실패') }
+  rateApi.setPlaybackRate(1)
+  assert.equal(await rateApi.loadPlaybackRate(), 1, '읽기가 실패해도 재생을 막지 않는다')
+})

@@ -164,7 +164,7 @@ export default function DubWorkspace() {
     playing.current?.pause()
     playing.current = null
     if (!src || playIndex === index) { setPlayIndex(null); return }
-    const el = createManagedAudio(`file://${src.split('\\').join('/')}`)
+    const el = createManagedAudio(`file://${src.split('\\').join('/')}`, { made: true })
     el.onended = () => setPlayIndex(null)
     el.onerror = () => { setError('그 줄 소리를 재생하지 못했습니다.'); setPlayIndex(null) }
     playing.current = el

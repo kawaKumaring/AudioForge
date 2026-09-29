@@ -72,7 +72,7 @@ export async function playPreview(modelPath: string, engineId?: string): Promise
 
     const url = await window.api.audio.getFileUrl(r.data)
     if (mine !== gen) return
-    const audio = el || createManagedAudio()
+    const audio = el || createManagedAudio(undefined, { made: true })
     el = audio
     audio.src = url
     audio.onended = () => { if (mine === gen) publish({ modelPath: '', phase: 'idle', message: '' }) }

@@ -38,6 +38,7 @@ import {
 } from '../../shared/emotionCandidateRegistry'
 import { WORK_DRAFT_STORAGE_KEY } from '../../shared/workDraft'
 import { PLAYBACK_VOLUME_STORAGE_KEY } from '../../shared/playbackVolume'
+import { PLAYBACK_RATE_STORAGE_KEY } from '../../shared/playbackRate'
 import { LAB_STORAGE_KEY } from '../../shared/labWorkspace'
 import { planOutputDir, type OutputPlace } from '../../shared/outputLayout'
 import { TRANSCRIPT_EDIT_STORAGE_KEY } from '../../shared/transcriptEdit'
@@ -1560,6 +1561,8 @@ export function registerAudioIpc(
       [WORK_DRAFT_STORAGE_KEY]: stored[WORK_DRAFT_STORAGE_KEY] ?? null,
       // 재생 음량(미리듣기·결과 공용). 없으면 null → renderer 가 기본값(최대)을 쓴다.
       [PLAYBACK_VOLUME_STORAGE_KEY]: stored[PLAYBACK_VOLUME_STORAGE_KEY] ?? null,
+      // 만들어진 소리의 재생 빠르기(낭독·생성본·최종 음성·더빙 결과). 없으면 null → renderer 가 1배.
+      [PLAYBACK_RATE_STORAGE_KEY]: stored[PLAYBACK_RATE_STORAGE_KEY] ?? null,
       // 테스트개발 작업실 — 기존 작업 저장과 **다른 열쇠**다(섞이지 않는다).
       [LAB_STORAGE_KEY]: stored[LAB_STORAGE_KEY] ?? null,
       [TRANSCRIPT_EDIT_STORAGE_KEY]: stored[TRANSCRIPT_EDIT_STORAGE_KEY] ?? null,
@@ -1601,7 +1604,7 @@ export function registerAudioIpc(
     // 옮기기만 한다. 저장 성공 여부를 그대로 돌려준다 — 실패를 persisted 로 표시하면
     // 사용자는 저장된 줄 알고 앱을 닫는다.
     if (key === GLOBAL_ASSET_STORAGE_KEY || key === VOICE_CAST_STORAGE_KEY
-        || key === WORK_DRAFT_STORAGE_KEY || key === PLAYBACK_VOLUME_STORAGE_KEY
+        || key === WORK_DRAFT_STORAGE_KEY || key === PLAYBACK_VOLUME_STORAGE_KEY || key === PLAYBACK_RATE_STORAGE_KEY
         || key === LAB_STORAGE_KEY || key === TRANSCRIPT_EDIT_STORAGE_KEY
         || key === DIALOGUE_EDIT_STORAGE_KEY
         // ★파일별 보존 열쇠 (2026-09-28 에 빠져 있던 것을 찾음).

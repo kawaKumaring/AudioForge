@@ -132,6 +132,8 @@ if (WITH_APP_UI) {
     [path.join('test', 'e2e', 'diagnostics-export.e2e.mjs')])
   // 콘솔 창 — 동작 기록이 창과 무관하게 남고, 보이고, 복사되고, 껐다 켜도 남는가(2026-09-30 지시).
   run('실제 앱 · 콘솔 창(GPU 없음)', 'node', [path.join('test', 'e2e', 'console-panel.e2e.mjs')])
+  // 만들어진 소리의 재생 빠르기 — 다시 만들지 않고 듣는 빠르기만, 음 높이 유지, 조각이 바뀌어도 유지(2026-09-30).
+  run('실제 앱 · 재생 빠르기(GPU 없음)', 'node', [path.join('test', 'e2e', 'playback-rate.e2e.mjs')])
   // 낭독 — 기본 목소리 여럿(Supertonic 열 개 + piper)을 들어 보고 골라 읽는가(2026-09-30). 받아 두지 않았으면 SKIP 으로 말한다.
   run('실제 앱 · 낭독 기본 목소리 고르기(GPU 없음)', 'node', [path.join('test', 'e2e', 'reader-voices.e2e.mjs')])
   // 낭독 — 글 파일을 UTF-8·UTF-16·CP949 로 알아서 읽고, 알아볼 수 없는 파일은 사유를 말하며 거절하는가(2026-09-30).

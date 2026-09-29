@@ -6,6 +6,7 @@ import { isCancelCleanupBusy } from '../../shared/cancelContract'
 import CompactVoiceWaveform from './CompactVoiceWaveform'
 import MediaImportCard from './MediaImportCard'
 import { createManagedAudio, onManagedPlay, pauseManagedAudio } from '../lib/playbackVolume'
+import PlaybackRateSelect from './PlaybackRateSelect'
 import {
   playPreview, stopPreview, disposePreview, onPreviewState, previewState, type PreviewState,
 } from '../lib/voicePreview'
@@ -235,7 +236,7 @@ function Takes({ card, close, disabled, back }: { card: SynthesisCard; close: ()
     const was = playing === take.id; stop(); if (was) return
     const token = epoch.current; setError('')
     try { const url = await window.api.audio.getFileUrl(take.path); if (token !== epoch.current) return
-      const el = audio.current || createManagedAudio(); audio.current = el; el.src = url
+      const el = audio.current || createManagedAudio(undefined, { made: true }); audio.current = el; el.src = url
       el.onended = () => setPlaying(null); el.onerror = () => { setPlaying(null); setError('파일 재생 실패') }
       await el.play(); if (token === epoch.current) setPlaying(take.id)
     } catch { if (token === epoch.current) setError('파일 재생 실패') }
@@ -461,7 +462,7 @@ export default function SynthesisCardWorkspace() {
       // ★재생 직전에 한 번 더 본다 — 주소를 받는 사이에도 계획은 바뀔 수 있다.
       const beforePlay = stale()
       if (beforePlay) { const t = previewStaleText(beforePlay); if (t && alive.current) setNotice(t); return }
-      const el = joinAudio.current || createManagedAudio()
+      const el = joinAudio.current || createManagedAudio(undefined, { made: true })
       joinAudio.current = el
       el.src = url
       el.onended = () => { setJoinPlaying(false); setPlayingKey('') }
@@ -889,6 +890,8 @@ export default function SynthesisCardWorkspace() {
         </span>}
         <button type="button" data-testid="join-sequence" aria-label="최종 음성 구성 보기" disabled={!state.cards.length} title="카드 순서와 채택한 생성본을 확인합니다" onClick={() => setModal({ type: 'sequence' })} style={{ ...button, background: 'transparent', border: 0, padding: '3px 0', minHeight: 26, fontSize: 11 }}><Icon name="list"/>{readyCount} / {state.cards.length} 준비</button>
       </div>
+      {/* 듣는 빠르기 — 생성본·최종 음성을 다시 만들지 않고 빠르게/느리게 듣는다. 낭독과 같은 값(2026-09-30). */}
+      <PlaybackRateSelect testId="card-rate" />
       <Action icon={joinPlaying ? 'stop' : 'play'} pressed={joinPlaying} label={joinPlaying ? '이어 듣기 멈춤' : '전체 이어 듣기'} testId="join-play"
         disabled={locked || !!joinBlocked || joining !== ''}
         title={joinPlaying ? '이어 듣기를 멈춥니다' : joinBlocked || (joining === 'preview' ? '이어 들을 음성을 준비하고 있습니다' : '카드 순서대로 채택한 생성본을 이어서 들려줍니다')}
