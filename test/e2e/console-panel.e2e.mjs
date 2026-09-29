@@ -70,9 +70,16 @@ try {
   })
   ok(dock.dockBottom === dock.h && dock.mainBottom <= dock.dockTop, '★맨 아래에 붙고 작업 화면과 겹치지 않는다', dock)
   ok(/\[ui:mode\] 화면 reader|\[/.test(await win.getByTestId('console-last').innerText()), '접혀 있어도 마지막 한 줄이 보인다')
+  const mainH = () => win.evaluate(() => Math.round(document.querySelector('[data-testid="workspace-content"]').getBoundingClientRect().height))
+  const hBefore = await mainH()
   await win.getByTestId('console-toggle').click()
   await win.getByTestId('console-lines').waitFor()
   ok(true, '토글을 누르면 펼쳐진다')
+  await win.waitForTimeout(700)                                   // 부드럽게 내려가는 시간
+  // ★펼쳐도 작업 화면은 줄지 않는다 — 아래로 늘어난다(같은 날 피드백: 위로 올라와 UX 를 해친다).
+  ok(await mainH() === hBefore, '★펼쳐도 작업 화면의 높이는 그대로다 — 아래로 늘어난다', { hBefore, after: await mainH() })
+  const seen = await win.evaluate(() => { const r = document.querySelector('[data-testid="console-lines"]').getBoundingClientRect(); return r.top < window.innerHeight && r.bottom <= window.innerHeight + 1 })
+  ok(seen, '펼치면 아래로 내려가 기록이 보인다')
 
   let lines = await lineTexts(win)
   ok(lines.some((l) => /\[boot\]/.test(l)), '앱을 켤 때의 기록이 보인다', lines.slice(0, 3))

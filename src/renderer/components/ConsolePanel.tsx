@@ -2,6 +2,8 @@
  * 콘솔 서랍 — 동작 기록을 **아래에서 펼쳐 보고, 한 번에 복사한다.**
  *
  * ★지시 (2026-09-30): "작동 동작 관련 콘솔 창을 복사해서 붙여 넣으면 문제를 찾는 게 수월할 것 같다."
+ * ★펼치면 작업 화면 **아래로** 늘어난다 (같은 날 피드백: "콘솔이 위로 올라와서 UX 를 해친다").
+ *   작업 화면의 높이는 그대로고, 제목 줄 아래 스크롤 영역이 아래로 내려가 기록을 보여 준다.
  * ★떠 있는 창이 아니다 (같은 날 피드백: "콘솔 팝업이 은근히 방해가 심하다 — 하단에 고정으로 토글을 넣어서
  *   확장하듯이 늘어나고 줄이게. 평소에는 토글이 없지만 옵션에서 콘솔을 활성화하면 하단에 토글이 생긴다").
  *   화면 배치의 맨 아래 한 칸이라 본문을 가리지 않는다 — 펼치면 그만큼 작업 화면이 줄어든다.
@@ -13,6 +15,11 @@ import { create } from 'zustand'
 import { CONSOLE_POPUP_STORAGE_KEY, CONSOLE_RECENT_MAX, parseConsolePopup } from '../../shared/appConsole'
 
 /** `open` 은 **서랍을 두는가**(설정). 펼침은 서랍 안의 일이라 저장하지 않는다 — 켤 때마다 접힌 채로 시작한다. */
+/** 접힌 막대의 높이 — 작업 화면이 이만큼만 양보한다. */
+export const CONSOLE_BAR_PX = 32
+/** 펼친 기록 칸의 높이 — 작업 화면을 줄이지 않고 **그 아래로** 붙는다. */
+export const CONSOLE_BODY_PX = 300
+
 export const useConsolePanel = create<{ open: boolean }>(() => ({ open: false }))
 
 /** 앱을 켤 때 한 번 — 켜 두었던 서랍을 다시 둔다. */
@@ -68,6 +75,15 @@ export default function ConsolePanel() {
 
   useEffect(() => { if (!open) setExpanded(false) }, [open])
 
+  // 펼치면 아래로 내려가 기록을 보이고, 접으면 맨 위로 돌아온다.
+  const shell = useRef<HTMLElement | null>(null)
+  useEffect(() => {
+    const sc = shell.current?.closest('[data-testid="shell-scroll"]') as HTMLElement | null
+    if (!sc) return
+    const calm = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    sc.scrollTo({ top: expanded ? sc.scrollHeight : 0, behavior: calm ? 'auto' : 'smooth' })
+  }, [expanded])
+
   if (!open) return null
 
   const copyAll = async () => {
@@ -80,12 +96,12 @@ export default function ConsolePanel() {
   const warns = lines.filter((l) => / (WARN|ERROR) /.test(l)).length
 
   return (
-    <section data-testid="console-panel" aria-label="콘솔 — 동작 기록" style={{
-      flexShrink: 0, display: 'flex', flexDirection: 'column',
-      height: expanded ? 'min(300px, 40vh)' : 32,
+    <section ref={shell} data-testid="console-panel" aria-label="콘솔 — 동작 기록" style={{
+      display: 'flex', flexDirection: 'column',
+      height: expanded ? CONSOLE_BAR_PX + CONSOLE_BODY_PX : CONSOLE_BAR_PX,
       background: 'var(--bg-primary)', borderTop: '1px solid var(--border-subtle)',
     }}>
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, height: 32, flexShrink: 0, padding: '0 12px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 10, height: CONSOLE_BAR_PX, flexShrink: 0, padding: '0 12px' }}>
         <button type="button" data-testid="console-toggle" aria-expanded={expanded}
           onClick={() => setExpanded((v) => !v)} title={expanded ? '콘솔 접기' : '콘솔 펼치기'}
           style={{ ...button, background: 'transparent', border: 'none', padding: '3px 4px', display: 'inline-flex', alignItems: 'center', gap: 6 }}>

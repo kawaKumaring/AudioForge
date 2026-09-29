@@ -1,11 +1,15 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { create } from 'zustand'
-import { useReadAloud, type ReaderVoicePick } from '@/hooks/useReadAloud'
+import { useReadAloud, voiceKeyOf, type ReaderVoicePick } from '@/hooks/useReadAloud'
+import { createManagedAudio } from '@/lib/playbackVolume'
+import { useAppStore } from '@/stores/app.store'
 import { runVoicePrep } from '@/lib/voicePrepRunner'
 import { opLog, nameOnly } from '@/lib/opLog'
 import { chunkAt, TEXT_FILE_LIMIT } from '../../shared/readerChunks'
 import { DEFAULT_READER_PREFS, parseReaderPrefs, READER_PREFS_STORAGE_KEY, READER_FONT_MAX, READER_FONT_MIN, type ReaderPrefs } from '../../shared/readerText'
 
+/** 들어 보기 문장 — 책 읽는 문장이어야 낭독 목소리를 고를 수 있다. */
+const SAMPLE_TEXT = '그는 천천히 문을 열고 어두운 복도를 내다보았다. 멀리서 물이 떨어지는 소리만 일정하게 이어졌다.'
 // 낭독 화면. 합성은 `useReadAloud`, 책·자리 보관은 `works/books`, 파일 고르기는 본체 대화상자가 맡는다.
 type Book = { id: string; name: string; paragraphs: string[]; position: number }
 /** 책으로 받을 파일 — 대화상자와 끌어 놓기가 **같은 규칙**을 타게 이름·크기·읽기만 본다. */
@@ -28,6 +32,16 @@ export default function ReaderWorkspace() {
   const [loading, setLoading] = useState(false)
   /** 참조 목소리를 준비하는 중이면 그 한 줄. 비면 준비 중이 아니다. */
   const [prep, setPrep] = useState('')
+  /**
+   * 목소리 **들어 보기** — 같은 문장으로 하나씩 들어 보고 고른다 (2026-09-30 지시:
+   * "기본 모델들을 여러 개 연결해 봐라, 하나씩 사용자가 들어 보고 선택하게").
+   * ★인사말이 아니라 **책 읽는 문장**으로 — 낭독 목소리를 고르는 자리다. 낭독 통로를 그대로 타서
+   *   한 번 만든 것은 쌓아 두고, 다시 들을 때는 곧바로 나온다.
+   */
+  const [trying, setTrying] = useState('')
+  const [tryNote, setTryNote] = useState('')
+  const sampleEl = useRef<HTMLAudioElement | null>(null)
+  useEffect(() => () => { try { sampleEl.current?.pause() } catch { /* 이미 멈춤 */ } }, [])
   const [dragging, setDragging] = useState(false)
   const [settings, setSettings] = useState(false)
   // ★책 목록은 **서재 팝업**에 모은다 (2026-09-30 지시: 불러올수록 화면이 차고 본문이 오른쪽으로 쏠린다).
@@ -167,6 +181,28 @@ export default function ReaderWorkspace() {
   }, [read.chunks, read.at, charOfParagraph])
 
   const closeSettings = () => { setSettings(false); voiceButton.current?.focus() }
+  const trySample = async (v: ReaderVoicePick, id: string) => {
+    if (trying) return
+    if (read.playing) read.stop()                 // 두 소리가 겹치지 않게
+    try { sampleEl.current?.pause() } catch { /* 이미 멈춤 */ }
+    setTrying(id); setTryNote('')
+    const t0 = Date.now()
+    try {
+      const r = await window.api.reader.speak(SAMPLE_TEXT, { kind: v.kind, path: v.path, engineId: v.engineId }, voiceKeyOf(v))
+      if (r.error || !r.data?.path) throw new Error(r.error || '들어 볼 소리를 만들지 못했습니다')
+      const url = await window.api.audio.getFileUrl(r.data.path)
+      const el = sampleEl.current || createManagedAudio()
+      sampleEl.current = el
+      useAppStore.getState().claimAudio('reader')
+      el.src = url
+      await el.play()
+      opLog('reader', `들어 보기 — ${v.label}${r.data.cached ? ' (쌓아 둔 것)' : ` · ${((Date.now() - t0) / 1000).toFixed(1)}s`}`)
+    } catch (e) {
+      const why = (e as Error)?.message || '들어 보지 못했습니다'
+      setTryNote(why)
+      opLog('reader', `들어 보기 실패 — ${v.label}: ${why}`, 'WARN')
+    } finally { setTrying('') }
+  }
   /**
    * 문단 글에서 **지금 읽는 덩이**에 든 글자만 칠한다. 덩이는 원문 글자 자리를 들고 있어
    * 여러 문단에 걸쳐도 각 문단의 제 몫만 칠해진다.
@@ -352,14 +388,22 @@ export default function ReaderWorkspace() {
       <section role="dialog" aria-modal="true" aria-label="낭독 설정" onClick={e => e.stopPropagation()} style={{ ...panel, width: '100%', maxWidth: 420, padding: 22 }}>
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 20 }}><h2 style={{ fontSize: 17, margin: 0 }}>낭독 설정</h2><button autoFocus aria-label="닫기" onClick={closeSettings} style={{ ...button, marginLeft: 'auto' }}>×</button></div>
         {/* ★설치된 것만 보여 준다. 없는 목소리를 고르게 하면 눌러야 실패를 안다. */}
-        {builtins.map(b => (
-          <button key={b.modelId} data-testid="reader-voice-builtin"
-            style={{ ...button, width: '100%', textAlign: 'left', marginBottom: 10 }}
-            onClick={() => {
-              useReader.setState({ voice: b.label, pick: { kind: 'builtin', path: b.path, engineId: b.engineId, label: b.label } })
-              setSettings(false)
-            }}>{b.label}</button>
-        ))}
+        {builtins.map(b => {
+          const v: ReaderVoicePick = { kind: 'builtin', path: b.path, engineId: b.engineId, label: b.label }
+          const chosen = pick?.kind === 'builtin' && pick.path === b.path
+          return <div key={b.modelId} style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+            <button data-testid="reader-voice-builtin" aria-pressed={chosen}
+              style={{ ...button, flex: 1, minWidth: 0, textAlign: 'left', borderColor: chosen ? 'var(--accent-light)' : undefined }}
+              onClick={() => {
+                useReader.setState({ voice: b.label, pick: v })
+                setSettings(false)
+              }}>{chosen ? '✓ ' : ''}{b.label}</button>
+            <button data-testid="reader-voice-try" style={{ ...button, flexShrink: 0 }} disabled={!!trying}
+              title="같은 문장으로 이 목소리를 들어 봅니다" onClick={() => { void trySample(v, b.modelId) }}>
+              {trying === b.modelId ? '만드는 중…' : '▶ 들어 보기'}</button>
+          </div>
+        })}
+        {tryNote && <span role="alert" style={{ display: 'block', fontSize: 12, color: 'var(--rose, #fb7185)', marginBottom: 10 }}>{tryNote}</span>}
         {!builtins.length && <span style={{ display: 'block', fontSize: 12, color: 'var(--amber, #d4a017)', marginBottom: 10 }}>{voiceNote || '기본 목소리를 확인하는 중입니다'}</span>}
         <button data-testid="reader-voice-file" style={{ ...button, width: '100%', textAlign: 'left' }}
           title="가지고 있는 소리·영상의 목소리로 읽습니다. 기본 목소리보다 훨씬 느립니다 — 실측 4배."

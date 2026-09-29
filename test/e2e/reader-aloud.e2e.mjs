@@ -182,9 +182,15 @@ try {
   //   목소리를 바꾸면 만들어 둔 것을 버리는 규칙은 `readerQueue.test.ts` 가 지킨다.
   //   여기서는 실제 단추로 목소리 파일을 고르는 길을 본다. 재생은 하지 않는다 —
   //   참조 목소리 합성은 GPU 로 수십 초가 들고, 이 검사가 보려는 것이 아니다.
-  await win.evaluate((p) => window.api.audio.e2eSetSelectFile(p), VOICE_PATH)
+  // ★들어 보기 — 같은 책 문장으로 목소리를 하나씩 들어 보고 고른다(2026-09-30 지시).
   await win.getByTestId('reader-settings').click()
   await win.getByRole('dialog', { name: '낭독 설정' }).waitFor()
+  const playsBeforeTry = await win.evaluate(() => (window.__plays || []).length)
+  await win.getByTestId('reader-voice-try').first().click()
+  const tried = await win.waitForFunction((n) => (window.__plays || []).length > n, playsBeforeTry, { timeout: 60000 }).then(() => true).catch(() => false)
+  ok(tried, '★목소리마다 들어 보기로 실제 소리가 난다')
+  ok(await win.getByRole('dialog', { name: '낭독 설정' }).count() === 1, '들어 봐도 설정 창은 그대로다 — 이어서 고른다')
+  await win.evaluate((p) => window.api.audio.e2eSetSelectFile(p), VOICE_PATH)
   await win.getByTestId('reader-voice-file').click()
   const picked = await win.waitForFunction(() =>
     (document.querySelector('[data-testid="reader-settings"]')?.textContent || '').includes('참조.wav'),
