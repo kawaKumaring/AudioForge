@@ -13,14 +13,16 @@
  * ★소리 파일은 **앱 데이터 자리**에 쌓는다(결과물이 아니다).
  *   사용자가 만든 결과는 `AudioForge_output` 이 갖는다 — 낭독 조각은 캐시다.
  */
-import { ipcMain, app } from 'electron'
-import { join, dirname } from 'path'
+import { ipcMain, app, BrowserWindow } from 'electron'
+import { join, dirname, basename } from 'path'
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync } from 'fs'
 import { createHash } from 'crypto'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { fileURLToPath } from 'url'
-import { currentPythonPath, synthesisBusy } from './audio.ipc'
+import { currentPythonPath, synthesisBusy, pickFiles, dialogFolderHost } from './audio.ipc'
+import { rememberFile } from '../services/dialogFolders'
+import { TEXT_FILE_LIMIT } from '../../shared/readerChunks'
 
 const execFileAsync = promisify(execFile)
 
@@ -160,6 +162,46 @@ export function registerReaderIpc(): void {
     } catch (e) {
       return fail(e)
     }
+  })
+
+  /**
+   * 책으로 읽을 글 파일을 고른다 — **지난번에 불러온 폴더에서 연다.**
+   *
+   * ★지시 (2026-09-29): "소설 또는 텍스트를 불러온 위치를 기억" 해야 한다.
+   *   예전에는 화면이 브라우저식 파일 입력칸을 써서 여는 자리를 운영체제가 정했다.
+   * ★내용 판정(글자 규칙·빈 글)은 화면이 한다 — 끌어 놓기와 **같은 규칙**을 타야 해서다.
+   *   여기서는 파일을 읽어 넘기기만 하고, 상한을 넘는 파일은 **읽지도 않는다.**
+   */
+  ipcMain.handle('reader:pick-texts', async (e): Promise<Reply<{ name: string; size: number; bytes?: Uint8Array }[]>> => {
+    try {
+      const win = BrowserWindow.fromWebContents(e.sender)
+      if (!win) throw new Error('창을 찾지 못했습니다')
+      const paths = await pickFiles(win, {
+        multi: true, slot: 'text',
+        filters: [{ name: '텍스트', extensions: ['txt'] }, { name: 'All Files', extensions: ['*'] }],
+      })
+      return ok(paths.map((p) => {
+        const name = basename(p)
+        try {
+          const size = statSync(p).size
+          if (size > TEXT_FILE_LIMIT) return { name, size }
+          return { name, size, bytes: readFileSync(p) }
+        } catch {
+          return { name, size: -1 }      // 읽지 못한 것은 화면이 사유를 말한다
+        }
+      }))
+    } catch (err) {
+      return fail(err)
+    }
+  })
+
+  /**
+   * 끌어 놓은 글 파일의 폴더도 기억한다 — 끌어 온 것도 "불러온 자리" 다.
+   * 없는 폴더는 기억하지 않는다(규칙은 `dialogFolders` 가 갖는다).
+   */
+  ipcMain.handle('reader:remember-text-dir', (_e, filePath: unknown) => {
+    if (typeof filePath === 'string' && filePath) rememberFile(dialogFolderHost(), 'text', filePath)
+    return true
   })
 
   /** 쌓아 둔 낭독 조각을 비운다. 설정의 '중간 산출물 비우기' 와 같은 갈래다. */

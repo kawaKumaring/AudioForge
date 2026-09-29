@@ -65,10 +65,6 @@ export function useReadAloud(text: string, voice: ReaderVoicePick | null): ReadA
   const aliveRef = useRef(true)
   const claim = useAppStore((s) => s.audioClaim)
 
-  // 글이 바뀌면 처음부터. 목소리가 바뀌면 만들어 둔 것을 버리되 **자리는 지킨다.**
-  useEffect(() => { setQ(emptyQueue(chunks.length, voiceKey)); setFault('') }, [chunks])
-  useEffect(() => { setQ((cur) => changeVoice(cur, voiceKey)) }, [voiceKey])
-
   const stopAudio = useCallback(() => {
     const el = audioRef.current
     if (!el) return
@@ -76,6 +72,19 @@ export function useReadAloud(text: string, voice: ReaderVoicePick | null): ReadA
     el.onended = null
     el.onerror = null
   }, [])
+
+  // 글이 바뀌면 처음부터. 목소리가 바뀌면 만들어 둔 것을 버리되 **자리는 지킨다.**
+  useEffect(() => { setQ(emptyQueue(chunks.length, voiceKey)); setFault('') }, [chunks])
+  // ★목소리를 바꾸면 **곧바로** 적용한다 (2026-09-29 사용자 신고: "선택하면 적용이 되지 않는다").
+  //   예전에는 옛 목소리 소리가 그 덩이 끝까지 이어졌다 — 고른 것과 다른 목소리를 들려준 셈이다.
+  //   지금 소리를 멈추고, 같은 자리를 새 목소리로 만들어 다시 읽는다.
+  const voiceSeen = useRef(voiceKey)
+  useEffect(() => {
+    if (voiceSeen.current === voiceKey) return
+    voiceSeen.current = voiceKey
+    stopAudio()
+    setQ((cur) => changeVoice(cur, voiceKey))
+  }, [voiceKey, stopAudio])
 
   const stop = useCallback(() => {
     setPlaying(false)
@@ -87,11 +96,22 @@ export function useReadAloud(text: string, voice: ReaderVoicePick | null): ReadA
     if (playing && claim && claim.owner !== 'reader') stop()
   }, [claim, playing, stop])
 
-  useEffect(() => () => { aliveRef.current = false; stopAudio() }, [stopAudio])
+  // ★붙을 때마다 **다시 살린다** (2026-09-29 사용자 신고: "첫 줄만 읽고 꺼진다").
+  //   개발 실행은 StrictMode 라 React 가 화면을 붙였다 떼었다 다시 붙인다. 예전에는
+  //   뗄 때 끄기만 하고 다시 켜지 않아서, **만든 소리를 받아도 전부 버렸다** —
+  //   재현: StrictMode 안 재생 0회 · 밖 8회. 검사는 배포 빌드로만 돌아 보지 못했다.
+  useEffect(() => {
+    aliveRef.current = true
+    return () => { aliveRef.current = false; stopAudio() }
+  }, [stopAudio])
 
   // ── 앞서 만들어 둔다 ────────────────────────────────────────────────────
+  // ★기본 목소리는 **누르기 전에도** 지금 자리부터 만들어 둔다 (2026-09-29 지시:
+  //   "텍스트를 읽어오면 빠르게 낭독 음성을 만들어서"). 한 덩이에 2초라 부담이 작고,
+  //   누르는 순간 바로 들린다. 참조 목소리는 GPU 로 수십 초가 들어 누를 때만 만든다.
   useEffect(() => {
-    if (!playing || !voice) return
+    if (!voice) return
+    if (!playing && voice.kind !== 'builtin') return
     const i = nextToMake(q)
     if (i < 0) return
     const chunk = chunks[i]

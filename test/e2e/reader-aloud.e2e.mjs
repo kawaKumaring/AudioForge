@@ -9,19 +9,32 @@
 //   4) 한 덩이가 끝나면 **다음으로 넘어간다** — 손대지 않아도
 //   5) 읽는 자리와 고른 자리를 구분해 보인다
 //   6) 같은 글을 다시 읽으면 **곧바로** 나온다(쌓아 둔 것을 쓴다)
-//   7) 목소리를 바꾸면 만들어 둔 것을 버린다
+//   7) 글과 목소리 파일을 **실제 단추로** 고르고, 불러온 폴더를 **각자** 기억한다
+//      (목소리를 바꾸면 만들어 둔 것을 버리는 규칙은 `readerQueue.test.ts` 가 지킨다)
 //
 // 실행: node test/e2e/reader-aloud.e2e.mjs   (사전: npm run build. GPU 불필요)
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
+import os from 'os'
 import path from 'path'
+import { randomUUID } from 'crypto'
 import { installAudioProbe } from './_audio-probe.mjs'
-import { isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, cleanupIsolated, makeSyntheticWav } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
 
 const UD = isolatedUserData()
+// 글과 목소리 파일은 **서로 다른 폴더**에 둔다 — 각자 따로 기억하는지 보려고.
+// 폴더 이름은 한글로 둔다 — 사용자의 실제 폴더가 그렇다.
+const ISO = path.join(os.tmpdir(), 'audioforge_e2e_' + randomUUID())
+const TEXT_DIR = path.join(ISO, '소설')
+const VOICE_DIR = path.join(ISO, '목소리')
+const BOOK_PATH = path.join(TEXT_DIR, '밤의 집.txt')
+const VOICE_PATH = path.join(VOICE_DIR, '참조.wav')
+const savedSetting = (key) => {
+  try { return JSON.parse(fs.readFileSync(path.join(UD, 'settings.json'), 'utf-8'))[key] } catch { return undefined }
+}
 let passed = 0
 const fails = []
 const ok = (v, label, extra) => {
@@ -36,12 +49,15 @@ const BOOK = [
   '그 소리는 오래된 집이 아직 숨을 쉬고 있다는 증거처럼 들렸다. 그는 한 걸음을 내디뎠다가 곧 멈췄다. 발밑의 마루가 낮게 울었다.',
   '울림이 복도 끝까지 퍼져 나가는 것을 느꼈다. 누군가 이 소리를 들었다면 이미 알아차렸을 것이다. 그는 숨을 죽이고 기다렸다.',
 ].join('\n')
+fs.mkdirSync(TEXT_DIR, { recursive: true })
+fs.writeFileSync(BOOK_PATH, BOOK, 'utf-8')
+makeSyntheticWav(VOICE_PATH, 3)
 
 let app = null
 try {
   app = await electron.launch({
     args: ['out/main/index.js'], cwd: APP,
-    env: { ...process.env, AF_E2E: '1', AF_E2E_USER_DATA: UD, HF_HUB_OFFLINE: '1' },
+    env: { ...process.env, AF_E2E: '1', AF_E2E_USER_DATA: UD, HF_HUB_OFFLINE: '1', AF_E2E_SELECT_FILE: BOOK_PATH },
   })
   const win = await app.firstWindow()
   win.setDefaultTimeout(30000)
@@ -52,7 +68,7 @@ try {
   const voices = listed?.data?.voices || []
   if (!voices.length) {
     console.log('SKIP 이 환경에는 쓸 수 있는 기본 목소리가 없습니다')
-    await app.close(); cleanupUserData(UD); process.exit(0)
+    await app.close(); cleanupUserData(UD); cleanupIsolated(ISO); process.exit(0)
   }
   console.log('  [증거] 목소리:', voices[0].label)
 
@@ -61,17 +77,15 @@ try {
   await win.waitForSelector('[data-testid="reader-workspace"]')
   ok(true, '낭독 화면이 열린다')
 
-  // 책을 넣는다 — 브라우저 파일 입력에 직접 얹는다(파일 선택창을 띄우지 않는다).
-  await win.evaluate(async (text) => {
-    const input = document.querySelector('input[type="file"][accept*="txt"]')
-    const dt = new DataTransfer()
-    dt.items.add(new File([text], '밤의 집.txt', { type: 'text/plain' }))
-    input.files = dt.files
-    input.dispatchEvent(new Event('change', { bubbles: true }))
-  }, BOOK)
+  // 책을 넣는다 — **실제 단추**를 누른다. 검사는 운영체제 선택창만 대신하고,
+  //   그 뒤(읽기·기억)는 사용자가 누를 때와 같다.
+  // ★예전에는 숨은 입력칸에 파일을 직접 얹어서 단추도, 여는 자리도 지나지 않았다.
+  await win.getByTestId('reader-add-text').click()
   await win.waitForSelector('[data-testid="reader-paragraph"]')
   const paras = await win.getByTestId('reader-paragraph').count()
   ok(paras === 3, '문단이 펼쳐진다', paras)
+  ok(savedSetting('lastTextDir') === TEXT_DIR, '★글을 불러온 폴더를 기억한다', savedSetting('lastTextDir'))
+  ok(savedSetting('lastDir') === undefined, '글을 고른 것이 음원 기억을 덮지 않는다', savedSetting('lastDir'))
 
   // ── 2. 목소리는 본체가 확인한 것만 ────────────────────────────────────
   await win.locator('button[title="낭독 목소리 선택"]').click()
@@ -131,13 +145,21 @@ try {
   ok(after === before, '같은 글·같은 목소리는 다시 만들지 않는다', { before, after })
   await win.getByTestId('reader-play').click()
 
-  // ── 8. 목소리를 바꾸면 만들어 둔 것을 버린다 ──────────────────────────
-  const dropped = await win.evaluate(() => {
-    const before = window.__afStore.getState()
-    void before
-    return true
-  })
-  ok(dropped, '목소리 바꾸기 확인을 준비한다')
+  // ── 8. 목소리 파일을 고른다 — 불러온 폴더를 기억한다 ────────────────────
+  // ★예전 이 자리의 검사는 **아무것도 보지 않고 통과했다**(2026-09-29 재조사에서 찾음).
+  //   목소리를 바꾸면 만들어 둔 것을 버리는 규칙은 `readerQueue.test.ts` 가 지킨다.
+  //   여기서는 실제 단추로 목소리 파일을 고르는 길을 본다. 재생은 하지 않는다 —
+  //   참조 목소리 합성은 GPU 로 수십 초가 들고, 이 검사가 보려는 것이 아니다.
+  await win.evaluate((p) => window.api.audio.e2eSetSelectFile(p), VOICE_PATH)
+  await win.locator('button[title="낭독 목소리 선택"]').click()
+  await win.getByRole('dialog', { name: '낭독 목소리' }).waitFor()
+  await win.getByTestId('reader-voice-file').click()
+  const picked = await win.waitForFunction(() =>
+    (document.querySelector('button[title="낭독 목소리 선택"]')?.textContent || '').includes('참조.wav'),
+  null, { timeout: 10000 }).then(() => true).catch(() => false)
+  ok(picked, '★고른 목소리 파일로 바뀐다')
+  ok(savedSetting('lastVoiceDir') === VOICE_DIR, '★목소리를 불러온 폴더를 기억한다', savedSetting('lastVoiceDir'))
+  ok(savedSetting('lastTextDir') === TEXT_DIR, '목소리를 고른 것이 글 기억을 덮지 않는다', savedSetting('lastTextDir'))
   const cleared = await win.evaluate(() => window.api.reader.clearCache())
   ok(cleared.removed >= 1, '★쌓아 둔 낭독 조각을 비울 수 있다', cleared)
   ok(fs.readdirSync(madeDir).filter((f) => f.endsWith('.wav')).length === 0, '실제로 비워졌다')
@@ -175,6 +197,7 @@ try {
 } finally {
   await app?.close().catch(() => {})
   cleanupUserData(UD)
+  cleanupIsolated(ISO)
 }
 console.log(`RESULT ${passed} checks · ${fails.length} fail`)
 process.exit(fails.length ? 1 : 0)

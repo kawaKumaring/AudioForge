@@ -179,6 +179,7 @@ const folderHost: FolderHost = {
   fallback: (slot) => {
     try {
       if (slot === 'python') return undefined      // 실행 파일을 음원 폴더에서 찾게 하지 않는다
+      if (slot === 'text') return app.getPath('documents')
       return app.getPath(slot === 'video' ? 'videos' : 'music')
     } catch {
       return undefined
@@ -189,6 +190,58 @@ const dialogStart = (slot: FolderSlot): string | undefined => startDir(folderHos
 
 /** 다른 IPC 모듈이 **같은 기억**을 쓰도록 내보낸다. 통로를 둘로 만들지 않는다. */
 export function dialogFolderHost(): FolderHost { return folderHost }
+
+// 검사가 지정한 '다음 한 번의 선택'(AF_E2E 전용). 한 번 쓰면 비워진다.
+let e2eNextSelect = ''
+
+/**
+ * 파일 고르기 — **그 용도의 폴더에서 열고, 고른 자리를 기억한다.**
+ *
+ * ★한 곳에 둔다(2026-09-29). 낭독 화면이 이것을 거치지 않고 브라우저식 파일 입력칸을
+ *   써서, 여는 자리를 운영체제가 정했다 — 09-25 에 고친 "다른 툴 폴더로 열린다" 가
+ *   새 화면에서 그대로 되살아났다. 다른 통로도 이 함수를 부른다.
+ *
+ * ★검사에서는 **창만** 대신한다. 예전에는 대신한 뒤 곧바로 돌아가 기억을 남기지 않아서,
+ *   "그 뒤 경로는 실제와 같다" 는 약속과 달리 폴더 기억을 검사로 확인할 길이 없었다.
+ *   여러 파일은 '|' 로 구분한다.
+ */
+export async function pickFiles(win: BrowserWindow, opts: {
+  multi: boolean
+  slot: FolderSlot
+  filters: Electron.FileFilter[]
+}): Promise<string[]> {
+  let picked: string[]
+  if (process.env.AF_E2E === '1' && (e2eNextSelect || process.env.AF_E2E_SELECT_FILE)) {
+    // 검사가 다음 선택을 명시했으면 그것을 한 번 내주고 비운다(연달아 다른 파일을 고르는 흐름).
+    // 명시가 없으면 env 목록 — 예전 동작 그대로다(검사 순서에 의존하지 않게).
+    if (!opts.multi && e2eNextSelect) {
+      picked = [e2eNextSelect]
+      e2eNextSelect = ''
+    } else {
+      const list = (process.env.AF_E2E_SELECT_FILE || '').split('|').filter(Boolean)
+      picked = opts.multi ? list : list.slice(0, 1)
+    }
+  } else {
+    const result = await dialog.showOpenDialog(win, {
+      properties: opts.multi ? ['openFile', 'multiSelections'] : ['openFile'],
+      defaultPath: dialogStart(opts.slot),
+      filters: opts.filters,
+    })
+    picked = result.canceled ? [] : result.filePaths
+  }
+  // ★여기서 기억한다. 예전에는 `audio:get-file-info` 안에서만 기억해서,
+  //   그것을 거치지 않는 네 통로(인물 목소리 지정·후보 넣기·감정 원본·더빙 목소리)는
+  //   파일을 골라도 폴더를 한 번도 남기지 않았다.
+  if (picked.length) rememberFile(folderHost, opts.slot, picked[0])
+  return picked
+}
+
+/** 검사 전용 — 다음 '파일 고르기' 가 무엇을 돌려줄지. AF_E2E=1 이 아니면 거절한다. */
+export function setE2eNextSelect(filePath: string): boolean {
+  if (process.env.AF_E2E !== '1') return false
+  e2eNextSelect = String(filePath || '')
+  return true
+}
 
 // 진단 사이드카 검증기를 모든 러너에 주입한다. python-runner는 Electron 없이 node --test로도
 // 로드되므로 검증기를 직접 import하지 않고 주입받는다(주입을 빠뜨리면 fail-closed —
@@ -522,55 +575,31 @@ export function registerAudioIpc(
 
   // multi 를 주면 여러 개를 고를 수 있다(같은 감정에 파일 여럿 등록). 인자를 주지 않는
   // 기존 호출부의 동작과 반환 형태는 그대로다 — 새 채널을 만들지 않는다.
-  // 검사가 지정한 '다음 한 번의 선택'(AF_E2E 전용). 한 번 쓰면 비워진다.
-  let e2eNextSelect = ''
-
   // 검사 전용 — 다음 '파일 고르기' 가 무엇을 돌려줄지 지정한다. AF_E2E=1 이 아니면 아무것도 하지 않는다.
   // 이것이 없으면 '목소리를 다른 파일로 바꾸기 → 실패' 같은 연속 선택 흐름을 자동 검사로 지날 수 없다.
-  ipcMain.handle('audio:e2e-set-select-file', (_e, filePath: string) => {
-    if (process.env.AF_E2E !== '1') return false
-    e2eNextSelect = String(filePath || '')
-    return true
-  })
+  // 상태는 `pickFiles` 곁(모듈)에 있다 — 낭독의 텍스트 고르기도 같은 통로를 쓴다.
+  ipcMain.handle('audio:e2e-set-select-file', (_e, filePath: string) => setE2eNextSelect(filePath))
 
   // ★`kind` 는 **어느 폴더에서 열지**만 정한다. 예전 호출(`selectFile()` / `selectFile(true)`)은
   //   그대로 동작한다 — 빼면 음원 폴더를 쓴다.
   ipcMain.handle('audio:select-file', async (
     _event, multi?: boolean, kind?: 'source' | 'voice',
   ) => {
-    // E2E 전용 통로 — **OS 파일 선택창만** 대신한다(그 뒤 경로는 실제와 완전히 같다).
-    // 이것이 없으면 '목소리 지정' 버튼을 누르는 실제 경로를 자동 검사로 지날 수 없어서, 검사는
-    // store 를 직접 불러 통과하는데 사용자 화면에서는 멈추는 눈뜬장님 상태가 된다(실측).
-    // AF_E2E=1 이 아니면 존재하지 않는 통로다. 여러 파일은 '|' 로 구분한다.
-    if (process.env.AF_E2E === '1' && (e2eNextSelect || process.env.AF_E2E_SELECT_FILE)) {
-      // 검사가 다음 선택을 명시했으면 그것을 한 번 내주고 비운다(연달아 다른 파일을 고르는 흐름).
-      // 명시가 없으면 env 목록의 첫 항목 — 예전 동작 그대로다(검사 순서에 의존하지 않게).
-      if (!multi && e2eNextSelect) {
-        const one = e2eNextSelect
-        e2eNextSelect = ''
-        return one
-      }
-      const list = (process.env.AF_E2E_SELECT_FILE || '').split('|').filter(Boolean)
-      return multi ? list : (list[0] ?? null)
-    }
     // ★용도를 받아 **그 용도의 폴더**에서 연다(2026-09-25). 예전에는 통이 하나뿐이라
     //   영상을 한 번 고르면 다음에 음원을 고를 때 영상 폴더가 떴다.
-    const slot: FolderSlot = kind === 'voice' ? 'voice' : 'source'
-    const result = await dialog.showOpenDialog(mainWindow, {
-      properties: multi ? ['openFile', 'multiSelections'] : ['openFile'],
-      defaultPath: dialogStart(slot),
+    // 검사에서는 창만 대신한다 — 이것이 없으면 '목소리 지정' 버튼을 누르는 실제 경로를
+    // 자동 검사로 지날 수 없어서, 검사는 store 를 직접 불러 통과하는데 사용자 화면에서는
+    // 멈추는 눈뜬장님 상태가 된다(실측).
+    const picked = await pickFiles(mainWindow, {
+      multi: !!multi,
+      slot: kind === 'voice' ? 'voice' : 'source',
       filters: [
         // 대표 포맷은 편의를 위해 앞에 두고, 실제 허용은 전체(ffmpeg 디코딩 가능 포맷 전부: mo3 등 포함)
         { name: 'Audio/Video', extensions: ['m4a', 'mp3', 'wav', 'flac', 'ogg', 'aac', 'wma', 'mp4', 'mkv', 'avi', 'mov', 'webm'] },
         { name: 'All Files', extensions: ['*'] }
-      ]
+      ],
     })
-    if (result.canceled || result.filePaths.length === 0) return multi ? [] : null
-    // ★여기서 기억한다. 예전에는 `audio:get-file-info` 안에서만 기억해서,
-    //   그것을 거치지 않는 네 통로(인물 목소리 지정·후보 넣기·감정 원본·더빙 목소리)는
-    //   파일을 골라도 폴더를 한 번도 남기지 않았다.
-    rememberFile(folderHost, slot, result.filePaths[0])
-    return multi ? result.filePaths : result.filePaths[0]
+    return multi ? picked : (picked[0] ?? null)
   })
 
   // 원본이 아직 그 자리에 있는가 — 현재 작업 복원이 인물마다 확인한다.

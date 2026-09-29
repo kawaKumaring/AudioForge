@@ -285,6 +285,12 @@ const api = {
       ipcRenderer.invoke('reader:speak', text, voice, voiceKey),
     clearCache: (): Promise<{ removed: number; freedMb: number }> =>
       ipcRenderer.invoke('reader:clear-cache'),
+    /** 글 파일 고르기 — 지난번 폴더에서 열고, 고른 폴더를 기억한다. 취소하면 빈 목록. */
+    pickTexts: (): Promise<{ data?: { name: string; size: number; bytes?: Uint8Array }[]; error?: string }> =>
+      ipcRenderer.invoke('reader:pick-texts'),
+    /** 끌어 놓은 글 파일의 폴더를 기억한다. */
+    rememberTextDir: (filePath: string): Promise<boolean> =>
+      ipcRenderer.invoke('reader:remember-text-dir', filePath),
   },
 
   /** 앱 설정 — 만든 것을 둘 자리와 쌓인 것 비우기. */

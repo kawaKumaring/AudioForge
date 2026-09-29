@@ -92,6 +92,16 @@ test('파이썬 경로는 음원 폴더를 빌리지 않는다', () => {
   assert.equal(startDir(h, 'python'), undefined)
 })
 
+// ★소설은 음원과 다른 자리에 모아 둔다. 음원 폴더를 빌리면 처음 한 번은 엉뚱한 데서 열린다.
+test('낭독 글은 음원 폴더를 빌리지 않고 제 기억을 쓴다', () => {
+  const h = host({ dirs: ['E:\\소리', 'E:\\소설'], settings: { lastDir: 'E:\\소리' } })
+  assert.equal(startDir(h, 'text'), undefined, '음원 폴더를 빌려 왔다')
+  rememberFile(h, 'text', 'E:\\소설\\밤의 집.txt')
+  assert.equal(h.saved.lastTextDir, 'E:\\소설')
+  assert.equal(startDir(h, 'text'), 'E:\\소설')
+  assert.equal(startDir(h, 'source'), 'E:\\소리', '글을 고른 것이 음원 기억을 덮었다')
+})
+
 test('빌려 오기가 제자리를 돌지 않는다', () => {
   const h = host({ settings: {} })
   for (const s of FOLDER_SLOTS) assert.equal(startDir(h, s), undefined)
@@ -206,6 +216,36 @@ test('폴더 기억은 한 창구를 함께 쓴다', () => {
     'audio.ipc 가 기억 창구를 내보내지 않는다')
   const index = readFileSync(path.join(MAIN, 'index.ts'), 'utf-8')
   assert.ok(index.includes('dialogFolderHost()'), '본체 배선이 같은 창구를 넘기지 않는다')
+})
+
+// ★위 검사들은 **본체만** 본다. 화면의 브라우저식 파일 입력칸은 본체 대화상자를 거치지
+//   않아서 여는 자리를 운영체제가 정하고, 고른 폴더도 기억되지 않는다.
+//   2026-09-29 낭독 화면이 바로 그렇게 빠져나갔다 — 09-25 에 고친 "다른 툴 폴더로 열린다" 가
+//   새 화면에서 되살아났다. 그래서 화면 전체를 스스로 훑는다.
+test('화면은 브라우저식 파일 입력칸을 쓰지 않는다 — 본체 대화상자만 쓴다', () => {
+  const RENDERER = path.resolve(MAIN, '..', 'renderer')
+  const bad: string[] = []
+  let seen = 0
+  const walk = (dir: string) => {
+    for (const name of readdirSync(dir)) {
+      const p2 = path.join(dir, name)
+      if (statSync(p2).isDirectory()) { walk(p2); continue }
+      if (!/\.(ts|tsx)$/.test(name) || /\.test\.(ts|tsx)$/.test(name)) continue
+      seen += 1
+      const lines = readFileSync(p2, 'utf-8').split(/\r?\n/)
+      lines.forEach((line, i) => {
+        const t = line.trimStart()
+        if (t.startsWith('//') || t.startsWith('*')) return
+        if (/type\s*=\s*\{?\s*["'`]file["'`]/.test(line)) {
+          bad.push(`${path.relative(RENDERER, p2).split(path.sep).join('/')}:${i + 1}`)
+        }
+      })
+    }
+  }
+  walk(RENDERER)
+  assert.ok(seen >= 50, `화면 파일을 ${seen}개밖에 못 찾았다 — 검사가 눈이 멀었다`)
+  assert.deepEqual(bad, [],
+    `여는 자리를 우리가 정하지 못하고 기억도 남지 않는다 — window.api 의 고르기를 쓰세요: ${bad.join(', ')}`)
 })
 
 // ★칸을 늘리고 문서를 안 고치면, 다음 사람이 **설정 파일에 무엇이 있는지 모른다.**

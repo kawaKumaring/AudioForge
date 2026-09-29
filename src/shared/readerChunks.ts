@@ -27,6 +27,12 @@ export const MIN_SECONDS = 12
 /** 이보다 길면 더 붙이지 않는다 — 첫 소리가 늦고, 멈출 때 버리는 것이 커진다. */
 export const MAX_SECONDS = 35
 
+/**
+ * 책으로 받는 파일의 크기 상한(바이트).
+ * ★화면과 본체가 **같은 값**을 본다 — 본체는 이보다 큰 파일을 읽지도 않는다.
+ */
+export const TEXT_FILE_LIMIT = 10 * 1024 * 1024
+
 const toChars = (sec: number) => Math.round(sec * CHARS_PER_SECOND)
 
 export interface Chunk {

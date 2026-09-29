@@ -1,10 +1,12 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { create } from 'zustand'
 import { useReadAloud, type ReaderVoicePick } from '@/hooks/useReadAloud'
-import { chunkAt } from '../../shared/readerChunks'
+import { chunkAt, TEXT_FILE_LIMIT } from '../../shared/readerChunks'
 
-// Renderer-only reading session. No settings writes, synthesis calls or simulated playback.
+// 낭독 화면. 합성은 `useReadAloud`, 책·자리 보관은 `works/books`, 파일 고르기는 본체 대화상자가 맡는다.
 type Book = { id: string; name: string; paragraphs: string[]; position: number }
+/** 책으로 받을 파일 — 대화상자와 끌어 놓기가 **같은 규칙**을 타게 이름·크기·읽기만 본다. */
+type TextSource = { name: string; size: number; read: () => Promise<ArrayBuffer | Uint8Array> }
 const useReader = create<{
   books: Book[]; active: string; fontSize: number; voice: string
   /** ★실제로 합성에 쓸 지정. 이름만 들고 있으면 낭독을 시작할 수 없다. */
@@ -17,8 +19,6 @@ function BookIcon() { return <svg width="26" height="26" viewBox="0 0 24 24" fil
 export default function ReaderWorkspace() {
   const { books, active, fontSize, voice, pick } = useReader()
   const book = books.find(b => b.id === active)
-  const fileInput = useRef<HTMLInputElement>(null)
-  const voiceInput = useRef<HTMLInputElement>(null)
   const bodyRef = useRef<HTMLDivElement>(null)
   const voiceButton = useRef<HTMLButtonElement>(null)
   const [error, setError] = useState('')
@@ -88,6 +88,12 @@ export default function ReaderWorkspace() {
     return out
   }, [book?.id, book?.paragraphs])
   const read = useReadAloud(body, pick)
+  // ★멈춰 있을 때는 **고른 자리**에 맞춰 둔다 — 엔진이 그 자리부터 미리 만들어 두어,
+  //   누르는 순간 곧바로 들린다(2026-09-29 지시: "읽어오면 빠르게 만들어서").
+  const { playing: readPlaying, seekToChar } = read
+  useEffect(() => {
+    if (!readPlaying) seekToChar(charOfParagraph[position] ?? 0)
+  }, [readPlaying, seekToChar, position, charOfParagraph])
   /** 지금 **실제로 읽고 있는** 문단. 사용자가 고른 자리와 다르다(인수인계 5항). */
   const readingParagraph = useMemo(() => {
     const start = read.chunks[read.at]?.start ?? -1
@@ -102,15 +108,43 @@ export default function ReaderWorkspace() {
     if (!book) return
     useReader.setState(s => ({ books: s.books.map(b => b.id === book.id ? { ...b, position: Math.max(0, Math.min(value, b.paragraphs.length - 1)) } : b) }))
   }
-  const importFiles = async (files: File[]) => {
+  // ★불러온 자리를 기억한다(2026-09-29 지시). 브라우저식 파일 입력칸은 여는 자리를
+  //   운영체제가 정해서 다른 툴 폴더로 열렸다 — 본체 대화상자가 용도별로 기억한다.
+  const pickTexts = async () => {
+    if (loading) return
+    const got = await window.api.reader.pickTexts()
+    if (got.error) { setError(got.error); return }
+    const list = got.data || []
+    if (!list.length) return                       // 취소
+    await importFiles(list.map(f => ({
+      name: f.name, size: f.size,
+      read: async () => { if (!f.bytes) throw new Error('읽지 못함'); return f.bytes },
+    })))
+  }
+  const dropTexts = (files: File[]) => {
+    // 끌어 온 것도 불러온 자리다 — 첫 글 파일의 폴더를 기억한다.
+    const first = files.find(f => /\.txt$/i.test(f.name))
+    const at = first ? window.api.utils.getPathForFile(first) : ''
+    if (at) void window.api.reader.rememberTextDir(at)
+    void importFiles(files.map(f => ({ name: f.name, size: f.size, read: () => f.arrayBuffer() })))
+  }
+  // 목소리 파일은 앱 전체의 '목소리' 기억을 함께 쓴다 — 카드에서 고른 폴더가 여기서도 열린다.
+  const pickVoiceFile = async () => {
+    setSettings(false)
+    const at = await window.api.audio.selectFile(false, 'voice')
+    if (typeof at !== 'string' || !at) return      // 취소
+    const label = at.split(/[\\/]/).pop() || at
+    useReader.setState({ voice: label, pick: { kind: 'reference', path: at, label } })
+  }
+  const importFiles = async (files: TextSource[]) => {
     if (loading) return
     setLoading(true); setError('')
     const added: Book[] = []; const rejected: string[] = []
     try {
       for (const file of files) {
-        if (!/\.txt$/i.test(file.name) || file.size > 10 * 1024 * 1024) { rejected.push(`${file.name}: TXT · 10MB 이하만 지원`); continue }
+        if (!/\.txt$/i.test(file.name) || file.size > TEXT_FILE_LIMIT) { rejected.push(`${file.name}: TXT · 10MB 이하만 지원`); continue }
         try {
-          const bytes = await file.arrayBuffer()
+          const bytes = await file.read()
           let text: string
           try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes) }
           catch { rejected.push(`${file.name}: UTF-8로 저장한 뒤 다시 불러오세요`); continue }
@@ -132,18 +166,9 @@ export default function ReaderWorkspace() {
     })
   }
   return <section data-testid="reader-workspace" aria-label="낭독 작업실" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-    <input ref={fileInput} type="file" accept=".txt,text/plain" multiple hidden onChange={e => { void importFiles(Array.from(e.target.files || [])); e.target.value = '' }} />
-    <input ref={voiceInput} type="file" accept="audio/*,video/*" hidden onChange={e => {
-      const f = e.target.files?.[0]
-      // ★파일 이름만으로는 합성할 수 없다. 실제 경로를 지정으로 담는다(인수인계 2항).
-      const full = f ? window.api.utils.getPathForFile(f) : ''
-      if (f && full) useReader.setState({ voice: f.name, pick: { kind: 'reference', path: full, label: f.name } })
-      else if (f) setError('이 파일의 자리를 알 수 없습니다 — 끌어 놓아 보세요.')
-      e.target.value = ''
-    }} />
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
       <button style={button} aria-pressed={shelf} onClick={() => setShelf(v => !v)} title="책 목록 열기·닫기">☷ 책 목록 {books.length || ''}</button>
-      <button style={button} onClick={() => fileInput.current?.click()} disabled={loading}>＋ 텍스트 추가</button>
+      <button style={button} onClick={() => { void pickTexts() }} disabled={loading} data-testid="reader-add-text">＋ 텍스트 추가</button>
       <span data-testid="reader-notice"
         title="책과 읽던 자리는 앱을 껐다 켜도 남습니다. 목록에서 빼면 그 기록만 지워지고 원본 파일은 그대로입니다. 목소리를 바꾸면 만들어 둔 소리는 버리고 다시 만듭니다."
         style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
@@ -151,7 +176,7 @@ export default function ReaderWorkspace() {
       </span>
     </div>
     {error && <div role="alert" style={{ color: 'var(--rose, #fb7185)', fontSize: 12 }}>{error}</div>}
-    <div onDragOver={e => { e.preventDefault(); setDragging(true) }} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false) }} onDrop={e => { e.preventDefault(); setDragging(false); void importFiles(Array.from(e.dataTransfer.files)) }} style={{ display: 'flex', gap: 16, flexWrap: 'wrap', outline: dragging ? '2px solid var(--accent-light)' : undefined, borderRadius: 14 }}>
+    <div onDragOver={e => { e.preventDefault(); setDragging(true) }} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false) }} onDrop={e => { e.preventDefault(); setDragging(false); dropTexts(Array.from(e.dataTransfer.files)) }} style={{ display: 'flex', gap: 16, flexWrap: 'wrap', outline: dragging ? '2px solid var(--accent-light)' : undefined, borderRadius: 14 }}>
       {shelf && books.length > 0 && <aside aria-label="책 목록" style={{ ...panel, flex: '1 1 190px', minWidth: 0, padding: 12, alignSelf: 'flex-start' }}>
         <div style={{ padding: '6px 8px 14px', fontSize: 11, color: 'var(--text-muted)' }}>내 책</div>
         <div style={{ maxHeight: 440, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -165,7 +190,7 @@ export default function ReaderWorkspace() {
         </div>
       </aside>}
       <article style={{ ...panel, flex: '4 1 340px', minWidth: 0, overflow: 'hidden' }}>
-        {!book ? <button onClick={() => fileInput.current?.click()} disabled={loading} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 18, width: 'calc(100% - 32px)', minHeight: 330, margin: 16, border: '1px dashed var(--border-accent)', borderRadius: 12, background: 'var(--bg-base)', color: 'var(--text-primary)', fontFamily: 'inherit', cursor: 'pointer' }}>
+        {!book ? <button onClick={() => { void pickTexts() }} disabled={loading} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 18, width: 'calc(100% - 32px)', minHeight: 330, margin: 16, border: '1px dashed var(--border-accent)', borderRadius: 12, background: 'var(--bg-base)', color: 'var(--text-primary)', fontFamily: 'inherit', cursor: 'pointer' }}>
           <span style={{ color: 'var(--accent-light)', padding: 17, borderRadius: 14, background: 'var(--accent-glow)' }}><BookIcon /></span>
           <strong style={{ fontSize: 17 }}>{loading ? '책을 불러오는 중' : '읽고 싶은 글을 가져오세요'}</strong>
           <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>끌어 놓거나 클릭해서 선택</span>
@@ -240,7 +265,7 @@ export default function ReaderWorkspace() {
         {!builtins.length && <span style={{ display: 'block', fontSize: 12, color: 'var(--amber, #d4a017)', marginBottom: 10 }}>{voiceNote || '기본 목소리를 확인하는 중입니다'}</span>}
         <button data-testid="reader-voice-file" style={{ ...button, width: '100%', textAlign: 'left' }}
           title="가지고 있는 소리·영상의 목소리로 읽습니다. 기본 목소리보다 훨씬 느립니다 — 실측 4배."
-          onClick={() => { voiceInput.current?.click(); setSettings(false) }}>＋ 음성·영상에서 목소리 선택</button>
+          onClick={() => { void pickVoiceFile() }}>＋ 음성·영상에서 목소리 선택</button>
       </section>
     </div>}
   </section>
