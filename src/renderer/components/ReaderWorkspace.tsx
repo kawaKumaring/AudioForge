@@ -124,10 +124,12 @@ export default function ReaderWorkspace() {
   }, [read.playing, read.at, prefs.follow, book?.id])
   // ★멈춰 있을 때는 **고른 자리**에 맞춰 둔다 — 엔진이 그 자리부터 미리 만들어 두어,
   //   누르는 순간 곧바로 들린다(2026-09-29 지시: "읽어오면 빠르게 만들어서").
-  const { playing: readPlaying, seekToChar } = read
+  // ★오류가 떠 있으면 건드리지 않는다 (2026-09-30 신고: "붉은색으로 경로가 빠르게 보였다 사라진다").
+  //   멈추자마자 자리를 맞추면서 오류 문구까지 지워, 무엇이 틀렸는지 읽을 수 없었다.
+  const { playing: readPlaying, seekToChar, fault: readFault } = read
   useEffect(() => {
-    if (!readPlaying) seekToChar(charOfParagraph[position] ?? 0)
-  }, [readPlaying, seekToChar, position, charOfParagraph])
+    if (!readPlaying && !readFault) seekToChar(charOfParagraph[position] ?? 0)
+  }, [readPlaying, readFault, seekToChar, position, charOfParagraph])
   /** 지금 **실제로 읽고 있는** 문단. 사용자가 고른 자리와 다르다(인수인계 5항). */
   const readingParagraph = useMemo(() => {
     const start = read.chunks[read.at]?.start ?? -1

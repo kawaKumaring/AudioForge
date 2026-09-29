@@ -154,6 +154,22 @@ try {
   const after = fs.readdirSync(madeDir).filter((f) => f.endsWith('.wav')).length
   ok(again <= 2, `★쌓아 둔 것은 곧바로 나온다 (처음 ${first}초 → 다시 ${again}초)`)
   ok(after === before, '같은 글·같은 목소리는 다시 만들지 않는다', { before, after })
+
+  // ★동시에 여럿을 요청해도 **모두** 만든다 (2026-09-30 사용자 신고: "붉은색으로 경로가 빠르게
+  //   보였다 사라진다"). 목소리·설정을 바꾸면 앞 작업이 도는 채로 새 작업이 들어온다 — 예전에는
+  //   둘이 같은 자리·같은 이름에 쓰다가 하나가 "다른 프로세스가 파일을 사용 중" 으로 죽었다.
+  const burst = await win.evaluate(async (v) => {
+    const stamp = Date.now()
+    const texts = [0, 1, 2].map((k) => `동시에 만드는 시험 문장 ${k}번입니다. ${stamp}`)
+    const got = await Promise.all(texts.map((t) =>
+      window.api.reader.speak(t, { kind: 'builtin', path: v.path, engineId: v.engineId }, 'burst')))
+    return got.map((r) => ({ ok: !!r.data?.path, error: r.error || '', name: (r.data?.path || '').split(/[\\/]/).pop() }))
+  }, voices[0])
+  ok(burst.every((b) => b.ok), '★동시에 셋을 요청해도 셋 다 만든다', burst)
+  ok(new Set(burst.map((b) => b.name)).size === 3, '셋이 서로 다른 소리다 — 남의 소리를 가져가지 않는다', burst)
+  ok(burst.every((b) => !/Command failed|[A-Za-z]:[\\/]/.test(b.error)), '실패해도 명령줄·폴더 경로를 보이지 않는다', burst)
+  const workLeft = fs.existsSync(path.join(madeDir, 'work')) ? fs.readdirSync(path.join(madeDir, 'work')) : []
+  ok(workLeft.length === 0, '작업 자리를 남기지 않는다', workLeft)
   await win.getByTestId('reader-play').click()
 
   // ── 8. 목소리 파일을 고른다 — 불러온 폴더를 기억한다 ────────────────────

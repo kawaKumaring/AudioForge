@@ -15,7 +15,7 @@
  */
 import { ipcMain, app, BrowserWindow } from 'electron'
 import { join, dirname, basename } from 'path'
-import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, statSync, unlinkSync } from 'fs'
+import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, statSync } from 'fs'
 import { createHash } from 'crypto'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
@@ -23,6 +23,8 @@ import { fileURLToPath } from 'url'
 import { currentPythonPath, synthesisBusy, pickFiles, dialogFolderHost } from './audio.ipc'
 import { rememberFile } from '../services/dialogFolders'
 import { TEXT_FILE_LIMIT } from '../../shared/readerChunks'
+import { appLog, fileLabel } from '../services/app-log'
+import { createLane, failureReason, jsonLines, madeTrack, pythonReason, readerRunConfig } from '../services/reader-run'
 
 const execFileAsync = promisify(execFile)
 
@@ -89,7 +91,64 @@ export interface ReaderVoice {
   engineId?: string
 }
 
-/** 지금 만들고 있는 것 — **한 번에 하나.** 같은 글을 또 부르면 그 약속을 나눠 준다. */
+/**
+ * 낭독 작업의 **줄** — 한 번에 하나씩 차례로 돈다.
+ *
+ * ★없어서 깨졌다 (2026-09-30 사용자 신고: "기본음성 참조 목소리 둘 다 안 된다",
+ *   "붉은색으로 경로가 빠르게 보였다 사라진다"). 목소리·설정을 바꾸면 화면은 새로 만들기 시작하는데
+ *   앞서 돌던 작업은 멈추지 않는다. 둘이 **같은 자리에 같은 이름**(synthesized.wav)으로 쓰다가
+ *   하나가 "다른 프로세스가 파일을 사용 중" 으로 죽었다 — 재현: 하나씩 정상, 동시에 둘이면 하나 실패.
+ *   둘 다 살아도 서로의 소리를 가져갈 수 있었다.
+ */
+const inLane = createLane()
+
+/**
+ * 덩이 하나를 소리로 — **제 자리에서** 만든다.
+ *
+ * ★작업마다 제 폴더를 쓴다. 같은 폴더를 나눠 쓰면 이름이 겹친다(위 사고).
+ * ★실패하면 **파이썬이 말한 사유**를 돌려준다. 예전에는 실행한 명령줄("Command failed: E:\\…")이
+ *   그대로 화면에 떴다 — 사유도 아니고, 폴더 경로가 드러났다. 경로는 파일 이름만 남긴다.
+ */
+async function makeChunk(body: string, v: ReaderVoice, out: string): Promise<string> {
+  // 차례를 기다리는 사이 같은 글·같은 목소리가 만들어졌을 수 있다.
+  if (existsSync(out)) return out
+  // ★다른 화면의 작업이 돌면 비킨다. 판정은 `synthesisGate` 한 곳이 갖는다.
+  const busy = synthesisBusy('낭독')
+  if (busy) throw new Error(busy)
+  const py = currentPythonPath()
+  if (!py || !existsSync(py)) throw new Error('파이썬을 찾지 못했습니다')
+
+  const runDir = join(readerDir(), 'work', `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
+  mkdirSync(runDir, { recursive: true })
+  const cfgPath = join(runDir, 'chunk.json')
+  writeFileSync(cfgPath, JSON.stringify(readerRunConfig(body, v, runDir)), 'utf-8')
+
+  const t0 = Date.now()
+  try {
+    const { stdout } = await execFileAsync(py, ['-X', 'utf8', scriptPath(), '--config', cfgPath], {
+      // 긴 덩이도 기본 목소리면 몇 초다. 참조 목소리는 훨씬 오래 걸린다.
+      timeout: 600000, maxBuffer: 4 * 1024 * 1024,
+      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+    })
+    const lines = jsonLines(stdout)
+    const wav = madeTrack(lines)
+    if (!wav || !existsSync(wav)) throw new Error(pythonReason(lines) || '이 부분을 소리로 만들지 못했습니다')
+    // 지문 이름으로 옮겨 둔다 — 다음에 같은 글·같은 목소리면 곧바로 쓴다.
+    writeFileSync(out, readFileSync(wav))
+    trimCache()
+    return out
+  } catch (e) {
+    const shown = failureReason(e)
+    // ★로그에 남긴다 — 낭독은 실패를 한 줄도 남기지 않아 신고를 받고도 사유를 알 수 없었다.
+    //   **글 내용은 적지 않는다.** 글자 수와 목소리 파일 이름만.
+    appLog()?.warn('reader', `만들지 못함 kind=${v.kind} voice=${fileLabel(v.path)} 글자=${body.length} ${((Date.now() - t0) / 1000).toFixed(1)}s: ${shown}`)
+    throw new Error(shown)
+  } finally {
+    try { rmSync(runDir, { recursive: true, force: true }) } catch { /* 다음 정리에서 */ }
+  }
+}
+
+/** 지금 만들고 있는 것 — 같은 글을 또 부르면 그 약속을 나눠 준다. */
 const inFlight = new Map<string, Promise<string>>()
 
 export function registerReaderIpc(): void {
@@ -113,51 +172,10 @@ export function registerReaderIpc(): void {
       const already = inFlight.get(out)
       if (already) return ok({ path: await already, cached: false })
 
-      // ★한 번에 하나. 이 판정은 `synthesisGate` 한 곳이 갖는다 — 낭독도 그 줄에 선다.
-      const busy = synthesisBusy('낭독')
-      if (busy) throw new Error(busy)
-
-      const py = currentPythonPath()
-      if (!py || !existsSync(py)) throw new Error('파이썬을 찾지 못했습니다')
-
-      const workDir = join(readerDir(), 'work')
-      mkdirSync(workDir, { recursive: true })
-      const cfgPath = join(workDir, `chunk-${Date.now()}.json`)
-      writeFileSync(cfgPath, JSON.stringify({
-        mode: 'tts', input: '', output: workDir, ttsText: body,
-        ttsEngine: v.kind === 'builtin' ? (v.engineId || 'piper') : undefined,
-        ttsBuiltinModel: v.kind === 'builtin' ? v.path : undefined,
-        ttsReferenceOverride: v.kind === 'reference' ? v.path : '',
-        ttsSpeed: 1.0, ttsSilenceGap: 0.35, ttsPitch: 0.0,
-        ttsTailMode: 'auto', ttsTailPaddingMs: 120, ttsTailFadeMs: 8,
-        ttsSpeakerMode: 'single',
-      }), 'utf-8')
-
-      const run = execFileAsync(py, ['-X', 'utf8', scriptPath(), '--config', cfgPath], {
-        // 긴 덩이도 기본 목소리면 몇 초다. 참조 목소리는 훨씬 오래 걸린다.
-        timeout: 600000, maxBuffer: 4 * 1024 * 1024,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
-      }).then(({ stdout }) => {
-        const made = String(stdout).split(/\r?\n/).map((l) => {
-          try { return JSON.parse(l) as { tracks?: { path?: string }[] } } catch { return null }
-        }).filter(Boolean).reverse().find((o) => o!.tracks?.length)
-        const wav = made?.tracks?.[0]?.path
-        if (!wav || !existsSync(wav)) throw new Error('이 부분을 소리로 만들지 못했습니다')
-        // 지문 이름으로 옮겨 둔다 — 다음에 같은 글·같은 목소리면 곧바로 쓴다.
-        try { mkdirSync(dirname(out), { recursive: true }) } catch { /* 이미 있다 */ }
-        try {
-          if (wav !== out) {
-            writeFileSync(out, readFileSync(wav))
-            rmSync(wav, { force: true })
-          }
-        } catch { return wav }          // 못 옮기면 만든 자리를 그대로 쓴다
-        trimCache()
-        return out
-      }).finally(() => {
-        inFlight.delete(out)
-        try { unlinkSync(cfgPath) } catch { /* 남아도 해롭지 않다 */ }
-      })
+      // ★한 번에 하나 — 줄에 세운다. 앞 작업이 끝나야 다음이 돈다.
+      const run = inLane(() => makeChunk(body, v, out))
       inFlight.set(out, run)
+      void run.finally(() => { inFlight.delete(out) }).catch(() => { /* 아래에서 받는다 */ })
       return ok({ path: await run, cached: false })
     } catch (e) {
       return fail(e)

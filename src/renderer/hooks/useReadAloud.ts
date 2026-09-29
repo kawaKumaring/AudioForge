@@ -107,6 +107,8 @@ export function useReadAloud(
     if (voiceSeen.current === voiceKey) return
     voiceSeen.current = voiceKey
     stopAudio()
+    // 새 목소리는 새 시도다 — 지난 목소리의 오류 문구를 남겨 두지 않는다.
+    setFault('')
     setQ((cur) => changeVoice(cur, voiceKey))
   }, [voiceKey, stopAudio])
 
