@@ -20,7 +20,7 @@ import { createHash } from 'crypto'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { fileURLToPath } from 'url'
-import { currentPythonPath, synthesisBusy, pickFiles, dialogFolderHost } from './audio.ipc'
+import { currentPythonPath, synthesisBusy, setReaderRunning, pickFiles, dialogFolderHost } from './audio.ipc'
 import { rememberFile } from '../services/dialogFolders'
 import { TEXT_FILE_LIMIT } from '../../shared/readerChunks'
 import { appLog, fileLabel } from '../services/app-log'
@@ -124,6 +124,11 @@ async function makeChunk(body: string, v: ReaderVoice, out: string): Promise<str
   writeFileSync(cfgPath, JSON.stringify(readerRunConfig(body, v, runDir)), 'utf-8')
 
   const t0 = Date.now()
+  // ★참조 목소리(GPU)만 남에게 '도는 중' 으로 알린다. 기본 목소리는 CPU 로 한 덩이 2초이고, 책을 열기만 해도
+  //   앞서 만들어 두므로(누르기 전에도) 그것까지 알리면 **책을 열어 둔 것만으로 합성이 거절된다.**
+  // ★남을 본 **다음에** 세운다 — 먼저 세우면 제 판정에 제가 걸린다. 바로 아래 try 의 finally 가 내린다.
+  const gpu = v.kind === 'reference'
+  if (gpu) setReaderRunning(true)
   try {
     const { stdout } = await execFileAsync(py, ['-X', 'utf8', scriptPath(), '--config', cfgPath], {
       // 긴 덩이도 기본 목소리면 몇 초다. 참조 목소리는 훨씬 오래 걸린다.
@@ -146,6 +151,7 @@ async function makeChunk(body: string, v: ReaderVoice, out: string): Promise<str
     appLog()?.warn('reader', `만들지 못함 kind=${v.kind} voice=${fileLabel(v.path)} 글자=${body.length} ${((Date.now() - t0) / 1000).toFixed(1)}s: ${shown}`)
     throw new Error(shown)
   } finally {
+    if (gpu) setReaderRunning(false)
     try { rmSync(runDir, { recursive: true, force: true }) } catch { /* 다음 정리에서 */ }
   }
 }
@@ -166,6 +172,14 @@ export async function readerSelfTest(text: string, v: ReaderVoice): Promise<{ pa
 const inFlight = new Map<string, Promise<string>>()
 
 export function registerReaderIpc(): void {
+  /**
+   * 줄에 선 것을 다 만들 때까지 기다린다 — 낭독 화면이 참조 목소리를 준비하기 전에 부른다.
+   * ★준비도 파이썬을 띄운다. 낭독이 만들던 것과 겹치면 공용 판정에 거절된다 — 거절 대신 기다린다.
+   */
+  ipcMain.handle('reader:idle', async (): Promise<Reply<true>> => {
+    try { await inLane(async () => undefined); return ok(true) } catch (e) { return fail(e) }
+  })
+
   /**
    * 덩이 하나를 소리로. 이미 만들어 둔 것이 있으면 **곧바로** 그 자리를 돌려준다.
    */

@@ -253,6 +253,11 @@ export default function ReaderWorkspace() {
     if (typeof at !== 'string' || !at) return      // 취소
     const label = nameOnly(at)
     setError('')
+    // ★준비도 파이썬을 띄운다 — 낭독이 참조 목소리로 만들던 것과 겹치면 공용 판정이 거절한다.
+    //   읽기를 멈추고, 만들던 부분까지 마치기를 기다린 뒤 준비한다(거절 대신 기다림).
+    if (read.playing) read.stop()
+    setPrep('읽던 부분을 마치는 중입니다…')
+    await window.api.reader.idle?.()
     setPrep('목소리를 살펴보는 중입니다…')
     opLog('reader', `참조 목소리 준비 시작 — ${label}`)
     let clip = ''

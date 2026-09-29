@@ -50,6 +50,8 @@ const api = {
       ipcRenderer.invoke('audio:analyze-reference', filePath, clipKey, extra),
     /** 검사 전용 — 다음 '파일 고르기' 가 돌려줄 경로를 지정한다(AF_E2E=1 에서만 동작). */
     e2eSetSelectFile: (filePath: string) => ipcRenderer.invoke('audio:e2e-set-select-file', filePath),
+    /** 검사 전용 — 지금 합성이 거절될 사유(읽기만). 검사 밖에서는 빈 값. */
+    e2eBusyReason: (label?: string): Promise<string> => ipcRenderer.invoke('audio:e2e-busy-reason', label),
     /** 이 결과가 어땠는지를 그 실행의 기록에 남긴다. verdict: good | fair | bad. */
     recordListening: (runId: string, verdict: string, note?: string) =>
       ipcRenderer.invoke('audio:record-listening', runId, verdict, note),
@@ -285,6 +287,9 @@ const api = {
       ipcRenderer.invoke('reader:speak', text, voice, voiceKey),
     clearCache: (): Promise<{ removed: number; freedMb: number }> =>
       ipcRenderer.invoke('reader:clear-cache'),
+    /** 줄에 선 낭독 조각을 다 만들 때까지 기다린다(참조 목소리 준비 전에). */
+    idle: (): Promise<{ data?: true; error?: string }> =>
+      ipcRenderer.invoke('reader:idle'),
     /** 글 파일 고르기 — 지난번 폴더에서 열고, 고른 폴더를 기억한다. 취소하면 빈 목록. */
     pickTexts: (): Promise<{ data?: { name: string; size: number; bytes?: Uint8Array }[]; error?: string }> =>
       ipcRenderer.invoke('reader:pick-texts'),

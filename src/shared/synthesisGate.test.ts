@@ -20,6 +20,7 @@ test('도는 것마다 **무엇 때문인지** 말한다', () => {
   assert.match(blockReason({ referenceTrim: true })!, /참조 구간 트림/)
   assert.match(blockReason({ samplerPreview: true })!, /미리듣기/)
   assert.match(blockReason({ dubJob: true })!, /더빙/)
+  assert.match(blockReason({ readerJob: true })!, /낭독이 참조 목소리로/)
 })
 
 test('시작하려는 일의 이름이 문구에 들어간다', () => {
@@ -37,7 +38,9 @@ test('감정 미리듣기는 반드시 목록에 있다 — 이것이 빠져서 
     '미리듣기를 목록에서 빼면 파이썬 둘이 같은 GPU 를 동시에 문다')
   assert.ok(GUARDED.includes('dubJob'),
     '더빙 앞단·내보내기도 제 실행기를 따로 만든다 — 빼면 같은 사고가 난다')
-  assert.equal(GUARDED.length, 5, '실행기를 늘렸으면 여기 수도 같이 늘어야 한다')
+  assert.ok(GUARDED.includes('readerJob'),
+    '낭독도 제 실행기를 따로 만든다 — 빼면 낭독이 도는 동안 합성이 같은 GPU 를 문다')
+  assert.equal(GUARDED.length, 6, '실행기를 늘렸으면 여기 수도 같이 늘어야 한다')
 })
 
 // ★목록을 만들어 두고 **안 쓰면** 아무것도 달라지지 않는다.
@@ -52,7 +55,7 @@ test('본체가 이 목록을 실제로 부른다', () => {
 // 타입이 실수를 잡는지 — 없는 이름을 쓰면 컴파일이 막힌다.
 const _shape: RunningState = {
   mainRunner: false, transcriptPreview: false, referenceTrim: false,
-  samplerPreview: false, dubJob: false,
+  samplerPreview: false, dubJob: false, readerJob: false,
 }
 void _shape
 
@@ -99,6 +102,23 @@ test('실행 상태를 한 곳에서 모은다', () => {
   const exceptions = callers.filter((l) => !l.includes('runningState()'))
   assert.ok(own.length >= 3, `모아 두고 쓰지 않으면 소용없다(지금 ${own.length}곳)`)
   assert.equal(exceptions.length, 1, `예외가 늘었다 — 왜 따로 세는지 적으세요:\n${exceptions.join('\n')}`)
-  assert.ok(exceptions[0].includes('samplerPreview') && exceptions[0].includes('dubJob'),
+  assert.ok(exceptions[0].includes('samplerPreview') && exceptions[0].includes('dubJob') && exceptions[0].includes('readerJob'),
     '예외(트랙 작업)조차 제 실행기를 따로 만드는 길들을 봐야 한다')
+})
+
+// ★낭독도 양방향이어야 한다(2026-09-30). 낭독만 남을 보고 비키고, 낭독이 도는 동안에는 아무도 몰랐다.
+test('낭독은 시작 전에 다른 작업을 보고, 참조 목소리로 만드는 동안 남에게 보인다', () => {
+  const here = path.dirname(fileURLToPath(import.meta.url))
+  const root = path.resolve(here, '..', '..')
+  const reader = readFileSync(path.join(root, 'src', 'main', 'ipc', 'reader.ipc.ts'), 'utf-8')
+  const audio = readFileSync(path.join(root, 'src', 'main', 'ipc', 'audio.ipc.ts'), 'utf-8')
+  // ① 낭독이 남을 본다 — 그리고 **본 다음에** 제 상태를 세운다(먼저 세우면 제가 저를 막는다)
+  const look = reader.indexOf("synthesisBusy('낭독')"), raise = reader.indexOf('setReaderRunning(true)')
+  assert.ok(look > 0 && raise > look, '낭독이 남을 보기 전에 제 상태를 세운다')
+  // ② 세운 것은 반드시 내린다 — finally 에서
+  assert.match(reader.split(/\r?\n/).join(' '), /finally \{\s*if \(gpu\) setReaderRunning\(false\)/)
+  // ③ 기본 목소리는 알리지 않는다 — 책을 연 것만으로 합성이 막히면 안 된다
+  assert.match(reader, /const gpu = v\.kind === 'reference'/)
+  // ④ 합성 쪽 판정이 그 상태를 받는다
+  assert.match(audio, /readerJob: readerRunning > 0/)
 })

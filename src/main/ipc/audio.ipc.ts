@@ -271,6 +271,13 @@ export function currentPythonPath(): string { return pythonPath }
 /** 지금 합성이 돌아 새 파이썬을 띄우면 안 되는가. 비면 띄워도 된다. */
 let synthesisBusyReason: (label: string) => string = () => ''
 export function synthesisBusy(label: string): string { return synthesisBusyReason(label) }
+/**
+ * 낭독이 지금 소리를 만드는 중인가 — 낭독 통로(reader.ipc)가 덩이마다 세우고 내린다.
+ * ★낭독은 제 실행기를 따로 만든다. 여기 알리지 않으면 낭독이 도는 동안 합성이 같은 GPU 를 문다
+ *   (낭독만 남을 보고 비키던 한쪽 가드였다).
+ */
+let readerRunning = 0
+export function setReaderRunning(on: boolean): void { readerRunning = Math.max(0, readerRunning + (on ? 1 : -1)) }
 // 취소 lifecycle(공용 마감 K/K2) 조정 상태 — audio:process가 세팅하고 audio:cancel/done이 소비.
 let currentSettle: import('../services/run-settlement').SettlementGuard | null = null
 // 취소 진행 상태: none=취소 안 함 / inflight=취소 요청 후 종료·정리 대기 / failed=kill 확인 실패(재취소 허용).
@@ -563,6 +570,7 @@ export function registerAudioIpc(
     referenceTrim: referenceTrimLane.running,
     samplerPreview: samplerInFlight > 0,
     dubJob: isDubRunning(),
+    readerJob: readerRunning > 0,
   })
 
   // 읽기 전용 작업 single-flight — StrictMode 중복 effect/동시 요청에도 subprocess는 1회.
@@ -584,6 +592,10 @@ export function registerAudioIpc(
   // 이것이 없으면 '목소리를 다른 파일로 바꾸기 → 실패' 같은 연속 선택 흐름을 자동 검사로 지날 수 없다.
   // 상태는 `pickFiles` 곁(모듈)에 있다 — 낭독의 텍스트 고르기도 같은 통로를 쓴다.
   ipcMain.handle('audio:e2e-set-select-file', (_e, filePath: string) => setE2eNextSelect(filePath))
+  // 검사 전용 — 지금 합성을 누르면 무엇 때문에 거절되는가(읽기만 한다). 합성을 실제로 눌러 보면 그 자체가
+  // 작업을 띄워 다른 실행기를 막으므로, 공용 판정의 답만 묻는다. AF_E2E=1 이 아니면 빈 값.
+  ipcMain.handle('audio:e2e-busy-reason', (_e, label?: string) =>
+    process.env.AF_E2E === '1' ? (blockReason(runningState(), String(label || '합성')) || '') : '')
 
   // ★`kind` 는 **어느 폴더에서 열지**만 정한다. 예전 호출(`selectFile()` / `selectFile(true)`)은
   //   그대로 동작한다 — 빼면 음원 폴더를 쓴다.
@@ -1238,7 +1250,7 @@ export function registerAudioIpc(
       throw new Error('이미 처리 중인 트랙 작업이 있습니다')
     }
     const trackBusy = blockReason(
-      { samplerPreview: samplerInFlight > 0, dubJob: isDubRunning() }, '트랙 작업')
+      { samplerPreview: samplerInFlight > 0, dubJob: isDubRunning(), readerJob: readerRunning > 0 }, '트랙 작업')
     if (trackBusy) throw new Error(trackBusy)
     if (!existsSync(pythonPath)) {
       throw new Error(`Python을 찾을 수 없습니다: ${basename(pythonPath)}`)
