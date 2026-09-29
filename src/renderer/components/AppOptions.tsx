@@ -252,7 +252,7 @@ export default function AppOptions({ close }: { close: () => void }) {
         <label style={{ ...row, gap: 8, fontSize: 12, cursor: 'pointer' }}>
           <input type="checkbox" data-testid="options-console" checked={consoleOpen}
             onChange={(e) => { void toggleConsole(e.target.checked) }} />
-          <span>콘솔 창 보기 — 동작 기록을 실시간으로 보고, 한 번에 복사해 건넬 수 있습니다</span>
+          <span>콘솔 켜기 — 화면 맨 아래에 콘솔 토글이 생기고, 누르면 동작 기록이 펼쳐집니다</span>
         </label>
         <span style={muted}>창을 켜지 않아도 기록은 남습니다. 글 내용과 폴더 경로는 적지 않습니다.</span>
         <div style={row}>

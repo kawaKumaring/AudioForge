@@ -9,7 +9,9 @@
 //   2) 콘솔을 **켜기 전에** 한 동작도 켠 뒤에 보인다 — 기록은 창과 무관하게 남는다
 //   3) 새 동작이 실시간으로 붙고, 화면이 보낸 글의 폴더 경로는 이름만 남는다
 //   4) 전체 복사가 된다(사용자 클립보드는 건드리지 않는다 — 앱 안에서 가로챈다)
-//   5) 껐다 켜도 콘솔 창이 다시 뜬다 · 닫으면 꺼진다
+//   5) 껐다 켜도 콘솔이 다시 생긴다 · 설정에서 끄면 사라진다
+//   6) ★떠 있는 창이 아니라 **맨 아래 서랍**이다 — 처음엔 접혀 있고 토글로 펼치고 접는다
+//      (같은 날 피드백: "콘솔 팝업이 은근히 방해가 심하다")
 //
 // 실행: node test/e2e/console-panel.e2e.mjs   (사전: npm run build. GPU 불필요)
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
@@ -59,7 +61,18 @@ try {
   await win.getByTestId('options-console').check()
   await win.getByTestId('options-close').click()
   await win.getByTestId('console-panel').waitFor()
-  ok(true, '★설정에서 켜면 콘솔 창이 뜬다')
+  ok(true, '★설정에서 켜면 맨 아래에 콘솔이 생긴다')
+  ok(await win.getByTestId('console-lines').count() === 0, '★처음엔 접혀 있다 — 작업 화면을 가리지 않는다')
+  const dock = await win.evaluate(() => {
+    const p = document.querySelector('[data-testid="console-panel"]').getBoundingClientRect()
+    const m = document.querySelector('[data-testid="workspace-content"]').getBoundingClientRect()
+    return { dockTop: Math.round(p.top), dockBottom: Math.round(p.bottom), mainBottom: Math.round(m.bottom), h: window.innerHeight }
+  })
+  ok(dock.dockBottom === dock.h && dock.mainBottom <= dock.dockTop, '★맨 아래에 붙고 작업 화면과 겹치지 않는다', dock)
+  ok(/\[ui:mode\] 화면 reader|\[/.test(await win.getByTestId('console-last').innerText()), '접혀 있어도 마지막 한 줄이 보인다')
+  await win.getByTestId('console-toggle').click()
+  await win.getByTestId('console-lines').waitFor()
+  ok(true, '토글을 누르면 펼쳐진다')
 
   let lines = await lineTexts(win)
   ok(lines.some((l) => /\[boot\]/.test(l)), '앱을 켤 때의 기록이 보인다', lines.slice(0, 3))
@@ -102,11 +115,19 @@ try {
   win.setDefaultTimeout(30000)
   await win.waitForFunction(() => !!window.__afStore)
   const back = await win.waitForSelector('[data-testid="console-panel"]', { timeout: 8000 }).then(() => true).catch(() => false)
-  ok(back, '★껐다 켜도 콘솔 창이 다시 뜬다')
-  await win.getByTestId('console-close').click()
+  ok(back, '★껐다 켜도 콘솔이 다시 생긴다')
+  ok(await win.getByTestId('console-lines').count() === 0, '다시 켜면 접힌 채로 시작한다')
+  await win.getByTestId('console-toggle').click()
+  await win.getByTestId('console-lines').waitFor()
+  await win.getByTestId('console-toggle').click()
+  ok(await win.getByTestId('console-lines').count() === 0, '토글을 다시 누르면 접힌다')
+  await win.getByTestId('open-app-options').click()
+  await win.getByTestId('app-options').waitFor()
+  await win.getByTestId('options-console').uncheck()
+  await win.getByTestId('options-close').click()
   await win.waitForTimeout(400)
-  ok(await win.getByTestId('console-panel').count() === 0, '닫으면 사라진다')
-  ok(settingsJson().consolePopup === false, '닫은 것도 설정 파일에 적힌다', settingsJson().consolePopup)
+  ok(await win.getByTestId('console-panel').count() === 0, '설정에서 끄면 사라진다')
+  ok(settingsJson().consolePopup === false, '끈 것도 설정 파일에 적힌다', settingsJson().consolePopup)
 } catch (e) {
   console.error('FAIL', e?.message || e)
   fails.push(String(e?.message || e))

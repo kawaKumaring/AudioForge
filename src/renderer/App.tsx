@@ -80,7 +80,6 @@ export default function App() {
       </aside>
       {/* 설정 — 팝업으로 띄운다(2026-09-28 지시). 레이아웃 흐름 밖에 둔다. */}
       {showOptions && <AppOptions close={() => setShowOptions(false)}/>}
-      <ConsolePanel />
       <main ref={scrollRef} data-testid="workspace-content" style={{ flex: 1, minWidth: 0, overflowY: 'auto', scrollbarGutter: 'stable' }}>
         <div ref={pageRef} style={{ width: '100%', maxWidth: 1120, margin: '0 auto', padding: '30px clamp(18px, 3vw, 40px) 48px' }}>
           <header style={{ marginBottom: mode === 'tts' ? 20 : 26 }}>
@@ -139,5 +138,7 @@ export default function App() {
         </div>
       </main>
     </div>
+    {/* 콘솔 서랍 — 설정에서 켜면 맨 아래에 생긴다. 떠 있지 않아 본문을 가리지 않는다(2026-09-30 피드백). */}
+    <ConsolePanel />
   </div>
 }
