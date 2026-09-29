@@ -4,6 +4,7 @@
 // 실행: npm run test:e2e:tts-editor-ux  (사전 npm run build). 실합성 없음 → GPU 불필요.
 // 참조 자산: AF_E2E_REFERENCE 우선, 없으면 이번 실행 전용 합성 WAV(파일 주입해 tts 모드 진입용, 합성 안 함).
 // 출력/로그는 비추적 _local/artifacts/diagnostics/e2e-shots 만. 사용자 절대경로 하드코딩 금지.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'; import os from 'os'
 import {

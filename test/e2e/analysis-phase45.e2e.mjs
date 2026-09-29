@@ -7,6 +7,7 @@
 // (합성 자체의 정확성은 이 파일의 범위가 아니다 — 그 검증은 별도 E2E 가 한다.)
 //
 // 원문은 남기지 않는다 — 글자 수·문단 수·SHA 앞자리·소요 시간만 본다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'

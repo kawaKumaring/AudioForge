@@ -12,6 +12,7 @@
 //  · 안 나오면 → 환경 자체가 달라진 것이므로 변환기 논의보다 그쪽이 먼저다.
 //
 // 대사는 우리 사슬에서 쓰던 중립 151자 그대로 — 변환본과 곧바로 비교하기 위해서다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { spawn, execFileSync } from 'child_process'
 import { chromium } from 'playwright'
 import fs from 'fs'

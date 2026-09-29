@@ -8,6 +8,7 @@
 //   `fixtures/synthetic_tree.py` 로 갈아 끼운다. 사용자 음원·GPU·모델을 쓰지 않는다.
 //
 // 경로: 화면 → 본체 → 작업 프로세스 → 본체 → 카드. 성공·오류·취소 셋 다 본다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'

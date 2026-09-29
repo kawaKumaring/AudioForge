@@ -8,6 +8,7 @@
 //   · 좁은 창에서 도구 묶음이 줄바꿈되고 주요 조작이 화면 안에 있다
 //
 // 마지막에 **긴 파일 대표 조건**(10분)으로 불러오기·조작 반응을 잰다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { createRequire } from 'node:module'

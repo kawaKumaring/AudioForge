@@ -19,6 +19,7 @@
 //
 // 실행: node test/e2e/playback-volume.e2e.mjs   (사전: npm run build. GPU·합성 불필요)
 //   AF_E2E_REFERENCE 로 실제 말이 든 참조를 준다(없으면 저장소 fixture).
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'

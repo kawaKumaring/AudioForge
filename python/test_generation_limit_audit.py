@@ -20,6 +20,8 @@ generation_limit 의 값을 복사하지 않고 import 해서 읽기만 한다. 
 
 용어: L = 한 chunk 에 적용된 max_new_tokens 상한값. tok = 그 chunk 의 prod_tokens.
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import os
 import re
 import sys

@@ -16,6 +16,8 @@ v1.4 는 화자와 감정을 실제 생성 경로까지 잇는다. 그 과정에
 
 새 의존성 0(stdlib unittest). 모델·GPU·오디오를 부르지 않는다.
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import sys
 
 import os

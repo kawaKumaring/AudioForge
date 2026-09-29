@@ -9,6 +9,7 @@
 //   5) 어느 실패든 대사·생성본·채택은 그대로고, 다른 카드는 건드리지 않는다
 //
 // 실행: node test/e2e/card-recovery.e2e.mjs   (사전: npm run build)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'

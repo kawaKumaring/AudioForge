@@ -5,6 +5,7 @@
 // 들으면 둘이 겹쳐 울렸다. 여기서는 **등록부에 올라간 소리 요소**가 규칙을 따르는지 본다.
 //
 // 실행: node test/e2e/playback-owner.component.mjs
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { createRequire } from 'node:module'

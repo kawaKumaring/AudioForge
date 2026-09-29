@@ -21,6 +21,8 @@ _unavailable_interpretation)를 직접 호출해 계약을 고정한다.
   (I9) payload 에 전사 본문·파일 경로·민감정보 없음, thresholds 는 확정 정확도값이 아님을 명시.
 """
 
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import json
 import os
 import sys

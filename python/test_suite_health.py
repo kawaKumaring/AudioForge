@@ -18,6 +18,8 @@ python/test_*.py 110개 중 **27개가 import 단계에서 죽어 있었다.** �
 2) 소스를 현재 폴더 기준 이름으로 여는 시험 → python/ 안에서 부를 때만 통과한다
    (실측: test_qwen_watchdog 등 4건이 `open("tts_worker.py")` 로 그러했다).
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import glob
 import os
 import re

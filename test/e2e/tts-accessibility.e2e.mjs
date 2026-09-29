@@ -1,6 +1,7 @@
 // TTS 접근성 E2E (계약 UX-3 §4~7) — synthetic/mock 상태 구동. GPU·Qwen·Whisper·실합성·미디어 없음.
 // 키보드 도달·focus-visible·ARIA(progressbar/alert/status/expanded/label)·반응형·대비/조작영역(참고)·
 // 진행 단계·오류 카드(원시 미노출·재시도 접근)·취소 스타일 렌더. 실행: npm run test:e2e:tts-accessibility
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'; import os from 'os'
 import {

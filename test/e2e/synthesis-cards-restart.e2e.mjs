@@ -7,6 +7,7 @@
 //
 // 실행: node test/e2e/synthesis-cards-restart.e2e.mjs   (사전: npm run build)
 //   쓸 수 있는 기본 목소리가 없으면 건너뛴다(없는 것을 있는 척하지 않는다).
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'

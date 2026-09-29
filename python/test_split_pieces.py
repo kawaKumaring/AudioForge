@@ -3,6 +3,8 @@
 같은 규칙이 shared/splitPieces.ts 에도 있다. 두 쪽이 갈라지면 미리듣기가 거짓말이 되므로,
 여기 적힌 기대값은 그쪽 단위 시험(splitPieces.test.ts)과 **같은 예제**다.
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import os
 import sys
 import unittest

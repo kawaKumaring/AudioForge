@@ -4,6 +4,8 @@
 핵심은 하나다 — estimator 의 planned_calls 가 실제 planner 의 chunk 수와 **같아야** 한다.
 두 경로가 갈라지는 순간 UI 는 안내가 아니라 오정보가 된다.
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import os
 import sys
 

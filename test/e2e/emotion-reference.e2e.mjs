@@ -8,6 +8,7 @@
 //  - 삭제/ reset이 해당/전체 클립만 정리
 //  - 앱 재시작 후 Sources+Regions로 effective 재구성(임시 경로 비의존)
 //  - 종료 후 refclip 0, resources/ 원본 불변
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'; import os from 'os'
 import { randomUUID } from 'crypto'

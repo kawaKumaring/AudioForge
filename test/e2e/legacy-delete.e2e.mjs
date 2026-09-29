@@ -10,6 +10,7 @@
 //   2) 지운 뒤 다시 옛 화면에 들어갔다 나와도 되살아나지 않는다
 //   3) 껐다 켜도 지워진 채다
 //   4) 옆 기록(자동 저장)과 가져온 카드 작업은 그대로다
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'

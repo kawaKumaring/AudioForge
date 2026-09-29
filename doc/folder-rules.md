@@ -139,15 +139,25 @@ AudioForge_output/
 **검사는 사용자 자산을 건드리지 않는다.** 이것이 첫 규칙이다.
 
 검사도 **시스템 드라이브로 가지 않는다.** `test/_temp-root.mjs` 가 `os.tmpdir()` 을
-저장소 안 `_local/tmp/` 로 돌린다. 들이는 자리는 세 곳뿐이다 —
-`test/e2e/_e2e-helper.mjs` 맨 위, `scripts/verify.mjs` 맨 위, `npm test` 의 `--import`.
+저장소 안 `_local/tmp/r<pid>/` — **실행마다 제 폴더** — 로 돌리고, 실행이 끝나면 그 폴더를 통째로 지운다.
+들이는 자리 —
+- 실제 앱·화면 검사 파일(`test/e2e/*.mjs`)마다 **첫 import**. 검사 도구(Playwright)가 불러오는 순간 임시 자리를
+  정해 두므로 둘째 줄이면 늦다. 단독으로 돌려도 C 로 가지 않는다.
+- `test/e2e/_e2e-helper.mjs` 맨 위, `scripts/verify.mjs` 맨 위, `npm test` 의 `--import`.
+- 파이썬 검사(`python/test_*.py`)마다 첫 import 로 `python/_test_temp.py` — 같은 일을 한다.
+  바로 앞 한 줄이 스크립트 폴더를 경로에 넣는다(내장 파이썬은 넣지 않는다).
+- `src/shared/testTempRoot.contract.test.ts` 가 새 검사 파일이 이 줄을 빠뜨리면 울린다.
 
-- 격리 userData: `_local/tmp/audioforge-e2e-userdata-<uuid>/`
-- 격리 입력물: `_local/tmp/audioforge_e2e_<uuid>/`
+자식 프로세스(Electron·파이썬)는 부모의 폴더를 물려받아 쓰고(`AF_TEST_RUN_DIR`), 지우는 것은 만든 프로세스 하나다.
+강제 종료로 남은 폴더는 다음 실행이 치운다 — 그 번호의 프로세스가 이미 없을 때만.
+남겨 보고 싶으면 `AF_KEEP_TEST_TEMP=1` (폴더에 `.keep` 이 생겨 청소도 건너뛴다).
+
+- 격리 userData: `_local/tmp/r<pid>/audioforge-e2e-userdata-<uuid>/`
+- 격리 입력물: `_local/tmp/r<pid>/audioforge_e2e_<uuid>/`
 - 화면 캡처·진단: `_local/artifacts/diagnostics/`
 
-★이름을 `test-temp` 가 아니라 `tmp` 로 둔 이유: 저장소 경로가 이미 79자다.
-윈도우 경로 상한(260)까지 여유가 얼마 없다.
+★이름을 `test-temp` 가 아니라 `tmp`, 실행 폴더를 `r<pid>` 로 짧게 둔 이유: 저장소 경로가 이미 79자다.
+윈도우 경로 상한(260)까지 여유가 얼마 없다. 실행 폴더가 7자 안팎을 더 쓴다.
 
 **실측(2026-09-28, 게이트가 도는 중)** — 임시 뿌리 94자, 가장 깊은 파일 205자, **여유 55자**.
 옛 자리(시스템 임시, 33자)였다면 144자였다. 61자를 잃었지만 상한에는 닿지 않는다.
@@ -159,8 +169,9 @@ prefix 와 부모 폴더를 확인하고, 연결(정션·심볼릭)이면 지우
 ★PowerShell 의 `Remove-Item` 을 임시 폴더 정리에 쓰지 않는다. 정션에 쓰면 **대상 안까지**
 지운다(실측). Node 의 `rmSync` 는 연결을 따라가지 않는다.
 
-★검사가 끝나도 남는 잔해가 쌓인다. 실패한 실행은 정리를 건너뛰기 때문이다.
-이제는 그 잔해가 **저장소 안 `_local/tmp/`** 에 모이므로 한 폴더만 보면 된다.
+★검사가 끝나도 남는 잔해가 쌓였다. 실패한 실행은 정리를 건너뛰고, 제 임시 폴더를 치우지 않는 검사도 많았다
+(2026-09-30 실측: `_local/tmp` 4,812개 · 1.6GB, 단독으로 돌린 검사가 남긴 C 쪽 13,879개 · 570MB).
+그래서 자리만 옮기는 것으로 끝내지 않고 **실행 단위로 통째로 지운다**(위).
 
 ★자리를 옮기기 **전**에 시스템 폴더에 쌓인 것은 스스로 사라지지 않는다.
 설정 → 쌓인 것 비우기 → 중간 산출물이 우리 이름(`audioforge_`·`audioforge-`)만

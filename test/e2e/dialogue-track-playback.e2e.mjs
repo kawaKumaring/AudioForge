@@ -9,6 +9,7 @@
 //
 // 엔진을 돌리지 않는다. 저장소 fixture 를 임시 폴더에 복사해서만 쓴다.
 // 실행: node test/e2e/dialogue-track-playback.e2e.mjs   (사전: npm run build)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import os from 'os'

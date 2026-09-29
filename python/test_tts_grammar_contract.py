@@ -5,6 +5,8 @@
 parser_version=2·case id 유일·valid/error 구조·dual offset 선언·integer pause_ms·full/sha8 구분·
 error code 공용 집합 포함·필수 case 존재를 검증한다. 실패 보고는 case id·필드명만(대사 전문 미출력).
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import json
 import os
 import unittest

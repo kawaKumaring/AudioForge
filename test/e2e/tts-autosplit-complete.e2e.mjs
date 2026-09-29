@@ -9,6 +9,7 @@
 // 출력/스크린샷/로그는 비추적 _local/artifacts/diagnostics/e2e-shots에만. resources 원본 전후 snapshot 불변.
 // chunk 시작/완료 progress의 완전한 단조·경계 단언은 python/test_autosplit_bridge.py(단위)에서 고정하고,
 // 여기서는 그 시작/완료 진행이 실제 앱 UI에 표면화되는지를 확인한다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
 import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenJobDirs, qwenVenvPids, nvidiaSmiGpu0, requireE2EReference } from './_e2e-helper.mjs'

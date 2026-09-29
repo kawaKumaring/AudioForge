@@ -6,6 +6,8 @@ electron-builder 산출물이 아직 없으므로(package.json build 비어 있�
 AUDIOFORGE_RESOURCES_PATH 를 주입해 같은 경로 규칙을 실행한다.
 자체 생성한 temp 만 정리하며, 저장소 파일은 건드리지 않는다.
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import json
 import os
 import shutil

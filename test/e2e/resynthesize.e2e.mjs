@@ -4,6 +4,7 @@
 // 실행: node test/e2e/resynthesize.e2e.mjs  (사전 npm run build). 실제 합성 2회 → 수 분.
 // 완료 대기 = 350초. 근거: E2E 350 > Electron watchdog 300 > Qwen 무응답 280(synthesize-complete 주석 참조).
 //   production 내부 안전장치가 발동하기 전에 E2E가 먼저 포기하지 않도록. production timeout은 불변.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
 import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenJobDirs, qwenVenvPids } from './_e2e-helper.mjs'

@@ -2,6 +2,7 @@
 // synthetic 프로세스 트리(fixtures/synthetic_tree.py)를 AF_E2E_TTS_SCRIPT로 띄워 실제 취소 경로
 // (PythonRunner.cancel/taskkill /T → child close 확인 → settlement → done → cancelled → idle)를 검증한다.
 // 상대 순서(cancel_clicked ≤ cancelling ≤ child_exit ≤ idle)와 race 승자·kill 실패·tree 종료·중복 신호 0을 단언.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import { execSync } from 'child_process'
 import fs from 'fs'; import path from 'path'; import os from 'os'

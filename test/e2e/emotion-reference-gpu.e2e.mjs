@@ -10,6 +10,7 @@
 // 조용히 안전 모드로 물러나지 않고 ICL_BOUNDARY_ALIGNMENT_FAILED 로 실패한다 —
 // 다른 방식으로 물러난 결과를 성공으로 세지 않기 위해서다.
 // 참조 전사는 앱의 자동 전사에 맡긴다(내가 참조 내용을 알 필요가 없고, 알아서도 안 된다).
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { spawn, execFileSync } from 'child_process'
 import { chromium } from 'playwright'
 import fs from 'fs'

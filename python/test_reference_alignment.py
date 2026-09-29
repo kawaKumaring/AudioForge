@@ -5,6 +5,8 @@
 세그먼트 경계는 화면 표시용 1초 단위가 아니라 실제 발화 경계 기준이다 —
 그 둘을 혼동한 것이 이번 사고의 직접 원인이라 테스트도 그 구분을 지킨다.
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import os
 import sys
 import unittest

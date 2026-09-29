@@ -9,6 +9,7 @@
 // ★검사 통과는 **연결이 됐다**는 뜻이지, 소리 품질 합격이 아니다. 품질은 사용자가 듣고 판단한다.
 //
 // 실행: node test/e2e/lab-workspace.e2e.mjs   (사전: npm run build, AF_E2E_REFERENCE)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import os from 'os'

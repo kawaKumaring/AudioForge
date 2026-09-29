@@ -8,6 +8,7 @@
 //
 // GPU·실합성 없음. 사용자 미디어 미사용(이번 실행 전용 synthetic WAV). 격리 user-data-dir + 자체 정리.
 // 실행: node test/e2e/reference-preview-stress.e2e.mjs  (사전 npm run build)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'; import os from 'os'
 import { randomUUID } from 'crypto'

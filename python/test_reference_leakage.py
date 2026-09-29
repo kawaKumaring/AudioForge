@@ -4,6 +4,8 @@
 핵심은 '인위적으로 섞은 참조 조각을 반드시 잡는가' 다. 검출기가 조용히 무력화되면
 기존 검사와 똑같은 위음성(혼입이 있는데 없다고 판정)으로 되돌아간다.
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import os
 import sys
 import unittest

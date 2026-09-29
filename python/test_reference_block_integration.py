@@ -4,6 +4,8 @@
 단위 수준 예외 확인으로 대체하지 않는다. 결함 config 조건으로 **합성 진입점**을 실제로 부르고
 모델 호출이 정확히 0회인지 센다. 파일 핸들은 전부 with 로 닫는다(누수 금지).
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import json
 import os
 import shutil

@@ -2,6 +2,7 @@
 // supported: slider 활성·키보드/reset·nonzero pitch 합성 gate 정상(비차단).
 // unsupported/probe-failed: slider 비활성·사유·저장된 +1에서 합성 버튼 차단·정확 사유·reset 활성·reset 후 차단 해제.
 // 실행: npm run test:e2e:tts-pitch-capability  (사전 npm run build)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
 import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenVenvPids } from './_e2e-helper.mjs'

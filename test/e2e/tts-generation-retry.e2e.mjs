@@ -3,6 +3,7 @@
 // audio:error(code=GENERATION_LIMIT_EXCEEDED) / audio:result를 보낸다 — production 코드는 손대지 않는다.
 // 검증: 실제 IPC 오류 경로 → 전용 카드(제목·설명·버튼 3) → '다시 시도' 1클릭=1 process → 성공,
 //       중복 트리거 dedup(2 bump→1 process), '닫기'/'참조 전사 확인'은 재합성 안 함, 일반 오류는 기존 카드.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
 import { snapshotTree, refClipDirs, qwenVenvPids } from './_e2e-helper.mjs'

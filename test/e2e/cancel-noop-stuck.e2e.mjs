@@ -15,6 +15,7 @@
 // 이 테스트가 증명하지 '않는' 것: 버튼 핸들러의 낙관적 전이 자체. 그 경로는 실제 실행 중 클릭이
 // 필요해 여기서 재현하지 않는다 — 대신 handleCancel에서 사전 전이를 제거했고(코드상 경로 소멸),
 // 전이 규칙은 cancelContract의 순수 리듀서 단위테스트가 고정한다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import os from 'os'

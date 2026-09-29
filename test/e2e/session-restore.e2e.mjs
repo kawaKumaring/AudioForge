@@ -3,6 +3,7 @@
 //        감정만 재지정 필요로 표시, (2) audio:pitch-preflight가 PitchCapability 계약을 반환(계약 G: 실제 probe, probed:true),
 //        (3) audio:fingerprint-reference가 statSync 기반 지문(path|size|mtime)을 반환.
 // 실행: node test/e2e/session-restore.e2e.mjs   (사전: npm run build)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'

@@ -5,6 +5,8 @@ GPT-SoVITS 는 벤더가 실제로 요구하는 3~10초를 필수로 유지한�
 Qwen3 에는 GPT-SoVITS 의 10초 상한을 적용하지 않는다(길이 필수 한계 없음). 3~10초는 이 앱이
 검증한 권장 범위이며 밖은 경고다 — 차단이 아니고, '길수록 좋다' 도 아니다.
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import os
 import sys
 

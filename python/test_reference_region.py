@@ -1,6 +1,8 @@
 # -*- coding: utf-8 -*-
 """참조 구간 백엔드 회귀 — 자동 추천/구간 분석/경계/파형 peak/트림(mono·24k·원본 불변).
 실제 모델 불필요(합성 스모크는 별도). 합성 신호로 결정적으로 검증."""
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import os
 import sys
 import tempfile

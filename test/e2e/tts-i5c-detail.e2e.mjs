@@ -2,6 +2,7 @@
 // 검증: 블록 존재·라벨/값 순서(끝 여백 120ms·페이드 8ms·감정 간격 200ms) / padding·fade 스왑 금지(표시·store) /
 //   tailMode off|auto·emotionMode immediate|pause store 반영 / pause일 때만 감정 간격 편집 / 범위 밖 값 오류+합성 차단 /
 //   신규=auto / 800×600·125/150% 넘침 0 / aria. 참조는 합성 WAV(사용자 미디어 미사용).
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
 import { isolatedInput, cleanupIsolated } from './_e2e-helper.mjs'

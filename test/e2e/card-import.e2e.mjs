@@ -9,6 +9,7 @@
 //   6) 껐다 켜도 가져온 내용이 남는다
 //
 // 실행: node test/e2e/card-import.e2e.mjs   (사전: npm run build)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'

@@ -4,6 +4,8 @@
 pitch_available: rubberband 지원 / 미지원 / ffmpeg 없음 / subprocess 오류. 캐시.
 separate.py pitch-preflight: 미디어 입력·모델 로딩 없이 available/reason 결과만 emit(경로/민감정보 미포함).
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import os
 import sys
 import json

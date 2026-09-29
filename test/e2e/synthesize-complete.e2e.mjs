@@ -7,6 +7,7 @@
 //   났다(2026-08-22 develop 감사에서 실측). 350초면 완료 / 280초 무응답 오류 / 300초 watchdog 오류가
 //   모두 이 창 안에서 관측된다. production timeout(280/300)은 변경하지 않는다.
 // 타임아웃/완료 무관하게 종료 후 잔존(venv 자식·.qwen-job-*·refclip)이 0임을 단언한다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import { execFileSync } from 'child_process'
 import fs from 'fs'

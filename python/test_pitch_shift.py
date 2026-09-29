@@ -4,6 +4,8 @@
 - pitch_method는 production에서 "rubberband" | None 둘뿐(asetrate 폴백 없음).
 - clamp_quantize가 정규화 권위, 0은 apply 호출 금지, 실패는 부분출력 삭제 + 예외.
 ffmpeg/rubberband 미탐지 환경에서는 왕복 테스트를 skip(순수 로직은 항상 실행)."""
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import math
 import os
 import sys

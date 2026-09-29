@@ -10,6 +10,7 @@
 // 그래서 둘이 갈라질 수 있었다. 이 검사는 **갈라지지 않는다**는 것만 본다.
 //
 // 실행: node test/e2e/reference-ready-consistency.e2e.mjs   (사전: npm run build. GPU 불필요)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import os from 'os'

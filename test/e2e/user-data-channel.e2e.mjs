@@ -8,6 +8,7 @@
 // AF_E2E_USER_DATA_BASE: 실제 %APPDATA% 대신 이 폴더를 "부모" 로 삼는다(그 아래 audio-forge / audio-forge-dev).
 // 두 채널 모두 이 부모를 따르므로 이 검사는 실제 사용자 폴더를 건드리지 않는다.
 // 실행: node test/e2e/user-data-channel.e2e.mjs   (사전: npm run build)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import os from 'os'

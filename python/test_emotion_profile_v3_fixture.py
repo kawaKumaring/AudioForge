@@ -7,6 +7,8 @@
 v2 fixture 는 건드리지 않는다 — 둘은 서로 다른 종류의 기록이고, 자동 승격하지 않는다.
 GPU·모델 없음. 오디오 한 개를 읽는 것이 전부다.
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import sys
 
 import os

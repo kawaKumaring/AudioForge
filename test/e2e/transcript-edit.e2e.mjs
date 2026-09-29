@@ -10,6 +10,7 @@
 //   5) 저장 실패를 안내한다 / 고친 내용이 앱을 다시 켜도 남는다
 //
 // 실행: node test/e2e/transcript-edit.e2e.mjs   (사전: npm run build. GPU 불필요)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import os from 'os'

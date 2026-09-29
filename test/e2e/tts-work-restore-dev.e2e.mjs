@@ -3,6 +3,7 @@
 // 핵심 흐름: 목소리 지정 → 구간 확정 → **합성하지 않고** 종료 → 재실행 → 같은 인물·목소리·구간 자동 복원.
 // 곁들여: 임시 클립이 사라진 뒤 저장된 구간으로 자동 복구되는지, 한 명의 참조 해제가 여러 명의 참조를
 // 손상시키지 않는지. GPU·음성 생성 없음(구간 확정까지만). 사용자 파일은 건드리지 않는다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { spawn, execFileSync } from 'child_process'
 import { chromium } from 'playwright'
 import fs from 'fs'

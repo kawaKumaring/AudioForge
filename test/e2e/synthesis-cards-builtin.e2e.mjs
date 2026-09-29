@@ -3,6 +3,7 @@
 // ★모형이 아니다. 실제 `audio:process` → PythonRunner → piper 를 탄다.
 //   파일을 하나도 열지 않고, 앱을 비운 상태에서 시작한다(명세 4항 ①).
 //   쓸 수 있는 기본 목소리가 없는 환경이면 **건너뛴다**(없는 것을 있는 척하지 않는다).
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'

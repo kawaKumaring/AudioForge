@@ -9,6 +9,7 @@
 //      (어느 쪽이든 몰래 기존 엔진으로 바꾸지 않는다)
 //
 // 실행: node test/e2e/diarize-engine.e2e.mjs   (사전: npm run build. GPU·모델 불필요)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import os from 'os'

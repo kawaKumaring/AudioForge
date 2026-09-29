@@ -10,6 +10,7 @@
 //   3) 재생 중지는 합성 작업 취소가 아니다 — 작업 상태를 건드리지 않는다
 //
 // 실행: node test/e2e/lab-stop-playback.e2e.mjs   (사전: npm run build. 참조·GPU 불필요)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'

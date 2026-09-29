@@ -9,6 +9,8 @@ fixture: E:/AudioForge_output/expressive-comparison/20260827-A2-emotion3/config_
 fixture 파일이 없는 환경(다른 PC 등)에서는 해당 테스트만 skip 하고, 정렬 판정 로직 자체는
 합성 입력으로 항상 검증한다. 실제 전사(Whisper)는 부르지 않는다 — 주입으로 대체한다.
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import json
 import os
 import sys

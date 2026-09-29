@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """실패 종료 사유 분류 — 시간 초과 / 모델 상한 / 분할 실패 / worker 감시 / 참조 준비 / 취소를 섞지 않는다."""
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import os
 import sys
 

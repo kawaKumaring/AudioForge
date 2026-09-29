@@ -1,6 +1,7 @@
 // I5-b 보강: selection/scroll 복원 · IME 정확 1회 · overlay scroll 동기 Electron E2E(GPU·실합성 없음).
 // 5886fb3(기본 편집 계약) 위에 필수 복원 단언을 test-only로 추가한다(A 파일 무수정). 실패가 production 결함이면
 // 완화하지 말고 I5-c 중단·보고(사용자 지시). 참조는 합성 WAV(사용자 미디어 미사용).
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
 import { isolatedInput, cleanupIsolated } from './_e2e-helper.mjs'

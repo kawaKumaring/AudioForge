@@ -4,6 +4,7 @@
 //   IME compositionend 후 적용(조합 중 오삽입 0) / 버튼 클릭 후 focus·selection 복원 / overlay aria-hidden /
 //   unknown 태그 오류 code 표시 + 합성 차단.
 // 실행: npm run build 후 AF_E2E_REFERENCE=<wav> node test/e2e/tts-i5b-editor.e2e.mjs
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
 import { isolatedInput, cleanupIsolated } from './_e2e-helper.mjs'

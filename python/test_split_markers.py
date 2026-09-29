@@ -4,6 +4,8 @@
 parity는 '파싱으로' 한다: src/shared/splitMarkers.ts 의 상수 블록을 읽어 reasonCode 집합·숫자 상수를 대조
 (test_tts_grammar_parity.py 가 tts_worker.py 를 ast 로 읽어 드리프트를 막는 것과 같은 패턴).
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import os
 import re
 import sys

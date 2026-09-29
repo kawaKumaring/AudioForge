@@ -1,6 +1,7 @@
 // I5 감정 참조 미리듣기 Electron E2E (synthetic WAV, GPU·실합성 없음).
 // 검증(PHASE 4 #4): file:// 직접 재생은 webSecurity에 막힘 → 앱 기존 안전 경로(getFileUrl → local-file://) 재사용.
 //   미리듣기 재생 시작 / 다른 clip 전환(이전 정지) / 컴포넌트 해제(모드 전환) 정리. 보안완화·임의경로·외부전송 없음.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
 import { isolatedInput, cleanupIsolated } from './_e2e-helper.mjs'

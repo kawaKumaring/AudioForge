@@ -1,6 +1,7 @@
 // 작업별 입력·결과와 합성 대본 재사용 UX 회귀. 실제 Electron, 모델·GPU·음성 생성 없음.
 // 실행: npm run build 후 node test/e2e/ux-workflow.e2e.mjs
 // 모델 IPC만 메인에서 대체한다. 화면 이동·파일 선택·대본 재사용은 실제 사용자 단추로 한다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'

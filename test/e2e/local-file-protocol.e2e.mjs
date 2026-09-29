@@ -7,6 +7,7 @@
 // 버스트용과 컨트롤용 파일 풀은 완전히 분리한다. 같은 경로를 재사용하면 Chromium 미디어 캐시가
 // 컨트롤 로드를 대신 처리해 '핸들러에 아예 도달하지 않는' 상태를 성공으로 오판하게 된다.
 // 실행: npm run build 후  node test/e2e/local-file-protocol.e2e.mjs
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'

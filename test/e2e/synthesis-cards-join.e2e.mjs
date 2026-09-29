@@ -4,6 +4,7 @@
 //   서로 다른 레이트·채널의 짧은 검사 WAV로 순서·간격·길이·클리핑·끝부분 보존을 본다.
 //   실제 `card:join` IPC 와 `python/card_join.py` 를 탄다(모형이 아니다).
 //   ★소리를 귀로 듣는 것은 이 검사의 몫이 아니다 — 길이·피크·원본 보존만 본다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'

@@ -16,6 +16,8 @@
 ★이 결함을 과거 합성(TTS) 떨림의 원인으로 연결하지 않는다. 별개 경로다 —
   여기는 대화 분리(입력을 화자별로 나누는 일)이고, 합성은 참조로 목소리를 만드는 일이다.
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import os
 import sys
 import unittest

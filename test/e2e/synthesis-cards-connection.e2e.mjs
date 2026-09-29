@@ -10,6 +10,7 @@
 //
 // ★모델·GPU·음성 생성을 쓰지 않는다. 합성 이벤트는 주입한다 —
 //   이것은 **수신부 계약** 검사이지 음질 검사가 아니다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import path from 'path'
 import { fileNameOf } from '../../src/shared/workRecord.ts'

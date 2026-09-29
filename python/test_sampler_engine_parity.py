@@ -27,6 +27,8 @@ production 어휘를 바꿔서 parity 를 통과시키지 않는다. 진짜로 �
 실행:
   python -m unittest discover -s python -p "test_sampler_engine_parity.py"
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import hashlib
 import io
 import json

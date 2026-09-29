@@ -11,6 +11,7 @@
 // 화면의 '목소리 바꾸기' 를 누른다. 실제 복원·지정 경로는 손대지 않는다(대역은 OS 선택창뿐).
 //
 // 실행: node test/e2e/restore-race-dev.e2e.mjs
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { spawn, execFileSync } from 'child_process'
 import { chromium } from 'playwright'
 import fs from 'fs'

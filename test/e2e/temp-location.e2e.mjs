@@ -13,6 +13,7 @@
 //   2) 화면이 그 자리를 보여 준다 (사용자가 새는 것을 알아볼 수 있다)
 //   3) 앱을 띄우고 실제로 일을 시킨 뒤에도 **시스템 임시 폴더가 늘지 않는다**
 //   4) 파이썬 자식도 같은 자리를 물려받는다 (env 로 전달되는가)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'

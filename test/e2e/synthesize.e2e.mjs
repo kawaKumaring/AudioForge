@@ -2,6 +2,7 @@
 // 실행: node test/e2e/synthesize.e2e.mjs   (사전: npm run build)
 // 프로덕션 빌드(out/main/index.js, loadFile)를 단일 인스턴스로 띄우고, 파일 주입→TTS→구간 확정→
 // 합성 클릭→취소→모드 전환→재진입을 실제로 구동하며 pageerror/crash/검은 화면이 없음을 단언한다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'

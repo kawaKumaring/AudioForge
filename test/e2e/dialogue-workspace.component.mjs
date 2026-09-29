@@ -5,6 +5,7 @@
 //   · 시간순 목록 — 여러 개 골라 한 번에 인물 변경, 시간 입력은 평소 숨김
 //   · 교정은 파일마다 따로 저장되고, 옛 한 칸 기록도 이어받는다
 //   · 아직 음원에 반영하지 않은 교정을 '저장 완료' 로 말하지 않는다
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { createRequire } from 'node:module'

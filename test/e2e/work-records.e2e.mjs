@@ -12,6 +12,7 @@
 //   그래서 **앱을 껐다 켜서** 확인한다. 메모리에서만 지워진 것은 지운 것이 아니다.
 //
 // 실행: node test/e2e/work-records.e2e.mjs   (사전: npm run build. GPU 불필요)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'

@@ -3,6 +3,7 @@
 // 실제 GPU·모델·사용자 미디어를 쓰지 않는다. 참조 원본은 이번 실행이 만든 synthetic WAV 이고,
 // 감정 샘플 생성은 AF_E2E 게이트의 가짜 runner 결과로 대체한다.
 // 실행: node test/e2e/reference-sampler.e2e.mjs   (사전 npm run build)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import { randomUUID, createHash } from 'crypto'
 import fs from 'fs'; import path from 'path'; import os from 'os'

@@ -7,6 +7,7 @@
 //   · 다른 원본으로 바꾸면 이전 결과가 새 원본의 결과처럼 보이지 않는다
 //
 // 본체 응답은 모의다(엔진을 돌리지 않는다). 소리는 검사용 합성 WAV.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import assert from 'node:assert/strict'
 import path from 'node:path'
 import { createRequire } from 'node:module'

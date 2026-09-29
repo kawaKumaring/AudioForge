@@ -9,6 +9,7 @@
 //      초기값은 제품 기본값이고, 작업실에서 바꾼 값은 저장되고 앱을 다시 켜도 살아 있다.
 //
 // 실행: node test/e2e/lab-independence.e2e.mjs   (사전: npm run build. 참조·GPU 불필요)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'

@@ -11,6 +11,7 @@
 //   3) 비우기는 **먼저 묻는다**. 그대로 두기를 고르면 아무것도 안 지운다
 //   4) 작업 기록 비우기는 **기록만** 지운다 — 앱 설정과 소리 파일은 그대로
 //   5) 중간 산출물 비우기는 그 폴더만 지운다
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'

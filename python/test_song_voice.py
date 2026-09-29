@@ -8,6 +8,8 @@
   경계가 새면 나중에 떼어낼 때 사슬 전체를 뜯게 된다.
   이 저장소가 반복해서 적어 온 말이기도 하다 — **경계를 새로 만들면서 그 경계를 안 봤다.**
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import io
 import os
 import sys

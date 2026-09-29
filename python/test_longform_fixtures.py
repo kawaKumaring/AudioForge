@@ -23,6 +23,8 @@
   python/ 의 `unittest discover` 기본 스위트(계약/parity 게이트)의 개수를 건드리지 않는다.
   실행: PYTHONIOENCODING=utf-8 <py> -m unittest discover -s test/fixtures/tts -p "test_*.py"
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import hashlib
 import io
 import json

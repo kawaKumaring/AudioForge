@@ -12,6 +12,8 @@ chunk 계획, 실제 발화, LF 입력과의 시간 예측이 모두 갈라진�
   · 원문 SHA 는 원본 기준, 정규화 SHA 는 정규화본 기준으로 분리된다
   · 다중 문단·빈 줄·astral 문자에서도 offset 이 밀리지 않는다
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import hashlib
 import os
 import sys

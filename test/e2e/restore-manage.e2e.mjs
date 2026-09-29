@@ -9,6 +9,7 @@
 //   3) 지우기는 먼저 묻고, 그대로 두기를 고르면 남는다
 //   4) 지우면 그 줄만 사라지고 **옆 작업과 소리 파일은 그대로다**
 //   5) 껐다 켜도 지워진 채다
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'

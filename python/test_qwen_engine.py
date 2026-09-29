@@ -5,6 +5,8 @@ batch-only 가드·세그먼트별 언어·속도 후 간격 보존을 검증. �
 
 테스트 격리(중요): mock.patch.stopall을 쓰지 않는다. 패처마다 addCleanup(patcher.stop)으로
 정확히 자기 것만 해제하고, 전역 Qwen 캐시(_qwen_engine, _qwen_ref_text_cache)는 스냅샷 후 복원한다."""
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import os
 import sys
 import subprocess
