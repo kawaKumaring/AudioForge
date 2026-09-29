@@ -93,6 +93,21 @@ python python/setup_env.py --torch-index cu124  # venv 생성 시 torch CUDA 채
 python python/setup_gptsovits.py
 ```
 
+## 기본 목소리 — Supertonic 3 (2026-09-30)
+
+참조 소리 없이 읽는 기본 목소리 **열 개**(여성 5 · 남성 5, 한국어). ONNX 로 **CPU 에서** 돈다 — torch·GPU 를 쓰지 않는다.
+앱 파이썬에 이미 있는 `onnxruntime`·`numpy` 만 쓴다(piper 가 쓰는 것과 같다). **pip 설치 없음.**
+
+- 자리: `<본체 저장소>/externals/supertonic3/` (작업 트리의 `externals` 는 본체로 이어진 연결이다).
+  바꾸려면 `AUDIOFORGE_SUPERTONIC`.
+- 내려받는 것(출처 huggingface.co/Supertone/supertonic-3, 합계 401,301,114 바이트):
+  `onnx/duration_predictor.onnx` · `onnx/text_encoder.onnx` · `onnx/vector_estimator.onnx` · `onnx/vocoder.onnx` ·
+  `onnx/tts.json` · `onnx/unicode_indexer.json` · `voice_styles/F1~F5.json` · `voice_styles/M1~M5.json` · `LICENSE` · `README.md` · `config.json`.
+- ★공식 패키지(`pip install supertonic`)는 쓰지 않는다 — 처음 실행 때 인터넷에서 모델을 받는다(외부 전송 금지).
+  추론 코드는 공식 예제(MIT)를 `python/supertonic_tts.py` 로 옮겨 받아 둔 파일만 연다.
+- 조건: BigScience Open RAIL-M(쓰임 제한 조항 · 상업 사용 가능). `model-licenses.json` 에 있다.
+- 없거나 파일이 빠지면 목록에 넣지 않고 사유를 남긴다(설정 → 기능 검사 → 모델 파일).
+
 ## 노래 목소리 변환기 연결 (따라부르기)
 
 따라부르기의 **변환 한 칸**만 바깥 해석기를 쓴다. 변환기는 앱 파이썬과 판이 맞지 않아

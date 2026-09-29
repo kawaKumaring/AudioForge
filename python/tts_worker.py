@@ -318,6 +318,60 @@ class PiperEngine(TTSEngine):
                 w.writeframes(b"\x00\x00" * int(sr * self.EMPTY_PAUSE_SEC))
 
 
+# ── Supertonic 3 (기본 목소리 열 개 — ONNX · CPU · 받아 둔 모델만) ──
+
+class SupertonicEngine(TTSEngine):
+    """참조 소리 없이 읽는 기본 목소리(2026-09-30). 규칙은 `supertonic_tts.py` 가 갖는다.
+
+    ★목소리는 **스타일 파일**로 고른다(`model_path`) — piper 가 모델 파일로 고르는 것과 같은 자리.
+    ★참조 소리·감정은 쓰지 않는다(쓰는 척하지 않는다). 속도는 쓴다.
+    """
+
+    name = "supertonic"
+    # ★실제로 확인한 언어만 적는다 — 모델은 더 많이 하지만 우리가 들어 본(받아 적기로 확인한) 것은 한국어다.
+    supported_languages = ["ko"]
+
+    def __init__(self):
+        self._tts = None
+        self.model_path = None
+
+    def load(self, lang_code="ko"):
+        if self._tts is not None:
+            return
+        import supertonic_tts
+        styles, why = supertonic_tts.scan()
+        if why:
+            e = RuntimeError("Supertonic 으로 읽을 수 없습니다 — %s" % why)
+            e.error_payload = {"code": ENGINE_LANG_UNAVAILABLE, "engine": "supertonic", "reason": why}
+            raise e
+        emit("progress", percent=10, message="기본 목소리 여는 중...")
+        self._tts = supertonic_tts.Supertonic()
+        emit("progress", percent=20, message="기본 목소리 준비 완료")
+
+    def synthesize_segment(self, text, ref_audio, emotion_id, speed, output_path):
+        import os as _os
+        import wave
+        import numpy as np
+        if self._tts is None:
+            self.load()
+        style = self.model_path
+        if not style or not _os.path.isfile(style):
+            e = RuntimeError("고른 기본 목소리 파일을 찾지 못했습니다: %s" % _os.path.basename(style or ""))
+            e.error_payload = {"code": ENGINE_LANG_UNAVAILABLE, "engine": "supertonic"}
+            raise e
+        wav = self._tts.synthesize(text, style, speed=speed or 1.0)
+        sr = self._tts.sample_rate
+        if wav.size == 0:
+            # 읽을 소리가 없는 토막(기호만 있는 줄) — piper 와 같이 짧게 쉰다.
+            wav = np.zeros(int(sr * PiperEngine.EMPTY_PAUSE_SEC), dtype=np.float32)
+        pcm = (np.clip(wav, -1.0, 1.0) * 32767.0).astype("<i2")
+        with wave.open(output_path, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
+            w.writeframes(pcm.tobytes())
+
+
 # ── GPT-SoVITS Engine (Korean, Japanese, Chinese, English — via isolated venv) ──
 
 class GPTSoVITSEngine(TTSEngine):
@@ -1226,6 +1280,7 @@ ENGINES = {
     "f5tts": F5TTSEngine,
     "kokoro": KokoroEngine,
     "piper": PiperEngine,
+    "supertonic": SupertonicEngine,
     "gptsovits": GPTSoVITSEngine,
 }
 
@@ -3748,7 +3803,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             engine = _select_engine(line_text, preferred_engine)
             # 화면이 고른 기본 목소리 모델을 그 엔진에 실어 준다.
             # ★엔진을 자동으로 다른 목소리로 바꾸지 않는다 — 고른 모델이 안 열리면 그 카드가 운다.
-            if builtin_model and isinstance(engine, PiperEngine):
+            if builtin_model and isinstance(engine, (PiperEngine, SupertonicEngine)):
                 engine.model_path = builtin_model
             engine_name = engine.name
             seg_engines.append(engine_name)

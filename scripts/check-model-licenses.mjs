@@ -20,7 +20,7 @@ const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 
 /** HuggingFace 형식 id. 조직 이름은 우리가 실제로 쓰는 것만 본다(무한 오탐 방지). */
 const HF_ORGS = ['facebook', 'openai', 'Qwen', 'nvidia', 'funasr', 'lj1995', 'Plachta',
-  'microsoft', 'speechbrain', 'pyannote']
+  'microsoft', 'speechbrain', 'pyannote', 'Supertone']
 /** HF 형식이 아닌 이름 — 파일명·엔진 이름으로 쓰는 것들. */
 const BARE_PATTERNS = [
   /\bhtdemucs(?:_ft)?\b/g,

@@ -63,8 +63,47 @@ def piper_voices_list(repo_root=None):
     return out, skipped
 
 
+def supertonic_voices_list(repo_root=None):
+    """Supertonic 3 의 목소리 열 개(2026-09-30). 런타임·모델 파일·설정을 모두 본 뒤에만 넣는다."""
+    out, skipped = [], []
+    try:
+        import onnxruntime  # noqa: F401
+        import numpy  # noqa: F401
+    except Exception as e:
+        skipped.append({"engineId": "supertonic",
+                        "why": "Supertonic 런타임(onnxruntime)을 불러오지 못했습니다: %s" % type(e).__name__})
+        return out, skipped
+    try:
+        import supertonic_tts as st
+    except Exception as e:
+        skipped.append({"engineId": "supertonic", "why": "Supertonic 을 읽지 못했습니다: %s" % e})
+        return out, skipped
+    styles, why = st.scan(repo_root or _repo_root())
+    if why:
+        skipped.append({"engineId": "supertonic", "why": why})
+        return out, skipped
+    try:
+        sr = st.sample_rate(repo_root or _repo_root())
+    except Exception as e:
+        skipped.append({"engineId": "supertonic", "why": "설정에서 샘플레이트를 읽지 못했습니다: %s" % type(e).__name__})
+        return out, skipped
+    for sid, path in styles:
+        out.append({
+            "engineId": "supertonic",
+            "modelId": sid,
+            "label": "Supertonic %s" % st.voice_label(sid),
+            "language": st.LANG,
+            "sampleRate": sr,
+            "path": path,
+        })
+    return out, skipped
+
+
 def main():
     voices, skipped = piper_voices_list()
+    more, more_skipped = supertonic_voices_list()
+    voices += more
+    skipped += more_skipped
     # 이름 순 — 같은 설치에서 늘 같은 순서가 나와야 한다.
     voices.sort(key=lambda v: (v["language"], v["modelId"]))
     sys.stdout.write(json.dumps({"voices": voices, "skipped": skipped}, ensure_ascii=False))

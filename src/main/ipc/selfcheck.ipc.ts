@@ -58,13 +58,17 @@ const RUN: Record<CheckId, () => Promise<string>> = {
   },
   models: async () => {
     const { stdout } = await execFileAsync(needPython(), ['-X', 'utf8', pythonScript('selfcheck_models.py')], { timeout: 60000, env: PY_ENV })
-    const j = JSON.parse(String(stdout).trim() || '{}') as { piper?: { voices?: string[] }; qwen?: { ok?: boolean; missing?: string[] } }
-    const voices = j.piper?.voices ?? []
+    const j = JSON.parse(String(stdout).trim() || '{}') as {
+      piper?: { voices?: string[] }; supertonic?: { voices?: string[]; why?: string }; qwen?: { ok?: boolean; missing?: string[] }
+    }
+    const piper = j.piper?.voices ?? [], supertonic = j.supertonic?.voices ?? []
+    const voices = [...piper, ...supertonic]
     const bad: string[] = []
     if (!voices.length) bad.push('기본 목소리 모델이 하나도 없습니다')
+    if (j.supertonic?.why) bad.push(`Supertonic 목소리를 쓸 수 없습니다: ${j.supertonic.why}`)
     if (!j.qwen?.ok) bad.push(`참조 목소리 모델 파일이 빠졌습니다${j.qwen?.missing?.length ? ': ' + j.qwen.missing.join(', ') : ''}`)
     if (bad.length) throw new Error(bad.join(' · '))
-    return `기본 목소리 ${voices.length}개 · 참조 목소리 모델 파일 모두 있음`
+    return `기본 목소리 ${voices.length}개(piper ${piper.length} · Supertonic ${supertonic.length}) · 참조 목소리 모델 파일 모두 있음`
   },
   'reader-builtin': async () => {
     const v = (await builtinVoiceList()).voices[0]

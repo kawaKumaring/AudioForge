@@ -494,7 +494,7 @@ export default function ReaderWorkspace() {
         else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
       }
     }} onClick={closeSettings} style={{ position: 'fixed', inset: 0, zIndex: 100, background: '#0009', display: 'grid', placeItems: 'center', padding: 20 }}>
-      <section role="dialog" aria-modal="true" aria-label="낭독 설정" onClick={e => e.stopPropagation()} style={{ ...panel, width: '100%', maxWidth: 420, padding: 22 }}>
+      <section role="dialog" aria-modal="true" aria-label="낭독 설정" onClick={e => e.stopPropagation()} style={{ ...panel, width: '100%', maxWidth: 420, padding: 22, maxHeight: 'calc(100vh - 40px)', overflowY: 'auto', overscrollBehavior: 'contain' }}>
         <div style={{ display: 'flex', alignItems: 'center', marginBottom: 20 }}><h2 style={{ fontSize: 17, margin: 0 }}>낭독 설정</h2><button autoFocus aria-label="닫기" onClick={closeSettings} style={{ ...button, marginLeft: 'auto' }}>×</button></div>
         {/* ★설치된 것만 보여 준다. 없는 목소리를 고르게 하면 눌러야 실패를 안다. */}
         {builtins.map(b => {
