@@ -1,0 +1,111 @@
+// 낭독 — **Qwen 지정 목소리(소희)만** 본다. 다른 기본 목소리는 거치지 않는다.
+//
+// ★왜 따로 두나 (2026-09-30 사용자 지적: "테스트를 할 거면 Qwen 을 테스트해야 하는데 자꾸 기본을 반복하는 이유는")
+//   목소리 고르기 검사(reader-voices)는 Supertonic 단계를 먼저 거쳐, Qwen 만 보고 싶을 때도 매번 그것을 되풀이했고
+//   앞 단계의 흔적(앞서 만들던 조각)이 Qwen 판정에 섞였다. 여기서는 책을 열고 곧바로 Qwen 을 고른다.
+//
+// 여기서 보는 것
+//   1) 목록에 Qwen 소희가 있고 이름표에 느리다고 적힌다
+//   2) ★고르기만 해서는 GPU 로 만들지 않는다 — 공용 판정에 '낭독 중' 이 한 번도 서지 않는다(4초)
+//   3) (AF_E2E_GPU=1) 누르면 소희로 읽는다 — 만드는 동안 합성이 비키고, 읽는 구절이 뜬다
+//
+// 실행: node test/e2e/reader-qwen.e2e.mjs   (사전: npm run build)   · AF_E2E_GPU=1 이면 3) 까지(1분 남짓)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import { randomUUID } from 'crypto'
+import { _electron as electron } from 'playwright'
+import { isolatedUserData, cleanupUserData, cleanupIsolated } from './_e2e-helper.mjs'
+
+const APP = process.cwd()
+if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
+
+const UD = isolatedUserData()
+const ISO = path.join(os.tmpdir(), 'audioforge_e2e_' + randomUUID())
+fs.mkdirSync(ISO, { recursive: true })
+const BOOK = path.join(ISO, '짧은 책.txt')
+// 틀고 있는지 볼 동안 끝나지 않을 만큼 — 한 덩이가 약 20초 분량이 되게.
+fs.writeFileSync(BOOK, Array.from({ length: 6 }, (_, i) =>
+  `${i + 1}번째 문단이다. 그는 천천히 문을 열고 어두운 복도를 내다보았다. 멀리서 물소리가 일정하게 이어졌다.`).join('\n'), 'utf-8')
+
+let passed = 0
+const fails = []
+const ok = (v, label, extra) => {
+  if (v) { passed++; console.log('PASS', label) }
+  else { fails.push(label); console.log('FAIL', label, extra === undefined ? '' : JSON.stringify(extra)) }
+}
+const logText = () => fs.readdirSync(path.join(UD, 'logs')).map((n) => fs.readFileSync(path.join(UD, 'logs', n), 'utf-8')).join('')
+
+let app = null
+try {
+  app = await electron.launch({ args: ['out/main/index.js'], cwd: APP, env: { ...process.env, AF_E2E: '1', AF_E2E_USER_DATA: UD, AF_E2E_SELECT_FILE: BOOK, HF_HUB_OFFLINE: '1' } })
+  const win = await app.firstWindow()
+  win.setDefaultTimeout(30000)
+  await win.waitForFunction(() => !!window.__afStore)
+  const voices = (await win.evaluate(() => window.api.cards.builtinVoices()))?.data?.voices || []
+  const qwen = voices.find((v) => v.engineId === 'qwen-custom')
+  if (!qwen) {
+    console.log('SKIP Qwen 지정 목소리를 받아 두지 않은 설치입니다')
+    await app.close(); cleanupUserData(UD); cleanupIsolated(ISO); process.exit(0)
+  }
+  ok(/소희/.test(qwen.label) && /느림/.test(qwen.label), 'Qwen 소희가 목록에 오르고 이름표에 느리다고 적힌다', qwen.label)
+
+  await win.getByTestId('mode-reader').click()
+  await win.getByTestId('reader-add-text').first().click()
+  await win.waitForSelector('[data-testid="reader-paragraph"]')
+
+  // ── 2. 고르기만 — GPU 로 만들지 않는다 ─────────────────────────────
+  await win.getByTestId('reader-settings').click()
+  await win.getByRole('dialog', { name: '낭독 설정' }).waitFor()
+  const rows = await win.getByTestId('reader-voice-builtin').allInnerTexts()
+  const qi = rows.findIndex((t) => t.includes('소희'))
+  await win.getByTestId('reader-voice-builtin').nth(qi).click()
+  const busySeen = []
+  for (let i = 0; i < 16; i++) {
+    const why = await win.evaluate(() => window.api.audio.e2eBusyReason('합성'))
+    if (why) busySeen.push(why)
+    await win.waitForTimeout(250)
+  }
+  const madeLines = (logText().match(/\[reader\] (만듦|만들지 못함).*/g) || [])
+  ok(busySeen.length === 0, '★고르기만 해서는 GPU 로 만들지 않는다(누를 때 만든다)', { busy: busySeen.length, made: madeLines.slice(-3) })
+
+  // ── 3. 누르면 소희로 읽는다 ────────────────────────────────────────
+  if (process.env.AF_E2E_GPU === '1') {
+    const t0 = Date.now()
+    await win.getByTestId('reader-play').click()
+    let sawBusy = false
+    for (let i = 0; i < 40 && !sawBusy; i++) {
+      sawBusy = !!(await win.evaluate(() => window.api.audio.e2eBusyReason('합성')))
+      if (!sawBusy) await win.waitForTimeout(250)
+    }
+    ok(sawBusy, '★소희로 만드는 동안 다른 화면의 합성이 비킨다(GPU)')
+    // ★읽는 구절 표시는 누르는 순간 뜬다 — 소리가 났다는 증거가 아니다(처음엔 그것으로 통과시켰다).
+    //   증거는 Qwen 모델로 만든 조각의 기록이다. 한 조각에 40초 남짓 — 3분까지 기다린다.
+    let logged = false
+    for (let i = 0; i < 360 && !logged; i++) {
+      logged = /\[reader\] 만듦 kind=builtin voice=config\.json/.test(logText())
+      if (!logged) await win.waitForTimeout(500)
+    }
+    ok(logged, '★누르면 소희(Qwen 모델)로 조각을 만든다(기록)',
+      { sec: Math.round((Date.now() - t0) / 1000), reader: (logText().match(/\[reader\] .*/g) || []).slice(-3) })
+    // 만든 조각을 실제로 틀었는가 — 낭독의 '기다림' 문구가 사라지고 재생 중이다.
+    const playingNow = await win.waitForFunction(() =>
+      document.querySelector('[data-testid="reader-play"]')?.getAttribute('aria-label') === '낭독 멈추기'
+      && !/만드는 중|기다리는 중/.test(document.querySelector('[data-testid="reader-controls"]')?.textContent || ''),
+    null, { timeout: 20000 }).then(() => true).catch(() => false)
+    ok(playingNow, '★만든 소희 소리를 틀고 있다(기다림 문구 없음)')
+    if (await win.getByTestId('reader-play').getAttribute('aria-label') === '낭독 멈추기') await win.getByTestId('reader-play').click()
+  } else {
+    console.log('SKIP 소희로 읽기 — GPU 로 1분 남짓(AF_E2E_GPU=1 일 때만)')
+  }
+} catch (e) {
+  console.error('FAIL', e?.message || e)
+  fails.push(String(e?.message || e))
+} finally {
+  await app?.close().catch(() => {})
+  cleanupUserData(UD)
+  cleanupIsolated(ISO)
+}
+console.log(`RESULT ${passed} checks · ${fails.length} fail`)
+process.exit(fails.length ? 1 : 0)

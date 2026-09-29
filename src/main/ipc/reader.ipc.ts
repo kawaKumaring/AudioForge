@@ -23,6 +23,7 @@ import { fileURLToPath } from 'url'
 import { currentPythonPath, synthesisBusy, setReaderRunning, pickFiles, dialogFolderHost } from './audio.ipc'
 import { rememberFile } from '../services/dialogFolders'
 import { TEXT_FILE_LIMIT } from '../../shared/readerChunks'
+import { usesGpu } from '../../shared/readerQueue'
 import { appLog, fileLabel } from '../services/app-log'
 import { createLane, failureReason, jsonLines, madeTrack, pythonReason, readerRunConfig } from '../services/reader-run'
 
@@ -124,10 +125,10 @@ async function makeChunk(body: string, v: ReaderVoice, out: string): Promise<str
   writeFileSync(cfgPath, JSON.stringify(readerRunConfig(body, v, runDir)), 'utf-8')
 
   const t0 = Date.now()
-  // ★참조 목소리(GPU)만 남에게 '도는 중' 으로 알린다. 기본 목소리는 CPU 로 한 덩이 2초이고, 책을 열기만 해도
+  // ★GPU 목소리(참조 · Qwen 지정 목소리 — 규칙은 readerQueue.usesGpu)만 남에게 '도는 중' 으로 알린다. CPU 기본 목소리는 한 덩이 2초이고, 책을 열기만 해도
   //   앞서 만들어 두므로(누르기 전에도) 그것까지 알리면 **책을 열어 둔 것만으로 합성이 거절된다.**
   // ★남을 본 **다음에** 세운다 — 먼저 세우면 제 판정에 제가 걸린다. 바로 아래 try 의 finally 가 내린다.
-  const gpu = v.kind === 'reference'
+  const gpu = usesGpu(v)
   if (gpu) setReaderRunning(true)
   try {
     const { stdout } = await execFileAsync(py, ['-X', 'utf8', scriptPath(), '--config', cfgPath], {

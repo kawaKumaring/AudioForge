@@ -61,7 +61,7 @@ try {
 
   const ref = await watchWhile(win, 'reader-reference')
   ok(ref.state === 'ok', '낭독 · 참조 목소리 검사가 실제로 통과한다', ref)
-  ok(ref.seen.some((w) => /낭독이 참조 목소리로 소리를 만드는 중에는 합성을 시작할 수 없습니다/.test(w)),
+  ok(ref.seen.some((w) => /낭독이 GPU 목소리\(참조 목소리·Qwen\)로 소리를 만드는 중에는 합성을 시작할 수 없습니다/.test(w)),
     '★참조 목소리가 만드는 동안 합성이 낭독 사유로 거절된다', ref.seen)
   ok(ref.after === '', '끝나면 다시 비워진다', ref.after)
 } catch (e) {

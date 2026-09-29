@@ -49,6 +49,17 @@ export interface QueueState {
 
 export const DEFAULT_AHEAD = 2
 
+/**
+ * 이 목소리가 **GPU 로 느리게** 만드는가 — 참조 목소리, 그리고 기본 목소리 중 Qwen 지정 목소리.
+ * ★이런 목소리는 ① 누르기 전에는 앞서 만들지 않고 ② 적게 앞서 두며 ③ 만드는 동안 다른 화면의 합성을 비키게 한다.
+ *   (실측 2026-09-30: Qwen 은 한 덩이 10초 분량에 약 41초. Supertonic·piper 는 CPU 로 2초 안쪽.)
+ */
+export const SLOW_BUILTIN_ENGINES: ReadonlyArray<string> = ['qwen-custom']
+export function usesGpu(v: { kind: 'builtin' | 'reference'; engineId?: string } | null | undefined): boolean {
+  if (!v) return false
+  return v.kind === 'reference' || SLOW_BUILTIN_ENGINES.includes(v.engineId || '')
+}
+
 export function emptyQueue(count: number, voiceKey: string, ahead = DEFAULT_AHEAD): QueueState {
   return {
     at: 0, count, voiceKey, ahead,

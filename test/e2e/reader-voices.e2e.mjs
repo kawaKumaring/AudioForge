@@ -26,7 +26,10 @@ const UD = isolatedUserData()
 const ISO = path.join(os.tmpdir(), 'audioforge_e2e_' + randomUUID())
 fs.mkdirSync(ISO, { recursive: true })
 const BOOK = path.join(ISO, '짧은 책.txt')
-fs.writeFileSync(BOOK, '첫째 문단이다. 그는 천천히 문을 열었다.\n둘째 문단이다. 멀리서 물소리가 들렸다.', 'utf-8')
+// ★멈출 때 아직 읽고 있을 만큼 길게 — 두 문장짜리였을 때 읽기가 제풀에 끝나는 순간과 '멈춤' 누름이 겹쳐
+//   **다시 읽기 시작**했고, 뒤의 Qwen 판정이 그 탓에 셋 중 둘 흔들렸다(따로 떼어 4회 재현 시 0회 — 제품이 아니라 검사의 경주).
+fs.writeFileSync(BOOK, Array.from({ length: 12 }, (_, i) =>
+  `${i + 1}번째 문단이다. 그는 천천히 문을 열고 어두운 복도를 내다보았다. 멀리서 물소리가 일정하게 이어졌다.`).join('\n'), 'utf-8')
 
 let passed = 0
 const fails = []
@@ -93,13 +96,18 @@ try {
   await win.getByTestId('reader-play').click()
   const read = await win.waitForSelector('[data-testid="reader-phrase"]', { timeout: 60000 }).then(() => true).catch(() => false)
   ok(read, '★그 목소리로 책을 읽는다(읽는 구절이 뜬다)')
-  await win.getByTestId('reader-play').click().catch(() => {})
+  // ★읽는 중일 때만 멈춘다 — 짧은 책은 이미 끝났을 수 있고, 그때 누르면 **다시 읽기 시작한다**(실측: 뒤 검사가 그 탓에 흔들렸다).
+  if (await win.getByTestId('reader-play').getAttribute('aria-label') === '낭독 멈추기') await win.getByTestId('reader-play').click()
+  await win.waitForFunction(() => document.querySelector('[data-testid="reader-play"]')?.getAttribute('aria-label') === '낭독 시작')
+  ok(true, '(낭독을 멈춰 둔다)')
 
   // ── 4. 엔진 확인 ───────────────────────────────────────────────────
   await win.waitForTimeout(800)
   const log = logText()
   ok(/\[reader\] 만듦 kind=builtin voice=F2\.json/.test(log), '★읽은 소리가 고른 Supertonic 목소리 파일로 만들어졌다(기록)', (log.match(/\[reader\] 만듦.*/g) || []).slice(-3))
   ok(!/\[net\] 바깥 요청을 막았다/.test(log), '바깥으로 나가려 한 요청이 없다')
+
+  // Qwen 지정 목소리(소희)는 따로 본다 — reader-qwen.e2e.mjs (이 검사의 Supertonic 단계를 되풀이하지 않게).
 } catch (e) {
   console.error('FAIL', e?.message || e)
   fails.push(String(e?.message || e))

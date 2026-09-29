@@ -145,3 +145,15 @@ test('풀 것이 없으면 그대로 둔다', () => {
   const q = markReady(q0(), 0, 'a.wav')
   assert.equal(retryFailed(q), q)
 })
+
+// ★GPU 로 느린 목소리 — 누르기 전엔 앞서 만들지 않고, 만드는 동안 다른 화면이 비킨다(2026-09-30).
+test('GPU 목소리 판단 — 참조와 Qwen 지정 목소리만', async () => {
+  // @ts-ignore TS5097
+  const { usesGpu } = await import('./readerQueue.ts')
+  assert.equal(usesGpu({ kind: 'reference' }), true)
+  assert.equal(usesGpu({ kind: 'builtin', engineId: 'qwen-custom' }), true)
+  assert.equal(usesGpu({ kind: 'builtin', engineId: 'supertonic' }), false)
+  assert.equal(usesGpu({ kind: 'builtin', engineId: 'piper' }), false)
+  assert.equal(usesGpu({ kind: 'builtin' }), false)
+  assert.equal(usesGpu(null), false)
+})

@@ -22,7 +22,7 @@ import { speakableText } from '../../shared/readerText'
 import { opLog, nameOnly } from '@/lib/opLog'
 import {
   emptyQueue, nextToMake, canPlayNow, waitReason, markMaking, markReady, markFailed,
-  seek, advance, atEnd, changeVoice, acceptResult, retryFailed, DEFAULT_AHEAD, type QueueState,
+  seek, advance, atEnd, changeVoice, acceptResult, retryFailed, DEFAULT_AHEAD, usesGpu, type QueueState,
 } from '../../shared/readerQueue'
 
 export interface ReaderVoicePick {
@@ -42,7 +42,8 @@ export interface ReaderVoicePick {
  */
 export const BUILTIN_AHEAD = 6
 function aheadFor(v: ReaderVoicePick | null): number {
-  return v?.kind === 'builtin' ? BUILTIN_AHEAD : DEFAULT_AHEAD
+  // ★GPU 로 느린 목소리(참조 · Qwen 지정 목소리)는 적게 앞서 둔다 — 멀리 앞서 만들면 옮길 때 버리는 것이 크다.
+  return v && !usesGpu(v) ? BUILTIN_AHEAD : DEFAULT_AHEAD
 }
 
 export function voiceKeyOf(v: ReaderVoicePick | null): string {
@@ -154,10 +155,10 @@ export function useReadAloud(
   // ── 앞서 만들어 둔다 ────────────────────────────────────────────────────
   // ★기본 목소리는 **누르기 전에도** 지금 자리부터 만들어 둔다 (2026-09-29 지시:
   //   "텍스트를 읽어오면 빠르게 낭독 음성을 만들어서"). 한 덩이에 2초라 부담이 작고,
-  //   누르는 순간 바로 들린다. 참조 목소리는 GPU 로 수십 초가 들어 누를 때만 만든다.
+  //   누르는 순간 바로 들린다. GPU 목소리(참조 · Qwen 지정 목소리)는 수십 초가 들어 누를 때만 만든다.
   useEffect(() => {
     if (!voice) return
-    if (!playing && voice.kind !== 'builtin') return
+    if (!playing && usesGpu(voice)) return
     const i = nextToMake(q)
     if (i < 0) return
     const chunk = chunks[i]

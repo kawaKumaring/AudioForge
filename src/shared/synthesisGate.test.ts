@@ -20,7 +20,7 @@ test('도는 것마다 **무엇 때문인지** 말한다', () => {
   assert.match(blockReason({ referenceTrim: true })!, /참조 구간 트림/)
   assert.match(blockReason({ samplerPreview: true })!, /미리듣기/)
   assert.match(blockReason({ dubJob: true })!, /더빙/)
-  assert.match(blockReason({ readerJob: true })!, /낭독이 참조 목소리로/)
+  assert.match(blockReason({ readerJob: true })!, /낭독이 GPU 목소리/)
 })
 
 test('시작하려는 일의 이름이 문구에 들어간다', () => {
@@ -118,7 +118,8 @@ test('낭독은 시작 전에 다른 작업을 보고, 참조 목소리로 만�
   // ② 세운 것은 반드시 내린다 — finally 에서
   assert.match(reader.split(/\r?\n/).join(' '), /finally \{\s*if \(gpu\) setReaderRunning\(false\)/)
   // ③ 기본 목소리는 알리지 않는다 — 책을 연 것만으로 합성이 막히면 안 된다
-  assert.match(reader, /const gpu = v\.kind === 'reference'/)
+  //    GPU 목소리인지는 한 곳(readerQueue.usesGpu)이 판단한다 — 참조 목소리와 Qwen 지정 목소리만.
+  assert.match(reader, /const gpu = usesGpu\(v\)/)
   // ④ 합성 쪽 판정이 그 상태를 받는다
   assert.match(audio, /readerJob: readerRunning > 0/)
 })

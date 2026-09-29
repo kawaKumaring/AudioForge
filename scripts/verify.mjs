@@ -212,6 +212,8 @@ if (WITH_APP) {
   run('실제 앱 · 합성 시작·취소 수명주기(GPU)', 'node', [path.join('test', 'e2e', 'synthesize.e2e.mjs')])
   // 낭독이 참조 목소리로 만드는 동안 남에게 보이는가 — 공용 판정의 반대 방향(2026-09-30). 기본 목소리는 막지 않는다.
   run('실제 앱 · 낭독이 도는 동안 합성이 비킨다(GPU)', 'node', [path.join('test', 'e2e', 'reader-gate.e2e.mjs')])
+  // Qwen 지정 목소리(소희) — 고르기만으론 GPU 를 안 쓰고, 누르면 Qwen 모델로 만들어 튼다(2026-09-30). 받아 두지 않았으면 SKIP.
+  run('실제 앱 · 낭독 Qwen 지정 목소리(GPU)', 'node', [path.join('test', 'e2e', 'reader-qwen.e2e.mjs')], { env: { ...process.env, AF_E2E_GPU: '1' } })
   // 소리가 실제로 나오는지는 완주 검사가 답한다. 참조 자산과 검증용 파이썬을 명시해야 돌고,
   // 주지 않으면 **통과처럼 종료**하므로(prerequisite skip) 여기서 저장소 fixture 와 앱 파이썬을 준다.
   const fixture = path.join(ROOT, 'test', 'fixtures', 'audio', 'ko-speech-region-18s.wav')

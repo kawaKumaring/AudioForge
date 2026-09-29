@@ -99,11 +99,42 @@ def supertonic_voices_list(repo_root=None):
     return out, skipped
 
 
+def qwen_custom_voices_list():
+    """Qwen3-TTS 지정 목소리(한국어: 소희) — 격리 환경·패키지·모델 파일을 모두 본 뒤에만 넣는다(2026-09-30).
+    ★GPU 로 느리다(10초 분량에 약 41초 실측) — 이름표에 그렇게 적어 고르기 전에 알 수 있게 한다."""
+    out, skipped = [], []
+    try:
+        import tts_worker as tw
+    except Exception as e:
+        skipped.append({"engineId": "qwen-custom", "why": "합성 모듈을 읽지 못했습니다: %s" % type(e).__name__})
+        return out, skipped
+    eng = tw.QwenCustomEngine()
+    venv_pkg = os.path.join(os.path.dirname(os.path.dirname(eng._venv_python)), "Lib", "site-packages", "qwen_tts")
+    if not (os.path.isfile(eng._venv_python) and os.path.isdir(venv_pkg)):
+        skipped.append({"engineId": "qwen-custom", "why": "Qwen 격리 환경(qwen_tts)이 없습니다"})
+        return out, skipped
+    models = tw.qwen_custom_voice_models()
+    if not models:
+        return out, skipped          # 받아 두지 않았다 — 문제가 아니다(선택 설치)
+    model = models[0]
+    for speaker, name in tw.QWEN_CUSTOM_KOREAN.items():
+        out.append({
+            "engineId": "qwen-custom",
+            "modelId": speaker,
+            "label": "Qwen %s (GPU · 느림)" % name,
+            "language": "ko",
+            "sampleRate": 24000,
+            "path": os.path.join(model, "config.json"),
+        })
+    return out, skipped
+
+
 def main():
     voices, skipped = piper_voices_list()
-    more, more_skipped = supertonic_voices_list()
-    voices += more
-    skipped += more_skipped
+    for extra in (supertonic_voices_list, qwen_custom_voices_list):
+        more, more_skipped = extra()
+        voices += more
+        skipped += more_skipped
     # 이름 순 — 같은 설치에서 늘 같은 순서가 나와야 한다.
     voices.sort(key=lambda v: (v["language"], v["modelId"]))
     sys.stdout.write(json.dumps({"voices": voices, "skipped": skipped}, ensure_ascii=False))

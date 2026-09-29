@@ -180,6 +180,14 @@
       "non_commercial": false,
       "default_path": true,
       "note": "2026-09-30 도입. 모델은 OpenRAIL-M(쓰임 제한 조항 — 해로운 용도 금지, 파생물에 같은 제한을 붙임), 옮겨 온 추론 코드(py/helper.py)는 MIT. 받아 둔 파일만 연다 — 공식 패키지의 자동 내려받기는 쓰지 않는다."
+    },
+    {
+      "id": "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
+      "role": "음성 합성(기본 목소리 — 지정 목소리 \"소희\"(한국어) · GPU · 참조 없이)",
+      "license": "Apache-2.0",
+      "non_commercial": false,
+      "default_path": true,
+      "note": "2026-09-30 도입(사용자 요청). 목소리 9개 중 한국어 원어민 소희만 싣는다. 격리 환경(qwen3_tts_venv)에서 python/qwen_custom_voice.py 로 돈다. 목소리 복제는 못 하는 판 — 복제 목록에는 사유와 함께 남는다."
     }
   ]
 }

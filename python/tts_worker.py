@@ -373,6 +373,106 @@ class SupertonicEngine(TTSEngine):
             w.writeframes(pcm.tobytes())
 
 
+# ── Qwen3-TTS 지정 목소리(CustomVoice — 참조 없이 모델 안의 목소리 · GPU · 격리 환경) ──
+
+# 한국어 목소리 — 모델이 한국어 원어민 목소리로 소개하는 것만 싣는다(2026-09-30 지시: "한국어가 있다면 받아 본다").
+# ★다른 여덟 목소리(영·중·일)도 한국어를 말할 수는 있지만 들어 보지 않았다 — 싣지 않는다.
+QWEN_CUSTOM_KOREAN = {"sohee": "소희"}
+
+
+def qwen_custom_voice_models():
+    """받아 둔 Qwen 지정 목소리 모델 폴더들 — 설정의 모델 종류가 custom_voice 이고 필수 파일이 다 있는 것만."""
+    out = []
+    ext = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "externals")
+    if not os.path.isdir(ext):
+        return out
+    for name in sorted(os.listdir(ext)):
+        full = os.path.join(ext, name)
+        if not name.startswith("qwen3_tts") or name in _QWEN_VARIANT_EXCLUDE or not os.path.isdir(full):
+            continue
+        info = _qwen_variant_info(full)
+        if info and info.get("model_type") == "custom_voice":
+            out.append(full)
+    return out
+
+
+class QwenCustomEngine(TTSEngine):
+    """Qwen3-TTS **지정 목소리** — 참조 소리 없이 모델 안의 목소리(소희)로 읽는다.
+
+    ★목소리는 모델 폴더의 설정 파일(config.json) 경로로 고른다(`model_path`) — 한 모델에 한국어 목소리가 하나라
+      그 경로가 목소리의 이름표가 된다. 화자 이름은 QWEN_CUSTOM_KOREAN 이 정한다.
+    ★격리 환경의 파이썬으로 `qwen_custom_voice.py` 를 조각마다 부른다 — 매번 모델을 여는 데 약 11초가 든다(실측).
+    ★빠르기는 바꿀 수 없다(모델에 그 조절이 없다) — 쓰는 척하지 않고 그렇다고 알린다.
+    """
+
+    name = "qwen-custom"
+    supported_languages = ["ko"]
+
+    def __init__(self):
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        venv = os.path.join(base, "externals", "qwen3_tts_venv")
+        self._venv_python = os.path.join(venv, "Scripts", "python.exe")
+        self._script = os.path.join(base, "python", "qwen_custom_voice.py")
+        self.model_path = None
+        self._speed_told = False
+
+    def load(self, lang_code="ko"):
+        if not os.path.isfile(self._venv_python):
+            e = RuntimeError("Qwen 격리 환경이 없습니다")
+            e.error_payload = {"code": ENGINE_UNAVAILABLE, "engine": self.name}
+            raise e
+
+    def synthesize_segment(self, text, ref_audio, emotion_id, speed, output_path):
+        import json as _json
+        import subprocess
+        import tempfile
+        self.load()
+        cfg = self.model_path or ""
+        model_dir = os.path.dirname(cfg)
+        if not (cfg and os.path.isfile(cfg) and _qwen_variant_info(model_dir)):
+            e = RuntimeError("고른 기본 목소리 모델을 찾지 못했습니다: %s" % os.path.basename(model_dir or ""))
+            e.error_payload = {"code": ENGINE_LANG_UNAVAILABLE, "engine": self.name}
+            raise e
+        if not text.strip():
+            # 읽을 글이 없는 조각(기호만 있던 줄) — 짧게 쉰다. 이 모델의 소리는 24kHz 한 채널이다.
+            import wave
+            with wave.open(output_path, "wb") as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000)
+                w.writeframes(b"\x00\x00" * int(24000 * PiperEngine.EMPTY_PAUSE_SEC))
+            return
+        try:
+            sp = float(speed or 1.0)
+        except Exception:
+            sp = 1.0
+        if abs(sp - 1.0) > 1e-6 and not self._speed_told:
+            emit("progress", message="이 목소리는 빠르기를 바꿀 수 없어 보통 빠르기로 읽습니다")
+            self._speed_told = True
+        fd, text_file = tempfile.mkstemp(suffix=".txt", prefix="qcv-")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        try:
+            speaker = next(iter(QWEN_CUSTOM_KOREAN))
+            env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+            proc = subprocess.run(
+                [self._venv_python, "-X", "utf8", self._script, "--model", model_dir, "--speaker", speaker,
+                 "--language", "korean", "--text-file", text_file, "--out", output_path],
+                capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=900)
+        finally:
+            try:
+                os.remove(text_file)
+            except OSError:
+                pass
+        last = None
+        for line in (proc.stdout or "").splitlines():
+            try:
+                last = _json.loads(line)
+            except Exception:
+                continue
+        if not (last and last.get("type") == "done" and os.path.isfile(output_path)):
+            why = (last or {}).get("message") or ("종료 코드 %s" % proc.returncode)
+            raise RuntimeError("Qwen 지정 목소리로 만들지 못했습니다 — %s" % why)
+
+
 # ── GPT-SoVITS Engine (Korean, Japanese, Chinese, English — via isolated venv) ──
 
 class GPTSoVITSEngine(TTSEngine):
@@ -1282,6 +1382,7 @@ ENGINES = {
     "kokoro": KokoroEngine,
     "piper": PiperEngine,
     "supertonic": SupertonicEngine,
+    "qwen-custom": QwenCustomEngine,
     "gptsovits": GPTSoVITSEngine,
 }
 
@@ -3804,7 +3905,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             engine = _select_engine(line_text, preferred_engine)
             # 화면이 고른 기본 목소리 모델을 그 엔진에 실어 준다.
             # ★엔진을 자동으로 다른 목소리로 바꾸지 않는다 — 고른 모델이 안 열리면 그 카드가 운다.
-            if builtin_model and isinstance(engine, (PiperEngine, SupertonicEngine)):
+            if builtin_model and isinstance(engine, (PiperEngine, SupertonicEngine, QwenCustomEngine)):
                 engine.model_path = builtin_model
             engine_name = engine.name
             seg_engines.append(engine_name)
@@ -3821,7 +3922,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             #   '에 에 에' 로 소리 냈다). 파서가 낸 글(line_text)은 그대로 둔다 — 기록·지문 대조의 기준이다.
             #   규칙은 speech_symbols 한 곳(화면 쪽 speechSymbols.ts 와 같은 사례로 검사).
             say_text = strip_spoken_symbols(line_text)
-            if not say_text and not isinstance(engine, (PiperEngine, SupertonicEngine)):
+            if not say_text and not isinstance(engine, (PiperEngine, SupertonicEngine, QwenCustomEngine)):
                 # 기호만 있던 줄 — piper·Supertonic 은 빈 글을 짧은 쉼으로 쓴다. 다른 엔진은 빈 글을
                 # 받아 본 적이 없다(이어 붙이기는 빈 조각을 거절한다) — 그 엔진들만 예전처럼 원문을 보낸다.
                 say_text = line_text
