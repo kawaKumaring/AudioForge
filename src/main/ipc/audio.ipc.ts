@@ -47,6 +47,7 @@ import { DIALOGUE_DRAFTS_STORAGE_KEY } from '../../shared/dialogueDrafts'
 import { CARD_STORAGE_KEY } from '../../shared/synthesisCardSave'
 import { READER_PREFS_STORAGE_KEY } from '../../shared/readerText'
 import { CONSOLE_POPUP_STORAGE_KEY } from '../../shared/appConsole'
+import { localTranslateModel } from '../../shared/offlinePolicy'
 import { registerTranscriptIpc } from './transcript.ipc'
 import { registerLabIpc } from './lab.ipc'
 import { outputBase, isInside } from '../services/appPaths'
@@ -977,7 +978,8 @@ export function registerAudioIpc(
       asrSeparate: options?.asrSeparate || 'auto',
       whisperLang: options?.whisperLang || 'auto',
       translate: !!options?.translate,
-      translateModel: options?.translateModel || '600m',
+      // ★외부 전송 금지 — 'google' 이 와도 로컬 번역으로(2026-09-30).
+      translateModel: localTranslateModel(options?.translateModel),
       srt: !!options?.exportSrt,
       splitPoints: mode === 'split' && options?.splitMarkers ? (options.splitMarkers as number[]).join(',') : '',
       splitLabels: mode === 'split' && options?.splitLabels ? (options.splitLabels as string[]).join('|') : '',
@@ -1258,7 +1260,7 @@ export function registerAudioIpc(
       transcribe: !!options.transcribe,
       translate: !!options.translate,
       srt: !!options.srt,
-      translateModel: options.translateModel || '600m',
+      translateModel: localTranslateModel(options.translateModel),
       // ★고른 설정을 싣는다(2026-09-24 감사).
       //   예전에는 이 셋이 빠져 파이썬 기본값(large-v3·자동감지)으로 고정됐고,
       //   사용자는 자기가 고른 모델·언어로 돈 줄 알았다. translateModel 만 싣던

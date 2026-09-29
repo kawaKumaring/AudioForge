@@ -1,4 +1,5 @@
-import { app, BrowserWindow, protocol, net } from 'electron'
+import { app, BrowserWindow, protocol, net, session } from 'electron'
+import { applyOfflineEnv, isLocalUrl } from '../shared/offlinePolicy'
 import { join } from 'path'
 import {
   closeSync, existsSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, writeFileSync,
@@ -162,6 +163,10 @@ const LEGACY_TEMP = tmpdir()
   } catch { /* 못 만들면 옛 자리 그대로 — 아래 boot 기록에 실제 자리가 남는다 */ }
 }
 
+// ★외부 전송 금지 — 모든 파이썬 자식이 물려받을 오프라인 설정을 **한 곳에서** 켠다(2026-09-30).
+//   예전에는 작업자마다 따로 켜서 노래 변환기처럼 빠진 곳이 실행마다 허깅페이스에 확인 요청을 보냈다.
+const OFFLINE_CHANGED = applyOfflineEnv(process.env)
+
 // ── 앱 로그 파일 — <userData>/logs/audioforge-<날짜>.log ─────────────────────────
 // userData 가 정해진 직후, 다른 어떤 것보다 먼저 만든다. 그래야 기동 중 오류도 파일에 남는다.
 // console.warn/error 는 그대로 나가면서 파일에도 적히고(터미널·E2E 수집 유지), 잡히지 않은 예외는
@@ -233,7 +238,9 @@ function createWindow(): void {
     ...(process.env.AF_E2E === '1' ? { show: false } : {}),
     webPreferences: {
       preload: preloadPath,
-      sandbox: false
+      sandbox: false,
+      // ★맞춤법 검사기를 끈다 — 켜 두면 크롬이 구글 서버에서 사전을 스스로 내려받는다(앱 데이터에 ko-3-0.bdic).
+      spellcheck: false,
     }
   })
   if (process.env.AF_E2E === '1') {
@@ -433,12 +440,29 @@ if (!gotLock) {
   })
 
   app.whenReady().then(() => {
+    // ★맞춤법 검사기를 **세션에서** 끈다 — 창마다 끄는 것으로는 부족했다. 세션이 켜진 채(한국어)로 떠서
+    //   크롬이 구글 서버에서 사전(ko-3-0.bdic)을 스스로 내려받았고, 이 내려받기는 아래 요청 차단 창구를
+    //   **거치지 않았다**(실측: 막은 기록 0건). 받는 주소도 이 컴퓨터 안의 빈 자리로 돌린다.
+    try {
+      session.defaultSession.setSpellCheckerEnabled(false)
+      session.defaultSession.setSpellCheckerDictionaryDownloadURL('http://127.0.0.1:9/')
+    } catch { /* 이 판의 Electron 에 없으면 아래 요청 차단이 남는다 */ }
+    // ★외부 전송 금지 — 이 컴퓨터 밖으로 가는 웹 요청은 막고 기록한다(2026-09-30).
+    //   화면·본체·Electron 자신(맞춤법 사전 내려받기 등)이 모두 이 창구를 지난다. 파이썬은 오프라인 설정이 막는다.
+    session.defaultSession.webRequest.onBeforeRequest({ urls: ['*://*/*'] }, (d, cb) => {
+      if (isLocalUrl(d.url)) { cb({}); return }
+      let host = '(알 수 없음)'
+      try { host = new URL(d.url).hostname } catch { /* 그대로 */ }
+      APP_LOG.warn('net', `바깥 요청을 막았다 — ${host} (${d.resourceType})`)
+      cb({ cancel: true })
+    })
     try {
       const b = currentBuildInfo()
       APP_LOG.info('boot', `AudioForge v${b.version}${b.commit ? '+' + b.commit : ''} · electron ${process.versions.electron} · node ${process.versions.node} · ${process.platform} ${process.arch}`)
     } catch { APP_LOG.info('boot', 'AudioForge 시작(판 정보 읽기 실패)') }
     // 어느 데이터 폴더를 쓰는지 — 이름만(절대 경로 없음). 처음 복사했으면 무엇을 옮겼는지도.
     APP_LOG.info('boot', `데이터 폴더 ${basename(app.getPath('userData'))} (채널 ${USER_DATA_CHANNEL ?? '모름'})`)
+    APP_LOG.info('boot', `바깥 전송 막음 · 파이썬 오프라인${OFFLINE_CHANGED.length ? '(켜 둠: ' + OFFLINE_CHANGED.join(',') + ')' : ''} · 웹 요청은 이 컴퓨터 안만`)
     // ★임시 자리가 **실제로** 옮겨졌는지 기록에 남긴다. 조용히 실패하면 여기서 드러난다 —
     //   '앱 안' 이 아니면 그 실행은 시스템 드라이브에 쌓고 있다는 뜻이다.
     APP_LOG.info('boot', `임시 자리 ${tmpdir().startsWith(app.getPath('userData')) ? '앱 안' : '앱 밖(!)'} · ${basename(tmpdir())}`)

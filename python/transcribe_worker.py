@@ -47,12 +47,21 @@ _LANG_KO_NAME = {
 }
 
 
+# ★구글 번역은 **없앴다** (2026-09-30, 사용자 원칙: "무조건 외부로 보내지 않는다 — 외부로 보내야 한다면
+#   명확하게 지적한 뒤 막아야 한다"). 예전에는 고르면 받아 적은 문장이 구간마다 구글 서버로 갔다.
+#   옛 설정에 'google' 이 남아 있으면 로컬 번역(NLLB 600m)으로 돌리고 그렇다고 알린다 — 조용히 바꾸지 않는다.
+BLOCKED_TRANSLATE_BACKENDS = ('google',)
+
+
 def set_translate_model(value):
-    """번역 백엔드/모델 선택. 'google' → 구글(네트워크), 'llm'/'qwen3b' → 로컬 LLM,
-    그 외 → NLLB(600m/1.3b)."""
+    """번역 백엔드/모델 선택. 'llm'/'qwen3b' → 로컬 LLM, 그 외 → NLLB(600m/1.3b).
+    'google' 은 받지 않는다 — 로컬 NLLB 로 돌린다(외부 전송 금지)."""
     v = (value or "600m").lower()
-    if v == "google":
-        _translate_backend["mode"] = "google"
+    if v in BLOCKED_TRANSLATE_BACKENDS:
+        emit("progress", percent=1,
+             message="구글 번역은 쓰지 않습니다(외부 전송 금지) — 로컬 번역으로 바꿔 진행합니다")
+        _translate_backend["mode"] = "nllb"
+        set_nllb_model("600m")
     elif v in _LLM_BACKEND_VALUES:
         _translate_backend["mode"] = "llm"
     else:
@@ -411,58 +420,13 @@ def _split_sentences(text: str):
 
 
 def translate_to_korean(text: str, src_lang: str):
-    """소스 언어 텍스트를 한국어로 번역. 백엔드(NLLB/LLM/구글)는 set_translate_model로 선택."""
+    """소스 언어 텍스트를 한국어로 번역. 백엔드(NLLB/LLM)는 set_translate_model로 선택. 전부 로컬이다."""
     if src_lang == "ko":
         return text
     mode = _translate_backend["mode"]
-    if mode == "google":
-        return _translate_google(text, src_lang) or _translate_nllb(text, src_lang)
     if mode == "llm":
         return _translate_llm(text, src_lang)
     return _translate_nllb(text, src_lang)
-
-
-# ── 구글 번역 백엔드 (비공식 무료 엔드포인트, 네트워크 필요·API키 불필요) ──────────
-# 공식이 아니므로 막히거나 레이트리밋될 수 있다 → 실패 시 None 반환, 상위에서 NLLB 폴백.
-# 전사 텍스트가 구글로 전송됨(프라이버시). 사용자가 'google' 백엔드를 명시 선택할 때만 작동.
-_GOOGLE_LANG = {"zh": "zh-CN"}  # 구글 코드가 다른 것만 매핑, 나머지는 whisper 코드 그대로
-
-
-def _translate_google(text: str, src_lang: str):
-    """구글 무료 엔드포인트로 한국어 번역. 실패 시 None."""
-    if not text or not text.strip():
-        return text
-    try:
-        import requests
-    except ImportError:
-        return None
-    sl = _GOOGLE_LANG.get(src_lang, src_lang or "auto")
-    try:
-        r = requests.get(
-            "https://translate.googleapis.com/translate_a/single",
-            params={"client": "gtx", "sl": sl, "tl": "ko", "dt": "t", "q": text},
-            headers={"User-Agent": "Mozilla/5.0"}, timeout=10)
-        r.raise_for_status()
-        data = r.json()
-        parts = [seg[0] for seg in data[0] if seg and seg[0]]
-        out = "".join(parts).strip()
-        return out or None
-    except Exception:
-        return None
-
-
-def _translate_segments_google(segments, src_lang):
-    """세그먼트별 구글 번역(1:1 정합). 실패한 세그먼트만 NLLB 폴백."""
-    out = []
-    for s in segments:
-        if not s.strip():
-            out.append("")
-            continue
-        g = _translate_google(s, src_lang)
-        if g is None:
-            g = _translate_nllb(s, src_lang) or ""  # 네트워크 실패/차단 시 로컬 폴백
-        out.append(g)
-    return out
 
 
 # ── LLM 번역 백엔드 (Qwen2.5-3B-Instruct) ───────────────────────────────────
@@ -757,14 +721,12 @@ def _translate_segments_llm(segments, src_lang):
 
 def translate_segments_to_korean(segments, src_lang):
     """세그먼트 리스트를 1:1 매핑 유지하며 한국어로 번역(타임라인용).
-    - ko: 그대로. - 구글: 세그먼트별(실패 시 NLLB 폴백).
+    - ko: 그대로.
     - NLLB: 세그먼트별(짧은 조각에도 안정적, 코드 스위칭 없음).
     - LLM: 번호 매겨 한 번에 번역 후 번호로 되돌림(문맥 확보) + 잔재 글자 NLLB 수리."""
     if src_lang == "ko":
         return list(segments)
     mode = _translate_backend["mode"]
-    if mode == "google":
-        return _translate_segments_google(segments, src_lang)
     if mode == "llm":
         return _translate_segments_llm(segments, src_lang)
     return [((_translate_nllb(s, src_lang) or "") if s.strip() else "") for s in segments]

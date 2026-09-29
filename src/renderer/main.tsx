@@ -8,6 +8,10 @@ import { useLabStore } from '@/stores/lab.store'
 import { planEmotionRefs } from '@/lib/emotions'
 import { setPlaybackVolume } from '@/lib/playbackVolume'
 import './styles/globals.css'
+import { applyRendererCsp } from '../shared/cspPolicy'
+
+// ★외부 전송 금지 — 화면 보안 정책을 **무엇보다 먼저** 건다(2026-09-30). 이 뒤의 모든 불러오기·연결에 걸린다.
+applyRendererCsp(document, !!(window as { api?: { _e2e?: boolean } }).api?._e2e)
 
 // E2E 전용(AF_E2E=1): 자동화가 store를 통해 파일/모드/상태를 주입할 수 있게 노출. 그 외엔 노출하지 않음.
 if ((window as { api?: { _e2e?: boolean } }).api?._e2e) {

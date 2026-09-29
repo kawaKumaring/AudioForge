@@ -62,7 +62,7 @@ function open(): void {
     autoHideMenuBar: true,
     // 검사에서는 사람이 하던 일을 빼앗지 않게 앞으로 튀어나오지 않는다(앱 창과 같은 규칙).
     ...(process.env.AF_E2E === '1' ? { show: false } : {}),
-    webPreferences: { preload, sandbox: false },
+    webPreferences: { preload, sandbox: false, spellcheck: false },
   })
   if (process.env.AF_E2E === '1') win.once('ready-to-show', () => { try { win?.showInactive() } catch { /* 닫혔다 */ } })
   win.setMenuBarVisibility(false)

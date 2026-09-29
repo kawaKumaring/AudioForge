@@ -933,7 +933,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       outputFormat: o.outputFormat || 'wav',
       whisperModel: o.whisperModel || 'large-v3',
       whisperLang: o.whisperLang || 'auto',
-      translateModel: o.translateModel || '600m',
+      // ★'google' 은 없앴다(외부 전송 금지, 2026-09-30) — 옛 저장값은 로컬 번역으로 연다.
+      translateModel: o.translateModel && o.translateModel !== 'google' ? o.translateModel : '600m',
       nSpeakers: o.nSpeakers ?? 2,
       // TTS 설정 복원(스냅샷에 있을 때만 유의미; 없으면 기본값)
       ttsText: o.ttsText ?? '',
