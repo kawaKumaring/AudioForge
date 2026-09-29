@@ -55,6 +55,19 @@ test('빼고 나서 남는 것이 없으면 빈 글 — 부르는 쪽이 건너�
 test('저장본을 믿지 않는다 — 모르는 값은 기본으로', () => {
   assert.deepEqual(parseReaderPrefs(null), DEFAULT_READER_PREFS)
   assert.deepEqual(parseReaderPrefs({ follow: 'yes', skipHanjaInParens: 1 }), DEFAULT_READER_PREFS)
-  assert.deepEqual(parseReaderPrefs({ follow: false, skipHanjaInParens: true }),
-    { follow: false, skipHanjaInParens: true })
+  assert.deepEqual(parseReaderPrefs({ follow: false, skipHanjaInParens: true, fontSize: 18 }),
+    { follow: false, skipHanjaInParens: true, fontSize: 18 })
+})
+
+test('★글자 크기 기본은 16 — 예전 19 는 크다는 지시', () => {
+  assert.equal(DEFAULT_READER_PREFS.fontSize, 16)
+  assert.equal(parseReaderPrefs({}).fontSize, 16, '예전 저장본(글자 크기 없음)도 16 으로 연다')
+})
+
+test('글자 크기는 범위 안으로만 — 모르는 값은 기본', () => {
+  assert.equal(parseReaderPrefs({ fontSize: 99 }).fontSize, 24)
+  assert.equal(parseReaderPrefs({ fontSize: 2 }).fontSize, 13)
+  assert.equal(parseReaderPrefs({ fontSize: 17.6 }).fontSize, 18)
+  assert.equal(parseReaderPrefs({ fontSize: '20' }).fontSize, 16)
+  assert.equal(parseReaderPrefs({ fontSize: NaN }).fontSize, 16)
 })

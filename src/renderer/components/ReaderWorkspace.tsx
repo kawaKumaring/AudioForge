@@ -2,23 +2,23 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { create } from 'zustand'
 import { useReadAloud, type ReaderVoicePick } from '@/hooks/useReadAloud'
 import { chunkAt, TEXT_FILE_LIMIT } from '../../shared/readerChunks'
-import { DEFAULT_READER_PREFS, parseReaderPrefs, READER_PREFS_STORAGE_KEY, type ReaderPrefs } from '../../shared/readerText'
+import { DEFAULT_READER_PREFS, parseReaderPrefs, READER_PREFS_STORAGE_KEY, READER_FONT_MAX, READER_FONT_MIN, type ReaderPrefs } from '../../shared/readerText'
 
 // 낭독 화면. 합성은 `useReadAloud`, 책·자리 보관은 `works/books`, 파일 고르기는 본체 대화상자가 맡는다.
 type Book = { id: string; name: string; paragraphs: string[]; position: number }
 /** 책으로 받을 파일 — 대화상자와 끌어 놓기가 **같은 규칙**을 타게 이름·크기·읽기만 본다. */
 type TextSource = { name: string; size: number; read: () => Promise<ArrayBuffer | Uint8Array> }
 const useReader = create<{
-  books: Book[]; active: string; fontSize: number; voice: string
+  books: Book[]; active: string; voice: string
   /** ★실제로 합성에 쓸 지정. 이름만 들고 있으면 낭독을 시작할 수 없다. */
   pick: ReaderVoicePick | null
-}>(() => ({ books: [], active: '', fontSize: 19, voice: '기본 목소리', pick: null }))
+}>(() => ({ books: [], active: '', voice: '기본 목소리', pick: null }))
 const panel: CSSProperties = { background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 14 }
 const button: CSSProperties = { fontFamily: 'inherit', color: 'var(--text-secondary)', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 8, padding: '8px 12px', cursor: 'pointer', whiteSpace: 'nowrap' }
-function BookIcon() { return <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M12 5v16M12 5C9 3 5 3 2 4v15c3-1 7-1 10 2 3-3 7-3 10-2V4c-3-1-7-1-10 1Z"/></svg> }
+function BookIcon({ size = 26 }: { size?: number }) { return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M12 5v16M12 5C9 3 5 3 2 4v15c3-1 7-1 10 2 3-3 7-3 10-2V4c-3-1-7-1-10 1Z"/></svg> }
 
 export default function ReaderWorkspace() {
-  const { books, active, fontSize, voice, pick } = useReader()
+  const { books, active, voice, pick } = useReader()
   const book = books.find(b => b.id === active)
   const bodyRef = useRef<HTMLDivElement>(null)
   const voiceButton = useRef<HTMLButtonElement>(null)
@@ -26,7 +26,8 @@ export default function ReaderWorkspace() {
   const [loading, setLoading] = useState(false)
   const [dragging, setDragging] = useState(false)
   const [settings, setSettings] = useState(false)
-  const [shelf, setShelf] = useState(true)
+  // ★책 목록은 **서재 팝업**에 모은다 (2026-09-30 지시: 불러올수록 화면이 차고 본문이 오른쪽으로 쏠린다).
+  const [library, setLibrary] = useState(false)
   /** 설치된 기본 목소리. ★표시값이 아니라 **본체가 확인한 것**이다(인수인계 1항). */
   const [builtins, setBuiltins] = useState<{ modelId: string; label: string; path: string; engineId: string }[]>([])
   const [voiceNote, setVoiceNote] = useState('')
@@ -46,12 +47,19 @@ export default function ReaderWorkspace() {
   }, [])
   const updatePrefs = (patch: Partial<ReaderPrefs>) => {
     prefsTouched.current = true
-    const next = { ...prefs, ...patch }
-    setPrefs(next)
-    void window.api.settings.set(READER_PREFS_STORAGE_KEY, next)
-      .then((r: { ok?: boolean } | undefined) => { if (r && r.ok === false) setError('낭독 설정을 저장하지 못했습니다 — 다시 켜면 예전 값으로 돌아갑니다.') })
-      .catch(() => setError('낭독 설정을 저장하지 못했습니다 — 다시 켜면 예전 값으로 돌아갑니다.'))
+    setPrefs((cur) => ({ ...cur, ...patch }))
   }
+  // 바꾼 뒤 멎으면 한 번 쓴다 — 글자 크기를 끄는 동안 설정 파일을 수십 번 쓰지 않는다.
+  useEffect(() => {
+    if (!prefsTouched.current) return
+    const t = setTimeout(() => {
+      void window.api.settings.set(READER_PREFS_STORAGE_KEY, prefs)
+        .then((r: { ok?: boolean } | undefined) => { if (r && r.ok === false) setError('낭독 설정을 저장하지 못했습니다 — 다시 켜면 예전 값으로 돌아갑니다.') })
+        .catch(() => setError('낭독 설정을 저장하지 못했습니다 — 다시 켜면 예전 값으로 돌아갑니다.'))
+    }, 250)
+    return () => clearTimeout(t)
+  }, [prefs])
+  const fontSize = prefs.fontSize
   useEffect(() => {
     void (async () => {
       try {
@@ -98,7 +106,24 @@ export default function ReaderWorkspace() {
     }, 600)
     return () => clearTimeout(t)
   }, [book?.id, book?.position, book?.paragraphs])
-  useEffect(() => { bodyRef.current?.querySelector('[aria-current="location"]')?.scrollIntoView({ block: 'nearest' }) }, [active, position])
+  /**
+   * 본문 칸 **안에서만** 굴린다 (2026-09-30 신고: "따라가기가 작동을 안 되는 경우가 많다",
+   * "하단의 실행 버튼이 휠에 영향을 받아서 움직인다").
+   * ★scrollIntoView 는 바깥 페이지까지 함께 굴려 아래 막대가 움직였고, 두 겹의 부드러운 굴리기가
+   *   겹치며 중간에 끊겼다. 본문 칸의 자리만 계산해 옮긴다.
+   */
+  const scrollInBody = (el: Element | null | undefined, how: 'nearest' | 'center', smooth: boolean) => {
+    const box = bodyRef.current
+    if (!box || !el) return
+    const b = box.getBoundingClientRect(), r = el.getBoundingClientRect()
+    if (how === 'nearest' && r.top >= b.top && r.bottom <= b.bottom) return
+    const tall = r.height > box.clientHeight * 0.8            // 칸보다 긴 구절은 머리를 맞춘다
+    const top = how === 'center' && !tall
+      ? box.scrollTop + (r.top - b.top) - (box.clientHeight - r.height) / 2
+      : box.scrollTop + (r.top - b.top) - 16
+    box.scrollTo({ top: Math.max(0, top), behavior: smooth ? 'smooth' : 'auto' })
+  }
+  useEffect(() => { scrollInBody(bodyRef.current?.querySelector('[aria-current="location"]'), 'nearest', false) }, [active, position])
   // ★본문 **전체**를 넘긴다. 표시용 문단과 합성용 덩이는 다른 단위다 —
   //   나누기 규칙은 `readerChunks` 가 갖는다(인수인계 3항).
   const PARAGRAPH_GAP = '\n\n'
@@ -117,10 +142,8 @@ export default function ReaderWorkspace() {
   //   덩이가 넘어갈 때마다 그 구절을 가운데로 가져온다. 끄면 그대로 둔다 — 앞뒤를 둘러볼 때.
   useEffect(() => {
     if (!read.playing || !prefs.follow) return
-    const el = bodyRef.current?.querySelector('[data-testid="reader-phrase"]')
-    if (!el) return
     const calm = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-    el.scrollIntoView({ block: 'center', behavior: calm ? 'auto' : 'smooth' })
+    scrollInBody(bodyRef.current?.querySelector('[data-testid="reader-phrase"]'), 'center', !calm)
   }, [read.playing, read.at, prefs.follow, book?.id])
   // ★멈춰 있을 때는 **고른 자리**에 맞춰 둔다 — 엔진이 그 자리부터 미리 만들어 두어,
   //   누르는 순간 곧바로 들린다(2026-09-29 지시: "읽어오면 빠르게 만들어서").
@@ -214,7 +237,8 @@ export default function ReaderWorkspace() {
   }
   return <section data-testid="reader-workspace" aria-label="낭독 작업실" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-      <button style={button} aria-pressed={shelf} onClick={() => setShelf(v => !v)} title="책 목록 열기·닫기">☷ 책 목록 {books.length || ''}</button>
+      <button style={{ ...button, display: 'inline-flex', alignItems: 'center', gap: 6 }} data-testid="reader-library" aria-haspopup="dialog"
+        onClick={() => setLibrary(true)} title="서재 — 불러온 책을 모아 둔 곳"><BookIcon size={16} /> 서재 {books.length || ''}</button>
       <button style={button} onClick={() => { void pickTexts() }} disabled={loading} data-testid="reader-add-text">＋ 텍스트 추가</button>
       <span data-testid="reader-notice"
         title="책과 읽던 자리는 앱을 껐다 켜도 남습니다. 목록에서 빼면 그 기록만 지워지고 원본 파일은 그대로입니다. 목소리를 바꾸면 만들어 둔 소리는 버리고 다시 만듭니다."
@@ -224,18 +248,6 @@ export default function ReaderWorkspace() {
     </div>
     {error && <div role="alert" style={{ color: 'var(--rose, #fb7185)', fontSize: 12 }}>{error}</div>}
     <div onDragOver={e => { e.preventDefault(); setDragging(true) }} onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false) }} onDrop={e => { e.preventDefault(); setDragging(false); dropTexts(Array.from(e.dataTransfer.files)) }} style={{ display: 'flex', gap: 16, flexWrap: 'wrap', outline: dragging ? '2px solid var(--accent-light)' : undefined, borderRadius: 14 }}>
-      {shelf && books.length > 0 && <aside aria-label="책 목록" style={{ ...panel, flex: '1 1 190px', minWidth: 0, padding: 12, alignSelf: 'flex-start' }}>
-        <div style={{ padding: '6px 8px 14px', fontSize: 11, color: 'var(--text-muted)' }}>내 책</div>
-        <div style={{ maxHeight: 440, overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
-          {books.map((b, i) => <div key={b.id} style={{ display: 'flex', gap: 4, borderRadius: 9, background: active === b.id ? 'var(--accent-glow)' : 'transparent' }}>
-            <button onClick={() => useReader.setState({ active: b.id })} aria-current={active === b.id ? 'true' : undefined} style={{ ...button, flex: 1, minWidth: 0, textAlign: 'left', background: 'transparent', border: 'none', whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
-              <span style={{ display: 'block', fontSize: 10, color: 'var(--text-muted)', marginBottom: 6 }}>{String(i + 1).padStart(2, '0')}</span>{b.name}
-              <span style={{ display: 'block', fontSize: 10, color: 'var(--text-muted)', marginTop: 7 }}>{b.position + 1} / {b.paragraphs.length} 문단</span>
-            </button>
-            <button aria-label={`${b.name} 목록에서 빼기`} title="목록에서 빼기 · 원본 파일은 유지" onClick={() => removeBook(b.id)} style={{ ...button, padding: 6, background: 'transparent', border: 'none', alignSelf: 'flex-start' }}>×</button>
-          </div>)}
-        </div>
-      </aside>}
       <article style={{ ...panel, flex: '4 1 340px', minWidth: 0, overflow: 'hidden' }}>
         {!book ? <button onClick={() => { void pickTexts() }} disabled={loading} style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 18, width: 'calc(100% - 32px)', minHeight: 330, margin: 16, border: '1px dashed var(--border-accent)', borderRadius: 12, background: 'var(--bg-base)', color: 'var(--text-primary)', fontFamily: 'inherit', cursor: 'pointer' }}>
           <span style={{ color: 'var(--accent-light)', padding: 17, borderRadius: 14, background: 'var(--accent-glow)' }}><BookIcon /></span>
@@ -245,10 +257,8 @@ export default function ReaderWorkspace() {
         </button> : <>
           <header style={{ padding: '20px 24px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10, borderBottom: '1px solid var(--border-subtle)' }}>
             <h2 style={{ margin: 0, fontSize: 17, flex: 1, overflowWrap: 'anywhere' }}>{book.name}</h2>
-            <button style={button} aria-label="글자 작게" disabled={fontSize <= 15} onClick={() => useReader.setState({ fontSize: fontSize - 2 })}>가−</button>
-            <button style={button} aria-label="글자 크게" disabled={fontSize >= 27} onClick={() => useReader.setState({ fontSize: fontSize + 2 })}>가＋</button>
           </header>
-          <div ref={bodyRef} aria-label="책 본문" style={{ height: 'clamp(300px, 48vh, 620px)', overflowY: 'auto', padding: '22px clamp(12px, 3vw, 32px)', background: 'var(--bg-base)' }}>
+          <div ref={bodyRef} data-testid="reader-body" aria-label="책 본문" style={{ height: 'clamp(320px, 58vh, 900px)', overflowY: 'auto', overscrollBehavior: 'contain', padding: '22px clamp(12px, 3vw, 32px)', background: 'var(--bg-base)' }}>
             {/* ★고른 자리와 **읽는 자리**를 구분해 보인다(인수인계 5항).
                 누른 곳은 '여기서 시작' 이고, 색이 찬 곳은 '지금 읽는 중' 이다. */}
             {book.paragraphs.map((p, i) => {
@@ -265,8 +275,9 @@ export default function ReaderWorkspace() {
         </>}
       </article>
     </div>
-    <footer style={{ ...panel, padding: '16px 12px', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto minmax(0, 1fr)', alignItems: 'center', gap: 8 }}>
-      <button ref={voiceButton} onClick={() => setSettings(true)} style={{ ...button, minWidth: 0, textAlign: 'left', padding: 8 }} title="낭독 목소리 선택">
+    {/* ★아래 막대는 **움직이지 않는다** (2026-09-30 신고: 낭독을 위한 작동 단추가 휠에 영향을 받으면 안 된다). */}
+    <footer data-testid="reader-controls" style={{ ...panel, position: 'sticky', bottom: 0, zIndex: 20, boxShadow: '0 -8px 20px #0006', padding: '16px 12px', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto minmax(0, 1fr)', alignItems: 'center', gap: 8 }}>
+      <button ref={voiceButton} data-testid="reader-settings" onClick={() => setSettings(true)} style={{ ...button, minWidth: 0, textAlign: 'left', padding: 8 }} title="낭독 설정 — 목소리·글자 크기·읽는 방식">
         <span style={{ display: 'block', fontSize: 10, color: 'var(--text-muted)', marginBottom: 5 }}>목소리</span><span style={{ overflowWrap: 'anywhere', whiteSpace: 'normal' }}>{voice}</span>
       </button>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
@@ -301,8 +312,8 @@ export default function ReaderWorkspace() {
         else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
       }
     }} onClick={closeSettings} style={{ position: 'fixed', inset: 0, zIndex: 100, background: '#0009', display: 'grid', placeItems: 'center', padding: 20 }}>
-      <section role="dialog" aria-modal="true" aria-label="낭독 목소리" onClick={e => e.stopPropagation()} style={{ ...panel, width: '100%', maxWidth: 420, padding: 22 }}>
-        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 20 }}><h2 style={{ fontSize: 17, margin: 0 }}>낭독 목소리</h2><button autoFocus aria-label="닫기" onClick={closeSettings} style={{ ...button, marginLeft: 'auto' }}>×</button></div>
+      <section role="dialog" aria-modal="true" aria-label="낭독 설정" onClick={e => e.stopPropagation()} style={{ ...panel, width: '100%', maxWidth: 420, padding: 22 }}>
+        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 20 }}><h2 style={{ fontSize: 17, margin: 0 }}>낭독 설정</h2><button autoFocus aria-label="닫기" onClick={closeSettings} style={{ ...button, marginLeft: 'auto' }}>×</button></div>
         {/* ★설치된 것만 보여 준다. 없는 목소리를 고르게 하면 눌러야 실패를 안다. */}
         {builtins.map(b => (
           <button key={b.modelId} data-testid="reader-voice-builtin"
@@ -316,6 +327,11 @@ export default function ReaderWorkspace() {
         <button data-testid="reader-voice-file" style={{ ...button, width: '100%', textAlign: 'left' }}
           title="가지고 있는 소리·영상의 목소리로 읽습니다. 기본 목소리보다 훨씬 느립니다 — 실측 4배."
           onClick={() => { void pickVoiceFile() }}>＋ 음성·영상에서 목소리 선택</button>
+        <label style={{ display: 'grid', gap: 6, marginTop: 18, fontSize: 13 }}>
+          <span>글자 크기 <span style={{ color: 'var(--text-muted)' }}>{prefs.fontSize}px</span></span>
+          <input data-testid="reader-font-size" type="range" min={READER_FONT_MIN} max={READER_FONT_MAX} step={1}
+            value={prefs.fontSize} onChange={e => updatePrefs({ fontSize: Number(e.target.value) })} />
+        </label>
         <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginTop: 18, fontSize: 13, cursor: 'pointer' }}>
           <input data-testid="reader-skip-hanja" type="checkbox" checked={prefs.skipHanjaInParens}
             onChange={e => updatePrefs({ skipHanjaInParens: e.target.checked })} style={{ marginTop: 3 }} />
@@ -323,6 +339,29 @@ export default function ReaderWorkspace() {
             <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>예: 학교(學校) → "학교" 만 읽습니다. 본문에는 그대로 보입니다.</span>
           </span>
         </label>
+      </section>
+    </div>}
+    {library && <div onKeyDown={e => { if (e.key === 'Escape') setLibrary(false) }} onClick={() => setLibrary(false)}
+      style={{ position: 'fixed', inset: 0, zIndex: 100, background: '#0009', display: 'grid', placeItems: 'center', padding: 20 }}>
+      <section role="dialog" aria-modal="true" aria-label="서재" data-testid="reader-library-dialog" onClick={e => e.stopPropagation()}
+        style={{ ...panel, width: '100%', maxWidth: 480, maxHeight: '80vh', display: 'flex', flexDirection: 'column', padding: 20 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
+          <h2 style={{ fontSize: 17, margin: 0, flex: 1 }}>서재</h2>
+          <button style={button} disabled={loading} onClick={() => { setLibrary(false); void pickTexts() }}>＋ 텍스트 추가</button>
+          <button autoFocus aria-label="닫기" style={button} onClick={() => setLibrary(false)}>×</button>
+        </div>
+        {!books.length && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>아직 불러온 책이 없습니다. 끌어 놓거나 '텍스트 추가' 로 가져오세요.</span>}
+        <div style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {books.map((b, i) => <div key={b.id} style={{ display: 'flex', gap: 4, borderRadius: 9, background: active === b.id ? 'var(--accent-glow)' : 'transparent' }}>
+            <button data-testid="reader-library-book" onClick={() => { useReader.setState({ active: b.id }); setLibrary(false) }} aria-current={active === b.id ? 'true' : undefined}
+              style={{ ...button, flex: 1, minWidth: 0, textAlign: 'left', background: 'transparent', border: 'none', whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
+              <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginBottom: 4 }}>{String(i + 1).padStart(2, '0')}</span>{b.name}
+              <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginTop: 5 }}>{b.position + 1} / {b.paragraphs.length} 문단</span>
+            </button>
+            <button aria-label={`${b.name} 목록에서 빼기`} title="목록에서 빼기 · 원본 파일은 유지" onClick={() => removeBook(b.id)}
+              style={{ ...button, padding: 6, background: 'transparent', border: 'none', alignSelf: 'flex-start' }}>×</button>
+          </div>)}
+        </div>
       </section>
     </div>}
   </section>

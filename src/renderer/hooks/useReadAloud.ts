@@ -19,9 +19,10 @@ import { useAppStore } from '@/stores/app.store'
 import { createManagedAudio } from '@/lib/playbackVolume'
 import { splitForReading, chunkAt, type Chunk } from '../../shared/readerChunks'
 import { speakableText } from '../../shared/readerText'
+import { opLog, nameOnly } from '@/lib/opLog'
 import {
   emptyQueue, nextToMake, canPlayNow, waitReason, markMaking, markReady, markFailed,
-  seek, advance, atEnd, changeVoice, acceptResult, retryFailed, type QueueState,
+  seek, advance, atEnd, changeVoice, acceptResult, retryFailed, DEFAULT_AHEAD, type QueueState,
 } from '../../shared/readerQueue'
 
 export interface ReaderVoicePick {
@@ -33,6 +34,17 @@ export interface ReaderVoicePick {
 }
 
 /** 무엇으로 만들었는지 가리키는 지문. 바뀌면 만들어 둔 것을 버린다. */
+/**
+ * 앞서 몇 덩이를 만들어 둘까.
+ * ★기본 목소리는 한 덩이(20초 분량)에 2초다 — **여섯**(약 2분)을 늘 앞서 둔다 (2026-09-30 피드백:
+ *   "읽다가 멈추고 다시 생성하고 하는 과정이 갑갑하다"). 예전 둘은 한 번만 늦어도 소리가 끊겼다.
+ * ★참조 목소리는 한 덩이에 40~90초 GPU 를 쓴다 — 멀리 앞서 만들면 옮길 때 버리는 것이 크다. 둘 그대로.
+ */
+export const BUILTIN_AHEAD = 6
+function aheadFor(v: ReaderVoicePick | null): number {
+  return v?.kind === 'builtin' ? BUILTIN_AHEAD : DEFAULT_AHEAD
+}
+
 export function voiceKeyOf(v: ReaderVoicePick | null): string {
   return v ? `${v.kind}:${v.engineId || ''}:${v.path}` : ''
 }
@@ -58,14 +70,18 @@ export function useReadAloud(
   text: string, voice: ReaderVoicePick | null,
   opts: { skipHanjaInParens?: boolean } = {},
 ): ReadAloud {
-  const chunks = useMemo(() => splitForReading(text), [text])
+  // ★고른 시작 자리는 **덩이의 경계**가 된다 — 덩이 한가운데를 고르면 그 앞 문단부터 읽었다(2026-09-30 재현).
+  //   글이 바뀌면 경계도 처음으로(같은 렌더에서 — 옛 책의 자리를 새 책에 쓰지 않는다).
+  const [cut, setCut] = useState<{ text: string; at: number }>({ text, at: 0 })
+  const breakAt = cut.text === text ? cut.at : 0
+  const chunks = useMemo(() => splitForReading(text, { breakAt }), [text, breakAt])
   const skipHanja = !!opts.skipHanjaInParens
   // ★두 열쇠를 나눈다. 본체의 쌓아 두기는 **목소리 + 실제로 읽은 글**로 이름 붙이므로
   //   목소리만 넘긴다(한자가 없는 덩이는 설정을 바꿔도 다시 만들지 않는다).
   //   큐는 설정까지 본다 — 설정이 바뀌면 만들어 둔 것을 버리고 지금 자리를 다시 읽는다.
   const cacheKey = voiceKeyOf(voice)
   const voiceKey = cacheKey && skipHanja ? `${cacheKey}|괄호한자뺌` : cacheKey
-  const [q, setQ] = useState<QueueState>(() => emptyQueue(chunks.length, voiceKey))
+  const [q, setQ] = useState<QueueState>(() => emptyQueue(chunks.length, voiceKey, aheadFor(voice)))
   const [playing, setPlaying] = useState(false)
   const [fault, setFault] = useState('')
 
@@ -97,7 +113,9 @@ export function useReadAloud(
   useEffect(() => {
     if (builtFor.current === chunks) return
     builtFor.current = chunks
-    setQ(emptyQueue(chunks.length, voiceKey)); setFault('')
+    // 경계가 바뀐 것이면 그 자리에서, 글이 바뀐 것이면 처음에서.
+    const start = Math.max(0, chunkAt(chunks, breakAt))
+    setQ({ ...emptyQueue(chunks.length, voiceKey, aheadFor(voice)), at: start }); setFault('')
   }, [chunks])
   // ★목소리를 바꾸면 **곧바로** 적용한다 (2026-09-29 사용자 신고: "선택하면 적용이 되지 않는다").
   //   예전에는 옛 목소리 소리가 그 덩이 끝까지 이어졌다 — 고른 것과 다른 목소리를 들려준 셈이다.
@@ -106,13 +124,15 @@ export function useReadAloud(
   useEffect(() => {
     if (voiceSeen.current === voiceKey) return
     voiceSeen.current = voiceKey
+    if (voice) opLog('reader', `목소리·설정 바꿈 — ${voice.kind}:${nameOnly(voice.path)}${skipHanja ? ' · 괄호 속 한자 뺌' : ''}`)
     stopAudio()
     // 새 목소리는 새 시도다 — 지난 목소리의 오류 문구를 남겨 두지 않는다.
     setFault('')
-    setQ((cur) => changeVoice(cur, voiceKey))
+    setQ((cur) => ({ ...changeVoice(cur, voiceKey), ahead: aheadFor(voice) }))
   }, [voiceKey, stopAudio])
 
   const stop = useCallback(() => {
+    opLog('reader', `멈춤 — 덩이 ${qRef.current.at + 1}/${qRef.current.count}`)
     setPlaying(false)
     stopAudio()
   }, [stopAudio])
@@ -187,7 +207,11 @@ export function useReadAloud(
     if (!playing) { playedRef.current = ''; return }
     const it = q.items[q.at]
     if (!it) { setPlaying(false); return }
-    if (it.state === 'failed') { setFault(it.why || '이 부분을 만들지 못했습니다'); setPlaying(false); return }
+    if (it.state === 'failed') {
+      const why = it.why || '이 부분을 만들지 못했습니다'
+      opLog('reader', `오류로 멈춤 — 덩이 ${q.at + 1}/${q.count}: ${why}`, 'WARN')
+      setFault(why); setPlaying(false); return
+    }
     if (it.state === 'ready' && !it.path) {
       // 소리 없이 지나가는 덩이 — 멈추지 않고 다음으로. 마지막이면 멈춘다.
       if (atEnd(q)) setPlaying(false)
@@ -205,7 +229,7 @@ export function useReadAloud(
     el.onended = () => {
       if (!aliveRef.current) return
       // 마지막이면 멈춘다 — 조용히 처음으로 돌아가지 않는다.
-      if (atEnd(qRef.current)) { setPlaying(false); return }
+      if (atEnd(qRef.current)) { opLog('reader', `끝까지 읽음 — ${qRef.current.count}덩이`); setPlaying(false); return }
       setQ((cur) => advance(cur))
     }
     el.onerror = () => {
@@ -238,16 +262,25 @@ export function useReadAloud(
     // ★다시 누르는 것은 "이제 될 것 같다" 는 뜻이다. 거절당해 굳은 것을 풀어 준다 —
     //   풀지 않으면 다른 작업이 끝나도 그 자리에 갇힌다.
     setQ((cur) => retryFailed(cur))
+    // ★동작 기록 — 글 내용은 적지 않는다. 자리·목소리 종류·파일 이름·설정만.
+    opLog('reader', `시작 — 덩이 ${qRef.current.at + 1}/${chunks.length} · 목소리 ${voice.kind}:${nameOnly(voice.path)}${skipHanja ? ' · 괄호 속 한자 뺌' : ''}`)
     setPlaying(true)
-  }, [voice, chunks.length])
+  }, [voice, chunks.length, skipHanja])
 
   const seekToChar = useCallback((charIndex: number) => {
-    const i = chunkAt(chunks, Math.max(0, charIndex))
-    if (i < 0) return
+    const c = Math.max(0, charIndex)
+    if (chunkAt(chunks, c) < 0) return
     stopAudio()
     setFault('')
-    setQ((cur) => seek(cur, i))
-  }, [chunks, stopAudio])
+    if (c === breakAt) {
+      // 이미 그 자리에서 끊겨 있다 — 자리만 옮긴다.
+      const i = chunkAt(chunks, c)
+      setQ((cur) => seek(cur, i))
+      return
+    }
+    // 새 경계 — 덩이가 다시 나뉘고, 위 효과가 그 자리로 옮긴다.
+    setCut({ text, at: c })
+  }, [chunks, breakAt, text, stopAudio])
 
   const next = useCallback(() => { stopAudio(); setQ((cur) => advance(cur)) }, [stopAudio])
   const prev = useCallback(() => { stopAudio(); setQ((cur) => seek(cur, cur.at - 1)) }, [stopAudio])

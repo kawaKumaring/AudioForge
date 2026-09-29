@@ -18,9 +18,17 @@ export interface ReaderPrefs {
    *   읽지 않도록." 기본은 **끔** — 켜기 전에는 예전과 똑같이 읽는다.
    */
   skipHanjaInParens: boolean
+  /**
+   * 본문 글자 크기(px). ★지시 (2026-09-30): "텍스트를 불러오면 처음 셋팅되어 있는 텍스트 크기가 크다.
+   *   크기를 줄이고 해당 크기를 옵션에서 조절할 수 있게." 예전 기본은 19 였다.
+   */
+  fontSize: number
 }
 
-export const DEFAULT_READER_PREFS: ReaderPrefs = { follow: true, skipHanjaInParens: false }
+export const READER_FONT_MIN = 13
+export const READER_FONT_MAX = 24
+
+export const DEFAULT_READER_PREFS: ReaderPrefs = { follow: true, skipHanjaInParens: false, fontSize: 16 }
 
 /** 저장본을 믿지 않는다 — 모르는 값은 기본으로 돌린다. */
 export function parseReaderPrefs(raw: unknown): ReaderPrefs {
@@ -29,6 +37,9 @@ export function parseReaderPrefs(raw: unknown): ReaderPrefs {
     follow: typeof o.follow === 'boolean' ? o.follow : DEFAULT_READER_PREFS.follow,
     skipHanjaInParens: typeof o.skipHanjaInParens === 'boolean'
       ? o.skipHanjaInParens : DEFAULT_READER_PREFS.skipHanjaInParens,
+    fontSize: typeof o.fontSize === 'number' && Number.isFinite(o.fontSize)
+      ? Math.round(Math.min(READER_FONT_MAX, Math.max(READER_FONT_MIN, o.fontSize)))
+      : DEFAULT_READER_PREFS.fontSize,
   }
 }
 

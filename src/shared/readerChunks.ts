@@ -77,9 +77,24 @@ function sentenceEnds(text: string): number[] {
  */
 export function splitForReading(raw: string, opts: {
   target?: number; min?: number; max?: number
+  /**
+   * 이 자리에서 **반드시 끊는다** — 사용자가 고른 시작 자리.
+   * ★없으면 고른 문단이 덩이 한가운데일 때 **그 앞 문단부터** 읽었다(2026-09-30, 60문단 책으로 재현:
+   *   40번째를 골랐는데 39번째부터). 짧은 문단을 묶는 이점은 그대로 두고, 이 한 자리만 경계로 세운다.
+   */
+  breakAt?: number
 } = {}): Chunk[] {
   const text = String(raw ?? '')
   if (!text.trim()) return []
+  const at = Math.floor(opts.breakAt ?? 0)
+  if (at > 0 && at < text.length) {
+    const { breakAt: _drop, ...rest } = opts
+    void _drop
+    const head = splitForReading(text.slice(0, at), rest)
+    const tail = splitForReading(text.slice(at), rest)
+      .map((c) => ({ ...c, start: c.start + at, end: c.end + at }))
+    return [...head, ...tail]
+  }
   const target = toChars(opts.target ?? TARGET_SECONDS)
   const min = toChars(opts.min ?? MIN_SECONDS)
   const max = toChars(opts.max ?? MAX_SECONDS)

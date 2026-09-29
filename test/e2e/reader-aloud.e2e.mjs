@@ -89,8 +89,8 @@ try {
   ok(savedSetting('lastDir') === undefined, '글을 고른 것이 음원 기억을 덮지 않는다', savedSetting('lastDir'))
 
   // ── 2. 목소리는 본체가 확인한 것만 ────────────────────────────────────
-  await win.locator('button[title="낭독 목소리 선택"]').click()
-  await win.getByRole('dialog', { name: '낭독 목소리' }).waitFor()
+  await win.getByTestId('reader-settings').click()
+  await win.getByRole('dialog', { name: '낭독 설정' }).waitFor()
   const listedInUi = await win.getByTestId('reader-voice-builtin').count()
   ok(listedInUi === voices.length,
     '★설치된 목소리만 고를 수 있다 — 없는 것을 고르게 하지 않는다', { listedInUi, real: voices.length })
@@ -178,11 +178,11 @@ try {
   //   여기서는 실제 단추로 목소리 파일을 고르는 길을 본다. 재생은 하지 않는다 —
   //   참조 목소리 합성은 GPU 로 수십 초가 들고, 이 검사가 보려는 것이 아니다.
   await win.evaluate((p) => window.api.audio.e2eSetSelectFile(p), VOICE_PATH)
-  await win.locator('button[title="낭독 목소리 선택"]').click()
-  await win.getByRole('dialog', { name: '낭독 목소리' }).waitFor()
+  await win.getByTestId('reader-settings').click()
+  await win.getByRole('dialog', { name: '낭독 설정' }).waitFor()
   await win.getByTestId('reader-voice-file').click()
   const picked = await win.waitForFunction(() =>
-    (document.querySelector('button[title="낭독 목소리 선택"]')?.textContent || '').includes('참조.wav'),
+    (document.querySelector('[data-testid="reader-settings"]')?.textContent || '').includes('참조.wav'),
   null, { timeout: 10000 }).then(() => true).catch(() => false)
   ok(picked, '★고른 목소리 파일로 바뀐다')
   ok(savedSetting('lastVoiceDir') === VOICE_DIR, '★목소리를 불러온 폴더를 기억한다', savedSetting('lastVoiceDir'))
@@ -199,8 +199,8 @@ try {
   // 낭독 설정을 바꿔 둔다 — 껐다 켠 뒤에도 남아야 한다(저장 허용 목록을 끝에서 끝까지 본다).
   ok(await win.getByTestId('reader-follow').getAttribute('aria-pressed') === 'true', '따라가기는 처음에 켜져 있다')
   await win.getByTestId('reader-follow').click()
-  await win.locator('button[title="낭독 목소리 선택"]').click()
-  await win.getByRole('dialog', { name: '낭독 목소리' }).waitFor()
+  await win.getByTestId('reader-settings').click()
+  await win.getByRole('dialog', { name: '낭독 설정' }).waitFor()
   ok(!(await win.getByTestId('reader-skip-hanja').isChecked()), '괄호 속 한자 건너뛰기는 처음에 꺼져 있다')
   await win.getByTestId('reader-skip-hanja').check()
   await win.keyboard.press('Escape')
@@ -226,12 +226,14 @@ try {
   await win2.waitForFunction(() => document.querySelector('[data-testid="reader-follow"]')?.getAttribute('aria-pressed') === 'false',
     null, { timeout: 5000 }).catch(() => {})
   ok(await win2.getByTestId('reader-follow').getAttribute('aria-pressed') === 'false', '★껐다 켜도 따라가기 설정이 남는다')
-  await win2.locator('button[title="낭독 목소리 선택"]').click()
-  await win2.getByRole('dialog', { name: '낭독 목소리' }).waitFor()
+  await win2.getByTestId('reader-settings').click()
+  await win2.getByRole('dialog', { name: '낭독 설정' }).waitFor()
   ok(await win2.getByTestId('reader-skip-hanja').isChecked(), '★껐다 켜도 괄호 속 한자 설정이 남는다')
   await win2.keyboard.press('Escape')
 
   // 목록에서 빼면 **그 파일만** 사라진다
+  // 책 목록은 서재 팝업에 있다(2026-09-30 피드백: 본문 옆 칸이 화면을 채웠다).
+  await win2.getByTestId('reader-library').click()
   await win2.locator('[aria-label$="목록에서 빼기"]').first().click()
   await win2.waitForTimeout(700)
   const left = fs.existsSync(path.join(UD, 'works', 'books'))

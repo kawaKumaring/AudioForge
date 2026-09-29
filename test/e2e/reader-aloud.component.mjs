@@ -197,10 +197,11 @@ try {
   // ── 3. 누르기 전에 미리 만들어 둔다 ───────────────────────────────────
   {
     const { page } = await open({ strict: true, seconds: 0.3, pick: A })
-    const made = await page.waitForFunction(() => window.__speaks.length >= 3, null, { timeout: 5000 })
+    // ★기본 목소리는 앞서 여섯(약 2분)을 둔다 — 지금 자리 + 여섯 = 일곱(2026-09-30, 멈춤 없는 낭독).
+    const made = await page.waitForFunction(() => window.__speaks.length >= 7, null, { timeout: 5000 })
       .then(() => true).catch(() => false)
     const got = await page.evaluate(() => ({ speaks: window.__speaks.length, played: window.__played.length }))
-    ok(made && got.speaks === 3, '★기본 목소리는 누르기 전에 앞 덩이를 만들어 둔다 — 지금 자리 + 둘', got)
+    ok(made && got.speaks === 7, '★기본 목소리는 누르기 전에 앞 덩이를 만들어 둔다 — 지금 자리 + 여섯', got)
     ok(got.played === 0, '누르기 전에는 소리를 내지 않는다', got)
     const t0 = Date.now()
     await page.evaluate(() => window.__r.start())

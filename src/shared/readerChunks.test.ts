@@ -118,3 +118,25 @@ test('★목표 크기를 바꾸면 따라 바뀐다 — 화면이 조절할 수
   const big = splitForReading(text, { target: 30, min: 20, max: 50 })
   assert.ok(small.length > big.length, `작게 잡았는데 덩이가 더 적다: ${small.length} vs ${big.length}`)
 })
+
+// ★고른 자리가 덩이 한가운데면 그 앞 문단부터 읽었다(2026-09-30, 60문단 책으로 재현).
+test('★고른 자리에서 반드시 끊는다 — 그 앞 문단부터 읽지 않는다', () => {
+  const paras = Array.from({ length: 12 }, (_, i) => `${i + 1}번째 문단이다. 그는 문을 열고 복도를 내다보았다.`)
+  const text = paras.join('\n\n')
+  const at = text.indexOf('8번째')
+  const plain = splitForReading(text)
+  assert.ok(plain.some((c) => c.start < at && c.end > at), '전제: 끊지 않으면 고른 자리가 덩이 한가운데에 든다')
+  const cut = splitForReading(text, { breakAt: at })
+  const i = chunkAt(cut, at)
+  assert.equal(cut[i].start, at, '고른 자리에서 시작하는 덩이가 없다')
+  assert.ok(cut[i].text.startsWith('8번째'))
+  // 원문 자리는 그대로 이어진다 — 표시·건너뛰기가 끊기지 않는다.
+  for (const c of cut) assert.equal(text.slice(c.start, c.end), c.text)
+  assert.ok(cut.every((c, k) => k === 0 || c.start >= cut[k - 1].end), '덩이가 겹친다')
+})
+
+test('끊을 자리가 처음이거나 밖이면 예전과 같다', () => {
+  const text = Array(6).fill('그는 문을 열고 복도를 내다보았다.').join(' ')
+  assert.deepEqual(splitForReading(text, { breakAt: 0 }), splitForReading(text))
+  assert.deepEqual(splitForReading(text, { breakAt: 99999 }), splitForReading(text))
+})
