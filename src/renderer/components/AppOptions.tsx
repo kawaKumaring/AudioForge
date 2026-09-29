@@ -333,7 +333,7 @@ export default function AppOptions({ close }: { close: () => void }) {
         <label style={{ ...row, gap: 8, fontSize: 12, cursor: 'pointer' }}>
           <input type="checkbox" data-testid="options-console" checked={consoleOpen}
             onChange={(e) => { void toggleConsole(e.target.checked) }} />
-          <span>콘솔 켜기 — 화면 맨 아래에 콘솔 토글이 생기고, 누르면 동작 기록이 아래로 펼쳐집니다</span>
+          <span>콘솔 켜기 — 앱 밖에 콘솔 창이 따로 뜹니다. 작업 화면은 그대로이고, 다른 모니터에 둘 수 있습니다</span>
         </label>
         <span style={muted}>켜지 않아도 기록은 남습니다. 글 내용과 폴더 경로는 적지 않습니다.</span>
         <div style={row}>

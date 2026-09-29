@@ -1,6 +1,7 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import App from './App'
+import ConsoleWindow from './components/ConsolePanel'
 import ErrorBoundary from './components/ErrorBoundary'
 import { useAppStore } from '@/stores/app.store'
 import { useLabStore } from '@/stores/lab.store'
@@ -33,7 +34,8 @@ window.addEventListener('unhandledrejection', (e) => {
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <App />
+      {/* 콘솔 창은 같은 화면 묶음을 #console 로 연다 — 앱 밖에 따로 뜨는 창이다(2026-09-30). */}
+      {window.location.hash === '#console' ? <ConsoleWindow /> : <App />}
     </ErrorBoundary>
   </React.StrictMode>
 )

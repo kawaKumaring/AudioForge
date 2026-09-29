@@ -18,7 +18,7 @@ import ReaderWorkspace from '@/components/ReaderWorkspace'
 import TtsResultInfo from '@/components/TtsResultInfo'
 import AppVersionLabel from '@/components/AppVersionLabel'
 import { loadPlaybackVolume } from '@/lib/playbackVolume'
-import ConsolePanel, { loadConsolePref, useConsolePanel, CONSOLE_BAR_PX } from '@/components/ConsolePanel'
+import { loadConsolePref } from '@/components/ConsolePanel'
 import { opLog } from '@/lib/opLog'
 import { isCancelCleanupBusy } from '../shared/cancelContract'
 
@@ -32,7 +32,11 @@ export default function App() {
   const pageRef = useRef<HTMLDivElement>(null)
   useEffect(() => { void loadPlaybackVolume() }, [])
   // 콘솔 창 — 켜 두었으면 다시 띄운다. 화면을 옮긴 것도 동작 기록에 남긴다(2026-09-30).
-  useEffect(() => { void loadConsolePref() }, [])
+  useEffect(() => {
+    let off = () => {}
+    void loadConsolePref().then((f) => { off = f })
+    return () => off()
+  }, [])
   useEffect(() => { opLog('mode', `화면 ${mode}`) }, [mode])
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0 }, [mode, synthesisTab])
   useEffect(() => {
@@ -45,7 +49,6 @@ export default function App() {
   }, [mode, synthesisTab])
 
   const synthesisView = useSynthesisCards(s => s.view)
-  const consoleOn = useConsolePanel(s => s.open)
   const workspace = WORKSPACES[mode]
   const showSharedRun = mode !== 'tts' && mode !== 'lab' && mode !== 'dub' && mode !== 'reader'
   const busy = status === 'processing' || isCancelCleanupBusy(status) || !!errorInfo?.childAlive
@@ -62,10 +65,7 @@ export default function App() {
         <span style={{ fontSize: 12, fontWeight: 600, letterSpacing: '.02em' }}>AudioForge</span>
       </div>
     </div>
-    {/* ★제목 줄 아래를 한 스크롤 영역으로 — 콘솔은 작업 화면 **아래로** 늘어난다(2026-09-30 피드백:
-        "콘솔이 위로 올라와서 UX 를 해친다, 아래로 늘리게"). 작업 화면의 높이는 창에 맞춰 그대로다. */}
-    <div data-testid="shell-scroll" style={{ flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden' }}>
-    <div style={{ height: consoleOn ? `calc(100% - ${CONSOLE_BAR_PX}px)` : '100%', minHeight: 0, display: 'flex' }}>
+    <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
       <aside data-testid="workspace-sidebar" style={{ width: 196, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 24, padding: '28px 12px 18px', background: 'var(--bg-primary)', borderRight: '1px solid var(--border-subtle)', overflowY: 'auto' }}>
         <ModeSelector />
         <div style={{ marginTop: 'auto', padding: '18px 0 0', borderTop: '1px solid var(--border-subtle)' }}>
@@ -141,9 +141,6 @@ export default function App() {
           </section>}
         </div>
       </main>
-    </div>
-    {/* 콘솔 서랍 — 설정에서 켜면 맨 아래에 생긴다. 펼치면 작업 화면 아래로 늘어난다. */}
-    <ConsolePanel />
     </div>
   </div>
 }

@@ -309,6 +309,16 @@ const api = {
     },
   },
 
+  /** 콘솔 창 — 앱 밖에 따로 뜨는 창. 켜고 끄기, 사용자가 창을 닫았을 때 알림. */
+  consoleWindow: {
+    set: (on: boolean): Promise<boolean> => ipcRenderer.invoke('console-window:set', on),
+    onClosed: (cb: () => void): (() => void) => {
+      const h = () => cb()
+      ipcRenderer.on('console-window:closed', h)
+      return () => { ipcRenderer.removeListener('console-window:closed', h) }
+    },
+  },
+
   /**
    * 기능 검사 — 기능별로 하나씩 실제로 돌려 본다(2026-09-30). 전체를 한 번에 돌리는 길은 없다.
    */
