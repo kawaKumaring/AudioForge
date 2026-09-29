@@ -132,6 +132,8 @@ if (WITH_APP_UI) {
     [path.join('test', 'e2e', 'diagnostics-export.e2e.mjs')])
   // 콘솔 창 — 동작 기록이 창과 무관하게 남고, 보이고, 복사되고, 껐다 켜도 남는가(2026-09-30 지시).
   run('실제 앱 · 콘솔 창(GPU 없음)', 'node', [path.join('test', 'e2e', 'console-panel.e2e.mjs')])
+  // 기능 검사 탭 — 기능별로 눌러 그 기능만, 초록/붉은 표시, 보고 복사·진단 묶음에 결과(2026-09-30 지시).
+  run('실제 앱 · 기능 검사 탭(GPU 없음)', 'node', [path.join('test', 'e2e', 'selfcheck.e2e.mjs')])
   // 개발선이 자기 데이터 폴더(audio-forge-dev)를 쓰고, 정식 폴더는 읽기만 하는가.
   run('실제 앱 · 채널별 데이터 폴더(GPU 없음)', 'node',
     [path.join('test', 'e2e', 'user-data-channel.e2e.mjs')])

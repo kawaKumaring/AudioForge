@@ -48,7 +48,7 @@ const FFMPEG_PATHS = [
     'Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.1-full_build/bin/ffmpeg.exe'),
 ]
 
-async function findFfmpeg(): Promise<string> {
+export async function findFfmpeg(): Promise<string> {
   for (const p of FFMPEG_PATHS) {
     try {
       await execFileAsync(p, ['-version'], { timeout: 8000 })
@@ -113,6 +113,30 @@ const previewMade = new Map<string, string>()
 /** 같은 모델을 동시에 두 번 만들지 않는다. */
 const previewInFlight = new Map<string, Promise<string>>()
 
+/**
+ * 기본 목소리 목록 — 화면과 **기능 검사**가 같은 길을 쓴다(2026-09-30).
+ * ★'폴더가 있으니 된다' 고 말하지 않는다. 판정은 python/builtin_voices.py 가 한다.
+ */
+export async function builtinVoiceList(): Promise<{ voices: BuiltinVoice[]; skipped: unknown[] }> {
+  if (voiceCache && Date.now() - voiceCache.at < VOICE_CACHE_MS) return voiceCache.data
+  const py = currentPythonPath()
+  if (!py || !existsSync(py)) throw new Error('파이썬을 찾지 못했습니다')
+  const here = dirname(fileURLToPath(import.meta.url))
+  const script = [
+    join(here, '..', '..', '..', 'python', 'builtin_voices.py'),
+    join(process.cwd(), 'python', 'builtin_voices.py'),
+  ].find((p) => existsSync(p))
+  if (!script) throw new Error('기본 목소리 조회 스크립트를 찾지 못했습니다')
+  const { stdout } = await execFileAsync(py, ['-X', 'utf8', script], {
+    timeout: 20000, maxBuffer: 1024 * 1024,
+    env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+  })
+  const parsed = JSON.parse(String(stdout).trim() || '{}') as { voices?: BuiltinVoice[]; skipped?: unknown[] }
+  const data = { voices: parsed.voices || [], skipped: parsed.skipped || [] }
+  voiceCache = { at: Date.now(), data }
+  return data
+}
+
 export function registerCardMediaIpc(): void {
   /**
    * 영상에서 소리를 꺼낸다. **소리 파일이면 그대로 돌려준다**(쓸데없이 다시 쓰지 않는다).
@@ -152,23 +176,7 @@ export function registerCardMediaIpc(): void {
    */
   ipcMain.handle('card:builtin-voices', async (): Promise<CardMediaReply<{ voices: BuiltinVoice[]; skipped: unknown[] }>> => {
     try {
-      if (voiceCache && Date.now() - voiceCache.at < VOICE_CACHE_MS) return ok(voiceCache.data)
-      const py = currentPythonPath()
-      if (!py || !existsSync(py)) throw new Error('파이썬을 찾지 못했습니다')
-      const here = dirname(fileURLToPath(import.meta.url))
-      const script = [
-        join(here, '..', '..', '..', 'python', 'builtin_voices.py'),
-        join(process.cwd(), 'python', 'builtin_voices.py'),
-      ].find((p) => existsSync(p))
-      if (!script) throw new Error('기본 목소리 조회 스크립트를 찾지 못했습니다')
-      const { stdout } = await execFileAsync(py, ['-X', 'utf8', script], {
-        timeout: 20000, maxBuffer: 1024 * 1024,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
-      })
-      const parsed = JSON.parse(String(stdout).trim() || '{}') as { voices?: BuiltinVoice[]; skipped?: unknown[] }
-      const data = { voices: parsed.voices || [], skipped: parsed.skipped || [] }
-      voiceCache = { at: Date.now(), data }
-      return ok(data)
+      return ok(await builtinVoiceList())
     } catch (e) {
       return fail(e)
     }

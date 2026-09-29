@@ -13,6 +13,7 @@ import { registerOptionsIpc } from './ipc/options.ipc'
 import { registerWorksIpc } from './ipc/works.ipc'
 import { registerReaderIpc } from './ipc/reader.ipc'
 import { registerConsoleIpc } from './ipc/console.ipc'
+import { registerSelfCheckIpc } from './ipc/selfcheck.ipc'
 import { registerDiagnosticsIpc } from './ipc/diagnostics.ipc'
 import { registerDubIpc } from './ipc/dub.ipc'
 import { registerSongIpc } from './ipc/song.ipc'
@@ -267,6 +268,8 @@ function createWindow(): void {
   registerReaderIpc()
   // 콘솔 창 — 앱 로그의 최근 줄을 보여 주고 화면의 동작 기록을 받는다(2026-09-30).
   registerConsoleIpc()
+  // 기능 검사 — 설정의 기능 검사 탭에서 기능별로 누른다(2026-09-30).
+  registerSelfCheckIpc()
   // 진단 묶음 — 로그 복사본 + 설정의 모양(값 없음). 시작 화면의 단추가 부른다.
   registerDiagnosticsIpc(() => mainWindow, () => currentPythonPath())
   // ★양쪽이 서로를 본다(2026-09-24 2차 감사). 더빙은 제 실행기를 따로 만들어서

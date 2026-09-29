@@ -22,6 +22,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { outputRootNotice, type OutputPlace } from '../../shared/outputLayout'
 import { exportDiagnosticsText } from '../../shared/diagnostics'
 import { useConsolePanel, setConsoleOpen } from './ConsolePanel'
+import { CHECKS, formatReport, type CheckId, type CheckResult } from '../../shared/selfCheck'
 
 const row: CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', minWidth: 0 }
 const panel: CSSProperties = {
@@ -78,6 +79,39 @@ export default function AppOptions({ close }: { close: () => void }) {
   // 임시 자리 — 앱 안이어야 한다. 화면에 내보이면 조용히 새는 것이 눈에 띈다.
   const [tempDir, setTempDir] = useState('')
   const [stray, setStray] = useState(0)
+  // ── 탭 (2026-09-30 지시: "설정에서 기능 검사 탭을 따로 만든 뒤 각 기능별 검사 버튼") ──
+  const [tab, setTab] = useState<'general' | 'checks'>('general')
+  const [checks, setChecks] = useState<Partial<Record<CheckId, CheckResult>>>({})
+  const [runningIds, setRunningIds] = useState<CheckId[]>([])
+  const [reportNote, setReportNote] = useState('')
+  useEffect(() => {
+    if (tab !== 'checks') return
+    void window.api.selfcheck.results().then((list) => {
+      const m: Partial<Record<CheckId, CheckResult>> = {}
+      for (const x of list) m[x.id as CheckId] = x as CheckResult
+      setChecks(m)
+    }).catch(() => {})
+  }, [tab])
+  const runCheck = async (id: CheckId) => {
+    setRunningIds((cur) => cur.includes(id) ? cur : [...cur, id])
+    try {
+      const got = await window.api.selfcheck.run(id)
+      if ('error' in got) setChecks((m) => ({ ...m, [id]: { id, ok: false, reason: got.error, ms: 0, at: new Date().toISOString() } }))
+      else setChecks((m) => ({ ...m, [id]: got as CheckResult }))
+    } finally {
+      setRunningIds((cur) => cur.filter((x) => x !== id))
+    }
+  }
+  // ★문제 보고용 복사 — 검사 결과와 최근 동작 기록을 **한 번에.** 이것 하나만 붙여 넣으면 된다.
+  const copyReport = async () => {
+    try {
+      const [lines, info] = await Promise.all([window.api.logs.recent(), window.api.app.getBuildInfo().catch(() => null)])
+      const head = `AudioForge ${(info as { version?: string } | null)?.version ?? ''} · 문제 보고`.trim()
+      const text = formatReport(Object.values(checks) as CheckResult[], lines.slice(-400), head)
+      await window.api.utils.copyToClipboard(text)
+      setReportNote(`복사했습니다 — 검사 ${Object.keys(checks).length}개 · 동작 기록 ${Math.min(400, lines.length)}건`)
+    } catch { setReportNote('복사하지 못했습니다') }
+  }
   // ── 문제 확인 (2026-09-30 지시: 콘솔 창 켜기 · 진단 묶음을 설정 안으로) ──
   const consoleOpen = useConsolePanel((s) => s.open)
   const toggleConsole = async (on: boolean) => {
@@ -165,10 +199,20 @@ export default function AppOptions({ close }: { close: () => void }) {
         <h2 style={{ margin: 0, fontSize: 17, flex: 1 }}>설정</h2>
         <button type="button" data-testid="options-close" style={button} onClick={close}>닫기</button>
       </div>
+      <div role="tablist" aria-label="설정 갈래" style={{ ...row, gap: 6 }}>
+        {([['general', '일반'], ['checks', '기능 검사']] as const).map(([k, label]) => (
+          <button key={k} type="button" role="tab" aria-selected={tab === k} data-testid={`options-tab-${k}`}
+            onClick={() => setTab(k)}
+            style={{ ...button, borderColor: tab === k ? 'var(--accent-light)' : undefined, color: tab === k ? 'var(--accent-light)' : undefined }}>
+            {label}
+          </button>
+        ))}
+      </div>
 
       {fault && <div role="alert" data-testid="options-fault" style={{ fontSize: 12, color: 'var(--rose)' }}>{fault}</div>}
       {notice && <div role="status" data-testid="options-notice" style={{ fontSize: 12, color: 'var(--accent-light)' }}>{notice}</div>}
 
+      {tab === 'general' && <>
       {/* ── 만든 것을 둘 자리 ───────────────────────────────────────────── */}
       <div style={panel}>
         <div style={{ ...row }}>
@@ -242,28 +286,67 @@ export default function AppOptions({ close }: { close: () => void }) {
         )}
       </div>
 
-      {/* ── 문제 확인 ─────────────────────────────────────────────────────
-          ★기록은 창을 켜든 끄든 남는다. 창은 보여 주고 복사하게 할 뿐이다.
-            진단 묶음은 버전 아래에 있던 것을 옮겨 왔다(2026-09-30 지시). */}
+      </>}
+
+      {/* ── 기능 검사 ─────────────────────────────────────────────────────
+          ★기능별로 눌러 **그 기능만** 확인한다. 전체를 한 번에 돌리는 단추는 두지 않는다(지시).
+          ★통과는 초록, 문제는 붉은 아이콘. 결과는 동작 기록에도 남는다. */}
+      {tab === 'checks' && <>
+      <div style={panel} data-testid="options-checks">
+        <div style={row}>
+          <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>기능 검사</span>
+          <span style={muted}>안 되는 기능만 눌러 보세요</span>
+        </div>
+        {CHECKS.map((c) => {
+          const res = checks[c.id]
+          const busy = runningIds.includes(c.id)
+          const state = busy ? 'running' : res ? (res.ok ? 'ok' : 'fail') : 'idle'
+          const dot = state === 'ok' ? '#4ade80' : state === 'fail' ? 'var(--rose, #fb7185)' : state === 'running' ? 'var(--accent-light)' : 'transparent'
+          return <div key={c.id} data-testid={`check-${c.id}`} data-state={state}
+            style={{ ...row, gap: 12, paddingTop: 10, borderTop: '1px solid var(--border-subtle)' }}>
+            <span aria-label={state === 'ok' ? '통과' : state === 'fail' ? '문제 있음' : state === 'running' ? '검사 중' : '아직 안 함'}
+              style={{ width: 20, height: 20, borderRadius: '50%', flexShrink: 0, display: 'grid', placeItems: 'center',
+                background: dot, border: state === 'idle' ? '1.5px solid var(--border-subtle)' : 'none',
+                color: '#0b0c10', fontSize: 12, fontWeight: 700 }}>{state === 'ok' ? '✓' : state === 'fail' ? '✕' : state === 'running' ? '…' : ''}</span>
+            <div style={{ flex: '1 1 220px', minWidth: 0 }}>
+              <div style={{ fontSize: 13 }}>{c.label}{c.slow && <span style={muted}> · {c.slow}</span>}</div>
+              <div data-testid={`check-note-${c.id}`} style={{ ...muted, color: state === 'fail' ? 'var(--rose, #fb7185)' : 'var(--text-muted)', overflowWrap: 'anywhere' }}>
+                {busy ? '검사 중입니다…' : res ? `${res.reason} · ${(res.ms / 1000).toFixed(1)}초 · ${new Date(res.at).toLocaleTimeString()}` : c.what}
+              </div>
+            </div>
+            <button type="button" data-testid={`check-run-${c.id}`} style={button} disabled={busy}
+              onClick={() => { void runCheck(c.id) }}>{busy ? '검사 중…' : res ? '다시 검사' : '검사'}</button>
+          </div>
+        })}
+      </div>
+
+      {/* ── 문제 보고 ─ 검사 결과 + 동작 기록 복사 · 콘솔 · 진단 묶음(보조) ── */}
       <div style={panel} data-testid="options-trouble">
         <div style={row}>
-          <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>문제 확인</span>
+          <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>문제 보고</span>
+        </div>
+        <div style={row}>
+          <button type="button" data-testid="check-report-copy" style={{ ...button, color: 'var(--accent-light)' }}
+            onClick={() => { void copyReport() }}>문제 보고용 복사</button>
+          <span data-testid="check-report-note" style={muted}>{reportNote || '검사 결과와 최근 동작 기록을 한 번에 복사합니다 — 이것만 붙여 주시면 됩니다'}</span>
         </div>
         <label style={{ ...row, gap: 8, fontSize: 12, cursor: 'pointer' }}>
           <input type="checkbox" data-testid="options-console" checked={consoleOpen}
             onChange={(e) => { void toggleConsole(e.target.checked) }} />
-          <span>콘솔 켜기 — 화면 맨 아래에 콘솔 토글이 생기고, 누르면 동작 기록이 펼쳐집니다</span>
+          <span>콘솔 켜기 — 화면 맨 아래에 콘솔 토글이 생기고, 누르면 동작 기록이 아래로 펼쳐집니다</span>
         </label>
-        <span style={muted}>창을 켜지 않아도 기록은 남습니다. 글 내용과 폴더 경로는 적지 않습니다.</span>
+        <span style={muted}>켜지 않아도 기록은 남습니다. 글 내용과 폴더 경로는 적지 않습니다.</span>
         <div style={row}>
           <button type="button" data-testid="export-diagnostics" style={button}
             onClick={() => { void exportDiagnostics() }} disabled={diag.busy}
-            title="최근 로그와 설정의 모양(값 없음)을 폴더 하나로 묶어 저장합니다. 대사·음원은 들어가지 않습니다.">
+            title="여러 날 치 로그·검사 결과·설정의 모양(값 없음)을 폴더 하나로 묶어 저장합니다. 대사·음원은 들어가지 않습니다.">
             {diag.busy ? '진단 묶음 만드는 중…' : '진단 묶음 내보내기'}
           </button>
-          {diag.text && <span data-testid="export-diagnostics-result" role="status" style={muted}>{diag.text}</span>}
+          {diag.text ? <span data-testid="export-diagnostics-result" role="status" style={muted}>{diag.text}</span>
+            : <span style={muted}>며칠 전 일을 볼 때 — 날짜별 로그를 폴더로 묶습니다</span>}
         </div>
       </div>
+      </>}
     </section>
     </dialog>
   )

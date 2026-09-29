@@ -309,6 +309,16 @@ const api = {
     },
   },
 
+  /**
+   * 기능 검사 — 기능별로 하나씩 실제로 돌려 본다(2026-09-30). 전체를 한 번에 돌리는 길은 없다.
+   */
+  selfcheck: {
+    run: (id: string): Promise<{ id: string; ok: boolean; reason: string; ms: number; at: string } | { error: string }> =>
+      ipcRenderer.invoke('selfcheck:run', id),
+    results: (): Promise<Array<{ id: string; ok: boolean; reason: string; ms: number; at: string }>> =>
+      ipcRenderer.invoke('selfcheck:results'),
+  },
+
   /** 앱 설정 — 만든 것을 둘 자리와 쌓인 것 비우기. */
   options: {
     // tempDir/strayTemp — 임시 자리가 앱 안인지 화면이 보여 준다(2026-09-28).

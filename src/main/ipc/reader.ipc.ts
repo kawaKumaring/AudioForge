@@ -150,6 +150,18 @@ async function makeChunk(body: string, v: ReaderVoice, out: string): Promise<str
   }
 }
 
+/**
+ * **기능 검사**용 — 낭독과 똑같은 길(줄·제 폴더·같은 설정)로 한 덩이를 만들어 본다(2026-09-30).
+ * ★쌓아 두는 자리에 남기지 않는다: 만든 소리는 검사 자리에 두고, 부르는 쪽이 들여다본 뒤 지운다.
+ */
+export async function readerSelfTest(text: string, v: ReaderVoice): Promise<{ path: string; bytes: number }> {
+  const dir = join(readerDir(), 'selfcheck')
+  mkdirSync(dir, { recursive: true })
+  const out = join(dir, `check-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.wav`)
+  const made = await inLane(() => makeChunk(text, v, out))
+  return { path: made, bytes: statSync(made).size }
+}
+
 /** 지금 만들고 있는 것 — 같은 글을 또 부르면 그 약속을 나눠 준다. */
 const inFlight = new Map<string, Promise<string>>()
 

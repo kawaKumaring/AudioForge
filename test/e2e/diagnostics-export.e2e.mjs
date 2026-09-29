@@ -84,6 +84,7 @@ try {
   ok(await win.getByTestId('export-diagnostics').count() === 0, '버전 아래에는 없다 — 설정으로 옮겼다')
   await win.getByTestId('open-app-options').click()
   await win.getByTestId('app-options').waitFor()
+  await win.getByTestId('options-tab-checks').click()   // 콘솔·진단 묶음은 '기능 검사' 탭에 있다
   const btn = win.getByTestId('export-diagnostics')
   ok(await btn.count() === 1, "설정 안에 '진단 묶음 내보내기' 가 있다")
   await btn.click()

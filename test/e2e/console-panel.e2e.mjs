@@ -56,6 +56,7 @@ try {
 
   await win.getByTestId('open-app-options').click()
   await win.getByTestId('app-options').waitFor()
+  await win.getByTestId('options-tab-checks').click()   // 콘솔·진단 묶음은 '기능 검사' 탭에 있다
   ok(await win.getByTestId('export-diagnostics').count() === 1, '★설정 안에 진단 묶음 내보내기가 있다')
   ok(!(await win.getByTestId('options-console').isChecked()), '콘솔 창 보기는 처음에 꺼져 있다')
   await win.getByTestId('options-console').check()
@@ -130,6 +131,7 @@ try {
   ok(await win.getByTestId('console-lines').count() === 0, '토글을 다시 누르면 접힌다')
   await win.getByTestId('open-app-options').click()
   await win.getByTestId('app-options').waitFor()
+  await win.getByTestId('options-tab-checks').click()   // 콘솔·진단 묶음은 '기능 검사' 탭에 있다
   await win.getByTestId('options-console').uncheck()
   await win.getByTestId('options-close').click()
   await win.waitForTimeout(400)
