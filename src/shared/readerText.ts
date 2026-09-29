@@ -53,10 +53,35 @@ const HAN = '\\u3400-\\u4DBF\\u4E00-\\u9FFF\\uF900-\\uFAFF'
 const HANJA_IN_PARENS = new RegExp(`[ \\t]*[(（][ \\t]*[${HAN}][${HAN} \\t·・,、]*[)）]`, 'g')
 
 /**
- * 이 덩이를 **소리로 보낼 글.** 설정이 꺼져 있으면 원문 그대로다.
- * 빼고 나서 아무것도 남지 않으면 빈 글을 돌려준다 — 부르는 쪽이 건너뛴다.
+ * **소리로 내지 않는 기호** — 따옴표·별표·괄호류·꾸밈 기호 (2026-09-30 사용자 신고:
+ * "' \" * 같은 특수기호를 소리 내려고 '에 에 에' 하는 소리를 낸다").
+ * ★문장 부호(. , ! ? … ; :)는 남긴다 — 쉼과 억양을 만든다. 괄호 ( ) 와 하이픈 - 도 남긴다(읽는 내용·낱말의 일부).
+ * ★기호만 빼고 **안의 글은 그대로** 읽는다 — `"누구세요?"` → `누구세요?`, `[퀘스트 완료]` → `퀘스트 완료`.
+ * ★영어 낱말 안의 작은따옴표(don't)는 남긴다.
+ */
+const SILENT_SYMBOLS = /["“”„‟«»‹›「」『』〈〉《》【】〔〕\[\]{}<>*＊_＿`´^|\\/＼#＃@=＝+＋♡♥☆★◆◇■□●○◎▲△▼▽※→←↑↓↔♪♬♩♫]/g
+/** 글자로 둘러싸이지 않은 작은따옴표 — 여는/닫는 따옴표로 쓰인 것. */
+const LONE_QUOTE = /(?<![A-Za-z])['‘’‚‛]|['‘’‚‛](?![A-Za-z])/g
+/** 숫자 사이의 물결표는 범위다 — `10~20명` 은 '10에서 20명' 으로 읽는다. 나머지 물결표(아~)는 뺀다. */
+const RANGE_TILDE = /(\d)\s*[~～〜]\s*(\d)/g
+const OTHER_TILDE = /[~～〜]/g
+
+/** 기호를 뺀 뒤 띄어쓰기를 다시 고른다 — 부호 앞의 빈칸, 겹친 빈칸. */
+function tidy(s: string): string {
+  return s.replace(/[ \t]{2,}/g, ' ').replace(/[ \t]+([.,!?…;:)])/g, '$1').replace(/([(])[ \t]+/g, '$1')
+    .split('\n').map((l) => l.trim()).join('\n').trim()
+}
+
+/**
+ * 이 덩이를 **소리로 보낼 글.** 보이는 글은 그대로이고 소리로 보낼 때만 탄다.
+ * - 늘: 소리 내지 않는 기호를 뺀다(위).
+ * - 설정을 켜면: 괄호 속 한자를 뺀다.
+ * 빼고 나서 **읽을 글자가 남지 않으면** 빈 글을 돌려준다 — 부르는 쪽이 소리 없이 건너뛴다(`* * *` 장면 구분 줄 등).
  */
 export function speakableText(text: string, prefs: Pick<ReaderPrefs, 'skipHanjaInParens'>): string {
-  if (!prefs.skipHanjaInParens) return text
-  return text.replace(HANJA_IN_PARENS, '').replace(/[ \t]{2,}/g, ' ')
+  let s = prefs.skipHanjaInParens ? text.replace(HANJA_IN_PARENS, '') : text
+  s = s.replace(RANGE_TILDE, '$1에서 $2').replace(OTHER_TILDE, ' ')
+    .replace(SILENT_SYMBOLS, ' ').replace(LONE_QUOTE, ' ')
+  s = tidy(s)
+  return /[\p{L}\p{N}]/u.test(s) ? s : ''
 }

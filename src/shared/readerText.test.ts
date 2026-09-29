@@ -71,3 +71,35 @@ test('글자 크기는 범위 안으로만 — 모르는 값은 기본', () => {
   assert.equal(parseReaderPrefs({ fontSize: '20' }).fontSize, 16)
   assert.equal(parseReaderPrefs({ fontSize: NaN }).fontSize, 16)
 })
+
+// ★기호를 소리 내지 않는다 (2026-09-30 사용자 신고: "' \" * 등을 소리 내려고 '에 에 에' 한다").
+test('★따옴표·별표는 빼고 안의 글은 읽는다 — 설정과 무관하게 늘', () => {
+  for (const p of [OFF, ON]) {
+    assert.equal(speakableText('"누구세요?" 하고 그가 물었다.', p), '누구세요? 하고 그가 물었다.')
+    assert.equal(speakableText("'설마…' 그는 생각했다.", p), '설마… 그는 생각했다.')
+    assert.equal(speakableText('그건 *정말* 중요했다.', p), '그건 정말 중요했다.')
+    assert.equal(speakableText('“좋아.” ‘그래.’ 「알았어」 『책』', p), '좋아. 그래. 알았어 책')
+  }
+})
+
+test('웹소설 꾸밈 — 괄호류·기호는 빼고 내용만', () => {
+  assert.equal(speakableText('[퀘스트 완료] <보상: 경험치> ※주의 ♡', OFF), '퀘스트 완료 보상: 경험치 주의')
+  assert.equal(speakableText('아~ 그래~~', OFF), '아 그래')
+  assert.equal(speakableText('10~20명이 왔다.', OFF), '10에서 20명이 왔다.')
+})
+
+test('★문장 부호·괄호·하이픈·영어 줄임말은 남긴다 — 쉼과 억양, 읽는 내용', () => {
+  assert.equal(speakableText("그래, 좋아! 정말? 음… 그런데(웃음) e-mail 이야. I don't know.", OFF),
+    "그래, 좋아! 정말? 음… 그런데(웃음) e-mail 이야. I don't know.")
+  assert.equal(speakableText('50% 할인', OFF), '50% 할인')
+})
+
+test('★기호만 남은 줄은 소리 없이 건너뛴다 — 장면 구분 줄', () => {
+  assert.equal(speakableText('* * *', OFF), '')
+  assert.equal(speakableText('◆◇◆', OFF), '')
+  assert.equal(speakableText('"……"', OFF), '')
+})
+
+test('괄호 속 한자 빼기와 함께 써도 된다', () => {
+  assert.equal(speakableText('"학교(學校)에 가자."', ON), '학교에 가자.')
+})
