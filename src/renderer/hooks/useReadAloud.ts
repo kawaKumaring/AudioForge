@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '@/stores/app.store'
 import { createManagedAudio } from '@/lib/playbackVolume'
 import { splitForReading, chunkAt, type Chunk } from '../../shared/readerChunks'
+import { speakableText } from '../../shared/readerText'
 import {
   emptyQueue, nextToMake, canPlayNow, waitReason, markMaking, markReady, markFailed,
   seek, advance, atEnd, changeVoice, acceptResult, retryFailed, type QueueState,
@@ -53,9 +54,17 @@ export interface ReadAloud {
   prev: () => void
 }
 
-export function useReadAloud(text: string, voice: ReaderVoicePick | null): ReadAloud {
+export function useReadAloud(
+  text: string, voice: ReaderVoicePick | null,
+  opts: { skipHanjaInParens?: boolean } = {},
+): ReadAloud {
   const chunks = useMemo(() => splitForReading(text), [text])
-  const voiceKey = voiceKeyOf(voice)
+  const skipHanja = !!opts.skipHanjaInParens
+  // ★두 열쇠를 나눈다. 본체의 쌓아 두기는 **목소리 + 실제로 읽은 글**로 이름 붙이므로
+  //   목소리만 넘긴다(한자가 없는 덩이는 설정을 바꿔도 다시 만들지 않는다).
+  //   큐는 설정까지 본다 — 설정이 바뀌면 만들어 둔 것을 버리고 지금 자리를 다시 읽는다.
+  const cacheKey = voiceKeyOf(voice)
+  const voiceKey = cacheKey && skipHanja ? `${cacheKey}|괄호한자뺌` : cacheKey
   const [q, setQ] = useState<QueueState>(() => emptyQueue(chunks.length, voiceKey))
   const [playing, setPlaying] = useState(false)
   const [fault, setFault] = useState('')
@@ -63,6 +72,14 @@ export function useReadAloud(text: string, voice: ReaderVoicePick | null): ReadA
   const qRef = useRef(q); qRef.current = q
   const audioRef = useRef<HTMLAudioElement | null>(null)
   const aliveRef = useRef(true)
+  /**
+   * 지금 가 있는 요청 — **같은 목소리·같은 글이면 그 답을 함께 받는다.** 두 번 보내지 않는다.
+   * ★건너뛰지 않고 '함께 받는다' 인 이유: 건너뛰면 그 자리가 '만드는 중' 이 아니게 되어
+   *   답이 와도 받을 곳이 없다. 처음엔 건너뛰게 만들었다가 StrictMode 에서 첫 덩이가
+   *   '차례를 기다리는 중' 에 멈췄다(실측). 목소리를 A→B→A 로 바꾸는 장면도 같은 구조라
+   *   `reader-aloud.component.mjs` 2-1 이 붙든다.
+   */
+  const asking = useRef(new Map<string, Promise<{ data?: { path: string; cached: boolean }; error?: string }>>())
   const claim = useAppStore((s) => s.audioClaim)
 
   const stopAudio = useCallback(() => {
@@ -74,7 +91,14 @@ export function useReadAloud(text: string, voice: ReaderVoicePick | null): ReadA
   }, [])
 
   // 글이 바뀌면 처음부터. 목소리가 바뀌면 만들어 둔 것을 버리되 **자리는 지킨다.**
-  useEffect(() => { setQ(emptyQueue(chunks.length, voiceKey)); setFault('') }, [chunks])
+  // ★**정말 바뀌었을 때만** 비운다. 개발 실행(StrictMode)은 효과를 두 번 돌리는데, 그때마다
+  //   비우면 막 '만드는 중' 으로 올린 자리가 지워져 답이 와도 받을 곳이 없다.
+  const builtFor = useRef(chunks)
+  useEffect(() => {
+    if (builtFor.current === chunks) return
+    builtFor.current = chunks
+    setQ(emptyQueue(chunks.length, voiceKey)); setFault('')
+  }, [chunks])
   // ★목소리를 바꾸면 **곧바로** 적용한다 (2026-09-29 사용자 신고: "선택하면 적용이 되지 않는다").
   //   예전에는 옛 목소리 소리가 그 덩이 끝까지 이어졌다 — 고른 것과 다른 목소리를 들려준 셈이다.
   //   지금 소리를 멈추고, 같은 자리를 새 목소리로 만들어 다시 읽는다.
@@ -117,8 +141,24 @@ export function useReadAloud(text: string, voice: ReaderVoicePick | null): ReadA
     const chunk = chunks[i]
     if (!chunk) return
     const madeFor = voiceKey
+    // ★소리로 보낼 때만 규칙을 탄다 — 보이는 글과 글자 자리는 그대로다.
+    const say = speakableText(chunk.text, { skipHanjaInParens: skipHanja })
+    if (!say.trim()) {
+      // 읽을 것이 남지 않은 덩이(괄호 속 한자뿐) — 소리 없이 지나간다.
+      setQ((cur) => markReady(cur, i, ''))
+      return
+    }
+    // ★같은 목소리·같은 글로 **이미 가 있는 요청**이면 새로 보내지 않고 그 답을 받는다.
+    //   개발 실행(StrictMode)은 이 효과를 두 번 돌려 같은 요청이 두 번 나갔다(검사로 확인).
+    const ask = `${madeFor}\n${say}`
+    let run = asking.current.get(ask)
+    if (!run) {
+      run = window.api.reader.speak(say, { kind: voice.kind, path: voice.path, engineId: voice.engineId }, cacheKey)
+      asking.current.set(ask, run)
+      void run.finally(() => { asking.current.delete(ask) }).catch(() => { /* 아래에서 받는다 */ })
+    }
     setQ((cur) => markMaking(cur, i))
-    void window.api.reader.speak(chunk.text, { kind: voice.kind, path: voice.path, engineId: voice.engineId }, madeFor)
+    void run
       .then((r) => {
         if (!aliveRef.current) return
         // ★늦게 온 결과가 새 목소리의 자리를 덮지 않는다.
@@ -134,7 +174,7 @@ export function useReadAloud(text: string, voice: ReaderVoicePick | null): ReadA
         if (!acceptResult(qRef.current, i, madeFor)) return
         setQ((cur) => markFailed(cur, i, (e as Error)?.message || '이 부분을 만들지 못했습니다'))
       })
-  }, [playing, q, chunks, voice, voiceKey])
+  }, [playing, q, chunks, voice, voiceKey, cacheKey, skipHanja])
 
   // ── 지금 것을 튼다 ──────────────────────────────────────────────────────
   // ★같은 덩이를 **두 번 틀지 않는다.** 이 효과는 큐가 바뀔 때마다 다시 도는데
@@ -146,6 +186,12 @@ export function useReadAloud(text: string, voice: ReaderVoicePick | null): ReadA
     const it = q.items[q.at]
     if (!it) { setPlaying(false); return }
     if (it.state === 'failed') { setFault(it.why || '이 부분을 만들지 못했습니다'); setPlaying(false); return }
+    if (it.state === 'ready' && !it.path) {
+      // 소리 없이 지나가는 덩이 — 멈추지 않고 다음으로. 마지막이면 멈춘다.
+      if (atEnd(q)) setPlaying(false)
+      else setQ((cur) => advance(cur))
+      return
+    }
     if (it.state !== 'ready' || !it.path) return
     const tag = `${q.at}:${it.path}`
     if (playedRef.current === tag) return
@@ -171,8 +217,13 @@ export function useReadAloud(text: string, voice: ReaderVoicePick | null): ReadA
       if (!aliveRef.current || playedRef.current !== tag) return
       if (el.src !== url) el.src = url
       return el.play()
-    }).catch(() => {
+    }).catch((e) => {
       if (!aliveRef.current) return
+      // ★막 시작한 재생을 **멈춤이 끊으면** 브라우저는 AbortError 로 알린다 — 실패가 아니다.
+      //   예전에는 이것을 실패로 읽어 낭독을 껐다. 목소리를 바꾸거나 문단을 누르는 순간이
+      //   재생 시작과 겹치면 "재생을 시작하지 못했습니다" 로 멈췄다(실측: 10번 중 1~5번).
+      //   이미 다른 덩이로 넘어간 뒤의 거절도 지금 것의 실패가 아니다.
+      if ((e as { name?: string } | null)?.name === 'AbortError' || playedRef.current !== tag) return
       setFault('재생을 시작하지 못했습니다')
       setPlaying(false)
     })

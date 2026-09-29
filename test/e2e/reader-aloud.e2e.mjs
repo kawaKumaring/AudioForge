@@ -11,6 +11,7 @@
 //   6) 같은 글을 다시 읽으면 **곧바로** 나온다(쌓아 둔 것을 쓴다)
 //   7) 글과 목소리 파일을 **실제 단추로** 고르고, 불러온 폴더를 **각자** 기억한다
 //      (목소리를 바꾸면 만들어 둔 것을 버리는 규칙은 `readerQueue.test.ts` 가 지킨다)
+//   8) 읽는 **구절**을 칠하고 화면 안에 둔다 · 따라가기·괄호 속 한자 설정이 껐다 켜도 남는다
 //
 // 실행: node test/e2e/reader-aloud.e2e.mjs   (사전: npm run build. GPU 불필요)
 import { _electron as electron } from 'playwright'
@@ -115,6 +116,16 @@ try {
   const stateText = await win.getByTestId('reader-state').innerText()
   const playBtn = await win.getByTestId('reader-play').innerText()
   ok(reading === 1, '★지금 읽는 문단이 하나 표시된다', { marks, stateText, playBtn })
+  // 읽는 **구절** — 문단보다 작은 단위다. 칠해진 글이 실제 책의 글이고, 화면 안에 있다.
+  const phrase = await win.evaluate(() => {
+    const els = [...document.querySelectorAll('[data-testid="reader-phrase"]')]
+    const r = els[0]?.getBoundingClientRect()
+    return { n: els.length, text: els.map((e) => e.textContent).join(''),
+      inView: !!r && r.bottom > 0 && r.top < window.innerHeight }
+  })
+  ok(phrase.n >= 1 && phrase.text.length > 10 && BOOK.includes(phrase.text.slice(0, 10)),
+    '★지금 읽는 구절을 칠한다', { n: phrase.n, len: phrase.text.length })
+  ok(phrase.inView, '★읽는 구절이 화면 안에 있다 — 따라간다', phrase)
 
   // ── 5. 손대지 않아도 다음으로 넘어간다 ────────────────────────────────
   const wentOn = await win.waitForFunction(() => (window.__plays || []).length >= 2, null, { timeout: 300000 })
@@ -169,6 +180,17 @@ try {
   const bookFiles = fs.existsSync(path.join(UD, 'works', 'books'))
     ? fs.readdirSync(path.join(UD, 'works', 'books')).filter((f) => f.endsWith('.json')) : []
   ok(bookFiles.length === 1, '★책 하나가 파일 하나다', bookFiles)
+  // 낭독 설정을 바꿔 둔다 — 껐다 켠 뒤에도 남아야 한다(저장 허용 목록을 끝에서 끝까지 본다).
+  ok(await win.getByTestId('reader-follow').getAttribute('aria-pressed') === 'true', '따라가기는 처음에 켜져 있다')
+  await win.getByTestId('reader-follow').click()
+  await win.locator('button[title="낭독 목소리 선택"]').click()
+  await win.getByRole('dialog', { name: '낭독 목소리' }).waitFor()
+  ok(!(await win.getByTestId('reader-skip-hanja').isChecked()), '괄호 속 한자 건너뛰기는 처음에 꺼져 있다')
+  await win.getByTestId('reader-skip-hanja').check()
+  await win.keyboard.press('Escape')
+  await win.waitForTimeout(400)
+  const savedPrefs = savedSetting('readerPrefs')
+  ok(savedPrefs?.follow === false && savedPrefs?.skipHanjaInParens === true, '★낭독 설정이 설정 파일에 적힌다', savedPrefs)
   await app.close(); app = null
 
   app = await electron.launch({
@@ -184,6 +206,14 @@ try {
   ok(back === 3, '★껐다 켜도 책이 그대로 있다', back)
   const where = await win2.getByTestId('reader-state').innerText()
   ok(where.includes('3 / 3'), '★읽던 자리도 그대로다', where)
+  // ★저장은 되는데 다시 켜면 사라지는 일이 있었다(읽기 목록 누락, 2026-09-28) — 그것까지 본다.
+  await win2.waitForFunction(() => document.querySelector('[data-testid="reader-follow"]')?.getAttribute('aria-pressed') === 'false',
+    null, { timeout: 5000 }).catch(() => {})
+  ok(await win2.getByTestId('reader-follow').getAttribute('aria-pressed') === 'false', '★껐다 켜도 따라가기 설정이 남는다')
+  await win2.locator('button[title="낭독 목소리 선택"]').click()
+  await win2.getByRole('dialog', { name: '낭독 목소리' }).waitFor()
+  ok(await win2.getByTestId('reader-skip-hanja').isChecked(), '★껐다 켜도 괄호 속 한자 설정이 남는다')
+  await win2.keyboard.press('Escape')
 
   // 목록에서 빼면 **그 파일만** 사라진다
   await win2.locator('[aria-label$="목록에서 빼기"]').first().click()

@@ -45,6 +45,7 @@ import { DIALOGUE_EDIT_STORAGE_KEY } from '../../shared/dialogueEdit'
 import { TRANSCRIPT_DRAFTS_STORAGE_KEY } from '../../shared/transcriptDrafts'
 import { DIALOGUE_DRAFTS_STORAGE_KEY } from '../../shared/dialogueDrafts'
 import { CARD_STORAGE_KEY } from '../../shared/synthesisCardSave'
+import { READER_PREFS_STORAGE_KEY } from '../../shared/readerText'
 import { registerTranscriptIpc } from './transcript.ipc'
 import { registerLabIpc } from './lab.ipc'
 import { outputBase, isInside } from '../services/appPaths'
@@ -1552,6 +1553,8 @@ export function registerAudioIpc(
       [DIALOGUE_DRAFTS_STORAGE_KEY]: stored[DIALOGUE_DRAFTS_STORAGE_KEY] ?? null,
       // 생성 카드 작업 — 위 열쇠들과 서로 독립이다(문장별 작업을 덮지 않는다).
       [CARD_STORAGE_KEY]: stored[CARD_STORAGE_KEY] ?? null,
+      // 낭독 설정(따라가기·괄호 속 한자) — 2026-09-29. 여기 없으면 저장은 되는데 다시 켜면 사라진다.
+      [READER_PREFS_STORAGE_KEY]: stored[READER_PREFS_STORAGE_KEY] ?? null,
     }
   })
 
@@ -1592,7 +1595,9 @@ export function registerAudioIpc(
         //   반드시 여기에도 더해야 한다.
         || key === CARD_STORAGE_KEY
         // 만든 것을 둘 자리(2026-09-28). 여기 없으면 고른 자리가 조용히 사라진다.
-        || key === OUTPUT_ROOT_KEY || key === OUTPUT_BESIDE_KEY) {
+        || key === OUTPUT_ROOT_KEY || key === OUTPUT_BESIDE_KEY
+        // 낭독 설정(2026-09-29).
+        || key === READER_PREFS_STORAGE_KEY) {
       // 배역 세트도 같은 원자 경로를 쓴다. 두 키는 서로를 덮지 않는다 —
       // settings-store 가 현재 파일을 읽어 그 키 하나만 갱신한다.
       return saveSetting(key, value ?? undefined)

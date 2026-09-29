@@ -46,6 +46,13 @@ transcriptEdits…)이 번호 없이 쌓여 있었다(2026-09-17 실측). 어느
 
 ★**칸을 늘리면 이 표도 늘려야 한다** — `dialogFolders.test.ts` 가 대조한다.
 
+## 낭독 설정 — `readerPrefs` (2026-09-29)
+
+`{ follow: boolean, skipHanjaInParens: boolean }` 한 칸. 기본은 따라가기 켬 · 괄호 속 한자 읽기(건너뛰지 않음).
+모양은 `src/shared/readerText.ts` 가 갖고, 모르는 값은 기본으로 돌린다(`parseReaderPrefs`).
+★화면이 쓰므로 **저장 허용 목록과 `settings:get` 읽기 목록 둘 다**에 있다 — 한쪽만 있으면
+저장은 되는데 다시 켜면 사라진다(2026-09-28 에 실제로 겪었다). `settingsAllowList.test.ts` 가 둘 다 본다.
+
 ## 모양을 바꾸는 사람이 할 일
 
 1. `SETTINGS_FORMAT_VERSION` 을 1 올린다.

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { create } from 'zustand'
 import { useReadAloud, type ReaderVoicePick } from '@/hooks/useReadAloud'
 import { chunkAt, TEXT_FILE_LIMIT } from '../../shared/readerChunks'
+import { DEFAULT_READER_PREFS, parseReaderPrefs, READER_PREFS_STORAGE_KEY, type ReaderPrefs } from '../../shared/readerText'
 
 // 낭독 화면. 합성은 `useReadAloud`, 책·자리 보관은 `works/books`, 파일 고르기는 본체 대화상자가 맡는다.
 type Book = { id: string; name: string; paragraphs: string[]; position: number }
@@ -29,6 +30,28 @@ export default function ReaderWorkspace() {
   /** 설치된 기본 목소리. ★표시값이 아니라 **본체가 확인한 것**이다(인수인계 1항). */
   const [builtins, setBuiltins] = useState<{ modelId: string; label: string; path: string; engineId: string }[]>([])
   const [voiceNote, setVoiceNote] = useState('')
+  /**
+   * 낭독 설정 — 따라가기·괄호 속 한자. **껐다 켜도 남는다**(설정 파일 한 칸).
+   * ★읽기 전에 바꾼 값을 읽어 온 값이 덮지 않게 한다.
+   */
+  const [prefs, setPrefs] = useState<ReaderPrefs>(DEFAULT_READER_PREFS)
+  const prefsTouched = useRef(false)
+  useEffect(() => {
+    void (async () => {
+      try {
+        const all = await window.api.settings.get() as Record<string, unknown>
+        if (!prefsTouched.current) setPrefs(parseReaderPrefs(all?.[READER_PREFS_STORAGE_KEY]))
+      } catch { /* 못 읽으면 기본값으로 읽는다 */ }
+    })()
+  }, [])
+  const updatePrefs = (patch: Partial<ReaderPrefs>) => {
+    prefsTouched.current = true
+    const next = { ...prefs, ...patch }
+    setPrefs(next)
+    void window.api.settings.set(READER_PREFS_STORAGE_KEY, next)
+      .then((r: { ok?: boolean } | undefined) => { if (r && r.ok === false) setError('낭독 설정을 저장하지 못했습니다 — 다시 켜면 예전 값으로 돌아갑니다.') })
+      .catch(() => setError('낭독 설정을 저장하지 못했습니다 — 다시 켜면 예전 값으로 돌아갑니다.'))
+  }
   useEffect(() => {
     void (async () => {
       try {
@@ -87,7 +110,18 @@ export default function ReaderWorkspace() {
     for (const p of book?.paragraphs || []) { out.push(n); n += p.length + 2 }
     return out
   }, [book?.id, book?.paragraphs])
-  const read = useReadAloud(body, pick)
+  const read = useReadAloud(body, pick, { skipHanjaInParens: prefs.skipHanjaInParens })
+  /** 지금 읽는 덩이 — 문단 안에서 그 글자만 칠한다. 읽지 않을 때는 없다. */
+  const phrase = read.playing ? read.chunks[read.at] : undefined
+  // ★읽는 구절을 **화면이 따라간다** (2026-09-29 지시: "현재 어느 구절을 읽고 있는지 따라가게").
+  //   덩이가 넘어갈 때마다 그 구절을 가운데로 가져온다. 끄면 그대로 둔다 — 앞뒤를 둘러볼 때.
+  useEffect(() => {
+    if (!read.playing || !prefs.follow) return
+    const el = bodyRef.current?.querySelector('[data-testid="reader-phrase"]')
+    if (!el) return
+    const calm = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    el.scrollIntoView({ block: 'center', behavior: calm ? 'auto' : 'smooth' })
+  }, [read.playing, read.at, prefs.follow, book?.id])
   // ★멈춰 있을 때는 **고른 자리**에 맞춰 둔다 — 엔진이 그 자리부터 미리 만들어 두어,
   //   누르는 순간 곧바로 들린다(2026-09-29 지시: "읽어오면 빠르게 만들어서").
   const { playing: readPlaying, seekToChar } = read
@@ -104,6 +138,17 @@ export default function ReaderWorkspace() {
   }, [read.chunks, read.at, charOfParagraph])
 
   const closeSettings = () => { setSettings(false); voiceButton.current?.focus() }
+  /**
+   * 문단 글에서 **지금 읽는 덩이**에 든 글자만 칠한다. 덩이는 원문 글자 자리를 들고 있어
+   * 여러 문단에 걸쳐도 각 문단의 제 몫만 칠해진다.
+   */
+  const withPhrase = (p: string, at: number) => {
+    if (!phrase) return p
+    const from = Math.max(at, phrase.start) - at
+    const to = Math.min(at + p.length, phrase.end) - at
+    if (from >= to) return p
+    return <>{p.slice(0, from)}<mark data-testid="reader-phrase" style={{ background: 'rgba(102, 204, 204, 0.2)', color: 'var(--text-primary)', borderRadius: 3, padding: '1px 0', boxDecorationBreak: 'clone', WebkitBoxDecorationBreak: 'clone' }}>{p.slice(from, to)}</mark>{p.slice(to)}</>
+  }
   const choosePosition = (value: number) => {
     if (!book) return
     useReader.setState(s => ({ books: s.books.map(b => b.id === book.id ? { ...b, position: Math.max(0, Math.min(value, b.paragraphs.length - 1)) } : b) }))
@@ -212,7 +257,7 @@ export default function ReaderWorkspace() {
                 aria-current={reading ? 'true' : chosen ? 'location' : undefined}
                 data-reading={reading ? '1' : '0'}
                 title={reading ? '지금 읽고 있는 곳입니다' : '이 문단을 낭독 시작 위치로 선택'}
-                style={{ display: 'block', width: '100%', textAlign: 'left', fontFamily: 'inherit', fontSize, lineHeight: 1.95, padding: '12px 16px', marginBottom: 8, border: 'none', borderLeft: `2px solid ${reading ? 'var(--cyan)' : chosen ? 'var(--accent-light)' : 'transparent'}`, borderRadius: 7, background: reading ? 'var(--accent-glow)' : 'transparent', color: (reading || chosen) ? 'var(--text-primary)' : 'var(--text-secondary)', cursor: 'pointer', overflowWrap: 'anywhere' }}>{p}</button>
+                style={{ display: 'block', width: '100%', textAlign: 'left', fontFamily: 'inherit', fontSize, lineHeight: 1.95, padding: '12px 16px', marginBottom: 8, border: 'none', borderLeft: `2px solid ${reading ? 'var(--cyan)' : chosen ? 'var(--accent-light)' : 'transparent'}`, borderRadius: 7, background: reading ? 'var(--accent-glow)' : 'transparent', color: (reading || chosen) ? 'var(--text-primary)' : 'var(--text-secondary)', cursor: 'pointer', overflowWrap: 'anywhere' }}>{withPhrase(p, charOfParagraph[i] ?? 0)}</button>
             })}
           </div>
         </>}
@@ -237,6 +282,9 @@ export default function ReaderWorkspace() {
           {read.playing ? '■' : '▶'}
         </button>
         <button style={button} aria-label="다음 문단" disabled={!book || position >= book.paragraphs.length - 1} onClick={() => choosePosition(position + 1)}>›</button>
+        <button data-testid="reader-follow" aria-pressed={prefs.follow} title={prefs.follow ? '읽는 구절을 화면이 따라갑니다 — 누르면 멈춥니다' : '누르면 읽는 구절을 화면이 따라갑니다'}
+          onClick={() => updatePrefs({ follow: !prefs.follow })}
+          style={{ ...button, fontSize: 12, color: prefs.follow ? 'var(--cyan)' : 'var(--text-muted)', borderColor: prefs.follow ? 'var(--cyan)' : undefined }}>따라가기</button>
       </div>
       <span data-testid="reader-state" style={{ flex: '1 1 140px', textAlign: 'right', fontSize: 12, color: read.fault ? 'var(--rose, #fb7185)' : 'var(--text-muted)' }}>
         {read.fault || read.wait || (book ? `${position + 1} / ${book.paragraphs.length} 문단` : '책을 선택하세요')}
@@ -245,7 +293,7 @@ export default function ReaderWorkspace() {
     {settings && <div onKeyDown={e => {
       if (e.key === 'Escape') closeSettings()
       if (e.key === 'Tab') {
-        const buttons = Array.from(e.currentTarget.querySelectorAll<HTMLButtonElement>('button'))
+        const buttons = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('button, input'))
         const first = buttons[0], last = buttons[buttons.length - 1]
         if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
         else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
@@ -266,6 +314,13 @@ export default function ReaderWorkspace() {
         <button data-testid="reader-voice-file" style={{ ...button, width: '100%', textAlign: 'left' }}
           title="가지고 있는 소리·영상의 목소리로 읽습니다. 기본 목소리보다 훨씬 느립니다 — 실측 4배."
           onClick={() => { void pickVoiceFile() }}>＋ 음성·영상에서 목소리 선택</button>
+        <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginTop: 18, fontSize: 13, cursor: 'pointer' }}>
+          <input data-testid="reader-skip-hanja" type="checkbox" checked={prefs.skipHanjaInParens}
+            onChange={e => updatePrefs({ skipHanjaInParens: e.target.checked })} style={{ marginTop: 3 }} />
+          <span>괄호 속 한자는 읽지 않기
+            <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>예: 학교(學校) → "학교" 만 읽습니다. 본문에는 그대로 보입니다.</span>
+          </span>
+        </label>
       </section>
     </div>}
   </section>
