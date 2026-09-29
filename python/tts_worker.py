@@ -18,6 +18,7 @@ import time
 import chunk_paths   # chunk 경로 규칙(bridge와 공용) — 결정적 경로 정확 일치 검증
 import semantic_chunk_planner   # 의미 경계 분류 + 무음 예산(C2). 순수 로직(stdlib only).
 from audio_utils import emit, get_device, find_ffmpeg, patch_torchaudio
+from speech_symbols import strip_spoken_symbols   # 소리로 내지 않는 기호(화면 쪽과 같은 사례로 검사). stdlib only.
 
 # ── Emotion definitions ──
 # ⚠️ 감정 id는 UI(src/renderer/components/TTSEditor.tsx의 EMOTION_GROUPS)와 공유된다.
@@ -3816,7 +3817,15 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                 lang = _detect_language(line_text)
                 engine.load(lang)
 
-            engine.synthesize_segment(line_text, ref, emotion_id, speed, seg_path)
+            # ★소리로 내지 않는 기호를 뺀 글을 엔진에 보낸다(2026-09-30 사용자 신고 — 따옴표·별표·기호 뭉치를
+            #   '에 에 에' 로 소리 냈다). 파서가 낸 글(line_text)은 그대로 둔다 — 기록·지문 대조의 기준이다.
+            #   규칙은 speech_symbols 한 곳(화면 쪽 speechSymbols.ts 와 같은 사례로 검사).
+            say_text = strip_spoken_symbols(line_text)
+            if not say_text and not isinstance(engine, (PiperEngine, SupertonicEngine)):
+                # 기호만 있던 줄 — piper·Supertonic 은 빈 글을 짧은 쉼으로 쓴다. 다른 엔진은 빈 글을
+                # 받아 본 적이 없다(이어 붙이기는 빈 조각을 거절한다) — 그 엔진들만 예전처럼 원문을 보낸다.
+                say_text = line_text
+            engine.synthesize_segment(say_text, ref, emotion_id, speed, seg_path)
             segment_paths.append(seg_path)
 
         # Concatenate
