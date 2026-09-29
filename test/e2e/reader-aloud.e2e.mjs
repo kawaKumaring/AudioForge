@@ -33,6 +33,7 @@ const TEXT_DIR = path.join(ISO, '소설')
 const VOICE_DIR = path.join(ISO, '목소리')
 const BOOK_PATH = path.join(TEXT_DIR, '밤의 집.txt')
 const VOICE_PATH = path.join(VOICE_DIR, '참조.wav')
+const LONG_VOICE_PATH = path.join(VOICE_DIR, '긴참조.wav')
 const savedSetting = (key) => {
   try { return JSON.parse(fs.readFileSync(path.join(UD, 'settings.json'), 'utf-8'))[key] } catch { return undefined }
 }
@@ -52,7 +53,11 @@ const BOOK = [
 ].join('\n')
 fs.mkdirSync(TEXT_DIR, { recursive: true })
 fs.writeFileSync(BOOK_PATH, BOOK, 'utf-8')
-makeSyntheticWav(VOICE_PATH, 3)
+// ★참조 목소리는 이제 준비 과정(분석·구간)을 거친다 — 가짜 사인파는 거절된다(그래야 맞다).
+//   저장소의 검사용 말소리(test/fixtures, 사용자 승인 자산)를 복사해 쓴다: 7.5초(원본 그대로) · 18초(구간을 잘라 씀).
+fs.mkdirSync(VOICE_DIR, { recursive: true })
+fs.copyFileSync(path.join(APP, 'test', 'fixtures', 'audio', 'ko-speech-7s.wav'), VOICE_PATH)
+fs.copyFileSync(path.join(APP, 'test', 'fixtures', 'audio', 'ko-speech-region-18s.wav'), LONG_VOICE_PATH)
 
 let app = null
 try {
@@ -183,8 +188,22 @@ try {
   await win.getByTestId('reader-voice-file').click()
   const picked = await win.waitForFunction(() =>
     (document.querySelector('[data-testid="reader-settings"]')?.textContent || '').includes('참조.wav'),
-  null, { timeout: 10000 }).then(() => true).catch(() => false)
-  ok(picked, '★고른 목소리 파일로 바뀐다')
+  null, { timeout: 120000 }).then(() => true).catch(() => false)
+  ok(picked, '★고른 목소리 파일로 바뀐다 — 준비를 거친 뒤')
+  const logText = () => fs.readdirSync(path.join(UD, 'logs')).map((n) => fs.readFileSync(path.join(UD, 'logs', n), 'utf-8')).join('')
+  ok(/참조 목소리 준비됨 — 참조\.wav · 원본 그대로/.test(logText()),
+    '★3~10초의 깨끗한 말소리는 원본 그대로 쓴다', logText().split('\n').filter((l) => /참조 목소리/.test(l)).slice(-2))
+
+  // ★긴 파일은 **구간을 잘라** 쓴다 — 원본 전체를 받아 적어 따라 하면 모델이 끝맺지 못했다(2026-09-30 사용자 로그).
+  await win.evaluate((p) => window.api.audio.e2eSetSelectFile(p), LONG_VOICE_PATH)
+  await win.getByTestId('reader-settings').click()
+  await win.getByRole('dialog', { name: '낭독 설정' }).waitFor()
+  await win.getByTestId('reader-voice-file').click()
+  const pickedLong = await win.waitForFunction(() =>
+    (document.querySelector('[data-testid="reader-settings"]')?.textContent || '').includes('긴참조.wav'),
+  null, { timeout: 120000 }).then(() => true).catch(() => false)
+  ok(pickedLong && /참조 목소리 준비됨 — 긴참조\.wav · 구간을 잘라 씀/.test(logText()),
+    '★긴 파일은 구간을 잘라 쓴다 — 원본 전체를 넘기지 않는다', logText().split('\n').filter((l) => /참조 목소리/.test(l)).slice(-2))
   ok(savedSetting('lastVoiceDir') === VOICE_DIR, '★목소리를 불러온 폴더를 기억한다', savedSetting('lastVoiceDir'))
   ok(savedSetting('lastTextDir') === TEXT_DIR, '목소리를 고른 것이 글 기억을 덮지 않는다', savedSetting('lastTextDir'))
   const cleared = await win.evaluate(() => window.api.reader.clearCache())

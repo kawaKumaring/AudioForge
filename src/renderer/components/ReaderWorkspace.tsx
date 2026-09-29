@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { create } from 'zustand'
 import { useReadAloud, type ReaderVoicePick } from '@/hooks/useReadAloud'
+import { runVoicePrep } from '@/lib/voicePrepRunner'
+import { opLog, nameOnly } from '@/lib/opLog'
 import { chunkAt, TEXT_FILE_LIMIT } from '../../shared/readerChunks'
 import { DEFAULT_READER_PREFS, parseReaderPrefs, READER_PREFS_STORAGE_KEY, READER_FONT_MAX, READER_FONT_MIN, type ReaderPrefs } from '../../shared/readerText'
 
@@ -24,6 +26,8 @@ export default function ReaderWorkspace() {
   const voiceButton = useRef<HTMLButtonElement>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
+  /** 참조 목소리를 준비하는 중이면 그 한 줄. 비면 준비 중이 아니다. */
+  const [prep, setPrep] = useState('')
   const [dragging, setDragging] = useState(false)
   const [settings, setSettings] = useState(false)
   // ★책 목록은 **서재 팝업**에 모은다 (2026-09-30 지시: 불러올수록 화면이 차고 본문이 오른쪽으로 쏠린다).
@@ -199,12 +203,45 @@ export default function ReaderWorkspace() {
     void importFiles(files.map(f => ({ name: f.name, size: f.size, read: () => f.arrayBuffer() })))
   }
   // 목소리 파일은 앱 전체의 '목소리' 기억을 함께 쓴다 — 카드에서 고른 폴더가 여기서도 열린다.
+  /**
+   * 음성 파일에서 목소리를 고른다 — **준비를 거친 조각**으로 읽는다.
+   *
+   * ★원본을 그대로 넘기면 파이썬이 파일 전체를 받아 적어 목소리를 따라 하는데, 그 전사가 소리와
+   *   어긋나면 모델이 끝맺지 못하고 생성 상한까지 말을 이어 갔다 (2026-09-30 사용자 로그 2회:
+   *   125자에 필요한 양 약 160토큰을 넘겨 256 에서 멈춤, 79초). 생성 카드·더빙은 3~10초의 깨끗한
+   *   구간을 골라 잘라 쓴다 — 낭독도 **같은 준비 실행기**를 쓴다. 상한을 없애는 것은 답이 아니다.
+   */
   const pickVoiceFile = async () => {
     setSettings(false)
     const at = await window.api.audio.selectFile(false, 'voice')
     if (typeof at !== 'string' || !at) return      // 취소
-    const label = at.split(/[\\/]/).pop() || at
-    useReader.setState({ voice: label, pick: { kind: 'reference', path: at, label } })
+    const label = nameOnly(at)
+    setError('')
+    setPrep('목소리를 살펴보는 중입니다…')
+    opLog('reader', `참조 목소리 준비 시작 — ${label}`)
+    let clip = ''
+    let said = ''
+    const outcome = await runVoicePrep({
+      clipKey: 'reader', path: at, reqId: `reader-${Date.now()}`,
+      engine: 'auto', refTargetSec: 0, plain: true,
+      committedNow: () => null,
+      report: (p) => {
+        if (p.phase === 'ready') clip = p.clip ?? ''
+        if (p.message) { said = p.message; setPrep(p.message) }
+      },
+    })
+    setPrep('')
+    if (outcome === 'ready') {
+      // 조각이 비면 원본이 그대로 쓸 만하다는 뜻이다(3~10초 · 품질 통과).
+      useReader.setState({ voice: label, pick: { kind: 'reference', path: clip || at, label } })
+      opLog('reader', `참조 목소리 준비됨 — ${label} · ${clip ? '구간을 잘라 씀' : '원본 그대로'}`)
+      return
+    }
+    const why = outcome === 'needs_region'
+      ? '이 파일은 쓸 구간을 스스로 고르지 못했습니다 — 3~10초짜리 깨끗한 말소리 파일을 고르거나, 생성 카드에서 구간을 정한 목소리를 쓰세요.'
+      : outcome === 'failed' ? (said || '이 파일에서 목소리를 준비하지 못했습니다 — 다른 파일을 골라 주세요.')
+      : ''
+    if (why) { setError(why); opLog('reader', `참조 목소리 준비 안 됨(${outcome}) — ${label}: ${why}`, 'WARN') }
   }
   const importFiles = async (files: TextSource[]) => {
     if (loading) return
@@ -283,7 +320,7 @@ export default function ReaderWorkspace() {
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
         <button style={button} aria-label="이전 문단" disabled={!book || position === 0} onClick={() => choosePosition(position - 1)}>‹</button>
         <button data-testid="reader-play" aria-label={read.playing ? '낭독 멈추기' : '낭독 시작'}
-          disabled={!book || !pick}
+          disabled={!book || !pick || !!prep}
           title={!book ? '먼저 책을 고르세요' : !pick ? '먼저 목소리를 고르세요' : read.playing ? '멈춥니다' : '이 자리부터 읽습니다'}
           onClick={() => {
             if (read.playing) { read.stop(); return }
@@ -300,7 +337,7 @@ export default function ReaderWorkspace() {
           style={{ ...button, fontSize: 12, color: prefs.follow ? 'var(--cyan)' : 'var(--text-muted)', borderColor: prefs.follow ? 'var(--cyan)' : undefined }}>따라가기</button>
       </div>
       <span data-testid="reader-state" style={{ flex: '1 1 140px', textAlign: 'right', fontSize: 12, color: read.fault ? 'var(--rose, #fb7185)' : 'var(--text-muted)' }}>
-        {read.fault || read.wait || (book ? `${position + 1} / ${book.paragraphs.length} 문단` : '책을 선택하세요')}
+        {read.fault || prep || read.wait || (book ? `${position + 1} / ${book.paragraphs.length} 문단` : '책을 선택하세요')}
       </span>
     </footer>
     {settings && <div onKeyDown={e => {
