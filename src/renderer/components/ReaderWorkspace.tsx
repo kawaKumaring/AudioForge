@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { create } from 'zustand'
 import { useReadAloud, voiceKeyOf, type ReaderVoicePick } from '@/hooks/useReadAloud'
 import { createManagedAudio } from '@/lib/playbackVolume'
@@ -6,6 +6,8 @@ import { useAppStore } from '@/stores/app.store'
 import { runVoicePrep } from '@/lib/voicePrepRunner'
 import { opLog, nameOnly } from '@/lib/opLog'
 import { chunkAt, TEXT_FILE_LIMIT } from '../../shared/readerChunks'
+import { decodeBookText, encodingLabel } from '../../shared/readerDecode'
+import { WINDOW_FROM, estimateHeight, offsetsOf, visibleRange, scrollTopFor } from '../../shared/readerWindow'
 import { DEFAULT_READER_PREFS, parseReaderPrefs, READER_PREFS_STORAGE_KEY, READER_FONT_MAX, READER_FONT_MIN, type ReaderPrefs } from '../../shared/readerText'
 
 /** 들어 보기 문장 — 책 읽는 문장이어야 낭독 목소리를 고를 수 있다. */
@@ -22,6 +24,32 @@ const useReader = create<{
 const panel: CSSProperties = { background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 14 }
 const button: CSSProperties = { fontFamily: 'inherit', color: 'var(--text-secondary)', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 8, padding: '8px 12px', cursor: 'pointer', whiteSpace: 'nowrap' }
 function BookIcon({ size = 26 }: { size?: number }) { return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M12 5v16M12 5C9 3 5 3 2 4v15c3-1 7-1 10 2 3-3 7-3 10-2V4c-3-1-7-1-10 1Z"/></svg> }
+
+const PHRASE_MARK: CSSProperties = { background: 'rgba(102, 204, 204, 0.2)', color: 'var(--text-primary)', borderRadius: 3, padding: '1px 0', boxDecorationBreak: 'clone', WebkitBoxDecorationBreak: 'clone' }
+
+/**
+ * 문단 한 줄 — **바뀐 줄만** 다시 그린다.
+ * ★큰 책에서 문단 하나를 누르면 모든 문단을 다시 그려 한 번에 120~170ms 가 걸렸다(3만 문단 · 5.5MB 실측).
+ *   덩이가 넘어갈 때마다도 그랬다. 줄마다 자기 몫(고른 자리·읽는 중·칠할 글자 범위)만 받게 한다.
+ * ★큰 책은 보이는 문단만 그린다(아래 `readerWindow`). `content-visibility` 는 누름을 오히려 느리게 해 쓰지 않는다.
+ */
+const ReaderParagraph = memo(function ReaderParagraph({ text, index, chosen, reading, from, to, fontSize, onPick }: {
+  text: string; index: number; chosen: boolean; reading: boolean
+  /** 이 문단 안에서 칠할 글자 범위. 없으면 -1. */
+  from: number; to: number
+  fontSize: number; onPick: (index: number) => void
+}) {
+  return <button data-testid="reader-paragraph" data-index={index}
+    onClick={() => onPick(index)}
+    aria-current={reading ? 'true' : chosen ? 'location' : undefined}
+    data-reading={reading ? '1' : '0'}
+    title={reading ? '지금 읽고 있는 곳입니다' : '이 문단을 낭독 시작 위치로 선택'}
+    style={{ display: 'block', width: '100%', textAlign: 'left', fontFamily: 'inherit', fontSize, lineHeight: 1.95, padding: '12px 16px', marginBottom: 8, border: 'none', borderLeft: `2px solid ${reading ? 'var(--cyan)' : chosen ? 'var(--accent-light)' : 'transparent'}`, borderRadius: 7, background: reading ? 'var(--accent-glow)' : 'transparent', color: (reading || chosen) ? 'var(--text-primary)' : 'var(--text-secondary)', cursor: 'pointer', overflowWrap: 'anywhere' }}>
+    {from >= 0 && from < to
+      ? <>{text.slice(0, from)}<mark data-testid="reader-phrase" style={PHRASE_MARK}>{text.slice(from, to)}</mark>{text.slice(to)}</>
+      : text}
+  </button>
+})
 
 export default function ReaderWorkspace() {
   const { books, active, voice, pick } = useReader()
@@ -141,7 +169,6 @@ export default function ReaderWorkspace() {
       : box.scrollTop + (r.top - b.top) - 16
     box.scrollTo({ top: Math.max(0, top), behavior: smooth ? 'smooth' : 'auto' })
   }
-  useEffect(() => { scrollInBody(bodyRef.current?.querySelector('[aria-current="location"]'), 'nearest', false) }, [active, position])
   // ★본문 **전체**를 넘긴다. 표시용 문단과 합성용 덩이는 다른 단위다 —
   //   나누기 규칙은 `readerChunks` 가 갖는다(인수인계 3항).
   const PARAGRAPH_GAP = '\n\n'
@@ -156,13 +183,6 @@ export default function ReaderWorkspace() {
   const read = useReadAloud(body, pick, { skipHanjaInParens: prefs.skipHanjaInParens })
   /** 지금 읽는 덩이 — 문단 안에서 그 글자만 칠한다. 읽지 않을 때는 없다. */
   const phrase = read.playing ? read.chunks[read.at] : undefined
-  // ★읽는 구절을 **화면이 따라간다** (2026-09-29 지시: "현재 어느 구절을 읽고 있는지 따라가게").
-  //   덩이가 넘어갈 때마다 그 구절을 가운데로 가져온다. 끄면 그대로 둔다 — 앞뒤를 둘러볼 때.
-  useEffect(() => {
-    if (!read.playing || !prefs.follow) return
-    const calm = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-    scrollInBody(bodyRef.current?.querySelector('[data-testid="reader-phrase"]'), 'center', !calm)
-  }, [read.playing, read.at, prefs.follow, book?.id])
   // ★멈춰 있을 때는 **고른 자리**에 맞춰 둔다 — 엔진이 그 자리부터 미리 만들어 두어,
   //   누르는 순간 곧바로 들린다(2026-09-29 지시: "읽어오면 빠르게 만들어서").
   // ★오류가 떠 있으면 건드리지 않는다 (2026-09-30 신고: "붉은색으로 경로가 빠르게 보였다 사라진다").
@@ -179,6 +199,92 @@ export default function ReaderWorkspace() {
     for (let i = 0; i < charOfParagraph.length; i++) { if (charOfParagraph[i] <= start) idx = i; else break }
     return idx
   }, [read.chunks, read.at, charOfParagraph])
+
+  // ── 큰 책은 **보이는 문단만** 그린다(자리 계산은 readerWindow) ─────────────
+  // ★3천 문단 이하는 전부 그린다 — 그때는 빨랐고(누름 20ms 실측) 지금까지 검사한 그대로 둔다.
+  const paragraphCount = book?.paragraphs.length ?? 0
+  const windowed = paragraphCount > WINDOW_FROM
+  const [view, setView] = useState({ top: 0, h: 600, w: 640 })
+  /** 문단 높이 — 처음엔 글자 수로 어림하고, 그려진 문단은 잰 값으로 바꾼다. 책·글자 크기·너비가 바뀌면 다시 어림한다. */
+  const heights = useRef<{ key: string; h: Float64Array }>({ key: '', h: new Float64Array(0) })
+  const [measured, setMeasured] = useState(0)
+  const heightKey = `${book?.id}|${fontSize}|${Math.round(view.w / 40)}`
+  if (windowed && book && heights.current.key !== heightKey) {
+    const g = { fontSize, contentWidth: Math.max(120, view.w), lineHeight: 1.95, chrome: 24 + 8 }
+    const h = new Float64Array(book.paragraphs.length)
+    book.paragraphs.forEach((p, i) => { h[i] = estimateHeight(p.length, g) })
+    heights.current = { key: heightKey, h }
+  }
+  const offsets = useMemo(() => windowed ? offsetsOf(heights.current.h) : null,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [windowed, heightKey, measured])
+  const range = offsets ? visibleRange(offsets, view.top, view.h) : { start: 0, end: paragraphCount }
+  // 본문 칸의 크기·굴린 자리를 따라간다(창을 쓸 때만). 글 너비 = 칸 너비 − 좌우 여백 − 문단 안쪽 여백·테두리.
+  useEffect(() => {
+    const box = bodyRef.current
+    if (!box || !windowed) return
+    const sync = () => {
+      const cs = getComputedStyle(box)
+      const w = box.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight) - 34
+      setView({ top: box.scrollTop, h: box.clientHeight, w })
+    }
+    sync()
+    const ro = new ResizeObserver(sync)
+    ro.observe(box)
+    return () => ro.disconnect()
+  }, [windowed, book?.id])
+  const scrollFrame = useRef(0)
+  const onBodyScroll = () => {
+    if (scrollFrame.current) return
+    scrollFrame.current = requestAnimationFrame(() => {
+      scrollFrame.current = 0
+      const box = bodyRef.current
+      if (box) setView((v) => (v.top === box.scrollTop ? v : { ...v, top: box.scrollTop }))
+    })
+  }
+  /**
+   * 문단(또는 읽는 구절)을 본문 칸에 보이게 한다. **아직 그려지지 않은 문단**이면 어림 자리로 먼저 굴리고,
+   * 그려진 뒤 실제 자리로 맞춘다(`pendingReveal`).
+   */
+  const pendingReveal = useRef<{ index: number; how: 'nearest' | 'center'; phrase: boolean } | null>(null)
+  const findTarget = (index: number, phrase: boolean) => bodyRef.current?.querySelector(
+    phrase ? '[data-testid="reader-phrase"]' : `[data-index="${index}"]`)
+  const reveal = (index: number, how: 'nearest' | 'center', smooth: boolean, phrase: boolean) => {
+    const box = bodyRef.current
+    if (!box || index < 0) return
+    const el = findTarget(index, phrase)
+    if (el || !offsets) { pendingReveal.current = null; scrollInBody(el, how, smooth); return }
+    box.scrollTop = scrollTopFor(offsets, index, box.clientHeight, 'center')
+    pendingReveal.current = { index, how: 'center', phrase }
+    setView((v) => ({ ...v, top: box.scrollTop }))
+  }
+  // 그린 뒤 — 문단 높이를 재고, 기다리던 '보이게 하기' 를 실제 자리로 맞춘다.
+  useLayoutEffect(() => {
+    if (!windowed) return
+    const box = bodyRef.current
+    if (!box) return
+    const h = heights.current.h
+    let changed = false
+    box.querySelectorAll<HTMLElement>('[data-index]').forEach((el) => {
+      const i = Number(el.dataset.index)
+      const m = el.offsetHeight + 8                          // 아래 간격(marginBottom) 포함
+      if (i < h.length && Math.abs(h[i] - m) > 1) { h[i] = m; changed = true }
+    })
+    if (changed) setMeasured((v) => v + 1)
+    const want = pendingReveal.current
+    if (want) {
+      const el = findTarget(want.index, want.phrase)
+      if (el) { pendingReveal.current = null; scrollInBody(el, want.how, false) }
+    }
+  })
+  useEffect(() => { reveal(position, 'nearest', false, false) }, [active, position])
+  // ★읽는 구절을 **화면이 따라간다** (2026-09-29 지시: "현재 어느 구절을 읽고 있는지 따라가게").
+  //   덩이가 넘어갈 때마다 그 구절을 가운데로 가져온다. 끄면 그대로 둔다 — 앞뒤를 둘러볼 때.
+  useEffect(() => {
+    if (!read.playing || !prefs.follow) return
+    const calm = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    reveal(readingParagraph, 'center', !calm, true)
+  }, [read.playing, read.at, prefs.follow, book?.id])
 
   const closeSettings = () => { setSettings(false); voiceButton.current?.focus() }
   const trySample = async (v: ReaderVoicePick, id: string) => {
@@ -203,21 +309,14 @@ export default function ReaderWorkspace() {
       opLog('reader', `들어 보기 실패 — ${v.label}: ${why}`, 'WARN')
     } finally { setTrying('') }
   }
-  /**
-   * 문단 글에서 **지금 읽는 덩이**에 든 글자만 칠한다. 덩이는 원문 글자 자리를 들고 있어
-   * 여러 문단에 걸쳐도 각 문단의 제 몫만 칠해진다.
-   */
-  const withPhrase = (p: string, at: number) => {
-    if (!phrase) return p
-    const from = Math.max(at, phrase.start) - at
-    const to = Math.min(at + p.length, phrase.end) - at
-    if (from >= to) return p
-    return <>{p.slice(0, from)}<mark data-testid="reader-phrase" style={{ background: 'rgba(102, 204, 204, 0.2)', color: 'var(--text-primary)', borderRadius: 3, padding: '1px 0', boxDecorationBreak: 'clone', WebkitBoxDecorationBreak: 'clone' }}>{p.slice(from, to)}</mark>{p.slice(to)}</>
-  }
   const choosePosition = (value: number) => {
     if (!book) return
     useReader.setState(s => ({ books: s.books.map(b => b.id === book.id ? { ...b, position: Math.max(0, Math.min(value, b.paragraphs.length - 1)) } : b) }))
   }
+  // 문단 누름 — 줄마다 같은 함수를 받아야 바뀌지 않은 줄이 다시 그려지지 않는다. 최신 상태는 ref 로 읽는다.
+  const pickRef = useRef<(i: number) => void>(() => {})
+  pickRef.current = (i: number) => { choosePosition(i); if (read.playing) read.seekToChar(charOfParagraph[i] ?? 0) }
+  const pickParagraph = useCallback((i: number) => pickRef.current(i), [])
   // ★불러온 자리를 기억한다(2026-09-29 지시). 브라우저식 파일 입력칸은 여는 자리를
   //   운영체제가 정해서 다른 툴 폴더로 열렸다 — 본체 대화상자가 용도별로 기억한다.
   const pickTexts = async () => {
@@ -293,9 +392,11 @@ export default function ReaderWorkspace() {
         if (!/\.txt$/i.test(file.name) || file.size > TEXT_FILE_LIMIT) { rejected.push(`${file.name}: TXT · 10MB 이하만 지원`); continue }
         try {
           const bytes = await file.read()
-          let text: string
-          try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes) }
-          catch { rejected.push(`${file.name}: UTF-8로 저장한 뒤 다시 불러오세요`); continue }
+          // ★UTF-8 · UTF-16 · CP949(EUC-KR) 를 알아서 읽는다 — 다시 저장하라고 떠넘기지 않는다(readerDecode).
+          const got = decodeBookText(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes))
+          if (!got) { rejected.push(`${file.name}: 글자 방식을 알아보지 못했습니다(UTF-8 · UTF-16 · CP949 만 읽습니다)`); continue }
+          if (got.encoding !== 'utf-8') opLog('reader', `글 파일 ${nameOnly(file.name)} — ${encodingLabel(got.encoding)} 로 읽음`)
+          const text = got.text
           const paragraphs = text.replace(/^\uFEFF/, '').split(/\r?\n/).map(p => p.trim()).filter(Boolean)
           if (!paragraphs.length) { rejected.push(`${file.name}: 내용 없음`); continue }
           added.push({ id: crypto.randomUUID(), name: file.name.replace(/\.txt$/i, ''), paragraphs, position: 0 })
@@ -336,19 +437,22 @@ export default function ReaderWorkspace() {
           <header style={{ padding: '20px 24px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10, borderBottom: '1px solid var(--border-subtle)' }}>
             <h2 style={{ margin: 0, fontSize: 17, flex: 1, overflowWrap: 'anywhere' }}>{book.name}</h2>
           </header>
-          <div ref={bodyRef} data-testid="reader-body" aria-label="책 본문" style={{ height: 'clamp(320px, 58vh, 900px)', overflowY: 'auto', overscrollBehavior: 'contain', padding: '22px clamp(12px, 3vw, 32px)', background: 'var(--bg-base)' }}>
+          <div ref={bodyRef} data-testid="reader-body" aria-label="책 본문" data-windowed={windowed ? '1' : '0'} onScroll={windowed ? onBodyScroll : undefined} style={{ height: 'clamp(320px, 58vh, 900px)', overflowY: 'auto', overscrollBehavior: 'contain', padding: '22px clamp(12px, 3vw, 32px)', background: 'var(--bg-base)' }}>
             {/* ★고른 자리와 **읽는 자리**를 구분해 보인다(인수인계 5항).
                 누른 곳은 '여기서 시작' 이고, 색이 찬 곳은 '지금 읽는 중' 이다. */}
-            {book.paragraphs.map((p, i) => {
-              const chosen = i === position
-              const reading = read.playing && i === readingParagraph
-              return <button key={`${book.id}-${i}`} data-testid="reader-paragraph"
-                onClick={() => { choosePosition(i); if (read.playing) read.seekToChar(charOfParagraph[i] ?? 0) }}
-                aria-current={reading ? 'true' : chosen ? 'location' : undefined}
-                data-reading={reading ? '1' : '0'}
-                title={reading ? '지금 읽고 있는 곳입니다' : '이 문단을 낭독 시작 위치로 선택'}
-                style={{ display: 'block', width: '100%', textAlign: 'left', fontFamily: 'inherit', fontSize, lineHeight: 1.95, padding: '12px 16px', marginBottom: 8, border: 'none', borderLeft: `2px solid ${reading ? 'var(--cyan)' : chosen ? 'var(--accent-light)' : 'transparent'}`, borderRadius: 7, background: reading ? 'var(--accent-glow)' : 'transparent', color: (reading || chosen) ? 'var(--text-primary)' : 'var(--text-secondary)', cursor: 'pointer', overflowWrap: 'anywhere' }}>{withPhrase(p, charOfParagraph[i] ?? 0)}</button>
+            {offsets && <div aria-hidden="true" style={{ height: offsets[range.start] }} />}
+            {book.paragraphs.slice(range.start, range.end).map((p, k) => {
+              const i = range.start + k
+              const at = charOfParagraph[i] ?? 0
+              // 이 문단 안에서 칠할 몫 — 걸치지 않는 문단은 늘 -1 이라 다시 그려지지 않는다.
+              const from = phrase ? Math.max(at, phrase.start) - at : -1
+              const to = phrase ? Math.min(at + p.length, phrase.end) - at : -1
+              const hit = from >= 0 && from < to
+              return <ReaderParagraph key={`${book.id}-${i}`} text={p} index={i}
+                chosen={i === position} reading={read.playing && i === readingParagraph}
+                from={hit ? from : -1} to={hit ? to : -1} fontSize={fontSize} onPick={pickParagraph} />
             })}
+            {offsets && <div aria-hidden="true" style={{ height: offsets[paragraphCount] - offsets[range.end] }} />}
           </div>
         </>}
       </article>

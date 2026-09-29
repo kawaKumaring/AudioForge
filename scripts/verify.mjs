@@ -132,6 +132,10 @@ if (WITH_APP_UI) {
     [path.join('test', 'e2e', 'diagnostics-export.e2e.mjs')])
   // 콘솔 창 — 동작 기록이 창과 무관하게 남고, 보이고, 복사되고, 껐다 켜도 남는가(2026-09-30 지시).
   run('실제 앱 · 콘솔 창(GPU 없음)', 'node', [path.join('test', 'e2e', 'console-panel.e2e.mjs')])
+  // 낭독 — 글 파일을 UTF-8·UTF-16·CP949 로 알아서 읽고, 알아볼 수 없는 파일은 사유를 말하며 거절하는가(2026-09-30).
+  run('실제 앱 · 낭독 글자 방식(GPU 없음)', 'node', [path.join('test', 'e2e', 'reader-encoding.e2e.mjs')])
+  // 낭독 — 3만 문단 책을 보이는 곳만 그려도 고르기·먼 자리로 가기·따라가기가 되는가(2026-09-30).
+  run('실제 앱 · 낭독 큰 책(GPU 없음)', 'node', [path.join('test', 'e2e', 'reader-bigbook.e2e.mjs')])
   // ★외부 전송 금지 — 보안 정책이 켜진 채 뜨고, 화면·본체의 바깥 요청이 막히고, 맞춤법 사전을 받지 않는가(2026-09-30 지시).
   run('실제 앱 · 외부 전송 차단(GPU 없음)', 'node', [path.join('test', 'e2e', 'offline-guard.e2e.mjs')])
   // 기능 검사 탭 — 기능별로 눌러 그 기능만, 초록/붉은 표시, 보고 복사·진단 묶음에 결과(2026-09-30 지시).

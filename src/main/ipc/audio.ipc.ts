@@ -217,7 +217,8 @@ export async function pickFiles(win: BrowserWindow, opts: {
   if (process.env.AF_E2E === '1' && (e2eNextSelect || process.env.AF_E2E_SELECT_FILE)) {
     // 검사가 다음 선택을 명시했으면 그것을 한 번 내주고 비운다(연달아 다른 파일을 고르는 흐름).
     // 명시가 없으면 env 목록 — 예전 동작 그대로다(검사 순서에 의존하지 않게).
-    if (!opts.multi && e2eNextSelect) {
+    // 여러 개 고르는 대화상자(낭독 글 파일)에도 한 개로 내준다 — 연달아 다른 글 파일을 불러오는 흐름을 검사하려고.
+    if (e2eNextSelect) {
       picked = [e2eNextSelect]
       e2eNextSelect = ''
     } else {
