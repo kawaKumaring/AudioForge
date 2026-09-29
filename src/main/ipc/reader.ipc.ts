@@ -136,6 +136,8 @@ async function makeChunk(body: string, v: ReaderVoice, out: string): Promise<str
     // 지문 이름으로 옮겨 둔다 — 다음에 같은 글·같은 목소리면 곧바로 쓴다.
     writeFileSync(out, readFileSync(wav))
     trimCache()
+    // 동작 기록 — 글 내용 없이 글자 수·걸린 시간만. 낭독이 얼마나 빠른지 사용자가 볼 수 있다.
+    appLog()?.info('reader', `만듦 kind=${v.kind} voice=${fileLabel(v.path)} 글자=${body.length} ${((Date.now() - t0) / 1000).toFixed(1)}s`)
     return out
   } catch (e) {
     const shown = failureReason(e)

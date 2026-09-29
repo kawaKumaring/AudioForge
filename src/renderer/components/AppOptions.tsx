@@ -20,6 +20,8 @@
  */
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { outputRootNotice, type OutputPlace } from '../../shared/outputLayout'
+import { exportDiagnosticsText } from '../../shared/diagnostics'
+import { useConsolePanel, setConsoleOpen } from './ConsolePanel'
 
 const row: CSSProperties = { display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', minWidth: 0 }
 const panel: CSSProperties = {
@@ -76,6 +78,26 @@ export default function AppOptions({ close }: { close: () => void }) {
   // 임시 자리 — 앱 안이어야 한다. 화면에 내보이면 조용히 새는 것이 눈에 띈다.
   const [tempDir, setTempDir] = useState('')
   const [stray, setStray] = useState(0)
+  // ── 문제 확인 (2026-09-30 지시: 콘솔 창 켜기 · 진단 묶음을 설정 안으로) ──
+  const consoleOpen = useConsolePanel((s) => s.open)
+  const toggleConsole = async (on: boolean) => {
+    if (!(await setConsoleOpen(on))) setFault('콘솔 창 설정을 저장하지 못했습니다 — 다시 켜면 예전 값으로 돌아갑니다.')
+  }
+  // 진단 묶음 — 결과는 한 줄 글로만 말한다. 경로는 화면에 오지 않는다(폴더 이름만).
+  const [diag, setDiag] = useState<{ busy: boolean; text: string | null }>({ busy: false, text: null })
+  const exportDiagnostics = async () => {
+    if (diag.busy) return
+    setDiag({ busy: true, text: null })
+    try {
+      const r = await window.api.app.exportDiagnostics()
+      if (r.ok) setDiag({ busy: false, text: `진단 묶음을 만들었습니다: ${r.name} (로그 ${r.logCount}개)` })
+      else if (r.reason === 'cancelled') setDiag({ busy: false, text: null })
+      // ★원문 대신 코드→문구. 예전에는 fs 오류 원문(절대 경로 포함)을 그대로 찍었다.
+      else setDiag({ busy: false, text: exportDiagnosticsText(r.code) })
+    } catch (e) {
+      setDiag({ busy: false, text: `진단 묶음을 만들지 못했습니다: ${(e as Error)?.message || '알 수 없는 이유'}` })
+    }
+  }
 
   useEffect(() => {
     void (async () => {
@@ -218,6 +240,29 @@ export default function AppOptions({ close }: { close: () => void }) {
               disabled={busy} onClick={() => void wipe(ask)}>{busy ? '비우는 중…' : '비우기'}</button>
           </div>
         )}
+      </div>
+
+      {/* ── 문제 확인 ─────────────────────────────────────────────────────
+          ★기록은 창을 켜든 끄든 남는다. 창은 보여 주고 복사하게 할 뿐이다.
+            진단 묶음은 버전 아래에 있던 것을 옮겨 왔다(2026-09-30 지시). */}
+      <div style={panel} data-testid="options-trouble">
+        <div style={row}>
+          <span style={{ fontSize: 13, fontWeight: 600, flex: 1 }}>문제 확인</span>
+        </div>
+        <label style={{ ...row, gap: 8, fontSize: 12, cursor: 'pointer' }}>
+          <input type="checkbox" data-testid="options-console" checked={consoleOpen}
+            onChange={(e) => { void toggleConsole(e.target.checked) }} />
+          <span>콘솔 창 보기 — 동작 기록을 실시간으로 보고, 한 번에 복사해 건넬 수 있습니다</span>
+        </label>
+        <span style={muted}>창을 켜지 않아도 기록은 남습니다. 글 내용과 폴더 경로는 적지 않습니다.</span>
+        <div style={row}>
+          <button type="button" data-testid="export-diagnostics" style={button}
+            onClick={() => { void exportDiagnostics() }} disabled={diag.busy}
+            title="최근 로그와 설정의 모양(값 없음)을 폴더 하나로 묶어 저장합니다. 대사·음원은 들어가지 않습니다.">
+            {diag.busy ? '진단 묶음 만드는 중…' : '진단 묶음 내보내기'}
+          </button>
+          {diag.text && <span data-testid="export-diagnostics-result" role="status" style={muted}>{diag.text}</span>}
+        </div>
       </div>
     </section>
     </dialog>

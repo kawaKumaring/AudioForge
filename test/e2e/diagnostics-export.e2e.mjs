@@ -80,8 +80,12 @@ try {
   ok(/ERROR \[console\] .*PROBE_7f2e/.test(fs.readFileSync(logPath, 'utf-8')), '수준 ERROR · 꼬리표 console 로 남는다')
 
   // ── 진단 묶음 ────────────────────────────────────────────────────────────
+  // ★2026-09-30 버전 아래에서 설정의 '문제 확인' 칸으로 옮겼다(지시). 설정을 열고 누른다.
+  ok(await win.getByTestId('export-diagnostics').count() === 0, '버전 아래에는 없다 — 설정으로 옮겼다')
+  await win.getByTestId('open-app-options').click()
+  await win.getByTestId('app-options').waitFor()
   const btn = win.getByTestId('export-diagnostics')
-  ok(await btn.count() === 1, "시작 화면에 '진단 묶음 내보내기' 가 있다")
+  ok(await btn.count() === 1, "설정 안에 '진단 묶음 내보내기' 가 있다")
   await btn.click()
   const result = win.getByTestId('export-diagnostics-result')
   await result.waitFor({ timeout: 10000 })

@@ -46,6 +46,7 @@ import { TRANSCRIPT_DRAFTS_STORAGE_KEY } from '../../shared/transcriptDrafts'
 import { DIALOGUE_DRAFTS_STORAGE_KEY } from '../../shared/dialogueDrafts'
 import { CARD_STORAGE_KEY } from '../../shared/synthesisCardSave'
 import { READER_PREFS_STORAGE_KEY } from '../../shared/readerText'
+import { CONSOLE_POPUP_STORAGE_KEY } from '../../shared/appConsole'
 import { registerTranscriptIpc } from './transcript.ipc'
 import { registerLabIpc } from './lab.ipc'
 import { outputBase, isInside } from '../services/appPaths'
@@ -234,6 +235,8 @@ export async function pickFiles(win: BrowserWindow, opts: {
   //   그것을 거치지 않는 네 통로(인물 목소리 지정·후보 넣기·감정 원본·더빙 목소리)는
   //   파일을 골라도 폴더를 한 번도 남기지 않았다.
   if (picked.length) rememberFile(folderHost, opts.slot, picked[0])
+  // 동작 기록 — 무엇을 고르려 했고 몇 개를 골랐는지. 폴더는 적지 않는다(이름만).
+  appLog()?.info('pick', picked.length ? `${opts.slot} ${picked.length}개 · ${fileLabel(picked[0])}` : `${opts.slot} 취소`)
   return picked
 }
 
@@ -1555,6 +1558,8 @@ export function registerAudioIpc(
       [CARD_STORAGE_KEY]: stored[CARD_STORAGE_KEY] ?? null,
       // 낭독 설정(따라가기·괄호 속 한자) — 2026-09-29. 여기 없으면 저장은 되는데 다시 켜면 사라진다.
       [READER_PREFS_STORAGE_KEY]: stored[READER_PREFS_STORAGE_KEY] ?? null,
+      // 콘솔 창을 띄워 둘지(2026-09-30). 여기 없으면 다시 켜면 닫혀 있다.
+      [CONSOLE_POPUP_STORAGE_KEY]: stored[CONSOLE_POPUP_STORAGE_KEY] ?? null,
     }
   })
 
@@ -1597,7 +1602,9 @@ export function registerAudioIpc(
         // 만든 것을 둘 자리(2026-09-28). 여기 없으면 고른 자리가 조용히 사라진다.
         || key === OUTPUT_ROOT_KEY || key === OUTPUT_BESIDE_KEY
         // 낭독 설정(2026-09-29).
-        || key === READER_PREFS_STORAGE_KEY) {
+        || key === READER_PREFS_STORAGE_KEY
+        // 콘솔 창(2026-09-30).
+        || key === CONSOLE_POPUP_STORAGE_KEY) {
       // 배역 세트도 같은 원자 경로를 쓴다. 두 키는 서로를 덮지 않는다 —
       // settings-store 가 현재 파일을 읽어 그 키 하나만 갱신한다.
       return saveSetting(key, value ?? undefined)

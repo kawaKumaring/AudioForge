@@ -293,6 +293,22 @@ const api = {
       ipcRenderer.invoke('reader:remember-text-dir', filePath),
   },
 
+  /**
+   * 동작 기록 — 콘솔 창이 보여 주고, 화면도 여기에 남긴다(2026-09-30).
+   * ★창을 켜지 않아도 기록은 앱 로그 파일에 남는다. 글 내용·폴더 경로는 적지 않는다.
+   */
+  logs: {
+    recent: (): Promise<string[]> => ipcRenderer.invoke('console:recent'),
+    write: (level: 'INFO' | 'WARN' | 'ERROR', tag: string, message: string): Promise<boolean> =>
+      ipcRenderer.invoke('console:write', level, tag, message),
+    /** 새 줄마다 부른다. 되돌리는 함수를 돌려준다. */
+    onLine: (cb: (line: string) => void): (() => void) => {
+      const h = (_e: unknown, line: string) => cb(line)
+      ipcRenderer.on('console:line', h)
+      return () => { ipcRenderer.removeListener('console:line', h) }
+    },
+  },
+
   /** 앱 설정 — 만든 것을 둘 자리와 쌓인 것 비우기. */
   options: {
     // tempDir/strayTemp — 임시 자리가 앱 안인지 화면이 보여 준다(2026-09-28).

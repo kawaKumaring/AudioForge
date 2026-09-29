@@ -18,6 +18,8 @@ import ReaderWorkspace from '@/components/ReaderWorkspace'
 import TtsResultInfo from '@/components/TtsResultInfo'
 import AppVersionLabel from '@/components/AppVersionLabel'
 import { loadPlaybackVolume } from '@/lib/playbackVolume'
+import ConsolePanel, { loadConsolePref } from '@/components/ConsolePanel'
+import { opLog } from '@/lib/opLog'
 import { isCancelCleanupBusy } from '../shared/cancelContract'
 
 export default function App() {
@@ -29,6 +31,9 @@ export default function App() {
   const scrollRef = useRef<HTMLDivElement>(null)
   const pageRef = useRef<HTMLDivElement>(null)
   useEffect(() => { void loadPlaybackVolume() }, [])
+  // 콘솔 창 — 켜 두었으면 다시 띄운다. 화면을 옮긴 것도 동작 기록에 남긴다(2026-09-30).
+  useEffect(() => { void loadConsolePref() }, [])
+  useEffect(() => { opLog('mode', `화면 ${mode}`) }, [mode])
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0 }, [mode, synthesisTab])
   useEffect(() => {
     if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
@@ -75,6 +80,7 @@ export default function App() {
       </aside>
       {/* 설정 — 팝업으로 띄운다(2026-09-28 지시). 레이아웃 흐름 밖에 둔다. */}
       {showOptions && <AppOptions close={() => setShowOptions(false)}/>}
+      <ConsolePanel />
       <main ref={scrollRef} data-testid="workspace-content" style={{ flex: 1, minWidth: 0, overflowY: 'auto', scrollbarGutter: 'stable' }}>
         <div ref={pageRef} style={{ width: '100%', maxWidth: 1120, margin: '0 auto', padding: '30px clamp(18px, 3vw, 40px) 48px' }}>
           <header style={{ marginBottom: mode === 'tts' ? 20 : 26 }}>

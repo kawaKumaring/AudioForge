@@ -230,6 +230,8 @@ class PiperEngine(TTSEngine):
     """
 
     name = "piper"
+    # 읽을 소리가 없는 토막(기호만 있는 줄)을 대신하는 쉼. 문장 사이 쉼(0.35초)보다 짧게.
+    EMPTY_PAUSE_SEC = 0.2
     # ★"다루려는 언어" 가 아니라 **목소리를 실제로 가진 언어**만 적는다.
     #   Kokoro 에서 넷 중 셋이 거짓이었던 일을 되풀이하지 않는다.
     #   진짜 판정은 piper_voices.check_language 가 실행 시점에 한다.
@@ -297,11 +299,23 @@ class PiperEngine(TTSEngine):
                 cfg = SynthesisConfig(length_scale=1.0 / sp)
         except Exception:
             cfg = None      # 못 넘기면 기본 속도로 낸다 — 터뜨리지 않는다
+        sr = int(getattr(getattr(self._voice, "config", None), "sample_rate", 0) or 22050)
         with wave.open(output_path, "wb") as w:
+            # ★형식을 **먼저** 정한다 (2026-09-30 사용자 신고로 재현).
+            #   piper 는 첫 소리 조각이 나올 때 형식을 정하는데, 기호만 있는 줄
+            #   (◆◇◆ · …… · ─── · “”)은 소리가 한 조각도 없어 형식 없이 닫히며
+            #   "# channels not specified" 로 **덩이 전체가 죽었다.** 소설의 장면 구분 줄이 그렇다.
+            #   piper 의 소리는 늘 한 채널·16비트다.
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
             if cfg is None:
-                self._voice.synthesize_wav(text, w)
+                self._voice.synthesize_wav(text, w, set_wav_format=False)
             else:
-                self._voice.synthesize_wav(text, w, syn_config=cfg)
+                self._voice.synthesize_wav(text, w, syn_config=cfg, set_wav_format=False)
+            if w.getnframes() == 0:
+                # 읽을 소리가 없는 토막 — 짧게 쉰다. 장면 구분 줄은 원래 쉬는 자리다.
+                w.writeframes(b"\x00\x00" * int(sr * self.EMPTY_PAUSE_SEC))
 
 
 # ── GPT-SoVITS Engine (Korean, Japanese, Chinese, English — via isolated venv) ──

@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react'
-import { exportDiagnosticsText } from '../../shared/diagnostics'
 import {
   buildDetailLines, buildDetailText, versionLabel, type AppBuildInfo,
 } from '../../shared/buildMetadata'
@@ -16,22 +15,6 @@ import {
 export default function AppVersionLabel() {
   const [info, setInfo] = useState<AppBuildInfo | null>(null)
   const [open, setOpen] = useState(false)
-  // 진단 묶음 내보내기 — 결과는 한 줄 글로만 말한다. 경로는 화면에 오지 않는다(폴더 이름만).
-  const [diag, setDiag] = useState<{ busy: boolean; text: string | null }>({ busy: false, text: null })
-  const exportDiagnostics = async () => {
-    if (diag.busy) return
-    setDiag({ busy: true, text: null })
-    try {
-      const r = await window.api.app.exportDiagnostics()
-      if (r.ok) setDiag({ busy: false, text: `진단 묶음을 만들었습니다: ${r.name} (로그 ${r.logCount}개)` })
-      else if (r.reason === 'cancelled') setDiag({ busy: false, text: null })
-      // ★원문 대신 코드→문구. 예전에는 fs 오류 원문(절대 경로 포함)을 그대로 찍었다.
-      else setDiag({ busy: false, text: exportDiagnosticsText(r.code) })
-    } catch (e) {
-      setDiag({ busy: false, text: `진단 묶음을 만들지 못했습니다: ${(e as Error)?.message || '알 수 없는 이유'}` })
-    }
-  }
-
   useEffect(() => {
     let alive = true
     // 버전 문자열을 renderer 에 하드코딩하지 않는다 — main 의 app.getVersion() 이 권위다.
@@ -78,29 +61,7 @@ export default function AppVersionLabel() {
       >
         {versionLabel(info)}
       </span>
-      {/* 진단 묶음 — 문제가 났을 때 화면 캡처 대신 건네는 폴더(로그 복사본 + 설정의 모양, 값 없음) */}
-      <div style={{ marginTop: 6 }}>
-        <button
-          type="button"
-          data-testid="export-diagnostics"
-          onClick={exportDiagnostics}
-          disabled={diag.busy}
-          title="최근 로그와 설정의 모양(값 없음)을 폴더 하나로 묶어 저장합니다. 대사·음원은 들어가지 않습니다."
-          style={{
-            background: 'transparent', border: 'none', padding: '2px 6px', cursor: diag.busy ? 'default' : 'pointer',
-            fontFamily: 'inherit', fontSize: 11, color: 'var(--text-faint, var(--text-muted))', opacity: 0.75,
-            textDecoration: 'underline', textUnderlineOffset: 3,
-          }}
-        >
-          {diag.busy ? '진단 묶음 만드는 중…' : '진단 묶음 내보내기'}
-        </button>
-        {diag.text && (
-          <div data-testid="export-diagnostics-result" role="status"
-            style={{ marginTop: 4, fontSize: 11, lineHeight: 1.4, color: 'var(--text-muted)' }}>
-            {diag.text}
-          </div>
-        )}
-      </div>
+      {/* 진단 묶음 내보내기는 설정의 '문제 확인' 칸으로 옮겼다(2026-09-30 지시). */}
       {open && lines.length > 1 && (
         <div
           role="tooltip"
