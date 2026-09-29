@@ -448,8 +448,9 @@ if (!gotLock) {
       session.defaultSession.setSpellCheckerDictionaryDownloadURL('http://127.0.0.1:9/')
     } catch { /* 이 판의 Electron 에 없으면 아래 요청 차단이 남는다 */ }
     // ★외부 전송 금지 — 이 컴퓨터 밖으로 가는 웹 요청은 막고 기록한다(2026-09-30).
-    //   화면·본체·Electron 자신(맞춤법 사전 내려받기 등)이 모두 이 창구를 지난다. 파이썬은 오프라인 설정이 막는다.
-    session.defaultSession.webRequest.onBeforeRequest({ urls: ['*://*/*'] }, (d, cb) => {
+    //   화면·본체(net)의 요청이 이 창구를 지난다. ★맞춤법 사전 내려받기는 지나지 않았다(실측) — 그래서 위에서 따로 끈다.
+    //   파이썬은 오프라인 설정이 막는다. 웹소켓은 '*' 가 덮는지 판마다 다를 수 있어 따로 적는다.
+    session.defaultSession.webRequest.onBeforeRequest({ urls: ['*://*/*', 'ws://*/*', 'wss://*/*'] }, (d, cb) => {
       if (isLocalUrl(d.url)) { cb({}); return }
       let host = '(알 수 없음)'
       try { host = new URL(d.url).hostname } catch { /* 그대로 */ }
