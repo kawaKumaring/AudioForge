@@ -140,7 +140,8 @@ try {
     '★audio_inspect: 2초 · 최고 -10.5dBFS · 조용함 0 · 잘림 0(만든 사인파의 참값과 맞다)', ti.json)
   const fx = await c.call('test_input', { kind: 'fixture' })
   ok(!fx.isError && Array.isArray(fx.json?.fixtures) && fx.json.fixtures.length > 0, `검사용 음원 목록 ${fx.json?.fixtures?.length}개`)
-  const outside = await c.call('audio_inspect', { path: 'C:/Windows/Media/tada.wav' })
+  // 가드는 파일이 있는지 보기 **전에** 막는다 — 없는 경로로도 같은 것을 보인다(이 PC 에만 있는 경로에 기대지 않는다).
+  const outside = await c.call('audio_inspect', { path: 'C:/Users/someone/Music/없는-녹음.wav' })
   ok(outside.isError && /허락/.test(outside.text), '★검사용 자리 밖 소리는 허락 없이 재지 않는다')
   const er = await c.call('errors')
   console.log('INFO errors:', JSON.stringify(er.json?.items || []).slice(0, 600), JSON.stringify(er.json?.appWarnings || []).slice(0, 400))
