@@ -25,7 +25,7 @@ node tools/mcp/client.cjs steps.json --out _local/tmp/mcp-client
 ```
 `steps.json` 예: `[{"tool":"app_start"},{"tool":"ui_click","args":{"target":"testid:mode-reader"}},{"tool":"ui_screenshot"},{"tool":"app_stop"}]`
 
-**검증** — `npm run test:mcp` (23건 · 사전 `npm run build`).
+**검증** — `npm run test:mcp` (39건 · 사전 `npm run build`) · 규칙 계약 5건(`npm test` 안).
 
 ## 도구
 
@@ -38,6 +38,24 @@ node tools/mcp/client.cjs steps.json --out _local/tmp/mcp-client
 - `js_eval` — 화면 JS 평가(점검용)
 - `dialog_queue` · `dialog_clear` — 다음 파일 창의 응답 미리 넣기(open=경로 · save=경로 · message=버튼 번호)
 - `logs` — main 출력 · 화면 콘솔 · 대화상자 응답 · **앱 동작 기록 파일**(`source:'app'` — `[reader]` `[check]` 같은 꼬리표)
+
+### AudioForge 에 맞춘 도구 (같은 날 개량 — "해당 툴에 맞게 사용할 수 있도록")
+
+AudioForge 는 소리를 다루고(AI 는 들을 수 없다), 작업이 길고(합성·분리), 개인정보 규칙이 엄격하다. 그래서 더했다 —
+- `app_state` — 한 번에: 작업 · 처리 상태 · 오류 · 합성이 막히는 사유 · 떠 있는 대화창·경고 · 생성 카드(개수·생성본 수·진행 중) · 낭독(책·문단 자리·목소리·읽는 중·상태 글) · 울리는 소리 수
+- `app_mode` — 작업 화면 바꾸기(`reader` 또는 '낭독' 처럼 한국어로). 처리 중이면 바뀌지 않는다고 알려 준다
+- `audio_now` — **무엇이 울리나**: 파일 이름 · 위치 · 멈춤/끝남 · 재생 빠르기 · 음량 · 앱 안 경로(낭독 소리 요소는 화면에 없어 틀기 시작할 때 붙잡는다)
+- `audio_inspect` — 만든 소리(WAV)를 수치로: 길이 · 최고/평균 크기(dBFS) · 잘린 표본 · 조용한 비율 · 앞뒤 조용함 · 가장 긴 틈 · 비었는지
+- `wait_idle` — 긴 작업이 끝날 때까지(처리 상태 · 카드 작업 · 합성 막힘 · 낭독 "만드는 중" 이 모두 비고 1초 유지)
+- `test_input` — **사용자 파일 대신 쓰는 재료**를 이 실행의 임시 폴더에: 글 파일(UTF-8·UTF-16·CP949) · 사인파 · 기본 목소리로 만든 말소리(참조 목소리 검사용) · 저장소 검사용 음원 복사
+- `errors` — 문제만: 화면 오류·경고 · 본체 오류 줄 · 앱 기록 WARN/ERROR. 검사 모드에서만 나는 알려진 경고(화면 정책의 eval — 검사 도구 때문)는 따로 센다
+- 설명서(instructions)에 **화면 지도**(작업 9개 · 주요 testid)를 실어 AI 가 매번 더듬지 않게 했다(`tools/mcp/audioforge.cjs` — 작업 목록이 ModeSelector 와 같은지 계약 검사가 본다)
+
+### 개인정보 가드 — 도구가 직접 막는다
+
+`dialog_queue` · `api_call` · `js_eval` · `audio_inspect` 에 넘기는 값 안에 **검사용 자리 밖의 미디어 경로**(소리·영상·이미지)가 있으면 멈추고 사유를 말한다.
+검사용 자리 = `test/fixtures/audio` · `_local/tmp` · 이 실행의 임시 폴더. 사용자가 **그 파일·그 작업을 명시적으로 허락했을 때만** `userApproved:true` 로 다시 부른다.
+대신 쓸 재료는 `test_input` 이 만든다. (`..` 로 빠져나가는 경로 · 문자열 안에 묻힌 경로도 막는다 — `src/main/services/mcpDevtool.contract.test.ts`)
 
 요소는 **`testid:이름`** 으로 지정하는 것이 가장 확실하다(이 앱은 요소마다 `data-testid` 를 단다). `@번호` ref 는 화면이 다시 그려지면 바뀐다.
 

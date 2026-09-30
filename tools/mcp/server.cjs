@@ -18,9 +18,11 @@ const fs = require('fs')
 const path = require('path')
 
 const ROOT = path.resolve(__dirname, '..', '..')
-const SERVER_INFO = { name: 'audioforge-devtool', version: '0.1.0' }
+const SERVER_INFO = { name: 'audioforge-devtool', version: '0.2.0' }
 const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05']
 const HELPERS = fs.readFileSync(path.join(__dirname, 'domHelpers.js'), 'utf8')
+// 이 앱에 맞춘 것들(화면 지도 · 상태 · 재생 관찰 · 기다리기 · 검사 재료 · 소리 수치 · 개인정보 가드)
+const AF = require('./audioforge.cjs')
 const log = (...a) => process.stderr.write('[audioforge-mcp] ' + a.join(' ') + '\n')
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -130,8 +132,13 @@ async function startApp ({ visible = false, build = 'auto', width = 1280, height
   proc.stderr && proc.stderr.on('data', keep('main', 'error'))
   proc.on('exit', (code) => { log('앱 종료(exit ' + code + ')'); record('main', 'info', '앱 종료(exit ' + code + ')'); if (session === s) session = null })
   app.on('window', (p) => watchPage(s, p))
+  // 재생 관찰 — 새 문서마다 먼저 심는다(낭독 소리 요소는 화면(DOM)에 없어 틀기 시작할 때 붙잡아야 한다).
+  await app.context().addInitScript(AF.MEDIA_HOOK).catch(() => {})
   const page = await app.firstWindow({ timeout: 90000 })
   watchPage(s, page)
+  await page.evaluate(AF.MEDIA_HOOK).catch(() => {})
+  s.inputs = path.join(tmp, 'inputs')
+  fs.mkdirSync(s.inputs, { recursive: true })
   await app.evaluate(new Function('return ' + DIALOG_PATCH)())
   // 화면이 뜰 때까지(앱 저장소가 생기면 준비된 것)
   const t0 = Date.now()
@@ -192,10 +199,18 @@ const TOOLS = [
   { name: 'ui_screenshot', description: '창(또는 요소) 캡처 이미지. 화면 밖 창도 된다. savePath 를 주면 파일로도 저장(_local/ 아래 권장).', inputSchema: { type: 'object', properties: { window: WIN, selector: TARGET, maxWidth: { type: 'number' }, savePath: { type: 'string' } } } },
   { name: 'window_resize', description: '창 크기 변경.', inputSchema: { type: 'object', properties: { window: WIN, width: { type: 'number' }, height: { type: 'number' } }, required: ['width', 'height'] } },
   { name: 'api_list', description: "화면이 쓰는 앱 기능(window.api) 이름 목록 — 'audio.getFileUrl' · 'reader.speak' 처럼 점으로 이은 이름.", inputSchema: { type: 'object', properties: { window: WIN } } },
-  { name: 'api_call', description: "앱 기능을 직접 호출한다(화면이 부르는 것과 같은 길: window.api → IPC → main). 예: method 'cards.builtinVoices' · 'settings.get'. 긴 문자열은 잘라서 돌려준다(full:true 면 전체). 오래 걸리면 timeoutMs 를 늘린다.", inputSchema: { type: 'object', properties: { window: WIN, method: { type: 'string' }, args: { type: 'array' }, full: { type: 'boolean' }, timeoutMs: { type: 'number' } }, required: ['method'] } },
-  { name: 'js_eval', description: '화면(렌더러)에서 JS 식을 평가한다(점검용 — 화면 수정은 코드로). window.__afStore(앱 상태)·__mcp 도우미 사용 가능.', inputSchema: { type: 'object', properties: { window: WIN, code: { type: 'string' } }, required: ['code'] } },
-  { name: 'dialog_queue', description: "다음에 뜰 OS 대화상자의 응답을 미리 넣는다. kind 'open'(파일·폴더 경로 또는 여러 파일 배열) · 'save'(저장 경로) · 'message'(버튼 번호). 비면 '취소'(진짜 창은 절대 안 뜸). ★낭독·카드의 파일 고르기도 여기로 온다.", inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: ['open', 'save', 'message'] }, answers: { type: 'array' } }, required: ['kind', 'answers'] } },
+  { name: 'api_call', description: "앱 기능을 직접 호출한다(화면이 부르는 것과 같은 길: window.api → IPC → main). 예: method 'cards.builtinVoices' · 'settings.get'. 긴 문자열은 잘라서 돌려준다(full:true 면 전체). 오래 걸리면 timeoutMs 를 늘린다.", inputSchema: { type: 'object', properties: { window: WIN, method: { type: 'string' }, args: { type: 'array' }, full: { type: 'boolean' }, timeoutMs: { type: 'number' }, userApproved: { type: 'boolean', description: '사용자가 그 미디어 파일·그 작업을 명시적으로 허락했을 때만 true(검사용 자리 밖 미디어 경로를 쓸 때)' } }, required: ['method'] } },
+  { name: 'js_eval', description: '화면(렌더러)에서 JS 식을 평가한다(점검용 — 화면 수정은 코드로). window.__afStore(앱 상태)·__mcp 도우미 사용 가능.', inputSchema: { type: 'object', properties: { window: WIN, code: { type: 'string' }, userApproved: { type: 'boolean', description: '사용자가 그 미디어 파일·그 작업을 명시적으로 허락했을 때만 true(검사용 자리 밖 미디어 경로를 쓸 때)' } }, required: ['code'] } },
+  { name: 'dialog_queue', description: "다음에 뜰 OS 대화상자의 응답을 미리 넣는다. kind 'open'(파일·폴더 경로 또는 여러 파일 배열) · 'save'(저장 경로) · 'message'(버튼 번호). 비면 '취소'(진짜 창은 절대 안 뜸). ★낭독·카드의 파일 고르기도 여기로 온다.", inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: ['open', 'save', 'message'] }, answers: { type: 'array' }, userApproved: { type: 'boolean', description: '사용자가 그 미디어 파일·그 작업을 명시적으로 허락했을 때만 true(검사용 자리 밖 미디어 경로를 쓸 때)' } }, required: ['kind', 'answers'] } },
   { name: 'dialog_clear', description: '대화상자 응답 큐 비우기.', inputSchema: { type: 'object', properties: {} } },
+  // ── AudioForge 전용 ──
+  { name: 'app_state', description: '지금 상태 한눈에: 작업(mode) · 처리 상태 · 오류 · 다른 작업 때문에 합성이 막히는 사유(busy) · 떠 있는 대화창·경고 · 생성 카드(개수·생성본 수·진행 중 작업) · 낭독(책·문단 자리·목소리·읽는 중인지·상태 글) · 울리는 소리 수. 무엇을 하기 전후로 먼저 부른다.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'app_mode', description: "작업 화면을 바꾼다: " + Object.entries(AF.MODES).map(([k, v]) => `'${k}'(${v})`).join(' · ') + '. 한국어 이름도 된다. 처리 중에는 바뀌지 않는다(그렇다고 알려 준다).', inputSchema: { type: 'object', properties: { mode: { type: 'string' } }, required: ['mode'] } },
+  { name: 'audio_now', description: '★소리는 들을 수 없으므로 — 틀기 시작한 소리 요소들의 파일 이름 · 위치(초) · 길이 · 멈춤/끝남 · 재생 빠르기 · 음량 · 오류. 낭독·생성본·미리듣기 모두(화면 DOM 에 없는 요소 포함).', inputSchema: { type: 'object', properties: { window: WIN } } },
+  { name: 'audio_inspect', description: '만든 소리(WAV)를 수치로: 길이 · 샘플레이트 · 최고/평균 크기(dBFS) · 잘린 표본 수 · 조용한 비율 · 앞뒤 조용함 · 가장 긴 틈 · 비었는지. ★검사용 자리(test/fixtures/audio · _local/tmp · 이 실행의 임시 폴더) 안의 파일만 — 그 밖은 userApproved:true(사용자 허락) 필요.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, userApproved: { type: 'boolean' } }, required: ['path'] } },
+  { name: 'wait_idle', description: '긴 작업(합성·낭독 조각 만들기·분리 등)이 끝날 때까지 기다린다 — 처리 상태 · 카드 작업 · 합성 막힘 사유 · 낭독 "만드는 중" 이 모두 비고 1초 유지되면 끝. 반환 met=false 면 시간 초과(timeoutMs 기본 10분).', inputSchema: { type: 'object', properties: { timeoutMs: { type: 'number' } } } },
+  { name: 'test_input', description: "사용자 파일 대신 쓰는 **검사 재료**를 이 실행의 임시 폴더에 만든다(경로를 돌려준다 — dialog_queue 에 그대로 넣는다). kind: 'text'(content · encoding utf-8|utf-8-bom|utf-16le|cp949 · name) · 'tone'(seconds · freq — 사인파 WAV) · 'speech'(text — 앱의 기본 목소리로 만든 말소리 WAV · 참조 목소리 검사용) · 'fixture'(name — 저장소 검사용 음원을 복사, 이름 없으면 목록).", inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: ['text', 'tone', 'speech', 'fixture'] }, content: { type: 'string' }, encoding: { type: 'string' }, name: { type: 'string' }, text: { type: 'string' }, seconds: { type: 'number' }, freq: { type: 'number' } }, required: ['kind'] } },
+  { name: 'errors', description: '문제만 모아 본다: 화면 오류·경고(pageerror 포함) · 본체 오류 줄 · 앱 기록의 WARN/ERROR. since=마지막으로 본 seq 이후만. 조작 뒤 건강 검사로 쓴다.', inputSchema: { type: 'object', properties: { since: { type: 'number' }, limit: { type: 'number' } } } },
   { name: 'logs', description: "기록: main(본체 출력) · renderer:<창>(화면 콘솔) · dialog(대화상자 응답) · app(앱 동작 기록 파일 — [reader]·[check] 같은 꼬리표). since=마지막으로 본 seq 이후만(app 은 파일이라 since 무시). grep=정규식.", inputSchema: { type: 'object', properties: { since: { type: 'number' }, source: { type: 'string', description: "'main'|'renderer'|'dialog'|'app'" }, grep: { type: 'string' }, limit: { type: 'number' } } } }
 ]
 
@@ -249,17 +264,111 @@ const HANDLERS = {
   },
   window_resize: (a) => resize(a),
   api_list: ({ window = 'main' }) => inPage(window, '__mcp.apiList()'),
-  api_call: async ({ window = 'main', method, args = [], full = false, timeoutMs = 300000 }) => {
+  api_call: async ({ window = 'main', method, args = [], full = false, timeoutMs = 300000, userApproved }) => {
+    AF.guardMedia(args, session, userApproved)
     const call = inPage(window, `__mcp.api(${JSON.stringify(method)}, ${JSON.stringify(args)}, ${!!full})`)
     return Promise.race([call, sleep(timeoutMs).then(() => { throw new Error(`시간 초과(${timeoutMs}ms): ${method}`) })])
   },
-  js_eval: ({ window = 'main', code }) => inPage(window, `(async () => { return (${code}) })()`),
-  dialog_queue: async ({ kind = 'open', answers = [] }) => {
+  js_eval: ({ window = 'main', code, userApproved }) => { AF.guardMedia(code, session, userApproved); return inPage(window, `(async () => { return (${code}) })()`) },
+  dialog_queue: async ({ kind = 'open', answers = [], userApproved }) => {
+    AF.guardMedia(answers, session, userApproved)
     if (!['open', 'save', 'message'].includes(kind)) throw new Error("kind = open|save|message")
     if (!session) throw new Error('앱이 실행 중이 아닙니다 — 먼저 app_start')
     return session.app.evaluate((_e, a) => { const d = globalThis.__mcpDialog; d[a.kind].push(...a.answers); return { kind: a.kind, queued: d[a.kind].length } }, { kind, answers })
   },
   dialog_clear: async () => { if (!session) return false; return session.app.evaluate(() => { const d = globalThis.__mcpDialog; d.open.length = d.save.length = d.message.length = 0; return true }) },
+  // ── AudioForge 전용 ──
+  app_state: async () => {
+    const st = await inPage('main', AF.STATE)
+    const q = await session.app.evaluate(() => { const d = globalThis.__mcpDialog; return d ? { open: d.open.length, save: d.save.length, message: d.message.length } : null }).catch(() => null)
+    return { ...st, dialogQueued: q, windows: (await windowsInfo()).map((w) => w.kind), logSeq }
+  },
+  app_mode: async ({ mode }) => {
+    const want = String(mode || '').trim()
+    const id = AF.MODES[want] ? want : Object.keys(AF.MODES).find((k) => AF.MODES[k] === want || AF.MODES[k].includes(want))
+    if (!id) throw new Error('모르는 작업: ' + want + ' — ' + Object.entries(AF.MODES).map(([k, v]) => `${k}(${v})`).join(' · '))
+    const r = await inPage('main', `__mcp.click(${JSON.stringify({ target: 'testid:mode-' + id })})`)
+    if (!r || !r.clicked) return { mode: id, changed: false, why: (r && r.error) || '누르지 못함', hint: r && r.error === '비활성 요소' ? '처리 중에는 작업을 바꿀 수 없다 — wait_idle 뒤 다시' : undefined }
+    const t0 = Date.now()
+    while (Date.now() - t0 < 5000) {
+      const cur = await inPage('main', `document.querySelector('[data-testid="mode-${id}"]')?.getAttribute('aria-current') === 'page'`).catch(() => false)
+      if (cur) return { mode: id, label: AF.MODES[id], changed: true }
+      await sleep(150)
+    }
+    return { mode: id, changed: false, why: '눌렀지만 화면이 바뀌지 않았다(5초)' }
+  },
+  audio_now: ({ window = 'main' }) => inPage(window, AF.MEDIA_NOW),
+  audio_inspect: async ({ path: p, userApproved }) => {
+    const full = path.isAbsolute(String(p || '')) ? String(p) : path.join(ROOT, String(p || ''))
+    AF.guardMedia(full, session, userApproved)
+    if (!fs.existsSync(full)) throw new Error('파일이 없습니다: ' + path.basename(full))
+    return AF.inspectWav(full)
+  },
+  wait_idle: async ({ timeoutMs = 600000 }) => {
+    const t0 = Date.now()
+    let calm = 0, last = null
+    while (Date.now() - t0 < timeoutMs) {
+      last = await inPage('main', AF.STATE).catch(() => null)
+      const busy = !last || last.status === 'processing' || (last.cards && last.cards.job) || last.busy ||
+        (last.reader && /만드는 중|기다리는 중/.test(last.reader.state || ''))
+      calm = busy ? 0 : calm + 1
+      if (calm >= 2) return { met: true, ms: Date.now() - t0, state: last }
+      await sleep(500)
+    }
+    return { met: false, ms: Date.now() - t0, state: last }
+  },
+  test_input: async ({ kind, content = '', encoding = 'utf-8', name = null, text: t = '', seconds = 2, freq = 440 }) => {
+    if (!session) throw new Error('앱이 실행 중이 아닙니다 — 먼저 app_start(재료는 이 실행의 임시 폴더에 만든다)')
+    const n = session.inputSeq = (session.inputSeq || 0) + 1
+    const safe = (s) => String(s).replace(/[\\/:*?"<>|]/g, '_').slice(0, 60)
+    if (kind === 'text') {
+      const file = path.join(session.inputs, safe(name || `글-${n}`) + (/\.txt$/i.test(name || '') ? '' : '.txt'))
+      AF.writeText(file, String(content || '첫째 문단이다. 그는 천천히 문을 열었다.'), encoding)
+      return { path: file, bytes: fs.statSync(file).size, encoding }
+    }
+    if (kind === 'tone') {
+      const file = path.join(session.inputs, safe(name || `소리-${n}`) + '.wav')
+      AF.writeTone(file, Number(seconds) || 2, Number(freq) || 440)
+      return { path: file, seconds: Number(seconds) || 2 }
+    }
+    if (kind === 'fixture') {
+      const list = AF.listFixtures()
+      if (!name) return { fixtures: list, dir: path.relative(ROOT, AF.FIXTURES) }
+      if (!list.includes(name)) throw new Error('없는 검사용 음원: ' + name + ' — 목록: ' + list.join(', '))
+      const file = path.join(session.inputs, name)
+      fs.copyFileSync(path.join(AF.FIXTURES, name), file)
+      return { path: file, from: path.join('test', 'fixtures', 'audio', name) }
+    }
+    if (kind === 'speech') {
+      // 앱의 기본 목소리로 만든다 — 사용자 음성이 아니므로 참조 목소리 검사에 써도 된다(기능 검사와 같은 방법).
+      const say = String(t || content || '안녕하세요. 이 목소리로 읽습니다.')
+      const made = await inPage('main', `(async () => {
+        const v = (await window.api.cards.builtinVoices())?.data?.voices || []
+        const b = v.find((x) => x.engineId !== 'qwen-custom') || v[0]
+        if (!b) throw new Error('쓸 수 있는 기본 목소리가 없습니다')
+        const r = await window.api.reader.speak(${JSON.stringify(say)}, { kind: 'builtin', path: b.path, engineId: b.engineId }, 'builtin:' + b.engineId + ':' + b.path)
+        if (r.error || !r.data?.path) throw new Error(r.error || '말소리를 만들지 못했습니다')
+        return { path: r.data.path, voice: b.label }
+      })()`)
+      const file = path.join(session.inputs, safe(name || `말소리-${n}`) + '.wav')
+      fs.copyFileSync(made.path, file)
+      return { path: file, voice: made.voice, ...AF.inspectWav(file) }
+    }
+    throw new Error("kind = text | tone | speech | fixture")
+  },
+  errors: async ({ since = 0, limit = 100 }) => {
+    await dialogLogs()
+    const bad = logs.filter((l) => l.seq > since && (
+      (l.source.startsWith('renderer') && (l.level === 'error' || l.level === 'warning' || /pageerror/.test(l.text))) ||
+      (l.source === 'main' && /\b(error|exception|fail|crash)|실패|오류/i.test(l.text) && !/DevTools|Autofill|GPU process/i.test(l.text))))
+    // ★검사 모드에서만 나는 알려진 경고는 따로 센다 — 검사 도구(Playwright) 때문에 검사 모드의 화면 정책에만 eval 을 허락해서
+    //   Electron 이 늘 경고한다(제품 정책엔 eval 이 없다 — offlinePolicy.test 가 본다). 매번 섞이면 진짜 문제가 묻힌다.
+    const KNOWN = /Electron Security Warning \(Insecure Content-Security-Policy\)/
+    const real = bad.filter((l) => !KNOWN.test(l.text))
+    const app = appLogLines().filter((l) => /\b(WARN|ERROR)\b/.test(l) && !KNOWN.test(l)).slice(-limit)
+    return { lastSeq: logSeq, count: real.length, items: real.slice(-limit), appWarnings: app,
+      knownTestModeNotices: bad.length - real.length + appLogLines().filter((l) => KNOWN.test(l)).length }
+  },
   logs: async ({ since = 0, source = null, grep = null, limit = 300 }) => {
     const re = grep ? new RegExp(grep, 'i') : null
     if (source === 'app') {
@@ -302,7 +411,7 @@ async function onMessage (m) {
         protocolVersion: SUPPORTED_PROTOCOLS.includes(want) ? want : SUPPORTED_PROTOCOLS[0],
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER_INFO,
-        instructions: 'AudioForge(음원 도구)를 직접 실행·조작·관찰하는 도구. 순서: app_start → ui_snapshot/ui_query 로 화면 파악 → ui_click/ui_set/api_call 로 조작 → ui_wait/logs 로 결과 확인 → app_stop. 요소는 testid 로 지정하는 것이 가장 확실하다(예: testid:mode-reader). 창은 기본적으로 화면 밖이라 사용자 작업을 방해하지 않는다. 파일 고르기는 dialog_queue 로 미리 응답을 넣는다. 사용자 데이터는 격리된 임시 폴더를 쓴다. ★사용자의 음성·영상 파일은 사용자가 명시적으로 허락한 것만 연다.'
+        instructions: 'AudioForge(음원 도구)를 직접 실행·조작·관찰하는 도구. 순서: app_start → ui_snapshot/ui_query 로 화면 파악 → ui_click/ui_set/api_call 로 조작 → ui_wait/logs 로 결과 확인 → app_stop. 요소는 testid 로 지정하는 것이 가장 확실하다(예: testid:mode-reader). 창은 기본적으로 화면 밖이라 사용자 작업을 방해하지 않는다. 파일 고르기는 dialog_queue 로 미리 응답을 넣는다. 사용자 데이터는 격리된 임시 폴더를 쓴다. ★사용자의 음성·영상 파일은 사용자가 명시적으로 허락한 것만 연다(검사용 자리 밖 미디어 경로는 도구가 막는다 — 대신 test_input). 소리는 들을 수 없다 — audio_now(무엇이 울리나)·audio_inspect(수치)로 본다.\n' + AF.SCREEN_MAP
       })
     }
     case 'notifications/initialized': case 'notifications/cancelled': return

@@ -88,6 +88,63 @@ try {
   ok(!al.isError && al.json?.items?.some((l) => /\[pick\]/.test(l)), '앱 동작 기록(파일)을 읽는다([pick] 줄)')
   const ev = await c.call('js_eval', { code: 'typeof window.__afStore' })
   ok(!ev.isError && /function|object/.test(ev.text), '화면 JS 평가(점검용)')
+
+  // ── AudioForge 전용 — 실제 쓰임새 한 바퀴: 낭독에 CP949 책을 열고 읽고, 울리는 것을 보고, 만든 소리를 잰다 ──
+  const bm = await c.call('app_mode', { mode: '낭독' })
+  ok(!bm.isError && bm.json?.changed && bm.json.mode === 'reader', '★작업을 한국어 이름으로 바꾼다(낭독)', bm.text.slice(0, 200))
+  const badMode = await c.call('app_mode', { mode: '없는작업' })
+  ok(badMode.isError && /reader\(낭독\)/.test(badMode.text), '모르는 작업은 목록과 함께 알려 준다')
+  const txt = await c.call('test_input', { kind: 'text', encoding: 'cp949', name: '엠씨피 책', content: '첫째 문단이다. 그는 천천히 문을 열었다.\n둘째 문단이다. 멀리서 물소리가 들렸다.' })
+  ok(!txt.isError && /엠씨피 책\.txt$/.test(txt.json?.path || ''), '★검사 재료: CP949 글 파일을 이 실행의 임시 폴더에 만든다', txt.text.slice(0, 200))
+  await c.call('dialog_queue', { kind: 'open', answers: [txt.json.path] })
+  await c.call('ui_click', { target: 'testid:reader-add-text' })
+  const opened = await c.call('ui_wait', { selector: 'testid:reader-paragraph', timeoutMs: 15000 })
+  const s1 = await c.call('app_state')
+  ok(opened.json?.met && s1.json?.mode === 'reader' && s1.json?.reader?.book === '엠씨피 책' && s1.json.reader.paragraphs === 2,
+    '★상태 한눈에: 작업 · 낭독 책 이름 · 문단 수', s1.json?.reader)
+
+  // 개인정보 가드 — 검사용 자리 밖 미디어 경로는 허락 없이 넘기지 못한다
+  const g1 = await c.call('dialog_queue', { kind: 'open', answers: ['C:/Users/someone/Music/노래.mp3'] })
+  ok(g1.isError && /허락/.test(g1.text), '★검사용 자리 밖 미디어 경로는 막는다(사용자 허락 필요)', g1.text.slice(0, 160))
+  const g2 = await c.call('api_call', { method: 'audio.getFileUrl', args: ['D:/개인/목소리.wav'] })
+  ok(g2.isError && /허락/.test(g2.text), '앱 기능 호출에 넘기는 경로도 같은 규칙')
+  const g3 = await c.call('dialog_queue', { kind: 'open', answers: ['C:/Users/someone/Music/노래.mp3'], userApproved: true })
+  ok(!g3.isError, 'userApproved:true 면 넘긴다(사용자가 허락했을 때)')
+  await c.call('dialog_clear')
+
+  // 읽기 — 소리는 들을 수 없으니 무엇이 울리는지 본다
+  await c.call('ui_click', { target: 'testid:reader-play' })
+  let now = null
+  for (let i = 0; i < 60; i++) {
+    now = await c.call('audio_now')
+    if (now.json?.some?.((m) => !m.paused && m.time > 0.2)) break
+    await new Promise((r) => setTimeout(r, 500))
+  }
+  const playing = now?.json?.find?.((m) => !m.paused)
+  ok(playing && /^[^\\/]+\.wav$/.test(playing.file) && playing.rate === 1 && playing.time > 0, '★audio_now: 울리는 소리의 파일 이름 · 위치 · 빠르기', playing)
+  // 재생 요소의 길이는 늦게 알려진다 — 앱 안 경로로 실제 길이를 잰다.
+  const pi = playing?.path ? await c.call('audio_inspect', { path: playing.path }) : null
+  ok(pi && !pi.isError && pi.json?.seconds > 1 && pi.json.empty === false, '★울리는 소리의 앱 안 경로를 받아 audio_inspect 로 잰다', pi?.text?.slice(0, 200))
+  const s2 = await c.call('app_state')
+  ok(s2.json?.reader?.playing === true && s2.json.audioPlaying >= 1, '상태에도 읽는 중으로 보인다')
+  await c.call('ui_click', { target: 'testid:reader-play' })
+  const idle = await c.call('wait_idle', { timeoutMs: 60000 })
+  ok(!idle.isError && idle.json?.met, '★wait_idle: 앞서 만들던 조각까지 끝나면 돌아온다', idle.json?.ms)
+
+  // 만든 소리를 수치로
+  const sp = await c.call('test_input', { kind: 'speech', text: '안녕하세요. 이 목소리로 읽습니다.' })
+  ok(!sp.isError && sp.json?.seconds > 1 && sp.json.empty === false, '★검사 재료: 기본 목소리로 만든 말소리(참조 목소리 검사용)', sp.text.slice(0, 200))
+  const tone = await c.call('test_input', { kind: 'tone', seconds: 2, freq: 440 })
+  const ti = await c.call('audio_inspect', { path: tone.json?.path })
+  ok(!ti.isError && ti.json?.seconds === 2 && Math.abs(ti.json.peakDbfs - -10.5) < 0.3 && ti.json.silentRatio === 0 && ti.json.clippedSamples === 0,
+    '★audio_inspect: 2초 · 최고 -10.5dBFS · 조용함 0 · 잘림 0(만든 사인파의 참값과 맞다)', ti.json)
+  const fx = await c.call('test_input', { kind: 'fixture' })
+  ok(!fx.isError && Array.isArray(fx.json?.fixtures) && fx.json.fixtures.length > 0, `검사용 음원 목록 ${fx.json?.fixtures?.length}개`)
+  const outside = await c.call('audio_inspect', { path: 'C:/Windows/Media/tada.wav' })
+  ok(outside.isError && /허락/.test(outside.text), '★검사용 자리 밖 소리는 허락 없이 재지 않는다')
+  const er = await c.call('errors')
+  console.log('INFO errors:', JSON.stringify(er.json?.items || []).slice(0, 600), JSON.stringify(er.json?.appWarnings || []).slice(0, 400))
+  ok(!er.isError && er.json?.count === 0 && er.json.appWarnings.length === 0 && er.json.knownTestModeNotices >= 1, `★errors: 이 한 바퀴 동안 진짜 문제 0건(검사 모드 알려진 경고 ${er.json?.knownTestModeNotices}건은 따로)`, er.json)
 } catch (e) {
   fails.push('예외: ' + (e?.message || e))
   console.log('FAIL 예외', e?.message || e)

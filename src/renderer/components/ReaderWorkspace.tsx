@@ -22,6 +22,8 @@ const useReader = create<{
   /** ★실제로 합성에 쓸 지정. 이름만 들고 있으면 낭독을 시작할 수 없다. */
   pick: ReaderVoicePick | null
 }>(() => ({ books: [], active: '', voice: '기본 목소리', pick: null }))
+// 검사·개발툴 MCP 전용 — 낭독 상태를 읽을 수 있게(생성 카드 저장소와 같은 규칙: 검사 모드에서만).
+if (typeof window !== 'undefined' && window.api?._e2e) Object.assign(window, { __readerStore: useReader })
 const panel: CSSProperties = { background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderRadius: 14 }
 const button: CSSProperties = { fontFamily: 'inherit', color: 'var(--text-secondary)', background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)', borderRadius: 8, padding: '8px 12px', cursor: 'pointer', whiteSpace: 'nowrap' }
 function BookIcon({ size = 26 }: { size?: number }) { return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M12 5v16M12 5C9 3 5 3 2 4v15c3-1 7-1 10 2 3-3 7-3 10-2V4c-3-1-7-1-10 1Z"/></svg> }
