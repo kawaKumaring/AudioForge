@@ -409,7 +409,13 @@ export default function ReaderWorkspace() {
           added.push({ id: crypto.randomUUID(), name: file.name.replace(/\.txt$/i, ''), paragraphs, position: 0 })
         } catch { rejected.push(`${file.name}: 읽지 못했습니다`) }
       }
-      if (added.length) useReader.setState(s => ({ books: [...s.books, ...added], active: s.active || added[0].id }))
+      if (added.length) {
+        useReader.setState(s => ({ books: [...s.books, ...added], active: s.active || added[0].id }))
+        // ★새 책은 **곧바로** 저장한다 (2026-10-01 · MCP 로 찾음). 저장은 '열려 있는 책' 이 바뀔 때만 일어나서, 다른 책을 연 채
+        //   더한 책은 한 번도 저장되지 않고 다시 켜면 사라졌다(두 권 중 한 권만 남음 — 재현). "껐다 켜도 남습니다" 가 거짓이었다.
+        //   다른 책은 건드리지 않는다 — 이 책 파일만 쓴다.
+        for (const b of added) void window.api.works.write('books', b.id, b).catch(() => { /* 열 때 다시 쓴다 */ })
+      }
       setError(rejected.join(' · '))
     } finally { setLoading(false) }
   }

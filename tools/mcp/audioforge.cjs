@@ -24,6 +24,8 @@ const SCREEN_MAP = [
   '· 낭독(reader): reader-add-text(글 파일 — dialog_queue 먼저) · reader-play(읽기/멈춤) · reader-settings(목소리 · reader-voice-builtin/reader-voice-try) · reader-rate(재생 빠르기) · reader-follow · reader-library · reader-paragraph(문단).',
   '· 음성 합성(tts): add-generation-card → pick-voice-builtin(기본 목소리)/pick-voice-file(파일) → generation-card(card-script 대본 · card-generate 만들기 · card-takes 생성본) → join-bar(join-play 이어 듣기 · join-save · card-rate).',
   '· 상태 한눈에: app_state · 소리: audio_now(무엇이 울리나)·audio_inspect(만든 소리 수치) · 긴 작업: wait_idle · 재료: test_input.',
+  '· 끌어 놓기로 받는 곳(낭독 책·카드 목소리·노래 변환·실험실·파일 가져오기)은 ui_drop_files · 파형·구간·카드 순서는 ui_pointer(at 비율·drag) · 단축키는 ui_key · 긴 목록은 ui_scroll · 다시 켜서 남는지는 app_restart.',
+  '· 화면 결함 점검: ui_audit(이름 없는 단추·이유 없는 비활성·창 밖·가림·잘린 글·작은 글씨·가로 스크롤) — 창 크기를 바꿔 가며.',
 ].join('\n')
 
 // ── 화면 안에서 쓰는 식들 ──
@@ -58,6 +60,7 @@ const STATE = `(async () => {
   const playing = (window.__mcpMedia || []).filter((el) => !el.paused && !el.ended).length
   return {
     mode: a.mode || null, status: a.status || null,
+    progress: typeof a.progress === 'number' && a.status === 'processing' ? Math.round(a.progress) : null,
     error: a.error ? String(a.error).slice(0, 200) : null, errorCode: a.errorInfo?.code || null,
     busy: busy || null,
     dialogs: [...document.querySelectorAll('[role=dialog]')].map((d) => d.getAttribute('aria-label') || (d.textContent || '').trim().slice(0, 40)),
@@ -196,4 +199,51 @@ function listFixtures () {
   return fs.existsSync(FIXTURES) ? fs.readdirSync(FIXTURES).filter((n) => /\.(wav|mp3|flac|ogg|json|txt)$/i.test(n)) : []
 }
 
-module.exports = { MODES, SCREEN_MAP, MEDIA_HOOK, MEDIA_NOW, STATE, guardMedia, blockedMediaPaths, isAllowed, inspectWav, writeTone, writeText, listFixtures, FIXTURES }
+// ── 화면 점검 — 사람이 눈으로 찾던 결함을 수치로(2026-10-01 · MCP 로 개발툴을 확인하며 개선) ──
+// 찾는 것: 이름 없는 단추 · 이유 없이 비활성된 단추 · 창 밖으로 삐져나간 요소 · 다른 것에 가려져 누를 수 없는 요소 ·
+//          잘려서 못 읽는 글(말줄임인데 전체를 볼 길이 없음) · 너무 작은 글씨(사용자 지시 "UI 크기 적절하게") · 가로 스크롤.
+// ★캡처(그림)를 대신한다 — 그림은 대화 밖으로 나가므로 허락 없이 찍지 않는다. 글과 숫자로 본다.
+function auditExpr (opts) {
+  return `(() => {
+  const o = ${JSON.stringify(opts || {})}
+  const TINY = o.tinyPx || 11
+  const W = innerWidth, H = innerHeight
+  const vis = (el) => { const r = el.getBoundingClientRect(); if (r.width <= 0 || r.height <= 0) return false; const s = getComputedStyle(el); return s.visibility !== 'hidden' && s.display !== 'none' && Number(s.opacity) > 0.05 }
+  const nm = (el) => ((el.innerText || '').trim() || el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('placeholder') || (el.value && el.tagName !== 'SELECT' ? el.value : '') || (el.tagName === 'SELECT' ? 'select' : '') || '').replace(/\\s+/g, ' ')
+  const who = (el) => el ? (el.dataset && el.dataset.testid ? 'testid:' + el.dataset.testid : el.tagName.toLowerCase() + (nm(el) ? ' "' + nm(el).slice(0, 36) + '"' : '')) : null
+  const root = o.within ? (__mcp.resolve(o.within, null, false, 0) || null) : document
+  if (!root) return { error: 'within 대상 없음: ' + o.within }
+  const lim = o.limit || 15
+  const out = { size: [W, H], noName: [], disabledNoReason: [], offscreen: [], covered: [], clipped: [], tiny: { count: 0, samples: [] }, pageOverflowX: document.documentElement.scrollWidth > W + 1 }
+  const inter = [...root.querySelectorAll('button, a[href], input:not([type=hidden]), select, textarea, [role=button], [role=tab], [role=checkbox]')].filter(vis)
+  for (const el of inter) {
+    if (!nm(el) && !el.closest('label')) out.noName.push(who(el) + (el.querySelector('svg') ? ' (그림만)' : ''))
+    if ((el.disabled || el.getAttribute('aria-disabled') === 'true') && !el.getAttribute('title') && !el.closest('[title]')) out.disabledNoReason.push(who(el))
+    const r = el.getBoundingClientRect()
+    if (r.right > W + 1 || r.left < -1) out.offscreen.push(who(el) + ' x=' + Math.round(r.left) + '~' + Math.round(r.right) + ' (창 폭 ' + W + ')')
+    const cx = r.left + Math.min(r.width / 2, 8), cy = r.top + r.height / 2
+    if (cx >= 0 && cx < W && cy >= 0 && cy < H) {
+      const hit = document.elementFromPoint(cx, cy)
+      if (hit && hit !== el && !el.contains(hit) && !hit.contains(el)) out.covered.push(who(el) + ' ← 가림: ' + who(hit))
+    }
+  }
+  const all = [...root.querySelectorAll('body *')].filter((el) => el.children.length === 0 || [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()))
+  const seenTiny = new Set()
+  for (const el of all) {
+    if (!vis(el)) continue
+    const s = getComputedStyle(el)
+    const t = (el.innerText || '').trim()
+    if (!t) continue
+    const fs = parseFloat(s.fontSize)
+    if (fs < TINY) { out.tiny.count++; const k = t.slice(0, 24); if (!seenTiny.has(k) && out.tiny.samples.length < lim) { seenTiny.add(k); out.tiny.samples.push(Math.round(fs * 10) / 10 + 'px ' + (el.dataset.testid ? 'testid:' + el.dataset.testid + ' ' : '') + '"' + k + '"') } }
+    const cut = (s.textOverflow === 'ellipsis' || s.overflow === 'hidden' || s.overflowX === 'hidden') && el.scrollWidth > el.clientWidth + 1
+    if (cut && !el.getAttribute('title') && !el.closest('[title]')) out.clipped.push(who(el) + ' 보임 ' + el.clientWidth + '/' + el.scrollWidth + 'px')
+  }
+  for (const k of ['noName', 'disabledNoReason', 'offscreen', 'covered', 'clipped']) { const n = out[k].length; out[k] = { count: n, samples: [...new Set(out[k])].slice(0, lim) } }
+  out.total = out.noName.count + out.disabledNoReason.count + out.offscreen.count + out.covered.count + out.clipped.count + (out.pageOverflowX ? 1 : 0)
+  return out
+})()`
+}
+
+module.exports = {
+  auditExpr, MODES, SCREEN_MAP, MEDIA_HOOK, MEDIA_NOW, STATE, guardMedia, blockedMediaPaths, isAllowed, inspectWav, writeTone, writeText, listFixtures, FIXTURES }

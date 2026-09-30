@@ -106,7 +106,7 @@ const DIALOG_PATCH = `(({ dialog }) => {
   return true
 })`
 
-async function startApp ({ visible = false, build = 'auto', width = 1280, height = 860 } = {}) {
+async function startApp ({ visible = false, build = 'auto', width = 1280, height = 860, keepData = false } = {}) {
   if (session) return { already: true, ...(await status()) }
   let built = null
   const bs = buildState()
@@ -115,7 +115,8 @@ async function startApp ({ visible = false, build = 'auto', width = 1280, height
   const base = path.join(ROOT, '_local', 'tmp')
   const tmp = path.join(base, 'mcp-' + process.pid)
   const userData = path.join(tmp, 'userdata')
-  fs.rmSync(tmp, { recursive: true, force: true })
+  // keepData: 다시 켜기(app_restart) — 같은 사용자 데이터로 켠다(남는지·되살아나는지 확인). 아니면 새로.
+  if (!keepData) fs.rmSync(tmp, { recursive: true, force: true })
   fs.mkdirSync(userData, { recursive: true })
   const env = {
     ...process.env, AF_E2E: '1', AF_E2E_OFFSCREEN: visible ? '0' : '1', AF_E2E_USER_DATA: userData,
@@ -149,7 +150,7 @@ async function startApp ({ visible = false, build = 'auto', width = 1280, height
   if (width && height) await resize({ window: 'main', width, height })
   return { started: true, visible, build: built ? '빌드함' : (bs.stale ? '빌드 오래됨(건너뜀)' : '최신'), ...(await status()) }
 }
-async function stopApp () {
+async function stopApp ({ keepData = false } = {}) {
   if (!session) return { stopped: false, reason: '실행 중 아님' }
   const s = session
   session = null
@@ -157,6 +158,7 @@ async function stopApp () {
   try { s.app.process().kill() } catch { /* 이미 끝났다 */ }
   await sleep(500)
   // Node rmSync 는 연결(정션)을 따라가지 않는다 — PowerShell Remove-Item 을 쓰지 않는다.
+  if (keepData) return { stopped: true, kept: path.relative(ROOT, s.userData) }
   try { fs.rmSync(s.tmp, { recursive: true, force: true, maxRetries: 3 }) } catch (e) { log('임시 폴더를 다 지우지 못함: ' + e.message) }
   return { stopped: true }
 }
@@ -210,6 +212,13 @@ const TOOLS = [
   { name: 'audio_inspect', description: '만든 소리(WAV)를 수치로: 길이 · 샘플레이트 · 최고/평균 크기(dBFS) · 잘린 표본 수 · 조용한 비율 · 앞뒤 조용함 · 가장 긴 틈 · 비었는지. ★검사용 자리(test/fixtures/audio · _local/tmp · 이 실행의 임시 폴더) 안의 파일만 — 그 밖은 userApproved:true(사용자 허락) 필요.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, userApproved: { type: 'boolean' } }, required: ['path'] } },
   { name: 'wait_idle', description: '긴 작업(합성·낭독 조각 만들기·분리 등)이 끝날 때까지 기다린다 — 처리 상태 · 카드 작업 · 합성 막힘 사유 · 낭독 "만드는 중" 이 모두 비고 1초 유지되면 끝. 반환 met=false 면 시간 초과(timeoutMs 기본 10분).', inputSchema: { type: 'object', properties: { timeoutMs: { type: 'number' } } } },
   { name: 'test_input', description: "사용자 파일 대신 쓰는 **검사 재료**를 이 실행의 임시 폴더에 만든다(경로를 돌려준다 — dialog_queue 에 그대로 넣는다). kind: 'text'(content · encoding utf-8|utf-8-bom|utf-16le|cp949 · name) · 'tone'(seconds · freq — 사인파 WAV) · 'speech'(text — 앱의 기본 목소리로 만든 말소리 WAV · 참조 목소리 검사용) · 'fixture'(name — 저장소 검사용 음원을 복사, 이름 없으면 목록).", inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: ['text', 'tone', 'speech', 'fixture'] }, content: { type: 'string' }, encoding: { type: 'string' }, name: { type: 'string' }, text: { type: 'string' }, seconds: { type: 'number' }, freq: { type: 'number' } }, required: ['kind'] } },
+  // ── 조작 보충(2026-10-01 · 개발툴과 비교해 빠졌던 것) ──
+  { name: 'ui_drop_files', description: "파일을 끌어 놓는다(진짜 경로가 실린 파일 — 앱이 getPathForFile 로 경로를 읽는다). 낭독 책 · 생성 카드 목소리 · 노래 변환 · 실험실 · 파일 가져오기 카드처럼 끌어 놓기로 받는 곳. 대상 요소의 가운데 아래 가장 안쪽 요소에 놓는다(실제 끌어 놓기처럼 위로 전해진다). ★검사용 자리 밖 미디어는 userApproved 필요 — 대신 test_input.", inputSchema: { type: 'object', properties: { window: WIN, target: TARGET, paths: { type: 'array', items: { type: 'string' } }, userApproved: { type: 'boolean' } }, required: ['target', 'paths'] } },
+  { name: 'ui_key', description: "키를 누른다(화면 안 입력 — OS 키보드 미사용). keys 예: 'Space' · 'Escape' · 'Enter' · 'Control+Z' · 'ArrowLeft' · 'Delete'. target 을 주면 그 요소에 먼저 초점을 둔다(대화 편집·트랙 분할·합성 탭의 단축키).", inputSchema: { type: 'object', properties: { window: WIN, keys: { type: 'string' }, target: TARGET, repeat: { type: 'number' } }, required: ['keys'] } },
+  { name: 'ui_pointer', description: "요소 **안의 위치**를 누르거나 끈다 — 파형(구간 자르기·트랙 분할) · 참조 구간 끌기 · 대화 구간 끌기 · 카드 순서 끌기처럼 '어디를' 눌렀는지가 뜻인 곳. at=[가로, 세로] 비율(0~1, 기본 가운데). action: click · rightclick · hover · drag(to=[가로, 세로] 비율 · 또는 toTarget 요소 가운데로).", inputSchema: { type: 'object', properties: { window: WIN, target: TARGET, action: { type: 'string', enum: ['click', 'rightclick', 'hover', 'drag'] }, at: { type: 'array' }, to: { type: 'array' }, toTarget: TARGET, steps: { type: 'number' } }, required: ['target'] } },
+  { name: 'ui_scroll', description: "요소(또는 창)를 굴린다. to: 'top' · 'bottom' · 숫자(px 자리) · by: 숫자(px 만큼). 긴 책·긴 목록에서.", inputSchema: { type: 'object', properties: { window: WIN, target: TARGET, to: {}, by: { type: 'number' } } } },
+  { name: 'ui_audit', description: '★화면 점검 — 이름 없는 단추 · 이유 없이 비활성된 단추 · 창 밖으로 삐져나간 요소 · 가려져 누를 수 없는 요소 · 잘려서 못 읽는 글(볼 길이 없음) · 너무 작은 글씨(기본 11px 미만) · 가로 스크롤. 개수와 예(testid)를 돌려준다. 창 크기를 바꿔 가며(window_resize) 좁은 창도 본다. 캡처 대신 쓴다.', inputSchema: { type: 'object', properties: { window: WIN, within: TARGET, tinyPx: { type: 'number' }, limit: { type: 'number' } } } },
+  { name: 'app_restart', description: '앱을 다시 켠다 — 기본은 **같은 사용자 데이터로**(설정·책·작업이 남는지, 되살리기가 되는지 확인). keepData:false 면 새 데이터로.', inputSchema: { type: 'object', properties: { keepData: { type: 'boolean' }, visible: { type: 'boolean' } } } },
   { name: 'errors', description: '문제만 모아 본다: 화면 오류·경고(pageerror 포함) · 본체 오류 줄 · 앱 기록의 WARN/ERROR. since=마지막으로 본 seq 이후만. 조작 뒤 건강 검사로 쓴다.', inputSchema: { type: 'object', properties: { since: { type: 'number' }, limit: { type: 'number' } } } },
   { name: 'logs', description: "기록: main(본체 출력) · renderer:<창>(화면 콘솔) · dialog(대화상자 응답) · app(앱 동작 기록 파일 — [reader]·[check] 같은 꼬리표). since=마지막으로 본 seq 이후만(app 은 파일이라 since 무시). grep=정규식.", inputSchema: { type: 'object', properties: { since: { type: 'number' }, source: { type: 'string', description: "'main'|'renderer'|'dialog'|'app'" }, grep: { type: 'string' }, limit: { type: 'number' } } } }
 ]
@@ -355,6 +364,76 @@ const HANDLERS = {
       return { path: file, voice: made.voice, ...AF.inspectWav(file) }
     }
     throw new Error("kind = text | tone | speech | fixture")
+  },
+  // ── 조작 보충 ──
+  ui_drop_files: async ({ window = 'main', target, paths = [], userApproved }) => {
+    const list = [].concat(paths).map((p) => (path.isAbsolute(String(p)) ? String(p) : path.join(ROOT, String(p))))
+    AF.guardMedia(list, session, userApproved)
+    for (const p of list) if (!fs.existsSync(p)) throw new Error('파일이 없습니다: ' + path.basename(p))
+    const page = await findPage(window)
+    // 진짜 경로가 실린 파일을 만드는 길: 숨긴 파일 입력칸에 경로로 넣는다(Electron 이 그 파일의 경로를 안다 — 실측).
+    await page.evaluate(() => { let i = document.getElementById('__mcpDropInput'); if (!i) { i = document.createElement('input'); i.type = 'file'; i.id = '__mcpDropInput'; i.multiple = true; i.style.display = 'none'; document.body.appendChild(i) } })
+    await page.setInputFiles('#__mcpDropInput', list)
+    const dt = await page.evaluateHandle(() => { const d = new DataTransfer(); for (const f of document.getElementById('__mcpDropInput').files) d.items.add(f); return d })
+    // 핸들(dt)을 넘겨야 해서 함수형으로 부른다 — 화면 안 도우미는 글로 넘겨 그 자리에서 만든다(검사 모드는 eval 허락).
+    return page.evaluate(({ dt, t, helpers }) => {
+      // eslint-disable-next-line no-new-func
+      const __mcp = new Function(helpers + '\nreturn __mcp')()
+      const el = __mcp.resolve(t, null, false, 0)
+      if (!el) return { dropped: false, error: '대상 없음: ' + t }
+      el.scrollIntoView({ block: 'center' })
+      const r = el.getBoundingClientRect()
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2) || el
+      for (const ty of ['dragenter', 'dragover', 'drop']) hit.dispatchEvent(new DragEvent(ty, { bubbles: true, cancelable: true, dataTransfer: dt }))
+      return { dropped: true, files: dt.files.length, on: __mcp.describe(hit, false) }
+    }, { dt, t: target, helpers: HELPERS })
+  },
+  ui_key: async ({ window = 'main', keys, target = null, repeat = 1 }) => {
+    const page = await findPage(window)
+    if (target) {
+      const f = await inPage(window, `(() => { const el = __mcp.resolve(${JSON.stringify(target)}, null, false, 0); if (!el) return null; el.focus(); return __mcp.describe(el, false) })()`)
+      if (!f) throw new Error('대상 없음: ' + target)
+    }
+    for (let i = 0; i < Math.max(1, Math.min(50, Number(repeat) || 1)); i++) await page.keyboard.press(String(keys))
+    await sleep(200)
+    return { pressed: keys, repeat, focused: await inPage(window, '(document.activeElement && document.activeElement !== document.body) ? __mcp.describe(document.activeElement, false) : null') }
+  },
+  ui_pointer: async ({ window = 'main', target, action = 'click', at = [0.5, 0.5], to = null, toTarget = null, steps = 12 }) => {
+    const page = await findPage(window)
+    const r = await inPage(window, `__mcp.rect(${JSON.stringify(target)})`)
+    if (!r) throw new Error('대상 없음(보이는 요소): ' + target)
+    // ★끝에서 1px 안쪽으로 — 비율 1(오른쪽 끝)은 요소 바로 밖을 눌러, 대화창이면 뒤의 가림막을 눌러 창이 닫혔다(실측).
+    const inside = (start, size, f) => start + Math.max(1, Math.min(size - 1, size * Math.min(1, Math.max(0, Number(f)))))
+    const pt = (rect, f) => ({ x: inside(rect.x, rect.width, f[0]), y: inside(rect.y, rect.height, f[1]) })
+    const a = pt(r, at)
+    if (action === 'hover') { await page.mouse.move(a.x, a.y) }
+    else if (action === 'click') { await page.mouse.click(a.x, a.y) }
+    else if (action === 'rightclick') { await page.mouse.click(a.x, a.y, { button: 'right' }) }
+    else if (action === 'drag') {
+      let b
+      if (toTarget) { const r2 = await inPage(window, `__mcp.rect(${JSON.stringify(toTarget)})`); if (!r2) throw new Error('끌어 갈 대상 없음: ' + toTarget); b = pt(r2, [0.5, 0.5]) }
+      else if (to) b = pt(r, to)
+      else throw new Error('drag 에는 to(비율) 또는 toTarget 이 필요하다')
+      await page.mouse.move(a.x, a.y); await page.mouse.down(); await page.mouse.move(b.x, b.y, { steps: Math.max(2, Number(steps) || 12) }); await page.mouse.up()
+    } else throw new Error('action = click | rightclick | hover | drag')
+    await sleep(250)
+    return { action, at: [Math.round(a.x), Math.round(a.y)], rect: r }
+  },
+  ui_scroll: ({ window = 'main', target = null, to = null, by = null }) => inPage(window, `(() => {
+    const el = ${target ? `__mcp.resolve(${JSON.stringify(target)}, null, false, 0)` : 'document.scrollingElement'}
+    if (!el) return { error: '대상 없음' }
+    const t = ${JSON.stringify(to)}, b = ${JSON.stringify(by)}
+    if (t === 'top') el.scrollTop = 0; else if (t === 'bottom') el.scrollTop = el.scrollHeight; else if (typeof t === 'number') el.scrollTop = t
+    if (typeof b === 'number') el.scrollTop += b
+    el.dispatchEvent(new Event('scroll'))
+    return { scrollTop: Math.round(el.scrollTop), scrollHeight: el.scrollHeight, clientHeight: el.clientHeight }
+  })()`),
+  ui_audit: ({ window = 'main', within = null, tinyPx = 11, limit = 15 }) => inPage(window, AF.auditExpr({ within, tinyPx, limit })),
+  app_restart: async ({ keepData = true, visible }) => {
+    if (!session) throw new Error('앱이 실행 중이 아닙니다 — 먼저 app_start')
+    const v = visible == null ? session.visible : !!visible
+    await stopApp({ keepData })
+    return startApp({ visible: v, build: 'never', keepData })
   },
   errors: async ({ since = 0, limit = 100 }) => {
     await dialogLogs()
