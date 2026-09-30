@@ -130,7 +130,11 @@ def qwen_custom_voices_list():
 
 
 def main():
-    voices, skipped = piper_voices_list()
+    # ★piper 한국어(ko_KR-kss-medium)는 목록에서 뺀다 (2026-09-30 사용자: "제거하라, 사용하지 않을 것 같다").
+    #   **파일과 엔진은 남긴다** — 속도 재기(bench_tts)의 참조 소리를 만들고, 한국어 자동 선택의 대비책이다.
+    #   파일은 본체와 함께 쓰는 폴더에 있어 지우면 되돌리기 어렵다.
+    voices = []
+    skipped = [{"engineId": "piper", "why": "목록에서 뺐습니다(사용자 요청) — 파일은 남아 있습니다"}]
     for extra in (supertonic_voices_list, qwen_custom_voices_list):
         more, more_skipped = extra()
         voices += more

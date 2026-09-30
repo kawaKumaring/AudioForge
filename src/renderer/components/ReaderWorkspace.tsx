@@ -115,7 +115,11 @@ export default function ReaderWorkspace() {
         setBuiltins(list)
         if (!list.length) setVoiceNote('쓸 수 있는 기본 목소리가 없습니다.')
         // 아직 고른 적이 없으면 첫 기본 목소리를 쓴다 — 바로 들을 수 있게.
-        useReader.setState((st) => st.pick ? st : (list[0]
+        // ★골라 둔 기본 목소리가 **목록에서 빠졌으면**(2026-09-30 piper 제거) 첫 기본 목소리로 바꾼다 —
+        //   보이지 않는 목소리로 계속 읽지 않는다. 참조 목소리(파일)는 목록과 무관하니 그대로 둔다.
+        const listed = (st: { pick: ReaderVoicePick | null }) =>
+          st.pick && (st.pick.kind !== 'builtin' || list.some((b: { path: string }) => b.path === st.pick!.path))
+        useReader.setState((st) => listed(st) ? st : (list[0]
           ? { pick: { kind: 'builtin', path: list[0].path, engineId: list[0].engineId, label: list[0].label }, voice: list[0].label }
           : st))
       } catch { setVoiceNote('기본 목소리를 확인하지 못했습니다.') }
