@@ -35,11 +35,16 @@ const ok = (v, label, extra) => {
   if (v) { passed++; console.log('PASS', label) }
   else { fails.push(label); console.log('FAIL', label, extra === undefined ? '' : JSON.stringify(extra)) }
 }
+import { execSync } from 'child_process'
+/** 떠 있는 Qwen 상주 실행기 수 — 고아로 남으면 그래픽카드 메모리를 붙든다. */
+// ★따옴표를 거치지 않게 명령을 부호화해 넘긴다(처음엔 따옴표가 깨져 늘 -1 이 나왔다).
+const COUNT_PS = Buffer.from("@(Get-CimInstance Win32_Process | Where-Object { $_.Name -eq 'python.exe' -and $_.CommandLine -like '*qwen_voice_server*' }).Count", 'utf16le').toString('base64')
+const serverCount = () => { try { return Number(execSync(`powershell -NoProfile -EncodedCommand ${COUNT_PS}`, { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }).trim()) } catch { return -1 } }
 const logText = () => fs.readdirSync(path.join(UD, 'logs')).map((n) => fs.readFileSync(path.join(UD, 'logs', n), 'utf-8')).join('')
 
 let app = null
 try {
-  app = await electron.launch({ args: ['out/main/index.js'], cwd: APP, env: { ...process.env, AF_E2E: '1', AF_E2E_USER_DATA: UD, AF_E2E_SELECT_FILE: BOOK, HF_HUB_OFFLINE: '1' } })
+  app = await electron.launch({ args: ['out/main/index.js'], cwd: APP, env: { ...process.env, AF_E2E: '1', AF_E2E_USER_DATA: UD, AF_E2E_SELECT_FILE: BOOK, HF_HUB_OFFLINE: '1', AF_E2E_QWEN_IDLE_MS: '6000' } })
   const win = await app.firstWindow()
   win.setDefaultTimeout(30000)
   await win.waitForFunction(() => !!window.__afStore)
@@ -49,7 +54,7 @@ try {
     console.log('SKIP Qwen 지정 목소리를 받아 두지 않은 설치입니다')
     await app.close(); cleanupUserData(UD); cleanupIsolated(ISO); process.exit(0)
   }
-  ok(/소희/.test(qwen.label) && /느림/.test(qwen.label), 'Qwen 소희가 목록에 오르고 이름표에 느리다고 적힌다', qwen.label)
+  ok(/소희/.test(qwen.label) && /시작 느림/.test(qwen.label), 'Qwen 소희가 목록에 오르고 이름표에 시작이 느리다고 적힌다', qwen.label)
 
   await win.getByTestId('mode-reader').click()
   await win.getByTestId('reader-add-text').first().click()
@@ -95,7 +100,28 @@ try {
       && !/만드는 중|기다리는 중/.test(document.querySelector('[data-testid="reader-controls"]')?.textContent || ''),
     null, { timeout: 20000 }).then(() => true).catch(() => false)
     ok(playingNow, '★만든 소희 소리를 틀고 있다(기다림 문구 없음)')
+
+    // ── 4. 띄워 둔 실행기 — 둘째 조각부터는 모델을 다시 열지 않고, 듣는 속도보다 빨리 만든다 ──────
+    const qwenLines = () => (logText().match(/\[reader\] 만듦 kind=builtin voice=config\.json.*/g) || [])
+    for (let i = 0; i < 240 && qwenLines().length < 2; i++) await win.waitForTimeout(500)
+    const [first, second] = qwenLines()
+    const num = (l, key) => Number((l || '').match(new RegExp(`${key}=([\\d.]+)s`))?.[1])
+    const total2 = Number((second || '').match(/ ([\d.]+)s 상주/)?.[1])
+    ok(/모델 엶/.test(first || '') && /상주/.test(second || '') && !/모델 엶/.test(second || ''),
+      '★첫 조각만 모델을 열고, 둘째 조각은 띄워 둔 실행기로 만든다', { first, second })
+    ok(total2 > 0 && total2 < num(second, '소리'), '★둘째 조각은 듣는 속도보다 빨리 만든다(실시간 낭독)', { 만든시간: total2, 소리: num(second, '소리') })
+    console.log('INFO 첫 조각:', (first || '').replace(/^.*\[reader\] /, ''))
+    console.log('INFO 둘째 조각:', (second || '').replace(/^.*\[reader\] /, ''))
     if (await win.getByTestId('reader-play').getAttribute('aria-label') === '낭독 멈추기') await win.getByTestId('reader-play').click()
+
+    // ── 5. 한동안 안 쓰면 내린다(검사에서는 6초) — 그래픽카드 메모리를 돌려준다 ─────────────
+    let unloaded = false
+    for (let i = 0; i < 180 && !unloaded; i++) {
+      unloaded = /Qwen 상주 실행기 내림\(한동안 안 씀\)/.test(logText())
+      if (!unloaded) await win.waitForTimeout(500)
+    }
+    await win.waitForTimeout(1500)
+    ok(unloaded && serverCount() === 0, '★한동안 안 쓰면 실행기를 내린다(프로세스가 남지 않는다)', { unloaded, 남은수: serverCount() })
   } else {
     console.log('SKIP 소희로 읽기 — GPU 로 1분 남짓(AF_E2E_GPU=1 일 때만)')
   }
@@ -106,6 +132,11 @@ try {
   await app?.close().catch(() => {})
   cleanupUserData(UD)
   cleanupIsolated(ISO)
+}
+// ★앱을 닫은 뒤 실행기가 남지 않는다(고아 금지) — GPU 검사를 돌렸을 때만 의미가 있다.
+if (process.env.AF_E2E_GPU === '1') {
+  await new Promise((r) => setTimeout(r, 2000))
+  ok(serverCount() === 0, '★앱을 닫으면 Qwen 상주 실행기도 남지 않는다', serverCount())
 }
 console.log(`RESULT ${passed} checks · ${fails.length} fail`)
 process.exit(fails.length ? 1 : 0)

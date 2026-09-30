@@ -917,6 +917,14 @@ def main():
     try:
         emit("progress", percent=10, message=f"Qwen3-TTS 모델 로딩 중... ({device}, offline)")
         model = _load_model(model_path, device)
+        # ★보조 모델 15걸음을 묶어 실행(2026-09-30 실측: 같은 문장 29초 → 10초, 받아 적기 일치 그대로).
+        #   패키지 파일은 고치지 않고 불러온 모델의 한 함수만 바꿔 끼운다. 쓴 방식을 기록에 남긴다.
+        try:
+            import qwen_fast
+            emit("stage", stage="code_predictor", mode=qwen_fast.apply(model) or "original", elapsed_sec=_elapsed())
+        except Exception as e:      # 바꿔 끼우지 못하면 원래대로 — 합성은 막지 않는다
+            emit("stage", stage="code_predictor", mode="original", reason=f"{type(e).__name__}: {str(e)[:120]}",
+                 elapsed_sec=_elapsed())
         builder, proc = _preflight_tokenizer(model)  # 안전장치 전제 — 부재 시 여기서 명확히 실패
         _install_talker_counter(model)
         _install_ref_prompt_timer(model)   # 계측 전용 — 동작 불변

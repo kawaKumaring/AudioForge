@@ -121,7 +121,8 @@ def qwen_custom_voices_list():
         out.append({
             "engineId": "qwen-custom",
             "modelId": speaker,
-            "label": "Qwen %s (GPU · 느림)" % name,
+            # 처음 소리까지 약 30초(모델 열기), 그다음부터는 듣는 속도보다 빠르다(2026-09-30 실측) — 시작만 느리다.
+            "label": "Qwen %s (GPU · 시작 느림)" % name,
             "language": "ko",
             "sampleRate": 24000,
             "path": os.path.join(model, "config.json"),

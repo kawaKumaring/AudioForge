@@ -49,7 +49,7 @@ class Installed(unittest.TestCase):
     def test_목록에_소희가_오르고_이름표에_느림을_적는다(self):
         voices, skipped = bv.qwen_custom_voices_list()
         self.assertEqual([v["modelId"] for v in voices], ["sohee"])
-        self.assertIn("느림", voices[0]["label"])
+        self.assertIn("시작 느림", voices[0]["label"])
         self.assertTrue(voices[0]["path"].endswith("config.json") and os.path.isfile(voices[0]["path"]))
         self.assertEqual(skipped, [])
 

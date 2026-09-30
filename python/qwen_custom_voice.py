@@ -30,8 +30,15 @@ def load(model_dir):
     errors = {}
     for attn in ("sdpa", "eager"):
         try:
-            return Qwen3TTSModel.from_pretrained(model_dir, device_map=device, dtype=dtype,
-                                                 attn_implementation=attn, local_files_only=True)
+            m = Qwen3TTSModel.from_pretrained(model_dir, device_map=device, dtype=dtype,
+                                              attn_implementation=attn, local_files_only=True)
+            # ★보조 모델 15걸음을 묶어 실행 — 같은 문장 29초 → 10초(2026-09-30 실측). 실패하면 원래대로.
+            try:
+                import qwen_fast
+                emit(type="stage", stage="code_predictor", mode=qwen_fast.apply(m) or "original")
+            except Exception as e:
+                emit(type="stage", stage="code_predictor", mode="original", reason="%s: %s" % (type(e).__name__, str(e)[:120]))
+            return m
         except Exception as e:
             errors[attn] = "%s: %s" % (type(e).__name__, str(e)[:200])
             gc.collect()

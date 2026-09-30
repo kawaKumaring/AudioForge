@@ -17,7 +17,7 @@ import { ipcMain, app, BrowserWindow } from 'electron'
 import { join, dirname, basename } from 'path'
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, statSync } from 'fs'
 import { createHash } from 'crypto'
-import { execFile } from 'child_process'
+import { execFile, spawn, type SpawnOptions } from 'child_process'
 import { promisify } from 'util'
 import { fileURLToPath } from 'url'
 import { currentPythonPath, synthesisBusy, setReaderRunning, pickFiles, dialogFolderHost } from './audio.ipc'
@@ -26,6 +26,7 @@ import { TEXT_FILE_LIMIT } from '../../shared/readerChunks'
 import { usesGpu } from '../../shared/readerQueue'
 import { appLog, fileLabel } from '../services/app-log'
 import { createLane, failureReason, jsonLines, madeTrack, pythonReason, readerRunConfig } from '../services/reader-run'
+import { QwenVoiceWorker } from '../services/qwen-voice-worker'
 
 const execFileAsync = promisify(execFile)
 
@@ -84,6 +85,29 @@ function scriptPath(): string {
   return found
 }
 
+/**
+ * Qwen 지정 목소리의 한국어 화자 — 파이썬 쪽 규칙(tts_worker.QWEN_CUSTOM_KOREAN)과 같은 하나.
+ * 목록에 오르는 목소리도 이것 하나라서, 모델 폴더(설정 파일 경로)가 곧 목소리의 이름표다.
+ */
+const QWEN_KOREAN_SPEAKER = 'sohee'
+
+/** Qwen 상주 실행기 — 하나만. 한동안 안 쓰면 내리고, 앱이 끝날 때 내린다. */
+let qwenWorkerInstance: QwenVoiceWorker | null = null
+function qwenWorker(): QwenVoiceWorker {
+  if (qwenWorkerInstance) return qwenWorkerInstance
+  const pyDir = dirname(scriptPath())
+  const root = dirname(pyDir)
+  qwenWorkerInstance = new QwenVoiceWorker({
+    spawn: (cmd, args, opts) => spawn(cmd, args, opts as SpawnOptions),
+    pythonPath: () => join(root, 'externals', 'qwen3_tts_venv', 'Scripts', 'python.exe'),
+    scriptPath: () => join(pyDir, 'qwen_voice_server.py'),
+    // 검사 전용 — '한동안 안 쓰면 내린다' 를 몇 초 안에 보려고. 검사 밖에서는 3분.
+    idleMs: process.env.AF_E2E === '1' && Number(process.env.AF_E2E_QWEN_IDLE_MS) > 0 ? Number(process.env.AF_E2E_QWEN_IDLE_MS) : undefined,
+    onEvent: (e, f) => appLog()?.info('reader', `Qwen 상주 실행기 ${e === 'start' ? '띄움' : `내림${f.reason ? `(${String(f.reason)})` : ''}`}`),
+  })
+  return qwenWorkerInstance
+}
+
 export interface ReaderVoice {
   /** 'builtin' 이면 설치된 목소리, 'reference' 면 참조 클립. */
   kind: 'builtin' | 'reference'
@@ -131,19 +155,33 @@ async function makeChunk(body: string, v: ReaderVoice, out: string): Promise<str
   const gpu = usesGpu(v)
   if (gpu) setReaderRunning(true)
   try {
-    const { stdout } = await execFileAsync(py, ['-X', 'utf8', scriptPath(), '--config', cfgPath], {
-      // 긴 덩이도 기본 목소리면 몇 초다. 참조 목소리는 훨씬 오래 걸린다.
-      timeout: 600000, maxBuffer: 4 * 1024 * 1024,
-      env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
-    })
-    const lines = jsonLines(stdout)
-    const wav = madeTrack(lines)
-    if (!wav || !existsSync(wav)) throw new Error(pythonReason(lines) || '이 부분을 소리로 만들지 못했습니다')
+    let wav: string
+    let note = ''
+    if (v.kind === 'builtin' && v.engineId === 'qwen-custom') {
+      // ★Qwen 소희는 **띄워 둔 실행기**로 만든다 — 조각마다 모델을 여는 약 10초가 첫 조각에만 든다(2026-09-30 실측).
+      //   글은 화면이 이미 소리 내지 않을 기호를 뺀 것이다(speakableText).
+      const textFile = join(runDir, 'text.txt')
+      writeFileSync(textFile, body, 'utf-8')
+      wav = join(runDir, 'qwen.wav')
+      const r = await qwenWorker().speak({ model: dirname(v.path), speaker: QWEN_KOREAN_SPEAKER, language: 'korean', textFile, out: wav })
+      note = ` 상주${r.loadedNow ? '(모델 엶)' : ''} 생성=${r.genSec.toFixed(1)}s 소리=${r.seconds.toFixed(1)}s`
+      if (!existsSync(wav)) throw new Error('이 부분을 소리로 만들지 못했습니다')
+    } else {
+      const { stdout } = await execFileAsync(py, ['-X', 'utf8', scriptPath(), '--config', cfgPath], {
+        // 긴 덩이도 기본 목소리면 몇 초다. 참조 목소리는 훨씬 오래 걸린다.
+        timeout: 600000, maxBuffer: 4 * 1024 * 1024,
+        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+      })
+      const lines = jsonLines(stdout)
+      const made = madeTrack(lines)
+      if (!made || !existsSync(made)) throw new Error(pythonReason(lines) || '이 부분을 소리로 만들지 못했습니다')
+      wav = made
+    }
     // 지문 이름으로 옮겨 둔다 — 다음에 같은 글·같은 목소리면 곧바로 쓴다.
     writeFileSync(out, readFileSync(wav))
     trimCache()
     // 동작 기록 — 글 내용 없이 글자 수·걸린 시간만. 낭독이 얼마나 빠른지 사용자가 볼 수 있다.
-    appLog()?.info('reader', `만듦 kind=${v.kind} voice=${fileLabel(v.path)} 글자=${body.length} ${((Date.now() - t0) / 1000).toFixed(1)}s`)
+    appLog()?.info('reader', `만듦 kind=${v.kind} voice=${fileLabel(v.path)} 글자=${body.length} ${((Date.now() - t0) / 1000).toFixed(1)}s${note}`)
     return out
   } catch (e) {
     const shown = failureReason(e)
@@ -173,6 +211,8 @@ export async function readerSelfTest(text: string, v: ReaderVoice): Promise<{ pa
 const inFlight = new Map<string, Promise<string>>()
 
 export function registerReaderIpc(): void {
+  // Qwen 상주 실행기는 앱과 함께 끝난다(그래픽카드 메모리를 붙든 채 남지 않게).
+  app.on('will-quit', () => { qwenWorkerInstance?.stop('앱 종료') })
   /**
    * 줄에 선 것을 다 만들 때까지 기다린다 — 낭독 화면이 참조 목소리를 준비하기 전에 부른다.
    * ★준비도 파이썬을 띄운다. 낭독이 만들던 것과 겹치면 공용 판정에 거절된다 — 거절 대신 기다린다.
