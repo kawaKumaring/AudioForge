@@ -61,19 +61,28 @@ try {
   await win.waitForSelector('[data-testid="reader-paragraph"]')
 
   // ── 2. 고르기만 — GPU 로 만들지 않는다 ─────────────────────────────
-  await win.getByTestId('reader-settings').click()
-  await win.getByRole('dialog', { name: '낭독 설정' }).waitFor()
-  const rows = await win.getByTestId('reader-voice-builtin').allInnerTexts()
+  await win.getByTestId('reader-voice').click()
+  await win.getByRole('dialog', { name: '목소리 고르기' }).waitFor()
+  const rows = await win.getByTestId('reader-voice-builtin').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') || ''))
   const qi = rows.findIndex((t) => t.includes('소희'))
+  ok(qi >= 0 && /소희/.test(await win.getByTestId('reader-voice-builtin').nth(qi).innerText()), '★소희는 짧은 이름(소희)으로 고른다', rows)
   await win.getByTestId('reader-voice-builtin').nth(qi).click()
+  await win.getByTestId('reader-voice-confirm').click()
   const busySeen = []
   for (let i = 0; i < 16; i++) {
     const why = await win.evaluate(() => window.api.audio.e2eBusyReason('합성'))
     if (why) busySeen.push(why)
     await win.waitForTimeout(250)
   }
-  const madeLines = (logText().match(/\[reader\] (만듦|만들지 못함).*/g) || [])
-  ok(busySeen.length === 0, '★고르기만 해서는 GPU 로 만들지 않는다(누를 때 만든다)', { busy: busySeen.length, made: madeLines.slice(-3) })
+  // 소희 것만 센다 — 앞서 쓰던 기본 목소리의 미리 만들기(CPU)는 이 규칙과 무관하다.
+  const madeLines = (logText().match(/\[reader\] (만듦|만들지 못함).*/g) || []).filter((l) => /voice=config\.json/.test(l))
+  if (process.env.AF_E2E_GPU === '1') {
+    // ★GPU 검사에서는 고르는 순간 **모델만 미리 연다**(2026-10-01 — 첫 소리의 모델 열기 약 10초를 누르기 전에 치른다).
+    //   소리는 만들지 않는다. 여는 동안 다른 합성이 비키는 사유는 낭독의 것이어야 한다.
+    ok(madeLines.length === 0 && busySeen.every((w) => /낭독/.test(w)), '★고르면 모델만 미리 연다 — 소리는 누를 때 만든다', { busy: busySeen.slice(0, 2), made: madeLines.slice(-3) })
+  } else {
+    ok(busySeen.length === 0 && madeLines.length === 0, '★고르기만 해서는 GPU 로 만들지 않는다(누를 때 만든다)', { busy: busySeen.length, made: madeLines.slice(-3) })
+  }
 
   // ── 3. 누르면 소희로 읽는다 ────────────────────────────────────────
   if (process.env.AF_E2E_GPU === '1') {
@@ -107,8 +116,11 @@ try {
     const [first, second] = qwenLines()
     const num = (l, key) => Number((l || '').match(new RegExp(`${key}=([\\d.]+)s`))?.[1])
     const total2 = Number((second || '').match(/ ([\d.]+)s 상주/)?.[1])
-    ok(/모델 엶/.test(first || '') && /상주/.test(second || '') && !/모델 엶/.test(second || ''),
-      '★첫 조각만 모델을 열고, 둘째 조각은 띄워 둔 실행기로 만든다', { first, second })
+    // ★모델은 고를 때 미리 열었다 — 두 조각 모두 띄워 둔 실행기로 만들고, 조각에서 모델을 여는 일이 없다.
+    const log0 = logText()
+    ok(/Qwen 상주 실행기 띄움/.test(log0) && log0.indexOf('Qwen 상주 실행기 띄움') < log0.indexOf(first || '\u0000')
+      && /상주/.test(first || '') && /상주/.test(second || '') && !/모델 엶/.test(first || '') && !/모델 엶/.test(second || ''),
+      '★고를 때 연 모델로 첫 조각부터 만든다(조각에서 모델을 다시 열지 않는다)', { first, second })
     ok(total2 > 0 && total2 < num(second, '소리'), '★둘째 조각은 듣는 속도보다 빨리 만든다(실시간 낭독)', { 만든시간: total2, 소리: num(second, '소리') })
     console.log('INFO 첫 조각:', (first || '').replace(/^.*\[reader\] /, ''))
     console.log('INFO 둘째 조각:', (second || '').replace(/^.*\[reader\] /, ''))

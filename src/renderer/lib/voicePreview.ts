@@ -47,12 +47,23 @@ export function stopPreview(): void {
   publish({ modelPath: '', phase: 'idle', message: '' })
 }
 
+/** 들어 볼 소리를 만드는 길 — 만든 소리 파일 자리를 돌려준다. 못 만들면 사유와 함께 던진다. */
+export type PreviewMaker = (modelPath: string, engineId?: string) => Promise<string>
+
+/** 기본 — 음성 합성 화면의 미리듣기(짧은 인사말). */
+const cardPreview: PreviewMaker = async (modelPath, engineId) => {
+  const r = await window.api.cards.previewBuiltin(modelPath, engineId) as { ok: boolean; data?: string; error?: string }
+  if (!r?.ok || !r.data) throw new Error(r?.error || '미리듣기를 만들지 못했습니다')
+  return r.data
+}
+
 /**
  * 그 목소리를 들어 본다. 같은 것을 다시 누르면 멈춘다(토글).
+ * `make` — 들어 볼 소리를 만드는 길. 낭독은 **책 읽는 문장**을 낭독 통로로 만든다(2026-10-01 — 목소리 고르기를 한 벌로 합치며).
  *
  * 돌려주는 값은 없다 — 상태는 `onPreviewState` 로 본다.
  */
-export async function playPreview(modelPath: string, engineId?: string): Promise<void> {
+export async function playPreview(modelPath: string, engineId?: string, make: PreviewMaker = cardPreview): Promise<void> {
   if (!modelPath) return
   // 같은 것을 다시 누르면 멈춘다.
   if (state.modelPath === modelPath && (state.phase === 'playing' || state.phase === 'preparing')) {
@@ -65,12 +76,10 @@ export async function playPreview(modelPath: string, engineId?: string): Promise
   publish({ modelPath, phase: 'preparing', message: '' })
 
   try {
-    const r = await window.api.cards.previewBuiltin(modelPath, engineId) as
-      { ok: boolean; data?: string; error?: string }
+    const made = await make(modelPath, engineId)
     if (mine !== gen) return                       // 그 사이 다른 것을 눌렀다
-    if (!r?.ok || !r.data) throw new Error(r?.error || '미리듣기를 만들지 못했습니다')
 
-    const url = await window.api.audio.getFileUrl(r.data)
+    const url = await window.api.audio.getFileUrl(made)
     if (mine !== gen) return
     const audio = el || createManagedAudio(undefined)
     el = audio

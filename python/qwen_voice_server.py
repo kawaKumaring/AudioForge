@@ -7,6 +7,7 @@
 
 주고받기(한 줄에 JSON 하나)
   요청: {"id": "...", "model": "<폴더>", "speaker": "sohee", "language": "korean", "text_file": "<글.txt>", "out": "<소리.wav>", "seed": 0}
+        {"id": "...", "model": "<폴더>", "warm": true}   미리 열기(소리는 만들지 않는다 · 2026-10-01)
   답  : {"id": "...", "ok": true, "seconds": 10.6, "sample_rate": 24000, "gen_sec": 9.8, "loaded_now": false}
         {"id": "...", "ok": false, "error": "..."}
   그 밖의 줄(라이브러리가 찍는 경고 등)은 부모가 무시한다 — 답은 id 로 짝짓는다.
@@ -44,6 +45,10 @@ def main():
                 model = qcv.load(req["model"])
                 model_dir = req["model"]
                 loaded_now = True
+            if req.get("warm"):
+                # 미리 열기 — 소희를 고른 순간 모델을 올려 둔다(첫 조각의 약 10초를 누르기 전에 치른다).
+                reply(id=rid, ok=True, seconds=0, sample_rate=0, gen_sec=0, loaded_now=loaded_now)
+                continue
             with open(req["text_file"], encoding="utf-8") as f:
                 text = f.read().strip()
             if not text:

@@ -10,6 +10,9 @@ import type { ChildProcess } from 'child_process'
  * ★죽은 파이프에 쓰는 경쟁 — 분석 상주 실행기에서 main 이 `write EPIPE` 로 터진 적이 있다(analysis-worker.ts).
  *   쓰기 전에 살아 있는지 확인하고, stdin 에 error 리스너를 달고, 쓰기 실패·종료·타임아웃을 **한 번만** 끝낸다.
  * 한 번에 하나만 보낸다(부르는 쪽 — 낭독 줄 — 이 이미 한 줄로 세운다). 겹쳐 오면 차례로 보낸다.
+ *
+ * ★같은 관리자를 **기본 목소리 상주 실행기**(reader_voice_server.py)도 쓴다(2026-10-01) — 주고받는 모양이 같다.
+ *   이름(label)만 다르게 주고, 요청은 call(payload) 로 그대로 보낸다.
  */
 export type SpawnFn = (command: string, args: string[], options: Record<string, unknown>) => ChildProcess
 
@@ -29,6 +32,8 @@ export interface QwenVoiceWorkerDeps {
   /** 한 조각 상한 — 멈춘 실행기를 놓아주는 안전장치(첫 조각은 모델 열기가 더해진다). */
   timeoutMs?: number
   onEvent?: (event: string, fields: Record<string, unknown>) => void
+  /** 사유 글에 쓰는 이름. 없으면 'Qwen 상주 실행기'. */
+  label?: string
 }
 
 export const QWEN_IDLE_MS = 3 * 60_000
@@ -38,7 +43,7 @@ interface Live {
   proc: ChildProcess
   buf: string
   dead: boolean
-  pending: { id: string; resolve: (r: QwenVoiceReply) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> } | null
+  pending: { id: string; resolve: (r: Record<string, unknown>) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> } | null
 }
 
 export class QwenVoiceWorker {
@@ -54,9 +59,19 @@ export class QwenVoiceWorker {
   /** 지금 떠 있는가(검사·기록용). */
   get running(): boolean { return !!this.live && !this.live.dead }
 
+  private get label(): string { return this.deps.label || 'Qwen 상주 실행기' }
+
   /** 한 조각을 만든다 — 차례로. */
   speak(req: QwenVoiceRequest): Promise<QwenVoiceReply> {
-    const run = this.tail.then(() => this.once(req), () => this.once(req))
+    return this.call({ model: req.model, speaker: req.speaker, language: req.language,
+      text_file: req.textFile, out: req.out, seed: req.seed ?? 0 }).then((msg) => ({
+      seconds: Number(msg.seconds) || 0, sampleRate: Number(msg.sample_rate) || 0,
+      genSec: Number(msg.gen_sec) || 0, loadedNow: !!msg.loaded_now }))
+  }
+
+  /** 요청 하나를 그대로 보내고 성공 답을 받는다 — 차례로. 실패 답은 사유와 함께 거절된다. */
+  call(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const run = this.tail.then(() => this.once(payload), () => this.once(payload))
     this.tail = run.catch(() => { /* 다음 차례는 앞의 실패와 무관하다 */ })
     return run
   }
@@ -66,7 +81,7 @@ export class QwenVoiceWorker {
     if (this.idle) { clearTimeout(this.idle); this.idle = null }
     const l = this.live
     if (!l) return
-    this.finish(l, new Error(`Qwen 상주 실행기를 내렸습니다(${reason})`))
+    this.finish(l, new Error(`${this.label}를 내렸습니다(${reason})`))
     try { l.proc.stdin?.end() } catch { /* 이미 닫혔다 */ }
     try { l.proc.kill() } catch { /* 이미 죽었다 */ }
     this.deps.onEvent?.('stop', { reason })
@@ -78,7 +93,7 @@ export class QwenVoiceWorker {
       env: { ...process.env, ...(this.deps.env || {}), PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
     })
     const l: Live = { proc, buf: '', dead: false, pending: null }
-    proc.stdin?.on('error', () => this.finish(l, new Error('Qwen 상주 실행기에 쓰지 못했습니다')))
+    proc.stdin?.on('error', () => this.finish(l, new Error(`${this.label}에 쓰지 못했습니다`)))
     proc.stdout?.setEncoding?.('utf8')
     proc.stdout?.on('data', (chunk: string) => {
       l.buf += String(chunk)
@@ -93,7 +108,7 @@ export class QwenVoiceWorker {
     const gone = (why: string) => () => {
       l.dead = true
       if (this.live === l) this.live = null
-      this.finish(l, new Error(`Qwen 상주 실행기가 끝났습니다(${why})`))
+      this.finish(l, new Error(`${this.label}가 끝났습니다(${why})`))
     }
     proc.on('exit', gone('종료'))
     proc.on('error', gone('시작 실패'))
@@ -110,10 +125,9 @@ export class QwenVoiceWorker {
     l.pending = null
     clearTimeout(p.timer)
     if (msg.ok === true) {
-      p.resolve({ seconds: Number(msg.seconds) || 0, sampleRate: Number(msg.sample_rate) || 0,
-        genSec: Number(msg.gen_sec) || 0, loadedNow: !!msg.loaded_now })
+      p.resolve(msg)
     } else {
-      p.reject(new Error(String(msg.error || 'Qwen 지정 목소리로 만들지 못했습니다')))
+      p.reject(new Error(String(msg.error || (this.deps.label ? '이 부분을 소리로 만들지 못했습니다' : 'Qwen 지정 목소리로 만들지 못했습니다'))))
     }
   }
 
@@ -126,28 +140,27 @@ export class QwenVoiceWorker {
     p.reject(err)
   }
 
-  private once(req: QwenVoiceRequest): Promise<QwenVoiceReply> {
+  private once(payload: Record<string, unknown>): Promise<Record<string, unknown>> {
     if (this.idle) { clearTimeout(this.idle); this.idle = null }
     if (!this.live || this.live.dead) this.live = this.start()
     const l = this.live
     const id = `q${++this.seq}`
-    return new Promise<QwenVoiceReply>((resolve, reject) => {
+    return new Promise<Record<string, unknown>>((resolve, reject) => {
       const timer = setTimeout(() => {
-        this.finish(l, new Error('Qwen 지정 목소리가 너무 오래 걸려 멈췄습니다'))
+        this.finish(l, new Error(this.deps.label ? `${this.label}가 너무 오래 걸려 멈췄습니다` : 'Qwen 지정 목소리가 너무 오래 걸려 멈췄습니다'))
         try { l.proc.kill() } catch { /* 이미 죽었다 */ }
       }, this.deps.timeoutMs ?? QWEN_TIMEOUT_MS)
       l.pending = { id, resolve, reject, timer }
-      const line = JSON.stringify({ id, model: req.model, speaker: req.speaker, language: req.language,
-        text_file: req.textFile, out: req.out, seed: req.seed ?? 0 }) + '\n'
+      const line = JSON.stringify({ id, ...payload }) + '\n'
       const w = l.proc.stdin
       if (l.dead || !w || !w.writable || w.destroyed || w.writableEnded) {
-        this.finish(l, new Error('Qwen 상주 실행기에 쓰지 못했습니다'))
+        this.finish(l, new Error(`${this.label}에 쓰지 못했습니다`))
         return
       }
       try {
-        w.write(line, (err) => { if (err) this.finish(l, new Error('Qwen 상주 실행기에 쓰지 못했습니다')) })
+        w.write(line, (err) => { if (err) this.finish(l, new Error(`${this.label}에 쓰지 못했습니다`)) })
       } catch {
-        this.finish(l, new Error('Qwen 상주 실행기에 쓰지 못했습니다'))
+        this.finish(l, new Error(`${this.label}에 쓰지 못했습니다`))
       }
     }).finally(() => {
       if (this.idle) clearTimeout(this.idle)

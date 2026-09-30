@@ -59,25 +59,32 @@ try {
   await win.waitForSelector('[data-testid="reader-paragraph"]')
 
   // ── 1. 설정 창의 목록 ──────────────────────────────────────────────
-  await win.getByTestId('reader-settings').click()
-  const dialog = win.getByRole('dialog', { name: '낭독 설정' })
+  await win.getByTestId('reader-voice').click()
+  const dialog = win.getByRole('dialog', { name: '목소리 고르기' })
   await dialog.waitFor()
-  const rows = await win.getByTestId('reader-voice-builtin').allInnerTexts()
-  ok(rows.length === voices.length && rows.some((t) => t.includes('Supertonic 여성 1')) && rows.some((t) => t.includes('Supertonic 남성 5')),
-    '★낭독 설정에 기본 목소리가 전부 보인다', rows)
-  ok(await win.getByTestId('reader-voice-try').count() === voices.length, '줄마다 들어 보기가 있다')
+  const rows = await win.getByTestId('reader-voice-builtin').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') || ''))
+  ok(rows.length === voices.length && rows.includes('Supertonic 여성 1') && rows.includes('Supertonic 남성 5'),
+    '★목소리 고르기에 기본 목소리가 전부 보인다', rows)
+  // ★묶음 칩 — 칩에는 짧은 이름(여성 1)만, 엔진 이름은 묶음 제목 한 번(2026-10-01 신고: 길게 나열돼 보기 좋지 않다).
+  const chips = await win.getByTestId('reader-voice-builtin').allInnerTexts()
+  ok(chips.includes('여성 1') && chips.includes('남성 5') && chips.every((t) => !/Supertonic/.test(t)), '★칩에는 짧은 이름만 보인다', chips)
+  ok(await dialog.getByRole('heading', { name: '빠른 기본 목소리' }).count() === 1, '★Supertonic 은 "빠른 기본 목소리" 묶음으로 한 번만 말한다')
+  ok(await win.getByTestId('reader-voice-try').count() === 1, '★들어 보기는 창 아래 하나 — 줄마다 두지 않는다')
 
   // ── 5. 목소리가 많아도 창 안에서 굴러간다 ───────────────────────────
   const fit = await dialog.evaluate((d) => {
     const r = d.getBoundingClientRect()
-    return { inView: r.top >= 0 && r.bottom <= window.innerHeight + 1, scrolls: d.scrollHeight <= d.clientHeight + 1 || getComputedStyle(d).overflowY === 'auto' }
+    const body = d.querySelector('.af-card-modal-body')
+    return { inView: r.top >= 0 && r.bottom <= window.innerHeight + 1, scrolls: !!body && (body.scrollHeight <= body.clientHeight + 1 || getComputedStyle(body).overflowY === 'auto') }
   })
-  ok(fit.inView && fit.scrolls, '★설정 창이 화면 안에 들고, 넘치면 창 안에서 굴러간다', fit)
+  ok(fit.inView && fit.scrolls, '★고르기 창이 화면 안에 들고, 넘치면 창 안에서 굴러간다', fit)
 
   // ── 2. 들어 보기 ───────────────────────────────────────────────────
-  const idx = rows.findIndex((t) => t.includes('Supertonic 여성 2'))
+  const idx = rows.findIndex((t) => t === 'Supertonic 여성 2')
   const t0 = Date.now()
-  await win.getByTestId('reader-voice-try').nth(idx).click()
+  await win.getByTestId('reader-voice-builtin').nth(idx).click()
+  ok(await win.getByTestId('reader-voice-builtin').nth(idx).getAttribute('aria-checked') === 'true', '칩을 누르면 골라진다(아직 확정 전)')
+  await win.getByTestId('reader-voice-try').click()
   // 기록이 답이다 — 들어 보기는 끝나면 '들어 보기 — 이름' 을, 실패하면 '들어 보기 실패 — 이름' 을 남긴다.
   let heard = false, failed = false
   for (let i = 0; i < 120 && !heard && !failed; i++) {
@@ -91,8 +98,8 @@ try {
   ok(heard && !failed && !note, '★Supertonic 목소리를 들어 볼 수 있고 기록에 남는다(오류 없이)', { tryMs, note })
 
   // ── 3. 고르고 읽기 ─────────────────────────────────────────────────
-  await win.getByTestId('reader-voice-builtin').nth(idx).click()
-  ok((await win.getByTestId('reader-settings').innerText()).includes('Supertonic 여성 2'), '고른 목소리 이름이 아래 막대에 뜬다')
+  await win.getByTestId('reader-voice-confirm').click()
+  ok((await win.getByTestId('reader-voice').innerText()).includes('Supertonic 여성 2'), '고른 목소리 이름이 아래 막대에 뜬다')
   await win.getByTestId('reader-play').click()
   const read = await win.waitForSelector('[data-testid="reader-phrase"]', { timeout: 60000 }).then(() => true).catch(() => false)
   ok(read, '★그 목소리로 책을 읽는다(읽는 구절이 뜬다)')

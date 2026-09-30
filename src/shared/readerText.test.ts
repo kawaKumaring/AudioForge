@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 // @ts-ignore TS5097: node --test 가 이 파일을 곧바로 읽는다(저장소 관례).
-import { speakableText, parseReaderPrefs, DEFAULT_READER_PREFS } from './readerText.ts'
+import { speakableText, parseReaderPrefs, DEFAULT_READER_PREFS, readingPlan, rememberVoice, READER_RECENT_MAX } from './readerText.ts'
 
 const ON = { skipHanjaInParens: true }
 const OFF = { skipHanjaInParens: false }
@@ -56,7 +56,7 @@ test('저장본을 믿지 않는다 — 모르는 값은 기본으로', () => {
   assert.deepEqual(parseReaderPrefs(null), DEFAULT_READER_PREFS)
   assert.deepEqual(parseReaderPrefs({ follow: 'yes', skipHanjaInParens: 1 }), DEFAULT_READER_PREFS)
   assert.deepEqual(parseReaderPrefs({ follow: false, skipHanjaInParens: true, fontSize: 18 }),
-    { follow: false, skipHanjaInParens: true, fontSize: 18 })
+    { follow: false, skipHanjaInParens: true, fontSize: 18, recentVoices: [] })
 })
 
 test('★글자 크기 기본은 16 — 예전 19 는 크다는 지시', () => {
@@ -102,4 +102,34 @@ test('★기호만 남은 줄은 소리 없이 건너뛴다 — 장면 구분 �
 
 test('괄호 속 한자 빼기와 함께 써도 된다', () => {
   assert.equal(speakableText('"학교(學校)에 가자."', ON), '학교에 가자.')
+})
+
+// ── 구절 나누기(따라가기 · 2026-10-01) ──────────────────────────────────────
+test('★구절 — 문장 끝·쉼표에서 나누고, 보이는 자리와 읽는 글자 수를 함께 안다', () => {
+  const t = '그는 "안녕," 하고 말했다. 학교(學校, 學生)에 갔다!'
+  const p = readingPlan(t, ON)
+  assert.deepEqual(p.parts.map((x) => t.slice(x.from, x.to)), ['그는 "안녕,"', '하고 말했다.', '학교(學校, 學生)에 갔다!'])
+  assert.deepEqual(p.parts.map((x) => x.strong), [false, true, true])
+  assert.equal(p.parts[2].weight, '학교에갔다!'.length, '괄호 속 쉼표에서 자르지 않아 한자 빼기가 그대로 된다')
+})
+
+test('★소리로 보내는 글은 예전과 같다 — 줄바꿈 수까지(쉼 길이가 바뀌지 않는다)', () => {
+  const t = '첫 문장이다. 둘째, 문장이다.\n\n***\n\n셋째 문단이다… 끝'
+  for (const pr of [ON, OFF]) assert.equal(readingPlan(t, pr).say, speakableText(t, pr))
+})
+
+test('읽을 것이 없는 구절은 무게 0 — 소리 없이 지나간다', () => {
+  const p = readingPlan('앞이다.\n***\n뒤다.', OFF)
+  assert.deepEqual(p.parts.map((x) => x.weight), [4, 0, 3], '무게는 띄어쓰기를 뺀 소리로 보낸 글자 수(문장 부호 포함)')
+})
+
+test('★최근 목소리 — 같은 파일은 맨 앞으로, 넘치면 오래된 것부터 뺀다 · 저장본을 믿지 않는다', () => {
+  let l: Array<{ path: string; label: string }> = []
+  for (let i = 0; i < READER_RECENT_MAX + 2; i++) l = rememberVoice(l, { path: `p${i}`, label: `v${i}` })
+  assert.equal(l.length, READER_RECENT_MAX)
+  assert.equal(l[0].path, `p${READER_RECENT_MAX + 1}`)
+  l = rememberVoice(l, { path: 'p3', label: 'v3' })
+  assert.equal(l[0].path, 'p3')
+  assert.equal(l.filter((x) => x.path === 'p3').length, 1)
+  assert.deepEqual(parseReaderPrefs({ recentVoices: [{ path: 'a', label: 'b' }, { path: '' }, 3, null] }).recentVoices, [{ path: 'a', label: 'b' }])
 })

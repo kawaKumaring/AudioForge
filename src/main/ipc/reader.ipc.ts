@@ -27,6 +27,7 @@ import { usesGpu } from '../../shared/readerQueue'
 import { appLog, fileLabel } from '../services/app-log'
 import { createLane, failureReason, jsonLines, madeTrack, pythonReason, readerRunConfig } from '../services/reader-run'
 import { QwenVoiceWorker } from '../services/qwen-voice-worker'
+import { parseWav, envelope, alignParts, type TimingPart } from '../../shared/readerTiming'
 
 const execFileAsync = promisify(execFile)
 
@@ -108,6 +109,56 @@ function qwenWorker(): QwenVoiceWorker {
   return qwenWorkerInstance
 }
 
+/**
+ * 기본 목소리(Supertonic) **상주 실행기** — 하나만 (2026-10-01).
+ * ★조각마다 파이썬을 새로 띄우면 기동·모델 열기에 약 1.7초가 매번 들었다(15초 분량 한 덩이 4.8초 중). 띄워 두면 합성 시간만 든다.
+ * ★소리는 예전 길과 똑같다 — 실행기가 같은 separate.main() 을 설정 파일로 부른다(같은 글 → 같은 소리, 실측 차이 0).
+ * CPU 로만 돈다(그래픽카드를 잡지 않는다). 한동안 안 쓰면 내리고, 앱이 끝날 때 내린다.
+ */
+const READER_WORKER_IDLE_MS = 10 * 60_000
+/** 앱이 끝나는 중 — 이때 끊긴 조각은 실패로 적지 않는다. */
+let quitting = false
+let readerWorkerInstance: QwenVoiceWorker | null = null
+function readerWorker(): QwenVoiceWorker {
+  if (readerWorkerInstance) return readerWorkerInstance
+  readerWorkerInstance = new QwenVoiceWorker({
+    label: '기본 목소리 상주 실행기',
+    spawn: (cmd, args, opts) => spawn(cmd, args, opts as SpawnOptions),
+    pythonPath: () => currentPythonPath() || '',
+    scriptPath: () => join(dirname(scriptPath()), 'reader_voice_server.py'),
+    idleMs: process.env.AF_E2E === '1' && Number(process.env.AF_E2E_QWEN_IDLE_MS) > 0 ? Number(process.env.AF_E2E_QWEN_IDLE_MS) : READER_WORKER_IDLE_MS,
+    timeoutMs: 600000,
+    onEvent: (e, f) => appLog()?.info('reader', `기본 목소리 상주 실행기 ${e === 'start' ? '띄움' : `내림${f.reason ? `(${String(f.reason)})` : ''}`}`),
+  })
+  return readerWorkerInstance
+}
+/** 상주 실행기로 만드는 기본 목소리인가. */
+const residentBuiltin = (v: { kind: string; engineId?: string }) => v.kind === 'builtin' && v.engineId === 'supertonic'
+
+/**
+ * 만든 소리 안에서 **구절마다의 시각** — 따라가기가 읽는 줄을 안다(규칙은 readerTiming).
+ * ★소리 파일을 읽어 크기만 잰다(10ms 마다). 못 읽으면 빈 배열 — 화면은 덩이 단위로 돌아간다.
+ */
+function timingOf(wavPath: string, parts: TimingPart[] | null): Array<[number, number]> {
+  if (!parts?.length) return []
+  try {
+    const w = parseWav(new Uint8Array(readFileSync(wavPath)))
+    return w ? alignParts(envelope(w), parts) : []
+  } catch { return [] }
+}
+
+/** 화면이 보낸 구절 무게를 믿지 않는다 — 모양이 다르면 없는 것으로. */
+function partsOf(raw: unknown): TimingPart[] | null {
+  if (!Array.isArray(raw) || !raw.length || raw.length > 2000) return null
+  const out: TimingPart[] = []
+  for (const p of raw) {
+    const w = Number((p as { weight?: unknown })?.weight)
+    if (!Number.isFinite(w) || w < 0) return null
+    out.push({ weight: w, strong: !!(p as { strong?: unknown })?.strong })
+  }
+  return out
+}
+
 export interface ReaderVoice {
   /** 'builtin' 이면 설치된 목소리, 'reference' 면 참조 클립. */
   kind: 'builtin' | 'reference'
@@ -157,7 +208,13 @@ async function makeChunk(body: string, v: ReaderVoice, out: string): Promise<str
   try {
     let wav: string
     let note = ''
-    if (v.kind === 'builtin' && v.engineId === 'qwen-custom') {
+    if (residentBuiltin(v)) {
+      // ★기본 목소리는 **띄워 둔 실행기**로 — 같은 설정 파일, 같은 소리.
+      const r = await readerWorker().call({ config: cfgPath })
+      wav = String(r.path || '')
+      note = ` 상주${r.loaded_now ? '(모델 엶)' : ''} 생성=${Number(r.gen_sec || 0).toFixed(1)}s`
+      if (!wav || !existsSync(wav)) throw new Error('이 부분을 소리로 만들지 못했습니다')
+    } else if (v.kind === 'builtin' && v.engineId === 'qwen-custom') {
       // ★Qwen 소희는 **띄워 둔 실행기**로 만든다 — 조각마다 모델을 여는 약 10초가 첫 조각에만 든다(2026-09-30 실측).
       //   글은 화면이 이미 소리 내지 않을 기호를 뺀 것이다(speakableText).
       const textFile = join(runDir, 'text.txt')
@@ -187,7 +244,9 @@ async function makeChunk(body: string, v: ReaderVoice, out: string): Promise<str
     const shown = failureReason(e)
     // ★로그에 남긴다 — 낭독은 실패를 한 줄도 남기지 않아 신고를 받고도 사유를 알 수 없었다.
     //   **글 내용은 적지 않는다.** 글자 수와 목소리 파일 이름만.
-    appLog()?.warn('reader', `만들지 못함 kind=${v.kind} voice=${fileLabel(v.path)} 글자=${body.length} ${((Date.now() - t0) / 1000).toFixed(1)}s: ${shown}`)
+    // ★앱을 끄면서 멈춘 조각은 실패가 아니다 — 경고로 남기면 끌 때마다 문제가 난 것처럼 보였다(2026-10-01 · MCP 검사).
+    if (quitting) appLog()?.info('reader', `앱 종료로 멈춤 kind=${v.kind} voice=${fileLabel(v.path)} 글자=${body.length}`)
+    else appLog()?.warn('reader', `만들지 못함 kind=${v.kind} voice=${fileLabel(v.path)} 글자=${body.length} ${((Date.now() - t0) / 1000).toFixed(1)}s: ${shown}`)
     throw new Error(shown)
   } finally {
     if (gpu) setReaderRunning(false)
@@ -212,7 +271,37 @@ const inFlight = new Map<string, Promise<string>>()
 
 export function registerReaderIpc(): void {
   // Qwen 상주 실행기는 앱과 함께 끝난다(그래픽카드 메모리를 붙든 채 남지 않게).
-  app.on('will-quit', () => { qwenWorkerInstance?.stop('앱 종료') })
+  app.on('will-quit', () => { quitting = true; qwenWorkerInstance?.stop('앱 종료'); readerWorkerInstance?.stop('앱 종료') })
+
+  /**
+   * 목소리를 **미리 연다** — 고른 순간(또는 책을 연 순간) 모델을 올려 둬 첫 조각을 기다리지 않게 (2026-10-01).
+   * ★기본 목소리는 CPU 라 언제든. Qwen 소희는 그래픽카드를 쓰므로 다른 작업이 돌면 열지 않는다(그때는 누를 때 연다).
+   * ★줄에 세운다 — 여는 동안 온 조각은 연 다음에 만든다.
+   */
+  ipcMain.handle('reader:warm', async (_e, voice: unknown): Promise<Reply<{ warmed: boolean; why?: string }>> => {
+    try {
+      const v = voice as ReaderVoice | null
+      if (!v || v.kind !== 'builtin' || !v.path || !existsSync(v.path)) return ok({ warmed: false, why: '미리 열 목소리가 아닙니다' })
+      if (residentBuiltin(v)) {
+        if (!currentPythonPath()) return ok({ warmed: false, why: '파이썬을 찾지 못했습니다' })
+        await inLane(() => readerWorker().call({ warm: true, model: v.path }))
+        return ok({ warmed: true })
+      }
+      if (v.engineId === 'qwen-custom') {
+        // 검사 전용 — GPU 를 쓰지 않는 기본 검사에서는 그래픽카드에 모델을 올리지 않는다(AF_E2E_GPU=1 일 때만 연다).
+        if (process.env.AF_E2E === '1' && process.env.AF_E2E_GPU !== '1') return ok({ warmed: false, why: '검사(GPU 끔)' })
+        return ok(await inLane(async () => {
+          const busy = synthesisBusy('낭독')
+          if (busy) return { warmed: false, why: busy }
+          setReaderRunning(true)
+          try { await qwenWorker().call({ warm: true, model: dirname(v.path) }) } finally { setReaderRunning(false) }
+          return { warmed: true }
+        }))
+      }
+      return ok({ warmed: false, why: '미리 열 목소리가 아닙니다' })
+    } catch (e) { return fail(e) }
+  })
+
   /**
    * 줄에 선 것을 다 만들 때까지 기다린다 — 낭독 화면이 참조 목소리를 준비하기 전에 부른다.
    * ★준비도 파이썬을 띄운다. 낭독이 만들던 것과 겹치면 공용 판정에 거절된다 — 거절 대신 기다린다.
@@ -225,8 +314,8 @@ export function registerReaderIpc(): void {
    * 덩이 하나를 소리로. 이미 만들어 둔 것이 있으면 **곧바로** 그 자리를 돌려준다.
    */
   ipcMain.handle('reader:speak', async (
-    _e, text: unknown, voice: unknown, voiceKey: unknown,
-  ): Promise<Reply<{ path: string; cached: boolean }>> => {
+    _e, text: unknown, voice: unknown, voiceKey: unknown, rawParts?: unknown,
+  ): Promise<Reply<{ path: string; cached: boolean; timing: Array<[number, number]> }>> => {
     try {
       const body = String(text ?? '').trim()
       if (!body) throw new Error('읽을 글이 없습니다')
@@ -234,18 +323,20 @@ export function registerReaderIpc(): void {
       if (!v || (v.kind !== 'builtin' && v.kind !== 'reference')) throw new Error('목소리를 고르세요')
       if (!v.path || !existsSync(v.path)) throw new Error('고른 목소리를 찾지 못했습니다')
       const key = String(voiceKey ?? '')
+      const parts = partsOf(rawParts)
 
       const out = join(readerDir(), chunkName(body, key))
-      if (existsSync(out)) return ok({ path: out, cached: true })
+      if (existsSync(out)) return ok({ path: out, cached: true, timing: timingOf(out, parts) })
 
       const already = inFlight.get(out)
-      if (already) return ok({ path: await already, cached: false })
+      if (already) { const p = await already; return ok({ path: p, cached: false, timing: timingOf(p, parts) }) }
 
       // ★한 번에 하나 — 줄에 세운다. 앞 작업이 끝나야 다음이 돈다.
       const run = inLane(() => makeChunk(body, v, out))
       inFlight.set(out, run)
       void run.finally(() => { inFlight.delete(out) }).catch(() => { /* 아래에서 받는다 */ })
-      return ok({ path: await run, cached: false })
+      const made = await run
+      return ok({ path: made, cached: false, timing: timingOf(made, parts) })
     } catch (e) {
       return fail(e)
     }

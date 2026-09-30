@@ -72,10 +72,15 @@ export function emptyQueue(count: number, voiceKey: string, ahead = DEFAULT_AHEA
  *
  * ★지금 자리부터 앞으로 `ahead` 개까지만 본다. 그 너머를 미리 만들면
  *   사용자가 자리를 옮겼을 때 버리는 것이 커진다.
- * ★이미 하나를 만들고 있으면 -1 — 본체가 한 번에 하나만 돌린다.
+ * ★이미 하나를 만들고 있으면 -1 — 앞서 만들기는 한 번에 하나씩.
+ * ★단, **지금 자리**는 기다리지 않는다 (2026-10-01 실측: 되감아 다시 듣기가 뒤 덩이를 다 만들 때까지 2.8초 멈췄다 —
+ *   쌓아 둔 소리인데도). 본체는 줄(lane)로 한 번에 하나만 만들고, 쌓아 둔 것은 줄을 서지 않고 곧바로 준다 —
+ *   그래서 지금 자리를 함께 물어도 파이썬이 둘이 되지 않는다. 지금 자리까지 만드는 중이면 더는 보내지 않는다.
  */
 export function nextToMake(q: QueueState): number {
-  if (q.items.some((it) => it.state === 'making')) return -1
+  if (q.items.some((it) => it.state === 'making')) {
+    return q.items[q.at]?.state === 'idle' ? q.at : -1
+  }
   const last = Math.min(q.count - 1, q.at + q.ahead)
   for (let i = q.at; i <= last; i++) {
     if (q.items[i] && q.items[i].state === 'idle') return i

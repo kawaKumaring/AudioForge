@@ -51,6 +51,7 @@ try {
   await win.getByTestId('add-generation-card').click()
   await win.getByRole('dialog', { name: '목소리 고르기' }).waitFor()
   await win.getByTestId('pick-voice-builtin').first().click()
+  await win.getByTestId('pick-voice-confirm').click()
   await win.getByTestId('generation-card').first().waitFor()
   await win.getByTestId('card-script').first().fill(LINE)
   await win.waitForTimeout(300)

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 // @ts-ignore TS5097: node --test 가 이 파일을 곧바로 읽는다(저장소 관례).
 import {
   splitForReading, chunkAt, charAt, totalSeconds,
-  CHARS_PER_SECOND, MIN_SECONDS, MAX_SECONDS,
+  CHARS_PER_SECOND, MIN_SECONDS, MAX_SECONDS, START_RAMP_SECONDS,
 // @ts-ignore TS5097
 } from './readerChunks.ts'
 
@@ -139,4 +139,26 @@ test('끊을 자리가 처음이거나 밖이면 예전과 같다', () => {
   const text = Array(6).fill('그는 문을 열고 복도를 내다보았다.').join(' ')
   assert.deepEqual(splitForReading(text, { breakAt: 0 }), splitForReading(text))
   assert.deepEqual(splitForReading(text, { breakAt: 99999 }), splitForReading(text))
+})
+
+// ── 첫 덩이는 짧게(2026-10-01) ─────────────────────────────────────────────
+test('★읽기 시작한 자리의 첫 덩이들은 짧다 — 첫 소리까지의 기다림을 줄인다', () => {
+  const body = Array.from({ length: 40 }, (_, i) => `${i + 1}번째 문장이다. 그는 천천히 문을 열고 복도를 내다보았다.`).join(' ')
+  const plain = splitForReading(body)
+  const ramped = splitForReading(body, { ramp: START_RAMP_SECONDS })
+  assert.ok(ramped[0].seconds <= START_RAMP_SECONDS[0] * 2 && ramped[0].seconds >= START_RAMP_SECONDS[0] * 0.8, JSON.stringify(ramped[0]))
+  assert.ok(ramped[1].seconds <= START_RAMP_SECONDS[1] * 2, JSON.stringify(ramped[1]))
+  assert.ok(ramped[0].seconds < plain[0].seconds / 2, '보통 덩이의 절반보다 짧다')
+  assert.ok(ramped[2].seconds >= MIN_SECONDS, '그 뒤는 보통 크기')
+  assert.equal(ramped.map((c) => c.text).join(' '), plain.map((c) => c.text).join(' '), '글은 빠짐없이 그대로다')
+})
+
+test('★짧게 하는 것은 고른 자리부터 — 그 앞은 보통 크기', () => {
+  const body = Array.from({ length: 40 }, (_, i) => `${i + 1}번째 문장이다. 그는 천천히 문을 열고 복도를 내다보았다.`).join(' ')
+  const at = body.indexOf('20번째')
+  const c = splitForReading(body, { breakAt: at, ramp: START_RAMP_SECONDS })
+  const i = chunkAt(c, at)
+  assert.equal(c[i].start, at)
+  assert.ok(c[i].seconds <= START_RAMP_SECONDS[0] * 2, JSON.stringify(c[i]))
+  assert.ok(c[0].seconds >= MIN_SECONDS, '앞쪽은 짧게 하지 않는다')
 })

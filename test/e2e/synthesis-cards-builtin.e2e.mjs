@@ -69,6 +69,9 @@ try {
   await win.getByTestId('add-generation-card').click()
   await win.getByRole('dialog', { name: '목소리 고르기' }).waitFor()
   check(await win.getByTestId('pick-voice-builtin').count() >= 1, '기본 목소리를 고를 수 있다')
+  // ★낭독과 같은 고르기 창(2026-10-01) — 열면 첫 목소리가 골라져 있어 곧바로 들어 보고 확정한다.
+  check(await win.getByTestId('pick-voice-builtin').first().getAttribute('aria-checked') === 'true', '★열자마자 첫 목소리가 골라져 있다')
+  check(await win.getByTestId('pick-voice-confirm').isEnabled(), '★곧바로 확정할 수 있다')
   // ── 고르기 전에 들어 본다 (실제 로컬 엔진) ──────────────────────────
   check(await win.getByTestId('voice-preview').count() >= 1, '고르기 창에서 들어 볼 수 있다')
   await installPlayProbe(win)
@@ -113,6 +116,7 @@ try {
   check(before.cards === 0 && before.takes === 0, '미리듣기가 카드·생성본을 만들지 않는다', before)
 
   await win.getByTestId('pick-voice-builtin').first().click()
+  await win.getByTestId('pick-voice-confirm').click()
   await win.getByTestId('generation-card').first().waitFor()
 
   const card = await win.evaluate(() => {

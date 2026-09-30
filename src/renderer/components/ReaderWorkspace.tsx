@@ -1,15 +1,18 @@
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { create } from 'zustand'
 import { useReadAloud, voiceKeyOf, type ReaderVoicePick } from '@/hooks/useReadAloud'
-import { createManagedAudio } from '@/lib/playbackVolume'
 import { useAppStore } from '@/stores/app.store'
+import { Icon, Modal, button as kitButton, muted } from './kit'
+import VoicePicker from './VoicePicker'
+import type { PreviewMaker } from '../lib/voicePreview'
 import { runVoicePrep } from '@/lib/voicePrepRunner'
 import { opLog, nameOnly } from '@/lib/opLog'
 import { chunkAt, TEXT_FILE_LIMIT } from '../../shared/readerChunks'
 import { decodeBookText, encodingLabel } from '../../shared/readerDecode'
 import PlaybackRateSelect from './PlaybackRateSelect'
 import { WINDOW_FROM, estimateHeight, offsetsOf, visibleRange, scrollTopFor } from '../../shared/readerWindow'
-import { DEFAULT_READER_PREFS, parseReaderPrefs, READER_PREFS_STORAGE_KEY, READER_FONT_MAX, READER_FONT_MIN, type ReaderPrefs } from '../../shared/readerText'
+import { DEFAULT_READER_PREFS, parseReaderPrefs, rememberVoice, READER_PREFS_STORAGE_KEY, READER_FONT_MAX, READER_FONT_MIN, type ReaderPrefs } from '../../shared/readerText'
+import type { BuiltinVoiceRef } from '../../shared/synthesisCardVoice'
 
 /** 들어 보기 문장 — 책 읽는 문장이어야 낭독 목소리를 고를 수 있다. */
 const SAMPLE_TEXT = '그는 천천히 문을 열고 어두운 복도를 내다보았다. 멀리서 물이 떨어지는 소리만 일정하게 이어졌다.'
@@ -60,26 +63,20 @@ export default function ReaderWorkspace() {
   const bodyRef = useRef<HTMLDivElement>(null)
   const footerRef = useRef<HTMLElement>(null)
   const voiceButton = useRef<HTMLButtonElement>(null)
+  const settingsButton = useRef<HTMLButtonElement>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   /** 참조 목소리를 준비하는 중이면 그 한 줄. 비면 준비 중이 아니다. */
   const [prep, setPrep] = useState('')
-  /**
-   * 목소리 **들어 보기** — 같은 문장으로 하나씩 들어 보고 고른다 (2026-09-30 지시:
-   * "기본 모델들을 여러 개 연결해 봐라, 하나씩 사용자가 들어 보고 선택하게").
-   * ★인사말이 아니라 **책 읽는 문장**으로 — 낭독 목소리를 고르는 자리다. 낭독 통로를 그대로 타서
-   *   한 번 만든 것은 쌓아 두고, 다시 들을 때는 곧바로 나온다.
-   */
-  const [trying, setTrying] = useState('')
-  const [tryNote, setTryNote] = useState('')
-  const sampleEl = useRef<HTMLAudioElement | null>(null)
-  useEffect(() => () => { try { sampleEl.current?.pause() } catch { /* 이미 멈춤 */ } }, [])
   const [dragging, setDragging] = useState(false)
+  /** 읽기 설정(글자 크기·괄호 속 한자·따라가기). ★목소리는 따로 고른다(2026-10-01 — 한 창에 섞여 있었다). */
   const [settings, setSettings] = useState(false)
+  /** 목소리 고르기 — 음성 합성과 같은 창(VoicePicker). */
+  const [picking, setPicking] = useState(false)
   // ★책 목록은 **서재 팝업**에 모은다 (2026-09-30 지시: 불러올수록 화면이 차고 본문이 오른쪽으로 쏠린다).
   const [library, setLibrary] = useState(false)
   /** 설치된 기본 목소리. ★표시값이 아니라 **본체가 확인한 것**이다(인수인계 1항). */
-  const [builtins, setBuiltins] = useState<{ modelId: string; label: string; path: string; engineId: string }[]>([])
+  const [builtins, setBuiltins] = useState<BuiltinVoiceRef[] | null>(null)
   const [voiceNote, setVoiceNote] = useState('')
   /**
    * 낭독 설정 — 따라가기·괄호 속 한자. **껐다 켜도 남는다**(설정 파일 한 칸).
@@ -189,8 +186,11 @@ export default function ReaderWorkspace() {
     return out
   }, [book?.id, book?.paragraphs])
   const read = useReadAloud(body, pick, { skipHanjaInParens: prefs.skipHanjaInParens })
-  /** 지금 읽는 덩이 — 문단 안에서 그 글자만 칠한다. 읽지 않을 때는 없다. */
-  const phrase = read.playing ? read.chunks[read.at] : undefined
+  /**
+   * 지금 **소리가 읽고 있는 구절** — 문단 안에서 그 글자만 칠한다. 읽지 않을 때는 없다.
+   * ★2026-10-01 이전에는 덩이(약 20초) 전체를 칠했다. 이제 구절(문장 끝·쉼표) 단위로 소리를 따라간다(readerTiming).
+   */
+  const phrase = read.spot
   // ★멈춰 있을 때는 **고른 자리**에 맞춰 둔다 — 엔진이 그 자리부터 미리 만들어 두어,
   //   누르는 순간 곧바로 들린다(2026-09-29 지시: "읽어오면 빠르게 만들어서").
   // ★오류가 떠 있으면 건드리지 않는다 (2026-09-30 신고: "붉은색으로 경로가 빠르게 보였다 사라진다").
@@ -200,13 +200,16 @@ export default function ReaderWorkspace() {
     if (!readPlaying && !readFault) seekToChar(charOfParagraph[position] ?? 0)
   }, [readPlaying, readFault, seekToChar, position, charOfParagraph])
   /** 지금 **실제로 읽고 있는** 문단. 사용자가 고른 자리와 다르다(인수인계 5항). */
-  const readingParagraph = useMemo(() => {
-    const start = read.chunks[read.at]?.start ?? -1
-    if (start < 0) return -1
-    let idx = 0
-    for (let i = 0; i < charOfParagraph.length; i++) { if (charOfParagraph[i] <= start) idx = i; else break }
+  /** 원문 글자 자리 → 문단 번호(나눠 찾기). */
+  const paragraphOfChar = useCallback((c: number) => {
+    let lo = 0, hi = charOfParagraph.length - 1, idx = 0
+    while (lo <= hi) { const mid = (lo + hi) >> 1; if (charOfParagraph[mid] <= c) { idx = mid; lo = mid + 1 } else hi = mid - 1 }
     return idx
-  }, [read.chunks, read.at, charOfParagraph])
+  }, [charOfParagraph])
+  const readingParagraph = useMemo(() => {
+    const start = phrase?.start ?? read.chunks[read.at]?.start ?? -1
+    return start < 0 ? -1 : paragraphOfChar(start)
+  }, [phrase?.start, read.chunks, read.at, paragraphOfChar])
 
   // ── 큰 책은 **보이는 문단만** 그린다(자리 계산은 readerWindow) ─────────────
   // ★3천 문단 이하는 전부 그린다 — 그때는 빨랐고(누름 20ms 실측) 지금까지 검사한 그대로 둔다.
@@ -309,36 +312,93 @@ export default function ReaderWorkspace() {
     }
   })
   useEffect(() => { reveal(position, 'nearest', false, false) }, [active, position])
-  // ★읽는 구절을 **화면이 따라간다** (2026-09-29 지시: "현재 어느 구절을 읽고 있는지 따라가게").
-  //   덩이가 넘어갈 때마다 그 구절을 가운데로 가져온다. 끄면 그대로 둔다 — 앞뒤를 둘러볼 때.
+  /**
+   * ★읽는 **줄**을 화면이 따라간다 (2026-10-01 사용자 신고: "소리가 읽어 주는 뷰어상의 텍스트 줄바꿈에 맞춰서
+   *   따라가길 원했는데, 생성된 음원의 처음에 서 있다가 다음 음원의 처음 부분에 쭉 서 있는 것 같다").
+   *   예전에는 덩이가 넘어갈 때만(약 20초마다) 옮겼다. 이제 매 화면마다 **소리가 닿은 글자**(read.caret)의 줄을 찾아,
+   *   그 줄을 본문 칸 위에서 35% 자리에 둔다 — 줄이 바뀔 때마다 한 줄만큼 부드럽게 올라간다(노래방 자막처럼).
+   *   ★처음엔 '읽기 띠(18~60%) 밖으로 나가면 옮기기' 로 만들었다가, 한 문단을 다 읽도록 가만히 있어 줄을 따라가지 않았다(검사로 확인).
+   * ★사용자가 휠·손가락·키로 굴리면 3초 동안 따라가지 않는다 — 앞뒤를 둘러보는 중에 끌어당기지 않는다.
+   * 끄면 그대로 둔다.
+   */
+  const userScrolledAt = useRef(0)
+  const revealRef = useRef(reveal); revealRef.current = reveal
   useEffect(() => {
     if (!read.playing || !prefs.follow) return
-    const calm = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-    reveal(readingParagraph, 'center', !calm, true)
-  }, [read.playing, read.at, prefs.follow, book?.id])
+    const calm = !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    const range = document.createRange()
+    let raf = 0, movedAt = 0, lastPara = -1
+    const lineAt = (el: Element, offset: number): { y: number; h: number } | null => {
+      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
+      let left = offset
+      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
+        const len = n.textContent?.length ?? 0
+        if (left < len) {
+          range.setStart(n, left); range.setEnd(n, Math.min(len, left + 1))
+          const r = range.getClientRects()[0] || range.getBoundingClientRect()
+          return r.height ? { y: r.top + r.height / 2, h: r.height } : null
+        }
+        left -= len
+      }
+      return null
+    }
+    const tick = () => {
+      raf = requestAnimationFrame(tick)
+      const now = performance.now()
+      if (now - userScrolledAt.current < 3000 || now - movedAt < 280) return
+      const box = bodyRef.current
+      const c = read.caret()
+      if (!box || c < 0) return
+      const para = paragraphOfChar(c)
+      const el = box.querySelector(`[data-index="${para}"]`)
+      if (!el) {
+        // 아직 그리지 않은 문단(큰 책) — 어림 자리로 먼저 옮기면 그려진 뒤 다음 화면에서 줄을 맞춘다.
+        if (para !== lastPara) { lastPara = para; movedAt = now; revealRef.current(para, 'center', false, false) }
+        return
+      }
+      lastPara = para
+      const line = lineAt(el, Math.max(0, c - (charOfParagraph[para] ?? 0)))
+      if (!line) return
+      const b = box.getBoundingClientRect()
+      const off = line.y - b.top - b.height * 0.35
+      // 같은 줄 안에서는 움직이지 않는다(글자가 옮겨 가도 줄은 그대로다). 칸 끝에 닿으면 더 굴릴 수 없다.
+      if (Math.abs(off) < Math.max(10, line.h * 0.6)) return
+      const top = Math.max(0, Math.min(box.scrollHeight - box.clientHeight, box.scrollTop + off))
+      if (Math.abs(top - box.scrollTop) < 2) return
+      movedAt = now
+      box.scrollTo({ top, behavior: calm ? 'auto' : 'smooth' })
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [read.playing, prefs.follow, book?.id, paragraphOfChar, charOfParagraph, read.caret])
+  const markUserScroll = () => { userScrolledAt.current = performance.now() }
 
-  const closeSettings = () => { setSettings(false); voiceButton.current?.focus() }
-  const trySample = async (v: ReaderVoicePick, id: string) => {
-    if (trying) return
+  const closeSettings = () => { setSettings(false); settingsButton.current?.focus() }
+  /**
+   * 목소리 **들어 보기** — 같은 **책 읽는 문장**으로 (2026-09-30 지시: "하나씩 사용자가 들어 보고 선택하게").
+   * 낭독 통로를 그대로 타서 한 번 만든 것은 쌓아 두고, 다시 들을 때는 곧바로 나온다.
+   * ★재생·상태는 음성 합성과 같은 미리듣기(voicePreview)가 맡는다 — 만드는 길만 낭독 것이다.
+   */
+  const previewMaker: PreviewMaker = async (path, engineId) => {
     if (read.playing) read.stop()                 // 두 소리가 겹치지 않게
-    try { sampleEl.current?.pause() } catch { /* 이미 멈춤 */ }
-    setTrying(id); setTryNote('')
+    useAppStore.getState().claimAudio('reader')
+    const v: ReaderVoicePick = { kind: 'builtin', path, engineId, label: '' }
     const t0 = Date.now()
-    try {
-      const r = await window.api.reader.speak(SAMPLE_TEXT, { kind: v.kind, path: v.path, engineId: v.engineId }, voiceKeyOf(v))
-      if (r.error || !r.data?.path) throw new Error(r.error || '들어 볼 소리를 만들지 못했습니다')
-      const url = await window.api.audio.getFileUrl(r.data.path)
-      const el = sampleEl.current || createManagedAudio(undefined, { readAloud: true })
-      sampleEl.current = el
-      useAppStore.getState().claimAudio('reader')
-      el.src = url
-      await el.play()
-      opLog('reader', `들어 보기 — ${v.label}${r.data.cached ? ' (쌓아 둔 것)' : ` · ${((Date.now() - t0) / 1000).toFixed(1)}s`}`)
-    } catch (e) {
-      const why = (e as Error)?.message || '들어 보지 못했습니다'
-      setTryNote(why)
-      opLog('reader', `들어 보기 실패 — ${v.label}: ${why}`, 'WARN')
-    } finally { setTrying('') }
+    const name = builtins?.find((b) => b.path === path)?.label || nameOnly(path)
+    const r = await window.api.reader.speak(SAMPLE_TEXT, { kind: 'builtin', path, engineId }, voiceKeyOf(v))
+    if (r.error || !r.data?.path) {
+      opLog('reader', `들어 보기 실패 — ${name}: ${r.error || '만들지 못함'}`, 'WARN')
+      throw new Error(r.error || '들어 볼 소리를 만들지 못했습니다')
+    }
+    opLog('reader', `들어 보기 — ${name}${r.data.cached ? ' (쌓아 둔 것)' : ` · ${((Date.now() - t0) / 1000).toFixed(1)}s`}`)
+    return r.data.path
+  }
+  /** 기본 목소리를 쓴다. GPU 목소리(소희)는 고르는 순간 미리 연다 — 첫 소리의 모델 열기(약 10초)를 누르기 전에 치른다. */
+  const chooseBuiltin = (b: BuiltinVoiceRef) => {
+    const v: ReaderVoicePick = { kind: 'builtin', path: b.path, engineId: b.engineId, label: b.label }
+    useReader.setState({ voice: b.label, pick: v })
+    if (b.engineId === 'qwen-custom') void window.api.reader.warm?.({ kind: 'builtin', path: b.path, engineId: b.engineId })?.catch(() => { /* 누를 때 연다 */ })
+    voiceButton.current?.focus()
   }
   const choosePosition = (value: number) => {
     if (!book) return
@@ -378,7 +438,6 @@ export default function ReaderWorkspace() {
    *   구간을 골라 잘라 쓴다 — 낭독도 **같은 준비 실행기**를 쓴다. 상한을 없애는 것은 답이 아니다.
    */
   const pickVoiceFile = async () => {
-    setSettings(false)
     const at = await window.api.audio.selectFile(false, 'voice')
     if (typeof at !== 'string' || !at) return      // 취소
     const label = nameOnly(at)
@@ -405,6 +464,8 @@ export default function ReaderWorkspace() {
     if (outcome === 'ready') {
       // 조각이 비면 원본이 그대로 쓸 만하다는 뜻이다(3~10초 · 품질 통과).
       useReader.setState({ voice: label, pick: { kind: 'reference', path: clip || at, label } })
+      // 다음에 목소리 고르기에서 다시 고를 수 있게 — 준비를 다시 하지 않는다.
+      updatePrefs({ recentVoices: rememberVoice(prefs.recentVoices, { path: clip || at, label }) })
       opLog('reader', `참조 목소리 준비됨 — ${label} · ${clip ? '구간을 잘라 씀' : '원본 그대로'}`)
       return
     }
@@ -451,11 +512,13 @@ export default function ReaderWorkspace() {
       return { books: next, active: s.active === id ? next[0]?.id || '' : s.active }
     })
   }
+  const progress = book ? `${position + 1} / ${book.paragraphs.length} 문단` : ''
+  const iconButton: CSSProperties = { ...kitButton, padding: 8, minWidth: 36 }
   return <section data-testid="reader-workspace" aria-label="낭독 작업실" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-      <button style={{ ...button, display: 'inline-flex', alignItems: 'center', gap: 6 }} data-testid="reader-library" aria-haspopup="dialog"
-        onClick={() => setLibrary(true)} title="서재 — 불러온 책을 모아 둔 곳"><BookIcon size={16} /> 서재 {books.length || ''}</button>
-      <button style={button} onClick={() => { void pickTexts() }} disabled={loading} data-testid="reader-add-text">＋ 텍스트 추가</button>
+      <button style={kitButton} data-testid="reader-library" aria-haspopup="dialog"
+        onClick={() => setLibrary(true)} title="서재 — 불러온 책을 모아 둔 곳"><Icon name="book"/>서재{books.length ? ` ${books.length}` : ''}</button>
+      <button style={kitButton} onClick={() => { void pickTexts() }} disabled={loading} data-testid="reader-add-text"><Icon name="plus"/>텍스트 추가</button>
       <span data-testid="reader-notice"
         title="책과 읽던 자리는 앱을 껐다 켜도 남습니다. 목록에서 빼면 그 기록만 지워지고 원본 파일은 그대로입니다. 목소리를 바꾸면 만들어 둔 소리는 버리고 다시 만듭니다."
         style={{ marginLeft: 'auto', fontSize: 11, color: 'var(--text-muted)' }}>
@@ -471,10 +534,14 @@ export default function ReaderWorkspace() {
           <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>끌어 놓거나 클릭해서 선택</span>
           <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>TXT · 여러 파일</span>
         </button> : <>
-          <header style={{ padding: '20px 24px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10, borderBottom: '1px solid var(--border-subtle)' }}>
+          <header style={{ padding: '16px 24px', display: 'flex', alignItems: 'baseline', flexWrap: 'wrap', gap: 10, borderBottom: '1px solid var(--border-subtle)' }}>
             <h2 style={{ margin: 0, fontSize: 17, flex: 1, overflowWrap: 'anywhere' }}>{book.name}</h2>
+            <span style={muted}>{progress}</span>
           </header>
-          <div ref={bodyRef} data-testid="reader-body" aria-label="책 본문" data-windowed={windowed ? '1' : '0'} onScroll={windowed ? onBodyScroll : undefined} style={{ height: bodyHeight ?? 'clamp(320px, 58vh, 900px)', overflowY: 'auto', overscrollBehavior: 'contain', padding: '22px clamp(12px, 3vw, 32px)', background: 'var(--bg-base)' }}>
+          <div ref={bodyRef} data-testid="reader-body" aria-label="책 본문" data-windowed={windowed ? '1' : '0'}
+            onScroll={windowed ? onBodyScroll : undefined} onWheel={markUserScroll} onTouchMove={markUserScroll}
+            onKeyDown={e => { if (['PageUp', 'PageDown', 'ArrowUp', 'ArrowDown', 'Home', 'End', ' '].includes(e.key)) markUserScroll() }}
+            style={{ height: bodyHeight ?? 'clamp(320px, 58vh, 900px)', overflowY: 'auto', overscrollBehavior: 'contain', padding: '22px clamp(12px, 3vw, 32px)', background: 'var(--bg-base)' }}>
             {/* ★고른 자리와 **읽는 자리**를 구분해 보인다(인수인계 5항).
                 누른 곳은 '여기서 시작' 이고, 색이 찬 곳은 '지금 읽는 중' 이다. */}
             {offsets && <div aria-hidden="true" style={{ height: offsets[range.start] }} />}
@@ -494,93 +561,84 @@ export default function ReaderWorkspace() {
         </>}
       </article>
     </div>
-    {/* ★아래 막대는 **움직이지 않는다** (2026-09-30 신고: 낭독을 위한 작동 단추가 휠에 영향을 받으면 안 된다). */}
-    <footer ref={footerRef} data-testid="reader-controls" style={{ ...panel, position: 'sticky', bottom: 0, zIndex: 20, boxShadow: '0 -8px 20px #0006', padding: '16px 12px', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto minmax(0, 1fr)', alignItems: 'center', gap: 8 }}>
-      <button ref={voiceButton} data-testid="reader-settings" onClick={() => setSettings(true)} style={{ ...button, minWidth: 0, textAlign: 'left', padding: 8 }} title="낭독 설정 — 목소리·글자 크기·읽는 방식">
-        <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginBottom: 5 }}>목소리</span><span style={{ overflowWrap: 'anywhere', whiteSpace: 'normal' }}>{voice}</span>
+    {/* ★아래 막대는 **움직이지 않는다** (2026-09-30 신고: 낭독을 위한 작동 단추가 휠에 영향을 받으면 안 된다).
+        자리(2026-10-01 정리): 왼쪽 = 목소리 · 가운데 = 이전/재생/다음 · 오른쪽 = 상태 · 따라가기 · 빠르기 · 설정. */}
+    <footer ref={footerRef} data-testid="reader-controls" style={{ ...panel, position: 'sticky', bottom: 0, zIndex: 20, boxShadow: '0 -8px 20px #0006', padding: '12px', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto minmax(0, 1fr)', alignItems: 'center', gap: 8 }}>
+      <button ref={voiceButton} data-testid="reader-voice" aria-haspopup="dialog" onClick={() => setPicking(true)} disabled={!!prep}
+        title={prep ? '목소리를 준비하는 중입니다' : '목소리 고르기'}
+        style={{ ...kitButton, justifyContent: 'flex-start', minWidth: 0, padding: '6px 10px', textAlign: 'left' }}>
+        <Icon name="voice"/>
+        <span style={{ minWidth: 0 }}>
+          <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>목소리</span>
+          <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)' }}>{prep ? '준비 중…' : voice}</span>
+        </span>
       </button>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
-        <button style={button} aria-label="이전 문단" disabled={!book || position === 0} title={!book ? '책을 먼저 여세요' : position === 0 ? '첫 문단입니다' : '이전 문단'} onClick={() => choosePosition(position - 1)}>‹</button>
+        <button style={iconButton} aria-label="이전 문단" disabled={!book || position === 0} title={!book ? '책을 먼저 여세요' : position === 0 ? '첫 문단입니다' : '이전 문단'} onClick={() => choosePosition(position - 1)}><Icon name="prev"/></button>
         <button data-testid="reader-play" aria-label={read.playing ? '낭독 멈추기' : '낭독 시작'}
           disabled={!book || !pick || !!prep}
-          title={!book ? '먼저 책을 고르세요' : !pick ? '먼저 목소리를 고르세요' : read.playing ? '멈춥니다' : '이 자리부터 읽습니다'}
+          title={!book ? '먼저 책을 고르세요' : !pick ? '먼저 목소리를 고르세요' : prep ? '목소리를 준비하는 중입니다' : read.playing ? '멈춥니다' : '이 자리부터 읽습니다'}
           onClick={() => {
             if (read.playing) { read.stop(); return }
             // 고른 문단부터 읽는다 — '시작 위치' 와 '읽는 자리' 는 다른 것이다(인수인계 5항).
             read.seekToChar(charOfParagraph[position] ?? 0)
             read.start()
           }}
-          style={{ ...button, width: 46, height: 46, borderRadius: '50%', color: 'var(--accent-light)', background: 'var(--accent-glow)', cursor: (!book || !pick) ? 'not-allowed' : 'pointer' }}>
-          {read.playing ? '■' : '▶'}
+          style={{ ...kitButton, width: 46, height: 46, borderRadius: '50%', padding: 0, color: 'var(--accent-light)', background: 'var(--accent-glow)', cursor: (!book || !pick) ? 'not-allowed' : 'pointer' }}>
+          <Icon name={read.playing ? 'stop' : 'play'} size={20}/>
         </button>
-        <button style={button} aria-label="다음 문단" disabled={!book || position >= book.paragraphs.length - 1} title={!book ? '책을 먼저 여세요' : position >= book.paragraphs.length - 1 ? '마지막 문단입니다' : '다음 문단'} onClick={() => choosePosition(position + 1)}>›</button>
-        <button data-testid="reader-follow" aria-pressed={prefs.follow} title={prefs.follow ? '읽는 구절을 화면이 따라갑니다 — 누르면 멈춥니다' : '누르면 읽는 구절을 화면이 따라갑니다'}
-          onClick={() => updatePrefs({ follow: !prefs.follow })}
-          style={{ ...button, fontSize: 12, color: prefs.follow ? 'var(--cyan)' : 'var(--text-muted)', borderColor: prefs.follow ? 'var(--cyan)' : undefined }}>따라가기</button>
-        {/* ★듣는 빠르기 — 만든 소리를 다시 만들지 않고 빠르게/느리게 듣는다(2026-09-30 지시). 앱 전체가 같은 값. */}
-        <PlaybackRateSelect testId="reader-rate" />
+        <button style={iconButton} aria-label="다음 문단" disabled={!book || position >= book.paragraphs.length - 1} title={!book ? '책을 먼저 여세요' : position >= book.paragraphs.length - 1 ? '마지막 문단입니다' : '다음 문단'} onClick={() => choosePosition(position + 1)}><Icon name="next"/></button>
       </div>
-      <span data-testid="reader-state" style={{ flex: '1 1 140px', textAlign: 'right', fontSize: 12, color: read.fault ? 'var(--rose, #fb7185)' : 'var(--text-muted)' }}>
-        {read.fault || prep || read.wait || (book ? `${position + 1} / ${book.paragraphs.length} 문단` : '책을 선택하세요')}
-      </span>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, flexWrap: 'wrap', minWidth: 0 }}>
+        <span data-testid="reader-state" style={{ flex: '1 1 110px', textAlign: 'right', fontSize: 12, color: read.fault ? 'var(--rose, #fb7185)' : 'var(--text-muted)', overflowWrap: 'anywhere' }}>
+          {read.fault || prep || read.wait || (book ? progress : '책을 선택하세요')}
+        </span>
+        <button data-testid="reader-follow" aria-pressed={prefs.follow} title={prefs.follow ? '읽는 줄을 화면이 따라갑니다 — 누르면 멈춥니다' : '누르면 읽는 줄을 화면이 따라갑니다'}
+          onClick={() => updatePrefs({ follow: !prefs.follow })}
+          style={{ ...kitButton, color: prefs.follow ? 'var(--cyan)' : 'var(--text-muted)', borderColor: prefs.follow ? 'var(--cyan)' : undefined }}><Icon name="follow"/>따라가기</button>
+        {/* ★듣는 빠르기 — 만든 소리를 다시 만들지 않고 빠르게/느리게 듣는다(2026-09-30 지시). 낭독 전용. */}
+        <PlaybackRateSelect testId="reader-rate" />
+        <button ref={settingsButton} data-testid="reader-settings" aria-haspopup="dialog" aria-label="읽기 설정" title="읽기 설정 — 글자 크기 · 괄호 속 한자 · 따라가기"
+          onClick={() => setSettings(true)} style={iconButton}><Icon name="settings"/></button>
+      </div>
     </footer>
-    {settings && <div onKeyDown={e => {
-      if (e.key === 'Escape') closeSettings()
-      if (e.key === 'Tab') {
-        const buttons = Array.from(e.currentTarget.querySelectorAll<HTMLElement>('button, input'))
-        const first = buttons[0], last = buttons[buttons.length - 1]
-        if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus() }
-        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus() }
-      }
-    }} onClick={closeSettings} style={{ position: 'fixed', inset: 0, zIndex: 100, background: '#0009', display: 'grid', placeItems: 'center', padding: 20 }}>
-      <section role="dialog" aria-modal="true" aria-label="낭독 설정" onClick={e => e.stopPropagation()} style={{ ...panel, width: '100%', maxWidth: 420, padding: 22, maxHeight: 'calc(100vh - 40px)', overflowY: 'auto', overscrollBehavior: 'contain' }}>
-        <div style={{ display: 'flex', alignItems: 'center', marginBottom: 20 }}><h2 style={{ fontSize: 17, margin: 0 }}>낭독 설정</h2><button autoFocus aria-label="닫기" onClick={closeSettings} style={{ ...button, marginLeft: 'auto' }}>×</button></div>
-        {/* ★설치된 것만 보여 준다. 없는 목소리를 고르게 하면 눌러야 실패를 안다. */}
-        {builtins.map(b => {
-          const v: ReaderVoicePick = { kind: 'builtin', path: b.path, engineId: b.engineId, label: b.label }
-          const chosen = pick?.kind === 'builtin' && pick.path === b.path
-          return <div key={b.modelId} style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
-            <button data-testid="reader-voice-builtin" aria-pressed={chosen}
-              style={{ ...button, flex: 1, minWidth: 0, textAlign: 'left', borderColor: chosen ? 'var(--accent-light)' : undefined }}
-              onClick={() => {
-                useReader.setState({ voice: b.label, pick: v })
-                setSettings(false)
-              }}>{chosen ? '✓ ' : ''}{b.label}</button>
-            <button data-testid="reader-voice-try" style={{ ...button, flexShrink: 0 }} disabled={!!trying}
-              title="같은 문장으로 이 목소리를 들어 봅니다" onClick={() => { void trySample(v, b.modelId) }}>
-              {trying === b.modelId ? '만드는 중…' : '▶ 들어 보기'}</button>
-          </div>
-        })}
-        {tryNote && <span role="alert" style={{ display: 'block', fontSize: 12, color: 'var(--rose, #fb7185)', marginBottom: 10 }}>{tryNote}</span>}
-        {!builtins.length && <span style={{ display: 'block', fontSize: 12, color: 'var(--amber, #d4a017)', marginBottom: 10 }}>{voiceNote || '기본 목소리를 확인하는 중입니다'}</span>}
-        <button data-testid="reader-voice-file" style={{ ...button, width: '100%', textAlign: 'left' }}
-          title="가지고 있는 소리·영상의 목소리로 읽습니다. 기본 목소리보다 훨씬 느립니다 — 실측 4배."
-          onClick={() => { void pickVoiceFile() }}>＋ 음성·영상에서 목소리 선택</button>
-        <label style={{ display: 'grid', gap: 6, marginTop: 18, fontSize: 13 }}>
+    {picking && <VoicePicker close={() => setPicking(false)} builtins={builtins} why={voiceNote}
+      current={pick} onChoose={chooseBuiltin} onFile={() => { void pickVoiceFile() }}
+      recent={prefs.recentVoices}
+      onRecent={(r) => {
+        useReader.setState({ voice: r.label, pick: { kind: 'reference', path: r.path, label: r.label } })
+        updatePrefs({ recentVoices: rememberVoice(prefs.recentVoices, r) })
+      }}
+      confirmLabel="이 목소리로 읽기" fileLabel="음성·영상 파일에서 목소리 만들기" make={previewMaker} disabled={!!prep}
+      ids={{ chip: 'reader-voice-builtin', confirm: 'reader-voice-confirm', file: 'reader-voice-file', preview: 'reader-voice-try', recent: 'reader-voice-recent' }}/>}
+    {settings && <Modal title="읽기 설정" close={closeSettings}>
+      <div data-testid="reader-settings-dialog" style={{ display: 'grid', gap: 20 }}>
+        <label style={{ display: 'grid', gap: 6, fontSize: 13 }}>
           <span>글자 크기 <span style={{ color: 'var(--text-muted)' }}>{prefs.fontSize}px</span></span>
           <input data-testid="reader-font-size" type="range" min={READER_FONT_MIN} max={READER_FONT_MAX} step={1}
             value={prefs.fontSize} onChange={e => updatePrefs({ fontSize: Number(e.target.value) })} />
         </label>
-        <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', marginTop: 18, fontSize: 13, cursor: 'pointer' }}>
+        <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', fontSize: 13, cursor: 'pointer' }}>
           <input data-testid="reader-skip-hanja" type="checkbox" checked={prefs.skipHanjaInParens}
             onChange={e => updatePrefs({ skipHanjaInParens: e.target.checked })} style={{ marginTop: 3 }} />
           <span>괄호 속 한자는 읽지 않기
             <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>예: 학교(學校) → "학교" 만 읽습니다. 본문에는 그대로 보입니다.</span>
           </span>
         </label>
-      </section>
-    </div>}
-    {library && <div onKeyDown={e => { if (e.key === 'Escape') setLibrary(false) }} onClick={() => setLibrary(false)}
-      style={{ position: 'fixed', inset: 0, zIndex: 100, background: '#0009', display: 'grid', placeItems: 'center', padding: 20 }}>
-      <section role="dialog" aria-modal="true" aria-label="서재" data-testid="reader-library-dialog" onClick={e => e.stopPropagation()}
-        style={{ ...panel, width: '100%', maxWidth: 480, maxHeight: '80vh', display: 'flex', flexDirection: 'column', padding: 20 }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 14 }}>
-          <h2 style={{ fontSize: 17, margin: 0, flex: 1 }}>서재</h2>
-          <button style={button} disabled={loading} onClick={() => { setLibrary(false); void pickTexts() }}>＋ 텍스트 추가</button>
-          <button autoFocus aria-label="닫기" style={button} onClick={() => setLibrary(false)}>×</button>
-        </div>
+        <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', fontSize: 13, cursor: 'pointer' }}>
+          <input data-testid="reader-follow-setting" type="checkbox" checked={prefs.follow}
+            onChange={e => updatePrefs({ follow: e.target.checked })} style={{ marginTop: 3 }} />
+          <span>읽는 줄 따라가기
+            <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>소리가 읽는 줄을 본문 위쪽 3분의 1 자리에 두고, 줄이 바뀔 때마다 한 줄씩 올립니다. 직접 굴리면 3초 동안 쉽니다.</span>
+          </span>
+        </label>
+      </div>
+    </Modal>}
+    {library && <Modal title="서재" subtitle={books.length ? `${books.length}권` : undefined} close={() => setLibrary(false)}>
+      <div data-testid="reader-library-dialog" style={{ display: 'grid', gap: 10 }}>
+        <button style={{ ...kitButton, justifySelf: 'start' }} disabled={loading} onClick={() => { setLibrary(false); void pickTexts() }}><Icon name="plus"/>텍스트 추가</button>
         {!books.length && <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>아직 불러온 책이 없습니다. 끌어 놓거나 '텍스트 추가' 로 가져오세요.</span>}
-        <div style={{ overflowY: 'auto', display: 'flex', flexDirection: 'column', gap: 6 }}>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           {books.map((b, i) => <div key={b.id} style={{ display: 'flex', gap: 4, borderRadius: 9, background: active === b.id ? 'var(--accent-glow)' : 'transparent' }}>
             <button data-testid="reader-library-book" onClick={() => { useReader.setState({ active: b.id }); setLibrary(false) }} aria-current={active === b.id ? 'true' : undefined}
               style={{ ...button, flex: 1, minWidth: 0, textAlign: 'left', background: 'transparent', border: 'none', whiteSpace: 'normal', overflowWrap: 'anywhere' }}>
@@ -588,10 +646,10 @@ export default function ReaderWorkspace() {
               <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginTop: 5 }}>{b.position + 1} / {b.paragraphs.length} 문단</span>
             </button>
             <button aria-label={`${b.name} 목록에서 빼기`} title="목록에서 빼기 · 원본 파일은 유지" onClick={() => removeBook(b.id)}
-              style={{ ...button, padding: 6, background: 'transparent', border: 'none', alignSelf: 'flex-start' }}>×</button>
+              style={{ ...iconButton, background: 'transparent', border: 'none', alignSelf: 'flex-start' }}><Icon name="close"/></button>
           </div>)}
         </div>
-      </section>
-    </div>}
+      </div>
+    </Modal>}
   </section>
 }

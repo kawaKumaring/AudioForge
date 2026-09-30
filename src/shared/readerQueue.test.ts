@@ -84,7 +84,17 @@ test('★만드는 중인 것은 건드리지 않는다 — 결과가 갈 곳을
   let q = markMaking(q0(10), 0)
   q = seek(q, 5)
   assert.equal(q.items[0].state, 'making', '돌고 있는 작업의 자리를 지웠다')
-  assert.equal(nextToMake(q), -1, '이미 하나가 돌고 있는데 또 만들려 한다')
+  // ★옮겨 간 **지금 자리**는 기다리지 않는다(2026-10-01 — 쌓아 둔 소리도 뒤 덩이를 기다려 2.8초 멈췄다).
+  //   본체 줄이 한 번에 하나만 만들므로 함께 물어도 파이썬은 하나다.
+  assert.equal(nextToMake(q), 5, '지금 자리가 앞서 만들기 뒤에서 기다린다')
+  q = markMaking(q, 5)
+  assert.equal(nextToMake(q), -1, '지금 자리까지 만드는 중인데 또 만들려 한다')
+})
+
+test('★앞서 만들기는 여전히 한 번에 하나 — 지금 자리가 아닌 것은 기다린다', () => {
+  let q = markReady(q0(10), 0, 'a.wav')
+  q = markMaking(q, 1)
+  assert.equal(nextToMake(q), -1, '지금 자리는 준비됐는데 앞서 만들기를 둘 보낸다')
 })
 
 test('자리를 범위 밖으로 옮겨도 무너지지 않는다', () => {

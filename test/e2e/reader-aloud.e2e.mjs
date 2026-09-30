@@ -12,6 +12,7 @@
 //   7) 글과 목소리 파일을 **실제 단추로** 고르고, 불러온 폴더를 **각자** 기억한다
 //      (목소리를 바꾸면 만들어 둔 것을 버리는 규칙은 `readerQueue.test.ts` 가 지킨다)
 //   8) 읽는 **구절**을 칠하고 화면 안에 둔다 · 따라가기·괄호 속 한자 설정이 껐다 켜도 남는다
+//   9) (2026-10-01) 목소리는 **묶음 칩**으로 고르고 확정한다 · 칠하는 구절이 한 덩이 안에서도 **소리를 따라 옮겨 간다**
 //
 // 실행: node test/e2e/reader-aloud.e2e.mjs   (사전: npm run build. GPU 불필요)
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
@@ -95,12 +96,17 @@ try {
   ok(savedSetting('lastDir') === undefined, '글을 고른 것이 음원 기억을 덮지 않는다', savedSetting('lastDir'))
 
   // ── 2. 목소리는 본체가 확인한 것만 ────────────────────────────────────
-  await win.getByTestId('reader-settings').click()
-  await win.getByRole('dialog', { name: '낭독 설정' }).waitFor()
+  await win.getByTestId('reader-voice').click()
+  await win.getByRole('dialog', { name: '목소리 고르기' }).waitFor()
   const listedInUi = await win.getByTestId('reader-voice-builtin').count()
   ok(listedInUi === voices.length,
     '★설치된 목소리만 고를 수 있다 — 없는 것을 고르게 하지 않는다', { listedInUi, real: voices.length })
+  // ★묶음으로 보인다 — 칩마다 엔진 이름을 되풀이하지 않는다(2026-10-01 신고: 목소리가 길게 나열돼 보기 좋지 않다).
+  const chipTexts = await win.getByTestId('reader-voice-builtin').allInnerTexts()
+  ok(chipTexts.every((t) => !/Supertonic|Qwen/.test(t)), '★칩에 엔진 이름을 되풀이하지 않는다', chipTexts)
   await win.getByTestId('reader-voice-builtin').first().click()
+  await win.getByTestId('reader-voice-confirm').click()
+  ok(await win.getByRole('dialog', { name: '목소리 고르기' }).count() === 0, '확정하면 고르기 창이 닫힌다')
 
   // ── 3. 실제로 읽는다 ──────────────────────────────────────────────────
   await win.evaluate(eval(installAudioProbe))
@@ -129,9 +135,23 @@ try {
     return { n: els.length, text: els.map((e) => e.textContent).join(''),
       inView: !!r && r.bottom > 0 && r.top < window.innerHeight }
   })
-  ok(phrase.n >= 1 && phrase.text.length > 10 && BOOK.includes(phrase.text.slice(0, 10)),
+  ok(phrase.n >= 1 && phrase.text.length >= 2 && BOOK.includes(phrase.text),
     '★지금 읽는 구절을 칠한다', { n: phrase.n, len: phrase.text.length })
   ok(phrase.inView, '★읽는 구절이 화면 안에 있다 — 따라간다', phrase)
+  // ★칠하는 구절이 **한 덩이 안에서도** 소리를 따라 옮겨 간다 (2026-10-01 신고: "생성된 음원의 처음에 서 있다가
+  //   다음 음원의 처음 부분에 쭉 서 있다"). 예전에는 덩이 전체를 칠해 덩이가 끝날 때까지 그대로였다.
+  const phraseNow = () => win.evaluate(() => ({
+    text: [...document.querySelectorAll('[data-testid="reader-phrase"]')].map((e) => e.textContent).join(''),
+    plays: (window.__plays || []).length }))
+  const seenPhrases = new Set([phrase.text])
+  const playsAtPhrase = (await phraseNow()).plays
+  for (let k = 0; k < 40 && seenPhrases.size < 2; k++) {
+    await win.waitForTimeout(150)
+    const p = await phraseNow()
+    if (p.plays !== playsAtPhrase) break                 // 다음 덩이로 넘어갔다 — 그 전에 옮겨 갔어야 한다
+    if (p.text) seenPhrases.add(p.text)
+  }
+  ok(seenPhrases.size >= 2, '★한 덩이 안에서 칠하는 구절이 소리를 따라 옮겨 간다', [...seenPhrases].map((t) => t.length))
 
   // ── 5. 손대지 않아도 다음으로 넘어간다 ────────────────────────────────
   const wentOn = await win.waitForFunction(() => (window.__plays || []).length >= 2, null, { timeout: 300000 })
@@ -184,17 +204,18 @@ try {
   //   여기서는 실제 단추로 목소리 파일을 고르는 길을 본다. 재생은 하지 않는다 —
   //   참조 목소리 합성은 GPU 로 수십 초가 들고, 이 검사가 보려는 것이 아니다.
   // ★들어 보기 — 같은 책 문장으로 목소리를 하나씩 들어 보고 고른다(2026-09-30 지시).
-  await win.getByTestId('reader-settings').click()
-  await win.getByRole('dialog', { name: '낭독 설정' }).waitFor()
+  await win.getByTestId('reader-voice').click()
+  await win.getByRole('dialog', { name: '목소리 고르기' }).waitFor()
   const playsBeforeTry = await win.evaluate(() => (window.__plays || []).length)
-  await win.getByTestId('reader-voice-try').first().click()
+  await win.getByTestId('reader-voice-builtin').nth(1).click()
+  await win.getByTestId('reader-voice-try').click()
   const tried = await win.waitForFunction((n) => (window.__plays || []).length > n, playsBeforeTry, { timeout: 60000 }).then(() => true).catch(() => false)
-  ok(tried, '★목소리마다 들어 보기로 실제 소리가 난다')
-  ok(await win.getByRole('dialog', { name: '낭독 설정' }).count() === 1, '들어 봐도 설정 창은 그대로다 — 이어서 고른다')
+  ok(tried, '★고른 목소리를 들어 보기로 실제 소리가 난다')
+  ok(await win.getByRole('dialog', { name: '목소리 고르기' }).count() === 1, '들어 봐도 고르기 창은 그대로다 — 이어서 고른다')
   await win.evaluate((p) => window.api.audio.e2eSetSelectFile(p), VOICE_PATH)
   await win.getByTestId('reader-voice-file').click()
   const picked = await win.waitForFunction(() =>
-    (document.querySelector('[data-testid="reader-settings"]')?.textContent || '').includes('참조.wav'),
+    (document.querySelector('[data-testid="reader-voice"]')?.textContent || '').includes('참조.wav'),
   null, { timeout: 120000 }).then(() => true).catch(() => false)
   ok(picked, '★고른 목소리 파일로 바뀐다 — 준비를 거친 뒤')
   const logText = () => fs.readdirSync(path.join(UD, 'logs')).map((n) => fs.readFileSync(path.join(UD, 'logs', n), 'utf-8')).join('')
@@ -203,16 +224,25 @@ try {
 
   // ★긴 파일은 **구간을 잘라** 쓴다 — 원본 전체를 받아 적어 따라 하면 모델이 끝맺지 못했다(2026-09-30 사용자 로그).
   await win.evaluate((p) => window.api.audio.e2eSetSelectFile(p), LONG_VOICE_PATH)
-  await win.getByTestId('reader-settings').click()
-  await win.getByRole('dialog', { name: '낭독 설정' }).waitFor()
+  await win.getByTestId('reader-voice').click()
+  await win.getByRole('dialog', { name: '목소리 고르기' }).waitFor()
   await win.getByTestId('reader-voice-file').click()
   const pickedLong = await win.waitForFunction(() =>
-    (document.querySelector('[data-testid="reader-settings"]')?.textContent || '').includes('긴참조.wav'),
+    (document.querySelector('[data-testid="reader-voice"]')?.textContent || '').includes('긴참조.wav'),
   null, { timeout: 120000 }).then(() => true).catch(() => false)
   ok(pickedLong && /참조 목소리 준비됨 — 긴참조\.wav · 구간을 잘라 씀/.test(logText()),
     '★긴 파일은 구간을 잘라 쓴다 — 원본 전체를 넘기지 않는다', logText().split('\n').filter((l) => /참조 목소리/.test(l)).slice(-2))
   ok(savedSetting('lastVoiceDir') === VOICE_DIR, '★목소리를 불러온 폴더를 기억한다', savedSetting('lastVoiceDir'))
   ok(savedSetting('lastTextDir') === TEXT_DIR, '목소리를 고른 것이 글 기억을 덮지 않는다', savedSetting('lastTextDir'))
+  // ★전에 쓴 목소리 파일은 고르기 창에 남는다 — 다시 고를 때 준비를 되풀이하지 않는다(2026-10-01).
+  await win.getByTestId('reader-voice').click()
+  await win.getByRole('dialog', { name: '목소리 고르기' }).waitFor()
+  const recentTexts = await win.getByTestId('reader-voice-recent').allInnerTexts()
+  ok(recentTexts.length === 2 && recentTexts[0].includes('긴참조.wav') && recentTexts[1].includes('참조.wav'),
+    '★전에 쓴 목소리 파일이 최근 것부터 남는다', recentTexts)
+  await win.getByTestId('reader-voice-recent').nth(1).click()
+  ok((await win.getByTestId('reader-voice').innerText()).includes('참조.wav') && !(await win.getByTestId('reader-voice').innerText()).includes('긴참조'),
+    '★최근 목소리를 누르면 준비 없이 곧바로 바뀐다', await win.getByTestId('reader-voice').innerText())
   const cleared = await win.evaluate(() => window.api.reader.clearCache())
   ok(cleared.removed >= 1, '★쌓아 둔 낭독 조각을 비울 수 있다', cleared)
   ok(fs.readdirSync(madeDir).filter((f) => f.endsWith('.wav')).length === 0, '실제로 비워졌다')
@@ -226,7 +256,8 @@ try {
   ok(await win.getByTestId('reader-follow').getAttribute('aria-pressed') === 'true', '따라가기는 처음에 켜져 있다')
   await win.getByTestId('reader-follow').click()
   await win.getByTestId('reader-settings').click()
-  await win.getByRole('dialog', { name: '낭독 설정' }).waitFor()
+  await win.getByRole('dialog', { name: '읽기 설정' }).waitFor()
+  ok(await win.getByTestId('reader-voice-builtin').count() === 0, '★읽기 설정에는 목소리 목록이 섞이지 않는다(2026-10-01 — 한 창에 섞여 있었다)')
   ok(!(await win.getByTestId('reader-skip-hanja').isChecked()), '괄호 속 한자 건너뛰기는 처음에 꺼져 있다')
   await win.getByTestId('reader-skip-hanja').check()
   await win.keyboard.press('Escape')
@@ -253,7 +284,7 @@ try {
     null, { timeout: 5000 }).catch(() => {})
   ok(await win2.getByTestId('reader-follow').getAttribute('aria-pressed') === 'false', '★껐다 켜도 따라가기 설정이 남는다')
   await win2.getByTestId('reader-settings').click()
-  await win2.getByRole('dialog', { name: '낭독 설정' }).waitFor()
+  await win2.getByRole('dialog', { name: '읽기 설정' }).waitFor()
   ok(await win2.getByTestId('reader-skip-hanja').isChecked(), '★껐다 켜도 괄호 속 한자 설정이 남는다')
   await win2.keyboard.press('Escape')
 

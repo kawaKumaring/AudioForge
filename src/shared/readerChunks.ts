@@ -33,6 +33,16 @@ export const MAX_SECONDS = 35
  */
 export const TEXT_FILE_LIMIT = 10 * 1024 * 1024
 
+/**
+ * **읽기 시작한 자리의 첫 덩이들은 짧게**(초) — 누르고 첫 소리까지의 기다림을 줄인다 (2026-10-01 지시:
+ * "생성 속도를 늘리고, 읽어 주는 동안에도 실시간으로 만들어 끊이지 않게").
+ * ★첫 덩이가 20초 분량이면 그만큼 다 만들어야 첫 소리가 났다(기본 목소리 약 4.8초). 4초 분량이면 1초 남짓이다.
+ *   그 소리를 듣는 동안 다음(9초)을, 그 동안 보통 덩이를 만든다 — 앞선 것이 늘 듣는 속도보다 먼저 준비된다.
+ * ★상주 실행기로 조각마다의 고정비(파이썬 기동·모델 열기)가 사라져서 짧은 덩이도 손해가 아니다.
+ * 덩이 i(시작 자리부터)의 최소 분량이 RAMP[i], 최대가 그 두 배. 그 뒤는 보통 규칙(MIN~MAX).
+ */
+export const START_RAMP_SECONDS = [4, 9]
+
 const toChars = (sec: number) => Math.round(sec * CHARS_PER_SECOND)
 
 export interface Chunk {
@@ -83,21 +93,30 @@ export function splitForReading(raw: string, opts: {
    *   40번째를 골랐는데 39번째부터). 짧은 문단을 묶는 이점은 그대로 두고, 이 한 자리만 경계로 세운다.
    */
   breakAt?: number
+  /** 첫 덩이들을 짧게(초) — 읽기 시작한 자리(breakAt, 없으면 처음)부터. 없으면 모두 보통 크기. */
+  ramp?: readonly number[]
 } = {}): Chunk[] {
   const text = String(raw ?? '')
   if (!text.trim()) return []
   const at = Math.floor(opts.breakAt ?? 0)
   if (at > 0 && at < text.length) {
-    const { breakAt: _drop, ...rest } = opts
+    const { breakAt: _drop, ramp, ...rest } = opts
     void _drop
+    // 앞쪽(읽기 시작한 자리 앞)은 보통 크기로 — 짧게 하는 것은 **시작하는 자리**뿐이다.
     const head = splitForReading(text.slice(0, at), rest)
-    const tail = splitForReading(text.slice(at), rest)
+    const tail = splitForReading(text.slice(at), { ...rest, ramp })
       .map((c) => ({ ...c, start: c.start + at, end: c.end + at }))
     return [...head, ...tail]
   }
   const target = toChars(opts.target ?? TARGET_SECONDS)
-  const min = toChars(opts.min ?? MIN_SECONDS)
-  const max = toChars(opts.max ?? MAX_SECONDS)
+  const baseMin = toChars(opts.min ?? MIN_SECONDS)
+  const baseMax = toChars(opts.max ?? MAX_SECONDS)
+  const ramp = opts.ramp || []
+  let min = baseMin, max = baseMax
+  const sizeFor = (c: number) => {
+    if (c < ramp.length) { min = toChars(ramp[c]); max = toChars(ramp[c] * 2) } else { min = baseMin; max = baseMax }
+  }
+  sizeFor(0)
 
   const out: Chunk[] = []
   let from = 0                 // 지금 덩이가 시작한 원문 자리
@@ -115,6 +134,7 @@ export function splitForReading(raw: string, opts: {
         end: to - tail,
         seconds: +(body.length / CHARS_PER_SECOND).toFixed(1),
       })
+      sizeFor(out.length)
     }
     from = to
   }

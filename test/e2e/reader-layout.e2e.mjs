@@ -80,7 +80,7 @@ try {
   const fs0 = await win.getByTestId('reader-paragraph').first().evaluate((e) => getComputedStyle(e).fontSize)
   ok(fs0 === '16px', '★처음 글자 크기는 16 — 예전 19 는 크다는 지시', fs0)
   await win.getByTestId('reader-settings').click()
-  await win.getByRole('dialog', { name: '낭독 설정' }).waitFor()
+  await win.getByRole('dialog', { name: '읽기 설정' }).waitFor()
   await win.getByTestId('reader-font-size').fill('20')
   await win.keyboard.press('Escape')
   await win.waitForTimeout(500)
@@ -117,17 +117,33 @@ try {
   ok(/^40번째/.test(onStart.phraseText), '고른 자리부터 읽는다', onStart.phraseText)
   ok(onStart.pageTop === away.pageTop && onStart.barVisible, '★따라가도 바깥 페이지·작동 막대는 그대로다', { away, onStart })
 
-  // 읽는 도중 본문을 다른 곳으로 굴려 두면, 다음 덩이로 넘어갈 때 다시 데려온다.
-  const firstAt = onStart.phraseText
+  // ★읽는 **줄**을 따라간다 (2026-10-01 신고: 덩이 처음에 서 있다가 다음 덩이 처음으로 뛰었다).
+  //   한 덩이(여러 문단) 안에서도 칠하는 구절이 옮겨 가고, 본문 칸이 그 줄을 따라 굴러가며, 구절은 늘 칸 안에 있다.
+  //   ★칠하기는 **소리가 날 때부터** — 만드는 동안에는 칠하지 않는다(예전엔 만드는 약 4초 동안에도 '읽는 중' 으로 칠했다).
+  const samples = []
+  for (let k = 0; k < 40; k++) { await win.waitForTimeout(250); samples.push(await where(win)) }
+  const texts = new Set(samples.map((s) => s.phraseText).filter(Boolean))
+  const tops = new Set(samples.map((s) => s.boxTop))
+  const inBox = samples.filter((s) => s.phraseText).every((s) => s.phraseInBox)
+  ok(texts.size >= 3, '★10초 동안 칠하는 구절이 소리를 따라 여러 번 옮겨 간다', [...texts].map((t) => t.slice(0, 8)))
+  ok(tops.size >= 2, '★본문 칸이 읽는 줄을 따라 굴러간다(덩이가 끝나기를 기다리지 않는다)', [...tops])
+  ok(inBox, '★읽는 구절이 늘 본문 칸 안에 있다', samples.filter((s) => !s.phraseInBox).slice(0, 2))
+
+  // 읽는 도중 본문을 다른 곳으로 굴려 두면(프로그램으로 — 사람 손이 아니다) 곧 다시 데려온다.
   await win.evaluate(() => { document.querySelector('[data-testid="reader-body"]').scrollTop = 0 })
-  const next = await win.waitForFunction((t) => {
-    const m = document.querySelector('[data-testid="reader-phrase"]')
-    return !!m && !(m.textContent || '').startsWith(t)
-  }, firstAt, { timeout: 90000 }).then(() => true).catch(() => false)
   await win.waitForTimeout(1200)                                  // 부드럽게 굴러오는 시간
   const onNext = await where(win)
-  ok(next, '다음 덩이로 넘어간다', onNext.phraseText)
-  ok(onNext.phraseInBox, '★덩이가 넘어가면 다시 따라간다 — 사용자가 굴려 둔 뒤에도', onNext)
+  ok(onNext.phraseInBox, '★굴려 둔 뒤에도 다시 따라간다', onNext)
+  // ★사람이 휠로 굴리면 **3초 동안** 끌어당기지 않는다 — 앞뒤를 둘러보는 중이다. 그 뒤에는 다시 따라간다.
+  const bb = await win.getByTestId('reader-body').boundingBox()
+  await win.mouse.move(bb.x + bb.width / 2, bb.y + bb.height / 2)
+  for (let i = 0; i < 8; i++) await win.mouse.wheel(0, -900)
+  await win.waitForTimeout(900)
+  const looking = await where(win)
+  ok(!looking.phraseInBox, '★휠로 둘러보는 동안에는 끌어당기지 않는다', looking)
+  await win.waitForTimeout(3600)
+  const resumed = await where(win)
+  ok(resumed.phraseInBox, '★3초 뒤에는 다시 따라간다', resumed)
   await win.getByTestId('reader-play').click()
 
   // 따라가기를 끄면 그대로 둔다

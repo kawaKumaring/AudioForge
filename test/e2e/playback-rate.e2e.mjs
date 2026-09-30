@@ -99,6 +99,7 @@ try {
   await win.getByTestId('add-generation-card').first().click()
   await win.getByRole('dialog', { name: '목소리 고르기' }).waitFor()
   await win.getByTestId('pick-voice-builtin').first().click()
+  await win.getByTestId('pick-voice-confirm').click()
   await win.getByTestId('generation-card').first().waitFor()
   // ★낭독 전용(2026-10-01 지시) — 생성 카드 화면에는 빠르기 고르기가 없고, 낭독에서 고른 0.75배가 새지 않는다.
   ok(await win.locator('[data-testid="card-rate"], [data-testid="playback-rate"]').count() === 0, '★생성 카드 화면에는 빠르기 고르기가 없다(낭독 전용)')

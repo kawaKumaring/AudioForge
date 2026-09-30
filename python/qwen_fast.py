@@ -161,8 +161,206 @@ def _graph_generate(self, inputs_embeds=None, max_new_tokens=None, do_sample=Non
                           top_p=top_p, top_k=top_k, temperature=temperature, **kw)
 
 
+# ── ③ 본 모델(28층)의 한 걸음도 기록해 두고 다시 틀기 (2026-10-01) ─────────────────────────
+# ★왜 (실측 · 소희 15.3초 분량): 보조 모델을 묶은 뒤 남은 시간의 77% 가 본 모델 한 걸음(조각당 66ms)이었다.
+#   폭 1024 · 28층 모델에 글자 하나 넣는 계산은 1~2ms 거리다 — 나머지는 층마다 파이썬·틀(가림판 만들기·위치 계산)이
+#   도는 **부르는 비용**이다. 보조 모델에서 쓴 방법을 그대로 쓴다: 고정 크기 기억(StaticCache)에 한 걸음을 기록해 두고 다시 튼다.
+# ★무엇을 기록하나: 본 모델(talker.model)의 **이어 쓰기 한 걸음**만. 첫 읽기(prefill)·값 뽑기·보조 모델은 기록 밖이다.
+#   가림판은 우리가 [1,1,1,L] 모양으로 만들어 넣는다(4차원 가림판은 틀이 그대로 쓴다 — transformers 4.57 masking_utils).
+# ★값 뽑기는 transformers `_sample` 과 **같은 규칙·같은 순서**다: float32 → 반복 벌점 → 최소 길이(끝 표시 막기) → 막은 값 →
+#   temperature → 상위 k → (상위 p) → softmax → multinomial. 뽑는 차례(본 모델 1 → 보조 모델 15)도 같아 무작위 흐름이 같다.
+# ★비트까지 같지는 않다(고정 기억은 빈 칸을 가린 채 L 칸으로 주의를 계산한다) — 받아 적기·길이로 따로 확인한다.
+# ★하나씩(배치 1)·GPU 일 때만 쓴다. 기록에 실패하면 원래 generate 로 돌아간다. 끄기: AUDIOFORGE_QWEN_TALKER_GRAPH=0.
+# ★기억 칸 수 L = 첫 읽기 길이 + TALKER_MAX_FRAMES. 조각(약 164초 분량)을 넘겨 말을 잇는 폭주는 거기서 멈춘다 —
+#   원래 상한 8192 조각(약 11분)은 낭독 한 덩이(최대 약 35초)에 쓸모가 없다.
+TALKER_MAX_FRAMES = 2048
+
+
+class _TalkerOut:
+    __slots__ = ("hidden_states", "sequences")
+
+    def __init__(self, hidden_states, sequences):
+        self.hidden_states = hidden_states
+        self.sequences = sequences
+
+
+class _TalkerStepGraph:
+    """본 모델의 이어 쓰기 한 걸음 — 입력은 고정 자리(emb·pos·cpos·mask)에 복사하고 기록을 다시 튼다."""
+
+    def __init__(self, model, cache, hidden, dtype, device, max_len):
+        import torch
+        self.model = model
+        self.cache = cache
+        self.emb = torch.zeros((1, 1, hidden), dtype=dtype, device=device)
+        self.pos = torch.zeros((3, 1, 1), dtype=torch.long, device=device)
+        self.cpos = torch.zeros((1,), dtype=torch.long, device=device)
+        self.mask = torch.zeros((1, 1, 1, max_len), dtype=torch.bool, device=device)
+        self.graph = None
+        self.out = None
+
+    def _run(self):
+        return self.model._af_orig_forward(inputs_embeds=self.emb, attention_mask=self.mask, position_ids=self.pos,
+                                           past_key_values=self.cache, use_cache=True, cache_position=self.cpos)
+
+    def load(self, inputs_embeds, position_ids, cache_position, attention_mask_2d):
+        self.emb.copy_(inputs_embeds)
+        self.pos.copy_(position_ids)
+        self.cpos.copy_(cache_position)
+        n = attention_mask_2d.shape[1]
+        self.mask.zero_()
+        self.mask[:, 0, 0, :n] = attention_mask_2d.to(torch_bool())
+
+    def capture(self):
+        import torch
+        side = torch.cuda.Stream()
+        side.wait_stream(torch.cuda.current_stream())
+        with torch.cuda.stream(side):
+            for _ in range(2):                  # 데우기 — 지금 걸음 자리에 같은 값을 쓴다(뒤이어 다시 쓴다)
+                self._run()
+        torch.cuda.current_stream().wait_stream(side)
+        g = torch.cuda.CUDAGraph()
+        with torch.cuda.graph(g):
+            out = self._run()
+        self.graph = g
+        self.out = out.last_hidden_state
+
+    def step(self):
+        self.graph.replay()
+        return self.out
+
+
+def torch_bool():
+    import torch
+    return torch.bool
+
+
+def _talker_scores(logits, gen, n_new, rp, min_new, eos, suppress):
+    """본 모델 점수 → 뽑기 전 점수(transformers 처리기와 같은 차례). gen: 지금까지 뽑은 첫 값들 [1, n]."""
+    import torch
+    scores = logits.to(dtype=torch.float32)
+    if rp is not None and float(rp) != 1.0 and n_new > 0:
+        s = torch.gather(scores, 1, gen)
+        s = torch.where(s < 0, s * float(rp), s / float(rp))
+        scores = scores.scatter(1, gen, s)
+    if min_new is not None and n_new < int(min_new) and eos is not None:
+        scores = scores.clone()
+        scores[:, eos] = float("-inf")
+    if suppress is not None:
+        scores = scores.clone()
+        scores[:, suppress] = float("-inf")
+    return scores
+
+
+def _talker_generate(self, inputs_embeds=None, attention_mask=None, trailing_text_hidden=None, tts_pad_embed=None,
+                     max_new_tokens=None, min_new_tokens=None, do_sample=None, top_k=None, top_p=None, temperature=None,
+                     eos_token_id=None, repetition_penalty=None, suppress_tokens=None, subtalker_dosample=None,
+                     subtalker_top_k=None, subtalker_top_p=None, subtalker_temperature=None,
+                     output_hidden_states=True, return_dict_in_generate=True, **kw):
+    import sys
+    import torch
+    from transformers.cache_utils import StaticCache
+    orig = lambda: self._af_orig_generate(  # noqa: E731
+        inputs_embeds=inputs_embeds, attention_mask=attention_mask, trailing_text_hidden=trailing_text_hidden,
+        tts_pad_embed=tts_pad_embed, max_new_tokens=max_new_tokens, min_new_tokens=min_new_tokens, do_sample=do_sample,
+        top_k=top_k, top_p=top_p, temperature=temperature, eos_token_id=eos_token_id,
+        repetition_penalty=repetition_penalty, suppress_tokens=suppress_tokens, subtalker_dosample=subtalker_dosample,
+        subtalker_top_k=subtalker_top_k, subtalker_top_p=subtalker_top_p, subtalker_temperature=subtalker_temperature,
+        output_hidden_states=output_hidden_states, return_dict_in_generate=return_dict_in_generate, **kw)
+    if (inputs_embeds is None or not inputs_embeds.is_cuda or inputs_embeds.shape[0] != 1 or kw
+            or getattr(self, "_af_talker_failed", False) or attention_mask is None):
+        return orig()
+    g = self.generation_config
+    do_sample = g.do_sample if do_sample is None else do_sample
+    top_k = g.top_k if top_k is None else top_k
+    top_p = g.top_p if top_p is None else top_p
+    temperature = g.temperature if temperature is None else temperature
+    rp = g.repetition_penalty if repetition_penalty is None else repetition_penalty
+    eos = g.eos_token_id if eos_token_id is None else eos_token_id
+    eos = eos[0] if isinstance(eos, (list, tuple)) else eos
+    limit = min(int(max_new_tokens or g.max_new_tokens or TALKER_MAX_FRAMES), TALKER_MAX_FRAMES)
+    dev = inputs_embeds.device
+    suppress = torch.tensor(list(suppress_tokens), device=dev, dtype=torch.long) if suppress_tokens else None
+    P = inputs_embeds.shape[1]
+    # ★기억 칸 수를 256 단위로 올려 잡는다 — 조각마다 첫 읽기 길이가 달라도 같은 기록을 다시 쓴다.
+    #   (처음엔 부를 때마다 새로 기록해 짧은 글에서 1.2배에 그쳤다 — 기록 비용이 매번 들었다. 2026-10-01 실측.)
+    L = ((P + 255) // 256) * 256 + TALKER_MAX_FRAMES
+    sub = dict(subtalker_dosample=subtalker_dosample, subtalker_top_k=subtalker_top_k,
+               subtalker_top_p=subtalker_top_p, subtalker_temperature=subtalker_temperature)
+    try:
+        states = self.__dict__.setdefault("_af_talker_states", {})
+        key = (L, inputs_embeds.dtype, inputs_embeds.shape[2])
+        if key in states:
+            cache, runner = states[key]
+            cache.reset()                       # 앞 조각의 기억을 비운다(칸과 기록은 그대로)
+        else:
+            while len(states) >= 3:             # 그래픽카드 메모리 — 크기 셋까지만 들고 있는다(하나 약 260MB)
+                states.pop(next(iter(states)))
+            cache = StaticCache(config=self.config, max_cache_len=L)
+            runner = _TalkerStepGraph(self.model, cache, inputs_embeds.shape[2], inputs_embeds.dtype, dev, L)
+            states[key] = (cache, runner)
+    except Exception as e:
+        self._af_talker_failed = True
+        sys.stderr.write("[qwen_fast] 본 모델 묶어 실행 준비 실패 — 원래대로: %s: %s\n" % (type(e).__name__, str(e)[:200]))
+        return orig()
+
+    def graphed_forward(inputs_embeds=None, attention_mask=None, position_ids=None, past_key_values=None,
+                        use_cache=None, cache_position=None, **fk):
+        from transformers.modeling_outputs import BaseModelOutputWithPast
+        if past_key_values is not cache or inputs_embeds is None or inputs_embeds.shape[1] != 1:
+            return self.model._af_orig_forward(inputs_embeds=inputs_embeds, attention_mask=attention_mask,
+                                               position_ids=position_ids, past_key_values=past_key_values,
+                                               use_cache=use_cache, cache_position=cache_position, **fk)
+        runner.load(inputs_embeds, position_ids, cache_position, attention_mask)
+        if runner.graph is None:
+            runner.capture()
+        # ★복사해서 돌려준다 — 기록의 출력 자리는 다음 걸음이 덮어쓴다(그대로 주면 모아 둔 걸음들이 모두 마지막 값이 된다).
+        return BaseModelOutputWithPast(last_hidden_state=runner.step().clone(), past_key_values=cache)
+
+    hidden_list = []
+    tokens = []
+    with torch.no_grad():
+        self.model._af_orig_forward = self.model.forward
+        self.model.forward = graphed_forward
+        try:
+            am = attention_mask
+            # ★첫 읽기는 **원래 길(늘어나는 기억)** 로 한다 — 고정 기억으로 읽으면 첫 숨은 값부터 조금 달라져(0.5/99)
+            #   받아 적기 오류가 16개 중 둘에서 13~15% 로 뛰었다(2026-10-01 실측). 읽은 기억은 고정 기억으로 옮겨 이어 쓴다.
+            from transformers.cache_utils import DynamicCache
+            dyn = DynamicCache()
+            pos = torch.arange(P, device=dev)
+            out = self(inputs_embeds=inputs_embeds, attention_mask=am, past_key_values=dyn, use_cache=True,
+                       cache_position=pos, trailing_text_hidden=trailing_text_hidden,
+                       tts_pad_embed=tts_pad_embed, **sub)
+            for li, layer in enumerate(dyn.layers):
+                cache.update(layer.keys, layer.values, li, {"cache_position": pos})
+            del dyn
+            gen = torch.zeros((1, 0), dtype=torch.long, device=dev)
+            for i in range(limit):
+                hidden_list.append(((out.past_hidden,), out.hidden_states[1]))
+                scores = _talker_scores(out.logits[:, -1, :], gen, i, rp, min_new_tokens, eos, suppress)
+                tok = _pick(scores, do_sample, top_k, top_p, temperature)
+                gen = torch.cat([gen, tok[:, None]], dim=1)
+                tokens.append(tok)
+                if int(tok[0]) == int(eos) or i == limit - 1:
+                    break
+                am = torch.cat([am, am.new_ones((1, 1))], dim=1)
+                out = self(input_ids=tok[:, None], attention_mask=am, past_key_values=cache, use_cache=True,
+                           cache_position=torch.tensor([P + i], device=dev), past_hidden=out.past_hidden,
+                           generation_step=out.generation_step, trailing_text_hidden=out.trailing_text_hidden,
+                           tts_pad_embed=out.tts_pad_embed, **sub)
+        except Exception as e:
+            self.model.forward = self.model._af_orig_forward
+            self._af_talker_failed = True
+            sys.stderr.write("[qwen_fast] 본 모델 묶어 실행을 쓰지 못해 원래대로 다시 만듭니다: %s: %s\n"
+                             % (type(e).__name__, str(e)[:200]))
+            return orig()
+        finally:
+            self.model.forward = self.model._af_orig_forward
+    return _TalkerOut(hidden_list, torch.stack(tokens, dim=1) if tokens else None)
+
+
 def apply(model):
-    """불러온 Qwen3TTSModel(또는 그 안의 .model)의 보조 모델 generate 를 바꿔 끼운다. 바꿨으면 어떤 방식인지('graph'·'loop'), 아니면 None."""
+    """불러온 Qwen3TTSModel(또는 그 안의 .model)의 generate 를 바꿔 끼운다. 바꿨으면 어떤 방식인지('graph+talker'·'graph'·'loop'), 아니면 None."""
     if os.environ.get("AUDIOFORGE_QWEN_FAST", "1") == "0":
         return None
     inner = getattr(model, "model", model)
@@ -172,6 +370,12 @@ def apply(model):
         return None
     if os.environ.get("AUDIOFORGE_QWEN_GRAPH", "1") != "0":
         cp.generate = types.MethodType(_graph_generate, cp)
+        # 본 모델 한 걸음도 묶는다(③). 끄기: AUDIOFORGE_QWEN_TALKER_GRAPH=0 — 그때는 보조 모델만 묶는다.
+        if (os.environ.get("AUDIOFORGE_QWEN_TALKER_GRAPH", "1") != "0" and hasattr(talker, "generate")
+                and not hasattr(talker, "_af_orig_generate")):
+            talker._af_orig_generate = talker.generate
+            talker.generate = types.MethodType(_talker_generate, talker)
+            return "graph+talker"
         return "graph"
     cp.generate = types.MethodType(_fast_generate, cp)
     return "loop"

@@ -4,21 +4,24 @@
  * ★지시 (2026-09-29): 책을 읽어 주는 플레이어. 기본 목소리 또는 고른 목소리로.
  *
  * 이 훅이 맡는 것
- *   · 글을 덩이로 나눈다(`readerChunks` 규칙)
+ *   · 글을 덩이로 나눈다(`readerChunks` 규칙) — 읽기 시작한 자리의 첫 덩이들은 짧게(첫 소리가 빨리 난다)
  *   · 지금 것을 틀고, 그 동안 **앞선 것부터** 만들어 둔다(`readerQueue` 규칙)
+ *   · 다음 덩이는 **미리 불러 둔 두 번째 소리 요소**로 넘어간다 — 덩이 사이가 끊기지 않는다(2026-10-01)
+ *   · 소리 안에서 **지금 읽는 구절**을 안다(`readerTiming` — 본체가 만든 소리의 쉼으로 잰다)
  *   · 끝나면 다음으로 넘어간다. 마지막이면 멈춘다
  *   · 목소리가 바뀌면 만들어 둔 것을 버린다 — 옛 목소리 소리를 들려주지 않는다
  *
  * ★소리는 **한 번에 한 곳만.** 공용 규칙에 `reader` 로 참여한다 —
  *   다른 화면이 소리를 가져가면 여기서 멈춘다.
- * ★판단은 전부 `readerChunks`·`readerQueue` 가 한다. 여기서는 **잇기만** 한다 —
+ * ★판단은 전부 `readerChunks`·`readerQueue`·`readerTiming` 이 한다. 여기서는 **잇기만** 한다 —
  *   그래야 규칙을 시계도 GPU도 없이 검사할 수 있다.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useAppStore } from '@/stores/app.store'
 import { createManagedAudio } from '@/lib/playbackVolume'
-import { splitForReading, chunkAt, type Chunk } from '../../shared/readerChunks'
-import { speakableText } from '../../shared/readerText'
+import { splitForReading, chunkAt, START_RAMP_SECONDS, type Chunk } from '../../shared/readerChunks'
+import { readingPlan, type ReadingPart } from '../../shared/readerText'
+import { partAt } from '../../shared/readerTiming'
 import { opLog, nameOnly } from '@/lib/opLog'
 import {
   emptyQueue, nextToMake, canPlayNow, waitReason, markMaking, markReady, markFailed,
@@ -33,7 +36,6 @@ export interface ReaderVoicePick {
   label: string
 }
 
-/** 무엇으로 만들었는지 가리키는 지문. 바뀌면 만들어 둔 것을 버린다. */
 /**
  * 앞서 몇 덩이를 만들어 둘까.
  * ★기본 목소리는 한 덩이(20초 분량)에 2초다 — **여섯**(약 2분)을 늘 앞서 둔다 (2026-09-30 피드백:
@@ -46,9 +48,13 @@ function aheadFor(v: ReaderVoicePick | null): number {
   return v && !usesGpu(v) ? BUILTIN_AHEAD : DEFAULT_AHEAD
 }
 
+/** 무엇으로 만들었는지 가리키는 지문. 바뀌면 만들어 둔 것을 버린다. */
 export function voiceKeyOf(v: ReaderVoicePick | null): string {
   return v ? `${v.kind}:${v.engineId || ''}:${v.path}` : ''
 }
+
+/** 지금 읽는 구절 — 원문 글자 자리. 읽지 않을 때는 null. */
+export interface ReadingSpot { start: number; end: number }
 
 export interface ReadAloud {
   chunks: Chunk[]
@@ -59,6 +65,13 @@ export interface ReadAloud {
   wait: string
   /** 만들지 못한 사유 등 사용자에게 보일 한 줄. */
   fault: string
+  /**
+   * 지금 **소리가 읽고 있는 구절**(원문 자리). 구절 시각을 모르면 덩이 전체.
+   * ★2026-10-01 이전에는 늘 덩이 전체였다 — 약 20초 동안 한 자리에 서 있었다(사용자 신고).
+   */
+  spot: ReadingSpot | null
+  /** 지금 소리가 닿은 **글자 하나**의 원문 자리 — 따라가기가 줄을 찾는다. 모르면 -1. 매 화면마다 불러도 가볍다. */
+  caret: () => number
   start: () => void
   stop: () => void
   /** 원문 글자 자리로 건너뛴다(본문에서 문단을 눌렀을 때). */
@@ -66,6 +79,8 @@ export interface ReadAloud {
   next: () => void
   prev: () => void
 }
+
+type Plan = { say: string; parts: ReadingPart[] }
 
 export function useReadAloud(
   text: string, voice: ReaderVoicePick | null,
@@ -75,8 +90,17 @@ export function useReadAloud(
   //   글이 바뀌면 경계도 처음으로(같은 렌더에서 — 옛 책의 자리를 새 책에 쓰지 않는다).
   const [cut, setCut] = useState<{ text: string; at: number }>({ text, at: 0 })
   const breakAt = cut.text === text ? cut.at : 0
-  const chunks = useMemo(() => splitForReading(text, { breakAt }), [text, breakAt])
+  const chunks = useMemo(() => splitForReading(text, { breakAt, ramp: START_RAMP_SECONDS }), [text, breakAt])
   const skipHanja = !!opts.skipHanjaInParens
+  // ★덩이마다 **구절 나누기와 소리로 보낼 글**(readerText.readingPlan). 큰 책은 덩이가 수천 개라 필요할 때만 만든다.
+  const plans = useRef<{ chunks: Chunk[]; skip: boolean; map: Map<number, Plan> }>({ chunks, skip: skipHanja, map: new Map() })
+  if (plans.current.chunks !== chunks || plans.current.skip !== skipHanja) plans.current = { chunks, skip: skipHanja, map: new Map() }
+  const planOf = useCallback((i: number): Plan => {
+    const m = plans.current.map
+    let p = m.get(i)
+    if (!p) { p = readingPlan(chunks[i]?.text || '', { skipHanjaInParens: skipHanja }); m.set(i, p) }
+    return p
+  }, [chunks, skipHanja])
   // ★두 열쇠를 나눈다. 본체의 쌓아 두기는 **목소리 + 실제로 읽은 글**로 이름 붙이므로
   //   목소리만 넘긴다(한자가 없는 덩이는 설정을 바꿔도 다시 만들지 않는다).
   //   큐는 설정까지 본다 — 설정이 바뀌면 만들어 둔 것을 버리고 지금 자리를 다시 읽는다.
@@ -85,9 +109,17 @@ export function useReadAloud(
   const [q, setQ] = useState<QueueState>(() => emptyQueue(chunks.length, voiceKey, aheadFor(voice)))
   const [playing, setPlaying] = useState(false)
   const [fault, setFault] = useState('')
+  /** 덩이마다 구절 시각(초) — 본체가 만든 소리에서 잰 것. 큐와 따로 둔다(큐 규칙을 건드리지 않는다). */
+  const timings = useRef(new Map<number, Array<[number, number]>>())
+  /** 지금 칠하는 구절 번호(덩이 안). 소리가 구절을 넘어갈 때만 바뀐다. */
+  const [part, setPart] = useState(-1)
 
   const qRef = useRef(q); qRef.current = q
+  /** 소리 요소 둘 — 하나가 울리는 동안 다른 하나에 다음 덩이를 불러 둔다. */
+  const els = useRef<HTMLAudioElement[]>([])
   const audioRef = useRef<HTMLAudioElement | null>(null)
+  /** 미리 불러 둔 것 — `${덩이}:${파일}`. 비면 없다. */
+  const preloaded = useRef('')
   const aliveRef = useRef(true)
   /**
    * 지금 가 있는 요청 — **같은 목소리·같은 글이면 그 답을 함께 받는다.** 두 번 보내지 않는다.
@@ -96,15 +128,22 @@ export function useReadAloud(
    *   '차례를 기다리는 중' 에 멈췄다(실측). 목소리를 A→B→A 로 바꾸는 장면도 같은 구조라
    *   `reader-aloud.component.mjs` 2-1 이 붙든다.
    */
-  const asking = useRef(new Map<string, Promise<{ data?: { path: string; cached: boolean }; error?: string }>>())
+  const asking = useRef(new Map<string, Promise<{ data?: { path: string; cached: boolean; timing?: Array<[number, number]> }; error?: string }>>())
   const claim = useAppStore((s) => s.audioClaim)
 
+  const element = (k: 0 | 1): HTMLAudioElement => {
+    // 재생 빠르기를 따른다(낭독 전용 — playbackVolume).
+    if (!els.current[k]) els.current[k] = createManagedAudio(undefined, { readAloud: true })
+    return els.current[k]
+  }
   const stopAudio = useCallback(() => {
-    const el = audioRef.current
-    if (!el) return
-    try { el.pause() } catch { /* 이미 멈춤 */ }
-    el.onended = null
-    el.onerror = null
+    for (const el of els.current) {
+      if (!el) continue
+      try { el.pause() } catch { /* 이미 멈춤 */ }
+      el.onended = null
+      el.onerror = null
+    }
+    preloaded.current = ''
   }, [])
 
   // 글이 바뀌면 처음부터. 목소리가 바뀌면 만들어 둔 것을 버리되 **자리는 지킨다.**
@@ -114,6 +153,7 @@ export function useReadAloud(
   useEffect(() => {
     if (builtFor.current === chunks) return
     builtFor.current = chunks
+    timings.current = new Map()
     // 경계가 바뀐 것이면 그 자리에서, 글이 바뀐 것이면 처음에서.
     const start = Math.max(0, chunkAt(chunks, breakAt))
     setQ({ ...emptyQueue(chunks.length, voiceKey, aheadFor(voice)), at: start }); setFault('')
@@ -127,10 +167,17 @@ export function useReadAloud(
     voiceSeen.current = voiceKey
     if (voice) opLog('reader', `목소리·설정 바꿈 — ${voice.kind}:${nameOnly(voice.path)}${skipHanja ? ' · 괄호 속 한자 뺌' : ''}`)
     stopAudio()
+    timings.current = new Map()
     // 새 목소리는 새 시도다 — 지난 목소리의 오류 문구를 남겨 두지 않는다.
     setFault('')
     setQ((cur) => ({ ...changeVoice(cur, voiceKey), ahead: aheadFor(voice) }))
   }, [voiceKey, stopAudio])
+  // ★기본 목소리(CPU)는 **고르자마자 미리 연다** — 첫 조각이 모델 열기를 기다리지 않는다(2026-10-01).
+  //   GPU 목소리는 여기서 열지 않는다(그래픽카드 메모리를 잡는다) — 사용자가 고를 때 화면이 따로 부른다.
+  useEffect(() => {
+    if (!voice || voice.kind !== 'builtin' || usesGpu(voice)) return
+    void window.api.reader.warm?.({ kind: voice.kind, path: voice.path, engineId: voice.engineId })?.catch(() => { /* 누를 때 연다 */ })
+  }, [cacheKey])
 
   const stop = useCallback(() => {
     opLog('reader', `멈춤 — 덩이 ${qRef.current.at + 1}/${qRef.current.count}`)
@@ -164,8 +211,9 @@ export function useReadAloud(
     const chunk = chunks[i]
     if (!chunk) return
     const madeFor = voiceKey
-    // ★소리로 보낼 때만 규칙을 탄다 — 보이는 글과 글자 자리는 그대로다.
-    const say = speakableText(chunk.text, { skipHanjaInParens: skipHanja })
+    // ★소리로 보낼 때만 규칙을 탄다 — 보이는 글과 글자 자리는 그대로다. 구절 무게도 함께 보낸다(따라가기).
+    const plan = planOf(i)
+    const say = plan.say
     if (!say.trim()) {
       // 읽을 것이 남지 않은 덩이(괄호 속 한자뿐) — 소리 없이 지나간다.
       setQ((cur) => markReady(cur, i, ''))
@@ -176,7 +224,8 @@ export function useReadAloud(
     const ask = `${madeFor}\n${say}`
     let run = asking.current.get(ask)
     if (!run) {
-      run = window.api.reader.speak(say, { kind: voice.kind, path: voice.path, engineId: voice.engineId }, cacheKey)
+      run = window.api.reader.speak(say, { kind: voice.kind, path: voice.path, engineId: voice.engineId }, cacheKey,
+        plan.parts.map((p) => ({ weight: p.weight, strong: p.strong })))
       asking.current.set(ask, run)
       void run.finally(() => { asking.current.delete(ask) }).catch(() => { /* 아래에서 받는다 */ })
     }
@@ -190,6 +239,8 @@ export function useReadAloud(
           setQ((cur) => markFailed(cur, i, r.error || '이 부분을 만들지 못했습니다'))
           return
         }
+        const t = r.data.timing
+        if (Array.isArray(t) && t.length === plan.parts.length) timings.current.set(i, t)
         setQ((cur) => markReady(cur, i, r.data!.path))
       })
       .catch((e) => {
@@ -197,7 +248,39 @@ export function useReadAloud(
         if (!acceptResult(qRef.current, i, madeFor)) return
         setQ((cur) => markFailed(cur, i, (e as Error)?.message || '이 부분을 만들지 못했습니다'))
       })
-  }, [playing, q, chunks, voice, voiceKey, cacheKey, skipHanja])
+  }, [playing, q, chunks, voice, voiceKey, cacheKey, planOf])
+
+  /** 이 소리 요소가 덩이 at 을 틀 때의 끝·오류 처리. */
+  const attach = useCallback((el: HTMLAudioElement) => {
+    el.onended = () => {
+      if (!aliveRef.current) return
+      const cur = qRef.current
+      // 마지막이면 멈춘다 — 조용히 처음으로 돌아가지 않는다.
+      if (atEnd(cur)) { opLog('reader', `끝까지 읽음 — ${cur.count}덩이`); setPlaying(false); return }
+      // ★다음 덩이를 미리 불러 둔 요소가 있으면 **곧바로** 튼다 — 화면이 다시 그려지기를 기다리지 않는다.
+      const nx = cur.items[cur.at + 1]
+      const tag = nx?.path ? `${cur.at + 1}:${nx.path}` : ''
+      if (tag && preloaded.current === tag) {
+        const other = els.current.find((x) => x && x !== el)
+        if (other) {
+          preloaded.current = ''
+          audioRef.current = other
+          playedRef.current = tag
+          attach(other)
+          void other.play().catch((e) => {
+            if ((e as { name?: string } | null)?.name === 'AbortError') return
+            playedRef.current = ''           // 아래 재생 효과가 보통 길로 다시 튼다
+          })
+        }
+      }
+      setQ((c) => advance(c))
+    }
+    el.onerror = () => {
+      if (!aliveRef.current) return
+      setFault('만들어 둔 소리를 열지 못했습니다')
+      setPlaying(false)
+    }
+  }, [])
 
   // ── 지금 것을 튼다 ──────────────────────────────────────────────────────
   // ★같은 덩이를 **두 번 틀지 않는다.** 이 효과는 큐가 바뀔 때마다 다시 도는데
@@ -224,20 +307,10 @@ export function useReadAloud(
     if (playedRef.current === tag) return
     playedRef.current = tag
 
-    const el = audioRef.current || createManagedAudio(undefined, { readAloud: true })   // 재생 빠르기를 따른다
+    const el = audioRef.current || element(0)
     audioRef.current = el
     useAppStore.getState().claimAudio('reader')
-    el.onended = () => {
-      if (!aliveRef.current) return
-      // 마지막이면 멈춘다 — 조용히 처음으로 돌아가지 않는다.
-      if (atEnd(qRef.current)) { opLog('reader', `끝까지 읽음 — ${qRef.current.count}덩이`); setPlaying(false); return }
-      setQ((cur) => advance(cur))
-    }
-    el.onerror = () => {
-      if (!aliveRef.current) return
-      setFault('만들어 둔 소리를 열지 못했습니다')
-      setPlaying(false)
-    }
+    attach(el)
     // ★주소는 **본체에게 묻는다.** 화면이 직접 만들면 규칙이 갈리고, 자리가 바뀐 날
     //   조용히 열지 못한다 — 2026-09-29 에 실제로 그랬다(소리는 만들었는데 안 났다).
     void window.api.audio.getFileUrl(it.path).then((url) => {
@@ -255,6 +328,62 @@ export function useReadAloud(
       setPlaying(false)
     })
   }, [playing, q.at, q.items])
+
+  // ── 다음 덩이를 미리 불러 둔다(끊김 없이 넘어가기) ─────────────────────────
+  // ★덩이 사이에서 예전에는 [끝 → 화면 다시 그림 → 본체에 주소 묻기 → 불러오기 → 틀기] 를 차례로 했다.
+  //   다른 소리 요소에 미리 불러 두면 끝나는 순간 곧바로 이어진다.
+  useEffect(() => {
+    if (!playing) return
+    const nx = q.items[q.at + 1]
+    if (!nx || nx.state !== 'ready' || !nx.path) return
+    const tag = `${q.at + 1}:${nx.path}`
+    if (preloaded.current === tag) return
+    const cur = audioRef.current
+    const other = (cur === els.current[0] ? element(1) : cur === els.current[1] ? element(0) : element(1))
+    if (other === cur) return
+    void window.api.audio.getFileUrl(nx.path).then((url) => {
+      if (!aliveRef.current) return
+      const now = qRef.current
+      if (now.at + 1 !== Number(tag.split(':')[0])) return      // 그 사이 자리가 옮겨졌다
+      try { other.pause() } catch { /* 이미 멈춤 */ }
+      other.onended = null; other.onerror = null
+      other.preload = 'auto'
+      if (other.src !== url) other.src = url
+      try { other.currentTime = 0 } catch { /* 아직 못 불렀다 */ }
+      preloaded.current = tag
+    }).catch(() => { /* 넘어갈 때 보통 길로 튼다 */ })
+  }, [playing, q.at, q.items])
+
+  // ── 지금 읽는 구절 ──────────────────────────────────────────────────────
+  // 소리 요소의 시각을 구절 시각에 대 본다. 구절이 바뀔 때만 화면을 다시 그린다.
+  const caretRef = useRef<() => number>(() => -1)
+  const posNow = (): { part: number; frac: number } | null => {
+    const el = audioRef.current
+    const spans = timings.current.get(qRef.current.at)
+    if (!el || !spans?.length) return null
+    return partAt(spans, el.currentTime)
+  }
+  caretRef.current = () => {
+    const c = chunks[qRef.current.at]
+    if (!c) return -1
+    const p = posNow()
+    if (!p) return c.start
+    const pr = planOf(qRef.current.at).parts[p.part]
+    if (!pr) return c.start
+    return c.start + pr.from + Math.min(pr.to - pr.from - 1, Math.max(0, Math.floor((pr.to - pr.from) * p.frac)))
+  }
+  useEffect(() => {
+    if (!playing) { setPart(-1); return }
+    let raf = 0
+    const tick = () => {
+      const p = posNow()
+      const k = p ? p.part : -1
+      setPart((cur) => cur === k ? cur : k)
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => cancelAnimationFrame(raf)
+  }, [playing, q.at])
 
   const start = useCallback(() => {
     if (!voice) { setFault('먼저 목소리를 고르세요'); return }
@@ -286,9 +415,17 @@ export function useReadAloud(
   const next = useCallback(() => { stopAudio(); setQ((cur) => advance(cur)) }, [stopAudio])
   const prev = useCallback(() => { stopAudio(); setQ((cur) => seek(cur, cur.at - 1)) }, [stopAudio])
 
+  const chunk = chunks[q.at]
+  let spot: ReadingSpot | null = null
+  // ★소리가 아직 없으면(만드는 중) 칠하지 않는다 — 예전에는 만드는 동안에도 덩이를 칠해 소리 없이 '읽는 중' 으로 보였다(2026-10-01 실측 약 4초).
+  if (playing && chunk && q.items[q.at]?.state === 'ready') {
+    const pr = part >= 0 ? planOf(q.at).parts[part] : undefined
+    spot = pr ? { start: chunk.start + pr.from, end: chunk.start + pr.to } : { start: chunk.start, end: chunk.end }
+  }
+  const caret = useCallback(() => caretRef.current(), [])
   return {
     chunks, at: q.at, playing,
     wait: playing && !canPlayNow(q) ? waitReason(q) : '',
-    fault, start, stop, seekToChar, next, prev,
+    fault, spot, caret, start, stop, seekToChar, next, prev,
   }
 }

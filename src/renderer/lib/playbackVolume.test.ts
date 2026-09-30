@@ -177,7 +177,7 @@ test('바꾼 뒤 새로 만든 소리도 지금 빠르기로 나온다 · 이상
   rateApi.setPlaybackRate(1)
 })
 
-test('★낭독 밖에서는 빠르기를 쓰지 않는다 — 낭독 두 자리 말고 readAloud 로 만드는 곳이 없다', async () => {
+test('★낭독 밖에서는 빠르기를 쓰지 않는다 — 책 읽기 말고 readAloud 로 만드는 곳이 없다', async () => {
   // 지시(2026-10-01): "낭독배속은 낭독에서만 사용하는 기능이다" — 생성 카드·최종 음성·더빙이 따라가던 것을 막는다.
   const fs = await import('node:fs'); const path = await import('node:path')
   const root = path.resolve(import.meta.dirname, '..')
@@ -188,7 +188,9 @@ test('★낭독 밖에서는 빠르기를 쓰지 않는다 — 낭독 두 자리
     else if (/\.(ts|tsx)$/.test(n.name) && !/\.test\./.test(n.name) && /readAloud: true|markMadeSound\(/.test(fs.readFileSync(p, 'utf8'))) users.push(path.relative(root, p).split(path.sep).join('/'))
   } }
   walk(root)
-  assert.deepEqual(users.sort(), ['components/ReaderWorkspace.tsx', 'hooks/useReadAloud.ts', 'lib/playbackVolume.ts'])
+  // ★목소리 들어 보기는 음성 합성과 같은 미리듣기(voicePreview)를 쓴다(2026-10-01 — 고르기 창 통일) — 늘 1배다.
+  //   빠르기를 따르는 것은 책 읽기(useReadAloud) 하나다.
+  assert.deepEqual(users.sort(), ['hooks/useReadAloud.ts', 'lib/playbackVolume.ts'])
   const bars = fs.readdirSync(path.join(root, 'components')).filter((n) => /.tsx$/.test(n) && fs.readFileSync(path.join(root, 'components', n), 'utf8').includes('<PlaybackRateSelect'))
   assert.deepEqual(bars, ['ReaderWorkspace.tsx'], '빠르기 고르기는 낭독 화면에만 있다')
 })
