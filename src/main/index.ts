@@ -52,6 +52,7 @@ import {
   emotionSampleExpressionFromTimeline, EMOTION_SAMPLER_DEFAULT_CONFIG,
 } from '../shared/emotionSampler'
 import { parseExpressiveTimeline } from '../shared/expressiveTimeline'
+import { applyOffscreenSwitches, keepOffscreen, offscreenWindowOptions } from './services/offscreen'
 
 let mainWindow: BrowserWindow | null = null
 // 프로토콜 핸들러가 키를 경로로 바꿀 때 쓴다. 창 생성 시 채워진다.
@@ -181,6 +182,8 @@ watchUncaught(APP_LOG)
 // React 개발 빌드의 StrictMode 이중 effect 가 있다. production 번들을 띄우는 기존 E2E 는
 // 그 조건을 재현하지 못해 실제 결함을 놓쳤다. 그 경로를 붙잡으려면 이미 떠 있는 Electron 에
 // 붙어야 하므로 여기서 포트를 연다 — **AF_E2E=1 이고 포트가 명시됐을 때만**.
+// 개발툴 MCP·검사 — 화면 밖 창도 그리게(두 스위치가 모두 켜졌을 때만. services/offscreen).
+applyOffscreenSwitches(app)
 if (process.env.AF_E2E === '1' && /^\d+$/.test(process.env.AF_E2E_CDP_PORT ?? '')) {
   app.commandLine.appendSwitch('remote-debugging-port', process.env.AF_E2E_CDP_PORT as string)
   app.commandLine.appendSwitch('remote-allow-origins', '*')
@@ -236,6 +239,7 @@ function createWindow(): void {
     //   그래서 검사에서는 창을 만들 때 감춰 두었다가 **활성화하지 않고** 보여 준다.
     //   보통 실행은 지금까지와 똑같다 — 만들자마자 보이고 앞으로 나온다.
     ...(process.env.AF_E2E === '1' ? { show: false } : {}),
+    ...offscreenWindowOptions(),
     webPreferences: {
       preload: preloadPath,
       sandbox: false,
@@ -247,6 +251,7 @@ function createWindow(): void {
     // showInactive: 창은 보이되 포커스를 가져오지 않는다(화면 캡처·클릭은 그대로 된다).
     mainWindow.once('ready-to-show', () => { try { mainWindow?.showInactive() } catch { /* 이미 닫혔다 */ } })
   }
+  keepOffscreen(mainWindow)
 
   // ── Electron 진단 로그 — 검은 화면/크래시 원인 규명용(stdout으로 E2E·터미널이 수집) ──
   const wc = mainWindow.webContents

@@ -17,6 +17,7 @@ import { BrowserWindow, ipcMain, screen } from 'electron'
 import { join } from 'path'
 import { dialogFolderHost } from './audio.ipc'
 import { appLog } from '../services/app-log'
+import { keepOffscreen, offscreenWindowOptions } from '../services/offscreen'
 import { CONSOLE_POPUP_STORAGE_KEY, parseConsolePopup } from '../../shared/appConsole'
 
 const BOUNDS_KEY = 'consoleWindowBounds'
@@ -62,8 +63,10 @@ function open(): void {
     autoHideMenuBar: true,
     // 검사에서는 사람이 하던 일을 빼앗지 않게 앞으로 튀어나오지 않는다(앱 창과 같은 규칙).
     ...(process.env.AF_E2E === '1' ? { show: false } : {}),
+    ...offscreenWindowOptions(),
     webPreferences: { preload, sandbox: false, spellcheck: false },
   })
+  keepOffscreen(win)
   if (process.env.AF_E2E === '1') win.once('ready-to-show', () => { try { win?.showInactive() } catch { /* 닫혔다 */ } })
   win.setMenuBarVisibility(false)
   win.webContents.on('will-navigate', (e) => e.preventDefault())

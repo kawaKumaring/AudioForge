@@ -1,0 +1,333 @@
+#!/usr/bin/env node
+'use strict'
+// AudioForge 개발툴 MCP 서버 — AI(Claude Code 등)가 AudioForge 를 직접 켜고·조작하고·결과를 읽는 "리모컨".
+//
+// ★Spine2DManager 개발툴 MCP(§278, doc/MCP-DEVTOOL.md)를 본떴지만 **구조는 새로 짰다** (2026-09-30):
+//   · Spine 은 앱을 감싸는 호스트 + 127.0.0.1 제어 창구(토큰)를 따로 두었다 — 앱의 require('electron') 를 가로채 창을 바꿔 끼우는 방식.
+//     AudioForge 본체는 electron-vite 가 하나로 묶은 빌드라 그 가로채기 지점이 다르다.
+//   · 대신 AudioForge 에는 이미 **검사 모드(AF_E2E)** 가 있다 — 사용자 데이터 격리 · 창을 앞으로 가져오지 않기 · 검사 전용 창구.
+//     그리고 앱 검사 100여 개가 Playwright(_electron)로 앱을 띄운다. 그래서 이 서버가 **Playwright 로 앱을 직접** 띄운다.
+//     → 호스트 파일도, 네트워크 포트도, 토큰도 없다(부품이 적고 밖에서 닿을 창구가 아예 없다).
+//   · 창은 화면 밖(AF_E2E_OFFSCREEN=1 → src/main/services/offscreen.ts) · 포커스 없음 — 사용자 마우스·키보드를 빼앗지 않는다.
+//   · OS 파일 열기·저장·메시지 대화상자는 앱 안에서 응답 큐로 바꿔 끼운다(진짜 창은 뜨지 않는다).
+//   · 임시 파일은 저장소 _local/tmp 아래(C 드라이브 아님), 끝나면 지운다.
+// ★표준출력은 MCP 메시지 전용 — 사람용 기록은 전부 표준오류(stderr). 섞이면 클라이언트가 끊긴다.
+// 등록: 저장소 루트 .mcp.json. 설명서: doc/mcp-devtool.md
+const { spawnSync } = require('child_process')
+const fs = require('fs')
+const path = require('path')
+
+const ROOT = path.resolve(__dirname, '..', '..')
+const SERVER_INFO = { name: 'audioforge-devtool', version: '0.1.0' }
+const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05']
+const HELPERS = fs.readFileSync(path.join(__dirname, 'domHelpers.js'), 'utf8')
+const log = (...a) => process.stderr.write('[audioforge-mcp] ' + a.join(' ') + '\n')
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+// ── 기록(링 버퍼) — main 표준출력·오류 · 창별 렌더러 콘솔 · 대화상자 응답 ──
+const LOG_MAX = 3000
+const logs = []
+let logSeq = 0
+function record (source, level, text) {
+  logs.push({ seq: ++logSeq, t: new Date().toISOString(), source, level, text: String(text).slice(0, 2000) })
+  if (logs.length > LOG_MAX) logs.splice(0, logs.length - LOG_MAX)
+}
+
+// ── 빌드 상태 — 화면·본체 소스가 out 보다 새로우면 다시 빌드한다 ──
+function newestMtime (dir) {
+  let m = 0
+  if (!fs.existsSync(dir)) return 0
+  for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
+    const f = path.join(dir, e.name)
+    if (e.isDirectory()) m = Math.max(m, newestMtime(f)); else if (/\.(ts|tsx|css|html|mjs|js)$/.test(e.name)) m = Math.max(m, fs.statSync(f).mtimeMs)
+  }
+  return m
+}
+function buildState () {
+  const outMain = path.join(ROOT, 'out', 'main', 'index.js')
+  if (!fs.existsSync(outMain)) return { built: false, stale: true }
+  const outT = Math.min(outMain && fs.statSync(outMain).mtimeMs, fs.existsSync(path.join(ROOT, 'out', 'renderer', 'index.html')) ? fs.statSync(path.join(ROOT, 'out', 'renderer', 'index.html')).mtimeMs : 0)
+  const srcT = newestMtime(path.join(ROOT, 'src'))
+  return { built: true, stale: srcT > outT, outAt: new Date(outT).toISOString(), srcAt: new Date(srcT).toISOString() }
+}
+function runBuild () {
+  log('빌드 실행(npm run build)…')
+  const r = spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build'], { cwd: ROOT, encoding: 'utf8', shell: process.platform === 'win32', timeout: 600000 })
+  const out = ((r.stdout || '') + (r.stderr || '')).split(/\r?\n/).slice(-12).join('\n')
+  if (r.status !== 0) throw new Error('빌드 실패(exit ' + r.status + ')\n' + out)
+  return out
+}
+
+// ── 앱 수명 ──
+let session = null // { app, visible, userData, tmp, pages: Map<page, kind> }
+function playwright () {
+  try { return require(path.join(ROOT, 'node_modules', 'playwright')) } catch (e) { throw new Error('playwright 를 불러오지 못했습니다(npm install 필요): ' + e.message) }
+}
+function kindOf (page) {
+  try { const u = page.url(); return /#console/.test(u) ? 'console' : 'main' } catch { return 'window' }
+}
+function watchPage (s, page) {
+  if (s.pages.has(page)) return
+  s.pages.set(page, true)
+  page.on('console', (m) => record('renderer:' + kindOf(page), m.type(), m.text()))
+  page.on('pageerror', (e) => record('renderer:' + kindOf(page), 'error', 'pageerror: ' + (e && e.message)))
+  page.on('close', () => s.pages.delete(page))
+}
+async function findPage (kind = 'main') {
+  if (!session) throw new Error('앱이 실행 중이 아닙니다 — 먼저 app_start')
+  const pages = session.app.windows()
+  for (const p of pages) watchPage(session, p)
+  const hit = pages.find((p) => kindOf(p) === kind)
+  if (!hit) throw new Error(`창 없음: ${kind} (열린 창: ${pages.map(kindOf).join(', ') || '없음'})`)
+  return hit
+}
+async function inPage (kind, expr) {
+  const page = await findPage(kind)
+  return page.evaluate(`(async () => { ${HELPERS}\n return (${expr}) })()`)
+}
+
+// 대화상자 바꿔 끼우기 — main 안에서. 큐가 비면 '취소'(메시지는 기본 버튼).
+const DIALOG_PATCH = `(({ dialog }) => {
+  if (globalThis.__mcpDialog) return true
+  const q = globalThis.__mcpDialog = { open: [], save: [], message: [], log: [] }
+  const last = (a) => a[a.length - 1] || {}
+  const open = (o) => { const p = q.open.shift(); q.log.push('열기 ' + (o.title || (o.properties || []).join(',')) + ' → ' + (p ? [].concat(p).join(' | ') : '(취소 — 큐 비어 있음)')); return p ? { canceled: false, filePaths: [].concat(p) } : { canceled: true, filePaths: [] } }
+  const save = (o) => { const p = q.save.shift(); q.log.push('저장 ' + (o.defaultPath || '') + ' → ' + (p || '(취소 — 큐 비어 있음)')); return p ? { canceled: false, filePath: p } : { canceled: true, filePath: undefined } }
+  const msg = (o) => { const i = q.message.length ? q.message.shift() : (Number.isInteger(o.defaultId) ? o.defaultId : 0); q.log.push('메시지 "' + String(o.message || o.title || '').slice(0, 120) + '" → 버튼 ' + i); return { response: i, checkboxChecked: false } }
+  dialog.showOpenDialog = async (...a) => open(last(a))
+  dialog.showOpenDialogSync = (...a) => { const r = open(last(a)); return r.canceled ? undefined : r.filePaths }
+  dialog.showSaveDialog = async (...a) => save(last(a))
+  dialog.showSaveDialogSync = (...a) => save(last(a)).filePath
+  dialog.showMessageBox = async (...a) => msg(last(a))
+  dialog.showMessageBoxSync = (...a) => msg(last(a)).response
+  dialog.showErrorBox = (t, c) => { q.log.push('오류 상자: ' + t + ' — ' + c) }
+  return true
+})`
+
+async function startApp ({ visible = false, build = 'auto', width = 1280, height = 860 } = {}) {
+  if (session) return { already: true, ...(await status()) }
+  let built = null
+  const bs = buildState()
+  if (build === 'always' || (build === 'auto' && bs.stale)) built = runBuild()
+  else if (!bs.built) throw new Error('out/ 없음 — build:"auto" 또는 "always" 로 다시 실행하세요')
+  const base = path.join(ROOT, '_local', 'tmp')
+  const tmp = path.join(base, 'mcp-' + process.pid)
+  const userData = path.join(tmp, 'userdata')
+  fs.rmSync(tmp, { recursive: true, force: true })
+  fs.mkdirSync(userData, { recursive: true })
+  const env = {
+    ...process.env, AF_E2E: '1', AF_E2E_OFFSCREEN: visible ? '0' : '1', AF_E2E_USER_DATA: userData,
+    TEMP: tmp, TMP: tmp, TMPDIR: tmp, AF_TEST_RUN_DIR: tmp, HF_HUB_OFFLINE: '1',
+  }
+  delete env.ELECTRON_RUN_AS_NODE // 있으면 electron 이 Node 로 돌아 창을 못 띄운다
+  const { _electron } = playwright()
+  const app = await _electron.launch({ args: [path.join('out', 'main', 'index.js')], cwd: ROOT, env, timeout: 90000 })
+  const s = { app, visible, userData, tmp, pages: new Map() }
+  session = s
+  const proc = app.process()
+  const keep = (src, lv) => (b) => { for (const line of String(b).split(/\r?\n/)) if (line.trim()) record(src, lv, line) }
+  proc.stdout && proc.stdout.on('data', keep('main', 'info'))
+  proc.stderr && proc.stderr.on('data', keep('main', 'error'))
+  proc.on('exit', (code) => { log('앱 종료(exit ' + code + ')'); record('main', 'info', '앱 종료(exit ' + code + ')'); if (session === s) session = null })
+  app.on('window', (p) => watchPage(s, p))
+  const page = await app.firstWindow({ timeout: 90000 })
+  watchPage(s, page)
+  await app.evaluate(new Function('return ' + DIALOG_PATCH)())
+  // 화면이 뜰 때까지(앱 저장소가 생기면 준비된 것)
+  const t0 = Date.now()
+  while (Date.now() - t0 < 60000) {
+    if (await page.evaluate(() => !!window.__afStore).catch(() => false)) break
+    await sleep(250)
+  }
+  if (width && height) await resize({ window: 'main', width, height })
+  return { started: true, visible, build: built ? '빌드함' : (bs.stale ? '빌드 오래됨(건너뜀)' : '최신'), ...(await status()) }
+}
+async function stopApp () {
+  if (!session) return { stopped: false, reason: '실행 중 아님' }
+  const s = session
+  session = null
+  try { await Promise.race([s.app.close(), sleep(8000)]) } catch { /* 이미 닫혔다 */ }
+  try { s.app.process().kill() } catch { /* 이미 끝났다 */ }
+  await sleep(500)
+  // Node rmSync 는 연결(정션)을 따라가지 않는다 — PowerShell Remove-Item 을 쓰지 않는다.
+  try { fs.rmSync(s.tmp, { recursive: true, force: true, maxRetries: 3 }) } catch (e) { log('임시 폴더를 다 지우지 못함: ' + e.message) }
+  return { stopped: true }
+}
+async function windowsInfo () {
+  if (!session) return []
+  return session.app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().map((w) => {
+    const b = w.getBounds()
+    return { id: w.id, title: w.getTitle(), url: w.webContents.getURL().slice(-60), x: b.x, y: b.y, width: b.width, height: b.height, visible: w.isVisible(), focused: w.isFocused() }
+  })).then((ws) => ws.map((w) => ({ kind: /#console/.test(w.url) ? 'console' : 'main', ...w })))
+}
+async function status () {
+  if (!session) return { running: false, build: buildState() }
+  const q = await session.app.evaluate(() => { const d = globalThis.__mcpDialog; return d ? { open: d.open.length, save: d.save.length, message: d.message.length } : null }).catch(() => null)
+  return { running: true, visible: session.visible, userData: path.relative(ROOT, session.userData), windows: await windowsInfo(), dialogQueued: q, logSeq }
+}
+async function resize ({ window = 'main', width, height }) {
+  await findPage(window)
+  return session.app.evaluate(({ BrowserWindow }, a) => {
+    const w = BrowserWindow.getAllWindows().find((x) => (a.window === 'console') === /#console/.test(x.webContents.getURL()))
+    if (!w) throw new Error('창 없음: ' + a.window)
+    w.setSize(Math.round(a.width), Math.round(a.height))
+    return w.getBounds()
+  }, { window, width, height })
+}
+
+// ── 도구(AI 가 읽는 설명서) ──
+const WIN = { type: 'string', description: "대상 창: 'main'(기본) · 'console'(콘솔 창 — 설정에서 콘솔을 켰을 때)" }
+const TARGET = { type: 'string', description: "요소 지정: 'testid:reader-play'(data-testid — 가장 확실) · '@번호'(ui_query 의 ref) · CSS 선택자 · 보이는 글자('▶ 들어 보기')" }
+const TOOLS = [
+  { name: 'app_start', description: 'AudioForge 를 실행한다(이미 실행 중이면 상태만). 기본은 화면 밖·포커스 없음 창이라 사용자 화면·마우스를 방해하지 않는다. 소스가 out/ 보다 새로우면 자동 빌드. 사용자 설정·작업은 임시 폴더로 격리(사용자 데이터 불변). OS 파일 창은 dialog_queue 로 넣어 둔 응답이 자동으로 쓰인다.', inputSchema: { type: 'object', properties: { visible: { type: 'boolean', description: 'true 면 보이는 창(사람이 함께 볼 때). 기본 false' }, build: { type: 'string', enum: ['auto', 'always', 'never'] }, width: { type: 'number' }, height: { type: 'number' } } } },
+  { name: 'app_stop', description: 'AudioForge 를 종료하고 임시 폴더를 지운다.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'app_status', description: '실행 여부 · 창 목록(kind·위치·포커스) · 대화상자 응답 대기 수 · 마지막 기록 번호.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'app_reload', description: '창 화면을 새로 고친다.', inputSchema: { type: 'object', properties: { window: WIN } } },
+  { name: 'ui_snapshot', description: '화면 구조를 접근성 트리(역할·이름) 글로 돌려준다 — 화면을 처음 파악할 때 가장 빠르다. 요소를 누를 땐 ui_query 의 testid·ref 를 쓴다.', inputSchema: { type: 'object', properties: { window: WIN, selector: { type: 'string', description: '이 CSS 선택자 안만(기본 body)' } } } },
+  { name: 'ui_query', description: "보이는 요소 목록(ref · testid · 글자 · 비활성 · 체크 · 값 · 선택지 · 위치). filter 'interactive'(기본) | 'all'. testid 가 있으면 'testid:이름' 으로 지정하는 것이 가장 확실하다(ref 는 화면이 다시 그려지면 바뀐다).", inputSchema: { type: 'object', properties: { window: WIN, filter: { type: 'string', enum: ['interactive', 'all'] }, within: TARGET, text: { type: 'string' }, limit: { type: 'number' } } } },
+  { name: 'ui_text', description: '요소(기본 body)의 보이는 글자.', inputSchema: { type: 'object', properties: { window: WIN, selector: TARGET, maxChars: { type: 'number' } } } },
+  { name: 'ui_click', description: '요소를 누른다(화면 안 이벤트 — OS 마우스 미사용). 비활성 요소는 누르지 않고 알려 준다.', inputSchema: { type: 'object', properties: { window: WIN, target: TARGET, within: TARGET, exact: { type: 'boolean' }, index: { type: 'number' }, waitMs: { type: 'number', description: '누른 뒤 대기(기본 300ms)' } }, required: ['target'] } },
+  { name: 'ui_set', description: '입력칸·선택 상자·체크박스 값을 바꾼다(React 가 알아채는 방식).', inputSchema: { type: 'object', properties: { window: WIN, target: TARGET, value: {}, within: TARGET, exact: { type: 'boolean' } }, required: ['target', 'value'] } },
+  { name: 'ui_wait', description: '조건이 참이 될 때까지 대기: text(글자 등장) · selector(요소 보임) · code(화면 JS 식). met=false 면 시간 초과.', inputSchema: { type: 'object', properties: { window: WIN, text: { type: 'string' }, selector: TARGET, code: { type: 'string' }, timeoutMs: { type: 'number' } } } },
+  { name: 'ui_screenshot', description: '창(또는 요소) 캡처 이미지. 화면 밖 창도 된다. savePath 를 주면 파일로도 저장(_local/ 아래 권장).', inputSchema: { type: 'object', properties: { window: WIN, selector: TARGET, maxWidth: { type: 'number' }, savePath: { type: 'string' } } } },
+  { name: 'window_resize', description: '창 크기 변경.', inputSchema: { type: 'object', properties: { window: WIN, width: { type: 'number' }, height: { type: 'number' } }, required: ['width', 'height'] } },
+  { name: 'api_list', description: "화면이 쓰는 앱 기능(window.api) 이름 목록 — 'audio.getFileUrl' · 'reader.speak' 처럼 점으로 이은 이름.", inputSchema: { type: 'object', properties: { window: WIN } } },
+  { name: 'api_call', description: "앱 기능을 직접 호출한다(화면이 부르는 것과 같은 길: window.api → IPC → main). 예: method 'cards.builtinVoices' · 'settings.get'. 긴 문자열은 잘라서 돌려준다(full:true 면 전체). 오래 걸리면 timeoutMs 를 늘린다.", inputSchema: { type: 'object', properties: { window: WIN, method: { type: 'string' }, args: { type: 'array' }, full: { type: 'boolean' }, timeoutMs: { type: 'number' } }, required: ['method'] } },
+  { name: 'js_eval', description: '화면(렌더러)에서 JS 식을 평가한다(점검용 — 화면 수정은 코드로). window.__afStore(앱 상태)·__mcp 도우미 사용 가능.', inputSchema: { type: 'object', properties: { window: WIN, code: { type: 'string' } }, required: ['code'] } },
+  { name: 'dialog_queue', description: "다음에 뜰 OS 대화상자의 응답을 미리 넣는다. kind 'open'(파일·폴더 경로 또는 여러 파일 배열) · 'save'(저장 경로) · 'message'(버튼 번호). 비면 '취소'(진짜 창은 절대 안 뜸). ★낭독·카드의 파일 고르기도 여기로 온다.", inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: ['open', 'save', 'message'] }, answers: { type: 'array' } }, required: ['kind', 'answers'] } },
+  { name: 'dialog_clear', description: '대화상자 응답 큐 비우기.', inputSchema: { type: 'object', properties: {} } },
+  { name: 'logs', description: "기록: main(본체 출력) · renderer:<창>(화면 콘솔) · dialog(대화상자 응답) · app(앱 동작 기록 파일 — [reader]·[check] 같은 꼬리표). since=마지막으로 본 seq 이후만(app 은 파일이라 since 무시). grep=정규식.", inputSchema: { type: 'object', properties: { since: { type: 'number' }, source: { type: 'string', description: "'main'|'renderer'|'dialog'|'app'" }, grep: { type: 'string' }, limit: { type: 'number' } } } }
+]
+
+const text = (obj) => ({ type: 'text', text: typeof obj === 'string' ? obj : JSON.stringify(obj, null, 1) })
+async function dialogLogs () {
+  if (!session) return
+  const lines = await session.app.evaluate(() => { const d = globalThis.__mcpDialog; if (!d) return []; const l = d.log.splice(0); return l }).catch(() => [])
+  for (const l of lines) record('dialog', 'info', l)
+}
+function appLogLines () {
+  if (!session) return []
+  const dir = path.join(session.userData, 'logs')
+  if (!fs.existsSync(dir)) return []
+  return fs.readdirSync(dir).sort().flatMap((n) => fs.readFileSync(path.join(dir, n), 'utf8').split(/\r?\n/).filter(Boolean))
+}
+const HANDLERS = {
+  app_start: (a) => startApp(a),
+  app_stop: () => stopApp(),
+  app_status: () => status(),
+  app_reload: async ({ window = 'main' }) => { const p = await findPage(window); await p.reload(); return true },
+  ui_snapshot: async ({ window = 'main', selector = 'body' }) => (await findPage(window)).locator(selector).first().ariaSnapshot({ timeout: 10000 }),
+  ui_query: ({ window = 'main', filter = 'interactive', within = null, text: t = null, limit = 200 }) => inPage(window, `__mcp.query(${JSON.stringify({ filter, within, text: t, limit })})`),
+  ui_text: ({ window = 'main', selector = 'body', maxChars = 20000 }) => inPage(window, `__mcp.text(${JSON.stringify(selector)}, ${Number(maxChars)})`),
+  ui_click: async ({ window = 'main', target, within = null, exact = false, index = 0, waitMs }) => { const r = await inPage(window, `__mcp.click(${JSON.stringify({ target, within, exact, index })})`); await sleep(waitMs == null ? 300 : waitMs); return r },
+  ui_set: ({ window = 'main', target, value, within = null, exact = false }) => inPage(window, `__mcp.set(${JSON.stringify({ target, value, within, exact })})`),
+  ui_wait: async ({ window = 'main', code = null, text: t = null, selector = null, timeoutMs = 30000 }) => {
+    const cond = code || (t ? `(document.body.innerText || '').includes(${JSON.stringify(t)})` : selector ? `!!__mcp.visibleEl(${JSON.stringify(selector)})` : 'true')
+    const t0 = Date.now()
+    while (Date.now() - t0 < timeoutMs) {
+      try { const v = await inPage(window, cond); if (v) return { met: true, value: v, ms: Date.now() - t0 } } catch { /* 화면이 바뀌는 중 */ }
+      await sleep(300)
+    }
+    return { met: false, ms: Date.now() - t0 }
+  },
+  ui_screenshot: async ({ window = 'main', selector = null, maxWidth = 1400, savePath = null }) => {
+    const page = await findPage(window)
+    let rect = null
+    if (selector) { rect = await inPage(window, `__mcp.rect(${JSON.stringify(selector)})`); if (!rect) throw new Error('선택자 대상 없음(보이는 요소): ' + selector) }
+    // 화면 밖 창도 찍히게 본체의 capturePage 를 쓴다(Playwright 캡처는 가려진 창에서 멈출 수 있다).
+    const shot = await session.app.evaluate(async ({ BrowserWindow }, a) => {
+      const w = BrowserWindow.getAllWindows().find((x) => (a.window === 'console') === /#console/.test(x.webContents.getURL()))
+      if (!w) throw new Error('창 없음: ' + a.window)
+      let img = await (a.rect ? w.webContents.capturePage(a.rect) : w.webContents.capturePage())
+      const orig = img.getSize()
+      if (a.maxWidth && orig.width > a.maxWidth) img = img.resize({ width: a.maxWidth, quality: 'good' })
+      return { b64: img.toPNG().toString('base64'), size: img.getSize(), orig }
+    }, { window, rect, maxWidth })
+    void page
+    if (savePath) { fs.mkdirSync(path.dirname(savePath), { recursive: true }); fs.writeFileSync(savePath, Buffer.from(shot.b64, 'base64')) }
+    return { content: [{ type: 'image', data: shot.b64, mimeType: 'image/png' }, text({ width: shot.size.width, height: shot.size.height, original: shot.orig, savedTo: savePath || null })] }
+  },
+  window_resize: (a) => resize(a),
+  api_list: ({ window = 'main' }) => inPage(window, '__mcp.apiList()'),
+  api_call: async ({ window = 'main', method, args = [], full = false, timeoutMs = 300000 }) => {
+    const call = inPage(window, `__mcp.api(${JSON.stringify(method)}, ${JSON.stringify(args)}, ${!!full})`)
+    return Promise.race([call, sleep(timeoutMs).then(() => { throw new Error(`시간 초과(${timeoutMs}ms): ${method}`) })])
+  },
+  js_eval: ({ window = 'main', code }) => inPage(window, `(async () => { return (${code}) })()`),
+  dialog_queue: async ({ kind = 'open', answers = [] }) => {
+    if (!['open', 'save', 'message'].includes(kind)) throw new Error("kind = open|save|message")
+    if (!session) throw new Error('앱이 실행 중이 아닙니다 — 먼저 app_start')
+    return session.app.evaluate((_e, a) => { const d = globalThis.__mcpDialog; d[a.kind].push(...a.answers); return { kind: a.kind, queued: d[a.kind].length } }, { kind, answers })
+  },
+  dialog_clear: async () => { if (!session) return false; return session.app.evaluate(() => { const d = globalThis.__mcpDialog; d.open.length = d.save.length = d.message.length = 0; return true }) },
+  logs: async ({ since = 0, source = null, grep = null, limit = 300 }) => {
+    const re = grep ? new RegExp(grep, 'i') : null
+    if (source === 'app') {
+      let lines = appLogLines()
+      if (re) lines = lines.filter((l) => re.test(l))
+      return { items: lines.slice(-limit) }
+    }
+    await dialogLogs()
+    let out = logs.filter((l) => l.seq > since)
+    if (source) out = out.filter((l) => l.source.startsWith(source))
+    if (re) out = out.filter((l) => re.test(l.text))
+    return { lastSeq: logSeq, items: out.slice(-limit) }
+  }
+}
+const MAX_TEXT = 60000
+async function callTool (name, args) {
+  const fn = HANDLERS[name]
+  if (!fn) return { content: [text('알 수 없는 도구: ' + name)], isError: true }
+  try {
+    const r = await fn(args || {})
+    if (r && Array.isArray(r.content)) return r
+    let t = typeof r === 'string' ? r : JSON.stringify(r, null, 1)
+    if (t && t.length > MAX_TEXT) t = t.slice(0, MAX_TEXT) + `\n…<${t.length - MAX_TEXT}자 생략 — 범위를 좁혀 다시 요청>`
+    return { content: [{ type: 'text', text: t === undefined ? 'null' : t }] }
+  } catch (e) {
+    return { content: [text('오류: ' + ((e && e.message) || e))], isError: true }
+  }
+}
+
+// ── MCP(JSON-RPC 2.0 · 표준입출력 한 줄 = 메시지 하나) ──
+const send = (msg) => process.stdout.write(JSON.stringify(msg) + '\n')
+const reply = (id, result) => send({ jsonrpc: '2.0', id, result })
+const fail = (id, code, message) => send({ jsonrpc: '2.0', id, error: { code, message } })
+async function onMessage (m) {
+  const isRequest = m && m.id !== undefined && m.id !== null
+  switch (m && m.method) {
+    case 'initialize': {
+      const want = m.params && m.params.protocolVersion
+      return reply(m.id, {
+        protocolVersion: SUPPORTED_PROTOCOLS.includes(want) ? want : SUPPORTED_PROTOCOLS[0],
+        capabilities: { tools: { listChanged: false } },
+        serverInfo: SERVER_INFO,
+        instructions: 'AudioForge(음원 도구)를 직접 실행·조작·관찰하는 도구. 순서: app_start → ui_snapshot/ui_query 로 화면 파악 → ui_click/ui_set/api_call 로 조작 → ui_wait/logs 로 결과 확인 → app_stop. 요소는 testid 로 지정하는 것이 가장 확실하다(예: testid:mode-reader). 창은 기본적으로 화면 밖이라 사용자 작업을 방해하지 않는다. 파일 고르기는 dialog_queue 로 미리 응답을 넣는다. 사용자 데이터는 격리된 임시 폴더를 쓴다. ★사용자의 음성·영상 파일은 사용자가 명시적으로 허락한 것만 연다.'
+      })
+    }
+    case 'notifications/initialized': case 'notifications/cancelled': return
+    case 'ping': return isRequest && reply(m.id, {})
+    case 'tools/list': return reply(m.id, { tools: TOOLS })
+    case 'tools/call': return reply(m.id, await callTool(m.params && m.params.name, m.params && m.params.arguments))
+    default:
+      if (isRequest) fail(m.id, -32601, 'Method not found: ' + (m && m.method))
+  }
+}
+let buf = ''
+process.stdin.setEncoding('utf8')
+process.stdin.on('data', (chunk) => {
+  buf += chunk
+  let i
+  while ((i = buf.indexOf('\n')) >= 0) {
+    const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1)
+    if (!line) continue
+    let m
+    try { m = JSON.parse(line) } catch { fail(null, -32700, 'Parse error'); continue }
+    onMessage(m).catch((e) => { log('처리 실패: ' + ((e && e.stack) || e)); if (m.id != null) fail(m.id, -32603, String((e && e.message) || e)) })
+  }
+})
+const shutdown = async () => { try { await stopApp() } catch { /* 이미 닫혔다 */ } process.exit(0) }
+process.stdin.on('end', shutdown)
+process.on('SIGINT', shutdown)
+process.on('SIGTERM', shutdown)
+log('준비됨 (프로젝트: ' + ROOT + ')')

@@ -132,6 +132,8 @@ if (WITH_APP_UI) {
     [path.join('test', 'e2e', 'diagnostics-export.e2e.mjs')])
   // 콘솔 창 — 동작 기록이 창과 무관하게 남고, 보이고, 복사되고, 껐다 켜도 남는가(2026-09-30 지시).
   run('실제 앱 · 콘솔 창(GPU 없음)', 'node', [path.join('test', 'e2e', 'console-panel.e2e.mjs')])
+  // 개발툴 MCP — AI 가 앱을 켜고 조작·관찰하는 도구가 표준대로 붙고, 화면 밖에 뜨고, 파일 창을 대체하고, 남기지 않는가(2026-09-30).
+  run('실제 앱 · 개발툴 MCP(GPU 없음)', 'node', [path.join('test', 'e2e', 'mcp-devtool.e2e.mjs')])
   // 만들어진 소리의 재생 빠르기 — 다시 만들지 않고 듣는 빠르기만, 음 높이 유지, 조각이 바뀌어도 유지(2026-09-30).
   run('실제 앱 · 재생 빠르기(GPU 없음)', 'node', [path.join('test', 'e2e', 'playback-rate.e2e.mjs')])
   // 낭독 — 기본 목소리 여럿(Supertonic 열 개 + piper)을 들어 보고 골라 읽는가(2026-09-30). 받아 두지 않았으면 SKIP 으로 말한다.
