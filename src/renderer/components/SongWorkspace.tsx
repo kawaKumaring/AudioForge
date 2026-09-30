@@ -185,7 +185,7 @@ function SongCards({ disabled }: { disabled: boolean }) {
           <span style={{ fontSize: 13, flex: 1 }}>목소리 바꾸기</span><span aria-label="선택됨" style={{ color: 'var(--accent-light)' }}>✓</span>
         </div>
         <div tabIndex={0} title="원곡 목소리를 유지하며 번역 가사를 멜로디와 리듬에 맞춰 부르는 기능입니다. 후속 개발 예정입니다." style={{ ...row, padding: 14, border: '1px solid var(--border-subtle)', borderRadius: 12, color: 'var(--text-muted)' }}>
-          <span aria-hidden="true" style={{ fontSize: 18 }}>文</span><span style={{ fontSize: 13, flex: 1 }}>다른 언어로 부르기</span><span style={{ fontSize: 10 }}>예정</span>
+          <span aria-hidden="true" style={{ fontSize: 18 }}>文</span><span style={{ fontSize: 13, flex: 1 }}>다른 언어로 부르기</span><span style={{ fontSize: 11 }}>예정</span>
         </div>
       </div>
     </section>

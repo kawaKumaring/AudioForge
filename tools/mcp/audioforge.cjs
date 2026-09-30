@@ -13,13 +13,15 @@ const ROOT = path.resolve(__dirname, '..', '..')
 const FIXTURES = path.join(ROOT, 'test', 'fixtures', 'audio')
 
 // ── 화면 지도 — AI 가 매번 더듬지 않게(ModeSelector.tsx 의 작업 목록 · 주요 testid) ──
+// 작업 화면 — button:false 는 왼쪽 목록에 단추가 없는 화면(다른 화면에서 들어간다).
+const NO_BUTTON = { 'dialogue-rebuild': '대화 분리 결과에서 "대화 구간 편집" 으로 들어간다', lab: '개발 중인 실험실 — 목록에 단추가 없다' }
 const MODES = {
   reader: '낭독', tts: '음성 합성', dub: '노래 변환', music: '음악 분리', conversation: '대화 분리',
   transcribe: '텍스트 추출', split: '트랙 분할', 'dialogue-rebuild': '대화 구간 편집', lab: '실험실',
 }
 const SCREEN_MAP = [
   '화면 지도(AudioForge):',
-  '· 작업 고르기: testid mode-<id> — ' + Object.entries(MODES).map(([k, v]) => `${k}(${v})`).join(' · ') + '. app_mode 로 바꾼다.',
+  '· 작업 고르기: testid mode-<id> — ' + Object.entries(MODES).filter(([k]) => !NO_BUTTON[k]).map(([k, v]) => `${k}(${v})`).join(' · ') + '. app_mode 로 바꾼다. 단추가 없는 화면: ' + Object.entries(NO_BUTTON).map(([k, v]) => `${k} — ${v}`).join(' · ') + '.',
   '· 설정: testid open-app-options → [일반]·[기능 검사](options-checks — 기능마다 check-run-<id>) · 콘솔 켜기 options-console.',
   '· 낭독(reader): reader-add-text(글 파일 — dialog_queue 먼저) · reader-play(읽기/멈춤) · reader-settings(목소리 · reader-voice-builtin/reader-voice-try) · reader-rate(재생 빠르기) · reader-follow · reader-library · reader-paragraph(문단).',
   '· 음성 합성(tts): add-generation-card → pick-voice-builtin(기본 목소리)/pick-voice-file(파일) → generation-card(card-script 대본 · card-generate 만들기 · card-takes 생성본) → join-bar(join-play 이어 듣기 · join-save · card-rate).',
@@ -211,10 +213,14 @@ function auditExpr (opts) {
   const vis = (el) => { const r = el.getBoundingClientRect(); if (r.width <= 0 || r.height <= 0) return false; const s = getComputedStyle(el); return s.visibility !== 'hidden' && s.display !== 'none' && Number(s.opacity) > 0.05 }
   const nm = (el) => ((el.innerText || '').trim() || el.getAttribute('aria-label') || el.getAttribute('title') || el.getAttribute('placeholder') || (el.value && el.tagName !== 'SELECT' ? el.value : '') || (el.tagName === 'SELECT' ? 'select' : '') || '').replace(/\\s+/g, ' ')
   const who = (el) => el ? (el.dataset && el.dataset.testid ? 'testid:' + el.dataset.testid : el.tagName.toLowerCase() + (nm(el) ? ' "' + nm(el).slice(0, 36) + '"' : '')) : null
-  const root = o.within ? (__mcp.resolve(o.within, null, false, 0) || null) : document
+  // ★대화창이 떠 있으면 그 안만 본다 — 뒤의 것은 대화창이 가리는 것이 정상이다(처음엔 이것을 '가림' 20~27건으로 셌다).
+  // 브라우저 기본 대화창(<dialog open> — 설정·목소리 고르기)도 대화창이다(처음엔 role 만 봐서 놓쳤다).
+  const modals = [...document.querySelectorAll('[role=dialog], dialog[open]')].filter(vis)
+  const topModal = modals.length ? modals[modals.length - 1] : null
+  const root = o.within ? (__mcp.resolve(o.within, null, false, 0) || null) : (topModal || document)
   if (!root) return { error: 'within 대상 없음: ' + o.within }
   const lim = o.limit || 15
-  const out = { size: [W, H], noName: [], disabledNoReason: [], offscreen: [], covered: [], clipped: [], tiny: { count: 0, samples: [] }, pageOverflowX: document.documentElement.scrollWidth > W + 1 }
+  const out = { size: [W, H], scope: o.within ? 'within' : topModal ? ('대화창: ' + (topModal.getAttribute('aria-label') || '이름 없음')) : '화면 전체', noName: [], disabledNoReason: [], offscreen: [], covered: [], clipped: [], tiny: { count: 0, samples: [] }, pageOverflowX: document.documentElement.scrollWidth > W + 1 }
   const inter = [...root.querySelectorAll('button, a[href], input:not([type=hidden]), select, textarea, [role=button], [role=tab], [role=checkbox]')].filter(vis)
   for (const el of inter) {
     if (!nm(el) && !el.closest('label')) out.noName.push(who(el) + (el.querySelector('svg') ? ' (그림만)' : ''))
@@ -222,12 +228,15 @@ function auditExpr (opts) {
     const r = el.getBoundingClientRect()
     if (r.right > W + 1 || r.left < -1) out.offscreen.push(who(el) + ' x=' + Math.round(r.left) + '~' + Math.round(r.right) + ' (창 폭 ' + W + ')')
     const cx = r.left + Math.min(r.width / 2, 8), cy = r.top + r.height / 2
-    if (cx >= 0 && cx < W && cy >= 0 && cy < H) {
+    // 굴림 칸 밖으로 굴러 나간 것은 '가림' 이 아니다 — 가장 가까운 굴림 칸의 보이는 자리 안일 때만 본다.
+    let sp = el.parentElement, inView = true
+    while (sp && sp !== document.body) { const st = getComputedStyle(sp); if (/(auto|scroll|hidden)/.test(st.overflowY + st.overflowX)) { const b = sp.getBoundingClientRect(); inView = cx >= b.left && cx <= b.right && cy >= b.top && cy <= b.bottom; break } sp = sp.parentElement }
+    if (inView && cx >= 0 && cx < W && cy >= 0 && cy < H) {
       const hit = document.elementFromPoint(cx, cy)
       if (hit && hit !== el && !el.contains(hit) && !hit.contains(el)) out.covered.push(who(el) + ' ← 가림: ' + who(hit))
     }
   }
-  const all = [...root.querySelectorAll('body *')].filter((el) => el.children.length === 0 || [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()))
+  const all = [...(root === document ? document.body : root).querySelectorAll('*')].filter((el) => el.children.length === 0 || [...el.childNodes].some((n) => n.nodeType === 3 && n.textContent.trim()))
   const seenTiny = new Set()
   for (const el of all) {
     if (!vis(el)) continue
@@ -246,4 +255,4 @@ function auditExpr (opts) {
 }
 
 module.exports = {
-  auditExpr, MODES, SCREEN_MAP, MEDIA_HOOK, MEDIA_NOW, STATE, guardMedia, blockedMediaPaths, isAllowed, inspectWav, writeTone, writeText, listFixtures, FIXTURES }
+  auditExpr, NO_BUTTON, MODES, SCREEN_MAP, MEDIA_HOOK, MEDIA_NOW, STATE, guardMedia, blockedMediaPaths, isAllowed, inspectWav, writeTone, writeText, listFixtures, FIXTURES }

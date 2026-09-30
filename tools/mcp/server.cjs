@@ -207,7 +207,7 @@ const TOOLS = [
   { name: 'dialog_clear', description: '대화상자 응답 큐 비우기.', inputSchema: { type: 'object', properties: {} } },
   // ── AudioForge 전용 ──
   { name: 'app_state', description: '지금 상태 한눈에: 작업(mode) · 처리 상태 · 오류 · 다른 작업 때문에 합성이 막히는 사유(busy) · 떠 있는 대화창·경고 · 생성 카드(개수·생성본 수·진행 중 작업) · 낭독(책·문단 자리·목소리·읽는 중인지·상태 글) · 울리는 소리 수. 무엇을 하기 전후로 먼저 부른다.', inputSchema: { type: 'object', properties: {} } },
-  { name: 'app_mode', description: "작업 화면을 바꾼다: " + Object.entries(AF.MODES).map(([k, v]) => `'${k}'(${v})`).join(' · ') + '. 한국어 이름도 된다. 처리 중에는 바뀌지 않는다(그렇다고 알려 준다).', inputSchema: { type: 'object', properties: { mode: { type: 'string' } }, required: ['mode'] } },
+  { name: 'app_mode', description: "작업 화면을 바꾼다: " + Object.entries(AF.MODES).map(([k, v]) => `'${k}'(${v})`).join(' · ') + '. 한국어 이름도 된다. 처리 중에는 바뀌지 않는다(그렇다고 알려 준다).', inputSchema: { type: 'object', properties: { mode: { type: 'string' }, force: { type: 'boolean', description: '단추가 없는 화면을 앱 상태로 직접 바꾼다(사용자가 가는 길이 아니다)' } }, required: ['mode'] } },
   { name: 'audio_now', description: '★소리는 들을 수 없으므로 — 틀기 시작한 소리 요소들의 파일 이름 · 위치(초) · 길이 · 멈춤/끝남 · 재생 빠르기 · 음량 · 오류. 낭독·생성본·미리듣기 모두(화면 DOM 에 없는 요소 포함).', inputSchema: { type: 'object', properties: { window: WIN } } },
   { name: 'audio_inspect', description: '만든 소리(WAV)를 수치로: 길이 · 샘플레이트 · 최고/평균 크기(dBFS) · 잘린 표본 수 · 조용한 비율 · 앞뒤 조용함 · 가장 긴 틈 · 비었는지. ★검사용 자리(test/fixtures/audio · _local/tmp · 이 실행의 임시 폴더) 안의 파일만 — 그 밖은 userApproved:true(사용자 허락) 필요.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, userApproved: { type: 'boolean' } }, required: ['path'] } },
   { name: 'wait_idle', description: '긴 작업(합성·낭독 조각 만들기·분리 등)이 끝날 때까지 기다린다 — 처리 상태 · 카드 작업 · 합성 막힘 사유 · 낭독 "만드는 중" 이 모두 비고 1초 유지되면 끝. 반환 met=false 면 시간 초과(timeoutMs 기본 10분).', inputSchema: { type: 'object', properties: { timeoutMs: { type: 'number' } } } },
@@ -292,10 +292,16 @@ const HANDLERS = {
     const q = await session.app.evaluate(() => { const d = globalThis.__mcpDialog; return d ? { open: d.open.length, save: d.save.length, message: d.message.length } : null }).catch(() => null)
     return { ...st, dialogQueued: q, windows: (await windowsInfo()).map((w) => w.kind), logSeq }
   },
-  app_mode: async ({ mode }) => {
+  app_mode: async ({ mode, force = false }) => {
     const want = String(mode || '').trim()
     const id = AF.MODES[want] ? want : Object.keys(AF.MODES).find((k) => AF.MODES[k] === want || AF.MODES[k].includes(want))
     if (!id) throw new Error('모르는 작업: ' + want + ' — ' + Object.entries(AF.MODES).map(([k, v]) => `${k}(${v})`).join(' · '))
+    if (AF.NO_BUTTON[id] && !force) return { mode: id, changed: false, why: '화면에 단추가 없는 작업이다 — ' + AF.NO_BUTTON[id], hint: '그 길로 들어가거나, 상태를 직접 바꾸려면 force:true(단추를 누르지 않고 앱 상태를 바꾼다 — 사용자가 하는 길이 아니다)' }
+    if (AF.NO_BUTTON[id] && force) {
+      await inPage('main', `window.__afStore.getState().setMode(${JSON.stringify(id)})`)
+      const cur = await inPage('main', 'window.__afStore.getState().mode')
+      return { mode: id, label: AF.MODES[id], changed: cur === id, forced: true, note: '단추 없이 앱 상태를 바꿨다 — 사용자가 들어가는 길과 다를 수 있다' }
+    }
     const r = await inPage('main', `__mcp.click(${JSON.stringify({ target: 'testid:mode-' + id })})`)
     if (!r || !r.clicked) return { mode: id, changed: false, why: (r && r.error) || '누르지 못함', hint: r && r.error === '비활성 요소' ? '처리 중에는 작업을 바꿀 수 없다 — wait_idle 뒤 다시' : undefined }
     const t0 = Date.now()

@@ -42,7 +42,7 @@ export default function ModeSelector() {
               fontFamily: 'inherit', fontSize: 13, fontWeight: active ? 600 : 400, textAlign: 'left', cursor: disabled ? 'not-allowed' : 'pointer', opacity: disabled && !active ? 0.45 : 1 }}>
             <span style={{ display: 'flex', color: active ? 'var(--accent-light)' : 'inherit' }}>{item.icon}</span>
             <span style={{ flex: 1, whiteSpace: 'nowrap' }}>{item.label}</span>
-            {id === 'dub' && <span style={{ fontSize: 9, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>개발 중</span>}
+            {id === 'dub' && <span style={{ fontSize: 11, color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>개발 중</span>}
           </button>
         })}
       </div>

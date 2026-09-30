@@ -224,7 +224,7 @@ export function useReadAloud(
     if (playedRef.current === tag) return
     playedRef.current = tag
 
-    const el = audioRef.current || createManagedAudio(undefined, { made: true })   // 재생 빠르기를 따른다
+    const el = audioRef.current || createManagedAudio(undefined, { readAloud: true })   // 재생 빠르기를 따른다
     audioRef.current = el
     useAppStore.getState().claimAudio('reader')
     el.onended = () => {

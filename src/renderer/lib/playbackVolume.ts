@@ -72,16 +72,17 @@ export function pauseManagedAudio(): void {
 
 /**
  * 소리 요소를 만들면서 곧바로 음량 관리 아래 둔다(만드는 자리에서 잊지 않도록).
- * `made: true` — **앱이 만든 소리**(낭독·생성본·최종 음성·더빙 결과)면 재생 빠르기도 건다(원본 소리에는 걸지 않는다).
+ * `readAloud: true` — **낭독 소리**(책 읽기·낭독 목소리 들어 보기)면 재생 빠르기도 건다.
+ * ★낭독 전용이다(2026-10-01 지시: "낭독배속은 낭독에서만 사용하는 기능이다") — 생성본·최종 음성·더빙·원본에는 걸지 않는다.
  */
-export function createManagedAudio(src?: string, opts: { made?: boolean } = {}): HTMLAudioElement {
+export function createManagedAudio(src?: string, opts: { readAloud?: boolean } = {}): HTMLAudioElement {
   const el = src ? new Audio(src) : new Audio()
   attachPlaybackVolume(el)
-  if (opts.made) markMadeSound(el)
+  if (opts.readAloud) markMadeSound(el)
   return el
 }
 
-// ── 재생 빠르기 — 만들어진 소리에만 (2026-09-30 지시) ─────────────────────────
+// ── 재생 빠르기 — 낭독 소리에만 (2026-09-30 지시 · 10-01 낭독 전용으로 좁힘) ─────────────────────────
 // ★다시 만들지 않는다. 재생할 때만 빠르기를 바꾸고 음 높이는 그대로(preservesPitch).
 // ★`src` 를 바꾸면 요소가 빠르기를 **기본 빠르기로 되돌린다**(미디어 불러오기 규칙) — 그래서 기본 빠르기도 함께 건다.
 //   그러지 않으면 낭독이 다음 조각으로 넘어갈 때마다 1배로 돌아간다.

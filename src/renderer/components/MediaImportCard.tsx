@@ -25,7 +25,7 @@ export default function MediaImportCard({ file, voice = false, busy = false, dis
       <span style={{ display: 'grid', placeItems: 'center', width: 48, height: 48, borderRadius: 14, background: 'var(--accent-glow)', color: 'var(--accent-light)' }}><MediaGlyph voice={voice}/></span>
       <span style={{ fontSize: 14, fontWeight: 600 }}>{busy ? '파일을 여는 중…' : voice ? '어떤 목소리로 부를까요?' : '오디오나 영상 파일을 가져오세요'}</span>
       <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>끌어 놓거나 클릭해서 선택</span>
-      {!voice && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>WAV · MP3 · M4A · FLAC · MP4 · MKV</span>}
+      {!voice && <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>WAV · MP3 · M4A · FLAC · MP4 · MKV</span>}
     </button> : <div style={{ padding: 18, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
       <span style={{ color: 'var(--accent-light)' }}><MediaGlyph voice={voice}/></span>
       <div style={{ flex: '1 1 140px', minWidth: 0 }}>

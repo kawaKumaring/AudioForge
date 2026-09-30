@@ -58,6 +58,7 @@ export default function ReaderWorkspace() {
   const { books, active, voice, pick } = useReader()
   const book = books.find(b => b.id === active)
   const bodyRef = useRef<HTMLDivElement>(null)
+  const footerRef = useRef<HTMLElement>(null)
   const voiceButton = useRef<HTMLButtonElement>(null)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
@@ -240,6 +241,29 @@ export default function ReaderWorkspace() {
     ro.observe(box)
     return () => ro.disconnect()
   }, [windowed, book?.id])
+  // ★본문 칸 높이를 **아래 막대 위 남은 자리**에 맞춘다 (2026-10-01 · MCP 로 잼).
+  //   예전엔 높이가 고정(58vh)이라 아래 막대가 본문 아래쪽을 가렸다 — 1280×860 에서 6px, 1000×720 에서 64px, 800×600 에서 136px(본문의 40%).
+  //   낭독은 **본문 칸 안에서** 읽는 자리를 옮기므로, 가려진 곳에 읽는 구절이 설 수 있었다. 창·막대 크기가 바뀌면 다시 잰다.
+  const [bodyHeight, setBodyHeight] = useState<number | null>(null)
+  useLayoutEffect(() => {
+    const box = bodyRef.current, foot = footerRef.current
+    if (!box || !foot) return
+    const scroller = box.closest('[data-testid="workspace-content"]') as HTMLElement | null
+    const fit = () => {
+      const view = scroller ? scroller.getBoundingClientRect() : { top: 0, height: window.innerHeight }
+      const scrolled = scroller ? scroller.scrollTop : 0
+      const topInContent = box.getBoundingClientRect().top - view.top + scrolled   // 굴림과 무관한 자리
+      const avail = view.height - topInContent - foot.offsetHeight - 16
+      // 최소 180px — 최소 창(800×600)에서 남는 자리가 196px 였다. 가리는 것보다 작은 칸이 낫다.
+      setBodyHeight((h) => { const next = Math.max(180, Math.min(900, Math.round(avail))); return h === next ? h : next })
+    }
+    fit()
+    const ro = new ResizeObserver(fit)
+    ro.observe(foot)
+    if (scroller) ro.observe(scroller)
+    window.addEventListener('resize', fit)
+    return () => { ro.disconnect(); window.removeEventListener('resize', fit) }
+  }, [book?.id])
   const scrollFrame = useRef(0)
   const onBodyScroll = () => {
     if (scrollFrame.current) return
@@ -304,7 +328,7 @@ export default function ReaderWorkspace() {
       const r = await window.api.reader.speak(SAMPLE_TEXT, { kind: v.kind, path: v.path, engineId: v.engineId }, voiceKeyOf(v))
       if (r.error || !r.data?.path) throw new Error(r.error || '들어 볼 소리를 만들지 못했습니다')
       const url = await window.api.audio.getFileUrl(r.data.path)
-      const el = sampleEl.current || createManagedAudio(undefined, { made: true })
+      const el = sampleEl.current || createManagedAudio(undefined, { readAloud: true })
       sampleEl.current = el
       useAppStore.getState().claimAudio('reader')
       el.src = url
@@ -445,12 +469,12 @@ export default function ReaderWorkspace() {
           <span style={{ color: 'var(--accent-light)', padding: 17, borderRadius: 14, background: 'var(--accent-glow)' }}><BookIcon /></span>
           <strong style={{ fontSize: 17 }}>{loading ? '책을 불러오는 중' : '읽고 싶은 글을 가져오세요'}</strong>
           <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>끌어 놓거나 클릭해서 선택</span>
-          <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>TXT · 여러 파일</span>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>TXT · 여러 파일</span>
         </button> : <>
           <header style={{ padding: '20px 24px', display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10, borderBottom: '1px solid var(--border-subtle)' }}>
             <h2 style={{ margin: 0, fontSize: 17, flex: 1, overflowWrap: 'anywhere' }}>{book.name}</h2>
           </header>
-          <div ref={bodyRef} data-testid="reader-body" aria-label="책 본문" data-windowed={windowed ? '1' : '0'} onScroll={windowed ? onBodyScroll : undefined} style={{ height: 'clamp(320px, 58vh, 900px)', overflowY: 'auto', overscrollBehavior: 'contain', padding: '22px clamp(12px, 3vw, 32px)', background: 'var(--bg-base)' }}>
+          <div ref={bodyRef} data-testid="reader-body" aria-label="책 본문" data-windowed={windowed ? '1' : '0'} onScroll={windowed ? onBodyScroll : undefined} style={{ height: bodyHeight ?? 'clamp(320px, 58vh, 900px)', overflowY: 'auto', overscrollBehavior: 'contain', padding: '22px clamp(12px, 3vw, 32px)', background: 'var(--bg-base)' }}>
             {/* ★고른 자리와 **읽는 자리**를 구분해 보인다(인수인계 5항).
                 누른 곳은 '여기서 시작' 이고, 색이 찬 곳은 '지금 읽는 중' 이다. */}
             {offsets && <div aria-hidden="true" style={{ height: offsets[range.start] }} />}
@@ -471,12 +495,12 @@ export default function ReaderWorkspace() {
       </article>
     </div>
     {/* ★아래 막대는 **움직이지 않는다** (2026-09-30 신고: 낭독을 위한 작동 단추가 휠에 영향을 받으면 안 된다). */}
-    <footer data-testid="reader-controls" style={{ ...panel, position: 'sticky', bottom: 0, zIndex: 20, boxShadow: '0 -8px 20px #0006', padding: '16px 12px', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto minmax(0, 1fr)', alignItems: 'center', gap: 8 }}>
+    <footer ref={footerRef} data-testid="reader-controls" style={{ ...panel, position: 'sticky', bottom: 0, zIndex: 20, boxShadow: '0 -8px 20px #0006', padding: '16px 12px', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto minmax(0, 1fr)', alignItems: 'center', gap: 8 }}>
       <button ref={voiceButton} data-testid="reader-settings" onClick={() => setSettings(true)} style={{ ...button, minWidth: 0, textAlign: 'left', padding: 8 }} title="낭독 설정 — 목소리·글자 크기·읽는 방식">
-        <span style={{ display: 'block', fontSize: 10, color: 'var(--text-muted)', marginBottom: 5 }}>목소리</span><span style={{ overflowWrap: 'anywhere', whiteSpace: 'normal' }}>{voice}</span>
+        <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginBottom: 5 }}>목소리</span><span style={{ overflowWrap: 'anywhere', whiteSpace: 'normal' }}>{voice}</span>
       </button>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
-        <button style={button} aria-label="이전 문단" disabled={!book || position === 0} onClick={() => choosePosition(position - 1)}>‹</button>
+        <button style={button} aria-label="이전 문단" disabled={!book || position === 0} title={!book ? '책을 먼저 여세요' : position === 0 ? '첫 문단입니다' : '이전 문단'} onClick={() => choosePosition(position - 1)}>‹</button>
         <button data-testid="reader-play" aria-label={read.playing ? '낭독 멈추기' : '낭독 시작'}
           disabled={!book || !pick || !!prep}
           title={!book ? '먼저 책을 고르세요' : !pick ? '먼저 목소리를 고르세요' : read.playing ? '멈춥니다' : '이 자리부터 읽습니다'}
@@ -489,7 +513,7 @@ export default function ReaderWorkspace() {
           style={{ ...button, width: 46, height: 46, borderRadius: '50%', color: 'var(--accent-light)', background: 'var(--accent-glow)', cursor: (!book || !pick) ? 'not-allowed' : 'pointer' }}>
           {read.playing ? '■' : '▶'}
         </button>
-        <button style={button} aria-label="다음 문단" disabled={!book || position >= book.paragraphs.length - 1} onClick={() => choosePosition(position + 1)}>›</button>
+        <button style={button} aria-label="다음 문단" disabled={!book || position >= book.paragraphs.length - 1} title={!book ? '책을 먼저 여세요' : position >= book.paragraphs.length - 1 ? '마지막 문단입니다' : '다음 문단'} onClick={() => choosePosition(position + 1)}>›</button>
         <button data-testid="reader-follow" aria-pressed={prefs.follow} title={prefs.follow ? '읽는 구절을 화면이 따라갑니다 — 누르면 멈춥니다' : '누르면 읽는 구절을 화면이 따라갑니다'}
           onClick={() => updatePrefs({ follow: !prefs.follow })}
           style={{ ...button, fontSize: 12, color: prefs.follow ? 'var(--cyan)' : 'var(--text-muted)', borderColor: prefs.follow ? 'var(--cyan)' : undefined }}>따라가기</button>

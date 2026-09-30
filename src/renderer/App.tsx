@@ -90,7 +90,7 @@ export default function App() {
             {mode !== 'tts' && <div style={{ marginBottom: 9, fontSize: 11, color: 'var(--text-muted)' }}>{workspace.group}</div>}
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
               <h1 title={workspace.description} style={{ fontSize: 25, lineHeight: 1.35, fontWeight: 600, letterSpacing: '-.035em' }}>{workspace.label}</h1>
-              {mode === 'dub' && <span style={{ padding: '3px 7px', border: '1px solid var(--border-subtle)', borderRadius: 5, color: 'var(--text-muted)', fontSize: 10 }}>개발 중</span>}
+              {mode === 'dub' && <span style={{ padding: '3px 7px', border: '1px solid var(--border-subtle)', borderRadius: 5, color: 'var(--text-muted)', fontSize: 11 }}>개발 중</span>}
               {busy && <span role="status" data-testid="workspace-activity" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 'auto', fontSize: 11, color: 'var(--accent-light)' }}>
                 <span className="workspace-activity" aria-hidden="true" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, height: 18 }}>
                   {[0, 1, 2, 3].map(i => <span key={i} style={{ width: 3, height: 14, borderRadius: 2, background: 'currentColor', animationDelay: `${i * 110}ms` }} />)}
@@ -106,7 +106,7 @@ export default function App() {
               {['원본 선택', '설정과 실행', '결과 확인'].map((label, i) => {
                 const step = !fileInfo ? 0 : done ? 2 : 1
                 return <li key={label} aria-current={step === i ? 'step' : undefined} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: step === i ? 'var(--text-primary)' : 'var(--text-muted)' }}>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 22, height: 22, borderRadius: '50%', fontSize: 10, background: step === i ? 'var(--accent-glow)' : 'var(--bg-elevated)', color: step === i ? 'var(--accent-light)' : 'inherit' }}>{i + 1}</span>{label}
+                  <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 22, height: 22, borderRadius: '50%', fontSize: 11, background: step === i ? 'var(--accent-glow)' : 'var(--bg-elevated)', color: step === i ? 'var(--accent-light)' : 'inherit' }}>{i + 1}</span>{label}
                 </li>
               })}
             </ol>

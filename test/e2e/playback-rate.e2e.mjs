@@ -9,7 +9,7 @@
 //   3) 읽는 도중 0.75배로 바꾸면 **틀고 있는 소리에 즉시** 걸린다
 //   4) 다른 조각으로 넘어가도(새 소리 파일) 빠르기가 1배로 돌아가지 않는다
 //   5) ★다시 만들지 않는다 — 빠르기를 바꿔도 새로 만든 조각이 없다
-//   6) 설정에 남고, 생성 카드 화면의 빠르기도 같은 값을 보인다
+//   6) 설정에 남고, ★생성 카드 화면에는 빠르기 고르기가 없다(낭독 전용 — 2026-10-01 지시)
 //
 // 실행: node test/e2e/playback-rate.e2e.mjs   (사전: npm run build)
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
@@ -100,7 +100,8 @@ try {
   await win.getByRole('dialog', { name: '목소리 고르기' }).waitFor()
   await win.getByTestId('pick-voice-builtin').first().click()
   await win.getByTestId('generation-card').first().waitFor()
-  ok(await win.getByTestId('card-rate').inputValue() === '0.75', '★생성 카드 화면의 빠르기도 같은 값(0.75배)이다')
+  // ★낭독 전용(2026-10-01 지시) — 생성 카드 화면에는 빠르기 고르기가 없고, 낭독에서 고른 0.75배가 새지 않는다.
+  ok(await win.locator('[data-testid="card-rate"], [data-testid="playback-rate"]').count() === 0, '★생성 카드 화면에는 빠르기 고르기가 없다(낭독 전용)')
 } catch (e) {
   console.error('FAIL', e?.message || e)
   fails.push(String(e?.message || e))
