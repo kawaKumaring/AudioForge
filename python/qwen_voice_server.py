@@ -5,70 +5,219 @@
 ★격리 환경(externals/qwen3_tts_venv)의 파이썬으로 돈다. 앱 본체(reader)가 하나만 띄워 관리한다.
 ★부모가 사라지면(입력이 끊기면) 스스로 끝난다 — 그래픽카드 메모리를 붙든 고아로 남지 않는다.
 
-주고받기(한 줄에 JSON 하나)
-  요청: {"id": "...", "model": "<폴더>", "speaker": "sohee", "language": "korean", "text_file": "<글.txt>", "out": "<소리.wav>", "seed": 0}
-        {"id": "...", "model": "<폴더>", "warm": true}   미리 열기(소리는 만들지 않는다 · 2026-10-01)
+★두 번째 입구 — **이름 있는 파이프**(2026-10-01, 감정 생성 시간 줄이기)
+  생성 카드는 본체가 아니라 합성 프로세스(separate.py → tts_worker)가 Qwen 을 부른다. 그 프로세스는 생성마다 새로 뜨고,
+  예전에는 **조각마다** qwen_custom_voice.py 를 띄워 모델(1.7B)을 매번 열었다(한 번에 30~60초).
+  본체가 이 실행기를 띄울 때 파이프 주소·열쇠(실행마다 새로 만든 값)를 넘기면, 합성 프로세스가 여기로 요청을 보낸다.
+  ★이 컴퓨터 안의 프로세스 사이 통로다(네트워크가 아니다). 열쇠가 맞아야 붙는다.
+  ★요청은 한 줄로 차례대로 처리한다 — 낭독(표준 입력)과 카드(파이프)가 겹쳐도 GPU 에는 하나씩.
+  ★파이프 요청을 처리할 때마다 {"activity": true} 를 내보낸다 — 부모가 '한동안 안 씀' 으로 내리지 않게.
+  ★모델은 둘까지 들고 있는다(빠른 0.6B · 감정 1.7B) — 낭독과 카드가 번갈아도 다시 열지 않는다.
+
+주고받기(표준 입력: 한 줄에 JSON 하나 · 파이프: 같은 모양의 dict)
+  요청: {"id": "...", "model": "<폴더>", "speaker": "sohee", "language": "korean", "text_file": "<글.txt>"(또는 "text"),
+         "out": "<소리.wav>", "seed": 0, "instruct": "<영어 감정 지시 · 1.7B 만>"}
+        {"id": "...", "model": "<폴더>", "warm": true}   미리 열기(소리는 만들지 않는다)
   답  : {"id": "...", "ok": true, "seconds": 10.6, "sample_rate": 24000, "gen_sec": 9.8, "loaded_now": false}
         {"id": "...", "ok": false, "error": "..."}
   그 밖의 줄(라이브러리가 찍는 경고 등)은 부모가 무시한다 — 답은 id 로 짝짓는다.
 """
+import collections
 import json
+import os
+import queue
 import sys
+import threading
 import time
+
+_OUT_LOCK = threading.Lock()
 
 
 def reply(**kw):
-    sys.stdout.write(json.dumps(kw, ensure_ascii=False) + "\n")
-    sys.stdout.flush()
+    with _OUT_LOCK:
+        sys.stdout.write(json.dumps(kw, ensure_ascii=False) + "\n")
+        sys.stdout.flush()
 
 
-def main():
+MAX_MODELS = max(1, int(os.environ.get("AF_QWEN_MAX_MODELS", "2") or 2))
+
+
+class Models:
+    """모델 폴더 → 불러 둔 모델. 넘치면 가장 오래 안 쓴 것부터 내린다."""
+
+    def __init__(self):
+        self.loaded = collections.OrderedDict()
+
+    def get(self, model_dir):
+        import torch
+        import qwen_custom_voice as qcv
+        if model_dir in self.loaded:
+            self.loaded.move_to_end(model_dir)
+            return self.loaded[model_dir], False
+        while len(self.loaded) >= MAX_MODELS:
+            self.loaded.popitem(last=False)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        m = qcv.load(model_dir)
+        self.loaded[model_dir] = m
+        return m, True
+
+
+def handle(models, req):
+    """요청 하나 → 답(dict, id 없이)."""
     import numpy as np
     import soundfile as sf
     import torch
-    import qwen_custom_voice as qcv
-    model, model_dir = None, None
-    reply(id="", ok=True, ready=True)
-    for line in sys.stdin:
-        line = line.strip()
-        if not line:
-            continue
-        rid = ""
+    model, loaded_now = models.get(req["model"])
+    if req.get("warm"):
+        # 미리 열기 — 고른 순간 모델을 올려 둔다(첫 조각의 모델 열기를 누르기 전에 치른다).
+        return dict(ok=True, seconds=0, sample_rate=0, gen_sec=0, loaded_now=loaded_now)
+    if "text" in req:
+        text = str(req["text"] or "").strip()
+    else:
+        with open(req["text_file"], encoding="utf-8") as f:
+            text = f.read().strip()
+    if not text:
+        raise RuntimeError("읽을 글이 없습니다")
+    seed = int(req.get("seed", 0))
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    t = time.time()
+    wavs, sr = model.generate_custom_voice(text=text, speaker=req["speaker"], language=req.get("language", "korean"),
+                                           instruct=(req.get("instruct") or None))
+    gen = time.time() - t
+    wav = np.asarray(wavs[0], dtype="float32").reshape(-1)
+    if wav.size == 0 or not np.isfinite(wav).all():
+        raise RuntimeError("소리가 비었거나 깨졌습니다")
+    sf.write(req["out"], wav, int(sr), subtype="PCM_16")
+    return dict(ok=True, seconds=round(wav.size / float(sr), 2), sample_rate=int(sr), gen_sec=round(gen, 2),
+                loaded_now=loaded_now)
+
+
+def _pipe_listener(work):
+    """파이프 입구 — 붙은 연결마다 요청을 받아 같은 줄에 세우고, 답을 그 연결로 돌려준다."""
+    addr = os.environ.get("AF_QWEN_PIPE_ADDR", "")
+    key = os.environ.get("AF_QWEN_PIPE_KEY", "")
+    if not (addr and key):
+        return None
+    from multiprocessing.connection import Listener
+    lis = Listener(address=addr, family="AF_PIPE", authkey=key.encode("utf-8"))
+
+    def serve(conn):
         try:
-            req = json.loads(line)
-            rid = str(req.get("id", ""))
-            loaded_now = False
-            if model is None or req["model"] != model_dir:
-                model, model_dir = None, None
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-                model = qcv.load(req["model"])
-                model_dir = req["model"]
-                loaded_now = True
-            if req.get("warm"):
-                # 미리 열기 — 소희를 고른 순간 모델을 올려 둔다(첫 조각의 약 10초를 누르기 전에 치른다).
-                reply(id=rid, ok=True, seconds=0, sample_rate=0, gen_sec=0, loaded_now=loaded_now)
-                continue
-            with open(req["text_file"], encoding="utf-8") as f:
-                text = f.read().strip()
-            if not text:
-                raise RuntimeError("읽을 글이 없습니다")
-            seed = int(req.get("seed", 0))
-            torch.manual_seed(seed)
-            if torch.cuda.is_available():
-                torch.cuda.manual_seed_all(seed)
-            t = time.time()
-            wavs, sr = model.generate_custom_voice(text=text, speaker=req["speaker"], language=req.get("language", "korean"))
-            gen = time.time() - t
-            wav = np.asarray(wavs[0], dtype="float32").reshape(-1)
-            if wav.size == 0 or not np.isfinite(wav).all():
-                raise RuntimeError("소리가 비었거나 깨졌습니다")
-            sf.write(req["out"], wav, int(sr), subtype="PCM_16")
-            reply(id=rid, ok=True, seconds=round(wav.size / float(sr), 2), sample_rate=int(sr),
-                  gen_sec=round(gen, 2), loaded_now=loaded_now)
+            while True:
+                req = conn.recv()
+                if not isinstance(req, dict):
+                    break
+                done = threading.Event()
+                box = {}
+                work.put((req, lambda r: (box.update(r), done.set()), True))
+                done.wait()
+                conn.send(box)
+        except (EOFError, OSError):
+            pass
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def accept():
+        while True:
+            try:
+                conn = lis.accept()
+            except Exception:
+                return          # 닫혔다(실행기가 끝난다) 또는 열쇠가 틀렸다 — 열쇠 틀림은 그 연결만 끊긴다
+            threading.Thread(target=serve, args=(conn,), daemon=True).start()
+
+    threading.Thread(target=accept, daemon=True).start()
+    return lis
+
+
+class _Stdin:
+    """표준 입력을 **막히지 않게** 읽는다.
+
+    ★왜 (2026-10-01 실측 · 카드 감정 한 번에 약 200초): 처음엔 다른 스레드가 표준 입력을 늘 읽고(막힌 채 기다리고) 있었다.
+      윈도우에서는 한 스레드가 동기 파이프를 읽느라 막혀 있으면, 다른 스레드가 그 손잡이를 건드리는 일(새 DLL 의 초기화 등 —
+      모델·GPU 라이브러리를 여는 동안 일어난다)이 **그 읽기가 끝날 때까지** 멈춘다. 그래서 모델 열기가 부모가 '한동안 안 씀'(3분)으로
+      입력을 닫을 때까지 멈춰 있었다. 이제 들어온 바이트가 있을 때만 읽는다(PeekNamedPipe) — 막힌 읽기가 없다.
+    """
+
+    def __init__(self):
+        self.fd = sys.stdin.fileno()
+        self.buf = b""
+        self.eof = False
+        self.handle = None
+        if os.name == "nt":
+            import msvcrt
+            self.handle = msvcrt.get_osfhandle(self.fd)
+
+    def _available(self):
+        if self.handle is not None:
+            import _winapi
+            try:
+                return _winapi.PeekNamedPipe(self.handle, 0)[0]
+            except OSError:
+                self.eof = True          # 부모가 닫았다
+                return 0
+        import select
+        r, _, _ = select.select([self.fd], [], [], 0)
+        return 65536 if r else 0
+
+    def lines(self):
+        """지금 들어와 있는 완전한 줄들(막히지 않는다). 끊기면 eof 가 선다."""
+        n = self._available()
+        if n:
+            chunk = os.read(self.fd, n)
+            if not chunk:
+                self.eof = True
+            self.buf += chunk
+        out = []
+        while b"\n" in self.buf:
+            line, self.buf = self.buf.split(b"\n", 1)
+            out.append(line.decode("utf-8", "replace").strip())
+        return [x for x in out if x]
+
+
+def main():
+    work = queue.Queue()
+    models = Models()
+    stdin = _Stdin()
+
+    def run(req, respond):
+        try:
+            respond(handle(models, req))
         except Exception as e:
-            reply(id=rid, ok=False, error="%s: %s" % (type(e).__name__, str(e)[:300]))
-    return 0      # 입력이 끊겼다 = 부모가 닫았거나 사라졌다
+            respond(dict(ok=False, error="%s: %s" % (type(e).__name__, str(e)[:300])))
+
+    lis = None
+    try:
+        lis = _pipe_listener(work)
+    except Exception as e:      # 파이프를 못 열면 표준 입력만 — 카드는 예전 길로 돌아간다
+        sys.stderr.write("[qwen_voice_server] 파이프를 열지 못했습니다: %s\n" % e)
+    reply(id="", ok=True, ready=True, pipe=bool(lis))
+    # ★한 스레드(여기)가 차례로 처리한다 — 표준 입력 요청과 파이프 요청이 겹쳐도 GPU 에는 하나씩.
+    while not stdin.eof:
+        for line in stdin.lines():
+            try:
+                req = json.loads(line)
+            except Exception:
+                continue
+            rid = str(req.get("id", ""))
+            run(req, lambda r, rid=rid: reply(id=rid, **r))
+        try:
+            req, respond, _ = work.get(timeout=0.05)
+        except queue.Empty:
+            continue
+        reply(id="", activity=True)
+        run(req, respond)
+    try:
+        if lis:
+            lis.close()
+    except Exception:
+        pass
+    os._exit(0)
 
 
 if __name__ == "__main__":

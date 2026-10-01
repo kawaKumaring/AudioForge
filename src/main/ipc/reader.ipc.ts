@@ -27,6 +27,7 @@ import { usesGpu } from '../../shared/readerQueue'
 import { appLog, fileLabel } from '../services/app-log'
 import { createLane, failureReason, jsonLines, madeTrack, pythonReason, readerRunConfig } from '../services/reader-run'
 import { QwenVoiceWorker } from '../services/qwen-voice-worker'
+import { qwenWorker, stopQwenResident } from '../services/qwen-resident'
 import { parseWav, envelope, alignParts, type TimingPart } from '../../shared/readerTiming'
 
 const execFileAsync = promisify(execFile)
@@ -120,22 +121,7 @@ function qwenVoiceOf(path: string): { model: string; speaker: string } | null {
   return null
 }
 
-/** Qwen 상주 실행기 — 하나만. 한동안 안 쓰면 내리고, 앱이 끝날 때 내린다. */
-let qwenWorkerInstance: QwenVoiceWorker | null = null
-function qwenWorker(): QwenVoiceWorker {
-  if (qwenWorkerInstance) return qwenWorkerInstance
-  const pyDir = dirname(scriptPath())
-  const root = dirname(pyDir)
-  qwenWorkerInstance = new QwenVoiceWorker({
-    spawn: (cmd, args, opts) => spawn(cmd, args, opts as SpawnOptions),
-    pythonPath: () => join(root, 'externals', 'qwen3_tts_venv', 'Scripts', 'python.exe'),
-    scriptPath: () => join(pyDir, 'qwen_voice_server.py'),
-    // 검사 전용 — '한동안 안 쓰면 내린다' 를 몇 초 안에 보려고. 검사 밖에서는 3분.
-    idleMs: process.env.AF_E2E === '1' && Number(process.env.AF_E2E_QWEN_IDLE_MS) > 0 ? Number(process.env.AF_E2E_QWEN_IDLE_MS) : undefined,
-    onEvent: (e, f) => appLog()?.info('reader', `Qwen 상주 실행기 ${e === 'start' ? '띄움' : `내림${f.reason ? `(${String(f.reason)})` : ''}`}`),
-  })
-  return qwenWorkerInstance
-}
+// Qwen 상주 실행기는 생성 카드와 함께 쓴다 — services/qwen-resident(2026-10-01).
 
 /**
  * 기본 목소리(Supertonic) **상주 실행기** — 하나만 (2026-10-01).
@@ -301,7 +287,7 @@ const inFlight = new Map<string, Promise<string>>()
 
 export function registerReaderIpc(): void {
   // Qwen 상주 실행기는 앱과 함께 끝난다(그래픽카드 메모리를 붙든 채 남지 않게).
-  app.on('will-quit', () => { quitting = true; qwenWorkerInstance?.stop('앱 종료'); readerWorkerInstance?.stop('앱 종료') })
+  app.on('will-quit', () => { quitting = true; stopQwenResident('앱 종료'); readerWorkerInstance?.stop('앱 종료') })
 
   /**
    * 목소리를 **미리 연다** — 고른 순간(또는 책을 연 순간) 모델을 올려 둬 첫 조각을 기다리지 않게 (2026-10-01).

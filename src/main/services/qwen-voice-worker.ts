@@ -43,6 +43,9 @@ interface Live {
   proc: ChildProcess
   buf: string
   dead: boolean
+  /** 실행기가 '준비됨' 을 알렸다(파이프까지 열렸다). */
+  ready: Promise<void>
+  markReady: () => void
   pending: { id: string; resolve: (r: Record<string, unknown>) => void; reject: (e: Error) => void; timer: ReturnType<typeof setTimeout> } | null
 }
 
@@ -76,6 +79,24 @@ export class QwenVoiceWorker {
     return run
   }
 
+  /**
+   * 요청 없이 **띄워 둔다** — 다른 입구(이름 있는 파이프)로 일이 올 때를 위해(2026-10-01 생성 카드).
+   * 한동안 일이 없으면 평소처럼 내린다.
+   */
+  ensure(waitMs = 30_000): Promise<boolean> {
+    if (!this.live || this.live.dead) this.live = this.start()
+    this.touch()
+    const l = this.live
+    // 준비 알림(파이프가 열림)까지 기다린다 — 너무 오래면 기다리지 않고 넘어간다(합성 쪽이 예전 길로 간다).
+    return Promise.race([l.ready.then(() => true), new Promise<boolean>((r) => setTimeout(() => r(false), waitMs))])
+  }
+
+  /** '한동안 안 씀' 시계를 다시 건다. */
+  private touch(): void {
+    if (this.idle) clearTimeout(this.idle)
+    this.idle = setTimeout(() => this.stop('한동안 안 씀'), this.deps.idleMs ?? QWEN_IDLE_MS)
+  }
+
   /** 내린다 — 떠 있지 않으면 아무 일도 없다. 기다리던 요청은 사유와 함께 끝난다. */
   stop(reason = '내림'): void {
     if (this.idle) { clearTimeout(this.idle); this.idle = null }
@@ -92,7 +113,9 @@ export class QwenVoiceWorker {
       stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
       env: { ...process.env, ...(this.deps.env || {}), PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
     })
-    const l: Live = { proc, buf: '', dead: false, pending: null }
+    let markReady = () => { /* 아래에서 채운다 */ }
+    const ready = new Promise<void>((r) => { markReady = r })
+    const l: Live = { proc, buf: '', dead: false, pending: null, ready, markReady: () => markReady() }
     proc.stdin?.on('error', () => this.finish(l, new Error(`${this.label}에 쓰지 못했습니다`)))
     proc.stdout?.setEncoding?.('utf8')
     proc.stdout?.on('data', (chunk: string) => {
@@ -120,6 +143,9 @@ export class QwenVoiceWorker {
     if (!line.startsWith('{')) return
     let msg: Record<string, unknown>
     try { msg = JSON.parse(line) } catch { return }
+    // 다른 입구(파이프)로 일하는 중이라는 알림 — 내리지 않게 시계를 다시 건다(기다리던 요청이 있으면 끝날 때 다시 건다).
+    if (msg.activity === true) { if (!l.pending) this.touch(); return }
+    if (msg.ready === true) { l.markReady(); return }
     const p = l.pending
     if (!p || String(msg.id ?? '') !== p.id) return
     l.pending = null

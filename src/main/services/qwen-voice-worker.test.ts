@@ -142,3 +142,33 @@ test('겹쳐 와도 차례로 보낸다(한 번에 하나)', async () => {
   await b
   w.stop()
 })
+
+// ── 파이프 입구(2026-10-01 생성 카드) — 요청 없이 띄우고 준비를 기다린다 · 파이프로 일하는 동안 내리지 않는다 ──
+test('★요청 없이 띄우고, 실행기가 준비를 알릴 때까지 기다린다 — 늦으면 기다리지 않고 false', async () => {
+  const { w, procs } = make()
+  const ready = w.ensure(1000)
+  await tick()
+  assert.equal(procs.length, 1, '띄우지 않았다')
+  assert.equal(procs[0].stdin.written.length, 0, '띄우기만 해야 하는데 요청을 보냈다')
+  procs[0].stdout.emit('data', JSON.stringify({ id: '', ok: true, ready: true, pipe: true }) + '\n')
+  assert.equal(await ready, true)
+  assert.equal(await w.ensure(1000), true, '이미 준비된 실행기는 곧바로')
+  assert.equal(procs.length, 1, '두 번 띄웠다')
+  w.stop()
+  const { w: w2 } = make()
+  assert.equal(await w2.ensure(20), false, '준비 알림이 없으면 기다림을 끝내고 false')
+  w2.stop()
+})
+
+test('★파이프로 일하는 동안(activity)은 한동안 안 씀으로 내리지 않는다', async () => {
+  const { w, procs } = make({ idleMs: 40 })
+  void w.ensure(10)
+  await tick()
+  for (let i = 0; i < 4; i++) {
+    await new Promise((r) => setTimeout(r, 25))
+    procs[0].stdout.emit('data', JSON.stringify({ id: '', activity: true }) + '\n')
+  }
+  assert.equal(w.running, true, '일하는 중인데 내렸다')
+  await new Promise((r) => setTimeout(r, 70))
+  assert.equal(w.running, false, '일이 끝난 뒤에는 내린다')
+})

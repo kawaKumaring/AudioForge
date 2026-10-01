@@ -9,6 +9,7 @@ import {
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
 import { appLog, fileLabel } from '../services/app-log'
+import { ensureQwenResident } from '../services/qwen-resident'
 import { currentBuildInfo } from './app-version.ipc'
 import { createSettlementGuard, createRunSettlement, createRunnerSlot } from '../services/run-settlement'
 import type { RunEnd, RunTerminal } from '../services/run-settlement'
@@ -917,6 +918,13 @@ export function registerAudioIpc(
     }
     if (!existsSync(scriptPath)) {
       throw new Error(`Python 스크립트를 찾을 수 없습니다: ${basename(scriptPath)}`)
+    }
+
+    // ★Qwen 지정 목소리 카드는 **띄워 둔 실행기**로 만든다(2026-10-01 — 감정 생성 시간 줄이기).
+    //   합성 파이썬이 붙기 전에 실행기가 준비돼 있어야 한다(늦으면 그 실행은 조각마다 모델을 여는 예전 길).
+    if (mode === 'tts' && options?.ttsEngine === 'qwen-custom') {
+      const residentOk = await ensureQwenResident()
+      appLog()?.info('job', `Qwen 상주 실행기 ${residentOk ? '준비됨 — 카드가 붙는다' : '준비 못 함 — 조각마다 모델을 연다'}`)
     }
 
     // Build output directory

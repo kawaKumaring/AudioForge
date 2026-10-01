@@ -508,7 +508,9 @@ class QwenCustomEngine(TTSEngine):
 
     ★목소리는 자리(`model_path`)로 고른다 — 소희는 모델 설정 파일(config.json), 나머지는 목소리 파일
       (voices/qwen/<화자>.json). 해석은 `qwen_voice_of` 한 곳.
-    ★격리 환경의 파이썬으로 `qwen_custom_voice.py` 를 조각마다 부른다 — 매번 모델을 여는 데 약 11초가 든다(실측).
+    ★먼저 **띄워 둔 실행기**(본체가 관리하는 qwen_voice_server — 이름 있는 파이프)에 보낸다(2026-10-01).
+      모델(0.6B·1.7B)이 이미 올라 있어 조각마다 여는 시간이 없다. 주소·열쇠는 본체가 환경 변수로 넘긴다.
+    ★붙지 못하면 예전 길 — 격리 환경의 파이썬으로 `qwen_custom_voice.py` 를 조각마다 부른다(매번 모델을 연다).
     ★빠르기는 바꿀 수 없다(모델에 그 조절이 없다) — 쓰는 척하지 않고 그렇다고 알린다.
     """
 
@@ -523,6 +525,8 @@ class QwenCustomEngine(TTSEngine):
         self.model_path = None
         self._speed_told = False
         self._emotion_told = False
+        self._conn = None             # 띄워 둔 실행기로 가는 연결(한 합성 실행 동안 하나)
+        self._resident_off = False    # 한 번 못 붙으면 이 실행에서는 예전 길로
 
     def load(self, lang_code="ko"):
         if not os.path.isfile(self._venv_python):
@@ -570,6 +574,8 @@ class QwenCustomEngine(TTSEngine):
                 instruct = None
             else:
                 instruct = None
+        if self._via_resident(model_dir, speaker, text, instruct, output_path):
+            return
         fd, text_file = tempfile.mkstemp(suffix=".txt", prefix="qcv-")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
@@ -594,6 +600,48 @@ class QwenCustomEngine(TTSEngine):
         if not (last and last.get("type") == "done" and os.path.isfile(output_path)):
             why = (last or {}).get("message") or ("종료 코드 %s" % proc.returncode)
             raise RuntimeError("Qwen 지정 목소리로 만들지 못했습니다 — %s" % why)
+
+    #: 띄워 둔 실행기 한 조각의 상한(초) — 멈춘 실행기에 갇히지 않게.
+    RESIDENT_TIMEOUT_SEC = 900
+
+    def _via_resident(self, model_dir, speaker, text, instruct, output_path):
+        """띄워 둔 실행기로 만든다. 만들었으면 True, 붙지 못했으면 False(예전 길로). 실행기가 실패를 답하면 그 사유로 멈춘다."""
+        addr = os.environ.get("AF_QWEN_PIPE_ADDR", "")
+        key = os.environ.get("AF_QWEN_PIPE_KEY", "")
+        if not (addr and key) or self._resident_off:
+            return False
+        try:
+            from multiprocessing.connection import Client
+            if self._conn is None:
+                # 본체가 준비를 기다린 뒤 합성을 띄우지만, 드물게 늦을 수 있어 잠깐(최대 5초) 다시 붙어 본다.
+                for attempt in range(10):
+                    try:
+                        self._conn = Client(addr, family="AF_PIPE", authkey=key.encode("utf-8"))
+                        break
+                    except FileNotFoundError:
+                        if attempt == 9:
+                            raise
+                        time.sleep(0.5)
+            self._conn.send({"model": model_dir, "speaker": speaker, "language": "korean", "text": text,
+                             "out": output_path, "seed": 0, "instruct": instruct or ""})
+            if not self._conn.poll(self.RESIDENT_TIMEOUT_SEC):
+                raise TimeoutError("답이 없습니다")
+            r = self._conn.recv()
+        except Exception as e:
+            self._resident_off = True
+            try:
+                if self._conn is not None:
+                    self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+            emit("progress", message="띄워 둔 Qwen 에 붙지 못해 조각마다 모델을 엽니다(%s)" % type(e).__name__)
+            return False
+        if not (isinstance(r, dict) and r.get("ok")):
+            raise RuntimeError("Qwen 지정 목소리로 만들지 못했습니다 — %s" % ((r or {}).get("error") if isinstance(r, dict) else r))
+        if not os.path.isfile(output_path):
+            raise RuntimeError("Qwen 지정 목소리로 만들지 못했습니다 — 소리 파일이 없습니다")
+        return True
 
 
 # ── GPT-SoVITS Engine (Korean, Japanese, Chinese, English — via isolated venv) ──
