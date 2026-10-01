@@ -10,6 +10,7 @@ import { opLog, nameOnly } from '@/lib/opLog'
 import { chunkAt, TEXT_FILE_LIMIT } from '../../shared/readerChunks'
 import { decodeBookText, encodingLabel } from '../../shared/readerDecode'
 import PlaybackRateSelect from './PlaybackRateSelect'
+import { usePlaybackVolume } from '@/hooks/usePlaybackVolume'
 import { WINDOW_FROM, estimateHeight, offsetsOf, visibleRange, scrollTopFor } from '../../shared/readerWindow'
 import { DEFAULT_READER_PREFS, parseReaderPrefs, rememberVoice, READER_PREFS_STORAGE_KEY, READER_FONT_MAX, READER_FONT_MIN, type ReaderPrefs } from '../../shared/readerText'
 import type { BuiltinVoiceRef } from '../../shared/synthesisCardVoice'
@@ -513,6 +514,11 @@ export default function ReaderWorkspace() {
     })
   }
   const progress = book ? `${position + 1} / ${book.paragraphs.length} 문단` : ''
+  // ★스피커 음량 (2026-10-01 지시: "낭독에서 스피커 음 조절 기능이 필요하다") — 앱의 **공용 재생 음량**(다른 화면 슬라이더와 같은 값, 보관됨).
+  const { volume, change: changeVolume, commit: commitVolume, saveFailed: volumeSaveFailed } = usePlaybackVolume()
+  /** 소리를 끄기 전 음량 — 다시 켜면 이 값으로(100% 로 튀지 않게). */
+  const lastVolume = useRef(volume > 0 ? volume : 1)
+  if (volume > 0) lastVolume.current = volume
   const iconButton: CSSProperties = { ...kitButton, padding: 8, minWidth: 36 }
   return <section data-testid="reader-workspace" aria-label="낭독 작업실" style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
@@ -596,6 +602,16 @@ export default function ReaderWorkspace() {
         <button data-testid="reader-follow" aria-pressed={prefs.follow} title={prefs.follow ? '읽는 줄을 화면이 따라갑니다 — 누르면 멈춥니다' : '누르면 읽는 줄을 화면이 따라갑니다'}
           onClick={() => updatePrefs({ follow: !prefs.follow })}
           style={{ ...kitButton, color: prefs.follow ? 'var(--cyan)' : 'var(--text-muted)', borderColor: prefs.follow ? 'var(--cyan)' : undefined }}><Icon name="follow"/>따라가기</button>
+        <label title={volumeSaveFailed ? '음량 — 이 값을 기억하지 못했습니다(이번 실행에만 적용됩니다).' : `음량 ${Math.round(volume * 100)}% — 앱 전체의 재생 음량이고, 정한 값이 다음에도 그대로 쓰입니다.`}
+          style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: 'var(--text-secondary)' }}>
+          <button type="button" aria-label={volume > 0 ? '소리 끄기' : '소리 켜기'} title={volume > 0 ? '소리 끄기' : '소리 켜기'}
+            data-testid="reader-mute" onClick={() => { changeVolume(volume > 0 ? 0 : lastVolume.current); commitVolume() }}
+            style={{ ...iconButton, padding: 6, minWidth: 30, minHeight: 30 }}><Icon name={volume > 0 ? 'volume' : 'mute'} size={16}/></button>
+          <input data-testid="reader-volume" type="range" min="0" max="1" step="0.05" value={volume} aria-label="음량"
+            onChange={(e) => changeVolume(parseFloat(e.target.value))}
+            onPointerUp={commitVolume} onKeyUp={commitVolume} onBlur={commitVolume}
+            style={{ width: 72, accentColor: 'var(--accent-light)', cursor: 'pointer' }} />
+        </label>
         {/* ★듣는 빠르기 — 만든 소리를 다시 만들지 않고 빠르게/느리게 듣는다(2026-09-30 지시). 낭독 전용. */}
         <PlaybackRateSelect testId="reader-rate" />
         <button ref={settingsButton} data-testid="reader-settings" aria-haspopup="dialog" aria-label="읽기 설정" title="읽기 설정 — 글자 크기 · 괄호 속 한자 · 따라가기"

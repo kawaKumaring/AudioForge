@@ -87,10 +87,30 @@ function scriptPath(): string {
 }
 
 /**
- * Qwen 지정 목소리의 한국어 화자 — 파이썬 쪽 규칙(tts_worker.QWEN_CUSTOM_KOREAN)과 같은 하나.
- * 목록에 오르는 목소리도 이것 하나라서, 모델 폴더(설정 파일 경로)가 곧 목소리의 이름표다.
+ * Qwen 지정 목소리 자리 → (모델 폴더, 화자). 파이썬 `tts_worker.qwen_voice_of` 와 같은 규칙.
+ * · 모델의 config.json → 소희(예전부터 쓰던 자리)
+ * · python/voices/qwen/<화자>.json → 그 화자(2026-10-01 — 소희 말고 일곱을 더 싣는다). 모델은 받아 둔 지정 목소리 모델.
+ * 못 풀면 null.
  */
-const QWEN_KOREAN_SPEAKER = 'sohee'
+function qwenVoiceOf(path: string): { model: string; speaker: string } | null {
+  if (basename(path) === 'config.json') return { model: dirname(path), speaker: 'sohee' }
+  let speaker = ''
+  try {
+    const j = JSON.parse(readFileSync(path, 'utf-8')) as { engine?: string; speaker?: string }
+    if (j.engine !== 'qwen-custom' || !j.speaker) return null
+    speaker = String(j.speaker).toLowerCase()
+  } catch { return null }
+  const ext = join(dirname(dirname(scriptPath())), 'externals')
+  try {
+    for (const name of readdirSync(ext).sort()) {
+      if (!name.startsWith('qwen3_tts')) continue
+      const cfg = join(ext, name, 'config.json')
+      if (!existsSync(cfg)) continue
+      try { if ((JSON.parse(readFileSync(cfg, 'utf-8')) as { tts_model_type?: string }).tts_model_type === 'custom_voice') return { model: join(ext, name), speaker } } catch { /* 다음 폴더 */ }
+    }
+  } catch { /* 없다 */ }
+  return null
+}
 
 /** Qwen 상주 실행기 — 하나만. 한동안 안 쓰면 내리고, 앱이 끝날 때 내린다. */
 let qwenWorkerInstance: QwenVoiceWorker | null = null
@@ -220,7 +240,9 @@ async function makeChunk(body: string, v: ReaderVoice, out: string): Promise<str
       const textFile = join(runDir, 'text.txt')
       writeFileSync(textFile, body, 'utf-8')
       wav = join(runDir, 'qwen.wav')
-      const r = await qwenWorker().speak({ model: dirname(v.path), speaker: QWEN_KOREAN_SPEAKER, language: 'korean', textFile, out: wav })
+      const qv = qwenVoiceOf(v.path)
+      if (!qv) throw new Error('고른 Qwen 목소리를 알아보지 못했습니다')
+      const r = await qwenWorker().speak({ model: qv.model, speaker: qv.speaker, language: 'korean', textFile, out: wav })
       note = ` 상주${r.loadedNow ? '(모델 엶)' : ''} 생성=${r.genSec.toFixed(1)}s 소리=${r.seconds.toFixed(1)}s`
       if (!existsSync(wav)) throw new Error('이 부분을 소리로 만들지 못했습니다')
     } else {
@@ -294,7 +316,9 @@ export function registerReaderIpc(): void {
           const busy = synthesisBusy('낭독')
           if (busy) return { warmed: false, why: busy }
           setReaderRunning(true)
-          try { await qwenWorker().call({ warm: true, model: dirname(v.path) }) } finally { setReaderRunning(false) }
+          const qv = qwenVoiceOf(v.path)
+          if (!qv) return { warmed: false, why: '고른 Qwen 목소리를 알아보지 못했습니다' }
+          try { await qwenWorker().call({ warm: true, model: qv.model }) } finally { setReaderRunning(false) }
           return { warmed: true }
         }))
       }

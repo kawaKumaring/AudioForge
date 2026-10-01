@@ -250,6 +250,10 @@ function createWindow(): void {
   if (process.env.AF_E2E === '1') {
     // showInactive: 창은 보이되 포커스를 가져오지 않는다(화면 캡처·클릭은 그대로 된다).
     mainWindow.once('ready-to-show', () => { try { mainWindow?.showInactive() } catch { /* 이미 닫혔다 */ } })
+    // ★검사·개발툴 MCP 는 **소리를 내지 않는다** (2026-10-01 사용자 요청: "테스트를 할 때는 무음으로").
+    //   창의 소리 출력만 끈다 — 재생 자체(시각이 흐르고, 끝나면 다음으로 넘어가고, 음량·빠르기 값)는 그대로라 검사가 보는 것은 같다.
+    //   들어야 하는 검사만 AF_E2E_AUDIBLE=1 로 켠다.
+    if (process.env.AF_E2E_AUDIBLE !== '1') mainWindow.webContents.setAudioMuted(true)
   }
   keepOffscreen(mainWindow)
 

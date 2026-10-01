@@ -100,6 +100,8 @@ function stampOf(p: string): string {
 export interface BuiltinVoice {
   engineId: string; modelId: string; label: string
   language: string; sampleRate: number; path: string
+  /** 목소리 설명(모델 카드) · 한국어 원어민인가 — Qwen 지정 목소리만(2026-10-01). */
+  note?: string; native?: boolean
 }
 
 /** 목소리 목록을 여러 번 묻지 않는다 — 설치가 바뀌는 일은 드물다. */

@@ -90,6 +90,22 @@ try {
   const c = await current()
   ok(c.rate === 0.75 && c.def === 0.75, '★다른 조각(새 소리 파일)으로 넘어가도 1배로 돌아가지 않는다', c)
 
+  // ── 7. 스피커 음량(2026-10-01 지시) — 읽는 도중 바꾸면 틀고 있는 소리에 곧바로 · 소리 끄기/켜기는 앞 음량으로 · 보관 ──
+  await win.getByTestId('reader-volume').fill('0.4')
+  await win.getByTestId('reader-volume').dispatchEvent('pointerup')
+  const vol1 = await win.evaluate(() => window.__played.at(-1).volume)
+  ok(Math.abs(vol1 - 0.4) < 0.01, '★낭독 음량을 바꾸면 틀고 있는 소리에 곧바로 걸린다', vol1)
+  await win.getByTestId('reader-mute').click()
+  const vol0 = await win.evaluate(() => window.__played.at(-1).volume)
+  await win.getByTestId('reader-mute').click()
+  const vol2 = await win.evaluate(() => window.__played.at(-1).volume)
+  ok(vol0 === 0 && Math.abs(vol2 - 0.4) < 0.01, '★소리 끄기 → 켜기는 앞 음량(40%)으로 돌아온다(100% 로 튀지 않는다)', { vol0, vol2 })
+  await win.waitForTimeout(300)
+  ok(Math.abs((settingsJson().playbackVolume ?? -1) - 0.4) < 0.01, '음량이 설정에 남는다', settingsJson().playbackVolume)
+  // ★검사는 소리를 내지 않는다(2026-10-01 사용자 요청) — 재생은 그대로 흐르고(위 검사들) 스피커로만 나가지 않는다.
+  ok(await app.evaluate(({ BrowserWindow }) => BrowserWindow.getAllWindows().every((w) => w.webContents.isAudioMuted())),
+    '★검사 창은 소리를 내지 않는다(무음)')
+
   await win.getByTestId('reader-play').click()
 
   // ── 6. 설정에 남고, 카드 화면도 같은 값 ─────────────────────────────

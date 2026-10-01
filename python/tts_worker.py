@@ -375,9 +375,47 @@ class SupertonicEngine(TTSEngine):
 
 # ── Qwen3-TTS 지정 목소리(CustomVoice — 참조 없이 모델 안의 목소리 · GPU · 격리 환경) ──
 
-# 한국어 목소리 — 모델이 한국어 원어민 목소리로 소개하는 것만 싣는다(2026-09-30 지시: "한국어가 있다면 받아 본다").
-# ★다른 여덟 목소리(영·중·일)도 한국어를 말할 수는 있지만 들어 보지 않았다 — 싣지 않는다.
+# 한국어 원어민 목소리 — 모델이 한국어 원어민 목소리로 소개하는 것(2026-09-30 지시: "한국어가 있다면 받아 본다").
 QWEN_CUSTOM_KOREAN = {"sohee": "소희"}
+
+# ★다른 화자도 한국어로 읽는다 (2026-10-01 지시: "소희 이외에도 다른 목소리를 늘리고 싶다").
+#   같은 글 3개 × 씨앗 2개를 한국어로 만들어 Whisper 로 받아 적었다 — 아래 일곱은 글자 오류율 0%.
+#   딜런(베이징)은 6개 중 하나가 12.5% 로 빠졌다(평균 2.1%) — 싣지 않는다.
+#   ★받아 적기는 **억양**을 재지 못한다 — 원어민이 아니라 억양이 있다고 이름표에 적고, 사용자가 들어 보고 고른다.
+#   설명은 모델 카드(README Supported Speakers)를 옮겼다.
+QWEN_CUSTOM_SPEAKERS = {
+    "sohee": {"name": "소희", "desc": "따뜻한 여성", "native": True},
+    "vivian": {"name": "비비안", "desc": "밝은 젊은 여성 · 중국어 억양", "native": False},
+    "serena": {"name": "세레나", "desc": "따뜻하고 부드러운 젊은 여성 · 중국어 억양", "native": False},
+    "ono_anna": {"name": "오노 안나", "desc": "장난스러운 여성 · 일본어 억양", "native": False},
+    "uncle_fu": {"name": "푸 아저씨", "desc": "연륜 있는 부드러운 남성 · 중국어 억양", "native": False},
+    "eric": {"name": "에릭", "desc": "활기찬 남성 · 중국어(쓰촨) 억양", "native": False},
+    "ryan": {"name": "라이언", "desc": "리듬감 있는 남성 · 영어 억양", "native": False},
+    "aiden": {"name": "에이든", "desc": "밝은 미국 남성 · 영어 억양", "native": False},
+}
+# 소희 말고는 **목소리 파일**(python/voices/qwen/<화자>.json)로 고른다 — 목소리마다 자리가 달라야 고르기·쌓아 두기가 갈린다.
+QWEN_VOICE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voices", "qwen")
+
+
+def qwen_voice_of(path):
+    """목소리 자리 → (모델 설정 파일, 화자). 모르면 (None, None).
+    · 모델의 config.json → 소희(예전부터 쓰던 자리 — 저장된 카드·낭독 선택이 그대로 산다)
+    · voices/qwen/<화자>.json → 그 화자, 모델은 받아 둔 지정 목소리 모델"""
+    import json as _json
+    if not path:
+        return None, None
+    if os.path.basename(path) == "config.json":
+        return path, "sohee"
+    try:
+        with open(path, encoding="utf-8") as f:
+            j = _json.load(f)
+    except Exception:
+        return None, None
+    sp = str(j.get("speaker", "")).lower()
+    if j.get("engine") != "qwen-custom" or sp not in QWEN_CUSTOM_SPEAKERS:
+        return None, None
+    models = qwen_custom_voice_models()
+    return (os.path.join(models[0], "config.json") if models else None), sp
 
 
 def qwen_custom_voice_models():
@@ -397,10 +435,10 @@ def qwen_custom_voice_models():
 
 
 class QwenCustomEngine(TTSEngine):
-    """Qwen3-TTS **지정 목소리** — 참조 소리 없이 모델 안의 목소리(소희)로 읽는다.
+    """Qwen3-TTS **지정 목소리** — 참조 소리 없이 모델 안의 목소리(소희 외 일곱)로 읽는다.
 
-    ★목소리는 모델 폴더의 설정 파일(config.json) 경로로 고른다(`model_path`) — 한 모델에 한국어 목소리가 하나라
-      그 경로가 목소리의 이름표가 된다. 화자 이름은 QWEN_CUSTOM_KOREAN 이 정한다.
+    ★목소리는 자리(`model_path`)로 고른다 — 소희는 모델 설정 파일(config.json), 나머지는 목소리 파일
+      (voices/qwen/<화자>.json). 해석은 `qwen_voice_of` 한 곳.
     ★격리 환경의 파이썬으로 `qwen_custom_voice.py` 를 조각마다 부른다 — 매번 모델을 여는 데 약 11초가 든다(실측).
     ★빠르기는 바꿀 수 없다(모델에 그 조절이 없다) — 쓰는 척하지 않고 그렇다고 알린다.
     """
@@ -427,9 +465,10 @@ class QwenCustomEngine(TTSEngine):
         import subprocess
         import tempfile
         self.load()
-        cfg = self.model_path or ""
+        cfg, speaker = qwen_voice_of(self.model_path or "")
+        cfg = cfg or ""
         model_dir = os.path.dirname(cfg)
-        if not (cfg and os.path.isfile(cfg) and _qwen_variant_info(model_dir)):
+        if not (cfg and speaker and os.path.isfile(cfg) and _qwen_variant_info(model_dir)):
             e = RuntimeError("고른 기본 목소리 모델을 찾지 못했습니다: %s" % os.path.basename(model_dir or ""))
             e.error_payload = {"code": ENGINE_LANG_UNAVAILABLE, "engine": self.name}
             raise e
@@ -451,7 +490,6 @@ class QwenCustomEngine(TTSEngine):
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
         try:
-            speaker = next(iter(QWEN_CUSTOM_KOREAN))
             env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
             proc = subprocess.run(
                 [self._venv_python, "-X", "utf8", self._script, "--model", model_dir, "--speaker", speaker,

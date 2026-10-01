@@ -87,15 +87,19 @@ export default function VoicePicker({
       {builtins !== null && !builtins.length && <span style={{ ...muted, color: 'var(--amber)' }} title={why}>쓸 수 있는 기본 목소리가 없습니다</span>}
       {groups.map((g) => <section key={g.key} aria-label={g.title}>
         <h3 style={heading}><span>{g.title}</span><span style={{ ...muted, fontWeight: 400 }}>{g.note}</span></h3>
-        <div role="radiogroup" aria-label={g.title} style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fill, minmax(${g.wide ? 140 : 88}px, 1fr))`, gap: 6 }}>
+        <div role="radiogroup" aria-label={g.title} style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fill, minmax(${g.wide ? 180 : 88}px, 1fr))`, gap: 6 }}>
           {g.voices.map(({ voice: v, short, tag }) => <button key={`${v.engineId}:${v.modelId}`} type="button" role="radio"
             data-testid={ids.chip} aria-checked={sel === v.path} aria-label={v.label} disabled={disabled}
             title={`${v.label} · 누르면 고르고, 두 번 누르면 바로 씁니다`}
             onClick={() => { if (sel !== v.path) { stopPreview(); setSel(v.path) } }}
             onDoubleClick={() => choose(v)}
             style={chip(sel === v.path)}>
-            {sel === v.path && <Icon name="check" size={14}/>}{short}
-            {tag && <span style={{ ...muted, fontSize: 11, padding: '1px 5px', borderRadius: 4, border: '1px solid var(--border-subtle)' }}>{tag}</span>}
+            {sel === v.path && <Icon name="check" size={14}/>}
+            {/* 설명(모델 카드)은 이름 아래 둘째 줄 — 길어도 잘리지 않게 줄을 바꾼다(2026-10-01 목소리 추가) */}
+            <span style={{ display: 'grid', gap: 2, minWidth: 0, textAlign: g.wide ? 'left' : 'center', flex: g.wide ? 1 : undefined }}>
+              <span>{short}</span>
+              {tag && <span style={{ ...muted, fontSize: 11, whiteSpace: 'normal', lineHeight: 1.35 }}>{tag}</span>}
+            </span>
           </button>)}
         </div>
       </section>)}

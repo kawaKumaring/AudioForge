@@ -127,11 +127,79 @@ class _GraphRunner:
         return torch.stack(toks, dim=1)
 
 
+class _SampledRunner(_GraphRunner):
+    """④ 15걸음 **과 값 뽑기까지** 한 기록으로 (2026-10-01).
+
+    ★왜 (실측 · 본 모델을 묶은 뒤): 한 조각 30.8ms 중 보조 모델이 18.1ms(59%) — 기록은 걸음마다 다시 틀지만
+      걸음 사이마다 파이썬이 값을 뽑고(top-k·softmax·multinomial) 다음 입력에 복사하느라 열다섯 번 오갔다.
+    ★뽑기 규칙은 같다(`_pick` 그대로 기록한다). 무작위는 GPU 의 기록용 난수(재생마다 이어진다)로 뽑는다.
+      실측(같은 글 4 × 씨앗 4): 걸음마다 묶기와 **결과 길이가 16개 모두 같았고** 받아 적기 오류율도 같았다(평균 0.3%),
+      속도는 x2.92 → x3.49. 같은 값이라고 보장하지는 않는다 — 받아 적기로 확인한다.
+    ★뽑기 설정(do_sample·top_k·top_p·temperature)이 기록에 굳는다 — 설정마다 따로 기록한다.
+    끄기: AUDIOFORGE_QWEN_SAMPLE_GRAPH=0 (걸음마다 기록 · 뽑기는 밖).
+    """
+
+    def _loop(self, pick):
+        import torch
+        toks = []
+        for k in range(self.STEPS):
+            out = self._step(k)
+            tok = pick(out.logits[:, -1, :])
+            toks.append(tok)
+            if k + 1 < self.STEPS:
+                self.tok.copy_(tok[:, None])
+        return torch.stack(toks, dim=1)
+
+    def capture_sampled(self, pick):
+        import torch
+        with torch.no_grad():
+            side = torch.cuda.Stream()
+            side.wait_stream(torch.cuda.current_stream())
+            with torch.cuda.stream(side):
+                for _ in range(2):
+                    self._loop(pick)
+            torch.cuda.current_stream().wait_stream(side)
+            g = torch.cuda.CUDAGraph()
+            with torch.cuda.graph(g):
+                self.out = self._loop(pick)
+            self.full = g
+
+    def run_sampled(self, inputs_embeds):
+        self.emb.copy_(inputs_embeds)
+        self.full.replay()
+        return self.out.clone()
+
+
 def _graph_generate(self, inputs_embeds=None, max_new_tokens=None, do_sample=None, top_p=None, top_k=None,
                     temperature=None, **kw):
     import sys
     import torch
     n = int(max_new_tokens)
+    if (os.environ.get("AUDIOFORGE_QWEN_SAMPLE_GRAPH", "1") != "0" and inputs_embeds is not None and inputs_embeds.is_cuda
+            and inputs_embeds.shape[1] == 2 and n == _GraphRunner.STEPS and not getattr(self, "_af_sample_graph_failed", False)):
+        g = self.generation_config
+        ds = g.do_sample if do_sample is None else do_sample
+        tk = g.top_k if top_k is None else top_k
+        tp = g.top_p if top_p is None else top_p
+        tt = g.temperature if temperature is None else temperature
+        key = (inputs_embeds.shape[0], inputs_embeds.dtype, bool(ds), tk, tp, tt)
+        sampled = self.__dict__.setdefault("_af_sampled_runners", {})
+        runner = sampled.get(key)
+        if runner is None:
+            try:
+                runner = _SampledRunner(self, inputs_embeds.shape[0], inputs_embeds.shape[2], inputs_embeds.dtype,
+                                        inputs_embeds.device)
+                runner.emb.copy_(inputs_embeds)
+                runner.capture_sampled(lambda lg: _pick(lg, ds, tk, tp, tt))
+                sampled[key] = runner
+            except Exception as e:                     # 뽑기까지 기록하지 못하면 걸음마다 기록으로
+                self._af_sample_graph_failed = True
+                sys.stderr.write("[qwen_fast] 뽑기까지 묶지 못해 걸음마다 묶기로 돌아갑니다: %s: %s\n"
+                                 % (type(e).__name__, str(e)[:200]))
+                runner = None
+        if runner is not None:
+            with torch.no_grad():
+                return _Result(runner.run_sampled(inputs_embeds))
     use = (inputs_embeds is not None and inputs_embeds.is_cuda and inputs_embeds.shape[1] == 2
            and n == _GraphRunner.STEPS and not getattr(self, "_af_graph_failed", False))
     if use:

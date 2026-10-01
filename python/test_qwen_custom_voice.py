@@ -20,8 +20,25 @@ HAVE_MODEL = bool(tw.qwen_custom_voice_models())
 
 
 class Rules(unittest.TestCase):
-    def test_한국어_목소리만_싣는다(self):
+    def test_한국어_원어민은_소희_하나(self):
         self.assertEqual(list(tw.QWEN_CUSTOM_KOREAN), ["sohee"])
+        self.assertEqual([k for k, v in tw.QWEN_CUSTOM_SPEAKERS.items() if v["native"]], ["sohee"])
+
+    def test_받아_적기로_고른_화자만_싣는다_딜런은_뺀다(self):
+        # 2026-10-01 — 한국어 받아 적기 오류율 0% 인 일곱만. 딜런은 12.5% 가 나와 뺐다. 억양은 이름표에 적는다.
+        self.assertEqual(sorted(tw.QWEN_CUSTOM_SPEAKERS), sorted(["sohee", "vivian", "serena", "ono_anna", "uncle_fu", "eric", "ryan", "aiden"]))
+        for k, v in tw.QWEN_CUSTOM_SPEAKERS.items():
+            if not v["native"]:
+                self.assertIn("억양", v["desc"], k)
+                self.assertTrue(os.path.isfile(os.path.join(tw.QWEN_VOICE_DIR, k + ".json")), k)
+
+    def test_목소리_자리를_화자로_푼다(self):
+        cfg, sp = tw.qwen_voice_of(os.path.join("어딘가", "config.json"))
+        self.assertEqual(sp, "sohee", "예전 자리(모델 설정 파일)는 소희 — 저장된 선택이 산다")
+        _, sp = tw.qwen_voice_of(os.path.join(tw.QWEN_VOICE_DIR, "vivian.json"))
+        self.assertEqual(sp, "vivian")
+        self.assertEqual(tw.qwen_voice_of(os.path.join(tw.QWEN_VOICE_DIR, "없는.json")), (None, None))
+        self.assertEqual(tw.qwen_voice_of(""), (None, None))
 
     def test_엔진이_등록되고_고른_모델을_받는다(self):
         self.assertIs(tw.ENGINES["qwen-custom"], tw.QwenCustomEngine)
@@ -46,11 +63,13 @@ class Rules(unittest.TestCase):
 
 @unittest.skipUnless(HAVE_MODEL, "Qwen 지정 목소리 모델을 받아 두지 않았다")
 class Installed(unittest.TestCase):
-    def test_목록에_소희가_오르고_이름표에_느림을_적는다(self):
+    def test_목록에_여덟이_오르고_이름표에_느림을_적는다(self):
         voices, skipped = bv.qwen_custom_voices_list()
-        self.assertEqual([v["modelId"] for v in voices], ["sohee"])
-        self.assertIn("시작 느림", voices[0]["label"])
-        self.assertTrue(voices[0]["path"].endswith("config.json") and os.path.isfile(voices[0]["path"]))
+        self.assertEqual(sorted(v["modelId"] for v in voices), sorted(tw.QWEN_CUSTOM_SPEAKERS))
+        self.assertTrue(all("시작 느림" in v["label"] for v in voices))
+        sohee = next(v for v in voices if v["modelId"] == "sohee")
+        self.assertTrue(sohee["path"].endswith("config.json") and os.path.isfile(sohee["path"]) and sohee["native"])
+        self.assertEqual(len({v["path"] for v in voices}), len(voices), "목소리마다 자리가 달라야 고르기·쌓아 두기가 갈린다")
         self.assertEqual(skipped, [])
 
     def test_기호만_남은_조각은_모델을_부르지_않고_쉰다(self):

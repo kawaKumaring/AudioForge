@@ -49,7 +49,8 @@ try {
   win.setDefaultTimeout(30000)
   await win.waitForFunction(() => !!window.__afStore)
   const voices = (await win.evaluate(() => window.api.cards.builtinVoices()))?.data?.voices || []
-  const qwen = voices.find((v) => v.engineId === 'qwen-custom')
+  // 소희를 이름(modelId)으로 찾는다 — 2026-10-01 부터 Qwen 목소리가 여덟이라 '첫 Qwen' 은 소희가 아니다.
+  const qwen = voices.find((v) => v.engineId === 'qwen-custom' && v.modelId === 'sohee')
   if (!qwen) {
     console.log('SKIP Qwen 지정 목소리를 받아 두지 않은 설치입니다')
     await app.close(); cleanupUserData(UD); cleanupIsolated(ISO); process.exit(0)

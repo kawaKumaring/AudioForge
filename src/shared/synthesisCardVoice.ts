@@ -31,6 +31,10 @@ export interface BuiltinVoiceRef {
   path: string
   sampleRate: number
   speakerId?: string
+  /** 목소리 설명(모델 카드를 옮김) — 고르기 칩에 작게 보인다. */
+  note?: string
+  /** 한국어 원어민 목소리인가. false 면 외국어 억양이 있다(받아 적기로는 알아듣게 읽는 것만 싣는다). */
+  native?: boolean
 }
 
 export type CardVoice =

@@ -117,15 +117,22 @@ def qwen_custom_voices_list():
     if not models:
         return out, skipped          # 받아 두지 않았다 — 문제가 아니다(선택 설치)
     model = models[0]
-    for speaker, name in tw.QWEN_CUSTOM_KOREAN.items():
+    for speaker, info in tw.QWEN_CUSTOM_SPEAKERS.items():
+        # 소희는 예전 자리(모델 설정 파일) 그대로 — 저장된 선택이 산다. 나머지는 목소리 파일.
+        path = os.path.join(model, "config.json") if speaker == "sohee" else os.path.join(tw.QWEN_VOICE_DIR, speaker + ".json")
+        if not os.path.isfile(path):
+            skipped.append({"engineId": "qwen-custom", "modelId": speaker, "why": "목소리 파일이 없습니다"})
+            continue
         out.append({
             "engineId": "qwen-custom",
             "modelId": speaker,
-            # 처음 소리까지 약 30초(모델 열기), 그다음부터는 듣는 속도보다 빠르다(2026-09-30 실측) — 시작만 느리다.
-            "label": "Qwen %s (GPU · 시작 느림)" % name,
+            # 처음 소리까지 몇 초(모델 열기 — 고를 때 미리 연다), 그다음부터는 듣는 속도보다 빠르다 — 시작만 느리다.
+            "label": "Qwen %s (GPU · 시작 느림)" % info["name"],
+            "note": info["desc"],
+            "native": bool(info["native"]),
             "language": "ko",
             "sampleRate": 24000,
-            "path": os.path.join(model, "config.json"),
+            "path": path,
         })
     return out, skipped
 

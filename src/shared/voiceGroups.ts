@@ -6,7 +6,7 @@
  *   엔진은 묶음 제목으로 한 번만 말하고, 칩에는 **고를 때 필요한 것만**(여성 1 · 소희) 남긴다.
  * 이름표 원본(label)은 그대로 둔다 — 칩의 툴팁·화면 읽기 프로그램이 그것을 읽는다.
  */
-export interface VoiceLike { engineId: string; modelId: string; label: string; path: string }
+export interface VoiceLike { engineId: string; modelId: string; label: string; path: string; note?: string; native?: boolean }
 
 export interface VoiceGroup<V extends VoiceLike> {
   key: string
@@ -38,15 +38,17 @@ function supertonicOrder(short: string): [number, number, string] {
 export function groupVoices<V extends VoiceLike>(list: readonly V[]): VoiceGroup<V>[] {
   const fast: VoiceGroup<V> = { key: 'fast', title: '빠른 기본 목소리', note: 'CPU · 곧바로 읽는다', wide: false, voices: [] }
   const slow: VoiceGroup<V> = { key: 'slow', title: '고품질 · 느림', note: '그래픽카드 · 첫 소리까지 몇 초', wide: true, voices: [] }
+  // ★외국어 억양 목소리는 따로 묶는다(2026-10-01) — 받아 적기로는 알아듣게 읽지만 원어민이 아니다. 들어 보고 고른다.
+  const accent: VoiceGroup<V> = { key: 'accent', title: '고품질 · 외국어 억양', note: '그래픽카드 · 들어 보고 고르세요', wide: true, voices: [] }
   const other: VoiceGroup<V> = { key: 'other', title: '다른 기본 목소리', note: '', wide: true, voices: [] }
   for (const v of list) {
     if (v.engineId === 'supertonic') fast.voices.push({ voice: v, short: supertonicShort(v.label), tag: '' })
-    else if (v.engineId === 'qwen-custom') slow.voices.push({ voice: v, short: qwenShort(v.label), tag: 'GPU' })
+    else if (v.engineId === 'qwen-custom') (v.native === false ? accent : slow).voices.push({ voice: v, short: qwenShort(v.label), tag: v.note || 'GPU' })
     else other.voices.push({ voice: v, short: v.label, tag: '' })
   }
   fast.voices.sort((a, b) => {
     const x = supertonicOrder(a.short), y = supertonicOrder(b.short)
     return x[0] - y[0] || x[1] - y[1] || x[2].localeCompare(y[2])
   })
-  return [fast, slow, other].filter((g) => g.voices.length)
+  return [fast, slow, accent, other].filter((g) => g.voices.length)
 }
