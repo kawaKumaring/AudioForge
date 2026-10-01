@@ -393,6 +393,74 @@ QWEN_CUSTOM_SPEAKERS = {
     "ryan": {"name": "라이언", "desc": "리듬감 있는 남성 · 영어 억양", "native": False},
     "aiden": {"name": "에이든", "desc": "밝은 미국 남성 · 영어 억양", "native": False},
 }
+# ── 감정 지시 (2026-10-01) ─────────────────────────────────────────────────
+# ★받아 둔 0.6B 는 지시(감정)를 **버린다**(qwen_tts 패키지: 0b6 이면 instruct=None). 지시는 1.7B 지정 목소리만 받는다.
+#   그래서 감정이 붙은 조각만 1.7B 로, 나머지는 빠른 0.6B 로 만든다.
+# ★지시는 **영어로** 보낸다 — 실측(같은 글 · 씨앗 3): 영어 지시는 음높이를 지시 없음의 씨앗 흔들림보다 13~34배 옮겼고
+#   (화남 +36Hz · 기쁨 +53Hz · 슬픔 +20Hz · 속삭임 −10Hz), 한국어 지시는 기쁨·슬픔에서 거의 그대로였다(1~2배).
+#   ★그러나 문장 4 × 씨앗 3 으로 넓혀 재자(문장마다 지시 없음 평균을 빼고 그 흔들림으로 나눔) 결과가 갈렸다 —
+#     기쁨 음높이 +36Hz(흔들림의 2.7배)·폭 +50Hz · 화남 +26Hz(1.9배)·빠르기 +0.9자/초(1.7배) · 슬픔 +16Hz(1.2배, 흔들림 안)
+#     · 속삭임 변화 없음. 처음 한 문장의 '13~34배' 는 그 문장의 지시 없음이 유난히 고르게 나와 부풀었다.
+#     → 감정마다 세기가 다르다. 말씨는 강하게('very') — 약한 말씨는 한 문장 실측에서 흔들림 안이었다. 듣는 판단은 사용자 몫.
+# ★성적인 감정 태그(aroused·climax·moaning·ecstasy)는 지시로 옮기지 않는다 — 보통으로 읽고 그렇다고 알린다.
+QWEN_EMOTION_INSTRUCTS = {
+    "happy": "Speak in a very happy, joyful and excited tone.",
+    "sad": "Speak in a very sad, sorrowful tone, as if about to cry.",
+    "angry": "Speak in a very angry, furious tone.",
+    "surprise": "Speak in a very surprised, astonished tone.",
+    "whisper": "Whisper very softly and quietly, almost without voice.",
+    "serious": "Speak in a very serious, grave tone.",
+    "cheerful": "Speak in a very bright, cheerful tone.",
+    "worried": "Speak in a very worried, anxious tone.",
+    "tired": "Speak in a very tired, exhausted tone.",
+    "polite": "Speak in a very polite, courteous tone.",
+    "sarcastic": "Speak in a very sarcastic tone.",
+    "nervous": "Speak in a very nervous, tense tone.",
+    "shy": "Speak in a very shy, timid tone.",
+    "confident": "Speak in a very confident, assured tone.",
+    "comforting": "Speak in a very warm, comforting tone.",
+    "excited": "Speak in a very excited tone.",
+    "scared": "Speak in a very scared, frightened tone.",
+    "annoyed": "Speak in a very annoyed, irritated tone.",
+    "narration": "Read calmly and clearly, like a narrator.",
+    "longing": "Speak in a very wistful, longing tone.",
+    "jealous": "Speak in a very jealous, resentful tone.",
+    "touched": "Speak in a very deeply moved, touched tone.",
+    "empty": "Speak in a very hollow, defeated tone.",
+    "mocking": "Speak in a very mocking, teasing tone.",
+    "cute": "Speak in a very cute, sweet and playful tone.",
+    "cold": "Speak in a very cold, detached tone.",
+    "tender": "Speak in a very tender, affectionate tone.",
+    "tearful": "Speak in a very tearful voice, as if about to cry.",
+    "sighing": "Speak with a heavy, weary sigh.",
+    "solemn": "Speak in a very solemn, resolute tone.",
+    "playful": "Speak in a very playful, mischievous tone.",
+    "contempt": "Speak in a very contemptuous, scornful tone.",
+    "admiring": "Speak in a very admiring, awed tone.",
+    "restless": "Speak in a very restless, impatient tone.",
+    "resigned": "Speak in a very resigned, accepting tone.",
+    "curious": "Speak in a very curious, inquisitive tone.",
+    "bored": "Speak in a very bored, uninterested tone.",
+    "flustered": "Speak in a very flustered, embarrassed tone.",
+    "proud": "Speak in a very proud, triumphant tone.",
+    "flutter": "Speak in a very excited, fluttering tone, full of anticipation.",
+    "seductive": "Speak in a very soft, charming tone.",
+    "sweet": "Speak in a very sweet, gentle tone.",
+    "intimate": "Speak in a very hushed, intimate tone.",
+    "bittersweet": "Speak in a very bittersweet, wistful tone.",
+    "charming": "Speak in a very charming, warm tone.",
+}
+
+
+def qwen_emotion_model():
+    """감정 지시를 받는 지정 목소리 모델(1.7B)의 설정 파일 — 없으면 None."""
+    for d in qwen_custom_voice_models():
+        info = _qwen_variant_info(d) or {}
+        if info.get("model_size") == "1b7":
+            return os.path.join(d, "config.json")
+    return None
+
+
 # 소희 말고는 **목소리 파일**(python/voices/qwen/<화자>.json)로 고른다 — 목소리마다 자리가 달라야 고르기·쌓아 두기가 갈린다.
 QWEN_VOICE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voices", "qwen")
 
@@ -414,7 +482,8 @@ def qwen_voice_of(path):
     sp = str(j.get("speaker", "")).lower()
     if j.get("engine") != "qwen-custom" or sp not in QWEN_CUSTOM_SPEAKERS:
         return None, None
-    models = qwen_custom_voice_models()
+    # 빠른 0.6B 를 먼저 — 감정 지시가 있을 때만 엔진이 1.7B(qwen_emotion_model)로 바꾼다.
+    models = sorted(qwen_custom_voice_models(), key=lambda d: (_qwen_variant_info(d) or {}).get("model_size") != "0b6")
     return (os.path.join(models[0], "config.json") if models else None), sp
 
 
@@ -453,6 +522,7 @@ class QwenCustomEngine(TTSEngine):
         self._script = os.path.join(base, "python", "qwen_custom_voice.py")
         self.model_path = None
         self._speed_told = False
+        self._emotion_told = False
 
     def load(self, lang_code="ko"):
         if not os.path.isfile(self._venv_python):
@@ -486,6 +556,20 @@ class QwenCustomEngine(TTSEngine):
         if abs(sp - 1.0) > 1e-6 and not self._speed_told:
             emit("progress", message="이 목소리는 빠르기를 바꿀 수 없어 보통 빠르기로 읽습니다")
             self._speed_told = True
+        # 감정 — 지시를 받는 1.7B 가 있으면 그 모델로, 영어 지시를 붙여 만든다(위 QWEN_EMOTION_INSTRUCTS).
+        instruct = QWEN_EMOTION_INSTRUCTS.get(emotion_id or "") if emotion_id not in (None, "", "default") else None
+        if emotion_id not in (None, "", "default"):
+            emo_cfg = qwen_emotion_model()
+            if instruct and emo_cfg:
+                model_dir = os.path.dirname(emo_cfg)
+                emit("progress", message="감정을 담아 만드는 중(1.7B) — %s" % emotion_id)
+            elif not self._emotion_told:
+                why = "감정 지시를 받는 1.7B 모델이 없어" if instruct else "이 감정은 지시로 옮기지 않아"
+                emit("progress", message="%s 보통으로 읽습니다" % why)
+                self._emotion_told = True
+                instruct = None
+            else:
+                instruct = None
         fd, text_file = tempfile.mkstemp(suffix=".txt", prefix="qcv-")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
@@ -493,7 +577,8 @@ class QwenCustomEngine(TTSEngine):
             env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
             proc = subprocess.run(
                 [self._venv_python, "-X", "utf8", self._script, "--model", model_dir, "--speaker", speaker,
-                 "--language", "korean", "--text-file", text_file, "--out", output_path],
+                 "--language", "korean", "--text-file", text_file, "--out", output_path]
+                + (["--instruct", instruct] if instruct else []),
                 capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=900)
         finally:
             try:

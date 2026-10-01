@@ -31,7 +31,7 @@ import {
 // @ts-ignore TS5097
 } from '../../shared/synthesisCardJob.ts'
 import {
-  cardVoiceOf, needsReferencePrep, voiceGenerateFault, builtinRequestFields, voiceSnapshot,
+  cardVoiceOf, needsReferencePrep, voiceGenerateFault, builtinRequestFields, voiceSnapshot, cardScriptWithEmotion,
   type BuiltinVoiceRef, type VoiceSnapshot,
 // @ts-ignore TS5097
 } from '../../shared/synthesisCardVoice.ts'
@@ -385,7 +385,8 @@ export async function startCardGeneration(card: SynthesisCard): Promise<string> 
   // ★요청 식별자를 실어 보낸다. 본체가 진행·결과·오류·취소에 그대로 되돌려 주므로
   //   화면이 '내 요청의 응답인가' 를 스스로 가릴 수 있다(2026-09-27 검수 재현 대응).
   const options = {
-    ...synthesisOptions(card.text, s, voice.kind === 'reference'
+    // ★카드 감정 — 받는 목소리(Qwen 지정 목소리 + 1.7B)면 태그 없는 줄마다 [감정] 을 붙여 보낸다(2026-10-01).
+    ...synthesisOptions(cardScriptWithEmotion(card.text, card.settings.emotion, voice), s, voice.kind === 'reference'
       ? { clip: ref!.clip, region: ref!.region }
       : { clip: '', region: null }),
     // 기본 목소리면 엔진·모델을 명시해 싣는다. 참조 목소리면 아무것도 붙지 않는다.

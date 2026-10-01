@@ -6,7 +6,7 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   cardVoiceOf, cardVoiceLabel, needsReferencePrep, voiceSupports,
-  voiceGenerateFault, builtinRequestFields, voiceSnapshot, sameVoice,
+  voiceGenerateFault, builtinRequestFields, voiceSnapshot, sameVoice, cardScriptWithEmotion, CARD_EMOTIONS,
   type BuiltinVoiceRef,
 } from './synthesisCardVoice.ts'
 
@@ -125,4 +125,25 @@ test('목소리가 달라지면 수정 전으로 본다', () => {
   assert.equal(sameVoice(a, voiceSnapshot(cardVoiceOf({ builtin: { ...ko, modelId: '다른모델' } }))), false)
   assert.equal(sameVoice(a, voiceSnapshot(cardVoiceOf({ source: src }))), false)
   assert.equal(cardVoiceLabel(cardVoiceOf({ builtin: ko })), 'ko_KR-kss-medium')
+})
+
+// ── 카드 감정(2026-10-01) — Qwen 지정 목소리 + 1.7B 일 때만, 태그 없는 줄마다 ───────────────
+const qwen = (emotion: boolean): BuiltinVoiceRef => ({ engineId: 'qwen-custom', modelId: 'sohee', label: 'Qwen 소희', language: 'ko', path: '/m/config.json', sampleRate: 24000, emotion })
+
+test('★감정은 Qwen 지정 목소리 + 1.7B 일 때만 고를 수 있다 — 참조 목소리·Supertonic 은 아니다', () => {
+  assert.equal(voiceSupports(cardVoiceOf({ builtin: qwen(true) })).emotion, true)
+  assert.equal(voiceSupports(cardVoiceOf({ builtin: qwen(false) })).emotion, false, '1.7B 가 없으면 감정을 고르게 하지 않는다')
+  assert.equal(voiceSupports(cardVoiceOf({ builtin: { ...qwen(true), engineId: 'supertonic' } })).emotion, false)
+  assert.equal(voiceSupports(cardVoiceOf({ source: { path: '/a.wav', name: 'a.wav', duration: 5 } })).emotion, false,
+    '참조 목소리 + 감정은 예전 실험에서 통과한 길이 없다')
+})
+
+test('★태그 없는 줄마다 [감정] 을 붙이고, 사용자가 쓴 태그 줄·빈 줄은 그대로 둔다', () => {
+  const v = cardVoiceOf({ builtin: qwen(true) })
+  assert.equal(cardScriptWithEmotion('첫 줄.\n\n  [슬픔] 둘째 줄.\n셋째 줄.', '기쁨', v),
+    '[기쁨] 첫 줄.\n\n  [슬픔] 둘째 줄.\n[기쁨] 셋째 줄.')
+  assert.equal(cardScriptWithEmotion('대사.', '자연스럽게', v), '대사.', '감정 없음은 그대로')
+  assert.equal(cardScriptWithEmotion('대사.', '모르는감정', v), '대사.', '목록 밖 감정은 붙이지 않는다')
+  assert.equal(cardScriptWithEmotion('대사.', '기쁨', cardVoiceOf({ builtin: qwen(false) })), '대사.', '받지 않는 목소리면 그대로')
+  assert.ok(!CARD_EMOTIONS.some((e) => ['흥분(성적)', '절정', '신음', '황홀'].includes(e)), '지시로 옮기지 않는 감정은 싣지 않는다')
 })

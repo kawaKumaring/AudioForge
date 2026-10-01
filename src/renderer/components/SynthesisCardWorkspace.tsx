@@ -17,7 +17,7 @@ import {
   cardApplied, cardEventFault, cardGenerateFault, takeMark, CARD_PITCH_MIN, CARD_PITCH_MAX, CARD_PITCH_STEP,
 } from '../../shared/synthesisCardJob'
 import {
-  cardVoiceOf, voiceSnapshot, voiceSupports, voiceGenerateFault, type BuiltinVoiceRef,
+  cardVoiceOf, voiceSnapshot, voiceSupports, voiceGenerateFault, CARD_EMOTIONS, CARD_EMOTION_NONE, type BuiltinVoiceRef,
 } from '../../shared/synthesisCardVoice'
 import {
   buildJoinPlan, joinPlanKey, joinBlockText,
@@ -62,7 +62,23 @@ const DISCONNECTED = '연결부만 따로 듣는 것은 아직 연결되지 않�
 function Settings({ card, close, disabled, focusReference = false }: { card: SynthesisCard; close: () => void; disabled: boolean; focusReference?: boolean }) {
   const [draft, setDraft] = useState<CardSettings>({ ...card.settings, pitch: cardApplied(card.settings).pitch })
   const set = (patch: Partial<CardSettings>) => setDraft(s => ({ ...s, ...patch }))
-  const supports = voiceSupports(cardVoiceOf(card))
+  // ★감정 지원은 **지금 목록**으로 본다 — 예전에 만든 카드의 목소리에는 감정 표시가 없다(2026-10-01 1.7B 받기 전).
+  //   지금 목록의 같은 목소리가 감정을 받으면 고르기를 보이고, 적용할 때 카드 목소리에도 표시를 새로 단다.
+  const [liveEmotion, setLiveEmotion] = useState(false)
+  useEffect(() => {
+    if (!card.builtin || card.builtin.engineId !== 'qwen-custom') return
+    let alive = true
+    void (async () => {
+      try {
+        const r = await window.api.cards.builtinVoices() as { ok: boolean; data?: { voices: BuiltinVoiceRef[] } }
+        const live = (r?.data?.voices || []).find(v => v.path === card.builtin!.path)
+        if (alive) setLiveEmotion(live?.emotion === true)
+      } catch { /* 모르면 보이지 않는다 */ }
+    })()
+    return () => { alive = false }
+  }, [card.builtin?.path])
+  const voiceNow = cardVoiceOf(card.builtin && liveEmotion ? { ...card, builtin: { ...card.builtin, emotion: true } } : card)
+  const supports = voiceSupports(voiceNow)
   const referenceChoice = useRef<HTMLSelectElement>(null)
   useEffect(() => { if (focusReference) referenceChoice.current?.focus() }, [focusReference])
   const duration = card.source?.duration || 0
@@ -78,7 +94,7 @@ function Settings({ card, close, disabled, focusReference = false }: { card: Syn
     <input id={`card-${label}`} className="af-effect-slider" aria-label={label} type="range" min={min} max={max} step={step} value={value} onChange={e => update(+e.target.value)} style={{ width: '100%', margin: '4px 0', '--fill': `${(value - min) / (max - min) * 100}%` } as CSSProperties}/>
     <div style={{ ...row, justifyContent: 'space-between', ...muted }}><span>{min}{suffix}</span><span>{max > 0 && label === '음높이' ? '+' : ''}{max}{suffix}</span></div>
   </div>
-  return <Modal title="고급 옵션" subtitle={card.label} close={close} footer={<><button type="button" style={button} onClick={close}>취소</button><button type="button" style={{ ...primary, opacity: disabled || !valid ? .4 : 1 }} disabled={disabled || !valid} onClick={() => { useSynthesisCards.getState().update(card.id, { settings: { ...draft } }); close() }}>적용</button></>}>
+  return <Modal title="고급 옵션" subtitle={card.label} close={close} footer={<><button type="button" style={button} onClick={close}>취소</button><button type="button" style={{ ...primary, opacity: disabled || !valid ? .4 : 1 }} disabled={disabled || !valid} onClick={() => { useSynthesisCards.getState().update(card.id, { settings: { ...draft }, ...(liveEmotion && card.builtin && card.builtin.emotion !== true ? { builtin: { ...card.builtin, emotion: true } } : {}) }); close() }}>적용</button></>}>
     <div style={{ ...row, justifyContent: 'flex-end', marginBottom: 14 }}><button type="button" style={button} disabled={disabled} title="이 팝업의 설정을 기본값으로 돌립니다. 적용 전에는 카드가 바뀌지 않습니다." onClick={reset}><Icon name="reset"/>전체 초기화</button></div>
     <fieldset disabled={disabled} style={{ border: 0, padding: 0, margin: 0, display: 'grid', gap: 12 }}>
       <details className="af-effect-group" open style={panel}>
@@ -96,7 +112,18 @@ function Settings({ card, close, disabled, focusReference = false }: { card: Syn
           {draft.reference === 'manual' && <div style={row}><label style={{ ...row, flex: '1 1 130px' }}>시작<input aria-label="참조 시작 초" style={{ ...field, width: 95 }} type="number" min="0" max={duration} step=".1" value={draft.start} onChange={e => set({ start: +e.target.value })}/>초</label><label style={{ ...row, flex: '1 1 130px' }}>끝<input aria-label="참조 끝 초" style={{ ...field, width: 95 }} type="number" min="0" max={duration} step=".1" value={draft.end} onChange={e => set({ end: +e.target.value })}/>초</label>{!valid && <span role="alert" style={{ color: 'var(--rose)', fontSize: 12 }}>구간 확인 필요</span>}</div>}
         </div>
       </details>}
-      {draft.emotion && draft.emotion !== '자연스럽게' && <div style={{ ...panel, ...row, padding: '14px 16px', color: 'var(--text-muted)', fontSize: 12 }} title="저장된 감정 설정은 현재 생성에 적용되지 않습니다. 해제하면 기본값으로 돌아갑니다."><span style={{ flex: 1 }}>감정 참조</span><span>{draft.emotion && draft.emotion !== '자연스럽게' ? `${draft.emotion} · 미적용` : '미연결'}</span>{draft.emotion && draft.emotion !== '자연스럽게' && <button type="button" aria-label="미지원 감정 선택 해제" style={button} onClick={() => set({ emotion: '자연스럽게' })}>해제</button>}</div>}
+      {supports.emotion && <details className="af-effect-group" data-testid="card-emotion-settings" open style={panel}>
+        <summary style={heading}><span style={{ flex: 1 }}>감정</span><span style={muted}>{draft.emotion && draft.emotion !== CARD_EMOTION_NONE ? draft.emotion : '자연스럽게'}</span><span className="af-effect-chevron" aria-hidden="true">⌃</span></summary>
+        <div style={{ display: 'grid', gap: 10, paddingBottom: 16 }}>
+          <select data-testid="card-emotion" aria-label="감정" style={field} value={CARD_EMOTIONS.includes(draft.emotion) ? draft.emotion : CARD_EMOTION_NONE}
+            onChange={e => set({ emotion: e.target.value })}>
+            <option value={CARD_EMOTION_NONE}>자연스럽게(감정 없음)</option>
+            {CARD_EMOTIONS.map(x => <option key={x} value={x}>{x}</option>)}
+          </select>
+          <span style={{ ...muted, lineHeight: 1.5 }}>감정을 고르면 그 대사를 감정 지시를 받는 큰 모델(1.7B)로 만듭니다 — 보통보다 느립니다. 감정마다 드러나는 정도가 다릅니다(재 보니 기쁨·화남은 뚜렷하고 슬픔·속삭임은 약했습니다) — 들어 보고 쓰세요. 줄 앞에 [슬픔] 처럼 직접 적은 줄은 그 감정을 따릅니다.</span>
+        </div>
+      </details>}
+      {!supports.emotion && draft.emotion && draft.emotion !== '자연스럽게' && <div style={{ ...panel, ...row, padding: '14px 16px', color: 'var(--text-muted)', fontSize: 12 }} title="저장된 감정 설정은 현재 생성에 적용되지 않습니다. 해제하면 기본값으로 돌아갑니다."><span style={{ flex: 1 }}>감정 참조</span><span>{draft.emotion && draft.emotion !== '자연스럽게' ? `${draft.emotion} · 미적용` : '미연결'}</span>{draft.emotion && draft.emotion !== '자연스럽게' && <button type="button" aria-label="미지원 감정 선택 해제" style={button} onClick={() => set({ emotion: '자연스럽게' })}>해제</button>}</div>}
     </fieldset>
   </Modal>
 }

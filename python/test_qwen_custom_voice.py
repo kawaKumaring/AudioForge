@@ -32,6 +32,47 @@ class Rules(unittest.TestCase):
                 self.assertIn("억양", v["desc"], k)
                 self.assertTrue(os.path.isfile(os.path.join(tw.QWEN_VOICE_DIR, k + ".json")), k)
 
+    def test_감정_지시는_영어이고_성적인_태그는_옮기지_않는다(self):
+        # 2026-10-01 실측 — 한국어 지시는 기쁨·슬픔에서 거의 그대로였다. 말씨는 강하게.
+        for eid, ins in tw.QWEN_EMOTION_INSTRUCTS.items():
+            self.assertTrue(ins.isascii(), eid)
+        for eid in ("aroused", "climax", "moaning", "ecstasy", "default"):
+            self.assertNotIn(eid, tw.QWEN_EMOTION_INSTRUCTS)
+        self.assertIn("very", tw.QWEN_EMOTION_INSTRUCTS["happy"])
+
+    def test_감정이_있는_조각만_1_7B_로_지시를_실어_보낸다(self):
+        import subprocess
+        from unittest import mock
+        calls = []
+
+        def fake_run(cmd, **kw):
+            calls.append(cmd)
+            out = cmd[cmd.index("--out") + 1]
+            with wave.open(out, "wb") as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000); w.writeframes(b"\x00\x00" * 240)
+            return subprocess.CompletedProcess(cmd, 0, stdout='{"type": "done"}\n', stderr="")
+        root = tempfile.mkdtemp()
+        small, big = os.path.join(root, "small"), os.path.join(root, "big")
+        eng = tw.QwenCustomEngine()
+        eng.load = lambda *a, **k: None
+        eng.model_path = os.path.join(small, "config.json")
+        out = os.path.join(root, "o.wav")
+        with mock.patch.object(tw, "qwen_voice_of", lambda p: (os.path.join(small, "config.json"), "sohee")), \
+             mock.patch.object(tw, "qwen_emotion_model", lambda: os.path.join(big, "config.json")), \
+             mock.patch.object(tw, "_qwen_variant_info", lambda d: {"model_size": "0b6"}), \
+             mock.patch("os.path.isfile", lambda p: True), \
+             mock.patch.object(subprocess, "run", fake_run):
+            eng.synthesize_segment("안녕하세요.", None, "happy", 1.0, out)
+            eng.synthesize_segment("안녕하세요.", None, None, 1.0, out)
+            eng.synthesize_segment("안녕하세요.", None, "moaning", 1.0, out)
+        happy, plain, adult = calls
+        self.assertEqual(happy[happy.index("--model") + 1], big)
+        self.assertEqual(happy[happy.index("--instruct") + 1], tw.QWEN_EMOTION_INSTRUCTS["happy"])
+        self.assertEqual(plain[plain.index("--model") + 1], small, "감정 없으면 빠른 0.6B")
+        self.assertNotIn("--instruct", plain)
+        self.assertNotIn("--instruct", adult, "옮기지 않는 감정은 지시 없이 보통으로")
+        self.assertEqual(adult[adult.index("--model") + 1], small)
+
     def test_목소리_자리를_화자로_푼다(self):
         cfg, sp = tw.qwen_voice_of(os.path.join("어딘가", "config.json"))
         self.assertEqual(sp, "sohee", "예전 자리(모델 설정 파일)는 소희 — 저장된 선택이 산다")

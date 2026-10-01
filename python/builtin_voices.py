@@ -116,7 +116,10 @@ def qwen_custom_voices_list():
     models = tw.qwen_custom_voice_models()
     if not models:
         return out, skipped          # 받아 두지 않았다 — 문제가 아니다(선택 설치)
+    # 빠른 0.6B 를 목소리의 모델로 — 1.7B 는 감정이 붙은 조각에만 쓴다(tts_worker.qwen_emotion_model).
+    models = sorted(models, key=lambda d: (tw._qwen_variant_info(d) or {}).get("model_size") != "0b6")
     model = models[0]
+    emotion = bool(tw.qwen_emotion_model())
     for speaker, info in tw.QWEN_CUSTOM_SPEAKERS.items():
         # 소희는 예전 자리(모델 설정 파일) 그대로 — 저장된 선택이 산다. 나머지는 목소리 파일.
         path = os.path.join(model, "config.json") if speaker == "sohee" else os.path.join(tw.QWEN_VOICE_DIR, speaker + ".json")
@@ -130,6 +133,8 @@ def qwen_custom_voices_list():
             "label": "Qwen %s (GPU · 시작 느림)" % info["name"],
             "note": info["desc"],
             "native": bool(info["native"]),
+            # 감정 지시를 받을 수 있는가(1.7B 를 받아 두었는가) — 화면이 감정 고르기를 보일지 정한다.
+            "emotion": emotion,
             "language": "ko",
             "sampleRate": 24000,
             "path": path,

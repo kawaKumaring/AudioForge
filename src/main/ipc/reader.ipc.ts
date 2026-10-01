@@ -102,12 +102,20 @@ function qwenVoiceOf(path: string): { model: string; speaker: string } | null {
   } catch { return null }
   const ext = join(dirname(dirname(scriptPath())), 'externals')
   try {
+    // 빠른 0.6B 를 고른다 — 1.7B(감정 지시용)도 같은 종류라 이름 차례에 기대지 않는다.
+    let fallback = ''
     for (const name of readdirSync(ext).sort()) {
       if (!name.startsWith('qwen3_tts')) continue
       const cfg = join(ext, name, 'config.json')
       if (!existsSync(cfg)) continue
-      try { if ((JSON.parse(readFileSync(cfg, 'utf-8')) as { tts_model_type?: string }).tts_model_type === 'custom_voice') return { model: join(ext, name), speaker } } catch { /* 다음 폴더 */ }
+      try {
+        const c = JSON.parse(readFileSync(cfg, 'utf-8')) as { tts_model_type?: string; tts_model_size?: string }
+        if (c.tts_model_type !== 'custom_voice') continue
+        if (c.tts_model_size === '0b6') return { model: join(ext, name), speaker }
+        fallback = fallback || join(ext, name)
+      } catch { /* 다음 폴더 */ }
     }
+    if (fallback) return { model: fallback, speaker }
   } catch { /* 없다 */ }
   return null
 }

@@ -56,6 +56,8 @@ def main():
     ap.add_argument("--text-file")
     ap.add_argument("--out")
     ap.add_argument("--seed", type=int, default=0)
+    # 감정 지시(영어) — 1.7B 지정 목소리만 받는다(0.6B 는 패키지가 버린다). 2026-10-01.
+    ap.add_argument("--instruct", default="")
     a = ap.parse_args()
     try:
         m = load(a.model)
@@ -73,7 +75,8 @@ def main():
         torch.manual_seed(a.seed)
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(a.seed)
-        wavs, sr = m.generate_custom_voice(text=text, speaker=a.speaker, language=a.language)
+        wavs, sr = m.generate_custom_voice(text=text, speaker=a.speaker, language=a.language,
+                                           instruct=(a.instruct or None))
         wav = np.asarray(wavs[0], dtype="float32").reshape(-1)
         if wav.size == 0 or not np.isfinite(wav).all():
             raise RuntimeError("소리가 비었거나 깨졌습니다")
