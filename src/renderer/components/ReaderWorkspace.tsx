@@ -397,6 +397,12 @@ export default function ReaderWorkspace() {
     opLog('reader', `들어 보기 — ${name}${r.data.cached ? ' (쌓아 둔 것)' : ` · ${((Date.now() - t0) / 1000).toFixed(1)}s`}`)
     return r.data.path
   }
+  /** 목록을 여는 순간 Qwen 실행기를 모델 없이 띄운다 — 불러오기(약 6.5초)를 고르기 전에 치른다(그래픽카드 메모리는 잡지 않는다). */
+  const prepareQwen = () => {
+    // 미리 읽을 모델 — 지금 고른 Qwen 목소리, 없으면 목록의 첫 Qwen 목소리(소희).
+    const q = builtins?.find((b) => b.engineId === 'qwen-custom' && b.path === pick?.path) || builtins?.find((b) => b.engineId === 'qwen-custom')
+    if (q) void window.api.reader.prepare?.({ kind: 'builtin', path: q.path, engineId: q.engineId }, { emotion: prefs.emotion && q.emotion === true })?.catch(() => { /* 고를 때 연다 */ })
+  }
   /** 기본 목소리를 쓴다. GPU 목소리(소희)는 고르는 순간 미리 연다 — 첫 소리의 모델 열기(약 10초)를 누르기 전에 치른다. */
   const chooseBuiltin = (b: BuiltinVoiceRef) => {
     const v: ReaderVoicePick = { kind: 'builtin', path: b.path, engineId: b.engineId, label: b.label }
@@ -574,7 +580,7 @@ export default function ReaderWorkspace() {
     {/* ★아래 막대는 **움직이지 않는다** (2026-09-30 신고: 낭독을 위한 작동 단추가 휠에 영향을 받으면 안 된다).
         자리(2026-10-01 정리): 왼쪽 = 목소리 · 가운데 = 이전/재생/다음 · 오른쪽 = 상태 · 따라가기 · 빠르기 · 설정. */}
     <footer ref={footerRef} data-testid="reader-controls" style={{ ...panel, position: 'sticky', bottom: 0, zIndex: 20, boxShadow: '0 -8px 20px #0006', padding: '12px', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto minmax(0, 1fr)', alignItems: 'center', gap: 8 }}>
-      <button ref={voiceButton} data-testid="reader-voice" aria-haspopup="dialog" onClick={() => setPicking(true)} disabled={!!prep}
+      <button ref={voiceButton} data-testid="reader-voice" aria-haspopup="dialog" onClick={() => { setPicking(true); prepareQwen() }} disabled={!!prep}
         title={prep ? '목소리를 준비하는 중입니다' : '목소리 고르기'}
         style={{ ...kitButton, justifyContent: 'flex-start', minWidth: 0, padding: '6px 10px', textAlign: 'left' }}>
         <Icon name="voice"/>

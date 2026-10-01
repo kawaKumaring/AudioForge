@@ -48,7 +48,46 @@ class Segments(unittest.TestCase):
             qvs._segments(FakeModel(), False, {"speaker": "sohee", "out": "x.wav", "segments": [{"text": " "}]})
 
 
+class FakeModels:
+    def __init__(self, model, loaded_now):
+        self.m, self.now = model, loaded_now
+
+    def get(self, _dir):
+        return self.m, self.now
+
+
+class Warm(unittest.TestCase):
+    def test_막_연_모델은_짧은_글을_한번_만들어_준비를_치른다(self):
+        m = FakeModel()
+        r = qvs.handle(FakeModels(m, True), {"model": "x", "warm": True, "speaker": "sohee"})
+        self.assertTrue(r["ok"])
+        self.assertEqual([c[0] for c in m.calls], [qvs.PRIME_TEXT])
+        self.assertEqual(r["seconds"], 0, "미리 열기는 소리를 돌려주지 않는다")
+
+    def test_이미_열린_모델이나_화자가_없으면_만들지_않는다(self):
+        m = FakeModel()
+        qvs.handle(FakeModels(m, False), {"model": "x", "warm": True, "speaker": "sohee"})
+        qvs.handle(FakeModels(m, True), {"model": "x", "warm": True})
+        self.assertEqual(m.calls, [])
+
+
 class StdinRule(unittest.TestCase):
+    def test_준비_신호_뒤에_라이브러리를_미리_불러온다(self):
+        src = open(qvs.__file__, encoding="utf-8").read()
+        main = src[src.index("def main"):]
+        self.assertLess(main.index("ready=True"), main.index("target=_preimport"), "준비 신호보다 먼저 불러오면 띄우는 쪽이 그만큼 기다린다")
+
+    def test_미리_읽기는_모델을_열지_않고_곧바로_답한다(self):
+        class NoModels:
+            def get(self, _d):
+                raise AssertionError("미리 읽기가 모델을 열었다")
+        d = tempfile.mkdtemp()
+        with open(os.path.join(d, "model.safetensors"), "wb") as f:
+            f.write(b"x" * 1024)
+        r = qvs.handle(NoModels(), {"prefetch": [d]})
+        self.assertTrue(r["ok"])
+        qvs._prefetch([d, os.path.join(d, "없는폴더")])     # 없는 폴더도 조용히 지나간다
+
     def test_표준_입력을_다른_스레드에서_막힌_채_읽지_않는다(self):
         src = open(qvs.__file__, encoding="utf-8").read()
         self.assertIn("PeekNamedPipe", src)

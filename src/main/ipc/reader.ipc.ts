@@ -27,7 +27,7 @@ import { usesGpu } from '../../shared/readerQueue'
 import { appLog, fileLabel } from '../services/app-log'
 import { createLane, failureReason, jsonLines, madeTrack, pythonReason, readerRunConfig } from '../services/reader-run'
 import { QwenVoiceWorker } from '../services/qwen-voice-worker'
-import { qwenWorker, stopQwenResident } from '../services/qwen-resident'
+import { ensureQwenResident, qwenWorker, stopQwenResident } from '../services/qwen-resident'
 import { parseWav, envelope, alignParts, type TimingPart } from '../../shared/readerTiming'
 
 const execFileAsync = promisify(execFile)
@@ -333,6 +333,25 @@ export function registerReaderIpc(): void {
    * ★기본 목소리는 CPU 라 언제든. Qwen 소희는 그래픽카드를 쓰므로 다른 작업이 돌면 열지 않는다(그때는 누를 때 연다).
    * ★줄에 세운다 — 여는 동안 온 조각은 연 다음에 만든다.
    */
+  /**
+   * Qwen 실행기를 **모델 없이** 띄워 라이브러리만 불러 둔다 — 낭독 화면이 목소리 목록을 열 때 부른다.
+   * ★모델 열기 13초 중 6.5초가 불러오기였다(2026-10-02 실측). 그래픽카드 메모리는 잡지 않고, 안 쓰면 3분 뒤 내린다.
+   */
+  ipcMain.handle('reader:prepare', async (_e, voice: unknown, prepOpts?: unknown): Promise<Reply<{ prepared: boolean }>> => {
+    try {
+      if (process.env.AF_E2E === '1' && process.env.AF_E2E_GPU !== '1') return ok({ prepared: false })
+      const prepared = await ensureQwenResident()
+      // 고를 법한 모델 파일을 미리 읽어 둔다 — 처음 열 때 디스크 읽기(1.7B 7.3초)를 목록을 보는 동안 치른다.
+      const v = voice as ReaderVoice | null
+      const qv = prepared && v?.path && v.engineId === 'qwen-custom' ? qwenVoiceOf(v.path) : null
+      if (qv) {
+        const emotion = !!(prepOpts as { emotion?: unknown } | undefined)?.emotion
+        void qwenWorker().call({ prefetch: [(emotion && qwenEmotionModel()) || qv.model] }).catch(() => { /* 못 읽어도 고를 때 연다 */ })
+      }
+      return ok({ prepared })
+    } catch (e) { return fail(e) }
+  })
+
   ipcMain.handle('reader:warm', async (_e, voice: unknown, warmOpts?: unknown): Promise<Reply<{ warmed: boolean; why?: string }>> => {
     try {
       const v = voice as ReaderVoice | null
@@ -355,7 +374,8 @@ export function registerReaderIpc(): void {
           const emotion = !!(warmOpts as { emotion?: unknown } | undefined)?.emotion
           const model = (emotion && qwenEmotionModel()) || qv.model
           setReaderRunning(true)
-          try { await qwenWorker().call({ warm: true, model }) } finally { setReaderRunning(false) }
+          // 화자를 넘기면 막 연 모델로 짧은 글을 한 번 만들어 버린다 — 첫 생성의 준비를 여기서 치른다.
+          try { await qwenWorker().call({ warm: true, model, speaker: qv.speaker, language: 'korean' }) } finally { setReaderRunning(false) }
           return { warmed: true }
         }))
       }

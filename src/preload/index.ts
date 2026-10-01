@@ -288,7 +288,10 @@ const api = {
       ipcRenderer.invoke('reader:speak', text, voice, voiceKey, parts, segments),
     /** 목소리를 미리 연다 — 고른 순간 모델을 올려 둬 첫 조각을 기다리지 않게. */
     warm: (voice: { kind: 'builtin' | 'reference'; path: string; engineId?: string }, opts?: { emotion?: boolean }): Promise<{ data?: { warmed: boolean; why?: string }; error?: string }> =>
-      ipcRenderer.invoke('reader:warm', voice, opts),
+      ipcRenderer.invoke('reader:warm', voice, opts),
+    /** Qwen 실행기를 모델 없이 띄워 둔다(목록을 열 때) — 고를 때 모델만 열면 되게. */
+    prepare: (voice?: { kind: 'builtin' | 'reference'; path: string; engineId?: string }, opts?: { emotion?: boolean }): Promise<{ data?: { prepared: boolean }; error?: string }> =>
+      ipcRenderer.invoke('reader:prepare', voice, opts),
     clearCache: (): Promise<{ removed: number; freedMb: number }> =>
       ipcRenderer.invoke('reader:clear-cache'),
     /** 줄에 선 낭독 조각을 다 만들 때까지 기다린다(참조 목소리 준비 전에). */

@@ -67,6 +67,12 @@ try {
   const rows = await win.getByTestId('reader-voice-builtin').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') || ''))
   const qi = rows.findIndex((t) => t.includes('소희'))
   ok(qi >= 0 && /소희/.test(await win.getByTestId('reader-voice-builtin').nth(qi).innerText()), '★소희는 짧은 이름(소희)으로 고른다', rows)
+  if (process.env.AF_E2E_GPU === '1') {
+    // ★목록을 여는 순간 Qwen 실행기를 모델 없이 띄운다(2026-10-02 — 불러오기·디스크 읽기를 고르기 전에 치른다).
+    let up = false
+    for (let i = 0; i < 40 && !up; i++) { up = /Qwen 상주 실행기 띄움/.test(logText()); if (!up) await win.waitForTimeout(250) }
+    ok(up, '★목록을 열면 고르기 전에 Qwen 실행기를 띄워 둔다', logText().split('\n').filter((l) => /\[reader\]/.test(l)).slice(-3))
+  }
   await win.getByTestId('reader-voice-builtin').nth(qi).click()
   await win.getByTestId('reader-voice-confirm').click()
   const busySeen = []

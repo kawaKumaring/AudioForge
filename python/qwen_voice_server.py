@@ -42,6 +42,35 @@ def reply(**kw):
 
 
 MAX_MODELS = max(1, int(os.environ.get("AF_QWEN_MAX_MODELS", "2") or 2))
+#: 미리 열기에서 한 번 만들어 버리는 짧은 글(첫 덩이와 같은 길이대 — 같은 묶어 실행 칸을 쓴다).
+PRIME_TEXT = "준비하고 있습니다."
+
+
+def _preimport():
+    """라이브러리를 미리 불러 둔다 — 그래픽카드 메모리는 잡지 않는다(모델은 요청이 와야 연다).
+    ★왜 (2026-10-02 실측): 모델 열기 13초 중 torch 1.9초 + qwen_tts 4.6초가 불러오기였다. 목록을 여는 순간 띄우면 고를 때는 모델만 연다."""
+    try:
+        import torch  # noqa: F401
+        import qwen_custom_voice  # noqa: F401
+        from qwen_tts import Qwen3TTSModel  # noqa: F401
+    except Exception as e:      # 못 불러오면 요청 때 다시 시도한다(그때 오류가 답으로 간다)
+        sys.stderr.write("[qwen_voice_server] 미리 불러오기 실패: %s\n" % e)
+
+
+def _prefetch(dirs):
+    """모델 파일을 미리 한 번 읽어 둔다(운영체제가 메모리에 붙들어 둔다) — 그래픽카드는 쓰지 않는다.
+    ★왜 (2026-10-02 실측): 디스크 읽기 0.53GB/s — 1.7B(3.8GB)를 처음 열면 7.3초가 더 든다. 목록을 보는 동안 읽어 둔다."""
+    buf = bytearray(16 << 20)
+    for d in dirs:
+        for root, _, files in os.walk(str(d)):
+            for f in files:
+                if f.endswith((".safetensors", ".bin", ".pt")):
+                    try:
+                        with open(os.path.join(root, f), "rb", buffering=0) as fh:
+                            while fh.readinto(buf):
+                                pass
+                    except OSError:
+                        pass
 
 
 class Models:
@@ -69,11 +98,22 @@ def handle(models, req):
     """요청 하나 → 답(dict, id 없이)."""
     import numpy as np
     import soundfile as sf
+    if isinstance(req.get("prefetch"), list):
+        # 미리 읽기 — 곧바로 답하고 뒤에서 읽는다(줄을 막지 않는다).
+        threading.Thread(target=_prefetch, args=(req["prefetch"],), daemon=True).start()
+        return dict(ok=True, seconds=0, sample_rate=0, gen_sec=0, loaded_now=False)
     import torch
     model, loaded_now = models.get(req["model"])
     if req.get("warm"):
         # 미리 열기 — 고른 순간 모델을 올려 둔다(첫 조각의 모델 열기를 누르기 전에 치른다).
-        return dict(ok=True, seconds=0, sample_rate=0, gen_sec=0, loaded_now=loaded_now)
+        # ★막 열었으면 짧은 글을 한 번 만들어 버린다 — 첫 생성의 묶어 실행 준비(1.3초, 2026-10-02 실측)를 여기서 치른다.
+        prime = 0.0
+        if loaded_now and req.get("speaker"):
+            t = time.time()
+            torch.manual_seed(0)
+            model.generate_custom_voice(text=PRIME_TEXT, speaker=req["speaker"], language=req.get("language", "korean"))
+            prime = round(time.time() - t, 2)
+        return dict(ok=True, seconds=0, sample_rate=0, gen_sec=0, loaded_now=loaded_now, prime_sec=prime)
     if isinstance(req.get("segments"), list):
         return _segments(model, loaded_now, req)
     if "text" in req:
@@ -239,6 +279,9 @@ def main():
     except Exception as e:      # 파이프를 못 열면 표준 입력만 — 카드는 예전 길로 돌아간다
         sys.stderr.write("[qwen_voice_server] 파이프를 열지 못했습니다: %s\n" % e)
     reply(id="", ok=True, ready=True, pipe=bool(lis))
+    # 준비 신호 뒤에 **따로** 불러온다 — 미리 읽기 요청을 곧바로 받게. 모델을 여는 요청은 같은 모듈을 불러오다
+    #   파이썬의 불러오기 잠금에서 이 스레드가 끝나길 기다린다(두 번 불러오지 않는다).
+    threading.Thread(target=_preimport, daemon=True).start()
     # ★한 스레드(여기)가 차례로 처리한다 — 표준 입력 요청과 파이프 요청이 겹쳐도 GPU 에는 하나씩.
     while not stdin.eof:
         for line in stdin.lines():
