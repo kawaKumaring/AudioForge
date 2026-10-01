@@ -18,6 +18,8 @@
   요청: {"id": "...", "model": "<폴더>", "speaker": "sohee", "language": "korean", "text_file": "<글.txt>"(또는 "text"),
          "out": "<소리.wav>", "seed": 0, "instruct": "<영어 감정 지시 · 1.7B 만>"}
         {"id": "...", "model": "<폴더>", "warm": true}   미리 열기(소리는 만들지 않는다)
+        {"id": "...", "model": "<1.7B 폴더>", "speaker": ..., "segments": [{"text": "...", "emotion": "happy"}, ...], "out": ...}
+             낭독 감정(2026-10-01) — 덩어리마다 감정 지시로 만들어 짧은 쉼을 두고 한 파일로 잇는다.
   답  : {"id": "...", "ok": true, "seconds": 10.6, "sample_rate": 24000, "gen_sec": 9.8, "loaded_now": false}
         {"id": "...", "ok": false, "error": "..."}
   그 밖의 줄(라이브러리가 찍는 경고 등)은 부모가 무시한다 — 답은 id 로 짝짓는다.
@@ -72,6 +74,8 @@ def handle(models, req):
     if req.get("warm"):
         # 미리 열기 — 고른 순간 모델을 올려 둔다(첫 조각의 모델 열기를 누르기 전에 치른다).
         return dict(ok=True, seconds=0, sample_rate=0, gen_sec=0, loaded_now=loaded_now)
+    if isinstance(req.get("segments"), list):
+        return _segments(model, loaded_now, req)
     if "text" in req:
         text = str(req["text"] or "").strip()
     else:
@@ -93,6 +97,44 @@ def handle(models, req):
     sf.write(req["out"], wav, int(sr), subtype="PCM_16")
     return dict(ok=True, seconds=round(wav.size / float(sr), 2), sample_rate=int(sr), gen_sec=round(gen, 2),
                 loaded_now=loaded_now)
+
+
+#: 낭독 감정 덩어리 사이의 쉼(초) — 덩어리 끝에도 모델이 남기는 쉼이 있어 짧게 둔다.
+SEGMENT_GAP_SEC = 0.12
+
+
+def _segments(model, loaded_now, req):
+    """감정 덩어리들 → 한 소리. 덩어리마다 같은 모델(1.7B)로 — 감정 없는 덩어리도 같은 모델이라 목소리가 바뀌지 않는다."""
+    import numpy as np
+    import soundfile as sf
+    import torch
+    from qwen_emotions import instruct_of
+    seed = int(req.get("seed", 0))
+    pieces, sr, gen, made = [], 24000, 0.0, 0
+    for seg in req["segments"]:
+        text = str((seg or {}).get("text") or "").strip()
+        if not text:
+            continue
+        torch.manual_seed(seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed_all(seed)
+        t = time.time()
+        wavs, sr = model.generate_custom_voice(text=text, speaker=req["speaker"], language=req.get("language", "korean"),
+                                               instruct=instruct_of((seg or {}).get("emotion")))
+        gen += time.time() - t
+        w = np.asarray(wavs[0], dtype="float32").reshape(-1)
+        if w.size == 0 or not np.isfinite(w).all():
+            raise RuntimeError("소리가 비었거나 깨졌습니다")
+        if pieces:
+            pieces.append(np.zeros(int(SEGMENT_GAP_SEC * int(sr)), dtype="float32"))
+        pieces.append(w)
+        made += 1
+    if not pieces:
+        raise RuntimeError("읽을 글이 없습니다")
+    wav = np.concatenate(pieces)
+    sf.write(req["out"], wav, int(sr), subtype="PCM_16")
+    return dict(ok=True, seconds=round(wav.size / float(sr), 2), sample_rate=int(sr), gen_sec=round(gen, 2),
+                loaded_now=loaded_now, segments=made)
 
 
 def _pipe_listener(work):

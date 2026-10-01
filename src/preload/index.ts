@@ -283,11 +283,12 @@ const api = {
    */
   reader: {
     speak: (text: string, voice: { kind: 'builtin' | 'reference'; path: string; engineId?: string },
-      voiceKey: string, parts?: Array<{ weight: number; strong: boolean }>): Promise<{ data?: { path: string; cached: boolean; timing?: Array<[number, number]> }; error?: string }> =>
-      ipcRenderer.invoke('reader:speak', text, voice, voiceKey, parts),
+      voiceKey: string, parts?: Array<{ weight: number; strong: boolean }>,
+      segments?: Array<{ text: string; emotion: string }>): Promise<{ data?: { path: string; cached: boolean; timing?: Array<[number, number]> }; error?: string }> =>
+      ipcRenderer.invoke('reader:speak', text, voice, voiceKey, parts, segments),
     /** 목소리를 미리 연다 — 고른 순간 모델을 올려 둬 첫 조각을 기다리지 않게. */
-    warm: (voice: { kind: 'builtin' | 'reference'; path: string; engineId?: string }): Promise<{ data?: { warmed: boolean; why?: string }; error?: string }> =>
-      ipcRenderer.invoke('reader:warm', voice),
+    warm: (voice: { kind: 'builtin' | 'reference'; path: string; engineId?: string }, opts?: { emotion?: boolean }): Promise<{ data?: { warmed: boolean; why?: string }; error?: string }> =>
+      ipcRenderer.invoke('reader:warm', voice, opts),
     clearCache: (): Promise<{ removed: number; freedMb: number }> =>
       ipcRenderer.invoke('reader:clear-cache'),
     /** 줄에 선 낭독 조각을 다 만들 때까지 기다린다(참조 목소리 준비 전에). */

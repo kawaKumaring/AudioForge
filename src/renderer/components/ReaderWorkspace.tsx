@@ -186,7 +186,10 @@ export default function ReaderWorkspace() {
     for (const p of book?.paragraphs || []) { out.push(n); n += p.length + 2 }
     return out
   }, [book?.id, book?.paragraphs])
-  const read = useReadAloud(body, pick, { skipHanjaInParens: prefs.skipHanjaInParens })
+  // ★감정 담아 읽기 — 고른 목소리가 감정 지시를 받을 때만(Qwen 지정 목소리 + 1.7B, 지금 목록 기준).
+  const emotionUsable = !!pick && pick.kind === 'builtin' && pick.engineId === 'qwen-custom'
+    && !!builtins?.find((b) => b.path === pick.path)?.emotion
+  const read = useReadAloud(body, pick, { skipHanjaInParens: prefs.skipHanjaInParens, emotion: prefs.emotion && emotionUsable })
   /**
    * 지금 **소리가 읽고 있는 구절** — 문단 안에서 그 글자만 칠한다. 읽지 않을 때는 없다.
    * ★2026-10-01 이전에는 덩이(약 20초) 전체를 칠했다. 이제 구절(문장 끝·쉼표) 단위로 소리를 따라간다(readerTiming).
@@ -398,7 +401,8 @@ export default function ReaderWorkspace() {
   const chooseBuiltin = (b: BuiltinVoiceRef) => {
     const v: ReaderVoicePick = { kind: 'builtin', path: b.path, engineId: b.engineId, label: b.label }
     useReader.setState({ voice: b.label, pick: v })
-    if (b.engineId === 'qwen-custom') void window.api.reader.warm?.({ kind: 'builtin', path: b.path, engineId: b.engineId })?.catch(() => { /* 누를 때 연다 */ })
+    // 감정 담아 읽기가 켜져 있으면 1.7B 를 연다(덩이 전체를 그 모델로 읽는다).
+    if (b.engineId === 'qwen-custom') void window.api.reader.warm?.({ kind: 'builtin', path: b.path, engineId: b.engineId }, { emotion: prefs.emotion && b.emotion === true })?.catch(() => { /* 누를 때 연다 */ })
     voiceButton.current?.focus()
   }
   const choosePosition = (value: number) => {
@@ -646,6 +650,17 @@ export default function ReaderWorkspace() {
             onChange={e => updatePrefs({ follow: e.target.checked })} style={{ marginTop: 3 }} />
           <span>읽는 줄 따라가기
             <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)', marginTop: 3 }}>소리가 읽는 줄을 본문 위쪽 3분의 1 자리에 두고, 줄이 바뀔 때마다 한 줄씩 올립니다. 직접 굴리면 3초 동안 쉽니다.</span>
+          </span>
+        </label>
+        <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', fontSize: 13, cursor: 'pointer' }}>
+          <input data-testid="reader-emotion" type="checkbox" checked={prefs.emotion}
+            onChange={e => updatePrefs({ emotion: e.target.checked })} style={{ marginTop: 3 }} />
+          <span>대사에 감정 담아 읽기
+            <span data-testid="reader-emotion-note" style={{ display: 'block', fontSize: 11, color: emotionUsable ? 'var(--text-muted)' : 'var(--amber, #d4a017)', marginTop: 3 }}>
+              {emotionUsable
+                ? '"…!" 그가 소리쳤다 · 울먹이며 · 속삭였다 같은 단서로 대사의 감정을 정해 큰 모델(1.7B)로 읽습니다. 기쁨·화남은 또렷하고 슬픔·속삭임은 약하게 드러납니다. 보통보다 느립니다.'
+                : '지금 목소리에는 쓰이지 않습니다 — Qwen 목소리(고품질)를 고르면 쓰입니다.'}
+            </span>
           </span>
         </label>
       </div>

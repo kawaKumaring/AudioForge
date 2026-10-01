@@ -22,6 +22,7 @@ import { createManagedAudio } from '@/lib/playbackVolume'
 import { splitForReading, chunkAt, START_RAMP_SECONDS, type Chunk } from '../../shared/readerChunks'
 import { readingPlan, type ReadingPart } from '../../shared/readerText'
 import { partAt } from '../../shared/readerTiming'
+import { partEmotions, emotionRuns, runSay } from '../../shared/readerEmotion'
 import { opLog, nameOnly } from '@/lib/opLog'
 import {
   emptyQueue, nextToMake, canPlayNow, waitReason, markMaking, markReady, markFailed,
@@ -84,7 +85,11 @@ type Plan = { say: string; parts: ReadingPart[] }
 
 export function useReadAloud(
   text: string, voice: ReaderVoicePick | null,
-  opts: { skipHanjaInParens?: boolean } = {},
+  opts: {
+    skipHanjaInParens?: boolean
+    /** 대사에 감정을 담아 읽는다 — 부르는 쪽이 'Qwen 지정 목소리 + 1.7B' 일 때만 켠다(2026-10-01). */
+    emotion?: boolean
+  } = {},
 ): ReadAloud {
   // ★고른 시작 자리는 **덩이의 경계**가 된다 — 덩이 한가운데를 고르면 그 앞 문단부터 읽었다(2026-09-30 재현).
   //   글이 바뀌면 경계도 처음으로(같은 렌더에서 — 옛 책의 자리를 새 책에 쓰지 않는다).
@@ -105,7 +110,9 @@ export function useReadAloud(
   //   목소리만 넘긴다(한자가 없는 덩이는 설정을 바꿔도 다시 만들지 않는다).
   //   큐는 설정까지 본다 — 설정이 바뀌면 만들어 둔 것을 버리고 지금 자리를 다시 읽는다.
   const cacheKey = voiceKeyOf(voice)
-  const voiceKey = cacheKey && skipHanja ? `${cacheKey}|괄호한자뺌` : cacheKey
+  const withEmotion = !!opts.emotion
+  // 감정을 켜고 끄면 다른 소리다 — 큐가 만들어 둔 것을 버리고 지금 자리를 다시 읽는다.
+  const voiceKey = (cacheKey && skipHanja ? `${cacheKey}|괄호한자뺌` : cacheKey) + (cacheKey && withEmotion ? '|감정' : '')
   const [q, setQ] = useState<QueueState>(() => emptyQueue(chunks.length, voiceKey, aheadFor(voice)))
   const [playing, setPlaying] = useState(false)
   const [fault, setFault] = useState('')
@@ -221,11 +228,17 @@ export function useReadAloud(
     }
     // ★같은 목소리·같은 글로 **이미 가 있는 요청**이면 새로 보내지 않고 그 답을 받는다.
     //   개발 실행(StrictMode)은 이 효과를 두 번 돌려 같은 요청이 두 번 나갔다(검사로 확인).
-    const ask = `${madeFor}\n${say}`
+    const ask = `${madeFor}\n${withEmotion ? '감정|' : ''}${say}`
     let run = asking.current.get(ask)
     if (!run) {
+      // ★감정 담아 읽기 — 같은 감정의 이웃 구절을 덩어리로 묶어 덩어리마다 보낸다(감정이 없어도 보낸다 — 덩이 전체가 같은 모델이 되게).
+      const segments = withEmotion
+        ? emotionRuns(plan.parts, partEmotions(chunk.text, plan.parts,
+          // 앞뒤 덩이의 끝·처음 — 덩이 경계에서 대사와 그 서술이 갈려도 단서를 잃지 않게
+          { before: chunks[i - 1]?.text.slice(-200), after: chunks[i + 1]?.text.slice(0, 200) })).map((r) => ({ text: runSay(chunk.text, plan.parts, r), emotion: r.emotion }))
+        : undefined
       run = window.api.reader.speak(say, { kind: voice.kind, path: voice.path, engineId: voice.engineId }, cacheKey,
-        plan.parts.map((p) => ({ weight: p.weight, strong: p.strong })))
+        plan.parts.map((p) => ({ weight: p.weight, strong: p.strong })), segments)
       asking.current.set(ask, run)
       void run.finally(() => { asking.current.delete(ask) }).catch(() => { /* 아래에서 받는다 */ })
     }
@@ -248,7 +261,7 @@ export function useReadAloud(
         if (!acceptResult(qRef.current, i, madeFor)) return
         setQ((cur) => markFailed(cur, i, (e as Error)?.message || '이 부분을 만들지 못했습니다'))
       })
-  }, [playing, q, chunks, voice, voiceKey, cacheKey, planOf])
+  }, [playing, q, chunks, voice, voiceKey, cacheKey, planOf, withEmotion])
 
   /** 이 소리 요소가 덩이 at 을 틀 때의 끝·오류 처리. */
   const attach = useCallback((el: HTMLAudioElement) => {

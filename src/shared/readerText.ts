@@ -29,6 +29,11 @@ export interface ReaderPrefs {
    * ★2026-10-01 이전에는 다른 목소리로 바꾸면 그 파일을 다시 골라 준비부터 다시 해야 했다.
    */
   recentVoices: Array<{ path: string; label: string }>
+  /**
+   * 대사에 감정을 담아 읽는다(2026-10-01 지시: "낭독에도 감정 표현을 적용하라") — Qwen 지정 목소리 + 1.7B 일 때만 쓰인다.
+   * 감정은 대사와 앞뒤 서술의 단서 낱말로 정한다(readerEmotion). 기본 켬.
+   */
+  emotion: boolean
 }
 
 export const READER_RECENT_MAX = 5
@@ -36,7 +41,7 @@ export const READER_RECENT_MAX = 5
 export const READER_FONT_MIN = 13
 export const READER_FONT_MAX = 24
 
-export const DEFAULT_READER_PREFS: ReaderPrefs = { follow: true, skipHanjaInParens: false, fontSize: 16, recentVoices: [] }
+export const DEFAULT_READER_PREFS: ReaderPrefs = { follow: true, skipHanjaInParens: false, fontSize: 16, recentVoices: [], emotion: true }
 
 /** 최근 목소리 목록에 넣는다 — 같은 파일은 맨 앞으로 옮기고, 넘치면 오래된 것을 뺀다. */
 export function rememberVoice(list: ReaderPrefs['recentVoices'], v: { path: string; label: string }): ReaderPrefs['recentVoices'] {
@@ -58,6 +63,7 @@ export function parseReaderPrefs(raw: unknown): ReaderPrefs {
           !!x && typeof x === 'object' && typeof (x as { path?: unknown }).path === 'string' && !!(x as { path: string }).path
           && typeof (x as { label?: unknown }).label === 'string').map((x) => ({ path: x.path, label: x.label })).slice(0, READER_RECENT_MAX)
       : [],
+    emotion: typeof o.emotion === 'boolean' ? o.emotion : DEFAULT_READER_PREFS.emotion,
   }
 }
 
@@ -88,6 +94,8 @@ export interface ReadingPart {
   weight: number
   /** 문장 끝(또는 줄 끝)에서 끊겼다 — 쉼이 길다. 아니면 쉼표. */
   strong: boolean
+  /** 이 구절을 소리로 보낸 글(감정 덩어리마다 나눠 보낼 때 쓴다). 빈 글이면 소리 없음. */
+  spoken?: string
 }
 
 const CLOSERS = '"”’\'」』)）】›»'
@@ -134,7 +142,7 @@ export function readingPlan(text: string, prefs: Pick<ReaderPrefs, 'skipHanjaInP
         say += say ? (breaks ? '\n'.repeat(breaks) : ' ') + spoken : spoken
         spokenTo = start + body.length
       }
-      parts.push({ from: start, to: start + body.length, weight: spoken.replace(/\s/g, '').length, strong })
+      parts.push({ from: start, to: start + body.length, weight: spoken.replace(/\s/g, '').length, strong, spoken })
     }
     from = to
   }

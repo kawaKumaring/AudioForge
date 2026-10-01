@@ -56,7 +56,9 @@ test('저장본을 믿지 않는다 — 모르는 값은 기본으로', () => {
   assert.deepEqual(parseReaderPrefs(null), DEFAULT_READER_PREFS)
   assert.deepEqual(parseReaderPrefs({ follow: 'yes', skipHanjaInParens: 1 }), DEFAULT_READER_PREFS)
   assert.deepEqual(parseReaderPrefs({ follow: false, skipHanjaInParens: true, fontSize: 18 }),
-    { follow: false, skipHanjaInParens: true, fontSize: 18, recentVoices: [] })
+    { follow: false, skipHanjaInParens: true, fontSize: 18, recentVoices: [], emotion: true })
+  assert.equal(parseReaderPrefs({ emotion: false }).emotion, false, '감정 담아 읽기를 끈 것이 남는다')
+  assert.equal(parseReaderPrefs({ emotion: 'no' }).emotion, true, '모르는 값은 기본(켬)')
 })
 
 test('★글자 크기 기본은 16 — 예전 19 는 크다는 지시', () => {

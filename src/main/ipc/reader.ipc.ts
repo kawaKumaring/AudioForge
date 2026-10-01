@@ -93,6 +93,37 @@ function scriptPath(): string {
  * · python/voices/qwen/<화자>.json → 그 화자(2026-10-01 — 소희 말고 일곱을 더 싣는다). 모델은 받아 둔 지정 목소리 모델.
  * 못 풀면 null.
  */
+/** 감정 지시를 받는 Qwen 지정 목소리 모델(1.7B) 폴더 — 없으면 ''. 파이썬 `tts_worker.qwen_emotion_model` 과 같은 규칙. */
+function qwenEmotionModel(): string {
+  const ext = join(dirname(dirname(scriptPath())), 'externals')
+  try {
+    for (const name of readdirSync(ext).sort()) {
+      if (!name.startsWith('qwen3_tts')) continue
+      const cfg = join(ext, name, 'config.json')
+      if (!existsSync(cfg)) continue
+      try {
+        const c = JSON.parse(readFileSync(cfg, 'utf-8')) as { tts_model_type?: string; tts_model_size?: string }
+        if (c.tts_model_type === 'custom_voice' && c.tts_model_size === '1b7') return join(ext, name)
+      } catch { /* 다음 폴더 */ }
+    }
+  } catch { /* 없다 */ }
+  return ''
+}
+
+/** 낭독 감정 덩어리 — 화면이 보낸 것을 믿지 않는다(모양이 다르면 없는 것으로). */
+export interface EmotionSegment { text: string; emotion: string }
+function segmentsOf(raw: unknown): EmotionSegment[] | null {
+  if (!Array.isArray(raw) || !raw.length || raw.length > 200) return null
+  const out: EmotionSegment[] = []
+  for (const s of raw) {
+    const text = String((s as { text?: unknown })?.text ?? '').trim()
+    const emotion = String((s as { emotion?: unknown })?.emotion ?? '')
+    if (!/^[a-z]{0,20}$/.test(emotion)) return null
+    if (text) out.push({ text, emotion })
+  }
+  return out.length ? out : null
+}
+
 function qwenVoiceOf(path: string): { model: string; speaker: string } | null {
   if (basename(path) === 'config.json') return { model: dirname(path), speaker: 'sohee' }
   let speaker = ''
@@ -199,7 +230,7 @@ const inLane = createLane()
  * ★실패하면 **파이썬이 말한 사유**를 돌려준다. 예전에는 실행한 명령줄("Command failed: E:\\…")이
  *   그대로 화면에 떴다 — 사유도 아니고, 폴더 경로가 드러났다. 경로는 파일 이름만 남긴다.
  */
-async function makeChunk(body: string, v: ReaderVoice, out: string): Promise<string> {
+async function makeChunk(body: string, v: ReaderVoice, out: string, segments: EmotionSegment[] | null = null): Promise<string> {
   // 차례를 기다리는 사이 같은 글·같은 목소리가 만들어졌을 수 있다.
   if (existsSync(out)) return out
   // ★다른 화면의 작업이 돌면 비킨다. 판정은 `synthesisGate` 한 곳이 갖는다.
@@ -236,8 +267,16 @@ async function makeChunk(body: string, v: ReaderVoice, out: string): Promise<str
       wav = join(runDir, 'qwen.wav')
       const qv = qwenVoiceOf(v.path)
       if (!qv) throw new Error('고른 Qwen 목소리를 알아보지 못했습니다')
-      const r = await qwenWorker().speak({ model: qv.model, speaker: qv.speaker, language: 'korean', textFile, out: wav })
-      note = ` 상주${r.loadedNow ? '(모델 엶)' : ''} 생성=${r.genSec.toFixed(1)}s 소리=${r.seconds.toFixed(1)}s`
+      const emoModel = segments ? qwenEmotionModel() : ''
+      if (segments && emoModel) {
+        // ★감정 담아 읽기(2026-10-01) — 덩이 전체를 1.7B 로(감정 없는 덩어리도 — 목소리가 바뀌지 않게), 덩어리마다 지시.
+        const r = await qwenWorker().call({ model: emoModel, speaker: qv.speaker, language: 'korean', segments, out: wav, seed: 0 })
+        const emos = segments.filter((s) => s.emotion).map((s) => s.emotion)
+        note = ` 상주 감정(1.7B)${r.loaded_now ? '(모델 엶)' : ''} 덩어리=${segments.length} 감정=${emos.length ? emos.join(',') : '없음'} 생성=${Number(r.gen_sec || 0).toFixed(1)}s 소리=${Number(r.seconds || 0).toFixed(1)}s`
+      } else {
+        const r = await qwenWorker().speak({ model: qv.model, speaker: qv.speaker, language: 'korean', textFile, out: wav })
+        note = ` 상주${r.loadedNow ? '(모델 엶)' : ''} 생성=${r.genSec.toFixed(1)}s 소리=${r.seconds.toFixed(1)}s`
+      }
       if (!existsSync(wav)) throw new Error('이 부분을 소리로 만들지 못했습니다')
     } else {
       const { stdout } = await execFileAsync(py, ['-X', 'utf8', scriptPath(), '--config', cfgPath], {
@@ -294,7 +333,7 @@ export function registerReaderIpc(): void {
    * ★기본 목소리는 CPU 라 언제든. Qwen 소희는 그래픽카드를 쓰므로 다른 작업이 돌면 열지 않는다(그때는 누를 때 연다).
    * ★줄에 세운다 — 여는 동안 온 조각은 연 다음에 만든다.
    */
-  ipcMain.handle('reader:warm', async (_e, voice: unknown): Promise<Reply<{ warmed: boolean; why?: string }>> => {
+  ipcMain.handle('reader:warm', async (_e, voice: unknown, warmOpts?: unknown): Promise<Reply<{ warmed: boolean; why?: string }>> => {
     try {
       const v = voice as ReaderVoice | null
       if (!v || v.kind !== 'builtin' || !v.path || !existsSync(v.path)) return ok({ warmed: false, why: '미리 열 목소리가 아닙니다' })
@@ -309,10 +348,14 @@ export function registerReaderIpc(): void {
         return ok(await inLane(async () => {
           const busy = synthesisBusy('낭독')
           if (busy) return { warmed: false, why: busy }
-          setReaderRunning(true)
+          // ★알아보지 못하면 '도는 중' 을 세우기 **전에** 돌아간다(예전에는 세운 채 돌아가 다른 합성을 막을 수 있었다).
           const qv = qwenVoiceOf(v.path)
           if (!qv) return { warmed: false, why: '고른 Qwen 목소리를 알아보지 못했습니다' }
-          try { await qwenWorker().call({ warm: true, model: qv.model }) } finally { setReaderRunning(false) }
+          // 감정 담아 읽기면 1.7B 를 연다(덩이 전체를 그 모델로 읽는다).
+          const emotion = !!(warmOpts as { emotion?: unknown } | undefined)?.emotion
+          const model = (emotion && qwenEmotionModel()) || qv.model
+          setReaderRunning(true)
+          try { await qwenWorker().call({ warm: true, model }) } finally { setReaderRunning(false) }
           return { warmed: true }
         }))
       }
@@ -332,7 +375,7 @@ export function registerReaderIpc(): void {
    * 덩이 하나를 소리로. 이미 만들어 둔 것이 있으면 **곧바로** 그 자리를 돌려준다.
    */
   ipcMain.handle('reader:speak', async (
-    _e, text: unknown, voice: unknown, voiceKey: unknown, rawParts?: unknown,
+    _e, text: unknown, voice: unknown, voiceKey: unknown, rawParts?: unknown, rawSegments?: unknown,
   ): Promise<Reply<{ path: string; cached: boolean; timing: Array<[number, number]> }>> => {
     try {
       const body = String(text ?? '').trim()
@@ -342,15 +385,19 @@ export function registerReaderIpc(): void {
       if (!v.path || !existsSync(v.path)) throw new Error('고른 목소리를 찾지 못했습니다')
       const key = String(voiceKey ?? '')
       const parts = partsOf(rawParts)
+      // 감정 덩어리 — Qwen 지정 목소리에만. 쌓아 둔 이름에 감정까지 넣는다(같은 글이라도 감정이 다르면 다른 소리).
+      const segments = v.kind === 'builtin' && v.engineId === 'qwen-custom' ? segmentsOf(rawSegments) : null
 
-      const out = join(readerDir(), chunkName(body, key))
+      const out = join(readerDir(), segments
+        ? chunkName(body + '\u0000' + JSON.stringify(segments.map((s) => [s.text, s.emotion])), key + '|감정')
+        : chunkName(body, key))
       if (existsSync(out)) return ok({ path: out, cached: true, timing: timingOf(out, parts) })
 
       const already = inFlight.get(out)
       if (already) { const p = await already; return ok({ path: p, cached: false, timing: timingOf(p, parts) }) }
 
       // ★한 번에 하나 — 줄에 세운다. 앞 작업이 끝나야 다음이 돈다.
-      const run = inLane(() => makeChunk(body, v, out))
+      const run = inLane(() => makeChunk(body, v, out, segments))
       inFlight.set(out, run)
       void run.finally(() => { inFlight.delete(out) }).catch(() => { /* 아래에서 받는다 */ })
       const made = await run
