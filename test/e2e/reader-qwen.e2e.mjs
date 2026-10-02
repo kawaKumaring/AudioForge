@@ -67,9 +67,15 @@ try {
 
   // ── 2. 고르기만 — GPU 로 만들지 않는다 ─────────────────────────────
   await win.getByTestId('reader-voice').click()
-  await win.getByRole('dialog', { name: '목소리 고르기' }).waitFor()
-  const rows = await win.getByTestId('reader-voice-builtin').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') || ''))
-  const qi = rows.findIndex((t) => t.includes(VNAME))
+  await win.getByRole('dialog', { name: '낭독자 고르기' }).waitFor()
+  // ★새 고르기는 묶음 탭이라 한 번에 한 묶음만 보인다 — 고를 목소리가 든 탭을 찾아 간다(소희 · 설계 목소리는 '고품질').
+  const pickerTabs = win.getByRole('dialog', { name: '낭독자 고르기' }).getByRole('button', { name: /^(빠른 낭독|고품질|외국어 억양|기타)$/ })
+  let rows = [], qi = -1
+  for (let i = 0, n = await pickerTabs.count(); i < n && qi < 0; i++) {
+    await pickerTabs.nth(i).click()
+    rows = await win.getByTestId('reader-voice-builtin').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') || ''))
+    qi = rows.findIndex((t) => t.includes(VNAME))
+  }
   ok(qi >= 0 && (await win.getByTestId('reader-voice-builtin').nth(qi).innerText()).includes(VNAME), `★${VNAME} 는 짧은 이름으로 고른다`, rows)
   if (process.env.AF_E2E_GPU === '1') {
     // ★목록을 여는 순간 Qwen 실행기를 모델 없이 띄운다(2026-10-02 — 불러오기·디스크 읽기를 고르기 전에 치른다).

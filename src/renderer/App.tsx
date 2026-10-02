@@ -15,6 +15,7 @@ import DialogueWorkspace from '@/components/DialogueWorkspace'
 import LabPlaceholder from '@/components/LabPlaceholder'
 import SongWorkspace from '@/components/SongWorkspace'
 import ReaderWorkspace from '@/components/ReaderWorkspace'
+import { WorkspaceDockContext } from '@/components/WorkspaceDock'
 import TtsResultInfo from '@/components/TtsResultInfo'
 import AppVersionLabel from '@/components/AppVersionLabel'
 import { loadPlaybackVolume, loadPlaybackRate } from '@/lib/playbackVolume'
@@ -25,6 +26,7 @@ import { isCancelCleanupBusy } from '../shared/cancelContract'
 export default function App() {
   const { fileInfo, mode, synthesisTab, status, resultMode, errorInfo, restorable, restoreSession, setRestorable } = useAppStore()
 
+  const [dock, setDock] = useState<HTMLDivElement | null>(null)
   const [restoring, setRestoring] = useState(false)
   /** 설정 화면. 작업 화면을 덮지 않고 **그 자리에서** 연다. */
   const [showOptions, setShowOptions] = useState(false)
@@ -40,8 +42,8 @@ export default function App() {
   useEffect(() => { opLog('mode', `화면 ${mode}`) }, [mode])
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0 }, [mode, synthesisTab])
   useEffect(() => {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
-    const motion = pageRef.current?.animate([
+    if (mode === 'reader' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    const motion = scrollRef.current?.animate([
       { opacity: 0.45, transform: 'translateY(6px)' },
       { opacity: 1, transform: 'translateY(0)' }
     ], { duration: 180, easing: 'cubic-bezier(.2,.7,.3,1)' })
@@ -50,6 +52,7 @@ export default function App() {
 
   const synthesisView = useSynthesisCards(s => s.view)
   const workspace = WORKSPACES[mode]
+  const heading = ({ music: ['MUSIC', '음악 작업실'], conversation: ['DIALOGUE', '대화 작업실'], transcribe: ['TRANSCRIPT', '받아쓰기'], split: ['TRACKS', '트랙 편집실'], tts: ['VOICE', '목소리 작업실'], dub: ['SONGS', '노래 작업실'], lab: ['LAB', '실험실'], reader: ['READER', '내 서재'], 'dialogue-rebuild': ['DIALOGUE', '대화 편집실'] } as const)[mode]
   const showSharedRun = mode !== 'tts' && mode !== 'lab' && mode !== 'dub' && mode !== 'reader'
   const busy = status === 'processing' || isCancelCleanupBusy(status) || !!errorInfo?.childAlive
   const ownResult = resultMode === mode
@@ -61,7 +64,7 @@ export default function App() {
   return <div data-testid="workspace-shell" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg-base)', color: 'var(--text-primary)' }}>
     <div className="titlebar-drag" style={{ display: 'flex', alignItems: 'center', height: 36, flexShrink: 0, padding: '0 18px', background: 'var(--bg-primary)', borderBottom: '1px solid var(--border-subtle)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="var(--accent-light)" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M3 10v4M7 6v12M12 3v18M17 7v10M21 10v4"/></svg>
+        <img src="./audioforge.svg" width="20" height="20" alt=""/>
         <span style={{ fontSize: 12, fontWeight: 600, letterSpacing: '.02em' }}>AudioForge</span>
       </div>
     </div>
@@ -84,13 +87,17 @@ export default function App() {
       </aside>
       {/* 설정 — 팝업으로 띄운다(2026-09-28 지시). 레이아웃 흐름 밖에 둔다. */}
       {showOptions && <AppOptions close={() => setShowOptions(false)}/>}
-      <main ref={scrollRef} data-testid="workspace-content" style={{ flex: 1, minWidth: 0, overflowY: 'auto', scrollbarGutter: 'stable' }}>
-        <div ref={pageRef} style={{ width: '100%', maxWidth: 1120, margin: '0 auto', padding: '30px clamp(18px, 3vw, 40px) 48px' }}>
-          <header style={{ marginBottom: mode === 'tts' ? 20 : 26 }}>
-            {mode !== 'tts' && <div style={{ marginBottom: 9, fontSize: 11, color: 'var(--text-muted)' }}>{workspace.group}</div>}
+      <WorkspaceDockContext.Provider value={dock}><main style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
+        <div ref={pageRef} style={{ width: '100%', maxWidth: 1120, height: '100%', minHeight: 0, margin: '0 auto', padding: '24px clamp(18px, 3vw, 40px) 18px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }}>
+          <header data-testid="workspace-heading" style={{ display: mode === 'reader' ? 'none' : undefined, flexShrink: 0, paddingBottom: 18, marginBottom: 18, borderBottom: '1px solid var(--border-subtle)' }}>
+            <div style={{ marginBottom: 7, fontSize: 10, letterSpacing: '.16em', color: '#b5aa95' }}>AUDIOFORGE · {heading[0]}</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
-              <h1 title={workspace.description} style={{ fontSize: 25, lineHeight: 1.35, fontWeight: 600, letterSpacing: '-.035em' }}>{workspace.label}</h1>
+              <h1 title={workspace.description} style={{ fontSize: 25, lineHeight: 1.35, fontWeight: 600, letterSpacing: '-.04em', margin: 0 }}>{heading[1]}</h1>
               {mode === 'dub' && <span style={{ padding: '3px 7px', border: '1px solid var(--border-subtle)', borderRadius: 5, color: 'var(--text-muted)', fontSize: 11 }}>개발 중</span>}
+              {showSharedRun && !busy && <span aria-label="작업 흐름" style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 11, color: done ? 'var(--emerald)' : 'var(--text-muted)' }}>
+                <span aria-hidden="true" style={{ width: 5, height: 5, borderRadius: '50%', background: 'currentColor' }}/>{!fileInfo ? '파일을 기다리는 중' : done ? '결과 준비됨' : status === 'error' ? '확인 필요' : '시작할 준비 됐어요'}
+              </span>}
+              {showSharedRun && done && <button type="button" data-testid="workspace-show-results" className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 10px' }} onClick={() => scrollRef.current?.querySelector('[data-testid="shared-results"]')?.scrollIntoView({ block: 'start' })}>결과 보기 ↓</button>}
               {busy && <span role="status" data-testid="workspace-activity" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 'auto', fontSize: 11, color: 'var(--accent-light)' }}>
                 <span className="workspace-activity" aria-hidden="true" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, height: 18 }}>
                   {[0, 1, 2, 3].map(i => <span key={i} style={{ width: 3, height: 14, borderRadius: 2, background: 'currentColor', animationDelay: `${i * 110}ms` }} />)}
@@ -101,15 +108,8 @@ export default function App() {
 
           </header>
 
+          <div ref={scrollRef} data-testid="workspace-content" style={{ flex: 1, minHeight: 0, overflowY: mode === 'reader' ? 'hidden' : 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', scrollbarGutter: mode === 'reader' ? undefined : 'stable', paddingBottom: mode === 'reader' ? 0 : 20 }}>
           {showSharedRun && <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-            <ol aria-label="작업 흐름" style={{ display: 'flex', alignItems: 'center', gap: 24, flexWrap: 'wrap', listStyle: 'none', paddingBottom: 18, borderBottom: '1px solid var(--border-subtle)' }}>
-              {['원본 선택', '설정과 실행', '결과 확인'].map((label, i) => {
-                const step = !fileInfo ? 0 : done ? 2 : 1
-                return <li key={label} aria-current={step === i ? 'step' : undefined} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: step === i ? 'var(--text-primary)' : 'var(--text-muted)' }}>
-                  <span style={{ display: 'inline-flex', alignItems: 'center', justifyContent: 'center', width: 22, height: 22, borderRadius: '50%', fontSize: 11, background: step === i ? 'var(--accent-glow)' : 'var(--bg-elevated)', color: step === i ? 'var(--accent-light)' : 'inherit' }}>{i + 1}</span>{label}
-                </li>
-              })}
-            </ol>
             <SourceCard />
             {fileInfo && restorable && status === 'idle' && <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', borderRadius: 10, padding: 14, background: 'var(--accent-glow)', border: '1px solid var(--border-accent)' }}>
               <span style={{ flex: '1 1 200px', fontSize: 12 }}>이 원본으로 만든 이전 결과가 있습니다.</span>
@@ -139,8 +139,10 @@ export default function App() {
             {mode === 'conversation' && done && <DialogueWorkspace />}
             {showSharedRun && done && <button type="button" className="btn btn-ghost" onClick={resetRun} style={{ alignSelf: 'flex-start', fontSize: 12 }}>설정을 바꿔 다시 작업</button>}
           </section>}
+          </div>
+          <div ref={setDock} data-testid="workspace-dock" style={{ flexShrink: 0, maxHeight: '42%', overflowY: 'auto' }}/>
         </div>
-      </main>
+      </main></WorkspaceDockContext.Provider>
     </div>
   </div>
 }

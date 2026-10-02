@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 // @ts-ignore TS5097: node --test 가 이 파일을 곧바로 읽는다(저장소 관례).
-import { speakableText, parseReaderPrefs, DEFAULT_READER_PREFS, readingPlan, rememberVoice, READER_RECENT_MAX } from './readerText.ts'
+import { speakableText, parseReaderPrefs, parseSavedVoice, DEFAULT_READER_PREFS, readingPlan, rememberVoice, READER_RECENT_MAX } from './readerText.ts'
 
 const ON = { skipHanjaInParens: true }
 const OFF = { skipHanjaInParens: false }
@@ -56,9 +56,28 @@ test('저장본을 믿지 않는다 — 모르는 값은 기본으로', () => {
   assert.deepEqual(parseReaderPrefs(null), DEFAULT_READER_PREFS)
   assert.deepEqual(parseReaderPrefs({ follow: 'yes', skipHanjaInParens: 1 }), DEFAULT_READER_PREFS)
   assert.deepEqual(parseReaderPrefs({ follow: false, skipHanjaInParens: true, fontSize: 18 }),
-    { follow: false, skipHanjaInParens: true, fontSize: 18, recentVoices: [], emotion: true })
+    { ...DEFAULT_READER_PREFS, follow: false, skipHanjaInParens: true, fontSize: 18 })
   assert.equal(parseReaderPrefs({ emotion: false }).emotion, false, '감정 담아 읽기를 끈 것이 남는다')
   assert.equal(parseReaderPrefs({ emotion: 'no' }).emotion, true, '모르는 값은 기본(켬)')
+})
+
+test('★고른 목소리 지정은 저장본에서 그대로 읽히고, 모양이 틀리면 없는 것으로 — 소리 파일은 담지 않는다', () => {
+  const builtin = { kind: 'builtin', engineId: 'supertonic', modelId: 'F1', label: 'Supertonic 여성 1' }
+  const ref = { kind: 'reference', path: 'E:/work/ref/clip_24k.wav', label: '내 목소리' }
+  assert.deepEqual(parseReaderPrefs({ voice: builtin }).voice, builtin)
+  assert.deepEqual(parseReaderPrefs({ voice: ref }).voice, ref)
+  assert.equal(parseReaderPrefs({}).voice, null, '예전 저장본(목소리 지정 없음)은 고른 적 없는 것')
+  assert.equal(DEFAULT_READER_PREFS.voice, null)
+  // 모양이 틀린 것 — 다른 목소리로 바꾸지 않고 없는 것으로(처음 값 규칙을 탄다)
+  for (const bad of [null, 5, 'F1', {}, { kind: 'builtin' }, { kind: 'builtin', engineId: 'x', label: 'y' }, { kind: 'builtin', engineId: 'x', modelId: '', label: 'y' },
+    { kind: 'reference', label: 'y' }, { kind: 'reference', path: '', label: 'y' }, { kind: 'other', path: 'p', label: 'y' }, { kind: 'builtin', engineId: 'x', modelId: 'm' }]) {
+    assert.equal(parseSavedVoice(bad), null, JSON.stringify(bad))
+  }
+  // 저장되는 것은 지정뿐 — 군더더기 필드(예: 소리 내용)를 따라오지 않는다
+  assert.deepEqual(parseSavedVoice({ ...builtin, bytes: 'AAAA', path: 'x' }), builtin)
+  assert.deepEqual(parseSavedVoice({ ...ref, data: 'AAAA' }), ref)
+  // 기본 목소리는 경로가 아니라 엔진+모델 이름으로 — 경로를 담지 않는다
+  assert.equal('path' in (parseSavedVoice(builtin) as object), false)
 })
 
 test('★글자 크기 기본은 16 — 예전 19 는 크다는 지시', () => {

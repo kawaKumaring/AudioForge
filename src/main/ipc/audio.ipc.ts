@@ -1703,6 +1703,17 @@ export function registerAudioIpc(
     }
   })
 
+  /**
+   * 자리에 파일이 있는지만 본다(내용은 열지 않는다) — 낭독이 고른 '내 목소리 파일' 이 아직 있는지 확인하는 데 쓴다(2026-10-02).
+   * 돌려주는 것: { [자리]: 있음 }. 최대 20개.
+   */
+  ipcMain.handle('app:paths-exist', (_event, paths: unknown) => {
+    const out: Record<string, boolean> = {}
+    if (!Array.isArray(paths)) return out
+    for (const p of paths.slice(0, 20)) if (typeof p === 'string' && p.length > 0 && p.length < 2000) out[p] = existsSync(p)
+    return out
+  })
+
   ipcMain.handle('app:read-text-file', async (_event, path: string) => {
     const { readFileSync } = await import('fs')
     try {

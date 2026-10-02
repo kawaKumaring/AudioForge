@@ -31,8 +31,11 @@ import {
 
 export interface ReaderVoicePick {
   kind: 'builtin' | 'reference'
+  /** 기본 목소리는 모델 파일 자리, 내 목소리는 조각(또는 원본) 자리. ★기본 목소리를 저장본에서 되살릴 때는 목록에서 찾기 전까지 빈 글자다. */
   path: string
   engineId?: string
+  /** 기본 목소리의 안정된 이름(엔진 안에서) — 저장·복원은 경로가 아니라 이것으로 찾는다. */
+  modelId?: string
   /** 화면에 보일 이름. */
   label: string
 }

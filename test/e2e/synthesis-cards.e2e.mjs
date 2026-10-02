@@ -36,7 +36,10 @@ try{
  await capture('00-empty-source')
  await win.getByRole('button',{name:'기본 목소리 선택',exact:true}).click()
  await win.getByRole('dialog',{name:'목소리 고르기'}).waitFor()
- check(await win.getByTestId('pick-voice-file').isVisible(),'기본 목소리 선택 통로 유지')
+ // 새 목소리 고르기는 '기본 목소리' / '내 목소리 파일' 탭이다 — 기본 목소리 탭이 열리고, 파일 통로는 내 목소리 파일 탭에 있다(같은 통로를 새 조작으로 본다).
+ check(await win.getByTestId('voice-source-builtin').isVisible(),'기본 목소리 통로 유지')
+ await win.getByTestId('voice-source-reference').click()
+ check(await win.getByTestId('pick-voice-file').isVisible(),'기본 목소리 선택 통로 유지(내 목소리 파일 탭)')
  await win.keyboard.press('Escape')
 
  await win.evaluate(p=>window.__afStore.setState({fileInfo:{path:p,name:'목소리 A.wav',duration:8,channels:1,sampleRate:24000,format:'wav'}}),src)
@@ -79,6 +82,7 @@ try{
  await app.evaluate(({ipcMain},p)=>{ipcMain.removeHandler('audio:select-file');ipcMain.handle('audio:select-file',()=>p)},other)
  // 목소리 바꾸기는 이제 갈래를 먼저 고른다(기본 목소리 / 파일). 검증 의도는 그대로다.
  await win.getByRole('button',{name:'2번 카드 목소리 변경'}).click()
+ await win.getByTestId('voice-source-reference').click()      // 새 고르기: 내 목소리 파일 탭
  await win.getByTestId('pick-voice-file').click()
  await win.waitForFunction(p=>window.__synthesisCards.getState().cards[1].source.path===p,other)
  check(await win.evaluate(p=>window.__afStore.getState().fileInfo.path===p&&window.__synthesisCards.getState().cards[0].source.path===p,src),'개별 음원 변경은 공통 원본·다른 카드에 영향 없음')
@@ -93,11 +97,56 @@ try{
  await win.getByTestId('card-drag-handle').nth(1).focus();await win.keyboard.press('Alt+ArrowUp')
  check(await win.evaluate(id=>window.__synthesisCards.getState().cards[0].id===id,ids[1]),'키보드 카드 순서 변경')
  await win.getByTestId('card-drag-handle').first().focus();await win.keyboard.press('Alt+ArrowDown')
- // Keep source and target visible together; dragTo scrolling its target otherwise displaces the source.
- await win.getByTestId('workspace-content').evaluate(el=>{const card=el.querySelector('[data-testid="generation-card"]');el.scrollTop+=card.getBoundingClientRect().top-el.getBoundingClientRect().top-16})
- const dropBox=await win.getByTestId('generation-card').nth(1).boundingBox()
- await win.getByTestId('card-drag-handle').first().dragTo(win.getByTestId('generation-card').nth(1),{targetPosition:{x:100,y:dropBox.height-8}})
- check(await win.evaluate(id=>window.__synthesisCards.getState().cards[0].id===id,ids[1]),'손잡이 드래그로 카드 묶음 이동')
+ // ★재정렬 애니메이션이 **멈춘 뒤** 사람처럼 마우스로 끈다(2026-10-03) — 움직이는 중의 자리로 굴리면 끝난 뒤 손잡이가 굴림 칸 밖으로 숨는다.
+ //   놓는 자리는 '다음 카드의 아래 절반'(뒤로 놓기)·'앞 카드의 위 절반'(앞으로 놓기) 중 **보이는 곳**. 안 보이면 굴림 칸 끝에 머물러 저절로 굴러가게 한다.
+ const settleAnim=()=>win.evaluate(()=>Promise.all(document.getAnimations().map(a=>a.finished.catch(()=>{}))))
+ const snapshotCards=()=>win.evaluate(()=>window.__synthesisCards.getState().cards.map(c=>JSON.stringify({id:c.id,label:c.label,script:c.script,source:c.source,settings:c.settings,takes:c.takes,adopted:c.adopted??null})))
+ const domOrder=()=>win.evaluate(()=>[...document.querySelectorAll('[data-testid="generation-card"]')].map(e=>e.getAttribute('data-card-id')))
+ const dragCard=async(fromIdx,toIdx,{after,prescroll})=>{
+  await settleAnim()
+  const content=win.getByTestId('workspace-content')
+  // 손잡이가 굴림 칸 안에 오게 — 위쪽 정렬(prescroll:'top') 또는 맨 아래까지 굴린 상태(prescroll:'bottom')에서 시작한다.
+  await content.evaluate((el,a)=>{const h=el.querySelectorAll('[data-testid="card-drag-handle"]')[a.from];if(a.prescroll==='bottom'){el.scrollTop=el.scrollHeight}else{el.scrollTop+=h.getBoundingClientRect().top-el.getBoundingClientRect().top-24}
+   const r=h.getBoundingClientRect(),c=el.getBoundingClientRect();if(r.top<c.top||r.bottom>c.bottom)h.scrollIntoView({block:'nearest'})},{from:fromIdx,prescroll})
+  await settleAnim()
+  const startTop=await content.evaluate(el=>el.scrollTop)
+  const hb=await win.getByTestId('card-drag-handle').nth(fromIdx).boundingBox()
+  await win.mouse.move(hb.x+hb.width/2,hb.y+hb.height/2);await win.mouse.down();await win.mouse.move(hb.x+hb.width/2,hb.y+hb.height/2+(after?12:-12),{steps:3})
+  let dropped=false
+  for(let i=0;i<80&&!dropped;i++){
+   const g=await content.evaluate((el,a)=>{const c=el.getBoundingClientRect(),r=el.querySelectorAll('[data-testid="generation-card"]')[a.to].getBoundingClientRect(),mid=r.top+r.height/2
+    const lo=a.after?Math.max(mid+6,c.top+6):Math.max(r.top+6,c.top+6),hi=a.after?Math.min(r.bottom-6,c.bottom-6):Math.min(mid-6,c.bottom-6)
+    return {x:r.left+100,lo,hi,edge:a.after?c.bottom-4:c.top+4}},{to:toIdx,after})
+   if(g.hi-g.lo>=8){await win.mouse.move(g.x,(g.lo+g.hi)/2,{steps:8});await win.mouse.up();dropped=true}
+   else{await win.mouse.move(g.x,g.edge,{steps:2});await win.waitForTimeout(60)}
+  }
+  if(!dropped)await win.mouse.up()
+  await settleAnim()
+  return {dropped,scrolled:startTop!==await content.evaluate(el=>el.scrollTop)}
+ }
+ const before=await snapshotCards()
+ const d1=await dragCard(0,1,{after:true,prescroll:'top'})
+ check(d1.dropped&&await win.evaluate(id=>window.__synthesisCards.getState().cards[0].id===id,ids[1]),'손잡이 드래그로 카드 묶음 이동')
+ // ★화면의 카드 순서 = 저장된 순서 = 최종 연결 순서(연결 계획은 저장된 순서로 만든다 — SynthesisCardWorkspace buildJoinPlan(cards.map…)).
+ check(JSON.stringify(await domOrder())===JSON.stringify(await win.evaluate(()=>window.__synthesisCards.getState().cards.map(c=>c.id))),'화면 카드 순서와 연결 순서가 같다')
+ const after1=await snapshotCards()
+ check(JSON.stringify([...before].sort())===JSON.stringify([...after1].sort()),'끌어 옮겨도 카드 대사·목소리·생성본·채택이 그대로다')
+ // 맨 아래까지 굴린 상태에서 아래 카드를 앞으로 — 앞 카드가 칸 위로 숨어 있으면 칸 끝에 머물러 굴러가게 한다.
+ const d2=await dragCard(1,0,{after:false,prescroll:'bottom'})
+ check(d2.dropped&&await win.evaluate(id=>window.__synthesisCards.getState().cards[0].id===id,ids[0]),'목록을 끝까지 굴린 뒤에도 손잡이로 앞으로 옮긴다')
+ check(JSON.stringify(await domOrder())===JSON.stringify(await win.evaluate(()=>window.__synthesisCards.getState().cards.map(c=>c.id))),'굴린 뒤 옮겨도 화면 순서 = 연결 순서')
+ // 좁은 창 — 같은 조작이 된다(카드가 길어져 굴림이 더 필요하다).
+ await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(760,700));await win.waitForTimeout(300)
+ const d3=await dragCard(0,1,{after:true,prescroll:'top'})
+ check(d3.dropped&&await win.evaluate(id=>window.__synthesisCards.getState().cards[0].id===id,ids[1]),'좁은 창에서도 손잡이 드래그로 옮긴다')
+ const d4=await dragCard(1,0,{after:false,prescroll:'bottom'})
+ check(d4.dropped&&await win.evaluate(id=>window.__synthesisCards.getState().cards[0].id===id,ids[0]),'좁은 창에서 굴린 뒤에도 앞으로 옮긴다')
+ check(JSON.stringify([...before].sort())===JSON.stringify([...await snapshotCards()].sort()),'여러 번 옮겨도 카드 내용이 그대로다')
+ console.log('INFO 드래그 중 저절로 굴렀나',JSON.stringify({넓은창_뒤로:d1.scrolled,넓은창_앞으로:d2.scrolled,좁은창_뒤로:d3.scrolled,좁은창_앞으로:d4.scrolled}))
+ await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(1280,850));await win.waitForTimeout(300)
+ // 뒤 검사는 카드 1이 앞(ids[1] 먼저)인 상태를 기대한다 — 예전 흐름의 끝 상태로 되돌린다.
+ await dragCard(0,1,{after:true,prescroll:'top'})
+ check(await win.evaluate(id=>window.__synthesisCards.getState().cards[0].id===id,ids[1]),'(뒤 검사용 순서로 되돌림)')
  await win.getByTestId('card-drag-handle').first().focus();await win.keyboard.press('Alt+ArrowDown')
  await win.getByRole('button',{name:'2번 카드 삭제'}).click();await win.getByRole('button',{name:'되돌리기',exact:true}).click()
  check(await win.evaluate(id=>window.__synthesisCards.getState().cards[1].id===id,ids[1]),'삭제 취소로 카드와 순서 복구')

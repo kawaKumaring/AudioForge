@@ -97,16 +97,25 @@ try {
 
   // ── 2. 목소리는 본체가 확인한 것만 ────────────────────────────────────
   await win.getByTestId('reader-voice').click()
-  await win.getByRole('dialog', { name: '목소리 고르기' }).waitFor()
-  const listedInUi = await win.getByTestId('reader-voice-builtin').count()
-  ok(listedInUi === voices.length,
+  await win.getByRole('dialog', { name: '낭독자 고르기' }).waitFor()
+  // ★새 고르기는 묶음 탭이라 한 번에 한 묶음만 보인다 — 탭을 하나씩 넘기며 모아 센다(같은 단언).
+  const pickerTabs = win.getByRole('dialog', { name: '낭독자 고르기' }).getByRole('button', { name: /^(빠른 낭독|고품질|외국어 억양|기타)$/ })
+  const tabCount = await pickerTabs.count()
+  const shownLabels = [], chipTexts = []
+  for (let i = 0; i < tabCount; i++) {
+    await pickerTabs.nth(i).click()
+    shownLabels.push(...await win.getByTestId('reader-voice-builtin').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') || '')))
+    chipTexts.push(...await win.getByTestId('reader-voice-builtin').evaluateAll((els) => els.map((e) => (e.textContent || '').trim())))
+  }
+  const listedInUi = shownLabels.length
+  ok(listedInUi === voices.length && new Set(shownLabels).size === voices.length && voices.every((v) => shownLabels.includes(v.label)),
     '★설치된 목소리만 고를 수 있다 — 없는 것을 고르게 하지 않는다', { listedInUi, real: voices.length })
   // ★묶음으로 보인다 — 칩마다 엔진 이름을 되풀이하지 않는다(2026-10-01 신고: 목소리가 길게 나열돼 보기 좋지 않다).
-  const chipTexts = await win.getByTestId('reader-voice-builtin').allInnerTexts()
   ok(chipTexts.every((t) => !/Supertonic|Qwen/.test(t)), '★칩에 엔진 이름을 되풀이하지 않는다', chipTexts)
+  await pickerTabs.first().click()
   await win.getByTestId('reader-voice-builtin').first().click()
   await win.getByTestId('reader-voice-confirm').click()
-  ok(await win.getByRole('dialog', { name: '목소리 고르기' }).count() === 0, '확정하면 고르기 창이 닫힌다')
+  ok(await win.getByRole('dialog', { name: '낭독자 고르기' }).count() === 0, '확정하면 고르기 창이 닫힌다')
 
   // ── 3. 실제로 읽는다 ──────────────────────────────────────────────────
   await win.evaluate(eval(installAudioProbe))
@@ -205,14 +214,15 @@ try {
   //   참조 목소리 합성은 GPU 로 수십 초가 들고, 이 검사가 보려는 것이 아니다.
   // ★들어 보기 — 같은 책 문장으로 목소리를 하나씩 들어 보고 고른다(2026-09-30 지시).
   await win.getByTestId('reader-voice').click()
-  await win.getByRole('dialog', { name: '목소리 고르기' }).waitFor()
+  await win.getByRole('dialog', { name: '낭독자 고르기' }).waitFor()
   const playsBeforeTry = await win.evaluate(() => (window.__plays || []).length)
   await win.getByTestId('reader-voice-builtin').nth(1).click()
   await win.getByTestId('reader-voice-try').click()
   const tried = await win.waitForFunction((n) => (window.__plays || []).length > n, playsBeforeTry, { timeout: 60000 }).then(() => true).catch(() => false)
   ok(tried, '★고른 목소리를 들어 보기로 실제 소리가 난다')
-  ok(await win.getByRole('dialog', { name: '목소리 고르기' }).count() === 1, '들어 봐도 고르기 창은 그대로다 — 이어서 고른다')
+  ok(await win.getByRole('dialog', { name: '낭독자 고르기' }).count() === 1, '들어 봐도 고르기 창은 그대로다 — 이어서 고른다')
   await win.evaluate((p) => window.api.audio.e2eSetSelectFile(p), VOICE_PATH)
+  await win.getByTestId('voice-source-reference').click()          // 새 고르기: 기본 목소리 ↔ 내 목소리 파일 탭
   await win.getByTestId('reader-voice-file').click()
   const picked = await win.waitForFunction(() =>
     (document.querySelector('[data-testid="reader-voice"]')?.textContent || '').includes('참조.wav'),
@@ -225,7 +235,8 @@ try {
   // ★긴 파일은 **구간을 잘라** 쓴다 — 원본 전체를 받아 적어 따라 하면 모델이 끝맺지 못했다(2026-09-30 사용자 로그).
   await win.evaluate((p) => window.api.audio.e2eSetSelectFile(p), LONG_VOICE_PATH)
   await win.getByTestId('reader-voice').click()
-  await win.getByRole('dialog', { name: '목소리 고르기' }).waitFor()
+  await win.getByRole('dialog', { name: '낭독자 고르기' }).waitFor()
+  await win.getByTestId('voice-source-reference').click()
   await win.getByTestId('reader-voice-file').click()
   const pickedLong = await win.waitForFunction(() =>
     (document.querySelector('[data-testid="reader-voice"]')?.textContent || '').includes('긴참조.wav'),
@@ -236,7 +247,8 @@ try {
   ok(savedSetting('lastTextDir') === TEXT_DIR, '목소리를 고른 것이 글 기억을 덮지 않는다', savedSetting('lastTextDir'))
   // ★전에 쓴 목소리 파일은 고르기 창에 남는다 — 다시 고를 때 준비를 되풀이하지 않는다(2026-10-01).
   await win.getByTestId('reader-voice').click()
-  await win.getByRole('dialog', { name: '목소리 고르기' }).waitFor()
+  await win.getByRole('dialog', { name: '낭독자 고르기' }).waitFor()
+  await win.getByTestId('voice-source-reference').click()
   const recentTexts = await win.getByTestId('reader-voice-recent').allInnerTexts()
   ok(recentTexts.length === 2 && recentTexts[0].includes('긴참조.wav') && recentTexts[1].includes('참조.wav'),
     '★전에 쓴 목소리 파일이 최근 것부터 남는다', recentTexts)
@@ -274,10 +286,14 @@ try {
   win2.setDefaultTimeout(30000)
   await win2.waitForFunction(() => !!window.__afStore)
   await win2.getByTestId('mode-reader').click()
-  await win2.waitForSelector('[data-testid="reader-paragraph"]')
+  await win2.waitForSelector('[data-testid="reader-paragraph"], [data-testid="reader-library-book"]')
+  // 다시 켜면 서재(책 선반)가 먼저 열린다 — 책을 열어 읽던 자리를 본다(같은 단언을 새 흐름으로).
+  await win2.getByTestId('reader-library-book').first().click()
+  await win2.waitForSelector('[data-testid="reader-state"]')
   const back = await win2.getByTestId('reader-paragraph').count()
   ok(back === 3, '★껐다 켜도 책이 그대로 있다', back)
-  const where = await win2.getByTestId('reader-state').innerText()
+  // 읽는 자리 표시(3 / 3)는 새 화면에서 아래 조작 막대(reader-controls)에 있다 — 상태 줄(reader-state)은 '이 자리에서 시작' 같은 안내다.
+  const where = await win2.getByTestId('reader-controls').innerText()
   ok(where.includes('3 / 3'), '★읽던 자리도 그대로다', where)
   // ★저장은 되는데 다시 켜면 사라지는 일이 있었다(읽기 목록 누락, 2026-09-28) — 그것까지 본다.
   await win2.waitForFunction(() => document.querySelector('[data-testid="reader-follow"]')?.getAttribute('aria-pressed') === 'false',
@@ -289,9 +305,12 @@ try {
   await win2.keyboard.press('Escape')
 
   // 목록에서 빼면 **그 파일만** 사라진다
-  // 책 목록은 서재 팝업에 있다(2026-09-30 피드백: 본문 옆 칸이 화면을 채웠다).
+  // 책 목록은 서재 선반에 있다(2026-09-30 피드백: 본문 옆 칸이 화면을 채웠다) — 선택해서 정리한다(두 번 눌러 확인).
   await win2.getByTestId('reader-library').click()
-  await win2.locator('[aria-label$="목록에서 빼기"]').first().click()
+  await win2.getByTestId('reader-library-manage').click()
+  await win2.getByTestId('reader-library-book').first().click()
+  await win2.getByTestId('reader-library-remove').click()       // 확인 단계
+  await win2.getByTestId('reader-library-remove').click()       // 목록에서 빼기
   await win2.waitForTimeout(700)
   const left = fs.existsSync(path.join(UD, 'works', 'books'))
     ? fs.readdirSync(path.join(UD, 'works', 'books')).filter((f) => f.endsWith('.json')) : []

@@ -11,6 +11,8 @@ import { stripSpokenSymbols } from './speechSymbols.ts'
 export const READER_PREFS_STORAGE_KEY = 'readerPrefs'
 
 export interface ReaderPrefs {
+  shelfView: 'cover' | 'compact' | 'list'
+  shelfGrouped: boolean
   /** 읽는 구절을 화면이 따라간다. */
   follow: boolean
   /**
@@ -34,14 +36,43 @@ export interface ReaderPrefs {
    * 감정은 대사와 앞뒤 서술의 단서 낱말로 정한다(readerEmotion). 기본 켬.
    */
   emotion: boolean
+  /**
+   * 사용자가 **고른 목소리 지정** (2026-10-02 재검수 — 앱을 껐다 켜도 고른 목소리가 남는다). 지정만 저장한다 — 소리 파일을 복사하지 않는다.
+   *  · 기본 목소리 — 엔진 + 모델 이름. ★경로가 아니다: 앱을 옮기거나 다시 깔아 경로가 달라져도 같은 목소리를 찾는다.
+   *  · 내 목소리 파일 — 준비해 둔 목소리 조각(또는 원본)의 경로.
+   * 고른 적이 없으면 null(처음 쓰는 사람만 첫 기본 목소리가 기본값이 된다).
+   */
+  voice: SavedReaderVoice | null
 }
 
+export type SavedReaderVoice =
+  | { kind: 'builtin'; engineId: string; modelId: string; label: string }
+  | { kind: 'reference'; path: string; label: string }
+
 export const READER_RECENT_MAX = 5
+
+/** 저장본의 목소리 지정을 믿지 않는다 — 모양이 다르면 없는 것으로. */
+export function parseSavedVoice(raw: unknown): SavedReaderVoice | null {
+  if (!raw || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  const str = (v: unknown, max: number): string => (typeof v === 'string' && v.length > 0 && v.length <= max ? v : '')
+  const label = str(o.label, 200)
+  if (!label) return null
+  if (o.kind === 'builtin') {
+    const engineId = str(o.engineId, 60), modelId = str(o.modelId, 120)
+    return engineId && modelId ? { kind: 'builtin', engineId, modelId, label } : null
+  }
+  if (o.kind === 'reference') {
+    const path = str(o.path, 2000)
+    return path ? { kind: 'reference', path, label } : null
+  }
+  return null
+}
 
 export const READER_FONT_MIN = 13
 export const READER_FONT_MAX = 24
 
-export const DEFAULT_READER_PREFS: ReaderPrefs = { follow: true, skipHanjaInParens: false, fontSize: 16, recentVoices: [], emotion: true }
+export const DEFAULT_READER_PREFS: ReaderPrefs = { shelfView: 'compact', shelfGrouped: true, follow: true, skipHanjaInParens: false, fontSize: 16, recentVoices: [], emotion: true, voice: null }
 
 /** 최근 목소리 목록에 넣는다 — 같은 파일은 맨 앞으로 옮기고, 넘치면 오래된 것을 뺀다. */
 export function rememberVoice(list: ReaderPrefs['recentVoices'], v: { path: string; label: string }): ReaderPrefs['recentVoices'] {
@@ -52,6 +83,8 @@ export function rememberVoice(list: ReaderPrefs['recentVoices'], v: { path: stri
 export function parseReaderPrefs(raw: unknown): ReaderPrefs {
   const o = raw && typeof raw === 'object' ? raw as Record<string, unknown> : {}
   return {
+    shelfView: o.shelfView === 'cover' || o.shelfView === 'list' ? o.shelfView : 'compact',
+    shelfGrouped: typeof o.shelfGrouped === 'boolean' ? o.shelfGrouped : true,
     follow: typeof o.follow === 'boolean' ? o.follow : DEFAULT_READER_PREFS.follow,
     skipHanjaInParens: typeof o.skipHanjaInParens === 'boolean'
       ? o.skipHanjaInParens : DEFAULT_READER_PREFS.skipHanjaInParens,
@@ -64,6 +97,7 @@ export function parseReaderPrefs(raw: unknown): ReaderPrefs {
           && typeof (x as { label?: unknown }).label === 'string').map((x) => ({ path: x.path, label: x.label })).slice(0, READER_RECENT_MAX)
       : [],
     emotion: typeof o.emotion === 'boolean' ? o.emotion : DEFAULT_READER_PREFS.emotion,
+    voice: parseSavedVoice(o.voice),
   }
 }
 

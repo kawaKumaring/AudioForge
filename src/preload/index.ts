@@ -360,6 +360,8 @@ const api = {
     /** 작업 기록이 적히는 데이터 파일의 자리. */
     dataFile: (): Promise<string> => ipcRenderer.invoke('app:data-file'),
     readTextFile: (path: string) => ipcRenderer.invoke('app:read-text-file', path),
+    /** 자리에 파일이 있는지만 본다(내용은 열지 않는다) — { [자리]: 있음 }. */
+    pathsExist: (paths: string[]): Promise<Record<string, boolean>> => ipcRenderer.invoke('app:paths-exist', paths),
     /** 없음과 읽기 실패를 가른다 — { state: 'ok', text } | { state: 'missing' } | { state: 'failed', message }. */
     readTextFileEx: (path: string): Promise<{ state: 'ok'; text: string } | { state: 'missing' } | { state: 'failed'; message: string }> =>
       ipcRenderer.invoke('app:read-text-file-ex', path),

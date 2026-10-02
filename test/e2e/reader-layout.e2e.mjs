@@ -1,4 +1,4 @@
-// 낭독 화면 — **긴 책**에서 따라가기·고정된 작동 막대·글자 크기·서재 팝업.
+// 낭독 화면 — **긴 책**에서 따라가기·고정된 작동 막대·글자 크기·서재(책 선반).
 //
 // ★왜 생겼나 (2026-09-30 사용 피드백)
 //   "따라가기가 작동을 안 되는 경우가 많다" · "하단의 실행 버튼이 휠에 영향을 받아서 움직인다" ·
@@ -68,13 +68,15 @@ try {
   await win.waitForSelector('[data-testid="reader-paragraph"]')
   ok(await win.getByTestId('reader-paragraph').count() === 60, '긴 책이 펼쳐진다')
 
-  // ── 서재 팝업 · 본문이 전체 폭 ─────────────────────────────────────────
+  // ── 서재(책 선반) · 본문이 전체 폭 ───────────────────────────────────────
+  // ★서재는 팝업이 아니라 화면 안의 책 선반이다(2026-10-02 개편). 같은 것을 본다: 책이 모이고, 닫으면 본문으로 돌아온다.
   ok(await win.locator('aside[aria-label="책 목록"]').count() === 0, '★책 목록이 본문 옆 칸을 차지하지 않는다')
   await win.getByTestId('reader-library').click()
-  await win.getByRole('dialog', { name: '서재' }).waitFor()
-  ok(await win.getByTestId('reader-library-book').count() === 1, '★서재 팝업에 불러온 책이 모인다')
-  await win.keyboard.press('Escape')
-  ok(await win.getByRole('dialog', { name: '서재' }).count() === 0, 'Esc 로 닫힌다')
+  await win.getByTestId('reader-library-dialog').waitFor()
+  ok(await win.getByTestId('reader-library-book').count() === 1, '★서재에 불러온 책이 모인다')
+  await win.getByTestId('reader-library-book').first().click()          // 책을 열면 서재가 걷히고 본문으로 돌아온다(예전의 Esc 로 닫기)
+  await win.waitForSelector('[data-testid="reader-library-dialog"]', { state: 'detached' })
+  ok(await win.getByTestId('reader-library-dialog').count() === 0 && await win.getByTestId('reader-paragraph').first().isVisible(), '책을 열면 서재가 닫히고 본문이 보인다')
 
   // ── 글자 크기 ─────────────────────────────────────────────────────────
   const fs0 = await win.getByTestId('reader-paragraph').first().evaluate((e) => getComputedStyle(e).fontSize)

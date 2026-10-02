@@ -19,7 +19,7 @@ export interface RecentVoice { path: string; label: string }
 
 export default function VoicePicker({
   close, builtins, why, current, onChoose, onFile, recent, onRecent, confirmLabel, fileLabel = '음성·영상 파일에서',
-  make, disabled = false, ids,
+  make, disabled = false, ids, onDropFile, keepOpenOnFile = false, title = '목소리 고르기',
 }: {
   close: () => void
   /** null 이면 아직 확인 중. */
@@ -29,6 +29,9 @@ export default function VoicePicker({
   current?: { kind: 'builtin' | 'reference'; path: string } | null
   onChoose: (v: BuiltinVoiceRef) => void
   onFile: () => void
+  onDropFile?: (file: File) => void
+  keepOpenOnFile?: boolean
+  title?: string
   /** 전에 쓴 내 목소리 파일(낭독). 없으면 묶음을 보이지 않는다. */
   recent?: RecentVoice[]
   onRecent?: (r: RecentVoice) => void
@@ -42,6 +45,8 @@ export default function VoicePicker({
 }) {
   const groups = useMemo(() => groupVoices(builtins || []), [builtins])
   const [sel, setSel] = useState<string>(() => current?.kind === 'builtin' ? current.path : '')
+  const [source, setSource] = useState<'builtin' | 'reference'>(current?.kind === 'reference' ? 'reference' : 'builtin')
+  const [group, setGroup] = useState(() => groups.find(g => g.voices.some(v => v.voice.path === current?.path))?.key || '')
   const [pv, setPv] = useState<PreviewState>(() => previewState())
   useEffect(() => onPreviewState(setPv), [])
   useEffect(() => () => stopPreview(), [])
@@ -65,46 +70,63 @@ export default function VoicePicker({
   })
   const heading: CSSProperties = { ...row, justifyContent: 'space-between', margin: '0 0 8px', fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }
 
-  return <Modal title="목소리 고르기" subtitle={chosen ? `고른 목소리 · ${chosen.label}` : undefined} close={() => { stopPreview(); close() }}
+  return <Modal title={title} close={() => { stopPreview(); close() }}
     footer={<>
-      <button type="button" data-testid={ids.preview} disabled={disabled || !chosen}
+      {source === 'builtin' && <button type="button" data-testid={ids.preview} disabled={disabled || !chosen}
         aria-label={chosen ? `${chosen.label} 들어 보기` : '들어 보기'}
         title={phase === 'failed' ? (pv.message || '들어 보지 못했습니다. 다시 눌러 보세요.') : chosen ? `${chosen.label} 로 짧은 문장을 읽어 들려줍니다` : '먼저 목소리를 고르세요'}
         onClick={() => { if (chosen) void playPreview(chosen.path, chosen.engineId, make) }}
         style={{ ...button, marginRight: 'auto', color: phase === 'failed' ? 'var(--rose)' : phase === 'playing' ? 'var(--accent-light)' : 'var(--text-secondary)' }}>
         <Icon name={phase === 'playing' || phase === 'preparing' ? 'stop' : 'play'}/>
         {phase === 'preparing' ? '만드는 중' : phase === 'playing' ? '멈춤' : phase === 'failed' ? '다시 듣기' : '들어 보기'}
-      </button>
+      </button>}
       <button type="button" style={button} onClick={() => { stopPreview(); close() }}>취소</button>
-      <button type="button" data-testid={ids.confirm} disabled={disabled || !chosen}
+      {source === 'builtin' && <button type="button" data-testid={ids.confirm} disabled={disabled || !chosen}
         title={chosen ? `${chosen.label}` : '먼저 목소리를 고르세요'}
         style={{ ...primary, opacity: disabled || !chosen ? .45 : 1 }} onClick={() => { if (chosen) choose(chosen) }}>
         <Icon name="check"/>{confirmLabel}
-      </button>
+      </button>}
     </>}>
     <div style={{ display: 'grid', gap: 18 }}>
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 8 }}>
+        <button type="button" data-testid="voice-source-builtin" aria-pressed={source === 'builtin'} style={{ ...chip(source === 'builtin'), minHeight: 58 }} onClick={() => { stopPreview(); setSource('builtin') }}><Icon name="voice"/>기본 목소리</button>
+        <button type="button" data-testid="voice-source-reference" aria-pressed={source === 'reference'} style={{ ...chip(source === 'reference'), minHeight: 58 }} onClick={() => { stopPreview(); setSource('reference') }}><Icon name="file"/>내 목소리 파일</button>
+      </div>
+      {source === 'builtin' && <>
+      <div style={row}>{groups.map(g => <button key={g.key} type="button" title={g.note} aria-pressed={(group || groups[0]?.key) === g.key}
+        style={{ ...chip((group || groups[0]?.key) === g.key), minHeight: 34, fontSize: 12 }} onClick={() => { stopPreview(); setGroup(g.key); if (!g.voices.some(v => v.voice.path === sel)) setSel(g.voices[0]?.voice.path || '') }}>
+        {g.key === 'fast' ? '빠른 낭독' : g.key === 'slow' ? '고품질' : g.key === 'accent' ? '외국어 억양' : '기타'}
+      </button>)}</div>
       {builtins === null && <span style={muted}>기본 목소리 확인 중…</span>}
       {builtins !== null && !builtins.length && <span style={{ ...muted, color: 'var(--amber)' }} title={why}>쓸 수 있는 기본 목소리가 없습니다</span>}
-      {groups.map((g) => <section key={g.key} aria-label={g.title}>
-        <h3 style={heading}><span>{g.title}</span><span style={{ ...muted, fontWeight: 400 }}>{g.note}</span></h3>
-        <div role="radiogroup" aria-label={g.title} style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fill, minmax(${g.wide ? 180 : 88}px, 1fr))`, gap: 6 }}>
+      {groups.filter(g => g.key === (group || groups[0]?.key)).map((g) => <section key={g.key} aria-label={g.title}>
+        <div role="radiogroup" aria-label={g.title} style={{ display: 'grid', gridTemplateColumns: `repeat(auto-fill, minmax(${g.wide ? 170 : 130}px, 1fr))`, gap: 8 }}>
           {g.voices.map(({ voice: v, short, tag }) => <button key={`${v.engineId}:${v.modelId}`} type="button" role="radio"
             data-testid={ids.chip} aria-checked={sel === v.path} aria-label={v.label} disabled={disabled}
-            title={`${v.label} · 누르면 고르고, 두 번 누르면 바로 씁니다`}
+            title={`${v.label}${tag ? ` · ${tag}` : ''} · ${g.note}`}
             onClick={() => { if (sel !== v.path) { stopPreview(); setSel(v.path) } }}
             onDoubleClick={() => choose(v)}
-            style={chip(sel === v.path)}>
-            {sel === v.path && <Icon name="check" size={14}/>}
+            style={{ ...chip(sel === v.path), justifyContent: 'flex-start', minHeight: 64, gap: 10 }}>
+            <span style={{ display: 'grid', placeItems: 'center', width: 30, height: 30, flexShrink: 0, borderRadius: '50%', color: sel === v.path ? 'var(--accent-light)' : 'var(--text-muted)', background: 'var(--bg-base)' }}><Icon name={sel === v.path ? 'check' : 'voice'} size={15}/></span>
             {/* 설명(모델 카드)은 이름 아래 둘째 줄 — 길어도 잘리지 않게 줄을 바꾼다(2026-10-01 목소리 추가) */}
             <span style={{ display: 'grid', gap: 2, minWidth: 0, textAlign: g.wide ? 'left' : 'center', flex: g.wide ? 1 : undefined }}>
               <span>{short}</span>
-              {tag && <span style={{ ...muted, fontSize: 11, whiteSpace: 'normal', lineHeight: 1.35 }}>{tag}</span>}
             </span>
           </button>)}
         </div>
       </section>)}
-      <section aria-label="내 목소리 파일">
-        <h3 style={heading}><span>내 목소리 파일</span><span style={{ ...muted, fontWeight: 400 }}>가진 소리·영상의 목소리로 · 느림</span></h3>
+      {chosen && <div title={chosen.label} style={{ ...row, padding: 12, borderRadius: 8, background: 'var(--bg-base)', color: 'var(--accent-light)', fontSize: 12 }}><Icon name="voice"/>{groups.flatMap(g => g.voices).find(v => v.voice.path === chosen.path)?.short || chosen.label}</div>}
+      </>}
+      {source === 'reference' && <section aria-label="내 목소리 파일">
+        <button type="button" data-testid={ids.file} disabled={disabled} title={fileLabel}
+          onDragOver={e => { if (onDropFile && !disabled) e.preventDefault() }}
+          onDrop={e => { e.preventDefault(); if (disabled || !onDropFile) return; const file = e.dataTransfer.files[0]; if (file) { stopPreview(); close(); onDropFile(file) } }}
+          onClick={() => { stopPreview(); if (!keepOpenOnFile) close(); onFile() }} style={{ ...button, width: '100%', flexDirection: 'column', minHeight: 138, marginBottom: 16, gap: 14, borderStyle: 'dashed', background: 'var(--bg-base)' }}>
+          <span style={{ padding: 12, color: 'var(--accent-light)', background: 'var(--accent-glow)', borderRadius: 12 }}><Icon name="plus" size={24}/></span>
+          <span>음성·영상 파일 불러오기</span>
+          {onDropFile && <span style={muted}>끌어 놓거나 클릭해서 선택</span>}
+        </button>
+        {!!recent?.length && <h3 style={heading}>최근 사용한 목소리</h3>}
         <div style={{ display: 'grid', gap: 6 }}>
           {(recent || []).map((r) => <button key={r.path} type="button" data-testid={ids.recent} disabled={disabled}
             aria-pressed={current?.kind === 'reference' && current.path === r.path}
@@ -112,12 +134,8 @@ export default function VoicePicker({
             style={{ ...chip(current?.kind === 'reference' && current.path === r.path), justifyContent: 'flex-start' }}>
             <Icon name="voice" size={15}/><span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{r.label}</span>
           </button>)}
-          <button type="button" data-testid={ids.file} disabled={disabled} title="가지고 있는 소리·영상 파일의 목소리를 따라 만듭니다"
-            onClick={() => { stopPreview(); close(); onFile() }} style={{ ...button, justifyContent: 'flex-start', padding: '10px 12px' }}>
-            <Icon name="plus"/>{fileLabel}
-          </button>
         </div>
-      </section>
+      </section>}
     </div>
   </Modal>
 }

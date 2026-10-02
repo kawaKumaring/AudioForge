@@ -41,10 +41,10 @@ export function Action({ icon, label, onClick, disabled = false, children, title
 export function Modal({ title, subtitle, close, children, footer, back }: { title: string; subtitle?: string; close: () => void; children: ReactNode; footer?: ReactNode; back?: () => void }) {
   const ref = useRef<HTMLDialogElement>(null)
   useEffect(() => { const el = ref.current; el?.showModal(); return () => el?.close() }, [title])
-  return <dialog ref={ref} className="af-card-modal" aria-label={title} onCancel={e => { e.preventDefault(); close() }}
+  return <><style>{`.af-card-modal::backdrop{background:rgba(5,7,12,.68);backdrop-filter:blur(4px)}.af-card-modal[open]{display:flex;flex-direction:column;animation:af-dialog-arrive 150ms ease-out}@keyframes af-dialog-arrive{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}@media(prefers-reduced-motion:reduce){.af-card-modal[open]{animation:none}}`}</style><dialog ref={ref} className="af-card-modal" aria-label={title} onCancel={e => { e.preventDefault(); close() }}
     style={{ margin: 'auto', width: 650, maxWidth: 'calc(100vw - 32px)', maxHeight: 'calc(100dvh - 32px)', padding: 0, border: '1px solid var(--border-default, var(--border-subtle))', borderRadius: 16, background: 'var(--bg-card)', color: 'var(--text-primary)', boxShadow: '0 24px 100px rgba(0,0,0,.5)' }}>
     <div style={{ ...row, flexShrink: 0, padding: '16px clamp(14px, 3vw, 22px)', borderBottom: '1px solid var(--border-subtle)' }}>{back && <Action icon="back" label="최종 음성 구성으로 돌아가기" onClick={back}/>}<div style={{ flex: 1, minWidth: 0 }}><h2 style={{ margin: 0, fontSize: 17 }}>{title}</h2>{subtitle && <div style={{ ...muted, marginTop: 5, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{subtitle}</div>}</div><Action icon="close" label="팝업 닫기" onClick={close}/></div>
     <div className="af-card-modal-body" style={{ padding: '18px clamp(14px, 3vw, 22px)', overflowY: 'auto', minHeight: 0, overscrollBehavior: 'contain' }}>{children}</div>
     {footer && <div style={{ ...row, flexShrink: 0, padding: '14px clamp(14px, 3vw, 22px)', justifyContent: 'flex-end', borderTop: '1px solid var(--border-subtle)' }}>{footer}</div>}
-  </dialog>
+  </dialog></>
 }

@@ -4,7 +4,7 @@
 // ★Supertonic 은 받아 둔 파일만 연다(인터넷에 닿지 않는다). 받아 두지 않은 설치에서는 건너뛴다(SKIP 으로 말한다).
 //
 // 여기서 보는 것 (실제 앱 · CPU)
-//   1) 낭독 설정에 기본 목소리가 전부 보이고 줄마다 '들어 보기' 가 있다
+//   1) 낭독자 고르기에 기본 목소리가 (묶음 탭을 넘겨 보면) 전부 보이고 '들어 보기' 는 창 아래 하나다
 //   2) Supertonic 목소리 하나를 들어 보면 실제로 소리가 나고 기록에 남는다
 //   3) 그 목소리를 고르면 아래 막대에 이름이 뜨고, 그 목소리로 책을 읽는다(읽는 구절이 뜬다)
 //   4) 들어 본 소리·읽은 소리가 Supertonic 으로 만든 것이다(기록의 엔진 이름)
@@ -60,16 +60,29 @@ try {
 
   // ── 1. 설정 창의 목록 ──────────────────────────────────────────────
   await win.getByTestId('reader-voice').click()
-  const dialog = win.getByRole('dialog', { name: '목소리 고르기' })
+  const dialog = win.getByRole('dialog', { name: '낭독자 고르기' })
   await dialog.waitFor()
-  const rows = await win.getByTestId('reader-voice-builtin').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') || ''))
+  // ★새 고르기는 묶음 탭(빠른 낭독 · 고품질 · 외국어 억양 · 기타)이라 한 번에 한 묶음만 보인다 — 탭을 하나씩 넘겨 모은다.
+  const GROUP_TABS = /^(빠른 낭독|고품질|외국어 억양|기타)$/
+  const tabs = dialog.getByRole('button', { name: GROUP_TABS })
+  const tabNames = await tabs.allInnerTexts()
+  const rows = [], chips = [], perTab = {}
+  for (let i = 0; i < tabNames.length; i++) {
+    await tabs.nth(i).click()
+    const labels = await win.getByTestId('reader-voice-builtin').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') || ''))
+    rows.push(...labels); perTab[tabNames[i]] = labels
+    chips.push(...await win.getByTestId('reader-voice-builtin').evaluateAll((els) => els.map((e) => (e.textContent || '').trim())))
+  }
   ok(rows.length === voices.length && rows.includes('Supertonic 여성 1') && rows.includes('Supertonic 남성 5'),
-    '★목소리 고르기에 기본 목소리가 전부 보인다', rows)
-  // ★묶음 칩 — 칩에는 짧은 이름(여성 1)만, 엔진 이름은 묶음 제목 한 번(2026-10-01 신고: 길게 나열돼 보기 좋지 않다).
-  const chips = await win.getByTestId('reader-voice-builtin').allInnerTexts()
-  ok(chips.includes('여성 1') && chips.includes('남성 5') && chips.every((t) => !/Supertonic/.test(t)), '★칩에는 짧은 이름만 보인다', chips)
-  ok(await dialog.getByRole('heading', { name: '빠른 기본 목소리' }).count() === 1, '★Supertonic 은 "빠른 기본 목소리" 묶음으로 한 번만 말한다')
+    '★낭독자 고르기에 기본 목소리가 (묶음 탭을 넘기면) 전부 보인다', { rows, tabNames })
+  // ★묶음 칩 — 칩에는 짧은 이름(여성 1)만, 엔진 이름은 묶음 탭 한 번(2026-10-01 신고: 길게 나열돼 보기 좋지 않다).
+  ok(chips.some((t) => t.includes('여성 1')) && chips.some((t) => t.includes('남성 5')) && chips.every((t) => !/Supertonic/.test(t)), '★칩에는 짧은 이름만 보인다', chips)
+  const fastTab = perTab['빠른 낭독'] || []
+  ok(tabNames.filter((n) => n === '빠른 낭독').length === 1 && fastTab.length === st.length && fastTab.every((l) => /^Supertonic/.test(l))
+    && Object.entries(perTab).every(([n, ls]) => n === '빠른 낭독' || ls.every((l) => !/^Supertonic/.test(l))),
+    '★Supertonic 은 "빠른 낭독" 묶음 하나에만 있다(한 묶음 · 한 번)', perTab)
   ok(await win.getByTestId('reader-voice-try').count() === 1, '★들어 보기는 창 아래 하나 — 줄마다 두지 않는다')
+  await tabs.filter({ hasText: '빠른 낭독' }).click()      // 아래 들어 보기는 빠른 낭독 묶음에서
 
   // ── 5. 목소리가 많아도 창 안에서 굴러간다 ───────────────────────────
   const fit = await dialog.evaluate((d) => {
@@ -99,7 +112,9 @@ try {
 
   // ── 3. 고르고 읽기 ─────────────────────────────────────────────────
   await win.getByTestId('reader-voice-confirm').click()
-  ok((await win.getByTestId('reader-voice').innerText()).includes('Supertonic 여성 2'), '고른 목소리 이름이 아래 막대에 뜬다')
+  // 낭독자 단추는 짧은 이름(여성 2)을 보이고, 전체 이름(Supertonic 여성 2)은 툴팁에 있다.
+  ok((await win.getByTestId('reader-voice').innerText()).includes('여성 2') && ((await win.getByTestId('reader-voice').getAttribute('title')) || '').includes('Supertonic 여성 2'),
+    '고른 목소리 이름이 낭독자 단추에 뜬다(짧은 이름 · 툴팁에 전체 이름)')
   await win.getByTestId('reader-play').click()
   const read = await win.waitForSelector('[data-testid="reader-phrase"]', { timeout: 60000 }).then(() => true).catch(() => false)
   ok(read, '★그 목소리로 책을 읽는다(읽는 구절이 뜬다)')
