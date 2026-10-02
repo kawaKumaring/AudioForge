@@ -22,7 +22,7 @@ import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { installAudioProbe } from './_audio-probe.mjs'
-import { isolatedUserData, cleanupUserData, cleanupIsolated, makeSyntheticWav } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, cleanupIsolated, makeSyntheticWav, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
@@ -70,6 +70,7 @@ try {
   const win = await app.firstWindow()
   win.setDefaultTimeout(30000)
   await win.waitForFunction(() => !!window.__afStore)
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 
   // 쓸 수 있는 기본 목소리가 없으면 건너뛴다 — 없는 것을 있는 척하지 않는다.
   const listed = await win.evaluate(() => window.api.cards.builtinVoices())
@@ -285,6 +286,7 @@ try {
   const win2 = await app.firstWindow()
   win2.setDefaultTimeout(30000)
   await win2.waitForFunction(() => !!window.__afStore)
+  await enterStudio(win2)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await win2.getByTestId('mode-reader').click()
   await win2.waitForSelector('[data-testid="reader-paragraph"], [data-testid="reader-library-book"]')
   // 다시 켜면 서재(책 선반)가 먼저 열린다 — 책을 열어 읽던 자리를 본다(같은 단언을 새 흐름으로).

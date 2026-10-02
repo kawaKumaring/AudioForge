@@ -302,6 +302,13 @@ const api = {
     /** 글 파일 고르기 — 지난번 폴더에서 열고, 고른 폴더를 기억한다. 취소하면 빈 목록. */
     pickTexts: (): Promise<{ data?: { name: string; size: number; bytes?: Uint8Array }[]; error?: string }> =>
       ipcRenderer.invoke('reader:pick-texts'),
+    /** 폴더 가져오기(2026-10-03) — 고르기·훑기·훑은 글 읽기. 결과 모양은 shared/readerLibrary 의 ScanResult. */
+    pickFolders: (): Promise<{ data?: import('../shared/readerLibrary').ScanResult | null; error?: string }> =>
+      ipcRenderer.invoke('reader:pick-folders'),
+    scanPaths: (paths: string[]): Promise<{ data?: import('../shared/readerLibrary').ScanResult; error?: string }> =>
+      ipcRenderer.invoke('reader:scan-paths', paths),
+    readTextPath: (path: string): Promise<{ data?: { bytes: Uint8Array; size: number; mtimeMs: number }; error?: string }> =>
+      ipcRenderer.invoke('reader:read-text-path', path),
     /** 끌어 놓은 글 파일의 폴더를 기억한다. */
     rememberTextDir: (filePath: string): Promise<boolean> =>
       ipcRenderer.invoke('reader:remember-text-dir', filePath),

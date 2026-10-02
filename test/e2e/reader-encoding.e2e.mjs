@@ -18,7 +18,7 @@ import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { _electron as electron } from 'playwright'
-import { isolatedUserData, cleanupUserData, cleanupIsolated } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, cleanupIsolated, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
@@ -53,6 +53,7 @@ try {
   const win = await app.firstWindow()
   win.setDefaultTimeout(30000)
   await win.waitForFunction(() => !!window.__afStore)
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await win.getByTestId('mode-reader').click()
 
   // 서재 팝업을 열어 두고(이미 열려 있으면 그대로) 책 이름들을 읽는다.
@@ -64,7 +65,8 @@ try {
   const addFromLibrary = async (p) => {
     await win.evaluate((x) => window.api.audio.e2eSetSelectFile(x), p)
     await libraryNames()
-    await win.getByRole('button', { name: '＋ 텍스트 추가' }).last().click()
+    // 서재의 '새 책 가져오기'(파일) — 개편 전에는 '＋ 텍스트 추가' 단추였다. 같은 파일 가져오기 길이다.
+    await win.getByTestId('reader-add-text').first().click()
   }
 
   // ── 1. CP949 ────────────────────────────────────────────────────────

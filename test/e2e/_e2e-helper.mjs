@@ -337,3 +337,17 @@ export function realUserDataFingerprint() {
   walk(root, '')
   return rows.join('\n')
 }
+
+/**
+ * 시작 화면(AppEntrance — 2026-10-03)에서 **'작업실 시작'** 을 누르고 작업실이 뜰 때까지 기다린다. 시작 화면이 없으면(콘솔 창 등) 그대로 둔다.
+ * ★왜: 시작 화면이 앱 전체를 감싸 누르기 전에는 작업실이 그려지지 않는다. `window.__afStore` 는 그 전에도 있어 그것만 기다리면 다음 클릭에서 멈춘다.
+ * 사용자가 들어가는 길과 같은 단추를 누른다(상태를 직접 바꾸지 않는다).
+ */
+export async function enterStudio(win, timeout = 15000) {
+  const where = await win.waitForFunction(() => document.querySelector('[data-testid="welcome-start"]') ? 'welcome'
+    : (document.querySelector('[data-testid^="mode-"]') ? 'studio' : null), null, { timeout }).then((h) => h.jsonValue())
+  if (where !== 'welcome') return false
+  await win.getByTestId('welcome-start').click()
+  await win.waitForSelector('[data-testid^="mode-"]', { timeout })
+  return true
+}

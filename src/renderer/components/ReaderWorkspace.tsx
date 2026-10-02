@@ -2,7 +2,8 @@ import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useStat
 import { create } from 'zustand'
 import { useReadAloud, voiceKeyOf, type ReaderVoicePick } from '@/hooks/useReadAloud'
 import { useAppStore } from '@/stores/app.store'
-import { Icon, Modal, button as kitButton, muted } from './kit'
+import { Icon, Modal, button as kitButton, muted, field as kitField, primary as kitPrimary } from './kit'
+import { classifyIncoming, mapPosition, moveInGroup, pushHistory, suggestGroupName, naturalCompare, samePath, type LibBook, type ScanResult, type ScanFile, type BookSource } from '../../shared/readerLibrary'
 import VoicePicker from './VoicePicker'
 import ReaderShelf from './ReaderShelf'
 import './reader.css'
@@ -22,7 +23,19 @@ import { groupVoices } from '../../shared/voiceGroups'
 /** 들어 보기 문장 — 책 읽는 문장이어야 낭독 목소리를 고를 수 있다. */
 const SAMPLE_TEXT = '그는 천천히 문을 열고 어두운 복도를 내다보았다. 멀리서 물이 떨어지는 소리만 일정하게 이어졌다.'
 // 낭독 화면. 합성은 `useReadAloud`, 책·자리 보관은 `works/books`, 파일 고르기는 본체 대화상자가 맡는다.
-type Book = { id: string; name: string; paragraphs: string[]; position: number; addedAt?: number; group?: string }
+type Book = LibBook
+/** 글 → 문단(빈 줄 빼고). 파일 가져오기와 폴더 가져오기가 같은 규칙. */
+const toParagraphs = (text: string): string[] => text.replace(/^\uFEFF/, '').split(/\r?\n/).map(p => p.trim()).filter(Boolean)
+/** 원본 바이트의 지문(sha256) — 같은 책 판정에 쓴다. */
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const d = await crypto.subtle.digest('SHA-256', new Uint8Array(bytes))      // 복사본 — IPC 로 받은 버퍼가 공유 버퍼일 수 있다
+  return Array.from(new Uint8Array(d), x => x.toString(16).padStart(2, '0')).join('')
+}
+/** 폴더에서 가져올 글 하나. */
+type ImportItem = { path: string; name: string; group?: string; order?: number; root?: string }
+/** 건너뛴 것 한 줄 — 개수만. */
+const skippedText = (s: ScanResult): string => [s.unsupported ? `지원하지 않는 형식 ${s.unsupported}` : '', s.tooLarge ? `10MB 초과 ${s.tooLarge}` : '',
+  s.links ? `연결 ${s.links}` : '', s.missing.length ? `열 수 없는 자리 ${s.missing.length}` : '', s.truncated ? '너무 많아 일부만' : ''].filter(Boolean).join(' · ')
 /** 책으로 받을 파일 — 대화상자와 끌어 놓기가 **같은 규칙**을 타게 이름·크기·읽기만 본다. */
 type TextSource = { name: string; size: number; read: () => Promise<ArrayBuffer | Uint8Array> }
 const useReader = create<{
@@ -474,7 +487,13 @@ export default function ReaderWorkspace() {
   }
   const choosePosition = (value: number) => {
     if (!book) return
-    useReader.setState(s => ({ books: s.books.map(b => b.id === book.id ? { ...b, position: Math.max(0, Math.min(value, b.paragraphs.length - 1)) } : b) }))
+    useReader.setState(s => ({ books: s.books.map(b => b.id === book.id ? { ...b, position: Math.max(0, Math.min(value, b.paragraphs.length - 1)), readAt: Date.now() } : b) }))
+  }
+  /** 책을 연다 — 마지막으로 읽은 때를 남긴다(묶음 이어 읽기가 쓴다). */
+  const openBook = (id: string) => {
+    useReader.setState(s => ({ active: id, books: s.books.map(b => b.id === id ? { ...b, readAt: Date.now() } : b) }))
+    bookSaver.queue(id, () => useReader.getState().books.find(b => b.id === id))
+    setLibrary(false)
   }
   // 문단 누름 — 줄마다 같은 함수를 받아야 바뀌지 않은 줄이 다시 그려지지 않는다. 최신 상태는 ref 로 읽는다.
   const pickRef = useRef<(i: number) => void>(() => {})
@@ -495,7 +514,12 @@ export default function ReaderWorkspace() {
     })))
     } catch { setError('책을 불러오지 못했습니다. 다시 선택해 주세요.') }
   }
-  const dropTexts = (files: File[]) => {
+  const dropTexts = (files: File[], dirs: boolean[] = []) => {
+    // 폴더가 섞여 있으면 본체가 훑는다(하위 폴더·작품 묶음) — 파일과 폴더가 섞인 끌기도 같은 길로.
+    if (dirs.some(Boolean)) {
+      void importPaths(files.map(f => window.api.utils.getPathForFile(f)).filter(Boolean))
+      return
+    }
     // 끌어 온 것도 불러온 자리다 — 첫 글 파일의 폴더를 기억한다.
     const first = files.find(f => /\.txt$/i.test(f.name))
     const at = first ? window.api.utils.getPathForFile(first) : ''
@@ -569,13 +593,15 @@ export default function ReaderWorkspace() {
           const got = decodeBookText(bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes))
           if (!got) { rejected.push(`${file.name}: 글자 방식을 알아보지 못했습니다(UTF-8 · UTF-16 · CP949 만 읽습니다)`); continue }
           if (got.encoding !== 'utf-8') opLog('reader', `글 파일 ${nameOnly(file.name)} — ${encodingLabel(got.encoding)} 로 읽음`)
-          const text = got.text
-          const paragraphs = text.replace(/^\uFEFF/, '').split(/\r?\n/).map(p => p.trim()).filter(Boolean)
+          const raw = bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)
+          const paragraphs = toParagraphs(got.text)
           if (!paragraphs.length) { rejected.push(`${file.name}: 내용 없음`); continue }
           const name = file.name.replace(/\.txt$/i, '')
-          const same = [...useReader.getState().books, ...added].find(b => b.name === name && b.paragraphs.length === paragraphs.length && b.paragraphs.every((p, i) => p === paragraphs[i]))
-          if (same) { duplicate++; existingId = same.id; continue }
-          const next = { id: crypto.randomUUID(), name, paragraphs, position: 0, addedAt: Date.now() }
+          // ★같은 책: 지문이 같거나(이름이 달라도), 지문 없는 예전 책은 이름 + 본문 전체가 같을 때(shared/readerLibrary).
+          const sha256 = await sha256Hex(raw)
+          const same = classifyIncoming({ sha256, name, paragraphs }, [...useReader.getState().books, ...added])
+          if (same.kind === 'duplicate') { duplicate++; existingId = same.id; continue }
+          const next: Book = { id: crypto.randomUUID(), name, paragraphs, position: 0, addedAt: Date.now(), source: { path: '', size: raw.byteLength, mtimeMs: 0, sha256 } }
           const saved = await window.api.works.write('books', next.id, next)
           if (!saved.ok) { rejected.push(`${file.name}: 저장하지 못했습니다`); continue }
           added.push(next)
@@ -630,17 +656,216 @@ export default function ReaderWorkspace() {
           await bookSaver.flush(id)        // 마지막 읽던 자리를 먼저 남긴 뒤 그 책을 읽는다
           const current = useReader.getState().books.find(b => b.id === id)
           if (!current) continue
-          const next = { ...current, group: name.trim().slice(0, 120) || undefined }
+          const target = name.trim().slice(0, 120)
+          // 다른 묶음으로 옮기면 그 묶음의 끝 차례로, 꺼내면 차례를 지운다.
+          const base = target ? Math.max(-1, ...useReader.getState().books.filter(b => b.group === target && !ids.includes(b.id)).map(b => b.order ?? -1), ...[...updated.values()].map(b => b.order ?? -1)) + 1 : 0
+          const next = { ...current, group: target || undefined, order: target ? (current.group === target ? current.order : base) : undefined }
           const code = await bookSaver.writeNow(id, next)
           if (code) throw new Error('save failed')
           updated.set(id, next)
         } catch { failed.push(useReader.getState().books.find(b => b.id === id)?.name || '책') }
       }
-      useReader.setState(s => ({ books: s.books.map(b => updated.has(b.id) ? { ...b, group: updated.get(b.id)!.group } : b) }))
+      useReader.setState(s => ({ books: s.books.map(b => updated.has(b.id) ? { ...b, group: updated.get(b.id)!.group, order: updated.get(b.id)!.order } : b) }))
       if (failed.length) setError(`묶음을 저장하지 못했습니다: ${failed.join(', ')}`)
       else setNotice(name.trim() ? `${updated.size}권을 ‘${name.trim()}’에 모았습니다` : `${updated.size}권을 묶음에서 꺼냈습니다`)
       return !failed.length
     } finally { release(); changingBooks.current = false; setLoading(false) }
+  }
+  // ── 폴더 가져오기 · 작품 묶음 (2026-10-03) ─────────────────────────────────────────
+  // ★원본은 읽기만 한다. 저장에 성공한 책만 서재에 넣는다. 취소하면 이미 넣은 것은 남기고 나머지는 넣지 않는다.
+  const [preview, setPreview] = useState<null | { scan: ScanResult; works: Array<{ root: string; name: string; include: boolean; files: ScanFile[] }> }>(null)
+  const [importRun, setImportRun] = useState<null | { total: number; processed: number }>(null)
+  const [importResult, setImportResult] = useState<null | { added: number; duplicate: number; failed: ImportItem[]; cancelled: number }>(null)
+  const [conflicts, setConflicts] = useState<null | Array<{ id: string; item: ImportItem; next: { name: string; paragraphs: string[]; source: BookSource }; choice: 'replace' | 'separate' | 'skip' }>>(null)
+  const [groupFault, setGroupFault] = useState<null | { group: string; root: string }>(null)
+  const cancelImport = useRef(false)
+  const nextOrder = (group: string) => Math.max(-1, ...useReader.getState().books.filter(b => b.group === group).map(b => b.order ?? -1)) + 1
+  /** 훑은 결과 → 미리 보기(묶음이 있을 때) 또는 곧바로(낱권만). */
+  const openScan = (scan: ScanResult | null | undefined) => {
+    if (!scan) return
+    const skipped = skippedText(scan)
+    if (!scan.works.length && !scan.loose.length) { setNotice(`가져올 TXT 가 없습니다${skipped ? ` · 건너뜀: ${skipped}` : ''}`); return }
+    const books = useReader.getState().books
+    if (!scan.works.length) { void runImport(scan.loose.map(f => ({ path: f.path, name: f.name }))); return }
+    setPreview({ scan, works: scan.works.map(w => ({ root: w.root, name: suggestGroupName(w, books), include: true, files: w.files })) })
+  }
+  const importFolder = async () => {
+    if (loading || importRun) return
+    const got = await window.api.reader.pickFolders()
+    if (got.error) { setError(got.error); return }
+    openScan(got.data)
+  }
+  const importPaths = async (paths: string[]) => {
+    if (!paths.length) return
+    const got = await window.api.reader.scanPaths(paths)
+    if (got.error) { setError(got.error); return }
+    openScan(got.data)
+  }
+  const importPathsRef = useRef(importPaths)
+  importPathsRef.current = importPaths
+  useEffect(() => {
+    // 검사 전용 — 끌어 놓은 자리(파일·폴더)를 화면이 받은 뒤의 길을 그대로 탄다(OS 끌기 사건은 만들 수 없다).
+    if (window.api?._e2e) Object.assign(window, { __readerImportPaths: (p: string[]) => importPathsRef.current(p) })
+  }, [])
+  const confirmPreview = () => {
+    if (!preview) return
+    const items: ImportItem[] = []
+    for (const w of preview.works) {
+      if (!w.include || !w.name.trim()) continue
+      const group = w.name.trim().slice(0, 120)
+      const base = nextOrder(group)
+      w.files.forEach((f, i) => items.push({ path: f.path, name: f.name, group, order: base + i, root: w.root }))
+    }
+    for (const f of preview.scan.loose) items.push({ path: f.path, name: f.name })
+    setPreview(null)
+    void runImport(items)
+  }
+  const runImport = async (items: ImportItem[]) => {
+    if (!items.length || changingBooks.current || !loadedBooks.current) return
+    changingBooks.current = true
+    cancelImport.current = false
+    setError(''); setNotice(''); setImportResult(null)
+    setImportRun({ total: items.length, processed: 0 })
+    const failed: ImportItem[] = [], found: NonNullable<typeof conflicts> = []
+    const batch: Book[] = []
+    let added = 0, duplicate = 0, cancelled = 0, processed = 0
+    const flush = () => { if (batch.length) { const add = batch.splice(0); useReader.setState(s => ({ books: [...s.books, ...add] })) } }
+    try {
+      for (let i = 0; i < items.length; i++) {
+        if (cancelImport.current) { cancelled = items.length - i; break }
+        const it = items[i]
+        try {
+          const r = await window.api.reader.readTextPath(it.path)
+          if (r.error || !r.data) throw new Error(r.error || '읽지 못함')
+          const raw = r.data.bytes instanceof Uint8Array ? r.data.bytes : new Uint8Array(r.data.bytes)
+          const got = decodeBookText(raw)
+          if (!got) throw new Error('글자 방식을 알아보지 못함')
+          const paragraphs = toParagraphs(got.text)
+          if (!paragraphs.length) throw new Error('내용 없음')
+          const name = it.name.replace(/\.txt$/i, '')
+          const sha256 = await sha256Hex(raw)
+          const source: BookSource = { path: it.path, root: it.root, size: r.data.size, mtimeMs: r.data.mtimeMs, sha256 }
+          const c = classifyIncoming({ path: it.path, sha256, name, paragraphs }, [...useReader.getState().books, ...batch])
+          if (c.kind === 'duplicate') duplicate++
+          else if (c.kind === 'changed') found.push({ id: c.id, item: it, next: { name, paragraphs, source }, choice: 'skip' })
+          else {
+            const next: Book = { id: crypto.randomUUID(), name, paragraphs, position: 0, addedAt: Date.now(), group: it.group, order: it.order, source }
+            const saved = await window.api.works.write('books', next.id, next)
+            if (!saved.ok) throw new Error(saved.why || '저장하지 못함')     // ★저장 실패를 성공으로 두지 않는다
+            batch.push(next); added++
+          }
+        } catch { failed.push(it) }
+        processed++
+        if (processed % 10 === 0 || processed === items.length) {
+          flush(); setImportRun({ total: items.length, processed })
+          await new Promise(r => setTimeout(r, 0))          // 화면이 멈추지 않게 한 박자
+        }
+      }
+    } finally {
+      flush(); changingBooks.current = false; setImportRun(null)
+    }
+    setImportResult({ added, duplicate, failed, cancelled })
+    if (added) setLibrary(true)
+    if (found.length) setConflicts(found)
+  }
+  /** 변경된 원본 — 사람이 고른 대로(교체/별도 등록/건너뜀). 조용히 덮지 않는다. */
+  const applyConflicts = async () => {
+    if (!conflicts || changingBooks.current) return
+    changingBooks.current = true
+    const release = bookSaver.hold()
+    let replaced = 0, separated = 0, skipped = 0, reset = 0
+    const failedNames: string[] = []
+    try {
+      for (const c of conflicts) {
+        if (c.choice === 'skip') { skipped++; continue }
+        const old = useReader.getState().books.find(b => b.id === c.id)
+        if (!old) { skipped++; continue }
+        if (c.choice === 'replace') {
+          await bookSaver.flush(old.id)
+          const cur = useReader.getState().books.find(b => b.id === c.id) || old
+          const mapped = mapPosition(cur.paragraphs, cur.position, c.next.paragraphs)
+          const upd: Book = { ...cur, paragraphs: c.next.paragraphs, source: { ...c.next.source, root: cur.source?.root ?? c.next.source.root }, position: mapped.position, history: pushHistory(cur, Date.now()) }
+          const code = await bookSaver.writeNow(cur.id, upd)
+          if (code) { failedNames.push(cur.name); continue }
+          useReader.setState(s => ({ books: s.books.map(b => b.id === cur.id ? upd : b) }))
+          replaced++; if (!mapped.kept) reset++
+        } else {
+          const next: Book = { id: crypto.randomUUID(), name: `${c.next.name} (새 판)`, paragraphs: c.next.paragraphs, position: 0, addedAt: Date.now(),
+            group: old.group, order: old.group ? nextOrder(old.group) : undefined, source: c.next.source }
+          const saved = await window.api.works.write('books', next.id, next)
+          if (!saved.ok) { failedNames.push(c.next.name); continue }
+          useReader.setState(s => ({ books: [...s.books, next] })); separated++
+        }
+      }
+    } finally { release(); changingBooks.current = false; setConflicts(null) }
+    setNotice([replaced ? `교체 ${replaced}` : '', separated ? `별도 등록 ${separated}` : '', skipped ? `건너뜀 ${skipped}` : '',
+      reset ? `읽던 자리를 새 본문에서 찾지 못해 처음으로 ${reset}권(이전 기록은 남김)` : ''].filter(Boolean).join(' · '))
+    if (failedNames.length) setError(`저장하지 못했습니다: ${failedNames.join(', ')}`)
+  }
+  /** 묶음 안 차례를 한 칸 옮긴다. */
+  const reorderBook = async (group: string, id: string, delta: -1 | 1) => {
+    if (changingBooks.current) return
+    const members = useReader.getState().books.filter(b => b.group === group)
+    const plan = moveInGroup(members, id, delta)
+    if (!plan) return
+    changingBooks.current = true
+    const release = bookSaver.hold()
+    try {
+      for (const { id: bid, order } of plan) {
+        const cur = useReader.getState().books.find(b => b.id === bid)
+        if (!cur || cur.order === order) continue
+        await bookSaver.flush(bid)
+        const upd = { ...useReader.getState().books.find(b => b.id === bid)!, order }
+        const code = await bookSaver.writeNow(bid, upd)
+        if (code) { setError(`차례를 저장하지 못했습니다: ${cur.name}`); break }
+        useReader.setState(s => ({ books: s.books.map(b => b.id === bid ? { ...b, order } : b) }))
+      }
+    } finally { release(); changingBooks.current = false }
+  }
+  /** 묶음 해제 — 책은 서재에 남는다. */
+  const ungroup = (group: string) => groupBooks(useReader.getState().books.filter(b => b.group === group).map(b => b.id), '')
+  /** 원본 폴더에서 새 회차를 찾는다 — 사람이 누를 때만. 원본에서 사라진 책은 지우지 않는다. */
+  const checkNew = async (group: string) => {
+    const members = useReader.getState().books.filter(b => b.group === group)
+    const roots = Array.from(new Set(members.map(b => b.source?.root).filter((r): r is string => !!r)))
+    if (!roots.length) { setNotice('이 묶음은 폴더로 가져오지 않아 확인할 원본 폴더가 없습니다'); return }
+    const r = await window.api.reader.scanPaths(roots)
+    if (r.error || !r.data) { setError(r.error || '원본 폴더를 훑지 못했습니다'); return }
+    const lost = roots.find(x => r.data!.missing.some(m => samePath(m, x)))
+    if (lost) { setGroupFault({ group, root: lost }); return }
+    setGroupFault(null)
+    const files = r.data.works.filter(w => roots.some(x => samePath(x, w.root))).flatMap(w => w.files.map(f => ({ ...f, root: w.root })))
+    const known = useReader.getState().books
+    const fresh = files.filter(f => !known.some(b => samePath(b.source?.path, f.path))).sort((a, b) => naturalCompare(a.name, b.name))
+    const gone = members.filter(b => b.source?.path && !files.some(f => samePath(f.path, b.source!.path))).length
+    const goneText = gone ? ` · 원본 폴더에 없는 책 ${gone}권(서재에는 그대로 둡니다)` : ''
+    if (!fresh.length) { setNotice(`새 회차가 없습니다${goneText}`); return }
+    const base = nextOrder(group)
+    await runImport(fresh.map((f, i) => ({ path: f.path, name: f.name, group, order: base + i, root: f.root })))
+    if (goneText) setNotice(n => (n ? n + goneText : goneText.slice(3)))
+  }
+  /** 원본 폴더를 다시 고른다 — 그 묶음의 원본 기록만 새 자리로 잇는다(책·읽던 자리는 그대로). */
+  const relinkFolder = async () => {
+    if (!groupFault || changingBooks.current) return
+    const got = await window.api.reader.pickFolders()
+    if (got.error) { setError(got.error); return }
+    const root = got.data?.works[0]?.root
+    if (!root) { if (got.data) setNotice('고른 폴더에 TXT 가 없습니다'); return }
+    const { group, root: lost } = groupFault
+    changingBooks.current = true
+    const release = bookSaver.hold()
+    try {
+      for (const b of useReader.getState().books.filter(x => x.group === group && samePath(x.source?.root, lost))) {
+        // 원본 자리도 새 폴더의 같은 파일 이름으로 잇는다 — 예전 자리로 남겨 두면 '새 파일 확인' 이 모든 책을 '원본에 없음' 으로 셌다(2026-10-03 캡처로 확인).
+        const sep = root.includes('\\') ? '\\' : '/'
+        const file = (b.source!.path || '').split(/[\\/]/).pop() || ''
+        const upd = { ...b, source: { ...b.source!, root, path: file ? root.replace(/[\\/]+$/, '') + sep + file : b.source!.path } }
+        if (await bookSaver.writeNow(b.id, upd)) { setError(`원본 폴더를 바꾸지 못했습니다: ${b.name}`); return }
+        useReader.setState(s => ({ books: s.books.map(x => x.id === b.id ? upd : x) }))
+      }
+    } finally { release(); changingBooks.current = false }
+    setGroupFault(null)
+    await checkNew(group)
   }
   // ★스피커 음량 (2026-10-01 지시: "낭독에서 스피커 음 조절 기능이 필요하다") — 앱의 **공용 재생 음량**(다른 화면 슬라이더와 같은 값, 보관됨).
   const { volume, change: changeVolume, commit: commitVolume, saveFailed: volumeSaveFailed } = usePlaybackVolume()
@@ -673,6 +898,18 @@ export default function ReaderWorkspace() {
       </button>
     </header>
     {!!notice && <span role="status" data-testid="reader-notice" style={{ ...muted, marginTop: -10 }}>{notice}</span>}
+    {!!importRun && <span role="status" data-testid="reader-import-progress" style={{ ...muted, marginTop: -10 }}>
+      가져오는 중 {importRun.processed} / {importRun.total}
+      <button data-testid="reader-import-cancel" onClick={() => { cancelImport.current = true }} title="남은 파일은 가져오지 않습니다 — 이미 넣은 책은 남습니다" style={{ ...kitButton, marginLeft: 8, padding: '2px 10px' }}>취소</button>
+    </span>}
+    {!!importResult && !importRun && <span role="status" data-testid="reader-import-result" style={{ ...muted, marginTop: -10 }}>
+      완료 {importResult.added} · 중복 {importResult.duplicate} · 실패 {importResult.failed.length}{importResult.cancelled ? ` · 취소로 미처리 ${importResult.cancelled}` : ''}
+      {!!importResult.failed.length && <button data-testid="reader-import-retry" onClick={() => { const f = importResult.failed; void runImport(f) }} title="실패한 파일만 다시 가져옵니다" style={{ ...kitButton, marginLeft: 8, padding: '2px 10px' }}>실패한 {importResult.failed.length}개 다시</button>}
+    </span>}
+    {!!groupFault && <span role="status" data-testid="reader-group-fault" style={{ ...muted, marginTop: -10, color: 'var(--rose)' }}>
+      ‘{groupFault.group}’ 원본 폴더를 찾지 못했습니다 — {nameOnly(groupFault.root)}
+      <button data-testid="reader-group-relink" onClick={() => { void relinkFolder() }} title="원본 폴더를 다시 고릅니다 — 서재의 책은 그대로입니다" style={{ ...kitButton, marginLeft: 8, padding: '2px 10px' }}>폴더 다시 선택</button>
+    </span>}
     {!!voiceGone && <span role="status" data-testid="reader-voice-missing" style={{ ...muted, marginTop: -10, color: 'var(--rose)' }}>
       ‘{voice}’ — {voiceGone}
       <button data-testid="reader-voice-pick-other" onClick={() => { setPicking(true); prepareQwen() }} style={{ ...kitButton, marginLeft: 8, padding: '2px 10px' }}>다른 목소리 고르기</button>
@@ -689,11 +926,16 @@ export default function ReaderWorkspace() {
     <div data-testid="reader-shelf-scroll" style={{ display: library || !book ? 'block' : 'none', flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', padding: '4px 4px 18px' }}>
     {(library || !book) && <ReaderShelf books={books} active={active} busy={loading} error={error} onDrop={dropTexts}
       view={prefs.shelfView} grouped={prefs.shelfGrouped} onView={shelfView => updatePrefs({ shelfView })} onGrouped={shelfGrouped => updatePrefs({ shelfGrouped })} onGroup={groupBooks}
-      onAdd={() => { void pickTexts() }} onRemove={removeBooks} onOpen={id => { useReader.setState({ active: id }); setLibrary(false) }}/>}
+      onAdd={() => { void pickTexts() }} onAddFolder={() => { void importFolder() }} onRemove={removeBooks} onOpen={openBook}
+      onReorder={reorderBook} onUngroup={ungroup} onCheckNew={g => { void checkNew(g) }}/>}
     </div>
     <div style={{ display: library || !book ? 'none' : 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }} onDragOver={e => { e.preventDefault(); setDragging(true) }}
       onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false) }}
-      onDrop={e => { e.preventDefault(); setDragging(false); dropTexts(Array.from(e.dataTransfer.files)) }}>
+      onDrop={e => {
+        e.preventDefault(); setDragging(false)
+        const items = Array.from(e.dataTransfer.items).filter(i => i.kind === 'file')
+        dropTexts(Array.from(e.dataTransfer.files), items.map(i => !!(i as DataTransferItem & { webkitGetAsEntry?: () => { isDirectory?: boolean } | null }).webkitGetAsEntry?.()?.isDirectory))
+      }}>
       {!library && error && <div role="alert" style={{ color: 'var(--rose)', fontSize: 12, marginBottom: 10 }}>{error}</div>}
       <article className="reader-view-enter" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, border: '1px solid var(--border-subtle)', borderRadius: 18, overflow: 'hidden', outline: dragging ? '2px solid var(--accent-light)' : undefined }}>
         <header style={{ padding: '12px 18px', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 12, background: '#1b1e27' }}>
@@ -794,6 +1036,34 @@ export default function ReaderWorkspace() {
       }}
       confirmLabel="목소리 적용" fileLabel="음성·영상 파일에서 목소리 만들기" make={previewMaker} disabled={!!prep}
       ids={{ chip: 'reader-voice-builtin', confirm: 'reader-voice-confirm', file: 'reader-voice-file', preview: 'reader-voice-try', recent: 'reader-voice-recent' }}/>}
+    {preview && <Modal title="폴더 가져오기" close={() => setPreview(null)}
+      footer={<><button style={kitButton} onClick={() => setPreview(null)}>취소</button>
+        <button data-testid="reader-import-confirm" style={kitPrimary} disabled={!preview.works.some(w => w.include && w.name.trim()) && !preview.scan.loose.length} onClick={confirmPreview}>
+          <Icon name="folder"/>가져오기 {preview.works.filter(w => w.include).reduce((n, w) => n + w.files.length, 0) + preview.scan.loose.length}개</button></>}>
+      <div data-testid="reader-import-preview" style={{ display: 'grid', gap: 8 }}>
+        {preview.works.map((w, i) => <label key={w.root} data-testid="reader-import-work" title={w.root} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 13 }}>
+          <input type="checkbox" aria-label={`${w.name} 가져오기`} checked={w.include} onChange={e => setPreview(p => p && ({ ...p, works: p.works.map((x, k) => k === i ? { ...x, include: e.target.checked } : x) }))}/>
+          <input aria-label="작품 이름" data-testid="reader-import-work-name" maxLength={120} value={w.name} onChange={e => setPreview(p => p && ({ ...p, works: p.works.map((x, k) => k === i ? { ...x, name: e.target.value } : x) }))} style={{ ...kitField, flex: 1, minWidth: 0 }}/>
+          <span style={{ ...muted, whiteSpace: 'nowrap' }}>{w.files.length}개</span>
+        </label>)}
+        {!!preview.scan.loose.length && <span style={muted}>묶지 않은 TXT {preview.scan.loose.length}개</span>}
+        {!!skippedText(preview.scan) && <span data-testid="reader-import-skipped" style={muted}>건너뜀: {skippedText(preview.scan)}</span>}
+      </div>
+    </Modal>}
+    {conflicts && <Modal title="내용이 바뀐 원본" close={() => setConflicts(null)}
+      footer={<><button style={kitButton} onClick={() => setConflicts(null)}>모두 건너뛰기</button>
+        <button data-testid="reader-conflict-apply" style={kitPrimary} onClick={() => { void applyConflicts() }}>적용</button></>}>
+      <div data-testid="reader-conflicts" style={{ display: 'grid', gap: 10 }}>
+        {conflicts.map((c, i) => <div key={c.item.path} data-testid="reader-conflict" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', fontSize: 13 }}>
+          <span title={c.item.path} style={{ flex: '1 1 160px', minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.next.name}</span>
+          <select aria-label={`${c.next.name} 처리`} data-testid="reader-conflict-choice" value={c.choice} style={kitField}
+            title="교체: 이 책의 본문을 새 내용으로(읽던 자리는 같은 문단이 있을 때만 유지) · 별도 등록: 새 책으로 하나 더"
+            onChange={e => setConflicts(cs => cs && cs.map((x, k) => k === i ? { ...x, choice: e.target.value as 'replace' | 'separate' | 'skip' } : x))}>
+            <option value="skip">건너뛰기</option><option value="replace">교체</option><option value="separate">별도 등록</option>
+          </select>
+        </div>)}
+      </div>
+    </Modal>}
     {settings && <Modal title="읽기 설정" close={closeSettings}>
       <div data-testid="reader-settings-dialog" style={{ display: 'grid', gap: 20 }}>
         <label style={{ display: 'grid', gap: 6, fontSize: 13 }}>

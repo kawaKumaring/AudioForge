@@ -13,7 +13,7 @@
  * ★소리 파일은 **앱 데이터 자리**에 쌓는다(결과물이 아니다).
  *   사용자가 만든 결과는 `AudioForge_output` 이 갖는다 — 낭독 조각은 캐시다.
  */
-import { ipcMain, app, BrowserWindow } from 'electron'
+import { ipcMain, app, BrowserWindow, dialog } from 'electron'
 import { join, dirname, basename } from 'path'
 import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync, statSync } from 'fs'
 import { createHash } from 'crypto'
@@ -21,7 +21,9 @@ import { execFile, spawn, type SpawnOptions } from 'child_process'
 import { promisify } from 'util'
 import { fileURLToPath } from 'url'
 import { currentPythonPath, synthesisBusy, setReaderRunning, pickFiles, dialogFolderHost } from './audio.ipc'
-import { rememberFile } from '../services/dialogFolders'
+import { rememberFile, rememberDir, startDir } from '../services/dialogFolders'
+import { scanTextPaths, scannedPaths } from '../services/folder-scan'
+import type { ScanResult } from '../../shared/readerLibrary'
 import { TEXT_FILE_LIMIT } from '../../shared/readerChunks'
 import { usesGpu } from '../../shared/readerQueue'
 import { appLog, fileLabel } from '../services/app-log'
@@ -485,6 +487,46 @@ export function registerReaderIpc(): void {
     } catch (err) {
       return fail(err)
     }
+  })
+
+  // ── 폴더 가져오기 (2026-10-03) ─────────────────────────────────────────────
+  // ★원본은 읽기만 한다. 화면은 **이 실행에서 훑어 건넨 글 파일만** 읽을 수 있다(아무 자리나 읽는 통로가 되지 않게).
+  const scanned = new Set<string>()
+  const remember = (r: ScanResult): ScanResult => { for (const p of scannedPaths(r)) scanned.add(p.toLowerCase()); return r }
+  /** 폴더를 고른다(여러 개) → 훑은 결과. 취소하면 빈 결과. */
+  ipcMain.handle('reader:pick-folders', async (e): Promise<Reply<ScanResult | null>> => {
+    try {
+      const win = BrowserWindow.fromWebContents(e.sender)
+      if (!win) throw new Error('창을 찾지 못했습니다')
+      let dirs: string[]
+      const e2ePick = process.env.AF_E2E === '1' ? ((globalThis as { __afE2eSelectFolder?: string }).__afE2eSelectFolder ?? process.env.AF_E2E_SELECT_FOLDER) : undefined
+      if (e2ePick !== undefined) {
+        // 검사 전용 — OS 대화상자 대신 지정한 폴더('|' 로 여러 개, 빈 값은 취소). 실행 중에는 globalThis.__afE2eSelectFolder 로 바꾼다.
+        dirs = e2ePick.split('|').filter(Boolean)
+      } else {
+        const r = await dialog.showOpenDialog(win, { properties: ['openDirectory', 'multiSelections'], defaultPath: startDir(dialogFolderHost(), 'text') })
+        dirs = r.canceled ? [] : r.filePaths
+      }
+      if (!dirs.length) return ok(null)
+      rememberDir(dialogFolderHost(), 'text', dirs[0])
+      return ok(remember(await scanTextPaths(dirs, TEXT_FILE_LIMIT)))
+    } catch (err) { return fail(err) }
+  })
+  /** 끌어 놓은 자리(파일·폴더 섞여도) 또는 '새 파일 확인' 의 작품 폴더를 훑는다. */
+  ipcMain.handle('reader:scan-paths', async (_e, paths: unknown): Promise<Reply<ScanResult>> => {
+    try {
+      const list = Array.isArray(paths) ? paths.filter((p): p is string => typeof p === 'string' && p.length > 0 && p.length < 4000).slice(0, 200) : []
+      return ok(remember(await scanTextPaths(list, TEXT_FILE_LIMIT)))
+    } catch (err) { return fail(err) }
+  })
+  /** 훑어 건넨 글 파일 하나를 읽는다(바이트 그대로 — 글자 방식 판정은 화면의 readerDecode). */
+  ipcMain.handle('reader:read-text-path', async (_e, p: unknown): Promise<Reply<{ bytes: Uint8Array; size: number; mtimeMs: number }>> => {
+    try {
+      if (typeof p !== 'string' || !scanned.has(p.toLowerCase())) throw new Error('훑지 않은 파일은 읽지 않습니다')
+      const s = statSync(p)
+      if (s.size > TEXT_FILE_LIMIT) throw new Error('10MB 를 넘는 글입니다')
+      return ok({ bytes: readFileSync(p), size: s.size, mtimeMs: Math.round(s.mtimeMs) })
+    } catch (err) { return fail(err) }
   })
 
   /**

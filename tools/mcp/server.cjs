@@ -296,6 +296,15 @@ const HANDLERS = {
     const want = String(mode || '').trim()
     const id = AF.MODES[want] ? want : Object.keys(AF.MODES).find((k) => AF.MODES[k] === want || AF.MODES[k].includes(want))
     if (!id) throw new Error('모르는 작업: ' + want + ' — ' + Object.entries(AF.MODES).map(([k, v]) => `${k}(${v})`).join(' · '))
+    // ★시작 화면(AppEntrance, 2026-10-03)이 떠 있으면 먼저 '작업실 시작' 을 누른다 — 사용자가 작업실로 들어가는 길과 같다.
+    //   시작 화면 자체를 보는 검사는 app_start 직후 app_mode 를 부르기 전에 본다(welcome-mcp).
+    const onWelcome = await inPage('main', `!!document.querySelector('[data-testid="welcome-start"]')`).catch(() => false)
+    if (onWelcome) {
+      const w = await inPage('main', `__mcp.click(${JSON.stringify({ target: 'testid:welcome-start' })})`)
+      if (!w || !w.clicked) return { mode: id, changed: false, why: '시작 화면의 작업실 시작을 누르지 못함: ' + ((w && w.error) || '') }
+      const t1 = Date.now()
+      while (Date.now() - t1 < 8000 && !(await inPage('main', `!!document.querySelector('[data-testid="mode-${id}"]')`).catch(() => false))) await sleep(100)
+    }
     if (AF.NO_BUTTON[id] && !force) return { mode: id, changed: false, why: '화면에 단추가 없는 작업이다 — ' + AF.NO_BUTTON[id], hint: '그 길로 들어가거나, 상태를 직접 바꾸려면 force:true(단추를 누르지 않고 앱 상태를 바꾼다 — 사용자가 하는 길이 아니다)' }
     if (AF.NO_BUTTON[id] && force) {
       await inPage('main', `window.__afStore.getState().setMode(${JSON.stringify(id)})`)
