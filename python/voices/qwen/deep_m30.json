@@ -1,0 +1,7 @@
+{
+  "engine": "qwen-custom",
+  "clone": {
+    "ref": "deep_m30.wav",
+    "text": "그는 천천히 창문을 열었다. 바람이 차가웠다."
+  }
+}

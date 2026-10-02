@@ -81,6 +81,34 @@ class Rules(unittest.TestCase):
         self.assertEqual(tw.qwen_voice_of(os.path.join(tw.QWEN_VOICE_DIR, "없는.json")), (None, None))
         self.assertEqual(tw.qwen_voice_of(""), (None, None))
 
+    def test_설계_목소리는_고정_참조와_Base_모델로_푼다(self):
+        for vid in tw.QWEN_DESIGNED_VOICES:
+            p = os.path.join(tw.QWEN_VOICE_DIR, vid + ".json")
+            self.assertEqual(tw.qwen_voice_of(p), (None, None), "지정 목소리 화자가 아니다")
+            c = tw.qwen_clone_of(p)
+            if not tw.qwen_clone_model():
+                self.assertIsNone(c, "Base 모델이 없으면 알아보지 않는다")
+                continue
+            self.assertTrue(os.path.isfile(c["ref"]) and c["text"], vid)
+            self.assertEqual(os.path.dirname(c["ref"]), tw.QWEN_VOICE_DIR, "참조 소리는 목소리 파일 옆")
+        self.assertIsNone(tw.qwen_clone_of(os.path.join(tw.QWEN_VOICE_DIR, "vivian.json")), "지정 목소리는 설계 목소리가 아니다")
+        self.assertIsNone(tw.qwen_clone_of(os.path.join("어딘가", "config.json")))
+
+    def test_설계_목소리는_감정을_받지_않고_띄운_실행기로_참조를_보낸다(self):
+        from unittest import mock
+        sent = []
+        eng = tw.QwenCustomEngine()
+        eng.load = lambda *a, **k: None
+        eng.model_path = "어딘가/girl.json"
+        clone = {"model": "BASE", "ref": "r.wav", "text": "참조 글"}
+        with mock.patch.object(tw, "qwen_clone_of", lambda p: clone), \
+             mock.patch.object(eng, "_via_resident", lambda *a, **k: sent.append((a, k)) or True):
+            eng.synthesize_segment("안녕하세요.", None, "happy", 1.0, os.path.join(tempfile.gettempdir(), "x.wav"))
+        (a, k), = sent
+        self.assertEqual(a[0], "BASE", "모델은 Base — 감정 1.7B 로 바뀌지 않는다")
+        self.assertIsNone(a[3], "지시는 버린다")
+        self.assertEqual(k["clone"], {"ref": "r.wav", "text": "참조 글"})
+
     def test_엔진이_등록되고_고른_모델을_받는다(self):
         self.assertIs(tw.ENGINES["qwen-custom"], tw.QwenCustomEngine)
         with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "tts_worker.py"), encoding="utf-8") as f:
@@ -106,7 +134,11 @@ class Rules(unittest.TestCase):
 class Installed(unittest.TestCase):
     def test_목록에_여덟이_오르고_이름표에_느림을_적는다(self):
         voices, skipped = bv.qwen_custom_voices_list()
-        self.assertEqual(sorted(v["modelId"] for v in voices), sorted(tw.QWEN_CUSTOM_SPEAKERS))
+        want = set(tw.QWEN_CUSTOM_SPEAKERS) | (set(tw.QWEN_DESIGNED_VOICES) if tw.qwen_clone_model() else set())
+        self.assertEqual(sorted(v["modelId"] for v in voices), sorted(want), "지정 여덟 + (Base 가 있으면) 설계 다섯")
+        for v in voices:
+            if v["modelId"] in tw.QWEN_DESIGNED_VOICES:
+                self.assertTrue(v["native"] and v["emotion"] is False, "설계 목소리는 한국어 원어민 · 감정 없음")
         self.assertTrue(all("시작 느림" in v["label"] for v in voices))
         sohee = next(v for v in voices if v["modelId"] == "sohee")
         self.assertTrue(sohee["path"].endswith("config.json") and os.path.isfile(sohee["path"]) and sohee["native"])

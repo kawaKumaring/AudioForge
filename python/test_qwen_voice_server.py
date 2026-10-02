@@ -56,6 +56,46 @@ class FakeModels:
         return self.m, self.now
 
 
+class CloneModel(FakeModel):
+    def __init__(self):
+        super().__init__()
+        self.prompts = 0
+
+    def create_voice_clone_prompt(self, ref_audio, ref_text):
+        self.prompts += 1
+        return {"ref": ref_audio, "text": ref_text}
+
+    def generate_voice_clone(self, text, language, voice_clone_prompt):
+        self.calls.append((text, "clone:" + voice_clone_prompt["text"], None))
+        return [np.full(2400, 0.1, dtype="float32")], 24000
+
+
+class Clone(unittest.TestCase):
+    def test_고정_참조로_읽고_참조_특징은_한_번만_만든다(self):
+        ref = os.path.join(tempfile.mkdtemp(), "r.wav")
+        open(ref, "wb").write(b"x")
+        m, models = CloneModel(), qvs.Models()
+        models.loaded["B"] = m
+        req = {"model": "B", "clone": {"ref": ref, "text": "참조 글"}, "language": "korean", "seed": 0}
+        out = tempfile.mkdtemp()
+        r1 = qvs.handle(models, dict(req, text="첫째.", out=os.path.join(out, "a.wav")))
+        r2 = qvs.handle(models, dict(req, text="둘째.", out=os.path.join(out, "b.wav")))
+        self.assertTrue(r1["ok"] and r2["ok"])
+        self.assertEqual([c[:2] for c in m.calls], [("첫째.", "clone:참조 글"), ("둘째.", "clone:참조 글")], "지정 목소리 화자 없이 참조로")
+        self.assertEqual(m.prompts, 1, "같은 참조는 한 번만 계산")
+
+    def test_감정_덩어리가_와도_지시를_버리고_참조로_읽는다(self):
+        ref = os.path.join(tempfile.mkdtemp(), "r.wav")
+        open(ref, "wb").write(b"x")
+        m, models = CloneModel(), qvs.Models()
+        models.loaded["B"] = m
+        out = os.path.join(tempfile.mkdtemp(), "o.wav")
+        r = qvs.handle(models, {"model": "B", "clone": {"ref": ref, "text": "g"}, "out": out,
+                                "segments": [{"text": "안녕.", "emotion": "happy"}, {"text": "반가워.", "emotion": ""}]})
+        self.assertTrue(r["ok"] and r["segments"] == 2)
+        self.assertEqual([c[2] for c in m.calls], [None, None])
+
+
 class Warm(unittest.TestCase):
     def test_막_연_모델은_짧은_글을_한번_만들어_준비를_치른다(self):
         m = FakeModel()

@@ -78,6 +78,15 @@ class Models:
 
     def __init__(self):
         self.loaded = collections.OrderedDict()
+        self.prompts = {}          # (모델 폴더, 참조 소리, 수정 시각) → 참조 목소리 특징(한 번만 계산)
+
+    def prompt(self, model, model_dir, clone):
+        """고정 참조 소리 → 그 목소리를 따라 읽게 하는 특징. 같은 참조는 한 번만 만든다."""
+        ref = clone["ref"]
+        key = (model_dir, ref, os.path.getmtime(ref))
+        if key not in self.prompts:
+            self.prompts[key] = model.create_voice_clone_prompt(ref_audio=ref, ref_text=clone["text"])
+        return self.prompts[key]
 
     def get(self, model_dir):
         import torch
@@ -86,7 +95,8 @@ class Models:
             self.loaded.move_to_end(model_dir)
             return self.loaded[model_dir], False
         while len(self.loaded) >= MAX_MODELS:
-            self.loaded.popitem(last=False)
+            gone, _ = self.loaded.popitem(last=False)
+            self.prompts = {k: v for k, v in self.prompts.items() if k[0] != gone}
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         m = qcv.load(model_dir)
@@ -104,18 +114,19 @@ def handle(models, req):
         return dict(ok=True, seconds=0, sample_rate=0, gen_sec=0, loaded_now=False)
     import torch
     model, loaded_now = models.get(req["model"])
+    say = _speaker(models, model, req)
     if req.get("warm"):
         # 미리 열기 — 고른 순간 모델을 올려 둔다(첫 조각의 모델 열기를 누르기 전에 치른다).
         # ★막 열었으면 짧은 글을 한 번 만들어 버린다 — 첫 생성의 묶어 실행 준비(1.3초, 2026-10-02 실측)를 여기서 치른다.
         prime = 0.0
-        if loaded_now and req.get("speaker"):
+        if loaded_now and (req.get("speaker") or req.get("clone")):
             t = time.time()
             torch.manual_seed(0)
-            model.generate_custom_voice(text=PRIME_TEXT, speaker=req["speaker"], language=req.get("language", "korean"))
+            say(PRIME_TEXT, None)
             prime = round(time.time() - t, 2)
         return dict(ok=True, seconds=0, sample_rate=0, gen_sec=0, loaded_now=loaded_now, prime_sec=prime)
     if isinstance(req.get("segments"), list):
-        return _segments(model, loaded_now, req)
+        return _segments(model, loaded_now, req, say)
     if "text" in req:
         text = str(req["text"] or "").strip()
     else:
@@ -128,8 +139,7 @@ def handle(models, req):
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
     t = time.time()
-    wavs, sr = model.generate_custom_voice(text=text, speaker=req["speaker"], language=req.get("language", "korean"),
-                                           instruct=(req.get("instruct") or None))
+    wavs, sr = say(text, req.get("instruct") or None)
     gen = time.time() - t
     wav = np.asarray(wavs[0], dtype="float32").reshape(-1)
     if wav.size == 0 or not np.isfinite(wav).all():
@@ -143,12 +153,25 @@ def handle(models, req):
 SEGMENT_GAP_SEC = 0.12
 
 
-def _segments(model, loaded_now, req):
+def _speaker(models, model, req):
+    """요청 → (글, 지시) 로 소리를 만드는 함수. 고정 참조(clone)가 있으면 그 목소리를 따라, 아니면 지정 목소리(speaker)로.
+    ★참조 목소리는 지시(감정)를 받지 않는다 — 지시는 버린다(화면도 이 목소리에는 감정을 켜지 않는다)."""
+    lang = req.get("language", "korean")
+    if req.get("clone"):
+        prompt = models.prompt(model, req["model"], req["clone"])
+        return lambda text, instruct: model.generate_voice_clone(text=text, language=lang, voice_clone_prompt=prompt)
+    return lambda text, instruct: model.generate_custom_voice(text=text, speaker=req.get("speaker"), language=lang,
+                                                                instruct=instruct)
+
+
+def _segments(model, loaded_now, req, say=None):
     """감정 덩어리들 → 한 소리. 덩어리마다 같은 모델(1.7B)로 — 감정 없는 덩어리도 같은 모델이라 목소리가 바뀌지 않는다."""
     import numpy as np
     import soundfile as sf
     import torch
     from qwen_emotions import instruct_of
+    if say is None:
+        say = _speaker(None, model, req)
     seed = int(req.get("seed", 0))
     pieces, sr, gen, made = [], 24000, 0.0, 0
     for seg in req["segments"]:
@@ -159,8 +182,7 @@ def _segments(model, loaded_now, req):
         if torch.cuda.is_available():
             torch.cuda.manual_seed_all(seed)
         t = time.time()
-        wavs, sr = model.generate_custom_voice(text=text, speaker=req["speaker"], language=req.get("language", "korean"),
-                                               instruct=instruct_of((seg or {}).get("emotion")))
+        wavs, sr = say(text, instruct_of((seg or {}).get("emotion")))
         gen += time.time() - t
         w = np.asarray(wavs[0], dtype="float32").reshape(-1)
         if w.size == 0 or not np.isfinite(w).all():

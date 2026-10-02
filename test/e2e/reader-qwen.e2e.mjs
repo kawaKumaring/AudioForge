@@ -50,12 +50,16 @@ try {
   await win.waitForFunction(() => !!window.__afStore)
   const voices = (await win.evaluate(() => window.api.cards.builtinVoices()))?.data?.voices || []
   // 소희를 이름(modelId)으로 찾는다 — 2026-10-01 부터 Qwen 목소리가 여덟이라 '첫 Qwen' 은 소희가 아니다.
-  const qwen = voices.find((v) => v.engineId === 'qwen-custom' && v.modelId === 'sohee')
+  const VID = process.env.AF_E2E_QWEN_VOICE || 'sohee'      // 설계 목소리(예: girl)도 같은 검사로 — AF_E2E_QWEN_VOICE=girl
+  const VFILE = VID === 'sohee' ? 'config.json' : `${VID}.json`
+  const VFILE_RE = VFILE.replace(/\./g, '\\.')
+  const qwen = voices.find((v) => v.engineId === 'qwen-custom' && v.modelId === VID)
+  const VNAME = qwen ? qwen.label.replace(/^Qwen\s+/, '').replace(/\s*\(.*$/, '') : ''
   if (!qwen) {
     console.log('SKIP Qwen 지정 목소리를 받아 두지 않은 설치입니다')
     await app.close(); cleanupUserData(UD); cleanupIsolated(ISO); process.exit(0)
   }
-  ok(/소희/.test(qwen.label) && /시작 느림/.test(qwen.label), 'Qwen 소희가 목록에 오르고 이름표에 시작이 느리다고 적힌다', qwen.label)
+  ok(qwen.label.includes(VNAME) && /시작 느림/.test(qwen.label), `Qwen ${VNAME} 가 목록에 오르고 이름표에 시작이 느리다고 적힌다`, qwen.label)
 
   await win.getByTestId('mode-reader').click()
   await win.getByTestId('reader-add-text').first().click()
@@ -65,8 +69,8 @@ try {
   await win.getByTestId('reader-voice').click()
   await win.getByRole('dialog', { name: '목소리 고르기' }).waitFor()
   const rows = await win.getByTestId('reader-voice-builtin').evaluateAll((els) => els.map((e) => e.getAttribute('aria-label') || ''))
-  const qi = rows.findIndex((t) => t.includes('소희'))
-  ok(qi >= 0 && /소희/.test(await win.getByTestId('reader-voice-builtin').nth(qi).innerText()), '★소희는 짧은 이름(소희)으로 고른다', rows)
+  const qi = rows.findIndex((t) => t.includes(VNAME))
+  ok(qi >= 0 && (await win.getByTestId('reader-voice-builtin').nth(qi).innerText()).includes(VNAME), `★${VNAME} 는 짧은 이름으로 고른다`, rows)
   if (process.env.AF_E2E_GPU === '1') {
     // ★목록을 여는 순간 Qwen 실행기를 모델 없이 띄운다(2026-10-02 — 불러오기·디스크 읽기를 고르기 전에 치른다).
     let up = false
@@ -82,7 +86,7 @@ try {
     await win.waitForTimeout(250)
   }
   // 소희 것만 센다 — 앞서 쓰던 기본 목소리의 미리 만들기(CPU)는 이 규칙과 무관하다.
-  const madeLines = (logText().match(/\[reader\] (만듦|만들지 못함).*/g) || []).filter((l) => /voice=config\.json/.test(l))
+  const madeLines = (logText().match(/\[reader\] (만듦|만들지 못함).*/g) || []).filter((l) => new RegExp(`voice=${VFILE_RE}`).test(l))
   if (process.env.AF_E2E_GPU === '1') {
     // ★GPU 검사에서는 고르는 순간 **모델만 미리 연다**(2026-10-01 — 첫 소리의 모델 열기 약 10초를 누르기 전에 치른다).
     //   소리는 만들지 않는다. 여는 동안 다른 합성이 비키는 사유는 낭독의 것이어야 한다.
@@ -105,7 +109,7 @@ try {
     //   증거는 Qwen 모델로 만든 조각의 기록이다. 한 조각에 40초 남짓 — 3분까지 기다린다.
     let logged = false
     for (let i = 0; i < 360 && !logged; i++) {
-      logged = /\[reader\] 만듦 kind=builtin voice=config\.json/.test(logText())
+      logged = new RegExp(`\\[reader\\] 만듦 kind=builtin voice=${VFILE_RE}`).test(logText())
       if (!logged) await win.waitForTimeout(500)
     }
     ok(logged, '★누르면 소희(Qwen 모델)로 조각을 만든다(기록)',
@@ -118,7 +122,7 @@ try {
     ok(playingNow, '★만든 소희 소리를 틀고 있다(기다림 문구 없음)')
 
     // ── 4. 띄워 둔 실행기 — 둘째 조각부터는 모델을 다시 열지 않고, 듣는 속도보다 빨리 만든다 ──────
-    const qwenLines = () => (logText().match(/\[reader\] 만듦 kind=builtin voice=config\.json.*/g) || [])
+    const qwenLines = () => (logText().match(new RegExp(`\\[reader\\] 만듦 kind=builtin voice=${VFILE_RE}.*`, 'g')) || [])
     for (let i = 0; i < 240 && qwenLines().length < 2; i++) await win.waitForTimeout(500)
     const [first, second] = qwenLines()
     const num = (l, key) => Number((l || '').match(new RegExp(`${key}=([\\d.]+)s`))?.[1])

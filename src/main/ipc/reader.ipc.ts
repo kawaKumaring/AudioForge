@@ -124,12 +124,37 @@ function segmentsOf(raw: unknown): EmotionSegment[] | null {
   return out.length ? out : null
 }
 
-function qwenVoiceOf(path: string): { model: string; speaker: string } | null {
+/** 설계 목소리(고정 참조)를 읽는 Base 1.7B 폴더 — 없으면 ''. */
+function qwenBaseModel(): string {
+  try {
+    const ext = join(dirname(dirname(scriptPath())), 'externals')
+    for (const name of readdirSync(ext).sort()) {
+      if (!name.startsWith('qwen3_tts')) continue
+      const cfg = join(ext, name, 'config.json')
+      if (!existsSync(cfg)) continue
+      try {
+        const c = JSON.parse(readFileSync(cfg, 'utf-8')) as { tts_model_type?: string; tts_model_size?: string }
+        if (c.tts_model_type === 'base' && c.tts_model_size === '1b7') return join(ext, name)
+      } catch { /* 다음 폴더 */ }
+    }
+  } catch { /* 없다 */ }
+  return ''
+}
+
+export interface QwenVoice { model: string; speaker: string; clone?: { ref: string; text: string } }
+function qwenVoiceOf(path: string): QwenVoice | null {
   if (basename(path) === 'config.json') return { model: dirname(path), speaker: 'sohee' }
   let speaker = ''
   try {
-    const j = JSON.parse(readFileSync(path, 'utf-8')) as { engine?: string; speaker?: string }
-    if (j.engine !== 'qwen-custom' || !j.speaker) return null
+    const j = JSON.parse(readFileSync(path, 'utf-8')) as { engine?: string; speaker?: string; clone?: { ref?: string; text?: string } }
+    if (j.engine !== 'qwen-custom') return null
+    if (j.clone) {
+      // 설계 목소리 — 고정 참조 소리(목소리 파일 옆) + Base 1.7B. 화자 이름은 없다.
+      const ref = j.clone.ref ? join(dirname(path), basename(String(j.clone.ref))) : ''
+      const model = qwenBaseModel()
+      return ref && j.clone.text && existsSync(ref) && model ? { model, speaker: '', clone: { ref, text: String(j.clone.text) } } : null
+    }
+    if (!j.speaker) return null
     speaker = String(j.speaker).toLowerCase()
   } catch { return null }
   const ext = join(dirname(dirname(scriptPath())), 'externals')
@@ -267,8 +292,12 @@ async function makeChunk(body: string, v: ReaderVoice, out: string, segments: Em
       wav = join(runDir, 'qwen.wav')
       const qv = qwenVoiceOf(v.path)
       if (!qv) throw new Error('고른 Qwen 목소리를 알아보지 못했습니다')
-      const emoModel = segments ? qwenEmotionModel() : ''
-      if (segments && emoModel) {
+      // 설계 목소리(고정 참조)는 감정 지시를 받지 않는다 — 덩어리가 와도 보통으로 한 번에.
+      const emoModel = segments && !qv.clone ? qwenEmotionModel() : ''
+      if (qv.clone) {
+        const r = await qwenWorker().call({ model: qv.model, clone: qv.clone, language: 'korean', text_file: textFile, out: wav, seed: 0 })
+        note = ` 상주 설계(Base 1.7B)${r.loaded_now ? '(모델 엶)' : ''} 생성=${Number(r.gen_sec || 0).toFixed(1)}s 소리=${Number(r.seconds || 0).toFixed(1)}s`
+      } else if (segments && emoModel) {
         // ★감정 담아 읽기(2026-10-01) — 덩이 전체를 1.7B 로(감정 없는 덩어리도 — 목소리가 바뀌지 않게), 덩어리마다 지시.
         const r = await qwenWorker().call({ model: emoModel, speaker: qv.speaker, language: 'korean', segments, out: wav, seed: 0 })
         const emos = segments.filter((s) => s.emotion).map((s) => s.emotion)
@@ -346,7 +375,7 @@ export function registerReaderIpc(): void {
       const qv = prepared && v?.path && v.engineId === 'qwen-custom' ? qwenVoiceOf(v.path) : null
       if (qv) {
         const emotion = !!(prepOpts as { emotion?: unknown } | undefined)?.emotion
-        void qwenWorker().call({ prefetch: [(emotion && qwenEmotionModel()) || qv.model] }).catch(() => { /* 못 읽어도 고를 때 연다 */ })
+        void qwenWorker().call({ prefetch: [(emotion && !qv.clone && qwenEmotionModel()) || qv.model] }).catch(() => { /* 못 읽어도 고를 때 연다 */ })
       }
       return ok({ prepared })
     } catch (e) { return fail(e) }
@@ -372,10 +401,10 @@ export function registerReaderIpc(): void {
           if (!qv) return { warmed: false, why: '고른 Qwen 목소리를 알아보지 못했습니다' }
           // 감정 담아 읽기면 1.7B 를 연다(덩이 전체를 그 모델로 읽는다).
           const emotion = !!(warmOpts as { emotion?: unknown } | undefined)?.emotion
-          const model = (emotion && qwenEmotionModel()) || qv.model
+          const model = (emotion && !qv.clone && qwenEmotionModel()) || qv.model
           setReaderRunning(true)
           // 화자를 넘기면 막 연 모델로 짧은 글을 한 번 만들어 버린다 — 첫 생성의 준비를 여기서 치른다.
-          try { await qwenWorker().call({ warm: true, model, speaker: qv.speaker, language: 'korean' }) } finally { setReaderRunning(false) }
+          try { await qwenWorker().call({ warm: true, model, language: 'korean', ...(qv.clone ? { clone: qv.clone } : { speaker: qv.speaker }) }) } finally { setReaderRunning(false) }
           return { warmed: true }
         }))
       }

@@ -262,6 +262,22 @@ Supertonic 은 반대로 문장 전체를 한꺼번에 8번 다듬는다(순서�
   첫 덩이 생성 4.3 → 2.1초(앱 검사). ★처음 여는 경우(디스크) 이득은 겹쳐 읽기 이론값(최대 7초) — 기억을 비울 수 없어 직접 재지 못했다.
 - 남은 벽: **다른 작업과 GPU 를 나눠 쓰면** 전부 몇 배로 느려진다(우리 쪽에서 우선순위를 바꿀 수 없다). 바닥은 모델 올리기 3.3 + 준비 1.5 + 첫 덩이 1.4초.
 
+### 4-12. 설계 목소리 다섯 — 글로 설계한 한국어 목소리를 고정 참조로 (2026-10-02, 사용자 승인 후 내려받기)
+
+- 지시: "소희처럼 사용할 수 있는 다양한 한국어 모델을 찾아봐라" → 후보 조사(Kokoro 는 한국어 목소리 없음 — 블로그 설명이 틀렸다, 공식 VOICES.md 로 확인) →
+  Qwen3-TTS **VoiceDesign 1.7B**(`externals/qwen3_tts_1_7b_voicedesign`, 4.52GB, 사용자 승인 후 받음)로 영어 설명문 → 한국어 목소리 6개 시범.
+- 실측(6목소리 × 3문장): 받아 적기 오류율 평균 0.2%(최대 4%) · x3.1(qwen_fast graph+talker 가 그대로 적용) ·
+  **같은 목소리가 문장마다 흔들림**(음높이 폭 16~58Hz). 설계 소리 한 문장을 참조로 Base 1.7B 가 이어 읽으면 6개 중 5개가 안정(40대 여성 58→12Hz).
+- 사용자가 고른 다섯(v6 중후한 남성 제외)을 **고정 참조 소리**로 박제 — `python/voices/qwen/<id>.wav` + `<id>.json`(`{engine, clone:{ref,text}}`):
+  `calm_f20` 차분한 여성 · `girl` 소녀 · `narrator_f40` 낭독 여성 · `soft_m20` 부드러운 남성 · `deep_m30` 낮은 남성.
+  참조 글 "그는 천천히 창문을 열었다. 바람이 차가웠다."(직접 쓴 문장, 씨앗 0 으로 합성) — 사용자 녹음이 아니다.
+- 설계 설명문(다시 만들 때): 모두 영어 + "native Seoul accent" — 20대 여성 "calm … soft, warm and gentle voice, natural pace" · 30대 여성 "bright and cheerful … lively, clear voice, slightly fast pace" ·
+  40대 여성 "deep, composed audiobook narrator voice, slow and steady pace" · 20대 남성 "soft and friendly voice" · 30대 남성 "low, calm and deep narrator voice".
+- 읽는 길: 상주 실행기 요청에 `clone:{ref,text}` — Base 1.7B 가 참조 특징을 한 번만 계산(`Models.prompt`, 모델이 내려가면 비운다)해 `generate_voice_clone` 으로.
+  낭독(`reader.ipc qwenVoiceOf`)·생성 카드(`tts_worker.qwen_clone_of`)·목록(`builtin_voices`)이 같은 규칙. **감정 지시는 받지 않는다**(`emotion:false`).
+- 실측(앱, 소녀): 첫 조각 7.3초 분량을 2.3초에 · 둘째 17.1초 분량을 5.4초에(x3.2). 소희 회귀 11/0.
+- 한계: 표본 3문장이라 유지력 개선은 경향. 참조 소리 한 문장이 튀면 그 목소리 전체가 따라간다(30대 여성은 참조가 평균보다 높았다). Base 1.7B 가 없으면 이 다섯은 목록에서 빠진다(사유를 남긴다).
+
 ## 5. 아직 안 한 것
 
 인수인계 열 항목 중 남은 것.

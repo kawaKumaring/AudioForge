@@ -441,6 +441,55 @@ def qwen_voice_of(path):
     return (os.path.join(models[0], "config.json") if models else None), sp
 
 
+# ── 설계 목소리 (2026-10-02) ───────────────────────────────────────────────
+# 글 설명으로 설계한 한국어 목소리(Qwen3-TTS VoiceDesign)를 **한 번 만들어 고정한 소리 파일**을 참조로 삼아, Base 1.7B 가 그 목소리를 따라 읽는다.
+# ★왜 고정 참조인가(실측): 설계 모델에 매번 설명만 주면 같은 목소리가 문장마다 흔들렸다(음높이 폭 16~58Hz).
+#   설계한 소리 한 문장을 참조로 이어 읽으면 여섯 중 다섯이 안정됐다(40대 여성 58→12Hz). 참조는 **직접 쓴 문장을 합성한 소리**뿐 — 사용자 녹음이 아니다.
+# ★감정 지시는 받지 않는다(Base 모델 — 지시를 쓰지 않는다).
+QWEN_DESIGNED_VOICES = {
+    "calm_f20": {"name": "차분한 여성", "desc": "20대 · 차분하고 부드러운"},
+    "girl": {"name": "소녀", "desc": "밝고 맑은 소녀 목소리"},
+    "narrator_f40": {"name": "낭독 여성", "desc": "40대 · 낮고 안정된 낭독 톤"},
+    "soft_m20": {"name": "부드러운 남성", "desc": "20대 · 부드럽고 친근한"},
+    "deep_m30": {"name": "낮은 남성", "desc": "30대 · 낮고 차분한 낭독 톤"},
+}
+
+
+def qwen_clone_model():
+    """고정 참조 목소리를 읽는 Base 1.7B 폴더 — 없으면 None."""
+    ext = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "externals")
+    if not os.path.isdir(ext):
+        return None
+    for name in sorted(os.listdir(ext)):
+        full = os.path.join(ext, name)
+        if not name.startswith("qwen3_tts") or name in _QWEN_VARIANT_EXCLUDE or not os.path.isdir(full):
+            continue
+        info = _qwen_variant_info(full) or {}
+        if info.get("model_type") == "base" and info.get("model_size") == "1b7":
+            return full
+    return None
+
+
+def qwen_clone_of(path):
+    """목소리 파일 → {model, ref, text}(고정 참조 목소리) — 아니면 None. 참조 소리는 목소리 파일 옆에 있어야 한다."""
+    import json as _json
+    if not path or os.path.basename(path) == "config.json":
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            j = _json.load(f)
+    except Exception:
+        return None
+    c = j.get("clone")
+    if j.get("engine") != "qwen-custom" or not isinstance(c, dict) or not c.get("ref") or not c.get("text"):
+        return None
+    ref = os.path.join(os.path.dirname(os.path.abspath(path)), os.path.basename(str(c["ref"])))
+    model = qwen_clone_model()
+    if not (model and os.path.isfile(ref)):
+        return None
+    return {"model": model, "ref": ref, "text": str(c["text"])}
+
+
 def qwen_custom_voice_models():
     """받아 둔 Qwen 지정 목소리 모델 폴더들 — 설정의 모델 종류가 custom_voice 이고 필수 파일이 다 있는 것만."""
     out = []
@@ -493,10 +542,12 @@ class QwenCustomEngine(TTSEngine):
         import subprocess
         import tempfile
         self.load()
-        cfg, speaker = qwen_voice_of(self.model_path or "")
+        # 설계 목소리(고정 참조) — 지정 목소리 모델이 아니라 참조 소리 + Base 1.7B 로 읽는다.
+        clone = qwen_clone_of(self.model_path or "")
+        cfg, speaker = (None, None) if clone else qwen_voice_of(self.model_path or "")
         cfg = cfg or ""
-        model_dir = os.path.dirname(cfg)
-        if not (cfg and speaker and os.path.isfile(cfg) and _qwen_variant_info(model_dir)):
+        model_dir = clone["model"] if clone else os.path.dirname(cfg)
+        if not clone and not (cfg and speaker and os.path.isfile(cfg) and _qwen_variant_info(model_dir)):
             e = RuntimeError("고른 기본 목소리 모델을 찾지 못했습니다: %s" % os.path.basename(model_dir or ""))
             e.error_payload = {"code": ENGINE_LANG_UNAVAILABLE, "engine": self.name}
             raise e
@@ -516,6 +567,14 @@ class QwenCustomEngine(TTSEngine):
             self._speed_told = True
         # 감정 — 지시를 받는 1.7B 가 있으면 그 모델로, 영어 지시를 붙여 만든다(위 QWEN_EMOTION_INSTRUCTS).
         instruct = QWEN_EMOTION_INSTRUCTS.get(emotion_id or "") if emotion_id not in (None, "", "default") else None
+        if clone:
+            # 설계 목소리는 지시를 받지 않는다 — 띄워 둔 실행기로만(참조 특징을 한 번만 계산해 둔다).
+            if emotion_id not in (None, "", "default") and not self._emotion_told:
+                emit("progress", message="이 목소리는 감정 지시를 받지 않아 보통으로 읽습니다")
+                self._emotion_told = True
+            if not self._via_resident(model_dir, None, text, None, output_path, clone={"ref": clone["ref"], "text": clone["text"]}):
+                raise RuntimeError("설계 목소리는 띄워 둔 Qwen 실행기가 있어야 읽습니다 — 앱을 다시 켜 보세요")
+            return
         if emotion_id not in (None, "", "default"):
             emo_cfg = qwen_emotion_model()
             if instruct and emo_cfg:
@@ -558,7 +617,7 @@ class QwenCustomEngine(TTSEngine):
     #: 띄워 둔 실행기 한 조각의 상한(초) — 멈춘 실행기에 갇히지 않게.
     RESIDENT_TIMEOUT_SEC = 900
 
-    def _via_resident(self, model_dir, speaker, text, instruct, output_path):
+    def _via_resident(self, model_dir, speaker, text, instruct, output_path, clone=None):
         """띄워 둔 실행기로 만든다. 만들었으면 True, 붙지 못했으면 False(예전 길로). 실행기가 실패를 답하면 그 사유로 멈춘다."""
         addr = os.environ.get("AF_QWEN_PIPE_ADDR", "")
         key = os.environ.get("AF_QWEN_PIPE_KEY", "")
@@ -576,8 +635,11 @@ class QwenCustomEngine(TTSEngine):
                         if attempt == 9:
                             raise
                         time.sleep(0.5)
-            self._conn.send({"model": model_dir, "speaker": speaker, "language": "korean", "text": text,
-                             "out": output_path, "seed": 0, "instruct": instruct or ""})
+            req = {"model": model_dir, "speaker": speaker, "language": "korean", "text": text,
+                   "out": output_path, "seed": 0, "instruct": instruct or ""}
+            if clone:
+                req["clone"] = clone
+            self._conn.send(req)
             if not self._conn.poll(self.RESIDENT_TIMEOUT_SEC):
                 raise TimeoutError("답이 없습니다")
             r = self._conn.recv()

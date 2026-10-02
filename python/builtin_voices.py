@@ -139,6 +139,26 @@ def qwen_custom_voices_list():
             "sampleRate": 24000,
             "path": path,
         })
+    # 설계 목소리(2026-10-02) — 고정 참조 소리 + Base 1.7B 가 있을 때만. 감정 지시는 받지 않는다.
+    for vid, info in tw.QWEN_DESIGNED_VOICES.items():
+        path = os.path.join(tw.QWEN_VOICE_DIR, vid + ".json")
+        if not os.path.isfile(path):
+            skipped.append({"engineId": "qwen-custom", "modelId": vid, "why": "목소리 파일이 없습니다"})
+            continue
+        if not tw.qwen_clone_of(path):
+            skipped.append({"engineId": "qwen-custom", "modelId": vid, "why": "참조 소리나 Base 1.7B 모델이 없습니다"})
+            continue
+        out.append({
+            "engineId": "qwen-custom",
+            "modelId": vid,
+            "label": "Qwen %s (GPU · 시작 느림)" % info["name"],
+            "note": info["desc"],
+            "native": True,
+            "emotion": False,
+            "language": "ko",
+            "sampleRate": 24000,
+            "path": path,
+        })
     return out, skipped
 
 
