@@ -70,8 +70,10 @@ const api = {
     pitchPreflight: () => ipcRenderer.invoke('audio:pitch-preflight'),
     processTrack: (trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string;
       /** ★고른 알아듣기 설정. 예전에는 빠져 파이썬 기본값으로 고정됐다(2026-09-24 감사). */
-      whisperModel?: string; whisperLang?: string; asrSeparate?: string }) =>
-      ipcRenderer.invoke('audio:process-track', trackPath, outputDir, options),
+      whisperModel?: string; whisperLang?: string; asrSeparate?: string },
+      /** 요청 식별자 — 화면이 요청마다 새로 만든다. 완료·오류 알림이 같은 값을 싣고 돌아온다(2026-10-02). */
+      requestId: string) =>
+      ipcRenderer.invoke('audio:process-track', trackPath, outputDir, options, requestId),
     onTrackResult: (callback: (data: unknown) => void) => {
       const handler = (_event: unknown, data: unknown) => callback(data)
       ipcRenderer.on('audio:track-result', handler)

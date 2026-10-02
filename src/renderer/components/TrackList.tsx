@@ -97,6 +97,8 @@ function TrackItem({ track, index, keep, onKeep, onKeepOnly }: {
     if (!outputDir || !isAudioTrack || processing) return
     // ★요청 당시의 것으로 가린다 — 이 결과의 경로(myPath)와 글 동일성(myIdent). 이름 부분 일치로 받지 않는다(2026-10-02 관리자 검수).
     const myPath = track.path, myIdent = ident
+    // ★요청마다 새 식별자 — 완료·오류는 입력 경로와 이 식별자가 **둘 다** 맞을 때만 받는다(같은 파일을 다시 처리해도 앞 실행의 늦은 답이 붙지 않게).
+    const myRequest = crypto.randomUUID()
     jobRef.current?.off()
     setJobNote(''); setProcessing(true)
     const job = { off: () => { offResult(); offError() } }
@@ -105,8 +107,8 @@ function TrackItem({ track, index, keep, onKeep, onKeepOnly }: {
 
     const offResult = window.api.audio.onTrackResult((data: any) => {
       if (jobRef.current !== job) return                       // 이 결과가 바뀌었거나 이미 끝났다
-      // 본체가 입력 경로를 실어 보낸다 — 그 경로가 이 결과의 것일 때만 받는다(다른 작업·옛 작업의 완료는 받지 않는다).
-      if (!data || data.trackPath !== myPath) return
+      // 본체가 입력 경로와 요청 식별자를 실어 보낸다 — 둘 다 내 것일 때만 받는다(다른 작업·옛 실행의 완료는 받지 않는다).
+      if (!data || data.trackPath !== myPath || data.requestId !== myRequest) return
       const t = data.tracks?.[0]
       if (!t) return
       patchText(myIdent, {
@@ -120,7 +122,8 @@ function TrackItem({ track, index, keep, onKeep, onKeepOnly }: {
     // Python 에러 시 "처리 중..." 고착 방지 — 실패해도 버튼 복구. 이 결과의 오류만 받고, 사유를 짧게 보인다.
     const offError = window.api.audio.onTrackError((data: any) => {
       if (jobRef.current !== job) return
-      if (data?.trackPath && data.trackPath !== myPath) return
+      // ★식별 정보가 없는 오류는 이 작업의 오류로 받지 않는다 — 경로와 요청 식별자가 둘 다 맞아야 한다.
+      if (!data || data.trackPath !== myPath || data.requestId !== myRequest) return
       setJobNote(shortReason(data?.message))
       setProcessing(false)
       finish()
@@ -129,7 +132,7 @@ function TrackItem({ track, index, keep, onKeep, onKeepOnly }: {
     try {
       // ★고른 설정을 함께 보낸다 — 예전에는 빠져서 고른 모델·언어가 무시됐다(2026-09-24 감사).
       await window.api.audio.processTrack(myPath, outputDir,
-        { transcribe, translate, srt: false, translateModel, whisperModel, whisperLang, asrSeparate })
+        { transcribe, translate, srt: false, translateModel, whisperModel, whisperLang, asrSeparate }, myRequest)
     } catch (e) {
       // 시작을 거절당했다(이미 도는 작업·다른 작업 중 등) — 사유를 보이고 처리 중으로 남지 않는다. 결과가 바뀐 뒤의 거절은 이 화면이 더 받지 않는다.
       if (jobRef.current !== job) return

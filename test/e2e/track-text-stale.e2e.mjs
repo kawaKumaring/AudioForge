@@ -96,10 +96,12 @@ try {
   await app.evaluate(({ ipcMain }) => {
     globalThis.__origProc = ipcMain._invokeHandlers.get('audio:process-track')
     globalThis.__procMode = 'start'
-    ipcMain._invokeHandlers.set('audio:process-track', async () => { if (globalThis.__procMode === 'refuse') throw new Error('이미 처리 중인 트랙 작업이 있습니다'); return undefined })
+    ipcMain._invokeHandlers.set('audio:process-track', async (_e, _p, _d, _o, id) => { globalThis.__lastReq = id; if (globalThis.__procMode === 'refuse') throw new Error('이미 처리 중인 트랙 작업이 있습니다'); return undefined })
   })
   /** 새 결과로 갈아 끼운다 — 앞 작업이 처리 중으로 남은 같은 경로의 행을 이어 쓰지 않게 다른 경로를 거친다. */
   const fresh = async (n) => { await show('ax'); await settle(200); await show(n); await settle() }
+  /** 방금 시작한 요청의 식별자(화면이 만들어 시작 통로로 보낸 값). */
+  const reqId = () => app.evaluate(() => globalThis.__lastReq)
   const startTranscribe = async () => {
     await win.getByTestId('track-menu').click()
     await win.getByTestId('track-menu-transcribe').click()
@@ -117,9 +119,10 @@ try {
   })
   await section("작업 알림-늦은 완료", async () => {
     await fresh('c'); await startTranscribe()
+  const idLate = await reqId()
   // (b) 앞 작업이 도는 중 결과가 바뀐다 → 앞 작업의 늦은 완료가 새 결과에 붙지 않는다
   await show('b'); await settle()
-  await emit('audio:track-result', { trackPath: P('audit-c.wav'), tracks: [{ name: 'audit-c', text: '앞 작업의 늦은 글' }] })
+  await emit('audio:track-result', { trackPath: P('audit-c.wav'), requestId: idLate, tracks: [{ name: 'audit-c', text: '앞 작업의 늦은 글' }] })
   await settle(400); await open()
   ok(!(await bodyHas('앞 작업의 늦은 글')), '★결과가 바뀐 뒤 도착한 앞 작업의 완료는 새 결과에 붙지 않는다')
   })
@@ -127,21 +130,57 @@ try {
   // (c) 맞는 완료는 받는다
   await fresh('c')
   await startTranscribe()
-  await emit('audio:track-result', { trackPath: P('audit-c.wav'), tracks: [{ name: 'audit-c', text: '맞는 작업의 글', translated_text: '맞는 작업의 번역' }] })
+  await emit('audio:track-result', { trackPath: P('audit-c.wav'), requestId: await reqId(), tracks: [{ name: 'audit-c', text: '맞는 작업의 글', translated_text: '맞는 작업의 번역' }] })
   await win.getByRole('status').filter({ hasText: '처리 중' }).waitFor({ state: 'detached' })
   await open()
   ok(await bodyHas('맞는 작업의 글') && await bodyHas('맞는 작업의 번역'), '이 결과의 완료는 받는다(원문·번역)')
   // (d) 다른 결과의 오류는 무시, 이 결과의 오류는 짧게 보인다
   await fresh('c')
   await startTranscribe()
-  await emit('audio:track-error', { trackPath: P('audit-ax.wav'), message: '다른 작업의 오류' })
+  const idErr = await reqId()
+  await emit('audio:track-error', { trackPath: P('audit-ax.wav'), requestId: idErr, message: '다른 작업의 오류' })
   await settle(300)
   ok((await win.getByRole('status').filter({ hasText: '처리 중' }).count()) === 1 && !(await bodyHas('다른 작업의 오류')), '★다른 결과의 오류는 이 결과의 처리를 멈추지 않는다')
-  await emit('audio:track-error', { trackPath: P('audit-c.wav'), message: '이 작업의 오류' })
+  await emit('audio:track-error', { trackPath: P('audit-c.wav'), message: '식별 정보 없는 오류' })
+  await settle(300)
+  ok((await win.getByRole('status').filter({ hasText: '처리 중' }).count()) === 1 && !(await bodyHas('식별 정보 없는 오류')), '★요청 식별자가 없는 오류는 이 작업의 오류로 받지 않는다')
+  await emit('audio:track-error', { trackPath: P('audit-c.wav'), requestId: 'OTHER-REQUEST-0001', message: '다른 요청의 오류' })
+  await settle(300)
+  ok((await win.getByRole('status').filter({ hasText: '처리 중' }).count()) === 1 && !(await bodyHas('다른 요청의 오류')), '★경로가 맞아도 요청 식별자가 다른 오류는 받지 않는다')
+  await emit('audio:track-error', { trackPath: P('audit-c.wav'), requestId: idErr, message: '이 작업의 오류' })
   await win.getByRole('status').filter({ hasText: '처리 중' }).waitFor({ state: 'detached' })
   ok(await bodyHas('이 작업의 오류'), '★이 결과의 오류는 그 자리에 짧게 보인다')
   })
+  await section("같은 파일 다시 처리", async () => {
+  // 같은 파일을 두 번 처리한다 — 첫 실행의 늦은 응답이 둘째 실행에 붙지 않는다(경로는 같고 요청 식별자만 다르다).
+  await fresh('c'); await startTranscribe()
+  const id1 = await reqId()
+  await show('ax'); await settle(200); await show('c'); await settle()       // 같은 파일 — 새 행(첫 실행의 구독은 끊겼다)
+  await startTranscribe()
+  const id2 = await reqId()
+  ok(!!id2 && id1 !== id2, '요청마다 다른 식별자가 발급된다', { id1, id2 })
+  await emit('audio:track-result', { trackPath: P('audit-c.wav'), requestId: id1 ?? 'OLD-RUN-ID', tracks: [{ name: 'audit-c', text: '앞 실행의 늦은 글' }] })
+  await emit('audio:track-error', { trackPath: P('audit-c.wav'), requestId: id1 ?? 'OLD-RUN-ID', message: '앞 실행의 늦은 오류' })
+  await settle(400)
+  ok(!(await bodyHas('앞 실행의 늦은 글')) && !(await bodyHas('앞 실행의 늦은 오류')) && (await win.getByRole('status').filter({ hasText: '처리 중' }).count()) === 1,
+    '★같은 파일을 다시 처리할 때 앞 실행의 늦은 완료·오류가 붙지 않는다(처리 중 그대로)')
+  await emit('audio:track-result', { trackPath: P('audit-c.wav'), requestId: id2, tracks: [{ name: 'audit-c', text: '이번 실행의 글' }] })
+  await win.getByRole('status').filter({ hasText: '처리 중' }).waitFor({ state: 'detached' })
+  await open()
+  ok(await bodyHas('이번 실행의 글'), '이번 실행의 완료는 받는다')
+  })
+  await section("요청 식별자 필수", async () => {
+  // 실제 본체 핸들러 — 식별자 없는 시작은 거절한다(파이썬을 띄우기 전에).
+  await app.evaluate(({ ipcMain }) => { ipcMain._invokeHandlers.set('audio:process-track', globalThis.__origProc) })
+  const bad = await win.evaluate(() => window.api.audio.processTrack('E:/없는/a.wav', 'E:/없는', { transcribe: true }, '').then(() => 'accepted', (e) => String(e?.message || e)))
+  ok(/요청 식별자/.test(bad), '★요청 식별자 없는 시작은 본체가 거절한다', bad)
+  const bad2 = await win.evaluate(() => window.api.audio.processTrack('E:/없는/a.wav', 'E:/없는', { transcribe: true }, '../../x').then(() => 'accepted', (e) => String(e?.message || e)))
+  ok(/요청 식별자/.test(bad2), '모양이 틀린 식별자도 거절한다', bad2)
+  })
   await section("시작 거절", async () => {
+  await app.evaluate(({ ipcMain }) => {
+    ipcMain._invokeHandlers.set('audio:process-track', async () => { if (globalThis.__procMode === 'refuse') throw new Error('이미 처리 중인 트랙 작업이 있습니다'); return undefined })
+  })
   // (e) 시작 거절 응답을 보인다
   await show('a'); await settle()
   await app.evaluate(() => { globalThis.__procMode = 'refuse' })

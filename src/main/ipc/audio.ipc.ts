@@ -1255,7 +1255,12 @@ export function registerAudioIpc(
   // Process individual track (transcribe/translate)
   ipcMain.handle('audio:process-track', async (_event, trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string;
       /** ★고른 알아듣기 설정. 예전에는 빠져 파이썬 기본값으로 고정됐다(2026-09-24 감사). */
-      whisperModel?: string; whisperLang?: string; asrSeparate?: string }) => {
+      whisperModel?: string; whisperLang?: string; asrSeparate?: string }, requestId?: unknown) => {
+    // ★요청 식별자는 **필수**다(2026-10-02 재검수) — 완료·오류 알림이 이 값을 싣고 돌아와, 화면이 '내가 낸 요청의 답' 만 받는다.
+    //   같은 파일을 다시 처리해도 앞 실행의 늦은 답이 새 요청에 붙지 않는다. 식별자 없는 시작은 거절한다.
+    if (typeof requestId !== 'string' || !/^[A-Za-z0-9-]{8,64}$/.test(requestId)) {
+      throw new Error('요청 식별자가 없어 시작하지 않았습니다')
+    }
     if (trackSlot.current?.isRunning) {
       throw new Error('이미 처리 중인 트랙 작업이 있습니다')
     }
@@ -1300,12 +1305,12 @@ export function registerAudioIpc(
     // TrackList의 처리중 표시가 영구히 남았다(감사 R4) — 트랙 처리에는 취소 버튼도 없다.
     const settle = createRunSettlement((t: RunTerminal) => {
       // ★입력 경로를 함께 싣는다(2026-10-02 관리자 검수) — 화면이 '내 작업의 완료' 를 이름 부분 일치가 아니라 **경로로** 가리게.
-      if (t.kind === 'result') { sendToWindow(mainWindow, 'audio:track-result', { ...(t.data as Record<string, unknown>), trackPath }); return }
+      if (t.kind === 'result') { sendToWindow(mainWindow, 'audio:track-result', { ...(t.data as Record<string, unknown>), trackPath, requestId }); return }
       const message = t.kind === 'cancelled'
         ? '트랙 처리가 취소되었습니다.'
         : (t.message ?? '트랙 처리에 실패했습니다.')
       // TrackList는 track-error로만 처리중 표시를 해제한다 → 취소도 같은 채널로 보낸다.
-      sendToWindow(mainWindow, 'audio:track-error', { message, trackPath, reasonCode: t.reasonCode })
+      sendToWindow(mainWindow, 'audio:track-error', { message, trackPath, requestId, reasonCode: t.reasonCode })
     })
 
     // Watchdog: kill if no progress for 5 minutes (same policy as main runner)
