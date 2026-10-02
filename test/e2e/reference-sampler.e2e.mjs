@@ -7,7 +7,7 @@ import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 �
 import { _electron as electron } from 'playwright'
 import { randomUUID, createHash } from 'crypto'
 import fs from 'fs'; import path from 'path'; import os from 'os'
-import { makeSyntheticWav, cleanupSyntheticWav } from './_e2e-helper.mjs'
+import { makeSyntheticWav, cleanupSyntheticWav, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 let failed = 0
@@ -43,6 +43,7 @@ let referenceId = null
 
 try {
   await win.waitForLoadState('domcontentloaded')
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 
   // ── 등록: 경로는 이 요청에서만 오간다 ──────────────────────────────────
   const imported = await win.evaluate(async ([p, t]) => window.api.referenceLibrary.import({
@@ -156,6 +157,7 @@ try {
   win = await app.firstWindow()
   win.on('pageerror', (e) => pageErrors.push(String(e)))
   await win.waitForLoadState('domcontentloaded')
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 
   const listAfter = await win.evaluate(() => window.api.referenceLibrary.list())
   ok(listAfter.status === 'ok' && listAfter.items.length === 2, '재시작 후 manifest 복원')

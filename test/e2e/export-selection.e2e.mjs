@@ -13,6 +13,7 @@ import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요: npm run build'); process.exit(2) }
@@ -36,6 +37,7 @@ const app = await electron.launch({
 try {
   const win = await app.firstWindow()
   await win.waitForLoadState('domcontentloaded')
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await win.waitForFunction(() => !!window.api?.audio?.exportTracks)
 
   /** 폴더 고르기만 가로챈다 — 복사와 보호는 제품 코드 그대로 돈다. */

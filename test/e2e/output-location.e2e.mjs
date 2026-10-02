@@ -16,7 +16,7 @@ import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { isolatedUserData, cleanupUserData, makeSyntheticWav } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, makeSyntheticWav, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const FIXTURE = path.join(APP, 'test', 'e2e', 'fixtures', 'synthetic_tree.py')
@@ -50,6 +50,7 @@ try {
   const win = await app.firstWindow()
   win.setDefaultTimeout(20000)
   await win.waitForFunction(() => !!window.__afStore)
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 
   /** 본체에 한 번 요청하고 **결과 자리만** 받아 온다. 곧바로 멈춘다. */
   const askWhere = async (opts) => {

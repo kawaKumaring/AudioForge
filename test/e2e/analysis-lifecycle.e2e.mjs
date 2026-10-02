@@ -16,6 +16,7 @@ import {
   killWorkerPids, listAnalysisWorkers, newWorkerPids, waitForGone, workerPidSet,
 } from './_analysis-workers.mjs'
 import { execSync } from 'child_process'
+import { enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 let failed = 0
@@ -49,6 +50,7 @@ app.process().stderr?.on('data', (d) => {
 })
 win.on('pageerror', (e) => pageErrors.push(e.message))
 
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 const call = (text, id) => win.evaluate(async ([t, rid]) => {
   const t0 = performance.now()
   const res = await window.api.analysis.analyze({ requestId: rid, text: t })

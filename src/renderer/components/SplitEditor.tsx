@@ -13,6 +13,7 @@ import {
   canUndo, canRedo, type SplitHistory,
 } from '../../shared/splitHistory'
 import { buildPieces, fmtDuration, type SplitPiece } from '../../shared/splitPieces'
+import { loadWave } from '@/lib/waveLoad'
 
 const miniBtn: React.CSSProperties = {
   padding: '3px 7px', borderRadius: 6, border: '1px solid var(--border-subtle)',
@@ -223,10 +224,14 @@ export default function SplitEditor() {
       addMarker(time)
     })
 
-    void ws.load(fileUrl).catch(() => { setWaveReady(false); setWaveError('파형을 읽지 못했습니다') })
+    // ★앱이 받아 넘긴다(lib/waveLoad) — 파일을 바꿀 때 끊긴 **앞 파일의** 불러오기가 catch 로 와서 새 파일 화면에
+    //   '파형을 읽지 못했습니다' 를 세울 수 있었다(2026-10-03). 끊긴 것은 조용히, 진짜 실패만 이 파일의 오류로.
+    const loading = new AbortController()
+    void loadWave(ws, fileUrl, loading.signal).catch(() => { if (!loading.signal.aborted) { setWaveReady(false); setWaveError('파형을 읽지 못했습니다') } })
     wsRef.current = ws
 
     return () => {
+      loading.abort()
       regions.un('region-updated', onRegionUpdated)
       regions.un('region-clicked', onRegionClicked)
       ws.destroy(); wsRef.current = null

@@ -6,7 +6,7 @@ import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 �
 import { _electron as electron } from 'playwright'
 import { execSync } from 'child_process'
 import fs from 'fs'; import path from 'path'; import os from 'os'
-import { snapshotTree, refClipDirs, qwenVenvPids, qwenJobDirs } from './_e2e-helper.mjs'
+import { snapshotTree, refClipDirs, qwenVenvPids, qwenJobDirs, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const FIXTURE = path.join(APP, 'test', 'e2e', 'fixtures', 'synthetic_tree.py')
@@ -110,6 +110,7 @@ const startSynth = async () => {
 try {
   await win.waitForLoadState('domcontentloaded')
   await win.waitForFunction(() => !!window.__afStore, undefined, { timeout: 30000 })
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await installSendCounter()
   await armStore()
 
@@ -312,6 +313,7 @@ try {
   const win2 = await app2.firstWindow()
   await win2.waitForLoadState('domcontentloaded')
   await win2.waitForFunction(() => !!window.__afStore, undefined, { timeout: 30000 })
+  await enterStudio(win2)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await win2.evaluate((p) => window.__afStore.setState({ fileInfo: { path: p, name: 'in.wav', duration: 5, channels: 1, sampleRate: 24000, format: 'wav' }, mode: 'tts', synthesisTab: 'advanced', status: 'idle', ttsText: '종료 테스트', ttsPitch: 0, ttsEmotionRefState: {} }), path.join(iso2, 'in.wav'))
   await win2.waitForTimeout(700)
   await win2.evaluate(() => window.__afStore.setState({ ttsRefReady: true, ttsRefMessage: '', status: 'idle' }))

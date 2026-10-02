@@ -14,6 +14,7 @@ import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
+import { enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const FIX = path.join(APP, 'test', 'fixtures', 'audio', 'ko-speech-7s.wav')
@@ -38,6 +39,7 @@ const app = await electron.launch({
 try {
   const win = await app.firstWindow()
   await win.waitForLoadState('domcontentloaded')
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await win.waitForFunction(() => !!window.api?.audio?.getFileUrl)
 
   for (const [label, file] of [['보통 이름', PLAIN], ['# 들어간 이름', HASH]]) {

@@ -15,6 +15,7 @@ import WaveSurfer from 'wavesurfer.js'
 import { getPlaybackVolume } from '@/lib/playbackVolume'
 import { usePlaybackVolume } from '@/hooks/usePlaybackVolume'
 import { useAppStore } from '@/stores/app.store'
+import { loadWave } from '@/lib/waveLoad'
 
 export function hexToRgba(hex: string, alpha: number): string {
   const h = hex.replace('#', '')
@@ -65,6 +66,7 @@ export function ResultPlayer({ path, color, paused, onClose, originalPath, origi
 
   useEffect(() => {
     let cancelled = false
+    const loading = new AbortController()      // 파형 불러오기 취소 손잡이(lib/waveLoad)
     let ws: WaveSurfer | null = null
     const mine = ++loadSeq.current
     useAppStore.getState().claimAudio('result')       // 트는 자리를 가져온다
@@ -115,11 +117,13 @@ export function ResultPlayer({ path, color, paused, onClose, originalPath, origi
         if (!pausedRef.current && mineNow()) ws.play()
       })
       ws.on('finish', () => onClose())
-      ws.load(url)
+      // ★앱이 받아 넘긴다(lib/waveLoad) — 예전에는 실패를 받는 곳이 없어 처리되지 않은 거절로 남았다. 끊긴 것은 조용히, 진짜 실패는 기록.
+      void loadWave(ws, url, loading.signal).catch((e) => { if (!cancelled) console.warn('[ResultPlayer] 파형을 읽지 못했습니다:', (e as Error)?.message) })
       wsRef.current = ws
     })()
     return () => {
       cancelled = true
+      loading.abort()
       const w = ws || wsRef.current
       if (w) { try { w.pause() } catch { /* noop */ } try { w.destroy() } catch { /* noop */ } }
       wsRef.current = null

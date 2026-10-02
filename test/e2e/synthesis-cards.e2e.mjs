@@ -3,7 +3,7 @@ import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
-import { isolatedUserData, cleanupUserData, makeSyntheticWav } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, makeSyntheticWav, enterStudio } from './_e2e-helper.mjs'
 const root=process.cwd(),ud=isolatedUserData(),src=makeSyntheticWav(path.join(ud,'reference-a.wav'),8),other=makeSyntheticWav(path.join(ud,'reference-b.wav'),7,24000,220)
 const shots=fs.mkdtempSync(path.join(os.tmpdir(),'af-unified-cards-shots-'))
 let app,win,passed=0;const errors=[]
@@ -13,6 +13,7 @@ try{
  app=await electron.launch({args:['out/main/index.js'],cwd:root,env:{...process.env,AF_E2E:'1',AF_E2E_USER_DATA:ud,AUDIOFORGE_NO_WARMUP:'1',HF_HUB_OFFLINE:'1',AF_E2E_SELECT_FILE:src}})
  win=await app.firstWindow();await app.evaluate(({BrowserWindow})=>BrowserWindow.getAllWindows()[0].setSize(1280,850));win.setDefaultTimeout(10000);win.on('pageerror',e=>errors.push(e.message))
  await win.waitForFunction(()=>!!window.__afStore&&!!window.__synthesisCards)
+ await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
  await app.evaluate(({ipcMain},src)=>{
   const replace=(c,f)=>{ipcMain.removeHandler(c);ipcMain.handle(c,f)}
   globalThis.__cardCalls=0;globalThis.__cardTrimCalls=0

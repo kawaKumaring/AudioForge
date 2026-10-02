@@ -16,7 +16,7 @@ import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 �
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
-import { isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
@@ -49,6 +49,7 @@ const launch = async () => {
   const win = await app.firstWindow()
   win.setDefaultTimeout(20000)
   await win.waitForFunction(() => !!window.__afStore)
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   return { app, win }
 }
 const filesIn = (kind) => {

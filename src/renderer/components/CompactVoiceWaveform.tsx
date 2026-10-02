@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import WaveSurfer from 'wavesurfer.js'
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js'
 import { getPlaybackVolume, onPlaybackVolumeChange } from '../lib/playbackVolume'
+import { loadWave } from '../lib/waveLoad'
 
 const PLAY_EVENT = 'audioforge:compact-voice-play'
 type Props = { path: string; name: string; region?: { start: number; duration: number } | null; disabled: boolean }
@@ -42,11 +43,13 @@ export default function CompactVoiceWaveform({ path, name, region, disabled }: P
     ws.on('finish', () => { if (!disposed) setPlaying(false) })
     const stopPeer = (event: Event) => { if ((event as CustomEvent).detail !== ws) ws.pause() }
     window.addEventListener(PLAY_EVENT, stopPeer)
+    // ★앱이 받아 넘긴다 — 카드를 만들고 곧바로 다른 작업실로 가면 끊기는데, 그 정상 취소를 wavesurfer 가 경고로 남겼다(2026-10-03). lib/waveLoad.
+    const loading = new AbortController()
     void Promise.resolve(window.api.audio.getFileUrl(path)).then(url => {
-      if (!disposed) return ws.load(url)
+      if (!disposed) return loadWave(ws, url, loading.signal)
     }).catch(fail)
     return () => {
-      disposed = true; unsubscribe(); window.removeEventListener(PLAY_EVENT, stopPeer); ws.destroy()
+      disposed = true; loading.abort(); unsubscribe(); window.removeEventListener(PLAY_EVENT, stopPeer); ws.destroy()
       if (player.current === ws) { player.current = null; overlay.current = null }
     }
   }, [path, retry])

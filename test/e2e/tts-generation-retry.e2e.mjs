@@ -6,7 +6,7 @@
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
-import { snapshotTree, refClipDirs, qwenVenvPids } from './_e2e-helper.mjs'
+import { snapshotTree, refClipDirs, qwenVenvPids, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const RES_DIR = path.join(APP, 'resources')
@@ -78,6 +78,7 @@ try {
   await win.waitForLoadState('domcontentloaded')
   await installMock()
   await win.waitForFunction(() => !!window.__afStore, undefined, { timeout: 30000 })
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 
   // ── Phase 0: 실제 IPC 오류 경로 → 전용 카드 ──
   await setMode('error'); await resetCalls(); await armStore()

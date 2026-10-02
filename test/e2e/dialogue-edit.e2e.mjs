@@ -21,7 +21,7 @@ import { OUTPUT_ROOT_DIRNAME, FEATURE_FOLDERS, dayFolder } from '../../src/share
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { isolatedInput, cleanupIsolated, isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, isolatedUserData, cleanupUserData, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
@@ -55,6 +55,7 @@ try {
   const win = await app.firstWindow()
   await win.waitForLoadState('domcontentloaded')
   await win.waitForFunction(() => !!window.__afStore, undefined, { timeout: 30000 })
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await win.evaluate(async ([src, segs, out]) => {
     const s = window.__afStore
     const info = await window.api.audio.getFileInfo(src)

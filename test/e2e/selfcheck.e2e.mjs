@@ -18,7 +18,7 @@ import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { _electron as electron } from 'playwright'
-import { isolatedUserData, cleanupUserData, cleanupIsolated } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, cleanupIsolated, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
@@ -59,6 +59,7 @@ try {
   const win = await app.firstWindow()
   win.setDefaultTimeout(30000)
   await win.waitForFunction(() => !!window.__afStore)
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 
   // ── 1. 탭과 줄 ───────────────────────────────────────────────────────
   await openChecks(win)

@@ -4,7 +4,7 @@
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
-import { isolatedInput, cleanupIsolated } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const SRC = (process.env.AF_E2E_REFERENCE || '').trim() || path.join(APP, 'resources', 'speaker_b.wav')
@@ -20,6 +20,7 @@ const app = await electron.launch({ args: ['out/main/index.js'], cwd: APP, env: 
 const win = await app.firstWindow()
 win.on('pageerror', e => pageErrors.push(e.message))
 
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 const ta = () => win.locator('textarea').first()
 const getText = () => win.evaluate(() => window.__afStore.getState().ttsText)
 // textarea/overlay 상태 스냅샷(선택·scroll·focus·overlay scroll).

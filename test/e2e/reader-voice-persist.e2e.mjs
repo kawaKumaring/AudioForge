@@ -4,6 +4,7 @@
 // 실제 화면 · 실제 창 닫기 · 실제 설정 파일 · 실제 목소리 조회(파이썬). 사용자 목소리·음원은 쓰지 않는다 — 검사용 무음 WAV 만.
 // 한 곳은 본체의 목소리 조회 통로를 검사용 프로세스에서 잠시 실패로 바꾼다(실패를 일으키는 수단일 뿐).
 // 실행: node test/e2e/reader-voice-persist.e2e.mjs     (사전: npm run build)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import fs from 'fs'
 import os from 'os'
 import path from 'path'

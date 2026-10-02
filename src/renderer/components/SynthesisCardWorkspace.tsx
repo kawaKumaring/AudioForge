@@ -1,3 +1,4 @@
+import WorkspaceDock from './WorkspaceDock'
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type DragEvent } from 'react'
 import { useAppStore } from '../stores/app.store'
 import { Icon, Action, Modal, row, muted, badge, field, button, primary, type IconName } from './kit'
@@ -7,6 +8,7 @@ import { isCancelCleanupBusy } from '../../shared/cancelContract'
 import CompactVoiceWaveform from './CompactVoiceWaveform'
 import MediaImportCard from './MediaImportCard'
 import SharedVoicePicker from './VoicePicker'
+import { useDragEdgeScroll } from '../hooks/useDragEdgeScroll'
 import { createManagedAudio, onManagedPlay, pauseManagedAudio } from '../lib/playbackVolume'
 import {
   playPreview, stopPreview, disposePreview, onPreviewState, previewState, type PreviewState,
@@ -685,6 +687,8 @@ export default function SynthesisCardWorkspace() {
   //   진짜인지 알 수 없고, 같은 testid 가 둘이 되어 검사도 갈린다.
   //   옛 버전으로 가는 길은 위쪽 버전 탭 하나뿐이다(SynthesisTabs).
   const workspace = useRef<HTMLDivElement>(null)
+  // ★카드를 끄는 동안 목록 칸 끝(고정 하단 막대 위 포함)에 머물면 그쪽으로 굴린다 — 첫 카드를 맨 뒤로 옮길 수 있게(2026-10-03).
+  useDragEdgeScroll(!!dragging, workspace)
   const [focusCard, setFocusCard] = useState<string | null>(null)
   useLayoutEffect(() => {
     if (!focusCard || modal) return
@@ -723,7 +727,7 @@ export default function SynthesisCardWorkspace() {
   const readyCount = state.cards.length - planNow.blocks.filter(b => b.cardId).length
   const active = modal && 'id' in modal ? state.cards.find(c => c.id === modal.id) : null
   return <div ref={workspace} data-testid="synthesis-card-workspace" onDragOver={e => { if (e.dataTransfer.types.includes('Files')) e.preventDefault() }} onDrop={e => { if (e.dataTransfer.files.length) drop(e) }} style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
-    <style>{`.af-card-progress{appearance:none;border:0;border-radius:3px;overflow:hidden;background:var(--border-subtle)}.af-card-progress::-webkit-progress-bar{background:var(--border-subtle)}.af-card-progress::-webkit-progress-value{background:var(--accent);border-radius:3px}.af-effect-slider{appearance:none;height:4px;border-radius:3px;background:linear-gradient(to right,var(--accent) var(--fill),var(--border-subtle) var(--fill));cursor:pointer}.af-effect-slider::-webkit-slider-thumb{appearance:none;width:15px;height:15px;border-radius:50%;background:var(--accent-light);box-shadow:0 0 0 4px rgba(139,92,246,.12)}.af-effect-slider:disabled{opacity:.4;cursor:not-allowed}.af-effect-group summary::-webkit-details-marker{display:none}.af-effect-group .af-effect-chevron{transition:transform 150ms ease;color:var(--text-muted)}.af-effect-group:not([open]) .af-effect-chevron{transform:rotate(180deg)}.af-card-modal::backdrop{background:rgba(5,7,12,.68);backdrop-filter:blur(4px)}.af-card-modal[open]{display:flex;flex-direction:column;animation:af-card-open 150ms ease-out}.af-take-detail{animation:af-card-open 120ms ease-out}.af-generation-card{transition:border-color 140ms ease,opacity 140ms ease}.af-card-modal button[aria-pressed="true"]{color:var(--accent-light)}.af-generation-card:focus-within{border-color:var(--accent)!important}.af-card-work-button:disabled{cursor:not-allowed;opacity:.4}@keyframes af-card-open{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}@media(prefers-reduced-motion:reduce){.af-card-modal[open],.af-take-detail{animation:none}}`}</style>
+    <style>{`.af-card-progress{appearance:none;border:0;border-radius:3px;overflow:hidden;background:var(--border-subtle)}.af-card-progress::-webkit-progress-bar{background:var(--border-subtle)}.af-card-progress::-webkit-progress-value{background:var(--accent);border-radius:3px}.af-effect-slider{appearance:none;height:4px;border-radius:3px;background:linear-gradient(to right,var(--accent) var(--fill),var(--border-subtle) var(--fill));cursor:pointer}.af-effect-slider::-webkit-slider-thumb{appearance:none;width:15px;height:15px;border-radius:50%;background:var(--accent-light);box-shadow:0 0 0 4px rgba(139,92,246,.12)}.af-effect-slider:disabled{opacity:.4;cursor:not-allowed}.af-effect-group summary::-webkit-details-marker{display:none}.af-effect-group .af-effect-chevron{transition:transform 150ms ease;color:var(--text-muted)}.af-effect-group:not([open]) .af-effect-chevron{transform:rotate(180deg)}.af-take-detail{animation:af-card-open 120ms ease-out}.af-generation-card{transition:border-color 140ms ease,opacity 140ms ease}.af-card-modal button[aria-pressed="true"]{color:var(--accent-light)}.af-generation-card:focus-within{border-color:var(--accent)!important}.af-card-work-button:disabled{cursor:not-allowed;opacity:.4}@keyframes af-card-open{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}@media(prefers-reduced-motion:reduce){.af-take-detail{animation:none}}`}</style>
     <div style={{ ...row, paddingBottom: 2 }}><span style={{ fontSize: 13, fontWeight: 600 }}>생성 카드 <span style={{ ...muted, marginLeft: 5 }}>{state.cards.length}</span></span><span style={{ flex: 1 }}/>
       <button type="button" data-testid="import-legacy" disabled={locked} style={{ ...button, background: 'transparent' }}
         title="옛 화면에서 만들던 작업을 카드로 복사합니다. 옛 기록은 그대로 남습니다."
@@ -842,7 +846,7 @@ export default function SynthesisCardWorkspace() {
     {state.removed && <div role="status" style={{ ...row, ...muted }}><span>카드 삭제됨</span><button type="button" disabled={locked} style={button} onClick={state.undo}>되돌리기</button></div>}
     {/* ★카드가 없으면 최종 음성 줄을 내보이지 않는다 — 누를 수 없는 단추만 남기지 않는다.
         실패 표시는 예외다: 마지막 시도가 실패했으면 카드가 비어도 그 사실은 보인다. */}
-    {(state.cards.length > 0 || joinFault) && <footer data-testid="join-bar" style={{ ...row, position: 'sticky', bottom: 0, zIndex: 2, marginTop: 4, padding: '15px 18px', background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', borderRadius: 12, boxShadow: '0 -8px 30px rgba(0,0,0,.12)' }}>
+    {(state.cards.length > 0 || joinFault) && <WorkspaceDock><footer data-testid="join-bar" style={{ ...row, marginTop: 10, padding: '15px 18px', background: 'var(--bg-primary)', border: '1px solid var(--border-subtle)', borderRadius: 12, boxShadow: '0 -8px 30px rgba(0,0,0,.12)' }}>
       <div style={{ flex: '1 1 130px' }}>
         <div style={{ ...row, fontSize: 13, fontWeight: 600 }}>최종 음성
           {joinBlocked && <span title={joinBlocked} style={{ ...muted, fontWeight: 400, color: 'var(--amber)' }}>{state.cards.length ? `${state.cards.length - readyCount}개 확인 필요` : '카드 없음'}</span>}</div>
@@ -864,7 +868,7 @@ export default function SynthesisCardWorkspace() {
         title={joinBlocked || '들은 것과 같은 방식으로 한 파일에 저장합니다'}
         onClick={() => void runJoin('save')} style={primary}>
         <Icon name="save"/>{joining === 'save' ? '저장 중' : '파일로 저장'}</button>
-    </footer>}
+    </footer></WorkspaceDock>}
     {modal?.type === 'sequence' && <Modal title="최종 음성 구성" close={() => setModal(null)} footer={<button type="button" style={button} onClick={() => setModal(null)}>닫기</button>}>
       <div style={{ display: 'grid', gap: 8 }}>{state.cards.map((card, i) => {
         const take = card.takes.find(t => t.id === card.adoptedId)

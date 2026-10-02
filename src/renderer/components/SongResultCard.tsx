@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useAppStore } from '../stores/app.store'
 import WaveSurfer from 'wavesurfer.js'
 import { getPlaybackVolume, onPlaybackVolumeChange } from '../lib/playbackVolume'
+import { loadWave } from '../lib/waveLoad'
 
 export interface SongResultView {
   /** Unique generation request ID, not the current editable input. */
@@ -73,8 +74,9 @@ function ResultPlayback({ result, disabled, onSave, onOpenFolder }: SongResultCa
     ws.on('finish', () => { if (!disposed) setPlaying(false) })
     const stop = (e: Event) => { if ((e as CustomEvent).detail !== ws) { resume.current = false; ws.pause() } }
     window.addEventListener(PLAY_EVENT, stop)
-    void Promise.resolve().then(() => window.api.audio.getFileUrl(path)).then(url => { if (!disposed) return ws.load(url) }).catch(fail)
-    return () => { disposed = true; unvolume(); window.removeEventListener(PLAY_EVENT, stop); ws.destroy(); if (player.current === ws) player.current = null }
+    const loading = new AbortController()      // 앱이 받아 넘긴다(lib/waveLoad) — 정리 때 먼저 끊는다
+    void Promise.resolve().then(() => window.api.audio.getFileUrl(path)).then(url => { if (!disposed) return loadWave(ws, url, loading.signal) }).catch(fail)
+    return () => { disposed = true; loading.abort(); unvolume(); window.removeEventListener(PLAY_EVENT, stop); ws.destroy(); if (player.current === ws) player.current = null }
   }, [path, retry])
   useEffect(() => { player.current?.setOptions({ interact: !disabled }) }, [disabled, phase])
   const choose = (next: 'original' | 'mix') => {

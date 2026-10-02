@@ -11,7 +11,7 @@ import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 �
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
-import { isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요: npm run build'); process.exit(2) }
@@ -38,6 +38,7 @@ try {
   let win = await app.firstWindow()
   win.setDefaultTimeout(20000)
   await win.waitForFunction(() => !!window.__afStore && !!window.__synthesisCards)
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 
   const listed = await win.evaluate(() => window.api.cards.builtinVoices())
   const voices = listed?.data?.voices || []
@@ -108,6 +109,7 @@ try {
   win = await app.firstWindow()
   win.setDefaultTimeout(20000)
   await win.waitForFunction(() => !!window.__afStore && !!window.__synthesisCards)
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await win.getByTestId('mode-tts').click()
 
   const restoreDialog = win.getByRole('dialog', { name: '이전 작업을 불러올까요?' })

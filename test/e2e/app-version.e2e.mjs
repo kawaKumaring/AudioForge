@@ -12,6 +12,7 @@ import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 �
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
+import { enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 let failed = 0
@@ -35,6 +36,7 @@ win.on('pageerror', (e) => pageErrors.push(e.message))
 
 try {
   await win.waitForLoadState('domcontentloaded')
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   const label = win.locator('[data-testid="app-version"]')
   await label.waitFor({ state: 'visible', timeout: 15000 })
 

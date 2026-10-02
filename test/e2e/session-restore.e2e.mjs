@@ -9,6 +9,7 @@ import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { randomUUID } from 'crypto'
+import { enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
@@ -25,6 +26,7 @@ const app = await electron.launch({ args: ['out/main/index.js'], cwd: APP, env: 
 const win = await app.firstWindow()
 try {
   await win.waitForLoadState('domcontentloaded')
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 
   // (1) store 복원 — synthetic 세션(파일/합성 없이 순수 상태 주입)
   const r = await win.evaluate(async (args) => {

@@ -1,3 +1,4 @@
+import WorkspaceDock from './WorkspaceDock'
 import React from 'react'
 import { motion } from 'framer-motion'
 import { useAppStore } from '@/stores/app.store'
@@ -27,7 +28,9 @@ function _estimateTime(mode: string, duration: number, transcribe: boolean, tran
   return `약 ${Math.ceil(secs / 60)}분`
 }
 
-export default function ProcessButton() {
+export default function ProcessButton() { return <WorkspaceDock><ProcessButtonContent /></WorkspaceDock> }
+
+function ProcessButtonContent() {
   const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, asrEngine, asrSeparate, diarizeEngine, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, splitSelected, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsPitchCapability, ttsEmotionRefState, ttsSpeakerRefState, ttsSpeakerLabels, ttsEmotionCandidateSelections, ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled, ttsSpeakerMode, ttsReferencePrompts, ttsEngine, ttsQwenModel, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, ttsExpressiveMode, ttsReferenceConditioningMode, status, resultMode, retryNonce, errorInfo, setProcessing, setProgress, setResult, setError } = useAppStore()
   // 사라진 참조 클립을 합성 직전에 스스로 다시 만든다 — '만료' 로 멈추지 않고 이어서 진행한다.
   const recoverClips = useClipRecovery({
@@ -377,7 +380,7 @@ export default function ProcessButton() {
       whileHover={{ scale: 1.01, y: -1 }} whileTap={{ scale: 0.99 }}
       onClick={handleProcess}
       aria-label={actionLabel}
-      style={{ ...btnBase, background: 'linear-gradient(135deg, var(--accent), #7c3aed)', color: '#fff', boxShadow: '0 2px 12px var(--accent-glow)' }}
+      style={{ ...btnBase, background: '#284c64', color: '#fff', boxShadow: '0 2px 12px var(--accent-glow)' }}
     >
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <circle cx="12" cy="12" r="10" /><polygon points="10,8 16,12 10,16" fill="currentColor" stroke="none" />

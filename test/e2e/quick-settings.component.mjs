@@ -112,6 +112,7 @@ try {
   // 다른 모드(분할)에서는 세부에만 있으므로 남아 있어야 한다.
   await page.evaluate(() => window.store.setState({ mode: 'split', transcribe: true }))
   await page.waitForTimeout(150)
+  await page.getByTestId('processing-options').click()
   const koInSplit = await page.getByRole('button', { name: '한국어', exact: true }).count()
   assert.equal(koInSplit, 1, '분할 모드에서는 세부에만 있어야 하는데 사라졌다')
   pass('★다른 모드에서는 언어 선택이 그대로 남는다')
@@ -124,6 +125,7 @@ try {
   await page.evaluate(() => window.store.setState({ mode: 'music' }))
   await page.setViewportSize({ width: 400, height: 800 })
   await page.waitForTimeout(200)
+  await page.getByTestId('processing-options').click()
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth > innerWidth), false,
     '좁은 창에서 가로로 넘친다')
   pass('좁은 창에서 가로 넘침이 없다')

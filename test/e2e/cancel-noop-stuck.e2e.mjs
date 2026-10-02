@@ -21,6 +21,7 @@ import path from 'path'
 import os from 'os'
 import fs from 'fs'
 import { randomUUID } from 'crypto'
+import { enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요: npm run build'); process.exit(2) }
@@ -44,6 +45,7 @@ win.on('crash', () => crashes.push('crash'))
 try {
   await win.waitForLoadState('domcontentloaded')
   await win.waitForFunction(() => !!window.__afStore, undefined, { timeout: 20000 })
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 
   // 실행 중이 아닌 상태에서의 취소 = main의 NO_ACTIVE_JOB noop 경로.
   const noop = await win.evaluate(async () => await window.api.audio.cancel())

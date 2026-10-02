@@ -4,6 +4,7 @@ import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js'
 import { useAppStore } from '@/stores/app.store'
 import { detectSilence, estimateProcessedDuration, type SilenceAnalysis } from '@/lib/silenceDetect'
 import { usePlaybackVolume } from '@/hooks/usePlaybackVolume'
+import { loadWave } from '@/lib/waveLoad'
 
 const MODE_WAVE_COLORS: Record<string, { wave: string; progress: string; cursor: string; btn: string; btnGlow: string }> = {
   music:        { wave: 'rgba(139,92,246,0.25)', progress: 'rgba(139,92,246,0.7)', cursor: '#a78bfa', btn: 'linear-gradient(135deg,#8b5cf6,#7c3aed)', btnGlow: 'rgba(139,92,246,0.2)' },
@@ -102,10 +103,13 @@ export default function Waveform() {
     ws.on('ready', () => { if (!disposed) setLoadState('ready') })
     // StrictMode 정리·빠른 이동 뒤 옛 요청의 실패가 새 파형 상태를 덮지 않는다.
     // 읽기 실패는 사용자가 복구할 수 있게 표시하며, 처리되지 않은 Promise로 버리지 않는다.
-    void ws.load(fileUrl).catch(fail)
+    // ★앱이 받아 넘긴다 — 화면을 바꿀 때 우리가 먼저 끊으면 '취소' 로 조용히 끝난다(진짜 실패만 fail). lib/waveLoad.
+    const loading = new AbortController()
+    void loadWave(ws, fileUrl, loading.signal).catch(fail)
 
     return () => {
       disposed = true
+      loading.abort()
       ws.destroy()
       if (wsRef.current === ws) { wsRef.current = null; regionsRef.current = null }
     }

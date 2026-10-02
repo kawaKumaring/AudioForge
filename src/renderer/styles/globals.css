@@ -5,6 +5,7 @@
 @import '@fontsource/inter/700.css';
 
 :root {
+  --sidebar-surface: linear-gradient(180deg, #171e28 0%, #14161d 70%);
   --bg-base: #111319;
   --bg-primary: #14161d;
   --bg-card: #191c24;
@@ -13,17 +14,17 @@
   --bg-input: #13161e;
   --border-subtle: rgba(210, 219, 246, 0.085);
   --border-default: rgba(210, 219, 246, 0.14);
-  --border-accent: rgba(139, 92, 246, 0.3);
+  --border-accent: rgba(139, 191, 219, 0.32);
   --text-primary: #eff0f6;
   --text: var(--text-primary);
   --text-faint: #9297aa;
   --text-secondary: #b1b6c8;
   /* 대비 개선: 기존 #555568은 어두운 배경에서 본문 대비가 낮아 상향 (WCAG 가독성) */
   --text-muted: #9297aa;
-  --accent: #8b5cf6;
-  --accent-light: #a78bfa;
-  --accent-glow: rgba(139, 112, 240, 0.12);
-  --accent-glow-strong: rgba(139, 92, 246, 0.35);
+  --accent: #73b4d4;
+  --accent-light: #a2d3eb;
+  --accent-glow: rgba(115, 180, 212, 0.12);
+  --accent-glow-strong: rgba(115, 180, 212, 0.22);
   --cyan: #22d3ee;
   --cyan-glow: rgba(34, 211, 238, 0.15);
   --emerald: #34d399;
@@ -75,11 +76,11 @@ html, body, #root {
 
 /* Glow effects */
 .glow-accent {
-  box-shadow: 0 0 20px var(--accent-glow), 0 0 60px rgba(139, 92, 246, 0.06);
+  box-shadow: 0 0 20px var(--accent-glow), 0 0 60px rgba(115, 180, 212, 0.06);
 }
 
 .glow-accent-strong {
-  box-shadow: 0 0 30px var(--accent-glow-strong), 0 0 80px rgba(139, 92, 246, 0.1);
+  box-shadow: 0 0 30px var(--accent-glow-strong), 0 0 80px rgba(115, 180, 212, 0.1);
 }
 
 /* Hover glow border */
@@ -90,7 +91,7 @@ html, body, #root {
 
 .hover-glow:hover {
   border-color: var(--border-accent);
-  box-shadow: 0 0 30px var(--accent-glow), 0 0 60px rgba(139, 92, 246, 0.06);
+  box-shadow: 0 0 30px var(--accent-glow), 0 0 60px rgba(115, 180, 212, 0.06);
 }
 
 /* Shimmer animation for loading */
@@ -162,7 +163,7 @@ html, body, #root {
 }
 
 .btn-primary {
-  background: linear-gradient(135deg, var(--accent), #7c3aed);
+  background: #284c64;
   color: #fff;
   box-shadow: 0 2px 12px var(--accent-glow);
 }
@@ -287,7 +288,7 @@ button:disabled { cursor: not-allowed; opacity: .48; }
 .workspace-nav-item:hover:not(:disabled), .source-dropzone:hover:not(:disabled) { filter: brightness(1.14); }
 .source-dropzone:hover:not(:disabled) { border-color: var(--accent-light) !important; }
 .workspace-nav-item:focus-visible { outline-offset: -2px; }
-::selection { background: rgba(139, 112, 240, .34); }
+::selection { background: rgba(115, 180, 212, .28); }
 @keyframes workspace-level {
   0%, 100% { transform: scaleY(.35); }
   50% { transform: scaleY(1); }

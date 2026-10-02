@@ -16,7 +16,7 @@ import crypto from 'crypto'
 import { randomUUID } from 'crypto'
 import { execSync } from 'child_process'
 import { listAnalysisWorkers, newWorkerPids, waitForGone, workerPidSet } from './_analysis-workers.mjs'
-import { makeSyntheticWav, cleanupSyntheticWav } from './_e2e-helper.mjs'
+import { makeSyntheticWav, cleanupSyntheticWav, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 let failed = 0
@@ -65,6 +65,7 @@ app.process().stderr?.on('data', (d) => {
 })
 win.on('pageerror', (e) => pageErrors.push(e.message))
 
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 const sleep = (ms) => win.waitForTimeout(ms)
 
 const setText = (text) => win.evaluate((t) => {

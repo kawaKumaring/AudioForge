@@ -5,6 +5,7 @@
 //
 // ★여기서 하는 일은 **화면에 내는 것**뿐이다. 무엇을 내보낼지는 부르는 쪽이 정한다.
 import { useCallback, useState } from 'react'
+import { Icon } from './kit'
 
 export interface ExportOutcome {
   text: string
@@ -44,6 +45,7 @@ export function useResultExport() {
 }
 
 const ghost: React.CSSProperties = {
+  display: 'inline-flex', alignItems: 'center', justifyContent: 'center', gap: 7, minHeight: 34,
   padding: '6px 12px', borderRadius: 7, border: '1px solid var(--border-subtle)',
   background: 'transparent', color: 'var(--text-secondary)', cursor: 'pointer',
   fontFamily: 'inherit', fontSize: 11, fontWeight: 600, whiteSpace: 'nowrap',
@@ -72,7 +74,7 @@ export function ResultToolbar({ what, paths, outputDir, disabled, children, note
       {outputDir && (
         <button type="button" data-testid="result-open-folder"
           onClick={() => window.api.app.openFolder(outputDir)}
-          title="결과가 저장된 폴더를 엽니다" style={ghost}>폴더</button>
+          title="결과가 저장된 폴더를 엽니다" style={ghost}><Icon name="folder" size={15}/>폴더</button>
       )}
       <button type="button" data-testid="result-export" disabled={off}
         onClick={() => onExport(paths, what)}
@@ -84,7 +86,7 @@ export function ResultToolbar({ what, paths, outputDir, disabled, children, note
           color: off ? 'var(--text-muted)' : 'var(--accent-light)',
           cursor: off ? 'not-allowed' : 'pointer', opacity: off ? 0.6 : 1,
         }}>
-        {what} 내보내기{paths.length ? ` (${paths.length})` : ''}
+        <Icon name="save" size={15}/>{what} 내보내기{paths.length ? ` (${paths.length})` : ''}
       </button>
       {note && (
         <span data-testid="result-export-note" role="status" style={{

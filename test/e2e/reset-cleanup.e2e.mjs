@@ -6,8 +6,7 @@ import fs from 'fs'; import path from 'path'; import os from 'os'
 import {
   isolatedInput, cleanupIsolated, snapshotTree,
   isolatedUserData, userDataIsPristine, userDataArtifacts, cleanupUserData,
-  realUserDataFingerprint,
-} from './_e2e-helper.mjs'
+  realUserDataFingerprint, enterStudio } from './_e2e-helper.mjs'
 const APP = process.cwd()
 // 참조 클립 생성(무음 경계로 자른 뒤 전사)을 지나야 하므로 **실제 말이 든 오디오**가 필요하다.
 // 합성 사인파로는 지날 수 없다 — 전사가 비면 앱이 BLOCK_TRANSCRIBE_FAILED 로 막는다(정상 동작).
@@ -37,6 +36,7 @@ ok(userDataIsPristine(UD), '임시 userData 가 비어 있다(선택 참조·클
 
 const app = await electron.launch({ args: ['out/main/index.js'], cwd: APP, env: { ...process.env, AF_E2E: '1', AF_E2E_USER_DATA: UD } })
 const win = await app.firstWindow()
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 try {
   await win.waitForLoadState('domcontentloaded')
   // 이관(2026-08-31): 수동 '이 구간으로 확정' 은 접힌 구간 편집기 안으로 들어갔고,

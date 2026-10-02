@@ -22,7 +22,7 @@ import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
@@ -68,6 +68,7 @@ try {
   win.on('pageerror', (e) => log('page error:', String(e).slice(0, 200)))
   await win.waitForLoadState('domcontentloaded')
   await win.waitForFunction(() => !!window.__afStore && !!window.__labStore, undefined, { timeout: 30000 })
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 
   // ── 고급에서 기본 목소리를 준비한다 ────────────────────────────────────
   await win.evaluate(async (p) => {

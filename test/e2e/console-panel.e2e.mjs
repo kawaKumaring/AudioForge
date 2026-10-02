@@ -17,7 +17,7 @@ import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 �
 import fs from 'fs'
 import path from 'path'
 import { _electron as electron } from 'playwright'
-import { isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
@@ -60,6 +60,7 @@ try {
   let win = await app.firstWindow()
   win.setDefaultTimeout(30000)
   await win.waitForFunction(() => !!window.__afStore)
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   ok(app.windows().length === 1, '처음에는 콘솔 창이 없다')
   ok(await win.getByTestId('export-diagnostics').count() === 0, '버전 아래에는 진단 묶음이 없다')
 
@@ -123,6 +124,7 @@ try {
   win = await app.firstWindow()
   win.setDefaultTimeout(30000)
   await win.waitForFunction(() => !!window.__afStore)
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   cw = await consoleWin(app)
   ok(!!cw, '★켜 둔 채 다시 켜면 콘솔 창도 다시 뜬다')
   const b = await consoleBounds(app)

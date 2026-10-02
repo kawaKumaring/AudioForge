@@ -2,6 +2,7 @@
 // 사용자 자료는 쓰지 않는다 — 검사용 폴더와 TXT 를 만든다. GPU·음성 생성 없음.
 // 끌어 놓기는 OS 끌기 사건을 만들 수 없어 화면이 경로를 받은 뒤의 길(__readerImportPaths)을 탄다 — 경로를 꺼내는 한 줄은 미확인.
 // 실행: node test/e2e/reader-folder-import.e2e.mjs     (사전: npm run build)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import fs from 'fs'
 import os from 'os'
 import path from 'path'

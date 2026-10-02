@@ -12,7 +12,7 @@
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
-import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenJobDirs, qwenVenvPids, nvidiaSmiGpu0, requireE2EReference } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenJobDirs, qwenVenvPids, nvidiaSmiGpu0, requireE2EReference, enterStudio } from './_e2e-helper.mjs'
 
 const WAIT_MS = 350000
 const APP = process.cwd()
@@ -46,6 +46,7 @@ win.on('crash', () => crashes.push('crash'))
 
 try {
   await win.waitForLoadState('domcontentloaded')
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await win.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))

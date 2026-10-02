@@ -64,12 +64,12 @@ export default function App() {
   return <div data-testid="workspace-shell" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg-base)', color: 'var(--text-primary)' }}>
     <div className="titlebar-drag" style={{ display: 'flex', alignItems: 'center', height: 36, flexShrink: 0, padding: '0 18px', background: 'var(--bg-primary)', borderBottom: '1px solid var(--border-subtle)' }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-        <img src="./audioforge.svg" width="20" height="20" alt=""/>
+        <img src="./audioforge-character.png" width="28" height="28" alt=""/>
         <span style={{ fontSize: 12, fontWeight: 600, letterSpacing: '.02em' }}>AudioForge</span>
       </div>
     </div>
     <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
-      <aside data-testid="workspace-sidebar" style={{ width: 196, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 24, padding: '28px 12px 18px', background: 'var(--bg-primary)', borderRight: '1px solid var(--border-subtle)', overflowY: 'auto' }}>
+      <aside data-testid="workspace-sidebar" style={{ width: 196, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 24, padding: '28px 12px 18px', background: 'var(--sidebar-surface)', borderRight: '1px solid var(--border-subtle)', overflowY: 'auto' }}>
         <ModeSelector />
         <div style={{ marginTop: 'auto', padding: '18px 0 0', borderTop: '1px solid var(--border-subtle)' }}>
           <button type="button" data-testid="open-app-options" onClick={() => setShowOptions(v => !v)}

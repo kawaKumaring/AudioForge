@@ -15,7 +15,7 @@ import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 �
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
-import { isolatedInput, cleanupIsolated, isolatedUserData, cleanupUserData, nvidiaSmiGpu0 } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, isolatedUserData, cleanupUserData, nvidiaSmiGpu0, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const SRC = (process.env.AF_E2E_REFERENCE || '').trim()
@@ -52,6 +52,7 @@ win.on('pageerror', (e) => pageErrors.push(e.message))
 
 try {
   await win.waitForLoadState('domcontentloaded')
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await win.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))

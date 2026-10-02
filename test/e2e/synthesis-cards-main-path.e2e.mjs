@@ -12,7 +12,7 @@ import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 �
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
-import { isolatedUserData, cleanupUserData, makeSyntheticWav } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, makeSyntheticWav, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const FIXTURE = path.join(APP, 'test', 'e2e', 'fixtures', 'synthetic_tree.py')
@@ -42,6 +42,7 @@ async function launch(mode) {
   const win = await app.firstWindow()
   win.setDefaultTimeout(20000)
   await win.waitForFunction(() => !!window.__afStore && !!window.__synthesisCards)
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   // 준비(참조 분석)는 이 검사의 대상이 아니다 — 합성 통로만 진짜로 둔다.
   await app.evaluate(({ ipcMain }, s) => {
     const replace = (c, f) => { ipcMain.removeHandler(c); ipcMain.handle(c, f) }

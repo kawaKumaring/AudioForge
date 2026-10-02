@@ -13,7 +13,7 @@ import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 �
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
-import { isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요: npm run build'); process.exit(2) }
@@ -76,6 +76,7 @@ try {
   let win = await app.firstWindow()
   win.setDefaultTimeout(20000)
   await win.waitForFunction(() => !!window.__afStore && !!window.__synthesisCards)
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 
   // 옛 기록을 심고, 하던 카드 작업도 하나 만들어 둔다(보관되는지 보려고).
   await win.evaluate(async (s) => {
@@ -239,6 +240,7 @@ try {
   win = await app.firstWindow()
   win.setDefaultTimeout(20000)
   await win.waitForFunction(() => !!window.__afStore && !!window.__synthesisCards)
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   const after = await win.evaluate(async () => {
     const all = await window.api.settings.get()
     // ★카드 작업은 기록 파일 둘이다(2026-09-29).

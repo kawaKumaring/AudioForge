@@ -5,12 +5,13 @@
 // 실제 파일 읽기 IPC · 실제 화면. 받아쓰기·번역 **작업 자체는 돌리지 않는다** — 시작 통로만 검사용으로 바꾸고,
 //   완료·오류 알림은 본체가 실제 채널(audio:track-result / audio:track-error)로 보낸다. 사용자 음원·GPU 없음.
 // 실행: node test/e2e/track-text-stale.e2e.mjs     (사전: npm run build)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { randomUUID } from 'crypto'
 import { _electron as electron } from 'playwright'
-import { isolatedUserData, cleanupUserData, cleanupIsolated } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, cleanupIsolated, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
@@ -48,6 +49,7 @@ try {
   const win = await app.firstWindow()
   win.setDefaultTimeout(15000)
   await win.waitForFunction(() => !!window.__afStore)
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   const show = (n) => win.evaluate(({ dir, p }) => window.__afStore.setState({
     mode: 'music', status: 'done', resultMode: 'music', outputDir: dir, tracks: [{ name: 'vocals', label: '보컬', path: p }] }), { dir: ISO, p: P(`audit-${n}.wav`) })
   const bodyHas = (s) => win.evaluate((t) => document.body.innerText.includes(t), s)
@@ -172,9 +174,10 @@ try {
   await section("요청 식별자 필수", async () => {
   // 실제 본체 핸들러 — 식별자 없는 시작은 거절한다(파이썬을 띄우기 전에).
   await app.evaluate(({ ipcMain }) => { ipcMain._invokeHandlers.set('audio:process-track', globalThis.__origProc) })
-  const bad = await win.evaluate(() => window.api.audio.processTrack('E:/없는/a.wav', 'E:/없는', { transcribe: true }, '').then(() => 'accepted', (e) => String(e?.message || e)))
+  const NOWHERE = { file: P('없는/a.wav'), dir: P('없는') }      // 검사 임시 자리 안의 없는 자리(이 PC 의 절대 경로에 기대지 않는다)
+  const bad = await win.evaluate((a) => window.api.audio.processTrack(a.file, a.dir, { transcribe: true }, '').then(() => 'accepted', (e) => String(e?.message || e)), NOWHERE)
   ok(/요청 식별자/.test(bad), '★요청 식별자 없는 시작은 본체가 거절한다', bad)
-  const bad2 = await win.evaluate(() => window.api.audio.processTrack('E:/없는/a.wav', 'E:/없는', { transcribe: true }, '../../x').then(() => 'accepted', (e) => String(e?.message || e)))
+  const bad2 = await win.evaluate((a) => window.api.audio.processTrack(a.file, a.dir, { transcribe: true }, '../../x').then(() => 'accepted', (e) => String(e?.message || e)), NOWHERE)
   ok(/요청 식별자/.test(bad2), '모양이 틀린 식별자도 거절한다', bad2)
   })
   await section("시작 거절", async () => {

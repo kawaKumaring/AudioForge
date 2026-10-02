@@ -18,7 +18,7 @@ import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
-import { isolatedUserData, cleanupUserData, makeSyntheticWav } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, makeSyntheticWav, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요: npm run build'); process.exit(2) }
@@ -56,6 +56,7 @@ try {
   const win = await app.firstWindow()
   win.setDefaultTimeout(20000)
   await win.waitForFunction(() => !!window.__afStore)
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 
   // ── 1. 본체의 임시 자리 ───────────────────────────────────────────────
   // ★본체 평가 문맥에는 `require` 가 없다. 그래서 `os.tmpdir()` 자체는

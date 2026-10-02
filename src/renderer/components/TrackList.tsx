@@ -8,6 +8,7 @@ import { createManagedAudio } from '@/lib/playbackVolume'
 // 결과 재생기·색·단추 모양은 **공용 부품**이다(음악·대화가 같은 것을 쓴다).
 import { ResultPlayer, actionBtnStyle, styleOf } from '@/components/ResultPlayer'
 import { ResultToolbar, useResultExport } from '@/components/ResultActions'
+import { Icon, button } from './kit'
 
 const menuItem: React.CSSProperties = {
   padding: '5px 8px', borderRadius: 6, border: 'none', background: 'transparent',
@@ -146,24 +147,20 @@ function TrackItem({ track, index, keep, onKeep, onKeepOnly }: {
     <motion.div
       initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: index * 0.06 }}
       style={{
-        display: 'flex', flexDirection: 'column', borderRadius: 12, overflow: 'hidden',
+        display: 'flex', flexDirection: 'column', borderRadius: 12,
         background: isPlaying ? st.glow : 'var(--bg-card)',
         border: `1px solid ${isPlaying ? st.color + '40' : 'var(--border-subtle)'}`
       }}
     >
       {/* Main row */}
-      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '10px 14px' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '14px 16px', flexWrap: 'wrap' }}>
         {/* Color dot */}
         <div style={{ position: 'relative', flexShrink: 0 }}>
-          <div style={{ width: 10, height: 10, borderRadius: '50%', background: st.color }} />
-          {isPlaying && (
-            <motion.div style={{ position: 'absolute', inset: 0, borderRadius: '50%', background: st.color }}
-              animate={{ scale: [1, 2], opacity: [0.6, 0] }} transition={{ duration: 1, repeat: Infinity }} />
-          )}
+          <div aria-hidden="true" style={{ width: 36, height: 36, borderRadius: 10, color: st.color, background: st.glow, display: 'grid', placeItems: 'center' }}><Icon name={isAudioTrack ? 'voice' : 'text'} size={19}/></div>
         </div>
 
         {/* Label */}
-        <span style={{ flex: 1, minWidth: 0, fontSize: 12, fontWeight: 600, color: isPlaying ? st.color : 'var(--text-primary)' }}>
+        <span style={{ flex: '1 1 90px', minWidth: 0, fontSize: 14, fontWeight: 600, overflowWrap: 'anywhere', color: isPlaying ? st.color : 'var(--text-primary)' }}>
           {track.label}
           {isPlaying && <span style={{ marginLeft: 6, fontSize: 10, fontWeight: 500, color: st.color }}>듣는 중</span>}
         </span>
@@ -171,7 +168,7 @@ function TrackItem({ track, index, keep, onKeep, onKeepOnly }: {
         {/* ★저장 선택 — **재생 중인 것과 다른 표시**다(색 테두리 ≠ 저장 대상). */}
         {isAudioTrack && (
           <label data-testid="track-keep-label" title="저장할 결과로 고릅니다"
-            style={{ display: 'flex', alignItems: 'center', gap: 4, flexShrink: 0, cursor: 'pointer', fontSize: 10, color: 'var(--text-muted)' }}>
+            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 8px', borderRadius: 7, background: keep ? 'var(--bg-elevated)' : 'transparent', flexShrink: 0, cursor: 'pointer', fontSize: 11, color: keep ? 'var(--text-secondary)' : 'var(--text-muted)' }}>
             <input type="checkbox" data-testid="track-keep" checked={keep}
               onChange={(e) => onKeep(track.name, e.target.checked)}
               aria-label={`${track.label} 저장 선택`}
@@ -251,7 +248,7 @@ function TrackItem({ track, index, keep, onKeep, onKeepOnly }: {
             aria-label={!isPlaying ? `${track.label} 재생` : paused ? `${track.label} 재생 재개` : `${track.label} 일시정지`}
             style={{
             display: 'flex', alignItems: 'center', justifyContent: 'center',
-            width: 32, height: 32, borderRadius: 7, border: 'none', cursor: 'pointer', flexShrink: 0,
+            width: 38, height: 38, borderRadius: '50%', border: 'none', cursor: 'pointer', flexShrink: 0,
             background: isPlaying ? st.color : 'var(--bg-elevated)',
             color: isPlaying ? '#fff' : 'var(--text-secondary)',
             boxShadow: isPlaying ? `0 2px 10px ${st.glow}` : 'none'
@@ -577,8 +574,8 @@ export default function TrackList() {
     <motion.div initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }}
       style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
       {/* Header */}
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12, flexWrap: 'wrap' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
           <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="var(--accent-light)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <polyline points="20 6 9 17 4 12" />
           </svg>
@@ -597,6 +594,10 @@ export default function TrackList() {
           {mode === 'music' && <KaraokeButton tracks={tracks} />}
         </ResultToolbar>
       </div>
+      {mode !== 'conversation' && audioTracks.length > 1 && <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <button data-testid="tracks-select-all" style={{ ...button, minHeight: 28, fontSize: 11, background: 'transparent' }} disabled={keptPaths.length === audioTracks.length} onClick={() => setDropped(new Set())}>모두 선택</button>
+        <button data-testid="tracks-select-none" style={{ ...button, minHeight: 28, fontSize: 11, background: 'transparent' }} disabled={!keptPaths.length} onClick={() => setDropped(new Set(audioTracks.map(t => t.name)))}>선택 해제</button>
+      </div>}
 
       {/* Tracks — ★대화 모드에서는 **작업실의 인물 카드**가 이 자리를 대신한다.
           같은 트랙을 두 군데에 쌓지 않는다(2026-09-27 개편). 폴더·내보내기는 위에 남는다. */}

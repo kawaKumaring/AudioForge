@@ -4,6 +4,7 @@
 // 실제 화면 · 실제 목소리 조회(파이썬). 조회 실패/부분 실패는 본체의 조회 통로를 **검사용 프로세스에서 잠시 바꿔** 만든다.
 // 사용자 책은 쓰지 않는다 — 검사용 TXT. GPU 없음.
 // 실행: node test/e2e/reader-voice-missing.e2e.mjs     (사전: npm run build)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import fs from 'fs'
 import os from 'os'
 import path from 'path'

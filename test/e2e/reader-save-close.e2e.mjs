@@ -3,6 +3,7 @@
 //   저장은 이제 화면 밖(writeBehind)이고, 창이 닫히는 순간에는 동기 통로(beforeunload)로 마지막 값을 남긴다.
 // 사용자 책은 쓰지 않는다 — 검사용 TXT 를 만든다. GPU 를 쓰지 않는다.
 // 실행: node test/e2e/reader-save-close.e2e.mjs     (사전: npm run build)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import fs from 'fs'
 import os from 'os'
 import path from 'path'

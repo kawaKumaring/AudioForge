@@ -9,8 +9,7 @@ import path from 'path'
 import {
   isolatedInput, cleanupIsolated, snapshotTree,
   isolatedUserData, userDataIsPristine, userDataArtifacts, cleanupUserData,
-  realUserDataFingerprint,
-} from './_e2e-helper.mjs'
+  realUserDataFingerprint, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 // 참조 클립 생성(무음 경계로 자른 뒤 전사)을 지나야 하므로 **실제 말이 든 오디오**가 필요하다.
@@ -67,6 +66,7 @@ win.on('pageerror', e => pageErrors.push(e.message))
 win.on('console', m => { if (m.type() === 'error') consoleErrors.push(m.text()) })
 win.on('crash', () => crashes.push('crash'))
 
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 async function measure() {
   return win.evaluate(() => {
     const root = document.getElementById('root')

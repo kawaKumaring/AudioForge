@@ -5,7 +5,7 @@
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
-import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenVenvPids } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenVenvPids, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const REF_ENV = process.env.AF_E2E_REFERENCE
@@ -29,6 +29,7 @@ async function launch(cap) {
   const win = await app.firstWindow()
   win.on('pageerror', e => pageErrors.push(`${cap}:${e.message}`))
   win.on('crash', () => crashes.push(cap))
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   return { app, win }
 }
 

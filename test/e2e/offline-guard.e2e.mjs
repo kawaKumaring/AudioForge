@@ -17,7 +17,7 @@ import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 �
 import fs from 'fs'
 import path from 'path'
 import { _electron as electron } from 'playwright'
-import { isolatedUserData, cleanupUserData, makeSyntheticWav } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, makeSyntheticWav, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
@@ -36,6 +36,7 @@ try {
   app = await electron.launch({ args: ['out/main/index.js'], cwd: APP, env: { ...process.env, AF_E2E: '1', AF_E2E_USER_DATA: UD } })
   const win = await app.firstWindow()
   let booted = false
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   for (let i = 0; i < 60 && !booted; i++) { booted = await win.evaluate(() => !!window.__afStore).catch(() => false); if (!booted) await sleep(250) }
   ok(booted, '★보안 정책이 켜진 채로 앱이 뜬다')
   const csp = await win.evaluate(() => document.querySelector('meta[http-equiv="Content-Security-Policy"]')?.getAttribute('content') || '')

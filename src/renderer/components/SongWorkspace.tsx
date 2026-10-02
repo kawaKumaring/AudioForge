@@ -1,3 +1,4 @@
+import WorkspaceDock from './WorkspaceDock'
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import type { FileInfo } from '../../shared/types'
 import { useAppStore } from '@/stores/app.store'
@@ -202,7 +203,7 @@ function SongCards({ disabled }: { disabled: boolean }) {
       disabled={disabled || busy}
       onSave={(snapshot) => save('mix', snapshot.id)}
       onOpenFolder={(snapshot) => openFolder(snapshot.mixPath)}/>}
-    <div style={{ ...row, justifyContent: 'space-between' }}>
+    <WorkspaceDock><div data-testid="song-controls" style={{ ...row, justifyContent: 'space-between', marginTop: 10, padding: '14px 0 0', borderTop: '1px solid var(--border-subtle)' }}>
       <span tabIndex={0} title={busy ? (progress.message || '노래를 변환하는 중입니다') : (blocked || '원곡의 가락과 박자를 두고 목소리만 바꿉니다')}
         style={{ fontSize: 11, color: busy ? 'var(--accent-light)' : blocked ? 'var(--amber)' : 'var(--text-muted)' }}>
         {busy ? `${progress.percent ?? 0}% ${progress.message || ''}`.trim() : blocked || '준비됨'}
@@ -216,6 +217,6 @@ function SongCards({ disabled }: { disabled: boolean }) {
           {busy ? '변환 중' : '노래 변환'}
         </button>
       </div>
-    </div>
+    </div></WorkspaceDock>
   </div>
 }

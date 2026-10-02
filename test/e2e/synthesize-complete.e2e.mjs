@@ -13,7 +13,7 @@ import { execFileSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenJobDirs, qwenVenvPids, nvidiaSmiGpu0, requireE2EReference,
-  isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
+  isolatedUserData, cleanupUserData, enterStudio } from './_e2e-helper.mjs'
 
 const WAIT_MS = 350000  // > watchdog 300 > 무응답 280 (위 근거 참조)
 const APP = process.cwd()
@@ -56,6 +56,7 @@ win.on('crash', () => crashes.push('crash'))
 let lastSnap = null
 try {
   await win.waitForLoadState('domcontentloaded')
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await win.evaluate(async (p) => {
     const s = window.__afStore
     const info = await window.api.audio.getFileInfo(p)

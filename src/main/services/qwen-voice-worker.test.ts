@@ -160,15 +160,19 @@ test('★요청 없이 띄우고, 실행기가 준비를 알릴 때까지 기다
   w2.stop()
 })
 
-test('★파이프로 일하는 동안(activity)은 한동안 안 씀으로 내리지 않는다', async () => {
+test('★파이프로 일하는 동안(activity)은 한동안 안 씀으로 내리지 않는다', async (t) => {
+  // ★가짜 시계로 잰다 — 진짜 시계(25ms 간격 · 40ms 상한)는 검사가 몰릴 때 타이머가 늦어 가끔 내려졌다(2026-10-03, 전량 단위 검사 2회 중 1회).
+  t.mock.timers.enable({ apis: ['setTimeout'] })
   const { w, procs } = make({ idleMs: 40 })
   void w.ensure(10)
-  await tick()
+  await new Promise<void>((r) => setImmediate(r))        // 가짜 시계와 무관한 한 박자(tick() 은 setTimeout 이라 멈춘다)
   for (let i = 0; i < 4; i++) {
-    await new Promise((r) => setTimeout(r, 25))
+    t.mock.timers.tick(25)
     procs[0].stdout.emit('data', JSON.stringify({ id: '', activity: true }) + '\n')
   }
-  assert.equal(w.running, true, '일하는 중인데 내렸다')
-  await new Promise((r) => setTimeout(r, 70))
+  assert.equal(w.running, true, '일하는 중인데 내렸다(상한 40ms 를 넘는 100ms 동안 일했다)')
+  t.mock.timers.tick(39)
+  assert.equal(w.running, true, '마지막 일 뒤 상한 전에는 내리지 않는다')
+  t.mock.timers.tick(2)
   assert.equal(w.running, false, '일이 끝난 뒤에는 내린다')
 })

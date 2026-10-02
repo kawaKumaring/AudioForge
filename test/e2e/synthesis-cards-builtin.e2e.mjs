@@ -8,7 +8,7 @@ import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
 import { OUTPUT_ROOT_DIRNAME, FEATURE_FOLDERS, dayFolder } from '../../src/shared/outputLayout.ts'
-import { isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요: npm run build'); process.exit(2) }
@@ -51,6 +51,7 @@ try {
   const win = await app.firstWindow()
   win.setDefaultTimeout(20000)
   await win.waitForFunction(() => !!window.__afStore && !!window.__synthesisCards)
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 
   // 쓸 수 있는 기본 목소리가 있는가 — 본체가 설치·구동을 확인해 돌려준다.
   const listed = await win.evaluate(() => window.api.cards.builtinVoices())

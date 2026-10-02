@@ -15,7 +15,7 @@ import { _electron as electron } from 'playwright'
 import path from 'path'
 import { fileNameOf } from '../../src/shared/workRecord.ts'
 import fs from 'fs'
-import { isolatedUserData, cleanupUserData, makeSyntheticWav } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, makeSyntheticWav, enterStudio } from './_e2e-helper.mjs'
 
 const root = process.cwd()
 const ud = isolatedUserData()
@@ -33,6 +33,7 @@ async function launch() {
   const win = await app.firstWindow()
   win.setDefaultTimeout(12000)
   await win.waitForFunction(() => !!window.__afStore && !!window.__synthesisCards)
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await app.evaluate(({ ipcMain }, s) => {
     const replace = (c, f) => { ipcMain.removeHandler(c); ipcMain.handle(c, f) }
     replace('card:extract-audio', () => ({ ok: true, data: s }))

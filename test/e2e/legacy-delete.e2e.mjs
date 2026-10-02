@@ -14,7 +14,7 @@ import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 �
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
-import { isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요: npm run build'); process.exit(2) }
@@ -79,6 +79,7 @@ try {
   let win = await app.firstWindow()
   win.setDefaultTimeout(20000)
   await win.waitForFunction(() => !!window.__afStore && !!window.__synthesisCards)
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await win.evaluate(async (s) => {
     for (const [k, v] of Object.entries(s)) await window.api.settings.set(k, v)
   }, seed(WAV))
@@ -123,6 +124,7 @@ try {
   win = await app.firstWindow()
   win.setDefaultTimeout(20000)
   await win.waitForFunction(() => !!window.__afStore && !!window.__synthesisCards)
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   const afterRestart = await countLegacy(win)
   ok(afterRestart.lab === -1, '★껐다 켜도 지워진 채다', afterRestart)
   ok(afterRestart.drafts === 1, '껐다 켜도 옆 기록은 남아 있다', afterRestart)

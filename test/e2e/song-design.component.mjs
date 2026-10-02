@@ -19,7 +19,7 @@ try{
 await page.setContent(`<style>:root{--bg-base:#101116;--bg-card:#1a1c25;--bg-elevated:#252733;--border-subtle:#333541;--border-accent:#655189;--accent:#9968f2;--accent-light:#c2a7fa;--accent-glow:#a080fa16;--text-primary:#ececf2;--text-muted:#9198ad;--amber:#dbb172;--rose:#ec8d99}*{box-sizing:border-box}body{margin:24px;background:#101116;color:#ececf2;font:14px Arial}</style><div id="root"></div>`)
 await page.evaluate(()=>{
  window.pick='song.mp3';window.calls=[];window.fail=false;
- window.api={audio:{selectFile:async(...args)=>{window.calls.push(args);return window.pick},getFileInfo:async path=>{if(window.fail)throw Error('failure');return {path,name:path.split('/').pop(),duration:123,format:path.split('.').pop(),sampleRate:44100,channels:2}}},utils:{getPathForFile:f=>f.name}};
+ window.api={audio:{selectFile:async(...args)=>{window.calls.push(args);return window.pick},getFileInfo:async path=>{if(window.fail)throw Error('failure');return {path,name:path.split('/').pop(),duration:123,format:path.split('.').pop(),sampleRate:44100,channels:2}}},utils:{getPathForFile:f=>f.name},song:{onProgress:()=>()=>{},onError:()=>()=>{},onCancelled:()=>()=>{}}};      // 진행·오류·취소 구독(2026-09-27 추가 — 대역에 빠져 있었다)
 })
 await page.addScriptTag({content:bundle.outputFiles[0].text})
 await page.getByTestId('song-cards').waitFor()

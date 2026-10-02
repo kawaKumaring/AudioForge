@@ -6,7 +6,7 @@
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
-import { isolatedInput, cleanupIsolated, snapshotTree, qwenJobDirs, qwenVenvPids } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, snapshotTree, qwenJobDirs, qwenVenvPids, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const SRC = (process.env.AF_E2E_REFERENCE || '').trim() || path.join(APP, 'resources', 'speaker_b.wav')
@@ -25,6 +25,7 @@ const win = await app.firstWindow()
 win.on('pageerror', e => pageErrors.push(e.message))
 win.on('crash', () => crashes.push('crash'))
 
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 const enterTts = async () => {
   await win.evaluate(async (p) => {
     const s = window.__afStore
