@@ -1299,7 +1299,8 @@ export function registerAudioIpc(
     // 실행당 터미널 정확히 1개. 여기가 없어서 'exit 0인데 result 없음'이나 시그널 종료 때
     // TrackList의 처리중 표시가 영구히 남았다(감사 R4) — 트랙 처리에는 취소 버튼도 없다.
     const settle = createRunSettlement((t: RunTerminal) => {
-      if (t.kind === 'result') { sendToWindow(mainWindow, 'audio:track-result', t.data); return }
+      // ★입력 경로를 함께 싣는다(2026-10-02 관리자 검수) — 화면이 '내 작업의 완료' 를 이름 부분 일치가 아니라 **경로로** 가리게.
+      if (t.kind === 'result') { sendToWindow(mainWindow, 'audio:track-result', { ...(t.data as Record<string, unknown>), trackPath }); return }
       const message = t.kind === 'cancelled'
         ? '트랙 처리가 취소되었습니다.'
         : (t.message ?? '트랙 처리에 실패했습니다.')
@@ -1595,7 +1596,8 @@ export function registerAudioIpc(
   ipcMain.on('settings:set-sync', (event, key: string, value: unknown) => {
     // 생성 카드 작업도 이 통로를 쓴다(2026-09-27). 창이 닫히는 순간의 비동기 요청은
     // **기다려 주지 않는다** — 마지막 편집 직후 종료하면 그대로 사라진다.
-    if (key !== WORK_DRAFT_STORAGE_KEY && key !== CARD_STORAGE_KEY) {
+    // 낭독 설정(2026-10-02) — 서재 보기를 바꾸고 곧바로 닫아도 남게.
+    if (key !== WORK_DRAFT_STORAGE_KEY && key !== CARD_STORAGE_KEY && key !== READER_PREFS_STORAGE_KEY) {
       event.returnValue = { ok: false, code: 'KEY_NOT_ALLOWED' }
       return
     }
@@ -1678,6 +1680,22 @@ export function registerAudioIpc(
     const { clipboard } = await import('electron')
     clipboard.writeText(text)
     return true
+  })
+
+  /**
+   * 글 파일 읽기 — **없음과 읽기 실패를 가른다**(2026-10-02). 예전 통로는 둘 다 null 이라 화면이 구별하지 못했다.
+   * 돌려주는 것: { state: 'ok', text } · { state: 'missing' } · { state: 'failed', message }
+   */
+  ipcMain.handle('app:read-text-file-ex', async (_event, path: unknown) => {
+    const { readFile } = await import('fs/promises')
+    if (typeof path !== 'string' || !path) return { state: 'failed', message: '경로가 없습니다' }
+    try {
+      return { state: 'ok', text: await readFile(path, 'utf-8') }
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException)?.code
+      if (code === 'ENOENT' || code === 'ENOTDIR') return { state: 'missing' }
+      return { state: 'failed', message: code || (e as Error)?.message || '읽지 못했습니다' }
+    }
   })
 
   ipcMain.handle('app:read-text-file', async (_event, path: string) => {

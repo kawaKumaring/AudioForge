@@ -66,7 +66,7 @@ try {
     window.__opened = null
     window.api = {
       settings: { get: async () => ({}), set: async () => ({ ok: true }) },
-      app: { openFolder: (d) => { window.__opened = d }, readTextFile: async () => null },
+      app: { openFolder: (d) => { window.__opened = d }, readTextFile: async () => null, readTextFileEx: async () => ({ state: 'missing' }) },
       audio: {
         getFileUrl: async (p) => {
           window.__urlAsked = p

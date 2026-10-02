@@ -15,6 +15,16 @@ const menuItem: React.CSSProperties = {
   textAlign: 'left', whiteSpace: 'nowrap',
 }
 
+/** 한 결과의 글(원문·번역)과 읽기 상태. ident 가 다르면 이 결과의 것이 아니다. */
+type TextPhase = 'loading' | 'ready' | 'missing' | 'failed'
+interface LoadedText { ident: string; transcript: string | null; translation: string | null; transcriptPhase: TextPhase; translationPhase: TextPhase }
+const emptyText = (ident: string): LoadedText => ({ ident, transcript: null, translation: null, transcriptPhase: 'loading', translationPhase: 'loading' })
+/** IPC 가 붙이는 앞머리를 떼고 한 줄로 — 화면에는 사유만. */
+const shortReason = (raw: unknown): string => {
+  const s = String(raw || '').replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, '').split('\n')[0].trim()
+  return (s || '처리하지 못했습니다').slice(0, 120)
+}
+
 function TrackItem({ track, index, keep, onKeep, onKeepOnly }: {
   track: { name: string; label: string; path: string }
   index: number
@@ -29,22 +39,52 @@ function TrackItem({ track, index, keep, onKeep, onKeepOnly }: {
     whisperModel, whisperLang, asrSeparate } = useAppStore()
   const isPlaying = playingTrack === track.name
   const st = styleOf(track.name)
-  const [transcript, setTranscript] = useState<string | null>(null)
-  const [translation, setTranslation] = useState<string | null>(null)
+  // ★글(원문·번역)은 **이 결과의 것으로만** 든다(2026-10-02 관리자 검수 재현).
+  //   예전에는 트랙 이름(vocals)이 같으면 컴포넌트가 그대로 살아 앞 결과의 글을 들고 있었고, 새 파일이 없으면 비우지도 않았다.
+  //   글 상태에 **결과 동일성(출력 폴더 + 파일 경로)** 을 달아, 다른 결과의 글은 한 번도 그려지지 않는다.
+  const ident = `${outputDir || ''}\n${track.path}`
+  const [loaded, setLoaded] = useState<LoadedText>(() => emptyText(ident))
+  const cur = loaded.ident === ident ? loaded : emptyText(ident)
+  const transcript = cur.transcript, translation = cur.translation
+  /** 이 결과의 글만 고친다 — 다른 결과 것이 늦게 와도 걸러진다. */
+  const patchText = (id: string, p: Partial<LoadedText>) => setLoaded((prev) => ({ ...(prev.ident === id ? prev : emptyText(id)), ...p }))
+  const [reloadTick, setReloadTick] = useState(0)
+  const [slowLoad, setSlowLoad] = useState(false)
   const [showText, setShowText] = useState(false)
+  /** 개별 작업의 거절·오류 사유(이 결과). */
+  const [jobNote, setJobNote] = useState('')
+  const jobRef = useRef<{ off: () => void } | null>(null)
   const [menu, setMenu] = useState(false)
   const [processing, setProcessing] = useState(false)
   const [paused, setPaused] = useState(false)  // 재생 중 일시정지 여부(행 버튼이 제어)
 
   const isAudioTrack = track.path.endsWith('.wav') || track.path.endsWith('.mp3') || track.path.endsWith('.flac')
 
-  // Load existing transcript/translation
+  // 이 결과의 글을 읽는다 — 결과가 바뀌면 앞 것을 비우고 처음부터. 늦게 끝난 앞 읽기는 버린다.
+  //   파일 없음 / 읽는 중 / 읽기 실패를 가른다(없는 것은 정상 — 아직 안 뽑았다).
   useEffect(() => {
-    if (!outputDir) return
+    setShowText(false); setJobNote('')
+    if (!outputDir) { setLoaded(emptyText(ident)); return }
+    let alive = true
+    setLoaded(emptyText(ident)); setSlowLoad(false)
+    const slow = setTimeout(() => { if (alive) setSlowLoad(true) }, 300)
     const base = track.path.replace(/\.(wav|mp3|flac)$/, '')
-    window.api.app.readTextFile(base + '.txt').then((t: string | null) => { if (t) setTranscript(t) })
-    window.api.app.readTextFile(base + '_korean.txt').then((t: string | null) => { if (t) setTranslation(t) })
-  }, [track.path, outputDir])
+    const read = (file: string, field: 'transcript' | 'translation', phase: 'transcriptPhase' | 'translationPhase') =>
+      window.api.app.readTextFileEx(file).then((r) => {
+        if (!alive) return
+        if (r.state === 'ok' && r.text) patchText(ident, { [field]: r.text, [phase]: 'ready' })
+        else patchText(ident, { [field]: null, [phase]: r.state === 'failed' ? 'failed' : 'missing' })
+      }).catch(() => { if (alive) patchText(ident, { [phase]: 'failed' }) })
+    void Promise.all([read(base + '.txt', 'transcript', 'transcriptPhase'), read(base + '_korean.txt', 'translation', 'translationPhase')])
+      .finally(() => { if (alive) setSlowLoad(false) })
+    return () => { alive = false; clearTimeout(slow) }
+  }, [ident, reloadTick])
+  // 이 결과가 바뀌거나 화면에서 사라지면 개별 작업의 구독을 끊고 처리 중 표시를 접는다 —
+  //   앞 결과의 늦은 완료·오류가 새 결과에 붙지 않게(작업은 본체에서 끝까지 돌 수 있지만 이 화면은 더 받지 않는다).
+  useEffect(() => {
+    setProcessing(false)
+    return () => { jobRef.current?.off(); jobRef.current = null }
+  }, [ident])
 
   // 재생 버튼(행 오른쪽, 원래 위치): 접힘→시작, 재생 중→일시정지/재개(아이콘만 바뀜). 한 번에 한 트랙만.
   const handlePlay = () => {
@@ -55,37 +95,47 @@ function TrackItem({ track, index, keep, onKeep, onKeepOnly }: {
 
   const handleTrackProcess = async (transcribe: boolean, translate: boolean) => {
     if (!outputDir || !isAudioTrack || processing) return
-    setProcessing(true)
-
-    const cleanup = () => { offResult(); offError() }
+    // ★요청 당시의 것으로 가린다 — 이 결과의 경로(myPath)와 글 동일성(myIdent). 이름 부분 일치로 받지 않는다(2026-10-02 관리자 검수).
+    const myPath = track.path, myIdent = ident
+    jobRef.current?.off()
+    setJobNote(''); setProcessing(true)
+    const job = { off: () => { offResult(); offError() } }
+    jobRef.current = job
+    const finish = () => { if (jobRef.current === job) jobRef.current = null; job.off() }
 
     const offResult = window.api.audio.onTrackResult((data: any) => {
-      const t = data?.tracks?.[0]
+      if (jobRef.current !== job) return                       // 이 결과가 바뀌었거나 이미 끝났다
+      // 본체가 입력 경로를 실어 보낸다 — 그 경로가 이 결과의 것일 때만 받는다(다른 작업·옛 작업의 완료는 받지 않는다).
+      if (!data || data.trackPath !== myPath) return
+      const t = data.tracks?.[0]
       if (!t) return
-      // Match by track name to avoid cross-track confusion
-      const resultName = t.name || ''
-      const myName = track.path.replace(/\\/g, '/').split('/').pop()?.replace(/\.\w+$/, '') || ''
-      if (resultName !== myName && !resultName.includes(myName)) return
-      if (t.text) setTranscript(t.text)
-      if (t.translated_text) setTranslation(t.translated_text)
+      patchText(myIdent, {
+        ...(t.text ? { transcript: String(t.text), transcriptPhase: 'ready' as const } : {}),
+        ...(t.translated_text ? { translation: String(t.translated_text), translationPhase: 'ready' as const } : {}),
+      })
       setProcessing(false)
-      cleanup()
+      finish()
     })
 
-    // Python 에러 시 "처리 중..." 고착 방지 — 실패해도 버튼 복구
+    // Python 에러 시 "처리 중..." 고착 방지 — 실패해도 버튼 복구. 이 결과의 오류만 받고, 사유를 짧게 보인다.
     const offError = window.api.audio.onTrackError((data: any) => {
-      if (data?.trackPath && data.trackPath !== track.path) return
+      if (jobRef.current !== job) return
+      if (data?.trackPath && data.trackPath !== myPath) return
+      setJobNote(shortReason(data?.message))
       setProcessing(false)
-      cleanup()
+      finish()
     })
 
     try {
       // ★고른 설정을 함께 보낸다 — 예전에는 빠져서 고른 모델·언어가 무시됐다(2026-09-24 감사).
-      await window.api.audio.processTrack(track.path, outputDir,
+      await window.api.audio.processTrack(myPath, outputDir,
         { transcribe, translate, srt: false, translateModel, whisperModel, whisperLang, asrSeparate })
-    } catch {
+    } catch (e) {
+      // 시작을 거절당했다(이미 도는 작업·다른 작업 중 등) — 사유를 보이고 처리 중으로 남지 않는다. 결과가 바뀐 뒤의 거절은 이 화면이 더 받지 않는다.
+      if (jobRef.current !== job) return
+      setJobNote(shortReason((e as Error)?.message))
       setProcessing(false)
-      cleanup()
+      finish()
     }
   }
 
@@ -129,6 +179,19 @@ function TrackItem({ track, index, keep, onKeep, onKeepOnly }: {
 
         {processing && (
           <span role="status" aria-live="polite" style={{ fontSize: 11, color: 'var(--accent-light)', fontWeight: 500, padding: '4px 8px' }}>처리 중...</span>
+        )}
+        {/* 글 읽기 상태 — 읽는 중(조금 걸릴 때만)·읽지 못함. 없는 것은 정상이라 아무것도 띄우지 않는다. */}
+        {slowLoad && !processing && (
+          <span role="status" data-testid="track-text-loading" style={{ fontSize: 11, color: 'var(--text-muted)', padding: '4px 8px' }}>글 확인 중…</span>
+        )}
+        {(cur.transcriptPhase === 'failed' || cur.translationPhase === 'failed') && (
+          <span role="alert" data-testid="track-text-failed" style={{ fontSize: 11, color: 'var(--rose)', padding: '4px 8px' }}>
+            {[cur.transcriptPhase === 'failed' ? '원문' : '', cur.translationPhase === 'failed' ? '번역' : ''].filter(Boolean).join('·')}을 읽지 못했습니다
+            <button onClick={() => setReloadTick((n) => n + 1)} title="글 파일을 다시 읽습니다" style={{ ...actionBtnStyle(false, 'var(--text-secondary)'), marginLeft: 6, padding: '2px 8px' }}>다시 읽기</button>
+          </span>
+        )}
+        {!!jobNote && (
+          <span role="alert" data-testid="track-job-note" style={{ fontSize: 11, color: 'var(--rose)', padding: '4px 8px', overflowWrap: 'anywhere' }}>{jobNote}</span>
         )}
 
         {/* 글이 나온 결과는 바로 펼쳐 볼 수 있다(자주 쓰는 조작은 밖에). */}
@@ -538,7 +601,7 @@ export default function TrackList() {
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
           <AnimatePresence>
             {tracks.map((track, i) => (
-              <TrackItem key={track.name} track={track} index={i}
+              <TrackItem key={track.path} track={track} index={i}
                 keep={!dropped.has(track.name)} onKeep={onKeep} onKeepOnly={onKeepOnly} />
             ))}
           </AnimatePresence>

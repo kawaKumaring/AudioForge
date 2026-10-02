@@ -358,6 +358,9 @@ const api = {
     /** 작업 기록이 적히는 데이터 파일의 자리. */
     dataFile: (): Promise<string> => ipcRenderer.invoke('app:data-file'),
     readTextFile: (path: string) => ipcRenderer.invoke('app:read-text-file', path),
+    /** 없음과 읽기 실패를 가른다 — { state: 'ok', text } | { state: 'missing' } | { state: 'failed', message }. */
+    readTextFileEx: (path: string): Promise<{ state: 'ok'; text: string } | { state: 'missing' } | { state: 'failed'; message: string }> =>
+      ipcRenderer.invoke('app:read-text-file-ex', path),
     // 교정본 저장 — 처음 인식한 파일은 그대로 두고 `_corrected` 로 새로 쓴다.
     saveCorrectedTranscript: (dir: string, base: string, txt: string, srt: string | null) =>
       ipcRenderer.invoke('transcript:save-corrected', dir, base, txt, srt),
