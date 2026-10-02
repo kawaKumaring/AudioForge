@@ -3,7 +3,7 @@ import { create } from 'zustand'
 import { useReadAloud, voiceKeyOf, type ReaderVoicePick } from '@/hooks/useReadAloud'
 import { useAppStore } from '@/stores/app.store'
 import { Icon, Modal, button as kitButton, muted, field as kitField, primary as kitPrimary } from './kit'
-import { classifyIncoming, mapPosition, moveInGroup, pushHistory, suggestGroupName, naturalCompare, samePath, type LibBook, type ScanResult, type ScanFile, type BookSource } from '../../shared/readerLibrary'
+import { classifyIncoming, mapPosition, moveInGroup, pushHistory, suggestGroupName, naturalCompare, samePath, planDrop, type LibBook, type ScanResult, type ScanFile, type BookSource } from '../../shared/readerLibrary'
 import VoicePicker from './VoicePicker'
 import ReaderShelf from './ReaderShelf'
 import './reader.css'
@@ -514,12 +514,12 @@ export default function ReaderWorkspace() {
     })))
     } catch { setError('책을 불러오지 못했습니다. 다시 선택해 주세요.') }
   }
-  const dropTexts = (files: File[], dirs: boolean[] = []) => {
+  const dropTexts = (files: File[], dirs: boolean[] = [], blocked = false) => {
+    // ★받지 못하면 사유를 띄운다 — 작업 중 · 빈 끌기 · 폴더 위치를 못 읽음(shared/readerLibrary planDrop).
+    const plan = planDrop(files.map((f, i) => ({ path: window.api.utils.getPathForFile(f) || '', dir: !!dirs[i] })), blocked || loading || !!importRun || changingBooks.current)
+    if (plan.kind === 'refuse') { setNotice(''); setError(plan.reason); opLog('reader', `끌어 놓기 받지 않음 — ${plan.reason}`); return }
     // 폴더가 섞여 있으면 본체가 훑는다(하위 폴더·작품 묶음) — 파일과 폴더가 섞인 끌기도 같은 길로.
-    if (dirs.some(Boolean)) {
-      void importPaths(files.map(f => window.api.utils.getPathForFile(f)).filter(Boolean))
-      return
-    }
+    if (plan.kind === 'paths') { void importPaths(plan.paths); return }
     // 끌어 온 것도 불러온 자리다 — 첫 글 파일의 폴더를 기억한다.
     const first = files.find(f => /\.txt$/i.test(f.name))
     const at = first ? window.api.utils.getPathForFile(first) : ''

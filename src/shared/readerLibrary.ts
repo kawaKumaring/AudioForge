@@ -117,3 +117,18 @@ export function suggestGroupName(work: Pick<ScanWork, 'root' | 'name'>, books: r
   const parent = parts.length >= 2 ? parts[parts.length - 2] : ''
   return parent ? `${work.name} (${parent})` : `${work.name} (2)`
 }
+
+/** 끌어 놓은 것을 어떻게 받을지. 받지 못하면 **사유**를 돌려준다 — 조용히 버리지 않는다(2026-10-03). */
+export type DropPlan = { kind: 'refuse'; reason: string } | { kind: 'paths'; paths: string[] } | { kind: 'files' }
+
+export function planDrop(items: ReadonlyArray<{ path: string; dir: boolean }>, busy: boolean): DropPlan {
+  if (busy) return { kind: 'refuse', reason: '지금 하는 작업(가져오기·정리)이 끝난 뒤 다시 끌어 놓아 주세요.' }
+  if (!items.length) return { kind: 'refuse', reason: '끌어 놓은 것에서 파일이나 폴더를 찾지 못했습니다. TXT 파일이나 폴더를 놓아 주세요.' }
+  // 폴더가 섞이면 본체가 위치로 훑는다 — 위치를 하나라도 못 읽으면 일부만 몰래 가져오지 않고 알린다.
+  if (items.some((i) => i.dir)) {
+    const missing = items.filter((i) => !i.path).length
+    if (missing) return { kind: 'refuse', reason: `끌어 놓은 ${missing}개 항목의 위치를 읽지 못했습니다. '폴더 가져오기' 단추로 골라 주세요.` }
+    return { kind: 'paths', paths: items.map((i) => i.path) }
+  }
+  return { kind: 'files' }
+}

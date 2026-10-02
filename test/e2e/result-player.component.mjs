@@ -169,6 +169,67 @@ try {
   '화면을 떠났는데 재생기가 남아 있다')
   pass('★화면을 떠나면 재생이 남지 않는다')
 
+  // ── 실제 소리로 본다(2026-10-03) ──────────────────────────────────────
+  //   ★위 검사들은 화면에 남은 재생기의 표시를 읽는다 — 이미 치워진 앞 재생기가 화면 밖에서 울려도 못 본다.
+  //     여기서는 WebAudio 가 **소리를 시작하는 순간**(AudioBufferSourceNode.start)을 전부 센다. 길이로 어느 파일인지 안다(12초/2초).
+  //   ★느린 자리 두 곳: 파일 주소 받기(getFileUrl) · 소리 받기(lib/waveLoad 의 fetch).
+  //     느린 소리 받기는 **취소를 무시하고 끝내 도착한다** — 늦은 응답이 실제로 온 상황을 만든다.
+  await page.evaluate(() => {
+    window.__starts = []
+    const start = AudioBufferSourceNode.prototype.start
+    AudioBufferSourceNode.prototype.start = function (...a) { window.__starts.push(Math.round(this.buffer?.duration ?? -1)); return start.apply(this, a) }
+    const realFetch = window.fetch.bind(window)
+    window.__slowFetch = 0; window.__slowArrived = 0
+    window.fetch = async (u, init) => {
+      if (window.__slowFetch && u === window.__urls['C:/out/long.wav']) {
+        await new Promise((r) => setTimeout(r, window.__slowFetch))
+        const res = await realFetch(u); window.__slowArrived++; return res   // 취소 신호를 넘기지 않는다
+      }
+      return realFetch(u, init)
+    }
+    const getUrl = window.api.audio.getFileUrl
+    window.__urlArrived = 0
+    window.api.audio.getFileUrl = async (p) => { const r = await getUrl(p); window.__urlArrived++; return r }
+  })
+  const starts = () => page.evaluate(() => window.__starts.slice())
+
+  // 눈 확인 — 느린 받기 뒤에 **바꾸지 않으면** 긴 파일이 실제로 울린다(검출기가 소리를 본다)
+  await page.evaluate(() => { window.__slowFetch = 700; window.__setPath('C:/out/long.wav'); window.__setOpen(true) })
+  await page.waitForFunction(() => window.__starts.includes(12), null, { timeout: 8000 })
+  pass('눈 확인: 느리게 받은 파일을 그대로 두면 소리 시작이 잡힌다(12초 파일)')
+
+  // ① 소리 받기가 느린 동안 파일을 바꾼다 → 늦게 도착한 앞 파일은 울리지 않고, 새 파일만 울린다
+  await page.evaluate(() => { window.__slowFetch = 0; window.__setPath('C:/out/short.wav') })
+  await page.waitForFunction(() => window.__starts.includes(2), null, { timeout: 8000 })
+  await page.evaluate(() => { window.__starts = []; window.__slowArrived = 0; window.__slowFetch = 900; window.__setPath('C:/out/long.wav') })
+  await page.waitForTimeout(150)
+  await page.evaluate(() => window.__setPath('C:/out/short.wav'))
+  await page.waitForFunction(() => window.__slowArrived >= 1, null, { timeout: 5000 })
+  await page.waitForTimeout(800)                                     // 도착 뒤 울릴 틈
+  const s1 = await starts()
+  assert.ok(!s1.includes(12) && s1.includes(2), `파일을 바꿨는데 늦게 온 앞 파일이 울렸거나 새 파일이 안 울렸다: ${JSON.stringify(s1)}`)
+  pass(`★소리 받기 중 파일 교체 — 늦은 앞 파일 도착 뒤에도 앞 파일 소리 0번, 새 파일만 울림 ${JSON.stringify(s1)}`)
+
+  // ② 소리 받기가 느린 동안 화면을 떠난다(작업실 전환 = 결과 목록이 화면에서 빠진다) → 아무것도 울리지 않는다
+  await page.evaluate(() => { window.__starts = []; window.__slowArrived = 0; window.__slowFetch = 900; window.__setPath('C:/out/long.wav'); window.__setOpen(true) })  // 2초 파일은 끝나면 스스로 닫힌다
+  await page.waitForTimeout(150)
+  await page.evaluate(() => window.__setOpen(false))
+  await page.waitForFunction(() => window.__slowArrived >= 1, null, { timeout: 5000 })
+  await page.waitForTimeout(800)
+  assert.deepEqual(await starts(), [], '화면을 떠났는데 늦게 도착한 파일이 울렸다')
+  pass('★소리 받기 중 화면을 떠나면 — 늦은 도착 뒤에도 소리 시작 0번')
+
+  // ③ 파일 주소 받기가 느린 동안 화면을 떠난다 → 아무것도 울리지 않는다
+  await page.evaluate(() => { window.__slowFetch = 0; window.__delay = 0; window.__setPath('C:/out/short.wav'); window.__setOpen(true) })
+  await page.waitForFunction(() => window.__starts.includes(2), null, { timeout: 8000 })
+  await page.evaluate(() => { window.__starts = []; window.__urlArrived = 0; window.__delay = 900; window.__setPath('C:/out/long.wav') })
+  await page.waitForTimeout(150)
+  await page.evaluate(() => window.__setOpen(false))
+  await page.waitForFunction(() => window.__urlArrived >= 1, null, { timeout: 5000 })
+  await page.waitForTimeout(800)
+  assert.deepEqual(await starts(), [], '화면을 떠났는데 늦게 온 파일 주소로 소리가 났다')
+  pass('★파일 주소 받기 중 화면을 떠나면 — 늦은 도착 뒤에도 소리 시작 0번')
+
   assert.equal(errors.length, 0, `런타임 오류: ${errors.join(' | ')}`)
   pass('런타임 오류 없음')
   console.log(JSON.stringify({ passed: checks }))

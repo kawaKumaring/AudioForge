@@ -2,7 +2,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 // @ts-ignore TS5097: node --test 가 요구하는 명시적 .ts 확장자
-import { naturalCompare, classifyIncoming, mapPosition, sortGroup, groupResume, moveInGroup, pushHistory, suggestGroupName, samePath, type LibBook } from './readerLibrary.ts'
+import { naturalCompare, classifyIncoming, mapPosition, sortGroup, groupResume, moveInGroup, pushHistory, suggestGroupName, samePath, planDrop, type LibBook } from './readerLibrary.ts'
 
 const book = (o: Partial<LibBook> & { id: string }): LibBook => ({ name: o.id, paragraphs: ['가'], position: 0, ...o })
 
@@ -61,4 +61,13 @@ test('묶음 이름 — 같은 이름의 다른 폴더면 부모 폴더 이름�
   assert.equal(suggestGroupName({ root: 'D:/B/1권', name: '1권' }, lib), '1권 (B)')
   assert.equal(suggestGroupName({ root: 'D:/C/새 작품', name: '새 작품' }, lib), '새 작품')
   assert.ok(samePath('C:\\a\\B', 'c:/A/b'))
+})
+
+test('끌어 놓기 — 받지 못하면 사유를 돌려준다(조용히 버리지 않는다)', () => {
+  assert.equal(planDrop([{ path: 'D:/a', dir: true }], true).kind, 'refuse', '작업 중')
+  assert.equal(planDrop([], false).kind, 'refuse', '빈 끌기(글 조각·링크)')
+  const miss = planDrop([{ path: 'D:/소설 모음', dir: true }, { path: '', dir: true }], false)
+  assert.ok(miss.kind === 'refuse' && /1개 항목의 위치/.test(miss.reason), '폴더 위치를 못 읽으면 일부만 가져오지 않는다')
+  assert.deepEqual(planDrop([{ path: 'D:/소설 모음', dir: true }, { path: 'D:/낱권.txt', dir: false }], false), { kind: 'paths', paths: ['D:/소설 모음', 'D:/낱권.txt'] })
+  assert.deepEqual(planDrop([{ path: '', dir: false }], false), { kind: 'files' }, '파일만이면 내용으로 읽는다(위치 없어도 됨)')
 })

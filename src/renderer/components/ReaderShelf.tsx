@@ -38,7 +38,7 @@ export default function ReaderShelf({ books, active, busy, error, onAdd, onAddFo
   onAddFolder: () => void
   onOpen: (id: string) => void; onRemove: (ids: string[]) => Promise<void>
   /** 끌어 놓은 것 — 파일과 함께 폴더인지(같은 차례). */
-  onDrop: (files: File[], dirs: boolean[]) => void
+  onDrop: (files: File[], dirs: boolean[], blocked: boolean) => void
   /** 묶음 안 차례를 한 칸 옮긴다. */
   onReorder: (group: string, id: string, delta: -1 | 1) => Promise<void>
   /** 묶음 해제 — 책은 서재에 남는다(원본 파일도 그대로). */
@@ -92,9 +92,9 @@ export default function ReaderShelf({ books, active, busy, error, onAdd, onAddFo
     onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false) }}
     onDrop={e => {
       e.preventDefault(); e.stopPropagation(); setDragging(false)
-      if (locked) return
+      // 잠겨 있어도 버리지 않고 넘긴다 — 받는 쪽이 사유를 띄운다(planDrop).
       const items = Array.from(e.dataTransfer.items).filter(i => i.kind === 'file')
-      onDrop(Array.from(e.dataTransfer.files), items.map(i => !!(i as DataTransferItem & { webkitGetAsEntry?: () => { isDirectory?: boolean } | null }).webkitGetAsEntry?.()?.isDirectory))
+      onDrop(Array.from(e.dataTransfer.files), items.map(i => !!(i as DataTransferItem & { webkitGetAsEntry?: () => { isDirectory?: boolean } | null }).webkitGetAsEntry?.()?.isDirectory), locked)
     }}
     style={{ display: 'grid', gap: 28, outline: dragging ? '2px solid var(--accent-light)' : undefined, outlineOffset: 6, borderRadius: 16 }}>
     {error && <div role="alert" style={{ fontSize: 12, color: 'var(--rose)' }}>{error}</div>}
