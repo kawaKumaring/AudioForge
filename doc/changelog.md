@@ -1,5 +1,10 @@
 # AudioForge Changelog
 
+## 2026-10-03 (개발선) — 실행 파일 런처 · 앱 아이콘 (Codex)
+
+- 앱 창 아이콘(`build/branding/audioforge.ico`)과 브랜드 이미지, 아이콘 만들기(`npm run build:icon` — scripts/build-icon.cjs), 실행 파일 런처(`npm run build:launcher` — scripts/build-launcher.ps1 · AudioForgeLauncher.cs).
+- 만들어진 `AudioForge.exe` 는 저장소에 넣지 않는다(.gitignore). 이 PC 의 절대 경로는 담지 않았다(스크립트 확인).
+
 ## 2026-10-03 (개발선) — 화면 개편 마무리(Codex·Claude 공동): 시작 화면 · 작업실 틀 · 카드 끝자리 굴림 · 파형 취소 정리
 
 ★지시: "전부 커밋해라 — 코덱스는 작업을 완료했다." (연기 대본 편집기는 보류 지시대로 제외 · 런처·아이콘은 별도 커밋)

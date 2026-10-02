@@ -4,6 +4,8 @@
   "description": "AI-powered audio source separation tool",
   "main": "./out/main/index.js",
   "scripts": {
+    "build:icon": "node scripts/build-icon.cjs",
+    "build:launcher": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-launcher.ps1",
     "predev": "node scripts/generate-build-metadata.mjs",
     "dev": "electron-vite dev",
     "prebuild": "node scripts/generate-build-metadata.mjs",

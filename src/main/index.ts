@@ -222,6 +222,7 @@ function createWindow(): void {
   const preloadPath = join(__dirname, '../preload/index.js')
   console.log(`[main] preload: ${preloadPath} · exists=${existsSync(preloadPath)}`)
   mainWindow = new BrowserWindow({
+    icon: join(app.getAppPath(), 'build', 'branding', 'audioforge.ico'),
     width: 1000,
     height: 720,
     minWidth: 800,
