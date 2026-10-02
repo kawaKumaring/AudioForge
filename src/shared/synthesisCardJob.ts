@@ -64,7 +64,7 @@ const round2 = (v: number) => Math.round(v * 100) / 100
  * 조용히 자르지 않는 것이 이 함수의 전부다 — 자르는 것 자체는 파이썬이 어차피 한다.
  * 여기서 미리 자르는 이유는 **깎였다는 사실을 화면과 생성본에 남기기 위해서**다.
  */
-export function cardApplied(s: CardEngineSettings): CardApplied {
+export function cardApplied(s: CardEngineSettings, voice?: CardVoice | null): CardApplied {
   const notes: CardSettingNote[] = []
 
   const raw = Number.isFinite(s.pitch) ? s.pitch : 0
@@ -77,12 +77,12 @@ export function cardApplied(s: CardEngineSettings): CardApplied {
     })
   }
 
-  // ★감정은 보내지 않는다. 보내도 참조가 없으면 소리가 바뀌지 않는데,
-  //   화면에는 적용된 것처럼 남는다. 그것이 가장 나쁜 결과다.
-  if (s.emotion && s.emotion !== '자연스럽게') {
+  // ★감정은 **실제로 보내는 경우에만** 조용하다 — 요청과 같은 판정(emotionSent)을 쓴다(2026-10-03: 보내는데도 '미적용' 이 떴다).
+  //   보내지 않는 감정을 적용된 것처럼 남기는 것이 가장 나쁜 결과다. 목소리를 모르면 보내지 않는 것으로 본다.
+  if (s.emotion && s.emotion !== '자연스럽게' && !emotionSent(s.emotion, voice)) {
     notes.push({
       field: 'emotion',
-      reason: `감정 '${s.emotion}' 은 이번 생성에 반영되지 않습니다 — 감정은 그 감정용 참조 소리를 따로 등록해야 동작합니다`,
+      reason: `감정 '${s.emotion}' 은 이번 생성에 반영되지 않습니다 — 감정은 Qwen 지정 목소리(감정 모델 1.7B 가 있을 때)에서만 보냅니다`,
     })
   }
 
@@ -126,7 +126,7 @@ export function cardGenerateFault(a: {
 
 /** 생성본에 붙일 그때의 모습. **현재 카드를 덮어 보여 주지 않기 위한 것**이다. */
 // @ts-ignore TS5097: Node executes repository TypeScript tests directly.
-import { sameVoice, type VoiceSnapshot } from './synthesisCardVoice.ts'
+import { sameVoice, emotionSent, type VoiceSnapshot, type CardVoice } from './synthesisCardVoice.ts'
 
 export interface CardTakeSnapshot {
   voice?: VoiceSnapshot

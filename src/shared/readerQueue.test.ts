@@ -120,10 +120,10 @@ test('같은 목소리면 아무것도 버리지 않는다', () => {
 })
 
 test('★늦게 온 결과가 새 목소리의 자리를 덮지 않는다', () => {
-  let q = markMaking(q0(), 0)
-  assert.equal(acceptResult(q, 0, 'piper:ko'), true)
+  let q = markMaking(q0(), 0, 'r1')
+  assert.equal(acceptResult(q, 0, 'piper:ko', 'r1'), true)
   q = changeVoice(q, 'ref:B')
-  assert.equal(acceptResult(q, 0, 'piper:ko'), false,
+  assert.equal(acceptResult(q, 0, 'piper:ko', 'r1'), false,
     '옛 목소리로 만든 결과를 받아들인다 — 무엇으로 만든 소리인지 알 수 없게 된다')
 })
 
@@ -166,4 +166,12 @@ test('GPU 목소리 판단 — 참조와 Qwen 지정 목소리만', async () => 
   assert.equal(usesGpu({ kind: 'builtin', engineId: 'piper' }), false)
   assert.equal(usesGpu({ kind: 'builtin' }), false)
   assert.equal(usesGpu(null), false)
+})
+
+test('★같은 번호라도 **다른 요청**의 답은 받지 않는다 — 덩이를 다시 나눈 뒤의 늦은 답(2026-10-03)', () => {
+  // 옛 요청 r1 이 1번을 만드는 중에 덩이가 다시 나뉘었다 → 새 큐의 1번은 새 요청 r2 로 만드는 중
+  const q = markMaking(emptyQueue(4, 'piper:ko'), 1, 'r2')
+  assert.equal(acceptResult(q, 1, 'piper:ko', 'r1'), false, '목소리만 같다고 옛 요청의 답(성공·오류)을 받는다')
+  assert.equal(acceptResult(q, 1, 'piper:ko', 'r2'), true)
+  assert.equal(acceptResult(q, 1, 'piper:ko', ''), false, '이름표 없는 답은 받지 않는다')
 })

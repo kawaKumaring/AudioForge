@@ -364,7 +364,7 @@ export async function startCardGeneration(card: SynthesisCard): Promise<string> 
   // ★적용값에 **실제로 쓰인 참조**까지 남긴다 — 자동 구간은 사람이 고른 값이 아니므로,
   //   남기지 않으면 나중에 '무엇이 달라져 소리가 달라졌나' 를 답할 수 없다(2026-09-27 지적).
   const applied: CardApplied = {
-    ...cardApplied(card.settings),
+    ...cardApplied(card.settings, voice),
     // 기본 목소리에는 참조가 없다 — 없는 것을 있는 것처럼 적지 않는다.
     ...(voice.kind === 'reference' ? { reference: { clip: ref!.clip, region: ref!.region } } : {}),
   }

@@ -50,7 +50,15 @@ AudioForge 는 소리를 다루고(AI 는 들을 수 없다), 작업이 길고(�
 - `test_input` — **사용자 파일 대신 쓰는 재료**를 이 실행의 임시 폴더에: 글 파일(UTF-8·UTF-16·CP949) · 사인파 · 기본 목소리로 만든 말소리(참조 목소리 검사용) · 저장소 검사용 음원 복사
 - `errors` — 문제만: 화면 오류·경고 · 본체 오류 줄 · 앱 기록 WARN/ERROR. 검사 모드에서만 나는 알려진 경고(화면 정책의 eval — 검사 도구 때문)는 따로 센다
 - `app_mode` 의 `force:true` — 화면에 단추가 없는 작업(`dialogue-rebuild` 는 대화 분리 결과에서 들어가고, `lab` 은 목록에 없다)도 점검용으로 연다. 없이 부르면 왜 안 되는지 알려 준다
-- `app_restart` — 같은 사용자 데이터로 다시 켠다(껐다 켜도 남는지 확인)
+- `app_restart` — 같은 사용자 데이터로 다시 켠다(껐다 켜도 남는지 확인). 처음 켤 때 고른 `prep` 을 그대로 쓴다
+- `app_start` 의 `prep`(2026-10-03) — 기본 `test` 는 **낭독 미리 준비를 끈다**(목록을 열 때 Qwen 실행기 띄우기·모델 파일 미리 읽기, 고를 때 모델 열기·첫 생성 준비, 켤 때 합성 라이브러리 미리 읽기).
+  성능을 잴 때는 `prep:"normal"`(= `AF_E2E_NORMAL_PREP=1`, GPU 사용) — 보통 실행과 같은 준비. ★`test` 로 잰 수치를 보통 실행 성능으로 보고하지 않는다.
+  그 밖에 검사 실행이 보통 실행과 다른 점: 사용자 데이터가 새 임시 폴더(낭독 캐시 빈 상태로 시작) · 창 소리 끔(시각·값은 그대로) · 화면 밖 창(그리기 멈춤 해제 스위치를 켬)
+- `reader_trace`(2026-10-03) — 낭독 관측 기록(최근 500개, `performance.now()` 단조 ms, `mode` 에 실행 방식). `clear:true` 면 읽고 비운다.
+  사건: `play-request`(readyAtRequest) · `gen-request`(req·gen·chunk·글자 수) · `gen-start`(본체 생성 시작 — 응답 시각 − 생성 길이, derived) ·
+  `gen-done`(ok·cached·shared·modelOpened·waitMs 줄 대기·makeMs 생성·engine·accepted) · `play-start`(소리 요소 **playing** 사건 — via·sinceRequestMs·gapMs) ·
+  `buffer-low-start`/`buffer-low-end`(lowMs, initial=시작 직후 첫 소리 대기) · `seek-request` · `resplit` · `voice-change` · `stop`. 본문·경로·전사 없음.
+  측정 순서는 `doc/performance-handoff-2026-10-03.md` 6절
 - `ui_drop_files` — 파일 끌어 놓기(숨긴 파일 입력칸으로 경로를 넣으면 Electron 이 진짜 경로를 안다 → 대상 가운데 아래 가장 안쪽 요소에 놓는다). 개인정보 가드를 탄다
 - `ui_key` · `ui_pointer`(요소 안 비율 위치 · 누르기/끌기 — 끝에서 1px 안쪽) · `ui_scroll`
 - `ui_audit` — 화면 결함을 글과 숫자로: 이름 없는 단추 · 이유 없는 비활성 · 창 밖 · 가림 · 잘린 글 · 작은 글씨(11px 미만) · 가로 스크롤.

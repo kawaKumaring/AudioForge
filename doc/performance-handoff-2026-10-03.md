@@ -4,7 +4,16 @@
 > 기준 코드: develop `d0eda7f`. 행 번호는 그 시점 기준의 대략값(편집하면 어긋난다 — 함수 이름으로 찾을 것).
 > 근거 수준 표기: [코드] 코드를 읽어 확인 · [실측] 과거 측정 · [추정] 이론값·계산 · [미확인] 확인하지 않음.
 
-## 0. 검수 중 발견한 결함 (즉시 보고, 수정하지 않음)
+## 0. 검수 중 발견한 결함
+
+> **2026-10-03 후속 — 세 건 모두 재현 후 수정.** 아래 1~3 은 발견 당시의 기록이다. 수정 내용:
+> 1. 재현: 실제 앱에서 긴 검사용 말소리 → 구간 잘라 씀 → 창 닫기 → 다시 켜기 → 소리 파일 없음·'찾지 못했습니다'·낭독 시작 막힘(`reader-ref-voice-restart.e2e` 수정 전 4 실패).
+>    결정: 원본+구간을 저장해 켤 때마다 다시 준비(원본이 옮겨지면 깨짐·매번 분석·구간이 달라질 수 있음) 대신 **앱이 관리하는 보관본**(`userData/readerVoices/<내용 지문>.wav`, `services/reader-voice-store.ts`) — 고른·최근 목소리가 가리키는 것만 남긴다. 임시 조각 청소는 그대로.
+>    원본 그대로 쓰는 짧은 파일은 원본 경로 그대로(복사 안 함). 보관이 실패하면 이번 실행에서만 쓰고 저장하지 않는다(사유 표시). 수정 후 11/11.
+> 2. 재현: 실제 낭독 엔진에 응답을 붙들었다가 옛 1번 응답을 먼저 풀기 — 성공이면 옛 글 소리가 새 자리에서 재생, 오류면 새 자리가 실패(`reader-resplit.component` 수정 전 4 실패).
+>    수정: 요청마다 이름표(`세대.번호`)를 큐 자리에 붙이고, 같은 목소리 + 바로 그 요청 + 같은 세대 + 같은 글일 때만 받는다(`readerQueue.acceptResult` · `useReadAloud`). 수정 후 12/12.
+> 3. 재현: 받는 목소리(Qwen+1.7B)에서 요청에는 감정이 실리는데 '미적용' 표시(`synthesisCardJob.test` 새 검사 실패).
+>    수정: 보내는 판정 하나(`emotionSent`)를 요청(`cardScriptWithEmotion`)·표시·생성본 기록(`cardApplied(설정, 목소리)`)이 함께 쓴다. 감정 품질을 뜻하는 표시는 만들지 않았다(보내지 않을 때만 '미적용').
 
 1. **낭독 참조 목소리가 앱을 다시 켜면 사라진다** [코드] — 설정 유실
    - 낭독에서 내 목소리 파일을 고르면 3~10초 구간을 잘라 `userData/refclips/audioforge_refclip_<uuid>/` 에 둔다. 그 **잘라 둔 조각의 경로**를
@@ -155,28 +164,50 @@
 - `api_call reader.speak` — 직접 부르면 `{path, cached, timing}`(캐시 적중 여부가 여기서만 보인다).
 - `wait_idle`, `audio_inspect`, `errors`.
 
-### 필요한 관측별 현재 가능 여부
-- 재생 요청 시각: **부분** — 시작 단추만 `[reader] 시작 — 덩이 i/n · 목소리 …` 로그. 덩이별 요청은 기록 없음.
-- 생성 시작: **불가** — 로그 없음(줄 대기 시간도 안 남음).
-- 생성 완료: **가능** — `[reader] 만듦 kind= voice= 글자= N.Ns 상주(모델 엶) 생성= 소리=`(reader.ipc ~327행). N.Ns 는 줄 대기를 뺀 시간.
-- 실제 재생 시작: **불가** — 기록 없음. `audio_now` 반복 조회로 300ms 해상도 어림만.
-- 다음 구절 준비·버퍼 부족: **부분** — 지금 덩이가 '만드는 중' 인지만 화면 글로. 다음 덩이 준비·미리 불러 둠·끊김 ms 는 노출 없음.
-- 문단 이동 후 새 구절 재생 시작: **불가** — 이동·재생 시작 기록 없음.
-- 캐시 적중: **화면 경로에서는 불가** — 렌더러가 `cached` 를 버리고 로그도 없음.
-- 모델 열기·준비(prepare/warm) 시간: **불가** — `(모델 엶)` 표시만, `prime_sec`·prefetch 완료 미기록.
+### 관측 기록 `reader_trace` (2026-10-03 추가 — 관리자 승인 '최소 관측')
+재기만 한다 — 합성·큐·재생 동작은 이 기록을 읽지 않는다. 위치: 화면 `src/renderer/lib/readerTrace.ts`(기록 통) · `src/renderer/hooks/useReadAloud.ts`(사건 지점) ·
+본체 `src/main/ipc/reader.ipc.ts` `reader:speak`(단계 길이를 응답에 싣는다) · MCP `reader_trace`.
+- 시계: 화면 `performance.now()`(ms, 단조). 본체 단계 길이는 본체 단조 시계로 잰 **길이**로만 받는다(두 프로세스 시계를 섞지 않는다).
+- 보관: 최근 500개(넘으면 오래된 것부터), 파일에 쓰지 않는다. 본문·경로·전사 없음(글은 글자 수, 목소리는 종류·엔진).
+- `mode` — `app` · `test(prep-off)` · `test-normal-prep`. ★`test(prep-off)` 수치는 보통 실행 성능으로 보고하지 않는다.
+
+필요한 관측 → 사건
+- 요청 ID·낭독 세대: `gen-request`/`gen-done` 의 `req`(=`세대.번호`)·`gen`. 세대는 덩이를 다시 나누거나 목소리를 바꿀 때 오른다(`resplit`·`voice-change`).
+- 생성 요청·실제 생성 시작·완료: `gen-request`(화면이 보낸 때) · `gen-start`(본체가 줄에서 실제로 시작한 때 = 응답 시각 − `makeMs`, `derived:true`) · `gen-done`(`waitMs` 본체 줄 대기, `makeMs` 생성 길이, `accepted` 받아들였나).
+  ★`gen-start` 는 응답이 돌아오는 IPC 시간(보통 수 ms)만큼 늦게 찍힐 수 있다.
+- 실제 재생 시작: `play-start` = 소리 요소의 **playing 사건**(생성 완료·play() 호출 아님). `sinceRequestMs` = 시작/이동 누름부터, `gapMs` = 앞 덩이가 끝난 때부터, `via` = 미리 불러 둔 요소로 이어 틀었나.
+  ★스피커까지의 장치 지연은 들어 있지 않다. 소리를 끈 검사 창에서도 사건은 같게 난다.
+- 버퍼 부족: `buffer-low-start`(재생 중 지금 덩이가 준비 안 됨, `initial:true` 면 시작·이동 직후의 첫 소리 대기) → `buffer-low-end`(`lowMs`, 다음 실제 재생 시작에서 닫힘).
+- 문단 이동: `seek-request` → 다음 `play-start`(`after:'seek'`, `sinceRequestMs` = 이동 후 첫 소리).
+- 캐시 적중·모델 최초 로딩: `gen-done` 의 `cached`(본체 디스크 캐시) · `shared`(같은 요청이 이미 가 있어 함께 받음) · `modelOpened`(이번 덩이에서 모델을 열었나) · `engine`.
+  `play-request` 의 `readyAtRequest` — 누르기 전에 큐가 이미 만들어 둔 자리(요청도 캐시 조회도 없다).
+- 기록하지 않는 것(남은 제한): 목록을 열 때·고를 때의 미리 준비(`reader:prepare`·`reader:warm`)의 결과와 걸린 시간·`prime_sec` · 파이썬 안 단계(불러오기·모델 올리기) 분해.
+
+정확성 확인(관측 자체) — 알고 있는 지연을 넣고 기록을 대 봄
+- `test/e2e/reader-trace.component.mjs` 17/17: 응답 300ms 지연 → 요청→완료 300ms · 생성 시작 = 완료 − 200ms · play() 뒤 250ms 늦춘 실제 재생을 playing 으로 잡음(play() 호출 아님) ·
+  재생 도중 버퍼 부족 시작/끝·길이 · 캐시 적중에는 생성 시작 없음 · 미리 불러 둔 이어 틂 · 이동 후 첫 소리 · 옛 세대 응답은 `accepted:false` · 본문·경로 없음.
+- `test/e2e/reader-trace-app.e2e.mjs` 9/9(실제 앱·기본 목소리 CPU): 본체 단계 길이·엔진·모델 처음 엶이 화면 기록까지 옴 · 이동 후 첫 소리 · 디스크 캐시 적중(목소리 A→B→A) · `readyAtRequest` · 실행 방식 표시.
+- `test/e2e/reader-trace-mcp.cjs` 4/4: MCP 도구 목록 · 기본 실행 표시 · `reader_trace` 읽기·비우기.
+- `src/renderer/lib/readerTrace.test.ts`: 500개 상한·오래된 것부터 버림·시각 단조.
+
+### 보통 실행과 같은 조건으로 재는 법
+- 검사 모드(`AF_E2E=1`, MCP 기본)가 보통 실행과 다른 점:
+  1. 낭독 미리 준비 꺼짐 — 목록을 열 때 Qwen 실행기 띄우기·모델 파일 미리 읽기(`reader:prepare`), 고를 때 모델 열기·첫 생성 준비(`reader:warm`, Qwen).
+  2. 켤 때 합성 라이브러리 미리 읽기 꺼짐(`bridge-warmup` — 참조 목소리·카드 첫 생성에 영향).
+  3. 사용자 데이터가 새 임시 폴더 — 낭독 캐시가 비어 있다(처음 실행 상태).
+  4. 창 소리 끔(시각·사건은 같다) · 화면 밖 창(그리기 멈춤 해제 스위치 켬).
+- 1·2 를 보통 실행과 같게: MCP `app_start { prep: "normal" }`(= 환경 변수 `AF_E2E_NORMAL_PREP=1`). 규칙은 `reader-run.ts` `testSkipsPrep` 한 곳. `reader_trace` 의 `mode` 가 `test-normal-prep` 로 찍힌다.
+  ★GPU 를 쓴다 — 다른 ComfyUI·VLM 이 GPU 를 쓰는 중이면 Qwen 수치가 반 토막(측정 전 확인, 사건 기록에는 GPU 점유가 없다).
+- 세 상태를 나눠 재기(같은 실행 안에서):
+  - **캐시 없는 최초 실행** — `app_start`(새 데이터) 직후 첫 재생. 첫 덩이 `gen-done.modelOpened=true`.
+    (OS 파일 캐시는 비울 수 없다 — 그 PC 의 이 세션에서 모델 파일을 처음 읽는 경우와 같지 않을 수 있다.)
+  - **모델이 열린 실행** — 같은 실행에서 다른 문단·다른 글로 다시 재생. `modelOpened=false`, `cached=false`.
+  - **캐시 적중** — 같은 글·같은 목소리를 다시(큐가 비워진 뒤 — 목소리 A→B→A 나 다른 책 다녀오기). `cached=true`, `gen-start` 없음.
+    같은 자리를 멈췄다 다시 누르는 것은 큐가 들고 있어 요청 자체가 없다(`readyAtRequest:true`).
+- 순서 예: `app_start {prep:"normal"}` → `app_mode reader` → `test_input`(글) + `dialog_queue` → `ui_click testid:reader-add-text` → 목소리 고르기 → `reader_trace {clear:true}` →
+  `ui_click testid:reader-play` → `ui_wait`(필요한 사건) → `reader_trace`.
 
 ### 측정 시 함정 [코드]
-- MCP 는 앱을 `AF_E2E=1`(GPU 끔 검사 모드)로 띄운다. 이때 `reader:prepare`·Qwen `reader:warm` 이 **건너뛰어진다**(reader.ipc ~373·~397행) — 첫 소리 앞당기기 효과가 빠진 수치가 나온다.
-  생성 자체(`reader:speak`)는 막지 않아 GPU 를 그대로 쓴다. 실제 앱과 같은 첫 소리를 재려면 `AF_E2E_GPU=1` 환경으로 띄워야 한다.
 - MCP 는 다른 프로그램의 GPU 점유를 보고 막지 않는다. 다른 ComfyUI·VLM 이 돌면 Qwen 수치가 반 토막 — 측정 전 GPU 확인 필요.
 - 검사·MCP 창은 소리를 끈 채 뜬다(재생 시각·값은 그대로 나온다).
-
-### 최소 추가안 (구현하지 않음 — 승인 대기)
-로그 한 줄씩만 더하면 위 '불가' 대부분이 앱 로그로 잡힌다. 구조 변경 없음.
-1. `useReadAloud` 덩이 요청을 보낼 때: `요청 덩이 i/n 글자 N`.
-2. 본체 `makeChunk` 줄에 들어간 순간과 시작 순간: `생성 시작 덩이 대기 X.Xs`(줄 대기 시간).
-3. `reader:speak` 응답이 캐시면: `캐시 적중 덩이 i`(렌더러가 `cached` 를 기록).
-4. 소리 요소 `playing` 사건: `재생 시작 덩이 i (요청부터 X.Xs)` · 미리 불러 둔 요소로 넘어갈 때 `이어 틂 덩이 i 간격 Nms`.
-5. 재생 중 지금 덩이가 준비 안 됨으로 바뀔 때: `버퍼 부족 덩이 i`.
-6. `seekToChar`/`pickParagraph`: `자리 이동 → 덩이 i`(이후 4번과 짝지으면 '이동 후 첫 소리').
-7. `reader:prepare`·`reader:warm` 결과와 시간(`prime_sec`, `loaded_now`).
+- 앱 로그의 `[reader] 만듦 … N.Ns` 는 그대로 있다(줄 대기를 뺀 생성 시간) — `reader_trace` 의 `makeMs` 와 같은 구간.

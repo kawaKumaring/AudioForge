@@ -23,11 +23,12 @@ import { fileURLToPath } from 'url'
 import { currentPythonPath, synthesisBusy, setReaderRunning, pickFiles, dialogFolderHost } from './audio.ipc'
 import { rememberFile, rememberDir, startDir } from '../services/dialogFolders'
 import { scanTextPaths, scannedPaths } from '../services/folder-scan'
+import { keepVoiceClip } from '../services/reader-voice-store'
 import type { ScanResult } from '../../shared/readerLibrary'
 import { TEXT_FILE_LIMIT } from '../../shared/readerChunks'
 import { usesGpu } from '../../shared/readerQueue'
 import { appLog, fileLabel } from '../services/app-log'
-import { createLane, failureReason, jsonLines, madeTrack, pythonReason, readerRunConfig } from '../services/reader-run'
+import { createLane, failureReason, jsonLines, madeTrack, pythonReason, readerRunConfig, testSkipsPrep } from '../services/reader-run'
 import { QwenVoiceWorker } from '../services/qwen-voice-worker'
 import { ensureQwenResident, qwenWorker, stopQwenResident } from '../services/qwen-resident'
 import { parseWav, envelope, alignParts, type TimingPart } from '../../shared/readerTiming'
@@ -257,9 +258,15 @@ const inLane = createLane()
  * ★실패하면 **파이썬이 말한 사유**를 돌려준다. 예전에는 실행한 명령줄("Command failed: E:\\…")이
  *   그대로 화면에 떴다 — 사유도 아니고, 폴더 경로가 드러났다. 경로는 파일 이름만 남긴다.
  */
-async function makeChunk(body: string, v: ReaderVoice, out: string, segments: EmotionSegment[] | null = null): Promise<string> {
+/** 관측 전용 — 줄에서 실제로 시작한 때·끝난 때(본체 단조 시계)와 모델을 이번에 열었는가. 동작은 이것을 읽지 않는다. */
+/** 응답에 싣는 관측 — 본체 단계 길이(ms). */
+type SpeakTrace = { cached?: boolean; shared?: boolean; waitMs?: number; makeMs?: number; totalMs?: number; modelOpened?: boolean | null; engine?: string }
+export interface ChunkTrace { startedAt?: number; endedAt?: number; modelOpened?: boolean | null; engine?: string; madeWhileWaiting?: boolean }
+
+async function makeChunk(body: string, v: ReaderVoice, out: string, segments: EmotionSegment[] | null = null, info: ChunkTrace = {}): Promise<string> {
+  info.startedAt = performance.now()
   // 차례를 기다리는 사이 같은 글·같은 목소리가 만들어졌을 수 있다.
-  if (existsSync(out)) return out
+  if (existsSync(out)) { info.madeWhileWaiting = true; info.endedAt = performance.now(); return out }
   // ★다른 화면의 작업이 돌면 비킨다. 판정은 `synthesisGate` 한 곳이 갖는다.
   const busy = synthesisBusy('낭독')
   if (busy) throw new Error(busy)
@@ -283,6 +290,7 @@ async function makeChunk(body: string, v: ReaderVoice, out: string, segments: Em
     if (residentBuiltin(v)) {
       // ★기본 목소리는 **띄워 둔 실행기**로 — 같은 설정 파일, 같은 소리.
       const r = await readerWorker().call({ config: cfgPath })
+      info.engine = 'supertonic-resident'; info.modelOpened = !!r.loaded_now
       wav = String(r.path || '')
       note = ` 상주${r.loaded_now ? '(모델 엶)' : ''} 생성=${Number(r.gen_sec || 0).toFixed(1)}s`
       if (!wav || !existsSync(wav)) throw new Error('이 부분을 소리로 만들지 못했습니다')
@@ -298,18 +306,23 @@ async function makeChunk(body: string, v: ReaderVoice, out: string, segments: Em
       const emoModel = segments && !qv.clone ? qwenEmotionModel() : ''
       if (qv.clone) {
         const r = await qwenWorker().call({ model: qv.model, clone: qv.clone, language: 'korean', text_file: textFile, out: wav, seed: 0 })
+        info.engine = 'qwen-clone-1.7b'; info.modelOpened = !!r.loaded_now
         note = ` 상주 설계(Base 1.7B)${r.loaded_now ? '(모델 엶)' : ''} 생성=${Number(r.gen_sec || 0).toFixed(1)}s 소리=${Number(r.seconds || 0).toFixed(1)}s`
       } else if (segments && emoModel) {
         // ★감정 담아 읽기(2026-10-01) — 덩이 전체를 1.7B 로(감정 없는 덩어리도 — 목소리가 바뀌지 않게), 덩어리마다 지시.
         const r = await qwenWorker().call({ model: emoModel, speaker: qv.speaker, language: 'korean', segments, out: wav, seed: 0 })
+        info.engine = 'qwen-emotion-1.7b'; info.modelOpened = !!r.loaded_now
         const emos = segments.filter((s) => s.emotion).map((s) => s.emotion)
         note = ` 상주 감정(1.7B)${r.loaded_now ? '(모델 엶)' : ''} 덩어리=${segments.length} 감정=${emos.length ? emos.join(',') : '없음'} 생성=${Number(r.gen_sec || 0).toFixed(1)}s 소리=${Number(r.seconds || 0).toFixed(1)}s`
       } else {
         const r = await qwenWorker().speak({ model: qv.model, speaker: qv.speaker, language: 'korean', textFile, out: wav })
+        info.engine = 'qwen-0.6b'; info.modelOpened = !!r.loadedNow
         note = ` 상주${r.loadedNow ? '(모델 엶)' : ''} 생성=${r.genSec.toFixed(1)}s 소리=${r.seconds.toFixed(1)}s`
       }
       if (!existsSync(wav)) throw new Error('이 부분을 소리로 만들지 못했습니다')
     } else {
+      // 참조 목소리 — 덩이마다 새 프로세스라 늘 모델을 연다.
+      info.engine = 'separate-process'; info.modelOpened = true
       const { stdout } = await execFileAsync(py, ['-X', 'utf8', scriptPath(), '--config', cfgPath], {
         // 긴 덩이도 기본 목소리면 몇 초다. 참조 목소리는 훨씬 오래 걸린다.
         timeout: 600000, maxBuffer: 4 * 1024 * 1024,
@@ -322,6 +335,7 @@ async function makeChunk(body: string, v: ReaderVoice, out: string, segments: Em
     }
     // 지문 이름으로 옮겨 둔다 — 다음에 같은 글·같은 목소리면 곧바로 쓴다.
     writeFileSync(out, readFileSync(wav))
+    info.endedAt = performance.now()
     trimCache()
     // 동작 기록 — 글 내용 없이 글자 수·걸린 시간만. 낭독이 얼마나 빠른지 사용자가 볼 수 있다.
     appLog()?.info('reader', `만듦 kind=${v.kind} voice=${fileLabel(v.path)} 글자=${body.length} ${((Date.now() - t0) / 1000).toFixed(1)}s${note}`)
@@ -370,7 +384,7 @@ export function registerReaderIpc(): void {
    */
   ipcMain.handle('reader:prepare', async (_e, voice: unknown, prepOpts?: unknown): Promise<Reply<{ prepared: boolean }>> => {
     try {
-      if (process.env.AF_E2E === '1' && process.env.AF_E2E_GPU !== '1') return ok({ prepared: false })
+      if (testSkipsPrep()) return ok({ prepared: false })
       const prepared = await ensureQwenResident()
       // 고를 법한 모델 파일을 미리 읽어 둔다 — 처음 열 때 디스크 읽기(1.7B 7.3초)를 목록을 보는 동안 치른다.
       const v = voice as ReaderVoice | null
@@ -394,7 +408,7 @@ export function registerReaderIpc(): void {
       }
       if (v.engineId === 'qwen-custom') {
         // 검사 전용 — GPU 를 쓰지 않는 기본 검사에서는 그래픽카드에 모델을 올리지 않는다(AF_E2E_GPU=1 일 때만 연다).
-        if (process.env.AF_E2E === '1' && process.env.AF_E2E_GPU !== '1') return ok({ warmed: false, why: '검사(GPU 끔)' })
+        if (testSkipsPrep()) return ok({ warmed: false, why: '검사(GPU 끔)' })
         return ok(await inLane(async () => {
           const busy = synthesisBusy('낭독')
           if (busy) return { warmed: false, why: busy }
@@ -427,7 +441,16 @@ export function registerReaderIpc(): void {
    */
   ipcMain.handle('reader:speak', async (
     _e, text: unknown, voice: unknown, voiceKey: unknown, rawParts?: unknown, rawSegments?: unknown,
-  ): Promise<Reply<{ path: string; cached: boolean; timing: Array<[number, number]> }>> => {
+  ): Promise<Reply<{ path: string; cached: boolean; timing: Array<[number, number]>; trace?: SpeakTrace }> & { trace?: SpeakTrace }> => {
+    // 관측 — 요청이 본체에 닿은 때부터 줄 대기·생성 길이(본체 단조 시계, ms). 응답에 함께 싣는다(화면이 기록).
+    const asked = performance.now()
+    const info: ChunkTrace = {}
+    const traceOf = (extra: { cached?: boolean; shared?: boolean } = {}) => ({
+      ...extra,
+      waitMs: info.startedAt != null ? Math.round(info.startedAt - asked) : undefined,
+      makeMs: info.startedAt != null && info.endedAt != null ? Math.round(info.endedAt - info.startedAt) : undefined,
+      modelOpened: info.modelOpened ?? null, engine: info.engine,
+    })
     try {
       const body = String(text ?? '').trim()
       if (!body) throw new Error('읽을 글이 없습니다')
@@ -442,19 +465,19 @@ export function registerReaderIpc(): void {
       const out = join(readerDir(), segments
         ? chunkName(body + '\u0000' + JSON.stringify(segments.map((s) => [s.text, s.emotion])), key + '|감정')
         : chunkName(body, key))
-      if (existsSync(out)) return ok({ path: out, cached: true, timing: timingOf(out, parts) })
+      if (existsSync(out)) return ok({ path: out, cached: true, timing: timingOf(out, parts), trace: traceOf({ cached: true }) })
 
       const already = inFlight.get(out)
-      if (already) { const p = await already; return ok({ path: p, cached: false, timing: timingOf(p, parts) }) }
+      if (already) { const p = await already; return ok({ path: p, cached: false, timing: timingOf(p, parts), trace: { ...traceOf({ shared: true }), totalMs: Math.round(performance.now() - asked) } }) }
 
       // ★한 번에 하나 — 줄에 세운다. 앞 작업이 끝나야 다음이 돈다.
-      const run = inLane(() => makeChunk(body, v, out, segments))
+      const run = inLane(() => makeChunk(body, v, out, segments, info))
       inFlight.set(out, run)
       void run.finally(() => { inFlight.delete(out) }).catch(() => { /* 아래에서 받는다 */ })
       const made = await run
-      return ok({ path: made, cached: false, timing: timingOf(made, parts) })
+      return ok({ path: made, cached: !!info.madeWhileWaiting, timing: timingOf(made, parts), trace: traceOf({ cached: !!info.madeWhileWaiting }) })
     } catch (e) {
-      return fail(e)
+      return { ...fail(e), trace: traceOf() }
     }
   })
 
@@ -536,6 +559,23 @@ export function registerReaderIpc(): void {
   ipcMain.handle('reader:remember-text-dir', (_e, filePath: unknown) => {
     if (typeof filePath === 'string' && filePath) rememberFile(dialogFolderHost(), 'text', filePath)
     return true
+  })
+
+  /**
+   * 구간을 잘라 쓴 내 목소리를 **앱이 관리하는 자리**(userData/readerVoices)에 보관한다(2026-10-03).
+   * ★임시 조각 자리(refclips)는 켤 때·끌 때 치운다 — 그 경로를 저장하면 다시 켰을 때 목소리가 사라졌다. 보관 이유·비교는 reader-voice-store.
+   * @param keep 남길 보관본(고른 목소리·최근 목소리 경로).
+   */
+  ipcMain.handle('reader:keep-voice', (_e, clip: unknown, keep: unknown): Reply<{ path: string }> => {
+    try {
+      if (typeof clip !== 'string' || !clip) throw new Error('준비한 목소리 조각이 없습니다')
+      const ud = app.getPath('userData')
+      const path = keepVoiceClip(clip, {
+        tempRoot: join(ud, 'refclips'), storeDir: join(ud, 'readerVoices'),
+        keep: Array.isArray(keep) ? keep.filter((k): k is string => typeof k === 'string') : [],
+      })
+      return ok({ path })
+    } catch (e) { return fail(e) }
   })
 
   /** 쌓아 둔 낭독 조각을 비운다. 설정의 '중간 산출물 비우기' 와 같은 갈래다. */

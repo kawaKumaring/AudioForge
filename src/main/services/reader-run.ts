@@ -87,3 +87,11 @@ export function readerRunConfig(body: string, v: ReaderRunVoice, runDir: string)
     ttsSpeakerMode: 'single',
   }
 }
+
+/**
+ * 검사 모드(AF_E2E=1)는 GPU 를 쓰는 **미리 준비**(목록을 열 때 Qwen 실행기 띄우기·파일 미리 읽기 / 고를 때 모델 열기·첫 생성 준비)를 끈다.
+ * ★성능 측정은 보통 실행과 같은 준비가 필요하다 — AF_E2E_NORMAL_PREP=1(또는 GPU 검사 AF_E2E_GPU=1)이면 끄지 않는다(2026-10-03).
+ */
+export function testSkipsPrep(env: NodeJS.ProcessEnv = process.env): boolean {
+  return env.AF_E2E === '1' && env.AF_E2E_GPU !== '1' && env.AF_E2E_NORMAL_PREP !== '1'
+}

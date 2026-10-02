@@ -24,6 +24,7 @@ import { readingPlan, type ReadingPart } from '../../shared/readerText'
 import { partAt } from '../../shared/readerTiming'
 import { partEmotions, emotionRuns, runSay } from '../../shared/readerEmotion'
 import { opLog, nameOnly } from '@/lib/opLog'
+import { trace } from '@/lib/readerTrace'
 import {
   emptyQueue, nextToMake, canPlayNow, waitReason, markMaking, markReady, markFailed,
   seek, advance, atEnd, changeVoice, acceptResult, retryFailed, DEFAULT_AHEAD, usesGpu, type QueueState,
@@ -85,6 +86,10 @@ export interface ReadAloud {
 }
 
 type Plan = { say: string; parts: ReadingPart[] }
+/** 본체가 함께 돌려주는 단계 길이(본체 단조 시계, ms) — 관측 전용. */
+type SpeakTrace = { cached?: boolean; shared?: boolean; waitMs?: number; makeMs?: number; modelOpened?: boolean | null; engine?: string }
+/** 소리 요소에 붙여 두는 관측 표 — 어느 덩이를 어떤 길로 틀었나. */
+type TraceTag = { chunk: number; gen: number; via: 'normal' | 'preloaded'; reported?: boolean }
 
 export function useReadAloud(
   text: string, voice: ReaderVoicePick | null,
@@ -125,6 +130,37 @@ export function useReadAloud(
   const [part, setPart] = useState(-1)
 
   const qRef = useRef(q); qRef.current = q
+  const chunksRef = useRef(chunks); chunksRef.current = chunks
+  /**
+   * **낭독 세대** — 덩이를 다시 나누거나 목소리를 바꿀 때마다 하나 오른다. 요청 이름표 = `세대.번호`.
+   * ★결과는 그 자리로 보낸 바로 그 요청이고, 세대와 글이 그대로일 때만 받는다(2026-10-03 — 다시 나눈 뒤 늦은 앞 답이 새 자리에 들어갔다).
+   */
+  const gen = useRef(0)
+  const reqSeq = useRef(0)
+  // ── 관측(재기만 한다 — lib/readerTrace) ──
+  /** 마지막 '시작'·'문단 이동' 누름 — 다음 실제 재생 시작까지의 시간을 잰다. */
+  const askedAt = useRef<{ t: number; kind: 'start' | 'seek' } | null>(null)
+  /** 앞 덩이가 끝난 순간 — 다음 덩이 재생 시작까지의 틈. */
+  const endedAt = useRef<number | null>(null)
+  /** 재생 중 지금 덩이가 준비 안 된 상태가 시작된 때. */
+  const lowSince = useRef<number | null>(null)
+  const tags = useRef(new WeakMap<HTMLAudioElement, TraceTag>())
+  const onPlayingTrace = (el: HTMLAudioElement) => {
+    const tag = tags.current.get(el)
+    if (!tag) return
+    const now = performance.now()
+    const first = !tag.reported
+    tag.reported = true
+    const asked = askedAt.current
+    const gap = endedAt.current
+    trace('play-start', {
+      chunk: tag.chunk, gen: tag.gen, via: tag.via, first,
+      sinceRequestMs: asked && first ? Math.round(now - asked.t) : undefined, after: asked && first ? asked.kind : undefined,
+      gapMs: gap != null && first ? Math.round(now - gap) : undefined,
+    }, now)
+    if (first) { askedAt.current = null; endedAt.current = null }
+    if (lowSince.current != null) { trace('buffer-low-end', { chunk: tag.chunk, lowMs: Math.round(now - lowSince.current) }, now); lowSince.current = null }
+  }
   /** 소리 요소 둘 — 하나가 울리는 동안 다른 하나에 다음 덩이를 불러 둔다. */
   const els = useRef<HTMLAudioElement[]>([])
   const audioRef = useRef<HTMLAudioElement | null>(null)
@@ -138,12 +174,17 @@ export function useReadAloud(
    *   '차례를 기다리는 중' 에 멈췄다(실측). 목소리를 A→B→A 로 바꾸는 장면도 같은 구조라
    *   `reader-aloud.component.mjs` 2-1 이 붙든다.
    */
-  const asking = useRef(new Map<string, Promise<{ data?: { path: string; cached: boolean; timing?: Array<[number, number]> }; error?: string }>>())
+  const asking = useRef(new Map<string, Promise<{ data?: { path: string; cached: boolean; timing?: Array<[number, number]>; trace?: SpeakTrace }; error?: string; trace?: SpeakTrace }>>())
   const claim = useAppStore((s) => s.audioClaim)
 
   const element = (k: 0 | 1): HTMLAudioElement => {
     // 재생 빠르기를 따른다(낭독 전용 — playbackVolume).
-    if (!els.current[k]) els.current[k] = createManagedAudio(undefined, { readAloud: true })
+    if (!els.current[k]) {
+      const el = createManagedAudio(undefined, { readAloud: true })
+      // ★관측 전용 — 소리가 **실제로 흐르기 시작한** 순간(playing). 동작은 이것을 읽지 않는다.
+      el.addEventListener('playing', () => onPlayingTrace(el))
+      els.current[k] = el
+    }
     return els.current[k]
   }
   const stopAudio = useCallback(() => {
@@ -163,9 +204,11 @@ export function useReadAloud(
   useEffect(() => {
     if (builtFor.current === chunks) return
     builtFor.current = chunks
+    gen.current++
     timings.current = new Map()
     // 경계가 바뀐 것이면 그 자리에서, 글이 바뀐 것이면 처음에서.
     const start = Math.max(0, chunkAt(chunks, breakAt))
+    trace('resplit', { gen: gen.current, chunk: start, count: chunks.length })
     setQ({ ...emptyQueue(chunks.length, voiceKey, aheadFor(voice)), at: start }); setFault('')
   }, [chunks])
   // ★목소리를 바꾸면 **곧바로** 적용한다 (2026-09-29 사용자 신고: "선택하면 적용이 되지 않는다").
@@ -175,6 +218,8 @@ export function useReadAloud(
   useEffect(() => {
     if (voiceSeen.current === voiceKey) return
     voiceSeen.current = voiceKey
+    gen.current++
+    trace('voice-change', { gen: gen.current, kind: voice?.kind, engine: voice?.engineId || '' })
     if (voice) opLog('reader', `목소리·설정 바꿈 — ${voice.kind}:${nameOnly(voice.path)}${skipHanja ? ' · 괄호 속 한자 뺌' : ''}`)
     stopAudio()
     timings.current = new Map()
@@ -191,6 +236,8 @@ export function useReadAloud(
 
   const stop = useCallback(() => {
     opLog('reader', `멈춤 — 덩이 ${qRef.current.at + 1}/${qRef.current.count}`)
+    trace('stop', { chunk: qRef.current.at, gen: gen.current })
+    askedAt.current = null; lowSince.current = null
     setPlaying(false)
     stopAudio()
   }, [stopAudio])
@@ -233,6 +280,7 @@ export function useReadAloud(
     //   개발 실행(StrictMode)은 이 효과를 두 번 돌려 같은 요청이 두 번 나갔다(검사로 확인).
     const ask = `${madeFor}\n${withEmotion ? '감정|' : ''}${say}`
     let run = asking.current.get(ask)
+    const shared = !!run
     if (!run) {
       // ★감정 담아 읽기 — 같은 감정의 이웃 구절을 덩어리로 묶어 덩어리마다 보낸다(감정이 없어도 보낸다 — 덩이 전체가 같은 모델이 되게).
       const segments = withEmotion
@@ -245,12 +293,25 @@ export function useReadAloud(
       asking.current.set(ask, run)
       void run.finally(() => { asking.current.delete(ask) }).catch(() => { /* 아래에서 받는다 */ })
     }
-    setQ((cur) => markMaking(cur, i))
+    const madeGen = gen.current
+    const req = `${madeGen}.${++reqSeq.current}`
+    const madeText = chunk.text
+    // ★받는 조건 — 같은 목소리 · 이 자리로 보낸 **바로 이 요청** · 같은 세대 · 같은 글. 하나라도 다르면 성공도 오류도 버린다.
+    const mine = () => acceptResult(qRef.current, i, madeFor, req) && gen.current === madeGen && chunksRef.current[i]?.text === madeText
+    trace('gen-request', { req, gen: madeGen, chunk: i, chars: say.length, kind: voice.kind, engine: voice.engineId || '', shared })
+    setQ((cur) => markMaking(cur, i, req))
     void run
       .then((r) => {
+        // 관측 — 받아들였는지와 본체 단계 길이. 생성 시작은 응답 시각에서 생성 길이를 뺀 이 창의 시각(derived).
+        const now = performance.now()
+        const tr: SpeakTrace = r.data?.trace || r.trace || {}
+        const accepted = aliveRef.current && mine()
+        if (tr.makeMs && !tr.cached) trace('gen-start', { req, gen: madeGen, chunk: i, derived: true }, now - tr.makeMs)
+        trace('gen-done', { req, gen: madeGen, chunk: i, ok: !r.error && !!r.data?.path, cached: !!tr.cached, shared: !!tr.shared || shared,
+          modelOpened: tr.modelOpened ?? null, waitMs: tr.waitMs, makeMs: tr.makeMs, engine: tr.engine, accepted }, now)
         if (!aliveRef.current) return
-        // ★늦게 온 결과가 새 목소리의 자리를 덮지 않는다.
-        if (!acceptResult(qRef.current, i, madeFor)) return
+        // ★늦게 온 결과가 새 목소리·새 덩이의 자리를 덮지 않는다.
+        if (!mine()) return
         if (r.error || !r.data?.path) {
           setQ((cur) => markFailed(cur, i, r.error || '이 부분을 만들지 못했습니다'))
           return
@@ -260,8 +321,9 @@ export function useReadAloud(
         setQ((cur) => markReady(cur, i, r.data!.path))
       })
       .catch((e) => {
+        trace('gen-done', { req, gen: madeGen, chunk: i, ok: false, accepted: aliveRef.current && mine() })
         if (!aliveRef.current) return
-        if (!acceptResult(qRef.current, i, madeFor)) return
+        if (!mine()) return
         setQ((cur) => markFailed(cur, i, (e as Error)?.message || '이 부분을 만들지 못했습니다'))
       })
   }, [playing, q, chunks, voice, voiceKey, cacheKey, planOf, withEmotion])
@@ -270,6 +332,7 @@ export function useReadAloud(
   const attach = useCallback((el: HTMLAudioElement) => {
     el.onended = () => {
       if (!aliveRef.current) return
+      endedAt.current = performance.now()
       const cur = qRef.current
       // 마지막이면 멈춘다 — 조용히 처음으로 돌아가지 않는다.
       if (atEnd(cur)) { opLog('reader', `끝까지 읽음 — ${cur.count}덩이`); setPlaying(false); return }
@@ -282,6 +345,7 @@ export function useReadAloud(
           preloaded.current = ''
           audioRef.current = other
           playedRef.current = tag
+          tags.current.set(other, { chunk: cur.at + 1, gen: gen.current, via: 'preloaded' })
           attach(other)
           void other.play().catch((e) => {
             if ((e as { name?: string } | null)?.name === 'AbortError') return
@@ -325,6 +389,7 @@ export function useReadAloud(
 
     const el = audioRef.current || element(0)
     audioRef.current = el
+    tags.current.set(el, { chunk: q.at, gen: gen.current, via: 'normal' })
     useAppStore.getState().claimAudio('reader')
     attach(el)
     // ★주소는 **본체에게 묻는다.** 화면이 직접 만들면 규칙이 갈리고, 자리가 바뀐 날
@@ -344,6 +409,15 @@ export function useReadAloud(
       setPlaying(false)
     })
   }, [playing, q.at, q.items])
+
+  // 관측 — 재생 중인데 지금 덩이가 준비되지 않았다(버퍼 부족). 끝은 다음 실제 재생 시작(onPlayingTrace).
+  const short = playing && !canPlayNow(q) && q.items[q.at]?.state !== 'failed'
+  useEffect(() => {
+    if (!short || lowSince.current != null) return
+    lowSince.current = performance.now()
+    // 시작·이동 직후의 기다림은 '첫 소리 대기' 다 — 재생 도중의 부족과 구분한다(initial).
+    trace('buffer-low-start', { chunk: q.at, gen: gen.current, initial: !!askedAt.current, state: q.items[q.at]?.state || '' }, lowSince.current)
+  }, [short, q.at])
 
   // ── 다음 덩이를 미리 불러 둔다(끊김 없이 넘어가기) ─────────────────────────
   // ★덩이 사이에서 예전에는 [끝 → 화면 다시 그림 → 본체에 주소 묻기 → 불러오기 → 틀기] 를 차례로 했다.
@@ -410,6 +484,9 @@ export function useReadAloud(
     setQ((cur) => retryFailed(cur))
     // ★동작 기록 — 글 내용은 적지 않는다. 자리·목소리 종류·파일 이름·설정만.
     opLog('reader', `시작 — 덩이 ${qRef.current.at + 1}/${chunks.length} · 목소리 ${voice.kind}:${nameOnly(voice.path)}${skipHanja ? ' · 괄호 속 한자 뺌' : ''}`)
+    askedAt.current = { t: performance.now(), kind: 'start' }; endedAt.current = null
+    // readyAtRequest — 누르기 전에 이미 만들어 둔 자리(큐가 들고 있음 — 요청도 캐시 조회도 없다)인가.
+    trace('play-request', { chunk: qRef.current.at, gen: gen.current, kind: voice.kind, engine: voice.engineId || '', readyAtRequest: qRef.current.items[qRef.current.at]?.state === 'ready' }, askedAt.current.t)
     setPlaying(true)
   }, [voice, chunks.length, skipHanja])
 
@@ -418,6 +495,9 @@ export function useReadAloud(
     if (chunkAt(chunks, c) < 0) return
     stopAudio()
     setFault('')
+    // 관측 — 이동 요청. 다음 play-start 의 sinceRequestMs 가 '이동 후 첫 소리'.
+    askedAt.current = { t: performance.now(), kind: 'seek' }; endedAt.current = null; lowSince.current = null
+    trace('seek-request', { fromChunk: qRef.current.at, gen: gen.current, sameCut: c === breakAt }, askedAt.current.t)
     if (c === breakAt) {
       // 이미 그 자리에서 끊겨 있다 — 자리만 옮긴다.
       const i = chunkAt(chunks, c)

@@ -41,7 +41,7 @@ test('감정은 보내지 않고, **안 보낸다고 말한다**', () => {
   const r = cardApplied({ ...base, emotion: '기쁨' })
   const note = r.notes.find((n) => n.field === 'emotion')
   assert.ok(note, '감정을 조용히 버린다 — 사용자는 적용된 줄 안다')
-  assert.match(note.reason, /참조/, '왜 안 되는지 말하지 않으면 고장으로 읽힌다')
+  assert.match(note.reason, /Qwen 지정 목소리/, '왜 안 되는지(어느 목소리에서만 되는지) 말하지 않으면 고장으로 읽힌다')
 })
 
 test('기본 감정은 잔소리하지 않는다', () => {
@@ -142,4 +142,23 @@ test('기록이 없는 생성본은 수정 전도 지금 것도 아니다', () =
   assert.equal(takeMark({
     text: '옛 대사', sourcePath: 'E:/a.wav', settings, applied: cardApplied(settings),
   }, now), 'stale')
+})
+
+// ★감정 표시 = 실제 요청(2026-10-03 관리자 검수). 보내는 판정(cardScriptWithEmotion)과 '미적용' 표시가 같은 근거여야 한다.
+test('감정 — 실제로 보내는 목소리에는 미적용 표시가 없고, 안 보내는 목소리에는 있다', async () => {
+  const { cardScriptWithEmotion } = await import('./synthesisCardVoice.ts')
+  const qwen = { kind: 'builtin' as const, voice: { engineId: 'qwen-custom', modelId: 'sohee', label: 'Qwen 소희', language: 'ko', path: '/m/config.json', sampleRate: 24000, emotion: true } }
+  const qwenNoEmo = { ...qwen, voice: { ...qwen.voice, emotion: false } }
+  const supertonic = { kind: 'builtin' as const, voice: { engineId: 'supertonic', modelId: 'F1', label: '여성 1', language: 'ko', path: '/m/F1.json', sampleRate: 44100 } }
+  const ref = { kind: 'reference' as const, source: { path: 'E:/a.wav', name: 'a.wav', duration: 5 } }
+  const s = { ...base, emotion: '기쁨' }
+  for (const [name, v, sent] of [['Qwen+1.7B', qwen, true], ['Qwen 1.7B 없음', qwenNoEmo, false], ['Supertonic', supertonic, false], ['참조', ref, false]] as const) {
+    const script = cardScriptWithEmotion('안녕하세요.', s.emotion, v as never)
+    const tagged = script.startsWith('[기쁨]')
+    const noted = cardApplied(s, v as never).notes.some((n) => n.field === 'emotion')
+    assert.equal(tagged, sent, `${name}: 요청에 감정이 ${sent ? '실려야' : '없어야'} 한다`)
+    assert.equal(noted, !sent, `${name}: 요청 ${tagged ? '보냄' : '안 보냄'} — '미적용' 표시는 ${tagged ? '없어야' : '있어야'} 한다`)
+  }
+  // 목록에 없는 옛 감정 값은 보내지 않는다 — 받는 목소리라도 미적용으로 말한다.
+  assert.ok(cardApplied({ ...base, emotion: '옛감정' }, qwen as never).notes.some((n) => n.field === 'emotion'))
 })

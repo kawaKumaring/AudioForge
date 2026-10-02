@@ -749,7 +749,7 @@ export default function SynthesisCardWorkspace() {
       const ref = state.refs[card.id]
       const voice = cardVoiceOf(card)
       // ★엔진이 못 받는 설정을 **말한다.** 조용히 무시하거나 적용된 척하지 않는다.
-      const notes = cardApplied(card.settings).notes
+      const notes = cardApplied(card.settings, voice).notes
       const fault = voiceGenerateFault({
         voice, text: card.text,
         refReady: !!(ref && ref.phase === 'ready' && ref.clip),

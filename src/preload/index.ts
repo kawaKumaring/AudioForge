@@ -19,6 +19,9 @@ import type {
   ReferenceLibraryRemoveResponse, ReferenceLibrarySelectResponse,
 } from '../shared/referenceLibraryApi'
 
+/** 낭독 관측 — 본체 단계 길이(ms, 본체 단조 시계). 동작은 읽지 않는다. */
+type SpeakTraceReply = { cached?: boolean; shared?: boolean; waitMs?: number; makeMs?: number; totalMs?: number; modelOpened?: boolean | null; engine?: string }
+
 const api = {
   audio: {
     // multi=true 면 string[] 을 돌려준다. 인자 없는 기존 호출은 string|null 그대로다.
@@ -286,16 +289,19 @@ const api = {
   reader: {
     speak: (text: string, voice: { kind: 'builtin' | 'reference'; path: string; engineId?: string },
       voiceKey: string, parts?: Array<{ weight: number; strong: boolean }>,
-      segments?: Array<{ text: string; emotion: string }>): Promise<{ data?: { path: string; cached: boolean; timing?: Array<[number, number]> }; error?: string }> =>
+      segments?: Array<{ text: string; emotion: string }>): Promise<{ data?: { path: string; cached: boolean; timing?: Array<[number, number]>; trace?: SpeakTraceReply }; error?: string; trace?: SpeakTraceReply }> =>
       ipcRenderer.invoke('reader:speak', text, voice, voiceKey, parts, segments),
     /** 목소리를 미리 연다 — 고른 순간 모델을 올려 둬 첫 조각을 기다리지 않게. */
     warm: (voice: { kind: 'builtin' | 'reference'; path: string; engineId?: string }, opts?: { emotion?: boolean }): Promise<{ data?: { warmed: boolean; why?: string }; error?: string }> =>
-      ipcRenderer.invoke('reader:warm', voice, opts),
-    /** Qwen 실행기를 모델 없이 띄워 둔다(목록을 열 때) — 고를 때 모델만 열면 되게. */
-    prepare: (voice?: { kind: 'builtin' | 'reference'; path: string; engineId?: string }, opts?: { emotion?: boolean }): Promise<{ data?: { prepared: boolean }; error?: string }> =>
+      ipcRenderer.invoke('reader:warm', voice, opts),
+    /** Qwen 실행기를 모델 없이 띄워 둔다(목록을 열 때) — 고를 때 모델만 열면 되게. */
+    prepare: (voice?: { kind: 'builtin' | 'reference'; path: string; engineId?: string }, opts?: { emotion?: boolean }): Promise<{ data?: { prepared: boolean }; error?: string }> =>
       ipcRenderer.invoke('reader:prepare', voice, opts),
     clearCache: (): Promise<{ removed: number; freedMb: number }> =>
       ipcRenderer.invoke('reader:clear-cache'),
+    /** 구간을 잘라 쓴 내 목소리를 앱이 관리하는 자리에 보관하고 그 경로를 돌려준다. keep = 남길 보관본. */
+    keepVoice: (clip: string, keep: string[]): Promise<{ data?: { path: string }; error?: string }> =>
+      ipcRenderer.invoke('reader:keep-voice', clip, keep),
     /** 줄에 선 낭독 조각을 다 만들 때까지 기다린다(참조 목소리 준비 전에). */
     idle: (): Promise<{ data?: true; error?: string }> =>
       ipcRenderer.invoke('reader:idle'),
@@ -415,7 +421,10 @@ const api = {
     copyToClipboard: (text: string) => ipcRenderer.invoke('app:copy-to-clipboard', text)
   },
   // E2E 전용 게이트 — AF_E2E=1 로 실행할 때만 true. 이 값으로만 renderer가 테스트 훅을 노출한다.
-  _e2e: process.env.AF_E2E === '1'
+  _e2e: process.env.AF_E2E === '1',
+  /** 실행 방식 — 관측 기록(readerTrace)이 함께 싣는다. 검사 모드 수치를 보통 실행 수치로 읽지 않게. */
+  _runMode: process.env.AF_E2E !== '1' ? 'app'
+    : (process.env.AF_E2E_NORMAL_PREP === '1' || process.env.AF_E2E_GPU === '1') ? 'test-normal-prep' : 'test(prep-off)'
 }
 
 contextBridge.exposeInMainWorld('api', api)

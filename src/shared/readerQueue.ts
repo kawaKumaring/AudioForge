@@ -29,6 +29,8 @@ export interface QueueItem {
   path?: string
   /** 만들지 못한 사유. `failed` 일 때만 있다. */
   why?: string
+  /** 이 자리로 보낸 **요청 하나의 이름표.** `making` 일 때만 있다 — 결과는 이 이름표가 맞을 때만 받는다(2026-10-03). */
+  req?: string
 }
 
 export interface QueueState {
@@ -108,8 +110,8 @@ export function waitReason(q: QueueState): string {
   return '차례를 기다리는 중입니다'
 }
 
-export function markMaking(q: QueueState, i: number): QueueState {
-  return patch(q, i, { state: 'making' })
+export function markMaking(q: QueueState, i: number, req?: string): QueueState {
+  return patch(q, i, req ? { state: 'making', req } : { state: 'making' })
 }
 
 export function markReady(q: QueueState, i: number, path: string): QueueState {
@@ -175,9 +177,12 @@ export function changeVoice(q: QueueState, voiceKey: string): QueueState {
  * ★늦게 온 결과가 **새 목소리의 자리를 덮지 않게** 한다. 목소리를 바꾼 뒤
  *   옛 요청이 돌아오면 버린다(인수인계 8항).
  */
-export function acceptResult(q: QueueState, i: number, voiceKey: string): boolean {
+export function acceptResult(q: QueueState, i: number, voiceKey: string, req: string): boolean {
   if (voiceKey !== q.voiceKey) return false
-  return q.items[i]?.state === 'making'
+  const it = q.items[i]
+  // ★목소리만 같다고 받지 않는다(2026-10-03 재현): 문단을 눌러 덩이를 다시 나누면 새 큐의 **같은 번호**가 다른 글로 '만드는 중' 이 된다.
+  //   그 자리로 보낸 바로 그 요청의 답일 때만 받는다 — 앞 요청의 성공도 오류도 새 자리에 들어가지 않는다.
+  return it?.state === 'making' && !!req && it.req === req
 }
 
 /**

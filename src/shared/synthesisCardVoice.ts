@@ -51,12 +51,20 @@ export const CARD_EMOTIONS: readonly string[] = [
 export const CARD_EMOTION_NONE = '자연스럽게'
 
 /**
+ * 이 감정이 **이 목소리로 실제 요청에 실리는가** — 요청(cardScriptWithEmotion)과 '미적용' 표시(cardApplied)가 함께 쓰는 판정 하나.
+ * ★실린다는 것은 '보낸다' 일 뿐, 감정이 소리에 잘 드러난다는 뜻이 아니다.
+ */
+export function emotionSent(emotion: string, v: CardVoice | null | undefined): boolean {
+  if (!v || !emotion || emotion === CARD_EMOTION_NONE || !CARD_EMOTIONS.includes(emotion)) return false
+  return voiceSupports(v).emotion
+}
+
+/**
  * 카드 감정을 대사에 싣는다 — **감정 태그가 없는 줄마다** `[감정] ` 을 붙인다(태그는 그 줄에만 걸린다 — tts_grammar 실측).
  * 사용자가 줄에 직접 쓴 태그는 그대로 둔다(그 줄은 그 감정). 감정이 없거나 이 목소리가 받지 않으면 대사 그대로.
  */
 export function cardScriptWithEmotion(text: string, emotion: string, v: CardVoice): string {
-  if (!emotion || emotion === CARD_EMOTION_NONE || !CARD_EMOTIONS.includes(emotion)) return text
-  if (!voiceSupports(v).emotion) return text
+  if (!emotionSent(emotion, v)) return text
   return text.split('\n').map((line) => (!line.trim() || /^\s*\[/.test(line)) ? line : `[${emotion}] ${line.replace(/^\s+/, '')}`).join('\n')
 }
 

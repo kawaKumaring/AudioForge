@@ -562,11 +562,22 @@ export default function ReaderWorkspace() {
     })
     setPrep('')
     if (outcome === 'ready') {
-      // 조각이 비면 원본이 그대로 쓸 만하다는 뜻이다(3~10초 · 품질 통과).
-      useReader.setState({ voice: label, pick: { kind: 'reference', path: clip || at, label } })
-      // 다음에 목소리 고르기에서 다시 고를 수 있게 — 준비를 다시 하지 않는다. 고른 목소리 지정도 함께 남긴다(파일은 복사하지 않는다).
-      updatePrefs({ recentVoices: rememberVoice(prefs.recentVoices, { path: clip || at, label }), voice: { kind: 'reference', path: clip || at, label } })
-      opLog('reader', `참조 목소리 준비됨 — ${label} · ${clip ? '구간을 잘라 씀' : '원본 그대로'}`)
+      // 조각이 비면 원본이 그대로 쓸 만하다는 뜻이다(3~10초 · 품질 통과) — 원본 경로를 그대로 쓴다(복사하지 않는다).
+      // ★잘라 쓴 조각은 임시 자리에 있다(켤 때·끌 때 치움) — 앱이 관리하는 자리에 보관한 경로를 쓴다(2026-10-03: 다시 켜면 목소리가 사라졌다).
+      let path = at
+      let lasting = true
+      if (clip) {
+        const keep = [...prefs.recentVoices.map((r) => r.path), prefs.voice?.kind === 'reference' ? prefs.voice.path : ''].filter(Boolean)
+        const kept = await window.api.reader.keepVoice(clip, keep)
+        if (kept.data?.path) path = kept.data.path
+        else { path = clip; lasting = false }
+      }
+      useReader.setState({ voice: label, pick: { kind: 'reference', path, label } })
+      // 다음에 목소리 고르기에서 다시 고를 수 있게 — 준비를 다시 하지 않는다. 고른 목소리 지정도 함께 남긴다.
+      // ★보관하지 못한 임시 조각은 저장하지 않는다 — 다음 실행에 없는 경로를 남기지 않는다(이번 실행에서만 쓴다).
+      if (lasting) updatePrefs({ recentVoices: rememberVoice(prefs.recentVoices, { path, label }), voice: { kind: 'reference', path, label } })
+      else setError('이 목소리를 보관하지 못해 이번 실행에서만 씁니다 — 다시 켜면 다시 골라 주세요.')
+      opLog('reader', `참조 목소리 준비됨 — ${label} · ${clip ? (lasting ? '구간을 잘라 씀 · 보관함' : '구간을 잘라 씀 · 보관 못 함') : '원본 그대로'}`)
       return
     }
     const why = outcome === 'needs_region'

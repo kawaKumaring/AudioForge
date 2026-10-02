@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 // @ts-ignore TS5097: node --test 가 이 파일을 곧바로 읽는다(저장소 관례).
-import { createLane, jsonLines, pythonReason, madeTrack, failureReason, readerRunConfig } from './reader-run.ts'
+import { createLane, jsonLines, pythonReason, madeTrack, failureReason, readerRunConfig, testSkipsPrep } from './reader-run.ts'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -72,4 +72,11 @@ test('우리가 던진 문구는 그대로 보인다', () => {
 
 test('시간 초과는 그렇다고 말한다', () => {
   assert.equal(failureReason({ killed: true, message: 'Command failed: …' }), '너무 오래 걸려 멈췄습니다')
+})
+
+test('검사 모드는 미리 준비를 끄고, 보통 준비(AF_E2E_NORMAL_PREP)·GPU 검사는 끄지 않는다(2026-10-03)', () => {
+  assert.equal(testSkipsPrep({}), false, '보통 실행은 끄지 않는다')
+  assert.equal(testSkipsPrep({ AF_E2E: '1' }), true)
+  assert.equal(testSkipsPrep({ AF_E2E: '1', AF_E2E_NORMAL_PREP: '1' }), false)
+  assert.equal(testSkipsPrep({ AF_E2E: '1', AF_E2E_GPU: '1' }), false)
 })

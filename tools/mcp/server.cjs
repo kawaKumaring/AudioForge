@@ -106,7 +106,7 @@ const DIALOG_PATCH = `(({ dialog }) => {
   return true
 })`
 
-async function startApp ({ visible = false, build = 'auto', width = 1280, height = 860, keepData = false } = {}) {
+async function startApp ({ visible = false, build = 'auto', width = 1280, height = 860, keepData = false, prep = 'test' } = {}) {
   if (session) return { already: true, ...(await status()) }
   let built = null
   const bs = buildState()
@@ -122,10 +122,13 @@ async function startApp ({ visible = false, build = 'auto', width = 1280, height
     ...process.env, AF_E2E: '1', AF_E2E_OFFSCREEN: visible ? '0' : '1', AF_E2E_USER_DATA: userData,
     TEMP: tmp, TMP: tmp, TMPDIR: tmp, AF_TEST_RUN_DIR: tmp, HF_HUB_OFFLINE: '1',
   }
+  // ★prep:'normal' — 보통 실행과 같은 **미리 준비**(낭독 목록을 열 때 Qwen 실행기·파일 미리 읽기, 고를 때 모델 열기, 켤 때 합성 라이브러리 미리 읽기).
+  //   검사 기본('test')은 이것들을 끈다 — 그 수치를 보통 실행 성능으로 읽으면 안 된다. 'normal' 은 GPU 를 쓴다.
+  if (prep === 'normal') env.AF_E2E_NORMAL_PREP = '1'; else delete env.AF_E2E_NORMAL_PREP
   delete env.ELECTRON_RUN_AS_NODE // 있으면 electron 이 Node 로 돌아 창을 못 띄운다
   const { _electron } = playwright()
   const app = await _electron.launch({ args: [path.join('out', 'main', 'index.js')], cwd: ROOT, env, timeout: 90000 })
-  const s = { app, visible, userData, tmp, pages: new Map() }
+  const s = { app, visible, userData, tmp, prep, pages: new Map() }
   session = s
   const proc = app.process()
   const keep = (src, lv) => (b) => { for (const line of String(b).split(/\r?\n/)) if (line.trim()) record(src, lv, line) }
@@ -148,7 +151,7 @@ async function startApp ({ visible = false, build = 'auto', width = 1280, height
     await sleep(250)
   }
   if (width && height) await resize({ window: 'main', width, height })
-  return { started: true, visible, build: built ? '빌드함' : (bs.stale ? '빌드 오래됨(건너뜀)' : '최신'), ...(await status()) }
+  return { started: true, visible, prep: prep === 'normal' ? 'normal(보통 실행과 같은 미리 준비 · GPU 사용)' : 'test(미리 준비 꺼짐 — 성능 수치로 쓰지 말 것)', build: built ? '빌드함' : (bs.stale ? '빌드 오래됨(건너뜀)' : '최신'), ...(await status()) }
 }
 async function stopApp ({ keepData = false } = {}) {
   if (!session) return { stopped: false, reason: '실행 중 아님' }
@@ -188,7 +191,8 @@ async function resize ({ window = 'main', width, height }) {
 const WIN = { type: 'string', description: "대상 창: 'main'(기본) · 'console'(콘솔 창 — 설정에서 콘솔을 켰을 때)" }
 const TARGET = { type: 'string', description: "요소 지정: 'testid:reader-play'(data-testid — 가장 확실) · '@번호'(ui_query 의 ref) · CSS 선택자 · 보이는 글자('▶ 들어 보기')" }
 const TOOLS = [
-  { name: 'app_start', description: 'AudioForge 를 실행한다(이미 실행 중이면 상태만). 기본은 화면 밖·포커스 없음 창이라 사용자 화면·마우스를 방해하지 않는다. 소스가 out/ 보다 새로우면 자동 빌드. 사용자 설정·작업은 임시 폴더로 격리(사용자 데이터 불변). OS 파일 창은 dialog_queue 로 넣어 둔 응답이 자동으로 쓰인다.', inputSchema: { type: 'object', properties: { visible: { type: 'boolean', description: 'true 면 보이는 창(사람이 함께 볼 때). 기본 false' }, build: { type: 'string', enum: ['auto', 'always', 'never'] }, width: { type: 'number' }, height: { type: 'number' } } } },
+  { name: 'app_start', description: 'AudioForge 를 실행한다(이미 실행 중이면 상태만). 기본은 화면 밖·포커스 없음 창이라 사용자 화면·마우스를 방해하지 않는다. 소스가 out/ 보다 새로우면 자동 빌드. 사용자 설정·작업은 임시 폴더로 격리(사용자 데이터 불변). OS 파일 창은 dialog_queue 로 넣어 둔 응답이 자동으로 쓰인다. ★성능 측정은 prep:"normal" — 기본(test)은 낭독 미리 준비(Qwen 실행기 띄우기·모델 열기·라이브러리 미리 읽기)를 끈다.', inputSchema: { type: 'object', properties: { visible: { type: 'boolean', description: 'true 면 보이는 창(사람이 함께 볼 때). 기본 false' }, build: { type: 'string', enum: ['auto', 'always', 'never'] }, width: { type: 'number' }, height: { type: 'number' }, prep: { type: 'string', enum: ['test', 'normal'], description: "'normal' = 보통 실행과 같은 미리 준비(GPU 사용) · 기본 'test' = 끔" } } } },
+  { name: 'reader_trace', description: '낭독 관측 기록(최근 500개, 단조 시계 ms) — 재생 요청·덩이 요청(req·세대)·생성 시작·완료(줄 대기·생성 길이·캐시 적중·모델 처음 엶)·실제 재생 시작(playing)·버퍼 부족·문단 이동 후 첫 소리. mode 로 실행 방식(test/normal-prep/app)을 함께 준다. 본문·경로 없음.', inputSchema: { type: 'object', properties: { clear: { type: 'boolean', description: 'true 면 읽은 뒤 비운다(다음 측정을 새로)' }, window: WIN } } },
   { name: 'app_stop', description: 'AudioForge 를 종료하고 임시 폴더를 지운다.', inputSchema: { type: 'object', properties: {} } },
   { name: 'app_status', description: '실행 여부 · 창 목록(kind·위치·포커스) · 대화상자 응답 대기 수 · 마지막 기록 번호.', inputSchema: { type: 'object', properties: {} } },
   { name: 'app_reload', description: '창 화면을 새로 고친다.', inputSchema: { type: 'object', properties: { window: WIN } } },
@@ -237,6 +241,7 @@ function appLogLines () {
 }
 const HANDLERS = {
   app_start: (a) => startApp(a),
+  reader_trace: ({ clear = false, window = 'main' }) => inPage(window, `(() => { const t = window.__readerTrace; if (!t) return { error: '관측 기록이 없습니다 — 낭독 화면을 한 번 연 뒤에 생깁니다' }; const d = t.dump(); if (${clear ? 'true' : 'false'}) t.clear(); return d })()`),
   app_stop: () => stopApp(),
   app_status: () => status(),
   app_reload: async ({ window = 'main' }) => { const p = await findPage(window); await p.reload(); return true },
@@ -447,8 +452,9 @@ const HANDLERS = {
   app_restart: async ({ keepData = true, visible }) => {
     if (!session) throw new Error('앱이 실행 중이 아닙니다 — 먼저 app_start')
     const v = visible == null ? session.visible : !!visible
+    const prep = session.prep         // 끄면 session 이 비므로 먼저 붙든다
     await stopApp({ keepData })
-    return startApp({ visible: v, build: 'never', keepData })
+    return startApp({ visible: v, build: 'never', keepData, prep })
   },
   errors: async ({ since = 0, limit = 100 }) => {
     await dialogLogs()
