@@ -50,7 +50,9 @@ async function drag(from, to, after, holdY) {
     const g = await geo()
     const r = await win.getByTestId('generation-card').nth(to).boundingBox()
     const mid = r.y + r.height / 2
-    const lo = after ? Math.max(mid + 6, g.top + 6) : Math.max(r.y + 6, g.top + 6), hi = after ? Math.min(r.y + r.height - 6, g.bottom - 6) : Math.min(mid - 6, g.bottom - 6)
+    // 놓는 자리는 칸 끝 굴림 영역(64px) 밖 — 그 안에 놓으면 잰 뒤에도 목록이 굴러 놓는 자리가 밀린다
+    const E = 70
+    const lo = after ? Math.max(mid + 6, g.top + E) : Math.max(r.y + 6, g.top + E), hi = after ? Math.min(r.y + r.height - 6, g.bottom - E) : Math.min(mid - 6, g.bottom - E)
     if (hi - lo >= 8) { await win.mouse.move(r.x + 120, (lo + hi) / 2, { steps: 6 }); await win.mouse.up(); dropped = true; break }
     await win.mouse.move(r.x + 120, holdY(g) + (tries % 2), { steps: 1 }); await win.waitForTimeout(60)
   }

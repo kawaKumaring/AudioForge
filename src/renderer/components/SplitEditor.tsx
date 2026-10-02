@@ -636,9 +636,11 @@ export default function SplitEditor() {
         <div style={{ background: 'var(--bg-base)', borderRadius: 10, padding: 10 }}>
           <div ref={containerRef} data-testid="split-edit-wave" title="두 번 클릭: 분할점 추가 · 분할선 끌기: 위치 변경"/>
           <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) 32px minmax(0,1fr)', gap: 8, alignItems: 'center', marginTop: 8 }}>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{fmtTime(currentTime)}</span>
+            {/* ★파형이 준비되기 전에는 길이를 모른다 — 0:00 으로 보이면 확정된 길이처럼 읽힌다(2026-10-03 캡처: 불러오는 중 0:00 / 0:00). */}
+            <span data-testid="split-current-time" style={{ fontSize: 11, color: 'var(--text-muted)' }}>{waveReady ? fmtTime(currentTime) : '—'}</span>
             <button type="button" aria-label={isPlaying ? '분할 파형 일시정지' : '분할 파형 재생'} disabled={!waveReady} onClick={() => { pieceStopRef.current = null; setPlayingPiece(null); beginPlayback(); void wsRef.current?.playPause().catch(() => setWaveError('재생하지 못했습니다')) }} style={{ width: 32, height: 32, padding: 0, border: 0, borderRadius: '50%', background: 'var(--accent-glow)', color: 'var(--accent-light)' }}>{isPlaying ? 'Ⅱ' : '▶'}</button>
-            <span style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'right' }}>{fmtTime(duration)}</span>
+            <span data-testid="split-duration" title={waveReady && duration > 0 ? undefined : (waveError ? '파형을 읽지 못했습니다' : '길이 확인 중')}
+              style={{ fontSize: 11, color: 'var(--text-muted)', textAlign: 'right' }}>{waveReady && duration > 0 ? fmtTime(duration) : '—'}</span>
           </div>
 
           {/* ★자주 쓰는 조작은 파형 바로 아래에. 좁으면 **묶음째** 줄바꿈한다. */}

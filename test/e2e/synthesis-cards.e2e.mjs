@@ -116,7 +116,8 @@ try{
   let dropped=false
   for(let i=0;i<80&&!dropped;i++){
    const g=await content.evaluate((el,a)=>{const c=el.getBoundingClientRect(),r=el.querySelectorAll('[data-testid="generation-card"]')[a.to].getBoundingClientRect(),mid=r.top+r.height/2
-    const lo=a.after?Math.max(mid+6,c.top+6):Math.max(r.top+6,c.top+6),hi=a.after?Math.min(r.bottom-6,c.bottom-6):Math.min(mid-6,c.bottom-6)
+    // 놓는 자리는 칸 끝 굴림 영역(64px) 밖 — 그 안에 놓으면 잰 뒤에도 목록이 굴러 놓는 자리가 밀린다(2026-10-03 간헐 실패 원인)
+    const E=70,lo=a.after?Math.max(mid+6,c.top+E):Math.max(r.top+6,c.top+E),hi=a.after?Math.min(r.bottom-6,c.bottom-E):Math.min(mid-6,c.bottom-E)
     return {x:r.left+100,lo,hi,edge:a.after?c.bottom-4:c.top+4}},{to:toIdx,after})
    if(g.hi-g.lo>=8){await win.mouse.move(g.x,(g.lo+g.hi)/2,{steps:8});await win.mouse.up();dropped=true}
    else{await win.mouse.move(g.x,g.edge,{steps:2});await win.waitForTimeout(60)}
