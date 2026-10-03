@@ -17,7 +17,7 @@ const ISO = path.join(os.tmpdir(), 'audioforge_e2e_' + randomUUID())
 const LIB = path.join(ISO, '서재 원본')
 const W = (rel, text) => { const p = path.join(LIB, rel); fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, text); return p }
 const body = (tag, n = 6) => Array.from({ length: n }, (_, i) => `${tag} ${i + 1}번째 문단입니다.`).join('\n')
-W('작품A/1화.txt', body('작품A 1화')); W('작품A/2화.txt', body('작품A 2화')); W('작품A/10화.txt', body('작품A 10화')); W('작품A/표지.jpg', 'x')
+W('작품A/1화.txt', body('작품A 1화')); W('작품A/2화.txt', body('작품A 2화')); W('작품A/10화.txt', body('작품A 10화')); W('작품A/메모.pdf', 'x')  // 지원하지 않는 형식 — 표지 이름 이미지는 이제 표지로 쓰인다(ce57d5f)
 W('묶음/시리즈B/1권/1화.txt', body('B1권 1화')); W('묶음/시리즈B/1권/2화.txt', body('B1권 2화')); W('묶음/시리즈B/2권/1화.txt', body('B2권 1화'))
 W('낱권.txt', body('낱권'))
 fs.mkdirSync(path.join(LIB, '깨진작품'), { recursive: true })
