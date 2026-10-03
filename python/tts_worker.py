@@ -637,6 +637,9 @@ class QwenCustomEngine(TTSEngine):
                         time.sleep(0.5)
             req = {"model": model_dir, "speaker": speaker, "language": "korean", "text": text,
                    "out": output_path, "seed": 0, "instruct": instruct or ""}
+            # 카드 멈춤이 이 파일을 만든다(본체가 실행마다 AF_QWEN_STOP_FILE 로 정함) — 실행기가 그 요청만 멈춘다.
+            if os.environ.get("AF_QWEN_STOP_FILE"):
+                req["stop_flag"] = os.environ["AF_QWEN_STOP_FILE"]
             if clone:
                 req["clone"] = clone
             self._conn.send(req)

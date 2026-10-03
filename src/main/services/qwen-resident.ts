@@ -61,6 +61,14 @@ export async function ensureQwenResident(): Promise<boolean> {
   } catch { return false }
 }
 
+/** 띄워 둔 실행기의 파이프 작업(카드·참조 낭독)이 끝날 때까지 — 실행기가 없거나 놀고 있으면 곧바로. */
+export function qwenPipeIdle(timeoutMs: number): Promise<{ idle: boolean; stopped: boolean; why: string; wasBusy: boolean }> {
+  if (!instance) return Promise.resolve({ idle: true, stopped: false, why: '', wasBusy: false })
+  const w = instance
+  const wasBusy = w.pipeWorking
+  return w.whenPipeIdle(timeoutMs).then((r) => ({ ...r, why: wasBusy ? w.lastPipeWhy : '', wasBusy }))
+}
+
 export function stopQwenResident(reason: string): void {
   instance?.stop(reason)
 }

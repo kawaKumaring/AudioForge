@@ -61,6 +61,31 @@ export class QwenVoiceWorker {
   // ★매개변수 속성(constructor(private deps…))을 쓰지 않는다 — node --test 가 이 파일을 곧바로 읽는다(타입만 벗기는 방식).
   constructor(deps: QwenVoiceWorkerDeps) { this.deps = deps }
 
+  /** 파이프로 맡은 작업이 돌고 있는가 — 실행기가 알린 시작·끝으로 안다. 실행기가 죽으면 거짓. */
+  private pipeBusy = false
+  private pipeWaiters: Array<(r: { idle: boolean; stopped: boolean }) => void> = []
+  private lastPipeStopped = false
+  /** 마지막 파이프 작업이 어떻게 끝났나(ok · stopped · error: …) — 취소 기록용. */
+  lastPipeWhy = ''
+  private setPipeBusy(busy: boolean, stopped: boolean): void {
+    this.pipeBusy = busy
+    if (!busy) {
+      this.lastPipeStopped = stopped
+      const ws = this.pipeWaiters; this.pipeWaiters = []
+      for (const w of ws) w({ idle: true, stopped })
+    }
+  }
+  get pipeWorking(): boolean { return this.pipeBusy && this.running }
+  /** 파이프 작업이 끝날 때까지(최대 timeoutMs). idle=false 면 시간 안에 끝나지 않았다. stopped = 정지 요청으로 멈췄는가. */
+  whenPipeIdle(timeoutMs: number): Promise<{ idle: boolean; stopped: boolean }> {
+    if (!this.pipeWorking) return Promise.resolve({ idle: true, stopped: this.lastPipeStopped })
+    return new Promise((resolve) => {
+      const t = setTimeout(() => { this.pipeWaiters = this.pipeWaiters.filter((w) => w !== done); resolve({ idle: false, stopped: false }) }, timeoutMs)
+      const done = (r: { idle: boolean; stopped: boolean }) => { clearTimeout(t); resolve(r) }
+      this.pipeWaiters.push(done)
+    })
+  }
+
   /** 지금 떠 있는가(검사·기록용). */
   get running(): boolean { return !!this.live && !this.live.dead }
 
@@ -107,6 +132,7 @@ export class QwenVoiceWorker {
     this.finish(l, new Error(`${this.label}를 내렸습니다(${reason})`))
     try { l.proc.stdin?.end() } catch { /* 이미 닫혔다 */ }
     try { l.proc.kill() } catch { /* 이미 죽었다 */ }
+    this.setPipeBusy(false, false)
     this.deps.onEvent?.('stop', { reason })
   }
 
@@ -134,6 +160,7 @@ export class QwenVoiceWorker {
       l.dead = true
       if (this.live === l) this.live = null
       this.finish(l, new Error(`${this.label}가 끝났습니다(${why})`))
+      this.setPipeBusy(false, false)        // 실행기가 죽었으면 그 파이프 작업도 끝났다 — 기다리는 취소를 풀어 준다
     }
     proc.on('exit', gone('종료'))
     proc.on('error', gone('시작 실패'))
@@ -146,7 +173,9 @@ export class QwenVoiceWorker {
     let msg: Record<string, unknown>
     try { msg = JSON.parse(line) } catch { return }
     // 다른 입구(파이프)로 일하는 중이라는 알림 — 내리지 않게 시계를 다시 건다(기다리던 요청이 있으면 끝날 때 다시 건다).
-    if (msg.activity === true) { if (!l.pending) this.touch(); return }
+    // 파이프 작업(카드·참조 낭독)의 시작·끝 — 카드 취소가 '실행기 작업까지 끝났나' 를 기다린다(2026-10-03).
+    if (msg.pipe_busy === false) { this.lastPipeWhy = String(msg.why ?? ''); this.setPipeBusy(false, !!msg.stopped); if (!l.pending) this.touch(); return }
+    if (msg.activity === true) { if (msg.pipe_busy === true) this.setPipeBusy(true, false); if (!l.pending) this.touch(); return }
     if (msg.ready === true) { l.markReady(); return }
     const p = l.pending
     if (!p || String(msg.id ?? '') !== p.id) return

@@ -142,10 +142,14 @@ export function useReadAloud(
    * 본체는 옛 세대 요청을 시작 전에 버리고, 돌고 있으면 멈출 수 있는 것(Qwen)을 멈춘다(관리자 실측: 이동 후 첫 소리 4.74초 중 2.59초가 지난 생성 대기).
    * ★다음·이전 덩이(한 칸)는 올리지 않는다 — 앞서 만들던 것이 곧 쓸 것이다.
    */
+  // ★표 = 이 화면 인스턴스(무작위) + 번호. 화면이 다시 만들어져도 앞 화면의 표와 겹치지 않는다(2026-10-03 — 번호를 견주던 때 왕복 뒤 낭독이 멈췄다).
+  const instance = useRef(Math.random().toString(36).slice(2, 10))
   const epoch = useRef(0)
+  const leaving = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const token = () => `${instance.current}:${epoch.current}`
   const supersede = (why: string) => {
     epoch.current++
-    const ep = epoch.current
+    const ep = token()
     void window.api.reader.supersede?.(ep, why)?.then((r) => {
       if (r?.data) trace('supersede', { epoch: ep, why, running: r.data.running, stopRequested: r.data.stopRequested, cancellable: r.data.cancellable })
     })?.catch(() => { /* 본체가 모르면 예전처럼 끝까지 기다린다 */ })
@@ -270,7 +274,16 @@ export function useReadAloud(
   //   재현: StrictMode 안 재생 0회 · 밖 8회. 검사는 배포 빌드로만 돌아 보지 못했다.
   useEffect(() => {
     aliveRef.current = true
-    return () => { aliveRef.current = false; stopAudio() }
+    // ★붙을 때 **이 화면의 표를 먼저 알린다** — 요청(아래 효과)보다 먼저 나가므로 본체는 이 화면의 요청을 지금 것으로 받는다.
+    //   떨어질 때도 알린다 — 떠난 화면이 남긴 생성이 계속 돌거나 새 화면에 끼어들지 않게(멈출 수 있는 것은 멈춘다).
+    //   ★개발 실행(StrictMode)은 떼자마자 다시 붙인다 — 그때는 같은 화면이므로 표를 바꾸지 않는다(떼는 알림을 한 박자 미뤘다가 다시 붙으면 거둔다).
+    //     바꾸면 막 보낸 요청과 다시 보낸 요청의 표가 달라 같은 덩이를 두 번 청했다(검사 reader-aloud 4번).
+    if (leaving.current) { clearTimeout(leaving.current); leaving.current = null }
+    else supersede('mount')
+    return () => {
+      aliveRef.current = false; stopAudio()
+      leaving.current = setTimeout(() => { leaving.current = null; supersede('unmount') }, 0)
+    }
   }, [stopAudio])
 
   // ── 앞서 만들어 둔다 ────────────────────────────────────────────────────
@@ -295,7 +308,9 @@ export function useReadAloud(
     }
     // ★같은 목소리·같은 글로 **이미 가 있는 요청**이면 새로 보내지 않고 그 답을 받는다.
     //   개발 실행(StrictMode)은 이 효과를 두 번 돌려 같은 요청이 두 번 나갔다(검사로 확인).
-    const ask = `${madeFor}\n${withEmotion ? '감정|' : ''}${say}`
+    // ★함께 받기 열쇠에 세대 표를 넣는다 — 지난 세대 요청(버려질 것)을 새 세대 요청이 함께 받으면 그 거절을 받아 버린다.
+    const sentToken = token()
+    const ask = `${sentToken}\n${madeFor}\n${withEmotion ? '감정|' : ''}${say}`
     let run = asking.current.get(ask)
     const shared = !!run
     if (!run) {
@@ -306,7 +321,7 @@ export function useReadAloud(
           { before: chunks[i - 1]?.text.slice(-200), after: chunks[i + 1]?.text.slice(0, 200) })).map((r) => ({ text: runSay(chunk.text, plan.parts, r), emotion: r.emotion }))
         : undefined
       run = window.api.reader.speak(say, { kind: voice.kind, path: voice.path, engineId: voice.engineId }, cacheKey,
-        plan.parts.map((p) => ({ weight: p.weight, strong: p.strong })), segments, epoch.current)
+        plan.parts.map((p) => ({ weight: p.weight, strong: p.strong })), segments, sentToken)
       asking.current.set(ask, run)
       void run.finally(() => { asking.current.delete(ask) }).catch(() => { /* 아래에서 받는다 */ })
     }
@@ -328,7 +343,18 @@ export function useReadAloud(
           modelOpened: tr.modelOpened ?? null, waitMs: tr.waitMs, makeMs: tr.makeMs, engine: tr.engine, accepted, superseded: r.superseded }, now)
         if (!aliveRef.current) return
         // ★본체가 지난 세대라며 버린 요청 — 오류가 아니다. 그 자리가 아직 이 요청의 것이면 다시 청할 수 있게 비운다.
-        if (r.superseded) { if (mine()) setQ((cur) => markIdle(cur, i)); return }
+        if (r.superseded) {
+          if (!mine()) return
+          // ★지금 표로 보냈는데 '지난 것' 이라 한다 = 화면과 본체의 세대가 어긋났다. 다시 청하면 같은 거절이 되풀이된다 —
+          //   되풀이하지 않고 사유를 보인다(조용히 '만드는 중' 에 갇히지도 않는다).
+          if (sentToken === token()) {
+            trace('epoch-desync', { req, chunk: i, token: sentToken })
+            setQ((cur) => markFailed(cur, i, '요청 순서가 어긋났습니다 — 다시 눌러 주세요'))
+            return
+          }
+          setQ((cur) => markIdle(cur, i))
+          return
+        }
         // ★늦게 온 결과가 새 목소리·새 덩이의 자리를 덮지 않는다.
         if (!mine()) return
         if (r.error || !r.data?.path) {

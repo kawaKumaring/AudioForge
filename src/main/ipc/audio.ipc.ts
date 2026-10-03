@@ -4,12 +4,12 @@ import { promisify } from 'util'
 import { join, basename, dirname, extname, resolve } from 'path'
 import { randomUUID } from 'crypto'
 import {
-  existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync, copyFileSync,
+  existsSync, mkdirSync, unlinkSync, rmSync, writeFileSync, readFileSync, readdirSync, statSync, copyFileSync,
 } from 'fs'
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
 import { appLog, fileLabel } from '../services/app-log'
-import { ensureQwenResident } from '../services/qwen-resident'
+import { ensureQwenResident, qwenPipeIdle } from '../services/qwen-resident'
 import { currentBuildInfo } from './app-version.ipc'
 import { createSettlementGuard, createRunSettlement, createRunnerSlot } from '../services/run-settlement'
 import type { RunEnd, RunTerminal } from '../services/run-settlement'
@@ -288,6 +288,8 @@ let cancelState: 'none' | 'inflight' | 'failed' = 'none'
 let currentWatchdogClear: (() => void) | null = null          // 취소가 watchdog을 즉시 해제할 수 있게
 let currentOutputDir: string | null = null                    // 취소 정리(bounded cleanup)가 쓸 output_dir
 let currentIsTts = false                                      // tts 실행만 job-dir 정리 대상
+/** 카드 취소가 띄워 둔 실행기 작업의 끝을 기다리는 최대 시간 — 정지 파일은 16걸음(약 1.3초) 안에 듣는다. */
+const RESIDENT_CANCEL_WAIT_MS = 15000
 let cleanupPending = false                                    // 취소 성공했으나 job-dir 정리 미완 → 새 실행 차단
 // runner 'done' 합류용 deferred — cancel 핸들러가 '실제로 runner가 free 됐는지'를 sleep 없이 기다린다.
 let runnerDoneDeferred: { promise: Promise<void>; resolve: () => void } | null = null
@@ -568,7 +570,8 @@ export function registerAudioIpc(
   // ★판정은 여기서 하지 않는다 — shared/synthesisGate 가 소유한 그 판정을 그대로 쓴다.
   synthesisBusyReason = (label: string) => blockReason(runningState(), label) || ''
   const runningState = () => ({
-    mainRunner: !!runner?.isRunning,
+    // ★취소가 끝나기 전(실행기 작업까지 끝났음을 확인하기 전)에는 잠금을 풀지 않는다(2026-10-03).
+    mainRunner: !!runner?.isRunning || cancelState === 'inflight',
     transcriptPreview: transcriptPreviewGuard.running,
     referenceTrim: referenceTrimLane.running,
     samplerPreview: samplerInFlight > 0,
@@ -1031,6 +1034,13 @@ export function registerAudioIpc(
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
     console.log(`[AudioForge] Config written to: ${configPath}`)
 
+    // 이 실행의 정지 파일 자리 — 카드 멈춤이 만든다. 띄워 둔 실행기에 맡긴 Qwen 요청이 이 파일을 보고 멈춘다(합성 프로세스가 물려받는다).
+    //   남은 옛 파일이 새 실행을 멈추지 않게 지우고 시작한다.
+    if (mode === 'tts') {
+      const stopFile = join(outputDir, '.qwen-stop')
+      try { rmSync(stopFile, { force: true }) } catch { /* 없다 */ }
+      process.env.AF_QWEN_STOP_FILE = stopFile
+    }
     runner = new PythonRunner(pythonPath, runnerDeps)
     const thisRunner = runner  // 이 실행 인스턴스 고정 — done에서 새 실행의 runner를 null로 덮어쓰지 않도록(clobber 방지).
 
@@ -1388,6 +1398,7 @@ export function registerAudioIpc(
     // ★띄워 둔 실행기에 맡긴 Qwen 작업도 멈춘다 — 합성 프로세스를 죽여도 실행기는 그 작업을 끝까지 하려 했다(2026-10-03).
     //   작업 폴더(.qwen-job-*)마다 정지 파일을 둔다 — 실행기가 16걸음 안에 멈춘다(그 작업에만 걸린다).
     if (isTts && outDir) {
+      try { writeFileSync(join(outDir, '.qwen-stop'), 'stop') } catch { /* 폴더가 없다 */ }
       for (const name of listQwenJobDirs(outDir)) { try { writeFileSync(join(outDir, name, '.qwen-stop'), 'stop') } catch { /* 이미 정리됐다 */ } }
     }
     afPhase('cancelling_sent')
@@ -1405,6 +1416,20 @@ export function registerAudioIpc(
     // runner done 합류(bounded) — done 핸들러가 runner를 free로 만들었는지 sleep 없이 확인.
     await Promise.race([doneP, delay(3000)])
     afPhase('runner_done_joined')
+    // ★합성 프로세스가 죽어도 **띄워 둔 실행기는 따로 돈다** — 그 작업이 실제로 끝났다는 알림까지 기다린다(2026-10-03 관리자 검수:
+    //   예전에는 화면이 0.65초에 '멈춤 완료' 를 받고, 실행기 작업은 2.17초까지 돌았다). 정지 파일·작업 폴더는 그 뒤에 지운다.
+    if (isTts) {
+      const t = Date.now()
+      const res = await qwenPipeIdle(RESIDENT_CANCEL_WAIT_MS)
+      appLog()?.info('job', `취소 — 띄워 둔 실행기 작업 ${!res.wasBusy ? '없음(이미 비어 있었다)' : res.idle ? `끝남(${Date.now() - t}ms · ${res.why || '사유 모름'})` : '시간 안에 끝나지 않음'}`)
+      if (!res.idle) {
+        cancelState = 'failed'
+        mainWindow.webContents.send('audio:cancel-failed', tagWith({ childAlive: false, residentBusy: true }, runClientReq))
+        return { accepted: true }
+      }
+      afPhase('resident_idle')
+      if (outDir) { try { rmSync(join(outDir, '.qwen-stop'), { force: true }) } catch { /* 없다 */ } }
+    }
     // bounded cleanup — 실제로 .qwen-job-* 0개임을 확인한 뒤에만 취소 완료.
     const cleanupOk = isTts && outDir ? await boundedJobCleanup(outDir, CLEANUP_DEADLINE_MS) : true
     afPhase('cleanup_done')

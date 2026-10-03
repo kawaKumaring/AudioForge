@@ -265,8 +265,15 @@ const inLane = createLane()
  *   · 돌고 있으면 **협조적 정지**를 건다 — Qwen(지정·설계·감정·참조)은 정지 파일을 보고 16걸음 안에 멈춘다. 기본 목소리(CPU, 1~2초)는 멈출 수 없어 끝까지 간다.
  *   · 멈춘 결과는 쌓지 않는다(잘린 소리를 다음에 꺼내 쓰지 않게). GPU 표시(readerJob)는 실제로 끝난 뒤에 내린다(makeChunk finally).
  */
-let latestEpoch = 0
-interface ReaderCtl { epoch: number; stopFile?: string; superseded?: boolean; cancellable?: boolean; killed?: boolean }
+/**
+ * ★세대는 **크기를 견주지 않는다**(2026-10-03 관리자 재현): 화면(낭독 엔진)이 다시 만들어지면 그 세대 번호가 0 부터 다시 셌는데,
+ *   본체는 앞 화면의 큰 번호를 들고 있어 새 화면의 모든 요청을 '지난 것' 으로 버렸다 — 화면은 다시 청하고 또 버려지길 수십 번,
+ *   끝내 '목소리를 만드는 중' 에 멈췄다(재생 0회). 이제 세대는 화면 인스턴스마다 다른 **표**(인스턴스:번호)이고,
+ *   지금 것 = 화면이 **마지막으로 알린 표**와 같은 요청이다. 표가 없는 요청(개발툴 직접 호출 등)은 세대에 묶이지 않는다.
+ */
+let currentEpoch: string | null = null
+const isStale = (ep: string | undefined): boolean => ep !== undefined && currentEpoch !== null && ep !== currentEpoch
+interface ReaderCtl { epoch: string | undefined; stopFile?: string; superseded?: boolean; cancellable?: boolean; killed?: boolean }
 /** 줄에 서서 **아직 시작하지 않은** 덩이 요청 수 — 미리 열기가 준비 생성을 건너뛸지 본다(실제 요청이 곧 그 준비를 치른다). */
 let queuedSpeaks = 0
 let runningCtl: ReaderCtl | null = null
@@ -279,7 +286,7 @@ class SupersededError extends Error {
 type SpeakTrace = { cached?: boolean; shared?: boolean; waitMs?: number; makeMs?: number; totalMs?: number; modelOpened?: boolean | null; engine?: string }
 export interface ChunkTrace { startedAt?: number; endedAt?: number; modelOpened?: boolean | null; engine?: string; madeWhileWaiting?: boolean }
 
-async function makeChunk(body: string, v: ReaderVoice, out: string, segments: EmotionSegment[] | null = null, info: ChunkTrace = {}, ctl: ReaderCtl = { epoch: latestEpoch }): Promise<string> {
+async function makeChunk(body: string, v: ReaderVoice, out: string, segments: EmotionSegment[] | null = null, info: ChunkTrace = {}, ctl: ReaderCtl = { epoch: undefined }): Promise<string> {
   info.startedAt = performance.now()
   // 차례를 기다리는 사이 같은 글·같은 목소리가 만들어졌을 수 있다.
   if (existsSync(out)) { info.madeWhileWaiting = true; info.endedAt = performance.now(); return out }
@@ -386,8 +393,8 @@ async function makeChunk(body: string, v: ReaderVoice, out: string, segments: Em
     else appLog()?.warn('reader', `만들지 못함 kind=${v.kind} voice=${fileLabel(v.path)} 글자=${body.length} ${((Date.now() - t0) / 1000).toFixed(1)}s: ${shown}`)
     throw new Error(shown)
   } finally {
-    // ★실제로 끝난 뒤에야 내린다 — 멈추라고 한 것도 파이썬/실행기가 답한 다음이다(정지 확인 전에 GPU 표시를 풀지 않는다).
     if (gpu) setReaderRunning(false)
+    // ★↑ 실제로 끝난 뒤에야 내린다 — 멈추라고 한 것도 파이썬/실행기가 답한 다음이다(정지 확인 전에 GPU 표시를 풀지 않는다).
     if (runningCtl === ctl) runningCtl = null
     try { rmSync(runDir, { recursive: true, force: true }) } catch { /* 다음 정리에서 */ }
   }
@@ -537,9 +544,9 @@ export function registerReaderIpc(): void {
         : chunkName(body, key + refTag))
       if (existsSync(out)) return ok({ path: out, cached: true, timing: timingOf(out, parts), trace: traceOf({ cached: true }) })
 
-      // 세대 — 화면이 보낸 값(없으면 지금 세대). 이미 지난 세대면 줄에 세우지도 않는다.
-      const ep = typeof epoch === 'number' && Number.isFinite(epoch) ? epoch : latestEpoch
-      if (ep < latestEpoch) throw new SupersededError('queued')
+      // 세대 — 화면이 보낸 표(없으면 세대에 묶이지 않음). 지금 표가 아니면 줄에 세우지도 않는다.
+      const ep = typeof epoch === 'string' && epoch ? epoch : undefined
+      if (isStale(ep)) throw new SupersededError('queued')
       // 같은 글·같은 목소리가 이미 가 있으면 함께 받는다 — 단 **멈추라고 한 것**은 함께 받지 않는다(새로 만든다).
       const already = inFlight.get(out)
       if (already && !already.ctl.superseded) { const p = await already.run; return ok({ path: p, cached: false, timing: timingOf(p, parts), trace: { ...traceOf({ shared: true }), totalMs: Math.round(performance.now() - asked) } }) }
@@ -549,7 +556,7 @@ export function registerReaderIpc(): void {
       queuedSpeaks++
       const run = inLane(() => {
         queuedSpeaks--
-        if (ctl.epoch < latestEpoch) { ctl.superseded = true; throw new SupersededError('queued') }
+        if (isStale(ctl.epoch)) { ctl.superseded = true; throw new SupersededError('queued') }
         return makeChunk(body, v, out, segments, info, ctl)
       })
       const entry = { run, ctl }
@@ -570,12 +577,11 @@ export function registerReaderIpc(): void {
    * 답: 무엇이 돌고 있었고 멈추라고 했는지 — '멈춤 완료' 는 그 작업의 답(superseded:'running')이 와야 확인된다.
    */
   ipcMain.handle('reader:supersede', (_e, epoch: unknown, why?: unknown): Reply<{ running: boolean; stopRequested: boolean; cancellable: boolean | null }> => {
-    const ep = Number(epoch)
-    if (!Number.isFinite(ep)) return fail(new Error('세대가 숫자가 아닙니다'))
-    if (ep > latestEpoch) latestEpoch = ep
+    if (typeof epoch !== 'string' || !epoch) return fail(new Error('세대 표가 없습니다'))
+    currentEpoch = epoch
     const r = runningCtl
     let stopRequested = false
-    if (r && r.epoch < latestEpoch && !r.superseded) {
+    if (r && isStale(r.epoch) && !r.superseded) {
       r.superseded = true
       if (r.cancellable && r.stopFile) {
         try { writeFileSync(r.stopFile, 'stop'); stopRequested = true } catch { /* 작업 폴더가 이미 지워졌다 — 끝난 것 */ }
@@ -587,7 +593,7 @@ export function registerReaderIpc(): void {
         stopRequested = true
       }
     }
-    for (const [k, en] of inFlight) if (en.ctl.epoch < latestEpoch) { en.ctl.superseded = true; inFlight.delete(k) }
+    for (const [k, en] of inFlight) if (isStale(en.ctl.epoch)) { en.ctl.superseded = true; inFlight.delete(k) }
     return ok({ running: !!r, stopRequested, cancellable: r ? !!r.cancellable : null })
   })
 

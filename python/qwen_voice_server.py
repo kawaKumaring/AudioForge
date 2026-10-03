@@ -182,7 +182,7 @@ def _bridge_job(models, req, push):
         except Exception as e:
             qb.emit("error", message="%s: %s" % (type(e).__name__, e))
             rc = 1
-        return dict(ok=rc == 0, done=True, loaded_now=loaded_now, ref_hits=models.ref_hits - hits0,
+        return dict(ok=rc == 0, done=True, loaded_now=loaded_now, stopped=bool(qb._STOP["requested"]), ref_hits=models.ref_hits - hits0,
                     ref_made=models.ref_made - made0, **({} if push else {"lines": lines}))
     finally:
         qb._SINK = None
@@ -406,9 +406,15 @@ def main():
 
     def run(req, respond, push=None):
         try:
-            respond(handle(models, req, push))
+            r = handle(models, req, push)
         except Exception as e:
-            respond(dict(ok=False, done=True, error="%s: %s" % (type(e).__name__, str(e)[:300])))
+            r = dict(ok=False, done=True, error="%s: %s" % (type(e).__name__, str(e)[:300]))
+        if push is not None:
+            # ★파이프 작업(카드·참조 낭독)이 **실제로 끝났다**는 알림 — 답보다 먼저 낸다(2026-10-03).
+            #   부모(본체)는 카드 취소를 이 알림까지 기다린다: 합성 프로세스가 죽어도 이 실행기는 따로 돌고 있기 때문이다.
+            why = "stopped" if r.get("stopped") else ("ok" if r.get("ok") else ("error: " + str(r.get("error") or "")[:80]))
+            reply(id="", pipe_busy=False, stopped=bool(r.get("stopped")), why=why)
+        respond(r)
 
     lis = None
     try:
@@ -432,7 +438,7 @@ def main():
             req, respond, push = work.get(timeout=0.05)
         except queue.Empty:
             continue
-        reply(id="", activity=True)
+        reply(id="", activity=True, pipe_busy=True)
         run(req, respond, push)
     try:
         if lis:

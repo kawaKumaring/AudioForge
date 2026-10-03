@@ -176,3 +176,30 @@ test('★파이프로 일하는 동안(activity)은 한동안 안 씀으로 내�
   t.mock.timers.tick(2)
   assert.equal(w.running, false, '일이 끝난 뒤에는 내린다')
 })
+
+test('★파이프 작업(카드) — 실행기가 알린 끝까지 기다린다 · 정지로 멈췄는지 · 시간 초과 · 실행기가 내려가면 풀린다(2026-10-03)', async () => {
+  const { w, procs } = make()
+  void w.ensure(10)
+  await tick()
+  const p = procs[0]
+  p.stdout.emit('data', JSON.stringify({ id: '', ready: true }) + '\n')
+  // 놀고 있으면 곧바로
+  assert.deepEqual(await w.whenPipeIdle(50), { idle: true, stopped: false })
+  // 파이프 작업 시작 → 끝날 때까지 기다린다
+  p.stdout.emit('data', JSON.stringify({ id: '', activity: true, pipe_busy: true }) + '\n')
+  assert.equal(w.pipeWorking, true)
+  let settled = false
+  const waiting = w.whenPipeIdle(5000).then((r) => { settled = true; return r })
+  await tick()
+  assert.equal(settled, false, '실행기가 끝을 알리기 전에 끝났다고 했다')
+  p.stdout.emit('data', JSON.stringify({ id: '', pipe_busy: false, stopped: true }) + '\n')
+  assert.deepEqual(await waiting, { idle: true, stopped: true })
+  // 끝을 알리지 않으면 시간 초과(끝났다고 하지 않는다)
+  p.stdout.emit('data', JSON.stringify({ id: '', activity: true, pipe_busy: true }) + '\n')
+  assert.deepEqual(await w.whenPipeIdle(30), { idle: false, stopped: false })
+  // 실행기가 내려가면(죽으면) 그 작업도 끝난 것이다
+  const after = w.whenPipeIdle(5000)
+  w.stop('검사')
+  assert.equal((await after).idle, true)
+  assert.equal(w.pipeWorking, false)
+})
