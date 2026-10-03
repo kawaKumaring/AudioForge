@@ -149,3 +149,62 @@ test('보관된 값이 이상하면 0 으로 떨어지지 않는다 — 빈 값 
   settingsGet = async () => ({ [PLAYBACK_VOLUME_STORAGE_KEY]: '' })
   assert.equal(await loadPlaybackVolume(), 1, '빈 값 때문에 소리가 조용히 꺼지면 고장으로 보인다')
 })
+
+// ── 재생 빠르기 — 낭독 소리에만 (2026-09-30 지시 · 10-01 낭독 전용) ─────────────────────────
+// ★확인하는 것: 낭독 소리에만 걸린다 · 이미 있는 것도 따라온다 · 기본 빠르기까지 건다(src 를 바꾸면
+//   요소가 기본 빠르기로 되돌아가므로 — 낭독이 다음 조각에서 1배로 돌아가지 않게) · 음 높이 그대로 · 보관.
+const rateApi = await import('./playbackVolume.ts')
+const { PLAYBACK_RATE_STORAGE_KEY } = await import('../../shared/playbackRate.ts')
+type RateEl = HTMLMediaElement & { preservesPitch?: boolean }
+
+test('★낭독 소리에만 빠르기가 걸린다 — 다른 소리(생성본·원본 등)는 그대로', () => {
+  rateApi.setPlaybackRate(1)
+  const made = rateApi.createManagedAudio(undefined, { readAloud: true }) as RateEl
+  const source = rateApi.createManagedAudio() as RateEl
+  rateApi.setPlaybackRate(1.5)
+  assert.equal(made.playbackRate, 1.5)
+  assert.equal(made.defaultPlaybackRate, 1.5, '기본 빠르기도 걸어야 다음 조각에서 되돌아가지 않는다')
+  assert.equal(made.preservesPitch, true, '음 높이는 그대로')
+  assert.notEqual(source.playbackRate, 1.5)
+  rateApi.setPlaybackRate(1)
+})
+
+test('바꾼 뒤 새로 만든 소리도 지금 빠르기로 나온다 · 이상한 값은 단계로', () => {
+  rateApi.setPlaybackRate('1.3')
+  const a = rateApi.createManagedAudio(undefined, { readAloud: true })
+  assert.equal(a.playbackRate, 1.25)
+  assert.equal(rateApi.getPlaybackRate(), 1.25)
+  rateApi.setPlaybackRate(1)
+})
+
+test('★낭독 밖에서는 빠르기를 쓰지 않는다 — 책 읽기 말고 readAloud 로 만드는 곳이 없다', async () => {
+  // 지시(2026-10-01): "낭독배속은 낭독에서만 사용하는 기능이다" — 생성 카드·최종 음성·더빙이 따라가던 것을 막는다.
+  const fs = await import('node:fs'); const path = await import('node:path')
+  const root = path.resolve(import.meta.dirname, '..')
+  const users: string[] = []
+  const walk = (d: string) => { for (const n of fs.readdirSync(d, { withFileTypes: true })) {
+    const p = path.join(d, n.name)
+    if (n.isDirectory()) walk(p)
+    else if (/\.(ts|tsx)$/.test(n.name) && !/\.test\./.test(n.name) && /readAloud: true|markMadeSound\(/.test(fs.readFileSync(p, 'utf8'))) users.push(path.relative(root, p).split(path.sep).join('/'))
+  } }
+  walk(root)
+  // ★목소리 들어 보기는 음성 합성과 같은 미리듣기(voicePreview)를 쓴다(2026-10-01 — 고르기 창 통일) — 늘 1배다.
+  //   빠르기를 따르는 것은 책 읽기(useReadAloud) 하나다.
+  assert.deepEqual(users.sort(), ['hooks/useReadAloud.ts', 'lib/playbackVolume.ts'])
+  const bars = fs.readdirSync(path.join(root, 'components')).filter((n) => /.tsx$/.test(n) && fs.readFileSync(path.join(root, 'components', n), 'utf8').includes('<PlaybackRateSelect'))
+  assert.deepEqual(bars, ['ReaderWorkspace.tsx'], '빠르기 고르기는 낭독 화면에만 있다')
+})
+
+test('보관하고 다시 읽는다 — 실패를 삼키지 않는다', async () => {
+  rateApi.setPlaybackRate(0.75)
+  assert.deepEqual(await rateApi.savePlaybackRate(), { ok: true })
+  assert.deepEqual(setCalls.at(-1), { key: PLAYBACK_RATE_STORAGE_KEY, value: 0.75 })
+  settingsSet = async () => ({ ok: false, code: 'DISK' })
+  assert.deepEqual(await rateApi.savePlaybackRate(), { ok: false, code: 'DISK' })
+  rateApi.setPlaybackRate(1)
+  settingsGet = async () => ({ [PLAYBACK_RATE_STORAGE_KEY]: 1.75 })
+  assert.equal(await rateApi.loadPlaybackRate(), 1.75)
+  settingsGet = async () => { throw new Error('읽기 실패') }
+  rateApi.setPlaybackRate(1)
+  assert.equal(await rateApi.loadPlaybackRate(), 1, '읽기가 실패해도 재생을 막지 않는다')
+})

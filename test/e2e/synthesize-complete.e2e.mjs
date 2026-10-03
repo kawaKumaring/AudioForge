@@ -7,12 +7,13 @@
 //   났다(2026-08-22 develop 감사에서 실측). 350초면 완료 / 280초 무응답 오류 / 300초 watchdog 오류가
 //   모두 이 창 안에서 관측된다. production timeout(280/300)은 변경하지 않는다.
 // 타임아웃/완료 무관하게 종료 후 잔존(venv 자식·.qwen-job-*·refclip)이 0임을 단언한다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import { execFileSync } from 'child_process'
 import fs from 'fs'
 import path from 'path'
 import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenJobDirs, qwenVenvPids, nvidiaSmiGpu0, requireE2EReference,
-  isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
+  isolatedUserData, cleanupUserData, enterStudio } from './_e2e-helper.mjs'
 
 const WAIT_MS = 350000  // > watchdog 300 > 무응답 280 (위 근거 참조)
 const APP = process.cwd()
@@ -55,11 +56,15 @@ win.on('crash', () => crashes.push('crash'))
 let lastSnap = null
 try {
   await win.waitForLoadState('domcontentloaded')
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await win.evaluate(async (p) => {
     const s = window.__afStore
     const info = await window.api.audio.getFileInfo(p)
     const url = await window.api.audio.getFileUrl(p)
     s.getState().setFile(info, url); s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
+    // 이관(2026-09-27): 합성의 기본 진입이 **생성 카드** 로 바뀌었다. 이 검사가 쓰는 화면
+    // (참조 준비, 대사 입력, '음성 합성 시작')은 옛 버전 탭에 있다. 단언은 그대로다.
+    window.__synthesisCards.getState().setView('legacy')
   }, REF)
   // 참조 준비를 기다린다. **손으로 확정하는 것은 더 이상 기본 흐름이 아니다** — 분석이 끝나면
   // 추천 구간으로 자동 확정된다(2026-09-08 기준). 그래서 '이 구간으로 확정' 버튼이 보이기를

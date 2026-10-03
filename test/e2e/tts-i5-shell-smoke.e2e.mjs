@@ -3,9 +3,10 @@
 //   기본 참조 패널 단일 마운트 / 4-flow에서 기존 기능 도달 가능(감정참조·전사·엔진·태그·예문) /
 //   store TTS 필드 손실 0 / resources 불변 · 종료 후 qwen 프로세스·job 임시폴더 잔존 0.
 // 실행: npm run build 후 node test/e2e/tts-i5-shell-smoke.e2e.mjs. 참조 자산은 AF_E2E_REFERENCE 또는 resources/speaker_b.wav.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
-import { isolatedInput, cleanupIsolated, snapshotTree, qwenJobDirs, qwenVenvPids } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, snapshotTree, qwenJobDirs, qwenVenvPids, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const SRC = (process.env.AF_E2E_REFERENCE || '').trim() || path.join(APP, 'resources', 'speaker_b.wav')
@@ -24,6 +25,7 @@ const win = await app.firstWindow()
 win.on('pageerror', e => pageErrors.push(e.message))
 win.on('crash', () => crashes.push('crash'))
 
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 const enterTts = async () => {
   await win.evaluate(async (p) => {
     const s = window.__afStore

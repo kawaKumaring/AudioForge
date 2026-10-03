@@ -1,6 +1,9 @@
 // E2E 격리 헬퍼 — 실제 사용자 자산(resources/)을 절대 건드리지 않는다.
 // 입력 파일을 os.tmpdir()/audioforge_e2e_<UUID>/ 로 복사해 주입하고, 합성 출력도 그 격리 폴더 안
 // (dirname(input)/AudioForge_output)에 생성되게 한다. finally에서 자신이 만든 UUID 폴더만 삭제.
+// ★맨 앞이어야 한다 — 이 아래 어떤 모듈이 os.tmpdir() 을 읽기 전에 자리를 돌린다.
+//   (2026-09-28 지시: C 드라이브로 가지 않는다)
+import '../_temp-root.mjs'
 import { randomUUID, createHash } from 'crypto'
 import { execSync, execFileSync } from 'child_process'
 import fs from 'fs'
@@ -12,6 +15,63 @@ import { fileURLToPath } from 'url'
 // speaker_b.wav 하드코딩·자동 검색·복사·fallback 없음. 오디오 decode·전사는 하지 않는다(실 Qwen 실행 전 금지).
 // 검사: 미설정 / 파일 없음 / .wav 아님 / 최소 바이트 미만(빈·손상 방어; 지속시간은 decode 없이 검사 불가라
 // 호출자가 요구하는 실제 길이는 사용자가 승인 자산으로 보장). 순수 함수(process.exit·decode 없음)라 단위테스트 가능.
+/**
+ * 검사가 앱 결과 폴더에 남긴 것을 **끝나고 치운다.**
+ *
+ * ★왜 이쪽에서 푸나 (2026-09-28)
+ *   검사만 다른 자리에 쌓게 해 봤더니, "기본 자리는 앱 폴더" 를 확인하는 검사가
+ *   검사 환경에서 그 규칙을 볼 수 없게 됐다. 자리 규칙은 이 프로젝트에서 가장
+ *   중요한 항목이라, 그것을 지키는 검사를 눈뜬장님으로 만들 수 없다.
+ *   **검사는 제품과 똑같이 쌓고, 자기가 만든 것만 치운다.**
+ *
+ * ★들어올 때의 목록을 적어 두고, 나갈 때 **새로 생긴 것만** 지운다.
+ *   원래 있던 것은 사용자의 결과일 수 있으므로 절대 건드리지 않는다.
+ * ★검사를 나란히 돌리면 서로의 것을 지울 수 있다 — 게이트는 하나씩 돌린다.
+ */
+const OUTPUT_ROOT = path.join(process.cwd(), 'AudioForge_output')
+const outputBefore = (() => {
+  const seen = new Set()
+  const walk = (d, depth) => {
+    let names = []
+    try { names = fs.readdirSync(d) } catch { return }
+    for (const n of names) {
+      const full = path.join(d, n)
+      let st
+      try { st = fs.statSync(full) } catch { continue }
+      if (!st.isDirectory()) continue
+      if (depth === 2) { seen.add(full); continue }   // <기능>/<날짜>/<작업>
+      walk(full, depth + 1)
+    }
+  }
+  walk(OUTPUT_ROOT, 0)
+  return seen
+})()
+
+/** 이 검사가 만든 결과 폴더만 지운다. 들어올 때 있던 것은 남긴다. */
+export function cleanupAppOutput() {
+  let removed = 0
+  const walk = (d, depth) => {
+    let names = []
+    try { names = fs.readdirSync(d) } catch { return }
+    for (const n of names) {
+      const full = path.join(d, n)
+      let st
+      try { st = fs.statSync(full) } catch { continue }
+      if (!st.isDirectory()) continue
+      if (depth === 2) {
+        if (outputBefore.has(full)) continue
+        try { fs.rmSync(full, { recursive: true, force: true }); removed++ } catch { /* 다음에 */ }
+        continue
+      }
+      walk(full, depth + 1)
+    }
+  }
+  walk(OUTPUT_ROOT, 0)
+  return removed
+}
+// ★검사가 어떻게 끝나든 치운다 — 실패한 실행이 잔해를 남기는 것이 지금까지의 문제였다.
+process.on('exit', () => { try { cleanupAppOutput() } catch { /* 종료 중이다 */ } })
+
 export function validateE2EReferencePath(raw, { minBytes = 64 * 1024 } = {}) {
   const p = (raw || '').trim()
   if (!p) return { ok: false, kind: 'unset', reason: 'AF_E2E_REFERENCE 미설정' }
@@ -67,11 +127,21 @@ export function isolatedInput(srcAbs) {
   return { dir, input }
 }
 
-// 격리 폴더만 삭제(prefix 가드).
+/**
+ * 격리 폴더만 삭제(prefix 가드 + 연결 경로 가드).
+ *
+ * ★연결(정션·심볼릭 링크)은 지우지 않는다 (2026-09-27)
+ *   Node 의 `rmSync({recursive})` 는 연결을 **따라가지 않는다**(실측: 정션을 지워도
+ *   대상 폴더의 파일은 그대로 남는다). 그래도 한 번 더 막는 이유는, 연결 자체를 지우면
+ *   그것이 가리키던 공용 자산으로 가는 길이 사라지기 때문이다.
+ *   ※ PowerShell 의 `Remove-Item` 은 다르다 — 정션에 쓰면 **대상 안까지 지운다.**
+ *     임시 폴더 정리는 반드시 이 함수(Node)로 한다.
+ */
 export function cleanupIsolated(dir) {
-  if (dir && path.basename(dir).startsWith('audioforge_e2e_') && path.dirname(dir) === os.tmpdir()) {
-    try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ }
-  }
+  if (!dir || path.dirname(dir) !== os.tmpdir()) return
+  if (!path.basename(dir).startsWith('audioforge_e2e_')) return
+  try { if (fs.lstatSync(dir).isSymbolicLink()) return } catch { return }
+  try { fs.rmSync(dir, { recursive: true, force: true }) } catch { /* ignore */ }
 }
 
 // 디렉터리 트리의 (상대경로, size, sha8) 정렬 스냅샷 — 원본 불변 단언용.
@@ -266,4 +336,18 @@ export function realUserDataFingerprint() {
   }
   walk(root, '')
   return rows.join('\n')
+}
+
+/**
+ * 시작 화면(AppEntrance — 2026-10-03)에서 **'작업실 시작'** 을 누르고 작업실이 뜰 때까지 기다린다. 시작 화면이 없으면(콘솔 창 등) 그대로 둔다.
+ * ★왜: 시작 화면이 앱 전체를 감싸 누르기 전에는 작업실이 그려지지 않는다. `window.__afStore` 는 그 전에도 있어 그것만 기다리면 다음 클릭에서 멈춘다.
+ * 사용자가 들어가는 길과 같은 단추를 누른다(상태를 직접 바꾸지 않는다).
+ */
+export async function enterStudio(win, timeout = 15000) {
+  const where = await win.waitForFunction(() => document.querySelector('[data-testid="welcome-start"]') ? 'welcome'
+    : (document.querySelector('[data-testid^="mode-"]') ? 'studio' : null), null, { timeout }).then((h) => h.jsonValue())
+  if (where !== 'welcome') return false
+  await win.getByTestId('welcome-start').click()
+  await win.waitForSelector('[data-testid^="mode-"]', { timeout })
+  return true
 }

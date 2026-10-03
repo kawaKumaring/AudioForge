@@ -67,7 +67,8 @@ export function bridgePython(root: string): string {
 export function skipReason(deps: WarmupDeps): string | null {
   const env = deps.env ?? process.env
   if ((env[DISABLE_ENV] || '').trim() === '1') return '꺼져 있음'
-  if ((env.AF_E2E || '').trim() === '1') return '검사 실행'
+  // 성능 측정용 '보통 실행과 같은 준비'(AF_E2E_NORMAL_PREP=1)에서는 검사여도 미리 읽는다.
+  if ((env.AF_E2E || '').trim() === '1' && (env.AF_E2E_NORMAL_PREP || '').trim() !== '1') return '검사 실행'
   const has = deps.exists ?? existsSync
   if (!has(bridgePython(deps.root))) return '합성 엔진 파이썬 없음'
   return null

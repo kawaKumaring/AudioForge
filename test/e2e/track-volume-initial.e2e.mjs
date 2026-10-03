@@ -17,10 +17,11 @@
 // 이 검사가 헛돌지 않음을 확인했다 — 고친 한 줄을 되돌리면 게인이 1(최대)로 나오고 실패한다.
 //
 // 실행: node test/e2e/track-volume-initial.e2e.mjs   (사전: npm run build. GPU·합성 불필요)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
-import { isolatedInput, cleanupIsolated, isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, isolatedUserData, cleanupUserData, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const SRC = (process.env.AF_E2E_REFERENCE || '').trim()
@@ -55,6 +56,7 @@ try {
   const win = await app.firstWindow()
   win.on('pageerror', (e) => pageErrors.push(e.message))
   await win.waitForLoadState('domcontentloaded')
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 
   // ── 1) 음량을 낮춘다 (실제 슬라이더) ────────────────────────────────────
   await win.evaluate(async (p) => {

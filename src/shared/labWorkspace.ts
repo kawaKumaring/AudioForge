@@ -121,6 +121,20 @@ export interface LabDoc {
   updatedAt: number
 }
 
+/**
+ * 이 문서에 **저장할 만한 것이 들어 있는가.**
+ *
+ * ★빈 대본을 저장하면 '없는 것' 과 '비어 있는 것' 이 구별되지 않는다.
+ *   실제로 그 때문에 **지운 기록이 되살아났다**(2026-09-28): 지운 뒤 화면을 열면
+ *   빈 문서가 만들어지고, 나갈 때 그것이 저장되어 항목이 다시 생겼다.
+ *   처음 앱을 켠 사람에게도 마찬가지다 — 아무것도 안 했는데 기록이 생긴다.
+ */
+export function docHasContent(d: LabDoc | null | undefined): boolean {
+  if (!d) return false
+  if ((d.voicePath || "").trim()) return true
+  return (d.lines || []).some((l) => (l.text || "").trim() || (l.takes || []).length > 0)
+}
+
 /** 목소리 식별값. 지금은 경로 하나지만, 판정이 이 함수 하나만 보게 해 둔다. */
 export function voiceKeyOf(voicePath: string): string {
   return (voicePath || '').trim()

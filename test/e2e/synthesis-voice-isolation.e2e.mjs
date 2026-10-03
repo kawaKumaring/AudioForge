@@ -17,11 +17,12 @@
 // 이 검사는 음성을 만들지 않는다. 참조 준비까지만 돌린다.
 //
 // 실행: node test/e2e/synthesis-voice-isolation.e2e.mjs   (사전: npm run build. GPU 불필요)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
@@ -67,6 +68,7 @@ try {
   win.on('pageerror', (e) => log('page error:', String(e).slice(0, 200)))
   await win.waitForLoadState('domcontentloaded')
   await win.waitForFunction(() => !!window.__afStore && !!window.__labStore, undefined, { timeout: 30000 })
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 
   // ── 고급에서 기본 목소리를 준비한다 ────────────────────────────────────
   await win.evaluate(async (p) => {
@@ -74,6 +76,9 @@ try {
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
     s.setState({ mode: 'tts', synthesisTab: 'advanced', ttsText: '안녕하세요.' })
   }, LONG)
+  // 기존 화면 검사: 통합 카드의 '이전 작업'을 통해 진입한다.
+  await win.getByTestId('open-legacy-synthesis').click()
+  await win.getByTestId('synthesis-tabs').waitFor()
 
   let ready = false
   for (let i = 0; i < 25 && !ready; i++) {

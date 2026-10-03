@@ -1,255 +1,153 @@
-import { useEffect } from 'react'
-
+import { loadPlaybackEffects, openEffectsPanel, effectsPanelOpen, onPlaybackEffects } from './lib/playbackEffects'
+import { loadPlaybackBoost } from './lib/playbackBoost'
+import { useEffect, useRef, useState } from 'react'
 import { useAppStore, type RestorableSession } from '@/stores/app.store'
-import DropZone from '@/components/DropZone'
-import ModeSelector from '@/components/ModeSelector'
-import Waveform from '@/components/Waveform'
+import ModeSelector, { WORKSPACES } from '@/components/ModeSelector'
+import SourceCard from '@/components/SourceCard'
 import ProcessButton from '@/components/ProcessButton'
 import ProgressBar from '@/components/ProgressBar'
 import TrackList from '@/components/TrackList'
 import Options from '@/components/Options'
+import AppOptions from '@/components/AppOptions'
 import SplitEditor from '@/components/SplitEditor'
 import SynthesisTabs from '@/components/SynthesisTabs'
+import { useSynthesisCards } from '@/stores/synthesisCards.store'
 import TranscriptEditor from '@/components/TranscriptEditor'
-import DialogueSegments from '@/components/DialogueSegments'
+import DialogueWorkspace from '@/components/DialogueWorkspace'
 import LabPlaceholder from '@/components/LabPlaceholder'
-import DubWorkspace from '@/components/DubWorkspace'
+import SongWorkspace from '@/components/SongWorkspace'
+import ReaderWorkspace from '@/components/ReaderWorkspace'
+import { WorkspaceDockContext } from '@/components/WorkspaceDock'
 import TtsResultInfo from '@/components/TtsResultInfo'
 import AppVersionLabel from '@/components/AppVersionLabel'
-import { loadPlaybackVolume } from '@/lib/playbackVolume'
+import { loadPlaybackVolume, loadPlaybackRate } from '@/lib/playbackVolume'
+import { loadConsolePref } from '@/components/ConsolePanel'
+import { opLog } from '@/lib/opLog'
+import { isCancelCleanupBusy } from '../shared/cancelContract'
 
 export default function App() {
-  const { fileInfo, mode, setMode, synthesisTab, setSynthesisTab, status, reset, restorable, restoreSession, setRestorable } = useAppStore()
-  // 보관된 재생 음량을 한 번 읽어 적용한다. 실패하면 기본값(최대)이 그대로 쓰인다 — 재생을 막지 않는다.
-  useEffect(() => { void loadPlaybackVolume() }, [])
-  const setIdle = () => useAppStore.setState({ status: 'idle', tracks: [], error: null, progress: 0 })
+  const { fileInfo, mode, synthesisTab, status, resultMode, errorInfo, restorable, restoreSession, setRestorable } = useAppStore()
 
-  const handleRestore = async () => {
-    const result = await window.api.audio.restoreFromFolder()
-    if (!result || result.tracks.length === 0) return
-    // session.json이 있으면 TTS mode·pitch·source+region·전사·metadata까지 복원(단일 재구성 경로).
-    if (result.session) {
-      const s = result.session as RestorableSession
-      useAppStore.setState({
-        fileInfo: {
-          path: s.source || '',
-          name: s.source ? (s.source.split(/[/\\]/).pop() || '이전 결과 복원') : '이전 결과 복원',
-          duration: 0, channels: 0, sampleRate: 0, format: ''
-        },
-        fileUrl: null
-      })
-      restoreSession(result.outputDir, s)
-      return
-    }
-    // 레거시(session.json 없음) — 트랙만 복원
-    useAppStore.setState({
-      fileInfo: { path: '', name: '이전 결과 복원', duration: 0, channels: 0, sampleRate: 0, format: '' },
-      fileUrl: null,
-      status: 'done',
-      tracks: result.tracks,
-      outputDir: result.outputDir,
-      mode: 'split'
-    })
-  }
+  const [dock, setDock] = useState<HTMLDivElement | null>(null)
+  const [restoring, setRestoring] = useState(false)
+  /** 설정 화면. 작업 화면을 덮지 않고 **그 자리에서** 연다. */
+  const [showOptions, setShowOptions] = useState(false)
+  useEffect(() => onPlaybackEffects(() => { if (effectsPanelOpen()) setShowOptions(true) }), [])
+  const scrollRef = useRef<HTMLDivElement>(null)
+  const pageRef = useRef<HTMLDivElement>(null)
+  useEffect(() => { void loadPlaybackEffects(); void loadPlaybackBoost(); void loadPlaybackVolume(); void loadPlaybackRate() }, [])
+  // 콘솔 창 — 켜 두었으면 다시 띄운다. 화면을 옮긴 것도 동작 기록에 남긴다(2026-09-30).
+  useEffect(() => {
+    let off = () => {}
+    void loadConsolePref().then((f) => { off = f })
+    return () => off()
+  }, [])
+  useEffect(() => { opLog('mode', `화면 ${mode}`) }, [mode])
+  useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0 }, [mode, synthesisTab])
+  useEffect(() => {
+    if (mode === 'reader' || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return
+    const motion = scrollRef.current?.animate([
+      { opacity: 0.45, transform: 'translateY(6px)' },
+      { opacity: 1, transform: 'translateY(0)' }
+    ], { duration: 180, easing: 'cubic-bezier(.2,.7,.3,1)' })
+    return () => motion?.cancel()
+  }, [mode, synthesisTab])
 
-  // ★공용 실행 버튼·진행 막대·결과 목록은 **다른 모드의 것**이다.
-  //   합성(일반/고급 둘 다)과 테스트개발에는 나오면 안 된다 — 예전에 여기 섞여 나와
-  //   알 수 없는 모드의 마지막 이름인 '텍스트 추출 시작' 이 뜨고, 누르면 워커가 모르는
-  //   갈래로 요청이 나가 빈 결과로 끝났다(종료 코드 1). 한 곳에서 정해 재발을 막는다.
-  const showSharedRun = mode !== 'tts' && mode !== 'lab' && mode !== 'dub'
-  // 결과 목록은 고급 합성까지만 함께 쓴다. 일반은 자기 화면 안에서 결과를 보여 준다.
-  const showSharedResults = mode !== 'lab' && mode !== 'dub' && !(mode === 'tts' && synthesisTab === 'basic')
+  const synthesisView = useSynthesisCards(s => s.view)
+  const workspace = WORKSPACES[mode]
+  const heading = ({ music: ['MUSIC', '음악 작업실'], conversation: ['DIALOGUE', '대화 작업실'], transcribe: ['TRANSCRIPT', '받아쓰기'], split: ['TRACKS', '트랙 편집실'], tts: ['VOICE', '목소리 작업실'], dub: ['SONGS', '노래 작업실'], lab: ['LAB', '실험실'], reader: ['READER', '내 서재'], 'dialogue-rebuild': ['DIALOGUE', '대화 편집실'] } as const)[mode]
+  const showSharedRun = mode !== 'tts' && mode !== 'lab' && mode !== 'dub' && mode !== 'reader'
+  const busy = status === 'processing' || isCancelCleanupBusy(status) || !!errorInfo?.childAlive
+  const ownResult = resultMode === mode
+  const sharedResults = ownResult && (showSharedRun || (mode === 'tts' && synthesisView === 'legacy' && synthesisTab === 'advanced'))
+  const done = ownResult && status === 'done'
+  const resetRun = () => useAppStore.setState({ status: 'idle', tracks: [], resultMode: null, error: null, errorInfo: null, progress: 0 })
 
-  return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg-base)', color: 'var(--text-primary)', fontFamily: "'Inter', -apple-system, sans-serif" }}>
-      {/* Title bar */}
-      <div className="titlebar-drag" style={{
-        display: 'flex', alignItems: 'center', height: 36, flexShrink: 0, padding: '0 16px',
-        background: 'rgba(8,8,12,0.8)', borderBottom: '1px solid var(--border-subtle)'
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="none">
-            <path d="M12 3v18M8 7l4-4 4 4" stroke="var(--accent)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-            <circle cx="12" cy="18" r="3" fill="var(--accent)" opacity="0.3" stroke="var(--accent)" strokeWidth="1.5" />
-          </svg>
-          <span style={{ fontSize: 11, fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.1em', color: 'var(--text-muted)' }}>
-            AudioForge
-          </span>
-        </div>
+
+  return <div data-testid="workspace-shell" style={{ display: 'flex', flexDirection: 'column', height: '100%', background: 'var(--bg-base)', color: 'var(--text-primary)' }}>
+    <div className="titlebar-drag" style={{ display: 'flex', alignItems: 'center', height: 36, flexShrink: 0, padding: '0 18px', background: 'var(--bg-primary)', borderBottom: '1px solid var(--border-subtle)' }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+        <img src="./audioforge-character.png" width="28" height="28" alt=""/>
+        <span style={{ fontSize: 12, fontWeight: 600, letterSpacing: '.02em' }}>AudioForge</span>
       </div>
-
-      {/* Background orbs */}
-      <div style={{ position: 'fixed', inset: 0, overflow: 'hidden', pointerEvents: 'none', zIndex: 0 }}>
-        <div style={{ position: 'absolute', left: -128, top: -128, width: 384, height: 384, borderRadius: '50%', opacity: 0.15, filter: 'blur(120px)', background: 'var(--accent)' }} />
-        <div style={{ position: 'absolute', right: -128, bottom: -192, width: 384, height: 384, borderRadius: '50%', opacity: 0.08, filter: 'blur(120px)', background: 'var(--cyan)' }} />
-      </div>
-
-      {/* Content */}
-      {/* ── 파일 없이도 여는 자리 ──
-             합성>일반(대본 작업실)은 대본을 쓰고 목소리를 따로 고르는 곳이라 분리할 원본이
-             필요 없다. 테스트개발은 안내만 있는 자리라 역시 필요 없다.
-             **고급을 비롯한 나머지는 예전 그대로** 파일을 먼저 불러와야 한다. */}
-      {!fileInfo && (mode === 'lab' || mode === 'dub' || mode === 'tts') ? (
-        <div style={{ position: 'relative', zIndex: 1, flex: 1, display: 'flex', flexDirection: 'column',
-                      gap: 14, padding: '20px 24px 28px', maxWidth: 1100, width: '100%', margin: '0 auto' }}>
-          <ModeSelector />
-          {mode === 'dub' ? <DubWorkspace /> : mode === 'lab' ? <LabPlaceholder /> : <SynthesisTabs />}
-        </div>
-      ) : !fileInfo ? (
-        /* ── 초기 화면 ── */
-        <div style={{ position: 'relative', zIndex: 1, flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
-          <div style={{ width: '100%', maxWidth: 520, padding: '0 40px' }}>
-            <div style={{ textAlign: 'center', marginBottom: 32 }}>
-              <h1 style={{ fontSize: 28, fontWeight: 700, background: 'linear-gradient(135deg, var(--text-primary), var(--accent-light))', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>
-                AudioForge
-              </h1>
-              <p style={{ marginTop: 8, fontSize: 13, color: 'var(--text-muted)' }}>AI 기반 오디오 분리 · 텍스트 변환 · 번역</p>
-            </div>
-            <DropZone />
-            <button onClick={handleRestore} style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-              width: '100%', marginTop: 16, padding: '10px 0', borderRadius: 10,
-              border: '1px solid var(--border-subtle)', background: 'transparent',
-              cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500,
-              color: 'var(--text-muted)'
-            }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
-              </svg>
-              이전 결과 폴더 열기
-            </button>
-            {/* 파일을 불러오지 않고 바로 대본 작업을 시작하는 자리 */}
-            <button data-testid="open-lab"
-              onClick={() => { setSynthesisTab('basic'); setMode('tts') }} style={{
-              display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-              width: '100%', marginTop: 8, padding: '10px 0', borderRadius: 10,
-              border: '1px solid var(--border-subtle)', background: 'transparent',
-              cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500,
-              color: 'var(--text-muted)'
-            }}>
-              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M9 3h6M10 3v6l-5 9a2 2 0 0 0 2 3h10a2 2 0 0 0 2-3l-5-9V3" />
-              </svg>
-              합성(일반) — 파일 없이 대본부터 시작
-            </button>
-            {/* 버전 표시 — 중앙 축 그대로, 버튼 아래 16px. 상단 로고 옆에는 두지 않는다. */}
-            <AppVersionLabel />
-          </div>
-        </div>
-      ) : (
-        /* ── 작업 화면 ── */
-        <div style={{ position: 'relative', zIndex: 1, flex: 1, overflowY: 'auto', display: 'flex', justifyContent: 'center' }}>
-          <div style={{ width: '100%', maxWidth: 720, padding: '24px 40px 40px' }}>
-            {/* 파일 정보 + 파형 (합침) */}
-            <div style={{
-              borderRadius: 14, overflow: 'hidden', marginBottom: 16,
-              background: 'var(--bg-card)', border: '1px solid var(--border-subtle)'
-            }}>
-              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '12px 16px' }}>
-                <div style={{ display: 'flex', alignItems: 'center', gap: 12, minWidth: 0, flex: 1 }}>
-                  <div style={{
-                    display: 'flex', alignItems: 'center', justifyContent: 'center',
-                    width: 40, height: 40, borderRadius: 10, flexShrink: 0,
-                    background: 'var(--accent-glow)', border: '1px solid var(--border-accent)'
-                  }}>
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="var(--accent-light)" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
-                      <path d="M9 18V5l12-2v13" /><circle cx="6" cy="18" r="3" /><circle cx="18" cy="16" r="3" />
-                    </svg>
-                  </div>
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                      {fileInfo.name}
-                    </div>
-                    <div style={{ marginTop: 3, display: 'flex', gap: 6 }}>
-                      {[
-                        `${Math.floor(fileInfo.duration / 60)}:${String(Math.floor(fileInfo.duration % 60)).padStart(2, '0')}`,
-                        fileInfo.channels === 1 ? 'Mono' : 'Stereo',
-                        `${(fileInfo.sampleRate / 1000).toFixed(1)}kHz`,
-                        fileInfo.format.toUpperCase()
-                      ].map((t, i) => (
-                        <span key={i} style={{ fontSize: 10, padding: '1px 6px', borderRadius: 4, background: 'var(--bg-elevated)', color: 'var(--text-muted)' }}>{t}</span>
-                      ))}
-                    </div>
-                  </div>
-                </div>
-                <button onClick={reset} style={{
-                  display: 'flex', alignItems: 'center', gap: 4, padding: '6px 10px',
-                  borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'inherit',
-                  fontSize: 11, fontWeight: 500, background: 'var(--bg-elevated)', color: 'var(--text-muted)'
-                }}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" />
-                  </svg>
-                </button>
-              </div>
-              <Waveform />
-            </div>
-
-            {/* 이전 결과 있음 — 재분리 없이 복원 (안내 후 선택) */}
-            {restorable && status === 'idle' && (
-              <div style={{
-                display: 'flex', alignItems: 'center', gap: 10, padding: '10px 14px', borderRadius: 10,
-                background: 'var(--cyan-glow, rgba(34,211,238,0.08))', border: '1px solid rgba(34,211,238,0.35)'
-              }}>
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="var(--cyan)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0 }}>
-                  <path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.36 2.64L3 8" /><path d="M3 3v5h5" />
-                </svg>
-                <span style={{ flex: 1, fontSize: 12, color: 'var(--text-secondary)' }}>
-                  이전 분리 결과가 있습니다. 다시 분리하지 않고 불러올까요?
-                </span>
-                <button onClick={() => restorable && restoreSession(restorable.dir, restorable.session)} style={{
-                  padding: '6px 12px', borderRadius: 8, border: 'none', cursor: 'pointer', fontFamily: 'inherit',
-                  fontSize: 12, fontWeight: 600, background: 'var(--cyan)', color: '#00181c'
-                }}>불러오기</button>
-                <button onClick={() => setRestorable(null)} style={{
-                  padding: '6px 12px', borderRadius: 8, border: '1px solid var(--border-subtle)', cursor: 'pointer',
-                  fontFamily: 'inherit', fontSize: 12, fontWeight: 500, background: 'transparent', color: 'var(--text-muted)'
-                }}>새로 분리</button>
-              </div>
-            )}
-
-            {/* 모드 + 옵션 + 버튼 + 결과 */}
-            <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
-              <ModeSelector />
-              {mode === 'split' ? <SplitEditor /> : mode === 'tts' ? <SynthesisTabs />
-                : mode === 'dub' ? <DubWorkspace />
-                : mode === 'lab' ? <LabPlaceholder /> : <Options />}
-              {/* 합성 화면에서는 시작·취소 버튼과 진행 상태를 [음성 만들기] 카드 안에서 그린다 —
-                  제목만 있는 단계 카드와 그 아래 버튼으로 나뉘어 있으면 '어디가 실행 자리인가'가 생긴다.
-                  다른 모드는 지금까지와 같은 자리다. */}
-              {/* ★테스트개발 작업실은 **자기 실행·진행·취소·오류를 자기 안에서** 보여 준다.
-                     예전에는 여기 공용 실행 버튼이 함께 그려져, 알 수 없는 모드의 마지막
-                     fallback 이름인 '텍스트 추출 시작' 이 작업실에 떴다. 게다가 그 버튼은
-                     mode='lab' 로 요청을 보내는데 워커에 그런 갈래가 없어 빈 결과로 끝났다
-                     ("분리 결과가 없습니다." → 종료 코드 1). 다른 모드의 실행·결과가 작업실에
-                     섞여 나오지 않게 여기서 제외한다. */}
-              {showSharedRun && <ProcessButton />}
-              {showSharedRun && <ProgressBar />}
-              {showSharedResults && <TtsResultInfo />}
-              {showSharedResults && <TrackList />}
-              {/* 텍스트 교정 — 전사 결과가 나온 뒤 그 자리 아래에 붙는다(새 화면을 만들지 않는다). */}
-              {mode === 'transcribe' && status === 'done' && <TranscriptEditor />}
-              {/* 대화 구간 수정 — 분석이 끝난 뒤 그 결과 아래에 붙는다. */}
-              {mode === 'conversation' && status === 'done' && <DialogueSegments />}
-              {/* 재처리 버튼 (결과 나온 후) */}
-              {status === 'done' && (
-                <button onClick={setIdle} style={{
-                  display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6,
-                  width: '100%', padding: '10px 0', borderRadius: 10,
-                  border: '1px solid var(--border-subtle)', background: 'var(--bg-card)',
-                  cursor: 'pointer', fontFamily: 'inherit', fontSize: 12, fontWeight: 500,
-                  color: 'var(--text-secondary)'
-                }}>
-                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                    <path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8" /><path d="M3 3v5h5" />
-                  </svg>
-                  다른 모드로 재처리
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
     </div>
-  )
+    <div style={{ flex: 1, minHeight: 0, display: 'flex' }}>
+      <aside data-testid="workspace-sidebar" style={{ width: 196, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 24, padding: '28px 12px 18px', background: 'var(--sidebar-surface)', borderRight: '1px solid var(--border-subtle)', overflowY: 'auto' }}>
+        <ModeSelector />
+        <div style={{ marginTop: 'auto', padding: '18px 0 0', borderTop: '1px solid var(--border-subtle)' }}>
+          <button type="button" data-testid="open-app-options" onClick={() => { openEffectsPanel(false); setShowOptions(v => !v) }}
+            aria-pressed={showOptions} className="btn btn-ghost"
+            title="만든 것을 둘 자리와 쌓인 것 비우기"
+            style={{ width: '100%', fontSize: 11, padding: '7px 8px', marginTop: 6, display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center' }}>
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true">
+              <circle cx="12" cy="12" r="3"/>
+              <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/>
+            </svg>
+            설정
+          </button>
+
+          <AppVersionLabel />
+        </div>
+      </aside>
+
+      {/* 설정 — 팝업으로 띄운다(2026-09-28 지시). 레이아웃 흐름 밖에 둔다. */}
+      {showOptions && <AppOptions initialTab={effectsPanelOpen() ? 'sound' : 'general'} close={() => { openEffectsPanel(false); setShowOptions(false) }}/>}
+      <WorkspaceDockContext.Provider value={dock}><main style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
+        <div ref={pageRef} style={{ width: '100%', maxWidth: 1120, height: '100%', minHeight: 0, margin: '0 auto', padding: '24px clamp(18px, 3vw, 40px) 18px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }}>
+          <header data-testid="workspace-heading" style={{ display: mode === 'reader' ? 'none' : undefined, flexShrink: 0, paddingBottom: 18, marginBottom: 18, borderBottom: '1px solid var(--border-subtle)' }}>
+            <div style={{ marginBottom: 7, fontSize: 10, letterSpacing: '.16em', color: '#b5aa95' }}>AUDIOFORGE · {heading[0]}</div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
+              <h1 title={workspace.description} style={{ fontSize: 25, lineHeight: 1.35, fontWeight: 600, letterSpacing: '-.04em', margin: 0 }}>{heading[1]}</h1>
+              {mode === 'dub' && <span style={{ padding: '3px 7px', border: '1px solid var(--border-subtle)', borderRadius: 5, color: 'var(--text-muted)', fontSize: 11 }}>개발 중</span>}
+              {showSharedRun && !busy && <span aria-label="작업 흐름" style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 11, color: done ? 'var(--emerald)' : 'var(--text-muted)' }}>
+                <span aria-hidden="true" style={{ width: 5, height: 5, borderRadius: '50%', background: 'currentColor' }}/>{!fileInfo ? '파일을 기다리는 중' : done ? '결과 준비됨' : status === 'error' ? '확인 필요' : '시작할 준비 됐어요'}
+              </span>}
+              {showSharedRun && done && <button type="button" data-testid="workspace-show-results" className="btn btn-ghost" style={{ fontSize: 11, padding: '6px 10px' }} onClick={() => scrollRef.current?.querySelector('[data-testid="shared-results"]')?.scrollIntoView({ block: 'start' })}>결과 보기 ↓</button>}
+              {busy && <span role="status" data-testid="workspace-activity" style={{ display: 'inline-flex', alignItems: 'center', gap: 8, marginLeft: 'auto', fontSize: 11, color: 'var(--accent-light)' }}>
+                <span className="workspace-activity" aria-hidden="true" style={{ display: 'inline-flex', alignItems: 'center', gap: 3, height: 18 }}>
+                  {[0, 1, 2, 3].map(i => <span key={i} style={{ width: 3, height: 14, borderRadius: 2, background: 'currentColor', animationDelay: `${i * 110}ms` }} />)}
+                </span>
+                {status === 'cancelling' ? '작업 정리 중' : status === 'processing' ? '작업 중' : '작업 종료 확인 중'}
+              </span>}
+            </div>
+
+          </header>
+
+          <div ref={scrollRef} data-testid="workspace-content" style={{ flex: 1, minHeight: 0, overflowY: mode === 'reader' ? 'hidden' : 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', scrollbarGutter: mode === 'reader' ? undefined : 'stable', paddingBottom: mode === 'reader' ? 0 : 20 }}>
+          {showSharedRun && <div style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
+            <SourceCard />
+            {fileInfo && restorable && status === 'idle' && <div role="status" style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', borderRadius: 10, padding: 14, background: 'var(--accent-glow)', border: '1px solid var(--border-accent)' }}>
+              <span style={{ flex: '1 1 200px', fontSize: 12 }}>이 원본으로 만든 이전 결과가 있습니다.</span>
+              <button type="button" className="btn btn-ghost" onClick={() => restoreSession(restorable.dir, restorable.session)} style={{ fontSize: 12 }}>결과 불러오기</button>
+              <button type="button" className="btn btn-ghost" onClick={() => setRestorable(null)} style={{ fontSize: 12 }}>새로 작업</button>
+            </div>}
+            {fileInfo && <>
+              {mode === 'split' ? <SplitEditor /> : <Options />}
+              <ProcessButton />
+              <ProgressBar />
+            </>}
+          </div>}
+
+          {mode === 'tts' && <SynthesisTabs />}
+          {mode === 'dub' && <SongWorkspace />}
+          {mode === 'reader' && <ReaderWorkspace />}
+          {mode === 'lab' && <LabPlaceholder />}
+
+          {sharedResults && (status === 'done' || status === 'error') && <section data-testid="shared-results" aria-label="현재 작업 결과" style={{ display: 'flex', flexDirection: 'column', gap: 18, marginTop: 24 }}>
+            {status === 'done' && <div style={{ display: 'flex', alignItems: 'center', gap: 8, borderTop: '1px solid var(--border-subtle)', paddingTop: 20 }}>
+              <span style={{ width: 6, height: 6, borderRadius: '50%', background: 'var(--emerald)' }}/>
+              <h2 style={{ fontSize: 14, fontWeight: 600 }}>{workspace.label} 결과</h2>
+            </div>}
+            <TtsResultInfo />
+            <TrackList />
+            {mode === 'transcribe' && done && <TranscriptEditor />}
+            {mode === 'conversation' && done && <DialogueWorkspace />}
+            {showSharedRun && done && <button type="button" className="btn btn-ghost" onClick={resetRun} style={{ alignSelf: 'flex-start', fontSize: 12 }}>설정을 바꿔 다시 작업</button>}
+          </section>}
+          </div>
+          <div ref={setDock} data-testid="workspace-dock" style={{ flexShrink: 0, maxHeight: '42%', overflowY: 'auto' }}/>
+        </div>
+      </main></WorkspaceDockContext.Provider>
+    </div>
+  </div>
 }

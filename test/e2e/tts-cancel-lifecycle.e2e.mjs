@@ -2,10 +2,11 @@
 // synthetic 프로세스 트리(fixtures/synthetic_tree.py)를 AF_E2E_TTS_SCRIPT로 띄워 실제 취소 경로
 // (PythonRunner.cancel/taskkill /T → child close 확인 → settlement → done → cancelled → idle)를 검증한다.
 // 상대 순서(cancel_clicked ≤ cancelling ≤ child_exit ≤ idle)와 race 승자·kill 실패·tree 종료·중복 신호 0을 단언.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import { execSync } from 'child_process'
 import fs from 'fs'; import path from 'path'; import os from 'os'
-import { snapshotTree, refClipDirs, qwenVenvPids, qwenJobDirs } from './_e2e-helper.mjs'
+import { snapshotTree, refClipDirs, qwenVenvPids, qwenJobDirs, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const FIXTURE = path.join(APP, 'test', 'e2e', 'fixtures', 'synthetic_tree.py')
@@ -86,6 +87,9 @@ const armStore = async () => {
       ttsText: '취소 테스트 문장입니다.', ttsPitch: 0, ttsPitchCapability: null,
       ttsEmotionRefState: {}, ttsReferencePrompts: {}, ttsReferenceClip: ''
     })
+    // ★화면 개편(2026-09-27 이관 · 10-03 확인): 합성의 기본 진입은 **생성 카드**다. 이 검사가 누르는 '음성 합성 시작'·'처리 취소' 는
+    //   옛 버전 탭에 있다 — 그 화면으로 간다(analyze-during-synthesis 와 같은 길). 취소 경로(audio:cancel)는 카드 멈춤과 같은 본체 길이다. 단언은 그대로다.
+    window.__synthesisCards.getState().setView('legacy')
   }, inputPath)
   await win.waitForTimeout(700)  // 참조 자동 분석(가짜 경로→실패) 정착 대기
   await win.evaluate(() => window.__afStore.setState({ ttsRefReady: true, ttsRefMessage: '', status: 'idle', error: null, errorInfo: null }))
@@ -95,7 +99,13 @@ const status = () => win.evaluate(() => window.__afStore.getState().status)
 const waitStatus = (s, t = 15000) => win.waitForFunction((ss) => window.__afStore.getState().status === ss, s, { timeout: t })
 const rootText = () => win.evaluate(() => document.getElementById('root')?.innerText || '')
 const readPids = () => { try { return JSON.parse(fs.readFileSync(pidFile, 'utf-8')) } catch { return null } }
-const clickSynth = () => win.getByRole('button', { name: '음성 합성 시작' }).first().click({ timeout: 8000 })
+const clickSynth = async () => {
+  // ★이 검사의 참조는 가짜 경로다(합성은 synthetic 트리) — 화면이 참조를 다시 살피면(취소 뒤 등) 분석이 실패해 '준비 필요' 로 돌아간다.
+  //   그래서 처음 준비(armStore)와 같은 방법으로 시나리오마다 준비 상태를 다시 세운다. 취소 경로 단언과는 무관하다.
+  await win.evaluate(() => window.__afStore.setState({ ttsRefReady: true, ttsRefMessage: '' }))
+  await win.waitForFunction(() => window.__afStore.getState().ttsRefReady === true, undefined, { timeout: 5000 })
+  await win.getByRole('button', { name: '음성 합성 시작' }).first().click({ timeout: 8000 })
+}
 const startSynth = async () => {
   fs.rmSync(pidFile, { force: true })
   await clickSynth()
@@ -109,6 +119,7 @@ const startSynth = async () => {
 try {
   await win.waitForLoadState('domcontentloaded')
   await win.waitForFunction(() => !!window.__afStore, undefined, { timeout: 30000 })
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await installSendCounter()
   await armStore()
 
@@ -213,7 +224,8 @@ try {
   ok(isAlive(pids.parent), 'kill 실패 시 child 여전히 생존')
   const s7 = await win.evaluate(() => { const g = window.__afStore.getState(); return { status: g.status, code: g.errorInfo?.code, childAlive: g.errorInfo?.childAlive } })
   ok(s7.status === 'error' && s7.code === 'CANCEL_FAILED' && s7.childAlive === true, 'cancel-failed(조용한 idle 아님·childAlive 표면화)')
-  ok(/취소하지 못했습니다/.test(await rootText()), 'cancel-failed 안내 메시지(role=alert)')
+  // 안내 문구는 e0c7a03 에서 '갈래마다 다른 회복 방법' 으로 바뀌었다(child 생존 → 다시 취소). 이제 **경고 요소(role=alert) 안**에 있는지까지 본다.
+  ok((await win.getByRole('alert').filter({ hasText: '이전 작업이 아직 살아 있습니다' }).count()) > 0, 'cancel-failed 안내 메시지(role=alert · 다시 취소 안내)')
   // 새 합성 차단 확인: 합성 버튼 없음(이전 작업 종료 대기 표시)
   ok((await win.getByRole('button', { name: '음성 합성 시작' }).count()) === 0, 'cancel-failed·childAlive 중 합성 버튼 차단')
   // 다시 취소(kill 시임 해제) → 성공 → idle
@@ -311,7 +323,8 @@ try {
   const win2 = await app2.firstWindow()
   await win2.waitForLoadState('domcontentloaded')
   await win2.waitForFunction(() => !!window.__afStore, undefined, { timeout: 30000 })
-  await win2.evaluate((p) => window.__afStore.setState({ fileInfo: { path: p, name: 'in.wav', duration: 5, channels: 1, sampleRate: 24000, format: 'wav' }, mode: 'tts', synthesisTab: 'advanced', status: 'idle', ttsText: '종료 테스트', ttsPitch: 0, ttsEmotionRefState: {} }), path.join(iso2, 'in.wav'))
+  await enterStudio(win2)        // 시작 화면의 '작업실 시작'(2026-10-03)
+  await win2.evaluate((p) => { window.__afStore.setState({ fileInfo: { path: p, name: 'in.wav', duration: 5, channels: 1, sampleRate: 24000, format: 'wav' }, mode: 'tts', synthesisTab: 'advanced', status: 'idle', ttsText: '종료 테스트', ttsPitch: 0, ttsEmotionRefState: {} }); window.__synthesisCards.getState().setView('legacy') }, path.join(iso2, 'in.wav'))
   await win2.waitForTimeout(700)
   await win2.evaluate(() => window.__afStore.setState({ ttsRefReady: true, ttsRefMessage: '', status: 'idle' }))
   await win2.getByRole('button', { name: '음성 합성 시작' }).first().click({ timeout: 8000 })

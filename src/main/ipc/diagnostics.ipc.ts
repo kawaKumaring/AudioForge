@@ -1,4 +1,6 @@
 import { app, dialog, ipcMain, shell, type BrowserWindow } from 'electron'
+import { selfCheckResults } from './selfcheck.ipc'
+import { resultLine } from '../../shared/selfCheck'
 import { existsSync } from 'fs'
 import { basename, join } from 'path'
 import { appLog, LOG_DIR_NAME } from '../services/app-log'
@@ -47,6 +49,7 @@ export function registerDiagnosticsIpc(getWindow: () => BrowserWindow | null, ge
           pythonPresent: existsSync(getPythonPath()),
           dataDirName: basename(userData),
         },
+        checks: selfCheckResults().map((c) => `${c.ok ? '●' : '✕'} ${resultLine(c)} · ${c.at}`),
       })
       appLog()?.info('diagnostics', `진단 묶음 완료 name=${r.name} logs=${r.copiedLogs.length}`)
       if (!e2eDir) shell.showItemInFolder(r.dir)

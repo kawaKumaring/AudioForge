@@ -4,6 +4,8 @@
 separate.main() 을 실제 argv 로 부르고 emit 을 가로채 무엇이 나갔는지만 본다.
 Whisper 는 reference_transcript.transcribe_reference 주입으로 대체(모델·GPU 불필요).
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import os
 import shutil
 import sys

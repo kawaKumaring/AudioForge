@@ -160,3 +160,48 @@ test('전역 하나 — 넣기 전엔 null, 호출부는 ?. 로 부른다', () =
     assert.equal(appLog(), log)
   } finally { setAppLog(null); s.cleanup() }
 })
+
+// ── 콘솔 창용 최근 줄 (2026-09-30) ─────────────────────────────────────────
+// ★창을 켜지 않아도 쌓여야 한다 — 켜는 순간 앞의 일이 보여야 문제를 찾는다.
+test('최근 줄을 쌓아 두고, 새 줄은 듣는 쪽에 곧바로 간다', () => {
+  const s = scratch()
+  try {
+    const log = createAppLog({ dir: s.dir, now: () => T0 })
+    log.info('boot', '하나')
+    const heard: string[] = []
+    const off = log.subscribe((l) => heard.push(l))
+    log.warn('reader', '둘')
+    off()
+    log.error('job', '셋')
+    const recent = log.recent()
+    assert.equal(recent.length, 3)
+    assert.match(recent[0], /INFO  \[boot\] 하나$/)
+    assert.equal(heard.length, 1, '끊은 뒤에도 들린다')
+    assert.match(heard[0], /WARN  \[reader\] 둘$/)
+    assert.ok(!recent.some((l) => l.endsWith('\n')), '줄 끝의 줄바꿈이 남았다')
+  } finally { s.cleanup() }
+})
+
+test('최근 줄은 상한을 넘지 않는다 — 오래된 것부터 버린다(파일에는 남는다)', async () => {
+  const s = scratch()
+  try {
+    const { LOG_RECENT_MAX } = await import('./app-log.ts')
+    const log = createAppLog({ dir: s.dir, now: () => T0 })
+    for (let i = 0; i < LOG_RECENT_MAX + 5; i++) log.info('t', `줄${i}`)
+    const recent = log.recent()
+    assert.equal(recent.length, LOG_RECENT_MAX)
+    assert.match(recent[0], /줄5$/)
+    const file = readFileSync(log.currentFile(), 'utf-8')
+    assert.ok(file.includes('줄0'), '파일에서도 지워졌다')
+  } finally { s.cleanup() }
+})
+
+test('듣는 쪽이 터져도 기록은 멈추지 않는다', () => {
+  const s = scratch()
+  try {
+    const log = createAppLog({ dir: s.dir, now: () => T0 })
+    log.subscribe(() => { throw new Error('보는 쪽 고장') })
+    log.info('t', '그래도 남는다')
+    assert.ok(readFileSync(log.currentFile(), 'utf-8').includes('그래도 남는다'))
+  } finally { s.cleanup() }
+})

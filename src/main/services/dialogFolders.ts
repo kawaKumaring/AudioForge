@@ -37,9 +37,10 @@ export type FolderSlot =
   | 'export'   // 내보내기·저장
   | 'restore'  // 이전 결과 폴더 열기
   | 'python'   // 파이썬 실행 파일
+  | 'text'     // 낭독할 소설·텍스트
 
 export const FOLDER_SLOTS: readonly FolderSlot[] =
-  ['source', 'voice', 'video', 'export', 'restore', 'python'] as const
+  ['source', 'voice', 'video', 'export', 'restore', 'python', 'text'] as const
 
 /**
  * 설정 파일에 쓰는 이름.
@@ -52,6 +53,7 @@ export const SLOT_KEY: Record<FolderSlot, string> = {
   export: 'lastExportDir',
   restore: 'lastRestoreDir',
   python: 'lastPythonDir',
+  text: 'lastTextDir',
 }
 
 /**
@@ -59,6 +61,8 @@ export const SLOT_KEY: Record<FolderSlot, string> = {
  * 참조 목소리는 대개 작업 음원과 같은 자리에 있고, 영상도 그렇다.
  * 내보내기·결과 폴더도 원본 근처가 자연스럽다.
  * ★`python` 은 비워 둔다 — 실행 파일을 음원 폴더에서 찾게 하면 더 헷갈린다.
+ * ★`text` 도 비워 둔다 — 소설은 음원과 다른 자리에 모아 둔다. 음원 폴더를 빌리면
+ *   처음 한 번은 엉뚱한 데서 열린다. 기억이 없으면 문서 폴더로 간다(본체의 보루).
  */
 const BORROW: Partial<Record<FolderSlot, FolderSlot>> = {
   voice: 'source',

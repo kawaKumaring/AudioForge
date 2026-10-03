@@ -15,6 +15,8 @@ save_audio 는 가짜로 바꿔 끼우므로 실제 오디오를 쓰지 않는�
 쓰지 않는다(conversation_worker 는 모듈 로드 시 무거운 것을 import 하지 않는다).
 """
 
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import os
 import sys
 import unittest

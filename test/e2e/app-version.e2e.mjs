@@ -8,9 +8,11 @@
 //   · 작은 창·고배율에서 버튼과 겹치지도 잘리지도 않는다
 //   · 기존 파일 선택·드래그·이전 결과 버튼 레이아웃은 그대로다
 // 화면 캡처는 하지 않는다 — 수치로만 판정한다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
+import { enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 let failed = 0
@@ -34,6 +36,7 @@ win.on('pageerror', (e) => pageErrors.push(e.message))
 
 try {
   await win.waitForLoadState('domcontentloaded')
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   const label = win.locator('[data-testid="app-version"]')
   await label.waitFor({ state: 'visible', timeout: 15000 })
 

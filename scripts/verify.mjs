@@ -11,6 +11,8 @@
 //
 // 파이썬은 앱과 같은 규칙으로 찾는다: AUDIOFORGE_PYTHON → externals/env.json → 없으면 그 단계만 건너뛰고
 // **건너뛴 사실을 요약에 남긴다**(조용히 통과시키지 않는다).
+// ★맨 앞 — 게이트가 띄우는 검사·Electron·파이썬이 전부 이 자리를 물려받는다.
+import '../test/_temp-root.mjs'
 import { spawnSync } from 'child_process'
 import { existsSync, readFileSync } from 'fs'
 import path from 'path'
@@ -128,6 +130,22 @@ if (WITH_APP_UI) {
   // 로그 파일이 남고, 진단 묶음이 값(대사·폴더) 없이 만들어지는가.
   run('실제 앱 · 로그 파일·진단 묶음(GPU 없음)', 'node',
     [path.join('test', 'e2e', 'diagnostics-export.e2e.mjs')])
+  // 콘솔 창 — 동작 기록이 창과 무관하게 남고, 보이고, 복사되고, 껐다 켜도 남는가(2026-09-30 지시).
+  run('실제 앱 · 콘솔 창(GPU 없음)', 'node', [path.join('test', 'e2e', 'console-panel.e2e.mjs')])
+  // 개발툴 MCP — AI 가 앱을 켜고 조작·관찰하는 도구가 표준대로 붙고, 화면 밖에 뜨고, 파일 창을 대체하고, 남기지 않는가(2026-09-30).
+  run('실제 앱 · 개발툴 MCP(GPU 없음)', 'node', [path.join('test', 'e2e', 'mcp-devtool.e2e.mjs')])
+  // 만들어진 소리의 재생 빠르기 — 다시 만들지 않고 듣는 빠르기만, 음 높이 유지, 조각이 바뀌어도 유지(2026-09-30).
+  run('실제 앱 · 재생 빠르기(GPU 없음)', 'node', [path.join('test', 'e2e', 'playback-rate.e2e.mjs')])
+  // 낭독 — 기본 목소리 여럿(Supertonic 열 개 + piper)을 들어 보고 골라 읽는가(2026-09-30). 받아 두지 않았으면 SKIP 으로 말한다.
+  run('실제 앱 · 낭독 기본 목소리 고르기(GPU 없음)', 'node', [path.join('test', 'e2e', 'reader-voices.e2e.mjs')])
+  // 낭독 — 글 파일을 UTF-8·UTF-16·CP949 로 알아서 읽고, 알아볼 수 없는 파일은 사유를 말하며 거절하는가(2026-09-30).
+  run('실제 앱 · 낭독 글자 방식(GPU 없음)', 'node', [path.join('test', 'e2e', 'reader-encoding.e2e.mjs')])
+  // 낭독 — 3만 문단 책을 보이는 곳만 그려도 고르기·먼 자리로 가기·따라가기가 되는가(2026-09-30).
+  run('실제 앱 · 낭독 큰 책(GPU 없음)', 'node', [path.join('test', 'e2e', 'reader-bigbook.e2e.mjs')])
+  // ★외부 전송 금지 — 보안 정책이 켜진 채 뜨고, 화면·본체의 바깥 요청이 막히고, 맞춤법 사전을 받지 않는가(2026-09-30 지시).
+  run('실제 앱 · 외부 전송 차단(GPU 없음)', 'node', [path.join('test', 'e2e', 'offline-guard.e2e.mjs')])
+  // 기능 검사 탭 — 기능별로 눌러 그 기능만, 초록/붉은 표시, 보고 복사·진단 묶음에 결과(2026-09-30 지시).
+  run('실제 앱 · 기능 검사 탭(GPU 없음)', 'node', [path.join('test', 'e2e', 'selfcheck.e2e.mjs')])
   // 개발선이 자기 데이터 폴더(audio-forge-dev)를 쓰고, 정식 폴더는 읽기만 하는가.
   run('실제 앱 · 채널별 데이터 폴더(GPU 없음)', 'node',
     [path.join('test', 'e2e', 'user-data-channel.e2e.mjs')])
@@ -140,11 +158,54 @@ if (WITH_APP_UI) {
   // 교정본 저장 — 자막 손질을 거치는지까지 본다(2026-09-24 B-7).
   run('실제 앱 · 전사 교정본 저장(GPU 없음)', 'node',
     [path.join('test', 'e2e', 'transcript-edit.e2e.mjs')])
+  // 작업 기록이 **파일 하나씩**인가, 그리고 지운 것이 껐다 켜도 되살아나지 않는가
+  // (2026-09-29). 되살아나는 사고를 실제로 두 번 겪었다 — 그래서 게이트에 건다.
+  run('실제 앱 · 작업 기록 파일 분리(GPU 없음)', 'node',
+    [path.join('test', 'e2e', 'work-records.e2e.mjs')])
+  // 낭독 — **실제 piper 로 소리를 만들어** 읽는다(2026-09-29). 모형이 아니다.
+  run('실제 앱 · 낭독(실제 기본 목소리)', 'node',
+    [path.join('test', 'e2e', 'reader-aloud.e2e.mjs')])
+  // ★위 검사는 배포 빌드라 StrictMode 가 화면을 두 번 붙이지 않는다. 개발 실행에서는 낭독이
+  //   만든 소리를 전부 버리고 멈췄는데(2026-09-29 사용자 신고) 게이트는 초록이었다.
+  //   그래서 엔진을 **React 개발판 + StrictMode** 로 따로 돌린다. 빌드·GPU 불필요.
+  run('화면 부품 · 낭독 엔진(개발 모드 StrictMode)', 'node',
+    [path.join('test', 'e2e', 'reader-aloud.component.mjs')])
+  // 긴 책(60문단) — 따라가기·고정된 작동 막대·고른 자리부터 읽기·서재 팝업(2026-09-30 피드백).
+  //   짧은 책 검사는 모든 글이 한 화면에 들어와 '화면 안에 있다' 가 늘 참이었다.
+  run('실제 앱 · 낭독 화면(긴 책)', 'node', [path.join('test', 'e2e', 'reader-layout.e2e.mjs')])
+  // 생성 카드 화면과 작업 흐름(2026-09-27). 만들어 두고 **게이트에 안 걸어 둔 상태**로
+  // 넘어올 뻔했다 — 이 파일의 머리말 그대로다: 돌리지 않은 검사는 있는 것이 아니다.
+  run('실제 앱 · 생성 카드 화면(GPU 없음)', 'node',
+    [path.join('test', 'e2e', 'synthesis-cards.e2e.mjs')])
+  run('실제 앱 · 작업 흐름(GPU 없음)', 'node',
+    [path.join('test', 'e2e', 'ux-workflow.e2e.mjs')])
+  // 생성 카드의 연결 경계 — 저장·복원·되돌리기·요청 대조·취소·실패(2026-09-27 검수 회귀).
+  run('실제 앱 · 생성 카드 연결(GPU 없음)', 'node',
+    [path.join('test', 'e2e', 'synthesis-cards-connection.e2e.mjs')])
+  // 본체를 통과하는 요청 식별자 — 이벤트 주입이 아니라 진짜 합성 통로를 탄다(모델만 대체).
+  run('실제 앱 · 생성 카드 본체 통과(GPU 없음)', 'node',
+    [path.join('test', 'e2e', 'synthesis-cards-main-path.e2e.mjs')])
+  // 기본 목소리 — 파일을 하나도 열지 않고 실제 piper 로 만든다(모델이 없으면 스스로 건너뛴다).
+  run('실제 앱 · 기본 목소리 생성(GPU 없음)', 'node',
+    [path.join('test', 'e2e', 'synthesis-cards-builtin.e2e.mjs')])
+  // 최종 음성 — 카드 순서대로 이어 듣고 한 파일로 저장(레이트·채널이 달라도).
+  run('실제 앱 · 최종 음성 연결(GPU 없음)', 'node',
+    [path.join('test', 'e2e', 'synthesis-cards-join.e2e.mjs')])
+  // 노래 변환 — 화면에서 눌러 엔진까지 가고, 멈추고, 실패해도 선택이 남는가.
+  //   ★실제 변환(분리 + seed-vc)은 몇 분이 걸려 여기서 돌리지 않는다. 그 확인은 따로 한다.
+  run('실제 앱 · 노래 변환 연결(GPU 없음)', 'node',
+    [path.join('test', 'e2e', 'song-convert.e2e.mjs')])
+  // 껐다 켜기 — 기본 목소리로 만든 생성본이 **무엇으로 만들어졌는지** 재시작 뒤에도 남는가.
+  // 파서 단위 검사는 source 만 있는 fixture 로 이 결함을 놓쳤다(2026-09-27 재현).
+  run('실제 앱 · 껐다 켠 뒤 카드 복원(GPU 없음)', 'node',
+    [path.join('test', 'e2e', 'synthesis-cards-restart.e2e.mjs')])
 } else {
   // 건너뛴 것은 **전부** 적는다 — 셋만 적혀 있던 동안 여섯 단계가 요약에서 사라져 있었다(2026-09-17 실측).
   skip('실제 앱 · UI 경로', '--app-ui 를 주면 함께 확인한다(GPU 안 씀)')
   for (const n of ['복원 중 선택 변경', '재생 음량 유지', '목소리 준비 표시 일치', '일반·고급 목소리 격리',
-    '이전 작업 되살리기 알림', '인물 차단 안내', '로그 파일·진단 묶음', '채널별 데이터 폴더']) {
+    '이전 작업 되살리기 알림', '인물 차단 안내', '로그 파일·진단 묶음', '채널별 데이터 폴더',
+    '생성 카드 화면', '작업 흐름', '생성 카드 연결', '생성 카드 본체 통과', '기본 목소리 생성', '최종 음성 연결',
+    '껐다 켠 뒤 카드 복원', '노래 변환 연결']) {
     skip(`실제 앱 · ${n}`, '같은 이유')
   }
 }
@@ -153,6 +214,10 @@ if (WITH_APP) {
   //   소리를 만들지 않는다. 예전에 이 단계를 '합성 1회' 로 적어 두었더니 4.9초에 통과했고,
   //   나는 그것을 합성 검증으로 읽었다. 모양만 맞는 검사가 통과로 세어지는 바로 그 종류다.
   run('실제 앱 · 합성 시작·취소 수명주기(GPU)', 'node', [path.join('test', 'e2e', 'synthesize.e2e.mjs')])
+  // 낭독이 참조 목소리로 만드는 동안 남에게 보이는가 — 공용 판정의 반대 방향(2026-09-30). 기본 목소리는 막지 않는다.
+  run('실제 앱 · 낭독이 도는 동안 합성이 비킨다(GPU)', 'node', [path.join('test', 'e2e', 'reader-gate.e2e.mjs')])
+  // Qwen 지정 목소리(소희) — 고르기만으론 GPU 를 안 쓰고, 누르면 Qwen 모델로 만들어 튼다(2026-09-30). 받아 두지 않았으면 SKIP.
+  run('실제 앱 · 낭독 Qwen 지정 목소리(GPU)', 'node', [path.join('test', 'e2e', 'reader-qwen.e2e.mjs')], { env: { ...process.env, AF_E2E_GPU: '1' } })
   // 소리가 실제로 나오는지는 완주 검사가 답한다. 참조 자산과 검증용 파이썬을 명시해야 돌고,
   // 주지 않으면 **통과처럼 종료**하므로(prerequisite skip) 여기서 저장소 fixture 와 앱 파이썬을 준다.
   const fixture = path.join(ROOT, 'test', 'fixtures', 'audio', 'ko-speech-region-18s.wav')

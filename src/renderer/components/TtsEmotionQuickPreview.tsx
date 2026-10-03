@@ -52,12 +52,12 @@ export default function TtsEmotionQuickPreview({
       borderTop: '1px solid var(--border-subtle)', paddingTop: 12,
     }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', minWidth: 0 }}>
-        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }}>감정 미리듣기</span>
+        <span style={{ fontSize: 12, fontWeight: 600, color: 'var(--text-secondary)' }} title="기쁨·화남·슬픔을 짧은 대사로 생성해 비교합니다">감정 미리듣기</span>
         <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1, minWidth: 140 }}>
           {running ? busyLabel
-            : allReady ? '아래 버튼으로 들어보세요'
+            : allReady ? '3개 준비됨'
               : readyCount > 0 ? `${readyCount}개 만들어짐`
-                : '기쁨 · 화남 · 슬픔을 짧은 대사로 만들어 들어봅니다'}
+                : ''}
         </span>
         <button
           type="button"

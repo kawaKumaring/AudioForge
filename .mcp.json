@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "audioforge-devtool": {
+      "command": "node",
+      "args": ["tools/mcp/server.cjs"]
+    }
+  }
+}

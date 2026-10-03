@@ -7,12 +7,14 @@
 // 버스트용과 컨트롤용 파일 풀은 완전히 분리한다. 같은 경로를 재사용하면 Chromium 미디어 캐시가
 // 컨트롤 로드를 대신 처리해 '핸들러에 아예 도달하지 않는' 상태를 성공으로 오판하게 된다.
 // 실행: npm run build 후  node test/e2e/local-file-protocol.e2e.mjs
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { randomUUID } from 'crypto'
 import { execFileSync } from 'child_process'
+import { enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
@@ -98,6 +100,7 @@ win.on('pageerror', e => pageErrors.push(e.message))
 
 try {
   await win.waitForLoadState('domcontentloaded')
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   const mainPid = await app.evaluate(() => process.pid)
   const hcAvailable = handleCount(mainPid) !== null
   if (!hcAvailable) log('관측 불가: main 프로세스 HandleCount — 핸들 관련 단언은 SKIP(추정하지 않음)')

@@ -21,6 +21,7 @@
  * 계획이 잠시 낡은 동안(`PLAN_STALE`)에도 화면을 닫지 않고 좌표 의존 버튼만 잠근다.
  */
 import { useEffect, useRef, useState } from 'react'
+import CompactVoiceWaveform from './CompactVoiceWaveform'
 import type { CSSProperties, ReactNode } from 'react'
 
 import type { DialogueProjection, DialogueRow, DialogueSpeaker } from '../hooks/useDialogueProjection'
@@ -34,6 +35,7 @@ export interface SpeakerVoiceState {
   registered: boolean
   ready: boolean
   fileName: string
+  sourcePath?: string
   decision: ReferenceDecision
   /** 준비되지 않은 이유(슬롯 message). **표시용이다** — 판정은 phase 로 한다. */
   message?: string
@@ -99,8 +101,8 @@ const inputBox: CSSProperties = {
   color: 'var(--text-primary, var(--text-secondary))', lineHeight: 1.5,
 }
 const card: CSSProperties = {
-  display: 'flex', flexDirection: 'column', gap: 6, padding: '10px 12px', borderRadius: 10,
-  border: '1px solid var(--border-subtle)', background: 'var(--bg-elevated, transparent)',
+  display: 'flex', flexDirection: 'column', gap: 10, padding: '14px 6px', borderRadius: 0,
+  borderBottom: '1px solid var(--border-subtle)', background: 'transparent',
   minWidth: 0, width: '100%', boxSizing: 'border-box',
 }
 const rowFlex: CSSProperties = { display: 'flex', gap: 6, alignItems: 'center', flexWrap: 'wrap', minWidth: 0 }
@@ -221,8 +223,7 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
       <div data-testid="multi-dialogue-source-only" role="status"
         data-mode={p.verdict.mode} data-blockers={p.verdict.blockers.join(' ')}
         style={{ fontSize: 11, color: 'var(--text-secondary)', lineHeight: 1.6 }}>
-        {blockerText.map((t) => <div key={t}>{t}</div>)}
-        <div style={{ color: 'var(--text-muted)' }}>아래 대본 표기 직접 편집은 그대로 사용할 수 있습니다.</div>
+        <span title={blockerText.join(' · ')}>배역 분석 대기</span>
       </div>
     )
   }
@@ -278,7 +279,7 @@ export default function MultiSpeakerDialogue(props: MultiSpeakerDialogueProps) {
       style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
       {p.verdict.blockers.length > 0 && (
         <div data-testid="multi-dialogue-transient" role="status" aria-live="polite" style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-          {blockerText.join(' · ')}
+          <span title={blockerText.join(' · ')}>배역 확인 필요</span>
         </div>
       )}
       {p.lastRefusal && (
@@ -535,7 +536,7 @@ function UtteranceCard(props: {
         <span data-testid="dialogue-row-stale" role="status" aria-live="polite"
           style={{ position: 'absolute', top: 4, right: 8, pointerEvents: 'none',
             fontSize: 10, color: 'var(--amber, #d08700)' }}>
-          대본을 다시 읽는 중 · 입력은 계속하세요
+          대본 분석 중
         </span>
       )}
       {/* 머리: 번호 · 인물 · 목소리 상태(누르면 이 카드 안에 상세) · 이동/삭제 */}
@@ -557,7 +558,7 @@ function UtteranceCard(props: {
             {props.onRenameSpeaker && (
               <button type="button" data-testid="card-rename" disabled={disabled || !p.patchAllowed} aria-expanded={renameOpen}
                 title="이 인물의 이름 바꾸기(모든 대사에 적용)" onClick={() => setRenameOpen((o) => !o)}
-                style={btn('var(--text-muted)', disabled || !p.patchAllowed)}>이름 바꾸기</button>
+                aria-label="인물 이름 바꾸기" style={btn('var(--text-muted)', disabled || !p.patchAllowed)}>✎</button>
             )}
             <span data-testid="card-voice-status" style={{ fontSize: 11, color: voice?.ready ? 'var(--text-secondary)' : 'var(--amber, #d4a017)' }}>· {voiceStatusShort(voice)}</span>
             {voice?.registered && !voice.ready && props.onRetryVoice && (
@@ -578,13 +579,15 @@ function UtteranceCard(props: {
         <span style={{ flex: 1 }} />
         <button type="button" disabled={disabled || !up.allowed} onClick={() => p.move(i, -1)}
           title={up.allowed ? '' : (REFUSAL_LABEL[up.code ?? ''] ?? '')}
-          aria-label="위로" style={btn('var(--text-secondary)', disabled || !up.allowed)}>위</button>
+          aria-label="위로" style={btn('var(--text-secondary)', disabled || !up.allowed)}>↑</button>
         <button type="button" disabled={disabled || !down.allowed} onClick={() => p.move(i, 1)}
           title={down.allowed ? '' : (REFUSAL_LABEL[down.code ?? ''] ?? '')}
-          aria-label="아래로" style={btn('var(--text-secondary)', disabled || !down.allowed)}>아래</button>
+          aria-label="아래로" style={btn('var(--text-secondary)', disabled || !down.allowed)}>↓</button>
         <button type="button" disabled={disabled || !p.patchAllowed} onClick={() => p.remove(i)}
           style={btn('var(--rose)', disabled || !p.patchAllowed)}>삭제</button>
       </div>
+
+      {voice?.sourcePath && <CompactVoiceWaveform path={voice.sourcePath} name={voice.fileName || r.view.speakerLabel || '목소리'} region={voice.region} disabled={disabled} />}
 
       {renameOpen && props.onRenameSpeaker && (
         <RenameRow label={r.view.speakerLabel ?? ''} disabled={disabled} onRename={props.onRenameSpeaker} onClose={() => setRenameOpen(false)} />
@@ -594,7 +597,7 @@ function UtteranceCard(props: {
 
       {/* 대사 — 대화칸 하나. 감정 태그는 이 안에 글자 그대로. 입력은 계획 상태와 무관하게 받고 blur/Ctrl+Enter 에 반영. */}
       <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start', minWidth: 0 }}>
-        <textarea ref={caret.taRef} data-testid="dialogue-body" rows={2} disabled={disabled}
+        <textarea ref={caret.taRef} data-testid="dialogue-body" rows={1} disabled={disabled}
           value={value}
           onFocus={() => p.beginDraft(i)}
           onChange={(e) => { p.updateDraft(i, e.target.value); caret.rememberCaret() }}
@@ -604,7 +607,7 @@ function UtteranceCard(props: {
           onBlur={() => { caret.rememberCaret(); p.commitDraft(i) }}
           onKeyDown={(e) => { if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) p.commitDraft(i) }}
           aria-label={`${i + 1}번 대사`}
-          style={{ ...inputBox, flex: '1 1 auto', width: '100%', resize: 'vertical', boxSizing: 'border-box' }} />
+          style={{ ...inputBox, flex: '1 1 auto', width: '100%', resize: 'vertical', boxSizing: 'border-box', fontSize: 15, lineHeight: 1.8, background: 'transparent', borderColor: 'transparent' }} />
         <EmotionAdd emotions={props.emotions} emotionTagOf={props.emotionTagOf} disabled={disabled} onInsert={caret.insertTag} />
       </div>
     </div>
@@ -916,8 +919,8 @@ function SpeakerVoicePanel(props: {
       <span data-testid="speaker-voice-applies-all" style={sub}
         title="이 인물의 다른 대사에도 같은 목소리와 같은 구간이 적용됩니다.">이 인물 전체에 적용</span>
       {voice?.registered && (voice.sharedWith?.length ?? 0) > 0 && (
-        <span data-testid="speaker-voice-shared" style={{ fontSize: 10, color: 'var(--amber, #d4a017)' }}>
-          {voice.sharedWith!.join(', ')} 와 같은 파일을 씁니다. 같은 목소리로 만들어집니다.
+        <span data-testid="speaker-voice-shared" title="같은 파일을 참조하므로 같은 목소리로 생성됩니다" style={{ fontSize: 10, color: 'var(--amber, #d4a017)' }}>
+          같은 참조 · {voice.sharedWith!.join(', ')}
         </span>
       )}
       {/* 감정별 목소리 — 고급 설정. 구성이 이 인물의 감정별 음원을 가질 때만 보이고 기본은 꺼짐. */}
@@ -929,13 +932,13 @@ function SpeakerVoicePanel(props: {
         </label>
       )}
       {(voice?.emotionVoiceAvailable?.length ?? 0) > 0 && voice!.emotionVoiceEnabled && (
-        <span data-testid="speaker-voice-emotion-override" style={{ fontSize: 10, color: 'var(--amber, #d4a017)' }}>
-          감정별 목소리 사용 중: {voice!.emotionOverrides!.join(', ')} — 이 감정의 대사는 그 음원으로 만들어지고, 나머지 대사는 기본 목소리로 만들어집니다.
+        <span data-testid="speaker-voice-emotion-override" title="해당 감정에는 지정 음원을, 나머지에는 기본 목소리를 사용합니다" style={{ fontSize: 10, color: 'var(--amber, #d4a017)' }}>
+          감정별 목소리 사용 중: {voice!.emotionOverrides!.join(', ')}
         </span>
       )}
       {(voice?.emotionVoiceAvailable?.length ?? 0) > 0 && !voice!.emotionVoiceEnabled && (
-        <span data-testid="speaker-voice-emotion-off" style={{ fontSize: 10, color: 'var(--text-muted)' }}>
-          감정별 음원 있음(꺼짐): {voice!.emotionVoiceAvailable!.join(', ')} — 지금은 기본 목소리만 사용합니다.
+        <span data-testid="speaker-voice-emotion-off" title="지금은 기본 목소리만 사용합니다" style={{ fontSize: 10, color: 'var(--text-muted)' }}>
+          감정별 음원 있음(꺼짐): {voice!.emotionVoiceAvailable!.join(', ')}
         </span>
       )}
       {/* 원본 전체 파형·구간 수정 — 이 인물 한 명의 편집기만. 접혀 있어도 분석·준비는 계속(마운트 유지). */}

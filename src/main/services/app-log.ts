@@ -44,7 +44,17 @@ export interface AppLog {
   currentFile(): string
   /** `keepDays` 보다 오래된 로그 파일을 지우고, 지운 파일 이름을 돌려준다. */
   prune(): string[]
+  /**
+   * 최근 줄(오래된 것부터) — 콘솔 창이 처음 열릴 때 보여 준다(2026-09-30).
+   * ★파일이 권위다. 이것은 앱이 켜진 뒤의 최근 몇 줄일 뿐이다.
+   */
+  recent(): string[]
+  /** 새 줄이 쓰일 때마다 부른다. 되돌리는 함수를 돌려준다. */
+  subscribe(fn: (line: string) => void): () => void
 }
+
+/** 콘솔 창이 들고 있을 최근 줄 수. */
+export const LOG_RECENT_MAX = 1500
 
 export interface AppLogOptions {
   dir: string
@@ -104,13 +114,25 @@ export function createAppLog(opts: AppLogOptions): AppLog {
 
   const currentFile = (): string => join(dir, logFileName(now()))
 
+  // ★콘솔 창을 켜지 않아도 쌓는다 — 켜는 순간 앞의 일도 보여야 한다.
+  const recentLines: string[] = []
+  const listeners = new Set<(line: string) => void>()
+  const remember = (line: string): void => {
+    const text = line.replace(/\n$/, '')
+    recentLines.push(text)
+    if (recentLines.length > LOG_RECENT_MAX) recentLines.splice(0, recentLines.length - LOG_RECENT_MAX)
+    for (const fn of listeners) { try { fn(text) } catch { /* 보는 쪽 사정으로 기록을 멈추지 않는다 */ } }
+  }
+
   const write = (level: LogLevel, tag: string, message: string): void => {
     try {
       const file = currentFile()
+      const line = formatLogLine(now(), level, tag, message)
+      // 파일이 상한에 걸려도 창에는 보인다 — 무엇이 일어나는지는 알아야 한다.
+      remember(line)
       if (capped.has(file)) return
       let size = 0
       try { size = statSync(file).size } catch { size = 0 }
-      const line = formatLogLine(now(), level, tag, message)
       if (size + Buffer.byteLength(line) > maxBytes) {
         capped.add(file)
         appendFileSync(file,
@@ -142,6 +164,8 @@ export function createAppLog(opts: AppLogOptions): AppLog {
 
   return {
     dir, write, currentFile, prune,
+    recent: () => recentLines.slice(),
+    subscribe: (fn) => { listeners.add(fn); return () => { listeners.delete(fn) } },
     info: (tag, message) => write('INFO', tag, message),
     warn: (tag, message) => write('WARN', tag, message),
     error: (tag, message) => write('ERROR', tag, message),

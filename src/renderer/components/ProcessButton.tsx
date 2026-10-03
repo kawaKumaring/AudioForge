@@ -1,9 +1,11 @@
+import WorkspaceDock from './WorkspaceDock'
 import React from 'react'
 import { motion } from 'framer-motion'
 import { useAppStore } from '@/stores/app.store'
 import { gateSpeakerEmotionRefs } from '../../shared/speakerEmotionGate'
 import { readinessFromSlots, multiSpeakerPreflight, speakerPreflightMessage, speakerTransmission } from '../../shared/speakerReference'
 import { validateMarkers, formatSplitMarkerError } from '../../shared/splitMarkers'
+import type { DialogueAnalysis } from '../../shared/dialogueWorkspace'
 import { ALL_EMOTIONS, planEmotionRefs } from '@/lib/emotions'
 import { useClipRecovery } from '@/hooks/useClipRecovery'
 import { parseTtsScript, TTS_PARSER_VERSION } from '../../shared/ttsGrammar'
@@ -26,8 +28,10 @@ function _estimateTime(mode: string, duration: number, transcribe: boolean, tran
   return `약 ${Math.ceil(secs / 60)}분`
 }
 
-export default function ProcessButton() {
-  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, asrEngine, asrSeparate, diarizeEngine, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, splitSelected, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsPitchCapability, ttsEmotionRefState, ttsSpeakerRefState, ttsSpeakerLabels, ttsEmotionCandidateSelections, ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled, ttsSpeakerMode, ttsReferencePrompts, ttsEngine, ttsQwenModel, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, ttsExpressiveMode, ttsReferenceConditioningMode, status, retryNonce, errorInfo, setProcessing, setProgress, setResult, setError } = useAppStore()
+export default function ProcessButton() { return <WorkspaceDock><ProcessButtonContent /></WorkspaceDock> }
+
+function ProcessButtonContent() {
+  const { fileInfo, mode, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, asrEngine, asrSeparate, diarizeEngine, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, splitSelected, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsPitchCapability, ttsEmotionRefState, ttsSpeakerRefState, ttsSpeakerLabels, ttsEmotionCandidateSelections, ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled, ttsSpeakerMode, ttsReferencePrompts, ttsEngine, ttsQwenModel, ttsReferenceClip, ttsRefReady, ttsRefMessage, ttsReferenceRegion, ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, ttsExpressiveMode, ttsReferenceConditioningMode, status, resultMode, retryNonce, errorInfo, setProcessing, setProgress, setResult, setError } = useAppStore()
   // 사라진 참조 클립을 합성 직전에 스스로 다시 만든다 — '만료' 로 멈추지 않고 이어서 진행한다.
   const recoverClips = useClipRecovery({
     speakerLabelOf: (id: string) => ttsSpeakerLabels[id] || id,
@@ -111,6 +115,12 @@ export default function ProcessButton() {
       }
     }
 
+    // ★대화 분석은 **실행마다 식별자**를 붙인다. 앞 실행의 결과가 늦게 와서 지금 작업을
+    //   덮어쓰지 못하게 하는 유일한 근거다(노래 변환·카드와 같은 방식).
+    const dialogueRun = mode === 'conversation'
+      ? `dlg_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}` : ''
+    if (dialogueRun) useAppStore.getState().beginDialogueRun(dialogueRun)
+
     console.log('[renderer][synthesize] setProcessing 직전')
     setProcessing()
     console.log('[renderer][synthesize] setProcessing 직후')
@@ -124,13 +134,28 @@ export default function ProcessButton() {
       // 취소가 '실제로' 정착(main의 audio:cancelling 수신)했을 때만 늦은 결과를 버린다(계약 4-A). main도 억제하지만 방어적 이중 가드.
       // 취소를 눌렀더라도 main이 no-op으로 끝냈으면 status는 여전히 processing이므로 이 결과는 정상 채택된다(계약 C2-P0.1 §5).
       if (!acceptsSettlement(useAppStore.getState().status)) return
-      // 대화 모드는 화자 구간도 함께 온다 — 재분석 없이 고치는 화면이 받는다.
-      if (Array.isArray(data.dialogueSegments)) {
-        useAppStore.setState({
-          dialogueSegments: data.dialogueSegments,
-          // 겹침 정보는 따로 보관한다. 없으면 비운다(옛 결과가 남지 않게).
-          dialogueOverlaps: Array.isArray(data.dialogueOverlaps) ? data.dialogueOverlaps : [],
-        })
+      // 대화 모드는 화자 구간도 함께 온다 — 작업실이 재분석 없이 고칠 수 있게.
+      // ★구간이 없으면 **앞 결과를 그대로 두지 않는다.** 예전에는 그래서 B 를 연 화면에
+      //   A 의 구간이 남았다(2026-09-27 재현). 비우고 사유를 말한다.
+      const st = useAppStore.getState()
+      if (st.mode === 'conversation') {
+        const segs = Array.isArray(data.dialogueSegments) ? data.dialogueSegments : null
+        if (segs && segs.length) {
+          const analysis: DialogueAnalysis = {
+            sourceKey: st.fileInfo?.path || '',
+            runId: typeof data.clientRequestId === 'string' ? data.clientRequestId : '',
+            segments: segs,
+            speakers: [...new Set(segs.map((x: { speaker: string }) => x.speaker))].sort() as string[],
+            overlaps: Array.isArray(data.dialogueOverlaps) ? data.dialogueOverlaps : [],
+            outputDir: typeof data.outputDir === 'string' ? data.outputDir : '',
+            durationSec: st.fileInfo?.duration || 0,
+            trimSilence: st.trimSilence,
+            transcribe: st.transcribe,
+          }
+          st.adoptDialogueAnalysis(analysis)
+        } else {
+          st.adoptDialogueAnalysis(null, '이번 분석에서는 발언 구간이 오지 않았습니다. 트랙만 만들어졌습니다.')
+        }
       }
       setResult(data.tracks ?? [], data.outputDir ?? '', data.metadata ?? null)
       cleanup()
@@ -161,7 +186,7 @@ export default function ProcessButton() {
       // ttsEmotionRefs = 사용∩등록∩준비된 감정의 effective 경로만(계약 §5 전송 필터).
       // ttsEmotionRefSources/Regions = 등록 전부의 원본/구간(재현·Python 등록판정용, §1.2/§5.1).
       // ttsPitch = 최종 WAV 음높이 후처리(0=무후처리, §6).
-      const r = await window.api.audio.process(fileInfo.path, mode, { trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, asrEngine, asrSeparate, diarizeEngine, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, splitSelected, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsEmotionRefs: emotionRefsToSend, ttsEmotionRefSources: emotionSources, ttsEmotionRefRegions: emotionRegions,
+      const r = await window.api.audio.process(fileInfo.path, mode, { clientRequestId: dialogueRun || undefined, trimSilence, silenceGap, transcribe, translate, exportSrt, outputFormat, whisperModel, asrEngine, asrSeparate, diarizeEngine, whisperLang, translateModel, demucsModel, nSpeakers, splitMarkers, splitLabels, splitSelected, ttsText, ttsSpeed, ttsSilenceGap, ttsPitch, ttsEmotionRefs: emotionRefsToSend, ttsEmotionRefSources: emotionSources, ttsEmotionRefRegions: emotionRegions,
         ttsSpeakerRefs: speakerRefsToSend, ttsSpeakerRefSources: speakerSources, ttsSpeakerLabels: speakerLabels, ttsEmotionCandidateSelections: gateSpeakerEmotionRefs(ttsEmotionCandidateSelections, ttsSpeakerEmotionEnabled), ttsSpeakerEmotionRefs: gateSpeakerEmotionRefs(ttsSpeakerEmotionRefs, ttsSpeakerEmotionEnabled), ttsReferencePrompts, ttsEngine, ttsQwenModel, ttsReferenceOverride: ttsReferenceClip, ttsReferenceRegion, ttsParsedPlanSha256, ttsParserVersion: TTS_PARSER_VERSION, ttsTailMode, ttsTailPaddingMs, ttsTailFadeMs, ttsEmotionBoundaryMode, ttsEmotionBoundaryPauseMs, ttsExpressiveMode, ttsReferenceConditioningMode, ttsSpeakerMode })
       console.log('[renderer][synthesize] audio:process 호출 직후', r)
     } catch (err: any) {
@@ -226,7 +251,7 @@ export default function ProcessButton() {
   // '다른 모드로 재처리'로 초기 상태를 거쳐야만 했다. TTS에서는 결과 화면의 기본 동작이므로
   // 여기서 바로 제공한다. 새 IPC 경로를 만들지 않고 기존 handleProcess를 그대로 호출한다
   // (설정은 store에 그대로 남아 있어 '같은 설정'이 성립한다).
-  if (status === 'done') {
+  if (status === 'done' && resultMode === mode) {
     if (mode !== 'tts') return null
     return (
       <button
@@ -355,7 +380,7 @@ export default function ProcessButton() {
       whileHover={{ scale: 1.01, y: -1 }} whileTap={{ scale: 0.99 }}
       onClick={handleProcess}
       aria-label={actionLabel}
-      style={{ ...btnBase, background: 'linear-gradient(135deg, var(--accent), #7c3aed)', color: '#fff', boxShadow: '0 2px 12px var(--accent-glow)' }}
+      style={{ ...btnBase, background: '#284c64', color: '#fff', boxShadow: '0 2px 12px var(--accent-glow)' }}
     >
       <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
         <circle cx="12" cy="12" r="10" /><polygon points="10,8 16,12 10,16" fill="currentColor" stroke="none" />

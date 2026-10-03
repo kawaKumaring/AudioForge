@@ -1,0 +1,173 @@
+/**
+ * 낭독을 위해 글을 **덩이로 나눈다** — 표시용 문단과 다른 일이다.
+ *
+ * ★왜 따로 나누나 (2026-09-29 실측)
+ *   만드는 시간이 `1.8초(고정) + 소리 길이 × 0.032` 다. **한 번 부를 때마다 1.8초를
+ *   버린다.** 그래서 소설처럼 줄이 짧은 글을 줄 단위로 만들면 배수가 1 아래로 떨어져
+ *   **오히려 끊긴다**(10자 한 문장 = 0.82배, 읽는 속도보다 느리다).
+ *
+ *   반대로 너무 크게 잡으면 첫 소리까지 오래 기다리고, 멈추거나 자리를 옮길 때
+ *   버리는 것이 커진다. 그래서 **15~30초 분량**으로 모은다.
+ *
+ * ★원문 자리를 잃지 않는다. 덩이마다 원문의 시작·끝 글자 자리를 들고 다닌다 —
+ *   지금 읽는 자리를 본문에 표시하고, 사용자가 문단을 누르면 그 덩이로 건너뛰려면
+ *   이 대응이 있어야 한다(인수인계 3항).
+ *
+ * ★문장 한가운데를 자르지 않는다. 문장 부호와 줄바꿈에서만 나눈다 —
+ *   중간에서 자르면 이어 붙일 때 말이 끊겨 들린다.
+ */
+
+/** 한국어 기준 1초에 읽는 글자 수 — 실측 평균(298자 → 32.4초). */
+export const CHARS_PER_SECOND = 9.2
+
+/** 덩이 하나의 목표 분량(초). 이 값 근처에서 자른다. */
+export const TARGET_SECONDS = 20
+/** 이보다 짧으면 다음 문장을 더 붙인다 — 잘게 쪼개면 고정비만 늘어난다. */
+export const MIN_SECONDS = 12
+/** 이보다 길면 더 붙이지 않는다 — 첫 소리가 늦고, 멈출 때 버리는 것이 커진다. */
+export const MAX_SECONDS = 35
+
+/**
+ * 책으로 받는 파일의 크기 상한(바이트).
+ * ★화면과 본체가 **같은 값**을 본다 — 본체는 이보다 큰 파일을 읽지도 않는다.
+ */
+export const TEXT_FILE_LIMIT = 10 * 1024 * 1024
+
+/**
+ * **읽기 시작한 자리의 첫 덩이들은 짧게**(초) — 누르고 첫 소리까지의 기다림을 줄인다 (2026-10-01 지시:
+ * "생성 속도를 늘리고, 읽어 주는 동안에도 실시간으로 만들어 끊이지 않게").
+ * ★첫 덩이가 20초 분량이면 그만큼 다 만들어야 첫 소리가 났다(기본 목소리 약 4.8초). 4초 분량이면 1초 남짓이다.
+ *   그 소리를 듣는 동안 다음(9초)을, 그 동안 보통 덩이를 만든다 — 앞선 것이 늘 듣는 속도보다 먼저 준비된다.
+ * ★상주 실행기로 조각마다의 고정비(파이썬 기동·모델 열기)가 사라져서 짧은 덩이도 손해가 아니다.
+ * 덩이 i(시작 자리부터)의 최소 분량이 RAMP[i], 최대가 그 두 배. 그 뒤는 보통 규칙(MIN~MAX).
+ */
+export const START_RAMP_SECONDS = [4, 9]
+
+const toChars = (sec: number) => Math.round(sec * CHARS_PER_SECOND)
+
+export interface Chunk {
+  /** 읽을 글. 앞뒤 공백은 없다. */
+  text: string
+  /** 원문에서 이 덩이가 시작하는 글자 자리(0부터). */
+  start: number
+  /** 원문에서 이 덩이가 끝나는 글자 자리(이 자리는 포함하지 않는다). */
+  end: number
+  /** 몇 초쯤 걸릴지 — 앞서 만들어 둘 양을 정할 때 쓴다. 어림값이다. */
+  seconds: number
+}
+
+/**
+ * 문장 끝을 찾는다. **원문 자리를 그대로** 돌려준다.
+ *
+ * 문장 부호 뒤에 닫는 따옴표·괄호가 따라오면 그것까지 한 문장이다 —
+ * `말했다."` 를 `말했다.` 와 `"` 로 가르면 따옴표 하나만 읽는 덩이가 생긴다.
+ */
+function sentenceEnds(text: string): number[] {
+  const out: number[] = []
+  const CLOSERS = '"”’\'」』)）】›»'
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i]
+    if (c === '\n') { out.push(i + 1); continue }
+    if (c !== '.' && c !== '!' && c !== '?' && c !== '…') continue
+    let j = i + 1
+    while (j < text.length && (text[j] === '.' || text[j] === '!' || text[j] === '?' || text[j] === '…')) j++
+    while (j < text.length && CLOSERS.includes(text[j])) j++
+    out.push(j)
+    i = j - 1
+  }
+  if (!out.length || out[out.length - 1] < text.length) out.push(text.length)
+  return out
+}
+
+/**
+ * 글을 덩이로 나눈다.
+ *
+ * ★한 문장이 최대치를 넘으면 **그 문장은 그대로 둔다.** 문장 한가운데를 자르면
+ *   이어 붙일 때 말이 끊겨 들린다. 늦어지는 것이 끊기는 것보다 낫다.
+ */
+export function splitForReading(raw: string, opts: {
+  target?: number; min?: number; max?: number
+  /**
+   * 이 자리에서 **반드시 끊는다** — 사용자가 고른 시작 자리.
+   * ★없으면 고른 문단이 덩이 한가운데일 때 **그 앞 문단부터** 읽었다(2026-09-30, 60문단 책으로 재현:
+   *   40번째를 골랐는데 39번째부터). 짧은 문단을 묶는 이점은 그대로 두고, 이 한 자리만 경계로 세운다.
+   */
+  breakAt?: number
+  /** 첫 덩이들을 짧게(초) — 읽기 시작한 자리(breakAt, 없으면 처음)부터. 없으면 모두 보통 크기. */
+  ramp?: readonly number[]
+} = {}): Chunk[] {
+  const text = String(raw ?? '')
+  if (!text.trim()) return []
+  const at = Math.floor(opts.breakAt ?? 0)
+  if (at > 0 && at < text.length) {
+    const { breakAt: _drop, ramp, ...rest } = opts
+    void _drop
+    // 앞쪽(읽기 시작한 자리 앞)은 보통 크기로 — 짧게 하는 것은 **시작하는 자리**뿐이다.
+    const head = splitForReading(text.slice(0, at), rest)
+    const tail = splitForReading(text.slice(at), { ...rest, ramp })
+      .map((c) => ({ ...c, start: c.start + at, end: c.end + at }))
+    return [...head, ...tail]
+  }
+  const target = toChars(opts.target ?? TARGET_SECONDS)
+  const baseMin = toChars(opts.min ?? MIN_SECONDS)
+  const baseMax = toChars(opts.max ?? MAX_SECONDS)
+  const ramp = opts.ramp || []
+  let min = baseMin, max = baseMax
+  const sizeFor = (c: number) => {
+    if (c < ramp.length) { min = toChars(ramp[c]); max = toChars(ramp[c] * 2) } else { min = baseMin; max = baseMax }
+  }
+  sizeFor(0)
+
+  const out: Chunk[] = []
+  let from = 0                 // 지금 덩이가 시작한 원문 자리
+  let cut = 0                  // 앞 문장까지의 끝
+
+  const push = (to: number) => {
+    const slice = text.slice(from, to)
+    const lead = slice.length - slice.trimStart().length
+    const tail = slice.length - slice.trimEnd().length
+    const body = slice.trim()
+    if (body) {
+      out.push({
+        text: body,
+        start: from + lead,
+        end: to - tail,
+        seconds: +(body.length / CHARS_PER_SECOND).toFixed(1),
+      })
+      sizeFor(out.length)
+    }
+    from = to
+  }
+
+  for (const end of sentenceEnds(text)) {
+    const len = end - from
+    if (len < min) { cut = end; continue }          // 아직 짧다 — 더 붙인다
+    if (len <= max) { push(end); cut = end; continue }
+    // 너무 길어졌다 — 앞 문장까지 끊고, 이 문장은 다음 덩이로 넘긴다.
+    if (cut > from && cut - from >= min) { push(cut) }
+    // 문장 하나가 통째로 최대치를 넘으면 그대로 둔다(가운데를 자르지 않는다).
+    push(end)
+    cut = end
+  }
+  if (from < text.length) push(text.length)
+  return out
+}
+
+/** 이 자리(원문 글자 위치)를 품은 덩이의 번호. 없으면 -1. */
+export function chunkAt(chunks: readonly Chunk[], charIndex: number): number {
+  for (let i = 0; i < chunks.length; i++) {
+    if (charIndex < chunks[i].end) return i
+  }
+  return chunks.length ? chunks.length - 1 : -1
+}
+
+/** 덩이 번호 → 원문 글자 자리. 화면이 지금 읽는 자리를 표시할 때 쓴다. */
+export function charAt(chunks: readonly Chunk[], index: number): number {
+  const c = chunks[index]
+  return c ? c.start : 0
+}
+
+/** 전부 읽는 데 걸리는 어림 시간(초). */
+export function totalSeconds(chunks: readonly Chunk[]): number {
+  return +chunks.reduce((s, c) => s + c.seconds, 0).toFixed(1)
+}

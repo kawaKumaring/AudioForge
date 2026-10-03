@@ -7,6 +7,7 @@
 // (합성 자체의 정확성은 이 파일의 범위가 아니다 — 그 검증은 별도 E2E 가 한다.)
 //
 // 원문은 남기지 않는다 — 글자 수·문단 수·SHA 앞자리·소요 시간만 본다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
@@ -15,7 +16,7 @@ import crypto from 'crypto'
 import { randomUUID } from 'crypto'
 import { execSync } from 'child_process'
 import { listAnalysisWorkers, newWorkerPids, waitForGone, workerPidSet } from './_analysis-workers.mjs'
-import { makeSyntheticWav, cleanupSyntheticWav } from './_e2e-helper.mjs'
+import { makeSyntheticWav, cleanupSyntheticWav, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 let failed = 0
@@ -64,6 +65,7 @@ app.process().stderr?.on('data', (d) => {
 })
 win.on('pageerror', (e) => pageErrors.push(e.message))
 
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 const sleep = (ms) => win.waitForTimeout(ms)
 
 const setText = (text) => win.evaluate((t) => {

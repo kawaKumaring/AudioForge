@@ -3,10 +3,11 @@
 // 실제 GPU·모델·사용자 미디어를 쓰지 않는다. 참조 원본은 이번 실행이 만든 synthetic WAV 이고,
 // 감정 샘플 생성은 AF_E2E 게이트의 가짜 runner 결과로 대체한다.
 // 실행: node test/e2e/reference-sampler.e2e.mjs   (사전 npm run build)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import { randomUUID, createHash } from 'crypto'
 import fs from 'fs'; import path from 'path'; import os from 'os'
-import { makeSyntheticWav, cleanupSyntheticWav } from './_e2e-helper.mjs'
+import { makeSyntheticWav, cleanupSyntheticWav, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 let failed = 0
@@ -42,6 +43,7 @@ let referenceId = null
 
 try {
   await win.waitForLoadState('domcontentloaded')
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 
   // ── 등록: 경로는 이 요청에서만 오간다 ──────────────────────────────────
   const imported = await win.evaluate(async ([p, t]) => window.api.referenceLibrary.import({
@@ -155,6 +157,7 @@ try {
   win = await app.firstWindow()
   win.on('pageerror', (e) => pageErrors.push(String(e)))
   await win.waitForLoadState('domcontentloaded')
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 
   const listAfter = await win.evaluate(() => window.api.referenceLibrary.list())
   ok(listAfter.status === 'ok' && listAfter.items.length === 2, '재시작 후 manifest 복원')

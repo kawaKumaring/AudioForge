@@ -12,6 +12,7 @@
 //
 // 대본 원문은 보고서에 넣지 않는다. 미리보기 칸은 길이만 세고, 로그 유출 검사에는
 // 조각을 쓰되 그 조각 자체를 출력하지 않는다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { chromium } from 'playwright'
 import { spawn, execFileSync } from 'child_process'
 import fs from 'fs'

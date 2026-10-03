@@ -11,6 +11,7 @@
 // 화면의 '목소리 바꾸기' 를 누른다. 실제 복원·지정 경로는 손대지 않는다(대역은 OS 선택창뿐).
 //
 // 실행: node test/e2e/restore-race-dev.e2e.mjs
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { spawn, execFileSync } from 'child_process'
 import { chromium } from 'playwright'
 import fs from 'fs'
@@ -123,6 +124,9 @@ try {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(fp), await window.api.audio.getFileUrl(fp))
     s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
+    // ★합성의 기본 진입이 생성 카드로 바뀌었다(2026-09-27 버전 탭).
+    //   이 검사가 보는 목소리 슬롯·파생 클립은 **옛 버전** 화면의 것이다.
+    window.__synthesisCards.getState().setView('legacy')
   }, work.input)
 
   // 1) A 의 복원이 **진행 중**인 창을 잡는다: 슬롯이 A 를 들고 아직 준비되지 않은 상태.

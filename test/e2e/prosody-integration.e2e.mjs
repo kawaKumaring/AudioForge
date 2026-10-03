@@ -5,10 +5,11 @@
 //  Session 2(앱 재시작, 합성 없음): Session 1의 session.json을 **파일에서 읽어** source+region으로 effective를
 //    재구성(이전 세션의 임시 경로에 의존하지 않음) — 계약 §1.2/추가정합3(재시작 복원).
 // 실행: node test/e2e/prosody-integration.e2e.mjs  (사전 npm run build). Session 1은 실제 합성이라 수 분.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import { execFileSync } from 'child_process'
 import fs from 'fs'; import path from 'path'
-import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenJobDirs, qwenVenvPids, nvidiaSmiGpu0, requireE2EReference } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenJobDirs, qwenVenvPids, nvidiaSmiGpu0, requireE2EReference, enterStudio } from './_e2e-helper.mjs'
 
 const WAIT_MS = 350000
 const APP = process.cwd()
@@ -71,6 +72,7 @@ let sess1OutputDir = null
 try {
   // ── Session 1: 실 Qwen 합성(pitch +1 + [기쁨] 감정) + Part B ──
   await win.waitForLoadState('domcontentloaded')
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await win.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
@@ -167,6 +169,7 @@ try {
   win = await app.firstWindow()
   attach(app, win)
   await win.waitForLoadState('domcontentloaded')
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await win.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))

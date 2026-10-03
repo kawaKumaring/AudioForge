@@ -1,5 +1,6 @@
 // Electron 단일 인스턴스 회귀 — 두 번째 실행은 창을 만들지 않고 종료, 첫 인스턴스만 유지.
 // 실행: node test/e2e/single-instance.e2e.mjs  (사전: npm run build)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'

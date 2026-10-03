@@ -3,6 +3,7 @@
 // 확인: 합성 메뉴 아래 전체 폭 탭 / 한 명 = 목소리+대사 한 칸 / 여러 명 = 단일 목소리 영역 없음 / 준비 완료 후·준비 도중 전환 시
 //       첫 인물이 기본 목소리(확정 구간 포함)를 이어받음 / 같은 음성 재등록·재확정 요구 없음 / 대화 추가 하나(기존·새) / 취소 무변경 /
 //       같은 인물 카드 목소리 공유 / 탭 전환 무손실 / 좁은 창 겹침·넘침 0. 화면 캡처 4장을 _local 진단 폴더에 남긴다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { spawn, execFileSync } from 'child_process'
 import { chromium } from 'playwright'
 import fs from 'fs'

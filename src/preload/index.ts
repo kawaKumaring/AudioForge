@@ -19,6 +19,9 @@ import type {
   ReferenceLibraryRemoveResponse, ReferenceLibrarySelectResponse,
 } from '../shared/referenceLibraryApi'
 
+/** 낭독 관측 — 본체 단계 길이(ms, 본체 단조 시계). 동작은 읽지 않는다. */
+type SpeakTraceReply = { cached?: boolean; shared?: boolean; waitMs?: number; makeMs?: number; totalMs?: number; modelOpened?: boolean | null; engine?: string }
+
 const api = {
   audio: {
     // multi=true 면 string[] 을 돌려준다. 인자 없는 기존 호출은 string|null 그대로다.
@@ -40,7 +43,7 @@ const api = {
     /** 돌려주는 것: 취소면 null, 아니면 { ok, dir, copied[], failed[] }. ★결과를 버리지 않는다. */
     exportTracks: (trackPaths: string[]) => ipcRenderer.invoke('audio:export-tracks', trackPaths) as
       Promise<null | { ok: boolean; dir: string; copied: string[]; failed: Array<{ name: string; why: string }> }>,
-    restoreFromFolder: () => ipcRenderer.invoke('audio:restore-from-folder'),
+
     findSession: (sourcePath: string) => ipcRenderer.invoke('audio:find-session', sourcePath),
     transcribeReference: (filePath: string) => ipcRenderer.invoke('audio:transcribe-reference', filePath),
     // clipKey('default'|emotionId): 감정별 파생 클립을 식별해 분석/트림/정리(생략 시 'default').
@@ -50,6 +53,8 @@ const api = {
       ipcRenderer.invoke('audio:analyze-reference', filePath, clipKey, extra),
     /** 검사 전용 — 다음 '파일 고르기' 가 돌려줄 경로를 지정한다(AF_E2E=1 에서만 동작). */
     e2eSetSelectFile: (filePath: string) => ipcRenderer.invoke('audio:e2e-set-select-file', filePath),
+    /** 검사 전용 — 지금 합성이 거절될 사유(읽기만). 검사 밖에서는 빈 값. */
+    e2eBusyReason: (label?: string): Promise<string> => ipcRenderer.invoke('audio:e2e-busy-reason', label),
     /** 이 결과가 어땠는지를 그 실행의 기록에 남긴다. verdict: good | fair | bad. */
     recordListening: (runId: string, verdict: string, note?: string) =>
       ipcRenderer.invoke('audio:record-listening', runId, verdict, note),
@@ -68,8 +73,10 @@ const api = {
     pitchPreflight: () => ipcRenderer.invoke('audio:pitch-preflight'),
     processTrack: (trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string;
       /** ★고른 알아듣기 설정. 예전에는 빠져 파이썬 기본값으로 고정됐다(2026-09-24 감사). */
-      whisperModel?: string; whisperLang?: string; asrSeparate?: string }) =>
-      ipcRenderer.invoke('audio:process-track', trackPath, outputDir, options),
+      whisperModel?: string; whisperLang?: string; asrSeparate?: string },
+      /** 요청 식별자 — 화면이 요청마다 새로 만든다. 완료·오류 알림이 같은 값을 싣고 돌아온다(2026-10-02). */
+      requestId: string) =>
+      ipcRenderer.invoke('audio:process-track', trackPath, outputDir, options, requestId),
     onTrackResult: (callback: (data: unknown) => void) => {
       const handler = (_event: unknown, data: unknown) => callback(data)
       ipcRenderer.on('audio:track-result', handler)
@@ -105,13 +112,14 @@ const api = {
     },
     // 취소 lifecycle(공용 마감 K): cancelling→(cancelled|cancel-failed). result/error와 별개 채널로,
     // 취소 승자 정착 후 main이 명시적으로 보낸다(늦은 result/error는 main에서 이미 억제).
-    onCancelling: (callback: () => void) => {
-      const handler = () => callback()
+    // 짐은 선택이다 — 본체가 요청 식별자를 실어 보낸다. 기존 화면은 그냥 무시한다.
+    onCancelling: (callback: (data?: unknown) => void) => {
+      const handler = (_event: unknown, data?: unknown) => callback(data)
       ipcRenderer.on('audio:cancelling', handler)
       return () => ipcRenderer.removeListener('audio:cancelling', handler)
     },
-    onCancelled: (callback: () => void) => {
-      const handler = () => callback()
+    onCancelled: (callback: (data?: unknown) => void) => {
+      const handler = (_event: unknown, data?: unknown) => callback(data)
       ipcRenderer.on('audio:cancelled', handler)
       return () => ipcRenderer.removeListener('audio:cancelled', handler)
     },
@@ -122,6 +130,22 @@ const api = {
     }
   },
   // 테스트개발 작업실 — 테이크 보관과 이어 붙여 내보내기만. 생성은 기존 audio.process 를 쓴다.
+  /** 생성 카드 — 카드별 미디어. 카드 하나가 다른 카드의 파일을 건드리지 않는다. */
+  cards: {
+    /** 영상이면 소리를 꺼내 그 경로를, 소리 파일이면 그대로 돌려준다. */
+    extractAudio: (cardId: string, filePath: string) =>
+      ipcRenderer.invoke('card:extract-audio', cardId, filePath),
+    /** 참조 없이 바로 읽을 수 있는 기본 목소리 목록(설치·구동 확인을 거친 것만). */
+    builtinVoices: () => ipcRenderer.invoke('card:builtin-voices'),
+    /** 그 기본 목소리로 짧은 문장을 실제로 읽어 소리 파일 경로를 돌려준다(카드를 바꾸지 않는다). */
+    previewBuiltin: (modelPath: string, engineId?: string) =>
+      ipcRenderer.invoke('card:preview-builtin', modelPath, engineId),
+    /** 최종 음성 — 미리듣기와 저장이 **같은 계획·같은 처리**를 쓴다. */
+    join: (plan: unknown, mode: 'preview' | 'save', planKey: string) =>
+      ipcRenderer.invoke('card:join', plan, mode, planKey),
+    /** 이 카드가 꺼내 둔 소리만 지운다. */
+    releaseMedia: (cardId: string) => ipcRenderer.invoke('card:release-media', cardId),
+  },
   lab: {
     keepTake: (srcPath: string, takeId: string): Promise<{ ok: boolean; path?: string; reason?: string }> =>
       ipcRenderer.invoke('lab:keep-take', srcPath, takeId),
@@ -176,6 +200,52 @@ const api = {
       return () => ipcRenderer.removeListener('dub:progress', handler)
     },
   },
+  /**
+   * 노래 변환 — 원곡의 가락·박자를 두고 **목소리만** 바꾼다.
+   * 사슬은 `python/song_chain.py` 가 이미 가지고 있다. 여기는 통로일 뿐이다.
+   */
+  /**
+   * 대화 작업실 — 자기 결과 폴더 안의 받아쓴 구간 파일을 읽는다.
+   * 폴더 밖은 읽지 못한다(본체가 막는다). 없으면 빈 글자를 돌려준다.
+   */
+  dialogue: {
+    readTranscript: (dir: string, name: string): Promise<string> =>
+      ipcRenderer.invoke('dialogue:read-transcript', dir, name),
+  },
+  song: {
+    /** 요청 시점의 입력을 그대로 보낸다. 결과에 그 입력이 실려 돌아온다. */
+    run: (req: unknown) => ipcRenderer.invoke('song:run', req),
+    /** 멈추기 — 바깥 변환기까지 끝난 것을 확인하고 답한다. */
+    cancel: () => ipcRenderer.invoke('song:cancel'),
+    /**
+     * 결과를 고른 자리에 복사한다. 원본·참조·결과 위에는 저장할 수 없다.
+     * `requestId` 는 **화면이 보고 있는 결과**의 것이다 — 본체가 대조해 다르면 거절한다.
+     */
+    exportResult: (which: 'mix' | 'vocal' | 'withHarmony', requestId: string) =>
+      ipcRenderer.invoke('song:export', which, requestId),
+    /** 새 작업이 쌓이는 자리(더빙과 **같은 설정**을 쓴다). */
+    workRoot: () => ipcRenderer.invoke('song:work-root'),
+    onProgress: (callback: (data: unknown) => void) => {
+      const handler = (_event: unknown, data: unknown) => callback(data)
+      ipcRenderer.on('song:progress', handler)
+      return () => ipcRenderer.removeListener('song:progress', handler)
+    },
+    onResult: (callback: (data: unknown) => void) => {
+      const handler = (_event: unknown, data: unknown) => callback(data)
+      ipcRenderer.on('song:result', handler)
+      return () => ipcRenderer.removeListener('song:result', handler)
+    },
+    onError: (callback: (data: unknown) => void) => {
+      const handler = (_event: unknown, data: unknown) => callback(data)
+      ipcRenderer.on('song:error', handler)
+      return () => ipcRenderer.removeListener('song:error', handler)
+    },
+    onCancelled: (callback: (data: unknown) => void) => {
+      const handler = (_event: unknown, data: unknown) => callback(data)
+      ipcRenderer.on('song:cancelled', handler)
+      return () => ipcRenderer.removeListener('song:cancelled', handler)
+    },
+  },
   settings: {
     get: () => ipcRenderer.invoke('settings:get'),
     set: (key: string, value: unknown) => ipcRenderer.invoke('settings:set', key, value),
@@ -187,11 +257,131 @@ const api = {
     setSync: (key: string, value: unknown) => ipcRenderer.sendSync('settings:set-sync', key, value),
     selectPythonPath: () => ipcRenderer.invoke('settings:select-python-path')
   },
+  /**
+   * 작업 기록 — **기록 하나가 파일 하나.**
+   *
+   * 화면은 **갈래와 열쇠만** 말한다. 어느 파일인지는 본체가 정한다 —
+   * 화면이 경로를 만들어 보내면 언젠가 엉뚱한 자리를 지운다.
+   * ★지우기는 그 파일 하나만 지운다. 남의 기록이 함께 사라지지 않는다.
+   */
+  works: {
+    list: (kind: string): Promise<{ records?: { key: string; updatedAt: number; data: unknown }[]; broken?: number; error?: string }> =>
+      ipcRenderer.invoke('works:list', kind),
+    read: (kind: string, key: string): Promise<{ record?: { key: string; updatedAt: number; data: unknown } | null; error?: string }> =>
+      ipcRenderer.invoke('works:read', kind, key),
+    write: (kind: string, key: string, data: unknown): Promise<{ ok: boolean; why?: string }> =>
+      ipcRenderer.invoke('works:write', kind, key, data),
+    remove: (kind: string, key: string): Promise<{ ok: boolean; removed?: boolean; why?: string }> =>
+      ipcRenderer.invoke('works:delete', kind, key),
+    clear: (kind: string): Promise<{ ok: boolean; removed?: number; why?: string }> =>
+      ipcRenderer.invoke('works:clear', kind),
+    /** 창이 닫히기 직전에만 쓴다 — 비동기 요청은 그때 사라진다. */
+    writeSync: (kind: string, key: string, data: unknown): { ok: boolean; why?: string } =>
+      ipcRenderer.sendSync('works:write-sync', kind, key, data),
+  },
+
+  /**
+   * 낭독 — **덩이 하나를 소리로.**
+   *
+   * ★같은 글·같은 목소리면 `cached: true` 로 곧바로 돌아온다(두 번째 듣기).
+   * ★한 번에 하나만 만든다 — 본체가 파이썬을 하나만 돌린다. 겹치면 사유를 돌려준다.
+   */
+  reader: {
+    speak: (text: string, voice: { kind: 'builtin' | 'reference'; path: string; engineId?: string },
+      voiceKey: string, parts?: Array<{ weight: number; strong: boolean }>,
+      segments?: Array<{ text: string; emotion: string }>, epoch?: string): Promise<{ data?: { path: string; cached: boolean; timing?: Array<[number, number]>; trace?: SpeakTraceReply }; error?: string; trace?: SpeakTraceReply; superseded?: 'queued' | 'running' }> =>
+      ipcRenderer.invoke('reader:speak', text, voice, voiceKey, parts, segments, epoch),
+    /** 낭독 세대를 올린다 — 옛 세대 요청은 시작 전에 버리고, 돌고 있으면 멈출 수 있는 것만 멈춘다(2026-10-03). */
+    supersede: (epoch: string, why?: string): Promise<{ data?: { running: boolean; stopRequested: boolean; cancellable: boolean | null }; error?: string }> =>
+      ipcRenderer.invoke('reader:supersede', epoch, why),
+    /** 목소리를 미리 연다 — 고른 순간 모델을 올려 둬 첫 조각을 기다리지 않게. */
+    warm: (voice: { kind: 'builtin' | 'reference'; path: string; engineId?: string }, opts?: { emotion?: boolean }): Promise<{ data?: { warmed: boolean; why?: string; loadedNow?: boolean; primeSec?: number; primeSkipped?: boolean; waitMs?: number; ms?: number }; error?: string }> =>
+      ipcRenderer.invoke('reader:warm', voice, opts),
+    /** Qwen 실행기를 모델 없이 띄워 둔다(목록을 열 때) — 고를 때 모델만 열면 되게. */
+    prepare: (voice?: { kind: 'builtin' | 'reference'; path: string; engineId?: string }, opts?: { emotion?: boolean }): Promise<{ data?: { prepared: boolean; ms?: number }; error?: string }> =>
+      ipcRenderer.invoke('reader:prepare', voice, opts),
+    clearCache: (): Promise<{ removed: number; freedMb: number }> =>
+      ipcRenderer.invoke('reader:clear-cache'),
+    /** 구간을 잘라 쓴 내 목소리를 앱이 관리하는 자리에 보관하고 그 경로를 돌려준다. keep = 남길 보관본. */
+    keepVoice: (clip: string, keep: string[]): Promise<{ data?: { path: string }; error?: string }> =>
+      ipcRenderer.invoke('reader:keep-voice', clip, keep),
+    /** 줄에 선 낭독 조각을 다 만들 때까지 기다린다(참조 목소리 준비 전에). */
+    idle: (): Promise<{ data?: true; error?: string }> =>
+      ipcRenderer.invoke('reader:idle'),
+    /** 글 파일 고르기 — 지난번 폴더에서 열고, 고른 폴더를 기억한다. 취소하면 빈 목록. */
+    pickTexts: (): Promise<{ data?: { name: string; size: number; bytes?: Uint8Array }[]; error?: string }> =>
+      ipcRenderer.invoke('reader:pick-texts'),
+    /** 폴더 가져오기(2026-10-03) — 고르기·훑기·훑은 글 읽기. 결과 모양은 shared/readerLibrary 의 ScanResult. */
+    cover: (path?: string): Promise<{ data?: string | null; error?: string }> => ipcRenderer.invoke('reader:cover', path),
+    pickFolders: (): Promise<{ data?: import('../shared/readerLibrary').ScanResult | null; error?: string }> =>
+      ipcRenderer.invoke('reader:pick-folders'),
+    scanPaths: (paths: string[]): Promise<{ data?: import('../shared/readerLibrary').ScanResult; error?: string }> =>
+      ipcRenderer.invoke('reader:scan-paths', paths),
+    readTextPath: (path: string): Promise<{ data?: { bytes: Uint8Array; size: number; mtimeMs: number }; error?: string }> =>
+      ipcRenderer.invoke('reader:read-text-path', path),
+    /** 끌어 놓은 글 파일의 폴더를 기억한다. */
+    rememberTextDir: (filePath: string): Promise<boolean> =>
+      ipcRenderer.invoke('reader:remember-text-dir', filePath),
+  },
+
+  /**
+   * 동작 기록 — 콘솔 창이 보여 주고, 화면도 여기에 남긴다(2026-09-30).
+   * ★창을 켜지 않아도 기록은 앱 로그 파일에 남는다. 글 내용·폴더 경로는 적지 않는다.
+   */
+  logs: {
+    recent: (): Promise<string[]> => ipcRenderer.invoke('console:recent'),
+    write: (level: 'INFO' | 'WARN' | 'ERROR', tag: string, message: string): Promise<boolean> =>
+      ipcRenderer.invoke('console:write', level, tag, message),
+    /** 새 줄마다 부른다. 되돌리는 함수를 돌려준다. */
+    onLine: (cb: (line: string) => void): (() => void) => {
+      const h = (_e: unknown, line: string) => cb(line)
+      ipcRenderer.on('console:line', h)
+      return () => { ipcRenderer.removeListener('console:line', h) }
+    },
+  },
+
+  /** 콘솔 창 — 앱 밖에 따로 뜨는 창. 켜고 끄기, 사용자가 창을 닫았을 때 알림. */
+  consoleWindow: {
+    set: (on: boolean): Promise<boolean> => ipcRenderer.invoke('console-window:set', on),
+    onClosed: (cb: () => void): (() => void) => {
+      const h = () => cb()
+      ipcRenderer.on('console-window:closed', h)
+      return () => { ipcRenderer.removeListener('console-window:closed', h) }
+    },
+  },
+
+  /**
+   * 기능 검사 — 기능별로 하나씩 실제로 돌려 본다(2026-09-30). 전체를 한 번에 돌리는 길은 없다.
+   */
+  selfcheck: {
+    run: (id: string): Promise<{ id: string; ok: boolean; reason: string; ms: number; at: string } | { error: string }> =>
+      ipcRenderer.invoke('selfcheck:run', id),
+    results: (): Promise<Array<{ id: string; ok: boolean; reason: string; ms: number; at: string }>> =>
+      ipcRenderer.invoke('selfcheck:results'),
+  },
+
+  /** 앱 설정 — 만든 것을 둘 자리와 쌓인 것 비우기. */
+  options: {
+    // tempDir/strayTemp — 임시 자리가 앱 안인지 화면이 보여 준다(2026-09-28).
+    get: (): Promise<{ chosenRoot: string; beside: boolean; appRoot: string; dataDir: string;
+      tempDir: string; strayTemp: number }> => ipcRenderer.invoke('options:get'),
+    set: (next: { chosenRoot?: string; beside?: boolean }): Promise<{ chosenRoot: string; beside: boolean; appRoot: string }> => ipcRenderer.invoke('options:set', next),
+    pickRoot: (): Promise<{ path?: string; error?: string } | null> => ipcRenderer.invoke('options:pick-root'),
+    wipe: (kind: string): Promise<{ removed: number; freedMb: number; error?: string }> => ipcRenderer.invoke('options:wipe', kind),
+    outputRoot: (): Promise<{ root: string; exists: boolean }> => ipcRenderer.invoke('options:output-root'),
+  },
   app: {
     openFolder: (path: string) => ipcRenderer.invoke('app:open-folder', path),
     // 탐색기에서 그 파일을 고른 상태로 보여 준다(여는 것이 아니다).
     revealFile: (path: string) => ipcRenderer.invoke('app:reveal-file', path),
+    /** 작업 기록이 적히는 데이터 파일의 자리. */
+    dataFile: (): Promise<string> => ipcRenderer.invoke('app:data-file'),
     readTextFile: (path: string) => ipcRenderer.invoke('app:read-text-file', path),
+    /** 자리에 파일이 있는지만 본다(내용은 열지 않는다) — { [자리]: 있음 }. */
+    pathsExist: (paths: string[]): Promise<Record<string, boolean>> => ipcRenderer.invoke('app:paths-exist', paths),
+    /** 없음과 읽기 실패를 가른다 — { state: 'ok', text } | { state: 'missing' } | { state: 'failed', message }. */
+    readTextFileEx: (path: string): Promise<{ state: 'ok'; text: string } | { state: 'missing' } | { state: 'failed'; message: string }> =>
+      ipcRenderer.invoke('app:read-text-file-ex', path),
     // 교정본 저장 — 처음 인식한 파일은 그대로 두고 `_corrected` 로 새로 쓴다.
     saveCorrectedTranscript: (dir: string, base: string, txt: string, srt: string | null) =>
       ipcRenderer.invoke('transcript:save-corrected', dir, base, txt, srt),
@@ -235,7 +425,10 @@ const api = {
     copyToClipboard: (text: string) => ipcRenderer.invoke('app:copy-to-clipboard', text)
   },
   // E2E 전용 게이트 — AF_E2E=1 로 실행할 때만 true. 이 값으로만 renderer가 테스트 훅을 노출한다.
-  _e2e: process.env.AF_E2E === '1'
+  _e2e: process.env.AF_E2E === '1',
+  /** 실행 방식 — 관측 기록(readerTrace)이 함께 싣는다. 검사 모드 수치를 보통 실행 수치로 읽지 않게. */
+  _runMode: process.env.AF_E2E !== '1' ? 'app'
+    : (process.env.AF_E2E_NORMAL_PREP === '1' || process.env.AF_E2E_GPU === '1') ? 'test-normal-prep' : 'test(prep-off)'
 }
 
 contextBridge.exposeInMainWorld('api', api)

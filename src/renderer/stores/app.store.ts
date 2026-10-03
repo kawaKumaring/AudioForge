@@ -2,6 +2,9 @@ import { create } from 'zustand'
 // @ts-ignore TS5097: node --test 가 요구하는 명시적 .ts 확장자(이 파일의 다른 import 와 같은 관례).
 import { forgetRestoredThisRun } from '../lib/workDraftSession.ts'
 import type { SeparationMode, Track, FileInfo } from '../../shared/types'
+// 대화 작업실 — 원본·분석 실행·교정 문서의 소속 판정을 store 가 다시 쓰지 않는다.
+// @ts-ignore TS5097: node --test 가 요구하는 명시적 .ts 확장자(위 관례와 같다).
+import { analysisFault, type DialogueAnalysis } from '../../shared/dialogueWorkspace.ts'
 import type { TtsReferenceEntry, PitchCapability, ReferenceConditioningMode } from '../../shared/ttsConfig'
 import type { ReferencePolicySummary, RefPhase } from '../../shared/referencePolicy'
 // 참조 conditioning 모드(PHASE 2) — 기본/복원 해석은 계약 모듈 단일 소유(store 가 규칙을 다시 쓰지 않는다).
@@ -201,6 +204,8 @@ interface AppState {
    *   어느 쪽 내용도 옮겨지거나 지워지지 않는다.
    */
   synthesisTab: SynthesisTab
+  /** 고급 작업에 적용한 구성. 화면 전환에는 유지하고 새 파일·작업에는 해제한다. */
+  activeVoiceCastId: string | null
   trimSilence: boolean
   silenceGap: number
   silencePreview: boolean
@@ -235,10 +240,46 @@ interface AppState {
   splitLabels: string[]
   /** 저장할 조각 번호(0부터). null 이면 전부 저장 — 예전 동작 그대로. */
   splitSelected: number[] | null
-  /** 화자 분석이 낸 구간(최초 결과). 수정 화면이 이것을 받아 고친다. */
-  dialogueSegments: { start: number; end: number; speaker: string }[]
-  /** 겹쳐 잡힌 구간 — 구간 목록과 **따로** 둔다. 겹침 발견 ≠ 겹친 목소리 분리. */
-  dialogueOverlaps: { start: number; end: number }[]
+  /**
+   * 메뉴를 옮겨도 **분할 편집을 잃지 않기 위한 자리**(2026-09-27).
+   *
+   * ★왜 필요한가: 편집기는 마커·트랙명·고른 조각을 제 안에만 들고 있었다. 다른 메뉴로 갔다
+   *   오면 컴포넌트가 다시 만들어지면서 전부 사라졌다(그리고 store 값까지 비웠다).
+   * ★`sourceKey` 를 함께 둔다 — **그 원본의 편집일 때만** 되살린다. 파일을 닫거나 새로
+   *   불러오면 `setFile`·`reset` 이 이 자리를 비우므로, 같은 경로를 다시 열어도 남지 않는다.
+   * ★디스크에 쓰지 않는다. 재시작 복원은 이번 범위가 아니다.
+   */
+  splitDraft: {
+    sourceKey: string
+    markers: { id: string; time: number; label: string }[]
+    firstLabel: string
+    unselected: number[]
+  } | null
+  /**
+   * 화자 분석 **한 번**의 결과. 어느 원본의 어느 실행인지 함께 들고 있다.
+   *
+   * ★예전에는 구간 배열만 떠 있었고 파일을 바꿔도 지워지지 않았다 — 그래서 B 를 열어 둔
+   *   화면에 A 의 구간이 그대로 남았다(2026-09-27 재현). 이제 원본이 바뀌면 함께 비운다.
+   */
+  dialogueAnalysis: DialogueAnalysis | null
+  /** 결과를 들이지 못한 사유(다른 원본·지난 실행·구간 없음). 조용히 버리지 않는다. */
+  dialogueNotice: string
+  /** 지금 기다리는 분석 실행 — 늦게 온 앞 실행의 결과를 가려낸다. */
+  dialogueRunId: string
+  /**
+   * **공용 원본 파형에게 이 구간을 틀어 달라**는 요청.
+   *
+   * 작업실이 제 오디오 요소를 따로 들지 않게 한다 — 같은 원본을 두 군데서 틀면
+   * 소리가 겹치고 음량 설정도 갈라진다. 파형이 멈추면 스스로 비운다.
+   */
+  waveRange: { start: number; end: number; token: number } | null
+  /**
+   * **지금 소리를 내는 자리.** 한 번에 하나다.
+   *
+   * 원본 파형과 결과 재생기가 동시에 울리면 무엇을 듣는지 알 수 없다.
+   * 새로 틀려는 쪽이 자리를 가져가고, 자리를 잃은 쪽은 스스로 멈춘다.
+   */
+  audioClaim: { owner: 'waveform' | 'result' | 'card' | 'song' | 'karaoke' | 'reader'; n: number } | null
   /** 대화 분석 엔진. 기본은 기존 엔진이다. */
   diarizeEngine: 'builtin' | 'community-1'
   ttsText: string
@@ -332,10 +373,15 @@ interface AppState {
   // 값이 바뀌는 경로는 '세션 복원' 하나뿐이며, 그때도 계약 밖 값은 조용히 고치지 않고 크게 실패시킨다.
   ttsExpressiveMode: ExpressiveMode
   resultMetadata: Record<string, unknown> | null
+  /** 공용 결과를 만든 모드. 현재 보이는 모드와 구분한다. */
+  resultMode: SeparationMode | null
+  /** 독립 작업이 잠시 빌린 실행 상태. 결과 객체가 그대로일 때만 완료 표시를 돌려준다. */
+  independentWork: { resume: { mode: SeparationMode; tracks: Track[] } | null } | null
 
   setFile: (info: FileInfo, url: string) => void
   setMode: (mode: SeparationMode) => void
   setSynthesisTab: (t: SynthesisTab) => void
+  setActiveVoiceCast: (id: string | null) => void
   setTrimSilence: (v: boolean) => void
   setSilenceGap: (v: number) => void
   setSilencePreview: (v: boolean) => void
@@ -393,9 +439,21 @@ interface AppState {
   setSpeakerLabel: (speakerId: string, label: string) => void
   removeEmotionRef: (emotionId: string) => void
   setEmotionRefState: (emotionId: string, patch: { clip?: string; ready?: boolean; message?: string; region?: { start: number; duration: number } | null; phase?: RefPhase; reqId?: string }) => void
+  beginIndependentWork: (message: string) => void
+  endIndependentWork: () => void
   setProcessing: () => void
   setProgress: (percent: number, message: string) => void
   setResult: (tracks: Track[], outputDir: string, metadata?: Record<string, unknown> | null) => void
+  /** 분석을 시작한다 — 이 실행의 식별자를 기억해 둔다(늦게 온 앞 결과를 가려내는 근거). */
+  beginDialogueRun: (runId: string) => void
+  /** 분석 결과를 들인다. 소속이 맞지 않으면 들이지 않고 **사유를 남긴다**. */
+  adoptDialogueAnalysis: (got: DialogueAnalysis | null, notice?: string) => void
+  /** 공용 파형에게 이 구간을 틀어 달라고 한다. 같은 요청을 다시 부르면 멈춘다. */
+  requestWaveRange: (start: number, end: number) => void
+  /** 파형이 멈췄다 — 요청을 비운다(그 요청일 때만). */
+  clearWaveRange: (token?: number) => void
+  /** 소리 낼 자리를 가져간다. 앞 자리는 스스로 멈춘다. */
+  claimAudio: (owner: 'waveform' | 'result' | 'card' | 'song' | 'karaoke' | 'reader') => void
   setError: (error: string, info?: { code?: string; childAlive?: boolean; cancelKind?: string } | null) => void
   // 오류 카드 '닫기' — 오류만 해제하고 idle로. 디스크의 synthesized.wav·재시도 nonce는 건드리지 않는다.
   clearError: () => void
@@ -428,6 +486,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   fileUrl: null,
   mode: 'music',
   synthesisTab: 'basic' as SynthesisTab,   // 첫 진입은 일반
+  activeVoiceCastId: null,
   trimSilence: false,
   silenceGap: 0.5,
   silencePreview: false,
@@ -455,8 +514,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   splitMarkers: [],
   splitLabels: [],
   splitSelected: null,
-  dialogueSegments: [],
-  dialogueOverlaps: [],
+  splitDraft: null,
+  dialogueAnalysis: null as DialogueAnalysis | null,
+  dialogueNotice: '',
+  dialogueRunId: '',
+  waveRange: null as { start: number; end: number; token: number } | null,
+  audioClaim: null as { owner: 'waveform' | 'result' | 'card' | 'song' | 'karaoke' | 'reader'; n: number } | null,
   diarizeEngine: 'builtin' as const,
   ttsText: '',
   ttsSpeed: 1.0,
@@ -515,6 +578,8 @@ export const useAppStore = create<AppState>((set, get) => ({
   ttsRefMessage: '',
   ttsReferenceRegion: null,
   resultMetadata: null,
+  resultMode: null,
+  independentWork: null,
 
   // 새 파일 → 이전 파생 참조/준비 상태 무효화(다른 원본의 클립을 재사용하지 않도록) + 임시 클립 폴더 정리.
   // 새 기본 참조 = 새 파일이므로 이전 전사(default + 감정 전부)는 새 음성에 결합되면 안 된다 →
@@ -523,13 +588,14 @@ export const useAppStore = create<AppState>((set, get) => ({
     // 파일을 새로 골랐다 — 이 작업은 다시 열릴 때 되살려야 한다(실행 단위 기록에서 지운다).
     forgetRestoredThisRun(info?.path || '')
     if (isCancelCleanupBusy(get().status)) return  // 취소 정리 중 새 파일 처리 차단(worker 종료 확인 전 상태 교체 방지)
-    try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 전체 파생 클립(기본+감정) 정리
+    try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }  // 공용 파일 작업의 참조만 정리(일반·더빙 보존)
     // 분할 마커는 파일에 종속이다. 비우지 않으면 이전 파일의 경계가 새 파일에 그대로 적용돼
     // (더 긴 파일에서는 오류조차 없이) 완전히 틀린 지점에서 잘린다 — 감사 R2.
-    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], ttsReferenceClip: '', ttsRefReady: false, ttsRefPhase: 'preparing' as RefPhase, ttsRefReqId: newRefReqId(), ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
+    set({ fileInfo: info, fileUrl: url, status: 'idle', tracks: [], resultMode: null, independentWork: null, resultMetadata: null, activeVoiceCastId: null, error: null, errorInfo: null, progress: 0, outputDir: null, restorable: null, playingTrack: null, splitMarkers: [], splitLabels: [], splitDraft: null, dialogueAnalysis: null, dialogueNotice: '', dialogueRunId: '', waveRange: null, audioClaim: null, ttsReferenceClip: '', ttsRefReady: false, ttsRefPhase: 'preparing' as RefPhase, ttsRefReqId: newRefReqId(), ttsRefMessage: '', ttsReferenceRegion: null, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {}, ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {}, ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single', ttsReferencePrompts: {} })
   },
   setMode: (mode) => set({ mode }),
   setSynthesisTab: (t) => set({ synthesisTab: t }),
+  setActiveVoiceCast: (id) => set({ activeVoiceCastId: id }),
   setTrimSilence: (v) => set({ trimSilence: v }),
   setSilenceGap: (v) => set({ silenceGap: v }),
   setSilencePreview: (v) => set({ silencePreview: v }),
@@ -746,10 +812,44 @@ export const useAppStore = create<AppState>((set, get) => ({
       },
     }
   }),
-  setProcessing: () => set({ status: 'processing', progress: 0, progressMessage: '파일 준비 중...', error: null, errorInfo: null, tracks: [], resultMetadata: null }),
+  beginIndependentWork: (message) => set((s) => ({
+    independentWork: s.independentWork ?? {
+      resume: s.status === 'done' && !s.error && s.resultMode && s.tracks.length > 0
+        ? { mode: s.resultMode, tracks: s.tracks } : null,
+    },
+    status: 'processing', progress: 0, progressMessage: message, error: null, errorInfo: null,
+  })),
+  endIndependentWork: () => set((s) => {
+    if (!s.independentWork || s.errorInfo?.childAlive) return {}
+    const previous = s.independentWork.resume
+    const restoreDone = !!previous && previous.mode === s.resultMode && previous.tracks === s.tracks && s.tracks.length > 0
+    return { independentWork: null, status: restoreDone ? 'done' : 'idle',
+      progress: restoreDone ? 100 : 0, progressMessage: restoreDone ? '완료' : '', error: null, errorInfo: null }
+  }),
+  setProcessing: () => set((s) => ({ independentWork: null, status: 'processing', progress: 0, progressMessage: '파일 준비 중...', error: null, errorInfo: null, tracks: [], resultMetadata: null, resultMode: s.mode })),
   setProgress: (percent, message) => set({ progress: percent, progressMessage: message }),
-  setResult: (tracks, outputDir, metadata) => set({ status: 'done', progress: 100, progressMessage: '완료', tracks, outputDir, resultMetadata: metadata ?? null }),
-  setError: (error, info) => set({ status: 'error', error, errorInfo: info ?? null, progressMessage: '' }),
+  beginDialogueRun: (runId) => set({ dialogueRunId: runId, dialogueAnalysis: null, dialogueNotice: '' }),
+  adoptDialogueAnalysis: (got, notice) => set((s) => {
+    const key = s.fileInfo?.path || ''
+    // 판정은 shared 한 곳이 소유한다 — store 가 규칙을 따로 쓰면 둘이 갈라진다.
+    const why = got ? analysisFault(got, key, s.dialogueRunId) : ''
+    if (got && why) return { dialogueNotice: why }        // 지금 결과는 건드리지 않는다
+    return { dialogueAnalysis: got, dialogueNotice: got ? '' : (notice || '') }
+  }),
+  requestWaveRange: (start, end) => set((s) => ({
+    waveRange: { start, end, token: (s.waveRange?.token ?? 0) + 1 },
+    audioClaim: { owner: 'waveform', n: (s.audioClaim?.n ?? 0) + 1 },
+  })),
+  claimAudio: (owner) => set((s) => (
+    s.audioClaim?.owner === owner ? {} : { audioClaim: { owner, n: (s.audioClaim?.n ?? 0) + 1 } }
+  )),
+  clearWaveRange: (token) => set((s) => (
+    token == null || s.waveRange?.token === token ? { waveRange: null } : {}
+  )),
+  setResult: (tracks, outputDir, metadata) => set((s) => ({ status: 'done', progress: 100, progressMessage: '완료', tracks, outputDir, resultMetadata: metadata ?? null, resultMode: s.resultMode ?? s.mode })),
+  // 실행 전 검증 오류는 현재 모드, 실행 중 도착한 오류는 시작 때 기록한 모드에 속한다.
+  setError: (error, info) => set((s) => ({ status: 'error', error, errorInfo: info ?? null, progressMessage: '',
+    resultMode: s.status === 'processing' || s.status === 'cancelling' ? (s.resultMode ?? s.mode) : s.mode })),
   clearError: () => set({ status: 'idle', error: null, errorInfo: null, progressMessage: '' }),
   // 오류 해제 + 재시도 트리거. idle로 되돌려 ProcessButton effect가 재합성 1회 실행하도록.
   // processing/cancelling 중이면 무시(재진입 방지 — 중복 클릭에도 1회만, 진행/취소 중 상태를 뒤엎지 않음).
@@ -764,7 +864,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     ? { status: 'cancelling', progressMessage: '작업을 취소하고 정리하는 중…', error: null, errorInfo: null }
     : {}),
   // 취소 완료(main audio:cancelled) → idle. 부분 결과 미채택.
-  finishCancelled: () => set({ status: 'idle', progress: 0, progressMessage: '', error: null, errorInfo: null, tracks: [], resultMetadata: null }),
+  finishCancelled: () => set({ status: 'idle', progress: 0, progressMessage: '', error: null, errorInfo: null, tracks: [], resultMetadata: null, resultMode: null }),
   // 취소 실패(main audio:cancel-failed) → 조용한 idle 금지. error + childAlive(재취소 게이팅용).
   // ★갈래마다 **회복 방법이 반대**다(2026-09-24 2차 감사). 예전에는 childAlive 하나만
   //   읽어서, 자식이 이미 죽은 갈래에도 "프로세스 상태를 확인하거나 앱을 종료하세요" 라는
@@ -808,11 +908,22 @@ export const useAppStore = create<AppState>((set, get) => ({
       : null
     // 같은 파일이 이미 열려 있고 기본 참조가 살아 있으면(불러오기 직후 자동 확정이 끝난 상태) 복원이 그것을
     // 내리지 않는다 — 방금까지 되던 목소리를 "구간 재확정 필요" 로 되돌리는 것은 복원이 아니라 퇴행이다.
-    const keepLiveDefault = !!cur.fileInfo?.path && cur.fileInfo.path === session.source && cur.ttsRefReady === true
+    const sameSource = !!cur.fileInfo?.path && cur.fileInfo.path === session.source
+    const keepLiveDefault = sameSource && cur.ttsRefReady === true
     const defaultReady = keepLiveDefault || (defaultAlive && !defaultUsedDerived)
     const defaultMessage = keepLiveDefault ? '' : (!defaultAlive ? '원본 다시 지정 필요' : (defaultUsedDerived ? '구간 재확정 필요' : ''))
     return {
+      // 이전 원본을 비교한 뒤 원본과 결과를 원자적으로 교체한다.
+      fileInfo: sameSource ? cur.fileInfo : {
+        path: session.source || '', name: session.source?.split(/[/\\]/).pop() || '이전 결과 복원',
+        duration: 0, channels: 0, sampleRate: 0, format: '',
+      },
+      fileUrl: sameSource ? cur.fileUrl : null,
       mode: session.mode || 'music',
+      synthesisTab: session.mode === 'tts' ? 'advanced' : cur.synthesisTab,
+      independentWork: null,
+      resultMode: session.mode || 'music',
+      activeVoiceCastId: null,
       demucsModel: o.model || 'htdemucs',
       trimSilence: !!o.trimSilence,
       silenceGap: o.silenceGap ?? 0.5,
@@ -822,7 +933,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       outputFormat: o.outputFormat || 'wav',
       whisperModel: o.whisperModel || 'large-v3',
       whisperLang: o.whisperLang || 'auto',
-      translateModel: o.translateModel || '600m',
+      // ★'google' 은 없앴다(외부 전송 금지, 2026-09-30) — 옛 저장값은 로컬 번역으로 연다.
+      translateModel: o.translateModel && o.translateModel !== 'google' ? o.translateModel : '600m',
       nSpeakers: o.nSpeakers ?? 2,
       // TTS 설정 복원(스냅샷에 있을 때만 유의미; 없으면 기본값)
       ttsText: o.ttsText ?? '',
@@ -878,16 +990,17 @@ export const useAppStore = create<AppState>((set, get) => ({
   }),
   reset: () => {
     if (isCancelCleanupBusy(get().status)) return  // 취소 정리 중 reset 차단(worker 종료 확인 전 상태 초기화 방지)
-    // 세션 리셋 → 파생 참조 클립 폴더 삭제 + 참조/전사/결과 상태 초기화(다른 원본의 상태 잔존 방지).
+    // 공용 파일 작업 리셋. 일반·더빙의 참조와 대본은 각 작업이 소유한다.
     try { window.api?.audio?.releaseReferenceClip?.() } catch { /* noop */ }
     set({
       fileInfo: null, fileUrl: null, status: 'idle', progress: 0, progressMessage: '', error: null, errorInfo: null,
-      tracks: [], outputDir: null, playingTrack: null, restorable: null, splitMarkers: [], splitLabels: [],
+      tracks: [], outputDir: null, playingTrack: null, restorable: null, splitMarkers: [], splitLabels: [], splitDraft: null,
+      dialogueAnalysis: null, dialogueNotice: '', dialogueRunId: '', waveRange: null, audioClaim: null,
       ttsReferenceClip: '', ttsRefReady: false, ttsRefMessage: '', ttsReferenceRegion: null,
       ttsReferencePrompts: {}, ttsEmotionRefState: {}, ttsSpeakerRefState: {}, ttsSpeakerInherit: null, ttsSpeakerRenames: {},
       ttsSpeakerLabels: {}, ttsEmotionCandidateSelections: {},
       ttsSpeakerEmotionRefs: {}, ttsSpeakerEmotionEnabled: {}, ttsSpeakerMode: 'single',
-      ttsPitch: 0.0, ttsPitchCapability: null, resultMetadata: null,
+      ttsPitch: 0.0, ttsPitchCapability: null, resultMetadata: null, resultMode: null, independentWork: null, activeVoiceCastId: null,
       // 세션 리셋은 표현형 모드도 기본으로 되돌린다(이전 세션의 모드가 새 작업에 눌러앉지 않게).
       ttsExpressiveMode: EXPRESSIVE_DEFAULT_MODE,
       // 참조 conditioning 모드도 fresh 세션과 같은 추천값으로 — 이전 세션의 선택이 새 작업에

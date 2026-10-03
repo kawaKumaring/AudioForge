@@ -1,11 +1,17 @@
 import React from 'react'
 import ReactDOM from 'react-dom/client'
-import App from './App'
+import AppEntrance from './components/AppEntrance'
+import ConsoleWindow from './components/ConsolePanel'
 import ErrorBoundary from './components/ErrorBoundary'
 import { useAppStore } from '@/stores/app.store'
 import { useLabStore } from '@/stores/lab.store'
 import { planEmotionRefs } from '@/lib/emotions'
+import { setPlaybackVolume } from '@/lib/playbackVolume'
 import './styles/globals.css'
+import { applyRendererCsp } from '../shared/cspPolicy'
+
+// ★외부 전송 금지 — 화면 보안 정책을 **무엇보다 먼저** 건다(2026-09-30). 이 뒤의 모든 불러오기·연결에 걸린다.
+applyRendererCsp(document, !!(window as { api?: { _e2e?: boolean } }).api?._e2e)
 
 // E2E 전용(AF_E2E=1): 자동화가 store를 통해 파일/모드/상태를 주입할 수 있게 노출. 그 외엔 노출하지 않음.
 if ((window as { api?: { _e2e?: boolean } }).api?._e2e) {
@@ -15,6 +21,10 @@ if ((window as { api?: { _e2e?: boolean } }).api?._e2e) {
   // 게이팅/전송 판정을 그대로(ProcessButton과 동일 로직) 검증할 수 있게 노출 — 실제 합성 없이 config 전달 확인.
   ;(window as unknown as { __afPlanEmotionRefs: (text: string) => unknown }).__afPlanEmotionRefs =
     (text: string) => planEmotionRefs(text, useAppStore.getState().ttsEmotionRefState)
+  // 재생 중 음량 변경이 **화면에 붙지 않는 요소**까지 닿는지 검사가 직접 확인할 수 있게.
+  // (슬라이더는 파일 작업 화면에만 있어, 파일을 열지 않는 검사에서는 닿을 길이 없다.)
+  ;(window as unknown as { __afSetPlaybackVolume: (v: unknown) => number }).__afSetPlaybackVolume =
+    (v: unknown) => setPlaybackVolume(v)
 }
 
 // 진단: uncaught 오류/거부를 콘솔로 남겨 main console-message / E2E pageerror가 수집하게 한다.
@@ -28,7 +38,8 @@ window.addEventListener('unhandledrejection', (e) => {
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>
     <ErrorBoundary>
-      <App />
+      {/* 콘솔 창은 같은 화면 묶음을 #console 로 연다 — 앱 밖에 따로 뜨는 창이다(2026-09-30). */}
+      {window.location.hash === '#console' ? <ConsoleWindow /> : <AppEntrance />}
     </ErrorBoundary>
   </React.StrictMode>
 )

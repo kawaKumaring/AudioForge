@@ -1,5 +1,5 @@
 export type SeparationMode = 'music' | 'conversation' | 'transcribe' | 'split' | 'tts' | 'lab' | 'dub'
-  | 'dialogue-rebuild'
+  | 'dialogue-rebuild' | 'reader'
 
 export interface Track {
   name: string

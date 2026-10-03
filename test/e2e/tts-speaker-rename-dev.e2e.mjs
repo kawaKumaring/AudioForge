@@ -1,6 +1,7 @@
 // 인물 이름 변경 — 개발 앱(격리 userData) 표적 확인 1회. GPU·음성 생성 없음(7.5초 원본 = 구간 없이 통째로 유효, 전사 검증 없음).
 // 카드 상세 '이름 바꾸기' → 같은 인물의 모든 발화 표기 + 목소리 슬롯(준비 상태·유효 참조) 이동 / 다른 인물과 충돌 시 거부·무변경 /
 // 고급 원문 편집으로 표기를 바꾸면 슬롯은 옮기지 않고 알림만(구분 처리).
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { spawn, execFileSync } from 'child_process'
 import { chromium } from 'playwright'
 import fs from 'fs'

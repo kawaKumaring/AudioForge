@@ -20,6 +20,8 @@ export interface TranscriptSegment {
 export type TranscriptEdits = Record<number, string>
 
 export interface TranscriptDoc {
+  /** 이 교정이 얹힌 추출 결과의 지문. 없으면 옛 문서다. */
+  basis?: TranscriptBasis
   /** 어떤 원본의 전사인가 — 다른 파일의 교정이 섞이지 않게 한다. */
   sourcePath: string
   /** 출력 파일 접두어(저장 이름을 여기서 만든다). */
@@ -32,6 +34,57 @@ export interface TranscriptDoc {
 }
 
 export const TRANSCRIPT_EDIT_STORAGE_KEY = 'transcriptEdits'
+
+/**
+ * **이 교정이 어느 추출 결과 위에서 만들어졌는가**(지문).
+ *
+ * ★교정은 문장 **번호**로 적힌다. 같은 파일을 다시 추출하면 문장이 갈라지는 자리가
+ *   달라질 수 있고, 그러면 번호가 다른 문장을 가리킨다. 그래서 옛 교정을 새 결과에
+ *   무조건 덮지 않는다 — 지문이 같을 때만 이어 쓴다.
+ */
+export interface TranscriptBasis {
+  segmentCount: number
+  /** 문장 시각 지문. */
+  timesHash: string
+  /** 처음 인식한 **글자** 지문(시간이 같아도 글이 다르면 다른 결과다). */
+  textHash: string
+}
+
+/** 짧고 안정적인 지문(FNV-1a). 값을 되돌릴 수 없고 경로를 담지 않는다. */
+function hashOf(text: string): string {
+  let h = 0x811c9dc5
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i)
+    h = Math.imul(h, 0x01000193) >>> 0
+  }
+  return h.toString(36)
+}
+
+export function basisOfTranscript(segments: TranscriptSegment[]): TranscriptBasis {
+  return {
+    segmentCount: segments.length,
+    timesHash: hashOf(segments.map((x) => `${x.start.toFixed(2)}-${x.end.toFixed(2)}`).join('|')),
+    textHash: hashOf(segments.map((x) => x.text).join('\u001f')),
+  }
+}
+
+/** 이 교정을 이 추출 결과에 **이어 써도 되는가.** 되면 '', 아니면 사유. */
+export function transcriptAdoptFault(saved: TranscriptDoc | null | undefined,
+  segments: TranscriptSegment[]): string {
+  if (!saved) return '이어 쓸 교정이 없습니다.'
+  const now = basisOfTranscript(segments)
+  const b = saved.basis
+  if (!b) {
+    // 지문이 없는 옛 문서 — 문장 수만이라도 같아야 한다.
+    return saved.segments.length === now.segmentCount ? '' : '그때와 문장 수가 다릅니다.'
+  }
+  if (b.segmentCount !== now.segmentCount) {
+    return `그때와 문장 수가 다릅니다(${b.segmentCount} → ${now.segmentCount}).`
+  }
+  if (b.timesHash !== now.timesHash) return '그때와 문장 시각이 다릅니다.'
+  if (b.textHash !== now.textHash) return '그때와 인식한 글이 다릅니다.'
+  return ''
+}
 
 /** 지금 보여 줄 글자 — 고친 것이 있으면 그것, 없으면 최초 인식 결과. */
 export function effectiveText(doc: TranscriptDoc, index: number): string {
@@ -143,7 +196,13 @@ export function parseTranscriptDoc(raw: unknown): TranscriptDoc | null {
     // 없는 문장을 가리키는 교정은 버린다 — 엉뚱한 줄에 붙으면 안 된다.
     if (Number.isInteger(i) && i >= 0 && i < segments.length && typeof v === 'string') edits[i] = v
   }
+  const b = (o as Record<string, unknown>).basis as Record<string, unknown> | undefined
+  const basis = (b && typeof b.segmentCount === 'number' && typeof b.timesHash === 'string'
+    && typeof b.textHash === 'string')
+    ? { segmentCount: b.segmentCount, timesHash: b.timesHash, textHash: b.textHash }
+    : undefined
   return {
+    ...(basis ? { basis } : {}),
     sourcePath: o.sourcePath,
     base: typeof o.base === 'string' ? o.base : '',
     language: typeof o.language === 'string' ? o.language : 'unknown',

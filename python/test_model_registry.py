@@ -1,5 +1,7 @@
 # -*- coding: utf-8 -*-
 """내부 snapshot 해석 계약 — 전역 환경을 바꾸지 않고, 전역 캐시로 새지 않는다."""
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import json
 import os
 import sys

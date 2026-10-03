@@ -5,6 +5,8 @@
 (tail mode/pad/fade/applied) + 감정 전환 모드가 고정 메타 키로 존재하고, 대사 전문·전사·전체 경로 같은
 민감 값은 담기지 않음을 고정한다. import tts_worker는 numpy 불요 → 시스템 python에서도 실행.
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import os
 import sys
 import unittest

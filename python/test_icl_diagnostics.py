@@ -8,6 +8,8 @@
   - 무한히 쌓이지 않는다(MAX_KEPT 초과분은 오래된 것부터 삭제).
   - 진단 보존이 실패해도 예외를 밖으로 내지 않는다(합성 실패 사유를 바꾸지 않는다).
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import json
 import os
 import shutil

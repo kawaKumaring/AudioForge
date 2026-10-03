@@ -8,10 +8,11 @@
 //
 // GPU·실합성 없음. 사용자 미디어 미사용(이번 실행 전용 synthetic WAV). 격리 user-data-dir + 자체 정리.
 // 실행: node test/e2e/reference-preview-stress.e2e.mjs  (사전 npm run build)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'; import os from 'os'
 import { randomUUID } from 'crypto'
-import { cleanupIsolated, snapshotTree, refClipDirs, makeSyntheticWav, cleanupSyntheticWav } from './_e2e-helper.mjs'
+import { cleanupIsolated, snapshotTree, refClipDirs, makeSyntheticWav, cleanupSyntheticWav, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const RES_DIR = path.join(APP, 'resources')
@@ -47,6 +48,7 @@ win.on('crash', () => crashes.push('crash'))
 
 try {
   await win.waitForLoadState('domcontentloaded')
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 
   // ── 계측: new Audio 인스턴스 / play·pause 호출 / play() 거부 ──
   await win.evaluate(() => {

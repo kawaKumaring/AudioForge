@@ -11,10 +11,11 @@
 //
 // 실행: node test/e2e/analyze-during-synthesis.e2e.mjs   (사전: npm run build, GPU 사용)
 //   AF_E2E_REFERENCE 로 실제 말이 든 참조를 준다(없으면 저장소 fixture).
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
-import { isolatedInput, cleanupIsolated, isolatedUserData, cleanupUserData, nvidiaSmiGpu0 } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, isolatedUserData, cleanupUserData, nvidiaSmiGpu0, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const SRC = (process.env.AF_E2E_REFERENCE || '').trim()
@@ -51,10 +52,14 @@ win.on('pageerror', (e) => pageErrors.push(e.message))
 
 try {
   await win.waitForLoadState('domcontentloaded')
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await win.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
     s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
+    // 이관(2026-09-27): 합성의 기본 진입이 **생성 카드** 로 바뀌었다. 이 검사가 쓰는 화면
+    // (참조 준비, '음성 합성 시작', 합성 중 설정 변경)은 옛 버전 탭에 있다. 단언은 그대로다.
+    window.__synthesisCards.getState().setView('legacy')
   }, REF)
   await win.waitForFunction(() => window.__afStore?.getState().ttsRefReady === true,
     undefined, { timeout: 180000 })

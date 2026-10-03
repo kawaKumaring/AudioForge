@@ -1,0 +1,156 @@
+import test from 'node:test'
+import assert from 'node:assert/strict'
+// @ts-ignore TS5097: node --test 가 이 파일을 곧바로 읽는다(저장소 관례).
+import { speakableText, parseReaderPrefs, parseSavedVoice, DEFAULT_READER_PREFS, readingPlan, rememberVoice, READER_RECENT_MAX } from './readerText.ts'
+
+const ON = { skipHanjaInParens: true }
+const OFF = { skipHanjaInParens: false }
+
+test('★끄면 원문 그대로 읽는다 — 켜기 전에는 예전과 같다', () => {
+  assert.equal(speakableText('학교(學校)에 갔다.', OFF), '학교(學校)에 갔다.')
+  assert.equal(DEFAULT_READER_PREFS.skipHanjaInParens, false)
+})
+
+test('★괄호 속 한자를 뺀다 — 중국어로 읽지 않는다', () => {
+  assert.equal(speakableText('학교(學校)에 갔다.', ON), '학교에 갔다.')
+  assert.equal(speakableText('그는 인간(人間)이었다. 그리고 신(神)이었다.', ON),
+    '그는 인간이었다. 그리고 신이었다.')
+})
+
+test('앞의 띄어쓰기도 함께 뺀다 — 말 사이가 벌어지지 않는다', () => {
+  assert.equal(speakableText('대한민국 (大韓民國) 의 역사', ON), '대한민국 의 역사')
+  assert.equal(speakableText('대한민국 (大韓民國)', ON), '대한민국')
+})
+
+test('전각 괄호도 본다', () => {
+  assert.equal(speakableText('학교（學校）에', ON), '학교에')
+})
+
+test('한자 사이의 띄어쓰기·가운뎃점·쉼표는 한자와 함께 뺀다', () => {
+  assert.equal(speakableText('사군자(梅 蘭 菊 竹)를', ON), '사군자를')
+  assert.equal(speakableText('사군자(梅·蘭·菊·竹)를', ON), '사군자를')
+  assert.equal(speakableText('사군자(梅, 蘭)를', ON), '사군자를')
+})
+
+test('★한자가 아닌 것이 섞인 괄호는 건드리지 않는다 — 읽는 내용이다', () => {
+  for (const s of ['학교(학교)에', '그해(1920년)에', '학교(學校, school)에', '(웃음)', '학교(學校 1)에']) {
+    assert.equal(speakableText(s, ON), s, s)
+  }
+})
+
+test('괄호 밖 한자는 이 설정이 다루지 않는다 — 지시가 괄호 속이다', () => {
+  assert.equal(speakableText('人間은 생각한다.', ON), '人間은 생각한다.')
+})
+
+test('호환 한자·확장 한자도 한자로 본다', () => {
+  assert.equal(speakableText('이(李)', ON), '이')      // 호환 한자
+  assert.equal(speakableText('가(㐀)', ON), '가')      // 확장 A 첫 글자
+  assert.equal(speakableText('나(鿿)', ON), '나')      // 통합 한자 끝
+})
+
+test('빼고 나서 남는 것이 없으면 빈 글 — 부르는 쪽이 건너뛴다', () => {
+  assert.equal(speakableText('(一)', ON).trim(), '')
+})
+
+test('저장본을 믿지 않는다 — 모르는 값은 기본으로', () => {
+  assert.deepEqual(parseReaderPrefs(null), DEFAULT_READER_PREFS)
+  assert.deepEqual(parseReaderPrefs({ follow: 'yes', skipHanjaInParens: 1 }), DEFAULT_READER_PREFS)
+  assert.deepEqual(parseReaderPrefs({ follow: false, skipHanjaInParens: true, fontSize: 18 }),
+    { ...DEFAULT_READER_PREFS, follow: false, skipHanjaInParens: true, fontSize: 18 })
+  assert.equal(parseReaderPrefs({ emotion: false }).emotion, false, '감정 담아 읽기를 끈 것이 남는다')
+  assert.equal(parseReaderPrefs({ emotion: 'no' }).emotion, true, '모르는 값은 기본(켬)')
+})
+
+test('★고른 목소리 지정은 저장본에서 그대로 읽히고, 모양이 틀리면 없는 것으로 — 소리 파일은 담지 않는다', () => {
+  const builtin = { kind: 'builtin', engineId: 'supertonic', modelId: 'F1', label: 'Supertonic 여성 1' }
+  const ref = { kind: 'reference', path: 'E:/work/ref/clip_24k.wav', label: '내 목소리' }
+  assert.deepEqual(parseReaderPrefs({ voice: builtin }).voice, builtin)
+  assert.deepEqual(parseReaderPrefs({ voice: ref }).voice, ref)
+  assert.equal(parseReaderPrefs({}).voice, null, '예전 저장본(목소리 지정 없음)은 고른 적 없는 것')
+  assert.equal(DEFAULT_READER_PREFS.voice, null)
+  // 모양이 틀린 것 — 다른 목소리로 바꾸지 않고 없는 것으로(처음 값 규칙을 탄다)
+  for (const bad of [null, 5, 'F1', {}, { kind: 'builtin' }, { kind: 'builtin', engineId: 'x', label: 'y' }, { kind: 'builtin', engineId: 'x', modelId: '', label: 'y' },
+    { kind: 'reference', label: 'y' }, { kind: 'reference', path: '', label: 'y' }, { kind: 'other', path: 'p', label: 'y' }, { kind: 'builtin', engineId: 'x', modelId: 'm' }]) {
+    assert.equal(parseSavedVoice(bad), null, JSON.stringify(bad))
+  }
+  // 저장되는 것은 지정뿐 — 군더더기 필드(예: 소리 내용)를 따라오지 않는다
+  assert.deepEqual(parseSavedVoice({ ...builtin, bytes: 'AAAA', path: 'x' }), builtin)
+  assert.deepEqual(parseSavedVoice({ ...ref, data: 'AAAA' }), ref)
+  // 기본 목소리는 경로가 아니라 엔진+모델 이름으로 — 경로를 담지 않는다
+  assert.equal('path' in (parseSavedVoice(builtin) as object), false)
+})
+
+test('★글자 크기 기본은 16 — 예전 19 는 크다는 지시', () => {
+  assert.equal(DEFAULT_READER_PREFS.fontSize, 16)
+  assert.equal(parseReaderPrefs({}).fontSize, 16, '예전 저장본(글자 크기 없음)도 16 으로 연다')
+})
+
+test('글자 크기는 범위 안으로만 — 모르는 값은 기본', () => {
+  assert.equal(parseReaderPrefs({ fontSize: 99 }).fontSize, 24)
+  assert.equal(parseReaderPrefs({ fontSize: 2 }).fontSize, 13)
+  assert.equal(parseReaderPrefs({ fontSize: 17.6 }).fontSize, 18)
+  assert.equal(parseReaderPrefs({ fontSize: '20' }).fontSize, 16)
+  assert.equal(parseReaderPrefs({ fontSize: NaN }).fontSize, 16)
+})
+
+// ★기호를 소리 내지 않는다 (2026-09-30 사용자 신고: "' \" * 등을 소리 내려고 '에 에 에' 한다").
+test('★따옴표·별표는 빼고 안의 글은 읽는다 — 설정과 무관하게 늘', () => {
+  for (const p of [OFF, ON]) {
+    assert.equal(speakableText('"누구세요?" 하고 그가 물었다.', p), '누구세요? 하고 그가 물었다.')
+    assert.equal(speakableText("'설마…' 그는 생각했다.", p), '설마… 그는 생각했다.')
+    assert.equal(speakableText('그건 *정말* 중요했다.', p), '그건 정말 중요했다.')
+    assert.equal(speakableText('“좋아.” ‘그래.’ 「알았어」 『책』', p), '좋아. 그래. 알았어 책')
+  }
+})
+
+test('웹소설 꾸밈 — 괄호류·기호는 빼고 내용만', () => {
+  assert.equal(speakableText('[퀘스트 완료] <보상: 경험치> ※주의 ♡', OFF), '퀘스트 완료 보상: 경험치 주의')
+  assert.equal(speakableText('아~ 그래~~', OFF), '아 그래')
+  assert.equal(speakableText('10~20명이 왔다.', OFF), '10에서 20명이 왔다.')
+})
+
+test('★문장 부호·괄호·하이픈·영어 줄임말은 남긴다 — 쉼과 억양, 읽는 내용', () => {
+  assert.equal(speakableText("그래, 좋아! 정말? 음… 그런데(웃음) e-mail 이야. I don't know.", OFF),
+    "그래, 좋아! 정말? 음… 그런데(웃음) e-mail 이야. I don't know.")
+  assert.equal(speakableText('50% 할인', OFF), '50% 할인')
+})
+
+test('★기호만 남은 줄은 소리 없이 건너뛴다 — 장면 구분 줄', () => {
+  assert.equal(speakableText('* * *', OFF), '')
+  assert.equal(speakableText('◆◇◆', OFF), '')
+  assert.equal(speakableText('"……"', OFF), '')
+})
+
+test('괄호 속 한자 빼기와 함께 써도 된다', () => {
+  assert.equal(speakableText('"학교(學校)에 가자."', ON), '학교에 가자.')
+})
+
+// ── 구절 나누기(따라가기 · 2026-10-01) ──────────────────────────────────────
+test('★구절 — 문장 끝·쉼표에서 나누고, 보이는 자리와 읽는 글자 수를 함께 안다', () => {
+  const t = '그는 "안녕," 하고 말했다. 학교(學校, 學生)에 갔다!'
+  const p = readingPlan(t, ON)
+  assert.deepEqual(p.parts.map((x) => t.slice(x.from, x.to)), ['그는 "안녕,"', '하고 말했다.', '학교(學校, 學生)에 갔다!'])
+  assert.deepEqual(p.parts.map((x) => x.strong), [false, true, true])
+  assert.equal(p.parts[2].weight, '학교에갔다!'.length, '괄호 속 쉼표에서 자르지 않아 한자 빼기가 그대로 된다')
+})
+
+test('★소리로 보내는 글은 예전과 같다 — 줄바꿈 수까지(쉼 길이가 바뀌지 않는다)', () => {
+  const t = '첫 문장이다. 둘째, 문장이다.\n\n***\n\n셋째 문단이다… 끝'
+  for (const pr of [ON, OFF]) assert.equal(readingPlan(t, pr).say, speakableText(t, pr))
+})
+
+test('읽을 것이 없는 구절은 무게 0 — 소리 없이 지나간다', () => {
+  const p = readingPlan('앞이다.\n***\n뒤다.', OFF)
+  assert.deepEqual(p.parts.map((x) => x.weight), [4, 0, 3], '무게는 띄어쓰기를 뺀 소리로 보낸 글자 수(문장 부호 포함)')
+})
+
+test('★최근 목소리 — 같은 파일은 맨 앞으로, 넘치면 오래된 것부터 뺀다 · 저장본을 믿지 않는다', () => {
+  let l: Array<{ path: string; label: string }> = []
+  for (let i = 0; i < READER_RECENT_MAX + 2; i++) l = rememberVoice(l, { path: `p${i}`, label: `v${i}` })
+  assert.equal(l.length, READER_RECENT_MAX)
+  assert.equal(l[0].path, `p${READER_RECENT_MAX + 1}`)
+  l = rememberVoice(l, { path: 'p3', label: 'v3' })
+  assert.equal(l[0].path, 'p3')
+  assert.equal(l.filter((x) => x.path === 'p3').length, 1)
+  assert.deepEqual(parseReaderPrefs({ recentVoices: [{ path: 'a', label: 'b' }, { path: '' }, 3, null] }).recentVoices, [{ path: 'a', label: 'b' }])
+})

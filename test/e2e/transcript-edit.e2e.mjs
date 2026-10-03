@@ -10,11 +10,13 @@
 //   5) 저장 실패를 안내한다 / 고친 내용이 앱을 다시 켜도 남는다
 //
 // 실행: node test/e2e/transcript-edit.e2e.mjs   (사전: npm run build. GPU 불필요)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
+import { installAudioProbe, seekedTo } from './_audio-probe.mjs'
+import { isolatedUserData, cleanupUserData, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
@@ -46,12 +48,13 @@ async function launch() {
   const win = await app.firstWindow()
   await win.waitForLoadState('domcontentloaded')
   await win.waitForFunction(() => !!window.__afStore, undefined, { timeout: 30000 })
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   // 전사가 끝난 상태를 그대로 얹는다(전사를 새로 돌리지 않는다).
   await win.evaluate(async ([p, segs, out]) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
     s.setState({
-      mode: 'transcribe', status: 'done', outputDir: out,
+      mode: 'transcribe', resultMode: 'transcribe', status: 'done', outputDir: out,
       tracks: [{ name: 'transcript', label: '텍스트 (ko)', path: out + '/a.txt',
                  text: segs.map((x) => x.text).join(' '), language: 'ko', base: 'a', segments: segs }],
     })
@@ -78,23 +81,11 @@ try {
   ok(vals[1] === '둘째 문장입니다.', '처음 인식한 글자가 그대로 보인다')
 
   // ── 2) 구간 재생 ────────────────────────────────────────────────────────
-  await win.evaluate(() => {
-    window.__seeks = []
-    const d = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'currentTime')
-    Object.defineProperty(HTMLMediaElement.prototype, 'currentTime', {
-      get() { return d.get.call(this) },
-      set(v) { window.__seeks.push(v); return d.set.call(this, v) },
-    })
-    window.__plays = []; window.__pauses = 0
-    const play = HTMLMediaElement.prototype.play
-    HTMLMediaElement.prototype.play = function (...a) { window.__plays.push(this.src); return play.apply(this, a) }
-    const pause = HTMLMediaElement.prototype.pause
-    HTMLMediaElement.prototype.pause = function (...a) { window.__pauses += 1; return pause.apply(this, a) }
-  })
+  await win.evaluate(eval(installAudioProbe))
   await win.getByTestId('transcript-play').nth(1).click()
   await sleep(900)
   const seeks = await win.evaluate(() => window.__seeks)
-  ok(seeks.includes(2.5), '누른 문장의 **시작 시간으로 이동**한다', JSON.stringify(seeks))
+  ok(seekedTo(seeks, 2.5), '누른 문장의 **시작 시간으로 이동**한다', JSON.stringify(seeks))
   ok((await win.evaluate(() => window.__plays)).length === 1, '실제로 재생한다')
   ok((await win.getByTestId('transcript-play').nth(1).textContent() || '').includes('■'),
     '재생 중인 문장이 표시된다')
@@ -103,7 +94,7 @@ try {
   await win.getByTestId('transcript-play').nth(2).click()
   await sleep(700)
   ok(await win.evaluate(() => window.__pauses) >= 1, '다른 문장을 누르면 이전 재생을 멈춘다')
-  ok((await win.evaluate(() => window.__seeks)).includes(5), '새 문장의 시작으로 이동한다')
+  ok(seekedTo(await win.evaluate(() => window.__seeks), 5), '새 문장의 시작으로 이동한다')
   ok((await win.getByTestId('transcript-play').nth(1).textContent() || '').includes('▶'),
     '이전 문장 표시가 풀린다')
   // 같은 문장을 다시 누르면 멈춘다
@@ -132,9 +123,14 @@ try {
     document.querySelectorAll('[data-testid="transcript-row"]')[1].getAttribute('data-edited')) === '1',
     '고친 줄이 표시된다')
   ok(await win.getByTestId('transcript-notes').count() === 1, '시간을 다시 계산하지 않았다는 안내가 뜬다')
-  const note = await win.getByTestId('transcript-notes').textContent()
+  // ★자세한 문장은 2026-09-27 화면 정리에서 **말풍선(title)** 으로 옮겼다.
+  //   보이는 글자는 '알아 둘 점 N건' 으로 줄었다. 확인하는 내용은 그대로 —
+  //   "시간을 다시 계산했다" 고 말하지 않는지, 그 문장이 사용자에게 닿는지 본다.
+  const note = await win.getByTestId('transcript-notes').getAttribute('title')
   ok((note || '').includes('다시 계산하지 않았습니다'),
-    '고친 글자에 맞는 시간이라고 말하지 않는다', `"${(note || '').trim().slice(0, 40)}…"`)
+    '고친 글자에 맞는 시간이라고 말하지 않는다', `"${(note || '').trim().slice(0, 60)}…"`)
+  const noteSeen = await win.getByTestId('transcript-notes').textContent()
+  ok((noteSeen || '').includes('알아 둘 점'), '알아 둘 점이 있다고 화면에 보인다', `"${noteSeen}"`)
   // 글자 수정만으로 재전사·재번역이 돌지 않는다
   const st = await win.evaluate(() => window.__afStore.getState().status)
   ok(st === 'done', '글자 수정으로 다시 돌리지 않는다', st)
@@ -189,6 +185,26 @@ try {
   await app1.close()
   app1 = null
 
+  // ★저장과 불러오기를 **갈라서** 본다. 한 줄로 묶으면 어느 쪽이 망가졌는지 모른다.
+  //
+  // ★2026-09-29: 기록이 **설정 한 칸에서 파일 하나씩**으로 옮겨졌다.
+  //   그래서 여기서 보는 자리도 바뀐다 — `works/transcript/` 아래 파일이다.
+  const workDir = path.join(UD, 'works', 'transcript')
+  const files = fs.existsSync(workDir) ? fs.readdirSync(workDir).filter((f) => f.endsWith('.json')) : []
+  const bodies = files.map((f) => {
+    try { return fs.readFileSync(path.join(workDir, f), 'utf-8') } catch { return '' }
+  })
+  ok(files.length === 1, '★기록 하나가 파일 하나다', `${files.length}개: ${files.join(', ')}`)
+  ok(bodies.some((b) => b.includes('둘째 문장을 고쳤습니다.')),
+    '★고친 내용이 그 파일에 실제로 적힌다', (bodies[0] || '').slice(0, 220))
+  // ★설정 파일에는 더 이상 작업 기록이 없다 — 옮기고 옛 열쇠를 지웠는가.
+  const settings = (() => {
+    try { return JSON.parse(fs.readFileSync(path.join(UD, 'settings.json'), 'utf-8')) }
+    catch { return {} }
+  })()
+  ok(settings.transcriptDrafts === undefined && settings.transcriptEdits === undefined,
+    '★설정 파일에 작업 기록이 남지 않는다 — 남으면 지운 것이 되살아난다',
+    JSON.stringify(Object.keys(settings)))
   // ── 앱을 다시 켜도 고친 내용이 남는다 ───────────────────────────────────
   const second = await launch()
   app2 = second.app

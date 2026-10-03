@@ -9,11 +9,12 @@
 // ★검사 통과는 **연결이 됐다**는 뜻이지, 소리 품질 합격이 아니다. 품질은 사용자가 듣고 판단한다.
 //
 // 실행: node test/e2e/lab-workspace.e2e.mjs   (사전: npm run build, AF_E2E_REFERENCE)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { isolatedInput, cleanupIsolated, isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, isolatedUserData, cleanupUserData, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const SRC = (process.env.AF_E2E_REFERENCE || '').trim()
@@ -51,6 +52,7 @@ async function launch() {
   // 이 앱의 껍데기는 **원본 파일을 불러와야** 모드 탭이 나온다(모든 모드 공통, 기존 동작).
   // 그래서 '파일 불러오기' 가 하는 일을 그대로 해 준 뒤 탭을 고른다.
   await win.waitForFunction(() => !!window.__afStore, undefined, { timeout: 30000 })
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await win.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))

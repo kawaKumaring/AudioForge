@@ -54,6 +54,7 @@ interface LabState {
   selectLine: (id: string | null) => void
   setLineText: (id: string, text: string) => void
   addLineAfter: (id: string | null) => string
+  appendScript: (text: string) => string | null
   removeLine: (id: string) => void
   undoRemove: () => void
   moveLine: (id: string, toIndex: number) => void
@@ -64,11 +65,13 @@ interface LabState {
   setError: (m: string | null) => void
   setNotice: (m: string | null) => void
   markLoaded: () => void
+  /** 지워진 기록을 잊는다(자동 저장도 멈춘다). */
+  forget: () => void
 }
 
 let refSeq = 0
 
-export const useLabStore = create<LabState>((set) => ({
+export const useLabStore = create<LabState>((set, get) => ({
   doc: emptyDoc(REFERENCE_CONDITIONING_RECOMMENDED),
   ref: emptyRef(),
   selectedLineId: null,
@@ -126,6 +129,21 @@ export const useLabStore = create<LabState>((set) => ({
       const lines = [...s.doc.lines]
       lines.splice(i < 0 ? lines.length : i + 1, 0, line)
       return { doc: { ...s.doc, lines, updatedAt: Date.now() }, selectedLineId: line.id }
+    })
+    return line.id
+  },
+
+  // 다른 작업의 대본은 새 항목으로 추가한다. 기존 항목의 글·생성본·채택은 그대로 보존한다.
+  appendScript: (text) => {
+    if (!text.trim() || get().job) return null
+    const line = newLine(text)
+    set((s) => {
+      const onlyEmpty = s.doc.lines.length === 1 && !s.doc.lines[0].text.trim() && s.doc.lines[0].takes.length === 0
+      return {
+        doc: { ...s.doc, lines: [...(onlyEmpty ? [] : s.doc.lines), line], updatedAt: Date.now() },
+        selectedLineId: line.id,
+        notice: '대본을 새 생성 항목으로 추가했습니다. 현재 선택한 목소리로 만들 수 있습니다.',
+      }
     })
     return line.id
   },
@@ -204,6 +222,15 @@ export const useLabStore = create<LabState>((set) => ({
   setError: (m) => set({ error: m }),
   setNotice: (m) => set({ notice: m }),
   markLoaded: () => set({ loaded: true }),
+  /**
+   * 이 기록이 **지워졌다.** 들고 있던 것을 버리고 저장도 멈춘다.
+   *
+   * ★`loaded` 를 내리는 것이 요점이다. 화면의 자동 저장은 `loaded` 일 때만 쓰므로,
+   *   이것을 내리지 않으면 탭을 옮기는 순간 **지운 문서가 그대로 되살아난다**
+   *   (2026-09-28: 지우기가 동작하지 않는 것처럼 보인 진짜 이유).
+   *   다음에 이 화면을 열면 없는 자리에서 새로 시작한다.
+   */
+  forget: () => set({ doc: emptyDoc(REFERENCE_CONDITIONING_RECOMMENDED), loaded: false, ref: emptyRef() }),
 }))
 
 export { LAB_STORAGE_KEY, defaultSettings, newId, parseDoc, REFERENCE_CONDITIONING_RECOMMENDED }

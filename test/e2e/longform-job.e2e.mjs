@@ -15,12 +15,13 @@
 //   4) 취소·시간 초과 후 timer / 자식 프로세스 / staging 잔존 0
 //   5) 구조화 QWEN_NO_RESPONSE 가 일반 timeout 으로 뭉개지지 않고 code 가 보존된다
 //   6) pageerror / crash 0
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
 import { execSync } from 'child_process'
-import { snapshotTree, qwenJobDirs } from './_e2e-helper.mjs'
+import { snapshotTree, qwenJobDirs, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const FIXTURE = path.join(APP, 'test', 'e2e', 'fixtures', 'longform_job.py')
@@ -66,6 +67,7 @@ const win = await app.firstWindow()
 win.on('pageerror', e => pageErrors.push(e.message))
 win.on('crash', () => crashes.push('crash'))
 
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 const readPid = () => { try { return JSON.parse(fs.readFileSync(PIDFILE, 'utf-8')).parent } catch { return null } }
 
 // main 프로세스 시임 주입(AF_E2E=1 에서만 읽힌다). 분 단위 축을 초 단위로 재현하기 위한 것이며

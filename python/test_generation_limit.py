@@ -10,6 +10,8 @@
   - _synthesize_qwen_job: 상한 도달 시 기존 synthesized.wav 원자 보존 + job_dir 정리 + 감정 ID만(전사·문장·경로 미포함).
   - metadata 3필드 집계: 최대 반복 세그먼트의 (상한, 반복, completed_before_limit) + 전사 전문 미포함.
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import os
 import sys
 import json

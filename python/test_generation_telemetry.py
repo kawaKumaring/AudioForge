@@ -9,6 +9,8 @@
   4) metadata 는 JSON 직렬화 가능하고 민감값(대사/전사/경로)을 담지 않는다.
   5) 생산 상수(ABS_LIMIT/SLOPE/BASE/MIN_LIMIT)와 두 watchdog 값이 base와 바이트 동일하다.
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import io
 import json
 import os

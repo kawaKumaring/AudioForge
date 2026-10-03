@@ -7,11 +7,12 @@
 //   · 묶음에는 summary.txt 와 logs/ 가 있고, 설정에 심어 둔 **대사 본문·폴더 값은 어디에도 없다**
 //
 // 실행: node test/e2e/diagnostics-export.e2e.mjs   (사전: npm run build)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
@@ -50,6 +51,7 @@ try {
   const win = await app.firstWindow()
   await win.waitForLoadState('domcontentloaded')
   await win.waitForFunction(() => !!window.__afStore, undefined, { timeout: 30000 })
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 
   // ── 로그 파일 ────────────────────────────────────────────────────────────
   const logDir = path.join(UD, 'logs')
@@ -80,8 +82,13 @@ try {
   ok(/ERROR \[console\] .*PROBE_7f2e/.test(fs.readFileSync(logPath, 'utf-8')), '수준 ERROR · 꼬리표 console 로 남는다')
 
   // ── 진단 묶음 ────────────────────────────────────────────────────────────
+  // ★2026-09-30 버전 아래에서 설정의 '문제 확인' 칸으로 옮겼다(지시). 설정을 열고 누른다.
+  ok(await win.getByTestId('export-diagnostics').count() === 0, '버전 아래에는 없다 — 설정으로 옮겼다')
+  await win.getByTestId('open-app-options').click()
+  await win.getByTestId('app-options').waitFor()
+  await win.getByTestId('options-tab-checks').click()   // 콘솔·진단 묶음은 '기능 검사' 탭에 있다
   const btn = win.getByTestId('export-diagnostics')
-  ok(await btn.count() === 1, "시작 화면에 '진단 묶음 내보내기' 가 있다")
+  ok(await btn.count() === 1, "설정 안에 '진단 묶음 내보내기' 가 있다")
   await btn.click()
   const result = win.getByTestId('export-diagnostics-result')
   await result.waitFor({ timeout: 10000 })

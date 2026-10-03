@@ -8,6 +8,7 @@
 //  C 구간 편집기에 숫자 입력이 있고, 고급 설정 '엔진·진단'에 설치된 음성 모델 판 선택이 뜬다.
 //
 // 자산은 저장소 fixture 만 쓰고 격리 폴더로 복사해 주입한다(사용자 resources/ 미접촉).
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { spawn, execFileSync } from 'child_process'
 import { chromium } from 'playwright'
 import fs from 'fs'
@@ -102,6 +103,9 @@ try {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(fp), await window.api.audio.getFileUrl(fp))
     s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
+    // ★합성의 기본 진입이 생성 카드로 바뀌었다(2026-09-27 버전 탭).
+    //   이 검사는 **옛 버전**(대본·배역 편집)의 편의 기능을 본다 — 그 탭으로 들어간다.
+    window.__synthesisCards.getState().setView('legacy')
   }, iso.input)
   await page.waitForSelector('[data-testid="dialogue-tabs"]', { timeout: 60000 })
   await page.click('[data-testid="dialogue-tabs"] [data-tab="multi"]')
@@ -296,6 +300,13 @@ try {
   ).catch(() => {})
 
   // 고급 설정 > 엔진·진단
+  // ★세부 설정이 대본 머리의 '⚙ 설정' 안으로 들어갔다(2026-09-27 Codex 정리).
+  //   그 문을 먼저 열어야 '고급 설정' 칸이 생긴다. 검증 의도는 그대로다.
+  await st(() => {
+    const t = document.querySelector('[data-testid="tts-settings-toggle"]')
+    if (t && t.getAttribute('aria-expanded') !== 'true') t.click()
+  })
+  await sleep(400)
   await st(() => {
     const btn = [...document.querySelectorAll('section[aria-label="고급 설정"] button')].find((b) => b.textContent.trim() === '열기')
     if (btn) btn.click()

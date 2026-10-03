@@ -12,6 +12,7 @@
 - **개발선(`-dev`)** → `%APPDATA%\audio-forge-dev`.
 - 개발선 폴더가 처음이면(설정 파일이 없고 표식도 없으면) 정식 폴더의 **앱 데이터만 한 번 복사**한다:
   `settings.json`, `reference-library/`, `refclips/`, `lab-takes/`, `emotion-sampler-cache/`.
+  (`readerVoices/` — 낭독에서 구간을 잘라 쓴 내 목소리 보관본, 2026-10-03 — 는 이 복사 목록에 없다. `refclips/` 는 임시 조각이라 앱이 켤 때·끌 때 치운다.)
   Electron 캐시(Cache·Code Cache·GPUCache·Session Storage…)는 옮기지 않는다 — 실측 192MB 중 187MB 가
   그것이고 앱이 다시 만든다. 앱 데이터 본체는 5MB 미만이었다.
 - **원본(정식 폴더)은 읽기만 한다.** 복사한 사실은 개발선 폴더의 `seeded-from.json` 에 남는다(폴더 이름·시각·

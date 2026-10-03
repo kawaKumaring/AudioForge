@@ -10,11 +10,12 @@
 // 그래서 둘이 갈라질 수 있었다. 이 검사는 **갈라지지 않는다**는 것만 본다.
 //
 // 실행: node test/e2e/reference-ready-consistency.e2e.mjs   (사전: npm run build. GPU 불필요)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
-import { isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
+import { isolatedUserData, cleanupUserData, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
@@ -74,11 +75,15 @@ try {
   const win = await app.firstWindow()
   await win.waitForLoadState('domcontentloaded')
   await win.waitForFunction(() => !!window.__afStore, undefined, { timeout: 30000 })
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await win.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
     s.setState({ mode: 'tts', synthesisTab: 'advanced', ttsText: '안녕하세요. 오늘 회의는 세 시입니다.' })
   }, SRC)
+  // 기존 화면 검사: 통합 카드의 '이전 작업'을 통해 진입한다.
+  await win.getByTestId('open-legacy-synthesis').click()
+  await win.getByTestId('synthesis-tabs').waitFor()
 
   // 목소리가 준비될 때까지(추천 구간 자동 확정).
   let ready = false

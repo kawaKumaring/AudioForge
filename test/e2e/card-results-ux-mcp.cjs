@@ -1,0 +1,27 @@
+const assert=require('node:assert/strict');const {McpClient}=require('../../tools/mcp/client.cjs');
+(async()=>{const c=new McpClient();await c.start();let n=0;const call=async(k,a={})=>{const r=await c.call(k,a);if(r.isError)throw Error(r.text);return r.json};const check=(v,m)=>{assert.ok(v,m);console.log('PASS',m);n++};const ev=code=>call('js_eval',{code});const wait=async(code,m)=>check((await call('ui_wait',{code,timeoutMs:10000})).met,m);const click=async(t,index=0)=>check((await call('ui_click',{target:'testid:'+t,index})).clicked,'누름: '+t);try{
+await call('app_start',{build:'never',width:1200,height:860});const f=await call('test_input',{kind:'tone',seconds:6,freq:220});const p=f.path;
+await call('app_mode',{mode:'tts'});
+await ev(`(()=>{const s=window.__synthesisCards.getState();const settings={speed:1,pitch:0,emotion:'자연스럽게',reference:'auto',start:0,end:6};const source={path:${JSON.stringify(p)},name:'시험 음성.wav',duration:6};const takes=[1,2,3].map(i=>({id:'take-'+i,path:${JSON.stringify(p)},createdAt:Date.now()+i,text:i===3?'오늘은 새로운 이야기를 시작합니다.':'이전에 만든 대사 '+i,source,settings,applied:{speed:1,pitch:0,notes:[]}}));s.replaceAll([{id:'card-1',label:'이야기꾼',source:null,builtin:{engineId:'piper',modelId:'test',path:'test',label:'기본 목소리',language:'ko'},text:'오늘은 새로운 이야기를 시작합니다.',settings,takes,adoptedId:'take-1'}],{gap:.3,level:false,edges:false,gaps:{}});return true})()`);
+await wait('document.querySelector("[data-testid=card-result]")?.dataset.takeId==="take-3"','카드에 최근 결과 바로 표시');await wait('document.querySelector("[data-testid=take-wave]")?.dataset.state==="ready"','실제 WAV로 작은 파형 준비');
+await ev('(()=>{window.__played=[];const p=HTMLMediaElement.prototype.play;HTMLMediaElement.prototype.play=function(){window.__played.push(this);return p.call(this)};return true})()');
+await click('take-play');await wait('window.__played.some(a=>!a.paused&&a.currentTime>0.1)','목록을 열지 않고 실제 재생 시간이 흐름');
+check(await ev('window.__synthesisCards.getState().cards[0].adoptedId==="take-1"'),'미리듣기는 최종 음성 선택을 바꾸지 않음');
+await call('ui_set',{target:'testid:card-result-select',value:'take-2'});await wait('document.querySelector("[data-testid=card-result]")?.dataset.takeId==="take-2"','카드에서 이전 결과 선택');check(await ev('window.__played.every(a=>a.paused)'),'결과를 바꾸면 앞 소리 멈춤');
+await ev('(()=>{const s=window.__synthesisCards.getState(),t=s.cards[0].takes[2];s.addTake("card-1",{...t,id:"take-4",createdAt:Date.now()});return true})()');await wait('document.querySelector("[data-testid=card-result]")?.dataset.takeId==="take-4"','새 생성 결과가 카드에 즉시 나타남');
+check(await ev('window.__synthesisCards.getState().cards[0].adoptedId==="take-1"'),'새 생성도 이미 고른 최종 음성은 보존');
+await wait('document.querySelector("[data-testid=card-result] [data-testid=take-wave]")?.dataset.state==="ready"','새 결과 파형 준비');await call('ui_screenshot',{savePath:'_local/card-result-inline.png'});
+await click('card-takes');await wait('document.querySelectorAll("[data-testid=take-row]").length===4','결과 목록 열림');check(await ev('Array.from(document.querySelectorAll("[data-testid=take-row]")).map(e=>e.dataset.takeId).join(",")==="take-4,take-3,take-2,take-1"'),'최신순이며 생성 번호는 그대로');
+await wait('document.querySelector("[data-testid=take-row] [data-testid=take-wave]")?.dataset.state==="ready"','목록 첫 파형 준비');await click('take-play');await wait('document.querySelector("[data-testid=take-row]")?.dataset.playing==="true"','왼쪽 재생 버튼 동작');
+await click('take-play',1);await wait('document.querySelectorAll("[data-testid=take-row][data-playing=true]").length===1&&document.querySelectorAll("[data-testid=take-row]")[1].dataset.playing==="true"','다른 결과를 틀면 하나만 재생');
+await ev('(()=>{window.__afStore.getState().claimAudio("waveform");return true})()');await wait('window.__played.every(a=>a.paused)','다른 작업실 재생이 소리를 가져가면 멈춤');
+check(await ev('Array.from(document.querySelectorAll("[data-testid=take-row]")).some(e=>e.textContent.includes("현재 대사와 다름"))'),'바뀐 대사를 구체적으로 표시');
+check((await call('ui_click',{target:'dialog[open] [data-testid=take-use]'})).clicked,'목록의 최종 선택 버튼 누름');check(await ev('window.__synthesisCards.getState().cards[0].adoptedId==="take-4"'),'최종 음성에 사용 단추로 명시 선택');
+await call('ui_screenshot',{savePath:'_local/card-result-list.png'});
+await call('window_resize',{width:760,height:700});await call('ui_screenshot',{savePath:'_local/card-result-list-small.png'});
+check(await ev('(()=>{const d=document.querySelector("dialog[open]");return !!d&&d.scrollWidth<=d.clientWidth+2})()'),'좁은 창 결과 목록 가로 넘침 없음');await call('ui_key',{keys:'Escape'});
+await wait('!!document.querySelector("[data-testid=card-result]")','목록 닫고 카드 복귀');await call('ui_screenshot',{savePath:'_local/card-result-inline-small.png'});
+check(await ev('document.querySelector("[data-testid=card-result]").textContent.includes("최종 음성에 사용 중")'),'카드도 같은 최종 선택 표시');
+await ev('(()=>{const s=window.__synthesisCards.getState(),c=s.cards[0];s.update(c.id,{takes:c.takes.map(t=>t.id==="take-4"?{...t,missing:true}:t)});return true})()');await wait('!document.querySelector("[data-testid=card-result] [data-testid=take-play]")','파일 누락이면 재생 불가');check(await ev('document.querySelector("[data-testid=card-result] [data-testid=take-use]").disabled'),'없는 파일 최종 선택 차단');
+console.log('RESULT',n,'checks · 0 fail');
+}finally{await c.call('app_stop');await c.close()}})().catch(e=>{console.error(e);process.exitCode=1});

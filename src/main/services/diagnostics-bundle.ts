@@ -57,6 +57,8 @@ export interface DiagnosticsBundleInput {
   runtime: DiagnosticsRuntime
   now?: () => Date
   logDays?: number
+  /** 기능 검사 결과 줄(2026-09-30) — 어느 기능이 되고 안 되는지가 진단의 핵심이다. 경로·글 내용 없음. */
+  checks?: string[]
 }
 
 export interface DiagnosticsBundleResult {
@@ -157,6 +159,9 @@ export function buildDiagnosticsBundle(input: DiagnosticsBundleInput): Diagnosti
     `node: ${r.node ?? '(모름)'}`,
     `python: ${r.pythonPresent === undefined ? '(모름)' : r.pythonPresent ? '있음' : '없음'}`,
     `data: ${r.dataDirName ?? '(모름)'}`,
+    '',
+    '[기능 검사]',
+    ...((input.checks && input.checks.length) ? input.checks : ['(이번 실행에서 돌린 검사 없음 — 설정의 기능 검사 탭에서 누른다)']),
     '',
     '[설정 모양]',
     ...settingsShapeLines(input.settingsPath),

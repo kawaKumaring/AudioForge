@@ -269,7 +269,7 @@ def run_community1_diarization(input_path, output_dir, n_speakers=2, device="cud
     py, model_dir = _community1_paths()
     here = os.path.dirname(os.path.abspath(__file__))
     bridge = os.path.join(here, "diarize_pyannote_bridge.py")
-    fd, out_path = tempfile.mkstemp(suffix=".json", prefix="diarize_")
+    fd, out_path = tempfile.mkstemp(suffix=".json", prefix="audioforge_diarize_")
     os.close(fd)
 
     emit("progress", percent=5, message="Community-1 화자 분석 준비 중...")

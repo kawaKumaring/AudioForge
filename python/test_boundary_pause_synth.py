@@ -14,6 +14,8 @@
 
 실행:  python -m unittest python/test_boundary_pause_synth.py   (또는 이 파일 직접 실행)
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import ast
 import io
 import math

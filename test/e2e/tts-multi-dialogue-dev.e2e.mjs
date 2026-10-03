@@ -8,6 +8,7 @@
 // 화면 구조(재설계): 한 명 = 기존 편집기 그대로(제한 없음). 여러 명 = 인물의 한 발화 카드가 기본 단위
 // (인물·목소리 상태·`+ 감정`·대사 한 칸·위/아래/삭제), 요약 한 줄, 선택 인물 한 명의 목소리 패널,
 // 원문 직접 편집은 `고급 · 대본 표기 직접 편집` 로 접힘(카드와 상호 배타).
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { chromium } from 'playwright'
 import { spawn, execFileSync } from 'child_process'
 import fs from 'fs'

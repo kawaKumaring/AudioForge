@@ -45,11 +45,43 @@ const codeOf = (text: string): string =>
 //   자리로 좁힌다: **공용 단추를 감추는 모드**는 제 화면이 직접 들어야 한다.
 //   그 모드 목록은 App.tsx 가 정하므로 **거기서 읽어 온다** — 새 모드를 목록에 넣는
 //   순간(= 구멍이 생기는 변경) 이 검사가 울린다.
-const OWN_CANCEL_SCREENS: Record<string, string> = {
-  tts: 'components/LabWorkspace.tsx',   // 합성 일반 탭(고급 탭은 ProcessButton 을 직접 그린다)
-  lab: 'components/LabWorkspace.tsx',
-  dub: 'components/DubWorkspace.tsx',
+//   ★한 모드가 화면을 **갈아 끼울 수도** 있다(2026-09-26). 합성은 이제 기본이 생성 카드이고
+//     '이전 작업' 을 고르면 예전 작업실이 뜬다. 둘 다 같은 모드 안에서 공용 단추 없이 뜨므로
+//     **둘 다** 직접 들어야 한다. 그래서 값이 목록이다.
+const OWN_CANCEL_SCREENS: Record<string, string[]> = {
+  // 합성 일반 탭(고급 탭은 ProcessButton 을 직접 그린다) + 그 앞에 서는 생성 카드 화면.
+  tts: ['components/LabWorkspace.tsx', 'components/SynthesisCardWorkspace.tsx'],
+  lab: ['components/LabWorkspace.tsx'],
+  dub: ['components/DubWorkspace.tsx'],
+  // ★낭독 화면은 **아직 아무것도 실행하지 않는다**(2026-09-29 GUI 초안).
+  //   실행이 없으니 취소도 없다 — 그래서 지금은 빈 목록이 사실이다.
+  //   엔진을 붙이는 순간 이 줄을 `['components/ReaderWorkspace.tsx']` 로 바꿔야 하고,
+  //   아래 검사가 그때 `useCancelLifecycle` 배선을 요구한다.
+  //   ★빈 목록으로 두는 것은 봐주기가 아니다 — 실행을 시작하면 반드시 걸린다.
+  reader: [],
 }
+
+test('★낭독 화면이 공용 실행기를 쓰기 시작했다면 취소도 배선해야 한다', () => {
+  // ★무엇이 '실행 시작' 인가를 좁게 본다 (2026-09-29).
+  //   `useCancelLifecycle` 이 덮는 것은 **공용 실행기**(`audio:process`)의 취소다.
+  //   목소리 **목록 조회**(`cards.builtinVoices`)는 실행이 아니다 — 넓게 잡았더니
+  //   목록만 읽는 화면을 실행으로 오인했다.
+  //   낭독은 제 통로(`reader.speak`)로 돌고, 갇힘은 **다시 누르면 풀리는 길**로 막는다
+  //   (`readerQueue.retryFailed`). 공용 실행기를 쓰기 시작하면 그때 여기가 운다.
+  const code = codeOf(readFileSync(path.join(RENDERER, 'components/ReaderWorkspace.tsx'), 'utf-8'))
+  const hook = codeOf(readFileSync(path.join(RENDERER, 'hooks/useReadAloud.ts'), 'utf-8'))
+  // 낭독이 갇히지 않게 하는 길이 실제로 있는가 — 이것이 없으면 거절당한 자리에 멈춘다.
+  assert.ok(hook.includes('retryFailed'),
+    '거절당한 덩이를 푸는 길이 없다 — 다른 작업이 끝나도 그 자리에 갇힌다')
+  const runs = /window\.api\.(audio\.process|dub\.)/.test(code)
+  if (!runs) {
+    assert.deepEqual(OWN_CANCEL_SCREENS.reader, [],
+      '아직 실행하지 않는데 목록에 올라 있다')
+    return
+  }
+  assert.deepEqual(OWN_CANCEL_SCREENS.reader, ['components/ReaderWorkspace.tsx'],
+    '낭독이 실행을 시작했다 — 취소 실패를 직접 듣지 않으면 「읽는 중」 에 갇힌다')
+})
 
 test('공용 실행 단추를 감추는 모드 목록이 바뀌면 여기서 멈춘다', () => {
   const app = readFileSync(path.join(RENDERER, 'App.tsx'), 'utf-8')
@@ -62,7 +94,7 @@ test('공용 실행 단추를 감추는 모드 목록이 바뀌면 여기서 멈
 
 test('공용 단추가 없는 화면은 취소 lifecycle 을 스스로 배선한다', () => {
   const bad: string[] = []
-  for (const rel of new Set(Object.values(OWN_CANCEL_SCREENS))) {
+  for (const rel of new Set(Object.values(OWN_CANCEL_SCREENS).flat())) {
     const code = codeOf(readFileSync(path.join(RENDERER, rel), 'utf-8'))
     if (!code.includes('useCancelLifecycle(')) bad.push(rel)
   }

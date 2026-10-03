@@ -18,6 +18,8 @@ audio_utils.emit 을 원본으로 되돌린다. 즉 '래퍼를 통과한 뒤 원
 GPU·실모델·사용자 미디어·네트워크 미사용.
 실행: cd python && python -m unittest discover -s . -p "test_terminal_sequence_contract.py"
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import contextlib
 import io
 import os

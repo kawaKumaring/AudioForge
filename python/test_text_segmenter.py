@@ -4,6 +4,8 @@
 검증: 내용 보존("".join==원문), 각 chunk<=max, 우선순위(문장>절>공백>문자), 빈 chunk 없음,
 재귀 종료, CJK 문자경계 fallback, SegmentTooLong(병리적), 분할 불필요 시 원문 그대로.
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import os
 import sys
 import unittest

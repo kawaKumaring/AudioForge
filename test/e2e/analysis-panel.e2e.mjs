@@ -5,12 +5,13 @@
 // 못하면 실패시킨다.
 //
 // 원문은 남기지 않는다 — requestId·SHA 앞자리·상태·오류 코드·소요 시간만 기록한다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
 import os from 'os'
 import { randomUUID } from 'crypto'
-import { makeSyntheticWav, cleanupSyntheticWav } from './_e2e-helper.mjs'
+import { makeSyntheticWav, cleanupSyntheticWav, enterStudio } from './_e2e-helper.mjs'
 import { newWorkerPids, waitForGone, workerPidSet } from './_analysis-workers.mjs'
 import crypto from 'crypto'
 
@@ -51,6 +52,7 @@ app.process().stderr?.on('data', (d) => {
 })
 win.on('pageerror', (e) => mainErrors.push(`renderer: ${e.message}`))
 
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 /** 패널의 현재 상태와 보이는 문구. 대사 원문은 읽지 않는다. */
 const panelState = () => win.evaluate(() => {
   const el = document.querySelector('[data-testid="input-analysis"]')

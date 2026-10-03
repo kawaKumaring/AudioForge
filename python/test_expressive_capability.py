@@ -9,6 +9,8 @@
   E. '~' 3분류 소비 + 최종 판정은 여기(ENGINE) 소유
   F. 직렬화 레코드는 짧은 토큰만
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import os
 import sys
 import unittest

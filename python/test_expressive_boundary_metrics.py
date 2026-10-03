@@ -7,6 +7,8 @@
   C. 계획 주석은 '숫자만' 이다(문자열 필드 없음)
   D. 임베딩 함수는 주입될 때만 쓰이고, 없으면 미가용으로 표기된다
 """
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import ast
 import io
 import os

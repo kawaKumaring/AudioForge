@@ -95,7 +95,7 @@ def _newest_new_wav(out_dir, before):
 
 
 def _write_config(cfg):
-    fd, cfg_path = tempfile.mkstemp(suffix='.json', prefix='af-dubspeak-')
+    fd, cfg_path = tempfile.mkstemp(suffix='.json', prefix='audioforge_dubspeak_')
     os.close(fd)
     with open(cfg_path, 'w', encoding='utf-8') as f:
         json.dump(cfg, f, ensure_ascii=False)

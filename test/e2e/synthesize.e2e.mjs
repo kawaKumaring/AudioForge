@@ -2,14 +2,14 @@
 // 실행: node test/e2e/synthesize.e2e.mjs   (사전: npm run build)
 // 프로덕션 빌드(out/main/index.js, loadFile)를 단일 인스턴스로 띄우고, 파일 주입→TTS→구간 확정→
 // 합성 클릭→취소→모드 전환→재진입을 실제로 구동하며 pageerror/crash/검은 화면이 없음을 단언한다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
 import {
   isolatedInput, cleanupIsolated, snapshotTree,
   isolatedUserData, userDataIsPristine, userDataArtifacts, cleanupUserData,
-  realUserDataFingerprint,
-} from './_e2e-helper.mjs'
+  realUserDataFingerprint, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 // 참조 클립 생성(무음 경계로 자른 뒤 전사)을 지나야 하므로 **실제 말이 든 오디오**가 필요하다.
@@ -66,6 +66,7 @@ win.on('pageerror', e => pageErrors.push(e.message))
 win.on('console', m => { if (m.type() === 'error') consoleErrors.push(m.text()) })
 win.on('crash', () => crashes.push('crash'))
 
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 async function measure() {
   return win.evaluate(() => {
     const root = document.getElementById('root')
@@ -93,7 +94,7 @@ try {
     const s = window.__afStore
     const info = await window.api.audio.getFileInfo(p)
     const url = await window.api.audio.getFileUrl(p)
-    s.getState().setFile(info, url); s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
+    s.getState().setFile(info, url)
   }, REF)
   // 이관(2026-08-31): 화면의 길이 표기가 `111.08초` 에서 `1:51`(분:초) 로 바뀌었다.
   // 표기 문자열 하나에만 매달리면 같은 자리에서 또 낡으므로 둘로 나눠 단언한다.
@@ -103,12 +104,27 @@ try {
     () => (window.__afStore?.getState().fileInfo?.duration ?? 0) > 0, undefined, { timeout: 30000 })
   const dur = await win.evaluate(() => window.__afStore.getState().fileInfo.duration)
   ok(dur > 0, `앱이 읽은 길이(${dur.toFixed(2)}초)`)
-  const tts = await measure()
-  await win.screenshot({ path: path.join(SHOT, 'e2e_02_tts.png') })
   // 특정 자산의 숫자를 박지 않는다 — 자산이 바뀌면 또 낡는다. 화면 표기가 **앱이 읽은 값과
   // 같은지**를 본다(m:ss). 자산이 무엇이든 이 계약은 같다.
   const mmss = `${Math.floor(dur / 60)}:${String(Math.floor(dur % 60)).padStart(2, '0')}`
-  ok(tts.txt.includes(mmss), `길이 표시가 읽은 값과 일치(${mmss})`)
+  // 이관(2026-09-27): 공용 원본 카드(그 길이 표기가 사는 자리)는 **파일 작업 화면**에 있다
+  // (App.tsx `showSharedRun = mode !== 'tts'`). 합성 화면에는 그 카드가 없으므로 진입 전에 본다.
+  // ★단언은 그대로다 — 보는 자리만 맞췄다.
+  await win.waitForFunction((m) => document.body.innerText.includes(m), mmss,
+    { timeout: 20000 }).catch(() => {})
+  const opened = await measure()
+  ok(opened.txt.includes(mmss), `길이 표시가 읽은 값과 일치(${mmss})`)
+
+  // 이제 합성으로 간다. 기본 진입이 **생성 카드** 로 바뀌었고, 이 검사가 보는 화면
+  // (대본·배역 편집, 참조 준비, 합성 시작 단추)은 옛 버전 탭에 있다 — 그 탭으로 들어간다.
+  await win.evaluate(() => {
+    const s = window.__afStore
+    s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
+    window.__synthesisCards.getState().setView('legacy')
+  })
+  const tts = await measure()
+  await win.screenshot({ path: path.join(SHOT, 'e2e_02_tts.png') })
+  ok(tts.len > 20, `합성 화면 non-empty(len=${tts.len})`)
   const spawnedAnalyze = mainOut.join('').includes('refanalyze')
   const spawnedPreflight = mainOut.join('').includes('qwenpre')
   ok(spawnedAnalyze && spawnedPreflight, 'analyze + preflight 동시 초기화(둘 다 spawn)')
@@ -166,7 +182,7 @@ try {
   // 6) 다른 모드 이동 후 합성 모드 재진입
   await win.evaluate(() => window.__afStore.getState().setMode('music'))
   await win.waitForTimeout(300)
-  await win.evaluate(() => { window.__afStore.getState().setMode('tts'); window.__afStore.getState().setSynthesisTab('advanced') })
+  await win.evaluate(() => { window.__afStore.getState().setMode('tts'); window.__afStore.getState().setSynthesisTab('advanced'); window.__synthesisCards.getState().setView('legacy') })
   await win.waitForTimeout(500)
   const reenter = await measure()
   await win.screenshot({ path: path.join(SHOT, 'e2e_04_reenter.png') })

@@ -1,9 +1,10 @@
 // 생성 metadata 결과 GUI E2E (공용 마감 1) — synthetic setResult 주입. GPU·Qwen·실합성·미디어 없음.
 // 다중 chunk 표시·details 열기/닫기·구 session(필드 없음) 숨김·잘못된 타입 무크래시·반응형(800x600·150%).
 // 실행: npm run test:e2e:tts-result-metadata
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
-import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenVenvPids } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, snapshotTree, refClipDirs, qwenVenvPids, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const REF_ENV = process.env.AF_E2E_REFERENCE
@@ -25,6 +26,7 @@ const win = await app.firstWindow()
 win.on('pageerror', e => pageErrors.push(e.message))
 win.on('crash', () => crashes.push('crash'))
 
+await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
 const setResult = (meta) => win.evaluate((m) => {
   const s = window.__afStore
   s.getState().setResult([{ name: 'synthesized', label: '합성 음성', path: 'X:/out/synthesized.wav' }], 'X:/out', m)

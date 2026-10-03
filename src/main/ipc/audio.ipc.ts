@@ -1,14 +1,17 @@
+import { PLAYBACK_EFFECTS_KEY } from '../../shared/playbackEffects'
+import { PLAYBACK_BOOST_STORAGE_KEY } from '../../shared/playbackBoost'
 import { ipcMain, dialog, BrowserWindow, shell, app } from 'electron'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
 import { join, basename, dirname, extname, resolve } from 'path'
 import { randomUUID } from 'crypto'
 import {
-  existsSync, mkdirSync, unlinkSync, writeFileSync, readFileSync, readdirSync, statSync, copyFileSync,
+  existsSync, mkdirSync, unlinkSync, rmSync, writeFileSync, readFileSync, readdirSync, statSync, copyFileSync,
 } from 'fs'
 import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
 import { appLog, fileLabel } from '../services/app-log'
+import { ensureQwenResident, qwenPipeIdle } from '../services/qwen-resident'
 import { currentBuildInfo } from './app-version.ipc'
 import { createSettlementGuard, createRunSettlement, createRunnerSlot } from '../services/run-settlement'
 import type { RunEnd, RunTerminal } from '../services/run-settlement'
@@ -24,21 +27,34 @@ import {
   rememberDir, rememberFile, startDir, type FolderHost, type FolderSlot,
 } from '../services/dialogFolders'
 import { blockReason } from '../../shared/synthesisGate'
+import { fileWorkspaceClipKeys } from '../../shared/referenceClipOwnership'
 import { cacheableResult, createResultCache, fileStamp, requestKey, KEY_SEP } from '../services/preview-cache'
 import { createJobWatchdog, startJobWatch, createStagingGate } from '../services/longform-job'
 import { createTerminalGate } from '../services/run-settlement'
 import type { CancelResponse } from '../../shared/cancelContract'
 import { validateSidecarEvent, SIDECAR_IPC_CHANNEL } from '../../shared/sidecarEvents'
+// 결과를 다른 자리에 저장할 때의 보호 — 판정은 shared 한 곳이 소유한다.
+import { exportFault, refusalText } from '../../shared/trackExportGuard'
+import { type PathProbe } from '../../shared/joinOutputGuard'
 import {
   GLOBAL_ASSET_STORAGE_KEY, VOICE_CAST_STORAGE_KEY,
 } from '../../shared/emotionCandidateRegistry'
 import { WORK_DRAFT_STORAGE_KEY } from '../../shared/workDraft'
 import { PLAYBACK_VOLUME_STORAGE_KEY } from '../../shared/playbackVolume'
+import { PLAYBACK_RATE_STORAGE_KEY } from '../../shared/playbackRate'
 import { LAB_STORAGE_KEY } from '../../shared/labWorkspace'
+import { planOutputDir, type OutputPlace } from '../../shared/outputLayout'
 import { TRANSCRIPT_EDIT_STORAGE_KEY } from '../../shared/transcriptEdit'
 import { DIALOGUE_EDIT_STORAGE_KEY } from '../../shared/dialogueEdit'
+import { TRANSCRIPT_DRAFTS_STORAGE_KEY } from '../../shared/transcriptDrafts'
+import { DIALOGUE_DRAFTS_STORAGE_KEY } from '../../shared/dialogueDrafts'
+import { CARD_STORAGE_KEY } from '../../shared/synthesisCardSave'
+import { READER_PREFS_STORAGE_KEY } from '../../shared/readerText'
+import { CONSOLE_POPUP_STORAGE_KEY } from '../../shared/appConsole'
+import { localTranslateModel } from '../../shared/offlinePolicy'
 import { registerTranscriptIpc } from './transcript.ipc'
 import { registerLabIpc } from './lab.ipc'
+import { outputBase, isInside } from '../services/appPaths'
 import { readSettingsFile, setSettingsKey, migrateSettings } from '../services/settings-store'
 import type { SidecarEnvelope } from '../../shared/sidecarEvents'
 // 타입만 가져온다 — 참조 라이브러리 모듈을 런타임에 끌어오지 않으므로 순환 의존이 생기지 않는다.
@@ -84,6 +100,57 @@ function resolvePythonPath(): string {
   return 'python'
 }
 
+/**
+ * 이 경로가 **앱이 관리하는 자리 안**인가.
+ *
+ * ★'원본 옆' 은 사용자 자료 옆이라는 뜻이다. 앱이 스스로 만든 중간 산출물
+ *   (영상에서 꺼낸 wav 같은 것) 옆이 아니다. 그것을 원본으로 보면 결과가
+ *   앱 데이터 폴더(윈도우에서는 C 드라이브)로 흘러내린다 — 2026-09-28 신고의 뿌리다.
+ *   화면이 원본을 안 실어 보내는 경우에도 **여기서 한 번 더 막는다.**
+ */
+function insideAppData(dir: string): boolean {
+  // ★앞부분만 견주면 `데이터-output` 같은 **옆 폴더를 안이라고 판정한다.**
+  //   판정은 `services/appPaths.isInside` 하나가 갖는다(구분자까지 붙여서 본다).
+  try { return isInside(dir, app.getPath('userData')) } catch { return false }
+}
+
+/** 폴더 목록. 없거나 못 읽으면 빈 목록 — 찾기가 여기서 멈추지 않게 한다. */
+function readDirSafe(dir: string): string[] {
+  try {
+    return readdirSync(dir).filter((e) => {
+      try { return statSync(join(dir, e)).isDirectory() } catch { return false }
+    })
+  } catch { return [] }
+}
+
+/** 앱이 도는 자리. `externals` 를 찾는 규칙과 같은 기준을 쓴다. */
+/** 결과를 쌓을 뿌리. 규칙은 `services/appPaths` 하나가 갖는다. */
+function appDirPath(): string { return outputBase(__dirname, process.env) }
+
+/** 만든 것을 둘 자리 설정. */
+export const OUTPUT_ROOT_KEY = 'outputRoot'
+export const OUTPUT_BESIDE_KEY = 'outputBesideSource'
+
+function readOutputSetting(): { chosen: string; beside: boolean } {
+  try {
+    const got = readSettingsFile(join(app.getPath('userData'), 'settings.json'))
+    if (got.kind !== 'ok') return { chosen: '', beside: false }
+    const v = got.settings as Record<string, unknown>
+    return {
+      chosen: typeof v[OUTPUT_ROOT_KEY] === 'string' ? (v[OUTPUT_ROOT_KEY] as string) : '',
+      beside: v[OUTPUT_BESIDE_KEY] === true,
+    }
+  } catch { return { chosen: '', beside: false } }
+}
+
+/**
+ * 어디에 쌓을 것인가. **체크가 가장 세다** — 사용자가 원본 옆이라고 하면 그대로 한다.
+ * 그다음이 고른 자리, 아무것도 없으면 앱 자리다.
+ */
+function outputPlace(chosen: string, beside: boolean): OutputPlace {
+  if (beside) return 'beside'
+  return chosen.trim() ? 'chosen' : 'app'
+}
 // L-6: 사용자가 고른 python 경로를 userData/settings.json에 영속화 → 재시작 후에도 유지.
 // (app.getPath는 ready 이후에만 안전하므로 여기서 함수로만 정의하고 호출은 registerAudioIpc 내부에서)
 function settingsFilePath(): string {
@@ -119,6 +186,7 @@ const folderHost: FolderHost = {
   fallback: (slot) => {
     try {
       if (slot === 'python') return undefined      // 실행 파일을 음원 폴더에서 찾게 하지 않는다
+      if (slot === 'text') return app.getPath('documents')
       return app.getPath(slot === 'video' ? 'videos' : 'music')
     } catch {
       return undefined
@@ -129,6 +197,61 @@ const dialogStart = (slot: FolderSlot): string | undefined => startDir(folderHos
 
 /** 다른 IPC 모듈이 **같은 기억**을 쓰도록 내보낸다. 통로를 둘로 만들지 않는다. */
 export function dialogFolderHost(): FolderHost { return folderHost }
+
+// 검사가 지정한 '다음 한 번의 선택'(AF_E2E 전용). 한 번 쓰면 비워진다.
+let e2eNextSelect = ''
+
+/**
+ * 파일 고르기 — **그 용도의 폴더에서 열고, 고른 자리를 기억한다.**
+ *
+ * ★한 곳에 둔다(2026-09-29). 낭독 화면이 이것을 거치지 않고 브라우저식 파일 입력칸을
+ *   써서, 여는 자리를 운영체제가 정했다 — 09-25 에 고친 "다른 툴 폴더로 열린다" 가
+ *   새 화면에서 그대로 되살아났다. 다른 통로도 이 함수를 부른다.
+ *
+ * ★검사에서는 **창만** 대신한다. 예전에는 대신한 뒤 곧바로 돌아가 기억을 남기지 않아서,
+ *   "그 뒤 경로는 실제와 같다" 는 약속과 달리 폴더 기억을 검사로 확인할 길이 없었다.
+ *   여러 파일은 '|' 로 구분한다.
+ */
+export async function pickFiles(win: BrowserWindow, opts: {
+  multi: boolean
+  slot: FolderSlot
+  filters: Electron.FileFilter[]
+}): Promise<string[]> {
+  let picked: string[]
+  if (process.env.AF_E2E === '1' && (e2eNextSelect || process.env.AF_E2E_SELECT_FILE)) {
+    // 검사가 다음 선택을 명시했으면 그것을 한 번 내주고 비운다(연달아 다른 파일을 고르는 흐름).
+    // 명시가 없으면 env 목록 — 예전 동작 그대로다(검사 순서에 의존하지 않게).
+    // 여러 개 고르는 대화상자(낭독 글 파일)에도 한 개로 내준다 — 연달아 다른 글 파일을 불러오는 흐름을 검사하려고.
+    if (e2eNextSelect) {
+      picked = [e2eNextSelect]
+      e2eNextSelect = ''
+    } else {
+      const list = (process.env.AF_E2E_SELECT_FILE || '').split('|').filter(Boolean)
+      picked = opts.multi ? list : list.slice(0, 1)
+    }
+  } else {
+    const result = await dialog.showOpenDialog(win, {
+      properties: opts.multi ? ['openFile', 'multiSelections'] : ['openFile'],
+      defaultPath: dialogStart(opts.slot),
+      filters: opts.filters,
+    })
+    picked = result.canceled ? [] : result.filePaths
+  }
+  // ★여기서 기억한다. 예전에는 `audio:get-file-info` 안에서만 기억해서,
+  //   그것을 거치지 않는 네 통로(인물 목소리 지정·후보 넣기·감정 원본·더빙 목소리)는
+  //   파일을 골라도 폴더를 한 번도 남기지 않았다.
+  if (picked.length) rememberFile(folderHost, opts.slot, picked[0])
+  // 동작 기록 — 무엇을 고르려 했고 몇 개를 골랐는지. 폴더는 적지 않는다(이름만).
+  appLog()?.info('pick', picked.length ? `${opts.slot} ${picked.length}개 · ${fileLabel(picked[0])}` : `${opts.slot} 취소`)
+  return picked
+}
+
+/** 검사 전용 — 다음 '파일 고르기' 가 무엇을 돌려줄지. AF_E2E=1 이 아니면 거절한다. */
+export function setE2eNextSelect(filePath: string): boolean {
+  if (process.env.AF_E2E !== '1') return false
+  e2eNextSelect = String(filePath || '')
+  return true
+}
 
 // 진단 사이드카 검증기를 모든 러너에 주입한다. python-runner는 Electron 없이 node --test로도
 // 로드되므로 검증기를 직접 import하지 않고 주입받는다(주입을 빠뜨리면 fail-closed —
@@ -149,6 +272,17 @@ let pythonPath = resolvePythonPath()
 /** 분석 worker 도 **같은 인터프리터**를 쓴다(설치 상태가 갈라지지 않게).
  *  audio.ipc 가 런타임에 경로를 바꾸면 그 값을 그대로 따라간다. */
 export function currentPythonPath(): string { return pythonPath }
+
+/** 지금 합성이 돌아 새 파이썬을 띄우면 안 되는가. 비면 띄워도 된다. */
+let synthesisBusyReason: (label: string) => string = () => ''
+export function synthesisBusy(label: string): string { return synthesisBusyReason(label) }
+/**
+ * 낭독이 지금 소리를 만드는 중인가 — 낭독 통로(reader.ipc)가 덩이마다 세우고 내린다.
+ * ★낭독은 제 실행기를 따로 만든다. 여기 알리지 않으면 낭독이 도는 동안 합성이 같은 GPU 를 문다
+ *   (낭독만 남을 보고 비키던 한쪽 가드였다).
+ */
+let readerRunning = 0
+export function setReaderRunning(on: boolean): void { readerRunning = Math.max(0, readerRunning + (on ? 1 : -1)) }
 // 취소 lifecycle(공용 마감 K/K2) 조정 상태 — audio:process가 세팅하고 audio:cancel/done이 소비.
 let currentSettle: import('../services/run-settlement').SettlementGuard | null = null
 // 취소 진행 상태: none=취소 안 함 / inflight=취소 요청 후 종료·정리 대기 / failed=kill 확인 실패(재취소 허용).
@@ -156,6 +290,8 @@ let cancelState: 'none' | 'inflight' | 'failed' = 'none'
 let currentWatchdogClear: (() => void) | null = null          // 취소가 watchdog을 즉시 해제할 수 있게
 let currentOutputDir: string | null = null                    // 취소 정리(bounded cleanup)가 쓸 output_dir
 let currentIsTts = false                                      // tts 실행만 job-dir 정리 대상
+/** 카드 취소가 띄워 둔 실행기 작업의 끝을 기다리는 최대 시간 — 정지 파일은 16걸음(약 1.3초) 안에 듣는다. */
+const RESIDENT_CANCEL_WAIT_MS = 15000
 let cleanupPending = false                                    // 취소 성공했으나 job-dir 정리 미완 → 새 실행 차단
 // runner 'done' 합류용 deferred — cancel 핸들러가 '실제로 runner가 free 됐는지'를 sleep 없이 기다린다.
 let runnerDoneDeferred: { promise: Promise<void>; resolve: () => void } | null = null
@@ -349,7 +485,7 @@ export function registerAudioIpc(
       .finally(() => { quitCleanupDone = true; app.quit() })
   })
 
-  // clipKey 지정 시 그 하나만, 생략 시 전체 정리(새 파일/reset용). 반환: 실제 삭제된 개수.
+  // 내부 정리 함수: 키 지정 시 하나, 생략 시 전체. 화면의 새 파일/reset은 아래 IPC에서 소유 범위를 좁힌다.
   const releaseRefClip = (clipKey?: string): number => {
     const keys = clipKey !== undefined ? [clipKey] : Array.from(refClipDirs.keys())
     let removed = 0
@@ -360,10 +496,38 @@ export function registerAudioIpc(
     return removed
   }
 
+  /**
+   * 이 실행을 요청한 **화면의 요청 식별자.**
+   *
+   * ★왜 생겼나 (2026-09-27 검수)
+   *   화면으로 나가는 이벤트에 '누구의 요청인가' 가 없었다. 그래서 늦게 온 결과가
+   *   이미 바뀐 요청의 대사와 묶여 생성본에 붙을 수 있었다(격리 재현으로 확인).
+   *   본체가 실행을 한 줄로 세우기는 해도, **이벤트 자체가 자기 출신을 말하지 않으면**
+   *   화면은 가려낼 방법이 없다. 그래서 요청→진행→결과→오류→취소 전 구간에 되돌려 준다.
+   *
+   * 값을 보내지 않는 화면(기존 합성 등)은 undefined 가 되고, 그 화면들은 이 칸을 보지 않는다.
+   */
+  /**
+   * 지금(또는 방금) 돌던 실행의 요청 식별자.
+   *
+   * ★**실행이 끝나도 지우지 않는다.** 마감 이벤트(result·보류된 error)는 `done` 보다
+   *   **뒤에** 나간다 — `done` 에서 비웠더니 그 둘에 식별자가 빠졌다(2026-09-27 2차 검수,
+   *   실제 본체 경로 재현). 다음 실행이 시작할 때 덮어쓰는 것으로 충분하다.
+   * ★그리고 실행 안에서는 이 전역을 읽지 않는다 — 각 실행이 **자기 지역 상수**를 쓴다.
+   *   뒤늦게 전역을 조회하는 구조 자체가 이 결함의 원인이었다.
+   */
+  let runClientReq: string | null = null
+  /** 이벤트에 요청 식별자를 붙인다. 식별자가 없으면 그대로 둔다(기존 화면 동작 불변). */
+  const tagWith = <T,>(payload: T, reqId: string | null): T => (reqId
+    ? { ...(payload as object), clientRequestId: reqId } as T
+    : payload)
+
   // Helper to send error to renderer.
   // 문자열 또는 구조화 오류({message, code?})를 받아 renderer용으로 정제 — message + (있으면) code만 전달.
   // code는 GENERATION_LIMIT_EXCEEDED 등 오류 UX 분기 열쇠. 전사·문장·전체경로·수치 상세는 전달하지 않는다.
-  const sendError = (err: string | { message?: unknown; code?: unknown; speaker_ref?: unknown }) => {
+  /** @param reqId 이 오류가 어느 요청의 것인가. 실행 밖의 오류는 주지 않는다(누구의 것도 아니다). */
+  const sendError = (err: string | { message?: unknown; code?: unknown; speaker_ref?: unknown },
+                     reqId: string | null = null) => {
     const o = typeof err === 'string' ? { message: err } : (err || {})
     const message = typeof o.message === 'string' ? o.message : String((o.message ?? '알 수 없는 오류'))
     const code = typeof o.code === 'string' ? o.code : undefined
@@ -374,9 +538,9 @@ export function registerAudioIpc(
       ? o.speaker_ref : undefined
     // 로그 파일에도 남긴다 — 화면이 사라진 뒤에도 '무슨 오류였나' 를 답할 수 있게. 본문은 위와 같은 정제본.
     appLog()?.error('job', `error${code ? ' code=' + code : ''}: ${message}`)
-    mainWindow.webContents.send('audio:error', {
+    mainWindow.webContents.send('audio:error', tagWith({
       message, ...(code ? { code } : {}), ...(speakerRef ? { speakerRef } : {}),
-    })
+    }, reqId))
   }
 
   // 배타 가드는 '중복 실행을 막아야 하는' 쓰기성 작업에만. 읽기 전용 analyze/preflight는 쓰지 않는다.
@@ -404,12 +568,17 @@ export function registerAudioIpc(
    *   실제로 그렇게 미리듣기가 합성 가드 밖에 있었고, 더빙은 그것마저 밖에 있었다.
    *   여기 한 줄을 늘리면 합성·트랙·참조 등록·미리듣기 경로가 **함께** 닫힌다.
    */
+  // 미리듣기 통로(다른 파일)가 '지금 합성이 도는가' 를 물을 수 있게 열어 둔다.
+  // ★판정은 여기서 하지 않는다 — shared/synthesisGate 가 소유한 그 판정을 그대로 쓴다.
+  synthesisBusyReason = (label: string) => blockReason(runningState(), label) || ''
   const runningState = () => ({
-    mainRunner: !!runner?.isRunning,
+    // ★취소가 끝나기 전(실행기 작업까지 끝났음을 확인하기 전)에는 잠금을 풀지 않는다(2026-10-03).
+    mainRunner: !!runner?.isRunning || cancelState === 'inflight',
     transcriptPreview: transcriptPreviewGuard.running,
     referenceTrim: referenceTrimLane.running,
     samplerPreview: samplerInFlight > 0,
     dubJob: isDubRunning(),
+    readerJob: readerRunning > 0,
   })
 
   // 읽기 전용 작업 single-flight — StrictMode 중복 effect/동시 요청에도 subprocess는 1회.
@@ -427,55 +596,35 @@ export function registerAudioIpc(
 
   // multi 를 주면 여러 개를 고를 수 있다(같은 감정에 파일 여럿 등록). 인자를 주지 않는
   // 기존 호출부의 동작과 반환 형태는 그대로다 — 새 채널을 만들지 않는다.
-  // 검사가 지정한 '다음 한 번의 선택'(AF_E2E 전용). 한 번 쓰면 비워진다.
-  let e2eNextSelect = ''
-
   // 검사 전용 — 다음 '파일 고르기' 가 무엇을 돌려줄지 지정한다. AF_E2E=1 이 아니면 아무것도 하지 않는다.
   // 이것이 없으면 '목소리를 다른 파일로 바꾸기 → 실패' 같은 연속 선택 흐름을 자동 검사로 지날 수 없다.
-  ipcMain.handle('audio:e2e-set-select-file', (_e, filePath: string) => {
-    if (process.env.AF_E2E !== '1') return false
-    e2eNextSelect = String(filePath || '')
-    return true
-  })
+  // 상태는 `pickFiles` 곁(모듈)에 있다 — 낭독의 텍스트 고르기도 같은 통로를 쓴다.
+  ipcMain.handle('audio:e2e-set-select-file', (_e, filePath: string) => setE2eNextSelect(filePath))
+  // 검사 전용 — 지금 합성을 누르면 무엇 때문에 거절되는가(읽기만 한다). 합성을 실제로 눌러 보면 그 자체가
+  // 작업을 띄워 다른 실행기를 막으므로, 공용 판정의 답만 묻는다. AF_E2E=1 이 아니면 빈 값.
+  ipcMain.handle('audio:e2e-busy-reason', (_e, label?: string) =>
+    process.env.AF_E2E === '1' ? (blockReason(runningState(), String(label || '합성')) || '') : '')
 
   // ★`kind` 는 **어느 폴더에서 열지**만 정한다. 예전 호출(`selectFile()` / `selectFile(true)`)은
   //   그대로 동작한다 — 빼면 음원 폴더를 쓴다.
   ipcMain.handle('audio:select-file', async (
     _event, multi?: boolean, kind?: 'source' | 'voice',
   ) => {
-    // E2E 전용 통로 — **OS 파일 선택창만** 대신한다(그 뒤 경로는 실제와 완전히 같다).
-    // 이것이 없으면 '목소리 지정' 버튼을 누르는 실제 경로를 자동 검사로 지날 수 없어서, 검사는
-    // store 를 직접 불러 통과하는데 사용자 화면에서는 멈추는 눈뜬장님 상태가 된다(실측).
-    // AF_E2E=1 이 아니면 존재하지 않는 통로다. 여러 파일은 '|' 로 구분한다.
-    if (process.env.AF_E2E === '1' && (e2eNextSelect || process.env.AF_E2E_SELECT_FILE)) {
-      // 검사가 다음 선택을 명시했으면 그것을 한 번 내주고 비운다(연달아 다른 파일을 고르는 흐름).
-      // 명시가 없으면 env 목록의 첫 항목 — 예전 동작 그대로다(검사 순서에 의존하지 않게).
-      if (!multi && e2eNextSelect) {
-        const one = e2eNextSelect
-        e2eNextSelect = ''
-        return one
-      }
-      const list = (process.env.AF_E2E_SELECT_FILE || '').split('|').filter(Boolean)
-      return multi ? list : (list[0] ?? null)
-    }
     // ★용도를 받아 **그 용도의 폴더**에서 연다(2026-09-25). 예전에는 통이 하나뿐이라
     //   영상을 한 번 고르면 다음에 음원을 고를 때 영상 폴더가 떴다.
-    const slot: FolderSlot = kind === 'voice' ? 'voice' : 'source'
-    const result = await dialog.showOpenDialog(mainWindow, {
-      properties: multi ? ['openFile', 'multiSelections'] : ['openFile'],
-      defaultPath: dialogStart(slot),
+    // 검사에서는 창만 대신한다 — 이것이 없으면 '목소리 지정' 버튼을 누르는 실제 경로를
+    // 자동 검사로 지날 수 없어서, 검사는 store 를 직접 불러 통과하는데 사용자 화면에서는
+    // 멈추는 눈뜬장님 상태가 된다(실측).
+    const picked = await pickFiles(mainWindow, {
+      multi: !!multi,
+      slot: kind === 'voice' ? 'voice' : 'source',
       filters: [
         // 대표 포맷은 편의를 위해 앞에 두고, 실제 허용은 전체(ffmpeg 디코딩 가능 포맷 전부: mo3 등 포함)
         { name: 'Audio/Video', extensions: ['m4a', 'mp3', 'wav', 'flac', 'ogg', 'aac', 'wma', 'mp4', 'mkv', 'avi', 'mov', 'webm'] },
         { name: 'All Files', extensions: ['*'] }
-      ]
+      ],
     })
-    if (result.canceled || result.filePaths.length === 0) return multi ? [] : null
-    // ★여기서 기억한다. 예전에는 `audio:get-file-info` 안에서만 기억해서,
-    //   그것을 거치지 않는 네 통로(인물 목소리 지정·후보 넣기·감정 원본·더빙 목소리)는
-    //   파일을 골라도 폴더를 한 번도 남기지 않았다.
-    rememberFile(folderHost, slot, result.filePaths[0])
-    return multi ? result.filePaths : result.filePaths[0]
+    return multi ? picked : (picked[0] ?? null)
   })
 
   // 원본이 아직 그 자리에 있는가 — 현재 작업 복원이 인물마다 확인한다.
@@ -776,17 +925,49 @@ export function registerAudioIpc(
       throw new Error(`Python 스크립트를 찾을 수 없습니다: ${basename(scriptPath)}`)
     }
 
+    // ★Qwen 지정 목소리 카드는 **띄워 둔 실행기**로 만든다(2026-10-01 — 감정 생성 시간 줄이기).
+    //   합성 파이썬이 붙기 전에 실행기가 준비돼 있어야 한다(늦으면 그 실행은 조각마다 모델을 여는 예전 길).
+    if (mode === 'tts' && options?.ttsEngine === 'qwen-custom') {
+      const residentOk = await ensureQwenResident()
+      appLog()?.info('job', `Qwen 상주 실행기 ${residentOk ? '준비됨 — 카드가 붙는다' : '준비 못 함 — 조각마다 모델을 연다'}`)
+    } else if (mode === 'tts' && !options?.ttsBuiltinModel) {
+      // ★참조 목소리 카드(Qwen3 Base 일괄)도 띄워 둔 실행기로 — 생성마다 모델을 새로 열지 않는다(2026-10-03, 낭독에서 먼저 검증).
+      //   합성 프로세스는 본체 환경을 물려받는다(파이프 주소·열쇠와 같은 자리). 실행기가 없으면 예전 길(새 프로세스)로 간다.
+      //   '다시 생성' 은 그대로 새로 만든다 — 실행마다 새 씨앗(tts_worker)이고, 이전 생성본을 돌려주지 않는다.
+      const residentOk = await ensureQwenResident()
+      process.env.AUDIOFORGE_QWEN_RESIDENT_BRIDGE = residentOk ? '1' : '0'
+      appLog()?.info('job', `참조 목소리 카드 — Qwen 상주 실행기 ${residentOk ? '준비됨(모델 재사용)' : '준비 못 함 — 새 프로세스로 모델을 연다'}`)
+    }
+
     // Build output directory
-    const ext = extname(filePath)
-    const nameWithoutExt = basename(filePath, ext)
-    const now = new Date()
-    const timestamp = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}_${String(now.getHours()).padStart(2, '0')}-${String(now.getMinutes()).padStart(2, '0')}-${String(now.getSeconds()).padStart(2, '0')}`
-    // 폴더명은 초 단위라 같은 초에 두 번 시작하면 같은 폴더를 재사용하게 되고, 워커가 ffmpeg -y로
-    // 덮어써 **이전 결과가 소리 없이 사라진다**(감사 R9). 이미 존재하면 짧은 접미사를 붙여 새 폴더를
-    // 확보한다. 접미사는 첫 충돌부터만 붙으므로 기존 폴더 이름 규칙은 그대로다.
-    const baseOutputDir = join(dirname(filePath), 'AudioForge_output', `${timestamp}_${nameWithoutExt}`)
-    let outputDir = baseOutputDir
-    for (let n = 2; existsSync(outputDir) && n <= 100; n++) outputDir = `${baseOutputDir}_${n}`
+    // ★기본 목소리(설치된 로컬 모델) 카드는 **원본 파일이 없다.** '원본 옆에 쌓는다' 는
+    //   규칙을 쓸 수 없으므로 앱이 관리하는 쓰기 가능한 자리에 쌓는다(2026-09-27).
+    //   매 실행마다 다른 폴더라 이전 결과를 덮지 않는다.
+    const builtinModel = typeof options?.ttsBuiltinModel === 'string' ? options.ttsBuiltinModel : ''
+    const builtinLabel = typeof options?.ttsBuiltinLabel === 'string' && options.ttsBuiltinLabel
+      ? options.ttsBuiltinLabel : '기본목소리'
+    /**
+     * ★**사용자가 고른 진짜 원본.** 영상을 목소리로 쓰면 화면이 꺼낸 wav 를 보내는데,
+     *   그 경로로 자리와 이름을 정하면 앱 데이터 폴더(C)에 `voice_xxxx` 라는 이름으로 쌓인다.
+     *   폴더만 보고는 무엇을 만든 것인지 알 수 없다 — 2026-09-28 신고의 두 얼굴이다.
+     */
+    const originalPath = typeof options?.sourceOriginalPath === 'string' && options.sourceOriginalPath
+      ? options.sourceOriginalPath : filePath
+    const ext = builtinModel ? '' : extname(originalPath)
+    const nameWithoutExt = builtinModel ? builtinLabel : basename(originalPath, ext)
+    // 자리 규칙은 `shared/outputLayout` 하나가 소유한다 — 여기서 판단하지 않는다.
+    const outSetting = readOutputSetting()
+    const plan = planOutputDir({
+      place: outputPlace(outSetting.chosen, outSetting.beside),
+      chosenRoot: outSetting.chosen,
+      appRoot: appDirPath(),
+      // 기본 목소리는 원본이 없다. 앱이 만든 중간 산출물도 원본이 아니다.
+      // 둘 중 하나면 빈 값을 주어 앱 자리로 물러난다 — 조용히 C 로 가지 않는다.
+      sourceDir: builtinModel || insideAppData(dirname(originalPath))
+        ? '' : dirname(originalPath),
+      mode, name: nameWithoutExt, at: new Date(), exists: existsSync,
+    })
+    const outputDir = plan.dir
     if (existsSync(outputDir)) {
       // 100개까지 전부 존재 = 비정상. 덮어쓰지 않고 명시 실패한다.
       throw Object.assign(new Error('출력 폴더를 만들 수 없습니다. 같은 이름의 폴더가 너무 많습니다.'), { code: 'OUTPUT_DIR_UNAVAILABLE' })
@@ -800,6 +981,10 @@ export function registerAudioIpc(
     // ② split 워커가 만드는 '원본 전체 사본' 임시폴더 이름에 실려, 취소·강제종료 뒤에도 main이
     //    이 실행의 폴더만 정확히 지울 수 있게 한다(파이썬 finally는 taskkill에서 실행되지 않는다).
     const runToken = randomUUID().slice(0, 8)
+    // 이 실행의 요청 식별자. **지역 상수다** — 이 실행이 보내는 모든 이벤트가 이 값을 쓴다.
+    const clientReq: string | null = typeof options?.clientRequestId === 'string' && options.clientRequestId
+      ? options.clientRequestId : null
+    runClientReq = clientReq        // 취소 통로(다른 핸들러)가 볼 수 있게 남긴다
     const jobStartedAt = Date.now()
     // 작업 시작 기록 — 파일은 이름만(폴더 없이), 대사는 적지 않는다.
     appLog()?.info('job', `start mode=${mode} run=${runToken} file=${fileLabel(filePath)}`)
@@ -827,7 +1012,8 @@ export function registerAudioIpc(
       asrSeparate: options?.asrSeparate || 'auto',
       whisperLang: options?.whisperLang || 'auto',
       translate: !!options?.translate,
-      translateModel: options?.translateModel || '600m',
+      // ★외부 전송 금지 — 'google' 이 와도 로컬 번역으로(2026-09-30).
+      translateModel: localTranslateModel(options?.translateModel),
       srt: !!options?.exportSrt,
       splitPoints: mode === 'split' && options?.splitMarkers ? (options.splitMarkers as number[]).join(',') : '',
       splitLabels: mode === 'split' && options?.splitLabels ? (options.splitLabels as string[]).join('|') : '',
@@ -850,6 +1036,13 @@ export function registerAudioIpc(
     writeFileSync(configPath, JSON.stringify(config, null, 2), 'utf-8')
     console.log(`[AudioForge] Config written to: ${configPath}`)
 
+    // 이 실행의 정지 파일 자리 — 카드 멈춤이 만든다. 띄워 둔 실행기에 맡긴 Qwen 요청이 이 파일을 보고 멈춘다(합성 프로세스가 물려받는다).
+    //   남은 옛 파일이 새 실행을 멈추지 않게 지우고 시작한다.
+    if (mode === 'tts') {
+      const stopFile = join(outputDir, '.qwen-stop')
+      try { rmSync(stopFile, { force: true }) } catch { /* 없다 */ }
+      process.env.AF_QWEN_STOP_FILE = stopFile
+    }
     runner = new PythonRunner(pythonPath, runnerDeps)
     const thisRunner = runner  // 이 실행 인스턴스 고정 — done에서 새 실행의 runner를 null로 덮어쓰지 않도록(clobber 방지).
 
@@ -874,7 +1067,7 @@ export function registerAudioIpc(
     const stagingGate = createStagingGate<unknown>(
       (data) => {
         appLog()?.info('job', `done mode=${mode} run=${runToken} elapsed=${((Date.now() - jobStartedAt) / 1000).toFixed(1)}s`)
-        mainWindow.webContents.send('audio:result', data)
+        mainWindow.webContents.send('audio:result', tagWith(data as object, clientReq))
       },
       createTerminalGate
     )
@@ -883,7 +1076,7 @@ export function registerAudioIpc(
     forwardSidecar(runner, mainWindow)
 
     runner.on('progress', (data) => {
-      mainWindow.webContents.send('audio:progress', data)
+      mainWindow.webContents.send('audio:progress', tagWith(data as object, clientReq))
     })
 
     runner.on('result', (data) => {
@@ -968,7 +1161,7 @@ export function registerAudioIpc(
           settle.markSettled()
           stagingGate.abandon()   // 시간 초과로 마감된 실행의 늦은 결과는 공개하지 않는다
           runner.cancel()  // async(무시) — 트리 kill 시도
-          sendError({ code: 'JOB_INACTIVE', message: '처리 시간이 초과되었습니다 (5분간 응답 없음)' })
+          sendError({ code: 'JOB_INACTIVE', message: '처리 시간이 초과되었습니다 (5분간 응답 없음)' }, clientReq)
         }
       }, WATCHDOG_MS)
     }
@@ -1004,7 +1197,7 @@ export function registerAudioIpc(
           : { code: 'JOB_BUDGET_EXHAUSTED',
               message: `합성이 이 작업에 허용된 총 시간을 초과했습니다 `
                 + `(경과 ${Math.round(r.elapsedMs / 1000)}초, 완료 ${r.completedChunks}`
-                + `/${r.estimatedTotalChunks ?? '?'}조각).` })
+                + `/${r.estimatedTotalChunks ?? '?'}조각).` }, clientReq)
       }
     })
 
@@ -1018,6 +1211,8 @@ export function registerAudioIpc(
     resetWatchdog()
 
     runner.on('done', (code) => {
+      // ★여기서 식별자를 내리지 않는다. result 와 보류된 error 는 **이 아래에서** 나간다 —
+      //   내렸더니 그 둘에 식별자가 빠져, 화면이 자기 결과를 못 알아봤다(2차 검수 재현).
       if (watchdog) { clearTimeout(watchdog); watchdog = null }
       jobTick.stop()
       try { unlinkSync(configPath) } catch {}
@@ -1055,7 +1250,7 @@ export function registerAudioIpc(
       // 종료되었습니다'가 시간 초과 사유를 덮어쓰며 terminal을 2개로 만든다.
       const terminalAlreadySent = stagingGate.outcome === 'abandoned'
       if (!stagingGate.markStagingComplete() && pendingError !== null && !terminalAlreadySent) {
-        sendError(pendingError)
+        sendError(pendingError, clientReq)
       }
       settle.finish(code)
     })
@@ -1069,7 +1264,7 @@ export function registerAudioIpc(
     const modeNames: Record<string, string> = {
       music: '음악 분리', conversation: '대화 분리', transcribe: '텍스트 추출', split: '트랙 분할', tts: '음성 합성'
     }
-    mainWindow.webContents.send('audio:progress', { percent: 0, message: `${modeNames[mode] || mode} 시작 중...` })
+    mainWindow.webContents.send('audio:progress', tagWith({ percent: 0, message: `${modeNames[mode] || mode} 시작 중...` }, clientReq))
 
     runner.run(scriptPath, ['--config', configPath])
 
@@ -1079,12 +1274,17 @@ export function registerAudioIpc(
   // Process individual track (transcribe/translate)
   ipcMain.handle('audio:process-track', async (_event, trackPath: string, outputDir: string, options: { transcribe?: boolean; translate?: boolean; srt?: boolean; translateModel?: string;
       /** ★고른 알아듣기 설정. 예전에는 빠져 파이썬 기본값으로 고정됐다(2026-09-24 감사). */
-      whisperModel?: string; whisperLang?: string; asrSeparate?: string }) => {
+      whisperModel?: string; whisperLang?: string; asrSeparate?: string }, requestId?: unknown) => {
+    // ★요청 식별자는 **필수**다(2026-10-02 재검수) — 완료·오류 알림이 이 값을 싣고 돌아와, 화면이 '내가 낸 요청의 답' 만 받는다.
+    //   같은 파일을 다시 처리해도 앞 실행의 늦은 답이 새 요청에 붙지 않는다. 식별자 없는 시작은 거절한다.
+    if (typeof requestId !== 'string' || !/^[A-Za-z0-9-]{8,64}$/.test(requestId)) {
+      throw new Error('요청 식별자가 없어 시작하지 않았습니다')
+    }
     if (trackSlot.current?.isRunning) {
       throw new Error('이미 처리 중인 트랙 작업이 있습니다')
     }
     const trackBusy = blockReason(
-      { samplerPreview: samplerInFlight > 0, dubJob: isDubRunning() }, '트랙 작업')
+      { samplerPreview: samplerInFlight > 0, dubJob: isDubRunning(), readerJob: readerRunning > 0 }, '트랙 작업')
     if (trackBusy) throw new Error(trackBusy)
     if (!existsSync(pythonPath)) {
       throw new Error(`Python을 찾을 수 없습니다: ${basename(pythonPath)}`)
@@ -1106,7 +1306,7 @@ export function registerAudioIpc(
       transcribe: !!options.transcribe,
       translate: !!options.translate,
       srt: !!options.srt,
-      translateModel: options.translateModel || '600m',
+      translateModel: localTranslateModel(options.translateModel),
       // ★고른 설정을 싣는다(2026-09-24 감사).
       //   예전에는 이 셋이 빠져 파이썬 기본값(large-v3·자동감지)으로 고정됐고,
       //   사용자는 자기가 고른 모델·언어로 돈 줄 알았다. translateModel 만 싣던
@@ -1123,12 +1323,13 @@ export function registerAudioIpc(
     // 실행당 터미널 정확히 1개. 여기가 없어서 'exit 0인데 result 없음'이나 시그널 종료 때
     // TrackList의 처리중 표시가 영구히 남았다(감사 R4) — 트랙 처리에는 취소 버튼도 없다.
     const settle = createRunSettlement((t: RunTerminal) => {
-      if (t.kind === 'result') { sendToWindow(mainWindow, 'audio:track-result', t.data); return }
+      // ★입력 경로를 함께 싣는다(2026-10-02 관리자 검수) — 화면이 '내 작업의 완료' 를 이름 부분 일치가 아니라 **경로로** 가리게.
+      if (t.kind === 'result') { sendToWindow(mainWindow, 'audio:track-result', { ...(t.data as Record<string, unknown>), trackPath, requestId }); return }
       const message = t.kind === 'cancelled'
         ? '트랙 처리가 취소되었습니다.'
         : (t.message ?? '트랙 처리에 실패했습니다.')
       // TrackList는 track-error로만 처리중 표시를 해제한다 → 취소도 같은 채널로 보낸다.
-      sendToWindow(mainWindow, 'audio:track-error', { message, trackPath, reasonCode: t.reasonCode })
+      sendToWindow(mainWindow, 'audio:track-error', { message, trackPath, requestId, reasonCode: t.reasonCode })
     })
 
     // Watchdog: kill if no progress for 5 minutes (same policy as main runner)
@@ -1196,8 +1397,14 @@ export function registerAudioIpc(
     const outDir = currentOutputDir
     const isTts = currentIsTts
     if (currentWatchdogClear) currentWatchdogClear()   // watchdog 무의미 → 즉시 해제
+    // ★띄워 둔 실행기에 맡긴 Qwen 작업도 멈춘다 — 합성 프로세스를 죽여도 실행기는 그 작업을 끝까지 하려 했다(2026-10-03).
+    //   작업 폴더(.qwen-job-*)마다 정지 파일을 둔다 — 실행기가 16걸음 안에 멈춘다(그 작업에만 걸린다).
+    if (isTts && outDir) {
+      try { writeFileSync(join(outDir, '.qwen-stop'), 'stop') } catch { /* 폴더가 없다 */ }
+      for (const name of listQwenJobDirs(outDir)) { try { writeFileSync(join(outDir, name, '.qwen-stop'), 'stop') } catch { /* 이미 정리됐다 */ } }
+    }
     afPhase('cancelling_sent')
-    mainWindow.webContents.send('audio:cancelling')     // renderer → 'cancelling' 표시
+    mainWindow.webContents.send('audio:cancelling', tagWith({}, runClientReq))     // renderer → 'cancelling' 표시
     afPhase('kill_requested')
     const res = await r.cancel(cancelExitMs())          // 트리 kill + tree 종료 확인(parent close + taskkill exit 0)
     if (res.treeKillConfirmed) afPhase('tree_kill_confirmed')
@@ -1205,12 +1412,26 @@ export function registerAudioIpc(
       // 트리 종료 미확인(spawn 실패/nonzero/parent close timeout/taskkill timeout) — 조용한 idle 금지.
       cancelState = 'failed'
       const childAlive = r.isRunning
-      mainWindow.webContents.send('audio:cancel-failed', { childAlive })
+      mainWindow.webContents.send('audio:cancel-failed', tagWith({ childAlive }, runClientReq))
       return { accepted: true }   // 취소는 접수됨(결과는 audio:cancel-failed로 이미 통지)
     }
     // runner done 합류(bounded) — done 핸들러가 runner를 free로 만들었는지 sleep 없이 확인.
     await Promise.race([doneP, delay(3000)])
     afPhase('runner_done_joined')
+    // ★합성 프로세스가 죽어도 **띄워 둔 실행기는 따로 돈다** — 그 작업이 실제로 끝났다는 알림까지 기다린다(2026-10-03 관리자 검수:
+    //   예전에는 화면이 0.65초에 '멈춤 완료' 를 받고, 실행기 작업은 2.17초까지 돌았다). 정지 파일·작업 폴더는 그 뒤에 지운다.
+    if (isTts) {
+      const t = Date.now()
+      const res = await qwenPipeIdle(RESIDENT_CANCEL_WAIT_MS)
+      appLog()?.info('job', `취소 — 띄워 둔 실행기 작업 ${!res.wasBusy ? '없음(이미 비어 있었다)' : res.idle ? `끝남(${Date.now() - t}ms · ${res.why || '사유 모름'})` : '시간 안에 끝나지 않음'}`)
+      if (!res.idle) {
+        cancelState = 'failed'
+        mainWindow.webContents.send('audio:cancel-failed', tagWith({ childAlive: false, residentBusy: true }, runClientReq))
+        return { accepted: true }
+      }
+      afPhase('resident_idle')
+      if (outDir) { try { rmSync(join(outDir, '.qwen-stop'), { force: true }) } catch { /* 없다 */ } }
+    }
     // bounded cleanup — 실제로 .qwen-job-* 0개임을 확인한 뒤에만 취소 완료.
     const cleanupOk = isTts && outDir ? await boundedJobCleanup(outDir, CLEANUP_DEADLINE_MS) : true
     afPhase('cleanup_done')
@@ -1219,14 +1440,14 @@ export function registerAudioIpc(
       cleanupPending = true
       cancelState = 'none'
       currentSettle = null; currentWatchdogClear = null  // currentOutputDir는 재시도 정리용으로 남긴다
-      mainWindow.webContents.send('audio:cancel-failed', { childAlive: false, cleanupPending: true })
+      mainWindow.webContents.send('audio:cancel-failed', tagWith({ childAlive: false, cleanupPending: true }, runClientReq))
       return { accepted: true }   // 접수됨(정리 미완은 audio:cancel-failed payload가 통지)
     }
     cancelState = 'none'
     currentSettle = null; currentWatchdogClear = null; currentOutputDir = null
     afPhase('cancelled_sent')
     appLog()?.info('job', 'cancelled')
-    mainWindow.webContents.send('audio:cancelled')       // ← terminal 신호(권위). renderer가 idle로.
+    mainWindow.webContents.send('audio:cancelled', tagWith({}, runClientReq))       // ← terminal 신호(권위). renderer가 idle로.
     return { accepted: true }
   })
 
@@ -1263,7 +1484,9 @@ export function registerAudioIpc(
   })
   ipcMain.handle('audio:release-reference-clip', (_event, clipKey?: string) => {
     if (runner?.isRunning) return false  // 합성 worker가 참조 사용 중 → 삭제 금지
-    releaseRefClip(clipKey)
+    // 키 없는 요청은 공용 파일 작업의 새 파일/reset이다. 독립 대본과 더빙은 유지한다.
+    const keys = clipKey === undefined ? fileWorkspaceClipKeys(refClipDirs.keys()) : [clipKey]
+    for (const key of keys) releaseRefClip(key)
     return true
   })
 
@@ -1277,10 +1500,31 @@ export function registerAudioIpc(
   // 불러온 원본에 대응하는 이전 결과(session.json) 탐색 — <원본폴더>/AudioForge_output/*/session.json
   ipcMain.handle('audio:find-session', (_event, sourcePath: string) => {
     try {
-      const root = join(dirname(sourcePath), 'AudioForge_output')
-      if (!existsSync(root)) return null
+      /**
+       * 이전 결과를 **여러 자리에서** 찾는다.
+       *
+       * ★자리가 바뀌었다(2026-09-28). 이제 기본은 앱 자리의 기능·날짜 폴더이고,
+       *   체크하면 원본 옆이다. 한 곳만 보면 **멀쩡한 옛 작업을 못 찾는다** —
+       *   `workRoot` 가 더빙에서 이미 배운 것과 같은 교훈이라, 옛 자리도 계속 본다.
+       * 없는 자리는 조용히 건너뛴다.
+       */
+      const setting = readOutputSetting()
+      const roots: string[] = []
+      const addRoot = (r: string) => { if (r && !roots.includes(r)) roots.push(r) }
+      addRoot(join(dirname(sourcePath), 'AudioForge_output'))          // 원본 옆(옛 자리이자 체크 시 자리)
+      for (const base of [setting.chosen, appDirPath()]) {
+        if (!base) continue
+        const root = join(base, 'AudioForge_output')
+        addRoot(root)
+        // 기능·날짜로 한 겹 더 들어간다 — 날짜 폴더 안에 실행 폴더가 있다.
+        for (const feature of readDirSafe(root)) {
+          for (const day of readDirSafe(join(root, feature))) addRoot(join(root, feature, day))
+        }
+      }
       const srcName = basename(sourcePath)
       const matches: { dir: string; session: Record<string, unknown>; createdAt: string }[] = []
+      for (const root of roots) {
+      if (!existsSync(root)) continue
       for (const entry of readdirSync(root)) {
         const dir = join(root, entry)
         let isDir = false
@@ -1299,6 +1543,7 @@ export function registerAudioIpc(
           matches.push({ dir, session: { ...s, tracks }, createdAt: String(s.createdAt || entry) })
         } catch { /* skip invalid */ }
       }
+      }
       if (matches.length === 0) return null
       matches.sort((a, b) => b.createdAt.localeCompare(a.createdAt))  // 최신 우선
       const top = matches[0]
@@ -1309,77 +1554,6 @@ export function registerAudioIpc(
     }
   })
 
-  ipcMain.handle('audio:restore-from-folder', async () => {
-    const result = await dialog.showOpenDialog(mainWindow, {
-      properties: ['openDirectory'],
-      defaultPath: dialogStart('restore'),
-      title: '이전 결과 폴더 선택'
-    })
-    if (result.canceled || result.filePaths.length === 0) return null
-
-    const dir = result.filePaths[0]
-    const { readdirSync, readFileSync } = await import('fs')
-    const files = readdirSync(dir)
-
-    // 우선 session.json이 있으면 그것으로 전체 설정(TTS mode·pitch·source+region·전사·metadata)을 복원.
-    // 트랙은 session.tracks 중 실제 남아 있는 파일만. refLiveness로 source 소실 감정을 렌더러가 표시.
-    if (files.includes('session.json')) {
-      try {
-        const s = JSON.parse(readFileSync(join(dir, 'session.json'), 'utf-8')) as Record<string, unknown>
-        const rawTracks = Array.isArray(s.tracks) ? s.tracks as { name?: string; label?: string; path?: string }[] : []
-        const sessionTracks = rawTracks
-          .filter(t => t.path && existsSync(t.path as string))
-          .map(t => ({ name: t.name || '', label: t.label || t.name || '', path: t.path as string }))
-        return {
-          tracks: sessionTracks,
-          outputDir: dir,
-          session: {
-            mode: s.mode,
-            source: s.source,
-            metadata: s.metadata ?? null,
-            options: s.options ?? {},
-            refLiveness: computeRefLiveness(s),
-            tracks: sessionTracks
-          }
-        }
-      } catch { /* session.json 손상 → 아래 레거시 스캔으로 폴백 */ }
-    }
-
-    const jsonFiles = files.filter((f: string) => f.endsWith('.json')).sort()
-
-    if (jsonFiles.length === 0) return null
-
-    const tracks: { name: string; label: string; path: string }[] = []
-
-    for (const jf of jsonFiles) {
-      try {
-        const meta = JSON.parse(readFileSync(join(dir, jf), 'utf-8'))
-        const audioFile = meta.output_file || ''
-        const audioPath = join(dir, audioFile)
-        if (existsSync(audioPath)) {
-          tracks.push({
-            name: audioFile.replace(/\.\w+$/, ''),
-            label: `${meta.title || audioFile} (${Math.floor((meta.duration || 0) / 60)}:${String(Math.floor((meta.duration || 0) % 60)).padStart(2, '0')})`,
-            path: audioPath
-          })
-        }
-      } catch { /* skip invalid json */ }
-    }
-
-    // Also include audio files without JSON (e.g., speaker_a.wav, vocals.wav)
-    const audioExts = ['.wav', '.mp3', '.flac']
-    for (const f of files) {
-      const ext = f.substring(f.lastIndexOf('.')).toLowerCase()
-      if (audioExts.includes(ext)) {
-        const name = f.replace(/\.\w+$/, '')
-        if (!tracks.some(t => t.name === name)) {
-          tracks.push({ name, label: name, path: join(dir, f) })
-        }
-      }
-    }
-
-    return { tracks, outputDir: dir, session: null }
-  })
 
   ipcMain.handle('audio:export-tracks', async (_event, trackPaths: string[]) => {
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -1390,7 +1564,17 @@ export function registerAudioIpc(
     if (result.canceled || result.filePaths.length === 0) return null
 
     const destDir = result.filePaths[0]
-    const { copyFileSync } = await import('fs')
+    const { copyFileSync, existsSync: exists, realpathSync: realp, statSync: statp } = await import('fs')
+    // 파일의 **정체**로 비교한다 — 같은 파일을 다른 경로로 가리킬 수 있다(카드 합치기와 같은 방식).
+    const probe: PathProbe = {
+      real: (q) => { try { return realp.native(resolve(q)) } catch { return resolve(q) } },
+      fileId: (q) => {
+        try { const st = statp(q, { bigint: true }); return st.ino ? `${st.dev}:${st.ino}` : null } catch { return null }
+      },
+    }
+    // ★지켜야 할 것 — 지금 결과 트랙 전부(자기 자신 위에 쓰는 것도 막는다).
+    //   사용자의 원본은 아래 '이미 있으면 덮지 않는다' 규칙이 함께 막는다.
+    const guarded = trackPaths.filter(Boolean)
     // ★한 건이 실패해도 **멈추지 않고 끝까지 시도하고, 무엇이 안 됐는지 돌려준다**
     //   (2026-09-24 2차 감사). 예전에는 try 없이 돌아서 한 건이 실패하면 즉시 멈췄고,
     //   화면은 약속을 통째로 버려 거절이 콘솔 한 줄로 사라졌다.
@@ -1400,8 +1584,12 @@ export function registerAudioIpc(
     const failed: Array<{ name: string; why: string }> = []
     for (const src of trackPaths) {
       const name = basename(src)
+      const dest = join(destDir, name)
+      // ★덮어쓰지 않는다. 결과 폴더나 원본이 있는 폴더를 골라도 **지우지 않는다**.
+      const why = exportFault(dest, guarded, exists(dest), probe)
+      if (why) { failed.push({ name, why: refusalText(why) }); continue }
       try {
-        copyFileSync(src, join(destDir, name))
+        copyFileSync(src, dest)
         copied.push(name)
       } catch (e) {
         failed.push({ name, why: (e as Error)?.message || String(e) })
@@ -1425,11 +1613,26 @@ export function registerAudioIpc(
       // (자동 저장이 사용자가 명시적으로 저장한 목소리 구성을 건드리지 않는다).
       [WORK_DRAFT_STORAGE_KEY]: stored[WORK_DRAFT_STORAGE_KEY] ?? null,
       // 재생 음량(미리듣기·결과 공용). 없으면 null → renderer 가 기본값(최대)을 쓴다.
+      [PLAYBACK_EFFECTS_KEY]: stored[PLAYBACK_EFFECTS_KEY] ?? null,
+      [PLAYBACK_BOOST_STORAGE_KEY]: stored[PLAYBACK_BOOST_STORAGE_KEY] ?? null,
       [PLAYBACK_VOLUME_STORAGE_KEY]: stored[PLAYBACK_VOLUME_STORAGE_KEY] ?? null,
+      // 만들어진 소리의 재생 빠르기(낭독·생성본·최종 음성·더빙 결과). 없으면 null → renderer 가 1배.
+      [PLAYBACK_RATE_STORAGE_KEY]: stored[PLAYBACK_RATE_STORAGE_KEY] ?? null,
       // 테스트개발 작업실 — 기존 작업 저장과 **다른 열쇠**다(섞이지 않는다).
       [LAB_STORAGE_KEY]: stored[LAB_STORAGE_KEY] ?? null,
       [TRANSCRIPT_EDIT_STORAGE_KEY]: stored[TRANSCRIPT_EDIT_STORAGE_KEY] ?? null,
       [DIALOGUE_EDIT_STORAGE_KEY]: stored[DIALOGUE_EDIT_STORAGE_KEY] ?? null,
+      // ★파일별 보존 (2026-09-28 에 빠져 있던 것을 찾음).
+      //   저장 목록과 **읽기 목록이 따로** 있어서 두 군데를 다 챙겨야 한다.
+      //   읽기에서 빠지면 저장은 되는데 **다시 켜면 사라진다** — 더 알아채기 어렵다.
+      [TRANSCRIPT_DRAFTS_STORAGE_KEY]: stored[TRANSCRIPT_DRAFTS_STORAGE_KEY] ?? null,
+      [DIALOGUE_DRAFTS_STORAGE_KEY]: stored[DIALOGUE_DRAFTS_STORAGE_KEY] ?? null,
+      // 생성 카드 작업 — 위 열쇠들과 서로 독립이다(문장별 작업을 덮지 않는다).
+      [CARD_STORAGE_KEY]: stored[CARD_STORAGE_KEY] ?? null,
+      // 낭독 설정(따라가기·괄호 속 한자) — 2026-09-29. 여기 없으면 저장은 되는데 다시 켜면 사라진다.
+      [READER_PREFS_STORAGE_KEY]: stored[READER_PREFS_STORAGE_KEY] ?? null,
+      // 콘솔 창을 띄워 둘지(2026-09-30). 여기 없으면 다시 켜면 닫혀 있다.
+      [CONSOLE_POPUP_STORAGE_KEY]: stored[CONSOLE_POPUP_STORAGE_KEY] ?? null,
     }
   })
 
@@ -1437,7 +1640,10 @@ export function registerAudioIpc(
   // sendSync 는 main 이 파일을 쓰고 답할 때까지 렌더러를 붙잡으므로 그 사이 닫히지 않는다.
   // 자동 저장 키만 허용한다(다른 키를 동기로 열어 줄 이유가 없다).
   ipcMain.on('settings:set-sync', (event, key: string, value: unknown) => {
-    if (key !== WORK_DRAFT_STORAGE_KEY) {
+    // 생성 카드 작업도 이 통로를 쓴다(2026-09-27). 창이 닫히는 순간의 비동기 요청은
+    // **기다려 주지 않는다** — 마지막 편집 직후 종료하면 그대로 사라진다.
+    // 낭독 설정(2026-10-02) — 서재 보기를 바꾸고 곧바로 닫아도 남게.
+    if (key !== WORK_DRAFT_STORAGE_KEY && key !== CARD_STORAGE_KEY && key !== READER_PREFS_STORAGE_KEY) {
       event.returnValue = { ok: false, code: 'KEY_NOT_ALLOWED' }
       return
     }
@@ -1454,15 +1660,40 @@ export function registerAudioIpc(
     // 옮기기만 한다. 저장 성공 여부를 그대로 돌려준다 — 실패를 persisted 로 표시하면
     // 사용자는 저장된 줄 알고 앱을 닫는다.
     if (key === GLOBAL_ASSET_STORAGE_KEY || key === VOICE_CAST_STORAGE_KEY
-        || key === WORK_DRAFT_STORAGE_KEY || key === PLAYBACK_VOLUME_STORAGE_KEY
+        || key === WORK_DRAFT_STORAGE_KEY || key === PLAYBACK_EFFECTS_KEY || key === PLAYBACK_BOOST_STORAGE_KEY || key === PLAYBACK_VOLUME_STORAGE_KEY || key === PLAYBACK_RATE_STORAGE_KEY
         || key === LAB_STORAGE_KEY || key === TRANSCRIPT_EDIT_STORAGE_KEY
-        || key === DIALOGUE_EDIT_STORAGE_KEY) {
+        || key === DIALOGUE_EDIT_STORAGE_KEY
+        // ★파일별 보존 열쇠 (2026-09-28 에 빠져 있던 것을 찾음).
+        //   `…Edits` 와 `…Drafts` 는 **서로 다른 열쇠**다. 화면은 Drafts 를 쓰는데
+        //   목록에는 Edits 만 있어서, 전사 교정본과 대화 구간 수정본이
+        //   만들어진 날부터 줄곧 저장되지 않았다(9-27 · 그 이전).
+        || key === TRANSCRIPT_DRAFTS_STORAGE_KEY
+        || key === DIALOGUE_DRAFTS_STORAGE_KEY
+        // 생성 카드 작업(2026-09-27). ★이 목록에 없으면 저장이 SETTINGS_KEY_NOT_ALLOWED 로
+        //   **조용히 거절된다.** 화면은 저장한 줄 알고 넘어간다 — 열쇠를 새로 만들 때는
+        //   반드시 여기에도 더해야 한다.
+        || key === CARD_STORAGE_KEY
+        // 만든 것을 둘 자리(2026-09-28). 여기 없으면 고른 자리가 조용히 사라진다.
+        || key === OUTPUT_ROOT_KEY || key === OUTPUT_BESIDE_KEY
+        // 낭독 설정(2026-09-29).
+        || key === READER_PREFS_STORAGE_KEY
+        // 콘솔 창(2026-09-30).
+        || key === CONSOLE_POPUP_STORAGE_KEY) {
       // 배역 세트도 같은 원자 경로를 쓴다. 두 키는 서로를 덮지 않는다 —
       // settings-store 가 현재 파일을 읽어 그 키 하나만 갱신한다.
       return saveSetting(key, value ?? undefined)
     }
     return { ok: false, code: 'SETTINGS_KEY_NOT_ALLOWED' }
   })
+
+  /**
+   * 작업 기록이 **실제로 적히는 파일**의 자리.
+   *
+   * ★불러오기 목록의 폴더 아이콘은 음원이 아니라 **데이터 파일**을 찾아간다
+   *   (2026-09-28 지시). 지금은 설정 파일 한 장이지만, 작업별 파일로 나눈 뒤에도
+   *   이 통로 하나만 바꾸면 화면은 그대로다.
+   */
+  ipcMain.handle('app:data-file', () => settingsFilePath())
 
   ipcMain.handle('settings:select-python-path', async () => {
     const result = await dialog.showOpenDialog(mainWindow, {
@@ -1495,6 +1726,33 @@ export function registerAudioIpc(
     const { clipboard } = await import('electron')
     clipboard.writeText(text)
     return true
+  })
+
+  /**
+   * 글 파일 읽기 — **없음과 읽기 실패를 가른다**(2026-10-02). 예전 통로는 둘 다 null 이라 화면이 구별하지 못했다.
+   * 돌려주는 것: { state: 'ok', text } · { state: 'missing' } · { state: 'failed', message }
+   */
+  ipcMain.handle('app:read-text-file-ex', async (_event, path: unknown) => {
+    const { readFile } = await import('fs/promises')
+    if (typeof path !== 'string' || !path) return { state: 'failed', message: '경로가 없습니다' }
+    try {
+      return { state: 'ok', text: await readFile(path, 'utf-8') }
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException)?.code
+      if (code === 'ENOENT' || code === 'ENOTDIR') return { state: 'missing' }
+      return { state: 'failed', message: code || (e as Error)?.message || '읽지 못했습니다' }
+    }
+  })
+
+  /**
+   * 자리에 파일이 있는지만 본다(내용은 열지 않는다) — 낭독이 고른 '내 목소리 파일' 이 아직 있는지 확인하는 데 쓴다(2026-10-02).
+   * 돌려주는 것: { [자리]: 있음 }. 최대 20개.
+   */
+  ipcMain.handle('app:paths-exist', (_event, paths: unknown) => {
+    const out: Record<string, boolean> = {}
+    if (!Array.isArray(paths)) return out
+    for (const p of paths.slice(0, 20)) if (typeof p === 'string' && p.length > 0 && p.length < 2000) out[p] = existsSync(p)
+    return out
   })
 
   ipcMain.handle('app:read-text-file', async (_event, path: string) => {

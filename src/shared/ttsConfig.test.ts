@@ -148,11 +148,14 @@ test('지정한 값은 그대로 통과한다', () => {
   assert.equal(c.ttsEngine, 'gptsovits')
 })
 
-test('직렬화 형태에 27개 TTS 키가 모두 존재한다 (필드 누락 방지; v1.4 화자 4개 + 후보 선택 1개 + 생성 방식 1개 + 모델 판 1개 + 참조 구간 1개)', () => {
+test('직렬화 형태에 32개 TTS 키가 모두 존재한다 (필드 누락 방지; v1.4 화자 4개 + 후보 선택 1개 + 생성 방식 1개 + 모델 판 1개 + 참조 구간 1개 + 기본 목소리 5개)', () => {
   const c = buildTtsConfig({})
   assert.deepEqual(
     Object.keys(c).sort(),
-    ['ttsEmotionBoundaryMode', 'ttsEmotionBoundaryPauseMs', 'ttsEmotionCandidateSelections',
+    [// 2026-09-27 추가 — 참조 음원 없이 읽는 기본 목소리. 여기 없으면 값이 파이썬까지 가지 않는다
+      // (실제로 빠뜨려 생성이 종료 코드 1 로 끝났다).
+      'ttsBuiltinLabel', 'ttsBuiltinLanguage', 'ttsBuiltinModel', 'ttsBuiltinModelId', 'ttsBuiltinSpeaker',
+      'ttsEmotionBoundaryMode', 'ttsEmotionBoundaryPauseMs', 'ttsEmotionCandidateSelections',
       'ttsEmotionRefRegions', 'ttsEmotionRefSources',
       'ttsEmotionRefs', 'ttsEngine', 'ttsExpressiveMode', 'ttsParsedPlanSha256', 'ttsParserVersion', 'ttsPitch',
       'ttsQwenModel',

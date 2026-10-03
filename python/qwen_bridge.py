@@ -70,8 +70,15 @@ def emit(msg_type, **kwargs):
     문자열을 미리 합쳐 락 아래에서 단일 write 하는 것이 heartbeat 스레드 도입의 전제다."""
     line = json.dumps({"type": msg_type, **kwargs}, ensure_ascii=False) + "\n"
     with _EMIT_LOCK:
+        if _SINK is not None:          # 상주 실행기 안에서 돌 때 — 같은 줄을 그 실행기가 받아 부모에게 넘긴다
+            _SINK(line.rstrip("\n"))
+            return
         sys.stdout.write(line)
         sys.stdout.flush()
+
+
+#: 출력 받는 곳. None = 표준 출력(이 파일을 바로 실행할 때). 상주 실행기(qwen_voice_server)가 작업 동안만 바꿔 끼운다.
+_SINK = None
 
 
 def _elapsed(clock=None):
@@ -124,6 +131,10 @@ def _install_talker_counter(model):
         return
 
     class _StepCounter(StoppingCriteria):
+        # ★받은 값(input_ids·scores)을 보지 않고 세기만 한다 — qwen_fast 의 빠른 길이 이 표시를 보고 받아 준다(2026-10-03).
+        #   표시가 없으면 빠른 길이 원래 길로 돌아가, 참조 목소리 생성이 묶어 실행을 쓰지 못했다.
+        _af_count_only = True
+
         def __call__(self, input_ids, scores, **kw):
             _COUNTER["n"] += 1
             # 협조적 정지: 플래그 파일이 생기면 True 를 반환해 generate 를 **정상 반환**시킨다.
@@ -917,6 +928,34 @@ def main():
     try:
         emit("progress", percent=10, message=f"Qwen3-TTS 모델 로딩 중... ({device}, offline)")
         model = _load_model(model_path, device)
+        # ★보조 모델 15걸음을 묶어 실행(2026-09-30 실측: 같은 문장 29초 → 10초, 받아 적기 일치 그대로).
+        #   패키지 파일은 고치지 않고 불러온 모델의 한 함수만 바꿔 끼운다. 쓴 방식을 기록에 남긴다.
+        try:
+            import qwen_fast
+            emit("stage", stage="code_predictor", mode=qwen_fast.apply(model) or "original", elapsed_sec=_elapsed())
+        except Exception as e:      # 바꿔 끼우지 못하면 원래대로 — 합성은 막지 않는다
+            emit("stage", stage="code_predictor", mode="original", reason=f"{type(e).__name__}: {str(e)[:120]}",
+                 elapsed_sec=_elapsed())
+        if run_loaded(model, cfg) != 0:
+            sys.exit(1)
+
+    except Exception as e:
+        import traceback
+        emit("error", message=f"{type(e).__name__}: {e}")
+        sys.stderr.write(traceback.format_exc())
+        sys.exit(1)
+
+
+def run_loaded(model, cfg):
+    """불러 둔 모델로 작업 하나(세그먼트 선분할 → 생성 → result). 0 = 성공, 1 = 구조화 오류를 이미 냈다.
+    ★바로 실행(main)과 상주 실행기(qwen_voice_server — 모델을 다시 열지 않는다, 2026-10-03)가 **같은 이 함수**를 쓴다 —
+      분할·생성 상한·종료 판정·결과 모양이 두 길에서 갈리지 않는다. 예외는 부르는 쪽이 error 로 낸다."""
+    probe_context = cfg.get("probe_context", "production")
+    segments = cfg.get("segments", [])
+    if not segments:
+        emit("error", message="합성할 세그먼트가 없습니다.")
+        return 1
+    if True:
         builder, proc = _preflight_tokenizer(model)  # 안전장치 전제 — 부재 시 여기서 명확히 실패
         _install_talker_counter(model)
         _install_ref_prompt_timer(model)   # 계측 전용 — 동작 불변
@@ -935,7 +974,7 @@ def main():
         except BridgeSegmentTooLong as e:
             emit("error", code="TEXT_SEGMENT_TOO_LONG", segment_index=e.segment_index,
                  emotion_id=e.emotion_id, production_tokens=e.production_tokens, allowed=e.allowed)
-            sys.exit(1)
+            return 1
 
         # 2단계: 생성. total_chunks 기준 진행률(시작 30% → 완료 90%). 시작·완료 모두 수치만(텍스트 없음).
         def _progress(percent, seg_index, n_seg, ci, cc, phase):
@@ -955,15 +994,10 @@ def main():
                  generated_iterations=e.generated_iterations, generation_limit=e.generation_limit,
                  resplit_attempts=getattr(e, "resplit_attempts", 0),
                  termination_reason="generation_limit", status="generation_limit")
-            sys.exit(1)
+            return 1
 
         emit("result", segments=done, success=True)
-
-    except Exception as e:
-        import traceback
-        emit("error", message=f"{type(e).__name__}: {e}")
-        sys.stderr.write(traceback.format_exc())
-        sys.exit(1)
+        return 0
 
 
 if __name__ == "__main__":

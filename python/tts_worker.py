@@ -18,6 +18,7 @@ import time
 import chunk_paths   # chunk 경로 규칙(bridge와 공용) — 결정적 경로 정확 일치 검증
 import semantic_chunk_planner   # 의미 경계 분류 + 무음 예산(C2). 순수 로직(stdlib only).
 from audio_utils import emit, get_device, find_ffmpeg, patch_torchaudio
+from speech_symbols import strip_spoken_symbols   # 소리로 내지 않는 기호(화면 쪽과 같은 사례로 검사). stdlib only.
 
 # ── Emotion definitions ──
 # ⚠️ 감정 id는 UI(src/renderer/components/TTSEditor.tsx의 EMOTION_GROUPS)와 공유된다.
@@ -230,6 +231,8 @@ class PiperEngine(TTSEngine):
     """
 
     name = "piper"
+    # 읽을 소리가 없는 토막(기호만 있는 줄)을 대신하는 쉼. 문장 사이 쉼(0.35초)보다 짧게.
+    EMPTY_PAUSE_SEC = 0.2
     # ★"다루려는 언어" 가 아니라 **목소리를 실제로 가진 언어**만 적는다.
     #   Kokoro 에서 넷 중 셋이 거짓이었던 일을 되풀이하지 않는다.
     #   진짜 판정은 piper_voices.check_language 가 실행 시점에 한다.
@@ -238,9 +241,29 @@ class PiperEngine(TTSEngine):
     def __init__(self):
         self._voice = None
         self._meta = None
+        # 화면이 고른 모델. 비어 있으면 언어로 고른다(예전 동작).
+        self.model_path = None
 
     def load(self, lang_code="ko"):
         import piper_voices
+        # ★고른 모델이 있으면 그것을 연다. 언어로 '아무거나' 고르면 화면이 적어 둔 것과
+        #   실제로 낸 소리가 달라진다 — 생성본 기록이 거짓이 된다(2026-09-27).
+        if self.model_path:
+            import os as _os
+            cfg = self.model_path + ".json"
+            if not (_os.path.isfile(self.model_path) and _os.path.isfile(cfg)):
+                e = RuntimeError("고른 기본 목소리 파일을 찾지 못했습니다: %s" % _os.path.basename(self.model_path))
+                e.error_payload = {"code": ENGINE_LANG_UNAVAILABLE, "engine": "piper"}
+                raise e
+            if self._voice is not None and self._meta and self._meta.get("onnx") == self.model_path:
+                return
+            emit("progress", percent=10, message="기본 목소리 여는 중...")
+            from piper import PiperVoice
+            self._voice = PiperVoice.load(self.model_path, config_path=cfg)
+            self._meta = {"onnx": self.model_path, "config": cfg,
+                          "name": _os.path.basename(self.model_path)[:-5]}
+            emit("progress", percent=20, message="기본 목소리 준비 완료")
+            return
         why = piper_voices.check_language(lang_code)
         if why:
             e = RuntimeError("piper 로 %s 를 합성할 수 없습니다 — %s" % (lang_code, why))
@@ -277,11 +300,368 @@ class PiperEngine(TTSEngine):
                 cfg = SynthesisConfig(length_scale=1.0 / sp)
         except Exception:
             cfg = None      # 못 넘기면 기본 속도로 낸다 — 터뜨리지 않는다
+        sr = int(getattr(getattr(self._voice, "config", None), "sample_rate", 0) or 22050)
         with wave.open(output_path, "wb") as w:
+            # ★형식을 **먼저** 정한다 (2026-09-30 사용자 신고로 재현).
+            #   piper 는 첫 소리 조각이 나올 때 형식을 정하는데, 기호만 있는 줄
+            #   (◆◇◆ · …… · ─── · “”)은 소리가 한 조각도 없어 형식 없이 닫히며
+            #   "# channels not specified" 로 **덩이 전체가 죽었다.** 소설의 장면 구분 줄이 그렇다.
+            #   piper 의 소리는 늘 한 채널·16비트다.
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
             if cfg is None:
-                self._voice.synthesize_wav(text, w)
+                self._voice.synthesize_wav(text, w, set_wav_format=False)
             else:
-                self._voice.synthesize_wav(text, w, syn_config=cfg)
+                self._voice.synthesize_wav(text, w, syn_config=cfg, set_wav_format=False)
+            if w.getnframes() == 0:
+                # 읽을 소리가 없는 토막 — 짧게 쉰다. 장면 구분 줄은 원래 쉬는 자리다.
+                w.writeframes(b"\x00\x00" * int(sr * self.EMPTY_PAUSE_SEC))
+
+
+# ── Supertonic 3 (기본 목소리 열 개 — ONNX · CPU · 받아 둔 모델만) ──
+
+class SupertonicEngine(TTSEngine):
+    """참조 소리 없이 읽는 기본 목소리(2026-09-30). 규칙은 `supertonic_tts.py` 가 갖는다.
+
+    ★목소리는 **스타일 파일**로 고른다(`model_path`) — piper 가 모델 파일로 고르는 것과 같은 자리.
+    ★참조 소리·감정은 쓰지 않는다(쓰는 척하지 않는다). 속도는 쓴다.
+    """
+
+    name = "supertonic"
+    # ★실제로 확인한 언어만 적는다 — 모델은 더 많이 하지만 우리가 들어 본(받아 적기로 확인한) 것은 한국어다.
+    supported_languages = ["ko"]
+
+    def __init__(self):
+        self._tts = None
+        self.model_path = None
+
+    def load(self, lang_code="ko"):
+        if self._tts is not None:
+            return
+        import supertonic_tts
+        styles, why = supertonic_tts.scan()
+        if why:
+            e = RuntimeError("Supertonic 으로 읽을 수 없습니다 — %s" % why)
+            e.error_payload = {"code": ENGINE_LANG_UNAVAILABLE, "engine": "supertonic", "reason": why}
+            raise e
+        emit("progress", percent=10, message="기본 목소리 여는 중...")
+        self._tts = supertonic_tts.Supertonic()
+        emit("progress", percent=20, message="기본 목소리 준비 완료")
+
+    def synthesize_segment(self, text, ref_audio, emotion_id, speed, output_path):
+        import os as _os
+        import wave
+        import numpy as np
+        if self._tts is None:
+            self.load()
+        style = self.model_path
+        if not style or not _os.path.isfile(style):
+            e = RuntimeError("고른 기본 목소리 파일을 찾지 못했습니다: %s" % _os.path.basename(style or ""))
+            e.error_payload = {"code": ENGINE_LANG_UNAVAILABLE, "engine": "supertonic"}
+            raise e
+        wav = self._tts.synthesize(text, style, speed=speed or 1.0)
+        sr = self._tts.sample_rate
+        if wav.size == 0:
+            # 읽을 소리가 없는 토막(기호만 있는 줄) — piper 와 같이 짧게 쉰다.
+            wav = np.zeros(int(sr * PiperEngine.EMPTY_PAUSE_SEC), dtype=np.float32)
+        pcm = (np.clip(wav, -1.0, 1.0) * 32767.0).astype("<i2")
+        with wave.open(output_path, "wb") as w:
+            w.setnchannels(1)
+            w.setsampwidth(2)
+            w.setframerate(sr)
+            w.writeframes(pcm.tobytes())
+
+
+# ── Qwen3-TTS 지정 목소리(CustomVoice — 참조 없이 모델 안의 목소리 · GPU · 격리 환경) ──
+
+# 한국어 원어민 목소리 — 모델이 한국어 원어민 목소리로 소개하는 것(2026-09-30 지시: "한국어가 있다면 받아 본다").
+QWEN_CUSTOM_KOREAN = {"sohee": "소희"}
+
+# ★다른 화자도 한국어로 읽는다 (2026-10-01 지시: "소희 이외에도 다른 목소리를 늘리고 싶다").
+#   같은 글 3개 × 씨앗 2개를 한국어로 만들어 Whisper 로 받아 적었다 — 아래 일곱은 글자 오류율 0%.
+#   딜런(베이징)은 6개 중 하나가 12.5% 로 빠졌다(평균 2.1%) — 싣지 않는다.
+#   ★받아 적기는 **억양**을 재지 못한다 — 원어민이 아니라 억양이 있다고 이름표에 적고, 사용자가 들어 보고 고른다.
+#   설명은 모델 카드(README Supported Speakers)를 옮겼다.
+QWEN_CUSTOM_SPEAKERS = {
+    "sohee": {"name": "소희", "desc": "따뜻한 여성", "native": True},
+    "vivian": {"name": "비비안", "desc": "밝은 젊은 여성 · 중국어 억양", "native": False},
+    "serena": {"name": "세레나", "desc": "따뜻하고 부드러운 젊은 여성 · 중국어 억양", "native": False},
+    "ono_anna": {"name": "오노 안나", "desc": "장난스러운 여성 · 일본어 억양", "native": False},
+    "uncle_fu": {"name": "푸 아저씨", "desc": "연륜 있는 부드러운 남성 · 중국어 억양", "native": False},
+    "eric": {"name": "에릭", "desc": "활기찬 남성 · 중국어(쓰촨) 억양", "native": False},
+    "ryan": {"name": "라이언", "desc": "리듬감 있는 남성 · 영어 억양", "native": False},
+    "aiden": {"name": "에이든", "desc": "밝은 미국 남성 · 영어 억양", "native": False},
+}
+# ── 감정 지시 (2026-10-01) ─────────────────────────────────────────────────
+# ★받아 둔 0.6B 는 지시(감정)를 **버린다**(qwen_tts 패키지: 0b6 이면 instruct=None). 지시는 1.7B 지정 목소리만 받는다.
+#   그래서 감정이 붙은 조각만 1.7B 로, 나머지는 빠른 0.6B 로 만든다.
+# ★지시는 **영어로** 보낸다 — 실측(같은 글 · 씨앗 3): 영어 지시는 음높이를 지시 없음의 씨앗 흔들림보다 13~34배 옮겼고
+#   (화남 +36Hz · 기쁨 +53Hz · 슬픔 +20Hz · 속삭임 −10Hz), 한국어 지시는 기쁨·슬픔에서 거의 그대로였다(1~2배).
+#   ★그러나 문장 4 × 씨앗 3 으로 넓혀 재자(문장마다 지시 없음 평균을 빼고 그 흔들림으로 나눔) 결과가 갈렸다 —
+#     기쁨 음높이 +36Hz(흔들림의 2.7배)·폭 +50Hz · 화남 +26Hz(1.9배)·빠르기 +0.9자/초(1.7배) · 슬픔 +16Hz(1.2배, 흔들림 안)
+#     · 속삭임 변화 없음. 처음 한 문장의 '13~34배' 는 그 문장의 지시 없음이 유난히 고르게 나와 부풀었다.
+#     → 감정마다 세기가 다르다. 말씨는 강하게('very') — 약한 말씨는 한 문장 실측에서 흔들림 안이었다. 듣는 판단은 사용자 몫.
+# ★성적인 감정 태그(aroused·climax·moaning·ecstasy)는 지시로 옮기지 않는다 — 보통으로 읽고 그렇다고 알린다.
+from qwen_emotions import QWEN_EMOTION_INSTRUCTS  # noqa: E402 — 표는 qwen_emotions 한 곳(상주 실행기와 같이 쓴다)
+
+
+def qwen_emotion_model():
+    """감정 지시를 받는 지정 목소리 모델(1.7B)의 설정 파일 — 없으면 None."""
+    for d in qwen_custom_voice_models():
+        info = _qwen_variant_info(d) or {}
+        if info.get("model_size") == "1b7":
+            return os.path.join(d, "config.json")
+    return None
+
+
+# 소희 말고는 **목소리 파일**(python/voices/qwen/<화자>.json)로 고른다 — 목소리마다 자리가 달라야 고르기·쌓아 두기가 갈린다.
+QWEN_VOICE_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "voices", "qwen")
+
+
+def qwen_voice_of(path):
+    """목소리 자리 → (모델 설정 파일, 화자). 모르면 (None, None).
+    · 모델의 config.json → 소희(예전부터 쓰던 자리 — 저장된 카드·낭독 선택이 그대로 산다)
+    · voices/qwen/<화자>.json → 그 화자, 모델은 받아 둔 지정 목소리 모델"""
+    import json as _json
+    if not path:
+        return None, None
+    if os.path.basename(path) == "config.json":
+        return path, "sohee"
+    try:
+        with open(path, encoding="utf-8") as f:
+            j = _json.load(f)
+    except Exception:
+        return None, None
+    sp = str(j.get("speaker", "")).lower()
+    if j.get("engine") != "qwen-custom" or sp not in QWEN_CUSTOM_SPEAKERS:
+        return None, None
+    # 빠른 0.6B 를 먼저 — 감정 지시가 있을 때만 엔진이 1.7B(qwen_emotion_model)로 바꾼다.
+    models = sorted(qwen_custom_voice_models(), key=lambda d: (_qwen_variant_info(d) or {}).get("model_size") != "0b6")
+    return (os.path.join(models[0], "config.json") if models else None), sp
+
+
+# ── 설계 목소리 (2026-10-02) ───────────────────────────────────────────────
+# 글 설명으로 설계한 한국어 목소리(Qwen3-TTS VoiceDesign)를 **한 번 만들어 고정한 소리 파일**을 참조로 삼아, Base 1.7B 가 그 목소리를 따라 읽는다.
+# ★왜 고정 참조인가(실측): 설계 모델에 매번 설명만 주면 같은 목소리가 문장마다 흔들렸다(음높이 폭 16~58Hz).
+#   설계한 소리 한 문장을 참조로 이어 읽으면 여섯 중 다섯이 안정됐다(40대 여성 58→12Hz). 참조는 **직접 쓴 문장을 합성한 소리**뿐 — 사용자 녹음이 아니다.
+# ★감정 지시는 받지 않는다(Base 모델 — 지시를 쓰지 않는다).
+QWEN_DESIGNED_VOICES = {
+    "calm_f20": {"name": "차분한 여성", "desc": "20대 · 차분하고 부드러운"},
+    "girl": {"name": "소녀", "desc": "밝고 맑은 소녀 목소리"},
+    "narrator_f40": {"name": "낭독 여성", "desc": "40대 · 낮고 안정된 낭독 톤"},
+    "soft_m20": {"name": "부드러운 남성", "desc": "20대 · 부드럽고 친근한"},
+    "deep_m30": {"name": "낮은 남성", "desc": "30대 · 낮고 차분한 낭독 톤"},
+}
+
+
+def qwen_clone_model():
+    """고정 참조 목소리를 읽는 Base 1.7B 폴더 — 없으면 None."""
+    ext = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "externals")
+    if not os.path.isdir(ext):
+        return None
+    for name in sorted(os.listdir(ext)):
+        full = os.path.join(ext, name)
+        if not name.startswith("qwen3_tts") or name in _QWEN_VARIANT_EXCLUDE or not os.path.isdir(full):
+            continue
+        info = _qwen_variant_info(full) or {}
+        if info.get("model_type") == "base" and info.get("model_size") == "1b7":
+            return full
+    return None
+
+
+def qwen_clone_of(path):
+    """목소리 파일 → {model, ref, text}(고정 참조 목소리) — 아니면 None. 참조 소리는 목소리 파일 옆에 있어야 한다."""
+    import json as _json
+    if not path or os.path.basename(path) == "config.json":
+        return None
+    try:
+        with open(path, encoding="utf-8") as f:
+            j = _json.load(f)
+    except Exception:
+        return None
+    c = j.get("clone")
+    if j.get("engine") != "qwen-custom" or not isinstance(c, dict) or not c.get("ref") or not c.get("text"):
+        return None
+    ref = os.path.join(os.path.dirname(os.path.abspath(path)), os.path.basename(str(c["ref"])))
+    model = qwen_clone_model()
+    if not (model and os.path.isfile(ref)):
+        return None
+    return {"model": model, "ref": ref, "text": str(c["text"])}
+
+
+def qwen_custom_voice_models():
+    """받아 둔 Qwen 지정 목소리 모델 폴더들 — 설정의 모델 종류가 custom_voice 이고 필수 파일이 다 있는 것만."""
+    out = []
+    ext = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "externals")
+    if not os.path.isdir(ext):
+        return out
+    for name in sorted(os.listdir(ext)):
+        full = os.path.join(ext, name)
+        if not name.startswith("qwen3_tts") or name in _QWEN_VARIANT_EXCLUDE or not os.path.isdir(full):
+            continue
+        info = _qwen_variant_info(full)
+        if info and info.get("model_type") == "custom_voice":
+            out.append(full)
+    return out
+
+
+class QwenCustomEngine(TTSEngine):
+    """Qwen3-TTS **지정 목소리** — 참조 소리 없이 모델 안의 목소리(소희 외 일곱)로 읽는다.
+
+    ★목소리는 자리(`model_path`)로 고른다 — 소희는 모델 설정 파일(config.json), 나머지는 목소리 파일
+      (voices/qwen/<화자>.json). 해석은 `qwen_voice_of` 한 곳.
+    ★먼저 **띄워 둔 실행기**(본체가 관리하는 qwen_voice_server — 이름 있는 파이프)에 보낸다(2026-10-01).
+      모델(0.6B·1.7B)이 이미 올라 있어 조각마다 여는 시간이 없다. 주소·열쇠는 본체가 환경 변수로 넘긴다.
+    ★붙지 못하면 예전 길 — 격리 환경의 파이썬으로 `qwen_custom_voice.py` 를 조각마다 부른다(매번 모델을 연다).
+    ★빠르기는 바꿀 수 없다(모델에 그 조절이 없다) — 쓰는 척하지 않고 그렇다고 알린다.
+    """
+
+    name = "qwen-custom"
+    supported_languages = ["ko"]
+
+    def __init__(self):
+        base = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        venv = os.path.join(base, "externals", "qwen3_tts_venv")
+        self._venv_python = os.path.join(venv, "Scripts", "python.exe")
+        self._script = os.path.join(base, "python", "qwen_custom_voice.py")
+        self.model_path = None
+        self._speed_told = False
+        self._emotion_told = False
+        self._conn = None             # 띄워 둔 실행기로 가는 연결(한 합성 실행 동안 하나)
+        self._resident_off = False    # 한 번 못 붙으면 이 실행에서는 예전 길로
+
+    def load(self, lang_code="ko"):
+        if not os.path.isfile(self._venv_python):
+            e = RuntimeError("Qwen 격리 환경이 없습니다")
+            e.error_payload = {"code": ENGINE_UNAVAILABLE, "engine": self.name}
+            raise e
+
+    def synthesize_segment(self, text, ref_audio, emotion_id, speed, output_path):
+        import json as _json
+        import subprocess
+        import tempfile
+        self.load()
+        # 설계 목소리(고정 참조) — 지정 목소리 모델이 아니라 참조 소리 + Base 1.7B 로 읽는다.
+        clone = qwen_clone_of(self.model_path or "")
+        cfg, speaker = (None, None) if clone else qwen_voice_of(self.model_path or "")
+        cfg = cfg or ""
+        model_dir = clone["model"] if clone else os.path.dirname(cfg)
+        if not clone and not (cfg and speaker and os.path.isfile(cfg) and _qwen_variant_info(model_dir)):
+            e = RuntimeError("고른 기본 목소리 모델을 찾지 못했습니다: %s" % os.path.basename(model_dir or ""))
+            e.error_payload = {"code": ENGINE_LANG_UNAVAILABLE, "engine": self.name}
+            raise e
+        if not text.strip():
+            # 읽을 글이 없는 조각(기호만 있던 줄) — 짧게 쉰다. 이 모델의 소리는 24kHz 한 채널이다.
+            import wave
+            with wave.open(output_path, "wb") as w:
+                w.setnchannels(1); w.setsampwidth(2); w.setframerate(24000)
+                w.writeframes(b"\x00\x00" * int(24000 * PiperEngine.EMPTY_PAUSE_SEC))
+            return
+        try:
+            sp = float(speed or 1.0)
+        except Exception:
+            sp = 1.0
+        if abs(sp - 1.0) > 1e-6 and not self._speed_told:
+            emit("progress", message="이 목소리는 빠르기를 바꿀 수 없어 보통 빠르기로 읽습니다")
+            self._speed_told = True
+        # 감정 — 지시를 받는 1.7B 가 있으면 그 모델로, 영어 지시를 붙여 만든다(위 QWEN_EMOTION_INSTRUCTS).
+        instruct = QWEN_EMOTION_INSTRUCTS.get(emotion_id or "") if emotion_id not in (None, "", "default") else None
+        if clone:
+            # 설계 목소리는 지시를 받지 않는다 — 띄워 둔 실행기로만(참조 특징을 한 번만 계산해 둔다).
+            if emotion_id not in (None, "", "default") and not self._emotion_told:
+                emit("progress", message="이 목소리는 감정 지시를 받지 않아 보통으로 읽습니다")
+                self._emotion_told = True
+            if not self._via_resident(model_dir, None, text, None, output_path, clone={"ref": clone["ref"], "text": clone["text"]}):
+                raise RuntimeError("설계 목소리는 띄워 둔 Qwen 실행기가 있어야 읽습니다 — 앱을 다시 켜 보세요")
+            return
+        if emotion_id not in (None, "", "default"):
+            emo_cfg = qwen_emotion_model()
+            if instruct and emo_cfg:
+                model_dir = os.path.dirname(emo_cfg)
+                emit("progress", message="감정을 담아 만드는 중(1.7B) — %s" % emotion_id)
+            elif not self._emotion_told:
+                why = "감정 지시를 받는 1.7B 모델이 없어" if instruct else "이 감정은 지시로 옮기지 않아"
+                emit("progress", message="%s 보통으로 읽습니다" % why)
+                self._emotion_told = True
+                instruct = None
+            else:
+                instruct = None
+        if self._via_resident(model_dir, speaker, text, instruct, output_path):
+            return
+        fd, text_file = tempfile.mkstemp(suffix=".txt", prefix="qcv-")
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        try:
+            env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
+            proc = subprocess.run(
+                [self._venv_python, "-X", "utf8", self._script, "--model", model_dir, "--speaker", speaker,
+                 "--language", "korean", "--text-file", text_file, "--out", output_path,
+                 "--seed", str(int(getattr(self, "run_seed", 0) or 0))]
+                + (["--instruct", instruct] if instruct else []),
+                capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=900)
+        finally:
+            try:
+                os.remove(text_file)
+            except OSError:
+                pass
+        last = None
+        for line in (proc.stdout or "").splitlines():
+            try:
+                last = _json.loads(line)
+            except Exception:
+                continue
+        if not (last and last.get("type") == "done" and os.path.isfile(output_path)):
+            why = (last or {}).get("message") or ("종료 코드 %s" % proc.returncode)
+            raise RuntimeError("Qwen 지정 목소리로 만들지 못했습니다 — %s" % why)
+
+    #: 띄워 둔 실행기 한 조각의 상한(초) — 멈춘 실행기에 갇히지 않게.
+    RESIDENT_TIMEOUT_SEC = 900
+
+    def _via_resident(self, model_dir, speaker, text, instruct, output_path, clone=None):
+        """띄워 둔 실행기로 만든다. 만들었으면 True, 붙지 못했으면 False(예전 길로). 실행기가 실패를 답하면 그 사유로 멈춘다."""
+        addr = os.environ.get("AF_QWEN_PIPE_ADDR", "")
+        key = os.environ.get("AF_QWEN_PIPE_KEY", "")
+        if not (addr and key) or self._resident_off:
+            return False
+        try:
+            from multiprocessing.connection import Client
+            if self._conn is None:
+                # 본체가 준비를 기다린 뒤 합성을 띄우지만, 드물게 늦을 수 있어 잠깐(최대 5초) 다시 붙어 본다.
+                for attempt in range(10):
+                    try:
+                        self._conn = Client(addr, family="AF_PIPE", authkey=key.encode("utf-8"))
+                        break
+                    except FileNotFoundError:
+                        if attempt == 9:
+                            raise
+                        time.sleep(0.5)
+            req = {"model": model_dir, "speaker": speaker, "language": "korean", "text": text,
+                   "out": output_path, "seed": int(getattr(self, "run_seed", 0) or 0), "instruct": instruct or ""}
+            # 카드 멈춤이 이 파일을 만든다(본체가 실행마다 AF_QWEN_STOP_FILE 로 정함) — 실행기가 그 요청만 멈춘다.
+            if os.environ.get("AF_QWEN_STOP_FILE"):
+                req["stop_flag"] = os.environ["AF_QWEN_STOP_FILE"]
+            if clone:
+                req["clone"] = clone
+            self._conn.send(req)
+            if not self._conn.poll(self.RESIDENT_TIMEOUT_SEC):
+                raise TimeoutError("답이 없습니다")
+            r = self._conn.recv()
+        except Exception as e:
+            self._resident_off = True
+            try:
+                if self._conn is not None:
+                    self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
+            emit("progress", message="띄워 둔 Qwen 에 붙지 못해 조각마다 모델을 엽니다(%s)" % type(e).__name__)
+            return False
+        if not (isinstance(r, dict) and r.get("ok")):
+            raise RuntimeError("Qwen 지정 목소리로 만들지 못했습니다 — %s" % ((r or {}).get("error") if isinstance(r, dict) else r))
+        if not os.path.isfile(output_path):
+            raise RuntimeError("Qwen 지정 목소리로 만들지 못했습니다 — 소리 파일이 없습니다")
+        return True
 
 
 # ── GPT-SoVITS Engine (Korean, Japanese, Chinese, English — via isolated venv) ──
@@ -862,6 +1242,63 @@ class QwenTextSegmentTooLongError(RuntimeError):
             f"tokens={production_tokens}, allowed={allowed})")
 
 
+class _ResidentBridgeJob:
+    """띄워 둔 Qwen 실행기(qwen_voice_server)에 맡긴 참조 목소리 작업 — run_job 이 프로세스처럼 다룬다(2026-10-03).
+
+    ★왜: 참조 목소리 합성은 작업마다 브리지 프로세스를 새로 띄워 모델을 열었다(낭독 한 덩이마다 약 9.5초 · 관리자 실측
+      '두 구절 모두 modelOpened=true'). 띄워 둔 실행기가 **같은 qwen_bridge.run_loaded** 를 불러 둔 모델로 돌린다.
+    ★진행 줄은 브리지가 표준 출력으로 내던 것과 **같은 JSON 줄**이 파이프로 온다 — 아래 run_job 의 읽기 고리를 그대로 탄다.
+    ★멈춤: kill() 은 협조적 정지 파일을 만든다(브리지 계수기가 16걸음마다 보고 생성을 정상 반환) — 실행기는 죽이지 않는다
+      (낭독·카드가 함께 쓰는 실행기다). 그리고 연결을 닫는다.
+    """
+    pid = None
+
+    def __init__(self, conn, q, stop_flag):
+        import threading
+        self.returncode = None
+        self.result = None
+        self._conn = conn
+        self._stop_flag = stop_flag
+        threading.Thread(target=self._pump, args=(q,), daemon=True).start()
+
+    def _pump(self, q):
+        try:
+            while True:
+                m = self._conn.recv()
+                if isinstance(m, dict) and "line" in m:
+                    q.put(str(m["line"]) + "\n")
+                    continue
+                self.result = m if isinstance(m, dict) else {}
+                self.returncode = 0 if self.result.get("ok") else 1
+                break
+        except Exception:
+            self.returncode = 1
+        q.put(None)
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        t = time.monotonic()
+        while self.returncode is None:
+            if timeout is not None and time.monotonic() - t > timeout:
+                raise TimeoutError("띄워 둔 Qwen 이 끝나지 않았습니다")
+            time.sleep(0.05)
+        return self.returncode
+
+    def kill(self):
+        if self._stop_flag:
+            try:
+                with open(self._stop_flag, "w") as fh:
+                    fh.write("stop")
+            except OSError:
+                pass
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+
+
 class QwenTTSEngine(TTSEngine):
     """Qwen3-TTS 로컬 Base — 격리 qwen3_tts_venv에서 job bridge로 실행(모델 1회 로딩, 전 문장 배치).
     per-segment가 아니라 run_job 배치. 완전 오프라인(local_files_only)."""
@@ -899,6 +1336,50 @@ class QwenTTSEngine(TTSEngine):
     def synthesize_segment(self, text, ref_audio, emotion_id, speed, output_path):
         raise RuntimeError("QwenTTSEngine은 배치(run_job) 전용입니다. synthesize() 배치 경로를 사용하세요.")
 
+    #: 띄워 둔 실행기를 쓰지 않는다(이 실행 동안) — 한 번 붙지 못하면 다시 시도하지 않는다.
+    _resident_off = False
+
+    def resident_wanted(self):
+        """이 작업을 띄워 둔 실행기에 맡길 것인가(부르는 쪽이 켰고, 파이프가 있고, 이 실행에서 실패한 적이 없다)."""
+        return bool(os.environ.get("AF_QWEN_PIPE_ADDR") and os.environ.get("AF_QWEN_PIPE_KEY")
+                    and os.environ.get("AUDIOFORGE_QWEN_RESIDENT_BRIDGE", "0") == "1"
+                    and not QwenTTSEngine._resident_off and not getattr(self, "_force_process", False))
+
+    def _resident_job(self, cfg, q):
+        """띄워 둔 실행기(파이프)에 작업을 맡긴다. 맡겼으면 _ResidentBridgeJob, 아니면 None(원래 길).
+        ★장치 고르기가 CPU 를 골랐어도 맡긴다 — 실행기가 모델을 **이미 그래픽카드에 들고 있으면** 여유 메모리가 그만큼 적어 보여
+          CPU 로 떨어지기 때문이다(그러면 수십 배 느려진다). 그래픽카드가 정말 모자라면 실행기가 메모리 부족 오류를 내고,
+          그 오류는 위(_synthesize_qwen_job)의 'CPU 로 한 번 다시' 로 간다(CPU 를 골랐던 작업은 여기서 바로 원래 길로).
+        ★부르는 쪽이 켤 때만(AUDIOFORGE_QWEN_RESIDENT_BRIDGE=1) — 낭독이 먼저 쓰고, 카드는 따로 확인한 뒤에 켠다."""
+        addr = os.environ.get("AF_QWEN_PIPE_ADDR", "")
+        key = os.environ.get("AF_QWEN_PIPE_KEY", "")
+        if not self.resident_wanted():
+            return None
+        try:
+            from multiprocessing.connection import Client
+            conn = Client(addr, family="AF_PIPE", authkey=key.encode("utf-8"))
+        except Exception as e:
+            QwenTTSEngine._resident_off = True
+            emit("progress", message="띄워 둔 Qwen 에 붙지 못해 모델을 새로 엽니다(%s)" % type(e).__name__)
+            return None
+        # 협조적 정지 파일 — 본체가 이 작업을 멈추라고 할 때 만든다. 낭독은 AF_QWEN_STOP_FILE 로 정해 주고,
+        #   카드는 **이 작업 폴더(.qwen-job-*)의 .qwen-stop** — 카드 멈춤(audio:cancel)이 그 폴더에 만든다(합성 프로세스를 죽여도 실행기 작업이 남지 않게).
+        _segs = cfg.get("segments") or []
+        _job_dir = os.path.dirname(str(_segs[0].get("out_path") or "")) if _segs else ""
+        stop_flag = os.environ.get("AF_QWEN_STOP_FILE") or (os.path.join(_job_dir, ".qwen-stop") if _job_dir else "")
+        job = dict(cfg)
+        job["device"] = "cuda:0"          # 실행기는 그래픽카드 작업만 한다(없으면 fallback 으로 돌려보낸다)
+        job["stop_flag"] = stop_flag
+        try:
+            conn.send({"bridge_job": job})
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return None
+        return _ResidentBridgeJob(conn, q, stop_flag)
+
     def run_job(self, segments, device, *, seed=None, inactivity_sec=None,
                 startup_deadline_sec=None, monotonic=None):
         """모델 1회 로딩 후 전 세그먼트 합성. Popen으로 stdout JSON을 실시간 읽어 즉시 progress emit.
@@ -934,43 +1415,45 @@ class QwenTTSEngine(TTSEngine):
             cfg["seed"] = int(seed)
         env = {**os.environ, "HF_HOME": _QWEN_HF_HOME, "HF_HUB_OFFLINE": "1",
                "TRANSFORMERS_OFFLINE": "1", "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
-        try:
-            proc = subprocess.Popen(
-                [self._venv_python, "-X", "utf8", "-u", self._bridge],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding="utf-8", errors="replace", env=env)
-        except (OSError, subprocess.SubprocessError) as e:
-            raise RuntimeError(f"Qwen 브리지 실행 오류: {e}")
-
         stderr_tail = []
-
-        def _read_err():
-            try:
-                for ln in proc.stderr:
-                    stderr_tail.append(ln)
-                    if len(stderr_tail) > 40:
-                        stderr_tail.pop(0)
-            except Exception:
-                pass
-        threading.Thread(target=_read_err, daemon=True).start()
-
         q = queue.Queue()
-
-        def _read_out():
+        # ★띄워 둔 실행기가 있으면 그쪽으로(모델을 다시 열지 않는다). 붙지 못하거나 CPU 작업이면 원래대로 새 프로세스.
+        proc = self._resident_job(cfg, q)
+        self.last_resident = proc is not None
+        if proc is None:
             try:
-                for ln in proc.stdout:
-                    q.put(ln)
-            except Exception:
-                pass
-            q.put(None)
-        threading.Thread(target=_read_out, daemon=True).start()
+                proc = subprocess.Popen(
+                    [self._venv_python, "-X", "utf8", "-u", self._bridge],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, encoding="utf-8", errors="replace", env=env)
+            except (OSError, subprocess.SubprocessError) as e:
+                raise RuntimeError(f"Qwen 브리지 실행 오류: {e}")
 
-        try:
-            proc.stdin.write(_json.dumps(cfg, ensure_ascii=False))
-            proc.stdin.close()
-        except Exception as e:
-            _kill_proc_tree(proc)
-            raise RuntimeError(f"Qwen 브리지 입력 전달 오류: {e}")
+            def _read_err():
+                try:
+                    for ln in proc.stderr:
+                        stderr_tail.append(ln)
+                        if len(stderr_tail) > 40:
+                            stderr_tail.pop(0)
+                except Exception:
+                    pass
+            threading.Thread(target=_read_err, daemon=True).start()
+
+            def _read_out():
+                try:
+                    for ln in proc.stdout:
+                        q.put(ln)
+                except Exception:
+                    pass
+                q.put(None)
+            threading.Thread(target=_read_out, daemon=True).start()
+
+            try:
+                proc.stdin.write(_json.dumps(cfg, ensure_ascii=False))
+                proc.stdin.close()
+            except Exception as e:
+                _kill_proc_tree(proc)
+                raise RuntimeError(f"Qwen 브리지 입력 전달 오류: {e}")
 
         seg_out = None
         err_msg = None
@@ -1091,6 +1574,18 @@ class QwenTTSEngine(TTSEngine):
             proc.wait(timeout=10)
         except Exception:
             _kill_proc_tree(proc)
+        if isinstance(proc, _ResidentBridgeJob) and seg_out is None and (
+                (proc.result or {}).get("fallback") or not str(device).startswith("cuda")):
+            # 실행기가 받지 않았거나(그래픽카드 없음), CPU 를 골랐던 작업이 실행기에서 실패했다 — 원래 길(새 프로세스)로 한 번.
+            emit("progress", message="띄워 둔 Qwen 으로 만들지 못해 원래 방식으로 다시 만듭니다")
+            self._force_process = True
+            try:
+                return self.run_job(segments, device, seed=seed, inactivity_sec=inactivity_sec,
+                                    startup_deadline_sec=startup_deadline_sec, monotonic=monotonic)
+            finally:
+                self._force_process = False
+        if isinstance(proc, _ResidentBridgeJob) and seg_out is None and not err_msg:
+            err_msg = (proc.result or {}).get("error") or "띄워 둔 Qwen 과의 연결이 끊겼습니다"
         if tsl_err is not None:
             raise tsl_err  # 분할 불가 — 상위가 감정 ID로 재해석.
         if gl_err is not None:
@@ -1179,6 +1674,22 @@ class QwenTTSEngine(TTSEngine):
 _qwen_engine = None
 
 
+def _resident_wanted(engine):
+    """이 엔진에 띄워 둔 실행기 길을 쓸 것인가 — 엔진의 계약은 run_job 하나라, 그 밖의 손잡이는 있을 때만 묻는다(검사 대역·옛 엔진)."""
+    f = getattr(engine, "resident_wanted", None)
+    return bool(f()) if callable(f) else False
+
+
+def _pick_run_seed():
+    """실행마다 새 씨앗(기본) — AUDIOFORGE_TTS_SEED 로 고정하면 같은 소리를 다시 만든다. (씨앗, 출처)."""
+    import random
+    _seed_env = (os.environ.get("AUDIOFORGE_TTS_SEED") or "").strip()
+    try:
+        return (int(_seed_env), "env") if _seed_env else (random.randrange(1, 2 ** 31 - 1), "random_per_run")
+    except ValueError:
+        return random.randrange(1, 2 ** 31 - 1), "random_per_run"
+
+
 def _get_qwen_engine():
     global _qwen_engine
     if _qwen_engine is None:
@@ -1192,6 +1703,8 @@ ENGINES = {
     "f5tts": F5TTSEngine,
     "kokoro": KokoroEngine,
     "piper": PiperEngine,
+    "supertonic": SupertonicEngine,
+    "qwen-custom": QwenCustomEngine,
     "gptsovits": GPTSoVITSEngine,
 }
 
@@ -1527,6 +2040,52 @@ def _ref_record(emotion_id, prompt_source, degraded, reason_code, transcript_sta
             "transcript_status": transcript_status, "model": model}
 
 
+#: 참조 전사 디스크 캐시의 형식 판 — 전사 방식(모델 호출 인자·정규화)을 바꾸면 올린다(옛 기록을 쓰지 않게).
+REF_TRANSCRIPT_CACHE_V = 1
+
+
+def _ref_transcript_cache_path(ref_audio, model_name):
+    """참조 전사 디스크 캐시 자리 — 본체가 정한 폴더(AF_REF_TRANSCRIPT_CACHE_DIR)가 있을 때만.
+    ★열쇠 = **소리 내용 지문**(경로·시각 아님) + 전사 모델 + 형식 판. 구간을 바꾸면 잘린 소리가 달라 다른 열쇠다."""
+    d = os.environ.get("AF_REF_TRANSCRIPT_CACHE_DIR") or ""
+    if not d:
+        return None
+    try:
+        import hashlib
+        h = hashlib.sha256()
+        with open(ref_audio, "rb") as fh:
+            for b in iter(lambda: fh.read(1 << 20), b""):
+                h.update(b)
+        safe_model = "".join(ch for ch in str(model_name) if ch.isalnum() or ch in "-_.")
+        return os.path.join(d, "%s-%s-v%d.json" % (h.hexdigest()[:40], safe_model, REF_TRANSCRIPT_CACHE_V))
+    except OSError:
+        return None
+
+
+def _ref_transcript_cache_get(path):
+    import json
+    try:
+        with open(path, encoding="utf-8") as fh:
+            j = json.load(fh)
+        if j.get("v") == REF_TRANSCRIPT_CACHE_V and isinstance(j.get("text"), str) and j["text"].strip():
+            return j
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _ref_transcript_cache_put(path, text, language, model_name):
+    import json
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".part"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"v": REF_TRANSCRIPT_CACHE_V, "text": text, "language": language, "model": model_name}, fh, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError:
+        pass                    # 쌓지 못해도 합성은 그대로
+
+
 def _resolve_qwen_ref_text(ref_audio, overrides_by_path, warned, degrade_sink=None,
                            emotion_id=None):
     """Qwen용 (ref_text, x_vector_only) 결정 — 수동/자동/ref-free 정책 재사용.
@@ -1591,13 +2150,26 @@ def _resolve_qwen_ref_text(ref_audio, overrides_by_path, warned, degrade_sink=No
         res, crec = _qwen_ref_text_cache[key]
         _record(dict(crec, emotion_id=emotion_id))
         return res
-    t = transcribe_reference(ref_audio, _QWEN_REF_TRANSCRIBE_MODEL)
+    # ★참조 카드는 생성마다 새 프로세스라 위 캐시가 늘 비어 있었다 — 같은 참조로 다시 만들 때마다 Whisper 전사(실측 20~31초)를 되풀이했다(2026-10-03).
+    #   같은 소리 내용·같은 전사 모델·같은 형식이면 디스크에 쌓아 둔 **성공한 자동 전사**를 쓴다. 실패·빈 결과는 쌓지 않는다(다음에 다시 전사).
+    #   생성 자체는 그대로 새로 한다 — '다시 생성' 은 새 소리다(이것은 모델에 주는 조건만 다시 쓰는 것이다).
+    cpath = _ref_transcript_cache_path(ref_audio, _QWEN_REF_TRANSCRIBE_MODEL)
+    hit = _ref_transcript_cache_get(cpath) if cpath else None
+    if hit:
+        from reference_transcript import ReferenceTranscript
+        t = ReferenceTranscript(source_path=ref_audio, status=STATUS_OK, text=hit["text"], language=hit.get("language"),
+                                model_name=_QWEN_REF_TRANSCRIBE_MODEL, error_code=None, error_message=None,
+                                file_size=None, file_mtime_ns=None)
+    else:
+        t = transcribe_reference(ref_audio, _QWEN_REF_TRANSCRIBE_MODEL)
+        if cpath and t.status == STATUS_OK and (t.text or "").strip():
+            _ref_transcript_cache_put(cpath, t.text, t.language, _QWEN_REF_TRANSCRIBE_MODEL)
     if t.status == STATUS_OK and (t.text or "").strip():
         res = (t.text, False)
         rec = _ref_record(emotion_id, "auto", False, None, t.status, _QWEN_REF_TRANSCRIBE_MODEL)
         if ("auto", ap) not in warned:
             warned.add(("auto", ap))
-            emit("progress", percent=9, message=f"참조 전사(자동, ICL): {t.language}, {len(t.text)}자")
+            emit("progress", percent=9, message=f"참조 전사(자동, ICL{', 쌓아 둔 것' if hit else ''}): {t.language}, {len(t.text)}자")
     else:
         res = ("", True)
         # error_code 만 옮긴다(error_message 는 경로를 담을 수 있어 절대 옮기지 않는다).
@@ -2243,7 +2815,12 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
     qwen = _get_qwen_engine()
     t_start = time.monotonic()
 
-    dev, reason = select_device("auto", min_free_mb=_QWEN_MIN_FREE_MB)
+    # ★띄워 둔 실행기에 맡길 작업이면 장치 고르기(torch 불러오기 + 그래픽카드 조회, 덩이마다 약 1.5초 — 2026-10-03 실측)를 건너뛴다.
+    #   그 실행기가 이미 그래픽카드에 모델을 들고 있다. 붙지 못하면 run_job 이 원래 길로 가고, 메모리 부족이면 아래 CPU 재시도가 그대로 돈다.
+    if _resident_wanted(qwen):
+        dev, reason = "cuda", "띄워 둔 실행기(그래픽카드)"
+    else:
+        dev, reason = select_device("auto", min_free_mb=_QWEN_MIN_FREE_MB)
     device = "cuda:0" if dev == "cuda" else "cpu"
     device_source = _parse_device_source(reason)
     device_reason = reason or None      # 기록에 남길 사유 전문(화면에 띄우는 그 값)
@@ -2466,12 +3043,7 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         # 예전에는 씨앗을 심지도, 기록하지도 않아서 옵션을 켜고 끄며 비교한 결과가
         # 옵션 차이인지 난수 차이인지 구분할 수 없었다(2026-09-08 조사에서 확인).
         # AUDIOFORGE_TTS_SEED 로 고정하면 같은 소리를 다시 만들 수 있다.
-        _seed_env = (os.environ.get("AUDIOFORGE_TTS_SEED") or "").strip()
-        try:
-            run_seed = int(_seed_env) if _seed_env else random.randrange(1, 2 ** 31 - 1)
-        except ValueError:
-            run_seed = random.randrange(1, 2 ** 31 - 1)
-        seed_source = "env" if _seed_env else "random_per_run"
+        run_seed, seed_source = _pick_run_seed()
 
         try:
             try:
@@ -3047,6 +3619,21 @@ def _environment_facts(device=None):
         out["env_os"] = f"{platform.system()} {platform.release()}"
     except Exception:
         pass
+    # ★띄워 둔 실행기가 만드는 작업이면 이 프로세스는 torch 를 쓰지 않는다 — 기록 하나 때문에 torch 를 불러오면
+    #   덩이마다 약 1.5초가 든다(2026-10-03 실측). 같은 사실(그래픽카드 이름·여유 메모리)을 nvidia-smi 로 남긴다.
+    if _resident_wanted(_get_qwen_engine()):
+        out["env_runner"] = "resident"
+        try:
+            import subprocess
+            r = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.free,memory.total", "--format=csv,noheader,nounits"],
+                               capture_output=True, text=True, timeout=5)
+            name, free_mb, total_mb = [x.strip() for x in (r.stdout or "").splitlines()[0].split(",")[:3]]
+            out["gpu_name"] = name
+            out["gpu_vram_free_mb"] = int(float(free_mb))
+            out["gpu_vram_total_mb"] = int(float(total_mb))
+        except Exception:
+            pass
+        return out
     try:
         import torch
         out["env_torch"] = str(torch.__version__)
@@ -3373,7 +3960,8 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                expressive_mode="legacy_v2", reference_conditioning_mode=None,
                speaker_refs=None, speaker_ref_sources=None, speaker_emotion_refs=None,
                emotion_candidate_selections=None,
-               speaker_labels=None, speaker_mode="single", reference_region=None):
+               speaker_labels=None, speaker_mode="single", reference_region=None,
+               builtin_model=None):
     """Synthesize speech. Auto-selects engine by language.
     speaker_mode: 'single' | 'multi' — 생성 방식(대본 내용이 아니다). single 이면 화자 표기가 있어도
       모든 발화를 한 명의 기본/감정 참조로 만들고 화자 참조·전용 참조·후보 선택은 개입하지 않는다.
@@ -3458,9 +4046,14 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
     # 감정 참조 준비가 실패해도, 이미 만든 임시 폴더가 새지 않게 한다.
     tmp_dirs = []
     try:
-        ref_wav, tmp_ref_dir = _prepare_ref(reference_audio)
-        if tmp_ref_dir:
-            tmp_dirs.append(tmp_ref_dir)
+        # ★기본 목소리(설치된 로컬 모델)는 참조 소리가 없다 — 준비할 것이 없다.
+        #   없는 파일을 만들어 넘기지 않는다. 참조를 쓰는 엔진이라면 아래 라우팅에서 드러난다.
+        if reference_audio:
+            ref_wav, tmp_ref_dir = _prepare_ref(reference_audio)
+            if tmp_ref_dir:
+                tmp_dirs.append(tmp_ref_dir)
+        else:
+            ref_wav = None
         ref_cache = {"default": ref_wav}
 
         # 감정 참조(계약 §5 4불변식) — 실제 대사에서 '사용된' 감정만 검증한다(미사용은 무시·bridge 미전달).
@@ -3585,12 +4178,18 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             profile_of=_profile_of_ref,
             # 사용자가 후보 비교 화면에서 고른 것. 잠정 제안이 사람의 선택을 덮지 않는다.
             user_selections=_prepared_selections)
-        # 전수 점검을 먼저 한다 — 모델을 올린 뒤 절반 만들고 막히면 헛수고가 된다.
-        ref_table.preflight([(sp, e) for e, _t, sp in parsed])
-        # 라우팅 스냅샷 — 발화별 참조를 여기서(모델 로딩 전) 확정하고 작업이 끝날 때까지 바꾸지 않는다.
-        _routing = ref_table.freeze_routing(parsed, speaker_mode=speaker_mode)
-        emit("stage", stage="routing_snapshot", utterances=len(_routing),
-             speaker_mode=speaker_mode, rules=_routing.rule_counts())
+        # ★기본 목소리(설치된 로컬 모델)는 참조를 쓰지 않는다 — 참조 표를 굳히지 않는다.
+        #   굳히면 '기본 참조가 없다' 로 막힌다. 참조가 없는 것이 이 길에서는 정상이다.
+        if builtin_model:
+            emit("stage", stage="builtin_voice", utterances=len(parsed),
+                 model=os.path.basename(builtin_model))
+        else:
+            # 전수 점검을 먼저 한다 — 모델을 올린 뒤 절반 만들고 막히면 헛수고가 된다.
+            ref_table.preflight([(sp, e) for e, _t, sp in parsed])
+            # 라우팅 스냅샷 — 발화별 참조를 여기서(모델 로딩 전) 확정하고 작업이 끝날 때까지 바꾸지 않는다.
+            _routing = ref_table.freeze_routing(parsed, speaker_mode=speaker_mode)
+            emit("stage", stage="routing_snapshot", utterances=len(_routing),
+                 speaker_mode=speaker_mode, rules=_routing.rule_counts())
         _speaker_duplicates = ref_table.duplicate_paths()
         if _speaker_duplicates:
             # 막지 않는다(같은 목소리를 여럿에 쓰는 것은 사용자의 선택). 사실만 알린다.
@@ -3667,7 +4266,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                 auto_fallback=_auto_fallback, failure_code=_failure_code, attempts=_attempts)
             meta = _build_tts_metadata(
                 requested_engine=requested_engine,
-                original_reference_path=reference_audio, effective_reference_path=reference_audio,
+                original_reference_path=reference_audio or "", effective_reference_path=reference_audio or "",
                 reference_region=reference_region, speed=float(speed), silence_gap=float(silence_gap),
                 **_rc_meta, **_plan_meta, **info)
             tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
@@ -3682,19 +4281,35 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
 
         segment_paths = []
         seg_engines = []
+        # ★Qwen 지정 목소리(소희 등)는 씨앗을 받는다 — 예전에는 늘 0 이라 '다시 생성' 이 매번 **같은 소리**였다(2026-10-03 실측: 세 번 모두 같은 지문).
+        #   실행마다 새 씨앗을 뽑아 기록하고, 조각마다 씨앗+순번으로 심는다(배치 경로와 같은 방식). 낭독은 이 길을 쓰지 않는다(따로 0 고정·캐시).
+        seg_seed, seg_seed_source = _pick_run_seed()
+        seg_seed_used = False
 
         for i, (emotion_id, line_text, speaker_id) in enumerate(parsed):
             pct = 25 + int((i / len(parsed)) * 60)
             # 화면·Qwen 경로와 같은 표를 같은 방식으로 본다(두 경로가 다른 참조를 쓰면 안 된다).
-            _frozen = getattr(ref_table, "routing", None)
-            ref = (_frozen[i]["path"] if _frozen is not None and len(_frozen) == len(parsed)
-                   else ref_table.resolve_with_emotion(
-                           None if getattr(ref_table, "speaker_mode", "single") == "single" else speaker_id,
-                           emotion_id)["path"])
+            if builtin_model:
+                # ★기본 목소리는 참조를 쓰지 않는다 — 참조 표에 묻지 않는다.
+                #   물으면 '기본 참조가 없다' 로 막힌다(참조가 없는 것이 정상인데도).
+                ref = None
+            else:
+                _frozen = getattr(ref_table, "routing", None)
+                ref = (_frozen[i]["path"] if _frozen is not None and len(_frozen) == len(parsed)
+                       else ref_table.resolve_with_emotion(
+                               None if getattr(ref_table, "speaker_mode", "single") == "single" else speaker_id,
+                               emotion_id)["path"])
             emotion_label = next((k for k, v in EMOTION_TAGS.items() if v == emotion_id), emotion_id)
 
             # Select engine based on text language
             engine = _select_engine(line_text, preferred_engine)
+            # 화면이 고른 기본 목소리 모델을 그 엔진에 실어 준다.
+            # ★엔진을 자동으로 다른 목소리로 바꾸지 않는다 — 고른 모델이 안 열리면 그 카드가 운다.
+            if builtin_model and isinstance(engine, (PiperEngine, SupertonicEngine, QwenCustomEngine)):
+                engine.model_path = builtin_model
+            if isinstance(engine, QwenCustomEngine):
+                engine.run_seed = (seg_seed + i) % (2 ** 31 - 1)
+                seg_seed_used = True
             engine_name = engine.name
             seg_engines.append(engine_name)
 
@@ -3706,7 +4321,15 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                 lang = _detect_language(line_text)
                 engine.load(lang)
 
-            engine.synthesize_segment(line_text, ref, emotion_id, speed, seg_path)
+            # ★소리로 내지 않는 기호를 뺀 글을 엔진에 보낸다(2026-09-30 사용자 신고 — 따옴표·별표·기호 뭉치를
+            #   '에 에 에' 로 소리 냈다). 파서가 낸 글(line_text)은 그대로 둔다 — 기록·지문 대조의 기준이다.
+            #   규칙은 speech_symbols 한 곳(화면 쪽 speechSymbols.ts 와 같은 사례로 검사).
+            say_text = strip_spoken_symbols(line_text)
+            if not say_text and not isinstance(engine, (PiperEngine, SupertonicEngine, QwenCustomEngine)):
+                # 기호만 있던 줄 — piper·Supertonic 은 빈 글을 짧은 쉼으로 쓴다. 다른 엔진은 빈 글을
+                # 받아 본 적이 없다(이어 붙이기는 빈 조각을 거절한다) — 그 엔진들만 예전처럼 원문을 보낸다.
+                say_text = line_text
+            engine.synthesize_segment(say_text, ref, emotion_id, speed, seg_path)
             segment_paths.append(seg_path)
 
         # Concatenate
@@ -3763,8 +4386,9 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             out_sr = int(_sf2.info(final_path).samplerate)
         except Exception:
             out_sr = None
+        # 기본 목소리에는 참조가 없다 — 없는 경로로 덮어쓰기 규칙을 뒤지지 않는다.
         default_ref = ref_cache["default"]
-        ov_def = (overrides_by_path or {}).get(os.path.abspath(default_ref)) or {}
+        ov_def = ((overrides_by_path or {}).get(os.path.abspath(default_ref)) or {}) if default_ref else {}
         if ov_def.get("mode") == "ref_free":
             p_src = "x-vector-only"
         elif (ov_def.get("manual_text") or "").strip():
@@ -3789,9 +4413,10 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             device=_gsv_dev.get("actual_device"),
             device_selection_source=_gsv_dev.get("device_selection_source"),
             prompt_source=p_src,
-            x_vector_only_mode=None, original_reference_path=reference_audio,
-            effective_reference_path=reference_audio, reference_region=reference_region,
-            target_language=tgt2, seed=None, seed_supported=False,
+            x_vector_only_mode=None, original_reference_path=reference_audio or "",
+            effective_reference_path=reference_audio or "", reference_region=reference_region,
+            target_language=tgt2, seed=(seg_seed if seg_seed_used else None), seed_supported=seg_seed_used,
+            **({"seed_source": seg_seed_source} if seg_seed_used else {}),
             speed=float(speed), speed_postprocessed=False, silence_gap=float(silence_gap),
             fallback=fb, fallback_reason=("Qwen3 사용 불가 → 기존 엔진 폴백" if fb else None),
             elapsed_seconds=round(_time.monotonic() - _t0, 2), output_sample_rate=out_sr,

@@ -36,7 +36,7 @@ function scriptPath(): string {
 
 /** 파이썬을 부르고 JSON 을 받아 온다. 실패는 **사유를 들고** 올라간다. */
 function runCli(python: string, args: string[]): Promise<Record<string, unknown>> {
-  const out = join(tmpdir(), `af-pitch-${process.pid}-${Date.now()}.json`)
+  const out = join(tmpdir(), `audioforge_pitch_${process.pid}-${Date.now()}.json`)
   return new Promise((resolve, reject) => {
     execFile(python, ['-X', 'utf8', scriptPath(), ...args, '--out', out],
       { windowsHide: true, maxBuffer: 1 << 20 }, (err) => {

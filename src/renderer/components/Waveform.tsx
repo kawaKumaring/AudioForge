@@ -1,9 +1,12 @@
+import SpeakerControl from './SpeakerControl'
+import { attachPlaybackBoost } from '../lib/playbackBoost'
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import WaveSurfer from 'wavesurfer.js'
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js'
 import { useAppStore } from '@/stores/app.store'
 import { detectSilence, estimateProcessedDuration, type SilenceAnalysis } from '@/lib/silenceDetect'
 import { usePlaybackVolume } from '@/hooks/usePlaybackVolume'
+import { loadWave } from '@/lib/waveLoad'
 
 const MODE_WAVE_COLORS: Record<string, { wave: string; progress: string; cursor: string; btn: string; btnGlow: string }> = {
   music:        { wave: 'rgba(139,92,246,0.25)', progress: 'rgba(139,92,246,0.7)', cursor: '#a78bfa', btn: 'linear-gradient(135deg,#8b5cf6,#7c3aed)', btnGlow: 'rgba(139,92,246,0.2)' },
@@ -25,16 +28,19 @@ function hexToRgba(hex: string, alpha: number): string {
 }
 
 export default function Waveform() {
-  const { fileUrl, mode, silenceGap, silencePreview, setSilencePreview } = useAppStore()
+  const { fileInfo, fileUrl, mode, silenceGap, silencePreview, setSilencePreview, waveRange, clearWaveRange, audioClaim } = useAppStore()
   const containerRef = useRef<HTMLDivElement>(null)
   const wsRef = useRef<WaveSurfer | null>(null)
   const regionsRef = useRef<ReturnType<typeof RegionsPlugin.create> | null>(null)
   const [isPlaying, setIsPlaying] = useState(false)
   const [currentTime, setCurrentTime] = useState('0:00')
   const [duration, setDuration] = useState('0:00')
+  const [loadState, setLoadState] = useState<'loading' | 'ready' | 'error'>('loading')
+  const [retry, setRetry] = useState(0)
+  const [playError, setPlayError] = useState('')
   // 재생 볼륨(듣기 전용 — 파일에 영향 없음). 값은 앱 공용이고 보관된다 —
   // 예전에는 여기 지역 상태여서 화면을 다시 그리거나 앱을 다시 켜면 100% 로 되돌아갔다.
-  const { volume, change: changeVolume, commit: commitVolume, saveFailed: volumeSaveFailed } = usePlaybackVolume()
+  const { volume } = usePlaybackVolume()
   const [decoded, setDecoded] = useState(false)
   const [analysis, setAnalysis] = useState<SilenceAnalysis | null>(null)
   const [computing, setComputing] = useState(false)
@@ -52,7 +58,13 @@ export default function Waveform() {
 
   useEffect(() => {
     if (!containerRef.current || !fileUrl) return
-    wsRef.current?.destroy()
+    let disposed = false
+    setLoadState('loading')
+    setCurrentTime('0:00')
+    setDuration('0:00')
+    setIsPlaying(false)
+    setPlayError('')
+    setComputing(false)
     setDecoded(false)
     setAnalysis(null)
     setSelIdx(0)
@@ -70,28 +82,86 @@ export default function Waveform() {
       dragToSeek: true, // 드래그로 스크럽/이동 (왼쪽으로 넘겨 끌면 처음으로)
       plugins: [regions]
     })
+    attachPlaybackBoost(ws.getMediaElement())
 
-    ws.on('play', () => setIsPlaying(true))
-    ws.on('pause', () => setIsPlaying(false))
-    ws.on('timeupdate', (t) => setCurrentTime(formatTime(t)))
-    ws.on('decode', (d) => { setDuration(formatTime(d)); setDecoded(true) })
-    // 개발 실행의 StrictMode 는 이 effect 를 setup -> cleanup -> setup 으로 두 번 부른다.
-    // 그러면 load() 가 끝나기 전에 destroy() 가 돌고, wavesurfer 내부 AbortController 가
-    // 그 요청을 끊어 `AbortError` 가 처리되지 않은 거부로 남는다 — 화면은 멀쩡하지만
-    // renderer 에 uncaught 오류가 쌓여 진짜 오류를 가린다.
-    // 끊긴 로드는 **정상적인 정리의 결과**이므로 여기서만 삼킨다. 그 밖의 로드 실패는
-    // 그대로 올려 보낸다 — 파일을 못 읽은 것을 조용히 감추면 안 된다.
-    void ws.load(fileUrl).catch((err: unknown) => {
-      if ((err as Error)?.name === 'AbortError') return
-      throw err
-    })
     wsRef.current = ws
+    const fail = () => {
+      if (disposed) return
+      setLoadState('error')
+      setDecoded(false)
+      setAnalysis(null)
+      setIsPlaying(false)
+    }
+    ws.on('play', () => { if (!disposed) setIsPlaying(true) })
+    ws.on('pause', () => {
+      if (disposed) return
+      setIsPlaying(false)
+      // 구간 듣기가 끝났다 — 부탁한 쪽이 알 수 있게 요청을 비운다.
+      useAppStore.getState().clearWaveRange()
+    })
+    ws.on('timeupdate', (t) => { if (!disposed) setCurrentTime(formatTime(t)) })
+    ws.on('decode', (d) => {
+      if (!disposed) { setDuration(formatTime(d)); setDecoded(true) }
+    })
+    ws.on('ready', () => { if (!disposed) setLoadState('ready') })
+    // StrictMode 정리·빠른 이동 뒤 옛 요청의 실패가 새 파형 상태를 덮지 않는다.
+    // 읽기 실패는 사용자가 복구할 수 있게 표시하며, 처리되지 않은 Promise로 버리지 않는다.
+    // ★앱이 받아 넘긴다 — 화면을 바꿀 때 우리가 먼저 끊으면 '취소' 로 조용히 끝난다(진짜 실패만 fail). lib/waveLoad.
+    const loading = new AbortController()
+    void loadWave(ws, fileUrl, loading.signal).catch(fail)
 
-    return () => { ws.destroy(); wsRef.current = null; regionsRef.current = null; setIsPlaying(false) }
-  }, [fileUrl, mode])
+    return () => {
+      disposed = true
+      loading.abort()
+      ws.destroy()
+      if (wsRef.current === ws) { wsRef.current = null; regionsRef.current = null }
+    }
+  }, [fileUrl, retry])
 
-  // 재생 볼륨 적용(듣기 전용 — Web Audio 게인, 파일 미변경). 파일/모드 재초기화 후에도 재적용.
-  useEffect(() => { wsRef.current?.setVolume(volume) }, [volume, fileUrl, mode])
+  /**
+   * **다른 화면이 부탁한 구간**을 여기서 튼다(대화 작업실 등).
+   *
+   * ★부탁하는 쪽이 제 오디오 요소를 따로 들지 않게 한다 — 같은 원본을 두 군데서 틀면
+   *   소리가 겹치고 음량 설정도 갈라진다. 틀 자리는 파형 하나뿐이다.
+   */
+  // 부탁으로 틀고 있는가. **부탁이 걷히면 멈춰야 하므로** 따로 기억한다.
+  const askedRef = useRef(false)
+  useEffect(() => {
+    const ws = wsRef.current
+    if (!ws) return
+    if (!waveRange) {
+      // ★부탁이 걷혔다 — 부탁한 화면이 떠났거나 사용자가 멈춤을 눌렀다.
+      //   여기서 멈추지 않으면 **화면을 떠난 뒤에도 소리가 계속 난다**(2026-09-28 실측).
+      //   사용자가 파형을 직접 틀어 둔 것은 건드리지 않는다 — 부탁으로 튼 것만 멈춘다.
+      if (askedRef.current) {
+        askedRef.current = false
+        try { ws.pause() } catch { /* 이미 멈춤 */ }
+      }
+      return
+    }
+    askedRef.current = true
+    const mine = waveRange.token
+    void ws.play(Math.max(0, waveRange.start), waveRange.end).catch(() => {
+      if (wsRef.current === ws) setPlayError('재생을 시작하지 못했습니다. 다시 눌러 주세요.')
+      clearWaveRange(mine)
+    })
+  }, [waveRange, clearWaveRange])
+
+  /**
+    * **소리는 한 번에 한 곳만.** 결과 재생기가 자리를 가져가면 여기서 멈춘다.
+    * (예전에는 원본 파형과 결과 재생기가 함께 울릴 수 있었다.)
+    */
+  useEffect(() => {
+    if (audioClaim && audioClaim.owner !== 'waveform') {
+      try { wsRef.current?.pause() } catch { /* noop */ }
+    }
+  }, [audioClaim])
+
+  // 같은 원본에서 메뉴만 바꾸면 색만 바꾼다. 디코드·재생 위치를 초기화하지 않는다.
+  useEffect(() => {
+    wsRef.current?.setOptions({ waveColor: colors.wave, progressColor: colors.progress, cursorColor: colors.cursor })
+  }, [colors, fileUrl, retry])
+  useEffect(() => { wsRef.current?.setVolume(volume) }, [volume, fileUrl, retry])
 
   // 미리보기 켜지고 디코드 완료 시 감지 계산(1회, 지연 실행으로 클릭 블로킹 방지 — 설계 §5 R5)
   useEffect(() => {
@@ -143,7 +213,9 @@ export default function Waveform() {
     const [s, e] = which === 'start'
       ? [r.start, r.start + span]
       : [r.end - span, r.end]
-    ws.play(s, e)
+    void ws.play(s, e).catch(() => {
+      if (wsRef.current === ws) setPlayError('재생을 시작하지 못했습니다. 다시 눌러 주세요.')
+    })
   }
 
   const step = (delta: number) => {
@@ -162,14 +234,22 @@ export default function Waveform() {
   })
 
   return (
-    <div style={{ padding: '0 16px 12px' }}>
-      <div ref={containerRef} style={{ marginBottom: 8 }} />
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+    <div data-testid="source-waveform" data-state={loadState} style={{ margin: '0 16px 12px', padding: 8, background: 'var(--bg-base)', borderRadius: 9 }}>
+      {loadState === 'loading' && <div role="status" style={{ padding: '12px 0', color: 'var(--text-muted)', fontSize: 12 }}>원본 파형을 불러오는 중…</div>}
+      {loadState === 'error' && <div role="alert" data-testid="waveform-error" style={{ padding: '12px 14px', marginBottom: 10, borderRadius: 8, background: 'var(--rose-glow)', color: 'var(--text-primary)', fontSize: 12, lineHeight: 1.7 }}>
+        <strong>원본을 읽지 못했습니다.</strong>
+        <div style={{ color: 'var(--text-secondary)' }}>파일 위치와 접근 권한을 확인하고 다시 읽어 주세요. 위치가 바뀌었다면 위의 ‘파일 변경’에서 선택할 수 있습니다.</div>
+        <details style={{ marginTop: 6, color: 'var(--text-muted)' }}><summary style={{ cursor: 'pointer' }}>현재 원본 경로</summary><div style={{ overflowWrap: 'anywhere' }}>{fileInfo?.path}</div></details>
+        <button type="button" className="btn btn-ghost" data-testid="waveform-retry" onClick={() => setRetry(v => v + 1)} style={{ marginTop: 8, padding: '6px 12px', fontSize: 12 }}>다시 읽기</button>
+      </div>}
+      <div ref={containerRef} style={{ marginBottom: 8, display: loadState === 'error' ? 'none' : undefined }} />
+      {playError && <div role="alert" style={{ marginBottom: 8, color: 'var(--rose)', fontSize: 12 }}>{playError}</div>}
+      <div data-testid="waveform-controls" style={{ display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) 32px minmax(0, 1fr)', alignItems: 'center', columnGap: 10 }}>
         {/* 왼쪽: 시간 + (Layer 1) 무음 미리보기 ghost 토글 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0 }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, minWidth: 0, flexWrap: 'wrap' }}>
           <span style={{ fontSize: 10, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>{currentTime}</span>
           {canPreview && (
-            <button onClick={() => setSilencePreview(!silencePreview)}
+            <button disabled={loadState !== 'ready'} onClick={() => setSilencePreview(!silencePreview)}
               title="제거될 무음 구간을 파형에 표시하고 경계를 들어봅니다"
               style={{
                 display: 'flex', alignItems: 'center', gap: 3, padding: '2px 7px', borderRadius: 6,
@@ -186,9 +266,18 @@ export default function Waveform() {
           )}
         </div>
         {/* 가운데: 재생 */}
-        <button onClick={() => wsRef.current?.playPause()} style={{
+        <button type="button" data-testid="waveform-play" aria-label={isPlaying ? '원본 일시정지' : '원본 재생'} disabled={loadState !== 'ready'} onClick={() => {
+          useAppStore.getState().claimAudio('waveform')   // 소리 낼 자리를 가져온다
+          const ws = wsRef.current
+          if (!ws || loadState !== 'ready') return
+          setPlayError('')
+          void ws.playPause().catch(() => {
+            if (wsRef.current === ws) setPlayError('재생을 시작하지 못했습니다. 다시 눌러 주세요.')
+          })
+        }} style={{
+          opacity: loadState === 'ready' ? 1 : 0.4,
           display: 'flex', alignItems: 'center', justifyContent: 'center',
-          width: 32, height: 32, borderRadius: '50%', border: 'none', cursor: 'pointer',
+          width: 32, height: 32, borderRadius: '50%', border: 'none', cursor: loadState === 'ready' ? 'pointer' : 'not-allowed',
           background: isPlaying ? `${colors.cursor}20` : colors.btn,
           boxShadow: isPlaying ? 'none' : `0 2px 12px ${colors.btnGlow}`
         }}>
@@ -203,29 +292,14 @@ export default function Waveform() {
           )}
         </button>
         {/* 오른쪽: 볼륨(듣기 전용) + 길이 */}
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <div title={volumeSaveFailed
-            ? '재생 볼륨 — 이 값을 기억하지 못했습니다(이번 실행에만 적용됩니다).'
-            : '재생 볼륨 (듣기 전용 · 원본 파일에는 영향 없음) — 정한 값이 다음에도 그대로 쓰입니다.'}
-            style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-              {volume < 0.01
-                ? <><line x1="23" y1="9" x2="17" y2="15" /><line x1="17" y1="9" x2="23" y2="15" /></>
-                : <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />}
-            </svg>
-            <input type="range" min="0" max="1" step="0.05" value={volume}
-              data-testid="waveform-volume" aria-label="재생 볼륨 (듣기 전용, 원본에 영향 없음)"
-              onChange={(e) => changeVolume(parseFloat(e.target.value))}
-              onPointerUp={commitVolume} onKeyUp={commitVolume} onBlur={commitVolume}
-              style={{ width: 60, accentColor: colors.cursor, cursor: 'pointer', height: 4 }} />
-          </div>
-          <span style={{ fontSize: 10, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>{duration}</span>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, minWidth: 0, flexWrap: 'wrap' }}>
+          <SpeakerControl id="waveform" />
+          <span style={{ fontSize: 10, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>{loadState === 'ready' ? duration : '—'}</span>
         </div>
       </div>
 
       {/* Layer 2: 미리보기 켤 때만 펼쳐지는 얇은 스트립 */}
-      {canPreview && silencePreview && (
+      {canPreview && silencePreview && loadState === 'ready' && (
         <div style={{
           marginTop: 8, padding: '8px 10px', borderRadius: 8,
           background: 'var(--bg-elevated)', border: '1px solid var(--border-subtle)',

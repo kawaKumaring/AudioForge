@@ -16,6 +16,7 @@
 // 통과시키면 이 파일은 존재 이유가 없다).
 //
 // 원문은 남기지 않는다 — requestId·SHA 앞자리·상태·코드·소요 시간만 본다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { chromium } from 'playwright'
 import { spawn, execFileSync } from 'child_process'
 import fs from 'fs'

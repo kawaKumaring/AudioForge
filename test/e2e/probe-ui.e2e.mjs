@@ -1,4 +1,5 @@
 // 화면 구조 확인용 — 참조를 올린 뒤 실제로 무엇이 보이는지 그대로 찍는다.
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { spawn, execFileSync } from 'child_process'
 import { chromium } from 'playwright'
 import fs from 'fs'

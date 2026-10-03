@@ -5,10 +5,11 @@
 // 되살리는 동작 자체는 유지한다(합성하지 않고 닫아도 남는 것이 목적). 다만 **보여 주고 고르게** 한다.
 //
 // 실행: node test/e2e/work-draft-restore-notice.e2e.mjs   (사전: npm run build. GPU 불필요)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
-import { isolatedInput, cleanupIsolated, isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, isolatedUserData, cleanupUserData, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
@@ -29,12 +30,18 @@ async function launch() {
   })
   const win = await app.firstWindow()
   await win.waitForLoadState('domcontentloaded')
-  await win.waitForFunction(() => !!window.__afStore, undefined, { timeout: 30000 })
+  await win.waitForFunction(() => !!window.__afStore && !!window.__synthesisCards, undefined, { timeout: 30000 })
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await win.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
     s.setState({ mode: 'tts', synthesisTab: 'advanced' })
   }, SRC)
+  // ★작업 되살리기는 **옛 버전**(대본·배역 편집) 화면의 기능이다. 합성의 기본 진입이
+  //   생성 카드로 바뀌었으므로(2026-09-27 버전 탭) 그 탭으로 들어간다.
+  //   검증 의도는 그대로다 — 되살아나는가, 그리고 되살렸다고 화면이 말하는가.
+  await win.getByTestId('open-legacy-synthesis').click()
+  await win.getByTestId('synthesis-tabs').waitFor({ timeout: 15000 })
   await sleep(1500)
   return { app, win }
 }

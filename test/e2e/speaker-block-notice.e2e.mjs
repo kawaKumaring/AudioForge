@@ -6,11 +6,12 @@
 // 소스 문자열 검사는 이걸 못 잡았다(문구가 있기는 했다 — 닿지 않았을 뿐이다). 그래서 화면을 본다.
 //
 // 실행: node test/e2e/speaker-block-notice.e2e.mjs   (사전: npm run build. GPU 불필요)
+import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import { createHash } from 'crypto'
 import path from 'path'
-import { isolatedInput, cleanupIsolated, isolatedUserData, cleanupUserData } from './_e2e-helper.mjs'
+import { isolatedInput, cleanupIsolated, isolatedUserData, cleanupUserData, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
@@ -33,16 +34,19 @@ try {
   const win = await app.firstWindow()
   await win.waitForLoadState('domcontentloaded')
   await win.waitForFunction(() => !!window.__afStore, undefined, { timeout: 30000 })
+  await enterStudio(win)        // 시작 화면의 '작업실 시작'(2026-10-03)
   await win.evaluate(async (p) => {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
     s.setState({ mode: 'tts', synthesisTab: 'advanced' })
   }, SRC)
+  await win.getByTestId('open-legacy-synthesis').click()
+  await win.getByTestId('synthesis-tabs').waitFor()
   await sleep(1200)
 
   // 파이썬이 막은 그대로를 재현한다 — message 가 코드와 같다(SpeakerReferenceError 의 실제 모양).
   const push = (code) => win.evaluate((c) => {
-    window.__afStore.setState({ status: 'error', error: c, errorInfo: { code: c } })
+    window.__afStore.getState().setError(c, { code: c })
   }, code)
 
   for (const code of ['SPEAKER_NOT_REGISTERED', 'SPEAKER_REFERENCE_NOT_READY']) {
@@ -89,7 +93,7 @@ try {
   // 화자와 무관한 오류는 예전 그대로다(이 수정이 다른 안내를 덮지 않았다).
   await win.evaluate(() => {
     window.__afStore.setState({
-      status: 'error', error: '알 수 없는 오류가 발생했습니다.', errorInfo: { code: 'SOMETHING_ELSE' },
+      status: 'error', resultMode: 'tts', error: '알 수 없는 오류가 발생했습니다.', errorInfo: { code: 'SOMETHING_ELSE' },
     })
   })
   await sleep(700)
