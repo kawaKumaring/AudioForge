@@ -229,7 +229,8 @@ def _handle_loaded(models, req, model, loaded_now, say):
         # 미리 열기 — 고른 순간 모델을 올려 둔다(첫 조각의 모델 열기를 누르기 전에 치른다).
         # ★막 열었으면 짧은 글을 한 번 만들어 버린다 — 첫 생성의 묶어 실행 준비(1.3초, 2026-10-02 실측)를 여기서 치른다.
         prime = 0.0
-        if loaded_now and (req.get("speaker") or req.get("clone")):
+        # prime=True — 본체가 모델을 먼저 연 뒤 따로 청하는 준비 생성(2026-10-03: 실제 요청이 이미 기다리면 본체가 이 요청을 보내지 않는다).
+        if (loaded_now or req.get("prime")) and (req.get("speaker") or req.get("clone")):
             t = time.time()
             torch.manual_seed(0)
             say(PRIME_TEXT, None)

@@ -167,6 +167,8 @@ const LEGACY_TEMP = tmpdir()
 // ★외부 전송 금지 — 모든 파이썬 자식이 물려받을 오프라인 설정을 **한 곳에서** 켠다(2026-09-30).
 //   예전에는 작업자마다 따로 켜서 노래 변환기처럼 빠진 곳이 실행마다 허깅페이스에 확인 요청을 보냈다.
 const OFFLINE_CHANGED = applyOfflineEnv(process.env)
+// 참조 전사 디스크 캐시 자리 — 합성 파이썬이 물려받는다(tts_worker). 같은 소리 내용·같은 전사 모델일 때만 다시 쓴다(2026-10-03).
+process.env.AF_REF_TRANSCRIPT_CACHE_DIR = join(app.getPath('userData'), 'refTranscripts')
 
 // ── 앱 로그 파일 — <userData>/logs/audioforge-<날짜>.log ─────────────────────────
 // userData 가 정해진 직후, 다른 어떤 것보다 먼저 만든다. 그래야 기동 중 오류도 파일에 남는다.

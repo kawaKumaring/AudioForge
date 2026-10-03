@@ -485,7 +485,7 @@ export default function ReaderWorkspace() {
   const warmVoice = (v: { kind: 'builtin' | 'reference'; path: string; engineId?: string }, opts?: { emotion?: boolean }) => {
     trace('warm-request', { kind: v.kind, engine: v.engineId || '' })
     void window.api.reader.warm?.(v, opts)?.then((r) => trace('warm-done', { kind: v.kind, engine: v.engineId || '', warmed: !!r?.data?.warmed, why: r?.data?.why,
-      loadedNow: r?.data?.loadedNow, primeSec: r?.data?.primeSec, waitMs: r?.data?.waitMs, ms: r?.data?.ms }))?.catch(() => { /* 누를 때 연다 */ })
+      loadedNow: r?.data?.loadedNow, primeSec: r?.data?.primeSec, primeSkipped: r?.data?.primeSkipped, waitMs: r?.data?.waitMs, ms: r?.data?.ms }))?.catch(() => { /* 누를 때 연다 */ })
   }
   /** 기본 목소리를 쓴다. GPU 목소리(소희)는 고르는 순간 미리 연다 — 첫 소리의 모델 열기(약 10초)를 누르기 전에 치른다. */
   const chooseBuiltin = (b: BuiltinVoiceRef) => {

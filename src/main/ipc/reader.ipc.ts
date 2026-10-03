@@ -489,11 +489,17 @@ export function registerReaderIpc(): void {
           const t = performance.now()
           setReaderRunning(true)
           // 화자를 넘기면 막 연 모델로 짧은 글을 한 번 만들어 버린다 — 첫 생성의 준비를 여기서 치른다.
-          // ★실제 덩이 요청이 이미 줄에서 기다리면 준비 생성은 건너뛴다 — 그 요청이 곧 같은 준비를 치른다(겹치는 몫 약 1초, 2026-10-03).
-          const prime = queuedSpeaks === 0
+          // ★모델 열기와 준비 생성(짧은 글 한 번)을 **나눠** 청한다 — 열기(약 9초) 사이에 사용자가 재생을 눌렀으면 실제 덩이 요청이 줄에 서 있다.
+          //   그때 준비 생성은 건너뛴다: 그 요청이 곧 같은 준비(첫 생성의 묶어 실행 준비)를 치르고, 버릴 글을 먼저 만들 까닭이 없다(실측 준비 생성 2.2~2.4초, 2026-10-03).
           try {
-            const r = await qwenWorker().call({ warm: true, model, language: 'korean', ...(prime ? (qv.clone ? { clone: qv.clone } : { speaker: qv.speaker }) : {}) })
-            return { warmed: true, loadedNow: !!r.loaded_now, primeSec: Number(r.prime_sec || 0), waitMs: Math.round(t - asked), ms: Math.round(performance.now() - t) }
+            const r = await qwenWorker().call({ warm: true, model })
+            let primeSec = 0
+            const primed = !!r.loaded_now && queuedSpeaks === 0
+            if (primed) {
+              const p = await qwenWorker().call({ warm: true, prime: true, model, language: 'korean', ...(qv.clone ? { clone: qv.clone } : { speaker: qv.speaker }) })
+              primeSec = Number(p.prime_sec || 0)
+            }
+            return { warmed: true, loadedNow: !!r.loaded_now, primeSec, primeSkipped: !!r.loaded_now && !primed, waitMs: Math.round(t - asked), ms: Math.round(performance.now() - t) }
           } finally { setReaderRunning(false) }
         }))
       }

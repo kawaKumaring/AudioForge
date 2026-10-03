@@ -110,6 +110,13 @@ class Warm(unittest.TestCase):
         qvs.handle(FakeModels(m, True), {"model": "x", "warm": True})
         self.assertEqual(m.calls, [])
 
+    def test_따로_청한_준비_생성은_이미_열린_모델에도_한다(self):
+        # 2026-10-03 — 본체가 모델 열기와 준비 생성을 나눠 청한다(재생이 이미 기다리면 준비 생성을 보내지 않는다).
+        m = FakeModel()
+        r = qvs.handle(FakeModels(m, False), {"model": "x", "warm": True, "prime": True, "speaker": "sohee"})
+        self.assertTrue(r["ok"])
+        self.assertEqual([c[0] for c in m.calls], [qvs.PRIME_TEXT])
+
 
 class StdinRule(unittest.TestCase):
     def test_준비_신호_뒤에_라이브러리를_미리_불러온다(self):

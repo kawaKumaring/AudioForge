@@ -2040,6 +2040,52 @@ def _ref_record(emotion_id, prompt_source, degraded, reason_code, transcript_sta
             "transcript_status": transcript_status, "model": model}
 
 
+#: 참조 전사 디스크 캐시의 형식 판 — 전사 방식(모델 호출 인자·정규화)을 바꾸면 올린다(옛 기록을 쓰지 않게).
+REF_TRANSCRIPT_CACHE_V = 1
+
+
+def _ref_transcript_cache_path(ref_audio, model_name):
+    """참조 전사 디스크 캐시 자리 — 본체가 정한 폴더(AF_REF_TRANSCRIPT_CACHE_DIR)가 있을 때만.
+    ★열쇠 = **소리 내용 지문**(경로·시각 아님) + 전사 모델 + 형식 판. 구간을 바꾸면 잘린 소리가 달라 다른 열쇠다."""
+    d = os.environ.get("AF_REF_TRANSCRIPT_CACHE_DIR") or ""
+    if not d:
+        return None
+    try:
+        import hashlib
+        h = hashlib.sha256()
+        with open(ref_audio, "rb") as fh:
+            for b in iter(lambda: fh.read(1 << 20), b""):
+                h.update(b)
+        safe_model = "".join(ch for ch in str(model_name) if ch.isalnum() or ch in "-_.")
+        return os.path.join(d, "%s-%s-v%d.json" % (h.hexdigest()[:40], safe_model, REF_TRANSCRIPT_CACHE_V))
+    except OSError:
+        return None
+
+
+def _ref_transcript_cache_get(path):
+    import json
+    try:
+        with open(path, encoding="utf-8") as fh:
+            j = json.load(fh)
+        if j.get("v") == REF_TRANSCRIPT_CACHE_V and isinstance(j.get("text"), str) and j["text"].strip():
+            return j
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def _ref_transcript_cache_put(path, text, language, model_name):
+    import json
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = path + ".part"
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump({"v": REF_TRANSCRIPT_CACHE_V, "text": text, "language": language, "model": model_name}, fh, ensure_ascii=False)
+        os.replace(tmp, path)
+    except OSError:
+        pass                    # 쌓지 못해도 합성은 그대로
+
+
 def _resolve_qwen_ref_text(ref_audio, overrides_by_path, warned, degrade_sink=None,
                            emotion_id=None):
     """Qwen용 (ref_text, x_vector_only) 결정 — 수동/자동/ref-free 정책 재사용.
@@ -2104,13 +2150,26 @@ def _resolve_qwen_ref_text(ref_audio, overrides_by_path, warned, degrade_sink=No
         res, crec = _qwen_ref_text_cache[key]
         _record(dict(crec, emotion_id=emotion_id))
         return res
-    t = transcribe_reference(ref_audio, _QWEN_REF_TRANSCRIBE_MODEL)
+    # ★참조 카드는 생성마다 새 프로세스라 위 캐시가 늘 비어 있었다 — 같은 참조로 다시 만들 때마다 Whisper 전사(실측 20~31초)를 되풀이했다(2026-10-03).
+    #   같은 소리 내용·같은 전사 모델·같은 형식이면 디스크에 쌓아 둔 **성공한 자동 전사**를 쓴다. 실패·빈 결과는 쌓지 않는다(다음에 다시 전사).
+    #   생성 자체는 그대로 새로 한다 — '다시 생성' 은 새 소리다(이것은 모델에 주는 조건만 다시 쓰는 것이다).
+    cpath = _ref_transcript_cache_path(ref_audio, _QWEN_REF_TRANSCRIBE_MODEL)
+    hit = _ref_transcript_cache_get(cpath) if cpath else None
+    if hit:
+        from reference_transcript import ReferenceTranscript
+        t = ReferenceTranscript(source_path=ref_audio, status=STATUS_OK, text=hit["text"], language=hit.get("language"),
+                                model_name=_QWEN_REF_TRANSCRIBE_MODEL, error_code=None, error_message=None,
+                                file_size=None, file_mtime_ns=None)
+    else:
+        t = transcribe_reference(ref_audio, _QWEN_REF_TRANSCRIBE_MODEL)
+        if cpath and t.status == STATUS_OK and (t.text or "").strip():
+            _ref_transcript_cache_put(cpath, t.text, t.language, _QWEN_REF_TRANSCRIBE_MODEL)
     if t.status == STATUS_OK and (t.text or "").strip():
         res = (t.text, False)
         rec = _ref_record(emotion_id, "auto", False, None, t.status, _QWEN_REF_TRANSCRIBE_MODEL)
         if ("auto", ap) not in warned:
             warned.add(("auto", ap))
-            emit("progress", percent=9, message=f"참조 전사(자동, ICL): {t.language}, {len(t.text)}자")
+            emit("progress", percent=9, message=f"참조 전사(자동, ICL{', 쌓아 둔 것' if hit else ''}): {t.language}, {len(t.text)}자")
     else:
         res = ("", True)
         # error_code 만 옮긴다(error_message 는 경로를 담을 수 있어 절대 옮기지 않는다).
