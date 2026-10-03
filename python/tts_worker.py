@@ -596,7 +596,8 @@ class QwenCustomEngine(TTSEngine):
             env = dict(os.environ, PYTHONIOENCODING="utf-8", PYTHONUTF8="1")
             proc = subprocess.run(
                 [self._venv_python, "-X", "utf8", self._script, "--model", model_dir, "--speaker", speaker,
-                 "--language", "korean", "--text-file", text_file, "--out", output_path]
+                 "--language", "korean", "--text-file", text_file, "--out", output_path,
+                 "--seed", str(int(getattr(self, "run_seed", 0) or 0))]
                 + (["--instruct", instruct] if instruct else []),
                 capture_output=True, text=True, encoding="utf-8", errors="replace", env=env, timeout=900)
         finally:
@@ -636,7 +637,7 @@ class QwenCustomEngine(TTSEngine):
                             raise
                         time.sleep(0.5)
             req = {"model": model_dir, "speaker": speaker, "language": "korean", "text": text,
-                   "out": output_path, "seed": 0, "instruct": instruct or ""}
+                   "out": output_path, "seed": int(getattr(self, "run_seed", 0) or 0), "instruct": instruct or ""}
             # 카드 멈춤이 이 파일을 만든다(본체가 실행마다 AF_QWEN_STOP_FILE 로 정함) — 실행기가 그 요청만 멈춘다.
             if os.environ.get("AF_QWEN_STOP_FILE"):
                 req["stop_flag"] = os.environ["AF_QWEN_STOP_FILE"]
@@ -1671,6 +1672,22 @@ class QwenTTSEngine(TTSEngine):
 
 
 _qwen_engine = None
+
+
+def _resident_wanted(engine):
+    """이 엔진에 띄워 둔 실행기 길을 쓸 것인가 — 엔진의 계약은 run_job 하나라, 그 밖의 손잡이는 있을 때만 묻는다(검사 대역·옛 엔진)."""
+    f = getattr(engine, "resident_wanted", None)
+    return bool(f()) if callable(f) else False
+
+
+def _pick_run_seed():
+    """실행마다 새 씨앗(기본) — AUDIOFORGE_TTS_SEED 로 고정하면 같은 소리를 다시 만든다. (씨앗, 출처)."""
+    import random
+    _seed_env = (os.environ.get("AUDIOFORGE_TTS_SEED") or "").strip()
+    try:
+        return (int(_seed_env), "env") if _seed_env else (random.randrange(1, 2 ** 31 - 1), "random_per_run")
+    except ValueError:
+        return random.randrange(1, 2 ** 31 - 1), "random_per_run"
 
 
 def _get_qwen_engine():
@@ -2741,7 +2758,7 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
 
     # ★띄워 둔 실행기에 맡길 작업이면 장치 고르기(torch 불러오기 + 그래픽카드 조회, 덩이마다 약 1.5초 — 2026-10-03 실측)를 건너뛴다.
     #   그 실행기가 이미 그래픽카드에 모델을 들고 있다. 붙지 못하면 run_job 이 원래 길로 가고, 메모리 부족이면 아래 CPU 재시도가 그대로 돈다.
-    if qwen.resident_wanted():
+    if _resident_wanted(qwen):
         dev, reason = "cuda", "띄워 둔 실행기(그래픽카드)"
     else:
         dev, reason = select_device("auto", min_free_mb=_QWEN_MIN_FREE_MB)
@@ -2967,12 +2984,7 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         # 예전에는 씨앗을 심지도, 기록하지도 않아서 옵션을 켜고 끄며 비교한 결과가
         # 옵션 차이인지 난수 차이인지 구분할 수 없었다(2026-09-08 조사에서 확인).
         # AUDIOFORGE_TTS_SEED 로 고정하면 같은 소리를 다시 만들 수 있다.
-        _seed_env = (os.environ.get("AUDIOFORGE_TTS_SEED") or "").strip()
-        try:
-            run_seed = int(_seed_env) if _seed_env else random.randrange(1, 2 ** 31 - 1)
-        except ValueError:
-            run_seed = random.randrange(1, 2 ** 31 - 1)
-        seed_source = "env" if _seed_env else "random_per_run"
+        run_seed, seed_source = _pick_run_seed()
 
         try:
             try:
@@ -3550,7 +3562,7 @@ def _environment_facts(device=None):
         pass
     # ★띄워 둔 실행기가 만드는 작업이면 이 프로세스는 torch 를 쓰지 않는다 — 기록 하나 때문에 torch 를 불러오면
     #   덩이마다 약 1.5초가 든다(2026-10-03 실측). 같은 사실(그래픽카드 이름·여유 메모리)을 nvidia-smi 로 남긴다.
-    if _get_qwen_engine().resident_wanted():
+    if _resident_wanted(_get_qwen_engine()):
         out["env_runner"] = "resident"
         try:
             import subprocess
@@ -4210,6 +4222,10 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
 
         segment_paths = []
         seg_engines = []
+        # ★Qwen 지정 목소리(소희 등)는 씨앗을 받는다 — 예전에는 늘 0 이라 '다시 생성' 이 매번 **같은 소리**였다(2026-10-03 실측: 세 번 모두 같은 지문).
+        #   실행마다 새 씨앗을 뽑아 기록하고, 조각마다 씨앗+순번으로 심는다(배치 경로와 같은 방식). 낭독은 이 길을 쓰지 않는다(따로 0 고정·캐시).
+        seg_seed, seg_seed_source = _pick_run_seed()
+        seg_seed_used = False
 
         for i, (emotion_id, line_text, speaker_id) in enumerate(parsed):
             pct = 25 + int((i / len(parsed)) * 60)
@@ -4232,6 +4248,9 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             # ★엔진을 자동으로 다른 목소리로 바꾸지 않는다 — 고른 모델이 안 열리면 그 카드가 운다.
             if builtin_model and isinstance(engine, (PiperEngine, SupertonicEngine, QwenCustomEngine)):
                 engine.model_path = builtin_model
+            if isinstance(engine, QwenCustomEngine):
+                engine.run_seed = (seg_seed + i) % (2 ** 31 - 1)
+                seg_seed_used = True
             engine_name = engine.name
             seg_engines.append(engine_name)
 
@@ -4337,7 +4356,8 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             prompt_source=p_src,
             x_vector_only_mode=None, original_reference_path=reference_audio or "",
             effective_reference_path=reference_audio or "", reference_region=reference_region,
-            target_language=tgt2, seed=None, seed_supported=False,
+            target_language=tgt2, seed=(seg_seed if seg_seed_used else None), seed_supported=seg_seed_used,
+            **({"seed_source": seg_seed_source} if seg_seed_used else {}),
             speed=float(speed), speed_postprocessed=False, silence_gap=float(silence_gap),
             fallback=fb, fallback_reason=("Qwen3 사용 불가 → 기존 엔진 폴백" if fb else None),
             elapsed_seconds=round(_time.monotonic() - _t0, 2), output_sample_rate=out_sr,
