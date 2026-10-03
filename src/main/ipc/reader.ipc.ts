@@ -275,7 +275,9 @@ let currentEpoch: string | null = null
 const isStale = (ep: string | undefined): boolean => ep !== undefined && currentEpoch !== null && ep !== currentEpoch
 interface ReaderCtl { epoch: string | undefined; stopFile?: string; superseded?: boolean; cancellable?: boolean; killed?: boolean }
 /** 줄에 서서 **아직 시작하지 않은** 덩이 요청 수 — 미리 열기가 준비 생성을 건너뛸지 본다(실제 요청이 곧 그 준비를 치른다). */
-let queuedSpeaks = 0
+const queuedSpeaks = new Set<ReaderCtl>()
+/** 지금 세대로 줄에 서 있는(아직 시작 전) 요청이 있는가 — 지난 세대(버려질 것)는 세지 않는다. */
+const currentSpeakWaiting = (): boolean => [...queuedSpeaks].some((c) => !isStale(c.epoch))
 let runningCtl: ReaderCtl | null = null
 class SupersededError extends Error {
   constructor(readonly phase: 'queued' | 'running') { super('지난 요청이라 버렸습니다') }
@@ -494,7 +496,7 @@ export function registerReaderIpc(): void {
           try {
             const r = await qwenWorker().call({ warm: true, model })
             let primeSec = 0
-            const primed = !!r.loaded_now && queuedSpeaks === 0
+            const primed = !!r.loaded_now && !currentSpeakWaiting()
             if (primed) {
               const p = await qwenWorker().call({ warm: true, prime: true, model, language: 'korean', ...(qv.clone ? { clone: qv.clone } : { speaker: qv.speaker }) })
               primeSec = Number(p.prime_sec || 0)
@@ -559,9 +561,9 @@ export function registerReaderIpc(): void {
 
       // ★한 번에 하나 — 줄에 세운다. 앞 작업이 끝나야 다음이 돈다. ★차례가 왔을 때 세대가 지났으면 시작하지 않고 버린다.
       const ctl: ReaderCtl = { epoch: ep }
-      queuedSpeaks++
+      queuedSpeaks.add(ctl)
       const run = inLane(() => {
-        queuedSpeaks--
+        queuedSpeaks.delete(ctl)
         if (isStale(ctl.epoch)) { ctl.superseded = true; throw new SupersededError('queued') }
         return makeChunk(body, v, out, segments, info, ctl)
       })

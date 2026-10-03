@@ -249,3 +249,20 @@ GPU 상태는 결과마다 함께 적었다. 다른 프로그램이 GPU 를 쓰�
 ### 7-5. 메모리·유휴 해제
 - 참조 목소리 미리 열기 +2.5GB, 읽는 동안 +3.2GB(그래픽카드) · 실행기 RAM 약 2.4GB. 유휴 시간(검사 20초, 보통 3분)이 지나면 실행기가 내려가고 그래픽카드가 시작 수준으로 돌아온다(실측).
 - 실행기는 모델을 둘까지 든다(소희·참조 Base 를 번갈아 쓰면 둘 다 올라 있을 수 있다).
+
+## 8. 마무리 (2026-10-03 후속) — 재검수 안내
+
+### 첫 소리 분해 (실제 앱 · 보통 준비 · 경우마다 새로 켬 · 측정 시작 GPU 0~23%·0.7~1GB, 다른 프로그램 가벼운 사용)
+- 소희 곧바로 재생: 누른 뒤 14.4초 = 모델 준비 9.8초(라이브러리·가중치 — 목록을 거의 안 보고 곧바로 고른 최악 조건) + 첫 구절 생성 4.5초 + 재생 준비 0.1초.
+  고르지 않은 기본 목소리 대기 0(예전 2.66초), 준비 생성은 재생이 기다려 생략(예전 2.2~2.4초 후 첫 구절).
+- 소희 8초 뒤 재생: 누른 뒤 4.6초(모델 준비가 9초라 1초 남은 것 + 첫 구절 3.5초).
+- 참조 곧바로 재생: 누른 뒤 6.8초 = 모델 준비 남은 2.7초 + 첫 구절 4.1초.
+- 비교: 관리자 22.09초(소희) · 19.9초(참조) → 이 문서 7-3 의 14.8·6.6초 → 지금 14.4·6.8초(같은 조건 범위 안의 차이 — 남은 대기는 모델 올리기 자체).
+- 참조 카드 같은 대사 두 번째 생성: 참조 전사 20~31초 → 0.03초. 전체 시간(7.3초)은 GPU 경합 중 측정이라 비교 기준이 아니다.
+
+### 재현 절차 (저장소 루트, `npm run build` 뒤)
+- 카드 취소 세 경로: `node _local/perf-ref/app-card-cancel-all.cjs <결과.json> [sohee|reference|loading]`
+- 첫 소리: `node _local/perf-ref/app-first-prep.cjs <결과.json>` · 참조 연속 낭독: `node _local/perf-ref/app-reference-reading.cjs <결과.json> 7`
+- 참조 덩이 분해: `npx esbuild scripts/bench-reader-reference.mts --bundle --platform=node --format=esm --outfile=_local/perf-ref/bench.mjs && node _local/perf-ref/bench.mjs --ref _local/perf-ref/ref-clip.wav --out <폴더> --mode resident`
+- 회귀 검사: `node test/e2e/reader-remount-epoch-mcp.cjs` · `node test/e2e/tts-cancel-lifecycle.e2e.mjs` · `python -X utf8 python/test_ref_transcript_cache.py`
+- 측정 자료: `_local/perf-ref/*.json` · 청취 자료와 조건·해시 `_local/artifacts/performance-2026-10-03/reference-listen/manifest.json`
