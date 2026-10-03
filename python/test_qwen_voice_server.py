@@ -134,5 +134,70 @@ class StdinRule(unittest.TestCase):
         self.assertNotIn("for line in sys.stdin", src, "막힌 읽기(sys.stdin 반복)가 돌아왔다 — 윈도우에서 모델 열기가 멈춘다")
 
 
+
+class TestRefPromptCache(unittest.TestCase):
+    """2026-10-03 — 참조 목소리 작업의 참조 특징은 **소리 내용·전사·방식**이 같을 때만 다시 쓴다(경로만으로 판정하지 않는다)."""
+
+    def _setup(self):
+        calls = []
+
+        class M:
+            def create_voice_clone_prompt(self, ref_audio=None, ref_text=None, x_vector_only_mode=False, **kw):
+                calls.append((ref_audio, ref_text, x_vector_only_mode))
+                return ("prompt", len(calls))
+        models = qvs.Models()
+        m = M()
+        qvs._ref_prompt_cache(models, m, "MODEL")
+        return models, m, calls
+
+    def test_같은_내용은_한_번만_다른_경로여도(self):
+        models, m, calls = self._setup()
+        d = tempfile.mkdtemp()
+        a, b = os.path.join(d, "a.wav"), os.path.join(d, "b.wav")
+        for p in (a, b):
+            with open(p, "wb") as fh:
+                fh.write(b"SAME")
+        p1 = m.create_voice_clone_prompt(ref_audio=a, x_vector_only_mode=True)
+        p2 = m.create_voice_clone_prompt(ref_audio=b, x_vector_only_mode=True)
+        self.assertEqual(p1, p2)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual((models.ref_made, models.ref_hits), (1, 1))
+
+    def test_내용이_바뀌거나_방식·전사가_다르면_다시_만든다(self):
+        models, m, calls = self._setup()
+        d = tempfile.mkdtemp()
+        a = os.path.join(d, "a.wav")
+        with open(a, "wb") as fh:
+            fh.write(b"ONE")
+        m.create_voice_clone_prompt(ref_audio=a, x_vector_only_mode=True)
+        with open(a, "wb") as fh:
+            fh.write(b"TWO")                     # 같은 자리, 다른 소리(다른 화자일 수 있다)
+        m.create_voice_clone_prompt(ref_audio=a, x_vector_only_mode=True)
+        m.create_voice_clone_prompt(ref_audio=a, x_vector_only_mode=False, ref_text="전사")
+        m.create_voice_clone_prompt(ref_audio=a, x_vector_only_mode=False, ref_text="다른 전사")
+        self.assertEqual(len(calls), 4)
+
+    def test_모델을_내리면_그_모델의_참조_특징도_버린다(self):
+        models = qvs.Models()
+        models.ref_prompts[("GONE", "sha", "", True, "[]")] = 1
+        models.ref_prompts[("KEEP", "sha", "", True, "[]")] = 2
+        models.loaded["GONE"] = object()
+        models.loaded["KEEP"] = object()
+        import collections
+        orig_max = qvs.MAX_MODELS
+        try:
+            qvs.MAX_MODELS = 2
+            # 자리가 꽉 찼다 — 새 모델을 열면 가장 오래된 GONE 이 내려간다(모델 열기는 가짜로)
+            import qwen_custom_voice as qcv
+            real = qcv.load
+            qcv.load = lambda d: object()
+            try:
+                models.get("NEW")
+            finally:
+                qcv.load = real
+        finally:
+            qvs.MAX_MODELS = orig_max
+        self.assertEqual([k[0] for k in models.ref_prompts], ["KEEP"])
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

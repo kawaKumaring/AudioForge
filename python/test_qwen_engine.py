@@ -820,5 +820,45 @@ def _json_dumps(o):
     return json.dumps(o, ensure_ascii=False)
 
 
+
+class ResidentBridgeGateTest(unittest.TestCase):
+    """2026-10-03 — 띄워 둔 실행기 길은 **부르는 쪽이 켤 때만**(낭독 먼저), 파이프가 있고 이 실행에서 실패한 적이 없을 때만."""
+
+    def _env(self, **kw):
+        base = {k: v for k, v in os.environ.items()
+                if k not in ("AF_QWEN_PIPE_ADDR", "AF_QWEN_PIPE_KEY", "AUDIOFORGE_QWEN_RESIDENT_BRIDGE")}
+        base.update(kw)
+        return mock.patch.dict(os.environ, base, clear=True)
+
+    def setUp(self):
+        tts_worker.QwenTTSEngine._resident_off = False
+
+    def tearDown(self):
+        tts_worker.QwenTTSEngine._resident_off = False
+
+    def test_켜지_않으면_원래_길(self):
+        e = tts_worker.QwenTTSEngine()
+        with self._env(AF_QWEN_PIPE_ADDR="p", AF_QWEN_PIPE_KEY="k"):
+            self.assertFalse(e.resident_wanted())          # 카드 등 — 켜지 않았다
+        with self._env(AUDIOFORGE_QWEN_RESIDENT_BRIDGE="1"):
+            self.assertFalse(e.resident_wanted())          # 파이프가 없다
+
+    def test_켜고_파이프가_있으면_쓴다_실패한_뒤에는_쓰지_않는다(self):
+        e = tts_worker.QwenTTSEngine()
+        with self._env(AF_QWEN_PIPE_ADDR="p", AF_QWEN_PIPE_KEY="k", AUDIOFORGE_QWEN_RESIDENT_BRIDGE="1"):
+            self.assertTrue(e.resident_wanted())
+            tts_worker.QwenTTSEngine._resident_off = True
+            self.assertFalse(e.resident_wanted())
+            tts_worker.QwenTTSEngine._resident_off = False
+            e._force_process = True
+            self.assertFalse(e.resident_wanted())
+
+    def test_파이프에_붙지_못하면_원래_길로_간다(self):
+        e = tts_worker.QwenTTSEngine()
+        import queue
+        with self._env(AF_QWEN_PIPE_ADDR=r"\.pipeaf-없는-파이프-test", AF_QWEN_PIPE_KEY="k", AUDIOFORGE_QWEN_RESIDENT_BRIDGE="1"):
+            self.assertIsNone(e._resident_job({"device": "cuda:0", "segments": []}, queue.Queue()))
+            self.assertTrue(tts_worker.QwenTTSEngine._resident_off)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

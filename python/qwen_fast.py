@@ -319,6 +319,14 @@ def _talker_scores(logits, gen, n_new, rp, min_new, eos, suppress):
     return scores
 
 
+def _count_only_criteria(kw):
+    """멈춤 조건이 '세기만 하는 것' 들뿐인가 — (조건 목록, 나머지 인자, 빠른 길에서 받아도 되나)."""
+    crit = kw.get("stopping_criteria")
+    rest = {k: v for k, v in kw.items() if k != "stopping_criteria"}
+    crit = list(crit) if crit is not None else []
+    return crit, rest, all(getattr(c, "_af_count_only", False) for c in crit)
+
+
 def _talker_generate(self, inputs_embeds=None, attention_mask=None, trailing_text_hidden=None, tts_pad_embed=None,
                      max_new_tokens=None, min_new_tokens=None, do_sample=None, top_k=None, top_p=None, temperature=None,
                      eos_token_id=None, repetition_penalty=None, suppress_tokens=None, subtalker_dosample=None,
@@ -334,7 +342,12 @@ def _talker_generate(self, inputs_embeds=None, attention_mask=None, trailing_tex
         repetition_penalty=repetition_penalty, suppress_tokens=suppress_tokens, subtalker_dosample=subtalker_dosample,
         subtalker_top_k=subtalker_top_k, subtalker_top_p=subtalker_top_p, subtalker_temperature=subtalker_temperature,
         output_hidden_states=output_hidden_states, return_dict_in_generate=return_dict_in_generate, **kw)
-    if (inputs_embeds is None or not inputs_embeds.is_cuda or inputs_embeds.shape[0] != 1 or kw
+    # ★멈춤 조건(stopping_criteria)이 '세기만 하는 것'(_af_count_only — 받은 값을 보지 않고 걸음을 세며, 요청이 있을 때만 True)이면
+    #   빠른 길에서도 받는다(2026-10-03). 예전에는 kw 가 하나라도 있으면 원래 길로 갔다 — qwen_bridge 가 걸음 수를 재려고
+    #   늘 계수기를 넘기므로 **참조 목소리(낭독·카드)는 본 모델 묶어 실행을 한 번도 쓰지 못했다**(생성만 실시간 0.6~0.9배).
+    #   다른 멈춤 조건이나 다른 인자가 오면 지금처럼 원래 길이다.
+    crit, rest, count_only = _count_only_criteria(kw)
+    if (inputs_embeds is None or not inputs_embeds.is_cuda or inputs_embeds.shape[0] != 1 or rest or not count_only
             or getattr(self, "_af_talker_failed", False) or attention_mask is None):
         return orig()
     g = self.generation_config
@@ -409,7 +422,9 @@ def _talker_generate(self, inputs_embeds=None, attention_mask=None, trailing_tex
                 tok = _pick(scores, do_sample, top_k, top_p, temperature)
                 gen = torch.cat([gen, tok[:, None]], dim=1)
                 tokens.append(tok)
-                if int(tok[0]) == int(eos) or i == limit - 1:
+                # 멈춤 조건 — 원래 길(transformers)처럼 걸음마다 **모두** 한 번씩 부른다(하나가 True 여도 나머지를 센다).
+                stop = [bool(c(gen, scores)) for c in crit]
+                if int(tok[0]) == int(eos) or i == limit - 1 or any(stop):
                     break
                 am = torch.cat([am, am.new_ones((1, 1))], dim=1)
                 out = self(input_ids=tok[:, None], attention_mask=am, past_key_values=cache, use_cache=True,

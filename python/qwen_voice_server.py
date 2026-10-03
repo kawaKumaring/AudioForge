@@ -20,6 +20,10 @@
         {"id": "...", "model": "<폴더>", "warm": true}   미리 열기(소리는 만들지 않는다)
         {"id": "...", "model": "<1.7B 폴더>", "speaker": ..., "segments": [{"text": "...", "emotion": "happy"}, ...], "out": ...}
              낭독 감정(2026-10-01) — 덩어리마다 감정 지시로 만들어 짧은 쉼을 두고 한 파일로 잇는다.
+        {"bridge_job": {<qwen_bridge 입력 그대로>}}   ★파이프 전용(2026-10-03) — 참조 목소리 합성(낭독·카드)을 **불러 둔 모델로**.
+             qwen_bridge.run_loaded 를 그대로 부르므로 분할·생성 상한·종료 판정·결과 모양이 바로 실행과 같다.
+             진행 줄은 {"line": "<브리지 JSON 줄>"} 로 흘려 보내고, 끝에 {"ok": ..., "done": true, "loaded_now": ...}.
+             참조 특징은 **소리 내용(지문)·전사·방식·모델**이 같을 때만 다시 쓴다(경로만으로 판정하지 않는다).
   답  : {"id": "...", "ok": true, "seconds": 10.6, "sample_rate": 24000, "gen_sec": 9.8, "loaded_now": false}
         {"id": "...", "ok": false, "error": "..."}
   그 밖의 줄(라이브러리가 찍는 경고 등)은 부모가 무시한다 — 답은 id 로 짝짓는다.
@@ -79,6 +83,10 @@ class Models:
     def __init__(self):
         self.loaded = collections.OrderedDict()
         self.prompts = {}          # (모델 폴더, 참조 소리, 수정 시각) → 참조 목소리 특징(한 번만 계산)
+        #: 참조 목소리 작업의 참조 특징 — (모델 폴더, 소리 지문, 전사, 방식) → 특징. 오래된 것부터 버린다.
+        self.ref_prompts = collections.OrderedDict()
+        self.ref_hits = 0          # 참조 특징을 다시 쓴 횟수(관측용)
+        self.ref_made = 0          # 새로 만든 횟수
 
     def prompt(self, model, model_dir, clone):
         """고정 참조 소리 → 그 목소리를 따라 읽게 하는 특징. 같은 참조는 한 번만 만든다."""
@@ -97,6 +105,8 @@ class Models:
         while len(self.loaded) >= MAX_MODELS:
             gone, _ = self.loaded.popitem(last=False)
             self.prompts = {k: v for k, v in self.prompts.items() if k[0] != gone}
+            for k in [k for k in self.ref_prompts if k[0] == gone]:
+                del self.ref_prompts[k]
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         m = qcv.load(model_dir)
@@ -104,10 +114,90 @@ class Models:
         return m, True
 
 
-def handle(models, req):
-    """요청 하나 → 답(dict, id 없이)."""
+#: 참조 특징을 몇 개까지 들고 있을까(참조 목소리는 보통 하나 — 여럿을 오가도 넘치지 않게).
+REF_PROMPT_MAX = 8
+
+
+def _ref_prompt_cache(models, model, model_dir):
+    """model.create_voice_clone_prompt 를 **내용 기준 캐시**로 감싼다(멱등).
+    ★열쇠 = (모델 폴더, 참조 소리 지문(sha256), 전사, 특징만 쓰는가, 그 밖의 인자) — 같은 경로라도 소리가 바뀌면 다시 만든다.
+      다른 화자의 참조가 섞일 수 없다(지문이 다르다). 목록 입력·모르는 인자는 감싸지 않고 그대로 부른다."""
+    import hashlib
+    if getattr(model, "_af_ref_cache", False):
+        return
+    orig = model.create_voice_clone_prompt
+
+    def cached(ref_audio=None, ref_text=None, x_vector_only_mode=False, **kw):
+        if not isinstance(ref_audio, str) or not os.path.isfile(ref_audio) or isinstance(ref_text, list) \
+                or isinstance(x_vector_only_mode, list):
+            return orig(ref_audio=ref_audio, ref_text=ref_text, x_vector_only_mode=x_vector_only_mode, **kw)
+        with open(ref_audio, "rb") as fh:
+            sha = hashlib.sha256(fh.read()).hexdigest()
+        key = (model_dir, sha, ref_text or "", bool(x_vector_only_mode), repr(sorted(kw.items())))
+        hit = models.ref_prompts.get(key)
+        if hit is not None:
+            models.ref_prompts.move_to_end(key)
+            models.ref_hits += 1
+            return hit
+        made = orig(ref_audio=ref_audio, ref_text=ref_text, x_vector_only_mode=x_vector_only_mode, **kw)
+        models.ref_prompts[key] = made
+        while len(models.ref_prompts) > REF_PROMPT_MAX:
+            models.ref_prompts.popitem(last=False)
+        models.ref_made += 1
+        return made
+
+    model.create_voice_clone_prompt = cached
+    model._af_ref_cache = True
+
+
+def _bridge_job(models, req, push):
+    """참조 목소리 작업 하나 — qwen_bridge 와 같은 함수(run_loaded)를 불러 둔 모델로 돌린다."""
+    import torch
+    import qwen_bridge as qb
+    cfg = req["bridge_job"]
+    if not str(cfg.get("device", "cuda:0")).startswith("cuda") or not torch.cuda.is_available():
+        # CPU 로 고른 작업은 여기서 하지 않는다 — 부르는 쪽이 원래 길(새 프로세스)로 간다.
+        return dict(ok=False, done=True, error="상주 실행기는 그래픽카드 작업만 받습니다", fallback=True)
+    lines = []
+    qb._SINK = (lambda l: push({"line": l})) if push else lines.append
+    qb._T0 = time.monotonic()
+    qb._COUNTER["n"] = 0
+    qb._STOP["requested"], qb._STOP["at_step"] = False, None
+    stop_flag = str(cfg.get("stop_flag") or "")
+    old_flag = os.environ.get(qb.DIAG_STOP_FLAG_ENV)
+    if stop_flag:
+        os.environ[qb.DIAG_STOP_FLAG_ENV] = stop_flag     # 협조적 정지 — 이 파일이 생기면 생성이 정상 반환한다
+    else:
+        os.environ.pop(qb.DIAG_STOP_FLAG_ENV, None)
+    hits0, made0 = models.ref_hits, models.ref_made
+    try:
+        qb.emit("progress", percent=10, message="띄워 둔 Qwen 으로 만듭니다")
+        qb.emit("stage", stage="loading", attn="resident", attempt=1, device="cuda:0", elapsed_sec=qb._elapsed())
+        model, loaded_now = models.get(cfg["model_path"])
+        _ref_prompt_cache(models, model, cfg["model_path"])
+        qb.emit("stage", stage="loaded", attn="resident", attempt=1, dtype="resident", elapsed_sec=qb._elapsed())
+        qb.emit("progress", percent=25, message="모델 준비됨(띄워 둔 실행기%s)" % (" · 방금 엶" if loaded_now else ""))
+        try:
+            rc = qb.run_loaded(model, cfg)
+        except Exception as e:
+            qb.emit("error", message="%s: %s" % (type(e).__name__, e))
+            rc = 1
+        return dict(ok=rc == 0, done=True, loaded_now=loaded_now, ref_hits=models.ref_hits - hits0,
+                    ref_made=models.ref_made - made0, **({} if push else {"lines": lines}))
+    finally:
+        qb._SINK = None
+        if old_flag is None:
+            os.environ.pop(qb.DIAG_STOP_FLAG_ENV, None)
+        else:
+            os.environ[qb.DIAG_STOP_FLAG_ENV] = old_flag
+
+
+def handle(models, req, push=None):
+    """요청 하나 → 답(dict, id 없이). push: 파이프 요청이면 진행 줄을 흘려 보낼 곳."""
     import numpy as np
     import soundfile as sf
+    if isinstance(req.get("bridge_job"), dict):
+        return _bridge_job(models, req, push)
     if isinstance(req.get("prefetch"), list):
         # 미리 읽기 — 곧바로 답하고 뒤에서 읽는다(줄을 막지 않는다).
         threading.Thread(target=_prefetch, args=(req["prefetch"],), daemon=True).start()
@@ -216,7 +306,8 @@ def _pipe_listener(work):
                     break
                 done = threading.Event()
                 box = {}
-                work.put((req, lambda r: (box.update(r), done.set()), True))
+                # 진행 줄을 흘려 보낼 곳 — 처리하는 스레드가 부른다(이 스레드는 끝날 때까지 기다리기만 한다).
+                work.put((req, lambda r: (box.update(r), done.set()), lambda m: conn.send(m)))
                 done.wait()
                 conn.send(box)
         except (EOFError, OSError):
@@ -289,11 +380,11 @@ def main():
     models = Models()
     stdin = _Stdin()
 
-    def run(req, respond):
+    def run(req, respond, push=None):
         try:
-            respond(handle(models, req))
+            respond(handle(models, req, push))
         except Exception as e:
-            respond(dict(ok=False, error="%s: %s" % (type(e).__name__, str(e)[:300])))
+            respond(dict(ok=False, done=True, error="%s: %s" % (type(e).__name__, str(e)[:300])))
 
     lis = None
     try:
@@ -314,11 +405,11 @@ def main():
             rid = str(req.get("id", ""))
             run(req, lambda r, rid=rid: reply(id=rid, **r))
         try:
-            req, respond, _ = work.get(timeout=0.05)
+            req, respond, push = work.get(timeout=0.05)
         except queue.Empty:
             continue
         reply(id="", activity=True)
-        run(req, respond)
+        run(req, respond, push)
     try:
         if lis:
             lis.close()

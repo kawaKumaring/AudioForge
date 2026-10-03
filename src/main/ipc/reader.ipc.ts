@@ -321,14 +321,23 @@ async function makeChunk(body: string, v: ReaderVoice, out: string, segments: Em
       }
       if (!existsSync(wav)) throw new Error('이 부분을 소리로 만들지 못했습니다')
     } else {
-      // 참조 목소리 — 덩이마다 새 프로세스라 늘 모델을 연다.
-      info.engine = 'separate-process'; info.modelOpened = true
+      // 참조 목소리 — 합성 프로세스(separate.py)가 덩이마다 뜬다. ★Qwen 은 **띄워 둔 실행기**가 불러 둔 모델로 만든다(2026-10-03):
+      //   예전에는 덩이마다 모델을 새로 열었다(약 9.5초 · 관리자 실측 두 구절 모두 modelOpened=true). 실행기가 없으면 예전 길 그대로.
+      const resident = v.kind === 'reference' && await ensureQwenResident()
       const { stdout } = await execFileAsync(py, ['-X', 'utf8', scriptPath(), '--config', cfgPath], {
         // 긴 덩이도 기본 목소리면 몇 초다. 참조 목소리는 훨씬 오래 걸린다.
         timeout: 600000, maxBuffer: 4 * 1024 * 1024,
-        env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' },
+        env: {
+          ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1',
+          ...(resident ? { AUDIOFORGE_QWEN_RESIDENT_BRIDGE: '1', AF_QWEN_STOP_FILE: join(runDir, 'stop.flag') } : {}),
+        },
       })
       const lines = jsonLines(stdout)
+      // 관측 — 실제로 어느 길로 만들었나(실행기가 답한 진행 줄로 안다), 모델을 이번에 열었나.
+      const said = lines.map((l) => String(l.message ?? '')).join('\n')
+      const viaResident = /띄워 둔 Qwen 으로 만듭니다/.test(said)
+      info.engine = viaResident ? 'qwen-resident-bridge' : 'separate-process'
+      info.modelOpened = viaResident ? /방금 엶/.test(said) : true
       const made = madeTrack(lines)
       if (!made || !existsSync(made)) throw new Error(pythonReason(lines) || '이 부분을 소리로 만들지 못했습니다')
       wav = made
@@ -462,9 +471,12 @@ export function registerReaderIpc(): void {
       // 감정 덩어리 — Qwen 지정 목소리에만. 쌓아 둔 이름에 감정까지 넣는다(같은 글이라도 감정이 다르면 다른 소리).
       const segments = v.kind === 'builtin' && v.engineId === 'qwen-custom' ? segmentsOf(rawSegments) : null
 
+      // ★참조 목소리는 **경로만으로** 같은 목소리라 보지 않는다 — 같은 자리의 파일이 바뀌면(크기·시각) 다른 이름(2026-10-03).
+      //   만드는 방식이 바뀐 것(띄워 둔 실행기·본 모델 묶어 실행)도 이름에 넣어 예전 소리와 섞지 않는다.
+      const refTag = v.kind === 'reference' ? (() => { try { const s = statSync(v.path); return `|ref:${s.size}:${Math.round(s.mtimeMs)}|gen2` } catch { return '|ref:?' } })() : ''
       const out = join(readerDir(), segments
         ? chunkName(body + '\u0000' + JSON.stringify(segments.map((s) => [s.text, s.emotion])), key + '|감정')
-        : chunkName(body, key))
+        : chunkName(body, key + refTag))
       if (existsSync(out)) return ok({ path: out, cached: true, timing: timingOf(out, parts), trace: traceOf({ cached: true }) })
 
       const already = inFlight.get(out)

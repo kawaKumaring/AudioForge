@@ -114,5 +114,28 @@ class Switch(unittest.TestCase):
         self.assertIsNone(qf.apply(types.SimpleNamespace(model=types.SimpleNamespace())))
 
 
+
+class TestCountOnlyCriteria(unittest.TestCase):
+    """2026-10-03 — 브리지 계수기(세기만)가 붙어도 빠른 길을 쓴다. 다른 조건·다른 인자면 원래 길."""
+
+    def test_세기만_하는_조건은_받는다(self):
+        c = types.SimpleNamespace(_af_count_only=True)
+        crit, rest, ok = qf._count_only_criteria({"stopping_criteria": [c]})
+        self.assertTrue(ok)
+        self.assertEqual(crit, [c])
+        self.assertEqual(rest, {})
+
+    def test_표시_없는_조건이나_다른_인자는_원래_길(self):
+        self.assertFalse(qf._count_only_criteria({"stopping_criteria": [object()]})[2])
+        crit, rest, ok = qf._count_only_criteria({"stopping_criteria": [], "foo": 1})
+        self.assertTrue(ok)
+        self.assertEqual(rest, {"foo": 1})          # 나머지 인자가 있으면 부르는 쪽이 원래 길로 간다
+
+    def test_브리지_계수기는_표시를_달고_있다(self):
+        import qwen_bridge as qb
+        self.assertTrue(hasattr(qb, "_install_talker_counter"))
+        src = open(qb.__file__, encoding="utf-8").read()
+        self.assertIn("_af_count_only = True", src)
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

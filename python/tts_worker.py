@@ -1238,6 +1238,63 @@ class QwenTextSegmentTooLongError(RuntimeError):
             f"tokens={production_tokens}, allowed={allowed})")
 
 
+class _ResidentBridgeJob:
+    """띄워 둔 Qwen 실행기(qwen_voice_server)에 맡긴 참조 목소리 작업 — run_job 이 프로세스처럼 다룬다(2026-10-03).
+
+    ★왜: 참조 목소리 합성은 작업마다 브리지 프로세스를 새로 띄워 모델을 열었다(낭독 한 덩이마다 약 9.5초 · 관리자 실측
+      '두 구절 모두 modelOpened=true'). 띄워 둔 실행기가 **같은 qwen_bridge.run_loaded** 를 불러 둔 모델로 돌린다.
+    ★진행 줄은 브리지가 표준 출력으로 내던 것과 **같은 JSON 줄**이 파이프로 온다 — 아래 run_job 의 읽기 고리를 그대로 탄다.
+    ★멈춤: kill() 은 협조적 정지 파일을 만든다(브리지 계수기가 16걸음마다 보고 생성을 정상 반환) — 실행기는 죽이지 않는다
+      (낭독·카드가 함께 쓰는 실행기다). 그리고 연결을 닫는다.
+    """
+    pid = None
+
+    def __init__(self, conn, q, stop_flag):
+        import threading
+        self.returncode = None
+        self.result = None
+        self._conn = conn
+        self._stop_flag = stop_flag
+        threading.Thread(target=self._pump, args=(q,), daemon=True).start()
+
+    def _pump(self, q):
+        try:
+            while True:
+                m = self._conn.recv()
+                if isinstance(m, dict) and "line" in m:
+                    q.put(str(m["line"]) + "\n")
+                    continue
+                self.result = m if isinstance(m, dict) else {}
+                self.returncode = 0 if self.result.get("ok") else 1
+                break
+        except Exception:
+            self.returncode = 1
+        q.put(None)
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        t = time.monotonic()
+        while self.returncode is None:
+            if timeout is not None and time.monotonic() - t > timeout:
+                raise TimeoutError("띄워 둔 Qwen 이 끝나지 않았습니다")
+            time.sleep(0.05)
+        return self.returncode
+
+    def kill(self):
+        if self._stop_flag:
+            try:
+                with open(self._stop_flag, "w") as fh:
+                    fh.write("stop")
+            except OSError:
+                pass
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+
+
 class QwenTTSEngine(TTSEngine):
     """Qwen3-TTS 로컬 Base — 격리 qwen3_tts_venv에서 job bridge로 실행(모델 1회 로딩, 전 문장 배치).
     per-segment가 아니라 run_job 배치. 완전 오프라인(local_files_only)."""
@@ -1275,6 +1332,47 @@ class QwenTTSEngine(TTSEngine):
     def synthesize_segment(self, text, ref_audio, emotion_id, speed, output_path):
         raise RuntimeError("QwenTTSEngine은 배치(run_job) 전용입니다. synthesize() 배치 경로를 사용하세요.")
 
+    #: 띄워 둔 실행기를 쓰지 않는다(이 실행 동안) — 한 번 붙지 못하면 다시 시도하지 않는다.
+    _resident_off = False
+
+    def resident_wanted(self):
+        """이 작업을 띄워 둔 실행기에 맡길 것인가(부르는 쪽이 켰고, 파이프가 있고, 이 실행에서 실패한 적이 없다)."""
+        return bool(os.environ.get("AF_QWEN_PIPE_ADDR") and os.environ.get("AF_QWEN_PIPE_KEY")
+                    and os.environ.get("AUDIOFORGE_QWEN_RESIDENT_BRIDGE", "0") == "1"
+                    and not QwenTTSEngine._resident_off and not getattr(self, "_force_process", False))
+
+    def _resident_job(self, cfg, q):
+        """띄워 둔 실행기(파이프)에 작업을 맡긴다. 맡겼으면 _ResidentBridgeJob, 아니면 None(원래 길).
+        ★장치 고르기가 CPU 를 골랐어도 맡긴다 — 실행기가 모델을 **이미 그래픽카드에 들고 있으면** 여유 메모리가 그만큼 적어 보여
+          CPU 로 떨어지기 때문이다(그러면 수십 배 느려진다). 그래픽카드가 정말 모자라면 실행기가 메모리 부족 오류를 내고,
+          그 오류는 위(_synthesize_qwen_job)의 'CPU 로 한 번 다시' 로 간다(CPU 를 골랐던 작업은 여기서 바로 원래 길로).
+        ★부르는 쪽이 켤 때만(AUDIOFORGE_QWEN_RESIDENT_BRIDGE=1) — 낭독이 먼저 쓰고, 카드는 따로 확인한 뒤에 켠다."""
+        addr = os.environ.get("AF_QWEN_PIPE_ADDR", "")
+        key = os.environ.get("AF_QWEN_PIPE_KEY", "")
+        if not self.resident_wanted():
+            return None
+        try:
+            from multiprocessing.connection import Client
+            conn = Client(addr, family="AF_PIPE", authkey=key.encode("utf-8"))
+        except Exception as e:
+            QwenTTSEngine._resident_off = True
+            emit("progress", message="띄워 둔 Qwen 에 붙지 못해 모델을 새로 엽니다(%s)" % type(e).__name__)
+            return None
+        # 협조적 정지 파일 — 본체가 이 작업을 멈추라고 할 때 만든다(AF_QWEN_STOP_FILE), 없으면 이 작업 전용 자리.
+        stop_flag = os.environ.get("AF_QWEN_STOP_FILE") or ""
+        job = dict(cfg)
+        job["device"] = "cuda:0"          # 실행기는 그래픽카드 작업만 한다(없으면 fallback 으로 돌려보낸다)
+        job["stop_flag"] = stop_flag
+        try:
+            conn.send({"bridge_job": job})
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            return None
+        return _ResidentBridgeJob(conn, q, stop_flag)
+
     def run_job(self, segments, device, *, seed=None, inactivity_sec=None,
                 startup_deadline_sec=None, monotonic=None):
         """모델 1회 로딩 후 전 세그먼트 합성. Popen으로 stdout JSON을 실시간 읽어 즉시 progress emit.
@@ -1310,43 +1408,45 @@ class QwenTTSEngine(TTSEngine):
             cfg["seed"] = int(seed)
         env = {**os.environ, "HF_HOME": _QWEN_HF_HOME, "HF_HUB_OFFLINE": "1",
                "TRANSFORMERS_OFFLINE": "1", "PYTHONIOENCODING": "utf-8", "PYTHONUTF8": "1"}
-        try:
-            proc = subprocess.Popen(
-                [self._venv_python, "-X", "utf8", "-u", self._bridge],
-                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                text=True, encoding="utf-8", errors="replace", env=env)
-        except (OSError, subprocess.SubprocessError) as e:
-            raise RuntimeError(f"Qwen 브리지 실행 오류: {e}")
-
         stderr_tail = []
-
-        def _read_err():
-            try:
-                for ln in proc.stderr:
-                    stderr_tail.append(ln)
-                    if len(stderr_tail) > 40:
-                        stderr_tail.pop(0)
-            except Exception:
-                pass
-        threading.Thread(target=_read_err, daemon=True).start()
-
         q = queue.Queue()
-
-        def _read_out():
+        # ★띄워 둔 실행기가 있으면 그쪽으로(모델을 다시 열지 않는다). 붙지 못하거나 CPU 작업이면 원래대로 새 프로세스.
+        proc = self._resident_job(cfg, q)
+        self.last_resident = proc is not None
+        if proc is None:
             try:
-                for ln in proc.stdout:
-                    q.put(ln)
-            except Exception:
-                pass
-            q.put(None)
-        threading.Thread(target=_read_out, daemon=True).start()
+                proc = subprocess.Popen(
+                    [self._venv_python, "-X", "utf8", "-u", self._bridge],
+                    stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, encoding="utf-8", errors="replace", env=env)
+            except (OSError, subprocess.SubprocessError) as e:
+                raise RuntimeError(f"Qwen 브리지 실행 오류: {e}")
 
-        try:
-            proc.stdin.write(_json.dumps(cfg, ensure_ascii=False))
-            proc.stdin.close()
-        except Exception as e:
-            _kill_proc_tree(proc)
-            raise RuntimeError(f"Qwen 브리지 입력 전달 오류: {e}")
+            def _read_err():
+                try:
+                    for ln in proc.stderr:
+                        stderr_tail.append(ln)
+                        if len(stderr_tail) > 40:
+                            stderr_tail.pop(0)
+                except Exception:
+                    pass
+            threading.Thread(target=_read_err, daemon=True).start()
+
+            def _read_out():
+                try:
+                    for ln in proc.stdout:
+                        q.put(ln)
+                except Exception:
+                    pass
+                q.put(None)
+            threading.Thread(target=_read_out, daemon=True).start()
+
+            try:
+                proc.stdin.write(_json.dumps(cfg, ensure_ascii=False))
+                proc.stdin.close()
+            except Exception as e:
+                _kill_proc_tree(proc)
+                raise RuntimeError(f"Qwen 브리지 입력 전달 오류: {e}")
 
         seg_out = None
         err_msg = None
@@ -1467,6 +1567,18 @@ class QwenTTSEngine(TTSEngine):
             proc.wait(timeout=10)
         except Exception:
             _kill_proc_tree(proc)
+        if isinstance(proc, _ResidentBridgeJob) and seg_out is None and (
+                (proc.result or {}).get("fallback") or not str(device).startswith("cuda")):
+            # 실행기가 받지 않았거나(그래픽카드 없음), CPU 를 골랐던 작업이 실행기에서 실패했다 — 원래 길(새 프로세스)로 한 번.
+            emit("progress", message="띄워 둔 Qwen 으로 만들지 못해 원래 방식으로 다시 만듭니다")
+            self._force_process = True
+            try:
+                return self.run_job(segments, device, seed=seed, inactivity_sec=inactivity_sec,
+                                    startup_deadline_sec=startup_deadline_sec, monotonic=monotonic)
+            finally:
+                self._force_process = False
+        if isinstance(proc, _ResidentBridgeJob) and seg_out is None and not err_msg:
+            err_msg = (proc.result or {}).get("error") or "띄워 둔 Qwen 과의 연결이 끊겼습니다"
         if tsl_err is not None:
             raise tsl_err  # 분할 불가 — 상위가 감정 ID로 재해석.
         if gl_err is not None:
@@ -2621,7 +2733,12 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
     qwen = _get_qwen_engine()
     t_start = time.monotonic()
 
-    dev, reason = select_device("auto", min_free_mb=_QWEN_MIN_FREE_MB)
+    # ★띄워 둔 실행기에 맡길 작업이면 장치 고르기(torch 불러오기 + 그래픽카드 조회, 덩이마다 약 1.5초 — 2026-10-03 실측)를 건너뛴다.
+    #   그 실행기가 이미 그래픽카드에 모델을 들고 있다. 붙지 못하면 run_job 이 원래 길로 가고, 메모리 부족이면 아래 CPU 재시도가 그대로 돈다.
+    if qwen.resident_wanted():
+        dev, reason = "cuda", "띄워 둔 실행기(그래픽카드)"
+    else:
+        dev, reason = select_device("auto", min_free_mb=_QWEN_MIN_FREE_MB)
     device = "cuda:0" if dev == "cuda" else "cpu"
     device_source = _parse_device_source(reason)
     device_reason = reason or None      # 기록에 남길 사유 전문(화면에 띄우는 그 값)
@@ -3425,6 +3542,21 @@ def _environment_facts(device=None):
         out["env_os"] = f"{platform.system()} {platform.release()}"
     except Exception:
         pass
+    # ★띄워 둔 실행기가 만드는 작업이면 이 프로세스는 torch 를 쓰지 않는다 — 기록 하나 때문에 torch 를 불러오면
+    #   덩이마다 약 1.5초가 든다(2026-10-03 실측). 같은 사실(그래픽카드 이름·여유 메모리)을 nvidia-smi 로 남긴다.
+    if _get_qwen_engine().resident_wanted():
+        out["env_runner"] = "resident"
+        try:
+            import subprocess
+            r = subprocess.run(["nvidia-smi", "--query-gpu=name,memory.free,memory.total", "--format=csv,noheader,nounits"],
+                               capture_output=True, text=True, timeout=5)
+            name, free_mb, total_mb = [x.strip() for x in (r.stdout or "").splitlines()[0].split(",")[:3]]
+            out["gpu_name"] = name
+            out["gpu_vram_free_mb"] = int(float(free_mb))
+            out["gpu_vram_total_mb"] = int(float(total_mb))
+        except Exception:
+            pass
+        return out
     try:
         import torch
         out["env_torch"] = str(torch.__version__)
