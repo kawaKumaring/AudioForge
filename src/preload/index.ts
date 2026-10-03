@@ -289,8 +289,11 @@ const api = {
   reader: {
     speak: (text: string, voice: { kind: 'builtin' | 'reference'; path: string; engineId?: string },
       voiceKey: string, parts?: Array<{ weight: number; strong: boolean }>,
-      segments?: Array<{ text: string; emotion: string }>): Promise<{ data?: { path: string; cached: boolean; timing?: Array<[number, number]>; trace?: SpeakTraceReply }; error?: string; trace?: SpeakTraceReply }> =>
-      ipcRenderer.invoke('reader:speak', text, voice, voiceKey, parts, segments),
+      segments?: Array<{ text: string; emotion: string }>, epoch?: number): Promise<{ data?: { path: string; cached: boolean; timing?: Array<[number, number]>; trace?: SpeakTraceReply }; error?: string; trace?: SpeakTraceReply; superseded?: 'queued' | 'running' }> =>
+      ipcRenderer.invoke('reader:speak', text, voice, voiceKey, parts, segments, epoch),
+    /** 낭독 세대를 올린다 — 옛 세대 요청은 시작 전에 버리고, 돌고 있으면 멈출 수 있는 것만 멈춘다(2026-10-03). */
+    supersede: (epoch: number): Promise<{ data?: { running: boolean; stopRequested: boolean; cancellable: boolean | null }; error?: string }> =>
+      ipcRenderer.invoke('reader:supersede', epoch),
     /** 목소리를 미리 연다 — 고른 순간 모델을 올려 둬 첫 조각을 기다리지 않게. */
     warm: (voice: { kind: 'builtin' | 'reference'; path: string; engineId?: string }, opts?: { emotion?: boolean }): Promise<{ data?: { warmed: boolean; why?: string }; error?: string }> =>
       ipcRenderer.invoke('reader:warm', voice, opts),

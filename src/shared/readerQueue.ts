@@ -114,6 +114,11 @@ export function markMaking(q: QueueState, i: number, req?: string): QueueState {
   return patch(q, i, req ? { state: 'making', req } : { state: 'making' })
 }
 
+/** 그 자리를 다시 '손대지 않음' 으로 — 본체가 지난 세대라며 버린 요청(2026-10-03). 아직 필요하면 다음 차례에 다시 청한다. */
+export function markIdle(q: QueueState, i: number): QueueState {
+  return patch(q, i, { state: 'idle' })
+}
+
 export function markReady(q: QueueState, i: number, path: string): QueueState {
   return patch(q, i, { state: 'ready', path })
 }

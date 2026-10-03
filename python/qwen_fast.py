@@ -319,6 +319,13 @@ def _talker_scores(logits, gen, n_new, rp, min_new, eos, suppress):
     return scores
 
 
+#: 협조적 정지(2026-10-03) — 이 파일이 생기면 본 모델 반복을 16걸음 안에 멈춘다(지금까지 만든 것으로 정상 반환).
+#  상주 실행기가 요청마다 정한다(낭독이 자리를 옮기거나 멈추면 본체가 파일을 만든다). 멈췄으면 STOPPED 가 선다 — 그 소리는 쓰지 않는다.
+STOP_FILE = None
+STOPPED = False
+_STOP_EVERY = 16
+
+
 def _count_only_criteria(kw):
     """멈춤 조건이 '세기만 하는 것' 들뿐인가 — (조건 목록, 나머지 인자, 빠른 길에서 받아도 되나)."""
     crit = kw.get("stopping_criteria")
@@ -424,6 +431,9 @@ def _talker_generate(self, inputs_embeds=None, attention_mask=None, trailing_tex
                 tokens.append(tok)
                 # 멈춤 조건 — 원래 길(transformers)처럼 걸음마다 **모두** 한 번씩 부른다(하나가 True 여도 나머지를 센다).
                 stop = [bool(c(gen, scores)) for c in crit]
+                if STOP_FILE and i % _STOP_EVERY == _STOP_EVERY - 1 and os.path.exists(STOP_FILE):
+                    globals()["STOPPED"] = True
+                    break
                 if int(tok[0]) == int(eos) or i == limit - 1 or any(stop):
                     break
                 am = torch.cat([am, am.new_ones((1, 1))], dim=1)

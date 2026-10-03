@@ -199,5 +199,50 @@ class TestRefPromptCache(unittest.TestCase):
             qvs.MAX_MODELS = orig_max
         self.assertEqual([k[0] for k in models.ref_prompts], ["KEEP"])
 
+
+class StopFlag(unittest.TestCase):
+    """2026-10-03 — 협조적 정지는 **그 요청에만** 걸린다(낭독과 카드가 같은 실행기를 쓴다). 멈춘 소리는 쓰지 않는다."""
+
+    def _models(self, stop_during=False):
+        import qwen_fast
+
+        class M(FakeModel):
+            def generate_custom_voice(self, text, speaker, language, instruct=None):
+                if stop_during:
+                    qwen_fast.STOPPED = True        # 빠른 길이 정지 파일을 보고 멈췄다(가짜)
+                return super().generate_custom_voice(text, speaker, language, instruct)
+        models = qvs.Models()
+        models.loaded["A"] = M()
+        return models
+
+    def test_멈춘_요청은_소리를_쓰지_않고_stopped_로_답한다(self):
+        import qwen_fast
+        d = tempfile.mkdtemp()
+        out, flag = os.path.join(d, "o.wav"), os.path.join(d, "stop.flag")
+        r = qvs.handle(self._models(stop_during=True), {"model": "A", "speaker": "sohee", "text": "가나다", "out": out, "stop_flag": flag})
+        self.assertFalse(r["ok"])
+        self.assertTrue(r.get("stopped"))
+        self.assertFalse(os.path.exists(out), "멈춘(잘렸을 수 있는) 소리를 남겼다")
+        self.assertIsNone(qwen_fast.STOP_FILE, "정지 파일이 다음 요청에 남았다")
+
+    def test_정지_파일은_그_요청에만_다음_요청은_멈추지_않는다(self):
+        import qwen_fast
+        d = tempfile.mkdtemp()
+        flag = os.path.join(d, "stop.flag")
+        open(flag, "w").write("stop")                 # 앞 요청이 멈춤 요청을 받은 채 끝났다
+        seen = []
+        models = self._models()
+        real = models.loaded["A"].generate_custom_voice
+
+        def spy(*a, **k):
+            seen.append(qwen_fast.STOP_FILE)
+            return real(*a, **k)
+        models.loaded["A"].generate_custom_voice = spy
+        out = os.path.join(d, "card.wav")
+        r = qvs.handle(models, {"model": "A", "speaker": "sohee", "text": "카드 대사", "out": out})   # 카드 — 정지 파일 없음
+        self.assertTrue(r["ok"])
+        self.assertEqual(seen, [None], "다른 요청에 앞 요청의 정지 파일이 걸렸다")
+        self.assertTrue(os.path.exists(out))
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

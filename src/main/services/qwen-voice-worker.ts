@@ -18,6 +18,8 @@ export type SpawnFn = (command: string, args: string[], options: Record<string, 
 
 export interface QwenVoiceRequest {
   model: string; speaker: string; language: string; textFile: string; out: string; seed?: number
+  /** 협조적 정지 파일 — 생기면 실행기가 만들기를 멈추고 stopped 로 답한다(2026-10-03). */
+  stopFlag?: string
 }
 export interface QwenVoiceReply { seconds: number; sampleRate: number; genSec: number; loadedNow: boolean }
 
@@ -67,7 +69,7 @@ export class QwenVoiceWorker {
   /** 한 조각을 만든다 — 차례로. */
   speak(req: QwenVoiceRequest): Promise<QwenVoiceReply> {
     return this.call({ model: req.model, speaker: req.speaker, language: req.language,
-      text_file: req.textFile, out: req.out, seed: req.seed ?? 0 }).then((msg) => ({
+      text_file: req.textFile, out: req.out, seed: req.seed ?? 0, ...(req.stopFlag ? { stop_flag: req.stopFlag } : {}) }).then((msg) => ({
       seconds: Number(msg.seconds) || 0, sampleRate: Number(msg.sample_rate) || 0,
       genSec: Number(msg.gen_sec) || 0, loadedNow: !!msg.loaded_now }))
   }

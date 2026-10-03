@@ -203,8 +203,28 @@ def handle(models, req, push=None):
         threading.Thread(target=_prefetch, args=(req["prefetch"],), daemon=True).start()
         return dict(ok=True, seconds=0, sample_rate=0, gen_sec=0, loaded_now=False)
     import torch
+    import qwen_fast
     model, loaded_now = models.get(req["model"])
     say = _speaker(models, model, req)
+    # ★협조적 정지(2026-10-03) — 낭독이 자리를 옮기거나 멈추면 본체가 이 파일을 만든다. 본 모델 반복이 16걸음 안에 멈추고,
+    #   멈춘 소리는 쓰지 않는다(파일을 쓰지 않고 stopped 로 답한다). 이 요청에만 걸린다 — 다음 요청(카드 등)과 섞이지 않는다.
+    qwen_fast.STOP_FILE = str(req.get("stop_flag") or "") or None
+    qwen_fast.STOPPED = False
+    try:
+        return _handle_loaded(models, req, model, loaded_now, say)
+    finally:
+        qwen_fast.STOP_FILE = None
+
+
+def _stopped():
+    import qwen_fast
+    return bool(qwen_fast.STOPPED)
+
+
+def _handle_loaded(models, req, model, loaded_now, say):
+    import numpy as np
+    import soundfile as sf
+    import torch
     if req.get("warm"):
         # 미리 열기 — 고른 순간 모델을 올려 둔다(첫 조각의 모델 열기를 누르기 전에 치른다).
         # ★막 열었으면 짧은 글을 한 번 만들어 버린다 — 첫 생성의 묶어 실행 준비(1.3초, 2026-10-02 실측)를 여기서 치른다.
@@ -231,6 +251,8 @@ def handle(models, req, push=None):
     t = time.time()
     wavs, sr = say(text, req.get("instruct") or None)
     gen = time.time() - t
+    if _stopped():
+        return dict(ok=False, stopped=True, error="멈춤 요청으로 만들기를 멈췄습니다", gen_sec=round(gen, 2), loaded_now=loaded_now)
     wav = np.asarray(wavs[0], dtype="float32").reshape(-1)
     if wav.size == 0 or not np.isfinite(wav).all():
         raise RuntimeError("소리가 비었거나 깨졌습니다")
@@ -274,6 +296,8 @@ def _segments(model, loaded_now, req, say=None):
         t = time.time()
         wavs, sr = say(text, instruct_of((seg or {}).get("emotion")))
         gen += time.time() - t
+        if _stopped():
+            return dict(ok=False, stopped=True, error="멈춤 요청으로 만들기를 멈췄습니다", gen_sec=round(gen, 2), loaded_now=loaded_now)
         w = np.asarray(wavs[0], dtype="float32").reshape(-1)
         if w.size == 0 or not np.isfinite(w).all():
             raise RuntimeError("소리가 비었거나 깨졌습니다")
