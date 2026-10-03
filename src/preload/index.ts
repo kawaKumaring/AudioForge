@@ -312,6 +312,7 @@ const api = {
     pickTexts: (): Promise<{ data?: { name: string; size: number; bytes?: Uint8Array }[]; error?: string }> =>
       ipcRenderer.invoke('reader:pick-texts'),
     /** 폴더 가져오기(2026-10-03) — 고르기·훑기·훑은 글 읽기. 결과 모양은 shared/readerLibrary 의 ScanResult. */
+    cover: (path?: string): Promise<{ data?: string | null; error?: string }> => ipcRenderer.invoke('reader:cover', path),
     pickFolders: (): Promise<{ data?: import('../shared/readerLibrary').ScanResult | null; error?: string }> =>
       ipcRenderer.invoke('reader:pick-folders'),
     scanPaths: (paths: string[]): Promise<{ data?: import('../shared/readerLibrary').ScanResult; error?: string }> =>

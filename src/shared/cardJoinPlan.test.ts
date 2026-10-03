@@ -34,7 +34,7 @@ test('채택이 없으면 **계획을 만들지 않는다**', () => {
   const r = buildJoinPlan([card('a'), card('b', '', { adopted: null })], opts)
   assert.equal(r.plan, null, '채택 없는 카드를 조용히 건너뛰고 이어 붙인다')
   assert.equal(r.blocks.length, 1)
-  assert.match(r.blocks[0].why, /채택한 생성본이 없/)
+  assert.match(r.blocks[0].why, /최종 음성에 넣을 결과를 골라/)
   assert.equal(r.blocks[0].cardId, 'b')
 })
 
@@ -43,7 +43,7 @@ test('파일이 사라진 생성본도 막는다', () => {
   gone.adopted = { id: 't', path: 'b.wav', missing: true }
   const r = buildJoinPlan([card('a'), gone], opts)
   assert.equal(r.plan, null)
-  assert.match(r.blocks[0].why, /사라졌/)
+  assert.match(r.blocks[0].why, /파일을 찾을 수 없/)
 })
 
 test('막힌 것이 여럿이면 모두 센다', () => {
@@ -58,7 +58,7 @@ test('카드가 없으면 만들지 않는다', () => {
 
 test('낄 수 없는 이유를 하나씩 말한다', () => {
   assert.equal(cardJoinFault(card('a')), '')
-  assert.match(cardJoinFault({ ...card('a'), adopted: null }), /채택/)
+  assert.match(cardJoinFault({ ...card('a'), adopted: null }), /최종 음성/)
   assert.match(cardJoinFault({ id: 'a', label: 'A', adopted: { id: 't', path: '', } }), /파일이 없/)
 })
 

@@ -13,6 +13,7 @@ export const READER_PREFS_STORAGE_KEY = 'readerPrefs'
 export interface ReaderPrefs {
   shelfView: 'cover' | 'compact' | 'list'
   shelfGrouped: boolean
+  autoNext: boolean
   /** 읽는 구절을 화면이 따라간다. */
   follow: boolean
   /**
@@ -72,7 +73,7 @@ export function parseSavedVoice(raw: unknown): SavedReaderVoice | null {
 export const READER_FONT_MIN = 13
 export const READER_FONT_MAX = 24
 
-export const DEFAULT_READER_PREFS: ReaderPrefs = { shelfView: 'compact', shelfGrouped: true, follow: true, skipHanjaInParens: false, fontSize: 16, recentVoices: [], emotion: true, voice: null }
+export const DEFAULT_READER_PREFS: ReaderPrefs = { shelfView: 'compact', shelfGrouped: true, autoNext: true, follow: true, skipHanjaInParens: false, fontSize: 16, recentVoices: [], emotion: true, voice: null }
 
 /** 최근 목소리 목록에 넣는다 — 같은 파일은 맨 앞으로 옮기고, 넘치면 오래된 것을 뺀다. */
 export function rememberVoice(list: ReaderPrefs['recentVoices'], v: { path: string; label: string }): ReaderPrefs['recentVoices'] {
@@ -85,6 +86,7 @@ export function parseReaderPrefs(raw: unknown): ReaderPrefs {
   return {
     shelfView: o.shelfView === 'cover' || o.shelfView === 'list' ? o.shelfView : 'compact',
     shelfGrouped: typeof o.shelfGrouped === 'boolean' ? o.shelfGrouped : true,
+    autoNext: typeof o.autoNext === 'boolean' ? o.autoNext : true,
     follow: typeof o.follow === 'boolean' ? o.follow : DEFAULT_READER_PREFS.follow,
     skipHanjaInParens: typeof o.skipHanjaInParens === 'boolean'
       ? o.skipHanjaInParens : DEFAULT_READER_PREFS.skipHanjaInParens,

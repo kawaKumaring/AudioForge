@@ -66,6 +66,7 @@ export interface ReadAloud {
   /** 지금 읽는 덩이 번호. */
   at: number
   playing: boolean
+  starting: boolean
   /** 왜 소리가 안 나는가 — 빈 글이면 아무 문제 없다. */
   wait: string
   /** 만들지 못한 사유 등 사용자에게 보일 한 줄. */
@@ -78,6 +79,7 @@ export interface ReadAloud {
   /** 지금 소리가 닿은 **글자 하나**의 원문 자리 — 따라가기가 줄을 찾는다. 모르면 -1. 매 화면마다 불러도 가볍다. */
   caret: () => number
   start: () => void
+  startAt: (charIndex: number) => void
   stop: () => void
   /** 원문 글자 자리로 건너뛴다(본문에서 문단을 눌렀을 때). */
   seekToChar: (charIndex: number) => void
@@ -94,6 +96,8 @@ type TraceTag = { chunk: number; gen: number; via: 'normal' | 'preloaded'; repor
 export function useReadAloud(
   text: string, voice: ReaderVoicePick | null,
   opts: {
+    documentId?: string
+    onEnded?: (documentId: string) => void
     skipHanjaInParens?: boolean
     /** 대사에 감정을 담아 읽는다 — 부르는 쪽이 'Qwen 지정 목소리 + 1.7B' 일 때만 켠다(2026-10-01). */
     emotion?: boolean
@@ -101,9 +105,13 @@ export function useReadAloud(
 ): ReadAloud {
   // ★고른 시작 자리는 **덩이의 경계**가 된다 — 덩이 한가운데를 고르면 그 앞 문단부터 읽었다(2026-09-30 재현).
   //   글이 바뀌면 경계도 처음으로(같은 렌더에서 — 옛 책의 자리를 새 책에 쓰지 않는다).
-  const [cut, setCut] = useState<{ text: string; at: number }>({ text, at: 0 })
-  const breakAt = cut.text === text ? cut.at : 0
-  const chunks = useMemo(() => splitForReading(text, { breakAt, ramp: START_RAMP_SECONDS }), [text, breakAt])
+  const documentKey = opts.documentId ?? text
+  const documentRef = useRef(documentKey); documentRef.current = documentKey
+  const endedCallback = useRef(opts.onEnded); endedCallback.current = opts.onEnded
+  const [startRequest, setStartRequest] = useState<{ document: string; at: number } | null>(null)
+  const [cut, setCut] = useState<{ text: string; at: number; document: string }>({ text, at: 0, document: documentKey })
+  const breakAt = cut.text === text && cut.document === documentKey ? cut.at : 0
+  const chunks = useMemo(() => splitForReading(text, { breakAt, ramp: START_RAMP_SECONDS }), [text, breakAt, documentKey])
   const skipHanja = !!opts.skipHanjaInParens
   // ★덩이마다 **구절 나누기와 소리로 보낼 글**(readerText.readingPlan). 큰 책은 덩이가 수천 개라 필요할 때만 만든다.
   const plans = useRef<{ chunks: Chunk[]; skip: boolean; map: Map<number, Plan> }>({ chunks, skip: skipHanja, map: new Map() })
@@ -122,7 +130,9 @@ export function useReadAloud(
   // 감정을 켜고 끄면 다른 소리다 — 큐가 만들어 둔 것을 버리고 지금 자리를 다시 읽는다.
   const voiceKey = (cacheKey && skipHanja ? `${cacheKey}|괄호한자뺌` : cacheKey) + (cacheKey && withEmotion ? '|감정' : '')
   const [q, setQ] = useState<QueueState>(() => emptyQueue(chunks.length, voiceKey, aheadFor(voice)))
+  const [preparedChunks, setPreparedChunks] = useState(chunks)
   const [playing, setPlaying] = useState(false)
+  const playingRef = useRef(playing); playingRef.current = playing
   const [fault, setFault] = useState('')
   /** 덩이마다 구절 시각(초) — 본체가 만든 소리에서 잰 것. 큐와 따로 둔다(큐 규칙을 건드리지 않는다). */
   const timings = useRef(new Map<number, Array<[number, number]>>())
@@ -221,6 +231,8 @@ export function useReadAloud(
   useEffect(() => {
     if (builtFor.current === chunks) return
     builtFor.current = chunks
+    stopAudio()
+    setPreparedChunks(chunks)
     gen.current++
     timings.current = new Map()
     // 경계가 바뀐 것이면 그 자리에서, 글이 바뀐 것이면 처음에서.
@@ -255,6 +267,7 @@ export function useReadAloud(
 
   const stop = useCallback(() => {
     opLog('reader', `멈춤 — 덩이 ${qRef.current.at + 1}/${qRef.current.count}`)
+    setStartRequest(null)
     trace('stop', { chunk: qRef.current.at, gen: gen.current })
     askedAt.current = null; lowSince.current = null
     // ★멈추면 만들던 것도 멈춘다 — 소리만 멈추고 생성은 계속되는 상태를 남기지 않는다(멈출 수 있는 목소리만).
@@ -375,12 +388,13 @@ export function useReadAloud(
 
   /** 이 소리 요소가 덩이 at 을 틀 때의 끝·오류 처리. */
   const attach = useCallback((el: HTMLAudioElement) => {
+    const forDocument = documentRef.current
     el.onended = () => {
-      if (!aliveRef.current) return
+      if (!aliveRef.current || !playingRef.current || forDocument !== documentRef.current || el !== audioRef.current) return
       endedAt.current = performance.now()
       const cur = qRef.current
       // 마지막이면 멈춘다 — 조용히 처음으로 돌아가지 않는다.
-      if (atEnd(cur)) { opLog('reader', `끝까지 읽음 — ${cur.count}덩이`); setPlaying(false); return }
+      if (atEnd(cur)) { opLog('reader', `끝까지 읽음 — ${cur.count}덩이`); setPlaying(false); endedCallback.current?.(forDocument); return }
       // ★다음 덩이를 미리 불러 둔 요소가 있으면 **곧바로** 튼다 — 화면이 다시 그려지기를 기다리지 않는다.
       const nx = cur.items[cur.at + 1]
       const tag = nx?.path ? `${cur.at + 1}:${nx.path}` : ''
@@ -423,7 +437,7 @@ export function useReadAloud(
     }
     if (it.state === 'ready' && !it.path) {
       // 소리 없이 지나가는 덩이 — 멈추지 않고 다음으로. 마지막이면 멈춘다.
-      if (atEnd(q)) setPlaying(false)
+      if (atEnd(q)) { setPlaying(false); endedCallback.current?.(documentRef.current) }
       else setQ((cur) => advance(cur))
       return
     }
@@ -551,9 +565,22 @@ export function useReadAloud(
       return
     }
     // 새 경계 — 덩이가 다시 나뉘고, 위 효과가 그 자리로 옮긴다.
-    setCut({ text, at: c })
-  }, [chunks, breakAt, text, stopAudio])
+    setCut({ text, at: c, document: documentKey })
+  }, [chunks, breakAt, text, stopAudio, documentKey])
 
+  const startAt = useCallback((charIndex: number) => {
+    setPlaying(false)
+    seekToChar(charIndex)
+    setStartRequest({ document: documentKey, at: Math.max(0, charIndex) })
+  }, [documentKey, seekToChar])
+  // 새 책의 경계와 큐가 맞춰진 렌더에서만 시작한다. 앞 책의 준비된 소리를 먼저 틀지 않는다.
+  useEffect(() => {
+    if (!startRequest) return
+    if (startRequest.document !== documentKey) { setStartRequest(null); return }
+    if (preparedChunks !== chunks || breakAt !== startRequest.at || q.at !== Math.max(0, chunkAt(chunks, startRequest.at))) return
+    setStartRequest(null)
+    start()
+  }, [startRequest, documentKey, preparedChunks, chunks, breakAt, q.at, start])
   const next = useCallback(() => { stopAudio(); setQ((cur) => advance(cur)) }, [stopAudio])
   const prev = useCallback(() => { stopAudio(); setQ((cur) => seek(cur, cur.at - 1)) }, [stopAudio])
 
@@ -566,8 +593,8 @@ export function useReadAloud(
   }
   const caret = useCallback(() => caretRef.current(), [])
   return {
-    chunks, at: q.at, playing,
+    chunks, at: q.at, playing, starting: !!startRequest,
     wait: playing && !canPlayNow(q) ? waitReason(q) : '',
-    fault, spot, caret, start, stop, seekToChar, next, prev,
+    fault, spot, caret, start, startAt, stop, seekToChar, next, prev,
   }
 }

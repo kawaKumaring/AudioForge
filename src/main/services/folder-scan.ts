@@ -44,6 +44,7 @@ export async function scanTextPaths(paths: readonly string[], limitBytes: number
     entries.sort((a, b) => naturalCompare(a.name, b.name))
     const files: ScanFile[] = []
     const subdirs: string[] = []
+    const images: string[] = []
     for (const e of entries) {
       const p = join(dir, e.name)
       if (e.isSymbolicLink()) { out.links++; continue }
@@ -53,13 +54,16 @@ export async function scanTextPaths(paths: readonly string[], limitBytes: number
         subdirs.push(p); continue
       }
       if (!e.isFile()) continue
+      if (['.png', '.jpg', '.jpeg', '.webp'].includes(extname(e.name).toLowerCase())) { images.push(p); continue }
       if (!TEXT_EXT.has(extname(e.name).toLowerCase())) { out.unsupported++; continue }
       if (count >= SCAN_MAX_FILES) { out.truncated = true; break }
       const f = await fileEntry(p)
       if (f === 'large') { out.tooLarge++; continue }
       if (f) { files.push(f); count++ }
     }
-    if (files.length) out.works.push({ root: dir, name: basename(dir), files })
+    const named = images.find(p => /^(cover|folder|poster|표지|커버)\.(png|jpe?g|webp)$/i.test(basename(p)))
+    const coverPath = named || (images.length === 1 ? images[0] : undefined)
+    if (files.length) out.works.push({ root: dir, name: basename(dir), files, ...(coverPath ? { coverPath } : {}) })
     for (const s of subdirs) await walk(s, depth + 1)
   }
 

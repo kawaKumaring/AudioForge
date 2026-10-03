@@ -30,6 +30,11 @@ export interface BookHistory { at: number; sha256?: string; position: number; pa
 export interface LibBook {
   id: string; name: string; paragraphs: string[]; position: number
   addedAt?: number; group?: string
+  /** 보관함에 숨긴 책. 원문·읽던 자리·묶음은 유지한다. */
+  archived?: boolean
+  /** 앱이 보관한 작은 표지 사본. 없으면 기본 책 표지. */
+  cover?: string
+  completed?: boolean
   /** 묶음 안의 차례(작을수록 앞). 없으면 이름 자연 정렬. */
   order?: number
   /** 마지막으로 열거나 자리를 고른 때 — 묶음 이어 읽기에 쓴다. */
@@ -70,9 +75,14 @@ export function sortGroup<T extends Pick<LibBook, 'name' | 'order' | 'addedAt'>>
 }
 
 /** 묶음 이어 읽기 — 마지막으로 읽던 책, 기록이 없으면 첫 책. */
-export function groupResume<T extends Pick<LibBook, 'name' | 'order' | 'addedAt' | 'readAt'>>(books: readonly T[]): T | undefined {
+export function groupResume<T extends Pick<LibBook, 'name' | 'order' | 'addedAt' | 'readAt' | 'completed'>>(books: readonly T[]): T | undefined {
   const read = books.filter((b) => (b.readAt ?? 0) > 0)
-  if (read.length) return read.reduce((a, b) => ((b.readAt ?? 0) > (a.readAt ?? 0) ? b : a))
+  if (read.length) {
+    const last = read.reduce((a, b) => ((b.readAt ?? 0) > (a.readAt ?? 0) ? b : a))
+    if (!last.completed) return last
+    const ordered = sortGroup(books), at = ordered.indexOf(last)
+    return ordered.slice(at + 1).find(b => !b.completed) || ordered.find(b => !b.completed) || last
+  }
   return sortGroup(books)[0]
 }
 
@@ -92,7 +102,7 @@ export function pushHistory(book: LibBook, at: number): BookHistory[] {
 
 // ── 폴더 탐색 결과(본체가 만든다) ─────────────────────────────────────────────
 export interface ScanFile { path: string; name: string; size: number; mtimeMs: number }
-export interface ScanWork { root: string; name: string; files: ScanFile[] }
+export interface ScanWork { root: string; name: string; files: ScanFile[]; coverPath?: string }
 export interface ScanResult {
   works: ScanWork[]
   /** 폴더가 아니라 파일로 끌어 놓은 글 — 묶지 않는다. */

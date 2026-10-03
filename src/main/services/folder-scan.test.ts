@@ -29,7 +29,8 @@ test('하위 폴더까지 훑고, 파일을 직접 담은 폴더만 작품이 �
     assert.deepEqual(r.works.map((w) => w.name), ['작품A', '1권', '2권'], '중간 폴더(묶음·시리즈B)는 묶음이 아니다')
     assert.deepEqual(r.works[0].files.map((f) => f.name), ['1화.txt', '2화.txt', '10화.txt'])
     assert.deepEqual(r.loose.map((f) => f.name), ['낱권.txt'], '파일로 놓은 글은 묶지 않는다')
-    assert.equal(r.unsupported, 2, '표지.jpg · 메모.md')
+    assert.equal(r.unsupported, 1, '표지는 가져오고 메모.md만 건너뛴다')
+    assert.equal(r.works[0].coverPath, join(root, '작품A', '표지.jpg'))
     assert.equal(scannedPaths(r).length, 6)
   } finally { clean(root) }
 })
@@ -52,5 +53,21 @@ test('★연결(정션) 순환을 따라가지 않는다', async () => {
     assert.ok(r.links >= 1, '연결을 세고 건너뛴다')
     assert.equal(r.works.filter((w) => w.name === '작품A').length, 1, '같은 작품을 두 번 훑지 않는다')
     assert.equal(r.truncated, false)
+  } finally { clean(root) }
+})
+
+
+test('표지 이름을 우선하고 이미지가 여러 장이면 임의로 고르지 않는다', async () => {
+  const root = fixture()
+  try {
+    writeFileSync(join(root, '작품A', '삽화.png'), 'x')
+    let r = await scanTextPaths([join(root, '작품A')], 1000)
+    assert.equal(r.works[0].coverPath, join(root, '작품A', '표지.jpg'))
+    unlinkSync(join(root, '작품A', '표지.jpg'))
+    r = await scanTextPaths([join(root, '작품A')], 1000)
+    assert.equal(r.works[0].coverPath, join(root, '작품A', '삽화.png'))
+    writeFileSync(join(root, '작품A', '다른삽화.png'), 'x')
+    r = await scanTextPaths([join(root, '작품A')], 1000)
+    assert.equal(r.works[0].coverPath, undefined)
   } finally { clean(root) }
 })

@@ -1,3 +1,5 @@
+// @ts-ignore TS5097
+import { attachPlaybackBoost } from './playbackBoost.ts'
 // 재생 음량의 **단일 소유자** — 만들어지는 모든 소리 요소에 같은 값을 건다.
 //
 // 왜 한곳에 모으는가(2026-09-10 사용자 보고): 이 앱의 재생 지점은 네 곳이고
@@ -41,6 +43,7 @@ function applyAll() {
 export function attachPlaybackVolume(el: HTMLMediaElement | null | undefined): void {
   if (!el) return
   applyTo(el)
+  attachPlaybackBoost(el)
   for (const ref of attached) if (ref.deref() === el) return
   attached.add(new WeakRef(el))
   // ★소리가 나기 시작하면 알린다 — '지금 소리를 내는 자리' 를 앱이 하나로 지키기 위해서다.

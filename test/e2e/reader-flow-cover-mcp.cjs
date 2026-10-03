@@ -1,0 +1,35 @@
+const assert=require('node:assert/strict');const fs=require('node:fs');const path=require('node:path');const zlib=require('node:zlib');const {McpClient}=require('../../tools/mcp/client.cjs');
+function png(){const w=180,h=240,raw=Buffer.alloc((w*3+1)*h);for(let y=0;y<h;y++)for(let x=0;x<w;x++){let k=y*(w*3+1)+1+x*3;const mountain=y>130-Math.abs(x-90)*.8;raw[k]=mountain?25:210-y/3;raw[k+1]=mountain?45:145-y/4;raw[k+2]=mountain?65:100+y/3}const chunk=(name,data)=>{const t=Buffer.from(name),b=Buffer.concat([t,data]);let crc=0xffffffff;for(const x of b){crc^=x;for(let k=0;k<8;k++)crc=(crc>>>1)^((crc&1)?0xedb88320:0)}const n=Buffer.alloc(4),c=Buffer.alloc(4);n.writeUInt32BE(data.length);c.writeUInt32BE((crc^0xffffffff)>>>0);return Buffer.concat([n,b,c])};const ih=Buffer.alloc(13);ih.writeUInt32BE(w);ih.writeUInt32BE(h,4);ih[8]=8;ih[9]=2;return Buffer.concat([Buffer.from([137,80,78,71,13,10,26,10]),chunk('IHDR',ih),chunk('IDAT',zlib.deflateSync(raw)),chunk('IEND',Buffer.alloc(0))])}
+(async()=>{const c=new McpClient();await c.start();let n=0;const call=async(k,a={})=>{const r=await c.call(k,a);if(r.isError)throw Error(r.text);return r.json};const check=(v,m)=>{assert.ok(v,m);console.log('PASS',m);n++};const click=async(t,index=0)=>check((await call('ui_click',{target:'testid:'+t,index})).clicked,'누름: '+t);const ev=code=>call('js_eval',{code});const wait=async(code,m,timeoutMs=8000)=>check((await call('ui_wait',{code,timeoutMs})).met,m);try{
+await call('app_start',{build:'never'});
+const fixture=await call('test_input',{kind:'text',name:'cover-fixture.txt',content:'표지 검사'});const base=path.dirname(fixture.path);const cover=path.join(base,'cover.png');const bytes=png();fs.writeFileSync(cover,bytes);
+for(let i=1;i<=18;i++)await call('api_call',{method:'works.write',args:['books','flow-'+i,{id:'flow-'+i,name:'검수 작품 '+String(i).padStart(2,'0')+'화',group:'검수 작품',order:i,paragraphs:['안녕하세요.','다음 이야기입니다.'],position:0}],full:true});
+await call('app_mode',{mode:'reader'});await wait('!!document.querySelector("[data-testid=reader-book-group]")','작품 표시');
+await call('dialog_queue',{kind:'open',answers:[[cover]]});await click('reader-group-menu');await click('reader-cover-choose');
+await wait('Array.from(document.querySelectorAll("[data-testid=reader-cover-image]")).some(i=>i.complete&&i.naturalWidth>0)','실제 표지 이미지 디코딩');
+const stored=(await ev('({path:window.__readerStore.getState().books[0].cover})')).path;check(stored!==cover&&fs.existsSync(stored),'앱이 작은 표지 사본 보관');check(fs.readFileSync(cover).equals(bytes),'원본 이미지 불변');
+check(await ev('getComputedStyle(document.querySelector("[data-testid=reader-cover-image]")).filter.includes("blur")'),'흐릿한 표지 처리');
+await click('reader-book-group');await wait('!!document.querySelector("[data-testid=reader-work-listen]")','작품 개요와 이어듣기');
+await call('ui_set',{target:'testid:reader-library-search',value:'검수'});
+await ev('(()=>{const e=document.querySelector("[data-testid=reader-shelf-scroll]");e.scrollTop=220;return e.scrollTop})()');
+await click('reader-library-book',10);await click('reader-library');
+check(await ev('!!document.querySelector("[data-testid=reader-group-crumb]")&&document.querySelector("[data-testid=reader-library-search]").value==="검수"'),'본문 왕복 뒤 작품·검색 유지');
+check(await ev('document.querySelector("[data-testid=reader-shelf-scroll]").scrollTop>0'),'본문 왕복 뒤 스크롤 유지');
+await click('reader-library-book',0);await click('reader-next-chapter');check(await ev('document.querySelector("[data-testid=reader-now-reading]").textContent.includes("02화")'),'다음 회차 이동');await click('reader-prev-chapter');check(await ev('document.querySelector("[data-testid=reader-now-reading]").textContent.includes("01화")'),'이전 회차 이동');
+await click('reader-settings');await click('reader-auto-next');await call('ui_key',{keys:'Escape'});
+await wait('!document.querySelector("[data-testid=reader-play]").disabled','기본 목소리 준비');await click('reader-play');
+await wait('window.__readerStore.getState().books.find(b=>b.id==="flow-1").completed===true','실제 CPU 낭독 완료',45000);
+check(await ev('document.querySelector("[data-testid=reader-now-reading]").textContent.includes("01화")'),'자동 넘김 끄면 현재 회차에서 멈춤');
+await click('reader-settings');await click('reader-auto-next');await call('ui_key',{keys:'Escape'});await click('reader-play');
+await wait('document.querySelector("[data-testid=reader-now-reading]").textContent.includes("02화")','끝나면 다음 회차로 자동 이동',45000);
+await wait('window.__readerStore.getState().books.find(b=>b.id==="flow-2").completed===true','같은 본문을 가진 다음 회차도 실제 재생 완료',45000);
+await click('reader-play');
+await call('window_resize',{width:800,height:600});
+check(await ev('(()=>{const r=document.querySelector("[data-testid=reader-controls]").getBoundingClientRect();return r.bottom<=innerHeight&&r.left>=0&&r.right<=innerWidth})()'),'작은 창에서도 고정 재생기 화면 안');
+await click('reader-chapters');await call('ui_screenshot',{savePath:'_local/reader-flow-work.png'});
+await call('app_restart',{keepData:true});await call('app_mode',{mode:'reader'});await wait('Array.from(document.querySelectorAll("[data-testid=reader-cover-image]")).some(i=>i.complete&&i.naturalWidth>0)','재시작 뒤 표지 복원');
+await click('reader-group-menu');await click('reader-cover-clear');await wait('window.__readerStore.getState().books.every(b=>!b.cover)','기본 책 표지로 되돌리기');
+const folder=path.join(base,'표지 있는 작품');fs.mkdirSync(folder);fs.writeFileSync(path.join(folder,'cover.png'),bytes);fs.writeFileSync(path.join(folder,'1화.txt'),'폴더 표지 확인입니다.');
+await call('dialog_queue',{kind:'open',answers:[[folder]]});await click('reader-add-folder');await wait('!!document.querySelector("[data-testid=reader-import-confirm]")','폴더 미리보기');await click('reader-import-confirm');await wait('window.__readerStore.getState().books.some(b=>b.group==="표지 있는 작품"&&b.cover)','폴더의 cover.png 자동 연결');
+console.log('RESULT',n,'checks · 0 fail');
+}finally{await c.call('app_stop');await c.close()}})().catch(e=>{console.error(e);process.exitCode=1});

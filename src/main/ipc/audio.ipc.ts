@@ -1,3 +1,5 @@
+import { PLAYBACK_EFFECTS_KEY } from '../../shared/playbackEffects'
+import { PLAYBACK_BOOST_STORAGE_KEY } from '../../shared/playbackBoost'
 import { ipcMain, dialog, BrowserWindow, shell, app } from 'electron'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
@@ -1611,6 +1613,8 @@ export function registerAudioIpc(
       // (자동 저장이 사용자가 명시적으로 저장한 목소리 구성을 건드리지 않는다).
       [WORK_DRAFT_STORAGE_KEY]: stored[WORK_DRAFT_STORAGE_KEY] ?? null,
       // 재생 음량(미리듣기·결과 공용). 없으면 null → renderer 가 기본값(최대)을 쓴다.
+      [PLAYBACK_EFFECTS_KEY]: stored[PLAYBACK_EFFECTS_KEY] ?? null,
+      [PLAYBACK_BOOST_STORAGE_KEY]: stored[PLAYBACK_BOOST_STORAGE_KEY] ?? null,
       [PLAYBACK_VOLUME_STORAGE_KEY]: stored[PLAYBACK_VOLUME_STORAGE_KEY] ?? null,
       // 만들어진 소리의 재생 빠르기(낭독·생성본·최종 음성·더빙 결과). 없으면 null → renderer 가 1배.
       [PLAYBACK_RATE_STORAGE_KEY]: stored[PLAYBACK_RATE_STORAGE_KEY] ?? null,
@@ -1656,7 +1660,7 @@ export function registerAudioIpc(
     // 옮기기만 한다. 저장 성공 여부를 그대로 돌려준다 — 실패를 persisted 로 표시하면
     // 사용자는 저장된 줄 알고 앱을 닫는다.
     if (key === GLOBAL_ASSET_STORAGE_KEY || key === VOICE_CAST_STORAGE_KEY
-        || key === WORK_DRAFT_STORAGE_KEY || key === PLAYBACK_VOLUME_STORAGE_KEY || key === PLAYBACK_RATE_STORAGE_KEY
+        || key === WORK_DRAFT_STORAGE_KEY || key === PLAYBACK_EFFECTS_KEY || key === PLAYBACK_BOOST_STORAGE_KEY || key === PLAYBACK_VOLUME_STORAGE_KEY || key === PLAYBACK_RATE_STORAGE_KEY
         || key === LAB_STORAGE_KEY || key === TRANSCRIPT_EDIT_STORAGE_KEY
         || key === DIALOGUE_EDIT_STORAGE_KEY
         // ★파일별 보존 열쇠 (2026-09-28 에 빠져 있던 것을 찾음).

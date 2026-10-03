@@ -159,9 +159,9 @@ try {
   // 화면에도 그대로 보이는가
   await win.locator('[data-testid="generation-card"]').first().getByTestId('card-takes').click()
   await win.waitForSelector('[data-testid="take-row"]')
-  ok(await win.getByTestId('take-unknown-settings').count() === 2,
+  ok(await win.getByTestId('take-row').getByTestId('take-unknown-settings').count() === 2,
     '생성본 목록이 설정 기록 없음을 말한다')
-  ok((await win.locator('[data-testid="take-row"]').first().innerText()).includes('파일 없음'),
+  ok((await win.locator('[data-testid="take-row"]').last().innerText()).includes('파일 없음'),
     '생성본 목록이 파일 없음을 말한다')
   await win.keyboard.press('Escape')
 

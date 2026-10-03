@@ -1,3 +1,5 @@
+import SpeakerControl from './SpeakerControl'
+import { attachPlaybackBoost } from '../lib/playbackBoost'
 // 결과 재생기와 결과 스타일 — **음악·대화가 같은 것을 쓴다.**
 //
 // 예전에는 이 코드가 `TrackList` 안에만 있었고, 대화 작업실은 제 오디오 요소를 따로 들었다.
@@ -51,7 +53,7 @@ export function ResultPlayer({ path, color, paused, onClose, originalPath, origi
   const handoffRef = useRef<{ time: number; playing: boolean } | null>(null)
   const activePath = listening === 'original' && originalPath ? originalPath : path
   // 원본 파형 슬라이더와 **같은 값**이다(공용·보관됨) — 두 슬라이더가 서로 다른 값을 갖지 않는다.
-  const { volume, change: changeVolume, commit: commitVolume, saveFailed: volumeSaveFailed } = usePlaybackVolume()
+  const { volume } = usePlaybackVolume()
 
   /** 이 재생기의 **몇 번째 로딩인가.** 늦게 온 앞 로딩이 소리를 내지 못하게 한다. */
   const loadSeq = useRef(0)
@@ -79,6 +81,7 @@ export function ResultPlayer({ path, color, paused, onClose, originalPath, origi
         cursorColor: color, cursorWidth: 2, barWidth: 2, barGap: 2, barRadius: 4,
         height: 40, normalize: true, backend: 'WebAudio', dragToSeek: true
       })
+    attachPlaybackBoost(ws.getMediaElement())
       // ★ 만들자마자 지금 음량을 건다 — **자동 재생 전에** 해야 한다.
       //   이 플레이어는 파일 주소를 기다린 뒤에 만들어지는데, 음량 effect 는 그 전에 이미 끝난다.
       //   그래서 여기서 걸지 않으면 결과 트랙의 **첫 재생만 최대 음량**으로 나갔다.
@@ -149,7 +152,7 @@ export function ResultPlayer({ path, color, paused, onClose, originalPath, origi
       data-time={curSec.toFixed(2)} data-dur={durSec.toFixed(2)}
       style={{ padding: '8px 14px', borderTop: '1px solid var(--border-subtle)' }}>
       <div ref={ref} style={{ marginBottom: 6 }} />
-      <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
         <span style={{ fontSize: 11, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>{cur} / {dur}</span>
         {/* 원본 ↔ 분리 결과 — **같은 자리에서** 견준다. 재생기는 하나뿐이라 소리가 겹치지 않는다.
             듣기만 한다: 저장된 파일을 키우거나 고르거나 다시 쓰지 않는다. */}
@@ -173,22 +176,7 @@ export function ResultPlayer({ path, color, paused, onClose, originalPath, origi
             {listening === 'original' ? `원본 듣는 중${originalLabel ? ` · ${originalLabel}` : ''}` : '원본과 비교'}
           </button>
         )}
-        <div title={volumeSaveFailed
-          ? '재생 볼륨 — 이 값을 기억하지 못했습니다(이번 실행에만 적용됩니다).'
-          : '재생 볼륨 (듣기 전용 · 원본 파일에는 영향 없음) — 정한 값이 다음에도 그대로 쓰입니다.'}
-          style={{ marginLeft: 'auto', display: 'flex', alignItems: 'center', gap: 5 }}>
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-            <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-            {volume < 0.01
-              ? <><line x1="23" y1="9" x2="17" y2="15" /><line x1="17" y1="9" x2="23" y2="15" /></>
-              : <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />}
-          </svg>
-          <input type="range" min="0" max="1" step="0.05" value={volume}
-            data-testid="track-volume" aria-label="재생 볼륨 (듣기 전용, 원본에 영향 없음)"
-            onChange={(e) => changeVolume(parseFloat(e.target.value))}
-            onPointerUp={commitVolume} onKeyUp={commitVolume} onBlur={commitVolume}
-            style={{ width: 56, accentColor: color, cursor: 'pointer', height: 4 }} />
-        </div>
+        <SpeakerControl id="track" />
         <button onClick={onClose} title="재생 닫기" aria-label="재생 닫기" style={{
           display: 'flex', alignItems: 'center', justifyContent: 'center',
           width: 28, height: 28, borderRadius: 6, border: 'none', cursor: 'pointer',

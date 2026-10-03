@@ -1,9 +1,10 @@
+import { useReaderFollow } from '../hooks/useReaderFollow'
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { create } from 'zustand'
 import { useReadAloud, voiceKeyOf, type ReaderVoicePick } from '@/hooks/useReadAloud'
 import { useAppStore } from '@/stores/app.store'
 import { Icon, Modal, button as kitButton, muted, field as kitField, primary as kitPrimary } from './kit'
-import { classifyIncoming, mapPosition, moveInGroup, pushHistory, suggestGroupName, naturalCompare, samePath, planDrop, type LibBook, type ScanResult, type ScanFile, type BookSource } from '../../shared/readerLibrary'
+import { classifyIncoming, mapPosition, moveInGroup, pushHistory, suggestGroupName, sortGroup, naturalCompare, samePath, planDrop, type LibBook, type ScanResult, type ScanFile, type BookSource } from '../../shared/readerLibrary'
 import VoicePicker from './VoicePicker'
 import ReaderShelf from './ReaderShelf'
 import './reader.css'
@@ -14,7 +15,7 @@ import { trace } from '@/lib/readerTrace'
 import { chunkAt, TEXT_FILE_LIMIT } from '../../shared/readerChunks'
 import { decodeBookText, encodingLabel } from '../../shared/readerDecode'
 import PlaybackRateSelect from './PlaybackRateSelect'
-import { usePlaybackVolume } from '@/hooks/usePlaybackVolume'
+import SpeakerControl from './SpeakerControl'
 import { WINDOW_FROM, estimateHeight, offsetsOf, visibleRange, scrollTopFor } from '../../shared/readerWindow'
 import { bookSaver, prefsSaver, PREFS_KEY } from '../lib/readerSaves'
 import { DEFAULT_READER_PREFS, parseReaderPrefs, rememberVoice, READER_PREFS_STORAGE_KEY, READER_FONT_MAX, READER_FONT_MIN, type ReaderPrefs, type SavedReaderVoice } from '../../shared/readerText'
@@ -33,7 +34,7 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(d), x => x.toString(16).padStart(2, '0')).join('')
 }
 /** 폴더에서 가져올 글 하나. */
-type ImportItem = { path: string; name: string; group?: string; order?: number; root?: string }
+type ImportItem = { path: string; name: string; group?: string; order?: number; root?: string; coverPath?: string }
 /** 건너뛴 것 한 줄 — 개수만. */
 const skippedText = (s: ScanResult): string => [s.unsupported ? `지원하지 않는 형식 ${s.unsupported}` : '', s.tooLarge ? `10MB 초과 ${s.tooLarge}` : '',
   s.links ? `연결 ${s.links}` : '', s.missing.length ? `열 수 없는 자리 ${s.missing.length}` : '', s.truncated ? '너무 많아 일부만' : ''].filter(Boolean).join(' · ')
@@ -91,6 +92,7 @@ export default function ReaderWorkspace() {
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
   const [notice, setNotice] = useState('')
+  const [removedBooks, setRemovedBooks] = useState<Book[]>([])
   const changingBooks = useRef(false)
   /** 참조 목소리를 준비하는 중이면 그 한 줄. 비면 준비 중이 아니다. */
   const [prep, setPrep] = useState('')
@@ -101,6 +103,12 @@ export default function ReaderWorkspace() {
   const [picking, setPicking] = useState(false)
   // ★책 목록은 **서재 팝업**에 모은다 (2026-09-30 지시: 불러올수록 화면이 차고 본문이 오른쪽으로 쏠린다).
   const [library, setLibrary] = useState(true)
+  const shelfScroll = useRef<HTMLDivElement>(null)
+  const shelfScrollTop = useRef(0)
+  const [shelfTarget, setShelfTarget] = useState<{ name: string; key: number } | null>(null)
+  const [pendingPlayback, setPendingPlayback] = useState<string | null>(null)
+  const completedRef = useRef<(id: string) => void>(() => {})
+  useLayoutEffect(() => { if (library && shelfScroll.current) shelfScroll.current.scrollTop = shelfScrollTop.current }, [library])
   const [finding, setFinding] = useState(false)
   const [findText, setFindText] = useState('')
   const [seekPosition, setSeekPosition] = useState<number | null>(null)
@@ -239,7 +247,7 @@ export default function ReaderWorkspace() {
         const saved = (got.records || [])
           .map((r) => r.data as Book | null)
           .filter((b): b is Book => !!b && Array.isArray(b.paragraphs) && b.paragraphs.length > 0)
-        if (saved.length) useReader.setState((st) => st.books.length ? st : { books: saved, active: saved[0].id })
+        if (saved.length) useReader.setState((st) => st.books.length ? st : { books: saved, active: [...saved].filter(b => b.readAt).sort((a, b) => (b.readAt || 0) - (a.readAt || 0))[0]?.id || '' })
       } catch { setError('서재를 읽지 못했습니다. 화면을 다시 열어 주세요.') }
       finally { loadedBooks.current = true }
     })()
@@ -286,7 +294,7 @@ export default function ReaderWorkspace() {
   // ★감정 담아 읽기 — 고른 목소리가 감정 지시를 받을 때만(Qwen 지정 목소리 + 1.7B, 지금 목록 기준).
   const emotionUsable = !!pick && pick.kind === 'builtin' && pick.engineId === 'qwen-custom'
     && !!builtins?.find((b) => b.path === pick.path)?.emotion
-  const read = useReadAloud(body, voiceGone || voiceUnresolved ? null : pick, { skipHanjaInParens: prefs.skipHanjaInParens, emotion: prefs.emotion && emotionUsable })
+  const read = useReadAloud(body, voiceGone || voiceUnresolved ? null : pick, { skipHanjaInParens: prefs.skipHanjaInParens, emotion: prefs.emotion && emotionUsable, documentId: active, onEnded: id => completedRef.current(id) })
   /**
    * 지금 **소리가 읽고 있는 구절** — 문단 안에서 그 글자만 칠한다. 읽지 않을 때는 없다.
    * ★2026-10-01 이전에는 덩이(약 20초) 전체를 칠했다. 이제 구절(문장 끝·쉼표) 단위로 소리를 따라간다(readerTiming).
@@ -298,8 +306,14 @@ export default function ReaderWorkspace() {
   //   멈추자마자 자리를 맞추면서 오류 문구까지 지워, 무엇이 틀렸는지 읽을 수 없었다.
   const { playing: readPlaying, seekToChar, fault: readFault } = read
   useEffect(() => {
-    if (!readPlaying && !readFault) seekToChar(charOfParagraph[position] ?? 0)
-  }, [readPlaying, readFault, seekToChar, position, charOfParagraph])
+    if (!readPlaying && !readFault && !read.starting && !pendingPlayback) seekToChar(charOfParagraph[position] ?? 0)
+  }, [readPlaying, readFault, read.starting, pendingPlayback, seekToChar, position, charOfParagraph])
+  useEffect(() => {
+    if (!pendingPlayback || pendingPlayback !== active || voiceUnresolved || prep) return
+    setPendingPlayback(null)
+    if (voiceGone || !pick) { setPicking(true); return }
+    read.startAt(charOfParagraph[position] ?? 0)
+  }, [pendingPlayback, active, voiceUnresolved, voiceGone, prep, pick, position, charOfParagraph, read.startAt])
   /** 지금 **실제로 읽고 있는** 문단. 사용자가 고른 자리와 다르다(인수인계 5항). */
   /** 원문 글자 자리 → 문단 번호(나눠 찾기). */
   const paragraphOfChar = useCallback((c: number) => {
@@ -390,66 +404,10 @@ export default function ReaderWorkspace() {
     }
   })
   useEffect(() => { reveal(position, 'nearest', false, false) }, [active, position, library])
-  /**
-   * ★읽는 **줄**을 화면이 따라간다 (2026-10-01 사용자 신고: "소리가 읽어 주는 뷰어상의 텍스트 줄바꿈에 맞춰서
-   *   따라가길 원했는데, 생성된 음원의 처음에 서 있다가 다음 음원의 처음 부분에 쭉 서 있는 것 같다").
-   *   예전에는 덩이가 넘어갈 때만(약 20초마다) 옮겼다. 이제 매 화면마다 **소리가 닿은 글자**(read.caret)의 줄을 찾아,
-   *   그 줄을 본문 칸 위에서 35% 자리에 둔다 — 줄이 바뀔 때마다 한 줄만큼 부드럽게 올라간다(노래방 자막처럼).
-   *   ★처음엔 '읽기 띠(18~60%) 밖으로 나가면 옮기기' 로 만들었다가, 한 문단을 다 읽도록 가만히 있어 줄을 따라가지 않았다(검사로 확인).
-   * ★사용자가 휠·손가락·키로 굴리면 3초 동안 따라가지 않는다 — 앞뒤를 둘러보는 중에 끌어당기지 않는다.
-   * 끄면 그대로 둔다.
-   */
-  const userScrolledAt = useRef(0)
-  const revealRef = useRef(reveal); revealRef.current = reveal
-  useEffect(() => {
-    if (!read.playing || !prefs.follow || library) return
-    const calm = !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-    const range = document.createRange()
-    let raf = 0, movedAt = 0, lastPara = -1
-    const lineAt = (el: Element, offset: number): { y: number; h: number } | null => {
-      const walker = document.createTreeWalker(el, NodeFilter.SHOW_TEXT)
-      let left = offset
-      for (let n = walker.nextNode(); n; n = walker.nextNode()) {
-        const len = n.textContent?.length ?? 0
-        if (left < len) {
-          range.setStart(n, left); range.setEnd(n, Math.min(len, left + 1))
-          const r = range.getClientRects()[0] || range.getBoundingClientRect()
-          return r.height ? { y: r.top + r.height / 2, h: r.height } : null
-        }
-        left -= len
-      }
-      return null
-    }
-    const tick = () => {
-      raf = requestAnimationFrame(tick)
-      const now = performance.now()
-      if (now - userScrolledAt.current < 3000 || now - movedAt < 280) return
-      const box = bodyRef.current
-      const c = read.caret()
-      if (!box || c < 0) return
-      const para = paragraphOfChar(c)
-      const el = box.querySelector(`[data-index="${para}"]`)
-      if (!el) {
-        // 아직 그리지 않은 문단(큰 책) — 어림 자리로 먼저 옮기면 그려진 뒤 다음 화면에서 줄을 맞춘다.
-        if (para !== lastPara) { lastPara = para; movedAt = now; revealRef.current(para, 'center', false, false) }
-        return
-      }
-      lastPara = para
-      const line = lineAt(el, Math.max(0, c - (charOfParagraph[para] ?? 0)))
-      if (!line) return
-      const b = box.getBoundingClientRect()
-      const off = line.y - b.top - b.height * 0.35
-      // 같은 줄 안에서는 움직이지 않는다(글자가 옮겨 가도 줄은 그대로다). 칸 끝에 닿으면 더 굴릴 수 없다.
-      if (Math.abs(off) < Math.max(10, line.h * 0.6)) return
-      const top = Math.max(0, Math.min(box.scrollHeight - box.clientHeight, box.scrollTop + off))
-      if (Math.abs(top - box.scrollTop) < 2) return
-      movedAt = now
-      box.scrollTo({ top, behavior: calm ? 'auto' : 'smooth' })
-    }
-    raf = requestAnimationFrame(tick)
-    return () => cancelAnimationFrame(raf)
-  }, [read.playing, prefs.follow, book?.id, paragraphOfChar, charOfParagraph, read.caret, library])
-  const markUserScroll = () => { userScrolledAt.current = performance.now() }
+  const { followPaused, resumeFollow, markUserScroll } = useReaderFollow({
+    body: bodyRef, playing: read.playing, enabled: prefs.follow, visible: !library, documentId: book?.id,
+    caret: read.caret, paragraphAt: paragraphOfChar, offsets: charOfParagraph, reveal,
+  })
 
   const closeSettings = () => { setSettings(false); settingsButton.current?.focus() }
   /**
@@ -499,17 +457,48 @@ export default function ReaderWorkspace() {
   }
   const choosePosition = (value: number) => {
     if (!book) return
-    useReader.setState(s => ({ books: s.books.map(b => b.id === book.id ? { ...b, position: Math.max(0, Math.min(value, b.paragraphs.length - 1)), readAt: Date.now() } : b) }))
+    useReader.setState(s => ({ books: s.books.map(b => b.id === book.id ? { ...b, position: Math.max(0, Math.min(value, b.paragraphs.length - 1)), completed: false, readAt: Date.now() } : b) }))
   }
   /** 책을 연다 — 마지막으로 읽은 때를 남긴다(묶음 이어 읽기가 쓴다). */
   const openBook = (id: string) => {
+    if (id !== active) { read.stop(); setPendingPlayback(null) }
     useReader.setState(s => ({ active: id, books: s.books.map(b => b.id === id ? { ...b, readAt: Date.now() } : b) }))
     bookSaver.queue(id, () => useReader.getState().books.find(b => b.id === id))
     setLibrary(false)
   }
+  const listenBook = (id: string, fromStart = false, showBody = true) => {
+    const target = useReader.getState().books.find(b => b.id === id)
+    if (!target) return
+    read.stop()
+    useReader.setState(s => ({ active: id, books: s.books.map(b => b.id === id ? { ...b, position: fromStart || b.completed ? 0 : b.position, completed: false, readAt: Date.now() } : b) }))
+    bookSaver.queue(id, () => useReader.getState().books.find(b => b.id === id))
+    if (showBody) setLibrary(false)
+    setPendingPlayback(id)
+  }
+  const chapters = book?.group ? sortGroup(books.filter(b => b.group === book.group && !b.archived)) : book ? [book] : []
+  const chapterIndex = chapters.findIndex(b => b.id === active)
+  const moveChapter = (delta: number) => {
+    const target = chapters[chapterIndex + delta]
+    if (!target) return
+    if (read.playing || read.starting) listenBook(target.id, false, false)
+    else { openBook(target.id); if (library) setLibrary(true) }
+  }
+  completedRef.current = (id) => {
+    const st = useReader.getState()
+    if (st.active !== id) return
+    const current = st.books.find(b => b.id === id)
+    if (!current) return
+    useReader.setState(s => ({ books: s.books.map(b => b.id === id ? { ...b, completed: true, position: b.paragraphs.length - 1 } : b) }))
+    bookSaver.queue(id, () => useReader.getState().books.find(b => b.id === id))
+    if (!prefs.autoNext || !current.group || current.archived) return
+    const list = sortGroup(st.books.filter(b => b.group === current.group && !b.archived))
+    const next = list[list.findIndex(b => b.id === id) + 1]
+    if (next) listenBook(next.id, true, false)
+  }
+  const showChapters = () => { setShelfTarget({ name: book?.group || '', key: Date.now() }); setLibrary(true) }
   // 문단 누름 — 줄마다 같은 함수를 받아야 바뀌지 않은 줄이 다시 그려지지 않는다. 최신 상태는 ref 로 읽는다.
   const pickRef = useRef<(i: number) => void>(() => {})
-  pickRef.current = (i: number) => { choosePosition(i); if (read.playing) read.seekToChar(charOfParagraph[i] ?? 0) }
+  pickRef.current = (i: number) => { resumeFollow(); choosePosition(i); if (read.playing) read.seekToChar(charOfParagraph[i] ?? 0) }
   const pickParagraph = useCallback((i: number) => pickRef.current(i), [])
   // ★불러온 자리를 기억한다(2026-09-29 지시). 브라우저식 파일 입력칸은 여는 자리를
   //   운영체제가 정해서 다른 툴 폴더로 열렸다 — 본체 대화상자가 용도별로 기억한다.
@@ -634,7 +623,7 @@ export default function ReaderWorkspace() {
         } catch { rejected.push(`${file.name}: 읽지 못했습니다`) }
       }
       if (added.length) {
-        useReader.setState(s => ({ books: [...s.books, ...added], active: added.length === 1 ? added[0].id : s.active || added[0].id }))
+        useReader.setState(s => ({ books: [...s.books, ...added], active: added.length === 1 ? added[0].id : s.active }))
         // 저장에 성공한 책만 넣는다. 한 권은 바로 열고 여러 권은 서재에서 고른다.
         setLibrary(added.length > 1)
       }
@@ -647,27 +636,87 @@ export default function ReaderWorkspace() {
     if (changingBooks.current) return
     changingBooks.current = true; setLoading(true); setError('')
     const removed = new Set<string>(); const failed: string[] = []
+    const snapshots: Book[] = []
     try {
     for (const id of ids) {
       // 지우는 책은 더 쓰지 않는다 — 쓰던 것이 있으면 끝나길 기다린다(지운 책이 늦은 저장으로 되살아나지 않게).
+      await bookSaver.flush(id)
+      const snapshot = useReader.getState().books.find(b => b.id === id)
       await bookSaver.discard(id)
       try {
         const result = await window.api.works.remove('books', id)
         if (!result.ok) throw new Error('remove failed')
         removed.add(id)
+        if (snapshot) snapshots.push(snapshot)
         bookSaver.forget(id)
       } catch {
         bookSaver.restore(id)            // 지우지 못했다 — 읽던 자리 저장을 되살린다
         failed.push(useReader.getState().books.find(b => b.id === id)?.name || '책')
       }
     }
+    if (removed.has(useReader.getState().active)) { read.stop(); setPendingPlayback(null) }
     useReader.setState(s => {
       const next = s.books.filter(b => !removed.has(b.id))
-      return { books: next, active: removed.has(s.active) ? next[0]?.id || '' : s.active }
+      return { books: next, active: removed.has(s.active) ? '' : s.active }
     })
+    if (snapshots.length) setRemovedBooks(prev => [...prev.filter(b => !removed.has(b.id)), ...snapshots])
     setNotice(removed.size ? `${removed.size}권을 서재에서 뺐습니다` : '')
     if (failed.length) setError(`목록에서 빼지 못했습니다: ${failed.join(', ')}`)
     } finally { changingBooks.current = false; setLoading(false) }
+  }
+  const undoRemove = async () => {
+    if (changingBooks.current) return
+    changingBooks.current = true; setLoading(true); setError('')
+    const restored = new Set<string>()
+    try {
+      for (const b of removedBooks) {
+        bookSaver.restore(b.id)
+        const code = await bookSaver.writeNow(b.id, b)
+        if (code) { setError('일부 책을 되돌리지 못했습니다. 다시 시도해 주세요.'); continue }
+        restored.add(b.id)
+        useReader.setState(s => ({ books: s.books.some(x => x.id === b.id) ? s.books : [...s.books, b], active: s.active || b.id }))
+      }
+      setRemovedBooks(prev => prev.filter(b => !restored.has(b.id)))
+      setNotice(restored.size ? `${restored.size}권을 되돌렸습니다` : '')
+    } finally { changingBooks.current = false; setLoading(false) }
+  }
+  const setCover = async (ids: string[], clear = false) => {
+    if (changingBooks.current) return
+    changingBooks.current = true; setLoading(true); setError('')
+    const release = bookSaver.hold()
+    try {
+      const got = clear ? { data: '' } : await window.api.reader.cover()
+      if (got.error) throw new Error(got.error)
+      if (got.data === null || got.data === undefined) return
+      for (const id of ids) {
+        await bookSaver.flush(id)
+        const current = useReader.getState().books.find(b => b.id === id)
+        if (!current) continue
+        const cover = got.data || undefined
+        if (await bookSaver.writeNow(id, { ...current, cover })) throw new Error('표지를 저장하지 못했습니다. 다시 시도해 주세요.')
+        useReader.setState(s => ({ books: s.books.map(b => b.id === id ? { ...b, cover } : b) }))
+      }
+    } catch (e) { setError((e as Error).message) }
+    finally { release(); changingBooks.current = false; setLoading(false) }
+  }
+  const archiveGroup = async (group: string, archived: boolean) => {
+    if (changingBooks.current) return false
+    changingBooks.current = true; setLoading(true); setError('')
+    const release = bookSaver.hold(); let ok = true
+    try {
+      const ids = useReader.getState().books.filter(b => b.group === group).map(b => b.id)
+      for (const id of ids) {
+        await bookSaver.flush(id)
+        const b = useReader.getState().books.find(x => x.id === id)
+        if (!b) continue
+        const next = { ...b, archived }
+        if (await bookSaver.writeNow(id, next)) { ok = false; continue }
+        useReader.setState(s => ({ books: s.books.map(x => x.id === id ? { ...x, archived } : x) }))
+      }
+      if (!ok) setError('일부 책의 보관 상태를 저장하지 못했습니다. 다시 시도해 주세요.')
+      else setNotice(`‘${group}’ 묶음을 ${archived ? '보관했습니다' : '내 서재로 꺼냈습니다'}`)
+      return ok
+    } finally { release(); changingBooks.current = false; setLoading(false) }
   }
   // 작품 이름은 책의 메타데이터다. 원본 TXT와 본문은 바꾸지 않고 저장 성공분만 반영한다.
   const groupBooks = async (ids: string[], name: string): Promise<boolean> => {
@@ -699,7 +748,7 @@ export default function ReaderWorkspace() {
   }
   // ── 폴더 가져오기 · 작품 묶음 (2026-10-03) ─────────────────────────────────────────
   // ★원본은 읽기만 한다. 저장에 성공한 책만 서재에 넣는다. 취소하면 이미 넣은 것은 남기고 나머지는 넣지 않는다.
-  const [preview, setPreview] = useState<null | { scan: ScanResult; works: Array<{ root: string; name: string; include: boolean; files: ScanFile[] }> }>(null)
+  const [preview, setPreview] = useState<null | { scan: ScanResult; works: Array<{ root: string; name: string; include: boolean; files: ScanFile[]; coverPath?: string }> }>(null)
   const [importRun, setImportRun] = useState<null | { total: number; processed: number }>(null)
   const [importResult, setImportResult] = useState<null | { added: number; duplicate: number; failed: ImportItem[]; cancelled: number }>(null)
   const [conflicts, setConflicts] = useState<null | Array<{ id: string; item: ImportItem; next: { name: string; paragraphs: string[]; source: BookSource }; choice: 'replace' | 'separate' | 'skip' }>>(null)
@@ -713,7 +762,7 @@ export default function ReaderWorkspace() {
     if (!scan.works.length && !scan.loose.length) { setNotice(`가져올 TXT 가 없습니다${skipped ? ` · 건너뜀: ${skipped}` : ''}`); return }
     const books = useReader.getState().books
     if (!scan.works.length) { void runImport(scan.loose.map(f => ({ path: f.path, name: f.name }))); return }
-    setPreview({ scan, works: scan.works.map(w => ({ root: w.root, name: suggestGroupName(w, books), include: true, files: w.files })) })
+    setPreview({ scan, works: scan.works.map(w => ({ root: w.root, name: suggestGroupName(w, books), include: true, files: w.files, coverPath: w.coverPath })) })
   }
   const importFolder = async () => {
     if (loading || importRun) return
@@ -740,7 +789,7 @@ export default function ReaderWorkspace() {
       if (!w.include || !w.name.trim()) continue
       const group = w.name.trim().slice(0, 120)
       const base = nextOrder(group)
-      w.files.forEach((f, i) => items.push({ path: f.path, name: f.name, group, order: base + i, root: w.root }))
+      w.files.forEach((f, i) => items.push({ path: f.path, name: f.name, group, order: base + i, root: w.root, coverPath: w.coverPath }))
     }
     for (const f of preview.scan.loose) items.push({ path: f.path, name: f.name })
     setPreview(null)
@@ -754,6 +803,7 @@ export default function ReaderWorkspace() {
     setImportRun({ total: items.length, processed: 0 })
     const failed: ImportItem[] = [], found: NonNullable<typeof conflicts> = []
     const batch: Book[] = []
+    const covers = new Map<string, string | undefined>()
     let added = 0, duplicate = 0, cancelled = 0, processed = 0
     const flush = () => { if (batch.length) { const add = batch.splice(0); useReader.setState(s => ({ books: [...s.books, ...add] })) } }
     try {
@@ -775,7 +825,12 @@ export default function ReaderWorkspace() {
           if (c.kind === 'duplicate') duplicate++
           else if (c.kind === 'changed') found.push({ id: c.id, item: it, next: { name, paragraphs, source }, choice: 'skip' })
           else {
-            const next: Book = { id: crypto.randomUUID(), name, paragraphs, position: 0, addedAt: Date.now(), group: it.group, order: it.order, source }
+            if (it.coverPath && !covers.has(it.coverPath)) {
+              const image = await window.api.reader.cover(it.coverPath)
+              covers.set(it.coverPath, image.data || undefined)
+              if (image.error) setError(image.error)
+            }
+            const next: Book = { cover: it.coverPath ? covers.get(it.coverPath) : undefined, id: crypto.randomUUID(), name, paragraphs, position: 0, addedAt: Date.now(), group: it.group, order: it.order, source }
             const saved = await window.api.works.write('books', next.id, next)
             if (!saved.ok) throw new Error(saved.why || '저장하지 못함')     // ★저장 실패를 성공으로 두지 않는다
             batch.push(next); added++
@@ -894,13 +949,18 @@ export default function ReaderWorkspace() {
     await checkNew(group)
   }
   // ★스피커 음량 (2026-10-01 지시: "낭독에서 스피커 음 조절 기능이 필요하다") — 앱의 **공용 재생 음량**(다른 화면 슬라이더와 같은 값, 보관됨).
-  const { volume, change: changeVolume, commit: commitVolume, saveFailed: volumeSaveFailed } = usePlaybackVolume()
-  /** 소리를 끄기 전 음량 — 다시 켜면 이 값으로(100% 로 튀지 않게). */
-  const lastVolume = useRef(volume > 0 ? volume : 1)
-  if (volume > 0) lastVolume.current = volume
   const iconButton: CSSProperties = { ...kitButton, padding: 8, minWidth: 36 }
   const displayPosition = read.playing && readingParagraph >= 0 ? readingParagraph : position
   const narratorName = useMemo(() => groupVoices(builtins || []).flatMap(g => g.voices).find(v => v.voice.path === pick?.path)?.short || voice, [builtins, pick?.path, voice])
+  const narratorButton = <button ref={voiceButton} data-testid="reader-voice" aria-haspopup="dialog" onClick={() => { setPicking(true); prepareQwen() }} disabled={!!prep}
+        title={prep ? '목소리를 준비하는 중입니다' : voiceGone ? `${voice} — ${voiceGone}` : `${voice} · 낭독자 바꾸기`}
+        style={{ ...kitButton, justifyContent: 'flex-start', minWidth: 0, padding: '3px 0', maxWidth: '100%', background: 'transparent', border: 'none', textAlign: 'left' }}>
+        <Icon name="voice"/>
+        <span style={{ minWidth: 0 }}>
+          <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>낭독자</span>
+          <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)' }}>{prep ? '준비 중…' : voiceGone ? '목소리를 골라 주세요' : narratorName}</span>
+        </span>
+      </button>
   const finishSeek = () => { if (seekPosition !== null) { pickParagraph(seekPosition); setSeekPosition(null) } }
   const matches = useMemo(() => {
     const term = findText.trim().toLocaleLowerCase()
@@ -911,18 +971,12 @@ export default function ReaderWorkspace() {
     <header data-testid="reader-heading" style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 14, flexShrink: 0, paddingBottom: 18, borderBottom: '1px solid var(--border-subtle)' }}>
       <div style={{ flex: 1, minWidth: 160 }}>
         <span style={{ display: 'block', fontSize: 10, color: '#b5aa95', letterSpacing: '.16em', marginBottom: 7 }}>AUDIOFORGE · READER</span>
-        <h1 style={{ margin: 0, fontSize: 25, fontWeight: 600, letterSpacing: '-.04em' }}>{library || !book ? '내 서재' : '책 읽는 시간'}</h1>
+        <h1 style={{ margin: 0, fontSize: 25, fontWeight: 600, letterSpacing: '-.04em' }}>{library || !book ? '내 서재' : book.group || '책 읽는 시간'}</h1>
       </div>
-      <button ref={voiceButton} data-testid="reader-voice" aria-haspopup="dialog" onClick={() => { setPicking(true); prepareQwen() }} disabled={!!prep}
-        title={prep ? '목소리를 준비하는 중입니다' : voiceGone ? `${voice} — ${voiceGone}` : `${voice} · 낭독자 바꾸기`}
-        style={{ ...kitButton, justifyContent: 'flex-start', minWidth: 0, padding: '7px 12px', maxWidth: 260, background: 'var(--bg-base)', borderRadius: 12, textAlign: 'left' }}>
-        <Icon name="voice"/>
-        <span style={{ minWidth: 0 }}>
-          <span style={{ display: 'block', fontSize: 11, color: 'var(--text-muted)' }}>낭독자</span>
-          <span style={{ display: 'block', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', color: 'var(--text-primary)' }}>{prep ? '준비 중…' : voiceGone ? '목소리를 골라 주세요' : narratorName}</span>
-        </span>
-      </button>
+      {!book && narratorButton}
+
     </header>
+    {!!removedBooks.length && <button data-testid="reader-remove-undo" style={kitButton} disabled={loading} onClick={() => void undoRemove()}>서재 제거 되돌리기 ({removedBooks.length}권)</button>}
     {!!notice && <span role="status" data-testid="reader-notice" style={{ ...muted, marginTop: -10 }}>{notice}</span>}
     {!!importRun && <span role="status" data-testid="reader-import-progress" style={{ ...muted, marginTop: -10 }}>
       가져오는 중 {importRun.processed} / {importRun.total}
@@ -949,11 +1003,11 @@ export default function ReaderWorkspace() {
       <button data-testid="reader-save-retry" onClick={() => { void bookSaver.retry(); void prefsSaver.retry() }} title="저장을 다시 시도합니다 — 자동으로도 다시 시도합니다"
         style={{ ...kitButton, marginLeft: 8, padding: '2px 10px' }}>다시 저장</button>
     </span>}
-    <div data-testid="reader-shelf-scroll" style={{ display: library || !book ? 'block' : 'none', flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', padding: '4px 4px 18px' }}>
-    {(library || !book) && <ReaderShelf books={books} active={active} busy={loading} error={error} onDrop={dropTexts}
+    <div ref={shelfScroll} onScroll={e => { if (library) shelfScrollTop.current = e.currentTarget.scrollTop }} data-testid="reader-shelf-scroll" style={{ display: library || !book ? 'block' : 'none', flex: 1, minHeight: 0, overflowY: 'auto', overflowX: 'hidden', overscrollBehavior: 'contain', padding: '4px 4px 18px' }}>
+    {<ReaderShelf books={books} active={active} busy={loading} error={error} onDrop={dropTexts}
       view={prefs.shelfView} grouped={prefs.shelfGrouped} onView={shelfView => updatePrefs({ shelfView })} onGrouped={shelfGrouped => updatePrefs({ shelfGrouped })} onGroup={groupBooks}
-      onAdd={() => { void pickTexts() }} onAddFolder={() => { void importFolder() }} onRemove={removeBooks} onOpen={openBook}
-      onReorder={reorderBook} onUngroup={ungroup} onCheckNew={g => { void checkNew(g) }}/>}
+      onAdd={() => { void pickTexts() }} onAddFolder={() => { void importFolder() }} onRemove={removeBooks} onOpen={openBook} onListen={listenBook} onCover={setCover} revealGroup={shelfTarget}
+      onArchive={archiveGroup} onReorder={reorderBook} onUngroup={ungroup} onCheckNew={g => { void checkNew(g) }}/>}
     </div>
     <div style={{ display: library || !book ? 'none' : 'flex', flexDirection: 'column', flex: 1, minHeight: 0 }} onDragOver={e => { e.preventDefault(); setDragging(true) }}
       onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragging(false) }}
@@ -966,15 +1020,19 @@ export default function ReaderWorkspace() {
       <article className="reader-view-enter" style={{ display: 'flex', flexDirection: 'column', flex: 1, minHeight: 0, border: '1px solid var(--border-subtle)', borderRadius: 18, overflow: 'hidden', outline: dragging ? '2px solid var(--accent-light)' : undefined }}>
         <header style={{ padding: '12px 18px', flexShrink: 0, display: 'flex', alignItems: 'center', gap: 12, background: '#1b1e27' }}>
           <button data-testid="reader-library" style={{ ...iconButton, border: 'none', background: 'transparent' }} onClick={() => setLibrary(true)} title="서재로 돌아가기" aria-label="서재로 돌아가기"><Icon name="back"/></button>
-          <h2 style={{ margin: 0, fontSize: 14, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{book?.name}</h2>
+          <h2 data-testid="reader-now-reading" style={{ margin: 0, fontSize: 14, flex: 1, minWidth: 0, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{book?.name}</h2>
+          <button style={iconButton} aria-label="이전 문단" title="이전 문단" disabled={displayPosition === 0} onClick={() => pickParagraph(displayPosition - 1)}><Icon name="prev" size={14}/></button>
+          <button style={iconButton} aria-label="다음 문단" title="다음 문단" disabled={!book || displayPosition >= book.paragraphs.length - 1} onClick={() => pickParagraph(displayPosition + 1)}><Icon name="next" size={14}/></button>
           <button data-testid="reader-find" style={iconButton} aria-label="본문 찾기" title="본문 찾기" onClick={() => setFinding(true)}><Icon name="text"/></button>
-        <button data-testid="reader-follow" aria-label="읽는 줄 따라가기" aria-pressed={prefs.follow} title={prefs.follow ? '읽는 줄을 화면이 따라갑니다 — 누르면 멈춥니다' : '누르면 읽는 줄을 화면이 따라갑니다'}
-          onClick={() => updatePrefs({ follow: !prefs.follow })}
-          style={{ ...kitButton, color: prefs.follow ? 'var(--cyan)' : 'var(--text-muted)', borderColor: prefs.follow ? 'var(--cyan)' : undefined }}><Icon name="follow"/></button>
+        <button data-testid="reader-follow" aria-label={followPaused ? '읽는 곳으로 돌아가기' : '읽는 줄 따라가기'} aria-pressed={prefs.follow && !followPaused} title={followPaused ? '직접 스크롤하여 따라가기를 쉬고 있습니다 — 읽는 곳으로 돌아가기' : prefs.follow ? '읽는 줄을 화면이 따라갑니다 — 누르면 멈춥니다' : '누르면 읽는 줄을 화면이 따라갑니다'}
+          onClick={() => { if (followPaused) { resumeFollow(); if (!read.playing) reveal(Math.max(0, readingParagraph), 'center', true, false) } else { resumeFollow(); updatePrefs({ follow: !prefs.follow }) } }}
+          style={{ ...kitButton, color: followPaused ? 'var(--amber)' : prefs.follow ? 'var(--cyan)' : 'var(--text-muted)', borderColor: followPaused ? 'var(--amber)' : prefs.follow ? 'var(--cyan)' : undefined }}><Icon name="follow"/>{followPaused && <span style={{ fontSize: 11 }}>읽는 곳으로</span>}</button>
         </header>
-        {book && <>
+        {book && <div data-testid="reader-viewer" style={{ display: 'grid', gridTemplateColumns: chapters.length > 1 ? '34px minmax(0, 1fr) 34px' : 'minmax(0, 1fr)', flex: 1, minHeight: 0, background: '#14171e' }}>
+          {chapters.length > 1 && <button type="button" className="reader-chapter-edge" data-testid="reader-prev-chapter" aria-label="이전 회차" title="이전 회차" disabled={chapterIndex <= 0} onClick={() => moveChapter(-1)} style={{ border: 0, padding: 0, minWidth: 0, cursor: 'pointer', visibility: chapterIndex <= 0 ? 'hidden' : 'visible' }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg></button>}
           <div ref={bodyRef} className="reader-prose" data-testid="reader-body" aria-label="책 본문" data-windowed={windowed ? '1' : '0'}
             onScroll={windowed ? onBodyScroll : undefined} onWheel={markUserScroll} onTouchMove={markUserScroll}
+            onPointerDown={e => { const el = e.currentTarget; if (e.clientX >= el.getBoundingClientRect().right - 16) markUserScroll() }}
             onKeyDown={e => { if (['PageUp', 'PageDown', 'ArrowUp', 'ArrowDown', 'Home', 'End', ' '].includes(e.key)) markUserScroll() }}
             style={{ flex: 1, minHeight: 0, overflowY: 'auto', overscrollBehavior: 'contain', padding: '26px max(18px, calc((100% - 760px) / 2))', background: '#14171e' }}>
             {/* ★고른 자리와 **읽는 자리**를 구분해 보인다(인수인계 5항).
@@ -993,51 +1051,44 @@ export default function ReaderWorkspace() {
             })}
             {offsets && <div aria-hidden="true" style={{ height: offsets[paragraphCount] - offsets[range.end] }} />}
           </div>
-        </>}
+          {chapters.length > 1 && <button type="button" className="reader-chapter-edge" data-testid="reader-next-chapter" aria-label="다음 회차" title="다음 회차" disabled={chapterIndex < 0 || chapterIndex >= chapters.length - 1} onClick={() => moveChapter(1)} style={{ border: 0, padding: 0, minWidth: 0, cursor: 'pointer', visibility: chapterIndex >= chapters.length - 1 ? 'hidden' : 'visible' }}><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="m9 5 7 7-7 7"/></svg></button>}
+        </div>}
       </article>
     </div>
     {book && <footer ref={footerRef} data-testid="reader-controls" style={{ ...panel, flexShrink: 0, boxShadow: '0 -4px 20px #0003', padding: '12px', display: 'grid', gridTemplateColumns: 'minmax(0, 1fr) auto minmax(0, 1fr)', alignItems: 'center', gap: 8 }}>
-      <div style={{ minWidth: 0, paddingLeft: 5 }}>
-        <div style={{ fontSize: 12, color: 'var(--text-primary)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{book?.name}</div>
-        <span data-testid="reader-state" title={read.fault || prep || read.wait || undefined} style={{ display: 'block', fontSize: 11, marginTop: 5, color: read.fault ? 'var(--rose)' : 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{read.fault || prep || read.wait || (read.playing ? '읽는 중' : '이 자리에서 시작')}</span>
+      <div data-testid="reader-narrator-status" style={{ minWidth: 0, paddingLeft: 5 }}>
+        {narratorButton}
+        <span data-testid="reader-state" title={read.fault || prep || read.wait || undefined} style={{ display: 'block', fontSize: 11, marginTop: 5, color: read.fault ? 'var(--rose)' : 'var(--text-muted)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{read.fault || prep || read.wait || (pendingPlayback || read.starting ? '낭독을 준비하고 있습니다' : read.playing ? '읽는 중' : book.completed ? '끝까지 들었습니다' : '이어 들을 준비가 됐습니다')}</span>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 6 }}>
-        <button style={iconButton} aria-label="이전 문단" disabled={!book || displayPosition === 0} title={displayPosition === 0 ? '첫 문단입니다' : '이전 문단'} onClick={() => pickParagraph(displayPosition - 1)}><Icon name="prev"/></button>
         <button data-testid="reader-play" aria-label={read.playing ? '낭독 멈추기' : '낭독 시작'}
           disabled={!book || !pick || !!prep || !!voiceGone || voiceUnresolved}
           title={!book ? '먼저 책을 고르세요' : !pick ? '먼저 목소리를 고르세요' : prep ? '목소리를 준비하는 중입니다' : read.playing ? '멈춥니다' : '이 자리부터 읽습니다'}
           onClick={() => {
             if (read.playing) { choosePosition(displayPosition); read.stop(); return }
+            resumeFollow()
             // 고른 문단부터 읽는다 — '시작 위치' 와 '읽는 자리' 는 다른 것이다(인수인계 5항).
-            read.seekToChar(charOfParagraph[position] ?? 0)
-            read.start()
+            if (book.completed) listenBook(book.id, true, false)
+            else read.startAt(charOfParagraph[position] ?? 0)
           }}
           style={{ ...kitButton, width: 52, height: 52, borderRadius: '50%', padding: 0, color: '#fff', background: 'var(--accent)', cursor: (!book || !pick) ? 'not-allowed' : 'pointer' }}>
           <Icon name={read.playing ? 'stop' : 'play'} size={20}/>
         </button>
-        <button style={iconButton} aria-label="다음 문단" disabled={!book || displayPosition >= book.paragraphs.length - 1} title={book && displayPosition >= book.paragraphs.length - 1 ? '마지막 문단입니다' : '다음 문단'} onClick={() => pickParagraph(displayPosition + 1)}><Icon name="next"/></button>
       </div>
-      <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 6, flexWrap: 'wrap' }}>
+      <div style={{ display: 'flex', justifyContent: 'flex-end', alignItems: 'center', gap: 6, flexWrap: 'wrap' }}>
+        {library && <button data-testid="reader-return-to-book" style={kitButton} onClick={() => setLibrary(false)}>본문으로</button>}
         {/* ★듣는 빠르기 — 만든 소리를 다시 만들지 않고 빠르게/느리게 듣는다(2026-09-30 지시). 낭독 전용. */}
         <PlaybackRateSelect testId="reader-rate" />
         <button ref={settingsButton} data-testid="reader-settings" aria-haspopup="dialog" aria-label="읽기 설정" title="읽기 설정 — 글자 크기 · 괄호 속 한자 · 따라가기"
           onClick={() => setSettings(true)} style={iconButton}><Icon name="settings"/></button>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', minWidth: 0, gridColumn: '1 / -1', borderTop: '1px solid var(--border-subtle)', paddingTop: 8 }}>
-        <span style={{ ...muted, minWidth: 70 }}>{displayPosition + 1} / {book?.paragraphs.length}</span>
+        <button data-testid="reader-chapters" style={{ ...kitButton, minHeight: 28, padding: '3px 8px' }} onClick={showChapters}><Icon name="list" size={14}/>{book.group ? '회차 ' + (chapterIndex + 1) + ' / ' + chapters.length : '서재'}</button>
+        <span style={{ ...muted, minWidth: 48 }} title={`${displayPosition + 1} / ${book.paragraphs.length} 문단`}>{book.completed ? 100 : Math.round(displayPosition / Math.max(1, book.paragraphs.length) * 100)}% 읽음</span>
         <input data-testid="reader-position" type="range" aria-label="본문 위치" aria-valuetext={String((seekPosition ?? displayPosition) + 1) + '번째 문단'} min={0} max={Math.max(0, (book?.paragraphs.length || 1) - 1)} value={seekPosition ?? displayPosition}
           onChange={e => setSeekPosition(Number(e.target.value))} onPointerUp={finishSeek} onKeyUp={finishSeek} onBlur={finishSeek}
           style={{ flex: '1 1 100px', minWidth: 50, accentColor: 'var(--accent-light)' }}/>
-        <label title={volumeSaveFailed ? '음량 — 이 값을 기억하지 못했습니다(이번 실행에만 적용됩니다).' : `음량 ${Math.round(volume * 100)}% — 앱 전체의 재생 음량이고, 정한 값이 다음에도 그대로 쓰입니다.`}
-          style={{ display: 'inline-flex', alignItems: 'center', gap: 5, color: 'var(--text-secondary)' }}>
-          <button type="button" aria-label={volume > 0 ? '소리 끄기' : '소리 켜기'} title={volume > 0 ? '소리 끄기' : '소리 켜기'}
-            data-testid="reader-mute" onClick={() => { changeVolume(volume > 0 ? 0 : lastVolume.current); commitVolume() }}
-            style={{ ...iconButton, padding: 6, minWidth: 30, minHeight: 30 }}><Icon name={volume > 0 ? 'volume' : 'mute'} size={16}/></button>
-          <input data-testid="reader-volume" type="range" min="0" max="1" step="0.05" value={volume} aria-label="음량"
-            onChange={(e) => changeVolume(parseFloat(e.target.value))}
-            onPointerUp={commitVolume} onKeyUp={commitVolume} onBlur={commitVolume}
-            style={{ width: 72, accentColor: 'var(--accent-light)', cursor: 'pointer' }} />
-        </label>
+        <SpeakerControl id="reader" />
 
       </div>
     </footer>}
@@ -1092,6 +1143,7 @@ export default function ReaderWorkspace() {
     </Modal>}
     {settings && <Modal title="읽기 설정" close={closeSettings}>
       <div data-testid="reader-settings-dialog" style={{ display: 'grid', gap: 20 }}>
+        <label style={{ display: 'flex', gap: 10, alignItems: 'center' }}><input data-testid="reader-auto-next" type="checkbox" checked={prefs.autoNext} onChange={e => updatePrefs({ autoNext: e.target.checked })}/>다음 회차 자동으로 듣기</label>
         <label style={{ display: 'grid', gap: 6, fontSize: 13 }}>
           <span>글자 크기 <span style={{ color: 'var(--text-muted)' }}>{prefs.fontSize}px</span></span>
           <input data-testid="reader-font-size" type="range" min={READER_FONT_MIN} max={READER_FONT_MAX} step={1}
@@ -1105,7 +1157,7 @@ export default function ReaderWorkspace() {
         </label>
         <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', fontSize: 13, cursor: 'pointer' }}>
           <input data-testid="reader-follow-setting" type="checkbox" checked={prefs.follow}
-            onChange={e => updatePrefs({ follow: e.target.checked })} style={{ marginTop: 3 }} />
+            onChange={e => { resumeFollow(); updatePrefs({ follow: e.target.checked }) }} style={{ marginTop: 3 }} />
           <span>읽는 줄 따라가기
           </span>
         </label>

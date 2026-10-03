@@ -23,6 +23,7 @@ import { fileURLToPath } from 'url'
 import { currentPythonPath, synthesisBusy, setReaderRunning, pickFiles, dialogFolderHost } from './audio.ipc'
 import { rememberFile, rememberDir, startDir } from '../services/dialogFolders'
 import { scanTextPaths, scannedPaths } from '../services/folder-scan'
+import { keepReaderCover } from '../services/reader-cover'
 import { keepVoiceClip } from '../services/reader-voice-store'
 import type { ScanResult } from '../../shared/readerLibrary'
 import { TEXT_FILE_LIMIT } from '../../shared/readerChunks'
@@ -639,7 +640,24 @@ export function registerReaderIpc(): void {
   // ── 폴더 가져오기 (2026-10-03) ─────────────────────────────────────────────
   // ★원본은 읽기만 한다. 화면은 **이 실행에서 훑어 건넨 글 파일만** 읽을 수 있다(아무 자리나 읽는 통로가 되지 않게).
   const scanned = new Set<string>()
-  const remember = (r: ScanResult): ScanResult => { for (const p of scannedPaths(r)) scanned.add(p.toLowerCase()); return r }
+  const coverPaths = new Set<string>()
+  const remember = (r: ScanResult): ScanResult => { for (const w of r.works) if (w.coverPath) coverPaths.add(w.coverPath.toLowerCase()); for (const p of scannedPaths(r)) scanned.add(p.toLowerCase()); return r }
+  ipcMain.handle('reader:cover', async (e, path?: unknown): Promise<Reply<string | null>> => {
+    try {
+      let source: string
+      if (typeof path === 'string') {
+        if (!coverPaths.has(path.toLowerCase())) throw new Error('가져오기에서 확인한 표지만 읽을 수 있습니다.')
+        source = path
+      } else {
+        const win = BrowserWindow.fromWebContents(e.sender)
+        if (!win) throw new Error('창을 찾지 못했습니다.')
+        const paths = await pickFiles(win, { multi: false, slot: 'text', filters: [{ name: '표지 이미지', extensions: ['png', 'jpg', 'jpeg', 'webp'] }] })
+        if (!paths.length) return ok(null)
+        source = paths[0]
+      }
+      return ok(await keepReaderCover(source, app.getPath('userData')))
+    } catch (err) { return fail(err) }
+  })
   /** 폴더를 고른다(여러 개) → 훑은 결과. 취소하면 빈 결과. */
   ipcMain.handle('reader:pick-folders', async (e): Promise<Reply<ScanResult | null>> => {
     try {

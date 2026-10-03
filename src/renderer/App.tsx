@@ -1,3 +1,5 @@
+import { loadPlaybackEffects, openEffectsPanel, effectsPanelOpen, onPlaybackEffects } from './lib/playbackEffects'
+import { loadPlaybackBoost } from './lib/playbackBoost'
 import { useEffect, useRef, useState } from 'react'
 import { useAppStore, type RestorableSession } from '@/stores/app.store'
 import ModeSelector, { WORKSPACES } from '@/components/ModeSelector'
@@ -30,9 +32,10 @@ export default function App() {
   const [restoring, setRestoring] = useState(false)
   /** 설정 화면. 작업 화면을 덮지 않고 **그 자리에서** 연다. */
   const [showOptions, setShowOptions] = useState(false)
+  useEffect(() => onPlaybackEffects(() => { if (effectsPanelOpen()) setShowOptions(true) }), [])
   const scrollRef = useRef<HTMLDivElement>(null)
   const pageRef = useRef<HTMLDivElement>(null)
-  useEffect(() => { void loadPlaybackVolume(); void loadPlaybackRate() }, [])
+  useEffect(() => { void loadPlaybackEffects(); void loadPlaybackBoost(); void loadPlaybackVolume(); void loadPlaybackRate() }, [])
   // 콘솔 창 — 켜 두었으면 다시 띄운다. 화면을 옮긴 것도 동작 기록에 남긴다(2026-09-30).
   useEffect(() => {
     let off = () => {}
@@ -72,7 +75,7 @@ export default function App() {
       <aside data-testid="workspace-sidebar" style={{ width: 196, flexShrink: 0, display: 'flex', flexDirection: 'column', gap: 24, padding: '28px 12px 18px', background: 'var(--sidebar-surface)', borderRight: '1px solid var(--border-subtle)', overflowY: 'auto' }}>
         <ModeSelector />
         <div style={{ marginTop: 'auto', padding: '18px 0 0', borderTop: '1px solid var(--border-subtle)' }}>
-          <button type="button" data-testid="open-app-options" onClick={() => setShowOptions(v => !v)}
+          <button type="button" data-testid="open-app-options" onClick={() => { openEffectsPanel(false); setShowOptions(v => !v) }}
             aria-pressed={showOptions} className="btn btn-ghost"
             title="만든 것을 둘 자리와 쌓인 것 비우기"
             style={{ width: '100%', fontSize: 11, padding: '7px 8px', marginTop: 6, display: 'flex', alignItems: 'center', gap: 6, justifyContent: 'center' }}>
@@ -82,11 +85,13 @@ export default function App() {
             </svg>
             설정
           </button>
+
           <AppVersionLabel />
         </div>
       </aside>
+
       {/* 설정 — 팝업으로 띄운다(2026-09-28 지시). 레이아웃 흐름 밖에 둔다. */}
-      {showOptions && <AppOptions close={() => setShowOptions(false)}/>}
+      {showOptions && <AppOptions initialTab={effectsPanelOpen() ? 'sound' : 'general'} close={() => { openEffectsPanel(false); setShowOptions(false) }}/>}
       <WorkspaceDockContext.Provider value={dock}><main style={{ flex: 1, minWidth: 0, minHeight: 0, overflow: 'hidden' }}>
         <div ref={pageRef} style={{ width: '100%', maxWidth: 1120, height: '100%', minHeight: 0, margin: '0 auto', padding: '24px clamp(18px, 3vw, 40px) 18px', boxSizing: 'border-box', display: 'flex', flexDirection: 'column' }}>
           <header data-testid="workspace-heading" style={{ display: mode === 'reader' ? 'none' : undefined, flexShrink: 0, paddingBottom: 18, marginBottom: 18, borderBottom: '1px solid var(--border-subtle)' }}>

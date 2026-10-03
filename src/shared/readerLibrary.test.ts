@@ -71,3 +71,11 @@ test('끌어 놓기 — 받지 못하면 사유를 돌려준다(조용히 버리
   assert.deepEqual(planDrop([{ path: 'D:/소설 모음', dir: true }, { path: 'D:/낱권.txt', dir: false }], false), { kind: 'paths', paths: ['D:/소설 모음', 'D:/낱권.txt'] })
   assert.deepEqual(planDrop([{ path: '', dir: false }], false), { kind: 'files' }, '파일만이면 내용으로 읽는다(위치 없어도 됨)')
 })
+
+
+test('완독한 회차 다음의 미완독 회차로 이어 듣고, 모두 완독했으면 마지막 책을 유지한다', () => {
+  const g = [book({ id: 'a', order: 0, completed: true, readAt: 10 }), book({ id: 'b', order: 1 }), book({ id: 'c', order: 2 })]
+  assert.equal(groupResume(g)?.id, 'b')
+  assert.equal(groupResume(g.map(b => ({ ...b, completed: true })))?.id, 'a')
+  assert.equal(groupResume(g.map(b => b.id === 'c' ? { ...b, readAt: 20, position: 1 } : b))?.id, 'c')
+})

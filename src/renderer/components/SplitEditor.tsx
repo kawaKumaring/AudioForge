@@ -1,3 +1,4 @@
+import { attachPlaybackBoost } from '../lib/playbackBoost'
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import WaveSurfer from 'wavesurfer.js'
 import { isCancelCleanupBusy } from '../../shared/cancelContract'
@@ -203,6 +204,7 @@ export default function SplitEditor() {
       autoScroll: false, autoCenter: false,
       plugins: [regions]
     })
+    attachPlaybackBoost(ws.getMediaElement())
 
     ws.on('decode', (d) => setDuration(d))
     // 어디를 보고 있는지 — 확대했을 때만 뜻이 있다.

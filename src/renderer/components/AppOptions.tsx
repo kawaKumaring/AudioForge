@@ -1,3 +1,5 @@
+import PlaybackEffectsPanel from './PlaybackEffectsPanel'
+import SpeakerQuickSettings from './SpeakerQuickSettings'
 /**
  * 앱 설정 — **만든 것을 어디에 둘지**와 **쌓인 것을 비우기.**
  *
@@ -68,7 +70,7 @@ const WIPE: Record<WipeKind, { label: string; what: string; keeps: string }> = {
  *   파일을 열면 앱이 스스로 이전 결과를 찾아 알려 주므로(원본 카드의 안내),
  *   손으로 짚는 길은 쓰이지 않고 이름만 헷갈렸다.
  */
-export default function AppOptions({ close }: { close: () => void }) {
+export default function AppOptions({ close, initialTab = 'general' }: { close: () => void; initialTab?: 'general' | 'sound' }) {
   const [place, setPlace] = useState<OutputPlace>('app')
   const [chosen, setChosen] = useState('')
   const [appRoot, setAppRoot] = useState('')
@@ -80,7 +82,7 @@ export default function AppOptions({ close }: { close: () => void }) {
   const [tempDir, setTempDir] = useState('')
   const [stray, setStray] = useState(0)
   // ── 탭 (2026-09-30 지시: "설정에서 기능 검사 탭을 따로 만든 뒤 각 기능별 검사 버튼") ──
-  const [tab, setTab] = useState<'general' | 'checks'>('general')
+  const [tab, setTab] = useState<'general' | 'checks' | 'sound'>(initialTab)
   const [checks, setChecks] = useState<Partial<Record<CheckId, CheckResult>>>({})
   const [runningIds, setRunningIds] = useState<CheckId[]>([])
   const [reportNote, setReportNote] = useState('')
@@ -200,7 +202,7 @@ export default function AppOptions({ close }: { close: () => void }) {
         <button type="button" data-testid="options-close" style={button} onClick={close}>닫기</button>
       </div>
       <div role="tablist" aria-label="설정 갈래" style={{ ...row, gap: 6 }}>
-        {([['general', '일반'], ['checks', '기능 검사']] as const).map(([k, label]) => (
+        {([['general', '일반'], ['sound', '소리 다듬기'], ['checks', '기능 검사']] as const).map(([k, label]) => (
           <button key={k} type="button" role="tab" aria-selected={tab === k} data-testid={`options-tab-${k}`}
             onClick={() => setTab(k)}
             style={{ ...button, borderColor: tab === k ? 'var(--accent-light)' : undefined, color: tab === k ? 'var(--accent-light)' : undefined }}>
@@ -212,6 +214,7 @@ export default function AppOptions({ close }: { close: () => void }) {
       {fault && <div role="alert" data-testid="options-fault" style={{ fontSize: 12, color: 'var(--rose)' }}>{fault}</div>}
       {notice && <div role="status" data-testid="options-notice" style={{ fontSize: 12, color: 'var(--accent-light)' }}>{notice}</div>}
 
+      {tab === 'sound' && <><SpeakerQuickSettings basicsOnly/><PlaybackEffectsPanel embedded/></>}
       {tab === 'general' && <>
       {/* ── 만든 것을 둘 자리 ───────────────────────────────────────────── */}
       <div style={panel}>

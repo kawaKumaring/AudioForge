@@ -1,3 +1,5 @@
+import SpeakerControl from './SpeakerControl'
+import { attachPlaybackBoost } from '../lib/playbackBoost'
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import WaveSurfer from 'wavesurfer.js'
 import RegionsPlugin from 'wavesurfer.js/dist/plugins/regions.js'
@@ -38,7 +40,7 @@ export default function Waveform() {
   const [playError, setPlayError] = useState('')
   // 재생 볼륨(듣기 전용 — 파일에 영향 없음). 값은 앱 공용이고 보관된다 —
   // 예전에는 여기 지역 상태여서 화면을 다시 그리거나 앱을 다시 켜면 100% 로 되돌아갔다.
-  const { volume, change: changeVolume, commit: commitVolume, saveFailed: volumeSaveFailed } = usePlaybackVolume()
+  const { volume } = usePlaybackVolume()
   const [decoded, setDecoded] = useState(false)
   const [analysis, setAnalysis] = useState<SilenceAnalysis | null>(null)
   const [computing, setComputing] = useState(false)
@@ -80,6 +82,7 @@ export default function Waveform() {
       dragToSeek: true, // 드래그로 스크럽/이동 (왼쪽으로 넘겨 끌면 처음으로)
       plugins: [regions]
     })
+    attachPlaybackBoost(ws.getMediaElement())
 
     wsRef.current = ws
     const fail = () => {
@@ -290,22 +293,7 @@ export default function Waveform() {
         </button>
         {/* 오른쪽: 볼륨(듣기 전용) + 길이 */}
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'flex-end', gap: 6, minWidth: 0, flexWrap: 'wrap' }}>
-          <div title={volumeSaveFailed
-            ? '재생 볼륨 — 이 값을 기억하지 못했습니다(이번 실행에만 적용됩니다).'
-            : '재생 볼륨 (듣기 전용 · 원본 파일에는 영향 없음) — 정한 값이 다음에도 그대로 쓰입니다.'}
-            style={{ display: 'flex', alignItems: 'center', gap: 5 }}>
-            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="var(--text-muted)" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-              <polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5" />
-              {volume < 0.01
-                ? <><line x1="23" y1="9" x2="17" y2="15" /><line x1="17" y1="9" x2="23" y2="15" /></>
-                : <path d="M15.54 8.46a5 5 0 0 1 0 7.07" />}
-            </svg>
-            <input type="range" min="0" max="1" step="0.05" value={volume}
-              data-testid="waveform-volume" aria-label="재생 볼륨 (듣기 전용, 원본에 영향 없음)"
-              onChange={(e) => changeVolume(parseFloat(e.target.value))}
-              onPointerUp={commitVolume} onKeyUp={commitVolume} onBlur={commitVolume}
-              style={{ width: 60, accentColor: colors.cursor, cursor: 'pointer', height: 4 }} />
-          </div>
+          <SpeakerControl id="waveform" />
           <span style={{ fontSize: 10, fontWeight: 500, fontVariantNumeric: 'tabular-nums', color: 'var(--text-muted)' }}>{loadState === 'ready' ? duration : '—'}</span>
         </div>
       </div>

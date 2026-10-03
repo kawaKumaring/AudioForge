@@ -1,3 +1,5 @@
+import SpeakerControl from './SpeakerControl'
+import { attachPlaybackBoost } from '../lib/playbackBoost'
 import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { useAppStore } from '../stores/app.store'
 import WaveSurfer from 'wavesurfer.js'
@@ -51,6 +53,7 @@ function ResultPlayback({ result, disabled, onSave, onOpenFolder }: SongResultCa
     setPhase('loading'); setPlaying(false); setMessage('')
     const ws = WaveSurfer.create({ container: host.current, height: 54, barWidth: 2, barGap: 2, barRadius: 2,
       waveColor: '#8261b5', progressColor: '#c2a7fa', cursorColor: '#e0d5fc', normalize: true, dragToSeek: true, interact: !locked.current })
+    attachPlaybackBoost(ws.getMediaElement())
     player.current = ws
     ws.setVolume(getPlaybackVolume())
     const unvolume = onPlaybackVolumeChange(v => ws.setVolume(v))
@@ -109,7 +112,7 @@ function ResultPlayback({ result, disabled, onSave, onOpenFolder }: SongResultCa
     catch { if (alive.current) setMessage(kind === 'save' ? '저장하지 못했습니다' : '폴더를 열지 못했습니다') }
     finally { pending.current = false; if (alive.current) setAction('') }
   }
-  return <section aria-label="노래 변환 결과" data-testid="song-result" data-state={phase} style={{ padding: 18, border: '1px solid var(--border-subtle)', borderRadius: 16, background: 'var(--bg-card)', minWidth: 0 }}>
+  return <SpeakerControl><section aria-label="노래 변환 결과" data-testid="song-result" data-state={phase} style={{ padding: 18, border: '1px solid var(--border-subtle)', borderRadius: 16, background: 'var(--bg-card)', minWidth: 0 }}>
     <div style={{ display: 'flex', alignItems: 'center', flexWrap: 'wrap', gap: 10, marginBottom: 16 }}>
       <div style={{ flex: '1 1 160px', minWidth: 0 }}><h2 style={{ margin: 0, fontSize: 14 }}>변환 음원</h2><div title={result.title} style={{ fontSize: 11, color: 'var(--text-muted)', marginTop: 6, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{result.title}</div></div>
       <button type="button" style={button} aria-label="결과 폴더 열기" title="결과 폴더 열기" disabled={disabled || !!action} onClick={() => void run('folder')}><Glyph kind="folder"/></button>
@@ -127,5 +130,5 @@ function ResultPlayback({ result, disabled, onSave, onOpenFolder }: SongResultCa
       </div>
     </div>
     {message && <div role="alert" style={{ display: 'flex', alignItems: 'center', gap: 10, marginTop: 10, fontSize: 12, color: 'var(--rose)' }}>{message}{phase === 'error' && <button type="button" style={button} disabled={disabled} onClick={() => setRetry(n => n + 1)}>다시 읽기</button>}</div>}
-  </section>
+  </section></SpeakerControl>
 }

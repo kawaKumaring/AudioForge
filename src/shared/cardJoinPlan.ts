@@ -49,9 +49,9 @@ export interface JoinPlan {
 
 /** 이 카드가 최종 연결에 낄 수 없는 이유. 없으면 빈 문자열. */
 export function cardJoinFault(c: JoinCardInput): string {
-  if (!c.adopted) return '채택한 생성본이 없습니다'
-  if (c.adopted.missing) return '채택한 생성본 파일이 사라졌습니다'
-  if (!c.adopted.path) return '채택한 생성본에 파일이 없습니다'
+  if (!c.adopted) return '최종 음성에 넣을 결과를 골라 주세요'
+  if (c.adopted.missing) return '최종 음성에 넣을 파일을 찾을 수 없습니다'
+  if (!c.adopted.path) return '최종 음성에 넣을 결과에 파일이 없습니다'
   return ''
 }
 
