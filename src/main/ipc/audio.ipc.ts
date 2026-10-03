@@ -925,6 +925,13 @@ export function registerAudioIpc(
     if (mode === 'tts' && options?.ttsEngine === 'qwen-custom') {
       const residentOk = await ensureQwenResident()
       appLog()?.info('job', `Qwen 상주 실행기 ${residentOk ? '준비됨 — 카드가 붙는다' : '준비 못 함 — 조각마다 모델을 연다'}`)
+    } else if (mode === 'tts' && !options?.ttsBuiltinModel) {
+      // ★참조 목소리 카드(Qwen3 Base 일괄)도 띄워 둔 실행기로 — 생성마다 모델을 새로 열지 않는다(2026-10-03, 낭독에서 먼저 검증).
+      //   합성 프로세스는 본체 환경을 물려받는다(파이프 주소·열쇠와 같은 자리). 실행기가 없으면 예전 길(새 프로세스)로 간다.
+      //   '다시 생성' 은 그대로 새로 만든다 — 실행마다 새 씨앗(tts_worker)이고, 이전 생성본을 돌려주지 않는다.
+      const residentOk = await ensureQwenResident()
+      process.env.AUDIOFORGE_QWEN_RESIDENT_BRIDGE = residentOk ? '1' : '0'
+      appLog()?.info('job', `참조 목소리 카드 — Qwen 상주 실행기 ${residentOk ? '준비됨(모델 재사용)' : '준비 못 함 — 새 프로세스로 모델을 연다'}`)
     }
 
     // Build output directory
@@ -1378,6 +1385,11 @@ export function registerAudioIpc(
     const outDir = currentOutputDir
     const isTts = currentIsTts
     if (currentWatchdogClear) currentWatchdogClear()   // watchdog 무의미 → 즉시 해제
+    // ★띄워 둔 실행기에 맡긴 Qwen 작업도 멈춘다 — 합성 프로세스를 죽여도 실행기는 그 작업을 끝까지 하려 했다(2026-10-03).
+    //   작업 폴더(.qwen-job-*)마다 정지 파일을 둔다 — 실행기가 16걸음 안에 멈춘다(그 작업에만 걸린다).
+    if (isTts && outDir) {
+      for (const name of listQwenJobDirs(outDir)) { try { writeFileSync(join(outDir, name, '.qwen-stop'), 'stop') } catch { /* 이미 정리됐다 */ } }
+    }
     afPhase('cancelling_sent')
     mainWindow.webContents.send('audio:cancelling', tagWith({}, runClientReq))     // renderer → 'cancelling' 표시
     afPhase('kill_requested')

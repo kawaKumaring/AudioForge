@@ -10,6 +10,7 @@
 // ★확장자를 붙인다 — `node --test` 가 이 파일을 곧바로 읽는다(dub-job 과 같은 관례).
 // @ts-ignore TS5097
 import { scrubPathsForLog } from './log-scrub.ts'
+import { join } from 'path'
 
 export interface ReaderRunVoice {
   kind: 'builtin' | 'reference'
@@ -94,4 +95,14 @@ export function readerRunConfig(body: string, v: ReaderRunVoice, runDir: string)
  */
 export function testSkipsPrep(env: NodeJS.ProcessEnv = process.env): boolean {
   return env.AF_E2E === '1' && env.AF_E2E_GPU !== '1' && env.AF_E2E_NORMAL_PREP !== '1'
+}
+
+/**
+ * 참조 목소리 합성이 쓰는 Qwen 모델 — **합성 프로세스(tts_worker 의 _QWEN_REPO·_QWEN_REVISION)와 같은 고정판**.
+ * 고르는 순간 띄워 둔 실행기에 미리 연다(2026-10-03). 두 값이 갈리면 미리 연 모델과 실제로 쓰는 모델이 달라진다 — 검사가 붙든다.
+ */
+export const QWEN_REF_REPO_DIR = 'models--Qwen--Qwen3-TTS-12Hz-0.6B-Base'
+export const QWEN_REF_REVISION = '5d83992436eae1d760afd27aff78a71d676296fc'
+export function qwenRefModelPath(externalsDir: string): string {
+  return join(externalsDir, 'qwen3_tts_hf', 'hub', QWEN_REF_REPO_DIR, 'snapshots', QWEN_REF_REVISION)
 }

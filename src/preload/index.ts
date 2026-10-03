@@ -292,13 +292,13 @@ const api = {
       segments?: Array<{ text: string; emotion: string }>, epoch?: number): Promise<{ data?: { path: string; cached: boolean; timing?: Array<[number, number]>; trace?: SpeakTraceReply }; error?: string; trace?: SpeakTraceReply; superseded?: 'queued' | 'running' }> =>
       ipcRenderer.invoke('reader:speak', text, voice, voiceKey, parts, segments, epoch),
     /** 낭독 세대를 올린다 — 옛 세대 요청은 시작 전에 버리고, 돌고 있으면 멈출 수 있는 것만 멈춘다(2026-10-03). */
-    supersede: (epoch: number): Promise<{ data?: { running: boolean; stopRequested: boolean; cancellable: boolean | null }; error?: string }> =>
-      ipcRenderer.invoke('reader:supersede', epoch),
+    supersede: (epoch: number, why?: string): Promise<{ data?: { running: boolean; stopRequested: boolean; cancellable: boolean | null }; error?: string }> =>
+      ipcRenderer.invoke('reader:supersede', epoch, why),
     /** 목소리를 미리 연다 — 고른 순간 모델을 올려 둬 첫 조각을 기다리지 않게. */
-    warm: (voice: { kind: 'builtin' | 'reference'; path: string; engineId?: string }, opts?: { emotion?: boolean }): Promise<{ data?: { warmed: boolean; why?: string }; error?: string }> =>
+    warm: (voice: { kind: 'builtin' | 'reference'; path: string; engineId?: string }, opts?: { emotion?: boolean }): Promise<{ data?: { warmed: boolean; why?: string; loadedNow?: boolean; primeSec?: number; waitMs?: number; ms?: number }; error?: string }> =>
       ipcRenderer.invoke('reader:warm', voice, opts),
     /** Qwen 실행기를 모델 없이 띄워 둔다(목록을 열 때) — 고를 때 모델만 열면 되게. */
-    prepare: (voice?: { kind: 'builtin' | 'reference'; path: string; engineId?: string }, opts?: { emotion?: boolean }): Promise<{ data?: { prepared: boolean }; error?: string }> =>
+    prepare: (voice?: { kind: 'builtin' | 'reference'; path: string; engineId?: string }, opts?: { emotion?: boolean }): Promise<{ data?: { prepared: boolean; ms?: number }; error?: string }> =>
       ipcRenderer.invoke('reader:prepare', voice, opts),
     clearCache: (): Promise<{ removed: number; freedMb: number }> =>
       ipcRenderer.invoke('reader:clear-cache'),

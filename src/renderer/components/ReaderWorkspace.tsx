@@ -10,6 +10,7 @@ import './reader.css'
 import type { PreviewMaker } from '../lib/voicePreview'
 import { runVoicePrep } from '@/lib/voicePrepRunner'
 import { opLog, nameOnly } from '@/lib/opLog'
+import { trace } from '@/lib/readerTrace'
 import { chunkAt, TEXT_FILE_LIMIT } from '../../shared/readerChunks'
 import { decodeBookText, encodingLabel } from '../../shared/readerDecode'
 import PlaybackRateSelect from './PlaybackRateSelect'
@@ -474,7 +475,17 @@ export default function ReaderWorkspace() {
   const prepareQwen = () => {
     // 미리 읽을 모델 — 지금 고른 Qwen 목소리, 없으면 목록의 첫 Qwen 목소리(소희).
     const q = builtins?.find((b) => b.engineId === 'qwen-custom' && b.path === pick?.path) || builtins?.find((b) => b.engineId === 'qwen-custom')
-    if (q) void window.api.reader.prepare?.({ kind: 'builtin', path: q.path, engineId: q.engineId }, { emotion: prefs.emotion && q.emotion === true })?.catch(() => { /* 고를 때 연다 */ })
+    if (!q) return
+    // 관측 — 목록 열기(실행기 띄우기·라이브러리·모델 파일 미리 읽기)의 시작과 끝.
+    trace('prepare-request', { engine: q.engineId })
+    void window.api.reader.prepare?.({ kind: 'builtin', path: q.path, engineId: q.engineId }, { emotion: prefs.emotion && q.emotion === true })
+      ?.then((r) => trace('prepare-done', { prepared: !!r?.data?.prepared, ms: r?.data?.ms }))?.catch(() => { /* 고를 때 연다 */ })
+  }
+  /** 목소리 확정 뒤 모델 미리 열기 — 시작·끝·줄 대기·실제 준비·모델 처음 엶·첫 생성 준비를 기록한다(동작은 기록을 읽지 않는다). */
+  const warmVoice = (v: { kind: 'builtin' | 'reference'; path: string; engineId?: string }, opts?: { emotion?: boolean }) => {
+    trace('warm-request', { kind: v.kind, engine: v.engineId || '' })
+    void window.api.reader.warm?.(v, opts)?.then((r) => trace('warm-done', { kind: v.kind, engine: v.engineId || '', warmed: !!r?.data?.warmed, why: r?.data?.why,
+      loadedNow: r?.data?.loadedNow, primeSec: r?.data?.primeSec, waitMs: r?.data?.waitMs, ms: r?.data?.ms }))?.catch(() => { /* 누를 때 연다 */ })
   }
   /** 기본 목소리를 쓴다. GPU 목소리(소희)는 고르는 순간 미리 연다 — 첫 소리의 모델 열기(약 10초)를 누르기 전에 치른다. */
   const chooseBuiltin = (b: BuiltinVoiceRef) => {
@@ -482,7 +493,8 @@ export default function ReaderWorkspace() {
     useReader.setState({ voice: b.label, pick: v })
     updatePrefs({ voice: { kind: 'builtin', engineId: b.engineId, modelId: b.modelId, label: b.label } })      // 지정만 저장 — 경로가 아니라 엔진 + 모델 이름
     // 감정 담아 읽기가 켜져 있으면 1.7B 를 연다(덩이 전체를 그 모델로 읽는다).
-    if (b.engineId === 'qwen-custom') void window.api.reader.warm?.({ kind: 'builtin', path: b.path, engineId: b.engineId }, { emotion: prefs.emotion && b.emotion === true })?.catch(() => { /* 누를 때 연다 */ })
+    trace('voice-confirm', { kind: 'builtin', engine: b.engineId })
+    if (b.engineId === 'qwen-custom') warmVoice({ kind: 'builtin', path: b.path, engineId: b.engineId }, { emotion: prefs.emotion && b.emotion === true })
     voiceButton.current?.focus()
   }
   const choosePosition = (value: number) => {
@@ -573,6 +585,9 @@ export default function ReaderWorkspace() {
         else { path = clip; lasting = false }
       }
       useReader.setState({ voice: label, pick: { kind: 'reference', path, label } })
+      // ★참조 목소리도 고르는 순간 그 모델 하나를 미리 연다(2026-10-03) — 첫 덩이가 모델 열기를 기다리지 않게.
+      trace('voice-confirm', { kind: 'reference' })
+      warmVoice({ kind: 'reference', path })
       // 다음에 목소리 고르기에서 다시 고를 수 있게 — 준비를 다시 하지 않는다. 고른 목소리 지정도 함께 남긴다.
       // ★보관하지 못한 임시 조각은 저장하지 않는다 — 다음 실행에 없는 경로를 남기지 않는다(이번 실행에서만 쓴다).
       if (lasting) updatePrefs({ recentVoices: rememberVoice(prefs.recentVoices, { path, label }), voice: { kind: 'reference', path, label } })

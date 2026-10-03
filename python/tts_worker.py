@@ -1358,8 +1358,11 @@ class QwenTTSEngine(TTSEngine):
             QwenTTSEngine._resident_off = True
             emit("progress", message="띄워 둔 Qwen 에 붙지 못해 모델을 새로 엽니다(%s)" % type(e).__name__)
             return None
-        # 협조적 정지 파일 — 본체가 이 작업을 멈추라고 할 때 만든다(AF_QWEN_STOP_FILE), 없으면 이 작업 전용 자리.
-        stop_flag = os.environ.get("AF_QWEN_STOP_FILE") or ""
+        # 협조적 정지 파일 — 본체가 이 작업을 멈추라고 할 때 만든다. 낭독은 AF_QWEN_STOP_FILE 로 정해 주고,
+        #   카드는 **이 작업 폴더(.qwen-job-*)의 .qwen-stop** — 카드 멈춤(audio:cancel)이 그 폴더에 만든다(합성 프로세스를 죽여도 실행기 작업이 남지 않게).
+        _segs = cfg.get("segments") or []
+        _job_dir = os.path.dirname(str(_segs[0].get("out_path") or "")) if _segs else ""
+        stop_flag = os.environ.get("AF_QWEN_STOP_FILE") or (os.path.join(_job_dir, ".qwen-stop") if _job_dir else "")
         job = dict(cfg)
         job["device"] = "cuda:0"          # 실행기는 그래픽카드 작업만 한다(없으면 fallback 으로 돌려보낸다)
         job["stop_flag"] = stop_flag

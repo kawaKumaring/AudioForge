@@ -28,7 +28,7 @@ import type { ScanResult } from '../../shared/readerLibrary'
 import { TEXT_FILE_LIMIT } from '../../shared/readerChunks'
 import { usesGpu } from '../../shared/readerQueue'
 import { appLog, fileLabel } from '../services/app-log'
-import { createLane, failureReason, jsonLines, madeTrack, pythonReason, readerRunConfig, testSkipsPrep } from '../services/reader-run'
+import { createLane, failureReason, jsonLines, madeTrack, pythonReason, readerRunConfig, testSkipsPrep, qwenRefModelPath } from '../services/reader-run'
 import { QwenVoiceWorker } from '../services/qwen-voice-worker'
 import { ensureQwenResident, qwenWorker, stopQwenResident } from '../services/qwen-resident'
 import { parseWav, envelope, alignParts, type TimingPart } from '../../shared/readerTiming'
@@ -266,7 +266,9 @@ const inLane = createLane()
  *   · 멈춘 결과는 쌓지 않는다(잘린 소리를 다음에 꺼내 쓰지 않게). GPU 표시(readerJob)는 실제로 끝난 뒤에 내린다(makeChunk finally).
  */
 let latestEpoch = 0
-interface ReaderCtl { epoch: number; stopFile?: string; superseded?: boolean; cancellable?: boolean }
+interface ReaderCtl { epoch: number; stopFile?: string; superseded?: boolean; cancellable?: boolean; killed?: boolean }
+/** 줄에 서서 **아직 시작하지 않은** 덩이 요청 수 — 미리 열기가 준비 생성을 건너뛸지 본다(실제 요청이 곧 그 준비를 치른다). */
+let queuedSpeaks = 0
 let runningCtl: ReaderCtl | null = null
 class SupersededError extends Error {
   constructor(readonly phase: 'queued' | 'running') { super('지난 요청이라 버렸습니다') }
@@ -372,7 +374,7 @@ async function makeChunk(body: string, v: ReaderVoice, out: string, segments: Em
     appLog()?.info('reader', `만듦 kind=${v.kind} voice=${fileLabel(v.path)} 글자=${body.length} ${((Date.now() - t0) / 1000).toFixed(1)}s${note}`)
     return out
   } catch (e) {
-    if (e instanceof SupersededError || (ctl.superseded && ctl.cancellable)) {
+    if (e instanceof SupersededError || (ctl.superseded && (ctl.cancellable || ctl.killed))) {
       appLog()?.info('reader', `지난 요청 멈춤·버림 kind=${v.kind} voice=${fileLabel(v.path)} 글자=${body.length} ${((Date.now() - t0) / 1000).toFixed(1)}s`)
       throw e instanceof SupersededError ? e : new SupersededError('running')
     }
@@ -419,7 +421,8 @@ export function registerReaderIpc(): void {
    * Qwen 실행기를 **모델 없이** 띄워 라이브러리만 불러 둔다 — 낭독 화면이 목소리 목록을 열 때 부른다.
    * ★모델 열기 13초 중 6.5초가 불러오기였다(2026-10-02 실측). 그래픽카드 메모리는 잡지 않고, 안 쓰면 3분 뒤 내린다.
    */
-  ipcMain.handle('reader:prepare', async (_e, voice: unknown, prepOpts?: unknown): Promise<Reply<{ prepared: boolean }>> => {
+  ipcMain.handle('reader:prepare', async (_e, voice: unknown, prepOpts?: unknown): Promise<Reply<{ prepared: boolean; ms?: number }>> => {
+    const t = performance.now()
     try {
       if (testSkipsPrep()) return ok({ prepared: false })
       const prepared = await ensureQwenResident()
@@ -430,18 +433,39 @@ export function registerReaderIpc(): void {
         const emotion = !!(prepOpts as { emotion?: unknown } | undefined)?.emotion
         void qwenWorker().call({ prefetch: [(emotion && !qv.clone && qwenEmotionModel()) || qv.model] }).catch(() => { /* 못 읽어도 고를 때 연다 */ })
       }
-      return ok({ prepared })
+      return ok({ prepared, ms: Math.round(performance.now() - t) })
     } catch (e) { return fail(e) }
   })
 
-  ipcMain.handle('reader:warm', async (_e, voice: unknown, warmOpts?: unknown): Promise<Reply<{ warmed: boolean; why?: string }>> => {
+  ipcMain.handle('reader:warm', async (_e, voice: unknown, warmOpts?: unknown): Promise<Reply<{ warmed: boolean; why?: string; loadedNow?: boolean; primeSec?: number; waitMs?: number; ms?: number }>> => {
+    // 관측 — 줄 대기(waitMs)와 실제 준비(ms), 모델을 이번에 열었나, 첫 생성 준비(primeSec).
+    const asked = performance.now()
     try {
       const v = voice as ReaderVoice | null
+      if (v?.kind === 'reference' && v.path && existsSync(v.path)) {
+        // ★참조 목소리도 **고르는 순간** 그 모델(합성이 쓰는 0.6B Base 고정판) 하나만 띄워 둔 실행기에 연다(2026-10-03).
+        //   예전에는 첫 덩이가 모델 열기를 기다렸다(실측 첫 소리 12.9초 중 약 6.4초). 다른 작업이 돌면 열지 않는다(누를 때 연다).
+        if (testSkipsPrep()) return ok({ warmed: false, why: '검사(GPU 끔)' })
+        const model = qwenRefModelPath(join(dirname(dirname(scriptPath())), 'externals'))
+        if (!existsSync(model)) return ok({ warmed: false, why: '참조 목소리 모델이 없습니다' })
+        if (!(await ensureQwenResident())) return ok({ warmed: false, why: '띄워 둔 실행기를 쓰지 못합니다' })
+        return ok(await inLane(async () => {
+          const busy = synthesisBusy('낭독')
+          if (busy) return { warmed: false, why: busy }
+          const t = performance.now()
+          setReaderRunning(true)
+          try {
+            const r = await qwenWorker().call({ warm: true, model })
+            return { warmed: true, loadedNow: !!r.loaded_now, waitMs: Math.round(t - asked), ms: Math.round(performance.now() - t) }
+          } finally { setReaderRunning(false) }
+        }))
+      }
       if (!v || v.kind !== 'builtin' || !v.path || !existsSync(v.path)) return ok({ warmed: false, why: '미리 열 목소리가 아닙니다' })
       if (residentBuiltin(v)) {
         if (!currentPythonPath()) return ok({ warmed: false, why: '파이썬을 찾지 못했습니다' })
-        await inLane(() => readerWorker().call({ warm: true, model: v.path }))
-        return ok({ warmed: true })
+        let t = 0
+        const r = await inLane(() => { t = performance.now(); return readerWorker().call({ warm: true, model: v.path }) })
+        return ok({ warmed: true, loadedNow: !!r.loaded_now, waitMs: Math.round(t - asked), ms: Math.round(performance.now() - t) })
       }
       if (v.engineId === 'qwen-custom') {
         // 검사 전용 — GPU 를 쓰지 않는 기본 검사에서는 그래픽카드에 모델을 올리지 않는다(AF_E2E_GPU=1 일 때만 연다).
@@ -455,10 +479,15 @@ export function registerReaderIpc(): void {
           // 감정 담아 읽기면 1.7B 를 연다(덩이 전체를 그 모델로 읽는다).
           const emotion = !!(warmOpts as { emotion?: unknown } | undefined)?.emotion
           const model = (emotion && !qv.clone && qwenEmotionModel()) || qv.model
+          const t = performance.now()
           setReaderRunning(true)
           // 화자를 넘기면 막 연 모델로 짧은 글을 한 번 만들어 버린다 — 첫 생성의 준비를 여기서 치른다.
-          try { await qwenWorker().call({ warm: true, model, language: 'korean', ...(qv.clone ? { clone: qv.clone } : { speaker: qv.speaker }) }) } finally { setReaderRunning(false) }
-          return { warmed: true }
+          // ★실제 덩이 요청이 이미 줄에서 기다리면 준비 생성은 건너뛴다 — 그 요청이 곧 같은 준비를 치른다(겹치는 몫 약 1초, 2026-10-03).
+          const prime = queuedSpeaks === 0
+          try {
+            const r = await qwenWorker().call({ warm: true, model, language: 'korean', ...(prime ? (qv.clone ? { clone: qv.clone } : { speaker: qv.speaker }) : {}) })
+            return { warmed: true, loadedNow: !!r.loaded_now, primeSec: Number(r.prime_sec || 0), waitMs: Math.round(t - asked), ms: Math.round(performance.now() - t) }
+          } finally { setReaderRunning(false) }
         }))
       }
       return ok({ warmed: false, why: '미리 열 목소리가 아닙니다' })
@@ -517,7 +546,9 @@ export function registerReaderIpc(): void {
 
       // ★한 번에 하나 — 줄에 세운다. 앞 작업이 끝나야 다음이 돈다. ★차례가 왔을 때 세대가 지났으면 시작하지 않고 버린다.
       const ctl: ReaderCtl = { epoch: ep }
+      queuedSpeaks++
       const run = inLane(() => {
+        queuedSpeaks--
         if (ctl.epoch < latestEpoch) { ctl.superseded = true; throw new SupersededError('queued') }
         return makeChunk(body, v, out, segments, info, ctl)
       })
@@ -538,7 +569,7 @@ export function registerReaderIpc(): void {
    * 돌고 있는 옛 세대 작업에 협조적 정지를 걸고(멈출 수 있는 것만), 줄에 선 옛 것은 차례가 오면 시작하지 않는다.
    * 답: 무엇이 돌고 있었고 멈추라고 했는지 — '멈춤 완료' 는 그 작업의 답(superseded:'running')이 와야 확인된다.
    */
-  ipcMain.handle('reader:supersede', (_e, epoch: unknown): Reply<{ running: boolean; stopRequested: boolean; cancellable: boolean | null }> => {
+  ipcMain.handle('reader:supersede', (_e, epoch: unknown, why?: unknown): Reply<{ running: boolean; stopRequested: boolean; cancellable: boolean | null }> => {
     const ep = Number(epoch)
     if (!Number.isFinite(ep)) return fail(new Error('세대가 숫자가 아닙니다'))
     if (ep > latestEpoch) latestEpoch = ep
@@ -548,6 +579,12 @@ export function registerReaderIpc(): void {
       r.superseded = true
       if (r.cancellable && r.stopFile) {
         try { writeFileSync(r.stopFile, 'stop'); stopRequested = true } catch { /* 작업 폴더가 이미 지워졌다 — 끝난 것 */ }
+      } else if (why === 'voice' && readerWorkerInstance?.running) {
+        // ★목소리를 **바꿨으면** 고르지 않은 기본 목소리(CPU) 덩이를 기다리지 않는다 — 그 실행기를 내린다(낭독 전용, 다음에 쓸 때 다시 뜬다 · 열기 1초 안팎).
+        //   실측(2026-10-03): 소희를 고르자 미리 열기가 기본 목소리 덩이 뒤에서 2.66초 기다렸다. 자리 이동·멈춤에는 내리지 않는다(같은 목소리를 곧 다시 쓴다).
+        r.killed = true
+        readerWorkerInstance.stop('목소리를 바꿈')
+        stopRequested = true
       }
     }
     for (const [k, en] of inFlight) if (en.ctl.epoch < latestEpoch) { en.ctl.superseded = true; inFlight.delete(k) }

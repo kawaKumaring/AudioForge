@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 // @ts-ignore TS5097: node --test 가 이 파일을 곧바로 읽는다(저장소 관례).
-import { createLane, jsonLines, pythonReason, madeTrack, failureReason, readerRunConfig, testSkipsPrep } from './reader-run.ts'
+import { createLane, jsonLines, pythonReason, madeTrack, failureReason, readerRunConfig, testSkipsPrep, QWEN_REF_REPO_DIR, QWEN_REF_REVISION } from './reader-run.ts'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
@@ -79,4 +79,11 @@ test('검사 모드는 미리 준비를 끄고, 보통 준비(AF_E2E_NORMAL_PREP
   assert.equal(testSkipsPrep({ AF_E2E: '1' }), true)
   assert.equal(testSkipsPrep({ AF_E2E: '1', AF_E2E_NORMAL_PREP: '1' }), false)
   assert.equal(testSkipsPrep({ AF_E2E: '1', AF_E2E_GPU: '1' }), false)
+})
+
+test('미리 여는 참조 목소리 모델 = 합성 프로세스가 쓰는 고정판(tts_worker)', async () => {
+  const { readFileSync } = await import('node:fs')
+  const py = readFileSync(new URL('../../../python/tts_worker.py', import.meta.url), 'utf-8')
+  assert.ok(py.includes(`_QWEN_REVISION = "${QWEN_REF_REVISION}"`), '고정판(revision)이 갈렸다')
+  assert.ok(py.includes('"' + QWEN_REF_REPO_DIR + '"'), '모델 자리 이름이 갈렸다')
 })

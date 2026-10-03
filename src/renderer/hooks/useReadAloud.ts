@@ -146,7 +146,7 @@ export function useReadAloud(
   const supersede = (why: string) => {
     epoch.current++
     const ep = epoch.current
-    void window.api.reader.supersede?.(ep)?.then((r) => {
+    void window.api.reader.supersede?.(ep, why)?.then((r) => {
       if (r?.data) trace('supersede', { epoch: ep, why, running: r.data.running, stopRequested: r.data.stopRequested, cancellable: r.data.cancellable })
     })?.catch(() => { /* 본체가 모르면 예전처럼 끝까지 기다린다 */ })
   }
