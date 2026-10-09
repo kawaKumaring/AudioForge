@@ -36,3 +36,20 @@
 ## 이번에 하지 않는 것
 - 참조 방식(ICL) 비교, 조각 사이 문맥 연결, 분할 크기 변경 — 이 비교의 결과를 본 뒤 하나씩.
 - 검수 도구 확장(색인·정밀 시간 정렬·원문 위치 연결).
+
+## 실행 결과(2026-10-09, 관리자 승인 실행) — 사람 청취 대기
+### 실행
+- 기준 seed 101·202·303(생성 전 plan.json 에 고정) × per_chunk/same = 6개, 6/6 성공. 파일당 41~50초(새 프로세스·cuda:0) — 예상(4~7분)보다 훨씬 빨랐다(9/25 는 당시 빌드). 다시 뽑지 않음, 길이·음량·속도 보정 없음, 제품 기본 seed 정책 불변.
+- 참조: 이미 재사용 승인된 참조 조각(ref-clip.wav, b51c8648…). 9/25 참조(bench-reference)는 승인 기록을 확인하지 못해 쓰지 않았다. 글: 9/25 장문과 같은 측정용 글(728자).
+- 길이: per_chunk 90.28/89.40/87.56초, same 87.96/86.52/91.80초. 모든 조각 상한 전 종료.
+### 기록 확인(실제 생성에서)
+- 조각별 실제 seed: per_chunk = s, s+1, s+2 / same = s, s, s — 6개 모두 기대대로 [기록].
+- 분할·전달문: 6개 모두 3조각(0-244, 244-537, 537-728), 조각 전달문 지문 동일(82ba…/1e3c…/78ec…) — 9/25 장문의 분할과도 같은 지문. 조각 전달문의 저장 지문 = 본문 지문.
+- 조각 음원 지문(returned_wav_sha256)·조각 음원 보존(vendor_returned.wav)·이음(basis=final_placement_rows, 간격·겹침 0)·결과 길이 대조(마지막 조각 뒤 2880표본 = 말끝 여백 120ms) 모두 기록됨.
+- 결함 하나 발견·수정: 실행 머리에 seed_policy 가 빠졌다(머리 항목 허용 목록에 없었음). 생성 뒤 허용 목록 두 곳에 추가했다 — 이번 6개 기록에는 없고, 정책은 조각별 applied_seed 와 plan.json 으로 확인된다.
+### 재현성
+- 같은 기준 seed 쌍의 첫 조각(두 정책 모두 seed s) 음원 지문: 3쌍 모두 **같다**(362bce11…, 286c3010…, c56afec4…). 이 조건(새 프로세스·같은 장치·같은 설정)에서 첫 조각 생성은 재현됐다. 둘째·셋째 조각의 차이는 seed 가 다른 것과 함께 나타나지만, 이것만으로 말투 차이의 원인을 seed 정책으로 단정하지 않는다.
+### 청취(대기)
+- 정책 이름을 숨긴 3쌍(X/Y 는 쌍마다 무작위): E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteninglongform-seed-20261009083328비교듣기.html — 전체 재생, 각 결과의 실제 이음 앞 5초·이음에서·앞뒤 5초 반복.
+- 듣는 파일(원본과 바이트가 같은 사본, 이름에 정책 없음): E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteninglongform-seed-20261009083328듣기 · 경로 목록 E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteninglongform-seed-20261009083328청취파일경로.txt · 정답표(청취 뒤) E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteninglongform-seed-20261009083328정답표.json · 기록 대조 E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteninglongform-seed-20261009083328ecord-check.json
+- 평가: 목소리 유지 · 말투 변화(어디쯤) · 이음 자연스러움 · 발음·누락·반복. 같은 seed 가 낫다고 전제하지 않는다.

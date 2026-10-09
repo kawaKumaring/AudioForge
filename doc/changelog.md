@@ -1,3 +1,8 @@
+## 2026-10-09 · 긴 글 seed 정책 비교 생성 (Claude) — 청취 대기
+- 진단 전용 스위치 AUDIOFORGE_DIAG_SEED_POLICY=same(모든 조각 같은 seed). 기본 동작(조각 k = s+k)은 그대로. 실행 머리 항목에 seed_policy 추가(허용 목록 누락을 생성 뒤 발견해 수정).
+- 6개 생성 성공(기준 seed 101·202·303 × 두 정책, 승인된 참조, 9/25 와 같은 글). 실제 기록에 조각별 seed·조각 전달문/음원 지문·이음 위치가 남는 것을 확인. 같은 seed 쌍의 첫 조각 음원 3/3 동일(재현).
+- 정책 이름을 숨긴 비교 페이지와 정답표를 만들었다. 사람 청취 전 — 어느 정책이 낫다는 결론 없음. 상세: doc/longform-seed-comparison-plan.md
+
 ## 2026-10-09 · 검수 근거 연결 통합 검증 (Claude)
 - 마지막 보완: 전달문 손상(invalid)·원문 파일 기록 충돌(중복 등록·파일 없음)이면 원문 일치·사유와 관계없이 normal=false, 누락 확정 보류(의견 보존). 기록 없음(unrecorded)은 손상과 다른 상태로 유지.
 - 실행 결과: 새 검사 audio-quality-source 35/35, test_run_record_longform 7/7. 기존 영향 검사 audio-quality-mcp 27/27, audio-quality-evidence 28/28, test_run_bundle_always 22/22, test_chunk_publish 18/18, test_quality_text 12/12.

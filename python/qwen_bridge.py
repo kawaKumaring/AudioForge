@@ -229,6 +229,12 @@ def _prod_tokens(builder, proc, text):
     return n
 
 
+def _seed_policy():
+    """조각별 seed 정책 — 진단 전용 비교(2026-10-09 긴 글 말투 비교). 기본 'per_chunk'(실행 seed + 조각 순번, 기존 동작).
+    AUDIOFORGE_DIAG_SEED_POLICY=same 일 때만 모든 조각에 실행 seed 그대로. 그 밖의 값은 기본으로 본다."""
+    return "same" if (os.environ.get("AUDIOFORGE_DIAG_SEED_POLICY") or "").strip() == "same" else "per_chunk"
+
+
 def _seed_rng(seed, chunk_ordinal):
     """진단 전용 — 고정 seed 로 talker 샘플링을 재현 가능하게 만든다.
 
@@ -783,7 +789,7 @@ def _generate_plan(model, plan, builder, proc, n_segments, progress=None, seed=N
             progress(30 + (completed * 60) // total, int(seg["index"]), n_segments, ci, cc, "start")
         cseg = dict(seg)         # 원본 속성 상속 — text만 chunk로 교체
         cseg["text"] = item["text"]
-        applied_seed = _seed_rng(seed, completed)
+        applied_seed = _seed_rng(seed, 0 if _seed_policy() == "same" else completed)
         g = _generate_segment(model, cseg, builder, proc, probe_context)
         if g["termination_reason"] == "cooperative_stop":
             _diag_save_raw(g, "cooperative-stop")
