@@ -301,6 +301,10 @@ def main():
         args.run_token = config.get("runToken", "")
         # TTS fields
         args.tts_text = config.get("ttsText", "")
+        # 서수 읽기 보정(2026-10-09) — 낭독 화면이 원문 기준으로 이미 바꿔 보낸 경우(규칙 이름)와,
+        # Qwen 이 아닌 엔진으로 갈 때 쓸 바꾸지 않은 글. 없으면 예전 그대로.
+        args.tts_spoken_prepared = config.get("ttsSpokenPrepared") or None
+        args.tts_text_non_qwen = config.get("ttsTextNonQwen")
         # 기본 목소리(설치된 로컬 모델). 있으면 참조 없이 읽는 길이다.
         args.tts_builtin_model = config.get("ttsBuiltinModel", "") or ""
         args.tts_speed = config.get("ttsSpeed", 1.0)
@@ -551,6 +555,14 @@ def main():
                 _code = getattr(_te, "code", None) or "INVALID_TTS_CONFIG"
                 emit("error", message="말끝 다듬기 설정이 올바르지 않습니다.", code=_code)
                 return
+            # ★바꾼 글은 Qwen 으로 갈 때만 — 다른 엔진(Qwen 이 없어 자동 선택이 넘어간 경우)은 바꾸지 않은 글을 받는다.
+            _spoken_prepared = getattr(args, "tts_spoken_prepared", None)
+            _non_qwen = getattr(args, "tts_text_non_qwen", None)
+            if _spoken_prepared and isinstance(_non_qwen, str) and not builtin_model:
+                from tts_worker import _select_job_engine
+                if _select_job_engine(args.tts_text, preferred_engine) != "qwen3":
+                    args.tts_text, _spoken_prepared = _non_qwen, None
+                    emit("stage", stage="spoken_text_fallback", reason="not_qwen")
             try:
                 _synth_out = synthesize(
                     ref_input, args.tts_text, args.output,
@@ -566,6 +578,7 @@ def main():
                     preferred_engine=preferred_engine,
                     reference_prompts=ref_prompts,
                     builtin_model=builtin_model or None,
+                    spoken_prepared=_spoken_prepared,
                     pitch=getattr(args, "tts_pitch", 0.0),
                     tail_cfg=_tail_cfg,
                     emotion_boundary_mode=_eb_mode,

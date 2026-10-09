@@ -19,6 +19,38 @@ import chunk_paths   # chunk 경로 규칙(bridge와 공용) — 결정적 경�
 import semantic_chunk_planner   # 의미 경계 분류 + 무음 예산(C2). 순수 로직(stdlib only).
 from audio_utils import emit, get_device, find_ffmpeg, patch_torchaudio
 from speech_symbols import strip_spoken_symbols   # 소리로 내지 않는 기호(화면 쪽과 같은 사례로 검사). stdlib only.
+from spoken_ordinals import spoken_ordinals, ORDINAL_RULE   # 서수 읽기 보정(화면 쪽 spokenOrdinals.ts 와 같은 사례로 검사). stdlib only.
+
+#: 부르는 쪽(낭독 화면)이 이미 원문 기준으로 서수를 바꿔 보냈다 — 이 실행에서는 다시 바꾸지 않는다(synthesize 가 정한다).
+#  ★기호 정리 뒤의 글("2에서 7번째")에서 다시 찾으면 범위의 일부를 바꾼다. 경계는 원문에서만 본다.
+_SPOKEN_PREPARED = None
+#: 이 실행에서 Qwen 에 보낸 글에서 바꾼 서수 수(기록용).
+_SPOKEN_ORDINAL_CHANGES = 0
+
+
+def _spoken_for_qwen(line_text):
+    """Qwen 에 보낼 글 — 서수 읽기 보정(1~99 '숫자+번째'만, ordinal-ko-v1). 반환 (글, 바꾼 수).
+    ★Qwen 경로에서만 부른다 — 다른 엔진은 근거가 없어 켜지 않는다. 원문(line_text)은 기록 기준으로 그대로 둔다."""
+    global _SPOKEN_ORDINAL_CHANGES
+    if _SPOKEN_PREPARED:
+        return line_text, 0
+    text, changes = spoken_ordinals(line_text)
+    _SPOKEN_ORDINAL_CHANGES += len(changes)
+    return text, len(changes)
+
+
+def _record_spoken(route):
+    """서수 보정 결과를 기록에 남긴다(규칙 이름·바꾼 수·누가 바꿨나) — 글 본문은 넣지 않는다."""
+    fields = dict(spoken_rule=ORDINAL_RULE if route == "qwen" else None,
+                  spoken_ordinal_changes=(None if _SPOKEN_PREPARED else _SPOKEN_ORDINAL_CHANGES) if route == "qwen" else 0,
+                  spoken_prepared_by_caller=_SPOKEN_PREPARED or None, spoken_route=route)
+    emit("stage", stage="spoken_text", **fields)
+    rec = _CONCAT_RECORDER
+    if rec is not None and getattr(rec, "active", False):
+        try:
+            rec.set_run_header(**fields)
+        except Exception:
+            pass               # 기록 실패가 합성을 막지 않는다
 
 # ── Emotion definitions ──
 # ⚠️ 감정 id는 UI(src/renderer/components/TTSEditor.tsx의 EMOTION_GROUPS)와 공유된다.
@@ -2988,7 +3020,9 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
                 def_source = _prompt_source_for(ref, overrides_by_path, xvo)
                 def_tr_lang, def_tr_len, def_tr_sha = _transcript_meta(ref_text)
             out_path = os.path.join(job_dir, f"segment_qwen_{i + 1:03d}.wav")
-            seg = {"index": i, "text": line_text, "ref_audio": ref, "ref_text": ref_text,
+            # ★서수 읽기 보정 — Qwen 에 보낼 글만 바꾼다. 원문은 source_text 로 함께 둔다(기록·지문 대조의 기준).
+            qwen_text, _ord_n = _spoken_for_qwen(line_text)
+            seg = {"index": i, "text": qwen_text, "source_text": line_text, "ref_audio": ref, "ref_text": ref_text,
                    "x_vector_only": xvo, "language_name": lang_name, "out_path": out_path,
                    # 태그(비민감) — bridge 가 결과·오류에 그대로 반환한다. 화자는 불투명
                    # 토큰으로만 싣는다(표시 이름은 private 기록의 몫).
@@ -3019,6 +3053,7 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
 
         # 발화 → 화자·참조 표를 기록에 올린다. chunk 행이 이 표를 보고 자기 화자를 채운다
         # (chunk 가 갈려도 같은 발화의 chunk 는 같은 화자·참조를 갖는다).
+        _record_spoken("qwen")
         if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
             try:
                 _CONCAT_RECORDER.set_speaker_map(reference_rows, labels=speaker_labels)
@@ -3961,7 +3996,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                speaker_refs=None, speaker_ref_sources=None, speaker_emotion_refs=None,
                emotion_candidate_selections=None,
                speaker_labels=None, speaker_mode="single", reference_region=None,
-               builtin_model=None):
+               builtin_model=None, spoken_prepared=None):
     """Synthesize speech. Auto-selects engine by language.
     speaker_mode: 'single' | 'multi' — 생성 방식(대본 내용이 아니다). single 이면 화자 표기가 있어도
       모든 발화를 한 명의 기본/감정 참조로 만들고 화자 참조·전용 참조·후보 선택은 개입하지 않는다.
@@ -4008,6 +4043,10 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
     import time as _time
     _t0 = _time.monotonic()
     requested_engine = preferred_engine or "auto"
+    # 서수 읽기 보정 — 실행마다 새로(이전 실행의 값이 남지 않게). spoken_prepared = 부르는 쪽이 이미 바꾼 규칙 이름(낭독).
+    global _SPOKEN_PREPARED, _SPOKEN_ORDINAL_CHANGES
+    _SPOKEN_PREPARED = spoken_prepared or None
+    _SPOKEN_ORDINAL_CHANGES = 0
 
     # 공용 마감 I2 — A 소유 파서(tts_grammar) 단일 소스로 파싱(합성 권위=Python). 인라인 감정·명시적 쉼·경계
     # 우선순위를 파서가 결정하고, 여기선 그 plan을 (parsed, boundary_gaps)로 환산만 한다(재-strip·재해석 금지).
@@ -4285,6 +4324,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         #   실행마다 새 씨앗을 뽑아 기록하고, 조각마다 씨앗+순번으로 심는다(배치 경로와 같은 방식). 낭독은 이 길을 쓰지 않는다(따로 0 고정·캐시).
         seg_seed, seg_seed_source = _pick_run_seed()
         seg_seed_used = False
+        _seg_qwen_used = False
 
         for i, (emotion_id, line_text, speaker_id) in enumerate(parsed):
             pct = 25 + int((i / len(parsed)) * 60)
@@ -4324,13 +4364,20 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             # ★소리로 내지 않는 기호를 뺀 글을 엔진에 보낸다(2026-09-30 사용자 신고 — 따옴표·별표·기호 뭉치를
             #   '에 에 에' 로 소리 냈다). 파서가 낸 글(line_text)은 그대로 둔다 — 기록·지문 대조의 기준이다.
             #   규칙은 speech_symbols 한 곳(화면 쪽 speechSymbols.ts 와 같은 사례로 검사).
-            say_text = strip_spoken_symbols(line_text)
+            #   ★서수 읽기 보정은 Qwen 지정 목소리만(근거가 Qwen 뿐) — 기호 정리 **전에** 원문에서 경계를 본다.
+            say_source = line_text
+            if isinstance(engine, QwenCustomEngine):
+                say_source, _ord_n = _spoken_for_qwen(line_text)
+                _seg_qwen_used = True
+            say_text = strip_spoken_symbols(say_source)
             if not say_text and not isinstance(engine, (PiperEngine, SupertonicEngine, QwenCustomEngine)):
                 # 기호만 있던 줄 — piper·Supertonic 은 빈 글을 짧은 쉼으로 쓴다. 다른 엔진은 빈 글을
                 # 받아 본 적이 없다(이어 붙이기는 빈 조각을 거절한다) — 그 엔진들만 예전처럼 원문을 보낸다.
                 say_text = line_text
             engine.synthesize_segment(say_text, ref, emotion_id, speed, seg_path)
             segment_paths.append(seg_path)
+
+        _record_spoken("qwen" if _seg_qwen_used else "other")
 
         # Concatenate
         emit("progress", percent=88, message="문장 이어붙이기 중...")

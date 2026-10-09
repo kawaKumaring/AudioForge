@@ -20,7 +20,8 @@ import type {
 } from '../shared/referenceLibraryApi'
 
 /** 낭독 관측 — 본체 단계 길이(ms, 본체 단조 시계). 동작은 읽지 않는다. */
-type SpeakTraceReply = { cached?: boolean; shared?: boolean; waitMs?: number; makeMs?: number; totalMs?: number; modelOpened?: boolean | null; engine?: string }
+type SpeakTraceReply = { cached?: boolean; shared?: boolean; waitMs?: number; makeMs?: number; totalMs?: number; modelOpened?: boolean | null; engine?: string
+  spoken?: { requested: { rule: string | null; ordinalChanges: number } | null; madeWith: { rule: string | null; ordinalChanges: number; usedText: 'spoken' | 'plain'; engine?: string; spokenSha256: string; madeAt: string } | null } }
 
 const api = {
   audio: {
@@ -289,8 +290,9 @@ const api = {
   reader: {
     speak: (text: string, voice: { kind: 'builtin' | 'reference'; path: string; engineId?: string },
       voiceKey: string, parts?: Array<{ weight: number; strong: boolean }>,
-      segments?: Array<{ text: string; emotion: string }>, epoch?: string): Promise<{ data?: { path: string; cached: boolean; timing?: Array<[number, number]>; trace?: SpeakTraceReply }; error?: string; trace?: SpeakTraceReply; superseded?: 'queued' | 'running' }> =>
-      ipcRenderer.invoke('reader:speak', text, voice, voiceKey, parts, segments, epoch),
+      segments?: Array<{ text: string; emotion: string }>, epoch?: string,
+      spoken?: { rule: string | null; ordinalChanges: number; plainSay?: string }): Promise<{ data?: { path: string; cached: boolean; timing?: Array<[number, number]>; trace?: SpeakTraceReply }; error?: string; trace?: SpeakTraceReply; superseded?: 'queued' | 'running' }> =>
+      ipcRenderer.invoke('reader:speak', text, voice, voiceKey, parts, segments, epoch, spoken),
     /** 낭독 세대를 올린다 — 옛 세대 요청은 시작 전에 버리고, 돌고 있으면 멈출 수 있는 것만 멈춘다(2026-10-03). */
     supersede: (epoch: string, why?: string): Promise<{ data?: { running: boolean; stopRequested: boolean; cancellable: boolean | null }; error?: string }> =>
       ipcRenderer.invoke('reader:supersede', epoch, why),

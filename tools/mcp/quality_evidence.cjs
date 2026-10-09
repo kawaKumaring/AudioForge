@@ -66,10 +66,10 @@ async function call(op,a,d){
   const clip=await d.call('audio_quality_clip',a),plot=await d.call('audio_quality_plot',a)
   const intersects=x=>Number.isFinite(x.start)&&Number.isFinite(x.end)&&x.start<clip.end&&x.end>clip.start
   const all=r.transcript.filter(intersects),signals=r.signals.filter(x=>x.kind==='channel'||intersects(x))
-  const data={reportId:a.reportId,source:r.source,window:[clip.start,clip.end],clip,transcript:all.slice(0,20),transcriptTotal:all.length,signals:signals.slice(0,20),signalsTotal:signals.length,asr:r.identity.asr,provenanceTool:'audio_quality_read / provenance',fullTranscriptTool:'audio_quality_read / transcript',plot:JSON.parse(plot.content[0].text),qualityVerdict:'미판정',note:'음원 사본 제공은 실제 청취를 뜻하지 않음. 전체 조회는 페이지 도구 사용.'}
+  const data={reportId:a.reportId,source:r.source,window:[clip.start,clip.end],clip,transcript:all.slice(0,20),transcriptTotal:all.length,signals:signals.slice(0,20),signalsTotal:signals.length,asr:r.identity.asr,provenanceTool:'audio_quality_read / provenance',fullTranscriptTool:'audio_quality_read / transcript',plot:JSON.parse(plot.content[0].text),inspectionCode:d.inspectionCode,qualityVerdict:'미판정',note:'음원 사본 제공은 실제 청취를 뜻하지 않음. 전체 조회는 페이지 도구 사용.'}
   const file=path.join(path.dirname(clip.path),'evidence.json');fs.writeFileSync(file,JSON.stringify(data,null,2))
   if(!d.current(r))throw Error('근거 묶음 생성 중 원본 변경')
-  return{content:[{type:'text',text:JSON.stringify({...data,bundlePath:file})},...plot.content.filter(x=>x.type==='image')]}
+  return{content:[{type:'text',text:JSON.stringify({...data,bundlePath:file,transportOnly:['bundlePath','transportOnly']})},...plot.content.filter(x=>x.type==='image')]}
  }
  if(op==='review'){
   if(a.action==='list')return{source:r.source,sourceCurrent:d.current(r),...d.paged(reviews(d,r),a)}

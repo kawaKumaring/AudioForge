@@ -36,8 +36,9 @@ const paged=(items,a)=>{const offset=Math.max(0,Math.floor(Number(a.offset)||0))
 async function call(name,a={}){
  const op=name.replace('audio_quality_','')
  if(EVIDENCE.tools.some(t=>t.name===name)){
-  const result=await EVIDENCE.call(op,a,{OUT,load,checked,current,hash,paged,worker,call})
+  // 검사 코드 해시는 호출 전에 한 번 계산해 근거 묶음 저장본(evidence.json)과 응답에 같은 값으로 넣는다.
   const inspectionCode={text:hash(path.join(__dirname,'quality_text.py')),evidence:hash(path.join(__dirname,'quality_evidence.cjs')),worker:hash(path.join(__dirname,'quality_worker.py'))}
+  const result=await EVIDENCE.call(op,a,{OUT,load,checked,current,hash,paged,worker,call,inspectionCode})
   if(result.content){const text=result.content.find(x=>x.type==='text');text.text=JSON.stringify({...JSON.parse(text.text),inspectionCode});return result}
   return{...result,inspectionCode}
  }

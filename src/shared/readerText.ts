@@ -1,4 +1,5 @@
 import { stripSpokenSymbols } from './speechSymbols.ts'
+import { applyOrdinals, findOrdinals, type OrdinalChange } from './spokenOrdinals.ts'
 /**
  * 낭독 — **보이는 글과 읽는 글을 나누는 규칙**, 그리고 낭독 설정.
  *
@@ -122,6 +123,9 @@ export function speakableText(text: string, prefs: Pick<ReaderPrefs, 'skipHanjaI
   return stripSpokenSymbols(prefs.skipHanjaInParens ? text.replace(HANJA_IN_PARENS, '') : text)
 }
 
+/** 소리 글 만들기 선택 — 서수 읽기 보정은 **부르는 쪽이 Qwen 목소리일 때만** 켠다(spokenOrdinals.ts). */
+export interface PlanOptions extends Pick<ReaderPrefs, 'skipHanjaInParens'> { ordinals?: boolean }
+
 /** 구절 하나 — 보이는 글(덩이 안 자리)과 그 구절을 소리로 읽는 글. */
 export interface ReadingPart {
   /** 덩이 글 안의 시작·끝(끝은 포함하지 않는다). */
@@ -144,7 +148,11 @@ const CLOSERS = '"”’\'」』)）】›»'
  * ★괄호 안의 쉼표에서는 자르지 않는다 — `(學校, 學生)` 을 가르면 괄호 속 한자 빼기가 알아보지 못한다.
  * ★읽을 것이 없는 구절(기호만)은 무게 0 — 소리 없이 지나간다.
  */
-export function readingPlan(text: string, prefs: Pick<ReaderPrefs, 'skipHanjaInParens'>): { say: string; parts: ReadingPart[] } {
+export function readingPlan(text: string, prefs: PlanOptions): { say: string; parts: ReadingPart[]; ordinalChanges: number } {
+  // ★서수 경계는 **덩이 전체 원문**에서 찾는다(구절로 자른 뒤에는 "1.7번째" 의 7 이 구절 맨 앞이 되어 경계를 잃는다).
+  //   바꾼 글은 구절의 소리 글(spoken)에만 — 구절의 원문 자리(from/to)는 그대로라 따라가기·감정 구간이 밀리지 않는다.
+  const ordinals: OrdinalChange[] = prefs.ordinals ? findOrdinals(text) : []
+  let ordinalChanges = 0
   const cuts: Array<{ at: number; strong: boolean }> = []
   let depth = 0
   for (let i = 0; i < text.length; i++) {
@@ -170,8 +178,10 @@ export function readingPlan(text: string, prefs: Pick<ReaderPrefs, 'skipHanjaInP
     const lead = raw.length - raw.trimStart().length
     const body = raw.trim()
     if (body) {
-      const spoken = speakableText(body, prefs)
       const start = from + lead
+      let source = body
+      if (ordinals.length) { const r = applyOrdinals(text, start, start + body.length, ordinals); source = r.text; ordinalChanges += r.applied }
+      const spoken = speakableText(source, prefs)
       if (spoken) {
         // 사이의 줄바꿈 수를 그대로 — 빈 줄(문단 사이)은 합성 쪽에서 긴 쉼이 된다(예전 글과 같게).
         const breaks = text.slice(spokenTo, start).split('\n').length - 1
@@ -184,5 +194,5 @@ export function readingPlan(text: string, prefs: Pick<ReaderPrefs, 'skipHanjaInP
   }
   for (const c of cuts) if (c.at > from) push(c.at, c.strong)
   if (from < text.length) push(text.length, true)
-  return { say, parts }
+  return { say, parts, ordinalChanges }
 }

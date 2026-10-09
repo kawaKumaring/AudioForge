@@ -62,6 +62,35 @@ function readerDir(): string {
 }
 
 /** 쌓인 것이 상한을 넘으면 **오래 안 쓴 것부터** 지운다. */
+/**
+ * 서수 읽기 보정(2026-10-09) — 화면이 이 요청의 소리 글을 어떤 규칙으로 만들었나.
+ * plainSay = 규칙을 적용하지 않은 소리 글(참조 목소리가 Qwen 이 아닌 엔진으로 넘어갈 때만 쓴다).
+ */
+export interface SpokenRequest { rule: string | null; ordinalChanges: number; plainSay?: string }
+/** 만든 덩이 옆 기록 — **그 소리를 만들 당시**의 규칙·실제로 보낸 글의 종류. 쌓아 둔 것을 쓸 때 지금 요청과 나란히 돌려준다. */
+export interface SpokenRecord { rule: string | null; ordinalChanges: number; usedText: 'spoken' | 'plain'; engine?: string; spokenSha256: string; madeAt: string }
+
+function spokenOf(raw: unknown): SpokenRequest | null {
+  if (!raw || typeof raw !== 'object') return null
+  const o = raw as Record<string, unknown>
+  const rule = typeof o.rule === 'string' && o.rule ? o.rule : null
+  const n = Number(o.ordinalChanges)
+  return { rule, ordinalChanges: Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0, ...(typeof o.plainSay === 'string' ? { plainSay: o.plainSay } : {}) }
+}
+function spokenRecordPath(wav: string): string { return wav.replace(/\.wav$/i, '') + '.spoken.json' }
+function readSpokenRecord(wav: string): SpokenRecord | null {
+  try { return JSON.parse(readFileSync(spokenRecordPath(wav), 'utf-8')) as SpokenRecord } catch { return null }
+}
+/**
+ * 쌓아 둔 소리를 이 요청에 써도 되나 — 규칙을 켠 요청인데 그 소리가 **바꾸지 않은 글로** 만들어졌으면(Qwen 이 없어 넘어간 때) 쓰지 않는다.
+ * 이름(지문)은 바꾼 글로 붙으므로 그 밖의 조건(목소리·모델·설정·글)은 이름이 이미 가른다.
+ */
+function cachedUsable(wav: string, spoken: SpokenRequest | null): boolean {
+  if (!existsSync(wav)) return false
+  if (!spoken?.rule) return true
+  return readSpokenRecord(wav)?.usedText !== 'plain'
+}
+
 function trimCache(): void {
   const dir = readerDir()
   let files: { p: string; size: number; at: number }[] = []
@@ -77,7 +106,7 @@ function trimCache(): void {
   files.sort((a, b) => a.at - b.at)
   for (const f of files) {
     if (total <= CACHE_LIMIT) break
-    try { rmSync(f.p, { force: true }); total -= f.size } catch { /* 다음에 */ }
+    try { rmSync(f.p, { force: true }); rmSync(spokenRecordPath(f.p), { force: true }); total -= f.size } catch { /* 다음에 */ }
   }
 }
 
@@ -286,13 +315,15 @@ class SupersededError extends Error {
 
 /** 관측 전용 — 줄에서 실제로 시작한 때·끝난 때(본체 단조 시계)와 모델을 이번에 열었는가. 동작은 이것을 읽지 않는다. */
 /** 응답에 싣는 관측 — 본체 단계 길이(ms). */
-type SpeakTrace = { cached?: boolean; shared?: boolean; waitMs?: number; makeMs?: number; totalMs?: number; modelOpened?: boolean | null; engine?: string }
-export interface ChunkTrace { startedAt?: number; endedAt?: number; modelOpened?: boolean | null; engine?: string; madeWhileWaiting?: boolean }
+/** spoken.requested = 이 요청의 규칙 · spoken.madeWith = 돌려준 소리를 **만들 당시** 기록(옛 소리는 기록이 없어 null). */
+type SpeakTrace = { cached?: boolean; shared?: boolean; waitMs?: number; makeMs?: number; totalMs?: number; modelOpened?: boolean | null; engine?: string;
+  spoken?: { requested: { rule: string | null; ordinalChanges: number } | null; madeWith: SpokenRecord | null } }
+export interface ChunkTrace { startedAt?: number; endedAt?: number; modelOpened?: boolean | null; engine?: string; madeWhileWaiting?: boolean; spokenFallback?: boolean }
 
-async function makeChunk(body: string, v: ReaderVoice, out: string, segments: EmotionSegment[] | null = null, info: ChunkTrace = {}, ctl: ReaderCtl = { epoch: undefined }): Promise<string> {
+async function makeChunk(body: string, v: ReaderVoice, out: string, segments: EmotionSegment[] | null = null, info: ChunkTrace = {}, ctl: ReaderCtl = { epoch: undefined }, spoken: SpokenRequest | null = null): Promise<string> {
   info.startedAt = performance.now()
   // 차례를 기다리는 사이 같은 글·같은 목소리가 만들어졌을 수 있다.
-  if (existsSync(out)) { info.madeWhileWaiting = true; info.endedAt = performance.now(); return out }
+  if (cachedUsable(out, spoken)) { info.madeWhileWaiting = true; info.endedAt = performance.now(); return out }
   // ★다른 화면의 작업이 돌면 비킨다. 판정은 `synthesisGate` 한 곳이 갖는다.
   const busy = synthesisBusy('낭독')
   if (busy) throw new Error(busy)
@@ -302,7 +333,11 @@ async function makeChunk(body: string, v: ReaderVoice, out: string, segments: Em
   const runDir = join(readerDir(), 'work', `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
   mkdirSync(runDir, { recursive: true })
   const cfgPath = join(runDir, 'chunk.json')
-  writeFileSync(cfgPath, JSON.stringify(readerRunConfig(body, v, runDir)), 'utf-8')
+  // ★참조 목소리에 규칙을 켠 요청이면 — 파이썬에 '이미 원문 기준으로 바꿨다'(다시 바꾸지 않게)와, Qwen 이 아닌 엔진으로 갈 때 쓸 바꾸지 않은 글을 함께 준다.
+  const spokenCfg = v.kind === 'reference' && spoken?.rule
+    ? { ttsSpokenPrepared: spoken.rule, ...(spoken.ordinalChanges > 0 && typeof spoken.plainSay === 'string' ? { ttsTextNonQwen: spoken.plainSay } : {}) }
+    : {}
+  writeFileSync(cfgPath, JSON.stringify({ ...readerRunConfig(body, v, runDir), ...spokenCfg }), 'utf-8')
   // 협조적 정지 — 이 덩이 전용 파일(세대가 지나면 reader:supersede 가 만든다). 기본 목소리(CPU)는 멈출 수 없다.
   ctl.stopFile = join(runDir, 'stop.flag')
   ctl.cancellable = !residentBuiltin(v)
@@ -370,6 +405,8 @@ async function makeChunk(body: string, v: ReaderVoice, out: string, segments: Em
       const viaResident = /띄워 둔 Qwen 으로 만듭니다/.test(said)
       info.engine = viaResident ? 'qwen-resident-bridge' : 'separate-process'
       info.modelOpened = viaResident ? /방금 엶/.test(said) : true
+      // 서수 보정 — Qwen 이 아닌 엔진으로 넘어가 바꾸지 않은 글로 만들었나(파이썬이 알린다).
+      info.spokenFallback = lines.some((l) => l.type === 'stage' && l.stage === 'spoken_text_fallback')
       const made = madeTrack(lines)
       if (!made || !existsSync(made)) throw new Error(pythonReason(lines) || '이 부분을 소리로 만들지 못했습니다')
       wav = made
@@ -378,6 +415,17 @@ async function makeChunk(body: string, v: ReaderVoice, out: string, segments: Em
     if (ctl.superseded && ctl.cancellable) throw new SupersededError('running')
     // 지문 이름으로 옮겨 둔다 — 다음에 같은 글·같은 목소리면 곧바로 쓴다.
     writeFileSync(out, readFileSync(wav))
+    // ★만든 당시의 기록을 소리 옆에 — 나중에 쌓아 둔 것을 쓸 때 '지금 요청의 규칙' 과 섞지 않는다. 글 본문은 넣지 않는다(지문만).
+    try {
+      const rec: SpokenRecord = {
+        rule: info.spokenFallback ? null : (spoken?.rule ?? null),
+        ordinalChanges: info.spokenFallback ? 0 : (spoken?.ordinalChanges ?? 0),
+        usedText: info.spokenFallback ? 'plain' : 'spoken', engine: info.engine,
+        spokenSha256: createHash('sha256').update(info.spokenFallback && spoken?.plainSay != null ? spoken.plainSay : body).digest('hex'),
+        madeAt: new Date().toISOString(),
+      }
+      writeFileSync(spokenRecordPath(out), JSON.stringify(rec), 'utf-8')
+    } catch { /* 기록 실패가 낭독을 막지 않는다 */ }
     info.endedAt = performance.now()
     trimCache()
     // 동작 기록 — 글 내용 없이 글자 수·걸린 시간만. 낭독이 얼마나 빠른지 사용자가 볼 수 있다.
@@ -523,13 +571,15 @@ export function registerReaderIpc(): void {
    */
   ipcMain.handle('reader:speak', async (
     _e, text: unknown, voice: unknown, voiceKey: unknown, rawParts?: unknown, rawSegments?: unknown,
-    epoch?: unknown,
+    epoch?: unknown, rawSpoken?: unknown,
   ): Promise<Reply<{ path: string; cached: boolean; timing: Array<[number, number]>; trace?: SpeakTrace }> & { trace?: SpeakTrace; superseded?: 'queued' | 'running' }> => {
     // 관측 — 요청이 본체에 닿은 때부터 줄 대기·생성 길이(본체 단조 시계, ms). 응답에 함께 싣는다(화면이 기록).
     const asked = performance.now()
     const info: ChunkTrace = {}
-    const traceOf = (extra: { cached?: boolean; shared?: boolean } = {}) => ({
-      ...extra,
+    const spoken = spokenOf(rawSpoken)
+    const spokenTrace = (wav?: string) => ({ requested: spoken ? { rule: spoken.rule, ordinalChanges: spoken.ordinalChanges } : null, madeWith: wav ? readSpokenRecord(wav) : null })
+    const traceOf = (extra: { cached?: boolean; shared?: boolean } = {}, wav?: string) => ({
+      ...extra, spoken: spokenTrace(wav),
       waitMs: info.startedAt != null ? Math.round(info.startedAt - asked) : undefined,
       makeMs: info.startedAt != null && info.endedAt != null ? Math.round(info.endedAt - info.startedAt) : undefined,
       modelOpened: info.modelOpened ?? null, engine: info.engine,
@@ -551,14 +601,14 @@ export function registerReaderIpc(): void {
       const out = join(readerDir(), segments
         ? chunkName(body + '\u0000' + JSON.stringify(segments.map((s) => [s.text, s.emotion])), key + '|감정')
         : chunkName(body, key + refTag))
-      if (existsSync(out)) return ok({ path: out, cached: true, timing: timingOf(out, parts), trace: traceOf({ cached: true }) })
+      if (cachedUsable(out, spoken)) return ok({ path: out, cached: true, timing: timingOf(out, parts), trace: traceOf({ cached: true }, out) })
 
       // 세대 — 화면이 보낸 표(없으면 세대에 묶이지 않음). 지금 표가 아니면 줄에 세우지도 않는다.
       const ep = typeof epoch === 'string' && epoch ? epoch : undefined
       if (isStale(ep)) throw new SupersededError('queued')
       // 같은 글·같은 목소리가 이미 가 있으면 함께 받는다 — 단 **멈추라고 한 것**은 함께 받지 않는다(새로 만든다).
       const already = inFlight.get(out)
-      if (already && !already.ctl.superseded) { const p = await already.run; return ok({ path: p, cached: false, timing: timingOf(p, parts), trace: { ...traceOf({ shared: true }), totalMs: Math.round(performance.now() - asked) } }) }
+      if (already && !already.ctl.superseded) { const p = await already.run; return ok({ path: p, cached: false, timing: timingOf(p, parts), trace: { ...traceOf({ shared: true }, p), totalMs: Math.round(performance.now() - asked) } }) }
 
       // ★한 번에 하나 — 줄에 세운다. 앞 작업이 끝나야 다음이 돈다. ★차례가 왔을 때 세대가 지났으면 시작하지 않고 버린다.
       const ctl: ReaderCtl = { epoch: ep }
@@ -566,13 +616,13 @@ export function registerReaderIpc(): void {
       const run = inLane(() => {
         queuedSpeaks.delete(ctl)
         if (isStale(ctl.epoch)) { ctl.superseded = true; throw new SupersededError('queued') }
-        return makeChunk(body, v, out, segments, info, ctl)
+        return makeChunk(body, v, out, segments, info, ctl, spoken)
       })
       const entry = { run, ctl }
       inFlight.set(out, entry)
       void run.finally(() => { if (inFlight.get(out) === entry) inFlight.delete(out) }).catch(() => { /* 아래에서 받는다 */ })
       const made = await run
-      return ok({ path: made, cached: !!info.madeWhileWaiting, timing: timingOf(made, parts), trace: traceOf({ cached: !!info.madeWhileWaiting }) })
+      return ok({ path: made, cached: !!info.madeWhileWaiting, timing: timingOf(made, parts), trace: traceOf({ cached: !!info.madeWhileWaiting }, made) })
     } catch (e) {
       // 지난 세대 — 화면이 오류로 보이지 않게 따로 표시한다(그 자리가 아직 필요하면 화면이 다시 청한다).
       if (e instanceof SupersededError) return { error: e.message, superseded: e.phase, trace: traceOf() }
