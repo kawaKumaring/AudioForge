@@ -115,3 +115,4 @@ append 필수: start/end, category(omission/pronunciation/repetition/noise/join/
 - compare.textRelation: same_text · same_source_different_sent(원문 같고 전달문 다름, 서수 보정) · declared_text_difference(원문 다름 + intendedDifference, 실제 차이와 나란히) · undeclared_text_difference(정상 아님) · unverified_basis(한쪽이라도 출처 미확인 — 사유를 적어도 정상 아님). normal 이 false 면 정상 비교가 아니다.
 - crosscheck 는 같은 대사 규칙 그대로, 양쪽 출처를 함께 보인다.
 - 검사: test/e2e/audio-quality-source.cjs(합성 사인파 + 가짜 실행 기록 폴더).
+- (보완) 판정 넷: runVerified · rawTextState · sentState(unrecorded/verified/invalid, sentIssues) · windowAlignment(whole/unaligned). 누락 확정은 출처·원문 확인 + 전체 구간 + 기대 대사일 때만이고, 아니면 review 가 미확정으로 보존(requestedVerdict·verdictHeldBecause). compare 는 rawMatch·sentMatch 를 따로 보이며, 전달문을 확인 못 하면 same_source_sent_unconfirmed.

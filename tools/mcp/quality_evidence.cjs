@@ -48,7 +48,7 @@ function reviews(d,r){const dir=reviewsDir(d,r);return fs.existsSync(dir)?fs.rea
 async function call(op,a,d){
  const r=op==='review'&&a.action==='list'?d.load(a.reportId):d.checked(a.reportId)
  if(op==='sentences')return{reportId:a.reportId,...d.paged(await d.worker({op:'sentences',report:r}),a)}
- if(op==='crosscheck'){const other=d.checked(a.otherReportId);const ts=x=>{const s=x.identity.textSource;return s?{kind:s.kind,verified:!!s.verified,runId:s.runId??null,rawSha256:s.rawSha256??null}:{kind:'unverified',verified:false}};return{reportIds:[a.reportId,a.otherReportId],textSources:[ts(r),ts(other)],...d.paged(await d.worker({op:'crosscheck',left:r,right:other}),a)}}
+ if(op==='crosscheck'){const other=d.checked(a.otherReportId);const ts=x=>require('./quality_source.cjs').brief(x.identity.textSource)||{kind:'unverified',verified:false};return{reportIds:[a.reportId,a.otherReportId],textSources:[ts(r),ts(other)],...d.paged(await d.worker({op:'crosscheck',left:r,right:other}),a)}}
  if(op==='context'){
   const ref=a.referenceReportId?d.checked(a.referenceReportId):null
   return{reportId:a.reportId,...d.paged(context(r).map(x=>({...x,
@@ -75,14 +75,15 @@ async function call(op,a,d){
   if(a.action==='list')return{source:r.source,sourceCurrent:d.current(r),...d.paged(reviews(d,r),a)}
   if(a.action!=='append')throw Error('action은 append/list')
   if(!Number.isFinite(a.start)||!Number.isFinite(a.end)||a.start<r.summary.window[0]||a.end>r.summary.window[1]||a.end<=a.start)throw Error('판정은 분석 범위 안이어야 합니다.')
-  // ★누락 확정은 대사 출처가 실행 기록으로 확인된 보고서에서만(2026-10-09) — 다른 실행의 글을 기대 대사로 써 '누락' 을 잘못 확정한 일이 있었다.
-  if(a.category==='omission'&&a.verdict==='confirmed'&&!(r.identity.textSource&&r.identity.textSource.verified))throw Error('대사 출처 미확인 — 실행 기록으로 확인된 보고서에서만 누락을 확정할 수 있습니다.')
+  // ★누락 '확정' 은 대사 근거가 확인된 보고서에서만(2026-10-09) — 다른 실행의 글을 기대 대사로 써 '누락' 을 잘못 확정한 일이 있었다.
+  //   근거가 부족하면 거부하지 않고 **미확정(uncertain)으로 보존**한다 — 사람의 청취 의견은 남기되 확정 근거로 쓰지 않는다.
+  const omissionBlock=a.category==='omission'&&a.verdict==='confirmed'?require('./quality_source.cjs').omissionBlocker(r.identity.textSource):null
   if(!['omission','pronunciation','repetition','noise','join','speaker','naturalness','other'].includes(a.category)||!['confirmed','not_observed','uncertain'].includes(a.verdict)||!['user_report','machine_observation'].includes(a.basis))throw Error('잘못된 판정 종류')
   for(const k of ['observer','note'])if(typeof a[k]!=='string'||!a[k].trim()||a[k].length>2000)throw Error(k+'는 1~2000자')
   if(a.basis==='user_report'&&(typeof a.userStatement!=='string'||!a.userStatement.trim()||a.userStatement.length>2000))throw Error('사용자가 전달한 청취 원문 필요')
   if(a.basis==='machine_observation'&&a.verdict!=='uncertain')throw Error('기계 관측으로 청취 합격/결함을 확정하지 않습니다.')
   if(a.replaces&&!reviews(d,r).some(x=>x.id===a.replaces))throw Error('같은 음원의 기존 판정만 정정할 수 있습니다.')
-  const entry={id:crypto.randomUUID(),created:new Date().toISOString(),reportId:a.reportId,source:r.source,start:a.start,end:a.end,category:a.category,verdict:a.verdict,basis:a.basis,observer:a.observer,note:a.note,userStatement:a.basis==='user_report'?a.userStatement:null,replaces:a.replaces||null,verification:'호출자가 전달한 판정. 도구가 청취 행위/발언 출처를 인증하지 않음.'}
+  const entry={id:crypto.randomUUID(),created:new Date().toISOString(),reportId:a.reportId,source:r.source,start:a.start,end:a.end,category:a.category,verdict:omissionBlock?'uncertain':a.verdict,...(omissionBlock?{requestedVerdict:a.verdict,verdictHeldBecause:omissionBlock}:{}),basis:a.basis,observer:a.observer,note:a.note,userStatement:a.basis==='user_report'?a.userStatement:null,replaces:a.replaces||null,verification:'호출자가 전달한 판정. 도구가 청취 행위/발언 출처를 인증하지 않음.'}
   const dir=reviewsDir(d,r);fs.mkdirSync(dir,{recursive:true});fs.writeFileSync(path.join(dir,entry.id+'.json'),JSON.stringify(entry,null,2),{flag:'wx'});return entry
  }
  throw Error('없는 확장 도구')

@@ -3733,7 +3733,8 @@ def _run_record_normalized(text):
 
 
 def _chunk_source_ranges(ordered_entries, seg_texts):
-    """조각이 자기 발화 글(엔진에 보낸 발화 글)의 어디인지 — 앞에서부터 차례로 찾는다.
+    """조각이 자기 발화 글(서수 보정 등을 거친 뒤 엔진에 보낸 발화 글)의 어디인지 — 앞에서부터 차례로 찾는다.
+    ★사용자 원문 위치가 아니다(원문 위치까지의 연결은 아직 없다).
     ★찾지 못하면 None(추정해 채우지 않는다). 분할은 이어 붙이면 발화 글과 같다(text_segmenter 단언)."""
     out, cursor = [], {}
     for e in ordered_entries:

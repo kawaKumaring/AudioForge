@@ -61,8 +61,27 @@
 
 ## 구현(2026-10-09, 관리자 승인 — 통합 검증 전)
 - A. 검수 대사 출처 연결: tools/mcp/quality_source.cjs 새로, quality.cjs(analyze runId·출처 · compare intendedDifference·textRelation), quality_evidence.cjs(crosscheck 출처 표시 · 출처 미확인 보고서의 누락 확정 거부). 사용법은 doc/mcp-audio-quality.md '대사 출처 연결'.
-- B. 장문 실행 기록: 조각마다 발화 글 안 범위(source_char_range, 기준 segment_spoken_text·발화 글 지문), 실제 심은 seed(applied_seed — 브리지가 돌려준 값, 없으면 비움), 엔진이 돌려준 조각 음원 지문(returned_wav_sha256), x-vector 여부·감정. 생성 설정(상한·반복·종료·토큰)은 기존 기록 그대로.
+- B. 장문 실행 기록: 조각마다 **보정 후 발화문 안의 위치**(source_char_range, 기준 segment_spoken_text — 서수 보정 등을 거쳐 엔진에 보낸 발화 글 기준이며 **사용자 원문 위치가 아니다**. 원문 위치까지의 연결은 아직 없다)와 그 발화 글 지문, 실제 심은 seed(applied_seed — 브리지가 돌려준 값, 없으면 비움), 엔진이 돌려준 조각 음원 지문(returned_wav_sha256), x-vector 여부·감정. 생성 설정(상한·반복·종료·토큰)은 기존 기록 그대로.
   - 이음(joins)은 진단 WAV 와 무관하게 늘 남긴다 — 실제 배치 행의 표본(left_end/right_start)·앱 간격·겹침(앞 끝이 뒤 시작을 넘은 만큼). placement_check = 마지막 조각 끝 표본과 결과 파일 표본 수(판정은 하지 않음). 배치 기록이 없으면 이음을 만들지 않는다.
   - 과거 기록에 없는 값은 채우지 않는다(예: 9/25 장문의 조각별 seed).
 - 장문 청취 준비: _local/listening/longform-joins-2026-10-09/장문이음듣기.html — 원본 그대로(새 합성·보정 없음), 29.76·66.16초 앞 5초/이음/앞뒤 5초 반복, 전체 재생, 경로·지문 표시.
 - 준비한 검사(미실행): test/e2e/audio-quality-source.cjs, python/test_run_record_longform.py.
+
+## 코드 검수 보완(2026-10-09 — 통합 검증 전)
+1. 판정을 넷으로 분리(tools/mcp/quality_source.cjs): 실행 출처(runVerified) · 원문 저장 지문(rawTextState: verified / stored_sha_missing) · 전달문 근거(sentState: unrecorded / verified / invalid + sentIssues) · 구간 대응(windowAlignment: whole / unaligned).
+   - 구간 분석은 대사가 원문에 들어 있어도 '대응 미확인' — 그 시간대의 대사라고 확정하지 않는다.
+   - 누락 '확정' 은 출처·원문 확인 + 전체 구간 + 기대 대사가 있을 때만. 아니면 review 가 거부하지 않고 **미확정(uncertain)으로 보존**(requestedVerdict·verdictHeldBecause 함께).
+2. compare: rawMatch(원문)와 sentMatch(전달문: 같음/다름/null=한쪽이라도 기록 없음·근거 어긋남)를 따로. 전달문을 확인하지 못하면 same_source_sent_unconfirmed — '같은 전달문' 이라 하지 않는다.
+3. 저장된 근거만으로 확인: 원문은 header.raw_text_sha256 와 manifest artifacts 의 파일 지문으로(저장 지문이 없으면 확인 불가 — 새로 계산한 지문으로 대신하지 않음). 전달문은 sent.private.json(파일 지문·문장별 저장 지문·순서) 또는 chunks/*.private.json(manifest chunks[] 대비 누락·중복·순서, 파일 지문, 조각별 저장 지문)으로 사유를 나눠 표시.
+4. 글자 범위는 '보정 후 발화문 내부 위치' 로 문서·기록 이름(source_char_basis=segment_spoken_text)에 명시. 원문 위치 연결은 남은 과제.
+
+### 최종 통합 검증 항목(미실행)
+- test/e2e/audio-quality-source.cjs: 출처·원문·전달문·구간·비교의 정상과 반대 사례 — 원문 저장 지문 없음, 원문 손상, 전달문 기록 없음, 전달문 지문 어긋남, 조각 파일 누락·중복·순서 이상·목록 밖·파일 지문 어긋남, 구간 대응 미확인·기대 대사 없음·출처 미확인·원문 확인 불가에서 누락 확정 보류(의견 보존), 한쪽 전달문 기록 없음/어긋남 비교, 근거 미확인 쪽 + 사유 비교.
+- python/test_run_record_longform.py: 조각 범위(보정 후 발화문 기준)·없는 값 비움·실제 배치 기준 이음(간격·겹침)·결과 길이 대조.
+- 영향: test/e2e/audio-quality-mcp.cjs · audio-quality-evidence.cjs · python/test_run_bundle_always.py · test_chunk_publish.py.
+
+### 남은 제한
+- 구간의 시간·대사 대응(강제 정렬)은 없다 — 구간 분석으로는 누락을 확정할 수 없다.
+- 조각 범위는 보정 후 발화문 기준 — 사용자 원문 위치로 잇지 않았다.
+- 실행 기록 찾기는 기록 폴더의 manifest 를 매번 모두 읽는다(색인 없음).
+- 예전 보고서(대사 출처 정보 없음)는 출처 미확인으로 다뤄진다. 9/25 장문의 조각별 seed 처럼 과거 기록에 없는 값은 비어 있다.
