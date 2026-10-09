@@ -21,8 +21,12 @@ function context(r){
   const bound=doc.sourceSha256===r.source.sha256||doc.out_sha256===r.source.sha256||!!match
   let reference=doc.reference||doc.conditions?.reference
   const clean=v=>typeof v==='string'?v.slice(0,1000):null
+  // 기록 값은 원래 타입 그대로(숫자 seed 42 를 null 로 지우지 않는다). 객체·배열·NaN 등 표현 불가 값만 null.
+  const scalar=v=>typeof v==='string'?v.slice(0,1000):(typeof v==='number'&&Number.isFinite(v))||typeof v==='boolean'?v:null
+  // 값이 없음(absent)·명시적 null·기록된 타입을 구분한다.
+  const recorded=(o,k)=>!o||typeof o!=='object'||!Object.prototype.hasOwnProperty.call(o,k)?'absent':o[k]===null?'null':Array.isArray(o[k])?'array':typeof o[k]
   entries.push({kind:'record',recordPath:file,recordSha256:recordHash,sourceLinked:bound,
-   engine:clean(doc.conditions?.engine),seed:clean(doc.conditions?.seed),chunk:match?.chunk??null,
+   engine:clean(doc.conditions?.engine),seed:scalar(doc.conditions?.seed),seedRecorded:recorded(doc.conditions,'seed'),chunk:match?.chunk??null,
    reference:reference?{sha256:clean(reference.sha256),start:Number.isFinite(reference.start)?reference.start:null,end:Number.isFinite(reference.end)?reference.end:null,selectionReason:clean(reference.selectionReason||reference.note),audioVerified:false}:null,
    recordedChunkCount:doc.stages?.chunks??null,
    note:bound?'이 음원 해시를 명시한 기록. 기록 내용의 진실성/참조 파일 실재는 별도 확인 필요.':'이 음원과 연결 미확인. 설정/연결점의 근거로 사용 금지.'})
@@ -62,10 +66,10 @@ async function call(op,a,d){
   const clip=await d.call('audio_quality_clip',a),plot=await d.call('audio_quality_plot',a)
   const intersects=x=>Number.isFinite(x.start)&&Number.isFinite(x.end)&&x.start<clip.end&&x.end>clip.start
   const all=r.transcript.filter(intersects),signals=r.signals.filter(x=>x.kind==='channel'||intersects(x))
-  const data={reportId:a.reportId,source:r.source,window:[clip.start,clip.end],clip,transcript:all.slice(0,20),transcriptTotal:all.length,signals:signals.slice(0,20),signalsTotal:signals.length,asr:r.identity.asr,provenanceTool:'audio_quality_read / provenance',fullTranscriptTool:'audio_quality_read / transcript',qualityVerdict:'미판정',note:'음원 사본 제공은 실제 청취를 뜻하지 않음. 전체 조회는 페이지 도구 사용.'}
+  const data={reportId:a.reportId,source:r.source,window:[clip.start,clip.end],clip,transcript:all.slice(0,20),transcriptTotal:all.length,signals:signals.slice(0,20),signalsTotal:signals.length,asr:r.identity.asr,provenanceTool:'audio_quality_read / provenance',fullTranscriptTool:'audio_quality_read / transcript',plot:JSON.parse(plot.content[0].text),qualityVerdict:'미판정',note:'음원 사본 제공은 실제 청취를 뜻하지 않음. 전체 조회는 페이지 도구 사용.'}
   const file=path.join(path.dirname(clip.path),'evidence.json');fs.writeFileSync(file,JSON.stringify(data,null,2))
   if(!d.current(r))throw Error('근거 묶음 생성 중 원본 변경')
-  return{content:[{type:'text',text:JSON.stringify({...data,bundlePath:file,plot:JSON.parse(plot.content[0].text)})},...plot.content.filter(x=>x.type==='image')]}
+  return{content:[{type:'text',text:JSON.stringify({...data,bundlePath:file})},...plot.content.filter(x=>x.type==='image')]}
  }
  if(op==='review'){
   if(a.action==='list')return{source:r.source,sourceCurrent:d.current(r),...d.paged(reviews(d,r),a)}
