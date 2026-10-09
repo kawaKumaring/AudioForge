@@ -8,6 +8,8 @@
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
 import path from 'node:path'
 import { createRequire } from 'node:module'
+// 실제로 보내는 글(서수 읽기 보정 2026-10-09 — 참조 목소리는 "1번째" 를 "첫 번째" 로 보낸다). 붙든 요청을 이 글로 고른다.
+import { spokenOrdinals, ordinalContextBefore } from '../../src/shared/spokenOrdinals.ts'
 
 const root = process.cwd()
 const require = createRequire(path.join(root, 'package.json'))
@@ -43,6 +45,7 @@ function wavUrl(seconds) {
 const TEXT = Array.from({ length: 24 }, (_, i) => `${i + 1}번째 문장은 어두운 복도를 조용히 내다보는 이야기입니다.`).join(' ')
 const REF = { kind: 'reference', path: 'ref.wav', label: 'R' }
 
+const sent = (c) => spokenOrdinals(c.text, ordinalContextBefore(TEXT, c.start)).text
 let passed = 0
 const fails = []
 const ok = (v, label, extra) => {
@@ -101,16 +104,16 @@ async function scenario(okResp) {
   const chunks0 = await page.evaluate(() => window.__r.chunks.map((c) => ({ start: c.start, text: c.text })))
   // 0번을 틀고, 1번 요청을 붙든다(GPU 목소리는 앞서 둘 — 0번이 준비되면 1번을 보낸다).
   await page.evaluate(() => window.__r.start())
-  await page.waitForFunction((t) => window.__held.some((h) => h.text.startsWith(t)), chunks0[0].text.slice(0, 6))
-  await release(page, chunks0[0].text.slice(0, 6))
-  await page.waitForFunction((t) => window.__held.some((h) => h.text.startsWith(t)), chunks0[1].text.slice(0, 6))
-  const oldOne = chunks0[1].text.slice(0, 12)
+  await page.waitForFunction((t) => window.__held.some((h) => h.text.startsWith(t)), sent(chunks0[0]).slice(0, 6))
+  await release(page, sent(chunks0[0]).slice(0, 6))
+  await page.waitForFunction((t) => window.__held.some((h) => h.text.startsWith(t)), sent(chunks0[1]).slice(0, 6))
+  const oldOne = sent(chunks0[1]).slice(0, 12)
   // 0번 덩이 안의 **둘째 문장**을 누른다 → 새 경계, 0번 = 첫 문장 · 1번 = 둘째 문장부터(옛 1번과 다른 글).
   const second = chunks0[0].start + chunks0[0].text.indexOf('2번째')
   await page.evaluate((c) => window.__r.seekToChar(c), second)
   await page.waitForFunction(() => window.__r.at === 1)
   const chunks1 = await page.evaluate(() => window.__r.chunks.map((c) => ({ start: c.start, text: c.text })))
-  const newOne = chunks1[1].text.slice(0, 12)
+  const newOne = sent(chunks1[1]).slice(0, 12)
   ok(newOne !== oldOne && chunks1[1].start === second, `[${tag}] 준비: 다시 나눈 1번은 옛 1번과 다른 글이다`, { oldOne, newOne })
   await page.waitForFunction((t) => window.__held.some((h) => h.text.startsWith(t)), newOne, { timeout: 5000 })
   ok(await page.evaluate((t) => window.__held.some((h) => h.text.startsWith(t)), oldOne), `[${tag}] 준비: 옛 1번 요청이 아직 붙들려 있다(새 요청보다 늦다)`)

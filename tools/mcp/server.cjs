@@ -18,11 +18,12 @@ const fs = require('fs')
 const path = require('path')
 
 const ROOT = path.resolve(__dirname, '..', '..')
-const SERVER_INFO = { name: 'audioforge-devtool', version: '0.2.0' }
+const SERVER_INFO = { name: 'audioforge-devtool', version: '0.4.0' }
 const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05']
 const HELPERS = fs.readFileSync(path.join(__dirname, 'domHelpers.js'), 'utf8')
 // 이 앱에 맞춘 것들(화면 지도 · 상태 · 재생 관찰 · 기다리기 · 검사 재료 · 소리 수치 · 개인정보 가드)
 const AF = require('./audioforge.cjs')
+const QUALITY = require('./quality.cjs')
 const log = (...a) => process.stderr.write('[audioforge-mcp] ' + a.join(' ') + '\n')
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 
@@ -191,6 +192,7 @@ async function resize ({ window = 'main', width, height }) {
 const WIN = { type: 'string', description: "대상 창: 'main'(기본) · 'console'(콘솔 창 — 설정에서 콘솔을 켰을 때)" }
 const TARGET = { type: 'string', description: "요소 지정: 'testid:reader-play'(data-testid — 가장 확실) · '@번호'(ui_query 의 ref) · CSS 선택자 · 보이는 글자('▶ 들어 보기')" }
 const TOOLS = [
+  ...QUALITY.tools,
   { name: 'app_start', description: 'AudioForge 를 실행한다(이미 실행 중이면 상태만). 기본은 화면 밖·포커스 없음 창이라 사용자 화면·마우스를 방해하지 않는다. 소스가 out/ 보다 새로우면 자동 빌드. 사용자 설정·작업은 임시 폴더로 격리(사용자 데이터 불변). OS 파일 창은 dialog_queue 로 넣어 둔 응답이 자동으로 쓰인다. ★성능 측정은 prep:"normal" — 기본(test)은 낭독 미리 준비(Qwen 실행기 띄우기·모델 열기·라이브러리 미리 읽기)를 끈다.', inputSchema: { type: 'object', properties: { visible: { type: 'boolean', description: 'true 면 보이는 창(사람이 함께 볼 때). 기본 false' }, build: { type: 'string', enum: ['auto', 'always', 'never'] }, width: { type: 'number' }, height: { type: 'number' }, prep: { type: 'string', enum: ['test', 'normal'], description: "'normal' = 보통 실행과 같은 미리 준비(GPU 사용) · 기본 'test' = 끔" } } } },
   { name: 'reader_trace', description: '낭독 관측 기록(최근 500개, 단조 시계 ms) — 재생 요청·덩이 요청(req·세대)·생성 시작·완료(줄 대기·생성 길이·캐시 적중·모델 처음 엶)·실제 재생 시작(playing)·버퍼 부족·문단 이동 후 첫 소리. mode 로 실행 방식(test/normal-prep/app)을 함께 준다. 본문·경로 없음.', inputSchema: { type: 'object', properties: { clear: { type: 'boolean', description: 'true 면 읽은 뒤 비운다(다음 측정을 새로)' }, window: WIN } } },
   { name: 'app_stop', description: 'AudioForge 를 종료하고 임시 폴더를 지운다.', inputSchema: { type: 'object', properties: {} } },
@@ -240,6 +242,7 @@ function appLogLines () {
   return fs.readdirSync(dir).sort().flatMap((n) => fs.readFileSync(path.join(dir, n), 'utf8').split(/\r?\n/).filter(Boolean))
 }
 const HANDLERS = {
+  ...Object.fromEntries(QUALITY.tools.map(t => [t.name, a => QUALITY.call(t.name, a)])),
   app_start: (a) => startApp(a),
   reader_trace: ({ clear = false, window = 'main' }) => inPage(window, `(() => { const t = window.__readerTrace; if (!t) return { error: '관측 기록이 없습니다 — 낭독 화면을 한 번 연 뒤에 생깁니다' }; const d = t.dump(); if (${clear ? 'true' : 'false'}) t.clear(); return d })()`),
   app_stop: () => stopApp(),
@@ -511,7 +514,7 @@ async function onMessage (m) {
         protocolVersion: SUPPORTED_PROTOCOLS.includes(want) ? want : SUPPORTED_PROTOCOLS[0],
         capabilities: { tools: { listChanged: false } },
         serverInfo: SERVER_INFO,
-        instructions: 'AudioForge(음원 도구)를 직접 실행·조작·관찰하는 도구. 순서: app_start → ui_snapshot/ui_query 로 화면 파악 → ui_click/ui_set/api_call 로 조작 → ui_wait/logs 로 결과 확인 → app_stop. 요소는 testid 로 지정하는 것이 가장 확실하다(예: testid:mode-reader). 창은 기본적으로 화면 밖이라 사용자 작업을 방해하지 않는다. 파일 고르기는 dialog_queue 로 미리 응답을 넣는다. 사용자 데이터는 격리된 임시 폴더를 쓴다. ★사용자의 음성·영상 파일은 사용자가 명시적으로 허락한 것만 연다(검사용 자리 밖 미디어 경로는 도구가 막는다 — 대신 test_input). 소리는 들을 수 없다 — audio_now(무엇이 울리나)·audio_inspect(수치)로 본다.\n' + AF.SCREEN_MAP
+        instructions: 'AudioForge(음원 도구)를 직접 실행·조작·관찰하는 도구. 순서: app_start → ui_snapshot/ui_query 로 화면 파악 → ui_click/ui_set/api_call 로 조작 → ui_wait/logs 로 결과 확인 → app_stop. 요소는 testid 로 지정하는 것이 가장 확실하다(예: testid:mode-reader). 창은 기본적으로 화면 밖이라 사용자 작업을 방해하지 않는다. 파일 고르기는 dialog_queue 로 미리 응답을 넣는다. 사용자 데이터는 격리된 임시 폴더를 쓴다. ★사용자의 음성·영상 파일은 사용자가 명시적으로 허락한 것만 연다(검사용 자리 밖 미디어 경로는 도구가 막는다 — 대신 test_input). 소리는 들을 수 없다 — audio_now·audio_inspect로 본다. 음원 품질 검수는 앱 실행 없이 audio_quality_capabilities → analyze → read(전 페이지) → plot/compare/clip. 자동 지표를 청취 합격으로 해석하지 않는다.\n' + AF.SCREEN_MAP
       })
     }
     case 'notifications/initialized': case 'notifications/cancelled': return
@@ -535,7 +538,7 @@ process.stdin.on('data', (chunk) => {
     onMessage(m).catch((e) => { log('처리 실패: ' + ((e && e.stack) || e)); if (m.id != null) fail(m.id, -32603, String((e && e.message) || e)) })
   }
 })
-const shutdown = async () => { try { await stopApp() } catch { /* 이미 닫혔다 */ } process.exit(0) }
+const shutdown = async () => { QUALITY.stop(); try { await stopApp() } catch { /* 이미 닫혔다 */ } process.exit(0) }
 process.stdin.on('end', shutdown)
 process.on('SIGINT', shutdown)
 process.on('SIGTERM', shutdown)

@@ -37,7 +37,9 @@ class WiredBeforeEngine(unittest.TestCase):
         self.assertIn("strip_spoken_symbols", src)
         # 문장 단위 엔진 호출 직전 — 파서가 낸 글(line_text)은 그대로 두고 소리로 보낼 글만 바꾼다.
         i = src.index("engine.synthesize_segment(say_text")
-        self.assertIn("say_text = strip_spoken_symbols(line_text)", src[i - 1500:i])
+        # 서수 읽기 보정(2026-10-09) 뒤 — Qwen 만 say_source 가 보정된 글, 나머지는 원문(line_text) 그대로.
+        self.assertIn("say_source = line_text", src[i - 1500:i])
+        self.assertIn("say_text = strip_spoken_symbols(say_source)", src[i - 1500:i])
 
     def test_기호만_남은_줄은_짧게_쉰다(self):
         import tempfile

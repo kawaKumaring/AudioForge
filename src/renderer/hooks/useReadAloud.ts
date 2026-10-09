@@ -21,6 +21,7 @@ import { useAppStore } from '@/stores/app.store'
 import { createManagedAudio } from '@/lib/playbackVolume'
 import { splitForReading, chunkAt, START_RAMP_SECONDS, type Chunk } from '../../shared/readerChunks'
 import { readingPlan, type ReadingPart } from '../../shared/readerText'
+import { ORDINAL_RULE, ordinalContextBefore } from '../../shared/spokenOrdinals'
 import { partAt } from '../../shared/readerTiming'
 import { partEmotions, emotionRuns, runSay } from '../../shared/readerEmotion'
 import { opLog, nameOnly } from '@/lib/opLog'
@@ -87,9 +88,10 @@ export interface ReadAloud {
   prev: () => void
 }
 
-type Plan = { say: string; parts: ReadingPart[] }
+type Plan = { say: string; parts: ReadingPart[]; ordinalChanges: number }
 /** 본체가 함께 돌려주는 단계 길이(본체 단조 시계, ms) — 관측 전용. */
-type SpeakTrace = { cached?: boolean; shared?: boolean; waitMs?: number; makeMs?: number; modelOpened?: boolean | null; engine?: string }
+type SpeakTrace = { cached?: boolean; shared?: boolean; waitMs?: number; makeMs?: number; modelOpened?: boolean | null; engine?: string
+  spoken?: { requested: { rule: string | null; ordinalChanges: number } | null; madeWith: { rule: string | null; ordinalChanges: number; usedText: 'spoken' | 'plain' } | null } }
 /** 소리 요소에 붙여 두는 관측 표 — 어느 덩이를 어떤 길로 틀었나. */
 type TraceTag = { chunk: number; gen: number; via: 'normal' | 'preloaded'; reported?: boolean }
 
@@ -114,14 +116,24 @@ export function useReadAloud(
   const chunks = useMemo(() => splitForReading(text, { breakAt, ramp: START_RAMP_SECONDS }), [text, breakAt, documentKey])
   const skipHanja = !!opts.skipHanjaInParens
   // ★덩이마다 **구절 나누기와 소리로 보낼 글**(readerText.readingPlan). 큰 책은 덩이가 수천 개라 필요할 때만 만든다.
-  const plans = useRef<{ chunks: Chunk[]; skip: boolean; map: Map<number, Plan> }>({ chunks, skip: skipHanja, map: new Map() })
-  if (plans.current.chunks !== chunks || plans.current.skip !== skipHanja) plans.current = { chunks, skip: skipHanja, map: new Map() }
+  // ★서수 읽기 보정(7번째 → 일곱 번째, spokenOrdinals.ts)은 **Qwen 으로 가는 목소리**에만 켠다 — Qwen 지정 목소리, 참조 목소리.
+  //   경계는 원문에서 봐야 해서(기호 정리 뒤엔 "2~7번째" 가 "2에서 7번째") 화면이 바꾼다.
+  //   참조 목소리가 Qwen 없이 다른 엔진으로 넘어가면 파이썬이 함께 보낸 '바꾸지 않은 글'(plainSay)을 쓴다 — 다른 엔진은 켜지 않는다.
+  const ordinals = !!voice && ((voice.kind === 'builtin' && voice.engineId === 'qwen-custom') || voice.kind === 'reference')
+  const plans = useRef<{ chunks: Chunk[]; skip: boolean; ord: boolean; map: Map<number, Plan> }>({ chunks, skip: skipHanja, ord: ordinals, map: new Map() })
+  if (plans.current.chunks !== chunks || plans.current.skip !== skipHanja || plans.current.ord !== ordinals) plans.current = { chunks, skip: skipHanja, ord: ordinals, map: new Map() }
   const planOf = useCallback((i: number): Plan => {
     const m = plans.current.map
     let p = m.get(i)
-    if (!p) { p = readingPlan(chunks[i]?.text || '', { skipHanjaInParens: skipHanja }); m.set(i, p) }
+    if (!p) {
+      const c = chunks[i]
+      // ★서수 경계는 문서 좌표로 — 덩이 앞의 경계 정보(바로 앞 글자 · 띄어쓰기를 건넌 가장 가까운 글자)를 원문에서 정확히 넘긴다.
+      //   덩이가 "1." 뒤에서 갈려도 "7번째" 를 바꾸지 않는다. 거슬러 가는 것은 덩이 앞 띄어쓰기 줄뿐 — 책 전체를 훑지 않는다.
+      const before = c && ordinals ? ordinalContextBefore(text, c.start) : ''
+      p = readingPlan(c?.text || '', { skipHanjaInParens: skipHanja, ordinals, before }); m.set(i, p)
+    }
     return p
-  }, [chunks, skipHanja])
+  }, [chunks, skipHanja, ordinals, text])
   // ★두 열쇠를 나눈다. 본체의 쌓아 두기는 **목소리 + 실제로 읽은 글**로 이름 붙이므로
   //   목소리만 넘긴다(한자가 없는 덩이는 설정을 바꿔도 다시 만들지 않는다).
   //   큐는 설정까지 본다 — 설정이 바뀌면 만들어 둔 것을 버리고 지금 자리를 다시 읽는다.
@@ -334,7 +346,10 @@ export function useReadAloud(
           { before: chunks[i - 1]?.text.slice(-200), after: chunks[i + 1]?.text.slice(0, 200) })).map((r) => ({ text: runSay(chunk.text, plan.parts, r), emotion: r.emotion }))
         : undefined
       run = window.api.reader.speak(say, { kind: voice.kind, path: voice.path, engineId: voice.engineId }, cacheKey,
-        plan.parts.map((p) => ({ weight: p.weight, strong: p.strong })), segments, sentToken)
+        plan.parts.map((p) => ({ weight: p.weight, strong: p.strong })), segments, sentToken,
+        // 생성 기록용 — 이 요청의 소리 글을 어떤 규칙으로 만들었나(본체가 만든 덩이 옆 기록에 남기고, 쌓아 둔 것을 쓸 때 당시 기록과 나란히 돌려준다).
+        { rule: ordinals ? ORDINAL_RULE : null, ordinalChanges: plan.ordinalChanges,
+          ...(voice.kind === 'reference' && plan.ordinalChanges > 0 ? { plainSay: readingPlan(chunk.text, { skipHanjaInParens: skipHanja }).say } : {}) })
       asking.current.set(ask, run)
       void run.finally(() => { asking.current.delete(ask) }).catch(() => { /* 아래에서 받는다 */ })
     }
@@ -353,7 +368,10 @@ export function useReadAloud(
         const accepted = aliveRef.current && mine()
         if (tr.makeMs && !tr.cached) trace('gen-start', { req, gen: madeGen, chunk: i, derived: true }, now - tr.makeMs)
         trace('gen-done', { req, gen: madeGen, chunk: i, ok: !r.error && !!r.data?.path, cached: !!tr.cached, shared: !!tr.shared || shared,
-          modelOpened: tr.modelOpened ?? null, waitMs: tr.waitMs, makeMs: tr.makeMs, engine: tr.engine, accepted, superseded: r.superseded }, now)
+          modelOpened: tr.modelOpened ?? null, waitMs: tr.waitMs, makeMs: tr.makeMs, engine: tr.engine, accepted, superseded: r.superseded,
+          // 서수 보정 — 이 요청의 규칙과, 받은 소리를 만들 당시의 규칙(쌓아 둔 것이면 다를 수 있다). 본문 없음.
+          spokenRule: tr.spoken?.requested?.rule ?? null, spokenChanges: tr.spoken?.requested?.ordinalChanges ?? 0,
+          madeWithRule: tr.spoken?.madeWith ? tr.spoken.madeWith.rule : 'unrecorded', madeWithText: tr.spoken?.madeWith?.usedText ?? null }, now)
         if (!aliveRef.current) return
         // ★본체가 지난 세대라며 버린 요청 — 오류가 아니다. 그 자리가 아직 이 요청의 것이면 다시 청할 수 있게 비운다.
         if (r.superseded) {

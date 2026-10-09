@@ -33,6 +33,7 @@ import { createLane, failureReason, jsonLines, madeTrack, pythonReason, readerRu
 import { QwenVoiceWorker } from '../services/qwen-voice-worker'
 import { ensureQwenResident, qwenWorker, stopQwenResident } from '../services/qwen-resident'
 import { parseWav, envelope, alignParts, type TimingPart } from '../../shared/readerTiming'
+import { cacheState, commitCache, readSpokenRecord, reusable, sha256, spokenOf, spokenRecordPath, type CacheState, type SpokenRecord, type SpokenRequest } from '../services/reader-cache'
 
 const execFileAsync = promisify(execFile)
 
@@ -61,12 +62,19 @@ function readerDir(): string {
   return d
 }
 
-/** 쌓인 것이 상한을 넘으면 **오래 안 쓴 것부터** 지운다. */
+// 쌓아 둔 소리의 기록·확정 규칙은 services/reader-cache.ts 한 곳(검사 가능하게 electron 밖에 둔다).
+/** 쌓인 것이 상한을 넘으면 **오래 안 쓴 것부터** 지운다. 끊겨 남은 .part 는 하루 지나면 지운다. */
 function trimCache(): void {
   const dir = readerDir()
   let files: { p: string; size: number; at: number }[] = []
   try {
-    files = readdirSync(dir).filter((f) => f.endsWith('.wav')).map((f) => {
+    const names = readdirSync(dir)
+    const dayAgo = Date.now() - 24 * 3600 * 1000
+    for (const n of names) {
+      if (!n.endsWith('.part')) continue
+      try { const p = join(dir, n); if (statSync(p).mtimeMs < dayAgo) rmSync(p, { force: true }) } catch { /* 다음에 */ }
+    }
+    files = names.filter((f) => f.endsWith('.wav')).map((f) => {
       const p = join(dir, f)
       const st = statSync(p)
       return { p, size: st.size, at: st.mtimeMs }
@@ -77,7 +85,7 @@ function trimCache(): void {
   files.sort((a, b) => a.at - b.at)
   for (const f of files) {
     if (total <= CACHE_LIMIT) break
-    try { rmSync(f.p, { force: true }); total -= f.size } catch { /* 다음에 */ }
+    try { rmSync(f.p, { force: true }); rmSync(spokenRecordPath(f.p), { force: true }); total -= f.size } catch { /* 다음에 */ }
   }
 }
 
@@ -286,13 +294,23 @@ class SupersededError extends Error {
 
 /** 관측 전용 — 줄에서 실제로 시작한 때·끝난 때(본체 단조 시계)와 모델을 이번에 열었는가. 동작은 이것을 읽지 않는다. */
 /** 응답에 싣는 관측 — 본체 단계 길이(ms). */
-type SpeakTrace = { cached?: boolean; shared?: boolean; waitMs?: number; makeMs?: number; totalMs?: number; modelOpened?: boolean | null; engine?: string }
-export interface ChunkTrace { startedAt?: number; endedAt?: number; modelOpened?: boolean | null; engine?: string; madeWhileWaiting?: boolean }
+/** spoken.requested = 이 요청의 규칙 · spoken.madeWith = 돌려준 소리를 **만들 당시** 기록(옛 소리는 기록이 없어 null). */
+type SpeakTrace = { cached?: boolean; shared?: boolean; waitMs?: number; makeMs?: number; totalMs?: number; modelOpened?: boolean | null; engine?: string;
+  spoken?: { requested: { rule: string | null; ordinalChanges: number } | null; madeWith: SpokenRecord | null } }
+export interface ChunkTrace { startedAt?: number; endedAt?: number; modelOpened?: boolean | null; engine?: string; madeWhileWaiting?: boolean; spokenFallback?: boolean
+  /** 쌓아 둔 자리 판정(cacheState) · 새로 만든 것을 쌓았나(false = 확정 실패, 재생 전용 자리로 돌림). */
+  cacheState?: CacheState; committed?: boolean }
+/** 쌓는 자리 정보 — nameSource 는 이름(지문)을 만든 원재료 그대로. 없으면(기능 검사) 기록 없이 그 자리에 쓴다. */
+export interface CacheTarget { nameSource: string; spoken: SpokenRequest | null }
 
-async function makeChunk(body: string, v: ReaderVoice, out: string, segments: EmotionSegment[] | null = null, info: ChunkTrace = {}, ctl: ReaderCtl = { epoch: undefined }): Promise<string> {
+async function makeChunk(body: string, v: ReaderVoice, out: string, segments: EmotionSegment[] | null = null, info: ChunkTrace = {}, ctl: ReaderCtl = { epoch: undefined }, target: CacheTarget | null = null): Promise<string> {
   info.startedAt = performance.now()
-  // 차례를 기다리는 사이 같은 글·같은 목소리가 만들어졌을 수 있다.
-  if (existsSync(out)) { info.madeWhileWaiting = true; info.endedAt = performance.now(); return out }
+  const spoken = target?.spoken ?? null
+  // 차례를 기다리는 사이 같은 글·같은 목소리가 만들어졌을 수 있다 — 쓸 수 있다고 **확인된** 것만.
+  if (target) {
+    const st = cacheState(out, target.nameSource, body, spoken)
+    if (reusable(st)) { info.cacheState = st; info.madeWhileWaiting = true; info.endedAt = performance.now(); return out }
+  } else if (existsSync(out)) { info.madeWhileWaiting = true; info.endedAt = performance.now(); return out }
   // ★다른 화면의 작업이 돌면 비킨다. 판정은 `synthesisGate` 한 곳이 갖는다.
   const busy = synthesisBusy('낭독')
   if (busy) throw new Error(busy)
@@ -302,7 +320,11 @@ async function makeChunk(body: string, v: ReaderVoice, out: string, segments: Em
   const runDir = join(readerDir(), 'work', `run-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`)
   mkdirSync(runDir, { recursive: true })
   const cfgPath = join(runDir, 'chunk.json')
-  writeFileSync(cfgPath, JSON.stringify(readerRunConfig(body, v, runDir)), 'utf-8')
+  // ★참조 목소리에 규칙을 켠 요청이면 — 파이썬에 '이미 원문 기준으로 바꿨다'(다시 바꾸지 않게)와, Qwen 이 아닌 엔진으로 갈 때 쓸 바꾸지 않은 글을 함께 준다.
+  const spokenCfg = v.kind === 'reference' && spoken?.rule
+    ? { ttsSpokenPrepared: spoken.rule, ...(spoken.ordinalChanges > 0 && typeof spoken.plainSay === 'string' ? { ttsTextNonQwen: spoken.plainSay } : {}) }
+    : {}
+  writeFileSync(cfgPath, JSON.stringify({ ...readerRunConfig(body, v, runDir), ...spokenCfg }), 'utf-8')
   // 협조적 정지 — 이 덩이 전용 파일(세대가 지나면 reader:supersede 가 만든다). 기본 목소리(CPU)는 멈출 수 없다.
   ctl.stopFile = join(runDir, 'stop.flag')
   ctl.cancellable = !residentBuiltin(v)
@@ -370,6 +392,8 @@ async function makeChunk(body: string, v: ReaderVoice, out: string, segments: Em
       const viaResident = /띄워 둔 Qwen 으로 만듭니다/.test(said)
       info.engine = viaResident ? 'qwen-resident-bridge' : 'separate-process'
       info.modelOpened = viaResident ? /방금 엶/.test(said) : true
+      // 서수 보정 — Qwen 이 아닌 엔진으로 넘어가 바꾸지 않은 글로 만들었나(파이썬이 알린다).
+      info.spokenFallback = lines.some((l) => l.type === 'stage' && l.stage === 'spoken_text_fallback')
       const made = madeTrack(lines)
       if (!made || !existsSync(made)) throw new Error(pythonReason(lines) || '이 부분을 소리로 만들지 못했습니다')
       wav = made
@@ -377,7 +401,27 @@ async function makeChunk(body: string, v: ReaderVoice, out: string, segments: Em
     // ★지난 세대로 멈춘 것은 쌓지 않는다 — 잘렸을 수 있다(멈출 수 없는 기본 목소리는 온전한 소리라 쌓는다).
     if (ctl.superseded && ctl.cancellable) throw new SupersededError('running')
     // 지문 이름으로 옮겨 둔다 — 다음에 같은 글·같은 목소리면 곧바로 쓴다.
-    writeFileSync(out, readFileSync(wav))
+    // 지문 이름으로 옮겨 둔다 — 다음에 같은 글·같은 목소리면 곧바로 쓴다.
+    // ★기록과 음원을 함께 확정한다(commitCache). 확정하지 못하면 이 소리는 쌓지 않고 재생 전용 자리에 둔다 — 기록 없는 새 음원이 쌓이지 않는다.
+    const bytes = readFileSync(wav)
+    if (target) {
+      const sent = info.spokenFallback && spoken?.plainSay != null ? spoken.plainSay : body
+      try {
+        commitCache(out, bytes, {
+          rule: info.spokenFallback ? null : (spoken?.rule ?? null),
+          ordinalChanges: info.spokenFallback ? 0 : (spoken?.ordinalChanges ?? 0),
+          usedText: info.spokenFallback ? 'plain' : 'spoken', engine: info.engine,
+          nameSha256: sha256(target.nameSource), sentSha256: sha256(sent),
+        })
+        info.committed = true
+      } catch (err) {
+        info.committed = false
+        const playOnly = join(readerDir(), `nocache-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.wav`)
+        writeFileSync(playOnly, bytes)
+        appLog()?.warn('reader', `쌓아 두기 확정 실패(재생만) kind=${v.kind}: ${failureReason(err)}`)
+        out = playOnly
+      }
+    } else writeFileSync(out, bytes)
     info.endedAt = performance.now()
     trimCache()
     // 동작 기록 — 글 내용 없이 글자 수·걸린 시간만. 낭독이 얼마나 빠른지 사용자가 볼 수 있다.
@@ -523,13 +567,24 @@ export function registerReaderIpc(): void {
    */
   ipcMain.handle('reader:speak', async (
     _e, text: unknown, voice: unknown, voiceKey: unknown, rawParts?: unknown, rawSegments?: unknown,
-    epoch?: unknown,
+    epoch?: unknown, rawSpoken?: unknown,
   ): Promise<Reply<{ path: string; cached: boolean; timing: Array<[number, number]>; trace?: SpeakTrace }> & { trace?: SpeakTrace; superseded?: 'queued' | 'running' }> => {
     // 관측 — 요청이 본체에 닿은 때부터 줄 대기·생성 길이(본체 단조 시계, ms). 응답에 함께 싣는다(화면이 기록).
     const asked = performance.now()
     const info: ChunkTrace = {}
-    const traceOf = (extra: { cached?: boolean; shared?: boolean } = {}) => ({
-      ...extra,
+    const spoken = spokenOf(rawSpoken)
+    // madeWith = 돌려준 소리를 **만들 당시** 기록 — 이 이름·글·음원과 맞는다고 확인된 것만(옛 소리·재생 전용 자리는 null).
+    let target: CacheTarget | null = null
+    let bodyForCheck = ''
+    const spokenTrace = (wav?: string) => {
+      // fallback-plain = 이 이름·음원과 맞는 기록이지만 바꾸지 않은 글로 만든 것 — 그 사실 그대로 보인다(재사용 여부와 별개).
+      const st = wav && target ? cacheState(wav, target.nameSource, bodyForCheck, spoken) : 'none'
+      const trusted = st === 'verified' || st === 'fallback-plain'
+      return { requested: spoken ? { rule: spoken.rule, ordinalChanges: spoken.ordinalChanges } : null,
+        madeWith: trusted ? readSpokenRecord(wav!) : null, cacheState: info.cacheState ?? null, committed: info.committed ?? null }
+    }
+    const traceOf = (extra: { cached?: boolean; shared?: boolean } = {}, wav?: string) => ({
+      ...extra, spoken: spokenTrace(wav),
       waitMs: info.startedAt != null ? Math.round(info.startedAt - asked) : undefined,
       makeMs: info.startedAt != null && info.endedAt != null ? Math.round(info.endedAt - info.startedAt) : undefined,
       modelOpened: info.modelOpened ?? null, engine: info.engine,
@@ -548,17 +603,21 @@ export function registerReaderIpc(): void {
       // ★참조 목소리는 **경로만으로** 같은 목소리라 보지 않는다 — 같은 자리의 파일이 바뀌면(크기·시각) 다른 이름(2026-10-03).
       //   만드는 방식이 바뀐 것(띄워 둔 실행기·본 모델 묶어 실행)도 이름에 넣어 예전 소리와 섞지 않는다.
       const refTag = v.kind === 'reference' ? (() => { try { const s = statSync(v.path); return `|ref:${s.size}:${Math.round(s.mtimeMs)}|gen2` } catch { return '|ref:?' } })() : ''
-      const out = join(readerDir(), segments
-        ? chunkName(body + '\u0000' + JSON.stringify(segments.map((s) => [s.text, s.emotion])), key + '|감정')
-        : chunkName(body, key + refTag))
-      if (existsSync(out)) return ok({ path: out, cached: true, timing: timingOf(out, parts), trace: traceOf({ cached: true }) })
+      const nameText = segments ? body + '\u0000' + JSON.stringify(segments.map((s) => [s.text, s.emotion])) : body
+      const nameVoice = segments ? key + '|감정' : key + refTag
+      const out = join(readerDir(), chunkName(nameText, nameVoice))
+      // ★이름의 원재료 그대로(chunkName 과 같은 순서: 목소리 열쇠 + 글) — 기록이 이 이름의 것인지 전체 지문으로 확인한다.
+      target = { nameSource: nameVoice + nameText, spoken }
+      bodyForCheck = body
+      info.cacheState = cacheState(out, target.nameSource, body, spoken)
+      if (reusable(info.cacheState)) return ok({ path: out, cached: true, timing: timingOf(out, parts), trace: traceOf({ cached: true }, out) })
 
       // 세대 — 화면이 보낸 표(없으면 세대에 묶이지 않음). 지금 표가 아니면 줄에 세우지도 않는다.
       const ep = typeof epoch === 'string' && epoch ? epoch : undefined
       if (isStale(ep)) throw new SupersededError('queued')
       // 같은 글·같은 목소리가 이미 가 있으면 함께 받는다 — 단 **멈추라고 한 것**은 함께 받지 않는다(새로 만든다).
       const already = inFlight.get(out)
-      if (already && !already.ctl.superseded) { const p = await already.run; return ok({ path: p, cached: false, timing: timingOf(p, parts), trace: { ...traceOf({ shared: true }), totalMs: Math.round(performance.now() - asked) } }) }
+      if (already && !already.ctl.superseded) { const p = await already.run; return ok({ path: p, cached: false, timing: timingOf(p, parts), trace: { ...traceOf({ shared: true }, p), totalMs: Math.round(performance.now() - asked) } }) }
 
       // ★한 번에 하나 — 줄에 세운다. 앞 작업이 끝나야 다음이 돈다. ★차례가 왔을 때 세대가 지났으면 시작하지 않고 버린다.
       const ctl: ReaderCtl = { epoch: ep }
@@ -566,13 +625,13 @@ export function registerReaderIpc(): void {
       const run = inLane(() => {
         queuedSpeaks.delete(ctl)
         if (isStale(ctl.epoch)) { ctl.superseded = true; throw new SupersededError('queued') }
-        return makeChunk(body, v, out, segments, info, ctl)
+        const t = target; return makeChunk(body, v, out, segments, info, ctl, t)
       })
       const entry = { run, ctl }
       inFlight.set(out, entry)
       void run.finally(() => { if (inFlight.get(out) === entry) inFlight.delete(out) }).catch(() => { /* 아래에서 받는다 */ })
       const made = await run
-      return ok({ path: made, cached: !!info.madeWhileWaiting, timing: timingOf(made, parts), trace: traceOf({ cached: !!info.madeWhileWaiting }) })
+      return ok({ path: made, cached: !!info.madeWhileWaiting, timing: timingOf(made, parts), trace: traceOf({ cached: !!info.madeWhileWaiting }, made) })
     } catch (e) {
       // 지난 세대 — 화면이 오류로 보이지 않게 따로 표시한다(그 자리가 아직 필요하면 화면이 다시 청한다).
       if (e instanceof SupersededError) return { error: e.message, superseded: e.phase, trace: traceOf() }
