@@ -1,3 +1,8 @@
+## 2026-10-10 · 노래 변환 기본을 흡수본으로 (Claude)
+- 사용자 청취 "ABC 다 비슷하다"(옛 엔진 오늘·새 엔진·옛 엔진 9/20 — 같은 수준). song_voice.py 기본 = 앱 안 흡수본(python/song_vc + externals/song_vc_models, 앱 런타임). 외부 변환기는 AF_SONG_VC_ENGINE=external 일 때만(되돌림 길).
+- 검사: 노래 관련 파이썬 67건 통과(test_song_voice 의 연결 계약을 새 설계로 갱신 — 기본 흡수본 경로 / 외부 선택 시 기록 없으면 고치는 방법 안내).
+- 남은 것: master 병합 후 외부 seed-vc 정리(약 7.4GB, 사용자 결과물은 이미 테스트 폴더로 옮김)·env.json singing_* 정리.
+
 ## 2026-10-10 · 노래 변환 흡수 구현 (Claude) — 청취 대기
 - seed-vc 의 노래 변환 경로만 `python/song_vc/` 로 옮기고(GPL-3.0, 개인 사용), 모델 5종을 `externals/song_vc_models/` 에 복사(2.4GB). 기존 실행 환경(gptsovits_venv_app) 사용 — 새 환경·다운로드 없음.
 - CPU 단계별 대조 차이 1e-4 이하(여러 단계 0), GPU 같은 곡 비교에서 새 엔진 차이가 옛 엔진의 실행마다 차이와 같은 수준(로그 멜 0.476 vs 0.4735), 새 엔진이 약 15% 빠름(96초 vs 113초).

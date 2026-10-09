@@ -71,9 +71,23 @@ class TestNoHardcodedPath(unittest.TestCase):
             self.assertNotIn(bad, body,
                              '코드에 특정 PC 나 특정 변환기 흔적이 박혀 있다: %s' % bad)
 
-    def test_기록이_없으면_고치는_방법까지_말한다(self):
+    def test_기본은_앱_안의_흡수본_저장소_기준_경로(self):
+        # 2026-10-10 노래 변환 흡수 — 기록 없이도 이 저장소의 흡수본과 앱 런타임을 쓴다(특정 PC 경로가 아니라 ROOT 기준).
         keep = dict(os.environ)
         try:
+            os.environ.pop(sv.ENGINE_ENV, None)
+            self.assertEqual(sv.ABSORBED_SCRIPT, os.path.join(sv.ROOT, 'python', 'song_vc', 'convert.py'))
+            self.assertTrue(sv.ABSORBED_PYTHON.startswith(os.path.join(sv.ROOT, 'externals', 'runtime')))
+            if os.path.isfile(sv.ABSORBED_PYTHON) and os.path.isfile(sv.ABSORBED_SCRIPT):
+                self.assertEqual(sv.converter(), {'python': sv.ABSORBED_PYTHON, 'script': sv.ABSORBED_SCRIPT})
+        finally:
+            os.environ.clear()
+            os.environ.update(keep)
+
+    def test_외부_변환기를_고르고_기록이_없으면_고치는_방법까지_말한다(self):
+        keep = dict(os.environ)
+        try:
+            os.environ[sv.ENGINE_ENV] = 'external'
             os.environ.pop(sv.PYTHON_ENV, None)
             os.environ.pop(sv.SCRIPT_ENV, None)
             sv.ENV_FILE = os.path.join(HERE, '없는파일.json')
