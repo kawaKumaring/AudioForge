@@ -53,3 +53,17 @@
 - 정책 이름을 숨긴 3쌍(X/Y 는 쌍마다 무작위): E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteninglongform-seed-20261009083328비교듣기.html — 전체 재생, 각 결과의 실제 이음 앞 5초·이음에서·앞뒤 5초 반복.
 - 듣는 파일(원본과 바이트가 같은 사본, 이름에 정책 없음): E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteninglongform-seed-20261009083328듣기 · 경로 목록 E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteninglongform-seed-20261009083328청취파일경로.txt · 정답표(청취 뒤) E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteninglongform-seed-20261009083328정답표.json · 기록 대조 E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteninglongform-seed-20261009083328ecord-check.json
 - 평가: 목소리 유지 · 말투 변화(어디쯤) · 이음 자연스러움 · 발음·누락·반복. 같은 seed 가 낫다고 전제하지 않는다.
+
+## 사용자 청취 판정·정답 대조(2026-10-09)
+- 표기: 사용자 판정의 A/B = 페이지 X/Y(쌍의 첫째/둘째).
+- 정답 대조: 정답표의 정책과 실행 기록의 조각별 applied_seed 로 따로 확인 — 6개 모두 일치. 세 쌍 모두 A(X) = per_chunk(현행: s, s+1, s+2), B(Y) = same(s, s, s). 청취 사본·원본 지문 일치.
+- **쌍1 B 는 same 정책**(모든 조각 seed 101)이다.
+- 청취 원문:
+  - 쌍1 A(per_chunk): "일정한 것 같다."
+  - 쌍1 B(same): "첫 이음 뒤 목소리 톤이 약간 달라진다. 명랑하게 바뀐 느낌이다." — 첫 이음은 28.48초. 쌍1 A·B 의 첫 조각(0~28.48초)은 음원 지문이 같고, 차이는 둘째 조각부터다 [기록].
+  - 쌍2·쌍3 A/B: "모두 일정한 것 같다."
+  - 전체: "대부분 음성의 퀄리티가 높게 들린다."
+- 판정 범위: 말투 일관성 5개 긍정 · 1개 변화 관찰(same 정책 1개). 품질은 긍정적 인상. 발음·누락·반복·이음 자연스러움은 별도 답변이 없어 합격 처리하지 않는다.
+- 한계: 참조 1개·글 1개·seed 3개. 무작위 X/Y 배치가 우연히 세 쌍 모두 X=per_chunk(1/8 확률)여서 순서 단서가 생길 수 있었다. 한 쌍의 차이로 정책의 일반적 우위를 확정하지 않는다.
+- 제안: **현행(per_chunk) 유지.** 근거 — 변화가 관찰된 1개는 same 정책 쪽이었고, 현행 3개는 모두 일정하다고 들렸다. 같은 seed 로 바꿀 근거는 없다. 반대로 현행이 낫다고 확정할 근거도 약하다(차이 1건). 진단 스위치는 기본 꺼짐으로 남긴다.
+- 기록: E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteninglongform-seed-20261009083328사용자청취판정.json (쌍마다 사용자 원문·정책(정답표/기록)·실제 seed·음원 지문·이음 시각)
