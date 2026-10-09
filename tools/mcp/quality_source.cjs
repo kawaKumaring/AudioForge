@@ -124,6 +124,9 @@ function resolveTextSource({ ROOT, python, audioSha, runId, callerText, partialW
   if (storedRaw && sha(raw) !== storedRaw) throw Error('실행 기록의 원문이 기록된 원문 지문과 다릅니다(기록 손상).')
   if (scriptFile === 'file_sha_mismatch') throw Error('원문 파일이 실행 기록에 적힌 파일 지문과 다릅니다(기록 손상).')
   const rawTextState = storedRaw ? 'verified' : 'stored_sha_missing'
+  // 원문 파일 목록 무결성은 원문 지문 확인과 따로 — 목록이 겹치거나(duplicate_listing) 파일이 없으면 근거 충돌이다.
+  //   'unlisted'(목록에 없음)는 충돌이 아니라 목록으로 확인할 수 없음. 충돌한 근거로는 정상 비교·누락 확정이 통과하지 않는다.
+  const rawFileConflict = scriptFile === 'duplicate_listing' || scriptFile === 'missing_file'
   const sent = sentEvidence(dir, m)
   // 대사·구간
   let text = raw, windowAlignment = 'whole'
@@ -133,7 +136,7 @@ function resolveTextSource({ ROOT, python, audioSha, runId, callerText, partialW
     text = callerText ?? null
     windowAlignment = 'unaligned'
   } else if (callerText != null && sha(callerText) !== sha(raw)) throw Error('넘긴 대사가 그 실행의 원문과 다릅니다 — 기록 원문을 쓰려면 대사를 비워 두세요.')
-  return { kind: 'run_record', ...base, verified: rawTextState === 'verified', rawTextState, scriptFile,
+  return { kind: 'run_record', ...base, verified: rawTextState === 'verified' && !rawFileConflict, rawTextState, scriptFile, rawFileConflict,
     rawSha256: storedRaw, text, windowAlignment,
     sentState: sent.state, sentIssues: sent.issues, sentBasis: sent.basis ?? null, sentSha256: sent.state === 'verified' ? sent.sha256 : null,
     rawText: raw, sentText: sent.state === 'verified' ? sent.text : null }
@@ -143,6 +146,8 @@ function resolveTextSource({ ROOT, python, audioSha, runId, callerText, partialW
 function omissionBlocker(ts) {
   if (!ts || !ts.runVerified) return '대사 출처(실행 기록) 미확인'
   if (ts.rawTextState !== 'verified') return '원문 지문을 저장된 근거로 확인하지 못함'
+  if (ts.rawFileConflict) return '원문 파일 기록 충돌(' + ts.scriptFile + ')'
+  if (ts.sentState === 'invalid') return '전달문 근거 손상'
   if (ts.windowAlignment !== 'whole') return '구간의 시간·대사 대응 근거 없음'
   if (ts.text == null) return '기대 대사 없음'
   return null
@@ -165,8 +170,11 @@ function textDiff(a, b) {
 function relation(x, y, intendedDifference) {
   const sx = x.identity.textSource, sy = y.identity.textSource
   const base = { textSources: [brief(sx), brief(sy)], intendedDifference: intendedDifference || null }
-  if (!sx || !sy || !sx.verified || !sy.verified) return { ...base, status: 'unverified_basis', normal: false, rawMatch: null, sentMatch: null, note: '대사 출처가 실행 기록·저장된 원문 지문으로 확인되지 않은 쪽이 있다 — 사유를 적어도 정상 비교가 아니다.' }
-  const rawMatch = sx.rawSha256 === sy.rawSha256
+  const rawMatch = sx && sy && sx.rawTextState === 'verified' && sy.rawTextState === 'verified' ? sx.rawSha256 === sy.rawSha256 : null
+  // ★근거 충돌·손상은 원문 일치·사유와 관계없이 정상 아님 — 원문 일치 정보는 그대로 보인다.
+  if (sx && sy && (sx.rawFileConflict || sy.rawFileConflict)) return { ...base, status: 'evidence_conflict', normal: false, rawMatch, sentMatch: null, sentStates: [sx.sentState, sy.sentState], note: '원문 파일 기록이 충돌한다(중복 등록·파일 없음) — 정상 비교가 아니다.' }
+  if (sx && sy && (sx.sentState === 'invalid' || sy.sentState === 'invalid')) return { ...base, status: 'evidence_invalid', normal: false, rawMatch, sentMatch: null, sentStates: [sx.sentState, sy.sentState], sentIssues: [sx.sentIssues || [], sy.sentIssues || []], note: '전달문 근거가 손상됐다 — 원문이 같거나 사유를 적어도 정상 비교가 아니다(기록 없음과는 다르다).' }
+  if (!sx || !sy || !sx.verified || !sy.verified) return { ...base, status: 'unverified_basis', normal: false, rawMatch, sentMatch: null, note: '대사 출처가 실행 기록·저장된 원문 지문으로 확인되지 않은 쪽이 있다 — 사유를 적어도 정상 비교가 아니다.' }
   const sentBoth = sx.sentState === 'verified' && sy.sentState === 'verified'
   const sentMatch = sentBoth ? sx.sentSha256 === sy.sentSha256 : null
   const sentStates = [sx.sentState, sy.sentState]
@@ -175,11 +183,12 @@ function relation(x, y, intendedDifference) {
   const r = { ...base, rawMatch, sentMatch, sentStates }
   if (rawMatch && sentMatch === true) return { ...r, status: 'same_text', normal: true }
   if (rawMatch && sentMatch === false) return { ...r, status: 'same_source_different_sent', normal: true, sentDiff, note: '원문은 같고 엔진에 보낸 글이 다르다(예: 서수 보정).' }
-  if (rawMatch) return { ...r, status: 'same_source_sent_unconfirmed', normal: true, note: '원문은 같다. 전달문은 한쪽이라도 기록이 없거나 근거가 어긋나 같다고 말할 수 없다.' }
+  if (rawMatch) return { ...r, status: 'same_source_sent_unrecorded', normal: true, note: '원문은 같다. 전달문은 한쪽이라도 기록이 없어 같다고 말할 수 없다(손상과는 다르다).' }
   if (!intendedDifference) return { ...r, status: 'undeclared_text_difference', normal: false, rawDiff, sentDiff, note: '원문이 다르다. 의도한 차이(intendedDifference)를 적으면 실제 차이와 나란히 보인다.' }
   return { ...r, status: 'declared_text_difference', normal: true, rawDiff, sentDiff, note: '각 음성은 자기 실행의 글과 확인됨. 적은 의도와 실제 차이가 맞는지는 사람이 본다.' }
 }
 const brief = (s) => s ? { kind: s.kind, verified: !!s.verified, runVerified: !!s.runVerified, runId: s.runId ?? null, rawTextState: s.rawTextState ?? null,
+  rawFileListState: s.scriptFile ?? null, rawFileConflict: !!s.rawFileConflict,
   rawSha256: s.rawSha256 ?? null, sentState: s.sentState ?? null, sentIssues: s.sentIssues ?? [], sentSha256: s.sentSha256 ?? null,
   windowAlignment: s.windowAlignment ?? null, audioSha256: s.audioSha256 ?? null, reason: s.reason ?? null } : null
 

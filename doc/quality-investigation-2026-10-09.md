@@ -75,7 +75,12 @@
 3. 저장된 근거만으로 확인: 원문은 header.raw_text_sha256 와 manifest artifacts 의 파일 지문으로(저장 지문이 없으면 확인 불가 — 새로 계산한 지문으로 대신하지 않음). 전달문은 sent.private.json(파일 지문·문장별 저장 지문·순서) 또는 chunks/*.private.json(manifest chunks[] 대비 누락·중복·순서, 파일 지문, 조각별 저장 지문)으로 사유를 나눠 표시.
 4. 글자 범위는 '보정 후 발화문 내부 위치' 로 문서·기록 이름(source_char_basis=segment_spoken_text)에 명시. 원문 위치 연결은 남은 과제.
 
-### 최종 통합 검증 항목(미실행)
+### 마지막 보완(근거 손상 시 정상 판정 차단)
+- 전달문 기록 없음(unrecorded → same_source_sent_unrecorded, 정상)과 근거 손상(invalid → evidence_invalid, normal=false)을 분리. 손상이면 원문 일치·사유와 관계없이 정상 아님, 원문 일치 정보는 그대로 보인다.
+- 원문 파일 목록 무결성(rawFileListState: match/unlisted/duplicate_listing/missing_file)을 원문 지문 확인과 따로 표시. 중복 등록·파일 없음은 충돌 → evidence_conflict(normal=false), 누락 확정 보류.
+- 전달문 손상도 누락 확정 보류. 보류 시 사용자 의견은 미확정으로 보존.
+
+### 최종 통합 검증 항목
 - test/e2e/audio-quality-source.cjs: 출처·원문·전달문·구간·비교의 정상과 반대 사례 — 원문 저장 지문 없음, 원문 손상, 전달문 기록 없음, 전달문 지문 어긋남, 조각 파일 누락·중복·순서 이상·목록 밖·파일 지문 어긋남, 구간 대응 미확인·기대 대사 없음·출처 미확인·원문 확인 불가에서 누락 확정 보류(의견 보존), 한쪽 전달문 기록 없음/어긋남 비교, 근거 미확인 쪽 + 사유 비교.
 - python/test_run_record_longform.py: 조각 범위(보정 후 발화문 기준)·없는 값 비움·실제 배치 기준 이음(간격·겹침)·결과 길이 대조.
 - 영향: test/e2e/audio-quality-mcp.cjs · audio-quality-evidence.cjs · python/test_run_bundle_always.py · test_chunk_publish.py.
