@@ -1,4 +1,13 @@
-# 노래 변환(seed-vc) 흡수 계획 (2026-10-10, 조사 완료 · 구현 전)
+# 노래 변환(seed-vc) 흡수 계획 (2026-10-10, 구현·검증 — 청취 대기)
+
+> **진행(2026-10-10)** — 사용자 결정: 개인 사용(GPL 코드 이식 허용), 시험 곡 승인.
+> - 코드: `python/song_vc/`(f0 44kHz 노래 경로만 15모듈+bigvgan, convert.py, LICENSE GPL-3.0, ATTRIBUTION — 원본 커밋 51383ef). munch 는 작은 dict 로 대체, dac 는 지연 import, 저장은 soundfile, BigVGAN 은 로컬 전용 로더. 다운로드 없음.
+> - 모델: `externals/song_vc_models/` 에 5종 **복사**(약 2.4GB, 9파일 sha256 원본과 같음, manifest.json). 원본 seed-vc 는 검증 끝까지 그대로.
+> - 실행 환경: 새 환경 없이 `externals/runtime/gptsovits_venv_app`(torch 2.11). 앱 전환은 환경변수 `AF_SONG_VC_ENGINE=absorbed`(기본은 옛 경로 그대로).
+> - CPU 대조(fp32, 합성 입력): 단계별 최대 차이 — Whisper 2.7e-5 · CAM++ 0 · RMVPE 1.1e-4Hz · 길이 조절 6e-8 · DiT 한 단계 0 · CFM 2단계 5.7e-6 · BigVGAN 0. 가중치 키 누락·초과 0(원본 로더가 원래 건너뛰는 DiT 키만 같게 차이).
+> - GPU 같은 입력 비교(9/20 곡 1개: 유우리 - 베텔기우스 주 보컬 + 쵸딘 8초, 40단계): 옛 엔진 113초 · 새 엔진 96초, 길이 같음(236.37초), 음량 차 0.2dB 이내. 로그 멜 평균 차이 새↔옛(오늘) 0.476 · 옛(9/20)↔옛(오늘) 0.4735(같은 엔진 실행마다 차이 = 기준선) → 새 엔진 차이는 기준선 수준.
+> - 청취 대기: 테스트/결과/song-vc-absorb-20261009185303/비교듣기.html(A/B/C 이름 숨김, 정답표 따로). 세 결과 모두 최대값이 1.0 — 옛 엔진에도 있던 클리핑 가능성(이번 범위 밖).
+> - 남은 것: 청취 확인 → env.json 을 새 경로로 고정·스위치 정리 → 외부 seed-vc 실행 환경·쓰지 않는 모델·원본 코드 정리(약 7.4GB, 사용자 결과물 제외). 모델 가중치 이용 조건 미확인.
 
 개발 모토는 **흡수**다 — 외부 도구를 폴더째 두고 부르지 않고, 실제로 쓰는 핵심(모델·최소 추론 코드)만 AudioForge 안으로 옮긴다.
 지금 노래 변환은 `resources/seed-vc`(10.6GB, 전용 실행 환경 6.19GB)를 별도 프로세스로 부른다(`externals/env.json` 의 singing_python·singing_script → `python/song_voice.py`).
