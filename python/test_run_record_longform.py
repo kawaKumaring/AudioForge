@@ -14,6 +14,7 @@ from unittest import mock
 import numpy as np
 
 import chunk_publish
+import local_assets
 import tts_worker
 
 
@@ -33,9 +34,15 @@ class SourceRanges(unittest.TestCase):
 
 class Recorder(unittest.TestCase):
     def setUp(self):
+        # 기록 자리는 _local 안이어야 한다(local_assets 규칙) — 검사용 임시 로컬 루트를 쓴다(test_run_bundle_always 와 같은 방식).
         self.tmp = tempfile.mkdtemp(prefix="af_rr_")
         self.addCleanup(lambda: shutil.rmtree(self.tmp, ignore_errors=True))
-        self.rec = chunk_publish.ChunkRecorder(root=self.tmp)
+        env = mock.patch.dict(os.environ, {local_assets.LOCAL_ROOT_ENV: self.tmp})
+        env.start(); self.addCleanup(env.stop)  # noqa: E702
+        for k in (chunk_publish.ENV, chunk_publish.STAGE_ENV):
+            os.environ.pop(k, None)
+        chunk_publish._AUTO_RUN_ID = None
+        self.rec = chunk_publish.ChunkRecorder()
 
     def _place(self, starts_lens_gaps, sr=24000):
         for g, (start, n, gap) in enumerate(starts_lens_gaps):

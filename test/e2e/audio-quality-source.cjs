@@ -60,7 +60,7 @@ const N = wav('none')
   const call = async (name, a) => { const r = await c.call('audio_quality_' + name, a); assert.equal(r.isError, false, r.text); return r.json }
   const fails = async (name, a, re) => { const r = await c.call('audio_quality_' + name, a); return r.isError && re.test(r.text) }
   const ts = async (p, extra = {}) => (await call('analyze', { path: p, ...extra })).textSource
-  const confirmOmission = (reportId) => call('review', { reportId, action: 'append', start: 0, end: 1, category: 'omission', verdict: 'confirmed', basis: 'user_report', observer: 't', note: 'n', userStatement: '없다' })
+  const confirmOmission = (reportId) => call('review', { reportId, action: 'append', start: 0, end: 0.4, category: 'omission', verdict: 'confirmed', basis: 'user_report', observer: 't', note: 'n', userStatement: '없다' })
   try {
     // ── 실행 출처 · 원문 ──
     const a = await call('analyze', { path: A })
@@ -107,7 +107,7 @@ const N = wav('none')
     const rel = async (x, y, intendedDifference) => (await call('compare', { reportId: x, otherReportId: y, ...(intendedDifference ? { intendedDifference } : {}) })).textRelation
     const b = await id(B), cc = await id(C), d = await id(D), ee = await id(E), ff = await id(F)
     const s1 = await rel(a.reportId, b)
-    ok(s1.status === 'same_source_different_sent' && s1.rawMatch === true && s1.sentMatch === false && s1.sentDiff.before === '7번째' && s1.sentDiff.after === '일곱 번째', '원문 같고 전달문 다름(서수 보정) — 바뀐 곳 표시')
+    ok(s1.status === 'same_source_different_sent' && s1.rawMatch === true && s1.sentMatch === false && s1.sentDiff.before === '7' && s1.sentDiff.after === '일곱 ' && s1.sentDiff.at === 4, '원문 같고 전달문 다름(서수 보정) — 바뀐 곳 표시')
     const s2 = await rel(a.reportId, d)
     ok(s2.status === 'same_source_sent_unrecorded' && s2.normal === true && s2.rawMatch === true && s2.sentMatch === null, '한쪽 전달문 기록 없음 → 같은 전달문이라 하지 않음(원문 일치는 따로) · 손상과 다른 상태')
     const s3 = await rel(a.reportId, ee)
