@@ -2318,7 +2318,7 @@ _METADATA_KEYS = [
     "reference_prompt_degraded", "reference_degrade_reason", "reference_transcript_status",
     "reference_transcript_model", "reference_degraded_emotions",
     # seed_source: env(고정 지정) | random_per_run(기본). 무엇이었는지 알 수 있어야 재현이 된다.
-    "target_language", "seed", "seed_supported", "seed_source",
+    "target_language", "seed", "seed_supported", "seed_source", "seed_policy",
     "speed", "speed_postprocessed", "silence_gap",
     "fallback", "fallback_reason", "elapsed_seconds", "output_sample_rate",
     # pitch 후처리(계약 §2.1) — pitch_method는 production에서 "rubberband" | None 둘뿐.
@@ -3324,6 +3324,8 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             # 실제로 심은 씨앗. 예전에는 여기에 늘 None/False 가 박혀 있었는데,
             # 브리지는 진작부터 씨앗을 받을 수 있었다 — 기록이 사실과 달랐다.
             "seed": run_seed, "seed_supported": True, "seed_source": seed_source,
+            # 조각별 seed 정책(진단 비교용 환경변수 — 기본 per_chunk). 실제 조각 seed 는 조각 기록의 applied_seed.
+            "seed_policy": "same" if (os.environ.get("AUDIOFORGE_DIAG_SEED_POLICY") or "").strip() == "same" else "per_chunk",
             "speed_postprocessed": bool(abs(float(speed) - 1.0) > 1e-6),
             "fallback": fallback, "fallback_reason": fallback_reason,
             "elapsed_seconds": round(_time.monotonic() - t_start, 2), "output_sample_rate": int(sr),
@@ -3603,7 +3605,7 @@ _RUN_HEADER_FROM_METADATA = (
     "termination_reason", "parser_version", "parsed_plan_sha8", "segment_count", "chunk_count",
     "explicit_pause_count", "total_pause_ms",
     # 난수 씨앗 — 이것이 없으면 어떤 비교도 재현할 수 없다.
-    "seed", "seed_supported", "seed_source",
+    "seed", "seed_supported", "seed_source", "seed_policy",
     # 참조를 어떻게 먹였는가(구간·방식·전사 상태). 전사 전문은 담기지 않는다(길이·해시8·언어만).
     "reference_region", "prompt_source", "x_vector_only_mode",
     "reference_transcript_language", "reference_transcript_len", "reference_transcript_sha8",
