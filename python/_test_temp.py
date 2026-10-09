@@ -4,7 +4,7 @@
   **단독으로** 돌리면 시스템 임시 폴더(C)로 갔다. C 에 AudioForge 검사 잔해가 13,879개(570MB) 쌓여 있었다.
 ★쓰는 법: 검사 파일의 **첫 import** 로 `import _test_temp  # noqa: F401` — tempfile 이 자리를 정하기 전에.
   - 부모(게이트·node 검사)가 정해 준 자리(`AF_TEST_RUN_DIR`)가 있으면 그대로 쓴다 — 지우는 것은 부모 몫.
-  - 없으면 `_local/tmp/r<pid>` 를 만들어 쓰고, 끝날 때 지운다. `AF_KEEP_TEST_TEMP=1` 이면 남긴다.
+  - 없으면 `<테스트 폴더>/임시/r<pid>` 를(테스트 폴더 = 본체 저장소 `_local/테스트`, _test_root.py) 만들어 쓰고, 끝날 때 지운다. `AF_KEEP_TEST_TEMP=1` 이면 남긴다.
   ★죽은 실행의 폴더 청소는 node 쪽(_temp-root.mjs)만 한다 — 윈도우 파이썬의 os.kill(pid, 0) 은
     '있는가' 가 아니라 **그 프로세스를 끝낸다**(문서화된 동작).
 """
@@ -13,7 +13,9 @@ import os
 import shutil
 import tempfile
 
-_BASE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), '_local', 'tmp')
+import _test_root
+
+_BASE = os.path.join(_test_root.TEST_ROOT, _test_root.SUB['temp'])
 _inherited = os.environ.get('AF_TEST_RUN_DIR') or ''
 
 if _inherited and os.path.normcase(os.path.dirname(os.path.abspath(_inherited))) == os.path.normcase(_BASE) \

@@ -9,7 +9,7 @@ const { McpClient } = require('../../tools/mcp/client.cjs');
     await call('app_start', { width: 1100, height: 820 }); await call('app_mode', { mode: 'reader' });
     // 낭독 화면이 실제로 뜬 뒤에 찍는다 — 바로 찍으면 앞 화면(음악 작업실)이 찍혔다(2026-10-03 캡처 확인).
     await check('!!document.querySelector("[data-testid=reader-workspace]") && !!document.querySelector("[data-testid=reader-library-dialog]")');
-    await call('ui_screenshot', { savePath: process.cwd() + '/_local/reader-empty-redesign.png' });
+    await call('ui_screenshot', { savePath: 'reader-empty-redesign.png' });
     const file = await call('test_input', { kind: 'text', name: '밤의 도서관 — 긴 소설.txt', content: Array.from({length:5000}, (_, i) => `${i+1}번째 문단. 창밖에는 비가 내리고 있었다. 책장을 넘기는 소리가 고요한 방 안을 채웠다.`).join('\n') });
     await call('dialog_queue', {kind:'open', answers:[[file.path]]}); await call('ui_click', {target:'testid:reader-add-text'});
     await check('document.querySelector("[data-testid=reader-body]")?.dataset.windowed === "1"');
@@ -22,7 +22,7 @@ const { McpClient } = require('../../tools/mcp/client.cjs');
     await check('window.__readerStore.getState().books[0].position===25');
     await call('window_resize', {width:800,height:600});
     await check('(()=>{const b=document.querySelector("[data-testid=reader-body]").getBoundingClientRect();const f=document.querySelector("[data-testid=reader-controls]").getBoundingClientRect();return b.height>150 && b.bottom<=f.top && f.bottom<=innerHeight+2 && document.documentElement.scrollWidth<=innerWidth})()');
-    await call('ui_screenshot', {savePath:process.cwd()+'/_local/reader-long-narrow.png'});
+    await call('ui_screenshot', {savePath:'reader-long-narrow.png'});
     const errors = await call('errors'); if (errors.count) throw Error(JSON.stringify(errors));
   } finally { await c.call('app_stop'); await c.close(); }
 })().catch(e => {console.error(e);process.exitCode=1});

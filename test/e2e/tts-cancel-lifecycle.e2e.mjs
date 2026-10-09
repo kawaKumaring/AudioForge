@@ -3,6 +3,8 @@
 // (PythonRunner.cancel/taskkill /T → child close 확인 → settlement → done → cancelled → idle)를 검증한다.
 // 상대 순서(cancel_clicked ≤ cancelling ≤ child_exit ≤ idle)와 race 승자·kill 실패·tree 종료·중복 신호 0을 단언.
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import { createRequire } from 'node:module'
+const TR = createRequire(import.meta.url)('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 import { _electron as electron } from 'playwright'
 import { execSync } from 'child_process'
 import fs from 'fs'; import path from 'path'; import os from 'os'
@@ -11,7 +13,7 @@ import { snapshotTree, refClipDirs, qwenVenvPids, qwenJobDirs, enterStudio } fro
 const APP = process.cwd()
 const FIXTURE = path.join(APP, 'test', 'e2e', 'fixtures', 'synthetic_tree.py')
 const RES_DIR = path.join(APP, 'resources')
-const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots'); fs.mkdirSync(SHOT, { recursive: true })
+const SHOT = TR.dir('shots', 'e2e'); fs.mkdirSync(SHOT, { recursive: true })
 let failed = 0
 const logLines = []
 const log = (...a) => { const s = a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '); logLines.push(s); console.log('[cancel]', s) }

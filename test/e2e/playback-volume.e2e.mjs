@@ -20,6 +20,8 @@
 // 실행: node test/e2e/playback-volume.e2e.mjs   (사전: npm run build. GPU·합성 불필요)
 //   AF_E2E_REFERENCE 로 실제 말이 든 참조를 준다(없으면 저장소 fixture).
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import { createRequire } from 'node:module'
+const TR = createRequire(import.meta.url)('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
@@ -31,7 +33,7 @@ const SRC = (process.env.AF_E2E_REFERENCE || '').trim()
 if (!fs.existsSync(SRC)) { console.error(`참조 없음: ${SRC}`); process.exit(2) }
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
 
-const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots')
+const SHOT = TR.dir('shots', 'e2e')
 fs.mkdirSync(SHOT, { recursive: true })
 const STAMP = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 15)
 const TARGET = 0.35      // 슬라이더 칸이 0.05 이므로 Home 에서 오른쪽 7번

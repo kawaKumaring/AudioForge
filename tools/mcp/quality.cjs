@@ -1,7 +1,7 @@
  'use strict'
 // Local, read-only source inspection. Artifacts are confined to a private analysis directory.
 const fs=require('fs'),path=require('path'),crypto=require('crypto'),{spawn}=require('child_process')
-const ROOT=path.resolve(__dirname,'../..'),OUT=path.join(ROOT,'_local','audio-quality')
+const ROOT=path.resolve(__dirname,'../..'),OUT=require('../test-root.cjs').dir('tools','검수MCP')  // 테스트 전용 폴더(_local/테스트/도구/검수MCP)
 const AF=require('./audioforge.cjs');const children=new Set();let busy=false
 const props={userApproved:{type:'boolean',description:'사용자가 해당 파일 분석을 허락한 경우만 true'},path:{type:'string'},reportId:{type:'string'},otherReportId:{type:'string'},start:{type:'number',minimum:0},end:{type:'number',minimum:0}}
 const tool=(name,description,properties={},required=[])=>({name:'audio_quality_'+name,description,inputSchema:{type:'object',properties,required,additionalProperties:false}})

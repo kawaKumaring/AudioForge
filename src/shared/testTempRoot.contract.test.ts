@@ -3,12 +3,14 @@ import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
 
 // ★검사를 한 파일씩 곧바로 돌려도 C 드라이브로 가지 않는다(2026-09-28 지시 "C 드라이브로 가지 않아야 한다").
 //   게이트는 맨 위에서 임시 자리를 바꾸지만, 검사 파일을 단독으로 돌리면 그 파일의 import 순서가 전부다.
 //   검사 도구(Playwright)는 불러오는 순간 임시 자리를 정해 두므로 **첫 import** 여야 한다(실측 — 둘째 줄이면 늦다).
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..')
 const E2E = path.join(ROOT, 'test', 'e2e')
+const TR = createRequire(import.meta.url)(path.join(ROOT, 'tools', 'test-root.cjs'))   // 테스트 전용 폴더(_local/테스트)
 
 test('실제 앱·화면 검사 파일은 첫 import 로 임시 자리를 바꾼다', () => {
   const bad: string[] = []
@@ -65,7 +67,7 @@ test('검사 실행이 끝나면 그 실행의 임시 폴더가 사라진다 · 
   const out = spawnSync(process.execPath, ['--input-type=module', '-e', script], { encoding: 'utf8', env })
   assert.equal(out.status, 0, out.stderr)
   const got = JSON.parse(out.stdout.trim().split(/\r?\n/).pop() as string)
-  assert.equal(path.dirname(got.dir), path.join(ROOT, '_local', 'tmp'))
+  assert.equal(path.dirname(got.dir), path.join(TR.TEST_ROOT, TR.SUB.temp))
   assert.match(path.basename(got.dir), /^r\d+$/)
   assert.equal(got.tmp, got.dir, '이 실행의 임시 자리가 제 폴더가 아니다')
   assert.equal(got.child, got.dir, '자식이 부모 폴더를 물려받지 않았다')

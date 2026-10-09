@@ -7,7 +7,7 @@ const {McpClient}=require('../../tools/mcp/client.cjs');
  const paths=[];for(let i=1;i<=8;i++){const f=await call('test_input',{kind:'text',name:`달빛 도서관 ${i}권.txt`,content:Array.from({length:24},(_,j)=>`${i}권 ${j+1}장. 문을 열자 오래된 책의 향기가 바람을 타고 전해졌다. 서가 끝에서 작은 불빛이 흔들렸다.`).join('\n')});paths.push(f.path)}
  await call('dialog_queue',{kind:'open',answers:[paths]});await call('ui_click',{target:'testid:reader-add-text'});
  await check('window.__readerStore.getState().books.length===8');
- await call('ui_screenshot',{savePath:process.cwd()+'/_local/reader-library-after.png'});
+ await call('ui_screenshot',{savePath:'reader-library-after.png'});
  await call('ui_set',{target:'testid:reader-library-search',value:'3권'});
  await check('document.querySelectorAll("[data-testid=reader-library-book]").length===1');
  await call('ui_click',{target:'testid:reader-library-book'});
@@ -19,11 +19,11 @@ const {McpClient}=require('../../tools/mcp/client.cjs');
  await call('ui_click',{target:'testid:reader-library'});
  await call('dialog_queue',{kind:'open',answers:[[paths[2]]]});await call('ui_click',{target:'testid:reader-add-text'});
  await check('window.__readerStore.getState().books.length===8 && document.querySelector("[data-testid=reader-notice]").textContent.includes("이미")');
- await call('ui_screenshot',{savePath:process.cwd()+'/_local/reader-after.png'});
+ await call('ui_screenshot',{savePath:'reader-after.png'});
  await call('ui_click',{target:'testid:reader-voice'});
- await call('ui_screenshot',{savePath:process.cwd()+'/_local/reader-voice-after.png'});
+ await call('ui_screenshot',{savePath:'reader-voice-after.png'});
  await call('ui_click',{target:'testid:voice-source-reference'});
- await call('ui_screenshot',{savePath:process.cwd()+'/_local/reader-reference-after.png'});
+ await call('ui_screenshot',{savePath:'reader-reference-after.png'});
  await call('ui_click',{target:'testid:reader-voice-file'});
  await check('document.querySelector("[data-testid=reader-voice-file]")!==null');
  await call('ui_key',{keys:'Escape'});
@@ -33,11 +33,11 @@ const {McpClient}=require('../../tools/mcp/client.cjs');
  await check('window.__readerStore.getState().books.length===8');
  await call('ui_click',{target:'testid:reader-library-remove'});await check('window.__readerStore.getState().books.length===6');
  await call('window_resize',{width:800,height:660});
- await call('ui_screenshot',{savePath:process.cwd()+'/_local/reader-library-narrow.png'});
+ await call('ui_screenshot',{savePath:'reader-library-narrow.png'});
  // 정리를 마치면 '취소' 로 정리 모드를 나온다 — 정리 중에는 '이어서 읽기' 가 보이지 않는다.
  await call('js_eval',{code:'(()=>{const b=[...document.querySelectorAll("[data-testid=reader-library-dialog] button")].find(x=>x.textContent.trim()==="취소");if(!b)throw Error("취소 단추 없음");b.click();return true})()'});
  await call('ui_click',{target:'testid:reader-resume'});
- await call('ui_screenshot',{savePath:process.cwd()+'/_local/reader-narrow.png'});
+ await call('ui_screenshot',{savePath:'reader-narrow.png'});
  // 조작 막대가 **보일 때만** 잰다 — 숨은 막대(0×0)끼리 견주면 늘 참이다.
  await check('(()=>{const f=document.querySelector("[data-testid=reader-controls]").getBoundingClientRect(); const p=document.querySelector("[data-testid=reader-play]").getBoundingClientRect(); return f.width>0&&p.width>0&&f.bottom<=innerHeight+1&&Math.abs(f.x+f.width/2-p.x-p.width/2)<2})()');
  await call('ui_click',{target:'testid:reader-library'});

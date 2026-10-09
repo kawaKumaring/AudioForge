@@ -3,8 +3,10 @@
 // C 감정 요약 배지 store 일치(고급 설정 > 음성 탭) / D 반응형(800x600·125/150% zoom) 수평 스크롤·겹침 없음.
 // 실행: npm run test:e2e:tts-editor-ux  (사전 npm run build). 실합성 없음 → GPU 불필요.
 // 참조 자산: AF_E2E_REFERENCE 우선, 없으면 이번 실행 전용 합성 WAV(파일 주입해 tts 모드 진입용, 합성 안 함).
-// 출력/로그는 비추적 _local/artifacts/diagnostics/e2e-shots 만. 사용자 절대경로 하드코딩 금지.
+// 출력/로그는 테스트 전용 폴더(_local/테스트/화면/e2e) 만. 사용자 절대경로 하드코딩 금지.
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import { createRequire } from 'node:module'
+const TR = createRequire(import.meta.url)('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'; import os from 'os'
 import {
@@ -19,7 +21,7 @@ const SYNTH = makeSyntheticWav(
   path.join(os.tmpdir(), 'af_e2e_' + randomUUID() + '.wav'), 12)
 const SRC = REF_ENV && REF_ENV.trim() ? REF_ENV.trim() : SYNTH
 const RES_DIR = path.join(APP, 'resources')
-const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots'); fs.mkdirSync(SHOT, { recursive: true })
+const SHOT = TR.dir('shots', 'e2e'); fs.mkdirSync(SHOT, { recursive: true })
 let failed = 0
 const logLines = []
 const log = (...a) => { const s = a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '); logLines.push(s); console.log('[editor-ux]', s) }

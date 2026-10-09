@@ -63,10 +63,22 @@ def _recorded(env_name, key):
         return ''
 
 
+# ★노래 변환은 **앱 안의 흡수본**(python/song_vc + externals/song_vc_models)이 기본이다(2026-10-10).
+#   GPU 같은 곡 비교에서 옛 외부 변환기와 같은 수준(로그 멜 차이 = 옛 엔진의 실행마다 차이), 사용자 청취 "ABC 다 비슷하다".
+#   해석기는 앱 런타임(gptsovits_venv_app), 인자·출력 이름은 원본 inference.py 와 같다. 경로는 이 저장소 기준(특정 PC 경로 아님).
+#   AF_SONG_VC_ENGINE=external 이면 예전처럼 env.json 의 singing_* (외부 변환기) — 외부 폴더를 정리하기 전까지의 되돌림 길.
+ENGINE_ENV = 'AF_SONG_VC_ENGINE'
+ABSORBED_PYTHON = os.path.join(ROOT, 'externals', 'runtime', 'gptsovits_venv_app', 'Scripts', 'python.exe')
+ABSORBED_SCRIPT = os.path.join(ROOT, 'python', 'song_vc', 'convert.py')
+
+
 def converter():
     """변환기 연결 정보. 기록이 없거나 파일이 없으면 **사유를 들고** 실패한다."""
-    py = _recorded(PYTHON_ENV, PYTHON_KEY)
-    sc = _recorded(SCRIPT_ENV, SCRIPT_KEY)
+    if os.environ.get(ENGINE_ENV, '') != 'external':
+        py, sc = ABSORBED_PYTHON, ABSORBED_SCRIPT
+    else:
+        py = _recorded(PYTHON_ENV, PYTHON_KEY)
+        sc = _recorded(SCRIPT_ENV, SCRIPT_KEY)
     missing = []
     if not py:
         missing.append('해석기(%s 또는 env.json 의 "%s")' % (PYTHON_ENV, PYTHON_KEY))

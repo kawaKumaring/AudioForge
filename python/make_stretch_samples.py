@@ -7,7 +7,7 @@
 
 실행:
   python -X utf8 python/make_stretch_samples.py [나갈폴더]
-기본 나갈 폴더: _local/artifacts/dubbing/stretch-samples  (저장소에 올라가지 않는다)
+기본 나갈 폴더: 테스트 폴더 _local/테스트/결과/dubbing/stretch-samples  (저장소에 올라가지 않는다)
 """
 import os
 import sys
@@ -18,6 +18,7 @@ import numpy as np
 import librosa
 
 import audio_fit
+import _test_root   # 테스트 전용 폴더(_local/테스트) — 2026-10-10
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 FIXTURE = os.path.join(REPO, 'test', 'fixtures', 'audio', 'ko-speech-7s.wav')
@@ -31,8 +32,8 @@ def median_f0(path):
 
 
 def main():
-    out_dir = sys.argv[1] if len(sys.argv) > 1 else os.path.join(
-        REPO, '_local', 'artifacts', 'dubbing', 'stretch-samples')
+    out_dir = sys.argv[1] if len(sys.argv) > 1 else _test_root.test_dir(
+        'results', 'dubbing', 'stretch-samples')
     os.makedirs(out_dir, exist_ok=True)
 
     src_sec = audio_fit.probe_duration(FIXTURE)

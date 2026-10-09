@@ -4,7 +4,7 @@ const {McpClient}=require('../../tools/mcp/client.cjs');
 (async()=>{const c=new McpClient();await c.start();try{
  const call=async(name,args={})=>{const r=await c.call(name,args);if(r.isError)throw Error(r.text);return r.json};
  const check=async code=>{const r=await call('ui_wait',{code,timeoutMs:8000});assert.equal(r.met,true,code);console.log('PASS',code)};
- const shot=async name=>{await call('ui_wait',{code:'document.getAnimations().every(a=>a.playState!=="running" || a.effect?.getTiming().iterations===Infinity)',timeoutMs:2500});await call('ui_screenshot',{savePath:process.cwd()+`/_local/design-${name}.png`})};
+ const shot=async name=>{await call('ui_wait',{code:'document.getAnimations().every(a=>a.playState!=="running" || a.effect?.getTiming().iterations===Infinity)',timeoutMs:2500});await call('ui_screenshot',{savePath:`design-${name}.png`})};
  await call('app_start',{width:1100,height:820});await call('app_mode',{mode:'music'});
  const tone=await call('test_input',{kind:'tone',seconds:30});await call('ui_drop_files',{target:'testid:source-card',paths:[tone.path]});
  await check('!!window.__afStore.getState().fileInfo && Array.from(document.querySelectorAll("button")).some(b=>b.getAttribute("aria-label")==="보컬 · 반주")');

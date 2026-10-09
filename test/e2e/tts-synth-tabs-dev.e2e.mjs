@@ -2,8 +2,10 @@
 // 실행: node test/e2e/tts-synth-tabs-dev.e2e.mjs        (GPU·음성 생성 없음. 참조 준비(분석·구간 자동 확정)만 돈다)
 // 확인: 합성 메뉴 아래 전체 폭 탭 / 한 명 = 목소리+대사 한 칸 / 여러 명 = 단일 목소리 영역 없음 / 준비 완료 후·준비 도중 전환 시
 //       첫 인물이 기본 목소리(확정 구간 포함)를 이어받음 / 같은 음성 재등록·재확정 요구 없음 / 대화 추가 하나(기존·새) / 취소 무변경 /
-//       같은 인물 카드 목소리 공유 / 탭 전환 무손실 / 좁은 창 겹침·넘침 0. 화면 캡처 4장을 _local 진단 폴더에 남긴다.
+//       같은 인물 카드 목소리 공유 / 탭 전환 무손실 / 좁은 창 겹침·넘침 0. 화면 캡처 4장을 테스트 전용 폴더(화면/)에 남긴다.
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import { createRequire } from 'node:module'
+const TR = createRequire(import.meta.url)('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 import { spawn, execFileSync } from 'child_process'
 import { chromium } from 'playwright'
 import fs from 'fs'
@@ -12,7 +14,7 @@ import path from 'path'
 import { isolatedInput, cleanupIsolated } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
-const SHOTS = path.join(APP, '_local', 'artifacts', 'diagnostics', 'ux-redesign-20260905', 'shots')
+const SHOTS = TR.dir('shots', 'ux-redesign-20260905')
 fs.mkdirSync(SHOTS, { recursive: true })
 // 18초 실제 발화 fixture(저장소 테스트 자산) — 10초를 넘어 기본 목소리가 **구간 클립**을 쓰는, 첨부 화면과 같은 상황.
 const FIX = path.join(APP, 'test', 'fixtures', 'audio', 'ko-speech-region-18s.wav')

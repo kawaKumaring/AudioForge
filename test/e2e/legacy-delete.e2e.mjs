@@ -11,6 +11,8 @@
 //   3) 껐다 켜도 지워진 채다
 //   4) 옆 기록(자동 저장)과 가져온 카드 작업은 그대로다
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import { createRequire } from 'node:module'
+const TR = createRequire(import.meta.url)('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
@@ -139,7 +141,7 @@ try {
   const finalCheck = await countLegacy(win)
   ok(finalCheck.lab === -1, '★재시작 뒤 옛 화면을 다녀와도 되살아나지 않는다', finalCheck)
 
-  const shot = path.join(APP, '_local', 'artifacts', 'diagnostics', 'legacy-delete.png')
+  const shot = TR.shot('legacy-delete.png')
   fs.mkdirSync(path.dirname(shot), { recursive: true })
   await win.screenshot({ path: shot })
   console.log('  [증거] 캡처:', shot)

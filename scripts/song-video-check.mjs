@@ -20,6 +20,7 @@ import { createHash } from 'node:crypto'
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { createRequire } from 'node:module'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const [video, voice, workRoot] = process.argv.slice(2)
@@ -47,7 +48,7 @@ const py = appPython()
 if (!py) { console.error('파이썬을 찾지 못했습니다(AUDIOFORGE_PYTHON · externals/env.json)'); process.exit(2) }
 
 const reqId = `videocheck-${Date.now().toString(36)}`
-const work = path.join(workRoot || path.join(ROOT, '_local', 'song-video-check'), reqId)
+const work = path.join(workRoot || createRequire(import.meta.url)('../tools/test-root.cjs').dir('results', 'song-video-check'), reqId)
 fs.mkdirSync(work, { recursive: true })
 
 let passed = 0

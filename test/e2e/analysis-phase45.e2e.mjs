@@ -8,6 +8,8 @@
 //
 // 원문은 남기지 않는다 — 글자 수·문단 수·SHA 앞자리·소요 시간만 본다.
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import { createRequire } from 'node:module'
+const TR = createRequire(import.meta.url)('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
@@ -481,7 +483,7 @@ try {
     })
     material.push({ name, chars: text.length, sha8: sha8(text), readyMs: r.ms, ...cap })
   }
-  const outDir = path.join(APP, '_local', 'artifacts', 'diagnostics')
+  const outDir = TR.dir('records', 'analysis-phase45')
   fs.mkdirSync(outDir, { recursive: true })
   const outPath = path.join(outDir, 'input-estimator-review.json')
   fs.writeFileSync(outPath, JSON.stringify({ generatedFor: 'INPUT_ESTIMATOR_UI_REVIEW', material },
@@ -491,7 +493,7 @@ try {
   const collected = material.filter((m) => !m.skipped).length
   const skipped = material.filter((m) => m.skipped).length
   ok(collected >= 3, '사용자 확인 자료 수집(자산 없이 가능한 시나리오)',
-    `수집 ${collected} / 건너뜀 ${skipped} → _local/artifacts/diagnostics/`)
+    `수집 ${collected} / 건너뜀 ${skipped} → 테스트/기록/analysis-phase45/`)
   for (const m of material) {
     if (m.skipped) { info(`자료[${m.name}]`, m.skipped); continue }
     info(`자료[${m.name}]`, `${m.chars}자 sha8=${m.sha8} status=${m.status} | ${m.summary}`)

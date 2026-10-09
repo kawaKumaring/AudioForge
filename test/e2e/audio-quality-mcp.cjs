@@ -2,7 +2,8 @@
 'use strict'
 const assert=require('node:assert/strict'),fs=require('fs'),path=require('path'),crypto=require('crypto')
 const {McpClient}=require('../../tools/mcp/client.cjs')
-const ROOT=path.resolve(__dirname,'../..'),dir=fs.mkdtempSync(path.join(ROOT,'_local/tmp/quality-test-'))
+const TR=require('../../tools/test-root.cjs')
+const ROOT=path.resolve(__dirname,'../..'),dir=fs.mkdtempSync(path.join(TR.dir('temp'),'quality-test-'))
 function tone(file){const sr=24000,n=sr*2,b=Buffer.alloc(44+n*4);b.write('RIFF');b.writeUInt32LE(b.length-8,4);b.write('WAVEfmt ',8);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);b.writeUInt16LE(2,22);b.writeUInt32LE(sr,24);b.writeUInt32LE(sr*4,28);b.writeUInt16LE(4,32);b.writeUInt16LE(16,34);b.write('data',36);b.writeUInt32LE(n*4,40);for(let i=0;i<n;i++){const v=i<sr*.6||i>=sr*1.3?Math.round(12000*Math.sin(i*2*Math.PI*440/sr)):0;b.writeInt16LE(v,44+i*4);b.writeInt16LE(-v,46+i*4)}fs.writeFileSync(file,b)}
 const sha=p=>crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex')
 ;(async()=>{const c=new McpClient();await c.start();let count=0;const ok=(v,m)=>{assert.ok(v,m);count++;console.log('PASS',m)};const call=async(n,a={})=>{const r=await c.call('audio_quality_'+n,a);assert.equal(r.isError,false,r.text);return r};try{
@@ -27,7 +28,7 @@ const sha=p=>crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex'
  ok(sha(f)===before,'source unchanged by all tools')
  fs.appendFileSync(f,Buffer.from([0,0]));ok(!(await call('read',{reportId:a.reportId})).json.sourceCurrent,'changed source reported');ok((await c.call('audio_quality_plot',{reportId:a.reportId})).isError,'stale plots blocked')
  const changed=(await call('analyze',{path:f})).json;ok(changed.reportId!==a.reportId&&!changed.cached,'source byte change invalidates cache')
- ok((await c.call('audio_quality_analyze',{path:path.join(ROOT,'_local/experiments/longform-2026-09-25/run/synthesized.wav')})).isError,'outside fixture permission guard')
+ ok((await c.call('audio_quality_analyze',{path:path.join(TR.TEST_ROOT,TR.SUB.results,'experiments/longform-2026-09-25/run/synthesized.wav')})).isError,'outside fixture permission guard')
  ok((await c.call('audio_quality_read',{reportId:'../x'})).isError,'report traversal rejected')
  console.log('RESULT',count,'checks, 0 fail')
  }finally{await c.close()}})().catch(e=>{console.error(e);process.exitCode=1})

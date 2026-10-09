@@ -56,7 +56,7 @@ module.exports = { McpClient }
 if (require.main === module) {
   (async () => {
     const argv = process.argv.slice(2)
-    const outIdx = argv.indexOf('--out'); const OUT = outIdx >= 0 ? argv[outIdx + 1] : path.join(__dirname, '..', '..', '_local', 'tmp', 'mcp-client')
+    const outIdx = argv.indexOf('--out'); const OUT = outIdx >= 0 ? argv[outIdx + 1] : path.join(require('../test-root.cjs').TEST_ROOT, '임시', 'mcp-client')
     const c = new McpClient({ onStderr: (s) => process.stderr.write(s) })
     await c.start()
     try {

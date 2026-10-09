@@ -12,7 +12,9 @@ import { fileURLToPath } from 'node:url'
 const require = createRequire(import.meta.url)
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..')
 const AF = require(path.join(ROOT, 'tools', 'mcp', 'audioforge.cjs'))
-const session = { tmp: path.join(ROOT, '_local', 'tmp', 'mcp-test-session') }
+const TR = require(path.join(ROOT, 'tools', 'test-root.cjs'))   // 테스트 전용 폴더(_local/테스트)
+const TEMP = path.join(TR.TEST_ROOT, TR.SUB.temp)
+const session = { tmp: path.join(TEMP, 'mcp-test-session') }
 
 test('★검사용 자리 밖 미디어 경로는 막는다 — 문자열 안에 묻혀 있어도', () => {
   for (const v of [
@@ -20,14 +22,14 @@ test('★검사용 자리 밖 미디어 경로는 막는다 — 문자열 안에
     ['D:\\개인\\목소리.wav'],
     { input: 'E:/Videos/clip.mp4' },
     'window.api.audio.getFileUrl("C:/Users/me/rec.m4a")',
-    path.join(ROOT, '_local', 'tmp', '..', '..', 'resources', 'voice.wav'),   // .. 로 빠져나가기
+    path.join(TEMP, '..', '..', 'resources', 'voice.wav'),   // .. 로 빠져나가기
   ]) assert.throws(() => AF.guardMedia(v, session, false), /허락/, JSON.stringify(v))
 })
 
 test('검사용 자리 안 · 미디어가 아닌 파일 · 허락 표시는 통과한다', () => {
   for (const v of [
     path.join(ROOT, 'test', 'fixtures', 'audio', 'ko-speech-region-18s.wav'),
-    path.join(ROOT, '_local', 'tmp', 'x', 'a.wav'),
+    path.join(TEMP, 'x', 'a.wav'),
     path.join(session.tmp, 'inputs', '말소리-1.wav'),
     'C:/Users/someone/Documents/책.txt',
     { method: 'settings.get' },
@@ -36,7 +38,7 @@ test('검사용 자리 안 · 미디어가 아닌 파일 · 허락 표시는 통
 })
 
 test('소리 수치 — 만든 사인파의 참값과 맞는다', () => {
-  const dir = path.join(ROOT, '_local', 'tmp', 'mcp-contract')
+  const dir = path.join(TEMP, 'mcp-contract')
   fs.mkdirSync(dir, { recursive: true })
   const f = path.join(dir, 'tone.wav')
   AF.writeTone(f, 1.5, 440)
@@ -52,7 +54,7 @@ test('소리 수치 — 만든 사인파의 참값과 맞는다', () => {
 })
 
 test('WAV 가 아니면 사유를 말한다', () => {
-  const dir = path.join(ROOT, '_local', 'tmp', 'mcp-contract2')
+  const dir = path.join(TEMP, 'mcp-contract2')
   fs.mkdirSync(dir, { recursive: true })
   const f = path.join(dir, 'x.wav')
   fs.writeFileSync(f, 'not a wav')

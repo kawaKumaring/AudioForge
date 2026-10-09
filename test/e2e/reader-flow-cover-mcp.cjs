@@ -26,7 +26,7 @@ await wait('window.__readerStore.getState().books.find(b=>b.id==="flow-2").compl
 await click('reader-play');
 await call('window_resize',{width:800,height:600});
 check(await ev('(()=>{const r=document.querySelector("[data-testid=reader-controls]").getBoundingClientRect();return r.bottom<=innerHeight&&r.left>=0&&r.right<=innerWidth})()'),'작은 창에서도 고정 재생기 화면 안');
-await click('reader-chapters');await call('ui_screenshot',{savePath:'_local/reader-flow-work.png'});
+await click('reader-chapters');await call('ui_screenshot',{savePath:'reader-flow-work.png'});
 await call('app_restart',{keepData:true});await call('app_mode',{mode:'reader'});await wait('Array.from(document.querySelectorAll("[data-testid=reader-cover-image]")).some(i=>i.complete&&i.naturalWidth>0)','재시작 뒤 표지 복원');
 await click('reader-group-menu');await click('reader-cover-clear');await wait('window.__readerStore.getState().books.every(b=>!b.cover)','기본 책 표지로 되돌리기');
 const folder=path.join(base,'표지 있는 작품');fs.mkdirSync(folder);fs.writeFileSync(path.join(folder,'cover.png'),bytes);fs.writeFileSync(path.join(folder,'1화.txt'),'폴더 표지 확인입니다.');

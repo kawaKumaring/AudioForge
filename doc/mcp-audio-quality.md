@@ -49,7 +49,7 @@ userApproved는 사용자 자료 열람 승인이 실제로 있을 때만 지정
 
 `node test/e2e/audio-quality-mcp.cjs`: 실제 MCP 표준입출력 27건 통과. 반대 위상, 페이지 원문 복원, 출처 조회, 첨부 기록/원본 변경, 잘못된 음원, 원본 불변, 추출 샘플 전량 일치, 네이티브 이미지, 경로 가드를 포함한다.
 
-기존 생성 파일 4개를 실제 도구로 분석하고 모든 section을 조회했다. CPU 전사·비교·이미지·구간 추출까지 완료했다. 결과: _local/quality-audit-2026-10-04/mcp-results.json 및 mcp-followup.json. 이 시점에는 사람 청취 판정을 수행하지 않았다(이후 청취 결과는 synthesis-quality-status·synthesis-ordinal-experiment 문서).
+기존 생성 파일 4개를 실제 도구로 분석하고 모든 section을 조회했다. CPU 전사·비교·이미지·구간 추출까지 완료했다. 결과: _local/테스트/결과/quality-audit-2026-10-04/mcp-results.json 및 mcp-followup.json. 이 시점에는 사람 청취 판정을 수행하지 않았다(이후 청취 결과는 synthesis-quality-status·synthesis-ordinal-experiment 문서).
 
 ## 0.4.0 확장 — 문장·연결부·참조·판정 (2026-10-04)
 
@@ -105,7 +105,7 @@ append 필수: start/end, category(omission/pronunciation/repetition/noise/join/
 - before-chunk3 마지막 '7번째 장면이다'는 small/base 모두 누락 후보. 문장 시각은 만들지 않고 끝부분 11.5~15.91초 근거 묶음과 기계 관측 uncertain을 보존했다.
 - 실제 참조 조각을 분석해 manifest의 b51c8648… 해시와 일치 확인. 원본 참조 내 선택 시작/끝과 다른 후보의 적합성은 이 기록만으로 알 수 없다.
 - 90초 장문의 실제 연결 좌표는 없음. 측정 성공으로 꾸미지 않았다. 연결부 측정 자체는 위치·진폭을 아는 2채널 검사 음원에서 샘플 차이와 6.0206dB 변화를 확인했다.
-- 산출물: _local/quality-audit-2026-10-04/mcp-extension-verified.json, mcp-evidence-final.png. 전사는 로컬 CPU만 사용했다. 이 절 작성 시점에는 사람 청취 없음.
+- 산출물: _local/테스트/결과/quality-audit-2026-10-04/mcp-extension-verified.json, mcp-evidence-final.png. 전사는 로컬 CPU만 사용했다. 이 절 작성 시점에는 사람 청취 없음.
 
 ## 대사 출처 연결 (2026-10-09)
 - analyze 의 기대 대사는 기본으로 **그 음원을 만든 실행 기록**에서 가져온다(tools/mcp/quality_source.cjs). 실행 기록 manifest 의 result.sha256 = 분석 파일 지문인 기록을 찾는다(runId 를 주면 그 기록만, 지문이 다르면 거부). 원문 = script.private.json(기록된 원문 지문과 대조, 다르면 거부), 실제 전달문 = sent.private.json 또는 chunks/*.private.json.

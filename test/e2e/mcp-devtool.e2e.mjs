@@ -21,6 +21,7 @@ import { createRequire } from 'module'
 const require = createRequire(import.meta.url)
 const { McpClient } = require('../../tools/mcp/client.cjs')
 const APP = process.cwd()
+const TR = require('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 if (!fs.existsSync(path.join(APP, 'out/main/index.js'))) { console.error('빌드 필요'); process.exit(2) }
 
 let passed = 0
@@ -49,7 +50,7 @@ try {
   tmpDir = st.json?.userData ? path.join(APP, path.dirname(st.json.userData)) : null
   const main = st.json?.windows?.find((w) => w.kind === 'main')
   ok(main && main.x <= -20000 && main.y <= -20000 && main.focused === false, `★창이 화면 밖 · 포커스 없음 (x=${main?.x}, focused=${main?.focused})`)
-  ok(/^_local[\\/]tmp[\\/]mcp-/.test(st.json?.userData || ''), '★사용자 데이터는 저장소 안 임시 폴더(사용자 설정 불변 · C 드라이브 아님)', st.json?.userData)
+  ok(!!st.json?.userData && path.resolve(APP, st.json.userData).startsWith(path.join(TR.TEST_ROOT, TR.SUB.temp, 'mcp-')), '★사용자 데이터는 저장소 안 임시 폴더(사용자 설정 불변 · C 드라이브 아님)', st.json?.userData)
 
   const snap = await c.call('ui_snapshot')
   ok(!snap.isError && snap.text.length > 50, `화면 구조(접근성 트리) ${snap.text.length}자`)
@@ -73,7 +74,7 @@ try {
   ok(miss.isError && /noSuch\.thing/.test(miss.text), '없는 기능은 오류로 안내')
 
   // 파일 창: 큐 → 비면 취소. 낭독의 '텍스트 추가' 는 pickTexts → 본체 대화상자를 탄다.
-  const book = path.join(APP, '_local', 'tmp', 'mcp-e2e-book.txt')
+  const book = path.join(TR.dir('temp'), 'mcp-e2e-book.txt')
   fs.writeFileSync(book, '첫째 문단이다. 그는 천천히 문을 열었다.', 'utf-8')
   await c.call('dialog_queue', { kind: 'open', answers: [book] })
   const d1 = await c.call('api_call', { method: 'reader.pickTexts' })

@@ -11,6 +11,7 @@ const { spawnSync } = require('child_process')
 
 const ROOT = path.resolve(__dirname, '..', '..')
 const FIXTURES = path.join(ROOT, 'test', 'fixtures', 'audio')
+const TR = require('../test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 
 // ── 화면 지도 — AI 가 매번 더듬지 않게(ModeSelector.tsx 의 작업 목록 · 주요 testid) ──
 // 작업 화면 — button:false 는 왼쪽 목록에 단추가 없는 화면(다른 화면에서 들어간다).
@@ -82,7 +83,7 @@ const STATE = `(async () => {
 const MEDIA_EXT = /\.(wav|mp3|flac|m4a|ogg|opus|aac|wma|aiff?|mp4|mkv|mov|avi|webm|m4v|png|jpe?g|webp|gif|bmp|tiff?)$/i
 const ABS = /^(?:[A-Za-z]:[\\/]|\\\\|\/)/
 function allowedRoots (session) {
-  return [FIXTURES, path.join(ROOT, '_local', 'tmp'), session && session.tmp].filter(Boolean).map((p) => path.resolve(p).toLowerCase())
+  return [FIXTURES, path.join(TR.TEST_ROOT, TR.SUB.temp), session && session.tmp].filter(Boolean).map((p) => path.resolve(p).toLowerCase())
 }
 function isAllowed (p, session) {
   const full = path.resolve(p).toLowerCase()
@@ -110,7 +111,7 @@ function guardMedia (value, session, approved) {
   if (bad.length) {
     throw new Error('사용자 미디어 파일로 보이는 경로가 있어 멈췄습니다 — ' + bad.map((b) => path.basename(b)).join(', ') +
       '. 사용자 음성·영상·이미지는 **사용자가 그 파일·그 작업을 명시적으로 허락했을 때만** 쓴다. 허락을 받았으면 userApproved:true 로 다시 부르고, ' +
-      '아니면 test_input(검사용 재료)을 쓴다. 허락 없이 쓰는 자리: test/fixtures/audio · _local/tmp · 이 실행의 임시 폴더.')
+      '아니면 test_input(검사용 재료)을 쓴다. 허락 없이 쓰는 자리: test/fixtures/audio · _local/테스트/임시 · 이 실행의 임시 폴더.')
   }
 }
 

@@ -24,8 +24,8 @@
   - B 를 만들려면 진단 전용 스위치가 필요하다: 환경변수 `AUDIOFORGE_DIAG_SEED_POLICY=same` 일 때만 `_seed_rng(seed, 0)`. 기본값·제품 동작은 그대로(A). 실행 기록 머리에 정책을 남긴다. (승인 후 구현 — 코드 3~5줄 + 단위 검사 1건)
 - 같게 두는 것: 글 · 참조 파일 · 분할(자동 분할 결과가 실행마다 같은지 기록으로 확인) · 모델(Qwen3-TTS 0.6B Base, revision 5d83992…) · 장치(cuda:0) · 참조 방식(safe_xvector) · 속도/음높이/쉼/말끝 설정 · 서수 보정 경로(이 글에는 숫자 없음) · 실행 seed(쌍마다 같은 s).
 - 글·참조(결정 필요):
-  - 권장: 9/25 장문과 같은 글(728자, 숫자·줄바꿈 없음 — 성능 측정용으로 만든 글)과 같은 참조(_local/experiments/longform-2026-09-25/bench-reference.wav, 3.95초, sha 31203178…). 사용자가 이미 들은 표본과 직접 이어진다. 이 참조 파일을 이번 생성에 다시 쓰는 것에 대한 승인이 필요하다.
-  - 대안: 승인된 참조 조각(_local/perf-ref/ref-clip.wav, sha b51c8648…)과 같은 글. 9/25 표본과 직접 비교는 어렵다.
+  - 권장: 9/25 장문과 같은 글(728자, 숫자·줄바꿈 없음 — 성능 측정용으로 만든 글)과 같은 참조(_local/테스트/결과/experiments/longform-2026-09-25/bench-reference.wav, 3.95초, sha 31203178…). 사용자가 이미 들은 표본과 직접 이어진다. 이 참조 파일을 이번 생성에 다시 쓰는 것에 대한 승인이 필요하다.
+  - 대안: 승인된 참조 조각(_local/테스트/결과/perf-ref/ref-clip.wav, sha b51c8648…)과 같은 글. 9/25 표본과 직접 비교는 어렵다.
 - 실행 seed: 3개(101, 202, 303) — 한 seed 결과로 일반화하지 않기 위해.
 - 파일 수: 3 seed × 2 정책 = **6개**(각 약 90초). 다시 뽑아 고르지 않는다.
 - 실행 방식: 매 생성 새 프로세스(상주 실행기 없음), 순차, GPU 여유 확인 후. 조각 원시 음원 보존(AUDIOFORGE_DIAG_CHUNK_STAGES=1 — 조각별 모델 반환 음원·이음 미리듣기 저장).
@@ -59,8 +59,8 @@
 ### 재현성
 - 같은 기준 seed 쌍의 첫 조각(두 정책 모두 seed s) 음원 지문: 3쌍 모두 **같다**(362bce11…, 286c3010…, c56afec4…). 이 조건(새 프로세스·같은 장치·같은 설정)에서 첫 조각 생성은 재현됐다. 둘째·셋째 조각의 차이는 seed 가 다른 것과 함께 나타나지만, 이것만으로 말투 차이의 원인을 seed 정책으로 단정하지 않는다.
 ### 청취(대기)
-- 정책 이름을 숨긴 3쌍(X/Y 는 쌍마다 무작위): E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteninglongform-seed-20261009083328비교듣기.html — 전체 재생, 각 결과의 실제 이음 앞 5초·이음에서·앞뒤 5초 반복.
-- 듣는 파일(원본과 바이트가 같은 사본, 이름에 정책 없음): E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteninglongform-seed-20261009083328듣기 · 경로 목록 E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteninglongform-seed-20261009083328청취파일경로.txt · 정답표(청취 뒤) E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteninglongform-seed-20261009083328정답표.json · 기록 대조 E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteninglongform-seed-20261009083328ecord-check.json
+- 정책 이름을 숨긴 3쌍(X/Y 는 쌍마다 무작위): E:\AI_Project\claudeCodeVsCode\apps\master\AudioForge\_local\테스트\결과\청취\longform-seed-20261009083328\비교듣기.html — 전체 재생, 각 결과의 실제 이음 앞 5초·이음에서·앞뒤 5초 반복.
+- 듣는 파일(원본과 바이트가 같은 사본, 이름에 정책 없음): E:\AI_Project\claudeCodeVsCode\apps\master\AudioForge\_local\테스트\결과\청취\longform-seed-20261009083328\듣기 · 경로 목록 E:\AI_Project\claudeCodeVsCode\apps\master\AudioForge\_local\테스트\결과\청취\longform-seed-20261009083328\청취파일경로.txt · 정답표(청취 뒤) E:\AI_Project\claudeCodeVsCode\apps\master\AudioForge\_local\테스트\결과\청취\longform-seed-20261009083328\정답표.json · 기록 대조 E:\AI_Project\claudeCodeVsCode\apps\master\AudioForge\_local\테스트\결과\청취\longform-seed-20261009083328\ecord-check.json
 - 평가: 목소리 유지 · 말투 변화(어디쯤) · 이음 자연스러움 · 발음·누락·반복. 같은 seed 가 낫다고 전제하지 않는다.
 
 ## 사용자 청취 판정·정답 대조(2026-10-09)
@@ -75,4 +75,4 @@
 - 판정 범위: 말투 일관성 5개 긍정 · 1개 변화 관찰(same 정책 1개). 품질은 긍정적 인상. 발음·누락·반복·이음 자연스러움은 별도 답변이 없어 합격 처리하지 않는다.
 - 한계: 참조 1개·글 1개·seed 3개. 무작위 X/Y 배치가 우연히 세 쌍 모두 X=per_chunk(1/8 확률)여서 순서 단서가 생길 수 있었다. 한 쌍의 차이로 정책의 일반적 우위를 확정하지 않는다.
 - 제안: **현행(per_chunk) 유지.** 근거 — 변화가 관찰된 1개는 same 정책 쪽이었고, 현행 3개는 모두 일정하다고 들렸다. 같은 seed 로 바꿀 근거는 없다. 반대로 현행이 낫다고 확정할 근거도 약하다(차이 1건). 진단 스위치는 기본 꺼짐으로 남긴다.
-- 기록: E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteninglongform-seed-20261009083328사용자청취판정.json (쌍마다 사용자 원문·정책(정답표/기록)·실제 seed·음원 지문·이음 시각)
+- 기록: E:\AI_Project\claudeCodeVsCode\apps\master\AudioForge\_local\테스트\결과\청취\longform-seed-20261009083328\사용자청취판정.json (쌍마다 사용자 원문·정책(정답표/기록)·실제 seed·음원 지문·이음 시각)

@@ -2,6 +2,8 @@
 // 5886fb3(기본 편집 계약) 위에 필수 복원 단언을 test-only로 추가한다(A 파일 무수정). 실패가 production 결함이면
 // 완화하지 말고 I5-c 중단·보고(사용자 지시). 참조는 합성 WAV(사용자 미디어 미사용).
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import { createRequire } from 'node:module'
+const TR = createRequire(import.meta.url)('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
 import { isolatedInput, cleanupIsolated, enterStudio } from './_e2e-helper.mjs'
@@ -138,7 +140,7 @@ try {
   ok(s4.ovTop !== null && Math.abs(s4.ovTop - s4.st) <= 2, `overlay scroll offset이 textarea와 동기(ov=${s4.ovTop}, ta=${s4.st})`)
 
   ok(pageErrors.length === 0, `pageerror 0 (=${pageErrors.length}${pageErrors[0] ? ': ' + pageErrors[0] : ''})`)
-  await win.screenshot({ path: path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots', 'i5b-restore.png') }).catch(() => {})
+  await win.screenshot({ path: TR.shot('e2e', 'i5b-restore.png') }).catch(() => {})
 } catch (e) {
   failed++; log('EXCEPTION', e?.message || String(e))
 } finally {

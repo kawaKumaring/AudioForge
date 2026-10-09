@@ -150,7 +150,7 @@
 - 소희 구간별 분석(09-30 `7e7f80f`, 보조 모델 74%) — qwen_fast 이전.
 
 ### 남은 원본 파일
-- `_local/tmp/qf_fast.npy`·`qf_orig.npy`(09-30, qwen_fast 비교용 배열)만 남음. 그 밖 `_local/experiments/perf-2026-09-25`·`longform-2026-09-25/result.json`·`_local/artifacts/bench/*` 는 낭독 이전 합성·분리 벤치.
+- `_local/tmp/qf_fast.npy`·`qf_orig.npy`(09-30, qwen_fast 비교용 배열)만 남음. 그 밖 `_local/테스트/결과/experiments/perf-2026-09-25`·`longform-2026-09-25/result.json`·`_local/artifacts/bench/*` 는 낭독 이전 합성·분리 벤치.
 
 ## 6. 관리자가 직접 재는 방법 (MCP)
 
@@ -214,7 +214,7 @@
 
 ## 7. 개선 결과 (2026-10-03 — 관리자 실측 기준 후속)
 
-근거 자료: `_local/perf-ref/`(측정 스크립트·결과 JSON) · 청취 자료 `_local/artifacts/performance-2026-10-03/reference-listen/`(참조 낭독 전후 4쌍, 사람 청취 판정 전).
+근거 자료: `_local/테스트/결과/perf-ref/`(측정 스크립트·결과 JSON) · 청취 자료 `_local/테스트/결과/개발판-artifacts/performance-2026-10-03/reference-listen/`(참조 낭독 전후 4쌍, 사람 청취 판정 전).
 GPU 상태는 결과마다 함께 적었다. 다른 프로그램이 GPU 를 쓰던 측정은 비교에 쓰지 않고 따로 표시한다.
 
 ### 7-1. 참조 목소리 연속 낭독 (모델·엔진 그대로: Qwen3-TTS 0.6B Base, 참조 특징만 쓰는 안전 방식)
@@ -261,8 +261,8 @@ GPU 상태는 결과마다 함께 적었다. 다른 프로그램이 GPU 를 쓰�
 - 참조 카드 같은 대사 두 번째 생성: 참조 전사 20~31초 → 0.03초. 전체 시간(7.3초)은 GPU 경합 중 측정이라 비교 기준이 아니다.
 
 ### 재현 절차 (저장소 루트, `npm run build` 뒤)
-- 카드 취소 세 경로: `node _local/perf-ref/app-card-cancel-all.cjs <결과.json> [sohee|reference|loading]`
-- 첫 소리: `node _local/perf-ref/app-first-prep.cjs <결과.json>` · 참조 연속 낭독: `node _local/perf-ref/app-reference-reading.cjs <결과.json> 7`
-- 참조 덩이 분해: `npx esbuild scripts/bench-reader-reference.mts --bundle --platform=node --format=esm --outfile=_local/perf-ref/bench.mjs && node _local/perf-ref/bench.mjs --ref _local/perf-ref/ref-clip.wav --out <폴더> --mode resident`
+- 카드 취소 세 경로: `node _local/테스트/결과/perf-ref/app-card-cancel-all.cjs <결과.json> [sohee|reference|loading]`
+- 첫 소리: `node _local/테스트/결과/perf-ref/app-first-prep.cjs <결과.json>` · 참조 연속 낭독: `node _local/테스트/결과/perf-ref/app-reference-reading.cjs <결과.json> 7`
+- 참조 덩이 분해: `npx esbuild scripts/bench-reader-reference.mts --bundle --platform=node --format=esm --outfile=_local/테스트/결과/perf-ref/bench.mjs && node _local/테스트/결과/perf-ref/bench.mjs --ref _local/테스트/결과/perf-ref/ref-clip.wav --out <폴더> --mode resident`
 - 회귀 검사: `node test/e2e/reader-remount-epoch-mcp.cjs` · `node test/e2e/tts-cancel-lifecycle.e2e.mjs` · `python -X utf8 python/test_ref_transcript_cache.py`
-- 측정 자료: `_local/perf-ref/*.json` · 청취 자료와 조건·해시 `_local/artifacts/performance-2026-10-03/reference-listen/manifest.json`
+- 측정 자료: `_local/테스트/결과/perf-ref/*.json` · 청취 자료와 조건·해시 `_local/테스트/결과/개발판-artifacts/performance-2026-10-03/reference-listen/manifest.json`

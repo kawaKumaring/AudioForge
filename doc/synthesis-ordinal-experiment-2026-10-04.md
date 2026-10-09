@@ -3,7 +3,7 @@
 > **요약(2026-10-09 정리)** — 새로 생성한 비교 실험이다(기존 생성물 분석과 별개). 사용자 청취: 숫자 5번째·다섯 번째 둘 다 정상 / 숫자 7번째 "칠 일 번째"로 들림 / 일곱 번째 정상. 한 대사·한 참조·seed 42에서의 결과이며 일반 해결이 아니다. 5 쌍은 첫 조각이 서로 달라 통제가 완전하지 않았다. 제품 숫자 전처리는 미구현.
 
 ## 실행
-- 결과 폴더: E:\AI_Project\claudeCodeVsCode\apps\development\AudioForge_af_worktrees\develop-run\_local\listening\ordinal-pairs-20261004-134721
+- 결과 폴더: E:\AI_Project\claudeCodeVsCode\apps\master\AudioForge\_local\테스트\결과\청취\ordinal-pairs-20261004-134721
 - HEAD af24f8d의 실제 separate.py → 별도로 띄운 qwen_voice_server → qwen_bridge 경로. 앱 GUI에서 누른 검사는 아니다.
 - 승인된 기존 ref-clip.wav(sha256 b51c864845b55e147c7dc7e88cc16a99c232ce6a159ea55862c053421623233e), 0.6B Base revision 5d83992436eae1d760afd27aff78a71d676296fc, safe_xvector, seed 42, cuda:0.
 - 속도 1, 음높이 0, 줄 사이 간격 0.35초, 말끝 auto/120ms/8ms. 같은 전체 대사에서 마지막 5번째 또는 7번째만 다섯 번째/일곱 번째로 바꿨다. 원문은 config.json에 그대로 남겼다.
