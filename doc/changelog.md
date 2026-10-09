@@ -1,3 +1,6 @@
+## 2026-10-10 · 외부 seed-vc 삭제 — 노래 변환 흡수 완료 (Claude, 사용자 결정)
+- master 병합(e0d6e74) 뒤 resources/seed-vc 전체 삭제(9.43GB), env.json 의 외부 연결 기록 제거(백업 남김). 외부 폴더 없이 흡수본 변환 정상 확인(저장소 시험 음성). 노래 관련 시험 통과.
+
 ## 2026-10-10 · 노래 변환 기본을 흡수본으로 (Claude)
 - 사용자 청취 "ABC 다 비슷하다"(옛 엔진 오늘·새 엔진·옛 엔진 9/20 — 같은 수준). song_voice.py 기본 = 앱 안 흡수본(python/song_vc + externals/song_vc_models, 앱 런타임). 외부 변환기는 AF_SONG_VC_ENGINE=external 일 때만(되돌림 길).
 - 검사: 노래 관련 파이썬 67건 통과(test_song_voice 의 연결 계약을 새 설계로 갱신 — 기본 흡수본 경로 / 외부 선택 시 기록 없으면 고치는 방법 안내).
