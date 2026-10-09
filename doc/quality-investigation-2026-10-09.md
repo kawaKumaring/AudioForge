@@ -1,14 +1,14 @@
 # 품질 조사 — 비교 원문 연결 오류 · 긴 글 말투 변화 (2026-10-09)
 
 새 음성 생성·반복 시험 없이 기존 실행 기록·검수 스크립트·코드만으로 조사했다. 근거 표시: [기록] 실행 기록으로 확인 · [코드] 코드로 확인 · [가설] 미확인.
-상세 조사 기록(로컬): _local/integ-2026-10-09/last-sentence-investigation.md · audit-link-investigation.md · longform-tone-investigation.md
+상세 조사 기록(로컬): _local/테스트/결과/integ-2026-10-09/last-sentence-investigation.md · audit-link-investigation.md · longform-tone-investigation.md
 
 ## 1. before-chunk3 판정 철회 — 범위
 - 그 표본 하나의 "마지막 문장 누락" 판정만 철회한다. 해당 문장은 그 실행의 실제 입력(105자)에 없었다 [기록]. 프로그램 전체에 누락 결함이 없다는 뜻이 아니다.
 - 같은 측정의 before-chunk0~2 는 실행 기록의 원문 지문(raw_text_sha256)이 검수 기대 대사와 **일치**했다 [기록] — 그 비교들과 청취 판정 04(추가 음절)는 유효하다. 무효는 before-chunk3 의 기대 대사 대조(CER·누락 결론)뿐이다.
 
 ## 2. 비교 원문을 잘못 연결한 원인
-- [코드] 검수 스크립트가 기대 대사를 실행 기록이 아니라 **덩이 번호**로 꺼냈다: _local/quality-audit-2026-10-04/audit.py:23-24 \`says[f['chunk']]\`, run-mcp.cjs:5 \`text: says[item.chunk]\`, 청취 묶음 package-listening.cjs:8 \`says[3]\`.
+- [코드] 검수 스크립트가 기대 대사를 실행 기록이 아니라 **덩이 번호**로 꺼냈다: _local/테스트/결과/quality-audit-2026-10-04/audit.py:23-24 \`says[f['chunk']]\`, run-mcp.cjs:5 \`text: says[item.chunk]\`, 청취 묶음 package-listening.cjs:8 \`says[3]\`.
 - [기록] says.json 은 개선 **후** 코드의 나누기 규칙으로 만든 덩이 목록(37·87·115·115·…)이고, 개선 **전** 실행은 [37, 87, 115, 105] 로 나뉘었다 — 같은 번호가 같은 글이라는 가정이 4번째에서 깨졌다.
 - [코드] 측정 스크립트(bench.mjs:338-339)는 출력에 실행 ID 를 남기지 않아, 실행 기록과의 연결 고리가 파일 번호뿐이었다.
 - [코드] 기계적 차단 없음:
@@ -64,7 +64,7 @@
 - B. 장문 실행 기록: 조각마다 **보정 후 발화문 안의 위치**(source_char_range, 기준 segment_spoken_text — 서수 보정 등을 거쳐 엔진에 보낸 발화 글 기준이며 **사용자 원문 위치가 아니다**. 원문 위치까지의 연결은 아직 없다)와 그 발화 글 지문, 실제 심은 seed(applied_seed — 브리지가 돌려준 값, 없으면 비움), 엔진이 돌려준 조각 음원 지문(returned_wav_sha256), x-vector 여부·감정. 생성 설정(상한·반복·종료·토큰)은 기존 기록 그대로.
   - 이음(joins)은 진단 WAV 와 무관하게 늘 남긴다 — 실제 배치 행의 표본(left_end/right_start)·앱 간격·겹침(앞 끝이 뒤 시작을 넘은 만큼). placement_check = 마지막 조각 끝 표본과 결과 파일 표본 수(판정은 하지 않음). 배치 기록이 없으면 이음을 만들지 않는다.
   - 과거 기록에 없는 값은 채우지 않는다(예: 9/25 장문의 조각별 seed).
-- 장문 청취 준비: _local/listening/longform-joins-2026-10-09/장문이음듣기.html — 원본 그대로(새 합성·보정 없음), 29.76·66.16초 앞 5초/이음/앞뒤 5초 반복, 전체 재생, 경로·지문 표시.
+- 장문 청취 준비: _local/테스트/결과/청취/longform-joins-2026-10-09/장문이음듣기.html — 원본 그대로(새 합성·보정 없음), 29.76·66.16초 앞 5초/이음/앞뒤 5초 반복, 전체 재생, 경로·지문 표시.
 - 준비한 검사(미실행): test/e2e/audio-quality-source.cjs, python/test_run_record_longform.py.
 
 ## 코드 검수 보완(2026-10-09 — 통합 검증 전)

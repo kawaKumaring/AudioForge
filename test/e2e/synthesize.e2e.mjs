@@ -3,6 +3,8 @@
 // 프로덕션 빌드(out/main/index.js, loadFile)를 단일 인스턴스로 띄우고, 파일 주입→TTS→구간 확정→
 // 합성 클릭→취소→모드 전환→재진입을 실제로 구동하며 pageerror/crash/검은 화면이 없음을 단언한다.
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import { createRequire } from 'node:module'
+const TR = createRequire(import.meta.url)('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
@@ -19,7 +21,7 @@ const APP = process.cwd()
 const FIXTURE = path.join(APP, 'test', 'fixtures', 'audio', 'ko-speech-7s.wav')
 const SRC = fs.existsSync(FIXTURE) ? FIXTURE : null
 const RES_DIR = path.dirname(FIXTURE)   // 불변 검사 대상 = fixture 폴더
-const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots')
+const SHOT = TR.dir('shots', 'e2e')
 fs.mkdirSync(SHOT, { recursive: true })
 const logLines = []
 const log = (...a) => { const s = a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '); logLines.push(s); console.log('[e2e]', s) }

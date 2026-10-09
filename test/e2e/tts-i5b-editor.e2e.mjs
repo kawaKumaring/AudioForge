@@ -5,6 +5,8 @@
 //   unknown 태그 오류 code 표시 + 합성 차단.
 // 실행: npm run build 후 AF_E2E_REFERENCE=<wav> node test/e2e/tts-i5b-editor.e2e.mjs
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import { createRequire } from 'node:module'
+const TR = createRequire(import.meta.url)('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
 import { isolatedInput, cleanupIsolated, enterStudio } from './_e2e-helper.mjs'
@@ -112,7 +114,7 @@ try {
   // 합성 버튼 차단 확인(ProcessButton disabled 또는 차단 사유). 최소한 pageerror 없이 오류가 표면화.
   ok(pageErrors.length === 0, `pageerror 0 (=${pageErrors.length}${pageErrors[0] ? ': ' + pageErrors[0] : ''})`)
 
-  await win.screenshot({ path: path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots', 'i5b-editor.png') }).catch(() => {})
+  await win.screenshot({ path: TR.shot('e2e', 'i5b-editor.png') }).catch(() => {})
 } catch (e) {
   failed++; log('EXCEPTION', e?.message || String(e))
 } finally {

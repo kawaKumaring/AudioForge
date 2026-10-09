@@ -9,6 +9,8 @@
 //
 // 자산은 저장소 fixture 만 쓰고 격리 폴더로 복사해 주입한다(사용자 resources/ 미접촉).
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import { createRequire } from 'node:module'
+const TR = createRequire(import.meta.url)('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 import { spawn, execFileSync } from 'child_process'
 import { chromium } from 'playwright'
 import fs from 'fs'
@@ -17,7 +19,7 @@ import path from 'path'
 import { isolatedInput, cleanupIsolated } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
-const OUT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'convenience-20260908')
+const OUT = TR.dir('shots', 'convenience-20260908')
 fs.mkdirSync(OUT, { recursive: true })
 const FIX = path.join(APP, 'test', 'fixtures', 'audio', 'ko-speech-region-18s.wav')
 if (!fs.existsSync(FIX)) { console.error('fixture 없음:', FIX); process.exit(2) }

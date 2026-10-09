@@ -3,6 +3,8 @@
 // 끌어 놓기는 OS 끌기 사건을 만들 수 없어 화면이 경로를 받은 뒤의 길(__readerImportPaths)을 탄다 — 경로를 꺼내는 한 줄은 미확인.
 // 실행: node test/e2e/reader-folder-import.e2e.mjs     (사전: npm run build)
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import { createRequire } from 'node:module'
+const TR = createRequire(import.meta.url)('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 import fs from 'fs'
 import os from 'os'
 import path from 'path'
@@ -28,7 +30,7 @@ fs.symlinkSync(LIB, path.join(LIB, '작품A', '되돌이'), 'junction')       //
 let passed = 0
 const fails = []
 const ok = (v, label, extra) => { if (v) { passed++; console.log('PASS', label) } else { fails.push(label); console.log('FAIL', label, extra === undefined ? '' : JSON.stringify(extra)) } }
-const shot = async (win, name) => { const p = path.join(APP, '_local', `folder-import-${name}.png`); fs.mkdirSync(path.dirname(p), { recursive: true }); await win.screenshot({ path: p }); return p }
+const shot = async (win, name) => { const p = TR.shot(`folder-import-${name}.png`); await win.screenshot({ path: p }); return p }
 let app = null
 const launch = async () => {
   app = await electron.launch({ args: ['out/main/index.js'], cwd: APP, env: { ...process.env, AF_E2E: '1', AF_E2E_USER_DATA: UD } })

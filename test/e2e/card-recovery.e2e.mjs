@@ -10,6 +10,8 @@
 //
 // 실행: node test/e2e/card-recovery.e2e.mjs   (사전: npm run build)
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import { createRequire } from 'node:module'
+const TR = createRequire(import.meta.url)('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 import { _electron as electron } from 'playwright'
 import fs from 'fs'
 import path from 'path'
@@ -61,7 +63,7 @@ try {
   ok(await win.getByTestId('join-bar').count() === 1, '카드가 있으면 최종 음성 줄이 보인다')
 
   // 대표 캡처 — **카드·채택 생성본·최종 음성 줄이 채워진 정상 화면**(새로 만들지 않는다).
-  const shots = path.join(APP, '_local', 'artifacts', 'diagnostics')
+  const shots = TR.dir('shots')
   fs.mkdirSync(shots, { recursive: true })
   await win.screenshot({ path: path.join(shots, 'card-normal.png') })
   await win.getByTestId('join-sequence').click()
@@ -211,7 +213,7 @@ try {
   ok(await win.getByTestId('join-bar').count() === 0,
     '★카드도 실패도 없으면 최종 음성 줄을 감춘다')
 
-  const shot = path.join(APP, '_local', 'artifacts', 'diagnostics', 'card-recovery.png')
+  const shot = TR.shot('card-recovery.png')
   fs.mkdirSync(path.dirname(shot), { recursive: true })
   await win.screenshot({ path: shot })
   console.log('  [증거] 캡처:', shot)

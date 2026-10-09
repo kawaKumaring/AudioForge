@@ -6,6 +6,8 @@
 //    재구성(이전 세션의 임시 경로에 의존하지 않음) — 계약 §1.2/추가정합3(재시작 복원).
 // 실행: node test/e2e/prosody-integration.e2e.mjs  (사전 npm run build). Session 1은 실제 합성이라 수 분.
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import { createRequire } from 'node:module'
+const TR = createRequire(import.meta.url)('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 import { _electron as electron } from 'playwright'
 import { execFileSync } from 'child_process'
 import fs from 'fs'; import path from 'path'
@@ -15,7 +17,7 @@ const WAIT_MS = 350000
 const APP = process.cwd()
 const SRC = requireE2EReference()   // 명시 AF_E2E_REFERENCE 단일 권위(speaker_b.wav 하드코딩·fallback 없음)
 const RES_DIR = path.join(APP, 'resources')
-const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots'); fs.mkdirSync(SHOT, { recursive: true })
+const SHOT = TR.dir('shots', 'e2e'); fs.mkdirSync(SHOT, { recursive: true })
 // 검증용 파이썬. 특정 PC 의 절대 경로를 박으면 다른 곳에서 재현되지 않는다 — 명시 env 로만 받는다.
 const PY = (process.env.AF_E2E_PYTHON || '').trim()
 if (!PY || !fs.existsSync(PY)) {

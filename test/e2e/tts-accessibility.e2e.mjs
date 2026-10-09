@@ -2,6 +2,8 @@
 // 키보드 도달·focus-visible·ARIA(progressbar/alert/status/expanded/label)·반응형·대비/조작영역(참고)·
 // 진행 단계·오류 카드(원시 미노출·재시도 접근)·취소 스타일 렌더. 실행: npm run test:e2e:tts-accessibility
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import { createRequire } from 'node:module'
+const TR = createRequire(import.meta.url)('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'; import os from 'os'
 import {
@@ -16,7 +18,7 @@ const SYNTH = makeSyntheticWav(
   path.join(os.tmpdir(), 'af_e2e_' + randomUUID() + '.wav'), 12)
 const SRC = REF_ENV && REF_ENV.trim() ? REF_ENV.trim() : SYNTH
 const RES_DIR = path.join(APP, 'resources')
-const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots'); fs.mkdirSync(SHOT, { recursive: true })
+const SHOT = TR.dir('shots', 'e2e'); fs.mkdirSync(SHOT, { recursive: true })
 let failed = 0
 const logLines = []
 const log = (...a) => { const s = a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '); logLines.push(s); console.log('[a11y]', s) }

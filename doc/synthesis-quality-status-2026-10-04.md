@@ -6,7 +6,7 @@
 > - [기록 · 생성 종료] 모델 호출 2번 모두 상한 전 종료(마지막 107/512, completed_before_limit). 이것은 상한에 걸려 잘리지 않았다는 근거일 뿐, 모델이 입력 글을 빠짐없이 발음했다는 증거가 아니다.
 > - [기록 · 처리 단계 보존] 마지막 조각의 모델 반환 프레임 = 최종 배치 프레임, 배치 끝 + 말끝 여백 = 전체 길이. 후처리·결합 단계에서 음원이 깎이지 않았다는 근거이며, 역시 발음 완전성의 증거가 아니다.
 > - 아래 본문의 "마지막 문장 누락 확인" 은 작성 당시 기록으로 남긴다. 숫자 발음 판정(02~04)과 장문 말투 변화 관찰은 이 정정과 별개로 유효하다.
-> 조사 기록: _local/integ-2026-10-09/last-sentence-investigation.md
+> 조사 기록: _local/테스트/결과/integ-2026-10-09/last-sentence-investigation.md
 
 > **정정(2026-10-09) — 90.24초 장문의 접합 좌표는 기록에 있다.** 실행 기록(본체 _local/artifacts/runs/tts-20260925-180448-c22511cb, 결과 지문 62c223d5…)의 timeline.json: 접합 29.76초·66.16초(3조각 244·293·191자). 아래 본문의 "정확한 접합 좌표 없음" 은 틀린 기록이다. 상세: doc/quality-investigation-2026-10-09.md
 
@@ -42,11 +42,11 @@ manifest의 안전 방식(x-vector) 표기는 기록의 주장이다. 원본 파
 
 선택 코드는 무음 경계 쌍에서 발화 초를 높이고 클리핑에 벌점을 준다. 동률이면 앞쪽을 고른다. 화자 유사도, 음소 다양성, 감정 적합도를 측정해 최적화하는 기준은 아니다. 반복 실행이 같은 곳을 선택하는 것은 결정적인 점수 규칙의 결과이며 그 구간이 합성 품질 최상이라는 증거가 아니다. historical ref-clip의 원래 시작/끝은 현재 추천으로 소급 채우지 않는다.
 
-실측 파일: _local/quality-audit-2026-10-04/current-reference-selection.json. 입력 바이트 불변. 구간 제안과 신호 분석만 했고 새 참조 합성은 하지 않았다.
+실측 파일: _local/테스트/결과/quality-audit-2026-10-04/current-reference-selection.json. 입력 바이트 불변. 구간 제안과 신호 분석만 했고 새 참조 합성은 하지 않았다.
 
 ## 바로 들을 자료
 정확한 폴더:
-E:\AI_Project\claudeCodeVsCode\apps\development\AudioForge_af_worktrees\develop-run\_local\listening\quality-review-2026-10-04
+E:\AI_Project\claudeCodeVsCode\apps\master\AudioForge\_local\테스트\결과\청취\quality-review-2026-10-04
 
 - 비교듣기.html: 한 화면에서 5개 재생, 다른 파일을 틀면 앞 재생은 멈춤.
 - 먼저읽기.txt: 파일별 확인할 말, 원본 경로와 시간 범위.
@@ -80,7 +80,7 @@ E:\AI_Project\claudeCodeVsCode\apps\development\AudioForge_af_worktrees\develop-
 
 다음 통제 실험은 숫자 원문 5번째/7번째와 발음용 다섯 번째/일곱 번째를 짝으로 비교한다. 같은 전체 문맥·같은 참조·같은 seed·같은 장치/생성 설정을 유지한다. 원시 생성 조각과 최종 파일을 함께 남겨 생성 시 누락인지 후처리 손실인지 구분한다. 숫자 전처리가 원인이라고 미리 단정하거나 제품에 일괄 적용하지 않는다. 한 seed의 효과만으로 일반화하지 않는다. 장문 말투 변화는 두 번째 우선순위로 실제 연결 위치와 청취 구간을 먼저 연결한다.
 
-청취 판정 원문: _local/listening/quality-review-2026-10-04/사용자청취판정.json. 이번 판정 기록 중 새 합성은 하지 않았다.
+청취 판정 원문: _local/테스트/결과/청취/quality-review-2026-10-04/사용자청취판정.json. 이번 판정 기록 중 새 합성은 하지 않았다.
 
 ## 현행 숫자 표기 비교 실행
 같은 참조·seed로 4개 실제 합성을 수행하고 모델 반환/최종 구간을 보존했다. 실행 조건, 첫 호출 통제 한계, 정확한 청취 경로는 synthesis-ordinal-experiment-2026-10-04.md에 기록했다. 제품 기본값은 바꾸지 않았다.

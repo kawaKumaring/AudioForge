@@ -13,6 +13,8 @@
 //
 // 대사는 우리 사슬에서 쓰던 중립 151자 그대로 — 변환본과 곧바로 비교하기 위해서다.
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import { createRequire } from 'node:module'
+const TR = createRequire(import.meta.url)('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 import { spawn, execFileSync } from 'child_process'
 import { chromium } from 'playwright'
 import fs from 'fs'
@@ -23,7 +25,7 @@ const APP = process.cwd()
 // 인물 목소리 위치는 **부르는 쪽이 준다.** 이 PC 의 절대 경로도, 저장소 밖으로 올라가는 상대
 // 경로도 여기에 박지 않는다(그러면 이 기계에서만 돌아간다). 이름 대신 경로를 직접 줘도 된다.
 const RES = process.env.AF_RESOURCES || ''
-const OUT = path.join(APP, '_local', 'experiments', 'baseline-safexvector')
+const OUT = TR.dir('results', 'experiments', 'baseline-safexvector')
 fs.mkdirSync(OUT, { recursive: true })
 
 const PEOPLE = (process.env.AF_PEOPLE || '').split(',').filter(Boolean)

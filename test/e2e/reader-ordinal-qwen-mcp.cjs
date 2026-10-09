@@ -11,7 +11,8 @@ const { pathToFileURL } = require('node:url')
 const ROOT = path.resolve(__dirname, '../..')
 const { McpClient } = require(path.join(ROOT, 'tools/mcp/client.cjs'))
 const sha = (b) => crypto.createHash('sha256').update(b).digest('hex')
-const REF = path.join(ROOT, '_local/perf-ref/ref-clip.wav')
+const TR = require(path.join(ROOT, 'tools/test-root.cjs'))
+const REF = path.join(TR.TEST_ROOT, TR.SUB.results, 'perf-ref', 'ref-clip.wav')
 const REF_SHA = 'b51c864845b55e147c7dc7e88cc16a99c232ce6a159ea55862c053421623233e'
 // 실행 기록 자리는 파이썬 local_assets 가 정한다(작업 트리에서도 본체 저장소의 _local) — 같은 판정을 그대로 쓴다.
 const PY = JSON.parse(fs.readFileSync(path.join(ROOT, 'externals/env.json'), 'utf-8')).python
@@ -132,8 +133,7 @@ if (process.env.AF_E2E_GPU !== '1') { console.log('SKIP AF_E2E_GPU=1 일 때만(
     const errs = await call('errors')
     assert.equal(errs.count, 0, JSON.stringify(errs).slice(0, 300))
     pass('오류 기록 없음')
-    fs.mkdirSync(path.join(ROOT, '_local/integ-2026-10-09'), { recursive: true })
-    fs.writeFileSync(path.join(ROOT, '_local/integ-2026-10-09/qwen-connection.json'), JSON.stringify(out, null, 2))
+    fs.writeFileSync(path.join(TR.dir('results', 'integ-2026-10-09'), 'qwen-connection.json'), JSON.stringify(out, null, 2))
     console.log(`RESULT ${passed} checks · 0 fail`)
   } catch (e) { console.log('FAIL', e.message); process.exitCode = 1 } finally { await c.call('app_stop'); await c.close() }
 })()

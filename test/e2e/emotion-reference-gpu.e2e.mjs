@@ -11,6 +11,8 @@
 // 다른 방식으로 물러난 결과를 성공으로 세지 않기 위해서다.
 // 참조 전사는 앱의 자동 전사에 맡긴다(내가 참조 내용을 알 필요가 없고, 알아서도 안 된다).
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import { createRequire } from 'node:module'
+const TR = createRequire(import.meta.url)('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 import { spawn, execFileSync } from 'child_process'
 import { chromium } from 'playwright'
 import fs from 'fs'
@@ -18,8 +20,8 @@ import os from 'os'
 import path from 'path'
 
 const APP = process.cwd()
-const EXP = path.join(APP, '_local', 'experiments', 'seedvc-20260906')
-const OUT = path.join(APP, '_local', 'experiments', 'tts-emotion-ref-20260907c')
+const EXP = path.join(TR.TEST_ROOT, TR.SUB.results, 'experiments', 'seedvc-20260906')
+const OUT = TR.dir('results', 'experiments', 'tts-emotion-ref-20260907c')
 fs.mkdirSync(OUT, { recursive: true })
 
 // 3차 — **변수를 하나만 남긴다.** 대사는 1차에서 성공했던 151자 중립문으로 되돌리고,

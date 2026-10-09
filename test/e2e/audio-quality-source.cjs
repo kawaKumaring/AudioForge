@@ -4,7 +4,7 @@
 // 실행: node test/e2e/audio-quality-source.cjs
 const fs = require('fs'), path = require('path'), crypto = require('crypto'), assert = require('node:assert/strict')
 const ROOT = path.resolve(__dirname, '../..')
-const dir = fs.mkdtempSync(path.join(ROOT, '_local/tmp/quality-source-'))
+const dir = fs.mkdtempSync(path.join(require('../../tools/test-root.cjs').dir('temp'), 'quality-source-'))
 const LOCAL = path.join(dir, 'local'), RUNS = path.join(LOCAL, 'artifacts', 'runs')
 process.env.AUDIOFORGE_LOCAL_ROOT = LOCAL              // 실행 기록 자리를 이 검사 폴더로(서버가 물려받는다)
 const { McpClient } = require('../../tools/mcp/client.cjs')

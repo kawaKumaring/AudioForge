@@ -1,7 +1,8 @@
 'use strict'
 const fs=require('fs'),path=require('path'),crypto=require('crypto'),assert=require('node:assert/strict')
 const {McpClient}=require('../../tools/mcp/client.cjs')
-const ROOT=path.resolve(__dirname,'../..'),dir=fs.mkdtempSync(path.join(ROOT,'_local/tmp/quality-evidence-'))
+const TR=require('../../tools/test-root.cjs')
+const ROOT=path.resolve(__dirname,'../..'),dir=fs.mkdtempSync(path.join(TR.dir('temp'),'quality-evidence-'))
 const file=path.join(dir,'step.wav'),b=Buffer.alloc(44+24000*4)
 b.write('RIFF');b.writeUInt32LE(b.length-8,4);b.write('WAVEfmt ',8);b.writeUInt32LE(16,16);b.writeUInt16LE(1,20);b.writeUInt16LE(2,22);b.writeUInt32LE(12000,24);b.writeUInt32LE(48000,28);b.writeUInt16LE(4,32);b.writeUInt16LE(16,34);b.write('data',36);b.writeUInt32LE(b.length-44,40)
 for(let i=0;i<24000;i++){const v=i<12000?3277:6554;b.writeInt16LE(v,44+i*4);b.writeInt16LE(-v,46+i*4)}fs.writeFileSync(file,b)

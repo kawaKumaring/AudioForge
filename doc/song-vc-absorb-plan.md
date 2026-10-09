@@ -2,7 +2,7 @@
 
 개발 모토는 **흡수**다 — 외부 도구를 폴더째 두고 부르지 않고, 실제로 쓰는 핵심(모델·최소 추론 코드)만 AudioForge 안으로 옮긴다.
 지금 노래 변환은 `resources/seed-vc`(10.6GB, 전용 실행 환경 6.19GB)를 별도 프로세스로 부른다(`externals/env.json` 의 singing_python·singing_script → `python/song_voice.py`).
-근거 표시: [코드] 코드로 확인 · [기록] 파일·기록으로 확인 · [가설] 미확인. 상세 조사(로컬): `_local/integ-2026-10-09/seedvc-absorb-plan.md`.
+근거 표시: [코드] 코드로 확인 · [기록] 파일·기록으로 확인 · [가설] 미확인. 상세 조사(로컬): `_local/테스트/결과/integ-2026-10-09/seedvc-absorb-plan.md`.
 
 ## 1. 실제로 쓰는 것
 - 호출 인자 [코드]: song_voice.py → seed-vc inference.py, 확산 40단계, f0 조건 켬, 자동 음높이 맞춤 끔, 반음 이동(옥타브 단위). 그 밖은 기본값(cfg 0.7, fp16, 길이 1.0). 9/20 변환 스크립트(`_곡변환.py`)도 같은 인자.

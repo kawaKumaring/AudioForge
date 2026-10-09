@@ -4,6 +4,8 @@
 //   store TTS 필드 손실 0 / resources 불변 · 종료 후 qwen 프로세스·job 임시폴더 잔존 0.
 // 실행: npm run build 후 node test/e2e/tts-i5-shell-smoke.e2e.mjs. 참조 자산은 AF_E2E_REFERENCE 또는 resources/speaker_b.wav.
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import { createRequire } from 'node:module'
+const TR = createRequire(import.meta.url)('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
 import { isolatedInput, cleanupIsolated, snapshotTree, qwenJobDirs, qwenVenvPids, enterStudio } from './_e2e-helper.mjs'
@@ -110,7 +112,7 @@ try {
   const reRootLen = await win.evaluate(() => (document.getElementById('root')?.innerText || '').length)
   ok(reRootLen > 50, `재진입 후 검은 화면 아님(${reRootLen}자)`)
 
-  await win.screenshot({ path: path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots', 'i5-smoke.png') }).catch(() => {})
+  await win.screenshot({ path: TR.shot('e2e', 'i5-smoke.png') }).catch(() => {})
 } catch (e) {
   failed++; log('EXCEPTION', e?.message || String(e))
 } finally {

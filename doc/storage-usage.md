@@ -2,7 +2,7 @@
 
 AudioForge 가 디스크를 왜 많이 쓰는지, 무엇이 필요한지, 무엇을 지웠고 무엇을 남겼는지의 기준 문서.
 측정 대상: `apps/master/AudioForge`(실제 모델·실행 환경이 있는 곳 — 개발 폴더의 `externals` 는 이곳을 가리키는 연결).
-분류 근거: 개발 이력(시험·채택·탈락 결정)과 실제 선택 로직. 상세 조사: `_local/integ-2026-10-09/storage-classification.md`(로컬).
+분류 근거: 개발 이력(시험·채택·탈락 결정)과 실제 선택 로직. 상세 조사: `_local/테스트/결과/integ-2026-10-09/storage-classification.md`(로컬).
 
 ## 1. 현재 사용량 — 76.3GB (2026-10-09 정리 후)
 

@@ -4,13 +4,15 @@
 // 검증: 실제 IPC 오류 경로 → 전용 카드(제목·설명·버튼 3) → '다시 시도' 1클릭=1 process → 성공,
 //       중복 트리거 dedup(2 bump→1 process), '닫기'/'참조 전사 확인'은 재합성 안 함, 일반 오류는 기존 카드.
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import { createRequire } from 'node:module'
+const TR = createRequire(import.meta.url)('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 import { _electron as electron } from 'playwright'
 import fs from 'fs'; import path from 'path'
 import { snapshotTree, refClipDirs, qwenVenvPids, enterStudio } from './_e2e-helper.mjs'
 
 const APP = process.cwd()
 const RES_DIR = path.join(APP, 'resources')
-const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots'); fs.mkdirSync(SHOT, { recursive: true })
+const SHOT = TR.dir('shots', 'e2e'); fs.mkdirSync(SHOT, { recursive: true })
 let failed = 0
 const logLines = []
 const log = (...a) => { const s = a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' '); logLines.push(s); console.log('[gen-retry]', s) }

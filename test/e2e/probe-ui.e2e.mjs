@@ -1,5 +1,7 @@
 // 화면 구조 확인용 — 참조를 올린 뒤 실제로 무엇이 보이는지 그대로 찍는다.
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import { createRequire } from 'node:module'
+const TR = createRequire(import.meta.url)('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 import { spawn, execFileSync } from 'child_process'
 import { chromium } from 'playwright'
 import fs from 'fs'
@@ -7,7 +9,7 @@ import os from 'os'
 import path from 'path'
 
 const APP = process.cwd()
-const REF = path.join(APP, '_local', 'experiments', 'seedvc-20260906', 'clean_src', '럭끼_평소_2p6s.wav')
+const REF = path.join(TR.TEST_ROOT, TR.SUB.results, 'experiments', 'seedvc-20260906', 'clean_src', '럭끼_평소_2p6s.wav')
 const USER_DATA = fs.mkdtempSync(path.join(os.tmpdir(), 'af-probe-'))
 const PORT = 9820
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))

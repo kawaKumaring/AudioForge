@@ -6,7 +6,7 @@
 > - [기록 · 생성 종료] 모델 호출 2번 모두 상한 전 종료(마지막 107/512, completed_before_limit). 이것은 상한에 걸려 잘리지 않았다는 근거일 뿐, 모델이 입력 글을 빠짐없이 발음했다는 증거가 아니다.
 > - [기록 · 처리 단계 보존] 마지막 조각의 모델 반환 프레임 = 최종 배치 프레임, 배치 끝 + 말끝 여백 = 전체 길이. 후처리·결합 단계에서 음원이 깎이지 않았다는 근거이며, 역시 발음 완전성의 증거가 아니다.
 > - 아래 본문의 "마지막 문장 누락 확인" 은 작성 당시 기록으로 남긴다. 숫자 발음 판정(02~04)과 장문 말투 변화 관찰은 이 정정과 별개로 유효하다.
-> 조사 기록: _local/integ-2026-10-09/last-sentence-investigation.md
+> 조사 기록: _local/테스트/결과/integ-2026-10-09/last-sentence-investigation.md
 
 > **정정(2026-10-09) — 90.24초 장문의 접합 좌표는 기록에 있다.** 실행 기록(본체 _local/artifacts/runs/tts-20260925-180448-c22511cb, 결과 지문 62c223d5…)의 timeline.json: 접합 29.76초·66.16초(3조각 244·293·191자). 아래 본문의 "정확한 접합 좌표 없음" 은 틀린 기록이다. 상세: doc/quality-investigation-2026-10-09.md
 
@@ -43,21 +43,21 @@ paired-waveforms.png는 4쌍을 같은 시간·진폭 축으로 표시한다. ch
 이번에는 화자 임베딩·신뢰할 수 있는 F0 정렬 비교를 수행하지 않았다. 화자 유사도·감정·지지직거림의 청감 판정과 정확한 장문 접합부 검수는 미완이다. 이번 9개 밖의 다른 엔진·화자 파일은 전수 평가하지 않았다. 제품 코드 수정·커밋 없음.
 
 ## 자료
-_local/quality-audit-2026-10-04/: audit.py, results.json, recheck.py, recheck.json, visualize.py, PNG 3개, 무보정 청취 WAV 5개, review.html. HTML에서 후보와 원본을 번갈아 재생할 수 있다. 음성 사본은 float WAV이며 원본 샘플 값을 유지한다.
+_local/테스트/결과/quality-audit-2026-10-04/: audit.py, results.json, recheck.py, recheck.json, visualize.py, PNG 3개, 무보정 청취 WAV 5개, review.html. HTML에서 후보와 원본을 번갈아 재생할 수 있다. 음성 사본은 float WAV이며 원본 샘플 값을 유지한다.
 
 ## MCP 연결 및 실제 사용
 7개 검수 도구를 내부 MCP에 추가했다. 실제 생성 파일 after-chunk1, after-chunk3, before-chunk3, 90.24초 장문을 CPU Whisper small로 분석하고 전체 보고서 페이지, 비교 이미지, 마지막 구간 추출까지 조회했다. 전용 검사 27건 통과.
 
 after-chunk1의 raw CER 3.23%는 서수 표기를 정규화하면 0%다. 음질이 바뀐 것이 아니라 오류 집계에서 표기 차이를 분리한 결과다. after-chunk3는 raw 4.88%, 정규화 2.44%; before-chunk3는 8.54%다. 조건과 seed가 달라 최적화의 품질 향상 인과를 주장하지 않는다. 장문 raw/정규화 CER는 모두 1.16%다.
 
-비교 그림을 직접 확인했다. before-chunk3는 15.91초에 끝나며 after에는 17초대 신호가 있다. 전사 누락 후보와 함께 청취 위치를 좁히는 근거이며 그림만으로 단어 누락을 확정하지 않는다. after의 16.93~18.5초를 원본 샘플 그대로 추출했다. MCP 자료는 _local/quality-audit-2026-10-04/mcp-results.json, mcp-followup.json, mcp-comparison.png에 있다. 원본 수정·추가 합성·GPU 작업·사람 청취 없음.
+비교 그림을 직접 확인했다. before-chunk3는 15.91초에 끝나며 after에는 17초대 신호가 있다. 전사 누락 후보와 함께 청취 위치를 좁히는 근거이며 그림만으로 단어 누락을 확정하지 않는다. after의 16.93~18.5초를 원본 샘플 그대로 추출했다. MCP 자료는 _local/테스트/결과/quality-audit-2026-10-04/mcp-results.json, mcp-followup.json, mcp-comparison.png에 있다. 원본 수정·추가 합성·GPU 작업·사람 청취 없음.
 
 ## MCP 확장 실제 검수
 2026-10-04에 문장 대조·교차 대조·출처·연결부·근거 묶음·판정 보존 도구를 추가했다. 전용 MCP 25건, 문장 단위 12건, 기존 MCP 27건 통과. 실제 자료 4개를 39문장으로 대조해 차이 후보 6문장을 찾았다. 이는 ASR 차이이며 발음 결함 확정이 아니다.
 
-before-chunk3 마지막 '7번째 장면이다'는 small/base 모두 누락 후보였다. 해당 문장에 시각을 부여하지 않았고, 마지막 11.5~15.91초를 청취할 근거 묶음으로 보존했다. 청취 판정은 없으며 machine_observation/uncertain만 기록했다. manifest의 참조 해시와 _local/perf-ref/ref-clip.wav의 실제 해시는 일치했다. 장문은 실제 연결 좌표 기록이 없어 연결부 측정 미실시. 새 생성/GPU/원본 변경 없음.
+before-chunk3 마지막 '7번째 장면이다'는 small/base 모두 누락 후보였다. 해당 문장에 시각을 부여하지 않았고, 마지막 11.5~15.91초를 청취할 근거 묶음으로 보존했다. 청취 판정은 없으며 machine_observation/uncertain만 기록했다. manifest의 참조 해시와 _local/테스트/결과/perf-ref/ref-clip.wav의 실제 해시는 일치했다. 장문은 실제 연결 좌표 기록이 없어 연결부 측정 미실시. 새 생성/GPU/원본 변경 없음.
 
-전체 결과: _local/quality-audit-2026-10-04/mcp-extension-verified.json. 사용법과 근거의 한계는 mcp-audio-quality.md 0.4.0 확장 절을 참조한다.
+전체 결과: _local/테스트/결과/quality-audit-2026-10-04/mcp-extension-verified.json. 사용법과 근거의 한계는 mcp-audio-quality.md 0.4.0 확장 절을 참조한다.
 
 ## 조건별 현황과 청취 묶음
-현재 코드 대조, 8개 표본의 실제 실행 폴더 해시 대조, 현행 자동 참조 선택 실측을 synthesis-quality-status-2026-10-04.md에 정리했다. 청취 폴더는 _local/listening/quality-review-2026-10-04이며 기존 소리의 사본 5개다. 새 합성 없음.
+현재 코드 대조, 8개 표본의 실제 실행 폴더 해시 대조, 현행 자동 참조 선택 실측을 synthesis-quality-status-2026-10-04.md에 정리했다. 청취 폴더는 _local/테스트/결과/청취/quality-review-2026-10-04이며 기존 소리의 사본 5개다. 새 합성 없음.

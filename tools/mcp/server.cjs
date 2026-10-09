@@ -10,7 +10,8 @@
 //     → 호스트 파일도, 네트워크 포트도, 토큰도 없다(부품이 적고 밖에서 닿을 창구가 아예 없다).
 //   · 창은 화면 밖(AF_E2E_OFFSCREEN=1 → src/main/services/offscreen.ts) · 포커스 없음 — 사용자 마우스·키보드를 빼앗지 않는다.
 //   · OS 파일 열기·저장·메시지 대화상자는 앱 안에서 응답 큐로 바꿔 끼운다(진짜 창은 뜨지 않는다).
-//   · 임시 파일은 저장소 _local/tmp 아래(C 드라이브 아님), 끝나면 지운다.
+//   · 임시 파일은 테스트 전용 폴더(본체 저장소 _local/테스트/임시) 아래(C 드라이브 아님), 끝나면 지운다.
+//     화면 캡처(ui_screenshot savePath 상대 경로)는 _local/테스트/화면 아래로 간다.
 // ★표준출력은 MCP 메시지 전용 — 사람용 기록은 전부 표준오류(stderr). 섞이면 클라이언트가 끊긴다.
 // 등록: 저장소 루트 .mcp.json. 설명서: doc/mcp-devtool.md
 const { spawnSync } = require('child_process')
@@ -18,6 +19,7 @@ const fs = require('fs')
 const path = require('path')
 
 const ROOT = path.resolve(__dirname, '..', '..')
+const TR = require('../test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 const SERVER_INFO = { name: 'audioforge-devtool', version: '0.4.0' }
 const SUPPORTED_PROTOCOLS = ['2025-06-18', '2025-03-26', '2024-11-05']
 const HELPERS = fs.readFileSync(path.join(__dirname, 'domHelpers.js'), 'utf8')
@@ -113,7 +115,7 @@ async function startApp ({ visible = false, build = 'auto', width = 1280, height
   const bs = buildState()
   if (build === 'always' || (build === 'auto' && bs.stale)) built = runBuild()
   else if (!bs.built) throw new Error('out/ 없음 — build:"auto" 또는 "always" 로 다시 실행하세요')
-  const base = path.join(ROOT, '_local', 'tmp')
+  const base = TR.dir('temp')
   const tmp = path.join(base, 'mcp-' + process.pid)
   const userData = path.join(tmp, 'userdata')
   // keepData: 다시 켜기(app_restart) — 같은 사용자 데이터로 켠다(남는지·되살아나는지 확인). 아니면 새로.
@@ -204,7 +206,7 @@ const TOOLS = [
   { name: 'ui_click', description: '요소를 누른다(화면 안 이벤트 — OS 마우스 미사용). 비활성 요소는 누르지 않고 알려 준다.', inputSchema: { type: 'object', properties: { window: WIN, target: TARGET, within: TARGET, exact: { type: 'boolean' }, index: { type: 'number' }, waitMs: { type: 'number', description: '누른 뒤 대기(기본 300ms)' } }, required: ['target'] } },
   { name: 'ui_set', description: '입력칸·선택 상자·체크박스 값을 바꾼다(React 가 알아채는 방식).', inputSchema: { type: 'object', properties: { window: WIN, target: TARGET, value: {}, within: TARGET, exact: { type: 'boolean' } }, required: ['target', 'value'] } },
   { name: 'ui_wait', description: '조건이 참이 될 때까지 대기: text(글자 등장) · selector(요소 보임) · code(화면 JS 식). met=false 면 시간 초과.', inputSchema: { type: 'object', properties: { window: WIN, text: { type: 'string' }, selector: TARGET, code: { type: 'string' }, timeoutMs: { type: 'number' } } } },
-  { name: 'ui_screenshot', description: '창(또는 요소) 캡처 이미지. 화면 밖 창도 된다. savePath 를 주면 파일로도 저장(_local/ 아래 권장).', inputSchema: { type: 'object', properties: { window: WIN, selector: TARGET, maxWidth: { type: 'number' }, savePath: { type: 'string' } } } },
+  { name: 'ui_screenshot', description: '창(또는 요소) 캡처 이미지. 화면 밖 창도 된다. savePath 를 주면 파일로도 저장 — 상대 경로는 테스트 폴더 _local/테스트/화면 아래(앞의 _local/ 는 떼어 냄), 절대 경로는 그대로.', inputSchema: { type: 'object', properties: { window: WIN, selector: TARGET, maxWidth: { type: 'number' }, savePath: { type: 'string' } } } },
   { name: 'window_resize', description: '창 크기 변경.', inputSchema: { type: 'object', properties: { window: WIN, width: { type: 'number' }, height: { type: 'number' } }, required: ['width', 'height'] } },
   { name: 'api_list', description: "화면이 쓰는 앱 기능(window.api) 이름 목록 — 'audio.getFileUrl' · 'reader.speak' 처럼 점으로 이은 이름.", inputSchema: { type: 'object', properties: { window: WIN } } },
   { name: 'api_call', description: "앱 기능을 직접 호출한다(화면이 부르는 것과 같은 길: window.api → IPC → main). 예: method 'cards.builtinVoices' · 'settings.get'. 긴 문자열은 잘라서 돌려준다(full:true 면 전체). 오래 걸리면 timeoutMs 를 늘린다.", inputSchema: { type: 'object', properties: { window: WIN, method: { type: 'string' }, args: { type: 'array' }, full: { type: 'boolean' }, timeoutMs: { type: 'number' }, userApproved: { type: 'boolean', description: '사용자가 그 미디어 파일·그 작업을 명시적으로 허락했을 때만 true(검사용 자리 밖 미디어 경로를 쓸 때)' } }, required: ['method'] } },
@@ -215,7 +217,7 @@ const TOOLS = [
   { name: 'app_state', description: '지금 상태 한눈에: 작업(mode) · 처리 상태 · 오류 · 다른 작업 때문에 합성이 막히는 사유(busy) · 떠 있는 대화창·경고 · 생성 카드(개수·생성본 수·진행 중 작업) · 낭독(책·문단 자리·목소리·읽는 중인지·상태 글) · 울리는 소리 수. 무엇을 하기 전후로 먼저 부른다.', inputSchema: { type: 'object', properties: {} } },
   { name: 'app_mode', description: "작업 화면을 바꾼다: " + Object.entries(AF.MODES).map(([k, v]) => `'${k}'(${v})`).join(' · ') + '. 한국어 이름도 된다. 처리 중에는 바뀌지 않는다(그렇다고 알려 준다).', inputSchema: { type: 'object', properties: { mode: { type: 'string' }, force: { type: 'boolean', description: '단추가 없는 화면을 앱 상태로 직접 바꾼다(사용자가 가는 길이 아니다)' } }, required: ['mode'] } },
   { name: 'audio_now', description: '★소리는 들을 수 없으므로 — 틀기 시작한 소리 요소들의 파일 이름 · 위치(초) · 길이 · 멈춤/끝남 · 재생 빠르기 · 음량 · 오류. 낭독·생성본·미리듣기 모두(화면 DOM 에 없는 요소 포함).', inputSchema: { type: 'object', properties: { window: WIN } } },
-  { name: 'audio_inspect', description: '만든 소리(WAV)를 수치로: 길이 · 샘플레이트 · 최고/평균 크기(dBFS) · 잘린 표본 수 · 조용한 비율 · 앞뒤 조용함 · 가장 긴 틈 · 비었는지. ★검사용 자리(test/fixtures/audio · _local/tmp · 이 실행의 임시 폴더) 안의 파일만 — 그 밖은 userApproved:true(사용자 허락) 필요.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, userApproved: { type: 'boolean' } }, required: ['path'] } },
+  { name: 'audio_inspect', description: '만든 소리(WAV)를 수치로: 길이 · 샘플레이트 · 최고/평균 크기(dBFS) · 잘린 표본 수 · 조용한 비율 · 앞뒤 조용함 · 가장 긴 틈 · 비었는지. ★검사용 자리(test/fixtures/audio · _local/테스트/임시 · 이 실행의 임시 폴더) 안의 파일만 — 그 밖은 userApproved:true(사용자 허락) 필요.', inputSchema: { type: 'object', properties: { path: { type: 'string' }, userApproved: { type: 'boolean' } }, required: ['path'] } },
   { name: 'wait_idle', description: '긴 작업(합성·낭독 조각 만들기·분리 등)이 끝날 때까지 기다린다 — 처리 상태 · 카드 작업 · 합성 막힘 사유 · 낭독 "만드는 중" 이 모두 비고 1초 유지되면 끝. 반환 met=false 면 시간 초과(timeoutMs 기본 10분).', inputSchema: { type: 'object', properties: { timeoutMs: { type: 'number' } } } },
   { name: 'test_input', description: "사용자 파일 대신 쓰는 **검사 재료**를 이 실행의 임시 폴더에 만든다(경로를 돌려준다 — dialog_queue 에 그대로 넣는다). kind: 'text'(content · encoding utf-8|utf-8-bom|utf-16le|cp949 · name) · 'tone'(seconds · freq — 사인파 WAV) · 'speech'(text — 앱의 기본 목소리로 만든 말소리 WAV · 참조 목소리 검사용) · 'fixture'(name — 저장소 검사용 음원을 복사, 이름 없으면 목록).", inputSchema: { type: 'object', properties: { kind: { type: 'string', enum: ['text', 'tone', 'speech', 'fixture'] }, content: { type: 'string' }, encoding: { type: 'string' }, name: { type: 'string' }, text: { type: 'string' }, seconds: { type: 'number' }, freq: { type: 'number' } }, required: ['kind'] } },
   // ── 조작 보충(2026-10-01 · 개발툴과 비교해 빠졌던 것) ──
@@ -276,6 +278,7 @@ const HANDLERS = {
       return { b64: img.toPNG().toString('base64'), size: img.getSize(), orig }
     }, { window, rect, maxWidth })
     void page
+    if (savePath && !path.isAbsolute(savePath)) savePath = TR.shot(savePath.replace(/^_local[\\/]/, ''))
     if (savePath) { fs.mkdirSync(path.dirname(savePath), { recursive: true }); fs.writeFileSync(savePath, Buffer.from(shot.b64, 'base64')) }
     return { content: [{ type: 'image', data: shot.b64, mimeType: 'image/png' }, text({ width: shot.size.width, height: shot.size.height, original: shot.orig, savedTo: savePath || null })] }
   },

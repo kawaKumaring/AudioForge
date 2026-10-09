@@ -8,6 +8,8 @@
 //   모두 이 창 안에서 관측된다. production timeout(280/300)은 변경하지 않는다.
 // 타임아웃/완료 무관하게 종료 후 잔존(venv 자식·.qwen-job-*·refclip)이 0임을 단언한다.
 import '../_temp-root.mjs'           // ★맨 앞 — 검사 도구가 임시 자리를 C 드라이브로 정하기 전에
+import { createRequire } from 'node:module'
+const TR = createRequire(import.meta.url)('../../tools/test-root.cjs')   // 테스트 전용 폴더(_local/테스트) — 2026-10-10
 import { _electron as electron } from 'playwright'
 import { execFileSync } from 'child_process'
 import fs from 'fs'
@@ -19,7 +21,7 @@ const WAIT_MS = 350000  // > watchdog 300 > 무응답 280 (위 근거 참조)
 const APP = process.cwd()
 const SRC = requireE2EReference()   // 명시 AF_E2E_REFERENCE 단일 권위(speaker_b.wav 하드코딩·fallback 없음)
 const RES_DIR = path.join(APP, 'resources')
-const SHOT = path.join(APP, '_local', 'artifacts', 'diagnostics', 'e2e-shots')
+const SHOT = TR.dir('shots', 'e2e')
 // 검증용 파이썬. 특정 PC 의 절대 경로를 박으면 다른 곳에서 재현되지 않는다 — 명시 env 로만 받는다.
 const PY = (process.env.AF_E2E_PYTHON || '').trim()
 if (!PY || !fs.existsSync(PY)) {
