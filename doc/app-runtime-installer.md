@@ -44,7 +44,7 @@ site-packages 전체를 해싱하지 않기 때문이다. 수 GiB 를 앱 실행
 ```
 <본체 저장소>/externals/            <- assets_root()  : 외부 참조. 읽기만 한다.
   GPT-SoVITS/                       코드 + 사전학습 모델 (이미 내려받아 둔 것)
-  gptsovits_venv/                   손상된 예전 venv. 보존만 한다.
+  gptsovits_venv/                   (2026-10-09 삭제 — 사용자 결정) 손상된 예전 venv.
   qwen3_tts_venv/, qwen3_tts_hf/, separator_models/, env.json
   runtime/                          <- runtime_root() : 앱 소유. 여기만 만들고 고친다.
     app-python/cpython-3.12.14-.../ 앱 전용 파이썬
@@ -203,7 +203,7 @@ node scripts/af-launch.mjs --install    설치까지만 (앱 실행 안 함)
 | `python/setup_env.py` | 그대로. 메인 환경 attach/venv 담당 |
 | `python/setup_gptsovits.py` | **실행하지 않는다.** 기존 repo·기존 venv를 전제로 pip 설치와 shim 덮어쓰기를 하기 때문. 모델 목록과 shim 로직은 지식으로만 가져왔다 |
 | `externals/env.json` | 그대로. 메인 환경 경로 기록 |
-| `externals/gptsovits_venv` | 손상된 예전 venv. **보존만 한다** — 수리도 삭제도 하지 않는다 |
+| `externals/gptsovits_venv` | **2026-10-09 삭제(사용자 결정, 저장 공간 정리).** 손상된 예전 venv 였고 runtime.json 이 가리키지 않았다 — 앱은 runtime/gptsovits_venv_app 을 쓴다 |
 | `externals/runtime/runtime.json` | **새로 추가.** 앱 전용 환경의 연결 기록 |
 
 `runtime.json`이 없으면 `app_runtime.resolve_gptsovits()`는 예전 관례 경로
@@ -266,3 +266,6 @@ node scripts/af-launch.mjs --install    설치까지만 (앱 실행 안 함)
 
 ★**패키지를 설치한 뒤에는 기록을 갱신해야 한다.** 이번 사고의 뿌리가 그것이다.
   정당한 설치였는데 기록을 안 고쳐서 다음 실행이 손상으로 읽었다.
+
+## 2026-10-09 정리 기록
+- 손상된 예전 `externals/gptsovits_venv`(3.26GB)를 사용자 결정으로 지웠다. runtime.json 의 gptsovits 는 `runtime/gptsovits_venv_app` 을 가리키므로 앱 동작과 무관하다. runtime.json 이 없는 설치에서만 쓰이던 예전 대체 경로(python/app_runtime.py 의 LEGACY_GPTSOVITS_VENV)는 그 폴더가 없으면 찾지 못한다 — 이 PC 는 runtime.json 이 있다.
