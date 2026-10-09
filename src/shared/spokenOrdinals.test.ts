@@ -58,7 +58,7 @@ test('감정 덩어리 글도 같은 소리 글(구절 번호로 묶으므로 �
 // @ts-ignore TS5097
 import { splitForReading, START_RAMP_SECONDS } from './readerChunks.ts'
 // @ts-ignore TS5097
-import { ORDINAL_CONTEXT } from './spokenOrdinals.ts'
+import { ordinalContextBefore } from './spokenOrdinals.ts'
 
 test('덩이가 "1." 뒤에서 갈려도 "7번째" 는 바꾸지 않는다(앞 문맥을 함께 본다)', () => {
   const doc = '값은 1.7번째 칸이다.'
@@ -69,7 +69,17 @@ test('덩이가 "1." 뒤에서 갈려도 "7번째" 는 바꾸지 않는다(앞 �
   assert.equal(readingPlan(doc.slice(at), { skipHanjaInParens: false, ordinals: true }).ordinalChanges, 1)
 })
 
-test('읽기 시작 자리·덩이 크기가 달라도 문서의 같은 자리는 같은 판정(덩이마다 앞 64글자만 본다)', () => {
+test('문맥 범위를 넘는 띄어쓰기 뒤의 범위 기호 — 문서 처음으로 오인하지 않는다', () => {
+  const doc = '2 ~' + ' '.repeat(100) + '7번째'
+  const at = doc.indexOf('7번째')
+  const ctx = ordinalContextBefore(doc, at)
+  assert.ok(ctx.startsWith('~'), JSON.stringify(ctx.slice(0, 3)))
+  assert.deepEqual(findOrdinals(doc.slice(at), ctx), [])
+  assert.deepEqual(findOrdinals(doc), [])
+  assert.equal(ordinalContextBefore('   7번째', 3), '   ')        // 앞에 글자가 없으면 실제 문서 처음
+})
+
+test('지금의 덩이 나눔(문장 끝·줄바꿈·고른 시작 문단)에서는 시작 자리·덩이 크기가 달라도 같은 판정', () => {
   const lines: string[] = []
   for (let k = 0; k < 40; k++) lines.push(k % 3 === 0 ? `그는 ${k % 9 + 1}번째 장면을 봤다.` : k % 3 === 1 ? `값은 1.${k % 9 + 1}번째 칸이다.` : `범위는 2~${k % 9 + 1}번째다.`)
   const doc = lines.join(' ')
@@ -83,7 +93,7 @@ test('읽기 시작 자리·덩이 크기가 달라도 문서의 같은 자리�
   for (const chunks of layouts) {
     const got = new Set<number>()
     for (const c of chunks) {
-      const before = doc.slice(Math.max(0, c.start - ORDINAL_CONTEXT), c.start)
+      const before = ordinalContextBefore(doc, c.start)
       for (const ch of findOrdinals(c.text, before)) got.add(c.start + ch.start)
     }
     assert.deepEqual([...got].sort((a, b) => a - b), [...whole].sort((a, b) => a - b))

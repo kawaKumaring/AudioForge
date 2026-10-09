@@ -126,7 +126,7 @@ export function speakableText(text: string, prefs: Pick<ReaderPrefs, 'skipHanjaI
 /** 소리 글 만들기 선택 — 서수 읽기 보정은 **부르는 쪽이 Qwen 목소리일 때만** 켠다(spokenOrdinals.ts). */
 export interface PlanOptions extends Pick<ReaderPrefs, 'skipHanjaInParens'> {
   ordinals?: boolean
-  /** 이 덩이 **바로 앞의 원문**(문서 좌표로 덩이 시작 앞 ORDINAL_CONTEXT 글자) — 서수 경계를 덩이 밖까지 본다. */
+  /** 이 덩이 앞의 경계 정보 — ordinalContextBefore(문서, 덩이 시작). 서수 경계를 덩이 밖까지 본다. */
   before?: string
 }
 

@@ -21,7 +21,7 @@ import { useAppStore } from '@/stores/app.store'
 import { createManagedAudio } from '@/lib/playbackVolume'
 import { splitForReading, chunkAt, START_RAMP_SECONDS, type Chunk } from '../../shared/readerChunks'
 import { readingPlan, type ReadingPart } from '../../shared/readerText'
-import { ORDINAL_RULE, ORDINAL_CONTEXT } from '../../shared/spokenOrdinals'
+import { ORDINAL_RULE, ordinalContextBefore } from '../../shared/spokenOrdinals'
 import { partAt } from '../../shared/readerTiming'
 import { partEmotions, emotionRuns, runSay } from '../../shared/readerEmotion'
 import { opLog, nameOnly } from '@/lib/opLog'
@@ -127,9 +127,9 @@ export function useReadAloud(
     let p = m.get(i)
     if (!p) {
       const c = chunks[i]
-      // ★서수 경계는 문서 좌표로 — 덩이 앞 원문 몇 글자를 함께 넘긴다(덩이가 "1." 뒤에서 갈려도 "7번째" 를 바꾸지 않게).
-      //   덩이마다 앞 64글자만 본다 — 큰 책 전체를 다시 훑지 않는다. 읽기 시작 자리·덩이 크기가 달라도 같은 판정.
-      const before = c && ordinals ? text.slice(Math.max(0, c.start - ORDINAL_CONTEXT), c.start) : ''
+      // ★서수 경계는 문서 좌표로 — 덩이 앞의 경계 정보(바로 앞 글자 · 띄어쓰기를 건넌 가장 가까운 글자)를 원문에서 정확히 넘긴다.
+      //   덩이가 "1." 뒤에서 갈려도 "7번째" 를 바꾸지 않는다. 거슬러 가는 것은 덩이 앞 띄어쓰기 줄뿐 — 책 전체를 훑지 않는다.
+      const before = c && ordinals ? ordinalContextBefore(text, c.start) : ''
       p = readingPlan(c?.text || '', { skipHanjaInParens: skipHanja, ordinals, before }); m.set(i, p)
     }
     return p

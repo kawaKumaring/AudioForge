@@ -51,19 +51,27 @@ const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u
 const TOKEN = /[0-9]+/g
 
 /**
- * 앞 문맥으로 넘길 글자 수 — 판정이 앞을 보는 것은 바로 앞 글자와 '띄어쓰기를 건넌 바로 앞 기호' 뿐이다.
- * 띄어쓰기가 이보다 길게 이어진 뒤의 기호는 보지 못한다(그때는 문서 처음처럼 본다 — 한계로 기록).
+ * 덩이 앞에서 판정에 필요한 **경계 정보만** 원문에서 정확히 잘라 낸다(2026-10-09 재검수).
+ * 판정이 앞을 보는 것은 ① 바로 앞 글자 ② 띄어쓰기·탭을 건넌 가장 가까운 글자 — 둘뿐이다.
+ * 그래서 띄어쓰기 줄을 끝까지 거슬러 가 ②부터 덩이 시작 바로 앞까지를 돌려준다(띄어쓰기 길이와 무관하게 정확, 책 전체를 훑지 않는다).
+ * ★예전처럼 앞 N글자로 자르지 않는다 — 띄어쓰기가 N 보다 길면 ②를 못 보고 문서 처음으로 오인해 범위 기호 뒤 숫자를 바꿨다.
+ * 돌려준 글에 ②가 없다면(띄어쓰기뿐이거나 빈 글) 그 앞은 **실제로 문서 처음**이다.
  */
-export const ORDINAL_CONTEXT = 64
+export function ordinalContextBefore(doc: string, start: number): string {
+  let k = Math.max(0, Math.min(start, doc.length))
+  const end = k
+  while (k > 0 && (doc[k - 1] === ' ' || doc[k - 1] === '\t')) k--
+  return doc.slice(Math.max(0, k - 1), end)
+}
 
 /**
  * 원문에서 바꿀 서수 자리를 찾는다(원문 좌표). 원문은 건드리지 않는다.
- * before = 이 글 **바로 앞의 원문**(낭독 덩이 앞) — 덩이가 "1." 뒤에서 갈려도 "7번째" 의 앞이 '.' 임을 안다.
- *   그래서 읽기 시작 자리·덩이 크기가 달라도 같은 자리는 같은 판정이다. 끝 쪽은 문맥이 필요 없다(토큰 + "번째" 가 덩이 안에 다 있어야 바꾼다).
+ * before = 이 글 바로 앞의 경계 정보 — **ordinalContextBefore(문서, 덩이 시작)** 로 만든다(자르지 않고 그대로 쓴다).
+ *   덩이가 "1." 뒤에서 갈려도 "7번째" 의 앞이 '.' 임을 안다. 끝 쪽은 문맥이 필요 없다(토큰 + "번째" 가 덩이 안에 다 있어야 바꾼다).
  */
 export function findOrdinals(text: string, before = ''): OrdinalChange[] {
   if (before) {
-    const ctx = before.slice(-ORDINAL_CONTEXT)
+    const ctx = before
     return findOrdinals(ctx + text).filter((c) => c.start >= ctx.length)
       .map((c) => ({ ...c, start: c.start - ctx.length, end: c.end - ctx.length }))
   }

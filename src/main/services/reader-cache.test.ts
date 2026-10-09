@@ -80,13 +80,48 @@ test('읽을 수 없는 기록·옛 판 기록은 확인 불가 — 쓰지 않�
   } finally { f.done() }
 })
 
-test('Qwen 없이 바꾸지 않은 글로 만든 소리 — 규칙 요청엔 쓰지 않고, 같은 바꾸지 않은 글 요청엔 쓴다', () => {
+// ── plain 기록(Qwen 없이 바꾸지 않은 글로 만든 소리) — 기록을 끝까지 대조한 **뒤에** 재사용 여부를 정한다(2026-10-09 재검수) ──
+const PLAIN = '7번째 장면이다.'
+const plainRec = (f: ReturnType<typeof fixture>) => ({ ...f.rec, rule: null, ordinalChanges: 0, usedText: 'plain' as const, sentSha256: sha256(PLAIN) })
+
+test('정상 plain 기록 — 사실대로 맞는 기록(fallback-plain)이지만 보정 요청에는 다시 쓰지 않는다', () => {
   const f = fixture()
   try {
-    const plain = '7번째 장면이다.'
-    commitCache(f.out, f.wav, { ...f.rec, rule: null, ordinalChanges: 0, usedText: 'plain', sentSha256: sha256(plain) })
-    assert.equal(cacheState(f.out, f.name, f.body, RULE), 'fallback-plain')
-    assert.equal(cacheState(f.out, f.name, f.body, { rule: null, ordinalChanges: 0, plainSay: plain }), 'verified')
+    commitCache(f.out, f.wav, plainRec(f))
+    const st = cacheState(f.out, f.name, f.body, { ...RULE, plainSay: PLAIN })
+    assert.equal(st, 'fallback-plain')
+    assert.ok(!reusable(st))
+    assert.equal(readSpokenRecord(f.out).usedText, 'plain')
+    // 보정을 끈(바꾸지 않은 글을 그대로 보내는) 같은 이름 요청에는 맞는 소리다.
+    assert.equal(cacheState(f.out, f.name, f.body, { rule: null, ordinalChanges: 0, plainSay: PLAIN }), 'verified')
+  } finally { f.done() }
+})
+
+test('plain 기록의 전달 글이 이번 요청의 바꾸지 않은 글과 다르면 기록 불일치 — fallback-plain 으로 보이지 않는다', () => {
+  const f = fixture()
+  try {
+    commitCache(f.out, f.wav, plainRec(f))
+    assert.equal(cacheState(f.out, f.name, f.body, { ...RULE, plainSay: PLAIN + ' 다른 글' }), 'record-mismatch')
+    assert.equal(cacheState(f.out, f.name, f.body, RULE), 'record-mismatch')      // plainSay 없음 → body 와 대조
+  } finally { f.done() }
+})
+
+test('plain 기록에 연결된 음원이 바뀌면 음원 불일치 — fallback-plain 으로 보이지 않는다', () => {
+  const f = fixture()
+  try {
+    commitCache(f.out, f.wav, plainRec(f))
+    writeFileSync(f.out, Buffer.from('RIFF....other bytes!!'))
+    assert.equal(cacheState(f.out, f.name, f.body, { ...RULE, plainSay: PLAIN }), 'wav-mismatch')
+    writeFileSync(f.out, Buffer.alloc(f.wav.length, 1))          // 크기는 같고 내용만 다름
+    assert.equal(cacheState(f.out, f.name, f.body, { ...RULE, plainSay: PLAIN }), 'wav-mismatch')
+  } finally { f.done() }
+})
+
+test('plain 기록이 다른 이름의 것이면 기록 불일치', () => {
+  const f = fixture()
+  try {
+    commitCache(f.out, f.wav, plainRec(f))
+    assert.equal(cacheState(f.out, f.name + 'x', f.body, { ...RULE, plainSay: PLAIN }), 'record-mismatch')
   } finally { f.done() }
 })
 

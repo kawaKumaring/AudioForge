@@ -37,7 +37,14 @@ class SameAsScreen(unittest.TestCase):
     def test_앞_문맥을_함께_본다_TS_와_같게(self):
         self.assertEqual(so.find_ordinals("7번째", before="값은 1."), [])
         self.assertEqual(so.spoken_ordinals("7번째", before="그는 ")[0], "일곱 번째")
-        self.assertEqual(so.ORDINAL_CONTEXT, 64)
+        # 문맥 범위를 넘는 띄어쓰기 뒤의 범위 기호 — 경계 정보는 띄어쓰기 줄 끝까지 거슬러 간다(TS 와 같은 사례).
+        doc = "2 ~" + " " * 100 + "7번째"
+        at = doc.index("7번째")
+        ctx = so.ordinal_context_before(doc, at)
+        self.assertTrue(ctx.startswith("~"), repr(ctx[:3]))
+        self.assertEqual(so.find_ordinals(doc[at:], before=ctx), [])
+        self.assertEqual(so.find_ordinals(doc), [])
+        self.assertEqual(so.ordinal_context_before("   7번째", 3), "   ")   # 앞에 글자가 없으면 실제 문서 처음
 
 
 class WiredOnlyToQwen(unittest.TestCase):

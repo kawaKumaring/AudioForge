@@ -28,7 +28,9 @@ export interface SpokenRecord {
  * - verified: 기록이 이 이름·이 글·이 음원과 맞는다.
  * - legacy-unrecorded: 기록 제도 이전의 옛 소리(새 저장은 기록을 **먼저** 확정하므로 기록 없는 완성 음원은 옛 것뿐이다).
  *   바꾼 글이 없는 요청에만 다시 쓴다 — 보정을 적용했는지 확인할 수 없는 소리를 보정 결과로 쓰지 않는다.
+ * - fallback-plain: 기록이 이 이름·보낸 글·음원과 **모두 맞지만** 바꾸지 않은 글로 만든 소리 — 사실은 보이되 보정 요청에는 다시 쓰지 않는다.
  * - 나머지는 쓰지 않고 새로 만든다(그 자리만 덮어쓴다 — 다른 쌓아 둔 것은 지우지 않는다).
+ *   호출부는 verified·fallback-plain 일 때만 기록을 '만들 당시 기록(madeWith)' 으로 보인다.
  */
 export type CacheState = 'none' | 'verified' | 'legacy-unrecorded'
   | 'record-unreadable' | 'record-mismatch' | 'wav-mismatch' | 'fallback-plain' | 'legacy-needs-rule'
@@ -55,16 +57,19 @@ export function cacheState(wav: string, nameSource: string, body: string, spoken
   }
   const rec = readSpokenRecord(wav)
   if (!rec || rec.v !== SPOKEN_RECORD_V) return 'record-unreadable'
+  // ★먼저 기록 자체를 끝까지 대조한다(이름 → 실제 보낸 글 → 음원 크기·지문). plain 여부는 **그 다음**에 판정한다
+  //   (2026-10-09 재검수 — 예전엔 plain 이면 대조 전에 돌아가, 어긋난 기록·바뀐 음원도 '맞는 plain 기록' 으로 보였다).
   if (rec.nameSha256 !== sha256(nameSource)) return 'record-mismatch'
-  if (rec.usedText === 'plain') {
-    // Qwen 이 없어 바꾸지 않은 글로 만든 소리 — 규칙을 켠 요청에는 쓰지 않는다.
-    if (spoken?.rule) return 'fallback-plain'
-    if (spoken?.plainSay == null || rec.sentSha256 !== sha256(spoken.plainSay)) return 'record-mismatch'
-  } else if (rec.sentSha256 !== sha256(body)) return 'record-mismatch'
+  if (rec.usedText !== 'plain' && rec.usedText !== 'spoken') return 'record-unreadable'
+  // plain = Qwen 이 아니라 바꾸지 않은 글로 만든 것 — 그 글은 요청의 plainSay(바꾼 것이 있을 때) 아니면 body(바꾼 것이 없으면 둘이 같다).
+  const expectedSent = rec.usedText === 'plain' ? (spoken?.plainSay ?? body) : body
+  if (rec.sentSha256 !== sha256(expectedSent)) return 'record-mismatch'
   try {
     const buf = readFileSync(wav)
     if (buf.length !== rec.wavBytes || sha256(buf) !== rec.wavSha256) return 'wav-mismatch'
   } catch { return 'wav-mismatch' }
+  // 기록은 이 이름·글·음원과 맞는다. 바꾸지 않은 글로 만든 소리는 보정 요청에는 다시 쓰지 않는다(사실은 그대로 보인다).
+  if (rec.usedText === 'plain' && spoken?.rule) return 'fallback-plain'
   return 'verified'
 }
 export const reusable = (s: CacheState) => s === 'verified' || s === 'legacy-unrecorded'

@@ -16,8 +16,15 @@ _TENS = ["", "열", "스물", "서른", "마흔", "쉰", "예순", "일흔", "�
 _BLOCK_BEFORE = set(".,:'’-‐‑‒–—―−~～〜+±/#_%$₩€£¥@&*^=")
 _RANGE_SIGN = set("-‐‑‒–—―−~～〜+±")
 _TOKEN = re.compile(r"[0-9]+")
-#: 앞 문맥 글자 수 — TS 의 ORDINAL_CONTEXT 와 같다.
-ORDINAL_CONTEXT = 64
+
+
+def ordinal_context_before(doc, start):
+    """덩이 앞의 경계 정보만 — 띄어쓰기·탭을 건넌 가장 가까운 글자부터 start 바로 앞까지(TS ordinalContextBefore 와 같다)."""
+    doc = doc or ""
+    k = end = max(0, min(start, len(doc)))
+    while k > 0 and doc[k - 1] in " \t":
+        k -= 1
+    return doc[max(0, k - 1):end]
 
 
 def ordinal_word(n):
@@ -39,9 +46,9 @@ def _letter_or_digit(ch):
 
 def find_ordinals(text, before=""):
     """원문에서 바꿀 서수 자리 [{start, end, original, spoken}] (원문 좌표).
-    before = 이 글 바로 앞의 원문(덩이 앞 문맥) — TS findOrdinals 와 같은 규칙."""
+    before = 이 글 바로 앞의 경계 정보(ordinal_context_before 로 만든다, 자르지 않는다) — TS findOrdinals 와 같은 규칙."""
     if before:
-        ctx = before[-ORDINAL_CONTEXT:]
+        ctx = before
         return [dict(c, start=c["start"] - len(ctx), end=c["end"] - len(ctx))
                 for c in find_ordinals(ctx + (text or "")) if c["start"] >= len(ctx)]
     out = []

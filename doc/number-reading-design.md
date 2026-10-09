@@ -23,14 +23,16 @@
 - 강조·감정 좌표: 구절 from/to 는 원문 자리 그대로, 감정 덩어리는 구절 번호로 묶어 spoken 을 잇는다 — 변환 뒤 글자 수가 늘어도 자리가 밀리지 않는다. 구절 무게는 바뀐 소리 글 기준(실제로 읽는 길이).
 
 ## 관리자 재검수 보완(2026-10-09)
-1. **낭독 덩이 경계** — 판정을 문서 좌표로. 덩이마다 바로 앞 원문 64글자(ORDINAL_CONTEXT)를 함께 넘겨 findOrdinals(덩이 글, 앞 문맥)으로 찾는다(useReadAloud.planOf → readingPlan(before)). "1." 뒤에서 갈린 "7번째" 는 앞이 '.' 라 바꾸지 않는다. 덩이마다 앞 64글자만 보므로 큰 책 전체를 다시 훑지 않는다. 덩이는 문장 끝·줄바꿈·사용자가 고른 시작 자리(문단 처음)에서만 갈리므로 "숫자+번째" 가 덩이 끝에 걸쳐 갈리지 않는다 — 판정은 읽기 시작 자리·덩이 크기와 무관(검사: 네 가지 덩이 나눔에서 문서 전체 판정과 같은 자리).
-   한계: 띄어쓰기가 64칸 넘게 이어진 뒤의 범위 기호는 보지 못한다.
+1. **낭독 덩이 경계** — 판정을 문서 좌표로. 덩이마다 ordinalContextBefore(문서, 덩이 시작)로 **판정에 필요한 경계 정보만** 정확히 넘긴다: 바로 앞 글자, 그리고 띄어쓰기·탭 줄을 끝까지 거슬러 간 가장 가까운 글자(useReadAloud.planOf → readingPlan(before) → findOrdinals(덩이 글, before)). "1." 뒤에서 갈린 "7번째" 는 앞이 '.' 라 바꾸지 않는다.
+   (2차 재검수 정정) 처음 구현은 앞 64글자로 잘라, 띄어쓰기가 그보다 길면 범위 기호를 못 보고 문서 처음으로 오인해 바꿨다. 이제 자르지 않는다 — 거슬러 가는 것은 덩이 앞 띄어쓰기 줄뿐이라 책 전체를 다시 훑지 않는다. 경계 정보에 글자가 없으면 실제로 문서 처음이다.
+   **보장 범위**: 지금의 splitForReading 이 문장 끝(. ! ? …)·줄바꿈·사용자가 고른 시작 문단에서만 덩이를 가르는 동안, 읽기 시작 자리·덩이 크기가 달라도 같은 자리는 같은 판정이다(검사: 네 가지 나눔 = 문서 전체 판정). 덩이를 숫자 한가운데나 "번째" 사이에서 가르도록 나눔 규칙이 바뀌면 그 토큰은 바꾸지 않는 쪽으로 달라질 수 있다(잘못 바꾸지는 않는다).
 2. **캐시 확정 절차** — services/reader-cache.ts 한 곳.
    - 새 소리는 음원·기록을 .part 로 쓰고, **기록을 먼저** 이름으로 옮긴 뒤 음원을 마지막에 옮긴다. 확정하지 못하면 그 이름으로 쌓지 않고 재생 전용 파일(nocache-*.wav)로 돌린다(기록 저장 실패를 무시하고 캐시를 쓰는 조합 제거).
    - 기록: 형식 판, 이름 원재료 전체 지문(nameSha256 — 이 이름의 기록인지), 엔진에 실제 보낸 글 지문(sentSha256), 음원 지문·크기, 규칙·바꾼 수·실제 쓴 글 종류·엔진.
    - 쓸 때 판정(cacheState): verified(모두 맞음) / legacy-unrecorded(기록 제도 이전 옛 소리 — 새 저장은 기록이 먼저라 기록 없는 완성 음원은 옛 것뿐) / legacy-needs-rule(바꾼 글이 든 요청에 기록 없는 소리 — 쓰지 않음) / record-unreadable·record-mismatch·wav-mismatch·fallback-plain(쓰지 않음) / none(음원 없음 — 기록만 남은 불완전 저장 포함).
    - 쓰지 않는 소리는 그 이름 자리만 새로 만들어 덮는다. 다른 쌓아 둔 것은 지우지 않는다. 끊겨 남은 .part 는 하루 뒤 정리.
    - 응답 trace.spoken: requested(지금 요청) · madeWith(확인된 기록만) · cacheState · committed.
+   - (2차 재검수 정정) plain 기록도 이름 → 실제 보낸 글(요청의 plainSay, 없으면 body) → 음원 크기·지문을 **모두 대조한 뒤** fallback-plain(맞는 기록, 보정 요청엔 재사용 안 함)으로 판정한다. 예전엔 대조 전에 돌아가 어긋난 기록·바뀐 음원도 madeWith 로 보였다. 호출부는 verified·fallback-plain 일 때만 madeWith 를 싣는다.
 
 ## 재생성과 캐시
 - 숫자 음절만 만들어 끼워 넣지 않는다. 바뀐 덩이는 **덩이 전체**를 새로 만든다(쌓아 둔 이름 = 목소리 + 실제 보낸 글 — 글이 바뀌면 이름이 바뀐다).
@@ -50,7 +52,8 @@
 - python python/test_speech_symbols.py (연결 자리 단언을 say_source 로 갱신)
 - 영향 검사: readerText·readerEmotion·useReadAloud 관련 기존 검사, reader e2e 중 낭독 trace·캐시
 - 근거 묶음: test/e2e/audio-quality-evidence.cjs (inspectionCode 포함 저장본=응답, seed 타입)
-- 덩이 경계: spokenOrdinals.test.ts 의 '1. 뒤 덩이'·'덩이 나눔 네 가지 = 문서 전체 판정', test_spoken_ordinals.py 앞 문맥
+- 덩이 경계: spokenOrdinals.test.ts 의 '1. 뒤 덩이'·'문맥 범위를 넘는 띄어쓰기 + 범위 기호'·'덩이 나눔 네 가지 = 문서 전체 판정', test_spoken_ordinals.py 앞 문맥·긴 띄어쓰기
+- plain 기록: reader-cache.test.ts 의 정상 plain(사실 표시·보정 요청 재사용 안 함)·전달 글 불일치·연결 음원 변경(크기 다름/같음)·다른 이름
 - 캐시 확정: node --test src/main/services/reader-cache.test.ts (확정·옛 소리·불완전 저장·이름/글/음원 불일치·옛 판·Qwen 미사용·확정 실패·다른 캐시 보존)
 - 실제 앱: 같은 덩이 두 번 읽기 → 두 번째 cacheState=verified, 기록 파일 지운 뒤 서수 든 덩이 → 새로 만듦
 - 청취(사용자): Qwen 지정 목소리·참조 목소리로 서수가 든 다른 대사·다른 seed — 자동 전사 일치는 합격으로 치지 않는다.
