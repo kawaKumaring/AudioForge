@@ -48,7 +48,7 @@ function reviews(d,r){const dir=reviewsDir(d,r);return fs.existsSync(dir)?fs.rea
 async function call(op,a,d){
  const r=op==='review'&&a.action==='list'?d.load(a.reportId):d.checked(a.reportId)
  if(op==='sentences')return{reportId:a.reportId,...d.paged(await d.worker({op:'sentences',report:r}),a)}
- if(op==='crosscheck'){const other=d.checked(a.otherReportId);return{reportIds:[a.reportId,a.otherReportId],...d.paged(await d.worker({op:'crosscheck',left:r,right:other}),a)}}
+ if(op==='crosscheck'){const other=d.checked(a.otherReportId);const ts=x=>{const s=x.identity.textSource;return s?{kind:s.kind,verified:!!s.verified,runId:s.runId??null,rawSha256:s.rawSha256??null}:{kind:'unverified',verified:false}};return{reportIds:[a.reportId,a.otherReportId],textSources:[ts(r),ts(other)],...d.paged(await d.worker({op:'crosscheck',left:r,right:other}),a)}}
  if(op==='context'){
   const ref=a.referenceReportId?d.checked(a.referenceReportId):null
   return{reportId:a.reportId,...d.paged(context(r).map(x=>({...x,
@@ -75,6 +75,8 @@ async function call(op,a,d){
   if(a.action==='list')return{source:r.source,sourceCurrent:d.current(r),...d.paged(reviews(d,r),a)}
   if(a.action!=='append')throw Error('action은 append/list')
   if(!Number.isFinite(a.start)||!Number.isFinite(a.end)||a.start<r.summary.window[0]||a.end>r.summary.window[1]||a.end<=a.start)throw Error('판정은 분석 범위 안이어야 합니다.')
+  // ★누락 확정은 대사 출처가 실행 기록으로 확인된 보고서에서만(2026-10-09) — 다른 실행의 글을 기대 대사로 써 '누락' 을 잘못 확정한 일이 있었다.
+  if(a.category==='omission'&&a.verdict==='confirmed'&&!(r.identity.textSource&&r.identity.textSource.verified))throw Error('대사 출처 미확인 — 실행 기록으로 확인된 보고서에서만 누락을 확정할 수 있습니다.')
   if(!['omission','pronunciation','repetition','noise','join','speaker','naturalness','other'].includes(a.category)||!['confirmed','not_observed','uncertain'].includes(a.verdict)||!['user_report','machine_observation'].includes(a.basis))throw Error('잘못된 판정 종류')
   for(const k of ['observer','note'])if(typeof a[k]!=='string'||!a[k].trim()||a[k].length>2000)throw Error(k+'는 1~2000자')
   if(a.basis==='user_report'&&(typeof a.userStatement!=='string'||!a.userStatement.trim()||a.userStatement.length>2000))throw Error('사용자가 전달한 청취 원문 필요')

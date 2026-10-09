@@ -106,3 +106,12 @@ append 필수: start/end, category(omission/pronunciation/repetition/noise/join/
 - 실제 참조 조각을 분석해 manifest의 b51c8648… 해시와 일치 확인. 원본 참조 내 선택 시작/끝과 다른 후보의 적합성은 이 기록만으로 알 수 없다.
 - 90초 장문의 실제 연결 좌표는 없음. 측정 성공으로 꾸미지 않았다. 연결부 측정 자체는 위치·진폭을 아는 2채널 검사 음원에서 샘플 차이와 6.0206dB 변화를 확인했다.
 - 산출물: _local/quality-audit-2026-10-04/mcp-extension-verified.json, mcp-evidence-final.png. 전사는 로컬 CPU만 사용했다. 이 절 작성 시점에는 사람 청취 없음.
+
+## 대사 출처 연결 (2026-10-09)
+- analyze 의 기대 대사는 기본으로 **그 음원을 만든 실행 기록**에서 가져온다(tools/mcp/quality_source.cjs). 실행 기록 manifest 의 result.sha256 = 분석 파일 지문인 기록을 찾는다(runId 를 주면 그 기록만, 지문이 다르면 거부). 원문 = script.private.json(기록된 원문 지문과 대조, 다르면 거부), 실제 전달문 = sent.private.json 또는 chunks/*.private.json.
+- 대사를 직접 주면 그 실행 원문과 같아야 한다(구간 분석이면 원문 안의 글). 구간 분석에 대사를 주지 않으면 전체 원문을 대지 않는다.
+- 기록이 없거나 둘 이상이면 textSource.kind='unverified'(출처 미확인). 이 보고서로는 review 에서 누락(omission)을 확정(confirmed)할 수 없다.
+- 보고서·provenance 에 textSource {kind, verified, runId, scope, rawSha256, sentSha256, audioSha256} — 본문은 싣지 않는다.
+- compare.textRelation: same_text · same_source_different_sent(원문 같고 전달문 다름, 서수 보정) · declared_text_difference(원문 다름 + intendedDifference, 실제 차이와 나란히) · undeclared_text_difference(정상 아님) · unverified_basis(한쪽이라도 출처 미확인 — 사유를 적어도 정상 아님). normal 이 false 면 정상 비교가 아니다.
+- crosscheck 는 같은 대사 규칙 그대로, 양쪽 출처를 함께 보인다.
+- 검사: test/e2e/audio-quality-source.cjs(합성 사인파 + 가짜 실행 기록 폴더).

@@ -3262,7 +3262,8 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
 
         if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
             # vendor native·legacy·safe_xvector 어느 경로든 여기를 지난다.
-            _run_record_entries(_CONCAT_RECORDER, ordered_entries)
+            _run_record_entries(_CONCAT_RECORDER, ordered_entries,
+                                seg_texts={int(s["index"]): s.get("text") or "" for s in segments})
             _diag_annotate(_CONCAT_RECORDER, ordered_entries, boundary_kinds,
                            segenv_meta, gaps)
 
@@ -3731,14 +3732,48 @@ def _run_record_normalized(text):
         pass                   # 기록 실패가 합성을 막지 않는다
 
 
-def _run_record_entries(rec, ordered_entries):
-    """chunk 좌표·대사·생성 근거를 기록한다. 대사는 private, 좌표·수치는 manifest."""
+def _chunk_source_ranges(ordered_entries, seg_texts):
+    """조각이 자기 발화 글(엔진에 보낸 발화 글)의 어디인지 — 앞에서부터 차례로 찾는다.
+    ★찾지 못하면 None(추정해 채우지 않는다). 분할은 이어 붙이면 발화 글과 같다(text_segmenter 단언)."""
+    out, cursor = [], {}
+    for e in ordered_entries:
+        osi = e.get("original_segment_index")
+        txt = (seg_texts or {}).get(osi)
+        ct = e.get("text") or ""
+        if txt is None or not ct:
+            out.append(None)
+            continue
+        at = txt.find(ct, cursor.get(osi, 0))
+        if at < 0:
+            out.append(None)
+            continue
+        cursor[osi] = at + len(ct)
+        out.append([at, at + len(ct)])
+    return out
+
+
+def _run_record_entries(rec, ordered_entries, seg_texts=None):
+    """chunk 좌표·대사·생성 근거를 기록한다. 대사는 private, 좌표·수치는 manifest.
+    (2026-10-09) 조각마다 발화 글 안 범위·실제 심은 seed·엔진이 돌려준 조각 음원 지문을 함께 — 없는 값은 None 그대로."""
     if rec is None or not rec.active:
         return
     try:
+        import hashlib
+        ranges = _chunk_source_ranges(ordered_entries, seg_texts)
         for g, e in enumerate(ordered_entries):
+            osi = e.get("original_segment_index")
+            seg_txt = (seg_texts or {}).get(osi)
+            rwav = e.get("out_path")
+            rsha = None
+            if rwav and os.path.isfile(rwav):
+                with open(rwav, "rb") as _fh:
+                    rsha = hashlib.sha256(_fh.read()).hexdigest()
+            rec.note(g, applied_seed=e.get("applied_seed"),
+                     source_char_basis="segment_spoken_text" if ranges[g] is not None else None,
+                     segment_text_sha256=(hashlib.sha256(seg_txt.encode("utf-8")).hexdigest() if seg_txt is not None else None),
+                     returned_wav_sha256=rsha, x_vector_only=e.get("x_vector_only"), emotion_id=e.get("emotion_id"))
             rec.record_chunk_text(
-                g, e.get("text") or "",
+                g, e.get("text") or "", source_char_range=ranges[g],
                 production_tokens=e.get("production_tokens"),
                 segment=e.get("original_segment_index"),
                 local_chunk_index=e.get("chunk_index"), model_call_index=g)

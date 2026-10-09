@@ -58,3 +58,11 @@
 - A. 검수 도구의 원문 연결 차단(2절 수정안 1~4)과 검사 6건.
 - B. 긴 글 진단 기록: 조각별 실제 seed·접합 시각을 실행 기록에 남김. 화자 유사도 등 수치 측정은 기존 90초 파일을 열어야 하므로 파일별 승인이 필요하다.
 - 통제 실험(새 생성)은 A·B 와 사용자 시각 확인 뒤에 따로 승인받는다.
+
+## 구현(2026-10-09, 관리자 승인 — 통합 검증 전)
+- A. 검수 대사 출처 연결: tools/mcp/quality_source.cjs 새로, quality.cjs(analyze runId·출처 · compare intendedDifference·textRelation), quality_evidence.cjs(crosscheck 출처 표시 · 출처 미확인 보고서의 누락 확정 거부). 사용법은 doc/mcp-audio-quality.md '대사 출처 연결'.
+- B. 장문 실행 기록: 조각마다 발화 글 안 범위(source_char_range, 기준 segment_spoken_text·발화 글 지문), 실제 심은 seed(applied_seed — 브리지가 돌려준 값, 없으면 비움), 엔진이 돌려준 조각 음원 지문(returned_wav_sha256), x-vector 여부·감정. 생성 설정(상한·반복·종료·토큰)은 기존 기록 그대로.
+  - 이음(joins)은 진단 WAV 와 무관하게 늘 남긴다 — 실제 배치 행의 표본(left_end/right_start)·앱 간격·겹침(앞 끝이 뒤 시작을 넘은 만큼). placement_check = 마지막 조각 끝 표본과 결과 파일 표본 수(판정은 하지 않음). 배치 기록이 없으면 이음을 만들지 않는다.
+  - 과거 기록에 없는 값은 채우지 않는다(예: 9/25 장문의 조각별 seed).
+- 장문 청취 준비: _local/listening/longform-joins-2026-10-09/장문이음듣기.html — 원본 그대로(새 합성·보정 없음), 29.76·66.16초 앞 5초/이음/앞뒤 5초 반복, 전체 재생, 경로·지문 표시.
+- 준비한 검사(미실행): test/e2e/audio-quality-source.cjs, python/test_run_record_longform.py.
