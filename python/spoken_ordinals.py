@@ -16,6 +16,8 @@ _TENS = ["", "열", "스물", "서른", "마흔", "쉰", "예순", "일흔", "�
 _BLOCK_BEFORE = set(".,:'’-‐‑‒–—―−~～〜+±/#_%$₩€£¥@&*^=")
 _RANGE_SIGN = set("-‐‑‒–—―−~～〜+±")
 _TOKEN = re.compile(r"[0-9]+")
+#: 앞 문맥 글자 수 — TS 의 ORDINAL_CONTEXT 와 같다.
+ORDINAL_CONTEXT = 64
 
 
 def ordinal_word(n):
@@ -35,8 +37,13 @@ def _letter_or_digit(ch):
     return ch.isalnum()
 
 
-def find_ordinals(text):
-    """원문에서 바꿀 서수 자리 [{start, end, original, spoken}] (원문 좌표)."""
+def find_ordinals(text, before=""):
+    """원문에서 바꿀 서수 자리 [{start, end, original, spoken}] (원문 좌표).
+    before = 이 글 바로 앞의 원문(덩이 앞 문맥) — TS findOrdinals 와 같은 규칙."""
+    if before:
+        ctx = before[-ORDINAL_CONTEXT:]
+        return [dict(c, start=c["start"] - len(ctx), end=c["end"] - len(ctx))
+                for c in find_ordinals(ctx + (text or "")) if c["start"] >= len(ctx)]
     out = []
     for m in _TOKEN.finditer(text or ""):
         digits, start = m.group(0), m.start()
@@ -74,8 +81,8 @@ def apply_ordinals(text, start, end, changes):
     return s + text[at:end], applied
 
 
-def spoken_ordinals(text):
+def spoken_ordinals(text, before=""):
     """글 전체 → (소리로 보낼 글, 바꾼 자리 목록)."""
     text = text or ""
-    changes = find_ordinals(text)
+    changes = find_ordinals(text, before)
     return apply_ordinals(text, 0, len(text), changes)[0], changes

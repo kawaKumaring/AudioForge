@@ -50,8 +50,23 @@ const RANGE_SIGN = new Set('-‐‑‒–—―−~～〜+±'.split(''))
 const LETTER_OR_DIGIT = /[\p{L}\p{N}]/u
 const TOKEN = /[0-9]+/g
 
-/** 원문에서 바꿀 서수 자리를 찾는다(원문 좌표). 원문은 건드리지 않는다. */
-export function findOrdinals(text: string): OrdinalChange[] {
+/**
+ * 앞 문맥으로 넘길 글자 수 — 판정이 앞을 보는 것은 바로 앞 글자와 '띄어쓰기를 건넌 바로 앞 기호' 뿐이다.
+ * 띄어쓰기가 이보다 길게 이어진 뒤의 기호는 보지 못한다(그때는 문서 처음처럼 본다 — 한계로 기록).
+ */
+export const ORDINAL_CONTEXT = 64
+
+/**
+ * 원문에서 바꿀 서수 자리를 찾는다(원문 좌표). 원문은 건드리지 않는다.
+ * before = 이 글 **바로 앞의 원문**(낭독 덩이 앞) — 덩이가 "1." 뒤에서 갈려도 "7번째" 의 앞이 '.' 임을 안다.
+ *   그래서 읽기 시작 자리·덩이 크기가 달라도 같은 자리는 같은 판정이다. 끝 쪽은 문맥이 필요 없다(토큰 + "번째" 가 덩이 안에 다 있어야 바꾼다).
+ */
+export function findOrdinals(text: string, before = ''): OrdinalChange[] {
+  if (before) {
+    const ctx = before.slice(-ORDINAL_CONTEXT)
+    return findOrdinals(ctx + text).filter((c) => c.start >= ctx.length)
+      .map((c) => ({ ...c, start: c.start - ctx.length, end: c.end - ctx.length }))
+  }
   const out: OrdinalChange[] = []
   TOKEN.lastIndex = 0
   let m: RegExpExecArray | null
@@ -89,7 +104,7 @@ export function applyOrdinals(text: string, from: number, to: number, changes: r
 }
 
 /** 글 하나 전체를 한 번에(카드·검사용). */
-export function spokenOrdinals(text: string): { text: string; changes: OrdinalChange[] } {
-  const changes = findOrdinals(text)
+export function spokenOrdinals(text: string, before = ''): { text: string; changes: OrdinalChange[] } {
+  const changes = findOrdinals(text, before)
   return { text: applyOrdinals(text, 0, text.length, changes).text, changes }
 }

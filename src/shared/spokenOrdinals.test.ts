@@ -53,3 +53,39 @@ test('감정 덩어리 글도 같은 소리 글(구절 번호로 묶으므로 �
   const said = runSay(text, plan.parts, { from: 0, to: plan.parts.length - 1, emotion: '' })
   assert.equal(said, plan.say)
 })
+
+// ── 낭독 덩이 경계(2026-10-09 관리자 검수) — 판정은 문서 좌표로, 덩이를 어떻게 나눠도 같다 ──
+// @ts-ignore TS5097
+import { splitForReading, START_RAMP_SECONDS } from './readerChunks.ts'
+// @ts-ignore TS5097
+import { ORDINAL_CONTEXT } from './spokenOrdinals.ts'
+
+test('덩이가 "1." 뒤에서 갈려도 "7번째" 는 바꾸지 않는다(앞 문맥을 함께 본다)', () => {
+  const doc = '값은 1.7번째 칸이다.'
+  const at = doc.indexOf('7번째')
+  const plan = readingPlan(doc.slice(at), { skipHanjaInParens: false, ordinals: true, before: doc.slice(0, at) })
+  assert.equal(plan.ordinalChanges, 0, plan.say)
+  // 문맥 없이 덩이만 보면 바꿔 버린다 — 이 검사가 무엇을 막는지 함께 보인다.
+  assert.equal(readingPlan(doc.slice(at), { skipHanjaInParens: false, ordinals: true }).ordinalChanges, 1)
+})
+
+test('읽기 시작 자리·덩이 크기가 달라도 문서의 같은 자리는 같은 판정(덩이마다 앞 64글자만 본다)', () => {
+  const lines: string[] = []
+  for (let k = 0; k < 40; k++) lines.push(k % 3 === 0 ? `그는 ${k % 9 + 1}번째 장면을 봤다.` : k % 3 === 1 ? `값은 1.${k % 9 + 1}번째 칸이다.` : `범위는 2~${k % 9 + 1}번째다.`)
+  const doc = lines.join(' ')
+  const whole = new Set(findOrdinals(doc).map((c: { start: number }) => c.start))
+  const layouts = [
+    splitForReading(doc),
+    splitForReading(doc, { ramp: START_RAMP_SECONDS }),
+    splitForReading(doc, { breakAt: doc.indexOf('7번째'), ramp: START_RAMP_SECONDS }),
+    splitForReading(doc, { target: 1, min: 0, max: 1 }),          // 문장마다 덩이
+  ]
+  for (const chunks of layouts) {
+    const got = new Set<number>()
+    for (const c of chunks) {
+      const before = doc.slice(Math.max(0, c.start - ORDINAL_CONTEXT), c.start)
+      for (const ch of findOrdinals(c.text, before)) got.add(c.start + ch.start)
+    }
+    assert.deepEqual([...got].sort((a, b) => a - b), [...whole].sort((a, b) => a - b))
+  }
+})

@@ -34,6 +34,11 @@ class SameAsScreen(unittest.TestCase):
         for c in so.find_ordinals(t):
             self.assertEqual(t[c["start"]:c["end"]], c["original"])
 
+    def test_앞_문맥을_함께_본다_TS_와_같게(self):
+        self.assertEqual(so.find_ordinals("7번째", before="값은 1."), [])
+        self.assertEqual(so.spoken_ordinals("7번째", before="그는 ")[0], "일곱 번째")
+        self.assertEqual(so.ORDINAL_CONTEXT, 64)
+
 
 class WiredOnlyToQwen(unittest.TestCase):
     """연결 자리 — 다른 엔진에는 자동으로 켜지 않는다. 원문(line_text)은 기록 기준으로 그대로."""

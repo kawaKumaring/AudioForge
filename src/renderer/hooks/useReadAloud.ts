@@ -21,7 +21,7 @@ import { useAppStore } from '@/stores/app.store'
 import { createManagedAudio } from '@/lib/playbackVolume'
 import { splitForReading, chunkAt, START_RAMP_SECONDS, type Chunk } from '../../shared/readerChunks'
 import { readingPlan, type ReadingPart } from '../../shared/readerText'
-import { ORDINAL_RULE } from '../../shared/spokenOrdinals'
+import { ORDINAL_RULE, ORDINAL_CONTEXT } from '../../shared/spokenOrdinals'
 import { partAt } from '../../shared/readerTiming'
 import { partEmotions, emotionRuns, runSay } from '../../shared/readerEmotion'
 import { opLog, nameOnly } from '@/lib/opLog'
@@ -125,9 +125,15 @@ export function useReadAloud(
   const planOf = useCallback((i: number): Plan => {
     const m = plans.current.map
     let p = m.get(i)
-    if (!p) { p = readingPlan(chunks[i]?.text || '', { skipHanjaInParens: skipHanja, ordinals }); m.set(i, p) }
+    if (!p) {
+      const c = chunks[i]
+      // ★서수 경계는 문서 좌표로 — 덩이 앞 원문 몇 글자를 함께 넘긴다(덩이가 "1." 뒤에서 갈려도 "7번째" 를 바꾸지 않게).
+      //   덩이마다 앞 64글자만 본다 — 큰 책 전체를 다시 훑지 않는다. 읽기 시작 자리·덩이 크기가 달라도 같은 판정.
+      const before = c && ordinals ? text.slice(Math.max(0, c.start - ORDINAL_CONTEXT), c.start) : ''
+      p = readingPlan(c?.text || '', { skipHanjaInParens: skipHanja, ordinals, before }); m.set(i, p)
+    }
     return p
-  }, [chunks, skipHanja, ordinals])
+  }, [chunks, skipHanja, ordinals, text])
   // ★두 열쇠를 나눈다. 본체의 쌓아 두기는 **목소리 + 실제로 읽은 글**로 이름 붙이므로
   //   목소리만 넘긴다(한자가 없는 덩이는 설정을 바꿔도 다시 만들지 않는다).
   //   큐는 설정까지 본다 — 설정이 바뀌면 만들어 둔 것을 버리고 지금 자리를 다시 읽는다.

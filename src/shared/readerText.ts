@@ -124,7 +124,11 @@ export function speakableText(text: string, prefs: Pick<ReaderPrefs, 'skipHanjaI
 }
 
 /** 소리 글 만들기 선택 — 서수 읽기 보정은 **부르는 쪽이 Qwen 목소리일 때만** 켠다(spokenOrdinals.ts). */
-export interface PlanOptions extends Pick<ReaderPrefs, 'skipHanjaInParens'> { ordinals?: boolean }
+export interface PlanOptions extends Pick<ReaderPrefs, 'skipHanjaInParens'> {
+  ordinals?: boolean
+  /** 이 덩이 **바로 앞의 원문**(문서 좌표로 덩이 시작 앞 ORDINAL_CONTEXT 글자) — 서수 경계를 덩이 밖까지 본다. */
+  before?: string
+}
 
 /** 구절 하나 — 보이는 글(덩이 안 자리)과 그 구절을 소리로 읽는 글. */
 export interface ReadingPart {
@@ -151,7 +155,7 @@ const CLOSERS = '"”’\'」』)）】›»'
 export function readingPlan(text: string, prefs: PlanOptions): { say: string; parts: ReadingPart[]; ordinalChanges: number } {
   // ★서수 경계는 **덩이 전체 원문**에서 찾는다(구절로 자른 뒤에는 "1.7번째" 의 7 이 구절 맨 앞이 되어 경계를 잃는다).
   //   바꾼 글은 구절의 소리 글(spoken)에만 — 구절의 원문 자리(from/to)는 그대로라 따라가기·감정 구간이 밀리지 않는다.
-  const ordinals: OrdinalChange[] = prefs.ordinals ? findOrdinals(text) : []
+  const ordinals: OrdinalChange[] = prefs.ordinals ? findOrdinals(text, prefs.before || '') : []
   let ordinalChanges = 0
   const cuts: Array<{ at: number; strong: boolean }> = []
   let depth = 0
