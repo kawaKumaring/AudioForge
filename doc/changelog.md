@@ -1,3 +1,9 @@
+## 2026-10-10 · C 드라이브 정리 68.6GB (사용자 결정)
+- AudioForge 초기 C 캐시 모델 27.33GB(앱은 externals 사본 사용, 다른 참조 없음) + pip 다운로드 캐시 41.3GB 삭제. 앱이 C 에서 직접 읽는 F5-TTS·Kokoro·htdemucs·whisper base/small 은 남김. 상세: doc/storage-usage.md
+
+## 2026-10-10 · 개발판 _local/models 사본 삭제 (사용자 결정)
+- 9/06~07 감정 연구 시험 생성에 쓴 1.7B CustomVoice 사본(4.21GB) — 10/01 부터 앱은 externals 의 같은 모델(모델 파일 13개 지문 동일)을 쓴다. 시험 결과물은 테스트 폴더(결과/experiments/customvoice-20260907)에 남아 있다. 연구 스크립트(tools/emotion-research/customvoice_instruct_test.py) 기본 경로를 externals 로.
+
 ## 2026-10-10 · 외부 seed-vc 삭제 — 노래 변환 흡수 완료 (Claude, 사용자 결정)
 - master 병합(e0d6e74) 뒤 resources/seed-vc 전체 삭제(9.43GB), env.json 의 외부 연결 기록 제거(백업 남김). 외부 폴더 없이 흡수본 변환 정상 확인(저장소 시험 음성). 노래 관련 시험 통과.
 
