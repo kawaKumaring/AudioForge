@@ -288,6 +288,7 @@ class ChunkRecorder:
         self.speaker_map = {}
         # 화자 표시 이름. private JSON 에만 남는다.
         self.speaker_private = None
+        self.sent_private = []      # sent.private.json — 문장별 엔진이 실제로 받은 글(서수 보정 등 뒤, 2026-10-09)
         self.header = {}            # 항상 남는 비민감 헤더
         self.result = None          # 최종 WAV 연결(복사 아님 — basename/길이/SHA)
         self.stages = []            # 단계별 elapsed
@@ -430,6 +431,15 @@ class ChunkRecorder:
             "paragraphs": paragraphs or [], "sentences": sentences or [],
         }
         return self.script_sha
+
+    def add_sent_text(self, index, text, engine=None):
+        """문장별 엔진(배치가 아닌 길)이 **실제로 받은 글**을 private 에만 남긴다 — 원문(script)과 따로.
+        배치 Qwen 은 chunk 기록이 이미 보낸 글을 갖는다. 기록 실패가 합성을 막지 않게 부르는 쪽이 감싼다."""
+        if not self.active:
+            return
+        import hashlib
+        self.sent_private.append({"index": int(index), "engine": engine, "text": text or "",
+                                  "sha256": hashlib.sha256((text or "").encode("utf-8")).hexdigest()})
 
     def set_speaker_map(self, rows, labels=None):
         """발화(segment) → 화자·참조 표. chunk 행이 이 표를 보고 자기 화자를 채운다.
@@ -594,6 +604,9 @@ class ChunkRecorder:
         # 화자 표시 이름은 사용자가 쓴 문자열이라 개인 정보가 될 수 있다 — private 로만.
         if self.speaker_private:
             _private_docs.append(("speakers" + PRIVATE_SUFFIX, self.speaker_private))
+        if self.sent_private:
+            _private_docs.append(("sent" + PRIVATE_SUFFIX, {"schema": "af-run-sent-private/1", "run_id": run_id(),
+                                                            "private": True, "segments": list(self.sent_private)}))
         for rel, payload in _private_docs +                 [("chunks/chunk-%03d%s" % (g, PRIVATE_SUFFIX), pv)
                  for g, pv in sorted(self.chunk_private.items())]:
             dst = os.path.join(self.root, rel.replace("/", os.sep))

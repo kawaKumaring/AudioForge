@@ -34,6 +34,16 @@
    - 응답 trace.spoken: requested(지금 요청) · madeWith(확인된 기록만) · cacheState · committed.
    - (2차 재검수 정정) plain 기록도 이름 → 실제 보낸 글(요청의 plainSay, 없으면 body) → 음원 크기·지문을 **모두 대조한 뒤** fallback-plain(맞는 기록, 보정 요청엔 재사용 안 함)으로 판정한다. 예전엔 대조 전에 돌아가 어긋난 기록·바뀐 음원도 madeWith 로 보였다. 호출부는 verified·fallback-plain 일 때만 madeWith 를 싣는다.
 
+## 최종 통합 검증(2026-10-09)
+- 단위: 서수 TS 71(사례 62·경계·좌표·감정) · 캐시 12 · 낭독 관련 기존 131 · Python 서수 7 · 기호 3 · fallback 3 · 관련 회귀 13개 파일(앱 파이썬) 통과. MCP 근거 28 · MCP 27 통과. 타입 검사·빌드 통과.
+- 회귀 수정: reader-resplit 검사가 원문 앞부분으로 붙든 요청을 고르는데, 참조 목소리는 이제 "1번째" 를 "첫 번째" 로 보낸다 — 검사가 **실제 보낸 글**로 고르도록 고쳤다(판정 그대로, 12/12 = master 와 같음). reader-aloud 의 1건 실패(★읽던 자리도 그대로다)는 master 에서도 같은 기존 실패(이번 범위 밖).
+- 실제 앱(CPU, reader-ordinal-cache-mcp 13/13): 기본 목소리(Supertonic)는 보정 없음 · 같은 덩이 다시 읽기 verified · 음원 변조/기록 깨짐/기록 없음+보정 요청/확정 실패 모두 잘못 쓰지 않음 · 재생 전용 파일이 다음 작업 정리 뒤에도 남음 · 다른 캐시 보존.
+- 실제 앱 + 실제 Qwen(GPU, reader-ordinal-qwen-mcp 6/6): 낭독 소희(감정 켬 → Qwen 1.7B) · 낭독 참조 목소리(상주 브리지)에서 실제 보낸 글 = 원문 기준 보정 글(범위 "2~7번째" 는 그대로, 파이썬이 다시 바꾸지 않음) · 카드 소희 생성·다시 생성: 실행 기록에 규칙·바꾼 수, 실제 보낸 글(sent.private.json)과 원문(script.private.json) 분리, 카드 원문·첫 결과 파일·최종 선택 보존.
+- 검증 중 보완: 카드 문장별 엔진 경로에 **실제 보낸 글** 기록이 없었다 → chunk_publish.add_sent_text(sent.private.json). 기록 머리 spoken_rule 은 부르는 쪽이 만든 글이면 그쪽 이름으로(이전엔 늘 ordinal-ko-v1).
+- 참조 목소리가 Qwen 이 아닌 엔진으로 갈 때 바꾸지 않은 글로 가는 갈래: separate.py 실제 설정 읽기 길에서 엔진 선택만 바꿔 끼워 확인(test_spoken_fallback_separate 3/3). 실제로 Qwen 을 없앤 설치에서는 돌려 보지 않았다.
+- 음질 비교(사용자 청취 대기): 승인된 기존 참조 조각, Qwen 0.6B Base(revision 5d83992…) cuda:0, safe_xvector, 새 문장 3(7·21·3번째) × seed 2(7·20261009) × 보정 끔/제품 보정 = 12개, 매번 새 프로세스로 순차, 다시 뽑지 않음. 12/12 생성 상한 전 종료. 쌍 안에서 다른 것은 엔진이 받은 글뿐(기록으로 확인). 자동 전사·생성 성공은 합격으로 치지 않는다.
+  - 비교 페이지: E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteningordinal-fix-20261009064045비교듣기.html · 경로 목록: E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteningordinal-fix-20261009064045청취파일경로.txt · 조건·해시: E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteningordinal-fix-20261009064045esults.json
+
 ## 재생성과 캐시
 - 숫자 음절만 만들어 끼워 넣지 않는다. 바뀐 덩이는 **덩이 전체**를 새로 만든다(쌓아 둔 이름 = 목소리 + 실제 보낸 글 — 글이 바뀌면 이름이 바뀐다).
 - 서수가 없는 덩이는 이름이 그대로라 목소리·모델·설정(이름에 든 것)이 같을 때만 다시 쓴다.

@@ -41,7 +41,8 @@ def _spoken_for_qwen(line_text):
 
 def _record_spoken(route):
     """서수 보정 결과를 기록에 남긴다(규칙 이름·바꾼 수·누가 바꿨나) — 글 본문은 넣지 않는다."""
-    fields = dict(spoken_rule=ORDINAL_RULE if route == "qwen" else None,
+    # spoken_rule = 이 실행의 글에 **실제로 적용된** 규칙 — 부르는 쪽이 이미 만들었으면 그쪽이 알린 이름(이 단계는 바꾸지 않았다).
+    fields = dict(spoken_rule=(_SPOKEN_PREPARED or ORDINAL_RULE) if route == "qwen" else None,
                   spoken_ordinal_changes=(None if _SPOKEN_PREPARED else _SPOKEN_ORDINAL_CHANGES) if route == "qwen" else 0,
                   spoken_prepared_by_caller=_SPOKEN_PREPARED or None, spoken_route=route)
     emit("stage", stage="spoken_text", **fields)
@@ -4374,6 +4375,12 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                 # 기호만 있던 줄 — piper·Supertonic 은 빈 글을 짧은 쉼으로 쓴다. 다른 엔진은 빈 글을
                 # 받아 본 적이 없다(이어 붙이기는 빈 조각을 거절한다) — 그 엔진들만 예전처럼 원문을 보낸다.
                 say_text = line_text
+            # 실제로 엔진에 보낸 글을 private 기록에(원문 script 와 따로) — 서수 보정 등을 거친 뒤의 글을 추적한다.
+            if _CONCAT_RECORDER is not None and getattr(_CONCAT_RECORDER, "active", False):
+                try:
+                    _CONCAT_RECORDER.add_sent_text(i, say_text, engine_name)
+                except Exception:
+                    pass       # 기록 실패가 합성을 막지 않는다
             engine.synthesize_segment(say_text, ref, emotion_id, speed, seg_path)
             segment_paths.append(seg_path)
 
