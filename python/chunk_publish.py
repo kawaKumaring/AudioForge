@@ -377,38 +377,52 @@ class ChunkRecorder:
 
     # ── join preview ─────────────────────────────────────────────────────
     def build_joins(self, final_arr, sr):
-        """최종 WAV 좌표로 join preview 를 파생한다. 원본은 수정하지 않는다."""
+        """최종 WAV 좌표로 이음 기록을 만든다. 원본은 수정하지 않는다.
+
+        ★좌표는 **실제 배치 행**(final(): 실제로 놓인 표본 수·앞 간격)에서만 온다 — 조각 수로 나누거나 추정하지 않는다(2026-10-09).
+        겹침 = 앞 조각 끝 표본 > 뒤 조각 시작 표본인 만큼. 들어 보기 조각(preview)은 진단 단계 WAV 를 켰을 때만 만든다."""
         if not self.active:
             return []
-        import numpy as np
-        if not self.stage_wavs:
-            return []
         rows = self.ordered()
-        side = int(PREVIEW_SIDE_SEC * sr)
+        side = int(PREVIEW_SIDE_SEC * sr) if sr else 0
         joins = []
         for i in range(1, len(rows)):
             a, b = rows[i - 1], rows[i]
             if "final_end_sample" not in a or "final_start_sample" not in b:
-                continue
+                continue                       # 배치 기록이 없으면 이음을 만들지 않는다(추정 금지)
             cut = int(b["final_start_sample"])
             gap = int(b.get("gap_before_samples") or 0)
-            s = max(0, int(a["final_end_sample"]) - side)
-            e = min(len(final_arr), cut + side)
-            seg = np.ascontiguousarray(final_arr[s:e])
-            info = _atomic_wav(seg, sr, os.path.join(
-                self.root, "joins", "join-%03d-preview.wav" % (i - 1)), self.root)
             tail = a.get("tail_silence_ms") or 0.0
             lead = b.get("lead_silence_ms") or 0.0
-            gap_ms = round(gap / float(sr) * 1000.0, 1)
-            joins.append({
-                "join_index": i - 1, "left_chunk": a["chunk_index"], "right_chunk": b["chunk_index"],
-                "boundary_kind": b.get("boundary_kind"),
-                "tail_silence_ms": tail, "app_gap_ms": gap_ms, "lead_silence_ms": lead,
-                "perceived_gap_ms": round(tail + gap_ms + lead, 1),
-                "envelope_applied": bool((b.get("envelope") or {}).get("applied")),
-                "preview": info["file"], "preview_sha256": info["sha256"],
-            })
+            j = {"join_index": i - 1, "left_chunk": a["chunk_index"], "right_chunk": b["chunk_index"],
+                 "boundary_kind": b.get("boundary_kind"), "basis": "final_placement_rows",
+                 "left_end_sample": int(a["final_end_sample"]), "right_start_sample": cut,
+                 "right_start_sec": b.get("final_start_sec"),
+                 "app_gap_samples": gap, "overlap_samples": max(0, int(a["final_end_sample"]) - cut),
+                 "tail_silence_ms": tail, "lead_silence_ms": lead,
+                 "envelope_applied": bool((b.get("envelope") or {}).get("applied"))}
+            if sr:
+                gap_ms = round(gap / float(sr) * 1000.0, 1)
+                j.update(app_gap_ms=gap_ms, perceived_gap_ms=round(tail + gap_ms + lead, 1))
+            if self.stage_wavs and final_arr is not None and sr:
+                import numpy as np
+                s = max(0, int(a["final_end_sample"]) - side)
+                e = min(len(final_arr), cut + side)
+                seg = np.ascontiguousarray(final_arr[s:e])
+                info = _atomic_wav(seg, sr, os.path.join(
+                    self.root, "joins", "join-%03d-preview.wav" % (i - 1)), self.root)
+                j.update(preview=info["file"], preview_sha256=info["sha256"])
+            joins.append(j)
         return joins
+
+    def placement_check(self):
+        """배치 행의 마지막 끝 표본과 실제 결과 파일 표본 수 — 좌표가 결과 파일 기준인지 확인할 재료(판정은 하지 않는다)."""
+        rows = [r for r in self.ordered() if "final_end_sample" in r]
+        frames = (self.result or {}).get("frames")
+        if not rows or frames is None:
+            return None
+        last = max(int(r["final_end_sample"]) for r in rows)
+        return {"last_chunk_end_sample": last, "output_frames": int(frames), "after_last_chunk_samples": int(frames) - last}
 
     # ── run bundle 확장 ────────────────────────────────────────────────────
     def _register(self, rel, sha, private):
@@ -587,7 +601,7 @@ class ChunkRecorder:
             return None
         if final_arr is None and self._final is not None:
             final_arr, sr = self._final
-        joins = self.build_joins(final_arr, sr) if final_arr is not None else []
+        joins = self.build_joins(final_arr, sr)
         doc = {"schema": SCHEMA_VERSION, "run_id": run_id(), "status": status,
                "created_at": _now_iso(),
                # 화면 표시와 같은 build 권위 — 구형 out 빌드와 최신 master 실행을 구분한다.
@@ -595,7 +609,8 @@ class ChunkRecorder:
                "stage_wavs_kept": bool(self.stage_wavs),
                "header": dict(self.header), "result": self.result,
                "stage_elapsed": list(self.stages),
-               "chunk_count": len(self.rows), "chunks": self.ordered(), "joins": joins}
+               "chunk_count": len(self.rows), "chunks": self.ordered(), "joins": joins,
+               "placement_check": self.placement_check()}
         if extra:
             doc.update({k: v for k, v in extra.items()
                         if k not in ("text", "transcript", "ttsText")})

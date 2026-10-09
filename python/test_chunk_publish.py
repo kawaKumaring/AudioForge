@@ -276,7 +276,8 @@ class TestGlobalIndexContract(unittest.TestCase):
         self.assertLess(i_begin, i_call)
         self.assertGreater(i_call, i_align,
                            "기록 생성이 정렬 경로 안에만 있으면 native 경로가 비어 버린다")
-        self.assertIn("_run_record_entries(_CONCAT_RECORDER, ordered_entries)", src,
+        # (2026-10-09) 조각 범위 계산용 발화 글을 함께 넘긴다 — 같은 조립 지점·같은 기록 함수.
+        self.assertIn("_run_record_entries(_CONCAT_RECORDER, ordered_entries,", src,
                       "모든 경로가 지나는 조립 지점에서 chunk 를 기록해야 한다")
 
     def test_two_segments_do_not_collide(self):
