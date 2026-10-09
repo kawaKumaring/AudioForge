@@ -79,6 +79,12 @@ AudioForge 가 디스크를 왜 많이 쓰는지, 무엇이 필요한지, 무엇
 ### 2026-10-10 삭제 — 9.43GB (사용자 결정)
 - 외부 노래 변환 도구 `resources/seed-vc` 전체 — 노래 변환을 앱 안으로 흡수(python/song_vc + externals/song_vc_models 2.4GB, 앱 런타임 사용)하고 같은 곡 청취로 같은 수준 확인 뒤. 시험 결과물은 테스트 폴더로 먼저 옮겼다. 순 절감 약 7GB(새 모델 복사 2.4GB 포함).
 
+### 2026-10-10 C 드라이브 정리 — 68.6GB (사용자 결정)
+- AudioForge 초기에 C 에 받아 둔 모델 27.33GB — 앱은 지금 모든 모델을 externals 에서 경로를 박아 읽어(download_root·model_registry·Qwen HF_HOME) C 사본을 읽지 않는다. 다른 AI_Project 프로젝트·ComfyUI 참조 없음 확인 뒤 삭제: huggingface 캐시의 NLLB-1.3B 10.23 · NLLB-600M 4.60 · Qwen2.5-3B 5.76 · Qwen3-TTS 0.6B Base 2.34 · whisper-large-v3-turbo 1.51(시험 탈락), .cache/whisper/large-v3.pt 2.88.
+- pip 다운로드 캐시 41.3GB(pip cache purge — 설치된 패키지는 그대로, 다음 설치 때 다시 받는다).
+- **C 에서 앱이 직접 읽어 남긴 것**: F5-TTS·vocos(F5 엔진), Kokoro-82M(Kokoro 엔진), torch 캐시의 htdemucs(음원 분리 기본), .cache/whisper 의 base·small(검수 MCP). 이 넷은 지우면 해당 기능이 다시 받으려 한다(오프라인이면 실패).
+- 손대지 않은 것: AudioForge 와 무관한 이미지·OCR 모델(Qwen-Image-Edit 등, 다른 프로젝트·ComfyUI).
+
 ## 4. 남은 일과 더 줄이는 방법
 - 설정 화면에 'NLLB-1.3B' 선택지가 남아 있다 — 고르면 모델이 없어 번역이 실패한다(지금 설정은 600M). 선택지 정리 필요.
 - Applio 분석 → 불필요하면 7.24GB.
