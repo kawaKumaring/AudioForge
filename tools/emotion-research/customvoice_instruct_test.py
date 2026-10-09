@@ -18,7 +18,7 @@ from pathlib import Path
 
 import soundfile as sf
 
-MODEL_DIR = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("_local/models/qwen3_tts_1_7b_customvoice")
+MODEL_DIR = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("externals/qwen3_tts_1_7b_customvoice")
 # 결과는 테스트 전용 폴더(_local/테스트/결과/experiments) — 2026-10-10
 sys.path.insert(0, str(Path(__file__).resolve().parents[2] / "python"))
 import _test_root  # noqa: E402
