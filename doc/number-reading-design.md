@@ -44,6 +44,18 @@
 - 음질 비교(사용자 청취 대기): 승인된 기존 참조 조각, Qwen 0.6B Base(revision 5d83992…) cuda:0, safe_xvector, 새 문장 3(7·21·3번째) × seed 2(7·20261009) × 보정 끔/제품 보정 = 12개, 매번 새 프로세스로 순차, 다시 뽑지 않음. 12/12 생성 상한 전 종료. 쌍 안에서 다른 것은 엔진이 받은 글뿐(기록으로 확인). 자동 전사·생성 성공은 합격으로 치지 않는다.
   - 비교 페이지: E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteningordinal-fix-20261009064045비교듣기.html · 경로 목록: E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteningordinal-fix-20261009064045청취파일경로.txt · 조건·해시: E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteningordinal-fix-20261009064045esults.json
 
+## 사용자 청취 판정(2026-10-09) — 비교 6쌍
+- 대조: results.json 의 실제 전달 글·보정 표시로 **A = 원문 표기(보정 끔), B = 보정본**임을 확인. 판정 기록 직전 12개 파일 SHA256 이 생성 기록과 일치.
+- 결과: **이번 6쌍에서 보정본(B) 서수 발음 6/6 정상. 원문 표기(A)는 3쌍에서 발음 이상.**
+  - 1 "오늘은 7번째…" seed 7: A "이고버제"처럼 불분명하고 새는 소리 / B 정상
+  - 2 같은 문장 seed 20261009: A·B 모두 "일곱 번째" 명료 — 원문 표기가 늘 틀리는 것은 아니다
+  - 3 "그녀는 21번째…" seed 7: A "이시아버째"처럼 불분명하고 새는 소리 / B 정상
+  - 4 같은 문장 seed 20261009: A "칠일알번째"처럼 불분명하고 새는 소리 / B 정상
+  - 5·6 "이번이 벌써 3번째…": A·B 모두 "세 번째" 명료
+- 판정하지 않은 것(자동 합격 아님): 화자 유사도·누락·반복·말끝·음질 전반.
+- 한계: 한 참조·새 문장 3개·seed 2개. 다른 대사·참조·목소리로 일반화하지 않는다. 과거 마지막 문장 누락·장문 말투 변화와는 무관.
+- 기록: E:AI_ProjectclaudeCodeVsCodeappsdevelopmentAudioForge_af_worktreesdevelop-run_locallisteningordinal-fix-20261009064045사용자청취판정.json (쌍마다 사용자 원문·실제 전달 글·WAV 경로·SHA256)
+
 ## 재생성과 캐시
 - 숫자 음절만 만들어 끼워 넣지 않는다. 바뀐 덩이는 **덩이 전체**를 새로 만든다(쌓아 둔 이름 = 목소리 + 실제 보낸 글 — 글이 바뀌면 이름이 바뀐다).
 - 서수가 없는 덩이는 이름이 그대로라 목소리·모델·설정(이름에 든 것)이 같을 때만 다시 쓴다.
