@@ -93,3 +93,8 @@ AudioForge 는 소리를 다루고(AI 는 들을 수 없다), 작업이 길고(�
 - 개발 실행(`npm run dev`, StrictMode) 이 아니라 **빌드된 앱(out/)** 을 띄운다 — 개발 실행에서만 나는 문제는 `*.component.mjs` 검사로 본다.
 - 저장소 상위 폴더에서 연 Claude Code 에는 도구가 붙지 않는다 — 그때는 `client.cjs` 로 같은 규약을 쓴다.
   `.mcp.json` 은 세션을 시작할 때 읽힌다 — 이미 열린 세션에는 다시 열어야 붙는다.
+
+## 음성 품질 검수
+서버 0.3.0에 독립 도구 7개를 추가했다. 사용법·제한·페이지 조회는 [음성 검수 MCP](mcp-audio-quality.md)를 따른다. 기존 연결은 다시 연결해야 새 도구 목록을 받는다.
+
+0.4.0: 품질 도구 총 13개. sentences/crosscheck/context/boundary/evidence/review로 근거를 추적한다. 음원에 없는 문장의 시간과 기록에 없는 연결점을 추정하지 않는다. 사용법은 위 음성 검수 MCP 문서 참조.
