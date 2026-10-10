@@ -1,3 +1,6 @@
+## 2026-10-10 · Applio 삭제 7.24GB (사용자 결정)
+- resources/ApplioV3.2.9 — 학습된 목소리 0개·앱 연결 없음. 흡수하면 목소리 학습 기능을 새로 만들어야 하는데 노래 변환은 흡수본으로 이미 됨 → 삭제. 지우기 전 확인: 링크 없음, ComfyUI 모델 경로 설정에 참조 없음, git 추적 없음. doc/storage-usage.md 1절의 환경·torch 숫자는 삭제 전 기준.
+
 ## 2026-10-10 · C 드라이브 정리 68.6GB (사용자 결정)
 - AudioForge 초기 C 캐시 모델 27.33GB(앱은 externals 사본 사용, 다른 참조 없음) + pip 다운로드 캐시 41.3GB 삭제. 앱이 C 에서 직접 읽는 F5-TTS·Kokoro·htdemucs·whisper base/small 은 남김. 상세: doc/storage-usage.md
 
