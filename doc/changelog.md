@@ -1,3 +1,11 @@
+## 2026-10-11 · 폴더·가지 정리 + 재현 기록 30일 보관 + 번역 1.3B 선택지 제거 (사용자 결정)
+- 작업 폴더: installer(설치기 8/29, 실행 환경 사본 3.9GB)·codex-ux(9/26)·빈 폴더 삭제 → master·develop 두 개. codex-ux 의 커밋 안 한 변경 277개는 `backup/codex-ux-wip-2026-09-26` 가지(원격에도)에 보존.
+- 가지: 반영 끝 66개 삭제, 미반영 25개는 `archive/*` 이름표 후 삭제. 남은 가지 master·develop·hold/performance-script-editor. 원격(GitHub) 가지는 그대로.
+- 옛 GPT-SoVITS 복구 사본 1.1GB 삭제(`_local/artifacts/recovery/recovery-staging/.../repo`, 기록 파일은 남김). `legacy-workfiles`(사용자 자료)는 손대지 않음.
+- 재현 기록(`_local/artifacts/runs`) 30일 자동 삭제 — `python/local_assets.py`, 시험 3건(`test_local_assets.py`). 정션 너머는 지우지 않는다.
+- 번역 설정에서 NLLB-1.3B 선택지 제거(모델은 10/09 삭제). 예전 설정의 `1.3b` 는 600M 로.
+- 폴더 규칙 문서에 작업 폴더·가지 규칙 추가(`doc/folder-rules.md` 5·5.1절).
+
 ## 2026-10-10 · Applio 삭제 7.24GB (사용자 결정)
 - resources/ApplioV3.2.9 — 학습된 목소리 0개·앱 연결 없음. 흡수하면 목소리 학습 기능을 새로 만들어야 하는데 노래 변환은 흡수본으로 이미 됨 → 삭제. 지우기 전 확인: 링크 없음, ComfyUI 모델 경로 설정에 참조 없음, git 추적 없음. doc/storage-usage.md 1절의 환경·torch 숫자는 삭제 전 기준.
 

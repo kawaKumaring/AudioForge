@@ -92,7 +92,7 @@ export interface RestorableSession {
     outputFormat: 'wav' | 'mp3' | 'flac'
     whisperModel: 'small' | 'medium' | 'large-v3' | 'large-v3-turbo'
     whisperLang: string
-    translateModel: '600m' | '1.3b' | 'llm' | 'google'
+    translateModel: '600m' | 'llm' | 'google'
     nSpeakers: number
     // TTS 스냅샷(있을 때만) — 재분리 없이 합성 설정 복원
     ttsText: string
@@ -219,7 +219,7 @@ interface AppState {
   /** 알아듣기 전에 배경음을 걷어낼지. 기본 auto — 재어 보고 필요할 때만 걷어낸다. */
   asrSeparate: 'never' | 'auto' | 'always'
   whisperLang: string
-  translateModel: '600m' | '1.3b' | 'llm' | 'google'
+  translateModel: '600m' | 'llm' | 'google'
   demucsModel: 'htdemucs' | 'htdemucs_ft' | 'roformer' | 'roformer_melband' | 'roformer_ensemble'
   nSpeakers: number
   status: 'idle' | 'loading' | 'processing' | 'cancelling' | 'done' | 'error'
@@ -394,7 +394,7 @@ interface AppState {
   setAsrSeparate: (v: AppState['asrSeparate']) => void
   setDiarizeEngine: (v: AppState['diarizeEngine']) => void
   setWhisperLang: (v: string) => void
-  setTranslateModel: (v: '600m' | '1.3b' | 'llm' | 'google') => void
+  setTranslateModel: (v: '600m' | 'llm' | 'google') => void
   setDemucsModel: (v: 'htdemucs' | 'htdemucs_ft' | 'roformer' | 'roformer_melband' | 'roformer_ensemble') => void
   setNSpeakers: (v: number) => void
   setTtsReferencePrompts: (v: Record<string, TtsReferenceEntry>) => void
@@ -934,7 +934,8 @@ export const useAppStore = create<AppState>((set, get) => ({
       whisperModel: o.whisperModel || 'large-v3',
       whisperLang: o.whisperLang || 'auto',
       // ★'google' 은 없앴다(외부 전송 금지, 2026-09-30) — 옛 저장값은 로컬 번역으로 연다.
-      translateModel: o.translateModel && o.translateModel !== 'google' ? o.translateModel : '600m',
+      // 1.3B 는 모델을 지웠다(2026-10-09) — 예전 설정에 남아 있으면 기본으로
+      translateModel: o.translateModel && o.translateModel !== 'google' && (o.translateModel as string) !== '1.3b' ? o.translateModel : '600m',
       nSpeakers: o.nSpeakers ?? 2,
       // TTS 설정 복원(스냅샷에 있을 때만 유의미; 없으면 기본값)
       ttsText: o.ttsText ?? '',
