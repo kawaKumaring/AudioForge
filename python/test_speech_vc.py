@@ -1,4 +1,5 @@
 import copy
+import json
 import unittest
 from pathlib import Path
 import yaml
@@ -27,6 +28,17 @@ class SpeechContract(unittest.TestCase):
     def test_defaults(self):
         a=speech_vc.build_parser().parse_args(['--source','source.wav','--target','ref.wav'])
         self.assertFalse(a.f0_condition);self.assertFalse(a.auto_f0_adjust);self.assertEqual(a.semi_tone_shift,0)
+        self.assertFalse(a.diagnostics_controls)
+    def test_vocoder_geometry_matches(self):
+        c=json.loads((Path(speech_vc.model_paths()['bigvgan'])/'config.json').read_text(encoding='utf-8'))
+        speech_vc.validate_vocoder_config(self.config,c)
+        for field in ('n_fft','num_mels','hop_size','win_size','sampling_rate','fmin','fmax'):
+            with self.subTest(field=field):
+                bad=copy.deepcopy(c);bad[field]=123
+                with self.assertRaises(ValueError):speech_vc.validate_vocoder_config(self.config,bad)
+    def test_controls_require_record_before_gpu_or_model(self):
+        a=speech_vc.build_parser().parse_args(['--source','missing.wav','--target','missing.wav','--diagnostics-controls'])
+        with self.assertRaisesRegex(ValueError,'기록 폴더'):speech_vc.main(a)
     def test_reject_pitch_before_model_load(self):
         a=speech_vc.build_parser().parse_args(['--source','missing.wav','--target','missing.wav','--f0-condition','True'])
         with self.assertRaises(ValueError):speech_vc.main(a)

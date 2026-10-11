@@ -41,19 +41,20 @@ class Recorder:
         self.document['output']=file_fingerprint(output)
         self.document['status']='complete';self._write()
 
-def traced_vocoder(vocoder, recorder):
+def traced_vocoder(vocoder, recorder, *, prefix='chunk'):
     """같은 forward의 잘라내기 전후를 기록. 반환 신호는 원래 출력 그대로."""
     calls=0
+    if not re.fullmatch(r'[a-z0-9_]+',prefix):raise ValueError('잘못된 관측 이름')
     def run(mel):
         nonlocal calls
-        prefix='chunk_'+str(calls);calls+=1
-        recorder.array(prefix+'_generated_mel',mel)
+        name=prefix+'_'+str(calls);calls+=1
+        recorder.array(name+'_generated_mel',mel)
         captured=[]
         hook=vocoder.conv_post.register_forward_hook(lambda module,inputs,output:captured.append(output.detach().clone()))
         try:output=vocoder(mel)
         finally:hook.remove()
         if len(captured)!=1:raise RuntimeError('음성 복원 전 신호를 정확히 한 번 관측하지 못했습니다')
-        recorder.array(prefix+'_prelimit_wave',captured[0])
-        recorder.array(prefix+'_vocoder_wave',output)
+        recorder.array(name+'_prelimit_wave',captured[0])
+        recorder.array(name+'_vocoder_wave',output)
         return output
     return run

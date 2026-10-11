@@ -1,7 +1,7 @@
 """Seed-VC V1 말하기 경로 흡수. GPL-3.0. 출처: speech-vc-absorption-2026-10-12.md.
 기존 song_vc 부품 재사용; 노래 경로 변경 없음. 실행 중 다운로드 없음.
 """
-import os, sys, argparse
+import os, sys, argparse, json
 from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE / 'song_vc'))
@@ -32,12 +32,20 @@ def validate_config(config):
     if m['vocoder']['name'] != 'nvidia/bigvgan_v2_22khz_80band_256x':
         raise ValueError('말하기용 음성 복원 모델이 아닙니다')
 
+def validate_vocoder_config(config, vocoder_config):
+    """모델 이름만 같아도 실제 분석·복원 설정이 다르면 시작하지 않는다."""
+    expected = mel_args(config)
+    for field in ('sampling_rate', 'n_fft', 'num_mels', 'hop_size', 'win_size', 'fmin', 'fmax'):
+        if vocoder_config.get(field) != expected[field]:
+            raise ValueError('변환·음성 복원 설정이 다릅니다: ' + field)
+
 def load_models(paths, device):
     from modules.commons import recursive_munch, build_model
     from modules.audio import mel_spectrogram
     from transformers import AutoFeatureExtractor, WhisperModel
     config=yaml.safe_load(Path(paths['config']).read_text(encoding='utf-8'))
     validate_config(config)
+    validate_vocoder_config(config,json.loads((Path(paths['bigvgan'])/'config.json').read_text(encoding='utf-8')))
     params=recursive_munch(config['model_params']); params.dit_type='DiT'
     model=build_model(params, stage='DiT')
     state=torch.load(paths['dit'],map_location='cpu',weights_only=True)['net']
@@ -72,6 +80,8 @@ def main(args):
     import soundfile as sf
     import torchaudio
 
+    if getattr(args,'diagnostics_controls',False) and not getattr(args,'diagnostics_dir',None):
+        raise ValueError('원음 복원 대조에는 단계별 기록 폴더가 필요합니다')
     if args.f0_condition or args.auto_f0_adjust or args.semi_tone_shift:
         raise ValueError('말하기 모델에는 음높이 조건이나 조옮김을 적용하지 않습니다')
     device = pick_device()
@@ -90,10 +100,13 @@ def main(args):
         files.extend(str(p) for p in sorted(Path(paths['whisper']).glob('*')) if p.is_file())
         diagnostic=Recorder(args.diagnostics_dir,{'seed':args.seed,'fp16':args.fp16,
             'steps':args.diffusion_steps,'cfg':args.inference_cfg_rate,'f0_condition':False,
+            'sampling_rate':22050,'hop_length':256,
+            'reconstruction_controls':getattr(args,'diagnostics_controls',False),
             'source':file_fingerprint(args.source),'reference':file_fingerprint(args.target),
             'models':[file_fingerprint(p) for p in files],
             'privacy':'음향 중간 자료는 사용자 음성 정보입니다. 로컬 보관 전용.'})
     model, semantic_fn, f0_fn, vocoder_fn, campplus_model, mel_fn, mel_fn_args = load_models(paths, device)
+    raw_vocoder=vocoder_fn
     if diagnostic:
         from vc_diagnostics import traced_vocoder
         vocoder_fn=traced_vocoder(vocoder_fn,diagnostic)
@@ -223,6 +236,11 @@ def main(args):
     if not torch.isfinite(vc_wave).all():
         raise RuntimeError("변환 결과에 유효하지 않은 값이 있습니다")
     sf.write(out, vc_wave[0].cpu().numpy(), sr, subtype='FLOAT')
+    if diagnostic and getattr(args,'diagnostics_controls',False):
+        # 본 변환이 끝난 뒤에만 원음의 복원을 대조한다. 난수 상태도 보존한다.
+        with torch.random.fork_rng(devices=[device.index if device.index is not None else torch.cuda.current_device()]):
+            traced_vocoder(raw_vocoder,diagnostic,prefix='control_source')(mel.float())
+            traced_vocoder(raw_vocoder,diagnostic,prefix='control_reference')(mel2.float())
     if diagnostic:diagnostic.complete(out)
     return out
 
@@ -239,6 +257,8 @@ def build_parser():
     p.add_argument('--f0-condition', type=s2b, default=False)
     p.add_argument('--seed', type=int, default=20261012)
     p.add_argument('--diagnostics-dir', default=None, help='선택적 로컬 중간 기록; 새 폴더만 사용')
+    p.add_argument('--diagnostics-controls', action='store_true',
+                   help='원음·참조의 멜을 같은 복원기로 대조; 기록 폴더 필요')
     p.add_argument('--auto-f0-adjust', type=s2b, default=False)
     p.add_argument('--semi-tone-shift', type=int, default=0)
 

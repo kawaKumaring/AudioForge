@@ -45,5 +45,18 @@ class DiagnosticsTest(unittest.TestCase):
             m=Broken();r=Recorder(Path(d)/'trace',{})
             with self.assertRaises(RuntimeError):traced_vocoder(m,r)(torch.ones(2))
             self.assertEqual(len(m.conv_post._forward_hooks),0)
+    def test_control_names_do_not_overwrite_conversion(self):
+        class Vocoder(torch.nn.Module):
+            def __init__(self):super().__init__();self.conv_post=torch.nn.Identity()
+            def forward(self,x):return self.conv_post(x).clamp(-1,1)
+        with tempfile.TemporaryDirectory() as d:
+            r=Recorder(Path(d)/'trace',{});m=Vocoder();x=torch.ones(3)
+            traced_vocoder(m,r)(x)
+            traced_vocoder(m,r,prefix='control_source')(x)
+            traced_vocoder(m,r,prefix='control_reference')(x)
+            names=[a['name'] for a in r.document['arrays']]
+            self.assertEqual(len(names),len(set(names)))
+            self.assertEqual(len(names),9)
+            with self.assertRaises(ValueError):traced_vocoder(m,r,prefix='../bad')
 
 if __name__=='__main__':unittest.main()
