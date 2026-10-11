@@ -50,7 +50,7 @@ try {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(src), await window.api.audio.getFileUrl(src))
     s.setState({
-      mode: 'conversation', status: 'done', outputDir: out,
+      mode: 'conversation', resultMode: 'conversation', status: 'done', outputDir: out,
       dialogueSegments: segs,
       tracks: [{ name: 'speaker_a', label: '화자 A', path: out + '/speaker_a.wav' }],
     })

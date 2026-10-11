@@ -51,7 +51,7 @@ async function launch() {
     const s = window.__afStore
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
     s.setState({
-      mode: 'transcribe', status: 'done', outputDir: out,
+      mode: 'transcribe', resultMode: 'transcribe', status: 'done', outputDir: out,
       tracks: [{ name: 'transcript', label: '텍스트 (ko)', path: out + '/a.txt',
                  text: segs.map((x) => x.text).join(' '), language: 'ko', base: 'a', segments: segs }],
     })

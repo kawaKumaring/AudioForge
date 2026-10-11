@@ -35,6 +35,9 @@ async function launch() {
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
     s.setState({ mode: 'tts', synthesisTab: 'advanced' })
   }, SRC)
+  // 기존 화면 검사: 통합 카드의 '이전 작업'을 통해 진입한다.
+  await win.getByTestId('open-legacy-synthesis').click()
+  await win.getByTestId('synthesis-tabs').waitFor()
   await sleep(1500)
   return { app, win }
 }

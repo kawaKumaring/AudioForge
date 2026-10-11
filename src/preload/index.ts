@@ -105,13 +105,14 @@ const api = {
     },
     // 취소 lifecycle(공용 마감 K): cancelling→(cancelled|cancel-failed). result/error와 별개 채널로,
     // 취소 승자 정착 후 main이 명시적으로 보낸다(늦은 result/error는 main에서 이미 억제).
-    onCancelling: (callback: () => void) => {
-      const handler = () => callback()
+    // 짐은 선택이다 — 본체가 요청 식별자를 실어 보낸다. 기존 화면은 그냥 무시한다.
+    onCancelling: (callback: (data?: unknown) => void) => {
+      const handler = (_event: unknown, data?: unknown) => callback(data)
       ipcRenderer.on('audio:cancelling', handler)
       return () => ipcRenderer.removeListener('audio:cancelling', handler)
     },
-    onCancelled: (callback: () => void) => {
-      const handler = () => callback()
+    onCancelled: (callback: (data?: unknown) => void) => {
+      const handler = (_event: unknown, data?: unknown) => callback(data)
       ipcRenderer.on('audio:cancelled', handler)
       return () => ipcRenderer.removeListener('audio:cancelled', handler)
     },
@@ -122,6 +123,14 @@ const api = {
     }
   },
   // 테스트개발 작업실 — 테이크 보관과 이어 붙여 내보내기만. 생성은 기존 audio.process 를 쓴다.
+  /** 생성 카드 — 카드별 미디어. 카드 하나가 다른 카드의 파일을 건드리지 않는다. */
+  cards: {
+    /** 영상이면 소리를 꺼내 그 경로를, 소리 파일이면 그대로 돌려준다. */
+    extractAudio: (cardId: string, filePath: string) =>
+      ipcRenderer.invoke('card:extract-audio', cardId, filePath),
+    /** 이 카드가 꺼내 둔 소리만 지운다. */
+    releaseMedia: (cardId: string) => ipcRenderer.invoke('card:release-media', cardId),
+  },
   lab: {
     keepTake: (srcPath: string, takeId: string): Promise<{ ok: boolean; path?: string; reason?: string }> =>
       ipcRenderer.invoke('lab:keep-take', srcPath, takeId),

@@ -103,6 +103,9 @@ try {
     s.getState().setFile(await window.api.audio.getFileInfo(fp), await window.api.audio.getFileUrl(fp))
     s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
   }, iso.input)
+  // 기존 화면 검사: 통합 카드의 '이전 작업'을 통해 진입한다.
+  await page.getByTestId('open-legacy-synthesis').click()
+  await page.getByTestId('synthesis-tabs').waitFor()
   await page.waitForSelector('[data-testid="dialogue-tabs"]', { timeout: 60000 })
   await page.click('[data-testid="dialogue-tabs"] [data-tab="multi"]')
   await sleep(300)

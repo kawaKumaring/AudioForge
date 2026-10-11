@@ -134,7 +134,7 @@ export default function ExpressionControls({
   return (
     <section className="tts-flow-card" aria-label="말하는 느낌" style={{ borderRadius: 12, background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', overflow: 'hidden' }}>
       <header className="tts-flow-head" style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap', padding: '12px 16px', borderBottom: '1px solid var(--border-subtle)' }}>
-        <span aria-hidden="true" style={flowNum}>{flowNumber}</span>
+        {flowNumber > 0 && <span aria-hidden="true" style={flowNum}>{flowNumber}</span>}
         <span style={{ fontSize: 13, fontWeight: 700, color: 'var(--text-primary)' }}>말하는 느낌</span>
         <span style={{ fontSize: 11, color: 'var(--text-muted)', flex: 1, minWidth: 140 }}>{summary}</span>
       </header>

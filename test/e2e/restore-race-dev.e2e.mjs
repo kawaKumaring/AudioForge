@@ -124,6 +124,9 @@ try {
     s.getState().setFile(await window.api.audio.getFileInfo(fp), await window.api.audio.getFileUrl(fp))
     s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
   }, work.input)
+  // 기존 화면 검사: 통합 카드의 '이전 작업'을 통해 진입한다.
+  await page.getByTestId('open-legacy-synthesis').click()
+  await page.getByTestId('synthesis-tabs').waitFor()
 
   // 1) A 의 복원이 **진행 중**인 창을 잡는다: 슬롯이 A 를 들고 아직 준비되지 않은 상태.
   const restoring = await waitUntil(async () => {

@@ -38,11 +38,13 @@ try {
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
     s.setState({ mode: 'tts', synthesisTab: 'advanced' })
   }, SRC)
+  await win.getByTestId('open-legacy-synthesis').click()
+  await win.getByTestId('synthesis-tabs').waitFor()
   await sleep(1200)
 
   // 파이썬이 막은 그대로를 재현한다 — message 가 코드와 같다(SpeakerReferenceError 의 실제 모양).
   const push = (code) => win.evaluate((c) => {
-    window.__afStore.setState({ status: 'error', error: c, errorInfo: { code: c } })
+    window.__afStore.getState().setError(c, { code: c })
   }, code)
 
   for (const code of ['SPEAKER_NOT_REGISTERED', 'SPEAKER_REFERENCE_NOT_READY']) {
@@ -89,7 +91,7 @@ try {
   // 화자와 무관한 오류는 예전 그대로다(이 수정이 다른 안내를 덮지 않았다).
   await win.evaluate(() => {
     window.__afStore.setState({
-      status: 'error', error: '알 수 없는 오류가 발생했습니다.', errorInfo: { code: 'SOMETHING_ELSE' },
+      status: 'error', resultMode: 'tts', error: '알 수 없는 오류가 발생했습니다.', errorInfo: { code: 'SOMETHING_ELSE' },
     })
   })
   await sleep(700)

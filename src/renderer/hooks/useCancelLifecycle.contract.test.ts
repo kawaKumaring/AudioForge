@@ -45,10 +45,14 @@ const codeOf = (text: string): string =>
 //   자리로 좁힌다: **공용 단추를 감추는 모드**는 제 화면이 직접 들어야 한다.
 //   그 모드 목록은 App.tsx 가 정하므로 **거기서 읽어 온다** — 새 모드를 목록에 넣는
 //   순간(= 구멍이 생기는 변경) 이 검사가 울린다.
-const OWN_CANCEL_SCREENS: Record<string, string> = {
-  tts: 'components/LabWorkspace.tsx',   // 합성 일반 탭(고급 탭은 ProcessButton 을 직접 그린다)
-  lab: 'components/LabWorkspace.tsx',
-  dub: 'components/DubWorkspace.tsx',
+//   ★한 모드가 화면을 **갈아 끼울 수도** 있다(2026-09-26). 합성은 이제 기본이 생성 카드이고
+//     '이전 작업' 을 고르면 예전 작업실이 뜬다. 둘 다 같은 모드 안에서 공용 단추 없이 뜨므로
+//     **둘 다** 직접 들어야 한다. 그래서 값이 목록이다.
+const OWN_CANCEL_SCREENS: Record<string, string[]> = {
+  // 합성 일반 탭(고급 탭은 ProcessButton 을 직접 그린다) + 그 앞에 서는 생성 카드 화면.
+  tts: ['components/LabWorkspace.tsx', 'components/SynthesisCardWorkspace.tsx'],
+  lab: ['components/LabWorkspace.tsx'],
+  dub: ['components/DubWorkspace.tsx'],
 }
 
 test('공용 실행 단추를 감추는 모드 목록이 바뀌면 여기서 멈춘다', () => {
@@ -62,7 +66,7 @@ test('공용 실행 단추를 감추는 모드 목록이 바뀌면 여기서 멈
 
 test('공용 단추가 없는 화면은 취소 lifecycle 을 스스로 배선한다', () => {
   const bad: string[] = []
-  for (const rel of new Set(Object.values(OWN_CANCEL_SCREENS))) {
+  for (const rel of new Set(Object.values(OWN_CANCEL_SCREENS).flat())) {
     const code = codeOf(readFileSync(path.join(RENDERER, rel), 'utf-8'))
     if (!code.includes('useCancelLifecycle(')) bad.push(rel)
   }

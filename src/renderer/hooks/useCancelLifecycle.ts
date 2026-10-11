@@ -30,10 +30,13 @@ import {
 } from '../../shared/cancelContract'
 
 export interface CancelLifecycleHandlers {
-  /** main 이 취소를 받아 정리를 시작했다. 'cancelling' 전환의 **유일한** 권위. */
-  onCancelling?: () => void
-  /** 취소가 끝났다. */
-  onCancelled?: () => void
+  /**
+   * main 이 취소를 받아 정리를 시작했다. 'cancelling' 전환의 **유일한** 권위.
+   * 짐에는 요청 식별자가 실려 온다(2026-09-27) — 남의 실행이 끝났다고 내 작업을 내리지 않게.
+   */
+  onCancelling?: (payload?: unknown) => void
+  /** 취소가 끝났다. 짐은 위와 같다. */
+  onCancelled?: (payload?: unknown) => void
   /**
    * 취소가 실패했다. 갈래마다 **회복 방법이 반대**다 —
    * `cancelRetryable(kind)` 가 false 면 '다시 취소' 를 권하면 안 된다.
@@ -52,8 +55,8 @@ export interface CancelLifecycle {
 
 type CancelApi = {
   cancel: () => Promise<unknown>
-  onCancelling: (cb: () => void) => () => void
-  onCancelled: (cb: () => void) => () => void
+  onCancelling: (cb: (payload?: unknown) => void) => () => void
+  onCancelled: (cb: (payload?: unknown) => void) => () => void
   onCancelFailed: (cb: (data: unknown) => void) => () => void
 }
 
@@ -74,8 +77,8 @@ export function useCancelLifecycle(
   //   뒤따르는 재취소의 이벤트가 그 가드에 걸려 조용히 버려진다.
   useEffect(() => {
     const api = (window as unknown as { api: { audio: CancelApi } }).api.audio
-    const offCancelling = api.onCancelling(() => ref.current.onCancelling?.())
-    const offCancelled = api.onCancelled(() => ref.current.onCancelled?.())
+    const offCancelling = api.onCancelling((d?: unknown) => ref.current.onCancelling?.(d))
+    const offCancelled = api.onCancelled((d?: unknown) => ref.current.onCancelled?.(d))
     const offFailed = api.onCancelFailed((d: unknown) => ref.current.onFailed?.(cancelFailureKind(d), d))
     return () => { offCancelling(); offCancelled(); offFailed() }
   }, [])

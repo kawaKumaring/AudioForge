@@ -37,14 +37,34 @@ function skip(name, why) {
   console.log(`\n[verify] SKIP ${name} — ${why}\n`)
 }
 
+/** 검사가 실패로 끝난 자리. 돌리지 못한 것을 통과로 세지 않는다. */
+function bad(name, why) {
+  results.push({ name, state: 'FAIL', sec: '0.0', detail: why })
+  console.log(NEWLINE + '[verify] FAIL ' + name + ' — ' + why + NEWLINE)
+}
+const NEWLINE = String.fromCharCode(10)
+
+/**
+ * 검사용 파이썬을 찾는다.
+ *
+ * ★**정해 둔 자리가 비었으면 건너뛰지 않는다**(2026-09-26).
+ *   'E:/AI' 폴더 이름이 바뀌자 적어 둔 자리가 죽었고, 게이트는 '설정이 없는 것' 과
+ *   똑같이 취급해 파이썬 검사 세 단계를 **말없이 건너뛰었다.** 요약은 초록이었다.
+ *   하마터면 그 초록으로 master 에 올릴 뻔했다.
+ *   아무것도 안 정한 것과 정한 것이 사라진 것은 다른 일이다 — 뒤엣것은 고장이다.
+ */
 function appPython() {
-  if (process.env.AUDIOFORGE_PYTHON && existsSync(process.env.AUDIOFORGE_PYTHON)) return process.env.AUDIOFORGE_PYTHON
+  const named = process.env.AUDIOFORGE_PYTHON
+  if (named) {
+    return existsSync(named) ? { exe: named } : { missing: named, from: 'AUDIOFORGE_PYTHON' }
+  }
   const cfg = path.join(ROOT, 'externals', 'env.json')
-  if (!existsSync(cfg)) return null
+  if (!existsSync(cfg)) return {}
   try {
     const p = JSON.parse(readFileSync(cfg, 'utf-8')).python
-    return typeof p === 'string' && existsSync(p) ? p : null
-  } catch { return null }
+    if (typeof p !== 'string' || !p) return {}
+    return existsSync(p) ? { exe: p } : { missing: p, from: 'externals/env.json' }
+  } catch { return {} }
 }
 
 // ── 앱을 띄우지 않는 확인 ────────────────────────────────────────────────
@@ -57,7 +77,8 @@ run('단위·계약 테스트', 'node', ['--test', 'src/**/*.test.ts'])
 run('모델 이용 조건', 'node', [path.join('scripts', 'check-model-licenses.mjs')])
 run('빌드', 'npx', ['electron-vite', 'build'])
 
-const py = appPython()
+const found = appPython()
+const py = found.exe || null
 if (py) {
   run('파이썬 스모크(--quick)', py, ['-X', 'utf8', path.join('python', 'smoke_test.py'), '--quick'],
     { env: { ...process.env, PYTHONIOENCODING: 'utf-8', PYTHONUTF8: '1' } })
@@ -69,8 +90,14 @@ if (py) {
   // 공백이 든 경로(Program Files 아래의 node.exe 같은 것)가 두 토큰으로 쪼개진다(실측 즉시 exit 1).
   run('파이썬 시험 전량', 'node', [path.join('scripts', 'python-tests.mjs')],
     { env: { ...process.env, AUDIOFORGE_PYTHON: py } })
+} else if (found.missing) {
+  // ★적어 둔 자리가 비었다 — 고장이다. 건너뛰기로 감추지 않는다.
+  const why = found.from + ' 이 가리키는 자리에 파이썬이 없다: ' + found.missing
+  bad('파이썬 스모크(--quick)', why)
+  bad('파이썬 모델 판 계약', '같은 이유')
+  bad('파이썬 시험 전량', '같은 이유')
 } else {
-  skip('파이썬 스모크(--quick)', 'AUDIOFORGE_PYTHON·externals/env.json 에서 파이썬을 찾지 못했다')
+  skip('파이썬 스모크(--quick)', '파이썬을 아직 정하지 않았다(AUDIOFORGE_PYTHON·externals/env.json)')
   skip('파이썬 모델 판 계약', '같은 이유')
   skip('파이썬 시험 전량', '같은 이유')
 }
@@ -113,11 +140,24 @@ if (WITH_APP_UI) {
   // 교정본 저장 — 자막 손질을 거치는지까지 본다(2026-09-24 B-7).
   run('실제 앱 · 전사 교정본 저장(GPU 없음)', 'node',
     [path.join('test', 'e2e', 'transcript-edit.e2e.mjs')])
+  // 생성 카드 화면과 작업 흐름(2026-09-27). 만들어 두고 **게이트에 안 걸어 둔 상태**로
+  // 넘어올 뻔했다 — 이 파일의 머리말 그대로다: 돌리지 않은 검사는 있는 것이 아니다.
+  run('실제 앱 · 생성 카드 화면(GPU 없음)', 'node',
+    [path.join('test', 'e2e', 'synthesis-cards.e2e.mjs')])
+  run('실제 앱 · 작업 흐름(GPU 없음)', 'node',
+    [path.join('test', 'e2e', 'ux-workflow.e2e.mjs')])
+  // 생성 카드의 연결 경계 — 저장·복원·되돌리기·요청 대조·취소·실패(2026-09-27 검수 회귀).
+  run('실제 앱 · 생성 카드 연결(GPU 없음)', 'node',
+    [path.join('test', 'e2e', 'synthesis-cards-connection.e2e.mjs')])
+  // 본체를 통과하는 요청 식별자 — 이벤트 주입이 아니라 진짜 합성 통로를 탄다(모델만 대체).
+  run('실제 앱 · 생성 카드 본체 통과(GPU 없음)', 'node',
+    [path.join('test', 'e2e', 'synthesis-cards-main-path.e2e.mjs')])
 } else {
   // 건너뛴 것은 **전부** 적는다 — 셋만 적혀 있던 동안 여섯 단계가 요약에서 사라져 있었다(2026-09-17 실측).
   skip('실제 앱 · UI 경로', '--app-ui 를 주면 함께 확인한다(GPU 안 씀)')
   for (const n of ['복원 중 선택 변경', '재생 음량 유지', '목소리 준비 표시 일치', '일반·고급 목소리 격리',
-    '이전 작업 되살리기 알림', '인물 차단 안내', '로그 파일·진단 묶음', '채널별 데이터 폴더']) {
+    '이전 작업 되살리기 알림', '인물 차단 안내', '로그 파일·진단 묶음', '채널별 데이터 폴더',
+    '생성 카드 화면', '작업 흐름', '생성 카드 연결', '생성 카드 본체 통과']) {
     skip(`실제 앱 · ${n}`, '같은 이유')
   }
 }
@@ -149,17 +189,17 @@ if (WITH_APP) {
 }
 
 // ── 요약 ─────────────────────────────────────────────────────────────────
-const fail = results.filter((r) => r.state === 'FAIL')
+const failed = results.filter((r) => r.state === 'FAIL')
 const skipped = results.filter((r) => r.state === 'SKIP')
 console.log('─'.repeat(64))
 for (const r of results) console.log(`  ${r.state.padEnd(4)} ${r.name.padEnd(26)} ${r.sec.padStart(6)}초  ${r.detail}`)
 console.log('─'.repeat(64))
-console.log(`  통과 ${results.length - fail.length - skipped.length} · 실패 ${fail.length} · 건너뜀 ${skipped.length}`)
-if (fail.length) {
+console.log(`  통과 ${results.length - failed.length - skipped.length} · 실패 ${failed.length} · 건너뜀 ${skipped.length}`)
+if (failed.length) {
   console.log('\n  ❌ 병합하지 않는다. 위 실패를 먼저 해결한다.')
 } else if (skipped.length) {
   console.log('\n  ⚠️  통과했지만 건너뛴 항목이 있다 — 무엇을 확인하지 않았는지 위 목록으로 확인한다.')
 } else {
   console.log('\n  ✅ 확인 항목 전부 통과.')
 }
-process.exit(fail.length ? 1 : 0)
+process.exit(failed.length ? 1 : 0)

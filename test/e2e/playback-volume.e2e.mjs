@@ -80,6 +80,9 @@ async function loadFile(win) {
     s.getState().setFile(await window.api.audio.getFileInfo(p), await window.api.audio.getFileUrl(p))
     s.getState().setMode('tts'); s.getState().setSynthesisTab('advanced')
   }, REF)
+  // 기존 화면 검사: 통합 카드의 '이전 작업'을 통해 진입한다.
+  await win.getByTestId('open-legacy-synthesis').click()
+  await win.getByTestId('synthesis-tabs').waitFor()
 }
 
 /** 기본 목소리의 구간 편집기를 펼친다 — DOM 소리 요소가 생기는 유일한 자리. */
