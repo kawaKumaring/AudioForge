@@ -1,3 +1,11 @@
+## 2026-10-11 · F5-TTS·Kokoro 다시 받아 앱 모델 폴더로 흡수 + 시험 GPU 계산 고장 수정 (사용자 승인)
+- 받음(1.73GB, HF 공개 저장소의 현재 판, 지문은 각 폴더 manifest.json): externals/f5_tts_models(F5TTS_v1_Base 1.35GB·vocos-mel-24khz 54MB), externals/kokoro_models/Kokoro-82M(본체 327MB·설정·언어별 기본 목소리 9개). C 캐시는 쓰지 않고 앱 폴더로 직접 받았다.
+- `tts_worker.f5_asset_paths`·`kokoro_asset_paths`·`kokoro_voice_path` — 앱 폴더 파일만 쓰고, 없으면 받지 않고 빠진 파일을 말한다. 시험 `test_tts_local_assets.py`(6건).
+- ★F5 참조 대사: 예전에는 참조 대사 자리에 감정 문구나 빈 글을 넣었다. 비면 F5 가 자체 받아쓰기(whisper-large-v3-turbo)를 HF 에서 찾는데, 그 모델은 10-10 C 정리 때 '앱이 읽지 않는다'며 지운 것이다(숨은 의존을 놓쳤다). 이제 앱의 받아쓰기(externals 의 whisper small)로 참조 대사를 얻는다. 감정 문구는 F5 에서 감정을 바꾸지 않았다 — 빠졌다.
+- ★시험 임시 자리가 한글 경로(_local/테스트/임시)라 torch 의 GPU 부품 캐시 만들기가 실패하고, 그 경고 문구(CP949)를 UTF-8 로 풀다 계산이 죽었다(Kokoro·F5 의 GPU stft 에서 실측). 10-10 테스트 폴더 통합 때 생긴 회귀. 시험 환경에서만 `USE_PYTORCH_KERNEL_CACHE=0`(python/_test_temp.py·test/_temp-root.mjs). 앱의 임시 자리는 영문 경로라 해당 없음.
+- 확인(빈 HF 캐시·오프라인, 사용자 음성 없음): Kokoro 영어 3.4초 분량 GPU 1.6초, F5 는 Kokoro 로 만든 합성 음성을 참조로 2.4초 분량 생성(받아쓰기 모델 첫 적재 포함 35초). 청취 판정은 하지 않음.
+- 앞 커밋의 절대경로 검사 실패(music_worker 주석의 C 경로 글자)도 고침.
+
 ## 2026-10-11 · 음원 분리·검수 받아쓰기 모델 C 의존 제거 (흡수)
 - Demucs(htdemucs·htdemucs_ft) 가중치 5개를 externals/demucs_models/checkpoints 로 복사(파일 이름의 SHA 앞자리 일치). `music_worker.use_local_demucs` 가 torch hub 자리를 그곳으로 돌리고, 파일이 없으면 받지 않고 실패한다(오프라인 설정은 torch 다운로드를 막지 않았다). 확인: 빈 TORCH_HOME 으로 두 모델 불러오기·3초 분리 성공, 빈 자리에 파일 0개.
 - 검수 MCP(quality.cjs·quality_worker.py)·연구 도구(word_timings.py)의 whisper 를 externals/whisper_models 로. base.pt 복사(지문 일치).

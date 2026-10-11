@@ -71,3 +71,5 @@ if (!reuse) {
 process.env.TEMP = TEST_TEMP_ROOT
 process.env.TMP = TEST_TEMP_ROOT
 process.env.TMPDIR = TEST_TEMP_ROOT
+// ★파이썬 자식의 torch GPU 부품 캐시 끄기 — 한글 경로(테스트)에서 경고 문구가 깨져 계산이 죽는다(_test_temp.py 참고, 2026-10-11).
+process.env.USE_PYTORCH_KERNEL_CACHE = '0'

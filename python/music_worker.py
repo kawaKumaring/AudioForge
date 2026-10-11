@@ -455,7 +455,7 @@ def run_roformer_separation(input_path: str, output_dir: str, model_name: str = 
 
 
 # ★Demucs 가중치는 앱 모델 폴더(externals/demucs_models/checkpoints)에서만 읽는다(2026-10-11 흡수).
-#   예전에는 torch 기본 캐시(C:\Users\...\.cache\torch)를 읽었고, 없으면 인터넷에서 받으려 했다
+#   예전에는 torch 기본 캐시(C 드라이브 사용자 폴더의 .cache/torch)를 읽었고, 없으면 인터넷에서 받으려 했다
 #   (오프라인 설정은 HF 만 막고 torch 다운로드는 막지 않는다). 파일 이름 뒤 8자리가 SHA256 앞자리다.
 DEMUCS_CHECKPOINTS = {
     "htdemucs": ["955717e8-8726e21a.th"],

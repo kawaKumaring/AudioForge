@@ -35,3 +35,7 @@ else:
 for _k in ('TEMP', 'TMP', 'TMPDIR'):
     os.environ[_k] = RUN_DIR
 tempfile.tempdir = RUN_DIR
+# ★torch 는 GPU 계산 부품 캐시를 TEMP 아래(torch/kernels)에 만든다. 테스트 폴더 경로에 한글('테스트')이 있어
+#   만들기에 실패하면 그 경고 문구(CP949)를 UTF-8 로 풀다 UnicodeDecodeError 로 **계산이 죽는다**
+#   (2026-10-11 실측: Kokoro·F5 의 GPU stft). 검사에서는 캐시를 끈다 — 앱의 임시 자리는 영문 경로라 해당 없음.
+os.environ['USE_PYTORCH_KERNEL_CACHE'] = '0'
