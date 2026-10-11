@@ -207,6 +207,68 @@ class TestDevOutputContract(unittest.TestCase):
         self.assertEqual(bad, [], "하네스가 외부 경로를 기본 출력으로 쓴다: %s" % bad)
 
 
+class TestRunRecordRetention(unittest.TestCase):
+    """재현 기록 보관 30일 — 오래된 것만 지우고, 새 것·이번 것·링크는 두며, 0이면 지우지 않는다."""
+
+    def setUp(self):
+        self._env = {k: os.environ.get(k) for k in (la.LOCAL_ROOT_ENV, "AF_RUN_RECORD_DAYS")}
+        self.tmp = tempfile.mkdtemp(prefix="af-runs-")
+        os.environ[la.LOCAL_ROOT_ENV] = self.tmp
+        os.environ.pop("AF_RUN_RECORD_DAYS", None)
+        self.runs = os.path.join(self.tmp, "artifacts", "runs")
+        os.makedirs(self.runs)
+        la._runs_pruned = False
+
+    def tearDown(self):
+        for k, v in self._env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+        la._runs_pruned = False
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _mk(self, name, age_days):
+        import time
+        d = os.path.join(self.runs, name)
+        os.makedirs(d)
+        with open(os.path.join(d, "x.json"), "w") as f:
+            f.write("{}")
+        t = time.time() - age_days * 86400
+        os.utime(d, (t, t))
+        return d
+
+    def test_오래된_기록만_지운다(self):
+        old, new = self._mk("old", 40), self._mk("new", 5)
+        cur = la.run_record_dir("cur")
+        self.assertFalse(os.path.exists(old))
+        self.assertTrue(os.path.exists(new))
+        self.assertTrue(os.path.isdir(cur))
+
+    def test_영이면_지우지_않는다(self):
+        os.environ["AF_RUN_RECORD_DAYS"] = "0"
+        old = self._mk("old", 400)
+        la.run_record_dir("cur")
+        self.assertTrue(os.path.exists(old))
+
+    def test_정션은_따라가_지우지_않는다(self):
+        import subprocess, time
+        target = tempfile.mkdtemp(prefix="af-target-")
+        try:
+            with open(os.path.join(target, "keep.txt"), "w") as f:
+                f.write("x")
+            link = os.path.join(self.runs, "link")
+            if subprocess.run(["cmd", "/c", "mklink", "/J", link, target], capture_output=True).returncode != 0:
+                self.skipTest("정션을 만들 수 없음")
+            t = time.time() - 400 * 86400
+            os.utime(link, (t, t))   # 정션을 따라 대상 시각을 옛날로 — 시각만 보면 지울 대상이 된다
+            self.assertLess(os.path.getmtime(link), time.time() - 300 * 86400)
+            la.run_record_dir("cur")
+            self.assertTrue(os.path.exists(os.path.join(target, "keep.txt")), "정션 너머를 지웠다")
+        finally:
+            shutil.rmtree(target, ignore_errors=True)
+
+
 # ★이 블록은 **파일 맨 끝**에 있어야 한다.
 #   예전에 중간에 있어서, 파일을 직접 실행하면 아래에 정의된 검사 6건이
 #   아직 만들어지지 않은 채 unittest.main() 이 돌아 **조용히 빠졌다**.

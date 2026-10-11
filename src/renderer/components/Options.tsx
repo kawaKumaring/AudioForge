@@ -248,7 +248,6 @@ export default function Options() {
                 <span style={{ fontSize: 12, minWidth: 64, color: 'var(--text-secondary)', whiteSpace: 'nowrap' }}>번역</span>
                 {([
                   ['600m', '600M', 'NLLB-600M — 가볍고 빠름 (기본, 로컬)'],
-                  ['1.3b', '1.3B', 'NLLB-1.3B — 더 큼 (효과 제한적, 로컬)'],
                   ['llm', 'LLM', 'Qwen2.5-3B 로컬 LLM — 구어체·문맥 번역, 느림·VRAM↑ (앱 안에 받아 둔 모델만 씀 — 실행 중에 내려받지 않음)'],
                 ] as const).map(([v, label, hint]) => (
                   <button key={v} onClick={() => !disabled && setTranslateModel(v)} disabled={disabled} title={hint} style={{

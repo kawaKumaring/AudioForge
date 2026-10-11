@@ -173,8 +173,47 @@ def run_record_dir(run_id):
     """**모든** TTS 생성이 남기는 재현 기록 — _local/artifacts/runs/<run-id>.
 
     진단 스위치와 무관하게 항상 여기에 쌓인다. 사용자 최종 출력 폴더가 아니라
-    앱 관리 영역이다."""
-    return _run_scoped("runs", run_id)
+    앱 관리 위치다."""
+    p = _run_scoped("runs", run_id)
+    _prune_old_runs(os.path.dirname(p), keep=p)
+    return p
+
+
+# ★재현 기록은 생성마다 쌓이는데 지우는 규칙이 없었다(2026-10-11, 1560개). 보관 30일(사용자 결정).
+#   프로세스마다 처음 한 번만 훑는다. 실패해도 생성은 막지 않는다. AF_RUN_RECORD_DAYS=0 이면 지우지 않는다.
+#   지운 기록을 가리키던 옛 청취 결과는 검수 도구에서 '근거 없음'으로 보인다(결과 음성은 남는다).
+RUN_RECORD_DAYS = 30
+_runs_pruned = False
+
+
+def _prune_old_runs(runs_root, keep=None):
+    global _runs_pruned
+    if _runs_pruned:
+        return
+    _runs_pruned = True
+    try:
+        days = int(os.environ.get("AF_RUN_RECORD_DAYS", RUN_RECORD_DAYS))
+    except ValueError:
+        days = RUN_RECORD_DAYS
+    if days <= 0:
+        return
+    import shutil
+    import time
+    cutoff = time.time() - days * 86400
+    try:
+        names = os.listdir(runs_root)
+    except OSError:
+        return
+    for n in names:
+        d = os.path.join(runs_root, n)
+        try:
+            if (d == keep or os.path.islink(d) or getattr(os.path, "isjunction", lambda _p: False)(d)
+                    or not os.path.isdir(d)):   # ★링크·정션은 따라가 지우지 않는다
+                continue
+            if os.path.getmtime(d) < cutoff:
+                shutil.rmtree(d, ignore_errors=True)
+        except OSError:
+            continue
 
 
 def run_diagnostics_dir(run_id):

@@ -14,10 +14,9 @@ LANG_TO_NLLB = {
     "hi": "hin_Deva", "bn": "ben_Beng", "ta": "tam_Taml", "uk": "ukr_Cyrl",
 }
 
-# NLLB 모델 선택: 600M(기본, 가벼움) / 1.3B(고품질, ~5GB·VRAM↑)
+# NLLB 모델: 600M 만. 1.3B 는 시험상 개선이 없어 모델을 지웠다(2026-10-09) — 예전 설정의 "1.3b" 는 600M 로 간다.
 _NLLB_MODELS = {
     "600m": "facebook/nllb-200-distilled-600M",
-    "1.3b": "facebook/nllb-200-distilled-1.3B",
 }
 _DEFAULT_NLLB = _NLLB_MODELS["600m"]
 
@@ -26,7 +25,7 @@ _nllb_cache = {"model": None, "tokenizer": None, "src_lang": None, "name": _DEFA
 
 
 def set_nllb_model(size):
-    """번역 모델 크기 지정 ('600m'/'1.3b'). 바뀌면 캐시 무효화."""
+    """번역 모델 크기 지정 ('600m'; 모르는 값은 600m). 바뀌면 캐시 무효화."""
     name = _NLLB_MODELS.get((size or "600m").lower(), _DEFAULT_NLLB)
     if _nllb_cache.get("name") != name:
         _nllb_cache.update({"model": None, "tokenizer": None, "src_lang": None, "name": name})
@@ -54,7 +53,7 @@ BLOCKED_TRANSLATE_BACKENDS = ('google',)
 
 
 def set_translate_model(value):
-    """번역 백엔드/모델 선택. 'llm'/'qwen3b' → 로컬 LLM, 그 외 → NLLB(600m/1.3b).
+    """번역 백엔드/모델 선택. 'llm'/'qwen3b' → 로컬 LLM, 그 외 → NLLB(600m).
     'google' 은 받지 않는다 — 로컬 NLLB 로 돌린다(외부 전송 금지)."""
     v = (value or "600m").lower()
     if v in BLOCKED_TRANSLATE_BACKENDS:
