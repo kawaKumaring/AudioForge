@@ -155,6 +155,44 @@ class TTSEngine:
         raise NotImplementedError
 
 
+# ── F5-TTS·Kokoro 가중치 — 앱 모델 폴더에서만(2026-10-11 흡수) ──
+# 예전에는 인자 없이 불러 HF 기본 캐시(C 드라이브 사용자 폴더의 .cache/huggingface)를 읽었다.
+# 그 캐시가 통째로 사라지자(10-11 확인) 두 엔진이 조용히 못 쓰게 됐다. 이제 externals 의 파일만 쓰고,
+# 없으면 받지 않고 무엇이 없는지 말한다.
+
+def _tts_asset(*parts):
+    import app_runtime
+    return os.path.join(app_runtime.assets_root(), *parts)
+
+
+def f5_asset_paths():
+    ckpt = _tts_asset("f5_tts_models", "F5-TTS", "F5TTS_v1_Base", "model_1250000.safetensors")
+    vocos = _tts_asset("f5_tts_models", "vocos-mel-24khz")
+    need = [ckpt, os.path.join(vocos, "config.yaml"), os.path.join(vocos, "pytorch_model.bin")]
+    missing = [os.path.basename(x) for x in need if not os.path.isfile(x)]
+    if missing:
+        raise RuntimeError("F5-TTS 모델 파일이 앱 모델 폴더(externals/f5_tts_models)에 없습니다"
+                           "(자동으로 받지 않습니다): %s" % ", ".join(missing))
+    return ckpt, vocos
+
+
+def kokoro_asset_paths():
+    root = _tts_asset("kokoro_models", "Kokoro-82M")
+    need = [os.path.join(root, "config.json"), os.path.join(root, "kokoro-v1_0.pth")]
+    missing = [os.path.basename(x) for x in need if not os.path.isfile(x)]
+    if missing:
+        raise RuntimeError("Kokoro 모델 파일이 앱 모델 폴더(externals/kokoro_models)에 없습니다"
+                           "(자동으로 받지 않습니다): %s" % ", ".join(missing))
+    return root
+
+
+def kokoro_voice_path(voice):
+    p = os.path.join(kokoro_asset_paths(), "voices", "%s.pt" % voice)
+    if not os.path.isfile(p):
+        raise RuntimeError("Kokoro 목소리 파일이 앱 모델 폴더에 없습니다: %s.pt" % voice)
+    return p
+
+
 # ── F5-TTS Engine (English + voice cloning) ──
 
 class F5TTSEngine(TTSEngine):
@@ -170,12 +208,36 @@ class F5TTSEngine(TTSEngine):
             patch_torchaudio()  # F5-TTS loads ref audio via torchaudio.load
             from f5_tts.api import F5TTS
             device = get_device(timeout_sec=10)
-            self._model = F5TTS(device=device)
+            ckpt, vocos = f5_asset_paths()
+            self._model = F5TTS(ckpt_file=ckpt, vocoder_local_path=vocos, device=device)
             emit("progress", percent=20, message=f"F5-TTS 로딩 완료 ({device.upper()})")
+
+    def _ref_text(self, ref_audio):
+        """참조 음성의 실제 대사 — 앱의 받아쓰기(앱 모델 폴더의 whisper small)로 얻는다.
+
+        ★2026-10-11: 예전에는 이 자리에 감정 문구("(happily, ...)")나 빈 글을 넣었다. F5 는 이 자리에
+          참조 음성의 대사를 받아야 하고, 비어 있으면 자체 받아쓰기(whisper-large-v3-turbo)를 HF 에서
+          찾는다 — 그 모델은 앱에 없고 오프라인이면 실패한다. 감정 문구는 F5 에서 감정을 바꾸지도 않았다.
+        """
+        cache = getattr(self, "_ref_cache", None)
+        if cache is None:
+            cache = self._ref_cache = {}
+        try:
+            key = (os.path.abspath(ref_audio), os.path.getmtime(ref_audio))
+        except OSError:
+            key = (ref_audio, None)
+        if key not in cache:
+            from reference_transcript import transcribe_reference, STATUS_OK
+            t = transcribe_reference(ref_audio, "small")
+            if t.status != STATUS_OK or not t.text:
+                raise RuntimeError("F5-TTS 참조 음성의 대사를 받아쓰지 못했습니다(%s) — 대사가 또렷한 참조를 쓰세요."
+                                   % (t.error_code or t.status))
+            cache[key] = t.text
+        return cache[key]
 
     def synthesize_segment(self, text, ref_audio, emotion_id, speed, output_path):
         self.load()
-        ref_text = EMOTION_PROMPTS.get(emotion_id, "")
+        ref_text = self._ref_text(ref_audio)
         self._model.infer(
             ref_file=ref_audio, ref_text=ref_text,
             gen_text=text, file_wave=output_path, speed=speed
@@ -218,8 +280,14 @@ class KokoroEngine(TTSEngine):
                                "engine": "kokoro", "language": lang_code,
                                "reason": why}
             raise e
-        from kokoro import KPipeline
-        self._pipeline = KPipeline(lang_code=new_lang)
+        from kokoro import KPipeline, KModel
+        root = kokoro_asset_paths()
+        if getattr(self, "_kmodel", None) is None:
+            self._kmodel = KModel(repo_id="hexgrad/Kokoro-82M", config=os.path.join(root, "config.json"),
+                                  model=os.path.join(root, "kokoro-v1_0.pth"))
+            import torch
+            self._kmodel = self._kmodel.to("cuda" if torch.cuda.is_available() else "cpu").eval()
+        self._pipeline = KPipeline(lang_code=new_lang, repo_id="hexgrad/Kokoro-82M", model=self._kmodel)
         self._lang = new_lang
         emit("progress", percent=20, message="Kokoro 로딩 완료")
 
@@ -238,7 +306,7 @@ class KokoroEngine(TTSEngine):
             e.error_payload = {"code": ENGINE_LANG_UNAVAILABLE,
                                "engine": "kokoro", "language": self._lang}
             raise e
-        generator = self._pipeline(text, voice=voice, speed=speed)
+        generator = self._pipeline(text, voice=kokoro_voice_path(voice), speed=speed)
         all_audio = []
         for _, _, audio in generator:
             all_audio.append(audio)
