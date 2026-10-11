@@ -17,7 +17,7 @@ SRC = Path(sys.argv[1])
 OUT = Path(sys.argv[2])
 MODEL = sys.argv[3] if len(sys.argv) > 3 else "base"
 LANG = sys.argv[4] if len(sys.argv) > 4 else "en"   # 언어를 반드시 지정한다 — 기본값에 맡기면 한국어를 영어로 옮겨 적는다
-ROOT = os.path.expanduser("~/.cache/whisper")
+ROOT = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "externals", "whisper_models")  # 2026-10-11 앱 모델 폴더
 
 
 def main():

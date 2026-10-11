@@ -98,18 +98,15 @@ def resolve_whisper_root(model_name):
     """(download_root, source) — 어디서 온 가중치인지 숨기지 않는다.
 
     1) 앱 내부(externals/whisper_models)에 <이름>.pt 가 있으면 그것.
-    2) 없으면 기존 전역 캐시에 **이미 존재하는** 파일만 쓴다(다운로드 아님).
-    3) 둘 다 없으면 WhisperModelMissing — 조용히 내려받지 않는다.
+    2) 없으면 WhisperModelMissing — 조용히 내려받지 않는다.
+    ★C 드라이브 전역 캐시(~/.cache/whisper)는 읽지 않는다(2026-10-11 흡수). 거기 두면 C 정리 때 기능이 깨진다.
     """
     fn = "%s.pt" % model_name
     internal = whisper_model_root()
     if os.path.isfile(os.path.join(internal, fn)):
         return internal, "internal"
-    legacy = os.path.join(os.path.expanduser("~"), ".cache", "whisper")
-    if os.path.isfile(os.path.join(legacy, fn)):
-        return legacy, "external_cache"
     raise WhisperModelMissing(
-        "WHISPER_MODEL_MISSING: %s — 내부 모델 위치에도 기존 캐시에도 없습니다. "
+        "WHISPER_MODEL_MISSING: %s — 앱 모델 폴더(externals/whisper_models)에 없습니다. "
         "자동 다운로드는 하지 않습니다." % fn)
 
 

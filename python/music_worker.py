@@ -454,6 +454,35 @@ def run_roformer_separation(input_path: str, output_dir: str, model_name: str = 
     return tracks
 
 
+# ★Demucs 가중치는 앱 모델 폴더(externals/demucs_models/checkpoints)에서만 읽는다(2026-10-11 흡수).
+#   예전에는 torch 기본 캐시(C:\Users\...\.cache\torch)를 읽었고, 없으면 인터넷에서 받으려 했다
+#   (오프라인 설정은 HF 만 막고 torch 다운로드는 막지 않는다). 파일 이름 뒤 8자리가 SHA256 앞자리다.
+DEMUCS_CHECKPOINTS = {
+    "htdemucs": ["955717e8-8726e21a.th"],
+    "htdemucs_ft": ["f7e0c4bc-ba3fe64a.th", "d12395a8-e57c48e6.th",
+                    "92cfc3b6-ef3bcb9c.th", "04573f0d-f3cf25b2.th"],
+}
+
+
+def demucs_hub_dir():
+    import app_runtime
+    return os.path.join(app_runtime.assets_root(), "demucs_models")
+
+
+def use_local_demucs(model):
+    """torch hub 자리를 앱 모델 폴더로 돌리고, 가중치가 없으면 **받지 않고** 사유를 들고 실패한다."""
+    import torch
+    hub = demucs_hub_dir()
+    need = DEMUCS_CHECKPOINTS.get(model)
+    if need is None:
+        raise RuntimeError("앱에 들어 있지 않은 분리 모델입니다: %s (htdemucs·htdemucs_ft 만)" % model)
+    missing = [n for n in need if not os.path.isfile(os.path.join(hub, "checkpoints", n))]
+    if missing:
+        raise RuntimeError("분리 모델 파일이 앱 모델 폴더에 없습니다(자동으로 받지 않습니다): %s" % ", ".join(missing))
+    torch.hub.set_dir(hub)
+    return hub
+
+
 def run_music_separation(input_path: str, output_dir: str, model: str = "htdemucs"):
     """Separate music into stems using Demucs."""
     emit("status", message="Demucs 모델 로딩 중...", percent=0)
@@ -470,6 +499,11 @@ def run_music_separation(input_path: str, output_dir: str, model: str = "htdemuc
     device = get_device(timeout_sec=10)
     emit("status", message=f"디바이스: {device.upper()}, 모델: {model}", percent=5)
 
+    try:
+        use_local_demucs(model)
+    except RuntimeError as e:
+        emit("error", message=str(e))
+        return []
     separator = get_model(model)
     separator.to(device)
     emit("progress", percent=15, message="모델 로딩 완료")

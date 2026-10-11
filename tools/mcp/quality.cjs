@@ -54,7 +54,7 @@ async function call(name,a={}){
  // ★기대 대사의 출처 — 그 음원을 만든 실행 기록(조각 번호로 다른 실행의 글을 잇지 않는다).
  const textSource=SRC.resolveTextSource({ROOT,python,audioSha:sourceHash,runId:a.runId,callerText:a.text??null,partialWindow:(a.start??0)>0||a.end!=null})
  const asr=a.asr||'none';if(!['none','base','small'].includes(asr))throw Error('지원하지 않는 ASR')
- const model=asr==='none'?null:path.join(require('os').homedir(),'.cache','whisper',asr+'.pt');if(model&&!fs.existsSync(model))throw Error('로컬 ASR 모델 없음. 자동 다운로드하지 않습니다.')
+ const model=asr==='none'?null:path.join(ROOT,'externals','whisper_models',asr+'.pt')/*앱 모델 폴더만(2026-10-11) — C 캐시 안 읽음*/;if(model&&!fs.existsSync(model))throw Error('로컬 ASR 모델 없음. 자동 다운로드하지 않습니다.')
  const environment=await worker({op:'capabilities'});const identity={environment,source,sourceHash,start:a.start??0,end:a.end??null,text:textSource.text??null,textSource,asr,records,worker:hash(path.join(__dirname,'quality_worker.py')),adapter:hash(__filename),textWorker:hash(path.join(__dirname,'quality_text.py')),evidenceAdapter:hash(path.join(__dirname,'quality_evidence.cjs')),python:python(),modelHash:model?hash(model):null}
  const id=crypto.createHash('sha256').update(JSON.stringify(identity)).digest('hex');const dir=path.join(OUT,id),file=path.join(dir,'report.json');if(fs.existsSync(file))return{reportId:id,cached:true,textSource:SRC.brief(textSource),...load(id).summary}
  fs.mkdirSync(dir,{recursive:true});const result=await worker({op:'analyze',...identity,model,dir});if(hash(source)!==sourceHash||records.some(r=>hash(r.path)!==r.sha256))throw Error('분석 도중 입력이 바뀌었습니다. 다시 요청하세요.')

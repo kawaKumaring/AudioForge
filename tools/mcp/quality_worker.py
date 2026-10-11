@@ -134,7 +134,7 @@ def run(a):
         for name in ['numpy','soundfile','scipy','matplotlib','torch','openai-whisper']:
             try:deps[name]=importlib.metadata.version(name)
             except importlib.metadata.PackageNotFoundError:deps[name]=None
-        return {'version':VERSION,'python':sys.version.split()[0],'dependencies':deps,'decodeFormats':sf.available_formats(),'asrLocalModels':{n:(Path.home()/'.cache/whisper'/f'{n}.pt').exists() for n in ['base','small']},'limits':{'analysisSeconds':600,'plotClipSeconds':120,'channels':8,'samples':30_000_000},'network':False,'device':'CPU','unavailable':['청취 판정','화자 유사도 점수','정확한 음절 강제 정렬','자동 감정 판정'],'workflow':'inventory → analyze → read (all pages) → plot / compare / clip'}
+        return {'version':VERSION,'python':sys.version.split()[0],'dependencies':deps,'decodeFormats':sf.available_formats(),'asrLocalModels':{n:(Path(__file__).resolve().parents[2]/'externals'/'whisper_models'/f'{n}.pt').exists() for n in ['base','small']},'limits':{'analysisSeconds':600,'plotClipSeconds':120,'channels':8,'samples':30_000_000},'network':False,'device':'CPU','unavailable':['청취 판정','화자 유사도 점수','정확한 음절 강제 정렬','자동 감정 판정'],'workflow':'inventory → analyze → read (all pages) → plot / compare / clip'}
     if a['op']=='analyze':return analyze(a)
     if a['op']=='plot':return render(a)
     if a['op']=='clip':
