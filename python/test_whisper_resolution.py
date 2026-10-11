@@ -52,6 +52,25 @@ class TestWhisperResolution(unittest.TestCase):
         self.assertEqual(source, "internal")
         self.assertEqual(os.path.normcase(root), os.path.normcase(self.tmp))
 
+    def test_c_drive_cache_is_not_read(self):
+        # ★C 의 ~/.cache/whisper 에 있어도 쓰지 않는다 — 앱 모델 폴더만(2026-10-11).
+        home = os.path.join(self.tmp, "home")
+        os.makedirs(os.path.join(home, ".cache", "whisper"))
+        with open(os.path.join(home, ".cache", "whisper", "base.pt"), "wb") as f:
+            f.write(b"x")
+        os.environ[tw.WHISPER_ROOT_ENV] = os.path.join(self.tmp, "empty")
+        keep = {k: os.environ.get(k) for k in ("USERPROFILE", "HOME")}
+        os.environ["USERPROFILE"] = os.environ["HOME"] = home
+        try:
+            with self.assertRaises(tw.WhisperModelMissing):
+                tw.resolve_whisper_root("base")
+        finally:
+            for k, v in keep.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
     def test_loader_passes_explicit_download_root(self):
         # whisper.load_model 에 download_root 가 반드시 전달되는지(조용한 ~/.cache 탐색 차단).
         src = open(os.path.join(os.path.dirname(os.path.abspath(__file__)),

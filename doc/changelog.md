@@ -1,3 +1,9 @@
+## 2026-10-11 · 음원 분리·검수 받아쓰기 모델 C 의존 제거 (흡수)
+- Demucs(htdemucs·htdemucs_ft) 가중치 5개를 externals/demucs_models/checkpoints 로 복사(파일 이름의 SHA 앞자리 일치). `music_worker.use_local_demucs` 가 torch hub 자리를 그곳으로 돌리고, 파일이 없으면 받지 않고 실패한다(오프라인 설정은 torch 다운로드를 막지 않았다). 확인: 빈 TORCH_HOME 으로 두 모델 불러오기·3초 분리 성공, 빈 자리에 파일 0개.
+- 검수 MCP(quality.cjs·quality_worker.py)·연구 도구(word_timings.py)의 whisper 를 externals/whisper_models 로. base.pt 복사(지문 일치).
+- 앱 받아쓰기 해석기(`transcribe_worker.resolve_whisper_root`)의 C 캐시 대체 경로 제거 + 시험 1건(C 에 있어도 안 읽음).
+- ★F5-TTS·vocos·Kokoro-82M 은 PC 에 없다(C huggingface 캐시가 10-11 이전에 통째로 사라짐, 원인 미상). 다시 받는 것은 사용자 승인 대기.
+
 ## 2026-10-11 · 폴더·가지 정리 + 재현 기록 30일 보관 + 번역 1.3B 선택지 제거 (사용자 결정)
 - 작업 폴더: installer(설치기 8/29, 실행 환경 사본 3.9GB)·codex-ux(9/26)·빈 폴더 삭제 → master·develop 두 개. codex-ux 의 커밋 안 한 변경 277개는 `backup/codex-ux-wip-2026-09-26` 가지(원격에도)에 보존.
 - 가지: 반영 끝 66개 삭제, 미반영 25개는 `archive/*` 이름표 후 삭제. 남은 가지 master·develop·hold/performance-script-editor. 원격(GitHub) 가지는 그대로.

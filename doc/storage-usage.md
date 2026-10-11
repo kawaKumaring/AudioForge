@@ -82,7 +82,7 @@ AudioForge 가 디스크를 왜 많이 쓰는지, 무엇이 필요한지, 무엇
 ### 2026-10-10 C 드라이브 정리 — 68.6GB (사용자 결정)
 - AudioForge 초기에 C 에 받아 둔 모델 27.33GB — 앱은 지금 모든 모델을 externals 에서 경로를 박아 읽어(download_root·model_registry·Qwen HF_HOME) C 사본을 읽지 않는다. 다른 AI_Project 프로젝트·ComfyUI 참조 없음 확인 뒤 삭제: huggingface 캐시의 NLLB-1.3B 10.23 · NLLB-600M 4.60 · Qwen2.5-3B 5.76 · Qwen3-TTS 0.6B Base 2.34 · whisper-large-v3-turbo 1.51(시험 탈락), .cache/whisper/large-v3.pt 2.88.
 - pip 다운로드 캐시 41.3GB(pip cache purge — 설치된 패키지는 그대로, 다음 설치 때 다시 받는다).
-- **C 에서 앱이 직접 읽어 남긴 것**: F5-TTS·vocos(F5 엔진), Kokoro-82M(Kokoro 엔진), torch 캐시의 htdemucs(음원 분리 기본), .cache/whisper 의 base·small(검수 MCP). 이 넷은 지우면 해당 기능이 다시 받으려 한다(오프라인이면 실패).
+- **C 의존 정리(2026-10-11)**: htdemucs·htdemucs_ft(5개, 420MB)와 whisper base(145MB)를 externals(demucs_models/checkpoints·whisper_models)로 복사하고 코드가 거기서만 읽게 했다(C 캐시를 읽지 않음, 없으면 받지 않고 실패). ★F5-TTS·vocos·Kokoro-82M 은 10-10 정리 직후엔 C 에 있었으나 10-11 확인 때 C 의 huggingface 캐시가 통째로 사라져(17:12 재생성, 휴지통에도 없음) **지금 PC 에 없다** — F5·Kokoro 엔진은 다시 받아 흡수하기 전까지 동작하지 않는다.
 - 손대지 않은 것: AudioForge 와 무관한 이미지·OCR 모델(Qwen-Image-Edit 등, 다른 프로젝트·ComfyUI).
 
 ## 4. 남은 일과 더 줄이는 방법
