@@ -91,7 +91,8 @@ def main():
             parts.append(f'<Subject 1> (S1) speaks in Korean with {description}: <d>[Korean] {spoken}</d> '+
                          (event[1] if event else '')+(' Then she pauses silently for about 0.7 seconds.' if i==3 else ''))
         assert ''.join(a['spoken'] for a in acting)==LONG_LINE
-        prompt=PROMPT.split('detailed_description:')[0]+'detailed_description:\n[Shot 1] The same speaker keeps the voice timbre of <Audio 1> throughout. '+\
+        prefix=PROMPT.split('detailed_description:')[0].replace('speaking warmly to a friend','speaking Korean to a friend')
+        prompt=prefix+'detailed_description:\n[Shot 1] The same speaker keeps the voice timbre of <Audio 1> throughout. '+\
                ' '.join(parts)+'\n\noverall_soundscape:\nClear Korean speech and the described breaths and laughter in a quiet room.'
     plan={'models':assets(),'reference':str(REFERENCE),'reference_sha256':REFERENCE_SHA,
           'seeds':[2024,2025,2026][:args.runs],'seconds_requested':args.seconds,'frames':frames,'canvas':256,
@@ -111,7 +112,7 @@ def main():
             seconds=max(5, len(item['spoken'])/7+1+(1 if item['nonverbal'] else 0))
             count=max(5,round(seconds*24));count+=(5-count)%17
             item['frames']=count
-            item['prompt']=PROMPT.split('detailed_description:')[0]+\
+            item['prompt']=prefix+\
                 'detailed_description:\n[Shot 1] <Subject 1> (S1) says: <d>[Korean] '+item['spoken']+'</d> '+\
                 'Her tone is '+item['description']+'. '+\
                 ({'chuckle':'She gives a short chuckle.','sighs':'She sighs softly.',
@@ -185,7 +186,7 @@ def main():
                         ref_audios={'ref_audio_0':audio}),loading))
             for index,seed in enumerate(plan['seeds']):
                 run={'index':index,'seed':seed,'stages':{},'gpu_before':gpu_snapshot(),
-                     'mode':'first' if index==0 else 'same_process_regeneration'}
+                     'mode':'independent_acting_segment' if args.acting_segments else ('first' if index==0 else 'same_process_regeneration')}
                 report['runs'].append(run);save();t=time.perf_counter()
                 # 같은 참조·본문의 재생성은 확정 조건만 재사용한다. 생성 음성은 재사용하지 않는다.
                 if args.acting_segments:
