@@ -1,0 +1,131 @@
+"""흡수 전 최소 시험: 설치 코드 직접 호출, 서버·영상 저장·다운로드 없음."""
+import argparse
+import hashlib
+import html
+import json
+import os
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+COMFY=Path(r'E:\AI\ComfyUI_windows_portable_python3.12\ComfyUI')
+BASE=Path(r'E:\AI_Project\claudeCodeVsCode\apps\master\AudioForge\_local\테스트\결과')
+REFERENCE=BASE/'cosyvoice3-scenes-fixed-20261012/참조/A.wav'
+REFERENCE_SHA='ace9ac3bb65798a729b65d2a768e67e73cb10c832b033dff3804445b18b1a10e'
+MODEL='minimax-h3/minimax_h3_ref2va_pruned_int8_convrot.safetensors'
+ENCODER='minimax-h3/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors'
+VAE='minimax-h3/minimax_h3_audio_vae_fp32.safetensors'
+LINE='오늘은 하루 종일 비가 와서 조금 우울했는데, 저녁에 친구가 찾아와서 따뜻한 차를 마시며 이야기를 나누니까 기분이 정말 좋아졌어요.'
+PROMPT=('subject_definitions:\n<Subject 1> is a young woman who uses <Audio 1> as her speaking voice timbre reference.\n\n'
+        'summary:\n[reference generation + audio reference] A character speaking warmly to a friend.\n\n'
+        'retention_analysis:\n<Audio 1>: reference - its vocal timbre guides the vocal delivery of <Subject 1> without copying the original signal.\n\n'
+        'detailed_description:\n[Shot 1] <Subject 1> says: <d>[Korean] '+LINE+'</d> her tone is calm and warm.\n\n'
+        'overall_soundscape:\nher clear voice in a quiet indoor room')
+
+def sha(path):
+    h=hashlib.sha256()
+    with Path(path).open('rb') as f:
+        for block in iter(lambda:f.read(1024*1024),b''):h.update(block)
+    return h.hexdigest()
+
+def gpu_snapshot():
+    r=subprocess.run(['nvidia-smi','--query-gpu=memory.free,memory.used,utilization.gpu',
+                      '--format=csv,noheader,nounits'],capture_output=True,text=True,check=True)
+    values=[int(x.strip()) for x in r.stdout.strip().splitlines()[0].split(',')]
+    return dict(zip(('free_mib','used_mib','utilization_percent'),values))
+
+def assets():
+    files=[COMFY/'models/diffusion_models'/MODEL,COMFY/'models/text_encoders'/ENCODER,
+           COMFY/'models/vae'/VAE]
+    return [{'path':str(p),'bytes':p.stat().st_size} for p in files]
+
+def main():
+    parser=argparse.ArgumentParser();parser.add_argument('--prepare-only',action='store_true')
+    args=parser.parse_args()
+    plan={'models':assets(),'reference':str(REFERENCE),'reference_sha256':REFERENCE_SHA,
+          'seeds':[2024,2025,2026],'seconds_requested':10,'frames':243,'canvas':256,
+          'steps':16,'sampler':'res_multistep','scheduler':'simple','cfg':1.0,
+          'shift_video':12,'shift_audio':3,'turbo':False,'step_reuse_cache':False,
+          'video_vae':False,'video_decode':False,'server':False}
+    if args.prepare_only:
+        print(json.dumps(plan,ensure_ascii=False,indent=2));return
+    before_gpu=gpu_snapshot()
+    if before_gpu['free_mib']<6144 or before_gpu['utilization_percent']>20:
+        raise RuntimeError('GPU 경합으로 측정 시작하지 않음: '+str(before_gpu))
+    if sha(REFERENCE)!=REFERENCE_SHA:raise RuntimeError('승인된 참조 A의 지문 불일치')
+    out=BASE/('h3-direct-speech-'+time.strftime('%Y%m%d-%H%M%S'));out.mkdir(exist_ok=False)
+    report={'status':'running','plan':plan,'gpu_before':before_gpu,'runs':[],
+            'scope':'설치 코드 직접 호출 시험이며 제품 흡수 완료가 아니다. OS 파일 캐시를 비우지 않음.'}
+    def save():
+        tmp=out/'record.tmp';tmp.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8');tmp.replace(out/'record.json')
+    save();started=time.perf_counter()
+    try:
+        os.environ.update(HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',HF_HUB_DISABLE_TELEMETRY='1',
+                          USE_PYTORCH_KERNEL_CACHE='0',NUMBA_CACHE_DIR=str(out/'numba-cache'))
+        sys.path.insert(0,str(COMFY));sys.argv=[sys.argv[0]]
+        import torch
+        import soundfile as sf
+        import nodes
+        from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo,MiniMaxH3SigmaShift
+        from comfy_extras.nodes_audio import VAEDecodeAudio
+        import comfy.model_management as mm
+        # 그래픽 미리보기는 만들지 않는다. 샘플러의 원래 계산은 유지한다.
+        nodes.latent_preview.prepare_callback=lambda *a,**k:None
+        def timed(label,fn,container):
+            torch.cuda.synchronize();t=time.perf_counter()
+            value=fn();torch.cuda.synchronize()
+            container[label]=time.perf_counter()-t
+            print(json.dumps({'stage':label,'seconds':container[label]},ensure_ascii=False),flush=True)
+            return value
+        report['imports_seconds']=time.perf_counter()-started
+        report['torch']=torch.__version__
+        report['code_sha256']={p:sha(COMFY/p) for p in ('nodes.py','comfy_extras/nodes_minimax_h3.py','comfy_extras/nodes_audio.py','comfy/ldm/minimax/model.py')}
+        loading={}
+        with torch.inference_mode():
+            model=timed('diffusion_load',lambda:nodes.UNETLoader().load_unet(MODEL,'default')[0],loading)
+            model=MiniMaxH3SigmaShift.execute(model,12.0,3.0)[0]
+            clip=timed('text_encoder_load',lambda:nodes.CLIPLoader().load_clip(ENCODER,'minimax','default')[0],loading)
+            vae=timed('audio_vae_load',lambda:nodes.VAELoader().load_vae(VAE)[0],loading)
+            report['load_stages']=loading
+            x,sr=sf.read(REFERENCE,dtype='float32',always_2d=True)
+            audio={'waveform':torch.from_numpy(x.T.copy())[None,:,:],'sample_rate':sr}
+            condition=None
+            for index,seed in enumerate(plan['seeds']):
+                run={'index':index,'seed':seed,'stages':{},'gpu_before':gpu_snapshot(),
+                     'mode':'first' if index==0 else 'same_process_regeneration'}
+                report['runs'].append(run);save();t=time.perf_counter()
+                # 같은 참조·본문의 재생성은 확정 조건만 재사용한다. 생성 음성은 재사용하지 않는다.
+                if condition is None:
+                    condition=timed('reference_and_text_encode',lambda:MiniMaxH3ReferenceToVideo.execute(
+                        clip=clip,prompt=PROMPT,width=256,height=256,length=243,audio_vae=vae,
+                        ref_audios={'ref_audio_0':audio}),run['stages'])
+                else:run['stages']['reference_and_text_encode']=0.0
+                positive,latent=condition[0],condition[1]
+                negative=nodes.ConditioningZeroOut().zero_out(positive)[0]
+                result=timed('sample',lambda:nodes.KSampler().sample(model,seed,16,1.0,
+                    'res_multistep','simple',positive,negative,latent,denoise=1.0)[0],run['stages'])
+                decoded=timed('audio_decode',lambda:VAEDecodeAudio.execute(vae,result)[0],run['stages'])
+                wave=decoded['waveform'][0].float().cpu().numpy().T
+                if not torch.isfinite(decoded['waveform']).all():raise RuntimeError('결과 비정상 값')
+                path=out/('첫생성.wav' if index==0 else f'재생성{index}.wav')
+                timed('save',lambda:sf.write(path,wave,decoded['sample_rate'],subtype='FLOAT'),run['stages'])
+                run.update(seconds=time.perf_counter()-t,path=str(path),sha256=sha(path),
+                           duration=len(wave)/decoded['sample_rate'],sample_rate=decoded['sample_rate'],
+                           peak=float(abs(wave).max()),conditioning_reused=index>0,gpu_after=gpu_snapshot())
+                if index==0:run['startup_inclusive_seconds']=time.perf_counter()-started
+                save();print(json.dumps(run,ensure_ascii=False),flush=True)
+        report['status']='complete';save()
+        body='<meta charset="utf-8"><title>H3 최소 생성 비교</title><h1>H3 첫 생성·재생성</h1><p>같은 참조·대사·설정, seed만 다름. 음질은 청취 판정 전.</p>'
+        for run in report['runs']:
+            body+=f'<h2>{run["index"]+1} · {run["seconds"]:.1f}초</h2><audio controls src="{Path(run["path"]).as_uri()}"></audio><p>{html.escape(run["path"])}</p>'
+        (out/'비교듣기.html').write_text(body,encoding='utf-8')
+        print('RESULT_DIR='+str(out),flush=True)
+    except BaseException as error:
+        report['status']='failed';report['error']=repr(error);save();raise
+    finally:
+        if 'mm' in locals():
+            try:mm.unload_all_models()
+            except Exception as error:print('모델 정리 실패: '+repr(error),flush=True)
+
+if __name__=='__main__':main()
