@@ -5,9 +5,10 @@ import { useEffect, useRef, type CSSProperties, type ReactNode } from 'react'
  *   화면마다 모양과 키보드 동작이 달랐다 — 같은 부품을 쓴다.
  */
 export type IconName = 'back' | 'list' | 'stop' | 'reset' | 'plus' | 'grip' | 'settings' | 'copy' | 'trash' | 'play' | 'folder' | 'text' | 'history' | 'close' | 'check' | 'link' | 'save' | 'file'
-  | 'prev' | 'next' | 'book' | 'voice' | 'follow' | 'volume' | 'mute'
+  | 'prev' | 'next' | 'book' | 'voice' | 'follow' | 'volume' | 'mute' | 'emotion'
 export function Icon({ name, size = 17 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, ReactNode> = {
+    emotion: <><circle cx="12" cy="12" r="9"/><path d="M8 9h.01M16 9h.01M8 14c2 3 6 3 8 0"/></>,
     back: <path d="m14 6-6 6 6 6"/>,
     list: <><path d="M9 6h12M9 12h12M9 18h12M3 6h.01M3 12h.01M3 18h.01"/></>,
     stop: <rect x="6" y="6" width="12" height="12" rx="2"/>,

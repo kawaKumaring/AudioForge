@@ -1,4 +1,7 @@
 import WorkspaceDock from './WorkspaceDock'
+import ExpressionPromptEditor from './ExpressionPromptEditor'
+import ExpressionPalette from './ExpressionPalette'
+import { expressionIconFault, type ExpressionIcon } from '../../shared/expressionIcons'
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type DragEvent } from 'react'
 import { useAppStore } from '../stores/app.store'
 import { Icon, Action, Modal, row, muted, badge, field, button, primary, type IconName } from './kit'
@@ -297,6 +300,8 @@ function planOfCards(cards: SynthesisCard[], joins: JoinSettings) {
 }
 
 export default function SynthesisCardWorkspace() {
+  const [expressionOpen, setExpressionOpen] = useState(false), [expressionCard, setExpressionCard] = useState('')
+  const expressionTarget = useRef<((cue: ExpressionIcon) => void) | null>(null)
   const state = useSynthesisCards(), source = useAppStore(s => s.fileInfo), status = useAppStore(s => s.status), childAlive = useAppStore(s => s.errorInfo?.childAlive)
   const busy = status === 'processing' || isCancelCleanupBusy(status) || !!childAlive
   const [modal, setModal] = useState<{ type: 'settings' | 'takes' | 'voice'; id: string; focusReference?: boolean; fromSequence?: boolean } | { type: 'join' | 'sequence' } | null>(null)
@@ -764,6 +769,7 @@ export default function SynthesisCardWorkspace() {
   return <div ref={workspace} data-testid="synthesis-card-workspace" onDragOver={e => { if (e.dataTransfer.types.includes('Files')) e.preventDefault() }} onDrop={e => { if (e.dataTransfer.files.length) drop(e) }} style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
     <style>{`.af-card-progress{appearance:none;border:0;border-radius:3px;overflow:hidden;background:var(--border-subtle)}.af-card-progress::-webkit-progress-bar{background:var(--border-subtle)}.af-card-progress::-webkit-progress-value{background:var(--accent);border-radius:3px}.af-effect-slider{appearance:none;height:4px;border-radius:3px;background:linear-gradient(to right,var(--accent) var(--fill),var(--border-subtle) var(--fill));cursor:pointer}.af-effect-slider::-webkit-slider-thumb{appearance:none;width:15px;height:15px;border-radius:50%;background:var(--accent-light);box-shadow:0 0 0 4px rgba(139,92,246,.12)}.af-effect-slider:disabled{opacity:.4;cursor:not-allowed}.af-effect-group summary::-webkit-details-marker{display:none}.af-effect-group .af-effect-chevron{transition:transform 150ms ease;color:var(--text-muted)}.af-effect-group:not([open]) .af-effect-chevron{transform:rotate(180deg)}.af-take-detail{animation:af-card-open 120ms ease-out}.af-generation-card{transition:border-color 140ms ease,opacity 140ms ease}.af-card-modal button[aria-pressed="true"]{color:var(--accent-light)}.af-generation-card:focus-within{border-color:var(--accent)!important}.af-card-work-button:disabled{cursor:not-allowed;opacity:.4}@keyframes af-card-open{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}@media(prefers-reduced-motion:reduce){.af-take-detail{animation:none}}`}</style>
     <div style={{ ...row, paddingBottom: 2 }}><span style={{ fontSize: 13, fontWeight: 600 }}>생성 카드 <span style={{ ...muted, marginLeft: 5 }}>{state.cards.length}</span></span><span style={{ flex: 1 }}/>
+      <Action icon="emotion" label="감정 도구 열기" title="대사에 감정 아이콘 넣기 · 입력하면서 계속 사용할 수 있습니다" onClick={() => setExpressionOpen(v => !v)}>감정</Action>
       <button type="button" data-testid="import-legacy" disabled={locked} style={{ ...button, background: 'transparent' }}
         title="옛 화면에서 만들던 작업을 카드로 복사합니다. 옛 기록은 그대로 남습니다."
         onClick={() => void openImport()}><Icon name="history"/>옛 작업 가져오기</button>
@@ -778,7 +784,7 @@ export default function SynthesisCardWorkspace() {
       const voice = cardVoiceOf(card)
       // ★엔진이 못 받는 설정을 **말한다.** 조용히 무시하거나 적용된 척하지 않는다.
       const notes = cardApplied(card.settings, voice).notes
-      const fault = voiceGenerateFault({
+      const fault = expressionIconFault(card.text, voiceSupports(voice).emotion) || voiceGenerateFault({
         voice, text: card.text,
         refReady: !!(ref && ref.phase === 'ready' && ref.clip),
         refMessage: ref?.message || '', busy: locked || !!state.job,
@@ -818,7 +824,9 @@ export default function SynthesisCardWorkspace() {
           {/* ★기본 목소리에는 파형이 없다 — 없는 소리를 그리지 않는다. */}
           {voice.kind === 'reference' && card.source && !modal && <CompactVoiceWaveform path={ref?.audio || card.source.path} name={card.source.name} region={card.settings.reference === 'manual' ? { start: card.settings.start, duration: card.settings.end - card.settings.start } : null} disabled={locked}/>}
           {card.source && modal && <div style={{ height: 40 }}/>}
-          <textarea data-testid="card-script" aria-label={`${index + 1}번 카드 대사`} placeholder="대사를 입력하세요" rows={2} spellCheck={false} disabled={locked} value={card.text} onChange={e => state.update(card.id, { text: e.target.value })} style={{ ...field, width: '100%', resize: 'vertical', minHeight: 76, fontSize: 15, lineHeight: 1.75, border: '1px solid var(--border-subtle)', background: 'var(--bg-base)', padding: '11px 13px', margin: '9px 0 0' }}/>
+          <ExpressionPromptEditor value={card.text} label={`${index + 1}번 카드 대사`} disabled={locked}
+            change={text => useSynthesisCards.getState().update(card.id, { text })}
+            activate={insert => { setExpressionCard(card.id); expressionTarget.current = insert }}/>
         </div>
         {/* ★실패도 '이 카드가 지금 하는 말' 이다 — 줄이 없으면 사유가 그려질 자리가 없다. */}
         {(mine || cardFault?.id === card.id || (ref && ref.phase !== 'ready') || notes.length > 0) && (
@@ -918,6 +926,10 @@ export default function SynthesisCardWorkspace() {
         </div>
       })}</div>
     </Modal>}
+    {expressionOpen && <ExpressionPalette target={state.cards.find(c => c.id === expressionCard)?.label || ''}
+      disabled={locked || !state.cards.some(c => c.id === expressionCard)}
+      supported={voiceSupports(cardVoiceOf(state.cards.find(c => c.id === expressionCard) || {})).emotion}
+      insert={cue => expressionTarget.current?.(cue)} close={() => setExpressionOpen(false)}/>}
     {modal?.type === 'settings' && active && <Settings key={active.id} card={active} disabled={busy} focusReference={modal.focusReference} close={() => setModal(null)}/>}
     {modal?.type === 'takes' && active && <Takes key={active.id} card={active} disabled={busy} close={() => setModal(null)} back={modal.fromSequence ? () => setModal({ type: 'sequence' }) : undefined}/>}
     {modal?.type === 'join' && <Join cards={state.cards} disabled={busy} close={() => setModal(null)}/>}

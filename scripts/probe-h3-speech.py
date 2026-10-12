@@ -61,14 +61,39 @@ def main():
     parser.add_argument('--seconds',type=float,default=10)
     parser.add_argument('--runs',type=int,default=3)
     parser.add_argument('--longform',action='store_true')
+    parser.add_argument('--acting-deck',action='store_true')
     args=parser.parse_args()
     if not 5<=args.seconds<=60 or not 1<=args.runs<=3:raise ValueError('시험 길이·횟수 범위 밖')
     frames=max(5,round(args.seconds*24));frames+=(5-frames)%17
     line=LONG_LINE if args.longform else LINE
     prompt=PROMPT.replace(LINE,line,1)
+    acting=[]
+    if args.acting_deck:
+        line=LONG_LINE
+        # 정확한 원문 위치로 나눠 공백·문장부호도 보존한다.
+        points=[line.index('저녁에'),line.index(' 창문'),line.index('그동안'),line.index(' 친구는'),
+                line.index('저는 오랜만에'),line.index(' 비가 그치면'),line.index(' 이제 편안한')]
+        bounds=[0,*points,len(line)]
+        moods=[('기쁨','happy and delighted'),('슬픔','sad and sorrowful'),('분노','angry and forceful'),
+               ('두려움','fearful with a trembling voice'),('혐오','disgusted and repelled'),
+               ('놀람','surprised and astonished'),('차분함','calm and composed'),('속삭임','a quiet but clearly articulated whisper')]
+        events={0:('chuckle','A short gentle chuckle follows.'),1:('sighs','A soft audible sigh follows.'),
+                2:('breath','One audible breath follows.'),5:('laughs','A brief natural laugh follows.')}
+        parts=[]
+        for i,(label,description) in enumerate(moods):
+            spoken=line[bounds[i]:bounds[i+1]]
+            event=events.get(i)
+            acting.append({'emotion':label,'start':bounds[i],'end':bounds[i+1],'spoken':spoken,
+                           'nonverbal':event[0] if event else None,'pause_request_seconds':.7 if i==3 else None})
+            parts.append(f'<Subject 1> (S1) speaks in Korean with {description}: <d>[Korean] {spoken}</d> '+
+                         (event[1] if event else '')+(' Then she pauses silently for about 0.7 seconds.' if i==3 else ''))
+        assert ''.join(a['spoken'] for a in acting)==LONG_LINE
+        prompt=PROMPT.split('detailed_description:')[0]+'detailed_description:\n[Shot 1] The same speaker keeps the voice timbre of <Audio 1> throughout. '+\
+               ' '.join(parts)+'\n\noverall_soundscape:\nClear Korean speech and the described breaths and laughter in a quiet room.'
     plan={'models':assets(),'reference':str(REFERENCE),'reference_sha256':REFERENCE_SHA,
           'seeds':[2024,2025,2026][:args.runs],'seconds_requested':args.seconds,'frames':frames,'canvas':256,
           'text':line,'prompt':prompt,'training_range_exceeded':args.seconds>15,
+          'acting_plan':acting,'pause_accuracy':'H3 의미 요청이며 정확한 시간 보장 없음',
           'steps':16,'sampler':'res_multistep','scheduler':'simple','cfg':1.0,
           'shift_video':12,'shift_audio':3,'turbo':False,'step_reuse_cache':False,
           'fp16_accumulation':True,'attention_requested':'comfy kitchen attention',

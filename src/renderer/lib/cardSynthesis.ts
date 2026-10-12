@@ -31,7 +31,7 @@ import {
 // @ts-ignore TS5097
 } from '../../shared/synthesisCardJob.ts'
 import {
-  cardVoiceOf, needsReferencePrep, voiceGenerateFault, builtinRequestFields, voiceSnapshot, cardScriptWithEmotion,
+  cardVoiceOf, needsReferencePrep, voiceGenerateFault, builtinRequestFields, voiceSnapshot, cardScriptWithEmotion, voiceSupports,
   type BuiltinVoiceRef, type VoiceSnapshot,
 // @ts-ignore TS5097
 } from '../../shared/synthesisCardVoice.ts'
@@ -45,6 +45,8 @@ import {
 import type { SavedWork } from '../../shared/synthesisCardSave.ts'
 // @ts-ignore TS5097
 import { useAppStore } from '../stores/app.store.ts'
+// @ts-ignore TS5097
+import { expressionIconFault, expressionScript } from '../../shared/expressionIcons.ts'
 
 /** 카드 설정에 없는 값(엔진·말끝 다듬기 등)은 **제품 기본값**을 쓴다. */
 const productDefaults = () => defaultSettings(REFERENCE_CONDITIONING_RECOMMENDED)
@@ -350,7 +352,7 @@ export async function startCardGeneration(card: SynthesisCard): Promise<string> 
   const app = useAppStore.getState()
   const ref = st.refs[card.id]
   const voice = cardVoiceOf(card)
-  const fault = voiceGenerateFault({
+  const fault = expressionIconFault(card.text, voiceSupports(voice).emotion) || voiceGenerateFault({
     voice,
     text: card.text,
     refReady: !!(ref && ref.phase === 'ready' && ref.clip),
@@ -386,7 +388,7 @@ export async function startCardGeneration(card: SynthesisCard): Promise<string> 
   //   화면이 '내 요청의 응답인가' 를 스스로 가릴 수 있다(2026-09-27 검수 재현 대응).
   const options = {
     // ★카드 감정 — 받는 목소리(Qwen 지정 목소리 + 1.7B)면 태그 없는 줄마다 [감정] 을 붙여 보낸다(2026-10-01).
-    ...synthesisOptions(cardScriptWithEmotion(card.text, card.settings.emotion, voice), s, voice.kind === 'reference'
+    ...synthesisOptions(cardScriptWithEmotion(expressionScript(card.text, card.settings.emotion === '자연스럽게' ? '기본' : card.settings.emotion || '기본'), card.settings.emotion, voice), s, voice.kind === 'reference'
       ? { clip: ref!.clip, region: ref!.region }
       : { clip: '', region: null }),
     // 기본 목소리면 엔진·모델을 명시해 싣는다. 참조 목소리면 아무것도 붙지 않는다.
