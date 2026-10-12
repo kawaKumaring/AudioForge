@@ -3,6 +3,7 @@ import argparse
 import hashlib
 import html
 import json
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -47,6 +48,7 @@ def main():
           'seeds':[2024,2025,2026],'seconds_requested':10,'frames':243,'canvas':256,
           'steps':16,'sampler':'res_multistep','scheduler':'simple','cfg':1.0,
           'shift_video':12,'shift_audio':3,'turbo':False,'step_reuse_cache':False,
+          'fp16_accumulation':True,'attention_requested':'comfy kitchen attention',
           'video_vae':False,'video_decode':False,'server':False}
     if args.prepare_only:
         print(json.dumps(plan,ensure_ascii=False,indent=2));return
@@ -63,19 +65,31 @@ def main():
     try:
         os.environ.update(HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',HF_HUB_DISABLE_TELEMETRY='1',
                           USE_PYTORCH_KERNEL_CACHE='0',NUMBA_CACHE_DIR=str(out/'numba-cache'))
-        sys.path.insert(0,str(COMFY));sys.argv=[sys.argv[0]]
+        sys.path.insert(0,str(COMFY));sys.argv=[sys.argv[0],'--fast','fp16_accumulation']
+        import comfy.options
+        comfy.options.enable_args_parsing()
+        logging.basicConfig(level=logging.INFO)
         import torch
         import soundfile as sf
         import nodes
         from comfy_extras.nodes_minimax_h3 import MiniMaxH3ReferenceToVideo,MiniMaxH3SigmaShift
         from comfy_extras.nodes_audio import VAEDecodeAudio
+        from comfy_extras.nodes_model_advanced import ModelAttentionBackend
+        import comfy.ldm.modules.attention as attention
         import comfy.model_management as mm
         # 그래픽 미리보기는 만들지 않는다. 샘플러의 원래 계산은 유지한다.
-        nodes.latent_preview.prepare_callback=lambda *a,**k:None
+        def progress_callback(*args,**kwargs):
+            def callback(step,x0,x,total_steps):
+                run['sampling_progress']={'completed_steps':step+1,'total_steps':total_steps,
+                    'elapsed_run_seconds':time.perf_counter()-t}
+                save();print(json.dumps(run['sampling_progress']),flush=True)
+            return callback
+        nodes.latent_preview.prepare_callback=progress_callback
         def timed(label,fn,container):
             torch.cuda.synchronize();t=time.perf_counter()
             value=fn();torch.cuda.synchronize()
             container[label]=time.perf_counter()-t
+            save()
             print(json.dumps({'stage':label,'seconds':container[label]},ensure_ascii=False),flush=True)
             return value
         report['imports_seconds']=time.perf_counter()-started
@@ -85,6 +99,8 @@ def main():
         with torch.inference_mode():
             model=timed('diffusion_load',lambda:nodes.UNETLoader().load_unet(MODEL,'default')[0],loading)
             model=MiniMaxH3SigmaShift.execute(model,12.0,3.0)[0]
+            report['attention_actual']='comfy kitchen int8' if attention.COMFY_KITCHEN_INT8_ATTENTION_IS_AVAILABLE else 'pytorch fallback'
+            model=ModelAttentionBackend.execute(model,'comfy kitchen attention')[0]
             clip=timed('text_encoder_load',lambda:nodes.CLIPLoader().load_clip(ENCODER,'minimax','default')[0],loading)
             vae=timed('audio_vae_load',lambda:nodes.VAELoader().load_vae(VAE)[0],loading)
             report['load_stages']=loading
