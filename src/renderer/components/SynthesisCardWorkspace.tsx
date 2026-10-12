@@ -82,7 +82,7 @@ function Settings({ card, close, disabled, focusReference = false }: { card: Syn
     })()
     return () => { alive = false }
   }, [card.builtin?.path])
-  const voiceNow = cardVoiceOf(card.builtin && liveEmotion ? { ...card, builtin: { ...card.builtin, emotion: true } } : card)
+  const voiceNow = cardVoiceOf({ ...card, settings: draft, ...(card.builtin && liveEmotion ? { builtin: { ...card.builtin, emotion: true } } : {}) })
   const supports = voiceSupports(voiceNow)
   const referenceChoice = useRef<HTMLSelectElement>(null)
   useEffect(() => { if (focusReference) referenceChoice.current?.focus() }, [focusReference])
@@ -102,14 +102,24 @@ function Settings({ card, close, disabled, focusReference = false }: { card: Syn
   return <Modal title="고급 옵션" subtitle={card.label} close={close} footer={<><button type="button" style={button} onClick={close}>취소</button><button type="button" style={{ ...primary, opacity: disabled || !valid ? .4 : 1 }} disabled={disabled || !valid} onClick={() => { useSynthesisCards.getState().update(card.id, { settings: { ...draft }, ...(liveEmotion && card.builtin && card.builtin.emotion !== true ? { builtin: { ...card.builtin, emotion: true } } : {}) }); close() }}>적용</button></>}>
     <div style={{ ...row, justifyContent: 'flex-end', marginBottom: 14 }}><button type="button" style={button} disabled={disabled} title="이 팝업의 설정을 기본값으로 돌립니다. 적용 전에는 카드가 바뀌지 않습니다." onClick={reset}><Icon name="reset"/>전체 초기화</button></div>
     <fieldset disabled={disabled} style={{ border: 0, padding: 0, margin: 0, display: 'grid', gap: 12 }}>
-      <details className="af-effect-group" open style={panel}>
+      {card.source && !card.builtin && <div style={{ ...panel, padding: '14px 16px', display: 'grid', gap: 8 }}>
+        <label htmlFor="card-reference-engine">목소리 생성 방식</label>
+        <select id="card-reference-engine" aria-label="목소리 생성 방식" style={field} value={draft.engine || 'qwen3'}
+          onChange={e => set({ engine: e.target.value as CardSettings['engine'], emotion: CARD_EMOTION_NONE })}>
+          <option value="qwen3">기존 Qwen</option><option value="minimax-h3">MiniMax H3 · 기본 말투</option>
+        </select>
+        <span style={muted} title="H3는 기본 말투만 연결했습니다. 감정 연출은 대사 손상 청취 판정으로 보류 중입니다.">
+          {draft.engine === 'minimax-h3' ? '참조 목소리로 생성 · 감정 연출 보류' : '기존 합성 방식 유지'}
+        </span>
+      </div>}
+      {(supports.speed || supports.pitch) && <details className="af-effect-group" open style={panel}>
         <summary style={heading}><span style={{ flex: 1 }}>음성 조정</span><span className="af-effect-chevron" aria-hidden="true">⌃</span></summary>
         <div style={{ display: 'grid', gap: 18, paddingBottom: 18 }}>
           {control('말하기 속도', draft.speed, .7, 1.3, .05, speed => set({ speed }), '×', 1)}
           {control('음높이', draft.pitch, CARD_PITCH_MIN, CARD_PITCH_MAX, CARD_PITCH_STEP, pitch => set({ pitch }), '', 0)}
           {card.settings.pitch !== cardApplied(card.settings).pitch && <span style={{ ...muted, color: 'var(--amber)' }} title={`저장된 음높이 ${card.settings.pitch}는 지원 범위를 벗어납니다. 적용을 누르면 화면의 값으로 저장됩니다.`}>저장값 보정</span>}
         </div>
-      </details>
+      </details>}
       {supports.region && <details className="af-effect-group" data-testid="card-reference-settings" open={focusReference || card.settings.reference === 'manual' ? true : undefined} style={panel}>
         <summary style={heading}><span style={{ flex: 1 }}>참조 구간</span><span style={muted}>{draft.reference === 'auto' ? '자동' : `${draft.start.toFixed(1)}–${draft.end.toFixed(1)}초`}</span><span className="af-effect-chevron" aria-hidden="true">⌃</span></summary>
         <div style={{ display: 'grid', gap: 12, paddingBottom: 16 }}><div style={{ ...row, justifyContent: 'space-between' }}><select ref={referenceChoice} aria-label="참조 구간 방식" style={field} value={draft.reference} onChange={e => set({ reference: e.target.value as CardSettings['reference'] })}><option value="auto">자동</option><option value="manual">직접 지정</option></select>{resetButton('참조 구간 초기화', () => set({ reference: 'auto', start: 0, end: duration }))}</div>
@@ -301,7 +311,7 @@ function planOfCards(cards: SynthesisCard[], joins: JoinSettings) {
 
 export default function SynthesisCardWorkspace() {
   const [expressionOpen, setExpressionOpen] = useState(false), [expressionCard, setExpressionCard] = useState('')
-  const expressionTarget = useRef<((cue: ExpressionIcon) => void) | null>(null)
+  const expressionTarget = useRef<Record<string, (cue: ExpressionIcon) => void>>({})
   const state = useSynthesisCards(), source = useAppStore(s => s.fileInfo), status = useAppStore(s => s.status), childAlive = useAppStore(s => s.errorInfo?.childAlive)
   const busy = status === 'processing' || isCancelCleanupBusy(status) || !!childAlive
   const [modal, setModal] = useState<{ type: 'settings' | 'takes' | 'voice'; id: string; focusReference?: boolean; fromSequence?: boolean } | { type: 'join' | 'sequence' } | null>(null)
@@ -769,7 +779,6 @@ export default function SynthesisCardWorkspace() {
   return <div ref={workspace} data-testid="synthesis-card-workspace" onDragOver={e => { if (e.dataTransfer.types.includes('Files')) e.preventDefault() }} onDrop={e => { if (e.dataTransfer.files.length) drop(e) }} style={{ display: 'flex', flexDirection: 'column', gap: 16, minWidth: 0 }}>
     <style>{`.af-card-progress{appearance:none;border:0;border-radius:3px;overflow:hidden;background:var(--border-subtle)}.af-card-progress::-webkit-progress-bar{background:var(--border-subtle)}.af-card-progress::-webkit-progress-value{background:var(--accent);border-radius:3px}.af-effect-slider{appearance:none;height:4px;border-radius:3px;background:linear-gradient(to right,var(--accent) var(--fill),var(--border-subtle) var(--fill));cursor:pointer}.af-effect-slider::-webkit-slider-thumb{appearance:none;width:15px;height:15px;border-radius:50%;background:var(--accent-light);box-shadow:0 0 0 4px rgba(139,92,246,.12)}.af-effect-slider:disabled{opacity:.4;cursor:not-allowed}.af-effect-group summary::-webkit-details-marker{display:none}.af-effect-group .af-effect-chevron{transition:transform 150ms ease;color:var(--text-muted)}.af-effect-group:not([open]) .af-effect-chevron{transform:rotate(180deg)}.af-take-detail{animation:af-card-open 120ms ease-out}.af-generation-card{transition:border-color 140ms ease,opacity 140ms ease}.af-card-modal button[aria-pressed="true"]{color:var(--accent-light)}.af-generation-card:focus-within{border-color:var(--accent)!important}.af-card-work-button:disabled{cursor:not-allowed;opacity:.4}@keyframes af-card-open{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}@media(prefers-reduced-motion:reduce){.af-take-detail{animation:none}}`}</style>
     <div style={{ ...row, paddingBottom: 2 }}><span style={{ fontSize: 13, fontWeight: 600 }}>생성 카드 <span style={{ ...muted, marginLeft: 5 }}>{state.cards.length}</span></span><span style={{ flex: 1 }}/>
-      <Action icon="emotion" label="감정 도구 열기" title="대사에 감정 아이콘 넣기 · 입력하면서 계속 사용할 수 있습니다" onClick={() => setExpressionOpen(v => !v)}>감정</Action>
       <button type="button" data-testid="import-legacy" disabled={locked} style={{ ...button, background: 'transparent' }}
         title="옛 화면에서 만들던 작업을 카드로 복사합니다. 옛 기록은 그대로 남습니다."
         onClick={() => void openImport()}><Icon name="history"/>옛 작업 가져오기</button>
@@ -804,9 +813,14 @@ export default function SynthesisCardWorkspace() {
           <button type="button" data-testid="card-drag-handle" title="카드 이동 · Alt+↑/↓" aria-label={`${index + 1}번 카드 이동`} disabled={locked} draggable={!locked} onDragStart={e => { e.dataTransfer.setData('application/x-audioforge-card', card.id); e.dataTransfer.effectAllowed = 'move'; setDragging(card.id) }} onDragEnd={() => { setDragging(null); setOver(null) }} onKeyDown={e => { if (!locked && e.altKey && ['ArrowUp', 'ArrowDown'].includes(e.key)) { e.preventDefault(); moveCard(card.id, index + (e.key === 'ArrowUp' ? -1 : 1)) } }} style={{ ...button, padding: 5, border: 0, background: 'transparent', color: 'var(--text-muted)', cursor: 'grab' }}><Icon name="grip"/></button>
           <span style={{ ...muted, fontVariantNumeric: 'tabular-nums' }}>{String(index + 1).padStart(2, '0')}</span>
           <input aria-label={`${index + 1}번 카드 이름`} value={card.label} disabled={locked} onChange={e => state.update(card.id, { label: e.target.value })} style={{ ...field, flex: '1 1 120px', padding: '6px 8px', background: 'transparent', borderColor: 'transparent', fontWeight: 600 }}/>
+          <div style={{ ...row, flexWrap: 'nowrap', flexShrink: 0, marginLeft: 'auto' }}>
           <Action icon="copy" label={`${index + 1}번 카드 복제`} title="목소리·설정 복제 — 대사와 생성본은 새로 시작" disabled={locked} onClick={() => state.clone(card.id)}/>
+          <Action icon="emotion" label={`${index + 1}번 카드 감정 도구`} title="이 카드의 대사에 연출 표시 넣기" disabled={locked}
+            pressed={expressionOpen && expressionCard === card.id}
+            onClick={() => { setExpressionOpen(!(expressionOpen && expressionCard === card.id)); setExpressionCard(card.id) }}/>
           <Action icon="settings" label={`${index + 1}번 카드 고급 옵션`} disabled={locked} onClick={() => setModal({ type: 'settings', id: card.id })}/>
           <Action icon="trash" label={`${index + 1}번 카드 삭제`} disabled={locked} onClick={() => state.remove(card.id)}/>
+          </div>
         </div>
         <div style={{ padding: '6px 20px 0' }} onDragOver={e => { if (!dragging && !locked && e.dataTransfer.types.includes('Files')) { e.preventDefault(); e.stopPropagation(); setHover(card.id) } }} onDragLeave={() => setHover(null)} onDrop={e => { if (!dragging) drop(e, card.id) }}>
           <div style={{ ...row, marginBottom: 1 }}>
@@ -826,7 +840,8 @@ export default function SynthesisCardWorkspace() {
           {card.source && modal && <div style={{ height: 40 }}/>}
           <ExpressionPromptEditor value={card.text} label={`${index + 1}번 카드 대사`} disabled={locked}
             change={text => useSynthesisCards.getState().update(card.id, { text })}
-            activate={insert => { setExpressionCard(card.id); expressionTarget.current = insert }}/>
+            register={insert => { if (insert) expressionTarget.current[card.id] = insert; else delete expressionTarget.current[card.id] }}
+            activate={insert => { setExpressionCard(card.id); expressionTarget.current[card.id] = insert }}/>
         </div>
         {/* ★실패도 '이 카드가 지금 하는 말' 이다 — 줄이 없으면 사유가 그려질 자리가 없다. */}
         {(mine || cardFault?.id === card.id || (ref && ref.phase !== 'ready') || notes.length > 0) && (
@@ -929,7 +944,7 @@ export default function SynthesisCardWorkspace() {
     {expressionOpen && <ExpressionPalette target={state.cards.find(c => c.id === expressionCard)?.label || ''}
       disabled={locked || !state.cards.some(c => c.id === expressionCard)}
       supported={voiceSupports(cardVoiceOf(state.cards.find(c => c.id === expressionCard) || {})).emotion}
-      insert={cue => expressionTarget.current?.(cue)} close={() => setExpressionOpen(false)}/>}
+      insert={cue => expressionTarget.current[expressionCard]?.(cue)} close={() => setExpressionOpen(false)}/>}
     {modal?.type === 'settings' && active && <Settings key={active.id} card={active} disabled={busy} focusReference={modal.focusReference} close={() => setModal(null)}/>}
     {modal?.type === 'takes' && active && <Takes key={active.id} card={active} disabled={busy} close={() => setModal(null)} back={modal.fromSequence ? () => setModal({ type: 'sequence' }) : undefined}/>}
     {modal?.type === 'join' && <Join cards={state.cards} disabled={busy} close={() => setModal(null)}/>}

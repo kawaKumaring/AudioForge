@@ -137,6 +137,7 @@ export async function hydrateWork(w: SavedWork): Promise<{
   const fallback = productDefaults()
   const cards: SynthesisCard[] = w.cards.map((c) => {
     const settings = {
+      ...(c.settings.engine ? { engine: c.settings.engine as 'qwen3' | 'minimax-h3' } : {}),
       speed: num(c.settings.speed, 1), pitch: num(c.settings.pitch, 0),
       emotion: text(c.settings.emotion) || '자연스럽게',
       reference: c.settings.reference === 'manual' ? 'manual' as const : 'auto' as const,
@@ -157,6 +158,7 @@ export async function hydrateWork(w: SavedWork): Promise<{
         settings: t.settingsUnknown
           ? { speed: 0, pitch: 0, emotion: '', reference: 'auto' as const, start: 0, end: 0 }
           : {
+            ...(t.settings.engine ? { engine: t.settings.engine as 'qwen3' | 'minimax-h3' } : {}),
             speed: num(t.settings.speed, settings.speed), pitch: num(t.settings.pitch, settings.pitch),
             emotion: text(t.settings.emotion) || settings.emotion,
             reference: t.settings.reference === 'manual' ? 'manual' as const : 'auto' as const,
@@ -234,6 +236,7 @@ function appliedFrom(raw: Record<string, unknown>): CardApplied {
   const out: Record<string, unknown> = {
     notes: Array.isArray(a.notes) ? a.notes : [],
   }
+  if (a.engine === 'qwen3' || a.engine === 'minimax-h3') out.engine = a.engine
   if (typeof a.speed === 'number' && Number.isFinite(a.speed)) out.speed = a.speed
   if (typeof a.pitch === 'number' && Number.isFinite(a.pitch)) out.pitch = a.pitch
   // ★실제로 쓰인 참조 구간 — 자동 확정 구간까지 그대로 되살린다(2026-09-27 재현 대상).
@@ -274,7 +277,7 @@ export async function prepareCardReference(card: SynthesisCard): Promise<void> {
   const cardId = card.id
   const clipKey = cardClipKey(cardId)
   const reqId = newReqId()
-  const s = productDefaults()
+  const s = { ...productDefaults(), ...(card.settings.engine ? { engine: card.settings.engine } : {}) }
 
   useSynthesisCards.getState().setRef(cardId, {
     phase: 'preparing', clip: '', region: null, message: '목소리를 살펴보는 중입니다…', reqId,
@@ -383,7 +386,8 @@ export async function startCardGeneration(card: SynthesisCard): Promise<string> 
     percent: 0, message: '만드는 중…', cancelling: false,
   })
 
-  const s = { ...productDefaults(), speed: applied.speed, pitch: applied.pitch }
+  const s = { ...productDefaults(), speed: applied.speed, pitch: applied.pitch,
+    ...(voice.kind === 'reference' && card.settings.engine ? { engine: card.settings.engine } : {}) }
   // ★요청 식별자를 실어 보낸다. 본체가 진행·결과·오류·취소에 그대로 되돌려 주므로
   //   화면이 '내 요청의 응답인가' 를 스스로 가릴 수 있다(2026-09-27 검수 재현 대응).
   const options = {
@@ -393,6 +397,7 @@ export async function startCardGeneration(card: SynthesisCard): Promise<string> 
       : { clip: '', region: null }),
     // 기본 목소리면 엔진·모델을 명시해 싣는다. 참조 목소리면 아무것도 붙지 않는다.
     ...builtinRequestFields(voice),
+    ...(voice.kind === 'reference' && voice.engine === 'minimax-h3' ? { ttsTailMode: 'off' } : {}),
     clientRequestId: reqId,
     // ★**사용자가 고른 원본**을 따로 싣는다. 영상이면 아래에서 꺼낸 wav 를 보내는데,
     //   본체가 그 폴더를 결과 자리로 삼으면 C 드라이브 중간 폴더에 쌓인다(2026-09-28 신고).

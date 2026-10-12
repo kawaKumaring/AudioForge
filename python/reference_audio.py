@@ -407,7 +407,14 @@ QWEN3_POLICY = ReferencePolicy(
                       "벤더 권장값은 오프라인에서 미확인. 범위 밖은 미검증 — 경고, 차단 아님.",
 )
 
+H3_POLICY = ReferencePolicy(
+    engine="minimax-h3", min_duration_sec=None, max_duration_sec=45.0,
+    recommended_min_sec=3.0, recommended_max_sec=10.0,
+    basis="45초는 H3 어댑터의 자원 보호 상한이며 모델 필수 한계라고 주장하지 않는다.",
+    recommended_basis="기존 앱의 짧은 참조 준비 경로를 유지한다. H3 참조 길이별 품질 우열은 미검증이다.",
+)
 POLICIES = {
+    H3_POLICY.engine: H3_POLICY,
     GPTSOVITS_POLICY.engine: GPTSOVITS_POLICY,
     QWEN3_POLICY.engine: QWEN3_POLICY,
 }

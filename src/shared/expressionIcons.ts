@@ -20,7 +20,7 @@ export function expressionScript(text: string, initialEmotion = '기본'): strin
   }).join('\n')
 }
 export function expressionIconFault(text: string, emotionSupported: boolean): string {
-  return !emotionSupported && expressionParts(text).some(p => p.cue && p.cue.id !== 'pause')
+  return !emotionSupported && expressionParts(text).some(p => p.cue && p.cue.id !== 'pause' && p.cue.id !== 'calm')
     ? '이 목소리는 감정 연출을 지원하지 않습니다. 감정 표시를 지우거나 지원 목소리를 선택하세요.' : ''
 }
 export function expressionParts(text: string): { text: string; cue?: ExpressionIcon }[] {

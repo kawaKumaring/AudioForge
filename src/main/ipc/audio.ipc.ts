@@ -930,7 +930,7 @@ export function registerAudioIpc(
     if (mode === 'tts' && options?.ttsEngine === 'qwen-custom') {
       const residentOk = await ensureQwenResident()
       appLog()?.info('job', `Qwen 상주 실행기 ${residentOk ? '준비됨 — 카드가 붙는다' : '준비 못 함 — 조각마다 모델을 연다'}`)
-    } else if (mode === 'tts' && !options?.ttsBuiltinModel) {
+    } else if (mode === 'tts' && !options?.ttsBuiltinModel && options?.ttsEngine !== 'minimax-h3') {
       // ★참조 목소리 카드(Qwen3 Base 일괄)도 띄워 둔 실행기로 — 생성마다 모델을 새로 열지 않는다(2026-10-03, 낭독에서 먼저 검증).
       //   합성 프로세스는 본체 환경을 물려받는다(파이프 주소·열쇠와 같은 자리). 실행기가 없으면 예전 길(새 프로세스)로 간다.
       //   '다시 생성' 은 그대로 새로 만든다 — 실행마다 새 씨앗(tts_worker)이고, 이전 생성본을 돌려주지 않는다.

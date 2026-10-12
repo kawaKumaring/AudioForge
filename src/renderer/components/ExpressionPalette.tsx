@@ -22,11 +22,11 @@ export default function ExpressionPalette({ target, insert, close, disabled, sup
     </div>
     <div style={{ padding: 12 }}><div style={{ ...muted, marginBottom: 9, overflowWrap: 'anywhere' }}>{target || '대사 입력칸을 먼저 선택하세요'}</div>
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5,1fr)', gap: 7 }}>
-        {EXPRESSION_ICONS.map(cue => <button key={cue.id} type="button" aria-label={cue.label} title={`${cue.label} — ${cue.description}`} disabled={disabled || !target}
-          onPointerDown={e => e.preventDefault()} onClick={() => insert(cue)} style={{ ...button, padding: 6, minHeight: 42, fontSize: 23, opacity: disabled || !target ? .4 : 1 }}>{cue.icon}</button>)}
+        {EXPRESSION_ICONS.map(cue => <button key={cue.id} type="button" aria-label={cue.label} title={`${cue.label} — ${cue.description}${!supported && !['pause', 'calm'].includes(cue.id) ? ' · 현재 생성 방식 미지원' : ''}`} disabled={disabled || !target || !supported && !['pause', 'calm'].includes(cue.id)}
+          onPointerDown={e => e.preventDefault()} onClick={() => insert(cue)} style={{ ...button, padding: 6, minHeight: 42, fontSize: 23, opacity: disabled || !target || !supported && !['pause', 'calm'].includes(cue.id) ? .4 : 1 }}>{cue.icon}</button>)}
       </div>
-      <div style={{ ...muted, marginTop: 9 }}>{supported ? '커서 위치에 연출 표시 · 대사는 유지' : '이 목소리는 감정 미지원 · 표시는 저장되지만 생성은 차단'}</div>
-      <div style={{ ...muted, marginTop: 7 }} title="웃음·가벼운 웃음·호흡·한숨은 H3 비교 음성에서 시험 중이며 카드 생성에는 연결되지 않았습니다.">웃음·호흡은 H3 청취 시험 중</div>
+      <div style={{ ...muted, marginTop: 9 }}>{supported ? '커서 위치에 연출 표시 · 대사는 유지' : '현재 방식은 기본 말투와 쉼만 사용'}</div>
+      <div style={{ ...muted, marginTop: 7 }} title="H3 감정 시험에서 대사 손상이 확인되어 웃음·호흡 등의 발성 태그 연결도 보류했습니다.">웃음·호흡 연출 보류</div>
     </div>
   </aside>, document.body)
 }

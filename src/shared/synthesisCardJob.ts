@@ -26,6 +26,7 @@ export const CARD_PITCH_STEP = 0.5
 
 /** 카드 설정 중 엔진에 보낼 수 있는 것만. */
 export interface CardEngineSettings {
+  engine?: 'qwen3' | 'minimax-h3'
   speed: number
   pitch: number
   emotion: string
@@ -43,6 +44,7 @@ export interface CardSettingNote {
 
 /** 실제로 엔진에 간 값. 생성본에 이것을 붙인다 — 요청값이 아니라 **적용값**이다. */
 export interface CardApplied {
+  engine?: 'qwen3' | 'minimax-h3'
   speed: number
   pitch: number
   notes: CardSettingNote[]
@@ -86,8 +88,13 @@ export function cardApplied(s: CardEngineSettings, voice?: CardVoice | null): Ca
     })
   }
 
-  const speed = Number.isFinite(s.speed) && s.speed > 0 ? round2(s.speed) : 1
-  return { speed, pitch, notes }
+  let speed = Number.isFinite(s.speed) && s.speed > 0 ? round2(s.speed) : 1
+  if (voice?.kind === 'reference' && voice.engine === 'minimax-h3') {
+    if (speed !== 1) notes.push({ field: 'speed', reason: 'MiniMax H3는 현재 기본 말하기 속도로 생성합니다.' })
+    if (pitch !== 0) notes.push({ field: 'pitch', reason: 'MiniMax H3는 현재 음높이를 바꾸지 않습니다.' })
+    speed = 1; pitch = 0
+  }
+  return { speed, pitch, notes, ...(voice?.kind === 'reference' ? { engine: s.engine || 'qwen3' } : {}) }
 }
 
 /** 이 카드의 파생 클립이 사는 자리. 카드마다 폴더가 따로다. */
@@ -148,7 +155,7 @@ export function takeIsStale(snap: CardTakeSnapshot, now: {
   if (snap.text !== now.text) return true
   if (snap.sourcePath !== now.sourcePath) return true
   const a = snap.settings, b = now.settings
-  return a.speed !== b.speed || a.pitch !== b.pitch || a.emotion !== b.emotion
+  return (a.engine || 'qwen3') !== (b.engine || 'qwen3') || a.speed !== b.speed || a.pitch !== b.pitch || a.emotion !== b.emotion
     || a.reference !== b.reference || a.start !== b.start || a.end !== b.end
 }
 
