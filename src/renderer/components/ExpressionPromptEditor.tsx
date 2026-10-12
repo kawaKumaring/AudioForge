@@ -57,7 +57,7 @@ export default function ExpressionPromptEditor({ value, change, label, disabled,
     for (const part of expressionParts(value)) fragment.appendChild(part.cue ? marker(part.cue) : document.createTextNode(part.text))
     root.replaceChildren(fragment); range.current = null
   }, [value])
-  return <div ref={ref} role="textbox" aria-label={label} aria-multiline="true" aria-disabled={disabled}
+  return <><style>{'.af-expression-input:empty::before{content:attr(data-placeholder);color:var(--text-muted);pointer-events:none}'}</style><div className="af-expression-input" ref={ref} role="textbox" aria-label={label} aria-multiline="true" aria-disabled={disabled}
     data-testid="card-script" data-placeholder="대사를 입력하세요" contentEditable={!disabled} suppressContentEditableWarning spellCheck={false}
     onFocus={() => { remember(); activate(insert) }} onMouseUp={remember} onKeyUp={remember} onBlur={remember}
     onInput={() => { remember(); if (!composing.current && ref.current) change(expressionDomText(ref.current)) }}
@@ -70,5 +70,11 @@ export default function ExpressionPromptEditor({ value, change, label, disabled,
       const selected = window.getSelection(); if (!selected?.rangeCount) return
       e.preventDefault(); e.clipboardData.setData('text/plain', expressionDomText(selected.getRangeAt(0).cloneContents()))
     }}
-    style={{ ...field, width: '100%', minHeight: 76, maxHeight: 320, overflowY: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 15, lineHeight: 1.75, background: 'var(--bg-base)', padding: '11px 13px', margin: '9px 0 0', cursor: disabled ? 'default' : 'text' }}/>
+    onCut={e => {
+      if (disabled) { e.preventDefault(); return }
+      const selected = window.getSelection(); if (!selected?.rangeCount) return
+      e.preventDefault(); e.clipboardData.setData('text/plain', expressionDomText(selected.getRangeAt(0).cloneContents()))
+      document.execCommand('delete'); remember()
+    }}
+    style={{ ...field, width: '100%', minHeight: 76, maxHeight: 320, resize: 'vertical', overflowY: 'auto', whiteSpace: 'pre-wrap', overflowWrap: 'anywhere', fontSize: 15, lineHeight: 1.75, background: 'var(--bg-base)', padding: '11px 13px', margin: '9px 0 0', cursor: disabled ? 'default' : 'text' }}/></>
 }

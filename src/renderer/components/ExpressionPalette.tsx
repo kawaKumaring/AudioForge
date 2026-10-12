@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { EXPRESSION_ICONS, type ExpressionIcon } from '../../shared/expressionIcons'
 import { Action, Icon, button, muted, row } from './kit'
@@ -6,10 +6,11 @@ export default function ExpressionPalette({ target, insert, close, disabled, sup
   target: string; insert: (cue: ExpressionIcon) => void; close: () => void; disabled: boolean; supported: boolean
 }) {
   const [position, setPosition] = useState({ x: Math.max(8, window.innerWidth - 330), y: 100 })
-  const constrain = (x: number, y: number) => ({ x: Math.max(8, Math.min(x, window.innerWidth - Math.min(310, window.innerWidth - 16) - 8)), y: Math.max(8, Math.min(y, window.innerHeight - 240)) })
+  const panel = useRef<HTMLElement>(null)
+  const constrain = (x: number, y: number) => ({ x: Math.max(8, Math.min(x, window.innerWidth - Math.min(310, window.innerWidth - 16) - 8)), y: Math.max(8, Math.min(y, window.innerHeight - (panel.current?.getBoundingClientRect().height || 300) - 8)) })
   useEffect(() => { const resize = () => setPosition(p => constrain(p.x, p.y)); window.addEventListener('resize', resize); return () => window.removeEventListener('resize', resize) }, [])
-  return createPortal(<aside role="region" aria-label="감정 도구" data-testid="expression-palette"
-    style={{ position: 'fixed', left: position.x, top: position.y, width: 310, maxWidth: 'calc(100vw - 16px)', zIndex: 1000, border: '1px solid var(--border-subtle)', borderRadius: 13, background: 'var(--bg-card)', color: 'var(--text-primary)', boxShadow: '0 14px 44px #0007' }}>
+  return createPortal(<aside ref={panel} role="region" aria-label="감정 도구" data-testid="expression-palette"
+    style={{ position: 'fixed', left: position.x, top: position.y, width: 310, maxWidth: 'calc(100vw - 16px)', maxHeight: 'calc(100vh - 16px)', overflowY: 'auto', zIndex: 1000, border: '1px solid var(--border-subtle)', borderRadius: 13, background: 'var(--bg-card)', color: 'var(--text-primary)', boxShadow: '0 14px 44px #0007' }}>
     <div style={{ ...row, flexWrap: 'nowrap', padding: '9px 10px', borderBottom: '1px solid var(--border-subtle)' }}>
       <button type="button" aria-label="감정 도구 이동" title="드래그로 이동 · 화살표로 이동" style={{ ...button, flex: 1, justifyContent: 'flex-start', border: 0, background: 'transparent', cursor: 'grab', touchAction: 'none' }}
         onPointerDown={e => { e.preventDefault(); const el = e.currentTarget, start = { x: e.clientX - position.x, y: e.clientY - position.y }; el.setPointerCapture(e.pointerId)
