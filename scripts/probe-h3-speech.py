@@ -20,6 +20,9 @@ MODEL='minimax-h3/minimax_h3_ref2va_pruned_int8_convrot.safetensors'
 ENCODER='minimax-h3/qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors'
 VAE='minimax-h3/minimax_h3_audio_vae_fp32.safetensors'
 LINE='오늘은 하루 종일 비가 와서 조금 우울했는데, 저녁에 친구가 찾아와서 따뜻한 차를 마시며 이야기를 나누니까 기분이 정말 좋아졌어요.'
+LONG_LINE=(LINE+' 창문 밖으로 떨어지는 빗방울을 바라보면서, 그동안 혼자 마음에 담아 두었던 걱정도 조금씩 꺼내 놓았어요.'
+           ' 친구는 서두르지 않고 제 이야기를 끝까지 들어 주었고, 저는 오랜만에 마음이 가벼워지는 걸 느꼈어요.'
+           ' 비가 그치면 함께 산책하기로 했어요. 이제 편안한 마음으로 내일을 기다리려고 해요.')
 PROMPT=('subject_definitions:\n<Subject 1> is a young woman who uses <Audio 1> as her speaking voice timbre reference.\n\n'
         'summary:\n[reference generation + audio reference] A character speaking warmly to a friend.\n\n'
         'retention_analysis:\n<Audio 1>: reference - its vocal timbre guides the vocal delivery of <Subject 1> without copying the original signal.\n\n'
@@ -55,9 +58,17 @@ def assets():
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--prepare-only',action='store_true')
     parser.add_argument('--minimum-free-mib',type=int,default=6144)
+    parser.add_argument('--seconds',type=float,default=10)
+    parser.add_argument('--runs',type=int,default=3)
+    parser.add_argument('--longform',action='store_true')
     args=parser.parse_args()
+    if not 5<=args.seconds<=60 or not 1<=args.runs<=3:raise ValueError('시험 길이·횟수 범위 밖')
+    frames=max(5,round(args.seconds*24));frames+=(5-frames)%17
+    line=LONG_LINE if args.longform else LINE
+    prompt=PROMPT.replace(LINE,line,1)
     plan={'models':assets(),'reference':str(REFERENCE),'reference_sha256':REFERENCE_SHA,
-          'seeds':[2024,2025,2026],'seconds_requested':10,'frames':243,'canvas':256,
+          'seeds':[2024,2025,2026][:args.runs],'seconds_requested':args.seconds,'frames':frames,'canvas':256,
+          'text':line,'prompt':prompt,'training_range_exceeded':args.seconds>15,
           'steps':16,'sampler':'res_multistep','scheduler':'simple','cfg':1.0,
           'shift_video':12,'shift_audio':3,'turbo':False,'step_reuse_cache':False,
           'fp16_accumulation':True,'attention_requested':'comfy kitchen attention',
@@ -128,7 +139,7 @@ def main():
                 # 같은 참조·본문의 재생성은 확정 조건만 재사용한다. 생성 음성은 재사용하지 않는다.
                 if condition is None:
                     condition=timed('reference_and_text_encode',lambda:MiniMaxH3ReferenceToVideo.execute(
-                        clip=clip,prompt=PROMPT,width=256,height=256,length=243,audio_vae=vae,
+                        clip=clip,prompt=prompt,width=256,height=256,length=frames,audio_vae=vae,
                         ref_audios={'ref_audio_0':audio}),run['stages'])
                 else:run['stages']['reference_and_text_encode']=0.0
                 if model is None:
@@ -155,7 +166,7 @@ def main():
                 if index==0:run['startup_inclusive_seconds']=time.perf_counter()-started
                 save();print(json.dumps(run,ensure_ascii=False),flush=True)
         report['status']='complete';save()
-        body='<meta charset="utf-8"><title>H3 최소 생성 비교</title><h1>H3 첫 생성·재생성</h1><p>같은 참조·대사·설정, seed만 다름. 음질은 청취 판정 전.</p>'
+        body='<meta charset="utf-8"><title>H3 최소 생성 비교</title><h1>H3 음성 생성 시험</h1><p>음질은 청취 판정 전.</p><p>'+html.escape(line)+'</p>'
         for run in report['runs']:
             body+=f'<h2>{run["index"]+1} · {run["seconds"]:.1f}초</h2><audio controls src="{Path(run["path"]).as_uri()}"></audio><p>{html.escape(run["path"])}</p>'
         (out/'비교듣기.html').write_text(body,encoding='utf-8')
