@@ -1,5 +1,7 @@
 """흡수 전 최소 시험: 설치 코드 직접 호출, 서버·영상 저장·다운로드 없음."""
 import argparse
+import ctypes
+import gc
 import hashlib
 import html
 import json
@@ -36,6 +38,15 @@ def gpu_snapshot():
     values=[int(x.strip()) for x in r.stdout.strip().splitlines()[0].split(',')]
     return dict(zip(('free_mib','used_mib','utilization_percent'),values))
 
+def ram_snapshot():
+    class MemoryStatus(ctypes.Structure):
+        _fields_=[('length',ctypes.c_ulong),('load',ctypes.c_ulong)]+[(n,ctypes.c_ulonglong) for n in
+            ('total_phys','avail_phys','total_page','avail_page','total_virtual','avail_virtual','extended')]
+    status=MemoryStatus();status.length=ctypes.sizeof(status)
+    if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
+        raise OSError('시스템 메모리 확인 실패')
+    return {'available_mib':status.avail_phys//1024**2,'total_mib':status.total_phys//1024**2}
+
 def assets():
     files=[COMFY/'models/diffusion_models'/MODEL,COMFY/'models/text_encoders'/ENCODER,
            COMFY/'models/vae'/VAE]
@@ -43,21 +54,25 @@ def assets():
 
 def main():
     parser=argparse.ArgumentParser();parser.add_argument('--prepare-only',action='store_true')
+    parser.add_argument('--minimum-free-mib',type=int,default=6144)
     args=parser.parse_args()
     plan={'models':assets(),'reference':str(REFERENCE),'reference_sha256':REFERENCE_SHA,
           'seeds':[2024,2025,2026],'seconds_requested':10,'frames':243,'canvas':256,
           'steps':16,'sampler':'res_multistep','scheduler':'simple','cfg':1.0,
           'shift_video':12,'shift_audio':3,'turbo':False,'step_reuse_cache':False,
           'fp16_accumulation':True,'attention_requested':'comfy kitchen attention',
-          'video_vae':False,'video_decode':False,'server':False}
+          'pinned_memory':False,'async_offload':False,
+          'video_vae':False,'video_decode':False,'server':False,'minimum_free_mib':args.minimum_free_mib,
+          'load_order':'encode_release_text_then_load_diffusion'}
     if args.prepare_only:
         print(json.dumps(plan,ensure_ascii=False,indent=2));return
     before_gpu=gpu_snapshot()
-    if before_gpu['free_mib']<6144 or before_gpu['utilization_percent']>20:
+    if args.minimum_free_mib<4096:raise ValueError('최소 GPU 여유는 4GiB 이상이어야 합니다')
+    if before_gpu['free_mib']<args.minimum_free_mib or before_gpu['utilization_percent']>20:
         raise RuntimeError('GPU 경합으로 측정 시작하지 않음: '+str(before_gpu))
     if sha(REFERENCE)!=REFERENCE_SHA:raise RuntimeError('승인된 참조 A의 지문 불일치')
     out=BASE/('h3-direct-speech-'+time.strftime('%Y%m%d-%H%M%S'));out.mkdir(exist_ok=False)
-    report={'status':'running','plan':plan,'gpu_before':before_gpu,'runs':[],
+    report={'status':'running','plan':plan,'gpu_before':before_gpu,'ram_before':ram_snapshot(),'runs':[],
             'scope':'설치 코드 직접 호출 시험이며 제품 흡수 완료가 아니다. OS 파일 캐시를 비우지 않음.'}
     def save():
         tmp=out/'record.tmp';tmp.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding='utf-8');tmp.replace(out/'record.json')
@@ -65,7 +80,8 @@ def main():
     try:
         os.environ.update(HF_HUB_OFFLINE='1',TRANSFORMERS_OFFLINE='1',HF_HUB_DISABLE_TELEMETRY='1',
                           USE_PYTORCH_KERNEL_CACHE='0',NUMBA_CACHE_DIR=str(out/'numba-cache'))
-        sys.path.insert(0,str(COMFY));sys.argv=[sys.argv[0],'--fast','fp16_accumulation']
+        sys.path.insert(0,str(COMFY));sys.argv=[sys.argv[0],'--fast','fp16_accumulation',
+            '--disable-pinned-memory','--disable-async-offload']
         import comfy.options
         comfy.options.enable_args_parsing()
         logging.basicConfig(level=logging.INFO)
@@ -89,6 +105,7 @@ def main():
             torch.cuda.synchronize();t=time.perf_counter()
             value=fn();torch.cuda.synchronize()
             container[label]=time.perf_counter()-t
+            report.setdefault('resource_observations',[]).append({'stage':label,'ram':ram_snapshot(),'gpu':gpu_snapshot()})
             save()
             print(json.dumps({'stage':label,'seconds':container[label]},ensure_ascii=False),flush=True)
             return value
@@ -96,17 +113,14 @@ def main():
         report['torch']=torch.__version__
         report['code_sha256']={p:sha(COMFY/p) for p in ('nodes.py','comfy_extras/nodes_minimax_h3.py','comfy_extras/nodes_audio.py','comfy/ldm/minimax/model.py')}
         loading={}
+        report['load_stages']=loading
         with torch.inference_mode():
-            model=timed('diffusion_load',lambda:nodes.UNETLoader().load_unet(MODEL,'default')[0],loading)
-            model=MiniMaxH3SigmaShift.execute(model,12.0,3.0)[0]
-            report['attention_actual']='comfy kitchen int8' if attention.COMFY_KITCHEN_INT8_ATTENTION_IS_AVAILABLE else 'pytorch fallback'
-            model=ModelAttentionBackend.execute(model,'comfy kitchen attention')[0]
             clip=timed('text_encoder_load',lambda:nodes.CLIPLoader().load_clip(ENCODER,'minimax','default')[0],loading)
             vae=timed('audio_vae_load',lambda:nodes.VAELoader().load_vae(VAE)[0],loading)
-            report['load_stages']=loading
             x,sr=sf.read(REFERENCE,dtype='float32',always_2d=True)
             audio={'waveform':torch.from_numpy(x.T.copy())[None,:,:],'sample_rate':sr}
             condition=None
+            model=None
             for index,seed in enumerate(plan['seeds']):
                 run={'index':index,'seed':seed,'stages':{},'gpu_before':gpu_snapshot(),
                      'mode':'first' if index==0 else 'same_process_regeneration'}
@@ -117,6 +131,15 @@ def main():
                         clip=clip,prompt=PROMPT,width=256,height=256,length=243,audio_vae=vae,
                         ref_audios={'ref_audio_0':audio}),run['stages'])
                 else:run['stages']['reference_and_text_encode']=0.0
+                if model is None:
+                    def release_encoder():
+                        nonlocal clip
+                        mm.unload_all_models();clip=None;gc.collect();torch.cuda.empty_cache()
+                    timed('release_text_encoder',release_encoder,run['stages'])
+                    model=timed('diffusion_load',lambda:nodes.UNETLoader().load_unet(MODEL,'default')[0],run['stages'])
+                    model=MiniMaxH3SigmaShift.execute(model,12.0,3.0)[0]
+                    report['attention_actual']='comfy kitchen int8' if attention.COMFY_KITCHEN_INT8_ATTENTION_IS_AVAILABLE else 'pytorch fallback'
+                    model=ModelAttentionBackend.execute(model,'comfy kitchen attention')[0]
                 positive,latent=condition[0],condition[1]
                 negative=nodes.ConditioningZeroOut().zero_out(positive)[0]
                 result=timed('sample',lambda:nodes.KSampler().sample(model,seed,16,1.0,
