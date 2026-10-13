@@ -120,6 +120,13 @@ class H3Contract(unittest.TestCase):
                 self.assertEqual(len(conditions),count)
                 self.assertGreater(len(seeds),previous)
                 self.assertEqual(seeds[previous],200)
+                with patch.dict('os.environ',{'AF_H3_DIAGNOSTIC':'1','AF_H3_DIAGNOSTIC_CANVAS':'64'}):
+                    engine.synthesize_segment(text,str(ref),'default',1,str(out))
+                self.assertFalse(engine.records[-1]['condition_cache_hit'])
+                self.assertEqual(engine.records[-1]['settings']['canvas'],64)
+                self.assertEqual(conditions[-1]['width'],64)
+                self.assertEqual(conditions[-1]['height'],64)
+                self.assertEqual(engine.records[-1]['chunks'][0]['sent_text'],split_text(text)[0])
                 # 같은 경로의 참조 내용이 바뀌면 재준비한다.
                 sf.write(ref,np.full(32,.2,dtype='float32'),32000,subtype='FLOAT')
                 engine.synthesize_segment(text,str(ref),'default',1,str(out))

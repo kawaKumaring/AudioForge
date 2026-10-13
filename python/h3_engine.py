@@ -84,10 +84,29 @@ def _condition_bytes(value):
     if isinstance(value,(list,tuple)):return sum(_condition_bytes(v) for v in value)
     return 0
 
-def condition_key(chunks,ref_hash,assets,code_identity):
+def diagnostic_settings(environ=None):
+    env=os.environ if environ is None else environ
+    canvas=env.get('AF_H3_DIAGNOSTIC_CANVAS','256')
+    attention=env.get('AF_H3_DIAGNOSTIC_ATTENTION','auto')
+    if (canvas!='256' or attention!='auto') and env.get('AF_H3_DIAGNOSTIC')!='1':
+        raise RuntimeError('H3 비교 설정은 검수 모드를 명시해야 합니다')
+    if canvas not in {'256','128','64'} or attention not in {'auto','pytorch'}:
+        raise RuntimeError('지원하지 않는 H3 비교 설정입니다')
+    return {'canvas':int(canvas),'attention_requested':attention,'diagnostic':env.get('AF_H3_DIAGNOSTIC')=='1'}
+
+def select_attention(module,requested):
+    if requested=='pytorch':
+        fn=module.get_attention_function('pytorch',None)
+        if fn is None:raise RuntimeError('요청한 H3 PyTorch 계산 방식이 없습니다')
+        return fn,'pytorch'
+    fn=module.get_attention_function('comfy_kitchen_int8',None)
+    if fn is not None:return fn,'comfy_kitchen_int8'
+    return module.get_attention_function('pytorch'),'pytorch'
+
+def condition_key(chunks,ref_hash,assets,code_identity,profile=None):
     stamps=[(key,str(p.resolve()),p.stat().st_size,p.stat().st_mtime_ns) for key,p in sorted(assets.items())]
     return hashlib.sha256(json.dumps([[(prompt_for(c),frame_count(c)) for c in chunks],ref_hash,stamps,code_identity,
-        {'canvas':256,'reference_channels':'mono_duplicate_or_stereo'}],ensure_ascii=False).encode()).hexdigest()
+        {**(profile or diagnostic_settings({})),'reference_channels':'mono_duplicate_or_stereo'}],ensure_ascii=False).encode()).hexdigest()
 
 class H3Engine:
     name='minimax-h3'
@@ -155,6 +174,7 @@ class H3Engine:
         if emotion_id not in {None,'default'}:raise RuntimeError('MiniMax H3 감정 연출은 대사 손상 청취 판정으로 보류 중입니다')
         if float(speed)!=1:raise RuntimeError('현재 H3 생성은 기본 속도만 지원합니다')
         if not any('\uac00'<=c<='\ud7a3' for c in text):raise RuntimeError('현재 H3 카드 경로는 한국어 대사만 연결했습니다')
+        profile=diagnostic_settings()
         chunks=split_text(text)
         if not ref_audio or not Path(ref_audio).is_file():raise RuntimeError('MiniMax H3에는 참조 목소리가 필요합니다')
         boot=time.monotonic();self.load();runtime_setup=time.monotonic()-boot
@@ -166,7 +186,7 @@ class H3Engine:
         self.mm.EXTRA_RESERVED_VRAM=self.budget['reserve_gib']*1024**3
         self._check_stop()
         ref_bytes=Path(ref_audio).read_bytes();ref_hash=hashlib.sha256(ref_bytes).hexdigest()
-        key=condition_key(chunks,ref_hash,self.assets,self.code_identity)
+        key=condition_key(chunks,ref_hash,self.assets,self.code_identity,profile)
         ref,sr=sf.read(io.BytesIO(ref_bytes),dtype='float32',always_2d=True);del ref_bytes
         if not len(ref) or not np.isfinite(ref).all():raise RuntimeError('H3 참조 목소리가 비어 있거나 손상되었습니다')
         if len(ref)/sr>45:raise RuntimeError('H3 참조는 45초 이하로 준비하세요. 원본을 자동으로 잘라 대체하지 않습니다')
@@ -185,6 +205,7 @@ class H3Engine:
             with torch.inference_mode():
                 if cache_hit:
                     mark('condition_cache');conditions=_copy_condition(self._cached['conditions']);vae=self._vae;model=self._model
+                    attention_selected=self._cached['attention_selected']
                 else:
                     self.release();mark('text_encoder_load')
                     clip=self.sd.load_clip([str(self.assets['encoder'])],embedding_directory=[],clip_type=self.sd.CLIPType.MINIMAX)
@@ -193,17 +214,16 @@ class H3Engine:
                     vae=self.sd.VAE(sd=state,metadata=metadata);del state
                     mark('reference_and_text_encode')
                     for chunk in chunks:
-                        conditions.append(self.ops.reference_to_latent(clip=clip,prompt=prompt_for(chunk),width=256,height=256,
+                        conditions.append(self.ops.reference_to_latent(clip=clip,prompt=prompt_for(chunk),width=profile['canvas'],height=profile['canvas'],
                             length=frame_count(chunk),audio_vae=vae,ref_audios={'ref_audio_0':audio}))
                     mark('release_encoder');self.mm.unload_all_models();clip=None;gc.collect();torch.cuda.empty_cache()
                     mark('diffusion_load')
                     model=self.sd.load_diffusion_model(str(self.assets['model']))
                     model=self.ops.shift_model(model,12.,3.)[0]
-                    attention=self.attention.get_attention_function('comfy_kitchen_int8',None)
-                    if attention is None:attention=self.attention.get_attention_function('pytorch')
+                    attention,attention_selected=select_attention(self.attention,profile['attention_requested'])
                     model=model.clone();model.set_model_optimized_attention(attention)
                     if self.keep_loaded and _condition_bytes(conditions)<=64*1024**2:
-                        self._cached={'key':key,'conditions':_copy_condition(conditions)};self._model=model;self._vae=vae
+                        self._cached={'key':key,'conditions':_copy_condition(conditions),'attention_selected':attention_selected};self._model=model;self._vae=vae
                 for index,(chunk,condition) in enumerate(zip(chunks,conditions)):
                     mark('sampling')
                     positive,latent=condition
@@ -233,7 +253,7 @@ class H3Engine:
                 mark('save');out=np.concatenate(waves);sf.write(output_path,out,decoded['sample_rate'],subtype='FLOAT')
             mark('complete')
             detail={'engine':self.name,'chunks':records,'reference_sha256':ref_hash,
-                    'sample_rate':decoded['sample_rate'],'settings':{'steps':16,'cfg':1,'sampler':'res_multistep','canvas':256},
+                    'sample_rate':decoded['sample_rate'],'settings':{'steps':16,'cfg':1,'sampler':'res_multistep',**profile,'attention_selected':attention_selected},
                     'emotion':'미적용·보류','seconds':time.monotonic()-started,'resource_budget':self.budget,
                     'reference_channels_in':reference_channels,
                     'stage_seconds':timings,'condition_cache_hit':cache_hit,'model_reused':model_reused,

@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace as N
 from unittest.mock import patch
-from h3_engine import condition_key,resource_budget,H3Engine
+from h3_engine import condition_key,resource_budget,H3Engine,diagnostic_settings,select_attention
 from h3_voice_server import run_request
 from _test_root import test_dir
 
@@ -17,6 +17,50 @@ class H3Resident(unittest.TestCase):
                 self.assertNotEqual(key,condition_key(text,ref,assets,code))
             p.write_bytes(b'changed')
             self.assertNotEqual(key,condition_key(['같은 대사'],'ref',assets,'code'))
+
+    def test_diagnostic_defaults_and_explicit_gate(self):
+        self.assertEqual(diagnostic_settings({}),{'canvas':256,'attention_requested':'auto','diagnostic':False})
+        for value in ['128','64']:
+            with self.assertRaises(RuntimeError):diagnostic_settings({'AF_H3_DIAGNOSTIC_CANVAS':value})
+            self.assertEqual(diagnostic_settings({'AF_H3_DIAGNOSTIC':'1','AF_H3_DIAGNOSTIC_CANVAS':value})['canvas'],int(value))
+        for value in ['32','0','256.0','garbage']:
+            with self.assertRaises(RuntimeError):diagnostic_settings({'AF_H3_DIAGNOSTIC':'1','AF_H3_DIAGNOSTIC_CANVAS':value})
+        with self.assertRaises(RuntimeError):diagnostic_settings({'AF_H3_DIAGNOSTIC':'1','AF_H3_DIAGNOSTIC_ATTENTION':'sage'})
+
+    def test_canvas_and_attention_do_not_share_condition_cache(self):
+        with tempfile.TemporaryDirectory(dir=test_dir('temp','h3-profile')) as d:
+            p=Path(d)/'model';p.write_bytes(b'a')
+            profiles=[diagnostic_settings({'AF_H3_DIAGNOSTIC':'1','AF_H3_DIAGNOSTIC_CANVAS':str(n)}) for n in [256,128,64]]
+            profiles.append(diagnostic_settings({'AF_H3_DIAGNOSTIC':'1','AF_H3_DIAGNOSTIC_ATTENTION':'pytorch'}))
+            self.assertEqual(len({condition_key(['대사'],'ref',{'model':p},'code',r) for r in profiles}),4)
+
+    def test_attention_requested_and_selected_are_separate(self):
+        native=object();fallback=object()
+        module=N(get_attention_function=lambda name,*a: native if name=='comfy_kitchen_int8' else fallback)
+        self.assertEqual(select_attention(module,'auto'),(native,'comfy_kitchen_int8'))
+        self.assertEqual(select_attention(module,'pytorch'),(fallback,'pytorch'))
+        module=N(get_attention_function=lambda name,*a: fallback if name=='pytorch' else None)
+        self.assertEqual(select_attention(module,'auto'),(fallback,'pytorch'))
+        with self.assertRaises(RuntimeError):select_attention(N(get_attention_function=lambda *a:None),'pytorch')
+
+    def test_comparison_plan_keeps_seed_text_and_quality(self):
+        import runpy
+        module=runpy.run_path(str(Path(__file__).resolve().parents[1]/'scripts'/'compare-h3-profiles.py'))
+        variants=module['plan'](2024)
+        self.assertEqual([v['canvas'] for v in variants],[256,128,64,256])
+        self.assertEqual(len({v['text'] for v in variants}),1)
+        self.assertTrue(all(v['seed']==2024 and v['steps']==16 and v['cfg']==1 and v['sampler']=='res_multistep' for v in variants))
+        self.assertEqual([v['attention_requested'] for v in variants],['auto','auto','auto','pytorch'])
+
+    def test_plan_does_not_read_reference_or_start_engine(self):
+        import runpy
+        module=runpy.run_path(str(Path(__file__).resolve().parents[1]/'scripts'/'compare-h3-profiles.py'))
+        with patch('sys.argv',['compare','--reference','missing.wav']),patch('builtins.print') as output,patch('pathlib.Path.read_bytes',side_effect=AssertionError('원본 읽기 금지')):
+            module['main']()
+        self.assertIn('계획만',output.call_args.args[0])
+        with patch('sys.argv',['compare','--execute']),patch('sys.stderr'):
+            with self.assertRaises(SystemExit) as error:module['main']()
+        self.assertEqual(error.exception.code,2)
 
     def test_owned_memory_is_not_counted_as_foreign_gpu_work(self):
         with patch('h3_engine.subprocess.run',return_value=N(returncode=0,stdout='14500, 1000, 40')):
