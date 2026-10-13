@@ -8,7 +8,7 @@ const calls: unknown[][]=[]
 }}
 const {useSynthesisCards,newCard}=await import('../stores/synthesisCards.store.ts')
 const {useAppStore}=await import('../stores/app.store.ts')
-const {startCardGeneration,endCardJob}=await import('./cardSynthesis.ts')
+const {startCardGeneration,endCardJob,acceptCardResult}=await import('./cardSynthesis.ts')
 test('H3 요청은 카드의 원문과 참조·요청 ID를 전달하고 자동 기호 해석을 하지 않는다',async()=>{
   const card=newCard({path:'synthetic-A.wav',name:'A',duration:8},{engine:'minimax-h3',speed:1,pitch:0,emotion:'자연스럽게',reference:'auto',start:0,end:8})
   card.text='안녕하세요~ 반갑습니다!';card.settings.symbolDirection=true
@@ -20,5 +20,13 @@ test('H3 요청은 카드의 원문과 참조·요청 ID를 전달하고 자동 
   assert.equal(options.ttsEngine,'minimax-h3');assert.equal(options.ttsText,card.text)
   assert.equal(options.ttsTailMode,'off')
   assert.ok(options.clientRequestId);assert.equal(options.ttsReferenceOverride,'synthetic-reference.wav')
+  const wrong=acceptCardResult({clientRequestId:'old-request',tracks:[{path:'wrong.wav'}]})
+  assert.ok(wrong.dropped);assert.ok(useSynthesisCards.getState().job)
+  const accepted=acceptCardResult({clientRequestId:options.clientRequestId,tracks:[{path:'h3-result.wav'}]})
+  assert.ok(accepted.takeId)
+  const take=useSynthesisCards.getState().cards[0].takes.find(t=>t.id===accepted.takeId)!
+  assert.equal(take.path,'h3-result.wav');assert.equal(take.text,card.text)
+  assert.equal(take.applied?.engine,'minimax-h3');assert.equal(take.source.path,card.source!.path)
+  assert.equal(useSynthesisCards.getState().job,null)
   endCardJob()
 })

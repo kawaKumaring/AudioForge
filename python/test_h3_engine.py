@@ -9,6 +9,20 @@ from h3_engine import H3Engine, asset_paths, frame_count, prompt_for, split_text
 TMP=Path(__file__).resolve().parents[1]/'_local/tests/h3';TMP.mkdir(parents=True,exist_ok=True)
 
 class H3Contract(unittest.TestCase):
+    def test_nested_chunks_do_not_reuse_next_segment_seed(self):
+        engine=H3Engine();engine.begin_segment(100)
+        self.assertEqual(engine.run_seed,100)
+        engine.records=[{'chunks':[{'seed':100},{'seed':101}]}]
+        engine.begin_segment(100);self.assertEqual(engine.run_seed,102)
+
+    def test_public_evidence_omits_text_and_keeps_provenance(self):
+        engine=H3Engine()
+        engine.records=[{'reference_sha256':'ref','chunks':[{'seed':12,'sent_text':'대사','sent_text_sha256':'text'}]}]
+        public=engine.public_records()
+        self.assertNotIn('sent_text',public[0]['chunks'][0])
+        self.assertEqual(public[0]['chunks'][0]['sent_text_sha256'],'text')
+        self.assertEqual(engine.records[0]['chunks'][0]['sent_text'],'대사')
+
     def test_split_preserves_every_character(self):
         text=('일곱 번째 장면입니다. 오늘도 같은 목소리로 말합니다.\n'*12)
         chunks=split_text(text)

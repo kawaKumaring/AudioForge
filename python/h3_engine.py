@@ -72,6 +72,16 @@ class H3Engine:
     def __init__(self):
         self.run_seed=0;self.records=[];self._ready=False
 
+    def begin_segment(self,base_seed):
+        # 내부 분할까지 센다. 다음 문장의 씨앗이 앞 문장 마지막 조각과 겹치지 않는다.
+        self.run_seed=(int(base_seed)+sum(len(r['chunks']) for r in self.records)) % (2**31-1)
+
+    def public_records(self):
+        # 원문은 private 기록에만. 공용 메타와 검수 헤더는 같은 표현을 사용한다.
+        return [{**{k:v for k,v in r.items() if k != 'chunks'},
+                 'chunks':[{k:v for k,v in c.items() if k != 'sent_text'} for c in r['chunks']]}
+                for r in self.records]
+
     def load(self):
         if self._ready:return
         runtime,self.assets=asset_paths();self.budget=resource_budget()

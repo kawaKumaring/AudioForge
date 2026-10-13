@@ -4463,6 +4463,8 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             if isinstance(engine, (QwenCustomEngine, H3Engine)):
                 engine.run_seed = (seg_seed + i) % (2 ** 31 - 1)
                 seg_seed_used = True
+            if isinstance(engine, H3Engine):
+                engine.begin_segment(seg_seed)
             engine_name = engine.name
             seg_engines.append(engine_name)
 
@@ -4496,6 +4498,9 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                 except Exception:
                     pass       # 기록 실패가 합성을 막지 않는다
             engine.synthesize_segment(say_text, ref, emotion_id, speed, seg_path)
+            if isinstance(engine, H3Engine) and _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
+                if engine.records and _CONCAT_RECORDER.sent_private:
+                    _CONCAT_RECORDER.sent_private[-1]["chunks"] = list(engine.records[-1]["chunks"])
             segment_paths.append(seg_path)
 
         _record_spoken("qwen" if _seg_qwen_used else "other")
@@ -4613,9 +4618,10 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                         expression_engine=None, expression_quality_verified=False,
                         prompt_source="audio_reference", reference_conditioning_mode_effective=None,
                         reference_conditioning_method="H3 audio VAE latent",
-                        h3_requests=[{**{k:v for k,v in record.items() if k != "chunks"},
-                            "chunks":[{k:v for k,v in chunk.items() if k != "sent_text"} for chunk in record["chunks"]]}
-                            for record in _get_engine("minimax-h3").records])
+                        h3_requests=_get_engine("minimax-h3").public_records())
+            if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
+                meta["run_id"] = os.path.basename(_CONCAT_RECORDER.root)
+                _CONCAT_RECORDER.set_run_header(h3_requests=meta["h3_requests"])
         tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
         _rr["status"] = "ok"
         if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
