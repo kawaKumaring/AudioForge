@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import time
+from h3_timing import estimate, split_by_budget, TIMING_VERSION
 
 FILES={'model':'minimax_h3_ref2va_pruned_int8_convrot.safetensors',
        'encoder':'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors','audio_vae':'minimax_h3_audio_vae_fp32.safetensors'}
@@ -28,27 +29,20 @@ def asset_paths(root=None):
         if (model/name).stat().st_size!=manifest['assets'][key]['size']:raise RuntimeError('H3 모델 크기가 기록과 다릅니다: '+name)
     return runtime,{key:model/name for key,name in FILES.items()}
 
-def split_text(text,limit=170):
+def split_text(text,limit=None):
     if not text.strip():raise RuntimeError('H3에 읽을 대사가 없습니다')
     if any(tag in text for tag in ('<d>','</d>','<|','|>')):raise RuntimeError('대사에 H3 내부 제어 태그를 넣을 수 없습니다')
     if re.search(r'<#[0-9.]+#>|\((?:laughs|chuckle|breath|sighs)\)',text):
         raise RuntimeError('Speech API 전용 발성·쉼 태그는 H3 기본 말투 경로에서 지원하지 않습니다')
-    chunks=[];rest=text
-    while len(rest)>limit:
-        candidates=[m.end() for m in re.finditer(r'(?<=[.!?。！？])\s+|\s+',rest) if m.end()<=limit]
-        if not candidates:raise RuntimeError('H3 한 어절이 길이 예산을 넘습니다. 단어를 자르지 말고 띄어쓰기를 확인하세요')
-        end=max(candidates);chunks.append(rest[:end]);rest=rest[end:]
-    if rest:chunks.append(rest)
-    assert ''.join(chunks)==text
-    return chunks
+    return split_by_budget(text,limit)
 
 def frame_count(text):
-    seconds=max(5,len(text)/7+2)
-    if seconds>30:raise RuntimeError('H3 한 구간의 시간 예산을 넘었습니다')
-    frames=max(5,round(seconds*24));return frames+(5-frames)%17
+    result=estimate(text)
+    if result['frames']>736:raise RuntimeError('H3 한 구간의 시간 예산을 넘었습니다')
+    return result['frames']
 
 def prompt_for(text):
-    # 초기 기본 말투 시험과 같은 틀. 감정·기호 연출·Speech API 태그를 덧붙이지 않는다.
+    # 성별을 특정하지 않는 앱 기본 지시. 초기 여성 지시와 다름, 감정 태그 없음.
     return ('subject_definitions:\n<Subject 1> is a person who uses <Audio 1> as their speaking voice timbre reference.\n\n'
             'summary:\n[reference generation + audio reference] A character speaking warmly to a friend.\n\n'
             'retention_analysis:\n<Audio 1>: reference - its vocal timbre guides the vocal delivery of <Subject 1> without copying the original signal.\n\n'
@@ -106,7 +100,7 @@ def select_attention(module,requested):
 def condition_key(chunks,ref_hash,assets,code_identity,profile=None):
     stamps=[(key,str(p.resolve()),p.stat().st_size,p.stat().st_mtime_ns) for key,p in sorted(assets.items())]
     return hashlib.sha256(json.dumps([[(prompt_for(c),frame_count(c)) for c in chunks],ref_hash,stamps,code_identity,
-        {**(profile or diagnostic_settings({})),'reference_channels':'mono_duplicate_or_stereo'}],ensure_ascii=False).encode()).hexdigest()
+        {**(profile or diagnostic_settings({})),'timing_rule':TIMING_VERSION,'reference_channels':'mono_duplicate_or_stereo'}],ensure_ascii=False).encode()).hexdigest()
 
 class H3Engine:
     name='minimax-h3'
@@ -249,11 +243,11 @@ class H3Engine:
                     channel=int(np.argmax(np.mean(wave.astype('float64')**2,axis=1)))
                     mono=wave[channel].copy();waves.append(mono)
                     records.append({'index':index,'seed':seed,'sent_text':chunk,'sent_text_sha256':hashlib.sha256(chunk.encode()).hexdigest(),
-                                    'frames':frame_count(chunk),'duration':len(mono)/decoded['sample_rate'],'mono_channel':channel})
+                                    'frames':frame_count(chunk),'timing_estimate':estimate(chunk),'duration':len(mono)/decoded['sample_rate'],'mono_channel':channel})
                 mark('save');out=np.concatenate(waves);sf.write(output_path,out,decoded['sample_rate'],subtype='FLOAT')
             mark('complete')
             detail={'engine':self.name,'chunks':records,'reference_sha256':ref_hash,
-                    'sample_rate':decoded['sample_rate'],'settings':{'steps':16,'cfg':1,'sampler':'res_multistep',**profile,'attention_selected':attention_selected},
+                    'sample_rate':decoded['sample_rate'],'settings':{'steps':16,'cfg':1,'sampler':'res_multistep','timing_rule':TIMING_VERSION,**profile,'attention_selected':attention_selected},
                     'emotion':'미적용·보류','seconds':time.monotonic()-started,'resource_budget':self.budget,
                     'reference_channels_in':reference_channels,
                     'stage_seconds':timings,'condition_cache_hit':cache_hit,'model_reused':model_reused,

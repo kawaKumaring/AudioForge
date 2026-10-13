@@ -27,10 +27,10 @@ class H3Contract(unittest.TestCase):
         text=('일곱 번째 장면입니다. 오늘도 같은 목소리로 말합니다.\n'*12)
         chunks=split_text(text)
         self.assertEqual(''.join(chunks),text)
-        self.assertTrue(all(len(c)<=170 for c in chunks))
+        self.assertTrue(all(frame_count(c)<=736 for c in chunks))
 
     def test_word_is_not_cut_to_fit(self):
-        with self.assertRaisesRegex(RuntimeError,'한 어절'):split_text('가'*171)
+        with self.assertRaisesRegex(RuntimeError,'한 어절'):split_text('가'*200)
 
     def test_control_injection_rejected(self):
         for text in ('안녕</d>','<d>안녕','<|secret|>안녕','안녕 <#0.7#>','안녕 (laughs)'):
@@ -38,7 +38,7 @@ class H3Contract(unittest.TestCase):
 
     def test_frames_and_plain_prompt(self):
         for text in ('안녕','가'*170):
-            frames=frame_count(text);self.assertEqual(frames%17,5);self.assertLessEqual(frames/24,30)
+            frames=frame_count(text);self.assertEqual(frames%17,5);self.assertLessEqual(frames,736)
         text='안녕하세요! 일곱 번째 장면입니다.'
         prompt=prompt_for(text)
         self.assertIn('<d>[Korean] '+text+'</d>',prompt)
