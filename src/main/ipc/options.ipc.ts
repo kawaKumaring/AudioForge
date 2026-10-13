@@ -1,3 +1,4 @@
+import {WORKSPACE_LAYOUT_KEY,defaultWorkspaceLayout,validWorkspaceLayout} from '../../shared/workspaceLayout'
 /**
  * 앱 설정 통로 — **만든 것을 둘 자리**와 **쌓인 것 비우기.**
  *
@@ -122,6 +123,21 @@ function readDirNames(p: string): string[] {
 }
 
 export function registerOptionsIpc(): void {
+  ipcMain.handle('options:workspace-layout-get',()=>{
+    try{
+      const got=readSettingsFile(settingsPath())
+      if(got.kind==='corrupt')return {ok:false,why:'메뉴 배치 설정을 읽지 못했습니다'}
+      const raw=got.kind==='ok'?(got.settings as Record<string,unknown>)[WORKSPACE_LAYOUT_KEY]:undefined
+      if(raw===undefined)return {ok:true,layout:defaultWorkspaceLayout()}
+      if(!validWorkspaceLayout(raw))return {ok:false,why:'저장된 메뉴 배치가 손상되었습니다. 기존 설정은 유지합니다.'}
+      return {ok:true,layout:raw}
+    }catch{return {ok:false,why:'메뉴 배치 설정을 읽지 못했습니다'}}
+  })
+  ipcMain.handle('options:workspace-layout-set',(_e,layout:unknown)=>{
+    if(!validWorkspaceLayout(layout))return {ok:false,why:'메뉴 배치가 올바르지 않습니다'}
+    try{return writeOne(WORKSPACE_LAYOUT_KEY,layout)?{ok:true}:{ok:false,why:'메뉴 배치를 저장하지 못했습니다'}}
+    catch{return {ok:false,why:'메뉴 배치를 저장하지 못했습니다'}}
+  })
   ipcMain.handle('options:get', () => ({
     cardAutoSave: readOne('cardAutoSave') === true,
     chosenRoot: typeof readOne(OUTPUT_ROOT_KEY) === 'string' ? readOne(OUTPUT_ROOT_KEY) as string : '',

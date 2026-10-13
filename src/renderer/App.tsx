@@ -1,3 +1,4 @@
+import {useWorkspaceLayout} from './lib/workspaceLayout'
 import { loadPlaybackEffects, openEffectsPanel, effectsPanelOpen, onPlaybackEffects } from './lib/playbackEffects'
 import { loadPlaybackBoost } from './lib/playbackBoost'
 import { useEffect, useRef, useState } from 'react'
@@ -38,9 +39,10 @@ export default function App() {
   useEffect(() => { void loadPlaybackEffects(); void loadPlaybackBoost(); void loadPlaybackVolume(); void loadPlaybackRate() }, [])
   // 콘솔 창 — 켜 두었으면 다시 띄운다. 화면을 옮긴 것도 동작 기록에 남긴다(2026-09-30).
   useEffect(() => {
+    let active = true
     let off = () => {}
-    void loadConsolePref().then((f) => { off = f })
-    return () => off()
+    void loadConsolePref().then(f => { if (active) off = f; else f() }).catch(() => {})
+    return () => { active = false; off() }
   }, [])
   useEffect(() => { opLog('mode', `화면 ${mode}`) }, [mode])
   useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = 0 }, [mode, synthesisTab])
@@ -54,6 +56,7 @@ export default function App() {
   }, [mode, synthesisTab])
 
   const synthesisView = useSynthesisCards(s => s.view)
+  const {layout:menuLayout} = useWorkspaceLayout()
   const workspace = WORKSPACES[mode]
   const heading = ({ music: ['MUSIC', '음악 작업실'], conversation: ['DIALOGUE', '대화 작업실'], transcribe: ['TRANSCRIPT', '받아쓰기'], split: ['TRACKS', '트랙 편집실'], tts: ['VOICE', '목소리 작업실'], dub: ['SONGS', '노래 작업실'], lab: ['LAB', '실험실'], reader: ['READER', '내 서재'], 'dialogue-rebuild': ['DIALOGUE', '대화 편집실'] } as const)[mode]
   const showSharedRun = mode !== 'tts' && mode !== 'lab' && mode !== 'dub' && mode !== 'reader'
@@ -98,7 +101,7 @@ export default function App() {
             <div style={{ marginBottom: 7, fontSize: 10, letterSpacing: '.16em', color: '#b5aa95' }}>AUDIOFORGE · {heading[0]}</div>
             <div style={{ display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' }}>
               <h1 title={workspace.description} style={{ fontSize: 25, lineHeight: 1.35, fontWeight: 600, letterSpacing: '-.04em', margin: 0 }}>{heading[1]}</h1>
-              {mode === 'dub' && <span style={{ padding: '3px 7px', border: '1px solid var(--border-subtle)', borderRadius: 5, color: 'var(--text-muted)', fontSize: 11 }}>개발 중</span>}
+              {menuLayout.create.some(id=>id===mode) && <span style={{ padding: '3px 7px', border: '1px solid var(--border-subtle)', borderRadius: 5, color: 'var(--text-muted)', fontSize: 11 }}>개발 중</span>}
               {showSharedRun && !busy && <span aria-label="작업 흐름" style={{ marginLeft: 'auto', display: 'inline-flex', alignItems: 'center', gap: 7, fontSize: 11, color: done ? 'var(--emerald)' : 'var(--text-muted)' }}>
                 <span aria-hidden="true" style={{ width: 5, height: 5, borderRadius: '50%', background: 'currentColor' }}/>{!fileInfo ? '파일을 기다리는 중' : done ? '결과 준비됨' : status === 'error' ? '확인 필요' : '시작할 준비 됐어요'}
               </span>}

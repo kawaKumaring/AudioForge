@@ -367,6 +367,8 @@ const api = {
 
   /** 앱 설정 — 만든 것을 둘 자리와 쌓인 것 비우기. */
   options: {
+    getWorkspaceLayout: (): Promise<{ok:boolean;layout?:unknown;why?:string}> => ipcRenderer.invoke('options:workspace-layout-get'),
+    setWorkspaceLayout: (layout:import('../shared/workspaceLayout').WorkspaceLayout): Promise<{ok:boolean;why?:string}> => ipcRenderer.invoke('options:workspace-layout-set',layout),
     // tempDir/strayTemp — 임시 자리가 앱 안인지 화면이 보여 준다(2026-09-28).
     get: (): Promise<{ chosenRoot: string; beside: boolean; appRoot: string; dataDir: string;
       tempDir: string; strayTemp: number; cardAutoSave: boolean }> => ipcRenderer.invoke('options:get'),
