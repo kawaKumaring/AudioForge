@@ -18,6 +18,8 @@
 export const CARD_STORAGE_KEY = 'synthesisCards'
 
 export interface SavedTake {
+  contentPath?: string
+  contentFault?: string
   id: string
   path: string
   createdAt: number
@@ -48,6 +50,9 @@ export interface SavedTake {
 }
 
 export interface SavedCard {
+  contentPaths?: string[]
+  contentPath?: string
+  contentFault?: string
   id: string
   label: string
   sourcePath: string
@@ -107,6 +112,7 @@ export function parseSavedWork(raw: unknown): SavedWork | null {
       const tt = t as Record<string, unknown>
       if (!str(tt.id) || !str(tt.path)) continue     // 파일 없는 생성본은 되살릴 것이 없다
       takes.push({
+        ...(str(tt.contentPath) ? {contentPath:str(tt.contentPath)} : {}), ...(str(tt.contentFault) ? {contentFault:str(tt.contentFault)} : {}),
         id: str(tt.id), path: str(tt.path), createdAt: num(tt.createdAt),
         text: str(tt.text), sourcePath: str(tt.sourcePath), sourceName: str(tt.sourceName),
         sourceDuration: num(tt.sourceDuration),
@@ -119,6 +125,8 @@ export function parseSavedWork(raw: unknown): SavedWork | null {
     }
     const adopted = str(c.adoptedId)
     cards.push({
+      ...(Array.isArray(c.contentPaths)?{contentPaths:c.contentPaths.filter((p):p is string=>typeof p==='string')}:{}),
+      ...(str(c.contentPath) ? {contentPath:str(c.contentPath)} : {}), ...(str(c.contentFault) ? {contentFault:str(c.contentFault)} : {}),
       id, label: str(c.label), sourcePath: str(c.sourcePath), sourceName: str(c.sourceName),
       sourceDuration: num(c.sourceDuration), text: str(c.text),
       settings: (c.settings as Record<string, unknown>) || {},
@@ -149,7 +157,7 @@ function importedFrom(raw: unknown): { kind: 'lab' | 'draft'; key: string; at: n
 /** 되살릴 만한 것이 들어 있는가. 빈 껍데기로 묻지 않는다. */
 export function savedWorkHasContent(w: SavedWork | null): boolean {
   if (!w || !w.cards.length) return false
-  return w.cards.some((c) => c.text.trim() || c.takes.length || c.sourcePath)
+  return w.cards.some((c) => c.text.trim() || c.takes.length || c.sourcePath || c.contentPath || c.builtin)
 }
 
 export interface RestoreAsk {

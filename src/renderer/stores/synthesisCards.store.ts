@@ -19,6 +19,8 @@ export type CardSettings = CardEngineSettings
  *   있으면 요청값과 다르다. 이것을 안 남기면 "왜 +4 로 했는데 이 소리지" 를 설명할 수 없다.
  */
 export type CardTake = {
+  contentPath?: string
+  contentFault?: string
   id: string
   path: string
   createdAt: number
@@ -38,6 +40,9 @@ export type CardTake = {
 }
 
 export type SynthesisCard = {
+  contentPaths?: string[]
+  contentPath?: string
+  contentFault?: string
   id: string; label: string; source: CardSource | null; text: string
   /**
    * 설치된 기본 목소리로 읽는 카드. `source` 와 **둘 중 하나**다.

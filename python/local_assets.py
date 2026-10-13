@@ -174,6 +174,15 @@ def run_record_dir(run_id):
 
     진단 스위치와 무관하게 항상 여기에 쌓인다. 사용자 최종 출력 폴더가 아니라
     앱 관리 위치다."""
+    output = os.environ.get("AUDIOFORGE_RUN_RECORD_OUTPUT_DIR", "").strip()
+    if output:
+        rid = str(run_id or "").strip()
+        if not rid or any(c in rid for c in r'\\/:*?"<>|') or any(ord(c) < 32 for c in rid):
+            raise ValueError("실행 식별자가 올바르지 않습니다")
+        p = os.path.join(os.path.realpath(output), ".generation-record", rid)
+        assert_run_record_root(p)
+        os.makedirs(p, exist_ok=True)
+        return p
     p = _run_scoped("runs", run_id)
     _prune_old_runs(os.path.dirname(p), keep=p)
     return p
@@ -249,3 +258,19 @@ def assert_inside_local(path, argv=None):
     raise ExternalOutputBlocked(
         "DEV_OUTPUT_OUTSIDE_LOCAL: 개발 산출물은 _local 안에 써야 한다. "
         "정말 밖으로 써야 하면 %s 를 명시하라." % EXTERNAL_OVERRIDE_FLAG)
+
+
+def assert_run_record_root(path):
+    """사용자 결과 기록은 지정 결과의 기록 하위만 허용한다. 개발 검사는 기존 규칙."""
+    output = os.environ.get("AUDIOFORGE_RUN_RECORD_OUTPUT_DIR", "").strip()
+    if not output:
+        return assert_inside_local(path)
+    root = os.path.normcase(os.path.realpath(os.path.join(output, ".generation-record")))
+    real = os.path.normcase(os.path.realpath(path))
+    try:
+        inside = os.path.commonpath([root, real]) == root
+    except ValueError:
+        inside = False
+    if not inside:
+        raise ExternalOutputBlocked("생성 기록은 해당 결과의 기록 폴더에만 저장합니다")
+    return real

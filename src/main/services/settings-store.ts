@@ -1,3 +1,5 @@
+// @ts-ignore TS5097
+import {encodeLegacyInput} from './legacy-input-store.ts'
 /**
  * `settings.json` 원자 저장 — main 이 소유하는 키 단위 병합.
  *
@@ -151,7 +153,12 @@ export function setSettingsKey(
     current.kind === 'ok' ? migrateSettings(current.settings).settings : {}
   const next: Record<string, unknown> = { ...base }
   if (value === undefined) delete next[key]
-  else next[key] = value
+  else {
+    try {
+      const chosen = typeof base.outputRoot === 'string' && base.outputRoot.trim() ? base.outputRoot : dirname(dirname(dirname(path)))
+      next[key] = encodeLegacyInput(key, value, join(chosen, 'AudioForge_output'),base[key])
+    } catch { return {ok:false,code:'USER_INPUT_WRITE_FAILED',preserved:true} }
+  }
   const stamped = stampSettingsMeta(next, opts.writtenBy ?? null, (opts.now ?? (() => new Date()))())
 
   const dir = dirname(path)

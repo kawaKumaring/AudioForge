@@ -4423,6 +4423,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             _rr["status"] = "ok"
             if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
                 _CONCAT_RECORDER.set_result(final_path)
+                meta["run_record_dir"] = os.path.abspath(_CONCAT_RECORDER.root)
                 _CONCAT_RECORDER.set_run_header(
                     **{k: meta.get(k) for k in _RUN_HEADER_FROM_METADATA if k in meta})
             emit("progress", percent=99, message="완료!")
@@ -4626,6 +4627,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         _rr["status"] = "ok"
         if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
             _CONCAT_RECORDER.set_result(final_path)
+            meta["run_record_dir"] = os.path.abspath(_CONCAT_RECORDER.root)
             _CONCAT_RECORDER.set_run_header(
                 **{k: meta.get(k) for k in _RUN_HEADER_FROM_METADATA if k in meta})
         emit("progress", percent=99, message="완료!")

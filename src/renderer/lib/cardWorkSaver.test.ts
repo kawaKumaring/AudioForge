@@ -177,9 +177,10 @@ test('치워 둔 문서를 다시 꺼내 쓸 수 있다', async () => {
 
 test('읽지 못해도 저장본을 지우지 않는다', async () => {
   getImpl = async () => { throw new Error('읽기 실패') }
-  const f = await saver.loadSavedFile()
-  assert.equal(f.current, null)
-  assert.deepEqual(f.kept, [])
+  await assert.rejects(saver.loadSavedFile(), /읽지 못했습니다/)
+  saver.queueSave(work('읽기 실패 뒤 변경'))
+  await saver.flushSave()
+  saver.flushSaveSync()
   assert.equal(writes.length, 0, '읽기 실패가 쓰기를 부른다 — 저장본을 날린다')
 })
 
@@ -201,4 +202,18 @@ test('종료 저장도 보관함을 함께 남긴다', async () => {
   saver.flushSaveSync()
   const last = syncWrites[syncWrites.length - 1]?.value as { kept: unknown[] }
   assert.equal(last.kept.length, 1, '종료 저장이 보관함을 날린다')
+})
+ test('자동 저장을 끄면 예약·창 종료 저장도 쓰지 않는다',async()=>{
+  saver.configureCardAutoSave(false)
+  saver.queueSave(work('자동 저장 꺼짐'))
+  await saver.flushSave();saver.flushSaveSync()
+  assert.equal(writes.length,0)
+ })
+
+test('별개 카드 작업을 시작하면 앞 카드 정보는 보관 목록에 남긴다',async()=>{
+ const first=work('앞 작업');const second=work('뒤 작업');second.cards[0].id='별개 카드'
+ saver.queueSave(first);await saver.flushSave()
+ saver.queueSave(second);await saver.flushSave()
+ assert.equal(saver.savedFileNow().kept.length,1)
+ assert.equal(saver.savedFileNow().kept[0].cards[0].text,'앞 작업')
 })

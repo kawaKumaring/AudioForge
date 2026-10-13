@@ -452,6 +452,10 @@ def main():
         sys.exit(1)
 
     os.makedirs(args.output, exist_ok=True)
+    if args.mode == "tts":
+        os.environ["AUDIOFORGE_RUN_RECORD_OUTPUT_DIR"] = os.path.abspath(args.output)
+    else:
+        os.environ.pop("AUDIOFORGE_RUN_RECORD_OUTPUT_DIR", None)
 
     try:
         # ── TTS mode ──

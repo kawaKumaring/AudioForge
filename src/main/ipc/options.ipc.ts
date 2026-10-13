@@ -123,6 +123,7 @@ function readDirNames(p: string): string[] {
 
 export function registerOptionsIpc(): void {
   ipcMain.handle('options:get', () => ({
+    cardAutoSave: readOne('cardAutoSave') === true,
     chosenRoot: typeof readOne(OUTPUT_ROOT_KEY) === 'string' ? readOne(OUTPUT_ROOT_KEY) as string : '',
     beside: readOne(OUTPUT_BESIDE_KEY) === true,
     appRoot: appRootPath(),

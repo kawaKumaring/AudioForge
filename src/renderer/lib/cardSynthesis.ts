@@ -96,6 +96,7 @@ export function serializeWork(
     // ★출처는 문서에 속한다. 편집 한 번에 사라지면 '이미 가져온 작업' 을 알아볼 수 없다.
     ...(importedFrom ? { importedFrom: { ...importedFrom } } : {}),
     cards: cards.map((c) => ({
+      contentPaths: c.contentPaths, contentPath: c.contentPath, contentFault: c.contentFault,
       id: c.id, label: c.label,
       sourcePath: c.source?.path || '', sourceName: c.source?.name || '',
       sourceDuration: c.source?.duration || 0,
@@ -105,6 +106,7 @@ export function serializeWork(
       //   하나라도 빠지면 되살린 카드가 '목소리 없는 카드' 가 된다(2026-09-27 재현).
       ...(c.builtin ? { builtin: { ...c.builtin } } : {}),
       takes: c.takes.map((t) => ({
+        contentPath: t.contentPath, contentFault: t.contentFault,
         id: t.id, path: t.path, createdAt: t.createdAt, text: t.text,
         sourcePath: t.source.path, sourceName: t.source.name,
         sourceDuration: t.source.duration || 0,
@@ -145,6 +147,7 @@ export async function hydrateWork(w: SavedWork): Promise<{
       start: num(c.settings.start, 0), end: num(c.settings.end, c.sourceDuration),
     }
     return {
+      contentPaths: c.contentPaths, contentPath: c.contentPath, contentFault: c.contentFault,
       id: c.id, label: c.label,
       source: c.sourcePath ? { path: c.sourcePath, name: c.sourceName, duration: c.sourceDuration } : null,
       // ★기본 목소리를 되살린다. 모양이 아니면 **자동으로 다른 목소리를 넣지 않는다** —
@@ -152,6 +155,7 @@ export async function hydrateWork(w: SavedWork): Promise<{
       ...(builtinFrom(c.builtin) ? { builtin: builtinFrom(c.builtin) } : {}),
       text: c.text, settings, adoptedId: c.adoptedId,
       takes: c.takes.map((t) => ({
+        contentPath: t.contentPath, contentFault: t.contentFault,
         id: t.id, path: t.path, createdAt: t.createdAt, text: t.text,
         source: { path: t.sourcePath, name: t.sourceName, duration: num(t.sourceDuration, 0) },
         // ★기록이 없으면 **카드 설정을 빌려 오지 않는다.** 빌려 온 값은 자리를 채울 뿐
@@ -238,6 +242,7 @@ function appliedFrom(raw: Record<string, unknown>): CardApplied {
   const out: Record<string, unknown> = {
     notes: Array.isArray(a.notes) ? a.notes : [],
   }
+  if (typeof a.h3Direction === 'string') out.h3Direction = a.h3Direction
   if (a.engine === 'qwen3' || a.engine === 'minimax-h3') out.engine = a.engine
   if (typeof a.speed === 'number' && Number.isFinite(a.speed)) out.speed = a.speed
   if (typeof a.pitch === 'number' && Number.isFinite(a.pitch)) out.pitch = a.pitch

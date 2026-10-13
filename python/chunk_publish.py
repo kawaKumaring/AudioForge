@@ -298,7 +298,7 @@ class ChunkRecorder:
         if self.active:
             import local_assets
             self.root = root or local_assets.run_record_dir(run_id())
-            local_assets.assert_inside_local(self.root)
+            local_assets.assert_run_record_root(self.root)
 
     def _row(self, gidx):
         return self.rows.setdefault(int(gidx), {"chunk_index": int(gidx)})

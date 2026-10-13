@@ -1,3 +1,6 @@
+import WorkLibraryRow from './WorkLibraryRow'
+import CardStorageActions from './CardStorageActions'
+import {useCardAutoSave} from '../hooks/useCardAutoSave'
 import WorkspaceDock from './WorkspaceDock'
 import ExpressionPromptEditor from './ExpressionPromptEditor'
 import ExpressionPalette from './ExpressionPalette'
@@ -76,7 +79,7 @@ function H3DirectionSettings({ card, close, disabled }: { card: SynthesisCard; c
   return <Modal title="연기 지시" subtitle={card.label} close={close} footer={<><button type="button" style={button} onClick={close}>취소</button><button type="button" style={primary} disabled={disabled || !!fault || card.settings.engine !== 'minimax-h3'} onClick={() => { useSynthesisCards.getState().update(card.id, { settings: { ...card.settings, h3Direction: value } }); close() }}>적용</button></>}>
     <div style={{ ...row, justifyContent: 'space-between', marginBottom: 10 }}><label htmlFor="h3-scene-direction" style={{ fontSize: 12 }}>상황 · 행동 · 말하는 방식</label><span style={badge} title="상황 지시는 대사 밖에 전달합니다. 한국어 감정과 참조 음색 유지의 실제 품질은 아직 검수 전입니다.">실험</span></div>
     <textarea id="h3-scene-direction" data-testid="h3-scene-direction" value={value} disabled={disabled} onChange={e => setValue(e.target.value)} placeholder="예: 친구의 거짓말을 알아챘다. 분노를 억누르며 낮고 단호하게 말한다." style={{ ...field, width: '100%', minHeight: 140, resize: 'vertical', lineHeight: 1.7 }} />
-    <div style={{ ...row, justifyContent: 'space-between', marginTop: 8, ...muted }}><span title="연기 지시는 읽을 대사와 별도로 보관됩니다. 비워 두면 기존 기본 말투로 생성합니다.">대사와 따로 보관</span><span>{Array.from(value.trim()).length} / 1200</span></div>
+    <div style={{ ...row, justifyContent: 'space-between', marginTop: 8, ...muted }}><span title="현재 카드에 적용한 뒤 카드의 대사·연기 지시 저장 버튼으로 파일에 보관합니다. 비워 두면 기존 기본 말투로 생성합니다.">적용 후 별도 저장</span><span>{Array.from(value.trim()).length} / 1200</span></div>
     {fault && <p role="alert" style={{ fontSize: 12, color: 'var(--rose)' }}>{fault}</p>}
   </Modal>
 }
@@ -523,12 +526,13 @@ export default function SynthesisCardWorkspace() {
   // 저장 — **타이머를 여기서 잡지 않는다.**
   // ★화면 수명과 저장 수명을 분리했다(2026-09-27). 예전에는 언마운트에서 타이머를 취소해
   //   메뉴를 빨리 옮기면 마지막 편집이 통째로 사라졌다. 이제 `lib/cardWorkSaver` 가 소유한다.
+  const autoSave = useCardAutoSave()
   const [save, setSave] = useState<SaveState>(() => saveState())
   useEffect(() => onSaveState(setSave), [])
   useEffect(() => {
-    if (!state.dirty) return
+    if (!state.dirty || autoSave !== true) return
     queueSave(serializeWork(state.cards, state.joins, state.importedFrom))
-  }, [state.cards, state.joins, state.dirty, state.importedFrom])
+  }, [state.cards, state.joins, state.dirty, state.importedFrom, autoSave])
   // 떠날 때는 **취소가 아니라 흘려보낸다.**
   useEffect(() => () => { void flushSave() }, [])
 
@@ -573,11 +577,13 @@ export default function SynthesisCardWorkspace() {
   }
 
   /**
-   * 옛 작업 가져오기 — **진입점은 여기 한 곳이다.**
+   * 작업 불러오기 — **진입점은 여기 한 곳이다.**
    *   고르기(list) → 가져올 내용 확인(plan) → 가져오기 → 새 카드 작업(done)
    * ★복사다. 옛 기록도, 하던 작업도 지우지 않는다(하던 것은 보관함으로 간다).
    */
   const [importStep, setImportStep] = useState<'list' | 'plan' | 'done' | null>(null)
+  const [savedImport,setSavedImport] = useState<RestoreChoice[]>([])
+  const [previewSaved,setPreviewSaved] = useState<RestoreChoice|null>(null)
   const [importList, setImportList] = useState<ImportPlan[]>([])
   const [importPick, setImportPick] = useState<ImportPlan | null>(null)
   const [importDup, setImportDup] = useState<{ slot: 'current' | 'kept'; index: number } | null>(null)
@@ -621,13 +627,15 @@ export default function SynthesisCardWorkspace() {
   }
 
   const openImport = async () => {
-    setImportWhy(''); setImportPick(null); setImportDup(null); setImportStep('list')
+    setImportWhy(''); setImportPick(null); setImportDup(null); setSavedImport([]);setImportList([]);setImportStep('list')
     try {
       const all = await window.api.settings.get() as Record<string, unknown>
       const found = legacyWorks(all, Date.now())
+      const saved = await loadSavedFile(true)
+      if (alive.current) setSavedImport(savedChoices(saved))
       if (alive.current) setImportList(found)
     } catch {
-      if (alive.current) { setImportList([]); setImportWhy('옛 작업을 읽지 못했습니다') }
+      if (alive.current) { setImportList([]); setImportWhy('작업 목록을 읽지 못했습니다. 기존 기록은 그대로입니다') }
     }
   }
   /** 고른 작업의 '가져올 내용' 을 연다. 이미 가져온 적이 있으면 그 사실을 먼저 말한다. */
@@ -667,9 +675,15 @@ export default function SynthesisCardWorkspace() {
     setImporting(true); setImportWhy('')
     try {
       // ① 변환 결과를 먼저 화면 모양으로 만들어 본다 — 여기서 실패하면 저장에 손대지 않는다.
-      const h = await hydrateWork(plan.doc)
+      const doc={...plan.doc,cards:plan.doc.cards.map(c=>({...c,id:crypto.randomUUID(),contentPath:'' as string,contentPaths:[] as string[],takes:c.takes.map(t=>({...t,contentPath:''}))}))}
+      for(const card of doc.cards){
+        const saved=await window.api.cards.saveInput(card)
+        if(!saved.ok || !saved.path)throw Error(saved.why||'가져올 대사·지시를 저장하지 못했습니다')
+        card.contentPath=saved.path
+      }
+      const h = await hydrateWork(doc)
       // ② 저장까지 성공해야 가져온 것이다.
-      const why = await importLegacyWork(plan.doc)
+      const why = await importLegacyWork(doc)
       if (why) throw Error(`저장하지 못했습니다(${why})`)
       useSynthesisCards.getState().replaceAll(h.cards, h.joins, h.importedFrom)
       if (!alive.current) return
@@ -686,7 +700,7 @@ export default function SynthesisCardWorkspace() {
       if (st.asked || st.dirty) return
       if (!savedWorkHasContent(file.current) && !file.kept.length) return
       const choices = savedChoices(file)
-      if (choices.length && alive.current) setRestore(choices)
+      if (choices.length && alive.current) {setSavedImport(choices);setImportStep('list')}
     })()
   }, [])
 
@@ -697,6 +711,7 @@ export default function SynthesisCardWorkspace() {
     void keepCurrentAside()
   }
   const takeRestore = (c: RestoreChoice) => {
+    setPreviewSaved(null);setImportStep(null)
     setRestore(null)
     void (async () => {
       try {
@@ -709,7 +724,7 @@ export default function SynthesisCardWorkspace() {
     })()
   }
 
-  const locked = busy || loading
+  const locked = busy || loading || importing
 
   /**
    * **다른 카드**가 지금 목소리를 준비하고 있는가.
@@ -798,8 +813,8 @@ export default function SynthesisCardWorkspace() {
     <style>{`.af-card-progress{appearance:none;border:0;border-radius:3px;overflow:hidden;background:var(--border-subtle)}.af-card-progress::-webkit-progress-bar{background:var(--border-subtle)}.af-card-progress::-webkit-progress-value{background:var(--accent);border-radius:3px}.af-effect-slider{appearance:none;height:4px;border-radius:3px;background:linear-gradient(to right,var(--accent) var(--fill),var(--border-subtle) var(--fill));cursor:pointer}.af-effect-slider::-webkit-slider-thumb{appearance:none;width:15px;height:15px;border-radius:50%;background:var(--accent-light);box-shadow:0 0 0 4px rgba(139,92,246,.12)}.af-effect-slider:disabled{opacity:.4;cursor:not-allowed}.af-effect-group summary::-webkit-details-marker{display:none}.af-effect-group .af-effect-chevron{transition:transform 150ms ease;color:var(--text-muted)}.af-effect-group:not([open]) .af-effect-chevron{transform:rotate(180deg)}.af-take-detail{animation:af-card-open 120ms ease-out}.af-generation-card{transition:border-color 140ms ease,opacity 140ms ease}.af-card-modal button[aria-pressed="true"]{color:var(--accent-light)}.af-generation-card:focus-within{border-color:var(--accent)!important}.af-card-work-button:disabled{cursor:not-allowed;opacity:.4}@keyframes af-card-open{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}@media(prefers-reduced-motion:reduce){.af-take-detail{animation:none}}`}</style>
     <div style={{ ...row, paddingBottom: 2 }}><span style={{ fontSize: 13, fontWeight: 600 }}>생성 카드 <span style={{ ...muted, marginLeft: 5 }}>{state.cards.length}</span></span><span style={{ flex: 1 }}/>
       <button type="button" data-testid="import-legacy" disabled={locked} style={{ ...button, background: 'transparent' }}
-        title="옛 화면에서 만들던 작업을 카드로 복사합니다. 옛 기록은 그대로 남습니다."
-        onClick={() => void openImport()}><Icon name="history"/>옛 작업 가져오기</button>
+        title="저장된 카드와 옛 작업을 한곳에서 보고 불러옵니다."
+        onClick={() => void openImport()}><Icon name="history"/>작업 불러오기</button>
     </div>
     {notice && <div role="status" style={{ ...row, fontSize: 12, color: 'var(--amber)' }}><span style={{ flex: 1 }}>{notice}</span><Action icon="close" label="알림 닫기" onClick={() => setNotice('')}/></div>}
     {save.phase === 'failed' && <div role="alert" data-testid="card-save-failed" style={{ ...row, fontSize: 12, color: 'var(--rose)', padding: '9px 12px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderLeft: '3px solid var(--rose)', borderRadius: 8 }}>
@@ -837,7 +852,7 @@ export default function SynthesisCardWorkspace() {
             pressed={expressionOpen && expressionCard === card.id}
             onClick={() => { setExpressionOpen(!(expressionOpen && expressionCard === card.id)); setExpressionCard(card.id) }}/>)}
             <Action icon="settings" label={`${index + 1}번 카드 고급 옵션`} disabled={locked} onClick={() => setModal({ type: 'settings', id: card.id })}/>
-          <Action icon="trash" label={`${index + 1}번 카드 삭제`} disabled={locked} onClick={() => state.remove(card.id)}/>
+          <CardStorageActions card={card} disabled={locked} autoSave={autoSave === true}/>
           </div>
         </div>
         <div style={{ padding: '6px 20px 0' }} onDragOver={e => { if (!dragging && !locked && e.dataTransfer.types.includes('Files')) { e.preventDefault(); e.stopPropagation(); setHover(card.id) } }} onDragLeave={() => setHover(null)} onDrop={e => { if (!dragging) drop(e, card.id) }}>
@@ -973,10 +988,23 @@ export default function SynthesisCardWorkspace() {
         if (modal.id) useSynthesisCards.getState().setBuiltin(modal.id, v)
         else useSynthesisCards.getState().addBuiltin(v)
       }}/>}
-    {/* 옛 작업 가져오기 — 고르기 → 확인 → 가져옴. 설명 문단 대신 목록과 짧은 사유만. */}
-    {importStep === 'list' && <Modal title="옛 작업 가져오기" subtitle={importList.length ? `${importList.length}개` : ''} close={() => setImportStep(null)}>
+    {/* 작업 불러오기 — 고르기 → 확인 → 가져옴. 설명 문단 대신 목록과 짧은 사유만. */}
+    {previewSaved && <Modal title="작업 내용" subtitle={previewSaved.summary} close={()=>setPreviewSaved(null)} footer={<button style={primary} onClick={()=>takeRestore(previewSaved)}>불러오기</button>}>
+      {previewSaved.work.cards.map(c=><div key={c.id} style={{padding:12,borderBottom:'1px solid var(--border-subtle)'}}>
+        <strong style={{fontSize:13}}>{c.label}</strong><div style={muted}>생성본 {c.takes.length}개</div>
+        {c.contentFault&&<p role="alert" style={{color:'var(--rose)'}}>{c.contentFault}</p>}
+        <p style={{whiteSpace:'pre-wrap',fontSize:12}}>{c.text || '따로 저장한 대사가 없습니다.'}</p>
+        {typeof c.settings.h3Direction==='string'&&c.settings.h3Direction&&<p style={{...muted,whiteSpace:'pre-wrap'}}>연기 지시: {c.settings.h3Direction}</p>}
+      </div>)}
+    </Modal>}
+    {importStep === 'list' && !previewSaved && <Modal title="작업 불러오기" subtitle={`${savedImport.length + importList.length}개`} close={() => setImportStep(null)}>
       {importWhy && <div role="alert" data-testid="import-fault" style={{ fontSize: 12, color: 'var(--rose)', marginBottom: 10 }}>{importWhy}</div>}
-      {!importList.length && !importWhy && <div data-testid="import-empty" style={muted}>가져올 옛 작업이 없습니다.</div>}
+      <div style={{display:'grid',gap:9,marginBottom:savedImport.length?9:0}}>{savedImport.map(c=><WorkLibraryRow key={c.slot+':'+c.index}
+        title={c.work.cards[0]?.label ? c.work.cards[0].label+(c.work.cards.length>1?' 외 '+(c.work.cards.length-1)+'개 카드':'') : '저장한 카드 작업'}
+        summary={c.summary} onDetails={()=>setPreviewSaved(c)} onLoad={()=>takeRestore(c)}
+        onReveal={()=>{const path=c.work.cards.flatMap(card=>card.takes).sort((a,b)=>b.createdAt-a.createdAt)[0]?.path||c.work.cards[0]?.contentPath;if(path)void window.api.app.revealFile(path).catch(()=>setImportWhy('파일 위치를 열지 못했습니다'));else setImportWhy('찾아갈 결과나 대사 파일이 없습니다')}}
+      />)}</div>
+      {!importList.length && !savedImport.length && !importWhy && <div data-testid="import-empty" style={muted}>가져올 옛 작업이 없습니다.</div>}
       {importDrop && <div data-testid="import-drop-ask" role="alert" style={{ ...row, gap: 8, fontSize: 12, color: 'var(--rose)', padding: '10px 12px', background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', borderRadius: 8, marginBottom: 10 }}>
         <span style={{ flex: 1 }}>{removeWarning(importDrop.work)}</span>
         <button type="button" data-testid="import-drop-cancel" style={button} onClick={() => setImportDrop(null)}>그대로 두기</button>
@@ -984,23 +1012,9 @@ export default function SynthesisCardWorkspace() {
           onClick={() => void dropLegacy(importDrop)}>지우기</button>
       </div>}
       <div style={{ display: 'grid', gap: 8 }}>{importList.map(plan => (
-        <div key={plan.work.key} data-testid="import-work" data-key={plan.work.key}
-          style={{ ...row, gap: 12, padding: 14, background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', borderRadius: 10 }}>
-          <span style={{ color: 'var(--accent-light)', display: 'flex' }}><Icon name="history"/></span>
-          <div style={{ flex: '1 1 160px', minWidth: 0 }}>
-            <div title={plan.work.title} style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{plan.work.title}</div>
-            <div style={muted}>{importSummary(plan.work)}</div>
-          </div>
-          <Action icon="folder" testId="import-reveal"
-            label={`${plan.work.title} 파일 위치 열기`}
-            title="생성된 음원이 있으면 결과 위치를, 없으면 참조 원본을 엽니다"
-            onClick={() => void openLegacyFile(plan)}/>
-          <Action icon="trash" testId="import-drop"
-            label={`${plan.work.title} 기록 지우기`}
-            title="이 옛 기록을 지웁니다. 만든 소리 파일과 가져온 카드 작업은 그대로입니다."
-            onClick={() => setImportDrop(plan)}/>
-          <button type="button" data-testid="import-pick" style={button} onClick={() => void pickImport(plan)}>내용 보기</button>
-        </div>
+        <WorkLibraryRow key={plan.work.key} testId="import-work" title={plan.work.title} summary={importSummary(plan.work)}
+          onDetails={()=>void pickImport(plan)} onLoad={()=>void pickImport(plan)}
+          onReveal={()=>void openLegacyFile(plan)} onRemove={()=>setImportDrop(plan)}/>
       ))}</div>
     </Modal>}
 
@@ -1023,6 +1037,7 @@ export default function SynthesisCardWorkspace() {
         <span>카드 <b>{importPick.work.cardCount}</b>장</span>
         <span>생성본 <b>{importPick.work.takeCount}</b>개</span>
       </div>
+      {importPick.doc.cards.map(c=><div key={c.id} style={{padding:12,borderBottom:'1px solid var(--border-subtle)'}}><strong style={{fontSize:12}}>{c.label}</strong><p style={{fontSize:12,whiteSpace:'pre-wrap'}}>{c.text || '대사 없음'}</p></div>)}
       {importPick.work.skips.length > 0 && <div data-testid="import-skips" style={{ marginTop: 12 }}>
         <div style={{ ...muted, marginBottom: 6 }}>옮기지 못하는 항목</div>
         <ul style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 4 }}>

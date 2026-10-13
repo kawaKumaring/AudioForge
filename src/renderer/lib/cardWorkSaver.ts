@@ -41,6 +41,7 @@ export const SAVE_DELAY_MS = 600
 
 let file: SavedFile = emptySavedFile()
 let loaded = false
+let readFailed = false
 let timer: ReturnType<typeof setTimeout> | null = null
 /** 쓰기를 한 줄로 세운다. */
 let lane: Promise<unknown> = Promise.resolve()
@@ -88,13 +89,16 @@ export async function loadSavedFile(force = false): Promise<SavedFile> {
     //   다시 써야 하고, 그래서 지운 것이 되살아났다 — 실제로 겪은 일이다.
     const got = await window.api.works.list('cards')
     if (got.error) throw new Error(got.error)
+    if(got.broken)throw Error('읽지 못한 카드 기록이 있어 저장을 막았습니다')
     const bag: Record<string, unknown> = {}
     for (const r of got.records || []) bag[r.key] = r.data
     file = parseSavedFile({ current: bag.current ?? null, kept: bag.kept ?? [] })
   } catch {
-    file = emptySavedFile()          // 못 읽으면 없는 것으로 본다. **지우지는 않는다.**
+    readFailed = true
+    publish({phase:'failed',code:'READ_FAILED',at:Date.now()})
+    throw Error('이전 작업을 읽지 못했습니다. 빈 기록으로 덮지 않습니다')
   }
-  loaded = true
+  loaded = true; readFailed = false
   return file
 }
 
@@ -127,8 +131,10 @@ export async function importLegacyWork(doc: SavedWork): Promise<string> {
   await flushSave()                    // 하던 작업의 마지막 편집까지 남긴 뒤에 옮긴다
   const before = file
   const next = applyImport(file, doc)
-  const code = await lane.then(() =>
-    writeCards(next))
+  if(!autoSaveEnabled){file=next;dirtyWork=null;publish({phase:'idle',code:'SAVE_DISABLED',at:Date.now()});return ''}
+  const writing = lane.then(() => writeCards(next))
+  lane = writing.catch(() => {})
+  const code = await writing
   if (code) {
     file = before                      // ★되돌린다 — 가져오기는 없던 일이 된다
     publish({ phase: 'failed', code, at: Date.now() })
@@ -166,12 +172,23 @@ export async function deleteSavedWork(slot: 'current' | 'kept', index: number): 
 }
 
 let dirtyWork: SavedWork | null = null
+let autoSaveEnabled = false
+export function configureCardAutoSave(enabled: boolean): void {
+  autoSaveEnabled = enabled
+  if (!enabled) { if(timer)clearTimeout(timer);timer=null;dirtyWork=null }
+}
+export function removeCardFromSave(id: string): void {
+  const prune=(w:SavedWork|null):SavedWork|null=>w?{...w,cards:w.cards.filter(c=>c.id!==id)}:null
+  file={current:prune(file.current),kept:file.kept.map(w=>prune(w)!)}
+  if(dirtyWork)dirtyWork=prune(dirtyWork)
+}
 
 /**
  * 저장을 예약한다. **화면이 사라져도 이 타이머는 산다.**
  * 같은 순간에 여러 번 불려도 마지막 값 하나만 쓴다.
  */
 export function queueSave(work: SavedWork): void {
+  if (!autoSaveEnabled) return
   dirtyWork = work
   if (timer) clearTimeout(timer)
   timer = setTimeout(() => { timer = null; void writeNow() }, SAVE_DELAY_MS)
@@ -179,17 +196,24 @@ export function queueSave(work: SavedWork): void {
 
 /** 대기 중인 저장을 **지금** 쓴다. 화면을 떠날 때·앱을 닫을 때 부른다. */
 export function flushSave(): Promise<void> {
+  if (!autoSaveEnabled) return Promise.resolve()
   if (timer) { clearTimeout(timer); timer = null }
   return writeNow()
 }
 
 /** 실패한 저장을 다시 시도한다. */
-export function retrySave(): Promise<void> {
+export async function retrySave(): Promise<void> {
+  if(readFailed)await loadSavedFile(true)
   return flushSave()
 }
 
 function writeNow(): Promise<void> {
-  if (dirtyWork) { file = { ...file, current: dirtyWork } }
+  if(readFailed){publish({phase:'failed',code:'READ_FAILED',at:Date.now()});return Promise.resolve()}
+  if (dirtyWork) {
+    const ids=new Set(dirtyWork.cards.map(c=>c.id))
+    if(file.current?.cards.length && dirtyWork.cards.length && !file.current.cards.some(c=>ids.has(c.id))) file=keepAside(file)
+    file = { ...file, current: dirtyWork }
+  }
   if (!loaded && !dirtyWork) return Promise.resolve()
   const mine = ++issued
   const payload: SavedFile = { current: file.current, kept: file.kept }
@@ -210,6 +234,7 @@ function writeNow(): Promise<void> {
 
 /** 검사·재시작용 — 읽어 둔 것을 잊는다. */
 export function resetSaverForTest(): void {
+  autoSaveEnabled = true; readFailed = false
   file = emptySavedFile(); loaded = false; dirtyWork = null
   if (timer) { clearTimeout(timer); timer = null }
   issued = 0; settled = 0
@@ -224,6 +249,7 @@ export function resetSaverForTest(): void {
  *   (자동 저장이 쓰던 길과 같다, 2026-09-27 2차 검수 지적).
  */
 export function flushSaveSync(): void {
+  if (!autoSaveEnabled) return
   if (timer) { clearTimeout(timer); timer = null }
   if (dirtyWork) file = { ...file, current: dirtyWork }
   if (!loaded && !dirtyWork) return

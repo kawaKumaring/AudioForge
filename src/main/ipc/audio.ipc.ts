@@ -1,3 +1,4 @@
+import {resolveLegacyInput} from '../services/legacy-input-store'
 import { PLAYBACK_EFFECTS_KEY } from '../../shared/playbackEffects'
 import { PLAYBACK_BOOST_STORAGE_KEY } from '../../shared/playbackBoost'
 import { ipcMain, dialog, BrowserWindow, shell, app } from 'electron'
@@ -163,6 +164,17 @@ function loadSettings(): Record<string, unknown> {
   // 손상본을 덮어쓰지 않는다(settings-store 가 막는다).
   // 읽은 것은 현재 판까지 올려서 준다(메모리에서만). 파일은 다음 쓰기 때 판이 찍힌다.
   return got.kind === 'ok' ? migrateSettings(got.settings).settings : {}
+}
+function loadSettingsWithInputs(): Record<string,unknown> {
+  const settings=loadSettings()
+  for(const key of ['labWorkspace','workDrafts','legacyWorkHistory']){
+    if(settings[key] && !JSON.stringify(settings[key]).includes('"inputFileVersion"')){
+      const r=setSettingsKey(settingsFilePath(),key,settings[key],{writtenBy:currentBuildInfo().version})
+      if(!r.ok)throw Error('옛 사용자 입력을 옮기지 못했습니다: '+r.code)
+    }
+  }
+  const latest=readSettingsFile(settingsFilePath())
+  return resolveLegacyInput(latest.kind==='ok'?latest.settings:settings) as Record<string,unknown>
 }
 // 원자 저장은 `services/settings-store` 가 소유한다(실패 시 기존 바이트 보존, 표적 테스트
 // 로 검증). 여기서는 결과를 그대로 돌려주고 실패를 성공으로 바꾸지 않는다.
@@ -1625,7 +1637,7 @@ export function registerAudioIpc(
     // 복원돼야 하므로 여기서 함께 돌려준다. Python 이 읽는 생성 config 와 다른 파일이다.
     // 두 키를 따로 돌려준다 — 자산(물리 음원)과 배역(연결)은 다른 책임이고, 한쪽이
     // 손상돼도 다른 쪽이 함께 죽지 않아야 한다.
-    const stored = loadSettings()
+    const stored = loadSettingsWithInputs()
     return {
       pythonPath,
       [GLOBAL_ASSET_STORAGE_KEY]: stored[GLOBAL_ASSET_STORAGE_KEY] ?? null,
@@ -1650,6 +1662,8 @@ export function registerAudioIpc(
       [DIALOGUE_DRAFTS_STORAGE_KEY]: stored[DIALOGUE_DRAFTS_STORAGE_KEY] ?? null,
       // 생성 카드 작업 — 위 열쇠들과 서로 독립이다(문장별 작업을 덮지 않는다).
       [CARD_STORAGE_KEY]: stored[CARD_STORAGE_KEY] ?? null,
+      cardAutoSave: stored.cardAutoSave === true,
+      legacyWorkHistory: stored.legacyWorkHistory ?? null,
       // 낭독 설정(따라가기·괄호 속 한자) — 2026-09-29. 여기 없으면 저장은 되는데 다시 켜면 사라진다.
       [READER_PREFS_STORAGE_KEY]: stored[READER_PREFS_STORAGE_KEY] ?? null,
       // 콘솔 창을 띄워 둘지(2026-09-30). 여기 없으면 다시 켜면 닫혀 있다.
@@ -1693,7 +1707,7 @@ export function registerAudioIpc(
         // 생성 카드 작업(2026-09-27). ★이 목록에 없으면 저장이 SETTINGS_KEY_NOT_ALLOWED 로
         //   **조용히 거절된다.** 화면은 저장한 줄 알고 넘어간다 — 열쇠를 새로 만들 때는
         //   반드시 여기에도 더해야 한다.
-        || key === CARD_STORAGE_KEY
+        || key === CARD_STORAGE_KEY || key === 'cardAutoSave' || key === 'legacyWorkHistory'
         // 만든 것을 둘 자리(2026-09-28). 여기 없으면 고른 자리가 조용히 사라진다.
         || key === OUTPUT_ROOT_KEY || key === OUTPUT_BESIDE_KEY
         // 낭독 설정(2026-09-29).
