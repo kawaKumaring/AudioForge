@@ -20,10 +20,10 @@ class H3Resident(unittest.TestCase):
 
     def test_diagnostic_defaults_and_explicit_gate(self):
         self.assertEqual(diagnostic_settings({}),{'canvas':256,'attention_requested':'auto','diagnostic':False})
-        for value in ['128','64']:
+        for value in ['128','64','32']:
             with self.assertRaises(RuntimeError):diagnostic_settings({'AF_H3_DIAGNOSTIC_CANVAS':value})
             self.assertEqual(diagnostic_settings({'AF_H3_DIAGNOSTIC':'1','AF_H3_DIAGNOSTIC_CANVAS':value})['canvas'],int(value))
-        for value in ['32','0','256.0','garbage']:
+        for value in ['16','0','256.0','garbage']:
             with self.assertRaises(RuntimeError):diagnostic_settings({'AF_H3_DIAGNOSTIC':'1','AF_H3_DIAGNOSTIC_CANVAS':value})
         with self.assertRaises(RuntimeError):diagnostic_settings({'AF_H3_DIAGNOSTIC':'1','AF_H3_DIAGNOSTIC_ATTENTION':'sage'})
 
@@ -47,10 +47,10 @@ class H3Resident(unittest.TestCase):
         import runpy
         module=runpy.run_path(str(Path(__file__).resolve().parents[1]/'scripts'/'compare-h3-profiles.py'))
         variants=module['plan'](2024)
-        self.assertEqual([v['canvas'] for v in variants],[256,128,64,256])
+        self.assertEqual([v['canvas'] for v in variants],[32])
         self.assertEqual(len({v['text'] for v in variants}),1)
         self.assertTrue(all(v['seed']==2024 and v['steps']==16 and v['cfg']==1 and v['sampler']=='res_multistep' for v in variants))
-        self.assertEqual([v['attention_requested'] for v in variants],['auto','auto','auto','pytorch'])
+        self.assertEqual([v['attention_requested'] for v in variants],['auto'])
 
     def test_plan_does_not_read_reference_or_start_engine(self):
         import runpy

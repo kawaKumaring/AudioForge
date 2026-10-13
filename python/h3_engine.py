@@ -90,7 +90,7 @@ def diagnostic_settings(environ=None):
     attention=env.get('AF_H3_DIAGNOSTIC_ATTENTION','auto')
     if (canvas!='256' or attention!='auto') and env.get('AF_H3_DIAGNOSTIC')!='1':
         raise RuntimeError('H3 비교 설정은 검수 모드를 명시해야 합니다')
-    if canvas not in {'256','128','64'} or attention not in {'auto','pytorch'}:
+    if canvas not in {'256','128','64','32'} or attention not in {'auto','pytorch'}:
         raise RuntimeError('지원하지 않는 H3 비교 설정입니다')
     return {'canvas':int(canvas),'attention_requested':attention,'diagnostic':env.get('AF_H3_DIAGNOSTIC')=='1'}
 

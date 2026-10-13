@@ -10,7 +10,7 @@ import time
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'python'))
 from h3_engine import diagnostic_settings
 
-PROFILES=[('기준',256,'auto'),('중간',128,'auto'),('작게',64,'auto'),('계산방식',256,'pytorch')]
+PROFILES=[('최소 크기',32,'auto')]
 TEXT='오늘은 하루 종일 비가 와서 조금 우울했는데, 저녁에 친구가 찾아와서 따뜻한 차를 마시며 이야기를 나누니까 기분이 정말 좋아졌어요.'
 
 def plan(seed):
