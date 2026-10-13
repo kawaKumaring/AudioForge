@@ -592,8 +592,8 @@ export default function SynthesisCardWorkspace() {
     setImportWhy('')
     try {
       const all = await window.api.settings.get() as Record<string, unknown>
-      const target = revealTarget(all, plan.work)
-      if (!target) { setImportWhy('찾아갈 파일이 기록에 없습니다.'); return }
+      const target = plan.doc.cards.flatMap(c => c.takes).sort((a, b) => b.createdAt - a.createdAt)[0]?.path || revealTarget(all, plan.work)
+      if (!target) { setImportWhy('생성된 음원이나 원본 위치가 기록에 없습니다.'); return }
       await window.api.app.revealFile(target)
     } catch { if (alive.current) setImportWhy('파일 위치를 열지 못했습니다.') }
   }
@@ -612,7 +612,7 @@ export default function SynthesisCardWorkspace() {
       if (r && r.ok === false) throw Error('저장하지 못했습니다')
       // ★지운 기록을 **들고 있는 쪽에게도 알린다.** 옛 화면은 문서를 메모리에 두고
       //   바뀔 때마다·떠날 때마다 다시 쓴다 — 알리지 않으면 탭 한 번에 되살아난다.
-      if (plan.work.kind === 'lab') useLabStore.getState().forget()
+      if (plan.work.kind === 'lab' && !plan.work.key.startsWith('history:')) useLabStore.getState().forget()
       if (!alive.current) return
       setImportDrop(null)
       setImportList((list) => list.filter((x) => x.work.key !== plan.work.key))
@@ -993,7 +993,7 @@ export default function SynthesisCardWorkspace() {
           </div>
           <Action icon="folder" testId="import-reveal"
             label={`${plan.work.title} 파일 위치 열기`}
-            title="이 옛 작업이 온 파일을 탐색기에서 엽니다"
+            title="생성된 음원이 있으면 결과 위치를, 없으면 참조 원본을 엽니다"
             onClick={() => void openLegacyFile(plan)}/>
           <Action icon="trash" testId="import-drop"
             label={`${plan.work.title} 기록 지우기`}

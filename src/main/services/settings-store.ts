@@ -1,3 +1,5 @@
+// @ts-ignore TS5097
+import { preserveLegacyHistory } from './legacy-work-history.ts'
 /**
  * `settings.json` 원자 저장 — main 이 소유하는 키 단위 병합.
  *
@@ -149,7 +151,7 @@ export function setSettingsKey(
   // 읽은 파일을 현재 판까지 올린 뒤 키 하나를 바꾸고 meta 를 찍는다. 모르는 키는 그대로 실려 간다.
   const base: Record<string, unknown> =
     current.kind === 'ok' ? migrateSettings(current.settings).settings : {}
-  const next: Record<string, unknown> = { ...base }
+  const next: Record<string, unknown> = { ...preserveLegacyHistory(base, key, value) }
   if (value === undefined) delete next[key]
   else next[key] = value
   const stamped = stampSettingsMeta(next, opts.writtenBy ?? null, (opts.now ?? (() => new Date()))())
