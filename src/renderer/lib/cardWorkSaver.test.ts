@@ -217,3 +217,23 @@ test('별개 카드 작업을 시작하면 앞 카드 정보는 보관 목록에
  assert.equal(saver.savedFileNow().kept.length,1)
  assert.equal(saver.savedFileNow().kept[0].cards[0].text,'앞 작업')
 })
+
+ test('읽기 실패 뒤 종료 저장도 원래 파일을 건드리지 않는다',async()=>{
+  getImpl=async()=>{throw Error('읽기 거절')}
+  await assert.rejects(saver.loadSavedFile())
+  saver.queueSave(work('덮으면 안 되는 글'))
+  saver.flushSaveSync()
+  assert.equal(syncWrites.length,0)
+  await saver.retrySave()
+  assert.equal(saver.saveState().phase,'failed')
+ })
+ test('저장 통로 예외도 실패 상태이며 재시도할 내용을 보존한다',async()=>{
+  await saver.loadSavedFile()
+  setImpl=async()=>{throw Error('통로 종료')}
+  saver.queueSave(work('예외 뒤 남길 글'))
+  await saver.flushSave()
+  assert.equal(saver.saveState().code,'WRITE_EXCEPTION')
+  setImpl=async(key,value)=>{writes.push({key,value});return {ok:true}}
+  await saver.retrySave()
+  assert.equal(lastWrite().current?.cards[0].text,'예외 뒤 남길 글')
+ })

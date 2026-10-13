@@ -19,14 +19,13 @@
  *   생성한 소리 파일이 남는 것과 작업 문서가 남는 것은 다른 일이다.
  */
 import {
-  CARD_STORAGE_KEY, adoptFromKept, emptySavedFile, keepAside, parseSavedFile, removeWork,
+  adoptFromKept, emptySavedFile, keepAside, parseSavedFile, removeWork,
   type SavedFile, type SavedWork,
 // @ts-ignore TS5097
 } from '../../shared/synthesisCardSave.ts'
 // @ts-ignore TS5097
 import { applyImport } from '../../shared/legacyCardImport.ts'
 // @ts-ignore TS5097
-import { saveSetting } from '../../shared/saveSetting.ts'
 
 export type SavePhase = 'idle' | 'saving' | 'saved' | 'failed'
 export interface SaveState {
@@ -67,17 +66,20 @@ export function savedFileNow(): SavedFile { return file }
 /**
  * 카드 작업을 **두 기록으로** 쓴다 — 하던 것과 보관함.
  *
- * ★둘을 함께 쓴다. 한쪽만 쓰면 '하던 것을 보관함으로 옮기기' 같은 동작이
- *   반쯤 남는다(옮겼는데 원래 자리에도 그대로 있는 상태).
- * ★실패 사유는 **첫 번째 것**을 돌려준다. 화면은 사유 하나를 보여 준다.
+ * 두 통로가 모두 끝난 뒤 성공을 표시한다. 예외도 저장 실패로 보고한다.
+ * 두 파일의 확정은 아직 원자적이지 않다. 한쪽 실패는 재시도로 복구한다.
  */
 async function writeCards(next: SavedFile): Promise<string> {
-  const rs = await Promise.all([
+  try {
+  const rs = await Promise.allSettled([
     window.api.works.write('cards', 'current', next.current),
     window.api.works.write('cards', 'kept', next.kept),
   ])
-  const bad = rs.find((r) => !r.ok)
-  return bad ? (bad.why || 'WRITE_FAILED') : ''
+  const rejected = rs.find(r => r.status === 'rejected')
+  if (rejected) return 'WRITE_EXCEPTION'
+  const bad = rs.find(r => r.status === 'fulfilled' && !r.value.ok)
+  return bad?.status === 'fulfilled' ? (bad.value.why || 'WRITE_FAILED') : ''
+  } catch { return 'WRITE_EXCEPTION' }
 }
 
 /** 저장본을 한 번 읽는다. 두 번 부르면 읽어 둔 것을 돌려준다. */
@@ -158,8 +160,9 @@ export async function deleteSavedWork(slot: 'current' | 'kept', index: number): 
   await flushSave()
   const before = file
   const next = removeWork(file, slot, index)
-  const code = await lane.then(() =>
-    writeCards(next))
+  const writing = lane.then(() => writeCards(next))
+  lane = writing.catch(() => {})
+  const code = await writing
   if (code) {
     file = before
     publish({ phase: 'failed', code, at: Date.now() })
@@ -203,8 +206,10 @@ export function flushSave(): Promise<void> {
 
 /** 실패한 저장을 다시 시도한다. */
 export async function retrySave(): Promise<void> {
-  if(readFailed)await loadSavedFile(true)
-  return flushSave()
+  try {
+    if(readFailed)await loadSavedFile(true)
+    await flushSave()
+  } catch { publish({phase:'failed',code:'READ_FAILED',at:Date.now()}) }
 }
 
 function writeNow(): Promise<void> {
@@ -249,7 +254,7 @@ export function resetSaverForTest(): void {
  *   (자동 저장이 쓰던 길과 같다, 2026-09-27 2차 검수 지적).
  */
 export function flushSaveSync(): void {
-  if (!autoSaveEnabled) return
+  if (!autoSaveEnabled || readFailed) return
   if (timer) { clearTimeout(timer); timer = null }
   if (dirtyWork) file = { ...file, current: dirtyWork }
   if (!loaded && !dirtyWork) return
