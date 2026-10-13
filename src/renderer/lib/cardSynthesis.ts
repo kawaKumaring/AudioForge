@@ -27,11 +27,11 @@ import { defaultSettings, synthesisOptions } from '../../shared/labWorkspace.ts'
 import { REFERENCE_CONDITIONING_RECOMMENDED } from '../../shared/ttsConfig.ts'
 import {
   cardApplied, cardClipKey, cardEventFault, cardGenerateFault, cardRegionFault,
-  type CardApplied,
+  type CardApplied, h3DirectionFault,
 // @ts-ignore TS5097
 } from '../../shared/synthesisCardJob.ts'
 import {
-  cardVoiceOf, needsReferencePrep, voiceGenerateFault, builtinRequestFields, voiceSnapshot, cardScriptWithEmotion,
+  cardVoiceOf, needsReferencePrep, voiceGenerateFault, builtinRequestFields, voiceSnapshot, cardScriptWithEmotion, voiceSupports,
   type BuiltinVoiceRef, type VoiceSnapshot,
 // @ts-ignore TS5097
 } from '../../shared/synthesisCardVoice.ts'
@@ -45,6 +45,8 @@ import {
 import type { SavedWork } from '../../shared/synthesisCardSave.ts'
 // @ts-ignore TS5097
 import { useAppStore } from '../stores/app.store.ts'
+// @ts-ignore TS5097
+import { expressionIconFault, expressionScript } from '../../shared/expressionIcons.ts'
 
 /** 카드 설정에 없는 값(엔진·말끝 다듬기 등)은 **제품 기본값**을 쓴다. */
 const productDefaults = () => defaultSettings(REFERENCE_CONDITIONING_RECOMMENDED)
@@ -94,6 +96,7 @@ export function serializeWork(
     // ★출처는 문서에 속한다. 편집 한 번에 사라지면 '이미 가져온 작업' 을 알아볼 수 없다.
     ...(importedFrom ? { importedFrom: { ...importedFrom } } : {}),
     cards: cards.map((c) => ({
+      contentPaths: c.contentPaths, contentPath: c.contentPath, contentFault: c.contentFault,
       id: c.id, label: c.label,
       sourcePath: c.source?.path || '', sourceName: c.source?.name || '',
       sourceDuration: c.source?.duration || 0,
@@ -103,6 +106,7 @@ export function serializeWork(
       //   하나라도 빠지면 되살린 카드가 '목소리 없는 카드' 가 된다(2026-09-27 재현).
       ...(c.builtin ? { builtin: { ...c.builtin } } : {}),
       takes: c.takes.map((t) => ({
+        contentPath: t.contentPath, contentFault: t.contentFault,
         id: t.id, path: t.path, createdAt: t.createdAt, text: t.text,
         sourcePath: t.source.path, sourceName: t.source.name,
         sourceDuration: t.source.duration || 0,
@@ -135,12 +139,15 @@ export async function hydrateWork(w: SavedWork): Promise<{
   const fallback = productDefaults()
   const cards: SynthesisCard[] = w.cards.map((c) => {
     const settings = {
+      h3Direction: text(c.settings.h3Direction),
+      ...(c.settings.engine ? { engine: c.settings.engine as 'qwen3' | 'minimax-h3' } : {}),
       speed: num(c.settings.speed, 1), pitch: num(c.settings.pitch, 0),
       emotion: text(c.settings.emotion) || '자연스럽게',
       reference: c.settings.reference === 'manual' ? 'manual' as const : 'auto' as const,
       start: num(c.settings.start, 0), end: num(c.settings.end, c.sourceDuration),
     }
     return {
+      contentPaths: c.contentPaths, contentPath: c.contentPath, contentFault: c.contentFault,
       id: c.id, label: c.label,
       source: c.sourcePath ? { path: c.sourcePath, name: c.sourceName, duration: c.sourceDuration } : null,
       // ★기본 목소리를 되살린다. 모양이 아니면 **자동으로 다른 목소리를 넣지 않는다** —
@@ -148,6 +155,7 @@ export async function hydrateWork(w: SavedWork): Promise<{
       ...(builtinFrom(c.builtin) ? { builtin: builtinFrom(c.builtin) } : {}),
       text: c.text, settings, adoptedId: c.adoptedId,
       takes: c.takes.map((t) => ({
+        contentPath: t.contentPath, contentFault: t.contentFault,
         id: t.id, path: t.path, createdAt: t.createdAt, text: t.text,
         source: { path: t.sourcePath, name: t.sourceName, duration: num(t.sourceDuration, 0) },
         // ★기록이 없으면 **카드 설정을 빌려 오지 않는다.** 빌려 온 값은 자리를 채울 뿐
@@ -155,6 +163,8 @@ export async function hydrateWork(w: SavedWork): Promise<{
         settings: t.settingsUnknown
           ? { speed: 0, pitch: 0, emotion: '', reference: 'auto' as const, start: 0, end: 0 }
           : {
+            ...(t.settings.engine ? { engine: t.settings.engine as 'qwen3' | 'minimax-h3' } : {}),
+            h3Direction: text(t.settings.h3Direction),
             speed: num(t.settings.speed, settings.speed), pitch: num(t.settings.pitch, settings.pitch),
             emotion: text(t.settings.emotion) || settings.emotion,
             reference: t.settings.reference === 'manual' ? 'manual' as const : 'auto' as const,
@@ -232,6 +242,8 @@ function appliedFrom(raw: Record<string, unknown>): CardApplied {
   const out: Record<string, unknown> = {
     notes: Array.isArray(a.notes) ? a.notes : [],
   }
+  if (typeof a.h3Direction === 'string') out.h3Direction = a.h3Direction
+  if (a.engine === 'qwen3' || a.engine === 'minimax-h3') out.engine = a.engine
   if (typeof a.speed === 'number' && Number.isFinite(a.speed)) out.speed = a.speed
   if (typeof a.pitch === 'number' && Number.isFinite(a.pitch)) out.pitch = a.pitch
   // ★실제로 쓰인 참조 구간 — 자동 확정 구간까지 그대로 되살린다(2026-09-27 재현 대상).
@@ -272,7 +284,7 @@ export async function prepareCardReference(card: SynthesisCard): Promise<void> {
   const cardId = card.id
   const clipKey = cardClipKey(cardId)
   const reqId = newReqId()
-  const s = productDefaults()
+  const s = { ...productDefaults(), ...(card.settings.engine ? { engine: card.settings.engine } : {}) }
 
   useSynthesisCards.getState().setRef(cardId, {
     phase: 'preparing', clip: '', region: null, message: '목소리를 살펴보는 중입니다…', reqId,
@@ -331,8 +343,9 @@ export async function prepareCardReference(card: SynthesisCard): Promise<void> {
     },
     report: (p) => report(cardId, reqId, {
       phase: (p.phase as CardRef['phase']) || 'preparing',
-      clip: typeof p.clip === 'string' ? p.clip : '',
-      region: (p.region as CardRef['region']) ?? null,
+      // valid_whole은 파생 파일 없이 원본을 사용한다. 카드도 실제 경로를 보존해야 생성할 수 있다.
+      clip: p.phase === 'ready' && p.clip === '' && p.region == null ? audio : (typeof p.clip === 'string' ? p.clip : ''),
+      region: (p.region as CardRef['region']) ?? (p.phase === 'ready' && p.clip === '' ? { start: 0, duration: card.source!.duration } : null),
       message: p.message || '',
     }),
   })
@@ -350,7 +363,8 @@ export async function startCardGeneration(card: SynthesisCard): Promise<string> 
   const app = useAppStore.getState()
   const ref = st.refs[card.id]
   const voice = cardVoiceOf(card)
-  const fault = voiceGenerateFault({
+  if (voice.kind === 'reference' && voice.engine === 'minimax-h3') { const why = h3DirectionFault(card.settings.h3Direction || ''); if (why) return why }
+  const fault = expressionIconFault(card.text, voiceSupports(voice).emotion) || voiceGenerateFault({
     voice,
     text: card.text,
     refReady: !!(ref && ref.phase === 'ready' && ref.clip),
@@ -381,16 +395,18 @@ export async function startCardGeneration(card: SynthesisCard): Promise<string> 
     percent: 0, message: '만드는 중…', cancelling: false,
   })
 
-  const s = { ...productDefaults(), speed: applied.speed, pitch: applied.pitch }
+  const s = { ...productDefaults(), speed: applied.speed, pitch: applied.pitch,
+    ...(voice.kind === 'reference' && card.settings.engine ? { engine: card.settings.engine } : {}) }
   // ★요청 식별자를 실어 보낸다. 본체가 진행·결과·오류·취소에 그대로 되돌려 주므로
   //   화면이 '내 요청의 응답인가' 를 스스로 가릴 수 있다(2026-09-27 검수 재현 대응).
   const options = {
     // ★카드 감정 — 받는 목소리(Qwen 지정 목소리 + 1.7B)면 태그 없는 줄마다 [감정] 을 붙여 보낸다(2026-10-01).
-    ...synthesisOptions(cardScriptWithEmotion(card.text, card.settings.emotion, voice), s, voice.kind === 'reference'
+    ...synthesisOptions(cardScriptWithEmotion(expressionScript(card.text, card.settings.emotion === '자연스럽게' ? '기본' : card.settings.emotion || '기본'), card.settings.emotion, voice), s, voice.kind === 'reference'
       ? { clip: ref!.clip, region: ref!.region }
       : { clip: '', region: null }),
     // 기본 목소리면 엔진·모델을 명시해 싣는다. 참조 목소리면 아무것도 붙지 않는다.
     ...builtinRequestFields(voice),
+    ...(voice.kind === 'reference' && voice.engine === 'minimax-h3' ? { ttsTailMode: 'off', ttsH3Direction: card.settings.h3Direction || '' } : {}),
     clientRequestId: reqId,
     // ★**사용자가 고른 원본**을 따로 싣는다. 영상이면 아래에서 꺼낸 wav 를 보내는데,
     //   본체가 그 폴더를 결과 자리로 삼으면 C 드라이브 중간 폴더에 쌓인다(2026-09-28 신고).

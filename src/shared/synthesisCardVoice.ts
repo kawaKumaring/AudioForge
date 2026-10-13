@@ -69,7 +69,7 @@ export function cardScriptWithEmotion(text: string, emotion: string, v: CardVoic
 }
 
 export type CardVoice =
-  | { kind: 'reference'; source: CardSourceLike }
+  | { kind: 'reference'; source: CardSourceLike; engine?: 'qwen3' | 'minimax-h3' }
   | { kind: 'builtin'; voice: BuiltinVoiceRef }
   | { kind: 'none' }
 
@@ -77,9 +77,10 @@ export type CardVoice =
 export function cardVoiceOf(card: {
   source?: CardSourceLike | null
   builtin?: BuiltinVoiceRef | null
+  settings?: { engine?: 'qwen3' | 'minimax-h3' }
 }): CardVoice {
   if (card.builtin && card.builtin.path) return { kind: 'builtin', voice: card.builtin }
-  if (card.source && card.source.path) return { kind: 'reference', source: card.source }
+  if (card.source && card.source.path) return { kind: 'reference', source: card.source, ...(card.settings?.engine ? { engine: card.settings.engine } : {}) }
   return { kind: 'none' }
 }
 
@@ -104,6 +105,7 @@ export function needsReferencePrep(v: CardVoice): boolean {
 export function voiceSupports(v: CardVoice): { speed: boolean; pitch: boolean; region: boolean; emotion: boolean } {
   // ★감정은 Qwen 지정 목소리 + 1.7B 일 때만(2026-10-01). 참조 목소리의 감정은 예전 실험에서 인물 동일성과 함께 통과한 길이 없어 열지 않는다.
   if (v.kind === 'builtin') return { speed: true, pitch: true, region: false, emotion: v.voice.engineId === 'qwen-custom' && v.voice.emotion === true }
+  if (v.kind === 'reference' && v.engine === 'minimax-h3') return { speed: false, pitch: false, region: true, emotion: false }
   return { speed: true, pitch: true, region: true, emotion: false }
 }
 

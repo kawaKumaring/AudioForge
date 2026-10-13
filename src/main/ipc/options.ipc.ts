@@ -27,7 +27,7 @@ export const OUTPUT_BESIDE_KEY = 'outputBesideSource'
 
 /** 작업 기록이 사는 열쇠들. 비울 때 이 목록만 본다 — 앱 설정은 건드리지 않는다. */
 const WORK_KEYS = [
-  'synthesisCards', 'labWorkspace', 'workDrafts',
+  'synthesisCards', 'labWorkspace', 'workDrafts', 'legacyWorkHistory',
   'dialogueDrafts', 'dialogueEdits', 'transcriptDrafts', 'transcriptEdits',
 ]
 
@@ -123,6 +123,7 @@ function readDirNames(p: string): string[] {
 
 export function registerOptionsIpc(): void {
   ipcMain.handle('options:get', () => ({
+    cardAutoSave: readOne('cardAutoSave') === true,
     chosenRoot: typeof readOne(OUTPUT_ROOT_KEY) === 'string' ? readOne(OUTPUT_ROOT_KEY) as string : '',
     beside: readOne(OUTPUT_BESIDE_KEY) === true,
     appRoot: appRootPath(),

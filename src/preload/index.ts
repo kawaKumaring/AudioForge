@@ -133,6 +133,9 @@ const api = {
   // 테스트개발 작업실 — 테이크 보관과 이어 붙여 내보내기만. 생성은 기존 audio.process 를 쓴다.
   /** 생성 카드 — 카드별 미디어. 카드 하나가 다른 카드의 파일을 건드리지 않는다. */
   cards: {
+    loadInput: ():Promise<{ok:boolean;canceled?:boolean;text?:string;settings?:Record<string,unknown>;why?:string}> => ipcRenderer.invoke('cards:load-input'),
+    saveInput: (card: unknown): Promise<{ok:boolean;path?:string;why?:string}> => ipcRenderer.invoke('cards:save-input', card),
+    remove: (card: unknown, audio: boolean, protectedPaths: string[]): Promise<{ok:boolean;why?:string}> => ipcRenderer.invoke('cards:remove', card, audio, protectedPaths),
     /** 영상이면 소리를 꺼내 그 경로를, 소리 파일이면 그대로 돌려준다. */
     extractAudio: (cardId: string, filePath: string) =>
       ipcRenderer.invoke('card:extract-audio', cardId, filePath),
@@ -366,7 +369,7 @@ const api = {
   options: {
     // tempDir/strayTemp — 임시 자리가 앱 안인지 화면이 보여 준다(2026-09-28).
     get: (): Promise<{ chosenRoot: string; beside: boolean; appRoot: string; dataDir: string;
-      tempDir: string; strayTemp: number }> => ipcRenderer.invoke('options:get'),
+      tempDir: string; strayTemp: number; cardAutoSave: boolean }> => ipcRenderer.invoke('options:get'),
     set: (next: { chosenRoot?: string; beside?: boolean }): Promise<{ chosenRoot: string; beside: boolean; appRoot: string }> => ipcRenderer.invoke('options:set', next),
     pickRoot: (): Promise<{ path?: string; error?: string } | null> => ipcRenderer.invoke('options:pick-root'),
     wipe: (kind: string): Promise<{ removed: number; freedMb: number; error?: string }> => ipcRenderer.invoke('options:wipe', kind),

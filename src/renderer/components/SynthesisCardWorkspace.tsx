@@ -1,4 +1,10 @@
+import WorkLibraryRow from './WorkLibraryRow'
+import CardStorageActions from './CardStorageActions'
+import {useCardAutoSave} from '../hooks/useCardAutoSave'
 import WorkspaceDock from './WorkspaceDock'
+import ExpressionPromptEditor from './ExpressionPromptEditor'
+import ExpressionPalette from './ExpressionPalette'
+import { expressionIconFault, type ExpressionIcon } from '../../shared/expressionIcons'
 import { useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type DragEvent } from 'react'
 import { useAppStore } from '../stores/app.store'
 import { Icon, Action, Modal, row, muted, badge, field, button, primary, type IconName } from './kit'
@@ -16,7 +22,7 @@ import {
 import { cancelFailureText, type CancelUiStatus } from '../../shared/cancelContract'
 import { cancelAlreadyOverText, useCancelLifecycle } from '../hooks/useCancelLifecycle'
 import {
-  cardApplied, cardEventFault, cardGenerateFault, takeMark, CARD_PITCH_MIN, CARD_PITCH_MAX, CARD_PITCH_STEP,
+  h3DirectionFault, cardApplied, cardEventFault, cardGenerateFault, takeMark, CARD_PITCH_MIN, CARD_PITCH_MAX, CARD_PITCH_STEP,
 } from '../../shared/synthesisCardJob'
 import {
   cardVoiceOf, voiceSnapshot, voiceSupports, voiceGenerateFault, CARD_EMOTIONS, CARD_EMOTION_NONE, type BuiltinVoiceRef,
@@ -61,6 +67,23 @@ function appliedOf(take: CardTake) {
   }
 }
 const DISCONNECTED = '연결부만 따로 듣는 것은 아직 연결되지 않았습니다. 전체 이어 듣기로 확인하세요.'
+const GENERATION_MODELS: Record<string, { description: string; status: string; hint: string }> = {
+  qwen3: { description: '참조 목소리로 대사를 만듭니다', status: '기본 엔진', hint: '현재 기본 생성 모델입니다. 기존 목소리와 생성본은 바뀌지 않습니다.' },
+  cosyvoice3: { description: '말투 연출을 비교하는 시험용 모델', status: '검수 중', hint: '한국어 발음과 참조 목소리 유지가 아직 검수 중입니다.' },
+  'minimax-h3': { description: '대사 길이를 자동으로 맞춰 생성합니다', status: '연기 실험', hint: '상황 지시는 카드의 연기 아이콘에서 설정합니다. 실제 감정·발음·음색 품질은 아직 검수 전입니다.' },
+}
+
+function H3DirectionSettings({ card, close, disabled }: { card: SynthesisCard; close: () => void; disabled: boolean }) {
+  const [value, setValue] = useState(card.settings.h3Direction || '')
+  const fault = h3DirectionFault(value)
+  return <Modal title="연기 지시" subtitle={card.label} close={close} footer={<><button type="button" style={button} onClick={close}>취소</button><button type="button" style={primary} disabled={disabled || !!fault || card.settings.engine !== 'minimax-h3'} onClick={() => { useSynthesisCards.getState().update(card.id, { settings: { ...card.settings, h3Direction: value } }); close() }}>적용</button></>}>
+    <div style={{ ...row, justifyContent: 'space-between', marginBottom: 10 }}><label htmlFor="h3-scene-direction" style={{ fontSize: 12 }}>상황 · 행동 · 말하는 방식</label><span style={badge} title="상황 지시는 대사 밖에 전달합니다. 한국어 감정과 참조 음색 유지의 실제 품질은 아직 검수 전입니다.">실험</span></div>
+    <textarea id="h3-scene-direction" data-testid="h3-scene-direction" value={value} disabled={disabled} onChange={e => setValue(e.target.value)} placeholder="예: 친구의 거짓말을 알아챘다. 분노를 억누르며 낮고 단호하게 말한다." style={{ ...field, width: '100%', minHeight: 140, resize: 'vertical', lineHeight: 1.7 }} />
+    <div style={{ ...row, justifyContent: 'space-between', marginTop: 8, ...muted }}><span title="현재 카드에 적용한 뒤 카드의 대사·연기 지시 저장 버튼으로 파일에 보관합니다. 비워 두면 기존 기본 말투로 생성합니다.">적용 후 별도 저장</span><span>{Array.from(value.trim()).length} / 1200</span></div>
+    {fault && <p role="alert" style={{ fontSize: 12, color: 'var(--rose)' }}>{fault}</p>}
+  </Modal>
+}
+
 function Settings({ card, close, disabled, focusReference = false }: { card: SynthesisCard; close: () => void; disabled: boolean; focusReference?: boolean }) {
   const [draft, setDraft] = useState<CardSettings>({ ...card.settings, pitch: cardApplied(card.settings).pitch })
   const set = (patch: Partial<CardSettings>) => setDraft(s => ({ ...s, ...patch }))
@@ -79,8 +102,9 @@ function Settings({ card, close, disabled, focusReference = false }: { card: Syn
     })()
     return () => { alive = false }
   }, [card.builtin?.path])
-  const voiceNow = cardVoiceOf(card.builtin && liveEmotion ? { ...card, builtin: { ...card.builtin, emotion: true } } : card)
+  const voiceNow = cardVoiceOf({ ...card, settings: draft, ...(card.builtin && liveEmotion ? { builtin: { ...card.builtin, emotion: true } } : {}) })
   const supports = voiceSupports(voiceNow)
+  const generationModel = GENERATION_MODELS[draft.engine || 'qwen3'] || GENERATION_MODELS.qwen3
   const referenceChoice = useRef<HTMLSelectElement>(null)
   useEffect(() => { if (focusReference) referenceChoice.current?.focus() }, [focusReference])
   const duration = card.source?.duration || 0
@@ -99,14 +123,24 @@ function Settings({ card, close, disabled, focusReference = false }: { card: Syn
   return <Modal title="고급 옵션" subtitle={card.label} close={close} footer={<><button type="button" style={button} onClick={close}>취소</button><button type="button" style={{ ...primary, opacity: disabled || !valid ? .4 : 1 }} disabled={disabled || !valid} onClick={() => { useSynthesisCards.getState().update(card.id, { settings: { ...draft }, ...(liveEmotion && card.builtin && card.builtin.emotion !== true ? { builtin: { ...card.builtin, emotion: true } } : {}) }); close() }}>적용</button></>}>
     <div style={{ ...row, justifyContent: 'flex-end', marginBottom: 14 }}><button type="button" style={button} disabled={disabled} title="이 팝업의 설정을 기본값으로 돌립니다. 적용 전에는 카드가 바뀌지 않습니다." onClick={reset}><Icon name="reset"/>전체 초기화</button></div>
     <fieldset disabled={disabled} style={{ border: 0, padding: 0, margin: 0, display: 'grid', gap: 12 }}>
-      <details className="af-effect-group" open style={panel}>
+      {card.source && !card.builtin && <div style={{ ...panel, padding: '14px 16px', display: 'grid', gap: 8 }}>
+        <div style={{ ...row, justifyContent: 'space-between' }}><label htmlFor="card-reference-engine" style={{ fontSize: 12, color: 'var(--text-secondary)' }}>생성 모델</label><span style={{ ...badge, fontSize: 10 }} title={generationModel.hint}>{generationModel.status}</span></div>
+        <select id="card-reference-engine" aria-label="생성 모델" style={{ ...field, colorScheme: 'dark' }} value={draft.engine || 'qwen3'}
+          onChange={e => set({ engine: e.target.value as CardSettings['engine'], emotion: CARD_EMOTION_NONE })}>
+          <option value="qwen3">Qwen</option><option value="minimax-h3">MiniMax H3</option>
+        </select>
+        <span style={{ ...muted, fontSize: 11 }} title={generationModel.hint}>
+          {generationModel.description}
+        </span>
+      </div>}
+      {(supports.speed || supports.pitch) && <details className="af-effect-group" open style={panel}>
         <summary style={heading}><span style={{ flex: 1 }}>음성 조정</span><span className="af-effect-chevron" aria-hidden="true">⌃</span></summary>
         <div style={{ display: 'grid', gap: 18, paddingBottom: 18 }}>
           {control('말하기 속도', draft.speed, .7, 1.3, .05, speed => set({ speed }), '×', 1)}
           {control('음높이', draft.pitch, CARD_PITCH_MIN, CARD_PITCH_MAX, CARD_PITCH_STEP, pitch => set({ pitch }), '', 0)}
           {card.settings.pitch !== cardApplied(card.settings).pitch && <span style={{ ...muted, color: 'var(--amber)' }} title={`저장된 음높이 ${card.settings.pitch}는 지원 범위를 벗어납니다. 적용을 누르면 화면의 값으로 저장됩니다.`}>저장값 보정</span>}
         </div>
-      </details>
+      </details>}
       {supports.region && <details className="af-effect-group" data-testid="card-reference-settings" open={focusReference || card.settings.reference === 'manual' ? true : undefined} style={panel}>
         <summary style={heading}><span style={{ flex: 1 }}>참조 구간</span><span style={muted}>{draft.reference === 'auto' ? '자동' : `${draft.start.toFixed(1)}–${draft.end.toFixed(1)}초`}</span><span className="af-effect-chevron" aria-hidden="true">⌃</span></summary>
         <div style={{ display: 'grid', gap: 12, paddingBottom: 16 }}><div style={{ ...row, justifyContent: 'space-between' }}><select ref={referenceChoice} aria-label="참조 구간 방식" style={field} value={draft.reference} onChange={e => set({ reference: e.target.value as CardSettings['reference'] })}><option value="auto">자동</option><option value="manual">직접 지정</option></select>{resetButton('참조 구간 초기화', () => set({ reference: 'auto', start: 0, end: duration }))}</div>
@@ -297,9 +331,11 @@ function planOfCards(cards: SynthesisCard[], joins: JoinSettings) {
 }
 
 export default function SynthesisCardWorkspace() {
+  const [expressionOpen, setExpressionOpen] = useState(false), [expressionCard, setExpressionCard] = useState('')
+  const expressionTarget = useRef<Record<string, (cue: ExpressionIcon) => void>>({})
   const state = useSynthesisCards(), source = useAppStore(s => s.fileInfo), status = useAppStore(s => s.status), childAlive = useAppStore(s => s.errorInfo?.childAlive)
   const busy = status === 'processing' || isCancelCleanupBusy(status) || !!childAlive
-  const [modal, setModal] = useState<{ type: 'settings' | 'takes' | 'voice'; id: string; focusReference?: boolean; fromSequence?: boolean } | { type: 'join' | 'sequence' } | null>(null)
+  const [modal, setModal] = useState<{ type: 'settings' | 'takes' | 'voice' | 'direction'; id: string; focusReference?: boolean; fromSequence?: boolean } | { type: 'join' | 'sequence' } | null>(null)
   const [notice, setNotice] = useState(''), [loading, setLoading] = useState(false), [hover, setHover] = useState<string | null>(null)
   const [dragging, setDragging] = useState<string | null>(null), [over, setOver] = useState<{ id: string; after: boolean } | null>(null)
   const alive = useRef(true), pending = useRef(false)
@@ -312,7 +348,7 @@ export default function SynthesisCardWorkspace() {
   useEffect(() => {
     for (const card of state.cards) {
       if (!card.source) { delete prepared.current[card.id]; continue }
-      const key = JSON.stringify([card.source.path, card.settings.reference, card.settings.start, card.settings.end])
+      const key = JSON.stringify([card.source.path, card.settings.engine || 'qwen3', card.settings.reference, card.settings.start, card.settings.end])
       // ★조건이 같아도 **준비 상태가 없으면 다시 준비한다.** 삭제→되돌리기로 카드가 돌아왔는데
       //   준비 상태만 비어 생성 단추가 잠긴 채였다(2026-09-27 검수 재현).
       //   되돌리기가 준비 상태를 되살리면 이 자리는 그냥 지나간다 — 어느 쪽이든 어긋나지 않는다.
@@ -490,12 +526,13 @@ export default function SynthesisCardWorkspace() {
   // 저장 — **타이머를 여기서 잡지 않는다.**
   // ★화면 수명과 저장 수명을 분리했다(2026-09-27). 예전에는 언마운트에서 타이머를 취소해
   //   메뉴를 빨리 옮기면 마지막 편집이 통째로 사라졌다. 이제 `lib/cardWorkSaver` 가 소유한다.
+  const autoSave = useCardAutoSave()
   const [save, setSave] = useState<SaveState>(() => saveState())
   useEffect(() => onSaveState(setSave), [])
   useEffect(() => {
-    if (!state.dirty) return
+    if (!state.dirty || autoSave !== true) return
     queueSave(serializeWork(state.cards, state.joins, state.importedFrom))
-  }, [state.cards, state.joins, state.dirty, state.importedFrom])
+  }, [state.cards, state.joins, state.dirty, state.importedFrom, autoSave])
   // 떠날 때는 **취소가 아니라 흘려보낸다.**
   useEffect(() => () => { void flushSave() }, [])
 
@@ -540,11 +577,13 @@ export default function SynthesisCardWorkspace() {
   }
 
   /**
-   * 옛 작업 가져오기 — **진입점은 여기 한 곳이다.**
+   * 작업 불러오기 — **진입점은 여기 한 곳이다.**
    *   고르기(list) → 가져올 내용 확인(plan) → 가져오기 → 새 카드 작업(done)
    * ★복사다. 옛 기록도, 하던 작업도 지우지 않는다(하던 것은 보관함으로 간다).
    */
   const [importStep, setImportStep] = useState<'list' | 'plan' | 'done' | null>(null)
+  const [savedImport,setSavedImport] = useState<RestoreChoice[]>([])
+  const [previewSaved,setPreviewSaved] = useState<RestoreChoice|null>(null)
   const [importList, setImportList] = useState<ImportPlan[]>([])
   const [importPick, setImportPick] = useState<ImportPlan | null>(null)
   const [importDup, setImportDup] = useState<{ slot: 'current' | 'kept'; index: number } | null>(null)
@@ -553,14 +592,49 @@ export default function SynthesisCardWorkspace() {
   const [importDone, setImportDone] = useState('')
   /** 지우기 전에 한 번 묻는다 — 되돌릴 수 없다. */
   const [importDrop, setImportDrop] = useState<ImportPlan | null>(null)
+  const [librarySelection,setLibrarySelection]=useState<string[]>([])
+  const [libraryDrop,setLibraryDrop]=useState(false)
+  const [libraryDeleting,setLibraryDeleting]=useState(false)
+  const savedKey=(c:RestoreChoice)=>'saved:'+c.slot+':'+c.index
+  const legacyKey=(p:ImportPlan)=>'legacy:'+p.work.key
+  const selectLibrary=(key:string,on:boolean)=>setLibrarySelection(old=>on?[...new Set([...old,key])]:old.filter(k=>k!==key))
+  const removeSelectedLibrary=async()=>{
+    if(libraryDeleting)return
+    setLibraryDeleting(true);setImportWhy('')
+    let removed=0;const failures:string[]=[]
+    try{
+      // 보관함은 뒤에서 지워 앞 항목의 번호가 바뀌지 않게 한다.
+      const saved=savedImport.filter(c=>librarySelection.includes(savedKey(c))).sort((a,b)=>b.index-a.index)
+      for(const c of saved){
+        try{const why=await deleteSavedWork(c.slot,c.index);if(why)throw Error(why);removed++}
+        catch(e){failures.push((e as Error).message)}
+      }
+      for(const plan of importList.filter(p=>librarySelection.includes(legacyKey(p)))){
+        try{
+          const all=await window.api.settings.get() as Record<string,unknown>
+          const patch=removeLegacy(all,plan.work)
+          if(!patch)throw Error('이미 바뀐 옛 작업입니다')
+          const r=await window.api.settings.set(patch.key,patch.value)
+          if(!r?.ok)throw Error('옛 작업 기록을 저장하지 못했습니다')
+          if(plan.work.kind==='lab'&&!plan.work.key.startsWith('history:'))useLabStore.getState().forget()
+          removed++
+        }catch(e){failures.push((e as Error).message)}
+      }
+      await openImport()
+      setLibraryDrop(false)
+      setImportWhy(failures.length?`${removed}개 제거 · ${failures.length}개 실패: ${failures[0]}`:`${removed}개 작업 기록을 제거했습니다.`)
+    }catch(e){setImportWhy(`${removed}개 제거 후 목록을 확인하지 못했습니다: ${(e as Error).message}`)}
+    finally{setLibraryDeleting(false)}
+  }
+
 
   /** 이 옛 작업이 온 파일을 탐색기로 연다. 기록에 없으면 그렇다고 말한다. */
   const openLegacyFile = async (plan: ImportPlan) => {
     setImportWhy('')
     try {
       const all = await window.api.settings.get() as Record<string, unknown>
-      const target = revealTarget(all, plan.work)
-      if (!target) { setImportWhy('찾아갈 파일이 기록에 없습니다.'); return }
+      const target = plan.doc.cards.flatMap(c => c.takes).sort((a, b) => b.createdAt - a.createdAt)[0]?.path || revealTarget(all, plan.work)
+      if (!target) { setImportWhy('생성된 음원이나 원본 위치가 기록에 없습니다.'); return }
       await window.api.app.revealFile(target)
     } catch { if (alive.current) setImportWhy('파일 위치를 열지 못했습니다.') }
   }
@@ -579,7 +653,7 @@ export default function SynthesisCardWorkspace() {
       if (r && r.ok === false) throw Error('저장하지 못했습니다')
       // ★지운 기록을 **들고 있는 쪽에게도 알린다.** 옛 화면은 문서를 메모리에 두고
       //   바뀔 때마다·떠날 때마다 다시 쓴다 — 알리지 않으면 탭 한 번에 되살아난다.
-      if (plan.work.kind === 'lab') useLabStore.getState().forget()
+      if (plan.work.kind === 'lab' && !plan.work.key.startsWith('history:')) useLabStore.getState().forget()
       if (!alive.current) return
       setImportDrop(null)
       setImportList((list) => list.filter((x) => x.work.key !== plan.work.key))
@@ -588,13 +662,15 @@ export default function SynthesisCardWorkspace() {
   }
 
   const openImport = async () => {
-    setImportWhy(''); setImportPick(null); setImportDup(null); setImportStep('list')
+    setLibrarySelection([]);setLibraryDrop(false);setImportWhy(''); setImportPick(null); setImportDup(null); setSavedImport([]);setImportList([]);setImportStep('list')
     try {
       const all = await window.api.settings.get() as Record<string, unknown>
       const found = legacyWorks(all, Date.now())
+      const saved = await loadSavedFile(true)
+      if (alive.current) setSavedImport(savedChoices(saved))
       if (alive.current) setImportList(found)
     } catch {
-      if (alive.current) { setImportList([]); setImportWhy('옛 작업을 읽지 못했습니다') }
+      if (alive.current) { setImportList([]); setImportWhy('작업 목록을 읽지 못했습니다. 기존 기록은 그대로입니다') }
     }
   }
   /** 고른 작업의 '가져올 내용' 을 연다. 이미 가져온 적이 있으면 그 사실을 먼저 말한다. */
@@ -634,9 +710,15 @@ export default function SynthesisCardWorkspace() {
     setImporting(true); setImportWhy('')
     try {
       // ① 변환 결과를 먼저 화면 모양으로 만들어 본다 — 여기서 실패하면 저장에 손대지 않는다.
-      const h = await hydrateWork(plan.doc)
+      const doc={...plan.doc,cards:plan.doc.cards.map(c=>({...c,id:crypto.randomUUID(),contentPath:'' as string,contentPaths:[] as string[],takes:c.takes.map(t=>({...t,contentPath:''}))}))}
+      for(const card of doc.cards){
+        const saved=await window.api.cards.saveInput(card)
+        if(!saved.ok || !saved.path)throw Error(saved.why||'가져올 대사·지시를 저장하지 못했습니다')
+        card.contentPath=saved.path
+      }
+      const h = await hydrateWork(doc)
       // ② 저장까지 성공해야 가져온 것이다.
-      const why = await importLegacyWork(plan.doc)
+      const why = await importLegacyWork(doc)
       if (why) throw Error(`저장하지 못했습니다(${why})`)
       useSynthesisCards.getState().replaceAll(h.cards, h.joins, h.importedFrom)
       if (!alive.current) return
@@ -653,7 +735,7 @@ export default function SynthesisCardWorkspace() {
       if (st.asked || st.dirty) return
       if (!savedWorkHasContent(file.current) && !file.kept.length) return
       const choices = savedChoices(file)
-      if (choices.length && alive.current) setRestore(choices)
+      if (choices.length && alive.current) {setSavedImport(choices);setImportStep('list')}
     })()
   }, [])
 
@@ -664,6 +746,7 @@ export default function SynthesisCardWorkspace() {
     void keepCurrentAside()
   }
   const takeRestore = (c: RestoreChoice) => {
+    setPreviewSaved(null);setImportStep(null)
     setRestore(null)
     void (async () => {
       try {
@@ -676,7 +759,7 @@ export default function SynthesisCardWorkspace() {
     })()
   }
 
-  const locked = busy || loading
+  const locked = busy || loading || importing
 
   /**
    * **다른 카드**가 지금 목소리를 준비하고 있는가.
@@ -765,8 +848,8 @@ export default function SynthesisCardWorkspace() {
     <style>{`.af-card-progress{appearance:none;border:0;border-radius:3px;overflow:hidden;background:var(--border-subtle)}.af-card-progress::-webkit-progress-bar{background:var(--border-subtle)}.af-card-progress::-webkit-progress-value{background:var(--accent);border-radius:3px}.af-effect-slider{appearance:none;height:4px;border-radius:3px;background:linear-gradient(to right,var(--accent) var(--fill),var(--border-subtle) var(--fill));cursor:pointer}.af-effect-slider::-webkit-slider-thumb{appearance:none;width:15px;height:15px;border-radius:50%;background:var(--accent-light);box-shadow:0 0 0 4px rgba(139,92,246,.12)}.af-effect-slider:disabled{opacity:.4;cursor:not-allowed}.af-effect-group summary::-webkit-details-marker{display:none}.af-effect-group .af-effect-chevron{transition:transform 150ms ease;color:var(--text-muted)}.af-effect-group:not([open]) .af-effect-chevron{transform:rotate(180deg)}.af-take-detail{animation:af-card-open 120ms ease-out}.af-generation-card{transition:border-color 140ms ease,opacity 140ms ease}.af-card-modal button[aria-pressed="true"]{color:var(--accent-light)}.af-generation-card:focus-within{border-color:var(--accent)!important}.af-card-work-button:disabled{cursor:not-allowed;opacity:.4}@keyframes af-card-open{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}@media(prefers-reduced-motion:reduce){.af-take-detail{animation:none}}`}</style>
     <div style={{ ...row, paddingBottom: 2 }}><span style={{ fontSize: 13, fontWeight: 600 }}>생성 카드 <span style={{ ...muted, marginLeft: 5 }}>{state.cards.length}</span></span><span style={{ flex: 1 }}/>
       <button type="button" data-testid="import-legacy" disabled={locked} style={{ ...button, background: 'transparent' }}
-        title="옛 화면에서 만들던 작업을 카드로 복사합니다. 옛 기록은 그대로 남습니다."
-        onClick={() => void openImport()}><Icon name="history"/>옛 작업 가져오기</button>
+        title="저장된 카드와 옛 작업을 한곳에서 보고 불러옵니다."
+        onClick={() => void openImport()}><Icon name="history"/>작업 불러오기</button>
     </div>
     {notice && <div role="status" style={{ ...row, fontSize: 12, color: 'var(--amber)' }}><span style={{ flex: 1 }}>{notice}</span><Action icon="close" label="알림 닫기" onClick={() => setNotice('')}/></div>}
     {save.phase === 'failed' && <div role="alert" data-testid="card-save-failed" style={{ ...row, fontSize: 12, color: 'var(--rose)', padding: '9px 12px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderLeft: '3px solid var(--rose)', borderRadius: 8 }}>
@@ -778,7 +861,7 @@ export default function SynthesisCardWorkspace() {
       const voice = cardVoiceOf(card)
       // ★엔진이 못 받는 설정을 **말한다.** 조용히 무시하거나 적용된 척하지 않는다.
       const notes = cardApplied(card.settings, voice).notes
-      const fault = voiceGenerateFault({
+      const fault = expressionIconFault(card.text, voiceSupports(voice).emotion) || voiceGenerateFault({
         voice, text: card.text,
         refReady: !!(ref && ref.phase === 'ready' && ref.clip),
         refMessage: ref?.message || '', busy: locked || !!state.job,
@@ -798,9 +881,14 @@ export default function SynthesisCardWorkspace() {
           <button type="button" data-testid="card-drag-handle" title="카드 이동 · Alt+↑/↓" aria-label={`${index + 1}번 카드 이동`} disabled={locked} draggable={!locked} onDragStart={e => { e.dataTransfer.setData('application/x-audioforge-card', card.id); e.dataTransfer.effectAllowed = 'move'; setDragging(card.id) }} onDragEnd={() => { setDragging(null); setOver(null) }} onKeyDown={e => { if (!locked && e.altKey && ['ArrowUp', 'ArrowDown'].includes(e.key)) { e.preventDefault(); moveCard(card.id, index + (e.key === 'ArrowUp' ? -1 : 1)) } }} style={{ ...button, padding: 5, border: 0, background: 'transparent', color: 'var(--text-muted)', cursor: 'grab' }}><Icon name="grip"/></button>
           <span style={{ ...muted, fontVariantNumeric: 'tabular-nums' }}>{String(index + 1).padStart(2, '0')}</span>
           <input aria-label={`${index + 1}번 카드 이름`} value={card.label} disabled={locked} onChange={e => state.update(card.id, { label: e.target.value })} style={{ ...field, flex: '1 1 120px', padding: '6px 8px', background: 'transparent', borderColor: 'transparent', fontWeight: 600 }}/>
+          <div style={{ ...row, flexWrap: 'nowrap', flexShrink: 0, marginLeft: 'auto' }}>
           <Action icon="copy" label={`${index + 1}번 카드 복제`} title="목소리·설정 복제 — 대사와 생성본은 새로 시작" disabled={locked} onClick={() => state.clone(card.id)}/>
-          <Action icon="settings" label={`${index + 1}번 카드 고급 옵션`} disabled={locked} onClick={() => setModal({ type: 'settings', id: card.id })}/>
-          <Action icon="trash" label={`${index + 1}번 카드 삭제`} disabled={locked} onClick={() => state.remove(card.id)}/>
+          {card.settings.engine === 'minimax-h3' && !card.builtin ? <Action icon="acting" label={`${index + 1}번 카드 연기 지시`} title={card.settings.h3Direction?.trim() ? '이 카드의 연기 지시 편집 · 실험' : '이 카드의 상황·연기 지시 설정 · 실험'} pressed={!!card.settings.h3Direction?.trim()} disabled={locked} onClick={() => setModal({ type: 'direction', id: card.id })}/> : (<Action icon="emotion" label={`${index + 1}번 카드 감정 도구`} title="이 카드의 대사에 연출 표시 넣기" disabled={locked}
+            pressed={expressionOpen && expressionCard === card.id}
+            onClick={() => { setExpressionOpen(!(expressionOpen && expressionCard === card.id)); setExpressionCard(card.id) }}/>)}
+            <Action icon="settings" label={`${index + 1}번 카드 고급 옵션`} disabled={locked} onClick={() => setModal({ type: 'settings', id: card.id })}/>
+          <CardStorageActions card={card} disabled={locked} autoSave={autoSave === true}/>
+          </div>
         </div>
         <div style={{ padding: '6px 20px 0' }} onDragOver={e => { if (!dragging && !locked && e.dataTransfer.types.includes('Files')) { e.preventDefault(); e.stopPropagation(); setHover(card.id) } }} onDragLeave={() => setHover(null)} onDrop={e => { if (!dragging) drop(e, card.id) }}>
           <div style={{ ...row, marginBottom: 1 }}>
@@ -818,7 +906,10 @@ export default function SynthesisCardWorkspace() {
           {/* ★기본 목소리에는 파형이 없다 — 없는 소리를 그리지 않는다. */}
           {voice.kind === 'reference' && card.source && !modal && <CompactVoiceWaveform path={ref?.audio || card.source.path} name={card.source.name} region={card.settings.reference === 'manual' ? { start: card.settings.start, duration: card.settings.end - card.settings.start } : null} disabled={locked}/>}
           {card.source && modal && <div style={{ height: 40 }}/>}
-          <textarea data-testid="card-script" aria-label={`${index + 1}번 카드 대사`} placeholder="대사를 입력하세요" rows={2} spellCheck={false} disabled={locked} value={card.text} onChange={e => state.update(card.id, { text: e.target.value })} style={{ ...field, width: '100%', resize: 'vertical', minHeight: 76, fontSize: 15, lineHeight: 1.75, border: '1px solid var(--border-subtle)', background: 'var(--bg-base)', padding: '11px 13px', margin: '9px 0 0' }}/>
+          <ExpressionPromptEditor value={card.text} label={`${index + 1}번 카드 대사`} disabled={locked}
+            change={text => useSynthesisCards.getState().update(card.id, { text })}
+            register={insert => { if (insert) expressionTarget.current[card.id] = insert; else delete expressionTarget.current[card.id] }}
+            activate={insert => { setExpressionCard(card.id); expressionTarget.current[card.id] = insert }}/>
         </div>
         {/* ★실패도 '이 카드가 지금 하는 말' 이다 — 줄이 없으면 사유가 그려질 자리가 없다. */}
         {(mine || cardFault?.id === card.id || (ref && ref.phase !== 'ready') || notes.length > 0) && (
@@ -918,6 +1009,11 @@ export default function SynthesisCardWorkspace() {
         </div>
       })}</div>
     </Modal>}
+    {expressionOpen && <ExpressionPalette target={state.cards.find(c => c.id === expressionCard)?.label || ''}
+      disabled={locked || !state.cards.some(c => c.id === expressionCard)}
+      supported={voiceSupports(cardVoiceOf(state.cards.find(c => c.id === expressionCard) || {})).emotion}
+      insert={cue => expressionTarget.current[expressionCard]?.(cue)} close={() => setExpressionOpen(false)}/>}
+    {modal?.type === 'direction' && active && <H3DirectionSettings key={active.id} card={active} disabled={busy} close={() => setModal(null)}/>}
     {modal?.type === 'settings' && active && <Settings key={active.id} card={active} disabled={busy} focusReference={modal.focusReference} close={() => setModal(null)}/>}
     {modal?.type === 'takes' && active && <Takes key={active.id} card={active} disabled={busy} close={() => setModal(null)} back={modal.fromSequence ? () => setModal({ type: 'sequence' }) : undefined}/>}
     {modal?.type === 'join' && <Join cards={state.cards} disabled={busy} close={() => setModal(null)}/>}
@@ -927,10 +1023,25 @@ export default function SynthesisCardWorkspace() {
         if (modal.id) useSynthesisCards.getState().setBuiltin(modal.id, v)
         else useSynthesisCards.getState().addBuiltin(v)
       }}/>}
-    {/* 옛 작업 가져오기 — 고르기 → 확인 → 가져옴. 설명 문단 대신 목록과 짧은 사유만. */}
-    {importStep === 'list' && <Modal title="옛 작업 가져오기" subtitle={importList.length ? `${importList.length}개` : ''} close={() => setImportStep(null)}>
+    {/* 작업 불러오기 — 고르기 → 확인 → 가져옴. 설명 문단 대신 목록과 짧은 사유만. */}
+    {previewSaved && <Modal title="작업 내용" subtitle={previewSaved.summary} close={()=>setPreviewSaved(null)} footer={<button style={primary} onClick={()=>takeRestore(previewSaved)}>불러오기</button>}>
+      {previewSaved.work.cards.map(c=><div key={c.id} style={{padding:12,borderBottom:'1px solid var(--border-subtle)'}}>
+        <strong style={{fontSize:13}}>{c.label}</strong><div style={muted}>생성본 {c.takes.length}개</div>
+        {c.contentFault&&<p role="alert" style={{color:'var(--rose)'}}>{c.contentFault}</p>}
+        <p style={{whiteSpace:'pre-wrap',fontSize:12}}>{c.text || '따로 저장한 대사가 없습니다.'}</p>
+        {typeof c.settings.h3Direction==='string'&&c.settings.h3Direction&&<p style={{...muted,whiteSpace:'pre-wrap'}}>연기 지시: {c.settings.h3Direction}</p>}
+      </div>)}
+    </Modal>}
+    {importStep === 'list' && !previewSaved && <Modal title="작업 불러오기" subtitle={`${savedImport.length + importList.length}개`} close={() => {if(!libraryDeleting)setImportStep(null)}}>
+      <div style={{...row,justifyContent:'space-between',marginBottom:12,flexWrap:'wrap'}}><label style={{...row,fontSize:12,gap:8}}><input type="checkbox" data-testid="work-library-select-all" disabled={libraryDeleting||!savedImport.length&&!importList.length} checked={librarySelection.length>0&&librarySelection.length===savedImport.length+importList.length} onChange={e=>setLibrarySelection(e.target.checked?[...savedImport.map(savedKey),...importList.map(legacyKey)]:[])}/>전체 선택</label><button data-testid="work-library-remove-selected" style={{...button,color:'var(--rose)'}} disabled={libraryDeleting||!librarySelection.length} onClick={()=>setLibraryDrop(true)}>{libraryDeleting?'제거 중…':`선택 제거 (${librarySelection.length})`}</button></div>
+      {libraryDrop&&<div role="alert" data-testid="work-library-remove-confirm" style={{padding:12,border:'1px solid var(--border-subtle)',borderRadius:10,marginBottom:12}}><p style={{fontSize:13,marginTop:0}}>선택한 작업 기록 {librarySelection.length}개를 제거할까요?</p><p style={muted}>음원과 따로 저장한 대사·연기 지시 파일은 유지합니다. 기록 제거는 되돌릴 수 없습니다.</p><div style={row}><button style={button} disabled={libraryDeleting} onClick={()=>setLibraryDrop(false)}>취소</button><button data-testid="work-library-remove-confirmed" style={{...button,color:'var(--rose)'}} disabled={libraryDeleting} onClick={()=>void removeSelectedLibrary()}>기록 제거</button></div></div>}
       {importWhy && <div role="alert" data-testid="import-fault" style={{ fontSize: 12, color: 'var(--rose)', marginBottom: 10 }}>{importWhy}</div>}
-      {!importList.length && !importWhy && <div data-testid="import-empty" style={muted}>가져올 옛 작업이 없습니다.</div>}
+      <div style={{display:'grid',gap:9,marginBottom:savedImport.length?9:0}}>{savedImport.map(c=><WorkLibraryRow key={c.slot+':'+c.index}
+        title={c.work.cards[0]?.label ? c.work.cards[0].label+(c.work.cards.length>1?' 외 '+(c.work.cards.length-1)+'개 카드':'') : '저장한 카드 작업'}
+        summary={c.summary} selected={librarySelection.includes(savedKey(c))} onSelect={on=>selectLibrary(savedKey(c),on)} disabled={libraryDeleting} onRemove={()=>{setLibrarySelection([savedKey(c)]);setLibraryDrop(true)}} onDetails={()=>setPreviewSaved(c)} onLoad={()=>takeRestore(c)}
+        onReveal={()=>{const path=c.work.cards.flatMap(card=>card.takes).sort((a,b)=>b.createdAt-a.createdAt)[0]?.path||c.work.cards[0]?.contentPath;if(path)void window.api.app.revealFile(path).catch(()=>setImportWhy('파일 위치를 열지 못했습니다'));else setImportWhy('찾아갈 결과나 대사 파일이 없습니다')}}
+      />)}</div>
+      {!importList.length && !savedImport.length && !importWhy && <div data-testid="import-empty" style={muted}>가져올 옛 작업이 없습니다.</div>}
       {importDrop && <div data-testid="import-drop-ask" role="alert" style={{ ...row, gap: 8, fontSize: 12, color: 'var(--rose)', padding: '10px 12px', background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', borderRadius: 8, marginBottom: 10 }}>
         <span style={{ flex: 1 }}>{removeWarning(importDrop.work)}</span>
         <button type="button" data-testid="import-drop-cancel" style={button} onClick={() => setImportDrop(null)}>그대로 두기</button>
@@ -938,23 +1049,9 @@ export default function SynthesisCardWorkspace() {
           onClick={() => void dropLegacy(importDrop)}>지우기</button>
       </div>}
       <div style={{ display: 'grid', gap: 8 }}>{importList.map(plan => (
-        <div key={plan.work.key} data-testid="import-work" data-key={plan.work.key}
-          style={{ ...row, gap: 12, padding: 14, background: 'var(--bg-base)', border: '1px solid var(--border-subtle)', borderRadius: 10 }}>
-          <span style={{ color: 'var(--accent-light)', display: 'flex' }}><Icon name="history"/></span>
-          <div style={{ flex: '1 1 160px', minWidth: 0 }}>
-            <div title={plan.work.title} style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{plan.work.title}</div>
-            <div style={muted}>{importSummary(plan.work)}</div>
-          </div>
-          <Action icon="folder" testId="import-reveal"
-            label={`${plan.work.title} 파일 위치 열기`}
-            title="이 옛 작업이 온 파일을 탐색기에서 엽니다"
-            onClick={() => void openLegacyFile(plan)}/>
-          <Action icon="trash" testId="import-drop"
-            label={`${plan.work.title} 기록 지우기`}
-            title="이 옛 기록을 지웁니다. 만든 소리 파일과 가져온 카드 작업은 그대로입니다."
-            onClick={() => setImportDrop(plan)}/>
-          <button type="button" data-testid="import-pick" style={button} onClick={() => void pickImport(plan)}>내용 보기</button>
-        </div>
+        <WorkLibraryRow key={plan.work.key} testId="import-work" title={plan.work.title} summary={importSummary(plan.work)}
+          selected={librarySelection.includes(legacyKey(plan))} onSelect={on=>selectLibrary(legacyKey(plan),on)} disabled={libraryDeleting} onDetails={()=>void pickImport(plan)} onLoad={()=>void pickImport(plan)}
+          onReveal={()=>void openLegacyFile(plan)} onRemove={()=>setImportDrop(plan)}/>
       ))}</div>
     </Modal>}
 
@@ -977,6 +1074,7 @@ export default function SynthesisCardWorkspace() {
         <span>카드 <b>{importPick.work.cardCount}</b>장</span>
         <span>생성본 <b>{importPick.work.takeCount}</b>개</span>
       </div>
+      {importPick.doc.cards.map(c=><div key={c.id} style={{padding:12,borderBottom:'1px solid var(--border-subtle)'}}><strong style={{fontSize:12}}>{c.label}</strong><p style={{fontSize:12,whiteSpace:'pre-wrap'}}>{c.text || '대사 없음'}</p></div>)}
       {importPick.work.skips.length > 0 && <div data-testid="import-skips" style={{ marginTop: 12 }}>
         <div style={{ ...muted, marginBottom: 6 }}>옮기지 못하는 항목</div>
         <ul style={{ margin: 0, paddingLeft: 18, display: 'grid', gap: 4 }}>

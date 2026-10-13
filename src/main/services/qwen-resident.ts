@@ -14,6 +14,7 @@ import { dirname, join } from 'path'
 import { fileURLToPath } from 'url'
 import { QwenVoiceWorker } from './qwen-voice-worker'
 import { appLog } from './app-log'
+import { yieldIdleH3 } from './h3-resident'
 
 /** 이 실행의 파이프 — 주소는 프로세스 번호 + 무작위, 열쇠는 무작위 32자. */
 export const QWEN_PIPE = {
@@ -56,6 +57,7 @@ export function qwenWorker(): QwenVoiceWorker {
  */
 export async function ensureQwenResident(): Promise<boolean> {
   try {
+    if (!await yieldIdleH3()) return false
     if (!existsSync(join(dirname(pythonDir()), 'externals', 'qwen3_tts_venv', 'Scripts', 'python.exe'))) return false
     return await qwenWorker().ensure()
   } catch { return false }

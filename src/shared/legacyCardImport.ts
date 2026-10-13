@@ -1,3 +1,5 @@
+// @ts-ignore TS5097
+import { LEGACY_HISTORY_KEY, type LegacyHistoryEntry } from './legacyWorkHistory.ts'
 /**
  * 옛 작업 → 생성 카드 **가져오기(복사)의 단일 소유자.**
  *
@@ -291,6 +293,17 @@ export function legacyWorks(all: Record<string, unknown> | null | undefined, at:
       if (p) out.push(p)
     }
   }
+  const history = rec(all?.[LEGACY_HISTORY_KEY])
+  for (const [id, raw] of Object.entries(history || {})) {
+    const entry = rec(raw) as (LegacyHistoryEntry & Record<string, unknown>) | null
+    if (!entry) continue
+    const p = entry.kind === 'lab' ? planFromLab(entry.data, at) : entry.kind === 'draft' ? planFromDraft(entry.data, entry.sourceKey, at) : null
+    if (!p) continue
+    p.work.key = 'history:' + id
+    p.work.title += ' · 이전 저장'
+    if (p.doc.importedFrom) p.doc.importedFrom.key = p.work.key
+    out.push(p)
+  }
   return out.sort((a, b) => {
     if (b.work.updatedAt !== a.work.updatedAt) return b.work.updatedAt - a.work.updatedAt
     return a.work.kind === 'lab' ? -1 : 1
@@ -347,6 +360,11 @@ export function applyImport(file: SavedFile, doc: SavedWork): SavedFile {
 export function revealTarget(raw: unknown, work: LegacyWork): string {
   const o = rec(raw)
   if (!o) return ''
+  if (work.key.startsWith('history:')) {
+    const e = rec(rec(o[LEGACY_HISTORY_KEY])?.[work.key.slice(8)])
+    const d = rec(e?.data)
+    return str(e?.kind === 'lab' ? d?.voicePath : d?.sourcePath)
+  }
   if (work.kind === 'lab') return str(rec(o[LEGACY_LAB_KEY])?.voicePath)
   const drafts = rec(rec(o[LEGACY_DRAFT_KEY])?.drafts)
   if (!drafts) return ''
@@ -364,6 +382,13 @@ export function revealTarget(raw: unknown, work: LegacyWork): string {
 export function removeLegacy(raw: unknown, work: LegacyWork): { key: string; value: unknown } | null {
   const o = rec(raw)
   if (!o) return null
+  if (work.key.startsWith('history:')) {
+    const history = rec(o[LEGACY_HISTORY_KEY])
+    const id = work.key.slice(8)
+    if (!history || !(id in history)) return null
+    const next = { ...history }; delete next[id]
+    return { key: LEGACY_HISTORY_KEY, value: next }
+  }
   if (work.kind === 'lab') {
     if (!o[LEGACY_LAB_KEY]) return null
     return { key: LEGACY_LAB_KEY, value: null }

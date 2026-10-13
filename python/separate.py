@@ -331,6 +331,10 @@ def main():
         args.note_text = config.get("noteText", "")
         # 사용자가 고른 음성 모델 판(빈 값 = 기본). 해석·검증·거부는 tts_worker.set_qwen_model 이 소유한다.
         args.tts_qwen_model = config.get("ttsQwenModel", "") or ""
+        # 작업 자식 프로세스 안에서만. 상주 H3에는 인증된 요청 값으로 전달한다.
+        from h3_scene import validate_direction
+        direction = validate_direction(config.get("ttsH3Direction", "")) if config.get("ttsEngine") == "minimax-h3" else ""
+        os.environ["AF_H3_DIRECTION"] = direction
         # 참조 conditioning 모드(참조혼입 대응 PHASE 2, 단일 권위 계약). 키 부재(legacy 세션)는
         # None 그대로 두고, 해석(부재→safe_xvector)·값 검증·fail-closed 는 tts_worker 가 단일 소유한다.
         # 여기서 기본값을 만들거나 값을 고치지 않는다(원시값 전달 — ttsExpressiveMode 와 같은 원칙).
@@ -448,6 +452,10 @@ def main():
         sys.exit(1)
 
     os.makedirs(args.output, exist_ok=True)
+    if args.mode == "tts":
+        os.environ["AUDIOFORGE_RUN_RECORD_OUTPUT_DIR"] = os.path.abspath(args.output)
+    else:
+        os.environ.pop("AUDIOFORGE_RUN_RECORD_OUTPUT_DIR", None)
 
     try:
         # ── TTS mode ──

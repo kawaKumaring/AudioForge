@@ -1,3 +1,5 @@
+import {CARD_AUTOSAVE_KEY} from '../../shared/cardPersistencePolicy'
+import {configureCardAutoSave} from '../lib/cardWorkSaver'
 import PlaybackEffectsPanel from './PlaybackEffectsPanel'
 import SpeakerQuickSettings from './SpeakerQuickSettings'
 /**
@@ -71,6 +73,7 @@ const WIPE: Record<WipeKind, { label: string; what: string; keeps: string }> = {
  *   손으로 짚는 길은 쓰이지 않고 이름만 헷갈렸다.
  */
 export default function AppOptions({ close, initialTab = 'general' }: { close: () => void; initialTab?: 'general' | 'sound' }) {
+  const [cardAutoSave,setCardAutoSave] = useState(false)
   const [place, setPlace] = useState<OutputPlace>('app')
   const [chosen, setChosen] = useState('')
   const [appRoot, setAppRoot] = useState('')
@@ -139,6 +142,7 @@ export default function AppOptions({ close, initialTab = 'general' }: { close: (
     void (async () => {
       try {
         const got = await window.api.options.get()
+        setCardAutoSave(got.cardAutoSave === true)
         setChosen(got.chosenRoot || '')
         setAppRoot(got.appRoot || '')
         setPlace(got.beside ? 'beside' : (got.chosenRoot ? 'chosen' : 'app'))
@@ -216,6 +220,14 @@ export default function AppOptions({ close, initialTab = 'general' }: { close: (
 
       {tab === 'sound' && <><SpeakerQuickSettings basicsOnly/><PlaybackEffectsPanel embedded/></>}
       {tab === 'general' && <>
+      <div style={panel}>
+        <label style={{...row,fontSize:12,cursor:'pointer'}} title="카드 순서·목소리·생성본 선택을 자동 저장합니다. 대사·연기 지시는 카드의 저장 버튼으로 따로 저장합니다.">
+          <input type="checkbox" data-testid="options-card-autosave" checked={cardAutoSave} onChange={async e=>{
+            const on=e.target.checked
+            try{const r=await window.api.settings.set(CARD_AUTOSAVE_KEY,on);if(r?.ok===false)throw Error('저장 실패');setCardAutoSave(on);configureCardAutoSave(on);window.dispatchEvent(new Event('audioforge-card-autosave'))}catch{setFault('카드 자동 저장 설정을 저장하지 못했습니다.')}
+          }}/><span>합성 카드 자동 저장</span>
+        </label>
+      </div>
       {/* ── 만든 것을 둘 자리 ───────────────────────────────────────────── */}
       <div style={panel}>
         <div style={{ ...row }}>

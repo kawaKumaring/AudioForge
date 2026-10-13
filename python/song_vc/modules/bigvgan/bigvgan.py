@@ -348,7 +348,7 @@ class BigVGAN(torch.nn.Module):
         # Final tanh activation. Defaults to True for backward compatibility
         self.use_tanh_at_final = h.get("use_tanh_at_final", True)
 
-    def forward(self, x):
+    def forward(self, x, *, clip_output=True):
         # Pre-conv
         x = self.conv_pre(x)
 
@@ -371,7 +371,7 @@ class BigVGAN(torch.nn.Module):
         # Final tanh activation
         if self.use_tanh_at_final:
             x = torch.tanh(x)
-        else:
+        elif clip_output:
             x = torch.clamp(x, min=-1.0, max=1.0)  # Bound the output to [-1, 1]
 
         return x

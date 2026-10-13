@@ -1800,7 +1800,9 @@ def _get_qwen_engine():
 
 # ── Engine registry ──
 
+from h3_engine import H3Engine
 ENGINES = {
+    "minimax-h3": H3Engine,
     "f5tts": F5TTSEngine,
     "kokoro": KokoroEngine,
     "piper": PiperEngine,
@@ -4132,6 +4134,8 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
     speaker_labels: 화자 id → 사용자가 쓴 표시 이름. **기록 전용**이며 private JSON 에만 남는다.
       합성 조건으로는 쓰이지 않는다(같은 사람을 다르게 적었을 뿐이면 목소리는 같다)."""
     # ── 참조 conditioning 모드 판정 — 어떤 파싱/참조 준비/모델 작업보다 먼저(모델 미로딩 차단). ──
+    if preferred_engine == "minimax-h3" and builtin_model:
+        raise RuntimeError("MiniMax H3에는 기본 목소리 대신 참조 목소리를 선택하세요")
     rc_mode = resolve_reference_conditioning_mode(reference_conditioning_mode)  # invalid → 구조화 오류
     # 재현 메타는 **결과가 확정된 뒤** _reference_conditioning_meta 로 만든다(여기서 미리 만들면
     # auto 전환이 기록에 반영되지 않는다). reference_alignment / reference_cut_sample 도 여기서
@@ -4419,6 +4423,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             _rr["status"] = "ok"
             if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
                 _CONCAT_RECORDER.set_result(final_path)
+                meta["run_record_dir"] = os.path.abspath(_CONCAT_RECORDER.root)
                 _CONCAT_RECORDER.set_run_header(
                     **{k: meta.get(k) for k in _RUN_HEADER_FROM_METADATA if k in meta})
             emit("progress", percent=99, message="완료!")
@@ -4433,6 +4438,8 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         seg_seed_used = False
         _seg_qwen_used = False
 
+        if preferred_engine == "minimax-h3":
+            _get_engine("minimax-h3").records = []
         for i, (emotion_id, line_text, speaker_id) in enumerate(parsed):
             pct = 25 + int((i / len(parsed)) * 60)
             # 화면·Qwen 경로와 같은 표를 같은 방식으로 본다(두 경로가 다른 참조를 쓰면 안 된다).
@@ -4454,9 +4461,11 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             # ★엔진을 자동으로 다른 목소리로 바꾸지 않는다 — 고른 모델이 안 열리면 그 카드가 운다.
             if builtin_model and isinstance(engine, (PiperEngine, SupertonicEngine, QwenCustomEngine)):
                 engine.model_path = builtin_model
-            if isinstance(engine, QwenCustomEngine):
+            if isinstance(engine, (QwenCustomEngine, H3Engine)):
                 engine.run_seed = (seg_seed + i) % (2 ** 31 - 1)
                 seg_seed_used = True
+            if isinstance(engine, H3Engine):
+                engine.begin_segment(seg_seed)
             engine_name = engine.name
             seg_engines.append(engine_name)
 
@@ -4477,6 +4486,8 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                 say_source, _ord_n = _spoken_for_qwen(line_text)
                 _seg_qwen_used = True
             say_text = strip_spoken_symbols(say_source)
+            if isinstance(engine, H3Engine):
+                say_text = say_source
             if not say_text and not isinstance(engine, (PiperEngine, SupertonicEngine, QwenCustomEngine)):
                 # 기호만 있던 줄 — piper·Supertonic 은 빈 글을 짧은 쉼으로 쓴다. 다른 엔진은 빈 글을
                 # 받아 본 적이 없다(이어 붙이기는 빈 조각을 거절한다) — 그 엔진들만 예전처럼 원문을 보낸다.
@@ -4488,6 +4499,9 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                 except Exception:
                     pass       # 기록 실패가 합성을 막지 않는다
             engine.synthesize_segment(say_text, ref, emotion_id, speed, seg_path)
+            if isinstance(engine, H3Engine) and _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
+                if engine.records and _CONCAT_RECORDER.sent_private:
+                    _CONCAT_RECORDER.sent_private[-1]["chunks"] = list(engine.records[-1]["chunks"])
             segment_paths.append(seg_path)
 
         _record_spoken("qwen" if _seg_qwen_used else "other")
@@ -4600,10 +4614,20 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             **_reference_conditioning_meta(rc_mode, rc_mode, icl_attempted=False,
                                            icl_published=False, auto_fallback=False),
             **_plan_meta)
+        if "minimax-h3" in engines_used:
+            meta.update(model_name="MiniMax H3 REF2VA", device="cuda", actual_device="cuda",
+                        expression_engine=None, expression_quality_verified=False,
+                        prompt_source="audio_reference", reference_conditioning_mode_effective=None,
+                        reference_conditioning_method="H3 audio VAE latent",
+                        h3_requests=_get_engine("minimax-h3").public_records())
+            if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
+                meta["run_id"] = os.path.basename(_CONCAT_RECORDER.root)
+                _CONCAT_RECORDER.set_run_header(h3_requests=meta["h3_requests"])
         tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
         _rr["status"] = "ok"
         if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
             _CONCAT_RECORDER.set_result(final_path)
+            meta["run_record_dir"] = os.path.abspath(_CONCAT_RECORDER.root)
             _CONCAT_RECORDER.set_run_header(
                 **{k: meta.get(k) for k in _RUN_HEADER_FROM_METADATA if k in meta})
         emit("progress", percent=99, message="완료!")
