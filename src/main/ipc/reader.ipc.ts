@@ -32,6 +32,7 @@ import { appLog, fileLabel } from '../services/app-log'
 import { createLane, failureReason, jsonLines, madeTrack, pythonReason, readerRunConfig, testSkipsPrep, qwenRefModelPath } from '../services/reader-run'
 import { QwenVoiceWorker } from '../services/qwen-voice-worker'
 import { ensureQwenResident, qwenWorker, stopQwenResident } from '../services/qwen-resident'
+import { yieldIdleH3 } from '../services/h3-resident'
 import { parseWav, envelope, alignParts, type TimingPart } from '../../shared/readerTiming'
 import { cacheState, commitCache, readSpokenRecord, reusable, sha256, spokenOf, spokenRecordPath, type CacheState, type SpokenRecord, type SpokenRequest } from '../services/reader-cache'
 
@@ -335,6 +336,7 @@ async function makeChunk(body: string, v: ReaderVoice, out: string, segments: Em
   //   앞서 만들어 두므로(누르기 전에도) 그것까지 알리면 **책을 열어 둔 것만으로 합성이 거절된다.**
   // ★남을 본 **다음에** 세운다 — 먼저 세우면 제 판정에 제가 걸린다. 바로 아래 try 의 finally 가 내린다.
   const gpu = usesGpu(v)
+  if (gpu && !await yieldIdleH3()) throw new Error('H3 생성이 끝난 뒤 낭독을 시작해 주세요')
   if (gpu) setReaderRunning(true)
   try {
     let wav: string

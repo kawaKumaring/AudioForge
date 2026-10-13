@@ -12,6 +12,7 @@ import { tmpdir } from 'os'
 import { PythonRunner } from '../services/python-runner'
 import { appLog, fileLabel } from '../services/app-log'
 import { ensureQwenResident, qwenPipeIdle } from '../services/qwen-resident'
+import { ensureH3Resident, stopH3Resident, h3Running, h3PipeIdle } from '../services/h3-resident'
 import { currentBuildInfo } from './app-version.ipc'
 import { createSettlementGuard, createRunSettlement, createRunnerSlot } from '../services/run-settlement'
 import type { RunEnd, RunTerminal } from '../services/run-settlement'
@@ -290,6 +291,7 @@ let cancelState: 'none' | 'inflight' | 'failed' = 'none'
 let currentWatchdogClear: (() => void) | null = null          // 취소가 watchdog을 즉시 해제할 수 있게
 let currentOutputDir: string | null = null                    // 취소 정리(bounded cleanup)가 쓸 output_dir
 let currentIsTts = false                                      // tts 실행만 job-dir 정리 대상
+let currentIsH3 = false
 /** 카드 취소가 띄워 둔 실행기 작업의 끝을 기다리는 최대 시간 — 정지 파일은 16걸음(약 1.3초) 안에 듣는다. */
 const RESIDENT_CANCEL_WAIT_MS = 15000
 let cleanupPending = false                                    // 취소 성공했으나 job-dir 정리 미완 → 새 실행 차단
@@ -474,10 +476,11 @@ export function registerAudioIpc(
   let quitCleanupDone = false
   app.on('before-quit', (e) => {
     if (quitCleanupDone) return  // 재진입 → 실제 종료 진행
-    const busy = runner?.isRunning || trackSlot.current?.isRunning
+    const busy = runner?.isRunning || trackSlot.current?.isRunning || h3Running()
     if (!busy) { try { sweepRefClipDirs(clipRoot()) } catch { /* noop */ } ; quitCleanupDone = true; return }
     e.preventDefault()  // 실행 트리 종료 확인 전까지 종료 보류
     const kills: Promise<unknown>[] = []
+    kills.push(stopH3Resident('앱 종료'))
     if (runner) kills.push(runner.cancel(3000))
     { const tr = trackSlot.current; if (tr) kills.push(tr.cancel(3000)) }
     Promise.race([Promise.all(kills), delay(3500)])
@@ -927,6 +930,15 @@ export function registerAudioIpc(
 
     // ★Qwen 지정 목소리 카드는 **띄워 둔 실행기**로 만든다(2026-10-01 — 감정 생성 시간 줄이기).
     //   합성 파이썬이 붙기 전에 실행기가 준비돼 있어야 한다(늦으면 그 실행은 조각마다 모델을 여는 예전 길).
+    let h3Starting = mode === 'tts' && options?.ttsEngine === 'minimax-h3'
+    try {
+    if (h3Starting) {
+      if (!await ensureH3Resident(pythonPath, PythonRunner.getScriptPath('h3_voice_server.py'), () => h3Starting || !!runner?.isRunning && currentIsH3)) {
+        throw new Error('H3 상주 실행기를 준비하지 못했습니다')
+      }
+    } else {
+      if (!await stopH3Resident('다른 처리 작업')) throw new Error('앞 H3 실행기가 아직 끝나지 않았습니다')
+    }
     if (mode === 'tts' && options?.ttsEngine === 'qwen-custom') {
       const residentOk = await ensureQwenResident()
       appLog()?.info('job', `Qwen 상주 실행기 ${residentOk ? '준비됨 — 카드가 붙는다' : '준비 못 함 — 조각마다 모델을 연다'}`)
@@ -1053,6 +1065,7 @@ export function registerAudioIpc(
     currentSettle = settle        // audio:cancel이 '최초 정착 승자' 판정에 사용
     currentOutputDir = outputDir  // 취소 정리(bounded cleanup)가 쓸 경로
     currentIsTts = mode === 'tts'
+    currentIsH3 = mode === 'tts' && options?.ttsEngine === 'minimax-h3'
     const runnerDone = makeDeferred()  // done 핸들러가 resolve → cancel 핸들러가 sleep 없이 합류
     runnerDoneDeferred = runnerDone
 
@@ -1269,6 +1282,7 @@ export function registerAudioIpc(
     runner.run(scriptPath, ['--config', configPath])
 
     return { outputDir }
+    } finally { h3Starting = false }
   })
 
   // Process individual track (transcribe/translate)
@@ -1405,6 +1419,12 @@ export function registerAudioIpc(
     }
     afPhase('cancelling_sent')
     mainWindow.webContents.send('audio:cancelling', tagWith({}, runClientReq))     // renderer → 'cancelling' 표시
+    // H3는 별도 상주 프로세스다. 그 프로세스 종료를 확인하기 전에는 취소 완료로 보내지 않는다.
+    if (currentIsH3 && !await stopH3Resident('생성 취소')) {
+      cancelState = 'failed'
+      mainWindow.webContents.send('audio:cancel-failed', tagWith({ childAlive: r.isRunning, residentBusy: true }, runClientReq))
+      return { accepted: true }
+    }
     afPhase('kill_requested')
     const res = await r.cancel(cancelExitMs())          // 트리 kill + tree 종료 확인(parent close + taskkill exit 0)
     if (res.treeKillConfirmed) afPhase('tree_kill_confirmed')
@@ -1422,7 +1442,8 @@ export function registerAudioIpc(
     //   예전에는 화면이 0.65초에 '멈춤 완료' 를 받고, 실행기 작업은 2.17초까지 돌았다). 정지 파일·작업 폴더는 그 뒤에 지운다.
     if (isTts) {
       const t = Date.now()
-      const res = await qwenPipeIdle(RESIDENT_CANCEL_WAIT_MS)
+      const replies = await Promise.all([qwenPipeIdle(RESIDENT_CANCEL_WAIT_MS), h3PipeIdle(RESIDENT_CANCEL_WAIT_MS)])
+      const res = { idle: replies.every(r => r.idle), wasBusy: replies.some(r => r.wasBusy), why: replies.map(r => r.why).filter(Boolean).join(' · ') }
       appLog()?.info('job', `취소 — 띄워 둔 실행기 작업 ${!res.wasBusy ? '없음(이미 비어 있었다)' : res.idle ? `끝남(${Date.now() - t}ms · ${res.why || '사유 모름'})` : '시간 안에 끝나지 않음'}`)
       if (!res.idle) {
         cancelState = 'failed'

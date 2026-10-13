@@ -85,6 +85,7 @@ class H3Contract(unittest.TestCase):
             before=ref.read_bytes();conditions=[];seeds=[];engine=H3Engine();engine.run_seed=100
             model=N();model.clone=lambda:model;model.set_model_optimized_attention=lambda _:None
             engine.assets={key:Path(root)/name for key,name in FILES.items()}
+            for asset in engine.assets.values():asset.write_bytes(b'model-fixture')
             engine.sd=N(CLIPType=N(MINIMAX='minimax'),load_clip=lambda *a,**k:object(),VAE=lambda **k:object(),load_diffusion_model=lambda *a:model)
             engine.utils=N(load_torch_file=lambda *a,**k:({},{}))
             engine.mm=N(unload_all_models=lambda:None)
@@ -108,6 +109,22 @@ class H3Contract(unittest.TestCase):
             self.assertEqual(seeds,list(range(100,100+len(conditions))))
             self.assertTrue(all(c['ref_audios']['ref_audio_0']['waveform'].shape[1]==2 for c in conditions))
             self.assertTrue(Path(str(out)+'.h3.json').is_file())
+            engine.keep_loaded=True
+            with patch.object(engine,'load'),patch('h3_engine.resource_budget',return_value={'reserve_gib':2}),patch('torch.cuda.empty_cache'):
+                engine.synthesize_segment(text,str(ref),'default',1,str(out))
+                self.assertFalse(engine.records[-1]['condition_cache_hit'])
+                count=len(conditions);previous=len(seeds);engine.run_seed=200
+                engine.synthesize_segment(text,str(ref),'default',1,str(out))
+                self.assertTrue(engine.records[-1]['condition_cache_hit'])
+                self.assertTrue(engine.records[-1]['model_reused'])
+                self.assertEqual(len(conditions),count)
+                self.assertGreater(len(seeds),previous)
+                self.assertEqual(seeds[previous],200)
+                # 같은 경로의 참조 내용이 바뀌면 재준비한다.
+                sf.write(ref,np.full(32,.2,dtype='float32'),32000,subtype='FLOAT')
+                engine.synthesize_segment(text,str(ref),'default',1,str(out))
+                self.assertFalse(engine.records[-1]['condition_cache_hit'])
+                self.assertGreater(len(conditions),count)
             def fail_clip(*args,**kwargs):raise TypeError('adapter argument')
             engine.sd.load_clip=fail_clip
             with patch.object(engine,'load'),patch('h3_engine.resource_budget',return_value={'reserve_gib':2}),patch('torch.cuda.empty_cache'):
