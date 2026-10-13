@@ -19,7 +19,7 @@ import {
 import { cancelFailureText, type CancelUiStatus } from '../../shared/cancelContract'
 import { cancelAlreadyOverText, useCancelLifecycle } from '../hooks/useCancelLifecycle'
 import {
-  cardApplied, cardEventFault, cardGenerateFault, takeMark, CARD_PITCH_MIN, CARD_PITCH_MAX, CARD_PITCH_STEP,
+  h3DirectionFault, cardApplied, cardEventFault, cardGenerateFault, takeMark, CARD_PITCH_MIN, CARD_PITCH_MAX, CARD_PITCH_STEP,
 } from '../../shared/synthesisCardJob'
 import {
   cardVoiceOf, voiceSnapshot, voiceSupports, voiceGenerateFault, CARD_EMOTIONS, CARD_EMOTION_NONE, type BuiltinVoiceRef,
@@ -67,7 +67,18 @@ const DISCONNECTED = '연결부만 따로 듣는 것은 아직 연결되지 않�
 const GENERATION_MODELS: Record<string, { description: string; status: string; hint: string }> = {
   qwen3: { description: '참조 목소리로 대사를 만듭니다', status: '기본 엔진', hint: '현재 기본 생성 모델입니다. 기존 목소리와 생성본은 바뀌지 않습니다.' },
   cosyvoice3: { description: '말투 연출을 비교하는 시험용 모델', status: '검수 중', hint: '한국어 발음과 참조 목소리 유지가 아직 검수 중입니다.' },
-  'minimax-h3': { description: '대사 길이를 자동으로 맞춰 생성합니다', status: '감정 보류', hint: '기본 말투로 생성합니다. 감정 연출은 대사 손상 청취 판정으로 보류 중입니다.' },
+  'minimax-h3': { description: '대사 길이를 자동으로 맞춰 생성합니다', status: '연기 실험', hint: '상황 지시는 카드의 연기 아이콘에서 설정합니다. 실제 감정·발음·음색 품질은 아직 검수 전입니다.' },
+}
+
+function H3DirectionSettings({ card, close, disabled }: { card: SynthesisCard; close: () => void; disabled: boolean }) {
+  const [value, setValue] = useState(card.settings.h3Direction || '')
+  const fault = h3DirectionFault(value)
+  return <Modal title="연기 지시" subtitle={card.label} close={close} footer={<><button type="button" style={button} onClick={close}>취소</button><button type="button" style={primary} disabled={disabled || !!fault || card.settings.engine !== 'minimax-h3'} onClick={() => { useSynthesisCards.getState().update(card.id, { settings: { ...card.settings, h3Direction: value } }); close() }}>적용</button></>}>
+    <div style={{ ...row, justifyContent: 'space-between', marginBottom: 10 }}><label htmlFor="h3-scene-direction" style={{ fontSize: 12 }}>상황 · 행동 · 말하는 방식</label><span style={badge} title="상황 지시는 대사 밖에 전달합니다. 한국어 감정과 참조 음색 유지의 실제 품질은 아직 검수 전입니다.">실험</span></div>
+    <textarea id="h3-scene-direction" data-testid="h3-scene-direction" value={value} disabled={disabled} onChange={e => setValue(e.target.value)} placeholder="예: 친구의 거짓말을 알아챘다. 분노를 억누르며 낮고 단호하게 말한다." style={{ ...field, width: '100%', minHeight: 140, resize: 'vertical', lineHeight: 1.7 }} />
+    <div style={{ ...row, justifyContent: 'space-between', marginTop: 8, ...muted }}><span title="연기 지시는 읽을 대사와 별도로 보관됩니다. 비워 두면 기존 기본 말투로 생성합니다.">대사와 따로 보관</span><span>{Array.from(value.trim()).length} / 1200</span></div>
+    {fault && <p role="alert" style={{ fontSize: 12, color: 'var(--rose)' }}>{fault}</p>}
+  </Modal>
 }
 
 function Settings({ card, close, disabled, focusReference = false }: { card: SynthesisCard; close: () => void; disabled: boolean; focusReference?: boolean }) {
@@ -321,7 +332,7 @@ export default function SynthesisCardWorkspace() {
   const expressionTarget = useRef<Record<string, (cue: ExpressionIcon) => void>>({})
   const state = useSynthesisCards(), source = useAppStore(s => s.fileInfo), status = useAppStore(s => s.status), childAlive = useAppStore(s => s.errorInfo?.childAlive)
   const busy = status === 'processing' || isCancelCleanupBusy(status) || !!childAlive
-  const [modal, setModal] = useState<{ type: 'settings' | 'takes' | 'voice'; id: string; focusReference?: boolean; fromSequence?: boolean } | { type: 'join' | 'sequence' } | null>(null)
+  const [modal, setModal] = useState<{ type: 'settings' | 'takes' | 'voice' | 'direction'; id: string; focusReference?: boolean; fromSequence?: boolean } | { type: 'join' | 'sequence' } | null>(null)
   const [notice, setNotice] = useState(''), [loading, setLoading] = useState(false), [hover, setHover] = useState<string | null>(null)
   const [dragging, setDragging] = useState<string | null>(null), [over, setOver] = useState<{ id: string; after: boolean } | null>(null)
   const alive = useRef(true), pending = useRef(false)
@@ -822,10 +833,10 @@ export default function SynthesisCardWorkspace() {
           <input aria-label={`${index + 1}번 카드 이름`} value={card.label} disabled={locked} onChange={e => state.update(card.id, { label: e.target.value })} style={{ ...field, flex: '1 1 120px', padding: '6px 8px', background: 'transparent', borderColor: 'transparent', fontWeight: 600 }}/>
           <div style={{ ...row, flexWrap: 'nowrap', flexShrink: 0, marginLeft: 'auto' }}>
           <Action icon="copy" label={`${index + 1}번 카드 복제`} title="목소리·설정 복제 — 대사와 생성본은 새로 시작" disabled={locked} onClick={() => state.clone(card.id)}/>
-          <Action icon="emotion" label={`${index + 1}번 카드 감정 도구`} title="이 카드의 대사에 연출 표시 넣기" disabled={locked}
+          {card.settings.engine === 'minimax-h3' && !card.builtin ? <Action icon="acting" label={`${index + 1}번 카드 연기 지시`} title={card.settings.h3Direction?.trim() ? '이 카드의 연기 지시 편집 · 실험' : '이 카드의 상황·연기 지시 설정 · 실험'} pressed={!!card.settings.h3Direction?.trim()} disabled={locked} onClick={() => setModal({ type: 'direction', id: card.id })}/> : (<Action icon="emotion" label={`${index + 1}번 카드 감정 도구`} title="이 카드의 대사에 연출 표시 넣기" disabled={locked}
             pressed={expressionOpen && expressionCard === card.id}
-            onClick={() => { setExpressionOpen(!(expressionOpen && expressionCard === card.id)); setExpressionCard(card.id) }}/>
-          <Action icon="settings" label={`${index + 1}번 카드 고급 옵션`} disabled={locked} onClick={() => setModal({ type: 'settings', id: card.id })}/>
+            onClick={() => { setExpressionOpen(!(expressionOpen && expressionCard === card.id)); setExpressionCard(card.id) }}/>)}
+            <Action icon="settings" label={`${index + 1}번 카드 고급 옵션`} disabled={locked} onClick={() => setModal({ type: 'settings', id: card.id })}/>
           <Action icon="trash" label={`${index + 1}번 카드 삭제`} disabled={locked} onClick={() => state.remove(card.id)}/>
           </div>
         </div>
@@ -952,6 +963,7 @@ export default function SynthesisCardWorkspace() {
       disabled={locked || !state.cards.some(c => c.id === expressionCard)}
       supported={voiceSupports(cardVoiceOf(state.cards.find(c => c.id === expressionCard) || {})).emotion}
       insert={cue => expressionTarget.current[expressionCard]?.(cue)} close={() => setExpressionOpen(false)}/>}
+    {modal?.type === 'direction' && active && <H3DirectionSettings key={active.id} card={active} disabled={busy} close={() => setModal(null)}/>}
     {modal?.type === 'settings' && active && <Settings key={active.id} card={active} disabled={busy} focusReference={modal.focusReference} close={() => setModal(null)}/>}
     {modal?.type === 'takes' && active && <Takes key={active.id} card={active} disabled={busy} close={() => setModal(null)} back={modal.fromSequence ? () => setModal({ type: 'sequence' }) : undefined}/>}
     {modal?.type === 'join' && <Join cards={state.cards} disabled={busy} close={() => setModal(null)}/>}

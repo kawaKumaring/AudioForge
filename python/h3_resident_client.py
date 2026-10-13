@@ -4,11 +4,11 @@ import os
 import time
 from pathlib import Path
 
-def synthesize(text,ref,emotion,speed,out,seed):
+def synthesize(text,ref,emotion,speed,out,seed,direction=''):
     from multiprocessing.connection import Client
     addr=os.environ['AF_H3_PIPE_ADDR'];key=os.environ['AF_H3_PIPE_KEY']
     request={'text':text,'ref':ref,'emotion':emotion,'speed':speed,'out':out,'seed':int(seed),
-             'stop_file':os.environ.get('AF_QWEN_STOP_FILE','')}
+             'stop_file':os.environ.get('AF_QWEN_STOP_FILE',''),'direction':direction}
     try:
         with Client(addr,family='AF_PIPE',authkey=key.encode()) as conn:
             conn.send(request);deadline=time.monotonic()+600

@@ -231,6 +231,7 @@ export interface TtsInputOptions {
   ttsSpeakerLabels?: Record<string, string>
   ttsEngine?: string
   /** 사용자가 고른 음성 모델 판 id(빈 값 = 기본). 해석·거부는 Python 이 소유한다. */
+  ttsH3Direction?: string
   ttsQwenModel?: string
   ttsReferencePrompts?: Record<string, TtsReferenceEntry>
   // 10초 초과 원본에서 사용자가 확정한 3~10초 파생 참조 클립(mono/24k). 설정 시 기본 참조로 이것을 쓴다.
@@ -293,6 +294,7 @@ export interface TtsConfig {
   ttsEmotionCandidateSelections: Record<string, string>
   ttsSpeakerLabels: Record<string, string>
   ttsEngine: string
+  ttsH3Direction?: string
   ttsQwenModel: string
   ttsReferencePrompts: Record<string, TtsReferencePromptConfig>
   ttsReferenceOverride: string
@@ -403,6 +405,7 @@ export function buildTtsConfig(o?: TtsInputOptions, sourceFingerprints?: Record<
     ttsEngine: o?.ttsEngine ?? 'auto',
     // 빈 값이 기본(pinned 판). 알 수 없는 값은 여기서 고치지 않고 Python 이 거부한다.
     ttsQwenModel: o?.ttsQwenModel ?? '',
+    ...(o?.ttsEngine === 'minimax-h3' && o?.ttsH3Direction ? { ttsH3Direction: o.ttsH3Direction } : {}),
     ttsReferencePrompts: buildReferencePrompts(prompts),
     ttsReferenceOverride: o?.ttsReferenceOverride ?? '',
     ttsParsedPlanSha256: o?.ttsParsedPlanSha256 ?? '',

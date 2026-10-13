@@ -11,14 +11,14 @@ from h3_engine import H3Engine
 
 def run_request(engine,req,progress):
     engine.records=[];engine.run_seed=int(req['seed']);engine.stop_file=str(req.get('stop_file') or '')
-    engine.progress=progress
+    engine.progress=progress;engine.direction=req.get('direction','')
     try:
         engine.synthesize_segment(req['text'],req['ref'],req.get('emotion'),req['speed'],req['out'])
         return {'ok':True,'record':engine.records[-1]}
     except Exception as exc:
         code=getattr(exc,'error_payload',{}).get('code','H3_GENERATION_FAILED')
         return {'ok':False,'error':str(exc),'code':code,'stopped':code=='H3_STOPPED'}
-    finally:engine.stop_file='';engine.progress=None
+    finally:engine.stop_file='';engine.progress=None;engine.direction=''
 
 def main():
     os.environ['AF_H3_SERVER']='1'

@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 from h3_timing import estimate, split_by_budget, TIMING_VERSION
+from h3_scene import validate_direction
 
 FILES={'model':'minimax_h3_ref2va_pruned_int8_convrot.safetensors',
        'encoder':'qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors','audio_vae':'minimax_h3_audio_vae_fp32.safetensors'}
@@ -41,7 +42,17 @@ def frame_count(text):
     if result['frames']>736:raise RuntimeError('H3 한 구간의 시간 예산을 넘었습니다')
     return result['frames']
 
-def prompt_for(text):
+def prompt_for(text,direction=''):
+    direction=validate_direction(direction)
+    if direction:
+        return ('subject_definitions:\n<Subject 1> is a person who uses <Audio 1> as their speaking voice timbre reference.\n\n'
+                'summary:\n[reference generation + audio reference] A character speaks the supplied dialogue.\n\n'
+                'retention_analysis:\n<Audio 1>: reference - preserve the speaker voice timbre without copying the original signal.\n\n'
+                'detailed_description:\n[Shot 1] Situation and delivery direction: '+direction+'\n'
+                'Keep the same reference voice. Speak only the supplied Korean dialogue, with no extra dialogue.\n'
+                '<Subject 1> says: <d>[Korean] '+text+'</d>\n\n'
+                'overall_soundscape:\nclear speech in a quiet indoor room, no background music or added sound effects')
+
     # 성별을 특정하지 않는 앱 기본 지시. 초기 여성 지시와 다름, 감정 태그 없음.
     return ('subject_definitions:\n<Subject 1> is a person who uses <Audio 1> as their speaking voice timbre reference.\n\n'
             'summary:\n[reference generation + audio reference] A character speaking warmly to a friend.\n\n'
@@ -97,9 +108,9 @@ def select_attention(module,requested):
     if fn is not None:return fn,'comfy_kitchen_int8'
     return module.get_attention_function('pytorch'),'pytorch'
 
-def condition_key(chunks,ref_hash,assets,code_identity,profile=None):
+def condition_key(chunks,ref_hash,assets,code_identity,profile=None,direction=''):
     stamps=[(key,str(p.resolve()),p.stat().st_size,p.stat().st_mtime_ns) for key,p in sorted(assets.items())]
-    return hashlib.sha256(json.dumps([[(prompt_for(c),frame_count(c)) for c in chunks],ref_hash,stamps,code_identity,
+    return hashlib.sha256(json.dumps([[(prompt_for(c,direction) if direction else prompt_for(c),frame_count(c)) for c in chunks],ref_hash,stamps,code_identity,
         {**(profile or diagnostic_settings({})),'timing_rule':TIMING_VERSION,'reference_channels':'mono_duplicate_or_stereo'}],ensure_ascii=False).encode()).hexdigest()
 
 class H3Engine:
@@ -109,7 +120,7 @@ class H3Engine:
     def __init__(self):
         self.run_seed=0;self.records=[];self._ready=False
         self.keep_loaded=False;self._model=None;self._vae=None;self._cached=None;self.code_identity=''
-        self.stop_file='';self.progress=None
+        self.stop_file='';self.progress=None;self.direction=validate_direction(os.environ.get('AF_H3_DIRECTION',''))
 
     def release(self):
         self._cached=None;self._model=None;self._vae=None
@@ -127,7 +138,7 @@ class H3Engine:
 
     def public_records(self):
         # 원문은 private 기록에만. 공용 메타와 검수 헤더는 같은 표현을 사용한다.
-        return [{**{k:v for k,v in r.items() if k != 'chunks'},
+        return [{**{k:v for k,v in r.items() if k not in {'chunks','scene_direction'}},
                  'chunks':[{k:v for k,v in c.items() if k != 'sent_text'} for c in r['chunks']]}
                 for r in self.records]
 
@@ -163,11 +174,12 @@ class H3Engine:
     def synthesize_segment(self,text,ref_audio,emotion_id,speed,output_path):
         if os.environ.get('AF_H3_PIPE_ADDR') and not os.environ.get('AF_H3_SERVER'):
             from h3_resident_client import synthesize
-            self.records.append(synthesize(text,ref_audio,emotion_id,speed,output_path,self.run_seed))
+            self.records.append(synthesize(text,ref_audio,emotion_id,speed,output_path,self.run_seed,self.direction))
             return
         if emotion_id not in {None,'default'}:raise RuntimeError('MiniMax H3 감정 연출은 대사 손상 청취 판정으로 보류 중입니다')
         if float(speed)!=1:raise RuntimeError('현재 H3 생성은 기본 속도만 지원합니다')
         if not any('\uac00'<=c<='\ud7a3' for c in text):raise RuntimeError('현재 H3 카드 경로는 한국어 대사만 연결했습니다')
+        direction=validate_direction(self.direction)
         profile=diagnostic_settings()
         chunks=split_text(text)
         if not ref_audio or not Path(ref_audio).is_file():raise RuntimeError('MiniMax H3에는 참조 목소리가 필요합니다')
@@ -180,7 +192,7 @@ class H3Engine:
         self.mm.EXTRA_RESERVED_VRAM=self.budget['reserve_gib']*1024**3
         self._check_stop()
         ref_bytes=Path(ref_audio).read_bytes();ref_hash=hashlib.sha256(ref_bytes).hexdigest()
-        key=condition_key(chunks,ref_hash,self.assets,self.code_identity,profile)
+        key=condition_key(chunks,ref_hash,self.assets,self.code_identity,profile,direction)
         ref,sr=sf.read(io.BytesIO(ref_bytes),dtype='float32',always_2d=True);del ref_bytes
         if not len(ref) or not np.isfinite(ref).all():raise RuntimeError('H3 참조 목소리가 비어 있거나 손상되었습니다')
         if len(ref)/sr>45:raise RuntimeError('H3 참조는 45초 이하로 준비하세요. 원본을 자동으로 잘라 대체하지 않습니다')
@@ -208,7 +220,7 @@ class H3Engine:
                     vae=self.sd.VAE(sd=state,metadata=metadata);del state
                     mark('reference_and_text_encode')
                     for chunk in chunks:
-                        conditions.append(self.ops.reference_to_latent(clip=clip,prompt=prompt_for(chunk),width=profile['canvas'],height=profile['canvas'],
+                        conditions.append(self.ops.reference_to_latent(clip=clip,prompt=prompt_for(chunk,direction) if direction else prompt_for(chunk),width=profile['canvas'],height=profile['canvas'],
                             length=frame_count(chunk),audio_vae=vae,ref_audios={'ref_audio_0':audio}))
                     mark('release_encoder');self.mm.unload_all_models();clip=None;gc.collect();torch.cuda.empty_cache()
                     mark('diffusion_load')
@@ -247,6 +259,8 @@ class H3Engine:
                 mark('save');out=np.concatenate(waves);sf.write(output_path,out,decoded['sample_rate'],subtype='FLOAT')
             mark('complete')
             detail={'engine':self.name,'chunks':records,'reference_sha256':ref_hash,
+                    'scene_direction':direction,'scene_direction_sha256':hashlib.sha256(direction.encode()).hexdigest(),
+                    'scene_direction_requested':bool(direction),'scene_effect_verified':False,
                     'sample_rate':decoded['sample_rate'],'settings':{'steps':16,'cfg':1,'sampler':'res_multistep','timing_rule':TIMING_VERSION,**profile,'attention_selected':attention_selected},
                     'emotion':'미적용·보류','seconds':time.monotonic()-started,'resource_budget':self.budget,
                     'reference_channels_in':reference_channels,

@@ -27,7 +27,7 @@ import { defaultSettings, synthesisOptions } from '../../shared/labWorkspace.ts'
 import { REFERENCE_CONDITIONING_RECOMMENDED } from '../../shared/ttsConfig.ts'
 import {
   cardApplied, cardClipKey, cardEventFault, cardGenerateFault, cardRegionFault,
-  type CardApplied,
+  type CardApplied, h3DirectionFault,
 // @ts-ignore TS5097
 } from '../../shared/synthesisCardJob.ts'
 import {
@@ -137,6 +137,7 @@ export async function hydrateWork(w: SavedWork): Promise<{
   const fallback = productDefaults()
   const cards: SynthesisCard[] = w.cards.map((c) => {
     const settings = {
+      h3Direction: text(c.settings.h3Direction),
       ...(c.settings.engine ? { engine: c.settings.engine as 'qwen3' | 'minimax-h3' } : {}),
       speed: num(c.settings.speed, 1), pitch: num(c.settings.pitch, 0),
       emotion: text(c.settings.emotion) || '자연스럽게',
@@ -159,6 +160,7 @@ export async function hydrateWork(w: SavedWork): Promise<{
           ? { speed: 0, pitch: 0, emotion: '', reference: 'auto' as const, start: 0, end: 0 }
           : {
             ...(t.settings.engine ? { engine: t.settings.engine as 'qwen3' | 'minimax-h3' } : {}),
+            h3Direction: text(t.settings.h3Direction),
             speed: num(t.settings.speed, settings.speed), pitch: num(t.settings.pitch, settings.pitch),
             emotion: text(t.settings.emotion) || settings.emotion,
             reference: t.settings.reference === 'manual' ? 'manual' as const : 'auto' as const,
@@ -356,6 +358,7 @@ export async function startCardGeneration(card: SynthesisCard): Promise<string> 
   const app = useAppStore.getState()
   const ref = st.refs[card.id]
   const voice = cardVoiceOf(card)
+  if (voice.kind === 'reference' && voice.engine === 'minimax-h3') { const why = h3DirectionFault(card.settings.h3Direction || ''); if (why) return why }
   const fault = expressionIconFault(card.text, voiceSupports(voice).emotion) || voiceGenerateFault({
     voice,
     text: card.text,
@@ -398,7 +401,7 @@ export async function startCardGeneration(card: SynthesisCard): Promise<string> 
       : { clip: '', region: null }),
     // 기본 목소리면 엔진·모델을 명시해 싣는다. 참조 목소리면 아무것도 붙지 않는다.
     ...builtinRequestFields(voice),
-    ...(voice.kind === 'reference' && voice.engine === 'minimax-h3' ? { ttsTailMode: 'off' } : {}),
+    ...(voice.kind === 'reference' && voice.engine === 'minimax-h3' ? { ttsTailMode: 'off', ttsH3Direction: card.settings.h3Direction || '' } : {}),
     clientRequestId: reqId,
     // ★**사용자가 고른 원본**을 따로 싣는다. 영상이면 아래에서 꺼낸 wav 를 보내는데,
     //   본체가 그 폴더를 결과 자리로 삼으면 C 드라이브 중간 폴더에 쌓인다(2026-09-28 신고).
