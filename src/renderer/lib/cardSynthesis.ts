@@ -336,8 +336,9 @@ export async function prepareCardReference(card: SynthesisCard): Promise<void> {
     },
     report: (p) => report(cardId, reqId, {
       phase: (p.phase as CardRef['phase']) || 'preparing',
-      clip: typeof p.clip === 'string' ? p.clip : '',
-      region: (p.region as CardRef['region']) ?? null,
+      // valid_whole은 파생 파일 없이 원본을 사용한다. 카드도 실제 경로를 보존해야 생성할 수 있다.
+      clip: p.phase === 'ready' && p.clip === '' && p.region == null ? audio : (typeof p.clip === 'string' ? p.clip : ''),
+      region: (p.region as CardRef['region']) ?? (p.phase === 'ready' && p.clip === '' ? { start: 0, duration: card.source!.duration } : null),
       message: p.message || '',
     }),
   })

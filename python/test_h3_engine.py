@@ -91,11 +91,12 @@ class H3Contract(unittest.TestCase):
             engine.attention=N(get_attention_function=lambda *a:None)
             def condition(**kwargs):
                 conditions.append(kwargs)
-                return [[torch.ones(1,2,3),{'pooled_output':torch.ones(1,3)}]],{'samples':torch.zeros(1,2,3)}
+                return [[torch.ones(1,2,3),{'pooled_output':None}]],{'samples':torch.zeros(1,2,3)}
             wave=torch.stack((torch.full((32,),.5),torch.full((32,),-.2)))[None,:,:]
             engine.ops=N(reference_to_latent=condition,shift_model=lambda m,*a:(m,),vae_decode_audio=lambda *a:{'waveform':wave,'sample_rate':32000})
             def sample(*args,**kwargs):
                 seeds.append(kwargs['seed']);self.assertTrue(torch.equal(args[7][0][0],torch.zeros(1,2,3)))
+                self.assertIsNone(args[7][0][1]['pooled_output'])
                 return torch.zeros(1,2,3)
             engine.sample=N(fix_empty_latent_channels=lambda m,x:x,prepare_noise=lambda x,s:torch.zeros_like(x),sample=sample)
             text='같은 대사입니다. '*22
@@ -107,5 +108,12 @@ class H3Contract(unittest.TestCase):
             self.assertEqual(seeds,list(range(100,100+len(conditions))))
             self.assertTrue(all(c['ref_audios']['ref_audio_0']['waveform'].shape[1]==2 for c in conditions))
             self.assertTrue(Path(str(out)+'.h3.json').is_file())
+            def fail_clip(*args,**kwargs):raise TypeError('adapter argument')
+            engine.sd.load_clip=fail_clip
+            with patch.object(engine,'load'),patch('h3_engine.resource_budget',return_value={'reserve_gib':2}),patch('torch.cuda.empty_cache'):
+                with self.assertRaisesRegex(RuntimeError,'text_encoder_load.*TypeError') as failure:
+                    engine.synthesize_segment('다시 확인합니다.',str(ref),'default',1,str(out))
+            self.assertEqual(failure.exception.error_payload['code'],'H3_GENERATION_FAILED')
+            self.assertTrue(np.all(sf.read(out,dtype='float32')[0]==.5))
 
 if __name__=='__main__':unittest.main()

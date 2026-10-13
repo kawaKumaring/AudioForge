@@ -327,7 +327,7 @@ export default function SynthesisCardWorkspace() {
   useEffect(() => {
     for (const card of state.cards) {
       if (!card.source) { delete prepared.current[card.id]; continue }
-      const key = JSON.stringify([card.source.path, card.settings.reference, card.settings.start, card.settings.end])
+      const key = JSON.stringify([card.source.path, card.settings.engine || 'qwen3', card.settings.reference, card.settings.start, card.settings.end])
       // ★조건이 같아도 **준비 상태가 없으면 다시 준비한다.** 삭제→되돌리기로 카드가 돌아왔는데
       //   준비 상태만 비어 생성 단추가 잠긴 채였다(2026-09-27 검수 재현).
       //   되돌리기가 준비 상태를 되살리면 이 자리는 그냥 지나간다 — 어느 쪽이든 어긋나지 않는다.

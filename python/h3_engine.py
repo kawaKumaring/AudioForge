@@ -129,27 +129,31 @@ class H3Engine:
         if reference_channels==1:ref=np.repeat(ref,2,axis=1)
         elif reference_channels!=2:raise RuntimeError('H3 참조는 모노 또는 스테레오 음원이어야 합니다')
         audio={'waveform':torch.from_numpy(ref.T.copy())[None,:,:],'sample_rate':sr}
-        clip=model=vae=None;conditions=[];waves=[];records=[];started=time.monotonic()
+        clip=model=vae=None;conditions=[];waves=[];records=[];started=time.monotonic();stage='text_encoder_load'
         try:
             with torch.inference_mode():
                 clip=self.sd.load_clip([str(self.assets['encoder'])],embedding_directory=[],clip_type=self.sd.CLIPType.MINIMAX)
+                stage='audio_vae_load'
                 state,metadata=self.utils.load_torch_file(str(self.assets['audio_vae']),return_metadata=True)
                 vae=self.sd.VAE(sd=state,metadata=metadata);del state
                 for chunk in chunks:
+                    stage='reference_and_text_encode'
                     conditions.append(self.ops.reference_to_latent(clip=clip,prompt=prompt_for(chunk),width=256,height=256,
                         length=frame_count(chunk),audio_vae=vae,ref_audios={'ref_audio_0':audio}))
                 self.mm.unload_all_models();clip=None;gc.collect();torch.cuda.empty_cache()
+                stage='diffusion_load'
                 model=self.sd.load_diffusion_model(str(self.assets['model']))
                 model=self.ops.shift_model(model,12.,3.)[0]
                 attention=self.attention.get_attention_function('comfy_kitchen_int8',None)
                 if attention is None:attention=self.attention.get_attention_function('pytorch')
                 model=model.clone();model.set_model_optimized_attention(attention)
                 for index,(chunk,condition) in enumerate(zip(chunks,conditions)):
+                    stage='sampling'
                     positive,latent=condition
                     negative=[]
                     for item in positive:
                         metadata=item[1].copy()
-                        if 'pooled_output' in metadata:metadata['pooled_output']=torch.zeros_like(metadata['pooled_output'])
+                        if metadata.get('pooled_output') is not None:metadata['pooled_output']=torch.zeros_like(metadata['pooled_output'])
                         negative.append([torch.zeros_like(item[0]),metadata])
                     seed=(int(self.run_seed)+index) % (2**31-1)
                     image=self.sample.fix_empty_latent_channels(model,latent['samples'])
@@ -157,6 +161,7 @@ class H3Engine:
                     samples=self.sample.sample(model,noise,16,1.,'res_multistep','simple',positive,negative,image,
                                                denoise=1.,disable_pbar=True,seed=seed)
                     result={**latent,'samples':samples}
+                    stage='audio_decode'
                     decoded=self.ops.vae_decode_audio(vae,result)
                     wave=decoded['waveform'][0].float().cpu().numpy()
                     if not wave.size or not np.isfinite(wave).all():raise RuntimeError('H3 출력이 비어 있거나 손상되었습니다')
@@ -164,7 +169,7 @@ class H3Engine:
                     mono=wave[channel].copy();waves.append(mono)
                     records.append({'index':index,'seed':seed,'sent_text':chunk,'sent_text_sha256':hashlib.sha256(chunk.encode()).hexdigest(),
                                     'frames':frame_count(chunk),'duration':len(mono)/decoded['sample_rate'],'mono_channel':channel})
-                out=np.concatenate(waves);sf.write(output_path,out,decoded['sample_rate'],subtype='FLOAT')
+                stage='save';out=np.concatenate(waves);sf.write(output_path,out,decoded['sample_rate'],subtype='FLOAT')
             detail={'engine':self.name,'chunks':records,'reference_sha256':hashlib.sha256(Path(ref_audio).read_bytes()).hexdigest(),
                     'sample_rate':decoded['sample_rate'],'settings':{'steps':16,'cfg':1,'sampler':'res_multistep','canvas':256},
                     'emotion':'미적용·보류','seconds':time.monotonic()-started,'resource_budget':self.budget,
@@ -172,5 +177,9 @@ class H3Engine:
                     'processing':'기본 VAE 디코더 처리 후 앱 mono 계약에 맞춰 가장 큰 RMS 채널 유지. 추가 자르기·음량 정규화·속도 변경 없음.'}
             self.records.append(detail)
             Path(str(output_path)+'.h3.json').write_text(json.dumps(detail,ensure_ascii=False,indent=2),encoding='utf-8')
+        except Exception as exc:
+            error=RuntimeError(f'H3 {stage} 실패: {type(exc).__name__}: {exc}')
+            error.error_payload={'code':'H3_GENERATION_FAILED'}
+            raise error from exc
         finally:
             conditions.clear();clip=model=vae=None;self.mm.unload_all_models();gc.collect();torch.cuda.empty_cache()
