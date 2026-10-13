@@ -592,6 +592,41 @@ export default function SynthesisCardWorkspace() {
   const [importDone, setImportDone] = useState('')
   /** 지우기 전에 한 번 묻는다 — 되돌릴 수 없다. */
   const [importDrop, setImportDrop] = useState<ImportPlan | null>(null)
+  const [librarySelection,setLibrarySelection]=useState<string[]>([])
+  const [libraryDrop,setLibraryDrop]=useState(false)
+  const [libraryDeleting,setLibraryDeleting]=useState(false)
+  const savedKey=(c:RestoreChoice)=>'saved:'+c.slot+':'+c.index
+  const legacyKey=(p:ImportPlan)=>'legacy:'+p.work.key
+  const selectLibrary=(key:string,on:boolean)=>setLibrarySelection(old=>on?[...new Set([...old,key])]:old.filter(k=>k!==key))
+  const removeSelectedLibrary=async()=>{
+    if(libraryDeleting)return
+    setLibraryDeleting(true);setImportWhy('')
+    let removed=0;const failures:string[]=[]
+    try{
+      // 보관함은 뒤에서 지워 앞 항목의 번호가 바뀌지 않게 한다.
+      const saved=savedImport.filter(c=>librarySelection.includes(savedKey(c))).sort((a,b)=>b.index-a.index)
+      for(const c of saved){
+        try{const why=await deleteSavedWork(c.slot,c.index);if(why)throw Error(why);removed++}
+        catch(e){failures.push((e as Error).message)}
+      }
+      for(const plan of importList.filter(p=>librarySelection.includes(legacyKey(p)))){
+        try{
+          const all=await window.api.settings.get() as Record<string,unknown>
+          const patch=removeLegacy(all,plan.work)
+          if(!patch)throw Error('이미 바뀐 옛 작업입니다')
+          const r=await window.api.settings.set(patch.key,patch.value)
+          if(!r?.ok)throw Error('옛 작업 기록을 저장하지 못했습니다')
+          if(plan.work.kind==='lab'&&!plan.work.key.startsWith('history:'))useLabStore.getState().forget()
+          removed++
+        }catch(e){failures.push((e as Error).message)}
+      }
+      await openImport()
+      setLibraryDrop(false)
+      setImportWhy(failures.length?`${removed}개 제거 · ${failures.length}개 실패: ${failures[0]}`:`${removed}개 작업 기록을 제거했습니다.`)
+    }catch(e){setImportWhy(`${removed}개 제거 후 목록을 확인하지 못했습니다: ${(e as Error).message}`)}
+    finally{setLibraryDeleting(false)}
+  }
+
 
   /** 이 옛 작업이 온 파일을 탐색기로 연다. 기록에 없으면 그렇다고 말한다. */
   const openLegacyFile = async (plan: ImportPlan) => {
@@ -627,7 +662,7 @@ export default function SynthesisCardWorkspace() {
   }
 
   const openImport = async () => {
-    setImportWhy(''); setImportPick(null); setImportDup(null); setSavedImport([]);setImportList([]);setImportStep('list')
+    setLibrarySelection([]);setLibraryDrop(false);setImportWhy(''); setImportPick(null); setImportDup(null); setSavedImport([]);setImportList([]);setImportStep('list')
     try {
       const all = await window.api.settings.get() as Record<string, unknown>
       const found = legacyWorks(all, Date.now())
@@ -997,11 +1032,13 @@ export default function SynthesisCardWorkspace() {
         {typeof c.settings.h3Direction==='string'&&c.settings.h3Direction&&<p style={{...muted,whiteSpace:'pre-wrap'}}>연기 지시: {c.settings.h3Direction}</p>}
       </div>)}
     </Modal>}
-    {importStep === 'list' && !previewSaved && <Modal title="작업 불러오기" subtitle={`${savedImport.length + importList.length}개`} close={() => setImportStep(null)}>
+    {importStep === 'list' && !previewSaved && <Modal title="작업 불러오기" subtitle={`${savedImport.length + importList.length}개`} close={() => {if(!libraryDeleting)setImportStep(null)}}>
+      <div style={{...row,justifyContent:'space-between',marginBottom:12,flexWrap:'wrap'}}><label style={{...row,fontSize:12,gap:8}}><input type="checkbox" data-testid="work-library-select-all" disabled={libraryDeleting||!savedImport.length&&!importList.length} checked={librarySelection.length>0&&librarySelection.length===savedImport.length+importList.length} onChange={e=>setLibrarySelection(e.target.checked?[...savedImport.map(savedKey),...importList.map(legacyKey)]:[])}/>전체 선택</label><button data-testid="work-library-remove-selected" style={{...button,color:'var(--rose)'}} disabled={libraryDeleting||!librarySelection.length} onClick={()=>setLibraryDrop(true)}>{libraryDeleting?'제거 중…':`선택 제거 (${librarySelection.length})`}</button></div>
+      {libraryDrop&&<div role="alert" data-testid="work-library-remove-confirm" style={{padding:12,border:'1px solid var(--border-subtle)',borderRadius:10,marginBottom:12}}><p style={{fontSize:13,marginTop:0}}>선택한 작업 기록 {librarySelection.length}개를 제거할까요?</p><p style={muted}>음원과 따로 저장한 대사·연기 지시 파일은 유지합니다. 기록 제거는 되돌릴 수 없습니다.</p><div style={row}><button style={button} disabled={libraryDeleting} onClick={()=>setLibraryDrop(false)}>취소</button><button data-testid="work-library-remove-confirmed" style={{...button,color:'var(--rose)'}} disabled={libraryDeleting} onClick={()=>void removeSelectedLibrary()}>기록 제거</button></div></div>}
       {importWhy && <div role="alert" data-testid="import-fault" style={{ fontSize: 12, color: 'var(--rose)', marginBottom: 10 }}>{importWhy}</div>}
       <div style={{display:'grid',gap:9,marginBottom:savedImport.length?9:0}}>{savedImport.map(c=><WorkLibraryRow key={c.slot+':'+c.index}
         title={c.work.cards[0]?.label ? c.work.cards[0].label+(c.work.cards.length>1?' 외 '+(c.work.cards.length-1)+'개 카드':'') : '저장한 카드 작업'}
-        summary={c.summary} onDetails={()=>setPreviewSaved(c)} onLoad={()=>takeRestore(c)}
+        summary={c.summary} selected={librarySelection.includes(savedKey(c))} onSelect={on=>selectLibrary(savedKey(c),on)} disabled={libraryDeleting} onRemove={()=>{setLibrarySelection([savedKey(c)]);setLibraryDrop(true)}} onDetails={()=>setPreviewSaved(c)} onLoad={()=>takeRestore(c)}
         onReveal={()=>{const path=c.work.cards.flatMap(card=>card.takes).sort((a,b)=>b.createdAt-a.createdAt)[0]?.path||c.work.cards[0]?.contentPath;if(path)void window.api.app.revealFile(path).catch(()=>setImportWhy('파일 위치를 열지 못했습니다'));else setImportWhy('찾아갈 결과나 대사 파일이 없습니다')}}
       />)}</div>
       {!importList.length && !savedImport.length && !importWhy && <div data-testid="import-empty" style={muted}>가져올 옛 작업이 없습니다.</div>}
@@ -1013,7 +1050,7 @@ export default function SynthesisCardWorkspace() {
       </div>}
       <div style={{ display: 'grid', gap: 8 }}>{importList.map(plan => (
         <WorkLibraryRow key={plan.work.key} testId="import-work" title={plan.work.title} summary={importSummary(plan.work)}
-          onDetails={()=>void pickImport(plan)} onLoad={()=>void pickImport(plan)}
+          selected={librarySelection.includes(legacyKey(plan))} onSelect={on=>selectLibrary(legacyKey(plan),on)} disabled={libraryDeleting} onDetails={()=>void pickImport(plan)} onLoad={()=>void pickImport(plan)}
           onReveal={()=>void openLegacyFile(plan)} onRemove={()=>setImportDrop(plan)}/>
       ))}</div>
     </Modal>}

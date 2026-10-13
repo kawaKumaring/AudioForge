@@ -28,6 +28,18 @@ const assert=require('node:assert/strict');const {McpClient}=require('../../tool
   await call('window_resize',{width:760,height:700});
   check(await ev('(()=>{const d=document.querySelector("dialog[open]");return !!d&&d.scrollWidth<=d.clientWidth})()'),'좁은 창 대화상자 가로 넘침 없음');
   await call('ui_screenshot',{savePath:'card-storage-library-small.png'});
+  await call('ui_click',{target:'testid:work-library-select',index:0});
+  await call('ui_click',{target:'testid:work-library-select',index:8});
+  check(await ev('document.querySelector("[data-testid=work-library-remove-selected]").textContent.includes("2")'),'새 작업과 옛 작업 함께 선택');
+  await call('ui_click',{target:'testid:work-library-remove-selected'});
+  check(await ev('document.querySelector("[data-testid=work-library-remove-confirm]").textContent.includes("음원과 따로 저장한")'),'삭제 범위 확인');
+  await call('ui_click',{target:'testid:work-library-remove-confirmed'});
+  check((await call('ui_wait',{code:'document.querySelectorAll(".af-work-library-row").length===16',timeoutMs:10000})).met,'선택한 두 기록만 제거');
+  await call('ui_click',{target:'testid:work-library-select-all'});
+  await call('ui_click',{target:'testid:work-library-remove-selected'});
+  await call('ui_click',{target:'testid:work-library-remove-confirmed'});
+  check((await call('ui_wait',{code:'document.querySelectorAll(".af-work-library-row").length===0',timeoutMs:10000})).met,'전체 선택 일괄 제거');
+  check(require('node:fs').existsSync(tone.path),'검사용 원본 소리 유지');
   const errors=await call('errors');console.log(JSON.stringify({checks,errors}));
  }finally{await c.call('app_stop');await c.close()}
 })().catch(e=>{console.error(e);process.exitCode=1});
