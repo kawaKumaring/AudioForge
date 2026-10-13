@@ -64,6 +64,12 @@ function appliedOf(take: CardTake) {
   }
 }
 const DISCONNECTED = '연결부만 따로 듣는 것은 아직 연결되지 않았습니다. 전체 이어 듣기로 확인하세요.'
+const GENERATION_MODELS: Record<string, { description: string; status: string; hint: string }> = {
+  qwen3: { description: '참조 목소리로 대사를 만듭니다', status: '기본 엔진', hint: '현재 기본 생성 모델입니다. 기존 목소리와 생성본은 바뀌지 않습니다.' },
+  cosyvoice3: { description: '말투 연출을 비교하는 시험용 모델', status: '검수 중', hint: '한국어 발음과 참조 목소리 유지가 아직 검수 중입니다.' },
+  'minimax-h3': { description: '대사 길이를 자동으로 맞춰 생성합니다', status: '감정 보류', hint: '기본 말투로 생성합니다. 감정 연출은 대사 손상 청취 판정으로 보류 중입니다.' },
+}
+
 function Settings({ card, close, disabled, focusReference = false }: { card: SynthesisCard; close: () => void; disabled: boolean; focusReference?: boolean }) {
   const [draft, setDraft] = useState<CardSettings>({ ...card.settings, pitch: cardApplied(card.settings).pitch })
   const set = (patch: Partial<CardSettings>) => setDraft(s => ({ ...s, ...patch }))
@@ -84,6 +90,7 @@ function Settings({ card, close, disabled, focusReference = false }: { card: Syn
   }, [card.builtin?.path])
   const voiceNow = cardVoiceOf({ ...card, settings: draft, ...(card.builtin && liveEmotion ? { builtin: { ...card.builtin, emotion: true } } : {}) })
   const supports = voiceSupports(voiceNow)
+  const generationModel = GENERATION_MODELS[draft.engine || 'qwen3'] || GENERATION_MODELS.qwen3
   const referenceChoice = useRef<HTMLSelectElement>(null)
   useEffect(() => { if (focusReference) referenceChoice.current?.focus() }, [focusReference])
   const duration = card.source?.duration || 0
@@ -103,13 +110,13 @@ function Settings({ card, close, disabled, focusReference = false }: { card: Syn
     <div style={{ ...row, justifyContent: 'flex-end', marginBottom: 14 }}><button type="button" style={button} disabled={disabled} title="이 팝업의 설정을 기본값으로 돌립니다. 적용 전에는 카드가 바뀌지 않습니다." onClick={reset}><Icon name="reset"/>전체 초기화</button></div>
     <fieldset disabled={disabled} style={{ border: 0, padding: 0, margin: 0, display: 'grid', gap: 12 }}>
       {card.source && !card.builtin && <div style={{ ...panel, padding: '14px 16px', display: 'grid', gap: 8 }}>
-        <label htmlFor="card-reference-engine">목소리 생성 방식</label>
-        <select id="card-reference-engine" aria-label="목소리 생성 방식" style={field} value={draft.engine || 'qwen3'}
+        <div style={{ ...row, justifyContent: 'space-between' }}><label htmlFor="card-reference-engine" style={{ fontSize: 12, color: 'var(--text-secondary)' }}>생성 모델</label><span style={{ ...badge, fontSize: 10 }} title={generationModel.hint}>{generationModel.status}</span></div>
+        <select id="card-reference-engine" aria-label="생성 모델" style={{ ...field, colorScheme: 'dark' }} value={draft.engine || 'qwen3'}
           onChange={e => set({ engine: e.target.value as CardSettings['engine'], emotion: CARD_EMOTION_NONE })}>
-          <option value="qwen3">기존 Qwen</option><option value="minimax-h3">MiniMax H3 · 기본 말투</option>
+          <option value="qwen3">Qwen</option><option value="minimax-h3">MiniMax H3</option>
         </select>
-        <span style={muted} title="H3는 기본 말투만 연결했습니다. 감정 연출은 대사 손상 청취 판정으로 보류 중입니다.">
-          {draft.engine === 'minimax-h3' ? '참조 목소리로 생성 · 감정 연출 보류' : '기존 합성 방식 유지'}
+        <span style={{ ...muted, fontSize: 11 }} title={generationModel.hint}>
+          {generationModel.description}
         </span>
       </div>}
       {(supports.speed || supports.pitch) && <details className="af-effect-group" open style={panel}>
