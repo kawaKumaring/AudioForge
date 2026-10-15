@@ -136,13 +136,29 @@ def match_loudness(src: str, dest: str, target_lufs: float, *,
     want = target_lufs - before
     gain = max(-max_gain_db, min(max_gain_db, want))
     clamped = abs(gain - want) > 1e-9
-    _run_ffmpeg(['-i', src, '-filter:a', 'volume=%.3fdB' % gain, dest], ffmpeg=ffmpeg)
+    # ★키운 뒤 최대치 보호(2026-10-16): 조용한 대사를 크게 키우면 최대치를 넘어 깨질 수 있었다.
+    #   ffmpeg 로 키워 16비트로 쓰면 **쓰는 순간 넘는 부분이 잘려** 뒤에서 되돌릴 수 없다.
+    #   그래서 wav·flac 는 실수로 읽어 키우고 → 넘을 때만 리미터 → 원본 형식으로 쓴다. 다른 형식은 예전대로 ffmpeg.
+    limited = None
+    if dest.lower().endswith(('.wav', '.flac')) and src.lower().endswith(('.wav', '.flac')):
+        import soundfile as sf
+        import audio_limiter
+        data, sr = sf.read(src, always_2d=True, dtype='float64')
+        data = data * audio_limiter.db_to_lin(gain)
+        if audio_limiter.true_peak(data) > audio_limiter.db_to_lin(audio_limiter.CEILING_DBTP):
+            data, limited = audio_limiter.limit(data, sr)
+        tmp = dest + '.part'
+        sf.write(tmp, data, sr, subtype=sf.info(src).subtype, format='WAV' if dest.lower().endswith('.wav') else 'FLAC')
+        os.replace(tmp, dest)
+    else:
+        _run_ffmpeg(['-i', src, '-filter:a', 'volume=%.3fdB' % gain, dest], ffmpeg=ffmpeg)
     return {
         'before_lufs': before,
         'after_lufs': measure_loudness(dest),
         'gain_db': gain,
         'requested_gain_db': want,
         'clamped': clamped,
+        'limited': limited,
     }
 
 
