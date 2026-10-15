@@ -253,6 +253,11 @@ def main(argv=None):
     except dp.DubPipelineError as e:
         emit('error', message=str(e))
         return 1
+    except Exception as e:
+        # ★단계 바깥(출력 폴더 만들기·진행 상태 저장)의 실패 — 권한·디스크 등.
+        #   예전에는 잡히지 않아 본체에는 '코드 1 로 끝났습니다' 만 보였다(2026-10-16 점검).
+        emit('error', message='더빙 준비 중 멈췄습니다: %s' % e)
+        return 1
     emit('complete', out_dir=result['out_dir'],
          skipped=result['skipped'], ran=result['ran'])
     return 0

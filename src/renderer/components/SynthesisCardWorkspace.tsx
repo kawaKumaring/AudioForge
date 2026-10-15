@@ -22,6 +22,7 @@ import {
 } from '../lib/voicePreview'
 import { cancelFailureText, type CancelUiStatus } from '../../shared/cancelContract'
 import { cancelAlreadyOverText, useCancelLifecycle } from '../hooks/useCancelLifecycle'
+import { stripIpcErrorPrefix } from '@/lib/ipcErrorText'
 import {
   h3DirectionFault, cardApplied, cardEventFault, cardGenerateFault, takeMark, CARD_PITCH_MIN, CARD_PITCH_MAX, CARD_PITCH_STEP,
 } from '../../shared/synthesisCardJob'
@@ -788,7 +789,7 @@ export default function SynthesisCardWorkspace() {
       const current = useAppStore.getState(); if (current.status === 'processing' || isCancelCleanupBusy(current.status) || current.errorInfo?.childAlive) { setNotice('작업이 끝난 뒤 다시 선택하세요'); return }
       if (id && sources[0]) { const card = useSynthesisCards.getState().cards.find(c => c.id === id); if (card) state.update(id, { source: sources[0], settings: { ...card.settings, reference: 'auto', start: 0, end: sources[0].duration } }) }
       else state.add(sources)
-    } catch (e) { if (alive.current) setNotice(e instanceof Error ? e.message : '파일 불러오기 실패') }
+    } catch (e) { if (alive.current) setNotice(e instanceof Error ? (stripIpcErrorPrefix(e.message) || '파일 불러오기 실패') : '파일 불러오기 실패') }
     finally { pending.current = false; if (alive.current) setLoading(false) }
   }
   const pick = async (id?: string) => {

@@ -66,6 +66,17 @@ class Test실행기_입구(unittest.TestCase):
         self.assertTrue([e for e in events if e.get('type') == 'error'])
 
 
+    def test_단계_바깥_실패도_사유를_내고_1을_돌려준다(self):
+        """★출력 자리를 못 만들면(파일이 이미 그 이름을 차지) 단계 바깥에서 실패한다 — 사유 없이 끝나지 않는다."""
+        blocker = os.path.join(self.dir, 'blocked')
+        with open(blocker, 'w', encoding='utf-8') as f:
+            f.write('x')
+        code, events = run_cli(['--video', self.video, '--out', blocker])
+        self.assertEqual(code, 1)
+        errors = [e for e in events if e.get('type') == 'error']
+        self.assertTrue(errors and '더빙 준비 중 멈췄습니다' in errors[0].get('message', ''))
+
+
 class Test배선(unittest.TestCase):
     def test_네_단계가_모두_배선돼_있다(self):
         """하나라도 빠지면 run_front 가 시작도 못 한다 - 빠진 것을 여기서 먼저 잡는다."""

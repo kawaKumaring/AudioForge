@@ -59,6 +59,8 @@ export type ReferenceLibraryImportResponse =
 
 export type ReferenceLibrarySelectFailure =
   | 'INVALID_ID' | 'NOT_FOUND' | 'NOT_READY' | 'MANIFEST_CORRUPT'
+  /** 선택 상태 파일을 쓰거나 지우지 못했다(권한·디스크·잠금). 성공으로 보고하지 않는다. */
+  | 'SAVE_FAILED'
 
 export type ReferenceLibrarySelectResponse =
   | { ok: true; referenceId: string | null }

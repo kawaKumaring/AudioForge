@@ -9,6 +9,7 @@ import { createManagedAudio } from '@/lib/playbackVolume'
 import { ResultPlayer, actionBtnStyle, styleOf } from '@/components/ResultPlayer'
 import { ResultToolbar, useResultExport } from '@/components/ResultActions'
 import { Icon, button } from './kit'
+import { stripIpcErrorPrefix } from '@/lib/ipcErrorText'
 
 const menuItem: React.CSSProperties = {
   padding: '5px 8px', borderRadius: 6, border: 'none', background: 'transparent',
@@ -22,7 +23,7 @@ interface LoadedText { ident: string; transcript: string | null; translation: st
 const emptyText = (ident: string): LoadedText => ({ ident, transcript: null, translation: null, transcriptPhase: 'loading', translationPhase: 'loading' })
 /** IPC 가 붙이는 앞머리를 떼고 한 줄로 — 화면에는 사유만. */
 const shortReason = (raw: unknown): string => {
-  const s = String(raw || '').replace(/^Error invoking remote method '[^']+':\s*(Error:\s*)?/, '').split('\n')[0].trim()
+  const s = stripIpcErrorPrefix(raw).split('\n')[0].trim()
   return (s || '처리하지 못했습니다').slice(0, 120)
 }
 

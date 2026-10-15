@@ -21,7 +21,7 @@ import { promisify } from 'node:util'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, rmSync, statSync, writeFileSync, unlinkSync, realpathSync } from 'node:fs'
 import { join, basename, dirname, resolve } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { findPythonScript } from '../services/python-runner'
 import { currentPythonPath, synthesisBusy } from './audio.ipc'
 // @ts-ignore TS5097: node --test 가 요구하는 명시적 .ts 확장자(다른 모듈과 같은 관례).
 import { joinOutputFault, type PathProbe } from '../../shared/joinOutputGuard.ts'
@@ -125,11 +125,7 @@ export async function builtinVoiceList(): Promise<{ voices: BuiltinVoice[]; skip
   if (voiceCache && Date.now() - voiceCache.at < VOICE_CACHE_MS) return voiceCache.data
   const py = currentPythonPath()
   if (!py || !existsSync(py)) throw new Error('파이썬을 찾지 못했습니다')
-  const here = dirname(fileURLToPath(import.meta.url))
-  const script = [
-    join(here, '..', '..', '..', 'python', 'builtin_voices.py'),
-    join(process.cwd(), 'python', 'builtin_voices.py'),
-  ].find((p) => existsSync(p))
+  const script = findPythonScript('builtin_voices.py')
   if (!script) throw new Error('기본 목소리 조회 스크립트를 찾지 못했습니다')
   const { stdout } = await execFileAsync(py, ['-X', 'utf8', script], {
     timeout: 20000, maxBuffer: 1024 * 1024,
@@ -207,11 +203,7 @@ export function registerCardMediaIpc(): void {
       if (!existsSync(modelPath)) throw new Error('고른 목소리 파일을 찾지 못했습니다')
       const py = currentPythonPath()
       if (!py || !existsSync(py)) throw new Error('파이썬을 찾지 못했습니다')
-      const here = dirname(fileURLToPath(import.meta.url))
-      const script = [
-        join(here, '..', '..', '..', 'python', 'separate.py'),
-        join(process.cwd(), 'python', 'separate.py'),
-      ].find((p) => existsSync(p))
+      const script = findPythonScript('separate.py')
       if (!script) throw new Error('합성 스크립트를 찾지 못했습니다')
 
       const outDir = join(app.getPath('userData'), 'voicePreview',
@@ -294,11 +286,7 @@ export function registerCardMediaIpc(): void {
 
       const py = currentPythonPath()
       if (!py || !existsSync(py)) throw new Error('파이썬을 찾지 못했습니다')
-      const here = dirname(fileURLToPath(import.meta.url))
-      const script = [
-        join(here, '..', '..', '..', 'python', 'card_join.py'),
-        join(process.cwd(), 'python', 'card_join.py'),
-      ].find((p) => existsSync(p))
+      const script = findPythonScript('card_join.py')
       if (!script) throw new Error('이어 붙이기 스크립트를 찾지 못했습니다')
 
       const planPath = join(app.getPath('userData'), `cardjoin_${randomUUID()}.json`)

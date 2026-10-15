@@ -12,6 +12,7 @@ import { parseTtsScript, TTS_PARSER_VERSION } from '../../shared/ttsGrammar'
 import { inRange, TTS_TAIL_PADDING_MS, TTS_TAIL_FADE_MS, TTS_EMOTION_PAUSE_MS } from '../../shared/ttsExpressionCapabilities'
 import { CANCEL_FAILED_CODE, acceptsSettlement, isCancelCleanupBusy } from '../../shared/cancelContract'
 import { cancelAlreadyOverText, useCancelLifecycle } from '@/hooks/useCancelLifecycle'
+import { stripIpcErrorPrefix } from '@/lib/ipcErrorText'
 
 function _estimateTime(mode: string, duration: number, transcribe: boolean, translate: boolean): string {
   let secs = 0
@@ -191,7 +192,7 @@ function ProcessButtonContent() {
       console.log('[renderer][synthesize] audio:process 호출 직후', r)
     } catch (err: any) {
       console.error('[renderer][synthesize] audio:process 오류', err?.stack || err)
-      setError(err.message || 'Process failed')
+      setError(stripIpcErrorPrefix(err?.message) || '처리하지 못했습니다')
       cleanup()
     }
   }

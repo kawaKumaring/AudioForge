@@ -107,3 +107,9 @@ test('다른 카드와 공유한 입력 경로는 음원보다 먼저 삭제하�
  assert.throws(()=>removeCardFiles(w.cards[0],true,[w.cards[0].contentPath!]),/원본/)
  assert.ok(existsSync(w.cards[0].contentPath!));assert.ok(existsSync(w.cards[0].takes[0].path))
 }))
+test('결과 기록(session.json)이 손상되면 영어 SyntaxError 대신 한국어 사유로 거절하고 아무것도 지우지 않는다',()=>scratch(p=>{
+ const w=fixture(p);w.cards[0].contentPath=saveCardInput(w.cards[0],p);const meta=separateCardWork(w,p)
+ writeFileSync(join(p,'session.json'),'{"mode":"tts","tracks":[')
+ assert.throws(()=>removeCardFiles(meta.cards[0],true,[]),/결과 기록\(session\.json\)이 손상/)
+ assert.ok(existsSync(meta.cards[0].contentPath!));assert.ok(existsSync(w.cards[0].takes[0].path))
+}))

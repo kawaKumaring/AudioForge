@@ -207,16 +207,23 @@ function readSelectedReferenceId(): string | null {
   }
 }
 
-function writeSelectedReferenceId(referenceId: string | null): void {
+/**
+ * 선택 상태를 저장한다. 성공 여부를 돌려준다 — 실패를 성공으로 보고하지 않는다.
+ * ★2026-10-16: 예전에는 실패를 삼키고 아무것도 돌려주지 않아, 화면은 '선택됨' 으로 보이는데
+ *   다시 열면 선택이 사라졌고 원인 기록도 없었다. 해제 실패면 해제한 참조가 '사용 중' 으로 남아 삭제도 막혔다.
+ */
+function writeSelectedReferenceId(referenceId: string | null): boolean {
   const p = selectionFilePath()
   try {
     if (referenceId === null) {
       if (existsSync(p)) rmSync(p, { force: true })
-      return
+      return true
     }
     writeFileSync(p, JSON.stringify({ referenceId }), 'utf-8')
-  } catch {
-    // 저장 실패를 성공으로 보고하지 않는다 — 다음 조회에서 '선택 없음'으로 드러난다.
+    return true
+  } catch (e) {
+    APP_LOG.warn('reference', `참조 선택 저장 실패(${referenceId === null ? '해제' : '선택'}): ${(e as NodeJS.ErrnoException)?.code ?? '알 수 없음'}`)
+    return false
   }
 }
 

@@ -584,6 +584,8 @@ export default function TTSEditor() {
     }
     const selected = await window.api.referenceLibrary.select(imported.referenceId)
     if (!selected.ok) {
+      // 저장 실패는 구간 탓이 아니다 — 다른 구간을 고르라고 안내하지 않는다.
+      if (selected.reason === 'SAVE_FAILED') return { ok: false, message: REF_ASSET_FAILURE_TEXT.SAVE_FAILED }
       return { ok: false, message: '준비한 목소리를 사용할 수 없습니다. 다른 구간을 골라 주세요.' }
     }
     ensuredReferenceKey.current = key
