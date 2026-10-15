@@ -18,6 +18,7 @@ import DialogueWorkspace from '@/components/DialogueWorkspace'
 import LabPlaceholder from '@/components/LabPlaceholder'
 import SongWorkspace from '@/components/SongWorkspace'
 import ReaderWorkspace from '@/components/ReaderWorkspace'
+import VoiceEditWorkspace from './components/VoiceEditWorkspace'
 import { WorkspaceDockContext } from '@/components/WorkspaceDock'
 import TtsResultInfo from '@/components/TtsResultInfo'
 import AppVersionLabel from '@/components/AppVersionLabel'
@@ -58,8 +59,8 @@ export default function App() {
   const synthesisView = useSynthesisCards(s => s.view)
   const {layout:menuLayout} = useWorkspaceLayout()
   const workspace = WORKSPACES[mode]
-  const heading = ({ music: ['MUSIC', '음악 작업실'], conversation: ['DIALOGUE', '대화 작업실'], transcribe: ['TRANSCRIPT', '받아쓰기'], split: ['TRACKS', '트랙 편집실'], tts: ['VOICE', '목소리 작업실'], dub: ['SONGS', '노래 작업실'], lab: ['LAB', '실험실'], reader: ['READER', '내 서재'], 'dialogue-rebuild': ['DIALOGUE', '대화 편집실'] } as const)[mode]
-  const showSharedRun = mode !== 'tts' && mode !== 'lab' && mode !== 'dub' && mode !== 'reader'
+  const heading = ({ music: ['MUSIC', '음악 작업실'], conversation: ['DIALOGUE', '대화 작업실'], transcribe: ['TRANSCRIPT', '받아쓰기'], split: ['TRACKS', '트랙 편집실'], tts: ['VOICE', '목소리 작업실'], dub: ['SONGS', '노래 작업실'], lab: ['LAB', '실험실'], voiceedit: ['EDIT', '음성 편집실'], reader: ['READER', '내 서재'], 'dialogue-rebuild': ['DIALOGUE', '대화 편집실'] } as const)[mode]
+  const showSharedRun = mode !== 'tts' && mode !== 'lab' && mode !== 'dub' && mode !== 'reader' && mode !== 'voiceedit'
   const busy = status === 'processing' || isCancelCleanupBusy(status) || !!errorInfo?.childAlive
   const ownResult = resultMode === mode
   const sharedResults = ownResult && (showSharedRun || (mode === 'tts' && synthesisView === 'legacy' && synthesisTab === 'advanced'))
@@ -134,6 +135,7 @@ export default function App() {
           {mode === 'tts' && <SynthesisTabs />}
           {mode === 'dub' && <SongWorkspace />}
           {mode === 'reader' && <ReaderWorkspace />}
+          {mode === 'voiceedit' && <VoiceEditWorkspace />}
           {mode === 'lab' && <LabPlaceholder />}
 
           {sharedResults && (status === 'done' || status === 'error') && <section data-testid="shared-results" aria-label="현재 작업 결과" style={{ display: 'flex', flexDirection: 'column', gap: 18, marginTop: 24 }}>

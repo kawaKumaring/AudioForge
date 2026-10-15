@@ -1,4 +1,4 @@
-import {WORKSPACE_LAYOUT_KEY,defaultWorkspaceLayout,validWorkspaceLayout} from '../../shared/workspaceLayout'
+import {WORKSPACE_LAYOUT_KEY,defaultWorkspaceLayout,validWorkspaceLayout,migrateWorkspaceLayout} from '../../shared/workspaceLayout'
 /**
  * 앱 설정 통로 — **만든 것을 둘 자리**와 **쌓인 것 비우기.**
  *
@@ -129,8 +129,9 @@ export function registerOptionsIpc(): void {
       if(got.kind==='corrupt')return {ok:false,why:'메뉴 배치 설정을 읽지 못했습니다'}
       const raw=got.kind==='ok'?(got.settings as Record<string,unknown>)[WORKSPACE_LAYOUT_KEY]:undefined
       if(raw===undefined)return {ok:true,layout:defaultWorkspaceLayout()}
-      if(!validWorkspaceLayout(raw))return {ok:false,why:'저장된 메뉴 배치가 손상되었습니다. 기존 설정은 유지합니다.'}
-      return {ok:true,layout:raw}
+      const layout=migrateWorkspaceLayout(raw)   // 새 작업실만 빠진 예전 배치는 덧붙여 살린다
+      if(!layout)return {ok:false,why:'저장된 메뉴 배치가 손상되었습니다. 기존 설정은 유지합니다.'}
+      return {ok:true,layout}
     }catch{return {ok:false,why:'메뉴 배치 설정을 읽지 못했습니다'}}
   })
   ipcMain.handle('options:workspace-layout-set',(_e,layout:unknown)=>{

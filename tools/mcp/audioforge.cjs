@@ -18,7 +18,7 @@ const TR = require('../test-root.cjs')   // 테스트 전용 폴더(_local/테�
 const NO_BUTTON = { 'dialogue-rebuild': '대화 분리 결과에서 "대화 구간 편집" 으로 들어간다', lab: '개발 중인 실험실 — 목록에 단추가 없다' }
 const MODES = {
   reader: '낭독', tts: '음성 합성', dub: '노래 변환', music: '음악 분리', conversation: '대화 분리',
-  transcribe: '텍스트 추출', split: '트랙 분할', 'dialogue-rebuild': '대화 구간 편집', lab: '실험실',
+  transcribe: '텍스트 추출', split: '트랙 분할', 'dialogue-rebuild': '대화 구간 편집', voiceedit: '음성 편집', lab: '실험실',
 }
 const SCREEN_MAP = [
   '화면 지도(AudioForge):',
@@ -27,6 +27,7 @@ const SCREEN_MAP = [
   '· 목소리 고르기 창(낭독·합성 같은 것): 묶음 칩(<chip> — 누르면 고르기만) · <preview>(고른 것 들어 보기) · <confirm>(확정) · <file>(음성·영상 파일) — 이름표는 아래 화면마다.',
   '· 낭독(reader): reader-add-text(글 파일 — dialog_queue 먼저) · reader-play(읽기/멈춤) · reader-voice(목소리 고르기 — chip reader-voice-builtin · preview reader-voice-try · confirm reader-voice-confirm · file reader-voice-file · 최근 reader-voice-recent) · reader-settings(읽기 설정: 글자 크기·괄호 속 한자·따라가기) · reader-rate(재생 빠르기 — 낭독 전용) · reader-follow · reader-library · reader-paragraph(문단) · reader-phrase(지금 소리가 읽는 구절).',
   '· 음성 합성(tts): add-generation-card → 목소리 고르기(chip pick-voice-builtin · confirm pick-voice-confirm · file pick-voice-file · preview voice-preview) → generation-card(card-script 대본 · card-generate 만들기 · card-takes 생성본 · \'N번 카드 고급 옵션\' → card-emotion 감정(Qwen 목소리 + 1.7B 일 때만)) → join-bar(join-play 이어 듣기 · join-save).',
+  '· 음성 편집(voiceedit): ve-add-track(화자 추가) · ve-add-clip(소리 추가 — dialog_queue 먼저, 고른 화자 트랙 끝에) · ve-lanes(시간축 — ui_pointer 로 클립 끌기: 몸통=옮기기·위아래=다른 화자·양 끝=자르기·위 모서리=페이드) · ve-clip-<id>(data-start·data-duration) · ve-ruler(클릭=재생 위치·끌기=반복 구간) · ve-play/ve-stop · ve-loop · ve-snap · ve-undo/ve-redo · ve-save(섞어서 저장 → ve-notice 에 결과) · ve-fx-<처리>-on / ve-fx-<처리>-<값>(화자별 음성 처리) · ve-clip-gain · ve-clip-shape.',
   '· 상태 한눈에: app_state · 소리: audio_now(무엇이 울리나)·audio_inspect(만든 소리 수치) · 긴 작업: wait_idle · 재료: test_input.',
   '· 끌어 놓기로 받는 곳(낭독 책·카드 목소리·노래 변환·실험실·파일 가져오기)은 ui_drop_files · 파형·구간·카드 순서는 ui_pointer(at 비율·drag) · 단축키는 ui_key · 긴 목록은 ui_scroll · 다시 켜서 남는지는 app_restart.',
   '· 화면 결함 점검: ui_audit(이름 없는 단추·이유 없는 비활성·창 밖·가림·잘린 글·작은 글씨·가로 스크롤) — 창 크기를 바꿔 가며.',

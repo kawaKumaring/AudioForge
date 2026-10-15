@@ -31,6 +31,7 @@ export const FEATURE_FOLDERS: Record<string, string> = {
   split: '트랙분할',
   song: '노래변환',
   dub: '더빙',
+  voiceedit: '음성편집',
 }
 
 /** 모르는 이름이 와도 폴더를 만들 수 있어야 한다 — 다만 지어내지 않고 그대로 쓴다. */

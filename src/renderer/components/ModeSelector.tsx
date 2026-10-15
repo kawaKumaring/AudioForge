@@ -17,6 +17,7 @@ export const WORKSPACES: Record<SeparationMode, WorkspaceInfo> = {
   split: { label: '트랙 분할', description: '파형을 들으며 구간을 나누고, 각각의 파일로 저장하세요.', icon: icon(<><path d="M12 3v18M3 8h5M3 12h5M3 16h5M16 8h5M16 12h5M16 16h5"/></>) },
   tts: { label: '음성 합성', description: '목소리를 고르고 대본을 작성해, 원하는 음성으로 완성하세요.', icon: icon(<><rect x="9" y="2" width="6" height="13" rx="3"/><path d="M5 10v2a7 7 0 0 0 14 0v-2M12 19v3M8 22h8"/></>) },
   dub: { label: '노래 변환', description: '원곡의 목소리를 다른 목소리로 바꿉니다. 번역 가창은 후속 개발입니다.', icon: icon(<><path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4"/></>) },
+  voiceedit: { label: '음성 편집', description: '여러 화자의 목소리를 겹치고 다듬어 한 장면으로 섞습니다.', icon: icon(<><path d="M3 7h10M3 12h14M7 17h14"/><path d="M15 5v4M19 10v4M11 15v4"/></>) },
   lab: { label: '실험실', description: '개발 중인 기능을 확인하세요.', icon: icon(<><path d="M9 3h6M10 3v6L5 19h14L14 9V3"/></>) }
 }
 

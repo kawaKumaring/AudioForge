@@ -11,6 +11,7 @@ import { pathToFileURL } from 'url'
 import { registerAudioIpc, dialogFolderHost } from './ipc/audio.ipc'
 import { registerAppVersionIpc, currentBuildInfo } from './ipc/app-version.ipc'
 import { registerOptionsIpc } from './ipc/options.ipc'
+import { registerVoiceEditIpc } from './ipc/voice-edit.ipc'
 import { registerWorksIpc } from './ipc/works.ipc'
 import { registerReaderIpc } from './ipc/reader.ipc'
 import { registerConsoleIpc } from './ipc/console.ipc'
@@ -291,6 +292,7 @@ function createWindow(): void {
   // 생성 카드가 영상을 받았을 때 소리를 꺼내는 통로(카드별 폴더만 소유한다).
   registerCardMediaIpc()
   registerOptionsIpc()
+  registerVoiceEditIpc()
   registerWorksIpc()
   registerReaderIpc()
   // 콘솔 창 — 앱 로그의 최근 줄을 보여 주고 화면의 동작 기록을 받는다(2026-09-30).
