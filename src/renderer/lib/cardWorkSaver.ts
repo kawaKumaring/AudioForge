@@ -96,7 +96,9 @@ export async function loadSavedFile(force = false): Promise<SavedFile> {
     publish({phase:'failed',code:'READ_FAILED',at:Date.now()})
     throw Error('이전 작업을 읽지 못했습니다. 빈 기록으로 덮지 않습니다')
   }
+  const recoveredRead=readFailed
   loaded = true; readFailed = false
+  if(recoveredRead)publish({phase:'idle',code:'',at:Date.now()})
   return file
 }
 

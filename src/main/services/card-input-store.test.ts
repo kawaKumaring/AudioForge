@@ -3,7 +3,9 @@ import assert from 'node:assert/strict'
 import {mkdtempSync,writeFileSync,readFileSync,existsSync,rmSync,symlinkSync} from 'node:fs'
 import {join,dirname} from 'node:path'
 import {tmpdir} from 'node:os'
-import {saveCardInput,separateCardWork,restoreCardWork,removeCardFiles} from './card-input-store.ts'
+import {saveCardInput,separateCardWork,restoreCardWork,planCardFileRemoval} from './card-input-store.ts'
+import {writeWorkTransaction} from './work-transaction.ts'
+const removeCardFiles=(...args:Parameters<typeof planCardFileRemoval>)=>{const root=mkdtempSync(join(tmpdir(),'audioforge-policy-removal-'));try{return writeWorkTransaction(root,[],undefined,{removals:planCardFileRemoval(...args)})}finally{rmSync(root,{recursive:true,force:true})}}
 import {setSettingsKey} from './settings-store.ts'
 import {encodeLegacyInput,resolveLegacyInput} from './legacy-input-store.ts'
 import type {SavedWork} from '../../shared/synthesisCardSave.ts'
@@ -93,4 +95,15 @@ test('실제 설정 저장도 사용자 대사 대신 외부 경로를 기록한
  const body=readFileSync(file,'utf8')
  assert.ok(!body.includes('내부에 없어야 할 대사'))
  assert.deepEqual(resolveLegacyInput(JSON.parse(body).workDrafts),raw)
+}))
+
+test('이전 생성본의 참조 원본도 음원 삭제에서 보호한다',()=>scratch(p=>{
+ const w=fixture(p);w.cards[0].takes[0].sourcePath=w.cards[0].takes[0].path
+ assert.throws(()=>removeCardFiles(w.cards[0],true,[]),/원본/)
+ assert.ok(existsSync(w.cards[0].takes[0].path))
+}))
+test('다른 카드와 공유한 입력 경로는 음원보다 먼저 삭제하지 않는다',()=>scratch(p=>{
+ const w=fixture(p);w.cards[0].contentPath=saveCardInput(w.cards[0],p)
+ assert.throws(()=>removeCardFiles(w.cards[0],true,[w.cards[0].contentPath!]),/원본/)
+ assert.ok(existsSync(w.cards[0].contentPath!));assert.ok(existsSync(w.cards[0].takes[0].path))
 }))

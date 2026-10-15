@@ -2,7 +2,7 @@ import {useState} from 'react'
 import {Action,Modal,button,primary,muted} from './kit'
 import {useSynthesisCards,type SynthesisCard} from '../stores/synthesisCards.store'
 import {serializeWork} from '../lib/cardSynthesis'
-import {flushSave,configureCardAutoSave,removeCardFromSave} from '../lib/cardWorkSaver'
+import {flushSave,configureCardAutoSave,removeCardFromSave,saveState} from '../lib/cardWorkSaver'
 const joins={gap:.35,level:true,edges:true,gaps:{}}
 export default function CardStorageActions({card,disabled,autoSave}:{card:SynthesisCard;disabled:boolean;autoSave:boolean}){
  const [ask,setAsk]=useState(false),[busy,setBusy]=useState(false),[fault,setFault]=useState(''),[saved,setSaved]=useState('')
@@ -29,10 +29,12 @@ export default function CardStorageActions({card,disabled,autoSave}:{card:Synthe
   setBusy(true);setFault('')
   try{
    // 마지막 예약 저장부터 끝낸 뒤 본체 기록을 지운다. 이전 예약이 되살리지 못한다.
-   await flushSave();configureCardAutoSave(false)
+   await flushSave()
+   if(saveState().phase==='failed')throw Error('앞 작업을 저장하지 못해 카드를 제거하지 않았습니다')
+   configureCardAutoSave(false)
    const st=useSynthesisCards.getState(),live=st.cards.find(c=>c.id===card.id)
    if(!live)throw Error('카드가 이미 바뀌었습니다')
-   const protectedPaths=st.cards.filter(c=>c.id!==card.id).flatMap(c=>[c.source?.path||'',...c.takes.map(t=>t.path)])
+   const protectedPaths=st.cards.filter(c=>c.id!==card.id).flatMap(c=>[c.source?.path||'',c.contentPath||'',...(c.contentPaths||[]),...c.takes.flatMap(t=>[t.path,t.source?.path||'',t.contentPath||''])])
    const r=await window.api.cards.remove(serializeWork([live],joins).cards[0],audio,protectedPaths)
    if(!r.ok)throw Error(r.why||'카드를 삭제하지 못했습니다')
    removeCardFromSave(card.id)
@@ -40,7 +42,7 @@ export default function CardStorageActions({card,disabled,autoSave}:{card:Synthe
    // 파일을 지우는 삭제는 메모리 되돌리기와 섞지 않는다.
    useSynthesisCards.setState({removed:null})
    setAsk(false)
-  }catch(e){setFault((e as Error).message)}finally{configureCardAutoSave(autoSave);setBusy(false)}
+  }catch(e){setFault((e as Error).message)}finally{configureCardAutoSave(autoSave);setBusy(false);window.dispatchEvent(new Event('audioforge-card-removal-recovery'))}
  }
  return <>
   <Action icon="text" label={`${card.label} 대사·연기 지시 불러오기`} title="따로 저장한 대사·지시 파일을 엽니다. 목소리와 생성본은 바꾸지 않습니다." disabled={disabled||busy} onClick={()=>void load()}/>
