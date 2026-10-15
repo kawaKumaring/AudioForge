@@ -133,6 +133,11 @@ def load_config():
     except (OSError, ValueError):
         # 손상된 설정은 "연결 없음"으로 취급한다. 조용히 덮어쓰지 않는다.
         return {"schema": SCHEMA_VERSION, "components": {}, "_unreadable": True}
+    if (not isinstance(cfg, dict)
+            or not isinstance(cfg.get("components", {}), dict)
+            or type(cfg.get("schema", SCHEMA_VERSION)) is not int
+            or cfg.get("schema", SCHEMA_VERSION) != SCHEMA_VERSION):
+        return {"schema": SCHEMA_VERSION, "components": {}, "_unreadable": True}
     cfg.setdefault("schema", SCHEMA_VERSION)
     cfg.setdefault("components", {})
     return cfg
@@ -140,6 +145,13 @@ def load_config():
 
 def save_config(cfg):
     """원자적 쓰기. 쓰다 죽어도 반쯤 쓰인 runtime.json 이 남지 않는다."""
+    if (not isinstance(cfg, dict) or cfg.get("_unreadable")
+            or not isinstance(cfg.get("components", {}), dict)
+            or type(cfg.get("schema", SCHEMA_VERSION)) is not int
+            or cfg.get("schema", SCHEMA_VERSION) != SCHEMA_VERSION):
+        raise ValueError("런타임 연결 설정이 손상되어 저장하지 않았습니다")
+    if load_config().get("_unreadable"):
+        raise ValueError("기존 런타임 연결 설정을 읽지 못해 보존했습니다")
     p = config_path()
     os.makedirs(os.path.dirname(p), exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=os.path.dirname(p), prefix=".runtime-", suffix=".tmp")
@@ -147,6 +159,8 @@ def save_config(cfg):
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(cfg, f, ensure_ascii=False, indent=2)
             f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())
         os.replace(tmp, p)
     except BaseException:
         try:

@@ -2,10 +2,13 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync, existsSync, readdirSync, writeFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import {readFileSync} from 'node:fs'
+import {fileNameOf as fileNameOfTest} from '../../shared/workRecord.ts'
+const requireRead=(p:string)=>readFileSync(p,'utf8')
 import { tmpdir } from 'node:os'
 // @ts-ignore TS5097: node --test 가 이 파일을 곧바로 읽는다(저장소 관례).
 import {
-  writeRecord, readRecord, listRecords, deleteRecord, clearKind, migrateKind, sizeOfKind,
+  writeRecord, readRecord, readRecordChecked, writeRecordBatch, listRecords, deleteRecord, clearKind, migrateKind, sizeOfKind,
 // @ts-ignore TS5097
 } from './work-store.ts'
 
@@ -172,3 +175,8 @@ test('옮길 것이 없으면 아무것도 하지 않는다', () => {
     assert.ok(!existsSync(join(h.root, 'works', 'drafts')), '빈 폴더를 만들었다')
   } finally { drop(h) }
 })
+
+test('작업 폴더 읽기 실패는 빈 목록으로 꾸미지 않는다',()=>{const h=fresh();try{mkdirSync(join(h.root,'works'));writeFileSync(join(h.root,'works','cards'),'폴더 아님');assert.ok(listRecords(h,'cards').error)}finally{drop(h)}})
+test('파일 이름과 안의 열쇠가 다르면 손상으로 표시한다',()=>{const h=fresh();try{const w=writeRecord(h,'cards','A',{v:1});assert.ok(w.ok);if(!w.ok)return;const body=JSON.parse(requireRead(w.file));body.key='B';writeFileSync(w.file,JSON.stringify(body));assert.equal(listRecords(h,'cards').broken.length,1);assert.ok(readRecordChecked(h,'cards','A').error)}finally{drop(h)}})
+test('묶음 저장에서 잘못된 두 번째 대상은 첫 기록도 바꾸지 않는다',()=>{const h=fresh();try{const a=writeRecord(h,'cards','A',{v:1});assert.ok(a.ok);writeRecord(h,'cards','B',{v:2});const b=listRecords(h,'cards').records.find(r=>r.key==='B')!;const name=fileNameOfTest(b.key);rmSync(join(h.root,'works','cards',name));mkdirSync(join(h.root,'works','cards',name));assert.equal(writeRecordBatch(h,'cards',[{key:'A',data:{v:9}},{key:'B',data:{v:8}}]).ok,false);assert.deepEqual(readRecord(h,'cards','A')?.data,{v:1})}finally{drop(h)}})
+test('옛 열쇠 정리 실패 후 목록을 비워도 기록을 되살리지 않는다',()=>{const h=fresh();try{const bag:Record<string,unknown>={transcriptDrafts:{drafts:{A:{v:1}}}};const first=migrateKind(h,'transcript',k=>bag[k],()=>false);assert.equal(first.failed.length,1);clearKind(h,'transcript');const next=migrateKind(h,'transcript',k=>bag[k],k=>{delete bag[k];return true});assert.equal(next.moved,0);assert.equal(listRecords(h,'transcript').records.length,0);assert.equal(bag.transcriptDrafts,undefined)}finally{drop(h)}})

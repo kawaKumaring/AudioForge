@@ -1,5 +1,7 @@
-import {createHash,randomUUID} from 'node:crypto'
-import {existsSync,mkdirSync,readFileSync,writeFileSync,renameSync,unlinkSync,lstatSync,realpathSync} from 'node:fs'
+// @ts-ignore TS5097
+import {replaceFileAtomically} from './durable-write.ts'
+import {createHash} from 'node:crypto'
+import {existsSync,readFileSync,unlinkSync,lstatSync,realpathSync} from 'node:fs'
 import {dirname,join,resolve,extname,basename} from 'node:path'
 // @ts-ignore TS5097
 import {withoutCardInput,CARD_INPUT_FIELDS} from '../../shared/cardPersistencePolicy.ts'
@@ -8,7 +10,7 @@ import {parseSavedWork,type SavedCard,type SavedWork} from '../../shared/synthes
 const hash=(s:string)=>createHash('sha256').update(s).digest('hex').slice(0,24)
 const obj=(v:unknown):Record<string,unknown>=>v && typeof v==='object' && !Array.isArray(v)?v as Record<string,unknown>:{}
 const inputs=(s:Record<string,unknown>)=>Object.fromEntries(CARD_INPUT_FIELDS.filter(k=>k in s).map(k=>[k,s[k]]))
-function atomic(path:string,data:unknown){mkdirSync(dirname(path),{recursive:true});const temp=path+'.'+randomUUID()+'.tmp';try{writeFileSync(temp,JSON.stringify(data,null,2),'utf8');renameSync(temp,path)}finally{if(existsSync(temp))unlinkSync(temp)}}
+function atomic(path:string,data:unknown){replaceFileAtomically(path,JSON.stringify(data,null,2))}
 export function cardContentFile(card:SavedCard,outputRoot:string):string {
  const newest=[...card.takes].sort((a,b)=>b.createdAt-a.createdAt).find(t=>existsSync(t.path))
  return join(newest?dirname(newest.path):join(outputRoot,'음성합성','작업대본'),'card-'+hash(card.id)+'.input.json')
@@ -75,7 +77,8 @@ export function removeCardFiles(card:SavedCard,removeAudio:boolean,protectedPath
   if(session.mode!=='tts' || !Array.isArray(session.tracks) || !session.tracks.some(x=>typeof obj(x).path==='string' && canonical(obj(x).path as string)===canonical(t.path)))throw Error('음성합성 결과로 확인되지 않았습니다')
   planned.push(t.path)
  }
- for(const p of new Set(planned))unlinkSync(p)
+ const unique=[...new Set(planned)];let removed=0
+ for(const path of unique){try{unlinkSync(path);removed++}catch{throw Error(`파일 ${unique.length}개 중 ${removed}개 제거 후 실패했습니다. 카드 기록은 유지되므로 파일 상태를 확인해 주세요`)}}
 }
 
 export function readStandaloneCardInput(path:string):{text:string;settings:Record<string,unknown>} {

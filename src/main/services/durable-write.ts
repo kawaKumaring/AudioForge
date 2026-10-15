@@ -26,10 +26,16 @@ import {
 import { basename, dirname, join } from 'path'
 
 /** 파일 하나를 쓰고 **디스크에 확정**한다(fsync). 이름 바꾸기는 하지 않는다. */
-export function writeFileDurable(path: string, data: string): void {
+export function writeFileDurable(path: string, data: string | Buffer): void {
   const fd = openSync(path, 'w')
   try {
-    writeSync(fd, data)
+    const bytes = typeof data === 'string' ? Buffer.from(data, 'utf-8') : data
+    let offset = 0
+    while (offset < bytes.length) {
+      const written = writeSync(fd, bytes, offset, bytes.length - offset)
+      if (written <= 0) throw new Error('파일 쓰기가 진행되지 않았습니다')
+      offset += written
+    }
     fsyncSync(fd)
   } finally {
     closeSync(fd)

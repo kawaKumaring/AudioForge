@@ -269,6 +269,8 @@ const api = {
    * ★지우기는 그 파일 하나만 지운다. 남의 기록이 함께 사라지지 않는다.
    */
   works: {
+    writeBatch: (kind:string,items:{key:string;data:unknown}[]):Promise<{ok:boolean;why?:string}> => ipcRenderer.invoke('works:write-batch',kind,items),
+    writeBatchSync: (kind:string,items:{key:string;data:unknown}[]):{ok:boolean;why?:string} => ipcRenderer.sendSync('works:write-batch-sync',kind,items),
     list: (kind: string): Promise<{ records?: { key: string; updatedAt: number; data: unknown }[]; broken?: number; error?: string }> =>
       ipcRenderer.invoke('works:list', kind),
     read: (kind: string, key: string): Promise<{ record?: { key: string; updatedAt: number; data: unknown } | null; error?: string }> =>

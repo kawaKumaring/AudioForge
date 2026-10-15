@@ -244,12 +244,13 @@ export default function ReaderWorkspace() {
         await bookSaver.flush()          // 지난 방문에서 아직 못 쓴 읽던 자리를 먼저 남긴 뒤 읽는다
         const got = await window.api.works.list('books')
         if (got.error) { setError('서재를 읽지 못했습니다. 화면을 다시 열어 주세요.'); return }
+        if(got.broken)setError(`서재 기록 ${got.broken}개를 읽지 못했습니다. 나머지 책은 그대로 표시합니다.`)
         const saved = (got.records || [])
           .map((r) => r.data as Book | null)
           .filter((b): b is Book => !!b && Array.isArray(b.paragraphs) && b.paragraphs.length > 0)
         if (saved.length) useReader.setState((st) => st.books.length ? st : { books: saved, active: [...saved].filter(b => b.readAt).sort((a, b) => (b.readAt || 0) - (a.readAt || 0))[0]?.id || '' })
+        loadedBooks.current = true
       } catch { setError('서재를 읽지 못했습니다. 화면을 다시 열어 주세요.') }
-      finally { loadedBooks.current = true }
     })()
   }, [])
 

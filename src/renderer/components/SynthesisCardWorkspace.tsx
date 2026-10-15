@@ -565,7 +565,7 @@ export default function SynthesisCardWorkspace() {
   /** 저장된 작업 하나를 지운다. 기록만 지운다 — 만든 소리 파일은 그대로다. */
   const dropSavedWork = async (c: RestoreChoice) => {
     setRestoreWhy('')
-    const why = await deleteSavedWork(c.slot, c.index)
+    const why = await deleteSavedWork(c.slot, c.index, c.work)
     if (!alive.current) return
     if (why) { setRestoreWhy(`지우지 못했습니다(${why})`); return }
     setRestoreDrop(null)
@@ -606,7 +606,7 @@ export default function SynthesisCardWorkspace() {
       // 보관함은 뒤에서 지워 앞 항목의 번호가 바뀌지 않게 한다.
       const saved=savedImport.filter(c=>librarySelection.includes(savedKey(c))).sort((a,b)=>b.index-a.index)
       for(const c of saved){
-        try{const why=await deleteSavedWork(c.slot,c.index);if(why)throw Error(why);removed++}
+        try{const why=await deleteSavedWork(c.slot,c.index,c.work);if(why)throw Error(why);removed++}
         catch(e){failures.push((e as Error).message)}
       }
       for(const plan of importList.filter(p=>librarySelection.includes(legacyKey(p)))){
@@ -664,11 +664,11 @@ export default function SynthesisCardWorkspace() {
   const openImport = async () => {
     setLibrarySelection([]);setLibraryDrop(false);setImportWhy(''); setImportPick(null); setImportDup(null); setSavedImport([]);setImportList([]);setImportStep('list')
     try {
-      const all = await window.api.settings.get() as Record<string, unknown>
-      const found = legacyWorks(all, Date.now())
-      const saved = await loadSavedFile(true)
-      if (alive.current) setSavedImport(savedChoices(saved))
-      if (alive.current) setImportList(found)
+      const [old,saved]=await Promise.allSettled([window.api.settings.get(),loadSavedFile(true)])
+      if(!alive.current)return
+      if(old.status==='fulfilled')setImportList(legacyWorks(old.value as Record<string,unknown>,Date.now()))
+      if(saved.status==='fulfilled')setSavedImport(savedChoices(saved.value))
+      if(old.status==='rejected'||saved.status==='rejected')setImportWhy('일부 작업을 읽지 못했습니다. 읽을 수 있는 작업만 표시합니다.')
     } catch {
       if (alive.current) { setImportList([]); setImportWhy('작업 목록을 읽지 못했습니다. 기존 기록은 그대로입니다') }
     }
@@ -730,7 +730,8 @@ export default function SynthesisCardWorkspace() {
   }
   useEffect(() => {
     void (async () => {
-      const file = await loadSavedFile()
+      let file
+      try{file=await loadSavedFile()}catch(e){if(alive.current)setNotice((e as Error).message);return}
       const st = useSynthesisCards.getState()
       if (st.asked || st.dirty) return
       if (!savedWorkHasContent(file.current) && !file.kept.length) return

@@ -1,6 +1,8 @@
-import {createHash,randomUUID} from 'node:crypto'
-import {existsSync,mkdirSync,readFileSync,writeFileSync,renameSync,unlinkSync} from 'node:fs'
-import {dirname,join} from 'node:path'
+// @ts-ignore TS5097
+import {replaceFileAtomically} from './durable-write.ts'
+import {createHash} from 'node:crypto'
+import {readFileSync} from 'node:fs'
+import {join} from 'node:path'
 const KEYS=new Set(['labWorkspace','workDrafts','legacyWorkHistory'])
 const obj=(v:unknown):Record<string,unknown>=>v&&typeof v==='object'&&!Array.isArray(v)?v as Record<string,unknown>:{}
 const hash=(s:string)=>createHash('sha256').update(s).digest('hex').slice(0,24)
@@ -24,8 +26,7 @@ export function encodeLegacyInput(key:string,value:unknown,outputRoot:string,pre
   const active=obj(prior).inputFile
   const slot=typeof active==='string' && active.endsWith('.a.input.json')?'b':'a'
   const path=join(outputRoot,'음성합성','이전작업','legacy-'+hash(key+'\0'+id)+'.'+slot+'.input.json')
-  mkdirSync(dirname(path),{recursive:true});const tmp=path+'.'+randomUUID()+'.tmp'
-  try{writeFileSync(tmp,JSON.stringify({version:1,kind:'legacy-input',owner:key+':'+id,data},null,2),'utf8');renameSync(tmp,path)}finally{if(existsSync(tmp))unlinkSync(tmp)}
+  replaceFileAtomically(path,JSON.stringify({version:1,kind:'legacy-input',owner:key+':'+id,data},null,2))
   return {inputFileVersion:1,inputOwner:key+':'+id,inputFile:path}
  }
  if(key==='labWorkspace')return store('current',value,previous)

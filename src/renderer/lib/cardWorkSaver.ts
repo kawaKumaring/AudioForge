@@ -67,18 +67,14 @@ export function savedFileNow(): SavedFile { return file }
  * 카드 작업을 **두 기록으로** 쓴다 — 하던 것과 보관함.
  *
  * 두 통로가 모두 끝난 뒤 성공을 표시한다. 예외도 저장 실패로 보고한다.
- * 두 파일의 확정은 아직 원자적이지 않다. 한쪽 실패는 재시도로 복구한다.
+ * 본체는 두 파일 교체 중 실패·중단을 복구한다. 파일별 저장 구조는 유지한다.
  */
 async function writeCards(next: SavedFile): Promise<string> {
   try {
-  const rs = await Promise.allSettled([
-    window.api.works.write('cards', 'current', next.current),
-    window.api.works.write('cards', 'kept', next.kept),
-  ])
-  const rejected = rs.find(r => r.status === 'rejected')
-  if (rejected) return 'WRITE_EXCEPTION'
-  const bad = rs.find(r => r.status === 'fulfilled' && !r.value.ok)
-  return bad?.status === 'fulfilled' ? (bad.value.why || 'WRITE_FAILED') : ''
+    const result=await window.api.works.writeBatch('cards',[
+      {key:'current',data:next.current},{key:'kept',data:next.kept},
+    ])
+    return result.ok?'':result.why||'WRITE_FAILED'
   } catch { return 'WRITE_EXCEPTION' }
 }
 
@@ -131,6 +127,7 @@ export function adoptKept(index: number): void {
 export async function importLegacyWork(doc: SavedWork): Promise<string> {
   await loadSavedFile()
   await flushSave()                    // 하던 작업의 마지막 편집까지 남긴 뒤에 옮긴다
+  if(state.phase==='failed')return state.code||'WRITE_FAILED'
   const before = file
   const next = applyImport(file, doc)
   if(!autoSaveEnabled){file=next;dirtyWork=null;publish({phase:'idle',code:'SAVE_DISABLED',at:Date.now()});return ''}
@@ -155,9 +152,15 @@ export async function importLegacyWork(doc: SavedWork): Promise<string> {
  *   실패하면 없던 일이 된다. 지운 줄 알고 넘어가게 두지 않는다.
  * ★기다리던 저장이 지운 것을 되살리지 않게 먼저 흘려보낸다.
  */
-export async function deleteSavedWork(slot: 'current' | 'kept', index: number): Promise<string> {
+export async function deleteSavedWork(slot: 'current' | 'kept', index: number, expected?:SavedWork): Promise<string> {
   await loadSavedFile()
   await flushSave()
+  if(state.phase==='failed')return state.code||'WRITE_FAILED'
+  if(expected){
+    const identity=(w:SavedWork|null)=>w?JSON.stringify([w.savedAt,w.cards.map(c=>c.id)]):''
+    const actual=slot==='current'?file.current:file.kept[index]??null
+    if(identity(actual)!==identity(expected))return '작업 목록이 바뀌었습니다. 목록을 다시 열어 선택해 주세요'
+  }
   const before = file
   const next = removeWork(file, slot, index)
   const writing = lane.then(() => writeCards(next))
@@ -213,6 +216,7 @@ export async function retrySave(): Promise<void> {
 }
 
 function writeNow(): Promise<void> {
+  if(!loaded&&!readFailed)return loadSavedFile().then(()=>writeNow()).catch(()=>{})
   if(readFailed){publish({phase:'failed',code:'READ_FAILED',at:Date.now()});return Promise.resolve()}
   if (dirtyWork) {
     const ids=new Set(dirtyWork.cards.map(c=>c.id))
@@ -254,13 +258,13 @@ export function resetSaverForTest(): void {
  *   (자동 저장이 쓰던 길과 같다, 2026-09-27 2차 검수 지적).
  */
 export function flushSaveSync(): void {
-  if (!autoSaveEnabled || readFailed) return
+  if (!autoSaveEnabled || readFailed || !loaded) return
   if (timer) { clearTimeout(timer); timer = null }
   if (dirtyWork) file = { ...file, current: dirtyWork }
   if (!loaded && !dirtyWork) return
   try {
-    window.api.works.writeSync('cards', 'current', file.current)
-    window.api.works.writeSync('cards', 'kept', file.kept)
+    const result=window.api.works.writeBatchSync('cards',[{key:'current',data:file.current},{key:'kept',data:file.kept}])
+    if(!result.ok)publish({phase:'failed',code:result.why||'WRITE_FAILED',at:Date.now()})
   } catch { /* 닫히는 중이다. 여기서 더 할 수 있는 것이 없다 */ }
 }
 

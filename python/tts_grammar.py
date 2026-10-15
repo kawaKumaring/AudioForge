@@ -708,45 +708,7 @@ def line_boundary_type(plan, line_a, line_b):
 # ── canonical 직렬화 + 해시(D-7). TS/Python 동일 알고리즘. ──
 # object key 알파벳 정렬, 배열 순서 유지, 공백 없음, string JSON escape(ascii), int만, null=null.
 
-def _json_escape(s):
-    out = ['"']
-    for ch in s:
-        code = ord(ch)
-        if ch == '"':
-            out.append('\\"')
-        elif ch == "\\":
-            out.append("\\\\")
-        elif ch == "\n":
-            out.append("\\n")
-        elif ch == "\r":
-            out.append("\\r")
-        elif ch == "\t":
-            out.append("\\t")
-        elif code < 0x20:
-            out.append("\\u%04x" % code)
-        else:
-            out.append(ch)
-    out.append('"')
-    return "".join(out)
-
-
-def _canonicalize(v):
-    if v is None:
-        return "null"
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    if isinstance(v, int):
-        return str(v)
-    if isinstance(v, float):
-        raise ValueError("canonical: float 금지")
-    if isinstance(v, str):
-        return _json_escape(v)
-    if isinstance(v, (list, tuple)):
-        return "[" + ",".join(_canonicalize(x) for x in v) + "]"
-    if isinstance(v, dict):
-        keys = sorted(v.keys())
-        return "{" + ",".join(_json_escape(k) + ":" + _canonicalize(v[k]) for k in keys) + "}"
-    raise TypeError("canonical: 미지원 타입 %r" % type(v))
+from canonical_json import canonicalize as _canonicalize, json_escape as _json_escape
 
 
 def canonical_json(value):

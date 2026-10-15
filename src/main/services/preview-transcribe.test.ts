@@ -149,3 +149,33 @@ test('단일 resolve: done 후 timeout이 또 와도 cleanup 중복 없음', asy
   await p
   assert.equal(cleanups, 1)
 })
+
+test('실행 시작이 동기로 거절돼도 실패 응답과 정리가 온다',async()=>{
+ const r=new FakeRunner(),t=manualTimers();let cleaned=0
+ r.run=()=>{throw Error('spawn 거절')}
+ const result=await runPreview({runner:r,scriptPath:'s',args:[],timeoutMs:100,cleanup:()=>{cleaned++},setTimeoutFn:t.setT,clearTimeoutFn:t.clrT})
+ assert.equal(result.status,'failed');assert.equal(cleaned,1);assert.equal(t.cleared,true)
+})
+test('정리 중 오류가 완료 응답을 막지 않는다',async()=>{
+ const r=new FakeRunner(),t=manualTimers()
+ const p=runPreview({runner:r,scriptPath:'s',args:[],timeoutMs:100,cleanup:()=>{throw Error('정리 실패')},setTimeoutFn:t.setT,clearTimeoutFn:t.clrT})
+ r.emit('result',{status:'ok'});r.emit('done',0)
+ assert.equal((await p).status,'ok')
+})
+test('완료 뒤 늦은 타이머는 이미 끝난 실행을 취소하지 않는다',async()=>{
+ const r=new FakeRunner(),t=manualTimers()
+ const p=runPreview({runner:r,scriptPath:'s',args:[],timeoutMs:100,cleanup:()=>{},setTimeoutFn:t.setT,clearTimeoutFn:t.clrT})
+ r.emit('result',{status:'ok'});r.emit('done',0);await p;t.fire();assert.equal(r.cancelCalled,false)
+})
+test('결과 뒤 명시적 오류가 오면 성공 결과로 가리지 않는다',async()=>{
+ const r=new FakeRunner(),t=manualTimers()
+ const p=runPreview({runner:r,scriptPath:'s',args:[],timeoutMs:100,cleanup:()=>{},setTimeoutFn:t.setT,clearTimeoutFn:t.clrT})
+ r.emit('result',{status:'ok'});r.emit('error','후처리 실패');r.emit('done',1)
+ assert.equal((await p).status,'failed')
+})
+
+test('시간 초과 중 cancel이 done을 곧바로 내도 시간 초과로 닫힌다',async()=>{
+ const r=new FakeRunner(),t=manualTimers();r.cancel=()=>{r.cancelCalled=true;r.emit('done',0)}
+ const p=runPreview({runner:r,scriptPath:'s',args:[],timeoutMs:100,cleanup:()=>{},setTimeoutFn:t.setT,clearTimeoutFn:t.clrT})
+ r.emit('result',{status:'ok'});t.fire();assert.equal((await p).status,'failed');assert.equal(r.cancelCalled,true)
+})

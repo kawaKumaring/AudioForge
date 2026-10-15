@@ -19,7 +19,7 @@ import { outputBase } from '../services/appPaths'
 import { ipcMain, app, dialog } from 'electron'
 import { join } from 'path'
 import {
-  listRecords, readRecord, writeRecord, deleteRecord, clearKind, migrateKind,
+  listRecords, readRecordChecked, writeRecord, writeRecordBatch, deleteRecord, clearKind, migrateKind,
 } from '../services/work-store'
 import { readSettingsFile, setSettingsKey } from '../services/settings-store'
 import { isWorkKind, type WorkKind } from '../../shared/workRecord'
@@ -32,10 +32,9 @@ function host() {
 function settingsPath(): string { return join(app.getPath('userData'), 'settings.json') }
 
 function readLegacy(key: string): unknown {
-  try {
-    const got = readSettingsFile(settingsPath())
-    return got.kind === 'ok' ? resolveLegacyInput((got.settings as Record<string, unknown>)[key]) : undefined
-  } catch { return undefined }
+  const got = readSettingsFile(settingsPath())
+  if(got.kind==='corrupt')throw Error('이전 작업 설정을 읽지 못했습니다. 원본을 유지합니다')
+  return got.kind === 'ok' ? resolveLegacyInput((got.settings as Record<string, unknown>)[key]) : undefined
 }
 
 function dropLegacy(key: string): boolean {
@@ -56,8 +55,9 @@ const moved = new Set<WorkKind>()
 
 function ensureMoved(kind: WorkKind): void {
   if (moved.has(kind)) return
+  const result=migrateKind(host(),kind,readLegacy,dropLegacy,kind==='cards'?data=>prepareCardData(data,true):undefined)
+  if(result.failed.length)throw Error(result.failed[0].why)
   moved.add(kind)
-  try { migrateKind(host(), kind, readLegacy, dropLegacy) } catch { /* 다음 요청에서 다시 보지 않는다 */ }
 }
 
 function resultRoot(): string {
@@ -78,27 +78,43 @@ function writeWork(kind: WorkKind, key: string, data: unknown) {
   try { return writeRecord(host(), kind, key, kind === 'cards' ? prepareCardData(data) : data) }
   catch(e) { return { ok: false as const, why: (e as Error).message } }
 }
+function handle(channel:string,listener:Parameters<typeof ipcMain.handle>[1]):void {
+  ipcMain.handle(channel,async(event,...args)=>{
+    try{return await listener(event,...args)}
+    catch(e){const why=(e as Error)?.message||'작업 기록을 처리하지 못했습니다';return {ok:false,why,error:why}}
+  })
+}
+function writeBatch(kind:unknown,items:unknown){
+  if(!isWorkKind(kind)||!Array.isArray(items)||!items.length||items.length>256)return {ok:false,why:'저장할 작업 묶음이 올바르지 않습니다'}
+  const valid=items.every(x=>x&&typeof x==='object'&&typeof x.key==='string'&&x.key)
+  if(!valid||new Set(items.map(x=>x.key)).size!==items.length)return {ok:false,why:'저장할 작업 열쇠가 없거나 겹칩니다'}
+  ensureMoved(kind)
+  return writeRecordBatch(host(),kind,items.map(x=>({key:x.key,data:kind==='cards'?prepareCardData(x.data):x.data})))
+}
 export function registerWorksIpc(): void {
-  ipcMain.handle('cards:load-input', async () => {
+  handle('works:write-batch',(_e,kind,items)=>writeBatch(kind,items))
+  ipcMain.on('works:write-batch-sync',(event,kind,items)=>{try{event.returnValue=writeBatch(kind,items)}catch(e){event.returnValue={ok:false,why:(e as Error).message}}})
+  handle('cards:load-input', async () => {
     try {
       const picked=await dialog.showOpenDialog({properties:['openFile'],defaultPath:resultRoot(),filters:[{name:'대사·연기 지시',extensions:['json']}]})
       if(picked.canceled || !picked.filePaths[0])return {ok:false,canceled:true}
       return {ok:true,...readStandaloneCardInput(picked.filePaths[0])}
     }catch(e){return {ok:false,why:(e as Error).message}}
   })
-  ipcMain.handle('cards:save-input', (_e, raw: unknown) => {
+  handle('cards:save-input', (_e, raw: unknown) => {
     try {
       const w = parseSavedWork({cards:[raw],joins:{},savedAt:Date.now()})
       if (!w?.cards.length) throw Error('저장할 카드가 없습니다')
       return {ok:true, path:saveCardInput(w.cards[0],resultRoot())}
     } catch(e) {return {ok:false,why:(e as Error).message}}
   })
-  ipcMain.handle('cards:remove', (_e, raw: unknown, audio: boolean, protectedPaths: string[]) => {
+  handle('cards:remove', (_e, raw: unknown, audio: boolean, protectedPaths: string[]) => {
     try {
       const w=parseSavedWork({cards:[raw],joins:{},savedAt:Date.now()})
       if (!w?.cards.length) throw Error('삭제할 카드가 없습니다')
       const card=w.cards[0]
       const stored=listRecords(host(),'cards')
+      if(stored.error)throw Error(stored.error)
       if(stored.broken.length)throw Error('읽지 못한 카드 기록이 있어 삭제하지 않았습니다')
       if(typeof audio!=='boolean')throw Error('음원 삭제 선택이 올바르지 않습니다')
       const others:string[]=[], inputPaths:string[]=[]
@@ -116,14 +132,16 @@ export function registerWorksIpc(): void {
         const work=parseSavedWork(data);if(!work)return data
         return {...work,cards:work.cards.filter(c=>c.id!==card.id)}
       }
-      for(const r of stored.records){const saved=writeRecord(host(),'cards',r.key,prune(r.data));if(!saved.ok)throw Error(saved.why)}
+      const saved=writeRecordBatch(host(),'cards',stored.records.map(r=>({key:r.key,data:prune(r.data)})))
+      if(!saved.ok)throw Error(saved.why)
       return {ok:true}
     }catch(e){return {ok:false,why:(e as Error).message}}
   })
-  ipcMain.handle('works:list', (_e, kind: unknown) => {
+  handle('works:list', (_e, kind: unknown) => {
     if (!isWorkKind(kind)) return { error: '알 수 없는 갈래입니다.' }
     ensureMoved(kind)
     const got = listRecords(host(), kind)
+    if(got.error)return {error:got.error}
     if (kind === 'cards') {
       try {
         // 한 번 옮겨 저장에 성공한 뒤에만 내부 원문이 빠진다. 실패하면 원본을 유지한다.
@@ -147,15 +165,17 @@ export function registerWorksIpc(): void {
     return { records: got.records, broken: got.broken.length }
   })
 
-  ipcMain.handle('works:read', (_e, kind: unknown, key: unknown) => {
+  handle('works:read', (_e, kind: unknown, key: unknown) => {
     if (!isWorkKind(kind) || typeof key !== 'string') return { error: '알 수 없는 갈래입니다.' }
     ensureMoved(kind)
-    const record = readRecord(host(), kind, key)
+    const got=readRecordChecked(host(),kind,key)
+    if(got.error)return {error:got.error}
+    const record=got.record
     if (kind === 'cards' && record) record.data = readCardData(record.data)
     return { record }
   })
 
-  ipcMain.handle('works:write', (_e, kind: unknown, key: unknown, data: unknown) => {
+  handle('works:write', (_e, kind: unknown, key: unknown, data: unknown) => {
     if (!isWorkKind(kind) || typeof key !== 'string' || !key) {
       return { ok: false, why: '알 수 없는 갈래입니다.' }
     }
@@ -165,7 +185,7 @@ export function registerWorksIpc(): void {
   })
 
   /** ★지우기는 **그 파일 하나만** 지운다. 남의 기록을 다시 쓰는 일이 없다. */
-  ipcMain.handle('works:delete', (_e, kind: unknown, key: unknown) => {
+  handle('works:delete', (_e, kind: unknown, key: unknown) => {
     if (!isWorkKind(kind) || typeof key !== 'string') {
       return { ok: false, why: '알 수 없는 갈래입니다.' }
     }
@@ -186,13 +206,15 @@ export function registerWorksIpc(): void {
       event.returnValue = { ok: false, why: '알 수 없는 갈래입니다.' }
       return
     }
-    ensureMoved(kind)
-    const r = writeWork(kind, key, data)
-    event.returnValue = r.ok ? { ok: true } : { ok: false, why: r.why }
+    try {
+      ensureMoved(kind)
+      const r = writeWork(kind, key, data)
+      event.returnValue = r.ok ? { ok: true } : { ok: false, why: r.why }
+    } catch(e){event.returnValue={ok:false,why:(e as Error).message}}
   })
 
   /** 갈래 하나를 통째로 비운다 — '쌓인 것 비우기' 만 쓴다. */
-  ipcMain.handle('works:clear', (_e, kind: unknown) => {
+  handle('works:clear', (_e, kind: unknown) => {
     if (!isWorkKind(kind)) return { ok: false, why: '알 수 없는 갈래입니다.' }
     ensureMoved(kind)          // 옮기기 전에 비우면 옛 열쇠가 남아 되살아난다
     return { ok: true, removed: clearKind(host(), kind) }
