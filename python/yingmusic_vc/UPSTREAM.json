@@ -1,0 +1,12 @@
+{
+  "repository": "https://github.com/GiantAILab/YingMusic-SVC",
+  "revision": "4974a80c6044c4557059548409379f6365129f88",
+  "downloaded_sha256": {
+    "LICENSE.txt": "ed2dd0b2f167db4266b9c18767c7dba5c9e780f11f06f884fb0cf6165d9342a4",
+    "configs/YingMusic-SVC.yml": "8e12dfa7d2e5ebf3cd8602ff9d20c03399d3f165d384018980de4675077e9b09",
+    "modules/commons.py": "ddf7151c24f7ddab94afa012743ed86b27b3c8c41e3aa826e7877c72e799831d",
+    "modules/diffusion_transformer.py": "c32dd8918d8057cea2006db44ec6f197da17de0b117b80afc1c6abf6bbe94be2",
+    "modules/flow_matching.py": "6357ee9fd392b3ad8196be5d9d0efa59a1334facef41b9967ff04e02983c4660",
+    "modules/length_regulator.py": "3ab126a179447a50508d0e953d4230f759b92c1291d24691af03dd3ab9661ed1"
+  }
+}

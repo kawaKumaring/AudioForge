@@ -74,7 +74,9 @@ ABSORBED_SCRIPT = os.path.join(ROOT, 'python', 'song_vc', 'convert.py')
 
 def converter():
     """변환기 연결 정보. 기록이 없거나 파일이 없으면 **사유를 들고** 실패한다."""
-    if os.environ.get(ENGINE_ENV, '') != 'external':
+    if os.environ.get(ENGINE_ENV, '') == 'yingmusic':
+        py, sc = ABSORBED_PYTHON, os.path.join(ROOT, 'python', 'yingmusic_vc', 'convert.py')
+    elif os.environ.get(ENGINE_ENV, '') != 'external':
         py, sc = ABSORBED_PYTHON, ABSORBED_SCRIPT
     else:
         py = _recorded(PYTHON_ENV, PYTHON_KEY)
