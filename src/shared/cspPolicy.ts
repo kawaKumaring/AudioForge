@@ -6,10 +6,12 @@
  * ★file: 을 함께 적는다 — 배포 빌드는 file:// 로 열리고, 크롬에서 self 가 file: 을 덮는지는 판에 따라 다르다.
  * ★검사로 띄운 앱(AF_E2E=1)만 eval 을 허락한다 — 검사 도구(Playwright)가 조건식을 화면 안에서
  *   new Function 으로 만든다. 검사 도구의 우회(bypassCSP)는 창이 처음 뜰 때와 경주해 들쭉날쭉했다(실측).
+ * ★'wasm-unsafe-eval' 은 **wasm 만** 허락한다(2026-10-16, 음성 처리의 노이즈 제거 RNNoise 가 wasm 이다).
+ *   JS eval·new Function 은 여전히 막히고, 바깥 연결 차단(connect-src 등)과도 무관하다.
  *   **바깥 연결 차단은 검사와 제품이 같다** — 달라지는 것은 eval 한 가지뿐이다.
  */
 export function rendererCsp(opts: { e2e?: boolean } = {}): string {
-  const script = ["'self'", 'file:', "'unsafe-inline'", ...(opts.e2e ? ["'unsafe-eval'"] : [])].join(' ')
+  const script = ["'self'", 'file:', "'unsafe-inline'", "'wasm-unsafe-eval'", ...(opts.e2e ? ["'unsafe-eval'"] : [])].join(' ')
   return [
     "default-src 'self' file:",
     `script-src ${script}`,

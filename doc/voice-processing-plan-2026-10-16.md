@@ -74,3 +74,14 @@ SoundCraft `ui-egui/src/edit_window.rs`, EffectCraft `ui-egui/src/panels/timelin
 - 노이즈 제거 재료(RNNoise) 다운로드 승인.
 - "전파 소리" 확인용 결과 음성 1개 사용 승인.
 - MCP 화면 캡처(`ui_screenshot`) 허락 범위.
+
+## 9. 진행 기록
+
+- **P0 리미터(완료, 2026-10-16)** — `python/audio_limiter.py`. 노래 변환 저장 전·음량 맞추기(저장 전에 키우기+리미터). 실제 변환(저장소 시험 음성)이 −1.00dBTP 로 저장됨, 4분 곡 약 7초.
+- **P1 처리 엔진(완료, 2026-10-16)**
+  - 계산부 `src/shared/voiceFx/`(biquad·dynamics·fades·settings·truePeak) + 시험 6건.
+  - 화면 엔진 `src/renderer/lib/voiceFx/`(chain·render·voiceFx.worklet). 노이즈 제거 = RNNoise(`@jitsi/rnnoise-wasm` 0.2.1, Apache-2.0, wasm 을 글자로 품은 동기판 — 따로 불러오지 않음).
+  - 화면 보안 정책에 `'wasm-unsafe-eval'`(wasm 만, JS eval 은 계속 막음).
+  - ★빌드 설정 `worker: { format: 'es' }` — 기본(iife)은 import.meta.url 을 self.location 으로 바꿔 AudioWorklet 안에서 등록 전에 멈췄다(실측). MCP 자동 빌드는 설정 파일 변경을 감지하지 않는다 → 설정을 바꾸면 `npm run build` 를 직접.
+  - **개발툴 MCP 로 실제 앱에서 확인**(`test/e2e/voice-fx-engine.mcp.cjs`, 합성 신호, 10건): 모두 끔=그대로, 리미터 지연 보정·−1dBTP 이하, 노이즈 제거 잡음 −10.8dB, 치찰음 8kHz −9.5dB, 리버브 꼬리, 저음 자르기 40Hz −10.9dB·1kHz 0.03dB, 같은 설정 두 번 렌더 동일, 실시간 미터 도착·문턱 변경 즉시 반영(13.1→3.1dB).
+  - 미확인: 말소리에 섞인 잡음에서 노이즈 제거가 목소리를 얼마나 상하게 하는지(청취 필요). 음성 생성 결과에 거는 연결은 P3.

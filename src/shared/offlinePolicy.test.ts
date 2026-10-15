@@ -41,7 +41,8 @@ test('★로컬 주소만 통과 — 바깥 주소는 막는다', () => {
 // ★화면 보안 정책 — 바깥 주소가 들어 있지 않고, 제품에서는 eval 을 허락하지 않는다(크롬 보안 경고의 원인).
 test('화면 보안 정책은 바깥 주소를 허락하지 않는다', () => {
   const csp = rendererCsp()
-  assert.ok(!/unsafe-eval/.test(csp), '제품 정책이 eval 을 허락한다')
+  assert.ok(!/(^|\s)'unsafe-eval'/.test(csp), '제품 정책이 eval 을 허락한다')
+  assert.match(csp, /'wasm-unsafe-eval'/, 'wasm(노이즈 제거)은 허락한다 — JS eval 과 별개')
   const hosts = [...csp.matchAll(/(?:https?|wss?):\/\/([^\s;:/]+)/g)].map((x) => x[1])
   assert.deepEqual([...new Set(hosts)].filter((h) => h !== 'localhost' && h !== '127.0.0.1'), [], `바깥 주소: ${hosts}`)
   assert.match(csp, /default-src 'self'/)
