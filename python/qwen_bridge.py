@@ -649,7 +649,7 @@ def _vendor_returned(dirpath, d, sr, g, seg, ci):
         base = os.path.join(dirpath, "vendor-returned-target-only")
         tmp = base + ".part"
         _sf.write(tmp, _np.ascontiguousarray(_np.asarray(d, dtype="float32")), sr,
-                  format="WAV", subtype="PCM_16")
+                  format="WAV", subtype="FLOAT")
         chk, _csr = _sf.read(tmp)
         if _csr != sr or chk.shape[0] != int(_np.asarray(d).shape[0]):
             raise RuntimeError("VENDOR_RETURNED_VERIFY_FAILED")
@@ -705,7 +705,7 @@ def _save_generation_limit_partial(g, seg, ci):
         base = os.path.join(root, "chunk-%03d-generation-limit-partial" % int(ci))
         tmp = base + ".part"
         _sf.write(tmp, _np.ascontiguousarray(d), int(g["sr"]),
-                  format="WAV", subtype="PCM_16")
+                  format="WAV", subtype="FLOAT")
         os.replace(tmp, base + ".wav")
         with open(base + ".json", "w", encoding="utf-8", newline=chr(10)) as fh:
             json.dump({"kind": "generation-limit-partial",
@@ -743,7 +743,7 @@ def _diag_save_raw(g, tag):
         d = _np.asarray(d, dtype="float32")
         if d.ndim > 1:
             d = d.mean(axis=1)
-        _sf.write(dst, _np.ascontiguousarray(d), int(g["sr"]))
+        _sf.write(dst, _np.ascontiguousarray(d), int(g["sr"]), subtype="FLOAT")
         emit("stage", stage="diagnostic_raw_kept", tag=tag,
              frames=int(d.size), sr=int(g["sr"]))
     except Exception as e:
@@ -837,7 +837,7 @@ def _generate_plan(model, plan, builder, proc, n_segments, progress=None, seed=N
                                  "target_text": item["text"],
                                  "sample_rate": int(g["sr"])}
         cpath = chunk_paths.chunk_out_path(seg["out_path"], ci)  # 결정적·job_dir 내부
-        sf.write(cpath, d, int(g["sr"]))
+        sf.write(cpath, d, int(g["sr"]), subtype="FLOAT")
         completed += 1
         done.append({"original_segment_index": int(seg["index"]), "chunk_index": int(ci),
                      "chunk_count": int(cc), "out_path": cpath, "sr": int(g["sr"]),

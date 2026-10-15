@@ -339,6 +339,7 @@ def main():
         # None 그대로 두고, 해석(부재→safe_xvector)·값 검증·fail-closed 는 tts_worker 가 단일 소유한다.
         # 여기서 기본값을 만들거나 값을 고치지 않는다(원시값 전달 — ttsExpressiveMode 와 같은 원칙).
         args.tts_reference_conditioning_mode = config.get("ttsReferenceConditioningMode", None)
+        args.tts_line_mode = config.get("ttsLineMode", "separate")
         args.tts_reference_prompts = config.get("ttsReferencePrompts", {})  # 식별자→수동 override
         args.tts_reference_override = config.get("ttsReferenceOverride", "")  # 파생 참조 클립(있으면 기본 참조로 사용)
         args.tts_pitch = config.get("ttsPitch", 0.0)  # 음높이 보정(반음, 후처리). 부재 시 0.0(하위호환·무후처리)
@@ -598,6 +599,7 @@ def main():
                     # controlled-prefix 로 생성한 뒤 파형 경계를 찾아 참조 구간을 잘라내고,
                     # 경계를 확정하지 못하면 ICL_BOUNDARY_ALIGNMENT_FAILED 로 실패한다(무음 대체 없음).
                     reference_conditioning_mode=_rc_mode,
+                    line_mode=getattr(args, "tts_line_mode", "separate"),
                     # 기록 전용 — 원본의 어느 구간을 잘라 참조로 썼는지. 합성 동작은 바뀌지 않는다.
                     reference_region=getattr(args, "tts_reference_region", None))
                 # 성공 조건은 'result 도달 + 실제 산출물'이다. synthesize가 돌려준 최종 경로가

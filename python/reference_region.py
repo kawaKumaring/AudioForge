@@ -174,7 +174,7 @@ def recommend_region(path, target_sec=None,
     # (전부 밀도 0.71 이상), 성긴 녹음을 위한 안전선으로 남긴다. 아무 후보도 못 넘으면 푼다.
     def best_between(lo, hi, min_ratio):
         import bisect
-        best = None
+        candidates = []
         for st in cuts:
             # 전체 cuts×cuts를 만들지 않는다. 긴 녹음에서도 이 시작점으로부터 허용 길이에
             # 들어오는 끝 경계만 본다.
@@ -190,9 +190,18 @@ def recommend_region(path, target_sec=None,
                     continue
                 # 담긴 발화 초 − 클리핑 초 × 3. 동률이면 앞쪽 구간.
                 rank = (float((sp - 3.0 * cl) * d), -st)
-                if best is None or rank > best[0]:
-                    best = (rank, st, en, sp)
-        return best
+                candidates.append((rank, st, en, sp, cl))
+        if not candidates:
+            return None
+        # 정보량이 최고 후보의 95% 이상인 후보끼리 클리핑이 적은 것을 우선한다.
+        # 음높이/음색을 평탄하게 만들지 않으며, 잡음·화자 판별로 부르지 않는다.
+        most_speech = max((c[2]-c[1])*c[3] for c in candidates)
+        near = [c for c in candidates if (c[2]-c[1])*c[3] >= most_speech*.95]
+        near.sort(key=lambda c: (c[4], -c[0][0], c[1]))
+        chosen = near[0]
+        return chosen[:4], [{"start_sec": round(c[1], 3), "dur_sec": round(c[2]-c[1], 3),
+                             "speech_ratio": round(float(c[3]), 4),
+                             "clipping_ratio": round(float(c[4]), 6)} for c in near[:3]]
 
     best = best_between(float(min_sec), float(max_sec), MIN_SPEECH_RATIO)
     if best is None:
@@ -219,8 +228,9 @@ def recommend_region(path, target_sec=None,
                 "duration_sec": round(dur, 3), "whole_file": False,
                 "silence_count": len(silences)}
 
-    _, st, en, sp = best
-    return {"ok": True, "start_sec": round(st, 3), "dur_sec": round(en - st, 3),
+    (_, st, en, sp), candidates = best
+    return {"selection_policy": "speech_amount_then_clipping_v1", "candidates": candidates,
+            "ok": True, "start_sec": round(st, 3), "dur_sec": round(en - st, 3),
             "duration_sec": round(dur, 3), "whole_file": False,
             "speech_ratio": round(float(sp), 4), "safe_boundaries": True}
 
