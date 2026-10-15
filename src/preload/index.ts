@@ -386,6 +386,9 @@ const api = {
       ipcRenderer.invoke('voiceedit:save', payload),
     getLast: (): Promise<{ ok: true; project: unknown } | { ok: false; why: string }> => ipcRenderer.invoke('voiceedit:last-get'),
     setLast: (project: unknown): Promise<{ ok: true } | { ok: false; why: string }> => ipcRenderer.invoke('voiceedit:last-set', project),
+    // 카드 생성본 처리본을 원본 옆에 쓴다(원본 유지). previous 는 지울 직전 처리본(같은 원본에서 나온 것만 지워진다).
+    saveBeside: (payload: { raw: string; wav: Uint8Array; previous?: string }): Promise<{ ok: true; path: string } | { ok: false; why: string }> =>
+      ipcRenderer.invoke('voiceedit:save-beside', payload),
   },
   app: {
     openFolder: (path: string) => ipcRenderer.invoke('app:open-folder', path),

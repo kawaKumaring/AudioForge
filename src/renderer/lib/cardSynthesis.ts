@@ -27,6 +27,8 @@ import {
 import { defaultSettings, synthesisOptions } from '../../shared/labWorkspace.ts'
 // @ts-ignore TS5097
 import { REFERENCE_CONDITIONING_RECOMMENDED } from '../../shared/ttsConfig.ts'
+// @ts-ignore TS5097
+import { sanitizeVoiceFx } from '../../shared/voiceFx/settings.ts'
 import {
   cardApplied, cardClipKey, cardEventFault, cardGenerateFault, cardRegionFault,
   type CardApplied, h3DirectionFault,
@@ -121,6 +123,8 @@ export function serializeWork(
         ...(t.voice ? { voice: { ...t.voice } } : {}),
         // 기록이 없다는 **사실 자체**를 남긴다 — 왕복하며 슬며시 '지금 것' 이 되지 않게.
         ...(t.settingsUnknown ? { settingsUnknown: true as const } : {}),
+        // 처리 전 원본 — 없으면 처리하지 않은 생성본이다.
+        ...(t.rawPath ? { rawPath: t.rawPath } : {}),
       })),
     })),
   }
@@ -149,6 +153,8 @@ export async function hydrateWork(w: SavedWork): Promise<{
       symbolDisabled: symbolDisabled(c.settings.symbolDisabled),
       reference: c.settings.reference === 'manual' ? 'manual' as const : 'auto' as const,
       start: num(c.settings.start, 0), end: num(c.settings.end, c.sourceDuration),
+      // 음성 처리 — 없으면 꺼짐. 깨진 값은 기본값으로(sanitize).
+      ...(c.settings.voiceFx && typeof c.settings.voiceFx === 'object' ? { voiceFx: sanitizeVoiceFx(c.settings.voiceFx) } : {}),
     }
     return {
       contentPaths: c.contentPaths, contentPath: c.contentPath, contentFault: c.contentFault,
@@ -175,7 +181,9 @@ export async function hydrateWork(w: SavedWork): Promise<{
             symbolDisabled: symbolDisabled(t.settings.symbolDisabled),
             reference: t.settings.reference === 'manual' ? 'manual' as const : 'auto' as const,
             start: num(t.settings.start, 0), end: num(t.settings.end, 0),
+            ...(t.settings.voiceFx && typeof t.settings.voiceFx === 'object' ? { voiceFx: sanitizeVoiceFx(t.settings.voiceFx) } : {}),
           },
+        ...(t.rawPath ? { rawPath: t.rawPath } : {}),
         // ★**기록이 없으면 비워 둔다.** 예전에는 제품 기본값을 채워 넣어, 재지 않은 값을
         //   "이 속도로 만들었다" 고 말하게 했다(2026-09-27 지적). 화면은 이미 '기록 없음' 을 그린다.
         applied: appliedFrom(t.applied),

@@ -37,6 +37,8 @@ export type CardTake = {
    * 화면은 '수정 전/지금 것' 대신 '설정 기록 없음' 으로 말한다.
    */
   settingsUnknown?: boolean
+  /** 음성 처리를 건 생성본이면 **처리 전 원본**. `path` 는 처리본을 가리킨다. 다시 걸 때는 늘 이 원본에서 시작한다. */
+  rawPath?: string
 }
 
 export type SynthesisCard = {
@@ -145,6 +147,7 @@ type State = {
   patchJob: (patch: Partial<CardJob>) => void
   /** 생성본을 **더한다.** 이전 생성본은 지우지 않는다. */
   addTake: (id: string, take: CardTake) => void
+  setTake: (id: string, takeId: string, patch: Partial<Omit<CardTake, 'id'>>) => void
   markAsked: () => void
   /** 저장본에서 통째로 되살린다. 사용자가 '불러오기' 를 고른 뒤에만 불린다. */
   replaceAll: (cards: SynthesisCard[], joins: JoinSettings, importedFrom?: { kind: 'lab' | 'draft'; key: string; at: number } | null) => void
@@ -204,6 +207,10 @@ export const useSynthesisCards = create<State>((set) => ({
   addTake: (id, take) => set(s => ({
     dirty: true,
     cards: s.cards.map(c => c.id === id ? { ...c, takes: [...c.takes, take] } : c),
+  })),
+  setTake: (id, takeId, patch) => set(s => ({
+    dirty: true,
+    cards: s.cards.map(c => c.id === id ? { ...c, takes: c.takes.map(t => t.id === takeId ? { ...t, ...patch } : t) } : c),
   })),
   markAsked: () => set({ asked: true }),
   replaceAll: (cards, joins, importedFrom = null) => set({ cards, joins, importedFrom, seeded: true, asked: true, dirty: false, refs: {}, removed: null }),
