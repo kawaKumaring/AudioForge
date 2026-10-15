@@ -1,3 +1,5 @@
+// @ts-ignore TS5097
+import { cardSymbolReading, readSymbolReading, symbolDisabled } from '../../shared/symbolDirection.ts'
 /**
  * 생성 카드를 **실제로 돌리는 곳** — 화면 밖.
  *
@@ -31,7 +33,7 @@ import {
 // @ts-ignore TS5097
 } from '../../shared/synthesisCardJob.ts'
 import {
-  cardVoiceOf, needsReferencePrep, voiceGenerateFault, builtinRequestFields, voiceSnapshot, cardScriptWithEmotion, voiceSupports,
+  cardVoiceOf, needsReferencePrep, voiceGenerateFault, builtinRequestFields, voiceSnapshot, voiceSupports,
   type BuiltinVoiceRef, type VoiceSnapshot,
 // @ts-ignore TS5097
 } from '../../shared/synthesisCardVoice.ts'
@@ -140,9 +142,11 @@ export async function hydrateWork(w: SavedWork): Promise<{
   const cards: SynthesisCard[] = w.cards.map((c) => {
     const settings = {
       h3Direction: text(c.settings.h3Direction),
-      ...(c.settings.engine ? { engine: c.settings.engine as 'qwen3' | 'minimax-h3' } : {}),
+      ...(c.settings.engine ? { engine: c.settings.engine as 'qwen3' | 'cosyvoice3' | 'minimax-h3' } : {}),
       speed: num(c.settings.speed, 1), pitch: num(c.settings.pitch, 0),
       emotion: text(c.settings.emotion) || '자연스럽게',
+      symbolDirection: c.settings.symbolDirection === true,
+      symbolDisabled: symbolDisabled(c.settings.symbolDisabled),
       reference: c.settings.reference === 'manual' ? 'manual' as const : 'auto' as const,
       start: num(c.settings.start, 0), end: num(c.settings.end, c.sourceDuration),
     }
@@ -163,10 +167,12 @@ export async function hydrateWork(w: SavedWork): Promise<{
         settings: t.settingsUnknown
           ? { speed: 0, pitch: 0, emotion: '', reference: 'auto' as const, start: 0, end: 0 }
           : {
-            ...(t.settings.engine ? { engine: t.settings.engine as 'qwen3' | 'minimax-h3' } : {}),
+            ...(t.settings.engine ? { engine: t.settings.engine as 'qwen3' | 'cosyvoice3' | 'minimax-h3' } : {}),
             h3Direction: text(t.settings.h3Direction),
             speed: num(t.settings.speed, settings.speed), pitch: num(t.settings.pitch, settings.pitch),
             emotion: text(t.settings.emotion) || settings.emotion,
+            symbolDirection: t.settings.symbolDirection === true,
+            symbolDisabled: symbolDisabled(t.settings.symbolDisabled),
             reference: t.settings.reference === 'manual' ? 'manual' as const : 'auto' as const,
             start: num(t.settings.start, 0), end: num(t.settings.end, 0),
           },
@@ -243,7 +249,9 @@ function appliedFrom(raw: Record<string, unknown>): CardApplied {
     notes: Array.isArray(a.notes) ? a.notes : [],
   }
   if (typeof a.h3Direction === 'string') out.h3Direction = a.h3Direction
-  if (a.engine === 'qwen3' || a.engine === 'minimax-h3') out.engine = a.engine
+  const symbolReading = readSymbolReading(a.symbolReading)
+  if (symbolReading) out.symbolReading = symbolReading
+  if (a.engine === 'qwen3' || a.engine === 'cosyvoice3' || a.engine === 'minimax-h3') out.engine = a.engine
   if (typeof a.speed === 'number' && Number.isFinite(a.speed)) out.speed = a.speed
   if (typeof a.pitch === 'number' && Number.isFinite(a.pitch)) out.pitch = a.pitch
   // ★실제로 쓰인 참조 구간 — 자동 확정 구간까지 그대로 되살린다(2026-09-27 재현 대상).
@@ -363,6 +371,7 @@ export async function startCardGeneration(card: SynthesisCard): Promise<string> 
   const app = useAppStore.getState()
   const ref = st.refs[card.id]
   const voice = cardVoiceOf(card)
+  // ★2e7252b(10-14) 의 H3 연기 지시 검사 — 옛 사본이 덮어써 사라졌던 것을 되살림(2026-10-16 검수).
   if (voice.kind === 'reference' && voice.engine === 'minimax-h3') { const why = h3DirectionFault(card.settings.h3Direction || ''); if (why) return why }
   const fault = expressionIconFault(card.text, voiceSupports(voice).emotion) || voiceGenerateFault({
     voice,
@@ -377,6 +386,7 @@ export async function startCardGeneration(card: SynthesisCard): Promise<string> 
 
   // ★적용값에 **실제로 쓰인 참조**까지 남긴다 — 자동 구간은 사람이 고른 값이 아니므로,
   //   남기지 않으면 나중에 '무엇이 달라져 소리가 달라졌나' 를 답할 수 없다(2026-09-27 지적).
+  const reading = cardSymbolReading(expressionScript(card.text, card.settings.emotion === '자연스럽게' ? '기본' : card.settings.emotion || '기본'), { ...card.settings, symbolDirection: false }, voice)
   const applied: CardApplied = {
     ...cardApplied(card.settings, voice),
     // 기본 목소리에는 참조가 없다 — 없는 것을 있는 것처럼 적지 않는다.
@@ -401,7 +411,7 @@ export async function startCardGeneration(card: SynthesisCard): Promise<string> 
   //   화면이 '내 요청의 응답인가' 를 스스로 가릴 수 있다(2026-09-27 검수 재현 대응).
   const options = {
     // ★카드 감정 — 받는 목소리(Qwen 지정 목소리 + 1.7B)면 태그 없는 줄마다 [감정] 을 붙여 보낸다(2026-10-01).
-    ...synthesisOptions(cardScriptWithEmotion(expressionScript(card.text, card.settings.emotion === '자연스럽게' ? '기본' : card.settings.emotion || '기본'), card.settings.emotion, voice), s, voice.kind === 'reference'
+    ...synthesisOptions(reading.script, s, voice.kind === 'reference'
       ? { clip: ref!.clip, region: ref!.region }
       : { clip: '', region: null }),
     // 기본 목소리면 엔진·모델을 명시해 싣는다. 참조 목소리면 아무것도 붙지 않는다.

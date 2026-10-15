@@ -54,8 +54,12 @@ export const CARD_EMOTION_NONE = '자연스럽게'
  * 이 감정이 **이 목소리로 실제 요청에 실리는가** — 요청(cardScriptWithEmotion)과 '미적용' 표시(cardApplied)가 함께 쓰는 판정 하나.
  * ★실린다는 것은 '보낸다' 일 뿐, 감정이 소리에 잘 드러난다는 뜻이 아니다.
  */
+// ★'명랑' 은 뺐다(2026-10-16 검수) — 엔진 지시문이 '기쁨' 과 똑같아(cosyvoice_engine cheerful = happy) 다른 것을 고른 줄 알아도 같은 요청이 된다.
+//   '한숨' 은 지시문은 기본과 같지만 [sigh] 토큰이 붙어 남긴다.
+export const COSY_CARD_EMOTIONS: readonly string[] = ['기쁨', '슬픔', '화남', '속삭임', '자신감', '다정', '나레이션', '한숨']
 export function emotionSent(emotion: string, v: CardVoice | null | undefined): boolean {
   if (!v || !emotion || emotion === CARD_EMOTION_NONE || !CARD_EMOTIONS.includes(emotion)) return false
+  if (v.kind === 'reference' && v.engine === 'cosyvoice3') return COSY_CARD_EMOTIONS.includes(emotion)
   return voiceSupports(v).emotion
 }
 
@@ -69,7 +73,7 @@ export function cardScriptWithEmotion(text: string, emotion: string, v: CardVoic
 }
 
 export type CardVoice =
-  | { kind: 'reference'; source: CardSourceLike; engine?: 'qwen3' | 'minimax-h3' }
+  | { kind: 'reference'; source: CardSourceLike; engine?: 'qwen3' | 'cosyvoice3' | 'minimax-h3' }
   | { kind: 'builtin'; voice: BuiltinVoiceRef }
   | { kind: 'none' }
 
@@ -77,7 +81,7 @@ export type CardVoice =
 export function cardVoiceOf(card: {
   source?: CardSourceLike | null
   builtin?: BuiltinVoiceRef | null
-  settings?: { engine?: 'qwen3' | 'minimax-h3' }
+  settings?: { engine?: 'qwen3' | 'cosyvoice3' | 'minimax-h3' }
 }): CardVoice {
   if (card.builtin && card.builtin.path) return { kind: 'builtin', voice: card.builtin }
   if (card.source && card.source.path) return { kind: 'reference', source: card.source, ...(card.settings?.engine ? { engine: card.settings.engine } : {}) }
@@ -106,6 +110,7 @@ export function voiceSupports(v: CardVoice): { speed: boolean; pitch: boolean; r
   // ★감정은 Qwen 지정 목소리 + 1.7B 일 때만(2026-10-01). 참조 목소리의 감정은 예전 실험에서 인물 동일성과 함께 통과한 길이 없어 열지 않는다.
   if (v.kind === 'builtin') return { speed: true, pitch: true, region: false, emotion: v.voice.engineId === 'qwen-custom' && v.voice.emotion === true }
   if (v.kind === 'reference' && v.engine === 'minimax-h3') return { speed: false, pitch: false, region: true, emotion: false }
+  if (v.kind === 'reference' && v.engine === 'cosyvoice3') return { speed: true, pitch: true, region: true, emotion: true }
   return { speed: true, pitch: true, region: true, emotion: false }
 }
 

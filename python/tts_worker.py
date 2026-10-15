@@ -1800,9 +1800,11 @@ def _get_qwen_engine():
 
 # ── Engine registry ──
 
+from cosyvoice_engine import CosyVoiceEngine
 from h3_engine import H3Engine
 ENGINES = {
     "minimax-h3": H3Engine,
+    "cosyvoice3": CosyVoiceEngine,
     "f5tts": F5TTSEngine,
     "kokoro": KokoroEngine,
     "piper": PiperEngine,
@@ -2335,7 +2337,7 @@ def _atempo_segment(inp, speed):
             pass
 
     try:
-        proc = subprocess.run([ff, "-y", "-i", inp, "-filter:a", f"atempo={speed:.4f}", out],
+        proc = subprocess.run([ff, "-y", "-i", inp, "-filter:a", f"atempo={speed:.4f}", "-c:a", "pcm_f32le", out],
                               capture_output=True, timeout=120)
     except (OSError, subprocess.SubprocessError) as e:  # TimeoutExpired 포함
         _rm_partial()
@@ -2389,7 +2391,7 @@ _METADATA_KEYS = [
     "reference_transcript_model", "reference_degraded_emotions",
     # seed_source: env(고정 지정) | random_per_run(기본). 무엇이었는지 알 수 있어야 재현이 된다.
     "target_language", "seed", "seed_supported", "seed_source", "seed_policy",
-    "speed", "speed_postprocessed", "silence_gap",
+    "speed", "speed_postprocessed", "silence_gap", "final_peak_gain",
     "fallback", "fallback_reason", "elapsed_seconds", "output_sample_rate",
     # pitch 후처리(계약 §2.1) — pitch_method는 production에서 "rubberband" | None 둘뿐.
     "pitch_semitones", "pitch_method", "pitch_postprocessed",
@@ -2405,7 +2407,7 @@ _METADATA_KEYS = [
     "tail_mode", "tail_pad_ms", "tail_fade_ms", "tail_fade_applied", "emotion_boundary_mode",
     # 끝났을 때 아직 소리가 남아 있었는가(0~1). 계측값일 뿐 판정이 아니다 —
     # 모델이 마지막 음절이 울리는 중에 끝내는 일을 사후에 알아보기 위한 값이다.
-    "tail_residual_ratio",
+    "tail_residual_ratio", "active_tail_preserved",
     # 경계 envelope 재현 — 최종 조립물 **바깥쪽** 시작·끝에 실제로 적용한 샘플 수(길이는 불변).
     # offset 0 = tail auto 가 말끝 fade 를 가져갔거나 배열이 짧아 clamp 된 경우.
     "boundary_onset_samples", "boundary_offset_samples",
@@ -2414,7 +2416,9 @@ _METADATA_KEYS = [
     # applied 는 경계마다 (앞 chunk 끝 / 뒤 chunk 시작) 좌표와 샘플 수. 대사·경로 없음.
     # 최종 파일 양 끝은 boundary_onset_samples/boundary_offset_samples 가 따로 말한다(중복 아님).
     "segment_envelope_onset_count", "segment_envelope_offset_count",
-    "segment_envelope_kind_counts", "segment_envelope_applied",
+    "segment_envelope_kind_counts", "segment_envelope_applied", "internal_quiet_edges",
+    "segment_active_tail_preserved_count",
+    "line_generation_mode", "context_source_segments", "context_pause_boundaries", "context_layout_basis",
     # macro gain drift 보정(연기·믹싱·공간 세 축 분리) — 조립 트랙 하나에 한 번 건 보정의 재현값.
     # reason 은 APPLIED / BELOW_GATE / TOO_SHORT / NO_ACTIVE_SPEECH / FULLY_PROTECTED / UNAVAILABLE.
     # curve_sha8 은 보정 곡선 수치 배열의 지문이다(대사·경로가 아니다).
@@ -2504,9 +2508,12 @@ def _transcript_meta(ref_text):
 
 
 def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None,
-                      macro_protected_spans=None):
+                      macro_protected_spans=None, preserve_active_tail=False):
     """엔진 무관 공통 최종 단계 + 경계 envelope + 말끝 finishing
     (계약 §2 순서: … → 전체 pitch → 경계 envelope → 최종 조건부 fade → 최종 0 padding → 검증 → 원자 교체).
+
+    preserve_active_tail=True(Qwen): 끝에 소리가 남아 있으면 offset/tail fade를 생략하고
+    요청한 무음 padding은 유지한다. 생성에서 이미 없어진 발음을 복원하지는 않는다.
 
     여기가 **조립이 끝난 최종 배열을 보는 단 하나의 지점**이다. 단문이든 장문이든 이 함수는 결과물
     하나만 보므로, 경계 envelope 을 여기에 걸면 자동으로 "바깥쪽 시작·끝에만 한 번" 이 된다.
@@ -2566,6 +2573,11 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None,
         # tail plan 은 **envelope 적용 전 원본**으로 산출한다 — already_silent 판정(마지막 5ms peak)이
         # 우리 offset fade 때문에 뒤바뀌면 tail 계약의 의미가 달라진다. 순서: plan(원본) → envelope → tail.
         plan = _af.compute_tail_plan(data, sr, tail)
+        from speech_join_policy import has_active_tail
+        active_tail_preserved = bool(preserve_active_tail and has_active_tail(data, sr))
+        if active_tail_preserved:
+            # 생성 종료 때 남은 발음을 후처리로 더 줄이지 않는다. 무음 패딩은 그대로.
+            plan.fade_applied = False
         # macro gain — **조립이 끝난 트랙 하나**에 한 번만 건다. chunk 별로 걸지 않는다.
         # 경계 envelope 보다 **먼저** 두어 바깥쪽 10 ms/20 ms fade 가 말끝의 마지막 권위로 남는다.
         # tail plan 은 위에서 이미 원본으로 산출했다 — boost 가 already_silent 판정을 뒤집지 않는다.
@@ -2575,12 +2587,17 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None,
             raise _af.AudioFinishingError("macro gain 이 길이를 바꿨습니다", code="AUDIO_INVALID")
         # tail 이 실제로 cosine fade 를 걸 때만 말끝을 양보한다(이중 fade 방지). 시작 쪽은 겹칠 게 없다.
         bplan = _af.compute_boundary_plan(len(corrected), sr, tail_owns_offset=bool(plan.fade_applied))
+        if active_tail_preserved:
+            bplan.offset_samples = 0
         enveloped = _af.apply_boundary_envelope(corrected, sr, bplan)
         # 말끝 잔여량 — **fade 를 걸기 전** 배열로 잰다(걸고 나면 언제나 0 이다).
         # 소리를 바꾸지 않는 계측이다. 모델이 마지막 음절이 울리는 중에 끝내는 일을 알아보기 위한 값이고,
         # 여기서는 판정하지 않는다(임계값은 제품이 가진다).
         tail_residual = _af.tail_residual_ratio(corrected, sr)
         finished = _af.apply_final_tail(enveloped, sr, plan)
+        # 중간 FLOAT가 보존한 초과 진폭은 최종 단계에서 전체에 같은 배율로 낮춘다.
+        from speech_join_policy import peak_safe
+        finished, final_peak_gain = peak_safe(finished)
         # 불변식 B — in-memory: mono·non-empty·finite + 예상 프레임 수 + padding 정확히 0.
         # (여기서 finite가 이미 보장되므로 PCM_16으로 써도 비유한을 숨길 수 없다 — write 전 in-memory 검증.)
         # envelope 은 길이를 바꾸지 않으므로 기대 프레임 수의 기준은 여전히 len(data)다.
@@ -2609,6 +2626,8 @@ def _finish_and_place(candidate, final_path, pitch, work_dir, tail_cfg=None,
                 except OSError:
                     pass
     out = dict(pinfo)
+    out["final_peak_gain"] = final_peak_gain
+    out["active_tail_preserved"] = active_tail_preserved
     out["output_sample_rate"] = int(sr)
     # I4 재현 메타: tail 적용값(계약 §2). off면 padding/fade 0. fade_applied는 실제 fade 수행 여부.
     if plan.mode == "auto":
@@ -2890,7 +2909,7 @@ def _summarize_reference_alignment(ordered_entries):
 def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed, silence_gap,
                          pitch=0.0, tail_cfg=None, boundary_gaps=None, boundary_kinds=None,
                          reference_conditioning_mode=None, ref_table=None,
-                         speaker_labels=None):
+                         speaker_labels=None, line_mode="separate"):
     """Qwen 배치 합성 — 2B 품질 게이트 재사용, Qwen 전용 VRAM 임계로 장치 선택(ComfyUI 병행 안전),
     모델 1회 로딩. speed: chunk별 atempo 후 결합(1.0은 raw). 임시파일 finally 정리.
     ⚠️ **결합 무음은 원 segment 경계에만 들어간다.** 한 문장이 자동분할된 내부 chunk 경계의 gap은
@@ -3028,6 +3047,19 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             emit("progress", percent=5,
                  message="참조 억양 반영 모드 — 참조 대사를 먼저 생성한 뒤 경계를 찾아 잘라냅니다"
                          "(생성 길이가 늘어 처리 시간이 더 걸립니다)")
+        # 청취 비교용: 기본 경로는 그대로. 일반 줄만 문맥을 유지해 생성한다.
+        context_lines = context_pauses = None
+        if (line_mode == "context" or os.environ.get("AUDIOFORGE_DIAG_CONTEXT_LINES") == "1") and len(parsed) > 1:
+            import context_line_pauses
+            context_lines, context_pauses = context_line_pauses.plan_lines(
+                parsed, boundary_kinds, boundary_gaps)
+            # 같은 태그라도 얼린 참조 배정이 다르면 합칠 수 없다.
+            _routing = getattr(ref_table, "routing", None)
+            if _routing and any({k:v for k,v in r.items() if k != "segment_index"} != {k:v for k,v in _routing[0].items() if k != "segment_index"} for r in _routing[1:]):
+                raise RuntimeError("참조 배정이 다른 줄은 문맥 유지로 합칠 수 없습니다")
+            parsed = [(parsed[0][0], " ".join(context_lines), parsed[0][2])]
+            boundary_gaps, boundary_kinds = [0.0], ["internal"]
+            emit("stage", stage="context_lines", lines=len(context_lines))
         # OVERTEST 진단 전용: parser 가 빈 줄로 나눈 문단을 **호출 단위로만** 하나로 합친다.
         # 글자·문장부호·문단 순서를 바꾸지 않고 줄바꿈으로 이어 붙인다(원문 보존).
         # 감정 태그가 서로 다르면 합치지 않는다 — 생성 조건이 달라지기 때문이다.
@@ -3309,7 +3341,8 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         # kind 가 line/paragraph/explicitPause 인 경계에만 걸고 internal/emotion 은 0 이다.
         # 길이 불변이라 아래 layout 진단(frames/start_sample)은 이 단계와 무관하게 그대로 유효하다.
         # _assert_concat_ready 보다 **먼저** 두어 envelope 산출물까지 같은 검증을 통과하게 한다.
-        use, segenv_meta = _apply_segment_envelopes(use, ordered_entries, boundary_kinds, job_dir)
+        use, segenv_meta = _apply_segment_envelopes(
+            use, ordered_entries, boundary_kinds, job_dir, preserve_active_tail=True)
 
         # 결합 직전 재검증(P0-3): speed 후처리 포함 모든 chunk가 동일 sr·mono·finite·non-empty.
         # (첫 파일 sr로 저장하므로 sr 혼입 시 뒤 chunk 속도/길이 변질 → 명확히 중단, 기존 wav 보존.)
@@ -3339,6 +3372,29 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
 
         emit("progress", percent=90, message="문장 이어붙이기 중...")
         _layout = _concat_with_boundaries(use, gaps, pending_path)  # 내부 0 / 원 segment 경계 silence_gap
+        if context_lines is not None:
+            # 자동 청크는 기존 tokenizer/참조 예산으로 나눈다. 합친 음성 전체와
+            # 전체 대사 일치 여부를 확인하며 추정 시간으로 줄 위치를 만들지 않는다.
+            import context_line_pauses as _clp
+            import soundfile as _sf
+            _x, _sr = _sf.read(pending_path, dtype="float32")
+            _asr = _icl_transcribe_fn()(pending_path)
+            _spoken_lines = [_spoken_for_qwen(t)[0] for t in context_lines]
+            # 줄별 보정과 묶은 글 보정이 다르면 위치를 추정하지 않는다.
+            # ★자동 분할로 여러 조각이 되면 첫 조각만 보면 늘 불일치였다(2026-10-16 검수) — 조각 전체를 공백 무시로 비교.
+            _nows = lambda t: "".join(str(t).split())  # noqa: E731
+            if _nows(" ".join(_spoken_lines)) != _nows("".join(s["text"] for s in segments)):
+                _asr = {}  # 대사 불일치로 표시, 음성은 그대로 보존
+            _x, _pauses = _clp.insert_line_pauses(
+                _x, _sr, _spoken_lines, context_pauses, _asr)
+            _sf.write(pending_path, _x, _sr, subtype="FLOAT")
+            # 별도 파일을 먼저 확정하지 않는다. 결과 metadata/실행 기록에만
+            # 함께 담아 이전 음성과 새 쉼 기록이 서로 어긋나는 통로를 만들지 않는다.
+            _missing = sum(r["status"] not in ("INSERTED", "ALREADY_SUFFICIENT") for r in _pauses)
+            emit("progress", percent=92, message=(
+                f"문맥 유지 — {_missing}곳의 줄 쉼은 위치를 확인하지 못해 원래 음성을 보존합니다"
+                if _missing else "문맥 유지 — 줄 쉼 확인 완료"))
+            emit("stage", stage="context_line_pauses", boundaries=_pauses)
         if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
             # 결합본은 join preview 파생용으로 **들고만** 있는다. manifest 는 synthesize 가
             # 마지막에 한 번 발행한다(manifest 존재 = 번들 완결이라는 계약을 지키기 위해서다).
@@ -3375,7 +3431,8 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
         # pending은 job_dir 내부(output_dir 하위) → os.replace가 동일 파일시스템 원자 이동.
         # pitch 뒤 경계 envelope(항상) + tail auto면 조건부 fade+0 padding까지(계약 §2).
         # 경계 envelope 은 이 최종 조립물의 양 끝에만 걸린다 — 내부 문장 경계는 건드리지 않는다.
-        pinfo = _finish_and_place(pending_path, final_path, pitch, job_dir, tail_cfg)
+        pinfo = _finish_and_place(pending_path, final_path, pitch, job_dir, tail_cfg,
+                                 preserve_active_tail=True)
         sr = pinfo["output_sample_rate"]
         import time as _time
         # target_language: 세그먼트 언어 중 최빈값
@@ -3401,6 +3458,10 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             "elapsed_seconds": round(_time.monotonic() - t_start, 2), "output_sample_rate": int(sr),
             "pitch_semitones": pinfo["pitch_semitones"], "pitch_method": pinfo["pitch_method"],
             "pitch_postprocessed": pinfo["pitch_postprocessed"],
+            "line_generation_mode": "context" if context_lines else line_mode,
+            "context_source_segments": (context_line_pauses.line_sources(context_lines) if context_lines else None),
+            "context_pause_boundaries": (_pauses if context_lines else None),
+            "context_layout_basis": "pre_pause_insertion_speed_applied_pitch_unapplied" if context_lines else None,
             "generation_limit": meta_gen_limit, "generated_iterations": meta_gen_iters,
             "termination_reason": meta_term, "generation_chunks": gen_chunks,
             # controlled-prefix 절단 실측(ICL 전용, 비민감 수치만). 안전 모드/legacy 는 None.
@@ -3409,6 +3470,8 @@ def _synthesize_qwen_job(parsed, ref_cache, overrides_by_path, output_dir, speed
             "tail_mode": pinfo.get("tail_mode"), "tail_pad_ms": pinfo.get("tail_pad_ms"),
             "tail_fade_ms": pinfo.get("tail_fade_ms"), "tail_fade_applied": pinfo.get("tail_fade_applied"),
             "tail_residual_ratio": pinfo.get("tail_residual_ratio"),
+            "active_tail_preserved": pinfo.get("active_tail_preserved"),
+            "final_peak_gain": pinfo.get("final_peak_gain"),
             # 경계 envelope 재현 — 실제 적용 샘플 수.
             "boundary_onset_samples": pinfo.get("boundary_onset_samples"),
             "boundary_offset_samples": pinfo.get("boundary_offset_samples"),
@@ -3490,7 +3553,7 @@ def _concat_with_silence(segment_paths, output_path, silence_sec=0.5):
     if silence_sec > 0 and len(all_audio) > 1:
         all_audio.pop()
     combined = np.concatenate(all_audio)
-    sf.write(output_path, combined, target_sr)
+    sf.write(output_path, combined, target_sr, subtype="FLOAT")
 
 
 def _assert_concat_ready(paths):
@@ -3534,12 +3597,16 @@ def _segment_envelope_plan(length, sr, want_onset, want_offset):
     return _af.BoundaryEnvelopePlan(onset_samples=onset, offset_samples=offset, sr=sr)
 
 
-def _apply_segment_envelopes(paths, ordered_entries, boundary_kinds, work_dir):
+def _apply_segment_envelopes(paths, ordered_entries, boundary_kinds, work_dir,
+                             preserve_active_tail=False):
     """B envelope 1단계 — **조립 중 열리는 segment 경계**의 안쪽 양면에 fade 를 건다(길이 불변).
 
     무엇을 하는가: ordered_entries 를 original_segment_index 로 묶어 segment 그룹을 만들고,
     그룹 사이 경계의 kind 가 SEGMENT_ENVELOPE_KINDS 면 **앞 그룹의 마지막 chunk 끝**에 inverted
     ease-out(1→0)을, **뒤 그룹의 첫 chunk 시작**에 ease-in(0→1)을 곱한다. 그 외 경계는 손대지 않는다.
+
+    preserve_active_tail=True(Qwen)일 때 offset 창에 소리가 남아 있으면 해당 fade는 생략한다.
+    시작 창과 이미 조용한 끝창은 기존 처리다. 보호 여부와 실제 offset 샘플 수를 기록한다.
 
     왜 여기인가: 이 지점이 '독립 생성된 조각들'을 아직 개별 파일로 들고 있는 마지막 자리다.
     _concat_with_boundaries 뒤에는 무음이 이미 삽입돼 어디가 경계였는지 배열만 보고는 알 수 없다.
@@ -3560,7 +3627,8 @@ def _apply_segment_envelopes(paths, ordered_entries, boundary_kinds, work_dir):
     import audio_finishing as _af
 
     meta = {"segment_envelope_onset_count": 0, "segment_envelope_offset_count": 0,
-            "segment_envelope_kind_counts": {}, "segment_envelope_applied": []}
+            "segment_envelope_kind_counts": {}, "segment_envelope_applied": [],
+            "segment_active_tail_preserved_count": 0}
     if not paths or len(paths) != len(ordered_entries) or not boundary_kinds:
         # 진단/구 경로 안전: 정렬이 어긋나면 잘못된 자리에 거는 대신 아무것도 하지 않는다.
         return list(paths), meta
@@ -3596,19 +3664,40 @@ def _apply_segment_envelopes(paths, ordered_entries, boundary_kinds, work_dir):
     if 0 in want_onset or (len(paths) - 1) in want_offset:
         raise RuntimeError("segment envelope: 최종 파일 양 끝은 _finish_and_place 권위다(중복 금지)")
 
-    if not want_onset and not want_offset:
+    # 독립 생성한 내부 조각: 발화 후보는 보존하고 아주 작은 끝값만 영점으로 연결한다.
+    from speech_join_policy import quiet_edge
+    internal_onsets = {i for i in range(1, len(paths))
+                       if ordered_entries[i]["original_segment_index"] ==
+                          ordered_entries[i-1]["original_segment_index"]}
+    internal_offsets = {i-1 for i in internal_onsets}
+    meta["internal_quiet_edges"] = []
+    if not want_onset and not want_offset and not internal_onsets:
         return list(paths), meta
 
     # 3) 대상 chunk 만 새 파일로 다시 쓴다(원본 무변경, sr·subtype·프레임 수 보존).
     new_paths = list(paths)
-    for pos in sorted(set(want_onset) | set(want_offset)):
+    for pos in sorted(set(want_onset) | set(want_offset) | internal_onsets | internal_offsets):
         src = paths[pos]
         data, sr = sf.read(src, dtype="float32")
         subtype = sf.info(src).subtype
         plan = _segment_envelope_plan(len(data), sr, pos in want_onset, pos in want_offset)
+        from speech_join_policy import has_active_tail
+        tail_preserved = bool(preserve_active_tail and plan.offset_samples and
+                              has_active_tail(data, sr))
+        if tail_preserved:
+            plan.offset_samples = 0
+            meta["segment_active_tail_preserved_count"] += 1
         out = _af.apply_boundary_envelope(data, sr, plan)
+        for onset, positions in ((True, internal_onsets), (False, internal_offsets)):
+            if pos in positions:
+                out, applied = quiet_edge(out, sr, onset=onset)
+                meta["internal_quiet_edges"].append({"chunk": pos, "onset": onset, "applied": applied})
         if len(out) != len(data):
             raise RuntimeError("segment envelope: 길이가 변했습니다(계약 위반)")
+        if pos not in want_onset and pos not in want_offset:
+            import numpy as np
+            if np.array_equal(out, data):
+                continue
         dst = os.path.join(work_dir, ".af-segenv-%04d.wav" % pos)
         sf.write(dst, out, sr, subtype=subtype)
         new_paths[pos] = dst
@@ -3625,6 +3714,7 @@ def _apply_segment_envelopes(paths, ordered_entries, boundary_kinds, work_dir):
                     int(ordered_entries[pos]["original_segment_index"]),
                     int(ordered_entries[pos]["chunk_index"])]:
                 rec["offset_samples"] = int(plan.offset_samples)
+                rec["active_tail_preserved"] = tail_preserved
 
     counts = {}
     for rec in meta["segment_envelope_applied"]:
@@ -3685,7 +3775,9 @@ _RUN_HEADER_FROM_METADATA = (
     "reference_conditioning_auto_fallback", "reference_conditioning_attempts",
     "reference_conditioning_icl_published", "fallback", "fallback_reason",
     "speed", "speed_postprocessed", "pitch_semitones", "pitch_method", "pitch_postprocessed",
-    "silence_gap",
+    "silence_gap", "final_peak_gain", "active_tail_preserved",
+    "segment_active_tail_preserved_count",
+    "line_generation_mode", "context_source_segments", "context_pause_boundaries", "context_layout_basis",
     # 말끝·경계 마감 재현값.
     "tail_mode", "tail_pad_ms", "tail_fade_ms", "tail_fade_applied", "emotion_boundary_mode",
     # 끝났을 때 아직 소리가 남아 있었는가(0~1). 계측값일 뿐 판정이 아니다 —
@@ -3933,6 +4025,8 @@ def _diag_annotate(rec, ordered_entries, boundary_kinds, segenv_meta, gaps):
         env_at = {}
         for rec_e in ((segenv_meta or {}).get("segment_envelope_applied") or ()):
             for side in ("offset_chunk", "onset_chunk"):
+                if rec_e.get(side.replace("_chunk", "_samples"), 0) <= 0:
+                    continue
                 pair = rec_e.get(side)
                 if not pair:
                     continue
@@ -4042,7 +4136,7 @@ def _concat_with_boundaries(paths, gaps_before, output_path):
         out.append(data)
         cursor += frames
     combined = np.concatenate(out) if out else np.zeros(0, dtype=np.float32)
-    sf.write(output_path, combined, target_sr)
+    sf.write(output_path, combined, target_sr, subtype="FLOAT")
     return layout
 
 
@@ -4105,7 +4199,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                speaker_refs=None, speaker_ref_sources=None, speaker_emotion_refs=None,
                emotion_candidate_selections=None,
                speaker_labels=None, speaker_mode="single", reference_region=None,
-               builtin_model=None, spoken_prepared=None):
+               builtin_model=None, spoken_prepared=None, line_mode="separate"):
     """Synthesize speech. Auto-selects engine by language.
     speaker_mode: 'single' | 'multi' — 생성 방식(대본 내용이 아니다). single 이면 화자 표기가 있어도
       모든 발화를 한 명의 기본/감정 참조로 만들고 화자 참조·전용 참조·후보 선택은 개입하지 않는다.
@@ -4134,8 +4228,16 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
     speaker_labels: 화자 id → 사용자가 쓴 표시 이름. **기록 전용**이며 private JSON 에만 남는다.
       합성 조건으로는 쓰이지 않는다(같은 사람을 다르게 적었을 뿐이면 목소리는 같다)."""
     # ── 참조 conditioning 모드 판정 — 어떤 파싱/참조 준비/모델 작업보다 먼저(모델 미로딩 차단). ──
+    from context_line_pauses import resolve_line_mode
+    line_mode = resolve_line_mode(line_mode)
+    if line_mode == "context" and (builtin_model or preferred_engine not in (None, "auto", "qwen3")):
+        raise RuntimeError("문맥 유지 방식은 참조 Qwen 합성에만 사용할 수 있습니다")
     if preferred_engine == "minimax-h3" and builtin_model:
         raise RuntimeError("MiniMax H3에는 기본 목소리 대신 참조 목소리를 선택하세요")
+    if preferred_engine == "cosyvoice3":
+        from cosyvoice_engine import SUPPORTED_EMOTIONS
+        if builtin_model:
+            raise RuntimeError("CosyVoice3에는 기본 목소리 대신 참조 목소리를 선택하세요")
     rc_mode = resolve_reference_conditioning_mode(reference_conditioning_mode)  # invalid → 구조화 오류
     # 재현 메타는 **결과가 확정된 뒤** _reference_conditioning_meta 로 만든다(여기서 미리 만들면
     # auto 전환이 기록에 반영되지 않는다). reference_alignment / reference_cut_sample 도 여기서
@@ -4174,6 +4276,11 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
     _run_record_normalized(text)
     parsed, boundary_gaps, boundary_kinds = _boundary_gaps_from_plan(
         _plan, silence_gap, emotion_boundary_mode, emotion_boundary_pause_ms)
+    if preferred_engine == "cosyvoice3":
+        from cosyvoice_engine import group_context_segments
+        if any(e not in SUPPORTED_EMOTIONS for e, _t, _s in parsed):
+            raise RuntimeError("CosyVoice3에서 연결하지 않은 감정이 있습니다. 지원되는 감정으로 바꿔 주세요")
+        parsed, boundary_gaps, boundary_kinds = group_context_segments(parsed, boundary_gaps, boundary_kinds)
     if not parsed:
         emit("error", message="합성할 텍스트가 없습니다.")
         return
@@ -4366,7 +4473,10 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
 
         # 배치형 엔진(Qwen3) 라우팅: 한국어 Auto 우선순위 Qwen3 → GPT-SoVITS → 폴백.
         # 모델 1회 로딩으로 전 문장 처리(문장별 프로세스 금지).
-        if _select_job_engine(text, preferred_engine) == "qwen3":
+        _selected_job_engine = _select_job_engine(text, preferred_engine)
+        if line_mode == "context" and _selected_job_engine != "qwen3":
+            raise RuntimeError("문맥 유지 요청을 처리할 참조 Qwen 엔진이 없습니다")
+        if _selected_job_engine == "qwen3":
             # ── auto: ICL 먼저 1회 → 정렬 실패면 그 결과를 버리고 safe 로 정확히 1회 전환 ──
             # 전환을 **여기**에서 하는 이유: _synthesize_qwen_job 은 실패하면 job_dir 을 통째로 지우고
             # final_path(=synthesized.wav)에 손대지 않은 채 예외로 나온다. 즉 정렬 실패분은 이 지점에
@@ -4385,7 +4495,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                                                         boundary_kinds=boundary_kinds,
                                                         reference_conditioning_mode=_attempt_mode,
                                                         ref_table=ref_table,
-                                                        speaker_labels=_speaker_label_map)
+                                                        speaker_labels=_speaker_label_map, line_mode=line_mode)
             except RuntimeError as _icl_err:
                 _code = (getattr(_icl_err, "error_payload", None) or {}).get("code")
                 if not (_auto and _code in AUTO_FALLBACK_TRIGGER_CODES):
@@ -4408,7 +4518,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                                                         boundary_kinds=boundary_kinds,
                                                         reference_conditioning_mode=_attempt_mode,
                                                         ref_table=ref_table,
-                                                        speaker_labels=_speaker_label_map)
+                                                        speaker_labels=_speaker_label_map, line_mode=line_mode)
             _rc_meta = _reference_conditioning_meta(
                 rc_mode, _attempt_mode, icl_attempted=_icl_attempted,
                 # 발행된 결과가 ICL 산이었을 때만 True — 전환했다면 발행된 것은 safe 결과다.
@@ -4437,9 +4547,11 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
         seg_seed, seg_seed_source = _pick_run_seed()
         seg_seed_used = False
         _seg_qwen_used = False
-
+        if preferred_engine == "cosyvoice3":
+            _get_engine("cosyvoice3").records = []
         if preferred_engine == "minimax-h3":
             _get_engine("minimax-h3").records = []
+
         for i, (emotion_id, line_text, speaker_id) in enumerate(parsed):
             pct = 25 + int((i / len(parsed)) * 60)
             # 화면·Qwen 경로와 같은 표를 같은 방식으로 본다(두 경로가 다른 참조를 쓰면 안 된다).
@@ -4461,7 +4573,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             # ★엔진을 자동으로 다른 목소리로 바꾸지 않는다 — 고른 모델이 안 열리면 그 카드가 운다.
             if builtin_model and isinstance(engine, (PiperEngine, SupertonicEngine, QwenCustomEngine)):
                 engine.model_path = builtin_model
-            if isinstance(engine, (QwenCustomEngine, H3Engine)):
+            if isinstance(engine, (QwenCustomEngine, CosyVoiceEngine, H3Engine)):
                 engine.run_seed = (seg_seed + i) % (2 ** 31 - 1)
                 seg_seed_used = True
             if isinstance(engine, H3Engine):
@@ -4488,6 +4600,10 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             say_text = strip_spoken_symbols(say_source)
             if isinstance(engine, H3Engine):
                 say_text = say_source
+            if isinstance(engine, CosyVoiceEngine):
+                from cosyvoice_engine import engine_text
+                # 언어/숫자 원문은 유지. 지원된 연출 토큰만 어댑터에서 추가한다.
+                engine_text(say_source, emotion_id)  # 기호 정리 전에 내부 제어 토큰을 거부한다.
             if not say_text and not isinstance(engine, (PiperEngine, SupertonicEngine, QwenCustomEngine)):
                 # 기호만 있던 줄 — piper·Supertonic 은 빈 글을 짧은 쉼으로 쓴다. 다른 엔진은 빈 글을
                 # 받아 본 적이 없다(이어 붙이기는 빈 조각을 거절한다) — 그 엔진들만 예전처럼 원문을 보낸다.
@@ -4495,10 +4611,17 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             # 실제로 엔진에 보낸 글을 private 기록에(원문 script 와 따로) — 서수 보정 등을 거친 뒤의 글을 추적한다.
             if _CONCAT_RECORDER is not None and getattr(_CONCAT_RECORDER, "active", False):
                 try:
-                    _CONCAT_RECORDER.add_sent_text(i, say_text, engine_name)
+                    _CONCAT_RECORDER.add_sent_text(i, engine_text(say_text, emotion_id) if isinstance(engine, CosyVoiceEngine) else say_text, engine_name)
+                    if isinstance(engine, CosyVoiceEngine):
+                        from cosyvoice_engine import instruction_for, MODEL_REV
+                        _CONCAT_RECORDER.sent_private[-1].update(instruction=instruction_for(emotion_id),
+                            model_revision=MODEL_REV, seed=engine.run_seed)
                 except Exception:
                     pass       # 기록 실패가 합성을 막지 않는다
             engine.synthesize_segment(say_text, ref, emotion_id, speed, seg_path)
+            if isinstance(engine, CosyVoiceEngine) and _CONCAT_RECORDER is not None and getattr(_CONCAT_RECORDER, "active", False):
+                if engine.records and _CONCAT_RECORDER.sent_private:
+                    _CONCAT_RECORDER.sent_private[-1]["chunks"] = list(engine.records[-1].get("chunks", []))
             if isinstance(engine, H3Engine) and _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
                 if engine.records and _CONCAT_RECORDER.sent_private:
                     _CONCAT_RECORDER.sent_private[-1]["chunks"] = list(engine.records[-1]["chunks"])
@@ -4623,6 +4746,18 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
             if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
                 meta["run_id"] = os.path.basename(_CONCAT_RECORDER.root)
                 _CONCAT_RECORDER.set_run_header(h3_requests=meta["h3_requests"])
+        if "cosyvoice3" in engines_used:
+            _ce = _get_engine("cosyvoice3")
+            meta.update(model_name=__import__('cosyvoice_engine').MODEL_ID, device="cuda", actual_device="cuda", prompt_source="instruction", expression_engine="cosyvoice3",
+                        model_revision=__import__('cosyvoice_engine').MODEL_REV,
+                        reference_conditioning_mode_effective=None,
+                        expression_quality_verified=False)
+            if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:
+                meta["run_id"] = os.path.basename(_CONCAT_RECORDER.root)
+                _CONCAT_RECORDER.set_run_header(cosyvoice_requests=[
+                    {**{k: v for k, v in r.items() if k not in ('sent_text', 'instruction', 'chunks')},
+                     'chunks':[{k:v for k,v in c.items() if k != 'sent_text'} for c in r['chunks']]}
+                    for r in _ce.records])
         tracks = [{"name": "synthesized", "label": f"합성 음성 ({len(parsed)}문장)", "path": final_path}]
         _rr["status"] = "ok"
         if _CONCAT_RECORDER is not None and _CONCAT_RECORDER.active:

@@ -27,7 +27,10 @@ export const CARD_PITCH_STEP = 0.5
 /** 카드 설정 중 엔진에 보낼 수 있는 것만. */
 export interface CardEngineSettings {
   h3Direction?: string
-  engine?: 'qwen3' | 'minimax-h3'
+  /** 고른 참조 합성 경로. 옛 작업은 Qwen 기본 경로를 유지한다. */
+  engine?: 'qwen3' | 'cosyvoice3' | 'minimax-h3'
+  symbolDirection?: boolean
+  symbolDisabled?: string[]
   speed: number
   pitch: number
   emotion: string
@@ -46,7 +49,8 @@ export interface CardSettingNote {
 /** 실제로 엔진에 간 값. 생성본에 이것을 붙인다 — 요청값이 아니라 **적용값**이다. */
 export interface CardApplied {
   h3Direction?: string
-  engine?: 'qwen3' | 'minimax-h3'
+  engine?: 'qwen3' | 'cosyvoice3' | 'minimax-h3'
+  symbolReading?: import('./symbolDirection').SymbolReading
   speed: number
   pitch: number
   notes: CardSettingNote[]
@@ -92,7 +96,7 @@ export function cardApplied(s: CardEngineSettings, voice?: CardVoice | null): Ca
   if (s.emotion && s.emotion !== '자연스럽게' && !emotionSent(s.emotion, voice)) {
     notes.push({
       field: 'emotion',
-      reason: `감정 '${s.emotion}' 은 이번 생성에 반영되지 않습니다 — 감정은 Qwen 지정 목소리(감정 모델 1.7B 가 있을 때)에서만 보냅니다`,
+      reason: `감정 '${s.emotion}' 은 이번 생성에 반영되지 않습니다 — Qwen 지정 목소리(1.7B) 또는 CosyVoice3 참조 연출에서 지원하는 감정을 선택하세요`,
     })
   }
 
@@ -163,7 +167,10 @@ export function takeIsStale(snap: CardTakeSnapshot, now: {
   if (snap.text !== now.text) return true
   if (snap.sourcePath !== now.sourcePath) return true
   const a = snap.settings, b = now.settings
-  return (a.engine || 'qwen3') !== (b.engine || 'qwen3') || a.speed !== b.speed || a.pitch !== b.pitch || a.emotion !== b.emotion
+  return (a.engine || 'qwen3') !== (b.engine || 'qwen3') || !!a.symbolDirection !== !!b.symbolDirection
+    || (a.symbolDirection && [...(a.symbolDisabled || [])].sort().join('') !== [...(b.symbolDisabled || [])].sort().join('')) === true
+    || ((a.engine || 'qwen3') === 'minimax-h3' && (a.h3Direction || '').trim() !== (b.h3Direction || '').trim())
+    || a.speed !== b.speed || a.pitch !== b.pitch || a.emotion !== b.emotion
     || a.reference !== b.reference || a.start !== b.start || a.end !== b.end
 }
 

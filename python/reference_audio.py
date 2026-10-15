@@ -407,6 +407,12 @@ QWEN3_POLICY = ReferencePolicy(
                       "벤더 권장값은 오프라인에서 미확인. 범위 밖은 미검증 — 경고, 차단 아님.",
 )
 
+COSYVOICE3_POLICY = ReferencePolicy(
+    engine="cosyvoice3", min_duration_sec=None, max_duration_sec=30.0,
+    recommended_min_sec=3.0, recommended_max_sec=10.0,
+    basis="CosyVoice3 음성 토크나이저가 30초 참조를 상한으로 검사한다. 원본은 변경하지 않는다.",
+    recommended_basis="앱의 기존 짧은 참조 준비 범위를 재사용한다. CosyVoice3 청취 품질은 별도 검수한다.",
+)
 H3_POLICY = ReferencePolicy(
     engine="minimax-h3", min_duration_sec=None, max_duration_sec=45.0,
     recommended_min_sec=3.0, recommended_max_sec=10.0,
@@ -415,6 +421,7 @@ H3_POLICY = ReferencePolicy(
 )
 POLICIES = {
     H3_POLICY.engine: H3_POLICY,
+    COSYVOICE3_POLICY.engine: COSYVOICE3_POLICY,
     GPTSOVITS_POLICY.engine: GPTSOVITS_POLICY,
     QWEN3_POLICY.engine: QWEN3_POLICY,
 }
