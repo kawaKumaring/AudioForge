@@ -43,7 +43,11 @@ function runCli(python: string, args: string[]): Promise<Record<string, unknown>
         try { parsed = JSON.parse(readFileSync(out, 'utf-8')) } catch { /* 없을 수 있다 */ }
         try { rmSync(out, { force: true }) } catch { /* 지우기 실패는 넘긴다 */ }
         if (parsed && parsed.ok === false) { reject(new Error(String(parsed.error))); return }
-        if (err && !parsed) { reject(new Error(err.message.slice(0, 300))); return }
+        if (err && !parsed) {
+          // ★execFile 원문은 'Command failed: <파이썬 경로> ...' + 영어 Traceback — 화면에 그대로 보내지 않는다(2026-10-16).
+          console.warn('[pitch] 파이썬 실패:', err.message.slice(0, 300))
+          reject(new Error('음높이 분석을 실행하지 못했습니다(파이썬 실행 실패)')); return
+        }
         if (!parsed) { reject(new Error('음높이를 읽지 못했습니다')); return }
         resolve(parsed)
       })

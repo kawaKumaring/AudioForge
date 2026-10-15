@@ -65,7 +65,7 @@ export function planCardFileRemoval(card:SavedCard,removeAudio:boolean,protected
   if(!/^\w+-[a-f0-9]{24}\.input\.json$/.test(basename(path)))throw Error('입력 기록 파일 이름이 다릅니다')
   if(protectedSet.has(canonical(path)))throw Error('원본 입력은 삭제하지 않습니다')
   if(lstatSync(path).isSymbolicLink())throw Error('연결 파일은 삭제하지 않습니다')
-  const r=obj(JSON.parse(readFileSync(path,'utf8')))
+  const r=obj(readJsonOr(path,'입력 기록 파일이 손상되어 삭제 대상을 확인할 수 없습니다'))
   if(r.version!==1 || r.cardId!==card.id || !['card-input','take-input'].includes(String(r.kind)) || r.kind==='take-input'&&!card.takes.some(t=>t.id===r.takeId))throw Error('다른 카드의 입력 기록은 삭제할 수 없습니다')
   planned.push(path)
  }
@@ -73,12 +73,15 @@ export function planCardFileRemoval(card:SavedCard,removeAudio:boolean,protected
   if(!existsSync(t.path))continue
   if(protectedSet.has(canonical(t.path)))throw Error('원본이나 다른 카드가 쓰는 음원은 삭제할 수 없습니다')
   if(lstatSync(t.path).isSymbolicLink() || !['.wav','.flac','.mp3','.m4a'].includes(extname(t.path).toLowerCase()) || !existsSync(join(dirname(t.path),'session.json')))throw Error('앱 생성 결과로 확인되지 않은 음원은 삭제할 수 없습니다')
-  const session=obj(JSON.parse(readFileSync(join(dirname(t.path),'session.json'),'utf8')))
+  const session=obj(readJsonOr(join(dirname(t.path),'session.json'),'결과 기록(session.json)이 손상되어 삭제할 음원을 확인할 수 없습니다'))
   if(session.mode!=='tts' || !Array.isArray(session.tracks) || !session.tracks.some(x=>typeof obj(x).path==='string' && canonical(obj(x).path as string)===canonical(t.path)))throw Error('음성합성 결과로 확인되지 않았습니다')
   planned.push(t.path)
  }
  return [...new Set(planned)]
 }
+
+/** JSON 기록을 읽는다. 손상이면 영어 SyntaxError 대신 한국어 사유로 던진다(2026-10-16 점검). */
+function readJsonOr(path:string,why:string):unknown{try{return JSON.parse(readFileSync(path,'utf8'))}catch{throw Error(why)}}
 
 export function readStandaloneCardInput(path:string):{text:string;settings:Record<string,unknown>} {
  const r=obj(JSON.parse(readFileSync(path,'utf8')))
