@@ -1,5 +1,6 @@
 import {resolveLegacyInput} from '../services/legacy-input-store'
 import { PLAYBACK_EFFECTS_KEY } from '../../shared/playbackEffects'
+import { CARD_AUTOSAVE_KEY } from '../../shared/cardPersistencePolicy'
 import { PLAYBACK_BOOST_STORAGE_KEY } from '../../shared/playbackBoost'
 import { ipcMain, dialog, BrowserWindow, shell, app } from 'electron'
 import { execFile } from 'child_process'
@@ -1662,7 +1663,7 @@ export function registerAudioIpc(
       [DIALOGUE_DRAFTS_STORAGE_KEY]: stored[DIALOGUE_DRAFTS_STORAGE_KEY] ?? null,
       // 생성 카드 작업 — 위 열쇠들과 서로 독립이다(문장별 작업을 덮지 않는다).
       [CARD_STORAGE_KEY]: stored[CARD_STORAGE_KEY] ?? null,
-      cardAutoSave: stored.cardAutoSave === true,
+      [CARD_AUTOSAVE_KEY]: stored[CARD_AUTOSAVE_KEY] === true,
       legacyWorkHistory: stored.legacyWorkHistory ?? null,
       // 낭독 설정(따라가기·괄호 속 한자) — 2026-09-29. 여기 없으면 저장은 되는데 다시 켜면 사라진다.
       [READER_PREFS_STORAGE_KEY]: stored[READER_PREFS_STORAGE_KEY] ?? null,
@@ -1707,7 +1708,7 @@ export function registerAudioIpc(
         // 생성 카드 작업(2026-09-27). ★이 목록에 없으면 저장이 SETTINGS_KEY_NOT_ALLOWED 로
         //   **조용히 거절된다.** 화면은 저장한 줄 알고 넘어간다 — 열쇠를 새로 만들 때는
         //   반드시 여기에도 더해야 한다.
-        || key === CARD_STORAGE_KEY || key === 'cardAutoSave' || key === 'legacyWorkHistory'
+        || key === CARD_STORAGE_KEY || key === CARD_AUTOSAVE_KEY || key === 'legacyWorkHistory'
         // 만든 것을 둘 자리(2026-09-28). 여기 없으면 고른 자리가 조용히 사라진다.
         || key === OUTPUT_ROOT_KEY || key === OUTPUT_BESIDE_KEY
         // 낭독 설정(2026-09-29).
