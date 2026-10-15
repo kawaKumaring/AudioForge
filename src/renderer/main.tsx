@@ -16,6 +16,8 @@ applyRendererCsp(document, !!(window as { api?: { _e2e?: boolean } }).api?._e2e)
 // E2E 전용(AF_E2E=1): 자동화가 store를 통해 파일/모드/상태를 주입할 수 있게 노출. 그 외엔 노출하지 않음.
 if ((window as { api?: { _e2e?: boolean } }).api?._e2e) {
   ;(window as unknown as { __afStore: typeof useAppStore }).__afStore = useAppStore
+  // 음성 처리 엔진(2026-10-16) — 검사가 실제 화면 오디오 엔진으로 렌더·실시간 연결을 확인한다.
+  void import('./lib/voiceFx/render').then((m) => { (window as unknown as { __afVoiceFx: unknown }).__afVoiceFx = m })
   // 테스트개발 작업실은 **자기 상태**를 가진다 — 설정이 합성 탭과 섞이지 않는지 검사가 직접 본다.
   ;(window as unknown as { __labStore: typeof useLabStore }).__labStore = useLabStore
   // 게이팅/전송 판정을 그대로(ProcessButton과 동일 로직) 검증할 수 있게 노출 — 실제 합성 없이 config 전달 확인.
