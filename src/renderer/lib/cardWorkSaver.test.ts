@@ -44,25 +44,12 @@ const CARD_KEY = 'synthesisCards'
           broken: 0,
         }
       },
-      write: async (_kind: string, key: string, data: unknown) => {
-        pending[key] = data
-        // 둘 다 들어오면 **한 번의 저장**으로 모아 기록한다 — 옛 확인과 같은 모양이다.
-        if ('current' in pending && 'kept' in pending) {
-          const payload = { current: pending.current, kept: pending.kept }
-          delete pending.current; delete pending.kept
-          const r = await setImpl(CARD_KEY, payload) as { ok?: boolean; code?: string } | undefined
-          return r && r.ok === false ? { ok: false, why: r.code || 'WRITE_FAILED' } : { ok: true }
-        }
-        return { ok: true }
+      writeBatch: async (_kind:string,items:{key:string;data:unknown}[])=>{
+        const r=await setImpl(CARD_KEY,Object.fromEntries(items.map(x=>[x.key,x.data]))) as {ok?:boolean;code?:string}
+        return r?.ok===false?{ok:false,why:r.code||'WRITE_FAILED'}:{ok:true}
       },
-      writeSync: (_kind: string, key: string, data: unknown) => {
-        syncPending[key] = data
-        if ('current' in syncPending && 'kept' in syncPending) {
-          const payload = { current: syncPending.current, kept: syncPending.kept }
-          delete syncPending.current; delete syncPending.kept
-          syncWrites.push({ key: CARD_KEY, value: payload })
-        }
-        return { ok: true }
+      writeBatchSync: (_kind:string,items:{key:string;data:unknown}[])=>{
+        syncWrites.push({key:CARD_KEY,value:Object.fromEntries(items.map(x=>[x.key,x.data]))});return {ok:true}
       },
     },
   },
@@ -185,7 +172,8 @@ test('읽지 못해도 저장본을 지우지 않는다', async () => {
 })
 
 // ★창이 닫히는 순간의 비동기 요청은 기다려 주지 않는다 — 마지막 편집 직후 종료하면 잃는다.
-test('종료 직전에는 기다려 주는 통로로 남긴다', () => {
+test('종료 직전에는 기다려 주는 통로로 남긴다', async () => {
+  await saver.loadSavedFile()
   saver.queueSave(work('닫기 직전 대사'))
   saver.flushSaveSync()
   const last = syncWrites[syncWrites.length - 1]
@@ -237,3 +225,22 @@ test('별개 카드 작업을 시작하면 앞 카드 정보는 보관 목록에
   await saver.retrySave()
   assert.equal(lastWrite().current?.cards[0].text,'예외 뒤 남길 글')
  })
+
+test('이전 작업을 읽기 전에는 종료 저장으로 덮지 않는다',()=>{
+ saver.queueSave(work('읽기 전 새 글'));saver.flushSaveSync();assert.equal(syncWrites.length,0)
+})
+test('목록을 연 뒤 대상 작업이 바뀌면 다른 작업을 지우지 않는다',async()=>{
+ const original=work('목록의 작업',1)
+ getImpl=async()=>({[CARD_STORAGE_KEY]:{current:original,kept:[]}})
+ await saver.loadSavedFile()
+ saver.queueSave(work('새로 저장한 작업',2));await saver.flushSave()
+ const why=await saver.deleteSavedWork('current',0,original)
+ assert.match(why,/목록이 바뀌었습니다/)
+ assert.equal(saver.savedFileNow().current?.savedAt,2)
+})
+test('직전 편집 저장이 실패하면 가져오기로 작업을 갈아끼우지 않는다',async()=>{
+ await saver.loadSavedFile();saver.queueSave(work('아직 저장할 글'))
+ setImpl=async()=>({ok:false,code:'DISK_FULL'})
+ const why=await saver.importLegacyWork({...work('가져올 글'),cards:[{...work('가져올 글').cards[0],id:'다른 카드'}]})
+ assert.equal(why,'DISK_FULL');assert.equal(saver.savedFileNow().current?.cards[0].text,'아직 저장할 글')
+})

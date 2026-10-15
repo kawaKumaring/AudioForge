@@ -201,3 +201,16 @@ test('writeNow 가 실패하면 그 값을 남기지 않는다 — 몰래 다시
   assert.equal(d.log.length, 0, '실패한 일이 나중에 이뤄지지 않는다')
   assert.deepEqual(s.failed(), [], '다시 시도할 것이 없으니 실패 상태로 두지 않는다')
 })
+
+test('값 읽기 오류도 실패로 남기고 같은 값을 재시도한다',async()=>{
+ const t=fakeTimers(),d=fakeDisk();let broken=true
+ const s=createWriteBehind<number>({delayMs:10,timers:t,write:d.write,retryDelays:[20]})
+ s.queue('책',()=>{if(broken)throw Error('값 읽기 실패');return 42})
+ t.advance(10);await tick();assert.equal(s.state('책').phase,'failed');assert.deepEqual(s.pending(),['책'])
+ broken=false;t.advance(20);await tick();assert.equal(d.disk.get('책'),42);assert.equal(s.state('책').phase,'saved')
+})
+test('종료 저장 통로 실패도 저장 완료로 표시하지 않는다',()=>{
+ const t=fakeTimers(),d=fakeDisk()
+ const s=createWriteBehind<number>({delayMs:10,timers:t,write:d.write,writeSync:()=> 'DISK_FULL'})
+ s.queue('책',()=>7);s.flushSync();assert.equal(s.state('책').phase,'failed');assert.deepEqual(s.pending(),['책'])
+})

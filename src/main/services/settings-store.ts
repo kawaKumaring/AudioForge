@@ -1,4 +1,6 @@
 // @ts-ignore TS5097
+import {writeFileDurable} from './durable-write.ts'
+// @ts-ignore TS5097
 import {encodeLegacyInput} from './legacy-input-store.ts'
 /**
  * `settings.json` 원자 저장 — main 이 소유하는 키 단위 병합.
@@ -18,8 +20,7 @@ import {encodeLegacyInput} from './legacy-input-store.ts'
  * 저장 위치는 호출부가 준다(테스트가 임시 폴더를 쓰고, 앱은 userData 를 쓴다).
  */
 import {
-  closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, renameSync,
-  unlinkSync, writeSync,
+  existsSync, mkdirSync, readFileSync, renameSync, unlinkSync,
 } from 'fs'
 import { dirname, join } from 'path'
 
@@ -166,13 +167,7 @@ export function setSettingsKey(
   const temp = join(dir, `.settings.${process.pid}.tmp`)
   try {
     mkdirSync(dir, { recursive: true })
-    const fd = openSync(temp, 'w')
-    try {
-      writeSync(fd, JSON.stringify(stamped, null, 2))
-      fsyncSync(fd)          // 여기까지 왔으면 임시본 내용이 디스크에 있다
-    } finally {
-      closeSync(fd)
-    }
+    writeFileDurable(temp, JSON.stringify(stamped, null, 2))
     // 되읽어 검증한다 — 깨진 것을 승격하지 않는다.
     const back = readSettingsFile(temp)
     if (back.kind !== 'ok') {

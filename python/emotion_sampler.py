@@ -844,45 +844,7 @@ def capability_for_row(row_id, override=None):
 
 
 # ── 10) canonical 직렬화 + sha256 (tts_grammar.py 와 동일 알고리즘). ────────
-def _json_escape(s):
-    out = ['"']
-    for ch in s:
-        code = ord(ch)
-        if ch == '"':
-            out.append('\\"')
-        elif ch == "\\":
-            out.append("\\\\")
-        elif ch == "\n":
-            out.append("\\n")
-        elif ch == "\r":
-            out.append("\\r")
-        elif ch == "\t":
-            out.append("\\t")
-        elif code < 0x20:
-            out.append("\\u%04x" % code)
-        else:
-            out.append(ch)
-    out.append('"')
-    return "".join(out)
-
-
-def _canonicalize(v):
-    if v is None:
-        return "null"
-    if isinstance(v, bool):
-        return "true" if v else "false"
-    if isinstance(v, int):
-        return str(v)
-    if isinstance(v, float):
-        raise ValueError("canonical: float 금지")
-    if isinstance(v, str):
-        return _json_escape(v)
-    if isinstance(v, (list, tuple)):
-        return "[" + ",".join(_canonicalize(x) for x in v) + "]"
-    if isinstance(v, dict):
-        keys = sorted(v.keys())
-        return "{" + ",".join(_json_escape(k) + ":" + _canonicalize(v[k]) for k in keys) + "}"
-    raise TypeError("canonical: 미지원 타입 %r" % type(v))
+from canonical_json import canonicalize as _canonicalize, json_escape as _json_escape
 
 
 def sampler_sha256_hex(s):

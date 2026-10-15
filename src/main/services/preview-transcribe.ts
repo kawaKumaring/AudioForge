@@ -74,11 +74,12 @@ export function runPreview(opts: RunPreviewOpts): Promise<PreviewResult> {
     let errPayload: PreviewResult | null = null
     let timer: unknown = null
 
-    const finish = (res: PreviewResult) => {
+    const finish = (res: PreviewResult, beforeCleanup?:()=>void) => {
       if (settled) return
       settled = true
-      if (timer !== null) clrT(timer)
-      opts.cleanup()
+      try { if (timer !== null) clrT(timer) } catch { /* 타이머 정리가 응답을 막지 않는다 */ }
+      try { beforeCleanup?.() } catch { /* 중단 요청 오류도 시간 초과 판정을 바꾸지 않는다 */ }
+      try { opts.cleanup() } catch { /* 결과와 정리 실패는 별개다 */ }
       resolve(res)
     }
 
@@ -120,15 +121,17 @@ export function runPreview(opts: RunPreviewOpts): Promise<PreviewResult> {
       }
     })
     opts.runner.on('done', () => {
-      if (payload) { finish(payload); return }
+      if (payload && !errMsg && !errPayload) { finish(payload); return }
       finish({ status: 'failed', error_message: errMsg || '전사 실패', ...(errPayload ?? {}) })
     })
 
+    try {
     timer = setT(() => {
-      try { opts.runner.cancel() } catch { /* ignore */ }
-      finish({ status: 'failed', error_message: `참조 전사 시간 초과 (${Math.round(opts.timeoutMs / 1000)}초)` })
+      if(settled)return
+      finish({ status: 'failed', error_message: `참조 전사 시간 초과 (${Math.round(opts.timeoutMs / 1000)}초)` },()=>opts.runner.cancel())
     }, opts.timeoutMs)
 
     opts.runner.run(opts.scriptPath, opts.args)
+    } catch { finish({status:'failed',error_message:'미리보기 작업을 시작하지 못했습니다'}) }
   })
 }

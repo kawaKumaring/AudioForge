@@ -1,3 +1,5 @@
+// @ts-ignore TS5097
+import {createSerialLane} from './serial-lane.ts'
 /**
  * 낭독 작업 하나를 돌리는 **판단들** — Electron 없이 검사할 수 있게 떼어 둔다.
  *
@@ -22,12 +24,8 @@ export interface ReaderRunVoice {
  * 차례대로 하나씩 — 앞 작업이 끝나야 다음이 시작한다. 앞의 실패는 다음을 막지 않는다.
  */
 export function createLane(): <T>(job: () => Promise<T>) => Promise<T> {
-  let tail: Promise<unknown> = Promise.resolve()
-  return <T>(job: () => Promise<T>): Promise<T> => {
-    const next = tail.then(job, job)
-    tail = next.catch(() => { /* 다음 차례는 앞의 실패와 무관하다 */ })
-    return next
-  }
+  const lane=createSerialLane()
+  return <T>(job:()=>Promise<T>)=>lane.run(job)
 }
 
 /** 파이썬이 내보낸 JSON 줄들. JSON 이 아닌 줄은 버린다. */

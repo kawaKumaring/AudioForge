@@ -1,3 +1,7 @@
+// @ts-ignore TS5097
+import {writeFileDurable} from './durable-write.ts'
+// @ts-ignore TS5097
+import {writeWorkTransaction,recoverWorkTransaction} from './work-transaction.ts'
 /**
  * 작업 기록 창고 — **기록 하나가 파일 하나.**
  *
@@ -12,8 +16,8 @@
  *   · 옮기기는 **한 번만**, 그리고 옮긴 뒤 옛 열쇠를 지운다.
  *     남겨 두면 지운 기록이 다음 실행에 되살아난다(실제로 그렇게 됐다).
  */
-import { existsSync, mkdirSync, openSync, writeSync, fsyncSync, closeSync, renameSync,
-  readFileSync, readdirSync, rmSync, statSync } from 'fs'
+import { existsSync, mkdirSync, renameSync,
+  readFileSync, readdirSync, rmSync, statSync, lstatSync } from 'fs'
 import { join } from 'path'
 // ★확장자를 붙인다 — `node --test` 가 이 파일을 곧바로 읽는다(dub-job 과 같은 관례).
 //   붙이지 않으면 실행 시점에 모듈을 못 찾는다.
@@ -43,13 +47,10 @@ export function writeRecord(
   const file = join(dir, fileNameOf(key))
   const temp = `${file}.${process.pid}.tmp`
   try {
+    recoverWorkTransaction(dir)
     mkdirSync(dir, { recursive: true })
     const body = JSON.stringify(makeRecord(key, data, host.now()), null, 2)
-    const fd = openSync(temp, 'w')
-    try {
-      writeSync(fd, body)
-      fsyncSync(fd)          // 여기까지 오면 임시본 내용이 디스크에 있다
-    } finally { closeSync(fd) }
+    writeFileDurable(temp, body)
     renameSync(temp, file)   // 이름 바꾸기는 한 번에 일어난다
     return { ok: true, file }
   } catch (e) {
@@ -58,19 +59,38 @@ export function writeRecord(
   }
 }
 
+/** 파일을 합치지 않고 교체의 성공·복구만 한 묶음으로 처리한다. */
+export function writeRecordBatch(host:WorkStoreHost,kind:WorkKind,items:{key:string;data:unknown}[]):{ok:true}|{ok:false;why:string}{
+  try{
+    writeWorkTransaction(dirOf(host,kind),items.map(x=>({name:fileNameOf(x.key),body:JSON.stringify(makeRecord(x.key,x.data,host.now()),null,2)})))
+    return {ok:true}
+  }catch(e){return {ok:false,why:(e as Error).message}}
+}
+
 /** 기록 하나를 읽는다. 없거나 깨졌으면 null — **빈 기록으로 꾸미지 않는다.** */
-export function readRecord(host: WorkStoreHost, kind: WorkKind, key: string): WorkRecord | null {
-  const file = join(dirOf(host, kind), fileNameOf(key))
-  try {
-    if (!existsSync(file)) return null
-    return parseRecord(JSON.parse(readFileSync(file, 'utf-8')))
-  } catch { return null }
+export function readRecordChecked(host:WorkStoreHost,kind:WorkKind,key:string):{record:WorkRecord|null;error?:string}{
+  const file=join(dirOf(host,kind),fileNameOf(key))
+  try{
+    recoverWorkTransaction(dirOf(host,kind))
+    let info
+    try{info=lstatSync(file)}catch(e){if((e as NodeJS.ErrnoException).code==='ENOENT')return {record:null};throw e}
+    if(!info.isFile()||info.isSymbolicLink())throw Error('작업 파일이 연결이거나 파일이 아닙니다')
+    const record=parseRecord(JSON.parse(readFileSync(file,'utf8')))
+    if(!record||record.key!==key)throw Error('작업 기록의 내용 또는 열쇠가 다릅니다')
+    return {record}
+  }catch(e){return {record:null,error:(e as Error).message}}
+}
+/** 기존 읽기 전용 소비자는 null을 받되, 복원 화면은 checked의 사유를 사용한다. */
+export function readRecord(host:WorkStoreHost,kind:WorkKind,key:string):WorkRecord|null {
+  return readRecordChecked(host,kind,key).record
 }
 
 export interface ListResult {
   records: WorkRecord[]
   /** 깨져서 읽지 못한 파일 이름들. **조용히 버리지 않는다.** */
   broken: string[]
+  /** 폴더 전체 읽기 실패. 없음과 구분해 쓰기를 차단한다. */
+  error?: string
 }
 
 /** 갈래 하나의 기록 전부. 최근 손댄 순. */
@@ -79,12 +99,16 @@ export function listRecords(host: WorkStoreHost, kind: WorkKind): ListResult {
   const out: WorkRecord[] = []
   const broken: string[] = []
   let names: string[] = []
-  try { names = readdirSync(dir) } catch { return { records: [], broken: [] } }
+  try { recoverWorkTransaction(dir); names = readdirSync(dir) } catch(e) {
+    return (e as NodeJS.ErrnoException).code==='ENOENT'?{records:[],broken:[]}:{records:[],broken:[],error:'작업 기록 폴더를 읽지 못했습니다: '+(e as Error).message}
+  }
   for (const n of names) {
     if (!isWorkFile(n)) continue
     try {
-      const got = parseRecord(JSON.parse(readFileSync(join(dir, n), 'utf-8')))
-      if (got) out.push(got)
+      const path=join(dir,n),info=lstatSync(path)
+      if(!info.isFile()||info.isSymbolicLink())throw Error('작업 파일이 연결이거나 파일이 아닙니다')
+      const got = parseRecord(JSON.parse(readFileSync(path, 'utf-8')))
+      if (got && fileNameOf(got.key)===n) out.push(got)
       else broken.push(n)
     } catch { broken.push(n) }
   }
@@ -103,6 +127,7 @@ export function deleteRecord(
 ): { ok: true; removed: boolean } | { ok: false; why: string } {
   const file = join(dirOf(host, kind), fileNameOf(key))
   try {
+    recoverWorkTransaction(dirOf(host,kind))
     if (!existsSync(file)) return { ok: true, removed: false }
     rmSync(file, { force: true })
     return { ok: true, removed: true }
@@ -116,7 +141,7 @@ export function clearKind(host: WorkStoreHost, kind: WorkKind): number {
   const dir = dirOf(host, kind)
   let n = 0
   let names: string[] = []
-  try { names = readdirSync(dir) } catch { return 0 }
+  try { recoverWorkTransaction(dir); names = readdirSync(dir) } catch(e) {if((e as NodeJS.ErrnoException).code==='ENOENT')return 0;throw e}
   for (const name of names) {
     if (!isWorkFile(name)) continue        // 남의 파일은 세지도 지우지도 않는다
     try { rmSync(join(dir, name), { force: true }); n++ } catch { /* 다음에 */ }
@@ -146,28 +171,41 @@ export function migrateKind(
   kind: WorkKind,
   readLegacy: (key: string) => unknown,
   dropLegacy: (key: string) => boolean,
+  transform: (data:unknown)=>unknown = data=>data,
 ): MoveResult {
   const out: MoveResult = { kind, moved: 0, failed: [], clearedKeys: [] }
-  // 이미 옮겼는가 — 파일이 하나라도 있으면 다시 옮기지 않는다.
-  if (listRecords(host, kind).records.length > 0) return out
-
-  for (const legacyKey of LEGACY_KEY_OF[kind]) {
-    const raw = readLegacy(legacyKey)
-    if (raw === undefined || raw === null) continue
-    const records = splitLegacyMap(raw, host.now())
-    // 가를 것이 없으면 **덩어리 자체를 한 기록으로** 둔다(카드 작업실 같은 모양).
-    const list: WorkRecord[] = records.length
-      ? records
-      : [makeRecord(legacyKey, raw, host.now())]
-    let allOk = true
-    for (const r of list) {
-      const w = writeRecord(host, kind, r.key, r.data)
-      if (w.ok) out.moved += 1
-      else { allOk = false; out.failed.push({ key: r.key, why: w.why }) }
-    }
-    // ★다 옮겼을 때만 옛 자리를 비운다. 남겨 두면 지운 것이 되살아난다.
-    if (allOk && dropLegacy(legacyKey)) out.clearedKeys.push(legacyKey)
+  const listed=listRecords(host,kind)
+  if(listed.error){out.failed.push({key:kind,why:listed.error});return out}
+  // 손상 파일이 있으면 이관 쓰기는 하지 않되, 읽을 수 있는 나머지 목록은 가리지 않는다.
+  if(listed.broken.length)return out
+  const marker=join(dirOf(host,kind),'.legacy-migration.json')
+  if(existsSync(marker)){
+    try{
+      const done=JSON.parse(readFileSync(marker,'utf8'))
+      if(done.version!==1||done.kind!==kind||!Array.isArray(done.keys)||done.keys.some((k:unknown)=>typeof k!=='string'||!LEGACY_KEY_OF[kind].includes(k)))throw Error('이전 작업 이관 표가 손상되었습니다')
+      for(const key of done.keys){if(dropLegacy(key))out.clearedKeys.push(key);else out.failed.push({key,why:'이전 작업의 옛 저장 위치를 정리하지 못했습니다'})}
+    }catch(e){out.failed.push({key:kind,why:(e as Error).message})}
+    return out
   }
+  if(listed.records.length)return out
+  const items:WorkRecord[]=[],keys:string[]=[]
+  for(const legacyKey of LEGACY_KEY_OF[kind]){
+    let raw:unknown
+    try{raw=readLegacy(legacyKey)}catch(e){out.failed.push({key:legacyKey,why:(e as Error).message});return out}
+    if(raw===undefined||raw===null)continue
+    const records=splitLegacyMap(raw,host.now())
+    items.push(...(records.length?records:[makeRecord(legacyKey,raw,host.now())]));keys.push(legacyKey)
+  }
+  if(!keys.length)return out
+  try{
+    writeWorkTransaction(dirOf(host,kind),[
+      ...items.map(r=>({name:fileNameOf(r.key),body:JSON.stringify({...r,data:transform(r.data)},null,2)})),
+      {name:'.legacy-migration.json',body:JSON.stringify({version:1,kind,keys})},
+    ])
+    out.moved=items.length
+    for(const key of keys){if(dropLegacy(key))out.clearedKeys.push(key);else out.failed.push({key,why:'이전 작업의 옛 저장 위치를 정리하지 못했습니다'})}
+  }catch(e){out.failed.push({key:kind,why:(e as Error).message})}
+
   return out
 }
 

@@ -100,7 +100,14 @@ export function createWriteBehind<V>(o: WriteBehindOptions<V>): WriteBehind<V> {
         while (s.get && !s.gone && (force || holds === 0)) {
           const get = s.get
           s.get = null
-          const value = get()
+          let value:V|undefined
+          try { value=get() }
+          catch(e){
+            if(!s.get)s.get=get
+            publish(key,s,{phase:'failed',code:(e as Error)?.message||'VALUE_READ_FAILED',at:Date.now()})
+            scheduleRetry(key,s)
+            break
+          }
           if (value === undefined) break          // 쓸 것이 없어졌다(기록이 사라졌다)
           publish(key, s, { phase: 'saving', code: '', at: Date.now() })
           let code = ''
@@ -217,9 +224,13 @@ export function createWriteBehind<V>(o: WriteBehindOptions<V>): WriteBehind<V> {
         if (s.gone || !s.get) continue
         if (s.timer) { clear(s.timer); s.timer = null }
         let value: V | undefined
-        try { value = s.get() } catch { continue }
+        try { value = s.get() } catch(e) {publish(key,s,{phase:'failed',code:(e as Error)?.message||'VALUE_READ_FAILED',at:Date.now()});continue}
         if (value === undefined) continue
-        try { if (!o.writeSync(key, value)) s.get = null } catch { /* 닫히는 중 — 더 할 수 있는 것이 없다 */ }
+        try {
+          const code=o.writeSync(key,value)
+          if(!code){s.get=null;publish(key,s,{phase:'saved',code:'',at:Date.now()})}
+          else publish(key,s,{phase:'failed',code,at:Date.now()})
+        } catch(e) {publish(key,s,{phase:'failed',code:(e as Error)?.message||'WRITE_FAILED',at:Date.now()})}
       }
     },
     state: (key) => slots.get(key)?.state ?? IDLE,
