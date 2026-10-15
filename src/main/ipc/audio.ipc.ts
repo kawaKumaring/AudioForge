@@ -127,13 +127,13 @@ function readDirSafe(dir: string): string[] {
 
 /** 앱이 도는 자리. `externals` 를 찾는 규칙과 같은 기준을 쓴다. */
 /** 결과를 쌓을 뿌리. 규칙은 `services/appPaths` 하나가 갖는다. */
-function appDirPath(): string { return outputBase(__dirname, process.env) }
+export function appDirPath(): string { return outputBase(__dirname, process.env) }
 
 /** 만든 것을 둘 자리 설정. */
 export const OUTPUT_ROOT_KEY = 'outputRoot'
 export const OUTPUT_BESIDE_KEY = 'outputBesideSource'
 
-function readOutputSetting(): { chosen: string; beside: boolean } {
+export function readOutputSetting(): { chosen: string; beside: boolean } {
   try {
     const got = readSettingsFile(join(app.getPath('userData'), 'settings.json'))
     if (got.kind !== 'ok') return { chosen: '', beside: false }
@@ -149,7 +149,7 @@ function readOutputSetting(): { chosen: string; beside: boolean } {
  * 어디에 쌓을 것인가. **체크가 가장 세다** — 사용자가 원본 옆이라고 하면 그대로 한다.
  * 그다음이 고른 자리, 아무것도 없으면 앱 자리다.
  */
-function outputPlace(chosen: string, beside: boolean): OutputPlace {
+export function outputPlace(chosen: string, beside: boolean): OutputPlace {
   if (beside) return 'beside'
   return chosen.trim() ? 'chosen' : 'app'
 }

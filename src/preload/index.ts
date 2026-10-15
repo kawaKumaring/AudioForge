@@ -380,6 +380,13 @@ const api = {
     wipe: (kind: string): Promise<{ removed: number; freedMb: number; error?: string }> => ipcRenderer.invoke('options:wipe', kind),
     outputRoot: (): Promise<{ root: string; exists: boolean }> => ipcRenderer.invoke('options:output-root'),
   },
+  // 음성 편집(2026-10-16) — 자리는 본체가 정한다. 화면은 이름·소리·작업만 보낸다.
+  voiceEdit: {
+    save: (payload: { name: string; wav: Uint8Array; project: unknown }): Promise<{ ok: true; path: string; dir: string } | { ok: false; why: string }> =>
+      ipcRenderer.invoke('voiceedit:save', payload),
+    getLast: (): Promise<{ ok: true; project: unknown } | { ok: false; why: string }> => ipcRenderer.invoke('voiceedit:last-get'),
+    setLast: (project: unknown): Promise<{ ok: true } | { ok: false; why: string }> => ipcRenderer.invoke('voiceedit:last-set', project),
+  },
   app: {
     openFolder: (path: string) => ipcRenderer.invoke('app:open-folder', path),
     // 탐색기에서 그 파일을 고른 상태로 보여 준다(여는 것이 아니다).
