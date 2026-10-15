@@ -198,6 +198,9 @@ class TestBoundaryStaysThin(unittest.TestCase):
                 continue
             body = io.open(os.path.join(HERE, name), encoding='utf-8',
                            errors='replace').read()
+            # ★변환기 **자체**가 제 명령줄을 정의하는 줄(add_argument)은 새는 것이 아니다(2026-10-16 검수 —
+            #   말하기 변환기 speech_vc.py 가 python/ 바로 아래라 잘못 걸렸다. song_vc/convert.py 와 같은 자리).
+            body = '\n'.join(l for l in body.splitlines() if 'add_argument(' not in l)
             for mark in ('diffusion-steps', 'f0-condition', 'auto-f0-adjust'):
                 if mark in body:
                     leaks.append('%s — %s' % (name, mark))
