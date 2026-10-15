@@ -103,3 +103,7 @@ SoundCraft `ui-egui/src/edit_window.rs`, EffectCraft `ui-egui/src/panels/timelin
   - ★`cardVoiceFx.ts` 는 Web Audio 를 쓰므로 node 시험이 읽는 `cardSynthesis.ts` 에서 부르지 않는다 — 화면이 결과를 받은 뒤 부른다.
   - **개발툴 MCP 실제 앱 확인**(`test/e2e/card-voice-fx.mcp.cjs`, 저장소 시험 음성, 15건): 칸 표시·켜기·실시간 재생·압축량 표시·처리 전 비교·적용 → 처리본 저장(길이 7.500초 = 원본, 최대치 −5.61dB)·원본 보존·다시 적용 시 직전 처리본 정리·끄면 원본으로·화면 오류 0.
   - 미확인: 실제 생성 직후 자동 적용 경로(GPU 생성을 돌리지 않음 — 코드 경로만). 처리를 끄면 마지막 처리본 파일은 원본 옆에 남는다(지우지 않음).
+- **생성 음성 위치 확인(2026-10-16)**
+  - 결과 자리 설정(`outputRoot`·`outputBesideSource`)이 비어 있어 음성 합성 결과는 **실행한 앱 폴더** `AudioForge_output\음성합성\<날짜>\` 에 쌓인다(`audio.ipc.ts` planOutputDir — 기본 목소리·참조 목소리 카드 모두).
+  - 확인 시점(파일 이름·개수만): 개발판 `음성합성` 에 음성 0개(옛 작업 기록 json 25개), 완성본에는 `AudioForge_output` 없음. 개발판의 다른 음성 63개는 청음 비교(10-02)·음악 분리(10-11).
+  - 카드 처리본은 생성본 원본 옆 `<원본>_처리_<시각>.wav`. P3 시험 처리본은 시험 끝에 정리했다.
