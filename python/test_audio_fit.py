@@ -147,6 +147,16 @@ class TestLoudness(unittest.TestCase):
         self.assertEqual(r['gain_db'], 6.0)
         self.assertTrue(r['clamped'])
 
+    def test_크게_키워도_실제_최대치가_상한을_넘지_않는다(self):
+        """★16비트로 쓰는 순간 잘리면 뒤에서 못 고친다 — 키우기와 리미터를 저장 전에 한다(2026-10-16)."""
+        import audio_limiter
+        dest = os.path.join(self.dir, 'loud.wav')
+        r = audio_fit.match_loudness(FIXTURE, dest, 0.0, max_gain_db=24.0)
+        y, _ = sf.read(dest, always_2d=True)
+        self.assertLessEqual(audio_limiter.lin_to_db(audio_limiter.true_peak(y)), audio_limiter.CEILING_DBTP + 0.05)
+        self.assertTrue(r['limited'] and r['limited']['limited'])
+        self.assertEqual(sf.info(dest).subtype, sf.info(FIXTURE).subtype)
+
     def test_잴_수_없는_음원은_사유와_함께_실패한다(self):
         with self.assertRaises(audio_fit.AudioFitError):
             audio_fit.match_loudness(self._short_copy('s2.wav'),

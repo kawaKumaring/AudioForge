@@ -301,8 +301,19 @@ def main(args):
     os.makedirs(args.output, exist_ok=True)
     out = os.path.join(args.output,
                        f"vc_{source_name}_{target_name}_{length_adjust}_{diffusion_steps}_{inference_cfg_rate}.wav")
+    # ★저장 직전 리미터(2026-10-16): 결과가 1.0 을 넘는 일이 있었다(9/20·10/10 시험 모두 최대치 1.0).
+    #   32비트 실수 wav 는 넘는 값을 그대로 담아, 듣거나 16비트로 바꾸는 순간 깨진다. 넘지 않는 소리는 바뀌지 않는다.
+    wave = vc_wave[0].cpu().numpy()
+    parent = os.path.dirname(HERE)
+    if parent not in sys.path:
+        sys.path.append(parent)   # python/audio_limiter.py
+    import audio_limiter
+    wave, lim = audio_limiter.limit(wave, sr)
+    if lim['limited']:
+        print("리미터: 실제 최대치 %.2f → %.2f dBTP (최대 %.1fdB 줄임)"
+              % (lim['true_peak_before_dbtp'], lim['true_peak_after_dbtp'], lim['max_reduction_db']))
     # torchaudio.save(실수 텐서) 와 같은 32비트 실수 wav.
-    sf.write(out, vc_wave[0].cpu().numpy(), sr, subtype='FLOAT')
+    sf.write(out, wave, sr, subtype='FLOAT')
 
 
 def build_parser():
