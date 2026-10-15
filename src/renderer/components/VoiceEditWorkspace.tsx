@@ -349,7 +349,7 @@ export default function VoiceEditWorkspace () {
               style={{ ...button, minHeight: 26, padding: '2px 8px', color: t.mute ? 'var(--amber, #f59e0b)' : undefined }}>끔</button>
             <button type="button" data-testid={`ve-solo-${i}`} aria-pressed={t.solo} title="이 화자만 듣기" onClick={(e) => { e.stopPropagation(); apply((p) => M.setTrack(p, t.id, { solo: !t.solo })) }}
               style={{ ...button, minHeight: 26, padding: '2px 8px', color: t.solo ? 'var(--accent-light)' : undefined }}>단독</button>
-            <span style={{ ...muted, marginLeft: 'auto' }} title="이 화자에 켠 처리 수">{Object.values(t.fx).filter((s) => (s as { on: boolean }).on).length}개 처리</span>
+            <span style={{ ...muted, marginLeft: 'auto' }} title="이 화자에 켠 음성 처리 수 — 아래 '음성 처리' 에서 바꿉니다">처리 {Object.values(t.fx).filter((s) => (s as { on: boolean }).on).length}</span>
           </div>
         </div>)}
       </div>

@@ -32,6 +32,14 @@ const SECTIONS: { id: Section; label: string; tip: string; knobs: Knob[] }[] = [
     { key: 'ceilingDb', label: '최대치', unit: 'dBTP', step: 0.1, tip: '실제 최대치(샘플 사이 포함)의 상한. 보통 −1.' }] },
 ]
 
+/** 조절 단위에 맞춘 자릿수 — 80Hz·4:1 은 정수로, 0.5dB 단위는 소수 한 자리로. 음수는 수학 빼기 기호. */
+function fmtStep (v: number, step: number): string {
+  const d = step >= 1 ? 0 : Math.min(2, (String(step).split('.')[1] || '').length)
+  return v.toFixed(d).replace('-', '−')
+}
+// 앱 슬라이더와 같은 모양(카드 고급 옵션의 af-effect-slider) — 음성 편집에서도 쓰이므로 여기서 직접 정의한다.
+const SLIDER_CSS = `.af-fx-slider{appearance:none;height:4px;border-radius:3px;background:linear-gradient(to right,var(--accent) var(--fill),var(--border-subtle) var(--fill));cursor:pointer;min-width:0}.af-fx-slider::-webkit-slider-thumb{appearance:none;width:14px;height:14px;border-radius:50%;background:var(--accent-light);box-shadow:0 0 0 4px rgba(139,92,246,.12)}.af-fx-slider:focus-visible{outline:2px solid var(--accent);outline-offset:4px}`
+
 const rowStyle: CSSProperties = { display: 'grid', gridTemplateColumns: '64px 1fr 72px', alignItems: 'center', gap: 8 }
 
 export default function VoiceFxPanel ({ fx, onChange, reductions, testPrefix = 've-fx' }: {
@@ -43,12 +51,13 @@ export default function VoiceFxPanel ({ fx, onChange, reductions, testPrefix = '
 }) {
   const set = (sec: Section, key: string, v: unknown): void => onChange({ ...fx, [sec]: { ...fx[sec], [key]: v } } as VoiceFxSettings)
   return <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+    <style>{SLIDER_CSS}</style>
     {SECTIONS.map((s) => {
       const on = (fx[s.id] as { on: boolean }).on
       const red = reductions?.[s.id as 'compressor' | 'deesser' | 'limiter']
       return <section key={s.id} style={{ border: '1px solid var(--border-subtle)', borderRadius: 9, padding: '9px 11px', background: on ? 'var(--bg-elevated)' : 'transparent' }}>
         <label title={s.tip} style={{ display: 'flex', alignItems: 'center', gap: 8, fontSize: 13, cursor: 'pointer' }}>
-          <input type="checkbox" data-testid={`${testPrefix}-${s.id}-on`} checked={on} onChange={(e) => set(s.id, 'on', e.target.checked)} />
+          <input type="checkbox" style={{ accentColor: 'var(--accent)' }} data-testid={`${testPrefix}-${s.id}-on`} checked={on} onChange={(e) => set(s.id, 'on', e.target.checked)} />
           <span style={{ flex: 1 }}>{s.label}</span>
           {on && red !== undefined && red > 0.1 && <span data-testid={`${testPrefix}-${s.id}-gr`} style={{ ...muted, fontVariantNumeric: 'tabular-nums' }} title="지금 줄이고 있는 양">−{red.toFixed(1)}dB</span>}
         </label>
@@ -58,9 +67,10 @@ export default function VoiceFxPanel ({ fx, onChange, reductions, testPrefix = '
             const v = (fx[s.id] as unknown as Record<string, number>)[k.key]
             return <label key={k.key} title={k.tip} style={rowStyle}>
               <span style={{ fontSize: 12, color: 'var(--text-secondary)' }}>{k.label}</span>
-              <input type="range" data-testid={`${testPrefix}-${s.id}-${k.key}`} min={range[0]} max={range[1]} step={k.step} value={v}
+              <input type="range" className="af-fx-slider" data-testid={`${testPrefix}-${s.id}-${k.key}`} min={range[0]} max={range[1]} step={k.step} value={v}
+                style={{ '--fill': `${(v - range[0]) / (range[1] - range[0]) * 100}%` } as CSSProperties}
                 onChange={(e) => set(s.id, k.key, Number(e.target.value))} />
-              <span style={{ ...muted, fontSize: 12, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{k.fmt ? k.fmt(v) : (Math.abs(v) >= 100 ? v.toFixed(0) : v.toFixed(1))}{k.unit}</span>
+              <span style={{ ...muted, fontSize: 12, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>{k.fmt ? k.fmt(v) : fmtStep(v, k.step)}{k.unit}</span>
             </label>
           })}
         </div>}

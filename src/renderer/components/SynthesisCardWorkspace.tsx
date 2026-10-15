@@ -128,7 +128,7 @@ function CardFxSection({ card, fx, onChange }: { card: SynthesisCard; fx: VoiceF
     <summary style={{ ...row, padding: '15px 0', cursor: 'pointer', listStyle: 'none', fontSize: 13, fontWeight: 600 }}><span style={{ flex: 1 }}>음성 처리</span><span style={muted}>{fx ? '켬' : '끔'}</span><span className="af-effect-chevron" aria-hidden="true">⌃</span></summary>
     <div style={{ display: 'grid', gap: 12, paddingBottom: 16 }}>
       <label title="만든 음성에 잡음 지우기·크기 고르게·치찰음 줄이기 등을 겁니다. 원래 파일은 지우지 않고 옆에 처리한 파일을 만듭니다." style={{ ...row, fontSize: 13, cursor: 'pointer' }}>
-        <input type="checkbox" data-testid="card-fx-on" checked={!!fx} onChange={e => onChange(e.target.checked ? (fx ?? VOICE_FX_DEFAULTS) : undefined)}/>
+        <input type="checkbox" style={{ accentColor: 'var(--accent)' }} data-testid="card-fx-on" checked={!!fx} onChange={e => onChange(e.target.checked ? (fx ?? VOICE_FX_DEFAULTS) : undefined)}/>
         <span style={{ flex: 1 }}>만든 음성에 처리 걸기</span>
       </label>
       {fx && <>
