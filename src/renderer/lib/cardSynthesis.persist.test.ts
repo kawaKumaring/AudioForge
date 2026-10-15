@@ -152,3 +152,30 @@ test('두 번 왕복해도 값이 닳지 않는다', async () => {
     { clip: 'clip.wav', region: { start: 2, duration: 4 } })
   assert.equal(twice.cards[0].takes[0].voice?.modelId, BUILTIN.modelId)
 })
+
+
+test('기호 연출과 실제 보낸 대사는 현재 설정으로 덮지 않고 복원', async () => {
+  const { cardSymbolReading } = await import('../../shared/symbolDirection.ts')
+  const c = builtinCard()
+  c.text = '안녕, 반가워♥'
+  c.takes[0].text = c.text
+  c.settings = { ...c.settings, symbolDirection: true, symbolDisabled: ['!'] }
+  c.takes[0].settings = { ...c.settings }
+  const reading = cardSymbolReading(c.text,c.settings,cardVoiceOf(c))
+  c.takes[0].applied = { ...c.takes[0].applied, symbolReading: reading }
+  const restored = await roundTrip([c])
+  assert.equal(restored.cards[0].settings.symbolDirection, true)
+  assert.deepEqual(restored.cards[0].settings.symbolDisabled,['!'])
+  assert.deepEqual(restored.cards[0].takes[0].applied.symbolReading,reading)
+})
+
+test('Cosy 선택·과거 생성 방식이 저장 왕복에서 Qwen으로 바뀌지 않는다', async () => {
+  const c=referenceCard()
+  c.settings={...c.settings,engine:'cosyvoice3'}
+  c.takes[0].settings={...c.takes[0].settings,engine:'qwen3'}
+  c.takes[0].applied={...c.takes[0].applied,engine:'qwen3'}
+  const {cards}=await roundTrip([c])
+  assert.equal(cards[0].settings.engine,'cosyvoice3')
+  assert.equal(cards[0].takes[0].settings.engine,'qwen3')
+  assert.equal(cards[0].takes[0].applied.engine,'qwen3')
+})

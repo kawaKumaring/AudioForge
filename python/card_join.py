@@ -175,7 +175,8 @@ def join(plan):
 
     # 음량 맞추기 — 조각별 RMS 를 가운데값 쪽으로 당긴다. **과하게 키우지 않는다.**
     if plan.get("level"):
-        levels = [_rms(x["data"]) for x in normed]
+        from speech_join_policy import active_rms
+        levels = [active_rms(x["data"], target_rate) for x in normed]
         usable = [v for v in levels if v > 1e-6]
         if len(usable) >= 2:
             target = float(np.median(usable))

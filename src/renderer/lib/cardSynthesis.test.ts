@@ -100,3 +100,45 @@ test('되돌리기가 목소리 준비 상태까지 되살린다', () => {
   assert.equal(back.phase, 'ready')
   assert.equal(back.clip, 'clip.wav')
 })
+
+
+// ★기호 연출은 2026-10-13 결정으로 보류 — 생성은 기호 연출을 끈 채 계산한다(cardSynthesis.ts). 켤 때 이 시험을 되살린다.
+test.skip('기호 미리보기와 실제 요청이 같고 원문·이전 결과는 유지 (보류)', async () => {
+  const { startCardGeneration } = await import('./cardSynthesis.ts')
+  const { cardSymbolReading } = await import('../../shared/symbolDirection.ts')
+  const { cardVoiceOf } = await import('../../shared/synthesisCardVoice.ts')
+  const builtin = { engineId: 'piper', modelId: 'test', label: 'test', language: 'ko', path: 'voice.onnx', sampleRate: 22050 }
+  const c = { ...card, source: null, builtin, text: '안녕, 다시 만나♥', settings: { ...card.settings, symbolDirection: true } }
+  useSynthesisCards.setState({ cards: [c], job: null, refs: {} })
+  let sent: any
+  const audio = (globalThis as any).window.api.audio
+  const prior = audio.process
+  audio.process = async (_path: string, _mode: string, options: unknown) => { sent = options }
+  try {
+    const expected = cardSymbolReading(c.text,c.settings,cardVoiceOf(c))
+    assert.equal(await startCardGeneration(c), '')
+    assert.equal(sent.ttsText, expected.script)
+    assert.equal(useSynthesisCards.getState().job?.text,c.text)
+    assert.deepEqual(useSynthesisCards.getState().job?.applied.symbolReading,expected)
+    assert.equal(useSynthesisCards.getState().cards[0].text,c.text)
+  } finally { audio.process = prior; useSynthesisCards.setState({job:null}); useAppStore.setState({status:'idle'}) }
+})
+
+test('Cosy 참조 선택이 실제 요청에 실리고 원문은 그대로', async () => {
+  const {startCardGeneration}=await import('./cardSynthesis.ts')
+  // 기호(♥)로 감정을 추측하지 않는다(보류) — 카드 감정을 직접 고른 경우를 본다.
+  const c={...card,text:'오늘 와 줘서 고마워요',settings:{...card.settings,engine:'cosyvoice3' as const,emotion:'다정'}}
+  useSynthesisCards.setState({cards:[c],job:null,refs:{c1:{phase:'ready',clip:'clip.wav',audio:'a.wav',region:null,message:'',reqId:'P'}}})
+  let sent:any
+  const api=(globalThis as any).window.api
+  const oldProcess=api.audio.process,oldExtract=api.cards.extractAudio
+  api.audio.process=async (_:string,_mode:string,options:unknown)=>{sent=options}
+  api.cards.extractAudio=async()=>({ok:true,data:'a.wav'})
+  try{
+    assert.equal(await startCardGeneration(c),'')
+    assert.equal(sent.ttsEngine,'cosyvoice3')
+    assert.ok(sent.ttsText.includes('[다정]'))
+    assert.equal(useSynthesisCards.getState().job?.text,c.text)
+    assert.equal(useSynthesisCards.getState().job?.applied.engine,'cosyvoice3')
+  } finally {api.audio.process=oldProcess;api.cards.extractAudio=oldExtract;useSynthesisCards.setState({job:null});useAppStore.setState({status:'idle'})}
+})

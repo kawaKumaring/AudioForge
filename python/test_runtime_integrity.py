@@ -1,7 +1,6 @@
 """실제 설정을 열지 않고 합성 런타임 설정의 손상·저장 실패를 확인한다."""
-import os,sys
-sys.path.insert(0,os.path.dirname(os.path.abspath(__file__)))
-import _test_temp
+import os, sys; sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))  # noqa: E401,E702 — 내장 파이썬은 스크립트 폴더를 경로에 넣지 않는다
+import _test_temp  # noqa: F401,E402  ★맨 앞 — 검사 임시 자리를 C 드라이브 밖으로(단독 실행 포함)
 import tempfile,json,unittest
 from unittest.mock import patch
 import app_runtime as rt

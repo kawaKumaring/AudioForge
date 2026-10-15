@@ -27,7 +27,7 @@ import {
   h3DirectionFault, cardApplied, cardEventFault, cardGenerateFault, takeMark, CARD_PITCH_MIN, CARD_PITCH_MAX, CARD_PITCH_STEP,
 } from '../../shared/synthesisCardJob'
 import {
-  cardVoiceOf, voiceSnapshot, voiceSupports, voiceGenerateFault, CARD_EMOTIONS, CARD_EMOTION_NONE, type BuiltinVoiceRef,
+  cardVoiceOf, voiceSnapshot, voiceSupports, voiceGenerateFault, CARD_EMOTIONS, CARD_EMOTION_NONE, COSY_CARD_EMOTIONS, type BuiltinVoiceRef,
 } from '../../shared/synthesisCardVoice'
 import {
   buildJoinPlan, joinPlanKey, joinBlockText,
@@ -128,8 +128,8 @@ function Settings({ card, close, disabled, focusReference = false }: { card: Syn
       {card.source && !card.builtin && <div style={{ ...panel, padding: '14px 16px', display: 'grid', gap: 8 }}>
         <div style={{ ...row, justifyContent: 'space-between' }}><label htmlFor="card-reference-engine" style={{ fontSize: 12, color: 'var(--text-secondary)' }}>생성 모델</label><span style={{ ...badge, fontSize: 10 }} title={generationModel.hint}>{generationModel.status}</span></div>
         <select id="card-reference-engine" aria-label="생성 모델" style={{ ...field, colorScheme: 'dark' }} value={draft.engine || 'qwen3'}
-          onChange={e => set({ engine: e.target.value as CardSettings['engine'], emotion: CARD_EMOTION_NONE })}>
-          <option value="qwen3">Qwen</option><option value="minimax-h3">MiniMax H3</option>
+          onChange={e => { set({ engine: e.target.value as CardSettings['engine'], emotion: CARD_EMOTION_NONE }); }}>
+          <option value="qwen3">Qwen</option><option value="cosyvoice3">CosyVoice 3</option><option value="minimax-h3">MiniMax H3</option>
         </select>
         <span style={{ ...muted, fontSize: 11 }} title={generationModel.hint}>
           {generationModel.description}
@@ -156,9 +156,9 @@ function Settings({ card, close, disabled, focusReference = false }: { card: Syn
           <select data-testid="card-emotion" aria-label="감정" style={field} value={CARD_EMOTIONS.includes(draft.emotion) ? draft.emotion : CARD_EMOTION_NONE}
             onChange={e => set({ emotion: e.target.value })}>
             <option value={CARD_EMOTION_NONE}>자연스럽게(감정 없음)</option>
-            {CARD_EMOTIONS.map(x => <option key={x} value={x}>{x}</option>)}
+            {(draft.engine === 'cosyvoice3' && !card.builtin ? COSY_CARD_EMOTIONS : CARD_EMOTIONS).map(x => <option key={x} value={x}>{x}</option>)}
           </select>
-          <span style={{ ...muted, lineHeight: 1.5 }}>감정을 고르면 그 대사를 감정 지시를 받는 큰 모델(1.7B)로 만듭니다 — 보통보다 느립니다. 감정마다 드러나는 정도가 다릅니다(재 보니 기쁨·화남은 뚜렷하고 슬픔·속삭임은 약했습니다) — 들어 보고 쓰세요. 줄 앞에 [슬픔] 처럼 직접 적은 줄은 그 감정을 따릅니다.</span>
+          <span style={{ ...muted, lineHeight: 1.5 }}>{draft.engine === 'cosyvoice3' && !card.builtin ? '대사와 별도로 연출을 요청합니다. 한국어 표현과 인물 닮음은 아직 청취 검수 중입니다. 줄 앞의 감정 지시는 그대로 우선합니다.' : '감정을 고르면 큰 모델(1.7B)로 요청합니다. 감정마다 표현 정도가 다릅니다. 줄 앞의 감정 지시는 그대로 우선합니다.'}</span>
         </div>
       </details>}
       {!supports.emotion && draft.emotion && draft.emotion !== '자연스럽게' && <div style={{ ...panel, ...row, padding: '14px 16px', color: 'var(--text-muted)', fontSize: 12 }} title="저장된 감정 설정은 현재 생성에 적용되지 않습니다. 해제하면 기본값으로 돌아갑니다."><span style={{ flex: 1 }}>감정 참조</span><span>{draft.emotion && draft.emotion !== '자연스럽게' ? `${draft.emotion} · 미적용` : '미연결'}</span>{draft.emotion && draft.emotion !== '자연스럽게' && <button type="button" aria-label="미지원 감정 선택 해제" style={button} onClick={() => set({ emotion: '자연스럽게' })}>해제</button>}</div>}
@@ -295,7 +295,11 @@ function TakeRow({ card, take, number, latest, disabled }: { card: SynthesisCard
         {a.pitch === null ? ' · 음높이 기록 없음' : ` · 음높이 ${a.pitch > 0 ? '+' : ''}${a.pitch}`}
         {a.reference?.region ? ` · 참조 ${a.reference.region.start.toFixed(1)}~${(a.reference.region.start + a.reference.region.duration).toFixed(1)}초` : ' · 참조 기록 없음'}
         {a.notes.length > 0 && ` · ${a.notes.length}개 설정 조정·미적용`}
-      </div>{take.text}</div> })()}
+      </div>{take.text}
+      {take.applied?.symbolReading && <details style={{ marginTop: 10 }}><summary>이 음성에 보낸 기호 연출</summary>
+        <div style={{ marginTop: 6 }}>{take.applied.symbolReading.script}</div>
+        {take.applied.symbolReading.entries.map((e,i) => <div key={i} style={muted}>{e.symbol} · {e.label}</div>)}
+      </details>}</div> })()}
     {error && <div role="alert" style={{ ...muted, color: 'var(--rose)' }}>{error}</div>}
   </div>
 }
