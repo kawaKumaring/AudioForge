@@ -5,7 +5,7 @@ import { useEffect, useRef, type CSSProperties, type ReactNode } from 'react'
  *   화면마다 모양과 키보드 동작이 달랐다 — 같은 부품을 쓴다.
  */
 export type IconName = 'back' | 'list' | 'stop' | 'reset' | 'plus' | 'grip' | 'settings' | 'copy' | 'trash' | 'play' | 'folder' | 'text' | 'history' | 'close' | 'check' | 'link' | 'save' | 'file'
-  | 'prev' | 'next' | 'book' | 'voice' | 'follow' | 'volume' | 'mute' | 'emotion' | 'acting'
+  | 'prev' | 'next' | 'book' | 'voice' | 'follow' | 'volume' | 'mute' | 'emotion' | 'acting' | 'zoomIn' | 'zoomOut' | 'undo' | 'redo'
 export function Icon({ name, size = 17 }: { name: IconName; size?: number }) {
   const paths: Record<IconName, ReactNode> = {
     acting: <><rect x="3" y="8" width="18" height="12" rx="2"/><path d="m3 8 17-4 1 4M6 5l3 3M12 4l3 3M17 3l3 3M8 13h8M8 16h5"/></>,
@@ -28,6 +28,8 @@ export function Icon({ name, size = 17 }: { name: IconName; size?: number }) {
     follow: <><path d="M4 7h16M4 12h10M4 17h13"/><path d="m17 10 3 2-3 2"/></>,
     volume: <><path d="M4 9v6h4l5 4V5L8 9z"/><path d="M16 9a4 4 0 0 1 0 6M18.5 6.5a8 8 0 0 1 0 11"/></>,
     mute: <><path d="M4 9v6h4l5 4V5L8 9z"/><path d="m16 9 5 6M21 9l-5 6"/></>,
+    zoomIn: <><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M8 11h6M11 8v6"/></>, zoomOut: <><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4M8 11h6"/></>,
+    undo: <path d="M9 14 4 9l5-5M4 9h11a5 5 0 0 1 0 10h-3"/>, redo: <path d="m15 14 5-5-5-5M20 9H9a5 5 0 0 0 0 10h3"/>,
   }
   return <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={name === 'grip' ? 3 : 1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">{paths[name]}</svg>
 }

@@ -128,16 +128,17 @@ function CardFxSection({ card, fx, onChange }: { card: SynthesisCard; fx: VoiceF
     <summary style={{ ...row, padding: '15px 0', cursor: 'pointer', listStyle: 'none', fontSize: 13, fontWeight: 600 }}><span style={{ flex: 1 }}>음성 처리</span><span style={muted}>{fx ? '켬' : '끔'}</span><span className="af-effect-chevron" aria-hidden="true">⌃</span></summary>
     <div style={{ display: 'grid', gap: 12, paddingBottom: 16 }}>
       <label title="만든 음성에 잡음 지우기·크기 고르게·치찰음 줄이기 등을 겁니다. 원래 파일은 지우지 않고 옆에 처리한 파일을 만듭니다." style={{ ...row, fontSize: 13, cursor: 'pointer' }}>
-        <input type="checkbox" style={{ accentColor: 'var(--accent)' }} data-testid="card-fx-on" checked={!!fx} onChange={e => onChange(e.target.checked ? (fx ?? VOICE_FX_DEFAULTS) : undefined)}/>
+        <input type="checkbox" style={{ accentColor: 'var(--accent)', colorScheme: 'dark' }} data-testid="card-fx-on" checked={!!fx} onChange={e => onChange(e.target.checked ? (fx ?? VOICE_FX_DEFAULTS) : undefined)}/>
         <span style={{ flex: 1 }}>만든 음성에 처리 걸기</span>
       </label>
       {fx && <>
-        <div style={row}>
-          <button type="button" data-testid="card-fx-play" style={button} disabled={!take} aria-pressed={playing}
+        <div style={{ ...row, padding: '10px 12px', borderRadius: 9, background: 'var(--bg-elevated)' }}>
+          <button type="button" data-testid="card-fx-play" style={{ ...(playing ? button : primary), minWidth: 128, opacity: take ? 1 : .45 }} disabled={!take} aria-pressed={playing}
             title={take ? '최신 음성을 반복 재생합니다. 값을 바꾸면 바로 들립니다.' : '먼저 음성을 만들면 들으며 조절할 수 있습니다.'}
             onClick={() => void toggle()}><Icon name={playing ? 'stop' : 'play'}/>{playing ? '멈춤' : '들으며 조절'}</button>
-          <button type="button" data-testid="card-fx-bypass" style={button} aria-pressed={bypass} disabled={!playing}
-            title="처리하기 전 원래 소리와 번갈아 들어 봅니다." onClick={() => setBypass(b => !b)}>{bypass ? '처리 전 듣는 중' : '처리 전'}</button>
+          <button type="button" data-testid="card-fx-bypass" style={{ ...button, ...(bypass ? { borderColor: 'var(--accent)', background: 'var(--accent-glow)', color: 'var(--accent-light)' } : {}), opacity: playing ? 1 : .45 }} aria-pressed={bypass} disabled={!playing}
+            title="처리하기 전 원래 소리와 번갈아 들어 봅니다." onClick={() => setBypass(b => !b)}>{bypass ? '처리 전 듣는 중' : '처리 전과 비교'}</button>
+          {!take && <span style={muted}>음성을 만들면 들을 수 있습니다</span>}
           {why && <span role="alert" style={{ fontSize: 12, color: 'var(--rose)' }}>{why}</span>}
         </div>
         <VoiceFxPanel fx={fx} onChange={onChange} reductions={playing && !bypass ? red : undefined} testPrefix="card-fx"/>

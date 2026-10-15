@@ -72,7 +72,7 @@ const ratio = (sec, lane, yIn = 0.6) => `(() => { const L = document.querySelect
 
     // 음성 처리: 치찰음 줄이기 켜기
     await click('ve-head-0'); await click('ve-fx-deesser-on')
-    ok(await ev(`document.querySelector('[data-testid="ve-fx-deesser-on"]').checked`), '화자 트랙에 치찰음 줄이기 켬')
+    ok(await ev(`document.querySelector('[data-testid="ve-fx-deesser-on"]').getAttribute('aria-checked') === 'true'`), '화자 트랙에 치찰음 줄이기 켬(켠 항목은 스위치로 펼쳐짐)')
 
     // 재생 — 재생 위치선이 움직인다
     await click('ve-play')
