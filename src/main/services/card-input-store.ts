@@ -1,7 +1,7 @@
 // @ts-ignore TS5097
 import {replaceFileAtomically} from './durable-write.ts'
 import {createHash} from 'node:crypto'
-import {existsSync,readFileSync,unlinkSync,lstatSync,realpathSync} from 'node:fs'
+import {existsSync,readFileSync,lstatSync,realpathSync} from 'node:fs'
 import {dirname,join,resolve,extname,basename} from 'node:path'
 // @ts-ignore TS5097
 import {withoutCardInput,CARD_INPUT_FIELDS} from '../../shared/cardPersistencePolicy.ts'
@@ -55,9 +55,9 @@ export function restoreCardWork(raw:unknown):SavedWork|null {
  })}
 }
 /** 카드의 사용자 입력만 지운다. 경로를 믿지 않고 정해진 이름과 소유 표를 확인한다. */
-export function removeCardFiles(card:SavedCard,removeAudio:boolean,protectedPaths:string[],extraInputs:string[]=[]):void {
+export function planCardFileRemoval(card:SavedCard,removeAudio:boolean,protectedPaths:string[],extraInputs:string[]=[]):string[] {
  const canonical=(p:string)=>existsSync(p)?realpathSync(p).toLowerCase():resolve(p).toLowerCase()
- const protectedSet=new Set([card.sourcePath,...protectedPaths].filter(Boolean).map(canonical))
+ const protectedSet=new Set([card.sourcePath,...card.takes.map(t=>t.sourcePath),...protectedPaths].filter(Boolean).map(canonical))
  const inputsToDelete=[...(card.contentPaths||[]),card.contentPath,...card.takes.map(t=>t.contentPath),...extraInputs].filter(Boolean) as string[]
  const planned:string[]=[]
  for(const path of new Set(inputsToDelete)){
@@ -66,7 +66,7 @@ export function removeCardFiles(card:SavedCard,removeAudio:boolean,protectedPath
   if(protectedSet.has(canonical(path)))throw Error('원본 입력은 삭제하지 않습니다')
   if(lstatSync(path).isSymbolicLink())throw Error('연결 파일은 삭제하지 않습니다')
   const r=obj(JSON.parse(readFileSync(path,'utf8')))
-  if(r.cardId!==card.id || !['card-input','take-input'].includes(String(r.kind)))throw Error('다른 카드의 입력 기록은 삭제할 수 없습니다')
+  if(r.version!==1 || r.cardId!==card.id || !['card-input','take-input'].includes(String(r.kind)) || r.kind==='take-input'&&!card.takes.some(t=>t.id===r.takeId))throw Error('다른 카드의 입력 기록은 삭제할 수 없습니다')
   planned.push(path)
  }
  if(removeAudio)for(const t of card.takes){
@@ -77,8 +77,7 @@ export function removeCardFiles(card:SavedCard,removeAudio:boolean,protectedPath
   if(session.mode!=='tts' || !Array.isArray(session.tracks) || !session.tracks.some(x=>typeof obj(x).path==='string' && canonical(obj(x).path as string)===canonical(t.path)))throw Error('음성합성 결과로 확인되지 않았습니다')
   planned.push(t.path)
  }
- const unique=[...new Set(planned)];let removed=0
- for(const path of unique){try{unlinkSync(path);removed++}catch{throw Error(`파일 ${unique.length}개 중 ${removed}개 제거 후 실패했습니다. 카드 기록은 유지되므로 파일 상태를 확인해 주세요`)}}
+ return [...new Set(planned)]
 }
 
 export function readStandaloneCardInput(path:string):{text:string;settings:Record<string,unknown>} {

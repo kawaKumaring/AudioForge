@@ -1,3 +1,4 @@
+import {useCardRemovalRecovery} from '../hooks/useCardRemovalRecovery'
 import WorkLibraryRow from './WorkLibraryRow'
 import CardStorageActions from './CardStorageActions'
 import {useCardAutoSave} from '../hooks/useCardAutoSave'
@@ -526,6 +527,7 @@ export default function SynthesisCardWorkspace() {
   // 저장 — **타이머를 여기서 잡지 않는다.**
   // ★화면 수명과 저장 수명을 분리했다(2026-09-27). 예전에는 언마운트에서 타이머를 취소해
   //   메뉴를 빨리 옮기면 마지막 편집이 통째로 사라졌다. 이제 `lib/cardWorkSaver` 가 소유한다.
+  const removalRecovery = useCardRemovalRecovery()
   const autoSave = useCardAutoSave()
   const [save, setSave] = useState<SaveState>(() => saveState())
   useEffect(() => onSaveState(setSave), [])
@@ -760,7 +762,7 @@ export default function SynthesisCardWorkspace() {
     })()
   }
 
-  const locked = busy || loading || importing
+  const locked = busy || loading || importing || removalRecovery.blocked
 
   /**
    * **다른 카드**가 지금 목소리를 준비하고 있는가.
@@ -852,6 +854,7 @@ export default function SynthesisCardWorkspace() {
         title="저장된 카드와 옛 작업을 한곳에서 보고 불러옵니다."
         onClick={() => void openImport()}><Icon name="history"/>작업 불러오기</button>
     </div>
+    {removalRecovery.message&&<div role="alert" data-testid="card-removal-recovery" style={{...row,fontSize:12,color:'var(--amber)',padding:'9px 12px',border:'1px solid var(--border-subtle)',borderRadius:8}}><span style={{flex:1}}>{removalRecovery.message}</span><button type="button" data-testid="card-removal-retry" style={button} disabled={removalRecovery.busy} onClick={()=>void removalRecovery.retry()}>{removalRecovery.busy?'확인 중…':'다시 정리'}</button></div>}
     {notice && <div role="status" style={{ ...row, fontSize: 12, color: 'var(--amber)' }}><span style={{ flex: 1 }}>{notice}</span><Action icon="close" label="알림 닫기" onClick={() => setNotice('')}/></div>}
     {save.phase === 'failed' && <div role="alert" data-testid="card-save-failed" style={{ ...row, fontSize: 12, color: 'var(--rose)', padding: '9px 12px', background: 'var(--bg-card)', border: '1px solid var(--border-subtle)', borderLeft: '3px solid var(--rose)', borderRadius: 8 }}>
       <span tabIndex={0} style={{ flex: 1 }} title={`저장 실패 코드: ${save.code || '알 수 없음'}`}>저장 실패</span>

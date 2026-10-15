@@ -244,3 +244,11 @@ test('직전 편집 저장이 실패하면 가져오기로 작업을 갈아끼�
  const why=await saver.importLegacyWork({...work('가져올 글'),cards:[{...work('가져올 글').cards[0],id:'다른 카드'}]})
  assert.equal(why,'DISK_FULL');assert.equal(saver.savedFileNow().current?.cards[0].text,'아직 저장할 글')
 })
+
+test('읽기 복구가 끝나면 실패 표시를 지우고 저장본을 다시 읽는다',async()=>{
+ getImpl=async()=>{throw Error('복구 전 읽기 거절')}
+ await assert.rejects(saver.loadSavedFile());assert.equal(saver.saveState().phase,'failed')
+ getImpl=async()=>({[CARD_STORAGE_KEY]:{current:work('복구한 대사'),kept:[]}})
+ await saver.loadSavedFile(true)
+ assert.equal(saver.saveState().phase,'idle');assert.equal(saver.savedFileNow().current?.cards[0].text,'복구한 대사')
+})

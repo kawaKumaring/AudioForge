@@ -47,7 +47,8 @@ export function writeRecord(
   const file = join(dir, fileNameOf(key))
   const temp = `${file}.${process.pid}.tmp`
   try {
-    recoverWorkTransaction(dir)
+    const recovery=recoverWorkTransaction(dir)
+    if(recovery.pending)throw Error(recovery.message||'이전 파일 정리가 남았습니다')
     mkdirSync(dir, { recursive: true })
     const body = JSON.stringify(makeRecord(key, data, host.now()), null, 2)
     writeFileDurable(temp, body)
@@ -60,10 +61,10 @@ export function writeRecord(
 }
 
 /** 파일을 합치지 않고 교체의 성공·복구만 한 묶음으로 처리한다. */
-export function writeRecordBatch(host:WorkStoreHost,kind:WorkKind,items:{key:string;data:unknown}[]):{ok:true}|{ok:false;why:string}{
+export function writeRecordBatch(host:WorkStoreHost,kind:WorkKind,items:{key:string;data:unknown}[],removals:string[]=[]):{ok:true;cleanupPending?:number}|{ok:false;why:string}{
   try{
-    writeWorkTransaction(dirOf(host,kind),items.map(x=>({name:fileNameOf(x.key),body:JSON.stringify(makeRecord(x.key,x.data,host.now()),null,2)})))
-    return {ok:true}
+    const state=writeWorkTransaction(dirOf(host,kind),items.map(x=>({name:fileNameOf(x.key),body:JSON.stringify(makeRecord(x.key,x.data,host.now()),null,2)})),undefined,{removals})
+    return {ok:true,...(state.pending?{cleanupPending:state.pending}:{})}
   }catch(e){return {ok:false,why:(e as Error).message}}
 }
 

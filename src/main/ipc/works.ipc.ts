@@ -1,5 +1,6 @@
+import {recoverWorkTransaction} from '../services/work-transaction'
 import {resolveLegacyInput} from '../services/legacy-input-store'
-import { saveCardInput, separateCardWork, restoreCardWork, removeCardFiles, readStandaloneCardInput } from '../services/card-input-store'
+import { saveCardInput, separateCardWork, restoreCardWork, planCardFileRemoval, readStandaloneCardInput } from '../services/card-input-store'
 import { parseSavedWork, type SavedWork, type SavedCard } from '../../shared/synthesisCardSave'
 import { OUTPUT_ROOT_DIRNAME } from '../../shared/outputLayout'
 import { outputBase } from '../services/appPaths'
@@ -80,7 +81,13 @@ function writeWork(kind: WorkKind, key: string, data: unknown) {
 }
 function handle(channel:string,listener:Parameters<typeof ipcMain.handle>[1]):void {
   ipcMain.handle(channel,async(event,...args)=>{
-    try{return await listener(event,...args)}
+    try{
+      if(channel.startsWith('cards:')&&channel!=='cards:recover-removals'){
+        const recovery=recoverWorkTransaction(join(host().root,'works','cards'))
+        if(recovery.pending)throw Error(recovery.message||'이전 파일 정리가 남았습니다')
+      }
+      return await listener(event,...args)
+    }
     catch(e){const why=(e as Error)?.message||'작업 기록을 처리하지 못했습니다';return {ok:false,why,error:why}}
   })
 }
@@ -92,6 +99,9 @@ function writeBatch(kind:unknown,items:unknown){
   return writeRecordBatch(host(),kind,items.map(x=>({key:x.key,data:kind==='cards'?prepareCardData(x.data):x.data})))
 }
 export function registerWorksIpc(): void {
+  // 실행 때 복구를 먼저 시도한다. 실패는 앱 전체를 닫지 않고 카드 통로에서 표시한다.
+  try{recoverWorkTransaction(join(host().root,'works','cards'))}catch{/* 사본을 보존하고 화면의 재시도로 연결 */}
+  handle('cards:recover-removals',()=>({ok:true,...recoverWorkTransaction(join(host().root,'works','cards'))}))
   handle('works:write-batch',(_e,kind,items)=>writeBatch(kind,items))
   ipcMain.on('works:write-batch-sync',(event,kind,items)=>{try{event.returnValue=writeBatch(kind,items)}catch(e){event.returnValue={ok:false,why:(e as Error).message}}})
   handle('cards:load-input', async () => {
@@ -113,28 +123,30 @@ export function registerWorksIpc(): void {
       const w=parseSavedWork({cards:[raw],joins:{},savedAt:Date.now()})
       if (!w?.cards.length) throw Error('삭제할 카드가 없습니다')
       const card=w.cards[0]
+      ensureMoved('cards')
       const stored=listRecords(host(),'cards')
       if(stored.error)throw Error(stored.error)
       if(stored.broken.length)throw Error('읽지 못한 카드 기록이 있어 삭제하지 않았습니다')
       if(typeof audio!=='boolean')throw Error('음원 삭제 선택이 올바르지 않습니다')
       const others:string[]=[], inputPaths:string[]=[]
-      const takeMap=new Map(card.takes.map(t=>[t.path,t]))
+      const takeKey=(t:{id:string;path:string})=>t.id+'\0'+t.path
+      const takeMap=new Map(card.takes.map(t=>[takeKey(t),t]))
       const collect=(data:unknown):void=>{
         if(Array.isArray(data)){data.forEach(collect);return}
         const work=parseSavedWork(data);if(!work)return
-        for(const c of work.cards){if(c.id!==card.id){others.push(c.sourcePath,...c.takes.map(t=>t.path))}else{inputPaths.push(...(c.contentPaths||[]));if(c.contentPath)inputPaths.push(c.contentPath);for(const t of c.takes){if(t.contentPath)inputPaths.push(t.contentPath);if(!takeMap.has(t.path))takeMap.set(t.path,t)}}}
+        for(const c of work.cards){if(c.id!==card.id){others.push(c.sourcePath,c.contentPath||'',...(c.contentPaths||[]),...c.takes.flatMap(t=>[t.path,t.sourcePath,t.contentPath||'']))}else{inputPaths.push(...(c.contentPaths||[]));if(c.contentPath)inputPaths.push(c.contentPath);for(const t of c.takes){if(t.contentPath)inputPaths.push(t.contentPath);if(!takeMap.has(takeKey(t)))takeMap.set(takeKey(t),t)}}}
       }
       stored.records.forEach(r=>collect(r.data))
       card.takes=[...takeMap.values()]
-      removeCardFiles(card,audio,[...others,...(Array.isArray(protectedPaths)?protectedPaths:[])],inputPaths)
+      const removals=planCardFileRemoval(card,audio,[...others,...(Array.isArray(protectedPaths)?protectedPaths:[])],inputPaths)
       const prune=(data:unknown):unknown=>{
         if(Array.isArray(data))return data.map(prune)
         const work=parseSavedWork(data);if(!work)return data
         return {...work,cards:work.cards.filter(c=>c.id!==card.id)}
       }
-      const saved=writeRecordBatch(host(),'cards',stored.records.map(r=>({key:r.key,data:prune(r.data)})))
+      const saved=writeRecordBatch(host(),'cards',stored.records.map(r=>({key:r.key,data:prune(r.data)})),removals)
       if(!saved.ok)throw Error(saved.why)
-      return {ok:true}
+      return {ok:true,cleanupPending:saved.cleanupPending||0}
     }catch(e){return {ok:false,why:(e as Error).message}}
   })
   handle('works:list', (_e, kind: unknown) => {
