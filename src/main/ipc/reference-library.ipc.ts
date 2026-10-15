@@ -30,7 +30,8 @@ export interface ReferenceLibraryIpcDeps {
   preview: ReferencePreviewAdapter
   /** 선택 상태는 논리 ID 로만 저장한다(경로 저장 금지). */
   readSelectedId: () => string | null
-  writeSelectedId: (referenceId: string | null) => void
+  /** 저장 성공 여부. false 면 응답을 SAVE_FAILED 로 돌려준다. */
+  writeSelectedId: (referenceId: string | null) => boolean
   isReadableFile: (filePath: string) => boolean
   sha256OfFile: (filePath: string) => string | null
   readFileBytes: (filePath: string) => Uint8Array
@@ -123,7 +124,7 @@ export function registerReferenceLibraryIpc(deps: ReferenceLibraryIpcDeps): void
     REFERENCE_LIBRARY_CHANNELS.select,
     (_event, referenceId: unknown): ReferenceLibrarySelectResponse => {
       if (referenceId === null) {                 // 선택 해제는 허용
-        deps.writeSelectedId(null)
+        if (!deps.writeSelectedId(null)) return { ok: false, reason: 'SAVE_FAILED' }
         return { ok: true, referenceId: null }
       }
       const id = normalizeId(referenceId)
@@ -138,7 +139,7 @@ export function registerReferenceLibraryIpc(deps: ReferenceLibraryIpcDeps): void
         // 못 쓰는 참조를 조용히 다른 것으로 바꾸지 않는다. 사유를 알리고 선택은 그대로 둔다.
         return { ok: false, reason: resolved.reason === 'NOT_FOUND' ? 'NOT_FOUND' : 'NOT_READY' }
       }
-      deps.writeSelectedId(id)
+      if (!deps.writeSelectedId(id)) return { ok: false, reason: 'SAVE_FAILED' }
       return { ok: true, referenceId: id }
     },
   )

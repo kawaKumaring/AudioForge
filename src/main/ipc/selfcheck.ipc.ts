@@ -11,7 +11,7 @@ import { existsSync, readFileSync, rmSync } from 'fs'
 import { dirname, join } from 'path'
 import { execFile } from 'child_process'
 import { promisify } from 'util'
-import { fileURLToPath } from 'url'
+import { findPythonScript } from '../services/python-runner'
 import { currentPythonPath, dialogFolderHost } from './audio.ipc'
 import { builtinVoiceList, findFfmpeg } from './card-media.ipc'
 import { readerSelfTest } from './reader.ipc'
@@ -31,8 +31,7 @@ export function selfCheckResults(): CheckResult[] {
 }
 
 function pythonScript(name: string): string {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const found = [join(here, '..', '..', '..', 'python', name), join(process.cwd(), 'python', name)].find((p) => existsSync(p))
+  const found = findPythonScript(name)
   if (!found) throw new Error(`${name} 을 찾지 못했습니다`)
   return found
 }

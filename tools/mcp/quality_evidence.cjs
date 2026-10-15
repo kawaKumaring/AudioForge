@@ -16,7 +16,7 @@ function context(r){
  for(const item of r.records||[]){if(!groups.has(item.path))groups.set(item.path,[]);groups.get(item.path).push(item)}
  const entries=[]
  for(const [file,chunks] of groups){
-  chunks.sort((a,b)=>a.offset-b.offset);const doc=JSON.parse(chunks.map(x=>x.text).join(''));if(!doc||typeof doc!=='object'){entries.push({kind:'unavailable',recordPath:file,reason:'객체 기록이 아님'});continue}const recordHash=chunks[0].sha256
+  chunks.sort((a,b)=>a.offset-b.offset);let doc;try{doc=JSON.parse(chunks.map(x=>x.text).join(''))}catch{entries.push({kind:'unavailable',recordPath:file,reason:'기록 JSON을 읽지 못함(잘렸거나 손상)'});continue}/* 2026-10-16: 기록 하나가 깨져도 나머지 기록은 보인다 */if(!doc||typeof doc!=='object'){entries.push({kind:'unavailable',recordPath:file,reason:'객체 기록이 아님'});continue}const recordHash=chunks[0].sha256
   const match=(Array.isArray(doc.files)?doc.files:[]).find(x=>x?.sha256===r.source.sha256)
   const bound=doc.sourceSha256===r.source.sha256||doc.out_sha256===r.source.sha256||!!match
   let reference=doc.reference||doc.conditions?.reference

@@ -16,7 +16,7 @@ import { execFile } from 'node:child_process'
 import { readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { app } from 'electron'
+import { PythonRunner } from '../services/python-runner'
 
 export interface PitchReply<T> { ok: boolean; data?: T; error?: string }
 
@@ -29,9 +29,8 @@ const fail = (e: unknown): PitchReply<never> => ({
 export const PREVIEW_SEC = 20
 
 function scriptPath(): string {
-  // 개발선은 소스 옆, 배포판은 자원 폴더 — 앱의 다른 다리와 같은 규칙.
-  const base = app.isPackaged ? process.resourcesPath : join(__dirname, '..', '..')
-  return join(base, 'python', 'pitch_cli.py')
+  // 개발선은 소스 옆, 배포판은 자원 폴더 — 본체 공용 규칙(python-runner.findPythonScript).
+  return PythonRunner.getScriptPath('pitch_cli.py')
 }
 
 /** 파이썬을 부르고 JSON 을 받아 온다. 실패는 **사유를 들고** 올라간다. */

@@ -43,6 +43,7 @@ export const REF_ASSET_FAILURE_TEXT: Record<string, string> = {
   NOT_OWNED: '저장된 참조를 확인할 수 없습니다.',
   DELETE_FAILED: '참조를 삭제하지 못했습니다.',
   REFERENCE_IN_USE: '현재 사용 중인 참조입니다. 다른 참조를 선택한 뒤 삭제할 수 있습니다.',
+  SAVE_FAILED: '참조 선택을 저장하지 못했습니다. 다시 시도해 주세요.',
 }
 
 export type ReferenceAssetTone = 'neutral' | 'ok' | 'warn' | 'error'

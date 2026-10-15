@@ -1,6 +1,6 @@
 import { ipcMain } from 'electron'
 import { spawn } from 'child_process'
-import { join } from 'path'
+import { PythonRunner } from '../services/python-runner'
 import {
   ANALYSIS_CANCEL_CHANNEL, ANALYSIS_CHANNEL, ANALYSIS_PREWARM_CHANNEL, toAnalysisResult,
   type AnalysisRequest, type AnalysisResponse,
@@ -25,7 +25,7 @@ export function registerAnalysisIpc(deps: { pythonPath: () => string }): Analysi
   worker = new AnalysisWorker({
     spawn: spawn as never,
     pythonPath: deps.pythonPath,
-    scriptPath: () => join(__dirname, '..', '..', 'python', 'analysis_worker.py'),
+    scriptPath: () => PythonRunner.getScriptPath('analysis_worker.py'),
     // 진단은 사유 코드와 수치만 남긴다 — 사용자 원문은 넘어오지 않는다(계약).
     onEvent: note,
   })

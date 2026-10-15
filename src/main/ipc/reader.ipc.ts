@@ -19,7 +19,7 @@ import { existsSync, mkdirSync, writeFileSync, readFileSync, readdirSync, rmSync
 import { createHash } from 'crypto'
 import { execFile, spawn, type SpawnOptions } from 'child_process'
 import { promisify } from 'util'
-import { fileURLToPath } from 'url'
+import { findPythonScript } from '../services/python-runner'
 import { currentPythonPath, synthesisBusy, setReaderRunning, pickFiles, dialogFolderHost } from './audio.ipc'
 import { rememberFile, rememberDir, startDir } from '../services/dialogFolders'
 import { scanTextPaths, scannedPaths } from '../services/folder-scan'
@@ -91,11 +91,7 @@ function trimCache(): void {
 }
 
 function scriptPath(): string {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const found = [
-    join(here, '..', '..', '..', 'python', 'separate.py'),
-    join(process.cwd(), 'python', 'separate.py'),
-  ].find((p) => existsSync(p))
+  const found = findPythonScript('separate.py')
   if (!found) throw new Error('합성 스크립트를 찾지 못했습니다')
   return found
 }

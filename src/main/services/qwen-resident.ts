@@ -11,7 +11,7 @@ import { spawn, type SpawnOptions } from 'child_process'
 import { randomBytes } from 'crypto'
 import { existsSync } from 'fs'
 import { dirname, join } from 'path'
-import { fileURLToPath } from 'url'
+import { findPythonScript } from './python-runner'
 import { QwenVoiceWorker } from './qwen-voice-worker'
 import { appLog } from './app-log'
 import { yieldIdleH3 } from './h3-resident'
@@ -26,11 +26,9 @@ process.env.AF_QWEN_PIPE_ADDR = QWEN_PIPE.addr
 process.env.AF_QWEN_PIPE_KEY = QWEN_PIPE.key
 
 function pythonDir(): string {
-  const here = dirname(fileURLToPath(import.meta.url))
-  const found = [join(here, '..', '..', '..', 'python'), join(process.cwd(), 'python')]
-    .find((p) => existsSync(join(p, 'qwen_voice_server.py')))
-  if (!found) throw new Error('합성 스크립트를 찾지 못했습니다')
-  return found
+  const script = findPythonScript('qwen_voice_server.py')
+  if (!script) throw new Error('합성 스크립트를 찾지 못했습니다')
+  return dirname(script)
 }
 
 let instance: QwenVoiceWorker | null = null

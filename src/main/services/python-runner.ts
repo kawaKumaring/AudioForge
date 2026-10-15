@@ -6,6 +6,24 @@ import { StringDecoder } from 'string_decoder'
 import type { RunEnd, RunEndReasonCode } from './run-settlement'
 import type { SidecarValidation, SidecarValidator } from '../../shared/sidecarEvents'
 
+/**
+ * 파이썬 스크립트 자리 — **본체 전체가 이 한 규칙을 쓴다**(2026-10-16 통합).
+ *  1) 개발선: 묶인 본체(out/main/index.js) 기준 두 칸 위 = 저장소의 python/
+ *  2) 배포판: process.resourcesPath/python/
+ * 없으면 null — 부르는 쪽이 한국어 사유로 실패한다.
+ * ★예전에는 일곱 곳이 따로 찾았고, 넷은 '모듈 기준 세 칸 위'(묶인 뒤엔 저장소 바깥) 다음
+ *   process.cwd() 에 기대고 있어 실행 폴더가 앱 폴더가 아니면 그 기능만 실패했다.
+ */
+export function findPythonScript(scriptName: string): string | null {
+  const devPath = join(__dirname, '..', '..', 'python', scriptName)
+  if (existsSync(devPath)) return devPath
+  if (process.resourcesPath) {
+    const prodPath = join(process.resourcesPath, 'python', scriptName)
+    if (existsSync(prodPath)) return prodPath
+  }
+  return null
+}
+
 // 사이드카 카운터 키 위생: '타입 이름 + 개수'만 남긴다 — payload 는 절대 담지 않는다.
 // 짧은 안전 토큰이 아니면(경로·본문·긴 문자열 냄새) 버킷명으로 대체해 로그/메트릭 오염을 막는다.
 const SAFE_TYPE_KEY_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/
@@ -455,16 +473,6 @@ export class PythonRunner extends EventEmitter {
   }
 
   static getScriptPath(scriptName: string): string {
-    // Try project root /python first (development)
-    const devPath = join(__dirname, '..', '..', 'python', scriptName)
-    if (existsSync(devPath)) return devPath
-
-    // Try resources path (production)
-    if (process.resourcesPath) {
-      const prodPath = join(process.resourcesPath, 'python', scriptName)
-      if (existsSync(prodPath)) return prodPath
-    }
-
-    return devPath // fallback, will fail with clear error
+    return findPythonScript(scriptName) ?? join(__dirname, '..', '..', 'python', scriptName) // 없으면 실행 때 분명히 실패
   }
 }
