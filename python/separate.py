@@ -1340,11 +1340,21 @@ def _run_meta_fix(args):
     total = len(json_files)
     tracks = []
 
+    # ★고친 메타를 **먼저 전부** 읽는다(2026-10-16). 예전에는 읽으면서 바로 이름을 바꿔,
+    #   중간 파일 하나가 깨져 있으면 앞쪽 트랙만 이름이 바뀐 채 멈췄다.
+    metas = []
+    for jf in json_files:
+        try:
+            with open(os.path.join(target_dir, jf), "r", encoding="utf-8") as f:
+                metas.append(json.load(f))
+        except (OSError, ValueError) as e:
+            emit("error", message=f"메타 파일을 읽지 못했습니다: {jf} — 고친 내용의 형식을 확인하세요. 아무 파일도 바꾸지 않았습니다. ({e})")
+            sys.exit(1)
+
     for i, jf in enumerate(json_files):
         pct = int((i / total) * 90)
         meta_path = os.path.join(target_dir, jf)
-        with open(meta_path, "r", encoding="utf-8") as f:
-            meta = json.load(f)
+        meta = metas[i]
 
         old_file = meta.get("output_file", "")
         old_path = os.path.join(target_dir, old_file)
