@@ -831,3 +831,24 @@ test('[배선] 취소 경로: 타이머 해제 + 결과 봉쇄가 함께 일어�
   iv.tickAll()
   assert.equal(r.sent.length, 0, '취소 후 타이머 발화도 없다')
 })
+
+// ★2026-10-16 사용자 신고 — H3 로 긴 글을 만들면 진행 중인데도 630초에 'JOB_STALLED(완료 0조각)' 로 끊겼다.
+//   H3 진행 문구('H3 생성 1/2 · 16/16')가 완료로 읽히지 않았기 때문이다. H3 는 조각마다 아래 완료 문구를 보낸다(python/h3_engine.py).
+test('H3 조각 완료 문구는 전진으로 세어져, 조각이 계속 나오는 한 긴 작업이 끊기지 않는다', () => {
+  assert.deepEqual(parseChunkPosition('H3 생성 (문장 2/5, 조각 1/3 완료)'),
+    { segIndex: 1, segCount: 5, chunkIndex: 0, chunkCount: 3, phase: 'complete', h3: true })
+  assert.equal(parseChunkPosition('H3 생성 1/3 · 16/16'), null, '단계 진행은 살아 있음일 뿐 완료가 아니다')
+  const clock = makeClock()
+  const w = createJobWatchdog({ now: clock.now })
+  // 조각마다 8분(480초) — 예전에는 630초 무진행으로 첫 조각 뒤에 끊겼다.
+  for (let c = 0; c < 4; c++) {
+    for (let s = 1; s <= 16; s++) { clock.advance(30_000); assert.equal(w.observe({ message: `H3 생성 ${c + 1}/4 · ${s}/16` }), 'liveness') }
+    assert.equal(w.observe({ message: `H3 생성 (문장 1/1, 조각 ${c + 1}/4 완료)` }), 'forward')
+    assert.equal(w.evaluate(), 'ok', `${c + 1}번째 조각 뒤에도 계속 간다`)
+  }
+  // 진짜로 멈추면(단계 소식만 오고 완료가 없음) 여전히 잡힌다.
+  for (let s = 0; s < 22; s++) { clock.advance(30_000); w.observe({ message: 'H3 생성 4/4 · 16/16' }) }
+  assert.equal(w.evaluate(), 'no-forward-progress')
+  // 낭독 모델(Qwen) 조각 예산은 그대로다 — H3 위치를 본 작업만 넓어진다.
+  assert.equal(parseChunkPosition('합성 중... (문장 1/1, 조각 1/2 완료)')!.h3, undefined)
+})

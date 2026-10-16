@@ -4578,6 +4578,7 @@ def synthesize(reference_audio, text, output_dir, speed=1.0, silence_gap=0.5,
                 seg_seed_used = True
             if isinstance(engine, H3Engine):
                 engine.begin_segment(seg_seed)
+                engine.segment_pos = (i, len(parsed))   # 조각 완료 신호에 실을 문장 위치(화면 감시가 전진으로 센다)
             engine_name = engine.name
             seg_engines.append(engine_name)
 

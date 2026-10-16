@@ -78,12 +78,19 @@ export const PER_CHUNK_BUDGET_MS = INACTIVITY_MS
  */
 export const MAX_JOB_RESTARTS = 1
 
-export function jobBudgetMs(chunkCount: number | null | undefined): number {
+export function jobBudgetMs(chunkCount: number | null | undefined, perChunkMs: number = PER_CHUNK_BUDGET_MS): number {
   if (typeof chunkCount !== 'number' || !Number.isFinite(chunkCount) || chunkCount <= 0) {
     return Number.POSITIVE_INFINITY
   }
-  return LOAD_BUDGET_MS + Math.ceil(chunkCount) * PER_CHUNK_BUDGET_MS + SELF_REPORT_GRACE_MS
+  return LOAD_BUDGET_MS + Math.ceil(chunkCount) * perChunkMs + SELF_REPORT_GRACE_MS
 }
+
+/**
+ * H3 조각당 예산(2026-10-16). PER_CHUNK_BUDGET_MS(300s)는 'Python 이 한 조각을 280s 에 끊는다' 는 Qwen 계약에서
+ * 나온 값이라 H3 에는 근거가 없다(H3 는 실제 길이의 약 10배 — 170자 조각 하나가 수 분). H3 는 '완료 사이 최대 대기'
+ * 인 STALL_MS 를 조각당 상한으로 쓴다 — 그보다 오래 걸리는 조각은 이미 ② 축이 잡으므로 새 천장을 만든 것이 아니다.
+ */
+export const H3_PER_CHUNK_BUDGET_MS = STALL_MS
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 1) 진행 신호 해석 — liveness vs forward progress
@@ -96,6 +103,8 @@ export interface ChunkPosition {
   chunkIndex: number    // 0-base
   chunkCount: number
   phase: 'start' | 'complete'
+  /** H3 가 보낸 위치인가 — 조각당 예산이 다르다(H3_PER_CHUNK_BUDGET_MS). */
+  h3?: boolean
 }
 
 // python/qwen_bridge.py:
@@ -103,6 +112,8 @@ export interface ChunkPosition {
 // 문구가 바뀌면 위치를 '모름'으로 떨어뜨릴 뿐 절대 throw 하지 않는다. 모름은 liveness 로 취급된다 —
 // 즉 파싱이 깨져도 감시가 느슨해지지 않고 **더 보수적**으로 판정된다(fail-safe 방향).
 const CHUNK_RE = /문장\s*(\d+)\s*\/\s*(\d+)\s*,\s*조각\s*(\d+)\s*\/\s*(\d+)\s*(시작|완료)/
+// python/h3_engine.py 조각 완료: 'H3 생성 (문장 s/n, 조각 c/m 완료)' — 같은 형식에 앞머리만 'H3 생성'.
+const H3_PREFIX_RE = /^H3 생성/
 
 export function parseChunkPosition(message: unknown): ChunkPosition | null {
   if (typeof message !== 'string') return null
@@ -114,7 +125,8 @@ export function parseChunkPosition(message: unknown): ChunkPosition | null {
   const chunkCount = Number(m[4])
   if (segIndex < 0 || chunkIndex < 0 || segCount <= 0 || chunkCount <= 0) return null
   if (segIndex >= segCount || chunkIndex >= chunkCount) return null
-  return { segIndex, segCount, chunkIndex, chunkCount, phase: m[5] === '완료' ? 'complete' : 'start' }
+  return { segIndex, segCount, chunkIndex, chunkCount, phase: m[5] === '완료' ? 'complete' : 'start',
+    ...(H3_PREFIX_RE.test(message) ? { h3: true } : {}) }
 }
 
 /**
@@ -308,6 +320,7 @@ export function createJobWatchdog(opts: JobWatchdogOptions): JobWatchdog {
   let lastPosition: ChunkPosition | null = null
   let segCount: number | null = null
   let maxChunkCount = 0
+  let perChunkMs = PER_CHUNK_BUDGET_MS   // H3 위치를 한 번이라도 보면 H3 조각 예산으로
   // 확정 총량(결과 metadata 등에서 직접 받은 값). 있으면 추정보다 우선한다.
   let declaredTotal: number | null =
     typeof opts.chunkCount === 'number' && opts.chunkCount > 0 ? Math.ceil(opts.chunkCount) : null
@@ -339,6 +352,7 @@ export function createJobWatchdog(opts: JobWatchdogOptions): JobWatchdog {
       const pos = parseChunkPosition(signal?.message)
       if (!pos) return 'liveness'
       lastPosition = pos
+      if (pos.h3) perChunkMs = H3_PER_CHUNK_BUDGET_MS
       segCount = pos.segCount
       if (pos.chunkCount > maxChunkCount) maxChunkCount = pos.chunkCount
       // '완료' 이고 처음 보는 조각일 때만 전진이다. 시작 알림·재전송은 liveness.
@@ -349,7 +363,7 @@ export function createJobWatchdog(opts: JobWatchdogOptions): JobWatchdog {
     evaluate() {
       const t = now()
       // ③ 을 먼저 본다 — 총 예산이 끝났으면 다른 축의 상태와 무관하게 끝이다.
-      if (t - startedAtMs >= jobBudgetMs(totalChunks())) return 'job-budget-exhausted'
+      if (t - startedAtMs >= jobBudgetMs(totalChunks(), perChunkMs)) return 'job-budget-exhausted'
       if (t - lastSignalAtMs >= inactivityMs) return 'inactivity-timeout'
       if (t - lastForwardAtMs >= stallMs) return 'no-forward-progress'
       return 'ok'
@@ -381,7 +395,7 @@ export function createJobWatchdog(opts: JobWatchdogOptions): JobWatchdog {
     get ledger() { return ledger },
     get startedAtMs() { return startedAtMs },
     get restarts() { return restarts },
-    get budgetMs() { return jobBudgetMs(totalChunks()) }
+    get budgetMs() { return jobBudgetMs(totalChunks(), perChunkMs) }
   }
 }
 
