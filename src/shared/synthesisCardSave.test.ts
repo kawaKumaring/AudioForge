@@ -141,3 +141,15 @@ test('고를 수 있는 목록에 보관본이 모두 들어간다', () => {
   assert.equal(c[0].slot, 'current')
   assert.deepEqual(c.slice(1).map((x) => x.index), [0, 1])
 })
+test('음성 처리를 건 생성본은 **처리 전 원본**을 저장 왕복에서 잃지 않는다(2026-10-16)', () => {
+  const base = work()
+  const fx = { limiter: { on: true, ceilingDb: -1 } }
+  base.cards[0].settings = { speed: 1, voiceFx: fx } as never
+  ;(base.cards[0].takes[0] as Record<string, unknown>).rawPath = 'out/t1.wav'
+  ;(base.cards[0].takes[0] as Record<string, unknown>).path = 'out/t1_처리_20261016-120000.wav'
+  const w = parseSavedWork(base)!
+  assert.equal(w.cards[0].takes[0].rawPath, 'out/t1.wav', '원본을 잃으면 다시 걸 때 처리 위에 처리가 겹친다')
+  assert.deepEqual(w.cards[0].settings.voiceFx, fx)
+  // 처리하지 않은 생성본에는 원본 칸이 생기지 않는다.
+  assert.equal('rawPath' in parseSavedWork(work())!.cards[0].takes[0], false)
+})

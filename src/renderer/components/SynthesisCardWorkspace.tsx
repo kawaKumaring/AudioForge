@@ -13,6 +13,9 @@ import { useSynthesisCards, type SynthesisCard, type CardSource, type CardSettin
 import { useLabStore } from '../stores/lab.store'
 import { isCancelCleanupBusy } from '../../shared/cancelContract'
 import CompactVoiceWaveform from './CompactVoiceWaveform'
+import VoiceFxPanel from './VoiceFxPanel'
+import { applyCardFx, CardFxPreviewer } from '../lib/cardVoiceFx'
+import { VOICE_FX_DEFAULTS, type VoiceFxSettings } from '../../shared/voiceFx/settings'
 import MediaImportCard from './MediaImportCard'
 import SharedVoicePicker from './VoicePicker'
 import { useDragEdgeScroll } from '../hooks/useDragEdgeScroll'
@@ -86,6 +89,64 @@ function H3DirectionSettings({ card, close, disabled }: { card: SynthesisCard; c
   </Modal>
 }
 
+/** 적용할 때 처리 설정이 바뀌었으면 **최종 음성과 최신 음성**에 다시 건다(늘 처리 전 원본에서). */
+function reapplyFx(card: SynthesisCard, next: VoiceFxSettings | undefined) {
+  if (JSON.stringify(card.settings.voiceFx ?? null) === JSON.stringify(next ?? null)) return
+  const live = card.takes.filter(t => !t.missing)
+  const ids = new Set([card.adoptedId, live[live.length - 1]?.id].filter((x): x is string => !!x && live.some(t => t.id === x)))
+  for (const id of ids) void applyCardFx(card.id, id)
+}
+
+/**
+ * 고급 옵션 — 음성 처리(2026-10-16). 음성 편집과 같은 엔진이라 여기서 들은 소리가 저장된다.
+ * 최신 생성본을 반복 재생하며 값을 바꾸면 바로 들린다. '처리 전' 으로 원래 소리와 번갈아 비교한다.
+ */
+function CardFxSection({ card, fx, onChange }: { card: SynthesisCard; fx: VoiceFxSettings | undefined; onChange: (fx: VoiceFxSettings | undefined) => void }) {
+  const live = card.takes.filter(t => !t.missing)
+  const take = live[live.length - 1]
+  const player = useRef<CardFxPreviewer | null>(null)
+  const [playing, setPlaying] = useState(false)
+  const [bypass, setBypass] = useState(false)
+  const [why, setWhy] = useState('')
+  const [red, setRed] = useState<Partial<Record<'compressor' | 'deesser' | 'limiter', number>>>({})
+  useEffect(() => () => { void player.current?.dispose() }, [])
+  useEffect(() => { if (fx) player.current?.setFx(fx); else player.current?.stop() }, [fx])
+  useEffect(() => { player.current?.setBypass(bypass) }, [bypass])
+  const toggle = async () => {
+    setWhy('')
+    if (playing) { player.current?.stop(); return }
+    if (!take || !fx) return
+    pauseManagedAudio()
+    const p = player.current ??= new CardFxPreviewer()
+    p.onEnd = () => { setPlaying(false); setRed({}) }
+    p.onMeter = (w, db) => setRed(r => ({ ...r, [w]: db }))
+    try { await p.play(take.rawPath || take.path, fx, bypass); setPlaying(true) }
+    catch (e) { setWhy((e as Error)?.message || '들려주지 못했습니다') }
+  }
+  const panel: CSSProperties = { background: 'var(--bg-base)', borderRadius: 10, padding: '0 16px', minWidth: 0 }
+  return <details className="af-effect-group" data-testid="card-fx-settings" open={fx ? true : undefined} style={panel}>
+    <summary style={{ ...row, padding: '15px 0', cursor: 'pointer', listStyle: 'none', fontSize: 13, fontWeight: 600 }}><span style={{ flex: 1 }}>음성 처리</span><span style={muted}>{fx ? '켬' : '끔'}</span><span className="af-effect-chevron" aria-hidden="true">⌃</span></summary>
+    <div style={{ display: 'grid', gap: 12, paddingBottom: 16 }}>
+      <label title="만든 음성에 잡음 지우기·크기 고르게·치찰음 줄이기 등을 겁니다. 원래 파일은 지우지 않고 옆에 처리한 파일을 만듭니다." style={{ ...row, fontSize: 13, cursor: 'pointer' }}>
+        <input type="checkbox" style={{ accentColor: 'var(--accent)', colorScheme: 'dark' }} data-testid="card-fx-on" checked={!!fx} onChange={e => onChange(e.target.checked ? (fx ?? VOICE_FX_DEFAULTS) : undefined)}/>
+        <span style={{ flex: 1 }}>만든 음성에 처리 걸기</span>
+      </label>
+      {fx && <>
+        <div style={{ ...row, padding: '10px 12px', borderRadius: 9, background: 'var(--bg-elevated)' }}>
+          <button type="button" data-testid="card-fx-play" style={{ ...(playing ? button : primary), minWidth: 128, opacity: take ? 1 : .45 }} disabled={!take} aria-pressed={playing}
+            title={take ? '최신 음성을 반복 재생합니다. 값을 바꾸면 바로 들립니다.' : '먼저 음성을 만들면 들으며 조절할 수 있습니다.'}
+            onClick={() => void toggle()}><Icon name={playing ? 'stop' : 'play'}/>{playing ? '멈춤' : '들으며 조절'}</button>
+          <button type="button" data-testid="card-fx-bypass" style={{ ...button, ...(bypass ? { borderColor: 'var(--accent)', background: 'var(--accent-glow)', color: 'var(--accent-light)' } : {}), opacity: playing ? 1 : .45 }} aria-pressed={bypass} disabled={!playing}
+            title="처리하기 전 원래 소리와 번갈아 들어 봅니다." onClick={() => setBypass(b => !b)}>{bypass ? '처리 전 듣는 중' : '처리 전과 비교'}</button>
+          {!take && <span style={muted}>음성을 만들면 들을 수 있습니다</span>}
+          {why && <span role="alert" style={{ fontSize: 12, color: 'var(--rose)' }}>{why}</span>}
+        </div>
+        <VoiceFxPanel fx={fx} onChange={onChange} reductions={playing && !bypass ? red : undefined} testPrefix="card-fx"/>
+      </>}
+    </div>
+  </details>
+}
+
 function Settings({ card, close, disabled, focusReference = false }: { card: SynthesisCard; close: () => void; disabled: boolean; focusReference?: boolean }) {
   const [draft, setDraft] = useState<CardSettings>({ ...card.settings, pitch: cardApplied(card.settings).pitch })
   const set = (patch: Partial<CardSettings>) => setDraft(s => ({ ...s, ...patch }))
@@ -122,7 +183,7 @@ function Settings({ card, close, disabled, focusReference = false }: { card: Syn
     <input id={`card-${label}`} className="af-effect-slider" aria-label={label} type="range" min={min} max={max} step={step} value={value} onChange={e => update(+e.target.value)} style={{ width: '100%', margin: '4px 0', '--fill': `${(value - min) / (max - min) * 100}%` } as CSSProperties}/>
     <div style={{ ...row, justifyContent: 'space-between', ...muted }}><span>{min}{suffix}</span><span>{max > 0 && label === '음높이' ? '+' : ''}{max}{suffix}</span></div>
   </div>
-  return <Modal title="고급 옵션" subtitle={card.label} close={close} footer={<><button type="button" style={button} onClick={close}>취소</button><button type="button" style={{ ...primary, opacity: disabled || !valid ? .4 : 1 }} disabled={disabled || !valid} onClick={() => { useSynthesisCards.getState().update(card.id, { settings: { ...draft }, ...(liveEmotion && card.builtin && card.builtin.emotion !== true ? { builtin: { ...card.builtin, emotion: true } } : {}) }); close() }}>적용</button></>}>
+  return <Modal title="고급 옵션" subtitle={card.label} close={close} footer={<><button type="button" style={button} onClick={close}>취소</button><button type="button" style={{ ...primary, opacity: disabled || !valid ? .4 : 1 }} disabled={disabled || !valid} onClick={() => { useSynthesisCards.getState().update(card.id, { settings: { ...draft }, ...(liveEmotion && card.builtin && card.builtin.emotion !== true ? { builtin: { ...card.builtin, emotion: true } } : {}) }); reapplyFx(card, draft.voiceFx); close() }}>적용</button></>}>
     <div style={{ ...row, justifyContent: 'flex-end', marginBottom: 14 }}><button type="button" style={button} disabled={disabled} title="이 팝업의 설정을 기본값으로 돌립니다. 적용 전에는 카드가 바뀌지 않습니다." onClick={reset}><Icon name="reset"/>전체 초기화</button></div>
     <fieldset disabled={disabled} style={{ border: 0, padding: 0, margin: 0, display: 'grid', gap: 12 }}>
       {card.source && !card.builtin && <div style={{ ...panel, padding: '14px 16px', display: 'grid', gap: 8 }}>
@@ -161,6 +222,7 @@ function Settings({ card, close, disabled, focusReference = false }: { card: Syn
           <span style={{ ...muted, lineHeight: 1.5 }}>{draft.engine === 'cosyvoice3' && !card.builtin ? '대사와 별도로 연출을 요청합니다. 한국어 표현과 인물 닮음은 아직 청취 검수 중입니다. 줄 앞의 감정 지시는 그대로 우선합니다.' : '감정을 고르면 큰 모델(1.7B)로 요청합니다. 감정마다 표현 정도가 다릅니다. 줄 앞의 감정 지시는 그대로 우선합니다.'}</span>
         </div>
       </details>}
+      <CardFxSection card={card} fx={draft.voiceFx} onChange={voiceFx => setDraft(s => ({ ...s, voiceFx }))}/>
       {!supports.emotion && draft.emotion && draft.emotion !== '자연스럽게' && <div style={{ ...panel, ...row, padding: '14px 16px', color: 'var(--text-muted)', fontSize: 12 }} title="저장된 감정 설정은 현재 생성에 적용되지 않습니다. 해제하면 기본값으로 돌아갑니다."><span style={{ flex: 1 }}>감정 참조</span><span>{draft.emotion && draft.emotion !== '자연스럽게' ? `${draft.emotion} · 미적용` : '미연결'}</span>{draft.emotion && draft.emotion !== '자연스럽게' && <button type="button" aria-label="미지원 감정 선택 해제" style={button} onClick={() => set({ emotion: '자연스럽게' })}>해제</button>}</div>}
     </fieldset>
   </Modal>
@@ -389,8 +451,13 @@ export default function SynthesisCardWorkspace() {
     const offR = window.api.audio.onResult((d: unknown) => {
       // ★남의 응답은 **조용히** 지나간다. 알림을 띄우면 사용자는 자기 작업이 실패한 줄 안다.
       if (!mine(d)) return
+      const cardId = useSynthesisCards.getState().job?.cardId || ''
       const r = acceptCardResult(d)
       if (r.dropped && alive.current) setNotice(`만든 소리를 붙이지 못했습니다: ${r.dropped}`)
+      // ★음성 처리가 켜진 카드면 방금 붙인 생성본에 건다(원본은 rawPath 로 남는다).
+      if (r.takeId && useSynthesisCards.getState().cards.find(c => c.id === cardId)?.settings.voiceFx) {
+        void applyCardFx(cardId, r.takeId).then(why => { if (why && alive.current) setNotice(why) })
+      }
     })
     const offE = window.api.audio.onError((d: unknown) => {
       if (!mine(d)) return

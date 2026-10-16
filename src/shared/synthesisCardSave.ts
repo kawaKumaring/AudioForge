@@ -47,6 +47,8 @@ export interface SavedTake {
    *   '지금 것' 이라고 말해 버린다 — 만들 때 무슨 값을 썼는지 아무도 모르는데도.
    */
   settingsUnknown?: boolean
+  /** 음성 처리를 건 생성본의 처리 전 원본(2026-10-16). 없으면 처리하지 않은 생성본. */
+  rawPath?: string
 }
 
 export interface SavedCard {
@@ -121,6 +123,7 @@ export function parseSavedWork(raw: unknown): SavedWork | null {
         // ★기록이 없으면 **넣지 않는다.** 빈 객체를 넣으면 '기록 없음' 과 '없는 목소리' 가 섞인다.
         ...(obj(tt.voice) ? { voice: obj(tt.voice)! } : {}),
         ...(tt.settingsUnknown === true ? { settingsUnknown: true } : {}),
+        ...(str(tt.rawPath) ? { rawPath: str(tt.rawPath) } : {}),
       })
     }
     const adopted = str(c.adoptedId)

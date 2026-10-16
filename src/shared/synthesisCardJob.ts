@@ -37,6 +37,11 @@ export interface CardEngineSettings {
   reference: 'auto' | 'manual'
   start: number
   end: number
+  /**
+   * 생성 **뒤** 화면에서 거는 음성 처리(2026-10-16). 엔진에는 보내지 않는다 — 없으면 꺼짐.
+   * 처리는 소리를 다시 만들지 않으므로 '현재 설정과 다름' 판정(takeIsStale)에 넣지 않는다.
+   */
+  voiceFx?: import('./voiceFx/settings').VoiceFxSettings
 }
 
 /** 보내지 못했거나 깎인 값 하나. **화면이 이 문장을 그대로 띄운다.** */

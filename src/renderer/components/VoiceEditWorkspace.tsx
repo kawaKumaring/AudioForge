@@ -9,7 +9,7 @@
  * ★반복 조작이라 움직임 효과를 넣지 않는다(즉시 반응). 재생 위치선만 transform 으로 옮긴다.
  */
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type PointerEvent as RPointerEvent } from 'react'
-import { Action, button, primary, muted, badge } from './kit'
+import { Action, Icon, button, primary, muted, badge } from './kit'
 import VoiceFxPanel from './VoiceFxPanel'
 import * as M from '../../shared/voiceEdit/model'
 import { clipHit, hitCursor, type ClipHit } from '../../shared/voiceEdit/hit'
@@ -167,6 +167,22 @@ export default function VoiceEditWorkspace () {
 
   const sched = useMemo(() => new Map(M.mixSchedule({ ...project, tracks: project.tracks.map((t) => ({ ...t, mute: false, solo: false })) }).map((s) => [s.clipId, s])), [project])
   const duration = M.projectDuration(project)
+  // ★맞춤 확대 — 사용자가 직접 확대·축소하기 전까지는 전체 길이가 시간축 폭에 들어오게 맞춘다
+  //   (옆 칸이 생겨 시간축이 좁아지자 7.5초 클립이 잘려 보였다, 2026-10-16 디자인 점검).
+  const zoomedByUser = useRef(false)
+  useEffect(() => {
+    const el = lanes.current
+    if (!el) return
+    const fit = (): void => {
+      if (zoomedByUser.current) return
+      const w = el.clientWidth - 24
+      // 끄는 동안 길이가 바뀌어도 다시 맞추지 않는다(소리 개수·창 크기가 바뀔 때만) — 끌던 손 아래 눈금이 흔들리면 안 된다.
+      if (w > 100) setPps(Math.min(200, Math.max(10, w / Math.max(10, M.projectDuration(projectRef.current) + 0.5))))
+    }
+    fit()
+    const ro = new ResizeObserver(fit); ro.observe(el)
+    return () => ro.disconnect()
+  }, [project.clips.length])
   const width = Math.max(800, (duration + 10) * pps)
 
   // 추가
@@ -307,33 +323,40 @@ export default function VoiceEditWorkspace () {
     setProject(next); setPast((p) => [...p.slice(-99), projectRef.current]); setFuture([])
     player.current?.setTrackFx(selTrack.id, next.tracks.find((t) => t.id === selTrack.id)!.fx)   // 끊지 않고 바로
   }
+  // 켜고 끄는 단추 — 켜지면 채운 바탕+강조 테두리로 분명히(테두리 색만으로는 구분이 안 됐다, 2026-10-16 디자인 점검).
+  const toggle = (on: boolean): CSSProperties => on ? { ...button, borderColor: 'var(--accent)', background: 'var(--accent-glow)', color: 'var(--accent-light)' } : button
+  const sep = <span aria-hidden="true" style={{ width: 1, height: 22, background: 'var(--border-subtle)', margin: '0 2px' }} />
   const lane: CSSProperties = { position: 'relative', height: LANE_H, borderBottom: '1px solid var(--border-subtle)' }
 
   return <div data-testid="voiceedit-workspace" style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
     <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
       <Action icon="plus" label="화자 추가" testId="ve-add-track" onClick={addTrack} title="새 화자 트랙을 만듭니다">화자</Action>
       <Action icon="file" label="소리 추가" testId="ve-add-clip" onClick={() => void addClips()} disabled={!!busy || !project.tracks.length} title="고른 화자 트랙 끝에 소리 파일을 놓습니다(여러 개 가능)">소리</Action>
-      <span style={{ width: 1, height: 22, background: 'var(--border-subtle)' }} />
+      {sep}
       {playing
         ? <Action icon="stop" label="멈춤" testId="ve-stop" onClick={stop} title="멈춤 (스페이스)" />
         : <Action icon="play" label="재생" testId="ve-play" onClick={() => void play()} title="재생 위치부터 듣기 (스페이스)" />}
       <button type="button" data-testid="ve-loop" aria-pressed={loopOn} onClick={() => setLoopOn((v) => !v)} disabled={!loop} title="눈금자를 끌어 정한 구간을 반복해서 듣습니다 — 들으며 처리 값을 조절할 때"
-        style={{ ...button, borderColor: loopOn ? 'var(--border-accent)' : undefined, color: loopOn ? 'var(--accent-light)' : undefined, opacity: loop ? 1 : 0.4 }}>구간 반복</button>
+        style={{ ...toggle(loopOn), opacity: loop ? 1 : 0.4 }}>구간 반복</button>
       <button type="button" data-testid="ve-snap" aria-pressed={snap} onClick={() => setSnap((v) => !v)} title="다른 클립 끝·재생 위치에 붙입니다. 끄는 동안 Ctrl 로 반대로."
-        style={{ ...button, borderColor: snap ? 'var(--border-accent)' : undefined, color: snap ? 'var(--accent-light)' : undefined }}>붙이기</button>
+        style={toggle(snap)}>붙이기</button>
       <span style={{ ...badge, fontVariantNumeric: 'tabular-nums' }} data-testid="ve-time">{fmtTime(playhead)}</span>
       <span style={{ flex: 1 }} />
-      <button type="button" data-testid="ve-undo" onClick={undo} disabled={!past.length} title="되돌리기 (Ctrl+Z)" style={{ ...button, opacity: past.length ? 1 : 0.4 }}>되돌리기</button>
-      <button type="button" data-testid="ve-redo" onClick={redo} disabled={!future.length} title="다시 하기 (Ctrl+Shift+Z)" style={{ ...button, opacity: future.length ? 1 : 0.4 }}>다시</button>
-      <button type="button" style={button} onClick={() => setPps((v) => Math.max(10, v / 1.5))} title="축소" aria-label="축소">−</button>
-      <button type="button" style={button} onClick={() => setPps((v) => Math.min(800, v * 1.5))} title="확대" aria-label="확대">+</button>
-      <button type="button" data-testid="ve-save" onClick={() => void save()} disabled={!!busy || !project.clips.length} style={{ ...primary, opacity: busy || !project.clips.length ? 0.5 : 1 }} title="모든 트랙을 처리·섞어 WAV 로 저장합니다(들은 소리와 같습니다)">섞어서 저장</button>
+      <Action icon="undo" label="되돌리기" testId="ve-undo" onClick={undo} disabled={!past.length} title="되돌리기 (Ctrl+Z)" />
+      <Action icon="redo" label="다시 하기" testId="ve-redo" onClick={redo} disabled={!future.length} title="다시 하기 (Ctrl+Shift+Z)" />
+      {sep}
+      <Action icon="zoomOut" label="시간축 축소" testId="ve-zoom-out" onClick={() => { zoomedByUser.current = true; setPps((v) => Math.max(10, v / 1.5)) }} title="시간축 축소" />
+      <Action icon="zoomIn" label="시간축 확대" testId="ve-zoom-in" onClick={() => { zoomedByUser.current = true; setPps((v) => Math.min(800, v * 1.5)) }} title="시간축 확대" />
+      {sep}
+      <button type="button" data-testid="ve-save" onClick={() => void save()} disabled={!!busy || !project.clips.length} style={{ ...primary, opacity: busy || !project.clips.length ? 0.5 : 1 }} title="모든 트랙을 처리·섞어 WAV 로 저장합니다(들은 소리와 같습니다)"><Icon name="save"/>섞어서 저장</button>
     </div>
     {(busy || notice) && <div role="status" data-testid="ve-notice" data-path={notice?.path ?? ""} style={{ display: 'flex', alignItems: 'center', gap: 10, fontSize: 12, padding: '8px 11px', borderRadius: 8, border: '1px solid var(--border-subtle)', color: notice?.tone === 'error' ? 'var(--rose, #f43f5e)' : 'var(--text-secondary)' }}>
       <span style={{ flex: 1 }}>{busy || notice?.text}</span>
       {!busy && notice?.path && <button type="button" style={button} onClick={() => void window.api.app.revealFile(notice.path!)}>폴더에서 보기</button>}
     </div>}
 
+    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(280px,340px)', gap: 14, alignItems: 'start' }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 10, minWidth: 0 }}>
     <div style={{ display: 'flex', border: '1px solid var(--border-subtle)', borderRadius: 10, overflow: 'hidden', background: 'var(--bg-base)' }}>
       <div style={{ width: HEAD_W, flexShrink: 0, borderRight: '1px solid var(--border-subtle)' }}>
         <div style={{ height: RULER_H, borderBottom: '1px solid var(--border-subtle)' }} />
@@ -349,7 +372,7 @@ export default function VoiceEditWorkspace () {
               style={{ ...button, minHeight: 26, padding: '2px 8px', color: t.mute ? 'var(--amber, #f59e0b)' : undefined }}>끔</button>
             <button type="button" data-testid={`ve-solo-${i}`} aria-pressed={t.solo} title="이 화자만 듣기" onClick={(e) => { e.stopPropagation(); apply((p) => M.setTrack(p, t.id, { solo: !t.solo })) }}
               style={{ ...button, minHeight: 26, padding: '2px 8px', color: t.solo ? 'var(--accent-light)' : undefined }}>단독</button>
-            <span style={{ ...muted, marginLeft: 'auto' }} title="이 화자에 켠 처리 수">{Object.values(t.fx).filter((s) => (s as { on: boolean }).on).length}개 처리</span>
+            <span style={{ ...muted, marginLeft: 'auto' }} title="이 화자에 켠 음성 처리 수 — 아래 '음성 처리' 에서 바꿉니다">처리 {Object.values(t.fx).filter((s) => (s as { on: boolean }).on).length}</span>
           </div>
         </div>)}
       </div>
@@ -378,14 +401,12 @@ export default function VoiceEditWorkspace () {
       </div>
     </div>
     {!project.clips.length && ready && <div style={{ ...muted, fontSize: 12 }}>‘소리’ 로 목소리 파일을 화자 트랙에 놓고, 끌어서 겹치면 끼어들기·동시 발화가 됩니다.</div>}
+    </div>
 
-    <div style={{ display: 'grid', gridTemplateColumns: 'minmax(0,1fr) minmax(0,1fr)', gap: 14 }}>
-      <section style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <h3 style={{ fontSize: 13, fontWeight: 600 }}>{selTrack ? `${selTrack.name} — 음성 처리` : '화자를 고르세요'}</h3>
-        {selTrack && <VoiceFxPanel fx={selTrack.fx} onChange={setFx} reductions={playing ? reductions[selTrack.id] as never : undefined} />}
-      </section>
+    <aside data-testid="ve-side" style={{ display: 'flex', flexDirection: 'column', gap: 12, position: 'sticky', top: 0, maxHeight: 'calc(100vh - 120px)', overflowY: 'auto', padding: '12px 14px', border: '1px solid var(--border-subtle)', borderRadius: 10, background: 'var(--bg-card)' }}>
       <section data-testid="ve-clip-panel" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        <h3 style={{ fontSize: 13, fontWeight: 600 }}>{selClip ? `클립 — ${selClip.name}` : '클립을 고르세요'}</h3>
+        {selClip ? <h3 style={{ fontSize: 13, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={selClip.name}>클립 — {selClip.name}</h3>
+          : <div style={{ ...muted, fontSize: 12 }}>클립을 누르면 음량·페이드를 여기서 조절합니다.</div>}
         {selClip && <div style={{ display: 'flex', flexDirection: 'column', gap: 8, fontSize: 12 }}>
           <div style={muted}>시작 {fmtTime(selClip.start)} · 길이 {selClip.duration.toFixed(2)}초 · 원본 {selClip.offset.toFixed(2)}초부터</div>
           <label title="이 클립만 크게·작게" style={{ display: 'grid', gridTemplateColumns: '64px 1fr 60px', alignItems: 'center', gap: 8 }}>
@@ -404,6 +425,11 @@ export default function VoiceEditWorkspace () {
           <button type="button" data-testid="ve-clip-remove" style={{ ...button, alignSelf: 'flex-start' }} onClick={() => { apply((p) => M.removeClip(p, selClip.id)); setSel({ trackId: selClip.trackId }) }}>클립 지우기</button>
         </div>}
       </section>
+      <section style={{ display: 'flex', flexDirection: 'column', gap: 6, paddingTop: 12, borderTop: '1px solid var(--border-subtle)' }}>
+        <h3 style={{ fontSize: 13, fontWeight: 600 }}>{selTrack ? `${selTrack.name} — 음성 처리` : '화자를 고르세요'}</h3>
+        {selTrack && <VoiceFxPanel fx={selTrack.fx} onChange={setFx} reductions={playing ? reductions[selTrack.id] as never : undefined} />}
+      </section>
+    </aside>
     </div>
   </div>
 }
