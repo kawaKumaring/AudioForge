@@ -120,7 +120,7 @@ class H3Engine:
     def __init__(self):
         self.run_seed=0;self.records=[];self._ready=False
         self.keep_loaded=False;self._model=None;self._vae=None;self._cached=None;self.code_identity=''
-        self.stop_file='';self.progress=None;self.direction=validate_direction(os.environ.get('AF_H3_DIRECTION',''))
+        self.stop_file='';self.progress=None;self.segment_pos=(0,1);self.direction=validate_direction(os.environ.get('AF_H3_DIRECTION',''))
 
     def release(self):
         self._cached=None;self._model=None;self._vae=None
@@ -174,7 +174,7 @@ class H3Engine:
     def synthesize_segment(self,text,ref_audio,emotion_id,speed,output_path):
         if os.environ.get('AF_H3_PIPE_ADDR') and not os.environ.get('AF_H3_SERVER'):
             from h3_resident_client import synthesize
-            self.records.append(synthesize(text,ref_audio,emotion_id,speed,output_path,self.run_seed,self.direction))
+            self.records.append(synthesize(text,ref_audio,emotion_id,speed,output_path,self.run_seed,self.direction,self.segment_pos))
             return
         if emotion_id not in {None,'default'}:raise RuntimeError('MiniMax H3 감정 연출은 대사 손상 청취 판정으로 보류 중입니다')
         if float(speed)!=1:raise RuntimeError('현재 H3 생성은 기본 속도만 지원합니다')
@@ -254,6 +254,12 @@ class H3Engine:
                     if not wave.size or not np.isfinite(wave).all():raise RuntimeError('H3 출력이 비어 있거나 손상되었습니다')
                     channel=int(np.argmax(np.mean(wave.astype('float64')**2,axis=1)))
                     mono=wave[channel].copy();waves.append(mono)
+                    # ★조각 완료 신호 — 화면 감시(longform-job CHUNK_RE)가 '실제 전진' 으로 세는 형식 그대로(2026-10-16).
+                    #   예전 'H3 생성 i/n · s/16' 만으로는 완료로 읽히지 않아, 긴 글이 진행 중이어도 630초에 끊겼다.
+                    if self.progress:
+                        si,sn=self.segment_pos
+                        self.progress({'type':'progress','percent':25+int(55*(index+1)/len(chunks)),
+                                       'message':f'H3 생성 (문장 {si+1}/{sn}, 조각 {index+1}/{len(chunks)} 완료)'})
                     records.append({'index':index,'seed':seed,'sent_text':chunk,'sent_text_sha256':hashlib.sha256(chunk.encode()).hexdigest(),
                                     'frames':frame_count(chunk),'timing_estimate':estimate(chunk),'duration':len(mono)/decoded['sample_rate'],'mono_channel':channel})
                 mark('save');out=np.concatenate(waves);sf.write(output_path,out,decoded['sample_rate'],subtype='FLOAT')
