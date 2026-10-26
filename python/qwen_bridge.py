@@ -320,8 +320,14 @@ def _ref_text_tokens(model, proc, seg):
 
 
 def _measure_ref_code_frames(model, seg):
-    fn = REF_FRAMES_MEASURER or _ref_code_frames
-    return fn(model, seg)
+    key = (id(model), os.path.abspath(str(seg.get("ref_audio") or "")))
+    if key not in _REF_FRAMES_CACHE:
+        fn = REF_FRAMES_MEASURER or _ref_code_frames
+        frames = fn(model, seg)
+        if frames:
+            _REF_FRAMES_CACHE[key] = int(frames)
+        return frames
+    return _REF_FRAMES_CACHE[key]
 
 
 def _reference_budget_for(model, proc, seg):
@@ -330,13 +336,9 @@ def _reference_budget_for(model, proc, seg):
     xvo = bool(seg.get("x_vector_only", False))
     if xvo:
         return chunk_budget.reference_budget(True)
-    key = os.path.abspath(str(seg.get("ref_audio") or ""))
-    frames = _REF_FRAMES_CACHE.get(key)
-    if frames is None:
-        frames = _measure_ref_code_frames(model, seg)
-        if not frames:
-            raise RuntimeError("TTS_COMPAT: 참조 codec 프레임 수를 얻지 못했다 — ICL 예산을 추정값으로 열지 않는다.")
-        _REF_FRAMES_CACHE[key] = int(frames)
+    frames = _measure_ref_code_frames(model, seg)
+    if not frames:
+        raise RuntimeError("TTS_COMPAT: 참조 codec 프레임 수를 얻지 못했다 — ICL 예산을 추정값으로 열지 않는다.")
     return chunk_budget.reference_budget(
         False, ref_code_frames=int(frames), ref_text_tokens=_ref_text_tokens(model, proc, seg),
         controlled_prefix=bool((seg.get("prefix_text") or "").strip()))
@@ -566,6 +568,9 @@ def _ref_code_frames(model, seg):
 
     vendor 가 이 값을 반환하지 않으므로 발행 근거로 쓰려면 직접 재현해야 한다.
     실패하면 None — 상위가 fail-closed 한다(추정값으로 채우지 않는다)."""
+    key = ("codec", id(model), os.path.abspath(str(seg.get("ref_audio") or "")))
+    if key in _REF_FRAMES_CACHE:
+        return _REF_FRAMES_CACHE[key]
     try:
         import soundfile as _sf
         wav, sr = _sf.read(seg["ref_audio"])
@@ -573,7 +578,10 @@ def _ref_code_frames(model, seg):
             wav = wav.mean(axis=1)
         enc = model.model.speech_tokenizer.encode(wav, sr=sr)
         codes = enc.audio_codes[0]
-        return int(codes.shape[0])
+        frames = int(codes.shape[0])
+        if frames > 0:
+            _REF_FRAMES_CACHE[key] = frames
+        return frames
     except Exception:
         return None
 
@@ -956,6 +964,7 @@ def run_loaded(model, cfg):
     """불러 둔 모델로 작업 하나(세그먼트 선분할 → 생성 → result). 0 = 성공, 1 = 구조화 오류를 이미 냈다.
     ★바로 실행(main)과 상주 실행기(qwen_voice_server — 모델을 다시 열지 않는다, 2026-10-03)가 **같은 이 함수**를 쓴다 —
       분할·생성 상한·종료 판정·결과 모양이 두 길에서 갈리지 않는다. 예외는 부르는 쪽이 error 로 낸다."""
+    _REF_FRAMES_CACHE.clear()  # 같은 경로라도 다음 요청의 파일·모델은 다시 측정한다.
     probe_context = cfg.get("probe_context", "production")
     segments = cfg.get("segments", [])
     if not segments:

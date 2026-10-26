@@ -29,12 +29,14 @@
   그 밖의 줄(라이브러리가 찍는 경고 등)은 부모가 무시한다 — 답은 id 로 짝짓는다.
 """
 import collections
+import gc
 import json
 import os
 import queue
 import sys
 import threading
 import time
+from qwen_reference_cache import reference_digest
 
 _OUT_LOCK = threading.Lock()
 
@@ -82,7 +84,7 @@ class Models:
 
     def __init__(self):
         self.loaded = collections.OrderedDict()
-        self.prompts = {}          # (모델 폴더, 참조 소리, 수정 시각) → 참조 목소리 특징(한 번만 계산)
+        self.prompts = collections.OrderedDict()  # 내용·전사·모델이 같은 고정 참조만, 상한 적용
         #: 참조 목소리 작업의 참조 특징 — (모델 폴더, 소리 지문, 전사, 방식) → 특징. 오래된 것부터 버린다.
         self.ref_prompts = collections.OrderedDict()
         self.ref_hits = 0          # 참조 특징을 다시 쓴 횟수(관측용)
@@ -91,10 +93,18 @@ class Models:
     def prompt(self, model, model_dir, clone):
         """고정 참조 소리 → 그 목소리를 따라 읽게 하는 특징. 같은 참조는 한 번만 만든다."""
         ref = clone["ref"]
-        key = (model_dir, ref, os.path.getmtime(ref))
-        if key not in self.prompts:
-            self.prompts[key] = model.create_voice_clone_prompt(ref_audio=ref, ref_text=clone["text"])
-        return self.prompts[key]
+        key = (model_dir, reference_digest(ref), clone["text"])
+        if key in self.prompts:
+            self.prompts.move_to_end(key)
+            return self.prompts[key]
+        made = model.create_voice_clone_prompt(ref_audio=ref, ref_text=clone["text"])
+        if reference_digest(ref) != key[1]:
+            raise RuntimeError("참조 파일이 준비 중 변경됐습니다. 다시 시도하세요.")
+        self.prompts[key] = made
+        while len(self.prompts) > REF_PROMPT_MAX:
+            self.prompts.popitem(last=False)
+        return made
+
 
     def get(self, model_dir):
         import torch
@@ -103,10 +113,13 @@ class Models:
             self.loaded.move_to_end(model_dir)
             return self.loaded[model_dir], False
         while len(self.loaded) >= MAX_MODELS:
-            gone, _ = self.loaded.popitem(last=False)
-            self.prompts = {k: v for k, v in self.prompts.items() if k[0] != gone}
+            gone, released = self.loaded.popitem(last=False)
+            del released
+            for k in [k for k in self.prompts if k[0] == gone]:
+                del self.prompts[k]
             for k in [k for k in self.ref_prompts if k[0] == gone]:
                 del self.ref_prompts[k]
+            gc.collect()  # 벤더 래퍼가 붙든 순환 참조도 새 모델을 열기 전에 해제한다.
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
         m = qcv.load(model_dir)
@@ -122,17 +135,15 @@ def _ref_prompt_cache(models, model, model_dir):
     """model.create_voice_clone_prompt 를 **내용 기준 캐시**로 감싼다(멱등).
     ★열쇠 = (모델 폴더, 참조 소리 지문(sha256), 전사, 특징만 쓰는가, 그 밖의 인자) — 같은 경로라도 소리가 바뀌면 다시 만든다.
       다른 화자의 참조가 섞일 수 없다(지문이 다르다). 목록 입력·모르는 인자는 감싸지 않고 그대로 부른다."""
-    import hashlib
     if getattr(model, "_af_ref_cache", False):
         return
     orig = model.create_voice_clone_prompt
 
     def cached(ref_audio=None, ref_text=None, x_vector_only_mode=False, **kw):
         if not isinstance(ref_audio, str) or not os.path.isfile(ref_audio) or isinstance(ref_text, list) \
-                or isinstance(x_vector_only_mode, list):
+                or isinstance(x_vector_only_mode, list) or kw:
             return orig(ref_audio=ref_audio, ref_text=ref_text, x_vector_only_mode=x_vector_only_mode, **kw)
-        with open(ref_audio, "rb") as fh:
-            sha = hashlib.sha256(fh.read()).hexdigest()
+        sha = reference_digest(ref_audio)
         key = (model_dir, sha, ref_text or "", bool(x_vector_only_mode), repr(sorted(kw.items())))
         hit = models.ref_prompts.get(key)
         if hit is not None:
@@ -140,6 +151,8 @@ def _ref_prompt_cache(models, model, model_dir):
             models.ref_hits += 1
             return hit
         made = orig(ref_audio=ref_audio, ref_text=ref_text, x_vector_only_mode=x_vector_only_mode, **kw)
+        if reference_digest(ref_audio) != sha:
+            raise RuntimeError("참조 파일이 준비 중 변경됐습니다. 다시 시도하세요.")
         models.ref_prompts[key] = made
         while len(models.ref_prompts) > REF_PROMPT_MAX:
             models.ref_prompts.popitem(last=False)
